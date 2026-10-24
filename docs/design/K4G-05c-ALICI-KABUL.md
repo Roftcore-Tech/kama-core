@@ -1,7 +1,7 @@
-# K4G-05c — Alıcı kabul bütünlüğü (R1 + R2 + sızıntı) — tasarım notu
+# K4G-05c — Alıcı kabul bütünlüğü (R1 + R2 + budama) — tasarım notu
 
 ## 0. Künye
-**K4G-05c** (CEVAP 9 §3) · **rev2** (2026-10-24 incelemesi; önceki `db8051e4`) · taban main + #136 + 05b rev4; satırlar `3439fccd` (ofset 05b §0) · P0 `k4g/p0-taban` @`df7c9e62` · **TASLAK: kod "K4G-05c ONAYLANDI" ve 05b rev4 merge'ünü bekler;** ölçülmedi.
+**K4G-05c** (CEVAP 9 §3) · **rev3** = rev2 (`18e6de95`) + CEVAP 11 / 11-EK / 12 / 13 (öncelik 13 > 12 > 11-EK > 11 > 10). Onay C12 §1 ile geçerli; rev3 SHA'sı ve Ek A hash'i ayrıca istenir. Taban main `1b1425d2` + 05b. Satır atıfları `1b1425d2`'dendir; 05b'ye bağlı atıflar `05b-int:` önekiyle `k4g/05b-int` @`20f1df53`'ten. P0: `k4g/p0-taban` @`df7c9e62`. **TASLAK — kod 05b merge'ünü bekler;** ölçülmedi. Tarihçe Ek E'de (MUST NOT IMPLEMENT).
 
 ## 1. Değişmez
 > Alıcının tutamadığı Reliable birim ACK'lenmez (SACK'te de, FEC RECOVERED'da da); ACK'lenmiş Reliable birim, oturum `Closed` olana dek uygulamaya eksiksiz, tam bir kez ve gönderim sırasıyla teslim edilir.
@@ -11,31 +11,84 @@
 ## 2. Mekanizma (bugün; atıflar D.0)
 - **R2:** ACK kabulden bağımsız gider; dolu kanalda ACK'li payload düşer. `p0_r2_full_channel_never_acks_undelivered`, `p0_r2_dropped_unit_blocks_followers`.
 - **R1:** Reorder eksik birimi atlar; gönderen mesafeyi sınırlamaz. `p0_r1_reorder_never_skips_missing_reliable`.
-- **Sızıntı:** bayat karar tablolarda kalır; runtime, motorun teyit etmediği geç ACK'te de payload'u siler.
+- **Kayıt/payload:** v1'de runtime, motorun teyit etmediği geç ACK'te de payload'u siler; envanterde 1–3, 5, 7–8. satırlar (ENVANTER.md). Bu, C13 §3 gereği **05b'de** kapanır (05b-int `drain_confirmed!` :2078-2099). 05c'ye kalan: K_MAP budamasının açılması ve birim başına O(1) runtime kaydı.
 
 ## 3. Tasarım [tasarım]
-**R2 — tek kabul kararı** (`server_task`). S1 kipinde oturum başına `AcceptState {floor, above ⊆ (floor, floor+cap]}` tutulur (D.4). Yan etkisiz `admit(u)`: `u < floor ∨ u ∈ above` → Duplicate (ACK, payload atılır) · `u − floor > cap` → Refuse(Window), `reorder_skip` · kanal kuralı tutmazsa → Refuse(Full), `full_refusals` · aksi → Accept. Refuse'da datagram `Receiver`'a, `BlockAsm`'e ve kanala girmez (`NotReady` deseni): SACK boşluğu kalır, gönderen yeniden yollar. Accept'te `await`'siz sıra: `on_datagram` → `permit.send` → `AcceptState`; `on_datagram` birimi döndürmezse izin bırakılır, karar Duplicate olur. Dördü birlikte ya da hiçbiri; `delivery_dropped` yapısal 0.
-- **Ayrılı yer:** R = min(`max_peers`, C − 1) izinlik sıra başı rezervi (C = `delivery_queue`). Floor birimi, rezervi boşsa rezervden alır; diğer kabuller rezervi boş oturumların payını (R − U) korumak zorundadır. Kota: kanalda ≤ C − R + 1, Reorder'da ≤ cap. Döngüsel bekleme yok (D.2); adalet sözü yok (DUR-05c-8).
-- Receiver girdisi = çağrının kendisi [DUR-05c-1 (a)], `seen_count` beyanı (D.1). FEC RECOVERED ve parçalı mesaj aynı kurala uyar (DUR-05c-12).
+**3.1 R2 — tek kabul kararı** (`server_task`). S1 kipinde oturum başına `AcceptState {floor, above ⊆ (floor, floor+cap]}` tutulur (D.4). Yan etkisiz `admit(u)`:
+- `u < floor ∨ u ∈ above` → **Duplicate**: ACK'lenir, payload atılır.
+- `u − floor > cap` → **Refuse(Window)**, `reorder_skip`.
+- Kanal kuralı tutmazsa → **Refuse(Full)**, `full_refusals`.
+- Aksi → **Accept**.
 
-**R1.** `u − next > cap` → düşer + `reorder_window_violations` (S1'de yapısal 0); atlama kalkar. Gönderende kapı `next_unit + c − 1 − O < cap` → tutmazsa `Backpressure` + `distance_holds`. Pay = 0 [DUR-05c-2 (a)] (D.3).
+Refuse'da datagram `Receiver`'a, `BlockAsm`'e ve kanala girmez (`NotReady` deseni): SACK boşluğu kalır, gönderen yeniden yollar. Accept'te `await`'siz sıra: `on_datagram` → `permit.send` → `AcceptState`. `on_datagram` birimi döndürmezse izin bırakılır, karar Duplicate olur. Dördü birlikte ya da hiçbiri; `delivery_dropped` yapısal 0.
 
-**Teyit tek kaynaktan + sızıntı.** Runtime her `on_event` / `on_event_batch` sonrası `Sender::take_confirmed_units()`'i (05b B.2.2; değerler `UnitId`) bir kez drene eder; `store.remove` ve `unit_acked!` yalnız bu çıktıdaki birimler için çalışır. Motorun teyit etmediği ACK'te (parite ACK'i; canlı kaydı olmayan iletim: tombstone TTL/TOMBSTONE_MAX, K_MAP budaması, tombstone'suz Duplicate kaybı) payload KALIR. `seq_to_unit` kalkar; `unit_seqs` yerine birim başına O(1) `UnitTxLog` gelir (#136 okur) → ≤ store.len(). Kanca DUR-23 (b).
+- **Ayrılı yer:** R = min(`max_peers`, C − 1) izinlik sıra başı rezervi ayrılır (C = `delivery_queue`). Floor birimi rezervi boşsa rezervden alır; diğer kabuller rezervi boş oturumların payını (R − U) korumak zorundadır. Kota: kanalda ≤ C − R + 1, Reorder'da ≤ cap. Döngüsel bekleme yoktur (D.2); adalet sözü yoktur (DUR-05c-8 (a)).
+- **Oturum geçişi:** yenilemede ya da supersession'da `h` (yalnız-alım drain) ve `h'` iki ayrı oturumdur, her biri kendi rezervini tutar. U ≤ R ve I (F ≥ R − U) korunur; ikisinin de sıra başı garantisi sürer (test D.5).
+- **Receiver girdisi = çağrının kendisi** (DUR-05c-1 (a′)). `seen_count` spec yaması bu PR'da (Ek A.5).
+- **FEC RECOVERED:** ESI listeye yalnız Accept/Duplicate'te girer; üç RECOVERED çıkışı da bu kurala uyar (`runtime.rs:3649`, `:3734`, `:3799`). İki kol için 3.6'ya bakın.
+
+**3.2 R1.** `u − next > cap` → birim düşer + `reorder_window_violations` (S1'de yapısal 0); atlama kalkar. Gönderende kapı `next_unit + c − 1 − O < cap`; tutmazsa `Backpressure` + `distance_holds`. Pay = 0 (DUR-05c-2 (a), D.3).
+
+**3.3 Kayıt ve payload sahipliği.** **05b'de (C13 §3):** payload ve `unit_acked!` yalnız `Sender::take_confirmed_units()` çıktısıyla silinir; teyit üretmeyen geç ACK'te payload kalır (05b-int `runtime.rs:2078-2124`, testler `k4g05b_runtime_ownership.rs`). **05c'de kalan (DUR-30):**
+- (i) Motor K_MAP budaması açılır: 05b-int `sender.rs` `own_on_sent` :6330, `K_MAP` :1644. Mekanizma `87b4cf49`'daki gibi, 4fec0556'da kapatılmıştı. Hangi kaydın budanacağı DUR-05c-14'tür (3.4).
+- (ii) Runtime'da birim başına O(1) kayıt: `seq_to_unit` kalkar, birim başına liste yerine `UnitTxLog {emisyon sayısı, son seq}` gelir. Yalnız store'daki birim için tutulur ve teyit çıktısıyla düşer → girdi ≤ store.len().
+- (iii) `late_ack_after_prune_keeps_payload` yeşil şarttır: budanmış seq'in geç ACK'i teyit etmez, payload yerinde kalır, yeniden gönderim gövdeli gider.
+- Kanca: DUR-23 (b) **05b'de** karşılandı (`SenderRecoveryDiag::{seq_to_unit_len, unit_seqs_len}`, 05b-int `runtime.rs:819-820`, `live_diag`). 05c'de `seq_to_unit_len` yapısal 0 olur, `unit_seqs_len` = `UnitTxLog` girdisi; ek kanca yok.
+
+**3.4 Budama gerilemesi → DUR-05c-14.** Budama açılınca iki mevcut test kırmızıya döner: `dr_cs1_acceptance::f3_di12ad_equal_timestamp_ordering` (C/D kolu ResolvedByDataAck → TimedOut) ve `ek4_a2_liveness::external_pto_drives_loss_declaration_and_differs_from_empty_batch` (v1 ARQ yolu kaybolur). Budama kapalıyken ikisi test değişmeden yeşildir (BUDAMA-UYARISI.md). Ortak desen: budama birimin **orijinal Data kaydını** kuruluş kopyaları yüzünden düşürüyor. C13 §4'e göre bu, kasıt kanıtlanmadıkça gerileme şüphesidir. Seçenekler Ek C'de; öneri **(A)**: orijinal Data kaydı budanmaz, budama orijinal dışındaki en eski kaydı seçer, sınır ≤ K_MAP aynı kalır. Her seçenekte iki test **değişmeden** yeşil şarttır (C hariç).
+
+**3.5 Parçalı mesaj → DUR-05c-12 (yeniden yazıldı; öneri A).** S1 yolunda transport parçalaması yapısal olarak kapalıdır: `ClientTransport::build` → `FragmenterOn` (`transport.rs:498-500`; ürün profili `runtime.rs:266` `None`). Ürün yolundaki tek parçalı mesaj dosyadır ve uygulama katmanında reddedilir (ANALIZ.md §2). `MsgAsm` yalnız S1-dışı bench/test yoludur. Öneri A, iki teste dayanır: `FragmenterOn` kilit testi (kapı bugün testsiz) ve dosya davranış testi; notta beyan. B ayrı karttır, sahip isterse.
+
+**3.6 FEC dolu kanalda iki kol (11-EK §5, C13 §7).**
+- **Kol 1 (zorunlu):** kaynak yeniden gönderimi sonradan ulaşır → ARQ ile tamamlanır (test D.5).
+- **Kol 2:** kaynak kaybolmaya devam eder, onarım yeterlidir; FEC üzerinden tamamlanma **PoC garantisi değildir**. 05c'de reddedilen kurtarımın bloğu düşer (`runtime.rs:3321`), kalıcı kaynak kaybında birim gelmez [tasarım çıkarımı]. KATMAN 6 beyanlı sınırı: "dolu kanalda FEC kurtarımı kaybolabilir; ARQ telafi eder; kaynak kalıcı kayıpsa oturum o birimde bekler". Kol 2 denenir ve raporlanır; tek başarılı koşu sınırı kaldırmaz. "FEC altında dayanıklılık sağlandı" denmez.
 
 ## 4. Dosyalar · YAMA · kimlik
-- `crates/client-core/src/{runtime.rs, transport.rs}`; `crates/adaptive-transport/src/receiver.rs` yalnız doc. Testler: `crates/client-core/tests/{runtime_e2e.rs, k4g_p0_receiver.rs, ctx_first_dispatch.rs, session_keyed_slots.rs}`, `crates/kama-node/src/node/tests.rs`.
-- Başka dosya yok (`s1.rs`, tel/codec/`tv_*`, `sender.rs`, UniFFI, kimlik/freeze dokunulmaz); INT-02 düzeneği dışarıda (DUR-05c-6); C9 §6 ile çakışma yok. Kimlik DUR-05c-11.
-- YAMA: sıralı teslim sözü `KM-SEAM-AT-001.md:151`; INV-ACK-DELIVER-1 yalnız plan:121'de → **A.1 KM-SEAM-AT-001** · A.2 plan:532 · A.3 plan:392 (DUR-05c-5) · A.4 HANDOFF:20 (DUR-05c-9).
+- **Kod:** `crates/client-core/src/{runtime.rs, transport.rs}`; `crates/adaptive-transport/src/sender.rs` (yalnız K_MAP budaması, DUR-05c-14 seçeneğiyle); `crates/adaptive-transport/src/receiver.rs` yalnız doc.
+- **Test:**
+  - `crates/client-core/tests/{runtime_e2e.rs, k4g_p0_receiver.rs (P0), ctx_first_dispatch.rs (literal), session_keyed_slots.rs (doc), k4g05b_runtime_ownership.rs (+ `late_ack_after_prune_keeps_payload`)}`
+  - `crates/adaptive-transport/tests/k4g05b_ownership.rs` (taşınan iddialar, §5)
+  - `crates/kama-node/src/node/tests.rs`
+  - `crates/kama-integration/tests/seam_real_adapter/main.rs` (`FragmenterOn` kilidi)
+  - kama-app dosya davranış testi (DUR-05c-12 A)
+  - `dr_cs1_acceptance.rs` ve `ek4_a2_liveness.rs` yalnız DUR-05c-14 (C) seçilirse değişir.
+- **Belge:** Ek A (A.1–A.5).
+- **Dokunulmaz:** `s1.rs`, `s3.rs`, `handles.rs`, protector, tel/codec/`tv_*`, UniFFI, kama-app ürün kodu, `api_surface_v0`, kimlik/freeze ve FROZEN dosyalar. INT-02 düzeneği K4G-05e'dedir.
+- **Çakışma (C9 §6):** `runtime.rs`/`transport.rs` 05c bitene dek A şeridine kapalı; A3 bu PR'ı bekler.
+- **Kimlik:** 05b'nin `kama-v1.1-full` beyanına 05c satırı (DUR-05c-11 (a)).
+- **YAMA hedefleri:** **A.1** KM-SEAM-AT-001 §4 (sıralı teslim sözü `:151`) · A.2 plan:532 · A.3 plan:392 · A.4 HANDOFF:20 · **A.5** engine-spec §2.2 `seen_count` (main :216 / 05b-int :220).
 
-## 5. Eski testler
-Dört test, iki belge (Ek B). İddia değişir; 4. hücre derlenir ve KIRMIZI beklenir.
+## 5. Eski ve taşınan testler
+- **Eski testler (Ek B):** `transport.rs:1412-1428`, `runtime_e2e.rs:255-305` (:288), `runtime.rs:3976-4017`, `kama-node/src/node/tests.rs:415-456`. İddia değişir; 2×2'nin 4. hücresi derlenir ve KIRMIZI beklenir.
+- **05b'den taşınanlar** (`k4g05c/05b-den-tasinan/`; 05c kapısında aktif, `#[ignore]` yok; davranışın neden 05c'de olduğu):
+  - `k4g05b_kmap_bound_and_pruned_late_ack` — sınadığı budama ve budanmış kaydın geç ACK'i yalnız 05c'de var, çünkü budama 05c'de açılır.
+  - D1 kol 1 (`…_kmap_live_records`) — "canlı kayıt ≤ K_MAP" iddiası budama olmadan sağlanamaz; budama 05c'de.
+  - D2 kol 3 (`…_kmap_live_records`) — aynı neden: sınırı budama kurar ve budama 05c'de.
+  - `k4g05b_accept_p0_mirror_horizon_out_declared_red` — budanmış-kayıt kolu 05c'de `late_ack_after_prune_keeps_payload` olarak gerçek runtime'da koşar. TTL kolu 05b'de etkin bir davranıştır ve orada kalır (05b-int `late_ack_after_ttl_keeps_payload` :775). Çelişki notu Ek C'de.
+- **Budamaya bağlı iki mevcut test** (3.4) DUR-05c-14 (A) altında değişmeden yeşil şarttır.
 
 ## 6. Kanıt
-- P0 üçlüsü 05c tabanında kırmızı (yeşilse DUR) → yeşil. Kanca-only commit'ten sonra `unit_records_track_store_only` ve `late_ack_after_tombstone_expiry_keeps_payload` tabanda kırmızı (yeşilse DUR-05c-13). Yeni testler D.5'te; mevcut testler + `tv_*` yeşil.
-- INT-02 `ek-tuketici-durak` [DUR-05c-3]: 3/3, teslim %100, `delivery_channel_drops = 0`, durakta ACK > 0 (heartbeat PoC'de yok: beyan). Bütün kollarda `reorder_skip = reorder_window_violations = 0` ve `confirmed_units_overflow = 0` (05b sayacı).
+- P0 üçlüsü 05c tabanında (main + 05b) kırmızı (yeşilse DUR) → yeşil.
+- `late_ack_after_prune_keeps_payload`, taşınan dört iddia ve iki budama testi yeşil.
+- `unit_records_bounded_per_unit`: her örnekte birim kaydı ≤ store.len() ve `seq_to_unit_len` = 0. Tabanda kırmızı beklenir: 05b'de birim başına liste yeniden gönderimle büyür.
+- Mevcut testler + `tv_*` yeşil.
+- Yeni testler (D.5): FEC kol 1 · oturum geçişinde rezerv · kanal rezervi · kontrol yolu · gönderen mesafe · pencere ihlali · `FragmenterOn` kilidi · dosya davranışı.
+- **INT-02 `ek-tuketici-durak`** (DUR-05c-3 kararı; düzenek K4G-05e):
+  - Durak 30 s; eşzamanlı dosya ≥ 1 025 birim.
+  - Taban kolunda (05c'siz) `delivery_channel_drops > 0`; geçerlilik `full_refusals > 0`.
+  - Hüküm 3 tohumda 3/3: teslim %100, `delivery_channel_drops = 0`, `reorder_skip = 0`, dedup doğru, kontrol yolu çalıştı. Kontrol yolu = ACK; heartbeat PoC'de yok.
+  - Bütün kollarda `reorder_window_violations = 0` ve `confirmed_units_overflow = 0`.
+  - Ayrıca öneri: 31–100 B/s'de tek dosya ölçümü (DUR-05c-12 olgu b).
 
 ## 7. Sıra · süre · risk
-Ön koşul 05b rev4 (INV-NO-ORPHAN + `take_confirmed_units`; yoksa DUR) → P0 → kanca → kırmızılar → kod → mutasyon → kapılar → INT-02. Süre ≈ 2,5 iş günü. Riskler D.6'da.
+- **Sıra:** 05b merge → rebase → P0 → kırmızılar → kod → mutasyon → kapılar → INT-02.
+- **Süre:** `[SÜRE-BEKLİYOR]`.
+- **Riskler (D.6):**
+  - Duraklama gönderene kayıp gibi görünür (hız düşmez).
+  - Rezerv R izni paylaşımlı havuzdan alır.
+  - FEC kol 2 sınırı.
+  - DUR-05c-14 (A)'da orijinal kayıt uçuş muhasebesinde kalır [çıkarım].
+  - Örtük kipte pencere ve rezerv yok.
 
 ---
 
