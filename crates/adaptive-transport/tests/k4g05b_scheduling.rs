@@ -562,8 +562,9 @@ fn k4g05b_pay_mixed_size_reservation() {
 ///
 /// Kurulum (ağsız): ısınma (4 × 300 B, 300 ms'de ACK) → u4..u8 (300 B) 500 ms'de girer, hiçbir
 /// iletimi ACK'lenmez → prob → devir → beş geometrik zincir (aralık srtt'den ×2, ≤ RTO_MAX). 100 s'den
-/// sonraki ilk zincir turunda (sessizlik ≥ H; aralıklar 30 s'de; birimlerin Data/prob kayıtları
-/// K_MAP budamasıyla düşmüş — uçuşta yalnız kopyalar) u4'ün o kopyası 300 ms sonra (≈ srtt; şişkin
+/// sonraki ilk zincir turunda (sessizlik ≥ H; aralıklar 30 s'de; birimlerin son K_MAP iletimi
+/// kopyadır — 05b'de budama kapalı olduğundan eski Data/prob kayıtları uçuşta kalabilir ve
+/// sıfırlama ACK'iyle kayıp ilan edilip ARQ'ya girer) u4'ün o kopyası 300 ms sonra (≈ srtt; şişkin
 /// RTT örneği tabanı bozmasın) ACK'lenir → u4 teyit, ilk ilerlemeli ACK = sıfırlama anı.
 ///
 /// AMAÇ: (1) o ACK'ten hemen sonra u5..u8'in geometrik aralığı tabana döner (≤ 2·srtt); (2) u5..u8'in

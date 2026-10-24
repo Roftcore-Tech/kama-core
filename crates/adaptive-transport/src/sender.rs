@@ -1402,7 +1402,7 @@ impl RecordOwner {
 }
 
 /// [K4G-05b madde 2/4/11 · Ek B.2.3] Birim başına SAHİPLİK DİZİNİ girdisi (`Sender::units`).
-/// Olay güdümlü güncellenir (gönderim, kayıp ilanı, ACK, budama, kayıt silme) — tam tarama yok;
+/// Olay güdümlü güncellenir (gönderim, kayıp ilanı, ACK, kayıt silme) — tam tarama yok;
 /// anahtar `BTreeMap<UnitId, _>` (deterministik, ADR-17). Girdi birimin ilk iletimiyle açılır;
 /// teyitsiz birimde teyide dek, teyitli birimde son kaydı (uçuş + tombstone) düşene dek yaşar.
 #[derive(Debug, Default)]
@@ -1412,7 +1412,9 @@ struct UnitOwnership {
     /// Birimin motorda yaşayan iletim kayıtlarının seq'leri (uçuş + tombstone), artan sırada.
     seqs: VecDeque<u64>,
     /// Bu kayıtlardan uçuşta olanların sayısı (≤ seq sayısı) — sahiplenme adaylığı (madde 4).
-    inflight_n: u8,
+    /// [CEVAP 11 DUR-30] Budama kapalıyken birim başına kayıt sayısı K_MAP ile sınırlı değildir;
+    /// sayaç doymasın diye `u32`.
+    inflight_n: u32,
     /// Kopya kuyruğunda TEK kalıcı geometrik sahip kaydı var mı (madde 3; ≤ 1).
     geometric: bool,
     /// Kopya kuyruğunda bekleyen tek seferlik kayıt sayısı (madde 5 ekleme kuralı: ≤ D − 1).
@@ -1469,8 +1471,7 @@ struct LostRec {
 /// Active-flight muhasebesinden DÜŞER (gönderim durmaz) ama kayıt YAŞAR: geç-ACK gelirse
 /// kol-1 (retx_count==0) BW-örneği NORMAL; kol-2 (retx'li) rate-örneksiz, delivered-kredili
 /// (tam kurallar TUR-2c). [K4G-05b madde 7] RTT iki kolda da engine §6 v1.1 KABUL KURALI'na bağlı.
-/// Süresi/tavanı dolan ya da K_MAP budamasıyla düşen kaydın geç-ACK'i → Expired/Unknown
-/// (örneksiz; birimi teyit etmez).
+/// Süresi/tavanı dolan kaydın geç-ACK'i → Expired/Unknown (örneksiz; birimi teyit etmez).
 #[derive(Debug, Clone, Copy)]
 struct TombstoneRec {
     unit: OpaqueUnit,
@@ -1634,26 +1635,26 @@ const UNIT_SIZE_HINT: u64 = 267;
 /// [TUR-2b D-1/4] Tombstone kayıt tavanı [CAL] — SR-AUDIT-001 bounded; en-eski-önce eviction +
 /// audit. 4-decade doluş-doğrulaması not D-1/4 (0.25kbps ≈ 11 kayıt; ≲Gbps'te ~450 ≪ 4096).
 const TOMBSTONE_MAX: usize = 4096;
-/// [K4G-05b madde 11 · sahip kararları CEVAP PAKETİ 9 DUR-20, CEVAP PAKETİ 10 DUR-28] Birim başına
-/// iletim kaydı tavanı: sender uçuş + tombstone tablosu ve kayıp dedektörü haritası birlikte
-/// ≤ K_MAP; aşılırken birimin EN ESKİ kaydı budanır (ilan yok, uçuş muhasebesinden düşer). Geç-ACK
-/// ufku uçuştaki kayıt için kararlı durumda K_MAP × RTO_MAX = 240 s; ufuk dışı geç ACK birimi
-/// teyit etmez, RTT örneği vermez (transport-layer-tdd §12 [AMENDMENT-12]). Türetim (desteklenen
-/// azami RTT 5 s + bir tam RTO_MAX) asgari 2 verir; sahip 8'i seçti (DUR-28 (a)). K4G-05c runtime
-/// eşleme budaması da bu sabiti kullanır.
+/// [K4G-05b madde 11 · sahip kararları CEVAP PAKETİ 9 DUR-20, CEVAP PAKETİ 10 DUR-28 (a), CEVAP
+/// PAKETİ 11 DUR-30] Birim başına iletim kaydı tavanı (8). Bir ADET sınırıdır, süre garantisi
+/// DEĞİLDİR. Budama K4G-05c'de runtime ile birlikte (ACK-tabanlı payload silmenin kaldırılması ve
+/// `take_confirmed_units` tüketimiyle aynı değişiklikte) açılır; 05b'de sabit tanımlıdır, budama
+/// davranışı YOKTUR. Yalnız-parite kaydının süre dolumu (`parity_expiry_horizon_ns`) da bu sabiti
+/// kullanır.
 pub const K_MAP: usize = 8;
 
 /// [K4G-05b · transport-layer-tdd §12 AMENDMENT-12] RTO_MAX = 30 s — NORMATİF sabit, koddan belgeye
 /// (yeni sayı DEĞİL): kaynak `TailRecoveryConfig::validated_v1().max_backoff_pto_ns`. Kuyruk-probu
-/// geri çekilmesinin ve PRE_CONVERGE dışında kopya kuyruğu geometrik aralığının üst sınırı; geç-ACK
-/// ufkunun birimi ve RTT tazelik ölçütünün tabanı. Yapılandırılan tail-recovery değerinden
+/// geri çekilmesinin ve PRE_CONVERGE dışında kopya kuyruğu geometrik aralığının üst sınırı, RTT
+/// tazelik ölçütünün tabanı. Yapılandırılan tail-recovery değerinden
 /// bağımsızdır (normatif değer, oturum yapılandırması değil).
 fn rto_max_ns() -> u64 {
     TailRecoveryConfig::validated_v1().max_backoff_pto_ns
 }
 
-/// [K4G-05b madde 1/11] Uçuştaki yalnız-parite kaydının ömrü: kayıp ilanı yoksa gönderiminden
-/// K_MAP × RTO_MAX sonra Expired olarak düşer (yeni sayı yok: iki mevcut sabitin çarpımı).
+/// [K4G-05b madde 1] Uçuştaki yalnız-parite kaydının ömrü: kayıp ilanı yoksa gönderiminden
+/// K_MAP × RTO_MAX sonra Expired olarak düşer (yeni sayı yok: iki mevcut sabitin çarpımı). Parite
+/// kaydı için bellek sınırıdır; birim geç-ACK garantisi değildir.
 fn parity_expiry_horizon_ns() -> u64 {
     rto_max_ns().saturating_mul(K_MAP as u64)
 }
@@ -1913,8 +1914,6 @@ pub struct Sender {
     parity_expiry: VecDeque<(u64, u64)>,
     /// [K4G-05b madde 1] Süre dolumuyla (K_MAP × RTO_MAX) düşen parite kaydı sayısı (SALT-GÖZLEM).
     diag_parity_expired: u64,
-    /// [K4G-05b madde 11] K_MAP budamasıyla düşen birim kaydı sayısı (SALT-GÖZLEM).
-    diag_kmap_pruned: u64,
     /// [K4G-05b madde 2/4/11] Birim başına sahiplik dizini (bkz. [`UnitOwnership`]). Boyut ≤ motorda
     /// kaydı ya da kopya/ARQ işi olan birim sayısı (runtime deposuyla sınırlı, `runtime.rs` 4096);
     /// teyit kümesi onun alt kümesidir.
@@ -2207,7 +2206,6 @@ impl Sender {
             tombstone_evicted: 0,
             parity_expiry: VecDeque::new(),
             diag_parity_expired: 0,
-            diag_kmap_pruned: 0,
             units: BTreeMap::new(),
             confirmed_out: VecDeque::new(),
             confirmed_units_overflow: 0,
@@ -5113,11 +5111,11 @@ impl Sender {
         v
     }
 
-    /// [K4G-05b madde 1/11] Kayıt sınırları (SALT GÖZLEM): `(k_map_budanan_birim_kaydı,
-    /// süre_dolumuyla_düşen_parite_kaydı)`. Hiçbir karar okumaz.
+    /// [K4G-05b madde 1] Süre dolumuyla (gönderimden K_MAP × RTO_MAX sonra) düşen yalnız-parite
+    /// kaydı sayısı (SALT GÖZLEM). Hiçbir karar okumaz.
     #[must_use]
-    pub fn diag_record_bounds(&self) -> (u64, u64) {
-        (self.diag_kmap_pruned, self.diag_parity_expired)
+    pub fn diag_parity_expired(&self) -> u64 {
+        self.diag_parity_expired
     }
 
     /// [FAZ-2 KALEM-2] §8.5 bant-türevli bütçe clamp'inin parity oranını KÜÇÜLTTÜĞÜ karar sayısı.
@@ -6251,8 +6249,8 @@ impl Sender {
     }
 
     /// [K4G-05b madde 1] Yalnız-parite kaydının Expired düşüşü: `seq` hâlâ uçuştaki bir FEC onarım
-    /// sembolüyse uçuş muhasebesinden ve kayıp dedektöründen ilan ETMEDEN silinir (madde 11 budama
-    /// adımlarıyla aynı: `inflight` + `inflight_bytes` + `bw_sampler` uçuş sayısı + `loss.forget`).
+    /// sembolüyse uçuş muhasebesinden ve kayıp dedektöründen ilan ETMEDEN silinir (`inflight` +
+    /// `inflight_bytes` + `bw_sampler` uçuş sayısı + `loss.forget`).
     /// Kayıt ACK'le ya da kayıp ilanıyla zaten düşmüşse NO-OP. Sonraki geç ACK'i Expired/Unknown.
     fn expire_parity_record(&mut self, seq: u64) {
         let is_parity = self
@@ -6309,42 +6307,13 @@ impl Sender {
         e.inflight_n = e.inflight_n.saturating_add(1);
         e.last_tx_ns = now_ns;
         sync_adopt_candidate(&mut self.adopt_candidates, u, e);
-        // [K4G-05b madde 11 · DUR-20/28] Birim başına iletim kaydı ≤ K_MAP: aşılırken birimin EN
-        // ESKİ kaydı budanır (yeni kayıt kuyruğun sonundadır, budanmaz).
-        let mut pruned: Vec<u64> = Vec::new();
-        while e.seqs.len() > K_MAP {
-            if let Some(old) = e.seqs.pop_front() {
-                pruned.push(old);
-            }
-        }
-        for old in pruned {
-            self.prune_unit_record(u, old);
-        }
-    }
-
-    /// [K4G-05b madde 11 · Ek B.2.3] K_MAP BUDAMASI: birimin `seq` kaydı İLAN ETMEDEN motordan düşer
-    /// — uçuştaysa `inflight` + `inflight_bytes` + `bw_sampler` uçuş sayısı, tombstone'daysa mevcut
-    /// tahliye deseni (uçuş sayısı; sıra girdisi tembel), her durumda kayıp dedektörü haritası
-    /// (`loss.forget`). Ledger, kayıp sayaçları ve `tv_loss` değişmez. Sonraki geç ACK'i ufuk
-    /// dışıdır → Expired/Unknown: birimi teyit etmez, RTT örneği vermez; birim sahipli kalır ve
-    /// yeniden gönderilir (prob hedefiyse emisyon-anı doğrulaması iptal eder).
-    fn prune_unit_record(&mut self, u: UnitId, seq: u64) {
-        if let Some(p) = self.inflight.remove(&seq) {
-            self.inflight_bytes = self.inflight_bytes.saturating_sub(p.unit.size);
-            self.bw_sampler.forget_in_flight();
-            if let Some(e) = self.units.get_mut(&u) {
-                e.inflight_n = e.inflight_n.saturating_sub(1);
-                sync_adopt_candidate(&mut self.adopt_candidates, u, e);
-            }
-        } else if self.tombstones.remove(&seq).is_some() {
-            self.bw_sampler.forget_in_flight(); // [commit-B §3.7] tahliye deseni
-        }
-        self.loss.forget(seq);
-        self.diag_kmap_pruned = self.diag_kmap_pruned.saturating_add(1);
+        // [K4G-05b · CEVAP PAKETİ 11 DUR-30] Birim başına K_MAP budaması 05b'de KAPALI: kayıt
+        // listesi yalnız ACK, tombstone TTL/tahliyesi ve tombstonesuz kopya kaybıyla kısalır.
+        // Budama K4G-05c'de runtime ile birlikte açılır.
     }
 
     /// Birimin `seq` kaydı motordan TAMAMEN düştü (ACK, tombstone TTL/tahliye, tombstonesuz kopya
-    /// kaybı, budama); `was_inflight` = kayıt düştüğünde uçuştaydı. Teyit kümesinden çıkış:
+    /// kaybı); `was_inflight` = kayıt düştüğünde uçuştaydı. Teyit kümesinden çıkış:
     /// teyitli birimin son kaydı düşünce girdi silinir.
     fn own_record_gone(&mut self, owner: RecordOwner, seq: u64, was_inflight: bool) {
         let Some(u) = owner.unit() else {
@@ -6660,8 +6629,8 @@ impl Sender {
     /// ACK (uçuştaki kayıt; tombstone kol-1/kol-2; kayıp ilan edilip yeniden planı bekleyen kaydın
     /// un-loss eşleşmesi — ufuk içi geç ACK bunlardan birine düşer) ve FEC RECOVERED. Teyit
     /// ÜRETMEYENLER: FEC onarım sembolünün ACK'i; canlı kaydı olmayan iletimin ACK'i (tombstone TTL'i
-    /// dolmuş, tavandan taşmış, K_MAP budamasıyla düşmüş ya da tombstone bırakmayan kopya kökenli
-    /// kayıp kaydı → Expired/Unknown; birim sahipli kalır, yeniden gönderilir); kayıt yokken dedektör
+    /// dolmuş, tavandan taşmış ya da tombstone bırakmayan kopya kökenli kayıp kaydı →
+    /// Expired/Unknown; birim sahipli kalır, yeniden gönderilir); kayıt yokken dedektör
     /// sınıflaması; teyitli birimin sonraki ACK'leri; bayat SACK; zamanlayıcı ve süre dolumları.
     ///
     /// Drenaj sözleşmesi (K4G-05c uygular): runtime her `on_event` / `on_event_batch` çağrısından
