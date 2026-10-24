@@ -15,33 +15,33 @@
 
 ## 3. Tasarım [tasarım]
 **R2 — tek kabul kararı** (`server_task`). S1 kipinde oturum başına `AcceptState {floor, above ⊆ (floor, floor+cap]}` tutulur (D.4). Yan etkisiz `admit(u)`: `u < floor ∨ u ∈ above` → Duplicate (ACK, payload atılır) · `u − floor > cap` → Refuse(Window), `reorder_skip` · kanal kuralı tutmazsa → Refuse(Full), `full_refusals` · aksi → Accept. Refuse'da datagram `Receiver`'a, `BlockAsm`'e ve kanala girmez (`NotReady` deseni): SACK boşluğu kalır, gönderen yeniden yollar. Accept'te `await`'siz sıra: `on_datagram` → `permit.send` → `AcceptState`; `on_datagram` birimi döndürmezse izin bırakılır, karar Duplicate olur. Dördü birlikte ya da hiçbiri; `delivery_dropped` yapısal 0.
-- **Ayrılı yer:** R = min(`max_peers`, C − 1) izinlik sıra başı rezervi (C = `delivery_queue`). Floor birimi, rezervi boşsa rezervden alır; diğer kabuller rezervi boş oturumların payını (R − U) korumak zorundadır. Kota: kanalda ≤ C − R + 1, Reorder'da ≤ cap. Döngüsel bekleme yok (D.2); adalet sözü yok (C-8).
-- Receiver girdisi = çağrının kendisi [C-1 (a)], `seen_count` beyanı (D.1). FEC RECOVERED ve parçalı mesaj aynı kurala uyar (C-13).
+- **Ayrılı yer:** R = min(`max_peers`, C − 1) izinlik sıra başı rezervi (C = `delivery_queue`). Floor birimi, rezervi boşsa rezervden alır; diğer kabuller rezervi boş oturumların payını (R − U) korumak zorundadır. Kota: kanalda ≤ C − R + 1, Reorder'da ≤ cap. Döngüsel bekleme yok (D.2); adalet sözü yok (DUR-05c-8).
+- Receiver girdisi = çağrının kendisi [DUR-05c-1 (a)], `seen_count` beyanı (D.1). FEC RECOVERED ve parçalı mesaj aynı kurala uyar (DUR-05c-12).
 
-**R1.** `u − next > cap` → düşer + `reorder_window_violations` (S1'de yapısal 0); atlama kalkar. Gönderende kapı `next_unit + c − 1 − O < cap` → tutmazsa `Backpressure` + `distance_holds`. Pay = 0 [C-2 (a)] (D.3).
+**R1.** `u − next > cap` → düşer + `reorder_window_violations` (S1'de yapısal 0); atlama kalkar. Gönderende kapı `next_unit + c − 1 − O < cap` → tutmazsa `Backpressure` + `distance_holds`. Pay = 0 [DUR-05c-2 (a)] (D.3).
 
-**Teyit tek kaynaktan + sızıntı.** Payload ve `unit_acked!` yalnız 05b rev4'teki motor teyit çıktısıyla silinir; motorun teyit etmediği geç ACK'te payload KALIR. `seq_to_unit` kalkar; yerine store'daki birim başına O(1) `UnitTxLog` gelir (#136 okur) → ≤ store.len(). Runtime K_MAP kullanmaz. Kanca C-12.
+**Teyit tek kaynaktan + sızıntı.** Runtime her `on_event` / `on_event_batch` sonrası `Sender::take_confirmed_units()`'i (05b B.2.2; değerler `UnitId`) bir kez drene eder; `store.remove` ve `unit_acked!` yalnız bu çıktıdaki birimler için çalışır. Motorun teyit etmediği ACK'te (parite ACK'i; canlı kaydı olmayan iletim: tombstone TTL/TOMBSTONE_MAX, K_MAP budaması, tombstone'suz Duplicate kaybı) payload KALIR. `seq_to_unit` kalkar; `unit_seqs` yerine birim başına O(1) `UnitTxLog` gelir (#136 okur) → ≤ store.len(). Kanca DUR-23 (b).
 
 ## 4. Dosyalar · YAMA · kimlik
 - `crates/client-core/src/{runtime.rs, transport.rs}`; `crates/adaptive-transport/src/receiver.rs` yalnız doc. Testler: `crates/client-core/tests/{runtime_e2e.rs, k4g_p0_receiver.rs, ctx_first_dispatch.rs, session_keyed_slots.rs}`, `crates/kama-node/src/node/tests.rs`.
-- Başka dosya yok (`s1.rs`, tel/codec/`tv_*`, `sender.rs`, UniFFI, kimlik/freeze dokunulmaz); INT-02 düzeneği dışarıda (C-6); C9 §6 ile çakışma yok. Kimlik C-11.
-- YAMA: sıralı teslim sözü `KM-SEAM-AT-001.md:151`; INV-ACK-DELIVER-1 yalnız plan:121'de → **A.1 KM-SEAM-AT-001** · A.2 plan:532 · A.3 plan:392 (C-5) · A.4 HANDOFF:20 (C-9).
+- Başka dosya yok (`s1.rs`, tel/codec/`tv_*`, `sender.rs`, UniFFI, kimlik/freeze dokunulmaz); INT-02 düzeneği dışarıda (DUR-05c-6); C9 §6 ile çakışma yok. Kimlik DUR-05c-11.
+- YAMA: sıralı teslim sözü `KM-SEAM-AT-001.md:151`; INV-ACK-DELIVER-1 yalnız plan:121'de → **A.1 KM-SEAM-AT-001** · A.2 plan:532 · A.3 plan:392 (DUR-05c-5) · A.4 HANDOFF:20 (DUR-05c-9).
 
 ## 5. Eski testler
 Dört test, iki belge (Ek B). İddia değişir; 4. hücre derlenir ve KIRMIZI beklenir.
 
 ## 6. Kanıt
-- P0 üçlüsü 05c tabanında kırmızı (yeşilse DUR) → yeşil. Kanca-only commit'ten sonra `unit_records_track_store_only` ve `late_ack_after_tombstone_expiry_keeps_payload` tabanda kırmızı (yeşilse C-14). Yeni testler D.5'te; mevcut testler + `tv_*` yeşil.
-- INT-02 `ek-tuketici-durak` [C-3]: 3/3, teslim %100, `delivery_channel_drops = 0`, durakta ACK > 0 (heartbeat PoC'de yok: beyan). Bütün kollarda `reorder_skip = reorder_window_violations = 0`.
+- P0 üçlüsü 05c tabanında kırmızı (yeşilse DUR) → yeşil. Kanca-only commit'ten sonra `unit_records_track_store_only` ve `late_ack_after_tombstone_expiry_keeps_payload` tabanda kırmızı (yeşilse DUR-05c-13). Yeni testler D.5'te; mevcut testler + `tv_*` yeşil.
+- INT-02 `ek-tuketici-durak` [DUR-05c-3]: 3/3, teslim %100, `delivery_channel_drops = 0`, durakta ACK > 0 (heartbeat PoC'de yok: beyan). Bütün kollarda `reorder_skip = reorder_window_violations = 0` ve `confirmed_units_overflow = 0` (05b sayacı).
 
 ## 7. Sıra · süre · risk
-Ön koşul 05b rev4 (INV-NO-ORPHAN + teyit çıktısı; yoksa DUR) → P0 → kanca → kırmızılar → kod → mutasyon → kapılar → INT-02. Süre ≈ 2,5 iş günü. Riskler D.6'da.
+Ön koşul 05b rev4 (INV-NO-ORPHAN + `take_confirmed_units`; yoksa DUR) → P0 → kanca → kırmızılar → kod → mutasyon → kapılar → INT-02. Süre ≈ 2,5 iş günü. Riskler D.6'da.
 
 ---
 
 ## Ek A — yama metinleri
 
-Biçim: üstü çiz, silme (`~~eski~~` + yeni) + tarihli YAMA KAYDI; `scripts/ci/word_coverage.py` kapısı yeşil olmalı (bu revizyonda koşulmadı). `<ONAY-TARİHİ>` = "K4G-05c ONAYLANDI" tarihi; `<C-5 CEVAP TARİHİ>` = C-5 kararının tarihi. A.2'deki 2026-10-24 sahibin DUR-18 tarihidir.
+Biçim: üstü çiz, silme (`~~eski~~` + yeni) + tarihli YAMA KAYDI; `scripts/ci/word_coverage.py` kapısı yeşil olmalı (bu revizyonda koşulmadı). `<ONAY-TARİHİ>` = "K4G-05c ONAYLANDI" tarihi; `<DUR-05c-5 CEVAP TARİHİ>` = DUR-05c-5 kararının tarihi. A.2'deki 2026-10-24 sahibin DUR-18 tarihidir.
 
 ### A.1 — `docs/seams/KM-SEAM-AT-001.md`
 
@@ -73,7 +73,7 @@ Yeni satır:
 | DUR-K4G-01 (#114/#116 üç beyanlı sınır) | KATMAN 6 kartı + INT-02 beyanı; ~~(i) için `delivery_channel_drops` sayacı K4G-11 `metrics()`'e, INT-02'de 0 olmalı;~~ (i) **2026-10-24: beyanlı sınır kaldırıldı → K4G-05c** [YAMA KAYDI 2026-10-24 — K4G-05c — DUR-18 CEVAP (sahip)] (`delivery_channel_drops` `metrics()`'te kalır; INT-02'de 0 şartı yapısal sağlanır); (iii) epoch geçişinde ölçülür | K4G-16, K4G-05, K4G-05c |
 ```
 
-### A.3 — `docs/plans/KAMA-PLAN-4GUN-APP-KRIPTO.md:392` (yalnız C-5 (a) ile)
+### A.3 — `docs/plans/KAMA-PLAN-4GUN-APP-KRIPTO.md:392` (yalnız DUR-05c-5 (a) ile)
 
 Satır içindeki parça:
 
@@ -84,14 +84,14 @@ Satır içindeki parça:
 yerine:
 
 ```
-~~(i) teslim kanalı taşması (`runtime.rs` ~:2321 `try_send`; INV-ACK-DELIVER-1'i ihlal edebilir → sayaç `delivery_channel_drops` K4G-11 `metrics()`'te, INT-02'de 0 olmalı)~~ (i) [YAMA KAYDI <C-5 CEVAP TARİHİ> — K4G-05c — DUR-18 + C-5 (a) CEVAP: beyanlı sınır (i) kaldırıldı]
+~~(i) teslim kanalı taşması (`runtime.rs` ~:2321 `try_send`; INV-ACK-DELIVER-1'i ihlal edebilir → sayaç `delivery_channel_drops` K4G-11 `metrics()`'te, INT-02'de 0 olmalı)~~ (i) [YAMA KAYDI <DUR-05c-5 CEVAP TARİHİ> — K4G-05c — DUR-18 + DUR-05c-5 (a) CEVAP: beyanlı sınır (i) kaldırıldı]
 ```
 
-### A.4 — `docs/transport-v1/TRANSPORT-CRYPTO-HANDOFF.md` (yalnız C-9 (a) ile)
+### A.4 — `docs/transport-v1/TRANSPORT-CRYPTO-HANDOFF.md` (yalnız DUR-05c-9 (a) ile)
 
 (i) Satır 8-9'daki "Kaynak: …" paragrafının ardına:
 
-> **YAMA KAYDI — <ONAY-TARİHİ> [K4G-05c — C-9 (a) CEVAP]:** §10.1 "kuyruklar" satırı: dolu teslim kuyruğunda birim artık düşmez, ACK'siz reddedilir; offer kuyruğu ayrıca birim-kimliği mesafesiyle durur. Üstü çizili metin silinmedi.
+> **YAMA KAYDI — <ONAY-TARİHİ> [K4G-05c — DUR-05c-9 (a) CEVAP]:** §10.1 "kuyruklar" satırı: dolu teslim kuyruğunda birim artık düşmez, ACK'siz reddedilir; offer kuyruğu ayrıca birim-kimliği mesafesiyle durur. Üstü çizili metin silinmedi.
 
 (ii) Satır 20, eski:
 
@@ -109,7 +109,7 @@ yeni:
 
 ## Ek B — değişecek eski testler (DUR-8 biçimi)
 
-Değişen fikstür değil, kusuru sabitleyen iddiadır. Bu yüzden DUR-8 (a)'nın (1) "iddia ve eşik aynı kaldı" koşulu ve (2)'deki 2×2'nin 4. hücresi ("eski kod + yeni test") burada tersine işler. Dayanak: B.1/B.2 için C9 §3 + DUR-18; B.3/B.4 sahibin adlandırmadığı ayna testleridir (C-10). Yeni iddialar eski kodda derlenir: yeni alan ya da dönüş tipi kullanmazlar, `full_refusals` iddiaları ayrı yeni testlerdedir, `push` `()` döner. Böylece 4. hücre sayısal kırmızı üretir. Her test için hücreler: eski kod + eski test yeşil · yeni kod + eski test KIRMIZI · yeni kod + yeni test yeşil · eski kod + yeni test KIRMIZI (beklenen; çıktı PR'da).
+Değişen fikstür değil, kusuru sabitleyen iddiadır. Bu yüzden DUR-8 (a)'nın (1) "iddia ve eşik aynı kaldı" koşulu ve (2)'deki 2×2'nin 4. hücresi ("eski kod + yeni test") burada tersine işler. Dayanak: B.1/B.2 için C9 §3 + DUR-18; B.3/B.4 sahibin adlandırmadığı ayna testleridir (DUR-05c-10). Yeni iddialar eski kodda derlenir: yeni alan ya da dönüş tipi kullanmazlar, `full_refusals` iddiaları ayrı yeni testlerdedir, `push` `()` döner. Böylece 4. hücre sayısal kırmızı üretir. Her test için hücreler: eski kod + eski test yeşil · yeni kod + eski test KIRMIZI · yeni kod + yeni test yeşil · eski kod + yeni test KIRMIZI (beklenen; çıktı PR'da).
 
 | Test (yeni ad) | Neden yeşildi | Düzeltmeyle kırmızı | Yeni iddia (fikstür aynı) | Eski kod + yeni test |
 |---|---|---|---|---|
@@ -122,24 +122,24 @@ Belge ve mekanik: B.3 aynanın canlılığını artık ayırt etmez (sayaç yap�
 
 ---
 
-## Ek C — DUR adayları (öneri kalın)
+## Ek C — DUR adayları (DUR-05c-n; öneri kalın)
 
-| # | Konu | Seçenekler |
+| DUR | Konu | Seçenekler |
 |---|---|---|
-| C-1 (DUR-05c-1) | Kart "`Receiver`'a kabul girdisi" | **(a) çağrı = kabul; `receiver.rs` yalnız doc; `seen_count` "alıcı motorunun kabul ettiği DATA" olur, engine-spec §2:216 metni değişmez, sapma INT-02 raporunda beyan** · (a′) (a) + engine-spec §2:216 YAMA · (b) `on_datagram(.., Admission)` · (c) tentative/commit (D.1) |
-| C-2 (DUR-05c-2) | Pay (kart "kopya işi sınırı (3) × …") | **(a) pay = 0 (D.3)** · (b) sahibin formülü: pay = 3c (N = 3, DUR-13) → kapı `next_unit + c − 1 − O < cap − 3c`; bedel: pencere 3c daralır |
-| C-3 (DUR-05c-3) | **Sahibe soru:** `ek-tuketici-durak` "50 TEXT akarken" kanalı dolduramaz (50 < 1024), kol R2'yi tetiklemez | (a) durak boyunca eşzamanlı dosya ≥ `delivery_queue` + 1 = 1 025 birim (≥ 1 025 × 1 013 B ≈ 1,04 MB); profil 30 s'de bunu taşımalı (≈ 35 birim/s ≈ 0,3 Mbit/s); taban kolu (05c'siz aday, 1 tohum): `delivery_channel_drops > 0` beklenir, 0 ise DUR; 05c'li kol: `full_refusals > 0` (geçerlilik) · (b) C9 §5 metni aynen (kol boş geçer) |
-| C-4 (DUR-05c-4) | engine-spec §14:970 "en eski drop (SACK ile kurtarılır)" ↔ kart "en yeni pencere-dışı ACK'siz" | **(a) spec dokunulmaz: S1 `Reorder` motor havuzu değildir; "SACK ile kurtarılır" ancak birim ACK'lenmemişse doğru, §3 R2 Refuse bunu sağlar** · (b) engine §14 YAMA |
-| C-5 (DUR-05c-5) | plan:392 (i) aynı sınırı tekrarlar | **(a) A.3** · (b) yalnız :532 |
-| C-6 (DUR-05c-6) | Sayaçların INT-02'ye ulaşması | **(a) `NodeMetrics`/UniFFI değişmez; INT-02 düzeneği ayrı iş (öneri K4G-05e): `kama-node/src/probe.rs` `NodeProbe` (test-util) + `node.rs` `probe()` dört sayaç; `int02_node.rs --arm ek-tuketici-durak`; `scripts/netem/int02_{run.sh,analyze.py}` hükümleri** · (b) `NodeMetrics`'e alan (K4G-15 `poc-uniffi-v0` yüzeyi değişir) |
-| C-7 (DUR-05c-7) | K_MAP erişimi | **kapandı:** runtime K_MAP kullanmaz (silme motor teyit çıktısıyla) |
-| C-8 (DUR-05c-8) | Ayrılı yer: R ve adalet | **(a) R = min(`max_peers`, C − 1) (ürün 64/1024); yalnız sıra başı garantisi, paylaşımlı havuzda adalet sözü yok** · (b) ek oturum kotası ⌊(C − R)/`max_peers`⌋ = 15 (hızlı yolda yapay ret) |
-| C-9 (DUR-05c-9) | HANDOFF §10.1 "kuyruklar" satırı bayatlar | **(a) A.4** · (b) dokunulmaz, K4G-16 belge PR'ına |
-| C-10 (DUR-05c-10) | B.3/B.4 sahibin adlandırmadığı testler | **(a) Ek B'deki DUR-8 biçimiyle değişir** · (b) DUR |
-| C-11 (DUR-05c-11) | Kimlik/ADR | **(a) 05b'nin `kama-v1.1-full` beyanına eklenir (EVOLUTION altı beyanına 05c satırı, PR'da); T-hücre birleşik adayda** · (b) ayrı kimlik |
-| C-12 (DUR-05c-12; önceki etiket "DUR-23 (b)", 05b'nin DUR-23'üyle çakıştığı için değişti) | Sızıntı bekçisi kancası | **(a) `#[cfg(any(test, feature = "test-util"))] ClientHandle::unit_records_for_test() -> (seq dizini girdisi, birim kaydı)`; `client_task` döngü başında `Arc<[AtomicUsize; 2]>`'ye O(1) yazar; INT-02 örnek derlemesinde de etkin (test-util dev-dep)** · (b) kanca yok, yalnız birim testi |
-| C-13 (DUR-05c-13) | Parçalı mesaj kalıcı sınır ihlali (yapılandırma uyumsuzluğu, bozuk FINAL) | **(a) protokol ihlali: ACK + düşür + `frag_chunk_dropped`; değişmez "geçerli birim" için konuşur (beyan); yeniden gönderim döngüsü yok** · (b) fail-closed yuva kapatma |
-| C-14 (DUR-05c-14) | Sızıntı testi 05c tabanında yeşil kalırsa | **(a) bekçi DUR-20 emriyle yazılır; kanıt 3439fccd+kanca kırmızısı; nota "yanlışlandı (05c tabanında): <test>"** · (b) bekçi ertelenir |
+| DUR-05c-1 | Kart "`Receiver`'a kabul girdisi" | **(a) çağrı = kabul; `receiver.rs` yalnız doc; `seen_count` "alıcı motorunun kabul ettiği DATA" olur, engine-spec §2:216 metni değişmez, sapma INT-02 raporunda beyan** · (a′) (a) + engine-spec §2:216 YAMA · (b) `on_datagram(.., Admission)` · (c) tentative/commit (D.1) |
+| DUR-05c-2 | Pay (kart "kopya işi sınırı (3) × …") | **(a) pay = 0 (D.3)** · (b) sahibin formülü: pay = 3c (N = 3, DUR-13) → kapı `next_unit + c − 1 − O < cap − 3c`; bedel: pencere 3c daralır |
+| DUR-05c-3 | **Sahibe soru:** `ek-tuketici-durak` "50 TEXT akarken" kanalı dolduramaz (50 < 1024), kol R2'yi tetiklemez | (a) durak boyunca eşzamanlı dosya ≥ `delivery_queue` + 1 = 1 025 birim (≥ 1 025 × 1 013 B ≈ 1,04 MB); profil 30 s'de bunu taşımalı (≈ 35 birim/s ≈ 0,3 Mbit/s); taban kolu (05c'siz aday, 1 tohum): `delivery_channel_drops > 0` beklenir, 0 ise DUR; 05c'li kol: `full_refusals > 0` (geçerlilik) · (b) C9 §5 metni aynen (kol boş geçer) |
+| DUR-05c-4 | engine-spec §14:970 "en eski drop (SACK ile kurtarılır)" ↔ kart "en yeni pencere-dışı ACK'siz" | **(a) spec dokunulmaz: S1 `Reorder` motor havuzu değildir; "SACK ile kurtarılır" ancak birim ACK'lenmemişse doğru, §3 R2 Refuse bunu sağlar** · (b) engine §14 YAMA |
+| DUR-05c-5 | plan:392 (i) aynı sınırı tekrarlar | **(a) A.3** · (b) yalnız :532 |
+| DUR-05c-6 | Sayaçların INT-02'ye ulaşması | **(a) `NodeMetrics`/UniFFI değişmez; INT-02 düzeneği ayrı iş (öneri K4G-05e): `kama-node/src/probe.rs` `NodeProbe` (test-util) + `node.rs` `probe()` dört sayaç; `int02_node.rs --arm ek-tuketici-durak`; `scripts/netem/int02_{run.sh,analyze.py}` hükümleri** · (b) `NodeMetrics`'e alan (K4G-15 `poc-uniffi-v0` yüzeyi değişir) |
+| DUR-05c-7 | K_MAP erişimi | **kapandı:** 05b `pub const K_MAP` (`adaptive_transport::sender`) tanımlar; runtime onu kullanmaz (silme `take_confirmed_units` ile) |
+| DUR-05c-8 | Ayrılı yer: R ve adalet | **(a) R = min(`max_peers`, C − 1) (ürün 64/1024); yalnız sıra başı garantisi, paylaşımlı havuzda adalet sözü yok** · (b) ek oturum kotası ⌊(C − R)/`max_peers`⌋ = 15 (hızlı yolda yapay ret) |
+| DUR-05c-9 | HANDOFF §10.1 "kuyruklar" satırı bayatlar | **(a) A.4** · (b) dokunulmaz, K4G-16 belge PR'ına |
+| DUR-05c-10 | B.3/B.4 sahibin adlandırmadığı testler | **(a) Ek B'deki DUR-8 biçimiyle değişir** · (b) DUR |
+| DUR-05c-11 | Kimlik/ADR | **(a) 05b'nin `kama-v1.1-full` beyanına eklenir (EVOLUTION altı beyanına 05c satırı, PR'da); T-hücre birleşik adayda** · (b) ayrı kimlik |
+| DUR-23 (b) | Runtime tablo sayacı kancası (sızıntı bekçisi; sahibe DUR-23 olarak soruldu, öneri (b)) | (a) kanca yok, yalnız birim testi · **(b) kanca: `#[cfg(any(test, feature = "test-util"))] ClientHandle::unit_records_for_test() -> (seq dizini girdisi, birim kaydı)`; `client_task` döngü başında `Arc<[AtomicUsize; 2]>`'ye O(1) yazar (05c sonrası seq dizini 0, birim kaydı = `UnitTxLog` boyu); INT-02 örnek derlemesinde de etkin (test-util dev-dep)** |
+| DUR-05c-12 | Parçalı mesaj kalıcı sınır ihlali (yapılandırma uyumsuzluğu, bozuk FINAL) | **(a) protokol ihlali: ACK + düşür + `frag_chunk_dropped`; değişmez "geçerli birim" için konuşur (beyan); yeniden gönderim döngüsü yok** · (b) fail-closed yuva kapatma |
+| DUR-05c-13 | Sızıntı testi 05c tabanında yeşil kalırsa | **(a) bekçi DUR-20 emriyle yazılır; kanıt 3439fccd+kanca kırmızısı; nota "yanlışlandı (05c tabanında): <test>"** · (b) bekçi ertelenir |
 
 ---
 
@@ -148,7 +148,7 @@ Belge ve mekanik: B.3 aynanın canlılığını artık ayırt etmez (sayaç yap�
 **D.0 Mekanizma satır atıfları** [kod, P0].
 - **R2:** `runtime.rs:2933-2961`: PN teslimden önce kaydedilir (`receiver.rs:233`), dedup teslimden önce ilerler (:2410), dolu kanalda payload düşer (:2380-2387), ACK koşulsuz (:2957). FEC ESI'si parse ve teslimden önce listeye girer (:2649). MsgAsm reddi ve tahliyesi ACK'li chunk düşürür (:2440, :2452-2455). P0: 40 birimin 36'sı ACK'li ama teslimsiz; arkadaki 12..15 hiç teslim edilmedi.
 - **R1:** `transport.rs:386-390` boşluğu atlar, :382-384 geç eksik birimi sayaçsız atar; gönderen yalnız sayıyı sınırlar (`runtime.rs:1785`). P0: cap 3, `1,2,3,4,0` → 0 atıldı.
-- **Sızıntı/teyit:** `runtime.rs:1468-1470` store'a bakmadan ekler; budama yalnız `store.remove(..).is_some()` dalında (:1687-1693, :1737-1744); bayat karar :1539-1549. Runtime geç ACK'te motordan bağımsız siler (:1736-1743). `Closed`: `transport.rs:996-999` kapanmış ya da bilinmeyen oturumun teslimini düşürür.
+- **Sızıntı/teyit:** `runtime.rs:1468-1470` store'a bakmadan ekler; budama yalnız `store.remove(..).is_some()` dalında (:1687-1693, :1737-1744); bayat karar :1539-1549. Runtime geç ACK'te motordan bağımsız siler (:1736-1743); 05c merge'üne dek bu ara durum 05b'de beyanlıdır (B.2.2). `Closed`: `transport.rs:996-999` kapanmış ya da bilinmeyen oturumun teslimini düşürür.
 
 **D.1 Receiver girdisi ve `seen_count`.** (a)'da kabul kararı `Receiver`'dan önce verilir; `on_datagram` çağrısı kararın kendisidir. Reddedilen datagram bugünkü `NotReady` kolu gibi (`runtime.rs:2805-2806`, :2821-2824) motora hiç girmez. Tutarlılık: PN yalnız Accept/Duplicate'te kaydedilir ve `AcceptState` unutmaz, bu yüzden yinelenen PN ⇒ kabul edilmiş birim; yinelenen PN'e Refuse çıkmaz. Bedel: reddedilen DATA `seen_count`'a girmez (engine-spec §2:216 "görülen toplam DATA"); gönderen durakta ileri-yön kaybı görür, kendi bakışından doğrudur. `NotReady` kolunda da aynısı bugün beyansız oluyor. (b) reddi `seen_total`'a katar ve gönderenin dönüş-yolu gözlemi (:1714-1722) bunu dönüş bozulması sanabilir. (c) `tick_ack`'i commit'e taşır, motor API'si bölünür ve `tv_*` riske girer.
 
@@ -158,7 +158,7 @@ Belge ve mekanik: B.3 aynanın canlılığını artık ayırt etmez (sayaç yap�
 - **Döngüsel bekleme yok:** floor'un kabulü üç şeye bağlıdır: (a) pencere (floor daima içinde), (b) s'nin rezervinin boşalması (yalnız adaptörün kanalı boşaltmasına bağlı), (c) F ≥ 1 (I'dan). Boşaltma yalnız adaptörün sürülmesine ve `inbox < MAX_INBOX`'a bağlıdır; inbox yalnız sıralı birim tutar ve uygulama tüketimiyle boşalır. Hiçbir adım herhangi bir oturumun eksik birimine bağlı değildir, bekleme grafiği döngüsüzdür.
 - **Reorder `held ≤ cap`:** tutulan her u kabul anında u ≤ floor_t + cap'i sağlar. floor_t altındaki birimler FIFO kanalda u'dan önce yer alır ve Reorder onları atlamadan çıkarır, dolayısıyla `next ≥ floor_t` ve `held ⊆ (next, next+cap]`. Kanal (≤ C) ve inbox (`MAX_INBOX`) düğüm geneli ek sınırdır.
 
-**D.3 Pay.** 05c'den sonra payload yalnız motor teyidiyle silinir. Teyit yalnız ACK/RECOVERED'dan doğar, bunlar da yalnız Accept/Duplicate'ten: teyitli ⇒ kabul edilmiş, buradan O ≤ floor. Gönderilen her u ≤ O + cap − 1 < floor + cap olur, u pencere içindedir. ARQ, kopya ve prob mevcut kimliği taşır; parite kimliği ESI'dir. Kopya işi sınırı (3) mesafeyi büyütmez; ACK gecikmesi O'yu yalnız küçültür. (a)'da pay gerekmez; (b) mevcut sabitten türer, yeni sayı değildir, bedeli pencere daralmasıdır.
+**D.3 Pay.** 05c'den sonra payload yalnız `take_confirmed_units` çıktısıyla silinir. Bu çıktının kaynakları yalnız canlı kayıtla eşleşen ACK ve RECOVERED'dır (05b B.2.2); ikisi de alıcıda yalnız Accept/Duplicate'ten doğar. Dolayısıyla teyitli ⇒ kabul edilmiş, buradan O ≤ floor. Gönderilen her u ≤ O + cap − 1 < floor + cap olur, u pencere içindedir. ARQ, kopya ve prob mevcut kimliği taşır; parite kimliği ESI'dir. Kopya işi sınırı (3) mesafeyi büyütmez; ACK gecikmesi O'yu yalnız küçültür. (a)'da pay gerekmez; (b) mevcut sabitten türer, yeni sayı değildir, bedeli pencere daralmasıdır.
 
 **D.4 Kabul durumunun kapsamı.** Birim-kimliği uzayı oturumundur: istemci her oturumda 0'dan başlar (`runtime.rs:1391`). Yuva anahtarlı durum `idle_hold` (105 s) emekliliğinde, adres değişiminde ve ek yuvada (`runtime.rs:754-756`) pencereyi 0'a çeker ve oturumu kilitler (INV-NO-IDLE-TEARDOWN'a aykırı). Bu yüzden S1 kipinde durum ve rezerv defteri oturum anahtarlıdır ve `retire_closed_slots` (:2509) ile aynı adımda silinir; boşta O(1), etkinken ≤ cap. Örtük kipte (`bind`/`bind_with_policy`, tek `IMPLICIT_SESSION`, her yuva ayrı istemci) durum yuva başına `delivered_seen`'de kalır. Aşağı akışta Reorder olmadığı için pencere ve rezerv yoktur; değişen yalnız dedup'un commit'te ilerlemesi ve dolu kanalda ACK'siz rettir. Kip iç kurucuya özel parametreyle geçer; pub imza değişmez.
 
@@ -177,6 +177,7 @@ Belge ve mekanik: B.3 aynanın canlılığını artık ayırt etmez (sayaç yap�
   - `runtime.rs:3284` `PeerSlot::new`: imza değişirse güncellenir.
   - `receiver.rs:192`: ön koşul cümlesi.
   - #136 `capture_recovery` `UnitTxLog`'u okur; `emission_decisions` doymaz.
+  - `client_task`: `drive!` (`runtime.rs:1457-1459`) her `on_event` sonrası `take_confirmed_units()`'i drene eder; ACK (:1735-1744) ve RECOVERED (:1687-1693) yollarındaki doğrudan silme kalkar.
   - `store` BTreeMap'e geçer (O = `first_key_value`).
 - **INT-02:** kontrol yolu ölçütü ACK ile sınırlıdır, çünkü heartbeat PoC'de yok (D18, `kama-node/src/event.rs:203`).
 
