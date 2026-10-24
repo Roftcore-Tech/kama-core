@@ -911,6 +911,155 @@ fn k4g05b_parity_fate_declared_tombstone() {
     );
 }
 
+/// [K4G-05b DUR-25 · CEVAP 11 tablo] ESI düzeltmesi ÜRÜN kipinde (Controller): PreConverge
+/// sonrası kayıplı kanalda motorun KENDİ kararıyla parite gerçekten üretilir — parite emisyonu > 0
+/// fikstür ön koşuludur; 0 ise test GEÇERSİZ (panik, yeşil SAYILMAZ) — ve ESI'si kaynak birim
+/// kimliğiyle çakışan paritenin ACK'i teyitsiz o birimi TEYİT ETMEZ, birim sahipli kalır. Statik-r
+/// kolları (`k4g05b_parity_fate_*`, P0 ESI) kusur kanıtı olarak kalır.
+///
+/// Kurulum (ağsız, ürün göndericisi): (A) kimlik 0..7 (100 B) t=0'da; 200 ms'de YALNIZ tek kimlikler
+/// ACK'lenir → u0, u2, u4 kayıp (paket eşiği), teyitsiz. (B) 80 birim (100 B) girer; her tikte
+/// çıkan Data'lardan birim sırası çift olanlar 1 ms sonra ACK'lenir (IID ~%50 kayıp, hızlı ACK —
+/// BtlBw kurulur), tekler hiç ACK'lenmez. (C) Her tikte karar oranı > 0 ise o olayın kararıyla blok
+/// kapatılır (latch, k = 8, r_max = 4). (D) Drenaj: u0 dışındaki birimlerin iletimleri ACK'lenir, u0'ınki
+/// hiç; parite toplanır. (E) Parite ACK'lenir (ESI 0 = u0).
+///
+/// TABANDA: KIRMIZI beklenir (parite kaydı `unit.id = esi`; ACK'i u0'ı acked_units'e koyar — P0 ESI-1).
+#[test]
+fn esi_controller_mode_parity_does_not_confirm_source() {
+    const TEST: &str = "esi_controller_mode_parity_does_not_confirm_source";
+    const SRC: u64 = 100;
+    const STEP: u64 = 10 * MS;
+    const N_IID: u64 = 80;
+    const IID_BASE: u64 = 1000;
+    let mut d = Drv::new(product_sender());
+    let mut fixture: Vec<String> = Vec::new();
+    // (A)
+    for id in 0..8 {
+        d.app(id, SRC);
+    }
+    let first: Vec<(u64, u64)> = (0..8)
+        .filter_map(|id| d.data_seq(id).map(|q| (id, q)))
+        .collect();
+    if first.len() != 8 {
+        fixture.push(format!("t=0 ilk uçuşu eksik: {first:?}"));
+    }
+    d.now = 200 * MS;
+    d.ack(
+        first
+            .iter()
+            .filter(|&&(id, _)| id % 2 == 1)
+            .map(|&(_, q)| q)
+            .collect(),
+    );
+    if d.s.state() == SenderState::PreConverge {
+        fixture.push("ilk ACK PreConverge'i sonlandırmalı".to_string());
+    }
+    // (B) + (C)
+    for k in 0..N_IID {
+        d.app(IID_BASE + k, SRC);
+    }
+    let mut planned = 0u16;
+    let mut ratio_peak = 0u32;
+    let ack_even = |d: &mut Drv, from: usize| {
+        let seqs: Vec<u64> = d.log[from..]
+            .iter()
+            .filter(|e| {
+                e.d.kind == TransmitKind::Data
+                    && e.d.unit_id >= IID_BASE
+                    && (e.d.unit_id - IID_BASE).is_multiple_of(2)
+            })
+            .map(|e| e.d.seq)
+            .collect();
+        if !seqs.is_empty() {
+            d.now += MS;
+            d.ack(seqs);
+        }
+    };
+    let mut mark = 0usize;
+    for _ in 0..3_000u32 {
+        d.now += STEP;
+        d.tick();
+        let from = mark;
+        mark = d.log.len();
+        ack_even(&mut d, from);
+        let snap = d.s.controller_decision_snapshot();
+        let ratio = snap.map_or(0, |s| s.ratio_permille);
+        ratio_peak = ratio_peak.max(ratio);
+        if ratio > 0 {
+            let auth = d.s.open_fec_block_authority();
+            let latch =
+                d.s.fec_controller_latch(auth, snap, FEC_K_ACTUAL, FEC_R, 1, SRC);
+            if latch.planned_r > 0 {
+                planned = latch.planned_r;
+                break;
+            }
+        }
+    }
+    // (D)
+    let mut parity: Vec<(u64, u64)> = Vec::new(); // (seq, esi)
+    let mut mark = d.log.len();
+    for _ in 0..1_000u32 {
+        if planned == 0 || parity.len() >= usize::from(planned) {
+            break;
+        }
+        d.now += STEP;
+        d.tick();
+        let fresh: Vec<Emit> = d.log[mark..].to_vec();
+        mark = d.log.len();
+        parity.extend(
+            fresh
+                .iter()
+                .filter(|e| e.d.kind == TransmitKind::FecParity)
+                .map(|e| (e.d.seq, e.d.unit_id)),
+        );
+        let others: Vec<u64> = fresh
+            .iter()
+            .filter(|e| carries_unit(e.d.kind) && e.d.unit_id != 0)
+            .map(|e| e.d.seq)
+            .collect();
+        if !others.is_empty() {
+            d.now += MS;
+            d.ack(others);
+            mark = d.log.len();
+        }
+    }
+    println!(
+        "[ESI Controller] oran tepe={ratio_peak}‰ planlanan r={planned}; parite (seq, esi)={parity:?}; \
+         u0 teyitli={}",
+        d.w.confirmed_set.contains(&0)
+    );
+    if parity.is_empty() {
+        fixture.push(format!(
+            "Controller kipinde parite ÜRETİLMEDİ (oran tepe {ratio_peak}‰, planlanan r {planned}) — \
+             ESI kolu sınanmadı"
+        ));
+    }
+    if !parity.iter().any(|&(_, esi)| esi == 0) {
+        fixture.push("ESI 0 paritesi (u0 ile çakışan) gönderilmedi".to_string());
+    }
+    if d.w.confirmed_set.contains(&0) || owner_of(&d.s, 0).is_none() {
+        fixture.push("parite ACK'inden önce u0 teyitsiz ve sahipli olmalı".to_string());
+    }
+    assert_fixture(TEST, &fixture);
+    // (E)
+    d.now += MS;
+    d.ack(parity.iter().map(|&(q, _)| q).collect());
+    assert!(
+        !d.w.confirmed_set.contains(&0),
+        "{TEST}: ESI 0 paritesinin ACK'i kaynak birim u0'ı teyit etti"
+    );
+    assert_eq!(
+        d.w.cm.confirms(0),
+        0,
+        "{TEST}: u0 teyit çıktısında görünmemeli"
+    );
+    assert!(
+        owner_of(&d.s, 0).is_some(),
+        "{TEST}: parite ACK'inden sonra u0 sahipsiz (kopya/ARQ işi iptal edildi)"
+    );
+}
+
 // ════════════════════════════════════════════════════════════════════════════════════════════
 // B2 ekleme kuralı
 // ════════════════════════════════════════════════════════════════════════════════════════════
