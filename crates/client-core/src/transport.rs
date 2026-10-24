@@ -1338,6 +1338,58 @@ mod tests {
         );
     }
 
+    /// [K4G-05c P0 · R1] `Reorder` eksik bir `Reliable` birimi ASLA atlamamalı.
+    ///
+    /// BULGU (R1, CEVAP 9 §3/§4; inceleme S07/S28): `Reorder::push`, tutulan birim sayısı
+    /// `cap`'i aşınca `next`'i tutulan ilk birime ilerletir (transport.rs:385-389); eksik birim
+    /// sonradan gelince `unit < next` dalında sessizce, sayaçsız atılır (transport.rs:382-384).
+    /// Veri alıcısı o birimi Reorder'dan ÖNCE ACK'lemiştir (runtime.rs:2957) → gönderen
+    /// payload'u siler → kalıcı kayıp. Ürün cap'i `max_inflight_units` = 4096
+    /// (transport.rs:981, runtime.rs:248); burada aynı mekanizma cap = 3 ile sınanır (tetik
+    /// mesafesi cap + 1 birim).
+    ///
+    /// DÜZENEK: geliş sırası `1, 2, 3, 4, 0`, ardından `4` YENİDEN. Son adım gönderenin
+    /// modelidir: K4G-05c tasarımında (CEVAP 9 §3) `held > cap` gönderen ihlalidir, pencere
+    /// dışındaki en yeni birim (4) ACK'siz düşer ve gönderen onu yeniden yollar. Tabanda bu
+    /// tekrar `unit < next` ile yok sayılır — sonucu değiştirmez; düzeltmede 4'ü teslim eden
+    /// adımdır. Böylece test yalnız "sonunda 0..4 eksiksiz ve sıralı, tampon sınırlı"
+    /// sözleşmesini sınar, düzeltmenin iç seçimini (4'ü tutmak ya da ACK'siz düşürmek) değil.
+    ///
+    /// TABANDA BEKLENEN: KIRMIZI — teslim `[1, 2, 3, 4]`; 0 atılır (sıra ve eksiksizlik
+    /// bozuk). Sınır iddiası (`held.len() <= cap`) tabanda YEŞİLDİR (atlama tutulanları hemen
+    /// boşaltır); cap denetimini kaldıran (sınırsız bellek) bir "düzeltme"yi yakalamak için
+    /// oradadır. Bu testle çelişen eski test:
+    /// `reorder_is_bounded_and_advances_past_a_gap_only_over_cap` (atlamayı beklenen davranış
+    /// diye sabitler; K4G-05c'de DUR-8 biçiminde beyanlı değişir).
+    #[test]
+    fn p0_r1_reorder_never_skips_missing_reliable() {
+        const CAP: usize = 3;
+        let h = SessionHandle::from_raw(1);
+        let mut r = Reorder::default();
+        let mut out = VecDeque::new();
+        for u in [1u64, 2, 3, 4, 0, 4] {
+            r.push(u, h, vec![u as u8], CAP, &mut out);
+            assert!(
+                r.held.len() <= CAP,
+                "R1: Reorder tamponu sınırlı kalmalı (held {} > cap {CAP}, birim {u} \
+                 sonrası) — atlamayı cap denetimini kaldırarak gidermek sınırsız bellek \
+                 demektir (SR-AUDIT-001)",
+                r.held.len()
+            );
+        }
+        let got: Vec<u8> = out.into_iter().map(|d| d.unit[0]).collect();
+        assert_eq!(
+            got,
+            [0, 1, 2, 3, 4],
+            "R1 KUSURU: eksik Reliable birim 0 atlandı. `held.len() > cap` olunca `next` \
+             tutulan ilk birime ilerledi (transport.rs:385-389); geç gelen 0 `unit < next` \
+             dalında sayaçsız atıldı (transport.rs:382-384). Veri alıcısı 0'ı Reorder'dan önce \
+             ACK'lediği için (runtime.rs:2957) gönderen onu bir daha yollamaz — kalıcı sessiz \
+             kayıp; teslim sırası da bozuk."
+        );
+        assert!(r.held.is_empty(), "teslimden sonra tutulan birim kalmamalı");
+    }
+
     /// [K4G-11] Salt-okunur erişimciler taze ürün adaptöründe: Crypto'nun tutmadığı tutamacın
     /// epoch'u yok, teslim kanalı taşması yok. Kurulu oturumun epoch'u (`Some(1)`, iki uçta) ve
     /// canlı taşma değeri uçtan uca `crates/kama-node/tests/two_nodes_loopback.rs` ile
