@@ -553,7 +553,7 @@ fn k4g05b_accept_05c_mirror_horizon_out_late_ack() {
     let t_final = run.t_final_ack.unwrap_or(u64::MAX);
     let between = tx
         .iter()
-        .filter(|e| e.t > HZ_T_LATE && e.t < t_final)
+        .filter(|e| (HZ_T_LATE + 1..t_final).contains(&e.t))
         .count();
     assert!(
         between >= 1,
@@ -1189,8 +1189,7 @@ fn d2_run(outage: u64, trickle: bool, horizon_after: u64) -> D2Run {
         sim.advance();
         let first_trickle = D2_T_OUT + D2_TRICKLE_OFFSET;
         if trickle
-            && sim.now < t_r
-            && sim.now >= first_trickle
+            && (first_trickle..t_r).contains(&sim.now)
             && (sim.now - first_trickle).is_multiple_of(D2_TRICKLE_PERIOD)
         {
             sim.w.units.push(next_id);
@@ -1273,8 +1272,7 @@ fn d2_assert(test: &str, run: &D2Run) {
         Some(ud) => log
             .iter()
             .filter(|e| {
-                e.t >= t_h
-                    && e.t <= ud.t
+                (t_h..=ud.t).contains(&e.t)
                     && e.d.seq < ud.d.seq
                     && e.d.kind == TransmitKind::Duplicate
                     && e.d.unit_id > u0
@@ -1287,7 +1285,7 @@ fn d2_assert(test: &str, run: &D2Run) {
     let x_bytes: u64 = match u0_emit {
         Some(e) => log
             .iter()
-            .filter(|x| x.t >= t_h && x.t <= e.t && x.d.kind != TransmitKind::Duplicate)
+            .filter(|x| (t_h..=e.t).contains(&x.t) && x.d.kind != TransmitKind::Duplicate)
             .map(|x| x.d.size)
             .sum(),
         None => 0,
@@ -1386,7 +1384,7 @@ fn k4g05b_d2_outage_600s_bounds() {
             .sim
             .unit_tx(v)
             .iter()
-            .filter(|e| e.d.kind == TransmitKind::Duplicate && e.t >= D2_T_OUT && e.t < run.t_r)
+            .filter(|e| e.d.kind == TransmitKind::Duplicate && (D2_T_OUT..run.t_r).contains(&e.t))
             .count() as u64;
         worst = worst.max(n);
     }
