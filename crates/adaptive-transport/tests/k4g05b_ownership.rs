@@ -606,34 +606,11 @@ fn k4g05b_accept_p0_mirror_deletions_confirmed() {
     assert_eq!(w.rt.stale_decisions, 0, "{TEST}: P0 aynasında store-miss");
 }
 
-/// Üç kabul koşulu (ii-a) — P0 aynası, UFUK DIŞI geç ACK kolu: BEYANLI ARA DURUM (Ek B.2 "Üç kabul
-/// koşulu testi" (ii-a); B.2.2 "05c merge'üne dek ürün runtime'ı eşlenen seq'in ACK'inde siler").
-///
-/// 05b'de KIRMIZI BEKLENİR: P0 aynası budanmış/süresi dolmuş kaydın geç ACK'inde payload'u siler,
-/// motor teyit etmez (birim sahipli kalır ve yeniden gönderilir) → silme teyit çıktısında değildir.
-/// K4G-05c (runtime silmeyi teyit çıktısına bağlar) kapatır. CI'yi kırmamak için `#[ignore]`;
-/// orkestratör `--ignored` ile koşup kırmızıyı gözler. TABANDA: KIRMIZI.
-#[test]
-#[ignore = "K4G-05b beyanlı ara durum (Ek B.2 (ii-a)): ufuk dışı geç ACK'te P0 aynası siler, motor teyit etmez — KIRMIZI beklenir; 05c kapatır (--ignored ile koş)"]
-fn k4g05b_accept_p0_mirror_horizon_out_declared_red() {
-    const TEST: &str = "k4g05b_accept_p0_mirror_horizon_out_declared_red";
-    let run = horizon_run(true);
-    assert_fixture(TEST, &run.fixture);
-    let w = &run.d.w;
-    println!(
-        "[ii-a ufuk dışı] P0 aynasının teyitsiz silmeleri (ms, birim)={:?}; P0 store-miss={}",
-        w.p0_unconfirmed_deletions
-            .iter()
-            .map(|&(t, u)| (t / MS, u))
-            .collect::<Vec<_>>(),
-        w.rt.stale_decisions
-    );
-    assert!(
-        w.p0_unconfirmed_deletions.is_empty(),
-        "{TEST}: BEKLENEN KIRMIZI — P0 aynası teyit çıktısında olmayan birimi sildi: {:?}",
-        w.p0_unconfirmed_deletions
-    );
-}
+// [CEVAP PAKETİ 10 DUR-22 düzeltmesi] Üç kabul koşulu (ii-a)'nın UFUK DIŞI geç ACK kolu (P0 aynası;
+// 05b'de beyanlı kırmızı) 05c şeridinin testidir: 05b'de `#[ignore]` YOK. Metni BİREBİR
+// `kama-k4g-work/k4g05c/05b-den-tasinan/k4g05b_accept_p0_mirror_horizon_out_declared_red.rs`
+// dosyasına taşındı; 05c runtime silmeyi teyit çıktısına bağlayınca orada `#[ignore]`suz koşar
+// (yeşil beklenir).
 
 // ════════════════════════════════════════════════════════════════════════════════════════════
 // K_MAP
