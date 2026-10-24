@@ -1867,7 +1867,9 @@ pub struct Sender {
     copy_share_tick: u32,
     /// [K4G-05b PAY · DUR-31 (b)] Kopya kuyruğu başı için token REZERVASYONU (bayt; 0 = yok): pay
     /// turunda token bulamayan baş için kurulur; o kopya gönderilene (ya da başsız kalınca) dek DATA
-    /// token ALMAZ. Token üretmez; değer ≤ bir kayıt boyu (güncel başın boyu). ARQ/prob etkilenmez.
+    /// token ALMAZ. Token üretmez; değer ≤ bir kayıt boyu (güncel başın boyu). ARQ/prob etkilenmez:
+    /// [DUR-37] pay turu dışında baş normal sırasında (ARQ ve kuyruk-probundan sonra) gider;
+    /// geçerlilik her turda denetlenir.
     copy_reserve_bytes: u64,
     /// [TUR-A ölçüm-#1, TEK DEĞİŞKEN] Son plato-değerlendirmesinden bu yana YENİ bw örneği geldi mi.
     /// Plato round'u yalnız yeni örnekte sayılır (pace-tick başına DEĞİL) — saat-sınıfı: event-count →
@@ -4623,6 +4625,8 @@ impl Sender {
         }
         // [K4G-05b PAY · DUR-24/31] Kopya kuyruğu payı: kendi sayacı (ARQ payından bağımsız);
         // aynı turda ARQ payı vadeliyse ARQ önce (yukarıda), sonra kopya başı, sonra DATA.
+        // [DUR-37] Pay turu dışında rezervasyon yalnız DATA'yı tutar; baş aşağıda
+        // `drain_due_duplicates`'te, ARQ ve kuyruk-probundan SONRA gider (A.4).
         self.copy_share_tick = self.copy_share_tick.wrapping_add(1);
         self.serve_copy_share(&mut out, now_ns);
         self.drain_new_data(&mut out, now_ns);
@@ -7050,21 +7054,31 @@ impl Sender {
     /// [K4G-05b PAY · engine §13 v1.1 İSTİSNA · CEVAP PAKETİ 10 DUR-24/31] Sınıflar arası sıranın TEK
     /// istisnası (PRE_CONVERGE DIŞINDA, her durumda): vadesi gelmiş kopya kuyruğu başı en geç her
     /// `K_ARQ_SHARE`'inci turda DATA'dan ÖNCE hizmet alır. Token yetmezse REZERVASYON kurulur: o
-    /// kopya gönderilene (ya da kuyrukta vadeli baş kalmayana) dek DATA token ALMAZ; rezervasyon
-    /// sürerken baş her turda DATA'dan önce denenir. Token üretilmez, ARQ/prob etkilenmez, gecikme
-    /// sözü verilmez. PRE_CONVERGE'de v1 sırası (pay ve rezervasyon yok).
+    /// kopya gönderilene (ya da kuyrukta vadeli baş kalmayana) dek DATA token ALMAZ. Token
+    /// üretilmez, gecikme sözü verilmez. PRE_CONVERGE'de v1 sırası (pay ve rezervasyon yok).
+    ///
+    /// [K4G-05b DUR-37 · A.4 "ARQ ve kuyruk-probu etkilenmez"] Pay turu DIŞINDA rezervasyon YALNIZ
+    /// DATA'yı tutar (`drain_new_data`); baş tur başında DENENMEZ, normal sınıf sırasında — ARQ ve
+    /// kuyruk-probundan SONRA — `drain_due_duplicates`'te gider (oradaki her kopya emisyonu
+    /// rezervasyonu kaldırır, `emit_copy_at`). Rezervasyonun geçerliliği HER TURDA denetlenir: vadeli
+    /// baş kalmadıysa (teyitle silinme vb.) kalkar. Pay turunda başın birimi aynı turda zaten
+    /// gönderildiyse (ARQ payı) baş atlanır, rezervasyon sürer (kopya kaydı henüz gitmedi).
     fn serve_copy_share(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
         if self.state == SenderState::PreConverge {
             self.copy_reserve_bytes = 0;
             return;
         }
-        let share_turn = self.copy_share_tick.is_multiple_of(K_ARQ_SHARE);
-        if !share_turn && self.copy_reserve_bytes == 0 {
+        // [DUR-37] Geçerlilik her tur: kuyrukta vadeli baş yoksa rezervasyon kalkar.
+        if self.copy_reserve_bytes > 0 && self.copy_queue_head(now_ns, &[]).is_none() {
+            self.copy_reserve_bytes = 0;
+        }
+        // [DUR-37] Pay turu değilse burada iş yok: rezervasyon (varsa) yalnız DATA'yı tutar, baş
+        // `drain_due_duplicates`'te (ARQ ve kuyruk-probundan sonra) denenir.
+        if !self.copy_share_tick.is_multiple_of(K_ARQ_SHARE) {
             return;
         }
         let Some(i) = self.next_copy_head(now_ns, out) else {
-            self.copy_reserve_bytes = 0; // baş yok → rezervasyon kalkar
-            return;
+            return; // vadeli baş yok (rezervasyon yukarıda kalktı) ya da başın birimi bu turda gitti
         };
         let size = self.dup_queue[i].unit.size;
         #[cfg(feature = "diag-sched-telemetry")]
@@ -9988,6 +10002,123 @@ mod tests {
             s.diag_pif(),
             s.inflight.len() as u64,
             "TTL-prune sonrası pif gerçek-uçuşa eşit olmalı (sızıntı-fix)"
+        );
+    }
+
+    /// [K4G-05b DUR-37 · engine §13 v1.1 İSTİSNA · A.4 "ARQ ve kuyruk-probu etkilenmez"] PAY TURU
+    /// DIŞINDA kopya başı rezervasyonu YALNIZ DATA'yı tutar: ARQ yeniden gönderimi ve kuyruk-probu
+    /// normal sıralarında (kopya kuyruğundan ÖNCE) token alır; baş `drain_due_duplicates`'te gider ve
+    /// o emisyon rezervasyonu kaldırır; vadeli baş kalmayan rezervasyon pay turu beklenmeden kalkar.
+    ///
+    /// Beyaz kutu: durum doğrudan kurulur, her `schedule_transmit` çağrısı bir turdur. Tur kredisi
+    /// `TokenBucket::new` ile verilir (kova = kopya başı boyu: başa YA DA ARQ/proba yeter, ikisine
+    /// birden yetmez). İki pay sayacı 0'dan başlar, tur içinde 1'e ilerler → pay turu DEĞİL
+    /// (`K_ARQ_SHARE` = 4). DUR-37 öncesi kodda KIRMIZI: rezervasyonlu baş tur başında denenip kovayı
+    /// alıyordu (ARQ kolunda çıktı `[Duplicate U]`, prob kolunda da `[Duplicate U]` olurdu).
+    #[test]
+    fn k4g05b_dur37_off_share_turn_reservation_holds_only_data() {
+        fn kinds(out: &[TransmitDecision]) -> Vec<(TransmitKind, u64)> {
+            out.iter().map(|x| (x.kind, x.unit_id)).collect()
+        }
+        let a = OpaqueUnit { id: 50, size: 300 };
+        let u = OpaqueUnit { id: 60, size: 1000 };
+        let d = OpaqueUnit { id: 70, size: 100 };
+        let p = OpaqueUnit { id: 80, size: 300 };
+        let now = 10 * MS;
+
+        // (1) ARQ kolu: RECOVER_ARQ; A kayıp ilan edilmiş (ARQ kuyruğunda), U'nun vadeli geometrik
+        // kopya kaydı sıra başı, D kuyrukta, rezervasyon etkin.
+        let mut s = Sender::new();
+        let a_seq = s.track_sent_unit(a, 0, 0, TransmitKind::Data);
+        s.queue_losses(&[a_seq], 0);
+        assert_eq!(s.pending_lost.len(), 1, "kurulum: A ARQ kuyruğunda");
+        s.dup_push(DupRec {
+            due_ns: 0,
+            unit: u,
+            interval_ns: 1_000 * MS,
+        });
+        s.tx_queue.push_back(d);
+        s.state = SenderState::RecoverArq;
+        s.last_decision.arq_aggressiveness_permille = 1000;
+        s.copy_reserve_bytes = u.size;
+        s.arq_share_tick = 0;
+        s.copy_share_tick = 0;
+        s.pacer = TokenBucket::new(1, u.size);
+        let out = s.schedule_transmit(now);
+        assert_eq!(
+            kinds(&out),
+            [(TransmitKind::Retransmit, a.id)],
+            "pay dışı turda ARQ kopya başından ÖNCE token alır; DATA tutulur; baş kalan token'a sığmaz"
+        );
+        assert_eq!(
+            s.copy_reserve_bytes, u.size,
+            "kopya kaydı gitmedi → rezervasyon sürer"
+        );
+        // (2) Sonraki pay dışı tur: ARQ işi yok → baş normal sırasında gider, rezervasyon kalkar.
+        s.pacer = TokenBucket::new(1, u.size);
+        let out = s.schedule_transmit(now + MS);
+        assert_eq!(
+            kinds(&out),
+            [(TransmitKind::Duplicate, u.id)],
+            "rezervasyon DATA'yı tutmaya devam eder; baş `drain_due_duplicates`'te gider"
+        );
+        assert_eq!(
+            s.copy_reserve_bytes, 0,
+            "başın emisyonu rezervasyonu kaldırır"
+        );
+        // (3) Rezervasyon kalkınca DATA token alır.
+        s.pacer = TokenBucket::new(1, u.size);
+        let out = s.schedule_transmit(now + 2 * MS);
+        assert_eq!(
+            kinds(&out),
+            [(TransmitKind::Data, d.id)],
+            "rezervasyon kalktıktan sonra DATA gider"
+        );
+
+        // (4) Kuyruk-probu kolu: STARTUP; bekleyen prob hedefi P, aynı kopya başı ve rezervasyon.
+        let mut s = Sender::new();
+        s.set_tail_recovery_config(tail_cfg_on());
+        let p_seq = s.track_sent_unit(p, 0, 0, TransmitKind::Data);
+        s.tail_probe_pending = Some(p_seq);
+        s.dup_push(DupRec {
+            due_ns: 0,
+            unit: u,
+            interval_ns: 1_000 * MS,
+        });
+        s.tx_queue.push_back(d);
+        s.state = SenderState::Startup;
+        s.copy_reserve_bytes = u.size;
+        s.arq_share_tick = 0;
+        s.copy_share_tick = 0;
+        s.pacer = TokenBucket::new(1, u.size);
+        let out = s.schedule_transmit(now);
+        assert_eq!(
+            kinds(&out),
+            [(TransmitKind::Retransmit, p.id)],
+            "pay dışı turda kuyruk-probu kopya başından ÖNCE token alır; DATA tutulur"
+        );
+        assert_eq!(
+            s.copy_reserve_bytes, u.size,
+            "prob kolunda da kopya kaydı gitmedi → rezervasyon sürer"
+        );
+
+        // (5) Geçerlilik her tur: vadeli baş yokken rezervasyon pay turu beklenmeden kalkar.
+        let mut s = Sender::new();
+        s.tx_queue.push_back(d);
+        s.state = SenderState::Startup;
+        s.copy_reserve_bytes = u.size;
+        s.arq_share_tick = 0;
+        s.copy_share_tick = 0;
+        s.pacer = TokenBucket::new(1, u.size);
+        let out = s.schedule_transmit(now);
+        assert_eq!(
+            s.copy_reserve_bytes, 0,
+            "vadeli baş yok → rezervasyon kalkar"
+        );
+        assert_eq!(
+            kinds(&out),
+            [(TransmitKind::Data, d.id)],
+            "rezervasyon kalkınca aynı turda DATA gider"
         );
     }
 }
