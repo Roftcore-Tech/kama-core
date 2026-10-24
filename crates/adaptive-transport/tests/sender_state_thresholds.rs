@@ -71,7 +71,8 @@ fn app(id: u64) -> Event {
     Event::AppData(OpaqueUnit { id, size: UNIT })
 }
 
-/// Yakınsamış bir oturum: srtt kurulu, PreConverge terk edilmiş.
+/// Yakınsamış bir oturum: srtt kurulu, PreConverge terk edilmiş. Dönen liste: ilk ACK olayının
+/// KENDİ emisyonlarının seq'leri (henüz ACK'lenmemiş; çağıran bir sonraki adımda ACK'ler).
 fn converged() -> (Sender, u64, Vec<u64>) {
     let mut s = Sender::new();
     let mut now = 0u64;
@@ -85,8 +86,12 @@ fn converged() -> (Sender, u64, Vec<u64>) {
         }
     }
     now += 50 * MS;
-    s.on_event(ack(out.clone()), now);
-    out.clear();
+    // [K4G-05b DUR-32] İlk ACK olayının KENDİ emisyonları da toplanır ve dönülür (dosyanın
+    // "emisyon HANGİ olaydan dönerse dönsün toplanır" ilkesi): v1.1'de (madde 7) çerçevenin en
+    // büyüğü kuruluş kopyasıdır → srtt kısalır, başlangıç tabanı büyür ve kuyruktaki birimler bu
+    // olayda çıkar; çıktı atılırsa o kayıtlar hiç ACK'lenmez ve motor Idle'a inemez.
+    let acked = std::mem::take(&mut out);
+    out = s.on_event(ack(acked), now).iter().map(|d| d.seq).collect();
     assert_ne!(
         s.state(),
         SenderState::PreConverge,
@@ -108,7 +113,7 @@ fn resume_from_idle_goes_to_startup_not_back_to_preconverge() {
     // Bu ayrım davranışsal olarak KRİTİK: PreConverge'e geri dönmek pacing'i 31 B/s
     // floor'una indirir ve ölçülmüş kanal bilgisini çöpe atar. Sessizlik sonrası her
     // resume'da bu olursa (ör. konuşma arası duraklamalar) hız hiç toparlanamaz.
-    let (mut s, mut now, _out) = converged();
+    let (mut s, mut now, out) = converged();
 
     // Boşalt: her şeyi ACK'le, timer'larla ilerlet → Idle'a düş.
     //
@@ -117,7 +122,8 @@ fn resume_from_idle_goes_to_startup_not_back_to_preconverge() {
     // DÖNÜŞÜNDEN de emisyon üretir. O emisyonlar düşürülünce hiç ACK'lenmiyor ve pif hiç
     // sıfırlanmıyordu (SONDA ölçümü: pif=3→4, Idle'a meşru olarak inilemiyor). Kurulumun doğru
     // biçimi: emisyon HANGİ olaydan dönerse dönsün toplanır ve bir sonraki adımda ACK'lenir.
-    let mut pending: Vec<u64> = Vec::new();
+    // [K4G-05b DUR-32] `converged()`'ın ilk ACK olayındaki emisyonlar da bu kümeye dahildir.
+    let mut pending: Vec<u64> = out;
     for _ in 0..30 {
         now += 100 * MS;
         for d in s.on_event(Event::TimerFired(Timer::Pto), now) {
