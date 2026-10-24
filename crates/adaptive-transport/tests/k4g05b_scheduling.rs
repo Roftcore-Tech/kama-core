@@ -421,8 +421,9 @@ fn one_way_100ms(_t: u64) -> u64 {
 /// vadesinden sonraki ilk tur.
 ///
 /// İDDİA 1 (hizmetin başlaması ≤ K_ARQ_SHARE tur): j ≥ K_ARQ_SHARE olan hiçbir turda, U yeniden
-/// gönderilene dek DATA emisyonu yoktur (pay turu j < K_ARQ_SHARE'dir; rezervasyon orada başlar,
-/// DATA token almayı keser). İDDİA 2 (rezervasyon → emisyon arası DATA yok): rezervasyonun
+/// gönderilene dek DATA emisyonu yoktur (pay turu j < K_ARQ_SHARE'dir; rezervasyon orada başlar;
+/// CEVAP 11/12 DUR-31: DATA, ARQ ve prob rezervin ALTINA inemez — bu düzende token rezerv + 37 B'ye
+/// hiç ulaşmadan baş gider). İDDİA 2 (rezervasyon → emisyon arası DATA yok): rezervasyonun
 /// gözlendiği ilk tur j* (DATA yok, birikim var, tur sonu token ≥ DATA boyu) ile U'nun yeniden
 /// emisyon turu arasında DATA emisyonu yoktur; emisyon turunda U'nun kararı her DATA'dan önce
 /// gelir. İDDİA 3: U yeniden gönderilir (token yetince; ARQ payı aynı turdaysa ARQ kopyasıyla —

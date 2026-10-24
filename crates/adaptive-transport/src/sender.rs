@@ -1866,11 +1866,14 @@ pub struct Sender {
     /// `schedule_transmit` çağrısı bir tur; RECOVER_ARQ'nun ARQ payı sayacından BAĞIMSIZ (aynı
     /// `K_ARQ_SHARE`, yeni sayı yok, ayrı token kovası yok).
     copy_share_tick: u32,
-    /// [K4G-05b PAY · DUR-31 (b)] Kopya kuyruğu başı için token REZERVASYONU (bayt; 0 = yok): pay
-    /// turunda token bulamayan baş için kurulur; o kopya gönderilene (ya da başsız kalınca) dek DATA
-    /// token ALMAZ. Token üretmez; değer ≤ bir kayıt boyu (güncel başın boyu). ARQ/prob etkilenmez:
-    /// [DUR-37] pay turu dışında baş normal sırasında (ARQ ve kuyruk-probundan sonra) gider;
-    /// geçerlilik her turda denetlenir.
+    /// [K4G-05b PAY · DUR-31 · CEVAP 11 §1 / 11-EK §4 / 12 §2] Kopya kuyruğu BAŞI için token
+    /// REZERVASYONU (bayt; 0 = yok): pay turunda token bulamayan baş için kurulur. Değer = güncel
+    /// başın boyu (≤ bir kayıt boyu), aynı anda tek rezerv, token ÜRETMEZ. Rezerv varken başın kopyası
+    /// DIŞINDAKİ her token tüketicisi (DATA, ARQ, kuyruk-probu, parite, CS-probu) rezervin ALTINA
+    /// inemez: `token − boy ≥ rezerv` (`copy_reserve_allows`). Temizlenme: gönderimde
+    /// (`emit_copy_at`), birim teyit edilince ya da hedef geçersizleşince (vadeli baş yok; baş
+    /// değiştiyse yeni başın boyuna güncellenir — `refresh_copy_reserve`, her tur başında),
+    /// PRE_CONVERGE'de; oturum kapanınca motorla birlikte düşer (motorda ayrı kapanış olayı yok).
     copy_reserve_bytes: u64,
     /// [TUR-A ölçüm-#1, TEK DEĞİŞKEN] Son plato-değerlendirmesinden bu yana YENİ bw örneği geldi mi.
     /// Plato round'u yalnız yeni örnekte sayılır (pace-tick başına DEĞİL) — saat-sınıfı: event-count →
@@ -2904,18 +2907,19 @@ impl Sender {
         // (`update_state` `pending_lost` boş değilken RecoverArq'a geçer ⇒ `plan_arq_retransmits`
         // aynı turda çalışır; onu bekleten tek şey token'dır). `dup_queue` BİLEREK dışarıda: kendi
         // `due_ns` deadline'ı var (kaynak 3).
-        // [K4G-05b DUR-31] Kopya başı rezervasyonu varken DATA token alamaz: DATA'nın hazır olma
-        // anı uyanma kaynağı değildir (ilerleme kopya başına bağlıdır — kaynak 3).
-        let data_ready = self.copy_reserve_bytes == 0;
+        // [K4G-05b DUR-31] Kopya başı rezervasyonu varken bu sınıflar rezervin ALTINA inemez: hazır
+        // olma anı `en küçük + rezerv` bayta token yetiştiği andır. Kova bu toplamı taşıyamıyorsa
+        // `None` — ilerleme kopya başına bağlıdır (kaynak 3); baş gidince rezerv kalkar.
         let smallest = self
             .tx_queue
             .iter()
-            .filter(|_| data_ready)
             .map(|u| u.size)
             .chain(self.pending_fec.iter().map(|p| p.size))
             .chain(self.pending_lost.iter().map(|r| r.unit.size))
             .min()?;
-        let dt = self.pacer.ns_until_sendable(smallest)?;
+        let dt = self
+            .pacer
+            .ns_until_sendable(smallest.saturating_add(self.copy_reserve_bytes))?;
         Some(self.last_now_ns.saturating_add(dt))
     }
 
@@ -3159,7 +3163,10 @@ impl Sender {
             {
                 self.sched_diag.cs_probe_selected += 1;
             }
-            if !self.pacer.try_send(CS_PROBE_WIRE_MAX) {
+            // [K4G-05b DUR-31] Kopya başı rezervinin altına inilmez.
+            if !self.copy_reserve_allows(CS_PROBE_WIRE_MAX)
+                || !self.pacer.try_send(CS_PROBE_WIRE_MAX)
+            {
                 #[cfg(feature = "diag-sched-telemetry")]
                 {
                     self.sched_diag.cs_probe_token_denied += 1;
@@ -4612,6 +4619,8 @@ impl Sender {
         self.apply_burst_floor(now_ns);
         // [K4G-05b madde 7] RTT tazelik ölçütü (yalnız gözlem; karar girdisi değil).
         self.note_rtt_freshness(now_ns);
+        // [K4G-05b DUR-31] Kopya başı rezervinin hedef geçerliliği — ilk token tüketicisinden önce.
+        self.refresh_copy_reserve(now_ns);
         // [TUR-7 β2] ARQ token-payı: her K_ARQ_SHARE'inci grant'te retx ÖNCE dener (BOŞ-NÖBET
         // biter — retx fiilen wire'a çıkar); diğer grant'ler DATA-önce (ölçülü-karar korunur).
         self.arq_share_tick = self.arq_share_tick.wrapping_add(1);
@@ -4622,9 +4631,8 @@ impl Sender {
             self.plan_arq_retransmits(&mut out, now_ns);
         }
         // [K4G-05b PAY · DUR-24/31] Kopya kuyruğu payı: kendi sayacı (ARQ payından bağımsız);
-        // aynı turda ARQ payı vadeliyse ARQ önce (yukarıda), sonra kopya başı, sonra DATA.
-        // [DUR-37] Pay turu dışında rezervasyon yalnız DATA'yı tutar; baş aşağıda
-        // `drain_due_duplicates`'te, ARQ ve kuyruk-probundan SONRA gider (A.4).
+        // aynı turda ARQ payı vadeliyse ARQ önce (yukarıda), sonra kopya başı, sonra DATA. Rezerv
+        // varken baş her tur burada denenir; diğer sınıflar rezervin altına inemez.
         self.copy_share_tick = self.copy_share_tick.wrapping_add(1);
         self.serve_copy_share(&mut out, now_ns);
         self.drain_new_data(&mut out, now_ns);
@@ -5693,8 +5701,9 @@ impl Sender {
             if !self.budget_parity_allows(p.size) {
                 break; // C1-canlı: kernel-limit (Leftover'da-None → hiç-girmez; baseline-özdeş)
             }
+            // [K4G-05b DUR-31] Kopya başı rezervinin altına inilmez (red = token reddi yolu).
             let balance_before = self.pacer.tokens(); // READ-ONLY (mühürlü-TokenBucket'a-dokunulmaz)
-            if !self.pacer.try_send(p.size) {
+            if !self.copy_reserve_allows(p.size) || !self.pacer.try_send(p.size) {
                 // Commit-G: budget-denied-GÖRÜNÜRLÜĞÜ (gauge; 1b-tasarım-girdisi — politika-DEĞİŞMEDİ).
                 self.token_denied_r_gauge = self.pending_fec.len() as u64;
                 // [FAZ-3] parity token reddi — ürün derlemesinde görünür.
@@ -6018,7 +6027,8 @@ impl Sender {
             if !self.budget_parity_allows(size) {
                 break; // C1: kernel-parity-limiti (hardcap-dahil) aşılamaz → miss-adayı (teşhisli)
             }
-            if !self.pacer.try_send(size) {
+            // [K4G-05b DUR-31] Kopya başı rezervinin altına inilmez.
+            if !self.copy_reserve_allows(size) || !self.pacer.try_send(size) {
                 break; // token-yok → sonraki-opportunity (miss-taraması-rezervde)
             }
             let sz = self.emit_parity_at(idx, out, now_ns);
@@ -6130,8 +6140,29 @@ impl Sender {
     /// RECOVER_ARQ (§9): ACK-güdümlü selective retransmit. arq_aggressiveness=0 → baskıla (fec-dominant).
     /// Commit-V: pre-parity-token-kapısı. OFF: saf-try_send (inline; byte-özdeş). ON: rezerv-korunur —
     /// `tokens < size + reserved` → red (yalnız-tokens≥size-iken-displacement-sayılır: "would-have-sent").
+    ///
+    /// [K4G-05b DUR-31] Kopya kuyruğu başı rezervi varken çağıran rezervin ALTINA inemez
+    /// (`copy_reserve_allows`); başın KENDİ kopyası `try_send_copy_head` ile gider.
     #[inline]
     fn try_send_pre_parity(&mut self, size: u64, is_retx: bool) -> bool {
+        if !self.copy_reserve_allows(size) {
+            return false;
+        }
+        self.try_send_copy_head(size, is_retx)
+    }
+
+    /// [K4G-05b DUR-31] Rezerv koşulu: rezerv yoksa ya da `token − boy ≥ rezerv` ise `true`
+    /// (rezervin ÜSTÜNDEKİ token kullanılabilir). Salt okuma.
+    fn copy_reserve_allows(&self, size: u64) -> bool {
+        self.copy_reserve_bytes == 0
+            || self.pacer.tokens() >= size.saturating_add(self.copy_reserve_bytes)
+    }
+
+    /// [K4G-05b DUR-31] Kopya kuyruğu BAŞININ token alımı: rezerv onun içindir, rezerv koşulu
+    /// uygulanmaz; FEC bütçe rezervi (Commit-V) aynen uygulanır. Diğer bütün sınıflar
+    /// `try_send_pre_parity` (rezerv koşullu) kullanır.
+    #[inline]
+    fn try_send_copy_head(&mut self, size: u64, is_retx: bool) -> bool {
         #[cfg(feature = "experimental-fec-budget")]
         {
             let r = self.budget_ext.reserved_now;
@@ -6926,7 +6957,8 @@ impl Sender {
             {
                 self.sched_diag.dup_selected += 1;
             }
-            if !self.try_send_pre_parity(self.dup_queue[i].unit.size, true) {
+            // [K4G-05b DUR-31] Gönderilen kayıt sıra başıdır: rezerv (varsa) onun içindir.
+            if !self.try_send_copy_head(self.dup_queue[i].unit.size, true) {
                 #[cfg(feature = "diag-sched-telemetry")]
                 {
                     self.sched_diag.dup_token_denied += 1;
@@ -7020,50 +7052,59 @@ impl Sender {
         }
     }
 
-    /// [K4G-05b PAY · engine §13 v1.1 İSTİSNA · CEVAP PAKETİ 10 DUR-24/31] Sınıflar arası sıranın TEK
-    /// istisnası (PRE_CONVERGE DIŞINDA, her durumda): vadesi gelmiş kopya kuyruğu başı en geç her
-    /// `K_ARQ_SHARE`'inci turda DATA'dan ÖNCE hizmet alır. Token yetmezse REZERVASYON kurulur: o
-    /// kopya gönderilene (ya da kuyrukta vadeli baş kalmayana) dek DATA token ALMAZ. Token
-    /// üretilmez, gecikme sözü verilmez. PRE_CONVERGE'de v1 sırası (pay ve rezervasyon yok).
-    ///
-    /// [K4G-05b DUR-37 · A.4 "ARQ ve kuyruk-probu etkilenmez"] Pay turu DIŞINDA rezervasyon YALNIZ
-    /// DATA'yı tutar (`drain_new_data`); baş tur başında DENENMEZ, normal sınıf sırasında — ARQ ve
-    /// kuyruk-probundan SONRA — `drain_due_duplicates`'te gider (oradaki her kopya emisyonu
-    /// rezervasyonu kaldırır, `emit_copy_at`). Rezervasyonun geçerliliği HER TURDA denetlenir: vadeli
-    /// baş kalmadıysa (teyitle silinme vb.) kalkar. Pay turunda başın birimi aynı turda zaten
-    /// gönderildiyse (ARQ payı) baş atlanır, rezervasyon sürer (kopya kaydı henüz gitmedi).
+    /// [K4G-05b PAY · engine §13 v1.1 İSTİSNA · CEVAP PAKETİ 10 DUR-24 · CEVAP 11 §1 DUR-31] Sınıflar
+    /// arası sıranın TEK istisnası (PRE_CONVERGE hariç bütün durumlarda): (i) SEÇİLME — vadesi gelmiş
+    /// kopya kuyruğu başı en geç her `K_ARQ_SHARE`'inci `schedule_transmit` çağrısında hizmet hakkı
+    /// kazanır ve DATA'dan ÖNCE denenir; token yetmezse REZERVASYON kurulur. (ii) GÖNDERİLME — rezerv
+    /// varken baş her turda burada (tur başında) yeniden denenir; diğer bütün sınıflar rezervin altına
+    /// inemediğinden (`copy_reserve_allows`) token sabit pace_rate'te ≤ boy / pace_rate içinde başın
+    /// boyuna birikir ve baş en geç bir sonraki turda çıkar (BURST_CAP tabanı başı kapsar; değişken
+    /// hızda biriken token üzerinden). Aynı turda ARQ payı vadeliyse ARQ önce (o da rezervin altına
+    /// inemez). Pay turunda başın birimi aynı turda zaten gönderildiyse baş atlanır, rezerv sürer.
+    /// Token üretilmez. PRE_CONVERGE'de v1 sırası (pay ve rezervasyon yok).
     fn serve_copy_share(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
         if self.state == SenderState::PreConverge {
-            self.copy_reserve_bytes = 0;
             return;
         }
-        // [DUR-37] Geçerlilik her tur: kuyrukta vadeli baş yoksa rezervasyon kalkar.
-        if self.copy_reserve_bytes > 0 && self.copy_queue_head(now_ns, &[]).is_none() {
-            self.copy_reserve_bytes = 0;
-        }
-        // [DUR-37] Pay turu değilse burada iş yok: rezervasyon (varsa) yalnız DATA'yı tutar, baş
-        // `drain_due_duplicates`'te (ARQ ve kuyruk-probundan sonra) denenir.
-        if !self.copy_share_tick.is_multiple_of(K_ARQ_SHARE) {
+        let share_turn = self.copy_share_tick.is_multiple_of(K_ARQ_SHARE);
+        if !share_turn && self.copy_reserve_bytes == 0 {
             return;
         }
         let Some(i) = self.next_copy_head(now_ns, out) else {
-            return; // vadeli baş yok (rezervasyon yukarıda kalktı) ya da başın birimi bu turda gitti
+            return; // vadeli baş yok (rezerv tur başında kalktı) ya da başın birimi bu turda gitti
         };
         let size = self.dup_queue[i].unit.size;
         #[cfg(feature = "diag-sched-telemetry")]
         {
             self.sched_diag.dup_selected += 1;
         }
-        if self.try_send_pre_parity(size, true) {
+        if self.try_send_copy_head(size, true) {
             self.emit_copy_at(i, out, now_ns);
         } else {
             #[cfg(feature = "diag-sched-telemetry")]
             {
                 self.sched_diag.dup_token_denied += 1;
             }
-            // Rezerv = güncel başın boyu (≤ bir kayıt boyu); token birikir, DATA alamaz.
+            // Rezerv = başın boyu (≤ bir kayıt boyu); token birikir, diğer sınıflar altına inemez.
             self.copy_reserve_bytes = size;
         }
+    }
+
+    /// [K4G-05b DUR-31 · 11-EK §4] Rezervin HEDEF geçerliliği — her `schedule_transmit` başında,
+    /// ilk token tüketicisinden (ARQ payı) önce: PRE_CONVERGE'de rezerv yok; kuyrukta vadeli baş
+    /// kalmadıysa (birim teyit edildi, kayıt silindi) rezerv kalkar; baş değiştiyse rezerv yeni başın
+    /// boyuna güncellenir (aynı anda tek rezerv).
+    fn refresh_copy_reserve(&mut self, now_ns: u64) {
+        if self.copy_reserve_bytes == 0 {
+            return;
+        }
+        if self.state == SenderState::PreConverge {
+            self.copy_reserve_bytes = 0;
+            return;
+        }
+        self.copy_reserve_bytes = self
+            .copy_queue_head(now_ns, &[])
+            .map_or(0, |i| self.dup_queue[i].unit.size);
     }
 
     /// [K4G-05b · engine §13 v1.1 BURST_CAP TUR BAŞI TABANI] PRE_CONVERGE DIŞINDA taban =
@@ -7118,9 +7159,10 @@ impl Sender {
             {
                 self.sched_diag.data_selected += 1;
             }
-            // [K4G-05b PAY · DUR-31 (b)] Kopya kuyruğu başı için rezervasyon varken DATA token ALMAZ
-            // (o kopya gönderilene ya da vadeli baş kalmayana dek; token birikir, üretilmez).
-            if self.copy_reserve_bytes > 0 || !self.try_send_pre_parity(front.size, false) {
+            // [K4G-05b PAY · DUR-31] Kopya kuyruğu başı rezervi varken DATA rezervin altına inemez
+            // (`try_send_pre_parity` içindeki `copy_reserve_allows`); rezervin üstündeki token'ı
+            // kullanabilir.
+            if !self.try_send_pre_parity(front.size, false) {
                 #[cfg(feature = "diag-sched-telemetry")]
                 {
                     self.sched_diag.data_token_denied += 1;
@@ -9974,77 +10016,113 @@ mod tests {
         );
     }
 
-    /// [K4G-05b DUR-37 · engine §13 v1.1 İSTİSNA · A.4 "ARQ ve kuyruk-probu etkilenmez"] PAY TURU
-    /// DIŞINDA kopya başı rezervasyonu YALNIZ DATA'yı tutar: ARQ yeniden gönderimi ve kuyruk-probu
-    /// normal sıralarında (kopya kuyruğundan ÖNCE) token alır; baş `drain_due_duplicates`'te gider ve
-    /// o emisyon rezervasyonu kaldırır; vadeli baş kalmayan rezervasyon pay turu beklenmeden kalkar.
-    ///
-    /// Beyaz kutu: durum doğrudan kurulur, her `schedule_transmit` çağrısı bir turdur. Tur kredisi
-    /// `TokenBucket::new` ile verilir (kova = kopya başı boyu: başa YA DA ARQ/proba yeter, ikisine
-    /// birden yetmez). İki pay sayacı 0'dan başlar, tur içinde 1'e ilerler → pay turu DEĞİL
-    /// (`K_ARQ_SHARE` = 4). DUR-37 öncesi kodda KIRMIZI: rezervasyonlu baş tur başında denenip kovayı
-    /// alıyordu (ARQ kolunda çıktı `[Duplicate U]`, prob kolunda da `[Duplicate U]` olurdu).
-    #[test]
-    fn k4g05b_dur37_off_share_turn_reservation_holds_only_data() {
-        fn kinds(out: &[TransmitDecision]) -> Vec<(TransmitKind, u64)> {
-            out.iter().map(|x| (x.kind, x.unit_id)).collect()
+    // ── [K4G-05b DUR-31 · CEVAP 11 §1 / 11-EK §4 / 12 §2] kopya kuyruğu başı rezervi ─────────────
+    //
+    // Beyaz kutu: durum doğrudan kurulur, her `schedule_transmit` çağrısı bir turdur; tur kredisi
+    // ya `TokenBucket::new` ile (kova dolu başlar) ya da `refill` ile verilir (token üretilmez,
+    // yalnız kova doldurulur). İki pay sayacı birlikte ilerler (her çağrıda +1).
+
+    /// Pay düzeneği: STARTUP, vadeli geometrik kopya başı U (`u_size`), `data_n` adet DATA (`d_size`),
+    /// boş kova (`rate`, kapasite 2400 B), kuruluş probu kapalı.
+    fn dur31_rig(rate: u64, u_size: u64, data_n: u64, d_size: u64) -> Sender {
+        let mut s = Sender::new();
+        s.set_establish_probe(false);
+        s.state = SenderState::Startup;
+        s.dup_push(DupRec {
+            due_ns: 0,
+            unit: OpaqueUnit {
+                id: 4,
+                size: u_size,
+            },
+            interval_ns: 1_000 * MS,
+        });
+        for i in 0..data_n {
+            s.tx_queue.push_back(OpaqueUnit {
+                id: 100 + i,
+                size: d_size,
+            });
         }
+        s.pacer = TokenBucket::new(rate, 2 * DEFAULT_MTU);
+        let full = s.pacer.tokens();
+        assert!(s.pacer.try_send(full), "kurulum: kova boşaltılır");
+        s
+    }
+
+    /// Bir tur: `dt` kadar token birikir (pace_rate'te), sonra `schedule_transmit`.
+    fn dur31_turn(s: &mut Sender, now: &mut u64, dt: u64) -> Vec<TransmitDecision> {
+        s.pacer.refill(Duration::from_nanos(dt));
+        *now += dt;
+        s.last_now_ns = *now;
+        s.schedule_transmit(*now)
+    }
+
+    /// 1 s (ns) — DUR-31 sınır testlerinin boy / pace_rate hesabı.
+    const DUR31_SEC: u64 = 1_000_000_000;
+
+    fn dur31_kinds(out: &[TransmitDecision]) -> Vec<(TransmitKind, u64)> {
+        out.iter().map(|x| (x.kind, x.unit_id)).collect()
+    }
+
+    /// [K4G-05b DUR-31 · CEVAP 11 §1, 12 §2 "DUR-31 okuması"] Rezerv BÜTÜN sınıflara karşı geçerlidir:
+    /// rezerv varken DATA, ARQ ve kuyruk-probu rezervin ALTINA inemez (`token − boy ≥ rezerv`),
+    /// rezervin ÜSTÜNDEKİ token'ı kullanabilir; baş rezerv varken her tur (tur başında) denenir.
+    /// (DUR-37'nin "pay dışı turda yalnız DATA'yı tutar" okuması geçersiz — o testin yerine.)
+    ///
+    /// Kollar: (1) ARQ payı turu, token 1350: ARQ rezervin ÜSTÜNDEKİ 350 B'nin 300'ünü alır, sonra baş
+    /// gider → `[Retransmit A, Duplicate U]`; (2) aynı tur, token 1200: ARQ rezerve inemez → baş gider,
+    /// rezerv kalkar, DATA kalan token'la gider → `[Duplicate U, Data D]`; (3) pay dışı tur, token 900
+    /// < rezerv: baş, DATA ve kuyruk-probu gitmez → `[]`, rezerv sürer; (4) token 1000: baş tur başında
+    /// gider → `[Duplicate U]`, rezerv 0; (5) rezerv kalkınca DATA ve prob v1 sırasıyla gider.
+    /// DUR-37 kodunda (2) `[Retransmit A]` ve (3) `[Retransmit P]` olurdu (ARQ/prob rezervi tüketirdi).
+    #[test]
+    fn k4g05b_dur31_reservation_binds_all_classes_above_reserve_only() {
         let a = OpaqueUnit { id: 50, size: 300 };
         let u = OpaqueUnit { id: 60, size: 1000 };
         let d = OpaqueUnit { id: 70, size: 100 };
         let p = OpaqueUnit { id: 80, size: 300 };
         let now = 10 * MS;
-
-        // (1) ARQ kolu: RECOVER_ARQ; A kayıp ilan edilmiş (ARQ kuyruğunda), U'nun vadeli geometrik
-        // kopya kaydı sıra başı, D kuyrukta, rezervasyon etkin.
-        let mut s = Sender::new();
-        let a_seq = s.track_sent_unit(a, 0, 0, TransmitKind::Data);
-        s.queue_losses(&[a_seq], 0);
+        let arq_rig = |tokens: u64| {
+            let mut s = Sender::new();
+            let a_seq = s.track_sent_unit(a, 0, 0, TransmitKind::Data);
+            s.queue_losses(&[a_seq], 0);
+            s.dup_push(DupRec {
+                due_ns: 0,
+                unit: u,
+                interval_ns: 1_000 * MS,
+            });
+            s.tx_queue.push_back(d);
+            s.state = SenderState::RecoverArq;
+            s.last_decision.arq_aggressiveness_permille = 1000;
+            s.copy_reserve_bytes = u.size;
+            // Tur içinde iki sayaç 4'e ilerler → ARQ payı ve kopya payı turu.
+            s.arq_share_tick = K_ARQ_SHARE - 1;
+            s.copy_share_tick = K_ARQ_SHARE - 1;
+            s.pacer = TokenBucket::new(1, tokens);
+            s
+        };
+        // (1)
+        let mut s = arq_rig(1350);
         assert_eq!(s.pending_lost.len(), 1, "kurulum: A ARQ kuyruğunda");
-        s.dup_push(DupRec {
-            due_ns: 0,
-            unit: u,
-            interval_ns: 1_000 * MS,
-        });
-        s.tx_queue.push_back(d);
-        s.state = SenderState::RecoverArq;
-        s.last_decision.arq_aggressiveness_permille = 1000;
-        s.copy_reserve_bytes = u.size;
-        s.arq_share_tick = 0;
-        s.copy_share_tick = 0;
-        s.pacer = TokenBucket::new(1, u.size);
         let out = s.schedule_transmit(now);
         assert_eq!(
-            kinds(&out),
-            [(TransmitKind::Retransmit, a.id)],
-            "pay dışı turda ARQ kopya başından ÖNCE token alır; DATA tutulur; baş kalan token'a sığmaz"
+            dur31_kinds(&out),
+            [
+                (TransmitKind::Retransmit, a.id),
+                (TransmitKind::Duplicate, u.id)
+            ],
+            "(1) ARQ rezervin üstündeki token'la gider, rezerv başa kalır"
         );
+        assert_eq!(s.copy_reserve_bytes, 0, "(1) gönderimde rezerv kalkar");
+        // (2)
+        let mut s = arq_rig(1200);
+        let out = s.schedule_transmit(now);
         assert_eq!(
-            s.copy_reserve_bytes, u.size,
-            "kopya kaydı gitmedi → rezervasyon sürer"
+            dur31_kinds(&out),
+            [(TransmitKind::Duplicate, u.id), (TransmitKind::Data, d.id)],
+            "(2) ARQ rezervin altına inemez; baş gider, sonra DATA kalan token'la"
         );
-        // (2) Sonraki pay dışı tur: ARQ işi yok → baş normal sırasında gider, rezervasyon kalkar.
-        s.pacer = TokenBucket::new(1, u.size);
-        let out = s.schedule_transmit(now + MS);
-        assert_eq!(
-            kinds(&out),
-            [(TransmitKind::Duplicate, u.id)],
-            "rezervasyon DATA'yı tutmaya devam eder; baş `drain_due_duplicates`'te gider"
-        );
-        assert_eq!(
-            s.copy_reserve_bytes, 0,
-            "başın emisyonu rezervasyonu kaldırır"
-        );
-        // (3) Rezervasyon kalkınca DATA token alır.
-        s.pacer = TokenBucket::new(1, u.size);
-        let out = s.schedule_transmit(now + 2 * MS);
-        assert_eq!(
-            kinds(&out),
-            [(TransmitKind::Data, d.id)],
-            "rezervasyon kalktıktan sonra DATA gider"
-        );
-
-        // (4) Kuyruk-probu kolu: STARTUP; bekleyen prob hedefi P, aynı kopya başı ve rezervasyon.
+        assert_eq!(s.copy_reserve_bytes, 0, "(2) gönderimde rezerv kalkar");
+        // (3)
         let mut s = Sender::new();
         s.set_tail_recovery_config(tail_cfg_on());
         let p_seq = s.track_sent_unit(p, 0, 0, TransmitKind::Data);
@@ -10059,35 +10137,364 @@ mod tests {
         s.copy_reserve_bytes = u.size;
         s.arq_share_tick = 0;
         s.copy_share_tick = 0;
-        s.pacer = TokenBucket::new(1, u.size);
+        s.pacer = TokenBucket::new(1, 900);
         let out = s.schedule_transmit(now);
-        assert_eq!(
-            kinds(&out),
-            [(TransmitKind::Retransmit, p.id)],
-            "pay dışı turda kuyruk-probu kopya başından ÖNCE token alır; DATA tutulur"
+        assert!(
+            out.is_empty(),
+            "(3) token < rezerv: baş, DATA ve kuyruk-probu gitmez; çıktı {:?}",
+            dur31_kinds(&out)
         );
-        assert_eq!(
-            s.copy_reserve_bytes, u.size,
-            "prob kolunda da kopya kaydı gitmedi → rezervasyon sürer"
-        );
-
-        // (5) Geçerlilik her tur: vadeli baş yokken rezervasyon pay turu beklenmeden kalkar.
-        let mut s = Sender::new();
-        s.tx_queue.push_back(d);
-        s.state = SenderState::Startup;
-        s.copy_reserve_bytes = u.size;
-        s.arq_share_tick = 0;
-        s.copy_share_tick = 0;
+        assert_eq!(s.copy_reserve_bytes, u.size, "(3) rezerv sürer");
+        // (4)
         s.pacer = TokenBucket::new(1, u.size);
-        let out = s.schedule_transmit(now);
+        let out = s.schedule_transmit(now + MS);
         assert_eq!(
-            s.copy_reserve_bytes, 0,
-            "vadeli baş yok → rezervasyon kalkar"
+            dur31_kinds(&out),
+            [(TransmitKind::Duplicate, u.id)],
+            "(4) token rezerve yetince baş tur başında gider"
         );
+        assert_eq!(s.copy_reserve_bytes, 0, "(4) gönderimde rezerv kalkar");
+        // (5)
+        s.pacer = TokenBucket::new(1, 400);
+        let out = s.schedule_transmit(now + 2 * MS);
         assert_eq!(
-            kinds(&out),
-            [(TransmitKind::Data, d.id)],
-            "rezervasyon kalkınca aynı turda DATA gider"
+            dur31_kinds(&out),
+            [(TransmitKind::Data, d.id), (TransmitKind::Retransmit, p.id)],
+            "(5) rezerv kalkınca DATA ve kuyruk-probu v1 sırasıyla"
         );
     }
+
+    /// [K4G-05b DUR-31 · 11-EK §4] Artık rezerv yok: rezerv (a) gönderimde, (b) birim teyit edilince,
+    /// (c) hedef geçersizleşince (vadeli baş yok / kayıt silindi; baş değiştiyse yeni başın boyuna
+    /// güncellenir) temizlenir. (d) Oturum kapanışı: motorda kapanış olayı yoktur; oturum kapanınca
+    /// `Sender` (rezerviyle) düşer — yeni oturumun motoru rezervsiz başlar.
+    #[test]
+    fn k4g05b_dur31_reserve_cleared_on_send_confirm_invalid_target() {
+        let u = OpaqueUnit { id: 60, size: 1000 };
+        let d = OpaqueUnit { id: 70, size: 100 };
+        let now = 10 * MS;
+        let rig = || {
+            let mut s = Sender::new();
+            s.set_establish_probe(false);
+            s.dup_push(DupRec {
+                due_ns: 0,
+                unit: u,
+                interval_ns: 1_000 * MS,
+            });
+            s.tx_queue.push_back(d);
+            s.state = SenderState::Startup;
+            s.copy_reserve_bytes = u.size;
+            s
+        };
+        // (a) gönderim
+        let mut s = rig();
+        s.pacer = TokenBucket::new(1, u.size);
+        let out = s.schedule_transmit(now);
+        assert!(
+            out.iter()
+                .any(|x| x.kind == TransmitKind::Duplicate && x.unit_id == u.id),
+            "(a) kurulum: baş gitmeli"
+        );
+        assert_eq!(s.copy_reserve_bytes, 0, "(a) gönderim sonrası artık rezerv");
+        // (b) teyit: U'nun canlı kaydının ACK'i — aynı olayın turunda rezerv kalkar, DATA gider.
+        let mut s = rig();
+        let u_seq = s.track_sent_unit(u, 0, 0, TransmitKind::Data);
+        s.pacer = TokenBucket::new(1, 0);
+        let _ = s.on_event(ack(&[u_seq]), now);
+        assert_eq!(
+            s.take_confirmed_units(),
+            vec![u.id],
+            "(b) kurulum: U teyitli"
+        );
+        assert_eq!(s.copy_reserve_bytes, 0, "(b) teyit sonrası artık rezerv");
+        // (c1) kayıt silindi (vadeli baş yok)
+        let mut s = rig();
+        s.dup_queue.clear();
+        s.pacer = TokenBucket::new(1, 0);
+        let _ = s.schedule_transmit(now);
+        assert_eq!(s.copy_reserve_bytes, 0, "(c) vadeli baş yok → artık rezerv");
+        // (c2) baş değişti → rezerv yeni başın boyuna güncellenir (aynı anda tek rezerv)
+        let mut s = rig();
+        s.dup_push(DupRec {
+            due_ns: 0,
+            unit: OpaqueUnit { id: 55, size: 400 },
+            interval_ns: 1_000 * MS,
+        });
+        s.pacer = TokenBucket::new(1, 0);
+        let _ = s.schedule_transmit(now);
+        assert_eq!(
+            s.copy_reserve_bytes, 400,
+            "(c) yeni baş (en küçük birim kimliği) → rezerv onun boyu"
+        );
+        // (d) yeni oturum motoru rezervsiz
+        assert_eq!(
+            Sender::new().copy_reserve_bytes,
+            0,
+            "(d) yeni motor rezervsiz"
+        );
+    }
+
+    /// [K4G-05b DUR-31 · CEVAP 11 tablo (a), 11-EK §4] 37 B DATA sürekli + 1050 B kopya başı, iki kip:
+    /// (i) SEÇİLME ≤ `K_ARQ_SHARE` çağrı (baş ya gider ya rezerv kurulur); (ii) GÖNDERİLME —
+    /// kip 1 sabit pace_rate 1064 B/s: baş, seçilmeden ≤ 1050/1064 s + 1 tur içinde çıkar; kip 2
+    /// değişken hız (500 ↔ 2000 B/s, 50 ms'de bir): baş, seçilmeden sonra tur başı token'ın başın boyuna
+    /// İLK yettiği turda ya da bir sonrakinde çıkar (biriken token üzerinden). Rezerv süresince DATA
+    /// yok (token hiç rezerv + 37 B'ye ulaşmaz); gönderimde rezerv 0. Tur 1 ms; BURST_CAP tabanı başı
+    /// kapsar.
+    #[test]
+    fn k4g05b_dur31_select_and_send_bounds_constant_and_variable_rate() {
+        const U: u64 = 1050;
+        const D: u64 = 37;
+        const TURN: u64 = MS;
+        for variable in [false, true] {
+            let rate_at = |k: u64| -> u64 {
+                if !variable {
+                    1064
+                } else if (k / 50).is_multiple_of(2) {
+                    500
+                } else {
+                    2000
+                }
+            };
+            let mut s = dur31_rig(rate_at(0), U, 4000, D);
+            let mut now = 0u64;
+            let mut selected: Option<(u64, u64)> = None; // (çağrı no, an)
+            let mut first_fit: Option<u64> = None; // seçilmeden sonra tur başı token ≥ U olan ilk çağrı
+            let mut emitted: Option<(u64, u64)> = None;
+            let mut data_during_reserve = 0u64;
+            for k in 1..=5_000u64 {
+                s.pacer.set_rate(rate_at(k));
+                s.pacer.refill(Duration::from_nanos(TURN));
+                now += TURN;
+                s.last_now_ns = now;
+                let pre_tokens = s.pacer.tokens();
+                if selected.is_some() && first_fit.is_none() && pre_tokens >= U {
+                    first_fit = Some(k);
+                }
+                let reserved_before = s.copy_reserve_bytes > 0;
+                let out = s.schedule_transmit(now);
+                let u_out = out
+                    .iter()
+                    .any(|x| x.kind == TransmitKind::Duplicate && x.unit_id == 4);
+                if reserved_before && !u_out {
+                    data_during_reserve +=
+                        out.iter().filter(|x| x.kind == TransmitKind::Data).count() as u64;
+                }
+                if selected.is_none() && (u_out || s.copy_reserve_bytes > 0) {
+                    selected = Some((k, now));
+                }
+                if u_out {
+                    emitted = Some((k, now));
+                    assert_eq!(s.copy_reserve_bytes, 0, "gönderimde rezerv kalkar");
+                    break;
+                }
+            }
+            let (k_sel, t_sel) = selected.expect("baş seçilmedi");
+            let (k_emit, t_emit) = emitted.expect("baş gönderilmedi");
+            eprintln!(
+                "[DUR-31 sınır] kip={} seçilme çağrısı={k_sel} gönderilme çağrısı={k_emit} \
+                 (seçilmeden {} ms); token yeterliliği çağrısı={first_fit:?}",
+                if variable { "değişken" } else { "sabit" },
+                (t_emit - t_sel) / MS
+            );
+            assert!(
+                k_sel <= u64::from(K_ARQ_SHARE),
+                "(i) seçilme {k_sel}. çağrıda > K_ARQ_SHARE"
+            );
+            if variable {
+                let fit = first_fit.unwrap_or(k_sel);
+                assert!(
+                    k_emit <= fit + 1,
+                    "(ii) değişken hız: baş token yeterliliğinden ({fit}) sonra 1 turdan geç çıktı ({k_emit})"
+                );
+            } else {
+                let bound = U * DUR31_SEC / 1064 + TURN;
+                assert!(
+                    t_emit - t_sel <= bound,
+                    "(ii) sabit hız: gönderilme {} ns > boy/pace_rate + 1 tur = {bound} ns",
+                    t_emit - t_sel
+                );
+            }
+            assert_eq!(
+                data_during_reserve, 0,
+                "rezerv süresince DATA rezervin altına indi"
+            );
+        }
+    }
+
+    /// [K4G-05b DUR-31 · CEVAP 11 tablo (b)] (a) düzeni + eşzamanlı ARQ ve kuyruk-probu trafiği
+    /// (RECOVER_ARQ, üç kayıp birim 300 B, bekleyen prob hedefi 300 B): kopya yine sınır içinde
+    /// (seçilme ≤ K_ARQ_SHARE çağrı, gönderilme ≤ 1050/1064 s + 1 tur); rezerv süresince ARQ, prob ve
+    /// DATA rezervin altına inmez (hiçbiri çıkmaz); gönderimde rezerv 0. Sonraki 50 turun emisyonu
+    /// yalnız raporlanır (DATA seli altında ARQ/prob sırası v1 sınıf sırasıdır, bu testin iddiası değil).
+    #[test]
+    fn k4g05b_dur31_bounds_with_concurrent_arq_and_probe() {
+        const U: u64 = 1050;
+        const TURN: u64 = MS;
+        let mut s = dur31_rig(1064, U, 4000, 37);
+        s.set_tail_recovery_config(tail_cfg_on());
+        for id in 50..53u64 {
+            let seq = s.track_sent_unit(OpaqueUnit { id, size: 300 }, 0, 0, TransmitKind::Data);
+            s.queue_losses(&[seq], 0);
+        }
+        let p_seq = s.track_sent_unit(OpaqueUnit { id: 80, size: 300 }, 0, 0, TransmitKind::Data);
+        s.tail_probe_pending = Some(p_seq);
+        s.state = SenderState::RecoverArq;
+        s.last_decision.arq_aggressiveness_permille = 1000;
+        assert_eq!(s.pending_lost.len(), 3, "kurulum: üç ARQ kaydı");
+        let mut now = 0u64;
+        let mut selected: Option<(u64, u64)> = None;
+        let mut emitted: Option<u64> = None;
+        let mut other_during_reserve = 0u64;
+        let mut after: Vec<(TransmitKind, u64)> = Vec::new();
+        let mut post_turns = 0u32;
+        for k in 1..=3_000u64 {
+            let reserved_before = s.copy_reserve_bytes > 0;
+            let out = dur31_turn(&mut s, &mut now, TURN);
+            let u_out = out
+                .iter()
+                .any(|x| x.kind == TransmitKind::Duplicate && x.unit_id == 4);
+            if emitted.is_some() {
+                after.extend(dur31_kinds(&out));
+                post_turns += 1;
+                if post_turns >= 50 {
+                    break;
+                }
+                continue;
+            }
+            if reserved_before && !u_out {
+                other_during_reserve += out.len() as u64;
+            }
+            if selected.is_none() && (u_out || s.copy_reserve_bytes > 0) {
+                selected = Some((k, now));
+            }
+            if u_out {
+                emitted = Some(now);
+                assert_eq!(s.copy_reserve_bytes, 0, "gönderimde rezerv kalkar");
+            }
+        }
+        let (k_sel, t_sel) = selected.expect("baş seçilmedi");
+        let t_emit = emitted.expect("baş gönderilmedi");
+        eprintln!(
+            "[DUR-31 (b)] seçilme={k_sel}. çağrı; gönderilme seçilmeden {} ms; rezerv sırasında diğer \
+             emisyon={other_during_reserve}; sonraki 50 tur={after:?}",
+            (t_emit - t_sel) / MS
+        );
+        assert!(
+            k_sel <= u64::from(K_ARQ_SHARE),
+            "(i) seçilme {k_sel}. çağrıda"
+        );
+        assert!(
+            t_emit - t_sel <= U * DUR31_SEC / 1064 + TURN,
+            "(ii) gönderilme sınırı aşıldı ({} ns)",
+            t_emit - t_sel
+        );
+        assert_eq!(
+            other_during_reserve, 0,
+            "rezerv süresince ARQ/prob/DATA rezervin altına indi"
+        );
+    }
+
+    /// [K4G-05b DUR-31 · CEVAP 11 tablo (c), DUR-24] Soğuk başlangıç ve token kıtlığı: PRE_CONVERGE'de
+    /// pay ve rezerv YOK (v1 sırası, §3.3-B takvimi): her turda rezerv 0; kopya bir turda çıkarsa
+    /// arkasından DATA gelmez (DATA önce); pay turları (her 4. çağrı) kopyayı DATA'nın önüne almaz.
+    #[test]
+    fn k4g05b_dur31_preconverge_v1_order_no_share_no_reserve() {
+        let mut s = dur31_rig(31, 101, 200, 101);
+        s.state = SenderState::PreConverge;
+        let mut now = 0u64;
+        let mut copies = 0u64;
+        for _ in 0..2_000u64 {
+            let out = dur31_turn(&mut s, &mut now, 10 * MS);
+            assert_eq!(s.copy_reserve_bytes, 0, "PRE_CONVERGE'de rezerv yok");
+            if let Some(ci) = out.iter().position(|x| x.kind == TransmitKind::Duplicate) {
+                copies += 1;
+                assert!(
+                    !out[ci..].iter().any(|x| x.kind == TransmitKind::Data),
+                    "PRE_CONVERGE: kopyanın ardından DATA (v1 sırası DATA önce): {:?}",
+                    dur31_kinds(&out)
+                );
+            }
+        }
+        let data = 200 - s.tx_queue.len() as u64;
+        eprintln!("[DUR-31 (c)] 20 s'de DATA={data} kopya={copies} (31 B/s)");
+        assert!(data > 0, "kurulum: DATA gitmeli");
+    }
+
+    /// [K4G-05b DUR-31 · 11-EK §4 bedel ölçümü — İDDİA DEĞİL, rapor] Düşük hızda (31, 64, 100 B/s)
+    /// rezerv süresince diğer sınıfların beklemesi. Her hız ve sınıf için iki koşu: 1050 B kopya başı
+    /// VAR (rezerv kurulur) ve YOK (karşı-olgu); sınıf ayrı düzenekte: DATA kolu 37 B birikim, ARQ kolu
+    /// tek kayıp kayıt (300 B, RECOVER_ARQ). Yazdırılan: rezerv süresi (seçilme → başın emisyonu) ve
+    /// sınıfın seçilme anından ilk emisyonuna bekleme (kopyalı / kopyasız / fark). 10 ms tur.
+    #[test]
+    fn k4g05b_dur31_reservation_cost_low_rate_report() {
+        const U: u64 = 1050;
+        const TURN: u64 = 10 * MS;
+        const HORIZON_TURNS: u64 = 30_000; // 300 s
+                                           // (sınıf, kopyalı mı) → (seçilme anı, baş anı, sınıfın ilk emisyonu) ns
+        let run = |rate: u64, arq: bool, with_copy: bool| -> (u64, Option<u64>, Option<u64>) {
+            let mut s = dur31_rig(rate, U, if arq { 0 } else { 400 }, 37);
+            if !with_copy {
+                s.dup_queue.clear();
+            }
+            if arq {
+                let seq =
+                    s.track_sent_unit(OpaqueUnit { id: 50, size: 300 }, 0, 0, TransmitKind::Data);
+                s.queue_losses(&[seq], 0);
+                s.state = SenderState::RecoverArq;
+                s.last_decision.arq_aggressiveness_permille = 1000;
+            }
+            let want = if arq {
+                TransmitKind::Retransmit
+            } else {
+                TransmitKind::Data
+            };
+            let mut now = 0u64;
+            // Kopyasız koşuda seçilme anı = ilk pay turu (K_ARQ_SHARE'inci çağrı) — karşılaştırma ekseni.
+            let mut t_sel: Option<u64> = None;
+            let mut t_head: Option<u64> = None;
+            let mut t_first: Option<u64> = None;
+            for k in 1..=HORIZON_TURNS {
+                let out = dur31_turn(&mut s, &mut now, TURN);
+                let u_out = out
+                    .iter()
+                    .any(|x| x.kind == TransmitKind::Duplicate && x.unit_id == 4);
+                if t_sel.is_none()
+                    && ((with_copy && (u_out || s.copy_reserve_bytes > 0))
+                        || (!with_copy && k == u64::from(K_ARQ_SHARE)))
+                {
+                    t_sel = Some(now);
+                }
+                if u_out && t_head.is_none() {
+                    t_head = Some(now);
+                }
+                if t_sel.is_some() && t_first.is_none() && out.iter().any(|x| x.kind == want) {
+                    t_first = Some(now);
+                }
+                if t_first.is_some() && (!with_copy || t_head.is_some()) {
+                    break;
+                }
+            }
+            (t_sel.unwrap_or(0), t_head, t_first)
+        };
+        for rate in [31u64, 64, 100] {
+            for arq in [false, true] {
+                let (sel_c, head_c, first_c) = run(rate, arq, true);
+                let (sel_n, _, first_n) = run(rate, arq, false);
+                let wait_c = first_c.map(|t| t.saturating_sub(sel_c) / MS);
+                let wait_n = first_n.map(|t| t.saturating_sub(sel_n) / MS);
+                eprintln!(
+                    "[DUR-31 bedel] hız={rate} B/s sınıf={} rezerv süresi={:?} ms; bekleme kopyalı={wait_c:?} ms \
+                     kopyasız={wait_n:?} ms fark={:?} ms (None = 300 s içinde yok)",
+                    if arq { "ARQ" } else { "DATA" },
+                    head_c.map(|t| t.saturating_sub(sel_c) / MS),
+                    wait_c.zip(wait_n).map(|(c, n)| c.saturating_sub(n))
+                );
+            }
+        }
+    }
+
+    // [K4G-05b DUR-37 → DUR-31 düzeltmesi] Geçersiz kılınan "pay dışı turda rezerv yalnız DATA'yı
+    // tutar" testi (`k4g05b_dur37_off_share_turn_reservation_holds_only_data`) yeni sözleşmeyle
+    // yeniden yazıldı: `k4g05b_dur31_reservation_binds_all_classes_above_reserve_only`.
 }
