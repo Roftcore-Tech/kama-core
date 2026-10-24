@@ -1849,6 +1849,14 @@ pub struct Sender {
     base_is_startup: bool,
     plateau_reached: bool, // [TUR-7 β1] plato-sinyali (base'ten AYRI: taze-giriş de base=false)
     arq_share_tick: u32,   // [TUR-7 β2] grant-sayacı (K_ARQ_SHARE payı)
+    /// [K4G-05b PAY · sahip kararı CEVAP PAKETİ 10 DUR-24] Kopya kuyruğu payının tur sayacı: her
+    /// `schedule_transmit` çağrısı bir tur; RECOVER_ARQ'nun ARQ payı sayacından BAĞIMSIZ (aynı
+    /// `K_ARQ_SHARE`, yeni sayı yok, ayrı token kovası yok).
+    copy_share_tick: u32,
+    /// [K4G-05b PAY · DUR-31 (b)] Kopya kuyruğu başı için token REZERVASYONU (bayt; 0 = yok): pay
+    /// turunda token bulamayan baş için kurulur; o kopya gönderilene (ya da başsız kalınca) dek DATA
+    /// token ALMAZ. Token üretmez; değer ≤ bir kayıt boyu (güncel başın boyu). ARQ/prob etkilenmez.
+    copy_reserve_bytes: u64,
     /// [TUR-A ölçüm-#1, TEK DEĞİŞKEN] Son plato-değerlendirmesinden bu yana YENİ bw örneği geldi mi.
     /// Plato round'u yalnız yeni örnekte sayılır (pace-tick başına DEĞİL) — saat-sınıfı: event-count →
     /// bw-sample. (Eski: her on_event çağrısı "round" sayılıyordu → 1ms tick'te 3 round = 3ms'de STEADY.)
@@ -2155,6 +2163,8 @@ impl Sender {
             base_is_startup: false,
             plateau_reached: false,
             arq_share_tick: 0,
+            copy_share_tick: 0,
+            copy_reserve_bytes: 0,
             bw_sampled_since_round: false,
             diag_loss_pkt: 0,
             diag_loss_time: 0,
@@ -2504,8 +2514,17 @@ impl Sender {
         } else {
             0
         };
-        let burst_lo = front_size.max(iw);
-        let burst_hi = front_size.max(2 * DEFAULT_MTU).max(iw);
+        // [K4G-05b · engine §13 v1.1 BURST_CAP TUR BAŞI TABANI] PRE_CONVERGE DIŞINDA alt sınır yol
+        // başlarını da kapsar (DATA başı — boşsa DEFAULT_MTU —, ARQ planı başı, bekleyen prob hedefi,
+        // kopya kuyruğu başı): kırpma kurtarma kaydının token'ını silemez; üst sınır en az alt
+        // sınırdır. Token üretilmez, pace_rate değişmez (INV-RATE-1). Başlar ≤ DATA başıyken ifade
+        // v1 ile birebir aynıdır. PRE_CONVERGE'de v1 (7-EK B1, beyanlı istisna).
+        let burst_lo = if self.state == SenderState::PreConverge {
+            front_size.max(iw)
+        } else {
+            self.burst_floor_bytes(now_ns)
+        };
+        let burst_hi = front_size.max(2 * DEFAULT_MTU).max(iw).max(burst_lo);
         self.pacer
             .set_burst_cap(window_bytes.clamp(burst_lo, burst_hi));
         if prev_state == SenderState::PreConverge && self.state != SenderState::PreConverge {
@@ -2759,21 +2778,40 @@ impl Sender {
         //   due gelecekte  → `due_ns`
         //   due geçmiş     → token'ın yeteceği an
         // (Yeni timer YOK: her iki girdi de mevcut authoritative durumdan okunur.)
-        best = earlier(
-            best,
-            self.dup_queue
+        if self.state == SenderState::PreConverge {
+            best = earlier(
+                best,
+                self.dup_queue
+                    .iter()
+                    .filter_map(|r| {
+                        if r.due_ns > self.last_now_ns {
+                            Some(r.due_ns)
+                        } else {
+                            self.pacer
+                                .ns_until_sendable(r.unit.size)
+                                .map(|dt| self.last_now_ns.saturating_add(dt))
+                        }
+                    })
+                    .min(),
+            );
+        } else {
+            // [K4G-05b madde 5 · engine §13 v1.1] PRE_CONVERGE DIŞINDA uyanma, seçimle AYNI başı
+            // kullanır: vadesi gelmiş kayıtlardan yalnız sıra başı gönderilebilir (arkadaki başı
+            // geçemez) → onun token'a yetiştiği an; ayrıca vadesi gelecekte olan en erken kayıt.
+            // Baş BURST_CAP'ten büyükse (taban bir sonraki tur başında yükselir) token birikim anı
+            // kovasız hesaplanır (erken uyanma zararsız; ilerlemesiz uyanış yok).
+            let future_due = self
+                .dup_queue
                 .iter()
-                .filter_map(|r| {
-                    if r.due_ns > self.last_now_ns {
-                        Some(r.due_ns)
-                    } else {
-                        self.pacer
-                            .ns_until_sendable(r.unit.size)
-                            .map(|dt| self.last_now_ns.saturating_add(dt))
-                    }
-                })
-                .min(),
-        );
+                .map(|r| r.due_ns)
+                .filter(|&d| d > self.last_now_ns)
+                .min();
+            let head_ready = self
+                .copy_queue_head(self.last_now_ns, &[])
+                .and_then(|i| self.ns_until_tokens(self.dup_queue[i].unit.size))
+                .map(|dt| self.last_now_ns.saturating_add(dt));
+            best = earlier(best, earlier(future_due, head_ready));
+        }
 
         // 3b. [DR-EST-1] Kuruluş-denemesi vadesi (yalnız PreConverge'de armed; token'sız kol
         // olduğundan stale-busy-loop riski yok — vadesi gelince EMİT EDER ve yeniden kurar).
@@ -2838,15 +2876,33 @@ impl Sender {
         // (`update_state` `pending_lost` boş değilken RecoverArq'a geçer ⇒ `plan_arq_retransmits`
         // aynı turda çalışır; onu bekleten tek şey token'dır). `dup_queue` BİLEREK dışarıda: kendi
         // `due_ns` deadline'ı var (kaynak 3).
+        // [K4G-05b DUR-31] Kopya başı rezervasyonu varken DATA token alamaz: DATA'nın hazır olma
+        // anı uyanma kaynağı değildir (ilerleme kopya başına bağlıdır — kaynak 3).
+        let data_ready = self.copy_reserve_bytes == 0;
         let smallest = self
             .tx_queue
             .iter()
+            .filter(|_| data_ready)
             .map(|u| u.size)
             .chain(self.pending_fec.iter().map(|p| p.size))
             .chain(self.pending_lost.iter().map(|r| r.unit.size))
             .min()?;
         let dt = self.pacer.ns_until_sendable(smallest)?;
         Some(self.last_now_ns.saturating_add(dt))
+    }
+
+    /// `size` bayta token yetişme süresi (ns; SALT OKUMA). Kova `size`'tan küçükse (BURST_CAP tur
+    /// başı tabanı bir sonraki turda yükseltir) birikim kovasız hesaplanır — erken uyanma zararsız;
+    /// hız 0 ise `None` (ilerleme dış olaya bağlı).
+    fn ns_until_tokens(&self, size: u64) -> Option<u64> {
+        self.pacer.ns_until_sendable(size).or_else(|| {
+            let rate = self.pacer.rate();
+            if rate == 0 {
+                return None;
+            }
+            let need = u128::from(size.saturating_sub(self.pacer.tokens())) * 1_000_000_000u128;
+            u64::try_from(need.div_ceil(u128::from(rate))).ok()
+        })
     }
 
     #[cfg(feature = "experimental-cold-start")]
@@ -4496,6 +4552,11 @@ impl Sender {
         // rezervasyonu (OFF'ta-derlenmez; LeftoverOnly'de-no-op → karar-dizisi-baseline-özdeş).
         #[cfg(feature = "experimental-fec-budget")]
         self.budget_reserve(now_ns);
+        // [K4G-05b · engine §13 v1.1 BURST_CAP TUR BAŞI TABANI] Tur başında, ilk kırpmadan önce:
+        // BURST_CAP alt sınırı yol başlarını (DATA, ARQ planı, prob hedefi, kopya kuyruğu başı)
+        // kapsar — yalnız yükseltir (token üretmez, kırpmaz). Tick-yolu (`on_event_core`'suz) da
+        // böylece kapsanır; PRE_CONVERGE'de v1.
+        self.apply_burst_floor(now_ns);
         // [TUR-7 β2] ARQ token-payı: her K_ARQ_SHARE'inci grant'te retx ÖNCE dener (BOŞ-NÖBET
         // biter — retx fiilen wire'a çıkar); diğer grant'ler DATA-önce (ölçülü-karar korunur).
         self.arq_share_tick = self.arq_share_tick.wrapping_add(1);
@@ -4505,6 +4566,10 @@ impl Sender {
         {
             self.plan_arq_retransmits(&mut out, now_ns);
         }
+        // [K4G-05b PAY · DUR-24/31] Kopya kuyruğu payı: kendi sayacı (ARQ payından bağımsız);
+        // aynı turda ARQ payı vadeliyse ARQ önce (yukarıda), sonra kopya başı, sonra DATA.
+        self.copy_share_tick = self.copy_share_tick.wrapping_add(1);
+        self.serve_copy_share(&mut out, now_ns);
         self.drain_new_data(&mut out, now_ns);
         match self.state {
             SenderState::RecoverArq => self.plan_arq_retransmits(&mut out, now_ns),
@@ -4975,6 +5040,18 @@ impl Sender {
             d.latest_kind = Some(kind);
         }
         d
+    }
+
+    /// [K4G-05b · sahip kararı CEVAP PAKETİ 10 DUR-23 (a)] SALT OKUMA: kopya kuyruğunda (tek seferlik
+    /// ya da geometrik) kaydı olan birim kimlikleri, sıralı ve tekil. D1/D2 testlerinin "uygunluk"
+    /// ölçümü (kopya kuyruğu sahipliği) içindir; `&self`, motor durumu değişmez, hiçbir karar bu
+    /// çıktıyı okumaz. Ayırma kuyruk boyuyla sınırlıdır.
+    #[must_use]
+    pub fn diag_dup_queue_units(&self) -> Vec<u64> {
+        let mut v: Vec<u64> = self.dup_queue.iter().map(|d| d.unit.id).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
     }
 
     /// [FAZ-2 KALEM-2] §8.5 bant-türevli bütçe clamp'inin parity oranını KÜÇÜLTTÜĞÜ karar sayısı.
@@ -6720,18 +6797,40 @@ impl Sender {
     }
 
     fn drain_due_duplicates(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
-        let mut i = 0;
-        while i < self.dup_queue.len() {
-            // [K4G-05b madde 2] Savunma: teyitli birimin kopya kaydı gönderilmez (teyitte silinir;
-            // buraya ulaşırsa planlanmadan düşer).
-            if self.unit_is_confirmed(UnitId(self.dup_queue[i].unit.id)) {
-                self.dup_queue.remove(i);
-                continue;
+        if self.state == SenderState::PreConverge {
+            // PRE_CONVERGE: §3.3-B sırası ve takvimi DEĞİŞMEZ (v1 — kuyruk sırası, ilk token
+            // reddinde dur; engine §13 v1.1 kaydı).
+            let mut i = 0;
+            while i < self.dup_queue.len() {
+                // [K4G-05b madde 2] Savunma: teyitli birimin kopya kaydı gönderilmez (teyitte
+                // silinir; buraya ulaşırsa planlanmadan düşer).
+                if self.unit_is_confirmed(UnitId(self.dup_queue[i].unit.id)) {
+                    self.dup_queue.remove(i);
+                    continue;
+                }
+                if self.dup_queue[i].due_ns > now_ns {
+                    i += 1;
+                    continue; // henüz vadesi gelmedi.
+                }
+                #[cfg(feature = "diag-sched-telemetry")]
+                {
+                    self.sched_diag.dup_selected += 1;
+                }
+                if !self.try_send_pre_parity(self.dup_queue[i].unit.size, true) {
+                    #[cfg(feature = "diag-sched-telemetry")]
+                    {
+                        self.sched_diag.dup_token_denied += 1;
+                    }
+                    break; // token yok.
+                }
+                self.emit_copy_at(i, out, now_ns);
             }
-            if self.dup_queue[i].due_ns > now_ns {
-                i += 1;
-                continue; // henüz vadesi gelmedi.
-            }
+            return;
+        }
+        // [K4G-05b madde 5 · engine §13 v1.1 KOPYA KUYRUĞU İÇİ SIRA] PRE_CONVERGE DIŞINDA: sıra başı
+        // (en küçük birim kimliği; bu turda gönderilmiş birim atlanır) gönderilir; token yetmezse
+        // tur DURUR — arkadaki kayıt başı GEÇEMEZ, istisnasız.
+        while let Some(i) = self.next_copy_head(now_ns, out) {
             #[cfg(feature = "diag-sched-telemetry")]
             {
                 self.sched_diag.dup_selected += 1;
@@ -6741,35 +6840,171 @@ impl Sender {
                 {
                     self.sched_diag.dup_token_denied += 1;
                 }
-                break; // token yok.
+                break; // token yok → baş bekler (HOL).
             }
+            self.emit_copy_at(i, out, now_ns);
+        }
+    }
+
+    /// Kopya kaydı `i`'yi tele çıkar (token çağıranda alınmıştır): `Duplicate` kaydı + karar;
+    /// geometrik kayıt kendini yeniden kurar (×2; PRE_CONVERGE dışında ≤ RTO_MAX), tek seferlik
+    /// kayıt bekleyen sayaçtan düşer. [K4G-05b DUR-31] PRE_CONVERGE dışında her kopya emisyonu o
+    /// anın sıra başıdır → başın rezervasyonu kalkar.
+    fn emit_copy_at(&mut self, i: usize, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+        #[cfg(feature = "diag-sched-telemetry")]
+        {
+            self.sched_diag.dup_wire_emitted += 1;
+        }
+        let dup = self.dup_queue.remove(i);
+        let seq = self.track_sent_unit(dup.unit, now_ns, 0, TransmitKind::Duplicate);
+        out.push(TransmitDecision {
+            kind: TransmitKind::Duplicate,
+            seq,
+            unit_id: dup.unit.id,
+            size: dup.unit.size,
+            send_record: None,
+        });
+        // §3.3-B geometrik reschedule: interval_ns>0 → sonraki kopya ×COPY_MULTIPLIER (sayı-
+        // tavanı YOK; teyit gelince §3.3-B stop ile iptal). [K4G-05b madde 3/5] Tek kalıcı
+        // geometrik sahip PRE_CONVERGE dışında da kendini yeniden kurar; aralık orada RTO_MAX
+        // tavanlıdır (PRE_CONVERGE'de takvim v1). Tek seferlik kayıt bekleyen sayaçtan düşer.
+        if dup.interval_ns > 0 {
+            let next_interval = self.copy_next_interval_ns(dup.interval_ns);
+            self.dup_queue.push(DupRec {
+                due_ns: now_ns.saturating_add(next_interval),
+                unit: dup.unit,
+                interval_ns: next_interval,
+            });
+        } else {
+            self.own_fire_once_done(UnitId(dup.unit.id));
+        }
+        if self.state != SenderState::PreConverge {
+            self.copy_reserve_bytes = 0;
+        }
+    }
+
+    /// Bu turda (bu `schedule_transmit` çağrısında) tele çıkmış birimler — her sınıftan (DATA, ARQ,
+    /// kuyruk-probu, kopya); sıralı, tekil. Parite (ESI taşır) ve kuruluş probu birim değildir.
+    fn turn_units(out: &[TransmitDecision]) -> Vec<u64> {
+        let mut v: Vec<u64> = out
+            .iter()
+            .filter(|d| {
+                matches!(
+                    d.kind,
+                    TransmitKind::Data | TransmitKind::Retransmit | TransmitKind::Duplicate
+                )
+            })
+            .map(|d| d.unit_id)
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
+    /// [K4G-05b madde 5 · engine §13 v1.1] KOPYA KUYRUĞU BAŞI (PRE_CONVERGE DIŞINDA; salt okuma):
+    /// vadesi gelmiş kayıtlardan EN ESKİ onaysız birimin kaydı — ölçüt en küçük birim kimliği (ürün
+    /// yolunda kimlik oturum içi gönderim sırasıdır), eşitlikte erken vade, sonra kuyruk sırası.
+    /// `sent` (bu turda gönderilmiş birimler, sıralı) atlanır: bir birim bir turda en çok bir kez.
+    /// Seçim, BURST_CAP tabanı ve bir sonraki uyanma aynı başı kullanır.
+    fn copy_queue_head(&self, now_ns: u64, sent: &[u64]) -> Option<usize> {
+        self.dup_queue
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d.due_ns <= now_ns && sent.binary_search(&d.unit.id).is_err())
+            .min_by_key(|&(i, d)| (d.unit.id, d.due_ns, i))
+            .map(|(i, _)| i)
+    }
+
+    /// Tur içi sıra başı: `copy_queue_head` + savunma (teyitli birimin kaydı başa gelirse düşer —
+    /// teyitte silinir; madde 2).
+    fn next_copy_head(&mut self, now_ns: u64, out: &[TransmitDecision]) -> Option<usize> {
+        let sent = Self::turn_units(out);
+        loop {
+            let i = self.copy_queue_head(now_ns, &sent)?;
+            if self.unit_is_confirmed(UnitId(self.dup_queue[i].unit.id)) {
+                self.dup_queue.remove(i);
+                continue;
+            }
+            return Some(i);
+        }
+    }
+
+    /// [K4G-05b PAY · engine §13 v1.1 İSTİSNA · CEVAP PAKETİ 10 DUR-24/31] Sınıflar arası sıranın TEK
+    /// istisnası (PRE_CONVERGE DIŞINDA, her durumda): vadesi gelmiş kopya kuyruğu başı en geç her
+    /// `K_ARQ_SHARE`'inci turda DATA'dan ÖNCE hizmet alır. Token yetmezse REZERVASYON kurulur: o
+    /// kopya gönderilene (ya da kuyrukta vadeli baş kalmayana) dek DATA token ALMAZ; rezervasyon
+    /// sürerken baş her turda DATA'dan önce denenir. Token üretilmez, ARQ/prob etkilenmez, gecikme
+    /// sözü verilmez. PRE_CONVERGE'de v1 sırası (pay ve rezervasyon yok).
+    fn serve_copy_share(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+        if self.state == SenderState::PreConverge {
+            self.copy_reserve_bytes = 0;
+            return;
+        }
+        let share_turn = self.copy_share_tick.is_multiple_of(K_ARQ_SHARE);
+        if !share_turn && self.copy_reserve_bytes == 0 {
+            return;
+        }
+        let Some(i) = self.next_copy_head(now_ns, out) else {
+            self.copy_reserve_bytes = 0; // baş yok → rezervasyon kalkar
+            return;
+        };
+        let size = self.dup_queue[i].unit.size;
+        #[cfg(feature = "diag-sched-telemetry")]
+        {
+            self.sched_diag.dup_selected += 1;
+        }
+        if self.try_send_pre_parity(size, true) {
+            self.emit_copy_at(i, out, now_ns);
+        } else {
             #[cfg(feature = "diag-sched-telemetry")]
             {
-                self.sched_diag.dup_wire_emitted += 1;
+                self.sched_diag.dup_token_denied += 1;
             }
-            let dup = self.dup_queue.remove(i);
-            let seq = self.track_sent_unit(dup.unit, now_ns, 0, TransmitKind::Duplicate);
-            out.push(TransmitDecision {
-                kind: TransmitKind::Duplicate,
-                seq,
-                unit_id: dup.unit.id,
-                size: dup.unit.size,
-                send_record: None,
-            });
-            // §3.3-B geometrik reschedule: interval_ns>0 → sonraki kopya ×COPY_MULTIPLIER (sayı-
-            // tavanı YOK; teyit gelince §3.3-B stop ile iptal). [K4G-05b madde 3/5] Tek kalıcı
-            // geometrik sahip PRE_CONVERGE dışında da kendini yeniden kurar; aralık orada RTO_MAX
-            // tavanlıdır (PRE_CONVERGE'de takvim v1). Tek seferlik kayıt bekleyen sayaçtan düşer.
-            if dup.interval_ns > 0 {
-                let next_interval = self.copy_next_interval_ns(dup.interval_ns);
-                self.dup_queue.push(DupRec {
-                    due_ns: now_ns.saturating_add(next_interval),
-                    unit: dup.unit,
-                    interval_ns: next_interval,
-                });
-            } else {
-                self.own_fire_once_done(UnitId(dup.unit.id));
-            }
+            // Rezerv = güncel başın boyu (≤ bir kayıt boyu); token birikir, DATA alamaz.
+            self.copy_reserve_bytes = size;
+        }
+    }
+
+    /// [K4G-05b · engine §13 v1.1 BURST_CAP TUR BAŞI TABANI] PRE_CONVERGE DIŞINDA taban =
+    /// max(kuyruk başındaki DATA biriminin boyu — kuyruk boşsa `DEFAULT_MTU`, v1 —, ARQ planının
+    /// ilk kaydı, bekleyen kuyruk-probu hedefi, kopya kuyruğu başı). Aynı turda oluşan kayıt
+    /// sonraki turun tabanına girer (beyanlı).
+    fn burst_floor_bytes(&self, now_ns: u64) -> u64 {
+        let front = self.tx_queue.front().map_or(DEFAULT_MTU, |u| u.size);
+        let arq = self.arq_plan_head_size().unwrap_or(0);
+        let probe = self
+            .tail_probe_pending
+            .and_then(|s| self.inflight.get(&s))
+            .map_or(0, |p| p.unit.size);
+        let copy = self
+            .copy_queue_head(now_ns, &[])
+            .map_or(0, |i| self.dup_queue[i].unit.size);
+        front.max(arq).max(probe).max(copy)
+    }
+
+    /// ARQ planının ilk Retransmit kaydının boyu (salt okuma; `DeadlineArqScheduler::plan` ile aynı
+    /// seçim: saldırganlık 0 ise plan boş; vade sırası, kararlı; tavanı aşan kayıt yayınlanmaz).
+    fn arq_plan_head_size(&self) -> Option<u64> {
+        if self.last_decision.arq_aggressiveness_permille == 0 {
+            return None;
+        }
+        let cap = self.arq.config().arq_retx_cap;
+        self.pending_lost
+            .iter()
+            .filter(|r| r.retx_count < cap)
+            .min_by_key(|r| r.deadline_ns)
+            .map(|r| r.unit.size)
+    }
+
+    /// Tur başı tabanı uygula: BURST_CAP tabanın altındaysa YALNIZ yükselt (token üretilmez,
+    /// kırpılmaz; birikime izin). PRE_CONVERGE'de v1 tabanı (`on_event_core`).
+    fn apply_burst_floor(&mut self, now_ns: u64) {
+        if self.state == SenderState::PreConverge {
+            return;
+        }
+        let floor = self.burst_floor_bytes(now_ns);
+        if self.pacer.burst_cap() < floor {
+            self.pacer.set_burst_cap(floor);
         }
     }
 
@@ -6782,7 +7017,9 @@ impl Sender {
             {
                 self.sched_diag.data_selected += 1;
             }
-            if !self.try_send_pre_parity(front.size, false) {
+            // [K4G-05b PAY · DUR-31 (b)] Kopya kuyruğu başı için rezervasyon varken DATA token ALMAZ
+            // (o kopya gönderilene ya da vadeli baş kalmayana dek; token birikir, üretilmez).
+            if self.copy_reserve_bytes > 0 || !self.try_send_pre_parity(front.size, false) {
                 #[cfg(feature = "diag-sched-telemetry")]
                 {
                     self.sched_diag.data_token_denied += 1;
