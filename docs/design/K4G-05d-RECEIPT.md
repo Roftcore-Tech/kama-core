@@ -7,7 +7,8 @@
 - **Girdiler:** orkestratör mekanizma taslağı v2 (`k4g05d/rev3/MEKANIZMA-TASLAK.md`), çürütme turu (`curutme-wf_79d4be78.json`), olgu dosyası (`k4g05d/rev3/OLGULAR.md`).
 - **Atıflar:**
   - Önek yoksa main `1b1425d2`.
-  - `05d:` öneki dal `6619ad6b`'dir; yalnız daldaki 05d koduna verilir.
+  - `05d::n` = dal `6619ad6b`'deki `crates/kama-app/src/messaging.rs` satırı; yalnız daldaki 05d koduna verilir.
+  - Kısaltma: `messaging.rs`, `file_transfer.rs`, `ptt.rs`, `signaling.rs`, `store.rs` = `crates/kama-app/src/`; `runtime.rs` = `crates/client-core/src/`.
   - Dalın tabanı `2a0e2133` ile main arasında #135 ve #136 var: client-core `runtime.rs` / `transport.rs`, kama-node (`node.rs`, `lib.rs`, `probe.rs`, `carrier.rs`), adaptive-transport ve kama-integration değişti. Bu yüzden client-core ve kama-node atıfları yalnız main'e geçerlidir.
   - kama-app, kama-contracts, kama-store, kama-mobile ve AMP spec iki ağaçta aynıdır (`git diff 2a0e2133 1b1425d2` boş). Öneksiz kama-app atıfı tabana da geçerlidir.
   - Olgu dosyasının "yalnız iki dosya ayrışır" cümlesi bu nedenle yanlıştı.
@@ -25,7 +26,7 @@
 ### M1 — Kuyruk: düşürme yok, taşınır, pencereyle sınırlı
 
 1. **Durum.** Eş başına `(eş, msg_id)` tekil yükümlülük kümesi. Bit haritası dedup penceresiyle hizalıdır (`messaging.rs:1161-1168`; 4096 bit = 512 B/eş, 64 eşte 32 KiB). Sunum sırası `msg_id` sırasıdır.
-   - Taşmada en eskiyi atma yolu kalkar: `05d:messaging.rs:1210-1213`, `receipts_evicted`.
+   - Taşmada en eskiyi atma yolu kalkar: `05d::1210-1213`, `receipts_evicted`.
 2. **Taşıma.**
    - `adopt` ve `retire` kuyruğu boşaltmaz (bugünkü boşaltma: `05d::783`, `05d::803`).
    - `owe_receipt` oturum yokken de kuyruğa alır (bugün bırakıyor: `05d::1184-1189`).
@@ -70,7 +71,8 @@
 
 - ACK sunucu soketinden gider, offer kanalından geçmez (`client-core/src/runtime.rs:3601-3605`).
 - S1 olayları birimlerden önce okunur (`messaging.rs:655-658`).
-- PoC'de heartbeat yok; testler ACK'i ve S1 olaylarını ölçer.
+- PoC'de heartbeat yok (`kama-node/src/event.rs:203`, `kama-node/src/lib.rs:66`; D18).
+- Testler S1 olaylarını ölçer. `Link`'te ACK yolu yoktur; ACK yarısı INT-02'nin işidir (Ek B (a)).
 
 ## 3. Bekleme grafiği
 
@@ -91,7 +93,7 @@
 
 ## 5. Testler (ayrıntı Ek B)
 
-- **(a)** İki yön: iki uçta dosya + TEXT yeniden sunumu + PTT, 256 TEXT karşılıklı. Geçiş sonrası oturumda bütün RECEIPT'ler kabul; kayıp 0, kilit yok; ACK ve S1 olayları çalıştı.
+- **(a)** İki yön: iki uçta dosya + TEXT yeniden sunumu + PTT, 256 TEXT karşılıklı. Geçiş sonrası oturumda bütün RECEIPT'ler kabul; kayıp 0, kilit yok; S1 olayları her turda okundu (ACK: INT-02).
 - **(b)** 300 TEXT tek yön.
   - **(b1)** Pencere içinde > 256 yükümlülük → silme yok.
   - **(b2)** Pencere ihlali → yalnız pencere altı sayılarak budanır.
@@ -119,7 +121,7 @@ M1 ile bu oturumdaki kuyruk `Closed`'a dek bekler, kapı o eşe `NotConnected` y
 - D4 ve pencere ihlali (DUR-05d-6).
 - Adalet sözü yok; PTT demeti kuyruk boşalana dek `Backpressure` alır, medya yeniden verir.
 - `Messenger::transport_mut()` pub kalır (`messaging.rs:425`); yapısal baypastır.
-- Kapı retleri `gated_by_receipts`'ten başka motorların kendi geçici ret sayaçlarına da girer: dosya `offers_refused` (`file_transfer.rs:593-595`), sinyalleşme `resend_refused` (`signaling.rs:323-325`). `MEDIA_BUNDLE` reddi çağırana döner; INT-02'de `push_retries`'e girer (`kama-integration/examples/int02_node.rs:1203-1206`). Messenger'ın `resend_refused`'ına yazılmaz; `int02_loopback.rs:177` savı ve `app_retransmit` (`int02_node.rs:2497-2500`) değişmez.
+- Kapı retleri motorların kendi geçici ret sayaçlarına da girer: dosya `offers_refused` (`file_transfer.rs:593-595`), sinyalleşme `resend_refused` (`signaling.rs:323-325`), `MEDIA_BUNDLE` için INT-02 `push_retries` (`kama-integration/examples/int02_node.rs:1203-1206`). Messenger'ın `resend_refused`'ına girmez; `kama-integration/tests/int02_loopback.rs:177` savı ve `app_retransmit` (`int02_node.rs:2497-2500`) değişmez.
 - kama-node ve kama-mobile'daki "Transport reddetti" ve "`RECEIPT(delivered)` gitti" cümleleri bayatlar (`kama-mobile/src/error.rs:340`, :402; `kama-node/src/event.rs:49`) → K4G-16.
 
 ## 8. DUR
@@ -150,7 +152,7 @@ M1 ile bu oturumdaki kuyruk `Closed`'a dek bekler, kapı o eşe `NotConnected` y
 
 Kod aşamasında, kodla aynı PR'da uygulanır. Biçim: ~~eski, birebir~~ → "yeni".
 - A.1 atıfları main `1b1425d2`'dir; AMP spec tabanda da aynıdır.
-- A.2 atıfları `05d:` (dal `6619ad6b`) numarasıdır; eski metin rev2 kodunun belgesidir.
+- A.2 atıfları `05d::n` (dal `6619ad6b`) numarasıdır; eski metin rev2 kodunun belgesidir.
 - `file_transfer.rs`, `signaling.rs` ve `ptt.rs` 05d'de değişmedi; numaraları main ile aynıdır.
 - rev2 Ek A'nın yerine geçer. rev2 Ek A'nın uygulanmış cümleleri aşağıda "eski" olarak durur.
 
