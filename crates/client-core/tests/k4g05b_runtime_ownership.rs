@@ -63,6 +63,9 @@ const TTL_LOWER_BOUND: Duration = Duration::from_millis(8 * 3 * 65_000 / (2 * 31
 /// TTL bekleme tavanı: alt sınırın birkaç katı (T_loss'un hız terimi loopback'te küçüktür).
 const TTL_WAIT: Duration = Duration::from_secs(120);
 /// Tahliye bekleme tavanı (tahliye TTL alt sınırından önce olmalıdır; pay ön koşul denetimindedir).
+/// Tahliye kolunda geç ACK öncesi trafik boşaltmasının da bütçesidir: tahliye edilen kayıtların
+/// geç ACK'i teyit etmez, birimler ek bir yeniden gönderim turuyla teyit edilir (11-EK §4'ün
+/// beklenen bedeli; ölçüm: 10 s'de 1/2 koşu kırmızı, 300 s bütçede adım 6,2 s sürdü).
 const CAP_WAIT: Duration = Duration::from_secs(60);
 /// Motorun tombstone tavanı (`sender.rs` TOMBSTONE_MAX = 4096, v1; 05b değiştirmedi).
 const TOMBSTONE_CAP: u32 = 4096;
@@ -660,14 +663,25 @@ impl Rig {
     }
 
     /// Faz A (geç ACK) + faz B (yeniden gönderim): beş iddia. Ağda tutulan İLK ACK (hedefin PN'ini
-    /// ilk bildiren datagram) istemciye şimdi verilir.
-    async fn late_ack_keeps_payload_then_resend_confirms(mut self, t: u64, path: &str) {
+    /// ilk bildiren datagram) istemciye şimdi verilir. `drain_budget`: geç ACK öncesi trafik
+    /// boşaltmasının yol başına bütçesi (yalnız bütçe; iddialar yoldan bağımsız).
+    async fn late_ack_keeps_payload_then_resend_confirms(
+        mut self,
+        t: u64,
+        path: &str,
+        drain_budget: Duration,
+    ) {
+        let drain_started = Instant::now();
         self.wait(
             "trafik teyit edilmeli (yalnız hedef teyitsiz)",
-            WAIT,
+            drain_budget,
             |r| r.client.outstanding() == 1,
         )
         .await;
+        eprintln!(
+            "[{path}] geç ACK öncesi trafik boşaltması: {:?} (bütçe {drain_budget:?})",
+            drain_started.elapsed()
+        );
         let late = self
             .net
             .with(|s| {
@@ -787,7 +801,7 @@ async fn late_ack_after_ttl_keeps_payload() {
         "ön koşul: kayıt TTL alt sınırından ({TTL_LOWER_BOUND:?}) önce düştü ({gone:?}) — yol \
          TTL değil (birim başına kayıt budaması ya da tahliye?)"
     );
-    rig.late_ack_keeps_payload_then_resend_confirms(t, "ttl")
+    rig.late_ack_keeps_payload_then_resend_confirms(t, "ttl", WAIT)
         .await;
 }
 
@@ -841,7 +855,7 @@ async fn late_ack_after_cap_keeps_payload() {
     while rig.next_unit < end {
         rig.send().await;
     }
-    rig.late_ack_keeps_payload_then_resend_confirms(t, "cap")
+    rig.late_ack_keeps_payload_then_resend_confirms(t, "cap", CAP_WAIT)
         .await;
 }
 
@@ -915,7 +929,7 @@ async fn late_ack_after_dup_loss_keeps_payload() {
             "ön koşul: kopyayı bildiren ACK ağda tutuldu"
         );
     });
-    rig.late_ack_keeps_payload_then_resend_confirms(t, "dup_loss")
+    rig.late_ack_keeps_payload_then_resend_confirms(t, "dup_loss", WAIT)
         .await;
 }
 
