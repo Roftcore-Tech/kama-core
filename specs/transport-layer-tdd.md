@@ -923,8 +923,8 @@ default path_mtu_target = 1200B (fragmentation kaçınımı); probe 576/768B; lo
 > **Kayıt sınırı ve geç-ACK tanıma (NORMATİF, CEVAP PAKETİ 9, 2026-10-24, DUR-20; CEVAP PAKETİ 11, 2026-10-24, DUR-28
 > ve DUR-30; CEVAP PAKETİ 11-EK, 2026-10-24, §3–§4):** K_MAP = 8, birim başına iletim eşlemesi ve zamanlama kaydı
 > (sender uçuş/tombstone tablosu ve kayıp dedektörü haritası) için bir ADET sınırıdır; süre garantisi DEĞİLDİR.
-> Budama (sınır aşılırken birimin EN ESKİ kaydı ilan edilmeden düşer, uçuş muhasebesinden çıkar) K4G-05c'de,
-> runtime'ın birim başına O(1) kaydıyla aynı değişiklikte açılır; K4G-05b'de `K_MAP` ve teyit çıktısı tanımlıdır,
+> Budama — hangi kaydın seçileceği ve uçuş muhasebesi dahil — K4G-05c'de tanımlanır ve runtime'ın birim başına
+> O(1) kaydıyla aynı değişiklikte açılır; K4G-05b'de `K_MAP` ve teyit çıktısı tanımlıdır,
 > budama KAPALIDIR. Geç ACK, seq'i birimin son K_MAP iletimi arasındaysa tanınır — o kayıt TTL/tahliyeyle daha önce
 > silinmemişse; tanıma garantisi bütün silme yollarıyla birlikte tanımlıdır (kayıp ilan edilmiş kayıt için tombstone
 > TTL'i (K_TOMB × T_loss) ve tombstone tavanı v1 aynen; K_MAP budaması K4G-05c). Tanınmayan geç ACK veri kaybı
