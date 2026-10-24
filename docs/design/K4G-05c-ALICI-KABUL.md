@@ -274,3 +274,18 @@ Belge ve mekanik:
 
 ---
 
+## Ek E — geri çekilenler (tarihçe; MUST NOT IMPLEMENT)
+
+Aşağıdaki maddeler önceki revizyonlarda ya da kararlarda yer aldı ve geri çekildi. Uygulanmaz; metin iz için korunur.
+
+- ~~DUR-05c-12 (CEVAP 10): "parçalı mesajda protokol ihlali: ACK + düşür + `frag_chunk_dropped`"~~ — CEVAP 11 ile geri çekildi.
+- ~~DUR-05c-12 (CEVAP 11): "geçersiz girdi → ACK YOK + `FragmentInvalid{peer, msg_id, neden}` olayı"~~ — CEVAP 11-EK §2 ile geri çekildi (sonsuz yeniden gönderim ve baş-blokajı).
+- ~~CEVAP 11-EK §2: "aynı mesaj ikinci kez reddedilirse gönderende kalıcı `Failed`"~~ — CEVAP 13 §2 ile geri çekildi (gönderen ret sayısını gözleyemez).
+- ~~rev2 §3: "parçalı mesaj: MsgAsm'de yer yoksa Refuse, tahliye kalkar"; D.5 "Parçalı: runtime birim testi (`MSG_ASM_CAP`)"~~ — S1-dışı yoldur; DUR-05c-12 A'da yer almaz (yalnız C seçilirse).
+- ~~rev2 §3: "runtime payload'u ve `unit_acked!`'i yalnız `take_confirmed_units` ile siler" (05c işi olarak)~~ — CEVAP 13 §3: bu uyarlama 05b'dedir (05b-int `drain_confirmed!`).
+- ~~rev2 DUR-23 (b) tasarımı: `#[cfg(any(test, feature = "test-util"))] ClientHandle::unit_records_for_test()`~~ — 05b'nin `SenderRecoveryDiag::{seq_to_unit_len, unit_seqs_len}` alanlarıyla karşılandı.
+- ~~rev2 DUR-05c-13: "05c tabanında yeşilse nota 'yanlışlandı (05c tabanında)'"~~ — CEVAP 11: "05b (`confirmed_units`) ile giderildi".
+- ~~rev2 DUR-05c-1 (a): "`seen_count` sapması beyanla kalır, engine §2:216 değişmez"~~ — CEVAP 10: (a′), spec yaması A.5.
+- ~~rev1 kart metni: "pay = kopya işi sınırı (3) × …"~~ — CEVAP 10 DUR-05c-2 (a): pay = 0.
+- ~~CEVAP 11-EK §5: "kol 2 geçerse sınır kalkar"~~ — CEVAP 13 §7: tek başarılı koşu sınırı kaldırmaz.
+- ~~rev2 §6: "INT-02 kolu C9 §5 metniyle (50 TEXT)"~~ — CEVAP 10 DUR-05c-3: eşzamanlı dosya ≥ 1 025 birim.
