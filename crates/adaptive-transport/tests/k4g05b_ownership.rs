@@ -16,6 +16,7 @@ use adaptive_transport::sender::{
     FecActuationMode, Sender, SenderState, TransmitDecision, TransmitKind,
 };
 use k4g05b_support::*;
+use std::time::Duration;
 
 fn assert_fixture(test: &str, fixture: &[String]) {
     assert!(
@@ -70,9 +71,11 @@ fn note_exhaust(
 }
 
 /// P0 D1 fikstürü (C9 §2 rev4 D1): RTT önce kurulur; kurbanlar son ısınma ACK'inin işlendiği tikte
-/// (taze ACK, uçuş boş, PreConverge dışı) en yüksek seq'lerle girer; kurbanların BÜTÜN iletimleri
-/// ileri yolda düşer; başka trafik ve yeni uygulama verisi yoktur; gerçek alıcı sessiz dönemde
-/// ≈ 8.39 s'de bir bayat SACK tekrarlar (receiver.rs:93-94). Pompa 10 ms (P0 gerekçesi).
+/// (taze ACK, uçuş boş, PreConverge dışı) en yüksek seq'lerle girer (ilk iletimleri ORİJİNAL
+/// Data: ilk kurban o tikte, sonrakiler token'a bağlı olarak taban PTO dolmadan); kurbanların
+/// BÜTÜN iletimleri ileri yolda düşer; başka trafik ve yeni uygulama verisi yoktur; gerçek alıcı
+/// sessiz dönemde ≈ 8.39 s'de bir bayat SACK tekrarlar (receiver.rs:93-94). Pompa 10 ms (P0
+/// gerekçesi).
 fn d1_run(sender: Sender, victims: &[u64]) -> D1Run {
     let mut sim = Sim::new(
         sender,
@@ -112,15 +115,6 @@ fn d1_run(sender: Sender, victims: &[u64]) -> D1Run {
     if sim.s.path_timing_snapshot().srtt_ns.is_none() {
         fixture.push("kurban girerken srtt yok (RTT önce kurulmalı)".to_string());
     }
-    for &v in victims {
-        let first = sim.unit_tx(v).first().copied();
-        if !first.is_some_and(|e| e.t == t0 && e.d.kind == TransmitKind::Data) {
-            fixture.push(format!(
-                "kurban u{v} taze ACK tikinde (t={} ms) Data olarak gönderilmedi",
-                t0 / MS
-            ));
-        }
-    }
     let base_pto_ns = sim.s.diag_recovery_timers().base_pto_ns;
     let end = t0 + D1_HORIZON;
     let mut t_exhaust: Option<u64> = None;
@@ -130,6 +124,29 @@ fn d1_run(sender: Sender, victims: &[u64]) -> D1Run {
         note_exhaust(&sim, victims, &mut t_exhaust, &mut exhaust_owner);
         sim.timers();
         note_exhaust(&sim, victims, &mut t_exhaust, &mut exhaust_owner);
+    }
+    // Kurbanların İLK iletimi ORİJİNAL Data olmalı: ilk kurban taze ACK tikinde (t0), sonrakiler
+    // hiçbir kurtarma zamanlayıcısı ateşlenmeden (t0 + taban PTO'dan önce) — iki birim aynı turda
+    // token'a sığmayabilir (kol 4: ikinci kurban girişten birkaç tik sonra çıkar). Ufuk boyunca
+    // sürüldükten sonra denetlenir (token'a bağlı ilk iletim girişten sonraki tiklerde olabilir).
+    for (i, &v) in victims.iter().enumerate() {
+        let first = sim.unit_tx(v).first().copied();
+        let in_window = |t: u64| {
+            if i == 0 {
+                t == t0
+            } else {
+                (t0..t0.saturating_add(base_pto_ns)).contains(&t)
+            }
+        };
+        if !first.is_some_and(|e| e.d.kind == TransmitKind::Data && in_window(e.t)) {
+            fixture.push(format!(
+                "kurban u{v}'in ilk iletimi ORİJİNAL Data değil ya da penceresi dışında \
+                 (t0={} ms, taban PTO={} ms; ilk iletim={:?})",
+                t0 / MS,
+                base_pto_ns / MS,
+                first.map(|e| (e.t / MS, e.d.kind))
+            ));
+        }
     }
     let first_victim_seq = victims.iter().filter_map(|&v| data_seq(&sim.log, v)).min();
     if let (Some(vs), Some(ma)) = (first_victim_seq, sim.max_acked) {
@@ -997,27 +1014,58 @@ fn k4g05b_b2_insertion_bound() {
 // H — sahipsizlik süresinin çapası
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
+/// `h_run` dönüşü: kurbanın ilk kopya kuyruğu anı (girişten), vadesi geçmiş olaylar, fikstür.
+struct HRun {
+    adopted: Option<u64>,
+    overdue: Vec<(u64, u64)>,
+    fixture: Vec<String>,
+}
+
 /// H sahiplenmesi için tek kurban + isteğe bağlı bayat ACK'ler / ilerleme ACK'i (prob kapalı).
-/// Dönüş: kurbanın ilk kopya kuyruğu anı.
-fn h_run(stale_every: Option<u64>, progress_at: Option<u64>) -> (Option<u64>, Vec<(u64, u64)>) {
+///
+/// İlerleme kolunda W, ısınmayla birlikte t=0'da çıkan beşinci birimdir: seq'i kurbanınkinden
+/// KÜÇÜKTÜR, bu yüzden W'nin ACK'i kurbanı kayıp eşiğine sokmaz (sahiplenme ARQ'ya kaymaz; ölçülen
+/// yalnız çapadır). W girişten `progress_at` sonra İLK kez ACK'lenir — gerçek ilerleme (canlı kaydın
+/// ilk onayı); `ack_delay` alıcının tutma süresini (`progress_at`) taşır → örnek ısınma RTT'sine
+/// eşittir, srtt ve dolayısıyla H değişmez.
+fn h_run(stale_every: Option<u64>, progress_at: Option<u64>) -> HRun {
     const UNIT: u64 = 300;
     const STEP: u64 = 10 * MS;
+    const VICTIM: u64 = 4;
+    const W: u64 = 5;
     let mut d = Drv::new(product_sender_probe_off());
+    let mut fixture: Vec<String> = Vec::new();
     for id in 0..4 {
         d.app(id, UNIT);
+    }
+    if progress_at.is_some() {
+        d.app(W, UNIT);
+    }
+    let w_seq = progress_at.and_then(|_| d.data_seq(W));
+    if progress_at.is_some() && w_seq.is_none() {
+        fixture.push("W ısınmayla birlikte t=0'da gönderilmedi".to_string());
     }
     d.pump_to(400 * MS, STEP);
     let warm: Vec<u64> = (0..4).filter_map(|id| d.data_seq(id)).collect();
     let stale_seq = warm.first().copied().unwrap_or_default();
     d.ack(warm);
     // Kurban, son ilerlemeli ACK'in olay anında girer (çapa = son iletim = son ilerleme).
-    d.w.units = vec![4];
-    d.app(4, UNIT);
-    let w_seq = progress_at.map(|_| {
-        d.app(5, UNIT);
-        d.data_seq(5).unwrap_or_default()
-    });
+    d.w.units = vec![VICTIM];
+    d.app(VICTIM, UNIT);
     let t_start = d.now;
+    let victim_seq = d
+        .unit_tx(VICTIM)
+        .first()
+        .filter(|e| e.t == t_start && e.d.kind == TransmitKind::Data)
+        .map(|e| e.d.seq);
+    match (victim_seq, w_seq) {
+        (None, _) => fixture.push("kurban girişte Data olarak gönderilmedi".to_string()),
+        (Some(v), Some(w)) if w >= v => fixture.push(format!(
+            "W'nin seq'i ({w}) kurbanınkinden ({v}) küçük değil: W'nin ACK'i kurbanı kayıp \
+             eşiğine sokar"
+        )),
+        _ => {}
+    }
     while d.now < t_start + 120 * SEC {
         d.now += STEP;
         d.tick();
@@ -1026,18 +1074,21 @@ fn h_run(stale_every: Option<u64>, progress_at: Option<u64>) -> (Option<u64>, Ve
         }
         if let (Some(tp), Some(seq)) = (progress_at, w_seq) {
             if d.now == t_start + tp {
-                d.ack(vec![seq]);
+                d.ack_with_delay(vec![seq], Duration::from_nanos(tp));
+                if !d.w.confirmed_set.contains(&W) {
+                    fixture.push("W'nin ACK'i ilerleme değil (W teyit edilmedi)".to_string());
+                }
             }
         }
-        if d.w.adopted_at.contains_key(&4) {
+        if d.w.adopted_at.contains_key(&VICTIM) {
             break;
         }
     }
-    let adopted = d.w.adopted_at.get(&4).map(|&(t, _)| t - t_start);
-    (
-        adopted,
-        d.w.h_overdue.iter().map(|&(t, u, _)| (t, u)).collect(),
-    )
+    HRun {
+        adopted: d.w.adopted_at.get(&VICTIM).map(|&(t, _)| t - t_start),
+        overdue: d.w.h_overdue.iter().map(|&(t, u, _)| (t, u)).collect(),
+        fixture,
+    }
 }
 
 /// H — sahipsizlik süresinin çapası `max(son ilerleme, son iletim)` (madde 4 (c); AMENDMENT-12;
@@ -1045,8 +1096,9 @@ fn h_run(stale_every: Option<u64>, progress_at: Option<u64>) -> (Option<u64>, Ve
 ///
 /// AMAÇ: (1) bayat ACK (yeni onay yok, 2 s'de bir < H) H sahiplenmesini ERTELEMEZ — çapa ACK
 /// varışı olsaydı sahiplenme hiç olmazdı; bayat ACK'li koşuda sahiplenme OLUR; (2) ilerlemeli ACK
-/// (ikinci birim W, girişten 2 s sonra ACK'lenir) çapayı ilerletir — sahiplenme bayat ACK'li koşudan
-/// en az 1 s SONRA (2 s'lik çapa ilerlemesi; H'nin kanal türevli oynaması payı); (3) üç koşuda da
+/// (ikinci birim W — ısınmayla t=0'da çıkar, seq'i kurbanınkinden küçük; girişten 2 s sonra İLK kez
+/// ACK'lenir, örnek ısınma RTT'sine eşit) çapayı ilerletir — sahiplenme bayat ACK'li koşudan en az
+/// 1 s SONRA (2 s'lik çapa ilerlemesi; H'nin kanal türevli oynaması payı); (3) üç koşuda da
 /// sahiplenmeden önce vadesi geçmiş ya da açıklanmamış olay yok. Bayat/ilerlemesiz yalın koşu
 /// (RECOVER_FWD girişiyle aynı eşik) yalnız raporlanır.
 ///
@@ -1054,9 +1106,19 @@ fn h_run(stale_every: Option<u64>, progress_at: Option<u64>) -> (Option<u64>, Ve
 #[test]
 fn k4g05b_h_anchor_stale_ack_vs_progress() {
     const TEST: &str = "k4g05b_h_anchor_stale_ack_vs_progress";
-    let (plain, over_a) = h_run(None, None);
-    let (stale, over_b) = h_run(Some(2 * SEC), None);
-    let (progress, over_c) = h_run(None, Some(2 * SEC));
+    let plain_run = h_run(None, None);
+    let stale_run = h_run(Some(2 * SEC), None);
+    let progress_run = h_run(None, Some(2 * SEC));
+    for (tag, run) in [
+        ("yalın", &plain_run),
+        ("bayat", &stale_run),
+        ("ilerleme", &progress_run),
+    ] {
+        assert_fixture(&format!("{TEST} [{tag}]"), &run.fixture);
+    }
+    let (plain, over_a) = (plain_run.adopted, &plain_run.overdue);
+    let (stale, over_b) = (stale_run.adopted, &stale_run.overdue);
+    let (progress, over_c) = (progress_run.adopted, &progress_run.overdue);
     println!(
         "[H] sahiplenme (girişten ms): yalın={:?} bayat-ACK={:?} ilerleme@2s={:?}",
         plain.map(|t| t / MS),
@@ -1075,11 +1137,7 @@ fn k4g05b_h_anchor_stale_ack_vs_progress() {
         s / MS,
         g / MS
     );
-    for (tag, over) in [
-        ("yalın", &over_a),
-        ("bayat", &over_b),
-        ("ilerleme", &over_c),
-    ] {
+    for (tag, over) in [("yalın", over_a), ("bayat", over_b), ("ilerleme", over_c)] {
         assert!(
             over.is_empty(),
             "{TEST}: {tag} koşusunda vadesi geçmiş sahiplenmemiş olay: {:?}",

@@ -73,7 +73,11 @@ fn k4g05b_rtt_rule_frame_max_no_fallback() {
 /// KABUL KURALI (d) + soğuk başlangıç kol B (Ek B.2 "Soğuk başlangıç (rev4)"): doygun ack_delay
 /// (V2 tavanı ≈ 16.78 s; alıcının tutma süresi bilinmez) örnek VERMEZ — srtt yokken de (ilk örnek)
 /// aynen; bayat tohum oluşmaz (srtt `None`, PreConverge sürer, kural reddi sayacı 1); birim yine de
-/// teyit edilir; sonraki doygun olmayan ilk ACK tohumu kendi gönderim anından kurar (100 ms tam).
+/// teyit edilir; sonraki doygun olmayan ilk ACK tohumu kendi gönderim anından kurar (150 ms tam).
+/// Kurulum: u0 ve u1 t=0'da (ilk uçuş bütçesi ikisini de taşır); 100 ms'de YALNIZ u0 doygun
+/// ack_delay'le ACK'lenir — u1 uçuşta kaldığından motor boşa düşmez (`update_state`'te Idle,
+/// PreConverge'den önce değerlendirilir: tek birimli kurulumda teyit motoru boşaltıp durumu Idle
+/// yapardı); 150 ms'de u1 sıfır ack_delay'le ACK'lenir.
 ///
 /// TABANDA: KIRMIZI beklenir (kural (d) yok: doygun ACK düzeltme reddiyle RAW örnek olarak girer).
 #[test]
@@ -81,8 +85,9 @@ fn k4g05b_rtt_rule_saturated_ack_delay_refused() {
     const TEST: &str = "k4g05b_rtt_rule_saturated_ack_delay_refused";
     let mut d = Drv::new(product_sender());
     d.app(0, 300);
-    let Some(s0) = d.data_seq(0) else {
-        panic!("{TEST}: FİKSTÜR GEÇERSİZ — u0 gönderilmedi");
+    d.app(1, 300);
+    let (Some(s0), Some(s1)) = (d.data_seq(0), d.data_seq(1)) else {
+        panic!("{TEST}: FİKSTÜR GEÇERSİZ — u0/u1 t=0'da gönderilmedi");
     };
     d.now = 100 * MS;
     d.ack_with_delay(vec![s0], saturated_ack_delay());
@@ -106,16 +111,11 @@ fn k4g05b_rtt_rule_saturated_ack_delay_refused() {
         "{TEST}: u0 teyit edilmeli (teslim RTT kararından bağımsız)"
     );
     d.now = 150 * MS;
-    d.app(1, 300);
-    let Some(s1) = d.data_seq(1) else {
-        panic!("{TEST}: FİKSTÜR GEÇERSİZ — u1 gönderilmedi");
-    };
-    d.now = 250 * MS;
     d.ack(vec![s1]);
     assert_eq!(
         srtt(&d),
-        Some(100 * MS),
-        "{TEST}: ilk kabul edilen örnek kendi gönderim anından (100 ms)"
+        Some(150 * MS),
+        "{TEST}: ilk kabul edilen örnek kendi gönderim anından (150 ms)"
     );
 }
 
