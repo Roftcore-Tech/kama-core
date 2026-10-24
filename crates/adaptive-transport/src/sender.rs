@@ -8775,35 +8775,69 @@ mod tests {
         );
     }
 
+    /// [K4G-05b · Ek B.3 #4 — DUR-8 biçimi; FİKSTÜR + İDDİA; testin amacı değişir (C8 DUR-15 —
+    /// sahibe bildirilir); ad v1 izlenebilirliği (2×2) için korunur] NEDEN DEĞİŞTİ: v1 RTT'yi yalnız
+    /// `origin == Data` kaydından alıyordu (Karn dışlaması); v1.1 engine §6 KABUL KURALI (madde 7)
+    /// çerçevedeki en büyük seq bu çerçeveyle ilk kez onaylanıyorsa onun kaydından — köken Data,
+    /// Retransmit ya da Duplicate — O İLETİMİN gönderim anından örnek alır (her iletim taze seq).
+    /// Eski fikstür v1.1'de probu sınamaz: `tail_cfg_on` bütçesi 2; bütçe tükenince aynı turda devir
+    /// ve kopyalar gelir, 5000 ms'deki ACK'in en büyüğü bir kopyadır. ESKİ İDDİA: prob ACK'i srtt'yi
+    /// DEĞİŞTİRMEZ. YENİ FİKSTÜR: ACK, bütçe tükenmeden (ilk probdan sonra, ikinciden önce) YALNIZ
+    /// prob seq'ini taşır. YENİ İDDİA: ACK'lenen en büyük seq'in kökeni Retransmit (prob) ve srtt
+    /// onun KENDİ gönderim anından alınan örnekle güncellenir — örnek sayısı +1; probdan 5 ms sonra
+    /// gelen ACK srtt'yi (10 ms) AŞAĞI çeker; örnek orijinalin 20 ms'deki gönderim anından alınsaydı
+    /// ≥ 100 ms olur, srtt'yi YUKARI çekerdi (yön iki hipotezi ayırır). 2×2: eski kod + eski test
+    /// YEŞİL · yeni kod + eski test KIRMIZI · yeni kod + yeni test YEŞİL · eski kod + yeni test
+    /// KIRMIZI.
     #[test]
     fn tail_probe_ack_is_karn_excluded_from_rtt() {
-        // Karn: an ACK of a PROBE (origin = Retransmit) must NEVER feed the RTT estimator (send-time ambiguity).
-        // The sender samples RTT only for origin == Data (sender.rs); probes emit as Retransmit, so acking them
-        // leaves srtt untouched. Proven by capturing srtt after the probe fires, then acking the probe seqs.
         let mut s = Sender::new();
         s.set_tail_recovery_config(tail_cfg_on());
         s.on_event(Event::AppData(unit(200)), 0);
-        s.on_event(ack(&[0]), 10 * MS); // the ONLY Data RTT sample → srtt fixed here.
+        // Tek Data örneği → srtt = 10 ms; ardından terminal kuyruk (orijinal @20 ms).
+        s.on_event(ack(&[0]), 10 * MS);
         s.on_event(Event::AppData(small(99)), 20 * MS);
+        // İlk prob emisyonuna dek sür ve DUR (bütçe 2: ikinci prob ve devirden ÖNCE).
+        let mut probe: Option<(u64, u64)> = None; // (prob seq'i, gönderim anı)
         for t in 1..=40u64 {
-            s.on_event(Event::TimerFired(Timer::Pto), (20 + t * 100) * MS);
+            let now = (20 + t * 100) * MS;
+            let out = s.on_event(Event::TimerFired(Timer::Pto), now);
+            if let Some(d) = out
+                .iter()
+                .find(|d| d.kind == TransmitKind::Retransmit && d.unit_id == 99)
+            {
+                probe = Some((d.seq, now));
+                break;
+            }
         }
-        assert!(s.tail_probe_diag().0 >= 1, "probe fired (precondition)");
-        let srtt_before = s.rtt.srtt();
-        // every currently-outstanding seq is a probe retransmit (origin = Retransmit).
-        let probe_seqs: Vec<u64> = s.inflight.keys().copied().collect();
-        assert!(!probe_seqs.is_empty(), "probe retransmits outstanding");
-        s.on_event(
-            Event::AckReceived(AckInfo {
-                acked_seqs: probe_seqs,
-                ack_delay: Duration::ZERO,
-            }),
-            5_000 * MS,
+        let (probe_seq, probe_tx_ns) = probe.expect("prob emisyonu (ön koşul)");
+        assert_eq!(
+            s.tail_probe_diag().0,
+            1,
+            "tam bir prob — bütçe tükenmedi (ön koşul)"
         );
         assert_eq!(
-            s.rtt.srtt(),
-            srtt_before,
-            "probe ACK is Karn-excluded — srtt must not move"
+            s.inflight.get(&probe_seq).map(|p| p.origin),
+            Some(TransmitKind::Retransmit),
+            "ACK'lenecek tek (en büyük) seq prob kopyasıdır — köken Retransmit"
+        );
+        let srtt_before = s.rtt.srtt().expect("srtt var");
+        let samples_before = s.diag_rtt_sample_count();
+        s.on_event(
+            Event::AckReceived(AckInfo {
+                acked_seqs: vec![probe_seq],
+                ack_delay: Duration::ZERO,
+            }),
+            probe_tx_ns + 5 * MS,
+        );
+        assert_eq!(
+            s.diag_rtt_sample_count(),
+            samples_before + 1,
+            "prob ACK'i kabul kuralıyla BİR örnek verir (Karn dışlaması kalktı)"
+        );
+        assert!(
+            s.rtt.srtt().expect("srtt") < srtt_before,
+            "örnek probun KENDİ gönderim anından (5 ms < srtt); orijinalin anından alınsaydı srtt yükselirdi"
         );
     }
 
@@ -9809,10 +9843,20 @@ mod tests {
         );
     }
 
+    /// [K4G-05b · Ek B.3 #5 — DUR-8 biçimi; İDDİA] NEDEN DEĞİŞTİ: v1 kol-2'de (superseded orijinalin
+    /// geç ACK'i) "RTT ALINMAZ" uyguluyordu; v1.1 engine §6 KABUL KURALI (madde 7) superseded işaretini
+    /// RTT'den ayırır — tek-seq'li çerçevede seq 1 en büyük ve bu çerçeveyle ilk kez onaylanıyor
+    /// (tombstone), köken Data → örnek seq 1'in KENDİ gönderim anından (ham 400 − 20 = 380 ms). ESKİ
+    /// İDDİA: srtt DEĞİŞMEZ → YENİ İDDİA: örnek sayısı +1 ve srtt YUKARI çekilir. Değişmeyenler AYNEN:
+    /// rate-örneği üretilmez (BtlBw aynı), delivered-kredi > 0, `(hits, ambig, bw_rec) = (1, 1, 0)`,
+    /// reorder ≥ 9; `ambig` v1.1'de "rate-örneği atlanan kol-2 isabeti" demektir (davranış aynı).
+    /// 2×2: eski kod + eski test YEŞİL · yeni kod + eski test KIRMIZI · yeni kod + yeni test YEŞİL ·
+    /// eski kod + yeni test KIRMIZI.
     #[test]
     fn karn_superseded_late_ack_credits_without_samples() {
         // [TUR-2c D-1/3 kol-2] Retransmit EMİT edildikten SONRA gelen orijinal-ACK:
-        // RTT ALINMAZ + rate-örneği ÜRETİLMEZ + delivered-KREDİSİ girer + ambiguous sayacı.
+        // rate-örneği ÜRETİLMEZ + delivered-KREDİSİ girer + ambiguous sayacı; [K4G-05b madde 7] RTT
+        // kabul kuralıyla o iletimin gönderim anından ALINIR.
         let mut s = Sender::new();
         s.on_event(Event::AppData(unit(200)), 0); // warm-up (MTU) → BtlBw kur
         s.on_event(ack(&[0]), 10 * MS);
@@ -9828,19 +9872,25 @@ mod tests {
         );
         // Superseded işareti: tombstone(seq1).retx_count arttı → kol-1'e düşemez.
         let srtt_before = s.rtt.srtt().expect("srtt");
+        let samples_before = s.diag_rtt_sample_count();
         let btlbw_before = s.btlbw.btlbw();
         // GEÇ orijinal-ACK (seq1): kol-2.
         s.on_event(ack(&[1]), 400 * MS);
         let (_, hits, bw_rec, _, ambig, credited) = s.diag_tombstone();
-        assert_eq!((hits, ambig, bw_rec), (1, 1, 0), "kol-2: örneksiz hit");
+        assert_eq!((hits, ambig, bw_rec), (1, 1, 0), "kol-2: rate-örneksiz hit");
         assert!(
             credited > 0,
             "delivered-kredisi girmeli (byte'lar wire'ı geçti)"
         );
+        // [K4G-05b B.3 #5] ESKİ: srtt == srtt_before ("RTT ALINMAZ") → YENİ: kabul kuralı örneği.
         assert_eq!(
-            s.rtt.srtt().expect("srtt"),
-            srtt_before,
-            "kol-2: RTT örneği ALINMAZ (400ms'lik sahte örnek srtt'yi bozardı)"
+            s.diag_rtt_sample_count(),
+            samples_before + 1,
+            "kol-2: tek-seq çerçevenin en büyüğü (seq 1, ilk kez onay, köken Data) BİR örnek verir"
+        );
+        assert!(
+            s.rtt.srtt().expect("srtt") > srtt_before,
+            "örnek seq 1'in KENDİ gönderim anından: ham 400 − 20 = 380 ms srtt'yi YUKARI çeker"
         );
         assert_eq!(
             s.btlbw.btlbw(),
@@ -9854,11 +9904,19 @@ mod tests {
         );
     }
 
+    /// [K4G-05b · Ek B.3 #6 — DUR-8 biçimi; İDDİA; #5 ile aynı gerekçe] Orijinalin geç ACK'i
+    /// (tek-seq çerçeve, seq 1'in kaydı ilk kez onaylanıyor) v1.1 kabul kuralıyla seq 1'in KENDİ
+    /// gönderim anından örnek verir (ham 400 − 20 = 380 ms). ESKİ İDDİA: "RTT değişmez" → YENİ
+    /// İDDİA: örnek sayısı +1 ve srtt YUKARI çekilir. Wire-byte kredisi, "rate-örneği üretilmez"
+    /// (BtlBw aynı) ve `(hits, ambig, bw_rec) = (1, 1, 0)` (`ambig` #5 anlamıyla) AYNEN. 2×2: eski
+    /// kod + eski test YEŞİL · yeni kod + eski test KIRMIZI · yeni kod + yeni test YEŞİL · eski kod +
+    /// yeni test KIRMIZI.
     #[test]
     fn karn_both_transmissions_acked_wire_byte_semantics() {
         // [TUR-2c review-vektörü] Retransmit'in KENDİ ACK'i geldikten SONRA orijinal-geç-ACK:
         // retransmit inflight-yolundan TAM örnek verir (seq iletimi tekil tanımlar); orijinal
-        // kol-2'den yalnız delivered-KREDİSİ alır. İKİ kopyanın da sayılması WIRE-BYTE
+        // kol-2'den delivered-KREDİSİ alır (rate-örneği yok; [K4G-05b madde 7] RTT kabul
+        // kuralıyla kendi gönderim anından). İKİ kopyanın da sayılması WIRE-BYTE
         // muhasebesidir (kapasite ölçümü, BBR semantiği) — "teslimat BİR KEZ" BİRİM-düzlemidir
         // (kopya-iptal + bench idempotent damga), iki düzlem karışmaz.
         let mut s = Sender::new();
@@ -9877,13 +9935,23 @@ mod tests {
         // 1) Retransmit'in kendi ACK'i: normal inflight-yolu (örnekli).
         s.on_event(ack(&[retx_seq]), 60 * MS);
         let srtt_after_retx = s.rtt.srtt().expect("srtt");
+        let samples_after_retx = s.diag_rtt_sample_count();
         let btlbw_after_retx = s.btlbw.btlbw();
-        // 2) Orijinal geç-ACK: kol-2 — örneksiz, KREDİLİ.
+        // 2) Orijinal geç-ACK: kol-2 — rate-örneksiz, KREDİLİ.
         s.on_event(ack(&[1]), 400 * MS);
         let (_, hits, bw_rec, _, ambig, credited) = s.diag_tombstone();
-        assert_eq!((hits, ambig, bw_rec), (1, 1, 0), "kol-2 örneksiz hit");
+        assert_eq!((hits, ambig, bw_rec), (1, 1, 0), "kol-2 rate-örneksiz hit");
         assert!(credited > 0, "wire-byte kredisi (kopya gerçekten geçti)");
-        assert_eq!(s.rtt.srtt().expect("srtt"), srtt_after_retx, "RTT değişmez");
+        // [K4G-05b B.3 #6] ESKİ: "RTT değişmez" → YENİ: kabul kuralı örneği (seq 1'in kendi anından).
+        assert_eq!(
+            s.diag_rtt_sample_count(),
+            samples_after_retx + 1,
+            "orijinalin geç ACK'i (ilk kez onay) BİR örnek verir"
+        );
+        assert!(
+            s.rtt.srtt().expect("srtt") > srtt_after_retx,
+            "örnek seq 1'in KENDİ gönderim anından: ham 400 − 20 = 380 ms srtt'yi YUKARI çeker"
+        );
         assert_eq!(s.btlbw.btlbw(), btlbw_after_retx, "rate-örneği üretilmez");
     }
 
