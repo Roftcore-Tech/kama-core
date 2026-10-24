@@ -415,7 +415,8 @@ fn p0_r2_dropped_unit_blocks_followers() {
          {summary}"
     );
     assert_eq!(
-        units, want,
+        units,
+        want,
         "Bob'un uygulaması dönünce 0..{} eksiksiz, sıralı ve tam bir kez teslim edilmeli (S1 §4 \
          sıralı Reliable teslim) — {summary}",
         N1 + M
