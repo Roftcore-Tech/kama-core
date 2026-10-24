@@ -23,14 +23,11 @@
 //! **Kapsam (Artım 1+3):** state machine + ölçüm + karar pipeline + DATA pacing + recovery İCRA
 //! (ARQ retransmit / forward duplication). Receiver (§4) = sonraki artım.
 
-#[cfg(feature = "experimental-cold-start")]
-use std::collections::BTreeSet;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Duration;
 
 use crate::arq::{
-    ArqScheduler, CapExceedPolicy, DeadlineArqScheduler, LostSeq, ReorderTracker, RetxConfig,
-    RetxDecision,
+    ArqScheduler, DeadlineArqScheduler, LostSeq, ReorderTracker, RetxConfig, RetxDecision,
 };
 use crate::budget::{self, BudgetConfig};
 use crate::bw::{BtlBwFilter, DeliveryRateSampler, SentPacket};
@@ -1409,10 +1406,39 @@ impl RecordOwner {
 /// teyitsiz birimde teyide dek, teyitli birimde son kaydı (uçuş + tombstone) düşene dek yaşar.
 #[derive(Debug, Default)]
 struct UnitOwnership {
+    /// Birimin tel boyu (kopya kaydı kurarken; birimin her iletiminde aynıdır).
+    size: u64,
     /// Birimin motorda yaşayan iletim kayıtlarının seq'leri (uçuş + tombstone), artan sırada.
     seqs: VecDeque<u64>,
+    /// Bu kayıtlardan uçuşta olanların sayısı (≤ seq sayısı) — sahiplenme adaylığı (madde 4).
+    inflight_n: u8,
+    /// Kopya kuyruğunda TEK kalıcı geometrik sahip kaydı var mı (madde 3; ≤ 1).
+    geometric: bool,
+    /// Kopya kuyruğunda bekleyen tek seferlik kayıt sayısı (madde 5 ekleme kuralı: ≤ D − 1).
+    fire_once: u8,
     /// Teyit kümesi (`confirmed_units`) üyeliği: teyitli birim için karar ÜRETİLMEZ (madde 2).
     confirmed: bool,
+    /// Son iletim anı (H-sahiplenme çapasının birim tarafı; aday kümesinin anahtarı).
+    last_tx_ns: u64,
+}
+
+impl UnitOwnership {
+    /// [K4G-05b madde 4] Sahiplenme adayı: uçuşta kaydı olan, teyitsiz, geometrik kaydı olmayan
+    /// birim. Prob kapsamı etkinken kuyruk-probu izler (bütçe tükenince devir), kapsam dışında H
+    /// sahiplenmesi, RECOVER_FWD'de canlılık kolu bu kümeden sahiplendirir.
+    fn adoptable(&self) -> bool {
+        !self.confirmed && !self.geometric && self.inflight_n > 0
+    }
+}
+
+/// [K4G-05b madde 4] Aday kümesini `e`'nin güncel durumuyla eşitler (anahtar `(last_tx_ns, u)`).
+/// Serbest fonksiyon: dizin girdisi ve aday kümesi ayrı alanlardır (ayrık ödünç).
+fn sync_adopt_candidate(candidates: &mut BTreeSet<(u64, UnitId)>, u: UnitId, e: &UnitOwnership) {
+    if e.adoptable() {
+        candidates.insert((e.last_tx_ns, u));
+    } else {
+        candidates.remove(&(e.last_tx_ns, u));
+    }
 }
 
 /// Bir gönderilmiş paketin muhasebe kaydı (RTT/BW/loss + retransmit).
@@ -1866,6 +1892,16 @@ pub struct Sender {
     confirmed_out: VecDeque<u64>,
     /// [K4G-05b madde 2] Teyit çıktısı taşma sayacı (SALT-GÖZLEM; testte ve INT-02'de 0 beklenir).
     confirmed_units_overflow: u64,
+    /// [K4G-05b madde 4] Sahiplenme aday kümesi `(son_iletim_ns, birim)`: uçuşta kaydı olan,
+    /// teyitsiz, geometrik kaydı olmayan birimler — dizinin olay güdümlü alt kümesi (tam tarama
+    /// yok; ilk eleman en eski iletim → H vadesi tek okumayla). Boyut ≤ dizin boyutu.
+    adopt_candidates: BTreeSet<(u64, UnitId)>,
+    /// [K4G-05b madde 4/6] Son İLERLEME anı: en az bir iletim kaydını ilk kez onaylayan ACK (bayat
+    /// SACK sayılmaz). H-sahiplenmesinin çapası ve kopya geri çekilmesi sıfırlamasının tetiği.
+    last_progress_ns: Option<u64>,
+    /// [K4G-05b madde 4] Acil-durum histerezis yapılandırması — `emergency` bununla kurulur; H'nin
+    /// `escalate_permille` paydası buradan okunur (eşik yeniden kalibre edilirse H onu izler).
+    hysteresis_cfg: HysteresisConfig,
     /// [BURST-FUSION] Yapı-gate'in burst dalındaki politikası (default = sevk davranışı).
     fec_structure_policy: FecStructurePolicy,
     /// [R-SWEEP] Yapı-gate'in açtığı parity seviyesi (‰) override'ı. `None` (default) = fuzzy
@@ -1985,6 +2021,7 @@ impl Sender {
     /// overload-YOK) — "Sender-yalnız-validated/trusted-config'le-kurulur" tip-düzeyi-sınırı.
     fn new_internal(fuzzy_cfg: ValidatedFuzzyConfig) -> Self {
         let budget_cfg = BudgetConfig::fixture();
+        let hysteresis_cfg = HysteresisConfig::fixture();
         Self {
             state: SenderState::Idle,
             loss: ThresholdLossDetector::new(),
@@ -1994,7 +2031,7 @@ impl Sender {
             fuzzy: DeterministicFuzzyController::new(fuzzy_cfg.into_inner()),
             src_cfg: SrcConfig::default(),
             budget_cfg,
-            emergency: HysteresisController::new(HysteresisConfig::fixture(), EmergencyLevel::Arq),
+            emergency: HysteresisController::new(hysteresis_cfg, EmergencyLevel::Arq),
             emergency_cfg: EmergencyConfig::fixture(),
             pacer: TokenBucket::new(budget_cfg.min_rate_bps, DEFAULT_BURST_CAP),
             arq: DeadlineArqScheduler::new(RetxConfig::fixture()),
@@ -2134,6 +2171,9 @@ impl Sender {
             units: BTreeMap::new(),
             confirmed_out: VecDeque::new(),
             confirmed_units_overflow: 0,
+            adopt_candidates: BTreeSet::new(),
+            last_progress_ns: None,
+            hysteresis_cfg,
             diag_tomb_hits: 0,
             diag_bw_recovered: 0,
             diag_ambiguous_skipped: 0,
@@ -2472,6 +2512,17 @@ impl Sender {
             // §3.3-D cold-start çıkışı: kanal-türevli micro-burst grant (STARTUP probing; kuyruk kanal-uygun
             // küçük burst'le boşalır — bu birimler STARTUP'ta emit → §3.3-B geometrik kopya ALMAZ).
             self.pacer.fill_to_cap();
+            // [K4G-05b madde 8 · engine §13 v1.1] PRE_CONVERGE çıkışında bekleyen kopyaların aralığı
+            // ve vadesi RTO_MAX'a kırpılır (PRE_CONVERGE'de §3.3-B takvimi tavansızdı; dışarıda
+            // geometrik aralığın üst sınırı RTO_MAX).
+            let rto_max = rto_max_ns();
+            let horizon = now_ns.saturating_add(rto_max);
+            for d in &mut self.dup_queue {
+                if d.interval_ns > 0 {
+                    d.interval_ns = d.interval_ns.min(rto_max);
+                }
+                d.due_ns = d.due_ns.min(horizon);
+            }
         }
         // DR-RATE-RAMP-2: BOOTSTRAP-ONLY. Release the floor permanently once EITHER the existing Startup
         // exit condition has fired (the ramp ended: `base_is_startup` cleared at the plateau, `sender.rs`
@@ -2574,7 +2625,7 @@ impl Sender {
     ) -> Vec<TransmitDecision> {
         let any_due = self.cs_any_due(now_ns);
         // E2 exact-no-op: yalnız boş-batch (Tick) + due-yok + bekleyen-scheduling-işi-yok.
-        if inbound.is_empty() && !any_due && !self.cs_has_pending_work() {
+        if inbound.is_empty() && !any_due && !self.cs_has_pending_work(now_ns) {
             return Vec::new();
         }
         let was_empty = inbound.is_empty();
@@ -2599,7 +2650,7 @@ impl Sender {
                 // saat-ilerletmez/emisyon-yaratamaz (N8) — iş-olsa-bile boş döner.
                 return Vec::new();
             }
-            if !any_due && !self.cs_has_pending_work() {
+            if !any_due && !self.cs_has_pending_work(now_ns) {
                 return Vec::new(); // savunmacı (E2'de-yakalanmıştı)
             }
             // Tick+iş VEYA due-timer-var → saat/refill ilerlet (core-refill muadili) → faz-2..4.
@@ -2657,6 +2708,8 @@ impl Sender {
     ///   5. Tail-recovery PTO (`armed_at_ns + current_pto_ns`)
     ///   6. Pacer token yenilenmesi — bekleyen iş VARSA (`tx_queue|pending_lost|dup_queue|pending_fec`)
     ///      en küçük bekleyen birimin gönderilebilir olacağı an
+    ///   7. [K4G-05b madde 4 (c)] Sahipsizlik vadesi — prob kapsamı dışındaki en eski sahiplenme
+    ///      adayının `max(son ilerleme, son iletim) + H` anı
     #[must_use]
     pub fn next_wakeup_ns(&self) -> Option<u64> {
         // Kaynak 1-5 (timer'lar) + kaynak 6 (pacer-token'a bağlı due-now iş).
@@ -2748,6 +2801,10 @@ impl Sender {
         // 5. Tail-recovery PTO (config default OFF ⇒ aday yok).
         best = earlier(best, self.tail_probe_deadline_ns());
 
+        // 7. [K4G-05b madde 4 (c)] Sahipsizlik vadesi: prob kapsamı dışında en eski adayın
+        // `max(son ilerleme, son iletim) + H` anı (yeni zamanlayıcı yok: dizinden türetilir).
+        best = earlier(best, self.adopt_due_ns());
+
         // NOT: `LostRec.deadline_ns` BİLEREK kaynak DEĞİL. `arq.rs:110-111` normatif: "deadline YALNIZ
         // SIRA — expired seq DROP EDİLMEZ, planda kalır" ⇒ o bir TESLİM-önceliği anahtarıdır, zamanlayıcı
         // değil. Wakeup kaynağı yapmak ilerlemesiz uyanış üretirdi. `pending_lost` zaten `update_state`
@@ -2808,11 +2865,15 @@ impl Sender {
 
     /// "Önceden-oluşmuş bekleyen scheduling-işi" (E2): kuyruklarda drain-bekleyen-iş var mı.
     #[cfg(feature = "experimental-cold-start")]
-    fn cs_has_pending_work(&self) -> bool {
+    fn cs_has_pending_work(&self, now_ns: u64) -> bool {
         !self.tx_queue.is_empty()
             || !self.pending_lost.is_empty()
             || !self.dup_queue.is_empty()
             || !self.pending_fec.is_empty()
+            // [K4G-05b madde 4 (c)] Vadesi gelmiş sahipsizlik (H) sahiplenmesi de bekleyen iştir:
+            // aksi hâlde yalnız Tick süren döngüde `next_wakeup_ns` geçmiş vadeyi tekrar tekrar
+            // raporlar ama sahiplenme koşmazdı (ilerlemesiz uyanış).
+            || self.adopt_due_ns().is_some_and(|d| d <= now_ns)
     }
 
     /// DR-CS-1 M3 (F2B) — echo-ingest: `(probe_seq)`-lookup → TEK-TÜKETİM → YALNIZ rtt-estimator
@@ -3122,6 +3183,11 @@ impl Sender {
         // DR-ARQ-PRODUCT-TAIL-1: snapshot inflight to detect REAL progress (new ack-eliciting data acked) vs a
         // duplicate/stale ACK that removes nothing. Only real progress resets the tail timer (§4).
         let inflight_before = self.inflight.len();
+        // [K4G-05b madde 6] Sessizlik süresi bu ACK'ten ÖNCEKİ kanal durumuyla ölçülür (H).
+        let horizon_before = self.unowned_horizon_ns();
+        // [K4G-05b madde 4/6] İLERLEME = en az bir iletim kaydını bu çerçeveyle ilk kez onaylamak
+        // (uçuş, tombstone ya da un-loss eşleşmesi); bayat SACK ilerleme DEĞİLDİR.
+        let mut progress = false;
 
         // [TUR-3a D-2/1] Kanal-türevi estimator pencereleri — örnekler işlenmeden ÖNCE, bir
         // önceki srtt'yle yazılır (deterministik; 10s [STD] tabanı setter'larda).
@@ -3169,8 +3235,9 @@ impl Sender {
                 self.startup_round_complete = true;
             }
             if let Some(p) = self.inflight.remove(&seq) {
+                progress = true;
                 self.inflight_bytes = self.inflight_bytes.saturating_sub(p.unit.size);
-                self.own_record_gone(p.owner, seq);
+                self.own_record_gone(p.owner, seq, true);
                 // Observation-only success evidence, ORIGINALS ONLY — the same Karn discipline the
                 // RTT sampler applies two lines below. A retransmit or duplicate proves nothing
                 // about the original's fate, and feeding one would corrupt the structure counters.
@@ -3197,8 +3264,9 @@ impl Sender {
                 // [TUR-2b D-1/4] GEÇ-ACK tombstone'a çarptı: kayıt korunmuştu → örnekler
                 // KURTARILIR (eski davranış: kayıt düşmüştü → sansür). Süresi geçmiş kayıt
                 // prune edilmişse buraya düşmez (Expired/Unknown — örneksiz).
+                progress = true;
                 self.diag_tomb_hits += 1;
-                self.own_record_gone(t.owner, seq);
+                self.own_record_gone(t.owner, seq, false);
                 // Teslim teyidi → bekleyen kopyaları iptal et. [K4G-05b madde 1] Kayıp ilan
                 // edilmiş paritenin geç ACK'i de birim teyit ETMEZ (`owner` = FEC sembolü).
                 if let Some(u) = t.owner.unit() {
@@ -3263,6 +3331,7 @@ impl Sender {
                     kept.push_back(rec);
                     continue;
                 }
+                progress = true;
                 self.diag_unloss += 1;
                 // Kopyaları aşağıdaki ortak iptale kat. [K4G-05b madde 2] Kayıp ilan edilmiş ve
                 // yeniden planı bekleyen kaydın un-loss eşleşmesi CANLI kayıt eşleşmesidir → teyit
@@ -3341,6 +3410,18 @@ impl Sender {
                 self.tail_recovery.disarm();
             }
         }
+        // [K4G-05b madde 6 · AMENDMENT-12 "Sıfırlama" (ii)] İlerlemesiz süre H'yi aştıktan sonraki İLK
+        // ilerlemeli ACK kopya kuyruğunun geometrik geri çekilmesini tabana döndürür; ilerleme anı H
+        // sahiplenmesinin çapasıdır. Bayat SACK (yeni onay yok) ne sıfırlar ne çapalar.
+        if progress {
+            if self
+                .last_progress_ns
+                .is_some_and(|lp| now_ns.saturating_sub(lp) >= horizon_before)
+            {
+                self.reset_copy_backoff();
+            }
+            self.last_progress_ns = Some(now_ns);
+        }
     }
 
     /// §12 timer handler (RTprop probe → DRAIN_RTPROP; PTO → zaman-eşiği loss).
@@ -3389,7 +3470,7 @@ impl Sender {
                             // [commit-B §3.7] artık ACK'lenmeyecek → uçuş-sayısından düş.
                             self.bw_sampler.forget_in_flight();
                             // [K4G-05b madde 2] Kayıt motordan düştü (geç ACK'i Expired/Unknown).
-                            self.own_record_gone(owner, front);
+                            self.own_record_gone(owner, front, false);
                         }
                         Some(_) => break,
                     }
@@ -3572,7 +3653,7 @@ impl Sender {
                 if p.origin == TransmitKind::Duplicate {
                     // [commit-B §3.7] Dup-kökenli kayıp tombstonesuz düşer → uçuş-sayısı burada.
                     self.bw_sampler.forget_in_flight();
-                    self.own_record_gone(p.owner, seq);
+                    self.own_record_gone(p.owner, seq, true);
                     // [P0 burst-recovery] Forward-recovery kopyası kaybolduysa birim HÂLÂ
                     // teslim edilmemiştir (ACK olsaydı on_ack inflight'tan siler + dup_queue.retain
                     // kopyayı iptal ederdi; buraya ancak gerçekten-outstanding birim düşer). Recovery-
@@ -3581,13 +3662,21 @@ impl Sender {
                     // yeniden-kur. Mevcut saf-sessizlik/PreConverge makinesinin aynısı; INV-RATE-1'e
                     // dokunmaz (dup_queue token-paced), loss METRİĞİNE dokunmaz. Kanıt: kapi-eval-v1
                     // exploratory h3 (GE-burst); regresyon kapısı tests/burst_loss_recovery.rs.
-                    if !confirmed && !self.dup_queue.iter().any(|d| d.unit.id == p.unit.id) {
-                        let srtt_ns = dur_ns(self.rtt.srtt().unwrap_or(INITIAL_RTT));
-                        self.dup_queue.push(DupRec {
-                            due_ns: now_ns.saturating_add(srtt_ns),
-                            unit: p.unit,
-                            interval_ns: srtt_ns.max(1), // >0 ⇒ drain_due_duplicates geometrik reschedule
-                        });
+                    // [K4G-05b madde 3/5] Bu kayıp later-ACK kanıtıdır: birimin geometrik sahibi
+                    // varsa vadesi öne çekilir; bekleyen tek seferlik kopyası varsa o sahiptir (v1);
+                    // yoksa TEK kalıcı geometrik sahip açılır (taban srtt, aralık ≤ RTO_MAX).
+                    if !confirmed {
+                        let base = self.copy_base_ns();
+                        let due = now_ns.saturating_add(base);
+                        let u = UnitId(p.unit.id);
+                        let pending_fire_once = self.units.get(&u).is_some_and(|e| e.fire_once > 0)
+                            || self
+                                .dup_queue
+                                .iter()
+                                .any(|d| d.unit.id == p.unit.id && d.interval_ns == 0);
+                        if self.unit_has_geometric(u) || !pending_fire_once {
+                            self.copy_ensure_geometric(p.unit, due, base, true);
+                        }
                     }
                 }
                 if p.origin != TransmitKind::Duplicate {
@@ -3648,6 +3737,7 @@ impl Sender {
                             expiry_ns,
                         },
                     );
+                    self.own_record_to_tombstone(p.owner);
                 }
             }
         }
@@ -4424,6 +4514,9 @@ impl Sender {
         // DR-ARQ-PRODUCT-TAIL-1 (gated; default OFF → no-op): forced PTO tail probe, state-independent, after the
         // normal ARQ planner (so it never double-plans a seq the planner already superseded).
         self.emit_tail_probe(&mut out, now_ns);
+        // [K4G-05b madde 4 (c)] Prob kapsamı dışında H geçen sahipsiz adayı kopya kuyruğuna al
+        // (PreConverge/Idle dışı; vadesi EK4-A2 7. uyanma kaynağı).
+        self.adopt_unowned(now_ns);
         // [DR-EST-1] PreConverge kuruluş-denemesi: §3.3-B kopya-makinesi ilk-ölçüm-öncesi
         // PRE_CONVERGE_FLOOR_BW pacer'ına takılıp boğuluyordu (token-yok → break). Bu kol
         // vadesi gelen EN-ESKİ kopyadan TEK datagram'ı token-MUAF geçirir; INV-RATE-1'e
@@ -5978,23 +6071,20 @@ impl Sender {
                         send_record: None,
                     });
                 }
-                RetxDecision::CapExceeded { seq, policy } => {
-                    if let Some(pos) = self.pending_lost.iter().position(|r| r.seq == seq) {
-                        let rec = self.pending_lost.remove(pos).expect("pos geçerli");
-                        if policy == CapExceedPolicy::HandToForward
-                            && !self.unit_is_confirmed(UnitId(rec.unit.id))
-                        {
-                            // ARQ cap doldu → forward-recovery'ye devret (§9.1 "veri ulaşsın").
-                            // [TUR-2c review-fix] devir de YENİDEN-EMİSYONDUR → superseded-işaret
-                            // (örnekleme politikası recovery-yoluna bağımlı olamaz — tekdüze kural).
-                            self.mark_tombstone_superseded(rec.seq);
-                            self.dup_queue.push(DupRec {
-                                due_ns: now_ns,
-                                unit: rec.unit,
-                                interval_ns: 0, // emergency: fire-once
-                            });
-                        }
-                        // ConnectionFail: spine'da düşür; gerçek impl bağlantı-fail sinyali verir.
+                RetxDecision::CapExceeded { seq, .. } => {
+                    let pos = self.pending_lost.iter().position(|r| r.seq == seq);
+                    if let Some(rec) = pos.and_then(|pos| self.pending_lost.remove(pos)) {
+                        // [K4G-05b madde 3 · AMENDMENT-12] ARQ_RETX_CAP aşımı HER politikada
+                        // (`HandToForward` ve `ConnectionFail`) yalnız YOLU değiştirir: birim TEK
+                        // kalıcı geometrik kopya sahibine devredilir (vade = şimdi, aralık taban,
+                        // ≤ RTO_MAX), ASLA düşürülmez (v1 `ConnectionFail` düşürüyordu; v1
+                        // `HandToForward` tek seferlik kopya kuruyordu — ikisi de D1 sınıfı sahipsizlik).
+                        // Politika alanı birim kaderini belirlemez (arq.rs `CapExceedPolicy` doc'u).
+                        // [TUR-2c review-fix] devir de YENİDEN-EMİSYONDUR → superseded-işaret
+                        // (örnekleme politikası recovery-yoluna bağımlı olamaz — tekdüze kural).
+                        self.mark_tombstone_superseded(rec.seq);
+                        let base = self.copy_base_ns();
+                        self.copy_ensure_geometric(rec.unit, now_ns, base, true);
                     }
                 }
             }
@@ -6049,12 +6139,12 @@ impl Sender {
             if let Some(t) = self.tombstones.remove(&old) {
                 self.tombstone_evicted += 1;
                 self.bw_sampler.forget_in_flight(); // [commit-B §3.7]
-                self.own_record_gone(t.owner, old);
+                self.own_record_gone(t.owner, old, false);
             }
         }
     }
 
-    // ── [K4G-05b madde 2] Sahiplik dizini + teyit kümesi ───────────────────────────────────────
+    // ── [K4G-05b madde 2/3/4/5] Sahiplik dizini + teyit kümesi + kopya kuyruğu sahipliği ────────
 
     /// Birim teyit kümesinde mi. Dizinde girdisi olmayan birim teyitsiz sayılır: teyitli birimin
     /// girdisi ancak son kaydı düşünce silinir ve o anda kayıp/kopya işi de yoktur (teyitte
@@ -6064,16 +6154,24 @@ impl Sender {
     }
 
     /// Birim kaydı motora girdi (gönderim); girdi gerekiyorsa açılır. Parite kaydı dizine girmez.
-    fn own_on_sent(&mut self, owner: RecordOwner, seq: u64) {
+    /// Son iletim anı H çapasının birim tarafıdır; aday anahtarı buna göre yenilenir.
+    fn own_on_sent(&mut self, owner: RecordOwner, unit: OpaqueUnit, seq: u64, now_ns: u64) {
         let Some(u) = owner.unit() else {
             return;
         };
-        self.units.entry(u).or_default().seqs.push_back(seq);
+        let e = self.units.entry(u).or_default();
+        self.adopt_candidates.remove(&(e.last_tx_ns, u));
+        e.size = unit.size;
+        e.seqs.push_back(seq);
+        e.inflight_n = e.inflight_n.saturating_add(1);
+        e.last_tx_ns = now_ns;
+        sync_adopt_candidate(&mut self.adopt_candidates, u, e);
     }
 
     /// Birimin `seq` kaydı motordan TAMAMEN düştü (ACK, tombstone TTL/tahliye, tombstonesuz kopya
-    /// kaybı, budama). Teyit kümesinden çıkış: teyitli birimin son kaydı düşünce girdi silinir.
-    fn own_record_gone(&mut self, owner: RecordOwner, seq: u64) {
+    /// kaybı, budama); `was_inflight` = kayıt düştüğünde uçuştaydı. Teyit kümesinden çıkış:
+    /// teyitli birimin son kaydı düşünce girdi silinir.
+    fn own_record_gone(&mut self, owner: RecordOwner, seq: u64, was_inflight: bool) {
         let Some(u) = owner.unit() else {
             return;
         };
@@ -6083,8 +6181,240 @@ impl Sender {
         if let Some(pos) = e.seqs.iter().position(|&s| s == seq) {
             e.seqs.remove(pos);
         }
+        if was_inflight {
+            e.inflight_n = e.inflight_n.saturating_sub(1);
+        }
+        sync_adopt_candidate(&mut self.adopt_candidates, u, e);
         if e.confirmed && e.seqs.is_empty() {
             self.units.remove(&u);
+        }
+    }
+
+    /// Birimin uçuş kaydı kayıp ilanıyla ya da prob emekliliğiyle tombstone'a geçti: kayıt yaşar
+    /// (geç ACK eşleşir) ama artık uçuşta değildir.
+    fn own_record_to_tombstone(&mut self, owner: RecordOwner) {
+        let Some(u) = owner.unit() else {
+            return;
+        };
+        if let Some(e) = self.units.get_mut(&u) {
+            e.inflight_n = e.inflight_n.saturating_sub(1);
+            sync_adopt_candidate(&mut self.adopt_candidates, u, e);
+        }
+    }
+
+    /// Birimin geometrik kopya kaydı var mı. Dizin girdisi yoksa (doğrudan durum kuran birim
+    /// testleri) kuyruğa bakılır.
+    fn unit_has_geometric(&self, u: UnitId) -> bool {
+        match self.units.get(&u) {
+            Some(e) => e.geometric,
+            None => self
+                .dup_queue
+                .iter()
+                .any(|d| d.unit.id == u.0 && d.interval_ns > 0),
+        }
+    }
+
+    /// Kopya kuyruğuna kayıt ekle + dizin muhasebesi (geometrik bayrağı / tek seferlik sayacı;
+    /// aday kümesi). Teyitli birime kayıt EKLENMEZ (madde 2).
+    fn dup_push(&mut self, rec: DupRec) {
+        let u = UnitId(rec.unit.id);
+        if self.unit_is_confirmed(u) {
+            return;
+        }
+        let e = self.units.entry(u).or_default();
+        if e.size == 0 {
+            e.size = rec.unit.size;
+        }
+        if rec.interval_ns > 0 {
+            e.geometric = true;
+        } else {
+            e.fire_once = e.fire_once.saturating_add(1);
+        }
+        sync_adopt_candidate(&mut self.adopt_candidates, u, e);
+        self.dup_queue.push(rec);
+    }
+
+    /// Tek seferlik kopya kaydı kuyruktan çıktı (gönderildi): bekleyen sayaç düşer.
+    fn own_fire_once_done(&mut self, u: UnitId) {
+        if let Some(e) = self.units.get_mut(&u) {
+            e.fire_once = e.fire_once.saturating_sub(1);
+        }
+    }
+
+    /// [K4G-05b madde 5/6] Kopya kuyruğu geometrik aralığının TABANI: srtt-türevi (ölçüm yoksa
+    /// `INITIAL_RTT`), üst sınır RTO_MAX — v1 canlılık kolunun tabanıyla aynı.
+    fn copy_base_ns(&self) -> u64 {
+        dur_ns(self.rtt.srtt().unwrap_or(INITIAL_RTT)).clamp(1, rto_max_ns())
+    }
+
+    /// [K4G-05b madde 5 · engine §13 v1.1] Geometrik kopyanın bir sonraki aralığı: ×2; PRE_CONVERGE
+    /// DIŞINDA üst sınır RTO_MAX (PRE_CONVERGE'de §3.3-B takvimi v1 — tavansız).
+    fn copy_next_interval_ns(&self, interval_ns: u64) -> u64 {
+        let next = interval_ns.saturating_mul(PC_COPY_MULTIPLIER);
+        if self.state == SenderState::PreConverge {
+            next
+        } else {
+            next.min(rto_max_ns())
+        }
+    }
+
+    /// [K4G-05b madde 3/4] Birime TEK kalıcı geometrik kopya sahibi. Yoksa `(due_ns, interval_ns)`
+    /// ile açılır (aralık RTO_MAX tavanlı). Varsa yeni kayıt AÇILMAZ: `pull` (later-ACK kayıp kanıtı:
+    /// kopya kaybı, ARQ tavanı, tek seferlik ekleme yeri) ise vadesi `due_ns`'e öne çekilir; değilse
+    /// (sahiplenme yolları: devir, H, canlılık) NO-OP — kaydın vadesine ve aralığına dokunulmaz.
+    /// Teyitli birime karar üretilmez.
+    fn copy_ensure_geometric(
+        &mut self,
+        unit: OpaqueUnit,
+        due_ns: u64,
+        interval_ns: u64,
+        pull: bool,
+    ) {
+        let u = UnitId(unit.id);
+        if self.unit_is_confirmed(u) {
+            return;
+        }
+        if self.unit_has_geometric(u) {
+            if pull {
+                if let Some(d) = self
+                    .dup_queue
+                    .iter_mut()
+                    .find(|d| d.unit.id == unit.id && d.interval_ns > 0)
+                {
+                    d.due_ns = d.due_ns.min(due_ns);
+                }
+            }
+            return;
+        }
+        self.dup_push(DupRec {
+            due_ns,
+            unit,
+            interval_ns: interval_ns.clamp(1, rto_max_ns()),
+        });
+    }
+
+    /// [K4G-05b madde 5 · ekleme kuralı (B2), C8 DUR-13] Tek seferlik kopyalar `dues` vadelerinde
+    /// istenir; birimin bekleyen tek seferlik kaydı ekleme anında sayılır ve ≤ D − 1 tutulur
+    /// (fazlası eklenmez). Birimin geometrik kaydı varsa yeni kayıt açılmaz, yalnız onun vadesi
+    /// istenen ilk vadeye öne çekilir → birim başına kopya kaydı ≤ 1 + (D − 1) ≤ D_max = 3.
+    fn copy_add_fire_once(&mut self, unit: OpaqueUnit, dues: &[u64], factor: u8) {
+        let u = UnitId(unit.id);
+        if self.unit_is_confirmed(u) {
+            return;
+        }
+        if self.unit_has_geometric(u) {
+            if let Some(&first) = dues.first() {
+                let base = self.copy_base_ns();
+                self.copy_ensure_geometric(unit, first, base, true);
+            }
+            return;
+        }
+        let pending = self.units.get(&u).map_or(0, |e| e.fire_once);
+        let room = usize::from(factor.saturating_sub(1).saturating_sub(pending));
+        for &due_ns in dues.iter().take(room) {
+            self.dup_push(DupRec {
+                due_ns,
+                unit,
+                interval_ns: 0, // fire-once, reschedule YOK
+            });
+        }
+    }
+
+    /// [K4G-05b madde 4] Kuyruk-probu KAPSAMI etkin mi: prob açık ve bütçesi tükenmemiş. Kapsam
+    /// etkinken uçuşta kaydı olan her teyitsiz birimi prob izler; bütçe tükendiği turda kapsamdaki
+    /// birimler devredilir, kapsam dışında H sahiplenmesi geçerlidir.
+    fn probe_scope_active(&self) -> bool {
+        self.tail_recovery.is_enabled()
+            && self.tail_recovery.probe_index() < self.tail_recovery.config().max_tail_probes
+    }
+
+    /// [K4G-05b madde 4] ACK sessizliği eşiği `max(ACK_SILENCE_SRTT_MULT·srtt, K_CONF_EAI·EAI)`
+    /// (ns) — `ack_confidence_permille` ile H aynı eşikten türer.
+    fn ack_silence_threshold_ns(&self) -> u64 {
+        let srtt = dur_ns(self.rtt.srtt().unwrap_or(INITIAL_RTT));
+        srtt.saturating_mul(u64::from(ACK_SILENCE_SRTT_MULT))
+            .max(dur_ns(self.expected_ack_interval()).saturating_mul(u64::from(K_CONF_EAI)))
+    }
+
+    /// [K4G-05b madde 4 · transport-layer-tdd §12 AMENDMENT-12] Sahipsizlik süresi
+    /// H = max(ACK_SILENCE_SRTT_MULT·srtt, K_CONF_EAI·EAI) × 1000 / `escalate_permille` (ns): saf
+    /// sessizlikte ack_confidence'ın escalate eşiğinin altına indiği an (RECOVER_FWD girişi). Kanal
+    /// türevli; RTO_MAX'la sınırlanmaz.
+    fn unowned_horizon_ns(&self) -> u64 {
+        self.ack_silence_threshold_ns().saturating_mul(1000)
+            / u64::from(self.hysteresis_cfg.escalate_permille.max(1))
+    }
+
+    /// [K4G-05b madde 4 (c)] H-sahiplenmesinin vadesi (EK4-A2 7. uyanma kaynağı): prob kapsamı
+    /// dışında (prob kapalı ya da bütçe tükenmiş), PreConverge/Idle dışı, en eski adayın
+    /// `max(son ilerleme, son iletim) + H` anı. Aday yoksa `None`.
+    fn adopt_due_ns(&self) -> Option<u64> {
+        if matches!(self.state, SenderState::PreConverge | SenderState::Idle)
+            || self.probe_scope_active()
+        {
+            return None;
+        }
+        let &(tx_ns, _) = self.adopt_candidates.first()?;
+        Some(
+            tx_ns
+                .max(self.last_progress_ns.unwrap_or(0))
+                .saturating_add(self.unowned_horizon_ns()),
+        )
+    }
+
+    /// [K4G-05b madde 4] Adayı kopya kuyruğuna sahiplendir: geometrik kayıt, vade = sahiplenme anı,
+    /// aralık = taban. Aday kümeden her durumda çıkar (ilerleme garantisi).
+    fn adopt_unit(&mut self, key: (u64, UnitId), now_ns: u64) {
+        let (_, u) = key;
+        let size = self.units.get(&u).map(|e| e.size);
+        if let Some(size) = size {
+            let base = self.copy_base_ns();
+            self.copy_ensure_geometric(OpaqueUnit { id: u.0, size }, now_ns, base, false);
+        }
+        self.adopt_candidates.remove(&key);
+    }
+
+    /// [K4G-05b madde 4 (b) · DUR-26 (a)] DEVİR: kuyruk-probu bütçesinin tükendiği turda kapsamdaki,
+    /// geometrik kaydı olmayan HER teyitsiz birim kopya kuyruğuna hemen devredilir (vade = devir anı).
+    /// ACK sessizliğine dayanmaz. Aynı yol RECOVER_FWD canlılık kolunu da besler. Deterministik
+    /// sıra: aday kümesi `(son_iletim, birim)` sırası.
+    fn adopt_all_candidates(&mut self, now_ns: u64) {
+        while let Some(&key) = self.adopt_candidates.first() {
+            self.adopt_unit(key, now_ns);
+        }
+    }
+
+    /// [K4G-05b madde 4 (c)] H-SAHİPLENMESİ: prob kapsamı dışındaki aday, ilerleme olmadan son
+    /// iletiminden beri H geçince kopya kuyruğuna alınır. Çapa ilerlemedir: alıcının sessizlikte
+    /// tekrarladığı bayat SACK RECOVER_FWD girişini erteleyebilir, H sahiplenmesini ertelemez.
+    /// Olay güdümlü: küme son iletim sırasındadır, ilk aday vadesizse hiçbiri vadeli değildir.
+    fn adopt_unowned(&mut self, now_ns: u64) {
+        while let Some(due) = self.adopt_due_ns() {
+            if due > now_ns {
+                break;
+            }
+            let Some(&key) = self.adopt_candidates.first() else {
+                break;
+            };
+            self.adopt_unit(key, now_ns);
+        }
+    }
+
+    /// [K4G-05b madde 6 · AMENDMENT-12 "Sıfırlama" (ii)] İlerlemesiz süre H'yi aştıktan sonraki
+    /// İLK ilerlemeli ACK bütün geometrik kopya aralıklarını tabana döndürür: sonraki kopya en geç
+    /// son kopya + taban (son kopya anı = vade − aralık). Emisyon ortak pace ve BURST_CAP'e tabidir
+    /// (INV-RATE-1); sıra kopya kuyruğu içi sıradır. PRE_CONVERGE'de §3.3-B takvimi değişmez.
+    fn reset_copy_backoff(&mut self) {
+        if self.state == SenderState::PreConverge {
+            return;
+        }
+        let base = self.copy_base_ns();
+        for d in &mut self.dup_queue {
+            if d.interval_ns > 0 {
+                let last_fire_ns = d.due_ns.saturating_sub(d.interval_ns);
+                d.due_ns = d.due_ns.min(last_fire_ns.saturating_add(base));
+                d.interval_ns = base;
+            }
         }
     }
 
@@ -6103,6 +6433,10 @@ impl Sender {
                 continue; // teyitli birimin sonraki ACK'leri teyit üretmez
             }
             e.confirmed = true;
+            // Kopya işi aşağıda silinir; birim sahiplenme adayı olmaktan çıkar.
+            e.geometric = false;
+            e.fire_once = 0;
+            sync_adopt_candidate(&mut self.adopt_candidates, u, e);
             if e.seqs.is_empty() {
                 self.units.remove(&u);
             }
@@ -6165,7 +6499,7 @@ impl Sender {
         if p.origin == TransmitKind::Duplicate {
             // Dup-origin: no tombstone (matches queue_losses) — drop the in-flight count here.
             self.bw_sampler.forget_in_flight();
-            self.own_record_gone(p.owner, seq);
+            self.own_record_gone(p.owner, seq, true);
             return;
         }
         let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
@@ -6185,6 +6519,7 @@ impl Sender {
                 expiry_ns,
             },
         );
+        self.own_record_to_tombstone(p.owner);
     }
 
     /// DR-ARQ-PRODUCT-TAIL-1 (gated; default OFF → no-op): emit at most one forced PTO tail probe. Called from
@@ -6257,6 +6592,13 @@ impl Sender {
         });
         self.tail_recovery.on_probe_sent(now_ns); // spend the attempt only on a real emission.
         self.tail_recovery.record_probe(unit.size, false);
+        // [K4G-05b madde 4 (b) · DUR-26 (a)] Bütçe bu emisyonla tükendiyse prob kapsamındaki,
+        // geometrik kaydı olmayan HER teyitsiz birim aynı turda kopya kuyruğuna devredilir
+        // (vade = devir anı). Az önce problanan birim bu turda ikinci kez gönderilmez (kopya
+        // drenajı tur kümesini atlar); ilk kopyası bir sonraki turda çıkabilir (beyanlı).
+        if !self.probe_scope_active() {
+            self.adopt_all_candidates(now_ns);
+        }
     }
 
     /// RECOVER_FWD (§11): ACK-BAĞIMSIZ forward duplication. Kayıp birimleri `factor` kez zaman-aralıklı
@@ -6268,23 +6610,12 @@ impl Sender {
     /// "saf sessizlik loss'u artırmaz; fakat liveness amacıyla probe/retransmit tetikleyebilir" (§5.1).
     fn plan_forward_duplication(&mut self, now_ns: u64) {
         if self.pending_lost.is_empty() {
-            // Saf-sessizlik tail-liveness: kopyası zaten planlı olmayan orijinal-DATA inflight birimleri.
-            let srtt_ns = dur_ns(self.rtt.srtt().unwrap_or(INITIAL_RTT));
-            // [K4G-05b madde 2] Teyitli birimin kalan uçuş kaydı canlılık kolu için aday DEĞİL.
-            let tail: Vec<OpaqueUnit> = self
-                .inflight
-                .values()
-                .filter(|p| p.origin == TransmitKind::Data && self.probe_eligible_owner(p.owner))
-                .map(|p| p.unit)
-                .filter(|u| !self.dup_queue.iter().any(|d| d.unit.id == u.id))
-                .collect();
-            for unit in tail {
-                self.dup_queue.push(DupRec {
-                    due_ns: now_ns,
-                    unit,
-                    interval_ns: srtt_ns.max(1), // geometrik reschedule (drain'de ×COPY_MULTIPLIER)
-                });
-            }
+            // Saf-sessizlik tail-liveness. [K4G-05b madde 4 (a)/(d)] Aday: uçuşta kaydı olan, teyitsiz,
+            // geometrik kaydı olmayan HER birim — kökeni `FecParity` dışında herhangi bir kayıt (v1
+            // yalnız `Data` kökenliyi alıyordu: prob/ARQ/kopya kökenli son kayıt sahipsiz kalıyordu,
+            // D1). Olay güdümlü aday kümesinden (v1'in uçuş × kuyruk taraması yok); geometrik kaydı
+            // olan birimde NO-OP. Vade = şimdi, aralık = taban (srtt, ≤ RTO_MAX) — v1 değerleri.
+            self.adopt_all_candidates(now_ns);
             return;
         }
         let (factor, spacing) = self.dup_params();
@@ -6294,13 +6625,12 @@ impl Sender {
             // superseded — kol-1/kol-2 seçimi recovery-state'e göre DEĞİŞEMEZ (tekdüze
             // muhafazakâr kural; ARQ-koluyla simetri).
             self.mark_tombstone_superseded(rec.seq);
-            for i in 0..u64::from(factor) {
-                self.dup_queue.push(DupRec {
-                    due_ns: now_ns + i.saturating_mul(dur_ns(spacing)),
-                    unit: rec.unit,
-                    interval_ns: 0, // emergency: fire-once, reschedule YOK
-                });
-            }
+            // [K4G-05b madde 5 ekleme kuralı] İstenen D tek seferlik vade; bekleyen tek seferlik
+            // kayıt ≤ D − 1 tutulur, geometrik sahip varsa yalnız onun vadesi öne çekilir.
+            let dues: Vec<u64> = (0..u64::from(factor))
+                .map(|i| now_ns.saturating_add(i.saturating_mul(dur_ns(spacing))))
+                .collect();
+            self.copy_add_fire_once(rec.unit, &dues, factor);
         }
     }
 
@@ -6357,12 +6687,15 @@ impl Sender {
             send_record: None,
         });
         if dup.interval_ns > 0 {
-            let next_interval = dup.interval_ns.saturating_mul(PC_COPY_MULTIPLIER);
+            // PreConverge'de çalışır: §3.3-B takvimi v1 (tavansız ×2; `copy_next_interval_ns`).
+            let next_interval = self.copy_next_interval_ns(dup.interval_ns);
             self.dup_queue.push(DupRec {
                 due_ns: now_ns.saturating_add(next_interval),
                 unit: dup.unit,
                 interval_ns: next_interval,
             });
+        } else {
+            self.own_fire_once_done(UnitId(dup.unit.id));
         }
         self.establish_probe_emitted = self.establish_probe_emitted.saturating_add(1);
         self.establish_interval_ns = self
@@ -6423,15 +6756,19 @@ impl Sender {
                 size: dup.unit.size,
                 send_record: None,
             });
-            // §3.3-B geometrik reschedule: interval_ns>0 (PRE_CONVERGE kopyası) → sonraki kopya
-            // ×COPY_MULTIPLIER (sayı-tavanı YOK, deadline'a dek; teyit gelince §3.3-B stop ile iptal).
+            // §3.3-B geometrik reschedule: interval_ns>0 → sonraki kopya ×COPY_MULTIPLIER (sayı-
+            // tavanı YOK; teyit gelince §3.3-B stop ile iptal). [K4G-05b madde 3/5] Tek kalıcı
+            // geometrik sahip PRE_CONVERGE dışında da kendini yeniden kurar; aralık orada RTO_MAX
+            // tavanlıdır (PRE_CONVERGE'de takvim v1). Tek seferlik kayıt bekleyen sayaçtan düşer.
             if dup.interval_ns > 0 {
-                let next_interval = dup.interval_ns.saturating_mul(PC_COPY_MULTIPLIER);
+                let next_interval = self.copy_next_interval_ns(dup.interval_ns);
                 self.dup_queue.push(DupRec {
                     due_ns: now_ns.saturating_add(next_interval),
                     unit: dup.unit,
                     interval_ns: next_interval,
                 });
+            } else {
+                self.own_fire_once_done(UnitId(dup.unit.id));
             }
         }
     }
@@ -6467,13 +6804,12 @@ impl Sender {
             });
             if self.state == SenderState::RecoverFwd {
                 let (factor, spacing) = self.dup_params();
-                for i in 1..u64::from(factor) {
-                    self.dup_queue.push(DupRec {
-                        due_ns: now_ns + i.saturating_mul(dur_ns(spacing)),
-                        unit: front,
-                        interval_ns: 0, // emergency: fire-once
-                    });
-                }
+                // [K4G-05b madde 5 ekleme kuralı] D − 1 tek seferlik kopya (emergency, fire-once);
+                // birimin bekleyen tek seferlik kaydı ≤ D − 1 tutulur.
+                let dues: Vec<u64> = (1..u64::from(factor))
+                    .map(|i| now_ns.saturating_add(i.saturating_mul(dur_ns(spacing))))
+                    .collect();
+                self.copy_add_fire_once(front, &dues, factor);
             } else if self.state == SenderState::PreConverge {
                 // §3.3-B geometrik kopya: ilk kopya k_base×RTT_floor sonra; ateşlenince ×COPY_MULTIPLIER.
                 // RTT_floor ≈ (unit+sack)/floor_bw. Temiz kanalda ilk SACK bunu ateşlemeden iptal eder.
@@ -6484,7 +6820,8 @@ impl Sender {
                     .checked_div(PRE_CONVERGE_FLOOR_BW)
                     .unwrap_or(0);
                 let first_delay = rtt_floor.saturating_mul(PC_KBASE_NUM) / PC_KBASE_DEN;
-                self.dup_queue.push(DupRec {
+                // [K4G-05b madde 3] Bu kayıt birimin geometrik sahibidir (dizin muhasebesiyle).
+                self.dup_push(DupRec {
                     due_ns: now_ns.saturating_add(first_delay),
                     unit: front,
                     interval_ns: first_delay, // reschedule aralığı (drain'de ×COPY_MULTIPLIER)
@@ -6557,9 +6894,16 @@ impl Sender {
         if self.first_send_ns.is_none() {
             self.first_send_ns = Some(now_ns);
         }
-        let more_pending = !self.tx_queue.is_empty()
-            || !self.pending_lost.is_empty()
-            || !self.dup_queue.is_empty();
+        // [K4G-05b madde 9 · INV-RATE-1] PRE_CONVERGE dışında yalnız VADESİ GELMİŞ kopya kaydı
+        // "bekleyen iş"tir: tek kalıcı geometrik sahip teyide dek yaşar; vadesi gelmemiş kaydı DATA
+        // örneğini app-limited dışı saydırmaz (BtlBw örneği şişmez). PRE_CONVERGE'de v1.
+        let copy_pending = if self.state == SenderState::PreConverge {
+            !self.dup_queue.is_empty()
+        } else {
+            self.dup_queue.iter().any(|d| d.due_ns <= now_ns)
+        };
+        let more_pending =
+            !self.tx_queue.is_empty() || !self.pending_lost.is_empty() || copy_pending;
         // [TUR-D1 F3] Gönderim-ANI gain-damgası: öz-kısma fazları (Drain 0.347× /
         // DrainRtprop 0.75× / PreConverge floor) gain<1 damgası (örnek-sınıflandırma-bilgisi; tüketicisi-arşivlendi, alan-korunur).
         let gain_ge1 = !matches!(
@@ -6594,7 +6938,7 @@ impl Sender {
             },
         );
         // [K4G-05b madde 2] Sahiplik dizini: birimin yeni kaydı (parite dizine girmez).
-        self.own_on_sent(owner, seq);
+        self.own_on_sent(owner, unit, seq, now_ns);
         seq
     }
 
@@ -6619,11 +6963,9 @@ impl Sender {
             None => return 1000,
         };
         let silence = now_ns.saturating_sub(anchor);
-        let srtt = dur_ns(self.rtt.srtt().unwrap_or(INITIAL_RTT));
         // [TUR-3b commit-C] eşik = max(3×srtt, K_CONF_EAI×EAI) — tüketici-8 (srtt-clock-v1 §3).
-        let threshold = srtt
-            .saturating_mul(u64::from(ACK_SILENCE_SRTT_MULT))
-            .max(dur_ns(self.expected_ack_interval()).saturating_mul(u64::from(K_CONF_EAI)));
+        // [K4G-05b madde 4] Tek kaynak: H (sahipsizlik süresi) aynı eşikten türer.
+        let threshold = self.ack_silence_threshold_ns();
         if silence <= threshold {
             return 1000;
         }
