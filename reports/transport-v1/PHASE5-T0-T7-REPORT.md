@@ -3,6 +3,7 @@
 Karar odaklı rapor. Ham hücre kayıtları: [`phase5/RESULTS-RUNNING.md`](phase5/RESULTS-RUNNING.md).
 Ön-kayıt: [`phase5/EXPECTATION.md`](phase5/EXPECTATION.md) ·
 Erratum: [`phase5/ERRATUM-1-blackout-boundary.md`](phase5/ERRATUM-1-blackout-boundary.md) ·
+[`phase5/ERRATUM-2-recover-fwd-count.md`](phase5/ERRATUM-2-recover-fwd-count.md) ·
 Aşama-A: [`phase5/STAGE-A-VALIDATION.md`](phase5/STAGE-A-VALIDATION.md) ·
 Metodoloji sözleşmesi: [`BENCHMARK-METHODOLOGY.md`](BENCHMARK-METHODOLOGY.md)
 
@@ -51,7 +52,10 @@ işaretli supersession notudur (yalnız taban commit).
 ## 4. KAMPANYA MATRİSİ
 
 11 kıyas hücresi × 3 kol × 30 tekrar = **990 ölçüm koşusu** + T3b sondası (5, yalnız Kama).
-Aşama A: 132 koşu (smoke, kanıt değil). Süre: 2026-09-08T15:02:57Z → 20:23:22Z (**5 sa 20 dk**).
+Aşama A: 132 koşu (smoke, kanıt değil). **[ERRATUM-2 (2026-10-18)]** Aşama A süresi 8 dk 16 sn
+([`phase5/STAGE-A-VALIDATION.md`](phase5/STAGE-A-VALIDATION.md):8). ~~Süre:~~ Tam kampanya
+(Aşama B, 11 hücre × 3 kol × 30 tekrar = 990 koşu; `campaign.out`) süresi:
+2026-09-08T15:02:57Z → 20:23:22Z (**5 sa 20 dk**).
 
 | | |
 |---|---|

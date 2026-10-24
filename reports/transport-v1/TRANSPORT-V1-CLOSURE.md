@@ -62,7 +62,7 @@ T0–T7 (990 koşu, N=30, ERRATUM-1 sonrası sıfırdan). Raporlar: `PHASE5-T0-T
 * "Sıfır-geri-besleme kuruluşu garanti" — HAYIR (T1b 18/30; LIM-001).
 * "Doygun dönüş-bant asimetrisi tam doğrulanmış" — HAYIR (T5 %3.5 kullanım; LIM-004).
 * "TCP'ye karşı tam-tel maliyet kıyası" — HAYIR (çekirdek trafiği görünmez; LIM-005).
-* "§11 acil yolu sahada çalışıyor" — HAYIR (330/330 koşuda ateşlemedi; LIM-006).
+* "§11 acil yolu sahada çalışıyor" — HAYIR (~~330/330 koşuda ateşlemedi~~ **[ERRATUM-2 (2026-10-18)]** 15/330 koşuda `RecoverFwd` girişi var, MinimalParity emisyonu ayrı sayaçla ölçülmedi, saha-doğrulanmamış; LIM-006).
 
 ## 7–10. Donmuş profil · invaryantlar · sınırlar · evrim
 

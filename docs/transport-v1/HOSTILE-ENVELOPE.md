@@ -40,7 +40,7 @@ iddiasıdır**: *bozuk geri-besleme körce ileri DATA kaybı sayılmaz.*
 | rejim | neden dışarıda | kanıt |
 |---|---|---|
 | **sıfır-geri-besleme kuruluşu** (ilk uçuşta hiç kullanılabilir ACK yok) | bootstrap mekanizmaları kalibre edilmemiş, bilinçli kapalı; ilerleme garanti edilmez | T1b 18/30 kalıcı durma; ADR-zero-ack-bootstrap; LIM-001 |
-| §11 acil-durum köşesi (çift-yön ≥ %80 kayıp ∧ sub-kbps ∧ ack_conf LOW) | yol kablolu ve birim-testli ama T0–T7'de HİÇ ateşlemedi (`recover_fwd_entries = 0`, 330/330) | ADR-minimal-parity-exception; LIM-006 |
+| §11 acil-durum köşesi (çift-yön ≥ %80 kayıp ∧ sub-kbps ∧ ack_conf LOW) | yol kablolu ve birim-testli ama ~~T0–T7'de HİÇ ateşlemedi (`recover_fwd_entries = 0`, 330/330)~~ **[ERRATUM-2 (2026-10-18)]** T0–T7'de 15/330 koşuda `RecoverFwd` girişi var (T1a 2, T1b 7, T6 6); §11 MinimalParity emisyonu ayrı sayaçla ölçülmedi, saha-doğrulanmamış | ADR-minimal-parity-exception; LIM-006; ERRATUM-2 |
 | sağlıklı yüksek-bant ağda TCP/QUIC'i geçmek | hedef DEĞİL (ARCHITECTURE §4.1 non-goal) | T0/T4/T5 parite |
 | tam sıralı akış semantiği | mesaj-granülü, sırasız (INV-011); sıra üst katmanın | Faz-4 metodoloji §5 |
 | QUIC-tarzı çoklu akış / bağlantı göçü / kernel-NIC paritesi | kapsam dışı | — |

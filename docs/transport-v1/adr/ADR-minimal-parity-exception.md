@@ -61,8 +61,11 @@ clause-düzeyi düzeltmedir.
   `emergency.rs::action`, `budget.rs::{budget_cap_permille, parity_final}`.
 * Faz-5 T3b sondası: köşeye GİRİLDİ (BtlBw 19 ve 1 B/s), `would_zero = 0` çünkü arbiter parity
   önermedi → `SPEC CONFLICT NOT REACHED`.
-* **Faz-5 T0–T7, 330/330 Kama koşusu: `recover_fwd_entries = 0`.** §11 yolu hiçbir doğrulama
-  hücresinde ateşlemedi (T6 health Dead iken bile `ack_confidence = 1000‰` raporlandı). İstisna
+* ~~**Faz-5 T0–T7, 330/330 Kama koşusu: `recover_fwd_entries = 0`.** §11 yolu hiçbir doğrulama
+  hücresinde ateşlemedi~~ **[ERRATUM-2 (2026-10-18)]** Faz-5 T0–T7, 330 Kama koşusunun 15'inde
+  `RecoverFwd` girişi var (`recover_fwd` > 0: T1a 2, T1b 7, T6 6; ham `c.err`, manifestte alan
+  yok — `reports/transport-v1/phase5/ERRATUM-2-recover-fwd-count.md`); §11 MinimalParity
+  emisyonu ayrı sayaçla ölçülmedi (T6 health Dead iken bile `ack_confidence = 1000‰` raporlandı). İstisna
   birim-testlidir (`tests/tv_emergency.rs`), saha-doğrulanmamıştır → HOSTILE-ENVELOPE "OUTSIDE".
 
 ## Revisit conditions

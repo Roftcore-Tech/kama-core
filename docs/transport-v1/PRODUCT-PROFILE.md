@@ -49,7 +49,7 @@ buna devreder). Değerler koddan okunmuştur (2026-09-11), tahmin değildir. Pin
 | Kuruluş probu (DR-EST-1) | ON, PreConverge'de, token-muaf | SHIP | audit ACTIVATION-PROOF |
 | ARQ | `RetxConfig::fixture()`: retx cap 3, reorder_k 3, ρ 2/1, cap aşımı → HandToForward | SHIP `[CAL]` | T1a retx 95, T2a 143 |
 | §8.5 bütçe | `BudgetConfig::fixture()`: profil tavanı 900‰, min_rate 31 B/s, budget_ref 125 kB/s; sıfırlama-reddi | SHIP `[CAL]` | ADR-minimal-parity-exception; clamp 4 300–13 000/hücre |
-| §11 emergency | `HysteresisConfig::fixture()` 300/700‰, dwell 1 s; `EmergencyConfig::fixture()` Dup 2×/3×, 20 ms, MinimalParity 100/200‰ | SHIP (wired) — **saha-doğrulanmamış** | `recover_fwd_entries = 0` (330/330); LIM-006 |
+| §11 emergency | `HysteresisConfig::fixture()` 300/700‰, dwell 1 s; `EmergencyConfig::fixture()` Dup 2×/3×, 20 ms, MinimalParity 100/200‰ | SHIP (wired) — **saha-doğrulanmamış** | ~~`recover_fwd_entries = 0` (330/330)~~ **[ERRATUM-2 (2026-10-18)]** `recover_fwd` > 0 15/330 koşuda (T1a 2, T1b 7, T6 6), §11 MinimalParity emisyonu ayrı sayaçla ölçülmedi; LIM-006 |
 | Alıcı ACK/SACK | `ACK_FREQ_N = 2`, SACK 65 B, `MAX_ACK_RANGES = 16`, R-kota 4, return-bw önseli 31 B/s | SHIP | T6 dönüş-yolu |
 | Dönüş-yolu gözlemcisi | EWMA α 250‰, min yön kanıtı 8 datagram, min ACK örneği 4, Degraded ×3 / Dead ×12 boşluk | SHIP | T6: fwd 45.5‰ ↔ ret 793‰ |
 
