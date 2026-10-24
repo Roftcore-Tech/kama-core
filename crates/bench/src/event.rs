@@ -100,11 +100,12 @@ pub struct RunMeta {
     /// iddiası bununla çelişirse koşu manifest YAZMADAN hata verir (sessiz karışım imkânsız).
     #[serde(default)]
     pub setup_in_window: bool,
-    /// [FAZ-4] PROFİL KİMLİĞİ — `kama-v1-full` yalnız sapma YOKKEN yazılır; aksi hâlde
-    /// `kama-custom`. Yorum/operatör disiplinine DEĞİL, koddan türetilen farka dayanır.
+    /// [FAZ-4] PROFİL KİMLİĞİ — `client_core::runtime::TRANSPORT_V1_PROFILE_ID` (v1.1:
+    /// `kama-v1.1-full`, K4G-05b) yalnız sapma YOKKEN yazılır; aksi hâlde `kama-custom`.
+    /// Yorum/operatör disiplinine DEĞİL, koddan türetilen farka dayanır.
     #[serde(default)]
     pub profile_id: String,
-    /// Kanonik ürün profilinden sapmalar (boşsa kimlik `kama-v1-full`).
+    /// Kanonik ürün profilinden sapmalar (boşsa kimlik `TRANSPORT_V1_PROFILE_ID`).
     #[serde(default)]
     pub profile_delta: Vec<String>,
 }

@@ -225,10 +225,14 @@ pub struct KamaV1Profile;
 /// [FAZ-6 DONDURMA] Transport v1 ÜRÜN-PROFİL kimliği — benchmark manifestlerindeki `arm` değeri.
 /// Yalnız `profile_delta` BOŞ olan koşu bu adı taşıyabilir; herhangi bir sapma `kama-custom`tur.
 /// Bu sabit tek kaynaktır: `crates/bench` etiketi buradan okur, elle yazmaz.
-pub const TRANSPORT_V1_PROFILE_ID: &str = "kama-v1-full";
+/// [v1.1 · K4G-05b — transport-layer-tdd §12 AMENDMENT-12; sahip kararı CEVAP PAKETİ 5, 2026-10-16]
+/// Yeniden-gönderim sahipliği motor davranışını değiştirdiği için kimlik `kama-v1.1-full`'dür
+/// (`RuntimeConfig` alanları değişmez; tel, codec ve `tv_*` değişmez).
+pub const TRANSPORT_V1_PROFILE_ID: &str = "kama-v1.1-full";
 /// [FAZ-6 DONDURMA] Mimari/spec sürüm kimliği. Davranış değiştiren her değişiklik bu kimliği
 /// `transport-v1.x` ya da `transport-v2` yapmak ZORUNDADIR (bkz. docs/transport-v1/EVOLUTION.md §9.5).
-pub const TRANSPORT_V1_ARCHITECTURE: &str = "transport-v1";
+/// [v1.1 · K4G-05b — AMENDMENT-12] `transport-v1.1` (AMENDMENT-11'in beyan ettiği `transport-v1.x`).
+pub const TRANSPORT_V1_ARCHITECTURE: &str = "transport-v1.1";
 
 impl KamaV1Profile {
     /// Sevk FEC profili: `kama_fec_codec` 0x05 — K_shape 8, R_code_max 4, **E = 1024**.
