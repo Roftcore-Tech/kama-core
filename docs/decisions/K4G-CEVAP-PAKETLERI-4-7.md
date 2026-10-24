@@ -1,6 +1,6 @@
-# K4G sprinti — sahip karar paketleri CEVAP 4–7 (kayıt)
+# K4G sprinti — sahip karar paketleri CEVAP 4–7 (kayıt) · güncel kapsam CEVAP 4–9 (dosya adı değişmez)
 
-> Bu dosya K4G-05b tasarım notunun (`docs/design/K4G-05b-RETX-FIX.md`) ve K4G-15/K4G-05 PR'larının atıf verdiği **sahip kararlarının** depodaki kaydıdır (CEVAP PAKETİ 7 — EK B7). Metinler değiştirilmeden aktarılmıştır; her bölümün başında kaynağı ve metnin sha256'sı yazılıdır. Karar mercii Abkarada'dır; bu dosya karar üretmez. Kapı ifadeleri yalnız sahibin mesajında geçerlidir; burada geçmeleri gerçekleşmiş kapı anlamına gelmez.
+> Bu dosya K4G-05b tasarım notunun (`docs/design/K4G-05b-RETX-FIX.md`) ve K4G-15/K4G-05 PR'larının atıf verdiği **sahip kararlarının** depodaki kaydıdır (CEVAP PAKETİ 7 — EK B7). Metinler değiştirilmeden aktarılmıştır; her bölümün başında kaynağı ve metnin sha256'sı yazılıdır. Karar mercii Abkarada'dır; bu dosya karar üretmez. Kapı ifadeleri yalnız sahibin mesajında geçerlidir; burada geçmeleri gerçekleşmiş kapı anlamına gelmez. CEVAP PAKETİ 8 (2026-10-19) ve CEVAP PAKETİ 9 (2026-10-24) bölümleri 2026-10-24'te K4G-05b rev4 ile eklendi; dosya adı mevcut atıflar için korunur.
 
 ---
 
@@ -202,4 +202,144 @@ Not (`docs/design/K4G-05b-RETX-FIX.md`, `k4g/05b-retx-fix` @d6d60be8, taban d46e
 1. `k4g/05-int02` PR'ı **şimdi** (onay gerekmez; "davranış değişikliği yok, yalnız gözlem; `ClientLiveDiag` aynası maliyeti ölçülmedi" beyanı; tam kapı yeşil) → merge → `k4g/05b-retx-fix` rebase.
 2. Not revizyonu: Ek B kapanır (CEVAP 7 + bu EK), A.8 koşulsuz, B1–B8 işlenir, `<ONAY-TARİHİ>` boş kalır → push → SHA + Ek A yeni sha256 bana tek satır.
 3. **"K4G-05b ONAYLANDI"** benden, ayrı mesaj → §8 sırası → **"INT-02 GEÇTİ"** benden → K4G-16.
+````
+
+---
+
+## CEVAP PAKETİ 8 — 2026-10-19
+
+*Kaynak:* dosya `~/Downloads/CEVAP-PAKETI-8-2026-10-19.md` (sahip), bayt-özdeş; sha256 `a3cc8505dc11931938f091a4181dda0202058ec4cde583385d20a3540306c822`
+
+````markdown
+# CEVAP PAKETİ 8 — Abkarada → K4G orkestratörü (2026-10-19)
+
+19 Ekim özetin (OZET-2026-10-19.md) ve K4G-05b notunun revizyonu (`k4g/05b-retx-fix` @c4dfd1fd) okundu. Bu mesaj DUR-CI-2, DUR-11..15 ve §7 listendeki K4G'ye düşen kalemleri kapatır. **"K4G-05b ONAYLANDI" ifadesi bu mesajda değil, ayrı mesajdadır** (bugün). "INT-02 GEÇTİ" yine ayrı.
+
+---
+
+## 1. DUR-CI-2 — CEVAP: önce yeniden tetikle; başlamazsa istisna açık
+
+Kök neden tahmini: GitHub Actions harcama limiti/kredisi (12 Ekim'deki kilitle aynı sınıf; 18 Ekim 11:34 UTC'den beri `startup_failure`, workflow dosyaları değişmedi). **Bugün hesaba 50 $ Actions kredisi eklendi.** Sıra:
+
+1. `core-main`'i main'de elle tetikle; #136 ve #135 kontrollerini yeniden koştur (`gh run rerun` ya da "Re-run all jobs"). **Başlarsa:** DUR-CI-2 = (a) kapandı, istisna açılmaz; `core-main` yeşilse plan §4.2 (iii) sağlanmış sayılır, raporda tek satır.
+2. **Hâlâ `startup_failure` ise:** bu mesajla **CI-KİLİT İSTİSNASI yeniden açıktır** (plan `docs/plans/KAMA-PLAN-4GUN-APP-KRIPTO.md` §4.2): neden GitHub Billing'de teyit edildi — Actions kredisi/limiti 18 Ekim'de tükenmişti, 19 Ekim'de kredi eklendi, hesabın işlemesi bekleniyor. Önce #136, sonra #135 yerel tam kapıyla merge (`k4g-gate.sh` çıktısı + `summary.txt` PR gövdesinde, "CI-KİLİT İSTİSNASI ile merge" satırı). Kilit kalkar kalkmaz `core-main` elle; kırmızıysa ACİL DUR + revert. İstisna kilitle biter.
+3. Dakika tasarrufu — **bu kartta workflow değişmez**, K4G-16 / Sprint 2 Y4'e kalem: PR workflow'unda `concurrency` + `cancel-in-progress`; yalnız `docs/**`/`reports/**` değişen PR'larda cargo adımları atlanır (`paths-ignore`); Rust derleme önbelleği. Ayrı küçük PR, "INT-02 GEÇTİ" sonrası.
+
+## 2. K4G-05b notu @c4dfd1fd — inceleme sonucu
+
+CEVAP 7-EK'in bütün maddeleri karşılandı: **A1** (O(1) geri çekildi; A.7 doğrusal büyüme + kesin biçim; AMENDMENT-9 DEMO-01 ön koşulu; D2 kol 3), **A2** (`reports/transport-v1.1/tcell/tools/` depoda, ön-kayıt içeriği), **B1** (imkânsızlık ispatlanamadı → BURST_CAP tabanı üç yolun başını kapsar; PreConverge v1 tabanı beyanlı), **B2** (G ≤ 1, F ≤ D−1, N = D_max = 3 türetimi), **B3** (dizgeler tele/prologue'a/CCR'ye çıkmıyor, satır atıflı), **B4** (56 mutant, ESI + H dahil), **B5** (D2 kol 2, DATA ≤ min_rate/2), **B6** (soğuk başlangıç kol B, N = 64), **B7** (`docs/decisions/K4G-CEVAP-PAKETLERI-4-7.md`, tarihli atıflar), **B8** (`lineage` referans; `f3`/`f4` panel koşulur). Ek A 171 satır, sha256 `b68340c5…`; silme kapısı 0/0.
+
+**DUR-11..15 CEVAP** (hepsi notun kalın seçeneği → Ek A sha256 değişmez):
+
+| # | Cevap | Not |
+|---|---|---|
+| DUR-11 | **(a)** | A.7'deki kesin biçim (m + ⌊Δ/RTO_MAX⌋) normatif; "≈ 1000" sahip tahmini olarak etiketli kalır; "≤ 1" rampa sonrası eğim. D2 kol 3 fikstür sayısı PR gövdesine; INT-02 raporu gerçek U ve kayıt sayısını yazar — tahmin orada ölçümle değişir, spec'te değil. |
+| DUR-12 | **(a)** | ARQ ve prob yollarındaki aynı delik bu kartta kapanır (+2 kol, +2 mutant = 56). Gerekçe: değişmez "izleyen yol yeniden gönderebilmeli" diyor; iki yolu açık bırakmak değişmezi yarım uygular. |
+| DUR-13 | **(a)** | N = D_max = 3; mevcut sabitlerden türetildi (`DEFAULT_DUP_FACTOR` 2, `dup3_factor` 3), yeni sayı yok. Ölçümde sapma → DUR. |
+| DUR-14 | **(a)** | Beyan. CEVAP 7'deki "ilk örnek zaten RTO_MAX ile sınırlı" cümlem **yanlıştı**, geri çekildi. Yerine soğuk-başlangıç testinin kol B'si (bayat tohum → N = 64 kabulde yakınsama) geçer; (b) DUR-1 (a) ile çelişir, reddedildi. |
+| DUR-15 | kural şimdiden | `dr_cs3_panel` düzeltmeyle kırmızıya düşerse: kırmızı yalnız v1.1'in **kasıtlı** değiştirdiği davranışı (fire-once, tavan) iddia eden satırdansa → iddia güncellenir, DUR-8 biçiminde (test başına paragraf, 2×2 çıktı, mutasyon) + DR-CS-3 kaydına YAMA KAYDI; eşik/amaç başka nedenle değişiyorsa DUR, kod beklemez — o test atlanmadan diğerleri sürer, PR o DUR kapanmadan açılmaz. |
+
+**Onay biçimi:** onay mesajım c4dfd1fd içindir; #136 merge sonrası rebase'in yalnız §0'daki satır ofsetlerini kaydıracağını, spec ve Ek A hedeflerinin değişmediğini kabul ediyorum — rebase sonrası SHA raporda tek satır. Kod, onay mesajı gelince, CI'yi beklemeden başlar (testler önce tabanda kırmızı); PR açılışı #136'nın merge'ünü bekler.
+
+## 3. #135 ERRATUM-2 — kabul
+
+Belge düzeltmesi doğru ve kanıtlı; CI açılınca (ya da §1 istisnasıyla, #136'dan sonra) merge. Ek kalem **K4G-16'ya:** §4'teki desen ("alan yok" → 0 okundu, "vakum sayaç") daha önce de görüldü (D0 kaynak denetimi, `first_probe_tick`). Analiz betiklerine "alan yoksa HATA, sıfır değil" kuralı ve manifest şeması ↔ `c.err` alan eşleşmesi denetimi — ayrı küçük PR, INT-02 sonrası.
+
+## 4. §7 listendeki diğer kalemler — K4G'ye düşenler
+
+- **Hasan'a release bağlantısı:** benden gidiyor. README-HASAN'daki iki eksik pratik not (loopback'te iki düğüm `connect`'ten önce başlatılır; manifest INTERNET izni) → K4G-16'da README'ye iki satır; release yeniden yayımlanmaz, release notuna bir satır.
+- **Dedup tablosu bağlı değil → yeniden başlatmada aynı mesaj iki kez görünebilir** (`kama-app/src/messaging.rs:120`): demo riski. KATMAN 6'ya kalem; Sprint 2'de Hayri'ye küçük kart (benden). K4G kodu dokunmaz.
+- **KAPSAM K3 "0-RTT ilk mesaj" ↔ kod (ertelendi):** K4G-16 belge PR'ında YAMA KAYDI (üstü çiz, "0-RTT kodda yok, ertelendi — K4G kararı"). **G-IMPL-S3 "BEKLİYOR"**, **CLAUDE.md "8 crate"**, S1/S3 "SEAM-FROZEN HOLD" aynı PR'da.
+- **"İki katman" netleştirme:** CAD-18'deki PKI bağı kastediliyor (Noise anahtar sahipliği + sertifika zinciriyle kimlik); iki AEAD değil. Metin değişmez.
+- **22 B:** küçültme yok, DR açılmaz. PTT başına asıl kaldıraç 11 B ara çerçeve (BatchPayload) ve `bundle_ms` — Sprint 2 dışı.
+- **Medya anahtarı (a/b/c), PTT ses yolu sahipliği, KM-SEAM-AM, arka plan (wake lock/Doze), O-20:** Sprint 2 kararları, bu oturumun işi değil; Resul/Hasan'la ben kapatırım, sonuç S2-A'ya gider.
+- **Yerel checkout:** `Desktop/kama-core`'u `git pull --ff-only` ile güncelle (izin verildi; izlenmeyen dosyalara dokunma).
+
+## 5. Sıra (bugün)
+
+CI yeniden tetikleme (§1) → ayrı mesajımla **"K4G-05b ONAYLANDI"** → kod (tabanda kırmızı testler önce) → #136 merge → rebase + SHA → #135 merge → PR → mutasyon → T-hücre (gece) → INT-02 → rapor → benden **"INT-02 GEÇTİ"** → K4G-16.
+
+Rapor: CI durumu tek satır (başladı / başlamadı + ekran görüntüsündeki hata metni); onaydan sonra gün sonu tek rapor.
+````
+
+---
+
+## CEVAP PAKETİ 9 — 2026-10-24
+
+*Kaynak:* dosya `~/Downloads/CEVAP-PAKETI-9-2026-10-24.md` (sahip), bayt-özdeş; sha256 `8d0ce2af168d1b5eb28eccc2cd2c837f9d7e9a524a7c42f386fb4add681f85bb`
+
+````markdown
+# CEVAP PAKETİ 9 — Abkarada → K4G orkestratörü (2026-10-24, v2) — bağımsız inceleme + senin 10 doğrulayıcın sonrası plan revizyonu
+
+**Girdi:** `Kama_Adversarial_Inceleme_2026-10-23.md` (incelemeci; kaynak okuması, cargo yok) + senin bağımsız doğrulaman (10 iddia: 9 DOĞRU, DEVIR KISMEN; `verify-wf_f84f4d0e.json`). Doğrulama kabul; daraltmaların da kabul. Bu mesaj DUR-16..19'u cevaplar, iki yeni kart açar, notun rev4 içeriğini verir, INT-02 kapısını günceller. **Kapı ifadesi bu mesajda yok.**
+
+**Çalışma kuralı:** her düzeltme önce **tabanda kırmızı testle** (P0). Doğrulayıcı "DOĞRU" dediği için değil, test kırmızı olduğu için kod yazılır. Yanlışlanan madde nota "yanlışlandı: <test>" diye girer.
+
+---
+
+## 1. DUR-16..19 CEVAP
+
+| # | Cevap |
+|---|---|
+| **DUR-16** (R1/R2/R3 + tablo sızıntısı kapsamı) | **(b)** — iki ayrı kart: **K4G-05c** alıcı kabul bütünlüğü (R1 + R2 + sızıntı; `client-core`), **K4G-05d** bekleyen-receipt kuyruğu (R3; `kama-app`). Kartlar §3'te. "Reliable düzeldi" üçü merge olmadan söylenmez. **"INT-02 GEÇTİ" üçünü de bekler** ve INT-02'ye R2'yi gerçekten tetikleyen kol eklenir (§5) — "INT-02 düzeltmesiz de geçer" olasılığı kapıyı boşaltmasın. |
+| **DUR-17** (not revizyonu) | **Evet.** Beş düzeltmen + §2'deki rev4 maddeleri işlenir, dala push, bana tek satır SHA + Ek A sha256. **Onay rev4 SHA'sına yazılır.** 19 Ekim onay metni oturuma yapıştırıldıysa rev4'le yenilenir; yapıştırılmadıysa ilk onay rev4'e. Kod rev4 onayından önce yazılmaz (değişmedi). |
+| **DUR-18** (R2 statüsü) | **K4G-05c'de kapatılır; beyanlı sınır olmaktan çıkar.** Gerekçe: düşen birimin arkasındaki teslimlerin 4096 birime dek beklediği yeni bulgu + gerçek tetiğin düğüm takılması olması (Kotlin dinleyicisi, disk — Android arka planında gerçekçi). DUR-K4G-01 (i) kararı geri çekildi: plan:532 satırına YAMA KAYDI ("2026-10-24: beyanlı sınır kaldırıldı → K4G-05c"); `runtime_e2e.rs:288`'deki davranışı sabitleyen test DUR-8 biçiminde (paragraf + 2×2) düzeltilir. INT-02 `delivery_channel_drops == 0` şartı kalır, artık **yapısal** sağlanır. |
+| **DUR-19** (#136) | (i) `INT-02-RAPORU.md:127` cümlesi merge öncesi düzelir: "ürün koduna salt-okunur canlı ayna ve teşhis yazıcısı eklendi; motor kararları değişmedi; maliyeti ölçülmedi". (ii) Teşhis yazıcısı ve `ClientLiveDiag` tur-başı yazımı **çalışma zamanı bayrağının** arkasına (`RuntimeConfig` alanı, varsayılan **kapalı**; tek derleme, feature değil — INT-02 ve ürün aynı ikiliyi koşsun); INT-02 düzeneği açar. (iii) Birleşik adayda **bir** karşılaştırma koşusu bayrak açık/kapalı (gating2, 2 tohum) raporda. #136 bu üç değişiklikle merge; "davranış değişikliği yok" iddiası bayrak kapalıyken geçerli. |
+| **A3 sırası** | **Değişti** (S2-A'ya ayrıca yazıldı): A3'ün birinci parçası (yeni dosya `hub_link.rs`, sahte hub conformance) şimdi; `runtime.rs`/`transport.rs` entegrasyonu **K4G-05c merge'ünden sonra**; A3 DONE ve INT-03 yine "INT-02 GEÇTİ" sonrası. Senin dosyaların A şeridine kapalı (çakışma haritası aşağıda). |
+
+**Numaralandırma:** DUR-16..19 seninkiler; benim yeni kararlarım **DUR-20** (K_MAP) ve **DUR-21** (PTT/dosya) — §2'de.
+
+## 2. K4G-05b rev4 — nota girecekler (senin beş maddenle birlikte)
+
+| Konu | Rev4 metni / kuralı |
+|---|---|
+| **D1 fikstürü** (senin iki ön koşul) | Test PreConverge **dışında** (önce RTT kurulur); kurban birim taze bir ACK'ten hemen sonra, **en yüksek seq** ile gönderilir ve ondan sonra ACK'lenen paket yoktur; **yeni uygulama verisi yok** (kusur oturum düzeyinde: başka birimin ACK'i prob bütçesini yeniler — notta böyle yazılır); her yeniden emisyonda runtime'da **payload mevcut** iddiası. |
+| **INV-NO-ORPHAN üç kabul koşulu** | A.7 okumasına: birim kayıtlı · payload mevcut · hizmet verilebilir bütçede yeniden seçilebilir. `confirmed_units` dışında hiçbir yol payload'u silmez (test). |
+| **ESI** | Madde 1 bütün yolları kapsar (ACK/tombstone/un-loss eşleşmesi, **prob hedefi**, RECOVERED); iç tipler `UnitId` / `Seq` / `Fec{block, esi}`. **Yalnız-parite kaydının akıbeti tanımlanır:** parite Reliable birim değildir, sahiplenilmez; kaydı kendi ACK'i, kayıp ilanı ya da süre dolumuyla kapanır; ARQ/prob'a girmez; runtime tablolarına girmez. Test: parite ESI = `UnitId` 0..3, uçuş + tombstone, en eski kayıt parite. |
+| **BURST_CAP (senin BURST)** | A.4 **tur başı taban kuralı**: `sender.rs:2322` tabanı = max(tx başı, ARQ planının ilk kaydı, bekleyen prob hedefi, ilk vadeli kopya kaydı) — **ilk kırpmadan önce**; token üretilmez, birikime izin; seçim ve uyanma aynı başları kullanır. Yol girişinde yükseltme cümlesi çıkar. Test: doğrulayıcının modeli (37 B / 42 B / 1050 B, 600 s) tabanda kırmızı. |
+| **Sınıflar arası pay (DUR-9 a → b-lite)** | Vadesi gelmiş kopya kuyruğu başı en geç her `K_ARQ_SHARE`'inci turda DATA'dan **önce** hizmet alır (RECOVER_ARQ'daki mekanizma kopya kuyruğuna genişler; **yeni sayı yok**, ayrı kova yok). A.4 "sınıflar arası sıra DEĞİŞMEDİ" cümlesi bu tek istisnayla. Test: pace'i dolduran DATA + eski kopya → ≤ K_ARQ_SHARE tur. Gecikme sözü yok. |
+| **RTT (senin RTT)** | KABUL KURALI rev4: örnek, çerçevenin **en büyük yeni-onaylı seq'inin kendi kaydından** (a); ilk kez onay (b); kaydın kökeni Data / Retransmit / Duplicate olabilir, zaman **o iletimin** gönderim anı (her iletim taze seq alır → tek anlamlı; CEVAP 5'teki Karn dışlamam gereksizdi, kalkar); FEC parite örnek vermez; (d) doygun `ack_delay` yok; (e) guard. **srtt-yok istisnası (DUR-1 a) kalkar**, DUR-14 düşer. **Tazelik ölçütü:** son kabul edilen örneğin yaşı ≤ max(10 × srtt, RTO_MAX); aşılırsa `rtt_stale` sayacı (INT-02 raporlar). Testler: yol RTT 0.4 → 2 s kalıcı artış, kopyalı trafik → yakınsama; kopya/FEC ağırlıklı 600 s → örnek yaşı sınırda; soğuk başlangıç A/B/C kilitlenmez (kilitlenirse DUR). Teslim / BW / delivered-kredi RTT kararından bağımsız (test iddia eder). m12'deki 60.5 s'nin `srtt` alanı olduğu tek satırla teyit. A.1/A.3 değişir. |
+| **Sıfırlama kapsamı** | İlk ilerlemeli ACK vadeleri tabana döndürür; emisyon pace + BURST_CAP'e tabi (INV-RATE-1) — test: tur başına emisyon ≤ bütçe, sıra HOL. |
+| **Devir zamanı (senin DEVIR)** | Normatif: devir **bütçenin tükendiği turda, hemen**; A.7'nin "en geç sonraki prob vadesi" cümlesi çıkar. "≤ 60 s" **uygunluk** sınırı olarak, zamanlayıcı başlangıç anı ve varsayımlarıyla yeniden türetilir; gerçek emisyon token'a bağlı, D1 testi uygunluk ve emisyonu **ayrı** raporlar. |
+| **Kaynak / tarihçe (DUR-20)** | CEVAP 7-EK A1'deki "AMENDMENT-9 DEMO-01 ön koşulu" kararım **geri çekildi** (K = 1024 hop-ACK'siz PN tavanı; hub fallback ister; bellek sınırı değil — doğrulandı). Yerine (madde 11): birim başına iletim eşlemesi ve zamanlama kaydı ≤ **K_MAP**, en eski budanır; **geç-ACK ufku = K_MAP × RTO_MAX** beyanlı; ufuk dışı geç ACK → Expired/Unknown: birimi **teyit etmez**, birim sahipli kalır, yeniden gider, RTT vermez. Kopya işi ≤ 3 (var); payload ≤ store (var); alıcı tampon → 05c; **teyit sonrası bayat motor kararının runtime tablolarına eklenmesi** (`runtime.rs:1469-1470` sızıntısı) → kaynağı 05b madde 2 (`confirmed_units`: teyitli birim için karar üretilmez), bekçisi 05c (runtime teyitli/olmayan birim için kayıt eklemez; mevcut sızıntı temizlenir). A.7 "doğrusal büyür" → "sınırlı; ufuk K_MAP × RTO_MAX". **DUR-20 CEVAP: K_MAP = 8** (ufuk 240 s = 8 × RTO_MAX; türetim notta: desteklenen azami RTT + bir tam RTO_MAX; sapma gerekçesi varsa DUR). |
+| **Gözlem** | DUR-19 (ii)/(iii). |
+
+## 3. Yeni kartlar (ayrı notlar ≤ 1 sayfa + yama metni bana; kod "K4G-05c ONAYLANDI" / "K4G-05d ONAYLANDI" bekler)
+
+**K4G-05c — Alıcı kabul bütünlüğü (R1 + R2 + sızıntı)**
+- Neden: Alıcı tutamadığı veriye ACK veriyor (kanal dolu) ve arkasındaki teslimler 4096 birime dek bekliyor; tampon dolunca eksik birimi atlıyor; teyit sonrası bayat kayıtlar runtime tablolarında birikiyor. Üçü de gönderen payload'u sildikten sonra sessiz kayıp ya da oturum ömrü boyunca büyüme.
+- Ne: (R2) **tek kabul kararı** — oturum gelen-kutusunda yer ayır + payload'u tut + dedup'u ilerlet + ACK'e uygun işaretle; dördü birlikte ya da hiçbiri; yer yoksa o PN **ACK'lenmez** (SACK boşluğu; gönderen yeniden gönderir), dedup ilerlemez, sayaç. `Receiver`'a kabul kararı girdisi (iç API; tel değişmez). Bloklayan `await` yok; gelen kutusu oturum başına sınırlı, **sıradaki eksik birim için yer ayrılı**; FEC RECOVERED ve parçalı mesaj aynı kural. (R1) `Reorder` eksik Reliable birimi **asla atlamaz**; `held > cap` gönderen ihlalidir → en yeni pencere-dışı birim ACK'siz düşer + `reorder_skip` sayacı. Gönderen: yeni birim kabulü **birim kimliği mesafesiyle** sınırlı (en yeni − en eski onaysız < alıcı cap − pay) → `Backpressure`; cap ürün sabiti (mevcut 4096), pay = kopya işi sınırı (3) × … notta türetilir. (Sızıntı) runtime, teyitli ya da bilinmeyen birim için `seq_to_unit`/`unit_seqs` kaydı eklemez; teyitte temizler; mevcut sızıntı için test (oturum boyu tablo boyutu ≤ sınır). Eski testler (`transport.rs:1323-1338` atlama; `runtime_e2e.rs:288` düşürme) DUR-8 biçiminde beyanlı.
+- Nereye: `crates/client-core/src/{transport.rs, runtime.rs}`, `crates/adaptive-transport/src/receiver.rs` (kabul girdisi); otoriter belgeye YAMA KAYDI (hangisi, notta); `s1.rs` dokunulmaz; tel/codec/tv_* değişmez.
+- Bağımlılık: K4G-05b rev4 PR merge; P0 testleri tabanda kırmızı.
+- Done: R1/R2/sızıntı regresyonları yeşil; INT-02 `ek-tuketici-durak` kolu: teslim %100, `delivery_channel_drops = 0`, `reorder_skip = 0`, dedup yanlış ilerlemedi, kontrol yolu çalıştı; mevcut testler + tv_* yeşil; mutasyon kabul kararı dalları.
+
+**K4G-05d — Bekleyen RECEIPT kuyruğu (R3) [+ isteğe bağlı DUR-21]**
+- Neden: `send_receipt` tek deneme; Backpressure'da receipt unutuluyor; canlı oturum 7 güne dek sürebildiği için "teslim edildi" o süre gelmiyor (yanlış "teslim edildi" yok). Tetik: aynı eşe büyük dosya giderken kuyruğun dolması — demoda gerçekçi.
+- Ne: `(peer, msg_id)` ile tekilleştirilen **sınırlı** bekleyen-receipt kuyruğu; ilk başarılı transport kabulüne dek kapasite açıldığında yeniden sunulur; `Ok` sonrası tekrar transport'un. İkinci ağ ARQ'su **değildir** (zamanlayıcı yok). Sınır = outbox eş başına sınırı (256; yeni sayı yok). "Tek deneme" açıklaması ve testleri beyanlı güncellenir; `flush_receipts` süre dolumu kopyalanmaz. **DUR-21 CEVAP: madde karttan ÇIKAR** — PTT açıkken dosya parça sınırı için sayı yok; karma trafik INT-02'de ölçülür, karar Sprint 3.
+- Nereye: `crates/kama-app/src/messaging.rs` (+ test); AMP/S1 dokunulmaz.
+- Bağımlılık: yok (05b/05c'den bağımsız).
+- Done: Backpressure → kapasite → yeni oturum olmadan teslim durumu tamamlanır; kuyruk sınırlı; INT-02 sonunda bekleyen receipt 0; mevcut testler yeşil.
+
+## 4. P0 — kanıt ve taban (1 gün; kod düzeltmesi yok)
+
+Tabanda kırmızı beklenenler: D1 (rev4 fikstürü) · ESI (0..3, uçuş + tombstone, en eski parite; prob pariteyi hedefler) · R1 (cap 3; `1,2,3,4,0`) · R2 (tüketici durur → kanal dolar → payload düşer, PN ACK'lenir, dedup ilerler; arkası bekler) · R3 (Backpressure → kayıt yok) · BURST (37/42/1050, 600 s) · sınıflar arası (doygun DATA + eski kopya) · sızıntı (teyit sonrası tablo büyür). Tabanda **yeşil** beklenen (rev4'te de yeşil kalmalı): RTT yol değişimi 0.4 → 2 s. Yalnız rev4'te: sıfırlama patlaması, tazelik. Değişecek eski testler listesi (atlama, düşürme, DR-CS-1 üçlüsü) nedenleriyle PR öncesi bana. **Rapor: P0 tablosu tek mesaj.**
+
+## 5. INT-02 kapısı (ölçüt eklendi; kaldırılan yok)
+
+- Değişmeyen: gating2 10 × 600 s **10/10**; 60 s kesinti **5/5** aynı oturum; dosya kolu ölçülür; `delivery_channel_drops = 0`, app/crypto retx = 0, ctx/hub = 0.
+- **Yeni kol `ek-tuketici-durak`:** alıcı dinleyicisi 30 s durur (kanal dolar), yeniden başlar; 50 TEXT akarken → teslim %100, `delivery_channel_drops = 0`, `reorder_skip = 0`, dedup doğru, kontrol yolu (ACK/heartbeat) duraklamada çalışmış — **3 tohum, 3/3**. R2'yi tetikleyen tek kol budur; 05c olmadan kırmızı beklenir.
+- Yeni hüküm: koşu sonunda bekleyen receipt = 0; `reorder_skip = 0`; `rtt_stale` raporlanır (hüküm değil).
+- `ek-dosya-ptt`: "bas→ilk ses" dosya altında raporlanır (ölçüt değil).
+- Zaman çizelgesine: tarihçe tabloları boyutu, en eski onaysız birimin yaşı/sahibi/son gerçek gönderimi, token reddi nedeni, bekleyen receipt, RTT örnek sayısı/yaşı. Bayrak açık/kapalı karşılaştırma (DUR-19 iii).
+- "INT-02 GEÇTİ" = 05b rev4 + 05c + 05d merge **ve** yukarıdakiler.
+
+## 6. Sıra, tahmin, çakışma
+
+P0 (1) → rev4 notu + onay → **05b** (2–3) → **05c** (2–3) → **05d** (0,5) → madde 11 / A.7 / §16.2 (1) → mutasyon + kapılar (1) → T-hücre gece → INT-02 → rapor → "INT-02 GEÇTİ". **≈ 9–10 iş günü → 5–6 Kasım**; senin yeniden hesabın gelince bu satır güncellenir. Her kart ayrı PR.
+
+Çakışma haritası (A şeridi dokunmaz): `crates/adaptive-transport/**`, `crates/client-core/src/{runtime.rs, transport.rs}` (05c bitene dek), `crates/client-core/tests/transport_v1_freeze.rs`, `crates/kama-app/src/messaging.rs`, `crates/bench/**`, `.github/workflows/nightly.yml`. A şeridi yeni dosyalarda (`hub_link.rs`, `s4.rs`, `ref/hub/**`, `vectors/hub/**`, `s4_*`).
+
+Çevre: `CARGO_BUILD_JOBS=2`, tek cargo, worktree başına target, ölçüm çıktısı `/tmp` dışında. CI başlamadıysa CEVAP 8 §1 (2).
+
+Rapor: P0 tablosu → rev4 SHA + Ek A sha256 tek satır → 05c/05d notları → sonra gün sonu tek rapor.
 ````
