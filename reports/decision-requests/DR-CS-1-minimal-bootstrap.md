@@ -1,5 +1,7 @@
 # DR-CS-1 — COLD-START PROGRESS DR: "MINIMAL BOOTSTRAP"
 
+> **YAMA KAYDI — 2026-10-24 [v1.1 · K4G-05b — kabul fikstürü düzeltmesi; sahip kararı CEVAP PAKETİ 7, 2026-10-18, DUR-8 (a) koşul 4 — `docs/decisions/K4G-CEVAP-PAKETLERI-4-7.md`]:** v1.1'de kabul fikstürleri düzeltildi; neden: teyit edilmiş birimi yeniden planlayan v1 davranışına dayanıyordu. Kapsam: `crates/adaptive-transport/tests/dr_cs1_acceptance.rs` DI-1 (`f2b_di1_first_data_loss_bootstrap_recovery`), DI-1C (`f2b_di1c_rearmed_pto_lifecycle_exposure`), DI-2 (`f2b_di2_single_ack_erasure_spurious_expected`); yalnız ACK'lenen seq'lerin seçimi değişir, assertion ve eşikler DEĞİŞMEDİ; eski/yeni kod × eski/yeni fikstür matrisi ve mutasyon çıktısı K4G-05b PR açıklamasında. Otoriter v1.1 kaydı: `specs/transport-layer-tdd.md` §12 [AMENDMENT-12]. Bu belgenin metni değiştirilmedi.
+
 > **ARŞİV ÜST-NOTU:** Bu doküman talimat-zincirinin (v1 → v2 → v3 → v4 → v5 → v6 → **v7**) nihai
 > normatif halidir; v7, v6'yı hükümsüz kılar. v1-incelemesi (EK1, 11 madde) ve v3-incelemesi (EK2,
 > B1-B5+T1-T2) AYNEN yürürlükte; v2-incelemesi (N1-N8) gövdeye işlenmiştir; v4-incelemesi = EK3
