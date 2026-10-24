@@ -1911,6 +1911,8 @@ pub struct Sender {
     parity_expiry: VecDeque<(u64, u64)>,
     /// [K4G-05b madde 1] Süre dolumuyla (K_MAP × RTO_MAX) düşen parite kaydı sayısı (SALT-GÖZLEM).
     diag_parity_expired: u64,
+    /// [K4G-05b madde 11] K_MAP budamasıyla düşen birim kaydı sayısı (SALT-GÖZLEM).
+    diag_kmap_pruned: u64,
     /// [K4G-05b madde 2/4/11] Birim başına sahiplik dizini (bkz. [`UnitOwnership`]). Boyut ≤ motorda
     /// kaydı ya da kopya/ARQ işi olan birim sayısı (runtime deposuyla sınırlı, `runtime.rs` 4096);
     /// teyit kümesi onun alt kümesidir.
@@ -2203,6 +2205,7 @@ impl Sender {
             tombstone_evicted: 0,
             parity_expiry: VecDeque::new(),
             diag_parity_expired: 0,
+            diag_kmap_pruned: 0,
             units: BTreeMap::new(),
             confirmed_out: VecDeque::new(),
             confirmed_units_overflow: 0,
@@ -5106,6 +5109,13 @@ impl Sender {
         v
     }
 
+    /// [K4G-05b madde 1/11] Kayıt sınırları (SALT GÖZLEM): `(k_map_budanan_birim_kaydı,
+    /// süre_dolumuyla_düşen_parite_kaydı)`. Hiçbir karar okumaz.
+    #[must_use]
+    pub fn diag_record_bounds(&self) -> (u64, u64) {
+        (self.diag_kmap_pruned, self.diag_parity_expired)
+    }
+
     /// [FAZ-2 KALEM-2] §8.5 bant-türevli bütçe clamp'inin parity oranını KÜÇÜLTTÜĞÜ karar sayısı.
     #[must_use]
     pub fn diag_parity_budget_clamped(&self) -> u64 {
@@ -6295,6 +6305,38 @@ impl Sender {
         e.inflight_n = e.inflight_n.saturating_add(1);
         e.last_tx_ns = now_ns;
         sync_adopt_candidate(&mut self.adopt_candidates, u, e);
+        // [K4G-05b madde 11 · DUR-20/28] Birim başına iletim kaydı ≤ K_MAP: aşılırken birimin EN
+        // ESKİ kaydı budanır (yeni kayıt kuyruğun sonundadır, budanmaz).
+        let mut pruned: Vec<u64> = Vec::new();
+        while e.seqs.len() > K_MAP {
+            if let Some(old) = e.seqs.pop_front() {
+                pruned.push(old);
+            }
+        }
+        for old in pruned {
+            self.prune_unit_record(u, old);
+        }
+    }
+
+    /// [K4G-05b madde 11 · Ek B.2.3] K_MAP BUDAMASI: birimin `seq` kaydı İLAN ETMEDEN motordan düşer
+    /// — uçuştaysa `inflight` + `inflight_bytes` + `bw_sampler` uçuş sayısı, tombstone'daysa mevcut
+    /// tahliye deseni (uçuş sayısı; sıra girdisi tembel), her durumda kayıp dedektörü haritası
+    /// (`loss.forget`). Ledger, kayıp sayaçları ve `tv_loss` değişmez. Sonraki geç ACK'i ufuk
+    /// dışıdır → Expired/Unknown: birimi teyit etmez, RTT örneği vermez; birim sahipli kalır ve
+    /// yeniden gönderilir (prob hedefiyse emisyon-anı doğrulaması iptal eder).
+    fn prune_unit_record(&mut self, u: UnitId, seq: u64) {
+        if let Some(p) = self.inflight.remove(&seq) {
+            self.inflight_bytes = self.inflight_bytes.saturating_sub(p.unit.size);
+            self.bw_sampler.forget_in_flight();
+            if let Some(e) = self.units.get_mut(&u) {
+                e.inflight_n = e.inflight_n.saturating_sub(1);
+                sync_adopt_candidate(&mut self.adopt_candidates, u, e);
+            }
+        } else if self.tombstones.remove(&seq).is_some() {
+            self.bw_sampler.forget_in_flight(); // [commit-B §3.7] tahliye deseni
+        }
+        self.loss.forget(seq);
+        self.diag_kmap_pruned = self.diag_kmap_pruned.saturating_add(1);
     }
 
     /// Birimin `seq` kaydı motordan TAMAMEN düştü (ACK, tombstone TTL/tahliye, tombstonesuz kopya
