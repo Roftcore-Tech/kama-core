@@ -1,0 +1,13 @@
+# /opt/kama-hub/compose.yml — KM-DEPLOY-TDD-001 v0.5 §5 (birebir). Yaşam döngüsünün tek sahibi
+# systemd'dir (`kama-hub.service`); bu dosyayla elle `up -d` / `down` çalıştırılmaz.
+services:
+  hub:
+    image: ghcr.io/roftcore-tech/kama-hub:${HUB_TAG}
+    network_mode: host          # UDP için araya Docker NAT'ı girmesin; port doğrudan 47000
+    read_only: true
+    user: "65532:65532"
+    cap_drop: [ALL]
+    volumes:
+      - ./hub.json:/config/hub.json:ro   # bind mount: dosyanın SUNUCUDAKİ sahibi/izni geçerli → 65532 okuyabilmeli (§6.2)
+    restart: "no"               # yeniden başlatmayı Docker değil systemd yapar (tek sahip)
+    logging: { driver: json-file, options: { max-size: "50m", max-file: "5" } }   # ≤ 250 MB

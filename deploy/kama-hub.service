@@ -1,0 +1,17 @@
+[Unit]
+Description=Kama hub (docker compose, foreground)
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/kama-hub
+ExecStart=/usr/bin/docker compose -f /opt/kama-hub/compose.yml up --exit-code-from hub --remove-orphans
+ExecStop=/usr/bin/docker compose -f /opt/kama-hub/compose.yml down
+Restart=always
+RestartSec=2
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
