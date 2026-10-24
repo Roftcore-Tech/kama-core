@@ -1403,6 +1403,18 @@ impl RecordOwner {
     }
 }
 
+/// [K4G-05b madde 2/4/11 · Ek B.2.3] Birim başına SAHİPLİK DİZİNİ girdisi (`Sender::units`).
+/// Olay güdümlü güncellenir (gönderim, kayıp ilanı, ACK, budama, kayıt silme) — tam tarama yok;
+/// anahtar `BTreeMap<UnitId, _>` (deterministik, ADR-17). Girdi birimin ilk iletimiyle açılır;
+/// teyitsiz birimde teyide dek, teyitli birimde son kaydı (uçuş + tombstone) düşene dek yaşar.
+#[derive(Debug, Default)]
+struct UnitOwnership {
+    /// Birimin motorda yaşayan iletim kayıtlarının seq'leri (uçuş + tombstone), artan sırada.
+    seqs: VecDeque<u64>,
+    /// Teyit kümesi (`confirmed_units`) üyeliği: teyitli birim için karar ÜRETİLMEZ (madde 2).
+    confirmed: bool,
+}
+
 /// Bir gönderilmiş paketin muhasebe kaydı (RTT/BW/loss + retransmit).
 struct InflightPacket {
     unit: OpaqueUnit,
@@ -1844,6 +1856,16 @@ pub struct Sender {
     parity_expiry: VecDeque<(u64, u64)>,
     /// [K4G-05b madde 1] Süre dolumuyla (K_MAP × RTO_MAX) düşen parite kaydı sayısı (SALT-GÖZLEM).
     diag_parity_expired: u64,
+    /// [K4G-05b madde 2/4/11] Birim başına sahiplik dizini (bkz. [`UnitOwnership`]). Boyut ≤ motorda
+    /// kaydı ya da kopya/ARQ işi olan birim sayısı (runtime deposuyla sınırlı, `runtime.rs` 4096);
+    /// teyit kümesi onun alt kümesidir.
+    units: BTreeMap<UnitId, UnitOwnership>,
+    /// [K4G-05b madde 2 · Ek B.2.2] TEYİT ÇIKTISI tamponu: son `take_confirmed_units`'ten bu yana
+    /// teyit kümesine İLK kez giren birimler, giriş sırasıyla. SINIRLI: `CONFIRMED_LOGICAL_CAP`;
+    /// taşma sözleşme ihlalidir (en eski düşer + `confirmed_units_overflow`).
+    confirmed_out: VecDeque<u64>,
+    /// [K4G-05b madde 2] Teyit çıktısı taşma sayacı (SALT-GÖZLEM; testte ve INT-02'de 0 beklenir).
+    confirmed_units_overflow: u64,
     /// [BURST-FUSION] Yapı-gate'in burst dalındaki politikası (default = sevk davranışı).
     fec_structure_policy: FecStructurePolicy,
     /// [R-SWEEP] Yapı-gate'in açtığı parity seviyesi (‰) override'ı. `None` (default) = fuzzy
@@ -2109,6 +2131,9 @@ impl Sender {
             tombstone_evicted: 0,
             parity_expiry: VecDeque::new(),
             diag_parity_expired: 0,
+            units: BTreeMap::new(),
+            confirmed_out: VecDeque::new(),
+            confirmed_units_overflow: 0,
             diag_tomb_hits: 0,
             diag_bw_recovered: 0,
             diag_ambiguous_skipped: 0,
@@ -3135,7 +3160,9 @@ impl Sender {
         // RTT: en yüksek yeni-acked ORİJİNAL (DATA) paketten örnekle (Karn: retransmit/dup'tan DEĞİL).
         let mut rtt_send_ns: Option<u64> = None;
         let mut largest = 0u64;
-        let mut acked_units: Vec<u64> = Vec::new();
+        // [K4G-05b madde 2] Bu çerçevenin CANLI kayıtla eşleşen birimleri (işlenme sırasıyla) —
+        // teyit kümesine giriş adayları; aynı liste v1 §3.3-B kopya iptalini de besler.
+        let mut acked_units: Vec<UnitId> = Vec::new();
         for &seq in &ack.acked_seqs {
             // [TUR-6] delivered-anchor round: marker-sonrası gönderilen seq'in ilk ACK'i.
             if seq >= self.startup_round_marker_seq {
@@ -3143,6 +3170,7 @@ impl Sender {
             }
             if let Some(p) = self.inflight.remove(&seq) {
                 self.inflight_bytes = self.inflight_bytes.saturating_sub(p.unit.size);
+                self.own_record_gone(p.owner, seq);
                 // Observation-only success evidence, ORIGINALS ONLY — the same Karn discipline the
                 // RTT sampler applies two lines below. A retransmit or duplicate proves nothing
                 // about the original's fate, and feeding one would corrupt the structure counters.
@@ -3153,7 +3181,7 @@ impl Sender {
                 // Birim kimliği `owner`dan: FEC onarım sembolünün ACK'i (`unit.id = esi`) kaynak
                 // birimi teyit ETMEZ (INV-004) — kaydı kendi ACK'iyle kapanır, o kadar.
                 if let Some(u) = p.owner.unit() {
-                    acked_units.push(u.0);
+                    acked_units.push(u);
                 }
                 // DR-S5-3 [SALT-LOGICAL — BtlBw'ye DEĞMEZ]: wire-ACK hangi-logical-paketi teyit-etti?
                 // Ayrı-defter (bounded); bw_sampler/btlbw'yi OKUMAZ/YAZMAZ (N8: recovered≠ACK tabanı).
@@ -3170,10 +3198,11 @@ impl Sender {
                 // KURTARILIR (eski davranış: kayıt düşmüştü → sansür). Süresi geçmiş kayıt
                 // prune edilmişse buraya düşmez (Expired/Unknown — örneksiz).
                 self.diag_tomb_hits += 1;
+                self.own_record_gone(t.owner, seq);
                 // Teslim teyidi → bekleyen kopyaları iptal et. [K4G-05b madde 1] Kayıp ilan
                 // edilmiş paritenin geç ACK'i de birim teyit ETMEZ (`owner` = FEC sembolü).
                 if let Some(u) = t.owner.unit() {
-                    acked_units.push(u.0);
+                    acked_units.push(u);
                 }
                 // S-0.7 correction leg (ESTIMATOR-LIFECYCLE §6.1): the ORIGINAL's own seq was
                 // late-acked — the product just disproved the loss it declared, so the estimator's
@@ -3235,12 +3264,15 @@ impl Sender {
                     continue;
                 }
                 self.diag_unloss += 1;
-                acked_units.push(rec.unit.id); // kopyaları aşağıdaki ortak iptale kat
-                                               // S-0.7 correction leg: un-loss = the declared-lost seq itself was acked, the loss
-                                               // hypothesis is withdrawn. retx_count == 0 ⟺ this record is the ORIGINAL emission
-                                               // (a lost retransmit re-enters pending_lost with retx_count ≥ 1 and its ACK proves
-                                               // only the retransmit's delivery). Exactly-once is carried by the estimator method:
-                                               // the same late ACK can hit both the tombstone branch and this drain in one event.
+                // Kopyaları aşağıdaki ortak iptale kat. [K4G-05b madde 2] Kayıp ilan edilmiş ve
+                // yeniden planı bekleyen kaydın un-loss eşleşmesi CANLI kayıt eşleşmesidir → teyit
+                // adayı (`LostRec` yalnız birim kaydıdır; parite ARQ'ya hiç girmez).
+                acked_units.push(UnitId(rec.unit.id));
+                // S-0.7 correction leg: un-loss = the declared-lost seq itself was acked, the loss
+                // hypothesis is withdrawn. retx_count == 0 ⟺ this record is the ORIGINAL emission
+                // (a lost retransmit re-enters pending_lost with retx_count ≥ 1 and its ACK proves
+                // only the retransmit's delivery). Exactly-once is carried by the estimator method:
+                // the same late ACK can hit both the tombstone branch and this drain in one event.
                 if rec.retx_count == 0 {
                     self.fate_estimator.correct_original_delivered(rec.unit.id);
                 }
@@ -3285,8 +3317,13 @@ impl Sender {
 
         // §3.3-B stop koşulu: teyit edilen birimlerin bekleyen geometrik kopyalarını İPTAL et.
         if !acked_units.is_empty() {
-            self.dup_queue.retain(|d| !acked_units.contains(&d.unit.id));
+            self.dup_queue
+                .retain(|d| !acked_units.contains(&UnitId(d.unit.id)));
         }
+        // [K4G-05b madde 2] TEYİT: canlı kayıtla eşleşen birimler teyit kümesine girer (ilk girişte
+        // teyit çıktısına). Kayıp ilanından ÖNCE: bu çerçevede teyit edilen birimin aynı çerçevede
+        // kayıp ilan edilen kaydı kayıp kuyruğuna girmez (yalnız muhasebe).
+        self.confirm_units(&acked_units);
 
         if self.state != SenderState::PreConverge || self.rtt.srtt().is_some() {
             let before = self.pending_lost.len();
@@ -3346,10 +3383,13 @@ impl Sender {
                             self.tombstone_order.pop_front(); // hit/evict ile zaten düşmüş
                         }
                         Some(t) if t.expiry_ns <= now_ns => {
+                            let owner = t.owner;
                             self.tombstones.remove(&front);
                             self.tombstone_order.pop_front();
                             // [commit-B §3.7] artık ACK'lenmeyecek → uçuş-sayısından düş.
                             self.bw_sampler.forget_in_flight();
+                            // [K4G-05b madde 2] Kayıt motordan düştü (geç ACK'i Expired/Unknown).
+                            self.own_record_gone(owner, front);
                         }
                         Some(_) => break,
                     }
@@ -3525,9 +3565,14 @@ impl Sender {
                         self.probe_loss_attributed = true;
                     }
                 }
+                // [K4G-05b madde 2] Teyitli birimin kaydı yalnız muhasebeye girer (dedektör, ledger,
+                // tombstone, kader-kanıtı v1 gibi): kayıp kuyruğu ve kopya yolu karar ÜRETMEZ.
+                // (Dizinden düşürmeden ÖNCE okunur: son kaydıyla girdi silinebilir.)
+                let confirmed = p.owner.unit().is_some_and(|u| self.unit_is_confirmed(u));
                 if p.origin == TransmitKind::Duplicate {
                     // [commit-B §3.7] Dup-kökenli kayıp tombstonesuz düşer → uçuş-sayısı burada.
                     self.bw_sampler.forget_in_flight();
+                    self.own_record_gone(p.owner, seq);
                     // [P0 burst-recovery] Forward-recovery kopyası kaybolduysa birim HÂLÂ
                     // teslim edilmemiştir (ACK olsaydı on_ack inflight'tan siler + dup_queue.retain
                     // kopyayı iptal ederdi; buraya ancak gerçekten-outstanding birim düşer). Recovery-
@@ -3536,7 +3581,7 @@ impl Sender {
                     // yeniden-kur. Mevcut saf-sessizlik/PreConverge makinesinin aynısı; INV-RATE-1'e
                     // dokunmaz (dup_queue token-paced), loss METRİĞİNE dokunmaz. Kanıt: kapi-eval-v1
                     // exploratory h3 (GE-burst); regresyon kapısı tests/burst_loss_recovery.rs.
-                    if !self.dup_queue.iter().any(|d| d.unit.id == p.unit.id) {
+                    if !confirmed && !self.dup_queue.iter().any(|d| d.unit.id == p.unit.id) {
                         let srtt_ns = dur_ns(self.rtt.srtt().unwrap_or(INITIAL_RTT));
                         self.dup_queue.push(DupRec {
                             due_ns: now_ns.saturating_add(srtt_ns),
@@ -3579,7 +3624,7 @@ impl Sender {
                     // anlaşılsın) KORUNUR; yalnız ARQ kuyruğu atlanır.
                     if p.origin == TransmitKind::FecParity {
                         self.repair_loss_not_arqed = self.repair_loss_not_arqed.saturating_add(1);
-                    } else {
+                    } else if !confirmed {
                         self.pending_lost.push_back(LostRec {
                             seq,
                             unit: p.unit,
@@ -3589,17 +3634,7 @@ impl Sender {
                         });
                     }
                     // [TUR-2b] tombstone: bounded, en-eski-önce eviction + audit.
-                    while self.tombstones.len() >= TOMBSTONE_MAX {
-                        match self.tombstone_order.pop_front() {
-                            Some(old) => {
-                                if self.tombstones.remove(&old).is_some() {
-                                    self.tombstone_evicted += 1; // geç-ACK'i artık Expired/Unknown
-                                    self.bw_sampler.forget_in_flight(); // [commit-B §3.7]
-                                }
-                            }
-                            None => break,
-                        }
-                    }
+                    self.make_tombstone_room();
                     self.tombstone_order.push_back(seq);
                     self.tombstones.insert(
                         seq,
@@ -5361,6 +5396,12 @@ impl Sender {
                     self.budget_ext.tk_cancel_after.saturating_add(after_cnt);
             }
         }
+        // [K4G-05b madde 2] FEC RECOVERED teyit kaynağıdır: kurtarılan birimler teyit kümesine girer
+        // (ilk girişte teyit çıktısına; motorun kaydını tutmadığı birim çıktı üretmez). Kimlik
+        // `RecoveredUnit::unit_id` = kaynak birim (ESI değil — madde 1). SALT-LOGICAL: rate/pacer/
+        // BtlBw/credit'e dokunmaz (N8); (i)/(ii) yukarıda v1 sayaçlarıyla zaten işlendi.
+        let recovered: Vec<UnitId> = info.units.iter().map(|ru| UnitId(ru.unit_id)).collect();
+        self.confirm_units(&recovered);
     }
 
     /// DR-S5-4: recovered-logical'ı defter'e yaz (ConfirmSource::Recovered). sent_logical'da kayıtlı
@@ -5898,6 +5939,12 @@ impl Sender {
                         continue;
                     };
                     let rec = self.pending_lost[pos];
+                    // [K4G-05b madde 2] Savunma: teyitli birim için ARQ kararı ÜRETİLMEZ (kaydı
+                    // teyitte silinir; buraya ulaşırsa planlanmadan düşer).
+                    if self.unit_is_confirmed(UnitId(rec.unit.id)) {
+                        self.pending_lost.remove(pos);
+                        continue;
+                    }
                     #[cfg(feature = "diag-sched-telemetry")]
                     {
                         self.sched_diag.arq_retransmit_selected += 1;
@@ -5934,7 +5981,9 @@ impl Sender {
                 RetxDecision::CapExceeded { seq, policy } => {
                     if let Some(pos) = self.pending_lost.iter().position(|r| r.seq == seq) {
                         let rec = self.pending_lost.remove(pos).expect("pos geçerli");
-                        if policy == CapExceedPolicy::HandToForward {
+                        if policy == CapExceedPolicy::HandToForward
+                            && !self.unit_is_confirmed(UnitId(rec.unit.id))
+                        {
                             // ARQ cap doldu → forward-recovery'ye devret (§9.1 "veri ulaşsın").
                             // [TUR-2c review-fix] devir de YENİDEN-EMİSYONDUR → superseded-işaret
                             // (örnekleme politikası recovery-yoluna bağımlı olamaz — tekdüze kural).
@@ -5952,14 +6001,20 @@ impl Sender {
         }
     }
 
-    /// [K4G-05b madde 1] Kuyruk-probu hedef adayı: bir Reliable birime ait EN ESKİ uçuş kaydı.
-    /// FEC onarım sembolünün kaydı atlanır (parite sahiplenilmez, prob'a girmez). Erken çıkışlı
-    /// tarama: uçuş haritası seq sırasındadır, ilk uygun kayıt döner (deterministik).
+    /// [K4G-05b madde 1/2] Kuyruk-probu hedef adayı: TEYİTSİZ bir Reliable birime ait EN ESKİ uçuş
+    /// kaydı. FEC onarım sembolünün kaydı (sahiplenilmez, prob'a girmez) ve teyitli birimin kalan
+    /// kaydı (yalnız muhasebe) atlanır. Erken çıkışlı tarama: uçuş haritası seq sırasındadır, ilk
+    /// uygun kayıt döner (deterministik).
     fn oldest_probe_eligible_seq(&self) -> Option<u64> {
         self.inflight
             .iter()
-            .find(|(_, p)| p.owner.unit().is_some())
+            .find(|(_, p)| self.probe_eligible_owner(p.owner))
             .map(|(&seq, _)| seq)
+    }
+
+    /// [K4G-05b madde 1/2] Kayıt sahibi prob hedefi olabilir mi: teyitsiz Reliable birim.
+    fn probe_eligible_owner(&self, owner: RecordOwner) -> bool {
+        owner.unit().is_some_and(|u| !self.unit_is_confirmed(u))
     }
 
     /// [K4G-05b madde 1] Yalnız-parite kaydının Expired düşüşü: `seq` hâlâ uçuştaki bir FEC onarım
@@ -5982,6 +6037,120 @@ impl Sender {
         }
     }
 
+    /// [TUR-2b] Tombstone tavanı: yeni kayıt için yer aç — en eski kayıt tahliye edilir (bounded,
+    /// SR-AUDIT-001; geç-ACK'i artık Expired/Unknown) + audit. `queue_losses` ve prob emekliliğinin
+    /// ortak yolu (davranış v1 ile aynı). [K4G-05b madde 2] Tahliye edilen kaydın birimi dizinde
+    /// güncellenir (teyitli birimin son kaydıysa girdi düşer).
+    fn make_tombstone_room(&mut self) {
+        while self.tombstones.len() >= TOMBSTONE_MAX {
+            let Some(old) = self.tombstone_order.pop_front() else {
+                break;
+            };
+            if let Some(t) = self.tombstones.remove(&old) {
+                self.tombstone_evicted += 1;
+                self.bw_sampler.forget_in_flight(); // [commit-B §3.7]
+                self.own_record_gone(t.owner, old);
+            }
+        }
+    }
+
+    // ── [K4G-05b madde 2] Sahiplik dizini + teyit kümesi ───────────────────────────────────────
+
+    /// Birim teyit kümesinde mi. Dizinde girdisi olmayan birim teyitsiz sayılır: teyitli birimin
+    /// girdisi ancak son kaydı düşünce silinir ve o anda kayıp/kopya işi de yoktur (teyitte
+    /// silinmiştir) — hiçbir karar yolu ona ulaşamaz.
+    fn unit_is_confirmed(&self, u: UnitId) -> bool {
+        self.units.get(&u).is_some_and(|e| e.confirmed)
+    }
+
+    /// Birim kaydı motora girdi (gönderim); girdi gerekiyorsa açılır. Parite kaydı dizine girmez.
+    fn own_on_sent(&mut self, owner: RecordOwner, seq: u64) {
+        let Some(u) = owner.unit() else {
+            return;
+        };
+        self.units.entry(u).or_default().seqs.push_back(seq);
+    }
+
+    /// Birimin `seq` kaydı motordan TAMAMEN düştü (ACK, tombstone TTL/tahliye, tombstonesuz kopya
+    /// kaybı, budama). Teyit kümesinden çıkış: teyitli birimin son kaydı düşünce girdi silinir.
+    fn own_record_gone(&mut self, owner: RecordOwner, seq: u64) {
+        let Some(u) = owner.unit() else {
+            return;
+        };
+        let Some(e) = self.units.get_mut(&u) else {
+            return;
+        };
+        if let Some(pos) = e.seqs.iter().position(|&s| s == seq) {
+            e.seqs.remove(pos);
+        }
+        if e.confirmed && e.seqs.is_empty() {
+            self.units.remove(&u);
+        }
+    }
+
+    /// [K4G-05b madde 2 · transport-layer-tdd §12 AMENDMENT-12 "Teyit çıktısı"] TEYİT: `units`
+    /// (canlı kayıtla eşleşen ACK'in ya da FEC RECOVERED'ın birimleri, işlenme sırasıyla) teyit
+    /// kümesine girer. Yalnız İLK giriş teyit çıktısına yazılır (birim oturumda en çok bir kez);
+    /// dizinde girdisi olmayan birim (motorun kaydını tutmadığı ya da girdisi düşmüş teyitli birim)
+    /// çıktı ÜRETMEZ. Teyitli birim için karar üretilmez: bekleyen kayıp ve kopya işi silinir.
+    fn confirm_units(&mut self, units: &[UnitId]) {
+        let mut newly: Vec<u64> = Vec::new();
+        for &u in units {
+            let Some(e) = self.units.get_mut(&u) else {
+                continue;
+            };
+            if e.confirmed {
+                continue; // teyitli birimin sonraki ACK'leri teyit üretmez
+            }
+            e.confirmed = true;
+            if e.seqs.is_empty() {
+                self.units.remove(&u);
+            }
+            if self.confirmed_out.len() >= CONFIRMED_LOGICAL_CAP {
+                self.confirmed_out.pop_front(); // sözleşme ihlali: drenaj yok — sınırlı kalır
+                self.confirmed_units_overflow = self.confirmed_units_overflow.saturating_add(1);
+            }
+            self.confirmed_out.push_back(u.0);
+            newly.push(u.0);
+        }
+        if newly.is_empty() {
+            return;
+        }
+        newly.sort_unstable();
+        self.pending_lost
+            .retain(|r| newly.binary_search(&r.unit.id).is_err());
+        self.dup_queue
+            .retain(|d| newly.binary_search(&d.unit.id).is_err());
+    }
+
+    /// [K4G-05b madde 2 · Ek B.2.2] TEYİT ÇIKTISI — runtime'ın payload ve teslim teyidi kaynağı.
+    ///
+    /// Son çağrıdan bu yana teyit kümesine İLK kez giren birim kimlikleri (`OpaqueUnit::id`; asla
+    /// iletim seq'i ya da FEC ESI'si değil), giriş sırasıyla (olay içinde ACK çerçevesinin işlenme
+    /// sırası); her birim oturumda en çok bir kez. Teyit ÜRETEN yollar YALNIZ: canlı kayıtla eşleşen
+    /// ACK (uçuştaki kayıt; tombstone kol-1/kol-2; kayıp ilan edilip yeniden planı bekleyen kaydın
+    /// un-loss eşleşmesi — ufuk içi geç ACK bunlardan birine düşer) ve FEC RECOVERED. Teyit
+    /// ÜRETMEYENLER: FEC onarım sembolünün ACK'i; canlı kaydı olmayan iletimin ACK'i (tombstone TTL'i
+    /// dolmuş, tavandan taşmış, K_MAP budamasıyla düşmüş ya da tombstone bırakmayan kopya kökenli
+    /// kayıp kaydı → Expired/Unknown; birim sahipli kalır, yeniden gönderilir); kayıt yokken dedektör
+    /// sınıflaması; teyitli birimin sonraki ACK'leri; bayat SACK; zamanlayıcı ve süre dolumları.
+    ///
+    /// Drenaj sözleşmesi (K4G-05c uygular): runtime her `on_event` / `on_event_batch` çağrısından
+    /// sonra bir kez çağırır ve `store.remove` / `unit_acked!`'i YALNIZ bu çıktıya bağlar. Tampon
+    /// `CONFIRMED_LOGICAL_CAP` ile sınırlı; her olay sonrası drenajla taşma yapısal olarak erişilemez
+    /// (taşma = sözleşme ihlali: en eski düşer, [`Self::diag_confirmed_units_overflow`] artar).
+    /// Çağrı YALNIZ tamponu boşaltır: motor kararlarını ve teyit kümesini değiştirmez.
+    pub fn take_confirmed_units(&mut self) -> Vec<u64> {
+        self.confirmed_out.drain(..).collect()
+    }
+
+    /// [K4G-05b madde 2] Teyit çıktısı taşma sayacı (SALT-GÖZLEM; 0 beklenir — sözleşme ihlali
+    /// göstergesi, bkz. [`Self::take_confirmed_units`]).
+    #[must_use]
+    pub fn diag_confirmed_units_overflow(&self) -> u64 {
+        self.confirmed_units_overflow
+    }
+
     /// DR-ARQ-PRODUCT-TAIL-1 (gated; ON-only — never reached when disabled): retire a still-outstanding `seq` from
     /// inflight into a bounded tombstone WITHOUT declaring loss (no pending_lost push, no loss-counter mutation —
     /// INV-RATE-1). Used by the PTO tail probe to supersede the original before retransmitting a probe copy, so a
@@ -5996,22 +6165,13 @@ impl Sender {
         if p.origin == TransmitKind::Duplicate {
             // Dup-origin: no tombstone (matches queue_losses) — drop the in-flight count here.
             self.bw_sampler.forget_in_flight();
+            self.own_record_gone(p.owner, seq);
             return;
         }
         let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
         let t_loss_ns = (dur_ns(srtt) * 9 / 8).max(dur_ns(self.cadence_loss_floor()));
         let expiry_ns = now_ns.saturating_add(t_loss_ns.saturating_mul(u64::from(K_TOMB)));
-        while self.tombstones.len() >= TOMBSTONE_MAX {
-            match self.tombstone_order.pop_front() {
-                Some(old) => {
-                    if self.tombstones.remove(&old).is_some() {
-                        self.tombstone_evicted += 1;
-                        self.bw_sampler.forget_in_flight();
-                    }
-                }
-                None => break,
-            }
-        }
+        self.make_tombstone_room();
         self.tombstone_order.push_back(seq);
         self.tombstones.insert(
             seq,
@@ -6042,12 +6202,13 @@ impl Sender {
         let Some(target) = self.tail_probe_pending.take() else {
             return;
         };
-        // [K4G-05b madde 1] Emisyon-anı yeniden doğrulama birimi `owner`dan okur: hedef hâlâ uçuşta
-        // VE bir Reliable birimin kaydı olmalıdır (FEC onarım sembolü prob hedefi olamaz).
+        // [K4G-05b madde 1/2] Emisyon-anı yeniden doğrulama birimi `owner`dan okur: hedef hâlâ uçuşta
+        // VE teyitsiz bir Reliable birimin kaydı olmalıdır (FEC onarım sembolü ve teyitli birim
+        // prob hedefi olamaz; hedef bu arada teyit edildiyse prob iptal — hak harcanmaz).
         let Some((unit, retx_count)) = self
             .inflight
             .get(&target)
-            .filter(|r| r.owner.unit().is_some())
+            .filter(|r| self.probe_eligible_owner(r.owner))
             .map(|r| (r.unit, r.retx_count))
         else {
             // target no longer outstanding (ACK race / already retransmitted) → cancelled; attempt NOT consumed.
@@ -6109,10 +6270,11 @@ impl Sender {
         if self.pending_lost.is_empty() {
             // Saf-sessizlik tail-liveness: kopyası zaten planlı olmayan orijinal-DATA inflight birimleri.
             let srtt_ns = dur_ns(self.rtt.srtt().unwrap_or(INITIAL_RTT));
+            // [K4G-05b madde 2] Teyitli birimin kalan uçuş kaydı canlılık kolu için aday DEĞİL.
             let tail: Vec<OpaqueUnit> = self
                 .inflight
                 .values()
-                .filter(|p| p.origin == TransmitKind::Data)
+                .filter(|p| p.origin == TransmitKind::Data && self.probe_eligible_owner(p.owner))
                 .map(|p| p.unit)
                 .filter(|u| !self.dup_queue.iter().any(|d| d.unit.id == u.id))
                 .collect();
@@ -6174,10 +6336,12 @@ impl Sender {
         }
         // En-eski vadeli §3.3-B kopyası; drain_due_duplicates gövdesinin try_send'siz tek-elemanlı
         // ikizi — dup'ın KENDİ geometrik reschedule'ı aynen sürer (kopya-sayısı şişmez).
+        // [K4G-05b madde 2] Savunma: teyitli birimin kopya kaydı seçilmez.
         let Some(i) = self
             .dup_queue
             .iter()
             .enumerate()
+            .filter(|(_, d)| !self.unit_is_confirmed(UnitId(d.unit.id)))
             .min_by_key(|(_, d)| d.due_ns)
             .map(|(i, _)| i)
         else {
@@ -6225,6 +6389,12 @@ impl Sender {
     fn drain_due_duplicates(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
         let mut i = 0;
         while i < self.dup_queue.len() {
+            // [K4G-05b madde 2] Savunma: teyitli birimin kopya kaydı gönderilmez (teyitte silinir;
+            // buraya ulaşırsa planlanmadan düşer).
+            if self.unit_is_confirmed(UnitId(self.dup_queue[i].unit.id)) {
+                self.dup_queue.remove(i);
+                continue;
+            }
             if self.dup_queue[i].due_ns > now_ns {
                 i += 1;
                 continue; // henüz vadesi gelmedi.
@@ -6423,6 +6593,8 @@ impl Sender {
                 origin,
             },
         );
+        // [K4G-05b madde 2] Sahiplik dizini: birimin yeni kaydı (parite dizine girmez).
+        self.own_on_sent(owner, seq);
         seq
     }
 
