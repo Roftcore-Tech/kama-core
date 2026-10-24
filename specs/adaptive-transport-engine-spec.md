@@ -1013,7 +1013,7 @@ priority: retransmit(deadline) > FEC parity > yeni DATA > ACK-only (ACK-only ayr
   ARQ ile başlar). İSTİSNA: vadesi gelmiş kopya kuyruğu başı en geç her K_ARQ_SHARE'inci planlama turunda DATA'dan
   ÖNCE hizmet alır — her durumda (PRE_CONVERGE DIŞINDA; PRE_CONVERGE'de v1 sırası ve §3.3-B takvimi değişmez); token yetmezse o kopya
   kaydı gönderilene ya da birimi teyit edilene dek DATA token ALMAZ (token birikir; ARQ ve kuyruk-probu
-  etkilenmez); ~~aynı sayaç ve~~ aynı K_ARQ_SHARE; kopya payı RECOVER_ARQ'nun ARQ payı sayacından bağımsız sayılır, yeni sayı ve ayrı token kovası YOK; aynı turda ARQ payı da vadeliyse
+  etkilenmez); aynı K_ARQ_SHARE; kopya payı RECOVER_ARQ'nun ARQ payı sayacından bağımsız sayılır, yeni sayı ve ayrı token kovası YOK; aynı turda ARQ payı da vadeliyse
   ARQ önce, sonra kopya başı; gecikme sınırı VERİLMEZ. Yukarıdaki priority satırıyla ayrışması bu kaydın kapsamı
   dışındadır.
 ```
