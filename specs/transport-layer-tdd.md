@@ -1,6 +1,6 @@
 # Kama — Transport Layer TDD (Adaptive Hostile-Aware Transport)
 
-> **YAMA KAYDI — 2026-10-24 [v1.1 · K4G-05b — yeniden-gönderim sahipliği; sahip kararları CEVAP PAKETİ 4 ve 5 (2026-10-16), CEVAP PAKETİ 6, 7 ve 7-EK (2026-10-18), CEVAP PAKETİ 8 (2026-10-19), CEVAP PAKETİ 9 (2026-10-24) — `docs/decisions/K4G-CEVAP-PAKETLERI-4-7.md`]:** §12'ye [AMENDMENT-12]: INV-NO-ORPHAN (sahip metni) ve üç kabul koşulu (kayıtlı · payload mevcut · hizmet verilebilir bütçede yeniden seçilebilir) · motorun **teyit çıktısı** (payload yalnız onunla silinir) · ARQ_RETX_CAP aşımı ve kuyruk-probu bütçesinin tükenmesi yolu değiştirir, birimi düşürmez; prob bütçesi tükenince prob kapsamındaki birimler aynı turda devredilir · **RTO_MAX = 30 s** normatif sabit (koddan belgeye: `TailRecoveryConfig::validated_v1().max_backoff_pto_ns`; yeni sayı yok) · kesinti sonrası ilk taze ACK'te kopya geri çekilmesi sıfırlanır · FEC onarım sembolünün ACK'i kaynak birimi teyit etmez, onarım sembolü sahiplenilmez · birim başına iletim kaydı ≤ K_MAP = 8, uçuştaki kayıt için geç-ACK ufku K_MAP × RTO_MAX = 240 s (ufuk dışı geç ACK teyit etmez) · kimlik `kama-v1-full` → `kama-v1.1-full`, `transport-v1` → `transport-v1.1` (AMENDMENT-11'in beyan ettiği `transport-v1.x` de bununla sabitlere işlenir). §5.3 "RTO↑" satırına tavan işareti. Engine-spec §5/§6 (RTT kabul kuralı + tazelik ölçütü), §13 (kopya kuyruğu sırası, BURST_CAP tur başı tabanı, sınıflar arası kopya payı) ve §16.2 (tek saat-sınıfı satırı) v1.1 yamaları aynı kartta; yetki dışındaki belgelere tek satırlık AMENDMENT-12 işaretçileri, DR-CS-1 belgesine kabul fikstürü YAMA KAYDI. Tel, codec ve altın vektörler (tv_*) DEĞİŞMEDİ. Bu belgede metin silinmedi (yalnız ekleme).
+> **YAMA KAYDI — 2026-10-24 [v1.1 · K4G-05b — yeniden-gönderim sahipliği; sahip kararları CEVAP PAKETİ 4 ve 5 (2026-10-16), CEVAP PAKETİ 6, 7 ve 7-EK (2026-10-18), CEVAP PAKETİ 8 (2026-10-19), CEVAP PAKETİ 9 (2026-10-24), CEVAP PAKETİ 10, 11, 11-EK, 12 ve 13 (2026-10-24) — `docs/decisions/K4G-CEVAP-PAKETLERI-4-7.md`]:** §12'ye [AMENDMENT-12]: INV-NO-ORPHAN (sahip metni) ve üç kabul koşulu (kayıtlı · payload mevcut · hizmet verilebilir bütçede yeniden seçilebilir) · motorun **teyit çıktısı** (payload yalnız onunla silinir — runtime tarafı K4G-05b; kaydı unutan hiçbir yol motor ile runtime arasında payload sahipliği ayrışması yaratmaz) · ARQ_RETX_CAP aşımı ve kuyruk-probu bütçesinin tükenmesi yolu değiştirir, birimi düşürmez; prob bütçesi tükenince prob kapsamındaki birimler aynı turda devredilir · **RTO_MAX = 30 s** normatif sabit (koddan belgeye: `TailRecoveryConfig::validated_v1().max_backoff_pto_ns`; yeni sayı yok) · kesinti sonrası ilk taze ACK'te kopya geri çekilmesi sıfırlanır · FEC onarım sembolünün ACK'i kaynak birimi teyit etmez, onarım sembolü sahiplenilmez · K_MAP = 8 birim başına iletim kaydı için ADET sınırı, süre garantisi değil (budama ve birim başına O(1) runtime kaydı K4G-05c'de birlikte açılır; tanınmayan geç ACK teyit etmez, veri kaybı değildir) · kimlik `kama-v1-full` → `kama-v1.1-full`, `transport-v1` → `transport-v1.1` (AMENDMENT-11'in beyan ettiği `transport-v1.x` de bununla sabitlere işlenir). §5.3 "RTO↑" satırına tavan işareti. Engine-spec §5/§6 (RTT kabul kuralı + tazelik ölçütü), §13 (kopya kuyruğu sırası, BURST_CAP tur başı tabanı, sınıflar arası kopya payı ve rezervasyonu) ve §16.2 (tek saat-sınıfı satırı) v1.1 yamaları aynı kartta; yetki dışındaki belgelere tek satırlık AMENDMENT-12 işaretçileri, DR-CS-1 belgesine kabul fikstürü YAMA KAYDI. Tel, codec ve altın vektörler (tv_*) DEĞİŞMEDİ. Bu belgede metin silinmedi (yalnız ekleme).
 
 > **YAMA KAYDI — 2026-10-08 [AMENDMENT-11 — WS-D (BL D1/D2/D3) UYGULANDI, L-D şeridi; iş emri 2026-10-06b §5]:** §12'ye [AMENDMENT-11]: ARQ/ACK kimliği = `meta.full_wire_pn` KODDA (çeviri katmanı `client-core` runtime'ında; `adaptive-transport` motoru değişmedi; ACK_FRAME_V2 formatı ve `ack_epoch` dokunulmadı) · noise-wire `Control::Ack/Sack` (0x10/0x11) kod silimi, codepoint'ler RESERVED → reject · golden etkisi listesi · altı beyan. Ara 11 B çerçeve veri yolunda KALIR (S3 kararı: beyanlı KARŞILANMAZ). Üstü çizili metin silinmedi.
 
@@ -848,18 +848,20 @@ default path_mtu_target = 1200B (fragmentation kaçınımı); probe 576/768B; lo
 > **[AMENDMENT-12 — 2026-10-24, v1.1 · K4G-05b: YENİDEN-GÖNDERİM SAHİPLİĞİ + RTO_MAX · NORMATİF · DAVRANIŞ DEĞİŞTİRİR · TEL DEĞİŞMEZ]**
 >
 > **Dayanak:** sahip kararları CEVAP PAKETİ 4 ve 5 (2026-10-16), CEVAP PAKETİ 6, 7 ve 7-EK (2026-10-18), CEVAP PAKETİ 8
-> (2026-10-19), CEVAP PAKETİ 9 (2026-10-24) — `docs/decisions/K4G-CEVAP-PAKETLERI-4-7.md`; tasarım notu
+> (2026-10-19), CEVAP PAKETİ 9 (2026-10-24), CEVAP PAKETİ 10, 11, 11-EK, 12 ve 13 (2026-10-24) — `docs/decisions/K4G-CEVAP-PAKETLERI-4-7.md`; tasarım notu
 > `docs/design/K4G-05b-RETX-FIX.md`.
 > **INV-NO-ORPHAN (sahip metni, CEVAP PAKETİ 5, 2026-10-16):** Onaysız hiçbir Reliable birim sahipsiz kalamaz: her anda ya yeniden gönderim
 > zamanlayıcısı, ya kopya kuyruğu, ya kuyruk-probu onu izler; izleyen yol kaybı ilan edebilmeli ve birimi yeniden
 > gönderebilmelidir. Kuyruk-probu kopyası da kayıp ilan edilebilir ve yeniden planlanabilir.
 > **Kabul (NORMATİF, CEVAP PAKETİ 9, 2026-10-24):** her onaysız Reliable birim için üç koşul birlikte sağlanır — (i) birim
 > kayıtlıdır (bir izleyen yolun kaydı vardır); (ii) payload'u mevcuttur; (iii) hizmet verilebilir ağ ve gönderim
-> bütçesinde yeniden seçilebilir (kaydı BURST_CAP tabanınca kapsanır, sıra başına geldiğinde token birikimiyle
+> bütçesinde yeniden seçilebilir (kaydı BURST_CAP tabanınca kapsanır, sıra başına geldiğinde rezervasyon ve token birikimiyle
 > gönderilir — engine §13 v1.1 kaydı). (i) ve (ii) (iii)'ü sağlamaz: token reddi altında bekleyen kopya kaydı ilerleme
-> kanıtı değildir. Payload yalnız motorun TEYİT ÇIKTISIYLA (aşağıda) silinir; başka hiçbir yol silmez. Runtime
-> tarafı K4G-05c'dedir; 05c merge'üne dek ürün runtime'ı payload'u eşlenen iletimin ACK'inde siler (beyanlı ara
-> durum: ufuk dışı geç ACK'te motor teyit etmezken silebilir; ACK, alıcının o iletimi aldığını gösterir).
+> kanıtı değildir. Payload yalnız teyit çıktısıyla silinir — runtime tarafı 05b; birim başına O(1) kayıt ve K_MAP
+> budaması 05c (kartlar K4G-05b / K4G-05c; teyit çıktısı aşağıda; CEVAP PAKETİ 11-EK, 2026-10-24, §3; CEVAP PAKETİ 13,
+> 2026-10-24, §3). Başka hiçbir yol silmez; ara durum yoktur. Motorun kaydı unutabildiği her yol (K_MAP budaması,
+> tombstone süre dolumu, kapasite tahliyesi, başka varsa) için geç ACK, motor ile runtime arasında payload sahipliği
+> ayrışması yaratmaz.
 > **Okuma (NORMATİF):** kapsam motorun taşıdığı her birimdir. Sessizlik kayıp İLAN ETMEZ (INV-001): sessizlikte izleyen
 > yol birimi canlılık için yeniden gönderir (kopya; loss sayılmaz); later-ACK kanıtı gelince izlenen kayıt — kuyruk-probu
 > kopyası dahil — mevcut dedektörle kayıp ilan edilir ve yeniden planlanır. ARQ_RETX_CAP aşımı (her politika) birimi
@@ -877,7 +879,8 @@ default path_mtu_target = 1200B (fragmentation kaçınımı); probe 576/768B; lo
 > birimi teyit ETMEZ (INV-004). Birim kimliği, iletim seq'i ve FEC (blok, ESI) ayrı tutulur; ACK, tombstone, un-loss,
 > kuyruk-probu hedefi ve RECOVERED eşleşmelerinin HEPSİ bu ayrıma uyar. FEC onarım sembolü Reliable birim DEĞİLDİR:
 > sahiplenilmez, ARQ'ya ve kuyruk-probuna girmez; kaydı kendi ACK'iyle kapanır, kayıp ilanında tombstone'a geçip mevcut
-> TTL'le (K_TOMB × T_loss) düşer, ilan yoksa gönderiminden K_MAP × RTO_MAX sonra Expired olarak düşer. Teyit edilmiş
+> TTL'le (K_TOMB × T_loss) düşer, ilan yoksa gönderiminden K_MAP × RTO_MAX sonra Expired olarak düşer (parite kaydı
+> için bellek sınırı; birim geç-ACK garantisi değildir). Teyit edilmiş
 > birimin kalan kayıtları yalnız muhasebeye girer (dedektör, ledger ve kader-kanıtı v1 gibi); ARQ, kuyruk-probu (hedef
 > seçimi ve emisyon), canlılık, sahiplenme ve kopya yolları teyitli birim için karar ÜRETMEZ. Birim başına ≤ 1
 > geometrik kopya kaydı ve ≤ D − 1 bekleyen tek seferlik kopya kaydı (ekleme anında sayılır; D ≤ D_max = 3); birim
@@ -887,12 +890,12 @@ default path_mtu_target = 1200B (fragmentation kaçınımı); probe 576/768B; lo
 > **Teyit çıktısı (NORMATİF):** motor, birimin teyit kümesine İLK kez girdiği olayı tek çıktıyla bildirir: son
 > bildirimden bu yana teyit edilen birim kimlikleri, teyit sırasıyla, her birim oturumda en çok bir kez. Kaynaklar YALNIZ:
 > canlı kayıtla eşleşen ACK (uçuştaki kayıt, tombstone, kayıp ilan edilmiş ama yeniden planı bekleyen kaydın un-loss
-> eşleşmesi — ufuk içi geç ACK dahil) ve FEC RECOVERED. Teyit ÜRETMEYENLER: FEC onarım sembolünün ACK'i; canlı kaydı
-> olmayan iletimin ACK'i (tombstone TTL'i dolmuş, tombstone tavanından taşmış, birim başına kayıt sınırıyla budanmış ya
+> eşleşmesi — tanınan geç ACK dahil) ve FEC RECOVERED. Teyit ÜRETMEYENLER: FEC onarım sembolünün ACK'i; canlı kaydı
+> olmayan iletimin ACK'i (tombstone TTL'i dolmuş, tombstone tavanından taşmış, birim başına kayıt sınırıyla budanmış (K4G-05c) ya
 > da tombstone bırakmayan kopya kökenli kayıp kaydı) — Expired/Unknown, birim sahipli kalır ve yeniden gönderilir;
 > kayıt yokken dedektör defterindeki sınıflama; teyitli birimin sonraki ACK'leri; zamanlayıcı ve süre dolumu. Çıktı her
 > olaydan sonra boşaltılır; birikimi sınırlıdır. Runtime payload'u ve uygulamaya teslim teyidini YALNIZ bu çıktıya
-> bağlar; iletim→birim eşlemesi silme kararı vermez (K4G-05c).
+> bağlar; iletim→birim eşlemesi silme kararı vermez (runtime tarafı K4G-05b; birim başına O(1) kayıt K4G-05c).
 > **Uygunluk sınırı (BEYANLI; uygunluk = vadesi gelmiş kaydı olan izleyen yol; emisyon token'a bağlıdır, ayrı ölçülür,
 > gecikme sözü VERİLMEZ):** kuyruk-probu zamanlayıcısı t_arm = max(son ilerleme, birimin uçuşta görüldüğü ilk
 > zamanlayıcı tiki) anında kurulur; t_arm'dan sonra ilerleme olmaz ve prob emisyonları token beklemezse son prob ve devir
@@ -905,7 +908,7 @@ default path_mtu_target = 1200B (fragmentation kaçınımı); probe 576/768B; lo
 > kaynak `TailRecoveryConfig::validated_v1().max_backoff_pto_ns` (PRODUCT-PROFILE "backoff tavanı 30 s", SHIP; pin
 > `crates/client-core/tests/transport_v1_freeze.rs`). Üst sınırı olduğu aralıklar: (i) kuyruk-probu PTO geri
 > çekilmesi (v1'de de); (ii) PRE_CONVERGE dışında kopya kuyruğunun geometrik aralığı ve tabanı (v1'de tavansızdı;
-> PRE_CONVERGE çıkışında bekleyen kopyalar RTO_MAX'a kırpılır). Geç-ACK ufkunun birimi (aşağıda) ve RTT tazelik
+> PRE_CONVERGE çıkışında bekleyen kopyalar RTO_MAX'a kırpılır). Parite kaydı süre dolumunun (K_MAP × RTO_MAX) ve RTT tazelik
 > ölçütünün tabanıdır (engine §6). Taban srtt-türevidir; taban-PTO tavanı `max_pto_ns` = 10 s ayrıdır; H kanal-türevidir
 > ve RTO_MAX'la sınırlanmaz. ZM-2 4-decade doğrulaması BEKLİYOR (beyanlı: v1.1 T-hücreleri D = 20 s ile bu tavana
 > ulaşmaz; uzun pencereli hücreler DEMO-01 öncesi ön-kayıtlı gece kartında — CEVAP PAKETİ 7, 2026-10-18, DUR-3 (b)).
@@ -917,18 +920,21 @@ default path_mtu_target = 1200B (fragmentation kaçınımı); probe 576/768B; lo
 > ACK sıfırlamaz.
 > **Beyanlı istisna (CEVAP PAKETİ 7-EK, 2026-10-18, B1):** PRE_CONVERGE'de BURST_CAP tabanı v1'dir; ilk-uçuş bütçesi
 > kaydın boyutundan küçükken BURST_CAP'i aşan kayıt izlenir, ama token'a yetişmeyebilir (engine §13 v1.1 kaydı).
-> **Kayıt sınırı ve geç-ACK ufku (NORMATİF, CEVAP PAKETİ 9, 2026-10-24, DUR-20):** birim başına iletim eşlemesi ve
-> zamanlama kaydı (sender uçuş/tombstone tablosu ve kayıp dedektörü haritası) ≤ K_MAP = 8; sınır aşılırken birimin EN
-> ESKİ kaydı budanır (ilan yok; uçuş muhasebesinden düşer). Geç-ACK ufku: uçuştaki kayıt için kararlı durumda (aralık
-> RTO_MAX'a ulaşmış, zincir dışı kayıt yok) K_MAP × RTO_MAX = 240 s; rampa ve zincir dışı kayıtlar budamayı öne çeker;
-> kayıp ilan edilmiş kayıt için tombstone TTL'i (K_TOMB × T_loss) ve tombstone tavanı v1 aynen. Türetim: ufuk ≥
-> desteklenen azami RTT (5 s, DR-CS-1 `RTT_MAX_SUPPORTED`) + bir tam RTO_MAX; K_MAP = 8 bunu kararlı durumda geniş payla
-> sağlar (pay: kesinti öncesi kaydın kesinti sonrası geç ACK'i). Ufuk dışı geç ACK → Expired/Unknown: birimi TEYİT
-> ETMEZ, birim sahipli kalır ve yeniden gönderilir, RTT örneği VERMEZ. Diğer sınırlar: bekleyen kopya işi birim başına
-> ≤ D_max = 3; payload sayısı ≤ birim deposu; alıcı tamponu ve runtime eşleme tabloları bu kaydın kapsamı dışındadır
-> (K4G-05c).
+> **Kayıt sınırı ve geç-ACK tanıma (NORMATİF, CEVAP PAKETİ 9, 2026-10-24, DUR-20; CEVAP PAKETİ 11, 2026-10-24, DUR-28
+> ve DUR-30; CEVAP PAKETİ 11-EK, 2026-10-24, §3–§4):** K_MAP = 8, birim başına iletim eşlemesi ve zamanlama kaydı
+> (sender uçuş/tombstone tablosu ve kayıp dedektörü haritası) için bir ADET sınırıdır; süre garantisi DEĞİLDİR.
+> Budama (sınır aşılırken birimin EN ESKİ kaydı ilan edilmeden düşer, uçuş muhasebesinden çıkar) K4G-05c'de,
+> runtime'ın birim başına O(1) kaydıyla aynı değişiklikte açılır; K4G-05b'de `K_MAP` ve teyit çıktısı tanımlıdır,
+> budama KAPALIDIR. Geç ACK, seq'i birimin son K_MAP iletimi arasındaysa tanınır — o kayıt TTL/tahliyeyle daha önce
+> silinmemişse; tanıma garantisi bütün silme yollarıyla birlikte tanımlıdır (kayıp ilan edilmiş kayıt için tombstone
+> TTL'i (K_TOMB × T_loss) ve tombstone tavanı v1 aynen; K_MAP budaması K4G-05c). Tanınmayan geç ACK veri kaybı
+> değildir; ek yeniden gönderimlere yol açabilir; payload sahipliği korunur: Expired/Unknown, birimi TEYİT ETMEZ,
+> birim sahipli kalır ve yeniden gönderilir, RTT örneği VERMEZ. Gerçek gönderim dizilerinde tutulan kayıt yaşı
+> ölçülür ve INT-02 raporunda yazılır. Diğer sınırlar: bekleyen kopya işi birim başına ≤ D_max = 3; payload sayısı
+> ≤ birim deposu; alıcı tamponu ve runtime eşleme tabloları bu kaydın kapsamı dışındadır (K4G-05c).
 > **Beyanlı sınırlar (CEVAP PAKETİ 7-EK, 2026-10-18, A1; CEVAP PAKETİ 9, 2026-10-24):** v1'de aralık tavansız olduğu için
-> kayıt büyümesi logaritmikti; v1.1'de birim başına kayıt SINIRLIDIR (≤ K_MAP). Emisyon sessizlikte sürer — canlılık
+> kayıt büyümesi logaritmikti; K4G-05b'de (budama kapalı) birim başına kayıt zincir emisyonuyla büyür (aşağıdaki
+> biçim; tombstone kaydı TTL ve tavanla sınırlı), K4G-05c'de K_MAP budamasıyla ≤ K_MAP. Emisyon sessizlikte sürer — canlılık
 > için bilinçli takas (INV-NO-IDLE-TEARDOWN): bir kopya zinciri Δ sürede birim başına ≤ m + ⌊Δ/RTO_MAX⌋ iletim üretir
 > (rampadan sonra birim başına 30 s'de ≤ 1); m = ⌈log2(RTO_MAX/b)⌉, b srtt-türevi kopya tabanı; ilk m iletimin rampası
 > v1 ile aynıdır; zincir dışı iletimler (orijinal, RECOVER_FWD ek kopyaları, ARQ ve kuyruk-probu yeniden gönderimleri)
