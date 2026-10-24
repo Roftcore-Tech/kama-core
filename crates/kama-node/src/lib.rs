@@ -75,6 +75,8 @@ mod files;
 mod handle;
 mod node;
 mod peers;
+#[cfg(feature = "test-util")]
+mod probe;
 #[cfg(test)]
 mod test_support;
 mod wiring;
@@ -106,6 +108,8 @@ pub use event::{
 };
 pub use files::RECEIVED_FILES_DIR;
 pub use handle::{FileHandle, StreamHandle};
+#[cfg(feature = "test-util")]
+pub use probe::{EnvelopeCounts, NodeProbe, SessionEventCounts, SessionProbe};
 
 use files::ReceivedFiles;
 use node::{AppEngines, Command, NodeLoop, Reply, Shared, COMMAND_QUEUE_CAP, REPLY_CAPACITY};
@@ -497,6 +501,72 @@ impl KamaNode {
     #[must_use]
     pub fn metrics(&self) -> NodeMetrics {
         node::lock(&self.shared.metrics).clone()
+    }
+
+    // ── [K4G-05] YALNIZ test-util (INT-02 ölçüm düzeneği) ───────────────────────────────────────
+
+    /// [DUR-19] Canlı teşhis aynası AÇIK düğüm (INT-02 ölçüm kolları): ürün yolunun AYNISI
+    /// (`KamaNode::build` — ürün profili, ürün builder'ı), ardından düğüm iş parçacığı başlamadan
+    /// Transport'un canlı ayna bayrağı açılır (`ClientTransport::set_live_diag_for_test(true)` →
+    /// `RuntimeConfig::live_diag`; çalışma-zamanı bayrağı, feature DEĞİL — aynı ikili). Bayrak
+    /// yalnız salt-gözlem yazıcısını açar; motor kararları değişmez. Ürün yolu
+    /// ([`KamaNode::start`]) bayrağı KAPALI kurar: orada sondanın Transport aynası alanları
+    /// ([`NodeProbe`] `sessions[].diag`, `retired`) varsayılan (sıfır) değerdedir.
+    ///
+    /// # Errors
+    /// [`KamaNode::start`] ile aynı.
+    #[cfg(feature = "test-util")]
+    pub fn start_live_diag_for_test(
+        config_path: &Path,
+        data_dir: &Path,
+        listener: Box<dyn NodeListener>,
+    ) -> Result<Self, NodeError> {
+        let app_clock: Arc<dyn MonotonicClock> = Arc::new(SystemClock::new());
+        let mut built = Self::build(config_path, data_dir, listener, app_clock)?;
+        built.node.set_live_diag_for_test(true);
+        Self::spawn(built)
+    }
+
+    /// recovery-OFF NEGATİF kolunun kurucusu (INT-02, plan K4G-05): ürün yolunun AYNISI
+    /// (`KamaNode::build` — ürün profili, ürün builder'ı), ardından düğüm iş parçacığı başlamadan
+    /// Transport'un kurtarma anahtarı kapatılır (`ClientTransport::set_recovery_for_test(false)`,
+    /// S1 H-APP-RETRY-0 kancası): ARQ retransmit, §11 kopya ve FEC repair kararları tele çıkmaz
+    /// (motor kararı verir, çalışma-zamanı bastırır ve `recovery_suppressed`'te sayar). Ürün
+    /// builder'ı `recovery: false` yapılandırmasını reddettiği için kol bu kancayla kurulur;
+    /// `TransportCapabilities::reliable` beyanı değişmez. [DUR-19] Kol bastırılan kararı canlı
+    /// aynadan okur: canlı teşhis aynası da açılır ([`Self::start_live_diag_for_test`] gibi). Ürün
+    /// yolu (`start`) bu yöntemden etkilenmez.
+    ///
+    /// # Errors
+    /// [`KamaNode::start`] ile aynı.
+    #[cfg(feature = "test-util")]
+    pub fn start_recovery_off_for_test(
+        config_path: &Path,
+        data_dir: &Path,
+        listener: Box<dyn NodeListener>,
+    ) -> Result<Self, NodeError> {
+        let app_clock: Arc<dyn MonotonicClock> = Arc::new(SystemClock::new());
+        let mut built = Self::build(config_path, data_dir, listener, app_clock)?;
+        built.node.set_live_diag_for_test(true);
+        built.node.set_recovery_for_test(false);
+        Self::spawn(built)
+    }
+
+    /// Ölçüm sondası (bkz. [`NodeProbe`]): Transport ARQ / RTT aynası, bağlam-önce dağıtım
+    /// düşüşleri, Application sayaçları, oturum olayları ve süreç-içi röleye verilen el sıkışma
+    /// zarfları. SALT OKUMADIR; düğüm turunda tek bir komut olarak işlenir (ağ beklenmez).
+    /// [DUR-19] Transport aynası alanları yalnız canlı ayna açık kurulan düğümde dolar
+    /// ([`Self::start_live_diag_for_test`], [`Self::start_recovery_off_for_test`]); ürün yolunda
+    /// ([`Self::start`]) varsayılan (sıfır) değerdedir.
+    ///
+    /// # Errors
+    /// Kuyruk/iş parçacığı hataları ([`NodeError::Busy`], [`NodeError::Stopped`],
+    /// [`NodeError::ReentrantCall`]).
+    #[cfg(feature = "test-util")]
+    pub fn probe_for_test(&self) -> Result<NodeProbe, NodeError> {
+        let mut probe = self.request(|reply| Command::Probe { reply })?;
+        probe.envelopes = carrier::envelope_counts_for_test(self.peers.me());
+        Ok(probe)
     }
 
     /// Düğümü kapatır: döngü biter, Transport (soketler, çalışma-zamanı) ve depo (dosya kilidi)

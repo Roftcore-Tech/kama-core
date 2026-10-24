@@ -89,4 +89,7 @@ fn product_v1_profile_is_pinned() {
         c.loss_confirm_horizon,
         LossConfirmHorizon::CadenceLegacy
     ));
+    // [K4G-05 / DUR-19] Canlı teşhis aynası ürün yolunda kapalı (salt gözlem; INT-02 düzeneği
+    // açar).
+    assert!(!c.live_diag, "ürün varsayılanında kapalı");
 }

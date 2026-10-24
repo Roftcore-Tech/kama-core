@@ -39,6 +39,7 @@ buna devreder). Değerler koddan okunmuştur (2026-09-11), tahmin değildir. Pin
 | `drain_cap` | `3 s` | SHIP | motor birim terk etmez → drain CAP'siz sonlanmayabilir | — | — |
 | `idle_hold` | `105 s` | SHIP | SESSION_IDLE_HOLD hizası | — | — |
 | `ts_sample_period_ns` | `None` | diagnostic (salt gözlem) | handoff enstrümanı | — | INV-007 |
+| `live_diag` | `false` | diagnostic (salt gözlem) | K4G-05 canlı teşhis aynası ve yazıcısı (`ClientLiveDiag`); çalışma-zamanı bayrağı, feature değil; kapalıyken yazıcı çalışmaz, açıkken motor kararları değişmez, maliyeti ölçülmedi; INT-02 düzeneği açar (2026-10-24 eklendi) | DUR-19 (CEVAP PAKETİ 9) | `product_v1_profile_is_pinned` |
 
 ## `ClientSession`'ın kurduğu, `RuntimeConfig` DIŞI sevk ayarları
 

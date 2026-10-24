@@ -62,6 +62,8 @@ use kama_contracts::handles::PeerRef;
 use kama_contracts::s3::HubHandle;
 
 use crate::error::NodeError;
+#[cfg(feature = "test-util")]
+use crate::probe::{EnvelopeCounts, EnvelopeLog, EnvelopeSent};
 
 /// Kutu başına okunmamış zarf olayı tavanı — yerel bellek sınırı, normatif DEĞİL `[KALİBRASYON]`
 /// (SR-AUDIT-001). Meşru yük küçüktür: kutu sahibinin kendi INIT'lerinin `HandleAssigned` ve
@@ -98,6 +100,10 @@ struct Relay {
 struct Mailbox {
     owner: Arc<Token>,
     events: VecDeque<LinkEvent>,
+    /// [K4G-05] YALNIZ test-util: kutu sahibinin röleye kabul ettirdiği zarfların kaydı (ölçüm
+    /// sondası, `crate::probe`). Yönlendirmeyi etkilemez; yalnız yazılır.
+    #[cfg(feature = "test-util")]
+    sent: EnvelopeLog,
 }
 
 /// Kayıt jetonu: kimliği yalnız adresidir (`Arc::ptr_eq`); canlı iki jeton aynı adresi paylaşamaz.
@@ -131,6 +137,8 @@ impl Relay {
             Mailbox {
                 owner: Arc::clone(&owner),
                 events: VecDeque::new(),
+                #[cfg(feature = "test-util")]
+                sent: EnvelopeLog::default(),
             },
         );
         Ok(Registration { me, owner })
@@ -203,6 +211,11 @@ impl Relay {
         let hub_handle = self.allocate_handle()?;
         let attempt = LinkAttempt(*next_attempt);
         *next_attempt = following_attempt;
+        // [K4G-05] YALNIZ test-util, salt kayıt: kabul edilen INIT (yönlendirmeyi etkilemez).
+        #[cfg(feature = "test-util")]
+        if let Some(mailbox) = self.owned_mut(from) {
+            mailbox.sent.record(EnvelopeSent::Init, &bytes);
+        }
         self.deliver(
             from.me,
             LinkEvent::HandleAssigned {
@@ -235,6 +248,11 @@ impl Relay {
     ) -> Result<(), LinkError> {
         if self.owned_mut(from).is_none() || !self.has_room(peer) {
             return Err(LinkError);
+        }
+        // [K4G-05] YALNIZ test-util, salt kayıt: kabul edilen RESPONSE (yönlendirmeyi etkilemez).
+        #[cfg(feature = "test-util")]
+        if let Some(mailbox) = self.owned_mut(from) {
+            mailbox.sent.record(EnvelopeSent::Response, &bytes);
         }
         self.deliver(
             peer,
@@ -321,6 +339,17 @@ impl Drop for LoopbackEnvelopeRelay {
 /// [`NodeError::IdentityInUse`] — bu süreçte aynı cihaz kimliğiyle çalışan bir düğüm var.
 pub(crate) fn product_envelope_link(me: PeerRef) -> Result<Box<dyn EnvelopeLink>, NodeError> {
     Ok(Box::new(LoopbackEnvelopeRelay::register(me)?))
+}
+
+/// [K4G-05] YALNIZ test-util: `me` kaydının röleye kabul ettirdiği el sıkışma zarfları (ölçüm
+/// sondası). Kayıt yoksa (düğüm kapandı) sıfır.
+#[cfg(feature = "test-util")]
+pub(crate) fn envelope_counts_for_test(me: PeerRef) -> EnvelopeCounts {
+    relay()
+        .mailboxes
+        .get(&me)
+        .map(|mailbox| mailbox.sent.counts())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

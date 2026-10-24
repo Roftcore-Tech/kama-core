@@ -99,6 +99,12 @@ impl DeadlineArqScheduler {
     pub fn new(cfg: RetxConfig) -> Self {
         Self { cfg }
     }
+
+    /// [K4G-05 / INT-02 TEŞHİS] Yürürlükteki yapılandırma (SALT OKUMA; durum değişmez).
+    #[must_use]
+    pub fn config(&self) -> RetxConfig {
+        self.cfg
+    }
 }
 
 impl ArqScheduler for DeadlineArqScheduler {
