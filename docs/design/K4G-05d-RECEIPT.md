@@ -124,7 +124,17 @@ M1 ile bu oturumdaki kuyruk `Closed`'a dek bekler, kapı o eşe `NotConnected` y
 
 ## 8. DUR
 
-(Tablo sonraki commit'te.)
+| DUR | Soru | Seçenekler | Önerim | Etkilenen test |
+|---|---|---|---|---|
+| **DUR-05d-5** | RECEIPT sunumunda `SessionSuperseded` / `UnknownSession` / `NotConnected` | (a) tut ve dur; `file_transfer.rs:1629-1637` sınıfı; ulaşılamaz hatalar bırakılır ve sayılır (beyan) · (b) yalnız `Backpressure` geçici kalır, geçişte silinir; telafi S2 yeniden üretimi, kanıt (d) · (c) poll'da sunum olaylardan sonra (T5/P0 sırası değişir) | **(a)** | t4 `DuringRecv`; birim t4 (a)/(b), t6; (d) |
+| **DUR-05d-6** | (i)'nin pencere ihlali yapan eşte daraltılması | (a) (i) M1.6 kapsamında koşulsuz; ihlalde pencere altı sayılarak budanır, pencere içi silinmez; kural AMP'de normatif olur (Ek A.1) · (b) her koşulda (i): bellek sınırsız, SR-AUDIT-001'e aykırı · (c) pencere altına türetilmiş ek tavan (256) + ihlal sayacı | **(a)** | (b1), (b2), (e) |
+| **DUR-05d-7** | (ii)'nin güçlü okuması | **A1:** client-core `ClientTransport`'a oturum başına "şu an kabul edilebilir birim" erişimcisi (`s1.rs` değil; tel değişmez; 05c sonrası mesafe penceresini de kapsar). kama-app'te küçük trait; kama-node'da newtype (orphan kuralı). Dosya ve `MEDIA_BUNDLE` yalnız boş yer ≥ H_R = 256 iken sunulur; dosya ayak izi ≤ W_F [CAL, INT-02'de ölçülür] · **A2:** `s1.rs` `send`'e sınıf işareti + client-core'da öncelikli kabul · **A3:** zayıf (ii) + beyanlı FIFO gecikmesi, INT-02'de 31–100 B/s ölçümü | **A1** (05d kodu M1–M4 ile ilerler; yalnız A1 kısmı bekler) | A1 ise (c2) rezerv testi |
+
+**Eski kararlar:**
+- **DUR-05d-1:** ~~en eski düşer + `receipts_evicted`, sınır 256~~ → düşürme yok; sınır gönderen penceresi (M1.4).
+- **DUR-05d-3:** ~~yalnız `Backpressure` geçici~~ → DUR-05d-5.
+- **DUR-05d-4:** ~~oturum değişiminde kuyruk düşer~~ → taşınır (M1.2–3; C11'in "kanıt yoksa taşı" kolu).
+- **DUR-05d-2:** desen korunur. `receipts_evicted` çıkar; `receipts_window_pruned` ve `gated_by_receipts` girer.
 
 ## 9. Süre (benim görüşüm)
 
