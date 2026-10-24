@@ -1,91 +1,103 @@
-# K4G-05d — Bekleyen RECEIPT kuyruğu (R3) — tasarım notu
+# K4G-05d — Bekleyen RECEIPT kuyruğu (R3) — tasarım notu (rev2)
 
 ## 0. Künye
-**K4G-05d** · dal `k4g/05d-receipt` · taban `main 3439fccd` (yalın `:n` = `crates/kama-app/src/messaging.rs`) · P0 `k4g/p0-taban` `4b7b27f1` · **TASLAK**: kod "K4G-05d ONAYLANDI" bekler; uygulanmadı, koşulmadı. Girdi: C9 §3 K4G-05d, §5; P0-OZET (R3, R3-tekil KIRMIZI); `verify-wf_f84f4d0e` "R3". **Kapsam dışı: PTT açıkken dosya parça sınırı (DUR-21), Sprint 3.**
+**K4G-05d** · dal `k4g/05d-receipt` · taban `main 3439fccd` (yalın `:n` = `crates/kama-app/src/messaging.rs`) · P0 `k4g/p0-taban` `4b7b27f1` · rev1 `aa94c1a7` + inceleme `review-2026-10-24/05d.md` · **TASLAK**: kod "K4G-05d ONAYLANDI" bekler; uygulanmadı, koşulmadı. **Kapsam dışı: PTT açıkken dosya parça sınırı (DUR-21), Sprint 3.**
 
-## 1. Değişmez
-> Teslim edilen TEXT'in RECEIPT'i, aynı oturumda Transport kabul edene dek eş başına sınırlı biçimde bekletilir; oturum değişimini beklemez (oturum değişince görev tekrar TEXT'e, S2, geçer). Kabulden sonrası Transport'undur.
+## 1. Değişmez (sahip metni, C9 §3 K4G-05d "Ne")
+> "`(peer, msg_id)` ile tekilleştirilen **sınırlı** bekleyen-receipt kuyruğu; ilk başarılı transport kabulüne dek kapasite açıldığında yeniden sunulur; `Ok` sonrası tekrar transport'un. İkinci ağ ARQ'su **değildir** (zamanlayıcı yok)."
+
+**Okuma [DUR-05d-4, öneri]:** kayıt yalnız eşin o anki oturumunda bekler. Oturum değişince ya da kapanınca düşer ve görev S2 tekrar TEXT'e geçer. Alternatif: kaydı yeni tutamaca taşımak.
 
 ## 2. Mekanizma (bugün) [kod]
-`on_text` (:800-822) her TEXT'te `send_receipt`'i (:1110-1136) çağırır. Bu tek bir `send(.., Reliable)` yapar; `Err` ya da oturum yoksa yalnız `receipts_unsent` artar (:1133-1135).
-
-`PeerState`'te (:858-878) bekleyen RECEIPT alanı yok. Tek yeniden sunum yolu `flush_resends`'tir (:653, :771-778 → `flush_peer` :1084-1107). Bu yol yalnız outbox TEXT'ini kapsar ve tutamaç başına bir kez sunar (:1093-1095). Tekrar TEXT ancak oturum değişiminde gelir (`adopt` :707-746).
-
-Sonuç: `Backpressure` (`transport.rs:1212`; tetik: `files.pump` kuyruğu doldurur, `node.rs:464`) alan RECEIPT, gönderenin `Delivered`'ını oturum ömrünce (7 gün / 2^31 PN: `session_control.rs:87`, `protector.rs:42`) geciktirir; outbox yuvası dolu kalır. Yanlış "teslim edildi" yok.
+`send_receipt` (:1110-1136) tek `send` yapar; `Err` ya da oturum yokken yalnız `receipts_unsent` artar. `PeerState`'te (:858-878) bekleyen alan yok; tekrar TEXT yalnız oturum değişiminde gelir (:1093-1095, `adopt` :707-746). `Backpressure` (`transport.rs:1212`; tetik `files.pump`, `node.rs:464`) alan RECEIPT, `Delivered`'ı oturum ömrünce (≤ 7 gün, `session_control.rs:87`) geciktirir; yanlış "teslim edildi" yok.
 
 ## 3. Tasarım [tasarım]
-1. **Durum.** `PeerState.pending_receipts: VecDeque<MsgId>`: FIFO, `(eş, msg_id)` tekil, eş başına ≤ `MAX_OUTBOX_UNACKED` = 256 (:162). Yeni sayı yok.
-   S7'ye uyan gönderenin RECEIPT'siz TEXT'i ≤ 256'dır (`next_send_id` :934-936), yani kuyruk ancak uyumsuz eşte dolar. Bellek ≤ 64 KiB; kalıcı değil.
-2. **Üretim** (`owe_receipt`).
-   - Oturum yoksa RECEIPT bırakılır.
-   - Varsa ve `msg_id` kuyrukta değilse sona eklenir (sınır denetimi eklemeden önce, SR-AUDIT-001). Ardından kuyruk baştan sunulur.
-   - Kuyruk boşken bu bugünkü tek çağrıdır.
-3. **Sunum** (baştan). `Ok` → çıkar, `receipts_sent`. `Backpressure` → dur (`flush_peer` deseni). Diğer `Err` → bırak, devam: oturum sonu (uç `None`, `transport.rs:873`/:1262) ya da sözleşme dışı. Yalnız `Backpressure` geçicidir; `file_transfer.rs` `is_transient`'tan (:1629-1637) bilinçli fark (orada alındı oturumlar arası bekler).
-4. **Yeniden sunum noktası.** `Messenger::poll` başı, `flush_resends`'ten (:653) hemen sonra. Zamanlayıcı yok.
-   `turn()` sırası değişmez: tur boşalmışsa `messenger.poll` `None` döndürmüştür (`ptt.rs:679-680`), yani sunum `files.pump`'tan önce koşar (`node.rs:458` → :464); trafiksiz de her `NODE_TICK`'te tur döner (`node.rs:27-28`).
-5. **`Ok` sonrası.** Kayıt düşer; aynı oturumda bir daha sunulmaz. Sonraki kayıp Transport Reliable'ındır; bu ikinci bir ağ ARQ'su değildir.
-6. **Oturum değişimi / kapanış: DÜŞÜR.** `adopt` (:739 `replace`'ten önce) ve `retire` (:756) kuyruğu boşaltır; düşen her kayıt `receipts_unsent`'e yazılır. Gerekçeler:
-   - Yeni oturumda gönderen RECEIPT'siz her TEXT'i yeniden yollar (:744-745), alıcı RECEIPT'i yeniden üretir (:800-810). Kaydı taşımak ikinci bir RECEIPT olurdu.
-   - Kuyruktaki her `msg_id` gönderenin outbox'ındadır; telafi kesindir.
-   - Oturum yalnız :739/:756'da değişir. Dolu kuyruk oturumun `Some` olduğunu gösterir; tutamaç alanı gerekmez.
-   - Oturumsuz kuyruk yaşamaz. `file_transfer.rs` süre dolumu (:1243) kopyalanmaz: TEXT gönderenin zamanlayıcısı yok, TTL R3'ü geri getirirdi.
-7. **Taşma [DUR-05d-1]** (C9'da tanımsız). En eski kayıt düşer; `receipts_evicted` ve `receipts_unsent` artar.
-   - Emsal: `file_transfer.rs:1220-1224` ve AMP §3 sinyalleşme kuralı (`specs/application-message-protocol.md:99`).
-   - Alternatif: yeni kaydı reddetmek.
-8. **Sayaçlar** (`MessengerStats` :329-358) **[DUR-05d-2]**.
-   - `receipts_sent` aynı kalır.
-   - `receipts_unsent` **yeni anlam**: kabul görmeden bırakılan RECEIPT (oturum yok · `Backpressure` dışı ret · oturum değişimi/kapanış · taşma).
-   - Yeni: `receipts_deferred` (kuyruğa giren yeni kayıt), `receipts_evicted` (`unsent` alt kümesi), `receipts_pending` (`stats()` anındaki anlık toplam; sayaç değil), `Messenger::pending_receipts(peer)`.
-   - RECEIPT sunumu `resent_on_new_session` / `resend_refused`'a yazılmaz. INT-02 `app_retransmit` = bu ikisinin toplamı (`k4g/05-int02` `int02_node.rs:2497-2500`).
-9. **Beyanlı güncelleme (DUR-8 biçimi).** Belge cümleleri değişir: :78-80, :90-91, :186-187, :340-343, :646-647, :1110-1111 → Ek A.
-   Eski davranışı sabitleyen test **yok**: `receipts_unsent` yalnız :343/:1134'te; bütün-yapı `MessengerStats` karşılaştırması yok; `text_receipt.rs:813`/`:1304` yalnız A→B'yi doldurur; `lose_next` testleri (:615, :964) RECEIPT'i kabul ettirip kaybeder. 2×2 gerekmez; mevcut test kırmızısı → DUR.
+1. **Durum:** `PeerState.pending_receipts: VecDeque<MsgId>`; FIFO, `(eş, msg_id)` tekil, ≤ `MAX_OUTBOX_UNACKED` = 256 (:162); bellek ≤ 64 KiB (B.4); kalıcı değil.
+2. **Üretim:** oturum yok → bırak. `msg_id` kuyruktaysa birleşir. Kuyruk boşsa hemen sunulur (bugünkü tek çağrı), `Backpressure` → kuyruğa. Kuyruk boş değilse yalnız sona eklenir (sınır denetimi önce, SR-AUDIT-001).
+3. **Sunum [DUR-05d-3]:** dolu kuyruğu yalnız `Messenger::poll` başı, `flush_resends`'ten (:653) sonra, baştan sunar: `Ok` → çıkar; `Backpressure` → dur; diğer `Err` (oturum sonu ya da sözleşme dışı, B.4) → bırak, devam. Alternatif: `is_transient` sınıfı (`file_transfer.rs:1629-1637`). **Sonuç:** reddedilen kayıt kuyrukta kalır ve dolu kuyruğa yalnız `poll` başı sunar → bir `poll` çağrısında eş başına ≤ 1 `Backpressure`; o eşin kuyruğu aynı `poll`'da yeniden denenmez.
+4. **Zamanlayıcı yok; `turn()` değişmez:** boşalan turda `messenger.poll` `None` döndürmüştür (`ptt.rs:679-680`), sunum `files.pump`'tan önce koşar (`node.rs:458` → :464). `Ok` sonrası Transport'undur.
+5. **Oturum değişimi / kapanış [DUR-05d-4], öneri DÜŞÜR:** `adopt` (:739 öncesi) ve `retire` (:756) kuyruğu boşaltır; gönderen RECEIPT'siz her TEXT'i yeniden yollar (:744-745), RECEIPT yeniden üretilir (:800-810). TTL gerekmez (`file_transfer.rs:1243` kopyalanmaz). Alternatif: `adopt` sonunda yeni tutamaca sun (fazlası `receipts_ignored`, :835-836). Gerekçe ve erişilebilirlik: B.4.
+6. **Taşma [DUR-05d-1], öneri en eski düşer** (+ `receipts_evicted`, `receipts_unsent`; emsal `file_transfer.rs:1220-1224`). [çıkarım] S7'ye uyan gönderende de oturum değişiminden sonra olabilir ve düşen kayıt canlı olabilir (B.4). Alternatif: yeniyi reddet; sınır 2 × 256 (C9 "256"dan sapma).
+7. **Sayaçlar [DUR-05d-2]:** `receipts_unsent` yeni anlam (kabulsüz bırakılan); yeni `receipts_deferred`, `receipts_evicted`, `receipts_pending` (anlık) + `pending_receipts(peer)`; tanımlar Ek A. Değişmez: `deferred` = kuyruktan kabul + kuyruktan düşen + `pending`. RECEIPT ertelemesi `resend_refused`'a yazılmaz → INT-02 `app_retransmit`'e (`int02_node.rs:2497-2500`) girmez (tele çıkmamış ilk sunum).
+8. **Beyanlı güncelleme:** belge cümleleri Ek A (eski → yeni); eski davranışı sabitleyen test yok (B.1); mevcut test kırmızısı → DUR.
 
-## 4. Dokunulan dosyalar
-- `messaging.rs` (+ `mod tests` taşma testi).
-- `crates/kama-app/tests/k4g_p0_receipt.rs`: `4b7b27f1` cherry-pick, iddialar aynen; yeni testler de buraya.
-- **Dokunulmaz:** AMP/tel, S1 (`s1.rs` K8), `kama-node` (tur, `NodeMetrics`), `kama-mobile`, `file_transfer.rs`, `client-core`, `specs/`.
-- **Spec yaması yok.**
-  - AMP §3 (:68, :75) tekrar TEXT'e RECEIPT'i yazar, reddi yazmaz.
-  - S1 K8 "bekler"e izin verir (`s1.rs:8-9`, `KM-SEAM-AT-001.md:121`).
-  - `docs/plans/KAMA-PLAN-4GUN-APP-KRIPTO.md:242` "aynı oturumda zamanlayıcılı retry yok" ile tutarlı: reddedilen birim tele çıkmamıştır, zamanlayıcı yok.
+## 4. Dosyalar
+Değişen: `messaging.rs`; `crates/kama-app/tests/k4g_p0_receipt.rs` (`4b7b27f1` cherry-pick; P0 gövde ve iddiaları aynen; `Link` uzantısı B.2). Dokunulmaz: AMP/tel, S1, `kama-node`, `kama-mobile`, `file_transfer.rs`, `client-core`, `specs/`. `kama-node` `event.rs:49` / `kama-mobile` `event.rs:50` "RECEIPT gitti" cümlesi bayat kalır → K4G-16 kalemi. Spec yaması yok (B.3).
 
-## 5. Kanıt planı
-**P0.** `k4g_p0_receipt.rs` `p0_r3_receipt_survives_backpressure` (:662-710) ve `p0_r3_receipt_dedup_bounded` (:732-802) tabanda KIRMIZI. 05d sonrası iddialar değişmeden yeşil olmalı.
+## 5. Kanıt
+Ölçüm `Link` gönderim kaydından; tablo ve düzenek B.2. **Tabanda kırmızı (derlenir):** P0-1, P0-2 (:662-710, :732-802; iddialar aynen), T1' taşma, T5 ret sınırı. **Tabanda yeşil bekçi:** T2 `Ok` sonrası, T3 oturum değişimi, T4 sınıf. **Yalnız 05d** (yeni API, tabanda derlenmez): T1 `evicted`, T3b, T4 `pending`, T6 sayaç değişmezi. Tabanda kırmızı beklenen yeşilse DUR.
 
-**Yeni testler.** Tabanda kırmızı beklenen test yeşil çıkarsa DUR.
-
-| Test | İddia | Tabanda |
-|---|---|---|
-| T1 taşma | uyumsuz eş, 257 `msg_id`, B→A dolu → kuyruk 256, `evicted` 1, düşen en eski | kırmızı |
-| T2 `Ok` sonrası | `lose_next` ile kaybolan RECEIPT `IDLE_ROUNDS` boyunca yeniden sunulmaz | yeşil (bekçi) |
-| T3 oturum değişimi | bekleyen RECEIPT(X) + supersede → kuyruk 0; `h'` üzerinde RECEIPT(X) tam bir kez, tek `Delivered` | yeşil (bekçi) |
-| T4 sınıf | oturum yok / `UnknownSession` → kuyruğa girmez | yeşil (bekçi) |
-| T5 ilk ret | `poll` başına eş başına ≤ 1 reddedilen sunum | yeşil (bekçi) |
-| T6 sayaç | `pending` = toplam; kapasite açılınca 0; `deferred` ≥ 1 | kırmızı |
-
-**Mutasyon hedefleri:** tekilleştirme yok / `Ok`'ta çıkarmama → P0-2 · `poll` başı sunum yok → P0-1 · boşaltmama → T3 · sınır yok / yeniyi düşür → T1 · geniş geçici sınıf → T4 · `Backpressure`'da devam → T5 · `pending` = 0 → T6. Mevcut testler değişmeden yeşil.
-
-**INT-02 hükmü** ("bekleyen receipt = 0").
-- İki düğümün son sondasında `NodeProbe::messenger.receipts_pending` = 0 olmalı (`k4g/05-int02` `probe.rs:62`, `node.rs:813`).
-- Düzenek `int02_node.rs:2452-2465` `app` nesnesine üç alanı ekler. Bu INT-02 dalının işidir; 05d `kama-node`'a dokunmaz.
-- `receipts_unsent` 05d öncesi/sonrası kıyaslanmaz.
+**INT-02** (INT-02 dalının işi): son sondada iki düğümde `receipts_pending` = 0 (`probe.rs:62`) ve zaman çizelgesinin her örneğinde (`timeline_entry`, `int02_node.rs:1395`); `deferred` / `evicted` raporlanır. **Boş geçiş:** INT-02'de R3'ü tetikleyen kol yok (TEXT ve dosya Alice→Bob); `deferred` = 0 iken `pending` = 0 yalnız bekçidir, R3 kanıtı P0-1/P0-2/T1'/T5'tir. `receipts_unsent` 05d öncesi/sonrası kıyaslanmaz.
 
 ## 6. Bağımlılık · süre · risk · DUR
-**Bağımlılık:** yok (05b/05c'den bağımsız). **Süre:** ≈ 0,5 iş günü.
+Bağımlılık yok; ≈ 0,5 iş günü + düzenek. Risk: `Backpressure` sürerken `poll` çağrısı başına eş başına ≤ 1 ret; tur başına çağrı sayısı (`node.rs:93`, `ptt.rs:678-685`) türetilmedi, maliyet ölçülmedi. RECEIPT dosya parçalarının önüne geçer (kasıtlı); kabul sonrası kayıp 05b/05c'nin.
 
-**Riskler.**
-- `Backpressure` sürerken her `poll` eş başına bir reddedilen `send` yapar (tur başına ≤ 1024, `node.rs:93`; `flush_resends` deseni). Maliyeti ölçülmedi.
-- RECEIPT dosya parçalarının önüne geçer (kasıtlı).
-- Kabul sonrası kayıp 05b/05c'nin konusu.
-
-**DUR adayları:** 05d-1 taşma · 05d-2 üç pub sayaç alanı + erişimci · 05d-3 yalnız `Backpressure` geçici · 05d-4 düşür ↔ taşı. Mevcut test kırmızısı ya da tur sırası değişikliği → DUR (gerekmiyor).
+**DUR:** 05d-1 taşma (öneri en eski; uyumlu eşte de tetiklenebilir) · 05d-2 üç pub sayaç + erişimci, ertelemenin `app_retransmit` dışında kalması — sahip onayı · 05d-3 yalnız `Backpressure` geçici · 05d-4 düşür ↔ taşı. Mevcut test kırmızısı / tur sırası değişikliği → DUR (gerekmiyor).
 
 ---
 
-## Ek A — beyanlı belge metinleri (öneri; `messaging.rs`)
-- **:78-80** (modül, "# RECEIPT", son iki cümle) → "RECEIPT eşin güncel oturumundan gider. Transport `Backpressure` ile reddederse RECEIPT eş başına sınırlı bekleyen kuyruğa girer (`(eş, msg_id)` tekil, ≤ [`MAX_OUTBOX_UNACKED`]) ve sonraki [`Messenger::poll`] çağrılarında AYNI oturuma ilk kabule dek yeniden sunulur (K8 "bekler": reddedilen birim tele çıkmamıştır; zamanlayıcı yok). Kabulden sonrası Transport'undur. Oturum yoksa, ret başka bir hataysa ya da eşin oturumu değişir veya kapanırsa RECEIPT bırakılır: gönderen kaydı bir sonraki oturumda yeniden gönderir, tekrar TEXT RECEIPT'i yeniden üretir. Kuyruk taşarsa en eski kayıt düşer."
-- **:90-91** ("Retry yok" son cümlesine ek) → "Reddedilen RECEIPT de aynı kuralla bekler ("RECEIPT")."
-- **:186-187** → "`RECEIPT(delivered)` bu olay üretilirken Transport'a sunuldu ya da (geri basınçta) bekleyen kuyruğa alındı."
-- **:340-343** → `receipts_sent`: "Transport'un kabul ettiği RECEIPT sunumları (ilk sunum ya da bekleyen kuyruktan)." · `receipts_unsent`: "Transport'a kabul ettirilmeden bırakılan RECEIPT'ler: oturum yokken üretilen, `Backpressure` dışı bir hatayla reddedilen, eşin oturumu değişince ya da kapanınca kuyruktan düşen, kuyruk taşmasında düşen. Telafisi gönderenin oturum değişimindeki yeniden gönderimidir (S2)." · `receipts_deferred`: "`Backpressure` ile bekleyen kuyruğa giren RECEIPT (tekilleştirilen tekrar sayılmaz)." · `receipts_evicted`: "Kuyruk taşmasında düşen RECEIPT (`receipts_unsent`'in alt kümesi; S7'ye uyan gönderende 0)." · `receipts_pending`: "ANLIK değer, sayaç değil: `stats()` anında bütün eşlerin bekleyen RECEIPT sayısı."
-- **:646-647** (`poll` "Sıra" cümlesi) → "(1) Transport'un reddettiği oturum-değişimi yeniden gönderimleri yeniden sunulur; (2) bekleyen RECEIPT'ler eş başına baştan, ilk `Backpressure`'a dek sunulur; (3) Transport olayları, birer birer; (4) teslim edilen birimler."
-- **:1110-1111** → "`RECEIPT(delivered)`'ı eşin bekleyen kuyruğuna koyar ve kuyruğu güncel tutamaca sunar (kuyruk boşken tek çağrı). Ayrıntı: modül belgesi, "RECEIPT"."
+## Ek A — beyanlı belge güncellemeleri (`messaging.rs`; ~~eski, birebir~~ → yeni)
+- **:11-12** ~~HER TEXT'e (tekrar dahil) `RECEIPT(delivered)` döner.~~ → "HER TEXT'e (tekrar dahil) `RECEIPT(delivered)` borcu doğar; aynı `msg_id` için bekleyen RECEIPT varsa tekrar onunla birleşir ("RECEIPT")."
+- **:78-80** ~~RECEIPT eşin güncel oturumundan gider. Gönderilemezse (oturum yok ya da Transport reddi) kaybolur ve yeniden denenmez: gönderen kaydı bir sonraki oturum değişiminde yeniden gönderir, tekrar TEXT RECEIPT'i yeniden üretir.~~ → "RECEIPT eşin güncel oturumundan gider. Eşin bekleyen kuyruğu boşsa hemen sunulur. `Backpressure` alırsa ya da önünde bekleyen varsa eş başına sınırlı kuyrukta bekler (`(eş, msg_id)` tekil, ≤ [`MAX_OUTBOX_UNACKED`]). Kuyruk her [`Messenger::poll`] başında baştan, ilk `Backpressure`'a dek AYNI oturuma sunulur (K8 "bekler": reddedilen birim tele çıkmamıştır; zamanlayıcı yok). Kabulden sonrası Transport'undur. Oturum yoksa, ret başka bir hataysa ya da eşin oturumu değişir veya kapanırsa RECEIPT bırakılır: gönderen kaydı bir sonraki oturumda yeniden gönderir, tekrar TEXT RECEIPT'i yeniden üretir. Kuyruk taşarsa en eski kayıt düşer."
+- **:91** (son cümleden sonra ek; silme yok) → "Reddedilen RECEIPT de aynı kuralla bekler ("RECEIPT")."
+- **:186-187** ~~`RECEIPT(delivered)` bu olay üretilirken gönderildi.~~ → "`RECEIPT(delivered)` bu olay üretilirken Transport'a sunuldu, (geri basınçta) bekleyen kuyruğa alındı ya da (oturum yok / kalıcı ret) bırakıldı (`receipts_unsent`)."
+- **:335, :337-338** ~~teslim yok, RECEIPT yeniden~~ (iki yerde) → "teslim yok; RECEIPT yeniden ya da bekleyenle birleşir".
+- **:340** ~~Transport'un kabul ettiği RECEIPT'ler.~~ → "Transport'un kabul ettiği RECEIPT sunumları (ilk sunum ya da bekleyen kuyruktan)."
+- **:342** ~~Gönderilemeyen RECEIPT'ler (oturum yok ya da Transport reddi; yeniden denenmez).~~ → "Transport'a kabul ettirilmeden bırakılan RECEIPT'ler: oturum yokken üretilen, `Backpressure` dışı bir hatayla reddedilen, eşin oturumu değişince ya da kapanınca kuyruktan düşen, taşmada düşen. Telafisi gönderenin oturum değişimindeki yeniden gönderimidir (S2)."
+- **:343 sonrası (yeni alanlar)** → `receipts_deferred`: "Bekleyen kuyrukta kalan yeni RECEIPT (ilk sunumu `Backpressure` aldı ya da önünde bekleyen vardı; birleşen tekrar sayılmaz)." · `receipts_evicted`: "Kuyruk taşmasında düşen RECEIPT (`receipts_unsent`'in alt kümesi). Uyumsuz eşte ya da oturum değişimi sonrası birikimde > 0 olabilir." · `receipts_pending`: "ANLIK değer, sayaç değil: `stats()` anında bütün eşlerin bekleyen RECEIPT sayısı."
+- **:646-647** ~~Sıra: (1) Transport'un reddettiği oturum-değişimi yeniden gönderimleri yeniden sunulur; (2) Transport olayları, birer birer; (3) teslim edilen birimler.~~ → "Sıra: (1) Transport'un reddettiği oturum-değişimi yeniden gönderimleri yeniden sunulur; (2) bekleyen RECEIPT'ler eş başına baştan, ilk `Backpressure`'a dek sunulur; (3) Transport olayları, birer birer; (4) teslim edilen birimler."
+- **:1110-1111** ~~`RECEIPT(delivered)`'ı eşin güncel tutamacından verir. Tek deneme: oturum yoksa ya da Transport reddederse kaybolur (retry yok; modül belgesi, "RECEIPT").~~ → "`RECEIPT(delivered)` borcunu eşe kaydeder. Eşin kuyruğu boşsa borcu güncel tutamaca hemen sunar (tek çağrı); değilse kuyruğun sonuna ekler. Dolu kuyruğu `Messenger::poll` başı sunar. Ayrıntı: modül belgesi, "RECEIPT"."
+
+## Ek B — ayrıntı
+**B.1 Eski testler (DUR-8 taraması, taban).** Eski davranışı sabitleyen test bulunamadı:
+- `receipts_unsent` yalnız :343 ve :1134'te geçiyor. `MessengerStats` hiçbir testte bütün yapı olarak karşılaştırılmıyor.
+- `text_receipt.rs:813` ve `:1304` yalnız A→B yönünü dolduruyor; RECEIPT `Backpressure` almıyor.
+- `lose_next` testi (:615) RECEIPT'i kabul ettirip kaybediyor (:626).
+- `:964` TEXT'i `drop_next_units` ile düşürüyor; RECEIPT yolu yok.
+- Ptt, signaling, file_transfer, connect_flow ve kama-node testlerinde RECEIPT `Backpressure` almıyor.
+
+Bu nedenle 2×2 matris gerekmiyor.
+
+**B.2 Testler, düzenek, mutasyon.**
+
+| Test | İddia | Tabanda |
+|---|---|---|
+| P0-1, P0-2 (:662-710, :732-802) | iddialar aynen | kırmızı |
+| T1' taşma | 257 `msg_id`; 0'ın RECEIPT'i hiç kabul edilmez, 1..256'nınki tam bir kez (05d-1'e bağlı) | kırmızı |
+| T5 ret sınırı | X1, X2 beklerken aynı `poll`'da önce X1 tekrarı, sonra yeni Y → o `poll`'da ≤ 1 `Backpressure` | kırmızı (taban 2) |
+| T2 `Ok` sonrası | `lose_next` ile kaybolan RECEIPT `RECOVERY_ROUNDS` (:94) boyunca yeniden sunulmaz | yeşil (bekçi) |
+| T3 oturum değişimi | geçiş `poll_event`'te; `h'`'de RECEIPT(X) tam 1 kabul (boşaltmayan mutant 2) | yeşil (bekçi) |
+| T4 sınıf | oturum yok / `UnknownSession` sonrası RECEIPT(X) yalnız tekrar TEXT'ten | yeşil (bekçi) |
+
+Yalnız 05d (yeni API): T1 `evicted` = 1 · T3b `retire` sonrası `pending` 0 · T4 ret sonrası `pending` 0 · T6 `deferred` = kuyruktan kabul + kuyruktan düşen + `pending`, kapasite sonrası `pending` 0, `deferred` ≥ 1.
+
+- `Link`'e eklenecek supersede ve close: eski tutamaç, `Ready(h')` ya da `Closed(h)` `poll_event` ile alınana dek aktif ve dolu kalır; geçiş `poll_event`'te yapılır. Bu, client-core'un davranışının aynasıdır: `drive` (`transport.rs:575`) ürün yolunda yalnız `recv` / `poll_event`'ten çağrılır (:1233, :1238); faz `Superseded`'a `drive_crypto_events` üzerinden geçer (:744-745 → :757-759, :795-797).
+- T3 sırası:
+  1. Bob `Ready(h')`'yi okur.
+  2. Alice kuyruğunu boşaltır, `h'`'ye geçer ve TEXT'i yeniden gönderir.
+  3. Bob `poll` eder.
+  Boşaltmayan mutantta, X'in poll başı kopyası tekrar TEXT'ten önce kabul edilir → 2 kabul.
+- T1': ham TEXT `LINK_QUEUE_CAP`'lik partilerle enjekte edilir; B→A dolu tutulur. Kurtarma turu sayısı ⌈256 / `LINK_QUEUE_CAP`⌉ + 2'den türetilir.
+- Mutasyonlar ve onları öldüren testler:
+  - tekilleştirme kaldırılır → P0-2
+  - `Ok`'ta kayıt çıkarılmaz → P0-2, T2
+  - `poll` başı sunum kaldırılır → P0-1
+  - `adopt` boşaltmaz → T3
+  - `retire` boşaltmaz → T3b
+  - sınır kaldırılır ya da en yeni düşürülür → T1'
+  - geçici hata sınıfı genişletilir → T4
+  - kuyruk doluyken de hemen sunulur ya da `Backpressure`'da sunum sürer → T5
+  - `pending` sabit 0 → T6
+- Mevcut testler değişmeden yeşil kalmalı.
+
+**B.3 Spec yaması yok.**
+- AMP §3 (:68, :75) tekrar TEXT'e RECEIPT gönderilmesini yazar, reddedilen RECEIPT'in ne olacağını yazmaz.
+- S1 K8 "bekler"e izin verir (`s1.rs:8-9`, `KM-SEAM-AT-001.md:121`).
+- Tasarım `docs/plans/KAMA-PLAN-4GUN-APP-KRIPTO.md:242`'deki "aynı oturumda zamanlayıcılı retry yok" kuralıyla tutarlı: reddedilen birim tele çıkmamıştır ve zamanlayıcı yoktur.
+
+**B.4 Seçim ayrıntıları.**
+- Bellek: `MAX_PEERS` 64 (:167) × 256 × 4 B (`MsgId` = u32, :150) = 64 KiB (+ `VecDeque` başlıkları).
+- Diğer `Err`: faz `Closed` / `Superseded` → `UnknownSession` / `SessionSuperseded` (`transport.rs:1182-1186`); uç görevi bitti → `NotConnected` (:1213 ← `runtime.rs:1041`). `is_transient` alternatifi yalnız 05d-4 "taşı" ile anlamlıdır (DÜŞÜR'de bu kayıtlar zaten boşaltılır).
+- DÜŞÜR: kuyruktaki her `msg_id` ya gönderenin outbox'ındadır (yeni oturumda yeniden gelir) ya da drain tekrarıysa gönderende zaten `Delivered`'dır → telafi kesin. Oturum yalnız :739 / :756'da değişir; dolu kuyruk ⇒ oturum `Some` ⇒ tutamaç alanı gerekmez. Boşaltma, değişim aynı `poll`'un olay okumasında keşfedilirse erişilir; daha önce keşfedildiyse kayıt `poll` başı sunumunda sınıf kuralıyla düşer — sonuç aynı.
+- Taşma senaryosu [çıkarım; test yok]: `Ready(h')` sonrası bütün outbox `h'`ye yeniden gelir; eski oturumun geç RECEIPT'leri (:88-90) gönderende yuva açar; yeni TEXT'ler aynı `Backpressure` altında birikir → kuyruk 256'yı aşabilir. En eskiyi düşürmek önce yeniden gönderimleri (bir kısmı zararsız drain tekrarı) vurur, yeniyi reddetmek her zaman canlı kaydı; düşen canlı kaydın telafisi sonraki oturum değişimidir. 2 × 256 = canlı (gönderen outbox'ı ≤ 256) + drain tekrarı (≤ 256). Emsal ayrıca AMP §3 sinyalleşme kuralı (`specs/application-message-protocol.md:99`).
+- Trafiksiz turda ret ≤ 1 / `NODE_TICK` (`node.rs:27-28`).
