@@ -10497,4 +10497,276 @@ mod tests {
     // [K4G-05b DUR-37 → DUR-31 düzeltmesi] Geçersiz kılınan "pay dışı turda rezerv yalnız DATA'yı
     // tutar" testi (`k4g05b_dur37_off_share_turn_reservation_holds_only_data`) yeni sözleşmeyle
     // yeniden yazıldı: `k4g05b_dur31_reservation_binds_all_classes_above_reserve_only`.
+
+    // ── [K4G-05b · CEVAP 13 §3, 11-EK §3] motor tarafı kayıt-unutma yolları ──────────────────────
+    //
+    // Motorun bir iletim kaydını unuttuğu her yol için aynı geç ACK: birim teyit çıktısına
+    // (`take_confirmed_units`) GİRMEZ, sahipli kalır ve yeniden gönderim kararı üretilir; o yeniden
+    // gönderimin ACK'i birimi teyit eder ve birim teyit çıktısında TAM BİR KEZ görünür. Runtime
+    // şeridinin karşılaştırma tablosunun motor sütunudur. Yollar: tombstone TTL dolumu (`Timer::Pto`
+    // budaması), `TOMBSTONE_MAX` tahliyesi (`make_tombstone_room`), tombstone bırakmayan Duplicate
+    // kökenli kayıp (`queue_losses`). K_MAP budaması 05b'de kapalıdır (CEVAP 11 DUR-30) — o yol
+    // 05c'de. Fikstür ön koşulları "FİKSTÜR GEÇERSİZ" ile ayrı düşer (kırmızı sayılmaz).
+
+    fn forget_fixture(test: &str, ok: bool, what: &str) {
+        assert!(
+            ok,
+            "{test}: FİKSTÜR GEÇERSİZ (sınanacak durum kurulmadı; sonuç kırmızı SAYILMAZ): {what}"
+        );
+    }
+
+    /// Ortak ısınma: srtt kurulur (u200, 10 ms); kuruluş probu kapalı.
+    fn forget_warm(test: &str) -> Sender {
+        let mut s = Sender::new();
+        s.set_establish_probe(false);
+        s.on_event(Event::AppData(unit(200)), 0);
+        s.on_event(ack(&[0]), 10 * MS);
+        forget_fixture(
+            test,
+            s.take_confirmed_units() == [200],
+            "ısınma birimi teyit çıktısında",
+        );
+        s
+    }
+
+    fn forget_unit(id: u64) -> OpaqueUnit {
+        OpaqueUnit { id, size: 100 }
+    }
+
+    /// Birim sahipli mi (motor içi): teyitsiz ve ARQ kaydı, kopya kaydı ya da uçuşta kendi kaydı var.
+    fn forget_owned(s: &Sender, u: u64) -> bool {
+        !s.unit_is_confirmed(UnitId(u))
+            && (s.pending_lost.iter().any(|r| r.unit.id == u)
+                || s.dup_queue.iter().any(|d| d.unit.id == u)
+                || s.inflight
+                    .values()
+                    .any(|p| p.owner == RecordOwner::Unit(UnitId(u))))
+    }
+
+    /// Geç ACK ve sonrası — her yol için AYNI iddialar. Ön koşul (fikstür): `late_seq`'in motorda izi
+    /// yok (uçuş, tombstone, ARQ kuyruğu — un-loss eşleşmesi de olamaz) ve birim sahipli.
+    fn forget_assert_after_late_ack(
+        s: &mut Sender,
+        u: u64,
+        late_seq: u64,
+        t_late: u64,
+        test: &str,
+    ) {
+        forget_fixture(
+            test,
+            !s.inflight.contains_key(&late_seq)
+                && !s.tombstones.contains_key(&late_seq)
+                && !s.pending_lost.iter().any(|r| r.seq == late_seq),
+            "geç ACK anında kaydın motorda izi kalmamalı (uçuş, tombstone, ARQ kuyruğu)",
+        );
+        forget_fixture(test, forget_owned(s, u), "geç ACK'ten önce birim sahipli");
+        forget_fixture(
+            test,
+            s.take_confirmed_units().is_empty(),
+            "geç ACK'ten önce bekleyen teyit yok",
+        );
+        let out = s.on_event(ack(&[late_seq]), t_late);
+        // İddia 1: unutulmuş kaydın geç ACK'i birimi teyit çıktısına koymaz.
+        let after_late = s.take_confirmed_units();
+        assert!(
+            !after_late.contains(&u),
+            "{test}: unutulmuş kaydın (seq {late_seq}) geç ACK'i birimi teyit çıktısına koydu: {after_late:?}"
+        );
+        // İddia 2: birim sahipli kalır ve sonraki turlarda yeniden gönderim kararı üretilir.
+        assert!(
+            forget_owned(s, u),
+            "{test}: geç ACK'ten sonra birim sahipsiz"
+        );
+        let resend_of = |o: &[TransmitDecision]| {
+            o.iter()
+                .find(|d| {
+                    d.unit_id == u
+                        && matches!(d.kind, TransmitKind::Retransmit | TransmitKind::Duplicate)
+                })
+                .map(|d| d.seq)
+        };
+        let mut t = t_late;
+        let mut resend = resend_of(&out);
+        for _ in 0..1_000u32 {
+            if resend.is_some() {
+                break;
+            }
+            t += 100 * MS;
+            let o = s.on_event(Event::TimerFired(Timer::Pto), t);
+            assert!(
+                !s.take_confirmed_units().contains(&u),
+                "{test}: ACK'siz turda birim teyit çıktısına girdi"
+            );
+            resend = resend_of(&o);
+        }
+        let Some(seq) = resend else {
+            panic!("{test}: geç ACK'ten sonra 100 s içinde yeniden gönderim kararı yok");
+        };
+        // İddia 3: yeniden gönderimin ACK'i birimi teyit eder; birim teyit çıktısında TAM BİR KEZ.
+        t += MS;
+        let _ = s.on_event(ack(&[seq]), t);
+        assert_eq!(
+            s.take_confirmed_units(),
+            vec![u],
+            "{test}: yeniden gönderimin (seq {seq}) ACK'i birimi tam bir kez teyit etmeli"
+        );
+        for _ in 0..50u32 {
+            t += 100 * MS;
+            let o = s.on_event(Event::TimerFired(Timer::Pto), t);
+            assert!(
+                !o.iter().any(|d| d.unit_id == u
+                    && matches!(
+                        d.kind,
+                        TransmitKind::Data | TransmitKind::Retransmit | TransmitKind::Duplicate
+                    )),
+                "{test}: teyitten sonra birim için karar çıktı"
+            );
+            assert!(
+                s.take_confirmed_units().is_empty(),
+                "{test}: birim teyit çıktısında ikinci kez göründü"
+            );
+        }
+        let _ = s.on_event(ack(&[late_seq, seq]), t + MS);
+        assert!(
+            s.take_confirmed_units().is_empty(),
+            "{test}: teyitli birimin tekrar ACK'i teyit çıktısı üretti"
+        );
+    }
+
+    /// Ortak kayıp kurgusu: U (7) ve üç yardımcı (8, 9, 10) 20 ms'de çıkar; 30 ms'de yardımcılar
+    /// ACK'lenir → U'nun Data kaydı paket eşiğiyle kayıp ilan edilir (tombstone + ARQ). Dönüş: U'nun
+    /// Data seq'i.
+    fn forget_lose_data(s: &mut Sender, test: &str) -> u64 {
+        let mut seqs: Vec<(u64, u64)> = Vec::new();
+        for id in [7u64, 8, 9, 10] {
+            for d in s.on_event(Event::AppData(forget_unit(id)), 20 * MS) {
+                if d.kind == TransmitKind::Data {
+                    seqs.push((d.unit_id, d.seq));
+                }
+            }
+        }
+        forget_fixture(
+            test,
+            seqs.len() == 4 && seqs.iter().any(|&(id, _)| id == 7),
+            "dört birim 20 ms'de DATA olarak çıkmalı",
+        );
+        let u_seq = seqs.iter().find(|&&(id, _)| id == 7).map_or(0, |&(_, q)| q);
+        let helpers: Vec<u64> = seqs
+            .iter()
+            .filter(|&&(id, _)| id != 7)
+            .map(|&(_, q)| q)
+            .collect();
+        let _ = s.on_event(ack(&helpers), 30 * MS);
+        forget_fixture(
+            test,
+            s.tombstones.contains_key(&u_seq),
+            "U'nun Data kaydı kayıp ilanıyla tombstone'da",
+        );
+        let _ = s.take_confirmed_units();
+        u_seq
+    }
+
+    /// Kayıt-unutma yolu 1 — tombstone TTL dolumu: U'nun Data tombstone'u vadesinde `Timer::Pto`
+    /// budamasıyla düşer (tahliye yok); sonra o seq'in geç ACK'i.
+    #[test]
+    fn k4g05b_forget_path_ttl_late_ack_not_confirmed_resend_confirms_once() {
+        const TEST: &str = "k4g05b_forget_path_ttl_late_ack_not_confirmed_resend_confirms_once";
+        let mut s = forget_warm(TEST);
+        let u_seq = forget_lose_data(&mut s, TEST);
+        let expiry = s.tombstones.get(&u_seq).map_or(0, |t| t.expiry_ns);
+        let _ = s.on_event(Event::TimerFired(Timer::Pto), expiry);
+        forget_fixture(
+            TEST,
+            !s.tombstones.contains_key(&u_seq) && s.tombstone_evicted == 0,
+            "U'nun tombstone'u TTL budamasıyla düşmeli (tahliye yok)",
+        );
+        let _ = s.take_confirmed_units();
+        forget_assert_after_late_ack(&mut s, 7, u_seq, expiry + MS, TEST);
+    }
+
+    /// Kayıt-unutma yolu 2 — `TOMBSTONE_MAX` tahliyesi (`make_tombstone_room`): U'nun tombstone'undan
+    /// sonra TOMBSTONE_MAX dolgu kaydı kayıp ilan edilir (dolgu birimleri sonra teyit edilip ARQ'dan
+    /// çıkar); en eski — U'nunki — tahliye edilir. Geç ACK U'nun TTL vadesinden ÖNCE (unutma nedeni
+    /// yalnız tahliye).
+    #[test]
+    fn k4g05b_forget_path_cap_late_ack_not_confirmed_resend_confirms_once() {
+        const TEST: &str = "k4g05b_forget_path_cap_late_ack_not_confirmed_resend_confirms_once";
+        let mut s = forget_warm(TEST);
+        let u_seq = forget_lose_data(&mut s, TEST);
+        let expiry = s.tombstones.get(&u_seq).map_or(0, |t| t.expiry_ns);
+        let t_fill = 31 * MS;
+        let t_late = 32 * MS;
+        let mut fillers: Vec<UnitId> = Vec::with_capacity(TOMBSTONE_MAX);
+        for i in 0..TOMBSTONE_MAX as u64 {
+            let f = OpaqueUnit {
+                id: 100_000 + i,
+                size: 1,
+            };
+            let q = s.track_sent_unit(f, t_fill, 0, TransmitKind::Data);
+            s.queue_losses(&[q], t_fill);
+            fillers.push(UnitId(f.id));
+        }
+        s.confirm_units(&fillers);
+        let _ = s.take_confirmed_units();
+        forget_fixture(
+            TEST,
+            !s.tombstones.contains_key(&u_seq) && s.tombstone_evicted >= 1,
+            "U'nun tombstone'u kapasite tahliyesiyle düşmeli",
+        );
+        forget_fixture(
+            TEST,
+            t_late < expiry,
+            "geç ACK U'nun tombstone TTL vadesinden önce olmalı",
+        );
+        forget_assert_after_late_ack(&mut s, 7, u_seq, t_late, TEST);
+    }
+
+    /// Kayıt-unutma yolu 3 — tombstone bırakmayan Duplicate kökenli kayıp: U'nun kopya kaydı paket
+    /// eşiğiyle kayıp ilan edilir ve tombstonesuz düşer; sonra o kopya seq'inin geç ACK'i.
+    #[test]
+    fn k4g05b_forget_path_dup_loss_late_ack_not_confirmed_resend_confirms_once() {
+        const TEST: &str =
+            "k4g05b_forget_path_dup_loss_late_ack_not_confirmed_resend_confirms_once";
+        let mut s = forget_warm(TEST);
+        let mut u_data: Option<u64> = None;
+        for d in s.on_event(Event::AppData(forget_unit(7)), 20 * MS) {
+            if d.kind == TransmitKind::Data {
+                u_data = Some(d.seq);
+            }
+        }
+        forget_fixture(TEST, u_data.is_some(), "U 20 ms'de DATA olarak çıkmalı");
+        // U'nun vadeli geometrik kopya kaydı; kopya 25 ms'deki turda çıkar.
+        s.dup_push(DupRec {
+            due_ns: 20 * MS,
+            unit: forget_unit(7),
+            interval_ns: 1_000 * MS,
+        });
+        let out = s.on_event(Event::TimerFired(Timer::Pto), 25 * MS);
+        let dup_seq = out
+            .iter()
+            .find(|d| d.unit_id == 7 && d.kind == TransmitKind::Duplicate)
+            .map(|d| d.seq);
+        forget_fixture(TEST, dup_seq.is_some(), "U'nun kopyası 25 ms'de çıkmalı");
+        let dup_seq = dup_seq.unwrap_or_default();
+        // Üç yardımcı kopyadan sonra çıkar ve ACK'lenir → kopya kaydı (ve U'nun Data'sı) kayıp.
+        let mut helpers: Vec<u64> = Vec::new();
+        for id in [8u64, 9, 10] {
+            for d in s.on_event(Event::AppData(forget_unit(id)), 26 * MS) {
+                if d.kind == TransmitKind::Data {
+                    helpers.push(d.seq);
+                }
+            }
+        }
+        forget_fixture(TEST, helpers.len() == 3, "üç yardımcı DATA olarak çıkmalı");
+        let _ = s.on_event(ack(&helpers), 40 * MS);
+        forget_fixture(
+            TEST,
+            !s.inflight.contains_key(&dup_seq)
+                && !s.tombstones.contains_key(&dup_seq)
+                && s.tombstone_evicted == 0,
+            "kopya kaydı kayıp ilanıyla tombstonesuz düşmeli",
+        );
+        let _ = s.take_confirmed_units();
+        forget_assert_after_late_ack(&mut s, 7, dup_seq, 50 * MS, TEST);
+    }
 }
