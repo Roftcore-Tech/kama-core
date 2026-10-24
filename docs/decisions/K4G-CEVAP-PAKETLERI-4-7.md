@@ -1,6 +1,6 @@
-# K4G sprinti — sahip karar paketleri CEVAP 4–7 (kayıt) · güncel kapsam CEVAP 4–9 (dosya adı değişmez)
+# K4G sprinti — sahip karar paketleri CEVAP 4–7 (kayıt) · güncel kapsam CEVAP ~~4–9~~ 4–10 ve üç onay (dosya adı değişmez)
 
-> Bu dosya K4G-05b tasarım notunun (`docs/design/K4G-05b-RETX-FIX.md`) ve K4G-15/K4G-05 PR'larının atıf verdiği **sahip kararlarının** depodaki kaydıdır (CEVAP PAKETİ 7 — EK B7). Metinler değiştirilmeden aktarılmıştır; her bölümün başında kaynağı ve metnin sha256'sı yazılıdır. Karar mercii Abkarada'dır; bu dosya karar üretmez. Kapı ifadeleri yalnız sahibin mesajında geçerlidir; burada geçmeleri gerçekleşmiş kapı anlamına gelmez. CEVAP PAKETİ 8 (2026-10-19) ve CEVAP PAKETİ 9 (2026-10-24) bölümleri 2026-10-24'te K4G-05b rev4 ile eklendi; dosya adı mevcut atıflar için korunur.
+> Bu dosya K4G-05b tasarım notunun (`docs/design/K4G-05b-RETX-FIX.md`) ve K4G-15/K4G-05 PR'larının atıf verdiği **sahip kararlarının** depodaki kaydıdır (CEVAP PAKETİ 7 — EK B7). Metinler değiştirilmeden aktarılmıştır; her bölümün başında kaynağı ve metnin sha256'sı yazılıdır. Karar mercii Abkarada'dır; bu dosya karar üretmez. Kapı ifadeleri yalnız sahibin mesajında geçerlidir; burada geçmeleri gerçekleşmiş kapı anlamına gelmez. CEVAP PAKETİ 8 (2026-10-19) ve CEVAP PAKETİ 9 (2026-10-24) bölümleri 2026-10-24'te K4G-05b rev4 ile eklendi; dosya adı mevcut atıflar için korunur. CEVAP PAKETİ 10 (2026-10-24) ve aynı gün verilen üç onay metni (K4G-05b, K4G-05c, K4G-05d) 2026-10-24'te K4G-05b onayıyla eklendi; ikisinin kaynağı orkestratör transkripsiyonudur (bölüm başında).
 
 ---
 
@@ -342,4 +342,105 @@ P0 (1) → rev4 notu + onay → **05b** (2–3) → **05c** (2–3) → **05d** 
 Çevre: `CARGO_BUILD_JOBS=2`, tek cargo, worktree başına target, ölçüm çıktısı `/tmp` dışında. CI başlamadıysa CEVAP 8 §1 (2).
 
 Rapor: P0 tablosu → rev4 SHA + Ek A sha256 tek satır → 05c/05d notları → sonra gün sonu tek rapor.
+````
+
+---
+
+## CEVAP PAKETİ 10 — 2026-10-24
+
+*Kaynak:* oturuma yapıştırılan metin, 2026-10-24; orkestratör transkripsiyonu `~/kama-k4g-work/decisions/C10.md`, bayt-özdeş; sha256 `cd84bab11ead1b4a8a426d685a486d3dd75f3a24905c9b972eec081af0c2e6d4`
+
+````markdown
+# CEVAP PAKETİ 10 — Abkarada → K4G orkestratörü (2026-10-24) — P0 sonucu, rev4/05c/05d notları, DUR-22..31, DUR-05c-*, DUR-05d-*, bağımlılık PR'ı
+
+P0 kabul: 12 testin 11'i tabanda beklenen nedenle kırmızı, RTT yol değişimi yeşil, yanlışlanan madde yok (`k4g/p0-taban` @df7c9e62). Üç not alındı: rev4 @ea2e57b2 (Ek A `27171e1c…`, 227 satır), 05c @18e6de95 (Ek A `efee869f…`), 05d @b9d83396 (Ek A `f3f62563…`). **Onaylar bu mesajda değil; üç ayrı mesajla, bunun hemen ardından geliyor.** CEVAP 8'in oturuma ulaşmamış olması benim hatam; bugünden itibaren her karar paketi dosya olarak gelir, sen alındığını tek satırla yazarsın.
+
+---
+
+## 1. P0 mesajındaki kararlar
+
+| # | Cevap |
+|---|---|
+| **DUR-22** | Kabul: kırmızı test tek başına main'e girmez; her test kendi düzeltme PR'ıyla (05b / 05c / 05d) yeşil olarak girer, `#[ignore]` yok. `k4g/p0-taban` dalı kanıt olarak kalır (PR açılmaz); PR gövdeleri P0 koşusunun log yoluna ve bu dala atıf verir. |
+| **DUR-23** | (a) kabul: motorda kopya kuyruğu sahipliğini okuyan salt-okur erişimci (05b; davranışsız). (b) kabul: runtime tablo boyutları için `#[cfg(any(test, feature = "test-util"))]` sayaç kancası (05c), notta önerildiği biçimde. İkisi de ürün yolunda karar okumaz. |
+| **DUR-24** | Onay: sınıflar arası pay **her durumda** (PRE_CONVERGE dışı), tur = `schedule_transmit` çağrısı. RECOVER_ARQ sayacı yalnız o durumun ARQ payı için kalır; kopya kuyruğu payı ondan bağımsız sayılır. PAY testi bu okumayla yeşil olmalı. |
+| **DUR-25** | Kabul: ESI birim testleri statik-r (Manual) kolunu kullanır (belirlenimli). Ürün kipi eşdeğerliği iddia edilmez; notta tek cümle. INT-02 FEC açık koşusunda parite ACK sayaçları raporlanır (hüküm değil). |
+| **DUR-26** | Kabul: devir ACK sessizliğine dayanmaz; ana yol "bütçe tükendiği turda hemen". Sessizlik kontrol kolu, gerçek alıcının ≈ 8.4 s'lik bayat SACK tekrarını içerecek şekilde yeniden tanımlanır (notta). |
+| **DUR-27** | **Evet.** Üç RustSec uyarısı için ayrı bağımlılık PR'ı (yalnız yama sürümleri: rustls-webpki 0.103.16, webpki-root-certs ≥ 1.0.10, tokio ≥ 1.53.3; yeni bağımlılık yok). CI-KİLİT İSTİSNASI bu PR'ı ve kilit sürdüğü sürece sıradaki **her** PR'ı kapsar (koşullar aynı: yerel tam kapı çıktısı PR'da, "CI-KİLİT İSTİSNASI ile merge" satırı, kilit kalkınca `core-main` elle, kırmızıysa ACİL DUR + revert). tokio ürün bağımlılığı olduğu için tam kapı + tv_* + entegrasyon testleri yeşil şart; `Cargo.lock` farkı yalnız bu üç satır. Sıra: bağımlılık PR'ı → #136 → #135. |
+
+## 2. rev4'ün açtığı DUR-28..31
+
+| # | Cevap |
+|---|---|
+| **DUR-28** (K_MAP türetimi) | K_MAP = 8 kalır. Türetim ("desteklenen azami RTT + bir tam RTO_MAX") 8'den **büyük** değer veriyorsa notta göster, DUR; küçük veriyorsa 8 kalır (ufuk 240 s). Ufuk dışı geç ACK kuralı değişmez. |
+| **DUR-29** (RTT (a) okuması) | **Dar okuma:** `ack_delay` çerçevenin en büyük PN'ine aittir (`receiver.rs:405`); örnek yalnız **o kayıt** bu çerçeveyle ilk kez onaylanıyorsa alınır. En büyük PN zaten onaylıysa ya da bilinmiyorsa örnek **yok** — daha küçük yeni-onaylı kayda geri düşülmez. Tazelik ölçütü bu yüzden var. |
+| **DUR-30** (madde 11 / A.7 / §16.2 adımının yeri) | Ayrı PR değil: motor tarafı K_MAP budaması + A.7 + §16.2 satırı **05b PR'ında** (Ek A zaten orada); runtime tarafı (birim başına O(1) kayıt, `take_confirmed_units` ile silme) **05c PR'ında**. C9 §6'daki ayrı adım kalkar. |
+| **DUR-31** (PAY karışık boy) | Kabul: kopya kuyruğu başı için **token rezervasyonu** — baş token'a yetişemediğinde eksik kısmı rezerve edilir, DATA rezervin altına inemez, baş gidince rezerv kalkar; token üretilmez, rezerv ≤ bir kayıt boyu. A.7 (iii) buna göre; test: 37 B DATA sürekli + 1050 B kopya, karışık boy → kopya ≤ K_ARQ_SHARE turda. |
+
+## 3. K4G-05c notunun kararları
+
+| # | Cevap |
+|---|---|
+| **DUR-05c-1** | **(a′)**: çağrı = kabul (`receiver.rs` yalnız doc) **+** engine-spec §2:216'ya tek satır YAMA KAYDI ("`seen_count` = alıcı motorunun **kabul ettiği** DATA; kabul kararı istemci runtime'ındadır, v1.1 · K4G-05c"). Yetki bu satırla sınırlı. Beyanlı sapma bırakmayalım. |
+| **DUR-05c-2** | **(a)** pay = 0 (notun türetimi). Kart metnindeki "3c" yer tutucuydu. |
+| **DUR-05c-3** | Kabul, önerilen tarifle: durak (30 s) boyunca eşzamanlı dosya ≥ 1 025 birim (≈ 1,04 MB); profil 30 s'de taşımalı; **taban kolu** (05c'siz aday, 1 tohum) `delivery_channel_drops > 0` gösterir; geçerlilik: `full_refusals > 0`. Hüküm: teslim %100, `delivery_channel_drops = 0`, `reorder_skip = 0`, dedup doğru, kontrol yolu çalıştı — 3 tohum 3/3. Profil taşıyamıyorsa dosya boyutu değil **kanal kapasitesi test ayarı** değiştirilmez — DUR. |
+| **DUR-05c-4** | **(a)** spec dokunulmaz; gerekçe notta kalır. |
+| **DUR-05c-5** | **(a)** A.3 — plan:392 ve :532 ikisi de. |
+| **DUR-05c-6** | **(a)** — `NodeMetrics`/UniFFI değişmez. **K4G-05e açıldı** (§5), not gerekmez. |
+| **DUR-05c-8** | **(a)** R = min(`max_peers`, C − 1) = 64/1024; yalnız sıra başı garantisi; adalet sözü yok (beyan). |
+| **DUR-05c-9** | **(a)** A.4. |
+| **DUR-05c-10** | **(a)** `runtime.rs:3334-3372` ve `kama-node node/tests.rs:415-456` DUR-8 biçimiyle (paragraf + 2×2) değişir. |
+| **DUR-05c-11** | **(a)** 05b'nin `kama-v1.1-full` beyanına 05c satırı; T-hücre birleşik adayda. |
+| **DUR-23 (b)** | Kabul (bkz. §1). |
+| **DUR-05c-12** | **(a)** protokol ihlali: ACK + düşür + `frag_chunk_dropped`; değişmez "geçerli birim" için; beyan notta ve INT-02 raporunda. |
+| **DUR-05c-13** | **(a)**: bekçi yazılır; kanıt 3439fccd + kanca kırmızısı; 05c tabanında yeşilse nota "yanlışlandı (05c tabanında)". |
+
+## 4. K4G-05d notunun kararları
+
+| # | Cevap |
+|---|---|
+| **DUR-05d-1** | En eski düşer + `receipts_evicted` (öneri). Sınır 256 (eş başına outbox sınırıyla aynı; 2 × 256 reddedildi). |
+| **DUR-05d-2** | Kabul: üç public sayaç + erişimci; RECEIPT ertelemesi INT-02 `app_retransmit`'e girmez (INT-02 raporunda ayrı sütun: `receipts_deferred`, koşu sonunda `receipts_pending = 0`). |
+| **DUR-05d-3** | Kabul: yalnız `Backpressure` geçici. |
+| **DUR-05d-4** | Kabul: oturum değişiminde kuyruk düşer (yeni oturumda TEXT yeniden gelir, RECEIPT yeniden üretilir). |
+
+## 5. K4G-05e — INT-02 düzeneği: yeni kollar ve sayaçlar (harness; kod bu mesajla serbest)
+
+- Neden: 05c/05d'nin sayaçları ve `ek-tuketici-durak` kolu olmadan INT-02 yeni kusurları ne tetikler ne ölçer.
+- Ne: `kama-node/src/probe.rs` `NodeProbe` (test-util) + `node.rs` `probe()` — `delivery_channel_drops`, `full_refusals`, `reorder_skip`, `receipts_pending/deferred/evicted`, runtime tablo boyutları (DUR-23 b kancası); `int02_node.rs --arm ek-tuketici-durak` (DUR-05c-3 tarifi); `int02_run.sh` / `int02_analyze.py` hükümleri (C9 §5); `live_diag` açık; gözlem açık/kapalı karşılaştırma kolu.
+- Nereye: `crates/kama-node/src/{probe.rs, node.rs}` (test-util), `crates/kama-integration/examples/int02_node.rs`, `scripts/netem/`, `docs/reports/INT-02-RAPORU.md` §10 (yeni tablolar).
+- Bağımlılık: #136 merge; sayaç adları 05c/05d notlarındaki gibi (PR'lar sıralı: 05c → 05d → 05e; 05e'nin kodu onların sayaçlarını bekler).
+- Done: yeni kol tabanda (05c'siz) kırmızı, 05c'li adayda 3/3; analiz betiği self-test; ürün kodu değişmez (test-util dışında).
+
+## 6. Sıra (bugünden)
+
+Bağımlılık PR'ı → #136 → #135 (yerel kapı, istisna) → onaylar (3 ayrı mesaj, bugün) → **05b** kod (P0 testleri yeşile; DR-CS-1 üçlüsü, Karn testleri, freeze pin'i beyanlı) → **05c** → **05d** → **05e** → mutasyon + kapılar → T-hücre gece → INT-02 (C9 §5 + DUR-05c-3) → rapor → benden "INT-02 GEÇTİ". Takvimin (29 Ekim tatili dahil, "INT-02 GEÇTİ" ≈ 10 Kasım) benimkinin yerine geçer; onay 27 değil **bugün** geldiği için bir iş günü kazanılabilir — sen hesapla.
+
+Rapor: bağımlılık PR'ı + #136 + #135 merge → tek satır; 05b PR açılınca tek satır; gün sonu tek rapor.
+````
+
+---
+
+## Üç onay (K4G-05b, K4G-05c, K4G-05d) — 2026-10-24
+
+*Kaynak:* oturuma yapıştırılan metin, 2026-10-24; orkestratör transkripsiyonu `~/kama-k4g-work/decisions/C10-ONAYLAR.md`, bayt-özdeş; sha256 `0361420b29e61b8743c46c67733b30def5e52c183a852a1b41d7dd6eca73df97`
+
+````markdown
+# Üç onay — K4G oturumuna ÜÇ AYRI MESAJ olarak, CEVAP PAKETİ 10'dan sonra
+
+(Orkestratör notu: sahip bu üç bloğu CEVAP PAKETİ 10 ile aynı mesajda, "Şimdi bu cevap ve onaylarla başla" talimatıyla verdi — 2026-10-24.)
+
+Her blok tek mesaj. Araya başka metin koyma.
+
+---
+
+K4G-05b ONAYLANDI — `docs/design/K4G-05b-RETX-FIX.md` rev4 @ ea2e57b2b57e77b2c50b0370b69c402341890d9c (dal `k4g/05b-retx-fix`), Ek A 227 satır sha256 `27171e1c9658d959d6b98b49d5af2af9b44f74fa66ec8b35e5d996b73bac5c77`. DUR-22..31 cevapları CEVAP PAKETİ 10'da. `<ONAY-TARİHİ>` = 2026-10-24. Kod başlar: P0 testleri bu PR'da yeşile döner; DR-CS-1 üçlüsü, Karn testleri ve freeze pin'i DUR-8 biçiminde beyanlı; mevcut testler + tv_* değişmeden yeşil; 2×2 çıktılı; mutasyon hedefli. PR, bağımlılık PR'ı ve #136 merge olmadan açılmaz. "INT-02 GEÇTİ" ayrı.
+
+---
+
+K4G-05c ONAYLANDI — `docs/design/K4G-05c-ALICI-KABUL.md` rev2 @ 18e6de95e361195bb2e5bf297b04426c84024df3 (dal `k4g/05c-alici-kabul`), Ek A sha256 `efee869ff8aa2377140337e043191f509c143dc1a4f4332aa0fc3dc9ab9dab15`. DUR-05c-1 (a′), -2 (a), -3 kabul (tarif CEVAP 10 §3), -4 (a), -5 (a), -6 (a) + K4G-05e, -8 (a), -9 (a), -10 (a), -11 (a), -12 (a), -13 (a), DUR-23 (b) kabul. Kod 05b rev4 merge'ünden sonra başlar; P0 R1/R2/takılma/sızıntı testleri bu PR'da yeşile döner; `transport.rs:1323-1338`, `runtime_e2e.rs:255-305`, `runtime.rs:3334-3372`, `node/tests.rs:415-456` beyanlı. "INT-02 GEÇTİ" ayrı.
+
+---
+
+K4G-05d ONAYLANDI — `docs/design/K4G-05d-RECEIPT.md` rev2 @ b9d83396b2a9004c2a92e1f84408bdc3847caf6a (dal `k4g/05d-receipt`), Ek A sha256 `f3f62563f21f8eee…` (tam değer PR gövdesinde). DUR-05d-1 en eski düşer + sayaç, -2 kabul, -3 kabul, -4 düşür. Kod şimdi başlayabilir (05b/05c'den bağımsız); P0 R3 testleri bu PR'da yeşile döner; "tek deneme" açıklaması ve testleri beyanlı. "INT-02 GEÇTİ" ayrı.
 ````
