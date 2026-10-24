@@ -341,6 +341,9 @@ pub struct MessengerStats {
     pub receipts_sent: u64,
     /// Gönderilemeyen RECEIPT'ler (oturum yok ya da Transport reddi; yeniden denenmez).
     pub receipts_unsent: u64,
+    pub receipts_deferred: u64,
+    pub receipts_evicted: u64,
+    pub receipts_pending: u64,
     /// Outbox'ta karşılığı olmayan `RECEIPT(delivered)`'lar (tekrar ya da bilinmeyen `msg_id`).
     pub receipts_ignored: u64,
     /// Oturum değişiminde Transport'un kabul ettiği yeniden gönderimler (S1 K7).
@@ -441,7 +444,17 @@ impl<T: KamaTransport> Messenger<T> {
     /// Gözlem sayaçları.
     #[must_use]
     pub fn stats(&self) -> MessengerStats {
-        self.stats
+        // `receipts_pending` sayaç değil, anlık değerdir: motor onu tutmaz (iç kopyada hep 0),
+        // burada eşlerin bekleyen kuyruklarından hesaplanır (≤ `MAX_PEERS` × `MAX_OUTBOX_UNACKED`).
+        let pending: usize = self
+            .peers
+            .values()
+            .map(|state| state.pending_receipts.len())
+            .sum();
+        MessengerStats {
+            receipts_pending: u64::try_from(pending).unwrap_or(u64::MAX),
+            ..self.stats
+        }
     }
 
     /// Eşin güncel oturum tutamacı (gönderimin gideceği); yoksa `None`.
@@ -456,6 +469,18 @@ impl<T: KamaTransport> Messenger<T> {
     #[must_use]
     pub fn unacked_count(&self, peer: PeerRef) -> usize {
         self.peers.get(&peer).map_or(0, |state| state.outbox.len())
+    }
+
+    /// Eşin bekleyen `RECEIPT(delivered)` sayısı: Transport'a henüz kabul ettirilemeyen ve sıradaki
+    /// [`Messenger::poll`] başında eşin güncel oturumuna sunulacak borçlar (≤
+    /// [`MAX_OUTBOX_UNACKED`]; modül belgesi, "RECEIPT"). Motorun tanımadığı eş için 0; bütün
+    /// eşlerin toplamı [`MessengerStats::receipts_pending`]'tir. Sayaç değişmezi (K4G-05d):
+    /// `receipts_deferred` = kuyruktan kabul edilen + kuyruktan düşen + `receipts_pending`.
+    #[must_use]
+    pub fn pending_receipts(&self, peer: PeerRef) -> usize {
+        self.peers
+            .get(&peer)
+            .map_or(0, |state| state.pending_receipts.len())
     }
 
     /// `KamaTransport::connect(peer, None)` (S1 K2, KARAR-1 idempotent). Aktif oturumun tutamacı
@@ -651,6 +676,7 @@ impl<T: KamaTransport> Messenger<T> {
     #[must_use]
     pub fn poll(&mut self) -> Option<MessengerEvent> {
         self.flush_resends();
+        self.flush_receipts();
         loop {
             if let Some(event) = self.transport.poll_event() {
                 self.on_session_event(event);
@@ -736,6 +762,9 @@ impl<T: KamaTransport> Messenger<T> {
                 },
             );
         }
+        // K4G-05d (DUR-05d-4): bekleyen RECEIPT'ler eşin eski oturumundaydı ve bırakılır; gönderen
+        // RECEIPT'siz kayıtları yeni oturumda yeniden gönderir, tekrar TEXT RECEIPT'i yeniden üretir.
+        drop_pending_receipts(state, &mut self.stats);
         if let Some(previous) = state.session.replace(handle) {
             self.by_handle.remove(&previous);
             push_retired(&mut self.retired, previous, peer);
@@ -754,6 +783,8 @@ impl<T: KamaTransport> Messenger<T> {
         };
         if let Some(state) = self.peers.get_mut(&peer) {
             state.session = None;
+            // K4G-05d (DUR-05d-4): oturum kapandı; bekleyen RECEIPT'ler bırakılır.
+            drop_pending_receipts(state, &mut self.stats);
         }
         push_retired(&mut self.retired, handle, peer);
     }
@@ -773,6 +804,16 @@ impl<T: KamaTransport> Messenger<T> {
         for state in self.peers.values_mut() {
             if state.resend_pending {
                 flush_peer(&mut self.transport, state, &mut self.stats);
+            }
+        }
+    }
+
+    /// K4G-05d: bekleyen RECEIPT'i olan eşlerin kuyruğunu güncel tutamaca baştan sunar
+    /// ([`flush_peer_receipts`]).
+    fn flush_receipts(&mut self) {
+        for state in self.peers.values_mut() {
+            if !state.pending_receipts.is_empty() {
+                flush_peer_receipts(&mut self.transport, state, &self.limits, &mut self.stats);
             }
         }
     }
@@ -801,9 +842,9 @@ impl<T: KamaTransport> Messenger<T> {
     fn on_text(&mut self, peer: PeerRef, msg_id: MsgId, text: String) -> Option<MessengerEvent> {
         let state = self.peers.get_mut(&peer)?;
         let admission = state.dedup.admit(msg_id);
-        send_receipt(
+        owe_receipt(
             &mut self.transport,
-            state.session,
+            state,
             msg_id,
             &self.limits,
             &mut self.stats,
@@ -869,6 +910,12 @@ struct PeerState {
     resend_pending: bool,
     /// Alıcı dedup penceresi.
     dedup: DedupWindow,
+    /// [K4G-05d] Transport'a henüz kabul ettirilemeyen `RECEIPT(delivered)` borçlarının
+    /// `ref_msg_id`'leri, doğuş sırasıyla: eşte tekil, ≤ [`MAX_OUTBOX_UNACKED`] (taşmada en eski
+    /// düşer), kalıcı DEĞİL. Yalnız `session` doluyken dolu olabilir: kayıt yalnız eşin o anki
+    /// oturumunda bekler, oturum değişince ya da kapanınca kuyruk boşalır (modül belgesi,
+    /// "RECEIPT").
+    pending_receipts: VecDeque<MsgId>,
     /// [B2.5] Bekleyen niyet: bilet + son `ConnectProgress` fazı.
     connecting: Option<(ConnectTicket, ConnectPhase)>,
     /// [B2.5] Transport'ta duran erken metin (S1 K6), kendi niyetinin biletiyle: o niyet `Ready`
@@ -918,6 +965,7 @@ impl PeerState {
             resend_pending: !outbox.is_empty(),
             outbox,
             dedup: DedupWindow::new(),
+            pending_receipts: VecDeque::new(),
             connecting: None,
             early: None,
         }
@@ -1109,28 +1157,112 @@ fn flush_peer<T: KamaTransport>(
 
 /// `RECEIPT(delivered)`'ı eşin güncel tutamacından verir. Tek deneme: oturum yoksa ya da Transport
 /// reddederse kaybolur (retry yok; modül belgesi, "RECEIPT").
-fn send_receipt<T: KamaTransport>(
+fn owe_receipt<T: KamaTransport>(
     transport: &mut T,
-    session: Option<SessionHandle>,
+    state: &mut PeerState,
     ref_msg_id: MsgId,
     limits: &AmpLimits,
     stats: &mut MessengerStats,
 ) {
+    let Some(handle) = state.session else {
+        // Oturum yok: borç bırakılır. Telafi S2'dir: gönderen kaydı eşin sıradaki oturumunda
+        // yeniden gönderir, tekrar TEXT RECEIPT'i yeniden üretir.
+        stats.receipts_unsent += 1;
+        return;
+    };
+    if state.pending_receipts.contains(&ref_msg_id) {
+        // Aynı `(eş, msg_id)` zaten bekliyor: tekrar TEXT onunla birleşir.
+        return;
+    }
+    if state.pending_receipts.is_empty() {
+        // Önünde bekleyen yok: tek çağrı.
+        match offer_receipt(transport, handle, ref_msg_id, limits) {
+            ReceiptOffer::Accepted => {
+                stats.receipts_sent += 1;
+                return;
+            }
+            ReceiptOffer::Dropped => {
+                stats.receipts_unsent += 1;
+                return;
+            }
+            ReceiptOffer::Deferred => {}
+        }
+    }
+    // Kuyruğun yalnız sonuna eklenir; dolu kuyruğu `Messenger::poll` başı sunar. Sınır eklemeden
+    // ÖNCE (SR-AUDIT-001): tavanda en eski kayıt düşer (DUR-05d-1).
+    if state.pending_receipts.len() >= MAX_OUTBOX_UNACKED {
+        state.pending_receipts.pop_front();
+        stats.receipts_evicted += 1;
+        stats.receipts_unsent += 1;
+    }
+    state.pending_receipts.push_back(ref_msg_id);
+    stats.receipts_deferred += 1;
+}
+
+/// [K4G-05d] Bir RECEIPT sunumunun sonucu — yalnız `Backpressure` geçicidir (DUR-05d-3).
+enum ReceiptOffer {
+    /// Transport kabul etti; sonrası Transport'undur (ikinci ağ ARQ'su yok).
+    Accepted,
+    /// `Backpressure`: birim tele çıkmadı; kayıt aynı oturumda bekler (S1 K8 "bekler").
+    Deferred,
+    /// Başka her hata (oturum sonu ya da sözleşme dışı) ve kodlama hatası: kayıt bırakılır.
+    Dropped,
+}
+
+/// [K4G-05d] `RECEIPT(delivered, ref_msg_id)`'yi `handle`'a BİR KEZ sunar ve sonucu sınıflar
+/// ([`ReceiptOffer`]).
+fn offer_receipt<T: KamaTransport>(
+    transport: &mut T,
+    handle: SessionHandle,
+    ref_msg_id: MsgId,
+    limits: &AmpLimits,
+) -> ReceiptOffer {
     let receipt = AppMessage::Receipt {
         ref_msg_id,
         kind: ReceiptKind::Delivered,
     };
     // RECEIPT gövdesi 5 B'tır ve her geçerli `AmpLimits`'e sığar (MAX_BODY_BYTES ≥ FILE_CHUNK
     // öneki); kodlama hatası yine de gönderilemeyen RECEIPT sayılır, panik yok.
-    let accepted = match (session, codec::encode(&receipt, limits)) {
-        (Some(handle), Ok(unit)) => transport
-            .send(handle, unit, DeliveryPolicy::Reliable)
-            .is_ok(),
-        _ => false,
+    let Ok(unit) = codec::encode(&receipt, limits) else {
+        return ReceiptOffer::Dropped;
     };
-    if accepted {
-        stats.receipts_sent += 1;
-    } else {
+    match transport.send(handle, unit, DeliveryPolicy::Reliable) {
+        Ok(()) => ReceiptOffer::Accepted,
+        Err(TransportError::Backpressure) => ReceiptOffer::Deferred,
+        Err(_) => ReceiptOffer::Dropped,
+    }
+}
+
+/// [K4G-05d] Eşin bekleyen RECEIPT'lerini güncel tutamaca baştan, her birini BİR KEZ sunar: kabul
+/// edilen çıkar, başka bir hatayla reddedilen bırakılır. İlk `Backpressure`'da durur: reddedilen
+/// baştaki kayıt ve arkası kuyrukta kalır, aynı çağrıda yeniden denenmez — bir [`Messenger::poll`]
+/// çağrısında eş başına en çok bir `Backpressure`. Zamanlayıcı yoktur.
+fn flush_peer_receipts<T: KamaTransport>(
+    transport: &mut T,
+    state: &mut PeerState,
+    limits: &AmpLimits,
+    stats: &mut MessengerStats,
+) {
+    let Some(handle) = state.session else {
+        // Kuyruk yalnız oturum varken doludur (oturum değişince ve kapanınca boşalır).
+        return;
+    };
+    while let Some(&ref_msg_id) = state.pending_receipts.front() {
+        match offer_receipt(transport, handle, ref_msg_id, limits) {
+            ReceiptOffer::Accepted => stats.receipts_sent += 1,
+            ReceiptOffer::Dropped => stats.receipts_unsent += 1,
+            ReceiptOffer::Deferred => return,
+        }
+        state.pending_receipts.pop_front();
+    }
+}
+
+/// [K4G-05d] Eşin oturumu değişti ya da kapandı (DUR-05d-4): bekleyen RECEIPT'ler bırakılır ve
+/// `receipts_unsent`'te sayılır. Telafi gönderenin yeni oturumdaki yeniden gönderimi ve onun tekrar
+/// TEXT'inin RECEIPT'idir (S2): kuyruktaki her `msg_id` ya gönderenin outbox'ındadır ya da
+/// (oturum-değişimi drain tekrarı) gönderende zaten `Delivered`'dır.
+fn drop_pending_receipts(state: &mut PeerState, stats: &mut MessengerStats) {
+    for _ in state.pending_receipts.drain(..) {
         stats.receipts_unsent += 1;
     }
 }
