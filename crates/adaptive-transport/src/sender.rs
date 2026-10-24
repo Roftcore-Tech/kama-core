@@ -297,10 +297,11 @@ pub const GATE_OUTCOME_KINDS: usize = 7;
 ///
 /// Bu, handshake'sizliğin bedeli DEĞİLDİR — bir pacer clamp'idir. QUIC'in IW=10 (RFC 9002 §7.2,
 /// ≤14720 B) seçimi de congestion-control tercihidir, handshake ürünü değil. Kritik sonuç:
-/// PreConverge'den çıkış YALNIZ bir RTT örneğiyle olur ve örnek YALNIZ `TransmitKind::Data`
-/// emisyonlarından gelir (Karn, `on_ack` `p.origin == Data` kapısı) → ilk uçuştaki ORİJİNAL
+/// PreConverge'den çıkış YALNIZ bir RTT örneğiyle olur ve (v1'de) örnek YALNIZ `TransmitKind::Data`
+/// emisyonlarından geliyordu (Karn, `on_ack` `p.origin == Data` kapısı) → ilk uçuştaki ORİJİNAL
 /// sayısı, kuruluş olasılığını doğrudan belirler: N orijinalle örnek alamama olasılığı
-/// `p_loss^N`. Tek pakette %50 kayıpta bu 0.5; on pakette ~0.001.
+/// `p_loss^N`. Tek pakette %50 kayıpta bu 0.5; on pakette ~0.001. [K4G-05b madde 7] v1.1 KABUL
+/// KURALI'nda çerçevenin en büyük yeni-onaylı Data / Retransmit / Duplicate kaydı örnek verir.
 ///
 /// `bytes == 0` (DEFAULT) = mevcut davranış BİREBİR (clamp'e dokunulmaz). `>0` = PreConverge'de
 /// burst-cap tabanı bu değere yükseltilir; kova zaten dolu başladığından ilk uçuş bir-kerelik bu
@@ -1466,8 +1467,10 @@ struct LostRec {
 
 /// [TUR-2b D-1/4] TOMBSTONE — kayıp-İLANI sonrası SAKLANAN gönderim kaydı (geç-ACK eşleştirme).
 /// Active-flight muhasebesinden DÜŞER (gönderim durmaz) ama kayıt YAŞAR: geç-ACK gelirse
-/// kol-1 (retx_count==0) BW-örneği NORMAL + Data'ysa RTT; kol-2 (retx'li) örneksiz sayaç
-/// (tam kurallar TUR-2c). Süresi/tavanı dolan kaydın geç-ACK'i → Expired/Unknown (örneksiz).
+/// kol-1 (retx_count==0) BW-örneği NORMAL; kol-2 (retx'li) rate-örneksiz, delivered-kredili
+/// (tam kurallar TUR-2c). [K4G-05b madde 7] RTT iki kolda da engine §6 v1.1 KABUL KURALI'na bağlı.
+/// Süresi/tavanı dolan ya da K_MAP budamasıyla düşen kaydın geç-ACK'i → Expired/Unknown
+/// (örneksiz; birimi teyit etmez).
 #[derive(Debug, Clone, Copy)]
 struct TombstoneRec {
     unit: OpaqueUnit,
@@ -1499,6 +1502,15 @@ enum ProbeExit {
 
 /// İlk RTT ölçülene kadar pacing/eşik için başlangıç RTT [CAL initial].
 const INITIAL_RTT: Duration = Duration::from_millis(100);
+/// [K4G-05b madde 7 · engine §6 v1.1 KABUL KURALI (d)] Doygun `ack_delay`: V2 kodlama tavanı
+/// 65535 × 256 µs ≈ 16.78 s (`ack::ACK_DELAY_UNIT_US` × `u16::MAX`; §2.1 satürasyonu — alıcının
+/// tutma süresi bilinmez). Yeni sayı yok: mevcut iki sabitin çarpımı. V1 çerçeve üründe üretilmez.
+const ACK_DELAY_SATURATED: Duration =
+    Duration::from_micros(crate::ack::ACK_DELAY_UNIT_US * u16::MAX as u64);
+/// [K4G-05b madde 7 · engine §6 v1.1 TAZELİK ÖLÇÜTÜ] Son kabul edilen RTT örneğinin yaşı
+/// ≤ max(RTT_STALE_SRTT_MULT × srtt, RTO_MAX); aşılırsa `rtt_stale` (yalnız gözlem, karar girdisi
+/// DEĞİL). Değer sahip kararıdır (CEVAP PAKETİ 9, 2026-10-24: "max(10 × srtt, RTO_MAX)").
+const RTT_STALE_SRTT_MULT: u64 = 10;
 /// [Q18-FIX] Yapı-gate alt kayıp-eşiği (ppm). Altında fuzzy'nin R1 `fec=0`'ı doğru (kayıp düşük,
 /// ARQ yeter); üstünde kayıp anlamlı ve yapı belirleyici.
 ///
@@ -1867,6 +1879,15 @@ pub struct Sender {
     diag_loss_time: u64,
     // ── [TUR-1x teşhis] ack_delay/RTT-guard sayaçları (SALT-GÖZLEM) ──
     diag_rtt_rejected: u64, // guard'a takılan sample sayısı (underflow / < MIN_RTT_FLOOR)
+    /// [K4G-05b madde 7] KABUL KURALI (d)/(e) ile reddedilen aday sayısı (SALT-GÖZLEM).
+    diag_rtt_rule_refused: u64,
+    /// [K4G-05b madde 7] Son KABUL edilen RTT örneğinin anı (ACK, CS-echo ya da bootstrap-echo).
+    last_rtt_sample_ns: Option<u64>,
+    /// [K4G-05b madde 7 · TAZELİK ÖLÇÜTÜ] Örnek yaşının eşiği aştığı dönem sayısı (dönem başına
+    /// bir kez; yalnız gözlem — karar girdisi DEĞİL; INT-02 raporlar).
+    rtt_stale: u64,
+    /// Bu dönem `rtt_stale` zaten sayıldı mı (yeni kabul edilen örnek dönemi kapatır).
+    rtt_stale_open: bool,
     diag_ack_delay_max_us: u64, // görülen en büyük (decoded) ack_delay — V2 sadakati kanıtı
     // ── [TUR-2a] adaptif reorder-toleransı + un-loss ──
     reorder: ReorderTracker, // §9.3 spurious→note_spurious kablosu; packet-thresh tüketimi
@@ -1879,7 +1900,7 @@ pub struct Sender {
     tombstone_evicted: u64,         // audit: kapasite-eviction
     diag_tomb_hits: u64,            // geç-ACK tombstone'a çarptı (SALT-GÖZLEM)
     diag_bw_recovered: u64,         // kol-1'den kurtarılan BW-örneği sayısı
-    diag_ambiguous_skipped: u64, // [TUR-2c resmî] kol-2 örnek-atlaması (sample_skipped_ambiguous)
+    diag_ambiguous_skipped: u64, // [TUR-2c resmî] kol-2 rate-örneği atlaması (v1.1: RTT kabul kuralında)
     diag_delivered_credited: u64, // [TUR-2c] kol-2 delivered-kredisi (byte)
     diag_qd_no_evidence: u64,    // [TUR-3a D-3/1] rtprop-yokken qd_ratio=0 sayısı
     diag_fuzzy_no_rule: u64,     // [TUR-4] sıfır-ağırlık fallback ateşleme sayısı
@@ -2169,6 +2190,10 @@ impl Sender {
             diag_loss_pkt: 0,
             diag_loss_time: 0,
             diag_rtt_rejected: 0,
+            diag_rtt_rule_refused: 0,
+            last_rtt_sample_ns: None,
+            rtt_stale: 0,
+            rtt_stale_open: false,
             diag_ack_delay_max_us: 0,
             reorder: ReorderTracker::new(),
             retx_cfg: RetxConfig::fixture(),
@@ -2964,6 +2989,7 @@ impl Sender {
         // YALNIZ RTT-estimator (mevcut observe; matematik-değişmez). cwnd/BtlBw/delivery/loss/
         // ack-conf'a DOKUNULMAZ (N8-spot-testli).
         self.rtt.observe(now_ns, sample);
+        self.note_rtt_sample_accepted(now_ns);
         // [FUSION-POLICY] Örnek sayacı + telemetri damgası: güvenlik doğrulayıcısının güven ve
         // tazelik kapıları bunlara bakar (min_rtt_samples / max_telemetry_age_ns).
         self.rtt_sample_count = self.rtt_sample_count.saturating_add(1);
@@ -3279,9 +3305,21 @@ impl Sender {
             }
         };
 
-        // RTT: en yüksek yeni-acked ORİJİNAL (DATA) paketten örnekle (Karn: retransmit/dup'tan DEĞİL).
+        // [K4G-05b madde 7 · engine §6 v1.1 KABUL KURALI (a)/(b), CEVAP PAKETİ 10 DUR-29 dar okuma]
+        // Çerçeve başına en çok BİR örnek: çerçevedeki gönderilmiş (sender'ın ürettiği) seq'lerin EN
+        // BÜYÜĞÜ ele alınır (`ack_delay` onundur, receiver.rs largest'ın alımından ölçer). Örnek
+        // YALNIZ o seq'in kaydı bu çerçeveyle İLK KEZ onaylanıyorsa (uçuş, tombstone kol-1/kol-2,
+        // un-loss) ve kaydın kökeni Data / Retransmit / Duplicate ise, O İLETİMİN gönderim anından
+        // alınır (her iletim taze seq → eşleşme tek anlamlı; Karn dışlaması kalktı). En büyük zaten
+        // onaylıysa, bilinmiyorsa ya da FEC onarım sembolüyse örnek YOK — daha küçük yeni-onaylı
+        // kayda GERİ DÜŞÜLMEZ (v1'in en büyük Data'ya geri düşüşü 60.5 s sınıfını üretiyordu).
+        let frame_max = ack
+            .acked_seqs
+            .iter()
+            .copied()
+            .filter(|&s| s < self.next_seq)
+            .max();
         let mut rtt_send_ns: Option<u64> = None;
-        let mut largest = 0u64;
         // [K4G-05b madde 2] Bu çerçevenin CANLI kayıtla eşleşen birimleri (işlenme sırasıyla) —
         // teyit kümesine giriş adayları; aynı liste v1 §3.3-B kopya iptalini de besler.
         let mut acked_units: Vec<UnitId> = Vec::new();
@@ -3312,8 +3350,7 @@ impl Sender {
                 let sample = self.bw_sampler.on_ack(now_ns, p.bw_sample);
                 self.btlbw.update(sample, now_ns, sample.delivered > 0);
                 self.bw_sampled_since_round = true; // [TUR-A ölçüm-#1] plato round'u bw-örneğiyle sayılır
-                if p.origin == TransmitKind::Data && (rtt_send_ns.is_none() || seq >= largest) {
-                    largest = seq;
+                if Some(seq) == frame_max && p.owner.unit().is_some() {
                     rtt_send_ns = Some(p.send_ns);
                 }
             } else if let Some(t) = self.tombstones.remove(&seq) {
@@ -3341,16 +3378,14 @@ impl Sender {
                     self.btlbw.update(sample, now_ns, sample.delivered > 0);
                     self.bw_sampled_since_round = true;
                     self.diag_bw_recovered += 1;
-                    if t.origin == TransmitKind::Data && (rtt_send_ns.is_none() || seq >= largest) {
-                        largest = seq;
-                        rtt_send_ns = Some(t.send_ns);
-                    }
                 } else {
-                    // [TUR-2c D-1/3 kol-2] Superseded iletimin geç-ACK'i: RTT YOK + rate-örneği
-                    // YOK (muhafazakâr Karn); ama DELIVERED-KREDİSİ VAR — byte'lar wire'ı
-                    // gerçekten geçti, sampler kümülatifine girer (gelecek örnek-delta'larına
-                    // dürüst yansır). Not: per-transmission seq tasarımında klasik belirsizlik
-                    // zayıftır (seq iletimi tekil tanımlar); kural yine muhafazakâr tutuldu.
+                    // [TUR-2c D-1/3 kol-2] Superseded iletimin geç-ACK'i: rate-örneği YOK
+                    // (muhafazakâr kural BW-örneği için DEĞİŞMEDİ); ama DELIVERED-KREDİSİ VAR —
+                    // byte'lar wire'ı gerçekten geçti, sampler kümülatifine girer (gelecek örnek-
+                    // delta'larına dürüst yansır). [K4G-05b madde 7] RTT ARTIK §6 KABUL KURALI'na
+                    // bağlıdır (aşağıda): superseded işareti RTT'yi dışlamaz — seq iletimi tekil
+                    // tanımlar, örnek o iletimin gönderim anındandır. `diag_ambiguous_skipped` v1.1'de
+                    // "rate-örneği atlanan kol-2 isabeti" demektir (davranış aynı).
                     self.bw_sampler.credit_delivered(now_ns, t.unit.size);
                     self.diag_delivered_credited += t.unit.size;
                     self.diag_ambiguous_skipped += 1;
@@ -3361,6 +3396,11 @@ impl Sender {
                     let la = self.loss.largest_acked().unwrap_or(seq);
                     self.reorder
                         .note_spurious(u32::try_from(la.saturating_sub(seq)).unwrap_or(u32::MAX));
+                }
+                // [K4G-05b madde 7] KABUL KURALI (b): tombstone (kol-1 ya da kol-2) ilk-kez onay
+                // eşleşmesidir; çerçevenin en büyüğüyse örnek o iletimin gönderim anından.
+                if Some(seq) == frame_max && t.owner.unit().is_some() {
+                    rtt_send_ns = Some(t.send_ns);
                 }
             }
         }
@@ -3376,7 +3416,6 @@ impl Sender {
         // [TUR-2a D-1/3] UN-LOSS: kayıp-ilan-edilmiş seq'e ACK geldi → hipotez çürüdü.
         // pending-retransmit İPTAL + kopyalar iptal + note_spurious kablosu + kol-1 RTT adayı.
         let unlossed = self.loss.take_unlossed();
-        let mut unloss_rtt: Option<(u64, u64)> = None; // (seq, send_ns)
         if !unlossed.is_empty() {
             // Gözlenen-reorder mesafesi görülen EN YÜKSEK acked'e göredir (bu geç-ACK'in
             // kendi max'ı değil — kayıp-şüphesini yaratan önceki yüksek ACK'ler dahil).
@@ -3404,18 +3443,15 @@ impl Sender {
                 // §9.3: gözlenen reorder mesafesiyle toleransı yükselt (küçülmez).
                 self.reorder
                     .note_spurious(u32::try_from(la.saturating_sub(rec.seq)).unwrap_or(u32::MAX));
-                // kol-1: retransmit HENÜZ gönderilmedi → orijinal RTT örneği GEÇERLİ.
-                if rec.retx_count == 0 && unloss_rtt.is_none_or(|(s, _)| rec.seq >= s) {
-                    unloss_rtt = Some((rec.seq, rec.send_ns));
+                // [K4G-05b madde 7] KABUL KURALI (b): yeniden planı bekleyen kaydın un-loss
+                // eşleşmesi de ilk-kez onaydır (tombstone'u düşmüş olsa bile); çerçevenin en
+                // büyüğüyse ve aday henüz yoksa örnek o kaydın gönderim anından (`LostRec` yalnız
+                // birim kaydıdır: Data ya da Retransmit kökenli).
+                if Some(rec.seq) == frame_max && rtt_send_ns.is_none() {
+                    rtt_send_ns = Some(rec.send_ns);
                 }
             }
             self.pending_lost = kept;
-        }
-        // RTT adayı birleşimi: en yüksek yeni-acked orijinal gönderim (inflight ∪ un-loss kol-1).
-        if let Some((useq, usend)) = unloss_rtt {
-            if rtt_send_ns.is_none() || useq >= largest {
-                rtt_send_ns = Some(usend);
-            }
         }
 
         if let Some(send_ns) = rtt_send_ns {
@@ -3423,20 +3459,33 @@ impl Sender {
             self.diag_ack_delay_max_us = self
                 .diag_ack_delay_max_us
                 .max(ack.ack_delay.as_micros() as u64);
-            // [TUR-1x] min-rtt guard (RFC 9002 §5.3): düzeltme güvensizse RAW kullanılır —
-            // örnek ATLANMAZ (sample-skip = estimator açlığı, K-1 sınıfı).
-            let (sample, corrected) = apply_ack_delay(raw, ack.ack_delay, self.rtt.rtprop());
+            // [TUR-1x] min-rtt guard (RFC 9002 §5.3): düzeltme güvensizse RAW kullanılır.
+            let rtprop = self.rtt.rtprop();
+            let (sample, corrected) = apply_ack_delay(raw, ack.ack_delay, rtprop);
             if !corrected {
-                self.diag_rtt_rejected += 1; // §7.3 ack_delay_untrusted (düzeltme reddi; raw işlendi)
+                self.diag_rtt_rejected += 1; // §7.3 ack_delay_untrusted (düzeltme reddi)
             }
-            self.rtt.observe(now_ns, sample);
-            // [FUSION-POLICY] Örnek sayacı + telemetri damgası: güvenlik doğrulayıcısının güven ve
-            // tazelik kapıları bunlara bakar (min_rtt_samples / max_telemetry_age_ns).
-            self.rtt_sample_count = self.rtt_sample_count.saturating_add(1);
-            self.last_telemetry_ns = now_ns;
-            // [TUR-3b D-2/3] DrainRtprop dwell'i içinde gelen rtt-örneği = qualifying.
-            if self.state == SenderState::DrainRtprop {
-                self.drain_rtprop_qualifying = true;
+            // [K4G-05b madde 7 · KABUL KURALI (d)/(e)] (d) doygun `ack_delay` (V2 kodlama tavanı:
+            // alıcının tutma süresi bilinmez) örnek VERMEZ; (e) rtprop varken guard düzeltmeyi
+            // reddettiyse `ack_delay < rtprop` olmalıdır — aksi hâlde RAW tutma süresiyle en az
+            // rtprop kadar şişmiştir (FLOOR kodlama: decoded ≤ gerçek tutma). "Örnek ATLANMAZ"
+            // yasağı kabul edilmiş örneğe aittir; kural reddi beyanlı estimator donmasıdır,
+            // tazelik ölçütüyle izlenir. Kural srtt yokken (ilk örnek) de AYNEN geçerlidir.
+            let saturated = ack.ack_delay >= ACK_DELAY_SATURATED;
+            let raw_inflated = !corrected && rtprop.is_some_and(|rp| ack.ack_delay >= rp);
+            if saturated || raw_inflated {
+                self.diag_rtt_rule_refused = self.diag_rtt_rule_refused.saturating_add(1);
+            } else {
+                self.rtt.observe(now_ns, sample);
+                self.note_rtt_sample_accepted(now_ns);
+                // [FUSION-POLICY] Örnek sayacı + telemetri damgası: güvenlik doğrulayıcısının güven
+                // ve tazelik kapıları bunlara bakar (min_rtt_samples / max_telemetry_age_ns).
+                self.rtt_sample_count = self.rtt_sample_count.saturating_add(1);
+                self.last_telemetry_ns = now_ns;
+                // [TUR-3b D-2/3] DrainRtprop dwell'i içinde gelen rtt-örneği = qualifying.
+                if self.state == SenderState::DrainRtprop {
+                    self.drain_rtprop_qualifying = true;
+                }
             }
         }
 
@@ -3644,6 +3693,7 @@ impl Sender {
         self.bs_diag.rtt_sample_ns = dur_ns(sample);
         // Existing estimator API — no synthetic write, no estimator rewrite.
         self.rtt.observe(now_ns, sample);
+        self.note_rtt_sample_accepted(now_ns);
         // [FUSION-POLICY] Örnek sayacı + telemetri damgası: güvenlik doğrulayıcısının güven ve
         // tazelik kapıları bunlara bakar (min_rtt_samples / max_telemetry_age_ns).
         self.rtt_sample_count = self.rtt_sample_count.saturating_add(1);
@@ -4557,6 +4607,8 @@ impl Sender {
         // kapsar — yalnız yükseltir (token üretmez, kırpmaz). Tick-yolu (`on_event_core`'suz) da
         // böylece kapsanır; PRE_CONVERGE'de v1.
         self.apply_burst_floor(now_ns);
+        // [K4G-05b madde 7] RTT tazelik ölçütü (yalnız gözlem; karar girdisi değil).
+        self.note_rtt_freshness(now_ns);
         // [TUR-7 β2] ARQ token-payı: her K_ARQ_SHARE'inci grant'te retx ÖNCE dener (BOŞ-NÖBET
         // biter — retx fiilen wire'a çıkar); diğer grant'ler DATA-önce (ölçülü-karar korunur).
         self.arq_share_tick = self.arq_share_tick.wrapping_add(1);
@@ -6534,6 +6586,26 @@ impl Sender {
             .retain(|d| newly.binary_search(&d.unit.id).is_err());
     }
 
+    /// [K4G-05b madde 7] Bir RTT örneği estimator'a KABUL edildi (ACK, CS-echo ya da bootstrap-
+    /// echo): tazelik dönemi kapanır. Yalnız gözlem durumu (karar girdisi değil).
+    fn note_rtt_sample_accepted(&mut self, now_ns: u64) {
+        self.last_rtt_sample_ns = Some(now_ns);
+        self.rtt_stale_open = false;
+    }
+
+    /// [K4G-05b madde 7 · TAZELİK ÖLÇÜTÜ] Son kabul edilen örneğin yaşı eşiği aşıyorsa `rtt_stale`
+    /// dönem başına BİR kez artar. Yalnız gözlem: kontrol akışını, sırayı ve pacing'i etkilemez.
+    fn note_rtt_freshness(&mut self, now_ns: u64) {
+        let (Some(last), Some(limit)) = (self.last_rtt_sample_ns, self.rtt_staleness_limit_ns())
+        else {
+            return;
+        };
+        if !self.rtt_stale_open && now_ns.saturating_sub(last) > limit {
+            self.rtt_stale = self.rtt_stale.saturating_add(1);
+            self.rtt_stale_open = true;
+        }
+    }
+
     /// [K4G-05b madde 2 · Ek B.2.2] TEYİT ÇIKTISI — runtime'ın payload ve teslim teyidi kaynağı.
     ///
     /// Son çağrıdan bu yana teyit kümesine İLK kez giren birim kimlikleri (`OpaqueUnit::id`; asla
@@ -6604,9 +6676,12 @@ impl Sender {
     /// the RecoverArq state machine). ARQ-eligibility override ONLY — emission still uses the safe token
     /// (try_send_pre_parity) + track_sent path (no pacing/wire-format bypass). Re-verifies the target is still
     /// outstanding at emission time (ACK race / already-retransmitted ⇒ absent from inflight ⇒ cancelled, attempt NOT
-    /// consumed). Declares NO "confirmed loss" (pending_lost/loss counters untouched — INV-RATE-1). Karn: the probe
-    /// copy is emitted as a Retransmit (origin ≠ Data ⇒ excluded from RTT sampling) and the superseded original's
-    /// tombstone retx_count is bumped so its late ACK is Karn-excluded too. Cap spent only on a real emission (§3).
+    /// consumed). Declares NO "confirmed loss" (pending_lost/loss counters untouched — INV-RATE-1). The probe copy
+    /// is emitted as a Retransmit under a FRESH seq and the superseded original's tombstone retx_count is bumped
+    /// (kol-2: no rate sample). [K4G-05b madde 7] v1.1: RTT follows the engine §6 ACCEPTANCE RULE — a probe copy's
+    /// own ACK may give a sample from ITS send time when it is the frame's largest newly-acked seq (Karn exclusion
+    /// removed; seq identifies the transmission). Cap spent only on a real emission (§3). [K4G-05b madde 4 (b)]
+    /// When this emission exhausts the budget, every in-scope unit without a geometric copy is handed over.
     fn emit_tail_probe(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
         if !self.tail_recovery.is_enabled() {
             return;
@@ -6649,7 +6724,8 @@ impl Sender {
             self.act_tail_probe_first_ns = now_ns;
         }
         // Supersede the still-outstanding original: retire it inflight→tombstone (no loss declaration), then bump
-        // the tombstone so the original's late ACK is Karn-excluded, then emit the probe copy under a fresh seq.
+        // the tombstone (kol-2: no rate sample for the original's late ACK), then emit the probe copy under a
+        // fresh seq.
         self.retire_inflight_to_tombstone(target, now_ns);
         self.mark_tombstone_superseded(target);
         // [K4G-05b madde 10] `saturating_add`: v1.1'de prob kopyası da kayıp ilan edilip yeniden
@@ -7263,6 +7339,24 @@ impl Sender {
     #[must_use]
     pub fn diag_rtt(&self) -> (u64, u64) {
         (self.diag_rtt_rejected, self.diag_ack_delay_max_us)
+    }
+    /// [K4G-05b madde 7 · engine §6 v1.1 KABUL KURALI + TAZELİK ÖLÇÜTÜ] SALT GÖZLEM:
+    /// `(son_kabul_edilen_örnek_anı_ns, rtt_stale, kabul_kuralı_reddi)`. Örnek yaşı =
+    /// `now − son_kabul`; eşik max(10 × srtt, RTO_MAX). Hiçbir karar bu değerleri okumaz.
+    #[must_use]
+    pub fn diag_rtt_freshness(&self) -> (Option<u64>, u64, u64) {
+        (
+            self.last_rtt_sample_ns,
+            self.rtt_stale,
+            self.diag_rtt_rule_refused,
+        )
+    }
+    /// [K4G-05b madde 7] TAZELİK eşiği (ns): max(RTT_STALE_SRTT_MULT × srtt, RTO_MAX); srtt yoksa
+    /// `None` (henüz kabul edilmiş örnek yok — bayatlık tanımsız). SALT OKUMA.
+    #[must_use]
+    pub fn rtt_staleness_limit_ns(&self) -> Option<u64> {
+        let srtt = dur_ns(self.rtt.srtt()?);
+        Some(srtt.saturating_mul(RTT_STALE_SRTT_MULT).max(rto_max_ns()))
     }
     /// [TUR-2a teşhis] ledger/un-loss (SALT-GÖZLEM): `(unloss_iptal, loss_windowed_ppm,
     /// spurious_units_total)` — ratchet-ölümü + geri-alma hacmi kanıtı.
