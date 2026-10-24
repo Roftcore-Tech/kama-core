@@ -9,8 +9,9 @@
 //!   `RECEIPT(delivered)`'ı gelene kadar outbox'ta tutulur.
 //! * **Alıcı** — [`Messenger::poll`] önce Transport olaylarını, sonra teslim edilen birimleri okur.
 //!   Dedup penceresinde ilk kez görülen TEXT [`MessengerEvent::TextReceived`] üretir; HER TEXT'e
-//!   (tekrar dahil) `RECEIPT(delivered)` döner. RECEIPT outbox'taki kaydı kapatır ve `msg_id`
-//!   başına tam bir kez [`MessengerEvent::Delivered`] üretir.
+//!   (tekrar dahil) `RECEIPT(delivered)` borcu doğar; aynı `msg_id` için bekleyen RECEIPT varsa
+//!   tekrar onunla birleşir ("RECEIPT"). RECEIPT outbox'taki kaydı kapatır ve `msg_id` başına tam
+//!   bir kez [`MessengerEvent::Delivered`] üretir.
 //!
 //! # `msg_id` eş başınadır (S2, Abkarada 2026-10-08) ve kalıcıdır (K4G-07, plan D4 v1.1)
 //!
@@ -75,9 +76,13 @@
 //! `delivered` = alıcı Application kaydı işledi (AMP §3, A4). Application üretir; Transport'un
 //! `Ok(())`'undan ya da başka bir Transport sinyalinden TÜREMEZ (S1 K8). Eşin canlılığının tek
 //! sinyali [`MessengerEvent::Delivered`]'dır; `ConnectProgress` hub yolunun durumudur (S1 §4).
-//! RECEIPT eşin güncel oturumundan gider. Gönderilemezse (oturum yok ya da Transport reddi)
-//! kaybolur ve yeniden denenmez: gönderen kaydı bir sonraki oturum değişiminde yeniden gönderir,
-//! tekrar TEXT RECEIPT'i yeniden üretir.
+//! RECEIPT eşin güncel oturumundan gider. Eşin bekleyen kuyruğu boşsa hemen sunulur. `Backpressure`
+//! alırsa ya da önünde bekleyen varsa eş başına sınırlı kuyrukta bekler (`(eş, msg_id)` tekil,
+//! ≤ [`MAX_OUTBOX_UNACKED`]). Kuyruk her [`Messenger::poll`] başında baştan, ilk `Backpressure`'a
+//! dek AYNI oturuma sunulur (K8 "bekler": reddedilen birim tele çıkmamıştır; zamanlayıcı yok).
+//! Kabulden sonrası Transport'undur. Oturum yoksa, ret başka bir hataysa ya da eşin oturumu değişir
+//! veya kapanırsa RECEIPT bırakılır: gönderen kaydı bir sonraki oturumda yeniden gönderir, tekrar
+//! TEXT RECEIPT'i yeniden üretir. Kuyruk taşarsa en eski kayıt düşer.
 //!
 //! # Retry yok — tek yeniden gönderim yolu oturum değişimi (S1 K7/K8, identity §16 adım 3)
 //!
@@ -89,6 +94,7 @@
 //! okunmamış olabilir; o kayıtlar da yeniden gider ve alıcının dedup'ında söner (teslim yok,
 //! RECEIPT yeniden). Transport'un REDDETTİĞİ (kuyruğa almadığı) bir yeniden gönderim sonraki
 //! [`Messenger::poll`] çağrılarında bekler (K8 "bekler"): kabul edilmemiş birim tele çıkmamıştır.
+//! Reddedilen RECEIPT de aynı kuralla bekler ("RECEIPT").
 //!
 //! # Bağlantı (B2.5)
 //!
@@ -184,7 +190,8 @@ pub enum MessengerEvent {
     /// ve UI katmanı için). `ConnectProgress` eşin canlılığını BİLDİRMEZ (S1 §4).
     Session(SessionEvent),
     /// Eşten yeni metin: bu `msg_id` eşin dedup penceresinde ilk kez görüldü. `RECEIPT(delivered)`
-    /// bu olay üretilirken gönderildi.
+    /// bu olay üretilirken Transport'a sunuldu, (geri basınçta) bekleyen kuyruğa alındı ya da
+    /// (oturum yok / kalıcı ret) bırakıldı (`receipts_unsent`).
     TextReceived {
         /// Gönderen eş.
         peer: PeerRef,
@@ -332,17 +339,25 @@ pub struct MessengerStats {
     pub records_dropped: u64,
     /// Hiçbir eşe bağlanamayan tutamaçtan gelen birimler (atıldı).
     pub units_unknown_session: u64,
-    /// Dedup penceresinde görülmüş `msg_id`'li TEXT'ler (teslim yok, RECEIPT yeniden).
+    /// Dedup penceresinde görülmüş `msg_id`'li TEXT'ler (teslim yok; RECEIPT yeniden ya da
+    /// bekleyenle birleşir).
     pub duplicate_texts: u64,
-    /// Pencerenin altında kalan `msg_id`'li TEXT'ler (fail-closed tekrar; teslim yok, RECEIPT
-    /// yeniden).
+    /// Pencerenin altında kalan `msg_id`'li TEXT'ler (fail-closed tekrar; teslim yok; RECEIPT
+    /// yeniden ya da bekleyenle birleşir).
     pub below_window_texts: u64,
-    /// Transport'un kabul ettiği RECEIPT'ler.
+    /// Transport'un kabul ettiği RECEIPT sunumları (ilk sunum ya da bekleyen kuyruktan).
     pub receipts_sent: u64,
-    /// Gönderilemeyen RECEIPT'ler (oturum yok ya da Transport reddi; yeniden denenmez).
+    /// Transport'a kabul ettirilmeden bırakılan RECEIPT'ler: oturum yokken üretilen, `Backpressure`
+    /// dışı bir hatayla reddedilen, eşin oturumu değişince ya da kapanınca kuyruktan düşen, taşmada
+    /// düşen. Telafisi gönderenin oturum değişimindeki yeniden gönderimidir (S2).
     pub receipts_unsent: u64,
+    /// Bekleyen kuyrukta kalan yeni RECEIPT (ilk sunumu `Backpressure` aldı ya da önünde bekleyen
+    /// vardı; birleşen tekrar sayılmaz).
     pub receipts_deferred: u64,
+    /// Kuyruk taşmasında düşen RECEIPT (`receipts_unsent`'in alt kümesi). Uyumsuz eşte ya da oturum
+    /// değişimi sonrası birikimde > 0 olabilir.
     pub receipts_evicted: u64,
+    /// ANLIK değer, sayaç değil: `stats()` anında bütün eşlerin bekleyen RECEIPT sayısı.
     pub receipts_pending: u64,
     /// Outbox'ta karşılığı olmayan `RECEIPT(delivered)`'lar (tekrar ya da bilinmeyen `msg_id`).
     pub receipts_ignored: u64,
@@ -669,10 +684,11 @@ impl<T: KamaTransport> Messenger<T> {
     /// Bir olay döndürür; Transport'ta okunacak bir şey kalmadıysa `None`.
     ///
     /// Sıra: (1) Transport'un reddettiği oturum-değişimi yeniden gönderimleri yeniden sunulur;
-    /// (2) Transport olayları, birer birer; (3) teslim edilen birimler. Olaylar birimlerden ÖNCE
-    /// okunur: yeni oturumun ilk birimi `Ready(h')` okunmadan işlenseydi eşi çözülemezdi. Olay
-    /// üretmeyen birimler (tekrar TEXT, karşılıksız RECEIPT, atılan kayıt) aynı çağrıda atlanır;
-    /// her tur Transport'tan bir birim tüketir.
+    /// (2) bekleyen RECEIPT'ler eş başına baştan, ilk `Backpressure`'a dek sunulur; (3) Transport
+    /// olayları, birer birer; (4) teslim edilen birimler. Olaylar birimlerden ÖNCE okunur: yeni
+    /// oturumun ilk birimi `Ready(h')` okunmadan işlenseydi eşi çözülemezdi. Olay üretmeyen
+    /// birimler (tekrar TEXT, karşılıksız RECEIPT, atılan kayıt) aynı çağrıda atlanır; her tur
+    /// Transport'tan bir birim tüketir.
     #[must_use]
     pub fn poll(&mut self) -> Option<MessengerEvent> {
         self.flush_resends();
@@ -1155,8 +1171,9 @@ fn flush_peer<T: KamaTransport>(
     state.resend_pending = false;
 }
 
-/// `RECEIPT(delivered)`'ı eşin güncel tutamacından verir. Tek deneme: oturum yoksa ya da Transport
-/// reddederse kaybolur (retry yok; modül belgesi, "RECEIPT").
+/// `RECEIPT(delivered)` borcunu eşe kaydeder. Eşin kuyruğu boşsa borcu güncel tutamaca hemen sunar
+/// (tek çağrı); değilse kuyruğun sonuna ekler. Dolu kuyruğu `Messenger::poll` başı sunar. Ayrıntı:
+/// modül belgesi, "RECEIPT".
 fn owe_receipt<T: KamaTransport>(
     transport: &mut T,
     state: &mut PeerState,
