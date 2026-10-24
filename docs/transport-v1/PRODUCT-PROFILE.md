@@ -1,5 +1,7 @@
 # Kama Transport v1 — ÜRÜN PROFİLİ SÖZLEŞMESİ (`KamaV1Profile`)
 
+> **YAMA KAYDI — 2026-10-24 [v1.1 · K4G-05b — AMENDMENT-12 işaretçisi; sahip kararı CEVAP PAKETİ 7, 2026-10-18, DUR-4 (b) — `docs/decisions/K4G-CEVAP-PAKETLERI-4-7.md`]:** Bu sözleşme v1'i (`kama-v1-full`) tanımlar; v1.1'de KURAL satırındaki ve "Kimlik" tablosundaki kimlik `kama-v1.1-full` / `transport-v1.1`'dir (`TRANSPORT_V1_PROFILE_ID` / `TRANSPORT_V1_ARCHITECTURE`). `RuntimeConfig` alanları ve tablolardaki değerler değişmez; davranışı değişen satırlar AMENDMENT-12'ye tabidir (otorite: `specs/transport-layer-tdd.md` §12 [AMENDMENT-12]): Tail-recovery (`max_tail_probes 3` bütçesi bitince kopya kuyruğuna devir; "backoff tavanı 30 s" = normatif RTO_MAX, aynı zamanda kopya aralığı tavanı) · ARQ ("cap aşımı → HandToForward" düşürmesiz, kalıcı kopya sahipliğine devir). Bu belgenin metni değiştirilmedi; düzeltmesi "INT-02 GEÇTİ" sonrası ayrı doküman PR'ı.
+
 Kaynak: `crates/client-core/src/runtime.rs` (`KamaV1Profile::runtime_config()`; `RuntimeConfig::default()`
 buna devreder). Değerler koddan okunmuştur (2026-09-11), tahmin değildir. Pin testleri:
 `crates/client-core/tests/{product_profile_v1,transport_v1_freeze}.rs`; bench kimlik testleri

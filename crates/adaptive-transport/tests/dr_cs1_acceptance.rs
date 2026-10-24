@@ -372,6 +372,15 @@ fn expect_retransmit_via_wakeup(
 /// DI-1: ilk-DATA-kaybı — probe→echo→bootstrap-srtt→Startup; sonraki-trafiğin-ACK'i kayıp-birimi
 /// MEVCUT time-threshold/ARQ-yolundan retransmit-eder; (C2) due-PTO ACK-batch'inin-KENDİSİNDE
 /// fire-eder (ek-RTT/ek-network-event-BEKLEMEZ).
+///
+/// [K4G-05b · Ek B.3 #1 — DUR-8 biçimi, FİKSTÜR; sahip kararı CEVAP PAKETİ 7 DUR-8 (a)] NEDEN
+/// DEĞİŞTİ: eski fikstür u2'nin seq'ini `1` sanıyordu; oysa seq 1, DR-EST-1 kuruluş probunun
+/// 0.5 s'de yaydığı u1 KOPYASIDIR (seq 2 de 1.5 s'deki kopya; u2 seq 3'tür). Eski ACK u1'i
+/// (kopyasıyla) teslim edilmiş gösteriyordu; v1 teyitli birimi yine de yeniden planladığı için
+/// test yeşildi. v1.1'de teyitli birime karar üretilmez (madde 2) → eski fikstür kırmızı olur.
+/// YENİ FİKSTÜR: yalnız ACK'lenen seq değişir — u2'nin GERÇEK Data seq'i (çıktıdan okunur);
+/// assertion ve eşikler AYNEN. 2×2: eski kod + eski fikstür YEŞİL · yeni kod + eski fikstür
+/// KIRMIZI · yeni kod + yeni fikstür YEŞİL · eski kod + yeni fikstür YEŞİL (kırmızıysa DUR).
 #[test]
 fn f2b_di1_first_data_loss_bootstrap_recovery() {
     for size in [65u64, 300, 1200] {
@@ -400,10 +409,15 @@ fn f2b_di1_first_data_loss_bootstrap_recovery() {
             vec![Event::AppData(OpaqueUnit { id: 2, size })],
         );
         assert!(out2.iter().any(|d| d.kind == TransmitKind::Data), "u2-emit");
+        // [K4G-05b B.3 #1] ACK'lenen seq = u2'nin GERÇEK Data seq'i (eski fikstür: sabit `1`).
+        let s2 = out2
+            .iter()
+            .find(|d| d.kind == TransmitKind::Data && d.unit_id == 2)
+            .map_or(1, |d| d.seq);
         let ack_batch = s.on_event_batch(
             4 * SEC,
             vec![Event::AckReceived(AckInfo {
-                acked_seqs: vec![1],
+                acked_seqs: vec![s2],
                 ack_delay: Duration::from_millis(1),
             })],
         );
@@ -467,6 +481,23 @@ fn f2b_di1a_overdue_pto_fires_same_batch() {
 /// DI-1C (EK4-A2): re-armed-PTO yaşam-döngüsü — retransmit'in-ACK'i-de-düşer; SONRAKİ trafik-ACK'i
 /// largest'ı-yükseltince YENİ deadline next_wakeup'ta görünür; Tick-only ile-ikinci-retransmit;
 /// nihai-ACK TÜM BootstrapPto-kayıtlarını-retire-eder.
+///
+/// [K4G-05b · Ek B.3 #2 — DUR-8 biçimi, FİKSTÜR; DI-1 ile aynı gerekçe] Eski ACK `[1, 2]` u2/u3'ü
+/// değil, kuruluş probunun 0.5 s ve 1.5 s'de yaydığı u1 KOPYALARINI onaylıyordu (u1 teslim
+/// edilmiş görünür; v1 yine de yeniden planlıyordu). YENİ FİKSTÜR: ACK, u2/u3'ten 3.3 s'de
+/// GERÇEKTEN yayılanların Data seq'lerini taşır (çıktıdan okunur; token yetişmeyen birim kuyrukta
+/// kalır — aşağıdaki "kuyruk-önü u3" notu); assertion ve eşikler AYNEN.
+/// 2×2: eski kod + eski fikstür YEŞİL · yeni kod + eski fikstür KIRMIZI · yeni kod + yeni fikstür
+/// YEŞİL · eski kod + yeni fikstür YEŞİL (kırmızıysa DUR).
+///
+/// [K4G-05b DUR-34 — B.3 #2 düzeltmesi, FİKSTÜR] Yukarıdaki B.3 #2 fikstürü iki kodda da kırmızı
+/// [çıkarım]: ACK artık u1'in 1.5 s'deki kuruluş kopyasını (seq 2) kapsamadığından o kayıt
+/// largest_acked'in altında uçuşta kalır; 60 s ileri zamanda t1 batch'i on_event_core'u iki kez koşar
+/// (AppData + vadesi geçmiş BootstrapPto) ve 60 s ACK sessizliği acil durum seviyesini iki kademe
+/// yükseltir (Arq → Dup2 → Dup3). b2'deki tek indirme Dup2 bırakır → RECOVER_FWD bekleyen u1 kaybını
+/// ileri kopyaya çevirir, ikinci Retransmit çıkmaz. Fire-sonrası ileri zaman 2 s'ye (u4 bekleme
+/// adımı 1 s'ye) indirildi: 60 s / 40 s 31 B/s tabanındaki token birikimi içindi. Assertion ve
+/// eşikler AYNEN. 2×2: E/E YEŞİL · Y/E KIRMIZI · Y/Y YEŞİL · E/Y YEŞİL [çıkarım].
 #[test]
 fn f2b_di1c_rearmed_pto_lifecycle_exposure() {
     let mut s = Sender::new();
@@ -477,17 +508,23 @@ fn f2b_di1c_rearmed_pto_lifecycle_exposure() {
         vec![Event::CsProbeEcho { probe_seq: 0 }],
     );
     // u2/u3 emit + ACK → largest>0 → ilk-retransmit (u1).
-    let _ = s.on_event_batch(
+    let out23 = s.on_event_batch(
         3 * SEC + 300 * MS,
         vec![
             Event::AppData(OpaqueUnit { id: 2, size: 1200 }),
             Event::AppData(OpaqueUnit { id: 3, size: 1200 }),
         ],
     );
+    // [K4G-05b B.3 #2] ACK'lenen seq'ler = u2/u3'ün bu batch'te yayılan Data seq'leri.
+    let acked23: Vec<u64> = out23
+        .iter()
+        .filter(|d| d.kind == TransmitKind::Data && (d.unit_id == 2 || d.unit_id == 3))
+        .map(|d| d.seq)
+        .collect();
     let b1 = s.on_event_batch(
         4 * SEC,
         vec![Event::AckReceived(AckInfo {
-            acked_seqs: vec![1, 2],
+            acked_seqs: acked23,
             ack_delay: Duration::from_millis(1),
         })],
     );
@@ -498,9 +535,11 @@ fn f2b_di1c_rearmed_pto_lifecycle_exposure() {
         .collect();
     assert_eq!(rtx1.len(), 1, "ilk-retransmit");
     let rtx1_seq = rtx1[0].seq;
-    let mut t1 = ft1 + 60 * SEC; // fire-sonrası ileri-zaman (simüle)
-                                 // Retransmit'in-ACK'i-de-düşer. SONRAKİ trafik: u4 enqueue + token-refill-bekleyerek emit
-                                 // (kuyruk-önü u3-olabilir; 31 B/s-refill ~38.7s/birim) → seq'i-çıktıdan-izle.
+    // [K4G-05b DUR-34] Fire-sonrası ileri zaman 2 s (eski 60 s): ACK sessizliği acil durum eşiğinin
+    // altında kalır. Retransmit'in ACK'i de düşer. SONRAKİ trafik: u4 enqueue + token beklenerek
+    // emit (kuyruk-önü u3 olabilir; PRE_CONVERGE çıkışından sonra hız kB/s mertebesinde) →
+    // seq'i çıktıdan izle.
+    let mut t1 = ft1 + 2 * SEC;
     let mut out_all = s.on_event_batch(t1, vec![Event::AppData(OpaqueUnit { id: 4, size: 1200 })]);
     let mut s4_opt = None;
     for _ in 0..20 {
@@ -511,7 +550,7 @@ fn f2b_di1c_rearmed_pto_lifecycle_exposure() {
             s4_opt = Some(d.seq);
             break;
         }
-        t1 += 40 * SEC;
+        t1 += SEC; // [DUR-34] token bekleme adımı (eski 40 s)
         out_all = s.on_event_batch(t1, vec![Event::TimerFired(Timer::Pto)]);
     }
     let s4 = s4_opt.expect("u4-emit (token-refill-sonrası)");
@@ -549,6 +588,14 @@ fn f2b_di1c_rearmed_pto_lifecycle_exposure() {
 /// DI-2 (§2.4-a): tekil-ACK-frame-erasure — DATA-ulaştı-ACK-düştü; echo-bootstrap → sonraki-ACK-
 /// kanıtıyla mevcut-PTO SPURIOUS-retransmit (BEKLENEN-maliyet; correctness-alıcı-dedup'unda);
 /// bootstrap_induced_retransmit_bytes EXACT; yön-teşhisi-İDDİA-EDİLMEZ.
+///
+/// [K4G-05b · Ek B.3 #3 — DUR-8 biçimi, FİKSTÜR; DI-1 ile aynı gerekçe] Eski ACK `[1]` u2'nin
+/// değil, kuruluş probunun 0.5 s'de yaydığı u1 KOPYASININ seq'iydi: u1'in kendisi onaylanıyordu
+/// ve "sonraki trafiğin ACK'i" anlatısı sınanmıyordu (v1 teyitli u1'i yine de yeniden
+/// planlıyordu). YENİ FİKSTÜR: ACK, u2'nin 3.3 s'de GERÇEKTEN yayılan Data seq'ini taşır
+/// (çıktıdan okunur) — u1'in DATA'sı ulaşmış ama ACK'i düşmüş, gönderici yalnız u2'nin ACK'ini
+/// görür; assertion ve eşikler AYNEN. 2×2: eski kod + eski fikstür YEŞİL · yeni kod + eski fikstür
+/// KIRMIZI · yeni kod + yeni fikstür YEŞİL · eski kod + yeni fikstür YEŞİL (kırmızıysa DUR).
 #[test]
 fn f2b_di2_single_ack_erasure_spurious_expected() {
     let mut s = Sender::new();
@@ -560,14 +607,19 @@ fn f2b_di2_single_ack_erasure_spurious_expected() {
     );
     let (_, _, induced0, _) = s.diag_cs_bootstrap();
     assert_eq!(induced0, 0);
-    let _ = s.on_event_batch(
+    let out2 = s.on_event_batch(
         3 * SEC + 300 * MS,
         vec![Event::AppData(OpaqueUnit { id: 2, size: 1200 })],
     );
+    // [K4G-05b B.3 #3] ACK'lenen seq = u2'nin GERÇEK Data seq'i (eski fikstür: sabit `1`).
+    let s2 = out2
+        .iter()
+        .find(|d| d.kind == TransmitKind::Data && d.unit_id == 2)
+        .map_or(1, |d| d.seq);
     let b = s.on_event_batch(
         4 * SEC,
         vec![Event::AckReceived(AckInfo {
-            acked_seqs: vec![1],
+            acked_seqs: vec![s2],
             ack_delay: Duration::from_millis(1),
         })],
     );

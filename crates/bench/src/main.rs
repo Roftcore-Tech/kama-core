@@ -662,8 +662,10 @@ async fn main() -> Result<(), BenchError> {
             for (p, m) in &loaded {
                 // [FAZ-4 §1.3] Kanonik iddiası ile sapma listesi ÇELİŞEMEZ.
                 let canon = m.is_canonical_kama();
-                if m.arm == "kama-v1-full" && !canon {
-                    println!("INVALID {}: kama-v1-full etiketi ama sapma var", short(p));
+                // [K4G-05b] Kanonik etiket tek kaynaktan (v1.1: `kama-v1.1-full`; elle yazılmaz).
+                let canon_id = client_core::runtime::TRANSPORT_V1_PROFILE_ID;
+                if m.arm == canon_id && !canon {
+                    println!("INVALID {}: {canon_id} etiketi ama sapma var", short(p));
                     invalid += 1;
                 }
                 println!(
