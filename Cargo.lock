@@ -690,6 +690,13 @@ dependencies = [
 [[package]]
 name = "hub-server"
 version = "0.1.0"
+dependencies = [
+ "blake2",
+ "ed25519-dalek",
+ "kama-noise-wire",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "indexmap"
