@@ -1034,7 +1034,9 @@ impl AckFrameCounts {
         self.frames = self.frames.saturating_add(1);
         self.mapped = self.mapped.saturating_add(u64::from(mapped));
         self.new_units = self.new_units.saturating_add(u64::from(new_units));
-        self.inflight_shrunk = self.inflight_shrunk.saturating_add(u64::from(inflight_shrunk));
+        self.inflight_shrunk = self
+            .inflight_shrunk
+            .saturating_add(u64::from(inflight_shrunk));
     }
 
     fn add(&mut self, other: &Self) {
