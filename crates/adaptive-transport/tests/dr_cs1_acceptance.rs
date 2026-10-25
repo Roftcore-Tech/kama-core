@@ -313,6 +313,7 @@ fn f2a_probe_disarm_on_early_data_ack() {
 
 // ── F2B (echo + bootstrap-RTT + Startup + (d) PTO binding) — İMPLEMENTE ────────────────────
 
+use adaptive_transport::emergency::EmergencyLevel;
 use adaptive_transport::sender::CsSrttSource;
 
 /// Cold-start sürücüsü: tek-birim + 100ms-Pto-tick'lerle `to_ns`'e kadar; emisyonları toplar.
@@ -582,6 +583,167 @@ fn f2b_di1c_rearmed_pto_lifecycle_exposure() {
     assert!(
         s.next_wakeup_ns().is_none_or(|w| w > t_end),
         "ACK-sonrası-due-yok (tüm-PTO-wakeup-kayıtları-temiz)"
+    );
+}
+
+/// DI-1C uzun sessizlik kolu (CEVAP PAKETİ 14 §2 (a); `f2b_di1c` DEĞİŞMEDİ) — DUR-34'ün
+/// `f2b_di1c`'den yalıttığı davranışı geri kapsar: ilk yeniden gönderimden sonra 60 s ACK sessizliği
+/// → acil durum merdiveni (seviye > Arq) → RECOVER_FWD → kayıp birim ileri kopyayla (Duplicate)
+/// tamamlanır. Kurgu DUR-34 öncesi `f2b_di1c`'dir: B.3 #2 fikstürü (u2/u3'ün gerçek Data seq'leri
+/// ACK'lenir), ileri zaman 60 s, u4 bekleme adımı 40 s; sonraki trafiğin ACK'i (b2) aynen.
+///
+/// İddialar: (1) sessizlikten sonraki ilk batch'in sonunda seviye > Arq ve durum RECOVER_FWD;
+/// (2) u1'in sessizlik sonrası İLK yeniden emisyonu ileri kopyadır (Duplicate), yeni ağ olayı
+/// olmadan uyanma zinciriyle çıkar; (3) o kopyanın ACK'i u1'i teyit eder ve u1 teyit çıktısında tam
+/// bir kez görünür; (4) sonra vadesi gelmiş iş kalmaz. b2 sonrası seviye ve durum raporlanır.
+#[test]
+fn f2b_di1c_long_silence_recover_fwd_completes_unit() {
+    let mut s = Sender::new();
+    let _ = s.on_event_batch(0, vec![Event::AppData(OpaqueUnit { id: 1, size: 1200 })]);
+    let _ = drive_ticks(&mut s, 100 * MS, 3 * SEC + 100 * MS); // probe@3s
+    let _ = s.on_event_batch(
+        3 * SEC + 200 * MS,
+        vec![Event::CsProbeEcho { probe_seq: 0 }],
+    );
+    let out23 = s.on_event_batch(
+        3 * SEC + 300 * MS,
+        vec![
+            Event::AppData(OpaqueUnit { id: 2, size: 1200 }),
+            Event::AppData(OpaqueUnit { id: 3, size: 1200 }),
+        ],
+    );
+    let acked23: Vec<u64> = out23
+        .iter()
+        .filter(|d| d.kind == TransmitKind::Data && (d.unit_id == 2 || d.unit_id == 3))
+        .map(|d| d.seq)
+        .collect();
+    assert!(
+        !acked23.is_empty(),
+        "FİKSTÜR GEÇERSİZ: u2/u3'ün Data seq'i çıktıda yok"
+    );
+    let b1 = s.on_event_batch(
+        4 * SEC,
+        vec![Event::AckReceived(AckInfo {
+            acked_seqs: acked23,
+            ack_delay: Duration::from_millis(1),
+        })],
+    );
+    let (ft1, fired1) = expect_retransmit_via_wakeup(&mut s, 4 * SEC, &b1, 1);
+    assert_eq!(
+        fired1
+            .iter()
+            .filter(|d| d.kind == TransmitKind::Retransmit && d.unit_id == 1)
+            .count(),
+        1,
+        "kurulum: ilk-retransmit"
+    );
+    let _ = s.take_confirmed_units();
+
+    // Uzun sessizlik: retransmit'in ACK'i düşer, 60 s sonra u4 sunulur (DUR-34 öncesi ileri zaman).
+    let mut log: Vec<(u64, TransmitDecision)> = Vec::new();
+    let mut t = ft1 + 60 * SEC;
+    let out = s.on_event_batch(t, vec![Event::AppData(OpaqueUnit { id: 4, size: 1200 })]);
+    log.extend(out.iter().map(|d| (t, *d)));
+    let level_after_silence = s.emergency_level();
+    let state_after_silence = s.state();
+    assert!(
+        level_after_silence > EmergencyLevel::Arq,
+        "60 s ACK sessizliği acil durum merdivenini yükseltmeli; seviye {level_after_silence:?}"
+    );
+    assert_eq!(
+        state_after_silence,
+        SenderState::RecoverFwd,
+        "60 s ACK sessizliğinden sonra RECOVER_FWD (seviye {level_after_silence:?})"
+    );
+    // u4 token beklenerek çıkar (DUR-34 öncesi 40 s adım); seq'i çıktıdan izlenir.
+    let data4 = |log: &[(u64, TransmitDecision)]| {
+        log.iter()
+            .find(|(_, d)| d.kind == TransmitKind::Data && d.unit_id == 4)
+            .map(|(_, d)| d.seq)
+    };
+    for _ in 0..20 {
+        if data4(&log).is_some() {
+            break;
+        }
+        t += 40 * SEC;
+        let o = s.on_event_batch(t, vec![Event::TimerFired(Timer::Pto)]);
+        log.extend(o.iter().map(|d| (t, *d)));
+    }
+    let s4 = data4(&log).expect("FİKSTÜR GEÇERSİZ: u4'ün Data seq'i çıktıda yok");
+    t += SEC;
+    let b2 = s.on_event_batch(
+        t,
+        vec![Event::AckReceived(AckInfo {
+            acked_seqs: vec![s4],
+            ack_delay: Duration::from_millis(1),
+        })],
+    );
+    log.extend(b2.iter().map(|d| (t, *d)));
+    eprintln!(
+        "[DI-1C uzun sessizlik] sessizlik sonrası: seviye {level_after_silence:?}, durum \
+         {state_after_silence:?}; b2 sonrası: seviye {:?}, durum {:?}",
+        s.emergency_level(),
+        s.state()
+    );
+
+    // u1'in sessizlik sonrası ilk yeniden emisyonu — günlükte yoksa uyanma zinciriyle (yeni ağ
+    // olayı yok; `expect_retransmit_via_wakeup` ile aynı sürüş).
+    let first_u1 = |log: &[(u64, TransmitDecision)]| {
+        log.iter()
+            .find(|(_, d)| {
+                d.unit_id == 1
+                    && matches!(d.kind, TransmitKind::Retransmit | TransmitKind::Duplicate)
+            })
+            .copied()
+    };
+    for _ in 0..64 {
+        if first_u1(&log).is_some() {
+            break;
+        }
+        let wk = s
+            .next_wakeup_ns()
+            .expect("outstanding iş varken None YASAK (EK4-A2)");
+        t = wk.max(t).saturating_add(MS);
+        let o = s.on_event_batch(t, vec![Event::TimerFired(Timer::Pto)]);
+        log.extend(o.iter().map(|d| (t, *d)));
+    }
+    let (t_c, c) = first_u1(&log)
+        .expect("sessizlik sonrası u1 yeniden gönderilmedi (uyanma zinciri, yeni ağ olayı yok)");
+    assert_eq!(
+        c.kind,
+        TransmitKind::Duplicate,
+        "u1'in sessizlik sonrası ilk yeniden emisyonu ileri kopya (RECOVER_FWD) olmalı; {:?} @ {} ms",
+        c.kind,
+        t_c / MS
+    );
+    assert!(
+        !s.take_confirmed_units().contains(&1),
+        "kurulum: u1 kopyanın ACK'inden önce teyitli olmamalı"
+    );
+    t += SEC;
+    let _ = s.on_event_batch(
+        t,
+        vec![Event::AckReceived(AckInfo {
+            acked_seqs: vec![c.seq],
+            ack_delay: Duration::from_millis(1),
+        })],
+    );
+    let confirmed = s.take_confirmed_units();
+    assert_eq!(
+        confirmed.iter().filter(|&&u| u == 1).count(),
+        1,
+        "ileri kopyanın (seq {}) ACK'i u1'i tam bir kez teyit etmeli: {confirmed:?}",
+        c.seq
+    );
+    let t_end = t + 600 * SEC;
+    let _ = s.on_event_batch(t_end, vec![Event::TimerFired(Timer::Pto)]);
+    assert!(
+        !s.take_confirmed_units().contains(&1),
+        "u1 teyit çıktısında ikinci kez göründü"
+    );
+    assert!(
+        s.next_wakeup_ns().is_none_or(|w| w > t_end),
+        "teyitten sonra vadesi gelmiş iş kalmamalı"
     );
 }
 
