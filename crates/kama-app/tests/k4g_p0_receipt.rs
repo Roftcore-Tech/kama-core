@@ -137,9 +137,9 @@ const BUNDLE_BYTES: usize = 8;
 /// Dosyanın kayıt sayısı üst sınırı: parça yükü birim tavanının yarısından büyüktür (A2: kayıt
 /// başlığı + 18 B önek yarım birimden küçük), dolayısıyla ⌈FILE_BYTES / (birim/2)⌉ + BEGIN + END.
 const FILE_RECORDS_BOUND: usize = FILE_BYTES.div_ceil(LINK_MAX_UNIT_BYTES / 2) + 2;
-/// rev3 (a): tur tavanı. Yön başına taşınacak birim ≤ 2·`A_TEXTS` (TEXT + RECEIPT) + dosya + demet
-/// + 2 (`PTT_OPEN`, `FILE_RECEIPT`); yön başına turda ≤ `LINK_QUEUE_CAP` birim akar. Tavan bu alt
-/// sınırın 4 katıdır: aşılırsa ilerleme durmuştur (kilit) ya da hizmet adaletsizdir — ikisi de
+/// rev3 (a): tur tavanı. Yön başına taşınacak birim ≤ 2·`A_TEXTS` (TEXT + RECEIPT) + dosya +
+/// demet + 2 (`PTT_OPEN`, `FILE_RECEIPT`); yön başına turda ≤ `LINK_QUEUE_CAP` birim akar. Tavan bu
+/// alt sınırın 4 katıdır: aşılırsa ilerleme durmuştur (kilit) ya da hizmet adaletsizdir — ikisi de
 /// bulgudur, tavan büyütülmez.
 const A_ROUND_CAP: usize =
     (2 * A_TEXTS + FILE_RECORDS_BOUND + A_BUNDLES + 2).div_ceil(LINK_QUEUE_CAP) * 4;
@@ -1172,7 +1172,7 @@ impl Duplex {
             app_step(self.node(side), side, stream, &mut logs[side.index()]);
         }
         self.clock.advance(TURN_TICK);
-        let order = if round % 2 == 0 {
+        let order = if round.is_multiple_of(2) {
             [Side::Alice, Side::Bob]
         } else {
             [Side::Bob, Side::Alice]
