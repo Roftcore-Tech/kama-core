@@ -228,10 +228,16 @@ pub struct KamaV1Profile;
 /// [v1.1 · K4G-05b — transport-layer-tdd §12 AMENDMENT-12; sahip kararı CEVAP PAKETİ 5, 2026-10-16]
 /// Yeniden-gönderim sahipliği motor davranışını değiştirdiği için kimlik `kama-v1.1-full`'dür
 /// (`RuntimeConfig` alanları değişmez; tel, codec ve `tv_*` değişmez).
+/// [v1.1 · K4G-05c — sahip kararı CEVAP PAKETİ 10, 2026-10-24, DUR-05c-11 (a)] Alıcı kabul
+/// bütünlüğü (R1: sıralama boşluk atlamaz; R2: tutulamayan birim ACK'lenmez, oturum penceresi ve
+/// sıra başı rezervi, gönderen mesafe kapısı — KM-SEAM-AT-001 §4 INV-ACK-DELIVER-1) ve K_MAP
+/// budaması (DUR-05c-14 (A) — transport-layer-tdd §12 AMENDMENT-12) AYNI kimlik altındadır: ayrı
+/// kimlik açılmaz. v1.1 T-hücre kanıtı birleşik adayda (05b + 05c) alınır.
 pub const TRANSPORT_V1_PROFILE_ID: &str = "kama-v1.1-full";
 /// [FAZ-6 DONDURMA] Mimari/spec sürüm kimliği. Davranış değiştiren her değişiklik bu kimliği
 /// `transport-v1.x` ya da `transport-v2` yapmak ZORUNDADIR (bkz. docs/transport-v1/EVOLUTION.md §9.5).
 /// [v1.1 · K4G-05b — AMENDMENT-12] `transport-v1.1` (AMENDMENT-11'in beyan ettiği `transport-v1.x`).
+/// [v1.1 · K4G-05c — DUR-05c-11 (a)] 05c'nin davranış değişiklikleri de bu kimlik altındadır.
 pub const TRANSPORT_V1_ARCHITECTURE: &str = "transport-v1.1";
 
 impl KamaV1Profile {
