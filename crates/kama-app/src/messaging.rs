@@ -1670,9 +1670,9 @@ impl DedupWindow {
 mod tests {
     //! Pencere sınırları, sayaç tükenmesi, depo sözleşmesi ihlalleri ve tablo tavanları — uçtan
     //! uca akış (yeniden başlatma, kalıcı outbox, depo hatası dahil) `tests/text_receipt.rs`'te.
-    //! K4G-05d bekleyen RECEIPT kuyruğunun yeni API'yi okuyan testleri (T1, T3b, T4, T6; aynı
-    //! tutamacın yeniden bildirilmesi, çok eşli dağılım) burada; tabanda derlenen davranışsal
-    //! eşleri `tests/k4g_p0_receipt.rs`'te.
+    //! K4G-05d bekleyen RECEIPT kuyruğunun yeni API'yi okuyan testleri (rev3: T3b, T4, T6, öncelik
+    //! kapısı (c), `adopt` sırası (f); aynı tutamacın yeniden bildirilmesi, çok eşli dağılım)
+    //! burada; uçtan uca eşleri `tests/k4g_p0_receipt.rs`'te.
 
     use std::collections::BTreeSet;
     use std::sync::Mutex;
@@ -2358,14 +2358,34 @@ mod tests {
         u64::try_from(n).expect("küçük sayı")
     }
 
-    /// K4G-05d **T3b** (not Ek B.2; yalnız 05d — yeni API, tabanda derlenmez): eşin oturumu
-    /// KAPANINCA (`Closed(h)` okunur, `retire`) bekleyen RECEIPT'ler bırakılır (DUR-05d-4):
-    /// `pending` 0'a döner, her biri `receipts_unsent`'te sayılır ve yeni oturuma taşınmaz (telafi
-    /// tekrar TEXT'tir, S2). Boşaltmayan `retire` mutantı kayıtları oturumsuz eşte sıradaki
-    /// `adopt`'a dek tutar (`pending` 2); davranışça görünmez — `adopt` da boşaltır — bu yüzden
-    /// sayaçla sınanır.
+    /// `h` üzerinde kabul edilen `RECEIPT(delivered)`'ların `ref_msg_id`'leri, kabul sırasıyla.
+    fn accepted_receipt_ids_on(
+        messenger: &Messenger<ScriptedTransport>,
+        h: SessionHandle,
+    ) -> Vec<MsgId> {
+        let limits = messenger.limits();
+        messenger
+            .transport()
+            .attempts
+            .iter()
+            .filter(|(on, _, result)| *on == h && result.is_ok())
+            .filter_map(|(_, bytes, _)| match codec::decode(bytes, limits) {
+                Ok(AppMessage::Receipt {
+                    ref_msg_id,
+                    kind: ReceiptKind::Delivered,
+                }) => Some(ref_msg_id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// K4G-05d rev3 **T3b** (M1 taşıma; not Ek B.2): eşin oturumu KAPANINCA (`Closed(h)` okunur,
+    /// `retire`) bekleyen RECEIPT'ler KALIR — `pending` 2, hiçbiri bırakılmaz (`receipts_unsent`
+    /// 0) — ve eşin sıradaki tutamacına `adopt`'ta `msg_id` sırasıyla sunulur. Öldürdüğü mutantlar:
+    /// `retire`'da kuyruğu boşaltan (`pending` 0, `h2`'de kabul yok); `adopt`'ta sunmayan
+    /// (`Ready(h2)` poll'unda `h2`'de kabul yok).
     #[test]
-    fn t3b_closing_the_session_drops_the_pending_receipts() {
+    fn t3b_closing_the_session_keeps_the_pending_receipts_for_the_next_session() {
         let p = peer(0);
         let h = handle(1);
         let mut messenger = scripted_with_session(p, h);
@@ -2385,54 +2405,98 @@ mod tests {
         messenger.transport_mut().events.push_back(closed);
         assert_eq!(messenger.poll(), Some(MessengerEvent::Session(closed)));
         assert_eq!(messenger.session_of(p), None);
-        assert_eq!(messenger.pending_receipts(p), 0, "kapanış kuyruğu boşaltır");
+        assert_eq!(
+            messenger.pending_receipts(p),
+            2,
+            "kapanış kuyruğu boşaltmaz"
+        );
         let stats = messenger.stats();
-        assert_eq!(stats.receipts_pending, 0);
-        assert_eq!(stats.receipts_unsent, 2);
+        assert_eq!(stats.receipts_pending, 2);
+        assert_eq!(stats.receipts_unsent, 0, "hiçbir RECEIPT bırakılmadı");
         assert_eq!(stats.receipts_deferred, 2);
 
-        // Kapasite açılsa ve yeni oturum gelse de kuyruktan hiçbir şey sunulmaz.
+        // Kapasite açılır ve yeni oturum gelir: kuyruk `adopt`'ta yeni tutamaca sunulur.
         messenger.transport_mut().open(usize::MAX);
         let h2 = handle(2);
         messenger
             .transport_mut()
             .events
             .push_back(SessionEvent::Ready(h2, p));
-        let before = messenger.transport().attempts.len();
         assert_eq!(
-            drain_scripted(&mut messenger),
-            vec![MessengerEvent::Session(SessionEvent::Ready(h2, p))]
+            messenger.poll(),
+            Some(MessengerEvent::Session(SessionEvent::Ready(h2, p)))
         );
         assert_eq!(
-            messenger.transport().attempts.len(),
-            before,
-            "bırakılan RECEIPT'ler yeni oturuma taşınmaz"
+            accepted_receipt_ids_on(&messenger, h2),
+            vec![0, 1],
+            "taşınan RECEIPT'ler yeni tutamaca, msg_id sırasıyla, Ready(h2)'nin poll'unda"
         );
-        assert!(accepted_receipt_ids(&messenger).is_empty());
+        assert_eq!(messenger.pending_receipts(p), 0);
+        assert_eq!(messenger.stats().receipts_unsent, 0);
     }
 
-    /// K4G-05d **T4** (not Ek B.2; yalnız 05d — yeni API, tabanda derlenmez): yalnız `Backpressure`
-    /// geçicidir (DUR-05d-3). Başka her `TransportError` — oturum sonu (`UnknownSession`,
-    /// `SessionSuperseded`, `NotConnected`) ya da sözleşme dışı — RECEIPT'i bırakır: ilk sunumda
-    /// reddedilen kuyruğa girmez, kuyruktan sunumda reddedilen çıkar; ikisinde de `pending` 0'a
-    /// döner, `receipts_unsent` artar, `receipts_deferred` yalnız `Backpressure`'la gireni sayar ve
-    /// bırakılan kayıt bir daha sunulmaz. Oturum yokken doğan RECEIPT de kuyruğa girmez ve hiç
-    /// sunulmaz. Geçici sınıfı genişleten mutant (ör. `file_transfer.rs` `is_transient` sınıfı)
-    /// kaydı tutar (`pending` 1). Davranışsal eşi T4 (`tests/k4g_p0_receipt.rs`).
+    /// K4G-05d rev3 **T4** (DUR-05d-5 (a); not Ek B.2): `Backpressure`, `SessionSuperseded`,
+    /// `UnknownSession` ve `NotConnected` tut-ve-dur'dur: ilk sunumda reddedilen kuyruğa girer,
+    /// kuyruktan sunumda reddedilen kalır; kapasite açılınca tam bir kez kabul edilir ve hiçbiri
+    /// bırakılmaz. RECEIPT için ulaşılamaz hatalar (`UnitTooLarge`, `DeadlineExpired`,
+    /// `EarlyUnitConflict`) kaydı bırakır ve `receipts_unsent`'te sayılır (beyan). Oturum yokken
+    /// doğan RECEIPT kuyruğa girer ve sıradaki tutamaca sunulur. Öldürdüğü mutantlar: yalnız
+    /// `Backpressure`'ı geçici sayan sınıf (rev2; tut-ve-dur kolunda `pending` 0); ulaşılamaz
+    /// hatayı da tutan sınıf (`pending` 1); oturumsuz borcu bırakan `owe_receipt` (`pending` 0).
     #[test]
-    fn t4_only_backpressure_keeps_a_receipt_pending() {
+    fn t4_session_end_errors_hold_the_receipt_and_unreachable_errors_drop_it() {
         let p = peer(0);
         let h = handle(1);
         for error in [
-            TransportError::UnknownSession,
             TransportError::SessionSuperseded,
+            TransportError::UnknownSession,
             TransportError::NotConnected,
+        ] {
+            let mut messenger = scripted_with_session(p, h);
+            // (a) İlk sunum `error` ile reddedilir: kayıt kuyruğa girer.
+            messenger.transport_mut().refuse(error);
+            deliver_text(&mut messenger, h, 0);
+            assert_eq!(messenger.poll(), Some(text_received(p, 0)), "{error:?}");
+            assert_eq!(
+                messenger.pending_receipts(p),
+                1,
+                "{error:?}: ilk sunumda ret → tut"
+            );
+            // (b) Sonraki poll'un kuyruk sunumu yine `error` alır: kayıt kalır.
+            assert_eq!(messenger.poll(), None, "{error:?}");
+            assert_eq!(
+                messenger.pending_receipts(p),
+                1,
+                "{error:?}: kuyruktan sunumda ret → tut"
+            );
+            // Kapasite açılınca tam bir kez kabul edilir.
+            messenger.transport_mut().open(usize::MAX);
+            assert_eq!(messenger.poll(), None, "{error:?}");
+            assert_eq!(
+                receipt_results(&messenger, 0),
+                vec![Err(error), Err(error), Ok(())],
+                "{error:?}"
+            );
+            let stats = messenger.stats();
+            assert_eq!(
+                (
+                    stats.receipts_deferred,
+                    stats.receipts_unsent,
+                    stats.receipts_sent,
+                    stats.receipts_pending
+                ),
+                (1, 0, 1, 0),
+                "{error:?}: (deferred, unsent, sent, pending)"
+            );
+        }
+
+        for error in [
             TransportError::UnitTooLarge,
             TransportError::DeadlineExpired,
             TransportError::EarlyUnitConflict,
         ] {
             let mut messenger = scripted_with_session(p, h);
-            // (a) İlk sunum `error` ile reddedilir: kayıt kuyruğa girmez.
+            // (a) İlk sunum ulaşılamaz hatayla reddedilir: kayıt kuyruğa girmez.
             messenger.transport_mut().refuse(error);
             deliver_text(&mut messenger, h, 0);
             assert_eq!(messenger.poll(), Some(text_received(p, 0)), "{error:?}");
@@ -2441,7 +2505,8 @@ mod tests {
                 0,
                 "{error:?}: ilk sunumda ret"
             );
-            // (b) Kuyruktan sunum `error` ile reddedilir: kayıt çıkar.
+            // (b) `Backpressure` ile kuyruğa giren kayıt, kuyruktan sunumda ulaşılamaz hatayla
+            // reddedilince çıkar.
             messenger
                 .transport_mut()
                 .refuse(TransportError::Backpressure);
@@ -2486,7 +2551,8 @@ mod tests {
         }
 
         // (c) Oturum yok: `Closed(h)` okunduktan sonra eski tutamaçla gelen TEXT (yalnız-alım
-        // drain) teslim edilir; RECEIPT'i kuyruğa girmez, Transport'a da verilmez.
+        // drain) teslim edilir; RECEIPT'i kuyruğa girer, Transport'a verilmez ve sıradaki
+        // tutamaca sunulur.
         let mut messenger = scripted_with_session(p, h);
         messenger.transport_mut().open(usize::MAX);
         let closed = SessionEvent::Closed(h, CloseReason::PeerClosed);
@@ -2494,11 +2560,25 @@ mod tests {
         assert_eq!(messenger.poll(), Some(MessengerEvent::Session(closed)));
         deliver_text(&mut messenger, h, 0);
         assert_eq!(messenger.poll(), Some(text_received(p, 0)));
-        assert_eq!(messenger.pending_receipts(p), 0);
+        assert_eq!(
+            messenger.pending_receipts(p),
+            1,
+            "oturumsuz borç kuyruğa girer"
+        );
         assert!(
             messenger.transport().attempts.is_empty(),
             "oturumsuz RECEIPT sunulmaz"
         );
+        let h2 = handle(2);
+        messenger
+            .transport_mut()
+            .events
+            .push_back(SessionEvent::Ready(h2, p));
+        assert_eq!(
+            messenger.poll(),
+            Some(MessengerEvent::Session(SessionEvent::Ready(h2, p)))
+        );
+        assert_eq!(accepted_receipt_ids_on(&messenger, h2), vec![0]);
         let stats = messenger.stats();
         assert_eq!(
             (
@@ -2506,17 +2586,19 @@ mod tests {
                 stats.receipts_unsent,
                 stats.receipts_pending
             ),
-            (0, 1, 0)
+            (1, 0, 0)
         );
     }
 
-    /// `receipts_deferred` = kuyruktan kabul edilen + kuyruktan düşen + `receipts_pending`
-    /// değişmezini (T6) ve beklenen `pending`'i denetler. T6 senaryosunda her RECEIPT kuyruktan
-    /// geçer: "kuyruktan kabul" Transport'un kabul kaydıdır (= `receipts_sent`), "kuyruktan düşen"
-    /// senaryonun saydığı `dropped`'tır (= `receipts_unsent`).
+    /// `receipts_deferred` = kuyruktan kabul edilen + kuyruktan kalıcı retle bırakılan + pencere
+    /// altında budanan + `receipts_pending` değişmezini (T6) ve beklenen `pending`'i denetler. T6
+    /// senaryosunda her RECEIPT kuyruktan geçer: "kuyruktan kabul" Transport'un kabul kaydıdır (=
+    /// `receipts_sent`), "kalıcı retle bırakılan" senaryonun saydığı `dropped`'tır (=
+    /// `receipts_unsent`), "budanan" `receipts_window_pruned`'dır.
     fn assert_receipt_invariant(
         messenger: &Messenger<ScriptedTransport>,
         dropped: u64,
+        pruned: u64,
         pending: u64,
         step: &str,
     ) {
@@ -2528,10 +2610,11 @@ mod tests {
             usize::try_from(pending).expect("küçük sayı"),
             "{step}: pending_receipts"
         );
+        assert_eq!(stats.receipts_window_pruned, pruned, "{step}: pruned");
         assert_eq!(
             stats.receipts_deferred,
-            accepted + dropped + stats.receipts_pending,
-            "{step}: deferred = kuyruktan kabul + kuyruktan düşen + pending"
+            accepted + dropped + pruned + stats.receipts_pending,
+            "{step}: deferred = kuyruktan kabul + bırakılan + budanan + pending"
         );
         assert_eq!(stats.receipts_sent, accepted, "{step}: her kabul kuyruktan");
         assert_eq!(
@@ -2540,21 +2623,22 @@ mod tests {
         );
     }
 
-    /// K4G-05d **T6** (not Ek B.2; yalnız 05d — yeni API, tabanda derlenmez; sayaç sözleşmesi,
-    /// DUR-05d-2): kuyruğa giren her kayıt tam bir yoldan çıkar ya da bekler; her an
-    /// `receipts_deferred` = kuyruktan kabul edilen + kuyruktan düşen + `receipts_pending`. Senaryo
-    /// kuyruğun bütün yollarını sırayla geçer: birleşen tekrar (sayılmaz), kısmi kapasite (baştaki
-    /// kabul, sonra `Backpressure`'da dur), kalıcı ret, oturum değişimi (`adopt` boşaltır), taşma;
-    /// sonunda kapasite açılır, `pending` 0'a döner ve `receipts_deferred` ≥ 1'dir. `pending` sabit
-    /// 0 mutantı ilk denetimde düşer.
+    /// K4G-05d rev3 **T6** (sayaç sözleşmesi, DUR-05d-2; not Ek B.2): kuyruğa giren her kayıt tam
+    /// bir yoldan çıkar ya da bekler; her an `receipts_deferred` = kuyruktan kabul edilen +
+    /// kalıcı retle bırakılan + pencere altında budanan + `receipts_pending`. Senaryo kuyruğun
+    /// bütün yollarını sırayla geçer: birleşen tekrar (sayılmaz), kısmi kapasite (baştaki kabul,
+    /// sonra `Backpressure`'da dur), kalıcı ret (ulaşılamaz hata: `UnitTooLarge`), oturum değişimi
+    /// (kayıt taşınır), pencere budaması (eşten `MSG_DEDUP_WINDOW` ileri bir `msg_id`); sonunda
+    /// kapasite açılır ve `pending` 0'a döner. `pending` sabit 0 mutantı ilk denetimde, budamayı
+    /// saymayan mutant 5. adımda düşer.
     #[test]
-    fn t6_deferred_equals_accepted_plus_dropped_from_the_queue_plus_pending() {
+    fn t6_deferred_equals_accepted_plus_dropped_plus_pruned_plus_pending() {
         let p = peer(0);
         let h = handle(1);
         let mut messenger = scripted_with_session(p, h);
 
         // 1. Geri basınç: üç yeni kayıt (ilkinin ilk sunumu `Backpressure` alır, diğerleri
-        //    arkasına eklenir) ve kuyruktakiyle birleşen bir tekrar.
+        //    kuyruğa girer) ve kuyruktakiyle birleşen bir tekrar.
         for msg_id in [0, 1, 2, 1] {
             deliver_text(&mut messenger, h, msg_id);
         }
@@ -2564,28 +2648,28 @@ mod tests {
             "tekrar olay üretmez"
         );
         assert_eq!(messenger.stats().duplicate_texts, 1);
-        assert_receipt_invariant(&messenger, 0, 3, "geri basınç");
+        assert_receipt_invariant(&messenger, 0, 0, 3, "geri basınç");
 
         // 2. Kısmi kapasite: baştaki kabul edilir, ikincisi `Backpressure` alır, sunum durur.
         messenger.transport_mut().open(1);
         assert_eq!(messenger.poll(), None);
         assert_eq!(accepted_receipt_ids(&messenger), vec![0]);
-        assert_receipt_invariant(&messenger, 0, 2, "kısmi kapasite");
+        assert_receipt_invariant(&messenger, 0, 0, 2, "kısmi kapasite");
 
-        // 3. Kalıcı ret: kuyruktaki iki kayıt bırakılır.
+        // 3. Kalıcı ret (RECEIPT için ulaşılamaz hata): kuyruktaki iki kayıt bırakılır.
         messenger
             .transport_mut()
-            .refuse(TransportError::UnknownSession);
+            .refuse(TransportError::UnitTooLarge);
         assert_eq!(messenger.poll(), None);
-        assert_receipt_invariant(&messenger, 2, 0, "kalıcı ret");
+        assert_receipt_invariant(&messenger, 2, 0, 0, "kalıcı ret");
 
-        // 4. Oturum değişimi: bekleyen yeni kayıt düşer.
+        // 4. Oturum değişimi: bekleyen yeni kayıt taşınır (yeni tutamaç da dolu).
         messenger
             .transport_mut()
             .refuse(TransportError::Backpressure);
         deliver_text(&mut messenger, h, 3);
         assert_eq!(drain_scripted(&mut messenger), vec![text_received(p, 3)]);
-        assert_receipt_invariant(&messenger, 2, 1, "yeni kayıt bekliyor");
+        assert_receipt_invariant(&messenger, 2, 0, 1, "yeni kayıt bekliyor");
         let h2 = handle(2);
         messenger
             .transport_mut()
@@ -2595,21 +2679,153 @@ mod tests {
             messenger.poll(),
             Some(MessengerEvent::Session(SessionEvent::Ready(h2, p)))
         );
-        assert_receipt_invariant(&messenger, 3, 0, "oturum değişimi");
+        assert_receipt_invariant(&messenger, 2, 0, 1, "oturum değişimi taşır");
 
-        // 6. Kapasite: kalanların hepsi kabul edilir.
+        // 5. Pencere budaması: eşten `3 + MSG_DEDUP_WINDOW` gelir; 3 pencere altına düşer.
+        let far = 3 + MSG_DEDUP_WINDOW;
+        deliver_text(&mut messenger, h2, far);
+        assert_eq!(drain_scripted(&mut messenger), vec![text_received(p, far)]);
+        assert_receipt_invariant(&messenger, 2, 1, 1, "pencere budaması");
+
+        // 6. Kapasite: kalan kabul edilir; budanan hiç sunulmaz.
         messenger.transport_mut().open(usize::MAX);
         assert_eq!(messenger.poll(), None);
-        assert_receipt_invariant(&messenger, 4, 0, "kapasite sonrası");
-        assert!(messenger.stats().receipts_deferred >= 1);
+        assert_receipt_invariant(&messenger, 2, 1, 0, "kapasite sonrası");
+        assert_eq!(accepted_receipt_ids(&messenger), vec![0, far]);
+    }
+
+    /// K4G-05d rev3 **(c)** öncelik kapısı (M2; not Ek B.1): eşin RECEIPT'i beklerken toplu
+    /// üretici kaydı Transport'a VERİLMEZ — `send_text` ve `send_gated` geçici `Backpressure` alır,
+    /// [`MessengerStats::gated_by_receipts`] artar, `resend_refused` artmaz ve Transport'ta deneme
+    /// kaydı oluşmaz. Ret bu `poll`'da alındıysa kapı kuyruğu yeniden sunmaz ("poll başına eş
+    /// başına ≤ 1 ret"); sıradaki `poll` RECEIPT'i kabul ettirir, sonra kapı açılır. Öldürdüğü
+    /// mutantlar: kapısız `send_text` / `send_gated` (deneme kaydı oluşur); kapı retini
+    /// `resend_refused`'a yazan; işareti yok sayıp aynı `poll`'da yeniden sunan kapı (fazladan
+    /// `Backpressure` denemesi).
+    #[test]
+    fn c_gate_holds_bulk_producers_while_receipts_wait_and_counts_separately() {
+        let p = peer(0);
+        let h = handle(1);
+        let mut messenger = scripted_with_session(p, h);
+        deliver_text(&mut messenger, h, 0);
+        assert_eq!(drain_scripted(&mut messenger), vec![text_received(p, 0)]);
+        assert_eq!(
+            messenger.pending_receipts(p),
+            1,
+            "ön koşul: RECEIPT bekliyor"
+        );
+        let before = messenger.transport().attempts.len();
+
+        assert_eq!(
+            messenger.send_text(p, "metin"),
+            Err(MessengerError::Transport(TransportError::Backpressure))
+        );
+        assert_eq!(
+            messenger.send_gated(h, unit(), DeliveryPolicy::Reliable),
+            Err(TransportError::Backpressure)
+        );
+        assert_eq!(
+            messenger.transport().attempts.len(),
+            before,
+            "kapı: Transport'a hiçbir deneme verilmedi (ret bu poll'da alındı)"
+        );
+        let stats = messenger.stats();
+        assert_eq!(stats.gated_by_receipts, 2);
+        assert_eq!(
+            stats.resend_refused, 0,
+            "kapı reddi Transport reddi değildir"
+        );
+        assert_eq!(
+            messenger.unacked_count(p),
+            0,
+            "kapıdaki TEXT outbox'a girmedi"
+        );
+
+        // Kapasite açılır: işaret bu poll'a dek sürer; poll RECEIPT'i kabul ettirir, kapı açılır.
+        messenger.transport_mut().open(usize::MAX);
+        assert_eq!(messenger.poll(), None);
+        assert_eq!(accepted_receipt_ids(&messenger), vec![0]);
+        let sent = messenger.send_text(p, "metin").expect("kapı açık");
+        assert_eq!(messenger.unacked_count(p), 1);
+        let last = messenger
+            .transport()
+            .attempts
+            .last()
+            .map(|(_, bytes, _)| bytes.clone())
+            .expect("en az bir deneme var");
+        assert_eq!(
+            codec::decode(&last, messenger.limits()).ok(),
+            Some(AppMessage::Text {
+                msg_id: sent,
+                text: "metin".to_owned(),
+            }),
+            "kapı açılınca TEXT gider"
+        );
+        assert_eq!(messenger.stats().gated_by_receipts, 2);
+    }
+
+    /// K4G-05d rev3 **(f)** `adopt` sırası (M1; not Ek B.1): yeni tutamaçta eşin bekleyen
+    /// RECEIPT'i, RECEIPT'siz TEXT'in yeniden gönderiminden ÖNCE kabul edilir. Eski tutamaç dolu
+    /// kalır (poll başı sunum orada `Backpressure` alır); `Ready(h2)` aynı poll'da okunur.
+    /// Öldürdüğü mutantlar: `adopt`'ta RECEIPT sunmayan ya da yeniden gönderimden sonra sunan
+    /// `flush_peer`; eski tutamacın ret işaretini yeni tutamaca taşıyan `adopt` (RECEIPT `h2`'ye
+    /// sunulmaz, TEXT kapıda kalır).
+    #[test]
+    fn f_adopt_presents_pending_receipts_before_resends() {
+        let p = peer(0);
+        let h = handle(1);
+        let mut messenger = scripted_with_session(p, h);
+        messenger.transport_mut().open(usize::MAX);
+        let sent = messenger.send_text(p, "metin").expect("oturum açık");
+        messenger
+            .transport_mut()
+            .refuse(TransportError::Backpressure);
+        deliver_text(&mut messenger, h, 7);
+        assert_eq!(drain_scripted(&mut messenger), vec![text_received(p, 7)]);
+        assert_eq!(
+            messenger.pending_receipts(p),
+            1,
+            "ön koşul: RECEIPT bekliyor"
+        );
+
+        messenger.transport_mut().open(usize::MAX);
+        messenger.transport_mut().full_sessions.insert(h);
+        let h2 = handle(2);
+        messenger
+            .transport_mut()
+            .events
+            .push_back(SessionEvent::Ready(h2, p));
+        let before = messenger.transport().attempts.len();
+        assert_eq!(
+            messenger.poll(),
+            Some(MessengerEvent::Session(SessionEvent::Ready(h2, p)))
+        );
+        let limits = messenger.limits();
+        let on_h2: Vec<AppMessage> = messenger.transport().attempts[before..]
+            .iter()
+            .filter(|(on, _, result)| *on == h2 && result.is_ok())
+            .map(|(_, bytes, _)| codec::decode(bytes, limits).expect("geçerli kayıt"))
+            .collect();
+        assert!(
+            matches!(
+                on_h2.as_slice(),
+                [
+                    AppMessage::Receipt { ref_msg_id: 7, kind: ReceiptKind::Delivered },
+                    AppMessage::Text { msg_id, .. },
+                ] if *msg_id == sent
+            ),
+            "h2'de önce RECEIPT(7), sonra TEXT({sent})'in yeniden gönderimi: {on_h2:?}"
+        );
+        assert_eq!(messenger.pending_receipts(p), 0);
+        assert_eq!(messenger.stats().resent_on_new_session, 1);
     }
 
     /// K4G-05d (yalnız 05d — yeni API, tabanda derlenmez): aynı tutamacın ikinci kez bildirilmesi
     /// (ör. `connect` dönüşü `ConnectResult::Ready(h)` + aynı `h`'nin `Ready` olayı) oturum
     /// DEĞİŞİMİ değildir: `adopt` aynı tutamaçta erken döner ve bekleyen kuyruk KORUNUR — hiçbir
     /// kayıt bırakılmaz, kapasite açılınca hepsi aynı oturumda doğuş sırasıyla kabul edilir.
-    /// Öldürdüğü mutant: `drop_pending_receipts`'i `adopt`'un aynı-tutamaç erken dönüşünün üstüne
-    /// taşıyan değişiklik (kuyruk boşalır: `pending` 0, `receipts_unsent` 2, kabul yok).
+    /// Öldürdüğü mutant: aynı tutamaçta kuyruğu boşaltan ya da bırakan `adopt` (`pending` 0,
+    /// kabul yok).
     #[test]
     fn re_announcing_the_same_handle_keeps_the_pending_receipts() {
         let p = peer(0);
