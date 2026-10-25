@@ -475,6 +475,47 @@ zinciri, birim teyit edilene dek bağlantıyı doldurabilir; INT-02 düşük hı
 
 **B.5 — Şerit sınırı (gövde §8'den):** A şeridi `crates/adaptive-transport/**`, `client-core/src/{runtime.rs, transport.rs}` (05c'ye dek), `transport_v1_freeze.rs`, `kama-app/src/messaging.rs`, `crates/bench/**`, `nightly.yml`'e dokunmaz. **Yer [DUR-30] (gövde §8'den):** `K_MAP` sabiti, teyit çıktısı, A.7/A.8 metni ve `take_confirmed_units()` ile payload silme 05b PR'ında; K_MAP budaması ve birim başına O(1) kayıt 05c PR'ında, birlikte; ayrı "madde 11 / A.7 / §16.2" adımı yok.
 
+**B.6 — Sürekli ilerleme testi — T_max türetimi (koşudan önce; CEVAP PAKETİ 14 §2, 2026-10-25).** [türetim; koşulmadı — kod okuması, satırlar `35a02fcf`] Bu alt bölüm testten ÖNCE commit'lenir; sonuca bakılarak büyütülmez. Sonuç: kopya sınıfı için sonlu T_max; DATA ve ARQ için 31 B/s'de zamanlayıcıdan T_max YOK → **DUR-38**, test yazılmadı (aşağıda (f)).
+
+(a) **Senaryo (sabit).**
+- Hız R ∈ {31, 100} B/s: pace_rate = darboğaz = R, sabit (beyaz kutu; C11-EK §4 "sabit pace_rate" koşulu). Ön yol FIFO serileştirme R; tek yön gecikme d = 200 ms (iki yön); alıcı her datagramı varışta ACK'ler (`ack_delay` 0). Pompa: her 10 ms `Timer::Pto`, 200 ms'de bir `Timer::RtpropProbe` (`tests/k4g05b_support` düzeni).
+- Birim boyları: küçük S_d = 37 B, büyük S_b = 1050 B.
+- Isınma: t = 0'da 4 küçük birim. Yük: [10 s, 120 s) aralığında 5 s'de bir küçük birim (22 birim); t = 20 s ve 25 s'de birer büyük birim (N_b = 2).
+- Kesinti: [60 s, 120 s), iki yön, 60 s. Yük üretiminin durduğu an T_stop = 120 s (kesinti sonu). Kabul kümesi kapalı: 4 + 22 + 2 = 28 birim. Kesinti sonrası kayıp yok. Ufuk: T_stop + 600 s.
+- ARQ işi ayrıca enjekte edilmez: kesintide kaybolan iletimlerin kesinti sonrası ilanından (paket/zaman eşiği) doğar.
+
+(b) **Tanımlar.** Tur = bir `schedule_transmit` çağrısı. Uygun iş (tur başında): DATA — `tx_queue` boş değil; ARQ — `arq_plan_head_size()` var (vadesi gelmiş, tavan altı `pending_lost` kaydı); kopya — `copy_queue_head(now)` var (vadeli baş). Susma = sınıfın uygun işi kesintisiz varken o sınıftan emisyon olmayan en uzun süre; kesinti penceresinde ölçülmez.
+
+(c) **Kod gerçekleri** (`crates/adaptive-transport/src/sender.rs`, aksi yazılmadıkça).
+- F1 sınıf sırası (`schedule_transmit` :4609-4657): rezerv tazeleme → ARQ payı (yalnız RECOVER_ARQ, her `K_ARQ_SHARE` = 4 turda; :1619, :4627) → kopya payı/rezerv (`serve_copy_share` :7065) → DATA (`drain_new_data` :7154) → ARQ (yalnız RECOVER_ARQ, :4640) ya da RECOVER_FWD'de `plan_forward_duplication` (:6810) → H sahiplenmesi → kopya kuyruğu (`drain_due_duplicates` :6921, HOL) → parite.
+- F2 pay çağrı sayar, zaman değil: ürün pompası 1 ms (`client-core/src/runtime.rs:65`) → pay turu ≤ 4 ms'de bir; test pompası 10 ms → ≤ 40 ms.
+- F3 rezerv (:7089, `refresh_copy_reserve` :7097, `copy_reserve_allows` :6156): pay turunda vadeli baş token bulamazsa rezerv = başın boyu; vadeli baş kaldıkça sürer (baş değişirse yeni başın boyu), yalnız kopya emisyonuyla (:7004-7006) ya da vadeli baş kalmayınca kalkar. Diğer sınıflar `token ≥ boy + rezerv` ister.
+- F4 BURST: düşük hızda pencere R·40 ms ≤ 4 B, yani tavan = tur başı tabanı = max(DATA başı — kuyruk boşsa 1200 —, ARQ başı, prob hedefi, vadeli kopya başı) (:2553-2560, :7114-7151); token tavana kırpılır (`pacer.rs:54`, `:72`). DATA kuyruğu doluyken tavan = en büyük yol başı = rezerv olduğundan `boy + rezerv > tavan`: **rezerv varken DATA, ARQ ve parite hiç token alamaz.** Vadeli kopya başı yokken tavan DATA başına iner (37 B); token birikmez.
+- F5 kopya zinciri (:6427, :6976): sonraki vade = emisyon + I, I ≤ RTO_MAX = 30 s (:1651). H'yi aşan sessizlikten sonraki ilk ilerlemeli ACK bütün aralıkları tabana (srtt) indirir (`reset_copy_backoff` :6582, çağrı :3536). Kuyruk başı en küçük birim kimliğidir (:7032).
+- F6 ARQ yalnız RECOVER_ARQ'ta hizmet alır (:4627, :4640). RECOVER_FWD'de (acil durum, :4321-4323) `pending_lost` tek seferlik kopyalara çevrilir (:6810) ve her DATA D − 1 tek seferlik kopya ekler (:7185): ARQ işi kopya işine dönüşür.
+- F7 pace ≥ min_rate = 31 B/s (`budget.rs:29`); bu senaryoda pace = R.
+
+(d) **Türetim.**
+- **Kopya.** Vadeli baş en geç `K_ARQ_SHARE` turda rezerv alır (F1, F3). Rezerv sürerken başka sınıf token alamaz (F4); token R hızında başın boyuna birikir ve baş her tur denenir. T_max(kopya) = S_maks/R + (K_ARQ_SHARE + 1) tur. Rakip yük bu sınıfı etkilemez (rezerv bütün sınıflara karşı). Sonlu.
+- **DATA ve ARQ — önerme (F2 + F3 + F4):** kopya kuyruğunda vadeli baş kesintisiz var olduğu sürece DATA ve ARQ emisyon yapamaz. Rezerv varken tavan = rezerv (F4). Rezerv bir kopya emisyonuyla kalktığında token ≈ 0'dır; sonraki pay turuna dek en çok R·(K_ARQ_SHARE − 1)·tik birikir (ürün 31·3·1 ms ≈ 0.1 B; test 0.93 B) < S_d = 37 B; o turda baş hâlâ vadeliyse rezerv yeniden kurulur. Dolayısıyla T_max(DATA) = T_max(ARQ) = S_baş/R + D_sürekli + tur payı; D_sürekli = vadeli kopya başının kesintisiz sürdüğü en uzun süre.
+- **D_sürekli (rakip yük).** Kararlı durumda (I = RTO_MAX) zincir u'nun emisyonundan sonraki 30 s'yi öbür zincirlerin token süresi kaplıyorsa kuyruk boşalmaz: Σ_{v≠u} S_v/R ≥ 30 s.
+  - **31 B/s:** tek büyük zincirin token süresi 1050/31 = 33.87 s > RTO_MAX = 30 s (bilinen risk). N_b ≥ 2 iken koşul her u için sağlanır → D_sürekli zamanlayıcıdan **sınırsız**; yalnız teyit (zincirin silinmesi) bitirir. Teyit gecikmesi ≥ S_b/R + 2d = 34.27 s > 33.87 s olduğundan HOL aynı birimi teyit gelmeden bir kez daha gönderir (boşa kopya). Kesinti sonrası F5 sıfırlaması iki zinciri hemen vadeli yaptığından, kayıpsız kanalda bile DATA/ARQ susması ≈ 2·2·33.87 = 135.5 s (t0'daki token en çok bir kopya kısaltır: ≥ 101.6 s); herhangi bir ek kayıpta sınırsız. (N_b ≤ 1 ve küçük zincirlerde kararlı durumda her 30 s'de boşluk vardır; o durumda T_max(DATA) ≈ 33.9 s olurdu.)
+  - **100 B/s:** Σ = 2·10.5 + 22·0.37 = 29.1 s < 30 s → kararlı durumda her 30 s'de ≥ 0.9 s boşluk (≥ 37/100 = 0.37 s) → sonlu. Sıfırlama sonrası (F5) aralıklar tabandan (srtt ≥ 37/100 + 2d = 0.77 s) ikiye katlanarak 29.1 s'yi geçene dek zincir başına ⌈log2(29.1/0.77)⌉ = 6 emisyon: D_sürekli ≤ 6·29.1 = 174.6 s. RECOVER_FWD dönüşümleri (F6; birim başına ≤ D − 1 = 2 tek seferlik kopya) ≤ 2·29.1 = 58.2 s ekler. T_max(DATA, ARQ) ≤ 10.5 + 174.6 + 58.2 + tur payı ≈ 243 s. Sonlu ama zayıf: bu, DATA/ARQ'ya ayrılmış bir payın değil kopya sınıfının bütün işinin süresidir.
+
+(e) **T_max tablosu** (tur payı: 5 tur = 50 ms, test pompasıyla).
+| sınıf | 31 B/s | 100 B/s | türetim özeti |
+|---|---|---|---|
+| kopya | 33.9 s | 10.55 s | rezerv + `K_ARQ_SHARE`: S_maks/R + 5 tur |
+| DATA | **sonsuz** — zamanlayıcıdan sınır yok, teyide bağlı (kayıpsız kanalda ≈ 135.5 s, ≥ 101.6 s) | ≤ 243 s | vadeli kopya başı kesintisizken DATA'ya sıfır bayt (önerme); 31 B/s'de 33.87 s > 30 s ve N_b = 2 → kesintisiz |
+| ARQ | **sonsuz** (DATA ile aynı) | ≤ 243 s | DATA ile aynı; RECOVER_FWD'de ARQ işi kopya işine dönüşür (F6) |
+
+(f) **DUR-38 (açık; karar sahibin).** Düşük hızda kopya sınıfı DUR-31 rezerviyle fiilen katı önceliklidir: çağrı sayan pay (F2) ve yol başı tavanı (F4) DATA/ARQ'ya bayt bırakmaz. 31 B/s'de iki teyitsiz 1050 B zinciri DATA ve ARQ'yu teyit gelene dek susturur; bu C14 §2'deki "T_max sonlu değil" durumudur. Sürekli ilerleme testi bu sonuçla yazılmadı. Çözüm rezervi kaldırmak değil, sınıflar arası hizmet politikasıdır (C14 §2); engine §13 v1.1 ve Ek A.4 metnine dokunur. Seçenekler:
+- (A) Sınıflar arası bayt tabanlı DRR: kopya / ARQ / DATA'ya sırayla bayt kotası; rezerv yalnız sırası gelen sınıfın başı için kurulur. T_max(c) = Σ_{öbür sınıflar} kota/R + S_baş(c)/R; teyitten bağımsız.
+- (B) Karşılık kuralı: rezervli bir kopya emisyonundan sonra, uygun işi olan DATA ve ARQ birer emisyon (ya da birer baş boyu bayt) alana dek yeni kopya rezervi kurulmaz. 31 B/s'de T_max(DATA) ≤ (S_kopya,maks + S_ARQ,maks + S_DATA)/R ≈ (1050 + 1050 + 37)/31 ≈ 69 s; kopya T_max'ı (S_DATA,maks + S_ARQ,maks)/R kadar büyür. DUR-31'in seçilme ölçütü korunur.
+- (C) Payı çağrı yerine bayta bağlamak: öbür sınıflar uygun işteyken kopya sınıfı baytların ≤ 1/K_ARQ_SHARE'ini alır. Pompa sıklığından bağımsızdır.
+- (D) Yalnız israfı azaltır, adalet vermez: F5 sıfırlamasının tabanı max(srtt, S_baş/pace + srtt) olur; birim, önceki kopyasının ACK'i dönemeden yeniden kopyalanmaz.
+Öneri: (B), en küçük değişiklik ve DUR-31 ölçütleriyle uyumlu. Seçilen politikadan sonra T_max'lar bu bölümün (a) senaryosuyla yeniden türetilir; test o türetimle yazılır.
+
 ## Ek C — karar tarihçesi (rev1–rev4 üstü çizili metinler; MUST NOT IMPLEMENT)
 
 > **MUST NOT IMPLEMENT.** Bu ek gövdeden taşınan karar tarihçesidir (CLAUDE.md §6: deprecated içerik appendix'e taşınır, sessizce silinmez; orkestratör kararı, 2026-10-24). Buradaki hiçbir ifade bağlayıcı değildir ve uygulanmaz; güncel metin gövde (§0–§9), Ek A ve Ek B'dir. Kaynak: gövdenin `77337dac` hâli; üstü çizili parçalar o hâldeki gibidir, her maddenin sonunda yerine geçen karar.
