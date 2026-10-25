@@ -8,6 +8,8 @@
 Kaynak: `crates/client-core/src/runtime.rs`, `crates/kama-transport-schema/src/lib.rs`,
 `crates/adaptive-transport/src/{receiver,fec,ack}.rs`. Kod okunarak yazıldı (2026-09-11).
 
+> **YAMA KAYDI — 2026-10-25 [K4G-05c — Abkarada kararı CEVAP PAKETİ 10, 2026-10-24, DUR-05c-9 (a) — `docs/decisions/K4G-CEVAP-PAKETLERI-4-7.md`]:** §10.1 "kuyruklar" satırı: dolu teslim kuyruğunda birim artık düşmez, ACK'siz reddedilir; offer kuyruğu ayrıca birim-kimliği mesafesiyle durur. Üstü çizili metin silinmedi.
+
 ## 10.1 Üst-katman birimi
 
 | | v1 |
@@ -17,7 +19,7 @@ Kaynak: `crates/client-core/src/runtime.rs`, `crates/kama-transport-schema/src/l
 | azami boyut | `max_message_bytes` = `max_unit_bytes` = **1 013 B** (`1024 − SOURCE_PREFIX_LEN 11`); aşarsa `RuntimeError::UnitTooLarge{got,cap}` |
 | fragmentasyon | `max_message_bytes: Some(n)` ile açık opt-in (v1'de KAPALI); açılırsa mesaj 1 013 B'lik chunk'lara bölünür, her chunk kendi birim-id'si/ARQ/FEC yuvası, alıcı birleştirir — **tel formatı görünür değişir** |
 | teslim olayı | alıcıda `Delivery{peer: SocketAddr, unit_id: u64, payload: Vec<u8>}`; göndericide `acked() -> Option<u64>` (ilk-ACK-kazanır birim id akışı) |
-| kuyruklar | bounded: `offer_queue 1024` (dolu → `QueueFull`), `delivery_queue 1024` (taşan teslim SAYILIR, sessiz düşmez) |
+| kuyruklar | bounded: `offer_queue 1024` (dolu → `QueueFull`; **[2026-10-25 — K4G-05c]** en yeni ile en eski teyitsiz birim arasındaki kimlik mesafesi `max_inflight_units`'e ulaşınca offer alınmaz, kuyruk dolar), `delivery_queue 1024` ~~(taşan teslim SAYILIR, sessiz düşmez)~~ **[2026-10-25 — K4G-05c]** (dolu → birim kanala girmez ve ACK'lenmez, `full_refusals` sayılır; teslim düşmez, `delivery_dropped` yapısal 0) |
 
 ## 10.2 Sıra
 

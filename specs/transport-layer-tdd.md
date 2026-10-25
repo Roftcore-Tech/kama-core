@@ -1,5 +1,7 @@
 # Kama — Transport Layer TDD (Adaptive Hostile-Aware Transport)
 
+> **YAMA KAYDI — 2026-10-25 [v1.1 · K4G-05c — K_MAP budama seçim kuralı ve geç-ACK tanıma garantisi; sahip kararı CEVAP PAKETİ 14, 2026-10-25, DUR-05c-14 (A, koşullu) — `docs/decisions/K4G-CEVAP-PAKETLERI-4-7.md`]:** §12 [AMENDMENT-12] "Kayıt sınırı ve geç-ACK tanıma" paragrafında budama cümlesi (K4G-05b'de budama KAPALI) ve tanıma garantisi üstü çizildi; yerine: budama açık (runtime'ın birim başına O(1) kaydıyla aynı değişiklikte); birim başına uçuş + tombstone kaydı TOPLAMI ≤ K_MAP, orijinal dahil; aşılırken orijinal Data kaydı DIŞINDAKİ en eski kayıt budanır. Orijinal yalnız K_MAP budamasından muaftır; tombstone TTL'i ve tombstone tavanı tahliyesi ona da uygulanır, daha geniş saklama garantisi yoktur. Motorun hâlâ tuttuğu kaydın geç ACK'i birimi teyit eder; unutulmuş (budanmış, süresi dolmuş, tahliye edilmiş) kaydınki teyit etmez, payload korunur. K_MAP = 8 değişmedi; tel, codec ve altın vektörler (tv_*) DEĞİŞMEDİ. Üstü çizili metin silinmedi.
+
 > **YAMA KAYDI — 2026-10-24 [v1.1 · K4G-05b — yeniden-gönderim sahipliği; sahip kararları CEVAP PAKETİ 4 ve 5 (2026-10-16), CEVAP PAKETİ 6, 7 ve 7-EK (2026-10-18), CEVAP PAKETİ 8 (2026-10-19), CEVAP PAKETİ 9 (2026-10-24), CEVAP PAKETİ 10, 11, 11-EK, 12 ve 13 (2026-10-24) — `docs/decisions/K4G-CEVAP-PAKETLERI-4-7.md`]:** §12'ye [AMENDMENT-12]: INV-NO-ORPHAN (sahip metni) ve üç kabul koşulu (kayıtlı · payload mevcut · hizmet verilebilir bütçede yeniden seçilebilir) · motorun **teyit çıktısı** (payload yalnız onunla silinir — runtime tarafı K4G-05b; kaydı unutan hiçbir yol motor ile runtime arasında payload sahipliği ayrışması yaratmaz) · ARQ_RETX_CAP aşımı ve kuyruk-probu bütçesinin tükenmesi yolu değiştirir, birimi düşürmez; prob bütçesi tükenince prob kapsamındaki birimler aynı turda devredilir · **RTO_MAX = 30 s** normatif sabit (koddan belgeye: `TailRecoveryConfig::validated_v1().max_backoff_pto_ns`; yeni sayı yok) · kesinti sonrası ilk taze ACK'te kopya geri çekilmesi sıfırlanır · FEC onarım sembolünün ACK'i kaynak birimi teyit etmez, onarım sembolü sahiplenilmez · K_MAP = 8 birim başına iletim kaydı için ADET sınırı, süre garantisi değil (budama ve birim başına O(1) runtime kaydı K4G-05c'de birlikte açılır; tanınmayan geç ACK teyit etmez, veri kaybı değildir) · kimlik `kama-v1-full` → `kama-v1.1-full`, `transport-v1` → `transport-v1.1` (AMENDMENT-11'in beyan ettiği `transport-v1.x` de bununla sabitlere işlenir). §5.3 "RTO↑" satırına tavan işareti. Engine-spec §5/§6 (RTT kabul kuralı + tazelik ölçütü), §13 (kopya kuyruğu sırası, BURST_CAP tur başı tabanı, sınıflar arası kopya payı ve rezervasyonu) ve §16.2 (tek saat-sınıfı satırı) v1.1 yamaları aynı kartta; yetki dışındaki belgelere tek satırlık AMENDMENT-12 işaretçileri, DR-CS-1 belgesine kabul fikstürü YAMA KAYDI. Tel, codec ve altın vektörler (tv_*) DEĞİŞMEDİ. Bu belgede metin silinmedi (yalnız ekleme).
 
 > **YAMA KAYDI — 2026-10-08 [AMENDMENT-11 — WS-D (BL D1/D2/D3) UYGULANDI, L-D şeridi; iş emri 2026-10-06b §5]:** §12'ye [AMENDMENT-11]: ARQ/ACK kimliği = `meta.full_wire_pn` KODDA (çeviri katmanı `client-core` runtime'ında; `adaptive-transport` motoru değişmedi; ACK_FRAME_V2 formatı ve `ack_epoch` dokunulmadı) · noise-wire `Control::Ack/Sack` (0x10/0x11) kod silimi, codepoint'ler RESERVED → reject · golden etkisi listesi · altı beyan. Ara 11 B çerçeve veri yolunda KALIR (S3 kararı: beyanlı KARŞILANMAZ). Üstü çizili metin silinmedi.
@@ -923,11 +925,21 @@ default path_mtu_target = 1200B (fragmentation kaçınımı); probe 576/768B; lo
 > **Kayıt sınırı ve geç-ACK tanıma (NORMATİF, CEVAP PAKETİ 9, 2026-10-24, DUR-20; CEVAP PAKETİ 11, 2026-10-24, DUR-28
 > ve DUR-30; CEVAP PAKETİ 11-EK, 2026-10-24, §3–§4):** K_MAP = 8, birim başına iletim eşlemesi ve zamanlama kaydı
 > (sender uçuş/tombstone tablosu ve kayıp dedektörü haritası) için bir ADET sınırıdır; süre garantisi DEĞİLDİR.
-> Budama — hangi kaydın seçileceği ve uçuş muhasebesi dahil — K4G-05c'de tanımlanır ve runtime'ın birim başına
+> ~~Budama — hangi kaydın seçileceği ve uçuş muhasebesi dahil — K4G-05c'de tanımlanır ve runtime'ın birim başına
 > O(1) kaydıyla aynı değişiklikte açılır; K4G-05b'de `K_MAP` ve teyit çıktısı tanımlıdır,
-> budama KAPALIDIR. Geç ACK, seq'i birimin son K_MAP iletimi arasındaysa tanınır — o kayıt TTL/tahliyeyle daha önce
-> silinmemişse; tanıma garantisi bütün silme yollarıyla birlikte tanımlıdır (kayıp ilan edilmiş kayıt için tombstone
-> TTL'i (K_TOMB × T_loss) ve tombstone tavanı v1 aynen; K_MAP budaması K4G-05c). Tanınmayan geç ACK veri kaybı
+> budama KAPALIDIR.~~ **[2026-10-25 — K4G-05c, CEVAP PAKETİ 14, 2026-10-25, DUR-05c-14 (A)] Budama AÇIKTIR**
+> (runtime'ın birim başına O(1) kaydıyla aynı değişiklikte): birimin uçuş ve tombstone kayıtlarının TOPLAMI
+> ≤ K_MAP, orijinal dahil; aşılırken birimin ORİJİNAL Data kaydı DIŞINDAKİ en eski kaydı ilan edilmeden budanır
+> (uçuş muhasebesinden ve kayıp dedektörü haritasından düşer; ledger ve kayıp sayaçları değişmez). Orijinal Data
+> kaydı YALNIZ K_MAP budamasının hedefi olmaz; tombstone TTL'i ve tombstone tavanı tahliyesi ona da uygulanır —
+> daha geniş bir saklama garantisi yoktur. ~~Geç ACK, seq'i birimin son K_MAP iletimi arasındaysa tanınır — o kayıt
+> TTL/tahliyeyle daha önce silinmemişse; tanıma garantisi bütün silme yollarıyla birlikte tanımlıdır (kayıp ilan
+> edilmiş kayıt için tombstone TTL'i (K_TOMB × T_loss) ve tombstone tavanı v1 aynen; K_MAP budaması K4G-05c).~~
+> **[2026-10-25 — K4G-05c]** Geç ACK, motorun o iletim için hâlâ tuttuğu kayıtla eşleşirse birimi teyit eder:
+> seq birimin orijinal Data kaydıysa ya da orijinal dışındaki en yeni kayıtları arasındaysa (toplam ≤ K_MAP) ve o
+> kayıt tombstone TTL'iyle (K_TOMB × T_loss) ya da tombstone tavanı tahliyesiyle daha önce silinmemişse (v1 aynen,
+> orijinal dahil); tanıma garantisi bütün silme yollarıyla birlikte tanımlıdır. Unutulmuş (budanmış, süresi dolmuş
+> ya da tahliye edilmiş) kaydın geç ACK'i birimi teyit etmez. Tanınmayan geç ACK veri kaybı
 > değildir; ek yeniden gönderimlere yol açabilir; payload sahipliği korunur: Expired/Unknown, birimi TEYİT ETMEZ,
 > birim sahipli kalır ve yeniden gönderilir, RTT örneği VERMEZ. Gerçek gönderim dizilerinde tutulan kayıt yaşı
 > ölçülür ve INT-02 raporunda yazılır. Diğer sınırlar: bekleyen kopya işi birim başına ≤ D_max = 3; payload sayısı

@@ -121,6 +121,13 @@
       "kind": "behavioral",
       "proof": "contract.rs rows::h_compress_boundary — ayni baytlar Never ve AppCompressed altinda byte-ozdes teslim edilir (Transport acmaz, sikistirmaz)",
       "needs": "gercek hedefte dogrulama (GAP-SEAM-REAL-1); 'decompress yalniz app'te (AMP §5)' Application codec'inin isidir — kama-app'te henuz yok [2026-10-08 L-T1] real hedefte KOSTU (client_core::transport::ClientTransport + gercek kripto NoiseWireProtection + UDP loopback; karsi uc = ayni adaptorun echo yapan ornegi) — durum 'implemented'."
+    },
+    {
+      "id": "H-ACK-DELIVER",
+      "status": "not_implemented",
+      "kind": "behavioral",
+      "proof": "conformance-core govdesi YOK (K4G-05c, 2026-10-25; spec §6 satiri KM-SEAM-AT-001 YAMA KAYDI 2026-10-25). Davranis client-core testlerinde gercek veri yoluyla sinanir: tests/k4g_p0_receiver.rs (P0 R2 iki kol: dolu kanalda ACK yok, takipciler beklemez), src/transport.rs Reorder testleri (P0 R1: eksik birim atlanmaz, tampon pencereyle sinirli), tests/session_keyed_slots.rs (oturum gecisinde ve baska oturumun selinde sira basi rezervi, pencere disi ACKsiz ret), tests/k4g05b_runtime_ownership.rs (FEC dolu kanal kollari, gonderen mesafe kapisi).",
+      "needs": "mock: kapsam disi (MockTransport teslim yolunu icermez; satir metni) · real: S1 seam govdesi (contract.rs rows::h_ack_deliver) yazilinca durum implemented olur; bugun client-core duzeyinde kanit var, seam kosucusunda yok."
     }
   ],
   "gaps": [

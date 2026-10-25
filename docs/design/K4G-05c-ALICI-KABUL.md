@@ -52,11 +52,11 @@ Refuse'da datagram `Receiver`'a, `BlockAsm`'e ve kanala girmez (`NotReady` desen
   - `crates/kama-integration/tests/seam_real_adapter/main.rs` (`FragmenterOn` kilidi)
   - kama-app dosya davranış testi (DUR-05c-12 A)
   - `dr_cs1_acceptance.rs` ve `ek4_a2_liveness.rs` yalnız DUR-05c-14 (C) seçilirse değişir.
-- **Belge:** Ek A (A.1–A.5).
+- **Belge:** Ek A (A.1–A.6). [K4G-05c kod] `scripts/ci/seam-coverage.json`'a §6 H-ACK-DELIVER satırının beyanı (`not_implemented`; seam drift kapısı §6 satır listesini beyanla eşitler).
 - **Dokunulmaz:** `s1.rs`, `s3.rs`, `handles.rs`, protector, tel/codec/`tv_*`, UniFFI, kama-app ürün kodu, `api_surface_v0`, kimlik/freeze ve FROZEN dosyalar. INT-02 düzeneği K4G-05e'dedir.
 - **Çakışma (C9 §6):** `runtime.rs`/`transport.rs` 05c bitene dek A şeridine kapalı; A3 bu PR'ı bekler.
 - **Kimlik:** 05b'nin `kama-v1.1-full` beyanına 05c satırı (DUR-05c-11 (a)).
-- **YAMA hedefleri:** **A.1** KM-SEAM-AT-001 §4 (sıralı teslim sözü `:151`) · A.2 plan:532 · A.3 plan:392 · A.4 HANDOFF:20 · **A.5** engine-spec §2.2 `seen_count` (main :216 / 05b-int :220).
+- **YAMA hedefleri:** **A.1** KM-SEAM-AT-001 §4 (sıralı teslim sözü `:151`) · A.2 plan:532 · A.3 plan:392 · A.4 HANDOFF:20 · **A.5** engine-spec §2.2 `seen_count` (main :216 / 05b-int :220) · **A.6** transport-layer-tdd §12 AMENDMENT-12 kayıt sınırı paragrafı (DUR-05c-14 (A) seçim kuralı + tanıma garantisi; CEVAP 14).
 
 ## 5. Eski ve taşınan testler
 - **Eski testler (Ek B):** `transport.rs:1412-1428`, `runtime_e2e.rs:255-305` (:288), `runtime.rs:3976-4017`, `kama-node/src/node/tests.rs:415-456`. İddia değişir; 2×2'nin 4. hücresi derlenir ve KIRMIZI beklenir.
@@ -94,7 +94,7 @@ Refuse'da datagram `Receiver`'a, `BlockAsm`'e ve kanala girmez (`NotReady` desen
 
 ## Ek A — yama metinleri
 
-Biçim: üstü çiz, silme (`~~eski~~` + yeni) + tarihli YAMA KAYDI; `scripts/ci/word_coverage.py` kapısı yeşil olmalı (bu revizyonda koşulmadı). `<ONAY-TARİHİ>` = rev3'ün uygulandığı PR'ın tarihi. A.2/A.3'teki 2026-10-24 sahip karar tarihidir (DUR-18; DUR-05c-5 (a), CEVAP 10). A.3–A.5 CEVAP 10 kararlarıyla kesinleşti.
+Biçim: üstü çiz, silme (`~~eski~~` + yeni) + tarihli YAMA KAYDI; `scripts/ci/word_coverage.py` kapısı yeşil olmalı (bu revizyonda koşulmadı). `<ONAY-TARİHİ>` = rev3'ün uygulandığı PR'ın tarihi. A.2/A.3'teki 2026-10-24 sahip karar tarihidir (DUR-18; DUR-05c-5 (a), CEVAP 10). A.3–A.5 CEVAP 10 kararlarıyla kesinleşti. A.6 CEVAP 14 (DUR-05c-14 (A, koşullu)) ile eklendi; A.6'nın CEVAP PAKETİ 14 tarihi (2026-10-25) sahip karar tarihidir.
 
 ### A.1 — `docs/seams/KM-SEAM-AT-001.md`
 
@@ -171,6 +171,43 @@ yeni:
                            #   istemci runtime'ındadır (kabul edilmeyen datagram sayılmaz).
 ```
 
+### A.6 — `specs/transport-layer-tdd.md` §12 [AMENDMENT-12] (DUR-05c-14 (A, koşullu), CEVAP 14 §3)
+
+(i) Dosya başındaki YAMA KAYDI bloğunun en üstüne (en yeni kayıt en üstte; 05b'nin 2026-10-24 kaydının önüne):
+
+> **YAMA KAYDI — <ONAY-TARİHİ> [v1.1 · K4G-05c — K_MAP budama seçim kuralı ve geç-ACK tanıma garantisi; sahip kararı CEVAP PAKETİ 14, 2026-10-25, DUR-05c-14 (A, koşullu) — `docs/decisions/K4G-CEVAP-PAKETLERI-4-7.md`]:** §12 [AMENDMENT-12] "Kayıt sınırı ve geç-ACK tanıma" paragrafında budama cümlesi (K4G-05b'de budama KAPALI) ve tanıma garantisi üstü çizildi; yerine: budama açık (runtime'ın birim başına O(1) kaydıyla aynı değişiklikte); birim başına uçuş + tombstone kaydı TOPLAMI ≤ K_MAP, orijinal dahil; aşılırken orijinal Data kaydı DIŞINDAKİ en eski kayıt budanır. Orijinal yalnız K_MAP budamasından muaftır; tombstone TTL'i ve tombstone tavanı tahliyesi ona da uygulanır, daha geniş saklama garantisi yoktur. Motorun hâlâ tuttuğu kaydın geç ACK'i birimi teyit eder; unutulmuş (budanmış, süresi dolmuş, tahliye edilmiş) kaydınki teyit etmez, payload korunur. K_MAP = 8 değişmedi; tel, codec ve altın vektörler (tv_*) DEĞİŞMEDİ. Üstü çizili metin silinmedi.
+
+(ii) Aynı paragrafta (05b sonrası satır 926–930) eski satırlar:
+
+```
+> Budama — hangi kaydın seçileceği ve uçuş muhasebesi dahil — K4G-05c'de tanımlanır ve runtime'ın birim başına
+> O(1) kaydıyla aynı değişiklikte açılır; K4G-05b'de `K_MAP` ve teyit çıktısı tanımlıdır,
+> budama KAPALIDIR. Geç ACK, seq'i birimin son K_MAP iletimi arasındaysa tanınır — o kayıt TTL/tahliyeyle daha önce
+> silinmemişse; tanıma garantisi bütün silme yollarıyla birlikte tanımlıdır (kayıp ilan edilmiş kayıt için tombstone
+> TTL'i (K_TOMB × T_loss) ve tombstone tavanı v1 aynen; K_MAP budaması K4G-05c). Tanınmayan geç ACK veri kaybı
+```
+
+yerine (satır 931 ve sonrası değişmez):
+
+```
+> ~~Budama — hangi kaydın seçileceği ve uçuş muhasebesi dahil — K4G-05c'de tanımlanır ve runtime'ın birim başına
+> O(1) kaydıyla aynı değişiklikte açılır; K4G-05b'de `K_MAP` ve teyit çıktısı tanımlıdır,
+> budama KAPALIDIR.~~ **[<ONAY-TARİHİ> — K4G-05c, CEVAP PAKETİ 14, 2026-10-25, DUR-05c-14 (A)] Budama AÇIKTIR**
+> (runtime'ın birim başına O(1) kaydıyla aynı değişiklikte): birimin uçuş ve tombstone kayıtlarının TOPLAMI
+> ≤ K_MAP, orijinal dahil; aşılırken birimin ORİJİNAL Data kaydı DIŞINDAKİ en eski kaydı ilan edilmeden budanır
+> (uçuş muhasebesinden ve kayıp dedektörü haritasından düşer; ledger ve kayıp sayaçları değişmez). Orijinal Data
+> kaydı YALNIZ K_MAP budamasının hedefi olmaz; tombstone TTL'i ve tombstone tavanı tahliyesi ona da uygulanır —
+> daha geniş bir saklama garantisi yoktur. ~~Geç ACK, seq'i birimin son K_MAP iletimi arasındaysa tanınır — o kayıt
+> TTL/tahliyeyle daha önce silinmemişse; tanıma garantisi bütün silme yollarıyla birlikte tanımlıdır (kayıp ilan
+> edilmiş kayıt için tombstone TTL'i (K_TOMB × T_loss) ve tombstone tavanı v1 aynen; K_MAP budaması K4G-05c).~~
+> **[<ONAY-TARİHİ> — K4G-05c]** Geç ACK, motorun o iletim için hâlâ tuttuğu kayıtla eşleşirse birimi teyit eder:
+> seq birimin orijinal Data kaydıysa ya da orijinal dışındaki en yeni kayıtları arasındaysa (toplam ≤ K_MAP) ve o
+> kayıt tombstone TTL'iyle (K_TOMB × T_loss) ya da tombstone tavanı tahliyesiyle daha önce silinmemişse (v1 aynen,
+> orijinal dahil); tanıma garantisi bütün silme yollarıyla birlikte tanımlıdır. Unutulmuş (budanmış, süresi dolmuş
+> ya da tahliye edilmiş) kaydın geç ACK'i birimi teyit etmez. Tanınmayan geç ACK veri kaybı
+```
+
+
 ---
 
 ## Ek B — değişecek eski testler (DUR-8 biçimi)
@@ -219,6 +256,8 @@ Belge ve mekanik:
 |---|---|---|
 | DUR-05c-12 (yeniden; C13 §2) | Parçalı mesaj: ret katmanı ve terminal durum | **A — mevcut mekanizma + kapsam kilidi.** S1'de transport parçası yapısal olarak yok (`transport.rs:498-500`, `runtime.rs:266`); parçalı mesaj = dosya; ret Application'da (ANALIZ.md §2). Testler: `FragmenterOn` kilidi (kapı bugün testsiz); F6 enjeksiyonu (alıcıda `Failed(IdleTimeout)`, gönderende `SendFailed(ReceiverTimeout \| ReceiptTimeout)`, o kaydın transport yeniden gönderimi 0, sonraki TEXT ve aktarım ilerler); F3 `Rejected` uçtan uca. S1-dışı `MsgAsm` (bench/test) değişmez, beyanlı; eski D.5 "Parçalı: `MSG_ASM_CAP`" testi S1-dışı yola aittir, A'da yoktur. · B — Application'da açık ret olayı + hızlı terminal: `FILE_RECEIPT(rejected)` anlamı genişler, S8 kararı ve UniFFI yüzeyi değişir; **ayrı kart, sahip isterse**. · C — S1-dışı `MsgAsm` hijyeni 05c içinde: kapsam ürün dışı yol için büyür (önerilmez). · D — tel: D1 `FILE_RECEIPT` `0x05 invalid_record`, D2 `SESSION_CLOSE` (karar sahibin; önerilmez). **Sahibe iki olgu:** (a) dosyada yuva-dolu reddi (F4, `file_transfer.rs:1027-1035`) bugün spec gereği açık ve terminal `FILE_RECEIPT(rejected)`'dır (AMP spec :89); C13 §2'nin "kapasite reddi R2'dir" okumasıyla gerilimdedir: R2 transport kapasitesi içindir, F4'ü R2'ye taşımak spec kararını değiştirir. (b) `FILE_RECEIPT_TTL` 60 s, `FILE_END` kuyruğa alınınca başlar (`file_transfer.rs:1541`); düşük hızda geçerli dosyada yanlış `ReceiptTimeout` riski var [çıkarım, ölçülmedi]; INT-02'de 31–100 B/s'de tek dosya ölçümü önerilir. |
 | DUR-05c-14 (yeni; C13 §4) | K_MAP budaması açılınca hangi kayıt budanır: `f3_di12ad` ResolvedByDataAck → TimedOut ve `external_pto` gerilemesi | **(A) orijinal Data kaydı budanmaz; budama orijinal dışındaki en eski kaydı seçer; sınır ≤ K_MAP aynı. İki test değişmeden yeşil [çıkarım; 05c kapısında doğrulanır].** · (A′) BUDAMA-UYARISI (a): orijinal sayım dışı, sınır ≤ 1 + K_MAP. · (B) yalnız kopya kökenli kayıtlar budanır; Data ve en son ARQ kaydı korunur. · (C) kasıtlı sözleşme değişikliği ("ufuk dışı geç ACK kuruluşu çözmez"), iki test DUR-8 ile değişir; C13 §4 kasıt kanıtı ister, önerilmez. (A), (A′) ve (B) AMENDMENT-12'nin "birimin EN ESKİ kaydı budanır" cümlesini değiştirir (aşağıda çelişki 1). |
+
+**[CEVAP PAKETİ 14, 2026-10-25] Kapandı:** DUR-05c-12 → **(A)** (FragmenterOn kilidi + dosya F6/F3 uçtan uca + yuva-dolu reddi açık ve terminal, R2 sayılmaz; B ayrı kart, istenmiyor) · DUR-05c-14 → **(A, koşullu)** (orijinal Data kaydı yalnız K_MAP budamasının hedefi olmaz; TTL ve tahliye orijinale de uygulanır; toplam ≤ K_MAP orijinal dahil; K_MAP / TTL / tahliye için ayrı geç ACK testleri; A.6). Yukarıdaki "Açık" tablosu karar öncesi metindir.
 
 **Çelişki / koordinasyon:**
 1. ~~**AMENDMENT-12 budama cümlesi.** Cümle 05b'nin uyguladığı spec'tedir (05b-int `specs/transport-layer-tdd.md:920-929`). Orada hâlâ "geç-ACK ufku … 240 s" yazıyor; C11 DUR-28 bu ifadeyi kaldırdı (05b rev5 işi). DUR-05c-14 (A/A′/B) aynı cümlenin budama kuralını değiştirir. Karar gerekiyor: metin 05b rev5'e mi girer, 05c Ek A'ya (A.6) mı?~~ **Çözüldü (orkestratör, 2026-10-25):** 05b rev5 (PR #140 @35a02fcf, A.7 `0b4ff343`) "240 s"yi kaldırdı ve kayıt seçim kuralını 05b'de sabitlemedi ("Budama — hangi kaydın seçileceği ve uçuş muhasebesi dahil — K4G-05c'de tanımlanır"). Kural 05c Ek A'ya (A.6) DUR-05c-14 kararıyla girer; 11-EK §4'ün aynen gelen garanti cümlesi ve "≤ K_MAP" sınırı da (A)/(A′)/(B) seçimine göre 05c Ek A'da ayarlanır.
