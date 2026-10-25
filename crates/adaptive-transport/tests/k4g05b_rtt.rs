@@ -131,7 +131,9 @@ fn k4g05b_rtt_rule_raw_inflated_refused() {
     const TEST: &str = "k4g05b_rtt_rule_raw_inflated_refused";
     let mut d = Drv::new(product_sender());
     d.app(0, 300);
-    let s0 = d.data_seq(0).unwrap_or_default();
+    let s0 = d
+        .data_seq(0)
+        .expect("FİKSTÜR GEÇERSİZ: u0'ın Data seq'i çıktıda yok");
     d.now = 100 * MS;
     d.ack(vec![s0]);
     let base = (

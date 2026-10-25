@@ -411,10 +411,12 @@ fn f2b_di1_first_data_loss_bootstrap_recovery() {
         );
         assert!(out2.iter().any(|d| d.kind == TransmitKind::Data), "u2-emit");
         // [K4G-05b B.3 #1] ACK'lenen seq = u2'nin GERÇEK Data seq'i (eski fikstür: sabit `1`).
+        // [C14 §2 (b)] Bulunamazsa fikstür geçersizdir; sessizce seq 1'e dönülmez.
         let s2 = out2
             .iter()
             .find(|d| d.kind == TransmitKind::Data && d.unit_id == 2)
-            .map_or(1, |d| d.seq);
+            .map(|d| d.seq)
+            .expect("FİKSTÜR GEÇERSİZ: u2'nin Data seq'i çıktıda yok");
         let ack_batch = s.on_event_batch(
             4 * SEC,
             vec![Event::AckReceived(AckInfo {
@@ -774,10 +776,12 @@ fn f2b_di2_single_ack_erasure_spurious_expected() {
         vec![Event::AppData(OpaqueUnit { id: 2, size: 1200 })],
     );
     // [K4G-05b B.3 #3] ACK'lenen seq = u2'nin GERÇEK Data seq'i (eski fikstür: sabit `1`).
+    // [C14 §2 (b)] Bulunamazsa fikstür geçersizdir; sessizce seq 1'e dönülmez.
     let s2 = out2
         .iter()
         .find(|d| d.kind == TransmitKind::Data && d.unit_id == 2)
-        .map_or(1, |d| d.seq);
+        .map(|d| d.seq)
+        .expect("FİKSTÜR GEÇERSİZ: u2'nin Data seq'i çıktıda yok");
     let b = s.on_event_batch(
         4 * SEC,
         vec![Event::AckReceived(AckInfo {

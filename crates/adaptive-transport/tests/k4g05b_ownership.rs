@@ -1197,7 +1197,9 @@ fn h_run(stale_every: Option<u64>, progress_at: Option<u64>) -> HRun {
     }
     d.pump_to(400 * MS, STEP);
     let warm: Vec<u64> = (0..4).filter_map(|id| d.data_seq(id)).collect();
-    let stale_seq = warm.first().copied().unwrap_or_default();
+    let Some(&stale_seq) = warm.first() else {
+        panic!("FİKSTÜR GEÇERSİZ: ısınma birimlerinin Data seq'i çıktıda yok");
+    };
     d.ack(warm);
     // Kurban, son ilerlemeli ACK'in olay anında girer (çapa = son iletim = son ilerleme).
     d.w.units = vec![VICTIM];
