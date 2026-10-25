@@ -64,10 +64,17 @@ const TTL_LOWER_BOUND: Duration = Duration::from_millis(8 * 3 * 65_000 / (2 * 31
 /// TTL bekleme tavanı: alt sınırın birkaç katı (T_loss'un hız terimi loopback'te küçüktür).
 const TTL_WAIT: Duration = Duration::from_secs(120);
 /// Tahliye bekleme tavanı (tahliye TTL alt sınırından önce olmalıdır; pay ön koşul denetimindedir).
-/// Tahliye kolunda geç ACK öncesi trafik boşaltmasının da bütçesidir: tahliye edilen kayıtların
-/// geç ACK'i teyit etmez, birimler ek bir yeniden gönderim turuyla teyit edilir (11-EK §4'ün
-/// beklenen bedeli; ölçüm: 10 s'de 1/2 koşu kırmızı, 300 s bütçede adım 6,2 s sürdü).
+/// ~~Tahliye kolunda geç ACK öncesi trafik boşaltmasının da bütçesidir~~ [K4G-05c] boşaltma bütçesi
+/// artık `CAP_DRAIN_WAIT`'tir: tahliye edilen kayıtların geç ACK'i teyit etmez, birimler ek bir
+/// yeniden gönderim turuyla teyit edilir (11-EK §4'ün beklenen bedeli; 05b ölçümü: 10 s'de 1/2 koşu
+/// kırmızı, 300 s bütçede adım 6,2 s sürdü).
 const CAP_WAIT: Duration = Duration::from_secs(60);
+/// [K4G-05c] Tahliye kolunda geç ACK öncesi trafik boşaltmasının bütçesi (`CAP_WAIT` tahliye
+/// beklemesi olarak ayrı kalır). 05c fikstürü, mesafe kapısı içinde her dolgunun ilk iki iletimini
+/// düşürür: tek yönlü iki kayıplı dolgu, ARQ tavanı ve kopya sahipliği uzun bir yeniden gönderim
+/// kuyruğu doğurur — ölçülen boşaltma 101,9 s (1 koşu, 900 s bütçeyle; run2 `teshis-cap900.log`),
+/// 60 s bütçede 3/3 kırmızı. Yalnız üst sınırdır (koşul `outstanding == 1`); iddialar değişmedi.
+const CAP_DRAIN_WAIT: Duration = Duration::from_secs(300);
 /// Motorun tombstone tavanı (`sender.rs` TOMBSTONE_MAX = 4096, v1; 05b değiştirmedi).
 const TOMBSTONE_CAP: u32 = 4096;
 /// Bir yoklama turunda sunulan tahliye dolgusu (teklif kuyruğu 1024'ün altında).
@@ -935,7 +942,7 @@ async fn late_ack_after_cap_keeps_payload() {
     while rig.next_unit < end {
         rig.send().await;
     }
-    rig.late_ack_keeps_payload_then_resend_confirms(t, "cap", CAP_WAIT)
+    rig.late_ack_keeps_payload_then_resend_confirms(t, "cap", CAP_DRAIN_WAIT)
         .await;
 }
 
