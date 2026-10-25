@@ -828,8 +828,9 @@ impl Rig {
             lens.0,
             body(t).len()
         );
-        // (4) Teyit sonrası payload düştü; (5) haritalar boş.
-        self.wait("trafik teyit edilmeli", WAIT, |r| {
+        // (4) Teyit sonrası payload düştü; (5) haritalar boş. Bütçe yolun boşaltma bütçesidir: tahliye
+        // kolunda dolgu ve ara birimler bu adımda hâlâ yolda olabilir (10 s'de 1/5 koşu kırmızı).
+        self.wait("trafik teyit edilmeli", drain_budget, |r| {
             r.client.outstanding() == 0
         })
         .await;
@@ -930,7 +931,7 @@ async fn late_ack_after_cap_keeps_payload() {
     while (fillers.len() as u64) < CAP_FILLERS {
         fillers.push(id);
         id += 1;
-        if (fillers.len() as u64) % CAP_BALLAST_EVERY == 0 {
+        if (fillers.len() as u64).is_multiple_of(CAP_BALLAST_EVERY) {
             id += 1; // ara birim: düşürme kuralı yok
         }
     }
