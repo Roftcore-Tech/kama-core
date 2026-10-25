@@ -57,34 +57,43 @@
 //!   sıradaki gönderim karşıya ulaşmaz. Uzantı P0 testlerinin yolunu değiştirmez (düğmeler
 //!   kapalıyken `send` / `recv` / `poll_event` eskisiyle aynıdır).
 //!
-//! # K4G-05d testleri (not `docs/design/K4G-05d-RECEIPT.md` rev2 §5, Ek B.2)
+//! * **`Link` uzantısı (K4G-05d rev3):** `Link::supersede_on_next_recv` geçişin `recv` yüzüdür —
+//!   ucun sıradaki `recv`'i supersession'ı öğrenir: eski tutamaç hemen eskir (`send` →
+//!   `SessionSuperseded`), yeni tutamaç aktif olur ve uca `Closed(eski)` SONRA `Ready(yeni)`
+//!   sıralanır (ters sıra; sahte Transport). `Link::supersede` zincirlenebilir: eski tutamaç uca son
+//!   duyurulandır (`Endpoint::announced`), uç olayları henüz okumamış olabilir.
 //!
-//! İki P0 testi düzeltmeyle yeşile döner; gövdeleri ve iddiaları DEĞİŞMEDİ. Aynı düzenekle beş
-//! test daha var. Hepsi yalnız tabanda da bulunan API'yi kullanır: dosya tabanda (`3439fccd`)
-//! DERLENİR ve sınıflar orada ölçülür.
+//! # K4G-05d testleri (not `docs/design/K4G-05d-RECEIPT.md` rev3 §5, Ek B)
 //!
-//! * **Tabanda KIRMIZI:** T1' taşma (`t1p_…`), T5 ret sınırı (`t5_…`).
-//! * **Tabanda YEŞİL (bekçi):** T2 `Ok` sonrası (`t2_…`), T3 oturum değişimi (`t3_…`), T4 hata
-//!   sınıfı (`t4_…`).
+//! İki P0 testi düzeltmeyle yeşile döner; gövdeleri ve iddiaları DEĞİŞMEDİ. Değişmeyen dal
+//! testleri: T2, T5. rev3 ile değişen: T3 (taşınan RECEIPT + tekrar TEXT'in RECEIPT'i: `h'`'de 2
+//! kabul), T4 (DUR-05d-5 (a) tut-ve-dur). Çıkan: T1' (rev2 düşürme yolu). Yeni (rev3 Ek B.1):
+//! (a1) oturum değişmeden iki yönlü doygunluk, (a2) ortada supersede, (b) 300 TEXT tek yön, (b1)
+//! pencere içinde > 256 yükümlülük, (b2) pencere ihlali, (c) öncelik kapısı ve muafiyetler, (d)
+//! oturum değişiminde kuyruk {a, b, c}, (e) kapanış borcu {bir kez hata, yeniden başlatma}.
 //!
-//! Yeni API'yi okuyan iddialar (`MessengerStats::receipts_deferred` / `receipts_evicted` /
-//! `receipts_pending`, `Messenger::pending_receipts`: T1 `evicted`, T3b, T4 `pending`, T6 sayaç
-//! değişmezi) tabanda derlenmez; `src/messaging.rs` birim testlerindedir.
+//! Yeni API'yi okuyan birim iddiaları (`Messenger::pending_receipts`, sayaç değişmezi, kapı,
+//! `adopt` sırası) `src/messaging.rs`'tedir.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kama_app::clock::MonotonicClock;
-use kama_app::codec::{decode, encode, AmpLimits, AppMessage, ReceiptKind};
-use kama_app::file_transfer::FileTransfer;
-use kama_app::messaging::{Messenger, MessengerEvent, MsgId, MAX_OUTBOX_UNACKED};
-use kama_app::ptt::{Ptt, PttEvent};
-use kama_app::signaling::{Signaling, SignalingEvent};
-use kama_app::store::{AppStore, MemoryAppStore};
+use kama_app::codec::{decode, encode, AmpLimits, AppMessage, PttCodec, ReceiptKind};
+use kama_app::file_transfer::{FileTransfer, MAX_REASSEMBLY_BYTES};
+use kama_app::messaging::{
+    Messenger, MessengerError, MessengerEvent, MsgId, MAX_OUTBOX_UNACKED, MSG_DEDUP_WINDOW,
+};
+use kama_app::ptt::{Ptt, PttError, PttEvent, StreamId};
+use kama_app::signaling::{Signaling, SignalingError, SignalingEvent};
+use kama_app::store::{
+    AppStore, AppStoreError, CounterKind, DedupWindow, MemoryAppStore, OutboxUnit,
+    FIRST_COUNTER_VALUE,
+};
 use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
 use kama_contracts::s1::{
     ConnectResult, ConnectTicket, Delivered, DeliveryPolicy, KamaTransport, PreparedUnit,
@@ -101,8 +110,9 @@ const LINK_MAX_UNIT_BYTES: usize = TEST_MAX_PLAINTEXT_UNIT_BYTES as usize;
 const LINK_QUEUE_CAP: usize = 16;
 /// Uç başına olay kuyruğu tavanı (düzenek sınırı).
 const LINK_EVENT_CAP: usize = 16;
-/// Uç başına `send` denemesi kaydının tavanı (düzenek sınırı; aşımı senaryo hatasıdır).
-const SEND_LOG_CAP: usize = 4096;
+/// Uç başına `send` denemesi kaydının tavanı (düzenek sınırı; aşımı senaryo hatasıdır). rev3 (a)
+/// tur tavanında (`A_ROUND_CAP`) tur başına ret denemeleri dahil sığacak değer.
+const SEND_LOG_CAP: usize = 16_384;
 /// Alice'in `poll` döngüsünün tavanı.
 const DRAIN_CAP: usize = 1024;
 /// Turda işlenen en çok olay: `kama-node` `MAX_EVENTS_PER_TURN` (node.rs:93) =
@@ -116,6 +126,42 @@ const TURN_TICK: Duration = Duration::from_millis(20);
 const CLOCK_START: Duration = Duration::from_secs(1);
 /// Kapasite açıldıktan sonra koşulan tur sayısı (her turdan önce Alice kuyruğunu okur).
 const RECOVERY_ROUNDS: usize = 8;
+/// PTT `bundle_ms` (yorumlanmaz; değeri önemsiz).
+const BUNDLE_MS: u8 = 20;
+/// rev3 (a): her uçtan karşıya TEXT sayısı — gönderen outbox tavanı (S7).
+const A_TEXTS: usize = MAX_OUTBOX_UNACKED;
+/// rev3 (a): uç başına PTT demeti.
+const A_BUNDLES: usize = 32;
+/// rev3 (a), (c): demet yükü (bayt; değeri önemsiz).
+const BUNDLE_BYTES: usize = 8;
+/// Dosyanın kayıt sayısı üst sınırı: parça yükü birim tavanının yarısından büyüktür (A2: kayıt
+/// başlığı + 18 B önek yarım birimden küçük), dolayısıyla ⌈FILE_BYTES / (birim/2)⌉ + BEGIN + END.
+const FILE_RECORDS_BOUND: usize = FILE_BYTES.div_ceil(LINK_MAX_UNIT_BYTES / 2) + 2;
+/// rev3 (a): tur tavanı. Yön başına taşınacak birim ≤ 2·`A_TEXTS` (TEXT + RECEIPT) + dosya + demet
+/// + 2 (`PTT_OPEN`, `FILE_RECEIPT`); yön başına turda ≤ `LINK_QUEUE_CAP` birim akar. Tavan bu alt
+/// sınırın 4 katıdır: aşılırsa ilerleme durmuştur (kilit) ya da hizmet adaletsizdir — ikisi de
+/// bulgudur, tavan büyütülmez.
+const A_ROUND_CAP: usize =
+    (2 * A_TEXTS + FILE_RECORDS_BOUND + A_BUNDLES + 2).div_ceil(LINK_QUEUE_CAP) * 4;
+/// rev3 (a2): supersession'ın yapıldığı tur (iki yön doluyken).
+const A2_SUPERSEDE_ROUND: usize = 4;
+/// rev3 (b), (b1): tek yönde TEXT sayısı (`MAX_OUTBOX_UNACKED`'ten fazla).
+const B_TEXTS: usize = 300;
+/// rev3 (b): tur tavanı (`A_ROUND_CAP` ile aynı türetim, tek yön).
+const B_ROUND_CAP: usize = (2 * B_TEXTS + FILE_RECORDS_BOUND).div_ceil(LINK_QUEUE_CAP) * 4;
+/// rev3 (b1): kapasite açıldıktan sonraki tur sayısı: her tur Bob→Alice yönünde `LINK_QUEUE_CAP`
+/// yer açar ve turun ilk `Messenger::poll`'u bekleyen RECEIPT'leri o kadar kabul ettirir (dosya
+/// pump'ı kapıda bekler); +2 tur kuyruk boşaldıktan sonra yeniden sunum olmadığını gösterir.
+const B1_ROUNDS: usize = B_TEXTS.div_ceil(LINK_QUEUE_CAP) + 2;
+/// rev3 (b2): pencere ihlali — ilk partiden sonra eşten gelen, `MSG_DEDUP_WINDOW` ileri `msg_id`.
+/// İlk parti `0 .. LINK_QUEUE_CAP`; pencere `B2_FAR − (MSG_DEDUP_WINDOW − 1) ..= B2_FAR` olur ve
+/// `0 .. B2_PRUNED` pencere altına düşer.
+const B2_FAR: MsgId = MSG_DEDUP_WINDOW + 4;
+/// rev3 (b2): budanması beklenen kayıt sayısı (`0 ..= B2_FAR − MSG_DEDUP_WINDOW`).
+const B2_PRUNED: MsgId = B2_FAR - MSG_DEDUP_WINDOW + 1;
+/// rev3 (b2): kapasite açıldıktan sonraki tur sayısı: kalan kayıtlar tek turda biter (≤
+/// `LINK_QUEUE_CAP`); +2 tur yeniden sunum olmadığını gösterir.
+const B2_ROUNDS: usize = 3;
 /// Bob'un Alice'e gönderdiği dosya: kayıt sayısı kuyruk tavanını aşar (aşağıdaki `const` denetimi).
 const FILE_BYTES: usize = 64 * 1024;
 /// Dosya içeriği (değeri önemsiz).
@@ -134,6 +180,10 @@ const BOB: PeerRef = PeerRef::from_dest_hash([0xB0; 32]);
 const _: () = assert!(FILE_BYTES / LINK_MAX_UNIT_BYTES > LINK_QUEUE_CAP);
 // Test 2'nin bütün TEXT'leri Bob'un teslim kuyruğuna sığar.
 const _: () = assert!(DUPLICATE_TEXTS as usize <= LINK_QUEUE_CAP);
+// (b2): budanan kayıtlar ilk partinin içindedir.
+const _: () = assert!((B2_PRUNED as usize) < LINK_QUEUE_CAP);
+// (b), (b1): tek yönde gönderen outbox tavanından fazla TEXT.
+const _: () = assert!(B_TEXTS > MAX_OUTBOX_UNACKED);
 
 fn caps() -> TransportCapabilities {
     TransportCapabilities {
@@ -223,6 +273,14 @@ enum Side {
 }
 
 impl Side {
+    /// [K4G-05d rev3] Uç dizisindeki yeri (Alice 0, Bob 1).
+    const fn index(self) -> usize {
+        match self {
+            Self::Alice => 0,
+            Self::Bob => 1,
+        }
+    }
+
     /// Bu ucun gördüğü eş.
     const fn remote(self) -> PeerRef {
         match self {
@@ -263,6 +321,13 @@ struct Endpoint {
     /// tutamaç hemen kapanır (`send` → `UnknownSession`) ve uca `Closed(h, neden)` sıralanır;
     /// kuyruktaki birim yine teslim edilir (client-core `recv` → `drive` aynası).
     close_on_recv: Option<CloseReason>,
+    /// [K4G-05d rev3] Bu uca son duyurulan (olayı sıralanmış) tutamaç: `Link::supersede` zinciri
+    /// eski tutamacı buradan alır (uç olayları henüz okumamış olabilir).
+    announced: Option<SessionHandle>,
+    /// [K4G-05d rev3] `Some(yeni)`: bu ucun sıradaki `recv`'i supersession'ı öğrenir — aktif
+    /// tutamaç hemen eskir (`send` → `SessionSuperseded`), `yeni` aktif olur ve uca
+    /// `Closed(eski, Superseded)` SONRA `Ready(yeni)` sıralanır (ters sıra; sahte Transport).
+    supersede_on_recv: Option<SessionHandle>,
 }
 
 impl Endpoint {
@@ -312,6 +377,7 @@ impl Link {
             let endpoint = self.endpoint(side);
             assert!(endpoint.active.is_none(), "establish: aktif oturum var");
             endpoint.active = Some(handle);
+            endpoint.announced = Some(handle);
             endpoint.push_event(SessionEvent::Ready(handle, side.remote()));
         }
         handle
@@ -319,14 +385,38 @@ impl Link {
 
     /// [K4G-05d] Supersession (S1 K7): her uca `Ready(h')` sonra `Closed(h, Superseded)` sıralanır;
     /// `h'` döner. Geçiş uç `Ready(h')`'yi `poll_event` ile alırken yapılır (`End::poll_event`); o
-    /// ana dek `h` o uçta aktif kalır.
+    /// ana dek `h` o uçta aktif kalır. [rev3] `h` uca son duyurulan tutamaçtır: iki supersession
+    /// arka arkaya yapılabilir.
     fn supersede(&mut self) -> SessionHandle {
         let handle = self.fresh_handle();
         for side in [Side::Alice, Side::Bob] {
             let endpoint = self.endpoint(side);
-            let old = endpoint.active.expect("supersede: aktif oturum yok");
+            let old = endpoint
+                .announced
+                .expect("supersede: duyurulmuş oturum yok");
+            endpoint.announced = Some(handle);
             endpoint.push_event(SessionEvent::Ready(handle, side.remote()));
             endpoint.push_event(SessionEvent::Closed(old, CloseReason::Superseded));
+        }
+        handle
+    }
+
+    /// [K4G-05d rev3] Supersession'ı `side` ucu `recv` anında öğrenir (`Endpoint::supersede_on_recv`);
+    /// karşı uca `Link::supersede` gibi `Ready(h')` sonra `Closed(h)` sıralanır. `h'` döner.
+    fn supersede_on_next_recv(&mut self, side: Side) -> SessionHandle {
+        let handle = self.fresh_handle();
+        for each in [Side::Alice, Side::Bob] {
+            let endpoint = self.endpoint(each);
+            let old = endpoint
+                .announced
+                .expect("supersede: duyurulmuş oturum yok");
+            endpoint.announced = Some(handle);
+            if each.index() == side.index() {
+                endpoint.supersede_on_recv = Some(handle);
+            } else {
+                endpoint.push_event(SessionEvent::Ready(handle, each.remote()));
+                endpoint.push_event(SessionEvent::Closed(old, CloseReason::Superseded));
+            }
         }
         handle
     }
@@ -410,6 +500,24 @@ impl Link {
         accepted
     }
 
+    /// [K4G-05d rev3] `from` ucunun `session`'a kabul ettirdiği `RECEIPT(delivered)`'ların
+    /// `ref_msg_id`'leri, kabul sırasıyla.
+    fn accepted_receipt_ids(&self, from: Side, session: SessionHandle) -> Vec<MsgId> {
+        let limits = limits();
+        self.endpoint_ref(from)
+            .sends
+            .iter()
+            .filter(|attempt| attempt.session == session && attempt.result.is_ok())
+            .filter_map(|attempt| match decode(&attempt.unit, &limits) {
+                Ok(AppMessage::Receipt {
+                    ref_msg_id,
+                    kind: ReceiptKind::Delivered,
+                }) => Some(ref_msg_id),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// [K4G-05d] `from` ucunun `send` denemesi sayısı (kayıt konumu).
     fn send_count(&self, from: Side) -> usize {
         self.endpoint_ref(from).sends.len()
@@ -421,6 +529,49 @@ impl Link {
             .iter()
             .filter(|attempt| attempt.result == Err(TransportError::Backpressure))
             .count()
+    }
+
+    /// [K4G-05d rev3] `from` ucunun `since` konumundan sonraki denemeleri: kayıt türü ve sonuç.
+    fn kinds_since(
+        &self,
+        from: Side,
+        since: usize,
+    ) -> Vec<(&'static str, Result<(), TransportError>)> {
+        let limits = limits();
+        self.endpoint_ref(from).sends[since..]
+            .iter()
+            .map(|attempt| {
+                let kind = decode(&attempt.unit, &limits).map_or("ÇÖZÜLEMEZ", |m| kind_of(&m));
+                (kind, attempt.result)
+            })
+            .collect()
+    }
+
+    /// [K4G-05d rev3] `from` ucunun `Backpressure` alan RECEIPT sunumları.
+    fn receipt_backpressure(&self, from: Side) -> usize {
+        self.kinds_since(from, 0)
+            .iter()
+            .filter(|&&(kind, result)| {
+                kind == "RECEIPT" && result == Err(TransportError::Backpressure)
+            })
+            .count()
+    }
+}
+
+/// [K4G-05d rev3] Kaydın AMP tür adı (deneme kayıtlarını sınıflamak için).
+const fn kind_of(message: &AppMessage) -> &'static str {
+    match message {
+        AppMessage::Text { .. } => "TEXT",
+        AppMessage::FileBegin { .. } => "FILE_BEGIN",
+        AppMessage::FileChunk { .. } => "FILE_CHUNK",
+        AppMessage::FileEnd { .. } => "FILE_END",
+        AppMessage::FileAbort { .. } => "FILE_ABORT",
+        AppMessage::PttOpen { .. } => "PTT_OPEN",
+        AppMessage::PttClose { .. } => "PTT_CLOSE",
+        AppMessage::Receipt { .. } => "RECEIPT",
+        AppMessage::SignalingBlob { .. } => "SIGNALING_BLOB",
+        AppMessage::MediaBundle { .. } => "MEDIA_BUNDLE",
+        AppMessage::FileReceipt { .. } => "FILE_RECEIPT",
     }
 }
 
@@ -505,6 +656,15 @@ impl KamaTransport for End {
     fn recv(&mut self) -> Option<Delivered> {
         let mut link = self.link.borrow_mut();
         let endpoint = link.endpoint(self.side);
+        if let Some(new) = endpoint.supersede_on_recv.take() {
+            // [K4G-05d rev3] Bu sürüş supersession'ı öğrenir: eski tutamaç hemen eskir, yenisi
+            // aktif olur; olaylar ters sırayla sıralanır (Closed önce).
+            if let Some(old) = endpoint.active.replace(new) {
+                endpoint.superseded.push(old);
+                endpoint.push_event(SessionEvent::Closed(old, CloseReason::Superseded));
+            }
+            endpoint.push_event(SessionEvent::Ready(new, self.side.remote()));
+        }
         if let Some(reason) = endpoint.close_on_recv.take() {
             // [K4G-05d] Bu sürüş kapanışı öğrenir: tutamaç hemen kapanır, olay sıralanır; zaten
             // teslim kuyruğunda olan birim yine verilir.
@@ -644,9 +804,14 @@ struct Rig {
 impl Rig {
     /// [K4G-05d] Oturum kurulu ve iki taraf `Ready`'yi okumuş; yolda hiçbir şey yok.
     fn connected() -> Self {
+        Self::connected_with(fresh_store())
+    }
+
+    /// [K4G-05d rev3] [`Rig::connected`], Alice'in deposu verilmiş biçimde (kapanış borcu, (e)).
+    fn connected_with(alice_store: Arc<dyn AppStore>) -> Self {
         let link = Rc::new(RefCell::new(Link::default()));
         let clock = ManualClock::started();
-        let alice = Messenger::with_store(End::new(&link, Side::Alice), fresh_store())
+        let alice = Messenger::with_store(End::new(&link, Side::Alice), alice_store)
             .expect("limitler geçerli");
         let bob_messenger = Messenger::with_store(End::new(&link, Side::Bob), fresh_store())
             .expect("limitler geçerli");
@@ -787,6 +952,308 @@ fn accepted_on(attempts: &[Attempt], session: SessionHandle) -> usize {
 fn count_delivered(events: &[MessengerEvent], msg_id: MsgId) -> usize {
     let expected = delivered(BOB, msg_id);
     events.iter().filter(|event| **event == expected).count()
+}
+
+// ── K4G-05d rev3 düzenek ekleri ──────────────────────────────────────────────────────────────
+
+/// [K4G-05d rev3 (e)] Bellek içi depo: `msg_id` sayacı testin koyduğu değerden sürer (ileri atlama
+/// depo sözleşmesine uyar: değerler kesin artar; tükenme kuralı ürün depolarıyla aynı,
+/// [`CounterKind::advance`]) ve `outbox_remove(_, id)` istenen sayıda `Persist` döndürür (hiçbir
+/// şey silinmez). Geri kalan her şey bellek içi depoya gider.
+struct FlakyRemoveStore {
+    inner: MemoryAppStore,
+    next_msg_id: Mutex<u64>,
+    /// (`msg_id`, kalan hata sayısı).
+    failing: Mutex<Option<(MsgId, u32)>>,
+}
+
+impl FlakyRemoveStore {
+    fn new() -> Self {
+        Self {
+            inner: MemoryAppStore::new(),
+            next_msg_id: Mutex::new(FIRST_COUNTER_VALUE),
+            failing: Mutex::new(None),
+        }
+    }
+
+    /// `msg_id`'nin kalıcı silmesi sıradaki `times` denemede başarısız olur.
+    fn fail_remove(&self, msg_id: MsgId, times: u32) {
+        *self.failing.lock().expect("kilit zehirlenmedi") = Some((msg_id, times));
+    }
+
+    /// Depo iyileşir: silme hatası kalmaz.
+    fn heal(&self) {
+        *self.failing.lock().expect("kilit zehirlenmedi") = None;
+    }
+
+    /// Sıradaki `msg_id` `next` olur (yalnız ileri).
+    fn jump_msg_id(&self, next: u64) {
+        let mut guard = self.next_msg_id.lock().expect("kilit zehirlenmedi");
+        assert!(next >= *guard, "sayaç geri gitmez");
+        *guard = next;
+    }
+
+    /// Eşin kalıcı outbox'ındaki `msg_id`'ler.
+    fn outbox_ids(&self, peer: PeerRef) -> Vec<MsgId> {
+        self.inner
+            .outbox_list(peer)
+            .expect("bellek içi depo okunur")
+            .iter()
+            .map(OutboxUnit::msg_id)
+            .collect()
+    }
+}
+
+impl AppStore for FlakyRemoveStore {
+    fn reserve_next(&self, peer: PeerRef, kind: CounterKind) -> Result<u64, AppStoreError> {
+        if kind != CounterKind::MsgId {
+            return self.inner.reserve_next(peer, kind);
+        }
+        let mut next = self.next_msg_id.lock().expect("kilit zehirlenmedi");
+        let value = *next;
+        *next = kind.advance(value)?;
+        Ok(value)
+    }
+
+    fn dedup_load(&self, peer: PeerRef) -> Result<DedupWindow, AppStoreError> {
+        self.inner.dedup_load(peer)
+    }
+
+    fn dedup_save(&self, peer: PeerRef, window: &DedupWindow) -> Result<(), AppStoreError> {
+        self.inner.dedup_save(peer, window)
+    }
+
+    fn outbox_put(&self, peer: PeerRef, unit: &OutboxUnit) -> Result<(), AppStoreError> {
+        self.inner.outbox_put(peer, unit)
+    }
+
+    fn outbox_remove(&self, peer: PeerRef, msg_id: MsgId) -> Result<bool, AppStoreError> {
+        {
+            let mut failing = self.failing.lock().expect("kilit zehirlenmedi");
+            if let Some((id, remaining)) = failing.as_mut() {
+                if *id == msg_id && *remaining > 0 {
+                    *remaining -= 1;
+                    return Err(AppStoreError::Persist);
+                }
+            }
+        }
+        self.inner.outbox_remove(peer, msg_id)
+    }
+
+    fn outbox_list(&self, peer: PeerRef) -> Result<Vec<OutboxUnit>, AppStoreError> {
+        self.inner.outbox_list(peer)
+    }
+}
+
+/// [K4G-05d rev3 (a)] Bir ucun gözlemi: gönderdiği TEXT'ler, gördüğü `Delivered` ve
+/// `TextReceived` sayıları, PTT demeti, oturum olayı.
+#[derive(Default)]
+struct SideLog {
+    sent: Vec<MsgId>,
+    delivered: BTreeMap<MsgId, usize>,
+    received: BTreeMap<MsgId, usize>,
+    bundles: usize,
+    session_events: usize,
+}
+
+impl SideLog {
+    /// Turun zincir sonuna ulaşan Messenger olaylarını sayar.
+    fn record(&mut self, side: Side, events: &[MessengerEvent]) {
+        for event in events {
+            match event {
+                MessengerEvent::Delivered { peer, msg_id } => {
+                    assert_eq!(*peer, side.remote(), "{side:?}: Delivered yalnız eşten");
+                    *self.delivered.entry(*msg_id).or_default() += 1;
+                }
+                MessengerEvent::TextReceived { peer, msg_id, .. } => {
+                    assert_eq!(*peer, side.remote(), "{side:?}: TEXT yalnız eşten");
+                    *self.received.entry(*msg_id).or_default() += 1;
+                }
+                MessengerEvent::Session(_) => self.session_events += 1,
+                MessengerEvent::Other { .. } => {}
+            }
+        }
+    }
+
+    /// Bu uç `A_TEXTS` TEXT gönderdi, hepsinin `Delivered`'ını ve eşin `A_TEXTS` TEXT'ini gördü.
+    fn complete(&self) -> bool {
+        self.sent.len() == A_TEXTS
+            && self.delivered.len() == A_TEXTS
+            && self.received.len() == A_TEXTS
+    }
+}
+
+/// [K4G-05d rev3 (a)] İki uç da `kama-node` motorlarıdır (`Node`): ikisi de dosya gönderir, PTT akışı
+/// açar ve karşılıklı TEXT yollar.
+struct Duplex {
+    link: Rc<RefCell<Link>>,
+    clock: ManualClock,
+    alice: Node,
+    bob: Node,
+    /// Kurulan ilk oturum.
+    session: SessionHandle,
+    /// Uç başına giden PTT akışı (`Side::index` sırasıyla).
+    streams: [StreamId; 2],
+}
+
+impl Duplex {
+    /// Oturum kurulu; iki uç PTT akışını boş kuyrukta açmış (`PTT_OPEN` kabul) ve karşıya
+    /// `FILE_BYTES`'lık dosyayı kuyruğa almış. Dolum ilk turda başlar.
+    fn started() -> Self {
+        let link = Rc::new(RefCell::new(Link::default()));
+        let clock = ManualClock::started();
+        let node = |side: Side| {
+            let messenger = Messenger::with_store(End::new(&link, side), fresh_store())
+                .expect("limitler geçerli");
+            Node::new(messenger, &clock)
+        };
+        let mut alice = node(Side::Alice);
+        let mut bob = node(Side::Bob);
+        let session = link.borrow_mut().establish();
+        assert_eq!(
+            alice.turn(),
+            vec![MessengerEvent::Session(SessionEvent::Ready(session, BOB))]
+        );
+        assert_eq!(
+            bob.turn(),
+            vec![MessengerEvent::Session(SessionEvent::Ready(session, ALICE))]
+        );
+        let mut streams = [0; 2];
+        for (node, side) in [(&mut alice, Side::Alice), (&mut bob, Side::Bob)] {
+            streams[side.index()] = node
+                .ptt
+                .open(
+                    &mut node.messenger,
+                    side.remote(),
+                    PttCodec::Opus,
+                    BUNDLE_MS,
+                )
+                .expect("PTT_OPEN boş kuyrukta kabul edilir");
+            node.files
+                .send_file(
+                    &node.messenger,
+                    side.remote(),
+                    FILE_NAME,
+                    vec![FILE_FILL_BYTE; FILE_BYTES],
+                )
+                .expect("dosya kuyruğa alınır");
+        }
+        Self {
+            link,
+            clock,
+            alice,
+            bob,
+            session,
+            streams,
+        }
+    }
+
+    fn node(&mut self, side: Side) -> &mut Node {
+        match side {
+            Side::Alice => &mut self.alice,
+            Side::Bob => &mut self.bob,
+        }
+    }
+
+    fn node_ref(&self, side: Side) -> &Node {
+        match side {
+            Side::Alice => &self.alice,
+            Side::Bob => &self.bob,
+        }
+    }
+
+    /// Bir tur: iki ucun uygulama adımı ([`app_step`]), saat, iki ucun `Node::turn`'u. Tur sırası
+    /// her turda değişir (çift turda Alice önce): iki yön de "karşı taraf okumadan önce dolu" anını
+    /// yaşar.
+    fn round(&mut self, round: usize, logs: &mut [SideLog; 2]) {
+        for side in [Side::Alice, Side::Bob] {
+            let stream = self.streams[side.index()];
+            app_step(self.node(side), side, stream, &mut logs[side.index()]);
+        }
+        self.clock.advance(TURN_TICK);
+        let order = if round % 2 == 0 {
+            [Side::Alice, Side::Bob]
+        } else {
+            [Side::Bob, Side::Alice]
+        };
+        for side in order {
+            let events = self.node(side).turn();
+            logs[side.index()].record(side, &events);
+        }
+    }
+
+    /// İki uç tamam ve hiçbir RECEIPT beklemiyor.
+    fn complete(&self, logs: &[SideLog; 2]) -> bool {
+        [Side::Alice, Side::Bob].into_iter().all(|side| {
+            logs[side.index()].complete()
+                && self
+                    .node_ref(side)
+                    .messenger
+                    .pending_receipts(side.remote())
+                    == 0
+        })
+    }
+
+    /// Tamamlanana ya da `A_ROUND_CAP`'e dek tur; `supersede_at` turunda supersession. Koşulan tur
+    /// sayısını döndürür.
+    fn run(&mut self, logs: &mut [SideLog; 2], supersede_at: Option<usize>) -> usize {
+        let mut rounds = 0;
+        while rounds < A_ROUND_CAP && !self.complete(logs) {
+            if supersede_at == Some(rounds) {
+                self.link.borrow_mut().supersede();
+            }
+            self.round(rounds, logs);
+            rounds += 1;
+        }
+        rounds
+    }
+
+    /// Bitmeme teşhisi (kilit / açlık): uç başına sayılar.
+    fn diagnosis(&self, logs: &[SideLog; 2]) -> String {
+        [Side::Alice, Side::Bob]
+            .into_iter()
+            .map(|side| {
+                let log = &logs[side.index()];
+                let stats = self.node_ref(side).messenger.stats();
+                format!(
+                    "{side:?}: gönderilen {}, Delivered {}, alınan {}, bekleyen RECEIPT {}, kapı {}",
+                    log.sent.len(),
+                    log.delivered.len(),
+                    log.received.len(),
+                    stats.receipts_pending,
+                    stats.gated_by_receipts
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+}
+
+/// [K4G-05d rev3 (a)] Bir ucun uygulama adımı: `A_TEXTS`'e dek TEXT, ret gelene kadar; bir PTT
+/// demeti (`A_BUNDLES`'a dek; reddedilen demet sonraki turda yeniden verilir). Geçici retler
+/// (`Backpressure` — Transport ya da RECEIPT öncelik kapısı — ve outbox tavanı) beklenir; başka her
+/// hata senaryo hatasıdır.
+fn app_step(node: &mut Node, side: Side, stream: StreamId, log: &mut SideLog) {
+    while log.sent.len() < A_TEXTS {
+        match node.messenger.send_text(side.remote(), TEXT) {
+            Ok(msg_id) => log.sent.push(msg_id),
+            Err(
+                MessengerError::Transport(TransportError::Backpressure)
+                | MessengerError::OutboxFull,
+            ) => break,
+            Err(other) => panic!("{side:?}: beklenmeyen TEXT hatası {other:?}"),
+        }
+    }
+    if log.bundles < A_BUNDLES {
+        match node
+            .ptt
+            .send_bundle(&mut node.messenger, stream, &[0x5B; BUNDLE_BYTES])
+        {
+            Ok(()) => log.bundles += 1,
+            Err(PttError::Transport(TransportError::Backpressure)) => {}
+            Err(other) => panic!("{side:?}: beklenmeyen demet hatası {other:?}"),
+        }
+    }
 }
 
 // ── testler ──────────────────────────────────────────────────────────────────────────────────
@@ -1019,21 +1486,22 @@ fn t2_an_accepted_receipt_is_never_offered_again_even_if_lost() {
     );
 }
 
-/// **T3 oturum değişimi (DUR-05d-4: düşür) — tabanda (`3439fccd`) YEŞİL (bekçi).**
+/// **T3 oturum değişimi (rev3 M1: kayıt taşınır; not Ek B.2).**
 ///
-/// Amaç: eşin oturumu değişince bekleyen RECEIPT DÜŞER; telafi gönderenin yeni oturumdaki yeniden
-/// gönderimidir ve onun tekrar TEXT'i RECEIPT'i yeniden üretir → `h'`'de RECEIPT(X) TAM BİR KEZ
-/// kabul edilir. Senaryo: P0 düzeneği (Bob→Alice dolu); Alice X'i yollar, Bob'un RECEIPT(X) sunumu
-/// `Backpressure` alır. Supersession `h` → `h'`, geçiş `poll_event`'te (Ek B.2). Sıra: (1) Bob
-/// `Ready(h')`'yi okur — o poll'un başında RECEIPT(X) hâlâ aktif ve dolu `h`'ye sunulur ve
-/// `Backpressure` alır, sonra `adopt` kuyruğu boşaltır; (2) Alice kuyruğunu okur (yer açılır),
-/// `h'`'ye geçer ve X'i yeniden yollar; (3) Bob'un turu tekrar X'i işler.
+/// Amaç: eşin oturumu değişince bekleyen RECEIPT DÜŞMEZ, yeni tutamaca taşınır; gönderenin yeni
+/// oturumdaki yeniden gönderimi ve onun tekrar TEXT'i RECEIPT'i bir kez daha üretir → `h'`'de
+/// RECEIPT(X) TAM İKİ kez kabul edilir, Alice tam bir `Delivered(X)` görür. Senaryo: P0 düzeneği
+/// (Bob→Alice dolu); Alice X'i yollar, Bob'un RECEIPT(X) sunumu `Backpressure` alır. Supersession
+/// `h` → `h'`, geçiş `poll_event`'te. Sıra: (1) Bob `Ready(h')`'yi okur — RECEIPT(X) önce hâlâ
+/// aktif ve dolu `h`'ye, sonra `adopt`'ta dolu `h'`'ye sunulur; ikisi de `Backpressure` alır ve
+/// kayıt kuyrukta kalır; (2) Alice kuyruğunu okur (yer açılır), `h'`'ye geçer ve X'i yeniden
+/// yollar; (3) Bob'un turu: poll başı taşınan RECEIPT(X)'i kabul ettirir, ardından tekrar X'in
+/// RECEIPT'i (bekleyen yok) bir kez daha kabul edilir.
 ///
-/// Tabanda neden yeşil: RECEIPT(X) tabanda reddedilince kaybolur; `h'`'deki tek RECEIPT tekrar
-/// TEXT'ten gelir. Boşaltmayan `adopt` mutantında X'in kaydı `h'`'de bekler: (3)'ün poll başı onu
-/// kabul ettirir, ardından tekrar TEXT'in RECEIPT'i ikinci kez kabul edilir → `h'`'de 2 kabul.
+/// Öldürdüğü mutant: `adopt`'ta kuyruğu boşaltan (rev2): `h'`'de yalnız tekrar TEXT'in RECEIPT'i
+/// (1 kabul) ve (1)'den sonra `pending` 0.
 #[test]
-fn t3_session_change_drops_the_pending_receipt_and_the_repeat_text_receipts_once() {
+fn t3_session_change_carries_the_pending_receipt_to_the_new_session() {
     let mut rig = Rig::with_full_bob_to_alice_queue();
     let old = rig.session;
     let msg_id = rig
@@ -1065,6 +1533,11 @@ fn t3_session_change_drops_the_pending_receipt_and_the_repeat_text_receipts_once
         "(1) Bob Ready(h') ve Closed(h) okur"
     );
     assert_eq!(rig.bob.messenger.session_of(ALICE), Some(new));
+    assert_eq!(
+        rig.bob.messenger.pending_receipts(ALICE),
+        1,
+        "(1) RECEIPT(X) yeni oturuma taşındı, bekliyor"
+    );
     // (2) Alice okur: `h'`'ye geçer, X'i yeniden yollar, Bob'un dosya kayıtlarını okur.
     let alice_switch = rig.drain_alice();
     let switch_events = [
@@ -1085,7 +1558,7 @@ fn t3_session_change_drops_the_pending_receipt_and_the_repeat_text_receipts_once
         rig.link.borrow().endpoint_ref(Side::Alice).inbox.is_empty(),
         "(2) Alice okudu: Bob→Alice yönünde yer açıldı"
     );
-    // (3) Bob'un turu: tekrar X → RECEIPT(X).
+    // (3) Bob'un turu: taşınan RECEIPT(X), sonra tekrar X → RECEIPT(X) bir kez daha.
     rig.clock.advance(TURN_TICK);
     assert!(rig.bob.turn().is_empty(), "(3) tekrar TEXT olay üretmez");
     assert_eq!(
@@ -1103,9 +1576,9 @@ fn t3_session_change_drops_the_pending_receipt_and_the_repeat_text_receipts_once
     );
     assert_eq!(
         accepted_on(&attempts, new),
-        1,
-        "oturum değişimi bekleyen RECEIPT({msg_id})'yi düşürmeli: h''de tek RECEIPT tekrar TEXT'in \
-         olmalı (2 kabul = adopt kuyruğu boşaltmadı). Denemeler: {attempts:?}"
+        2,
+        "taşınan RECEIPT({msg_id}) + tekrar TEXT'in RECEIPT'i: h''de 2 kabul (1 = adopt kuyruğu \
+         boşalttı). Denemeler: {attempts:?}"
     );
     let delivered_count =
         count_delivered(&alice_switch, msg_id) + count_delivered(&alice_after, msg_id);
@@ -1113,6 +1586,8 @@ fn t3_session_change_drops_the_pending_receipt_and_the_repeat_text_receipts_once
         delivered_count, 1,
         "Alice tam bir Delivered({msg_id}) görmeli"
     );
+    assert_eq!(rig.bob.messenger.pending_receipts(ALICE), 0);
+    assert_eq!(rig.bob.messenger.stats().receipts_unsent, 0);
 }
 
 /// T4'ün iki durumu: eşin oturumu, Bob'un RECEIPT(X)'i üretmesinden önce ya da o sırada biter.
@@ -1121,28 +1596,28 @@ enum SessionEnd {
     /// Kapanış olayı X'ten önce okunur (olaylar birimlerden önce): X eski tutamaçla, Bob'un
     /// oturumu yokken işlenir — "oturum yok".
     BeforeText,
-    /// Bob'un Transport'u kapanışı X'i teslim eden `recv`'de öğrenir: RECEIPT(X)'in tek sunumu
+    /// Bob'un Transport'u kapanışı X'i teslim eden `recv`'de öğrenir: RECEIPT(X)'in ilk sunumu
     /// `UnknownSession` alır (Messenger olayı henüz okumadı).
     DuringRecv,
 }
 
-/// **T4 hata sınıfı (DUR-05d-3: yalnız `Backpressure` geçici) — tabanda (`3439fccd`) YEŞİL
-/// (bekçi).**
+/// **T4 hata sınıfı (rev3, DUR-05d-5 (a): tut ve dur; not Ek B.2).**
 ///
-/// Amaç: oturum yokken doğan ya da `Backpressure` dışı bir hatayla (burada `UnknownSession`)
-/// reddedilen RECEIPT bırakılır ve AYNI oturuma bir daha sunulmaz; RECEIPT(X) yalnız gönderenin
-/// yeni oturumdaki tekrar TEXT'inden gelir. Senaryo (dosya yok): Alice X'i yollar; oturum iki
-/// durumdan biriyle biter ([`SessionEnd`]); Bob bir tur daha koşar; sonra Alice kapanışı okur,
-/// yeni oturum kurulur, Alice X'i yeniden yollar ve Bob'un turu tekrar TEXT'i işler. Beklenen:
-/// RECEIPT(X) denemeleri tam olarak şunlardır — (yalnız `DuringRecv`) eski tutamaçta bir
-/// `UnknownSession`, sonra `h'`'de bir kabul; Alice tam bir `Delivered(X)` görür. Kuyruk boyu
-/// yarısı (`pending` 0) yeni API'dir: `src/messaging.rs` T4.
+/// Amaç: oturum yokken doğan RECEIPT kuyruğa girer; `Backpressure` dışı oturum sonu hatası (burada
+/// `UnknownSession`) kaydı BIRAKMAZ, tutar. Kayıt eşin sıradaki tutamacına `adopt`'ta sunulur ve
+/// tekrar TEXT'in RECEIPT'i bir kez daha kabul edilir. Senaryo (dosya yok): Alice X'i yollar;
+/// oturum iki durumdan biriyle biter ([`SessionEnd`]); Bob bir tur daha koşar; sonra Alice
+/// kapanışı okur, yeni oturum kurulur, Alice X'i yeniden yollar. Beklenen RECEIPT(X) denemeleri:
+/// (yalnız `DuringRecv`) eski tutamaçta iki `UnknownSession` — biri TEXT'i teslim eden `poll`'da,
+/// biri kapanış olayını okuyan sonraki `poll`'un başında (poll başına eş başına ≤ 1 ret) —, sonra
+/// `h'`'de iki kabul (taşınan + tekrar TEXT'in). Oturumsuz turda hiçbir sunum yok. Alice tam bir
+/// `Delivered(X)` görür.
 ///
-/// Tabanda neden yeşil: `send_receipt` tek denemedir ve oturum yoksa sunmaz — beklenen sıranın
-/// aynısı. Geçici sınıfı genişleten mutant (`UnknownSession` geçici sayılır) `DuringRecv`'de kaydı
-/// tutar ve sıradaki poll başında eski tutamaca yeniden sunar → fazladan bir `UnknownSession`.
+/// Öldürdüğü mutantlar: yalnız `Backpressure`'ı geçici sayan sınıf (rev2; `DuringRecv`'de tek
+/// `UnknownSession`, `h'`'de tek kabul); oturumsuz borcu bırakan `owe_receipt` (`BeforeText`'te
+/// `h'`'de tek kabul).
 #[test]
-fn t4_a_non_backpressure_end_leaves_the_receipt_to_the_repeat_text() {
+fn t4_a_session_end_holds_the_receipt_for_the_next_session() {
     for case in [SessionEnd::BeforeText, SessionEnd::DuringRecv] {
         let mut rig = Rig::connected();
         let old = rig.session;
@@ -1165,7 +1640,10 @@ fn t4_a_non_backpressure_end_leaves_the_receipt_to_the_repeat_text() {
                     .close_on_next_recv(Side::Bob, CloseReason::PeerClosed);
                 (
                     vec![text, closed],
-                    vec![(old, Err(TransportError::UnknownSession))],
+                    vec![
+                        (old, Err(TransportError::UnknownSession)),
+                        (old, Err(TransportError::UnknownSession)),
+                    ],
                 )
             }
         };
@@ -1174,17 +1652,21 @@ fn t4_a_non_backpressure_end_leaves_the_receipt_to_the_repeat_text() {
             bob_events,
             "{case:?}: Bob X'i teslim eder ve kapanışı okur"
         );
-        // Yeni oturumdan önce bir tur daha: geçici sınıf genişletilmiş olsaydı RECEIPT(X) burada
-        // (ya da önceki turun ikinci poll'unda) eski tutamaca yeniden sunulurdu.
+        assert_eq!(
+            rig.bob.messenger.pending_receipts(ALICE),
+            1,
+            "{case:?}: RECEIPT(X) tutuldu"
+        );
+        // Yeni oturumdan önce bir tur daha: oturumsuz eşe hiçbir sunum yapılmaz.
         rig.clock.advance(TURN_TICK);
         assert!(rig.bob.turn().is_empty(), "{case:?}: oturumsuz tur boştur");
         assert_eq!(
             rig.link.borrow().receipt_attempts(Side::Bob, msg_id),
             refused,
-            "{case:?}: bırakılan RECEIPT({msg_id}) aynı oturuma yeniden sunulmamalı"
+            "{case:?}: oturum kapandıktan sonra RECEIPT({msg_id}) sunulmaz"
         );
 
-        // Telafi (S2): Alice kapanışı okur, yeni oturum kurulur, Alice X'i yeniden yollar.
+        // Alice kapanışı okur, yeni oturum kurulur, Alice X'i yeniden yollar.
         rig.link
             .borrow_mut()
             .close_at(Side::Alice, CloseReason::PeerClosed);
@@ -1215,16 +1697,19 @@ fn t4_a_non_backpressure_end_leaves_the_receipt_to_the_repeat_text() {
         assert_eq!(rig.bob.messenger.stats().duplicate_texts, 1, "{case:?}");
         let mut expected = refused;
         expected.push((new, Ok(())));
+        expected.push((new, Ok(())));
         assert_eq!(
             rig.link.borrow().receipt_attempts(Side::Bob, msg_id),
             expected,
-            "{case:?}: RECEIPT({msg_id}) yalnız tekrar TEXT'ten (h') gelmeli"
+            "{case:?}: RECEIPT({msg_id}) h''ye önce kuyruktan (adopt), sonra tekrar TEXT'ten"
         );
         assert_eq!(
             rig.drain_alice(),
             vec![delivered(BOB, msg_id)],
             "{case:?}: Alice tam bir Delivered görür"
         );
+        assert_eq!(rig.bob.messenger.pending_receipts(ALICE), 0, "{case:?}");
+        assert_eq!(rig.bob.messenger.stats().receipts_unsent, 0, "{case:?}");
     }
 }
 
@@ -1312,4 +1797,766 @@ fn t5_at_most_one_backpressure_per_poll_while_receipts_wait() {
          sunulmalı ve Backpressure almalı (poll başı sunumu kaldıran ya da poll sonuna taşıyan \
          kuyruk onu hiç sunmaz)"
     );
+}
+
+// ── K4G-05d rev3 testleri (not rev3 §5, Ek B.1) ─────────────────────────────────────────────
+
+/// **(a1) Oturum değişmeden iki yönlü doygunluk — ZORUNLU (C14 §4).**
+///
+/// Senaryo ([`Duplex`]): iki uç da `kama-node` motorlarıdır; ikisi de karşıya dosya gönderir, PTT
+/// akışı açar ve her turda demet verir; ikisi de karşıya `A_TEXTS` (= `MAX_OUTBOX_UNACKED`) TEXT
+/// yollar. Yön kuyrukları dosya pump'ı, TEXT ve RECEIPT'lerle dolar; tur sırası her turda değişir.
+/// Beklenen (değişmez (ii)–(iv)): `A_ROUND_CAP` içinde iki uç da bütün TEXT'lerini teslim eder,
+/// her TEXT için tam bir `Delivered` görür; her RECEIPT AYNI oturumda tam bir kez kabul edilir;
+/// `receipts_unsent` = 0, bekleyen RECEIPT 0; oturum olayı yok. Doygunluk kanıtı: iki uç da
+/// `Backpressure` aldı, RECEIPT'ler en az bir kez `Backpressure` aldı ve öncelik kapısı en az bir
+/// kez toplu üreticiyi tuttu. ACK yolu `Link`'te yoktur (M4'ün ACK yarısı INT-02'de ölçülür).
+#[test]
+fn a1_two_way_saturation_completes_on_the_same_session() {
+    let mut duplex = Duplex::started();
+    let mut logs = [SideLog::default(), SideLog::default()];
+    let rounds = duplex.run(&mut logs, None);
+    assert!(
+        duplex.complete(&logs),
+        "(a1) kilit ya da açlık: {A_ROUND_CAP} turda bitmedi — {}",
+        duplex.diagnosis(&logs)
+    );
+    let link = duplex.link.borrow();
+    let mut receipt_backpressure = 0;
+    let mut gated = 0;
+    for side in [Side::Alice, Side::Bob] {
+        let log = &logs[side.index()];
+        let messenger = &duplex.node_ref(side).messenger;
+        assert_eq!(log.session_events, 0, "{side:?}: oturum değişmemeli");
+        assert_eq!(messenger.session_of(side.remote()), Some(duplex.session));
+        assert!(
+            log.delivered.values().all(|&n| n == 1),
+            "{side:?}: her TEXT için tam bir Delivered"
+        );
+        assert!(
+            log.received.values().all(|&n| n == 1),
+            "{side:?}: her TEXT bir kez teslim"
+        );
+        let stats = messenger.stats();
+        assert_eq!(stats.receipts_unsent, 0, "{side:?}: bırakılan RECEIPT yok");
+        assert_eq!(stats.receipts_pending, 0, "{side:?}");
+        let accepted = link.accepted_receipts(side, duplex.session);
+        assert_eq!(
+            accepted.len(),
+            A_TEXTS,
+            "{side:?}: her RECEIPT aynı oturumda kabul edildi"
+        );
+        assert!(
+            accepted.values().all(|&n| n == 1),
+            "{side:?}: her RECEIPT tam bir kez"
+        );
+        assert!(
+            link.backpressure_since(side, 0) > 0,
+            "{side:?} yönü doymadı (düzenek)"
+        );
+        receipt_backpressure += link.receipt_backpressure(side);
+        gated += stats.gated_by_receipts;
+    }
+    assert!(
+        receipt_backpressure > 0,
+        "düzenek: RECEIPT'ler hiç Backpressure almadı ({rounds} tur)"
+    );
+    assert!(
+        gated > 0,
+        "düzenek: öncelik kapısı hiç çalışmadı ({rounds} tur)"
+    );
+}
+
+/// **(a2) İki yönlü doygunluk, ortada supersession (geçiş kolu; C14 §4).**
+///
+/// (a1) ile aynı düzenek; `A2_SUPERSEDE_ROUND` turunda iki yön doluyken `h` → `h'`. Beklenen:
+/// `A_ROUND_CAP` içinde iki uç da bütün TEXT'lerini teslim eder; her TEXT tam bir kez teslim edilir
+/// ve tam bir `Delivered` görür (yeniden gönderimler dedup'ta söner); `receipts_unsent` = 0,
+/// bekleyen RECEIPT 0; uç başına iki oturum olayı (`Ready(h')`, `Closed(h)`). RECEIPT'lerin hangi
+/// oturumda kabul edildiği iddia edilmez.
+#[test]
+fn a2_two_way_saturation_survives_a_supersession() {
+    let mut duplex = Duplex::started();
+    let mut logs = [SideLog::default(), SideLog::default()];
+    duplex.run(&mut logs, Some(A2_SUPERSEDE_ROUND));
+    assert!(
+        duplex.complete(&logs),
+        "(a2) kilit ya da açlık: {A_ROUND_CAP} turda bitmedi — {}",
+        duplex.diagnosis(&logs)
+    );
+    for side in [Side::Alice, Side::Bob] {
+        let log = &logs[side.index()];
+        let messenger = &duplex.node_ref(side).messenger;
+        assert_eq!(log.session_events, 2, "{side:?}: Ready(h') + Closed(h)");
+        assert_ne!(
+            messenger.session_of(side.remote()),
+            Some(duplex.session),
+            "{side:?}: yeni oturumda"
+        );
+        assert!(
+            log.delivered.values().all(|&n| n == 1),
+            "{side:?}: her TEXT için tam bir Delivered"
+        );
+        assert!(
+            log.received.values().all(|&n| n == 1),
+            "{side:?}: her TEXT bir kez teslim"
+        );
+        let stats = messenger.stats();
+        assert_eq!(stats.receipts_unsent, 0, "{side:?}: bırakılan RECEIPT yok");
+        assert_eq!(stats.receipts_pending, 0, "{side:?}");
+    }
+}
+
+/// **(b) 300 TEXT tek yön, gönderen outbox tavanını aşmadan (rev3; not Ek B.1).**
+///
+/// Senaryo: P0 düzeneği (Bob Alice'e dosya gönderiyor, Bob→Alice dolu). Alice her turda yer
+/// buldukça TEXT yollar (outbox tavanı ve `Backpressure` beklenir), Bob `kama-node` turunu koşar,
+/// Alice okur. Beklenen: `B_ROUND_CAP` içinde `B_TEXTS` TEXT'in her biri tam bir kez teslim edilir
+/// ve tam bir `Delivered` görür; her RECEIPT aynı oturumda tam bir kez kabul edilir; Bob'da
+/// `receipts_unsent` = 0. Doygunluk kanıtı: RECEIPT'ler en az bir kez `Backpressure` aldı.
+#[test]
+fn b_three_hundred_texts_one_way_are_all_delivered_and_none_dropped() {
+    let mut rig = Rig::with_full_bob_to_alice_queue();
+    let session = rig.session;
+    let mut sent: Vec<MsgId> = Vec::new();
+    let mut received_count: BTreeMap<MsgId, usize> = BTreeMap::new();
+    let mut delivered_count: BTreeMap<MsgId, usize> = BTreeMap::new();
+    let mut rounds = 0;
+    while rounds < B_ROUND_CAP
+        && !(delivered_count.len() == B_TEXTS && rig.bob.messenger.pending_receipts(ALICE) == 0)
+    {
+        while sent.len() < B_TEXTS {
+            match rig.alice.send_text(BOB, TEXT) {
+                Ok(msg_id) => sent.push(msg_id),
+                Err(
+                    MessengerError::Transport(TransportError::Backpressure)
+                    | MessengerError::OutboxFull,
+                ) => break,
+                Err(other) => panic!("beklenmeyen TEXT hatası {other:?}"),
+            }
+        }
+        rig.clock.advance(TURN_TICK);
+        for event in rig.bob.turn() {
+            match event {
+                MessengerEvent::TextReceived { msg_id, .. } => {
+                    *received_count.entry(msg_id).or_default() += 1;
+                }
+                other => panic!("Bob'da beklenmeyen olay {other:?}"),
+            }
+        }
+        for event in rig.drain_alice() {
+            if let MessengerEvent::Delivered { msg_id, .. } = event {
+                *delivered_count.entry(msg_id).or_default() += 1;
+            }
+        }
+        rounds += 1;
+    }
+    assert_eq!(
+        delivered_count.len(),
+        B_TEXTS,
+        "(b) {B_ROUND_CAP} turda bitmedi: gönderilen {}, alınan {}, Delivered {}",
+        sent.len(),
+        received_count.len(),
+        delivered_count.len()
+    );
+    assert!(
+        received_count.values().all(|&n| n == 1),
+        "her TEXT bir kez teslim"
+    );
+    assert!(
+        delivered_count.values().all(|&n| n == 1),
+        "her TEXT için tam bir Delivered"
+    );
+    let link = rig.link.borrow();
+    let accepted = link.accepted_receipts(Side::Bob, session);
+    assert_eq!(
+        accepted.len(),
+        B_TEXTS,
+        "her RECEIPT aynı oturumda kabul edildi"
+    );
+    assert!(
+        accepted.values().all(|&n| n == 1),
+        "her RECEIPT tam bir kez"
+    );
+    assert_eq!(rig.bob.messenger.stats().receipts_unsent, 0);
+    assert_eq!(rig.bob.messenger.pending_receipts(ALICE), 0);
+    assert!(
+        link.receipt_backpressure(Side::Bob) > 0,
+        "düzenek: RECEIPT'ler hiç Backpressure almadı ({rounds} tur)"
+    );
+}
+
+/// **(b1) Pencere içinde `MAX_OUTBOX_UNACKED`'ten fazla yükümlülük düşmez (rev3 M1; not Ek B.1).**
+///
+/// Senaryo: P0 düzeneği; Bob→Alice dolu tutulur (Alice okumaz). Bob'a `B_TEXTS` farklı `msg_id`'li
+/// (0, 1, …) ham TEXT `LINK_QUEUE_CAP`'lik partilerle gelir — gönderen outbox tavanı yerine
+/// gönderen penceresine uyan eş. Beklenen: `B_TEXTS` RECEIPT bekler (hiçbiri düşmez, ≤
+/// `MSG_DEDUP_WINDOW`); kapasite açılınca `B1_ROUNDS` turda her biri AYNI oturumda tam bir kez ve
+/// `msg_id` sırasıyla kabul edilir. Öldürdüğü mutantlar: rev2'nin 256 tavanı ve en eskiyi düşürmesi
+/// (`msg_id` 0..44 hiç kabul edilmez); `msg_id` sırası yerine bit konumu sırası.
+#[test]
+fn b1_more_obligations_than_the_outbox_cap_wait_without_drops() {
+    let mut rig = Rig::with_full_bob_to_alice_queue();
+    let session = rig.session;
+    let ids: Vec<MsgId> = (0..B_TEXTS)
+        .map(|n| MsgId::try_from(n).expect("küçük sayı"))
+        .collect();
+    for batch in ids.chunks(LINK_QUEUE_CAP) {
+        for &msg_id in batch {
+            rig.link
+                .borrow_mut()
+                .inject(Side::Bob, text_record(msg_id, TEXT));
+        }
+        let expected: Vec<MessengerEvent> = batch
+            .iter()
+            .map(|&msg_id| received(ALICE, msg_id, TEXT))
+            .collect();
+        assert_eq!(
+            rig.bob.turn(),
+            expected,
+            "ön koşul: her TEXT bir kez teslim edilir"
+        );
+    }
+    assert_eq!(
+        rig.bob.messenger.pending_receipts(ALICE),
+        B_TEXTS,
+        "pencere içinde {B_TEXTS} yükümlülük bekler; hiçbiri düşmedi"
+    );
+    assert!(
+        rig.link
+            .borrow()
+            .accepted_receipt_ids(Side::Bob, session)
+            .is_empty(),
+        "ön koşul: Bob→Alice dolu kaldı"
+    );
+    assert_eq!(rig.bob.messenger.stats().receipts_unsent, 0);
+
+    let after = rig.run_rounds(B1_ROUNDS);
+    rig.assert_same_session_and_capacity_opened(&after);
+    assert_eq!(
+        rig.link.borrow().accepted_receipt_ids(Side::Bob, session),
+        ids,
+        "her RECEIPT aynı oturumda tam bir kez, msg_id sırasıyla"
+    );
+    let stats = rig.bob.messenger.stats();
+    assert_eq!(stats.receipts_pending, 0);
+    assert_eq!(stats.receipts_unsent, 0);
+    assert_eq!(stats.receipts_window_pruned, 0);
+}
+
+/// **(b2) Pencere ihlali: yalnız pencere altı budanır (rev3 M1, DUR-05d-6 (a); not Ek B.1).**
+///
+/// Senaryo: P0 düzeneği (Bob→Alice dolu). Bob'a önce `0 .. LINK_QUEUE_CAP` gelir (RECEIPT'leri
+/// bekler), sonra pencereyi aşan `B2_FAR` (= `MSG_DEDUP_WINDOW` + 4). Beklenen: `0 .. B2_PRUNED`
+/// pencere altına düşer ve sayılarak budanır (`receipts_window_pruned` = `B2_PRUNED`); pencere
+/// içindeki kalan kayıtlar ve `B2_FAR` kapasite açılınca aynı oturumda tam bir kez, `msg_id`
+/// sırasıyla kabul edilir. Öldürdüğü mutantlar: budamayan kuyruk (0..4 da kabul edilir); pencere
+/// içini de budayan kuyruk; budamayı saymayan sayaç.
+#[test]
+fn b2_a_window_violation_prunes_only_below_the_window() {
+    let mut rig = Rig::with_full_bob_to_alice_queue();
+    let session = rig.session;
+    let cap = MsgId::try_from(LINK_QUEUE_CAP).expect("küçük sayı");
+    for msg_id in 0..cap {
+        rig.link
+            .borrow_mut()
+            .inject(Side::Bob, text_record(msg_id, TEXT));
+    }
+    assert_eq!(
+        rig.bob.turn().len(),
+        LINK_QUEUE_CAP,
+        "ön koşul: ilk parti teslim"
+    );
+    assert_eq!(rig.bob.messenger.pending_receipts(ALICE), LINK_QUEUE_CAP);
+
+    rig.link
+        .borrow_mut()
+        .inject(Side::Bob, text_record(B2_FAR, TEXT));
+    assert_eq!(rig.bob.turn(), vec![received(ALICE, B2_FAR, TEXT)]);
+    let pruned = usize::try_from(B2_PRUNED).expect("küçük sayı");
+    assert_eq!(
+        rig.bob.messenger.stats().receipts_window_pruned,
+        u64::from(B2_PRUNED),
+        "yalnız pencere altı sayılarak budandı"
+    );
+    assert_eq!(
+        rig.bob.messenger.pending_receipts(ALICE),
+        LINK_QUEUE_CAP - pruned + 1,
+        "pencere içi kayıtlar + B2_FAR bekler"
+    );
+
+    let after = rig.run_rounds(B2_ROUNDS);
+    rig.assert_same_session_and_capacity_opened(&after);
+    let expected: Vec<MsgId> = (B2_PRUNED..cap).chain([B2_FAR]).collect();
+    assert_eq!(
+        rig.link.borrow().accepted_receipt_ids(Side::Bob, session),
+        expected,
+        "pencere içi kayıtlar tam bir kez, msg_id sırasıyla; budananlar hiç"
+    );
+    assert_eq!(rig.bob.messenger.pending_receipts(ALICE), 0);
+    assert_eq!(rig.bob.messenger.stats().receipts_unsent, 0);
+}
+
+/// **(c) Öncelik kapısı ve muafiyetler (rev3 M2; not Ek B.1).**
+///
+/// Senaryo: Bob Alice'e PTT akışı açar (boş kuyruk, `PTT_OPEN` kabul) ve dosya gönderir; dosya
+/// pump'ı Bob→Alice kuyruğunu doldurur. Alice TEXT X'i yollar; Bob'un RECEIPT(X)'i `Backpressure`
+/// alır ve bekler. Beklenen: (1) aynı turda dosya pump'ı kapıda kalır — o turda `FILE_*` denemesi
+/// yok; (2) kuyruk beklerken `MEDIA_BUNDLE`, `SIGNALING_BLOB` ve TEXT Transport'a hiç VERİLMEZ
+/// (geçici `Backpressure`, `gated_by_receipts` her biri için artar); (3) muaf kayıtlar Transport'a
+/// VERİLİR: `PTT_CLOSE` (çağrı), `FILE_ABORT` (kullanıcı iptali, sonraki turun pump'ı) ve
+/// `FILE_RECEIPT` (Alice'ten gelen, sığmayan `FILE_BEGIN`'e `rejected`); (4) kapasite açılınca
+/// Bob'un ilk kabul edilen kaydı RECEIPT(X)'tir ve Alice tam bir `Delivered(X)` görür.
+///
+/// Öldürdüğü mutantlar: kapıyı atlayan motor (ilgili tür denemelerde görünür); muafiyeti kaldıran
+/// kapı (`PTT_CLOSE` / `FILE_ABORT` / `FILE_RECEIPT` denemesi yok); `FILE_ABORT`'u adımdan ayırt
+/// etmeyen dosya sunumu.
+#[test]
+fn c_gate_holds_bulk_producers_and_passes_exempt_control_records() {
+    let mut rig = Rig::connected();
+    let stream = rig
+        .bob
+        .ptt
+        .open(&mut rig.bob.messenger, ALICE, PttCodec::Opus, BUNDLE_MS)
+        .expect("PTT_OPEN boş kuyrukta kabul edilir");
+    let transfer = rig
+        .bob
+        .files
+        .send_file(
+            &rig.bob.messenger,
+            ALICE,
+            FILE_NAME,
+            vec![FILE_FILL_BYTE; FILE_BYTES],
+        )
+        .expect("dosya kuyruğa alınır");
+    assert!(rig.bob.turn().is_empty(), "dolum turu olay üretmez");
+    assert_eq!(
+        rig.link.borrow().endpoint_ref(Side::Alice).inbox.len(),
+        LINK_QUEUE_CAP,
+        "düzenek: Bob→Alice dolu"
+    );
+
+    let msg_id = rig
+        .alice
+        .send_text(BOB, TEXT)
+        .expect("Alice→Bob yönünde yer var");
+    let since_turn = rig.link.borrow().send_count(Side::Bob);
+    assert_eq!(rig.bob.turn(), vec![received(ALICE, msg_id, TEXT)]);
+    let in_turn = rig.link.borrow().kinds_since(Side::Bob, since_turn);
+    assert_eq!(
+        in_turn.first(),
+        Some(&("RECEIPT", Err(TransportError::Backpressure))),
+        "(1) RECEIPT(X) ilk sunumda Backpressure: {in_turn:?}"
+    );
+    assert!(
+        !in_turn.iter().any(|(kind, _)| kind.starts_with("FILE_")),
+        "(1) RECEIPT beklerken dosya pump'ı kapıda: {in_turn:?}"
+    );
+    assert_eq!(rig.bob.messenger.pending_receipts(ALICE), 1);
+    let gated_before = rig.bob.messenger.stats().gated_by_receipts;
+    assert!(gated_before >= 1, "(1) pump kapıda sayıldı");
+
+    // (2) Toplu üreticiler kapıda: hiçbiri Transport'a verilmez.
+    let since_app = rig.link.borrow().send_count(Side::Bob);
+    let payload = [0x5B; BUNDLE_BYTES];
+    assert_eq!(
+        rig.bob
+            .ptt
+            .send_bundle(&mut rig.bob.messenger, stream, &payload),
+        Err(PttError::Transport(TransportError::Backpressure))
+    );
+    assert_eq!(
+        rig.bob
+            .signaling
+            .send(&mut rig.bob.messenger, ALICE, &payload)
+            .map(|_| ()),
+        Err(SignalingError::Transport(TransportError::Backpressure))
+    );
+    assert_eq!(
+        rig.bob.messenger.send_text(ALICE, TEXT),
+        Err(MessengerError::Transport(TransportError::Backpressure))
+    );
+    assert!(
+        rig.link
+            .borrow()
+            .kinds_since(Side::Bob, since_app)
+            .is_empty(),
+        "(2) kapıdaki kayıtlar Transport'a verilmedi"
+    );
+    assert_eq!(
+        rig.bob.messenger.stats().gated_by_receipts,
+        gated_before + 3,
+        "(2) her toplu sunum kapıda sayıldı"
+    );
+
+    // (3) Muaf kayıtlar Transport'a verilir (yön dolu: `Backpressure` alırlar).
+    assert_eq!(
+        rig.bob.ptt.close(&mut rig.bob.messenger, stream),
+        Err(PttError::Transport(TransportError::Backpressure)),
+        "(3) PTT_CLOSE sunuldu; yön dolu"
+    );
+    rig.bob
+        .files
+        .cancel_send(transfer)
+        .expect("aktarım sürüyor");
+    let oversized = AppMessage::FileBegin {
+        transfer_id: 1,
+        file_size: MAX_REASSEMBLY_BYTES + 1,
+        whole_file_hash: [0; 32],
+        chunk_count: 1,
+        name: FILE_NAME.to_owned(),
+    };
+    rig.link.borrow_mut().inject(
+        Side::Bob,
+        encode(&oversized, &limits()).expect("kodlanır").bytes,
+    );
+    rig.clock.advance(TURN_TICK);
+    assert!(
+        rig.bob.turn().is_empty(),
+        "(3) FILE_BEGIN dosya motorunda tüketilir"
+    );
+    let control = rig.link.borrow().kinds_since(Side::Bob, since_app);
+    for exempt in ["PTT_CLOSE", "FILE_ABORT", "FILE_RECEIPT"] {
+        assert!(
+            control.iter().any(|(kind, _)| *kind == exempt),
+            "(3) muaf {exempt} Transport'a verilmeli: {control:?}"
+        );
+    }
+    for bulk in [
+        "TEXT",
+        "MEDIA_BUNDLE",
+        "SIGNALING_BLOB",
+        "FILE_BEGIN",
+        "FILE_CHUNK",
+        "FILE_END",
+    ] {
+        assert!(
+            !control.iter().any(|(kind, _)| *kind == bulk),
+            "(3) toplu {bulk} RECEIPT beklerken verilmemeli: {control:?}"
+        );
+    }
+
+    // (4) Kapasite açılır: Bob'un ilk kabul edilen kaydı RECEIPT(X).
+    let since_open = rig.link.borrow().send_count(Side::Bob);
+    let after = rig.open_capacity_and_run_turns();
+    let opened = rig.link.borrow().kinds_since(Side::Bob, since_open);
+    let first_accepted = opened
+        .iter()
+        .find(|(_, result)| result.is_ok())
+        .map(|&(kind, _)| kind);
+    assert_eq!(
+        first_accepted,
+        Some("RECEIPT"),
+        "(4) kapasite açılınca önce RECEIPT(X): {opened:?}"
+    );
+    assert_eq!(count_delivered(&after.alice, msg_id), 1);
+    assert_eq!(rig.bob.messenger.pending_receipts(ALICE), 0);
+}
+
+/// **(d-a) Kuyruktayken kapanış (rev3 M1; not Ek B.1).**
+///
+/// Bob'un RECEIPT(X)'i dolu Bob→Alice yönünde beklerken oturum iki uçta kapanır (`Closed(h)`);
+/// Alice kuyruğunu okur, yeni oturum kurulur. Beklenen: kapanış kuyruğu boşaltmaz; Bob
+/// `Ready(h')`'yi okuduğu turda RECEIPT(X)'i kuyruktan `h'`'ye kabul ettirir — Alice'in yeniden
+/// gönderdiği tekrar X henüz işlenmemişken (`duplicate_texts` 0) — ve Alice tam bir
+/// `Delivered(X)` görür. Öldürdüğü mutant: `retire`'da kuyruğu boşaltan (o turda `h'`'de kabul
+/// yok).
+#[test]
+fn receipt_queue_survives_session_change_a() {
+    let mut rig = Rig::with_full_bob_to_alice_queue();
+    let old = rig.session;
+    let msg_id = rig
+        .alice
+        .send_text(BOB, TEXT)
+        .expect("Alice→Bob yönünde yer var");
+    assert_eq!(rig.bob.turn(), vec![received(ALICE, msg_id, TEXT)]);
+    assert_eq!(
+        rig.bob.messenger.pending_receipts(ALICE),
+        1,
+        "ön koşul: RECEIPT(X) bekliyor"
+    );
+
+    let closed = MessengerEvent::Session(SessionEvent::Closed(old, CloseReason::PeerClosed));
+    for side in [Side::Alice, Side::Bob] {
+        rig.link
+            .borrow_mut()
+            .close_at(side, CloseReason::PeerClosed);
+    }
+    assert_eq!(rig.bob.turn(), vec![closed.clone()]);
+    assert_eq!(rig.bob.messenger.session_of(ALICE), None);
+    assert_eq!(
+        rig.bob.messenger.pending_receipts(ALICE),
+        1,
+        "kapanış kuyruğu boşaltmaz"
+    );
+    let alice_closed = rig.drain_alice();
+    assert_eq!(alice_closed.first(), Some(&closed), "Alice kapanışı okur");
+    assert!(rig.link.borrow().endpoint_ref(Side::Alice).inbox.is_empty());
+
+    let new = rig.link.borrow_mut().establish();
+    rig.clock.advance(TURN_TICK);
+    assert_eq!(
+        rig.bob.turn(),
+        vec![MessengerEvent::Session(SessionEvent::Ready(new, ALICE))]
+    );
+    let attempts = rig.link.borrow().receipt_attempts(Side::Bob, msg_id);
+    assert_eq!(
+        accepted_on(&attempts, new),
+        1,
+        "Ready(h')'nin turunda kuyruktan h''ye: {attempts:?}"
+    );
+    assert_eq!(
+        rig.bob.messenger.stats().duplicate_texts,
+        0,
+        "tekrar X henüz işlenmedi"
+    );
+    assert_eq!(count_delivered(&rig.drain_alice(), msg_id), 1);
+    rig.clock.advance(TURN_TICK);
+    assert!(rig.bob.turn().is_empty(), "tekrar X olay üretmez");
+    assert_eq!(count_delivered(&rig.drain_alice(), msg_id), 0);
+    assert_eq!(rig.bob.messenger.pending_receipts(ALICE), 0);
+    assert_eq!(rig.bob.messenger.stats().receipts_unsent, 0);
+}
+
+/// **(d-b) Geçiş `recv` anında, olaylar ters sırada (rev3 M1, DUR-05d-5 (a); not Ek B.1).**
+///
+/// Bob'un Transport'u supersession'ı X'i teslim eden `recv`'de öğrenir (`Link::supersede_on_next_recv`;
+/// client-core `recv` → `drive` aynası): eski tutamaç hemen `SessionSuperseded` döner ve olaylar
+/// `Closed(h)` önce, `Ready(h')` sonra gelir (`retire` → `adopt`). Beklenen RECEIPT(X) denemeleri:
+/// `h`'de iki `SessionSuperseded` (TEXT'in `poll`'u ve sonraki `poll`'un başı), sonra `Ready(h')`'nin
+/// `poll`'unda `h'`'de kabul — Alice'in yeniden gönderimi gelmeden. Alice tam bir `Delivered(X)`
+/// görür. Öldürdüğü mutant: yalnız `Backpressure`'ı geçici sayan sınıf (DUR-05d-5 (b); `h'`'ye
+/// kuyruktan sunum yok).
+#[test]
+fn receipt_queue_survives_session_change_b() {
+    let mut rig = Rig::connected();
+    let old = rig.session;
+    let msg_id = rig
+        .alice
+        .send_text(BOB, TEXT)
+        .expect("Alice→Bob yönünde yer var");
+    let new = rig.link.borrow_mut().supersede_on_next_recv(Side::Bob);
+    assert_eq!(
+        rig.bob.turn(),
+        vec![
+            received(ALICE, msg_id, TEXT),
+            MessengerEvent::Session(SessionEvent::Closed(old, CloseReason::Superseded)),
+            MessengerEvent::Session(SessionEvent::Ready(new, ALICE)),
+        ],
+        "Bob X'i teslim eder, sonra Closed(h) ve Ready(h') okur"
+    );
+    assert_eq!(
+        rig.link.borrow().receipt_attempts(Side::Bob, msg_id),
+        vec![
+            (old, Err(TransportError::SessionSuperseded)),
+            (old, Err(TransportError::SessionSuperseded)),
+            (new, Ok(())),
+        ],
+        "tut ve dur: h'de iki ret, sonra h''ye kuyruktan"
+    );
+    assert_eq!(rig.bob.messenger.stats().duplicate_texts, 0);
+    let alice = rig.drain_alice();
+    let switch_events = [
+        MessengerEvent::Session(SessionEvent::Ready(new, BOB)),
+        MessengerEvent::Session(SessionEvent::Closed(old, CloseReason::Superseded)),
+    ];
+    assert_eq!(alice.get(..switch_events.len()), Some(&switch_events[..]));
+    assert_eq!(count_delivered(&alice, msg_id), 1);
+    rig.clock.advance(TURN_TICK);
+    assert!(rig.bob.turn().is_empty(), "tekrar X olay üretmez");
+    assert_eq!(count_delivered(&rig.drain_alice(), msg_id), 0);
+    assert_eq!(rig.bob.messenger.pending_receipts(ALICE), 0);
+    assert_eq!(rig.bob.messenger.stats().receipts_unsent, 0);
+}
+
+/// **(d-c) Arka arkaya iki oturum değişimi (rev3 M1; not Ek B.1).**
+///
+/// Bob'un RECEIPT(X)'i dolu Bob→Alice yönünde beklerken iki supersession `h` → `h'` → `h''`; Bob
+/// dört olayı tek turda okur (her `adopt`'ta dolu yeni tutamaca sunum `Backpressure` alır). Alice
+/// okur, iki yeni tutamaçta da X'i yeniden yollar. Beklenen: RECEIPT(X)'in ilk kabulü `h''`'dedir;
+/// `h` ve `h'`'de kabul yok; Alice tam bir `Delivered(X)` görür — hiçbir TEXT "teslim edildi"siz
+/// kalmaz.
+#[test]
+fn receipt_queue_survives_session_change_c() {
+    let mut rig = Rig::with_full_bob_to_alice_queue();
+    let first = rig.session;
+    let msg_id = rig
+        .alice
+        .send_text(BOB, TEXT)
+        .expect("Alice→Bob yönünde yer var");
+    assert_eq!(rig.bob.turn(), vec![received(ALICE, msg_id, TEXT)]);
+
+    let second = rig.link.borrow_mut().supersede();
+    let third = rig.link.borrow_mut().supersede();
+    assert_eq!(
+        rig.bob.turn(),
+        vec![
+            MessengerEvent::Session(SessionEvent::Ready(second, ALICE)),
+            MessengerEvent::Session(SessionEvent::Closed(first, CloseReason::Superseded)),
+            MessengerEvent::Session(SessionEvent::Ready(third, ALICE)),
+            MessengerEvent::Session(SessionEvent::Closed(second, CloseReason::Superseded)),
+        ],
+        "Bob iki değişimi tek turda okur"
+    );
+    assert_eq!(rig.bob.messenger.session_of(ALICE), Some(third));
+    assert_eq!(
+        rig.bob.messenger.pending_receipts(ALICE),
+        1,
+        "RECEIPT(X) iki değişimden sağ çıktı"
+    );
+    let alice_switch = rig.drain_alice();
+    assert_eq!(rig.alice.session_of(BOB), Some(third));
+    rig.clock.advance(TURN_TICK);
+    assert!(rig.bob.turn().is_empty(), "tekrar X'ler olay üretmez");
+    let alice_after = rig.drain_alice();
+
+    let attempts = rig.link.borrow().receipt_attempts(Side::Bob, msg_id);
+    assert_eq!(
+        accepted_on(&attempts, first) + accepted_on(&attempts, second),
+        0,
+        "eski tutamaçlarda kabul yok: {attempts:?}"
+    );
+    assert_eq!(
+        attempts
+            .iter()
+            .find(|(_, result)| result.is_ok())
+            .map(|&(on, _)| on),
+        Some(third),
+        "ilk kabul h'''de: {attempts:?}"
+    );
+    assert_eq!(
+        count_delivered(&alice_switch, msg_id) + count_delivered(&alice_after, msg_id),
+        1,
+        "Alice tam bir Delivered({msg_id}) görür"
+    );
+    assert_eq!(rig.bob.messenger.pending_receipts(ALICE), 0);
+    assert_eq!(rig.bob.messenger.stats().receipts_unsent, 0);
+}
+
+/// **(e1) Kapanış borcu — bir kez kalıcı silme hatası (rev3 M1, DUR-05d-6 (a) zorunlu kol).**
+///
+/// Alice X'in RECEIPT'ini alır ama kalıcı kopyanın silmesi iki kez başarısız olur (`on_receipt`'in
+/// silmesi ve sonraki `poll`'un yeniden denemesi). Beklenen: teslim gerçektir (`Delivered`),
+/// `store_errors` 1 (yeniden deneme hatası yeniden sayılmaz); borç açıkken gönderen penceresi
+/// X'ten ölçülür — `X + MSG_DEDUP_WINDOW` ayrılamaz (`UnackedSpanFull { oldest: X }`); sıradaki
+/// `poll` silmeyi başarır, kalıntı kalkar ve aynı `msg_id` (yedek) gönderilir ve teslim edilir
+/// ("takılma yok"). Öldürdüğü mutantlar: borcu tutmayan gönderen (ilk `send_text` geçer); yeniden
+/// denemeyen gönderen (ikinci `send_text` de `UnackedSpanFull`).
+#[test]
+fn e1_closure_debt_holds_the_window_until_the_retry_succeeds() {
+    let store = Arc::new(FlakyRemoveStore::new());
+    let mut rig = Rig::connected_with(store.clone());
+    let first = rig
+        .alice
+        .send_text(BOB, TEXT)
+        .expect("Alice→Bob yönünde yer var");
+    assert_eq!(rig.bob.turn(), vec![received(ALICE, first, TEXT)]);
+    store.fail_remove(first, 2);
+    assert_eq!(rig.drain_alice(), vec![delivered(BOB, first)]);
+    assert_eq!(
+        rig.alice.stats().store_errors,
+        1,
+        "yeniden deneme hatası yeniden sayılmaz"
+    );
+    assert_eq!(store.outbox_ids(BOB), vec![first], "kalıntı depoda");
+
+    let far = first + MSG_DEDUP_WINDOW;
+    store.jump_msg_id(u64::from(far));
+    assert_eq!(
+        rig.alice.send_text(BOB, TEXT),
+        Err(MessengerError::UnackedSpanFull { oldest: first }),
+        "borç pencereyi tutar"
+    );
+    assert!(rig.drain_alice().is_empty(), "yeniden deneme olay üretmez");
+    assert!(
+        store.outbox_ids(BOB).is_empty(),
+        "yeniden deneme kalıntıyı sildi"
+    );
+    assert_eq!(
+        rig.alice.send_text(BOB, TEXT),
+        Ok(far),
+        "borç kapandı: yedek msg_id gönderilir"
+    );
+    assert_eq!(rig.bob.turn(), vec![received(ALICE, far, TEXT)]);
+    assert_eq!(rig.drain_alice(), vec![delivered(BOB, far)]);
+    assert_eq!(rig.alice.stats().store_errors, 1);
+}
+
+/// **(e2) Kapanış borcu — kalıcı silme hatası + yeniden başlatma (rev3 M1, DUR-05d-6 (a) zorunlu
+/// kol).**
+///
+/// Alice X'in kalıcı kopyasını silemez (depo yeniden başlatmaya dek bozuk). Pencerenin son değeri
+/// (`X + MSG_DEDUP_WINDOW − 1`) gönderilir ve teslim edilir; bir fazlası borç yüzünden ayrılmaz.
+/// Alice aynı depoyla yeniden başlar (depo iyileşti), yeni oturum kurulur. Beklenen: kalıntı X yeni
+/// oturumda yeniden gönderilir ve Bob'un penceresinin İÇİNDEDİR — tekrar sayılır
+/// (`duplicate_texts` 1), pencere altı değildir (`below_window_texts` 0, `receipts_window_pruned`
+/// 0); RECEIPT'i kalıntıyı kapatır. Öldürdüğü mutant: borcu tutmayan gönderen (bir fazlası
+/// gönderilir ve Bob'un penceresi X'in üstüne çıkar: kalıntı pencere altı olur).
+#[test]
+fn e2_closure_debt_survives_a_restart_and_the_residue_stays_inside_the_window() {
+    let store = Arc::new(FlakyRemoveStore::new());
+    let mut rig = Rig::connected_with(store.clone());
+    let first = rig
+        .alice
+        .send_text(BOB, TEXT)
+        .expect("Alice→Bob yönünde yer var");
+    assert_eq!(rig.bob.turn(), vec![received(ALICE, first, TEXT)]);
+    store.fail_remove(first, u32::MAX);
+    assert_eq!(rig.drain_alice(), vec![delivered(BOB, first)]);
+
+    let last = first + MSG_DEDUP_WINDOW - 1;
+    store.jump_msg_id(u64::from(last));
+    assert_eq!(
+        rig.alice.send_text(BOB, TEXT),
+        Ok(last),
+        "pencerenin son değeri"
+    );
+    assert_eq!(rig.bob.turn(), vec![received(ALICE, last, TEXT)]);
+    assert_eq!(rig.drain_alice(), vec![delivered(BOB, last)]);
+    assert_eq!(
+        rig.alice.send_text(BOB, TEXT),
+        Err(MessengerError::UnackedSpanFull { oldest: first }),
+        "bir fazlası borç yüzünden ayrılmaz"
+    );
+    assert_eq!(store.outbox_ids(BOB), vec![first], "kalıntı depoda");
+
+    // Yeniden başlatma: aynı depoyla yeni motor; depo iyileşti; yeni oturum.
+    store.heal();
+    rig.alice = Messenger::with_store(End::new(&rig.link, Side::Alice), store.clone())
+        .expect("limitler geçerli");
+    let old = rig.session;
+    let new = rig.link.borrow_mut().supersede();
+    let switch_events = |peer: PeerRef| {
+        vec![
+            MessengerEvent::Session(SessionEvent::Ready(new, peer)),
+            MessengerEvent::Session(SessionEvent::Closed(old, CloseReason::Superseded)),
+        ]
+    };
+    assert_eq!(rig.drain_alice(), switch_events(BOB));
+    assert_eq!(
+        rig.alice.stats().resent_on_new_session,
+        1,
+        "kalıntı yeni oturumda yeniden gönderildi"
+    );
+    rig.clock.advance(TURN_TICK);
+    assert_eq!(
+        rig.bob.turn(),
+        switch_events(ALICE),
+        "tekrar X olay üretmez"
+    );
+    let bob = rig.bob.messenger.stats();
+    assert_eq!(bob.duplicate_texts, 1, "kalıntı tekrar sayıldı");
+    assert_eq!(
+        bob.below_window_texts, 0,
+        "kalıntı alıcının penceresi içinde (budanmadı)"
+    );
+    assert_eq!(bob.receipts_window_pruned, 0);
+    assert_eq!(
+        rig.drain_alice(),
+        vec![delivered(BOB, first)],
+        "kalıntı kapandı (yeniden başlatma sonrası ikinci Delivered beyanlıdır)"
+    );
+    assert!(store.outbox_ids(BOB).is_empty());
+    let next = rig.alice.send_text(BOB, TEXT).expect("pencere açık");
+    assert!(next > last, "sayaç kaldığı yerden sürer");
 }
