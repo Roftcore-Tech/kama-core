@@ -77,8 +77,14 @@ const ACK_BLOCKS: u64 = MAX_ACK_RANGES as u64 + 1;
 /// Parçalama dolgusu: hedefin bloğunu ACK çerçevesinin dışına itmek için alıcıda hedefin üstünde
 /// `ACK_BLOCKS`'tan fazla blok gerekir; her tek sayılı dolgu bir boşluk açar (pay: 4 blok).
 const FRAG_FILLERS: u64 = 2 * (ACK_BLOCKS + 4);
-/// Tahliye dolgusu: her birinin ilk datagramı düşer → bir kayıp ilanı → bir tombstone.
-const CAP_FILLERS: u64 = TOMBSTONE_CAP as u64 + 4 * ACK_BLOCKS;
+/// Tahliye dolgusu: her birinin İLK İKİ datagramı düşer (orijinal + ilk ARQ yeniden gönderimi) →
+/// iki kayıp ilanı → iki tombstone; dolgu başına iki tombstone, tavanın yarısı + pay birimle.
+/// [K4G-05c] Eski hâl (`TOMBSTONE_CAP + 4 × ACK_BLOCKS` dolgu, birim başına bir tombstone) hedefin
+/// ARDINDAN 4096'dan fazla birim sunuyordu; 05c'nin gönderen mesafe kapısı (en yeni − en eski
+/// teyitsiz kimlik < `max_inflight_units` = 4096) teyitsiz hedeften 4095 kimlik ötesini almadığı
+/// için fazlası teklif kuyruğunda kalıyordu (ölçüm: `outstanding = 112`, motorda teyitsiz 1). Yol
+/// ve iddialar aynı; dolgu pencerenin içinde kalır (ön koşul testte denetlenir).
+const CAP_FILLERS: u64 = TOMBSTONE_CAP as u64 / 2 + 2 * ACK_BLOCKS;
 /// Bekleme boyunca trafik aralığı. Alıcı ACK_FREQ_N = 2 ile ilerleme ≈ 2 × bu aralıkta gelir; bu,
 /// tail-recovery PTO'sunun alt sınırının (`max_ack_delay` 25 ms) altındadır. Böylece hedefin
 /// kaydı prob emekliliğiyle çoğalmaz (birim başına kayıt sınırına ulaşmaz) ve kopyaları kayıp
@@ -249,6 +255,9 @@ struct NetState {
     target_open: bool,
     /// İlk DATA datagramı düşen birimler (orijinal kaybolur, yeniden gönderimler geçer).
     drop_first: BTreeSet<u64>,
+    /// [K4G-05c] İlk İKİ DATA datagramı düşen birimler (orijinal ve ilk yeniden gönderim kaybolur,
+    /// sonrakiler geçer) — tahliye kolu.
+    drop_first_two: BTreeSet<u64>,
     /// Hedef dışı DATA kapısı.
     data_gate: DataGate,
     /// Bekçi kanalı (hedef dışı DATA ve bütün ACK'ler).
@@ -306,6 +315,9 @@ impl NetState {
             return Forward::Drop;
         }
         if nth == 0 && self.drop_first.contains(&unit) {
+            return Forward::Drop;
+        }
+        if nth < 2 && self.drop_first_two.contains(&unit) {
             return Forward::Drop;
         }
         if !self.data_gate.admits(unit) {
@@ -842,8 +854,13 @@ async fn late_ack_after_ttl_keeps_payload() {
 }
 
 /// Envanter satır 2 — **TOMBSTONE_MAX tahliyesi**. Kurulum TTL koluyla aynı; ardından her birinin
-/// orijinali düşen 4096+ dolgu birimi bir TTL içinde 4096+ tombstone üretir ve en eski kayıt
+/// ilk iki iletimi düşen ≈ 2048 dolgu birimi bir TTL içinde 4096+ tombstone üretir ve en eski kayıt
 /// (hedefin orijinali) tavandan tahliye edilir. Sonra tutulan ACK gelir.
+///
+/// [K4G-05c] Fikstür, gönderen mesafe kapısının (hedef teyitsizken en çok hedef + 4095 kimlik)
+/// İÇİNDE kalacak biçimde yeniden kuruldu: tombstone'lar birim sayısıyla değil aynı birimlerin
+/// tekrarlanan kayıplarıyla üretilir (bkz. `CAP_FILLERS`). Yol (tahliye), ön koşullar (TTL alt
+/// sınırından önce düşüş, tablo tavana ulaştı) ve beş iddia DEĞİŞMEDİ.
 #[tokio::test(flavor = "multi_thread")]
 async fn late_ack_after_cap_keeps_payload() {
     let mut rig = Rig::new(cfg_no_fec()).await;
@@ -854,7 +871,13 @@ async fn late_ack_after_cap_keeps_payload() {
         .expect("hedefin orijinali geçti");
     let first = rig.next_unit;
     let end = first + CAP_FILLERS;
-    rig.net.with(|s| s.drop_first.extend(first..end));
+    let window = RuntimeConfig::default().max_inflight_units as u64;
+    assert!(
+        (end - 1) - t < window,
+        "ön koşul: dolgu gönderen mesafe kapısının içinde kalmalı (son kimlik {} − hedef {t} <          max_inflight_units {window})",
+        end - 1
+    );
+    rig.net.with(|s| s.drop_first_two.extend(first..end));
     let deadline = Instant::now() + CAP_WAIT;
     let mut max_tombs = 0u32;
     let gone_at = loop {
@@ -1261,10 +1284,51 @@ async fn late_ack_after_prune_keeps_payload() {
         .await;
 }
 
+/// [K4G-05c] Kurtarma görüntüsü örnekleyicisi: her YENİ görüntü (`taken_at`) bir kez sayılır; birim
+/// başına O(1) kaydın iki iddiasını (`seq_to_unit_len == 0`, `unit_seqs_len ≤ unacked_units`)
+/// ihlal eden görüntüler toplanır.
+#[derive(Default)]
+struct RecordSampler {
+    last: Option<Instant>,
+    /// Teyitsiz birim varken alınmış görüntü sayısı (iddianın boş geçmemesi için ön koşul).
+    busy: u32,
+    over: Vec<SenderRecoveryDiag>,
+}
+
+impl RecordSampler {
+    fn sample(&mut self, r: &Rig) {
+        let Some(rec) = r.client.live_diag().recovery else {
+            return;
+        };
+        if self.last == Some(rec.taken_at) {
+            return;
+        }
+        self.last = Some(rec.taken_at);
+        if rec.unacked_units > 0 {
+            self.busy += 1;
+        }
+        if rec.seq_to_unit_len != 0 || rec.unit_seqs_len > rec.unacked_units {
+            self.over.push(rec);
+        }
+    }
+}
+
+/// [K4G-05c] Birim kaydı testinde tutulan birim (bekçi kanalına ek; ilk evrede bütün iletimleri
+/// düşer) ve o evrede beklenen, teyitsiz birim varken alınmış görüntü sayısı.
+const RECORDS_HELD_UNIT: u64 = GUARD_UNITS / 2;
+const RECORDS_HELD_SAMPLES: u32 = 2;
+
 /// [K4G-05c · not §3.3 (ii), §6] Birim başına O(1) runtime kaydı: kayıp + yeniden sıralama
 /// kanalında (bekçi kanalı) HER kurtarma görüntüsünde `seq_to_unit_len == 0` ve gönderim kaydı
 /// girdisi (`unit_seqs_len`) ≤ teyitsiz birim (`unacked_units`); sonda ikisi de 0. Ön koşul:
-/// teyitsiz birim varken alınmış görüntü ve yeniden gönderim gerçekleşti (iddia boş geçmesin).
+/// teyitsiz birim varken alınmış görüntü ve yeniden gönderim (iddia boş geçmesin).
+///
+/// Fikstür (ilk koşudan sonra düzeltildi): bekçi kanalı loopback'te bütün birimleri iki görüntü
+/// arasında (`RECOVERY_DIAG_PERIOD` = 200 ms; ilk görüntü boş depoyla görev başında) teyit
+/// edebiliyordu — ölçüm: teyitsiz birimli görüntü 0, yeniden gönderim 138. Bu yüzden ilk evrede
+/// bir birimin (`RECORDS_HELD_UNIT`) bütün iletimleri düşer: o birim teyitsiz ve yeniden
+/// gönderilirken en az `RECORDS_HELD_SAMPLES` görüntü alınır; sonra kapı açılır ve bütün birimler
+/// teyit edilir. İddialar değişmedi.
 ///
 /// TABAN (05b): KIRMIZI beklenir — iletim → birim haritası yeniden gönderimle büyür
 /// (`seq_to_unit_len` ≥ teyitsiz birim > 0).
@@ -1279,28 +1343,32 @@ async fn unit_records_bounded_per_unit() {
             delay: GUARD_DELAY,
             ack_drop_ppm: GUARD_ACK_DROP_PPM,
         });
+        s.data_gate = DataGate::Except(std::iter::once(RECORDS_HELD_UNIT).collect());
     });
     for _ in 0..GUARD_UNITS {
         rig.send().await;
     }
-    let mut last: Option<Instant> = None;
-    let mut busy_samples = 0u32;
-    let mut over: Vec<SenderRecoveryDiag> = Vec::new();
+    let mut sampler = RecordSampler::default();
+    rig.wait(
+        "ön koşul: tutulan birim teyitsizken görüntüler ve yeniden gönderim",
+        WAIT,
+        |r| {
+            sampler.sample(r);
+            sampler.busy >= RECORDS_HELD_SAMPLES && r.client.live_diag().retransmits >= 1
+        },
+    )
+    .await;
+    rig.net.with(|s| s.data_gate = DataGate::All);
     rig.wait("bütün birimler teyit edilmeli", GUARD_WAIT, |r| {
-        if let Some(rec) = r.client.live_diag().recovery {
-            if last != Some(rec.taken_at) {
-                last = Some(rec.taken_at);
-                if rec.unacked_units > 0 {
-                    busy_samples += 1;
-                }
-                if rec.seq_to_unit_len != 0 || rec.unit_seqs_len > rec.unacked_units {
-                    over.push(rec);
-                }
-            }
-        }
+        sampler.sample(r);
         r.client.outstanding() == 0
     })
     .await;
+    let RecordSampler {
+        busy: busy_samples,
+        over,
+        ..
+    } = sampler;
     let retransmits = rig.client.live_diag().retransmits;
     assert!(
         busy_samples >= 1 && retransmits >= 1,
