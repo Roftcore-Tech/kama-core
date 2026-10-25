@@ -62,14 +62,20 @@
 //! | yanıtlayan, glare kaybı | bilet | `ConnectAbandoned(_, LocalPermanent)` | `Close` |
 //! | yanıtlayan, niyet yok | hiçbir şey | yok (S1 K2/K7) | `Close` |
 //! | yenileme cutover'ı | eski tutamaç | yok (aşağıda) | yenileme sürer |
-//! | provisional onayı | eski tutamaç | DUR-05g-1 | dokunulmaz |
+//! | yenileme yedek kolu | eski tutamaç | `Closed(eski, Superseded)` | yeni + eski `Close` |
+//! | provisional onayı | eski tutamaç | `Closed(eski, Superseded)` | yeni + eski `Close` |
 //!
 //! Niyeti olmayan yanıtlayanda tutamaç Application'a hiç verilmemiştir: `Ready`siz `Closed`
 //! K7'nin olay sırasını (`Ready` → … → `Closed`) bozardı. Yenilemede uç `AcceptResponse`'tan ÖNCE
 //! açılır (Crypto `Established`'de eski oturumu geri alınamaz biçimde drain'e alır); açılamazsa
-//! yanıt tutulur, eski oturum tam çalışır, cutover sonraki `drive`'da yeniden denenir. Provisional
-//! onayı Crypto'nun açma yolunda verilir ve eski oturumu kendisi drain'e alır: S1'de karşılığı yok,
-//! sahip kararına dek önceki davranış korunur (`activate_without_endpoint`).
+//! yanıt tutulur, eski oturum tam çalışır, cutover sonraki `drive`'da yeniden denenir.
+//!
+//! Yerine geçen oturumun ucu, Crypto eski oturumu ZATEN drain'e aldıktan sonra açılamazsa —
+//! provisional onayı (Crypto'nun açma yolunda verilir) ya da yenilemenin yedek kolu (yanıt
+//! Crypto'da yenilemeyle tutulmadan eşleşti, uç önceden açılmadı) — S1 K7'nin TEK istisnası
+//! uygulanır (DUR-05g-1 (a), CEVAP PAKETİ 15 §3): yeni oturum için `Ready` YAYIMLANMAZ, yeni
+//! Crypto oturumu kapatılır, eski oturum `Closed(eski, Superseded)` ile biter — etkin bir ardıl
+//! olmadan. Application eşi bağlantısız sayar ve yeniden `connect` eder (`abandon_successor`).
 //!
 //! Her başarısız deneme [`ClientTransport::endpoint_open_failures`]'ta sayılır.
 //! `ConnectAbandoned`'da `early_unit` gönderilmemiştir (S1 K6, §4); Application onu yeni
@@ -894,19 +900,14 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         if let Some(i) = self.renewals.iter().position(|r| r.pending == h) {
             let mut r = self.renewals.remove(i);
             self.hub_of.remove(&h);
-            let opened = r.endpoint.take().or_else(|| self.open_endpoint(h, r.peer));
-            if let Some(old) = self.sessions.get_mut(&r.old) {
-                if old.phase == Phase::Active {
-                    old.phase = Phase::Superseded;
-                }
-            }
-            match opened {
-                // Erken birim yok → başarısız olamaz.
+            match r.endpoint.take().or_else(|| self.open_endpoint(h, r.peer)) {
                 Some(opened) => {
+                    self.supersede(r.old);
+                    // Erken birim yok → başarısız olamaz.
                     let _ = self.activate(h, r.peer, None, opened);
                 }
-                // DUR-05g-1: Crypto eski oturumu ZATEN drain'e aldı (`activate_without_endpoint`).
-                None => self.activate_without_endpoint(h, r.peer),
+                // Yedek kol (DUR-05g-1 (a)): Crypto eski oturumu ZATEN drain'e aldı.
+                None => self.abandon_successor(h, r.old),
             }
             return;
         }
@@ -962,18 +963,24 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             return;
         };
         self.hub_of.remove(&new);
+        match self.open_endpoint(new, peer) {
+            Some(opened) => {
+                self.supersede(old);
+                // Erken birim yok → başarısız olamaz.
+                let _ = self.activate(new, peer, None, opened);
+            }
+            // DUR-05g-1 (a): onay Crypto'nun açma yolunda verildi ve eski oturum ZATEN drain'de.
+            None => self.abandon_successor(new, old),
+        }
+    }
+
+    /// Yerine geçen oturum S1'e açılırken eski oturum `send` kabul etmeyi bırakır (`Ready(h')` ile
+    /// `Closed(h)`'in okunması arası `SessionSuperseded`; S1 F0.2(i)).
+    fn supersede(&mut self, old: SessionHandle) {
         if let Some(s) = self.sessions.get_mut(&old) {
             if s.phase == Phase::Active {
                 s.phase = Phase::Superseded;
             }
-        }
-        match self.open_endpoint(new, peer) {
-            // Erken birim yok → başarısız olamaz.
-            Some(opened) => {
-                let _ = self.activate(new, peer, None, opened);
-            }
-            // DUR-05g-1: onay Crypto'nun açma yolunda verildi ve eski oturum ZATEN drain'de.
-            None => self.activate_without_endpoint(new, peer),
         }
     }
 
@@ -1162,25 +1169,40 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         }
     }
 
-    /// DUR-05g-1 (SAHİP KARARI BEKLİYOR) — yerine geçen oturumun ucu açılamadı ama Crypto eski
-    /// oturumu ZATEN yalnız-alım drain'e aldı (yenilemede `Established`, provisional'da
-    /// `Confirmed`; geri alınamaz, eski oturumun gönderimi Crypto'da kapandı). S1'in kapalı
-    /// olay/neden kümesinde "yerine geçen açılamadı" karşılığı yoktur; karar gelene dek önceki
-    /// davranış korunur: uçsuz `Active` + `Ready` (`send` → `NotConnected`). Sayaç
-    /// `open_endpoint`'te arttı.
-    fn activate_without_endpoint(&mut self, h: SessionHandle, peer: PeerRef) {
-        self.sessions.insert(
-            h,
-            Sess {
-                peer,
-                phase: Phase::Active,
-                endpoint: None,
-                sent: 0,
-                #[cfg(any(test, feature = "test-util"))]
-                drop_ids: Arc::new(Mutex::new(BTreeSet::new())),
-            },
-        );
-        self.events.push_back(SessionEvent::Ready(h, peer));
+    /// [K4G-05g / DUR-05g-1 (a) — S1 K7'nin TEK istisnası, CEVAP PAKETİ 15 §3] Yerine geçen
+    /// oturumun (provisional onayı ya da yenileme cutover'ının yedek kolu) yerel ucu açılamadı ve
+    /// Crypto eski oturumu ZATEN yalnız-alım drain'e aldı (`Confirmed` / `Established`; geri
+    /// alınamaz, eski oturumun gönderimi Crypto'da kapandı). Yeni oturum için `Ready` YAYIMLANMAZ,
+    /// yeni Crypto oturumu kapatılır (`abort_activation`); eski oturum `Closed(eski, Superseded)`
+    /// ile biter — etkin bir ardıl olmadan. Kapanış `close` ile aynı yoldur: uç bırakılır, sıralama
+    /// durumu silinir, eski oturumun bekleyen yenilemesi kapatılır ve Crypto'nun eski oturum için
+    /// vereceği TEK `Closed` (drain sonu ya da buradaki `Close`) yutulur — S1'e tam BİR `Closed`.
+    /// Eski oturum zaten `Active` değilse (başka bir ardıl `Ready` oldu ya da `Closed` kuyrukta)
+    /// yalnız yeni oturum kapatılır.
+    fn abandon_successor(&mut self, new: SessionHandle, old: SessionHandle) {
+        self.abort_activation(new);
+        let Some(s) = self.sessions.get_mut(&old) else {
+            return;
+        };
+        if s.phase != Phase::Active {
+            return;
+        }
+        s.phase = Phase::Closed;
+        // [K4G-05] Salt gözlem: uç bırakılmadan önce aynası kapanmış oturumlar toplamına eklenir.
+        if let Some(endpoint) = s.endpoint.take() {
+            if endpoint.live_diag_enabled() {
+                self.retired_diag.add_counters(&endpoint.live_diag());
+            }
+        }
+        self.reorder.remove(&old);
+        self.locally_closed.insert(old);
+        let _ = self.command(SessionCommand::Close { session: old });
+        if let Some(i) = self.renewals.iter().position(|r| r.old == old) {
+            let r = self.renewals.remove(i);
+            let _ = self.command(SessionCommand::Close { session: r.pending });
+        }
+        self.events
+            .push_back(SessionEvent::Closed(old, CloseReason::Superseded));
     }
 
     /// Oturumun veri ucunu açar. Açılamazsa (`peer_addrs`'ta eşin adresi yok ya da
