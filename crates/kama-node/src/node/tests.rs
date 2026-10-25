@@ -33,6 +33,10 @@ use crate::{KamaNode, NodeListener};
 /// Eşzamanlı connect (glare) — DR-CONNECT-1 #4 / K2 (`tests/glare.rs`).
 mod glare;
 
+/// [K4G-05g] Oturum ucu açılamazsa: provisional kolu ve başlatan kolu, yarım açık oturum dururken
+/// yeniden bağlanma (`tests/endpoint_failure.rs`).
+mod endpoint_failure;
+
 const ALICE: &str = "alice";
 const BOB: &str = "bob";
 const CAROL: &str = "carol";
