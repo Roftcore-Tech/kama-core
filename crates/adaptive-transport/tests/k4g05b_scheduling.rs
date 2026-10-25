@@ -432,23 +432,26 @@ fn one_way_100ms(_t: u64) -> u64 {
 /// TABANDA: KIRMIZI beklenir (kopya drenajı DATA'dan sonra, ilk token reddinde durur; pay yok).
 ///
 /// [K4G-05b rev6 · DUR-8 biçimi, FİKSTÜR + İDDİA 1; CEVAP PAKETİ 15 v3 K1 (c), K3] NEDEN DEĞİŞTİ
-/// (teşhis, 37b78aad ölçümü `kod-run/r5`): (a) ölçüm penceresi bayattı. Pencere başı, selin olduğu
-/// anda okunan vadeydi (PRE_CONVERGE çıkışı + RTO_MAX = 30.3 s). v1.1'de U'nun ARQ'su sel altında
-/// 37 B DATA tarafından aç bırakılıyordu (v1 ARQ↔DATA boy ters dönmesi) ve U'nun kopyası o vadede
-/// kalıyordu. rev6'da ARQ payı da rezerv alır (K3): U'nun ARQ yeniden gönderimleri selde de çıkar
-/// (hepsi düşer), ARQ_RETX_CAP'te birim geometrik sahibine devredilir ve vadesi ŞİMDİYE çekilir
-/// (madde 3, `copy_ensure_geometric(pull)`). Kopya ≈ 2 s'de çıkar; sonraki vade ≈ emisyon + 30 s ≈
-/// 32.1 s olur. [30.3 s, ≈ 32.1 s) aralığında U'nun vadeli kopya kaydı yoktur; oradaki DATA
-/// emisyonları doğrudur. Gerçek vadeden (rezervin gözlendiği j* = 1788) U'ya dek 0 DATA vardı; U
-/// ≈ 0.73 s sonra çıktı. YENİ FİKSTÜR: pencere başı = selden sonra U'nun kopya kaydının ARQ işi
-/// yokken vadesine İLK ulaştığı an (her adımda okunur). YENİ İDDİA 1 (K1 niteleyicisi "karşılık hakkı
-/// yokken" + A.4 rev6 (iii)): vadeden U'nun yeniden emisyonuna dek en çok iki DATA emisyonu vardır
-/// (Ek B.6 (h.3) T_max(kopya) dizisi: DATA hak sahibi → ARQ → DATA hak sahibi → kopya). U, vadeden
-/// sonra ≤ (2·37 + 1050 + 1050) B / pace_min + (K_ARQ_SHARE + 4) tur içinde yeniden gönderilir;
-/// pace_min = penceredeki en düşük tur sonu pacing hızı (değişken hızda biriken token). İDDİA 2 ve 3
-/// aynen. 2×2: eski kod + eski test YEŞİL · yeni kod + eski test KIRMIZI (ölçüldü: 62 DATA turu,
-/// bayat pencere) · yeni kod + yeni test YEŞİL · eski kod + yeni test YEŞİL (eski kodda U'nun ARQ'su
-/// aç kalır, ilk vade 30.3 s, vadeden sonra 0 DATA) [son iki hücre çıkarım; koordinatör ölçer].
+/// (teşhis; ölçüm `kod-run/r5` 37b78aad ve `kod-run/r6` 33938987): ölçüm penceresi bayattı. Pencere
+/// başı, selin olduğu anda okunan vadeydi (PRE_CONVERGE çıkışı + RTO_MAX = 30.3 s). v1.1'de U'nun
+/// ARQ'su sel altında 37 B DATA tarafından aç bırakılıyordu (v1 ARQ↔DATA boy ters dönmesi) ve U'nun
+/// kopyası o vadede kalıyordu. rev6'da ARQ payı da rezerv alır (K3): U'nun ARQ yeniden gönderimleri
+/// selde de çıkar (ölçüldü: 0.755 / 8.028 / 26.553 s, hepsi düşer). ARQ_RETX_CAP'te birim geometrik
+/// sahibine devredilir ve vadesi şimdiye çekilir (madde 3, `copy_ensure_geometric(pull)`; ölçülen
+/// gerçek vade 29.196 s — seldeki okumadan ÖNCE). U'nun kopyası 30.013 s'de, vadeden 0.817 s sonra
+/// çıktı; arada 0 DATA. Eski pencere 30.3 s'de başladığından bu kopyayı dışarıda bıraktı. Eski test
+/// 32.814 s'deki SONRAKİ kopyayı yakaladı; o kopyayı kopya kaybının later-ACK çekmesi üretir. Aradaki
+/// 62 DATA turu, U'nun vadeli kopya kaydı yokken çıkan DATA'dır. YENİ FİKSTÜR: pencere başı = selden
+/// sonra U'nun kopya kaydının, U'nun ARQ işi yokken vadesine İLK ulaştığı an (her adımda okunur).
+/// YENİ İDDİA 1 (K1 niteleyicisi "karşılık hakkı yokken" + A.4 rev6 (iii)): vadeden U'nun yeniden
+/// emisyonuna dek en çok iki DATA emisyonu (Ek B.6 (h.3) T_max(kopya) dizisi: DATA hak sahibi → ARQ →
+/// DATA hak sahibi → kopya); U vadeden sonra ≤ (2·37 + 1050 + 1050) B / pace_min + (K_ARQ_SHARE + 4)
+/// tur içinde yeniden gönderilir (pace_min = penceredeki en düşük tur sonu hızı; ölçüldü: 817 ms ≤
+/// 2711 ms). İDDİA 2 ve 3 aynen. 2×2: eski kod + eski test YEŞİL · yeni kod + eski test KIRMIZI
+/// (ölçüldü, r5: 62 DATA turu, bayat pencere) · yeni kod + yeni test YEŞİL (ölçüldü, r6) · eski kod +
+/// yeni test FİKSTÜR GEÇERSİZ (ölçüldü, r6: "gerçek vade" yok). Fikstür eski kodda kurulamaz: K3'e
+/// bağlıdır, eski kodda U'nun ARQ'su aç kalır ve "ARQ işi yokken vade" anı hiç oluşmaz. Bu kırmızı
+/// kanıt değildir.
 #[test]
 fn k4g05b_pay_mixed_size_reservation() {
     const TEST: &str = "k4g05b_pay_mixed_size_reservation";
