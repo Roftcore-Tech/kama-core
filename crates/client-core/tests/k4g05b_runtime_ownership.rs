@@ -33,8 +33,9 @@ use std::time::{Duration, Instant};
 
 use adaptive_transport::ack::{AckFrame, FRAME_TYPE_ACK, FRAME_TYPE_ACK_V2, MAX_ACK_RANGES};
 use client_core::runtime::{
-    ClientEndpoint, ClientHandle, ClientStats, FecRuntimeConfig, RuntimeConfig, RuntimeError,
-    SenderRecoveryDiag, ServerEndpoint, ServerHandle, ServerStats,
+    ClientEndpoint, ClientHandle, ClientStats, CtxDispatchCounters, ExpectedSessions,
+    FecRuntimeConfig, RuntimeConfig, RuntimeError, SenderRecoveryDiag, ServerEndpoint,
+    ServerHandle, ServerStats,
 };
 use client_core::seam::{IdentitySeam, IDENTITY_TAG};
 use client_core::wire::{decode_data, decode_fec};
@@ -487,6 +488,26 @@ impl Rig {
         )
         .await
         .expect("sunucu");
+        Self::with_server(server, cfg).await
+    }
+
+    /// [K4G-05c] OTURUM kipli veri alıcısı (`bind_expecting`; S1 kabul kuralı: oturum penceresi +
+    /// teslim kanalında sıra başı rezervi). `IdentitySeam`'in tek oturumu beklenir ve hazırdır.
+    async fn new_session_keyed(server_cfg: RuntimeConfig, client_cfg: RuntimeConfig) -> Self {
+        let server = ServerEndpoint::bind_expecting(
+            "127.0.0.1:0".parse().expect("adres"),
+            server_cfg,
+            Box::new(IdentitySeam::new()),
+            None,
+            ExpectedSessions::only(IdentitySeam::SESSION),
+            CtxDispatchCounters::new(),
+        )
+        .await
+        .expect("sunucu");
+        Self::with_server(server, client_cfg).await
+    }
+
+    async fn with_server(server: ServerHandle, cfg: RuntimeConfig) -> Self {
         let net = Net::start(server.local_addr()).await;
         let client = ClientEndpoint::connect(net.front, cfg, Box::new(IdentitySeam::new()))
             .await
@@ -514,6 +535,21 @@ impl Rig {
                 }
                 Some(dl) = self.server.next_delivery() => {
                     self.delivered.entry(dl.unit_id).or_insert(dl.payload);
+                }
+            }
+        }
+    }
+
+    /// [K4G-05c] Teslimleri OKUMADAN yalnız teyit akışını `d` boyunca boşaltır: uygulama (tüketici)
+    /// durur, veri alıcısının teslim kanalı dolar.
+    async fn pump_acks_only(&mut self, d: Duration) {
+        let until = tokio::time::Instant::now() + d;
+        loop {
+            tokio::select! {
+                () = tokio::time::sleep_until(until) => return,
+                Some(u) = self.client.acked() => {
+                    self.acked.push(u);
+                    self.acked_set.insert(u);
                 }
             }
         }
@@ -1285,4 +1321,158 @@ async fn unit_records_bounded_per_unit() {
     let (cs, _ss) = rig.finish().await;
     assert_eq!(cs.stale_decisions, 0, "{cs:?}");
     assert_eq!(cs.acked, GUARD_UNITS, "{cs:?}");
+}
+
+// ── K4G-05c: FEC dolu kanalda (not 3.6; CEVAP 11-EK §5, CEVAP 13 §7) ─────────────────────────
+
+/// Dolu kanal kolunun teslim kanalı: K − 1 (blok boyunun bir eksiği; not D.5) → tek blok kanalı
+/// doldurur, kurtarılan birime yer kalmaz.
+fn fec_full_channel_server_cfg() -> RuntimeConfig {
+    RuntimeConfig {
+        delivery_queue: usize::try_from(block_k() - 1).expect("küçük sayı"),
+        // R = min(max_peers, C − 1) = 1: tek oturumun sıra başı rezervi.
+        max_peers: 1,
+        ..cfg_fec_static()
+    }
+}
+
+/// Durak evresinin ön koşulu: kurtarım ya da yeniden gönderim en az bir kez reddedildi ve hedef
+/// dışındaki birimler teyitli (teslimler okunmaz).
+async fn fec_stall_until_refused(rig: &mut Rig, target: u64) {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        rig.pump_acks_only(STEP).await;
+        let refused = rig.server.ctx_dispatch_stats().full_refusals >= 1;
+        let others = (0..target).all(|u| rig.acked_set.contains(&u));
+        if refused && others {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "ön koşul: dolu kanalda ret ve hedef dışı teyit {WAIT:?} içinde olmadı — {}",
+            rig.describe()
+        );
+    }
+}
+
+/// Dolu kanalda durak penceresi: hedefin bu süre boyunca teyitsiz kaldığı gözlenir.
+const FEC_STALL_QUIET: Duration = Duration::from_secs(2);
+/// Drenaj tavanı: reddedilmiş birimin geri çekilmiş yeniden gönderimi (RTO_MAX 30 s) için pay.
+const FEC_DRAIN_WAIT: Duration = Duration::from_secs(90);
+/// Kol 2 deneme penceresi (drenajdan sonra; sonuç raporlanır, iddia edilmez).
+const FEC_ARM2_WINDOW: Duration = Duration::from_secs(10);
+
+/// [K4G-05c · not 3.6 KOL 1 (zorunlu), D.5; 11-EK §5] FEC DOLU KANALDA — kol 1. Oturum kipli alıcı,
+/// teslim kanalı K − 1, R = 1; tüketici durur. Blok 0'ın son biriminin (hedef) YALNIZ ilk
+/// emisyonu düşer; diğer K − 1 birim kanalı doldurur (sıra başı rezervle, kalanlar F − 1 ≥ R − U
+/// ile). Parite gelince blok çözülür ama kurtarılan hedefe yer yoktur → kurtarım reddedilir:
+/// RECOVERED listesine girmez (alıcının tutamadığı birim FEC teyidiyle de ACK'lenmez), hedef
+/// durakta teyitsiz kalır, yeniden gönderimi de reddedilir (`full_refusals`). Tüketici dönünce
+/// kaynak yeniden gönderimi ulaşır → ARQ ile K/K tamamlanır.
+///
+/// ESI mutantı (reddedilen kurtarımın ESI'si RECOVERED'a girerse) burada ölür: gönderen hedefi
+/// RECOVERED ile teyit eder, payload'u siler ve yeniden göndermez → drenajda hedef gelmez.
+#[tokio::test(flavor = "multi_thread")]
+async fn fec_full_channel_arm1_refused_recovery_completes_by_arq() {
+    let k = block_k();
+    let target = k - 1;
+    let mut rig = Rig::new_session_keyed(fec_full_channel_server_cfg(), cfg_fec_static()).await;
+    rig.net.with(|s| {
+        s.drop_first.insert(target);
+    });
+    for _ in 0..k {
+        rig.send().await;
+    }
+    fec_stall_until_refused(&mut rig, target).await;
+    rig.pump_acks_only(FEC_STALL_QUIET).await;
+    assert!(
+        !rig.acked_set.contains(&target),
+        "durakta hedef teyitsiz kalmalı: tutulamayan kurtarım RECOVERED ile teyit edilmemeli — \
+         teyitler {:?}",
+        rig.acked
+    );
+    // Drenaj: tüketici döner; hedef ARQ ile tamamlanır.
+    rig.wait("drenajda K/K teslim ve teyit", FEC_DRAIN_WAIT, |r| {
+        r.client.outstanding() == 0 && (r.delivered.len() as u64) == k
+    })
+    .await;
+    assert!(
+        (0..k).all(|u| rig.delivered.get(&u).is_some_and(|b| *b == body(u))),
+        "alıcı K birimi gerçek gövdeleriyle teslim etmeli"
+    );
+    let refusals = rig.server.ctx_dispatch_stats().full_refusals;
+    let (cs, ss) = rig.finish().await;
+    eprintln!(
+        "[FEC kol 1] full_refusals={refusals} fec_blocks_decoded={} fec_recovered_units={} \
+         acked={} fec_recovered_ctrl_units={}",
+        ss.fec_blocks_decoded, ss.fec_recovered_units, cs.acked, cs.fec_recovered_ctrl_units
+    );
+    assert!(
+        ss.fec_blocks_decoded >= 1,
+        "ön koşul: blok çözüldü (kurtarım üretildi ve reddedildi): {ss:?}"
+    );
+    assert_eq!(
+        ss.fec_recovered_units, 0,
+        "dolu kanalda kurtarım kanala girmedi; hedef ARQ'la geldi: {ss:?}"
+    );
+    assert_eq!(ss.delivery_dropped, 0, "{ss:?}");
+    assert_eq!(
+        (cs.acked, cs.fec_recovered_ctrl_units),
+        (k, 0),
+        "K birim ACK ile teyit, RECOVERED teyidi yok: {cs:?}"
+    );
+    assert_eq!(cs.stale_decisions, 0, "{cs:?}");
+}
+
+/// [K4G-05c · not 3.6 KOL 2 — DENEME; PoC garantisi DEĞİL (KATMAN 6 beyanlı sınırı; CEVAP 13 §7)]
+/// FEC DOLU KANALDA — kol 2. Kol 1 düzeneği, ama hedefin kaynağı KALICI kaybolur (bütün
+/// iletimleri düşer); onarım yeterlidir, kurtarım dolu kanalda reddedilir ve blok düşer.
+/// Tüketici döndükten sonra `FEC_ARM2_WINDOW` boyunca FEC üzerinden tamamlanma GÖZLENİR ve
+/// RAPORLANIR; iddia edilmez — tek başarılı koşu sınırı kaldırmaz, "FEC altında dayanıklılık
+/// sağlandı" DENMEZ. İddia yalnız R2 güvenliğidir: hedef teslim edilmedikçe teyit edilmez (sahte
+/// RECOVERED yok; oturum o birimde bekler), diğer birimler eksiksiz ve gövdeleri doğru, teslim
+/// düşüşü yok.
+#[tokio::test(flavor = "multi_thread")]
+async fn fec_full_channel_arm2_permanent_source_loss_is_reported_not_guaranteed() {
+    let k = block_k();
+    let target = k - 1;
+    let mut rig = Rig::new_session_keyed(fec_full_channel_server_cfg(), cfg_fec_static()).await;
+    rig.net
+        .with(|s| s.data_gate = DataGate::Except(std::iter::once(target).collect()));
+    for _ in 0..k {
+        rig.send().await;
+    }
+    fec_stall_until_refused(&mut rig, target).await;
+    rig.pump_acks_only(FEC_STALL_QUIET).await;
+    assert!(
+        !rig.acked_set.contains(&target),
+        "durakta hedef teyitsiz kalmalı — teyitler {:?}",
+        rig.acked
+    );
+    rig.pump(FEC_ARM2_WINDOW).await;
+    let completed = rig.delivered.contains_key(&target);
+    eprintln!(
+        "[FEC kol 2 — DENEME, garanti değil] hedef FEC üzerinden tamamlandı mı: {completed} \
+         (KATMAN 6 beyanlı sınırı: dolu kanalda FEC kurtarımı kaybolabilir; kaynak kalıcı kayıpsa \
+         oturum o birimde bekler)"
+    );
+    if completed {
+        assert_eq!(
+            rig.delivered.get(&target),
+            Some(&body(target)),
+            "tamamlandıysa gövde doğru olmalı"
+        );
+    } else {
+        assert!(
+            !rig.acked_set.contains(&target),
+            "R2 güvenliği: teslim edilmeyen hedef teyit edilmemeli (sahte RECOVERED) — teyitler {:?}",
+            rig.acked
+        );
+    }
+    assert!(
+        (0..target).all(|u| rig.delivered.get(&u).is_some_and(|b| *b == body(u))),
+        "hedef dışı birimler gerçek gövdeleriyle teslim edilmeli"
+    );
+    let (_cs, ss) = rig.finish().await;
+    assert_eq!(ss.delivery_dropped, 0, "{ss:?}");
 }
