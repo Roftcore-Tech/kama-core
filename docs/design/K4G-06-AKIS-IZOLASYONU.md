@@ -36,7 +36,7 @@
 
 ## 3. Akış modeli
 
-**Akış** = oturum içinde **tek yönlü** mantıksal kanal; açan (gönderen) taraf numaralar. `flow_id` u16, oturum ve yön başına monoton, **yeniden kullanılmaz** (tükenince oturum yenilenir, DUR-06-9). Akış 0 = kontrol şeridi (örtük açık; kredi tüketmez; tavanlı, §4).
+**Akış** = oturum içinde **tek yönlü** mantıksal kanal; açan (gönderen) taraf numaralar. `flow_id` u16, oturum ve yön başına monoton, **yeniden kullanılmaz** (tükenince oturum yenilenir, DUR-06-9). Akış 0 = **kontrol şeridi**: uygulama kontrol kayıtları (RECEIPT, FILE_RECEIPT, FILE_ABORT) için örtük açık, `Ordered`, `Reliable`, kredi tüketmeyen, katman 0'da tavanlı akış (§4); `open_flow(Control)` bu akışı döndürür. Transport iç kontrol çerçeveleri (FLOW_CREDIT, FLOW_BLOCKED, FLOW_RESET) akış birimi değildir, ayrı çerçeve tipleridir.
 
 **Üç kimlik (sahip §9.3 (1)):**
 
@@ -62,8 +62,8 @@
 | TEXT | BE (AC_BE) | `Ordered`, `Reliable` | oturum boyu tek akış |
 | SIGNALING_BLOB | BE | `Ordered`, `Reliable` | ayrı akış [öneri, DUR-06-15] |
 | Dosya | BK (AC_BK) | `Ordered`, `Reliable` | aktarım başına bir akış |
-| RECEIPT, FILE_RECEIPT, FILE_ABORT | CTRL (uygulama kontrolü) | `Ordered`, `Reliable`, birim boyu tavanlı | uygulama kontrol akışı |
-| Kredi / BLOCKED / RESET | CTRL (transport iç) | §7 | akış 0 ya da ACK yolu |
+| RECEIPT, FILE_RECEIPT, FILE_ABORT | CTRL (uygulama kontrolü) | `Ordered`, `Reliable`, birim boyu tavanlı | akış 0 (kontrol şeridi) |
+| Kredi / BLOCKED / RESET | CTRL (transport iç) | §7 | ayrı çerçeve: kredi alıcının ACK yolunda; BLOCKED/RESET gönderenin katman 0'ında |
 
 WMM adları Kama'da gecikme/adalet **garantisi vermez** (WMM MAC erişim kuyruklarını düzenler); garanti §5'teki zamanlayıcıdan ve onun türetiminden gelir (EK-1 §1.1).
 
@@ -71,7 +71,7 @@ WMM adları Kama'da gecikme/adalet **garantisi vermez** (WMM MAC erişim kuyrukl
 - **Tavan:** kontrol token kovası (oran ρ_C·r, kova b_C) [CAL] + kontrol birim boyu tavanı `max_control_unit_bytes` (yeni yetenek alanı; aşan → `UnitTooLarge`) + bekleyen kontrol kaydı tavanı.
 - **Koşullu asgari hizmet hakkı:** uygun kontrol işi varken ve kovada token varken katman 0 her şeyden önce seçilir → uzun dönemde ≥ ρ_C·r hizmet; kova boşsa bekler, diğer katmanları aç bırakmaz.
 - **Veri kredisinden bağımsızlık:** kredi ilanları alıcının ACK yolundan gider (sunucu soketi; bugün ACK'in gittiği yol `0c22a07d:runtime.rs:3971-3981`) — veri akışının arkasında değildir ve kredi tüketmez; gönderenin kontrol akışı da kredi tüketmez (alıcıda protokol tavanlı CTRL havuzu). "Kontrol göndermek için kontrol bekleme" döngüsü yoktur.
-- **Ayrı kaynak:** dosya kredisi bitse de CTRL havuzu ve uygulama kontrol akışı kullanılabilir (havuzlar ayrık, §7.2).
+- **Ayrı kaynak:** dosya kredisi bitse de CTRL havuzu ve akış 0 (kontrol şeridi) kullanılabilir (havuzlar ayrık, §7.2).
 
 **Kontrol envanteri ve bağımlılıklar** (EK-1 §1.1 (a)):
 
@@ -80,10 +80,10 @@ WMM adları Kama'da gecikme/adalet **garantisi vermez** (WMM MAC erişim kuyrukl
 | ACK_V2 (transport ACK, PN) | alıcı sunucu soketi; gönderen pacer'ından geçmez | gönderen uçuş/teyit/RTT | bugünkü gibi (ACK zamanlayıcısı 20 ms, `0c22a07d:runtime.rs:69`) | değişmez |
 | FLOW_CREDIT (yeni) | alıcı ACK yolu | gönderenin yeni verisi | tetikli (§7.4), kredi tüketmez | birleştirilmiş; CTRL kovası |
 | FLOW_BLOCKED (yeni) | gönderen katman 0 | alıcının yeniden ilanı | koşullu asgari hak | blok bölümü başına 1 + geri çekilmeli tekrar |
-| FLOW_RESET (yeni) | gönderen katman 0, güvenilir | alıcının akış kaynakları | akış açılırken yeri ayrılır | ≤ açık akış sayısı |
+| FLOW_RESET (yeni) | gönderen katman 0; teyidi alıcının sonraki FLOW_CREDIT'indeki kapalı-akış watermark'ı, teyide dek geri çekilmeli tekrar | alıcının akış kaynakları | akış açılırken yeri ayrılır | ≤ açık akış sayısı |
 | PARAM_SET/ACK, RECOVERED, CS_PROBE/ECHO | mevcut | FEC bağlaması, teyit, kuruluş | mevcut | değişmez (RECOVERED'a `flow_id`, §8) |
-| RECEIPT(delivered) — **uygulama alındısı, transport ACK değildir** | uygulama kontrol akışı | gönderen outbox kapanışı | katman 0 | gövde 5 B |
-| FILE_RECEIPT, FILE_ABORT | uygulama kontrol akışı | dosya aktarımının sonu | katman 0 | gövde 9 B / küçük |
+| RECEIPT(delivered) — **uygulama alındısı, transport ACK değildir** | akış 0 | gönderen outbox kapanışı | katman 0 | gövde 5 B |
+| FILE_RECEIPT, FILE_ABORT | akış 0 | dosya aktarımının sonu | katman 0 | gövde 9 B / küçük |
 | PTT_OPEN, PTT_CLOSE | konuşmanın VO akışı, `Reliable` | alıcının akışı başlatma/bitirme | VO; yeri açılışta ayrılır (§7.6) | konuşma başına 2 |
 
 ## 5. İki düzeyli zamanlayıcı ve seçim sözleşmesi (S7 önerisi)
@@ -143,7 +143,7 @@ WMM adları Kama'da gecikme/adalet **garantisi vermez** (WMM MAC erişim kuyrukl
 **7.6 Yaşam döngüsü (EK-1 §1.4).**
 - **Açılış:** örtük (§3); ilk kredi 7.3.
 - **FIN:** son birimde bayrak. Alıcı `fin_seq`'e dek her birimi uygulamaya verince akış durumu, tamponu ve taahhüdü serbest kalır; `MAX_FLOWS` ilerler. FIN'den sonra kullanılmamış kredi geçersizdir (gönderen FIN ötesine yazamaz).
-- **RESET (iptal):** gönderen `reset_flow` → motor akışın bütün birimlerini iptal eder (ARQ/kopya/parite adaylığından çıkar; uçuş kayıtları yalnız muhasebe; geç ACK teyit üretmez, çifte serbest bırakma yok) → CTRL'de güvenilir `FLOW_RESET(flow, final_seq)`. Alıcı tamponu atar, akışı kapalı işaretler (monoton kimlik → `closed_below` + ≤ MAX_FLOWS küme); kabul edilmiş ama gelmemiş veri `final_seq`'ten bilinir, beklenmez; geç birim ACK'lenip atılır (`late_after_reset`; kapasite kusuru DEĞİL).
+- **RESET (iptal):** gönderen `reset_flow` → motor akışın bütün birimlerini iptal eder (ARQ/kopya/parite adaylığından çıkar; uçuş kayıtları yalnız muhasebe; geç ACK teyit üretmez, çifte serbest bırakma yok) → katman 0'da `FLOW_RESET(flow, final_seq)`; teyit = alıcının FLOW_CREDIT'indeki kapalı-akış watermark'ı, gelene dek geri çekilmeli tekrar (idempotent). Alıcı tamponu atar, akışı kapalı işaretler (monoton kimlik → `closed_below` + ≤ MAX_FLOWS küme); kabul edilmiş ama gelmemiş veri `final_seq`'ten bilinir, beklenmez; geç birim ACK'lenip atılır (`late_after_reset`; kapasite kusuru DEĞİL).
 - **Gelecekteki CLOSE/RESET yükümlülüğüne yer:** gönderen akış açarken CTRL kuyruğunda bir RESET yuvası ayırır (toplam ≤ Σ MAX_FLOWS); `Live` akışta alıcı PTT_OPEN + PTT_CLOSE için 2 birimlik krediyi açılışta ayırır. Ayrılamıyorsa `open_flow` → `Backpressure` ("kuyruk şimdi dolu değil" yetmez; sessiz düşürme yok).
 - **Oturum değişimi:** akış taşınmaz; uygulama yeni oturumda yeni akış açar (TEXT eski `msg_id` ile yeniden gönderilir; dosya `FILE_ABORT(superseded)`; PTT yeniden OPEN — bugünkü kama-app kuralları).
 - **Medya expiry:** `Live` akışta sıra boşluğu teslimi durdurmaz (sırasız teslim); süresi dolan birim gönderende motor boyunca iptal edilir; eski ses kaybı yeni sesi durdurmaz. Kredi muhasebesi DUR-06-1'e bağlı.
@@ -166,7 +166,7 @@ WMM adları Kama'da gecikme/adalet **garantisi vermez** (WMM MAC erişim kuyrukl
 
 ## 10. kama-app ataması, PTT süre politikası, sesli mesaj (S5)
 
-- **Atama:** §4 tablosu. TEXT oturum boyu tek BE akışı; dosya aktarım başına BK akışı (`FILE_BEGIN … FILE_END`, FIN); uygulama kontrolü CTRL akışı; PTT konuşma başına VO `Live` akışı: ilk birim `PTT_OPEN` (`Reliable`), demetler `DeadlineBounded`, son birim `PTT_CLOSE` (`Reliable` + FIN). AMP kayıt baytları değişmez; AMP PTT-R0 ("üçü de Reliable", `0c22a07d:ptt.rs:20-24`) ve PTT-R3 (OPEN'sız demet DROP) değişir → AMP yaması (Ek A).
+- **Atama:** §4 tablosu. TEXT oturum boyu tek BE akışı; dosya aktarım başına BK akışı (`FILE_BEGIN … FILE_END`, FIN); uygulama kontrolü akış 0; PTT konuşma başına VO `Live` akışı: ilk birim `PTT_OPEN` (`Reliable`), demetler `DeadlineBounded`, son birim `PTT_CLOSE` (`Reliable` + FIN). AMP kayıt baytları değişmez; AMP PTT-R0 ("üçü de Reliable", `0c22a07d:ptt.rs:20-24`) ve PTT-R3 (OPEN'sız demet DROP) değişir → AMP yaması (Ek A).
 - **Alıcıda PTT:** demetler `flow_seq` ile gelir; OPEN'dan önce gelen demet sınırlı ön tamponda bekler (N [CAL], süre ≤ oynatma bütçesi); CLOSE, `flow_seq`'i kendisinden küçük demetler geldiğinde ya da süreleri dolduğunda akışı bitirir. Oynatma noktası media/kama-app'tedir: geç demet oynatılmaz ve sayılır.
 - **Süre politikası:** demet süresi = sunum + D_VO (profil, [CAL]); gönderen motor süresi dolanı DATA/ARQ/kopya/parite kuyruklarından iptal eder; güvenilir dosya/TEXT için "yükümlülüğü koru", canlı medya için "süre sonrası kurtarmayı bırak" ayrı ilkelerdir.
 - **Desteklenmeyen profil:** VO akışı ancak ölçülen teslim hızı kabul edilmiş VO profilini ρ_V,max içinde taşıyorsa açılır; değilse tipli hata → uygulama "desteklenmeyen profil" gösterir. ≈ 300 B/s yalnız deney başlangıcıdır (S5); desteklenen profil ölçümle belirlenir.
