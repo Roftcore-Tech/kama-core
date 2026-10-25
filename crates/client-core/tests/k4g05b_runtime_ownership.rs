@@ -84,14 +84,24 @@ const ACK_BLOCKS: u64 = MAX_ACK_RANGES as u64 + 1;
 /// Parçalama dolgusu: hedefin bloğunu ACK çerçevesinin dışına itmek için alıcıda hedefin üstünde
 /// `ACK_BLOCKS`'tan fazla blok gerekir; her tek sayılı dolgu bir boşluk açar (pay: 4 blok).
 const FRAG_FILLERS: u64 = 2 * (ACK_BLOCKS + 4);
-/// Tahliye dolgusu: her birinin İLK İKİ datagramı düşer (orijinal + ilk ARQ yeniden gönderimi) →
-/// iki kayıp ilanı → iki tombstone; dolgu başına iki tombstone, tavanın yarısı + pay birimle.
-/// [K4G-05c] Eski hâl (`TOMBSTONE_CAP + 4 × ACK_BLOCKS` dolgu, birim başına bir tombstone) hedefin
-/// ARDINDAN 4096'dan fazla birim sunuyordu; 05c'nin gönderen mesafe kapısı (en yeni − en eski
-/// teyitsiz kimlik < `max_inflight_units` = 4096) teyitsiz hedeften 4095 kimlik ötesini almadığı
-/// için fazlası teklif kuyruğunda kalıyordu (ölçüm: `outstanding = 112`, motorda teyitsiz 1). Yol
-/// ve iddialar aynı; dolgu pencerenin içinde kalır (ön koşul testte denetlenir).
-const CAP_FILLERS: u64 = TOMBSTONE_CAP as u64 / 2 + 2 * ACK_BLOCKS;
+/// Tahliye dolgusunun baştan düşen iletim sayısı: orijinal + iki ARQ yeniden gönderimi kaybolur
+/// (üç kayıp ilanı → üç tombstone); dördüncü iletim (ARQ tavanı 3 içinde) geçer.
+/// [K4G-05c · run3] İki kayıplı sürüm (dolgu başına iki tombstone, ara birim yok) tahliyeyi TTL alt
+/// sınırına çok yakın üretiyordu (tam client-core koşusunda hedef kaydı 25,33 s'de TTL'le düştü):
+/// her kayıp ilanı geçen bir sonraki iletimin ACK'ini bekliyordu; ilk iki iletim düştüğü için o
+/// kanıt kuyruk-probuyla (taban PTO ≈ 1,85 s, ×2 geri çekilme) geliyordu ve gönderen hızı küçük,
+/// uygulama-sınırlı ısınma evrelerinin teslim hızına bağlıydı.
+const CAP_DROPS: u32 = 3;
+/// Tahliye dolgusu: `CAP_DROPS` tombstone'luk birimler, tavan / `CAP_DROPS` + 2 × ACK_BLOCKS pay.
+/// Hedefin tombstone'undan sonra ≥ 3 × 1399 + 21 (parçalama) + hedefin kendi kayıpları ≈ 4221
+/// tombstone girer (tavan 4096; pay ≈ 125). Kimlikler gönderen mesafe kapısının içinde kalır
+/// (ön koşul testte denetlenir).
+const CAP_FILLERS: u64 = TOMBSTONE_CAP as u64 / CAP_DROPS as u64 + 2 * ACK_BLOCKS;
+/// Ara birim sıklığı: her bu kadar dolgudan sonra bütün iletimleri geçen bir birim. Onun ACK'i,
+/// önündeki kayıpları paket eşiğiyle (K ≥ 3 seq) hemen ilan ettirir — kayıp ilanı kuyruk-probu
+/// zamanlayıcısına bağlı kalmaz. Dolgu bittikten sonra da tahliye görülene dek `TRICKLE` aralığıyla
+/// (mesafe kapısı içinde) ara birim sunulur.
+const CAP_BALLAST_EVERY: u64 = 8;
 /// Bekleme boyunca trafik aralığı. Alıcı ACK_FREQ_N = 2 ile ilerleme ≈ 2 × bu aralıkta gelir; bu,
 /// tail-recovery PTO'sunun alt sınırının (`max_ack_delay` 25 ms) altındadır. Böylece hedefin
 /// kaydı prob emekliliğiyle çoğalmaz (birim başına kayıt sınırına ulaşmaz) ve kopyaları kayıp
@@ -262,9 +272,9 @@ struct NetState {
     target_open: bool,
     /// İlk DATA datagramı düşen birimler (orijinal kaybolur, yeniden gönderimler geçer).
     drop_first: BTreeSet<u64>,
-    /// [K4G-05c] İlk İKİ DATA datagramı düşen birimler (orijinal ve ilk yeniden gönderim kaybolur,
-    /// sonrakiler geçer) — tahliye kolu.
-    drop_first_two: BTreeSet<u64>,
+    /// [K4G-05c] Baştaki N DATA datagramı düşen birimler (birim → N; sonraki iletimler geçer) —
+    /// tahliye kolu.
+    drop_leading: BTreeMap<u64, u32>,
     /// Hedef dışı DATA kapısı.
     data_gate: DataGate,
     /// Bekçi kanalı (hedef dışı DATA ve bütün ACK'ler).
@@ -324,7 +334,7 @@ impl NetState {
         if nth == 0 && self.drop_first.contains(&unit) {
             return Forward::Drop;
         }
-        if nth < 2 && self.drop_first_two.contains(&unit) {
+        if self.drop_leading.get(&unit).is_some_and(|&n| nth < n) {
             return Forward::Drop;
         }
         if !self.data_gate.admits(unit) {
@@ -881,33 +891,65 @@ async fn late_ack_after_ttl_keeps_payload() {
         .await;
 }
 
-/// Envanter satır 2 — **TOMBSTONE_MAX tahliyesi**. Kurulum TTL koluyla aynı; ardından her birinin
-/// ilk iki iletimi düşen ≈ 2048 dolgu birimi bir TTL içinde 4096+ tombstone üretir ve en eski kayıt
-/// (hedefin orijinali) tavandan tahliye edilir. Sonra tutulan ACK gelir.
+/// Envanter satır 2 — **TOMBSTONE_MAX tahliyesi**. Kurulum TTL koluyla aynı; ardından dolgu
+/// birimlerinin kayıpları bir TTL içinde 4096+ tombstone üretir ve en eski kayıt (hedefin
+/// orijinali) tavandan tahliye edilir. Sonra tutulan ACK gelir.
 ///
-/// [K4G-05c] Fikstür, gönderen mesafe kapısının (hedef teyitsizken en çok hedef + 4095 kimlik)
-/// İÇİNDE kalacak biçimde yeniden kuruldu: tombstone'lar birim sayısıyla değil aynı birimlerin
-/// tekrarlanan kayıplarıyla üretilir (bkz. `CAP_FILLERS`). Yol (tahliye), ön koşullar (TTL alt
-/// sınırından önce düşüş, tablo tavana ulaştı) ve beş iddia DEĞİŞMEDİ.
+/// [K4G-05c] Fikstür gönderen mesafe kapısının (hedef teyitsizken en çok hedef + 4095 kimlik)
+/// İÇİNDE kalır ve tahliye en geç TTL alt sınırının YARISINDA gerçekleşir (run3: iki kayıplı
+/// sürüm tahliyeyi sınıra çok yakın üretti):
+/// - ısınma: hedeften ÖNCE, teklif kuyruğu boyu kadar bütün iletimleri geçen birim teyit edilir —
+///   gönderenin teslim-hızı kestirimi (BtlBw, 10 s pencere) uygulama-sınırlı küçük evrelerden değil,
+///   sınırsız bir teslimden gelir; dolgu evresi bu hızla pace edilir (INV-RATE-1: kayıp hızı
+///   düşürmez);
+/// - dolgu başına `CAP_DROPS` = 3 tombstone (tombstone başına en az iletim);
+/// - her `CAP_BALLAST_EVERY` dolguda ve dolgudan sonra bütün iletimleri geçen ara birim: kayıplar
+///   paket eşiğiyle hemen ilan edilir, kuyruk-probu (taban PTO ≈ 1,85 s, ×2 geri çekilme) yolda değil.
+/// Yol (tahliye), ön koşullar (TTL alt sınırının yarısından önce düşüş, tablo tavana ulaştı) ve beş
+/// iddia aynı; ölçülen tahliye anı `eprintln!` ile yazılır.
 #[tokio::test(flavor = "multi_thread")]
 async fn late_ack_after_cap_keeps_payload() {
     let mut rig = Rig::new(cfg_no_fec()).await;
+    let warmup = RuntimeConfig::default().offer_queue as u64;
+    for _ in 0..warmup {
+        rig.send().await;
+    }
+    rig.wait("ısınma birimleri teyit edilmeli", CAP_WAIT, |r| {
+        r.client.outstanding() == 0
+    })
+    .await;
     let t = rig.target_with_held_ack().await;
     let passed_at = rig
         .net
         .with(|s| s.target_passed_at)
         .expect("hedefin orijinali geçti");
+    // Plan: `first`'ten başlayarak her `CAP_BALLAST_EVERY` dolgudan sonra bir ara birim.
     let first = rig.next_unit;
-    let end = first + CAP_FILLERS;
+    let mut fillers: Vec<u64> = Vec::with_capacity(CAP_FILLERS as usize);
+    let mut id = first;
+    while (fillers.len() as u64) < CAP_FILLERS {
+        fillers.push(id);
+        id += 1;
+        if (fillers.len() as u64) % CAP_BALLAST_EVERY == 0 {
+            id += 1; // ara birim: düşürme kuralı yok
+        }
+    }
+    let end = id;
     let window = RuntimeConfig::default().max_inflight_units as u64;
     assert!(
         (end - 1) - t < window,
-        "ön koşul: dolgu gönderen mesafe kapısının içinde kalmalı (son kimlik {} − hedef {t} <          max_inflight_units {window})",
+        "ön koşul: dolgu gönderen mesafe kapısının içinde kalmalı (son kimlik {} − hedef {t} < \
+         max_inflight_units {window})",
         end - 1
     );
-    rig.net.with(|s| s.drop_first_two.extend(first..end));
+    rig.net.with(|s| {
+        s.drop_leading
+            .extend(fillers.iter().map(|&u| (u, CAP_DROPS)));
+    });
+    let bound = TTL_LOWER_BOUND / 2;
     let deadline = Instant::now() + CAP_WAIT;
     let mut max_tombs = 0u32;
+    let mut next_ballast = Instant::now();
     let gone_at = loop {
         let live = rig.client.live_diag();
         if let (Some(origin), Some(rec)) = (live.clock_origin, live.recovery) {
@@ -922,18 +964,30 @@ async fn late_ack_after_cap_keeps_payload() {
              {max_tombs}) — {}",
             rig.describe()
         );
-        let mut batch = 0;
-        while rig.next_unit < end && batch < CAP_BATCH {
+        if rig.next_unit < end {
+            let mut batch = 0;
+            while rig.next_unit < end && batch < CAP_BATCH {
+                rig.send().await;
+                batch += 1;
+            }
+        } else if Instant::now() >= next_ballast && rig.next_in_window() {
+            // Dolgudan sonra ara birim: kalan kayıpların ilan kanıtı.
             rig.send().await;
-            batch += 1;
+            next_ballast = Instant::now() + TRICKLE;
         }
         rig.pump(STEP).await;
     };
     let gone = gone_at.duration_since(passed_at);
+    eprintln!(
+        "[cap] tahliye anı (hedefin geçen iletiminden): {gone:?} (ön koşul ≤ {bound:?}); en büyük \
+         tombstone {max_tombs}; ısınma {warmup}, dolgu {CAP_FILLERS} × {CAP_DROPS} kayıp, \
+         sunulan kimlik {}..{}",
+        first, rig.next_unit
+    );
     assert!(
-        gone < TTL_LOWER_BOUND,
-        "ön koşul: kayıt TTL alt sınırından ({TTL_LOWER_BOUND:?}) önce düşmeli (tahliye); düştü: \
-         {gone:?}"
+        gone <= bound,
+        "ön koşul: kayıt TTL alt sınırının yarısından ({bound:?}) önce düşmeli (tahliye; TTL'den \
+         ayırt edilir); düştü: {gone:?}"
     );
     assert!(
         max_tombs >= TOMBSTONE_CAP,
