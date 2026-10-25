@@ -216,12 +216,17 @@ fn ack_frame(pn: u64) -> Vec<u8> {
 }
 
 /// Bu dosyanın düzeneklerinde `not_ready_drops` daima 0'dır (hazır olmayan oturum yok); INV
-/// testi o sayacı ayrıca okur.
+/// testi o sayacı ayrıca okur. [K4G-05c] Kabul/pencere sayaçları da bu düzeneklerde 0'dır (teslim
+/// kanalı dolmaz, gönderen pencere içinde kalır).
 fn stats(ctx_mismatch_drops: u64, hub_frames_dropped: u64) -> CtxDispatchStats {
     CtxDispatchStats {
         ctx_mismatch_drops,
         hub_frames_dropped,
         not_ready_drops: 0,
+        full_refusals: 0,
+        reorder_skip: 0,
+        reorder_window_violations: 0,
+        distance_holds: 0,
     }
 }
 

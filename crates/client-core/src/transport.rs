@@ -363,6 +363,7 @@ struct Renewal {
 /// [K4G-01b] Adaptör bunu OTURUM başına tutar (`ClientTransport::reorder`, `SessionHandle`
 /// anahtarlı): karşı ucun bir oturumu tek bir uçtur. `unit < next` ve tutulan birim için ikinci
 /// kopya YOK SAYILIR — aynı oturumun farklı eş yuvalarından gelen kopyaları burada tekilleşir.
+/// [K4G-05c · R1] Eksik birim atlanmaz; tampon `(next, next + cap]` penceresiyle sınırlıdır.
 #[derive(Default)]
 struct Reorder {
     next: u64,
@@ -381,8 +382,15 @@ pub struct ReorderDiag {
 }
 
 impl Reorder {
-    /// Birimi koyar; sırası gelen birimler `out`'a akar. Tutulan birim `cap`'i aşarsa en küçük
-    /// boşluk atlanır (motorun gönderim penceresi bunu meşru trafikte imkânsız kılar).
+    /// Birimi koyar; sırası gelen birimler `out`'a akar.
+    ///
+    /// [K4G-05c · R1] Boşluk ASLA atlanmaz: sıradaki eksik birim (`next`) gelene dek arkasındakiler
+    /// tutulur. Pencere `(next, next + cap]`'tır; tutulan birim sayısı bu yüzden ≤ `cap`
+    /// (SR-AUDIT-001). Pencere dışındaki birim (`unit − next > cap`) tutulmaz, düşer ve dönüş
+    /// `false` olur (çağıran `reorder_window_violations` sayar). S1'de bu yapısal olarak 0'dır:
+    /// veri alıcısı yalnız oturumun kabul penceresindeki birimi kabul eder (`runtime`
+    /// `AcceptState`), kabul tabanı `next`'in altında kalamaz (bkz. K4G-05c notu D.2 "`held ≤ cap`").
+    /// `unit < next` ve tutulan birimin ikinci kopyası yok sayılır (dönüş `true`).
     fn push(
         &mut self,
         unit: u64,
@@ -390,16 +398,14 @@ impl Reorder {
         payload: Vec<u8>,
         cap: usize,
         out: &mut VecDeque<Delivered>,
-    ) {
+    ) -> bool {
         if unit < self.next {
-            return; // veri alıcısının ilk-teslim penceresinin dışından gelen geç kopya
+            return true; // teslim edilmiş birimin geç kopyası
+        }
+        if unit - self.next > cap as u64 {
+            return false; // pencere ihlali: tutulmaz (atlama yok, sınırsız tampon yok)
         }
         self.held.entry(unit).or_insert((session, payload));
-        if self.held.len() > cap {
-            if let Some((&first, _)) = self.held.first_key_value() {
-                self.next = first;
-            }
-        }
         while let Some(entry) = self.held.first_entry() {
             if *entry.key() != self.next {
                 break;
@@ -408,6 +414,7 @@ impl Reorder {
             out.push_back(Delivered { session, unit });
             self.next = self.next.saturating_add(1);
         }
+        true
     }
 }
 
@@ -1074,10 +1081,18 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             // [K4G-01b] Sıra OTURUMUN (`h`), kaynak adresin (`d.peer`) değil: aynı adresten gelen
             // yeni oturum eski oturumun `next`'ine takılmaz; aynı oturumun başka bir yuvadan
             // (adres) gelen kopyası burada tekilleşir.
-            self.reorder
-                .entry(h)
-                .or_default()
-                .push(d.unit_id, h, d.payload, cap, &mut self.inbox);
+            // [K4G-05c · R1] Pencere ihlali sayılır (S1'de yapısal 0; > 0 veri alıcısının kabul
+            // penceresinin atlandığını gösterir).
+            let in_window = self.reorder.entry(h).or_default().push(
+                d.unit_id,
+                h,
+                d.payload,
+                cap,
+                &mut self.inbox,
+            );
+            if !in_window {
+                self.ctx_counters.add_reorder_window_violation();
+            }
         }
     }
 
@@ -1409,8 +1424,13 @@ mod tests {
         assert_eq!(got, [b"a".to_vec(), b"b".to_vec()]);
     }
 
+    /// [K4G-05c · DUR-8 Ek B.1; eski ad `reorder_is_bounded_and_advances_past_a_gap_only_over_cap`]
+    /// Fikstür aynı (cap 3, geliş 1, 2, 3, 4). Eski iddia boşluk atlamasını beklenen davranış diye
+    /// sabitliyordu (`[1, 2, 3, 4]`); R1 düzeltmesiyle (C9 §3, DUR-18) 4 pencere dışıdır ve
+    /// tutulmaz, 0 gelmeden hiçbir birim teslim edilmez. Eski kodda bu test KIRMIZIDIR (`out =
+    /// [1, 2, 3, 4]`; beklenen). Eksiksiz teslim (0 gelince 0..4) `p0_r1_reorder_never_skips_missing_reliable`'da.
     #[test]
-    fn reorder_is_bounded_and_advances_past_a_gap_only_over_cap() {
+    fn reorder_is_bounded_and_never_skips_a_gap() {
         let h = SessionHandle::from_raw(1);
         let mut r = Reorder::default();
         let mut out = VecDeque::new();
@@ -1420,11 +1440,83 @@ mod tests {
         assert!(out.is_empty(), "tavan dolmadan boşluk atlanmaz");
         r.push(4, h, vec![4], 3, &mut out);
         let got: Vec<u8> = out.into_iter().map(|d| d.unit[0]).collect();
+        assert!(
+            got.is_empty(),
+            "eksik birim 0 gelmeden hiçbir birim teslim edilmez (boşluk atlanmaz): {got:?}"
+        );
+        assert!(
+            r.held.len() <= 3,
+            "tampon pencereyle sınırlı kalmalı (held {} > cap 3)",
+            r.held.len()
+        );
+    }
+
+    /// [K4G-05c P0 · R1] `Reorder` eksik bir `Reliable` birimi ASLA atlamamalı.
+    ///
+    /// BULGU (R1, CEVAP 9 §3/§4; inceleme S07/S28): `Reorder::push`, tutulan birim sayısı
+    /// `cap`'i aşınca `next`'i tutulan ilk birime ilerletiyordu; eksik birim sonradan gelince
+    /// `unit < next` dalında sessizce, sayaçsız atılıyordu. Veri alıcısı o birimi Reorder'dan ÖNCE
+    /// ACK'lemişti → gönderen payload'u siler → kalıcı kayıp. Ürün cap'i `max_inflight_units` =
+    /// 4096; burada aynı mekanizma cap = 3 ile sınanır (tetik mesafesi cap + 1 birim).
+    ///
+    /// DÜZENEK: geliş sırası `1, 2, 3, 4, 0`, ardından `4` YENİDEN. Son adım gönderenin
+    /// modelidir: K4G-05c tasarımında (CEVAP 9 §3) `held > cap` gönderen ihlalidir, pencere
+    /// dışındaki en yeni birim (4) ACK'siz düşer ve gönderen onu yeniden yollar. Tabanda bu
+    /// tekrar `unit < next` ile yok sayılır — sonucu değiştirmez; düzeltmede 4'ü teslim eden
+    /// adımdır. Böylece test yalnız "sonunda 0..4 eksiksiz ve sıralı, tampon sınırlı"
+    /// sözleşmesini sınar, düzeltmenin iç seçimini (4'ü tutmak ya da ACK'siz düşürmek) değil.
+    ///
+    /// TABANDA (P0 `k4g/p0-taban` @df7c9e62): KIRMIZI — teslim `[1, 2, 3, 4]`; 0 atılır. Sınır
+    /// iddiası (`held.len() <= cap`) tabanda YEŞİLDİR; cap denetimini kaldıran (sınırsız bellek)
+    /// bir "düzeltme"yi yakalamak için oradadır.
+    #[test]
+    fn p0_r1_reorder_never_skips_missing_reliable() {
+        const CAP: usize = 3;
+        let h = SessionHandle::from_raw(1);
+        let mut r = Reorder::default();
+        let mut out = VecDeque::new();
+        for u in [1u64, 2, 3, 4, 0, 4] {
+            r.push(u, h, vec![u as u8], CAP, &mut out);
+            assert!(
+                r.held.len() <= CAP,
+                "R1: Reorder tamponu sınırlı kalmalı (held {} > cap {CAP}, birim {u} \
+                 sonrası) — atlamayı cap denetimini kaldırarak gidermek sınırsız bellek \
+                 demektir (SR-AUDIT-001)",
+                r.held.len()
+            );
+        }
+        let got: Vec<u8> = out.into_iter().map(|d| d.unit[0]).collect();
         assert_eq!(
             got,
-            [1, 2, 3, 4],
-            "tavan aşılınca en küçük boşluk atlanır, sıra korunur"
+            [0, 1, 2, 3, 4],
+            "R1 KUSURU: eksik Reliable birim 0 atlandı. `held.len() > cap` olunca `next` \
+             tutulan ilk birime ilerledi; geç gelen 0 `unit < next` dalında sayaçsız atıldı. \
+             Veri alıcısı 0'ı Reorder'dan önce ACK'lediği için gönderen onu bir daha yollamaz — \
+             kalıcı sessiz kayıp; teslim sırası da bozuk."
         );
+        assert!(r.held.is_empty(), "teslimden sonra tutulan birim kalmamalı");
+    }
+
+    /// [K4G-05c · R1] Pencere ihlali tutulmaz ve çağırana bildirilir (`reorder_window_violations`
+    /// sayacının girdisi); pencere içi birim ve geç kopya ihlal sayılmaz.
+    #[test]
+    fn reorder_reports_window_violation_and_holds_nothing_outside() {
+        let h = SessionHandle::from_raw(2);
+        let mut r = Reorder::default();
+        let mut out = VecDeque::new();
+        assert!(
+            r.push(3, h, vec![3], 3, &mut out),
+            "3 − 0 = 3 ≤ cap: pencere içi"
+        );
+        assert!(!r.push(4, h, vec![4], 3, &mut out), "4 − 0 > cap: ihlal");
+        assert_eq!(r.held.keys().copied().collect::<Vec<_>>(), [3]);
+        for u in 0..3 {
+            assert!(r.push(u, h, vec![u as u8], 3, &mut out));
+        }
+        assert!(r.push(1, h, vec![1], 3, &mut out), "geç kopya ihlal değil");
+        let got: Vec<u8> = out.into_iter().map(|d| d.unit[0]).collect();
+        assert_eq!(got, [0, 1, 2, 3]);
+        assert!(r.held.is_empty());
     }
 
     /// [K4G-11] Salt-okunur erişimciler taze ürün adaptöründe: Crypto'nun tutmadığı tutamacın

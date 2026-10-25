@@ -1286,6 +1286,10 @@ struct CtxDispatchCells {
     ctx_mismatch_drops: AtomicU64,
     hub_frames_dropped: AtomicU64,
     not_ready_drops: AtomicU64,
+    full_refusals: AtomicU64,
+    reorder_skip: AtomicU64,
+    reorder_window_violations: AtomicU64,
+    distance_holds: AtomicU64,
 }
 
 impl CtxDispatchCounters {
@@ -1302,6 +1306,10 @@ impl CtxDispatchCounters {
             ctx_mismatch_drops: self.0.ctx_mismatch_drops.load(Ordering::Relaxed),
             hub_frames_dropped: self.0.hub_frames_dropped.load(Ordering::Relaxed),
             not_ready_drops: self.0.not_ready_drops.load(Ordering::Relaxed),
+            full_refusals: self.0.full_refusals.load(Ordering::Relaxed),
+            reorder_skip: self.0.reorder_skip.load(Ordering::Relaxed),
+            reorder_window_violations: self.0.reorder_window_violations.load(Ordering::Relaxed),
+            distance_holds: self.0.distance_holds.load(Ordering::Relaxed),
         }
     }
 
@@ -1315,6 +1323,28 @@ impl CtxDispatchCounters {
 
     fn add_not_ready(&self) {
         self.0.not_ready_drops.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// [K4G-05c · R2] Teslim kanalında yer yok: birim ACK'siz reddedildi.
+    fn add_full_refusal(&self) {
+        self.0.full_refusals.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// [K4G-05c · R2] Birim oturumun kabul penceresinin dışında: ACK'siz reddedildi.
+    fn add_reorder_skip(&self) {
+        self.0.reorder_skip.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// [K4G-05c · R1] S1 adaptörünün sıralama penceresi dışındaki birim (yapısal 0).
+    pub(crate) fn add_reorder_window_violation(&self) {
+        self.0
+            .reorder_window_violations
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// [K4G-05c · R1] Gönderende birim-kimliği mesafe kapısının sunumu beklettiği bölüm sayısı.
+    fn add_distance_hold(&self) {
+        self.0.distance_holds.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -1331,6 +1361,20 @@ pub struct CtxDispatchStats {
     /// girmeden, ACK'siz düşürüldü; gönderen ARQ ile yeniden yollar. Güvenlik sayacı DEĞİLDİR:
     /// `Ready` / onay geçişleri çevresinde olağan akışta da artar (`ctx_mismatch_drops`'tan ayrı).
     pub not_ready_drops: u64,
+    /// [K4G-05c · R2] Teslim kanalında yer olmadığı için ACK'siz reddedilen DATA / FEC kurtarımı
+    /// (`Refuse(Full)`): birim alıcı motoruna, blok birleştiriciye ve kanala girmez; gönderen
+    /// yeniden yollar. Tüketici durduğunda olağan akışta artar.
+    pub full_refusals: u64,
+    /// [K4G-05c · R2] Oturumun kabul penceresinin (`max_inflight_units`) dışında kaldığı için
+    /// ACK'siz reddedilen birim (`Refuse(Window)`). Gönderenin mesafe kapısı bunu meşru trafikte
+    /// önler; > 0 gönderen ihlalidir.
+    pub reorder_skip: u64,
+    /// [K4G-05c · R1] S1 adaptörünün sıralama penceresi dışında kalıp düşen birim. Veri alıcısının
+    /// kabul penceresi bunu yapısal olarak 0 tutar; > 0 kabul kararının atlandığını gösterir.
+    pub reorder_window_violations: u64,
+    /// [K4G-05c · R1] Gönderende en yeni ile en eski teyitsiz birim arasındaki kimlik mesafesi
+    /// `max_inflight_units`'e ulaştığı için bekleyen sunumun alınmadığı bölüm sayısı.
+    pub distance_holds: u64,
 }
 
 /// [K4G-01 / INV-ACK-DELIVER-1] Beklenen bir tutamacın teslim hazırlığı.
@@ -3988,6 +4032,10 @@ mod ctx_first_tests {
             ctx_mismatch_drops: 0,
             hub_frames_dropped: 1,
             not_ready_drops: 0,
+            full_refusals: 0,
+            reorder_skip: 0,
+            reorder_window_violations: 0,
+            distance_holds: 0,
         };
         assert_eq!(counters.snapshot(), want);
     }
