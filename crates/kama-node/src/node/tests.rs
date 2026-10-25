@@ -10,7 +10,7 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use kama_app::codec::{AppMessage, EncodeError, PttCodec};
 use kama_app::file_transfer::{
@@ -54,6 +54,9 @@ const BUNDLE_BYTE: u8 = 0x5A;
 /// Taşma testinde bir adımda verilen en çok demet (geri basınca dek): adımı kısa tutar; değer
 /// sonucu belirlemez, koşul her adımda yeniden denetlenir.
 const PUSH_BURST: usize = 256;
+/// [K4G-05c] Dolu kanal testinde göndericinin teyitsiz birim sayısı bu süre değişmezse teslim akışı
+/// durmuş sayılır (koşul olaydır; üst sınır `support::WAIT`).
+const STALL_QUIET: Duration = Duration::from_secs(3);
 
 /// Zamanlayıcı kontrolü: eşiğin bu kadar ALTINDA süre dolmamış olmalı. Saat elle ilerler;
 /// değer yalnız eşikten ayırt edilebilir olmalı.
@@ -421,15 +424,23 @@ fn connect_after_cancel_in_one_batch_keeps_the_abandoned_event() {
 /// reddedilir ve yeniden gönderilir: Bob döngüye girince `Ok` alan her demet tam bir kez gelir,
 /// ölçüdeki taşma 0 kalır. Demet içerikleri aynı olduğundan sıra iddiası yoktur. Eski kodda bu
 /// test KIRMIZIDIR (gelen demet < `Ok`; beklenen).
+///
+/// Taşmanın kuruluşu (run2 düzeltmesi: ilk sürüm Bob'u demetler hâlâ yoldayken başlatıyordu, Bob'un
+/// döngüsü kanalı boşalttı ve taşma hiç oluşmadı — eski kodda yeşil, M03 altında yeşil): iki uç da
+/// elle sürülür; Alice geri basınçta yeniden deneyerek TAM `delivery_queue + 1` demet kabul ettirir,
+/// sonra Alice'in Transport'undaki teyitsiz birim sayısı `STALL_QUIET` boyunca değişmeyene dek
+/// beklenir — Bob sürülmediği için teslim kanalı bu sürede yalnız dolar. Eski kod: bütün demetler
+/// ACK'lenir (teyitsiz 0), kanalı aşan demet düşer. 05c: kanal sıra başı rezervine dek dolar,
+/// kalanı ACK'siz reddedilir (teyitsiz > 0, yeniden gönderim bekler). Bob ancak bundan sonra döner.
 #[test]
 fn delivery_channel_full_refuses_and_node_metrics_stay_zero() {
     let _serial = support::serial();
     let root = TempDir::new("delivery-overflow");
     let phones = support::provision(root.path(), &[ALICE, BOB]);
+    let (mut alice, mut alice_events) = support::manual(&phones[ALICE], support::system_clock());
     let (mut bob, mut bob_events) = support::manual(&phones[BOB], support::system_clock());
-    let (alice, mut alice_events) = support::threaded(&phones[ALICE]);
-    connect_to_manual(
-        &alice,
+    connect_manuals(
+        &mut alice.node,
         &mut alice_events,
         ALICE,
         &mut bob.node,
@@ -442,31 +453,50 @@ fn delivery_channel_full_refuses_and_node_metrics_stay_zero() {
         "taşma öncesi"
     );
 
-    let stream = alice
-        .ptt_open(BOB, PttCodec::Lyra, BUNDLE_MS)
-        .expect("ptt_open");
+    // ── Bob bundan sonra sürülmez (teslim kanalını boşaltan adaptör çağrılmaz). ──
+    let to_bob = peer_of(&alice.node, BOB);
+    let stream = call(&mut alice.node, |reply| Command::PttOpen {
+        peer: to_bob,
+        codec: PttCodec::Lyra,
+        bundle_ms: BUNDLE_MS,
+        reply,
+    })
+    .expect("ptt_open");
     // Bob'un ürün profili teslim kanalı (`delivery_queue`) + 1: kanalı aşan en az bir demet.
     let target = client_core::runtime::RuntimeConfig::default().delivery_queue + 1;
     let mut pushed = 0usize;
-    support::until(
-        "alice: kanal tavanı + 1 demet sunuldu ya da geri basınç",
-        || {
-            for _ in 0..PUSH_BURST {
-                if pushed >= target {
-                    return Some(());
-                }
-                match alice.ptt_push(stream, vec![BUNDLE_BYTE; BUNDLE_LEN]) {
-                    Ok(()) => pushed += 1,
-                    // Geri basınç: Transport demeti almadı; sunum burada biter.
-                    Err(NodeError::Ptt(PttError::Transport(TransportError::Backpressure))) => {
-                        return Some(());
-                    }
-                    Err(other) => panic!("ptt_push: {other:?}"),
-                }
+    support::until("alice: kanal tavanı + 1 demet kabul edildi", || {
+        for _ in 0..PUSH_BURST {
+            if pushed >= target {
+                return Some(());
             }
-            (pushed >= target).then_some(())
-        },
-    );
+            match call(&mut alice.node, |reply| Command::PttPush {
+                stream,
+                payload: vec![BUNDLE_BYTE; BUNDLE_LEN],
+                reply,
+            }) {
+                Ok(()) => pushed += 1,
+                // Geri basınç: Transport demeti almadı; sonraki adımda yeniden denenir.
+                Err(NodeError::Ptt(PttError::Transport(TransportError::Backpressure))) => {
+                    return None;
+                }
+                Err(other) => panic!("ptt_push: {other:?}"),
+            }
+        }
+        (pushed >= target).then_some(())
+    });
+    // Teslim akışı durana dek (Alice'in teyitsiz birim sayısı STALL_QUIET boyunca sabit).
+    let outstanding = |alice: &NodeLoop| alice.messenger.transport().outstanding_for_test();
+    let mut last = outstanding(&alice.node);
+    let mut since = Instant::now();
+    support::until("alice: teyit akışı durmalı (Bob sürülmüyor)", || {
+        let now = outstanding(&alice.node);
+        if now != last {
+            last = now;
+            since = Instant::now();
+        }
+        (since.elapsed() >= STALL_QUIET).then_some(())
+    });
 
     // Ürün döngüsü (`run`): `Ok` alan her demet tam bir kez gelir; ölçüde taşma yok.
     let bob = KamaNode::spawn(bob).expect("düğüm iş parçacığı");
