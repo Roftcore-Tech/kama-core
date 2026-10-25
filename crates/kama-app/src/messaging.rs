@@ -354,9 +354,6 @@ pub struct MessengerStats {
     /// Bekleyen kuyrukta kalan yeni RECEIPT (ilk sunumu `Backpressure` aldı ya da önünde bekleyen
     /// vardı; birleşen tekrar sayılmaz).
     pub receipts_deferred: u64,
-    /// Kuyruk taşmasında düşen RECEIPT (`receipts_unsent`'in alt kümesi). Uyumsuz eşte ya da oturum
-    /// değişimi sonrası birikimde > 0 olabilir.
-    pub receipts_evicted: u64,
     /// ANLIK değer, sayaç değil: `stats()` anında bütün eşlerin bekleyen RECEIPT sayısı.
     pub receipts_pending: u64,
     /// Outbox'ta karşılığı olmayan `RECEIPT(delivered)`'lar (tekrar ya da bilinmeyen `msg_id`).
@@ -1205,13 +1202,7 @@ fn owe_receipt<T: KamaTransport>(
             ReceiptOffer::Deferred => {}
         }
     }
-    // Kuyruğun yalnız sonuna eklenir; dolu kuyruğu `Messenger::poll` başı sunar. Sınır eklemeden
-    // ÖNCE (SR-AUDIT-001): tavanda en eski kayıt düşer (DUR-05d-1).
-    if state.pending_receipts.len() >= MAX_OUTBOX_UNACKED {
-        state.pending_receipts.pop_front();
-        stats.receipts_evicted += 1;
-        stats.receipts_unsent += 1;
-    }
+    // Kuyruğun yalnız sonuna eklenir; dolu kuyruğu `Messenger::poll` başı sunar.
     state.pending_receipts.push_back(ref_msg_id);
     stats.receipts_deferred += 1;
 }
@@ -2071,54 +2062,6 @@ mod tests {
         u64::try_from(n).expect("küçük sayı")
     }
 
-    /// K4G-05d **T1** (not Ek B.2; yalnız 05d — yeni API, tabanda derlenmez): taşmada EN ESKİ
-    /// bekleyen RECEIPT düşer ve sayılır (DUR-05d-1). Geri basınç sürerken eşten
-    /// `MAX_OUTBOX_UNACKED` + 1 farklı `msg_id` gelir: kuyruk tavanda kalır, `receipts_evicted` = 1
-    /// ve düşen kayıt `receipts_unsent`'te de sayılır (alt küme). Kapasite açılınca kalanlar doğuş
-    /// sırasıyla, her biri bir kez kabul edilir; düşen en eski (`msg_id` 0) hiç kabul edilmez.
-    /// Davranışsal eşi tabanda derlenen ve kırmızı olan T1' (`tests/k4g_p0_receipt.rs`).
-    #[test]
-    fn t1_overflow_evicts_the_oldest_pending_receipt_and_counts_it() {
-        let p = peer(0);
-        let h = handle(1);
-        let mut messenger = scripted_with_session(p, h);
-        let total = MAX_OUTBOX_UNACKED + 1;
-        for n in 0..total {
-            deliver_text(&mut messenger, h, MsgId::try_from(n).expect("küçük sayı"));
-        }
-        assert_eq!(
-            drain_scripted(&mut messenger).len(),
-            total,
-            "her TEXT bir kez"
-        );
-        assert_eq!(messenger.pending_receipts(p), MAX_OUTBOX_UNACKED);
-        let stats = messenger.stats();
-        assert_eq!(stats.receipts_evicted, 1, "taşmada tek kayıt düştü");
-        assert_eq!(
-            stats.receipts_unsent, 1,
-            "düşen kayıt receipts_unsent'in alt kümesi"
-        );
-        assert_eq!(stats.receipts_deferred, count(total));
-        assert_eq!(stats.receipts_pending, count(MAX_OUTBOX_UNACKED));
-        assert_eq!(stats.receipts_sent, 0);
-
-        messenger.transport_mut().open(usize::MAX);
-        assert_eq!(messenger.poll(), None);
-        let rest: Vec<MsgId> = (1..total)
-            .map(|n| MsgId::try_from(n).expect("küçük sayı"))
-            .collect();
-        assert_eq!(
-            accepted_receipt_ids(&messenger),
-            rest,
-            "kalanlar doğuş sırasıyla, birer kez; en eski hiç"
-        );
-        assert_eq!(messenger.pending_receipts(p), 0);
-        let stats = messenger.stats();
-        assert_eq!(stats.receipts_sent, count(MAX_OUTBOX_UNACKED));
-        assert_eq!(stats.receipts_pending, 0);
-        assert_eq!(stats.receipts_evicted, 1);
-    }
-
     /// K4G-05d **T3b** (not Ek B.2; yalnız 05d — yeni API, tabanda derlenmez): eşin oturumu
     /// KAPANINCA (`Closed(h)` okunur, `retire`) bekleyen RECEIPT'ler bırakılır (DUR-05d-4):
     /// `pending` 0'a döner, her biri `receipts_unsent`'te sayılır ve yeni oturuma taşınmaz (telafi
@@ -2357,17 +2300,6 @@ mod tests {
             Some(MessengerEvent::Session(SessionEvent::Ready(h2, p)))
         );
         assert_receipt_invariant(&messenger, 3, 0, "oturum değişimi");
-
-        // 5. Taşma: tavanın bir fazlası yeni kayıt; en eski düşer.
-        let first: MsgId = 4;
-        let total = MAX_OUTBOX_UNACKED + 1;
-        for n in 0..total {
-            let offset = MsgId::try_from(n).expect("küçük sayı");
-            deliver_text(&mut messenger, h2, first + offset);
-        }
-        assert_eq!(drain_scripted(&mut messenger).len(), total);
-        assert_eq!(messenger.stats().receipts_evicted, 1);
-        assert_receipt_invariant(&messenger, 4, count(MAX_OUTBOX_UNACKED), "taşma");
 
         // 6. Kapasite: kalanların hepsi kabul edilir.
         messenger.transport_mut().open(usize::MAX);

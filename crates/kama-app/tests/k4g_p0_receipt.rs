@@ -126,16 +126,6 @@ const FILE_NAME: &str = "buyuk.bin";
 const TEXT: &str = "dosya giderken metin";
 /// Test 2: aynı `(Alice, msg_id)` için Bob'a gelen TEXT sayısı (ilk + tekrarlar).
 const DUPLICATE_TEXTS: u64 = 4;
-/// T1': Bob'a gelen farklı `msg_id` sayısı — eş başına bekleyen RECEIPT tavanının
-/// (`MAX_OUTBOX_UNACKED`, outbox tavanıyla aynı; C9: yeni sayı yok) bir fazlası.
-const OVERFLOW_TEXTS: usize = MAX_OUTBOX_UNACKED + 1;
-/// T1': kapasite açıldıktan sonraki tur sayısı (not Ek B.2). Her turdan önce Alice kuyruğunu okur
-/// ve Bob→Alice yönünde en çok `LINK_QUEUE_CAP` yer açar; turun ilk `Messenger::poll`'u bekleyen
-/// RECEIPT'leri bu yer kadar kabul ettirir (dosya pump'ı turda sonra koşar). Tavandaki
-/// `MAX_OUTBOX_UNACKED` kayıt ⌈`MAX_OUTBOX_UNACKED` / `LINK_QUEUE_CAP`⌉ turda biter; +2 tur
-/// kuyruk boşaldıktan sonra hiçbir RECEIPT'in yeniden sunulmadığını ("tam bir kez") gösterir.
-const OVERFLOW_ROUNDS: usize = MAX_OUTBOX_UNACKED.div_ceil(LINK_QUEUE_CAP) + 2;
-
 const ALICE: PeerRef = PeerRef::from_dest_hash([0xA1; 32]);
 const BOB: PeerRef = PeerRef::from_dest_hash([0xB0; 32]);
 
@@ -735,8 +725,7 @@ impl Rig {
         self.run_rounds(RECOVERY_ROUNDS)
     }
 
-    /// [K4G-05d] [`Rig::open_capacity_and_run_turns`]'ün tur sayısı verilen biçimi (T1':
-    /// `OVERFLOW_ROUNDS`).
+    /// [K4G-05d] [`Rig::open_capacity_and_run_turns`]'ün tur sayısı verilen biçimi.
     fn run_rounds(&mut self, rounds: usize) -> AfterOpening {
         let accepted_before = self.link.borrow().accepted_sends(Side::Bob);
         let mut alice = Vec::new();
@@ -964,79 +953,6 @@ fn p0_r3_receipt_dedup_bounded() {
 }
 
 // ── K4G-05d testleri (not rev2 §5, Ek B.2; tabanda derlenir) ────────────────────────────────
-
-/// **T1' taşma (DUR-05d-1: en eski düşer) — tabanda (`3439fccd`) KIRMIZI beklenir.**
-///
-/// Amaç: eş başına bekleyen RECEIPT kuyruğu `MAX_OUTBOX_UNACKED` ile sınırlıdır ve taşmada EN ESKİ
-/// kayıt düşer; geri kalanların her biri kapasite açılınca AYNI oturumda tam bir kez kabul edilir.
-/// Senaryo (tek oturum): Bob→Alice kuyruğu dolu tutulur (Alice okumaz); Bob'a `OVERFLOW_TEXTS`
-/// farklı `msg_id`'li (0, 1, …) ham TEXT `LINK_QUEUE_CAP`'lik partilerle gelir, her partiden sonra
-/// Bob'un turu koşar — tavanı gönderende tutmayan uyumsuz eş. Sonra kapasite açılır ve Bob
-/// `OVERFLOW_ROUNDS` tur çalışır. Beklenen: `msg_id` 0'ın RECEIPT'i hiç kabul edilmez; kalan
-/// `MAX_OUTBOX_UNACKED` `msg_id`'nin her birininki tam bir kez kabul edilir. Sayaç yarısı
-/// (`receipts_evicted` = 1) yeni API'dir: `src/messaging.rs` birim testi T1.
-///
-/// Tabanda neden kırmızı: bekleyen kayıt yoktur; her RECEIPT'in tek sunumu `Backpressure` alır ve
-/// kaybolur, kapasite açılınca hiçbiri yeniden sunulmaz → "tam bir kez" denetimi 0 kabulle düşer.
-/// Mutantlar (Ek B.2): sınır kaldırılırsa 0'ın RECEIPT'i de kabul edilir (ilk denetim düşer); en
-/// yeni düşürülürse 0'ınki kabul edilir, en yeni `msg_id`'ninki edilmez.
-#[test]
-fn t1p_overflow_drops_only_the_oldest_receipt() {
-    let mut rig = Rig::with_full_bob_to_alice_queue();
-    let session = rig.session;
-    let ids: Vec<MsgId> = (0..OVERFLOW_TEXTS)
-        .map(|n| MsgId::try_from(n).expect("küçük sayı"))
-        .collect();
-    for batch in ids.chunks(LINK_QUEUE_CAP) {
-        for &msg_id in batch {
-            rig.link
-                .borrow_mut()
-                .inject(Side::Bob, text_record(msg_id, TEXT));
-        }
-        let expected: Vec<MessengerEvent> = batch
-            .iter()
-            .map(|&msg_id| received(ALICE, msg_id, TEXT))
-            .collect();
-        assert_eq!(
-            rig.bob.turn(),
-            expected,
-            "ön koşul: her TEXT bir kez teslim edilir"
-        );
-    }
-    assert!(
-        rig.link
-            .borrow()
-            .accepted_receipts(Side::Bob, session)
-            .is_empty(),
-        "ön koşul: Bob→Alice kuyruğu dolu kaldı, hiçbir RECEIPT kabul edilmedi"
-    );
-
-    let after = rig.run_rounds(OVERFLOW_ROUNDS);
-    rig.assert_same_session_and_capacity_opened(&after);
-
-    let accepted = rig.link.borrow().accepted_receipts(Side::Bob, session);
-    let oldest = ids[0];
-    assert_eq!(
-        accepted.get(&oldest),
-        None,
-        "taşma: en eski RECEIPT({oldest}) düşmeliydi ama kabul edildi (sınır yok ya da en yeni \
-         düşürülüyor)"
-    );
-    let not_once: Vec<(MsgId, usize)> = ids[1..]
-        .iter()
-        .map(|&msg_id| (msg_id, accepted.get(&msg_id).copied().unwrap_or(0)))
-        .filter(|&(_, count)| count != 1)
-        .collect();
-    assert!(
-        not_once.is_empty(),
-        "T1' (tabanda beklenen kırmızı): en eski dışındaki {} RECEIPT'in her biri aynı oturumda \
-         ({session:?}) tam bir kez kabul edilmeli; {} msg_id'de değil, ilk sekizi (msg_id, kabul): \
-         {:?}. Bekleyen kayıt yoksa ilk sunum Backpressure alır ve RECEIPT kaybolur.",
-        ids.len() - 1,
-        not_once.len(),
-        &not_once[..not_once.len().min(8)]
-    );
-}
 
 /// **T2 `Ok` sonrası (C9: "`Ok` sonrası tekrar transport'un") — tabanda (`3439fccd`) YEŞİL
 /// (bekçi).**
