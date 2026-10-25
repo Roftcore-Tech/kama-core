@@ -901,3 +901,194 @@ async fn e_maintenance_tick_retires_a_closed_session_slot_without_table_pressure
     );
     assert_eq!((ss.open_failures, ss.unknown_frames), (0, 0));
 }
+
+// ── K4G-05c · R2: sunucu düzeyinde kabul kuralı (not 3.1, D.2, D.5) ──────────────────────────
+
+/// Dönüş soketinde bekleyen datagramları `QUIET` sessizliğe dek boşaltır.
+async fn drain_socket(sock: &UdpSocket) {
+    let mut buf = [0u8; 2048];
+    while let Ok(Ok(_)) = tokio::time::timeout(QUIET, sock.recv_from(&mut buf)).await {}
+}
+
+/// `sock`'a `WAIT` içinde gelen ilk datagram `crypto` ile açılır ve ACK çerçevesi mi (V1/V2).
+async fn next_is_ack(sock: &UdpSocket, crypto: &mut NoiseWireProtection) -> bool {
+    let mut buf = [0u8; 2048];
+    let Ok(Ok((n, _))) = tokio::time::timeout(WAIT, sock.recv_from(&mut buf)).await else {
+        return false;
+    };
+    crypto.open(&buf[..n]).is_some_and(|o| {
+        o.frame.first().is_some_and(|&t| {
+            t == adaptive_transport::ack::FRAME_TYPE_ACK
+                || t == adaptive_transport::ack::FRAME_TYPE_ACK_V2
+        })
+    })
+}
+
+/// [K4G-05c · not D.2 / D.5 — "kanal rezervi" + "kontrol yolu"] Bir oturumun seli teslim kanalını
+/// doldururken BAŞKA bir oturumun sıra başı birimi kabul edilir (sıra başı rezervi); dolu kanalda
+/// kontrol yolu çalışır (kabul edilmiş birimin tekrarı ACK'lenir, `mark_t0` döner).
+///
+/// C = 4 → R = min(`max_peers`, C − 1) = 3; tüketici durur. Bob 0..8 yollar: 0 sıra başı
+/// (rezervle), 1 kabul (F − 1 = 2 ≥ R − U = 2), 2..7 ACK'siz ret (`full_refusals`). Carol'ın
+/// sıra başı birimi 0 DOLU kanalda rezervle kabul edilir. Eski davranışta Bob'un seli kanalın
+/// tamamını alırdı. Her adımda U ≤ R ve F ≥ R − U.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn full_channel_keeps_another_sessions_head_and_the_control_path() {
+    const QUEUE: usize = 4;
+    const FLOOD: u64 = 8;
+    let mut alice = node(ALICE).0;
+    let mut bob = node(BOB).0;
+    let mut carol = node(CAROL).0;
+    let (h_ab, h_ba) = handshake(&mut alice, &mut bob, id(BOB), HUB_AB);
+    let (h_ac, h_ca) = handshake(&mut alice, &mut carol, id(CAROL), HUB_AC);
+    let expected = ExpectedSessions::new();
+    expected.insert_ready(h_ab);
+    expected.insert_ready(h_ac);
+    let cfg = RuntimeConfig {
+        delivery_queue: QUEUE,
+        ..RuntimeConfig::default()
+    };
+    let mut server = ServerEndpoint::bind_expecting(
+        SocketAddr::from(([127, 0, 0, 1], 0)),
+        cfg,
+        Box::new(alice),
+        None,
+        expected.clone(),
+        CtxDispatchCounters::new(),
+    )
+    .await
+    .expect("veri alıcısı");
+    let to = server.local_addr();
+    let bob_addr = udp().await;
+    let carol_addr = udp().await;
+    let invariant = |server: &ServerHandle, step: &str| {
+        let r = server.delivery_reserve_for_test();
+        assert!(
+            r.in_use <= r.reserve && r.free >= r.reserve - r.in_use,
+            "{step}: U ≤ R ve F ≥ R − U olmalı — {r:?}"
+        );
+        r
+    };
+    async fn settle(server: &ServerHandle, done: impl Fn(&ServerHandle) -> bool, what: &str) {
+        let deadline = Instant::now() + WAIT;
+        while !done(server) {
+            assert!(Instant::now() < deadline, "{what}: {WAIT:?} içinde olmadı");
+            tokio::time::sleep(TICK).await;
+        }
+    }
+
+    // Bob'un seli (tüketici durur).
+    for u in 0..FLOOD {
+        send(&bob_addr, &sealed_data(&mut bob, h_ba, u), to).await;
+    }
+    settle(
+        &server,
+        |s| s.ctx_dispatch_stats().full_refusals == FLOOD - 2,
+        "Bob'un seli kanalı rezerv sınırına dek doldurmalı",
+    )
+    .await;
+    let r = invariant(&server, "sel");
+    assert_eq!((r.pushed, r.in_use), (2, 1), "Bob: sıra başı + bir sırasız");
+
+    // Carol'ın sıra başı DOLU kanalda kabul edilir.
+    send(&carol_addr, &sealed_data(&mut carol, h_ca, 0), to).await;
+    settle(
+        &server,
+        |s| s.delivery_reserve_for_test().pushed == 3,
+        "Carol'ın sıra başı kabul edilmeli",
+    )
+    .await;
+    let r = invariant(&server, "carol/0");
+    assert_eq!(r.in_use, 2, "iki oturumun rezervi kullanımda");
+    assert_eq!(
+        server.ctx_dispatch_stats().full_refusals,
+        FLOOD - 2,
+        "sıra başı reddedilmedi"
+    );
+
+    // Kontrol yolu: kabul edilmiş birimin tekrarı (yeni PN) ACK'lenir; `mark_t0` döner.
+    drain_socket(&bob_addr).await;
+    send(&bob_addr, &sealed_data(&mut bob, h_ba, 0), to).await;
+    assert!(
+        next_is_ack(&bob_addr, &mut bob).await,
+        "dolu kanalda kabul edilmiş birimin tekrarı ACK'lenmeli (kontrol yolu)"
+    );
+    tokio::time::timeout(WAIT, server.mark_t0())
+        .await
+        .expect("dolu kanalda mark_t0 dönmeli");
+
+    // Tüketici döner: FIFO sırası; sonra rezerv serbest.
+    for (unit, ctx) in [
+        (0, ProtectionContext::Session(h_ab)),
+        (1, ProtectionContext::Session(h_ab)),
+        (0, ProtectionContext::Session(h_ac)),
+    ] {
+        let d = delivery(&mut server).await;
+        assert_eq!((d.unit_id, d.ctx), (unit, ctx));
+    }
+    assert!(server.try_next_delivery().is_none());
+    let r = invariant(&server, "son");
+    assert_eq!((r.in_use, r.free), (0, QUEUE));
+    let stats = server.ctx_dispatch_stats();
+    assert_eq!(stats.reorder_skip, 0, "{stats:?}");
+    let ss = server.shutdown().await;
+    assert_eq!(ss.delivery_dropped, 0, "{ss:?}");
+}
+
+/// [K4G-05c · not 3.1 / D.5 — "pencere ihlali"] Oturumun kimlik penceresinin dışındaki birim
+/// (`unit − floor > max_inflight_units`) ACK'siz reddedilir (`reorder_skip`), alıcı motoruna ve
+/// kanala girmez; kabul durumu onu kaydetmez — pencere içine girince aynı birim kabul edilir.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unit_outside_the_session_window_is_refused_without_ack_then_accepted() {
+    const WINDOW: usize = 4;
+    let mut alice = node(ALICE).0;
+    let mut bob = node(BOB).0;
+    let (h_ab, h_ba) = handshake(&mut alice, &mut bob, id(BOB), HUB_AB);
+    let cfg = RuntimeConfig {
+        max_inflight_units: WINDOW,
+        ..RuntimeConfig::default()
+    };
+    let mut server = ServerEndpoint::bind_expecting(
+        SocketAddr::from(([127, 0, 0, 1], 0)),
+        cfg,
+        Box::new(alice),
+        None,
+        ExpectedSessions::only(h_ab),
+        CtxDispatchCounters::new(),
+    )
+    .await
+    .expect("veri alıcısı");
+    let to = server.local_addr();
+    let bob_addr = udp().await;
+    let far = WINDOW as u64 + 1;
+
+    send(&bob_addr, &sealed_data(&mut bob, h_ba, far), to).await;
+    let deadline = Instant::now() + WAIT;
+    while server.ctx_dispatch_stats().reorder_skip == 0 {
+        assert!(Instant::now() < deadline, "pencere dışı birim reddedilmeli");
+        tokio::time::sleep(TICK).await;
+    }
+    let mut buf = [0u8; 2048];
+    let reply = tokio::time::timeout(QUIET, bob_addr.recv_from(&mut buf)).await;
+    assert!(reply.is_err(), "pencere dışı birim ACK'lenmemeli");
+    assert!(server.try_next_delivery().is_none(), "kanala girmemeli");
+
+    for u in 0..far {
+        send(&bob_addr, &sealed_data(&mut bob, h_ba, u), to).await;
+    }
+    for u in 0..far {
+        let d = delivery(&mut server).await;
+        assert_eq!(d.unit_id, u, "pencere içi birimler kabul edilir");
+    }
+    // Taban `far`'a geldi: aynı birim (yeni PN) artık pencere içinde.
+    send(&bob_addr, &sealed_data(&mut bob, h_ba, far), to).await;
+    assert_eq!(delivery(&mut server).await.unit_id, far);
+    let stats = server.ctx_dispatch_stats();
+    assert_eq!(
+        (stats.reorder_skip, stats.full_refusals),
+        (1, 0),
+        "{stats:?}"
+    );
+    let ss = server.shutdown().await;
+    assert_eq!(ss.delivered, far + 1, "{ss:?}");
+}

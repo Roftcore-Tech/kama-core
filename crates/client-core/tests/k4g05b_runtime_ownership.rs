@@ -1476,3 +1476,56 @@ async fn fec_full_channel_arm2_permanent_source_loss_is_reported_not_guaranteed(
     let (_cs, ss) = rig.finish().await;
     assert_eq!(ss.delivery_dropped, 0, "{ss:?}");
 }
+
+// ── K4G-05c: gönderen mesafe kapısı (not 3.2, D.3, D.5) ──────────────────────────────────────
+
+/// [K4G-05c · not 3.2 / D.3 / D.5 — "gönderen mesafe"] Gönderen, en yeni birimi ile en eski
+/// teyitsiz birimi arasındaki kimlik mesafesi `max_inflight_units`'e ulaşınca sunumu almaz
+/// (`distance_holds`); dürüst göndericinin birimi alıcının oturum penceresinin dışına düşmez
+/// (`reorder_skip` = 0, pay = 0 — DUR-05c-2 (a)). Pencere 8, birim 0'ın bütün iletimleri düşer:
+/// gönderen 0..7 dışında kimlik yollamaz; 0 geçince bütün birimler teslim ve teyit edilir.
+#[tokio::test(flavor = "multi_thread")]
+async fn sender_distance_gate_holds_offers_and_receiver_never_refuses_window() {
+    const WINDOW: usize = 8;
+    const UNITS: u64 = 3 * WINDOW as u64;
+    let cfg = RuntimeConfig {
+        max_inflight_units: WINDOW,
+        ..cfg_no_fec()
+    };
+    let mut rig = Rig::new_session_keyed(cfg.clone(), cfg).await;
+    let stuck = 0u64;
+    rig.net
+        .with(|s| s.data_gate = DataGate::Except(std::iter::once(stuck).collect()));
+    for _ in 0..UNITS {
+        rig.send().await;
+    }
+    rig.wait("mesafe kapısı sunumu bekletmeli", WAIT, |r| {
+        r.client.ctx_dispatch_stats().distance_holds >= 1
+    })
+    .await;
+    rig.pump(QUIET).await;
+    let highest = rig.net.with(|s| s.data_seen.keys().max().copied());
+    assert!(
+        highest.is_some_and(|u| u < WINDOW as u64),
+        "gönderen en eski teyitsiz birimden itibaren pencere dışı kimlik yollamamalı: en büyük \
+         görülen {highest:?} (pencere {WINDOW})"
+    );
+    rig.net.with(|s| s.data_gate = DataGate::All);
+    rig.wait(
+        "bütün birimler teslim ve teyit edilmeli",
+        RETX_WAIT,
+        |r| r.client.outstanding() == 0 && (r.delivered.len() as u64) == UNITS,
+    )
+    .await;
+    assert!(
+        (0..UNITS).all(|u| rig.delivered.get(&u).is_some_and(|b| *b == body(u))),
+        "alıcı gerçek gövdeleri teslim etmeli"
+    );
+    let stats = rig.server.ctx_dispatch_stats();
+    assert_eq!(
+        stats.reorder_skip, 0,
+        "dürüst gönderici alıcı penceresinin dışına düşmez: {stats:?}"
+    );
+    let (cs, _ss) = rig.finish().await;
+    assert_eq!(cs.acked, UNITS, "{cs:?}");
+}
