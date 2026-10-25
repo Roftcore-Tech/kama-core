@@ -1401,6 +1401,53 @@ impl RecordOwner {
     }
 }
 
+/// [K4G-05b rev6 · CEVAP PAKETİ 15 v3 §2 (DUR-38 B′, K1–K3)] Sınıflar arası karşılık hakkı ve sahipli
+/// tek rezervin hizmet sınıfları (Ek A.4 rev6). Kuyruk-probu, FEC parity ve kuruluş/CS probu sınıf
+/// DEĞİLDİR: hak almazlar, rezerv sahibi olmazlar, her rezervin altına inemezler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SvcClass {
+    Arq,
+    Data,
+    Copy,
+}
+
+impl SvcClass {
+    /// Hak sahipleri arasında rezervin kurulma sırası: ARQ > DATA > kopya (C15 K1 (c)).
+    const RESERVE_ORDER: [SvcClass; 3] = [SvcClass::Arq, SvcClass::Data, SvcClass::Copy];
+}
+
+/// [K4G-05b rev6 · Ek A.4 KARŞILIK] Karşılık hakları — sınıf başına en çok bir. Hak bir kopya ya da
+/// ARQ emisyonundan sonra o anda uygun işi olan diğer sınıflara verilir; sınıfın kendi emisyonuyla ya
+/// da uygun işi bitince düşer (başka düşme yolu yok).
+#[derive(Debug, Clone, Copy, Default)]
+struct ServiceRights {
+    arq: bool,
+    data: bool,
+    copy: bool,
+}
+
+impl ServiceRights {
+    fn get(self, c: SvcClass) -> bool {
+        match c {
+            SvcClass::Arq => self.arq,
+            SvcClass::Data => self.data,
+            SvcClass::Copy => self.copy,
+        }
+    }
+
+    fn set(&mut self, c: SvcClass, v: bool) {
+        match c {
+            SvcClass::Arq => self.arq = v,
+            SvcClass::Data => self.data = v,
+            SvcClass::Copy => self.copy = v,
+        }
+    }
+
+    fn any(self) -> bool {
+        self.arq || self.data || self.copy
+    }
+}
+
 /// [K4G-05b madde 2/4/11 · Ek B.2.3] Birim başına SAHİPLİK DİZİNİ girdisi (`Sender::units`).
 /// Olay güdümlü güncellenir (gönderim, kayıp ilanı, ACK, kayıt silme) — tam tarama yok;
 /// anahtar `BTreeMap<UnitId, _>` (deterministik, ADR-17). Girdi birimin ilk iletimiyle açılır;
@@ -1872,9 +1919,17 @@ pub struct Sender {
     /// DIŞINDAKİ her token tüketicisi (DATA, ARQ, kuyruk-probu, parite, CS-probu) rezervin ALTINA
     /// inemez: `token − boy ≥ rezerv` (`copy_reserve_allows`). Temizlenme: gönderimde
     /// (`emit_copy_at`), birim teyit edilince ya da hedef geçersizleşince (vadeli baş yok; baş
-    /// değiştiyse yeni başın boyuna güncellenir — `refresh_copy_reserve`, her tur başında),
+    /// değiştiyse yeni başın boyuna güncellenir — `refresh_reserve`, her tur başında),
     /// PRE_CONVERGE'de; oturum kapanınca motorla birlikte düşer (motorda ayrı kapanış olayı yok).
+    /// [rev6] Tek rezervin KOPYA sahipli hâli; ARQ/DATA sahipli hâli `class_reserve`'dadır (ikisi
+    /// aynı anda dolu olmaz — aynı anda tek rezerv).
     copy_reserve_bytes: u64,
+    /// [K4G-05b rev6 · Ek A.4 REZERVASYON/KARŞILIK, C15 K1 (a)–(c), K3] Tek rezervin ARQ ya da
+    /// karşılık hakkındaki DATA sahipli hâli: `(sahip, bayt)`. Sahibin başı dışındaki her token
+    /// tüketicisi (kopya kuyruğu dahil) rezervin altına inemez (`reserve_allows`).
+    class_reserve: Option<(SvcClass, u64)>,
+    /// [K4G-05b rev6 · Ek A.4 KARŞILIK] Karşılık hakları (sınıf başına en çok bir).
+    rights: ServiceRights,
     /// [TUR-A ölçüm-#1, TEK DEĞİŞKEN] Son plato-değerlendirmesinden bu yana YENİ bw örneği geldi mi.
     /// Plato round'u yalnız yeni örnekte sayılır (pace-tick başına DEĞİL) — saat-sınıfı: event-count →
     /// bw-sample. (Eski: her on_event çağrısı "round" sayılıyordu → 1ms tick'te 3 round = 3ms'de STEADY.)
@@ -2192,6 +2247,8 @@ impl Sender {
             arq_share_tick: 0,
             copy_share_tick: 0,
             copy_reserve_bytes: 0,
+            class_reserve: None,
+            rights: ServiceRights::default(),
             bw_sampled_since_round: false,
             diag_loss_pkt: 0,
             diag_loss_time: 0,
@@ -2837,9 +2894,13 @@ impl Sender {
                 .map(|r| r.due_ns)
                 .filter(|&d| d > self.last_now_ns)
                 .min();
+            // [rev6] Başka sınıf rezervin sahibiyse baş, rezervin ÜSTÜNE yetişince gidebilir.
+            let copy_reserve = self.reserve_for(Some(SvcClass::Copy));
             let head_ready = self
                 .copy_queue_head(self.last_now_ns, &[])
-                .and_then(|i| self.ns_until_tokens(self.dup_queue[i].unit.size))
+                .and_then(|i| {
+                    self.ns_until_tokens(self.dup_queue[i].unit.size.saturating_add(copy_reserve))
+                })
                 .map(|dt| self.last_now_ns.saturating_add(dt));
             best = earlier(best, earlier(future_due, head_ready));
         }
@@ -2910,16 +2971,30 @@ impl Sender {
         // [K4G-05b DUR-31] Kopya başı rezervasyonu varken bu sınıflar rezervin ALTINA inemez: hazır
         // olma anı `en küçük + rezerv` bayta token yetiştiği andır. Kova bu toplamı taşıyamıyorsa
         // `None` — ilerleme kopya başına bağlıdır (kaynak 3); baş gidince rezerv kalkar.
-        let smallest = self
+        // [K4G-05b rev6] Rezerv sahipli: sahibin kendi başı rezervsiz, diğerleri `boy + rezerv` ister.
+        let data = self
             .tx_queue
             .iter()
             .map(|u| u.size)
-            .chain(self.pending_fec.iter().map(|p| p.size))
-            .chain(self.pending_lost.iter().map(|r| r.unit.size))
+            .min()
+            .map(|s| s.saturating_add(self.reserve_for(Some(SvcClass::Data))));
+        let fec = self
+            .pending_fec
+            .iter()
+            .map(|p| p.size)
+            .min()
+            .map(|s| s.saturating_add(self.reserve_for(None)));
+        let arq = self
+            .pending_lost
+            .iter()
+            .map(|r| r.unit.size)
+            .min()
+            .map(|s| s.saturating_add(self.reserve_for(Some(SvcClass::Arq))));
+        let dt = [data, fec, arq]
+            .into_iter()
+            .flatten()
+            .filter_map(|need| self.pacer.ns_until_sendable(need))
             .min()?;
-        let dt = self
-            .pacer
-            .ns_until_sendable(smallest.saturating_add(self.copy_reserve_bytes))?;
         Some(self.last_now_ns.saturating_add(dt))
     }
 
@@ -4619,16 +4694,18 @@ impl Sender {
         self.apply_burst_floor(now_ns);
         // [K4G-05b madde 7] RTT tazelik ölçütü (yalnız gözlem; karar girdisi değil).
         self.note_rtt_freshness(now_ns);
-        // [K4G-05b DUR-31] Kopya başı rezervinin hedef geçerliliği — ilk token tüketicisinden önce.
-        self.refresh_copy_reserve(now_ns);
+        // [K4G-05b DUR-31 · rev6] Rezervin ve karşılık haklarının geçerliliği — ilk token
+        // tüketicisinden önce (uygun işi kalmayan hak ve rezerv düşer; rezerv yoksa ilk hak sahibine).
+        self.refresh_reserve(now_ns);
         // [TUR-7 β2] ARQ token-payı: her K_ARQ_SHARE'inci grant'te retx ÖNCE dener (BOŞ-NÖBET
         // biter — retx fiilen wire'a çıkar); diğer grant'ler DATA-önce (ölçülü-karar korunur).
         self.arq_share_tick = self.arq_share_tick.wrapping_add(1);
+        // [K4G-05b rev6 · C15 K3] ARQ payı da rezerv alır: başı token'a yetişemezse ve rezerv yoksa.
         if self.state == SenderState::RecoverArq
             && !self.pending_lost.is_empty()
             && self.arq_share_tick.is_multiple_of(K_ARQ_SHARE)
         {
-            self.plan_arq_retransmits(&mut out, now_ns);
+            self.plan_arq_retransmits(&mut out, now_ns, true);
         }
         // [K4G-05b PAY · DUR-24/31] Kopya kuyruğu payı: kendi sayacı (ARQ payından bağımsız);
         // aynı turda ARQ payı vadeliyse ARQ önce (yukarıda), sonra kopya başı, sonra DATA. Rezerv
@@ -4637,7 +4714,7 @@ impl Sender {
         self.serve_copy_share(&mut out, now_ns);
         self.drain_new_data(&mut out, now_ns);
         match self.state {
-            SenderState::RecoverArq => self.plan_arq_retransmits(&mut out, now_ns),
+            SenderState::RecoverArq => self.plan_arq_retransmits(&mut out, now_ns, false),
             SenderState::RecoverFwd => self.plan_forward_duplication(now_ns),
             _ => {}
         }
@@ -6141,28 +6218,147 @@ impl Sender {
     /// Commit-V: pre-parity-token-kapısı. OFF: saf-try_send (inline; byte-özdeş). ON: rezerv-korunur —
     /// `tokens < size + reserved` → red (yalnız-tokens≥size-iken-displacement-sayılır: "would-have-sent").
     ///
-    /// [K4G-05b DUR-31] Kopya kuyruğu başı rezervi varken çağıran rezervin ALTINA inemez
-    /// (`copy_reserve_allows`); başın KENDİ kopyası `try_send_copy_head` ile gider.
+    /// [K4G-05b DUR-31 · rev6] Sınıfı olmayan tüketici (kuyruk-probu, PRE_CONVERGE kopyası) HER
+    /// rezervin ALTINA inemez (`reserve_allows(None, …)`).
     #[inline]
     fn try_send_pre_parity(&mut self, size: u64, is_retx: bool) -> bool {
-        if !self.copy_reserve_allows(size) {
+        self.try_send_class(None, size, is_retx)
+    }
+
+    /// [K4G-05b rev6 · Ek A.4 REZERVASYON] Sınıfın token alımı: rezervin sahibi kendi başı için
+    /// rezervsiz alır; diğer her tüketici `token − boy ≥ rezerv` ister. FEC bütçe rezervi
+    /// (Commit-V) aynen uygulanır.
+    #[inline]
+    fn try_send_class(&mut self, class: Option<SvcClass>, size: u64, is_retx: bool) -> bool {
+        if !self.reserve_allows(class, size) {
             return false;
         }
-        self.try_send_copy_head(size, is_retx)
+        self.try_send_raw(size, is_retx)
     }
 
-    /// [K4G-05b DUR-31] Rezerv koşulu: rezerv yoksa ya da `token − boy ≥ rezerv` ise `true`
-    /// (rezervin ÜSTÜNDEKİ token kullanılabilir). Salt okuma.
+    /// [K4G-05b DUR-31 · rev6] Rezerv koşulu (sınıfsız tüketici: parite, CS-probu): rezerv yoksa ya
+    /// da `token − boy ≥ rezerv` ise `true`. Salt okuma.
     fn copy_reserve_allows(&self, size: u64) -> bool {
-        self.copy_reserve_bytes == 0
-            || self.pacer.tokens() >= size.saturating_add(self.copy_reserve_bytes)
+        self.reserve_allows(None, size)
     }
 
-    /// [K4G-05b DUR-31] Kopya kuyruğu BAŞININ token alımı: rezerv onun içindir, rezerv koşulu
-    /// uygulanmaz; FEC bütçe rezervi (Commit-V) aynen uygulanır. Diğer bütün sınıflar
-    /// `try_send_pre_parity` (rezerv koşullu) kullanır.
+    /// [K4G-05b rev6] Tek rezervin sahibi (kopya, ARQ ya da DATA); rezerv yoksa `None`.
+    fn reserve_owner(&self) -> Option<SvcClass> {
+        if self.copy_reserve_bytes > 0 {
+            Some(SvcClass::Copy)
+        } else {
+            self.class_reserve.map(|(c, _)| c)
+        }
+    }
+
+    /// [K4G-05b rev6] Tek rezervin boyu (0 = yok).
+    fn reserve_total(&self) -> u64 {
+        self.copy_reserve_bytes
+            .saturating_add(self.class_reserve.map_or(0, |(_, b)| b))
+    }
+
+    /// [K4G-05b rev6] `class`'ın bırakmak zorunda olduğu rezerv: sahibiyse 0, değilse rezervin boyu.
+    fn reserve_for(&self, class: Option<SvcClass>) -> u64 {
+        match (self.reserve_owner(), class) {
+            (Some(o), Some(c)) if o == c => 0,
+            _ => self.reserve_total(),
+        }
+    }
+
+    /// [K4G-05b rev6] Rezerv koşulu: `token − boy ≥ reserve_for(class)`. Salt okuma.
+    fn reserve_allows(&self, class: Option<SvcClass>, size: u64) -> bool {
+        let r = self.reserve_for(class);
+        r == 0 || self.pacer.tokens() >= size.saturating_add(r)
+    }
+
+    /// [K4G-05b rev6] Rezervi `class`'ın başına kur (aynı anda tek rezerv).
+    fn set_reserve(&mut self, class: SvcClass, size: u64) {
+        if class == SvcClass::Copy {
+            self.copy_reserve_bytes = size;
+            self.class_reserve = None;
+        } else {
+            self.copy_reserve_bytes = 0;
+            self.class_reserve = Some((class, size));
+        }
+    }
+
+    fn clear_reserve(&mut self) {
+        self.copy_reserve_bytes = 0;
+        self.class_reserve = None;
+    }
+
+    /// [K4G-05b rev6 · Ek A.4 UYGUN İŞ] Sınıfın başı (boy), tur başı uygunluk tanımıyla: DATA — kuyruk
+    /// başı; ARQ — RECOVER_ARQ'da ARQ planının başı; kopya — vadesi gelmiş, teyitsiz kopya başı. Token
+    /// yetersizliği uygunluğu kaldırmaz; vadesi gelmemiş iş uygun değildir. `None` = uygun iş yok.
+    fn class_head_size(&self, class: SvcClass, now_ns: u64) -> Option<u64> {
+        match class {
+            SvcClass::Data => self.tx_queue.front().map(|u| u.size),
+            SvcClass::Arq => {
+                if self.state == SenderState::RecoverArq {
+                    self.arq_plan_head_size()
+                } else {
+                    None
+                }
+            }
+            SvcClass::Copy => self
+                .copy_queue_head(now_ns, &[])
+                .map(|i| self.dup_queue[i].unit.size),
+        }
+    }
+
+    /// [K4G-05b rev6] Rezerv yoksa ilk hak sahibine (ARQ > DATA > kopya) kurulur; uygun işi kalmayan
+    /// hak düşer.
+    fn assign_reserve_to_holder(&mut self, now_ns: u64) {
+        if self.reserve_total() > 0 || !self.rights.any() {
+            return;
+        }
+        for c in SvcClass::RESERVE_ORDER {
+            if !self.rights.get(c) {
+                continue;
+            }
+            match self.class_head_size(c, now_ns) {
+                Some(size) => {
+                    self.set_reserve(c, size);
+                    return;
+                }
+                None => self.rights.set(c, false),
+            }
+        }
+    }
+
+    /// [K4G-05b rev6 · Ek A.4 KARŞILIK/REZERVASYON] Bir sınıfın emisyonundan sonra (PRE_CONVERGE
+    /// dışında): sınıf rezervin sahibiyse rezerv düşer; sınıfın hakkı düşer; kopya ya da ARQ
+    /// emisyonuysa o anda uygun işi olan diğer sınıfların her biri hak alır (DATA emisyonu hak
+    /// üretmez); rezerv boşsa ilk hak sahibine kurulur.
+    fn on_class_emitted(&mut self, class: SvcClass, now_ns: u64) {
+        if self.state == SenderState::PreConverge {
+            return;
+        }
+        if self.reserve_owner() == Some(class) {
+            self.clear_reserve();
+        }
+        self.rights.set(class, false);
+        if class != SvcClass::Data {
+            for c in SvcClass::RESERVE_ORDER {
+                if c != class && self.class_head_size(c, now_ns).is_some() {
+                    self.rights.set(c, true);
+                }
+            }
+        }
+        self.assign_reserve_to_holder(now_ns);
+    }
+
+    /// [K4G-05b DUR-31 · rev6] Kopya kuyruğu BAŞININ token alımı: kopya rezervin sahibiyse rezervsiz;
+    /// başka sınıf rezervin sahibiyse (karşılık hakkı, ARQ payı) kopya kuyruğu — drenaj dahil —
+    /// rezervin altına inemez.
     #[inline]
     fn try_send_copy_head(&mut self, size: u64, is_retx: bool) -> bool {
+        self.try_send_class(Some(SvcClass::Copy), size, is_retx)
+    }
+
+    /// Token alımı (rezerv koşulu çağıranda): FEC bütçe rezervi (Commit-V) aynen uygulanır.
+    #[inline]
+    fn try_send_raw(&mut self, size: u64, is_retx: bool) -> bool {
         #[cfg(feature = "experimental-fec-budget")]
         {
             let r = self.budget_ext.reserved_now;
@@ -6184,7 +6380,9 @@ impl Sender {
         self.pacer.try_send(size)
     }
 
-    fn plan_arq_retransmits(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+    /// [K4G-05b rev6] `share`: ARQ payı turu (C15 K3) — başı token'a yetişemezse ve rezerv yoksa
+    /// ARQ rezervi kurulur. Her ARQ emisyonu karşılık hakkı üretir (`on_class_emitted`).
+    fn plan_arq_retransmits(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64, share: bool) {
         let lost: Vec<LostSeq> = self
             .pending_lost
             .iter()
@@ -6214,10 +6412,17 @@ impl Sender {
                     {
                         self.sched_diag.arq_retransmit_selected += 1;
                     }
-                    if !self.try_send_pre_parity(rec.unit.size, true) {
+                    if !self.try_send_class(Some(SvcClass::Arq), rec.unit.size, true) {
                         #[cfg(feature = "diag-sched-telemetry")]
                         {
                             self.sched_diag.arq_retransmit_token_denied += 1;
+                        }
+                        // [K4G-05b rev6 · C15 K3] ARQ payı rezervi: rezerv yokken baş token bulamadı.
+                        if share
+                            && self.state != SenderState::PreConverge
+                            && self.reserve_total() == 0
+                        {
+                            self.set_reserve(SvcClass::Arq, rec.unit.size);
                         }
                         break; // token yok → sonraki tick'te (deadline plandan düşmez, §9).
                     }
@@ -6242,6 +6447,7 @@ impl Sender {
                         size: rec.unit.size,
                         send_record: None,
                     });
+                    self.on_class_emitted(SvcClass::Arq, now_ns);
                 }
                 RetxDecision::CapExceeded { seq, .. } => {
                     let pos = self.pending_lost.iter().position(|r| r.seq == seq);
@@ -7001,9 +7207,9 @@ impl Sender {
         } else {
             self.own_fire_once_done(UnitId(dup.unit.id));
         }
-        if self.state != SenderState::PreConverge {
-            self.copy_reserve_bytes = 0;
-        }
+        // [K4G-05b DUR-31 · rev6] Kopya başının emisyonu: kopya rezervi düşer, diğer uygun sınıflar
+        // karşılık hakkı alır (PRE_CONVERGE'de no-op).
+        self.on_class_emitted(SvcClass::Copy, now_ns);
     }
 
     /// Bu turda (bu `schedule_transmit` çağrısında) tele çıkmış birimler — her sınıftan (DATA, ARQ,
@@ -7029,11 +7235,32 @@ impl Sender {
     /// yolunda kimlik oturum içi gönderim sırasıdır), eşitlikte erken vade, sonra kuyruk sırası.
     /// `sent` (bu turda gönderilmiş birimler, sıralı) atlanır: bir birim bir turda en çok bir kez.
     /// Seçim, BURST_CAP tabanı ve bir sonraki uyanma aynı başı kullanır.
+    ///
+    /// [K4G-05b rev6 · DUR-40 · C15 K1 (d)] YAŞ TAVANI: vadesinden bu yana ≥ RTO_MAX geçmiş kaydı olan
+    /// birim varsa baş, bunlar arasında son hizmeti (birimin herhangi bir sınıftan son iletimi) EN
+    /// ESKİ olan birimin en erken vadeli kaydıdır (eşitlikte küçük kimlik) — yeni sayı yok (tavan
+    /// RTO_MAX). Normal hızda kayıt vadesinden RTO_MAX sonra hâlâ beklemez; HOL korunur.
     fn copy_queue_head(&self, now_ns: u64, sent: &[u64]) -> Option<usize> {
-        self.dup_queue
-            .iter()
-            .enumerate()
-            .filter(|(_, d)| d.due_ns <= now_ns && sent.binary_search(&d.unit.id).is_err())
+        let due = || {
+            self.dup_queue
+                .iter()
+                .enumerate()
+                .filter(move |(_, d)| d.due_ns <= now_ns && sent.binary_search(&d.unit.id).is_err())
+        };
+        let cap = rto_max_ns();
+        if let Some((i, _)) = due()
+            .filter(|(_, d)| now_ns.saturating_sub(d.due_ns) >= cap)
+            .min_by_key(|&(i, d)| {
+                let last_tx = self
+                    .units
+                    .get(&UnitId(d.unit.id))
+                    .map_or(0, |e| e.last_tx_ns);
+                (last_tx, d.unit.id, d.due_ns, i)
+            })
+        {
+            return Some(i);
+        }
+        due()
             .min_by_key(|&(i, d)| (d.unit.id, d.due_ns, i))
             .map(|(i, _)| i)
     }
@@ -7067,6 +7294,8 @@ impl Sender {
             return;
         }
         let share_turn = self.copy_share_tick.is_multiple_of(K_ARQ_SHARE);
+        // [rev6] Kopya rezervin sahibiyse her tur; değilse yalnız pay turunda (karşılık hakkı sahibi
+        // varken rezerv onundur — kopya payı rezerv kurmaz, yalnız rezervin üstünden gidebilir).
         if !share_turn && self.copy_reserve_bytes == 0 {
             return;
         }
@@ -7086,7 +7315,10 @@ impl Sender {
                 self.sched_diag.dup_token_denied += 1;
             }
             // Rezerv = başın boyu (≤ bir kayıt boyu); token birikir, diğer sınıflar altına inemez.
-            self.copy_reserve_bytes = size;
+            // [rev6] Yalnız rezerv yokken ya da sahibi kopyayken (aynı anda tek rezerv).
+            if self.reserve_total() == 0 || self.copy_reserve_bytes > 0 {
+                self.set_reserve(SvcClass::Copy, size);
+            }
         }
     }
 
@@ -7094,17 +7326,31 @@ impl Sender {
     /// ilk token tüketicisinden (ARQ payı) önce: PRE_CONVERGE'de rezerv yok; kuyrukta vadeli baş
     /// kalmadıysa (birim teyit edildi, kayıt silindi) rezerv kalkar; baş değiştiyse rezerv yeni başın
     /// boyuna güncellenir (aynı anda tek rezerv).
-    fn refresh_copy_reserve(&mut self, now_ns: u64) {
-        if self.copy_reserve_bytes == 0 {
-            return;
-        }
+    ///
+    /// [K4G-05b rev6 · Ek A.4 KARŞILIK, K-4] Aynı tazeleme bütün sahipler için: uygun işi kalmayan
+    /// hak düşer; rezervin sahibinin uygun işi yoksa rezerv düşer, baş değiştiyse yeni başın boyuna
+    /// güncellenir; rezerv yoksa ilk hak sahibine (ARQ > DATA > kopya) kurulur. PRE_CONVERGE'de hak
+    /// ve rezerv yoktur.
+    fn refresh_reserve(&mut self, now_ns: u64) {
         if self.state == SenderState::PreConverge {
-            self.copy_reserve_bytes = 0;
+            self.clear_reserve();
+            self.rights = ServiceRights::default();
             return;
         }
-        self.copy_reserve_bytes = self
-            .copy_queue_head(now_ns, &[])
-            .map_or(0, |i| self.dup_queue[i].unit.size);
+        if self.rights.any() {
+            for c in SvcClass::RESERVE_ORDER {
+                if self.rights.get(c) && self.class_head_size(c, now_ns).is_none() {
+                    self.rights.set(c, false);
+                }
+            }
+        }
+        if let Some(owner) = self.reserve_owner() {
+            match self.class_head_size(owner, now_ns) {
+                Some(size) => self.set_reserve(owner, size),
+                None => self.clear_reserve(),
+            }
+        }
+        self.assign_reserve_to_holder(now_ns);
     }
 
     /// [K4G-05b · engine §13 v1.1 BURST_CAP TUR BAŞI TABANI] PRE_CONVERGE DIŞINDA taban =
@@ -7162,7 +7408,7 @@ impl Sender {
             // [K4G-05b PAY · DUR-31] Kopya kuyruğu başı rezervi varken DATA rezervin altına inemez
             // (`try_send_pre_parity` içindeki `copy_reserve_allows`); rezervin üstündeki token'ı
             // kullanabilir.
-            if !self.try_send_pre_parity(front.size, false) {
+            if !self.try_send_class(Some(SvcClass::Data), front.size, false) {
                 #[cfg(feature = "diag-sched-telemetry")]
                 {
                     self.sched_diag.data_token_denied += 1;
@@ -7182,6 +7428,8 @@ impl Sender {
                 size: front.size,
                 send_record: None,
             });
+            // [K4G-05b rev6] DATA emisyonu hak üretmez; DATA'nın hakkı ve (sahipse) rezervi düşer.
+            self.on_class_emitted(SvcClass::Data, now_ns);
             if self.state == SenderState::RecoverFwd {
                 let (factor, spacing) = self.dup_params();
                 // [K4G-05b madde 5 ekleme kuralı] D − 1 tek seferlik kopya (emergency, fire-once);
@@ -10070,10 +10318,20 @@ mod tests {
     ///
     /// Kollar: (1) ARQ payı turu, token 1350: ARQ rezervin ÜSTÜNDEKİ 350 B'nin 300'ünü alır, sonra baş
     /// gider → `[Retransmit A, Duplicate U]`; (2) aynı tur, token 1200: ARQ rezerve inemez → baş gider,
-    /// rezerv kalkar, DATA kalan token'la gider → `[Duplicate U, Data D]`; (3) pay dışı tur, token 900
-    /// < rezerv: baş, DATA ve kuyruk-probu gitmez → `[]`, rezerv sürer; (4) token 1000: baş tur başında
-    /// gider → `[Duplicate U]`, rezerv 0; (5) rezerv kalkınca DATA ve prob v1 sırasıyla gider.
-    /// DUR-37 kodunda (2) `[Retransmit A]` ve (3) `[Retransmit P]` olurdu (ARQ/prob rezervi tüketirdi).
+    /// rezerv kalkar ~~, DATA kalan token'la gider → `[Duplicate U, Data D]`~~ → `[Duplicate U]`; (3) pay
+    /// dışı tur, token 900 < rezerv: baş, DATA ve kuyruk-probu gitmez → `[]`, rezerv sürer; (4) token
+    /// 1000: baş tur başında gider → `[Duplicate U]`, rezerv 0; (5) rezerv kalkınca DATA ve prob v1
+    /// sırasıyla gider. DUR-37 kodunda (2) `[Retransmit A]` ve (3) `[Retransmit P]` olurdu (ARQ/prob
+    /// rezervi tüketirdi).
+    ///
+    /// [K4G-05b rev6 · DUR-8 biçimi, İDDİA — kasıtlı davranış değişikliği CEVAP PAKETİ 15 v3 K1 (c)]
+    /// NEDEN DEĞİŞTİ: kol (2)'de kopya emisyonundan sonra uygun işi olan ARQ (A) ve DATA (D) karşılık
+    /// hakkı alır; iki hak sahibi varken rezervi önce ARQ alır (Ek A.4 rev6 KARŞILIK, ARQ > DATA), DATA
+    /// ARQ'nun emisyonundan sonra. D (100 B) artık ARQ'nun rezervinin (300 B) altına inemez → `[Duplicate
+    /// U]`, rezerv ARQ'da. Kollar (1), (3)–(5) aynen. 2×2: eski kod + eski test YEŞİL · yeni kod + eski
+    /// test KIRMIZI (kol 2 `[Duplicate U]`) · yeni kod + yeni test YEŞİL · eski kod + yeni test
+    /// DERLENMEZ (`class_reserve`/`rights` rev6 alanları; kol 2'nin çıktı iddiası eski kodda KIRMIZI —
+    /// eski kod D'yi gönderir) [çıkarım; koordinatör ölçer].
     #[test]
     fn k4g05b_dur31_reservation_binds_all_classes_above_reserve_only() {
         let a = OpaqueUnit { id: 50, size: 300 };
@@ -10118,10 +10376,20 @@ mod tests {
         let out = s.schedule_transmit(now);
         assert_eq!(
             dur31_kinds(&out),
-            [(TransmitKind::Duplicate, u.id), (TransmitKind::Data, d.id)],
-            "(2) ARQ rezervin altına inemez; baş gider, sonra DATA kalan token'la"
+            [(TransmitKind::Duplicate, u.id)],
+            "(2) ARQ rezervin altına inemez; baş gider; karşılık hakkıyla rezerv önce ARQ'ya geçer, \
+             DATA ARQ'nun rezervinin altına inemez (rev6, C15 K1 (c))"
         );
         assert_eq!(s.copy_reserve_bytes, 0, "(2) gönderimde rezerv kalkar");
+        assert_eq!(
+            s.class_reserve,
+            Some((SvcClass::Arq, a.size)),
+            "(2) rezerv karşılık hakkındaki ARQ başında (ARQ > DATA)"
+        );
+        assert!(
+            s.rights.data && !s.rights.copy,
+            "(2) DATA hak sahibi; kopyanın hakkı kendi emisyonuyla düştü"
+        );
         // (3)
         let mut s = Sender::new();
         s.set_tail_recovery_config(tail_cfg_on());
@@ -10324,9 +10592,21 @@ mod tests {
 
     /// [K4G-05b DUR-31 · CEVAP 11 tablo (b)] (a) düzeni + eşzamanlı ARQ ve kuyruk-probu trafiği
     /// (RECOVER_ARQ, üç kayıp birim 300 B, bekleyen prob hedefi 300 B): kopya yine sınır içinde
-    /// (seçilme ≤ K_ARQ_SHARE çağrı, gönderilme ≤ 1050/1064 s + 1 tur); rezerv süresince ARQ, prob ve
+    /// (~~seçilme ≤ K_ARQ_SHARE çağrı,~~ gönderilme ≤ 1050/1064 s + 1 tur); rezerv süresince ARQ, prob ve
     /// DATA rezervin altına inmez (hiçbiri çıkmaz); gönderimde rezerv 0. Sonraki 50 turun emisyonu
     /// yalnız raporlanır (DATA seli altında ARQ/prob sırası v1 sınıf sırasıdır, bu testin iddiası değil).
+    ///
+    /// [K4G-05b rev6 · DUR-8 biçimi, İDDİA — kasıtlı davranış değişikliği CEVAP PAKETİ 15 v3 K3 + K1]
+    /// NEDEN DEĞİŞTİ: ARQ payı da rezerv alır (K3) ve aynı pay turunda ARQ kopyadan önce gelir (A.4 "ARQ
+    /// önce, sonra kopya başı"); ARQ emisyonundan sonra DATA ve kopya karşılık hakkı alır, rezerv önce
+    /// DATA'ya (DATA > kopya). Kopyanın seçilmesi bu yüzden artık ≤ K_ARQ_SHARE çağrı DEĞİL ("karşılık
+    /// hakkı ve ARQ payı rezervi yokken" — A.4 rev6 (i)); yerine (iii) HİZMET GARANTİSİ: kopya, uygun
+    /// olduğu turdan itibaren ≤ (2·S_DATA + S_ARQ + S_kopya)/pace_rate + (K_ARQ_SHARE + 4) tur =
+    /// (74 + 300 + 1050)/1064 s + 8 ms ≈ 1.346 s içinde çıkar (Ek B.6 (h) T_max(kopya); beklenen ≈ 1.303
+    /// s). Gönderilme (ii) ve rezerv süresince diğer emisyon yok iddiaları aynen. 2×2: eski kod + eski
+    /// test YEŞİL · yeni kod + eski test KIRMIZI (seçilme ≈ 317. çağrı) · yeni kod + yeni test YEŞİL ·
+    /// eski kod + yeni test YEŞİL (eski kodda kopya 4. çağrıda seçilir, ≈ 0.99 s'de çıkar) [çıkarım;
+    /// koordinatör ölçer].
     #[test]
     fn k4g05b_dur31_bounds_with_concurrent_arq_and_probe() {
         const U: u64 = 1050;
@@ -10380,9 +10660,14 @@ mod tests {
              emisyon={other_during_reserve}; sonraki 50 tur={after:?}",
             (t_emit - t_sel) / MS
         );
+        // [rev6] (iii) HİZMET GARANTİSİ — kopya ilk turdan (vadeli) itibaren T_max(kopya) içinde çıkar.
+        let t_max_copy =
+            (2 * 37 + 300 + U) * DUR31_SEC / 1064 + (u64::from(K_ARQ_SHARE) + 4) * TURN;
         assert!(
-            k_sel <= u64::from(K_ARQ_SHARE),
-            "(i) seçilme {k_sel}. çağrıda"
+            t_emit <= TURN + t_max_copy,
+            "(iii) kopya {} ns'de çıktı > T_max(kopya) = {} ns (seçilme {k_sel}. çağrı)",
+            t_emit,
+            TURN + t_max_copy
         );
         assert!(
             t_emit - t_sel <= U * DUR31_SEC / 1064 + TURN,
