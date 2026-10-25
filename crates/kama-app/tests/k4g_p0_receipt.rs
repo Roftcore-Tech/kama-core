@@ -60,8 +60,8 @@
 //! * **`Link` uzantısı (K4G-05d rev3):** `Link::supersede_on_next_recv` geçişin `recv` yüzüdür —
 //!   ucun sıradaki `recv`'i supersession'ı öğrenir: eski tutamaç hemen eskir (`send` →
 //!   `SessionSuperseded`), yeni tutamaç aktif olur ve uca `Closed(eski)` SONRA `Ready(yeni)`
-//!   sıralanır (ters sıra; sahte Transport). `Link::supersede` zincirlenebilir: eski tutamaç uca son
-//!   duyurulandır (`Endpoint::announced`), uç olayları henüz okumamış olabilir.
+//!   sıralanır (ters sıra; sahte Transport). `Link::supersede` zincirlenebilir: eski tutamaç uca
+//!   son duyurulandır (`Endpoint::announced`), uç olayları henüz okumamış olabilir.
 //!
 //! # K4G-05d testleri (not `docs/design/K4G-05d-RECEIPT.md` rev3 §5, Ek B)
 //!
@@ -401,8 +401,9 @@ impl Link {
         handle
     }
 
-    /// [K4G-05d rev3] Supersession'ı `side` ucu `recv` anında öğrenir (`Endpoint::supersede_on_recv`);
-    /// karşı uca `Link::supersede` gibi `Ready(h')` sonra `Closed(h)` sıralanır. `h'` döner.
+    /// [K4G-05d rev3] Supersession'ı `side` ucu `recv` anında öğrenir
+    /// (`Endpoint::supersede_on_recv`); karşı uca `Link::supersede` gibi `Ready(h')` sonra
+    /// `Closed(h)` sıralanır. `h'` döner.
     fn supersede_on_next_recv(&mut self, side: Side) -> SessionHandle {
         let handle = self.fresh_handle();
         for each in [Side::Alice, Side::Bob] {
@@ -796,7 +797,7 @@ struct Rig {
     clock: ManualClock,
     alice: Messenger<End>,
     bob: Node,
-    /// Kurulan ilk oturum. P0 testlerinde ve T1' / T2 / T5'te hiçbir adımda değişmez; oturum
+    /// Kurulan ilk oturum. P0 testlerinde ve T2 / T5 / (b) / (c)'de hiçbir adımda değişmez; oturum
     /// değişimini sınayan T3 / T4 yenisini kendisi tutar.
     session: SessionHandle,
 }
@@ -1083,8 +1084,8 @@ impl SideLog {
     }
 }
 
-/// [K4G-05d rev3 (a)] İki uç da `kama-node` motorlarıdır (`Node`): ikisi de dosya gönderir, PTT akışı
-/// açar ve karşılıklı TEXT yollar.
+/// [K4G-05d rev3 (a)] İki uç da `kama-node` motorlarıdır (`Node`): ikisi de dosya gönderir, PTT
+/// akışı açar ve karşılıklı TEXT yollar.
 struct Duplex {
     link: Rc<RefCell<Link>>,
     clock: ManualClock,
@@ -1419,7 +1420,7 @@ fn p0_r3_receipt_dedup_bounded() {
     );
 }
 
-// ── K4G-05d testleri (not rev2 §5, Ek B.2; tabanda derlenir) ────────────────────────────────
+// ── K4G-05d testleri (rev2'den kalan T2 / T5, rev3'te değişen T3 / T4) ──────────────────────
 
 /// **T2 `Ok` sonrası (C9: "`Ok` sonrası tekrar transport'un") — tabanda (`3439fccd`) YEŞİL
 /// (bekçi).**
@@ -1922,9 +1923,12 @@ fn b_three_hundred_texts_one_way_are_all_delivered_and_none_dropped() {
     let mut received_count: BTreeMap<MsgId, usize> = BTreeMap::new();
     let mut delivered_count: BTreeMap<MsgId, usize> = BTreeMap::new();
     let mut rounds = 0;
-    while rounds < B_ROUND_CAP
-        && !(delivered_count.len() == B_TEXTS && rig.bob.messenger.pending_receipts(ALICE) == 0)
-    {
+    loop {
+        let done =
+            delivered_count.len() == B_TEXTS && rig.bob.messenger.pending_receipts(ALICE) == 0;
+        if done || rounds == B_ROUND_CAP {
+            break;
+        }
         while sent.len() < B_TEXTS {
             match rig.alice.send_text(BOB, TEXT) {
                 Ok(msg_id) => sent.push(msg_id),
@@ -2320,13 +2324,13 @@ fn receipt_queue_survives_session_change_a() {
 
 /// **(d-b) Geçiş `recv` anında, olaylar ters sırada (rev3 M1, DUR-05d-5 (a); not Ek B.1).**
 ///
-/// Bob'un Transport'u supersession'ı X'i teslim eden `recv`'de öğrenir (`Link::supersede_on_next_recv`;
-/// client-core `recv` → `drive` aynası): eski tutamaç hemen `SessionSuperseded` döner ve olaylar
-/// `Closed(h)` önce, `Ready(h')` sonra gelir (`retire` → `adopt`). Beklenen RECEIPT(X) denemeleri:
-/// `h`'de iki `SessionSuperseded` (TEXT'in `poll`'u ve sonraki `poll`'un başı), sonra `Ready(h')`'nin
-/// `poll`'unda `h'`'de kabul — Alice'in yeniden gönderimi gelmeden. Alice tam bir `Delivered(X)`
-/// görür. Öldürdüğü mutant: yalnız `Backpressure`'ı geçici sayan sınıf (DUR-05d-5 (b); `h'`'ye
-/// kuyruktan sunum yok).
+/// Bob'un Transport'u supersession'ı X'i teslim eden `recv`'de öğrenir
+/// (`Link::supersede_on_next_recv`; client-core `recv` → `drive` aynası): eski tutamaç hemen
+/// `SessionSuperseded` döner ve olaylar `Closed(h)` önce, `Ready(h')` sonra gelir (`retire` →
+/// `adopt`). Beklenen RECEIPT(X) denemeleri: `h`'de iki `SessionSuperseded` (TEXT'in `poll`'u ve
+/// sonraki `poll`'un başı), sonra `Ready(h')`'nin `poll`'unda `h'`'de kabul — Alice'in yeniden
+/// gönderimi gelmeden. Alice tam bir `Delivered(X)` görür. Öldürdüğü mutant: yalnız
+/// `Backpressure`'ı geçici sayan sınıf (DUR-05d-5 (b); `h'`'ye kuyruktan sunum yok).
 #[test]
 fn receipt_queue_survives_session_change_b() {
     let mut rig = Rig::connected();
