@@ -2495,6 +2495,23 @@ async fn client_task(
     // (yalnız aynaya yazılır, görev okumaz).
     let mut last_state: Option<adaptive_transport::sender::SenderState> = None;
     let mut state_changes: u64 = 0;
+    // [K4G-05c · R1/R2 — not §3.2, D.3] Gönderen mesafe kapısı: bir sunum, kimlik uzayında en yeni
+    // birimi ile en eski teyitsiz birim (O) arasındaki mesafe alıcının kabul penceresini
+    // (`max_inflight_units`) aşmayacaksa alınır: next_unit + c − 1 − O < cap; c = bir sunumun en
+    // çok birim sayısı (parçalama kapalıyken 1; S1-dışı parçalı yolda mesaj tavanının birim
+    // sayısı, ihtiyatlı üst sınır). Tutmazsa sunum kuyrukta bekler → kuyruk dolar → `send()`
+    // `QueueFull` (S1: `Backpressure`). Teyitli ⇒ alıcıda kabul edilmiş olduğundan (O ≤ floor)
+    // dürüst göndericinin birimi alıcı penceresinin dışına düşmez (pay = 0, DUR-05c-2 (a)).
+    let distance_cap = cfg.max_inflight_units as u64;
+    let offer_units: u64 = if frag_on {
+        cfg.max_message_bytes
+            .map_or(1, |m| m.div_ceil(cfg.max_unit_bytes).max(1)) as u64
+    } else {
+        1
+    };
+    // Bekleyen sunumun mesafe kapısında tutulduğu bölüm sürüyor mu (`distance_holds` bölüm başına
+    // bir kez sayılır).
+    let mut distance_holding = false;
 
     // ── Ana döngü ──
     loop {
@@ -2549,6 +2566,16 @@ async fn client_task(
                 mirror.states.push(change);
             }
         }
+        let oldest_unconfirmed = store.keys().next().copied().unwrap_or(next_unit);
+        let distance_ok = next_unit
+            .saturating_add(offer_units - 1)
+            .saturating_sub(oldest_unconfirmed)
+            < distance_cap;
+        let held_now = !distance_ok && !offer_rx.is_empty();
+        if held_now && !distance_holding {
+            ctx_counters.add_distance_hold();
+        }
+        distance_holding = held_now;
         tokio::select! {
             _ = shutdown_rx.changed() => break,
             // Ölçüm-t0 işareti (ClientHandle::mark_t0): wire sayaçları sıfırlanır, MOTOR DURUMU
@@ -2571,7 +2598,8 @@ async fn client_task(
                 let _ = ack.send(()); // çağıran serbest: bundan sonrası ölçüm penceresi
             }
             // Offer YALNIZ store'da yer varken alınır (bounds-before-alloc: kanal + store çift sınır).
-            maybe = offer_rx.recv(), if store.len() < cfg.max_inflight_units => {
+            // [K4G-05c] ve birim-kimliği mesafesi alıcı penceresinin içinde kalacaksa.
+            maybe = offer_rx.recv(), if store.len() < cfg.max_inflight_units && distance_ok => {
                 let Some((message, deadline_ns)) = maybe else { break }; // handle'lar düştü → drain
                 stats.offered += 1;
                 // [DEADLINE-EKSENİ] Politika girdisi; ARQ/pacing/loss durumuna DOKUNMAZ.
