@@ -146,6 +146,57 @@ M1 ile bu oturumdaki kuyruk `Closed`'a dek bekler, kapı o eşe `NotConnected` y
 - Rebase: ≈ 0,25 gün.
 - **Toplam ≈ 3–3,5 iş günü.** A1 seçilirse +1–1,5 gün (erişimci, trait, newtype, W_F ölçümü).
 
+## 10. DUR-05d-8 — A1 parametreleri (A1 kodundan ÖNCE; sahibe)
+
+C14 §4 DUR-05d-7 koşulları (1)–(3) için. Kod yok; değerler A1 PR'ına girmeden onay bekler.
+
+**Model [olgu].**
+- Oturum başına kabul sınırı offer kanalıdır: `try_send` dolu → `Backpressure` (`client-core/src/runtime.rs:1527-1531`, kanal :1616, `offer_queue` 1024).
+- Kanaldan store'a alım `store.len() < max_inflight_units` iken olur (:2430). `outstanding` ≈ kanal + store (:1714).
+- A1 erişimcisi oturum başına iki sayı verir: `A(h)` = kanalda kalan boş yer (05c'den sonra mesafe penceresi dahil, min) ve `O(h)` = `outstanding`.
+- `A(h)`'yi yalnız bu oturuma yapılan `send`'ler azaltır; runtime görevi yalnız artırır. kama-app gönderimleri tek sahipten (`&mut` Transport) sıralı yapar. [çıkarım; A1 ve 05c koduyla doğrulanacak]
+
+**(i) W_F başlangıç değeri: 240 birim.**
+- Tanım: toplu kayıt yalnız `O(h) < W_F` iken sunulur. Böylece yeni bir RECEIPT kabul edildiğinde FIFO'da önünde en çok W_F toplu birim bulunur (bugün ≤ 5120).
+- Türetim: ölçülmüş düşmanca zarfın en büyük bant-gecikme çarpımı, tam birim datagramıyla bölünür.
+  - h6_rtt200: 10 Mbit/s, iki yönde 100 ms, yani RTT 200 ms (`scripts/netem/kapi_manifest.py:81`; `docs/transport-v1/HOSTILE-ENVELOPE.md:18`).
+  - Tam birim datagramı 1046 B (OLGULAR §8).
+  - W_F = ⌈1 250 000 B/s × 0,2 s / 1046 B⌉ = ⌈239,0⌉ = 240.
+- Sonuç: zarfın içinde W_F dosya hızını kısmaz. RECEIPT'in önündeki toplu yük ≤ 240 × 1046 B ≈ 251 kB. Bu 100 B/s'de ≈ 42 dk, 31 B/s'de ≈ 2,2 sa sürer (bugünkü 15–48 sa yerine).
+- [CAL] yalnız son değer içindir: INT-02 "dosya altında RECEIPT gecikmesi" kolundan sonra.
+
+**(ii) Rezerv koşulu (C14 §4 düzeltmesi).**
+- Toplu kayıt (dosya kayıtları, `MEDIA_BUNDLE`) yalnız kabulünden SONRA en az H_R = 256 boş yer kalacaksa sunulur: `A(h) − 1 ≥ H_R + H_C` ((iii)'teki H_C dahil).
+- Denetim her toplu `send`'in hemen önünde yapılır. Arada kama-app'te başka üretim yoktur; runtime `A`'yı yalnız artırır. Bu yüzden denetim, kabul anındaki boş yerin alt sınırıdır.
+- A1 kodu tek denetimle birden çok kayıt sunarsa yerel bütçe `A(h) − H_R − H_C` tutar ve o oturuma yapılan HER kabulde azaltır: toplu, RECEIPT ve kontrol kaydı.
+- "Boş yer ≥ 256 iken sun" kuralı geri çekildi: tam 256'da bir kabul 255 bırakır.
+
+**(iii) Muaf tek atışlık kontrol kayıtları.**
+- Bugünkü durum [olgu, main]:
+  - Kabul edilene dek bekleyen, kaybolmayan kayıtlar:
+    - `FILE_ABORT` (`file_transfer.rs:1547-1550`);
+    - oturum değişiminin yeniden `PTT_OPEN`'ı (`ptt.rs:690-696`).
+  - Bekleyen ama süreli kayıt: `FILE_RECEIPT`, `FILE_RECEIPT_TTL` 60 s dolunca düşer ve sayılır (`file_transfer.rs:1243-1244`).
+  - Tek atış kayıtlar:
+    - `PTT_CLOSE` reddedilirse yeniden denenmez; karşıda ≤ 120 s hayalet akış kalır (`ptt.rs:649`, :656, :215).
+    - `open()`'ın `PTT_OPEN`'ı reddedilince hata çağırana döner; sessiz kayıp yok (`ptt.rs:549`).
+  - Erken metin taze uca gider (`client-core/src/transport.rs:1000-1004`); kapasite sorunu değildir, K4G-05g'nin işidir.
+- **Seçenek a, bekletme:** `PTT_CLOSE` `FILE_ABORT` gibi kabul edilene dek kuyrukta bekler (K8 "bekler"). Kaybolmaz. Ancak kabul, kanalın boşalmasına bağlıdır; hayalet akış süresi ağa bağlıdır.
+- **Seçenek b, ayrı bütçe:** H_C = oturum başına aynı anda bekleyebilecek kontrol kaydı üst sınırı = 2 + 4 + 4 = 10.
+  - 2: eş başına en çok bir giden PTT akışı, OPEN + CLOSE (`ptt.rs:536-537`, :496).
+  - 4: `MAX_OUTGOING_TRANSFERS` `FILE_ABORT` (`file_transfer.rs:281`).
+  - 4: `MAX_PENDING_RECEIPTS` `FILE_RECEIPT` (:291).
+  - Kurallar: toplu kayıt (ii)'deki gibi; RECEIPT yalnız `A(h) − 1 ≥ H_C` iken sunulur, değilse tut-ve-dur; kontrol kaydı `A(h) ≥ 1` iken sunulur.
+  - Böylece toplu ya da RECEIPT kabulünden sonra en az H_C yer kalır ve kontrol kayıtları hemen kabul edilebilir.
+- **Önerim: b.** Gerekçe: `PTT_CLOSE` zamana duyarlıdır. Bekletme kaybı önler ama kabulü ağa bırakır. b yeni yeniden deneme durumu eklemez; H_C türetilmiştir.
+  - b'nin kalan açığı: `transport_mut()` baypası (§7). b seçilirse `PTT_CLOSE` için a da savunma olarak eklenebilir; ikisi çelişmez.
+
+**(iv)** Rezerv RECEIPT'in ve kontrol kayıtlarının **kabul edilebilirliğini** sağlar, **bekleme süresini** değil. Kabul edilen RECEIPT, önündeki ≤ W_F birim iletilene dek bekler. Gecikme INT-02 "dosya altında RECEIPT gecikmesi" kolunda ölçülür (C14 §7 (2)): `gated_by_receipts`, `receipts_pending`, en uzun bekleme.
+
+| DUR | Soru | Seçenekler | Önerim | Etkilenen test |
+|---|---|---|---|---|
+| **DUR-05d-8** | A1 parametreleri | W_F₀ = 240 (zarf BDP'si) · rezerv `A − 1 ≥ H_R + H_C` · kontrol kayıtları: a bekletme / b ayrı bütçe H_C = 10 | W_F₀ = 240; b | A1 PR'ında (c2) rezerv testi + `PTT_CLOSE` kayıpsızlık testi |
+
 ---
 
 ## Ek A — beyanlı belge ve spec güncellemeleri (rev3)
