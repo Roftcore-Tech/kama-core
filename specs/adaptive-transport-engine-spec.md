@@ -993,36 +993,55 @@ inter-packet gap = pkt.size / pace_rate    (düzgün pacing; ACK-clock değil, r
 priority: retransmit(deadline) > FEC parity > yeni DATA > ACK-only (ACK-only ayrı küçük budget)
 [v1.1 · K4G-05b, NORMATİF — sahip kararları CEVAP PAKETİ 5, 2026-10-16; CEVAP PAKETİ 7, 2026-10-18 (DUR-9 (a));
   CEVAP PAKETİ 7-EK, 2026-10-18 (B1); CEVAP PAKETİ 9, 2026-10-24; CEVAP PAKETİ 10, 11, 11-EK, 12 ve 13, 2026-10-24
-  (DUR-24, DUR-31) — `docs/decisions/K4G-CEVAP-PAKETLERI-4-7.md`]
+  (DUR-24, DUR-31); CEVAP PAKETİ 15 v3 ve 15 EK-1, 2026-10-25 (DUR-38: B′, K1–K3; DUR-40) —
+  `docs/decisions/K4G-CEVAP-PAKETLERI-4-7.md`]
   KOPYA KUYRUĞU İÇİ SIRA (PRE_CONVERGE DIŞINDA): vadesi gelmiş kopya kayıtlarından EN ESKİ ONAYSIZ birimin kaydı
   önce gönderilir (ölçüt: en küçük birim kimliği — ürün yolunda kimlik oturum içi gönderim sırasıdır; eşitlikte
-  erken vade, sonra kuyruk sırası); bir birim bir planlama turunda — hangi sınıftan olursa olsun — en çok bir kez
-  gönderilir; token yetmezse o tur DURUR — arkadaki kayıt sıranın başını GEÇEMEZ, istisnasız. Teyit edilmiş birimin
-  kaydı gönderilmez. Bir birimin bekleyen tek seferlik kopya kaydı ≤ D − 1 tutulur (ekleme anında sayılır, fazlası
-  eklenmez); geometrik kaydı varken yeni kayıt açılmaz, yalnız onun vadesi öne çekilir. BURST_CAP TUR BAŞI TABANI
-  (PRE_CONVERGE DIŞINDA): her planlama turunun başında, İLK kırpmadan önce, BURST_CAP alt sınırı = max(kuyruk
-  başındaki DATA biriminin boyutu — kuyruk boşsa DEFAULT_MTU, v1 aynen —, ARQ planının ilk kaydının boyutu, bekleyen
-  kuyruk-probu hedefinin boyutu, yukarıdaki ölçüte göre ilk vadesi gelmiş kopya kaydının boyutu); üst sınır en az
-  alt sınırdır; aynı turda oluşan kayıt sonraki turun tabanına girer. Token ÜRETİLMEZ; token tavana dek
-  birikebilir; pace_rate DEĞİŞMEZ (INV-RATE-1). Yol seçimi ve bir sonraki uyanma aynı başları kullanır.
-  PRE_CONVERGE'de taban v1'dir (max(kuyruk başındaki DATA biriminin boyutu, ilk-uçuş bütçesi)): ilk-uçuş bütçesi
-  kaydın boyutundan küçükken BURST_CAP'i aşan kayıt bu kayıtla kapsanmaz (beyanlı istisna, transport-layer-tdd §12
-  [AMENDMENT-12]); çıkış turu tek turdur. Geometrik aralık ×2, üst sınır RTO_MAX (transport-layer-tdd §12
-  [AMENDMENT-12]). PRE_CONVERGE'de §3.3-B sırası ve takvimi DEĞİŞMEZ; PRE_CONVERGE çıkışında bekleyen kopyaların
-  aralığı ve vadesi RTO_MAX'a kırpılır. SINIFLAR ARASI SIRA tek istisnayla DEĞİŞMEDİ: v1 tahkimi kod sırasıdır
-  (DATA → ARQ → kuyruk-probu → kuruluş probu → kopya kuyruğu → FEC parity; RECOVER_ARQ'da her K_ARQ_SHARE'inci tur
-  ARQ ile başlar). İSTİSNA — PRE_CONVERGE hariç bütün durumlarda (PRE_CONVERGE'de v1 sırası ve §3.3-B takvimi
-  değişmez; bu kapsam rev4 notunun "PRE_CONVERGE dahil" önerisini DEĞİŞTİRİR; CEVAP PAKETİ 10 (2026-10-24) "her
-  durumda" ifadesi CEVAP PAKETİ 11-EK (2026-10-24) §6 ile geri alındı): (i) SEÇİLME — gönderilmeye uygun (vadesi
-  gelmiş) kopya kuyruğu başı en geç K_ARQ_SHARE'inci `schedule_transmit` çağrısında DATA'dan ÖNCE hizmet hakkı
-  kazanır; aynı K_ARQ_SHARE; kopya payı RECOVER_ARQ'nun ARQ payı sayacından bağımsız sayılır, yeni sayı ve ayrı
-  token kovası YOK; aynı turda ARQ payı da vadeliyse ARQ önce, sonra kopya başı. REZERVASYON — hak kazanan baş
-  token'a yetişemezse REZERV açılır: başın kopyası dışındaki her token tüketicisi (DATA, ARQ, kuyruk-probu, FEC
-  parity, kuruluş probu) rezervin altına inemez, rezervin ÜSTÜNDEKİ token'ı kullanabilir; rezerv ≤ bir kayıt boyu,
-  aynı anda tek rezerv; token ÜRETİLMEZ; rezerv gönderimde, birim teyit edilince, hedef geçersizleşince ve oturum
-  kapanınca temizlenir; artık rezerv testle sınanır. (ii) GÖNDERİLME — hak kazanan baş ≤ boy / pace_rate + bir tur
-  içinde çıkar: sabit pace_rate, çalışan zamanlayıcı ve yeterli BURST kapasitesi koşuluyla; değişken hızda biriken
-  token üzerinden hesaplanır (test iki kipte). (ii) dışında gecikme sınırı VERİLMEZ. Yukarıdaki priority satırıyla
+  erken vade, sonra kuyruk sırası); YAŞ TAVANI (DUR-40) — vadesinden bu yana en az RTO_MAX geçmiş kaydı olan birim
+  varsa sıranın başı, bu birimler arasında son hizmeti (birimin herhangi bir sınıftan son iletimi) EN ESKİ olan
+  birimin en erken vadeli kaydıdır (eşitlikte küçük kimlik); bir birim bir planlama turunda — hangi sınıftan olursa
+  olsun — en çok bir kez gönderilir; token yetmezse o tur DURUR — arkadaki kayıt sıranın başını GEÇEMEZ, istisnasız.
+  Teyit edilmiş birimin kaydı gönderilmez. Bir birimin bekleyen tek seferlik kopya kaydı ≤ D − 1 tutulur (ekleme
+  anında sayılır, fazlası eklenmez); geometrik kaydı varken yeni kayıt açılmaz, yalnız onun vadesi öne çekilir.
+  BURST_CAP TUR BAŞI TABANI (PRE_CONVERGE DIŞINDA): her planlama turunun başında, İLK kırpmadan önce, BURST_CAP alt
+  sınırı = max(kuyruk başındaki DATA biriminin boyutu — kuyruk boşsa DEFAULT_MTU, v1 aynen —, ARQ planının ilk
+  kaydının boyutu, bekleyen kuyruk-probu hedefinin boyutu, yukarıdaki ölçüte göre ilk vadesi gelmiş kopya kaydının
+  boyutu); üst sınır en az alt sınırdır; aynı turda oluşan kayıt sonraki turun tabanına girer. Token ÜRETİLMEZ;
+  token tavana dek birikebilir; pace_rate DEĞİŞMEZ (INV-RATE-1). Yol seçimi ve bir sonraki uyanma aynı başları
+  kullanır. PRE_CONVERGE'de taban v1'dir (max(kuyruk başındaki DATA biriminin boyutu, ilk-uçuş bütçesi)): ilk-uçuş
+  bütçesi kaydın boyutundan küçükken BURST_CAP'i aşan kayıt bu kayıtla kapsanmaz (beyanlı istisna,
+  transport-layer-tdd §12 [AMENDMENT-12]); çıkış turu tek turdur. Geometrik aralık ×2, üst sınır RTO_MAX
+  (transport-layer-tdd §12 [AMENDMENT-12]). PRE_CONVERGE'de §3.3-B sırası ve takvimi DEĞİŞMEZ; PRE_CONVERGE
+  çıkışında bekleyen kopyaların aralığı ve vadesi RTO_MAX'a kırpılır. SINIFLAR ARASI SIRA ~~tek istisnayla~~
+  istisna ve karşılık kuralıyla DEĞİŞMEDİ: v1 tahkimi kod sırasıdır (DATA → ARQ → kuyruk-probu → kuruluş probu →
+  kopya kuyruğu → FEC parity; RECOVER_ARQ'da her K_ARQ_SHARE'inci tur ARQ ile başlar). İSTİSNA — PRE_CONVERGE hariç
+  bütün durumlarda (PRE_CONVERGE'de v1 sırası ve §3.3-B takvimi değişmez; hak ve sınıf rezervi yoktur; bu kapsam
+  rev4 notunun "PRE_CONVERGE dahil" önerisini DEĞİŞTİRİR; CEVAP PAKETİ 10 (2026-10-24) "her durumda" ifadesi CEVAP
+  PAKETİ 11-EK (2026-10-24) §6 ile geri alındı): UYGUN İŞ (tur başında) — DATA: kuyrukta birim; ARQ: RECOVER_ARQ'da
+  vadesi gelmiş, tavan altı kayıp kaydı; kopya: vadesi gelmiş, teyitsiz, o turda gönderilmemiş kopya kaydı; token
+  yetersizliği uygun işi kaldırmaz, vadesi gelmemiş iş uygun iş değildir. (i) SEÇİLME — karşılık hakkı yokken (ve
+  aynı turda ARQ payı rezerv almamışken) gönderilmeye uygun (vadesi gelmiş) kopya kuyruğu başı en geç
+  K_ARQ_SHARE'inci `schedule_transmit` çağrısında DATA'dan ÖNCE hizmet hakkı kazanır; aynı K_ARQ_SHARE; kopya payı
+  RECOVER_ARQ'nun ARQ payı sayacından bağımsız sayılır, yeni sayı ve ayrı token kovası YOK; aynı turda ARQ payı da
+  vadeliyse ARQ önce, sonra kopya başı. ARQ PAYI REZERVİ (CEVAP PAKETİ 15 v3 K3) — ARQ payı turunda ARQ planının başı
+  token'a yetişemezse ve rezerv yoksa REZERV ARQ başı için açılır. REZERVASYON — hak kazanan baş token'a
+  yetişemezse REZERV açılır; rezerv tek ve sahiplidir (kopya kuyruğu başı, ARQ planı başı ya da karşılık hakkındaki
+  DATA başı): sahibin başı dışındaki her token tüketicisi (DATA, ARQ, kopya kuyruğu — drenaj dahil —, kuyruk-probu,
+  FEC parity, kuruluş probu) rezervin altına inemez, rezervin ÜSTÜNDEKİ token'ı kullanabilir; rezerv ≤ bir kayıt boyu,
+  aynı anda tek rezerv; token ÜRETİLMEZ; rezerv sahibin başının gönderiminde, birim teyit edilince, hedef ya da
+  sahibin uygun işi geçersizleşince ve oturum kapanınca temizlenir; baş değişirse yeni başın boyuna güncellenir;
+  artık rezerv testle sınanır. KARŞILIK — bir kopya ya da ARQ emisyonundan sonra (her yoldan) o anda uygun işi olan
+  diğer sınıfların her biri bir karşılık hakkı alır; sınıf başına en çok bir hak; DATA emisyonu hak üretmez; hak,
+  sınıfın kendi emisyonuyla ya da uygun işi bitince düşer, başka düşme yolu yoktur; hak sahibi varken rezerv ARQ >
+  DATA > kopya sırasıyla ilk hak sahibinin başı için kurulur ve kopya payı rezerv kurmaz. (ii) GÖNDERİLME — rezervi
+  alan baş ≤ boy / pace_rate + bir tur içinde çıkar: sabit pace_rate, çalışan zamanlayıcı ve yeterli BURST kapasitesi
+  koşuluyla; değişken hızda biriken token üzerinden hesaplanır (test iki kipte). ~~(ii) dışında gecikme sınırı
+  VERİLMEZ.~~ (ii) ve (iii) dışında gecikme sınırı VERİLMEZ. (iii) HİZMET GARANTİSİ — PRE_CONVERGE dışında, uygun işi
+  olan her sınıf (DATA, ARQ, kopya) ve kopya sınıfı içinde her teyitsiz birim, teyitten bağımsız olarak, en geç
+  [kendi başının ve kendisinden önce rezerv alan hak sahiplerinin baş boyları toplamı] / pace_rate + K_ARQ_SHARE tur
+  (birim için: T_birim) içinde bir gönderim fırsatı alır; sabit pace_rate ≥ taban, çalışan zamanlayıcı ve yeterli
+  BURST kapasitesi koşuluyla; değişken hızda biriken token üzerinden. Sabit bir saniye değeri vaat edilmez; fikstür
+  değerleri (31 B/s, 100 B/s) notta türetilir ve testte üst sınır olarak doğrulanır. Yukarıdaki priority satırıyla
   ayrışması bu kaydın kapsamı dışındadır.
 ```
 
