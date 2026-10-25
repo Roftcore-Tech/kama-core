@@ -1,215 +1,235 @@
-# K4G-06 — Akış izolasyonu ve teslim sözleşmesi — tasarım notu rev2 (ADIM 1: sözleşme/arayüz taslağı + ayırt edici test planı)
+# K4G-06 — Akış izolasyonu ve teslim sözleşmesi — tasarım notu rev3 (ADIM 1: sözleşme/arayüz taslağı + ayırt edici test planı)
 
 ## 0. Künye
 
-- **Kart / dal / durum:** K4G-06 · `k4g/06-tasarim` (taban main `1b1425d2`) · **rev2 TASLAK**. Kod yok, ölçüm yok; deney dalı (`k4g/06-deney`) açılmadı.
-- **rev1 → rev2:** rev1 = `2656953c`. Dört mercekli incelemenin (`k4g06/inceleme-wf_4a961b72.json`; 2 blocker, 42 major, 29 minor) bütün bulguları işlendi ya da gerekçeyle reddedildi; satır satır izleme Ek F'de. En büyük değişiklik: rev1'in W2 tel önerisi geri çekildi, KARAR-1 ile hizalı B önerisi geldi (DUR-06-5).
-- **Otorite sırası:** CEVAP 15 EK-1 > CEVAP 15 v3 > 14 > …; donmuş belgeler kendi değişiklik kuralıyla (PoC-KAPSAM-001 yalnız sahibin tarihli ekiyle; ccr/noise-wire/transport-tdd yalnız sahip kararıyla). Sahibin iki ek notu bağlayıcı. İnceleme kayıtları kanıt girdisidir.
+- **Kart / dal / durum:** K4G-06 · `k4g/06-tasarim` (taban main `1b1425d2`) · **rev3 TASLAK**. Kod yok, ölçüm yok; deney dalı (`k4g/06-deney`) açılmadı.
+- **Sürümler:** rev1 = `2656953c` (inceleme `k4g06/inceleme-wf_4a961b72.json`) · rev2 = `9cda1fab` (doğrulama `k4g06/rev2-dogrulama-wf_86a0d33e.json`; 31 kontrol, 26 yeni bulgu) · rev3 = bu sürüm. Her iki turun bütün bulgularının izlemesi Ek F'de. rev3'ün ana değişiklikleri: KARAR-1 için tarihli ek açıkça gerekli ilan edildi; FEC blok sınırı onarım çerçevesine taşındı (blok kimliği yeniden oturum boyu monoton); transport kontrolü ayrı kalıcı akışa alındı (TCTRL bayrağı kalktı); VO'da `REL` bayrağı; kredi canlılık kuralları tamamlandı; seçicide rezerv hiyerarşisi.
+- **Otorite sırası:** CEVAP 15 EK-1 > CEVAP 15 v3 > 14 > …; donmuş belgeler kendi değişiklik kuralıyla (PoC-KAPSAM-001 yalnız sahibin tarihli ekiyle; ccr/noise-wire/transport-tdd yalnız sahip kararıyla). Sahibin iki ek notu bağlayıcı. İnceleme ve doğrulama kayıtları kanıt girdisidir.
 - **Atıf biçimi:** `SHA:dosya:satır`. Kısa dosya adları: `runtime.rs`/`transport.rs`/`wire.rs`/`batch.rs` = `crates/client-core/src/`; `sender.rs`/`arq.rs` = `crates/adaptive-transport/src/`; `s1.rs` = `crates/kama-contracts/src/`; `ptt.rs`/`file_transfer.rs`/`messaging.rs` = `crates/kama-app/src/`; `node.rs` = `crates/kama-node/src/`. Belgeler tam yolla.
-- **SHA'lar (origin'de, 2026-10-25):** `0c22a07d` = `k4g/05c-kod` (05b rev5 `35a02fcf` + 05c) · `37b78aad` = `k4g/05b-retx-fix` ucu, **05b rev6** (B′ karşılık hakkı, K3 ARQ payı rezervi, DUR-40 yaş tavanlı HOL; Ek A A.4 rev6, Ek B.6 (g)(h)) — `0c22a07d` rev6'yı İÇERMEZ · `1b1425d2` = main · `cf270a6c` = 05d · `e5514e7a` = 05f rev1 · `0b216f07` = 05g origin ucu (yerel `c9c2ea22` YEREL, dayanak değil).
-- **Ek A sha256:** `013ec64bee245a8f329024dc939bd72a14b9051708ae2a72ec17de76c14051f7` — kapsam `## Ek A` satırından `## Ek B`'den önceki son boş olmayan satıra dek, 43 satır, her satır `\n` ile (`~/kama-k4g-work/tools/eka-sha.sh`); 35 kalem. rev1 Ek A (`e497640e…`, 26 kalem) geçersizdir.
+- **SHA'lar (origin'de, 2026-10-25):** `0c22a07d` = `k4g/05c-kod` (05b rev5 `35a02fcf` + 05c) · `37b78aad` = `k4g/05b-retx-fix`, **05b rev6** (B′, K3, DUR-40; Ek A A.4 rev6, Ek B.6 (g)(h)) — `0c22a07d` rev6'yı İÇERMEZ · `1b1425d2` = main · `cf270a6c` = 05d · `e5514e7a` = 05f rev1 · `0b216f07` = 05g origin ucu (yerel `c9c2ea22` YEREL, dayanak değil).
+- **Ek A sha256:** EK_A_SHA_PLACEHOLDER
 - **Etiketler:** [olgu] koddan · [hesap] aritmetik, ölçülmedi · [çıkarım] test edilmedi · [türetim] koddan önce yazılan sınır · [CAL] deney başlangıç değeri.
 
 ## Karar özeti
 
-**Şimdi istenen onay:** yalnız §14 deney kapsamı ve deneyden ÖNCE gereken iki yön (DUR-06-5, DUR-06-2) ile deney kapsam daraltması (DUR-06-20). Ürün kodu, merge ya da donmuş metin değişikliği istenmiyor.
+**Şimdi istenen onay:** yalnız §14 deney kapsamı, deneyden ÖNCE gereken iki yön (DUR-06-5, DUR-06-2) ve deney kapsam daraltması (DUR-06-20). Ürün kodu, merge ya da donmuş metin değişikliği istenmiyor.
 
-1. **Birim çerçevesi KARAR-1 ile hizalanır (DUR-06-5, öneri B; rev1'in W2'si geri çekildi).** Akış koordinatı ccr §35.14 `BatchPayload`'ın alt-mesaj başlığına girer: `[tip][submsg_count][flags · flow_id u16 · flow_seq u32][len_mode][AMP kaydı]` = 10 B (kayıt ≤ 239 B) / 12 B (bugün 11 B) [hesap]. FEC kimliği oturumda tekil kalır: `block_id` = `flow_id ‖ akış içi blok no` (u32 alanı aynı), `esi` = `flow_seq mod K`. Kurtarılan birimin akışı ve sırası `block_id`/`esi`'den, akış sonu (FIN) FEC korumalı sembol önekinden okunur. Bedel: ccr §35.14 alt-mesaj başlığı + KARAR-1'in tarihli sahip eki + noise-wire §2.6 ID-SCOPE yaması (Ek A A.9–A.11).
-2. **S7 (b): motor içinde tek, saf seçici; etiket eklemeli API ile** (`Event::AppDataTagged(OpaqueUnit, ServiceTag)`; etiketsiz birim = tek akış = 05b rev6 davranışı; ≈149 `OpaqueUnit` literal'i değişmez). Düzey 2 = 05b rev6 K-0…K-5 akış içinde; düzey 1 = CTRL ve VO kovaları + BE/BK DRR. S7(a)'nın reddi yeniden tasarlanan karşı örnek B2'ye bağlıdır: yeni TEXT'in KENDİ kurtarma işi, N_u ≥ 8 eski dosya birimi, tabanlar `0c22a07d` ve `37b78aad` ayrı, ön-kayıtlı.
-3. **Kredi:** akış başına mutlak, artan sınır; akış 0'ın (kontrol şeridi) veri kredisinden bağımsız kendi kredisi; BLOCKED, etkin sınır artana dek tekrarlanır; ilan alıcının ACK yolunda ve tetik kuralıyla sınırlıdır; kontrol yükümlülüklerinin yeri akış açılırken ayrılır. Kabul kapısı yalnız `capacity_defect = 0`'a bağlıdır (akış 0 dahil; sahibin notu 2).
-4. **PTT:** sahibin C15 v3 §9.3 / S5 yönü (canlı ses, demet süreli) PoC-KAPSAM-001'in "Reliable klip, geç ses düşürülmez" hükmünü değiştirir; bu yalnız sahibin tarihli PoC-KAPSAM eki ile olur (DUR-06-18). Deney PTT'ye dokunmaz; karar uygulamadan önce gerekir. K8 demo hedefleri (bas→ilk ses ≤ 1,5 s / ≤ 3 s; sıfır bozuk hece) PTT eşiklerinin ürün hedefi girdisidir.
-5. **Göndericide süre dolumu ve RESET payload için ikinci silme yolu açmaz:** 05b'nin teyit çıktısı "sonlandırma çıktısı"na (teyit | iptal; birim başına oturumda en çok bir kez) genişler. Bu AMENDMENT-12'nin donmuş cümlelerini değiştirir (Ek A A.16); uygulamadan önce sahip kararı gerekir.
+1. **Birim çerçevesi (DUR-06-5, öneri B): KARAR-1'in canonical `BatchPayload` alt mesaj çerçevesini korur, ama KARAR-1'e ve ccr §35.14'e tarihli sahip EKİ GEREKTİRİR** (rev2'nin "KARAR-1 ile çelişmeyen tek seçenek" iddiası geri çekildi). Ek gereken dört nokta: v0 kabuk tip baytı (ccr'de yok), alt mesaj akış başlığı `flags · flow_id u16 · flow_seq u32`, S1 kipinde `submsg_count ∈ {0, 1}`, açık parçalayıcı (0x05) istisnası. Örtük kip de FLOW_BATCH'e geçer; ürün runtime'ında tek veri çerçevesi tanımı kalır. Başlık 10 B (kayıt ≤ 239 B) / 12 B; bugün 11 B [hesap].
+2. **FEC kimliği:** `block_id` bugünkü gibi oturum + yön boyu monoton (§2.6 ID-SCOPE değişmez); blok tek akışın ardışık birimlerinden oluşur; blok sınırı onarım çerçevesinde taşınır (`first_seq` u32, onarım sembolü başına +4 B). Kaynak sembol öneki S1 kipinde kendini tanıtır: `message_id := flow_seq`, `chunk_offset := flow_id`, `source_flags`'ta FIN ve REL. Kısmi blok kapanışı serbesttir, blok kimliği yeniden kullanılmaz.
+3. **S7 (b): motor içinde tek, saf seçici; eklemeli API** (`Event::AppDataTagged`; etiketsiz = tek akış = rev6). Rezerv hiyerarşisi: katman 0/1, kova payları içinde katman-2 rezervinin önüne geçer; K1 (a) katman 2 içinde aynen. S7(a)'nın reddi B2'ye bağlı (TEXT'in KENDİ kurtarma işi; iki taban; ön-kayıtlı).
+4. **Kredi ve kontrol:** akış başına mutlak artan sınırlar; sayım sınırları (`bk_flow_limit`, `max_rel`) aynı FLOW_CREDIT'te; BLOCKED iki boyutlu, çok girdili, etkin sınır artana dek tekrarlanır; alıcı her BLOCKED'e güncel sınırı ≤ 1 / T_min ile yeniden ilan eder. Transport kontrolü (akış 0) transportun kendi tükettiği şerit, uygulama kontrolü (akış 1) ayrı. Kabul kapısı yalnız `capacity_defect = 0` (sahibin notu 2).
+5. **PTT ve S5:** canlı PTT (C15 v3 §9.3 / S5) PoC-KAPSAM-001'in PTT satırını, K8 "sıfır bozuk hece" ölçütünü ve S5 dondurmasını (`:34`, K6 `:54`) değiştirir; hepsi tek bir tarihli sahip ekiyle (EK-4, DUR-06-18) olur. Live'a bağlı DUR'lar (06-1, 06-6, 06-11 Live kısmı, 06-23) DUR-06-18 (a)'ya koşulludur.
 
-**Deneyden ÖNCE gerekenler:** DUR-06-5 ve DUR-06-2 yön onayı · DUR-06-20 (deney kodunda FEC kapalı; B2'nin FEC kolu yalnız tabanda ölçülür) · §14 kapsamı (≈ 5,5–7 iş günü; tahmin, takvim sözü değil).
+**Deneyden ÖNCE gerekenler:** DUR-06-5 ve DUR-06-2 yön onayı (KARAR-1 ekinin gerekli olduğu kabulü dahil) · DUR-06-20 (deney kodunda FEC kapalı; B2 FEC kolu yalnız tabanda) · §14 kapsamı (≈ 5,5–7 iş günü; tahmin).
 
 ## 1. Amaç ve değişmeyenler
 
-**Amaç:** tek güvenli oturum altında bağımsız mantıksal akışlar — akış başına sıra, WMM-örnekli sınıf önceliği (PTT → AC_VO, TEXT → AC_BE, FILE → AC_BK; AC_VI yok), alıcının önceden ilan ettiği kredi, ortak ve adil gönderim bütçesi. Dosyanın eksik birimi ya da durmuş tüketicisi TEXT/PTT'yi bekletmez; olağan kapasite durması ACK kesilerek kayıp gibi gösterilmez (HER BİT DÜŞMAN). Bu bir teslim sözleşmesi revizyonudur (C15 v3 §9.1).
+**Amaç:** tek güvenli oturum altında bağımsız mantıksal akışlar — akış başına sıra, WMM-örnekli sınıf önceliği (PTT → AC_VO, TEXT → AC_BE, FILE → AC_BK; AC_VI yok), alıcının önceden ilan ettiği kredi, ortak ve adil gönderim bütçesi. Dosyanın eksik birimi ya da durmuş tüketicisi TEXT/PTT'yi bekletmez; olağan kapasite durması ACK kesilerek gösterilmez (HER BİT DÜŞMAN). Teslim sözleşmesi revizyonudur (C15 v3 §9.1).
 
 **Değişmeyenler:**
-- **D1 Hub zarfı:** 22 B legacy / 26 B extended dış zarf ve hub-server codec'i değişmez [`1b1425d2:crates/kama-noise-wire/src/envelope.rs:80-83`]. Akış alanları AEAD altındaki iç çerçevededir ve **yalnız `CtxRoute::Session` kolunda ayrıştırılır**; `HubChannel` (PoC'de AEAD'siz no-op), `Mismatch` ve `NotReady` kollarında yüke dokunulmadan düşer [`0c22a07d:runtime.rs:1510-1516`, :2320-2335].
-- **D2 Noise:** sayaç/nonce akış başına sıfırlanmaz; yön başına tek PN uzayı; transport ARQ kimliği PN'dir [`0c22a07d:runtime.rs:2028-2033`].
-- **D3 Doğruluk düzeltmeleri korunur:** payload yalnız motorun **sonlandırma çıktısında** düşer (bugün: teyit çıktısı, `0c22a07d:runtime.rs:2019-2024`; genişleme §8.3, Ek A A.16); 05c INV-ACK-DELIVER-1 akış başına; 05g sahte `Ready` kapanışı; 05d "canlı RECEIPT silinmez".
-- **D4 INV-ENGINE-SOC:** motor payload'u ve kama-app tiplerini görmez; yalnız generic hizmet etiketi görür.
-- **D5 INV-RATE-1:** tek pacer; akış başına pacer yok; kayıp hızı düşürmez.
-- **D6 INV-FEC-1** aynen; **D7** ADR-05 (fixed-width, varint yok) ve ADR-17 (deterministik seçim).
-- **Kapsam dışı (gerekçeli):** Wi-Fi/DSCP işaretleme; hub rölesi (direct-mode, INT-02) — ama hub kuyruğu gereksinimi S4'e iletilir (§6, Ek A A.31); media plane.
+- **D1 Hub zarfı:** 22 B legacy / 26 B extended dış zarf ve hub-server codec'i değişmez [`1b1425d2:crates/kama-noise-wire/src/envelope.rs:80-83`]. Akış alanları AEAD altındaki iç çerçevededir ve yalnız `CtxRoute::Session` kolunda ayrıştırılır; diğer kollarda yüke dokunulmaz [`0c22a07d:runtime.rs:1510-1516`, :2320-2335].
+- **D2 Noise:** sayaç/nonce akış başına sıfırlanmaz; yön başına tek PN uzayı; ARQ kimliği PN [`0c22a07d:runtime.rs:2028-2033`].
+- **D3 Tek sonlandırma çıktısı:** payload, birim başına oturumda en çok bir kez, yalnız tek bir sonlandırma çıktısında düşer: motora verilmiş birim için motorun `take_finished_units`'i (Teyit | İptal), motora hiç verilmemiş birim için runtime'ın kendi iptal çıktısı — bir birim için yalnız biri (bugün: teyit çıktısı, `0c22a07d:runtime.rs:2019-2024`; §8.3, A.16). 05c INV-ACK-DELIVER-1 akış başına; 05g sahte `Ready` kapanışı; 05d "canlı RECEIPT silinmez".
+- **D4 INV-ENGINE-SOC:** transport payload'u ve AMP kaydını çözmez; yalnız generic hizmet etiketini ve alt mesaj bayraklarını görür.
+- **D5 INV-RATE-1:** tek pacer; kayıp hızı düşürmez. **D6 INV-FEC-1** aynen. **D7** ADR-05, ADR-17.
+- **Kapsam dışı (gerekçeli):** Wi-Fi/DSCP; hub rölesi (direct-mode) — hub kuyruğu gereksinimi S4'e (A.31); media plane.
 
 ## 2. Bugün neden birbirlerini bekliyorlar [olgu → çıkarım]
 
-- **Alıcı:** oturum başına tek `Reorder` [`0c22a07d:transport.rs:370-419`]; düğüm geneli tek `inbox` (1024, :118, :449) ve tek teslim kanalı (`delivery_queue` 1024, `runtime.rs:3053`, :271); kabul penceresi oturum geneli `max_inflight_units` [`runtime.rs:3447`, :3480-3482].
+- **Alıcı:** oturum başına tek `Reorder` [`0c22a07d:transport.rs:370-419`]; düğüm geneli tek `inbox` (1024, :118, :449) ve tek teslim kanalı (`runtime.rs:3053`, :271); kabul penceresi oturum geneli `max_inflight_units` [`runtime.rs:3447`, :3480-3482].
 - **Gönderen:** tek offer FIFO'su (1024, `runtime.rs:1705`, :270); oturum geneli mesafe kapısı [:2511, :2575-2581, :2608].
-- **Motor (sınıf körü):** `OpaqueUnit{id, size}` [`0c22a07d:sender.rs:75-80`]; yeni DATA FIFO [:2492, :7225-7247]; ARQ sırası kayıp ilanı anı [:3846-3849, `arq.rs:124-127`]; kopya başı: rev5'te en küçük birim kimliği [`0c22a07d:sender.rs:7103-7110`], **rev6'da RTO_MAX yaş tavanına dek en küçük kimlik, vadesini RTO_MAX aşmış kayıt varsa son hizmeti en eski birim** (DUR-40) [`37b78aad:sender.rs:7243-7265`]; parite FIFO [`0c22a07d:sender.rs:1787`]; sınıflar arası DATA-önce + karşılık hakları (rev6 K-2/K-3) [`37b78aad:sender.rs:4684-4717`, :1405-1440, :6333-6350].
-- **FEC blokları trafikleri bağlar:** blok = `unit_id / K` [`0c22a07d:runtime.rs:2010-2014`]; kurtarılan birim = `block·K + esi` [:2379-2382].
-- **Süre yalnız sunumda:** `DeadlineBounded` yalnız `send` anında denetlenir [`0c22a07d:transport.rs:1297-1305`]; sonra yalnız FEC politika girdisi [`runtime.rs:2612-2613`]; ARQ süresi dolanı düşürmez [`arq.rs:92-94`].
-- **kama-app:** PTT'nin üç kaydı da `Reliable` (PoC-KAPSAM-001 §2 hükmü, `0c22a07d:ptt.rs:18-24`); dosya pompası eş başına yalnız en eski aktarıma hizmet eder [`file_transfer.rs:862-881`]; tek okuyucu olay zinciri [`messaging.rs:652-660`; `node.rs:465-485`].
-- **Sonuç [çıkarım]:** oturum sırasındaki kayıp dosya birimi alıcıda TEXT/PTT'yi tutar; gönderende yeni TEXT FIFO'larda ve motor kuyruklarında eski dosya işinin arkasındadır (05d: `cf270a6c:docs/design/K4G-05d-RECEIPT.md:88`); kapasite ilan edilmez, dolunca ACK kesilir.
+- **Motor:** `OpaqueUnit{id, size}` [`0c22a07d:sender.rs:75-80`]; DATA FIFO [:2492, :7225-7247]; ARQ sırası kayıp ilanı anı [:3846-3849, `arq.rs:124-127`]; kopya başı rev5'te en küçük kimlik [`0c22a07d:sender.rs:7103-7110`], rev6'da RTO_MAX yaş tavanına dek en küçük kimlik (DUR-40) [`37b78aad:sender.rs:7243-7265`]; parite FIFO [`0c22a07d:sender.rs:1787`]; DATA-önce + karşılık hakları [`37b78aad:sender.rs:4684-4717`, :1405-1440, :6333-6350]. Motor blok kimliğini yalnız eşitlikle kullanır [olgu: `37b78aad:sender.rs:5690`, :5729-5735, :6170-6173].
+- **FEC blokları trafikleri bağlar:** blok = `unit_id / K` [`0c22a07d:runtime.rs:2010-2014`]; kurtarılan birim = `block·K + esi` [:2379-2382]; kısmi blok bugün yalnız akış sonunda kapanır [:2763-2811]; gönderen `repair_store` ve alıcı `slot.blocks` en küçük anahtarı (`pop_first`) tahliye eder [:2715-2716, :3894-3895].
+- **Süre yalnız sunumda:** `DeadlineBounded` yalnız `send` anında [`0c22a07d:transport.rs:1297-1305`]; ARQ süresi dolanı düşürmez [`arq.rs:92-94`].
+- **kama-app:** PTT üç kaydı da `Reliable` [`0c22a07d:ptt.rs:18-24`]; dosya pompası eş başına yalnız en eski aktarım [`file_transfer.rs:862-881`]; alındı kuyruğu küresel 4, taşmada en eskiyi düşürür [`file_transfer.rs:286-291`, :1216-1224]; reddedilen FILE_BEGIN de FILE_RECEIPT(rejected) üretir [:1018-1034]; tek okuyucu zincir [`messaging.rs:652-660`; `node.rs:465-485`].
+- **Sonuç [çıkarım]:** kayıp dosya birimi alıcıda TEXT/PTT'yi tutar; gönderende yeni TEXT FIFO'larda ve motor kurtarma kuyruklarında eski dosya işinin arkasındadır (`cf270a6c:docs/design/K4G-05d-RECEIPT.md:88`); kapasite dolunca ACK kesilir.
 
 ## 3. Akış modeli
 
-**Akış** = oturum içinde tek yönlü mantıksal kanal; açan (gönderen) taraf numaralar.
+**Akış** = oturum içinde tek yönlü mantıksal kanal; açan (gönderen) numaralar.
 
-**Kimlik uzayı** (`flow_id` u16, yön başına; rev1'in tek monoton uzayı geri çekildi):
-- **Kalıcı akışlar** (oturum boyu, örtük açık, ayrılmış kimlik): `0` = kontrol şeridi (CTRL), `1` = TEXT (BE), `2` = SIGNALING (BE), `3` = VO (canlı PTT, `Live`; konuşmalar AMP `stream_id` ile bu akışta çoğullanır).
-- **Dinamik akışlar** (`4…65535`): yalnız BK (dosya aktarımı başına bir akış). Gönderen kimliği ilk biriminin kabul edildiği anda ayırır (boşluk yok). Alıcı, sayım sınırı olarak mutlak `bk_flow_limit` ilan eder (QUIC MAX_STREAMS anlamı); "çözümlenmiş alt sınır" `bk_resolved_below` + açık küme (≤ MAX_FLOWS_BK) tutar. Kapalı ya da çözümlenmiş akışın geç birimi ACK'lenip atılır (`late_after_close`), kredi ihlali sayılmaz.
-- Kalıcı akışlar watermark'ı tutmaz (rev1'in "RESET teyidi hiç ilerlemez" kusuru yapısal olarak kalkar). Tükenme [hesap]: 65 532 dosya aktarımı/oturum; tükenmede yeni aktarım tipli hata alır ve `RenewRequired` istenir (DUR-06-5 (iii)).
+**Kimlik uzayı** (`flow_id` u16, yön başına):
+- **Kalıcı akışlar** (oturum boyu, örtük açık, ayrılmış): `0` = **transport kontrol şeridi** (FLOW_RESET; tüketicisi transporttur, uygulamaya teslim yok) · `1` = **uygulama kontrol şeridi** (RECEIPT, FILE_RECEIPT, FILE_ABORT) · `2` = TEXT · `3` = SIGNALING · `4` = VO (`Live`; konuşmalar AMP `stream_id` ile çoğullanır). Kalıcı akışa `close_flow`/`reset_flow` → `UnknownFlow` (kalıcı akış kapatılamaz; yeni hata varyantı gerekmez).
+- **Dinamik akışlar** (`5…65535`): yalnız BK (dosya aktarımı başına). Gönderen kimliği ilk biriminin kabul edildiği anda, boşluksuz ayırır. Alıcı `max_seen` + açık küme tutar. **Örtük açma:** k > `max_seen` gelince [`max_seen` + 1, k] aralığı açık kümeye girer (geç gelen ilk birimleri bekler). **Kapalılık:** k ≤ `max_seen` ∧ k ∉ açık küme. **Sayım sınırı:** gönderen yalnız k < `bk_flow_limit` kullanır; `bk_flow_limit` = `bk_flow_limit0` + çözümlenen akış sayısı (çözümlenme = FIN'e dek teslim ya da RESET işlendi ∧ o akışın FILE_RECEIPT yuvası boşaldı, §7.6). Böylece açık küme ≤ `bk_flow_limit0`; tutulan bir aktarım yalnız kendi yuvasını tutar, diğerleri ilerler. Kapalı akışın geç birimi ACK'lenip atılır (`late_after_close`).
+- Tükenme [hesap]: 65 531 dosya aktarımı/oturum; tükenince yeni aktarım tipli hata, `RenewRequired` (DUR-06-5 (iii)).
 
-**Üç kimlik:** PN (Noise zarfı; ACK, nonce) · birim kimliği (`OpaqueUnit.id`; yalnız gönderen runtime + motor; sahiplik, teyit) · (`flow_id`, `flow_seq`) (iç çerçeve; teslim yeri, akış içi sıra, kabul, dedup, kredi). Gönderen runtime (akış, sıra) ↔ birim kimliği **ters dizinini** tutar (girdi ≤ store; sonlandırmada düşer).
+**Üç kimlik:** PN (zarf; ACK, nonce) · birim kimliği (`OpaqueUnit.id`; gönderen runtime + motor) · (`flow_id`, `flow_seq`) (iç çerçeve; teslim yeri, sıra, kabul, dedup, kredi) — noise-wire §3'ün (4) "message/chunk-id" kimliğinin S1 kipindeki anlamı (A.10). Gönderen runtime (akış, sıra) ↔ birim ters dizinini tutar (≤ store).
 
-**Birim çerçevesi — öneri B (DUR-06-5):** `FLOW_BATCH = [tip u8] ‖ BatchPayload { submsg_count u8 = 1 ; BatchSubMessage { flags u8 · flow_id u16_be · flow_seq u32_be · len_mode u8 [· length u16_be] · payload = AMP kaydı } }` [`1b1425d2:specs/ccr-format-spec.md:3017-3035`, `0c22a07d:batch.rs:1-29`]. 10 B (kayıt ≤ 239 B) / 12 B [hesap]. `flags`: FIN · TCTRL (akış 0'da transport kontrol birimi) · ayrılmış (≠ 0 → ret). Sınıf ve kip `flow_id`'den çıkar. PoC'de `submsg_count = 1` (bir motor birimi = bir AMP kaydı); çoklu alt mesaj ayrı karar.
-- **FEC kimliği:** `block_id` = `flow_id ‖ flow_block` (u32; `flow_block = flow_seq div K`), `esi = flow_seq mod K`. Oturum + yön içinde tekil, akış içinde monoton, yeniden kullanılmaz; FEC/RECOVERED çerçeve düzeni değişmez. Kaynak sembol öneki iki uçta türetilir: `message_id := flow_seq`, `actual_payload_len = |AMP kaydı|`, `source_flags`'ta yeni FIN biti → FEC ile kurtarılan son birimin FIN'i görünür.
-- **Store-miss (05b bekçisi):** store'da olmayan birim için motor kararı boş batch (`submsg_count = 0`; ccr §35.14 K3: geçerli, PN tüketir, teslim yok) olarak gider; alıcı PN'i ACK'ler, `stale_decisions` sayılır; sahte koordinat üretilmez.
-- **Akış bilgisi genel sıralamadan önce görülür:** alıcının ilk kararı (kabul kapısı) alt mesaj başlığından okur; oturum geneli sıra alanı S1 kipinde kalkar.
+**Birim çerçevesi — öneri B (DUR-06-5):**
+`FLOW_BATCH = [tip u8 (v0 kabuk çoğullayıcısı)] ‖ BatchPayload { submsg_count u8 ∈ {0, 1} ; BatchSubMessage { flags u8 · flow_id u16_be · flow_seq u32_be · len_mode u8 [· length u16_be] · payload = AMP kaydı } }` [`1b1425d2:specs/ccr-format-spec.md:3017-3035`; `0c22a07d:batch.rs:1-29`].
+- `flags`: FIN · REL (yalnız VO: `Reliable` birim) · ayrılmış (≠ 0 → ret). Sınıf ve kip `flow_id`'den çıkar.
+- 10 B (kayıt ≤ 239 B) / 12 B [hesap]. `submsg_count ≥ 2` → fail-closed ret + `batch_multi_rejected` (ccr'nin çoklu alt mesajı S1 kipinde kısıtlanır → KARAR-1/ccr eki).
+- **Store-miss** (05b bekçisi; motor teyitli/iptal birime karar üretti): v0 kabukta `[tip][boş BatchPayload]` = 2 B (BatchPayload kısmı ccr K3'ün canonical 1 B'si); alıcı PN'i kabul kapısına girmeden ACK'ler, teslim yok, `stale_decisions` sayılır.
+- **Örtük kip** (bench, S1-dışı) de FLOW_BATCH'e (tek kalıcı akış 2) geçer; 0x00 emekli. 0x05 yalnız açık opt-in parçalayıcıda (S1'de yasak, `0c22a07d:transport.rs:508`) beyanlı istisna olarak kalır.
+- **S2 eşlemesi:** extended yolda FLOW_BATCH için yeni `inner_kind` (0x1D+, K-WIRE-CTRL-1); legacy yolda ccr'de ayrım baytı yoktur → KARAR-1'in açık "ayrım" parçası (`batch.rs:28-29`), tarihli ekle karara bağlanır.
 
-**Teslim kipleri:** `Ordered` (güvenilir; akış içinde sıralı, boşluk atlanmaz) · `Live` (VO; akış içinde sırasız teslim, `flow_seq` uygulamaya verilir; alıcıda kayan dedup penceresi W_LIVE [CAL] — `Reliable` birimler (PTT_OPEN/CLOSE) "tam bir kez", pencere altı geç birim atılır, `media_late_rx`).
+**FEC kimliği (öneri B-iii, DUR-06-5 (v)):**
+- `block_id` bugünkü gibi oturum + yön boyu monoton u32 (§2.6 ID-SCOPE değişmez); blok **tek akışın** ardışık birimlerinden oluşur; akış başına biriktirici; kısmi blok T_block [CAL] dolunca kapanır, sonraki birim yeni `block_id` alır (yeniden kullanım yok).
+- v0 onarım çerçevesi: ölü `seq u16` alanı → `flow_id`; ek `first_seq u32` (blok ilk biriminin `flow_seq`'i) → onarım sembolü başına +4 B [hesap]. `esi = flow_seq − first_seq`.
+- Kaynak sembol öneki (iki uçta türetilir, kurtarılan sembolde okunur): `message_id := flow_seq`, `chunk_offset := flow_id` (S1'de parçalama yok, alan boş), `actual_payload_len`, `source_flags = FINAL | FIN | REL` → kurtarılan birim kendini tanıtır (akış, sıra, FIN, REL). v0 alt mesaj bayrakları ile kurtarılan öneğin bayrakları çelişirse fail-closed + `flag_mismatch`.
+- Alıcı: kaynak sembolleri akış başına sınırlı halkada tutar, blok üyeliğini onarım çerçevesinden öğrenir; RECOVERED (`block_id`, `esi`) → gönderenin blok tablosu (`block_id` → akış, `first_seq`) → ters dizin → birim. Gönderen `repair_store` ve alıcı `slot.blocks` **sınıf başına bölünür**; `block_id` monoton olduğundan `pop_first` sınıf içinde en eskiyi tahliye eder.
 
-**Oturum sınırı:** akışlar oturuma aittir, yenileme/supersession akış taşımaz (S1 K7 aynen); bağlam-önce dağıtım eski oturumun DATA/ACK/kredisini yeni oturuma ulaştırmaz [`0c22a07d:transport.rs:56-62`].
+**Teslim kipleri:** `Ordered` (akış içinde sıralı, boşluk atlanmaz) · `Live` (VO; akış içinde sırasız, `flow_seq` uygulamaya verilir). VO'da: demet = `DeadlineBounded`, REL birim (PTT_OPEN/CLOSE) = `Reliable`. Alıcı dedup penceresi W_LIVE: pencere içi her `flow_seq` tam bir kez; **gönderen kapısı:** en eski teyitsiz REL birimiyle yeni `flow_seq` arası < W_LIVE (kesintide yeni VO birimi beklemez, süresi dolar); böylece REL birim hiçbir zaman pencere altına düşmez ve "tam bir kez" yapısal olarak tutar.
+
+**Oturum sınırı:** akışlar oturuma aittir; yenileme/supersession akış taşımaz (S1 K7); bağlam-önce dağıtım eski oturumun DATA/ACK/kredisini yeni oturuma ulaştırmaz [`0c22a07d:transport.rs:56-62`].
 
 ## 4. Sınıflar ve kontrol
 
 | Trafik | Sınıf | Akış | Kip / politika |
 |---|---|---|---|
-| Canlı PTT | VO (AC_VO) | 3 | `Live`; demet `DeadlineBounded`, OPEN/CLOSE `Reliable` (DUR-06-18'e bağlı) |
-| TEXT | BE (AC_BE) | 1 | `Ordered`, `Reliable` |
-| SIGNALING_BLOB | BE | 2 | `Ordered`, `Reliable` (DUR-06-15) |
-| Dosya | BK (AC_BK) | 4… (aktarım başına) | `Ordered`, `Reliable` |
-| RECEIPT, FILE_RECEIPT, FILE_ABORT; FLOW_RESET (TCTRL) | CTRL | 0 | `Ordered`, `Reliable`, birim boyu tavanlı |
-| FLOW_CREDIT | CTRL | — (alıcının ACK yolu) | tetikli, idempotent |
-| FLOW_BLOCKED | CTRL | — (`TransmitKind::Control`, izlenmez) | yerini alan, geri çekilmeli tekrar |
+| FLOW_RESET | CTRL (transport) | 0 | `Ordered`, `Reliable`; transport kabul sırasıyla tüketir |
+| RECEIPT, FILE_RECEIPT, FILE_ABORT | CTRL (uygulama) | 1 | `Ordered`, `Reliable`, birim boyu tavanlı |
+| TEXT | BE (AC_BE) | 2 | `Ordered`, `Reliable` |
+| SIGNALING_BLOB | BE | 3 | `Ordered`, `Reliable` (DUR-06-15) |
+| Canlı PTT | VO (AC_VO) | 4 | `Live`; demet `DeadlineBounded`, OPEN/CLOSE `Reliable` + REL (DUR-06-18'e bağlı) |
+| Dosya | BK (AC_BK) | 5… | `Ordered`, `Reliable` |
+| FLOW_CREDIT | CTRL | — (alıcının ACK yolu) | tetikli, idempotent, çok girdili |
+| FLOW_BLOCKED | CTRL | — (`TransmitKind::Control`, izlenmez) | çok girdili, geri çekilmeli tekrar |
 
-WMM adları niyet bildirir; Kama'da garanti §5 seçicisinden ve türetiminden gelir.
+WMM adları niyet bildirir; garanti §5 seçicisinden gelir.
 
-**Kontrol katmanı (S6, EK-1 §1.1):** VO'nun altında tek sıra değildir; ayrı katman 0'dır.
-- **Tavan:** katman 0'ın BÜTÜN gönderen işi (akış 0'ın DATA/ARQ/kopya işi, BLOCKED tekrarları) kontrol kovasına yazılır: oran ρ_C·r(t), kova b_C ≥ `max_control_unit_bytes` + mühür ek yükü [CAL]. Alıcının ACK yolundaki FLOW_CREDIT için ayrı sınır (§7.8).
-- **Koşullu asgari hak:** uygun kontrol işi varken ve kovada token varken katman 0 önce seçilir → backlog'luyken ≥ ρ_C·r hizmet; kova boşsa bekler.
-- **Veri kredisinden bağımsızlık:** akış 0'ın kredisi (W_CTRL) veri kredisinden ayrıdır ve FLOW_CREDIT'in akış 0 girdisiyle ilerler; kredi ilanı alıcının ACK yolundan gider ve kredi tüketmez. "Kontrol göndermek için kontrol bekleme" döngüsü yoktur (B10 (c)).
-- **Envanter, hizmet hakkı ve toplam maliyet:** Ek D, DUR-06-3 altındaki tablo (31 ve 300 B/s'de saniyede bayt üst sınırı; transport ACK ≠ uygulama RECEIPT).
+**Kontrol katmanı (S6):** VO'nun altında tek sıra değil, katman 0.
+- **Tavan:** katman 0'ın bütün gönderen işi (akış 0 ve 1'in DATA/ARQ/kopya işi, BLOCKED) kontrol kovasındadır: ρ_C·r(t), kova b_C ≥ `max_control_unit_bytes` + mühür [CAL]. **Katman 0 içi sıra:** vadesi gelmiş BLOCKED (kendi zamanlayıcısıyla seyrek, tek çok girdili çerçeve) → akış 0 → akış 1.
+- **Koşullu asgari hak:** uygun iş + kovada token → katman 0 önce; backlog'luyken ≥ ρ_C·r.
+- **Veri kredisinden bağımsızlık:** akış 0 kredisi (W_TCTRL) transportun kendi tüketimiyle, akış 1 kredisi (W_CTRL) uygulama tüketimiyle ilerler; ikisi de veri kredisinden ayrıdır; kredi ilanı ACK yolunda gider, kredi tüketmez (B10 (c)).
+- **Envanter, hizmet hakkı, toplam maliyet:** Ek D, DUR-06-3.
 
 ## 5. İki düzeyli seçici (S7 önerisi; DUR-38 ile ortak)
 
-**Sözleşme [öneri S7(b), DUR-06-2]:** `ServiceTag { tier: u8, flow: u32 (opak), expires_ns: Option<u64> }`, eklemeli olay `Event::AppDataTagged(OpaqueUnit, ServiceTag)`; etiketsiz `Event::AppData` = tek akış, katman 2 → 05b rev6 davranışı birebir (≈149 literal ve mühürlü pinler değişmez, Ek C.F). Seçim motor içinde tek, saf, deterministik bir fonksiyondur. Yeni `TransmitKind::Control` (CsProbe deseni: uçuşta izlenmez, PN tablosuna girmez) yalnız FLOW_BLOCKED içindir.
+**Sözleşme [DUR-06-2 (b2)]:** `ServiceTag { tier: u8, flow: u32 (opak), expires_ns: Option<u64> }`; eklemeli `Event::AppDataTagged(OpaqueUnit, ServiceTag)`; etiketsiz `AppData` = tek akış, katman 2 = rev6 birebir (149 literal ve pinler değişmez). Seçim motor içinde tek, saf, deterministik fonksiyon. `TransmitKind::Control` yalnız FLOW_BLOCKED için (uçuşta izlenmez, PN tablosuna girmez).
 
-**Düzey 1 — hangi akış:** katman 0 CTRL (kova) → katman 1 VO (kova: oran **min(VO profil hızı, ρ_V,max·r(t))**, kova b_V; kesilen pay `vo_rate_deficit` sayacına düşer, sürekli açıkta uygulamaya tipli "desteklenmeyen profil" olayı gider) → katman 2 BE/BK bayt kuantumlu DRR: **sınıf ağırlığı akış sayısından bağımsız** (Q_BE : Q_BK = 3 : 1 [CAL]); sınıf içinde akışlar arası DRR (akış başına pay = sınıf payı / n_sınıf).
-**Akışsız motor emisyonları:** CS/bootstrap probu ve kuruluş probu katman 0'a (kontrol kovası) yazılır; kuyruk-probu, parite ve kopya ait oldukları birimin/bloğun akışına aittir. 05b K1 (a) aynen: rezerv sahibinin başı dışındaki HER token tüketicisi (prob ve parite dahil) rezervin altına inemez.
-**Tek rezerv:** küresel tek rezerv; sahiplik sırası önce düzey 1 (seçilen akış), akış içinde rev6 K-3 (ARQ > DATA > kopya). Haklar (rev6 K-2) **(akış, sınıf)** başına tutulur. K_ARQ_SHARE payı `schedule_transmit` çağrısını değil **akışın hizmet fırsatını** sayar (DUR-38'in kök nedeni çağrı sayan paydı).
-**Düzey 2 — akış içinde hangi iş:** 05b rev6 K-0…K-5 (`37b78aad:docs/design/K4G-05b-RETX-FIX.md:545-575`), akış içinde. Tek akışlı yapılandırmada düzey 1 etkisizdir → rev6 T1/T2 regresyon testi olarak kalır (B17).
-**PRE_CONVERGE (K-0):** düzey 1 katman sırası uygulanır (CTRL/VO DATA'sı BK DATA'sından önce); düzey 2'de v1 sırası, §3.3-B takvimi; hak ve rezerv yok. Beyanlı istisna; B14 kolu.
+**Düzey 1 — hangi akış:** katman 0 CTRL (kova) → katman 1 VO (kova: min(VO profil hızı, ρ_V,max·r(t)); kesilen pay `vo_rate_deficit`, sürekli açıkta tipli "desteklenmeyen profil" olayı) → katman 2 BE/BK bayt kuantumlu DRR (sınıf ağırlığı akış sayısından bağımsız, Q_BE : Q_BK = 3 : 1 [CAL]; sınıf içinde akışlar arası DRR).
 
-**Aç bırakılmama — ispat taslağı [türetim; sonuç "ölçüldü" diye yazılır].** r(t) = pacer hızı; pacer dışı ters yön ACK/kredi trafiği hariç (iki yönlü durumda ayrıca ölçülür, B5). Biriken token üzerinden (05b A.4 (iii) biçimi):
-1. τ aralığında katman 0 + 1 + akışsız prob tüketimi ≤ ∫(ρ_C + ρ_V)·r + b_C + b_V + P_pf; **ρ_C + ρ_V,max < 1 her an korunur** (VO kovası r(t)'ye bağlı).
-2. Katman 2'de backlog'lu sınıf c bir DRR turunda ≥ Q_c bayt alır; tur ≤ Σ_c (Q_c + S_max) bayt; akış f sınıf c içinde n_c akışla ≥ Q_c / n_c.
-3. f'nin iki hizmet fırsatı arası P_f ≤ n_c·[Σ_c (Q_c + S_max) + b_C + b_V + P_pf] / ((1 − ρ_C − ρ_V,max)·r) + τ.
-4. **T_birim (akış içi):** rev6 formülü T_birim = max(H_maks, A) + A + N_live·P_c + τ (`37b78aad:…RETX-FIX.md:571`); P_c = rev6 T_max(kopya) = (2·S_d + S_a + S_c)/R + (K + 4)·τ + P_pf/R ifadesinde R yerine akışın etkin hızı r_f = (Q_c / n_c) / P_f, τ yerine P_f konur (akış içi düzey-2 payı: K-3 sırası + K_ARQ_SHARE akış fırsatı). Girdiler B14'te koddan önce yazılır.
-5. **Kontrol:** uygun kontrol başı ≤ (S_iletimde + S_ctrl)/r + kova dolum süresi + τ içinde çıkar.
-- Örnek [hesap]: r = 300 B/s, VO yok, ρ_C = 0,1, bir BE + bir BK akışı, Q_BE = 3150 B, Q_BK = 1050 B, S_max = 1050 B → tur ≈ 6300 B / 270 B/s ≈ 23,3 s.
+**Rezerv hiyerarşisi [öneri; DUR-06-2 (i)]:** her katmanın en çok bir rezervi vardır. Katman 0 ya da 1'in uygun başı token bulamazsa o katmanın rezervi kurulur ve alt katmanların rezervinin **önüne geçer**; katman 0/1 tüketimi kova paylarıyla sınırlı olduğundan katman-2 rezervinin ömrü sonlu kalır. **05b K1 (a) katman 2 içinde aynen:** katman-2 rezerv sahibinin başı dışındaki her katman-2 tüketicisi (aynı katmanın kuyruk-probu ve paritesi dahil) rezervin altına inemez. Sonuç: VO ve kontrol, BK başının token birikimini beklemez (bekledikleri yalnız iletimdeki paket, §11). Haklar (rev6 K-2) **(akış, sınıf)** başına; K_ARQ_SHARE payı **akışın hizmet fırsatını** sayar.
+**Akışsız emisyonlar:** CS/bootstrap probu ve kuruluş probu katman 0'a (kova) yazılır; kuyruk-probu, parite ve kopya ait oldukları birimin/bloğun akışının katmanındadır.
+**Düzey 2 — akış içi iş:** 05b rev6 K-0…K-5 (`37b78aad:docs/design/K4G-05b-RETX-FIX.md:545-575`). Tek akışta rev6 T1/T2 regresyonu (B17).
+**PRE_CONVERGE (K-0):** düzey 1 katman sırası uygulanır; düzey 2'de v1 sırası ve §3.3-B takvimi; hak ve rezerv yok (beyanlı; B14 kolu).
+
+**Aç bırakılmama — ispat taslağı [türetim; sonuç "ölçüldü" diye yazılır].** r(t) = pacer hızı; pacer dışı ters yön trafik hariç (B5'te ayrıca ölçülür):
+1. τ aralığında katman 0 + 1 + akışsız prob ≤ ∫(ρ_C + ρ_V)·r + b_C + b_V + P_pf; ρ_C + ρ_V,max < 1 her an (VO kovası r(t)'ye bağlı).
+2. Katman 2'de backlog'lu sınıf c turda ≥ Q_c; tur ≤ Σ_c (Q_c + S_max); akış f, n_c akışlı sınıfta ≥ Q_c / n_c.
+3. P_f ≤ n_c·[Σ_c (Q_c + S_max) + b_C + b_V + P_pf] / ((1 − ρ_C − ρ_V,max)·r) + τ (rezerv hiyerarşisi bu paydayla tutarlıdır).
+4. **T_birim (akış içi):** rev6 T_birim = max(H_maks, A) + A + N_live·P_c + τ (`37b78aad:…RETX-FIX.md:571`); P_c = rev6 T_max(kopya) ifadesinde R → r_f = (Q_c / n_c) / P_f, τ → P_f.
+5. **Kontrol ve VO:** uygun başı ≤ (S_iletimde + S_baş)/r + kendi kova dolumu + τ içinde çıkar (katman-2 rezerv beklemesi YOK).
+- Örnek [hesap]: r = 300 B/s, VO yok, ρ_C = 0,1, bir BE + bir BK, Q_BE = 3150 B, Q_BK = 1050 B, S_max = 1050 B → tur ≈ 6300 B / 270 B/s ≈ 23,3 s.
 
 ## 6. Kuyruk derinliği denetimi (S7) ve S7(a) hükmü
 
 | Katman | Bugün [olgu] | TEXT'in önünde kalabilecek dosya işi [hesap/çıkarım] | K4G-06 |
 |---|---|---|---|
-| kama-app dosya pompası | eş başına yalnız en eski aktarım (`0c22a07d:file_transfer.rs:862-881`) | ikinci dosya birincinin arkasında | akış başına hizmet (A.21) |
+| kama-app dosya pompası | eş başına en eski aktarım (`0c22a07d:file_transfer.rs:862-881`) | ikinci dosya birincinin arkasında | akış başına hizmet (A.21) |
 | S1 `send` → offer mpsc | tek FIFO 1024 | 1024 birim; 31 B/s'de ≈ 9,6 sa | akış bütçesi dışında birim kabul edilmez; yerel tampon akış başına, offer FIFO'su dışında |
 | runtime store + mesafe kapısı | oturum geneli (`runtime.rs:2575-2581`) | eski dosya birimi yeni alımı durdurabilir | S1 kipinde mesafe kapısı kalkar → akış kredisi; store ≤ min(Σ kredi, yerel tavan) |
 | motor `tx_queue` | FIFO | ≤ 4096 DATA | katman/akış başına kuyruk |
 | motor `pending_lost` | kayıp ilanı sırası | önce kaybolan dosya birimi önce | düzey 1 akış seçer; akış içi `arq.rs` sırası aynen |
-| motor `dup_queue` | rev5 en küçük kimlik; rev6 yaş tavanına dek en küçük kimlik | eski dosya kopyası (yaş tavanı dolmadıkça) önce | akış başına baş; düzey 1 |
-| motor `pending_fec` | FIFO; blok oturum geneli | karışık blok paritesi | blok akış başına (§3) |
-| pacer / soket / darboğaz | tek kova; iletimdeki paket kesilemez | S/r (31 B/s'de 1050 B ≈ 33,9 s; 300 B/s'de 3,5 s) | değişmez — fiziksel sınır (§11) |
-| **hub (INT-03)** | S4 taslağında kuyruk tanımsız (`1b1425d2:docs/seams/KM-SEAM-TH-001-TASLAK.md:63`) | hub sınıf göremez; derin eş FIFO'su önceliği etkisizleştirir | gereksinim: sığ, sınırlı handle kuyruğu → S4'e (A.31) |
+| motor `dup_queue` | rev5 en küçük kimlik; rev6 yaş tavanına dek en küçük kimlik | eski dosya kopyası önce | akış başına baş; düzey 1 |
+| motor `pending_fec` / `repair_store` | FIFO; oturum geneli blok; `pop_first` | karışık blok paritesi; BK seli TEXT paritesini tahliye eder | blok akış başına; depo sınıf başına |
+| pacer / soket / darboğaz | iletimdeki paket kesilemez | S/r (31 B/s'de 1050 B ≈ 33,9 s; 300 B/s'de 3,5 s) | fiziksel sınır (§11) |
+| hub (INT-03) | S4'te kuyruk tanımsız (`1b1425d2:docs/seams/KM-SEAM-TH-001-TASLAK.md:63`) | hub sınıf göremez | gereksinim: sığ, sınırlı handle kuyruğu (A.31) |
 | alıcı teslim kanalı | düğüm geneli FIFO 1024 | dolunca ACK'siz ret | kapasite ≥ Σ taahhüt (yapısal yer) |
 | alıcı `Reorder` / `inbox` | oturum başına / düğüm geneli | dosya boşluğu ve durmuş tüketici herkesi tutar | (oturum, akış) başına; akış başına hazır kuyruk + `hold_flow` |
 | kama-app olay zinciri | tek okuyucu | yavaş dosya işleyici herkesi tutar | dosya tüketicisi akışını tutar; zincir sürer |
 
-**S7(a) hükmü [çıkarım; B2 ile sınanır].** Üst katmanın sığ beslemesi motora önceden kabul edilmiş ARQ/kopya/parite işini sıralamaz: ARQ planı kayıp ilanı sırasıyla, kopya başı (yaş tavanı dolmadıkça) en küçük kimlikle, parite FIFO ile çalışır. Bu, yeni TEXT'in **ilk** emisyonunu bekletmez (DATA-önce, rev6 karşılık hakları) ama TEXT'in **kendi kurtarma işini**, önce ilan edilmiş N_u eski dosya kaydının arkasına koyar. B2 bu niceliği ölçer; tabanda kırmızı beklenir (ön-kayıtlı, koda dayalı; Ek B B2). Kırmızı çıkmazsa önce türetim sorgulanır. **Öneri: S7(a) reddedilir, S7(b).**
+**S7(a) hükmü [çıkarım; B2 ile sınanır]:** sığ besleme motora önceden kabul edilmiş ARQ/kopya/parite işini sıralamaz; yeni TEXT'in ilk emisyonunu bekletmez ama TEXT'in kendi kurtarma işini önce ilan edilmiş N_u dosya kaydının arkasına koyar. B2 tabanında kırmızı beklenir (ön-kayıtlı). **Öneri: S7(a) reddedilir, S7(b).**
 
 ## 7. Alıcı kredileri
 
-**7.1 Birim:** akış başına iki mutlak, artan sınır: `max_seq` (u32) ve `max_bytes` (u32, akışın toplam payload baytı; dosya akışında tavan `MAX_REASSEMBLY_BYTES` = 64 MiB, `0c22a07d:file_transfer.rs:257` → u32 yeter; aşımda tipli hata). Yeniden gönderim, kopya ve FEC kurtarımı aynı `flow_seq`'i taşır → ikinci kredi yok. Live akış (VO): demetler `flow_seq` tüketir ama seq kredisinden muaftır (kabul politikası DUR-06-1); VO akışındaki `Reliable` birimler ayrı mutlak sayaç `max_rel` ile sınırlanır.
-**7.2 Havuz ve taahhüt:** alıcı oturum başına sınıf havuzları P_CTRL, P_BE, P_VO, P_BK (birim + bayt); taahhüt = Σ_f (`max_seq_f` − uygulamaya verilmiş_f), kullanılmamış kredi dahil, ≤ havuz; BK kredisi yalnız P_BK'den. RuntimeConfig doğrulaması iki değişmez ister: Σ W + kontrol tavanı < `max_inflight_units`; `delivery_queue` ≥ `max_peers` × Σ havuz. Alıcı FEC blok tavanı (`RX_BLOCKS_CAP` 32, `runtime.rs:3193`) sınıf başına bölünür; BK blokları BE/CTRL bloklarını tahliye edemez, tahliye sayılır.
-**7.3 İlk kredi:** sınıf başına `W0` ve `bk_flow_limit0`, `W_CTRL0`, `max_rel0` profil sabitidir; ilk birim ve ilk kontrol hiçbir kontrol turu beklemez.
-**7.4 Güncelleme:** `max_seq` = **uygulamaya verilmiş + W_sınıf** (taşımadaki alım değil); `max_bytes` aynı kural. İlan: (i) sınır W/2 ilerleyince; (ii) son BLOCKED(seq)'in üstündeki her artış **hemen**.
-**7.5 Canlılık:** gönderen bloklu kaldıkça BLOCKED'i **etkin sınır artana dek** tekrarlar; "yanıt" = sınır artışı, herhangi bir FLOW_CREDIT değil. Aralık 1·srtt'den başlar, ×2, tavan min(RTO_MAX = 30 s, `idle_hold`/2) — tekrarlar alıcının sunucu yuvasını da canlı tutar (`idle_hold` 105 s, `runtime.rs:280`). Mutlak değer + en büyükle birleştirme → bayat/sırasız/tekrar kredi zararsız.
+**7.1 Sınırlar (hepsi mutlak, artan; FLOW_CREDIT'in sabit boylu girdilerinde):**
+- **Akış kredisi:** `max_seq` (u32) ve `max_bytes` (u32; dosya akışında tavan `MAX_REASSEMBLY_BYTES` 64 MiB, `0c22a07d:file_transfer.rs:257`; aşımda tipli hata). Yeniden gönderim/kopya/FEC kurtarımı aynı `flow_seq` → ikinci kredi yok. Açılışta FIN için 1 seq'lik yuva ayrılır (`max_seq + 1`; boş FIN birimi tampon tutmaz).
+- **Sayım sınırları:** `bk_flow_limit` (u16; §3) ve VO için `max_rel` (u32; REL birim sayısı). İlerleme: `bk_flow_limit` çözümlenen BK akışı başına +1; `max_rel` uygulamaya verilen REL birim başına +1.
+- **VO demetleri** `flow_seq` tüketir ama seq kredisinden muaftır; kabul politikası DUR-06-1 (b) (P_VO havuzu; yalnız REL bayrağı olmayan birim düşebilir).
+
+**7.2 Havuz ve taahhüt:** oturum başına sınıf havuzları P_TCTRL, P_CTRL, P_BE, P_VO, P_BK (birim + bayt); taahhüt = Σ_f (`max_seq_f` + FIN yuvası − uygulamaya/transporta verilmiş_f) ≤ havuz; BK kredisi yalnız P_BK'den. İki RuntimeConfig değişmezi: Σ W + kontrol tavanı < `max_inflight_units`; `delivery_queue` ≥ `max_peers` × Σ havuz. [hesap] [CAL] değerleriyle oturum başına ≈ 360 birim / ≈ 321 KiB → `max_peers` 64'te ≈ 23 040 birim / ≈ 20 MiB (bugünkü `delivery_queue` 1024, `runtime.rs:271`); bu bellek SR-AUDIT açısından kabul edilemez büyüklüktedir → deneyde etkin S1 oturumu ≤ 8 (≈ 2 880 birim / ≈ 2,5 MiB); normatif sayı DUR-06-3. FEC blok tavanı (`RX_BLOCKS_CAP` 32) sınıf başına bölünür.
+**7.3 İlk kredi:** `W0` (sınıf başına), `W_TCTRL0`, `W_CTRL0`, `bk_flow_limit0`, `max_rel0` profil sabitidir; ilk birim ve ilk kontrol kontrol turu beklemez.
+**7.4 İlan tetikleri (alıcı):** (i) bir sınır W/2 ilerleyince; (ii) bir BLOCKED bölümünden sonraki **ilk** artış hemen; (iii) **her BLOCKED(girdi) alındığında, güncel sınır girdideki değerleri aşıyorsa güncel sınır yeniden ilan edilir** (akış/sayım başına ≤ 1 / T_min; değişmemiş sınır, gönderen tarafındaki kayıp ilanı kurtarır); (iv) birden çok due girdi tek çerçevede birleştirilir. `max_seq` = uygulamaya (akış 0'da transporta) verilmiş + W; `max_bytes` aynı kural.
+**7.5 Canlılık (gönderen):** **etkin sınır artışı** = bekleyen başı her iki boyutta (`seq`, bayt) açan artış; açmayan artıştan sonra yeni BLOCKED bölümü başlar. BLOCKED girdisi `(flow_id, seq, bytes)` ya da sayım girdisi `(tür, değer)` taşır; bütün bloklu akışlar ve sayımlar tek çok girdili çerçevede (≤ FLOW_CREDIT_MAX_ENTRIES). Aralık 1·srtt → ×2 → tavan min(RTO_MAX = 30 s, `idle_hold`/2); tekrar, etkin sınır artana dek sürer ve alıcının sunucu yuvasını canlı tutar (`idle_hold` 105 s, `runtime.rs:280`). Bu kurallarla "artış ilanı kayboldu, tüketilecek veri kalmadı" durumu (rev2 senaryo A) sonraki BLOCKED + (iii) ile kapanır.
 **7.6 Yaşam döngüsü:**
-- **FIN:** son birimde bayrak; `close_flow` son birimden sonra çağrılırsa boş FIN birimi, açılışta ayrılan 1 seq'lik FIN yuvasıyla (`max_seq + 1`) gider. Alıcı `fin_seq`'e dek her birimi uygulamaya verince akış durumu ve taahhüt serbest; `bk_flow_limit` ilerler. Tutulan akışın kapanışı uygulama tüketene dek bekler (beyan).
-- **RESET:** `reset_flow` → motor akışın birimlerini iptal eder (§8.3) → akış 0'da güvenilir TCTRL birimi `FLOW_RESET(flow, final_seq)`; teyidi motorun kendi teyit çıktısıdır (tek mekanizma). Alıcı tamponu atar, akışı kapalı işaretler.
-- **Gelecekteki kontrol yükümlülüğüne yer (H_C_tavan, eş başına) [türetim]:** FILE_ABORT ≤ `MAX_OUTGOING_TRANSFERS` 4 + FLOW_RESET ≤ açık giden BK akışı (≤ `bk_flow_limit0` 4) + FILE_RECEIPT ≤ `MAX_INCOMING_TRANSFERS_PER_PEER` 2 + PTT_CLOSE ve yeniden PTT_OPEN ≤ 2 = **12 akış-0 birimi**; RECEIPT(delivered) 05d bit haritasında (≤ `MSG_DEDUP_WINDOW` 4096) tut-ve-dur ile bekler. W_CTRL0 ≥ 12 + RECEIPT payı [CAL]. Yeni aktarım ya da yeni PTT ancak kendi yuvaları ayrılabiliyorsa kabul edilir; değilse `Backpressure`, sessiz düşürme yok.
-- **Oturum değişimi:** akış taşınmaz; kama-app kuralları (TEXT eski `msg_id` ile, dosya `FILE_ABORT(superseded)`, PTT yeniden OPEN).
-- **Medya expiry:** Live akışta sıra boşluğu teslimi durdurmaz; süresi dolan demet gönderende iptal edilir; konuşma sonu uygulamada: CLOSE alındı ∧ (CLOSE'tan küçük `flow_seq`'li demetler geldi ∨ CLOSE varışından D_VO sonra) → `PttEnded`; yedek PTT-R4 TTL.
-- **Churn:** eşzamanlı BK akışı ≤ `bk_flow_limit` − `bk_resolved_below`; kapalı akış kaydı ≤ açık küme; VO akışı kalıcı olduğundan churn yok.
-**7.7 05c reddi = savunma; sayaçlar:** krediyi aşan birim → ACK'siz ret + `credit_violations` (akış 0 dahil: W_CTRL aşımı); kredili birim (akış 0 dahil) için yer bulunamazsa `capacity_defect`. **Kabul kapısı yalnız `capacity_defect = 0`** (sahibin notu 2). Live demetin havuz yüzünden düşmesi `media_dropped_rx` (ACK'lenir; yalnız `DeadlineBounded` birim; `Reliable` birim asla).
-**7.8 Kontrol çerçevesi sınırları (DoS):** FLOW_CREDIT yalnız 7.4 tetikleriyle; BLOCKED yanıtı akış başına ≥ 1 srtt aralıklı ve yalnız o akışın girdisini taşır; BLOCKED, yanıt boyuna dolgulanır (amp ≤ 1; CS probe/echo emsali `0c22a07d:wire.rs:220-221`). Girdiler sabit boylu (sızıntı azalır, §11), çerçeve başına ≤ FLOW_CREDIT_MAX_ENTRIES [CAL], fail-closed çözüm (emsal `wire.rs:188-198`); bilinmeyen/kapalı akış girdisi, kredi ötesi BLOCKED, ayrılmış bit ≠ 0, akış ortasında kip değişimi → ret + kol başına sayaç. Gönderen store'u daima min(eşin kredisi, yerel sabit tavan) ile sınırlanır (u32::MAX kredi belleği açmaz).
+- **FIN:** son birimde bayrak (ya da FIN yuvasındaki boş birim). Alıcı `fin_seq`'e dek her birimi uygulamaya verince akış ve taahhüt serbest; tutulan akışın kapanışı uygulama tüketene dek bekler (beyan).
+- **RESET:** `reset_flow` → motor akışın birimlerini iptal eder (§8.3) → akış 0'da güvenilir `FLOW_RESET(flow, final_seq)`. Akış 0'ın tüketicisi transporttur (uygulama durgun olsa da işlenir); teyidi motorun teyit çıktısıdır. Alıcı akışın tamponunu — ACK'lenmiş ama teslim edilmemiş birimler dahil — atar (INV-ACK-DELIVER-1 istisnası, A.7) ve akışı kapalı işaretler.
+- **Kontrol yükümlülüğüne yer — H_C_tavan (eş başına, şerit başına) [türetim]:**
+  - akış 1 (uygulama kontrolü): FILE_ABORT ≤ `MAX_OUTGOING_TRANSFERS` 4 + FILE_RECEIPT ≤ `bk_flow_limit0` 4 (kabul edilen ve REDDEDİLEN her gelen BK akışı bir alındı doğurur, `0c22a07d:file_transfer.rs:1018-1034`) = **8**; RECEIPT(delivered) 05d bit haritasında tut-ve-dur (≤ `MSG_DEDUP_WINDOW`). W_CTRL0 ≥ 8 + RECEIPT payı [CAL].
+  - akış 0 (transport kontrolü): FLOW_RESET ≤ açık giden BK akışı ≤ eşin `bk_flow_limit0` 4 → W_TCTRL0 ≥ 4.
+  - VO: PTT_OPEN + PTT_CLOSE + yeniden PTT_OPEN ≤ 3 / giden konuşma → `max_rel0` ≥ 4 [CAL].
+  - FILE_RECEIPT yuvası alıcıda BK akışı açılırken ayrılır; `bk_flow_limit` ancak akış çözümlenip FILE_RECEIPT akış 1'e kabul edildikten sonra ilerler → bekleyen alındı ≤ `bk_flow_limit0`. kama-app'in küresel, en eskiyi düşüren alındı kuyruğu kalkar (A.21). Yuvası ayrılamayan yeni aktarım/PTT → `Backpressure`; mevcut yükümlülük hiç düşmez.
+- **Oturum değişimi:** akış taşınmaz; kama-app kuralları (TEXT eski `msg_id`; dosya `FILE_ABORT(superseded)`; PTT yeniden OPEN).
+- **Live:** VO akışı kalıcı (churn yok); sıra boşluğu teslimi durdurmaz; konuşma sonu uygulamada: CLOSE alındı ∧ (CLOSE'tan küçük `flow_seq`'li demetler geldi ∨ CLOSE varışından D_VO sonra) → `PttEnded`; yedek PTT-R4 TTL.
+- **Churn (BK):** açık küme ≤ `bk_flow_limit0`; kapalılık `max_seen` + açık kümeyle temsil edilir (§3).
+**7.7 Sayaçlar ve kapı:** krediyi ya da W_CTRL/W_TCTRL'yi aşan birim → ACK'siz ret + `credit_violations`; kredili birim (akış 0/1 dahil) için yer yoksa `capacity_defect`; **kabul kapısı yalnız `capacity_defect = 0`** (sahibin notu 2). VO demetinin havuz yüzünden düşmesi `media_dropped_rx` (ACK'lenir; yalnız REL'siz birim). Kapalı/bilinmeyen akış girdisi, RESET/FIN ile yarışan BLOCKED ya da kredi girdisi → girdi düzeyinde yok sayılır, `stale_ctrl_entries` (ihlal sayılmaz).
+**7.8 Kontrol çerçevesi sınırları (ACK yolu ve DoS):** alıcıda srtt yoktur (`0c22a07d:runtime.rs:3654-3670`) → yanıt aralığı sabit T_min [CAL, ör. 1 s]. **ACK yolunda zorunlu sınır:** sunucu yuvası (eş) başına ≤ 1 FLOW_CREDIT çerçevesi / T_min; due girdiler birleştirilir (≤ FLOW_CREDIT_MAX_ENTRIES); BLOCKED, yanıtının boyuna dolgulanır (amp ≤ 1, emsal `0c22a07d:wire.rs:220-221`). Olağan yük tetiklerle (W/2, BLOCKED) sınırlıdır; T_min yalnız kötü niyetli BLOCKED seline karşı tavandır [hesap: eş başına ≤ 38–80 B/s ters yön, saldırı altında]. Girdiler sabit boylu; çerçeve düzeyinde ret yalnız biçim hatalarında (ayrılmış bit, girdi sayısı aşımı) + kol sayacı. Gönderen store'u daima min(eşin kredisi, yerel sabit tavan) ile sınırlı.
 
 ## 8. FEC / ARQ / kopya; süre dolumu ve iptal
 
-**8.1 FEC:** blok tek akışın birimlerinden oluşur (`block_id` = `flow_id ‖ flow_block`); RECOVERED (`block_id`, `esi`) → (akış, sıra) → ters dizin → birim; başka akışın birimi teyit edilemez. Live akış ilk uygulamada FEC dışı [öneri DUR-06-11]; `Ordered` akışta kısmi blok T_block [CAL] içinde kapanır.
-**8.2 ARQ ve kopya** akış etiketini taşır; ARQ_RETX_CAP aşımında kopyaya devir (AMENDMENT-12) aynen; `Live` birimde süre dolunca devir yerine iptal.
-**8.3 Süre dolumu ve iptal — tek sonlandırma çıktısı:** motor birime `iptal` durumu verir (süre dolumu: `expires_ns`; RESET: yeni `Event::CancelFlow`). İptal edilmiş birim `tx_queue`, `pending_lost`, `dup_queue` ve parite adaylığından çıkar; sahiplenme (H), kayıp ilanı, kuyruk-probu hedefi ve teyit yolları onu atlar; uçuş kayıtları yalnız muhasebede kalır. Çıktı: `take_confirmed_units` → **`take_finished_units` = (birim, Teyit | İptal)**, birim başına oturumda en çok bir kez. Aynı olayda teyit ve iptal çakışırsa **teyit kazanır**. Runtime payload'u ve uygulama olayını YALNIZ bu çıktıya bağlar → ikinci silme yolu yok. Bu, AMENDMENT-12'nin dört donmuş cümlesini değiştirir (Ek A A.16).
+**8.1 FEC:** §3 (B-iii). Live ilk uygulamada FEC dışı [DUR-06-11]; `Ordered` akışta kısmi blok T_block içinde kapanır ve blok kimliği yeniden kullanılmaz.
+**8.2 ARQ ve kopya** akış etiketini taşır; ARQ_RETX_CAP aşımında kopyaya devir (AMENDMENT-12) aynen; süresi dolan `DeadlineBounded` birimde devir yerine iptal.
+**8.3 Tek sonlandırma çıktısı:** motor birime `iptal` durumu verir (`expires_ns` dolumu; RESET: `Event::CancelFlow`). İptal edilmiş birim `tx_queue`, `pending_lost`, `dup_queue` ve parite adaylığından çıkar; H-sahiplenmesi, kayıp ilanı, kuyruk-probu hedefi ve teyit yolları onu atlar; uçuş kayıtları yalnız muhasebede kalır. Çıktı `take_finished_units` = (birim, Teyit | İptal), birim başına oturumda en çok bir kez; aynı olayda çakışmada **teyit kazanır**. Motora hiç verilmemiş birim (offer kanalı, akış başına yerel tampon) payload sahipliği doğurmaz: runtime onu kendi tek çıktısıyla (İptal, birim başına bir kez) düşürür. Bu, AMENDMENT-12'nin altı donmuş cümlesini ve INV-NO-IDLE-TEARDOWN'a bir açıklamayı değiştirir (A.16).
 
 ## 9. 05c kapısının akış başına dönüşümü
 
-`AcceptState` (oturum) → (oturum, akış); pencere = kredi; `RefuseWindow` = kredi ihlali; `RefuseFull` kredili birim için yapısal olarak erişilemez (erişilirse `capacity_defect`). Sıra başı rezervi (`DeliveryLedger`, `0c22a07d:runtime.rs:3284-3297`) S1 kipinde kredi taahhüdüyle yer değiştirir (akış 0 dahil: W_CTRL önceden ayrılmış yerdir); örtük kip (bench) aynen. "Durum unutmaz" (`runtime.rs:3359-3361`) akış ömrü boyunca korunur; kapandıktan sonra `late_after_close` kuralı devralır. Mesafe kapısı S1 kipinde kalkar; yeni akışlar eski dosyanın eksik biriminin kimliğine bağlanmaz (B1b).
+`AcceptState` (oturum) → (oturum, akış); pencere = kredi; `RefuseWindow` = kredi ihlali; `RefuseFull` kredili birim için yapısal olarak erişilemez (erişilirse `capacity_defect`). Sıra başı rezervi (`0c22a07d:runtime.rs:3284-3297`) S1 kipinde kredi taahhüdüyle yer değiştirir (akış 0/1 dahil); örtük kip tek akışla aynı kuralla. "Durum unutmaz" (`runtime.rs:3359-3361`) akış ömrü boyunca; kapandıktan sonra `late_after_close`. Mesafe kapısı S1 kipinde kalkar (B1b).
 
 ## 10. kama-app ataması, PTT, sesli mesaj, pompa
 
-- **Atama:** §4 tablosu. Erken birim (`connect` K6) için akış DUR-06-7'dedir (öneri: `connect`'e erken birimin sınıfı; Ready'de o kalıcı akışın ilk birimi).
-- **Pompa:** eş başına değil **akış başına** hizmet; bir aktarımın krediden tıkanması aynı eşin diğer aktarımını bekletmez (A.21; B23).
-- **Tek kabul yolu (C15 v3 §5(ii) devri):** kama-app'teki her üretici akış açma/gönderme yolundan çıkar; `Messenger::transport_mut()` baypası (`0c22a07d:messaging.rs:425`; kullanımlar `file_transfer.rs:1520`, `ptt.rs:960`, `signaling.rs:426`, :583) kaldırılır ya da daraltılır; baypas testi B24.
-- **PTT (DUR-06-18'e bağlı):** önerilen canlı kipte demet süresi = sunum + D_VO [CAL]; gönderen süresi dolanı iptal eder; alıcıda OPEN'dan önce gelen demet sınırlı ön tamponda (N [CAL], ≤ oynatma bütçesi); geç demet oynatılmaz ve sayılır. AMP PTT-R0/PTT-R3 ve PoC-KAPSAM-001 §2/EK-2 md.1/EK-3 değişir (A.18, A.19).
-- **Desteklenmeyen profil:** VO yalnız `min(profil, ρ_V,max·r(t))` profili karşılıyorsa açılır ve sürer; değilse tipli hata/olay; **sesli mesaja otomatik ya da görünmez geçiş yoktur** (S5; B19 (b)). Sesli mesaj ayrı, görünür kullanıcı eylemidir (DUR-06-12).
-- **05d / 05f:** RECEIPT ve FILE_RECEIPT akış 0'da → dosya FIFO'sunun arkasında beklemez; 05d A1 akış bütçesine dönüşür, tek kabul yolu şartı devralınır (DUR-06-14). 05f rev2: dosya ilerlemesi = dosya akışının teyit tabanı + yeni benzersiz teyit.
-- **UniFFI/S5:** `PttBundle` olayına `flow_seq` (sıra) alanı ve anlamı ("teslim sırası değil, akış sırası; geç demet oynatılmaz"); `pttPush` için `DeadlineExpired` ve "reddedileni yeniden ver" kuralının canlı kipte kalkması; KM-SEAM-AK-001 ve README-HASAN (Hasan ile ortak onay); `node.rs` SessionEvent eşlemesine `FlowOpened`/`FlowEnded` (`0c22a07d:node.rs:560-584`). (A.24, DUR-06-23)
+- **Atama:** §4. Erken birim (`connect` K6): `connect`'e erken birimin sınıfı; `Ready`'de o kalıcı akışın ilk birimi (DUR-06-7).
+- **Pompa** akış başına (A.21; B23). **Alındılar** gelen BK akışı başına yuvada; reddedilen FILE_BEGIN dahil (§7.6).
+- **Tek kabul yolu (C15 v3 §5(ii)):** her üretici akış açma/gönderme yolundan; `Messenger::transport_mut()` baypası (`0c22a07d:messaging.rs:425`; `file_transfer.rs:1520`, `ptt.rs:960`, `signaling.rs:426`, :583) kaldırılır ya da daraltılır (B24).
+- **PTT (DUR-06-18'e bağlı):** canlı kipte demet süresi = sunum + D_VO [CAL]; gönderen süresi dolanı iptal eder; alıcıda OPEN'dan önce gelen demet sınırlı ön tamponda (N [CAL]); geç demet oynatılmaz ve sayılır. Değişen donmuş metinler: AMP PTT-R0/R3 (A.18); PoC-KAPSAM-001 §2 PTT satırı ve "bekliyor" göstergesi, EK-2 md. 1, EK-3, **K8 PTT satırı ("sıfır bozuk hece", (a) seçilirse)**, §2 "Sözleşmeler" S5 dondurması ve K6 "facade değişmez" (A.19).
+- **Desteklenmeyen profil:** VO yalnız min(profil, ρ_V,max·r(t)) profili karşılıyorsa açılır ve sürer; değilse tipli hata/olay; sesli mesaja otomatik/görünmez geçiş YOK (S5; B19 (b)). Sesli mesaj ayrı, görünür eylem (DUR-06-12).
+- **05d / 05f:** RECEIPT ve FILE_RECEIPT akış 1'de; 05d A1 akış bütçesine dönüşür, tek kabul yolu devralınır (DUR-06-14). 05f rev2: dosya ilerlemesi = dosya akışının teyit tabanı.
+- **UniFFI/S5 (DUR-06-23 + DUR-06-18):** `PttBundle`'a `flow_seq` ve anlamı ("akış sırası; geç demet oynatılmaz"); `pttPush` için `DeadlineExpired` ve canlı kipte "reddedileni yeniden ver" kuralının kalkması; `UnknownFlow` aynası; `node.rs` eşlemesine `FlowOpened`/`FlowEnded` (`0c22a07d:node.rs:560-584`). ui-api v0.3 kaynağı `kama-engine docs/ui-api-v0.md` (tag `ui-api-v0.3` = `5de9be16`, KM-SEAM-AK-001:9) — **facade'a dokunur:** oynatıcı sıra bilgisine ihtiyaç duyar ve "bekliyor" davranışı değişir; bu yüzden K6 ve §2 "Sözleşmeler" satırı da EK-4'e girer (A.19, A.24).
 
-## 11. Fiziksel sınırlar, yan kanal, karma sürüm
+## 11. Fiziksel sınırlar, yan kanal, karma sürüm, kapılar
 
-- Eksik parçayı bekleme kalkar; hat meşguliyeti kalkmaz. İletimdeki paket kesilemez: 1050 B paket 31 B/s'de ≈ 33,9 s, 300 B/s'de 3,5 s [hesap]; BK etkinken VO gecikmesi ≥ S_BK/r (DUR-06-10).
-- 1,2 kbit/s ses yalnız payload olarak ≈ 150 B/s → 31 B/s'de canlı ses sürdürülemez. 31 B/s'de dosya kapsamdadır (S2): ağ zarfı `docs/transport-v1/HOSTILE-ENVELOPE.md` profilleriyle ve kesinti süresi/sayısı, rastgele kayıp, dönüş yolu kaybı yazılı olarak Ek B B22'de.
-- Kontrol datagramı ≥ mühür ek yükü 22/26 B + gövde; S2 kontrol gövdeleri ayrıca `control_id` u32 taşır [`1b1425d2:specs/kama-noise-wire-tdd-v2.0.md:347`] → 31 B/s'de 12 B'lik kredi çerçevesi ≈ (26 + 12) / 31 ≈ 1,2 s, S2'de ≈ 1,4 s hat süresi [hesap].
-- **Yan kanal [çıkarım]:** datagram boyu ve zamanlaması hub'a açıktır; sabit boylu kredi girdileri ve tetik kuralı akış sayısı sızıntısını azaltır, kredi ritmi sızmaya devam eder — bilinçli kabul, ölçülür (B3/B7).
-- **Karma sürüm:** kimlik sabitleri telde müzakere edilmez; eski alıcı FLOW_BATCH'i bilinmeyen çerçeve sayıp ACK'siz düşürür [`0c22a07d:runtime.rs:4089`] → sonsuz kurtarma trafiği. Öneri: sürüm/yetenek kimliği doğrulanmış el sıkışmada, `Ready` öncesi fail-closed (DUR-06-13; B25).
-- Soket/çekirdek/darboğaz kuyrukları bu tasarımın denetiminde değildir.
+- Eksik parçayı bekleme kalkar, hat meşguliyeti kalkmaz; iletimdeki paket kesilemez: 1050 B 31 B/s'de ≈ 33,9 s, 300 B/s'de 3,5 s [hesap]; BK etkinken VO gecikmesi ≥ S_BK/r (DUR-06-10). Rezerv hiyerarşisiyle bu, VO'nun gördüğü tek BK terimidir (§5 m.5).
+- 1,2 kbit/s ses ≈ 150 B/s payload → 31 B/s'de canlı ses yok; 31 B/s'de dosya kapsamda (S2; ağ zarfı B22).
+- Kontrol datagramı ≥ mühür 22/26 B + gövde; S2 kontrol gövdeleri ayrıca `control_id` u32 [`1b1425d2:specs/kama-noise-wire-tdd-v2.0.md:347`]: 31 B/s'de 12 B'lik kredi çerçevesi ≈ 1,2 s, S2'de ≈ 1,4 s hat süresi [hesap].
+- **Yan kanal [çıkarım]:** datagram boyu/zamanlaması hub'a açık; sabit boylu girdiler akış sayısı sızıntısını azaltır; kredi ritmi sızar — bilinçli kabul, ölçülür.
+- **Karma sürüm:** eski alıcı FLOW_BATCH'i bilinmeyen çerçeve sayıp ACK'siz düşürür [`0c22a07d:runtime.rs:4089`] → sürüm/yetenek el sıkışmada, `Ready` öncesi fail-closed (DUR-06-13; B25).
+- **Kalite kapıları:** bench ürün kolu bugün örtük kipte koşar (`0c22a07d:crates/bench/src/kama_product.rs:1`, :36-41). Örtük kip FLOW_BATCH'e geçtiği için netem 7 profil ve T-hücreleri çerçeveyi ve akış başına FEC'i ölçer; **çoklu akış, kredi ve BLOCKED'i ölçmez.** Öneri: bench'e S1-kipi ürün kolu (`kama-product-s1`; manifestte `kip` alanı; B20 ön koşulu) — DUR-06-25. Yapılmazsa A.26'da "T-hücreleri kredi/çoklu akışı ölçmez" beyanı.
 
 ## 12. Geçiş sırası ve çakışmalar
 
-1. 05b #140 (rev6) → 05g → 05c merge (C15 v3 §7 Aşama 2–4; 05c rev6 üstüne yeniden tabanlanır).
-2. **Deney dalı** `k4g/06-deney` (§14; merge edilmez; FROZEN dosyalar yalnız orada "DENEY" etiketiyle).
-3. rev3 + CEVAP 16 → ürün kodu (API-first): (i) S1 + KM-SEAM-AT-001 + drift (typed-error stub) · (ii) client-core çerçeve + akış/kredi + alıcı · (iii) motor S7(b) + engine §13 / AMENDMENT-13 · (iv) kama-app + AMP + PoC-KAPSAM eki + 05d A1 / 05f rev2 akış başına · (v) UniFFI/S5 + kama-node + INT-02 düzeneği.
-- **Çakışmalar:** 05c kabul/mesafe kodu (§9); 05g `transport.rs` etkinleştirme kolları (akış yalnız `Ready` sonrası; `Closed` sonrası `FlowRef` → `UnknownFlow`); 05d M1 (korunur), M2/A1 (dönüşür); 05f rev2 akış başına; 05b rev6 K-0…K-5 seçicinin düzey-2 kuralı olur; KARAR-1 geçişi (transport-tdd'de "veri yolu geçişi sonraki sprint" beyanı, `0c22a07d:specs/transport-layer-tdd.md:972-974`) K4G-06 ile birlikte yapılır.
+1. 05b #140 (rev6) → 05g → 05c merge (05c rev6 üstüne yeniden tabanlanır).
+2. **Deney dalı** (§14; merge yok; FROZEN dosyalar yalnız orada "DENEY" etiketiyle).
+3. rev4 + CEVAP 16 → ürün kodu (API-first): (i) S1 + KM-SEAM-AT-001 + drift · (ii) client-core çerçeve + akış/kredi + alıcı · (iii) motor S7(b) + engine §13 / AMENDMENT-13 · (iv) kama-app + AMP + PoC-KAPSAM EK-4 + 05d A1 / 05f rev2 · (v) UniFFI/S5 + kama-node + INT-02 + bench S1 kolu.
+- **Çakışmalar:** 05c kabul/mesafe kodu (§9); 05g etkinleştirme kolları (akış yalnız `Ready` sonrası; `Closed` sonrası `UnknownFlow`); 05d M1 korunur, M2/A1 dönüşür; 05f rev2 akış başına; rev6 K-0…K-5 düzey-2 olur; KARAR-1 geçişi (`0c22a07d:specs/transport-layer-tdd.md:972-974`) K4G-06 ile birlikte.
 
 ## 13. DUR özeti (öncelikli; ayrıntı Ek D)
 
 | Öncelik | DUR | Soru | Önerim |
 |---|---|---|---|
-| **1 — deneyden ÖNCE** | DUR-06-5 | Birim çerçevesi, FEC kimliği, KARAR-1 eki, `flow_id` uzayı | B (alt mesaj başlığı; `block_id = flow_id‖flow_block`) |
-| 1 | DUR-06-2 | S7 seçim sözleşmesi | (b) eklemeli `AppDataTagged` + motor içi saf seçici |
-| 1 | DUR-06-20 | Deney kapsamı; FEC kolunun yeni kodda ölçülmemesi | §14 kapsamı; B2-FEC yalnız tabanda |
-| **2 — deney sonucunu bekler** | DUR-06-1 | Canlı medya kredisi | ayrı sınırlı kabul + `max_rel` |
-| 2 | DUR-06-6 | Live alıcı teslim kipi | sırasız + `flow_seq` + dedup penceresi |
-| 2 | DUR-06-11 | FEC kapsamı | akış başına blok; Live FEC dışı |
-| 2 | DUR-06-10 | VO açıkken BK/BE birim boyu | beyan + ölçüm |
-| 2 | DUR-06-3 | Kontrol katmanının normatif sayıları ve akış 0 kredisi | §4 sözleşmesi; sayılar deneyden sonra |
-| 2 | DUR-06-17 | §5 sınırlarının sözleşmeye "koşullu garanti" olarak girişi | evet, 05b K2 biçiminde |
-| **3 — uygulamadan önce** | DUR-06-18 | PoC-KAPSAM-001 PTT hükmü (sahibin tarihli eki) | EK-4: canlı PTT |
-| 3 | DUR-06-7 | S1 yüzeyi + `early_unit` | `send(flow)` + açık akış çağrıları; `connect`'e erken birim sınıfı |
-| 3 | DUR-06-13 | Sürüm kimliği ve karma sürüm | `transport-v2`; el sıkışmada fail-closed |
-| 3 | DUR-06-14 | 05d A1/M2 devri + tek kabul yolu | A1 ayrıca kodlanmaz; şart devralınır |
-| 3 | DUR-06-15 | Sinyalleşmenin sınıfı | BE, ayrı kalıcı akış |
-| 3 | DUR-06-12 | Sesli mesaj PoC'de kod mu | hayır, yalnız tasarım |
-| 3 | DUR-06-21 | ~190 testte DUR-8 yöntemi | toplu yöntem (Ek D) |
-| 3 | DUR-06-22 | INT-02/INT-03 kapı metni (A.25) | `capacity_defect = 0` + ayrı sebep sütunları |
-| 3 | DUR-06-23 | UniFFI/S5 yüzeyi (Hasan ile) | `PttBundle.flow_seq` + `pttPush` kuralı |
-| **4 — Aşama 7** | DUR-06-24 | PTT eşik dosyasının onayı | kalibrasyondan sonra sahip onaylar (yöntemin kendisi sahibin 1. notudur) |
+| **1 — deneyden ÖNCE** | DUR-06-5 | Birim çerçevesi + FEC kimliği + **KARAR-1/ccr tarihli eki** + `flow_id` uzayı | B + B-iii; ek gerekir |
+| 1 | DUR-06-2 | S7 seçim sözleşmesi + rezerv hiyerarşisi | (b2) + (i) |
+| 1 | DUR-06-20 | Deney kapsamı; FEC kolunun yeni kodda ölçülmemesi | §14; B2-FEC yalnız tabanda |
+| **2 — deney sonucunu bekler** | DUR-06-10 | VO açıkken BK/BE birim boyu | beyan + ölçüm |
+| 2 | DUR-06-11 | FEC kapsamı (Ordered kısmı) | akış başına blok, B-iii |
+| 2 | DUR-06-3 | Kontrol katmanı sayıları, akış 0/1 kredileri, havuz/bellek | §4/§7; sayılar deneyden sonra |
+| 2 | DUR-06-17 | Sınırların sözleşmeye "koşullu garanti" girişi | evet, 05b K2 biçimi |
+| **3 — uygulamadan önce** | DUR-06-18 | PoC-KAPSAM-001 EK-4 (PTT, K8, S5/K6) | (a) canlı PTT |
+| 3 (06-18 (a)'ya koşullu) | DUR-06-1 | Canlı medya kredisi | ayrı sınırlı kabul + `max_rel` |
+| 3 (06-18 (a)'ya koşullu) | DUR-06-6 | Live teslim + REL + gönderen kapısı | sırasız + `flow_seq` + W_LIVE kapısı |
+| 3 (06-18 (a)'ya koşullu) | DUR-06-11 (Live) | Live FEC | FEC dışı |
+| 3 (06-18'e bağlı) | DUR-06-23 | UniFFI/S5 yüzeyi (Hasan + EK-4) | `PttBundle.flow_seq` + `pttPush` |
+| 3 | DUR-06-7 | S1 yüzeyi + `early_unit` | `send(flow)` + açık akış çağrıları |
+| 3 | DUR-06-13 | Sürüm kimliği + karma sürüm | `transport-v2`; el sıkışmada fail-closed |
+| 3 | DUR-06-14 | 05d A1/M2 devri + tek kabul yolu | A1 ayrıca kodlanmaz |
+| 3 | DUR-06-15 | Sinyalleşme sınıfı | BE, kalıcı akış 3 |
+| 3 | DUR-06-12 | Sesli mesaj PoC'de kod mu | hayır |
+| 3 | DUR-06-21 | ~190 testte DUR-8 yöntemi | toplu yöntem |
+| 3 | DUR-06-22 | INT-02/INT-03 kapı metni | `capacity_defect = 0` + sebep sütunları |
+| 3 | DUR-06-25 | netem/T-hücre ölçüm kolu | bench S1-kipi kolu |
+| **4 — Aşama 7** | DUR-06-24 | PTT eşik dosyası onayı | kalibrasyondan sonra (yöntem sahibin 1. notu) |
 
-DUR'dan çıkarılanlar (C11 §3: uygulama tercihi ya da zaten karara bağlı): rev1 DUR-06-8 (kredi taşıyıcısı → DUR-06-5 (iv)), DUR-06-4 (yöntem sahibin 1. notudur → B11 kuralı; asıl karar DUR-06-24), DUR-06-9 (DUR-06-5'e girdi), DUR-06-16 ([CAL] başlangıç değerlerini orkestratör seçer ve raporlar; normatif olunca DUR-06-3/-17).
+DUR'dan çıkarılanlar (C11 §3): rev1 DUR-06-4, -8 (→ 06-5 (iv)), -9 (→ 06-5 (iii)), -16 ([CAL] başlangıç değerleri orkestratörün; normatif olunca 06-3/-17).
 
 ## 14. Deney dalı (ADIM 2) — kapsam
 
-**Taban:** `0c22a07d` (05c-kod; DeliveryGate/UnitTxLog burada). B2 tabanı ayrıca `37b78aad` (rev6, yalnız motor düzeyi) üstünde koşulur. Deney sonuçları "**ürün profili dışı** (FEC kapalı)" etiketlidir.
-- **K1 (kod değişmeden; taban ölçümü):** B2'nin üç kolu (ARQ, kopya, FEC — FEC ürün profilinde açık, `0c22a07d:runtime.rs:292`) iki tabanda; T_BE, §5'in [CAL] değerleriyle K1'den ÖNCE commit'lenir; ayrıca B1-taban (eski API: bütün tüketici durur + dosya birimi kaybolur = `ek-tuketici-durak` tarifi). ≈ 1 gün.
-- **K2 client-core:** FLOW_BATCH (B; FEC kapalı), (oturum, akış) kabul + sıra, akış başına hazır kuyruk + test-util `hold_flow`, tek kredi türü (birim) ACK yolunda, BLOCKED; **S1 kipinde mesafe kapısı kalkar, yerini akış kredisi alır** (örtük kip aynen). ≈ 2–3 gün.
-- **K3 motor ("DENEY"):** `AppDataTagged` + iki katman (BE/BK) DATA kuyruğu + akış etiketli ARQ/kopya başı seçimi; DRR 3:1 isteğe bağlı (sıra 2). ≈ 1–1,5 gün.
-- **K4 testler:** B1-en-küçük, B1b (mesafe kapısı bağı), B2 (ARQ ve kopya kolları, yeni kodda); B3-en-küçük isteğe bağlı (sıra 2). ≈ 1 gün.
-- **Regresyon alt kümesi:** `tv_*`, `k4g05b_scheduling` (tek akış), INV-ACK-DELIVER-1 testleri (Ek C.C K satırları). ≈ 0,5 gün.
-- **Toplam ≈ 5,5–7 iş günü** (tahmin). Aşama 0 toplamı: tasarım rev1 + rev2 ≈ 1,5 gün harcandı + deney 5,5–7 + rev3 ≈ 1 + inceleme 1–2 ≈ **9–11,5 iş günü**; C15 v3 §7'nin "4–6 + 1–2" tahmininden ≈ +3,5–4 gün fazla. Vektör ve seam beyanı deneyde değişmez; sonuçlar SHA + komut + çıktı ile, origin'de değilse YEREL etiketiyle.
+**Taban:** `0c22a07d` (05c-kod, **05b rev5 motoru**; rev6 B′/K3/DUR-40 deneyde YOK). B2 tabanı ayrıca `37b78aad` üstünde (yalnız motor). Sonuçlar "**ürün profili dışı** (FEC kapalı; rev5 motoru)" etiketlidir. **Hüküm kapsamı:** deney yalnız S7(a)/(b) ayrımını ve izolasyonun en küçük kanıtını verir; rev6 + seçici etkileşimi ve rezerv hiyerarşisi U aşamasında sınanır (B10 (e), B14, B17).
+- **K1 (kod değişmeden):** B2'nin üç kolu (ARQ, kopya, FEC — ürün profilinde açık, `0c22a07d:runtime.rs:292`) iki tabanda; T_BE ve deney seçicisine göre T_BE^rec (Ek B B2) K1'den ÖNCE commit'lenir; B1-taban. ≈ 1 gün.
+- **K2 client-core:** FLOW_BATCH (B; FEC kapalı), (oturum, akış) kabul + sıra, örtük açma + `max_seen`/açık küme, akış başına hazır kuyruk + test-util `hold_flow`, tek kredi türü (birim; BLOCKED tek boyutlu `seq`) ACK yolunda §7.4 (i)–(iii) tetikleriyle ve T_min sınırıyla; **S1 kipinde mesafe kapısı kalkar** (örtük kip tek akışla). ≈ 2–3 gün.
+- **K3 motor ("DENEY"):** `AppDataTagged` + iki katman (BE/BK) DATA kuyruğu + **deney seçicisi = katı sınıf önceliği BE > BK** (ARQ, kopya ve DATA başı için); DRR yok (sıra 2, isteğe bağlı). ≈ 1–1,5 gün.
+- **K4 testler:** B1-en-küçük, B1b, B2 (ARQ, kopya; yeni kodda); B3 (b)(e) en küçük hâli isteğe bağlı (sıra 2). ≈ 1 gün.
+- **Regresyon alt kümesi:** `tv_*`, `k4g05b_scheduling` (tek akış), INV-ACK-DELIVER-1 testleri. ≈ 0,5 gün.
+- **Toplam ≈ 5,5–7 iş günü** (tahmin). Aşama 0 ≈ 9,5–12 iş günü (tasarım rev1–rev3 ≈ 2 gün harcandı); C15 v3 §7'nin "4–6 + 1–2"sinden ≈ +4 gün.
 
 ## 15. Bu notun sınırı
 
