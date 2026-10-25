@@ -11211,6 +11211,35 @@ mod tests {
                 .any(|p| p.owner == RecordOwner::Unit(UnitId(u)))
     }
 
+    /// [K4G-05b rev6 · kara delik bekçisi] Birimin ardışık kopya emisyonları: m = ⌈log2(RTO_MAX/taban)⌉
+    /// olmak üzere ilk m + 2 aralıktan sonra her aralık ≥ RTO_MAX (geometrik aralık ×2, ≤ RTO_MAX; ACK
+    /// yokken later-ACK öne çekmesi ve madde 6 sıfırlaması olmaz → istisna yok); pencere W içinde kopya
+    /// sayısı ≤ m + ⌊W/RTO_MAX⌋ + 3.
+    fn rev6_assert_backoff(tag: &str, unit: u64, times: &[u64], base_ns: u64, window_ns: u64) {
+        let cap = rto_max_ns();
+        let base = base_ns.clamp(1, cap);
+        let ratio = cap.div_ceil(base);
+        let m = u64::from(u64::BITS - ratio.saturating_sub(1).leading_zeros()) as usize;
+        let short_late: Vec<(usize, u64)> = times
+            .windows(2)
+            .map(|w| w[1] - w[0])
+            .enumerate()
+            .filter(|&(k, g)| k >= m + 2 && g < cap)
+            .map(|(k, g)| (k, g / MS))
+            .collect();
+        assert!(
+            short_late.is_empty(),
+            "{tag}: u{unit} {m}+2. aralıktan sonra RTO_MAX'tan kısa kopya aralığı (ms): {short_late:?}"
+        );
+        let bound = m as u64 + window_ns / cap + 3;
+        assert!(
+            times.len() as u64 <= bound,
+            "{tag}: u{unit} {} s pencerede {} kopya > m + ⌊W/RTO_MAX⌋ + 3 = {bound}",
+            window_ns / REV6_SEC,
+            times.len()
+        );
+    }
+
     /// T1 — ACK'siz hizmet adaleti, birim düzeyinde (C15 v3 §2.4 T1; Ek B.6 (h.5)).
     fn rev6_t1(rate: u64) {
         let tag = format!("T1 R={rate} B/s");
@@ -11297,6 +11326,7 @@ mod tests {
         let mut last: BTreeMap<u64, u64> = BTreeMap::new();
         let mut services: BTreeMap<u64, u32> = BTreeMap::new();
         let mut kinds: BTreeMap<u64, Vec<TransmitKind>> = BTreeMap::new();
+        let mut copy_times: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
         let mut max_age: BTreeMap<u64, u64> = BTreeMap::new();
         for x in a.iter().chain(c.iter()) {
             last.insert(x.id, t_c);
@@ -11324,6 +11354,9 @@ mod tests {
                         last.insert(dd.unit_id, now);
                         *services.entry(dd.unit_id).or_default() += 1;
                         kinds.entry(dd.unit_id).or_default().push(dd.kind);
+                    }
+                    if dd.kind == TransmitKind::Duplicate {
+                        copy_times.entry(dd.unit_id).or_default().push(now);
                     }
                 }
             }
@@ -11378,6 +11411,20 @@ mod tests {
             max_age.iter().map(|(k, v)| (*k, v / MS)).collect::<Vec<_>>(),
             kinds.get(&10),
             kinds.get(&11)
+        );
+        // [kara delik bekçisi] ACK yokken her birimin kopya aralıkları RTO_MAX'a dek büyür.
+        for (id, times) in &copy_times {
+            rev6_assert_backoff(&tag, *id, times, srtt_ns, now - t_c);
+        }
+        eprintln!(
+            "[K4G-05b T1] R={rate} B/s kopya aralıkları (ms): {:?}",
+            copy_times
+                .iter()
+                .map(|(k, v)| (
+                    *k,
+                    v.windows(2).map(|w| (w[1] - w[0]) / MS).collect::<Vec<_>>()
+                ))
+                .collect::<Vec<_>>()
         );
         // Her sınıf ölçülecek iş üretti: en az bir emisyon (ARQ RECOVER_ARQ'ta).
         for (n, name) in sil.emitted.iter().zip(REV6_CLASS_NAMES) {

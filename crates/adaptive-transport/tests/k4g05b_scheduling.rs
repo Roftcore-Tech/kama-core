@@ -631,6 +631,132 @@ fn k4g05b_pay_mixed_size_reservation() {
     );
 }
 
+/// [K4G-05b rev6 · kara delik bekçisi] Bir birimin ardışık kopya emisyonları: `m = ⌈log2(RTO_MAX/taban)⌉`
+/// olmak üzere ilk m + 2 aralıktan sonra her aralık ≥ RTO_MAX (geometrik aralık ×2, ≤ RTO_MAX); izinli
+/// olay olarak dönem başına TEK bir later-ACK öne çekmesi (`exceptions_allowed`) kalabilir. Ayrıca
+/// pencere W içinde kopya sayısı ≤ m + ⌊W/RTO_MAX⌋ + 3 (+ izinli çekme). İhlalde panik.
+fn assert_copy_backoff(
+    tag: &str,
+    times: &[u64],
+    base_ns: u64,
+    window_ns: u64,
+    exceptions_allowed: usize,
+) {
+    let base = base_ns.clamp(1, rto_max_ns());
+    let ratio = rto_max_ns().div_ceil(base);
+    let m = u64::from(u64::BITS - ratio.saturating_sub(1).leading_zeros()) as usize;
+    let gaps: Vec<u64> = times.windows(2).map(|w| w[1] - w[0]).collect();
+    let short_late: Vec<(usize, u64)> = gaps
+        .iter()
+        .enumerate()
+        .filter(|&(k, &g)| k >= m + 2 && g < rto_max_ns())
+        .map(|(k, &g)| (k, g / MS))
+        .collect();
+    let count_bound = m as u64 + window_ns / rto_max_ns() + 3 + exceptions_allowed as u64;
+    println!(
+        "[kara delik] {tag}: kopya={} aralıklar(ms)={:?} m={m} sayı sınırı={count_bound} kısa geç aralık={short_late:?}",
+        times.len(),
+        gaps.iter().map(|g| g / MS).collect::<Vec<_>>()
+    );
+    assert!(
+        short_late.len() <= exceptions_allowed,
+        "{tag}: {m}+2. aralıktan sonra RTO_MAX'tan kısa kopya aralığı (izinli {exceptions_allowed}): {short_late:?}"
+    );
+    assert!(
+        times.len() as u64 <= count_bound,
+        "{tag}: {} s pencerede {} kopya > m + ⌊W/RTO_MAX⌋ + 3 + izinli = {count_bound}",
+        window_ns / SEC,
+        times.len()
+    );
+}
+
+/// [K4G-05b rev6 · kara delik bekçisi] PAY düzeni (darboğaz 1064 B/s, 37 B DATA seli, yol canlı), U'nun
+/// (1050 B) BÜTÜN iletimleri düşer. ARQ_RETX_CAP devrinden sonra U kopya kuyruğundadır; her kopyası
+/// sonraki DATA'nın ACK'iyle kayıp ilan edilir (later-ACK kanıtı).
+///
+/// AMAÇ: kara deliğe düşmüş birimin ardışık kopya aralıkları, tanımlı olaylar dışında RTO_MAX'a dek
+/// büyür. Tanımlı olaylar: zincirin kuruluşu, madde 6 sıfırlaması (bu düzende yok: ACK akışı
+/// sürekli), dönem başına tek later-ACK öne çekmesi (9868ba31). Ön koşul (assert'li): U kopya
+/// kuyruğuna girdi; pencere boyunca ACK akışı sürdü (yol canlı).
+///
+/// 9868ba31 ÖNCESİ: KIRMIZI beklenir. Ölçüldü (kod-run/r6, 33938987): kopyalar ≈ 1.5–2.8 s arayla,
+/// aralık büyümüyor.
+#[test]
+fn k4g05b_blackhole_copy_interval_backoff() {
+    const TEST: &str = "k4g05b_blackhole_copy_interval_backoff";
+    const WINDOW: u64 = 150 * SEC;
+    let mut sim = Sim::new(
+        product_sender(),
+        PACE_TICK_NS,
+        Path::new(one_way_100ms, Some(P_LINK_BPS)),
+        Path::new(one_way_100ms, None),
+    );
+    sim.drop_fwd = Box::new(|d: &TransmitDecision| d.unit_id == P_U && carries_unit(d.kind));
+    let mut fixture: Vec<String> = Vec::new();
+    for id in 0..P_U {
+        sim.app(id, 100);
+    }
+    sim.app(P_U, P_U_SIZE);
+    sim.timers();
+    let mut flooded = false;
+    while sim.now < 10 * SEC {
+        sim.advance();
+        if sim.last_ack_at == Some(sim.now) && sim.s.state() != SenderState::PreConverge {
+            for i in 0..P_BACKLOG {
+                sim.app(P_U + 1 + i, P_DATA);
+            }
+            flooded = true;
+            sim.timers();
+            break;
+        }
+        sim.timers();
+    }
+    if !flooded {
+        fixture.push("PreConverge'den çıkılmadı (sel kurulmadı)".to_string());
+    }
+    // U'nun kopya kuyruğuna girdiği ilk kopya emisyonu (ARQ_RETX_CAP devri sonrası).
+    let t_search = sim.now + 90 * SEC;
+    let first_copy = |sim: &Sim| {
+        unit_tx(&sim.log, P_U)
+            .iter()
+            .find(|e| e.d.kind == TransmitKind::Duplicate)
+            .map(|e| e.t)
+    };
+    while first_copy(&sim).is_none() && sim.now < t_search {
+        sim.advance();
+        sim.timers();
+    }
+    let c0 = first_copy(&sim);
+    if c0.is_none() {
+        fixture.push("U 90 s içinde kopya kuyruğundan gönderilmedi".to_string());
+    }
+    let c0 = c0.unwrap_or_default();
+    let base = sim.s.path_timing_snapshot().srtt_ns.unwrap_or(SEC);
+    let end = c0 + WINDOW;
+    while sim.now < end {
+        sim.advance();
+        sim.timers();
+    }
+    if !sim.last_ack_at.is_some_and(|t| t + 5 * SEC >= end) {
+        fixture.push(format!(
+            "pencere boyunca ACK akışı sürmedi (son ACK {:?} ms, uç {} ms) — later-ACK kanıtı sınanmadı",
+            sim.last_ack_at.map(|t| t / MS),
+            end / MS
+        ));
+    }
+    let times: Vec<u64> = unit_tx(&sim.log, P_U)
+        .iter()
+        .filter(|e| e.d.kind == TransmitKind::Duplicate && (c0..end).contains(&e.t))
+        .map(|e| e.t)
+        .collect();
+    assert_fixture(TEST, &fixture);
+    assert!(
+        !sim.w.confirmed_set.contains(&P_U),
+        "{TEST}: FİKSTÜR GEÇERSİZ — U teyit edildi (kara delik kurulmadı)"
+    );
+    assert_copy_backoff(TEST, &times, base, WINDOW, 1);
+}
+
 // ════════════════════════════════════════════════════════════════════════════════════════════
 // Madde 6 — sıfırlama
 // ════════════════════════════════════════════════════════════════════════════════════════════
