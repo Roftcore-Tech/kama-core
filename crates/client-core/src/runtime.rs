@@ -819,6 +819,9 @@ pub struct SenderRecoveryDiag {
     /// birim haritasındaki ve birim → seq listesindeki girdi sayısı. Girdiler yalnız teyitsiz
     /// (store'daki) birim için açılır ve birim motorca teyit edilince düşer; teyitsiz birim yokken
     /// ikisi de 0 olmalıdır (sızıntı bekçisi). SALT GÖZLEM.
+    /// [K4G-05c · not §3.3 (ii)] Birim başına O(1) kayıt: `seq_to_unit_len` yapısal 0 (harita
+    /// kalktı; alan yüzey uyumu için durur), `unit_seqs_len` = birim başına gönderim kaydı
+    /// (`UnitTxLog`) girdi sayısı ≤ `unacked_units`.
     pub seq_to_unit_len: u32,
     pub unit_seqs_len: u32,
 }
@@ -829,7 +832,7 @@ pub struct StuckUnitDiag {
     /// Birim kimliği (alıcının sıralı teslimindeki `unit_id`).
     pub unit_id: u64,
     /// Motorun bu birim için verdiği emisyon kararı sayısı: orijinal + ARQ retransmit + kopya +
-    /// tail-probe (kurtarma kapalıyken bastırılanlar dahil).
+    /// tail-probe (kurtarma kapalıyken bastırılanlar dahil). [K4G-05c] Doymaz (`u32::MAX`'ta kalır).
     pub emission_decisions: u32,
     /// Son emisyon kararının motor seq'i ve — tele çıktıysa ve PN çeviri penceresindeyse — tel PN'i.
     pub last_seq: Option<u64>,
@@ -848,17 +851,16 @@ pub struct StuckUnitDiag {
 /// yalnız `&` referanslar; `now_ns` motorun saat tabanındadır (`elapsed_ns(start)`).
 fn capture_recovery(
     sender: &adaptive_transport::sender::Sender,
-    store: &HashMap<u64, Vec<u8>>,
-    seq_to_unit: &HashMap<u64, u64>,
-    unit_seqs: &HashMap<u64, Vec<u64>>,
+    store: &BTreeMap<u64, Vec<u8>>,
+    unit_log: &HashMap<u64, UnitTxLog>,
     pn_seq: &VecDeque<(u64, u64)>,
     now_ns: u64,
 ) -> SenderRecoveryDiag {
     let since = |t: u64| now_ns.saturating_sub(t);
     let timers = sender.diag_recovery_timers();
-    let oldest_unacked = store.keys().min().map(|&unit_id| {
-        let seqs = unit_seqs.get(&unit_id);
-        let last_seq = seqs.and_then(|s| s.last().copied());
+    let oldest_unacked = store.keys().next().map(|&unit_id| {
+        let log = unit_log.get(&unit_id);
+        let last_seq = log.map(|l| l.last_seq);
         let last_pn = last_seq.and_then(|seq| {
             pn_seq
                 .iter()
@@ -869,7 +871,7 @@ fn capture_recovery(
         let engine = sender.diag_unit_recovery(unit_id);
         StuckUnitDiag {
             unit_id,
-            emission_decisions: seqs.map_or(0, |s| u32::try_from(s.len()).unwrap_or(u32::MAX)),
+            emission_decisions: log.map_or(0, |l| l.emissions),
             last_seq,
             last_pn,
             engine,
@@ -888,9 +890,21 @@ fn capture_recovery(
         since_last_ack_ns: timers.last_ack_ns.map(since),
         tail_armed_for_ns: timers.tail_armed_at_ns.map(since),
         timers,
-        seq_to_unit_len: u32::try_from(seq_to_unit.len()).unwrap_or(u32::MAX),
-        unit_seqs_len: u32::try_from(unit_seqs.len()).unwrap_or(u32::MAX),
+        // [K4G-05c] Runtime'da iletim → birim haritası yok (teyidi motor verir): yapısal 0.
+        seq_to_unit_len: 0,
+        unit_seqs_len: u32::try_from(unit_log.len()).unwrap_or(u32::MAX),
     }
+}
+
+/// [K4G-05c · not §3.3 (ii)] Birim başına O(1) gönderim kaydı (yalnız teşhis; hiçbir karar okumaz):
+/// motorun bu birim için verdiği emisyon kararı sayısı (doymaz) ve son kararın motor seq'i. Girdi
+/// yalnız teyitsiz (depodaki) birim için açılır ve birim motorca teyit edilince düşer → girdi
+/// sayısı ≤ depo boyu (SR-AUDIT-001). Eski `seq_to_unit` / `unit_seqs` (iletim başına bir girdi)
+/// kalktı.
+#[derive(Debug, Clone, Copy)]
+struct UnitTxLog {
+    emissions: u32,
+    last_seq: u64,
 }
 
 /// [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] Canlı aynada tutulan son ACK çerçevesi kaydı sayısı
@@ -2000,11 +2014,11 @@ async fn client_task(
     // YALNIZ motor teyidinde düşer (`drain_confirmed!`): ACK'teki seq'in runtime haritasındaki
     // birimi silme gerekçesi DEĞİLDİR — motor kaydı unuttuysa (tombstone TTL / tahliye / kopya
     // kökenli kayıp / K_MAP) o geç ACK teyit etmez, birim motorda sahipli kalır ve yeniden gider.
-    let mut store: HashMap<u64, Vec<u8>> = HashMap::new();
-    // seq → unit haritası + birim → seq'leri (teyitte toplu budama — harita store disipliniyle
-    // sınırlı kalır; teyitli birime kayıt eklenmez).
-    let mut seq_to_unit: HashMap<u64, u64> = HashMap::new();
-    let mut unit_seqs: HashMap<u64, Vec<u64>> = HashMap::new();
+    // [K4G-05c] BTreeMap: en eski teyitsiz birim (gönderen mesafe kapısının O'su) ilk anahtardır.
+    let mut store: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
+    // [K4G-05c · not §3.3 (ii)] Birim başına O(1) gönderim kaydı (teşhis; `UnitTxLog`): yalnız
+    // depodaki birim için tutulur, teyitle düşer → girdi ≤ depo boyu.
+    let mut unit_log: HashMap<u64, UnitTxLog> = HashMap::new();
     // [D1a] ARQ kimliği = `meta.full_wire_pn` (BL D1; S3 K2/K4): her (yeniden) gönderim yeni bir
     // seal → yeni PN; alıcı ACK_V2 aralıklarını PN uzayında kurar. Motor kendi seq uzayında KALIR
     // (motor değişmez): bu tablo PN → motor seq çevirir. PN'ler artan sırada eklenir (ikili arama);
@@ -2121,14 +2135,12 @@ async fn client_task(
     // bir kez). Motorun tanımadığı geç ACK (kaydı tombstone TTL'i, tahliye, kopya kökenli kayıp ya
     // da K_MAP ile düşmüş) teyit üretmez: payload yerinde kalır, sonraki yeniden gönderim gövdeli
     // gider ve onun ACK'i teyit eder (`docs/design/K4G-05b-RUNTIME-ENVANTER.md`). Birimin
-    // haritaları aynı yerde budanır. Değer: bu drenajda store'dan düşen birim sayısı.
+    // gönderim kaydı (`UnitTxLog`) aynı yerde düşer. Değer: bu drenajda store'dan düşen birim sayısı.
     macro_rules! drain_confirmed {
         ($via:expr) => {{
             let mut newly: u32 = 0;
             for unit in session.sender_mut().take_confirmed_units() {
-                for old in unit_seqs.remove(&unit).unwrap_or_default() {
-                    seq_to_unit.remove(&old);
-                }
+                unit_log.remove(&unit);
                 // Store'da olmayan birimin teyidi motor sözleşmesince erişilemez (birim yalnız
                 // teyitle düşer, teyit birim başına bir kez); app olayı üretilmez.
                 if store.remove(&unit).is_none() {
@@ -2152,22 +2164,27 @@ async fn client_task(
             let decisions = session.on_event(ev, $now);
             // [K4G-05b] Teyit drenajı kararlar işlenmeden ÖNCE: motor aynı olayda teyit ettiği
             // birime karar üretmemelidir; üretirse karar aşağıda store-miss olarak sayılır
-            // (`stale_decisions`, panik yok) ve birime yeni harita kaydı açılmaz.
+            // (`stale_decisions`, panik yok) ve birime yeni gönderim kaydı açılmaz.
             let confirmed_now: u32 = drain_confirmed!(via);
             for d in decisions {
                 // PN → seq çevirisi motor seq'i taşıyan HER kararda (repair'ler de seq işgal eder;
-                // `map_pn!`); ama seq→unit haritası YALNIZ birim-taşıyan kararlarda: FecParity'nin
-                // unit_id'si ESI'dir (AYRI ad-uzayı) — haritaya girseydi repair-ACK'i gerçek bir
-                // birimin store'unu silerdi (S1'de yakalanan tuzak).
+                // `map_pn!`); ama birim gönderim kaydı YALNIZ birim-taşıyan kararlarda: FecParity'nin
+                // unit_id'si ESI'dir (AYRI ad-uzayı) — kayda girseydi gerçek bir birime atfedilirdi
+                // (S1'de yakalanan tuzak; teyidi K4G-05b'den beri motor verir).
                 let carries_unit = matches!(
                     d.kind,
                     TransmitKind::Data | TransmitKind::Retransmit | TransmitKind::Duplicate
                 );
                 if carries_unit {
                     // [K4G-05b] Teyitli (store'dan düşmüş) birim için kayıt EKLENMEZ.
+                    // [K4G-05c] Birim başına O(1): emisyon sayısı + son seq.
                     if store.contains_key(&d.unit_id) {
-                        seq_to_unit.insert(d.seq, d.unit_id);
-                        unit_seqs.entry(d.unit_id).or_default().push(d.seq);
+                        let log = unit_log.entry(d.unit_id).or_insert(UnitTxLog {
+                            emissions: 0,
+                            last_seq: d.seq,
+                        });
+                        log.emissions = log.emissions.saturating_add(1);
+                        log.last_seq = d.seq;
                     }
                 } else {
                     // [S1] FecParity (FEC-açıkken): repair-store'daki gerçek RS-repair →
@@ -2495,8 +2512,7 @@ async fn client_task(
                 recovery = Some(capture_recovery(
                     session.sender(),
                     &store,
-                    &seq_to_unit,
-                    &unit_seqs,
+                    &unit_log,
                     &pn_seq,
                     mirror_now_ns,
                 ));
