@@ -75,6 +75,15 @@ pub struct Delivered {
 }
 
 /// §1 K7 — olaylar typed'dır; Transport yorumlamadan iletir.
+///
+/// **[YAMA KAYDI — <ONAY-TARİHİ> · K4G-05g DUR-05g-1 (a), sahip kararı CEVAP PAKETİ 15 §3 — K7'nin
+/// TEK istisnası]** Yerine geçen oturumun (provisional onayı ya da yenileme cutover'ı) yerel ucu
+/// açılamazsa: yeni oturum için `Ready` YAYIMLANMAZ; yeni Crypto oturumu kapatılır; eski oturum
+/// (Crypto'da zaten drain'de, geri alınamaz) `Closed(eski, Superseded)` ile biter. K7'nin
+/// "`Ready(h′)` → … → `Closed(h, Superseded)`" sırasına TEK istisna budur: `Closed(h, Superseded)`
+/// etkin bir ardıl olmadan gelebilir. Application `Closed(_, Superseded)` aldığında etkin ardıl
+/// yoksa eşi bağlantısız sayar ve yeniden `connect` eder. Kapsam yalnız bu hata koludur; enum'lar
+/// ve imzalar değişmedi.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionEvent {
     Ready(SessionHandle, PeerRef),
