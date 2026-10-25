@@ -430,6 +430,25 @@ fn one_way_100ms(_t: u64) -> u64 {
 /// U'nun yeniden emisyonu sayılır).
 ///
 /// TABANDA: KIRMIZI beklenir (kopya drenajı DATA'dan sonra, ilk token reddinde durur; pay yok).
+///
+/// [K4G-05b rev6 · DUR-8 biçimi, FİKSTÜR + İDDİA 1; CEVAP PAKETİ 15 v3 K1 (c), K3] NEDEN DEĞİŞTİ
+/// (teşhis, 37b78aad ölçümü `kod-run/r5`): (a) ölçüm penceresi bayattı. Pencere başı, selin olduğu
+/// anda okunan vadeydi (PRE_CONVERGE çıkışı + RTO_MAX = 30.3 s). v1.1'de U'nun ARQ'su sel altında
+/// 37 B DATA tarafından aç bırakılıyordu (v1 ARQ↔DATA boy ters dönmesi) ve U'nun kopyası o vadede
+/// kalıyordu. rev6'da ARQ payı da rezerv alır (K3): U'nun ARQ yeniden gönderimleri selde de çıkar
+/// (hepsi düşer), ARQ_RETX_CAP'te birim geometrik sahibine devredilir ve vadesi ŞİMDİYE çekilir
+/// (madde 3, `copy_ensure_geometric(pull)`). Kopya ≈ 2 s'de çıkar; sonraki vade ≈ emisyon + 30 s ≈
+/// 32.1 s olur. [30.3 s, ≈ 32.1 s) aralığında U'nun vadeli kopya kaydı yoktur; oradaki DATA
+/// emisyonları doğrudur. Gerçek vadeden (rezervin gözlendiği j* = 1788) U'ya dek 0 DATA vardı; U
+/// ≈ 0.73 s sonra çıktı. YENİ FİKSTÜR: pencere başı = selden sonra U'nun kopya kaydının ARQ işi
+/// yokken vadesine İLK ulaştığı an (her adımda okunur). YENİ İDDİA 1 (K1 niteleyicisi "karşılık hakkı
+/// yokken" + A.4 rev6 (iii)): vadeden U'nun yeniden emisyonuna dek en çok iki DATA emisyonu vardır
+/// (Ek B.6 (h.3) T_max(kopya) dizisi: DATA hak sahibi → ARQ → DATA hak sahibi → kopya). U, vadeden
+/// sonra ≤ (2·37 + 1050 + 1050) B / pace_min + (K_ARQ_SHARE + 4) tur içinde yeniden gönderilir;
+/// pace_min = penceredeki en düşük tur sonu pacing hızı (değişken hızda biriken token). İDDİA 2 ve 3
+/// aynen. 2×2: eski kod + eski test YEŞİL · yeni kod + eski test KIRMIZI (ölçüldü: 62 DATA turu,
+/// bayat pencere) · yeni kod + yeni test YEŞİL · eski kod + yeni test YEŞİL (eski kodda U'nun ARQ'su
+/// aç kalır, ilk vade 30.3 s, vadeden sonra 0 DATA) [son iki hücre çıkarım; koordinatör ölçer].
 #[test]
 fn k4g05b_pay_mixed_size_reservation() {
     const TEST: &str = "k4g05b_pay_mixed_size_reservation";
@@ -460,10 +479,10 @@ fn k4g05b_pay_mixed_size_reservation() {
         }
         sim.timers();
     }
-    let t_due = sim.s.diag_unit_recovery(P_U).dup_due_ns;
-    if t_flood.is_none() || t_due.is_none() {
+    let due_at_flood = sim.s.diag_unit_recovery(P_U).dup_due_ns;
+    if t_flood.is_none() || due_at_flood.is_none() {
         fixture.push(format!(
-            "PreConverge'den çıkılmadı ya da U'nun kopya kaydı yok (sel={t_flood:?}, vade={t_due:?})"
+            "PreConverge'den çıkılmadı ya da U'nun kopya kaydı yok (sel={t_flood:?}, vade={due_at_flood:?})"
         ));
     }
     if unit_tx(&sim.log, P_U)
@@ -471,6 +490,26 @@ fn k4g05b_pay_mixed_size_reservation() {
         .any(|e| e.d.kind == TransmitKind::Duplicate)
     {
         fixture.push("U'nun kopyası selden önce çıktı (kuruluş probu)".to_string());
+    }
+    // [rev6 · DUR-8 FİKSTÜR] Pencere başı = U'nun kopya kaydının, U'nun ARQ işi yokken vadesine İLK
+    // ulaştığı an (vade ARQ_RETX_CAP devriyle öne çekilebilir; selin anındaki vade bayattır).
+    let mut t_due: Option<u64> = None;
+    let search_end = sim.now + 60 * SEC;
+    while sim.now < search_end {
+        let r = sim.s.diag_unit_recovery(P_U);
+        if let Some(d) = r.dup_due_ns {
+            if d <= sim.now && r.pending_lost_retx.is_none() {
+                t_due = Some(d);
+                break;
+            }
+        }
+        sim.advance();
+        sim.timers();
+    }
+    if t_due.is_none() {
+        fixture.push(
+            "selden sonra 60 s içinde U'nun kopya kaydı ARQ işi yokken vadeye ulaşmadı".to_string(),
+        );
     }
     let t_due = t_due.unwrap_or_default();
     let end = t_due + 20 * SEC;
@@ -525,14 +564,40 @@ fn k4g05b_pay_mixed_size_reservation() {
             _ => false,
         }
     });
+    // [rev6 · İDDİA 1] Vadeden U'nun yeniden emisyonuna dek DATA emisyonu (karşılık hakkıyla ≤ 2) ve
+    // U'nun gecikmesi ≤ (2·S_DATA + S_ARQ + S_kopya) / pace_min + (K_ARQ_SHARE + 4) tur.
+    let data_before_re = window[..upto].iter().filter(|r| has_data(r)).count();
+    let rate_min = window[..upto.min(window.len())]
+        .iter()
+        .map(|r| r.rate_after)
+        .min()
+        .unwrap_or(MIN_RATE_BPS)
+        .max(MIN_RATE_BPS);
+    let bound_ns =
+        (2 * P_DATA + 2 * P_U_SIZE) * SEC / rate_min + (K_ARQ_SHARE as u64 + 4) * PACE_TICK_NS;
+    let t_re = j_re.map(|j| window[j].t);
     println!(
-        "[PAY-DUR31] sel={:?} ms vade={} ms; j*={j_star:?} j_re={j_re:?} (an={:?} ms); \
-         K sonrası DATA turları={}; j* sonrası DATA turları={}",
+        "[PAY-DUR31] sel={:?} ms selde okunan vade={:?} ms gerçek vade={} ms; j*={j_star:?} \
+         j_re={j_re:?} (an={:?} ms); vadeden U'ya dek DATA={data_before_re}; K sonrası DATA turları={}; \
+         j* sonrası DATA turları={}; gecikme={:?} ms ≤ sınır {} ms (pace_min {rate_min} B/s)",
         t_flood.map(|t| t / MS),
+        due_at_flood.map(|t| t / MS),
         t_due / MS,
-        j_re.map(|j| window[j].t / MS),
+        t_re.map(|t| t / MS),
         data_after_k.len(),
-        data_after_star.len()
+        data_after_star.len(),
+        t_re.map(|t| (t - t_due) / MS),
+        bound_ns / MS
+    );
+    // Teşhis kanıtı: U'nun bütün iletimleri (an ms, tür) — K3 ile ARQ yeniden gönderimleri ve
+    // ARQ_RETX_CAP devrinden sonraki kopya, pencere başının neden selde okunan vadeden ayrıldığını gösterir.
+    println!(
+        "[PAY-DUR31] U iletimleri (ms, tür): {:?}",
+        unit_tx(&sim.log, P_U)
+            .iter()
+            .map(|e| (e.t / MS, e.d.kind))
+            .take(16)
+            .collect::<Vec<_>>()
     );
     assert_fixture(TEST, &fixture);
     assert!(
@@ -540,9 +605,17 @@ fn k4g05b_pay_mixed_size_reservation() {
         "{TEST}: İDDİA 3 — vadeli 1050 B kopya başı 20 s içinde hizmet almadı (U yeniden gönderilmedi)"
     );
     assert!(
-        data_after_k.is_empty(),
-        "{TEST}: İDDİA 1 — vadeden sonraki {K_ARQ_SHARE}. turdan itibaren U'dan önce DATA çıktı (tur j): {:?}",
+        data_before_re <= 2,
+        "{TEST}: İDDİA 1 (rev6) — vadeden U'ya dek {data_before_re} DATA emisyonu > 2 (karşılık hakkı \
+         dizisi en çok iki DATA başı; tur j: {:?})",
         data_after_k.iter().take(8).collect::<Vec<_>>()
+    );
+    assert!(
+        t_re.is_some_and(|t| t - t_due <= bound_ns),
+        "{TEST}: İDDİA 1 (rev6) — U vadeden {:?} ms sonra çıktı > (2·37 + 2·1050) B / {rate_min} B/s + \
+         (K_ARQ_SHARE + 4) tur = {} ms",
+        t_re.map(|t| (t - t_due) / MS),
+        bound_ns / MS
     );
     assert!(
         data_after_star.is_empty(),
