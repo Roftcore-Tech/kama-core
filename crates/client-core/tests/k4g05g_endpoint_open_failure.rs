@@ -22,6 +22,14 @@
 //! yok, eski oturum İKİ yönde çalışır; uç açılınca tek `Ready(h')`. (4) glare kaybeden — bilet
 //! bilinir → `ConnectAbandoned`; yeniden `connect` toparlar.
 //!
+//! [DUR-05g-1 (a), CEVAP PAKETİ 15 §3 — S1 K7'nin TEK istisnası] Yerine geçen oturumun ucu, Crypto
+//! eski oturumu zaten drain'e aldıktan sonra açılamazsa: (5) provisional onayı ve (6) yenilemenin
+//! yedek kolu — yeni oturum için `Ready` yok, yeni Crypto oturumu kapalı, eski oturum tam BİR
+//! `Closed(eski, Superseded)` ile biter (etkin ardıl olmadan); gerçek yeniden bağlanma
+//! (`connect` → `Pending` → `Ready`) toparlar. (6)'nın düzeneği: karşı uç HAM eştir (`RawPeer`,
+//! Crypto'yu test sürer) ve yenilemenin RESPONSE'unu yabancı bir hub tutamacıyla yollar — adaptör
+//! yanıtı yenilemeyle eşleyemez (tutmaz, ucu önceden açmaz), Crypto adayı yine bulur.
+//!
 //! Kabul 2'nin kama-app yarısı: `ConnectAbandoned(bilet, _)` erken metni outbox'a "hiçbir tutamaca
 //! gönderilmemiş" (`sent_on: None`) koyar ve eşin sıradaki oturumunda aynı `msg_id`'yle yollar
 //! (`crates/kama-app/src/messaging.rs` `on_session_event` → `release_early`); kama-app'te
@@ -36,17 +44,21 @@
 //! (`k4g05g/mutasyon/`) eski davranışı bu kodun üstüne geri getirir ve hangi testin hangi
 //! iddiasının kırmızı olduğunu yazar.
 
-use std::net::SocketAddr;
+use std::net::{SocketAddr, UdpSocket as StdUdpSocket};
 use std::time::{Duration, Instant};
 
-use client_core::memory_link::MemoryHub;
-use client_core::transport::{ClientTransport, ClientTransportConfig};
-use kama_contracts::handles::{PeerRef, SessionHandle};
+use client_core::memory_link::{MemoryHub, MemoryLink};
+use client_core::transport::{ClientTransport, ClientTransportConfig, EnvelopeLink, LinkEvent};
+use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
 use kama_contracts::s1::{
     AbandonReason, CompressionPolicy, ConnectPhase, ConnectResult, ConnectTicket, Delivered,
     DeliveryPolicy, KamaTransport, PreparedUnit, SessionEvent, TransportError,
 };
+use kama_contracts::s3::{
+    HubHandle, PacketProtection, ProtectionContext, SessionCommand, SessionControl, SessionResult,
+};
 use kama_noise_wire::clock::ManualClock;
+use kama_noise_wire::epoch_machine::GRACE_T_G;
 use kama_noise_wire::protector::NoiseWireProtection;
 use kama_noise_wire::seam_mock::{fixture_directory, fixture_protection};
 use kama_noise_wire::session_control::{EnvelopeKind, SESSION_MAX_AGE};
@@ -61,6 +73,9 @@ const WAIT: Duration = Duration::from_secs(15);
 const QUIET: Duration = Duration::from_millis(300);
 /// Yoklama adımı.
 const TICK: Duration = Duration::from_millis(2);
+/// (6): ham eşin yenileme RESPONSE'unu yolladığı yabancı hub tutamacı — `MemoryHub` tutamaçları
+/// 1'den artarak atar, bu değere test boyunca ulaşılmaz.
+const FOREIGN_HUB: HubHandle = HubHandle::from_raw(0x7E57_F0F0);
 
 type Node = ClientTransport<NoiseWireProtection>;
 
@@ -74,11 +89,16 @@ fn id(n: u8) -> PeerRef {
     PeerRef::from_dest_hash(dest_hash)
 }
 
-/// Ürün builder'ı + ürün veri profili (kapanış boşaltması kısaltılmış) + saatin test kopyası.
-fn node(me: u8, hub: &MemoryHub) -> (Node, ManualClock) {
+/// İki kimliği de bilen dizinle ürün kriptosu (`with_control`) + saatin test kopyası.
+fn crypto(me: u8) -> (NoiseWireProtection, ManualClock) {
     let ids = [ALICE, BOB].map(|n| *id(n).as_bytes());
     let dir = fixture_directory(ids).expect("fikstür dizini");
-    let (crypto, clock) = fixture_protection(*id(me).as_bytes(), dir, EnvelopeKind::Legacy);
+    fixture_protection(*id(me).as_bytes(), dir, EnvelopeKind::Legacy)
+}
+
+/// Ürün builder'ı + ürün veri profili (kapanış boşaltması kısaltılmış) + saatin test kopyası.
+fn node(me: u8, hub: &MemoryHub) -> (Node, ManualClock) {
+    let (crypto, clock) = crypto(me);
     let mut cfg = ClientTransportConfig::product(SocketAddr::from(([127, 0, 0, 1], 0)));
     cfg.runtime.drain_cap = Duration::from_millis(100);
     let t = ClientTransport::new(cfg, crypto, Box::new(hub.link(id(me)))).expect("düğüm");
@@ -94,6 +114,111 @@ fn pair(hub: &MemoryHub, bob_knows_alice: bool) -> (Node, ManualClock, Node) {
         bob.add_peer_addr(id(ALICE), alice.data_addr());
     }
     (alice, clock, bob)
+}
+
+/// İki düğüm, iki yönde adresli, iki saat de testte: (Alice, Alice'in saati, Bob, Bob'un saati).
+fn pair_with_clocks(hub: &MemoryHub) -> (Node, ManualClock, Node, ManualClock) {
+    let (mut alice, alice_clock) = node(ALICE, hub);
+    let (mut bob, bob_clock) = node(BOB, hub);
+    alice.add_peer_addr(id(BOB), bob.data_addr());
+    bob.add_peer_addr(id(ALICE), alice.data_addr());
+    (alice, alice_clock, bob, bob_clock)
+}
+
+/// HAM karşı uç (test (6)): Crypto'yu (S3) test sürer — S1 adaptörünün zarf yolundaki komutların
+/// aynısı —; zarfları aynı `MemoryHub` üzerinden taşınır; veri yolu yoktur, Alice'in bu eşe açtığı
+/// uçlar `sink`'e yazar.
+struct RawPeer {
+    crypto: NoiseWireProtection,
+    link: MemoryLink,
+    sink: StdUdpSocket,
+}
+
+impl RawPeer {
+    fn new(me: u8, hub: &MemoryHub) -> Self {
+        Self {
+            crypto: crypto(me).0,
+            link: hub.link(id(me)),
+            sink: StdUdpSocket::bind("127.0.0.1:0").expect("UDP soketi"),
+        }
+    }
+
+    fn sink_addr(&self) -> SocketAddr {
+        self.sink.local_addr().expect("adres")
+    }
+
+    /// Gelen INIT'leri adaptörün zarf yoluyla AYNI komutlarla yanıtlar (`AcceptInit` +
+    /// `AssignHandle` gerçek tutamaçla); RESPONSE `reply_handle` verildiyse O tutamaçla yollanır.
+    /// Yanıtlanan oturumları sırayla döner.
+    fn serve(&mut self, reply_handle: Option<HubHandle>) -> Vec<SessionHandle> {
+        let mut out = Vec::new();
+        while let Some(ev) = self.link.poll() {
+            let LinkEvent::IncomingInit {
+                hub_handle, bytes, ..
+            } = ev
+            else {
+                continue; // ham eş başlatmaz: HandleAssigned / Response gelmez
+            };
+            let (session, peer, envelope_type, reply) = match self
+                .crypto
+                .command(SessionCommand::AcceptInit { wire: bytes })
+            {
+                SessionResult::EstablishedAndReply {
+                    session,
+                    peer,
+                    envelope_type,
+                    bytes,
+                } => (session, peer, envelope_type, bytes),
+                SessionResult::ProvisionalAndReply {
+                    new,
+                    peer,
+                    envelope_type,
+                    bytes,
+                    ..
+                } => (new, peer, envelope_type, bytes),
+                other => panic!("INIT kabul edilmeli: {other:?}"),
+            };
+            assert_eq!(
+                self.crypto.command(SessionCommand::AssignHandle {
+                    session,
+                    hub_handle,
+                }),
+                SessionResult::NoOutput
+            );
+            self.link
+                .send_response(
+                    peer,
+                    reply_handle.unwrap_or(hub_handle),
+                    envelope_type,
+                    reply,
+                )
+                .expect("zarf taşıyıcısı");
+            out.push(session);
+        }
+        while self.crypto.poll_event().is_some() {}
+        out
+    }
+
+    /// `sink`'e gelen datagramlardan biri `session` bağlamında AEAD-geçerli açılır (üst sınır
+    /// `WAIT`): Alice'in o oturum için açtığı uç gerçekten mühürlüyor ve yolluyor.
+    fn opens_in(&mut self, session: SessionHandle) -> bool {
+        let deadline = Instant::now() + WAIT;
+        self.sink
+            .set_read_timeout(Some(QUIET))
+            .expect("okuma zaman sınırı");
+        let mut buf = [0u8; 2048];
+        while Instant::now() < deadline {
+            let Ok(n) = self.sink.recv(&mut buf) else {
+                continue;
+            };
+            if let Some(opened) = self.crypto.open(&buf[..n]) {
+                if opened.ctx == ProtectionContext::Session(session) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
 }
 
 fn unit(bytes: &[u8]) -> PreparedUnit {
@@ -456,6 +581,177 @@ fn glare_loser_endpoint_failure_abandons_its_ticket_and_reconnect_recovers() {
     assert_no_delivery(&mut alice, "bob-erken-1 hiç, bob-erken-2 tek kez");
     assert_eq!(
         bob.endpoint_open_failures(),
+        1,
+        "toparlanmada yeni hata yok"
+    );
+}
+
+/// **DUR-05g-1 (a), provisional onayı kolu:** Alice yeniler; Bob'da provisional `b1` doğar ve
+/// Alice'in ilk epoch-1 paketiyle Crypto'da onaylanır (eski `b0` Crypto'da drain'e düşer) — ama
+/// Bob'un `b1` ucu açılamaz.
+///
+/// Beklenen (Bob): `Ready(b1)` YOK; `b0` tam BİR `Closed(b0, Superseded)` ile biter (Crypto'nun
+/// drain sınırı `T_g` geçse de ikincisi yok); sayaç 1; `b1` S1'e verilmedi ve Crypto'da kapalı;
+/// `b0` da Crypto'da kapalı. Toparlanma: Bob `connect` → `Pending` → `Ready(b2)` ve erken metni
+/// Alice'in yeni oturumundan teslim edilir.
+///
+/// Mutasyon M5'te (uçsuz `Ready` geri) ilk olay `Ready(b1, Alice)`: `Closed` iddiası kırmızı;
+/// M7'de (eski oturum kapatılmaz) `Closed` gelmez: "S1 olayı gelmedi".
+#[test]
+fn provisional_confirm_endpoint_failure_ends_the_old_session_and_reconnect_recovers() {
+    let hub = MemoryHub::new();
+    let (mut alice, alice_clock, mut bob, bob_clock) = pair_with_clocks(&hub);
+    let _ = pending(alice.connect(id(BOB), None));
+    assert_eq!(hub.relay(), 1, "INIT → Bob, HANDLE_ASSIGN → Alice");
+    let (b0, _) = ready(&mut bob, id(ALICE));
+    assert_eq!(hub.relay(), 1, "RESPONSE → Alice");
+    let (a0, _) = ready(&mut alice, id(BOB));
+
+    // Alice yeniler: Bob'da `b0` var → yenileme INIT'i provisional `b1` doğurur.
+    alice_clock.advance(SESSION_MAX_AGE);
+    assert_eq!(next_event(&mut alice), SessionEvent::RenewRequired(a0));
+    assert_eq!(
+        hub.relay(),
+        1,
+        "yenileme INIT'i → Bob, HANDLE_ASSIGN → Alice"
+    );
+    bob.drive();
+    // Bob'un sıradaki uç açma denemesi = `b1`'in onayı.
+    bob.set_endpoint_open_failures_for_test(1);
+    assert_eq!(hub.relay(), 1, "RESPONSE → Alice");
+    let (a1, _) = ready(&mut alice, id(BOB));
+    alice
+        .send(a1, unit(b"onay"), DeliveryPolicy::Reliable)
+        .expect("Alice'in yeni oturumu");
+
+    assert_eq!(
+        next_event(&mut bob),
+        SessionEvent::Closed(b0, CloseReason::Superseded),
+        "ardılın ucu açılamadı: eski oturum etkin ardıl olmadan Superseded ile biter"
+    );
+    assert_no_event(&mut bob, "yeni oturum için Ready yok");
+    assert_eq!(bob.endpoint_open_failures(), 1);
+    assert_eq!(bob.active_session_for_test(id(ALICE)), None);
+    let b1 = bob
+        .last_failed_activation_for_test()
+        .expect("ucu açılamayan tutamaç kaydedilmeli");
+    assert_ne!(b1, b0);
+    assert_not_activated(&mut bob, b1);
+    assert_eq!(
+        bob.send(b0, unit(b"x"), DeliveryPolicy::Reliable),
+        Err(TransportError::UnknownSession)
+    );
+    assert_eq!(bob.session_epoch(b0), None, "eski oturum Crypto'da kapandı");
+    bob_clock.advance(GRACE_T_G);
+    assert_no_event(&mut bob, "tam bir Closed: drain sınırı ikincisini üretmez");
+
+    // Gerçek yeniden bağlanma: Alice'te `a1` var → Bob'un INIT'i orada provisional.
+    let tb = pending(bob.connect(id(ALICE), Some(unit(b"bob-geri"))));
+    assert_eq!(hub.relay(), 1, "INIT → Alice, HANDLE_ASSIGN → Bob");
+    alice.drive();
+    assert_eq!(hub.relay(), 1, "RESPONSE → Bob");
+    let (b2, before) = ready(&mut bob, id(ALICE));
+    assert_eq!(
+        before,
+        [SessionEvent::ConnectProgress(tb, ConnectPhase::Measuring)]
+    );
+    assert_ne!(b2, b1);
+    let d = expect_delivery(&mut alice);
+    assert_eq!(d.unit, b"bob-geri");
+    assert_ne!(d.session, a1, "Alice'in yeni oturumundan teslim");
+    assert_eq!(
+        bob.endpoint_open_failures(),
+        1,
+        "toparlanmada yeni hata yok"
+    );
+}
+
+/// **DUR-05g-1 (a), yenilemenin yedek kolu:** Alice'in yenileme RESPONSE'u adaptörde yenilemeyle
+/// eşleşmez (ham eş onu yabancı hub tutamacıyla yollar) → tutulmaz, uç önceden açılmaz; Crypto
+/// adayı bulur, `Established` der ve `a0`'ı drain'e alır; `on_crypto_ready` ucu açamaz.
+///
+/// Beklenen (Alice): `Ready(h')` YOK; `a0` tam BİR `Closed(a0, Superseded)` ile biter; sayaç 1
+/// (tek deneme); `h'` S1'e verilmedi ve Crypto'da kapalı, `a0` da. Toparlanma: `connect` →
+/// `Pending` → `Ready(a2)`; Alice'in yeni ucu Bob'un yeni oturumu bağlamında mühürler.
+///
+/// Mutasyon M6'da (uçsuz `Ready` geri) ilk olay `Ready(h', Bob)`: `Closed` iddiası kırmızı.
+#[test]
+fn renewal_fallback_endpoint_failure_ends_the_old_session_and_reconnect_recovers() {
+    let hub = MemoryHub::new();
+    let (mut alice, clock) = node(ALICE, &hub);
+    let mut bob = RawPeer::new(BOB, &hub);
+    alice.add_peer_addr(id(BOB), bob.sink_addr());
+    let _ = pending(alice.connect(id(BOB), None));
+    assert_eq!(hub.relay(), 1, "INIT → Bob, HANDLE_ASSIGN → Alice");
+    assert_eq!(bob.serve(None).len(), 1, "Bob INIT'i yanıtlar");
+    assert_eq!(hub.relay(), 1, "RESPONSE → Alice");
+    let (a0, _) = ready(&mut alice, id(BOB));
+
+    alice.set_endpoint_open_failures_for_test(usize::MAX);
+    clock.advance(SESSION_MAX_AGE);
+    assert_eq!(next_event(&mut alice), SessionEvent::RenewRequired(a0));
+    assert_eq!(
+        hub.relay(),
+        1,
+        "yenileme INIT'i → Bob, HANDLE_ASSIGN → Alice"
+    );
+    assert_eq!(
+        bob.serve(Some(FOREIGN_HUB)).len(),
+        1,
+        "Bob yenilemeyi yanıtlar (provisional), RESPONSE yabancı tutamaçla"
+    );
+    assert_eq!(hub.relay(), 1, "RESPONSE → Alice");
+
+    assert_eq!(
+        next_event(&mut alice),
+        SessionEvent::Closed(a0, CloseReason::Superseded),
+        "ardılın ucu açılamadı: eski oturum etkin ardıl olmadan Superseded ile biter"
+    );
+    assert_no_event(&mut alice, "yeni oturum için Ready yok");
+    assert_eq!(alice.endpoint_open_failures(), 1, "yedek kol tek deneme");
+    assert_eq!(alice.active_session_for_test(id(BOB)), None);
+    let failed = alice
+        .last_failed_activation_for_test()
+        .expect("ucu açılamayan tutamaç kaydedilmeli");
+    assert_ne!(failed, a0);
+    assert_not_activated(&mut alice, failed);
+    assert_eq!(
+        alice.send(a0, unit(b"x"), DeliveryPolicy::Reliable),
+        Err(TransportError::UnknownSession)
+    );
+    assert_eq!(
+        alice.session_epoch(a0),
+        None,
+        "eski oturum Crypto'da kapandı"
+    );
+    clock.advance(GRACE_T_G);
+    assert_no_event(
+        &mut alice,
+        "tam bir Closed: drain sınırı ikincisini üretmez",
+    );
+
+    // Gerçek yeniden bağlanma.
+    alice.set_endpoint_open_failures_for_test(0);
+    let t = pending(alice.connect(id(BOB), None));
+    assert_eq!(hub.relay(), 1, "INIT → Bob, HANDLE_ASSIGN → Alice");
+    let served = bob.serve(None);
+    assert_eq!(served.len(), 1, "Bob yeni INIT'i yanıtlar");
+    assert_eq!(hub.relay(), 1, "RESPONSE → Alice");
+    let (a2, before) = ready(&mut alice, id(BOB));
+    assert_eq!(
+        before,
+        [SessionEvent::ConnectProgress(t, ConnectPhase::Measuring)]
+    );
+    assert_ne!(a2, failed);
+    alice
+        .send(a2, unit(b"yeni"), DeliveryPolicy::Reliable)
+        .expect("yeni oturum gönderim kabul eder");
+    assert!(
+        bob.opens_in(served[0]),
+        "yeni uç Bob'un yeni oturumu bağlamında mühürlemeli"
+    );
+    assert_eq!(
+        alice.endpoint_open_failures(),
         1,
         "toparlanmada yeni hata yok"
     );
