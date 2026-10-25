@@ -82,6 +82,30 @@ fn product_builder_rejects_recovery_off() {
     );
 }
 
+/// [K4G-05c · DUR-05c-12 (A), CEVAP 14 §3] `FragmenterOn` KİLİDİ: S1'de transport parçalaması
+/// yapısal olarak kapalıdır — ürün builder'ı mesaj tavanı açık (`max_message_bytes = Some(_)`)
+/// yapılandırmayı reddeder; bir S1 birimi tek veri birimidir ve ürün yolundaki tek parçalı mesaj
+/// dosyadır (ret Application'da). Kapı bugüne dek testsizdi (K4G-05c ANALIZ §1.1); bu test onu
+/// sabitler. Ürün profilinde alan `None`'dır.
+#[test]
+fn product_builder_rejects_fragmenter_on() {
+    let me = harness::test_peer(0x0D);
+    let dir = fixture_directory([*me.as_bytes()]).expect("dizin");
+    let (crypto, _clock) = fixture_protection(*me.as_bytes(), dir, EnvelopeKind::Legacy);
+    let mut cfg = ClientTransportConfig::product(loopback());
+    assert_eq!(
+        cfg.runtime.max_message_bytes, None,
+        "ürün profili: transport parçalaması kapalı"
+    );
+    cfg.runtime.max_message_bytes = Some(cfg.runtime.max_unit_bytes.saturating_mul(2));
+    let hub = MemoryHub::new();
+    let r = ClientTransport::new(cfg, crypto, Box::new(hub.link(me)));
+    assert!(
+        matches!(r, Err(TransportBuildError::FragmenterOn)),
+        "ürün builder'ı parçalama açık yapılandırmayı reddetmeli"
+    );
+}
+
 /// G1 (2026-10-08): doğrulanmış eş dizininde OLMAYAN eşe `connect` → `Pending` + `Measuring` +
 /// `ConnectAbandoned(LocalPermanent)` — Crypto'nun reddi opaktır, Application'a kripto nedeni
 /// sızmaz; niyet kapalı bir nedenle biter. (Sahtede dizin yoktur.)

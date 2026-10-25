@@ -15,6 +15,7 @@ use std::time::Duration;
 use kama_app::codec::{AppMessage, EncodeError, PttCodec};
 use kama_app::file_transfer::{
     FileFailure, FileSendError, SendFailure, TransferId, FILE_IDLE_TTL, FILE_RECEIPT_TTL,
+    MAX_INCOMING_TRANSFERS_PER_PEER, MAX_REASSEMBLY_BYTES,
 };
 use kama_app::messaging::{ConnectState, MessengerError, MessengerEvent};
 use kama_app::ptt::{PttError, PttEvent, PTT_STREAM_IDLE_TTL};
@@ -66,6 +67,8 @@ const EPOCH_TEXT: &str = "epoch-1";
 const AFTER_RECEIPT_TEXT: &str = "alindidan-sonra";
 /// Zincir sırası testinde Alice'in teslim kuyruğundaki kayıtlar: `FILE_RECEIPT(ok)` + metin.
 const RECEIPT_AND_TEXT: usize = 2;
+/// [K4G-05c · DUR-05c-12 (A)] Dosya reddinden SONRA aynı eşe gönderilen metin (sıralı akış sürer).
+const AFTER_FILE_TEXT: &str = "dosyadan-sonra";
 
 /// Plan D14: tek TEXT ≤ 1002 B — düğümün türettiği tavana karşı BAĞIMSIZ kaynak (ürün profili:
 /// birim 1013 B − AMP başlığı 5 B = `MAX_BODY_BYTES` 1008 B; − TEXT öneki 6 B).
@@ -753,6 +756,392 @@ fn receipt_timeout_closes_the_handle_on_a_turn_without_traffic() {
     );
     let again = call(node, |reply| Command::CancelFile { file, reply });
     assert!(matches!(again, Err(NodeError::HandleClosed)), "{again:?}");
+}
+
+// ── K4G-05c · DUR-05c-12 (A): parçalı mesaj = dosya, ret Application'da ─────────────────────
+
+/// Alice'in sunduğu bütün kayıtlar Transport'ta teyitli: gönderen tarafta teyitsiz birim kalmadı.
+/// Teyitli birime motor karar üretmez (K4G-05b madde 2) → bu kayıtların Transport yeniden
+/// gönderimi yapısal olarak 0'dır (geçersiz kayıt ACK'lenir, sonsuz yeniden gönderim yok).
+fn all_records_confirmed(alice: &NodeLoop) {
+    support::until("alice: bütün kayıtlar Transport'ta teyitli", || {
+        (alice.messenger.transport().outstanding_for_test() == 0).then_some(())
+    });
+}
+
+/// Alice'in AYNI eşe SONRA gönderdiği metin Bob'a ulaşır: dosya reddi sıralı akışı tıkamaz.
+fn next_text_flows(alice: &mut NodeLoop, bob: &mut NodeLoop, bob_events: &mut Events) {
+    let to_bob = peer_of(alice, BOB);
+    let text = call(alice, |reply| Command::SendText {
+        peer: to_bob,
+        text: AFTER_FILE_TEXT.to_owned(),
+        reply,
+    })
+    .expect("metin");
+    support::until("bob: dosyadan sonraki metin", || {
+        alice.turn();
+        bob.turn();
+        bob_events.take(|event| {
+            matches!(
+                event,
+                NodeEvent::TextReceived { peer_id, msg_id, .. }
+                    if peer_id == ALICE && *msg_id == text
+            )
+            .then_some(())
+        })
+    });
+}
+
+/// [K4G-05c · DUR-05c-12 (A), CEVAP 14 §3 — olgu F6] Kabul edilmiş aktarıma geometriye uymayan bir
+/// `FILE_CHUNK` (uzunluk 0) gelir. Ret katmanı Application'dır: Transport kaydı ACK'ler ve teslim
+/// eder (gönderende teyitsiz birim 0 → o kaydın Transport yeniden gönderimi 0), dosya motoru onu
+/// atar (`inconsistent_records`); aktarım tamamlanamaz ve `FILE_IDLE_TTL` dolunca alıcıda
+/// `Failed(IdleTimeout)`, gönderende eşin `FILE_RECEIPT(timeout)`'uyla `SendFailed(ReceiverTimeout)`
+/// olur (iki uçta terminal). Aynı eşe sonraki TEXT ilerler.
+///
+/// Enjeksiyon: aynı derlemedeki gönderici F6 üretmez (ANALIZ §3.2); kayıt, Transport'tan
+/// uygulamaya teslim edildikten SONRA dosya motoruna verilmeden önce bozulur (uyumsuz gönderici
+/// benzetimi). Diğer kayıtlar ürün yolundan (`turn`) işlenir.
+#[test]
+fn file_invalid_chunk_fails_by_idle_timeout_and_next_text_flows() {
+    let _serial = support::serial();
+    let root = TempDir::new("file-f6");
+    let phones = support::provision(root.path(), &[ALICE, BOB]);
+    let clock = ManualClock::default();
+    let (mut alice, mut alice_events) = support::manual(&phones[ALICE], support::system_clock());
+    let (mut bob, mut bob_events) = support::manual(&phones[BOB], Arc::new(clock.clone()));
+    connect_manuals(
+        &mut alice.node,
+        &mut alice_events,
+        ALICE,
+        &mut bob.node,
+        &mut bob_events,
+        BOB,
+    );
+    let chunk_len = alice.node.messenger.limits().max_file_chunk_bytes();
+    let bytes = file_of_chunks(chunk_len);
+    let records = file_records(bytes.len(), chunk_len);
+    let source = root.path().join("gecersiz-parca.bin");
+    fs::write(&source, &bytes).expect("kaynak dosya");
+
+    let file = send_file(&mut alice.node, BOB, &source);
+    support::until("alice: Sent", || {
+        alice.node.turn();
+        alice_events.take(progress(file, FileStage::Sent))
+    });
+    queue_records(&mut bob.node, records);
+    all_records_confirmed(&alice.node);
+    let transfer_id = take_begin(&mut bob.node);
+
+    // İlk FILE_CHUNK uygulamaya geçersiz hâliyle verilir (F6: uzunluk 0).
+    let node = &mut bob.node;
+    let event = node
+        .ptt
+        .poll(&mut node.messenger)
+        .expect("FILE_CHUNK teslim kuyruğunda");
+    let (peer, offset) = match &event {
+        PttEvent::Messenger(MessengerEvent::Other {
+            peer,
+            message:
+                AppMessage::FileChunk {
+                    transfer_id: got,
+                    offset,
+                    ..
+                },
+        }) if *got == transfer_id => (*peer, *offset),
+        other => panic!("ikinci kayıt bu aktarımın FILE_CHUNK'ı değil: {other:?}"),
+    };
+    let inconsistent = node.files.stats().inconsistent_records;
+    node.on_ptt_event(PttEvent::Messenger(MessengerEvent::Other {
+        peer,
+        message: AppMessage::FileChunk {
+            transfer_id,
+            offset,
+            payload: Vec::new(),
+        },
+    }));
+    assert_eq!(
+        node.files.stats().inconsistent_records - inconsistent,
+        1,
+        "geçersiz parça dosya motorunda atıldı (Application reddi)"
+    );
+    node.turn();
+    assert_eq!(
+        node.files.incoming_count(),
+        1,
+        "eksik parçayla aktarım tamamlanamaz; süre dolana dek sürer"
+    );
+    clock.advance(FILE_IDLE_TTL);
+    node.turn();
+    let reason = bob_events
+        .take(|event| match event {
+            NodeEvent::FileFailed {
+                file: FileRef::Incoming(id),
+                peer_id,
+                reason,
+            } if peer_id == ALICE && *id == transfer_id => Some(*reason),
+            _ => None,
+        })
+        .expect("alıcıda terminal: FILE_IDLE_TTL doldu");
+    assert_eq!(reason, FileFailReason::Incoming(FileFailure::IdleTimeout));
+    let (peer_id, reason) = support::until("alice: FILE_RECEIPT(timeout)", || {
+        bob.node.turn();
+        alice.node.turn();
+        alice_events.take(failed_outgoing(file))
+    });
+    assert_eq!(peer_id, BOB);
+    assert_eq!(
+        reason,
+        FileFailReason::Outgoing(SendFailure::ReceiverTimeout),
+        "gönderende terminal"
+    );
+    assert_eq!(
+        alice.node.messenger.transport().outstanding_for_test(),
+        0,
+        "geçersiz kayıt teyitli kaldı (Transport yeniden gönderimi yok)"
+    );
+    next_text_flows(&mut alice.node, &mut bob.node, &mut bob_events);
+}
+
+/// [K4G-05c · DUR-05c-12 (A), CEVAP 14 §3 — olgu F3] `file_size > MAX_REASSEMBLY_BYTES` bildiren
+/// `FILE_BEGIN`: alıcı aktarımı açık ve terminal bir alındıyla reddeder (`FILE_RECEIPT(rejected)`),
+/// gönderende `SendFailed(Rejected)`; Transport kaydı ACK'lemiştir (teyitsiz birim 0, kanal reddi
+/// yok). Aktarımın kalan kayıtları bilinmeyen aktarım olarak atılır; aynı eşe sonraki TEXT ilerler.
+///
+/// Enjeksiyon: aynı derlemedeki gönderici sınırı yerelde uygular (`FileSendError::TooLarge`);
+/// `FILE_BEGIN`, Transport'tan uygulamaya teslim edildikten SONRA dosya motoruna verilmeden önce
+/// bildirilen boy büyütülerek bozulur (uyumsuz gönderici benzetimi).
+#[test]
+fn file_oversize_begin_is_rejected_end_to_end_and_next_text_flows() {
+    let _serial = support::serial();
+    let root = TempDir::new("file-f3");
+    let phones = support::provision(root.path(), &[ALICE, BOB]);
+    let (mut alice, mut alice_events) = support::manual(&phones[ALICE], support::system_clock());
+    let (mut bob, mut bob_events) = support::manual(&phones[BOB], support::system_clock());
+    connect_manuals(
+        &mut alice.node,
+        &mut alice_events,
+        ALICE,
+        &mut bob.node,
+        &mut bob_events,
+        BOB,
+    );
+    let chunk_len = alice.node.messenger.limits().max_file_chunk_bytes();
+    let bytes = file_of_chunks(chunk_len);
+    let records = file_records(bytes.len(), chunk_len);
+    let source = root.path().join("buyuk-beyan.bin");
+    fs::write(&source, &bytes).expect("kaynak dosya");
+
+    let file = send_file(&mut alice.node, BOB, &source);
+    support::until("alice: Sent", || {
+        alice.node.turn();
+        alice_events.take(progress(file, FileStage::Sent))
+    });
+    queue_records(&mut bob.node, records);
+    all_records_confirmed(&alice.node);
+
+    let node = &mut bob.node;
+    let event = node
+        .ptt
+        .poll(&mut node.messenger)
+        .expect("FILE_BEGIN teslim kuyruğunda");
+    let PttEvent::Messenger(MessengerEvent::Other {
+        peer,
+        message:
+            AppMessage::FileBegin {
+                transfer_id,
+                whole_file_hash,
+                chunk_count,
+                name,
+                ..
+            },
+    }) = event.clone()
+    else {
+        panic!("ilk kayıt FILE_BEGIN değil: {event:?}");
+    };
+    let refused = node.files.stats().transfers_refused;
+    node.on_ptt_event(PttEvent::Messenger(MessengerEvent::Other {
+        peer,
+        message: AppMessage::FileBegin {
+            transfer_id,
+            file_size: MAX_REASSEMBLY_BYTES + 1,
+            whole_file_hash,
+            chunk_count,
+            name,
+        },
+    }));
+    assert_eq!(
+        node.files.stats().transfers_refused - refused,
+        1,
+        "S7 boyutu: açık ret (FILE_RECEIPT(rejected))"
+    );
+    assert_eq!(node.files.incoming_count(), 0, "aktarım açılmadı");
+    node.turn();
+    let (peer_id, reason) = support::until("alice: FILE_RECEIPT(rejected)", || {
+        bob.node.turn();
+        alice.node.turn();
+        alice_events.take(failed_outgoing(file))
+    });
+    assert_eq!(peer_id, BOB);
+    assert_eq!(
+        reason,
+        FileFailReason::Outgoing(SendFailure::Rejected),
+        "gönderende terminal"
+    );
+    assert_eq!(
+        bob.node
+            .messenger
+            .transport()
+            .ctx_dispatch_stats()
+            .full_refusals,
+        0,
+        "ret Application'dadır: Transport'ta kanal reddi yok"
+    );
+    assert_eq!(
+        alice.node.messenger.transport().outstanding_for_test(),
+        0,
+        "reddedilen aktarımın kayıtları teyitli kaldı (Transport yeniden gönderimi yok)"
+    );
+    next_text_flows(&mut alice.node, &mut bob.node, &mut bob_events);
+}
+
+/// [K4G-05c · DUR-05c-12 (A), CEVAP 14 §3 — olgu F4] Yuva-dolu reddi AÇIK ve TERMİNALdir
+/// (`FILE_RECEIPT(rejected)` → gönderende `SendFailed(Rejected)`, tutamaç kapanır) ve R2 SAYILMAZ:
+/// kayıtlar Transport'ta kabul edilip ACK'lenmiştir (kanal reddi 0, gönderende teyitsiz birim 0);
+/// geçerli dosyanın yuva yüzünden reddi UX borcudur (KATMAN 6). Eş başına iki açık aktarım varken
+/// üçüncünün `FILE_BEGIN`'i reddedilir; ilk ikisi tamamlanır (`Delivered`); aynı eşe sonraki TEXT
+/// ilerler.
+///
+/// Sıra: gönderenin kuyruğu aktarımları ardışık sunar ve teslim sıralıdır; alıcıda iki aktarımı
+/// aynı anda açık tutmak için kayıtlar uygulamaya teslim edildikten SONRA, dosya motoruna önce
+/// bütün `FILE_BEGIN`'ler, sonra kalanlar (geliş sırasıyla) verilir.
+#[test]
+fn file_slot_full_rejection_is_explicit_and_terminal() {
+    let _serial = support::serial();
+    let root = TempDir::new("file-slot-full");
+    let phones = support::provision(root.path(), &[ALICE, BOB]);
+    let (mut alice, mut alice_events) = support::manual(&phones[ALICE], support::system_clock());
+    let (mut bob, mut bob_events) = support::manual(&phones[BOB], support::system_clock());
+    connect_manuals(
+        &mut alice.node,
+        &mut alice_events,
+        ALICE,
+        &mut bob.node,
+        &mut bob_events,
+        BOB,
+    );
+    let chunk_len = alice.node.messenger.limits().max_file_chunk_bytes();
+    let bytes = file_of_chunks(chunk_len);
+    let per_file = file_records(bytes.len(), chunk_len);
+    let source = root.path().join("yuva.bin");
+    fs::write(&source, &bytes).expect("kaynak dosya");
+    let count = MAX_INCOMING_TRANSFERS_PER_PEER + 1;
+    let files: Vec<FileHandle> = (0..count)
+        .map(|_| send_file(&mut alice.node, BOB, &source))
+        .collect();
+    let mut sent = vec![false; count];
+    support::until("alice: bütün aktarımlar Sent", || {
+        alice.node.turn();
+        for (seen, &file) in sent.iter_mut().zip(&files) {
+            if !*seen && alice_events.take(progress(file, FileStage::Sent)).is_some() {
+                *seen = true;
+            }
+        }
+        sent.iter().all(|seen| *seen).then_some(())
+    });
+    queue_records(&mut bob.node, count * per_file);
+    all_records_confirmed(&alice.node);
+
+    let node = &mut bob.node;
+    let mut delivered: Vec<PttEvent> = Vec::with_capacity(count * per_file);
+    while let Some(event) = node.ptt.poll(&mut node.messenger) {
+        delivered.push(event);
+    }
+    assert_eq!(
+        delivered.len(),
+        count * per_file,
+        "bütün kayıtlar teslim edildi"
+    );
+    let (begins, rest): (Vec<PttEvent>, Vec<PttEvent>) = delivered.into_iter().partition(|event| {
+        matches!(
+            event,
+            PttEvent::Messenger(MessengerEvent::Other {
+                message: AppMessage::FileBegin { .. },
+                ..
+            })
+        )
+    });
+    assert_eq!(begins.len(), count, "her aktarımın bir FILE_BEGIN'i");
+    let refused = node.files.stats().transfers_refused;
+    for event in begins {
+        node.on_ptt_event(event);
+    }
+    assert_eq!(
+        node.files.incoming_count(),
+        MAX_INCOMING_TRANSFERS_PER_PEER,
+        "eş başına yuva tavanı"
+    );
+    assert_eq!(
+        node.files.stats().transfers_refused - refused,
+        1,
+        "yuva yok: açık ret (FILE_RECEIPT(rejected))"
+    );
+    for event in rest {
+        node.on_ptt_event(event);
+    }
+    node.turn();
+
+    let rejected = files[count - 1];
+    let mut delivered_files: Vec<FileHandle> = Vec::new();
+    let mut rejection: Option<(String, FileFailReason)> = None;
+    support::until("alice: iki Delivered + bir Rejected", || {
+        bob.node.turn();
+        alice.node.turn();
+        for &file in &files[..count - 1] {
+            if !delivered_files.contains(&file)
+                && alice_events
+                    .take(progress(file, FileStage::Delivered))
+                    .is_some()
+            {
+                delivered_files.push(file);
+            }
+        }
+        if rejection.is_none() {
+            rejection = alice_events.take(failed_outgoing(rejected));
+        }
+        (delivered_files.len() == count - 1 && rejection.is_some()).then_some(())
+    });
+    assert_eq!(
+        rejection,
+        Some((
+            BOB.to_owned(),
+            FileFailReason::Outgoing(SendFailure::Rejected)
+        )),
+        "üçüncü aktarım açık ve terminal biçimde reddedildi"
+    );
+    let again = call(&mut alice.node, |reply| Command::CancelFile {
+        file: rejected,
+        reply,
+    });
+    assert!(
+        matches!(again, Err(NodeError::HandleClosed)),
+        "terminal: tutamaç kapandı ({again:?})"
+    );
+    assert_eq!(
+        bob.node
+            .messenger
+            .transport()
+            .ctx_dispatch_stats()
+            .full_refusals,
+        0,
+        "R2 sayılmaz: Transport'ta kanal reddi yok"
+    );
+    assert_eq!(
+        alice.node.messenger.transport().outstanding_for_test(),
+        0,
+        "bütün kayıtlar teyitli (Transport yeniden gönderimi yok)"
+    );
+    next_text_flows(&mut alice.node, &mut bob.node, &mut bob_events);
 }
 
 // ── Son tur (koordinatör 9a145b41 incelemesi) ────────────────────────────────────────────────
