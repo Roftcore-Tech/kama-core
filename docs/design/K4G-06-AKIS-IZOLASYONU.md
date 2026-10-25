@@ -392,3 +392,139 @@ EK-1 §3 (2) ile: iki akış (TEXT/BE + dosya/BK), akış başına sıra, tek kr
 - **(a)** `flow_id` uzayı test kancasıyla sona yaklaştırılır → yeni `open_flow` tipli hata + `RenewRequired`; yeni oturumda akış açılır; eski akışlar sessiz düşmez.
 - **(b)** Ölçülen hız VO profilini ρ_V,max içinde taşımıyorken `open_flow(Voice)` reddedilir ("desteklenmeyen profil"); taşıyorken açılır. Eşik sayısı [CAL].
 - **Aşama:** U.
+
+## Ek C — Etkilenen mevcut testler (DUR-8 adayları)
+
+Kaynak: salt okuma taraması, `0c22a07d` (öneksiz) ve `cf270a6c` (`05d:` önekli); hiçbir test koşulmadı. Satır = test `fn` satırı (parantezde ana assertion). **İşlem:** **D8** = iddia değişir, DUR-8 biçimiyle (NEDEN DEĞİŞTİ + ESKİ İDDİA → YENİ İDDİA; 2×2: eski kod + eski test yeşil · yeni kod + eski test kırmızı · yeni kod + yeni test yeşil · eski kod + yeni test kırmızı) · **K** = değişmeden yeşil kalmalı (kalmazsa DUR) · **F** = sahte (fake) modelin güncellenmesi; davranış iddiası ayrıca gözden geçirilir. Bazı testler birden çok sınıftadır. **Uyarı:** oturum geneli sıra modeli kama-app sahtelerinde ikinci kez kodlanmıştır (`kama-app/tests/common/mock_transport.rs:487-500`, :468; `End`/`Link` FIFO'ları); yalnız transport'u değiştirmek bu testleri kırmızıya çevirmez — bilinçli gözden geçirme gerekir.
+
+**C.A — Oturum geneli sıralı teslim (`Reorder`)** — 16 test + 3 sahte
+| Test | İddia | İşlem |
+|---|---|---|
+| `crates/client-core/src/transport.rs:1425` `reorder_delivers_in_unit_order_and_skips_nothing` (:1434) | 0 gelmeden 1 teslim edilmez | D8 → akış başına |
+| `transport.rs:1443` `reorder_is_bounded_and_never_skips_a_gap` (:1453) | boşluk atlanmaz, held ≤ cap | D8 → akış başına, cap = kredi |
+| `transport.rs:1483` `p0_r1_reorder_never_skips_missing_reliable` (:1499) | 1,2,3,4,0 → [0..4] | K (akış içinde), D8 anahtar |
+| `transport.rs:1513` `reorder_reports_window_violation_and_holds_nothing_outside` (:1521, :1528) | pencere ihlali sayılır | D8 → kredi ihlali |
+| `transport.rs:1537` `read_only_accessors_on_a_fresh_product_adapter` (:1555) | `reorder_diags()` boş | D8 (teşhis API'si akış başına) |
+| `crates/client-core/tests/k4g_p0_receiver.rs:341` `p0_r2_dropped_unit_blocks_followers` (:413, :422) | izleyenler tam sırayla | D8 → aynı akışta K, farklı akışta bloklamaz |
+| `client-core/tests/session_keyed_slots.rs:375`, `:442`, `:508` (:585-591, :601-603), `:622` (:640), yardımcı `:338` | oturum başına `next`, rezerv, tekilleşme | D8 (anahtar (oturum, akış)) |
+| `kama-integration/tests/common/seam/contract.rs:909` `h_app_retry_0` (:925), `:584` `h_cutover` (:642); mock + real (`seam_conformance_core/main.rs:18,20`) | gönderim sırası | D8 → akış içi sıra; H-* satırları |
+| `kama-integration/tests/seam_mock_fixture/main.rs:307` (:325-358) | sahtede HOL | F + D8 |
+| `kama-node/tests/signaling_loopback.rs:154` (:165, :175) | blob'lar gönderim sırasıyla | K (sinyalleşme tek akış) |
+| `kama-node/tests/two_nodes_loopback.rs:133` (:232) | demetler gönderim sırasıyla (PTT-R0) | D8 (`Live` sırasız; sıra `flow_seq` ile) |
+| `kama-app/tests/file_transfer.rs:924` `echo_peer_reassembles_through_mock_loss_and_recovery` | MockTransport HOL'üne dayanır (belirsiz) | F |
+| sahteler: `kama-app/tests/common/mock_transport.rs:487-500`, :468; `End`/`Link` (`kama-app/tests/{ptt,file_transfer,text_receipt,signaling}.rs`); `05d:kama-app/tests/k4g_p0_receipt.rs` `End` | oturum başına HOL + tek `MAX_INBOX` | F |
+
+**C.B — DATA 0x00 düzeni, `HDR_DATA`, `encode_data`/`decode_data`** — 34 test + 1 fuzz hedefi
+| Test | İddia | İşlem |
+|---|---|---|
+| `client-core/tests/api_surface_v0.rs:70` `transport_api_v0_surface_is_frozen` (:373-376, :415-419; `Delivery` :246-257) | wire-v0 imzaları, `Delivery{unit_id}` | D8 (A.19) |
+| `fuzz/fuzz_targets/wire_v0.rs:10` (+ 7 tohum `fuzz/corpus/wire_v0/`) | panik yok | D8: yeni decode'lar eklenir |
+| `client-core/tests/runtime_e2e.rs:1287` `arq_identity_is_the_pn_not_the_interim_seq_field` (:1264-1268) | `seq u16` alanı okunmaz | D8 (W2'de alan yok; iddia "ARQ kimliği PN" K) |
+| `runtime_e2e.rs:423`, `:602`, `:1125` (DropUnitsSeam :402-404) | birim seçimi `decode_data` ile | D8 (akış koordinatı) |
+| `client-core/tests/ctx_first_dispatch.rs:628`, `:684`, `:762` (yardımcı :206); `:444`, `:473`, `:501`, `:533`, `:557`, `:580` (ClientRig :331) | ham DATA çerçevesi | D8 (yardımcı güncellenir; bağlam-önce iddiaları K) |
+| `session_keyed_slots.rs` yardımcıları `:260`, `:697` → testler `:375, :442, :508, :622, :735, :827, :936, :1042` | ham `encode_data` | D8 yardımcı |
+| `client-core/tests/k4g05b_runtime_ownership.rs:316` (NetState) → testler `:862, :912, :1010, :1086, :1165, :1209, :1267, :1419, :1527, :1587, :1639` | röle çerçeveyi `decode_data`/`decode_fec` ile sınıflar | D8 yardımcı; sahiplik iddiaları K |
+
+**C.C — Mesafe kapısı / oturum penceresi / sıra başı rezervi / teslim kanalı** — 18 test
+| Test | İddia | İşlem |
+|---|---|---|
+| `client-core/tests/transport_v1_freeze.rs:104` `sinirlar_ve_kotalar_donmus` (:106-108) | 4096 / 1024 / 64 | D8 (A.12) |
+| `k4g05b_runtime_ownership.rs:1639` `sender_distance_gate_holds_offers_and_receiver_never_refuses_window` (:1654, :1660, :1677) | `distance_holds ≥ 1`, `reorder_skip = 0` | D8 → akış kredi kapısı |
+| `k4g05b_runtime_ownership.rs:912` (:939-944); Rig penceresi :509-560 | mesafe kapısı içinde kalma | D8 yardımcı |
+| `k4g05b_runtime_ownership.rs:1527` (:1496, :1569), `:1587` (:1628) | `full_refusals ≥ 1`, `delivery_dropped = 0` | D8: kredili akışta `full_refusals` yapısal 0, kol testi krediyi aşan sahteyle |
+| `session_keyed_slots.rs:508` (:530-533, :537, :578), `:936` (:986-1028), `:1042` (:1067, :1073, :1087) | R = min(max_peers, C − 1); dolu kanal; pencere dışı ret | D8 (S1 kipinde rezerv kalkar; örtük kip K) |
+| `k4g_p0_receiver.rs:99` `p0_r2_full_channel_never_acks_undelivered` (:198, :209, :218) | teslimsiz ACK yok | K (INV-ACK-DELIVER-1), fikstür krediyi aşan gönderenle |
+| `runtime_e2e.rs:262` `delivery_overflow_refuses_without_ack_not_grown` (:302-306) | taşmada ACK'siz ret | K örtük kipte; S1 kipinde D8 |
+| `crates/client-core/src/runtime.rs:4555` `overflow_is_refused_and_drop_mirror_stays_zero` (:4597-4599, :4614-4616) | dolu kanal ACK'siz | K (örtük kip) |
+| `runtime.rs:4469` `hub_dispatch_only_counts` (:4484-4492); `ctx_first_dispatch.rs:221` `stats()` (:226-229) | `CtxDispatchStats` tam literal | D8 (yeni sayaçlar) |
+| `kama-node/src/node/tests.rs:436` `delivery_channel_full_refuses_and_node_metrics_stay_zero` (:513-518) | Reliable demetler dolu kanalda | D8 (demet `Live`) |
+| `node/tests.rs:945` (:1021-1027), `:1049` (:1160-1166) | `full_refusals = 0` (belirsiz) | K |
+| `api_surface_v0.rs:77-108` | `RuntimeConfig` tam deseni | D8 (A.12/A.19) |
+| zayıf: `kama-mobile/src/event.rs:914`, `kama-mobile/tests/smoke.rs:208` (:267), `kama-node/tests/two_nodes_loopback.rs:123`, `kama-node/tests/start_config.rs:152` | ölçü aynası | D8 (yeni sayaçlar) |
+
+**C.D — FEC bloğu = `unit_id / K`, RECOVERED düzeni** — 16 test + 3 belirsiz kopya
+| Test | İddia | İşlem |
+|---|---|---|
+| `runtime_e2e.rs:423` (:490, :494-497, :503-506), `:602` (:629), `:1125` (:1161-1163) | ardışık 8 birim tek blok; kısmi blok | D8 → akış başına blok |
+| `ctx_first_dispatch.rs:473` (:476, :497) | `encode_recovered(0,&[0])` = birim 0 | D8 (`flow_id` eklenir) |
+| `k4g05b_runtime_ownership.rs:1086` (:1138), `:1209`, `:1527` (:1552), `:1587` (:1625) | blok 0 = birimler 0..K−1; ESI adaşı | D8 |
+| `adaptive-transport/tests/k4g05b_ownership.rs:770`, `:860`, `:943` (:1064; fikstür :739); `k4g_p0_engine.rs:895`, `:932` | ESI ↔ birim kimliği çakışması | K (motor içi; runtime eşlemesi değişir) |
+| `adaptive-transport/tests/budget_equivalence_pin.rs:223` | parite kendi bloğunun kaynağından önce gitmez | K |
+| `api_surface_v0.rs:415-419` | RECOVERED codec | D8 |
+| `adaptive-transport/src/sender.rs:7790` `dr_s5_4_recovered_cancels_and_ledger` | `RecoveredUnit` (belirsiz) | K |
+| belirsiz kopyalar: `adaptive-transport/tests/live_budget_sweep.rs:129`, `policy_outcome_sweep.rs:168`, `kama-integration/tests/common/fs_spine.rs:308`, `loss_structure_observation.rs` | id/K eşlemesinin yerel kopyaları | gözden geçir |
+
+**C.E — Motor seçim sırası** — 33 test + ~7 belirsiz (S7 (b) seçilirse; tek akışta K hedefi)
+| Test | İddia | İşlem |
+|---|---|---|
+| `adaptive-transport/tests/k4g05b_scheduling.rs:196, :225, :258, :304, :359` | BURST_CAP tur başı tabanı | K (tek akış) |
+| `k4g05b_scheduling.rs:434` `k4g05b_pay_mixed_size_reservation` (:538-554) | K_ARQ_SHARE + DUR-31 rezervi | K tek akışta; seçiciye taşınınca D8 (DUR-38 kararına bağlı) |
+| `k4g05b_scheduling.rs:578` (:682-684) | sıfırlama sonrası kopyalar kimlik sırasıyla | K tek akışta; çok akışta D8 |
+| `adaptive-transport/tests/k4g05b_ownership.rs:1569, :1577` (d2_assert :1485-1544); `:1597, :232, :315, :379, :404` (belirsiz) | kopya başı en eski birim | K tek akışta |
+| `adaptive-transport/tests/k4g_p0_engine.rs:1132`, `:1214`; `:551` (belirsiz) | DATA yükünde ARQ/kopya hizmeti | K |
+| `sender.rs:9684` `arq_share_emits_retx_under_token_starvation`; `sender.rs:10150, :10244, :10317, :10403, :10474, :10502` `k4g05b_dur31_*` | pay, rezerv, PRE_CONVERGE DATA önce; rig `tx_queue`'ya doğrudan iter | D8 (iç yapı katman kuyruğuna dönüşür) |
+| `adaptive-transport/tests/sprint5c_fec_emit.rs:73` (:98-101); `:43` (belirsiz) | DATA parite öncesi | K |
+| `budget_equivalence_pin.rs:27, :163, :181 (:185-196), :203, :223` | Commit-W karar akışı pinleri | K tek akışta; kayarsa DUR |
+| `adaptive-transport/tests/dr_cs3_structural_oracle.rs:2857, :2882, :2978, :3038` (ayna :663-680) | `tx_queue` katı FIFO | D8 (sınıf içi FIFO) |
+| `adaptive-transport/tests/tv_arq.rs:19 (:39), :57, :106 (:122), :144 (:152), :163` | `DeadlineArqScheduler` sırası | K (A.15) |
+
+**C.F — `OpaqueUnit` / `Event` biçimi** — 4
+| Test | İşlem |
+|---|---|
+| `api_surface_v0.rs:45` re-export adları; `:70` (:432) `ClientSession::on_event` imzası | D8 (`OpaqueUnit` alanı) |
+| `budget_equivalence_pin.rs:36-47, :100-107` ve `dr_cs3_structural_oracle.rs:216`, `kama-integration/tests/common/dr_cs3_panel.rs:2240` — tam `TransmitKind` eşleşmesi | K (yeni `TransmitKind` önerilmez) |
+| belge pini `docs/design/P4-TRANSPORT-API-FREEZE.md:126` | D8 (A.19) |
+
+**C.G — S1 yüzey pinleri** — 4 pin + düzenek
+| Test | İşlem |
+|---|---|
+| `crates/kama-contracts/src/s1.rs:225` `closed_sets_are_exhaustive`, `:269` `trait_is_object_safe`, `:275` `transport_error_is_a_std_error_with_stable_messages` | D8 (A.1–A.3) |
+| `crates/kama-app/src/signaling.rs:886` (`ALL: [TransportError; 7]`); `05d:kama-app/src/messaging.rs:2447` (belirsiz) | D8 (yeni varyant) |
+| `scripts/ci/seam-api-drift.py`, `scripts/ci/seam-coverage.json`, `kama-integration/tests/common/seam/contract.rs:1253, :1292` makroları, `seam_conformance_core/main.rs:17-20`, `common/seam/target.rs:174`, `seam_mock_fixture/main.rs` f1..f12 (:99-576), `seam_real_adapter/main.rs:54` | D8 + yeni H-* satırları |
+| `impl KamaTransport for` (yeni metotlar hepsini kırar) — `0c22a07d`: `client-core/src/transport.rs:1198`; `kama-app/src/signaling.rs:647`, `ptt.rs:997`, `messaging.rs:1316`, `:1368`, `file_transfer.rs:1834`; `kama-app/tests/common/mock_transport.rs:396`; `kama-app/tests/ptt.rs:448`, `signaling.rs:319`, `text_receipt.rs:375`, `file_transfer.rs:463`; `kama-integration/tests/common/seam/real.rs:231` (12) · `05d:` ek `messaging.rs:2223` (ScriptedTransport), `tests/k4g_p0_receipt.rs:594` | F |
+
+**C.H — Ürün profili / dondurma pinleri** — 12 + 3 belirsiz
+| Test | İşlem |
+|---|---|
+| `transport_v1_freeze.rs:27` (:28-29) `kimlik_sabitleri_donmus`; `:34, :44, :71, :84, :104` | D8 (DUR-06-13 kimlik; A.12 alanlar) |
+| `client-core/tests/product_profile_v1.rs:12, :32, :46, :59` | D8 |
+| `bench/src/manifest.rs:330`, `bench/src/kama_product.rs:1035` | D8 (kimlik tek kaynaktan) |
+| `api_surface_v0.rs:77-108` | D8 |
+| belirsiz: `runtime_e2e.rs:852`, `:1097`, `client-core/src/lib.rs:226` | gözden geçir |
+
+**C.I — PTT `Reliable` ve sıra garantisi** — 16
+| Test | İddia | İşlem |
+|---|---|---|
+| `kama-app/tests/ptt.rs:740` `r0_all_ptt_records_are_reliable` (:760) | üç kayıt da Reliable | D8 (A.18: demet `DeadlineBounded`) |
+| `ptt.rs:694` (:714) | Started, Audio×N, Ended sırası | D8 (`flow_seq` sırası) |
+| `ptt.rs:817` `bundle_before_open_is_dropped` (:820, :831); `:851` (:858, :871) | aynı oturum sırasına dayanır | D8 (PTT-R3 → ön tampon) |
+| `ptt.rs:1167` (:1200-1201), `:1234` (:1252, :1275, :1282), `:1307` (:1327, :1341), `:1458` (:1523-1524), `:1596` (:1623, :1638) | yeni oturumda OPEN demetlerden önce | D8 (OPEN akışın ilk birimi) |
+| `ptt.rs:1660` `r0_late_bundles_from_a_retired_session_are_delivered_not_dropped` (:1666-1739) | geç demet asla düşmez | D8 (geç demet oynatılmaz; teslim edilir mi DUR-06-6) |
+| `ptt.rs:1818`, `:2111` (:2186) | belirsiz | gözden geçir |
+| `kama-node/tests/two_nodes_loopback.rs:133` (:232); `kama-node/src/node/tests.rs:436` (:513) | gerçek transport'ta sıra / dolu kanal | D8 |
+| `kama-integration/tests/int02_loopback.rs:367` (:374), `:407` (:417) — `ptt_ok = done && in_order` (`examples/int02_node.rs:692-693`, :1758-1759) | PTT kesintisiz ve sıralı | D8 (B11 ölçüleri) |
+
+**C.J — Kayıtlar arası oturum sırası** — `0c22a07d` 14 · `05d:` 20 (3 belirsiz)
+| Test | İddia | İşlem |
+|---|---|---|
+| `kama-app/tests/file_transfer.rs:757` (:772) | FILE_BEGIN önce | K (aynı akış) |
+| `file_transfer.rs:903` `a_receipt_refused_by_the_transport_waits_and_is_not_lost` | alıcının kendi parçaları ortak kuyruğu doldurur | D8 (FILE_RECEIPT kontrol akışında) |
+| `file_transfer.rs:1882` (:1914), `:1016`, `:1091`, `:1396` (:1455) | bilinmeyen aktarım / sıra (belirsiz) | gözden geçir |
+| `kama-node/src/node/tests.rs:266` (:333) | sonraki TEXT sıra bariyeri | D8 (akışlar arası bariyer yok) |
+| `node/tests.rs:836`, `:945`, `:1049` (:1045); `:1476` | "teslim sıralıdır"; FILE_RECEIPT(ok) sonra TEXT | D8 (akışlar arası sıra sözü yok) |
+| `kama-node/src/node/signaling_tests.rs:142` (:154, :181) | blob, text, blob sırası | D8 (ayrı akışlar) |
+| `kama-app/tests/signaling.rs:615` (:636) | blob'lar sırayla | K |
+| `kama-app/tests/text_receipt.rs:585` (:596-598) | RECEIPT varış sırası (belirsiz) | gözden geçir |
+| `05d:kama-app/tests/k4g_p0_receipt.rs:1282, :1352, :1440, :1505, :1735, :1919, :2002, :2060, :2269, :2384` | `Rig::with_full_bob_to_alice_queue`: dosya pompası ortak kuyruğu doldurur → RECEIPT bekler | D8 (fikstür ön koşulu artık kurulamaz; iddia "canlı RECEIPT silinmez" K, kurulum CTRL akışının kredisi/tavanıyla yeniden yazılır) |
+| `05d:k4g_p0_receipt.rs:1816` (:1859), `:1879` | iki yönlü doygunluk | K (B5'e taşınır) |
+| `05d:k4g_p0_receipt.rs:2119` (:2160-2191); `:2335` (belirsiz) | `gated_by_receipts` kapısı | D8 / kaldırılabilir (DUR-06-14) |
+| `05d:kama-app/src/messaging.rs:2706, :2774, :2882`; `:2388, :2635, :2830` (belirsiz) | kapı; adopt sırası; "geri basınç oturum başına" | D8 |
+
+**C.K — kama-mobile UniFFI aynası** — 2 + 2 derleme pini
+| Test | İşlem |
+|---|---|
+| `crates/kama-mobile/src/error.rs:552` (:560-569) | K (Backpressure aynası) + yeni varyant |
+| `kama-mobile/src/event.rs:914` `metrics_mirror_keeps_every_field` | D8 (yeni sayaçlar) |
+| derleme pinleri `error.rs:218-250`, `:374-440` (tam `From` eşlemeleri) | D8 (A.23) |
+
+**Toplam (kesişimli):** A 16 · B 34 · C 18 · D 16 · E 33 · F 4 · G 4 + düzenek · H 12 · I 16 · J 14 + 20 · K 2. Taranmayan: kama-engine, kama-noise-wire, kama-store testleri (A.6 gereği değişmemeleri beklenir — doğrulama uygulama turunda).
