@@ -534,3 +534,56 @@ Sürekli dosya aktarımında toplam kontrol yükü [hesap]: 31 B/s'de ≈ 1,3 + 
 **DUR-06-24 — PTT eşik dosyasının onayı.** Yöntem sahibin 1. notudur (B11) ve DUR değildir. DUR olan: kalibrasyondan sonra `PTT-ESIK-v1`'in (içeriği B11) sahip onayı, kabul koşusundan önce.
 
 **DUR'dan çıkarılanlar:** rev1 DUR-06-4 (yöntem → B11 kuralı), DUR-06-9 (→ DUR-06-5 (iii)), DUR-06-16 ([CAL] başlangıç değerleri: ρ_C 0,1 · Q_BE:Q_BK 3:1 · W0_BE 32 birim/32 KiB · W0_BK 64/64 KiB · `bk_flow_limit0` 4 · `max_rel0` 4 · W_CTRL0 16 · ρ_V,max 0,7 · W_LIVE, D_VO, T_block, N ölçülür — orkestratör seçer, raporlar; normatif olunca DUR-06-3/-17).
+
+## Ek E — EK-1 kapsama tablosu (gövde · Ek A · Ek B · Ek C)
+
+Boş hücre "—" = o ekte madde gerekmiyor; gerekçe "Not" sütununda.
+
+| EK-1 / karar maddesi | Gövde | Ek A | Ek B | Ek C | Not |
+|---|---|---|---|---|---|
+| §1.1 PTT>TEXT>FILE yalnız uygulama verisi; kontrol ilerleme mekanizması | §4, §5 katman 0 | A.17 | B10 | — | kontrol testleri yeni |
+| §1.1 (a) kontrol envanteri; ACK ≠ RECEIPT; hizmet hakkı; toplam maliyet | §4 | — | B10 (a) | — | tablo Ek D DUR-06-3 (31/300 B/s maliyet) |
+| §1.1 (b) tavan + koşullu asgari hak | §4 Tavan, §5 m.1/m.5, §7.8 | A.13, A.17 | B10 (a)(b), B26 | — | FLOW_CREDIT tavanı ACK yolunda §7.8 |
+| §1.1 (c) kontrol veri kredisine bağımlı değil | §4, §7.4 | A.13 | B10 (c) | — | |
+| §1.1 (d) sürekli PTT'de ACK/kredi/OPEN/CLOSE ilerler; sürekli kontrolde veri aç kalmaz | §5 m.5 | — | B10 (a) (ACK_V2 dahil), (b) | — | |
+| §1.1 (e) dosya kredisi bitince kontrol için ayrı kaynak | §4, §7.2 | A.13 | B10 (d), B13 (g) | — | |
+| §1.1 WMM garanti vermez; DSCP kapsam dışı | §1, §4 | — | — | — | beyan |
+| §1.2 OpaqueUnit id+size; kopya/ARQ/parite sırası | §2, §6 | A.17 | B2 | C.E, C.F | rev6 kopya kuralı düzeltildi |
+| §1.2 ZORUNLU karşı örnek | §6 hüküm, §14 K1 | — | **B2** (yeniden tasarım) | C.E | FEC kolu deneyde tabanda (DUR-06-20) |
+| §1.2 payload opak; generic sözleşme; motor kama-app'e bağımsız | §5 | A.17, A.33 | B17 | C.F | |
+| §1.2 S7(a) yalnız uçtan uca kanıtla; (b) güçlü aday | §6, DUR-06-2 | A.17 | B2, B16 | C.E | |
+| §1.2 05c oturum geneli pencerenin dönüşümü | §9 | A.12, A.13 | B1 (`distance_holds = 0`), **B1b** | C.C | |
+| §1.2 DUR-38 ile ortak seçim/rezerv; geçemeyen mekanizma tutulmaz | §5 | A.17, A.20 | B17, B14 | C.E | taban 05b rev6 `37b78aad` |
+| §1.3 oynatılabilir oran, başlangıç, uçtan uca, yük altında, geç oynatılmaz, sebep sayaçları | §10 | A.24, A.32 | B11 | C.I | gecikme bileşeni sayaçları eklendi |
+| §1.3 eşikler ürün hedefi + ölçüm (+ sahibin notu 1) | — | — | B11 kuralı | — | K8 hedefleri girdisi; DUR-06-24 |
+| §1.3 deadline göndericide; bütün sahiplik zinciri; geç ACK güvenli; iki ilke | §8.3, §10 | A.4, A.16, A.17 | B12 | — | tek sonlandırma çıktısı |
+| §1.3 S5: 300 B/s başlangıç; paket boyu ses kabulünün parçası | §10, §11 | — | B11 (birim boyu profilde), B19 (b) | — | DUR-06-10 |
+| §1.3 sesli mesaj ayrı, görünür; maliyet ayrı | §10 | — | B19 (b) (otomatik geçiş yok) | — | DUR-06-12 |
+| §1.4 açılış: ilk kredi + ilk kontrol | §3, §7.3 | A.5 | B13 (a) (+ erken birim) | — | |
+| §1.4 akış sonu/iptal: kullanılmamış kredi, gelmemiş veri, serbest kalma | §7.6 | A.7, A.16 | B13 (b) | — | FIN yuvası; RESET akış 0 birimi |
+| §1.4 oturum değişimi sonrası eski kredi/DATA/ACK uygulanmaz | §3, §7.5 | — | B4, B13 (c) | — | bağlam-önce dağıtım mevcut |
+| §1.4 medya expiry kredi ve sıra muhasebesi | §7.1, §7.6 | A.4 | B13 (d) | — | DUR-06-1 seçenek başına muhasebe |
+| §1.4 aç-kapa kayıt/bellek sınırı | §3 kimlik uzayı, §7.6 | — | B13 (e) (TEXT açıkken) | — | |
+| §1.4 yeni OPEN'da gelecekteki CLOSE yükümlülüğüne yer | §7.6 H_C_tavan | A.22 | B13 (f) | — | FILE_ABORT/FILE_RECEIPT/RESET/PTT_CLOSE/RECEIPT |
+| §1.4 kullanılmamış taahhüt dahil dosya yükü rezervi tüketemez | §7.2 | A.13 | B13 (g), B10 (d) | — | |
+| §1.4 medya kredisi DUR; QUIC stream/datagram karıştırılmaz | §7.1 | — | — | — | DUR-06-1 |
+| §1.4 test ayrımı; dört sebep ayrı; kapı yalnız kapasite kusuru (+ sahibin notu 2) | §7.7 | A.25 | B7 (beş alt koşu), sayaç sözlüğü | C.L | akış 0 dahil |
+| §1.5 T_birim girdileri | §5 m.4 | — | B14 | — | rev6 formülü akış içi |
+| §1.5 sonlu küme; backpressure; token yokluğu ≠ iş yokluğu; vadesiz iş | §5 düzey 1 | — | B6, B14 | — | |
+| §1.5 PRE_CONVERGE ve hizmet yaşının başlangıcı | §5 | — | B14 kolu | — | |
+| §1.5 B′ + ARQ rezervi "ölçüldü" | §5 | — | B17 | C.E | |
+| §2 S1: 120 s yalnız FILE_RECEIPT deney hedefi; ölçüm tanımı | — | — | **B21** | — | rev1'de yoktu |
+| §2 S2: 31 B/s dosya kapsamda; ağ zarfı yazılı | §11 | — | **B22** | — | rev1 S2'yi yanlışlıkla B11'e bağlıyordu |
+| §2 S3: K7 istisnası ayrı | §0 | Ek A kuralı | — | — | |
+| §2 S4: PoC kapsamında | §1 | — | — | — | |
+| §2 S5 | §10, §11 | A.19 | B11, B19 | — | PoC-KAPSAM eki DUR-06-18 |
+| §2 S6 | §4 | A.13, A.17 | B10 | — | |
+| §2 S7 | §5, §6 | A.17 | B2, B16 | C.E, C.F | |
+| §3 deney dalı; merge yok; FROZEN yalnız "DENEY"; vektör/seam değişmez | §12, §14 | Ek A kuralı | Ek B son satır | — | |
+| §4 takvim: Aralık risk; yeni tarih yok | §14 (tahmin) | — | — | — | |
+| §5 her başlığa karşılık; SHA + komut + sonuç; YEREL | bu tablo, §0 | — | ortak kurallar | — | |
+| C15 v3 §9.3 "bir dosya diğerini de kilitlemez" | §6, §10 | A.21 | **B23** | — | rev1'de yoktu |
+| C15 v3 §5(ii) tek kabul yolu, ürün derlemesinde zorlama | §10 | A.21, A.22 | **B24** | — | rev1'de yoktu |
+| C15 v3 §9.4 tel ve şema "sürümleme" | §11 | A.14, A.34 | **B25** | — | karma sürüm |
+| PoC-KAPSAM-001 §2 PTT / EK-2 / EK-3 / K8 | Karar özeti 4, §10 | A.18, A.19 | B11 | C.I | DUR-06-18 |
+| ccr §35.6/§35.14 + KM-SEAM-TC-001 KARAR-1 | §3, Karar özeti 1 | A.8, A.9, A.27 | B1 (D) | C.B, C.D | DUR-06-5 |
