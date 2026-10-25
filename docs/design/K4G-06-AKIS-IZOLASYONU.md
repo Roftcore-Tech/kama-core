@@ -254,3 +254,141 @@ EK-1 §3 (2) ile: iki akış (TEXT/BE + dosya/BK), akış başına sıra, tek kr
 | A.26 | `scripts/ci/layer_check.py` | Yeni kural önerisi: `adaptive-transport` kama-app'e ve kama-contracts'a bağımlı olmaz (ServiceTag motorun kendi tipidir) — mevcut kuralların kapsamı doğrulanır | Hayır | tasarım onayı | — | — |
 
 **Değişmez beyanı (aynı listenin parçası):** `handles.rs`, `s3.rs`, kama-noise-wire zarfı ve protector, hub-server codec, ACK_V2 codec'i ve `tv_ack`, `arq.rs` planı ve `tv_arq`, AMP kayıt baytları ve `amp-record*-v1.json`, `ccr-*` vektörleri, `vectors/SCHEMA.json`. Bunlardan biri uygulama sırasında değişmek zorunda kalırsa iş durur ve ayrı DUR açılır.
+
+## Ek B — Kabul testleri (ayırt edici test planı)
+
+**Ortak kurallar.** Fikstür ön koşulları AÇIK assertion'dır: kurulmadıysa test KIRMIZI ("ölçülecek iş oluşmadı" yeşil sayılmaz; `None` = kırmızı). Dışarıdan ACK, kayıp ilanı ya da kredi ENJEKTE edilmez; yalnız üretim saatleri ve zamanlayıcıları ilerler (ağ kaybı ağ düzeneğinde, ACK yolu kaybı yalnız belirtilen testlerde). Sınırlar koddan ÖNCE türetilir ve commit'lenir; testte ölçülen değer türetilen üst sınırın altında kalmalıdır; sonuç "ölçüldü" diye yazılır. Aşama: **D** = deney dalı (`k4g/06-deney`, YEREL/SHA kuralıyla), **U** = Aşama 6 ürün uygulaması, **I** = Aşama 7 INT-02 (iki süreç + gerçek UDP, 3 tohum). Ön-kayıtlı beklentiler her testte "taban" satırındadır; tutmayan beklentide önce türetim, sonra kod sorgulanır.
+
+**Sayaç sözlüğü (B7 bunları ayırt eder):** `net_loss_recovery_bytes` (ağ kaybından doğan ARQ/kopya/parite) · `credit_violations` (krediyi aşan birim, ACK'siz ret — protokol ihlali) · `media_expired_tx` (gönderende süresi dolup iptal edilen VO birimi) · `media_dropped_rx` (alıcıda VO havuzu/oynatma nedeniyle düşen) · `media_late_unplayed` (geç geldiği için oynatılmayan) · `capacity_defect` (geçerli krediye uyan güvenilir birim için yer bulunamaması — **kabul kapısı yalnız bu sayaca bağlıdır**, sahibin notu 2) · `late_after_reset` · `ctrl_credit_bytes`, `ctrl_blocked_bytes` (kredi trafiğinin bant maliyeti).
+
+### B1 — §9.5 ilk kabul testi: durmuş dosya tüketicisi + kayıp dosya birimi
+- **Amaç:** dosya tüketicisi durmuşken VE dosyada bir birim kayıpken TEXT teslim edilir, medya süre politikasına uyar, bellek sınırlıdır; tüketici açılınca dosya tamamlanır.
+- **Ön koşullar (assert):** alıcı dosya akışını `hold_flow` ile tuttu; dosya birimi k en az bir kez ağda düştü (düzenek sayacı ≥ 1) ve k'den büyük en az bir dosya birimi alıcıda kabul edildi; dosya akışının kredisi tükendi (gönderende `flow_blocked` ≥ 1); TEXT ve (U/I'de) VO birimleri bu durum kurulduktan SONRA sunuldu.
+- **Ölçülen:** her TEXT'in sunumdan uygulamaya teslim süresi; dosya akışı tampon doluluğu (birim, bayt); alıcının bütün tamponlarındaki toplam birim/bayt; VO sayaçları; B7 sayaçları.
+- **Geçer:** bütün TEXT'ler dosya tutulu iken teslim edilir; dosya tamponu ≤ dosya kredisi, toplam ≤ havuz; `capacity_defect = 0`, `credit_violations = 0`; VO yalnız süre politikasına göre düşer (oynatılabilir oran B11'de); tüketici açılınca dosya bütün birimleriyle ve sırayla tamamlanır, özet tutar. **Taban (05c, ön-kayıtlı):** TEXT k kurtarılana dek teslim edilmez → KIRMIZI.
+- **Aşama:** D (TEXT + dosya, VO yok, FEC kapalı) · U (VO dahil) · I.
+
+### B2 — EK-1 §1.2 motor karşı örnek testi (ZORUNLU)
+- **Amaç:** motora daha önce kabul edilmiş eski dosya biriminin kurtarma işi yeni TEXT/medyayı bekletiyor mu.
+- **Ön koşullar (assert):** offer kanalı boş, `tx_queue`'da dosya DATA'sı yok; eski dosya birimi u teyitsiz ve kurtarma işi canlı — üç kol: (a) RECOVER_ARQ'da `pending_lost`'ta u (ARQ planında baş), (b) `dup_queue`'da vadeli u kopyası (baş), (c) u'nun bloğunun bekleyen paritesi `pending_fec`'te; dönüş yolu kesik (u teyit edilemez). Sonra TEXT birimi t ve (U'da) VO birimi v sunulur.
+- **Ölçülen:** t'nin (ve v'nin) ilk emisyonuna kadar u için yapılan emisyon sayısı ve bayt; t'nin ilk emisyon gecikmesi.
+- **Geçer:** t, türetilmiş düzey-1 sınırı T_BE içinde ilk emisyonunu alır (§5 madde 3); u'nun kurtarma emisyonları t'yi bu sınırın ötesine itemez; aynı ölçüt v için T_VO. **Taban (ön-kayıtlı):** mevcut motorda (a) ve (b) kolunda t, u'nun bütün uygun kurtarma emisyonlarından sonra gelir → KIRMIZI; kırmızı çıkmazsa §6 çıkarımı yanlıştır, S7 kararı yeniden açılır. B2 S7(a)'nın tek başına kabul edilemeyeceğinin sınamasıdır: (a) ancak bu testi gerçek kurtarma yollarıyla geçerse kabul edilir.
+- **Aşama:** D (motor düzeyi, deterministik saat; kol (a), (b); kol (c) FEC kapalı olduğundan "ölçülmedi") · U (üç kol, uçtan uca).
+
+### B3 — Kredi güncellemesi kaybı
+- **Amaç:** kredi çerçevelerinin kaybı veri kaybı ya da kalıcı durma üretmez.
+- **Ön koşullar (assert):** dosya akışı kredi sınırında bloklu; alıcı tüketiciyi açtı (yeni kredi üretildi); sonraki N_k FLOW_CREDIT çerçevesi düzenekte düşürüldü (sayaç = N_k).
+- **Ölçülen:** gönderende `FLOW_BLOCKED` sayısı ve aralıkları; blokta kalma süresi; `ctrl_credit_bytes`, `ctrl_blocked_bytes`.
+- **Geçer:** akış, türetilmiş "BLOCKED geri çekilme + RTT + ilan" sınırı içinde ilerler; veri kaybı yok; `capacity_defect = 0`; kontrol baytı raporlanır.
+- **Aşama:** D (en küçük hâli) · U · I.
+
+### B4 — Sırasız / bayat / tekrarlanan / yanlış oturumdan kredi
+- **Amaç:** mutlak + artan kredi modelinin sağlamlığı.
+- **Ön koşullar (assert):** daha büyük sınırlı çerçeve işlendikten sonra daha küçük sınırlı çerçeve teslim edildi; aynı çerçeve iki kez; eski oturum bağlamlı kredi çerçevesi (yenileme sonrası) gönderildi.
+- **Ölçülen:** gönderenin etkin sınırı; gönderilen en büyük `flow_seq`.
+- **Geçer:** etkin sınır hiç azalmaz; gönderen hiçbir anda etkin sınırı aşmaz (`credit_violations = 0` alıcıda); eski oturum kredisi yeni oturum akışına uygulanmaz (bağlam-önce dağıtım sayacı artar).
+- **Aşama:** D (birim düzeyi) · U.
+
+### B5 — İki yönlü doygunluk
+- **Amaç:** iki uç aynı anda dosya + TEXT + (U/I) PTT gönderirken kilitlenme ve aç bırakma yok.
+- **Ön koşullar (assert):** iki yönde de dosya akışı kredi sınırında bloklu kalmış en az bir bölüm; iki yönde de bekleyen RECEIPT/FILE_RECEIPT; oturum değişmedi.
+- **Ölçülen:** her yönde tamamlanma; RECEIPT/FILE_RECEIPT gecikmesi; kredi çerçevesi gecikmesi.
+- **Geçer:** bütün TEXT/RECEIPT/dosya tamamlanır; canlı RECEIPT silinmez (05d); `capacity_defect = 0`; kontrol yolu her iki yönde ilerledi (kredi ilanı sayacı her iki yönde > 0).
+- **Aşama:** U · I.
+
+### B6 — Sürekli yeni yük: sonlu hedef küme biter
+- **Amaç:** kapasiteyi aşan sürekli üretici altında önceden kabul edilmiş hedef kümenin adaleti.
+- **Ön koşullar (assert):** hedef küme BAŞTAN sabit (ör. bir dosya + 20 TEXT); ayrı arka plan üreticisi BE'de kapasitenin üstünde yük SÜRDÜRÜR ve hiç durmaz; arka plan `Backpressure` aldı (≥ 1).
+- **Ölçülen:** hedef kümenin her biriminin tamamlanma süresi; arka plan reddi sayısı.
+- **Geçer:** hedef kümenin her birimi türetilmiş sınır içinde tamamlanır (§5); tamamlanma arka planın durmasına bağlı değildir; yeni iş backpressure alır, kabul edilmiş iş aç kalmaz.
+- **Aşama:** U · I.
+
+### B7 — "HER BİT DÜŞMAN": sebeplerin ayrık sayılması
+- **Amaç:** dört sebebin (ağ kaybı, protokol ihlali, medya expiry, kapasite kusuru) ayrı sayaçlara düştüğünü ve kabul kapısının yalnız kapasite kusuruna bağlandığını göstermek.
+- **Ön koşullar (assert):** dört alt koşu, her birinde yalnız bir sebep kurulur: (1) ağ kaybı (düzenek kaybı > 0, kredi uyumlu gönderen); (2) krediyi aşan sahte gönderen (test kancası); (3) VO süresi dolumu (D_VO küçük); (4) kapasite kusuru — yalnız test kancasıyla alıcı havuzunu yapay küçülterek.
+- **Ölçülen:** sözlükteki bütün sayaçlar, her alt koşuda.
+- **Geçer:** her alt koşuda yalnız kendi sayacı artar (diğerleri 0); (4)'te `capacity_defect > 0` ve kabul hükmü KIRMIZI üretir; (1)–(3)'te `capacity_defect = 0` ve hüküm o sebepten kırmızı olmaz. Ürün koşularında (B1, B5, B6) `capacity_defect = 0` ŞARTTIR; kredi baytları ayrıca raporlanır ("boşa bayt ≈ 0" tek başına kapı değildir).
+- **Aşama:** D (1, 2, 4) · U (dördü) · I (ürün koşularında sayaç sütunları).
+
+### B8 — PTT altında TEXT gecikmesi
+- **Amaç:** sürekli canlı ses altında TEXT'in ilerlemesi.
+- **Ön koşullar (assert):** VO akışı desteklenen profilde açık ve ölçüm penceresi boyunca demet üretiyor; TEXT ölçüm penceresinde sunuldu.
+- **Ölçülen:** TEXT teslim gecikmesi dağılımı (p50/p95/en çok), VO sayaçları.
+- **Geçer:** ölçülür/raporlanır; ayrıca her TEXT türetilmiş üst sınır içinde teslim edilir (ρ_V ile §5 madde 3).
+- **Aşama:** U · I.
+
+### B9 — Sürekli TEXT altında dosya biter (aç bırakılmama)
+- **Amaç:** BE sürekli yükteyken BK dosyasının tamamlanması.
+- **Ön koşullar (assert):** BE akışı ölçüm penceresi boyunca backlog'lu (kuyruk hiç boşalmadı — örneklemeyle assert); dosya ölçüm başında kabul edildi.
+- **Ölçülen:** dosya tamamlanma süresi; BK'nin aldığı bayt payı.
+- **Geçer:** dosya, Q_BK/(Q_BE+Q_BK) payından türetilen sınır içinde tamamlanır; BK payı türetilen alt sınırın altına inmez.
+- **Aşama:** D (BE+BK) · U · I.
+
+### B10 — EK-1 §1.1 kontrol testleri (iki yönlü)
+- **(a) Sürekli PTT altında kontrol ilerler.** Ön koşul: VO ölçüm boyunca backlog'lu. Ölçülen: kredi ilanı, FLOW_RESET, PTT_OPEN/CLOSE ve RECEIPT gecikmesi. Geçer: her biri türetilmiş kontrol sınırı içinde (§5 madde 5).
+- **(b) Sürekli kontrol yükü altında kabul edilmiş veri aç kalmaz.** Ön koşul: kontrol katmanı ölçüm boyunca uygun işte (ör. çok sayıda RECEIPT üreten TEXT seli; sentetik kontrol kancası); BK ve BE'de kabul edilmiş iş var. Ölçülen: BK/BE bayt payı. Geçer: kontrol tüketimi ≤ ρ_C·r·τ + b_C; BK/BE türetilen alt sınırın altına inmez.
+- **(c) Döngüsel bağımlılık yok.** Ön koşul: bütün veri akışlarının kredisi sıfır (bloklu). Ölçülen: kredi ilanı ve BLOCKED'in yine de çıkıp çıkmadığı. Geçer: kontrol çerçeveleri veri kredisi olmadan gider ve işlenir; akışlar açılır.
+- **(d) Ayrı kaynak.** Ön koşul: P_BK tam taahhüt edilmiş, dosya kredisi bitmiş. Geçer: RECEIPT/FILE_RECEIPT/FILE_ABORT ve TEXT kabul edilir (P_CTRL, P_BE ayrı).
+- **Aşama:** D ((c), (d)) · U (dördü) · I ((a)).
+
+### B11 — EK-1 §1.3 PTT ölçüleri ve eşik sabitleme
+- **Amaç:** "bütün sesi düşürerek geçmek" yok: desteklenen profilde zamanında oynatılabilir oran, konuşma başlangıç gecikmesi, uçtan uca gecikme; dosya/TEXT yükü altında korunması; geç demetin oynatılmaması; sebep sayaçları.
+- **Ön koşullar (assert):** profil (hız, RTT, kayıp, kesinti) yazılı ve ağ düzeneğiyle kuruldu; VO açıldı (desteklenen profil); B1/B9'daki dosya ve TEXT yükü aynı anda.
+- **Ölçülen:** oynatılabilir oran = süresi içinde oynatma noktasına ulaşan demet / üretilen demet; konuşma başlangıcı = `open` çağrısından ilk demetin oynatılmasına; uçtan uca gecikme dağılımı; `media_expired_tx`, `media_dropped_rx`, `media_late_unplayed`, ağ kaybı ayrı.
+- **Geçer (eşik sabitleme kuralı, sahibin notu 1):** (1) bir ya da daha çok **KALİBRASYON** koşusu yapılır ve "kalibrasyon" etiketiyle raporlanır — kabul hükmü üretmez; (2) sahip eşikleri ürün hedefi + kalibrasyondan seçer ve eşik dosyası (`PTT-ESIK-v1`, sha256) "INT-02 GEÇTİ" kabul koşusundan ÖNCE commit'lenir ve onaylanır; (3) kabul YENİ bir koşuyla (yeni koşu kimliği, yeni tohumlar) yapılır; kalibrasyon koşusu kabul sayılmaz, kabul koşusunun sonucuna bakılarak eşik değiştirilmez; (4) eşik değişirse yeni dosya + yeni kabul koşusu. Geç demet hiç oynatılmaz (`media_late_unplayed` sayılır, oynatma olayı yok).
+- **Aşama:** U (sayaçlar ve ölçüm araçları) · I (kalibrasyon + kabul).
+
+### B12 — Gönderici deadline'ı: süresi dolan medya hiçbir motor kuyruğunda yaşamaz
+- **Amaç:** expiry bütün sahiplik zincirinde; geç ACK çifte serbest bırakma ya da yanlış teyit yaratmaz.
+- **Ön koşullar (assert):** VO birimi v'nin süresi dolmadan önce v `tx_queue`, `pending_lost` ve `dup_queue`'da (üç kol ayrı) bulunuyor; dönüş yolu kesik.
+- **Ölçülen:** süre dolumundan sonra v'nin motor kuyruklarında ve store'da varlığı; v için emisyon; süre dolumundan sonra gelen v ACK'inin etkisi.
+- **Geçer:** süre dolumundan sonraki ilk turda v hiçbir DATA/ARQ/kopya/parite adayında değildir ve tele çıkmaz; store'dan bir kez düşer; geç ACK teyit üretmez, payload'u ikinci kez serbest bırakmaz, `media_expired_tx` = 1. Güvenilir birim için aynı test yükümlülüğün KORUNDUĞUNU gösterir (dosya birimi süre nedeniyle iptal edilmez).
+- **Aşama:** D (motor düzeyi; DENEY) · U.
+
+### B13 — EK-1 §1.4 kredi yaşam döngüsü
+- **(a) Açılış:** yeni akışın ilk birimi kontrol turu beklemeden gider ve kabul edilir (ilk kredi profil sabiti); ilk uygulama kontrolü kredisiz gider. Ön koşul: hiçbir FLOW_CREDIT görülmedi.
+- **(b) FIN ve RESET:** FIN'den sonra akış durumu, tampon ve taahhüt serbest kalır (sayaçla); RESET'te kabul edilmiş ama gelmemiş veri beklenmez, geç birim `late_after_reset` ile ACK'lenip atılır, `capacity_defect = 0`; kaynakların serbest kalma anı ölçülür.
+- **(c) Oturum değişimi:** supersession/yenileme sonrası eski oturumun kredisi, DATA'sı ve ACK'i yeni oturumun akışına uygulanmaz (ön koşul: eski oturumdan geç çerçeve gerçekten geldi).
+- **(d) Medya expiry muhasebesi:** eski konuşmanın kayıp/süresi dolmuş demetleri yeni konuşmanın teslimini durdurmaz; kredi/sıra muhasebesi DUR-06-1 kararına göre tutarlı.
+- **(e) Açılıp kapanma:** K döngüde akış aç-kapa (dosya ve PTT); kayıt sayısı ve bellek her örnekte ≤ türetilmiş tavan; kapalı akış kaydı ≤ watermark + MAX_FLOWS.
+- **(f) Gelecek yükümlülüğe yer:** RESET yuvası ve Live akışın OPEN/CLOSE kredisi ayrılamıyorken `open_flow` → `Backpressure`; açık akışların hepsi her durumda kapatılabilir (CLOSE/RESET hiç reddedilmez).
+- **(g) Rezerv korunur:** P_BK tam taahhütte (kullanılmamış kredi dahil) TEXT ve kontrol kabul edilir.
+- **Aşama:** D ((a), (b) FIN, (g)) · U (hepsi).
+
+### B14 — EK-1 §1.5 T_birim (akışlar arası, birim düzeyi)
+- **Amaç:** her teyitsiz birimin son hizmet yaşı türetilmiş T_birim ile sınırlı.
+- **Türetim (koddan önce):** girdiler açık: canlı rakip birim sayısı, kuyrukta önce hizmet alacak işler, yeniden uygun hale gelme süresi, durum geçişleri, çağrılar arası azami aralık; "uygun iş" = vadesi gelmiş, teyitsiz, bu turda gönderilmemiş; token yokluğu iş yokluğu sayılmaz; PRE_CONVERGE istisnası ve hizmet yaşının başladığı an yazılı.
+- **Ön koşullar (assert):** kabul edilmiş sonlu canlı küme: ≥ 2 akışta (BE, BK) ≥ 2'şer teyitsiz zincir; dönüş yolu kesik; dışarıdan olay enjekte edilmez; ≥ 2 × T_birim boyunca üretim saati ilerler.
+- **Ölçülen:** her birimin son hizmet yaşı ve yeniden seçilmesi; durum geçişlerinde (ARQ → kopya) aynı birimin izlenmesi.
+- **Geçer:** her birim için ölçülen ≤ T_birim; sonuç "ölçüldü" diye yazılır. 31 ve 100 B/s'de.
+- **Aşama:** D (iki akış) · U.
+
+### B15 — FEC akışları yeniden bağlamaz
+- **Amaç:** kurtarılan birim aynı akış ve kredi muhasebesinden geçer; farklı akışlar aynı bloğu beklemez.
+- **Ön koşullar (assert):** BE ve BK akışları aynı anda FEC açık; her akışta bir blokta kalıcı kaynak kaybı, parite yeterli.
+- **Ölçülen:** kurtarılan birimin teslim sayısı, kredi tüketimi, blok kapanış süresi, parite ve küçük paket bayt maliyeti.
+- **Geçer:** her blok tek akışın birimlerinden oluşur; kurtarılan birim tam bir kez teslim edilir ve ikinci kredi tüketmez; kısmi blok T_block içinde kapanır; maliyet raporlanır.
+- **Aşama:** U.
+
+### B16 — Kuyruk derinliği ölçüsü (S7 denetiminin testi)
+- **Amaç:** §6 tablosundaki her katmanda yeni TEXT biriminin önünde dosya işi kalmadığını ölçmek.
+- **Ön koşullar (assert):** dosya backlog'u her katmanda gerçekten var (offer bütçesi dolu, motor BK kuyruğu dolu, BK kurtarma işi canlı).
+- **Ölçülen:** TEXT birimi sunulduğu anda, sırasıyla offer → store → motor seçimi → tel yolu üzerinde, ondan önce hizmet alacak BK baytı.
+- **Geçer:** ≤ bir iletimdeki BK birimi (fiziksel sınır, §11) + türetilmiş DRR payı; FIFO kaynaklı ek BK baytı = 0.
+- **Aşama:** D (offer + motor) · U (bütün katmanlar).
+
+### B17 — DUR-38 regresyonu: tek akışta 05b davranışı
+- **Amaç:** ortak seçicinin tek akışlı yapılandırmada DUR-38 kararlarını koruması.
+- **Ön koşullar / ölçülen / geçer:** C15 v3 §2.4 T1 ve T2 aynen (31 ve 100 B/s; birim düzeyi; enjeksiyonsuz; ayrı arka plan üreticisi), tek akışla.
+- **Aşama:** U (D'de seçici tam değilse "ölçülmedi").
+
+### B18 — Korunan doğruluk düzeltmeleri
+- **Amaç:** 05b/05c/05d/05g'nin akış başına korunması.
+- **Kapsam:** INV-ACK-DELIVER-1 akış başına (tutulamayan birim ACK'lenmez — sahte ihlalcıyla); 05b teyit/payload sahipliği (budanmış kaydın geç ACK'i teyit etmez) akış etiketiyle; 05d canlı RECEIPT silinmez ve oturum değişiminde taşınır; 05g: `Ready` olmayan oturumda `open_flow` → hata, `Closed` sonrası `FlowRef` → `UnknownFlow`; INT-02 `ek-tuketici-durak` kolu 3/3 (bütün düğüm durur; tasarım bunu değiştirmez).
+- **Geçer:** ilgili mevcut testler (Ek C) yeni iddialarıyla yeşil; INT-02 kolu 3/3.
+- **Aşama:** U · I.
+
+### B19 — Akış kimliği tükenmesi ve VO kabulü
+- **(a)** `flow_id` uzayı test kancasıyla sona yaklaştırılır → yeni `open_flow` tipli hata + `RenewRequired`; yeni oturumda akış açılır; eski akışlar sessiz düşmez.
+- **(b)** Ölçülen hız VO profilini ρ_V,max içinde taşımıyorken `open_flow(Voice)` reddedilir ("desteklenmeyen profil"); taşıyorken açılır. Eşik sayısı [CAL].
+- **Aşama:** U.
