@@ -587,3 +587,83 @@ Boş hücre "—" = o ekte madde gerekmiyor; gerekçe "Not" sütununda.
 | C15 v3 §9.4 tel ve şema "sürümleme" | §11 | A.14, A.34 | **B25** | — | karma sürüm |
 | PoC-KAPSAM-001 §2 PTT / EK-2 / EK-3 / K8 | Karar özeti 4, §10 | A.18, A.19 | B11 | C.I | DUR-06-18 |
 | ccr §35.6/§35.14 + KM-SEAM-TC-001 KARAR-1 | §3, Karar özeti 1 | A.8, A.9, A.27 | B1 (D) | C.B, C.D | DUR-06-5 |
+
+## Ek F — İnceleme izleme tablosu (`k4g06/inceleme-wf_4a961b72.json`, rev1 `2656953c`)
+
+Mercekler: **E** = EK-1 kapsama · **T** = teknik doğruluk · **W** = tel/güvenlik/donma · **F** = uygulanabilirlik. Önem: B = blocker, M = major, m = minor. 73 bulgu: 70 işlendi, 3 kısmen reddedildi (gerekçe satırda).
+
+| Bulgu | Önem | Kısa başlık | Karar | Notta yeri |
+|---|---|---|---|---|
+| E1 | B | FLOW_DATA × ccr §35.6/KARAR-1/batch.rs | işlendi: W2 geri çekildi, öneri B | Karar özeti 1, §3, A.8, A.9, DUR-06-5 |
+| E2 | B | PoC-KAPSAM-001 PTT hükmü sessizce aşılıyor | işlendi: Ek A satırı + ayrı DUR; K8 → B11/DUR-06-24 | Karar özeti 4, §10, A.18, A.19, DUR-06-18, B11 |
+| E3 | M | noise-wire §2.6/§3/§2.57, schema eksik | işlendi; A.6 daraltıldı | A.6, A.10, A.11, DUR-06-5 (ii) |
+| E4 | M | T-hücre, netem 7 profil, §4.4 yok | işlendi | A.26, B20, C.L |
+| E5 | M | `early_unit` (K6) sahipsiz | işlendi | A.5, DUR-06-7, B13 (a) |
+| E6 | M | UniFFI/S5 PttBundle, pttPush, AK-001, README-HASAN, node.rs | işlendi | §10, A.24, DUR-06-23 |
+| E7 | M | Live kredi/sıra muhasebesi çelişkili | işlendi | §7.1, §7.6, DUR-06-1, B13 (d) |
+| E8 | M | Akış 0 akış kontrolü ve taşma sayacı | işlendi: W_CTRL | §4, §7.7, B7 (5) |
+| E9 | M | FLOW_CREDIT tavanı ACK yolunda uygulanamıyor | işlendi | §7.4, §7.8, DUR-06-3 tablo |
+| E10 | M | FILE_RECEIPT/FILE_ABORT/RECEIPT yeri; H_C_tavan yok | işlendi: H_C_tavan = 12 | §7.6, A.22, B13 (f) |
+| E11 | M | Pompa eş başına → dosya dosyayı kilitler | işlendi | §6, §10, A.21, B23 |
+| E12 | M | Akışsız emisyonlar, K1 (a), hak kapsamı | işlendi | §5 |
+| E13 | M | S1/S2 karşılanmamış | işlendi | B21, B22, §11, Ek E |
+| E14 | M | Tek kabul yolu / `transport_mut` devredilmemiş | işlendi | §10, A.21, A.22, DUR-06-14, B24 |
+| E15 | m | B10 (a)'da ACK yok | işlendi | B10 |
+| E16 | m | B12 motor öncesi zincir, parite kolu | işlendi | B12 |
+| E17 | m | PRE_CONVERGE açık değil | işlendi | §5, B14 |
+| E18 | m | T_birim akış içi terim | işlendi | §5 m.4, B14 |
+| E19 | m | S5: birim boyu, gecikme sayaçları, otomatik geçiş | işlendi | B11, B19 (b) |
+| E20 | m | Envanter eksik, toplam maliyet yok | işlendi | DUR-06-3 tablo |
+| E21 | m | INV-ACK-DELIVER-1 RESET istisnası | işlendi | A.7, §9 |
+| E22 | m | HANDOFF/KNOWN-LIMITATIONS, seam-mutation, kama-engine | işlendi | A.7, A.20, A.30, A.35 |
+| E23 | m | RX_BLOCKS_CAP ortak | işlendi | §7.2, B15 |
+| E24 | m | Hub kuyruğu gerekçesiz dışarıda | işlendi | §1, §6, A.31 |
+| E25 | m | Ek E sütunları; 05c pencere assert'i | işlendi | Ek E, B1, B1b |
+| T1 | M | B2 yanlış niceliği ölçüyor; taban SHA yok | işlendi | §6, B2 |
+| T2 | M | 05b rev6 yok; kopya iddiası yanlış; T_birim eksik | işlendi | §0, §2, §5, §6, A.17, A.20 |
+| T3 | M | Kredi canlılığı: kalıcı durma | işlendi | §7.4, §7.5, B3 (b)(c) |
+| T4 | M | Kapalı akış izleme sınırsız; geç kopya kuralı yok | işlendi: kalıcı/dinamik kimlik uzayı, `late_after_close` | §3, §7.6, §9, B13 (e) |
+| T5 | M | Live sonlanma, MAX_FLOWS_VO, dedup, düşür+ACK | işlendi: VO kalıcı akış; dedup penceresi; yalnız `DeadlineBounded` düşer | §3, §7.6, §7.7, DUR-06-6 |
+| T6 | M | Akış 0 kredisiz; sıra başı yeri kayboluyor | işlendi | §4, §7.7, §9, B10 (d), B7 (5) |
+| T7 | M | Deadline/iptal × `take_confirmed_units` ve donmuş cümleler | işlendi: tek sonlandırma çıktısı | D3, §8.3, A.16, B12 |
+| T8 | M | ρ_C + ρ_V < 1 yalnız açılışta | işlendi: VO kovası min(profil, ρ_V,max·r(t)) | §5, §10, B19 (b) |
+| T9 | m | Kontrol kovasının kapsamı belirsiz | işlendi | §4, §5 m.1, §7.8 |
+| T10 | m | DRR indisleri; çağrı sayan pay; hakların kapsamı | işlendi | §5 düzey 1, tek rezerv |
+| T11 | m | Kredi formülü, havuz, yerel tampon, değişmezler | işlendi | §6, §7.2, §7.4 |
+| T12 | m | BLOCKED/RESET motor taşıması tanımsız | işlendi: RESET = akış 0 güvenilir birimi, BLOCKED = `TransmitKind::Control` | §4, §5, §7.6 |
+| T13 | m | `close_flow` boş FIN birimi kredisi | işlendi: FIN yuvası | §7.6 |
+| T14 | m | `max_bytes` u32 dosya tavanı | **kısmen reddedildi:** u64 (+4 B/girdi) yerine u32 + açık tavan (`MAX_REASSEMBLY_BYTES` 64 MiB) + tipli hata; alıcı 64 MiB üstünü zaten reddeder | §7.1 |
+| T15 | m | Blok tavanı akışları yeniden bağlar | işlendi | §7.2, B15 |
+| W1 | M | W2'de FEC kimlik türetimleri tanımsız | işlendi (B ile) | §3, DUR-06-5 tablo, B15 |
+| W2 | M | Akış başına blok numarası çakışması | işlendi (B ile) | §3, §8.1, DUR-06-5 |
+| W3 | M | FIN FEC kurtarımında görünmez | işlendi: `source_flags` FIN biti | §3, A.11, B13 (b) |
+| W4 | M | Store-miss bekçisi; ikinci silme yolu | işlendi: boş batch; sonlandırma çıktısı | §3, D3, §8.3, B18 |
+| W5 | M | `TransmitKind` kapalı küme çelişkisi | işlendi | §5, C.F (D8) |
+| W6 | M | RESET teyidi yapısal olarak imkânsız | işlendi | §3, §7.6 |
+| W7 | M | Kontrol çerçevesi DoS sınırları | işlendi | §7.8, B26 |
+| W8 | M | Akış 0 tüketici durunca ACK'siz ret, sayaç yok | işlendi | §4, §7.7, B7 (5) |
+| W9 | M | KARAR-1 çelişkisi; DUR-06-8 gerekçesi | işlendi | = E1; DUR-06-5 (iv) |
+| W10 | M | noise-wire/şema hizası, codepoint, tek kaynak, `control_id` | işlendi: 0x1D+ K-WIRE-CTRL-1; tek kaynak schema | A.10, A.11, §11 |
+| W11 | M | Karma sürüm davranışı tanımsız | işlendi | §11, DUR-06-13, A.34, B25 |
+| W12 | M | Live dedup yok | işlendi | §3, DUR-06-6 |
+| W13 | m | `OpaqueUnit` alanı 149 literal'i kırar | işlendi: eklemeli API | §5, C.F, DUR-06-2 |
+| W14 | m | FEC ölü `seq` alanı yerine `flow_id` | **gereksiz kaldı (kısmen reddedildi):** B'de akış `block_id`'dedir, FEC çerçevesine alan eklenmez; ölü alan S2 geçişinde zaten düşer | §3, A.8 |
+| W15 | m | `early_unit` akış ataması | işlendi | = E5 |
+| W16 | m | HubChannel'da FLOW_* | işlendi | D1, B27 |
+| W17 | m | Yama tabanı bayat (rev6) | işlendi | §0, A.17, A.20, B2 |
+| W18 | m | `flow_id` tükenmesinin bedeli | işlendi: VO kalıcı (churn yok), BK 65 532 | §3, DUR-06-5 (iii), B19 (a) |
+| W19 | m | Kredi çerçevesi boyu yan kanal | işlendi: sabit boylu girdi + beyan | §7.8, §11 |
+| F1 | M | B2 nicelik ve ön-kayıtlı beklenti | işlendi | = T1 |
+| F2 | M | D etiketleri §15 ile tutarsız | işlendi | §14, Ek B son satır |
+| F3 | M | FEC kolu tabanda ölçülebilir | işlendi | §14 K1, DUR-06-20 |
+| F4 | M | Deneyde mesafe kapısının durumu | işlendi | §14 K2, B1b |
+| F5 | M | Düzenek sütunu; I'de hedefli düşürme yok; üç sahte model | işlendi | Ek B düzenekler, A.32, Ek C başı |
+| F6 | M | Akış 0 kaybı kapıdan kaçabilir | işlendi | §7.7, B7 (5) |
+| F7 | M | `OpaqueUnit` literal'leri; K3 tahmini | işlendi | = W13; §14 K3 |
+| F8 | M | 2×2 bu ölçekte uygulanamaz | işlendi | DUR-06-21, B1-taban, Ek C başı |
+| F9 | m | Rutin DUR'lar | işlendi: 06-4, 06-8, 06-9, 06-16 çıktı; 06-3 daraltıldı; 06-15 gerekçeyle kaldı | §13, Ek D başı |
+| F10 | M | Ek A satırlarının DUR bağı; iki eksik DUR | işlendi | Ek A DUR sütunu, DUR-06-17, -20, -22, -23 |
+| F11 | m | Eşik dosyası SHA/[CAL]/istatistik | işlendi | B11 |
+| F12 | m | Ölçüt belirsizlikleri (B1, B4, B9, B16, B18) | işlendi | Ek B |
+| F13 | m | Aşama 0 toplamı, fazlalıklar, regresyon alt kümesi, kapılar | işlendi | §14, C.L |
+| F14 | M | Karar özeti, öncelik, Ek C'yi ayrı dosyaya taşıma | **kısmen reddedildi:** özet ve öncelik işlendi; Ek C notta kalır — EK-1 §5 Ek C'nin notta karşılık içermesini ister, tek dosya + tek hash izlenebilirliği korunur | Karar özeti, §13 |
