@@ -737,7 +737,7 @@ fn k4g05b_blackhole_copy_interval_backoff() {
         sim.advance();
         sim.timers();
     }
-    if !sim.last_ack_at.is_some_and(|t| t + 5 * SEC >= end) {
+    if sim.last_ack_at.is_none_or(|t| t + 5 * SEC < end) {
         fixture.push(format!(
             "pencere boyunca ACK akışı sürmedi (son ACK {:?} ms, uç {} ms) — later-ACK kanıtı sınanmadı",
             sim.last_ack_at.map(|t| t / MS),
