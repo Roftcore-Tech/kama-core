@@ -11054,4 +11054,555 @@ mod tests {
         let _ = s.take_confirmed_units();
         forget_assert_after_late_ack(&mut s, 7, dup_seq, 50 * MS, TEST);
     }
+
+    // ── [K4G-05b rev6 · CEVAP PAKETİ 15 v3 §2.4] T1 ve T2 — sınıflar arası ve sınıf içi hizmet ──────
+    //
+    // Sınırlar Ek B.6 (h)'de koddan ÖNCE türetildi (h.4–h.6); burada aynı formüller ns cinsinden
+    // hesaplanır, sonuca bakılarak büyütülmez. Beyaz kutu: her olayda `on_event_core` → pace = R ve
+    // BURST tavanı = max(tur başı tabanı, R·40 ms) (ürünün R'deki tavanı) → `schedule_transmit`.
+    // Kuyruk-probu ve FEC kapalı (`Sender::new` varsayılanı) → prob/FEC payı P_pf = 0.
+
+    const REV6_SEC: u64 = 1_000_000_000;
+    /// Pompa: her 10 ms `Timer::Pto`, 200 ms'de bir `Timer::RtpropProbe` (τ = 10 ms).
+    const REV6_TICK: u64 = 10 * MS;
+    const REV6_RTPROP: u64 = 200 * MS;
+    const REV6_BIG: u64 = 1050;
+    const REV6_SMALL: u64 = 37;
+
+    /// Ürünün R'deki davranışı (beyaz kutu): olay → pace = R, tavan → tur.
+    fn rev6_turn(s: &mut Sender, ev: Event, now: u64, rate: u64) -> Vec<TransmitDecision> {
+        s.on_event_core(ev, now);
+        s.pacer.set_rate(rate);
+        if s.state != SenderState::PreConverge {
+            let window = rate.saturating_mul(BURST_WINDOW_NS) / REV6_SEC;
+            let floor = s.burst_floor_bytes(now);
+            s.pacer.set_burst_cap(window.max(floor));
+        }
+        s.schedule_transmit(now)
+    }
+
+    /// Sınıf sınırları (Ek B.6 (h.3)): T_max(DATA) = T_max(ARQ) = 3·S/R + 7τ, T_max(kopya) = 4·S/R + 8τ.
+    fn rev6_t_max(rate: u64) -> (u64, u64, u64) {
+        let s3 = 3 * REV6_BIG * REV6_SEC / rate + 7 * REV6_TICK;
+        let s4 = 4 * REV6_BIG * REV6_SEC / rate + 8 * REV6_TICK;
+        (s3, s3, s4)
+    }
+
+    /// H_maks = max(3·srtt, 2·EAI_maks)·1000/300, EAI_maks = 2·S/R + 65/31 s (ortalama uçuş birimi ≤ S).
+    fn rev6_h_max(rate: u64, srtt_ns: u64) -> u64 {
+        let eai =
+            2 * REV6_BIG * REV6_SEC / rate + EAI_SACK_WIRE_BYTES * REV6_SEC / EAI_RETURN_BW_PRIOR;
+        (3 * srtt_ns).max(2 * eai) * 1000 / 300
+    }
+
+    /// T_birim = max(H_maks, RTO_MAX) + RTO_MAX + N_live·T_max(kopya) + τ (Ek B.6 (h.3)).
+    fn rev6_t_unit(rate: u64, srtt_ns: u64, n_live: u64) -> u64 {
+        let a = rto_max_ns();
+        rev6_h_max(rate, srtt_ns).max(a) + a + n_live * rev6_t_max(rate).2 + REV6_TICK
+    }
+
+    fn rev6_class(k: TransmitKind) -> Option<usize> {
+        match k {
+            TransmitKind::Data => Some(0),
+            TransmitKind::Retransmit => Some(1),
+            TransmitKind::Duplicate => Some(2),
+            _ => None,
+        }
+    }
+
+    const REV6_CLASS_NAMES: [&str; 3] = ["DATA", "ARQ", "kopya"];
+
+    /// Sınıf susması ölçeri: uygun iş kesintisizken emisyonsuz geçen en uzun süre (Ek B.6 (b)).
+    #[derive(Default)]
+    struct Rev6Silence {
+        start: [Option<u64>; 3],
+        max: [u64; 3],
+        emitted: [u64; 3],
+    }
+
+    impl Rev6Silence {
+        /// `elig`: tur başı uygunluk; `out`: turun emisyonları. Sınır aşılırsa panik.
+        fn turn(
+            &mut self,
+            tag: &str,
+            now: u64,
+            elig: [bool; 3],
+            out: &[TransmitDecision],
+            bound: [u64; 3],
+        ) {
+            let mut emitted = [false; 3];
+            for d in out {
+                if let Some(c) = rev6_class(d.kind) {
+                    emitted[c] = true;
+                    self.emitted[c] += 1;
+                }
+            }
+            for (c, ((&el, &bd), &em)) in elig
+                .iter()
+                .zip(bound.iter())
+                .zip(emitted.iter())
+                .enumerate()
+            {
+                if el && self.start[c].is_none() {
+                    self.start[c] = Some(now);
+                }
+                if let Some(st) = self.start[c] {
+                    let w = now - st;
+                    self.max[c] = self.max[c].max(w);
+                    assert!(
+                        w <= bd,
+                        "{tag}: {} {} ms sustu (uygun iş varken) > T_max {} ms (an {} ms)",
+                        REV6_CLASS_NAMES[c],
+                        w / MS,
+                        bd / MS,
+                        now / MS
+                    );
+                }
+                if em || !el {
+                    self.start[c] = None;
+                }
+            }
+        }
+
+        fn reset(&mut self) {
+            self.start = [None; 3];
+        }
+    }
+
+    fn rev6_elig(s: &Sender, now: u64) -> [bool; 3] {
+        [
+            s.class_head_size(SvcClass::Data, now).is_some(),
+            s.class_head_size(SvcClass::Arq, now).is_some(),
+            s.class_head_size(SvcClass::Copy, now).is_some(),
+        ]
+    }
+
+    /// Birim motorda sahipli mi (bağımsız yapılarla): ARQ kaydı, kopya kaydı ya da uçuşta kaydı.
+    fn rev6_owned(s: &Sender, u: u64) -> bool {
+        s.pending_lost.iter().any(|r| r.unit.id == u)
+            || s.dup_queue.iter().any(|d| d.unit.id == u)
+            || s.inflight
+                .values()
+                .any(|p| p.owner == RecordOwner::Unit(UnitId(u)))
+    }
+
+    /// T1 — ACK'siz hizmet adaleti, birim düzeyinde (C15 v3 §2.4 T1; Ek B.6 (h.5)).
+    fn rev6_t1(rate: u64) {
+        let tag = format!("T1 R={rate} B/s");
+        let mut s = Sender::new();
+        s.set_establish_probe(false);
+        // Isınma (ürün yolu): W t = 0, ACK t = 1 s → srtt ≈ 1 s.
+        let w = s.on_event(
+            Event::AppData(OpaqueUnit {
+                id: 0,
+                size: REV6_SMALL,
+            }),
+            0,
+        );
+        let w_seq = w
+            .iter()
+            .find(|d| d.kind == TransmitKind::Data)
+            .map(|d| d.seq)
+            .expect("FİKSTÜR GEÇERSİZ: ısınma birimi çıkmadı");
+        let _ = s.on_event(ack(&[w_seq]), REV6_SEC);
+        assert_eq!(
+            s.take_confirmed_units(),
+            [0],
+            "FİKSTÜR GEÇERSİZ: ısınma birimi teyit edilmedi"
+        );
+        // Dönüş yolu açıkken iş kurulur (t_c): ARQ (A1 1050 B, A2 37 B kayıp ilanlı), kopya (C1, C2
+        // 1050 B vadeli geometrik zincir), DATA (D1 1050 B baş, D2, D3 37 B). Kimlik sırası A < C < D.
+        let t_c = REV6_SEC + REV6_TICK;
+        let u = |id: u64, size: u64| OpaqueUnit { id, size };
+        let a = [u(10, REV6_BIG), u(11, REV6_SMALL)];
+        let c = [u(20, REV6_BIG), u(21, REV6_BIG)];
+        let d = [u(30, REV6_BIG), u(31, REV6_SMALL), u(32, REV6_SMALL)];
+        let a_seqs: Vec<u64> = a
+            .iter()
+            .map(|&x| s.track_sent_unit(x, t_c, 0, TransmitKind::Data))
+            .collect();
+        s.queue_losses(&a_seqs, t_c);
+        for &x in &c {
+            let _ = s.track_sent_unit(x, t_c, 0, TransmitKind::Data);
+            let base = s.copy_base_ns();
+            s.copy_ensure_geometric(x, t_c, base, false);
+        }
+        for &x in &d {
+            s.tx_queue.push_back(x);
+        }
+        s.pacer.set_rate(rate);
+        let full = s.pacer.tokens();
+        let _ = s.pacer.try_send(full);
+        let srtt_ns = dur_ns(s.rtt.srtt().expect("FİKSTÜR GEÇERSİZ: srtt yok"));
+        let (tm_d, tm_a, tm_c) = rev6_t_max(rate);
+        let t_unit = rev6_t_unit(rate, srtt_ns, 7);
+        let bound = [tm_d, tm_a, tm_c];
+        let mut now = t_c;
+        let out0 = rev6_turn(&mut s, Event::TimerFired(Timer::Pto), now, rate);
+        // Fikstür ön koşulları (kurulmadıysa kırmızı; "ölçülecek iş oluşmadı" yeşil sayılmaz).
+        assert!(
+            out0.is_empty(),
+            "FİKSTÜR GEÇERSİZ: ilk turda token yokken emisyon {out0:?}"
+        );
+        assert_eq!(
+            s.state,
+            SenderState::RecoverArq,
+            "FİKSTÜR GEÇERSİZ: RECOVER_ARQ değil"
+        );
+        assert_eq!(
+            s.arq_plan_head_size(),
+            Some(REV6_BIG),
+            "FİKSTÜR GEÇERSİZ: ARQ başı 1050 B değil"
+        );
+        assert_eq!(
+            s.dup_queue
+                .iter()
+                .filter(|x| x.interval_ns > 0 && x.due_ns <= now)
+                .count(),
+            2,
+            "FİKSTÜR GEÇERSİZ: iki vadeli geometrik zincir yok"
+        );
+        assert_eq!(
+            s.tx_queue.front().map(|x| x.size),
+            Some(REV6_BIG),
+            "FİKSTÜR GEÇERSİZ: DATA başı 1050 B değil"
+        );
+        // Bundan sonra dönüş yolu kesik: ACK ve kayıp ilanı ENJEKTE EDİLMEZ.
+        let mut sil = Rev6Silence::default();
+        let mut last: BTreeMap<u64, u64> = BTreeMap::new();
+        let mut services: BTreeMap<u64, u32> = BTreeMap::new();
+        let mut kinds: BTreeMap<u64, Vec<TransmitKind>> = BTreeMap::new();
+        let mut max_age: BTreeMap<u64, u64> = BTreeMap::new();
+        for x in a.iter().chain(c.iter()) {
+            last.insert(x.id, t_c);
+        }
+        let mut fwd_seen = false;
+        let min_end = t_c + 2 * tm_c;
+        let hard_end = t_c + 2 * t_unit;
+        loop {
+            now += REV6_TICK;
+            let mut evs = vec![Event::TimerFired(Timer::Pto)];
+            if now.is_multiple_of(REV6_RTPROP) {
+                evs.push(Event::TimerFired(Timer::RtpropProbe));
+            }
+            for ev in evs {
+                s.on_event_core(ev, now);
+                s.pacer.set_rate(rate);
+                let window = rate.saturating_mul(BURST_WINDOW_NS) / REV6_SEC;
+                let floor = s.burst_floor_bytes(now);
+                s.pacer.set_burst_cap(window.max(floor));
+                let elig = rev6_elig(&s, now);
+                let out = s.schedule_transmit(now);
+                sil.turn(&tag, now, elig, &out, bound);
+                for dd in &out {
+                    if rev6_class(dd.kind).is_some() {
+                        last.insert(dd.unit_id, now);
+                        *services.entry(dd.unit_id).or_default() += 1;
+                        kinds.entry(dd.unit_id).or_default().push(dd.kind);
+                    }
+                }
+            }
+            fwd_seen |= s.state == SenderState::RecoverFwd;
+            assert!(
+                s.take_confirmed_units().is_empty(),
+                "{tag}: ACK yokken teyit üretildi"
+            );
+            for (&id, &t_last) in &last {
+                let age = now - t_last;
+                let m = max_age.entry(id).or_default();
+                *m = (*m).max(age);
+                assert!(
+                    age <= t_unit,
+                    "{tag}: u{id} hizmet yaşı {} ms > T_birim {} ms (an {} ms)",
+                    age / MS,
+                    t_unit / MS,
+                    now / MS
+                );
+                assert!(
+                    rev6_owned(&s, id),
+                    "{tag}: u{id} sahipsiz (an {} ms)",
+                    now / MS
+                );
+            }
+            let all_reselected = a
+                .iter()
+                .chain(c.iter())
+                .chain(d.iter())
+                .all(|x| services.get(&x.id).copied().unwrap_or(0) >= 2);
+            if now >= min_end && all_reselected {
+                break;
+            }
+            assert!(
+                now < hard_end,
+                "{tag}: 2·T_birim içinde her birim iki kez hizmet almadı: {services:?}"
+            );
+        }
+        eprintln!(
+            "[K4G-05b T1] R={rate} B/s ufuk {} s · en uzun susma DATA {} ms / ARQ {} ms / kopya {} ms \
+             (T_max {} / {} / {} ms) · emisyon {:?} · T_birim {} ms · en büyük hizmet yaşı {:?} ms · \
+             hizmet sayısı {services:?} · A1 {:?} · A2 {:?} · RECOVER_FWD görüldü {fwd_seen}",
+            (now - t_c) / REV6_SEC,
+            sil.max[0] / MS,
+            sil.max[1] / MS,
+            sil.max[2] / MS,
+            tm_d / MS,
+            tm_a / MS,
+            tm_c / MS,
+            sil.emitted,
+            t_unit / MS,
+            max_age.iter().map(|(k, v)| (*k, v / MS)).collect::<Vec<_>>(),
+            kinds.get(&10),
+            kinds.get(&11)
+        );
+        // Her sınıf ölçülecek iş üretti: en az bir emisyon (ARQ RECOVER_ARQ'ta).
+        for (n, name) in sil.emitted.iter().zip(REV6_CLASS_NAMES) {
+            assert!(
+                *n > 0,
+                "{tag}: {name} hiç emisyon yapmadı (ölçülecek iş oluşmadı)"
+            );
+        }
+    }
+
+    #[test]
+    fn k4g05b_t1_ackless_unit_fairness_r31() {
+        rev6_t1(31);
+    }
+
+    #[test]
+    fn k4g05b_t1_ackless_unit_fairness_r100() {
+        rev6_t1(100);
+    }
+
+    /// T2 ağı: ön yol FIFO R + 200 ms, dönüş 200 ms; alıcı her varışta o ana dek aldığı bütün seq'lerle
+    /// ACK'ler; kesinti [T_out, T_r) iki yönde (ön yolda gönderim anı, dönüşte ACK üretim anı).
+    struct Rev6Net {
+        rate: u64,
+        link_free: u64,
+        fwd: VecDeque<(u64, u64)>,
+        ret: VecDeque<(u64, Vec<u64>)>,
+        received: BTreeSet<u64>,
+        outage: (u64, u64),
+    }
+
+    const REV6_ONE_WAY: u64 = 200 * MS;
+
+    impl Rev6Net {
+        fn in_outage(&self, t: u64) -> bool {
+            (self.outage.0..self.outage.1).contains(&t)
+        }
+
+        fn send(&mut self, now: u64, d: &TransmitDecision, drop: bool) {
+            if drop || self.in_outage(now) {
+                return;
+            }
+            let start = self.link_free.max(now);
+            let done = start + d.size * REV6_SEC / self.rate;
+            self.link_free = done;
+            self.fwd.push_back((done + REV6_ONE_WAY, d.seq));
+        }
+
+        /// `now`'a dek varışlar → ACK üretimi; dönüşte varan ACK'ler.
+        fn advance(&mut self, now: u64) -> Vec<Vec<u64>> {
+            while let Some(&(arr, seq)) = self.fwd.front() {
+                if arr > now {
+                    break;
+                }
+                self.fwd.pop_front();
+                self.received.insert(seq);
+                if !self.in_outage(arr) {
+                    self.ret
+                        .push_back((arr + REV6_ONE_WAY, self.received.iter().copied().collect()));
+                }
+            }
+            let mut acks = Vec::new();
+            while let Some((arr, _)) = self.ret.front() {
+                if *arr > now {
+                    break;
+                }
+                if let Some((_, v)) = self.ret.pop_front() {
+                    acks.push(v);
+                }
+            }
+            acks
+        }
+    }
+
+    /// T2 — sonlu kesinti sonrası tamamlanma (C15 v3 §2.4 T2; Ek B.6 (h.6)).
+    fn rev6_t2(rate: u64) {
+        let tag = format!("T2 R={rate} B/s");
+        let t_out = 100 * REV6_SEC;
+        let t_r = 160 * REV6_SEC;
+        let mut s = Sender::new();
+        s.set_establish_probe(false);
+        let mut net = Rev6Net {
+            rate,
+            link_free: 0,
+            fwd: VecDeque::new(),
+            ret: VecDeque::new(),
+            received: BTreeSet::new(),
+            outage: (t_out, t_r),
+        };
+        let u = |id: u64, size: u64| OpaqueUnit { id, size };
+        // Hedef küme BAŞTAN sabit (6 birim) ve kabul anları.
+        let big = [10u64, 11];
+        let targets: Vec<(u64, OpaqueUnit)> = vec![
+            (5 * REV6_SEC, u(10, REV6_BIG)),
+            (6 * REV6_SEC, u(11, REV6_BIG)),
+            (10 * REV6_SEC, u(12, REV6_SMALL)),
+            (20 * REV6_SEC, u(13, REV6_SMALL)),
+            (30 * REV6_SEC, u(14, REV6_SMALL)),
+            (40 * REV6_SEC, u(15, REV6_SMALL)),
+        ];
+        let target_ids: Vec<u64> = targets.iter().map(|(_, x)| x.id).collect();
+        let (tm_d, tm_a, tm_c) = rev6_t_max(rate);
+        let bound = [tm_d, tm_a, tm_c];
+        // B_T2 (Ek B.6 (h.6)): L = (1200 + S)/R + 2d; t_a − t_r ≤ S/R + τ + L; srtt ≤ L ile H_maks.
+        let l = (DEFAULT_MTU + REV6_BIG) * REV6_SEC / rate + 2 * REV6_ONE_WAY;
+        let delta_a = REV6_BIG * REV6_SEC / rate + REV6_TICK + l;
+        let b_t2 = delta_a + rev6_t_unit(rate, l, 26) + l;
+        let mut confirmed_at: BTreeMap<u64, u64> = BTreeMap::new();
+        let mut sil = Rev6Silence::default();
+        let mut now = 0u64;
+        let mut next_bg = 0u64;
+        let mut bg_id = 1000u64;
+        let mut ti = 0usize;
+        let mut chains_fixed = false;
+        let mut chain_seen = [false; 2];
+        let mut warm_done = false;
+        loop {
+            let mut evs: Vec<Event> = Vec::new();
+            if !warm_done {
+                for id in 0..4 {
+                    evs.push(Event::AppData(u(id, REV6_SMALL)));
+                }
+                warm_done = true;
+            }
+            while ti < targets.len() && targets[ti].0 <= now {
+                evs.push(Event::AppData(targets[ti].1));
+                ti += 1;
+            }
+            if now >= next_bg {
+                evs.push(Event::AppData(u(bg_id, REV6_SMALL)));
+                bg_id += 1;
+                next_bg += 10 * REV6_SEC;
+            }
+            for v in net.advance(now) {
+                evs.push(ack(&v));
+            }
+            evs.push(Event::TimerFired(Timer::Pto));
+            if now.is_multiple_of(REV6_RTPROP) {
+                evs.push(Event::TimerFired(Timer::RtpropProbe));
+            }
+            // Fikstür: kesinti başında iletilmiş, teyitsiz her hedefe vadeli geometrik zincir (yoksa).
+            if !chains_fixed && now >= t_out {
+                chains_fixed = true;
+                for (_, x) in &targets {
+                    let sent = s.units.contains_key(&UnitId(x.id));
+                    if sent
+                        && !s.unit_is_confirmed(UnitId(x.id))
+                        && !s.unit_has_geometric(UnitId(x.id))
+                    {
+                        let base = s.copy_base_ns();
+                        s.copy_ensure_geometric(*x, now, base, false);
+                    }
+                }
+                for (k, b) in big.iter().enumerate() {
+                    assert!(
+                        s.units.contains_key(&UnitId(*b)) && s.unit_has_geometric(UnitId(*b)),
+                        "FİKSTÜR GEÇERSİZ: büyük hedef u{b} kesinti başında iletilmiş ve zincirli değil"
+                    );
+                    chain_seen[k] = true;
+                }
+                sil.reset();
+            }
+            if now == t_r {
+                sil.reset();
+            }
+            for ev in evs {
+                s.on_event_core(ev, now);
+                s.pacer.set_rate(rate);
+                if s.state != SenderState::PreConverge {
+                    let window = rate.saturating_mul(BURST_WINDOW_NS) / REV6_SEC;
+                    let floor = s.burst_floor_bytes(now);
+                    s.pacer.set_burst_cap(window.max(floor));
+                }
+                let elig = rev6_elig(&s, now);
+                let out = s.schedule_transmit(now);
+                if s.state != SenderState::PreConverge && !net.in_outage(now) {
+                    sil.turn(&tag, now, elig, &out, bound);
+                }
+                for dd in &out {
+                    let drop = now < t_r && big.contains(&dd.unit_id);
+                    if rev6_class(dd.kind).is_some() || dd.kind == TransmitKind::FecParity {
+                        net.send(now, dd, drop);
+                    }
+                }
+                for id in s.take_confirmed_units() {
+                    confirmed_at.entry(id).or_insert(now);
+                }
+            }
+            let done = target_ids.iter().all(|id| confirmed_at.contains_key(id));
+            if done && now >= t_r + 2 * tm_c {
+                break;
+            }
+            assert!(
+                now <= t_r + b_t2,
+                "{tag}: hedef küme t_r + B_T2 = {} s içinde tamamlanmadı; teyitsiz: {:?}",
+                (t_r + b_t2) / REV6_SEC,
+                target_ids
+                    .iter()
+                    .filter(|id| !confirmed_at.contains_key(id))
+                    .collect::<Vec<_>>()
+            );
+            now += REV6_TICK;
+        }
+        let waits: Vec<(u64, i128)> = target_ids
+            .iter()
+            .map(|id| {
+                (
+                    *id,
+                    confirmed_at[id] as i128 / MS as i128 - t_r as i128 / MS as i128,
+                )
+            })
+            .collect();
+        let worst = target_ids
+            .iter()
+            .map(|id| confirmed_at[id].saturating_sub(t_r))
+            .max()
+            .unwrap_or(0);
+        eprintln!(
+            "[K4G-05b T2] R={rate} B/s · hedef tamamlanma (t_r'ye göre ms; eksi = kesintiden önce) {waits:?} · \
+             en uzun bekleme {} ms (B_T2 {} ms) · kesinti dışı en uzun susma DATA {} / ARQ {} / kopya {} ms \
+             (T_max {} / {} / {} ms) · emisyon {:?} · büyük hedef zinciri {chain_seen:?}",
+            worst / MS,
+            b_t2 / MS,
+            sil.max[0] / MS,
+            sil.max[1] / MS,
+            sil.max[2] / MS,
+            tm_d / MS,
+            tm_a / MS,
+            tm_c / MS,
+            sil.emitted
+        );
+        for b in big {
+            assert!(
+                confirmed_at[&b] >= t_r,
+                "FİKSTÜR GEÇERSİZ: büyük hedef u{b} kesintiden önce teyit edildi (düşürme kuralı uygulanmadı)"
+            );
+        }
+        assert!(
+            sil.emitted[1] > 0,
+            "{tag}: ARQ kesinti dışında hiç emisyon yapmadı (K3 tahmini sınanamadı)"
+        );
+    }
+
+    #[test]
+    fn k4g05b_t2_finite_outage_completion_r31() {
+        rev6_t2(31);
+    }
+
+    #[test]
+    fn k4g05b_t2_finite_outage_completion_r100() {
+        rev6_t2(100);
+    }
 }
