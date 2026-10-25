@@ -249,14 +249,25 @@ async fn client_survives_server_death_mid_run() {
     );
 }
 
-/// Item 9 — teslim-kanalı taşması: app drenaj yapmazken bellek BÜYÜMEZ, taşan teslim SAYILIR,
-/// app sonradan drenaja dönebilir (kanal bozulmaz).
+/// Item 9 — teslim-kanalı taşması: app drenaj yapmazken bellek BÜYÜMEZ, app sonradan drenaja
+/// dönebilir (kanal bozulmaz).
+///
+/// [K4G-05c · DUR-8 Ek B.2; eski ad `delivery_overflow_is_counted_not_grown`] Fikstür aynı (teslim
+/// kanalı 4, 40 birim, teslimler önce BİLEREK drenaj edilmez). Eski iddia (`acked == 40`,
+/// `delivery_dropped > 0`) kanal taşmasının ACK'li birimi düşürmesini beklenen davranış diye
+/// sabitliyordu; R2 düzeltmesiyle (C9 §3, DUR-18) dolu kanaldaki birim ACK'siz reddedilir: durakta
+/// teyit ≤ kanal kapasitesi, düşüş 0, drenajda kanal işler. Eksiksiz teslim P0
+/// `k4g_p0_receiver.rs`'de sınanır. Eski kodda bu test KIRMIZIDIR (40 teyit, 36 düşüş; beklenen).
 #[tokio::test(flavor = "multi_thread")]
-async fn delivery_overflow_is_counted_not_grown() {
+async fn delivery_overflow_refuses_without_ack_not_grown() {
+    const QUEUE: usize = 4;
+    const UNITS: u64 = 40;
+    /// Teyit akışı bu süre değişmezse durmuş sayılır (tabanda 40 teyit bundan çok önce gelir).
+    const STALL_QUIET: Duration = Duration::from_secs(3);
     let mut server = ServerEndpoint::bind(
         "127.0.0.1:0".parse().unwrap(),
         RuntimeConfig {
-            delivery_queue: 4,
+            delivery_queue: QUEUE,
             ..RuntimeConfig::default()
         },
         Box::new(IdentitySeam::new()),
@@ -270,23 +281,34 @@ async fn delivery_overflow_is_counted_not_grown() {
     )
     .await
     .expect("client connect");
-    for i in 0..40u64 {
+    for i in 0..UNITS {
         client
             .send(format!("overflow-{i}").into_bytes())
             .expect("offer");
     }
-    // App teslimleri BİLEREK drenaj etmiyor; birimlerin ACK'lenmesini bekle (teslim ≠ drenaj).
+    // App teslimleri BİLEREK drenaj etmiyor; teyit akışı durana dek bekle (üst sınır 20 s).
     let mut acked = 0u64;
-    let _ = tokio::time::timeout(Duration::from_secs(20), async {
-        while acked < 40 {
-            if client.acked().await.is_some() {
-                acked += 1;
-            }
+    let start = tokio::time::Instant::now();
+    let mut last_progress = start;
+    while acked < UNITS
+        && start.elapsed() < Duration::from_secs(20)
+        && last_progress.elapsed() < STALL_QUIET
+    {
+        if let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(5), client.acked()).await {
+            acked += 1;
+            last_progress = tokio::time::Instant::now();
         }
-    })
-    .await;
-    assert_eq!(acked, 40, "teslim-kanalı taşması ACK yolunu ETKİLEMEMELİ");
-    // Şimdi drenaja dön: kanal hâlâ işler (ilk 4 bekliyor).
+    }
+    assert!(
+        acked <= QUEUE as u64,
+        "dolu kanaldaki birim ACK'lenmemeli: durakta teyit {acked} > kanal {QUEUE}"
+    );
+    assert_eq!(
+        server.delivery_dropped(),
+        0,
+        "dolu kanalda birim düşmemeli (ACK'siz ret)"
+    );
+    // Şimdi drenaja dön: kanal hâlâ işler (kanaldakiler bekliyor).
     let d = tokio::time::timeout(Duration::from_secs(5), server.next_delivery())
         .await
         .expect("drenaj dönünce teslim akmalı")
@@ -294,14 +316,7 @@ async fn delivery_overflow_is_counted_not_grown() {
     assert!(d.payload.starts_with(b"overflow-"));
     client.shutdown().await;
     let ss = server.shutdown().await;
-    assert!(
-        ss.delivery_dropped > 0,
-        "taşan teslim sayaçla görünmeli: {ss:?}"
-    );
-    assert!(
-        ss.delivered + ss.delivery_dropped >= 40,
-        "teslim + taşan ≥ 40 olmalı: {ss:?}"
-    );
+    assert_eq!(ss.delivery_dropped, 0, "taşma düşüşü olmamalı: {ss:?}");
 }
 
 /// Item 3 — idle-peer emekliliği: kısa idle_hold ile eş emekli edilir (sayaç), tablo boşalır ve

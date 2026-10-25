@@ -654,6 +654,9 @@ pub struct ServerStats {
     /// App'e teslim edilen birim (ilk-teslim).
     pub delivered: u64,
     /// Teslim kanalı doluyken düşen teslim (app drenaj sözleşmesi ihlali görünür olsun).
+    /// [K4G-05c · R2] Yapısal 0: dolu kanalda birim ACK'siz reddedilir (`CtxDispatchStats::
+    /// full_refusals`), düşmez; > 0 kabul kararının atlandığını gösterir (tek istisna S1-dışı
+    /// parçalı yol, beyanlı).
     pub delivery_dropped: u64,
     /// Peer-cap fail-closed reddi (yeni peer, tablo dolu).
     /// [K4G-01b] "Yeni peer" = yeni `(adres, SessionHandle)` yuvası.
@@ -2904,6 +2907,10 @@ pub struct ServerHandle {
     /// [`ServerHandle::delivery_dropped`]). Görev her döngü turunun başında sayacın o anki değerini
     /// buraya yazar; sayaç ve davranış değişmez.
     delivery_dropped: Arc<AtomicU64>,
+    /// [K4G-05c · R2] Teslim kanalının defteri (görevle paylaşılır): tüketici bir teslimi kanaldan
+    /// alırken alım ile sayacı AYNI kilit altında yapar; görev boş izin ve kullanımdaki rezerv
+    /// sayısını aynı kilit altında okur (not D.2).
+    ledger: Arc<Mutex<DeliveryLedger>>,
 }
 
 impl ServerEndpoint {
@@ -2932,13 +2939,16 @@ impl ServerEndpoint {
     ) -> Result<ServerHandle, RuntimeError> {
         // PoC: tek örtük oturum — `connect` / `connect_with_policy` ile simetrik (eski çağıranların
         // davranışı birebir). Çok-oturumlu uç beklenen kümeyi oturum tablosundan alır.
-        Self::bind_expecting(
+        // [K4G-05c] Örtük kip: her yuva ayrı istemcidir; kabul durumu yuvanın teslim-dedup
+        // penceresidir, oturum penceresi ve sıra başı rezervi yoktur (not D.4).
+        Self::bind_inner(
             bind,
             cfg,
             seam,
             egress,
             ExpectedSessions::only(IMPLICIT_SESSION),
             CtxDispatchCounters::new(),
+            AcceptMode::Implicit,
         )
         .await
     }
@@ -2952,6 +2962,10 @@ impl ServerEndpoint {
     /// [K4G-01b] Eş yuvası `(kaynak adres, h)` ile anahtarlıdır: aynı adresten yeni bir beklenen
     /// oturum yeni yuva alır; bağlı oturumu `expected`'dan çıkan yuva emekliye ayrılır.
     ///
+    /// [K4G-05c · R2] Oturum kipi: kabul durumu (`AcceptState`), kimlik penceresi
+    /// (`max_inflight_units`) ve teslim kanalındaki sıra başı rezervi OTURUM anahtarlıdır; oturumu
+    /// beklenen kümeden çıkınca yuvalarıyla aynı adımda silinir (not D.4).
+    ///
     /// # Errors
     /// FEC-config reddi (koşu-öncesi typed) veya soket bind hatası.
     pub async fn bind_expecting(
@@ -2962,6 +2976,27 @@ impl ServerEndpoint {
         expected: ExpectedSessions,
         ctx_counters: CtxDispatchCounters,
     ) -> Result<ServerHandle, RuntimeError> {
+        Self::bind_inner(
+            bind,
+            cfg,
+            seam,
+            egress,
+            expected,
+            ctx_counters,
+            AcceptMode::SessionKeyed,
+        )
+        .await
+    }
+
+    async fn bind_inner(
+        bind: SocketAddr,
+        cfg: RuntimeConfig,
+        seam: Box<dyn PacketProtection>,
+        egress: Option<Box<dyn EgressPolicy>>,
+        expected: ExpectedSessions,
+        ctx_counters: CtxDispatchCounters,
+        mode: AcceptMode,
+    ) -> Result<ServerHandle, RuntimeError> {
         validate_fec(&cfg)?; // [S1] koşu-öncesi typed FEC-config doğrulaması
         let sock = UdpSocket::bind(bind).await?;
         let local_addr = sock.local_addr()?;
@@ -2970,12 +3005,20 @@ impl ServerEndpoint {
         // Kapasite 1 + onay-oneshot: mark_t0 görev işleyene dek bekler (ölçüm sözleşmesi).
         let (t0_tx, t0_rx) = mpsc::channel::<oneshot::Sender<()>>(1);
         let delivery_dropped = Arc::new(AtomicU64::new(0));
+        let ledger = Arc::new(Mutex::new(DeliveryLedger::default()));
+        let gate = DeliveryGate::new(
+            &cfg,
+            delivery_tx,
+            Arc::clone(&ledger),
+            mode,
+            ctx_counters.clone(),
+        );
         let task = tokio::spawn(server_task(
             sock,
             cfg,
             seam,
             egress,
-            delivery_tx,
+            gate,
             shutdown_rx,
             t0_rx,
             expected,
@@ -2990,6 +3033,7 @@ impl ServerEndpoint {
             local_addr,
             ctx_counters,
             delivery_dropped,
+            ledger,
         })
     }
 }
@@ -3002,13 +3046,32 @@ impl ServerHandle {
     }
 
     /// Sıradaki teslim (ilk-teslim dedup'lu; kanal bounded).
+    ///
+    /// [K4G-05c · R2] Alım ile defter sayacı aynı kilit altındadır (not D.2): kilit yalnız
+    /// yoklamanın eşzamanlı gövdesinde tutulur, bekleme (`await`) boyunca tutulmaz.
     pub async fn next_delivery(&mut self) -> Option<Delivery> {
-        self.delivery_rx.recv().await
+        let ledger = Arc::clone(&self.ledger);
+        let rx = &mut self.delivery_rx;
+        std::future::poll_fn(|cx| {
+            let mut book = lock_ledger(&ledger);
+            match rx.poll_recv(cx) {
+                std::task::Poll::Ready(Some(d)) => {
+                    book.on_taken();
+                    std::task::Poll::Ready(Some(d))
+                }
+                other => other,
+            }
+        })
+        .await
     }
 
     /// [L-T1] Bekleyen teslim varsa hemen döner, yoksa `None` (senkron S1 adaptörü için).
+    /// [K4G-05c · R2] Alım ile defter sayacı aynı kilit altındadır (not D.2).
     pub fn try_next_delivery(&mut self) -> Option<Delivery> {
-        self.delivery_rx.try_recv().ok()
+        let mut book = lock_ledger(&self.ledger);
+        let d = self.delivery_rx.try_recv().ok()?;
+        book.on_taken();
+        Some(d)
     }
 
     /// Ölçüm-t0 işareti (dönüş yönü): wire sayaçları sıfırlanır, ALICI DURUMU KORUNUR ve varsa
@@ -3029,11 +3092,16 @@ impl ServerHandle {
 
     /// [K4G-11] Salt-okunur: teslim kanalı doluyken düşen teslim sayısı —
     /// [`ServerStats::delivery_dropped`] ile AYNI sayaç, kapanışı beklemeden okunur (bileşim kökünün
-    /// `delivery_channel_drops`'u). Yayın: sayaç görevin bir `select!` kolunda (`push_delivery`)
+    /// `delivery_channel_drops`'u). Yayın: sayaç görevin bir `select!` kolunda (`DeliveryGate::push_unreserved`)
     /// artar; döngü o kol biter bitmez başa döner ve değeri yayımlar — okuyucu en çok artışın olduğu
     /// kolun kalan işi kadar geride kalır, bir zamanlayıcıyı beklemez. Kapanış kolunda (`break`)
     /// yayın yoktur; kapanıştaki kesin değer [`ServerHandle::shutdown`]'ın döndürdüğü
     /// istatistiktir. Monoton.
+    ///
+    /// [K4G-05c · R2] Birim kanala girmeden ACK'lenmez: dolu kanalda birim ACK'siz reddedilir
+    /// (`full_refusals`), düşmez. Bu yüzden sayaç yapısal olarak 0'dır; > 0 kabul kararının
+    /// atlandığını gösterir. Tek istisna S1-dışı parçalı (`max_message_bytes`) yoldur
+    /// (birleştirici `MsgAsm` değişmedi; beyanlı).
     #[must_use]
     pub fn delivery_dropped(&self) -> u64 {
         self.delivery_dropped.load(Ordering::Relaxed)
@@ -3131,69 +3199,323 @@ impl MsgAsm {
     }
 }
 
-/// Teslim kanalına bir mesaj koyar (bounded; taşan teslim sayılır — app drenaj sözleşmesi).
-fn push_delivery(
-    stats: &mut ServerStats,
-    delivery_tx: &mpsc::Sender<Delivery>,
-    peer: SocketAddr,
-    ctx: ProtectionContext,
-    unit_id: u64,
-    payload: Vec<u8>,
-    from_fec: bool,
-) {
-    let d = Delivery {
-        peer,
-        unit_id,
-        payload,
-        ctx,
-    };
-    if delivery_tx.try_send(d).is_ok() {
+/// [K4G-05c · R2] Teslim kanalının defteri — görev (üretici) ile [`ServerHandle`] (tüketici)
+/// arasında paylaşılır; bütün alanlar AYNI kilit altında okunur ve yazılır (not D.2).
+///
+/// Kanal FIFO'dur ve tek üreticisi görevdir: `pushed` kanala konan, `taken` kanaldan alınan
+/// teslim sayısıdır; k'ıncı konan teslim k'ıncı alınandır. Sıra başı rezerviyle kabul edilen
+/// teslimin sırası `reserved`'da tutulur ve o teslim alınınca rezerv serbest kalır. Kullanımdaki
+/// rezerv sayısı U = `reserved.len()`; boş izin F = kanalın o anki kapasitesi. Boyut: her
+/// rezerv kanaldaki ayrı bir teslimdir → `reserved` ≤ `delivery_queue` (SR-AUDIT-001).
+#[derive(Debug, Default)]
+struct DeliveryLedger {
+    pushed: u64,
+    taken: u64,
+    /// Rezervli teslimin sırası → oturumu.
+    reserved: BTreeMap<u64, SessionHandle>,
+    /// Oturum → kullanımdaki rezervinin sırası (oturum başına en çok bir).
+    by_session: HashMap<SessionHandle, u64>,
+}
+
+impl DeliveryLedger {
+    /// Görev kanala bir teslim koydu; `reserved_for` = sıra başı rezerviyle kabul edildiyse oturumu.
+    fn on_pushed(&mut self, reserved_for: Option<SessionHandle>) {
+        let seq = self.pushed;
+        self.pushed = self.pushed.wrapping_add(1);
+        if let Some(session) = reserved_for {
+            self.reserved.insert(seq, session);
+            self.by_session.insert(session, seq);
+        }
+    }
+
+    /// Tüketici kanaldan bir teslim aldı (alımla aynı kilit altında): rezervli teslimse rezerv
+    /// serbest kalır — U azalır, F aynı adımda artmıştır.
+    fn on_taken(&mut self) {
+        let seq = self.taken;
+        self.taken = self.taken.wrapping_add(1);
+        if let Some(session) = self.reserved.remove(&seq) {
+            self.by_session.remove(&session);
+        }
+    }
+
+    /// Kullanımdaki rezerv sayısı (U).
+    fn in_use(&self) -> usize {
+        self.reserved.len()
+    }
+
+    /// Oturumun rezervi boş mu (rezervle kabul ettiği teslim kanaldan alınmış ya da hiç yok).
+    fn reserve_free(&self, session: SessionHandle) -> bool {
+        !self.by_session.contains_key(&session)
+    }
+}
+
+/// Defter kilidi: zehirlenmeye karşı panik yapmaz (önceki tutucu panik etse de sayaçlar okunur).
+fn lock_ledger(m: &Mutex<DeliveryLedger>) -> MutexGuard<'_, DeliveryLedger> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// [K4G-05c · R2] Bir oturumun kabul durumu (S1 kipi): `floor` altındaki her birim ve `above`
+/// kümesindeki birimler kabul edilmiştir; `above ⊆ (floor, floor + cap]` (pencere) → girdi ≤ cap
+/// (SR-AUDIT-001). Durum unutmaz: kabul edilmiş birim daima Duplicate'tir.
+#[derive(Debug, Default)]
+struct AcceptState {
+    floor: u64,
+    above: std::collections::BTreeSet<u64>,
+}
+
+impl AcceptState {
+    fn is_duplicate(&self, unit: u64) -> bool {
+        unit < self.floor || self.above.contains(&unit)
+    }
+
+    fn commit(&mut self, unit: u64) {
+        if unit == self.floor {
+            self.floor = self.floor.saturating_add(1);
+            while self.above.remove(&self.floor) {
+                self.floor = self.floor.saturating_add(1);
+            }
+        } else if unit > self.floor {
+            self.above.insert(unit);
+        }
+    }
+}
+
+/// [K4G-05c · R2] Kabul kipinin kapsamı (not D.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AcceptMode {
+    /// `bind` / `bind_with_policy`: her yuva ayrı istemcidir; durum yuvanın teslim-dedup
+    /// penceresidir (`delivered_seen`), pencere ve rezerv yoktur.
+    Implicit,
+    /// `bind_expecting` (S1 adaptörü): durum, pencere ve rezerv oturum anahtarlıdır.
+    SessionKeyed,
+}
+
+/// [K4G-05c · R2] Tek kabul kararının sonucu (yan etkisiz [`DeliveryGate::decide`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Admission {
+    /// Kabul edilmiş birimin tekrarı: datagram alıcı motoruna girer (ACK'lenir), payload atılır.
+    Duplicate,
+    /// Oturumun kimlik penceresi dışında: ACK'siz ret (`reorder_skip`).
+    RefuseWindow,
+    /// Teslim kanalında yer yok: ACK'siz ret (`full_refusals`).
+    RefuseFull,
+    /// Kabul: `reserve` = sıra başı rezerviyle.
+    Accept { reserve: bool },
+}
+
+impl Admission {
+    /// Ret: datagram alıcı motoruna, blok birleştiriciye ve kanala girmez (`NotReady` deseni).
+    fn is_refused(self) -> bool {
+        matches!(self, Self::RefuseWindow | Self::RefuseFull)
+    }
+}
+
+/// [K4G-05c · R2] Teslim kapısı: alıcının TEK kabul kararı (not §3.1, D.2). Alıcının tutamadığı
+/// Reliable birim ACK'lenmez; kabul edilen birim önce kanalda yer (izin) alır, sonra alıcı
+/// motoruna girer (ACK), sonra kanala konur, sonra kabul durumuna işlenir — `await`'siz, dördü
+/// birlikte ya da hiçbiri. Böylece kanal taşmasıyla teslim düşmez (`delivery_dropped` yapısal 0;
+/// S1-dışı parçalı yol hariç, beyanlı).
+///
+/// Sıra başı rezervi (S1 kipi): R = min(`max_peers`, C − 1), C = `delivery_queue`. Oturumun
+/// sıradaki eksik birimi (`floor`), oturumun rezervi boşsa ve U < R ise rezervle kabul edilir;
+/// diğer her kabul F − 1 ≥ R − U ister. Değişmez I: F ≥ R − U. Aynı anda R oturuma kadar her
+/// oturumun sıra başına kanalda yer garantidir; adalet sözü yoktur (DUR-05c-8 (a)).
+struct DeliveryGate {
+    tx: mpsc::Sender<Delivery>,
+    ledger: Arc<Mutex<DeliveryLedger>>,
+    mode: AcceptMode,
+    /// Oturum kimlik penceresi (`max_inflight_units`).
+    window: u64,
+    /// Sıra başı rezervi R.
+    reserve: usize,
+    /// S1 kipinde oturum başına kabul durumu; oturum beklenen kümeden çıkınca silinir.
+    accept: HashMap<SessionHandle, AcceptState>,
+    counters: CtxDispatchCounters,
+}
+
+impl DeliveryGate {
+    fn new(
+        cfg: &RuntimeConfig,
+        tx: mpsc::Sender<Delivery>,
+        ledger: Arc<Mutex<DeliveryLedger>>,
+        mode: AcceptMode,
+        counters: CtxDispatchCounters,
+    ) -> Self {
+        Self {
+            tx,
+            ledger,
+            mode,
+            window: cfg.max_inflight_units as u64,
+            reserve: cfg.max_peers.min(cfg.delivery_queue.saturating_sub(1)),
+            accept: HashMap::new(),
+            counters,
+        }
+    }
+
+    /// Yan etkisiz kabul kararı (defter kilidi altında çağrılır).
+    fn decide(
+        &self,
+        book: &DeliveryLedger,
+        slot: &PeerSlot,
+        session: SessionHandle,
+        unit: u64,
+    ) -> Admission {
+        let free = self.tx.capacity();
+        match self.mode {
+            AcceptMode::Implicit => {
+                if slot.delivered_seen.contains(&unit) {
+                    Admission::Duplicate
+                } else if free >= 1 {
+                    Admission::Accept { reserve: false }
+                } else {
+                    Admission::RefuseFull
+                }
+            }
+            AcceptMode::SessionKeyed => {
+                let (floor, duplicate) = self
+                    .accept
+                    .get(&session)
+                    .map_or((0, false), |a| (a.floor, a.is_duplicate(unit)));
+                if duplicate {
+                    return Admission::Duplicate;
+                }
+                // Duplicate değilse unit ≥ floor.
+                if unit - floor > self.window {
+                    return Admission::RefuseWindow;
+                }
+                let in_use = book.in_use();
+                if unit == floor && book.reserve_free(session) && in_use < self.reserve && free >= 1
+                {
+                    return Admission::Accept { reserve: true };
+                }
+                if free >= 1 && free - 1 >= self.reserve.saturating_sub(in_use) {
+                    Admission::Accept { reserve: false }
+                } else {
+                    Admission::RefuseFull
+                }
+            }
+        }
+    }
+
+    /// Bir birimin kabulü (DATA ya da FEC kurtarımı; parçalama kapalı). `engine` yalnız Accept /
+    /// Duplicate'te çağrılır: datagramı alıcı motoruna verir ve PN'in YENİ olup olmadığını döner
+    /// (FEC kurtarımında PN yoktur → `true`). Accept'te PN yeni değilse izin bırakılır, karar
+    /// Duplicate olur. Ret sayılır; çağıran reddedilen datagramı motora, blok birleştiriciye ve
+    /// kanala sokmaz.
+    #[allow(clippy::too_many_arguments)]
+    fn admit(
+        &mut self,
+        stats: &mut ServerStats,
+        slot: &mut PeerSlot,
+        peer: SocketAddr,
+        session: SessionHandle,
+        unit: u64,
+        payload: &[u8],
+        from_fec: bool,
+        engine: impl FnOnce(&mut PeerSlot) -> bool,
+    ) -> Admission {
+        let mut book = lock_ledger(&self.ledger);
+        let decision = self.decide(&book, slot, session, unit);
+        let reserve = match decision {
+            Admission::RefuseFull => {
+                self.counters.add_full_refusal();
+                return decision;
+            }
+            Admission::RefuseWindow => {
+                self.counters.add_reorder_skip();
+                return decision;
+            }
+            Admission::Duplicate => {
+                let _ = engine(slot);
+                return decision;
+            }
+            Admission::Accept { reserve } => reserve,
+        };
+        // Yer önce ayrılır. Kilit altında F ≥ 1 görüldü ve tek üretici bu görevdir (tüketici F'yi
+        // yalnız artırır): ret erişilemez; yine de ACK'siz ret yolu kullanılır.
+        let Ok(permit) = self.tx.try_reserve() else {
+            self.counters.add_full_refusal();
+            return Admission::RefuseFull;
+        };
+        if !engine(slot) {
+            return Admission::Duplicate; // PN tekrarı: izin bırakılır
+        }
+        permit.send(Delivery {
+            peer,
+            unit_id: unit,
+            payload: payload.to_vec(),
+            ctx: slot.ctx,
+        });
+        book.on_pushed(reserve.then_some(session));
         stats.delivered += 1;
         if from_fec {
             stats.fec_recovered_units += 1;
         }
-    } else {
-        stats.delivery_dropped += 1;
+        match self.mode {
+            AcceptMode::Implicit => {
+                slot.delivered_seen.insert(unit);
+                if slot.delivered_seen.len() > DELIVERED_DEDUP_WINDOW {
+                    slot.delivered_seen.pop_first();
+                }
+            }
+            AcceptMode::SessionKeyed => self.accept.entry(session).or_default().commit(unit),
+        }
+        decision
+    }
+
+    /// [S1B — S1-dışı parçalı yol, DEĞİŞMEDİ (beyanlı, DUR-05c-12 A)] Tamamlanan mesajı kanala
+    /// koyar; dolu kanalda teslim düşer ve sayılır (`delivery_dropped`). Defter sırası korunur.
+    fn push_unreserved(
+        &self,
+        stats: &mut ServerStats,
+        peer: SocketAddr,
+        ctx: ProtectionContext,
+        unit_id: u64,
+        payload: Vec<u8>,
+        from_fec: bool,
+    ) {
+        let mut book = lock_ledger(&self.ledger);
+        let d = Delivery {
+            peer,
+            unit_id,
+            payload,
+            ctx,
+        };
+        if self.tx.try_send(d).is_ok() {
+            book.on_pushed(None);
+            stats.delivered += 1;
+            if from_fec {
+                stats.fec_recovered_units += 1;
+            }
+        } else {
+            stats.delivery_dropped += 1;
+        }
+    }
+
+    /// Oturumu beklenen kümeden çıkmış kabul durumlarını siler — `retire_closed_slots` ile AYNI
+    /// adımda çağrılır. Kanalda bekleyen rezervli teslim defterde kalır ve alınınca serbest olur.
+    fn retire_closed(&mut self, expected: &ExpectedSessions) {
+        if self.mode == AcceptMode::SessionKeyed {
+            self.accept
+                .retain(|&session, _| expected.readiness(session).is_some());
+        }
     }
 }
 
-/// [S1B] Alınan bir chunk'ı app'e teslim yoluna koyar — DATA ve FEC-kurtarma ORTAK kapısı.
-///
-/// Fragmentasyon KAPALIYKEN: chunk = mesaj → doğrudan teslim, ilk-teslim dedup'ı `unit_id`
-/// üzerinde (eski davranış birebir).
-/// AÇIKKEN: prefix'teki `(message_id, chunk_offset, FINAL)` ile birleştiriciye girer; mesaj
-/// tamamlanınca TAM payload TEK `Delivery` olarak akar ve dedup `message_id` üzerinde olur.
+/// [S1B — S1-dışı parçalı yol, DEĞİŞMEDİ (beyanlı)] Alınan bir chunk'ı birleştiriciye koyar
+/// (DATA ve FEC-kurtarma ORTAK kapısı); mesaj tamamlanınca TAM payload TEK `Delivery` olarak akar ve
+/// dedup `message_id` üzerinde olur. Parçalama kapalıyken birim kabulü [`DeliveryGate::admit`]'tir.
 #[allow(clippy::too_many_arguments)]
 fn admit_chunk(
     stats: &mut ServerStats,
-    delivery_tx: &mpsc::Sender<Delivery>,
+    gate: &DeliveryGate,
     peer: SocketAddr,
     slot: &mut PeerSlot,
-    frag_on: bool,
     max_message_bytes: usize,
-    unit_id: u64,
     pfx: &SourcePrefix,
     payload: &[u8],
     from_fec: bool,
 ) {
-    if !frag_on {
-        if !slot.delivered_seen.insert(unit_id) {
-            return; // birim çoktan teslim edildi (DATA/FEC ortak pencere)
-        }
-        if slot.delivered_seen.len() > DELIVERED_DEDUP_WINDOW {
-            slot.delivered_seen.pop_first();
-        }
-        push_delivery(
-            stats,
-            delivery_tx,
-            peer,
-            slot.ctx,
-            unit_id,
-            payload.to_vec(),
-            from_fec,
-        );
-        return;
-    }
     let mid = u64::from(pfx.message_id);
     if slot.delivered_seen.contains(&mid) {
         return; // mesaj çoktan teslim edildi; geç chunk'lar (retransmit/kurtarma) yutulur
@@ -3218,7 +3540,7 @@ fn admit_chunk(
             slot.delivered_seen.pop_first();
         }
         stats.msgs_reassembled += 1;
-        push_delivery(stats, delivery_tx, peer, slot.ctx, mid, full, from_fec);
+        gate.push_unreserved(stats, peer, slot.ctx, mid, full, from_fec);
     } else if slot.msgs.len() > MSG_ASM_CAP {
         slot.msgs.pop_first();
         stats.msg_asm_evicted += 1;
@@ -3337,11 +3659,16 @@ async fn srv_seal_send(
 /// eksik-source > 0 VE distinct(source)+distinct(repair) ≥ K iken denenir; reconstruct HATASI
 /// bloğu SİLMEZ (shard'lar korunur — sonraki shard tamamlayabilir). Tam blok (sources ≥ K) işi
 /// bitmiştir, düşülür. Kapasite aşımında en-eski blok düşer (sayaçla görünür).
+///
+/// [K4G-05c · R2] Dönüş = RECOVERED ile bildirilecek ESI'ler: parçalama kapalıyken YALNIZ kabul
+/// kapısının Accept / Duplicate verdiği kurtarımlar (alıcının tutamadığı birim FEC teyidiyle de
+/// ACK'lenmez). Reddedilen kurtarımın bloğu yine düşer; birim ARQ ile tamamlanır (not 3.6 kol 1).
 #[allow(clippy::too_many_arguments)]
 fn fec_ingest(
     stats: &mut ServerStats,
-    delivery_tx: &mpsc::Sender<Delivery>,
+    gate: &mut DeliveryGate,
     peer: SocketAddr,
+    session: SessionHandle,
     slot: &mut PeerSlot,
     p: &FecProfile,
     block_id: u32,
@@ -3416,7 +3743,10 @@ fn fec_ingest(
                 // kurtarılan chunk'ı YANLIŞ birime bağlardı.
                 let k = u64::from(p.k_shape);
                 for r in recovered {
-                    recovered_esis.push(r.esi);
+                    if frag_on {
+                        // [S1B — S1-dışı, değişmedi] Bildirim ayrıştırmadan önce.
+                        recovered_esis.push(r.esi);
+                    }
                     let unit_id = u64::from(block_id) * k + u64::from(r.esi);
                     let Ok(pfx) = SourcePrefix::parse(&r.bytes) else {
                         continue;
@@ -3427,21 +3757,30 @@ fn fec_ingest(
                         continue;
                     };
                     // [S1B] Kurtarılan chunk DATA ile AYNI kapıdan geçer: fragmentasyon kapalıysa
-                    // doğrudan teslim, açıksa birleştiriciye girer — yani FEC kurtarımı ÇOK
-                    // PARÇALI mesajlarda da işe yarar (kurtarılan symbol'ün prefix'i mesaj
-                    // kimliğini ve offset'ini zaten taşır). İlk-teslim dedup penceresi ORTAK.
-                    admit_chunk(
-                        stats,
-                        delivery_tx,
-                        peer,
-                        slot,
-                        frag_on,
-                        max_message_bytes,
-                        unit_id,
-                        &pfx,
-                        payload,
-                        true,
-                    );
+                    // birim kabul kapısı, açıksa birleştirici — yani FEC kurtarımı ÇOK PARÇALI
+                    // mesajlarda da işe yarar (kurtarılan symbol'ün prefix'i mesaj kimliğini ve
+                    // offset'ini zaten taşır). İlk-teslim dedup durumu ORTAK.
+                    if frag_on {
+                        admit_chunk(
+                            stats,
+                            gate,
+                            peer,
+                            slot,
+                            max_message_bytes,
+                            &pfx,
+                            payload,
+                            true,
+                        );
+                    } else {
+                        // [K4G-05c · R2] Kurtarımın PN'i yoktur: motor girdisi yok (`true`).
+                        let adm =
+                            gate.admit(stats, slot, peer, session, unit_id, payload, true, |_| {
+                                true
+                            });
+                        if !adm.is_refused() {
+                            recovered_esis.push(r.esi);
+                        }
+                    }
                 }
                 if let Some(a) = slot.blocks.remove(&block_id) {
                     stats.fec_repairs_useful += a.repairs.len() as u64;
@@ -3476,7 +3815,7 @@ async fn server_task(
     cfg: RuntimeConfig,
     seam: Box<dyn PacketProtection>,
     egress: Option<Box<dyn EgressPolicy>>,
-    delivery_tx: mpsc::Sender<Delivery>,
+    mut gate: DeliveryGate,
     mut shutdown_rx: watch::Receiver<bool>,
     mut t0_rx: mpsc::Receiver<oneshot::Sender<()>>,
     expected: ExpectedSessions,
@@ -3514,7 +3853,7 @@ async fn server_task(
 
     loop {
         // [K4G-11] Salt gözlem: sayacın o anki değeri yayımlanır (önceki turun bütün `continue`
-        // yolları dahil). Sayaç yalnız `push_delivery`'de artar; burada okunur, değişmez.
+        // yolları dahil). Sayaç yalnız `DeliveryGate::push_unreserved`'da (S1-dışı parçalı yol) artar; burada okunur, değişmez.
         delivery_dropped_seen.store(stats.delivery_dropped, Ordering::Relaxed);
         tokio::select! {
             _ = shutdown_rx.changed() => break,
@@ -3551,6 +3890,8 @@ async fn server_task(
                 // yuva yolunda da çağrılır). Kapanmış oturumun geç DATA'sı yuva AÇAMAZ (kol c).
                 let now = elapsed_ns(start);
                 let mut retired = retire_closed_slots(&mut peers, &expected);
+                // [K4G-05c] Kapanan oturumun kabul durumu yuvalarıyla AYNI adımda silinir.
+                gate.retire_closed(&expected);
                 let before = peers.len();
                 peers.retain(|_, s| now.saturating_sub(s.last_seen_ns) < idle_hold_ns);
                 retired += (before - peers.len()) as u64;
@@ -3658,6 +3999,7 @@ async fn server_task(
                 if !peers.contains_key(&key) {
                     if peers.len() >= cfg.max_peers {
                         stats.retired_idle_peers += retire_closed_slots(&mut peers, &expected);
+                        gate.retire_closed(&expected);
                     }
                     if peers.len() >= cfg.max_peers {
                         stats.dropped_new_peers += 1;
@@ -3700,31 +4042,40 @@ async fn server_task(
                             ),
                             _ => unreachable!("dış match yalnız iki DATA varyantını seçti"),
                         };
-                        let out = slot.rx.on_datagram(
-                            RxDatagram {
-                                seq: pn,
-                                unit_id,
-                                kind: RxKind::Data,
-                            },
-                            now,
-                        );
-                        // İlk-teslim: PN-yeni ise chunk teslim kapısına girer (dedup orada:
-                        // fragmentasyon kapalı→birim-id, açık→mesaj-id).
-                        if out.delivered.contains(&unit_id) {
-                            admit_chunk(
-                                &mut stats,
-                                &delivery_tx,
-                                peer,
-                                slot,
-                                frag_on,
-                                msg_cap,
-                                unit_id,
-                                &pfx,
-                                payload,
-                                false,
+                        let session = key.1;
+                        let datagram = RxDatagram {
+                            seq: pn,
+                            unit_id,
+                            kind: RxKind::Data,
+                        };
+                        let mut ack_out: Option<AckFrame> = None;
+                        if frag_on {
+                            // [S1B — S1-dışı parçalı yol, değişmedi (beyanlı)] İlk-teslim: PN-yeni
+                            // ise chunk birleştiriciye girer (dedup mesaj-id).
+                            let out = slot.rx.on_datagram(datagram, now);
+                            if out.delivered.contains(&unit_id) {
+                                admit_chunk(
+                                    &mut stats, &gate, peer, slot, msg_cap, &pfx, payload, false,
+                                );
+                            }
+                            ack_out = out.ack;
+                        } else {
+                            // [K4G-05c · R2] TEK kabul kararı: ret → datagram alıcı motoruna, blok
+                            // birleştiriciye ve kanala girmez; ACK yok, SACK boşluğu kalır, gönderen
+                            // yeniden yollar. Kabul → yer, motor (ACK), kanal, kabul durumu.
+                            let adm = gate.admit(
+                                &mut stats, slot, peer, session, unit_id, payload, false,
+                                |slot| {
+                                    let out = slot.rx.on_datagram(datagram, now);
+                                    ack_out = out.ack;
+                                    out.delivered.contains(&unit_id)
+                                },
                             );
+                            if adm.is_refused() {
+                                continue;
+                            }
                         }
-                        if let Some(ack) = out.ack {
+                        if let Some(ack) = ack_out {
                             let sp = slot.ctx;
                             srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, ack.encode())
                                 .await;
@@ -3757,8 +4108,9 @@ async fn server_task(
                             let k = u8::try_from(p.k_shape).unwrap_or(255);
                             let rec = fec_ingest(
                                 &mut stats,
-                                &delivery_tx,
+                                &mut gate,
                                 peer,
+                                key.1,
                                 slot,
                                 p,
                                 block_id,
@@ -3842,8 +4194,9 @@ async fn server_task(
                         }
                         let rec = fec_ingest(
                             &mut stats,
-                            &delivery_tx,
+                            &mut gate,
                             peer,
+                            key.1,
                             slot,
                             p,
                             h.block_id,
@@ -3907,8 +4260,9 @@ async fn server_task(
                                         let is_rep = fh.kind == inner_kind::FEC_REPAIR;
                                         let rec = fec_ingest(
                                             &mut stats,
-                                            &delivery_tx,
+                                            &mut gate,
                                             peer,
+                                            key.1,
                                             slot,
                                             p,
                                             fh.block_id,
@@ -4088,26 +4442,24 @@ mod delivery_dropped_mirror_tests {
     const TICK: Duration = Duration::from_millis(5);
     /// Taşırılan teslim kanalının kapasitesi (en küçük geçerli değer).
     const TINY_QUEUE: usize = 1;
-    /// Gönderilen birim: kanal kapasitesinden büyük olmalı ki teslimler taşsın.
+    /// Gönderilen birim: kanal kapasitesinden büyük olmalı ki kanal dolsun.
     const UNITS: u64 = 16;
 
-    async fn wait_until(mut done: impl FnMut() -> bool) -> bool {
-        let deadline = tokio::time::Instant::now() + WAIT;
-        while tokio::time::Instant::now() < deadline {
-            if done() {
-                return true;
-            }
-            tokio::time::sleep(TICK).await;
-        }
-        done()
-    }
-
-    /// Teslimler BİLEREK drenaj edilmez: kanala ilk birim girer, kalan `UNITS − 1` birim sayılarak
-    /// düşer (her birim ilk teslimde tam bir kez `push_delivery`'ye gelir). Ayna bu değere
-    /// kapanıştan ÖNCE ulaşır ve kapanış istatistiğiyle aynıdır.
+    /// [K4G-05c · DUR-8 Ek B.3; eski ad `live_value_equals_the_overflow_counter_before_shutdown`]
+    /// Fikstür aynı (teslim kanalı 1, 16 birim, teslimler önce BİLEREK drenaj edilmez). Eski iddia
+    /// kanal taşmasının ACK'li birimi düşürmesini (15 düşüş, canlı + kapanış) beklenen davranış diye
+    /// sabitliyordu; R2 düzeltmesiyle (C9 §3, DUR-18; DUR-05c-10 (a)) dolu kanaldaki birim ACK'siz
+    /// reddedilir, düşmez: canlı ve kapanış `delivery_dropped` 0, drenajda 16 birimin hepsi teslim
+    /// edilir. Ayna artık canlılığını ayırt etmez (sayaç yapısal 0; beyan, not Ek B). Eski kodda bu
+    /// test KIRMIZIDIR (durakta canlı değer 15; beklenen).
     #[tokio::test(flavor = "multi_thread")]
-    async fn live_value_equals_the_overflow_counter_before_shutdown() {
-        let server = ServerEndpoint::bind(
+    async fn overflow_is_refused_and_drop_mirror_stays_zero() {
+        /// Durakta gönderenin teyitsiz sayısının değişmediği süre: akış durmuş sayılır.
+        const STALL_QUIET: Duration = Duration::from_secs(1);
+        /// Drenaj üst sınırı: reddedilen birimlerin geri çekilmiş yeniden gönderimi (RTO_MAX 30 s,
+        /// transport-layer-tdd AMENDMENT-12) için pay.
+        const DRAIN_MAX: Duration = Duration::from_secs(90);
+        let mut server = ServerEndpoint::bind(
             "127.0.0.1:0".parse().expect("adres"),
             RuntimeConfig {
                 delivery_queue: TINY_QUEUE,
@@ -4130,19 +4482,45 @@ mod delivery_dropped_mirror_tests {
                 .send(format!("taşma-{i}").into_bytes())
                 .expect("offer");
         }
-        let expected = UNITS - TINY_QUEUE as u64;
-        assert!(
-            wait_until(|| server.delivery_dropped() == expected).await,
-            "canlı değer kapanıştan önce {expected} olmalı, gelen {}",
-            server.delivery_dropped()
+        // Durak: gönderenin teyitsiz sayısı STALL_QUIET boyunca değişmeyene dek (üst sınır WAIT).
+        let deadline = tokio::time::Instant::now() + WAIT;
+        let mut last = client.outstanding();
+        let mut last_change = tokio::time::Instant::now();
+        while tokio::time::Instant::now() < deadline && last_change.elapsed() < STALL_QUIET {
+            tokio::time::sleep(TICK).await;
+            let now = client.outstanding();
+            if now != last {
+                last = now;
+                last_change = tokio::time::Instant::now();
+            }
+        }
+        assert_eq!(
+            server.delivery_dropped(),
+            0,
+            "dolu kanaldaki birim ACK'siz reddedilmeli, düşmemeli (durakta teyitsiz {last})"
         );
+        // Drenaj: her birim tam bir kez teslim edilir.
+        let mut got = std::collections::BTreeSet::new();
+        let deadline = tokio::time::Instant::now() + DRAIN_MAX;
+        while (got.len() as u64) < UNITS && tokio::time::Instant::now() < deadline {
+            if let Ok(Some(d)) = tokio::time::timeout(TICK, server.next_delivery()).await {
+                assert!(
+                    got.insert(d.unit_id),
+                    "birim {} iki kez teslim edildi",
+                    d.unit_id
+                );
+            }
+        }
+        assert_eq!(
+            got.len() as u64,
+            UNITS,
+            "drenajda her birim teslim edilmeli: {got:?}"
+        );
+        assert_eq!(server.delivery_dropped(), 0, "canlı değer 0 kalmalı");
         client.shutdown().await;
         let stats = server.shutdown().await;
-        assert_eq!(
-            stats.delivery_dropped, expected,
-            "erişimci ve kapanış istatistiği aynı sayaçtır: {stats:?}"
-        );
-        assert_eq!(stats.delivered, TINY_QUEUE as u64, "{stats:?}");
+        assert_eq!(stats.delivery_dropped, 0, "kapanış istatistiği: {stats:?}");
+        assert_eq!(stats.delivered, UNITS, "{stats:?}");
     }
 }
 

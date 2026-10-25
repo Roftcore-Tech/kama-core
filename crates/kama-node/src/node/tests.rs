@@ -408,12 +408,18 @@ fn connect_after_cancel_in_one_batch_keeps_the_abandoned_event() {
 
 // ── Madde 2: teslim kanalı taşması ve epoch geçişi ölçüde ───────────────────────────────────
 
-/// Bob'un döngüsü sürülmezken veri alıcısı birimleri ACK'ler ve teslim kanalına koyar; kanalı
-/// boşaltan adaptör çağrılmaz. Alice kanal tavanını aşana dek demet yollar. Taşma Transport'un
-/// salt-okunur sayacında, sonra ürün döngüsünde `KamaNode::metrics().delivery_channel_drops`'ta
-/// görünür.
+/// Bob'un döngüsü sürülmezken veri alıcısı birimleri teslim kanalına koyar; kanalı boşaltan
+/// adaptör çağrılmaz. Alice kanal tavanından (`delivery_queue`) bir fazla demet sunar.
+///
+/// [K4G-05c · DUR-8 Ek B.4; eski ad `delivery_channel_overflow_reaches_node_metrics`] Fikstür aynı
+/// (Bob sürülmez, Alice PTT demetleri basar, sonra Bob ürün döngüsüne girer). Eski iddia kanal
+/// taşmasının ACK'li demeti düşürmesini (`delivery_channel_drops > 0`) beklenen davranış diye
+/// sabitliyordu; R2 düzeltmesiyle (C9 §3, DUR-18; DUR-05c-10 (a)) dolu kanaldaki birim ACK'siz
+/// reddedilir ve yeniden gönderilir: Bob döngüye girince `Ok` alan her demet tam bir kez gelir,
+/// ölçüdeki taşma 0 kalır. Demet içerikleri aynı olduğundan sıra iddiası yoktur. Eski kodda bu
+/// test KIRMIZIDIR (gelen demet < `Ok`; beklenen).
 #[test]
-fn delivery_channel_overflow_reaches_node_metrics() {
+fn delivery_channel_full_refuses_and_node_metrics_stay_zero() {
     let _serial = support::serial();
     let root = TempDir::new("delivery-overflow");
     let phones = support::provision(root.path(), &[ALICE, BOB]);
@@ -436,23 +442,47 @@ fn delivery_channel_overflow_reaches_node_metrics() {
     let stream = alice
         .ptt_open(BOB, PttCodec::Lyra, BUNDLE_MS)
         .expect("ptt_open");
-    support::until("bob: teslim kanalı taştı", || {
-        for _ in 0..PUSH_BURST {
-            match alice.ptt_push(stream, vec![BUNDLE_BYTE; BUNDLE_LEN]) {
-                Ok(()) => {}
-                // Geri basınç: demet alınmadı; sonraki adımda yenileri verilir.
-                Err(NodeError::Ptt(PttError::Transport(TransportError::Backpressure))) => break,
-                Err(other) => panic!("ptt_push: {other:?}"),
+    // Bob'un ürün profili teslim kanalı (`delivery_queue`) + 1: kanalı aşan en az bir demet.
+    let target = client_core::runtime::RuntimeConfig::default().delivery_queue + 1;
+    let mut pushed = 0usize;
+    support::until(
+        "alice: kanal tavanı + 1 demet sunuldu ya da geri basınç",
+        || {
+            for _ in 0..PUSH_BURST {
+                if pushed >= target {
+                    return Some(());
+                }
+                match alice.ptt_push(stream, vec![BUNDLE_BYTE; BUNDLE_LEN]) {
+                    Ok(()) => pushed += 1,
+                    // Geri basınç: Transport demeti almadı; sunum burada biter.
+                    Err(NodeError::Ptt(PttError::Transport(TransportError::Backpressure))) => {
+                        return Some(());
+                    }
+                    Err(other) => panic!("ptt_push: {other:?}"),
+                }
             }
-        }
-        (bob.node.messenger.transport().delivery_dropped() > 0).then_some(())
-    });
+            (pushed >= target).then_some(())
+        },
+    );
 
-    // Ürün döngüsü (`run`): her tur sonundaki anlık görüntü taşmayı taşır.
+    // Ürün döngüsü (`run`): `Ok` alan her demet tam bir kez gelir; ölçüde taşma yok.
     let bob = KamaNode::spawn(bob).expect("düğüm iş parçacığı");
-    support::until("bob: metrics().delivery_channel_drops > 0", || {
-        (bob.metrics().delivery_channel_drops > 0).then_some(())
+    let mut bundles = 0usize;
+    support::until("bob: Ok alan her demet teslim edildi", || {
+        while bob_events
+            .take(|event| matches!(event, NodeEvent::PttBundle { .. }).then_some(()))
+            .is_some()
+        {
+            bundles += 1;
+        }
+        (bundles >= pushed).then_some(())
     });
+    assert_eq!(bundles, pushed, "her demet tam bir kez teslim edilmeli");
+    assert_eq!(
+        bob.metrics().delivery_channel_drops,
+        0,
+        "dolu kanalda demet düşmemeli (ACK'siz ret)"
+    );
 }
 
 /// Ölçünün epoch yolu: yanıtlayanın oturumu hazır olduğunda epoch-0'dadır (başlatanın epoch-1

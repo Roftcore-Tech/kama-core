@@ -190,6 +190,11 @@ impl Receiver {
     }
 
     /// §4 on_datagram: VERIFIED datagram'ı işle → teslim + belki ACK.
+    ///
+    /// [v1.1 · K4G-05c — DUR-05c-1 (a′)] Ön koşul: çağrı KABULÜN kendisidir. Çağıran (istemci
+    /// runtime'ı) yalnız tutabildiği birimin DATA'sını verir; kabul edilmeyen datagram (oturumu hazır
+    /// değil, teslim kanalında yer yok, kimlik penceresi dışında) buraya hiç girmez — PN'i
+    /// kaydedilmez, ACK'lenmez ve `seen_count`'a sayılmaz (engine-spec §2.2 `seen_count` yaması).
     pub fn on_datagram(&mut self, d: RxDatagram, now_ns: u64) -> RxOutput {
         // [§2.2 V2] seen_count: HER görülen datagram sayılır (dup/shard DAHİL) — sender'ın
         // "seen vs sent" yön-ayrımlı kayıp kıyası için (K3 cold-start).

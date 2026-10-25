@@ -685,7 +685,8 @@ async fn d_max_peers_bounds_session_keyed_slots() {
 /// Düzenek: `max_peers: 3` ve en çok İKİ yuva (Bob'un `(A, h_ab)`'si — sonra onun taze hâli — ve
 /// Carol'ın bariyer yuvası `(B, h_ac)`) → tablo HİÇ dolmaz, dolu-tablo yolu HİÇ çalışmaz
 /// (`dropped_new_peers == 0` doğrular); `idle_hold` ürün değeri (105 s) → idle emekliliği de
-/// çalışmaz. Bob'un birimi 0 teslim edilir (yuvanın teslim-dedup penceresine girer), sonra oturum
+/// çalışmaz. Bob'un birimi 0 teslim edilir (oturumun kabul durumuna girer — K4G-05c: oturum
+/// anahtarlı, yuvalarıyla AYNI adımda silinir; eski belge: "yuvanın teslim-dedup penceresi"), sonra oturum
 /// tablosu `h_ab`'siz yayımlanır (oturum kapandı); bundan sonra Bob'un yuvasını emekliye
 /// ayırabilecek tek yol bakım tick'idir.
 ///
@@ -693,7 +694,7 @@ async fn d_max_peers_bounds_session_keyed_slots() {
 /// tekrarlanan bir SONDAYLA olaydan okunur. Her turda `h_ab` YALNIZ sonda süresince yeniden
 /// yayımlanır, Bob birim 0'ı yeni PN'le yeniden yollar, ardından Carol'ın yuvasından bir bariyer
 /// gelir (aynı sunucu soketinden sırayla işlenir: bariyer teslim edildiğinde sonda işlenmiştir).
-/// Yuva hâlâ duruyorsa birim 0 onun dedup penceresinde yutulur (teslim yok) ve `h_ab` yeniden
+/// Yuva hâlâ duruyorsa birim 0 oturumun kabul durumunda Duplicate olarak yutulur (teslim yok) ve `h_ab` yeniden
 /// kaldırılır; yuva emekliye ayrılmışsa sonda TAZE bir yuva açar ve birim 0 yeniden teslim edilir —
 /// bekleme koşulu budur (üst sınır `WAIT` ≫ 1 s). Turlar arasındaki `PROBE_PACE` aralığında `h_ab`
 /// beklenmez; sonda penceresi bir bariyer gidiş-dönüşü kadar kısadır. Sonda taze yuvayı açtıktan
@@ -731,7 +732,7 @@ async fn e_maintenance_tick_retires_a_closed_session_slot_without_table_pressure
     let bob_addr = udp().await;
     let carol_addr = udp().await;
 
-    // Bob'un yuvası `(A, h_ab)`: birim 0 teslim edilir ve yuvanın teslim-dedup penceresine girer.
+    // Bob'un yuvası `(A, h_ab)`: birim 0 teslim edilir ve oturumun kabul durumuna girer.
     send(&bob_addr, &sealed_data(&mut bob, h_ba, 0), to).await;
     let d = delivery(&mut server).await;
     assert_eq!((d.unit_id, d.ctx), (0, ProtectionContext::Session(h_ab)));

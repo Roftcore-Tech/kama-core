@@ -586,9 +586,9 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     }
 
     /// [K4G-11] Salt-okunur telemetri: veri alıcısının teslim kanalı doluyken düşen teslim sayısı
-    /// (`ServerStats::delivery_dropped`; bkz. [`ServerHandle::delivery_dropped`]). Adaptör teslim
-    /// kanalını her `drive`'da boşalttığı için uygulama `recv`'i sürdükçe sıfır kalır; sıfırdan
-    /// büyükse ACK'lenmiş birim uygulamaya ulaşmadan düşmüştür (app drenaj sözleşmesi ihlali).
+    /// (`ServerStats::delivery_dropped`; bkz. [`ServerHandle::delivery_dropped`]).
+    /// [K4G-05c · R2] Yapısal 0: dolu kanalda birim ACK'siz reddedilir (`full_refusals`), düşmez;
+    /// > 0 kabul kararının atlandığını gösterir.
     #[must_use]
     pub fn delivery_dropped(&self) -> u64 {
         self.server.delivery_dropped()
@@ -1520,9 +1520,9 @@ mod tests {
     }
 
     /// [K4G-11] Salt-okunur erişimciler taze ürün adaptöründe: Crypto'nun tutmadığı tutamacın
-    /// epoch'u yok, teslim kanalı taşması yok. Kurulu oturumun epoch'u (`Some(1)`, iki uçta) ve
-    /// canlı taşma değeri uçtan uca `crates/kama-node/tests/two_nodes_loopback.rs` ile
-    /// `runtime::delivery_dropped_mirror_tests`'te sınanır.
+    /// epoch'u yok, teslim kanalı taşması yok. Kurulu oturumun epoch'u (`Some(1)`, iki uçta) uçtan
+    /// uca `crates/kama-node/tests/two_nodes_loopback.rs` ile sınanır; [K4G-05c] dolu kanalda canlı
+    /// değerin 0 kaldığı (ACK'siz ret) `runtime::delivery_dropped_mirror_tests`'te.
     #[test]
     fn read_only_accessors_on_a_fresh_product_adapter() {
         use kama_noise_wire::seam_mock::{fixture_directory, fixture_protection};
