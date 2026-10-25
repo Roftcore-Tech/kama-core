@@ -1104,3 +1104,185 @@ async fn store_miss_guard_fec_recovered() {
     );
     assert_eq!(ss.fec_recovered_units, erased, "{ss:?}");
 }
+
+// ── K4G-05c: K_MAP budaması ve birim başına O(1) runtime kaydı ───────────────────────────────
+
+/// [K4G-05c · C11 DUR-30, DUR-05c-14 (A)] Kayıt-unutma yolu 4 — **K_MAP budaması** (gerçek
+/// runtime; not §3.3 (iii)). Hedefin orijinali düşer; İKİNCİ iletimi (kayıp ilanının getirdiği
+/// yeniden gönderim — Retransmit kökenli: kayıp ilanında tombstone'a geçer, kopya kökenli kayıp
+/// yoluyla silinmez) alıcıya ulaşır; onu bildiren ACK'ler ağda tutulur ve parçalama dolgusuyla ACK
+/// çerçevesinin dışına itilir. Dolgu teyit edildikten sonra SESSİZLİKTE hedefin iletimleri (hepsi
+/// düşer) motorda birikir: hiçbir ACK gelmediğinden kayıp ilanı olmaz, kayıt yalnız budamayla
+/// düşer. Motor birim başına toplam ≤ K_MAP için ORİJİNAL DIŞINDAKİ en eski kaydı budar — ikinci
+/// iletimden eski kopya-dışı kayıt yoktur, ilk budama onu seçer. Ön koşul: sessizlikteki iletim
+/// sayısı en az bir budamayı zorunlu kılar (görüntüdeki kayıt sayısı A'dan K_MAP − A + 2 iletim;
+/// +1 orijinalin TTL'le düşme payı) ve ikinci iletimden beri tombstone TTL'inin alt sınırı
+/// (`TTL_LOWER_BOUND`) geçmemiştir (yol TTL değil). Sonra tutulan ACK gelir: beş iddia.
+///
+/// TABAN (05b, budama kapalı): kayıt budanmaz, tutulan ACK canlı tombstone'la eşleşir ve hedefi
+/// teyit eder → iddia (1) KIRMIZI beklenir.
+#[tokio::test(flavor = "multi_thread")]
+async fn late_ack_after_prune_keeps_payload() {
+    let k_map = adaptive_transport::sender::K_MAP as u32;
+    let mut rig = Rig::new(cfg_no_fec()).await;
+    let w = rig.send().await;
+    rig.wait("kuruluş birimi teyit edilmeli", WAIT, |r| {
+        r.acked_set.contains(&w)
+    })
+    .await;
+    let t = rig.next_unit;
+    rig.net.with(|s| {
+        s.target = Some(t);
+        s.target_pass_nth = 1;
+        s.hold_target_acks = true;
+    });
+    let before = rig.client.live_diag();
+    assert_eq!(rig.send().await, t, "fikstür: hedef kimliği");
+    // Orijinal düşer; geçen trafik paket eşiği kanıtını getirir → ikinci iletim alıcıya geçer.
+    rig.wait_trickle("hedefin ikinci iletimi alıcıya geçmeli", WAIT, |r| {
+        r.net.with(|s| s.hold_pn.is_some())
+    })
+    .await;
+    let at_pass = rig.client.live_diag();
+    assert!(
+        at_pass.retransmits > before.retransmits && at_pass.dups == before.dups,
+        "ön koşul: hedefin ikinci iletimi Retransmit kökenli olmalı (retransmit {} → {}, kopya {} → \
+         {})",
+        before.retransmits,
+        at_pass.retransmits,
+        before.dups,
+        at_pass.dups
+    );
+    let passed_at = rig
+        .net
+        .with(|s| s.target_passed_at)
+        .expect("hedefin ikinci iletimi geçti");
+    // Parçalama: geçen iletimin bloğu ACK çerçevesinin dışına itilir, ilerleme sürer.
+    let first = rig.next_unit;
+    let fillers = first..first + FRAG_FILLERS;
+    rig.net
+        .with(|s| s.drop_first.extend(fillers.clone().filter(|u| u % 2 == 1)));
+    for _ in fillers {
+        rig.send().await;
+    }
+    rig.wait("dolgu teyit edilmeli (yalnız hedef teyitsiz)", WAIT, |r| {
+        r.client.outstanding() == 1
+    })
+    .await;
+    let want = body(t);
+    rig.wait(
+        "alıcı hedefi ikinci iletiminden teslim etmeli",
+        WAIT,
+        |r| r.delivered.get(&t).is_some_and(|b| *b == want),
+    )
+    .await;
+    // Sessizlik: önce görüntü (A), SONRA röle sayacı — aradaki iletim ikisine de girmez (ihtiyatlı).
+    let rec = rig.fresh_recovery().await;
+    let a = rec
+        .oldest_unacked
+        .filter(|u| u.unit_id == t)
+        .map(|u| u.engine.inflight_records + u.engine.tombstone_records);
+    let a = a.expect("ön koşul: hedef teyitsiz depodaki en eski birim");
+    assert!(
+        a <= k_map,
+        "budama: birim başına toplam kayıt ≤ K_MAP ({a} > {k_map}) — {rec:?}"
+    );
+    let need = u64::from(k_map - a + 2);
+    let seen = |r: &Rig| {
+        r.net
+            .with(|s| u64::from(s.data_seen.get(&t).copied().unwrap_or(0)))
+    };
+    let s0 = seen(&rig);
+    rig.wait(
+        &format!("sessizlikte hedefin en az {need} iletimi (budamayı zorunlu kılar)"),
+        TTL_LOWER_BOUND,
+        |r| seen(r) - s0 >= need,
+    )
+    .await;
+    let since_pass = passed_at.elapsed();
+    assert!(
+        since_pass < TTL_LOWER_BOUND,
+        "ön koşul: ikinci iletimden beri tombstone TTL alt sınırı ({TTL_LOWER_BOUND:?}) geçmemeli \
+         ({since_pass:?}) — yol K_MAP budaması olmalı, TTL değil"
+    );
+    let rec = rig.fresh_recovery().await;
+    let after = rec
+        .oldest_unacked
+        .filter(|u| u.unit_id == t)
+        .map(|u| u.engine.inflight_records + u.engine.tombstone_records)
+        .unwrap_or_default();
+    assert!(
+        after <= k_map,
+        "budama: birim başına toplam kayıt ≤ K_MAP ({after} > {k_map}) — {rec:?}"
+    );
+    rig.net.with(|s| {
+        assert!(
+            !s.held.is_empty(),
+            "ön koşul: hedefin ikinci iletimini bildiren ACK ağda tutuldu"
+        );
+    });
+    rig.late_ack_keeps_payload_then_resend_confirms(t, "prune", WAIT)
+        .await;
+}
+
+/// [K4G-05c · not §3.3 (ii), §6] Birim başına O(1) runtime kaydı: kayıp + yeniden sıralama
+/// kanalında (bekçi kanalı) HER kurtarma görüntüsünde `seq_to_unit_len == 0` ve gönderim kaydı
+/// girdisi (`unit_seqs_len`) ≤ teyitsiz birim (`unacked_units`); sonda ikisi de 0. Ön koşul:
+/// teyitsiz birim varken alınmış görüntü ve yeniden gönderim gerçekleşti (iddia boş geçmesin).
+///
+/// TABAN (05b): KIRMIZI beklenir — iletim → birim haritası yeniden gönderimle büyür
+/// (`seq_to_unit_len` ≥ teyitsiz birim > 0).
+#[tokio::test(flavor = "multi_thread")]
+async fn unit_records_bounded_per_unit() {
+    let mut rig = Rig::new(cfg_no_fec()).await;
+    rig.net.with(|s| {
+        s.chaos = Some(Chaos {
+            state: GUARD_SEED,
+            data_drop_ppm: GUARD_DATA_DROP_PPM,
+            data_delay_ppm: GUARD_DATA_DELAY_PPM,
+            delay: GUARD_DELAY,
+            ack_drop_ppm: GUARD_ACK_DROP_PPM,
+        });
+    });
+    for _ in 0..GUARD_UNITS {
+        rig.send().await;
+    }
+    let mut last: Option<Instant> = None;
+    let mut busy_samples = 0u32;
+    let mut over: Vec<SenderRecoveryDiag> = Vec::new();
+    rig.wait("bütün birimler teyit edilmeli", GUARD_WAIT, |r| {
+        if let Some(rec) = r.client.live_diag().recovery {
+            if last != Some(rec.taken_at) {
+                last = Some(rec.taken_at);
+                if rec.unacked_units > 0 {
+                    busy_samples += 1;
+                }
+                if rec.seq_to_unit_len != 0 || rec.unit_seqs_len > rec.unacked_units {
+                    over.push(rec);
+                }
+            }
+        }
+        r.client.outstanding() == 0
+    })
+    .await;
+    let retransmits = rig.client.live_diag().retransmits;
+    assert!(
+        busy_samples >= 1 && retransmits >= 1,
+        "ön koşul: teyitsiz birim varken görüntü ({busy_samples}) ve yeniden gönderim \
+         ({retransmits}) olmalı"
+    );
+    assert!(
+        over.is_empty(),
+        "birim başına O(1): her görüntüde seq_to_unit_len = 0 ve unit_seqs_len ≤ unacked_units \
+         olmalı; ihlal ({}): {:?}",
+        over.len(),
+        over.first()
+    );
+    rig.pump(SETTLE).await;
+    let rec = rig.fresh_recovery().await;
+    assert_eq!(rec.unacked_units, 0, "{rec:?}");
+    assert_runtime_maps_empty(&rec, "o1");
+    let (cs, _ss) = rig.finish().await;
+    assert_eq!(cs.stale_decisions, 0, "{cs:?}");
+    assert_eq!(cs.acked, GUARD_UNITS, "{cs:?}");
+}
