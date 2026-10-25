@@ -7,6 +7,7 @@
 - **Otorite sırası:** CEVAP 15 EK-1 > CEVAP 15 v3 > 14 > …; donmuş belgeler kendi değişiklik kuralıyla (PoC-KAPSAM-001 yalnız sahibin tarihli ekiyle; ccr/noise-wire/transport-tdd yalnız sahip kararıyla). Sahibin iki ek notu bağlayıcı. İnceleme kayıtları kanıt girdisidir.
 - **Atıf biçimi:** `SHA:dosya:satır`. Kısa dosya adları: `runtime.rs`/`transport.rs`/`wire.rs`/`batch.rs` = `crates/client-core/src/`; `sender.rs`/`arq.rs` = `crates/adaptive-transport/src/`; `s1.rs` = `crates/kama-contracts/src/`; `ptt.rs`/`file_transfer.rs`/`messaging.rs` = `crates/kama-app/src/`; `node.rs` = `crates/kama-node/src/`. Belgeler tam yolla.
 - **SHA'lar (origin'de, 2026-10-25):** `0c22a07d` = `k4g/05c-kod` (05b rev5 `35a02fcf` + 05c) · `37b78aad` = `k4g/05b-retx-fix` ucu, **05b rev6** (B′ karşılık hakkı, K3 ARQ payı rezervi, DUR-40 yaş tavanlı HOL; Ek A A.4 rev6, Ek B.6 (g)(h)) — `0c22a07d` rev6'yı İÇERMEZ · `1b1425d2` = main · `cf270a6c` = 05d · `e5514e7a` = 05f rev1 · `0b216f07` = 05g origin ucu (yerel `c9c2ea22` YEREL, dayanak değil).
+- **Ek A sha256:** `013ec64bee245a8f329024dc939bd72a14b9051708ae2a72ec17de76c14051f7` — kapsam `## Ek A` satırından `## Ek B`'den önceki son boş olmayan satıra dek, 43 satır, her satır `\n` ile (`~/kama-k4g-work/tools/eka-sha.sh`); 35 kalem. rev1 Ek A (`e497640e…`, 26 kalem) geçersizdir.
 - **Etiketler:** [olgu] koddan · [hesap] aritmetik, ölçülmedi · [çıkarım] test edilmedi · [türetim] koddan önce yazılan sınır · [CAL] deney başlangıç değeri.
 
 ## Karar özeti
@@ -19,7 +20,7 @@
 4. **PTT:** sahibin C15 v3 §9.3 / S5 yönü (canlı ses, demet süreli) PoC-KAPSAM-001'in "Reliable klip, geç ses düşürülmez" hükmünü değiştirir; bu yalnız sahibin tarihli PoC-KAPSAM eki ile olur (DUR-06-18). Deney PTT'ye dokunmaz; karar uygulamadan önce gerekir. K8 demo hedefleri (bas→ilk ses ≤ 1,5 s / ≤ 3 s; sıfır bozuk hece) PTT eşiklerinin ürün hedefi girdisidir.
 5. **Göndericide süre dolumu ve RESET payload için ikinci silme yolu açmaz:** 05b'nin teyit çıktısı "sonlandırma çıktısı"na (teyit | iptal; birim başına oturumda en çok bir kez) genişler. Bu AMENDMENT-12'nin donmuş cümlelerini değiştirir (Ek A A.16); uygulamadan önce sahip kararı gerekir.
 
-**Deneyden ÖNCE gerekenler:** DUR-06-5 ve DUR-06-2 yön onayı · DUR-06-20 (deney kodunda FEC kapalı; B2'nin FEC kolu yalnız tabanda ölçülür) · §14 kapsamı (≈ 6–7,5 iş günü; tahmin, takvim sözü değil).
+**Deneyden ÖNCE gerekenler:** DUR-06-5 ve DUR-06-2 yön onayı · DUR-06-20 (deney kodunda FEC kapalı; B2'nin FEC kolu yalnız tabanda ölçülür) · §14 kapsamı (≈ 5,5–7 iş günü; tahmin, takvim sözü değil).
 
 ## 1. Amaç ve değişmeyenler
 
@@ -98,7 +99,7 @@ WMM adları niyet bildirir; Kama'da garanti §5 seçicisinden ve türetiminden g
 1. τ aralığında katman 0 + 1 + akışsız prob tüketimi ≤ ∫(ρ_C + ρ_V)·r + b_C + b_V + P_pf; **ρ_C + ρ_V,max < 1 her an korunur** (VO kovası r(t)'ye bağlı).
 2. Katman 2'de backlog'lu sınıf c bir DRR turunda ≥ Q_c bayt alır; tur ≤ Σ_c (Q_c + S_max) bayt; akış f sınıf c içinde n_c akışla ≥ Q_c / n_c.
 3. f'nin iki hizmet fırsatı arası P_f ≤ n_c·[Σ_c (Q_c + S_max) + b_C + b_V + P_pf] / ((1 − ρ_C − ρ_V,max)·r) + τ.
-4. **T_birim (akış içi):** rev6 formülü T_birim = max(H_maks, A) + A + N_live·P_c + τ (`37b78aad:…RETX-FIX.md:571`), P_c yerine akışın düzey-2 sınıf hizmet aralığı = P_f × (K-3 sırasının üç baş boyu / Q payı) + K_ARQ_SHARE akış fırsatı. Girdiler B14'te koddan önce yazılır.
+4. **T_birim (akış içi):** rev6 formülü T_birim = max(H_maks, A) + A + N_live·P_c + τ (`37b78aad:…RETX-FIX.md:571`); P_c = rev6 T_max(kopya) = (2·S_d + S_a + S_c)/R + (K + 4)·τ + P_pf/R ifadesinde R yerine akışın etkin hızı r_f = (Q_c / n_c) / P_f, τ yerine P_f konur (akış içi düzey-2 payı: K-3 sırası + K_ARQ_SHARE akış fırsatı). Girdiler B14'te koddan önce yazılır.
 5. **Kontrol:** uygun kontrol başı ≤ (S_iletimde + S_ctrl)/r + kova dolum süresi + τ içinde çıkar.
 - Örnek [hesap]: r = 300 B/s, VO yok, ρ_C = 0,1, bir BE + bir BK akışı, Q_BE = 3150 B, Q_BK = 1050 B, S_max = 1050 B → tur ≈ 6300 B / 270 B/s ≈ 23,3 s.
 
@@ -196,7 +197,7 @@ WMM adları niyet bildirir; Kama'da garanti §5 seçicisinden ve türetiminden g
 | 3 | DUR-06-21 | ~190 testte DUR-8 yöntemi | toplu yöntem (Ek D) |
 | 3 | DUR-06-22 | INT-02/INT-03 kapı metni (A.25) | `capacity_defect = 0` + ayrı sebep sütunları |
 | 3 | DUR-06-23 | UniFFI/S5 yüzeyi (Hasan ile) | `PttBundle.flow_seq` + `pttPush` kuralı |
-| **4 — Aşama 7** | DUR-06-24 | PTT eşik dosyasının onayı | kalibrasyondan sonra (yöntem sahibin 1. notu; DUR değil) |
+| **4 — Aşama 7** | DUR-06-24 | PTT eşik dosyasının onayı | kalibrasyondan sonra sahip onaylar (yöntemin kendisi sahibin 1. notudur) |
 
 DUR'dan çıkarılanlar (C11 §3: uygulama tercihi ya da zaten karara bağlı): rev1 DUR-06-8 (kredi taşıyıcısı → DUR-06-5 (iv)), DUR-06-4 (yöntem sahibin 1. notudur → B11 kuralı; asıl karar DUR-06-24), DUR-06-9 (DUR-06-5'e girdi), DUR-06-16 ([CAL] başlangıç değerlerini orkestratör seçer ve raporlar; normatif olunca DUR-06-3/-17).
 
@@ -208,7 +209,7 @@ DUR'dan çıkarılanlar (C11 §3: uygulama tercihi ya da zaten karara bağlı): 
 - **K3 motor ("DENEY"):** `AppDataTagged` + iki katman (BE/BK) DATA kuyruğu + akış etiketli ARQ/kopya başı seçimi; DRR 3:1 isteğe bağlı (sıra 2). ≈ 1–1,5 gün.
 - **K4 testler:** B1-en-küçük, B1b (mesafe kapısı bağı), B2 (ARQ ve kopya kolları, yeni kodda); B3-en-küçük isteğe bağlı (sıra 2). ≈ 1 gün.
 - **Regresyon alt kümesi:** `tv_*`, `k4g05b_scheduling` (tek akış), INV-ACK-DELIVER-1 testleri (Ek C.C K satırları). ≈ 0,5 gün.
-- **Toplam ≈ 5,5–7 iş günü** (tahmin). Aşama 0 toplamı: tasarım rev1 + rev2 ≈ 1,5 gün harcandı + deney 5,5–7 + rev3 ≈ 1 + inceleme 1–2 ≈ **9–11,5 iş günü**; C15 v3 §7'nin "4–6 + 1–2" tahmininden +3–4 gün fazla. Vektör ve seam beyanı deneyde değişmez; sonuçlar SHA + komut + çıktı ile, origin'de değilse YEREL etiketiyle.
+- **Toplam ≈ 5,5–7 iş günü** (tahmin). Aşama 0 toplamı: tasarım rev1 + rev2 ≈ 1,5 gün harcandı + deney 5,5–7 + rev3 ≈ 1 + inceleme 1–2 ≈ **9–11,5 iş günü**; C15 v3 §7'nin "4–6 + 1–2" tahmininden ≈ +3,5–4 gün fazla. Vektör ve seam beyanı deneyde değişmez; sonuçlar SHA + komut + çıktı ile, origin'de değilse YEREL etiketiyle.
 
 ## 15. Bu notun sınırı
 
