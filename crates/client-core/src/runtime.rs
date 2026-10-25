@@ -3049,7 +3049,7 @@ impl ServerEndpoint {
         // Kapasite 1 + onay-oneshot: mark_t0 görev işleyene dek bekler (ölçüm sözleşmesi).
         let (t0_tx, t0_rx) = mpsc::channel::<oneshot::Sender<()>>(1);
         let delivery_dropped = Arc::new(AtomicU64::new(0));
-        let ledger = Arc::new(Mutex::new(DeliveryLedger::default()));
+        let ledger = Arc::new(Mutex::new(DeliveryLedger::new(&cfg)));
         let gate = DeliveryGate::new(
             &cfg,
             delivery_tx,
@@ -3149,6 +3149,24 @@ impl ServerHandle {
     #[must_use]
     pub fn delivery_dropped(&self) -> u64 {
         self.delivery_dropped.load(Ordering::Relaxed)
+    }
+
+    /// [K4G-05c · R2 — YALNIZ test (`test-util`)] Teslim kanalı defterinin anlık görüntüsü (bkz.
+    /// [`DeliveryReserveSnapshot`]); defter kilidi altında okunur, durum değişmez. F = C − kanalda
+    /// bekleyen teslim.
+    #[cfg(any(test, feature = "test-util"))]
+    #[must_use]
+    pub fn delivery_reserve_for_test(&self) -> DeliveryReserveSnapshot {
+        let book = lock_ledger(&self.ledger);
+        let queued = usize::try_from(book.pushed.wrapping_sub(book.taken)).unwrap_or(usize::MAX);
+        DeliveryReserveSnapshot {
+            capacity: book.capacity,
+            reserve: book.reserve,
+            in_use: book.in_use(),
+            free: book.capacity.saturating_sub(queued),
+            pushed: book.pushed,
+            taken: book.taken,
+        }
     }
 
     /// Kapanış → istatistik.
@@ -3253,6 +3271,12 @@ impl MsgAsm {
 /// rezerv kanaldaki ayrı bir teslimdir → `reserved` ≤ `delivery_queue` (SR-AUDIT-001).
 #[derive(Debug, Default)]
 struct DeliveryLedger {
+    /// Kanal kapasitesi C (`delivery_queue`) — yalnız gözlem (`ServerHandle::delivery_reserve_for_test`;
+    /// karar boş izni kanalın kendisinden okur).
+    #[cfg_attr(not(any(test, feature = "test-util")), allow(dead_code))]
+    capacity: usize,
+    /// Sıra başı rezervi R = min(`max_peers`, C − 1) — kararın TEK kaynağı (`DeliveryGate::decide`).
+    reserve: usize,
     pushed: u64,
     taken: u64,
     /// Rezervli teslimin sırası → oturumu.
@@ -3261,7 +3285,34 @@ struct DeliveryLedger {
     by_session: HashMap<SessionHandle, u64>,
 }
 
+/// [K4G-05c · R2] Sıra başı rezervi R = min(`max_peers`, C − 1) (DUR-05c-8 (a)).
+fn delivery_reserve(cfg: &RuntimeConfig) -> usize {
+    cfg.max_peers.min(cfg.delivery_queue.saturating_sub(1))
+}
+
+/// [K4G-05c · R2 — YALNIZ test] Teslim kanalı defterinin anlık görüntüsü
+/// ([`ServerHandle::delivery_reserve_for_test`]): C, R, U (kullanımdaki rezerv), F (boş izin) ve
+/// sayaçlar. Değişmez I: F ≥ R − U; U ≤ R.
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeliveryReserveSnapshot {
+    pub capacity: usize,
+    pub reserve: usize,
+    pub in_use: usize,
+    pub free: usize,
+    pub pushed: u64,
+    pub taken: u64,
+}
+
 impl DeliveryLedger {
+    fn new(cfg: &RuntimeConfig) -> Self {
+        Self {
+            capacity: cfg.delivery_queue,
+            reserve: delivery_reserve(cfg),
+            ..Self::default()
+        }
+    }
+
     /// Görev kanala bir teslim koydu; `reserved_for` = sıra başı rezerviyle kabul edildiyse oturumu.
     fn on_pushed(&mut self, reserved_for: Option<SessionHandle>) {
         let seq = self.pushed;
@@ -3370,8 +3421,6 @@ struct DeliveryGate {
     mode: AcceptMode,
     /// Oturum kimlik penceresi (`max_inflight_units`).
     window: u64,
-    /// Sıra başı rezervi R.
-    reserve: usize,
     /// S1 kipinde oturum başına kabul durumu; oturum beklenen kümeden çıkınca silinir.
     accept: HashMap<SessionHandle, AcceptState>,
     counters: CtxDispatchCounters,
@@ -3390,7 +3439,6 @@ impl DeliveryGate {
             ledger,
             mode,
             window: cfg.max_inflight_units as u64,
-            reserve: cfg.max_peers.min(cfg.delivery_queue.saturating_sub(1)),
             accept: HashMap::new(),
             counters,
         }
@@ -3428,11 +3476,11 @@ impl DeliveryGate {
                     return Admission::RefuseWindow;
                 }
                 let in_use = book.in_use();
-                if unit == floor && book.reserve_free(session) && in_use < self.reserve && free >= 1
+                if unit == floor && book.reserve_free(session) && in_use < book.reserve && free >= 1
                 {
                     return Admission::Accept { reserve: true };
                 }
-                if free >= 1 && free - 1 >= self.reserve.saturating_sub(in_use) {
+                if free >= 1 && free - 1 >= book.reserve.saturating_sub(in_use) {
                     Admission::Accept { reserve: false }
                 } else {
                     Admission::RefuseFull

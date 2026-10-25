@@ -118,9 +118,18 @@ type Node = ClientTransport<NoiseWireProtection>;
 /// Alice: ürün builder'ı + ürün veri profili (yalnız kapanış boşaltması kısaltılmış) + saatinin
 /// kopyası.
 fn alice_node(hub: &MemoryHub) -> (Node, ManualClock) {
+    alice_node_with_queue(hub, None)
+}
+
+/// [`alice_node`]; `delivery_queue` verilirse veri alıcısının teslim kanalı o kapasitededir (ürün
+/// 1024; yalnız dolu kanal kolları).
+fn alice_node_with_queue(hub: &MemoryHub, delivery_queue: Option<usize>) -> (Node, ManualClock) {
     let (crypto, clock) = node(ALICE);
     let mut cfg = ClientTransportConfig::product(SocketAddr::from(([127, 0, 0, 1], 0)));
     cfg.runtime.drain_cap = Duration::from_millis(100);
+    if let Some(q) = delivery_queue {
+        cfg.runtime.delivery_queue = q;
+    }
     let t = ClientTransport::new(cfg, crypto, Box::new(hub.link(id(ALICE)))).expect("düğüm");
     (t, clock)
 }
@@ -484,6 +493,116 @@ fn b_after_renewal_the_same_port_does_not_wait_for_idle_hold() {
     assert_eq!(expect_delivery(&mut alice), delivered(a1, "yeni", 1));
     assert_quiet(&mut alice, "tek teslim");
     assert_eq!(alice.ctx_dispatch_stats(), CtxDispatchStats::default());
+}
+
+/// [K4G-05c · not 3.1 / D.2 / D.5] **Oturum geçişinde sıra başı rezervi.** Yenilemede eski oturum
+/// (`a0`, yalnız-alım drain) ve yeni oturum (`a1`) veri alıcısında BİRLİKTE beklenir; her biri
+/// kendi sıra başı rezervini tutar. Alice'in teslim kanalı küçüktür (C = 4 → R = min(`max_peers`,
+/// C − 1) = 3) ve uygulaması DURUR (S1 çağrısı yok; adaptör kanalı boşaltmaz). Bob önce `a0`'ın
+/// sırasız birimlerini yollar: kanal F − 1 ≥ R − U sınırına dek dolar, kalanı ACK'siz reddedilir
+/// (`full_refusals`). Sonra DOLU kanalda `a1`'in ve `a0`'ın sıra başı birimleri rezervle kabul
+/// edilir. Her adımda U ≤ R ve F ≥ R − U (değişmez I). Uygulama dönünce iki oturum da sırayla
+/// teslim edilir, reddedilenler yeniden gönderimle (ARQ'nun tel karşılığı) gelir; sonda U = 0,
+/// F = C.
+#[test]
+fn renewal_old_and_new_sessions_keep_their_head_of_line_reserve() {
+    const QUEUE: usize = 4;
+    let hub = MemoryHub::new();
+    let (mut alice, clock) = alice_node_with_queue(&hub, Some(QUEUE));
+    let mut bob = RawPeer::new(BOB, &hub);
+    alice.add_peer_addr(id(BOB), bob.sink_addr());
+    let to = alice.data_addr();
+    let (a0, b0) = establish(&mut alice, &mut bob, &hub);
+    // `a0`'ın kabul tabanı 2 olur (birim 0 ve 1 teslim edildi).
+    old_session_traffic(&mut alice, &mut bob, a0, b0, 2);
+    clock.advance(SESSION_MAX_AGE);
+    assert_eq!(next_event(&mut alice), SessionEvent::RenewRequired(a0));
+    assert_eq!(hub.relay(), 1, "yenileme INIT'i → Bob");
+    let served = bob.serve();
+    assert_eq!(served.len(), 1, "Bob yenilemeyi yanıtlar");
+    let b1 = served[0];
+    assert_eq!(hub.relay(), 1, "RESPONSE → Alice");
+    let (a1, _) = ready(&mut alice, id(BOB));
+    assert_ne!(a1, a0);
+
+    // ── Durak: Alice'e S1 çağrısı YOK (gözlem `drive` çağırmaz). ──
+    let base = alice.delivery_reserve_for_test();
+    assert_eq!(
+        (base.capacity, base.reserve, base.in_use, base.free),
+        (QUEUE, QUEUE - 1, 0, QUEUE),
+        "ön koşul: boş kanal, R = min(max_peers, C − 1)"
+    );
+    let invariant = |alice: &Node, step: &str| {
+        let r = alice.delivery_reserve_for_test();
+        assert!(
+            r.in_use <= r.reserve && r.free >= r.reserve - r.in_use,
+            "{step}: U ≤ R ve F ≥ R − U olmalı — {r:?}"
+        );
+        r
+    };
+    let wait_for = |alice: &Node, what: &str, done: &dyn Fn(&Node) -> bool| {
+        let deadline = Instant::now() + WAIT;
+        while !done(alice) {
+            assert!(Instant::now() < deadline, "{what}: {WAIT:?} içinde olmadı");
+            std::thread::sleep(TICK);
+        }
+    };
+    let pushed = |n: u64| move |a: &Node| a.delivery_reserve_for_test().pushed == base.pushed + n;
+    let refused = |n: u64| move |a: &Node| a.ctx_dispatch_stats().full_refusals == n;
+
+    // `a0`'ın sırasız birimleri (taban 2 eksik): 3 kabul (F − 1 = 3 ≥ R − U = 3), 4 ve 5 reddedilir.
+    let wire = bob.data(b0, 3, "eski");
+    bob.send(&wire, to);
+    wait_for(&alice, "a0 birim 3 kabul", &pushed(1));
+    invariant(&alice, "a0/3");
+    let wire = bob.data(b0, 4, "eski");
+    bob.send(&wire, to);
+    wait_for(&alice, "a0 birim 4 ret", &refused(1));
+    let wire = bob.data(b0, 5, "eski");
+    bob.send(&wire, to);
+    wait_for(&alice, "a0 birim 5 ret", &refused(2));
+    let r = invariant(&alice, "a0 sırasızlar");
+    assert_eq!((r.in_use, r.free), (0, QUEUE - 1), "rezerv için yer kaldı");
+
+    // DOLU kanalda iki oturumun sıra başı rezervle kabul edilir.
+    let wire = bob.data(b1, 0, "yeni");
+    bob.send(&wire, to);
+    wait_for(&alice, "a1 sıra başı kabul", &pushed(2));
+    let r = invariant(&alice, "a1/0");
+    assert_eq!(r.in_use, 1, "a1'in rezervi kullanımda");
+    let wire = bob.data(b0, 2, "eski");
+    bob.send(&wire, to);
+    wait_for(&alice, "a0 sıra başı kabul", &pushed(3));
+    let r = invariant(&alice, "a0/2");
+    assert_eq!(r.in_use, 2, "iki oturumun rezervi birlikte kullanımda");
+    assert_eq!(
+        alice.ctx_dispatch_stats().full_refusals,
+        2,
+        "sıra başı birimler reddedilmedi"
+    );
+
+    // ── Uygulama döner: iki oturum sırayla; reddedilenler yeniden gönderimle. ──
+    assert_eq!(expect_delivery(&mut alice), delivered(a1, "yeni", 0));
+    assert_eq!(expect_delivery(&mut alice), delivered(a0, "eski", 2));
+    assert_eq!(expect_delivery(&mut alice), delivered(a0, "eski", 3));
+    for u in [4, 5] {
+        let wire = bob.data(b0, u, "eski");
+        bob.send(&wire, to);
+        assert_eq!(expect_delivery(&mut alice), delivered(a0, "eski", u));
+    }
+    assert_quiet(&mut alice, "tek teslim");
+    let end = invariant(&alice, "son");
+    assert_eq!(
+        (end.in_use, end.free),
+        (0, QUEUE),
+        "tüketimden sonra rezerv serbest, kanal boş"
+    );
+    let stats = alice.ctx_dispatch_stats();
+    assert_eq!(
+        (stats.reorder_skip, stats.reorder_window_violations),
+        (0, 0),
+        "{stats:?}"
+    );
 }
 
 /// **Kart NE 3(c) — adres-sahteli kopya datagram:** S1'de TEK teslim (çift teslim yok).

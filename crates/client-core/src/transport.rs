@@ -95,6 +95,8 @@ use kama_contracts::s3::{
 };
 use kama_noise_wire::protector::NoiseWireProtection;
 
+#[cfg(any(test, feature = "test-util"))]
+use crate::runtime::DeliveryReserveSnapshot;
 use crate::runtime::{
     ClientEndpoint, ClientHandle, ClientLiveDiag, CtxDispatchCounters, CtxDispatchStats,
     ExpectedSessions, Readiness, RuntimeConfig, RuntimeError, ServerEndpoint, ServerHandle,
@@ -1141,6 +1143,14 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     #[must_use]
     pub fn inbox_len_for_test(&self) -> usize {
         self.inbox.len()
+    }
+
+    /// [K4G-05c · R2] Veri alıcısının teslim kanalı defteri (C, R, U, F; bkz.
+    /// [`DeliveryReserveSnapshot`]). SÜRMEZ (`drive` çağırmaz): uygulamanın durduğu an gözlenir.
+    #[cfg(any(test, feature = "test-util"))]
+    #[must_use]
+    pub fn delivery_reserve_for_test(&self) -> DeliveryReserveSnapshot {
+        self.server.delivery_reserve_for_test()
     }
 
     /// [K4G-01b] Sıralama durumu tutulan oturumlar (sıralı). Kapanan oturumunki silinir.
