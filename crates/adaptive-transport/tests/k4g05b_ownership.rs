@@ -1,7 +1,8 @@
 //! K4G-05b — sahiplik, teyit ve kayıt sınırı testleri (K4G-05b notu §6 "05b testleri", Ek B.2):
 //! üç kabul koşulu — (i) owned(U) her olayda, (ii-a) P0 runtime aynası, (ii-b) 05c-model aynası —;
-//! D1 (üç kol + iki birimli kol; CEVAP PAKETİ 10 DUR-26 okuması); H; K_MAP (05b'de budama kapalı,
-//! CEVAP 11 DUR-30); ESI ve parite akıbeti;
+//! D1 (üç kol + iki birimli kol; CEVAP PAKETİ 10 DUR-26 okuması); H; K_MAP (budama K4G-05c'de
+//! açık — CEVAP 11 DUR-30, DUR-05c-14 (A): toplam ≤ K_MAP, orijinal Data kaydı hedef olmaz); ESI ve
+//! parite akıbeti;
 //! B2 ekleme kuralı; D2.
 //!
 //! Her test başında amaç ve TABANDA (K4G-05b öncesi motor, v1) beklenen sonuç yazılıdır
@@ -220,9 +221,10 @@ fn tx_times_after(sim: &Sim, v: u64, from: u64) -> Vec<u64> {
 /// Σ_{i<3} min(taban_PTO·2^i, RTO_MAX) + 3 tik (her prob vade tikinde, ≤ 1 tik gecikmeyle; prob
 /// token beklemesi bu fikstürde yok — P0 ölçümü probları vade tikinde gördü); devirden sonra
 /// ardışık iletim aralığı ≤ RTO_MAX + 2 tik, ufkun sonuna dek; her olayda gözlenebilir sahip var
-/// (üç kabul koşulu (i)); her yeniden emisyonda payload var (05c aynası store-miss 0 — koşul (ii)).
-/// [CEVAP 11 DUR-30] Birim başına canlı kayıt ≤ K_MAP iddiası 05c'de budamayla birlikte sınanır;
-/// burada yalnız raporlanır (05b'de budama kapalı).
+/// (üç kabul koşulu (i)); her yeniden emisyonda payload var (05c aynası store-miss 0 — koşul (ii));
+/// birim başına canlı kayıt ≤ K_MAP.
+/// [K4G-05c] Son iddia 05b'den taşındı (CEVAP 11 DUR-30: sınırı K_MAP budaması kurar, budama
+/// 05c'de açılır; DUR-05c-14 (A): toplam ≤ K_MAP, orijinal dahil); `k4g05c/05b-den-tasinan/`.
 ///
 /// TABANDA: KIRMIZI beklenir (P0 `p0_d1_orphan_after_probe_budget`: 3. probdan sonra 592 s yeniden
 /// gönderim yok; bütçe tükenince sahipsiz olaylar).
@@ -289,6 +291,11 @@ fn k4g05b_d1_probe_on_stale_sack_handover() {
     assert!(
         w.cm.has_payload(victim),
         "{TEST}: teyitsiz kurbanın payload'u silinmemeli"
+    );
+    assert!(
+        w.kmap_over.is_empty(),
+        "{TEST}: birim başına canlı kayıt K_MAP'i aştı: {:?}",
+        w.kmap_over.iter().take(4).collect::<Vec<_>>()
     );
 }
 
@@ -438,9 +445,9 @@ const HZ_UNIT: u64 = 300;
 const HZ_VICTIM: u64 = 4;
 const HZ_STEP: u64 = 10 * MS;
 const HZ_T_INJECT: u64 = 500 * MS;
-/// [CEVAP 11 DUR-30] 05b'de budama kapalı: ORİJİNAL Data kaydı ancak tombstone TTL'iyle (prob
-/// emekliliğinden ≈ 8 × 3.2 s sonra) unutulur — geç ACK o süreden sonra verilir (eski 20 s
-/// budamaya dayanıyordu).
+/// [CEVAP 11 DUR-30; K4G-05c DUR-05c-14 (A)] ORİJİNAL Data kaydı K_MAP budamasının hedefi
+/// değildir: ancak tombstone TTL'iyle (prob emekliliğinden ≈ 8 × 3.2 s sonra) unutulur — geç ACK o
+/// süreden sonra verilir (eski 20 s budamaya dayanıyordu).
 const HZ_T_LATE: u64 = 60 * SEC;
 const HZ_T_FINAL: u64 = 100 * SEC;
 const HZ_T_END: u64 = 130 * SEC;
@@ -462,7 +469,8 @@ struct HzRun {
 /// Ağsız sürücü: ısınma (4 × 300 B, 300 ms'de ACK) → kurban 500 ms'de tek başına girer, hiçbir
 /// iletimi ACK'lenmez (prob → devir → geometrik kopya). `late_ack`: 60 s'de kurbanın ORİJİNAL Data
 /// seq'i geç ACK'lenir — o kayıt artık canlı değildir (kanıt: canlı kayıt < iletim sayısı; tombstone
-/// TTL'i en eski kaydı önce düşürür; 05b'de K_MAP budaması kapalı) → tanınmayan geç ACK. 100 s'de
+/// TTL'i en eski kaydı önce düşürür; orijinal K_MAP budamasından muaftır — DUR-05c-14 (A)) →
+/// tanınmayan geç ACK. 100 s'de
 /// kurbanın EN SON (canlı) iletimi ACK'lenir → teyit; 130 s'ye dek sürülür.
 fn horizon_run(late_ack: bool) -> HzRun {
     let mut d = Drv::new(product_sender());
@@ -633,19 +641,24 @@ fn k4g05b_accept_p0_mirror_deletions_confirmed() {
 // K_MAP
 // ════════════════════════════════════════════════════════════════════════════════════════════
 
-/// K_MAP budaması 05b'de KAPALI (CEVAP PAKETİ 11 DUR-30: sabit ve `take_confirmed_units` tanımlı,
-/// budama davranışı yok; budama K4G-05c'de runtime ile birlikte açılır — budamalı sürüm
-/// `k4g05b_kmap_bound_and_pruned_late_ack` 05c'ye taşındı).
+/// K_MAP (madde 11; DUR-28 (a) K_MAP = 8; Ek B.2.3 budama).
 ///
-/// AMAÇ: kurbanın son prob kaydından sonra en az K_MAP iletim çıkınca kayıt sayısı K_MAP'i aşar
-/// (budama yok — fikstür ön koşulu); o prob kaydı UNUTULMAZ: 200 s'deki geç ACK'i canlı kayıtla
-/// eşleşir, birimi teyit eder (teyit çıktısında tam bir kez) ve teyitten sonra birim için karar
-/// çıkmaz; kopya işi ≤ D_max × birim, her olayda sahip var.
+/// [K4G-05c — 05b'den TAŞINAN test, metin 7f81f184'ten (`k4g05c/05b-den-tasinan/`); CEVAP 11
+/// DUR-30: budama 05c'de runtime ile birlikte açılır. Yerine geçtiği 05b testi
+/// `k4g05b_kmap_pruning_off_old_record_late_ack_confirms` (05b'nin ara durumu "budama kapalı":
+/// eski prob kaydının geç ACK'i teyit eder) 05c'de kalktı — DUR-8 beyanı PR gövdesinde.]
 ///
-/// TABANDA: KIRMIZI beklenir (D1: bütçe tükenince kurban sahipsiz, kopya zinciri yok).
+/// AMAÇ: birim başına canlı iletim kaydı her olayda ≤ K_MAP (toplam, orijinal dahil — DUR-05c-14
+/// (A)); budama ilan etmeden düşürür (`diag_record_bounds().0` artar); kopya işi ≤ D_max × birim;
+/// prob-3 kaydı (uçuşta kalan, hiç tombstone'a geçmeyen) ardından K_MAP kopya gelince yalnız
+/// budamayla düşer (orijinal değildir) — onun geç ACK'i tanınmaz (CEVAP 11-EK §4: geç ACK, seq
+/// birimin son K_MAP iletimi arasındaysa ve kayıt TTL/tahliyeyle silinmemişse tanınır): teyit
+/// YOK, RTT örneği YOK, birim sahipli kalır ve yeniden gönderilir.
+///
+/// TABANDA: KIRMIZI beklenir (budama yok; D1 nedeniyle kurban sahipsiz, kopya zinciri de yok).
 #[test]
-fn k4g05b_kmap_pruning_off_old_record_late_ack_confirms() {
-    const TEST: &str = "k4g05b_kmap_pruning_off_old_record_late_ack_confirms";
+fn k4g05b_kmap_bound_and_pruned_late_ack() {
+    const TEST: &str = "k4g05b_kmap_bound_and_pruned_late_ack";
     const T_LATE: u64 = 200 * SEC;
     const T_END: u64 = 260 * SEC;
     let mut d = Drv::new(product_sender());
@@ -671,39 +684,40 @@ fn k4g05b_kmap_pruning_off_old_record_late_ack_confirms() {
             last_probe.map(|i| tx[i].d.seq)
         ));
     }
-    let r = d.s.diag_unit_recovery(HZ_VICTIM);
-    let live = u64::from(r.inflight_records + r.tombstone_records);
-    if live <= k_map() {
-        fixture.push(format!(
-            "budama kapalıyken canlı kayıt K_MAP'i aşmalı (canlı={live}, K_MAP={})",
-            k_map()
-        ));
+    let (pruned, _) = d.s.diag_record_bounds();
+    if pruned == 0 {
+        fixture.push("K_MAP budaması hiç olmadı".to_string());
     }
     assert_fixture(TEST, &fixture);
     let probe_seq = last_probe.map(|i| tx[i].d.seq).unwrap_or_default();
+    let samples_before = d.s.diag_rtt_sample_count();
     d.ack(vec![probe_seq]);
-    let t_confirm = d.now;
     assert!(
-        d.w.confirmed_set.contains(&HZ_VICTIM),
-        "{TEST}: K_MAP'ten eski kaydın (seq {probe_seq}) geç ACK'i birimi teyit etmedi — budama 05b'de kapalı"
+        !d.w.confirmed_set.contains(&HZ_VICTIM),
+        "{TEST}: budanmış kaydın (seq {probe_seq}) geç ACK'i birimi teyit etti"
+    );
+    assert_eq!(
+        d.s.diag_rtt_sample_count(),
+        samples_before,
+        "{TEST}: budanmış kaydın geç ACK'i RTT örneği verdi"
     );
     d.pump_to(T_END, HZ_STEP);
-    let after = d
-        .unit_tx(HZ_VICTIM)
-        .iter()
-        .filter(|e| e.t > t_confirm)
-        .count();
+    let resent = d.unit_tx(HZ_VICTIM).iter().filter(|e| e.t > T_LATE).count();
     println!(
-        "[K_MAP kapalı] canlı kayıt={live} (K_MAP={}); prob-3 seq={probe_seq}; teyitten sonra karar={after}",
-        k_map()
+        "[K_MAP] budanan={} parite_süre_dolumu={}; prob-3 seq={probe_seq}; geç ACK sonrası iletim={resent}",
+        d.s.diag_record_bounds().0,
+        d.s.diag_record_bounds().1
+    );
+    assert!(
+        resent >= 1,
+        "{TEST}: ufuk dışı geç ACK'ten sonra birim yeniden gönderilmedi"
     );
     let w = &d.w;
-    assert_eq!(
-        w.cm.confirms(HZ_VICTIM),
-        1,
-        "{TEST}: kurban teyit çıktısında tam bir kez olmalı"
+    assert!(
+        w.kmap_over.is_empty(),
+        "{TEST}: canlı kayıt K_MAP'i aştı: {:?}",
+        w.kmap_over.iter().take(4).collect::<Vec<_>>()
     );
-    assert_eq!(after, 0, "{TEST}: teyitten sonra birim için karar çıktı");
     assert!(
         w.copy_work_over.is_empty(),
         "{TEST}: kopya işi D_max × birimi aştı: {:?}",
@@ -1567,16 +1581,18 @@ fn k4g05b_d2_outage_60s_with_trickle() {
 
 /// D2 kol 3 — 600 s iki yönlü kesinti (DUR-2 (a); Ek B.2 "D2 iddiaları" kol 3).
 ///
-/// AMAÇ: her olayda kopya işi ≤ D_max × birim; kesinti boyunca
+/// AMAÇ: her olayda birim başına canlı kayıt ≤ K_MAP, kopya işi ≤ D_max × birim; kesinti boyunca
 /// her kurbanın kopya zinciri emisyonu ≤ m + ⌊Δ/RTO_MAX⌋ + 2 (m = ⌈log2(RTO_MAX/b)⌉, b = devirdeki
 /// srtt; +2 = ilk kopya ve pencere kenarı); kesinti boyunca ARDIŞIK KOPYA ARALIĞI ≤ RTO_MAX (madde
 /// 3/5: her kopya emisyonunda birimin bir sonraki kopya vadesi − emisyon anı; fikstür ön koşulu:
 /// zincir RTO_MAX'a ulaştı — yoksa iddia boş geçerdi; emisyon aralığı = bu + token beklemesi,
-/// raporlanır); owned her olayda. [CEVAP 11 DUR-30] Birim başına canlı kayıt ≤ K_MAP iddiası
-/// 05c'ye taşındı (05c'de K_MAP budamasıyla aktif); burada yalnız raporlanır.
+/// raporlanır); owned her olayda. [K4G-05c] "Canlı kayıt ≤ K_MAP" iddiası 05b'den taşındı (CEVAP 11
+/// DUR-30: sınırı K_MAP budaması kurar, budama 05c'de açılır; DUR-05c-14 (A): toplam ≤ K_MAP,
+/// orijinal dahil); `k4g05c/05b-den-tasinan/`.
 ///
 /// TABANDA: KIRMIZI beklenir [v1 zinciri ×2 tavansız: kesintide planlı kopya aralığı 51.2 / 102.4 /
-/// 204.8 s > RTO_MAX = 30 s; D1 sahipsizliği].
+/// 204.8 s > RTO_MAX = 30 s; aritmetik: v1 zinciri 600 s'de 10 kopya + orijinal = 11 > K_MAP = 8;
+/// D1 sahipsizliği].
 #[test]
 fn k4g05b_d2_outage_600s_bounds() {
     const TEST: &str = "k4g05b_d2_outage_600s_bounds";
@@ -1637,6 +1653,11 @@ fn k4g05b_d2_outage_600s_bounds() {
         run.copy_intervals.len(),
         interval_over.len(),
         max_emit_gap / MS
+    );
+    assert!(
+        w.kmap_over.is_empty(),
+        "{TEST}: canlı kayıt K_MAP'i aştı: {:?}",
+        w.kmap_over.iter().take(4).collect::<Vec<_>>()
     );
     assert!(
         w.copy_work_over.is_empty(),

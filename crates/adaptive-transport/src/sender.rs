@@ -10846,3 +10846,344 @@ mod tests {
         forget_assert_after_late_ack(&mut s, 7, dup_seq, 50 * MS, TEST);
     }
 }
+
+#[cfg(test)]
+mod k4g05c_kmap_tests {
+    //! [K4G-05c · DUR-05c-14 (A, koşullu), CEVAP PAKETİ 14 §3] K_MAP budaması: TOPLAM sınır (orijinal
+    //! dahil ≤ K_MAP) ve kayıt-unutma yolu başına AYRI geç ACK kolları — K_MAP budaması · tombstone
+    //! TTL'i · tombstone tavanı tahliyesi — ile tanınan kaydın kolu. Kayıtlar ürün kayıt yolundan
+    //! üretilir (`track_sent_unit` → `track_sent` → `own_on_sent`); motor içi durum doğrudan okunur
+    //! (yalnız test). Fikstür ön koşulları "FİKSTÜR GEÇERSİZ" ile ayrı düşer (kırmızı sayılmaz).
+    //! Kural: motorun hâlâ tanıdığı kaydın geç ACK'i birimi teyit eder; unutulmuş kaydınki teyit
+    //! etmez, RTT örneği vermez, birim sahipli kalır. Orijinal Data kaydı YALNIZ K_MAP budamasının
+    //! hedefi olmaz; TTL ve tahliye ona da uygulanır.
+    use super::*;
+
+    const MS: u64 = 1_000_000;
+    /// Sınanan birim.
+    const U: u64 = 7;
+    /// Yardımcı birimler: ACK'leri U'nun orijinalini paket eşiğiyle kayıp ilan ettirir.
+    const HELPERS: [u64; 3] = [8, 9, 10];
+    /// Kayıt üretim anı (yardımcıların ACK'inden sonra).
+    const T_RECORDS: u64 = 40 * MS;
+    /// Kayıt üretim adımı.
+    const RECORD_STEP: u64 = MS;
+
+    fn fixture(test: &str, ok: bool, what: &str) {
+        assert!(
+            ok,
+            "{test}: FİKSTÜR GEÇERSİZ (sınanacak durum kurulmadı; sonuç kırmızı SAYILMAZ): {what}"
+        );
+    }
+
+    fn ack(seqs: &[u64]) -> Event {
+        Event::AckReceived(AckInfo {
+            acked_seqs: seqs.to_vec(),
+            ack_delay: Duration::ZERO,
+        })
+    }
+
+    fn unit_of(id: u64) -> OpaqueUnit {
+        OpaqueUnit { id, size: 100 }
+    }
+
+    /// srtt kurulur (u200, 10 ms'de ACK); kuruluş probu kapalı.
+    fn warm(test: &str) -> Sender {
+        let mut s = Sender::new();
+        s.set_establish_probe(false);
+        s.on_event(Event::AppData(unit_of(200)), 0);
+        s.on_event(ack(&[0]), 10 * MS);
+        fixture(
+            test,
+            s.take_confirmed_units() == [200],
+            "ısınma birimi teyit çıktısında",
+        );
+        s
+    }
+
+    /// U ve yardımcılar 20 ms'de DATA olarak çıkar; 30 ms'de yardımcılar ACK'lenir → U'nun
+    /// orijinal Data kaydı paket eşiğiyle kayıp ilan edilir (tombstone). Dönüş: orijinalin seq'i.
+    fn lose_original(s: &mut Sender, test: &str) -> u64 {
+        let mut seqs: Vec<(u64, u64)> = Vec::new();
+        for id in std::iter::once(U).chain(HELPERS) {
+            for d in s.on_event(Event::AppData(unit_of(id)), 20 * MS) {
+                if d.kind == TransmitKind::Data {
+                    seqs.push((d.unit_id, d.seq));
+                }
+            }
+        }
+        let orig = seqs.iter().find(|&&(id, _)| id == U).map(|&(_, q)| q);
+        fixture(
+            test,
+            seqs.len() == 4 && orig.is_some(),
+            "dört birim 20 ms'de DATA olarak çıkmalı",
+        );
+        let orig = orig.unwrap_or_default();
+        let helpers: Vec<u64> = seqs
+            .iter()
+            .filter(|&&(id, _)| id != U)
+            .map(|&(_, q)| q)
+            .collect();
+        let _ = s.on_event(ack(&helpers), 30 * MS);
+        let _ = s.take_confirmed_units();
+        fixture(
+            test,
+            s.tombstones.contains_key(&orig),
+            "U'nun orijinal Data kaydı kayıp ilanıyla tombstone'da",
+        );
+        orig
+    }
+
+    /// U'nun motorda yaşayan kayıt sayısı (dizin) ve uçuş + tombstone taraması (iki kaynak eşit
+    /// olmalı).
+    fn records(s: &Sender) -> (usize, u32) {
+        let index = s.units.get(&UnitId(U)).map_or(0, |e| e.seqs.len());
+        let r = s.diag_unit_recovery(U);
+        (index, r.inflight_records + r.tombstone_records)
+    }
+
+    /// U'ya `n` kopya-dışı (Retransmit kökenli) kayıt ekler; HER eklemeden sonra toplam ≤ K_MAP
+    /// (orijinal dahil) denetlenir. Dönüş: eklenen seq'ler, eklenme sırasıyla.
+    fn add_records(s: &mut Sender, n: usize, test: &str) -> Vec<u64> {
+        let mut out = Vec::with_capacity(n);
+        for i in 0..n as u64 {
+            let q = s.track_sent_unit(
+                unit_of(U),
+                T_RECORDS + i * RECORD_STEP,
+                1,
+                TransmitKind::Retransmit,
+            );
+            out.push(q);
+            let (index, scanned) = records(s);
+            assert!(
+                index <= K_MAP && scanned as usize <= K_MAP,
+                "{test}: birim başına toplam kayıt K_MAP'i aştı (dizin {index}, tarama {scanned}, \
+                 K_MAP {K_MAP}) — {i}. eklemeden sonra"
+            );
+            assert_eq!(index, scanned as usize, "{test}: dizin ile tarama ayrıştı");
+        }
+        out
+    }
+
+    /// U'nun en yeni canlı kaydı (dizinin son seq'i).
+    fn newest_live(s: &Sender) -> Option<u64> {
+        s.units.get(&UnitId(U)).and_then(|e| e.seqs.back().copied())
+    }
+
+    /// Unutulmuş kaydın geç ACK'i: teyit yok, RTT örneği yok, birim sahipli; ardından canlı
+    /// kaydın ACK'i birimi TAM BİR KEZ teyit eder.
+    fn assert_forgotten_late_ack(s: &mut Sender, late_seq: u64, t_late: u64, test: &str) {
+        fixture(
+            test,
+            !s.inflight.contains_key(&late_seq)
+                && !s.tombstones.contains_key(&late_seq)
+                && !s.pending_lost.iter().any(|r| r.seq == late_seq),
+            "geç ACK anında kaydın motorda izi kalmamalı (uçuş, tombstone, ARQ kuyruğu)",
+        );
+        fixture(
+            test,
+            s.take_confirmed_units().is_empty(),
+            "geç ACK'ten önce bekleyen teyit yok",
+        );
+        let samples = s.diag_rtt_sample_count();
+        let _ = s.on_event(ack(&[late_seq]), t_late);
+        let after = s.take_confirmed_units();
+        assert!(
+            !after.contains(&U),
+            "{test}: unutulmuş kaydın (seq {late_seq}) geç ACK'i birimi teyit etti: {after:?}"
+        );
+        assert_eq!(
+            s.diag_rtt_sample_count(),
+            samples,
+            "{test}: unutulmuş kaydın geç ACK'i RTT örneği verdi"
+        );
+        assert!(
+            !s.unit_is_confirmed(UnitId(U)),
+            "{test}: birim teyit kümesine girdi"
+        );
+        let live = newest_live(s);
+        fixture(test, live.is_some(), "U'nun canlı kaydı olmalı");
+        let live = live.unwrap_or_default();
+        let _ = s.on_event(ack(&[live]), t_late + MS);
+        assert_eq!(
+            s.take_confirmed_units(),
+            vec![U],
+            "{test}: canlı kaydın (seq {live}) ACK'i birimi tam bir kez teyit etmeli"
+        );
+    }
+
+    /// TOPLAM sınır + seçim kuralı: orijinal tombstone'dayken K_MAP + 2 kopya-dışı kayıt eklenir.
+    /// Her ekleme sonrası toplam ≤ K_MAP (orijinal dahil); budanan kayıtlar orijinal DIŞINDAKİ en
+    /// eskilerdir; orijinal yerinde kalır; `diag_record_bounds().0` budama sayısıdır.
+    #[test]
+    fn k4g05c_kmap_total_bound_keeps_original_prunes_oldest_other() {
+        const TEST: &str = "k4g05c_kmap_total_bound_keeps_original_prunes_oldest_other";
+        let mut s = warm(TEST);
+        let orig = lose_original(&mut s, TEST);
+        let before: Vec<u64> = s
+            .units
+            .get(&UnitId(U))
+            .map(|e| e.seqs.iter().copied().collect())
+            .unwrap_or_default();
+        fixture(
+            TEST,
+            before.first() == Some(&orig) && before.len() < K_MAP,
+            "başlangıçta orijinal en eski kayıt ve toplam K_MAP'in altında",
+        );
+        let pruned_before = s.diag_record_bounds().0;
+        let added = add_records(&mut s, K_MAP + 2, TEST);
+        let now: Vec<u64> = s
+            .units
+            .get(&UnitId(U))
+            .map(|e| e.seqs.iter().copied().collect())
+            .unwrap_or_default();
+        assert_eq!(now.len(), K_MAP, "{TEST}: toplam tam K_MAP olmalı: {now:?}");
+        assert_eq!(
+            now.first(),
+            Some(&orig),
+            "{TEST}: orijinal Data kaydı budanmamalı (DUR-05c-14 A): {now:?}"
+        );
+        assert!(
+            s.tombstones.contains_key(&orig),
+            "{TEST}: orijinal tombstone'da kalmalı"
+        );
+        // Beklenen: orijinal + bütün kayıtların (önceki kopya-dışılar + eklenenler) en yeni K_MAP − 1'i.
+        let others: Vec<u64> = before
+            .iter()
+            .copied()
+            .filter(|&q| q != orig)
+            .chain(added.iter().copied())
+            .collect();
+        let keep_from = others.len() - (K_MAP - 1);
+        let want: Vec<u64> = std::iter::once(orig)
+            .chain(others[keep_from..].iter().copied())
+            .collect();
+        assert_eq!(
+            now, want,
+            "{TEST}: budama orijinal dışındaki EN ESKİ kayıtları seçmeli"
+        );
+        for &q in &others[..keep_from] {
+            assert!(
+                !s.inflight.contains_key(&q) && !s.tombstones.contains_key(&q),
+                "{TEST}: budanan kayıt (seq {q}) motorda kalmamalı"
+            );
+        }
+        assert_eq!(
+            s.diag_record_bounds().0 - pruned_before,
+            keep_from as u64,
+            "{TEST}: budama sayacı budanan kayıt sayısına eşit olmalı"
+        );
+    }
+
+    /// K_MAP kolu: budanmış (kopya-dışı) kaydın geç ACK'i teyit ETMEZ; canlı kaydın ACK'i teyit eder.
+    #[test]
+    fn k4g05c_kmap_arm_pruned_record_late_ack_does_not_confirm() {
+        const TEST: &str = "k4g05c_kmap_arm_pruned_record_late_ack_does_not_confirm";
+        let mut s = warm(TEST);
+        let _orig = lose_original(&mut s, TEST);
+        let added = add_records(&mut s, K_MAP + 2, TEST);
+        let victim = added[0];
+        fixture(
+            TEST,
+            s.diag_record_bounds().0 >= 1,
+            "K_MAP budaması gerçekleşmeli",
+        );
+        let t_late = T_RECORDS + (K_MAP as u64 + 3) * RECORD_STEP;
+        assert_forgotten_late_ack(&mut s, victim, t_late, TEST);
+    }
+
+    /// Tanınan kayıt kolu: orijinal Data kaydı K_MAP budamasından muaf olduğundan, budama
+    /// sürerken onun geç ACK'i (tombstone eşleşmesi) birimi TAM BİR KEZ teyit eder.
+    #[test]
+    fn k4g05c_kmap_arm_kept_original_late_ack_confirms() {
+        const TEST: &str = "k4g05c_kmap_arm_kept_original_late_ack_confirms";
+        let mut s = warm(TEST);
+        let orig = lose_original(&mut s, TEST);
+        let _ = add_records(&mut s, K_MAP + 2, TEST);
+        fixture(
+            TEST,
+            s.diag_record_bounds().0 >= 1 && s.tombstones.contains_key(&orig),
+            "budama gerçekleşmeli ve orijinal tombstone'da kalmalı",
+        );
+        let _ = s.take_confirmed_units();
+        let t_late = T_RECORDS + (K_MAP as u64 + 3) * RECORD_STEP;
+        let _ = s.on_event(ack(&[orig]), t_late);
+        assert_eq!(
+            s.take_confirmed_units(),
+            vec![U],
+            "{TEST}: motorun tanıdığı orijinal kaydın geç ACK'i birimi tam bir kez teyit etmeli"
+        );
+    }
+
+    /// TTL kolu: budama sürerken orijinal Data kaydı tombstone TTL'iyle düşer (tahliye yok) —
+    /// orijinale daha geniş saklama yoktur; onun geç ACK'i teyit ETMEZ.
+    #[test]
+    fn k4g05c_ttl_arm_original_expires_late_ack_does_not_confirm() {
+        const TEST: &str = "k4g05c_ttl_arm_original_expires_late_ack_does_not_confirm";
+        let mut s = warm(TEST);
+        let orig = lose_original(&mut s, TEST);
+        let _ = add_records(&mut s, K_MAP + 2, TEST);
+        let expiry = s.tombstones.get(&orig).map_or(0, |t| t.expiry_ns);
+        fixture(
+            TEST,
+            s.diag_record_bounds().0 >= 1 && expiry > T_RECORDS,
+            "budama gerçekleşmeli ve orijinalin TTL vadesi kayıtlardan sonra olmalı",
+        );
+        let _ = s.on_event(Event::TimerFired(Timer::Pto), expiry);
+        let _ = s.take_confirmed_units();
+        fixture(
+            TEST,
+            !s.tombstones.contains_key(&orig) && s.tombstone_evicted == 0,
+            "orijinalin tombstone'u TTL budamasıyla düşmeli (tahliye yok)",
+        );
+        assert_eq!(
+            s.units.get(&UnitId(U)).and_then(|e| e.original),
+            None,
+            "{TEST}: TTL'le düşen orijinal dizinden de çıkmalı"
+        );
+        assert_forgotten_late_ack(&mut s, orig, expiry + MS, TEST);
+    }
+
+    /// Tahliye kolu: budama sürerken orijinal Data kaydı TOMBSTONE_MAX tahliyesiyle (en eski önce)
+    /// TTL vadesinden ÖNCE düşer — orijinale daha geniş saklama yoktur; geç ACK'i teyit ETMEZ.
+    #[test]
+    fn k4g05c_cap_arm_original_evicted_late_ack_does_not_confirm() {
+        const TEST: &str = "k4g05c_cap_arm_original_evicted_late_ack_does_not_confirm";
+        let mut s = warm(TEST);
+        let orig = lose_original(&mut s, TEST);
+        let _ = add_records(&mut s, K_MAP + 2, TEST);
+        let expiry = s.tombstones.get(&orig).map_or(0, |t| t.expiry_ns);
+        let t_fill = T_RECORDS + (K_MAP as u64 + 3) * RECORD_STEP;
+        let t_late = t_fill + MS;
+        let mut fillers: Vec<UnitId> = Vec::with_capacity(TOMBSTONE_MAX);
+        for i in 0..TOMBSTONE_MAX as u64 {
+            let f = OpaqueUnit {
+                id: 100_000 + i,
+                size: 1,
+            };
+            let q = s.track_sent_unit(f, t_fill, 0, TransmitKind::Data);
+            s.queue_losses(&[q], t_fill);
+            fillers.push(UnitId(f.id));
+        }
+        s.confirm_units(&fillers);
+        let _ = s.take_confirmed_units();
+        fixture(
+            TEST,
+            s.diag_record_bounds().0 >= 1
+                && !s.tombstones.contains_key(&orig)
+                && s.tombstone_evicted >= 1,
+            "budama gerçekleşmeli ve orijinalin tombstone'u kapasite tahliyesiyle düşmeli",
+        );
+        fixture(
+            TEST,
+            t_late < expiry,
+            "geç ACK orijinalin TTL vadesinden önce olmalı",
+        );
+        assert_eq!(
+            s.units.get(&UnitId(U)).and_then(|e| e.original),
+            None,
+            "{TEST}: tahliyeyle düşen orijinal dizinden de çıkmalı"
+        );
+        assert_forgotten_late_ack(&mut s, orig, t_late, TEST);
+    }
+}
