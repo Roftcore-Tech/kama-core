@@ -1466,6 +1466,10 @@ struct UnitOwnership {
     geometric: bool,
     /// Kopya kuyruğunda bekleyen tek seferlik kayıt sayısı (madde 5 ekleme kuralı: ≤ D − 1).
     fire_once: u8,
+    /// [K4G-05b rev6 · kara delik bekçisi] Bu zincir döneminde (zincirin kuruluşu ya da madde 6
+    /// sıfırlamasından bu yana) kopya kaybının later-ACK kanıtı geometrik vadeyi zaten bir kez öne çekti
+    /// mi. Çekme dönem başına EN ÇOK BİR KEZ uygulanır; sonraki kayıplarda aralık ×2 büyür (≤ RTO_MAX).
+    loss_pull_used: bool,
     /// Teyit kümesi (`confirmed_units`) üyeliği: teyitli birim için karar ÜRETİLMEZ (madde 2).
     confirmed: bool,
     /// Son iletim anı (H-sahiplenme çapasının birim tarafı; aday kümesinin anahtarı).
@@ -3856,6 +3860,12 @@ impl Sender {
                     // [K4G-05b madde 3/5] Bu kayıp later-ACK kanıtıdır: birimin geometrik sahibi
                     // varsa vadesi öne çekilir; bekleyen tek seferlik kopyası varsa o sahiptir (v1);
                     // yoksa TEK kalıcı geometrik sahip açılır (taban srtt, aralık ≤ RTO_MAX).
+                    // [K4G-05b rev6 · kara delik bekçisi] Öne çekme zincir dönemi başına EN ÇOK BİR
+                    // KEZ: yol canlıyken bütün iletimleri düşen birimin her kopyası later-ACK ile kayıp
+                    // ilan edilir; her seferinde `şimdi + srtt`'ye çekmek geometrik aralığı (×2, ≤
+                    // RTO_MAX) etkisizleştirir ve tek birim için sabit hızda yeniden gönderim üretir
+                    // (ölçüldü: 1064 B/s'de ≈ 1.9 s'de bir 1050 B, bağlantının ≈ %52'si). Dönem zincirin
+                    // kuruluşu ve madde 6 sıfırlamasıyla yenilenir.
                     if !confirmed {
                         let base = self.copy_base_ns();
                         let due = now_ns.saturating_add(base);
@@ -3865,8 +3875,16 @@ impl Sender {
                                 .dup_queue
                                 .iter()
                                 .any(|d| d.unit.id == p.unit.id && d.interval_ns == 0);
-                        if self.unit_has_geometric(u) || !pending_fire_once {
-                            self.copy_ensure_geometric(p.unit, due, base, true);
+                        let had_geometric = self.unit_has_geometric(u);
+                        if had_geometric || !pending_fire_once {
+                            let pull = !had_geometric
+                                || !self.units.get(&u).is_some_and(|e| e.loss_pull_used);
+                            self.copy_ensure_geometric(p.unit, due, base, pull);
+                            if had_geometric && pull {
+                                if let Some(e) = self.units.get_mut(&u) {
+                                    e.loss_pull_used = true;
+                                }
+                            }
                         }
                     }
                 }
@@ -6607,7 +6625,10 @@ impl Sender {
             e.size = rec.unit.size;
         }
         if rec.interval_ns > 0 {
+            // [rev6 · kara delik bekçisi] Yeni geometrik zincir = yeni dönem: later-ACK çekmesi
+            // bir kez daha kullanılabilir.
             e.geometric = true;
+            e.loss_pull_used = false;
         } else {
             e.fire_once = e.fire_once.saturating_add(1);
         }
@@ -6796,6 +6817,10 @@ impl Sender {
                 d.due_ns = d.due_ns.min(last_fire_ns.saturating_add(base));
                 d.interval_ns = base;
             }
+        }
+        // [rev6 · kara delik bekçisi] Sıfırlama yeni dönemdir: later-ACK çekmesi yenilenir.
+        for e in self.units.values_mut() {
+            e.loss_pull_used = false;
         }
     }
 
