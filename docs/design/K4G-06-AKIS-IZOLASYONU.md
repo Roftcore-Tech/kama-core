@@ -589,18 +589,18 @@ Boş hücre "—" = o ekte madde gerekmiyor; gerekçe "Not" sütununda.
 | §1.2 payload opak; generic sözleşme; motor kama-app'e bağımsız | §5 | A.17, A.33 | B17 | C.F | |
 | §1.2 S7(a) yalnız uçtan uca kanıtla; (b) güçlü aday | §6, DUR-06-2 | A.17 | B2, B16 | C.E | |
 | §1.2 05c oturum geneli pencerenin dönüşümü | §9 | A.12, A.13 | B1 (`distance_holds = 0`), **B1b** | C.C | |
-| §1.2 DUR-38 ile ortak seçim/rezerv; geçemeyen mekanizma tutulmaz | §5 | A.17, A.20 | B17, B14 | C.E | taban 05b rev6 `37b78aad` |
+| §1.2 DUR-38 ile ortak seçim/rezerv; geçemeyen mekanizma tutulmaz | §5 (rezerv hiyerarşisi, akışsız emisyonlar) | A.17, A.20 | B17, B14, B10 (e) | C.E | taban 05b rev6 `37b78aad`; DUR-06-2 (i) |
 | §1.3 oynatılabilir oran, başlangıç, uçtan uca, yük altında, geç oynatılmaz, sebep sayaçları | §10 | A.24, A.32 | B11 | C.I | gecikme bileşeni sayaçları eklendi |
 | §1.3 eşikler ürün hedefi + ölçüm (+ sahibin notu 1) | — | — | B11 kuralı | — | K8 hedefleri girdisi; DUR-06-24 |
 | §1.3 deadline göndericide; bütün sahiplik zinciri; geç ACK güvenli; iki ilke | §8.3, §10 | A.4, A.16, A.17 | B12 | — | tek sonlandırma çıktısı |
 | §1.3 S5: 300 B/s başlangıç; paket boyu ses kabulünün parçası | §10, §11 | — | B11 (birim boyu profilde), B19 (b) | — | DUR-06-10 |
 | §1.3 sesli mesaj ayrı, görünür; maliyet ayrı | §10 | — | B19 (b) (otomatik geçiş yok) | — | DUR-06-12 |
 | §1.4 açılış: ilk kredi + ilk kontrol | §3, §7.3 | A.5 | B13 (a) (+ erken birim) | — | |
-| §1.4 akış sonu/iptal: kullanılmamış kredi, gelmemiş veri, serbest kalma | §7.6 | A.7, A.16 | B13 (b) | — | FIN yuvası; RESET akış 0 birimi |
+| §1.4 akış sonu/iptal: kullanılmamış kredi, gelmemiş veri, serbest kalma | §7.6 | A.7 (iki istisna), A.16 | B13 (b) | — | FIN yuvası; RESET akış 0'da, transport tüketir |
 | §1.4 oturum değişimi sonrası eski kredi/DATA/ACK uygulanmaz | §3, §7.5 | — | B4, B13 (c) | — | bağlam-önce dağıtım mevcut |
-| §1.4 medya expiry kredi ve sıra muhasebesi | §7.1, §7.6 | A.4 | B13 (d) | — | DUR-06-1 seçenek başına muhasebe |
-| §1.4 aç-kapa kayıt/bellek sınırı | §3 kimlik uzayı, §7.6 | — | B13 (e) (TEXT açıkken) | — | |
-| §1.4 yeni OPEN'da gelecekteki CLOSE yükümlülüğüne yer | §7.6 H_C_tavan | A.22 | B13 (f) | — | FILE_ABORT/FILE_RECEIPT/RESET/PTT_CLOSE/RECEIPT |
+| §1.4 medya expiry kredi ve sıra muhasebesi | §3 (REL + gönderen kapısı), §7.1, §7.6 | A.4 | B13 (d) | — | DUR-06-1, DUR-06-6 (DUR-06-18 (a)'ya koşullu) |
+| §1.4 aç-kapa kayıt/bellek sınırı | §3 (örtük açma, `max_seen` + açık küme), §7.2, §7.6 | A.13, A.14 | B13 (e), B23 (b) | — | bellek sonucu §7.2 / DUR-06-3 |
+| §1.4 yeni OPEN'da gelecekteki CLOSE yükümlülüğüne yer | §7.6 H_C_tavan (şerit başına) | A.21, A.22 | B13 (f) | — | FILE_RECEIPT reddedilen FILE_BEGIN dahil; `bk_flow_limit` alındı kabulüne bağlı |
 | §1.4 kullanılmamış taahhüt dahil dosya yükü rezervi tüketemez | §7.2 | A.13 | B13 (g), B10 (d) | — | |
 | §1.4 medya kredisi DUR; QUIC stream/datagram karıştırılmaz | §7.1 | — | — | — | DUR-06-1 |
 | §1.4 test ayrımı; dört sebep ayrı; kapı yalnız kapasite kusuru (+ sahibin notu 2) | §7.7 | A.25 | B7 (beş alt koşu), sayaç sözlüğü | C.L | akış 0 dahil |
@@ -621,8 +621,10 @@ Boş hücre "—" = o ekte madde gerekmiyor; gerekçe "Not" sütununda.
 | C15 v3 §9.3 "bir dosya diğerini de kilitlemez" | §6, §10 | A.21 | **B23** | — | rev1'de yoktu |
 | C15 v3 §5(ii) tek kabul yolu, ürün derlemesinde zorlama | §10 | A.21, A.22 | **B24** | — | rev1'de yoktu |
 | C15 v3 §9.4 tel ve şema "sürümleme" | §11 | A.14, A.34 | **B25** | — | karma sürüm |
-| PoC-KAPSAM-001 §2 PTT / EK-2 / EK-3 / K8 | Karar özeti 4, §10 | A.18, A.19 | B11 | C.I | DUR-06-18 |
-| ccr §35.6/§35.14 + KM-SEAM-TC-001 KARAR-1 | §3, Karar özeti 1 | A.8, A.9, A.27 | B1 (D) | C.B, C.D | DUR-06-5 |
+| ccr §35.6/§35.14 + KM-SEAM-TC-001 KARAR-1 | §3, Karar özeti 1 | A.8, A.9, A.27 | B1 (D), B28 | C.B, C.D | **tarihli KARAR-1/ccr eki gerekir** (DUR-06-5); örtük kip de FLOW_BATCH |
+| PoC-KAPSAM-001 §2 PTT ve "bekliyor" (:26) / S5 "Sözleşmeler" (:34) / K6 (:54) / K8 (:62) / EK-2 / EK-3 | Karar özeti 5, §10 | A.18, A.19, A.24 | B11 | C.I, C.K | tek EK-4 (DUR-06-18); Live DUR'ları buna koşullu |
+| Kredi canlılığı (C15 v3 §9.3 (2) "kayıp sonrası yeniden duyurulur") | §7.4, §7.5 | A.13 | B3 (a)–(g) | — | BLOCKED iki boyutlu, sayım girdileri, (iii) tetiği |
+| Kalite kapıları (ADR-18 netem, T-hücre, §4.4) | §11 | A.26 | B20 | C.L | S1-kipi bench kolu (DUR-06-25) |
 
 ## Ek F — İnceleme izleme tablosu (`k4g06/inceleme-wf_4a961b72.json`, rev1 `2656953c`)
 
