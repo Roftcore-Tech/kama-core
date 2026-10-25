@@ -299,7 +299,9 @@ pub enum MessengerError {
     MsgIdExhausted,
     /// Metin bir `AppMessageRecord`'a sığmıyor (`MAX_BODY_BYTES`, S1 K3).
     Encode(EncodeError),
-    /// Transport reddetti; kayıt kuyruğa ALINMADI (S1 §3). Yeniden deneme kararı çağıranındır.
+    /// Transport reddetti ya da eşin bekleyen RECEIPT'leri önde (K4G-05d kapısı: `Backpressure`,
+    /// [`MessengerStats::gated_by_receipts`]); kayıt kuyruğa ALINMADI (S1 §3). Yeniden deneme
+    /// kararı çağıranındır.
     Transport(TransportError),
     /// Kalıcı depo ([`AppStore`]) `msg_id` ayıramadı, eşin outbox'ını okuyamadı ya da kaydı
     /// outbox'a yazamadı: kayıt Transport'a VERİLMEDİ ve outbox'a girmedi (depo belirsizliği
@@ -374,6 +376,10 @@ pub struct MessengerStats {
     /// RECEIPT'ler. Pencereye uyan gönderende budanan kayıt kapanmıştır (ör. oturum değişimi drain
     /// tekrarı); canlı kayıt yalnız pencereye uymayan eşte budanabilir (DUR-05d-6).
     pub receipts_window_pruned: u64,
+    /// Toplu üretici sunumlarından, eşin bekleyen RECEIPT'leri önde olduğu için Transport'a
+    /// verilmeden geri çevrilenler (geçici `Backpressure`; K4G-05d M2). Transport reddi DEĞİLDİR;
+    /// `resend_refused`'a yazılmaz.
+    pub gated_by_receipts: u64,
     /// ANLIK değer, sayaç değil: `stats()` anında bütün eşlerin bekleyen RECEIPT sayısı.
     pub receipts_pending: u64,
     /// Outbox'ta karşılığı olmayan `RECEIPT(delivered)`'lar (tekrar ya da bilinmeyen `msg_id`).
@@ -510,6 +516,32 @@ impl<T: KamaTransport> Messenger<T> {
         self.peers
             .get(&peer)
             .map_or(0, |state| state.receipts.len())
+    }
+
+    /// [K4G-05d M2] Toplu üretici kaydını (dosya kayıtları, `MEDIA_BUNDLE`, sinyalleşme) RECEIPT
+    /// öncelik kapısından geçirerek `handle`'a BİR KEZ sunar. `handle` bir eşin güncel tutamacıysa
+    /// önce o eşin bekleyen RECEIPT'leri sunulur; kuyruk hâlâ boş değilse kayıt Transport'a
+    /// VERİLMEZ, geçici `Backpressure` döner ve [`MessengerStats::gated_by_receipts`] artar
+    /// (Transport reddi değildir). Güncel olmayan tutamaçta kapı yoktur: oturum sonunu Transport
+    /// bildirir. Kapı dışı kayıtlar (`PTT_OPEN`, `PTT_CLOSE`, `FILE_RECEIPT`, `FILE_ABORT`)
+    /// [`Messenger::transport_mut`] ile gider (modül belgesi, "RECEIPT").
+    ///
+    /// # Errors
+    ///
+    /// Kapının `Backpressure`'ı ya da Transport'un `send` hatası (S1 §3): kayıt kuyruğa alınmadı.
+    pub(crate) fn send_gated(
+        &mut self,
+        handle: SessionHandle,
+        unit: PreparedUnit,
+        policy: DeliveryPolicy,
+    ) -> Result<(), TransportError> {
+        let peer = self.by_handle.get(&handle).copied();
+        if let Some(state) = peer.and_then(|peer| self.peers.get_mut(&peer)) {
+            if !receipts_yield(&mut self.transport, state, &self.limits, &mut self.stats) {
+                return Err(TransportError::Backpressure);
+            }
+        }
+        self.transport.send(handle, unit, policy)
     }
 
     /// `KamaTransport::connect(peer, None)` (S1 K2, KARAR-1 idempotent). Aktif oturumun tutamacı
@@ -664,10 +696,11 @@ impl<T: KamaTransport> Messenger<T> {
     /// [`MessengerError::NoSession`] · [`MessengerError::OutboxFull`] ·
     /// [`MessengerError::MsgIdExhausted`] ya da [`MessengerError::Store`] (`msg_id` ayrılamadı) ·
     /// [`MessengerError::UnackedSpanFull`] · [`MessengerError::Encode`] ·
-    /// [`MessengerError::OutboxFull`] ya da [`MessengerError::Store`] (kayıt depoya yazılamadı) ·
-    /// [`MessengerError::Transport`]. Hiçbiri `msg_id` tüketmez; hiçbirinde kayıt outbox'a girmez
-    /// (depo belirsizliği istisnası: [`MessengerError`]) ya da Transport'a verilmez (Transport'un
-    /// kendi reddi hariç).
+    /// [`MessengerError::Transport`] (`Backpressure`: eşin bekleyen RECEIPT'leri önde, K4G-05d
+    /// öncelik kapısı; depoya yazılmadan) · [`MessengerError::OutboxFull`] ya da
+    /// [`MessengerError::Store`] (kayıt depoya yazılamadı) · [`MessengerError::Transport`]. Hiçbiri
+    /// `msg_id` tüketmez; hiçbirinde kayıt outbox'a girmez (depo belirsizliği istisnası:
+    /// [`MessengerError`]) ya da Transport'a verilmez (Transport'un kendi reddi hariç).
     pub fn send_text(&mut self, peer: PeerRef, text: &str) -> Result<MsgId, MessengerError> {
         let Some(state) = self.peers.get_mut(&peer) else {
             return Err(if self.peers.len() >= MAX_PEERS {
@@ -683,6 +716,10 @@ impl<T: KamaTransport> Messenger<T> {
             text: text.to_owned(),
         };
         let unit = codec::encode(&message, &self.limits).map_err(MessengerError::Encode)?;
+        // K4G-05d M2: TEXT'in ilk gönderimi toplu üreticidir; eşin RECEIPT'leri önce sunulur.
+        if !receipts_yield(&mut self.transport, state, &self.limits, &mut self.stats) {
+            return Err(MessengerError::Transport(TransportError::Backpressure));
+        }
         persist_unsent(&*self.store, &mut self.stats, peer, msg_id, &unit)?;
         if let Err(error) = self
             .transport
@@ -1232,7 +1269,21 @@ fn flush_peer<T: KamaTransport>(
         // Oturum yok: bir sonraki `Ready` yeniden başlatır.
         return;
     };
-    flush_peer_receipts(transport, state, limits, stats);
+    if state
+        .outbox
+        .values()
+        .all(|entry| entry.sent_on == Some(handle))
+    {
+        // Yeniden gönderilecek kayıt yok: yalnız bekleyen RECEIPT'ler sunulur (`adopt` sırası).
+        flush_peer_receipts(transport, state, limits, stats);
+        state.resend_pending = false;
+        return;
+    }
+    if !receipts_yield(transport, state, limits, stats) {
+        // K4G-05d M2: yeniden gönderimler toplu üreticidir; RECEIPT kuyruğu boşalınca sonraki
+        // `poll`'larda sunulurlar (`resend_pending` kalır).
+        return;
+    }
     for entry in state.outbox.values_mut() {
         if entry.sent_on == Some(handle) {
             continue;
@@ -1393,6 +1444,26 @@ fn flush_peer_receipts<T: KamaTransport>(
         };
         from = next;
     }
+}
+
+/// [K4G-05d M2] Öncelik kapısı: eşin bekleyen RECEIPT'leri varsa önce onları sunar (bu `poll`'da
+/// reddedilmediyse; [`flush_peer_receipts`]). Kuyruk boşsa ya da boşaldıysa `true` — toplu üretici
+/// sunabilir. Boşalmadıysa [`MessengerStats::gated_by_receipts`] artar ve `false` döner.
+fn receipts_yield<T: KamaTransport>(
+    transport: &mut T,
+    state: &mut PeerState,
+    limits: &AmpLimits,
+    stats: &mut MessengerStats,
+) -> bool {
+    if state.receipts.is_empty() {
+        return true;
+    }
+    flush_peer_receipts(transport, state, limits, stats);
+    if state.receipts.is_empty() {
+        return true;
+    }
+    stats.gated_by_receipts += 1;
+    false
 }
 
 /// Dedup penceresinin alt ucu: `highest − (MSG_DEDUP_WINDOW − 1)`, sıfırda doyar.

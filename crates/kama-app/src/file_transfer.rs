@@ -590,8 +590,9 @@ pub struct FileTransferStats {
     /// Transport'un kabul ettiği giden `FILE_*` kayıtları (gönderen kuyruğu; alındılar hariç). Her
     /// kayıt EN ÇOK bir kez kabul ettirilir.
     pub records_accepted: u64,
-    /// Transport'un geçici reddi (geri basınç, eski tutamaç) — gönderen kaydı ya da alındı: tele
-    /// çıkmadı, kuyrukta bekler.
+    /// Transport'un geçici reddi (geri basınç, eski tutamaç) ya da Messenger'ın RECEIPT öncelik
+    /// kapısı (K4G-05d; yalnız gönderen kaydı, `FILE_ABORT` hariç) — gönderen kaydı ya da alındı:
+    /// tele çıkmadı, kuyrukta bekler.
     pub offers_refused: u64,
     /// Bilinmeyen aktarıma ait `FILE_CHUNK` / `FILE_END` (atıldı).
     pub unknown_transfer_records: u64,
@@ -1516,9 +1517,14 @@ fn offer<T: KamaTransport>(
     }
     let encoded = codec::encode(&transfer.message(transfer_id, step), messenger.limits());
     let sent = match encoded {
-        Ok(unit) => messenger
-            .transport_mut()
-            .send(session, unit, DeliveryPolicy::Reliable),
+        // K4G-05d M2: `FILE_ABORT` tek atışlık kontrol kaydıdır, kapı dışıdır; BEGIN / CHUNK / END
+        // RECEIPT öncelik kapısından geçer (`Messenger::send_gated`).
+        Ok(unit) if matches!(step, Step::Abort(_)) => {
+            messenger
+                .transport_mut()
+                .send(session, unit, DeliveryPolicy::Reliable)
+        }
+        Ok(unit) => messenger.send_gated(session, unit, DeliveryPolicy::Reliable),
         // Kuyruğa alınırken bu limitlere sığan kayıt burada sığmıyorsa `pump`'a başka bir motor
         // verilmiştir: kayıt birime sığmıyor (S1 K3) — Transport'un `UnitTooLarge`'ıyla aynı anlam.
         Err(_) => Err(TransportError::UnitTooLarge),

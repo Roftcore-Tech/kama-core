@@ -338,7 +338,8 @@ pub enum PttError {
     },
     /// Kayıt kodlanamadı. Savunmadır: yük ön denetiminden sonra beklenmez.
     Encode(EncodeError),
-    /// Transport reddetti; kayıt kuyruğa ALINMADI (S1 §3).
+    /// Transport ya da Messenger'ın RECEIPT öncelik kapısı (K4G-05d, `Backpressure`) reddetti;
+    /// kayıt kuyruğa ALINMADI (S1 §3).
     Transport(TransportError),
     /// Kalıcı depo ([`AppStore`]) `stream_id` ayıramadı ya da sözleşmesine aykırı bir değer verdi
     /// (`Corrupt`): `PTT_OPEN` gönderilmedi, akış açılmadı. Depo tükenmesi
@@ -624,7 +625,7 @@ impl Ptt {
             bundle_ms: stream.bundle_ms,
             payload: payload.to_vec(),
         };
-        send_record(messenger, handle, &bundle, DeliveryPolicy::Reliable)
+        send_gated_record(messenger, handle, &bundle, DeliveryPolicy::Reliable)
     }
 
     /// Basış biter: akış kapanır ve `PTT_CLOSE` eşin güncel oturumuna `DeliveryPolicy::Reliable`
@@ -959,6 +960,21 @@ fn send_record<T: KamaTransport>(
     messenger
         .transport_mut()
         .send(handle, unit, policy)
+        .map_err(PttError::Transport)
+}
+
+/// [K4G-05d M2] `MEDIA_BUNDLE`: kaydı kodlar ve RECEIPT öncelik kapısından geçirerek `handle`'a
+/// tek deneme verir (`Messenger::send_gated`); hata yolunda hiçbir şey kuyruğa girmez. `PTT_OPEN`
+/// ve `PTT_CLOSE` kapı dışıdır ([`send_record`]).
+fn send_gated_record<T: KamaTransport>(
+    messenger: &mut Messenger<T>,
+    handle: SessionHandle,
+    message: &AppMessage,
+    policy: DeliveryPolicy,
+) -> Result<(), PttError> {
+    let unit = codec::encode(message, messenger.limits()).map_err(PttError::Encode)?;
+    messenger
+        .send_gated(handle, unit, policy)
         .map_err(PttError::Transport)
 }
 

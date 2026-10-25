@@ -275,7 +275,8 @@ pub enum SignalingError {
     IdExhausted,
     /// Kayıt kodlanamadı. Savunmadır: boyut ön denetiminden sonra beklenmez.
     Encode(EncodeError),
-    /// Transport reddetti; kayıt kuyruğa ALINMADI (S1 §3). Yeniden deneme kararı çağıranındır.
+    /// Transport ya da Messenger'ın RECEIPT öncelik kapısı (K4G-05d, `Backpressure`) reddetti;
+    /// kayıt kuyruğa ALINMADI (S1 §3). Yeniden deneme kararı çağıranındır.
     Transport(TransportError),
 }
 
@@ -320,8 +321,8 @@ pub struct SignalingStats {
     /// Eşin yeni oturumuna Transport'un kabul ettiği yeniden sunumlar — blob ve oturum başına en çok
     /// bir.
     pub resent_on_new_session: u64,
-    /// Transport'un GEÇİCİ reddettiği yeniden sunum denemeleri (kayıt kalır, sonraki denetimde yeniden
-    /// sunulur).
+    /// Transport'un ya da Messenger'ın RECEIPT öncelik kapısının (K4G-05d) GEÇİCİ reddettiği
+    /// yeniden sunum denemeleri (kayıt kalır, sonraki denetimde yeniden sunulur).
     pub resend_refused: u64,
     /// [`SIGNALING_RESEND_TTL`] dolduğu için budanan kayıtlar.
     pub records_expired: u64,
@@ -422,9 +423,9 @@ impl Signaling {
             blob: bytes.to_vec(),
         };
         let unit = codec::encode(&message, messenger.limits()).map_err(SignalingError::Encode)?;
+        // K4G-05d M2: sinyalleşme toplu üreticidir; RECEIPT öncelik kapısından geçer.
         messenger
-            .transport_mut()
-            .send(handle, unit.clone(), DeliveryPolicy::Reliable)
+            .send_gated(handle, unit.clone(), DeliveryPolicy::Reliable)
             .map_err(SignalingError::Transport)?;
         // Kabul edildi: kimlik ancak şimdi tüketilir; `u64` sonu kalıcı tükenmedir (sarma yok).
         let id = SignalingId(raw);
@@ -579,10 +580,8 @@ fn offer_queue<T: KamaTransport>(
             index += 1;
             continue;
         }
-        match messenger
-            .transport_mut()
-            .send(current, record.unit.clone(), DeliveryPolicy::Reliable)
-        {
+        // K4G-05d M2: yeniden sunum da RECEIPT öncelik kapısından geçer.
+        match messenger.send_gated(current, record.unit.clone(), DeliveryPolicy::Reliable) {
             Ok(()) => {
                 record.sent_on = current;
                 stats.resent_on_new_session += 1;
