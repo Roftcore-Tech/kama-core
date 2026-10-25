@@ -51,6 +51,30 @@
 //! INIT başlatır, Application hiçbir olay görmez. Niyet yalnız `Ready`, `cancel` ya da kapalı bir
 //! `ConnectAbandoned` nedeniyle biter.
 //!
+//! # Uç açılmadan `Ready` yok (K4G-05g, CEVAP PAKETİ 14 §5)
+//!
+//! Bir oturum S1'e YALNIZ veri ucu açılmışsa (ve varsa `early_unit` o uca verilmişse) `Ready`
+//! olarak açılır. Uç açılamazsa (eşin veri adresi yok ya da soket kurulamadı) yol başına:
+//!
+//! | Yol | App bilir | S1 olayı | Crypto oturumu |
+//! |---|---|---|---|
+//! | bekleyen niyet (başlatan) | bilet | `ConnectAbandoned(_, LocalPermanent)` | `Close` |
+//! | yanıtlayan, glare kaybı | bilet | `ConnectAbandoned(_, LocalPermanent)` | `Close` |
+//! | yanıtlayan, niyet yok | hiçbir şey | yok (S1 K2/K7) | `Close` |
+//! | yenileme cutover'ı | eski tutamaç | yok (aşağıda) | yenileme sürer |
+//! | provisional onayı | eski tutamaç | DUR-05g-1 | dokunulmaz |
+//!
+//! Niyeti olmayan yanıtlayanda tutamaç Application'a hiç verilmemiştir: `Ready`siz `Closed`
+//! K7'nin olay sırasını (`Ready` → … → `Closed`) bozardı. Yenilemede uç `AcceptResponse`'tan ÖNCE
+//! açılır (Crypto `Established`'de eski oturumu geri alınamaz biçimde drain'e alır); açılamazsa
+//! yanıt tutulur, eski oturum tam çalışır, cutover sonraki `drive`'da yeniden denenir. Provisional
+//! onayı Crypto'nun açma yolunda verilir ve eski oturumu kendisi drain'e alır: S1'de karşılığı yok,
+//! sahip kararına dek önceki davranış korunur (`activate_without_endpoint`).
+//!
+//! Her başarısız deneme [`ClientTransport::endpoint_open_failures`]'ta sayılır.
+//! `ConnectAbandoned`'da `early_unit` gönderilmemiştir (S1 K6, §4); Application onu yeni
+//! `connect`'ten sonra yeniden verir.
+//!
 //! # Bağlam-önce dağıtım (K4G-01 / D1 v1.1)
 //!
 //! Bağlam yükün tipinden türetilmez; bağlam dağıtıcıyı seçer. Yük, bağlam doğrulanmadan çözülmez.
@@ -356,6 +380,17 @@ struct Renewal {
     pending: SessionHandle,
     /// Tutulan RESPONSE ve tutulmaya başlandığı an.
     held: Option<(Vec<u8>, Instant)>,
+    /// [K4G-05g] `AcceptResponse`'tan ÖNCE açılan yeni oturum ucu; Crypto'nun `Ready(pending)`'i
+    /// işlenince oturuma geçer (`ClientTransport::release_held_renewals`).
+    endpoint: Option<OpenedEndpoint>,
+}
+
+/// [K4G-05g] Açılmış oturum ucu + (yalnız test) uç dikişiyle paylaşılan ilk-emisyon kaybı kümesi.
+/// `activate` yalnız bununla çağrılabilir: açılmamış uçla `Ready` üretilemez.
+struct OpenedEndpoint {
+    endpoint: ClientHandle,
+    #[cfg(any(test, feature = "test-util"))]
+    drop_ids: Arc<Mutex<BTreeSet<u64>>>,
 }
 
 /// Kaynak uç başına sıralı teslim (S1 §4).
@@ -452,9 +487,19 @@ pub struct ClientTransport<C: PacketProtection + SessionControl> {
     /// toplamı — ucun bırakıldığı andaki canlı aynasından ([`Self::retired_live_diag`]). Hiçbir
     /// karar okumaz. [DUR-19] Yalnız aynası olan uç eklenir (`RuntimeConfig::live_diag`).
     retired_diag: ClientLiveDiag,
+    /// [K4G-05g] Salt gözlem: oturum ucunun kullanılamadığı deneme sayısı
+    /// ([`Self::endpoint_open_failures`]). Hiçbir karar okumaz.
+    endpoint_open_failures: u64,
     /// Sıradaki `send`'lerden kaçının ilk emisyonu kaybettirilecek (yalnız test).
     #[cfg(any(test, feature = "test-util"))]
     drops: usize,
+    /// [K4G-05g] Sıradaki kaç uç açma denemesi soket kurulum hatası gibi başarısız olacak (yalnız
+    /// test; [`Self::set_endpoint_open_failures_for_test`]).
+    #[cfg(any(test, feature = "test-util"))]
+    endpoint_open_fail_next: usize,
+    /// [K4G-05g] Ucu açılamadığı için S1'e açılmayan son tutamaç (yalnız test).
+    #[cfg(any(test, feature = "test-util"))]
+    last_failed_activation: Option<SessionHandle>,
     server: ServerHandle,
     /// SON alan: alanlar bildirim sırasıyla düşer — uç tutamaçları çalışma-zamanından önce.
     rt: tokio::runtime::Runtime,
@@ -551,8 +596,13 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             expected,
             ctx_counters,
             retired_diag: ClientLiveDiag::default(),
+            endpoint_open_failures: 0,
             #[cfg(any(test, feature = "test-util"))]
             drops: 0,
+            #[cfg(any(test, feature = "test-util"))]
+            endpoint_open_fail_next: 0,
+            #[cfg(any(test, feature = "test-util"))]
+            last_failed_activation: None,
             server,
             rt,
         })
@@ -585,6 +635,15 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     #[must_use]
     pub fn delivery_dropped(&self) -> u64 {
         self.server.delivery_dropped()
+    }
+
+    /// [K4G-05g] Salt-okunur telemetri: bir oturumun veri ucunun kullanılamadığı deneme sayısı —
+    /// uç açılamadı (eşin veri adresi yok ya da soket kurulamadı) ya da taze uç erken birimi kabul
+    /// etmedi. Her deneme bir kez sayılır; yenileme cutover'ı uç açılana dek her `drive`'da yeniden
+    /// dener (bkz. modül belgesi "Uç açılmadan `Ready` yok"). Durum değişmez.
+    #[must_use]
+    pub fn endpoint_open_failures(&self) -> u64 {
+        self.endpoint_open_failures
     }
 
     /// [K4G-05] Salt-okunur telemetri: ucu açık her S1 oturumunun motor / ARQ aynası
@@ -780,7 +839,7 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     fn release_held_renewals(&mut self) {
         let now = Instant::now();
         for i in 0..self.renewals.len() {
-            let Some((_, since)) = &self.renewals[i].held else {
+            let Some(since) = self.renewals[i].held.as_ref().map(|(_, since)| *since) else {
                 continue;
             };
             let old = self.renewals[i].old;
@@ -789,13 +848,26 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                 .get(&old)
                 .and_then(|s| s.endpoint.as_ref())
                 .is_none_or(|e| e.outstanding() == 0);
-            if !drained && now.saturating_duration_since(*since) < self.renew_drain_cap {
+            if !drained && now.saturating_duration_since(since) < self.renew_drain_cap {
                 continue;
             }
+            // [K4G-05g] Yeni oturumun ucu `AcceptResponse`'tan ÖNCE açılır: Crypto `Established`'de
+            // eski oturumu yalnız-alım drain'e alır ve bu geri alınamaz. Uç açılamazsa yanıt
+            // TUTULUR (Crypto'ya verilmez): eski oturum Crypto'da da tam çalışmaya devam eder,
+            // Application hiçbir olay görmez, cutover sonraki `drive`'da yeniden denenir.
+            let (pending, peer) = (self.renewals[i].pending, self.renewals[i].peer);
+            let Some(opened) = self.open_endpoint(pending, peer) else {
+                continue;
+            };
             if let Some((wire, _)) = self.renewals[i].held.take() {
-                // Established → Crypto `Ready(pending)` → `on_crypto_ready` eşler. Failed (yanlış
-                // aday) → yenileme sürer, yeni bir yanıt beklenir.
-                let _ = self.command(SessionCommand::AcceptResponse { wire });
+                // Established → Crypto `Ready(pending)` → `on_crypto_ready` eşler ve bu ucu
+                // kullanır. Failed (yanlış aday) → yenileme sürer, yeni bir yanıt beklenir; uç
+                // bırakılır (bir sonraki yanıtta yeniden açılır).
+                let established = self.command(SessionCommand::AcceptResponse { wire })
+                    == (SessionResult::Established { session: pending });
+                if established {
+                    self.renewals[i].endpoint = Some(opened);
+                }
             }
         }
     }
@@ -816,40 +888,72 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     }
 
     fn on_crypto_ready(&mut self, h: SessionHandle) {
-        // (a) Kendi yenilemem tamamlandı: atomik cutover.
+        // (a) Kendi yenilemem tamamlandı: atomik cutover. [K4G-05g] Uç `AcceptResponse`'tan ÖNCE
+        // açıldı (`release_held_renewals`); yanıt Crypto'da bu yenilemeyle başka bir yoldan
+        // eşleştiyse (önceden açılmış uç yok) burada açılır.
         if let Some(i) = self.renewals.iter().position(|r| r.pending == h) {
-            let r = self.renewals.remove(i);
+            let mut r = self.renewals.remove(i);
             self.hub_of.remove(&h);
+            let opened = r.endpoint.take().or_else(|| self.open_endpoint(h, r.peer));
             if let Some(old) = self.sessions.get_mut(&r.old) {
                 if old.phase == Phase::Active {
                     old.phase = Phase::Superseded;
                 }
             }
-            self.activate(h, r.peer, None);
+            match opened {
+                // Erken birim yok → başarısız olamaz.
+                Some(opened) => {
+                    let _ = self.activate(h, r.peer, None, opened);
+                }
+                // DUR-05g-1: Crypto eski oturumu ZATEN drain'e aldı (`activate_without_endpoint`).
+                None => self.activate_without_endpoint(h, r.peer),
+            }
             return;
         }
-        // (b) Başlattığım niyet çözüldü.
+        // (b) Başlattığım niyet çözüldü. [K4G-05g] Uç açılamazsa niyet kapalı nedenle biter:
+        // Application'ın elinde yalnız bilet vardır; `early_unit` gönderilmemiştir (S1 K6, §4).
         if let Some(i) = self.intents.iter().position(|it| it.pending == h) {
             let it = self.intents.remove(i);
             self.hub_of.remove(&h);
-            self.activate(h, it.peer, it.early);
+            if !self.open_and_activate(h, it.peer, it.early) {
+                self.abort_activation(h);
+                self.events.push_back(SessionEvent::ConnectAbandoned(
+                    it.ticket,
+                    AbandonReason::LocalPermanent,
+                ));
+            }
             return;
         }
         // (c) Yanıtlayan rolde kurulan oturum. Glare'i kaybettiysek Crypto bu eşe bekleyen
         // INIT'imizi sildi; niyetimiz bu oturumla çözülür.
         if let Some(peer) = self.responder_peer.remove(&h) {
             self.hub_of.remove(&h);
-            let early = self
-                .intents
-                .iter()
-                .position(|it| it.peer == peer)
-                .and_then(|i| {
-                    let it = self.intents.remove(i);
-                    self.attempts.retain(|_, p| *p != it.pending);
-                    self.hub_of.remove(&it.pending);
-                    it.early
-                });
-            self.activate(h, peer, early);
+            let glare = self.intents.iter().position(|it| it.peer == peer).map(|i| {
+                let it = self.intents.remove(i);
+                self.attempts.retain(|_, p| *p != it.pending);
+                self.hub_of.remove(&it.pending);
+                it
+            });
+            let (lost, early) = match glare {
+                Some(it) => (Some((it.ticket, it.pending)), it.early),
+                None => (None, None),
+            };
+            if !self.open_and_activate(h, peer, early) {
+                // [K4G-05g] Niyet yoksa Application bu tutamacı hiç görmedi: S1 olayı YOK (K2:
+                // tutamaç yalnız `Ready` ile verilir; K7: oturumun olay sırası `Ready` ile başlar),
+                // yalnız sayaç. Glare kaybında bilet bilinir → `ConnectAbandoned`; `early_unit`
+                // gönderilmedi.
+                self.abort_activation(h);
+                if let Some((ticket, pending)) = lost {
+                    // Crypto glare kaybında bekleyeni zaten sildi; `Close` bilinmeyen tutamaçta
+                    // olay üretmez (s3 v1.1) — zombi bekleyen kalmadığının güvencesi.
+                    let _ = self.command(SessionCommand::Close { session: pending });
+                    self.events.push_back(SessionEvent::ConnectAbandoned(
+                        ticket,
+                        AbandonReason::LocalPermanent,
+                    ));
+                }
+            }
         }
     }
 
@@ -863,7 +967,14 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                 s.phase = Phase::Superseded;
             }
         }
-        self.activate(new, peer, None);
+        match self.open_endpoint(new, peer) {
+            // Erken birim yok → başarısız olamaz.
+            Some(opened) => {
+                let _ = self.activate(new, peer, None, opened);
+            }
+            // DUR-05g-1: onay Crypto'nun açma yolunda verildi ve eski oturum ZATEN drain'de.
+            None => self.activate_without_endpoint(new, peer),
+        }
     }
 
     fn on_renew_required(&mut self, h: SessionHandle) {
@@ -895,6 +1006,7 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                 peer,
                 pending,
                 held: None,
+                endpoint: None,
             });
         }
     }
@@ -987,48 +1099,115 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         }
     }
 
-    /// Oturumu S1'e açar: veri ucu + `Ready(h, peer)` + (varsa) `early_unit` ilk gönderim.
-    fn activate(&mut self, h: SessionHandle, peer: PeerRef, early: Option<Vec<u8>>) {
-        #[cfg(any(test, feature = "test-util"))]
-        let drop_ids = Arc::new(Mutex::new(BTreeSet::new()));
-        let endpoint = self.open_endpoint(
-            h,
-            peer,
-            #[cfg(any(test, feature = "test-util"))]
-            Arc::clone(&drop_ids),
-        );
+    /// Oturumu S1'e açar: açılmış uç + `Ready(h, peer)` + (varsa) `early_unit` ilk gönderim.
+    ///
+    /// [K4G-05g] Uç PARAMETREDİR: açılmamış uçla `Ready` üretilemez. Taze uç erken birimi kabul
+    /// etmezse (kuyruk taze uçta boştur; ret yalnız ucun görevi bitmişse olur) oturum S1'e AÇILMAZ:
+    /// `Ready` yok, uç bırakılır, [`Self::endpoint_open_failures`] artar ve `false` döner — olayı
+    /// ve Crypto oturumunu çağıran yol belirler. Erken birim yoksa başarısız olamaz.
+    fn activate(
+        &mut self,
+        h: SessionHandle,
+        peer: PeerRef,
+        early: Option<Vec<u8>>,
+        opened: OpenedEndpoint,
+    ) -> bool {
+        let endpoint = opened.endpoint;
         let mut sent = 0;
-        if let (Some(e), Some(bytes)) = (endpoint.as_ref(), early) {
-            // Kuyruk taze uçta boştur; ret yalnız uç kurulamadıysa olur (birim düşer).
-            if e.send(bytes).is_ok() {
-                sent = 1;
+        if let Some(bytes) = early {
+            if endpoint.send(bytes).is_err() {
+                self.endpoint_open_failures = self.endpoint_open_failures.saturating_add(1);
+                return false;
             }
+            sent = 1;
         }
         self.sessions.insert(
             h,
             Sess {
                 peer,
                 phase: Phase::Active,
-                endpoint,
+                endpoint: Some(endpoint),
                 sent,
                 #[cfg(any(test, feature = "test-util"))]
-                drop_ids,
+                drop_ids: opened.drop_ids,
+            },
+        );
+        self.events.push_back(SessionEvent::Ready(h, peer));
+        true
+    }
+
+    /// [K4G-05g] Ucu açar ve oturumu S1'e açar; ikisinden biri olmazsa `false` (`Ready` yok).
+    fn open_and_activate(
+        &mut self,
+        h: SessionHandle,
+        peer: PeerRef,
+        early: Option<Vec<u8>>,
+    ) -> bool {
+        match self.open_endpoint(h, peer) {
+            Some(opened) => self.activate(h, peer, early, opened),
+            None => false,
+        }
+    }
+
+    /// [K4G-05g] Ucu açılamayan oturum S1'e AÇILMADI: Crypto oturumu kapatılır (zombi kripto
+    /// oturumu kalmaz). Crypto'nun bu kapanış için yayınlayacağı `Closed(h, UserClosed)`
+    /// `on_crypto_closed`'da hiçbir tabloda bulunmaz ve sessizce düşer (adım 5: S1'in bilmediği
+    /// tutamaç). `h` hiçbir tabloda olmadığı için bir sonraki `sync_expected` onu beklenen kümeden
+    /// çıkarır.
+    fn abort_activation(&mut self, h: SessionHandle) {
+        let _ = self.command(SessionCommand::Close { session: h });
+        #[cfg(any(test, feature = "test-util"))]
+        {
+            self.last_failed_activation = Some(h);
+        }
+    }
+
+    /// DUR-05g-1 (SAHİP KARARI BEKLİYOR) — yerine geçen oturumun ucu açılamadı ama Crypto eski
+    /// oturumu ZATEN yalnız-alım drain'e aldı (yenilemede `Established`, provisional'da
+    /// `Confirmed`; geri alınamaz, eski oturumun gönderimi Crypto'da kapandı). S1'in kapalı
+    /// olay/neden kümesinde "yerine geçen açılamadı" karşılığı yoktur; karar gelene dek önceki
+    /// davranış korunur: uçsuz `Active` + `Ready` (`send` → `NotConnected`). Sayaç
+    /// `open_endpoint`'te arttı.
+    fn activate_without_endpoint(&mut self, h: SessionHandle, peer: PeerRef) {
+        self.sessions.insert(
+            h,
+            Sess {
+                peer,
+                phase: Phase::Active,
+                endpoint: None,
+                sent: 0,
+                #[cfg(any(test, feature = "test-util"))]
+                drop_ids: Arc::new(Mutex::new(BTreeSet::new())),
             },
         );
         self.events.push_back(SessionEvent::Ready(h, peer));
     }
 
-    fn open_endpoint(
-        &self,
-        h: SessionHandle,
-        peer: PeerRef,
-        #[cfg(any(test, feature = "test-util"))] drop_ids: Arc<Mutex<BTreeSet<u64>>>,
-    ) -> Option<ClientHandle> {
+    /// Oturumun veri ucunu açar. Açılamazsa (`peer_addrs`'ta eşin adresi yok ya da
+    /// `ClientEndpoint::connect_session_counted` hatası) `None` ve
+    /// [`Self::endpoint_open_failures`] artar.
+    fn open_endpoint(&mut self, h: SessionHandle, peer: PeerRef) -> Option<OpenedEndpoint> {
+        let opened = self.try_open_endpoint(h, peer);
+        if opened.is_none() {
+            self.endpoint_open_failures = self.endpoint_open_failures.saturating_add(1);
+        }
+        opened
+    }
+
+    fn try_open_endpoint(&mut self, h: SessionHandle, peer: PeerRef) -> Option<OpenedEndpoint> {
         let addr = *self.peer_addrs.get(&peer)?;
+        // (yalnız test) Soket kurulum hatasının belirlenimli karşılığı; ürün derlemesinde yoktur.
+        #[cfg(any(test, feature = "test-util"))]
+        if self.endpoint_open_fail_next > 0 {
+            self.endpoint_open_fail_next -= 1;
+            return None;
+        }
+        #[cfg(any(test, feature = "test-util"))]
+        let drop_ids = Arc::new(Mutex::new(BTreeSet::new()));
         let seam = EndpointSeam {
             crypto: Arc::clone(&self.crypto),
             #[cfg(any(test, feature = "test-util"))]
-            drop_ids,
+            drop_ids: Arc::clone(&drop_ids),
             #[cfg(any(test, feature = "test-util"))]
             max_unit_sealed: None,
         };
@@ -1045,7 +1224,11 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             ))
             .ok()?;
         endpoint.set_recovery(self.recovery_on);
-        Some(endpoint)
+        Some(OpenedEndpoint {
+            endpoint,
+            #[cfg(any(test, feature = "test-util"))]
+            drop_ids,
+        })
     }
 
     // ── teslimler ──
@@ -1108,6 +1291,22 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     #[cfg(any(test, feature = "test-util"))]
     pub fn drop_next_units_for_test(&mut self, n: usize) {
         self.drops = self.drops.saturating_add(n);
+    }
+
+    /// [K4G-05g] Sonraki `n` oturum ucu açma denemesi, `ClientEndpoint::connect_session_counted`'ın
+    /// `Err`'i gibi başarısız olur (eşin adres denetiminden SONRA). `n` ATANIR (eklenmez): `0`
+    /// kancayı kapatır. Ürün derlemesinde yoktur; ürün yolu bu alanı okumaz.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_endpoint_open_failures_for_test(&mut self, n: usize) {
+        self.endpoint_open_fail_next = n;
+    }
+
+    /// [K4G-05g] Ucu açılamadığı için S1'e açılmayan ve Crypto oturumu kapatılan son tutamaç
+    /// (Application bu tutamacı hiç görmez; fikstür Crypto'da zombi kalmadığını onunla sınar).
+    #[cfg(any(test, feature = "test-util"))]
+    #[must_use]
+    pub fn last_failed_activation_for_test(&self) -> Option<SessionHandle> {
+        self.last_failed_activation
     }
 
     /// Bütün uçlarda kabul edilmiş ama teyidi gelmemiş birim sayısı (fikstürün durgunluk ölçüsü).
