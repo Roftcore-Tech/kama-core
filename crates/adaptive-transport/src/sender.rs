@@ -1402,7 +1402,8 @@ impl RecordOwner {
 }
 
 /// [K4G-05b madde 2/4/11 · Ek B.2.3] Birim başına SAHİPLİK DİZİNİ girdisi (`Sender::units`).
-/// Olay güdümlü güncellenir (gönderim, kayıp ilanı, ACK, kayıt silme) — tam tarama yok;
+/// Olay güdümlü güncellenir (gönderim, kayıp ilanı, ACK, K_MAP budaması (K4G-05c), kayıt silme) —
+/// tam tarama yok;
 /// anahtar `BTreeMap<UnitId, _>` (deterministik, ADR-17). Girdi birimin ilk iletimiyle açılır;
 /// teyitsiz birimde teyide dek, teyitli birimde son kaydı (uçuş + tombstone) düşene dek yaşar.
 #[derive(Debug, Default)]
@@ -1410,10 +1411,13 @@ struct UnitOwnership {
     /// Birimin tel boyu (kopya kaydı kurarken; birimin her iletiminde aynıdır).
     size: u64,
     /// Birimin motorda yaşayan iletim kayıtlarının seq'leri (uçuş + tombstone), artan sırada.
+    /// [K4G-05c · DUR-05c-14 (A)] Toplam ≤ K_MAP, orijinal dahil (K_MAP budaması, `own_on_sent`).
     seqs: VecDeque<u64>,
+    /// [K4G-05c · DUR-05c-14 (A)] Birimin ORİJİNAL Data kaydının seq'i, kayıt motorda yaşadıkça
+    /// (ACK, tombstone TTL'i, tombstone tavanı tahliyesi onu düşürünce `None`). K_MAP budamasının
+    /// hedefi olmaz; diğer silme yolları ona da uygulanır (daha geniş saklama garantisi yoktur).
+    original: Option<u64>,
     /// Bu kayıtlardan uçuşta olanların sayısı (≤ seq sayısı) — sahiplenme adaylığı (madde 4).
-    /// [CEVAP 11 DUR-30] Budama kapalıyken birim başına kayıt sayısı K_MAP ile sınırlı değildir;
-    /// sayaç doymasın diye `u32`.
     inflight_n: u32,
     /// Kopya kuyruğunda TEK kalıcı geometrik sahip kaydı var mı (madde 3; ≤ 1).
     geometric: bool,
@@ -1637,10 +1641,16 @@ const UNIT_SIZE_HINT: u64 = 267;
 const TOMBSTONE_MAX: usize = 4096;
 /// [K4G-05b madde 11 · sahip kararları CEVAP PAKETİ 9 DUR-20, CEVAP PAKETİ 10 DUR-28 (a), CEVAP
 /// PAKETİ 11 DUR-30] Birim başına iletim kaydı tavanı (8). Bir ADET sınırıdır, süre garantisi
-/// DEĞİLDİR. Budama K4G-05c'de runtime ile birlikte (ACK-tabanlı payload silmenin kaldırılması ve
-/// `take_confirmed_units` tüketimiyle aynı değişiklikte) açılır; 05b'de sabit tanımlıdır, budama
-/// davranışı YOKTUR. Yalnız-parite kaydının süre dolumu (`parity_expiry_horizon_ns`) da bu sabiti
+/// DEĞİLDİR. Yalnız-parite kaydının süre dolumu (`parity_expiry_horizon_ns`) da bu sabiti
 /// kullanır.
+///
+/// [K4G-05c · DUR-05c-14 (A, koşullu), CEVAP PAKETİ 14 §3] Budama AÇIK (runtime'ın birim başına
+/// O(1) kaydıyla aynı değişiklikte): birimin uçuş + tombstone kayıtlarının TOPLAMI ≤ K_MAP,
+/// orijinal dahil. Aşılırken ORİJİNAL Data kaydı DIŞINDAKİ en eski kayıt budanır (ilan yok; uçuş
+/// muhasebesinden ve kayıp dedektörü haritasından düşer). Orijinal yalnız K_MAP budamasının hedefi
+/// olmaz; tombstone TTL'i ve tavan tahliyesi ona da uygulanır. Motorun hâlâ tanıdığı kaydın geç
+/// ACK'i birimi teyit eder; budanmış (unutulmuş) kaydınki teyit etmez, RTT örneği vermez — birim
+/// sahipli kalır, payload runtime'da kalır ve ilerleme yeniden gönderimle sağlanır.
 pub const K_MAP: usize = 8;
 
 /// [K4G-05b · transport-layer-tdd §12 AMENDMENT-12] RTO_MAX = 30 s — NORMATİF sabit, koddan belgeye
@@ -1917,6 +1927,8 @@ pub struct Sender {
     parity_expiry: VecDeque<(u64, u64)>,
     /// [K4G-05b madde 1] Süre dolumuyla (K_MAP × RTO_MAX) düşen parite kaydı sayısı (SALT-GÖZLEM).
     diag_parity_expired: u64,
+    /// [K4G-05c · DUR-05c-14] K_MAP budamasıyla düşen birim kaydı sayısı (SALT-GÖZLEM).
+    diag_kmap_pruned: u64,
     /// [K4G-05b madde 2/4/11] Birim başına sahiplik dizini (bkz. [`UnitOwnership`]). Boyut ≤ motorda
     /// kaydı ya da kopya/ARQ işi olan birim sayısı (runtime deposuyla sınırlı, `runtime.rs` 4096);
     /// teyit kümesi onun alt kümesidir.
@@ -2209,6 +2221,7 @@ impl Sender {
             tombstone_evicted: 0,
             parity_expiry: VecDeque::new(),
             diag_parity_expired: 0,
+            diag_kmap_pruned: 0,
             units: BTreeMap::new(),
             confirmed_out: VecDeque::new(),
             confirmed_units_overflow: 0,
@@ -5126,6 +5139,13 @@ impl Sender {
         self.diag_parity_expired
     }
 
+    /// [K4G-05c · DUR-05c-14] Kayıt sınırları (SALT GÖZLEM): `(k_map_budanan_birim_kaydı,
+    /// süre_dolumuyla_düşen_parite_kaydı)`. Hiçbir karar okumaz.
+    #[must_use]
+    pub fn diag_record_bounds(&self) -> (u64, u64) {
+        (self.diag_kmap_pruned, self.diag_parity_expired)
+    }
+
     /// [FAZ-2 KALEM-2] §8.5 bant-türevli bütçe clamp'inin parity oranını KÜÇÜLTTÜĞÜ karar sayısı.
     #[must_use]
     pub fn diag_parity_budget_clamped(&self) -> u64 {
@@ -6327,7 +6347,15 @@ impl Sender {
 
     /// Birim kaydı motora girdi (gönderim); girdi gerekiyorsa açılır. Parite kaydı dizine girmez.
     /// Son iletim anı H çapasının birim tarafıdır; aday anahtarı buna göre yenilenir.
-    fn own_on_sent(&mut self, owner: RecordOwner, unit: OpaqueUnit, seq: u64, now_ns: u64) {
+    /// `origin` = kaydın kökeni (orijinal Data kaydı K_MAP budamasından muaftır).
+    fn own_on_sent(
+        &mut self,
+        owner: RecordOwner,
+        unit: OpaqueUnit,
+        seq: u64,
+        now_ns: u64,
+        origin: TransmitKind,
+    ) {
         let Some(u) = owner.unit() else {
             return;
         };
@@ -6335,17 +6363,61 @@ impl Sender {
         self.adopt_candidates.remove(&(e.last_tx_ns, u));
         e.size = unit.size;
         e.seqs.push_back(seq);
+        if origin == TransmitKind::Data {
+            e.original = Some(seq);
+        }
         e.inflight_n = e.inflight_n.saturating_add(1);
         e.last_tx_ns = now_ns;
         sync_adopt_candidate(&mut self.adopt_candidates, u, e);
-        // [K4G-05b · CEVAP PAKETİ 11 DUR-30] Birim başına K_MAP budaması 05b'de KAPALI: kayıt
-        // listesi yalnız ACK, tombstone TTL/tahliyesi ve tombstonesuz kopya kaybıyla kısalır.
-        // Budama K4G-05c'de runtime ile birlikte açılır.
+        // [K4G-05c · DUR-05c-14 (A)] Birim başına toplam kayıt ≤ K_MAP, orijinal dahil: aşılırken
+        // orijinal Data kaydı DIŞINDAKİ en eski kayıt budanır (yeni kayıt kuyruğun sonundadır ve
+        // K_MAP ≥ 2 iken en eskisi olamaz).
+        loop {
+            let victim = {
+                let Some(e) = self.units.get_mut(&u) else {
+                    break;
+                };
+                if e.seqs.len() <= K_MAP {
+                    break;
+                }
+                let original = e.original;
+                let Some(pos) = e.seqs.iter().position(|&s| Some(s) != original) else {
+                    break;
+                };
+                e.seqs.remove(pos)
+            };
+            match victim {
+                Some(old) => self.prune_unit_record(u, old),
+                None => break,
+            }
+        }
+    }
+
+    /// [K4G-05c · DUR-05c-14 (A) · 05b Ek B.2.3] K_MAP BUDAMASI: birimin `seq` kaydı İLAN ETMEDEN
+    /// motordan düşer — uçuştaysa `inflight` + `inflight_bytes` + `bw_sampler` uçuş sayısı,
+    /// tombstone'daysa tahliye deseni (uçuş sayısı; sıra girdisi tembel), her durumda kayıp
+    /// dedektörü haritası (`loss.forget`). Ledger, kayıp sayaçları ve `tv_loss` değişmez. Sonraki
+    /// geç ACK'i Expired/Unknown: birimi teyit etmez, RTT örneği vermez; birim sahipli kalır ve
+    /// yeniden gönderilir (prob hedefiyse emisyon-anı doğrulaması iptal eder). Seq'i dizinden
+    /// çağıran çıkarmıştır.
+    fn prune_unit_record(&mut self, u: UnitId, seq: u64) {
+        if let Some(p) = self.inflight.remove(&seq) {
+            self.inflight_bytes = self.inflight_bytes.saturating_sub(p.unit.size);
+            self.bw_sampler.forget_in_flight();
+            if let Some(e) = self.units.get_mut(&u) {
+                e.inflight_n = e.inflight_n.saturating_sub(1);
+                sync_adopt_candidate(&mut self.adopt_candidates, u, e);
+            }
+        } else if self.tombstones.remove(&seq).is_some() {
+            self.bw_sampler.forget_in_flight(); // [commit-B §3.7] tahliye deseni
+        }
+        self.loss.forget(seq);
+        self.diag_kmap_pruned = self.diag_kmap_pruned.saturating_add(1);
     }
 
     /// Birimin `seq` kaydı motordan TAMAMEN düştü (ACK, tombstone TTL/tahliye, tombstonesuz kopya
-    /// kaybı); `was_inflight` = kayıt düştüğünde uçuştaydı. Teyit kümesinden çıkış:
-    /// teyitli birimin son kaydı düşünce girdi silinir.
+    /// kaybı; K_MAP budaması ayrı yoldur: `prune_unit_record`); `was_inflight` = kayıt düştüğünde
+    /// uçuştaydı. Teyit kümesinden çıkış: teyitli birimin son kaydı düşünce girdi silinir.
     fn own_record_gone(&mut self, owner: RecordOwner, seq: u64, was_inflight: bool) {
         let Some(u) = owner.unit() else {
             return;
@@ -6355,6 +6427,9 @@ impl Sender {
         };
         if let Some(pos) = e.seqs.iter().position(|&s| s == seq) {
             e.seqs.remove(pos);
+        }
+        if e.original == Some(seq) {
+            e.original = None;
         }
         if was_inflight {
             e.inflight_n = e.inflight_n.saturating_sub(1);
@@ -6660,8 +6735,8 @@ impl Sender {
     /// ACK (uçuştaki kayıt; tombstone kol-1/kol-2; kayıp ilan edilip yeniden planı bekleyen kaydın
     /// un-loss eşleşmesi — ufuk içi geç ACK bunlardan birine düşer) ve FEC RECOVERED. Teyit
     /// ÜRETMEYENLER: FEC onarım sembolünün ACK'i; canlı kaydı olmayan iletimin ACK'i (tombstone TTL'i
-    /// dolmuş, tavandan taşmış ya da tombstone bırakmayan kopya kökenli kayıp kaydı →
-    /// Expired/Unknown; birim sahipli kalır, yeniden gönderilir); kayıt yokken dedektör
+    /// dolmuş, tavandan taşmış, [K4G-05c] K_MAP budamasıyla düşmüş ya da tombstone bırakmayan kopya
+    /// kökenli kayıp kaydı → Expired/Unknown; birim sahipli kalır, yeniden gönderilir); kayıt yokken dedektör
     /// sınıflaması; teyitli birimin sonraki ACK'leri; bayat SACK; zamanlayıcı ve süre dolumları.
     ///
     /// Drenaj sözleşmesi (K4G-05c uygular): runtime her `on_event` / `on_event_batch` çağrısından
@@ -7318,7 +7393,8 @@ impl Sender {
             },
         );
         // [K4G-05b madde 2] Sahiplik dizini: birimin yeni kaydı (parite dizine girmez).
-        self.own_on_sent(owner, unit, seq, now_ns);
+        // [K4G-05c] Köken: orijinal Data kaydı K_MAP budamasından muaf.
+        self.own_on_sent(owner, unit, seq, now_ns, origin);
         seq
     }
 
