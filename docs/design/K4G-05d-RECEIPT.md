@@ -93,7 +93,9 @@
 
 ## 5. Testler (ayrıntı Ek B)
 
-- **(a)** İki yön: iki uçta dosya + TEXT yeniden sunumu + PTT, 256 TEXT karşılıklı. Geçiş sonrası oturumda bütün RECEIPT'ler kabul; kayıp 0, kilit yok; S1 olayları her turda okundu (ACK: INT-02).
+- **(a)** İki kol (C14 §4):
+  - **(a1)** oturum değişmeden iki yönlü doygunluk, ZORUNLU: iki uçta dosya + PTT, 256 TEXT karşılıklı. Bütün RECEIPT'ler AYNI oturumda kabul; kayıp 0, kilit yok; S1 olayları her turda okundu (ACK: INT-02).
+  - **(a2)** ortada supersede, geçiş kolu.
 - **(b)** 300 TEXT tek yön.
   - **(b1)** Pencere içinde > 256 yükümlülük → silme yok.
   - **(b2)** Pencere ihlali → yalnız pencere altı sayılarak budanır.
@@ -102,7 +104,7 @@
 - **(e)** Kapanış borcu.
 - **(f)** `adopt` sırası.
 
-**Değişen dal testleri:** t3, t4 (`BeforeText`, `DuringRecv`), birim t3b, birim t4 (a)/(b)/(c), birim t6. **Çıkan:** t1p, birim t1. **main'de kırılan test:** çürütme turunda bulunmadı; koşulmadı.
+**Değişen dal testleri:** t3, t4 (`BeforeText`, `DuringRecv`), birim t3b, birim t4 (a)/(b)/(c), birim t6. **Çıkan:** t1p, birim t1, t6 adım 5. **main'de kırılan test:** çürütme turunda bulunmadı; koşulmadı.
 
 ## 6. Ayrı bulgu (05d dışı; kart önerisi)
 
@@ -130,7 +132,9 @@ M1 ile bu oturumdaki kuyruk `Closed`'a dek bekler, kapı o eşe `NotConnected` y
 |---|---|---|---|---|
 | **DUR-05d-5** | RECEIPT sunumunda `SessionSuperseded` / `UnknownSession` / `NotConnected` | (a) tut ve dur; `file_transfer.rs:1629-1637` sınıfı; ulaşılamaz hatalar bırakılır ve sayılır (beyan) · (b) yalnız `Backpressure` geçici kalır, geçişte silinir; telafi S2 yeniden üretimi, kanıt (d) · (c) poll'da sunum olaylardan sonra (T5/P0 sırası değişir) | **(a)** | t4 `DuringRecv`; birim t4 (a)/(b), t6; (d) |
 | **DUR-05d-6** | (i)'nin pencere ihlali yapan eşte daraltılması | (a) (i) M1.6 kapsamında koşulsuz; ihlalde pencere altı sayılarak budanır, pencere içi silinmez; kural AMP'de normatif olur (Ek A.1) · (b) her koşulda (i): bellek sınırsız, SR-AUDIT-001'e aykırı · (c) pencere altına türetilmiş ek tavan (256) + ihlal sayacı | **(a)** | (b1), (b2), (e) |
-| **DUR-05d-7** | (ii)'nin güçlü okuması | **A1:** client-core `ClientTransport`'a oturum başına "şu an kabul edilebilir birim" erişimcisi (`s1.rs` değil; tel değişmez; 05c sonrası mesafe penceresini de kapsar). kama-app'te küçük trait; kama-node'da newtype (orphan kuralı). Dosya ve `MEDIA_BUNDLE` yalnız boş yer ≥ H_R = 256 iken sunulur; dosya ayak izi ≤ W_F [CAL, INT-02'de ölçülür] · **A2:** `s1.rs` `send`'e sınıf işareti + client-core'da öncelikli kabul · **A3:** zayıf (ii) + beyanlı FIFO gecikmesi, INT-02'de 31–100 B/s ölçümü | **A1** (05d kodu M1–M4 ile ilerler; yalnız A1 kısmı bekler) | A1 ise (c2) rezerv testi |
+| **DUR-05d-7** | (ii)'nin güçlü okuması | **A1:** client-core `ClientTransport`'a oturum başına "şu an kabul edilebilir birim" erişimcisi (`s1.rs` değil; tel değişmez; 05c sonrası mesafe penceresini de kapsar). kama-app'te küçük trait; kama-node'da newtype (orphan kuralı). ~~Dosya ve `MEDIA_BUNDLE` yalnız boş yer ≥ H_R = 256 iken sunulur~~ → kabulden SONRA ≥ H_R (DUR-05d-8 (ii), C14 §4 düzeltmesi); dosya ayak izi ≤ W_F (başlangıç değeri DUR-05d-8 (i); [CAL] yalnız son değer) · **A2:** `s1.rs` `send`'e sınıf işareti + client-core'da öncelikli kabul · **A3:** zayıf (ii) + beyanlı FIFO gecikmesi, INT-02'de 31–100 B/s ölçümü | **A1** (05d kodu M1–M4 ile ilerler; yalnız A1 kısmı bekler) | A1 ise (c2) rezerv testi |
+
+**Kararlar (C14 §4, 2026-10-25):** DUR-05d-5 (a) · DUR-05d-6 (a) + kalıcı silme hatası ve yeniden başlatma testleri · DUR-05d-7 A1: uygulama ve ölçüme GO, "çözdü" onayı değil; A2 ve A3 reddedildi; A1 parçası 05c merge'ünden sonra. A1 parametreleri DUR-05d-8'de (§10).
 
 **Eski kararlar:**
 - **DUR-05d-1:** ~~en eski düşer + `receipts_evicted`, sınır 256~~ → düşürme yok; sınır gönderen penceresi (M1.4).
@@ -255,24 +259,28 @@ Gerekçe: alıcının pencere altı budaması gönderen penceresi kuralına daya
 
 | Test | Düzenek ve iddia | Öldürdüğü mutant |
 |---|---|---|
-| (a) iki yön | Alice ve Bob'da aynı anda dosya, TEXT yeniden sunumu ve PTT; 256'şar TEXT karşılıklı; ortada `supersede`. Bütün RECEIPT'ler geçiş sonrası oturumda kabul; `receipts_unsent` = 0; her TEXT tam bir `Delivered`; türetilmiş tur sınırında biter (kilit yok); `Link` olayları her turda okunur. ACK yolu `Link`'te yoktur; M4'ün ACK yarısı INT-02'nin işidir. | kapı yok (RECEIPT dosya parçalarının ardında kalır); M3 ihlali (dolu yönde tüketimi durduran mutant kilitlenir) |
-| (b1) | 300 TEXT tek yön, B→A dolu; pencere içinde > 256 yükümlülük. Hiçbiri düşmez, kuyruk ≤ 4096, kapasite açılınca her biri tam bir kez kabul. | 256 tavanı, en eskiyi düşürme |
-| (b2) | Ham TEXT ile pencere ihlali (`m` sonra `m + 4096`). Yalnız pencere altı budanır, `receipts_window_pruned` = budanan sayısı; pencere içi hepsi kabul. | budama yok (bellek sınırsız); pencere içini de budayan |
-| (c) | Kuyruk doluyken o eşe `FILE_CHUNK`, `MEDIA_BUNDLE`, TEXT ilk gönderimi, `flush_peer` ve sinyalleşme Transport'a ulaşmaz (`Link` gönderim kaydı); `gated_by_receipts` artar; `PTT_OPEN`, `PTT_CLOSE`, `FILE_RECEIPT`, `FILE_ABORT` geçer. Kapı ret sonrası aynı `poll`'da yeniden sunmaz (≤ 1 ret). | kapıyı atlayan motor; muafiyeti kaldıran; işareti yok sayan |
+| (a1) `a1_two_way_saturation_completes_on_the_same_session` | İki uç da `kama-node` motorları: dosya, PTT demeti, 256'şar TEXT karşılıklı; tur sırası her turda değişir. Bütün RECEIPT'ler AYNI oturumda tam bir kez kabul; `receipts_unsent` = 0; her TEXT tam bir `Delivered`; türetilmiş tur tavanında biter (kilit yok); iki uç da `Backpressure` aldı, RECEIPT'ler `Backpressure` aldı, kapı çalıştı. ACK yolu `Link`'te yoktur; M4'ün ACK yarısı INT-02'nin işidir. | kapı yok; M3 ihlali (dolu yönde tüketimi durduran mutant kilitlenir) |
+| (a2) `a2_two_way_saturation_survives_a_supersession` | (a1) + 4. turda supersede. Her TEXT bir kez teslim, tam bir `Delivered`; `receipts_unsent` = 0; uç başına iki oturum olayı. | geçişte kuyruğu boşaltan; kapısız yeniden gönderim |
+| (b) `b_three_hundred_texts_one_way_are_all_delivered_and_none_dropped` | Alice 300 TEXT (outbox tavanı ve `Backpressure` beklenir), Bob dosya gönderirken. Her TEXT bir kez teslim, tam bir `Delivered`; her RECEIPT aynı oturumda bir kez; RECEIPT'ler `Backpressure` aldı. | RECEIPT kaybeden kuyruk |
+| (b1) `b1_more_obligations_than_the_outbox_cap_wait_without_drops` | Ham 300 TEXT, B→A dolu; pencere içinde > 256 yükümlülük. Hiçbiri düşmez; kapasite açılınca her biri tam bir kez, `msg_id` sırasıyla kabul. | 256 tavanı, en eskiyi düşürme; bit konumu sırası |
+| (b2) `b2_a_window_violation_prunes_only_below_the_window` | Ham TEXT `0..16`, sonra `4100`: `0..4` budanır (`receipts_window_pruned` = 5); `5..15` ve `4100` bir kez kabul. | budama yok (bellek sınırsız); pencere içini de budayan |
+| (c) `c_gate_holds_bulk_producers_and_passes_exempt_control_records` + birim `c_gate_holds_bulk_producers_while_receipts_wait_and_counts_separately` | Kuyruk beklerken dosya kayıtları, `MEDIA_BUNDLE`, TEXT ve sinyalleşme Transport'a ulaşmaz (`Link` gönderim kaydı); `gated_by_receipts` her biri için artar, `resend_refused` artmaz; `PTT_CLOSE`, `FILE_ABORT`, `FILE_RECEIPT` geçer; kapasite açılınca ilk kabul RECEIPT. Kapı ret sonrası aynı `poll`'da yeniden sunmaz. | kapıyı atlayan motor; muafiyeti kaldıran; işareti yok sayan |
 | (c2) | Yalnız A1 seçilirse: boş yer < 256 iken dosya ve `MEDIA_BUNDLE` sunulmaz. | rezervi yok sayan |
-| (d) `receipt_queue_survives_session_change_{a,b,c}` | (a) kuyruk doluyken `Closed(h)` → yeni oturumda sunulur; (b) geçiş `recv` anında (`Link` yeni kip `supersede_on_next_recv`, client-core aynası `client-core/src/transport.rs:1314-1317` → :823-826) ve `adopt` / `retire` ters sırası; (c) iki ardışık değişim. Her TEXT tam bir `Delivered`. | `adopt`/`retire` boşaltır; DUR-05d-5 (b) (yalnız `Backpressure` geçici) |
-| (e) kapanış borcu | `outbox_remove` bir kez hata verir (test deposu deseni `05d::1406-1467`); ardından 4096'dan fazla TEXT; sonra yeniden başlatma. `UnackedSpanFull` takılması yok, borçlu `msg_id` alıcıda budanmaz, kalıntı yeniden gönderilip kapanır. | borcu tutmayan (bugünkü `messaging.rs:846-848`); pencereyi yalnız outbox'tan ölçen |
-| (f) `adopt` sırası | Yeni tutamaçta ilk kabul edilen RECEIPT, TEXT yeniden sunumundan önce gelir. | `adopt`'ta sunmayan; sırayı ters çeviren |
+| (d) `receipt_queue_survives_session_change_{a,b,c}` | (a) kuyruk doluyken `Closed(h)` → `Ready(h')`'nin turunda kuyruktan sunulur; (b) geçiş `recv` anında (`Link::supersede_on_next_recv`, client-core aynası `client-core/src/transport.rs:1314-1317` → :823-826), olaylar ters sırada (`retire` → `adopt`); (c) arka arkaya iki değişim (`Link::supersede` zincirlenir). Her TEXT tam bir `Delivered`. | `adopt`/`retire` boşaltır; DUR-05d-5 (b) (yalnız `Backpressure` geçici) |
+| (e1) `e1_closure_debt_holds_the_window_until_the_retry_succeeds` | Silme iki kez hata verir: borç açıkken `X + 4096` ayrılmaz (`UnackedSpanFull`); sıradaki `poll` silmeyi başarır, aynı `msg_id` gönderilir ve teslim edilir (takılma yok). | borcu tutmayan (bugünkü `messaging.rs:846-848`); yeniden denemeyen |
+| (e2) `e2_closure_debt_survives_a_restart_and_the_residue_stays_inside_the_window` | Silme kalıcı hata; `X + 4095` gönderilir, bir fazlası ayrılmaz; yeniden başlatma + yeni oturum: kalıntı Bob'un penceresi içinde tekrar (`below_window_texts` 0, `receipts_window_pruned` 0) ve kapanır. | borcu tutmayan; pencereyi yalnız outbox'tan ölçen |
+| (f) birim `f_adopt_presents_pending_receipts_before_resends` | Yeni tutamaçta ilk kabul edilen RECEIPT, TEXT yeniden sunumundan önce gelir. | `adopt`'ta sunmayan; sırayı ters çeviren; eski tutamacın ret işaretini taşıyan |
 
 **B.2 Değişen 05d dal testleri** (main'de karşılığı yok; P0-1 ve P0-2 gövdeleri aynen kalır):
-- **t3:** `h'`'de RECEIPT(X) 1 değil 2 kabul (taşınan kayıt + tekrar TEXT'in RECEIPT'i).
-- **t4 `BeforeText`:** oturumsuz doğan RECEIPT(X) kuyruğa girer, `h'`'ye `adopt`'ta sunulur.
-- **t4 `DuringRecv`:** `UnknownSession` sonrası kayıt tutulur; eski tutamaca bir daha sunulmaz.
-- **birim t3b:** `retire` sonrası `pending` 0 değil 1.
-- **birim t4:** (a) ve (b) `UnknownSession`, `SessionSuperseded`, `NotConnected` için tutar; `UnitTooLarge`, `DeadlineExpired`, `EarlyUnitConflict` için aynen kalır. (c) oturumsuz doğan kayıt kuyruğa girer.
-- **birim t6:** adım 3'ün "kalıcı ret"i ulaşılamaz bir hatayla kurulur (`UnknownSession` artık tutar); adım 4 taşınır; adım 5 (taşma) yerine pencere budaması.
+- **t3** → `t3_session_change_carries_the_pending_receipt_to_the_new_session`: `h'`'de RECEIPT(X) 1 değil 2 kabul (taşınan kayıt + tekrar TEXT'in RECEIPT'i).
+- **t4** → `t4_a_session_end_holds_the_receipt_for_the_next_session`:
+  - `BeforeText`: oturumsuz doğan RECEIPT(X) kuyruğa girer, `h'`'ye `adopt`'ta sunulur.
+  - `DuringRecv`: `UnknownSession` sonrası kayıt tutulur. ~~eski tutamaca bir daha sunulmaz~~ → kapanış olayı okunana dek bir `poll` daha sunulur: eski tutamaçta iki `UnknownSession` (poll başına ≤ 1 ret; Ek A.2'deki "o `poll`'da durur" kuralı). Kodda düzeltildi; rev3 notunun önceki cümlesi yanlıştı.
+- **birim t3b** → `t3b_closing_the_session_keeps_the_pending_receipts_for_the_next_session`: `retire` sonrası `pending` 0 değil 2; `Ready(h2)`'de sunulur.
+- **birim t4** → `t4_session_end_errors_hold_the_receipt_and_unreachable_errors_drop_it`: (a) ve (b) `UnknownSession`, `SessionSuperseded`, `NotConnected` için tutar; `UnitTooLarge`, `DeadlineExpired`, `EarlyUnitConflict` için aynen kalır. (c) oturumsuz doğan kayıt kuyruğa girer.
+- **birim t6** → `t6_deferred_equals_accepted_plus_dropped_plus_pruned_plus_pending`: adım 3'ün "kalıcı ret"i ulaşılamaz bir hatayla kurulur (`UnknownSession` artık tutar); adım 4 taşınır; adım 5 (taşma) yerine pencere budaması.
 - **Değişmez:** P0 × 2, t2, t5, `re_announcing_the_same_handle_keeps_the_pending_receipts` (öldürdüğü mutantın tanımı bayatlar), `pending_receipts_are_per_peer_and_backpressure_is_per_session`. Sonuncusunun değişmemesi şuna bağlıdır: `poll` döngü sırası (`flush_resends` → `flush_receipts`) korunur ve kapı `flush_peer` içinde yalnız o eşin kuyruğunu sunar.
-- **Çıkan:** t1p, birim t1.
+- **Çıkan:** t1p, birim t1, birim t6 adım 5 (rev2 düşürme yolu; C14 §4).
 
 **B.3 Kalan mutasyonlar:** tekilleştirme kaldırılır → P0-2 · `Ok`'ta kayıt çıkarılmaz → P0-2, t2 · `poll` başı sunum kaldırılır → P0-1 · `Backpressure`'da sunum sürer → t5.
 
