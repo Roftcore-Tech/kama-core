@@ -6372,25 +6372,21 @@ impl Sender {
         // [K4G-05c · DUR-05c-14 (A)] Birim başına toplam kayıt ≤ K_MAP, orijinal dahil: aşılırken
         // orijinal Data kaydı DIŞINDAKİ en eski kayıt budanır (yeni kayıt kuyruğun sonundadır ve
         // K_MAP ≥ 2 iken en eskisi olamaz).
-        loop {
-            let victim = {
-                let Some(e) = self.units.get_mut(&u) else {
-                    break;
-                };
-                if e.seqs.len() <= K_MAP {
-                    break;
-                }
-                let original = e.original;
-                let Some(pos) = e.seqs.iter().position(|&s| Some(s) != original) else {
-                    break;
-                };
-                e.seqs.remove(pos)
-            };
-            match victim {
-                Some(old) => self.prune_unit_record(u, old),
-                None => break,
-            }
+        while let Some(old) = self.take_kmap_victim(u) {
+            self.prune_unit_record(u, old);
         }
+    }
+
+    /// [K4G-05c · DUR-05c-14 (A)] Birimin toplam kaydı K_MAP'i aşıyorsa budanacak kaydı dizinden
+    /// çıkarır ve döner: ORİJİNAL Data kaydı dışındaki en eski kayıt. Aşmıyorsa `None`.
+    fn take_kmap_victim(&mut self, u: UnitId) -> Option<u64> {
+        let e = self.units.get_mut(&u)?;
+        if e.seqs.len() <= K_MAP {
+            return None;
+        }
+        let original = e.original;
+        let pos = e.seqs.iter().position(|&s| Some(s) != original)?;
+        e.seqs.remove(pos)
     }
 
     /// [K4G-05c · DUR-05c-14 (A) · 05b Ek B.2.3] K_MAP BUDAMASI: birimin `seq` kaydı İLAN ETMEDEN

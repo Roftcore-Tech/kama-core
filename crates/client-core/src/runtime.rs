@@ -3486,7 +3486,8 @@ impl DeliveryGate {
                 {
                     return Admission::Accept { reserve: true };
                 }
-                if free >= 1 && free - 1 >= book.reserve.saturating_sub(in_use) {
+                // F − 1 ≥ R − U (değişmez I korunur).
+                if free > book.reserve.saturating_sub(in_use) {
                     Admission::Accept { reserve: false }
                 } else {
                     Admission::RefuseFull
