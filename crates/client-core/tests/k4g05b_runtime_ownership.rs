@@ -489,6 +489,9 @@ struct Rig {
     acked_set: BTreeSet<u64>,
     /// Sunucunun ilk teslimleri (birim → gövde).
     delivered: BTreeMap<u64, Vec<u8>>,
+    /// [K4G-05c] İstemcinin gönderen mesafe kapısı (`max_inflight_units`): en eski teyitsiz
+    /// birimden bu kadar kimlik ötesi sunulsa da gönderilmez (teklif kuyruğunda bekler).
+    window: u64,
 }
 
 impl Rig {
@@ -521,6 +524,7 @@ impl Rig {
 
     async fn with_server(server: ServerHandle, cfg: RuntimeConfig) -> Self {
         let net = Net::start(server.local_addr()).await;
+        let window = cfg.max_inflight_units as u64;
         let client = ClientEndpoint::connect(net.front, cfg, Box::new(IdentitySeam::new()))
             .await
             .expect("istemci");
@@ -532,7 +536,18 @@ impl Rig {
             acked: Vec::new(),
             acked_set: BTreeSet::new(),
             delivered: BTreeMap::new(),
+            window,
         }
+    }
+
+    /// [K4G-05c] Sıradaki birim gönderen mesafe kapısının içinde mi: `next_unit − O < window`, O =
+    /// testin gördüğü en eski teyitsiz birim (teyit olayı geç gelebilir → O gerçeğinden küçük ya da
+    /// eşit; koşul ihtiyatlıdır).
+    fn next_in_window(&self) -> bool {
+        let oldest = (0..self.next_unit)
+            .find(|u| !self.acked_set.contains(u))
+            .unwrap_or(self.next_unit);
+        self.next_unit - oldest < self.window
     }
 
     /// Olay akışlarını `d` boyunca boşaltır (teyit kanalı taşmasın, teslim kanalı dolmasın).
@@ -601,6 +616,12 @@ impl Rig {
     }
 
     /// `wait` + bekleme boyunca `TRICKLE` aralığıyla trafik (geçen birimler).
+    ///
+    /// [K4G-05c] Trafik gönderen mesafe kapısının içinde kalır (`next_in_window`): teyitsiz hedef
+    /// uzun süre beklerken (TTL kolu ≥ 25 s, faz B ≤ RTO_MAX) birim sayısı makine hızına göre 4096'yı
+    /// aşabilir; aşan birimler teklif kuyruğunda kalır ve "yalnız hedef teyitsiz" boşaltması hiç
+    /// sağlanmazdı. Pencere doluyken birim sunulmaz; hedefin kaydını TTL'den başka bir yol yine
+    /// düşürmez (orijinal K_MAP budamasından muaf, tahliye için tombstone sayısı yetmez).
     async fn wait_trickle(
         &mut self,
         what: &str,
@@ -618,7 +639,7 @@ impl Rig {
                 "{what}: {limit:?} içinde olmadı — {}",
                 self.describe()
             );
-            if Instant::now() >= next {
+            if Instant::now() >= next && self.next_in_window() {
                 self.send().await;
                 next = Instant::now() + TRICKLE;
             }
