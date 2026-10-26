@@ -118,28 +118,70 @@ fn f3_partial_block_real_decode_and_pin_c_advances() {
 }
 
 /// **§8 COST-SPLIT proof:** F0 D2/R2 → FEC blok'u ERKEN tamamlar AMA post-DATA-parity geç-varınca ARQ
-/// SPURIOUS retransmit sızdırır. İKİ maliyet AYRI: INTERVENTION-BUDGET (C-P4 = proaktif parity sealed-wire)
-/// vs TOTAL-OUTCOME-COST (§8 = arq_retransmit_bytes + spurious_retransmits). Spurious ≠ BUDGET_MISMATCH.
+/// SPURIOUS retransmit sızdırır [K4G-05b öncesi sıralamada — DUR-44]. İKİ maliyet AYRI: INTERVENTION-BUDGET
+/// (C-P4 = proaktif parity sealed-wire) vs TOTAL-OUTCOME-COST (§8 = arq_retransmit_bytes +
+/// spurious_retransmits). Spurious ≠ BUDGET_MISMATCH.
+///
+/// [K4G-05b DUR-44 (a) · DUR-8 biçimi · sahip kararı bekliyor] NEDEN DEĞİŞTİ (teşhis; ölçüm
+/// `~/kama-k4g-work/k4g05b/kod-run/r10`; bisect: 35a02fcf ve 9e0ea164 YEŞİL, bc913d49'dan 20a92477'ye
+/// KIRMIZI). K4G-05b rev6'nın K3 ARQ payı rezervi (CEVAP PAKETİ 15 v3 §2.3) bu fikstürde ARQ yeniden
+/// gönderimini son orijinal DATA'nın token dilimine alır: t_arq_wire 124 → 115 ms, t_arq_arrival
+/// 144.808 → 135.808 ms < t_repair_usable 136.0 ms. Alıcı 136 ms'de 5 orijinal + yeniden gönderim + 2
+/// parite ile çözer; yeniden gönderim çözülen K sembolünden biridir, israf değildir → fikstürün
+/// sınıflaması (`t_repair_usable ≤ t_arq_arrival`) doğru olarak 0 verir. Sayı, bayt ve tamamlanma aynı
+/// (retx 1, parite 2 × 101 B, ARQ 101 B, 136 ms). `spurious_retransmits > 0` satırı bir maliyet kanalının
+/// VARLIĞINI belgeliyordu, güvenlik özelliğini değil (SPURIOUS-RETRANSMIT-SUPERSESSION md `7718b94f…`);
+/// kanal DATA'nın dilimi kazandığı sıralamada hâlâ vardır, bu fikstür onu artık kurmaz. YENİ: spurious
+/// İDDİA EDİLMEZ, basılır — t_arq_arrival − t_repair_usable işaretiyle (eski sıralama +8.808 ms /
+/// spurious 1; K3 −0.192 ms / spurious 0). Maliyet ayrımı iddiaları aynen; eklenen: retransmits ≥ 1 (ARQ
+/// kolu çalıştı), delivered == 8, tamamlanma var. Eser: SPURIOUS-RETRANSMIT-SUPERSESSION-K4G05B-DUR44
+/// (md `3faadfce…`, bu düzenlemeden ÖNCE commit'lendi); tasarım notu Ek B.1d DUR-44 ve B.2.8 #10.
+/// 2×2: eski kod + eski test YEŞİL (ölçüldü, r10: 9e0ea164) · yeni kod + eski test KIRMIZI (ölçüldü, r10)
+/// · yeni kod + yeni test YEŞİL, işaret − [çıkarım] · eski kod + yeni test YEŞİL, işaret +, spurious 1
+/// basılır [çıkarım]. K3 kapalı mutasyonla (DUR-44): YEŞİL, t_arq_wire 124 ms, işaret +, spurious 1
+/// basılır [çıkarım].
 #[test]
 fn f0_cost_split_intervention_vs_total_outcome() {
     // DR-RATE-RAMP-2B SUPERSESSION (md `7718b94f…`): these constants were measured on the
     // startup-pacing-INACTIVE path and are PRESERVED VERBATIM here, re-scoped to it. The floor
     // removes the late-parity race that produced the spurious retransmit; the product-default
-    // behaviour is sealed by `f0_cost_split_under_product_default` below. Nothing weakened.
+    // behaviour is sealed by `f0_cost_split_under_product_default` below. ~~Nothing weakened.~~
+    // [K4G-05b DUR-44 (a)] The `spurious_retransmits > 0` assertion was removed (printed instead): see the
+    // doc comment above and SPURIOUS-RETRANSMIT-SUPERSESSION-K4G05B-DUR44 (md `3faadfce…`).
     let sealed = fs_sealed_len(64); // 101B grounded
     let r = run_f0_paced(2, &[2, 5], 1_000_000, 20 * MS, Some(false));
+    assert_eq!(r.delivered, 8, "blok teslim edilmeli");
+    assert!(r.completion_ns.is_some(), "tamamlanma anı olmalı");
     assert_eq!(r.fec_decoded_sources, 2, "FEC tamamlamalı");
     // INTERVENTION-BUDGET (C-P4): YALNIZ proaktif parity sealed-wire (2 × 101).
     assert_eq!(r.realized_sealed_wire_bytes, 2 * sealed);
-    // TOTAL-OUTCOME-COST (§8 AYRI): arq_retransmit_bytes accounting-identity + spurious leak gözlendi.
+    // TOTAL-OUTCOME-COST (§8 AYRI): arq_retransmit_bytes accounting-identity.
     assert_eq!(
         r.arq_retransmit_bytes,
         r.retransmits * sealed,
         "arq_retransmit_bytes = retransmits × sealed (accounting-identity)"
     );
     assert!(
-        r.spurious_retransmits > 0,
-        "D2/R2'de FEC-erken-tamamlar + post-DATA-parity-geç → spurious-ARQ beklenir"
+        r.retransmits >= 1,
+        "D2/R2'de ARQ kolu çalışmalı (en az bir yeniden gönderim)"
+    );
+    // [K4G-05b DUR-44 (a)] Spurious sınıflaması basılır, iddia edilmez: işaret + → yeniden gönderim FEC
+    // çözümünden sonra vardı (israf, spurious); − → çözümden önce vardı (çözüme girdi).
+    let arrival = r.timing.t_arq_arrival;
+    let usable = r.timing.t_repair_usable;
+    let lead_ns = match (arrival, usable) {
+        (Some(a), Some(u)) => Some(i128::from(a) - i128::from(u)),
+        _ => None,
+    };
+    let verdict = match lead_ns {
+        Some(d) if d >= 0 => "ARQ FEC çözümünden sonra: yeniden gönderim israf (spurious)",
+        Some(_) => "ARQ FEC çözümünden önce: yeniden gönderim çözüme girdi",
+        None => "ölçülmedi",
+    };
+    eprintln!(
+        "[f0 cost-split] retx={} spurious={} t_arq_wire={:?} t_arq_arrival={arrival:?} \
+         t_repair_usable={usable:?} t_arq_arrival−t_repair_usable={lead_ns:?} ns ({verdict}); completion={:?}",
+        r.retransmits, r.spurious_retransmits, r.timing.t_arq_wire, r.completion_ns
     );
     assert!(
         r.spurious_retransmits <= r.retransmits,
