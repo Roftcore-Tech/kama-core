@@ -1477,9 +1477,10 @@ struct UnitOwnership {
     geometric: bool,
     /// Kopya kuyruğunda bekleyen tek seferlik kayıt sayısı (madde 5 ekleme kuralı: ≤ D − 1).
     fire_once: u8,
-    /// [K4G-05b rev6 · kara delik bekçisi] Bu zincir döneminde (zincirin kuruluşu ya da madde 6
-    /// sıfırlamasından bu yana) kopya kaybının later-ACK kanıtı geometrik vadeyi zaten bir kez öne çekti
-    /// mi. Çekme dönem başına EN ÇOK BİR KEZ uygulanır; sonraki kayıplarda aralık ×2 büyür (≤ RTO_MAX).
+    /// [K4G-05b DUR-41 (B) · Ek A A.7] Bu ZİNCİR DÖNEMİNDE (geometrik kaydın açılışından ya da madde 6
+    /// sıfırlamasından bu yana) later-ACK kayıp kanıtı geometrik vadeyi zaten GERÇEKTEN öne çekti mi.
+    /// Hak üç yerin ortak hakkıdır (kopya kaybı, ARQ tavanı devri, tek seferlik ekleme yeri;
+    /// `copy_loss_evidence`); dönem başına EN ÇOK BİR öne çekme, sonra aralık ×2 büyür (≤ RTO_MAX).
     loss_pull_used: bool,
     /// [K4G-05b DUR-41 · SALT GÖZLEM] Teyitsizken kayıp ilan edilen Duplicate kökenli kayıt sayısı
     /// (`queue_losses` kopya kolu). Karar okumaz.
@@ -3877,15 +3878,14 @@ impl Sender {
                     // [K4G-05b madde 3/5] Bu kayıp later-ACK kanıtıdır: birimin geometrik sahibi
                     // varsa vadesi öne çekilir; bekleyen tek seferlik kopyası varsa o sahiptir (v1);
                     // yoksa TEK kalıcı geometrik sahip açılır (taban srtt, aralık ≤ RTO_MAX).
-                    // [K4G-05b rev6 · kara delik bekçisi] Öne çekme zincir dönemi başına EN ÇOK BİR
-                    // KEZ: yol canlıyken bütün iletimleri düşen birimin her kopyası later-ACK ile kayıp
-                    // ilan edilir; her seferinde `şimdi + srtt`'ye çekmek geometrik aralığı (×2, ≤
-                    // RTO_MAX) etkisizleştirir ve tek birim için sabit hızda yeniden gönderim üretir
-                    // (ölçüldü: 1064 B/s'de ≈ 1.9 s'de bir 1050 B, bağlantının ≈ %52'si). Dönem zincirin
-                    // kuruluşu ve madde 6 sıfırlamasıyla yenilenir.
+                    // [K4G-05b DUR-41 (B) · Ek A A.7] Öne çekme ZİNCİR DÖNEMİ başına EN ÇOK BİR KEZ ve
+                    // hak ARQ tavanı devri ile tek seferlik ekleme yeriyle ORTAK (`copy_loss_evidence`):
+                    // yol canlıyken bütün iletimleri düşen birimin her kopyası later-ACK ile kayıp ilan
+                    // edilir; her seferinde `şimdi + srtt`'ye çekmek geometrik aralığı (×2, ≤ RTO_MAX)
+                    // etkisizleştirir ve tek birim için büyümeyen bir yeniden gönderim sıklığı üretir
+                    // (ölçüldü, kod-run/r7: PAY düzeninde 150 s'de 84 kopya, aralıklar 1.335–2.801 s).
                     if !confirmed {
-                        let base = self.copy_base_ns();
-                        let due = now_ns.saturating_add(base);
+                        let due = now_ns.saturating_add(self.copy_base_ns());
                         let u = UnitId(p.unit.id);
                         if let Some(e) = self.units.get_mut(&u) {
                             e.copy_losses = e.copy_losses.saturating_add(1);
@@ -3895,16 +3895,8 @@ impl Sender {
                                 .dup_queue
                                 .iter()
                                 .any(|d| d.unit.id == p.unit.id && d.interval_ns == 0);
-                        let had_geometric = self.unit_has_geometric(u);
-                        if had_geometric || !pending_fire_once {
-                            let pull = !had_geometric
-                                || !self.units.get(&u).is_some_and(|e| e.loss_pull_used);
-                            self.copy_ensure_geometric(p.unit, due, base, pull);
-                            if had_geometric && pull {
-                                if let Some(e) = self.units.get_mut(&u) {
-                                    e.loss_pull_used = true;
-                                }
-                            }
+                        if self.unit_has_geometric(u) || !pending_fire_once {
+                            self.copy_loss_evidence(p.unit, due);
                         }
                     }
                 }
@@ -6511,9 +6503,11 @@ impl Sender {
                         // Politika alanı birim kaderini belirlemez (arq.rs `CapExceedPolicy` doc'u).
                         // [TUR-2c review-fix] devir de YENİDEN-EMİSYONDUR → superseded-işaret
                         // (örnekleme politikası recovery-yoluna bağımlı olamaz — tekdüze kural).
+                        // [K4G-05b DUR-41 (B)] Birimin geometrik kaydı zaten varsa vadeyi şimdiye
+                        // çekmek later-ACK kayıp kanıtıdır: zincir döneminin TEK öne çekme hakkını
+                        // kopya kaybı ve tek seferlik ekleme yeriyle paylaşır (`copy_loss_evidence`).
                         self.mark_tombstone_superseded(rec.seq);
-                        let base = self.copy_base_ns();
-                        self.copy_ensure_geometric(rec.unit, now_ns, base, true);
+                        self.copy_loss_evidence(rec.unit, now_ns);
                     }
                 }
             }
@@ -6658,8 +6652,9 @@ impl Sender {
             e.size = rec.unit.size;
         }
         if rec.interval_ns > 0 {
-            // [rev6 · kara delik bekçisi] Yeni geometrik zincir = yeni dönem: later-ACK çekmesi
-            // bir kez daha kullanılabilir.
+            // [K4G-05b DUR-41 (B)] Geometrik kaydın AÇILIŞI yeni zincir dönemidir: öne çekme hakkı
+            // yenilenir (açılışın kendisi öne çekme sayılmaz). Kaydın kendi yeniden kurulumu
+            // (`emit_copy_at`, `drain_establish_probe`) ham `dup_queue.push`'tur, dönem başlatmaz.
             e.geometric = true;
             e.loss_pull_used = false;
         } else {
@@ -6694,11 +6689,12 @@ impl Sender {
     }
 
     /// [K4G-05b madde 3/4] Birime TEK kalıcı geometrik kopya sahibi. Yoksa `(due_ns, interval_ns)`
-    /// ile açılır (aralık RTO_MAX tavanlı). Varsa yeni kayıt AÇILMAZ: `pull` (later-ACK kayıp kanıtı:
-    /// kopya kaybı, ARQ tavanı, tek seferlik ekleme yeri) ise vadesi `due_ns`'e öne çekilir; değilse
-    /// (sahiplenme yolları: devir, H, canlılık) NO-OP — kaydın vadesine ve aralığına dokunulmaz.
-    /// Teyitli birime karar üretilmez. [K4G-05b DUR-41] Döner: mevcut kaydın vadesi GERÇEKTEN küçüldü
-    /// mü (öne çekme oldu). Kayıt açılışı (zincirin kuruluşu) öne çekme değildir → `false`.
+    /// ile açılır (aralık RTO_MAX tavanlı). Varsa yeni kayıt AÇILMAZ: `pull` ise vadesi `due_ns`'e öne
+    /// çekilir (aralık değişmez); değilse (sahiplenme yolları: devir, H, canlılık; ya da dönemin öne
+    /// çekme hakkı kullanılmış) NO-OP — kaydın vadesine ve aralığına dokunulmaz. Teyitli birime karar
+    /// üretilmez. `pull = true` YALNIZ `copy_loss_evidence`'tan gelir (DUR-41 (B): later-ACK
+    /// kayıp kanıtının üç yeri tek yardımcıdan geçer). Döner: mevcut kaydın vadesi GERÇEKTEN küçüldü mü
+    /// (öne çekme oldu). Kayıt açılışı (zincirin kuruluşu) öne çekme değildir → `false`.
     fn copy_ensure_geometric(
         &mut self,
         unit: OpaqueUnit,
@@ -6738,10 +6734,43 @@ impl Sender {
         false
     }
 
+    /// [K4G-05b DUR-41 (B) · Ek A A.7 · transport-layer-tdd §12 AMENDMENT-12] later-ACK KAYIP
+    /// KANITININ tek giriş noktası. Üç yer buradan geçer ve AYNI hakkı paylaşır: kopya kaybı
+    /// (`queue_losses` Duplicate kolu), ARQ tavanı devri (`RetxDecision::CapExceeded`) ve tek seferlik
+    /// ekleme yeri (`copy_add_fire_once`, geometrik kayıt varken).
+    /// - Geometrik kayıt yoksa `(due_ns, taban)` ile açılır: zincirin KURULUŞU, öne çekme sayılmaz;
+    ///   yeni zincir dönemi başlar (`dup_push`).
+    /// - Varsa vade ≤ `due_ns`'e öne çekilir, aralık değişmez. Bu ZİNCİR DÖNEMİ başına EN ÇOK BİR KEZ
+    ///   uygulanır; hak yalnız vade GERÇEKTEN küçüldüyse yanar (boşa çekme hakkı yakmaz).
+    /// - Dönem, kaydın açılışıyla ve madde 6 sıfırlamasıyla (`reset_copy_backoff`, Sıfırlama (ii))
+    ///   başlar; dönemin sonraki kayıp kanıtları kaydın vadesine ve aralığına dokunmaz.
+    ///
+    /// Teyitli birime karar üretilmez (`copy_ensure_geometric`).
+    fn copy_loss_evidence(&mut self, unit: OpaqueUnit, due_ns: u64) {
+        let u = UnitId(unit.id);
+        let allowed = !self.units.get(&u).is_some_and(|e| e.loss_pull_used);
+        let base = self.copy_base_ns();
+        if self.copy_ensure_geometric(unit, due_ns, base, allowed) {
+            // Ürün yolunda teyitsiz birimin geometrik kaydı her zaman dizin girdisiyle kurulur
+            // (`dup_push`); girdisiz geometrik kayıt yalnız kuyruğa doğrudan kayıt koyan birim
+            // testlerinde olur ve orada hak kaydedilemez (her kanıt yeniden çekebilir — eski davranış).
+            debug_assert!(
+                self.units.contains_key(&u),
+                "DUR-41: geometrik kaydı olan teyitsiz birimin sahiplik girdisi yok (u{})",
+                u.0
+            );
+            if let Some(e) = self.units.get_mut(&u) {
+                e.loss_pull_used = true;
+            }
+        }
+    }
+
     /// [K4G-05b madde 5 · ekleme kuralı (B2), C8 DUR-13] Tek seferlik kopyalar `dues` vadelerinde
     /// istenir; birimin bekleyen tek seferlik kaydı ekleme anında sayılır ve ≤ D − 1 tutulur
     /// (fazlası eklenmez). Birimin geometrik kaydı varsa yeni kayıt açılmaz, yalnız onun vadesi
     /// istenen ilk vadeye öne çekilir → birim başına kopya kaydı ≤ 1 + (D − 1) ≤ D_max = 3.
+    /// [K4G-05b DUR-41 (B)] Bu öne çekme later-ACK kayıp kanıtıdır: zincir döneminin TEK hakkını
+    /// kopya kaybı ve ARQ tavanı devriyle paylaşır (`copy_loss_evidence`).
     fn copy_add_fire_once(&mut self, unit: OpaqueUnit, dues: &[u64], factor: u8) {
         let u = UnitId(unit.id);
         if self.unit_is_confirmed(u) {
@@ -6749,8 +6778,7 @@ impl Sender {
         }
         if self.unit_has_geometric(u) {
             if let Some(&first) = dues.first() {
-                let base = self.copy_base_ns();
-                self.copy_ensure_geometric(unit, first, base, true);
+                self.copy_loss_evidence(unit, first);
             }
             return;
         }
@@ -6849,6 +6877,10 @@ impl Sender {
     /// İLK ilerlemeli ACK bütün geometrik kopya aralıklarını tabana döndürür: sonraki kopya en geç
     /// son kopya + taban (son kopya anı = vade − aralık). Emisyon ortak pace ve BURST_CAP'e tabidir
     /// (INV-RATE-1); sıra kopya kuyruğu içi sıradır. PRE_CONVERGE'de §3.3-B takvimi değişmez.
+    /// [K4G-05b DUR-41 (B)] Sıfırlama yeni bir zincir dönemi başlatır: geometrik kaydı olan her
+    /// birimin öne çekme hakkı yenilenir. Hak yalnız geometrik kayıtta anlamlıdır (kaydın açılışı da
+    /// yeniler, `dup_push`), bu yüzden dizinin tamamı değil, aynı döngüde ziyaret edilen kayıtların
+    /// birimleri güncellenir (tam tarama yok).
     fn reset_copy_backoff(&mut self) {
         if self.state == SenderState::PreConverge {
             return;
@@ -6859,11 +6891,10 @@ impl Sender {
                 let last_fire_ns = d.due_ns.saturating_sub(d.interval_ns);
                 d.due_ns = d.due_ns.min(last_fire_ns.saturating_add(base));
                 d.interval_ns = base;
+                if let Some(e) = self.units.get_mut(&UnitId(d.unit.id)) {
+                    e.loss_pull_used = false;
+                }
             }
-        }
-        // [rev6 · kara delik bekçisi] Sıfırlama yeni dönemdir: later-ACK çekmesi yenilenir.
-        for e in self.units.values_mut() {
-            e.loss_pull_used = false;
         }
     }
 
