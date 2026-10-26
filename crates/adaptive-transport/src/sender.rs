@@ -11285,30 +11285,34 @@ mod tests {
                 .any(|p| p.owner == RecordOwner::Unit(UnitId(u)))
     }
 
-    /// [K4G-05b rev6 · kara delik bekçisi] Birimin ardışık kopya emisyonları: m = ⌈log2(RTO_MAX/taban)⌉
-    /// olmak üzere ilk m + 2 aralıktan sonra her aralık ≥ RTO_MAX (geometrik aralık ×2, ≤ RTO_MAX; ACK
-    /// yokken later-ACK öne çekmesi ve madde 6 sıfırlaması olmaz → istisna yok); pencere W içinde kopya
-    /// sayısı ≤ m + ⌊W/RTO_MAX⌋ + 3.
+    /// [K4G-05b DUR-41 · Ek A A.7 "Beyanlı sınırlar"] ACK'siz işletimde birimin ZİNCİR emisyonları.
+    /// ACK yokken later-ACK öne çekmesi ve madde 6 sıfırlaması KAYNAĞI YOKTUR (kayıp ilanı zaman eşiği
+    /// seq < largest_acked ister; ARQ_RETX_CAP devri ve ilerleme olmaz) → izinli istisna yok. b = taban,
+    /// m = ⌈log2(RTO_MAX/b)⌉: k. aralık (0 tabanlı) ≥ min(2^(k+1)·b, RTO_MAX) — ilk m − 1 aralıktan
+    /// sonra ≥ RTO_MAX — ve pencere W'da emisyon ≤ m + ⌊W/RTO_MAX⌋ (türetim:
+    /// `tests/k4g05b_scheduling.rs` "DUR-41" başlığı). Tek seferlik kopyalar (A.7: zincir dışı) sayılmaz.
     fn rev6_assert_backoff(tag: &str, unit: u64, times: &[u64], base_ns: u64, window_ns: u64) {
         let cap = rto_max_ns();
         let base = base_ns.clamp(1, cap);
         let ratio = cap.div_ceil(base);
-        let m = u64::from(u64::BITS - ratio.saturating_sub(1).leading_zeros()) as usize;
-        let short_late: Vec<(usize, u64)> = times
-            .windows(2)
-            .map(|w| w[1] - w[0])
-            .enumerate()
-            .filter(|&(k, g)| k >= m + 2 && g < cap)
-            .map(|(k, g)| (k, g / MS))
-            .collect();
+        let m = u64::from(u64::BITS - ratio.saturating_sub(1).leading_zeros());
+        let mut floor = base;
+        let mut short: Vec<(usize, u64, u64)> = Vec::new();
+        for (k, w) in times.windows(2).enumerate() {
+            floor = floor.saturating_mul(2).min(cap);
+            let g = w[1] - w[0];
+            if g < floor {
+                short.push((k, g / MS, floor / MS));
+            }
+        }
         assert!(
-            short_late.is_empty(),
-            "{tag}: u{unit} {m}+2. aralıktan sonra RTO_MAX'tan kısa kopya aralığı (ms): {short_late:?}"
+            short.is_empty(),
+            "{tag}: u{unit} öne çekilmemiş alt sınırın altında zincir aralığı (k, ms, sınır ms): {short:?}"
         );
-        let bound = m as u64 + window_ns / cap + 3;
+        let bound = m + window_ns / cap;
         assert!(
             times.len() as u64 <= bound,
-            "{tag}: u{unit} {} s pencerede {} kopya > m + ⌊W/RTO_MAX⌋ + 3 = {bound}",
+            "{tag}: u{unit} {} s pencerede {} zincir emisyonu > m + ⌊W/RTO_MAX⌋ = {bound}",
             window_ns / REV6_SEC,
             times.len()
         );
@@ -11401,6 +11405,7 @@ mod tests {
         let mut services: BTreeMap<u64, u32> = BTreeMap::new();
         let mut kinds: BTreeMap<u64, Vec<TransmitKind>> = BTreeMap::new();
         let mut copy_times: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
+        let mut once_times: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
         let mut max_age: BTreeMap<u64, u64> = BTreeMap::new();
         for x in a.iter().chain(c.iter()) {
             last.insert(x.id, t_c);
@@ -11423,6 +11428,7 @@ mod tests {
                 let elig = rev6_elig(&s, now);
                 let out = s.schedule_transmit(now);
                 sil.turn(&tag, now, elig, &out, bound);
+                let mut chain_units: Vec<u64> = Vec::new();
                 for dd in &out {
                     if rev6_class(dd.kind).is_some() {
                         last.insert(dd.unit_id, now);
@@ -11430,7 +11436,23 @@ mod tests {
                         kinds.entry(dd.unit_id).or_default().push(dd.kind);
                     }
                     if dd.kind == TransmitKind::Duplicate {
-                        copy_times.entry(dd.unit_id).or_default().push(now);
+                        // [DUR-41] Zincir emisyonu: geometrik kayıt aynı turda `şimdi + aralık`'a
+                        // yeniden kurulur (`emit_copy_at`); aksi tek seferlik kayıttır (A.7: zincir
+                        // dışı). Aynı turda emisyondan SONRA vadeyi değiştiren bir öne çekme olsaydı
+                        // emisyon tek seferlik sayılırdı (yalnız sayım düşer); ACK'siz T1'de öne çekme
+                        // kaynağı yoktur.
+                        let chain = !chain_units.contains(&dd.unit_id)
+                            && s.dup_queue.iter().any(|x| {
+                                x.unit.id == dd.unit_id
+                                    && x.interval_ns > 0
+                                    && x.due_ns == now.saturating_add(x.interval_ns)
+                            });
+                        if chain {
+                            chain_units.push(dd.unit_id);
+                            copy_times.entry(dd.unit_id).or_default().push(now);
+                        } else {
+                            once_times.entry(dd.unit_id).or_default().push(now);
+                        }
                     }
                 }
             }
@@ -11486,19 +11508,33 @@ mod tests {
             kinds.get(&10),
             kinds.get(&11)
         );
-        // [kara delik bekçisi] ACK yokken her birimin kopya aralıkları RTO_MAX'a dek büyür.
+        // [K4G-05b DUR-41 · Ek A A.7] ACK'siz işletimde later-ACK öne çekmesi ve madde 6 sıfırlaması
+        // KAYNAĞI YOKTUR: her birimin zincir aralıkları öne çekilmemiş alt sınırda ya da üstünde, sayısı
+        // ≤ m + ⌊W/RTO_MAX⌋ (taban = srtt_ns; T1'de RTT örneği yok, her zincirin tabanı budur). Bu,
+        // 9868ba31 / DUR-41 düzeltmesinin bekçisi DEĞİLDİR: T1 Duplicate kökenli later-ACK kayıp
+        // koluna erişemez (ACK yok); bekçiler `tests/k4g05b_scheduling.rs` DUR-41 testleridir.
+        // "En az bir birim ≥ m + 4 zincir emisyonu" ön koşulu EKLENMEDİ: emisyonlar token sınırlıdır
+        // (1050 B kopya R = 31'de 33.9 s, R = 100'de 10.5 s) ve ufuk sabittir (h.5); r7'de birim başına
+        // en çok 5 (R = 31) / 6 (R = 100) kopya ölçüldü < m + 4 = 9. Bunun yerine her aralık kendi
+        // rampa alt sınırıyla (k = 0'dan) sınanır.
         for (id, times) in &copy_times {
             rev6_assert_backoff(&tag, *id, times, srtt_ns, now - t_c);
         }
-        eprintln!(
-            "[K4G-05b T1] R={rate} B/s kopya aralıkları (ms): {:?}",
-            copy_times
-                .iter()
-                .map(|(k, v)| (
-                    *k,
-                    v.windows(2).map(|w| (w[1] - w[0]) / MS).collect::<Vec<_>>()
-                ))
+        let intervals = |m: &BTreeMap<u64, Vec<u64>>| {
+            m.iter()
+                .map(|(k, v)| {
+                    (
+                        *k,
+                        v.windows(2).map(|w| (w[1] - w[0]) / MS).collect::<Vec<_>>(),
+                    )
+                })
                 .collect::<Vec<_>>()
+        };
+        eprintln!(
+            "[K4G-05b T1] R={rate} B/s zincir kopya aralıkları (ms): {:?} · tek seferlik kopya aralıkları \
+             (ms): {:?}",
+            intervals(&copy_times),
+            intervals(&once_times)
         );
         // Her sınıf ölçülecek iş üretti: en az bir emisyon (ARQ RECOVER_ARQ'ta).
         for (n, name) in sil.emitted.iter().zip(REV6_CLASS_NAMES) {
