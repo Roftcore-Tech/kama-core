@@ -820,6 +820,13 @@ pub struct UnitRecoveryDiag {
     pub copy_losses: u32,
     pub loss_pulls: u32,
     pub loss_pull_used: bool,
+    /// [K4G-05b DUR-41 · SALT GÖZLEM] later-ACK kayıp kanıtının yer başına geliş sayısı, birimin
+    /// geometrik kaydı VARKEN (öne çekme adayı; hak kullanılmış olsa da sayılır): kopya kaybı
+    /// (`queue_losses` Duplicate kolu), ARQ tavanı devri (`RetxDecision::CapExceeded`), tek seferlik
+    /// ekleme yeri (`copy_add_fire_once`). Girdinin ömrü boyunca; karar okumaz.
+    pub evidence_copy_loss: u32,
+    pub evidence_arq_cap: u32,
+    pub evidence_fire_once: u32,
 }
 
 /// Commit-G: latch-baskılama nedenleri (named; kalibrasyon-dışı-hücre-işaretleri).
@@ -1459,6 +1466,18 @@ impl ServiceRights {
     }
 }
 
+/// [K4G-05b DUR-41 · SALT GÖZLEM] later-ACK kayıp kanıtının üç yeri (`Sender::copy_loss_evidence`);
+/// yalnız gözlem sayacının dizinidir.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LossEvidenceSite {
+    /// `queue_losses` Duplicate kökenli kayıp kolu.
+    CopyLoss = 0,
+    /// `plan_arq_retransmits` → `RetxDecision::CapExceeded` (ARQ tavanı devri).
+    ArqCap = 1,
+    /// `copy_add_fire_once`, birimin geometrik kaydı varken (RECOVER_FWD).
+    FireOnce = 2,
+}
+
 /// [K4G-05b madde 2/4/11 · Ek B.2.3] Birim başına SAHİPLİK DİZİNİ girdisi (`Sender::units`).
 /// Olay güdümlü güncellenir (gönderim, kayıp ilanı, ACK, kayıt silme) — tam tarama yok;
 /// anahtar `BTreeMap<UnitId, _>` (deterministik, ADR-17). Girdi birimin ilk iletimiyle açılır;
@@ -1488,6 +1507,10 @@ struct UnitOwnership {
     /// [K4G-05b DUR-41 · SALT GÖZLEM] Geometrik vadenin later-ACK kayıp kanıtıyla GERÇEKTEN öne
     /// çekildiği (vade küçüldü) kez sayısı (`copy_ensure_geometric`). Karar okumaz.
     loss_pulls: u32,
+    /// [K4G-05b DUR-41 · SALT GÖZLEM] later-ACK kayıp kanıtının geometrik kayıt varken geldiği kez
+    /// sayısı, yer başına (`LossEvidenceSite` sırasıyla: kopya kaybı, ARQ tavanı devri, tek seferlik
+    /// ekleme yeri). Karar okumaz.
+    evidence_by_site: [u32; 3],
     /// Teyit kümesi (`confirmed_units`) üyeliği: teyitli birim için karar ÜRETİLMEZ (madde 2).
     confirmed: bool,
     /// Son iletim anı (H-sahiplenme çapasının birim tarafı; aday kümesinin anahtarı).
@@ -3896,7 +3919,7 @@ impl Sender {
                                 .iter()
                                 .any(|d| d.unit.id == p.unit.id && d.interval_ns == 0);
                         if self.unit_has_geometric(u) || !pending_fire_once {
-                            self.copy_loss_evidence(p.unit, due);
+                            self.copy_loss_evidence(p.unit, due, LossEvidenceSite::CopyLoss);
                         }
                     }
                 }
@@ -5218,6 +5241,10 @@ impl Sender {
             d.copy_losses = e.copy_losses;
             d.loss_pulls = e.loss_pulls;
             d.loss_pull_used = e.loss_pull_used;
+            let [copy_loss, arq_cap, fire_once] = e.evidence_by_site;
+            d.evidence_copy_loss = copy_loss;
+            d.evidence_arq_cap = arq_cap;
+            d.evidence_fire_once = fire_once;
         }
         if let Some((send_ns, seq, kind)) = latest {
             d.latest_send_ns = Some(send_ns);
@@ -6507,7 +6534,7 @@ impl Sender {
                         // çekmek later-ACK kayıp kanıtıdır: zincir döneminin TEK öne çekme hakkını
                         // kopya kaybı ve tek seferlik ekleme yeriyle paylaşır (`copy_loss_evidence`).
                         self.mark_tombstone_superseded(rec.seq);
-                        self.copy_loss_evidence(rec.unit, now_ns);
+                        self.copy_loss_evidence(rec.unit, now_ns, LossEvidenceSite::ArqCap);
                     }
                 }
             }
@@ -6743,17 +6770,20 @@ impl Sender {
     /// - Varsa vade ≤ `due_ns`'e öne çekilir, aralık değişmez. Bu ZİNCİR DÖNEMİ başına EN ÇOK BİR KEZ
     ///   uygulanır; hak yalnız vade GERÇEKTEN küçüldüyse yanar (boşa çekme hakkı yakmaz).
     /// - Dönem, kaydın açılışıyla ve madde 6 sıfırlamasıyla (`reset_copy_backoff`, Sıfırlama (ii))
-    ///   başlar; dönemin sonraki kayıp kanıtları kaydın vadesine ve aralığına dokunmaz.
+    ///   başlar; öne çekmeden sonraki kayıp kanıtları kaydın vadesine ve aralığına dokunmaz; vadeyi
+    ///   küçültmeyen kanıt hakkı kullanmaz.
     ///
-    /// Teyitli birime karar üretilmez (`copy_ensure_geometric`).
-    fn copy_loss_evidence(&mut self, unit: OpaqueUnit, due_ns: u64) {
+    /// Teyitli birime karar üretilmez (`copy_ensure_geometric`). `site` yalnız gözlem sayacıdır
+    /// (`note_loss_evidence_site`); kararı değiştirmez.
+    fn copy_loss_evidence(&mut self, unit: OpaqueUnit, due_ns: u64, site: LossEvidenceSite) {
         let u = UnitId(unit.id);
+        self.note_loss_evidence_site(u, site);
         let allowed = !self.units.get(&u).is_some_and(|e| e.loss_pull_used);
         let base = self.copy_base_ns();
         if self.copy_ensure_geometric(unit, due_ns, base, allowed) {
             // Ürün yolunda teyitsiz birimin geometrik kaydı her zaman dizin girdisiyle kurulur
-            // (`dup_push`); girdisiz geometrik kayıt yalnız kuyruğa doğrudan kayıt koyan birim
-            // testlerinde olur ve orada hak kaydedilemez (her kanıt yeniden çekebilir — eski davranış).
+            // (`dup_push`). Girdisiz geometrik kayıt bir TEST HATASIDIR (kuyruğa doğrudan geometrik
+            // kayıt koyan birim testi): debug derlemede assert eder; release'de hak kaydedilemez.
             debug_assert!(
                 self.units.contains_key(&u),
                 "DUR-41: geometrik kaydı olan teyitsiz birimin sahiplik girdisi yok (u{})",
@@ -6762,6 +6792,18 @@ impl Sender {
             if let Some(e) = self.units.get_mut(&u) {
                 e.loss_pull_used = true;
             }
+        }
+    }
+
+    /// [K4G-05b DUR-41 · SALT GÖZLEM] later-ACK kayıp kanıtı `site`'tan geldi: birimin geometrik
+    /// kaydı varsa (öne çekme adayı) yerin sayacı artar. Karar okumaz; davranış değişmez.
+    fn note_loss_evidence_site(&mut self, u: UnitId, site: LossEvidenceSite) {
+        if !self.unit_has_geometric(u) {
+            return;
+        }
+        if let Some(e) = self.units.get_mut(&u) {
+            let c = &mut e.evidence_by_site[site as usize];
+            *c = c.saturating_add(1);
         }
     }
 
@@ -6778,7 +6820,7 @@ impl Sender {
         }
         if self.unit_has_geometric(u) {
             if let Some(&first) = dues.first() {
-                self.copy_loss_evidence(unit, first);
+                self.copy_loss_evidence(unit, first, LossEvidenceSite::FireOnce);
             }
             return;
         }
