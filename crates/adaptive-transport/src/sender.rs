@@ -11196,6 +11196,241 @@ mod tests {
         forget_assert_after_late_ack(&mut s, 7, dup_seq, 50 * MS, TEST);
     }
 
+    // ── [K4G-05b DUR-41 (B)] later-ACK öne çekme hakkı — beyaz kutu (wf_090f012d (v), (vi)) ─────────
+    //
+    // Kurulum: ısınmış gönderici (`forget_warm`; sonra ACK enjekte edilmez → srtt ve taban B =
+    // `copy_base_ns()` sabit), X'in Data kaydı ve geometrik zinciri (vade t0, aralık 1 s). Zincir
+    // emisyonu `emit_copy_at` (ürünün yeniden kurulum yolu: vade = emisyon + 2 × aralık, ham push —
+    // dönem başlatmaz); kaybı `queue_losses` (dedektörün ilan yolu). Ürün davranışı değişmez; bu
+    // testler yalnız gözler.
+
+    /// DUR-41 düzeneği: (gönderici, X'in Data seq'i, taban B).
+    fn dur41_rig(test: &str, x: OpaqueUnit, t0: u64) -> (Sender, u64, u64) {
+        let mut s = forget_warm(test);
+        let data_seq = s.track_sent_unit(x, t0, 0, TransmitKind::Data);
+        s.copy_ensure_geometric(x, t0, 1_000 * MS, false);
+        forget_fixture(
+            test,
+            dur41_geo(&s, x.id).is_some(),
+            "X'in geometrik zinciri kurulmalı",
+        );
+        forget_fixture(
+            test,
+            s.state != SenderState::PreConverge,
+            "gönderici PRE_CONVERGE dışında olmalı",
+        );
+        let base = s.copy_base_ns();
+        forget_fixture(
+            test,
+            base > 0 && base < 100 * MS,
+            "taban 0 < B < 100 ms olmalı",
+        );
+        (s, data_seq, base)
+    }
+
+    /// Birimin geometrik kaydı: `(vade, aralık)`.
+    fn dur41_geo(s: &Sender, u: u64) -> Option<(u64, u64)> {
+        s.dup_queue
+            .iter()
+            .find(|d| d.unit.id == u && d.interval_ns > 0)
+            .map(|d| (d.due_ns, d.interval_ns))
+    }
+
+    /// Birimin geometrik kaydını `now`'da gönder (zincir emisyonu); Duplicate seq'i döner.
+    fn dur41_emit(s: &mut Sender, test: &str, u: u64, now: u64) -> u64 {
+        let i = s
+            .dup_queue
+            .iter()
+            .position(|d| d.unit.id == u && d.interval_ns > 0);
+        forget_fixture(test, i.is_some(), "emisyon için geometrik kayıt yok");
+        let mut out = Vec::new();
+        s.emit_copy_at(i.unwrap_or_default(), &mut out, now);
+        let seq = out
+            .iter()
+            .find(|d| d.kind == TransmitKind::Duplicate && d.unit_id == u)
+            .map(|d| d.seq);
+        forget_fixture(test, seq.is_some(), "zincir emisyonu Duplicate üretmedi");
+        seq.unwrap_or_default()
+    }
+
+    /// [K4G-05b DUR-41 (B) · wf_090f012d (vi) · Ek A A.7 "vadeyi küçültmeyen kanıt hakkı kullanmaz"]
+    /// Vadeyi küçültmeyen later-ACK kanıtı hakkı KULLANMAZ; sonraki gerçek öne çekme TAM BİR küçülme
+    /// yapar (vade = ilan + B, aralık değişmez) ve hakkı yakar; dönemin sonraki kanıtı vadeye dokunmaz.
+    ///
+    /// Dizi: c1 t1'de (vade t1 + 2 s) → c1 kaybı t1 + 2 s − B/2'de: hedef t1 + 2 s + B/2 ≥ vade → boşa;
+    /// c2 t3 = t1 + 2 s'de (vade t3 + 4 s) → c2 kaybı t3 + 100 ms'de: hedef < vade → GERÇEK öne çekme;
+    /// c3 t5 = t4 + B'de (vade t5 + 8 s) → c3 kaybı t5 + 100 ms'de → hak kullanılmış, vade aynı.
+    ///
+    /// E/Y [çıkarım]: 61344031 (e6e711fe davranışı) KIRMIZI — boşa kanıt hakkı yakar (c1 kaybından
+    /// sonra `loss_pull_used`), c2 kaybı çekmez; HEAD YEŞİL.
+    #[test]
+    fn k4g05b_dur41_noop_evidence_keeps_right_one_real_pull() {
+        const TEST: &str = "k4g05b_dur41_noop_evidence_keeps_right_one_real_pull";
+        let sec = 1_000 * MS;
+        let x = forget_unit(7);
+        let t0 = 20 * MS;
+        let (mut s, _data_seq, base) = dur41_rig(TEST, x, t0);
+        // c1 + boşa kanıt.
+        let t1 = t0 + MS;
+        let s1 = dur41_emit(&mut s, TEST, x.id, t1);
+        forget_fixture(
+            TEST,
+            dur41_geo(&s, x.id) == Some((t1 + 2 * sec, 2 * sec)),
+            "c1 sonrası vade t1 + 2 s, aralık 2 s",
+        );
+        let t2 = t1 + 2 * sec - base / 2;
+        s.queue_losses(&[s1], t2);
+        let r = s.diag_unit_recovery(x.id);
+        forget_fixture(
+            TEST,
+            r.copy_losses == 1,
+            "c1 Duplicate kökenli kayıp ilan edilmeli",
+        );
+        assert_eq!(
+            dur41_geo(&s, x.id),
+            Some((t1 + 2 * sec, 2 * sec)),
+            "{TEST}: vadeyi küçültmeyen kanıt vadeye dokunmamalı"
+        );
+        assert!(
+            !r.loss_pull_used && r.loss_pulls == 0,
+            "{TEST}: vadeyi küçültmeyen kanıt hakkı kullanmamalı (hak kullanıldı={}, gerçek öne çekme={})",
+            r.loss_pull_used,
+            r.loss_pulls
+        );
+        // c2 + gerçek öne çekme.
+        let t3 = t1 + 2 * sec;
+        let s2 = dur41_emit(&mut s, TEST, x.id, t3);
+        forget_fixture(
+            TEST,
+            dur41_geo(&s, x.id) == Some((t3 + 4 * sec, 4 * sec)),
+            "c2 sonrası vade t3 + 4 s, aralık 4 s",
+        );
+        let t4 = t3 + 100 * MS;
+        s.queue_losses(&[s2], t4);
+        let r = s.diag_unit_recovery(x.id);
+        assert_eq!(
+            dur41_geo(&s, x.id),
+            Some((t4 + base, 4 * sec)),
+            "{TEST}: ilk gerçek kanıt vadeyi ilan + B'ye çekmeli, aralık değişmemeli"
+        );
+        assert!(
+            r.loss_pull_used && r.loss_pulls == 1,
+            "{TEST}: gerçek öne çekme hakkı yakmalı (hak kullanıldı={}, gerçek öne çekme={})",
+            r.loss_pull_used,
+            r.loss_pulls
+        );
+        // c3 + dönemin sonraki kanıtı.
+        let t5 = t4 + base;
+        let s3 = dur41_emit(&mut s, TEST, x.id, t5);
+        forget_fixture(
+            TEST,
+            dur41_geo(&s, x.id) == Some((t5 + 8 * sec, 8 * sec)),
+            "c3 sonrası vade t5 + 8 s, aralık 8 s",
+        );
+        let t6 = t5 + 100 * MS;
+        s.queue_losses(&[s3], t6);
+        assert_eq!(
+            dur41_geo(&s, x.id),
+            Some((t5 + 8 * sec, 8 * sec)),
+            "{TEST}: hak kullanılmışken kanıt vadeye dokunmamalı"
+        );
+        assert_eq!(
+            s.diag_unit_recovery(x.id).loss_pulls,
+            1,
+            "{TEST}: dönemde tek gerçek öne çekme"
+        );
+    }
+
+    /// [K4G-05b DUR-41 (B) · wf_090f012d (v)] ÜÇÜNCÜ YER: RECOVER_FWD'de zincirli birimin Duplicate
+    /// OLMAYAN kaydı kayıp ilan edilir → `plan_forward_duplication` → `copy_add_fire_once` geometrik
+    /// kolu. Bu öne çekme dönemin TEK hakkını kopya kaybıyla PAYLAŞIR, iki yönde: (a) hak kopya
+    /// kaybında yandıysa tek seferlik ekleme yeri vadeyi ÇEKMEZ (geometrik kayıt varken tek seferlik
+    /// kayıt da açılmaz); (b) hak tek seferlik ekleme yerinde yandıysa sonraki kopya kaybı vadeyi
+    /// ÇEKMEZ. Kanıtın o yerden geldiği diag `evidence_fire_once` ile görülür (mekanizma çalıştı).
+    ///
+    /// E/Y [çıkarım]: 61344031 KIRMIZI — tek seferlik ekleme yerinin çekmesi hakka bakmıyor ve hakkı
+    /// yakmıyordu ((a)'da vade t3'e çekilir; (b)'de kopya kaybı yine çeker); HEAD YEŞİL.
+    #[test]
+    fn k4g05b_dur41_fire_once_site_shares_epoch_right() {
+        const TEST: &str = "k4g05b_dur41_fire_once_site_shares_epoch_right";
+        let sec = 1_000 * MS;
+        let x = forget_unit(7);
+        let t0 = 20 * MS;
+        // (a) Önce kopya kaybı (gerçek öne çekme), sonra RECOVER_FWD'de Data kaybı.
+        {
+            let (mut s, data_seq, base) = dur41_rig(TEST, x, t0);
+            let t1 = t0 + MS;
+            let s1 = dur41_emit(&mut s, TEST, x.id, t1);
+            let t2 = t1 + 100 * MS;
+            s.queue_losses(&[s1], t2);
+            forget_fixture(
+                TEST,
+                dur41_geo(&s, x.id) == Some((t2 + base, 2 * sec)),
+                "(a) kopya kaybı gerçek öne çekme yapmalı (vade t2 + B)",
+            );
+            let t3 = t2 + base / 2;
+            s.queue_losses(&[data_seq], t3);
+            forget_fixture(
+                TEST,
+                s.pending_lost.iter().any(|r| r.unit.id == x.id),
+                "(a) X'in Data kaydı ARQ kuyruğunda olmalı",
+            );
+            s.state = SenderState::RecoverFwd;
+            s.plan_forward_duplication(t3);
+            let r = s.diag_unit_recovery(x.id);
+            forget_fixture(
+                TEST,
+                r.evidence_fire_once == 1,
+                "(a) kanıt tek seferlik ekleme yerinden gelmeli",
+            );
+            assert_eq!(
+                dur41_geo(&s, x.id),
+                Some((t2 + base, 2 * sec)),
+                "{TEST}: (a) hak kopya kaybında yanmışken tek seferlik ekleme yeri vadeyi çekmemeli"
+            );
+            assert_eq!(r.loss_pulls, 1, "{TEST}: (a) dönemde tek gerçek öne çekme");
+            assert_eq!(
+                s.dup_queue.iter().filter(|d| d.unit.id == x.id).count(),
+                1,
+                "{TEST}: (a) geometrik kayıt varken tek seferlik kayıt açılmamalı"
+            );
+        }
+        // (b) Önce RECOVER_FWD'de Data kaybı (gerçek öne çekme), sonra kopya kaybı.
+        {
+            let (mut s, data_seq, base) = dur41_rig(TEST, x, t0);
+            let t1 = t0 + MS;
+            let _s1 = dur41_emit(&mut s, TEST, x.id, t1);
+            let t2 = t1 + 100 * MS;
+            s.queue_losses(&[data_seq], t2);
+            s.state = SenderState::RecoverFwd;
+            s.plan_forward_duplication(t2);
+            let r = s.diag_unit_recovery(x.id);
+            forget_fixture(
+                TEST,
+                r.evidence_fire_once == 1 && dur41_geo(&s, x.id) == Some((t2, 2 * sec)),
+                "(b) tek seferlik ekleme yeri gerçek öne çekme yapmalı (vade t2)",
+            );
+            let s2 = dur41_emit(&mut s, TEST, x.id, t2);
+            let t3 = t2 + 100 * MS;
+            s.queue_losses(&[s2], t3);
+            forget_fixture(
+                TEST,
+                t3 + base < t2 + 4 * sec,
+                "(b) kopya kaybının hedefi vadeden önce olmalı (çekme olsaydı gerçek olurdu)",
+            );
+            assert_eq!(
+                dur41_geo(&s, x.id),
+                Some((t2 + 4 * sec, 4 * sec)),
+                "{TEST}: (b) hak tek seferlik ekleme yerinde yanmışken kopya kaybı vadeyi çekmemeli"
+            );
+            assert_eq!(
+                s.diag_unit_recovery(x.id).loss_pulls,
+                1,
+                "{TEST}: (b) dönemde tek gerçek öne çekme"
+            );
+        }
+    }
+
     // ── [K4G-05b rev6 · CEVAP PAKETİ 15 v3 §2.4] T1 ve T2 — sınıflar arası ve sınıf içi hizmet ──────
     //
     // Sınırlar Ek B.6 (h)'de koddan ÖNCE türetildi (h.4–h.6); burada aynı formüller ns cinsinden
@@ -11330,14 +11565,14 @@ mod tests {
     /// [K4G-05b DUR-41 · Ek A A.7 "Beyanlı sınırlar"] ACK'siz işletimde birimin ZİNCİR emisyonları.
     /// ACK yokken later-ACK öne çekmesi ve madde 6 sıfırlaması KAYNAĞI YOKTUR (kayıp ilanı zaman eşiği
     /// seq < largest_acked ister; ARQ_RETX_CAP devri ve ilerleme olmaz) → izinli istisna yok. b = taban,
-    /// m = ⌈log2(RTO_MAX/b)⌉: k. aralık (0 tabanlı) ≥ min(2^(k+1)·b, RTO_MAX) — ilk m − 1 aralıktan
+    /// m = max(1, ⌈log2(RTO_MAX/b)⌉): k. aralık (0 tabanlı) ≥ min(2^(k+1)·b, RTO_MAX) — ilk m − 1 aralıktan
     /// sonra ≥ RTO_MAX — ve pencere W'da emisyon ≤ m + ⌊W/RTO_MAX⌋ (türetim:
     /// `tests/k4g05b_scheduling.rs` "DUR-41" başlığı). Tek seferlik kopyalar (A.7: zincir dışı) sayılmaz.
     fn rev6_assert_backoff(tag: &str, unit: u64, times: &[u64], base_ns: u64, window_ns: u64) {
         let cap = rto_max_ns();
         let base = base_ns.clamp(1, cap);
         let ratio = cap.div_ceil(base);
-        let m = u64::from(u64::BITS - ratio.saturating_sub(1).leading_zeros());
+        let m = u64::from(u64::BITS - ratio.saturating_sub(1).leading_zeros()).max(1);
         let mut floor = base;
         let mut short: Vec<(usize, u64, u64)> = Vec::new();
         for (k, w) in times.windows(2).enumerate() {

@@ -638,7 +638,8 @@ fn k4g05b_pay_mixed_size_reservation() {
 // ════════════════════════════════════════════════════════════════════════════════════════════
 //
 // Ortak türetim [türetim] (Ek A A.7; DUR-41 (B)): b = zincirin tabanı (açılıştaki aralık),
-// m = ⌈log2(RTO_MAX/b)⌉. Kayıt her emisyonda `şimdi + aralık`'a yeniden kurulur ve aralık ×2'ler
+// m = max(1, ⌈log2(RTO_MAX/b)⌉) (aşağıdaki toplam j = 1'den başlar; b = RTO_MAX iken m = 0 bir eksik
+// sayardı — wf_090f012d). Kayıt her emisyonda `şimdi + aralık`'a yeniden kurulur ve aralık ×2'ler
 // (≤ RTO_MAX; `emit_copy_at`). Öne çekilmemiş k. aralık (0 tabanlı) g_k ≥ I_(k+1) = min(2^(k+1)·b,
 // RTO_MAX): ilk m − 1 aralıktan sonra ≥ RTO_MAX. Δ penceresinde n emisyon için
 // e_(n−1) − e_0 = Σ_(j<n−1) g_j < Δ ve I_j = RTO_MAX (j ≥ m) ⇒ (n − m)·RTO_MAX < Δ ⇒
@@ -647,11 +648,11 @@ fn k4g05b_pay_mixed_size_reservation() {
 // ≤ 1. Bu sınırlar yalnız ZİNCİR emisyonlarını sayar (A.7: tek seferlik kopya zincir dışı) ve
 // dönem içinde geçerlidir (madde 6 sıfırlaması yeni dönemdir; ön koşul: ilerleme boşluğu < H).
 
-/// [DUR-41] m = ⌈log2(RTO_MAX/b)⌉ (Ek A A.7 "Beyanlı sınırlar"; b = zincir tabanı, ≤ RTO_MAX).
+/// [DUR-41] m = max(1, ⌈log2(RTO_MAX/b)⌉) (Ek A A.7 "Beyanlı sınırlar"; b = zincir tabanı, ≤ RTO_MAX).
 fn chain_ramp_m(base_ns: u64) -> u64 {
     let cap = rto_max_ns();
     let ratio = cap.div_ceil(base_ns.clamp(1, cap));
-    u64::from(u64::BITS - ratio.saturating_sub(1).leading_zeros())
+    u64::from(u64::BITS - ratio.saturating_sub(1).leading_zeros()).max(1)
 }
 
 /// [DUR-41] Öne çekilmemiş zincirin k. aralığının (0 tabanlı) alt sınırı I_(k+1) = min(2^(k+1)·b,
@@ -845,10 +846,12 @@ fn drive_to_first_copy(
 /// (`on_event_core`, "PRE_CONVERGE çıkışında bekleyen kopyaların aralığı ve vadesi RTO_MAX'a
 /// kırpılır"; engine §13 v1.1). Rampa burada SINANMAZ (bkz. `k4g05b_blackhole_chain_ramp_a7_bound`).
 ///
-/// İDDİALAR [türetim, yukarıdaki ortak türetim; c0'da aralık RTO_MAX ⇒ I_j = RTO_MAX]:
-/// (1) 1. indeksten sonraki her aralık ≥ RTO_MAX (dönemin tek öne çekmesi en çok g_0'ı kısaltır:
-///     c0 kopyasının kaybı dönemdeki ilk kayıp kanıtıdır); (2) pencere W'da kopya ≤ ⌊W/RTO_MAX⌋ + 2
-///     ((n − 2)·RTO_MAX < W); (3) İKİ YÖNLÜ: her aralık ve uç boşluğu ≤ RTO_MAX + T_max(kopya) —
+/// İDDİALAR [türetim, yukarıdaki ortak türetim; c0'da aralık RTO_MAX ⇒ I_j = RTO_MAX, m = 1]:
+/// (1) dönemin tek öne çekmesi c0'dan ÖNCE kullanıldıysa (c0'da diag `loss_pulls` ≥ 1 — ürün yolunda
+///     ARQ_RETX_CAP devri, zincir zaten varken vadeyi şimdiye çeker) g_0 dahil HER aralık ≥ RTO_MAX;
+///     kullanılmadıysa tek öne çekme en çok g_0'ı kısaltır (c0 kopyasının kaybı dönemdeki ilk kayıp
+///     kanıtıdır) → 1. indeksten sonraki her aralık ≥ RTO_MAX; (2) pencere W'da kopya ≤ ⌊W/RTO_MAX⌋ + 2
+///     (A.7 + DUR-41, m = 1; (n − 2)·RTO_MAX < W); (3) İKİ YÖNLÜ: her aralık ve uç boşluğu ≤ RTO_MAX + T_max(kopya) —
 ///     kayıt emisyondan ≤ RTO_MAX sonra vadeli, vadeli kopya ≤ T_max(kopya) içinde çıkar (Ek B.6 h.3:
 ///     S_d = 37 B, S_a = S_c = 1050 B, R = penceredeki en düşük pace, τ = 1 ms, P_pf = aralıktaki
 ///     kuyruk-probu + FEC parite baytı); (4) kopya ≥ ⌈W / (RTO_MAX + T_max(kopya))⌉ ((3)'ün sonucu;
@@ -856,12 +859,15 @@ fn drive_to_first_copy(
 ///
 /// Ön koşullar (FİKSTÜR): sel kuruldu; c0 bulundu; c0'da U'nun geometrik aralığı = RTO_MAX (diag);
 /// [c0, uç) boyunca en büyük ilerleme boşluğu < H'nin alt sınırı (madde 6 sıfırlaması yok); pencerede
-/// U'nun Duplicate kökenli kaybı ≥ 1 (diag `copy_losses`); U teyitsiz.
+/// U'nun Duplicate kökenli kaybı ≥ 1 (diag `copy_losses`); RTO_MAX + T_max(kopya) < W/(⌊W/RTO_MAX⌋ − 1)
+/// = 37.5 s, yani T_max(kopya) < 7.5 s (pace düşerse (3)–(4) ⌊W/RTO_MAX⌋'ı türetmez; bekçi sessizce
+/// tek yönlü kalmasın); U teyitsiz.
 ///
-/// E/Y [çıkarım]: 33938987 (sınırsız çekme) KIRMIZI — r7'de 150 s'de 84 kopya, aralıklar 1.335–2.801 s
-/// (ölçüldü, eski bekçiyle); e6e711fe YEŞİL — r7'de 6 kopya, aralıklar [2801, 30971, 31329, 32337,
-/// 31272] ms (ölçüldü); DUR-41 (B) YEŞİL — ARQ_RETX_CAP devri dönemin tek öne çekmesini c0'dan önce
-/// kullanır, c0 kaybı çekmez: ≈ 5 kopya, her aralık ≥ RTO_MAX.
+/// E/Y [ölçüldü, r8, bir önceki hâliyle (04fbc840)]: 2e37f422 YEŞİL — 5 kopya, aralıklar [31304, 30785,
+/// 31513, 32562] ms, uç boşluğu 23836 ms ≤ 35456 ms (pace_min 399 B/s, T_max 5.456 s), gerçek öne
+/// çekme pencerede 0 (ömür 1); 61344031 YEŞİL — 6 kopya, [2801, 30971, 31329, 32337, 31272] ms, ömür 2;
+/// 33938987-eşdeğeri KIRMIZI — 84 kopya. Bu hâliyle [çıkarım]: 61344031 KIRMIZI — c0'da hak kullanılmış
+/// (ARQ_RETX_CAP devri, ömür 1), g_0 = 2801 ms < RTO_MAX ((1)); HEAD YEŞİL.
 #[test]
 fn k4g05b_blackhole_copy_interval_backoff() {
     const TEST: &str = "k4g05b_blackhole_copy_interval_backoff";
@@ -974,19 +980,32 @@ fn k4g05b_blackhole_copy_interval_backoff() {
     let n = times.len() as u64;
     let n_max = WINDOW / cap + 2;
     let n_min = WINDOW.div_ceil(g_all);
-    let short_after_first: Vec<(usize, u64)> = gaps
+    // (1) Hak c0'dan önce kullanıldıysa g_0 de sınanır.
+    let pulled_before_c0 = r0.loss_pulls >= 1;
+    let first_checked = usize::from(!pulled_before_c0);
+    let short_checked: Vec<(usize, u64)> = gaps
         .iter()
         .enumerate()
-        .skip(1)
+        .skip(first_checked)
         .filter(|&(_, &g)| g < cap)
         .map(|(k, &g)| (k, g / MS))
         .collect();
+    // Ön koşul: (4) ⌊W/RTO_MAX⌋'a eşit kalsın (T_max(kopya) < 7.5 s).
+    let g_lim = WINDOW / (WINDOW / cap - 1);
+    if g_all >= g_lim {
+        fixture.push(format!(
+            "RTO_MAX + T_max(kopya) = {} ms ≥ {} ms (pace_min {rate_min} B/s): (3)–(4) ⌊W/RTO_MAX⌋'ı \
+             türetmez — bekçi tek yönlü kalırdı",
+            g_all / MS,
+            g_lim / MS
+        ));
+    }
     println!(
         "[kara delik PAY] c0={} ms aralık(c0)={:?} ms; kopya={n} (sınır {n_min}..={n_max}; ⌊W/RTO_MAX⌋={}) \
          anlar(c0'dan ms)={:?} aralıklar(ms)={:?}; uç boşluğu={:?} ms; RTO_MAX+T_max üst={} ms (pace_min \
-         {rate_min} B/s, P_pf_max {p_pf_max} B); aşan (an, aralık, sınır ms)={over:?}; 1. indeksten sonra \
-         kısa={short_after_first:?}; Dup kökenli kayıp={losses} gerçek öne çekme={pulls} (ömür {}) hak \
-         kullanıldı={}; en büyük ilerleme boşluğu={} ms (H alt sınırı {} ms); prob {}→{}",
+         {rate_min} B/s, P_pf_max {p_pf_max} B); aşan (an, aralık, sınır ms)={over:?}; hak c0'da \
+         kullanılmış={pulled_before_c0} → {first_checked}. indeksten sınanan kısa={short_checked:?}; Dup \
+         kökenli kayıp={losses} gerçek öne çekme={pulls} (ömür {}) hak kullanıldı={}; en büyük ilerleme boşluğu={} ms (H alt sınırı {} ms); prob {}→{}",
         c0 / MS,
         r0.geo_interval_ns.map(|v| v / MS),
         WINDOW / cap,
@@ -1007,8 +1026,9 @@ fn k4g05b_blackhole_copy_interval_backoff() {
         "{TEST}: FİKSTÜR GEÇERSİZ — U teyit edildi (kara delik kurulmadı)"
     );
     assert!(
-        short_after_first.is_empty(),
-        "{TEST}: (1) 1. indeksten sonra RTO_MAX'tan kısa kopya aralığı (k, ms): {short_after_first:?}"
+        short_checked.is_empty(),
+        "{TEST}: (1) {first_checked}. indeksten sonra RTO_MAX'tan kısa kopya aralığı (k, ms; hak c0'da \
+         kullanılmış={pulled_before_c0}): {short_checked:?}"
     );
     assert!(
         n <= n_max,
@@ -1038,19 +1058,25 @@ fn k4g05b_blackhole_copy_interval_backoff() {
 /// İDDİALAR (ortak türetim; b = c0 sonrası aralığın yarısı — kayıt c0'da `min(2b, RTO_MAX)`'a
 /// yeniden kurulur; ön koşul 2b < RTO_MAX): (1) öne çekilmemiş alt sınırın (g_k ≥ min(2^(k+1)·b,
 /// RTO_MAX); ilk m − 1 aralıktan sonra RTO_MAX) altında kalan aralık ≤ 1 (dönemin tek öne çekmesi);
-/// (2) W'da zincir emisyonu ≤ m + ⌊W/RTO_MAX⌋ + 1; (3) dönemde GERÇEK öne çekme ≤ 1 (diag
-/// `loss_pulls`, girdinin ömrü = bu zincirin tek dönemi).
+/// (2) W'da zincir emisyonu ≤ m + ⌊W/RTO_MAX⌋ + 1; (3) dönemde GERÇEK öne çekme TAM 1 (diag
+/// `loss_pulls`, girdinin ömrü = bu zincirin tek dönemi). (3)'ün alt yarısı [türetim, fikstür
+/// değerleriyle]: k ≥ 1 kopyasının vadesi emisyondan I_(k+1) ≥ 4b = 800 ms sonradır; kaybı en geç
+/// RTT 200 ms + paket eşiği 3 × 20 ms ≈ 260 ms sonra ilan edilir ve hedef vade ilan + b ≈ 460 ms'dir
+/// < 800 ms → hak kullanılmamışsa ilk böyle kayıp GERÇEK çekmedir. (3) "hak yalnız gerçek çekmede
+/// yanar" kuralını ve (B) ≠ (A)'yı ayırır: boşa kanıtta hak yakan ya da hiç çekmeyen kod 0 verir.
 ///
 /// Ön koşullar (FİKSTÜR): PRE_CONVERGE'den çıkıldı; U'nun sunulduğu anda geometrik kaydı yok; c0
-/// bulundu; 2b < RTO_MAX; [c0, uç) boyunca en büyük ilerleme boşluğu < H alt sınırı; pencerede
-/// kuyruk-probu yok ve RECOVER_FWD yok (U'nun Duplicate'leri yalnız zincir); U'nun Duplicate kökenli
-/// kaybı ≥ 1; U teyitsiz.
+/// bulundu; c0 zincirin emisyonudur (c0 adımı sonunda geometrik vade = c0 + aralık); 2b < RTO_MAX;
+/// b, zincirin açıldığı adımın öncesindeki ve sonrasındaki srtt arasında (taban = açılış anının
+/// srtt'si; c0'daki srtt'ye eşitlik garanti değil — arada RTT örneği gelebilir); [c0, uç) boyunca en
+/// büyük ilerleme boşluğu < H alt sınırı; pencerede kuyruk-probu yok ve RECOVER_FWD yok (U'nun
+/// Duplicate'leri yalnız zincir); U'nun Duplicate kökenli kaybı ≥ 1; U teyitsiz.
 ///
-/// E/Y [çıkarım]: 33938987 KIRMIZI (her kayıp çeker: aralık ≈ kayıp tespiti + taban'da kalır);
-/// e6e711fe YEŞİL (bu düzende yalnız Duplicate kolu çeker, o da dönemde bir kez; ARQ_RETX_CAP devri
-/// zinciri AÇAR, çekmez; tek seferlik ekleme yeri yok); DUR-41 (B) YEŞİL. Bekçi sınırsız ya da
-/// dönemde birden çok öne çekmeyi yakalar; e6e711fe ile DUR-41'i ayıran düzen
-/// `k4g05b_blackhole_intermittent_tail_on_chain_bound`'dur.
+/// E/Y [ölçüldü, r8, bir önceki hâliyle (04fbc840)]: 2e37f422 YEŞİL — b = 200 ms = srtt(c0), m = 8,
+/// 11 ≤ 14 kopya, aralıklar [610, 670, 1879, 3389, 6624, 12815, 25612, 30000, 30000, 30000] ms, kısa
+/// (1, 670, 800), gerçek öne çekme 1; 61344031 YEŞİL — 11 kopya, kısa yok, gerçek öne çekme 0 (c0'nun
+/// boşa kanıtı hakkı yaktı); 33938987-eşdeğeri KIRMIZI — 260 kopya. Bu hâliyle [çıkarım]: 61344031
+/// KIRMIZI ((3): 0 ≠ 1), HEAD YEŞİL.
 #[test]
 fn k4g05b_blackhole_chain_ramp_a7_bound() {
     const TEST: &str = "k4g05b_blackhole_chain_ramp_a7_bound";
@@ -1090,7 +1116,27 @@ fn k4g05b_blackhole_chain_ramp_a7_bound() {
     if sim.s.diag_unit_recovery(U).geo_interval_ns.is_some() {
         fixture.push("U sunulduğu anda geometrik kayıt aldı (§3.3-B mirası)".to_string());
     }
-    let c0 = drive_to_first_copy(&mut sim, Some(&mut feed), U, t_u + 60 * SEC);
+    // c0'ya dek sür; zincirin açıldığı adımın öncesindeki ve sonrasındaki srtt (taban = açılış anının
+    // srtt'si, `copy_base_ns`). `stop` her adımdan ÖNCE sorulur: o an önceki adımın sonudur.
+    let mut seen = sim.log.len();
+    let mut c0: Option<u64> = None;
+    let mut prev_srtt = sim.s.path_timing_snapshot().srtt_ns;
+    let mut srtt_at_open: Option<(Option<u64>, Option<u64>)> = None;
+    let _ = drive_window(&mut sim, Some(&mut feed), t_u + 60 * SEC, |s| {
+        let cur = s.s.path_timing_snapshot().srtt_ns;
+        if srtt_at_open.is_none() && s.s.diag_unit_recovery(U).geo_interval_ns.is_some() {
+            srtt_at_open = Some((prev_srtt, cur));
+        }
+        prev_srtt = cur;
+        if let Some(e) = s.log[seen..]
+            .iter()
+            .find(|e| e.d.unit_id == U && e.d.kind == TransmitKind::Duplicate)
+        {
+            c0 = Some(e.t);
+        }
+        seen = s.log.len();
+        c0.is_some()
+    });
     if c0.is_none() {
         fixture.push("U 60 s içinde kopya kuyruğundan gönderilmedi".to_string());
     }
@@ -1104,7 +1150,23 @@ fn k4g05b_blackhole_chain_ramp_a7_bound() {
             i1 / MS
         ));
     }
+    if r0.geo_due_ns != Some(c0 + i1) {
+        fixture.push(format!(
+            "c0 zincirin emisyonu değil: c0 adımı sonunda vade {:?} ms ≠ c0 + aralık {} ms",
+            r0.geo_due_ns.map(|v| v / MS),
+            (c0 + i1) / MS
+        ));
+    }
     let base = (i1 / 2).max(1);
+    let base_is_srtt = match srtt_at_open {
+        Some((Some(a), Some(b))) => (a.min(b)..=a.max(b)).contains(&base),
+        _ => false,
+    };
+    if !base_is_srtt {
+        fixture.push(format!(
+            "taban b = {base} ns zincirin açıldığı adımın srtt'si değil (öncesi/sonrası {srtt_at_open:?} ns)"
+        ));
+    }
     let m = chain_ramp_m(base);
     let end = c0 + WINDOW;
     let obs = drive_window(&mut sim, Some(&mut feed), end, |_| false);
@@ -1175,8 +1237,9 @@ fn k4g05b_blackhole_chain_ramp_a7_bound() {
         WINDOW / SEC
     );
     assert!(
-        r1.loss_pulls <= 1,
-        "{TEST}: (3) dönemde {} gerçek öne çekme > 1",
+        r1.loss_pulls == 1,
+        "{TEST}: (3) dönemde {} gerçek öne çekme ≠ 1 (0: boşa kanıt hakkı yaktı ya da hiç çekilmedi; \
+         > 1: dönem başına tek hak aşıldı)",
         r1.loss_pulls
     );
 }
@@ -1188,8 +1251,9 @@ fn one_way_20ms(_t: u64) -> u64 {
 
 /// [K4G-05b DUR-41 · aralıklı trafik, kuyruk-probu AÇIK] Ürün yapılandırması (`product_sender`:
 /// validated_v1 prob), darboğazsız yol, RTT 40 ms; 1 s'de bir 200 B birim (kimlik 0, 1, 2, …; uca
-/// dek); U = birim 10 (t = 10 s), U'nun BÜTÜN iletimleri düşer. İlerleme boşlukları ≈ 1 s: taban
-/// PTO'dan uzun, H'den kısa (wf_060b3c83 bulgu 1 rejimi). Her boşlukta prob U'nun uçuştaki kaydını
+/// dek); U = birim 10 (t = 10 s), U'nun BÜTÜN iletimleri düşer. İlerleme boşlukları taban PTO'dan
+/// uzun, H'den kısa (wf_060b3c83 bulgu 1 rejimi) — ölçüldü (r8): taban PTO 65 ms, en büyük boşluk
+/// 2000 ms, 150 s'de PTO'yu aşan 76 boşluk. Her boşlukta prob U'nun uçuştaki kaydını
 /// hedefler (v1 mirası, `oldest_probe_eligible_seq`; DUR-42) → prob kayıtlarının kaybı ARQ'ya girer
 /// → ARQ_RETX_CAP devri birimin geometrik kaydını bulur (later-ACK kayıp kanıtı).
 ///
@@ -1206,11 +1270,15 @@ fn one_way_20ms(_t: u64) -> u64 {
 /// aşan ilerleme boşluğu sayısı).
 ///
 /// Ön koşullar (FİKSTÜR): c0 bulundu; 2b < RTO_MAX; en büyük ilerleme boşluğu < H alt sınırı;
-/// pencerede ≥ 1 kuyruk-probu (PTO < boşluk rejimi kuruldu); RECOVER_FWD yok; U teyitsiz.
+/// pencerede ≥ 1 kuyruk-probu (PTO < boşluk rejimi kuruldu); MEKANİZMA ÇALIŞTI — pencerede U'ya
+/// geometrik kaydı varken ≥ 1 ARQ_RETX_CAP devri kanıtı (diag `evidence_arq_cap`) ve ≥ 1 Duplicate
+/// kökenli kayıp (diag `copy_losses`) geldi (DUR-42 (b)/(c) bu yolu kapatırsa bekçi sessizce boşa
+/// düşmesin); RECOVER_FWD yok; U teyitsiz.
 ///
-/// E/Y [çıkarım]: e6e711fe KIRMIZI — ARQ_RETX_CAP devrinin çekmesi sınırsızdır; prob → ARQ →
-/// CapExceeded döngüsü boşluk başına bir öne çekme üretir, kopya sayısı ≈ boşluk sayısı (≈ 150)
-/// mertebesine çıkar. DUR-41 (B) YEŞİL — üç yer tek hakkı paylaşır, zincir kendi takvimindedir.
+/// E/Y [ölçüldü, r8, bir önceki hâliyle (04fbc840)]: 61344031 KIRMIZI — zincir + çekme 45 > 16,
+/// gerçek öne çekme 40, Retransmit(ARQ) 41 (ARQ_RETX_CAP devrinin çekmesi sınırsızdı); 2e37f422
+/// YEŞİL — 13 ≤ 16, gerçek öne çekme 1, Retransmit(prob) 225, Retransmit(ARQ) 6; 33938987-eşdeğeri
+/// KIRMIZI — 44 > 16. Bu hâliyle [çıkarım]: aynı (ön koşul sayaçları iki tabanda da ≥ 1 beklenir).
 #[test]
 fn k4g05b_blackhole_intermittent_tail_on_chain_bound() {
     const TEST: &str = "k4g05b_blackhole_intermittent_tail_on_chain_bound";
@@ -1274,6 +1342,14 @@ fn k4g05b_blackhole_intermittent_tail_on_chain_bound() {
     if obs.fwd_seen {
         fixture.push("pencerede RECOVER_FWD (tek seferlik kopya kaynağı)".to_string());
     }
+    let ev_cap = r1.evidence_arq_cap.saturating_sub(r0.evidence_arq_cap);
+    let ev_loss = r1.copy_losses.saturating_sub(r0.copy_losses);
+    if ev_cap == 0 || ev_loss == 0 {
+        fixture.push(format!(
+            "mekanizma çalışmadı: pencerede geometrik kayıtlıyken ARQ_RETX_CAP kanıtı {ev_cap}, \
+             Duplicate kökenli kayıp {ev_loss} (ikisi de ≥ 1 olmalı)"
+        ));
+    }
     let tx: Vec<Emit> = sim
         .unit_tx(U)
         .into_iter()
@@ -1304,7 +1380,8 @@ fn k4g05b_blackhole_intermittent_tail_on_chain_bound() {
          Retransmit(ARQ)={n_arq} Duplicate(zincir)={} Duplicate(çekme sonrası)={n_pulled}; zincir + çekme \
          {n_dup} ≤ m + ⌊W/RTO_MAX⌋ + 1 = {n_max}; kısa aralıklar (k, ms, sınır ms)={:?}; gerçek öne çekme \
          (ömür)={} hak kullanıldı={}; prob bileşeni {n_probe} (v1 bütçesi ≤ 3 × {gaps_over_pto} = \
-         {probe_budget_v1}; {} B/s); prob {}→{}",
+         {probe_budget_v1}; {} B/s); prob {}→{}; pencerede kanıt: ARQ_RETX_CAP {ev_cap}, kopya kaybı \
+         {ev_loss}",
         c0 / MS,
         base / MS,
         base_pto / MS,
