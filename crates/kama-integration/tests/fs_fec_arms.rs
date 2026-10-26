@@ -137,9 +137,9 @@ fn f3_partial_block_real_decode_and_pin_c_advances() {
 /// kolu çalıştı), delivered == 8, tamamlanma var. Eser: SPURIOUS-RETRANSMIT-SUPERSESSION-K4G05B-DUR44
 /// (md `3faadfce…`, bu düzenlemeden ÖNCE commit'lendi); tasarım notu Ek B.1d DUR-44 ve B.2.8 #10.
 /// 2×2: eski kod + eski test YEŞİL (ölçüldü, r10: 9e0ea164) · yeni kod + eski test KIRMIZI (ölçüldü, r10)
-/// · yeni kod + yeni test YEŞİL, işaret − [çıkarım] · eski kod + yeni test YEŞİL, işaret +, spurious 1
-/// basılır [çıkarım]. K3 kapalı mutasyonla (DUR-44): YEŞİL, t_arq_wire 124 ms, işaret +, spurious 1
-/// basılır [çıkarım].
+/// · yeni kod + yeni test YEŞİL, işaret −0.192 ms (ölçüldü, r11) · eski kod + yeni test YEŞİL, işaret
+/// +8.808 ms, spurious 1 basılır (ölçüldü, r11: 9e0ea164). K3 kapalı mutasyonla (DUR-44): YEŞİL,
+/// t_arq_wire 124 ms, işaret +8.808 ms, spurious 1 basılır; eski test de YEŞİL (ölçüldü, r11).
 #[test]
 fn f0_cost_split_intervention_vs_total_outcome() {
     // DR-RATE-RAMP-2B SUPERSESSION (md `7718b94f…`): these constants were measured on the
