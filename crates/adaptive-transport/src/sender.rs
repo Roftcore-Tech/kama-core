@@ -809,6 +809,17 @@ pub struct UnitRecoveryDiag {
     /// Kopya kuyruğundaysa: vade (ns) ve geometrik aralık (ns; 0 = tek atış, >0 = her atışta ×2).
     pub dup_due_ns: Option<u64>,
     pub dup_interval_ns: Option<u64>,
+    /// [K4G-05b DUR-41] Birimin geometrik (kalıcı) kopya kaydı varsa: vadesi ve aralığı (ns). Tek
+    /// seferlik kayıtlar burada görünmez (`dup_*` alanları kuyruktaki ilk kaydı gösterir).
+    pub geo_due_ns: Option<u64>,
+    pub geo_interval_ns: Option<u64>,
+    /// [K4G-05b DUR-41] Sahiplik dizini girdisinden (girdi yoksa 0 / `false`): teyitsizken kayıp ilan
+    /// edilen Duplicate kökenli kayıt sayısı; geometrik vadenin later-ACK kayıp kanıtıyla GERÇEKTEN
+    /// öne çekildiği (vade küçüldü) kez sayısı — üç yerin toplamı, girdinin ömrü boyunca; bu zincir
+    /// döneminin öne çekme hakkı kullanıldı mı.
+    pub copy_losses: u32,
+    pub loss_pulls: u32,
+    pub loss_pull_used: bool,
 }
 
 /// Commit-G: latch-baskılama nedenleri (named; kalibrasyon-dışı-hücre-işaretleri).
@@ -1470,6 +1481,12 @@ struct UnitOwnership {
     /// sıfırlamasından bu yana) kopya kaybının later-ACK kanıtı geometrik vadeyi zaten bir kez öne çekti
     /// mi. Çekme dönem başına EN ÇOK BİR KEZ uygulanır; sonraki kayıplarda aralık ×2 büyür (≤ RTO_MAX).
     loss_pull_used: bool,
+    /// [K4G-05b DUR-41 · SALT GÖZLEM] Teyitsizken kayıp ilan edilen Duplicate kökenli kayıt sayısı
+    /// (`queue_losses` kopya kolu). Karar okumaz.
+    copy_losses: u32,
+    /// [K4G-05b DUR-41 · SALT GÖZLEM] Geometrik vadenin later-ACK kayıp kanıtıyla GERÇEKTEN öne
+    /// çekildiği (vade küçüldü) kez sayısı (`copy_ensure_geometric`). Karar okumaz.
+    loss_pulls: u32,
     /// Teyit kümesi (`confirmed_units`) üyeliği: teyitli birim için karar ÜRETİLMEZ (madde 2).
     confirmed: bool,
     /// Son iletim anı (H-sahiplenme çapasının birim tarafı; aday kümesinin anahtarı).
@@ -3870,6 +3887,9 @@ impl Sender {
                         let base = self.copy_base_ns();
                         let due = now_ns.saturating_add(base);
                         let u = UnitId(p.unit.id);
+                        if let Some(e) = self.units.get_mut(&u) {
+                            e.copy_losses = e.copy_losses.saturating_add(1);
+                        }
                         let pending_fire_once = self.units.get(&u).is_some_and(|e| e.fire_once > 0)
                             || self
                                 .dup_queue
@@ -5193,6 +5213,19 @@ impl Sender {
         if let Some(dup) = self.dup_queue.iter().find(|q| q.unit.id == unit_id) {
             d.dup_due_ns = Some(dup.due_ns);
             d.dup_interval_ns = Some(dup.interval_ns);
+        }
+        if let Some(geo) = self
+            .dup_queue
+            .iter()
+            .find(|q| q.unit.id == unit_id && q.interval_ns > 0)
+        {
+            d.geo_due_ns = Some(geo.due_ns);
+            d.geo_interval_ns = Some(geo.interval_ns);
+        }
+        if let Some(e) = self.units.get(&UnitId(unit_id)) {
+            d.copy_losses = e.copy_losses;
+            d.loss_pulls = e.loss_pulls;
+            d.loss_pull_used = e.loss_pull_used;
         }
         if let Some((send_ns, seq, kind)) = latest {
             d.latest_send_ns = Some(send_ns);
@@ -6664,35 +6697,45 @@ impl Sender {
     /// ile açılır (aralık RTO_MAX tavanlı). Varsa yeni kayıt AÇILMAZ: `pull` (later-ACK kayıp kanıtı:
     /// kopya kaybı, ARQ tavanı, tek seferlik ekleme yeri) ise vadesi `due_ns`'e öne çekilir; değilse
     /// (sahiplenme yolları: devir, H, canlılık) NO-OP — kaydın vadesine ve aralığına dokunulmaz.
-    /// Teyitli birime karar üretilmez.
+    /// Teyitli birime karar üretilmez. [K4G-05b DUR-41] Döner: mevcut kaydın vadesi GERÇEKTEN küçüldü
+    /// mü (öne çekme oldu). Kayıt açılışı (zincirin kuruluşu) öne çekme değildir → `false`.
     fn copy_ensure_geometric(
         &mut self,
         unit: OpaqueUnit,
         due_ns: u64,
         interval_ns: u64,
         pull: bool,
-    ) {
+    ) -> bool {
         let u = UnitId(unit.id);
         if self.unit_is_confirmed(u) {
-            return;
+            return false;
         }
         if self.unit_has_geometric(u) {
-            if pull {
-                if let Some(d) = self
-                    .dup_queue
-                    .iter_mut()
-                    .find(|d| d.unit.id == unit.id && d.interval_ns > 0)
-                {
-                    d.due_ns = d.due_ns.min(due_ns);
-                }
+            if !pull {
+                return false;
             }
-            return;
+            let Some(d) = self
+                .dup_queue
+                .iter_mut()
+                .find(|d| d.unit.id == unit.id && d.interval_ns > 0)
+            else {
+                return false;
+            };
+            if due_ns >= d.due_ns {
+                return false;
+            }
+            d.due_ns = due_ns;
+            if let Some(e) = self.units.get_mut(&u) {
+                e.loss_pulls = e.loss_pulls.saturating_add(1);
+            }
+            return true;
         }
         self.dup_push(DupRec {
             due_ns,
             unit,
             interval_ns: interval_ns.clamp(1, rto_max_ns()),
         });
+        false
     }
 
     /// [K4G-05b madde 5 · ekleme kuralı (B2), C8 DUR-13] Tek seferlik kopyalar `dues` vadelerinde
