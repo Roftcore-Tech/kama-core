@@ -249,8 +249,11 @@ impl<C: Clock, R: EntropySource> Hub<C, R> {
         sink.send(to, datagram);
         stats::bump(&mut self.stats.tx_forward);
         stats::bump(&mut self.stats.relay_packets);
-        let bytes = u64::try_from(datagram.len()).unwrap_or(u64::MAX);
-        self.stats.relay_bytes = self.stats.relay_bytes.saturating_add(bytes);
+        // Datagram ≤ MAX_DATAGRAM; usize → u64 her hedefte sığar.
+        stats::add(
+            &mut self.stats.relay_bytes,
+            u64::try_from(datagram.len()).unwrap_or(0),
+        );
     }
 
     fn deliver(

@@ -51,11 +51,15 @@ impl fmt::Debug for ProbeDevice {
 }
 
 /// Probe hatası; dosya içeriği taşımaz.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Socket` kaynağı olduğu gibi taşır: çağıran `error.kind()` ile ayırt eder (metin eşleştirme yok).
+#[derive(Debug)]
 pub enum ProbeError {
     DeviceUnreadable,
     DeviceInvalid(&'static str),
-    Socket(String),
+    Socket(std::io::Error),
+    /// Kodlanmış istek tek datagrama sığmadı (programlama hatası; hub'a hiçbir şey gitmedi).
+    RequestTooLong,
     /// Hub cevap vermedi (dizinde değil, erişilemiyor ya da kayıp).
     Timeout(&'static str),
     /// Hub hata çerçevesi döndü.
@@ -72,6 +76,7 @@ impl fmt::Display for ProbeError {
             Self::DeviceUnreadable => f.write_str("device file unreadable"),
             Self::DeviceInvalid(what) => write!(f, "device file invalid: {what}"),
             Self::Socket(error) => write!(f, "socket: {error}"),
+            Self::RequestTooLong => f.write_str("request does not fit one datagram"),
             Self::Timeout(step) => write!(f, "{step}: no answer after {ATTEMPTS} attempts"),
             Self::Refused(code) => write!(f, "hub refused: error 0x{code:04x}"),
             Self::BadHubSignature => f.write_str("hub signature does not verify"),
@@ -80,7 +85,14 @@ impl fmt::Display for ProbeError {
     }
 }
 
-impl std::error::Error for ProbeError {}
+impl std::error::Error for ProbeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Socket(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 /// Probe sonucu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,13 +184,11 @@ pub fn run(
     } else {
         (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
     };
-    let socket = UdpSocket::bind(local).map_err(|error| ProbeError::Socket(error.to_string()))?;
-    socket
-        .connect(hub)
-        .map_err(|error| ProbeError::Socket(error.to_string()))?;
+    let socket = UdpSocket::bind(local).map_err(ProbeError::Socket)?;
+    socket.connect(hub).map_err(ProbeError::Socket)?;
     socket
         .set_read_timeout(Some(WAIT))
-        .map_err(|error| ProbeError::Socket(error.to_string()))?;
+        .map_err(ProbeError::Socket)?;
 
     // S4 C2/C8: imzasız BAD_COOKIE ya da RATE_LIMITED bind'i bitirmez → 1. tura dön (yeni nonce).
     let mut attempt = 0;
@@ -280,12 +290,10 @@ fn exchange(
         payload,
     }
     .encode(&mut datagram)
-    .map_err(|_| ProbeError::Socket("request too long".to_owned()))?;
+    .map_err(|_| ProbeError::RequestTooLong)?;
     for _ in 0..ATTEMPTS {
         let sent_at = Instant::now();
-        socket
-            .send(&datagram)
-            .map_err(|error| ProbeError::Socket(error.to_string()))?;
+        socket.send(&datagram).map_err(ProbeError::Socket)?;
         while let Some(reply) = receive(socket, sent_at) {
             let Ok(Datagram::Control {
                 frame_type: frame::PLANE1_RPC,
@@ -346,4 +354,27 @@ fn receive(socket: &UdpSocket, sent_at: Instant) -> Option<Vec<u8>> {
     let length = socket.recv(&mut buffer).ok()?;
     buffer.truncate(length);
     Some(buffer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::error::Error as _;
+    use std::io::ErrorKind;
+
+    #[test]
+    fn socket_error_keeps_its_kind_for_the_caller() {
+        let taken = UdpSocket::bind("127.0.0.1:0").expect("bind");
+        let addr = taken.local_addr().expect("adres");
+        let error = UdpSocket::bind(addr)
+            .map_err(ProbeError::Socket)
+            .expect_err("aynı adres ikinci kez bağlanamaz");
+        let ProbeError::Socket(io) = &error else {
+            panic!("{error:?}");
+        };
+        assert_eq!(io.kind(), ErrorKind::AddrInUse);
+        let source = error.source().expect("kaynak");
+        assert!(source.downcast_ref::<std::io::Error>().is_some());
+        assert!(error.to_string().starts_with("socket: "));
+    }
 }
