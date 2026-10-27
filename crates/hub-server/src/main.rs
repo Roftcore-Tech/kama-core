@@ -20,9 +20,10 @@ use std::io::{ErrorKind, Write};
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use hub_server::config::{self, ConfigError};
+use hub_server::stats::{self, SendErrors};
 use hub_server::{probe, Hub, Sink, SystemClock};
 use kama_noise_wire::entropy::OsEntropy;
 
@@ -37,11 +38,24 @@ const EXIT_USAGE: u8 = 2;
 
 struct UdpSink<'a> {
     socket: &'a UdpSocket,
+    started: Instant,
+    /// `STATS_PERIOD`: gönderim hatası satırı en çok bu aralıkta bir.
+    period: Duration,
+    errors: SendErrors,
 }
 
 impl Sink for UdpSink<'_> {
+    /// Röle davranışı: yeniden deneme yok, bekleme yok — başarısız datagram düşer. Hata sayılır ve
+    /// en çok `period`'da bir satırla loglanır (`WouldBlock` dahil: soket tamponu dolu = düşen paket).
     fn send(&mut self, to: SocketAddr, datagram: &[u8]) {
-        let _ = self.socket.send_to(datagram, to);
+        if let Err(error) = self.socket.send_to(datagram, to) {
+            let now = self.started.elapsed();
+            if self.errors.record(now, self.period) {
+                let errors = self.errors;
+                stats::log_send_error(self, to, &error, &errors);
+                self.errors.logged(now);
+            }
+        }
     }
 
     fn log(&mut self, line: fmt::Arguments<'_>) {
@@ -188,7 +202,12 @@ fn serve(path: &std::path::Path, listen: Option<SocketAddr>) -> ExitCode {
     };
     // Sınırın bir fazlası: daha büyük datagram tampona kesilerek gelir ve boyundan tanınır.
     let mut buffer = vec![0u8; hub_server::wire::MAX_DATAGRAM.saturating_add(1)];
-    let mut sink = UdpSink { socket: &socket };
+    let mut sink = UdpSink {
+        socket: &socket,
+        started: Instant::now(),
+        period: config::Limits::S4.stats_period,
+        errors: SendErrors::default(),
+    };
     sink.log(format_args!(
         "hub listening addr={listen} devices={devices}"
     ));
@@ -220,5 +239,30 @@ fn serve(path: &std::path::Path, listen: Option<SocketAddr>) -> ExitCode {
             }
         }
         hub.on_tick(&mut sink);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// IPv4 soketten IPv6 adrese gönderim gerçek bir `send_to` hatasıdır (Linux: adres ailesi
+    /// desteklenmiyor).
+    #[test]
+    fn send_failure_is_counted_not_retried_and_logged_once_per_period() {
+        let socket = UdpSocket::bind("127.0.0.1:0").expect("bind");
+        let mut sink = UdpSink {
+            socket: &socket,
+            started: Instant::now(),
+            period: Duration::from_secs(3600),
+            errors: SendErrors::default(),
+        };
+        let unreachable: SocketAddr = "[::1]:47000".parse().expect("adres");
+        for _ in 0..5 {
+            sink.send(unreachable, b"\x00\x00\x00\x00x");
+        }
+        assert_eq!(sink.errors.total, 5);
+        // İlk hata satıra yazıldı; aynı aralıktaki dört hata yalnız sayıldı.
+        assert_eq!(sink.errors.suppressed, 4);
     }
 }
