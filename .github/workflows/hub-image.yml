@@ -1,0 +1,117 @@
+name: hub-image
+
+# KM-DEPLOY-TDD-001 v0.5 §4 + §7 — hub imajı. YALNIZ `main`'e merge'de (ve elle) çalışır; PR'da koşmaz.
+#   ghcr.io/roftcore-tech/kama-hub:<kısa-sha>   (`latest` KULLANILMAZ — hangi commit'in koştuğu belli olsun)
+# Otomatik deploy YOK: sunucuya `make deploy TAG=<kısa-sha>` ile insan koyar (C4 + bilinçli kapı).
+# İmza / cosign yok (PoC).
+#
+# Denetimler (push'tan ÖNCE): ikili statik ("not a dynamic executable"), imaj < 20 MB, ikili scratch'te
+# gerçekten çalışıyor (kullanım hatası → çıkış 2), konteyner kullanıcısı 65532.
+#
+# `paths`: imaj yalnız hub'ın derleme grafiğine giren bir şey değişince yeniden üretilir (dakika bütçesi).
+# Hangi SHA'nın imajı olduğu GHCR'den okunur; `make deploy` yalnız imajı olan bir SHA ile çalışır.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/hub-server/**'
+      - 'crates/kama-noise-wire/**'
+      - 'crates/kama-contracts/**'
+      - 'crates/kama-transport-schema/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'deploy/Dockerfile'
+      - '.dockerignore'
+      - '.github/workflows/hub-image.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: hub-image
+  cancel-in-progress: false
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: başlangıç zamanı
+        run: echo "STARTED=$(date +%s)" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v4
+
+      - name: etiket
+        id: tag
+        run: |
+          set -euo pipefail
+          short=$(git rev-parse --short=7 HEAD)
+          owner=$(printf '%s' "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
+          echo "image=ghcr.io/${owner}/kama-hub:${short}" >> "$GITHUB_OUTPUT"
+          echo "short=${short}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: derle (yükle, henüz itme)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          load: true
+          push: false
+          tags: ${{ steps.tag.outputs.image }}
+          cache-from: type=gha,scope=hub-image
+          cache-to: type=gha,mode=max,scope=hub-image
+
+      - name: denetim — statik ikili, boyut, çalışıyor, kullanıcı 65532
+        env:
+          IMAGE: ${{ steps.tag.outputs.image }}
+        run: |
+          set -euo pipefail
+          id=$(docker create "$IMAGE")
+          docker cp "$id:/hub-server" ./hub-server
+          docker rm "$id" >/dev/null
+          ldd_out=$(ldd ./hub-server 2>&1 || true)
+          echo "ldd: $ldd_out"
+          case "$ldd_out" in
+            *"not a dynamic executable"*|*"statically linked"*) ;;
+            *) echo "::error title=HUB_IMAGE::ikili statik değil: $ldd_out"; exit 1 ;;
+          esac
+          size=$(docker image inspect "$IMAGE" --format '{{.Size}}')
+          echo "imaj boyutu: $size B"
+          if [ "$size" -ge 20000000 ]; then
+            echo "::error title=HUB_IMAGE::imaj 20 MB hedefini aşıyor ($size B)"; exit 1
+          fi
+          user=$(docker image inspect "$IMAGE" --format '{{.Config.User}}')
+          [ "$user" = "65532:65532" ] || { echo "::error title=HUB_IMAGE::kullanıcı $user"; exit 1; }
+          set +e
+          docker run --rm --entrypoint /hub-server "$IMAGE" >/dev/null 2>usage.txt
+          rc=$?
+          set -e
+          grep -q "usage: hub-server" usage.txt && [ "$rc" -eq 2 ] \
+            || { echo "::error title=HUB_IMAGE::ikili scratch'te çalışmadı (rc=$rc)"; cat usage.txt; exit 1; }
+          {
+            echo "### hub imajı"
+            echo "- etiket: \`${IMAGE}\`"
+            echo "- boyut: ${size} B · kullanıcı: ${user} · ldd: ${ldd_out}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: GHCR'ye giriş
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: it
+        run: docker push "${{ steps.tag.outputs.image }}"
+
+      - name: Actions dakikası
+        if: always()
+        run: |
+          elapsed=$(( $(date +%s) - STARTED ))
+          echo "- süre: ${elapsed} s (≈ $(( (elapsed + 59) / 60 )) faturalanan dakika)" >> "$GITHUB_STEP_SUMMARY"
