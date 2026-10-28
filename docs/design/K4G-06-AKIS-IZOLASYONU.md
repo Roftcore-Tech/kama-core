@@ -24,7 +24,7 @@
 1. **Birim çerçevesi (DUR-06-5, KARAR):** KARAR-1'in canonical `BatchPayload` alt mesaj çerçevesi + tarihli ek: v0 kabuk tip baytı, alt mesaj akış başlığı `flags · flow_id u16 · flow_seq u32`, S1 kipinde `submsg_count ∈ {0, 1}`, 0x05 parçalayıcı istisnası; örtük kip de FLOW_BATCH. Başlık 10 B (kayıt ≤ 239 B) / 12 B; bugün 11 B [hesap].
 2. **FEC kimliği (B-iii, KARAR):** `block_id` oturum + yön boyu monoton (§2.6 ID-SCOPE değişmez); blok tek akışın ardışık birimleri; blok sınırı onarım çerçevesinde (`first_seq` u32, +4 B/onarım sembolü); kendini tanıtan önek (`message_id := flow_seq`, `chunk_offset := flow_id`, FIN, REL).
 3. **S7 (b2) + (i) (KARAR):** tek saf seçici, eklemeli API; katman 0/1 kova payı içinde katman-2 rezervinin önüne geçer; K1 (a) katman 2 içinde aynen.
-4. **Kredi ve kontrol:** akış başına mutlak artan sınırlar; tek kredi kuralı `max_seq = min(floor_a + W_D, c + W)` (hariç üst sınır; §3, §7.4); sayım sınırları aynı FLOW_CREDIT'te; BLOCKED iki boyutlu, çok girdili, etkin sınır artana dek tekrarlanır. **Öneri (DUR-06-27 (c)):** kontrol şeritleri (akış 0 ve 1) `Independent` kipte — sırasız, oturum içinde tam bir kez; bağımsızlık W_D derinliğine kadar, W_D zarf içinde erişilemeyecek biçimde türetilir (AMP denetimi §4.1; tasarım §4.2). **Öneri (DUR-06-28 (a)):** Faz G'deki gönderen iptali akış RESET'ine uygulama koduyla bağlanır. Kabul kapısı yalnız `capacity_defect = 0` (sahibin notu 2).
+4. **Kredi ve kontrol:** akış başına mutlak artan sınırlar; tek kredi kuralı `max_seq = min(floor_a + W_D, c + W)` (hariç üst sınır; §3, §7.4); sayım sınırları aynı FLOW_CREDIT'te; BLOCKED iki boyutlu, çok girdili, etkin sınır artana dek tekrarlanır. **Öneri (DUR-06-27 (c)):** kontrol şeritleri (akış 0 ve 1) `Independent` kipte — sırasız, oturum içinde tam bir kez; bağımsızlık W_D derinliğine kadar; W_D hıza bağlı türetilir, W_D = 2048 [CAL] D-3'te r ≤ ≈ 2 kB/s için zarf içinde erişilemez (AMP denetimi §4.1; tasarım §4.2). **Öneri (DUR-06-28 (a)):** Faz G'deki gönderen iptali akış RESET'ine uygulama koduyla bağlanır. Kabul kapısı yalnız `capacity_defect = 0` (sahibin notu 2).
 5. **Ortak yaşam döngüsü (§16):** alıcı kredisi, kontrol yükümlülükleri, iptal, FIN ve zaman aşımı tek tabloda; R3 açık S1 çağrısıyla (`resolve_flow`); `FlowEnded` bant içi (YD-10). 05f ve 05d A1 buna atıf verir. D_tük = 0 reddedildi; **öneri (DUR-06-26 = DUR-05f-14 (a)):** FIN sonrası tutma zarfa D_h = 30 s olarak girer. "Tutuluyor" girdisi (b), ancak D > G_H olan tutmalar gerekirse daha ucuzdur.
 6. **PTT ve S5:** canlı PTT PoC-KAPSAM-001'in PTT satırını, K8 "sıfır bozuk hece" ölçütünü ve S5 dondurmasını (`:34`, K6 `:54`) değiştirir; tek tarihli sahip ekiyle (EK-4, DUR-06-18). Live'a bağlı DUR'lar (06-1, 06-6, 06-11 Live, 06-23) DUR-06-18 (a)'ya koşulludur.
 
@@ -83,7 +83,23 @@
 - **Tekilleştirme penceresi:** `floor_a` = ilk alınmamış `flow_seq`; [`floor_a`, `floor_a` + W_D) bit haritası. `flow_seq < floor_a` ya da biti kurulu birim → ACK'lenir, teslim yok, `dup_ctrl` sayılır. Bellek W_D bit.
 - **Tüketim kredisi:** `c` = şerit tüketicisinin aldığı farklı birim sayısı (akış 0'da transport, akış 1'de uygulama).
 - **İlan:** `max_seq = min(floor_a + W_D, c + W_c)`; hariç üst sınırdır (§7.1). Alınmış ama tüketilmemiş birim ≤ W_c (bellek sınırı). Durgun tüketicide kredi durur; bu bir kapasite beklemesidir, ACK kesilmez. Bir boşluk ancak arkasında W_D − 1 birim birikince krediyi bekletir.
-- **Kalan bağımlılık (beyanlı sınır):** sırasızlık W_D derinliğine kadardır. Kayıp birimin kurtarılması sürerken kontrol kovası en çok b_C + ρ_C·r·T_rec bayt çıkarır. W_D ≥ ⌈(b_C + ρ_C·r·T_rec)/S_min⌉ + 1 ise zarf içinde pencere beklemesi doğmaz [türetim taslağı; T_rec = birimin kendi kurtarma sınırı = 05f T_ctrl(k)]. [hesap] 31 B/s, ρ_C = 0,1, b_C = 64 B [CAL], S_min = 42 B (22 B mühür + 10 B başlık + 10 B RECEIPT kaydı), T_rec = 1 863,6 s (05f rev3.1 `40c59dfb` §7, D-3): ≈ 139 birim → **W_D = 256 [CAL]** (şerit ve oturum başına 32 B). T_rec yaklaşık 1/r ile ölçeklendiği için çarpım hıza bağlı değildir [çıkarım]. Zarf dışında boşluk, `floor_a` ilerleyene dek krediyi bekletir: kayıt düşmez, ihlal sayılmaz.
+- **Kalan bağımlılık (beyanlı sınır; rev5.2'de hıza bağlı türetim).** Sırasızlık W_D derinliğine kadardır. Kayıp `floor_a` biriminin kurtarılması sürerken kontrol kovası en çok b_C + ρ_C·r·T_rec bayt çıkarır. Pencere beklemesinin doğmaması için koşul [türetim taslağı]:
+  - **W_D ≥ W_D(r, E) = ⌈(b_C + ρ_C·r·T_rec(r, E))/S_min⌉ + 1.**
+  - **T_rec(r, E) = T_ctrl(k, r) + T_düzey2(r).** T_ctrl 05f'nindir; k, birimin yön sınıfıdır (§16 YD-9 m.7).
+  - T_ctrl hıza bağlı ve bağlı olmayan iki parçaya ayrılır: T_ctrl = α_E/r + β_E. Burada β_E = (k + N_o − 1)·A + N_o·D_o + d (A = RTO_MAX = 30 s, D_o = 60 s; 05f T_ctrl formülü).
+  - T_düzey2, kayıp birimin yeniden gönderiminin aynı şeritteki yeni DATA ile düzey-2 kuralı altında (rev6 DATA-önce + K_ARQ_SHARE) bekleme süresidir: ≤ K_ARQ_SHARE·S_baş,C/(ρ_C·r) [türetim taslağı; 05f ve rev6 doğrular]. W_D'ye hıza bağlı olmayan ≈ K_ARQ_SHARE·S_baş,C/S_min kayıt ekler.
+  - **Sonuç: W_D(r) hızla doğrusal büyür.** β_E hıza bağlı olmadığı için rev5.1'in "çarpım hıza bağlı değildir" çıkarımı geri çekildi.
+  - [hesap] D-3 hücresi (k_r = 11, N_o = 1; 05f rev3.1 §8.2): β = 11·30 + 60 = 390 s (d ihmal); α = (1 863,6 − 390)·31 ≈ 45 682 B; ρ_C = 0,1, b_C = 64 B, S_min = 42 B (22 B mühür + 10 B başlık + 10 B RECEIPT kaydı); T_düzey2 payı hariç:
+
+  | r (B/s) | 31 | 100 | 300 | 1 000 | 2 000 |
+  |---|---|---|---|---|---|
+  | W_D(r) (kayıt) | 141 | 205 | 390 | 1 040 | 1 969 |
+
+  - rev5.1'deki "≈ 139" değeri yanlıştı; formül 141 verir.
+  - **Seçim: W_D = 2048 [CAL]**, şerit ve oturum başına 256 B; iki şerit × 8 oturum ≈ 4 KiB [hesap].
+  - **Geçerlilik:** D-3 hücresinde r ≤ ≈ 2,08 kB/s; T_düzey2 payı (≈ K_ARQ_SHARE·1,2 kayıt) kadar daha az. β'sı küçük hücrelerde aralık daha geniştir. **Bu aralığın üstünde "zarf içinde erişilemez" iddiası yoktur:** pencere beklemesi doğabilir, ama kayıp ve ihlal olmaz. PoC'nin hostile hücreleri (31–300 B/s) ve temiz-1k tavanı aralıktadır [çıkarım: PoC r_max ≈ 1 kB/s varsayımı; orkestratör doğrular].
+  - **Ön koşul:** T_ctrl, dolayısıyla T_rec, gönderenin motoru PreConverge ya da Idle değilken bir sınırdır (≥ 1 kabul edilmiş RTT örneği). PreConverge'de benimseme ve kayıp ilanı kapalıdır, kopya aralığı tavansız ikiye katlanır (`593029eb:sender.rs:6709-6715`, :7583-7597, :6867, :3632; 05f doğrulaması). Yeni oturumda bu ön koşul tutmaz; Faz A'da FILE_RECEIPT'in taşındığı oturum da buna dahildir. Bu, 05b (iii) kapsamı dışındadır; orkestratör DUR adayı olarak sahibe götürür (§16 YD-9 m.5).
+  - **U'daki derinlik:** kama-app'in FILE_* payı (§7.6) yüzünden RECEIPT'ler bir boşluğun arkasında W_D − 13 kayıtta, FILE_* kayıtları W_D − 1 kayıtta kredi bekler.
 - FEC ile kurtarılan birim kendini tanıttığı için (önek, yukarıda) aynı yoldan geçer. Oturumlar arası yeniden sunum yeni `flow_seq` alır; onu uygulama kaydın kendi kimliğiyle tekilleştirir (§4.1; FILE_ABORT için sınır §16 YD-5).
 
 **Oturum sınırı:** akışlar oturuma aittir; yenileme/supersession akış taşımaz (S1 K7); bağlam-önce dağıtım eski oturumun DATA/ACK/kredisini yeni oturuma ulaştırmaz [`0c22a07d:transport.rs:56-62`].
@@ -141,7 +157,7 @@ WMM adları niyet bildirir; garanti §5 seçicisinden gelir.
 **Seçenekler (DUR-06-27):**
 - **(a)** Tek `Ordered` akış 1 (rev4): karşı örnek yapısal olarak kırmızı.
 - **(b)** Ayrı `Ordered` şeritler: RECEIPT şeridi + dosya kontrol şeridi (FILE_RECEIPT, FILE_ABORT). Karşı örnek yeşile döner. **Kalan:** şerit içinde 1 derinlikte HOL. Bu bağımlılıkların semantik gerekçesi yoktur: RECEIPT(n) kaybı RECEIPT(n+1)'i bekletir; FILE_RECEIPT(t1) kaybı FILE_RECEIPT(t2)'yi ve FILE_ABORT'u bekletir. İkincisi, kontrol düzeyinde "bir dosya diğerini kilitlemez" kuralını (C15 v3 §9.3) bozar. Bedel: bir kalıcı akış daha (kimlikler kayar; uygulama öncesinde bedeli ≈ 0); alıcıda şerit başına sıra tamponu; H_C_tavan bölünür.
-- **(c)** **`Independent` kip, akış 0 ve 1** (§3). Teslim sırasızdır, oturum içinde tam bir kezdir: transport `flow_seq` ile tekilleştirir (pencere W_D). Oturumlar arası tekrarı uygulama, kaydın kimliğiyle tekilleştirir (§4.1). Kredi tüketim sayısıyla ilerler ve tekilleştirme penceresinden ayrıdır (§3). **Kalan:** W_D derinliğinde bağımlılık. W_D, zarf içinde erişilemeyecek biçimde türetilir (§3 [hesap]: 31 B/s'de ≈ 139 birim → W_D = 256 [CAL]). Zarf dışında kredi beklemesi olur (kayıp yok, ihlal yok). Karşı örnek ve kardeşleri W_D içinde yeşile döner: FILE_RECEIPT(t1) ↔ (t2), ters yön RECEIPT ↔ FILE_RECEIPT, FLOW_RESET(k1) ↔ (k2). Bedel: yeni `FlowMode::Independent`, yani FROZEN S1 kapalı kümesi değişir (A.1); yeni seam değişmezi (A.7); alıcıda şerit başına W_D bit; kama-app'te FILE_* payı (§7.6).
+- **(c)** **`Independent` kip, akış 0 ve 1** (§3). Teslim sırasızdır, oturum içinde tam bir kezdir: transport `flow_seq` ile tekilleştirir (pencere W_D). Oturumlar arası tekrarı uygulama, kaydın kimliğiyle tekilleştirir (§4.1). Kredi tüketim sayısıyla ilerler ve tekilleştirme penceresinden ayrıdır (§3). **Kalan:** W_D derinliğinde bağımlılık. W_D hızın fonksiyonudur (§3): W_D = 2048 [CAL], D-3'te r ≤ ≈ 2,08 kB/s için zarf içinde erişilemez. Üstünde ve zarf dışında kredi beklemesi olur (kayıp yok, ihlal yok); U'da RECEIPT için derinlik W_D − 13. Karşı örnek ve kardeşleri W_D içinde yeşile döner: FILE_RECEIPT(t1) ↔ (t2), ters yön RECEIPT ↔ FILE_RECEIPT, FLOW_RESET(k1) ↔ (k2). Bedel: yeni `FlowMode::Independent`, yani FROZEN S1 kapalı kümesi değişir (A.1); yeni seam değişmezi (A.7); alıcıda şerit başına W_D bit; kama-app'te FILE_* payı (§7.6).
 - **(d)** Kayıt başına sıralama anahtarı (aynı anahtarlı kayıtlar sıralı). Denetim şerit içinde sıra isteyen bir anahtar bulmadı. Anahtar ya transporta uygulama anlamı taşır ya da nesne başına akış ister → reddedilir.
 - **Eşit ölçütle karşılaştırma (rev5.1):**
 
@@ -150,10 +166,10 @@ WMM adları niyet bildirir; garanti §5 seçicisinden gelir.
 | Karşı örnek (FILE_RECEIPT ↔ RECEIPT) | yeşil | yeşil |
 | FILE_RECEIPT(t1) ↔ FILE_RECEIPT(t2) | kırmızı (1 derinlik) | yeşil (W_D içinde) |
 | RECEIPT(n) ↔ RECEIPT(n+1) | kırmızı (1 derinlik) | yeşil (W_D içinde) |
-| Kalan derinlik | 1 | W_D (zarf içinde erişilemez; türetim taslağı) |
+| Kalan derinlik | 1 | W_D (D-3'te r ≤ ≈ 2,08 kB/s için zarf içinde erişilemez; üstünde beyanlı; türetim taslağı) |
 | Tel | değişmez | değişmez (ayırt edici değil) |
 | S1 / seam | akış kimlikleri kayar; kip kümesi aynı | FROZEN S1 kapalı kümesine `Independent`; yeni seam değişmezi |
-| Alıcı belleği | şerit başına sıra tamponu (≤ W birim) | W_D bit + ≤ W_c birim hazır kuyruk |
+| Alıcı belleği | şerit başına sıra tamponu (≤ W birim) | W_D bit (2048 → 256 B) + ≤ W_c birim hazır kuyruk |
 | Deneyde ölçülen | yok; B30 sonucu [çıkarım] (`Ordered` ve `Independent` kollarından) | B30 `Independent` kolu |
 
 - **Öneri (c).** t1 ↔ t2 ve RECEIPT ↔ RECEIPT bağımsızlığını yalnız (c) verir. Alıcıda yük tamponu yerine anında teslim olur ve 05c `AcceptState` kalıbı yeniden kullanılır. Bedeli FROZEN S1 kapalı kümesinin değişmesidir; sahip kararı gerekir.
@@ -287,7 +303,7 @@ Seçenekler:
 | **1 — deneyden ÖNCE** | DUR-06-5 | Birim çerçevesi + FEC kimliği + **KARAR-1/ccr tarihli eki** + `flow_id` uzayı | **KARAR (C16 v2 §4): B + B-iii yön GO, yalnız deney; ek gerekli kabul, ürün aşamasında yazılır** |
 | 1 | DUR-06-2 | S7 seçim sözleşmesi + rezerv hiyerarşisi | **KARAR: (b2) + (i) yön GO; DUR-38 ile ortak** |
 | 1 | DUR-06-20 | Deney kapsamı; FEC kolunun yeni kodda ölçülmemesi | **KARAR: (a) KOŞULLU — iki taban (H, G), karar G'de** (§14) |
-| 1 (rev5) | **DUR-06-27** | Kontrol şeritlerinin (akış 0, 1) teslim kipi — kontrol-alındısı karşı örneği | (c) `Independent`: sırasız, tam bir kez; W_D derinliğine kadar (zarf içinde erişilemez, türetim); tekilleştirme ve tüketim kredisi ayrı |
+| 1 (rev5) | **DUR-06-27** | Kontrol şeritlerinin (akış 0, 1) teslim kipi — kontrol-alındısı karşı örneği | (c) `Independent`: sırasız, tam bir kez; W_D derinliğine kadar (W_D(r) hıza bağlı; 2048 [CAL], r ≤ ≈ 2 kB/s); tekilleştirme ve tüketim kredisi ayrı |
 | **2 — deney sonucunu bekler** | DUR-06-10 | VO açıkken BK/BE birim boyu | beyan + ölçüm |
 | 2 | DUR-06-11 | FEC kapsamı (Ordered kısmı) | akış başına blok, B-iii |
 | 2 | DUR-06-3 | Kontrol katmanı sayıları, akış 0/1 kredileri, havuz/bellek | §4/§7; sayılar deneyden sonra |
@@ -784,11 +800,11 @@ Sözleşme: (a) sığ giriş · (b1) `OpaqueUnit`'e alan (149 literal D8; K3 +1�
 
 **Öneri (c).** Gerekçe:
 - AMP denetimi (§4.1) akış 1'in üç kaydında ve akış 0'ın tek kaydında şerit içi sıra gereksinimi bulmadı. RECEIPT ve FILE_RECEIPT kodda kimlikle idempotent: `0c22a07d:messaging.rs:833-855`, `file_transfer.rs:1135-1160`; testler `kama-app/tests/text_receipt.rs:564`, `src/file_transfer.rs:2349`. FILE_ABORT'un bitmiş aktarımdaki sınırı §16 YD-5'te.
-- Eşit ölçütle karşılaştırma §4.2'deki tablodadır. Kalanlar: (b)'de şerit içinde 1 derinlik HOL (RECEIPT ↔ RECEIPT, FILE_RECEIPT(t1) ↔ (t2)); (c)'de W_D derinliği, zarf içinde erişilemeyecek biçimde türetilmiş (§3 [hesap]).
+- Eşit ölçütle karşılaştırma §4.2'deki tablodadır. Kalanlar: (b)'de şerit içinde 1 derinlik HOL (RECEIPT ↔ RECEIPT, FILE_RECEIPT(t1) ↔ (t2)); (c)'de W_D derinliği; W_D hıza bağlı türetilir ve W_D = 2048 [CAL] D-3'te r ≤ ≈ 2,08 kB/s için zarf içinde erişilemez (§3 [hesap]); üstünde beyanlı.
 - "Tel değişmez" iki seçenekte de doğrudur, ayırt edici değildir. (b)'nin B30 sonucu deneyde ölçülmez, [çıkarım] olarak yazılır.
 - (d) transporta uygulama anlamı taşır.
 
-Bedel (c): yeni teslim kipi — FROZEN S1 kapalı kümesi değişir (A.1); seam değişmezi (A.7); alıcıda şerit başına W_D bit; kama-app'te FILE_* kredi payı (§7.6). **Kalan beyanı:** kontrol kaydı aynı şeritteki başka bir kaydın kurtarılmasını W_D − 1 kayda dek beklemez; ötesinde `floor_a` ilerleyene dek kredi bekler (kayıp yok, ihlal yok). Sırasızlık yalnız 0 ve 1'e uygulanır; TEXT, BK ve VO sıra kuralları aynen kalır (körlemesine sırasızlık yok). **Deneyden önce:** yön. Deney K2'de akış 1'in kipi anahtarlıdır (`Ordered` | `Independent`): `Ordered` kolu (a)'yı, `Independent` kolu (c)'yi sınar (B30).
+Bedel (c): yeni teslim kipi — FROZEN S1 kapalı kümesi değişir (A.1); seam değişmezi (A.7); alıcıda şerit başına W_D bit; kama-app'te FILE_* kredi payı (§7.6). **Kalan beyanı:** kontrol kaydı aynı şeritteki başka bir kaydın kurtarılmasını W_D − 1 kayda dek (U'da RECEIPT için W_D − 13) beklemez; ötesinde `floor_a` ilerleyene dek kredi bekler (kayıp yok, ihlal yok). Ön koşullar: motor ∉ {PreConverge, Idle}; r, W_D'nin geçerlilik aralığında (§3). Sırasızlık yalnız 0 ve 1'e uygulanır; TEXT, BK ve VO sıra kuralları aynen kalır (körlemesine sırasızlık yok). **Deneyden önce:** yön. Deney K2'de akış 1'in kipi anahtarlıdır (`Ordered` | `Independent`): `Ordered` kolu (a)'yı, `Independent` kolu (c)'yi sınar (B30).
 
 ### Öncelik 2 — deney sonucunu bekler
 
