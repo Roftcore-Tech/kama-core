@@ -13006,7 +13006,10 @@ mod tests {
             tm_c / MS,
             sil.emitted,
             t_unit / MS,
-            max_age.iter().map(|(k, v)| (*k, v / MS)).collect::<Vec<_>>()
+            max_age
+                .iter()
+                .map(|(k, v)| (*k, v / MS))
+                .collect::<Vec<_>>()
         );
         eprintln!(
             "[K4G-05b T1′] {tag} · ölçüm evresi: prob {probes} ({} B; sınır {probe_bound} / {} B) \
