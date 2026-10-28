@@ -1,8 +1,10 @@
-# K4G-05g — sahte `Ready` — kısa not (DUR-05g-1 (a) uygulaması + DUR-05g-2)
+# K4G-05g — sahte `Ready` — kısa not (DUR-05g-1 (a) uygulaması + DUR-05g-2 + DUR-05g-3 (B))
 
 ## 0. Künye
 
-**K4G-05g** (CEVAP 14 §5; CEVAP 15 §3). Dal `k4g/05g-sahte-ready`, taban main `1b1425d2`. Kod: `9c0273e4`, `0049f5d9` · testler: `0b216f07`, `9fee9b77`, `ee7fabb4` · S1 metni (Ek A): `b0eed05f`. Ek A'daki `<ONAY-TARİHİ>` sahibin onay turu-2 mesajının tarihidir; o mesaj gelmeden Ek A merge edilmez. Satır atıfları bu dalın uçundandır (Ek B). Bu şeritte cargo koşulmadı; sayılar orkestratörün ölçümünden gelir.
+**K4G-05g** (CEVAP 14 §5; CEVAP 15 §3; CEVAP 16 §2). Dal `k4g/05g-sahte-ready`, taban main `1b1425d2`. Kod: `9c0273e4`, `0049f5d9`, `978180a5` (DUR-05g-3 (B)) · testler: `0b216f07`, `9fee9b77`, `ee7fabb4`, `0e54e31e` · S1 metni (Ek A): `b0eed05f`. Ek A'daki `<ONAY-TARİHİ>` sahibin onay turu-2 mesajının tarihidir; o mesaj gelmeden Ek A merge edilmez. Satır atıfları bu dalın uçundandır (Ek B). Bu şeritte cargo koşulmadı; sayılar orkestratörün ölçümünden gelir.
+
+**Onay koşulu (CEVAP 16 §2).** "K4G-05g ONAYLANDI" ancak #140 merge'ünden SONRA main üzerine yeniden tabanlanmış GERÇEK merge adayında, tam yerel kapı (1.96.0, `--locked`) yeşil olduğunda ve sonuçlar o SHA'ya bağlandığında gelir. Ek A hash'inin değişmemesi kodun doğrulandığı anlamına GELMEZ: Ek A yalnız S1 K7 metnidir. (B) ile Ek A DEĞİŞMEDİ; K7 yaması `b0eed05f`'teki hâliyle aynıdır. Yeniden tabanlamayı orkestratör yapar.
 
 ## 1. Kol başına davranış (DUR-05g-1 (a) sonrası)
 
@@ -14,6 +16,8 @@
 | yenileme cutover'ı (yanıt tutuldu) | eski tutamaç | yok; uç `AcceptResponse`'tan ÖNCE açılır, açılamazsa yanıt tutulur, eski oturum tam çalışır | yenileme sürer |
 | yenileme yedek kolu (uç önceden açılmadı) | eski tutamaç | `Closed(eski, Superseded)`, `Ready` yok | yeni + eski `Close` |
 | provisional onayı | eski tutamaç | `Closed(eski, Superseded)`, `Ready` yok | yeni + eski `Close` |
+
+Ek olarak `connect` (ve kalıcı niyetin taze INIT'i) INIT'ten ÖNCE yerel soketi sınar (§3, DUR-05g-3 (B)). Sınama düşerse INIT yola çıkmaz; niyet `ConnectAbandoned(bilet, LocalPermanent)` ile biter. Sınama geçer ama açılış düşerse yukarıdaki kollar aynen çalışır.
 
 Son iki kol S1 K7'nin TEK istisnasıdır (Ek A). Kapanış `close` ile aynı yoldan geçer: uç bırakılır, sıralama durumu silinir, eski oturumun bekleyen yenilemesi kapatılır, Crypto'nun eski oturum için vereceği tek `Closed` yutulur. S1'e tam BİR `Closed` gider (`abandon_successor`). `activate_without_endpoint` kalktı. Uçsuz `Ready` üreten kod yolu yok: `activate` açılmış ucu parametre olarak alır. Enum'lar değişmedi. Application tarafı nedenden bağımsızdır: kama-app `Messenger::retire` eşin oturumunu kaldırır, kama-node `note_down` eş için `NodeEvent::Closed { reason: Session(Superseded) }` yayımlar.
 
@@ -64,12 +68,11 @@ Karşı uçtaki kayıt Crypto'nun "yarım açık" kaydı DEĞİLDİR. O kayıt b
 - **Temizlenme koşulu.**
   - Ölü `Active`: bizim sıradaki BAŞARILI bağlanmamız (onay → drain → kapanış, `GRACE` içinde) ya da karşı ucun yenilemesi.
   - Onaysız provisional: yalnız `PROVISIONAL_TTL`. Başka bir provisional'ın onayı onu temizlemez.
-- **Açık: DUR-05g-3.** Kalıcı bir yerel uç hatası altında Application'ın her yeniden bağlanma denemesi karşı uçta bir provisional bırakır; eş başına tavan yoktur. Seçenekler:
-  - (A) kama-noise-wire'da eş başına onaysız provisional tavanı: yenisi gelince en eski onaysız kayıt düşer (`HALF_OPEN_CAP` kalıbı). KS-DOS-1 sınıfı, ayrı kart; tel değişmez.
-  - (B) client-core `connect`'inde INIT'ten önce yerel soket sınaması: bind + connect, uç görevi açılmadan. Kalıcı yerel hatada INIT yola çıkmaz, karşıya kayıt gitmez. Bedeli `ClientEndpoint`'in soket kurulumunun kopyası.
-  - (C) Kabul + INT-02 ölçümü.
-
-  Öneri: (B) bu kartta küçük ek (yerel; tel ve S1 değişmez). (A) ayrı kart, çünkü yalnız 05g'nin değil, her doğrulanmış eşin INIT selinin sınırıdır.
+- **DUR-05g-3.** Kalıcı bir yerel uç hatası altında Application'ın her yeniden bağlanma denemesi karşı uçta bir provisional bırakır; eş başına tavan yoktur. Sahip kararı (CEVAP 16 §2):
+  - **(B) bu kartta, yardımcı önlem olarak uygulandı** (`978180a5`). `connect` ve `reinitiate`, INIT'ten ÖNCE ucun açılışındaki AYNI soket kurulumunu sınar: ortak yardımcı `runtime::bind_peer_socket` (bind + connect), uç görevi açılmadan; kopya yok. Sınama düşerse INIT yola çıkmaz, Crypto `Initiate` çağrılmaz, karşı uçta kayıt oluşmaz. Niyet `ConnectAbandoned(_, LocalPermanent)` ile biter; sayaç `local_probe_failures`. S1, tel ve enum değişmedi.
+  - **(B)'nin sınırı: (B) başarısız girişimleri azaltır ama kaynak sınırı DEĞİLDİR.** Sınama ile gerçek açılış arasında koşul değişebilir (o zaman §1'deki açılış hatası kolları aynen çalışır; sınama onların yerine geçmez). Ayrıca (B) gelen INIT yollarını (yanıtlayan, provisional) ve yenileme INIT'ini kapsamaz. Karşı uçtaki provisional sayısına üst sınır koymaz.
+  - **(A) ayrı kart:** kama-noise-wire'da eş başına onaysız provisional tavanı ve temizleme politikası (`HALF_OPEN_CAP` kalıbı; KS-DOS-1 sınıfı). "INT-02 GEÇTİ"den ÖNCE kapanır. Taslak: dal `k4g/05g-a-provisional-tavan`, not `docs/design/K4G-05g-A-PROVISIONAL-TAVAN.md`; kart adı sahibin.
+  - **(C) tek başına REDDEDİLDİ:** INT-02 ölçümü ek olarak kalır (§5).
 
 ## 4. Testler (DUR-05g-1 (a) ve DUR-05g-2 (3))
 
@@ -91,16 +94,39 @@ kama-node (`crates/kama-node/src/node/tests/endpoint_failure.rs`; iki elle sür�
   - Alice `Closed { bob, Abandoned(LocalPermanent) }` görür.
   - Bob'daki yarım açık oturum dururken Alice'in yeniden `connect`'i BAŞARIR; Bob'da `Closed` yok.
 
+**DUR-05g-3 (B)** (aynı client-core dosyası, 4 yeni test; mevcut 6 test değişmedi):
+- **(7) Kalıcı yerel soket hatası:**
+  - INIT yok: röle ve bütün kutular boş, karşı uca hiçbir zarf gitmedi, Bob'da olay yok.
+  - `ConnectAbandoned(t1, LocalPermanent)`; `local_probe_failures` 1, `endpoint_open_failures` 0; Crypto oturumu hiç açılmadı.
+  - Hata kalkınca `connect` → `Pending` → `Ready`; erken metin tek kez teslim edilir.
+- **(8) Sınama geçer, açılış düşer:** INIT yola çıkar (röle 1). `Ready` yok; tam bir `ConnectAbandoned`. Sınama sayacı 0, açılış sayacı 1; Crypto oturumu kapalı.
+- **(9) Normal yol:** `Measuring` → `Ready`; iki sayaç 0; iki yönde veri.
+- **(10) Kalıcı niyetin taze INIT'i:** `HALF_OPEN_TTL` sonrası sınama düşer. Taze INIT yok (rölede yalnız ilk INIT); `ConnectAbandoned`.
+
+**2×2 beklentisi (DUR-8 biçimi).** Satırlar kod, sütunlar test. "Yeni kod" = `0e54e31e`. "Eski kod" = (B)'siz `c9c2ea22`; yeni testler orada derlenmez (`set_socket_probe_failures_for_test` / `local_probe_failures` yok). Bu yüzden eski davranış yeni kodun üstüne mutasyonla geri getirilir.
+
+| Kod \ test | (7) | (8) | (9) | (10) | mevcut 6 test + kama-node 2 |
+|---|---|---|---|---|---|
+| yeni kod | Y | Y | Y | Y | Y (değişmedi) |
+| M8: `connect` sınamayı atlar | **K** — INIT gider, ikinci `next_event` WAIT içinde gelmez | Y | Y | Y | Y |
+| M9: `reinitiate` sınamayı atlar | Y | Y | Y | **K** — taze INIT gider, `ConnectAbandoned` gelmez | Y |
+| M10: `connect`'te sınama düşünce olay yok | **K** — ikinci `next_event` gelmez | Y | Y | Y | Y |
+| M1: açılış kolunda uçsuz `Ready` | Y | **K** — ikinci olay `Ready` | Y | Y | initiator, responder, glare, kama-node (b) K |
+
+(K = kırmızı, Y = yeşil.) (9) mutasyonlarla kırmızıya dönmez; normal yolun değişmediğinin kontrol kolu odur. Mutasyon dosyaları `~/kama-k4g-work/k4g05g/mutasyon/M8…M10`.
+
 ## 5. INT-02 (DUR-05g-2 (4))
 
 Ölçüm ek olarak kalır (hüküm değil, raporlanır):
-- `endpoint_open_failures`;
+- `endpoint_open_failures` ve `local_probe_failures`;
 - karşı uçta ölü `Active` ve onaysız provisional sayısı ile ömrü;
 - yeniden bağlanmadan karşı ucun ölü oturumunun kapanışına kadar geçen süre (beklenen ≤ `GRACE_T_G`).
 
 ## 6. Beyanlar
 
-- **`LocalPermanent`:** soket kurulum hatası geçici olabilir. Kapalı listede uyan başka neden yoktur ve niyeti açık tutmak kalıcı hatada sınırsız el sıkışma döngüsü kurar. Adres eksikliğinde `connect` bu nedeni zaten kullanıyordu.
+- **`LocalPermanent`:** soket kurulum hatası geçici olabilir. Kapalı listede uyan başka neden yoktur ve niyeti açık tutmak kalıcı hatada sınırsız el sıkışma döngüsü kurar. Adres eksikliğinde `connect` bu nedeni zaten kullanıyordu. (B)'nin sınama hatası da aynı nedenle biter: `connect`'in belgelenmiş hata kümesinde (`EarlyUnitConflict`, `UnitTooLarge`, `Backpressure`) yerel soket hatasının karşılığı yoktur; yeni hata ya da olay eklenmedi.
+- **(B) kapsamı:** `connect` ve `reinitiate` (kalıcı niyetin `HALF_OPEN_TTL` sonrası taze INIT'i). Yenileme INIT'i sınanmaz: yenilemenin uç hatası, uç `AcceptResponse`'tan önce açıldığı için eski oturumu bozmaz ve yenileme başına karşı uçta en çok bir provisional bırakır.
+- **(B) ve runtime.rs:** yalnız `connect_session_counted`'ın soket kurulumu `bind_peer_socket`'a taşındı (aynı iki çağrı). 05b'nin (#140) runtime.rs hunk'larıyla örtüşmüyor.
 - **Yenileme yeniden denemesi:** uç açma denemesi her `drive`'da bir kez sayılır, yani sayaç hızlı artabilir.
 - **Testsiz savunma dalı:** taze ucun erken birimi reddetmesi (uç görevi açılır açılmaz ölürse).
 - **Bayat belge cümleleri (davranış değişmedi):**
@@ -163,7 +189,7 @@ index 037ceeab..a6ed0a20 100644
 
 ## Ek B — atıflar (dal ucu)
 
-- `crates/client-core/src/transport.rs`: `on_incoming_init` :785 · `release_held_renewals` :845 · `on_crypto_ready` :896 · `on_confirmed` :961 · `on_crypto_closed` :1021 · `activate` :1115 · `abort_activation` :1164 · `abandon_successor` :1182.
+- `crates/client-core/src/transport.rs`: `on_incoming_init` :814 · `release_held_renewals` :874 · `on_crypto_ready` :925 · `on_confirmed` :990 · `on_crypto_closed` :1050 · `reinitiate` :1109 (sınama :1112) · `activate` :1153 · `abort_activation` :1202 · `abandon_successor` :1220 · `local_socket_ok` :1251 · `connect` :1476 (sınama :1524). `crates/client-core/src/runtime.rs`: `bind_peer_socket` :1544.
 - `crates/kama-noise-wire/src/session_control.rs`: `HALF_OPEN_CAP` :80 · `HALF_OPEN_TTL` :83 · `PROVISIONAL_TTL` :85 · `SESSION_MAX_AGE` :87 · `active_session_with` :246 · onay `Confirmed` :418-422 · `tick_meta` :442 (drain `T_g` :447, provisional TTL :451-453, yaş :457) · bekleyen INIT TTL :476 · `start_drain` :524 · `end_session` :543 · provisional mi etkin mi :769 · yanıtlayan `created_at` :806 · önbellek tavanı :824 · yanıtlayan `Ready` :849 · başlatan `created_at` :907, `Ready` :920, eski drain :922 · `cmd_close` :991.
 - `crates/kama-noise-wire/src/epoch_machine.rs`: `GRACE_N_G` :57 · `GRACE_T_G` :61. `crates/kama-noise-wire/src/protector.rs`: `SEND_PN_CAP` :42.
 - `crates/client-core/src/runtime.rs` ürün varsayılanı: `max_inflight_units` 4096 :259 · `offer_queue` 1024 :260 · `drain_cap` 3 s :269.
