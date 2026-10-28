@@ -12693,4 +12693,664 @@ mod tests {
     fn k4g05b_dur45_diag_d2_r100() {
         dur45_d2(100);
     }
+
+    // ── [K4G-05b · CEVAP PAKETİ 16 v2 §1.2 (4)] T1′ / T2′ — ürün kipi (kuyruk-probu + FEC açık) ──
+    //
+    // Sınırlar, ön koşullar ve önceden kayıtlı tahminler: tasarım notu Ek B.6 h.9.8 (fikstürden
+    // ÖNCE, a708630f + 81ac0588). T1/T2 (prob ve FEC kapalı) AYNEN kalır. Ürün yapılandırması:
+    // kuyruk-probu `validated_v1`, FEC `Manual{enabled: true}` (kısmi blok, r = 2, S_par = 151 B),
+    // CS kapalı.
+    // Evre sayaçları hazırlık / ölçüm ayrımını t_c (T2′'de t_r) görüntüsüyle yapar; ölçüm evresinde
+    // prob ≥ 1, parite üretimi = 2 ve parite emisyonu ≥ 1 ön koşuldur ("kapsandı" sıfır emisyonla
+    // sayılmaz). T2′ DATA (R2) sınırını assert ETMEZ (DUR-45 (1), ispat açığı): ölçer ve basar.
+
+    const UK_S: u64 = 150;
+    const UK_SMALL: u64 = 37;
+    const UK_PAR: u64 = UK_S + 1;
+    const UK_PAR_R: u16 = 2;
+    const T1P_P_ID: u64 = 5;
+    const T1P_BLOCK_AT: u64 = 100 * MS;
+    const T1P_N_LIVE: u64 = 7;
+    /// T2′ prob tetikleyicisi: ölçüm evresinde bu arka plan biriminin İLK iletimi düşer
+    /// (t = 250 s).
+    const T2P_DROP_ID: u64 = 1025;
+    /// T2′ parite bloğu (1026–1027) t = 270 s'de, 1027'nin sunumundan sonra kapatılır.
+    const T2P_BLOCK_AT: u64 = 270 * REV6_SEC;
+
+    /// Ürün kipi sınıf sınırları (Ek B.6 h.3, h.9.3 P2), baş boyu üst sınırı `s`: T_max(DATA) =
+    /// (3·s + p_pf)/R + 7τ, T_max(ARQ) = 3·s/R + 7τ, T_max(kopya) = 4·s/R + 8τ.
+    fn uk_t_max(rate: u64, s: u64, p_pf: u64) -> (u64, u64, u64) {
+        let d = (3 * s + p_pf) * REV6_SEC / rate + 7 * REV6_TICK;
+        let a = 3 * s * REV6_SEC / rate + 7 * REV6_TICK;
+        let c = 4 * s * REV6_SEC / rate + 8 * REV6_TICK;
+        (d, a, c)
+    }
+
+    /// H_maks = max(3·srtt, 2·EAI_maks)·1000/300, EAI_maks = 2·unit_max/R + 65/31 s (Ek B.6 h.2).
+    fn uk_h_max(rate: u64, srtt_ns: u64, unit_max: u64) -> u64 {
+        let eai =
+            2 * unit_max * REV6_SEC / rate + EAI_SACK_WIRE_BYTES * REV6_SEC / EAI_RETURN_BW_PRIOR;
+        (3 * srtt_ns).max(2 * eai) * 1000 / 300
+    }
+
+    /// T_birim = max(H_maks, A) + A + N_live·T_max(kopya) + τ (Ek B.6 h.3, h.9.7).
+    fn uk_t_unit(h_max: u64, t_max_copy: u64, n_live: u64) -> u64 {
+        let a = rto_max_ns();
+        h_max.max(a) + a + n_live * t_max_copy + REV6_TICK
+    }
+
+    /// Evre sayacı görüntüsü: prob emisyonu, parite üretimi, parite emisyonu.
+    #[derive(Clone, Copy)]
+    struct UkPhase {
+        probes: u64,
+        parity_enq: u64,
+        parity_emit: u64,
+    }
+
+    fn uk_phase(s: &Sender) -> UkPhase {
+        UkPhase {
+            probes: s.act_tail_probe_emitted,
+            parity_enq: s.parity_enqueued_total,
+            parity_emit: s.act_parity_emitted,
+        }
+    }
+
+    /// Ölçüm evresi P_pf muhasebesi: prob ve parite baytı; U2'de (tur başında DATA uygun, DATA
+    /// hakkı yok, rezerv yok) başlayıp DATA emisyonu olmayan turlarda alınanlar ayrıca
+    /// (`u2_bytes`).
+    #[derive(Default)]
+    struct UkPpf {
+        probe_n: u64,
+        probe_bytes: u64,
+        parity_bytes: u64,
+        u2_bytes: u64,
+    }
+
+    impl UkPpf {
+        /// `probed`: bu turda gerçek prob emisyonu oldu. Prob turun SON Retransmit kararıdır
+        /// (`schedule_transmit`'te probdan sonra yalnız kopya, parite ve CS kararları gelir).
+        fn turn(&mut self, u2: bool, probed: bool, out: &[TransmitDecision]) {
+            let last_retx = out
+                .iter()
+                .rev()
+                .find(|d| d.kind == TransmitKind::Retransmit);
+            let probe = if probed {
+                last_retx.map_or(0, |d| d.size)
+            } else {
+                0
+            };
+            let parity: u64 = out
+                .iter()
+                .filter(|d| d.kind == TransmitKind::FecParity)
+                .map(|d| d.size)
+                .sum();
+            if probed {
+                self.probe_n += 1;
+            }
+            self.probe_bytes += probe;
+            self.parity_bytes += parity;
+            let data = out.iter().any(|d| d.kind == TransmitKind::Data);
+            if u2 && !data {
+                self.u2_bytes += probe + parity;
+            }
+        }
+    }
+
+    /// T1′ — ürün kipi ACK'siz ölçüm evresi (R0) ve R1a alt kolu (Ek B.6 h.9.8). `stale`: dönüş
+    /// yolu 1 s'de bir özdeş SACK (yalnız W) taşır — T_birim(R1a) bekçisi (h.9.7).
+    fn uk_t1p(rate: u64, stale: bool) {
+        let tag = format!("T1′ R={rate} B/s {}", if stale { "R1a" } else { "R0" });
+        let mk = |id: u64, size: u64| OpaqueUnit { id, size };
+        let mut s = Sender::new();
+        s.set_establish_probe(false);
+        s.set_tail_recovery_config(TailRecoveryConfig::validated_v1());
+        let mode = s.set_fec_actuation_mode(FecActuationMode::Manual { enabled: true });
+        assert!(
+            mode.is_ok(),
+            "FİKSTÜR GEÇERSİZ: FEC Manual kipi kabul edilmedi"
+        );
+        // Isınma (T1 ile aynı): W t = 0, ACK t = 1 s → srtt 1 s (R0/R1a'da RTT örneği yok).
+        let w = s.on_event(Event::AppData(mk(0, REV6_SMALL)), 0);
+        let w_seq = w
+            .iter()
+            .find(|d| d.kind == TransmitKind::Data)
+            .map(|d| d.seq)
+            .expect("FİKSTÜR GEÇERSİZ: ısınma birimi çıkmadı");
+        let _ = s.on_event(ack(&[w_seq]), REV6_SEC);
+        assert_eq!(
+            s.take_confirmed_units(),
+            [0],
+            "FİKSTÜR GEÇERSİZ: ısınma birimi teyit edilmedi"
+        );
+        // t_c: P (ilk izlenen → en eski uygun kayıt), A1 (kayıp ilanlı), C1 (zincir), D1 + D2.
+        let t_c = REV6_SEC + REV6_TICK;
+        let p_seq = s.track_sent_unit(mk(T1P_P_ID, UK_SMALL), t_c, 0, TransmitKind::Data);
+        let a_seq = s.track_sent_unit(mk(10, UK_S), t_c, 0, TransmitKind::Data);
+        s.queue_losses(&[a_seq], t_c);
+        let c1 = mk(20, UK_S);
+        let _ = s.track_sent_unit(c1, t_c, 0, TransmitKind::Data);
+        let base = s.copy_base_ns();
+        s.copy_ensure_geometric(c1, t_c, base, false);
+        s.tx_queue.push_back(mk(30, UK_S));
+        s.tx_queue.push_back(mk(31, UK_SMALL));
+        s.pacer.set_rate(rate);
+        let full = s.pacer.tokens();
+        let _ = s.pacer.try_send(full);
+        // Türetilmiş sınırlar (Ek B.6 h.9.8).
+        let cap = u64::from(s.tail_recovery.config().max_tail_probes);
+        let srtt_ns = dur_ns(s.rtt.srtt().expect("FİKSTÜR GEÇERSİZ: srtt yok"));
+        let p_pf_u2_bound = cap * UK_SMALL;
+        let (tm_d, tm_a, tm_c) = uk_t_max(rate, UK_S, p_pf_u2_bound);
+        let t_unit = uk_t_unit(uk_h_max(rate, srtt_ns, UK_PAR), tm_c, T1P_N_LIVE);
+        let end = t_c + 2 * t_unit;
+        let probe_bound = cap - u64::from(s.tail_recovery.probe_index());
+        let parity_bound = u64::from(UK_PAR_R) * UK_PAR;
+        let phase0 = uk_phase(&s);
+        let mut now = t_c;
+        let out0 = rev6_turn(&mut s, Event::TimerFired(Timer::Pto), now, rate);
+        // Ön koşullar (kurulmadıysa kırmızı).
+        assert!(
+            out0.is_empty(),
+            "FİKSTÜR GEÇERSİZ: ilk turda token yokken emisyon {out0:?}"
+        );
+        assert_eq!(
+            s.state,
+            SenderState::RecoverArq,
+            "FİKSTÜR GEÇERSİZ: RECOVER_ARQ değil"
+        );
+        assert_eq!(
+            s.arq_plan_head_size(),
+            Some(UK_S),
+            "FİKSTÜR GEÇERSİZ: ARQ başı 150 B değil"
+        );
+        assert_eq!(
+            s.dup_queue
+                .iter()
+                .filter(|x| x.interval_ns > 0 && x.due_ns <= now)
+                .count(),
+            1,
+            "FİKSTÜR GEÇERSİZ: bir vadeli geometrik zincir yok"
+        );
+        assert_eq!(
+            s.tx_queue.front().map(|x| x.size),
+            Some(UK_S),
+            "FİKSTÜR GEÇERSİZ: DATA başı 150 B değil"
+        );
+        assert_eq!(
+            s.oldest_probe_eligible_seq(),
+            Some(p_seq),
+            "FİKSTÜR GEÇERSİZ: en eski uygun kayıt P değil"
+        );
+        assert!(
+            s.probe_scope_active() && probe_bound == cap,
+            "FİKSTÜR GEÇERSİZ: prob kapsamı etkin değil ya da probe_index ≠ 0"
+        );
+        let la0 = s.loss.largest_acked();
+        assert!(
+            la0.is_some_and(|la| la < p_seq),
+            "FİKSTÜR GEÇERSİZ: la seq(P)'nin altında değil (tek prob kurulumu koşulu)"
+        );
+        assert_eq!(
+            phase0.parity_enq, 0,
+            "FİKSTÜR GEÇERSİZ: hazırlıkta parite üretildi"
+        );
+        let mut sil = Rev6Silence::default();
+        let bound = [tm_d, tm_a, tm_c];
+        let mut ppf = UkPpf::default();
+        let mut last: BTreeMap<u64, u64> = BTreeMap::new();
+        let mut services: BTreeMap<u64, u32> = BTreeMap::new();
+        let mut max_age: BTreeMap<u64, u64> = BTreeMap::new();
+        for id in [T1P_P_ID, 10, 20] {
+            last.insert(id, t_c);
+        }
+        let mut block_closed = false;
+        let mut next_stale = t_c + REV6_SEC;
+        let mut fwd_at: Option<u64> = None;
+        while now + REV6_TICK <= end {
+            now += REV6_TICK;
+            if !block_closed && now >= t_c + T1P_BLOCK_AT {
+                // Ölçüm evresinde FEC kısmi bloğu: F1, F2 sunulur ve blok kapatılır (runtime akış
+                // sonu kısmi bloğu gibi; parite üretimi kapanış anında).
+                block_closed = true;
+                s.tx_queue.push_back(mk(40, UK_SMALL));
+                s.tx_queue.push_back(mk(41, UK_SMALL));
+                let auth = s.open_fec_block_authority();
+                let closed = s.close_fec_block_manual(auth, 1, UK_PAR_R, UK_PAR);
+                assert_eq!(
+                    closed,
+                    Ok(UK_PAR_R),
+                    "FİKSTÜR GEÇERSİZ: FEC bloğu kapanmadı"
+                );
+            }
+            let mut evs: Vec<Event> = Vec::new();
+            if stale && now >= next_stale {
+                evs.push(ack(&[w_seq]));
+                next_stale += REV6_SEC;
+            }
+            evs.push(Event::TimerFired(Timer::Pto));
+            if now.is_multiple_of(REV6_RTPROP) {
+                evs.push(Event::TimerFired(Timer::RtpropProbe));
+            }
+            for ev in evs {
+                let is_ack = matches!(ev, Event::AckReceived(_));
+                let inflight_before = s.inflight.len();
+                s.on_event_core(ev, now);
+                assert!(
+                    !is_ack || s.inflight.len() >= inflight_before,
+                    "{tag}: FİKSTÜR GEÇERSİZ: bayat çerçeve uçuşu küçülttü (an {} ms)",
+                    now / MS
+                );
+                s.pacer.set_rate(rate);
+                let window = rate.saturating_mul(BURST_WINDOW_NS) / REV6_SEC;
+                let floor = s.burst_floor_bytes(now);
+                s.pacer.set_burst_cap(window.max(floor));
+                let elig = rev6_elig(&s, now);
+                let u2 = elig[0] && !s.rights.get(SvcClass::Data) && s.reserve_total() == 0;
+                let probes_before = s.act_tail_probe_emitted;
+                let out = s.schedule_transmit(now);
+                sil.turn(&tag, now, elig, &out, bound);
+                ppf.turn(u2, s.act_tail_probe_emitted > probes_before, &out);
+                for dd in &out {
+                    if rev6_class(dd.kind).is_some() {
+                        last.insert(dd.unit_id, now);
+                        *services.entry(dd.unit_id).or_default() += 1;
+                    }
+                }
+            }
+            assert!(
+                s.take_confirmed_units().is_empty(),
+                "{tag}: yeni teyit (R0/R1a'da olmamalı; an {} ms)",
+                now / MS
+            );
+            if stale {
+                assert_eq!(
+                    s.loss.largest_acked(),
+                    la0,
+                    "{tag}: FİKSTÜR GEÇERSİZ: R1a'da la değişti"
+                );
+            }
+            if s.state == SenderState::RecoverFwd && fwd_at.is_none() {
+                fwd_at = Some(now);
+            }
+            for (&id, &t_last) in &last {
+                let age = now - t_last;
+                let m = max_age.entry(id).or_default();
+                *m = (*m).max(age);
+                assert!(
+                    age <= t_unit,
+                    "{tag}: u{id} hizmet yaşı {} ms > T_birim {} ms (an {} ms)",
+                    age / MS,
+                    t_unit / MS,
+                    now / MS
+                );
+                assert!(
+                    rev6_owned(&s, id),
+                    "{tag}: u{id} sahipsiz (an {} ms)",
+                    now / MS
+                );
+            }
+        }
+        let phase = uk_phase(&s);
+        let probes = phase.probes - phase0.probes;
+        let par_enq = phase.parity_enq - phase0.parity_enq;
+        let par_emit = phase.parity_emit - phase0.parity_emit;
+        eprintln!(
+            "[K4G-05b T1′] {tag} · pencere {} s · en uzun susma DATA {} / ARQ {} / kopya {} ms \
+             (T_max {} / {} / {} ms) · emisyon {:?} · T_birim {} ms · en büyük hizmet yaşı {:?} ms",
+            (end - t_c) / REV6_SEC,
+            sil.max[0] / MS,
+            sil.max[1] / MS,
+            sil.max[2] / MS,
+            tm_d / MS,
+            tm_a / MS,
+            tm_c / MS,
+            sil.emitted,
+            t_unit / MS,
+            max_age.iter().map(|(k, v)| (*k, v / MS)).collect::<Vec<_>>()
+        );
+        eprintln!(
+            "[K4G-05b T1′] {tag} · ölçüm evresi: prob {probes} ({} B; sınır {probe_bound} / {} B) \
+             · parite üretimi {par_enq}, emisyonu {par_emit} ({} B; sınır {parity_bound} B) · \
+             P_pf^U2 {} B (sınır {p_pf_u2_bound} B) · hizmet {services:?} · RECOVER_FWD {:?} ms",
+            ppf.probe_bytes,
+            probe_bound * UK_S,
+            ppf.parity_bytes,
+            ppf.u2_bytes,
+            fwd_at.map(|t| t / MS)
+        );
+        // Ön koşullar (ölçüm evresi; sıfır emisyon "kapsandı" sayılmaz).
+        assert_eq!(
+            ppf.probe_n, probes,
+            "{tag}: FİKSTÜR GEÇERSİZ: prob sayımı tutarsız"
+        );
+        assert!(
+            probes >= 1,
+            "{tag}: FİKSTÜR GEÇERSİZ: ölçüm evresinde prob emisyonu yok"
+        );
+        assert_eq!(
+            par_enq,
+            u64::from(UK_PAR_R),
+            "{tag}: FİKSTÜR GEÇERSİZ: ölçüm evresinde parite üretimi"
+        );
+        assert!(
+            par_emit >= 1,
+            "{tag}: FİKSTÜR GEÇERSİZ: ölçüm evresinde parite emisyonu yok"
+        );
+        for id in [T1P_P_ID, 10, 20, 30, 31, 40, 41] {
+            assert!(
+                last.contains_key(&id),
+                "{tag}: FİKSTÜR GEÇERSİZ: u{id} hiç iletilmedi"
+            );
+        }
+        for (n, name) in sil.emitted.iter().zip(REV6_CLASS_NAMES) {
+            assert!(
+                *n > 0,
+                "{tag}: {name} hiç emisyon yapmadı (ölçülecek iş oluşmadı)"
+            );
+        }
+        // Türetilmiş bayt sınırları (Ek B.6 h.9.8).
+        assert!(
+            probes <= probe_bound && ppf.probe_bytes <= probe_bound * UK_S,
+            "{tag}: prob {probes} / {} B > sınır {probe_bound} / {} B",
+            ppf.probe_bytes,
+            probe_bound * UK_S
+        );
+        assert!(
+            ppf.parity_bytes <= parity_bound,
+            "{tag}: parite {} B > sınır {parity_bound} B",
+            ppf.parity_bytes
+        );
+        assert!(
+            ppf.u2_bytes <= p_pf_u2_bound,
+            "{tag}: P_pf^U2 {} B > sınır {p_pf_u2_bound} B",
+            ppf.u2_bytes
+        );
+    }
+
+    #[test]
+    fn k4g05b_t1p_product_ackless_r31() {
+        uk_t1p(31, false);
+    }
+
+    #[test]
+    fn k4g05b_t1p_product_ackless_r100() {
+        uk_t1p(100, false);
+    }
+
+    #[test]
+    fn k4g05b_t1p_product_r1a_t_birim_r31() {
+        uk_t1p(31, true);
+    }
+
+    #[test]
+    fn k4g05b_t1p_product_r1a_t_birim_r100() {
+        uk_t1p(100, true);
+    }
+
+    /// T2′ — ürün kipi sonlu kesinti + ACK'li toparlanma (R2) (Ek B.6 h.9.8). T1′'in sınırları
+    /// KULLANILMAZ; DATA (R2) susması assert edilmez (DUR-45 (1)), ölçülür ve basılır.
+    fn uk_t2p(rate: u64) {
+        let tag = format!("T2′ R={rate} B/s");
+        let t_out = 100 * REV6_SEC;
+        let t_r = 160 * REV6_SEC;
+        let mk = |id: u64, size: u64| OpaqueUnit { id, size };
+        let mut s = Sender::new();
+        s.set_establish_probe(false);
+        s.set_tail_recovery_config(TailRecoveryConfig::validated_v1());
+        let mode = s.set_fec_actuation_mode(FecActuationMode::Manual { enabled: true });
+        assert!(
+            mode.is_ok(),
+            "FİKSTÜR GEÇERSİZ: FEC Manual kipi kabul edilmedi"
+        );
+        let mut net = Rev6Net {
+            rate,
+            link_free: 0,
+            fwd: VecDeque::new(),
+            ret: VecDeque::new(),
+            received: BTreeSet::new(),
+            outage: (t_out, t_r),
+        };
+        // Hedef küme BAŞTAN sabit (6 × 150 B); iki büyük-sıralı hedefin t_r öncesi iletimi düşer.
+        let big = [10u64, 11];
+        let targets: Vec<(u64, OpaqueUnit)> = vec![
+            (5 * REV6_SEC, mk(10, UK_S)),
+            (6 * REV6_SEC, mk(11, UK_S)),
+            (10 * REV6_SEC, mk(12, UK_S)),
+            (20 * REV6_SEC, mk(13, UK_S)),
+            (30 * REV6_SEC, mk(14, UK_S)),
+            (40 * REV6_SEC, mk(15, UK_S)),
+        ];
+        let target_ids: Vec<u64> = targets.iter().map(|(_, x)| x.id).collect();
+        // Türetilmiş sınırlar (Ek B.6 h.9.8).
+        let cap = u64::from(s.tail_recovery.config().max_tail_probes);
+        let (_, tm_a, tm_c) = uk_t_max(rate, UK_S, 0);
+        let bound = [u64::MAX, tm_a, tm_c];
+        let l = (DEFAULT_MTU + UK_S) * REV6_SEC / rate + 2 * REV6_ONE_WAY;
+        let delta_a = UK_S * REV6_SEC / rate + REV6_TICK + l;
+        let t_unit = uk_t_unit(uk_h_max(rate, l, DEFAULT_MTU), tm_c, 26);
+        let b_t2 = delta_a + t_unit + l;
+        let ack_delay = TailRecoveryConfig::validated_v1().max_ack_delay_ns;
+        let b_min = ack_delay + 2 * REV6_ONE_WAY + UK_S * REV6_SEC / rate;
+        let parity_bound = u64::from(UK_PAR_R) * UK_PAR;
+        let mut confirmed_at: BTreeMap<u64, u64> = BTreeMap::new();
+        let mut sil = Rev6Silence::default();
+        let mut ppf = UkPpf::default();
+        let mut phase0: Option<UkPhase> = None;
+        let mut idx_r = 0u64;
+        let mut now = 0u64;
+        let mut next_bg = 0u64;
+        let mut bg_id = 1000u64;
+        let mut ti = 0usize;
+        let mut chains_fixed = false;
+        let mut chain_seen = [false; 2];
+        let mut warm_done = false;
+        let mut drop_done = false;
+        let mut block_closed = false;
+        loop {
+            let mut evs: Vec<Event> = Vec::new();
+            if !warm_done {
+                for id in 0..4 {
+                    evs.push(Event::AppData(mk(id, UK_S)));
+                }
+                warm_done = true;
+            }
+            while ti < targets.len() && targets[ti].0 <= now {
+                evs.push(Event::AppData(targets[ti].1));
+                ti += 1;
+            }
+            if now >= next_bg {
+                evs.push(Event::AppData(mk(bg_id, UK_S)));
+                bg_id += 1;
+                next_bg += 10 * REV6_SEC;
+            }
+            for v in net.advance(now) {
+                evs.push(ack(&v));
+            }
+            evs.push(Event::TimerFired(Timer::Pto));
+            if now.is_multiple_of(REV6_RTPROP) {
+                evs.push(Event::TimerFired(Timer::RtpropProbe));
+            }
+            // Fikstür (T2 gibi): kesinti başında iletilmiş, teyitsiz her hedefe vadeli zincir.
+            if !chains_fixed && now >= t_out {
+                chains_fixed = true;
+                for (_, x) in &targets {
+                    let sent = s.units.contains_key(&UnitId(x.id));
+                    if sent
+                        && !s.unit_is_confirmed(UnitId(x.id))
+                        && !s.unit_has_geometric(UnitId(x.id))
+                    {
+                        let base = s.copy_base_ns();
+                        s.copy_ensure_geometric(*x, now, base, false);
+                    }
+                }
+                for (k, b) in big.iter().enumerate() {
+                    assert!(
+                        s.units.contains_key(&UnitId(*b)) && s.unit_has_geometric(UnitId(*b)),
+                        "FİKSTÜR GEÇERSİZ: büyük hedef u{b} kesinti başında iletilmiş ve zincirli değil"
+                    );
+                    chain_seen[k] = true;
+                }
+                sil.reset();
+            }
+            if now == t_r {
+                // Evre sınırı: hazırlık / ölçüm sayaçları ve prob kurulumunun başlangıç durumu.
+                sil.reset();
+                phase0 = Some(uk_phase(&s));
+                idx_r = u64::from(s.tail_recovery.probe_index());
+            }
+            let in_m = now >= t_r;
+            for ev in evs {
+                s.on_event_core(ev, now);
+                s.pacer.set_rate(rate);
+                if s.state != SenderState::PreConverge {
+                    let window = rate.saturating_mul(BURST_WINDOW_NS) / REV6_SEC;
+                    let floor = s.burst_floor_bytes(now);
+                    s.pacer.set_burst_cap(window.max(floor));
+                }
+                let elig = rev6_elig(&s, now);
+                let u2 = elig[0] && !s.rights.get(SvcClass::Data) && s.reserve_total() == 0;
+                let probes_before = s.act_tail_probe_emitted;
+                let out = s.schedule_transmit(now);
+                if s.state != SenderState::PreConverge && !net.in_outage(now) {
+                    sil.turn(&tag, now, elig, &out, bound);
+                }
+                if in_m {
+                    ppf.turn(u2, s.act_tail_probe_emitted > probes_before, &out);
+                }
+                for dd in &out {
+                    let carried = rev6_class(dd.kind).is_some();
+                    let first_drop = in_m && carried && dd.unit_id == T2P_DROP_ID && !drop_done;
+                    if first_drop {
+                        drop_done = true;
+                    }
+                    let drop = (now < t_r && big.contains(&dd.unit_id)) || first_drop;
+                    if carried || dd.kind == TransmitKind::FecParity {
+                        net.send(now, dd, drop);
+                    }
+                }
+                for id in s.take_confirmed_units() {
+                    confirmed_at.entry(id).or_insert(now);
+                }
+            }
+            if !block_closed && now >= T2P_BLOCK_AT {
+                // Ölçüm evresinde kısmi blok (1026–1027): parite üretimi kapanış anında.
+                block_closed = true;
+                let auth = s.open_fec_block_authority();
+                let closed = s.close_fec_block_manual(auth, 2, UK_PAR_R, UK_PAR);
+                assert_eq!(
+                    closed,
+                    Ok(UK_PAR_R),
+                    "FİKSTÜR GEÇERSİZ: FEC bloğu kapanmadı"
+                );
+            }
+            let done = target_ids.iter().all(|id| confirmed_at.contains_key(id));
+            let m_ok = phase0.is_some_and(|p0| {
+                let p = uk_phase(&s);
+                p.probes > p0.probes && p.parity_emit >= p0.parity_emit + u64::from(UK_PAR_R)
+            });
+            if (done && m_ok && now >= t_r + 2 * tm_c) || now >= t_r + b_t2 {
+                break;
+            }
+            now += REV6_TICK;
+        }
+        assert!(
+            target_ids.iter().all(|id| confirmed_at.contains_key(id)),
+            "{tag}: hedef küme t_r + B_T2′ = {} s içinde tamamlanmadı; teyitsiz: {:?}",
+            (t_r + b_t2) / REV6_SEC,
+            target_ids
+                .iter()
+                .filter(|id| !confirmed_at.contains_key(id))
+                .collect::<Vec<_>>()
+        );
+        let p0 = phase0.expect("FİKSTÜR GEÇERSİZ: t_r evre görüntüsü yok");
+        let p = uk_phase(&s);
+        let probes = p.probes - p0.probes;
+        let par_enq = p.parity_enq - p0.parity_enq;
+        let par_emit = p.parity_emit - p0.parity_emit;
+        let m_len = now - t_r;
+        let probe_bound = (cap - idx_r) + cap * (m_len / b_min);
+        let worst = target_ids
+            .iter()
+            .map(|id| confirmed_at[id].saturating_sub(t_r))
+            .max()
+            .unwrap_or(0);
+        eprintln!(
+            "[K4G-05b T2′] {tag} · en uzun hedef beklemesi {} ms (B_T2′ {} ms) · kesinti dışı \
+             en uzun susma DATA {} ms (assert edilmedi, DUR-45 (1)) / ARQ {} / kopya {} ms \
+             (T_max {} / {} ms) · emisyon {:?} · zincir {chain_seen:?}",
+            worst / MS,
+            b_t2 / MS,
+            sil.max[0] / MS,
+            sil.max[1] / MS,
+            sil.max[2] / MS,
+            tm_a / MS,
+            tm_c / MS,
+            sil.emitted
+        );
+        eprintln!(
+            "[K4G-05b T2′] {tag} · ölçüm evresi {} s: prob {probes} ({} B; sınır {probe_bound} \
+             / {} B; b_min {} ms, idx(t_r) {idx_r}) · parite üretimi {par_enq}, emisyonu \
+             {par_emit} ({} B; sınır {parity_bound} B) · P_pf^U2 {} B (basılır)",
+            m_len / REV6_SEC,
+            ppf.probe_bytes,
+            probe_bound * UK_S,
+            b_min / MS,
+            ppf.parity_bytes,
+            ppf.u2_bytes
+        );
+        // Ön koşullar.
+        for b in big {
+            assert!(
+                confirmed_at[&b] >= t_r,
+                "FİKSTÜR GEÇERSİZ: büyük hedef u{b} kesintiden önce teyit edildi"
+            );
+        }
+        assert_eq!(
+            p0.parity_enq, 0,
+            "{tag}: FİKSTÜR GEÇERSİZ: hazırlıkta parite üretildi"
+        );
+        assert!(
+            drop_done,
+            "{tag}: FİKSTÜR GEÇERSİZ: u{T2P_DROP_ID}'in ilk iletimi ölçüm evresinde düşmedi"
+        );
+        assert_eq!(
+            ppf.probe_n, probes,
+            "{tag}: FİKSTÜR GEÇERSİZ: prob sayımı tutarsız"
+        );
+        assert!(
+            probes >= 1,
+            "{tag}: FİKSTÜR GEÇERSİZ: ölçüm evresinde prob emisyonu yok"
+        );
+        assert_eq!(
+            par_enq,
+            u64::from(UK_PAR_R),
+            "{tag}: FİKSTÜR GEÇERSİZ: ölçüm evresinde parite üretimi"
+        );
+        assert!(
+            par_emit >= 1,
+            "{tag}: FİKSTÜR GEÇERSİZ: ölçüm evresinde parite emisyonu yok"
+        );
+        // Türetilmiş bayt sınırları (Ek B.6 h.9.8).
+        assert!(
+            probes <= probe_bound && ppf.probe_bytes <= probe_bound * UK_S,
+            "{tag}: prob {probes} / {} B > sınır {probe_bound} / {} B",
+            ppf.probe_bytes,
+            probe_bound * UK_S
+        );
+        assert!(
+            ppf.parity_bytes <= parity_bound,
+            "{tag}: parite {} B > sınır {parity_bound} B",
+            ppf.parity_bytes
+        );
+    }
+
+    #[test]
+    fn k4g05b_t2p_product_outage_completion_r31() {
+        uk_t2p(31);
+    }
+
+    #[test]
+    fn k4g05b_t2p_product_outage_completion_r100() {
+        uk_t2p(100);
+    }
 }
