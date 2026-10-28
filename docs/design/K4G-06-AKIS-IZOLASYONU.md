@@ -19,7 +19,7 @@
 - **DUR-06-2 — (b2) + (i) yön GO.** Motor içinde tek saf seçici; eklemeli `AppDataTagged(OpaqueUnit, ServiceTag)`; etiketsiz = rev6; rezerv hiyerarşisi. DUR-38 ile ORTAK seçim/rezerv: iki istisna sistemi üst üste büyümez.
 - **DUR-06-20 — (a) KOŞULLU.** Deney kodunda FEC kapalı. Deney İKİ tabanda koşar: H `0c22a07d` (tarihsel) ve G güncel birleşik aday (#140 merge + yeniden tabanlanmış 05c, hazır olunca). **Karar verdiren koşu G'dir** (§14). S7(a) reddi ön-kayıtlı (B2).
 
-**rev5'te istenen:** DUR-06-27 (kontrol şeritlerinin teslim kipi; deneyden ÖNCE, çünkü B30 deneyde koşar) · DUR-06-26 ve DUR-06-28 yönü (05f ile ortak; 05f rev3 bunlara göre yazılır). Ürün kodu, merge ya da donmuş metin değişikliği istenmiyor.
+**rev5 / rev5.1'de istenen (öneriler; sahip kararı bekliyor):** DUR-06-27 (kontrol şeritlerinin teslim kipi; deneyden ÖNCE, çünkü B30 deneyde koşar) · DUR-06-26 = DUR-05f-14 ve DUR-06-28 = DUR-05f-18 yönü (05f ile ortak; iki notta aynı öneri). Ürün kodu, merge ya da donmuş metin değişikliği istenmiyor.
 
 1. **Birim çerçevesi (DUR-06-5, KARAR):** KARAR-1'in canonical `BatchPayload` alt mesaj çerçevesi + tarihli ek: v0 kabuk tip baytı, alt mesaj akış başlığı `flags · flow_id u16 · flow_seq u32`, S1 kipinde `submsg_count ∈ {0, 1}`, 0x05 parçalayıcı istisnası; örtük kip de FLOW_BATCH. Başlık 10 B (kayıt ≤ 239 B) / 12 B; bugün 11 B [hesap].
 2. **FEC kimliği (B-iii, KARAR):** `block_id` oturum + yön boyu monoton (§2.6 ID-SCOPE değişmez); blok tek akışın ardışık birimleri; blok sınırı onarım çerçevesinde (`first_seq` u32, +4 B/onarım sembolü); kendini tanıtan önek (`message_id := flow_seq`, `chunk_offset := flow_id`, FIN, REL).
@@ -729,8 +729,8 @@ Kaynak: salt okuma taraması, `0c22a07d` (öneksiz) ve `cf270a6c` (`05d:` önekl
 | `src/file_transfer.rs:2531` `early_abort_record_is_bounded_and_expires` | eş başına 2, toplam tavan, ömür `FILE_IDLE_TTL` | D8 (zamanlayıcısız düşme, tavan 2·`bk_flow_limit0`; §16 YD-5) |
 | `kama-app/tests/file_transfer.rs:1882` `synchronous_supersession_aborts_and_an_overtaken_file_begin_is_rejected`; `:1841` `supersession_closes_a_half_transfer_with_file_abort_superseded` | oturumlar arası: geçilen FILE_BEGIN reddedilir; `superseded` FILE_ABORT | K (oturumlar arası kural aynı) |
 | `tests/file_transfer.rs:1777` `a_cancel_while_an_abort_is_pending_adds_no_second_event` | Faz G iptali FILE_ABORT ile; tek olay | D8 (Faz G iptali `reset_flow(k, kod)`; tek olay iddiası K; DUR-06-28 (a)) |
-| `tests/file_transfer.rs:1479` `receiver_cancel_sends_aborted_by_receiver_and_the_sender_stops` | alıcı iptali; gönderen durur | D8 (`stop_flow` + gönderen `reset_flow(k, 0x00)`; §16 YD-4) |
-| `tests/file_transfer.rs:1091` `sender_receipt_timeout_fails_the_transfer_and_a_queued_receipt_wins`; `:1176` `sender_receipt_timer_starts_when_file_end_is_accepted` | `FILE_RECEIPT_TTL` | D8 (05f A saati + `HELD`; §16 YD-3, YD-7) |
+| `tests/file_transfer.rs:1479` `receiver_cancel_sends_aborted_by_receiver_and_the_sender_stops` | alıcı iptali; gönderen durur | D8 (`stop_flow` + gönderen `reset_flow_local`; §16 YD-4) |
+| `tests/file_transfer.rs:1091` `sender_receipt_timeout_fails_the_transfer_and_a_queued_receipt_wins`; `:1176` `sender_receipt_timer_starts_when_file_end_is_accepted` | `FILE_RECEIPT_TTL` | D8 (05f A saati; D_h ya da (b) seçilirse `HELD`; §16 YD-3, YD-7) |
 | sahte A+ (Ek B düzenekleri) | — | F: `Independent` kip, RESET kodu, `stop_flow`, `HELD` |
 
 **Toplam (kesişimli):** A 16 · B 34 · C 18 · D 16 · E 33 · F 149 literal (eklemeli API'de K) + 4 pin · G 4 + düzenek · H 12 · I 16 · J 14 + 20 · K 2 · L 4 kapı · M 9 (rev5). kama-engine taranmadı değil: A.30 (eklemeli API'de değişmez hedefi); kama-noise-wire ve kama-store testleri A.6/A.35 gereği değişmez hedefidir, uygulama turunda doğrulanır.
@@ -1090,3 +1090,33 @@ Kapsam A (blocker'lar, Ek A, tel) 14 kontrol + 13 yeni; Kapsam B (protokol canl�
 | Deney kapsam sınırı | INCELEMECI-8 | işlendi | §14 hüküm kapsamı |
 | A.18'de "RECEIPT/FILE_RECEIPT/FILE_ABORT akış 0" yazımı (rev3 akış ayrımıyla çelişiyordu) | rev5 öz-denetim | düzeltildi: akış 1 | A.18 |
 | Ek A'da A.35 ile A.36 arasındaki boş satır tabloyu bölüyordu | rev5 öz-denetim | düzeltildi (Ek A hash'i zaten değişiyor) | Ek A |
+
+### rev5 doğrulaması (`k4g06/rev5-wf_77fe089a.json`, üç mercek; rev5 `b8b2dac8`) → rev5.1
+
+Mercekler: **L1** = §4.1 envanter · **L2** = §4.2 / DUR-06-27 / B30 · **L3** = §16, DUR-06-26/-28, Ek A, §14. Üç mercek de "holds_with_caveats". Tutanlar aynen kaldı: akış-1 kayıtları arasında sıra gereksinimi yok; (c) dört seçeneğin en iyisi; §14 iki taban planı C16 §4 ile uyumlu; FLOW_RESET +1 B A.8'de, hub zarfı değişmez. Bu turda reddedilen bulgu yok.
+
+| Bulgu | Önem | Kısa başlık | Karar (rev5.1) | Notta yeri |
+|---|---|---|---|---|
+| L1-0, L2-0, L3-10 | M | (c) HOL'u kaldırmıyor, W derinliğinde krediye taşıyor | işlendi: tekilleştirme penceresi (W_D) tüketim kredisinden (W_c) ayrıldı; W_D türetimi [hesap: 31 B/s D-3 ≈ 139 → 256 CAL]; kalan derinlik beyanlı; H-CTRL-INDEPENDENT ve YD-9 m.5 sınırla yazıldı; T_ctrl'ye pencere beklemesi girdi; FILE_* payı kama-app'te | §3, §4.2, §7.6, YD-9 m.5, A.7, A.21, B30 (d)(e) |
+| L1-4, L2-1 | M | kredi tabanı iki tanımla | işlendi: tek kural `max_seq = min(floor_a + W_D, c + W)`; durgun tüketicide bellek ≤ W_c, `capacity_defect = 0` | §3, §7.2, §7.4, A.13, B26 |
+| L2-6 | m | `max_seq` dahil/hariç | işlendi: hariç üst sınır; FIN yuvası `flow_seq = max_seq` | §7.1, A.8 |
+| L1-1, L2-2, L3-7 | M | YD-5 erken iptal kaydı sızıyor; tavan öncülü | işlendi: kayıt yalnız R0 akışı varken; `aborts_after_terminal`; R0 kümesi tükenince düşer; zaman eşitsizliğine dayanmaz; tavan taslağı C_EA = 12; aşımda `early_abort_overflow`; 05f §9 Faz A girişiyle uzlaştı (YD-1 S2) | YD-1, YD-5, §4.1 FILE_ABORT satırı, B31 (h)(i)(j) |
+| L1-2 | M | `FlowEnded` × inbox sırası → hayalet aktarım | işlendi: bant içi işaret + okunmamış birimlerin atomik atılması; `Finished` hazır kuyruk boşalınca | YD-10, A.7 (ii), A.15, B31 (k) |
+| L1-3 | M | Live CLOSE → OPEN (DUR-06-18 (a)'ya koşullu) | işlendi: OPEN'ı görülmemiş akışın CLOSE'u ön tamponda, "başladı + bitti"; kapanmış akış kaydı oturum içinde gereksiz [türetim taslağı] | §7.6, §4.1 PTT satırı, A.18, B13 (d) |
+| L2-3, L2-4, L2-5 | M/m | B30 gözlenebilirlik, ön koşul, pencere, FEC kolu, tekrar katmanı, kardeş kollar | işlendi: D'de S1/transport vekili, kama-app ölçüleri U'da; sıra tabanlı iddialar; ön-kayıtlı W_ölç; FEC paritesi de düşer / `fec_recovered(F) = 0`; yeni PN'li tekrar, aynı-PN yalnız anti-replay; (d) ≥ W_D, (e) ters kol, (f) akış 0 | B30 |
+| L3-0 | M | DUR-06-26 (b) gerekçesi zarfla çelişiyor | işlendi: öneri (a) D_h = 30 s'ye döndü; 05f rev3.1 §7 ölçütü ve G_H formülü; iki notun satırı aynı (DUR-06-26 = DUR-05f-14); B29 ayırt edici mutant kolu; INT-02 30 s kolu beyanla ayırt edici değil | YD-3, Ek D DUR-06-26, §13, Karar özeti 5, B29 |
+| L3-2, L3-3 | m | HELD gönderen durum ömrü; "en çok bir ACK yolu" | işlendi ((b) için): ömür FIN teyidinden FILE_RECEIPT / A dolumu / `Closed`'a; S1 sonundaki HELD katılır; fazla düşme ≤ min(D_tut,max, t_S2 − t_R2) | YD-3, A.12 |
+| L3-12 | not | mobil askı, `held_ms` doyması, Faz A azami bekleme | işlendi: beyanlar | YD-3 |
+| L3-1 | M | R3 tetiği transporta görünmüyor; Faz A FILE_ABORT'ta yuva sızıyor | işlendi: `resolve_flow(k)` S1 çağrısı + RESET'te kendiliğinden; çağrı noktaları | YD-1, YD-2, YD-6, A.2, A.7, A.13, A.21, B13 (f), B31 (d) |
+| L1-5 | m | FILE_RECEIPT payı drain oturumu dahil | işlendi: akış 1 H_C_tavan = 4 + 2·4 = 12; W_CTRL0 32 [CAL] | §7.6, YD-6 |
+| L1-6 | m | HELD ve MEDIA_BUNDLE satırları | işlendi | §4.1 |
+| L3-4 | m | DUR-06-28 üçüncü durum; Faz G iptal penceresi | işlendi: kullanıcı iptali bugünkü sınırda (FILE_END öncesi); G dolumu sonrası alıcı bitirmişse beyanlı ayrışma | §4.2 (D), YD-4, Ek D DUR-06-28, B31 (l) |
+| L3-5 | m | `reset_flow(k, 0x00)` W_TCTRL0'ı bozuyor | işlendi: `reset_flow_local` (telde RESET yok) | YD-4, A.2, A.12, B31 (f) |
+| L3-6 | m | `stop_flow` tampon/taahhüt sahipliği | işlendi: yerel sıfırlama | YD-2, A.2, A.7 (iii) |
+| L3-8 | m | RESET teyidinden önce oturum değişimi; bilinmeyen kod | işlendi: yeni oturumda FILE_ABORT(kod); `Unspecified` | YD-4, A.18, A.37, B31 (m)(n) |
+| L3-9 | m | Ek A'nın atladığı kalemler | işlendi: A.12, A.15, A.27, A.32, A.7 (+ A.36 `available`, `bound`) | Ek A |
+| L2-7 | m | 05d M2 kalırsa kredi beklemesi yayılır | işlendi: M2 kaldırılır | §10, A.21, DUR-06-14 |
+| L2-8 | m | (b) ile eşitsiz karşılaştırma | işlendi: eşit ölçüt tablosu; "tel değişmez" ayırt edici değil; FROZEN S1 bedeli; (b)'nin B30 sonucu [çıkarım] | §4.2, Ek D DUR-06-27 |
+| L2-9 | not | akış-0 kardeşi için kol yok | işlendi | B30 (f) |
+| L3-11 | not | öneriler karar gibi yazılmış | işlendi: §16 başında öneri/karar ayrımı; A.23, YD-9, Karar özeti, §14 K2 koşullu | §16, A.23, YD-9, §14 |
+| L1-7 | not | metin ve atıf hataları | işlendi: FILE_ABORT hücresindeki rev4 RESET cümlesi; `AlreadySent` :831 (rev5 :830 yazıyordu); SIGNALING "zararsız" daraltıldı | §4.1, YD-1, YD-3 |
