@@ -30,6 +30,14 @@
 //! Crypto'yu test sürer) ve yenilemenin RESPONSE'unu yabancı bir hub tutamacıyla yollar — adaptör
 //! yanıtı yenilemeyle eşleyemez (tutmaz, ucu önceden açmaz), Crypto adayı yine bulur.
 //!
+//! [DUR-05g-3 (B), CEVAP PAKETİ 16 §2 — INIT öncesi yerel soket sınaması; yardımcı önlem, kaynak
+//! sınırı DEĞİL] (7) kalıcı yerel soket hatası → INIT yola çıkmaz (rölede ve karşı uçta hiçbir
+//! zarf yok), niyet `ConnectAbandoned(_, LocalPermanent)` ile biter; hata kalkınca gerçek yeniden
+//! bağlanma. (8) sınama geçer, açılış düşer → açılış hatası kolu aynen (sınama onun yerine
+//! geçmez). (9) normal yol değişmez. (10) kalıcı niyetin taze INIT'i (`HALF_OPEN_TTL` sonrası) da
+//! sınanır. Sınama hatası `set_socket_probe_failures_for_test` ile belirlenimli üretilir; uç
+//! açılışını etkilemez.
+//!
 //! Kabul 2'nin kama-app yarısı: `ConnectAbandoned(bilet, _)` erken metni outbox'a "hiçbir tutamaca
 //! gönderilmemiş" (`sent_on: None`) koyar ve eşin sıradaki oturumunda aynı `msg_id`'yle yollar
 //! (`crates/kama-app/src/messaging.rs` `on_session_event` → `release_early`); kama-app'te
@@ -61,7 +69,7 @@ use kama_noise_wire::clock::ManualClock;
 use kama_noise_wire::epoch_machine::GRACE_T_G;
 use kama_noise_wire::protector::NoiseWireProtection;
 use kama_noise_wire::seam_mock::{fixture_directory, fixture_protection};
-use kama_noise_wire::session_control::{EnvelopeKind, SESSION_MAX_AGE};
+use kama_noise_wire::session_control::{EnvelopeKind, HALF_OPEN_TTL, SESSION_MAX_AGE};
 
 const ALICE: u8 = 0xA1;
 const BOB: u8 = 0xB0;
@@ -755,4 +763,184 @@ fn renewal_fallback_endpoint_failure_ends_the_old_session_and_reconnect_recovers
         1,
         "toparlanmada yeni hata yok"
     );
+}
+
+// ── DUR-05g-3 (B): INIT öncesi yerel soket sınaması ─────────────────────────────────────────
+
+/// **(7) Kalıcı yerel soket hatası → INIT yok; hata kalkınca gerçek yeniden bağlanma.**
+///
+/// Beklenen: Alice `Measuring` → `ConnectAbandoned(t1, LocalPermanent)`; röle ve bütün kutular
+/// boş (INIT ve HANDLE_ASSIGN yok: karşı uca hiçbir zarf gitmedi, karşı uçta kayıt oluşamaz),
+/// Bob'da olay yok; `local_probe_failures` 1, `endpoint_open_failures` 0, Crypto oturumu hiç
+/// açılmadı. Yeniden `connect` → `Pending` → `Ready`, erken metin ("erken-2") tek kez teslim.
+///
+/// Mutasyon M8'de (`connect` sınamayı atlar) INIT yola çıkar: `ConnectAbandoned` gelmez — ikinci
+/// `next_event` WAIT içinde düşer; M10'da (sınama hatası olaysız) aynı iddia kırmızı.
+#[test]
+fn local_socket_probe_failure_sends_no_init_and_reconnect_recovers() {
+    let hub = MemoryHub::new();
+    let (mut alice, _clock, mut bob) = pair(&hub, true);
+
+    alice.set_socket_probe_failures_for_test(1);
+    let t1 = pending(alice.connect(id(BOB), Some(unit(b"erken-1"))));
+    assert_eq!(
+        next_event(&mut alice),
+        SessionEvent::ConnectProgress(t1, ConnectPhase::Measuring)
+    );
+    assert_eq!(
+        next_event(&mut alice),
+        SessionEvent::ConnectAbandoned(t1, AbandonReason::LocalPermanent),
+        "yerel soket sınaması düştü: niyet kapalı nedenle biter"
+    );
+    assert_no_event(&mut alice, "ConnectAbandoned'dan sonra olay yok");
+    assert!(
+        hub.is_idle(),
+        "INIT yola çıkmadı: rölede ve kutularda zarf yok"
+    );
+    assert_eq!(hub.relay(), 0, "taşınacak zarf yok");
+    assert_no_event(&mut bob, "karşı uca hiçbir şey ulaşmadı");
+    assert_eq!(bob.active_session_for_test(id(ALICE)), None);
+    assert_eq!(alice.local_probe_failures(), 1);
+    assert_eq!(alice.endpoint_open_failures(), 0, "uç açılışı denenmedi");
+    assert_eq!(
+        alice.last_failed_activation_for_test(),
+        None,
+        "Crypto oturumu hiç açılmadı"
+    );
+
+    // Hata kalktı (kanca tek seferlikti): gerçek yeniden bağlanma.
+    let t2 = pending(alice.connect(id(BOB), Some(unit(b"erken-2"))));
+    assert_ne!(t2, t1);
+    assert_eq!(hub.relay(), 1, "INIT → Bob, HANDLE_ASSIGN → Alice");
+    let (b0, _) = ready(&mut bob, id(ALICE));
+    assert_eq!(hub.relay(), 1, "RESPONSE → Alice");
+    let (_, before) = ready(&mut alice, id(BOB));
+    assert_eq!(
+        before,
+        [SessionEvent::ConnectProgress(t2, ConnectPhase::Measuring)]
+    );
+    assert_eq!(
+        expect_delivery(&mut bob),
+        Delivered {
+            session: b0,
+            unit: b"erken-2".to_vec(),
+        }
+    );
+    assert_no_delivery(&mut bob, "erken-1 hiç, erken-2 tek kez");
+    assert_eq!(
+        alice.local_probe_failures(),
+        1,
+        "toparlanmada yeni hata yok"
+    );
+}
+
+/// **(8) Sınama geçer, açılış düşer → açılış hatası kolu aynen.**
+///
+/// Beklenen: sınama başarılı (`local_probe_failures` 0) → INIT yola çıkar (röle 1); uç açılamaz →
+/// `ConnectAbandoned(t, LocalPermanent)` tam bir kez, `Ready` yok; `endpoint_open_failures` 1;
+/// Crypto oturumu kapalı. Sınama açılış hatası kolunun YERİNE geçmez.
+///
+/// Mutasyon M1'de (açılış kolunda uçsuz `Ready`) ikinci olay `Ready`: kırmızı.
+#[test]
+fn probe_passes_but_endpoint_open_fails_keeps_the_open_failure_path() {
+    let hub = MemoryHub::new();
+    let (mut alice, _clock, mut bob) = pair(&hub, true);
+
+    alice.set_endpoint_open_failures_for_test(1);
+    let t = pending(alice.connect(id(BOB), Some(unit(b"erken"))));
+    assert_eq!(hub.relay(), 1, "sınama geçti: INIT yola çıktı");
+    let _ = ready(&mut bob, id(ALICE));
+    assert_eq!(hub.relay(), 1, "RESPONSE → Alice");
+    assert_eq!(
+        next_event(&mut alice),
+        SessionEvent::ConnectProgress(t, ConnectPhase::Measuring)
+    );
+    assert_eq!(
+        next_event(&mut alice),
+        SessionEvent::ConnectAbandoned(t, AbandonReason::LocalPermanent)
+    );
+    assert_no_event(&mut alice, "tam bir kapanış, Ready yok");
+    assert_eq!(alice.local_probe_failures(), 0, "sınama geçti");
+    assert_eq!(alice.endpoint_open_failures(), 1, "açılış düştü");
+    let failed = alice
+        .last_failed_activation_for_test()
+        .expect("ucu açılamayan tutamaç kaydedilmeli");
+    assert_not_activated(&mut alice, failed);
+}
+
+/// **(9) Normal yol değişmez.**
+///
+/// Beklenen: `Measuring` → `Ready(a0)` (arada başka olay yok), iki sayaç 0, veri iki yönde teslim.
+/// Sınama her `connect`'te bir kez koşar ve normal yolda gözlenebilir hiçbir şey değiştirmez.
+#[test]
+fn normal_connect_with_a_passing_probe_is_unchanged() {
+    let hub = MemoryHub::new();
+    let (mut alice, _clock, mut bob) = pair(&hub, true);
+    let t = pending(alice.connect(id(BOB), None));
+    assert_eq!(hub.relay(), 1, "INIT → Bob, HANDLE_ASSIGN → Alice");
+    let (b0, _) = ready(&mut bob, id(ALICE));
+    assert_eq!(hub.relay(), 1, "RESPONSE → Alice");
+    let (a0, before) = ready(&mut alice, id(BOB));
+    assert_eq!(
+        before,
+        [SessionEvent::ConnectProgress(t, ConnectPhase::Measuring)]
+    );
+    assert_eq!(
+        (alice.local_probe_failures(), alice.endpoint_open_failures()),
+        (0, 0)
+    );
+    alice
+        .send(a0, unit(b"ileri"), DeliveryPolicy::Reliable)
+        .expect("gönder");
+    assert_eq!(
+        expect_delivery(&mut bob),
+        Delivered {
+            session: b0,
+            unit: b"ileri".to_vec(),
+        }
+    );
+    bob.send(b0, unit(b"geri"), DeliveryPolicy::Reliable)
+        .expect("gönder");
+    assert_eq!(
+        expect_delivery(&mut alice),
+        Delivered {
+            session: a0,
+            unit: b"geri".to_vec(),
+        }
+    );
+    assert_no_event(&mut alice, "normal yolda ek olay yok");
+}
+
+/// **(10) Kalıcı niyetin taze INIT'i de sınanır.** Alice'in INIT'i röleden hiç geçmez; Crypto
+/// `HALF_OPEN_TTL` sonra bekleyen kaydı düşürür → adaptör niyeti sürdürmek için taze INIT
+/// başlatacakken yerel sınama düşer.
+///
+/// Beklenen: `Measuring` → `ConnectAbandoned(t, LocalPermanent)`; rölede yalnız İLK INIT vardır
+/// (taze INIT yok); `local_probe_failures` 1. Mutasyon M9'da (`reinitiate` sınamayı atlar) taze
+/// INIT yola çıkar ve niyet sürer: `ConnectAbandoned` gelmez, kırmızı.
+#[test]
+fn persistent_intent_reinit_probe_failure_abandons_without_a_fresh_init() {
+    let hub = MemoryHub::new();
+    let (mut alice, clock, mut bob) = pair(&hub, true);
+    let t = pending(alice.connect(id(BOB), None));
+    assert_eq!(
+        next_event(&mut alice),
+        SessionEvent::ConnectProgress(t, ConnectPhase::Measuring)
+    );
+
+    alice.set_socket_probe_failures_for_test(1);
+    clock.advance(HALF_OPEN_TTL);
+    assert_eq!(
+        next_event(&mut alice),
+        SessionEvent::ConnectAbandoned(t, AbandonReason::LocalPermanent),
+        "taze INIT öncesi sınama düştü: niyet kapalı nedenle biter"
+    );
+    assert_no_event(&mut alice, "ConnectAbandoned'dan sonra olay yok");
+    assert_eq!(alice.local_probe_failures(), 1);
+    assert_eq!(hub.relay(), 1, "rölede yalnız ilk INIT: taze INIT yok");
+    // Bob bayat INIT'i işler; yanıtı gelse de Alice'te bekleyen kayıt yok (opak `Failed`).
+    bob.drive();
+    let _ = hub.relay();
+    assert_no_event(&mut alice, "bayat yanıt niyeti diriltmez");
+    assert_eq!(alice.active_session_for_test(id(BOB)), None);
 }
