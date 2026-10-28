@@ -12064,4 +12064,599 @@ mod tests {
     fn k4g05b_t2_finite_outage_completion_r100() {
         rev6_t2(100);
     }
+
+    // ── [K4G-05b · CEVAP PAKETİ 16 v2 · DUR-45] D1/D2 TEŞHİS fikstürleri ─────────────────────────
+    //
+    // Tasarım ve önceden kayıtlı tahminler: tasarım notu Ek B.6 h.9.6 (fikstürden ÖNCE, ea55fa6c).
+    // Yalnız ölçer ve basar; sonuç iddiası YOK. Ön koşul kurulmadıysa "FİKSTÜR GEÇERSİZ" (kırmızı).
+    // Tek isteğe bağlı iddia ("U ölçüm penceresinde ≥ 1 hizmet aldı") ayrı `*_u_served_*`
+    // testlerindedir; önceden kayıtlı tahmin KIRMIZI. Ürün yapılandırması: kuyruk-probu
+    // `validated_v1`, FEC `Manual{enabled: true}`, CS kapalı. Beyaz kutu düzeni T1 ile aynı.
+
+    const D45_U_ID: u64 = 5;
+    const D45_U_SIZE: u64 = 150;
+    const D45_CHAIN_IDS: [u64; 4] = [20, 21, 22, 23];
+    const D45_PARITY_BLOCKS: u32 = 2;
+    const D45_PARITY_R: u16 = 4;
+    const D45_PARITY_N: usize = 8;
+    /// R1b: hazırlık paritesinin ilk onayları t_c + j·25 s'de (j = 1..8) — parite süresi
+    /// K_MAP·RTO_MAX = 240 s dolmadan (`parity_expiry_horizon_ns`).
+    const D45_R1B_STEP: u64 = 25 * REV6_SEC;
+    /// Bayat/özdeş SACK aralığı (ack_confidence sessizlik eşiğinin, ≥ 3 s, çok altında).
+    const D45_STALE_STEP: u64 = REV6_SEC;
+
+    /// D1 yükü: dört 1050 B geometrik zincir ya da hiç boşalmayan 150 B DATA kuyruğu.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum D45Load {
+        Chains,
+        Data,
+    }
+
+    /// D1 dönüş yolu: R1a = yalnız özdeş SACK; R1b = R1a + yeni teyit üretmeyen parite onayları.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum D45Ret {
+        R1a,
+        R1b,
+    }
+
+    /// D1 ölçümü (basılır; `*_u_served_*` testi `u_services`'i okur).
+    #[derive(Debug, Default)]
+    struct D45D1 {
+        window_ns: u64,
+        u_services: Vec<(u64, TransmitKind)>,
+        u_max_age_ns: u64,
+        probes: u64,
+        first_pending_ns: Option<u64>,
+        pending_turns: u64,
+        turns: u64,
+        u_adopted_ns: Option<u64>,
+        fwd_ns: Option<u64>,
+        scope_inactive_ns: Option<u64>,
+        rearm_frames: u64,
+        stale_frames: u64,
+        other_services: BTreeMap<u64, u32>,
+    }
+
+    /// D1 — R1 + kuyruk-probu + sürekli sınıf yükü (Ek B.6 h.9.6).
+    fn dur45_d1(rate: u64, load: D45Load, ret: D45Ret) -> D45D1 {
+        let tag = format!("DUR-45 D1 {load:?}/{ret:?} R={rate} B/s");
+        let mk = |id: u64, size: u64| OpaqueUnit { id, size };
+        let mut s = Sender::new();
+        s.set_establish_probe(false);
+        s.set_tail_recovery_config(TailRecoveryConfig::validated_v1());
+        let mode = s.set_fec_actuation_mode(FecActuationMode::Manual { enabled: true });
+        assert!(
+            mode.is_ok(),
+            "FİKSTÜR GEÇERSİZ: FEC Manual kipi kabul edilmedi"
+        );
+        // Isınma (T1 ile aynı): W t = 0, ACK t = 1 s → srtt 1 s, rttvar 0.5 s (taban PTO 3.025 s).
+        let w = s.on_event(Event::AppData(mk(0, REV6_SMALL)), 0);
+        let w_seq = w
+            .iter()
+            .find(|d| d.kind == TransmitKind::Data)
+            .map(|d| d.seq)
+            .expect("FİKSTÜR GEÇERSİZ: ısınma birimi çıkmadı");
+        let _ = s.on_event(ack(&[w_seq]), REV6_SEC);
+        assert_eq!(
+            s.take_confirmed_units(),
+            [0],
+            "FİKSTÜR GEÇERSİZ: ısınma birimi teyit edilmedi"
+        );
+        assert_ne!(
+            s.state,
+            SenderState::PreConverge,
+            "FİKSTÜR GEÇERSİZ: ısınmadan sonra PRE_CONVERGE"
+        );
+        // Hazırlık: iki FEC bloğu (r = 4, S_par = S_maks + 1) kapatılır ve 8 parite çıkar; seq'leri
+        // U'dan küçüktür (R1b onay kaynağı: la U'nun altında kalır).
+        let t_p = REV6_SEC + MS;
+        let s_par = REV6_BIG + 1;
+        for block in 1..=D45_PARITY_BLOCKS {
+            let auth = s.open_fec_block_authority();
+            let closed = s.close_fec_block_manual(auth, block, D45_PARITY_R, s_par);
+            assert_eq!(
+                closed,
+                Ok(D45_PARITY_R),
+                "FİKSTÜR GEÇERSİZ: FEC bloğu kapanmadı"
+            );
+        }
+        s.pacer.set_rate(rate);
+        s.pacer.set_burst_cap(2 * D45_PARITY_N as u64 * s_par);
+        s.pacer.fill_to_cap();
+        let prep = s.schedule_transmit(t_p);
+        let parity_seqs: Vec<u64> = prep
+            .iter()
+            .filter(|d| d.kind == TransmitKind::FecParity)
+            .map(|d| d.seq)
+            .collect();
+        assert_eq!(
+            parity_seqs.len(),
+            D45_PARITY_N,
+            "FİKSTÜR GEÇERSİZ: hazırlıkta 8 parite çıkmadı: {prep:?}"
+        );
+        let full = s.pacer.tokens();
+        let _ = s.pacer.try_send(full);
+        // t_c: U (uçuşta, zincirsiz, en eski uygun kayıt) ve yük.
+        let t_c = REV6_SEC + REV6_TICK;
+        let u_seq = s.track_sent_unit(mk(D45_U_ID, D45_U_SIZE), t_c, 0, TransmitKind::Data);
+        if load == D45Load::Chains {
+            for id in D45_CHAIN_IDS {
+                let x = mk(id, REV6_BIG);
+                let _ = s.track_sent_unit(x, t_c, 0, TransmitKind::Data);
+                let base = s.copy_base_ns();
+                s.copy_ensure_geometric(x, t_c, base, false);
+            }
+        }
+        s.pacer.set_rate(rate);
+        let la0 = s.loss.largest_acked();
+        assert!(
+            la0.is_some_and(|la| la < u_seq),
+            "FİKSTÜR GEÇERSİZ: la seq(U)'nun altında değil"
+        );
+        assert_eq!(
+            s.oldest_probe_eligible_seq(),
+            Some(u_seq),
+            "FİKSTÜR GEÇERSİZ: U uçuştaki en eski uygun kayıt değil"
+        );
+        assert!(
+            s.probe_scope_active(),
+            "FİKSTÜR GEÇERSİZ: prob kapsamı etkin değil"
+        );
+        assert!(
+            !s.dup_queue.iter().any(|d| d.unit.id == D45_U_ID),
+            "FİKSTÜR GEÇERSİZ: U kopya kuyruğunda"
+        );
+        let srtt_ns = dur_ns(s.rtt.srtt().expect("FİKSTÜR GEÇERSİZ: srtt yok"));
+        let t_unit = rev6_t_unit(rate, srtt_ns, 5);
+        let end = t_c + 2 * t_unit;
+        let mut r = D45D1 {
+            window_ns: end - t_c,
+            ..D45D1::default()
+        };
+        let mut acked_full: Vec<u64> = vec![w_seq];
+        let mut r1b_next = 0usize;
+        let mut next_stale = t_c + D45_STALE_STEP;
+        let mut next_data_id = 1000u64;
+        let mut last_u = t_c;
+        let mut idle_turns = 0u64;
+        let probes0 = s.act_tail_probe_emitted;
+        let mut now = t_c;
+        while now + REV6_TICK <= end {
+            now += REV6_TICK;
+            if load == D45Load::Data {
+                while s.tx_queue.len() < 2 {
+                    s.tx_queue.push_back(mk(next_data_id, D45_U_SIZE));
+                    next_data_id += 1;
+                }
+            }
+            // Dönüş yolu: (olay, R1b çerçevesi mi).
+            let mut evs: Vec<(Event, bool)> = Vec::new();
+            let r1b_due = ret == D45Ret::R1b
+                && r1b_next < D45_PARITY_N
+                && now >= t_c + (r1b_next as u64 + 1) * D45_R1B_STEP;
+            if r1b_due {
+                acked_full.push(parity_seqs[r1b_next]);
+                r1b_next += 1;
+                evs.push((ack(&acked_full), true));
+            } else if now >= next_stale {
+                evs.push((ack(&acked_full), false));
+                next_stale += D45_STALE_STEP;
+            }
+            evs.push((Event::TimerFired(Timer::Pto), false));
+            if now.is_multiple_of(REV6_RTPROP) {
+                evs.push((Event::TimerFired(Timer::RtpropProbe), false));
+            }
+            for (ev, r1b) in evs {
+                let is_ack = matches!(ev, Event::AckReceived(_));
+                let inflight_before = s.inflight.len();
+                s.on_event_core(ev, now);
+                if is_ack {
+                    let shrank = s.inflight.len() < inflight_before;
+                    if r1b {
+                        assert!(
+                            shrank,
+                            "{tag}: FİKSTÜR GEÇERSİZ: R1b çerçevesi uçuşu küçültmedi (an {} ms)",
+                            now / MS
+                        );
+                        r.rearm_frames += 1;
+                    } else {
+                        assert!(
+                            !shrank,
+                            "{tag}: FİKSTÜR GEÇERSİZ: bayat çerçeve uçuşu küçülttü (an {} ms)",
+                            now / MS
+                        );
+                        r.stale_frames += 1;
+                    }
+                }
+                s.pacer.set_rate(rate);
+                let window = rate.saturating_mul(BURST_WINDOW_NS) / REV6_SEC;
+                let floor = s.burst_floor_bytes(now);
+                s.pacer.set_burst_cap(window.max(floor));
+                if rev6_elig(&s, now) == [false; 3] {
+                    idle_turns += 1;
+                }
+                let out = s.schedule_transmit(now);
+                r.turns += 1;
+                for d in &out {
+                    if rev6_class(d.kind).is_none() {
+                        continue;
+                    }
+                    if d.unit_id == D45_U_ID {
+                        r.u_services.push((now, d.kind));
+                        last_u = now;
+                    } else {
+                        *r.other_services.entry(d.unit_id).or_default() += 1;
+                    }
+                }
+                assert!(
+                    s.take_confirmed_units().is_empty(),
+                    "{tag}: FİKSTÜR GEÇERSİZ: R1'de yeni teyit (an {} ms)",
+                    now / MS
+                );
+                let la = s.loss.largest_acked();
+                assert!(
+                    la.is_some_and(|x| x < u_seq),
+                    "{tag}: FİKSTÜR GEÇERSİZ: la seq(U)'ya ulaştı (an {} ms)",
+                    now / MS
+                );
+                if ret == D45Ret::R1a {
+                    assert_eq!(la, la0, "{tag}: FİKSTÜR GEÇERSİZ: R1a'da la değişti");
+                }
+            }
+            r.u_max_age_ns = r.u_max_age_ns.max(now - last_u);
+            if s.tail_probe_pending.is_some() {
+                r.pending_turns += 1;
+                if r.first_pending_ns.is_none() {
+                    r.first_pending_ns = Some(now);
+                }
+            }
+            let adopted = s.dup_queue.iter().any(|d| d.unit.id == D45_U_ID);
+            if adopted && r.u_adopted_ns.is_none() {
+                r.u_adopted_ns = Some(now);
+            }
+            if s.state == SenderState::RecoverFwd && r.fwd_ns.is_none() {
+                r.fwd_ns = Some(now);
+            }
+            if !s.probe_scope_active() && r.scope_inactive_ns.is_none() {
+                r.scope_inactive_ns = Some(now);
+            }
+        }
+        r.probes = s.act_tail_probe_emitted - probes0;
+        // Ön koşullar (pencere sonu).
+        assert_eq!(
+            idle_turns, 0,
+            "{tag}: FİKSTÜR GEÇERSİZ: yük kesintisiz değil (uygun işsiz tur sayısı)"
+        );
+        if ret == D45Ret::R1b {
+            let want = D45_PARITY_N as u64;
+            assert_eq!(
+                r.rearm_frames, want,
+                "{tag}: FİKSTÜR GEÇERSİZ: R1b yeniden kurulum çerçevesi sayısı"
+            );
+        }
+        if load == D45Load::Chains {
+            for id in D45_CHAIN_IDS {
+                assert!(
+                    r.other_services.get(&id).copied().unwrap_or(0) >= 1,
+                    "{tag}: FİKSTÜR GEÇERSİZ: zincir u{id} hiç hizmet almadı"
+                );
+            }
+        }
+        let resent = r.other_services.values().filter(|&&n| n > 1).count();
+        eprintln!(
+            "[DUR-45 D1] {tag} · pencere {} s (2·T_birim(R0), T_birim {} ms) · U hizmeti {} {:?}",
+            r.window_ns / REV6_SEC,
+            t_unit / MS,
+            r.u_services.len(),
+            r.u_services
+        );
+        eprintln!(
+            "[DUR-45 D1] {tag} · U en büyük hizmet yaşı {} ms · prob emisyonu {} · prob bekleyen \
+             tur {} / {} (ilk {:?} ms) · U kopya kuyruğunda {:?} ms · RECOVER_FWD {:?} ms · \
+             kapsam sönmesi {:?} ms",
+            r.u_max_age_ns / MS,
+            r.probes,
+            r.pending_turns,
+            r.turns,
+            r.first_pending_ns.map(|t| t / MS),
+            r.u_adopted_ns.map(|t| t / MS),
+            r.fwd_ns.map(|t| t / MS),
+            r.scope_inactive_ns.map(|t| t / MS)
+        );
+        eprintln!(
+            "[DUR-45 D1] {tag} · R1b çerçevesi {} · bayat çerçeve {} · diğer birim hizmetleri \
+             {} birim, birden çok hizmet alan {} · probe_index {} · durum {:?}",
+            r.rearm_frames,
+            r.stale_frames,
+            r.other_services.len(),
+            resent,
+            s.tail_recovery.probe_index(),
+            s.state
+        );
+        r
+    }
+
+    #[test]
+    fn k4g05b_dur45_diag_d1_chains_r1a_r31() {
+        dur45_d1(31, D45Load::Chains, D45Ret::R1a);
+    }
+
+    #[test]
+    fn k4g05b_dur45_diag_d1_chains_r1a_r100() {
+        dur45_d1(100, D45Load::Chains, D45Ret::R1a);
+    }
+
+    #[test]
+    fn k4g05b_dur45_diag_d1_chains_r1b_r31() {
+        dur45_d1(31, D45Load::Chains, D45Ret::R1b);
+    }
+
+    #[test]
+    fn k4g05b_dur45_diag_d1_chains_r1b_r100() {
+        dur45_d1(100, D45Load::Chains, D45Ret::R1b);
+    }
+
+    #[test]
+    fn k4g05b_dur45_diag_d1_data_r1a_r31() {
+        dur45_d1(31, D45Load::Data, D45Ret::R1a);
+    }
+
+    #[test]
+    fn k4g05b_dur45_diag_d1_data_r1a_r100() {
+        dur45_d1(100, D45Load::Data, D45Ret::R1a);
+    }
+
+    /// [DUR-45 (2)] Tek isteğe bağlı iddia: U ölçüm penceresinde ≥ 1 hizmet aldı. Önceden kayıtlı
+    /// tahmin KIRMIZI (Ek B.6 h.9.6); main'e girmez.
+    fn dur45_d1_u_served(rate: u64) {
+        let r = dur45_d1(rate, D45Load::Chains, D45Ret::R1a);
+        assert!(
+            !r.u_services.is_empty(),
+            "DUR-45 D1 R={rate} B/s: U {} s pencerede hizmet almadı (en büyük hizmet yaşı {} ms)",
+            r.window_ns / REV6_SEC,
+            r.u_max_age_ns / MS
+        );
+    }
+
+    #[test]
+    fn k4g05b_dur45_diag_d1_u_served_chains_r1a_r31() {
+        dur45_d1_u_served(31);
+    }
+
+    #[test]
+    fn k4g05b_dur45_diag_d1_u_served_chains_r1a_r100() {
+        dur45_d1_u_served(100);
+    }
+
+    /// D2 kara delik birimi (37 B; bütün iletimleri ön yolda düşer) ve DATA birikimi (74 B).
+    const D45_B_ID: u64 = 9;
+    const D45_B_SIZE: u64 = 37;
+    const D45_D2_DATA: u64 = 74;
+    /// Ön yol darboğazı = 10 × pace (pace darboğazın altında → ilerleme boşluğu ≫ srtt).
+    const D45_D2_LINK_MULT: u64 = 10;
+    const D45_D2_T_M: u64 = 20 * REV6_SEC;
+    const D45_D2_WINDOW: u64 = 600 * REV6_SEC;
+
+    /// D2 ölçümü (yalnız basılır).
+    #[derive(Debug, Default)]
+    struct D45D2 {
+        data_max_silence_ns: u64,
+        data_emits: u64,
+        probes: u64,
+        probe_bytes: u64,
+        b_bytes: u64,
+        gaps: Vec<u64>,
+        gaps_over_pto: u64,
+        min_pto_ns: u64,
+        confirmed: u64,
+        states: Vec<(u64, SenderState)>,
+    }
+
+    /// D2 — R2 + kuyruk-probu + taban PTO'yu aşan ilerleme boşlukları (Ek B.6 h.9.6).
+    fn dur45_d2(rate: u64) {
+        let tag = format!("DUR-45 D2 R={rate} B/s");
+        let mk = |id: u64, size: u64| OpaqueUnit { id, size };
+        let mut s = Sender::new();
+        s.set_establish_probe(false);
+        s.set_tail_recovery_config(TailRecoveryConfig::validated_v1());
+        let mode = s.set_fec_actuation_mode(FecActuationMode::Manual { enabled: true });
+        assert!(
+            mode.is_ok(),
+            "FİKSTÜR GEÇERSİZ: FEC Manual kipi kabul edilmedi"
+        );
+        let mut net = Rev6Net {
+            rate: rate * D45_D2_LINK_MULT,
+            link_free: 0,
+            fwd: VecDeque::new(),
+            ret: VecDeque::new(),
+            received: BTreeSet::new(),
+            outage: (0, 0),
+        };
+        let t_end = D45_D2_T_M + D45_D2_WINDOW;
+        let mut r = D45D2 {
+            min_pto_ns: u64::MAX,
+            ..D45D2::default()
+        };
+        let mut now = 0u64;
+        let mut warm_done = false;
+        let mut b_sent = false;
+        let mut next_id = 1000u64;
+        let mut last_data = D45_D2_T_M;
+        let mut last_progress: Option<u64> = None;
+        let mut b_targeted = false;
+        let mut idle_data_turns = 0u64;
+        while now <= t_end {
+            let in_m = now >= D45_D2_T_M;
+            let mut evs: Vec<Event> = Vec::new();
+            if !warm_done {
+                for id in 0..4 {
+                    evs.push(Event::AppData(mk(id, REV6_SMALL)));
+                }
+                warm_done = true;
+            }
+            if in_m {
+                if !b_sent {
+                    evs.push(Event::AppData(mk(D45_B_ID, D45_B_SIZE)));
+                    b_sent = true;
+                }
+                for _ in s.tx_queue.len()..2 {
+                    evs.push(Event::AppData(mk(next_id, D45_D2_DATA)));
+                    next_id += 1;
+                }
+            }
+            for v in net.advance(now) {
+                evs.push(ack(&v));
+            }
+            evs.push(Event::TimerFired(Timer::Pto));
+            if now.is_multiple_of(REV6_RTPROP) {
+                evs.push(Event::TimerFired(Timer::RtpropProbe));
+            }
+            for ev in evs {
+                let is_ack = matches!(ev, Event::AckReceived(_));
+                let inflight_before = s.inflight.len();
+                s.on_event_core(ev, now);
+                if in_m && is_ack && s.inflight.len() < inflight_before {
+                    // İlerleme (uçuş küçülmesi = prob yeniden kurulumu): boşluk, o anki taban PTO.
+                    let srtt = s.rtt.srtt().map(dur_ns);
+                    let pto = s.tail_recovery.base_pto_ns(srtt, dur_ns(s.rtt.rttvar()));
+                    r.min_pto_ns = r.min_pto_ns.min(pto);
+                    if let Some(lp) = last_progress {
+                        let g = now - lp;
+                        r.gaps.push(g);
+                        if g > pto {
+                            r.gaps_over_pto += 1;
+                        }
+                    }
+                    last_progress = Some(now);
+                }
+                s.pacer.set_rate(rate);
+                if s.state != SenderState::PreConverge {
+                    let window = rate.saturating_mul(BURST_WINDOW_NS) / REV6_SEC;
+                    let floor = s.burst_floor_bytes(now);
+                    s.pacer.set_burst_cap(window.max(floor));
+                }
+                if in_m && s.tx_queue.is_empty() {
+                    idle_data_turns += 1;
+                }
+                let probes_before = s.act_tail_probe_emitted;
+                let out = s.schedule_transmit(now);
+                if in_m {
+                    let target_b = s
+                        .tail_probe_pending
+                        .and_then(|q| s.inflight.get(&q))
+                        .is_some_and(|p| p.owner == RecordOwner::Unit(UnitId(D45_B_ID)));
+                    b_targeted |= target_b;
+                    if s.act_tail_probe_emitted > probes_before {
+                        r.probes += 1;
+                        // Prob turun SON Retransmit kararıdır: `schedule_transmit`'te probdan
+                        // (:4776) sonra yalnız kopya, parite ve CS kararları gelir.
+                        let probe = out
+                            .iter()
+                            .rev()
+                            .find(|d| d.kind == TransmitKind::Retransmit);
+                        r.probe_bytes += probe.map_or(0, |d| d.size);
+                        b_targeted |= probe.is_some_and(|d| d.unit_id == D45_B_ID);
+                    }
+                    for d in &out {
+                        if d.kind == TransmitKind::Data && d.unit_id != D45_B_ID {
+                            r.data_emits += 1;
+                            last_data = now;
+                        }
+                        if d.unit_id == D45_B_ID && rev6_class(d.kind).is_some() {
+                            r.b_bytes += d.size;
+                        }
+                    }
+                    r.data_max_silence_ns = r.data_max_silence_ns.max(now - last_data);
+                }
+                for d in &out {
+                    let carried = rev6_class(d.kind).is_some();
+                    let drop = carried && d.unit_id == D45_B_ID;
+                    if carried || d.kind == TransmitKind::FecParity {
+                        net.send(now, d, drop);
+                    }
+                }
+                for id in s.take_confirmed_units() {
+                    assert_ne!(
+                        id, D45_B_ID,
+                        "{tag}: FİKSTÜR GEÇERSİZ: kara delik birimi teyit edildi"
+                    );
+                    if in_m {
+                        r.confirmed += 1;
+                    }
+                }
+            }
+            if r.states.last().is_none_or(|&(_, st)| st != s.state) {
+                r.states.push((now, s.state));
+            }
+            now += REV6_TICK;
+        }
+        // Ön koşullar (pencere sonu).
+        assert_eq!(
+            idle_data_turns, 0,
+            "{tag}: FİKSTÜR GEÇERSİZ: DATA kuyruğu pencerede boşaldı"
+        );
+        assert!(
+            r.confirmed >= 10,
+            "{tag}: FİKSTÜR GEÇERSİZ: R2 kurulmadı (pencerede teyit {})",
+            r.confirmed
+        );
+        assert!(
+            r.gaps_over_pto >= 10,
+            "{tag}: FİKSTÜR GEÇERSİZ: taban PTO'yu aşan ilerleme boşluğu {} < 10",
+            r.gaps_over_pto
+        );
+        assert!(
+            b_targeted,
+            "{tag}: FİKSTÜR GEÇERSİZ: kara delik birimi hiç prob hedefi olmadı"
+        );
+        let window_s = D45_D2_WINDOW / REV6_SEC;
+        let pace_bytes = rate * window_s;
+        let mut sorted = r.gaps.clone();
+        sorted.sort_unstable();
+        let median = sorted.get(sorted.len() / 2).copied().unwrap_or(0);
+        let max_gap = sorted.last().copied().unwrap_or(0);
+        // Önceden kayıtlı sınır (h.9.6): (S_c + S_a + S_d + 6·S_B)/R + 7τ — yalnız basılır.
+        let bound_bytes = 2 * D45_B_SIZE + D45_D2_DATA + 6 * D45_B_SIZE;
+        let bound = bound_bytes * REV6_SEC / rate + 7 * REV6_TICK;
+        eprintln!(
+            "[DUR-45 D2] {tag} · pencere {window_s} s · DATA en uzun susma {} ms (önceden kayıtlı \
+             sınır {} ms) · DATA emisyonu {} · teyit {}",
+            r.data_max_silence_ns / MS,
+            bound / MS,
+            r.data_emits,
+            r.confirmed
+        );
+        eprintln!(
+            "[DUR-45 D2] {tag} · prob {} ({} B, pace ‰{}) · B toplam {} B (‰{}) · pace {} B",
+            r.probes,
+            r.probe_bytes,
+            r.probe_bytes * 1000 / pace_bytes,
+            r.b_bytes,
+            r.b_bytes * 1000 / pace_bytes,
+            pace_bytes
+        );
+        eprintln!(
+            "[DUR-45 D2] {tag} · ilerleme boşluğu {} (taban PTO'yu aşan {}) · ortanca {} ms · en \
+             büyük {} ms · en küçük taban PTO {} ms · durumlar {:?}",
+            r.gaps.len(),
+            r.gaps_over_pto,
+            median / MS,
+            max_gap / MS,
+            r.min_pto_ns / MS,
+            r.states
+                .iter()
+                .map(|&(t, st)| (t / MS, st))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn k4g05b_dur45_diag_d2_r31() {
+        dur45_d2(31);
+    }
+
+    #[test]
+    fn k4g05b_dur45_diag_d2_r100() {
+        dur45_d2(100);
+    }
 }
