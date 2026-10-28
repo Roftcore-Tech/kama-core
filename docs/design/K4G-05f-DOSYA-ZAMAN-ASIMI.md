@@ -47,7 +47,7 @@
     - `05d` → `cf270a6c:docs/design/K4G-05d-RECEIPT.md`
   - SHA'lar (hepsi origin'de): `1b1425d2` main · `0c22a07d` 05c-kod · `593029eb` 05b rev6 son adayı · `cf270a6c` 05d · `24bc6314` K4G-06 rev5.2 (`11f91572` rev5.1) · `e5514e7a` / `3e0ec8fa` / `b96f7d6d` / `40c59dfb` 05f rev1 / rev2 / rev3 / rev3.1.
 - **Etiketler:** [olgu] koddan · [hesap] aritmetik, ölçülmedi · [türetim] koddan önce yazılmış sınır · [çıkarım] test edilmedi · [CAL] deney başlangıç değeri.
-- **Ek A: rev3.2'de DEĞİŞTİ → ⟨SHA256-BEKLİYOR⟩.** Kapsam: `## Ek A` satırından `## Ek B`'den önceki son boş olmayan satıra dek (`~/kama-k4g-work/tools/eka-sha.sh`). Önceki sürüm (rev2–rev3.1): sha256 `a6c546ae5d788dad4dee9a974e1796c1d40b1326aa70057bfc0f09afc46c2ea1`, 38 satır. Değişenler:
+- **Ek A: rev3.2'de DEĞİŞTİ → `87ef33068b61147607165e78487935a17c7093b4796b14daa0d8aa911aa37870`.** Kapsam: `## Ek A` satırından `## Ek B`'den önceki son boş olmayan satıra dek (`~/kama-k4g-work/tools/eka-sha.sh`). Önceki sürüm (rev2–rev3.1): sha256 `a6c546ae5d788dad4dee9a974e1796c1d40b1326aa70057bfc0f09afc46c2ea1`, 38 satır. Değişenler:
   - A.2: DUR-05f-18 = DUR-06-28 kararına göre iki metin; (a) metni FILE_ABORT'un üç kullanımıyla (`06 §16 YD-9` m.3);
   - A.5: Faz A girişinin niteleyicisi (m.9) ve aynı kararın iki metni.
   - Bekleyen: DUR-05f-14 = DUR-06-26 kararıyla A.5'e tutma kuralı girer; karardan sonra yazılır.
