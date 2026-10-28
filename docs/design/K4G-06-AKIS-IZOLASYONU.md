@@ -328,7 +328,7 @@ DUR'dan çıkarılanlar (C11 §3): rev1 DUR-06-4, -8 (→ 06-5 (iv)), -9 (→ 06
 | **K2–K4 — deney kodu:** B1 (en küçük), B1b, B2 (a)(b), **B30 (a)(b)**; B3 (b)(e) isteğe bağlı | G hazır değilse burada yazılır ve koşar | taşınır (ya da doğrudan yazılır) ve koşar | **yalnız G** |
 | **Regresyon alt kümesi:** `tv_*`, tek akış `k4g05b_scheduling`, INV-ACK-DELIVER-1 testleri; G'de ayrıca rev6 T1/T2 | evet | evet | G |
 
-**Ön-kayıt (K1'den ÖNCE commit; sonuç görülmeden):** T_BE (B2) · T_BE^rec(H) = (S_iletimde + S_t)/r + K_ARQ_SHARE·τ [türetim: rev5'te katı öncelik; t'nin kurtarma başı yalnız iletimdeki paketi ve kendi token birikimini bekler] · **T_BE^rec(G) = (S_iletimde + S_rez + S_t)/r + K_ARQ_SHARE·τ** [türetim: rev6'da K1 (a) katman 2 içinde aynen; BE başı, kurulu bir BK rezervinin dolmasını en çok S_rez ≤ S_max kadar bekler] · B30 taban beklentisi ve geçme ölçütü · [CAL] değerleri. H ve G aynı ön-kayıtla koşar; G'de sınır ifadesi değişirse yeni ön-kayıt sonuç görülmeden yazılır.
+**Ön-kayıt (K1'den ÖNCE commit; sonuç görülmeden):** T_BE (B2) · T_BE^rec(H) = (S_iletimde + S_t)/r + K_ARQ_SHARE·τ [türetim: rev5'te katı öncelik; t'nin kurtarma başı yalnız iletimdeki paketi ve kendi token birikimini bekler] · **T_BE^rec(G) = (S_iletimde + S_rez + S_t)/r + K_ARQ_SHARE·τ** [türetim: rev6'da K1 (a) katman 2 içinde aynen; BE başı, kurulu bir BK rezervinin dolmasını en çok S_rez ≤ S_max kadar bekler] · B30 taban beklentisi, sıra tabanlı geçme ölçütü ve ölçüm penceresi W_ölç (≥ RTO_MAX + türetilmiş ilk emisyon sınırı) · [CAL] değerleri (W_D, W_c dahil). H ve G aynı ön-kayıtla koşar; G'de sınır ifadesi değişirse yeni ön-kayıt sonuç görülmeden yazılır.
 
 **Kod parçaları:**
 - **K1** (kod yok): H ≈ 1 gün; G ≈ 0,5 gün (G hazır olunca).
