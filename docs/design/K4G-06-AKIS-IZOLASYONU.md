@@ -662,7 +662,20 @@ Kaynak: salt okuma taraması, `0c22a07d` (öneksiz) ve `cf270a6c` (`05d:` önekl
 | bench ürün kolu bayt muhasebesi (`bench/src/kama_product.rs`, `bench/src/manifest.rs`) | D8 (kimlik + yeni sınıf sayaçları) |
 | `scripts/netem/int02_analyze.py` hükümleri (`1b1425d2:…:18` `delivery_channel_drops = 0`; :969-1011 PTT `in_order_complete`; :1134-1141 öz-test fikstürleri) | D8 (A.25, DUR-06-22) |
 
-**Toplam (kesişimli):** A 16 · B 34 · C 18 · D 16 · E 33 · F 149 literal (eklemeli API'de K) + 4 pin · G 4 + düzenek · H 12 · I 16 · J 14 + 20 · K 2 · L 4 kapı. kama-engine taranmadı değil: A.30 (eklemeli API'de değişmez hedefi); kama-noise-wire ve kama-store testleri A.6/A.35 gereği değişmez hedefidir, uygulama turunda doğrulanır.
+**C.M — Kontrol şeridi kipi, iptalin akışa bağlanması, erken iptal kaydı, FIN sonrası tutma (rev5; DUR-06-26/-27/-28)** — 9 test (`0c22a07d`)
+| Test | İddia | İşlem |
+|---|---|---|
+| `kama-app/tests/text_receipt.rs:564` `text_is_delivered_once_and_receipted_once` (:576-580) | tekrar ve bilinmeyen RECEIPT olay üretmez | K (`Independent` şeritte idempotentliğin dayanağı) |
+| `text_receipt.rs:585` `receiver_accepts_out_of_order_msg_ids` | sırasız `msg_id` kabul edilir | K |
+| `kama-app/src/file_transfer.rs:2349` `file_abort_and_file_receipt_apply_to_opposite_directions` | iki kayıt zıt yönlere uygulanır | K |
+| `src/file_transfer.rs:2531` `early_abort_record_is_bounded_and_expires` | eş başına 2, toplam tavan, ömür `FILE_IDLE_TTL` | D8 (zamanlayıcısız düşme, tavan 2·`bk_flow_limit0`; §16 YD-5) |
+| `kama-app/tests/file_transfer.rs:1882` `synchronous_supersession_aborts_and_an_overtaken_file_begin_is_rejected`; `:1841` `supersession_closes_a_half_transfer_with_file_abort_superseded` | oturumlar arası: geçilen FILE_BEGIN reddedilir; `superseded` FILE_ABORT | K (oturumlar arası kural aynı) |
+| `tests/file_transfer.rs:1777` `a_cancel_while_an_abort_is_pending_adds_no_second_event` | Faz G iptali FILE_ABORT ile; tek olay | D8 (Faz G iptali `reset_flow(k, kod)`; tek olay iddiası K; DUR-06-28 (a)) |
+| `tests/file_transfer.rs:1479` `receiver_cancel_sends_aborted_by_receiver_and_the_sender_stops` | alıcı iptali; gönderen durur | D8 (`stop_flow` + gönderen `reset_flow(k, 0x00)`; §16 YD-4) |
+| `tests/file_transfer.rs:1091` `sender_receipt_timeout_fails_the_transfer_and_a_queued_receipt_wins`; `:1176` `sender_receipt_timer_starts_when_file_end_is_accepted` | `FILE_RECEIPT_TTL` | D8 (05f A saati + `HELD`; §16 YD-3, YD-7) |
+| sahte A+ (Ek B düzenekleri) | — | F: `Independent` kip, RESET kodu, `stop_flow`, `HELD` |
+
+**Toplam (kesişimli):** A 16 · B 34 · C 18 · D 16 · E 33 · F 149 literal (eklemeli API'de K) + 4 pin · G 4 + düzenek · H 12 · I 16 · J 14 + 20 · K 2 · L 4 kapı · M 9 (rev5). kama-engine taranmadı değil: A.30 (eklemeli API'de değişmez hedefi); kama-noise-wire ve kama-store testleri A.6/A.35 gereği değişmez hedefidir, uygulama turunda doğrulanır.
 
 ## Ek D — DUR'lar (CEVAP 16 v2 kararları işlendi; açıklar CEVAP 17'ye): seçenekler, öneri, gerekçe — öncelik sırasıyla
 
