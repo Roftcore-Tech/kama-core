@@ -12711,11 +12711,11 @@ mod tests {
     const T1P_P_ID: u64 = 5;
     const T1P_BLOCK_AT: u64 = 100 * MS;
     const T1P_N_LIVE: u64 = 7;
-    /// T2′ prob tetikleyicisi: ölçüm evresinde bu arka plan biriminin İLK iletimi düşer
-    /// (t = 250 s).
-    const T2P_DROP_ID: u64 = 1025;
-    /// T2′ parite bloğu (1026–1027) t = 270 s'de, 1027'nin sunumundan sonra kapatılır.
-    const T2P_BLOCK_AT: u64 = 270 * REV6_SEC;
+    /// T2′ prob tetikleyicisi (r15 teşhisi, Ek B.6 h.9.8): t ≥ t_r'de motor sessizken ilk arka
+    /// plan sunumunun İLK iletimi düşer ve arka plan üreticisi bu süre duraklar (taban PTO ≤ 10 s).
+    const T2P_PAUSE: u64 = 30 * REV6_SEC;
+    /// T2′ parite bloğu tetikleyiciden bu süre sonra kapatılır (üretici duraklamadan sonra sürer).
+    const T2P_BLOCK_DELAY: u64 = 40 * REV6_SEC;
 
     /// Ürün kipi sınıf sınırları (Ek B.6 h.3, h.9.3 P2), baş boyu üst sınırı `s`: T_max(DATA) =
     /// (3·s + p_pf)/R + 7τ, T_max(ARQ) = 3·s/R + 7τ, T_max(kopya) = 4·s/R + 8τ.
@@ -13148,6 +13148,8 @@ mod tests {
         let mut chain_seen = [false; 2];
         let mut warm_done = false;
         let mut drop_done = false;
+        let mut drop_id: Option<u64> = None;
+        let mut block_at: Option<u64> = None;
         let mut block_closed = false;
         loop {
             let mut evs: Vec<Event> = Vec::new();
@@ -13162,9 +13164,24 @@ mod tests {
                 ti += 1;
             }
             if now >= next_bg {
+                // [r15 teşhisi] Prob tetikleyicisi koşullu sessiz andır: t ≥ t_r olan ilk arka plan
+                // sunumunda motor boşsa (uçuş, DATA, ARQ ve kopya kuyruğu) bu birimin ilk iletimi
+                // düşer ve üretici T2P_PAUSE duraklar — meşgul hatta prob vadelenemez (h.9.8).
+                let quiet = now >= t_r
+                    && drop_id.is_none()
+                    && s.inflight.is_empty()
+                    && s.tx_queue.is_empty()
+                    && s.pending_lost.is_empty()
+                    && s.dup_queue.is_empty();
                 evs.push(Event::AppData(mk(bg_id, UK_S)));
+                if quiet {
+                    drop_id = Some(bg_id);
+                    block_at = Some(now + T2P_BLOCK_DELAY);
+                    next_bg = now + T2P_PAUSE;
+                } else {
+                    next_bg += 10 * REV6_SEC;
+                }
                 bg_id += 1;
-                next_bg += 10 * REV6_SEC;
             }
             for v in net.advance(now) {
                 evs.push(ack(&v));
@@ -13222,7 +13239,8 @@ mod tests {
                 }
                 for dd in &out {
                     let carried = rev6_class(dd.kind).is_some();
-                    let first_drop = in_m && carried && dd.unit_id == T2P_DROP_ID && !drop_done;
+                    let target = drop_id == Some(dd.unit_id);
+                    let first_drop = in_m && carried && target && !drop_done;
                     if first_drop {
                         drop_done = true;
                     }
@@ -13235,8 +13253,9 @@ mod tests {
                     confirmed_at.entry(id).or_insert(now);
                 }
             }
-            if !block_closed && now >= T2P_BLOCK_AT {
-                // Ölçüm evresinde kısmi blok (1026–1027): parite üretimi kapanış anında.
+            if !block_closed && block_at.is_some_and(|t| now >= t) {
+                // Ölçüm evresinde kısmi blok (tetikleyiciden T2P_BLOCK_DELAY sonra): parite üretimi
+                // kapanış anında.
                 block_closed = true;
                 let auth = s.open_fec_block_authority();
                 let closed = s.close_fec_block_manual(auth, 2, UK_PAR_R, UK_PAR);
@@ -13312,9 +13331,14 @@ mod tests {
             p0.parity_enq, 0,
             "{tag}: FİKSTÜR GEÇERSİZ: hazırlıkta parite üretildi"
         );
+        let drop_unit = drop_id.expect("FİKSTÜR GEÇERSİZ: ölçüm evresinde sessiz an bulunamadı");
         assert!(
             drop_done,
-            "{tag}: FİKSTÜR GEÇERSİZ: u{T2P_DROP_ID}'in ilk iletimi ölçüm evresinde düşmedi"
+            "{tag}: FİKSTÜR GEÇERSİZ: u{drop_unit}'in ilk iletimi ölçüm evresinde düşmedi"
+        );
+        eprintln!(
+            "[K4G-05b T2′] {tag} · sessiz an tetikleyicisi u{drop_unit}, blok kapanışı {:?} ms",
+            block_at.map(|t| t / MS)
         );
         assert_eq!(
             ppf.probe_n, probes,
