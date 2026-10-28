@@ -78,14 +78,16 @@
 
 **Teslim kipleri:** `Ordered` (akış içinde sıralı, boşluk atlanmaz) · `Live` (VO; akış içinde sırasız, `flow_seq` uygulamaya verilir). VO'da: demet = `DeadlineBounded`, REL birim (PTT_OPEN/CLOSE) = `Reliable`. Alıcı dedup penceresi W_LIVE: pencere içi her `flow_seq` tam bir kez; **gönderen kapısı:** en eski teyitsiz REL birimiyle yeni `flow_seq` arası < W_LIVE (kesintide yeni VO birimi beklemez, süresi dolar); böylece REL birim hiçbir zaman pencere altına düşmez ve "tam bir kez" yapısal olarak tutar.
 
+**Üçüncü kip — `Independent`** (yalnız kalıcı kontrol akışları 0 ve 1; DUR-06-27 (c)): güvenilir, sırasız, oturum içinde tam bir kez. Birim geldiği anda teslim edilir. Alıcı akış başına `floor` (ilk alınmamış `flow_seq`) ve [`floor`, `floor` + W) bit haritasını tutar (W = W_TCTRL ya da W_CTRL; bellek W bit). `flow_seq < floor` ya da biti kurulu birim → ACK'lenir, teslim yok, `dup_ctrl` sayılır; `flow_seq ≥ floor + W` → kredi ihlali (§7.7). Kredi `max_seq = floor + W`: bir boşluk pencereyi kurtarılana dek daraltır, kayıt düşürmez. FEC ile kurtarılan birim kendini tanıttığı için (önek, yukarıda) aynı yoldan geçer. Oturumlar arası yeniden sunum yeni `flow_seq` alır; onu uygulama kaydın kendi kimliğiyle tekilleştirir (§4.1).
+
 **Oturum sınırı:** akışlar oturuma aittir; yenileme/supersession akış taşımaz (S1 K7); bağlam-önce dağıtım eski oturumun DATA/ACK/kredisini yeni oturuma ulaştırmaz [`0c22a07d:transport.rs:56-62`].
 
 ## 4. Sınıflar ve kontrol
 
 | Trafik | Sınıf | Akış | Kip / politika |
 |---|---|---|---|
-| FLOW_RESET | CTRL (transport) | 0 | `Ordered`, `Reliable`; transport kabul sırasıyla tüketir |
-| RECEIPT, FILE_RECEIPT, FILE_ABORT | CTRL (uygulama) | 1 | `Ordered`, `Reliable`, birim boyu tavanlı |
+| FLOW_RESET (+ uygulama kodu, DUR-06-28) | CTRL (transport) | 0 | `Independent`, `Reliable`; transport geldiği anda tüketir (DUR-06-27) |
+| RECEIPT, FILE_RECEIPT, FILE_ABORT (Faz A ve oturum değişimi; DUR-06-28) | CTRL (uygulama) | 1 | `Independent`, `Reliable`, birim boyu tavanlı (DUR-06-27; rev4'te `Ordered`) |
 | TEXT | BE (AC_BE) | 2 | `Ordered`, `Reliable` |
 | SIGNALING_BLOB | BE | 3 | `Ordered`, `Reliable` (DUR-06-15) |
 | Canlı PTT | VO (AC_VO) | 4 | `Live`; demet `DeadlineBounded`, OPEN/CLOSE `Reliable` + REL (DUR-06-18'e bağlı) |
@@ -100,6 +102,54 @@ WMM adları niyet bildirir; garanti §5 seçicisinden gelir.
 - **Koşullu asgari hak:** uygun iş + kovada token → katman 0 önce; backlog'luyken ≥ ρ_C·r.
 - **Veri kredisinden bağımsızlık:** akış 0 kredisi (W_TCTRL) transportun kendi tüketimiyle, akış 1 kredisi (W_CTRL) uygulama tüketimiyle ilerler; ikisi de veri kredisinden ayrıdır; kredi ilanı ACK yolunda gider, kredi tüketmez (B10 (c)).
 - **Envanter, hizmet hakkı, toplam maliyet:** Ek D, DUR-06-3.
+
+**4.1 AMP kontrol kayıtları — sıra denetimi** [olgu: kod ve spec satırları; "sıra gereksinimi" sütunu çıkarım]. Soru (C16 v2 §4): hangi kayıt gerçekten sıra ister, neye göre; kimlikle tekilleştirilebilir mi; kayıp ve tekrar neyi bozar. AMP = `1b1425d2:specs/application-message-protocol.md`; kod `0c22a07d`.
+
+| Kayıt | Üreten → uygulandığı | Şerit (rev5) | Tekilleştirme kimliği | Sıra gereksinimi (neye göre) | Kayıp olursa | Tekrar olursa | Kaynak |
+|---|---|---|---|---|---|---|---|
+| RECEIPT(delivered) 0x08 | TEXT alıcısı → göndericinin outbox'ı | 1 | (eş, `ref_msg_id`) | **Şeritteki hiçbir kayda göre yok.** TEXT(n)'e göre doğum nedenselliği var (RECEIPT(n), TEXT(n) işlenince doğar); bu bir şerit sırası değildir. Uygulama teslim sırasını `msg_id` ile zorlamaz. `read` (0x02) bugün işlenmez; eklenirse durum kafesi delivered ≤ read, büyüğü alınır | outbox kaydı açık kalır; 05d tut-ve-dur yeniden sunar; oturum değişiminde TEXT eski `msg_id` ile yeniden gider ve RECEIPT yeniden doğar | olay yok (`receipts_ignored`); kalıcı silme idempotent | AMP :68, :73, :75; `messaging.rs:792-795` (yalnız `delivered`), :833-855; test `kama-app/tests/text_receipt.rs:564` (:576-580 tekrar + bilinmeyen → `receipts_ignored` = 2), :585 (sırasız `msg_id` kabul) |
+| FILE_RECEIPT 0x0B | dosya alıcısı → göndericinin GİDEN aktarımı | 1 | (eş, `transfer_id`), giden haritası | **Şeritteki hiçbir kayda göre yok.** FILE_ABORT ters yönlüdür ve başka bir kimlik uzayındadır: FILE_RECEIPT benim gelen, FILE_ABORT benim giden aktarımımı anlatır. Aktarımın verisine göre nedensellik: `ok` FILE_END + bütün parçalar + özetten sonra doğar; `rejected` FILE_BEGIN'den hemen sonra doğabilir ve gönderen Faz G'deyken gelir (faz tablosu karşılar) | Faz A'da gönderenin A saati, Faz G'de G saati sürer (05f); yuva düşmez (A.21) | aktarım tablodan çıkmıştır → `receipts_ignored` | AMP :71, :89 ("aktarım başına en çok bir kez"); `file_transfer.rs:1135-1160`, :1598-1625 (`receipt_outcome`); test `src/file_transfer.rs:2349` (iki kayıt zıt yönlere uygulanır) |
+| FILE_ABORT 0x05 | dosya göndereni → alıcının GELEN aktarımı | 1 (DUR-06-28 (a) ile yalnız Faz A ve oturum değişimi) | (eş, `transfer_id`), gelen haritası; ilk neden kalır | **Şeritteki kayıtlara göre yok. Aynı aktarımın FILE_BEGIN'ine göre VAR ve şeritler arasıdır:** FILE_BEGIN(t) BK akışı k'nin ilk birimidir, FILE_ABORT(t) akış 1'dedir → FILE_ABORT önce işlenebilir. Bugün yalnız oturumlar arasında olur (erken iptal kaydı); akış ayrımıyla oturum İÇİNDE de olur (§4.2 (D)) | alıcı aktarımı tutar (bugün `FILE_IDLE_TTL`; 05f'de R saati); Faz G iptalinde RESET ayrıca gider | etkisiz; aktarım çıkmışsa erken iptal kaydına girer (zararsız) | AMP :65, :88, :92; `file_transfer.rs:1114-1132`, :1018-1025, :139-156 (kayıt ve türetimi), :295, :1295-1322; `cancel_send` :812-830 (FILE_BEGIN kabulünden önce tele bir şey çıkmaz; Faz A'da `AlreadySent`) |
+| FLOW_RESET (transport) | gönderen transport → alıcı transport | 0 | (oturum, `flow_id`); kapalı akışa gelen = bayat | **Şeritteki kayıtlara göre yok.** Kendi akışının birimlerine göre: RESET'ten sonra gelen birim `late_after_close`; `flow_id > max_seen` → örtük açma + kapalı | alıcı akışın kaynaklarını kurtarılana dek tutar | `stale_ctrl_entries` | §7.6 |
+| FLOW_CREDIT / FLOW_BLOCKED (transport) | alıcı ↔ gönderen | şerit dışı (ACK yolu / `TransmitKind::Control`) | mutlak artan sınırlar | **Yok:** büyüğü alınır; sırasız ya da bayat girdi zararsız (B4) | §7.4 (iii) tetiği + BLOCKED tekrarı | idempotent | §7.4–§7.5 |
+| FILE_BEGIN / FILE_CHUNK / FILE_END 0x02–0x04 | dosya göndereni → alıcı | BK akışı k (`Ordered`) | FILE_BEGIN (eş, `transfer_id`); parça `offset` bit haritası | **Akış içinde VAR:** FILE_BEGIN önce gelir (ön tampon yok; bilinmeyen aktarımın parçası DROP). Parçalar `offset` adreslidir, birbirine göre sıra gerekmez. Eksik parça varken FILE_END aktarımı bitirmez | yalnız kendi aktarımı bekler | `duplicate_records`; durum bozulmaz | AMP :62-64; `file_transfer.rs:74-77`, :1003-1013 |
+| PTT_OPEN / PTT_CLOSE 0x06/0x07 (REL) | konuşan → dinleyen | 4 (`Live`) | (eş, `stream_id`); OPEN idempotent (PTT-R1); bilinmeyen akışın CLOSE'u yok sayılır (PTT-R2) | **Akış içinde VAR:** demetlere göre OPEN önce (sınırlı ön tampon, A.18), CLOSE sonra (§7.6 Live sonlanma kuralı). Kontrol şeritlerine göre yok | §7.6; yedek PTT-R4 | W_LIVE dedup, tam bir kez (§3) | AMP :66-67, :79-84; `ptt.rs:630-658` (CLOSE tek kez) |
+| TEXT 0x01 | → | 2 (`Ordered`) | (eş, `msg_id`); dedup 4096 | Uygulama zorlamaz (AMP :73), ama kullanıcı sırası transporttan beklenir → `Ordered` kalır | outbox + yeniden sunum | dedup; RECEIPT yeniden | AMP :61, :73, :75; `messaging.rs:801-821` |
+| SIGNALING_BLOB 0x09 | → | 3 (`Ordered`) | kimlik yok; dedup YOK (AMP :98) | **Seam sırayı GARANTİ ETMEZ** (`1b1425d2:specs/signaling-seam-v0.md:43-44`). `Ordered` daha sıkıdır ve zararsızdır → DUR-06-15 aynen; `Independent` mümkün ama gerekmez | yeniden sunum (K4G-14a) | medya motoru idempotent | AMP :69, :98 |
+
+**Denetimin sonucu:**
+- Akış 1'in üç kaydının hiçbiri şerit içindeki başka bir kayda göre sıra istemez. Üçü de kendi kimliğiyle idempotenttir; kodda ve testte görülür (satırlar tabloda). Akış 0'ın tek kaydı (FLOW_RESET) akış kimliğiyle idempotenttir.
+- Sıra isteyen bağımlılıklar akış içindedir (FILE_BEGIN önce; PTT_OPEN önce) ve kendi akışlarında korunur.
+- **Bir bağımlılık şeritler arasıdır:** FILE_ABORT(t) ↔ FILE_BEGIN(t). Kontrol şeridinin kipinden bağımsızdır; akış ayrımının kendisinden doğar (§4.2 (D)).
+- Bütün kontrol kayıtları körlemesine sırasız yapılmaz: sırasızlık yalnız denetimin bağımsız bulduğu 0 ve 1'e uygulanır. TEXT, BK ve VO'nun akış içi sıra kuralları aynen kalır.
+
+**4.2 Kontrol sıralama tasarımı.**
+
+**(K) Karşı örnek** (C16 v2 §4; INCELEMECI-8, K4G-06 bölümü). rev4'te RECEIPT, FILE_RECEIPT ve FILE_ABORT aynı `Ordered` akış 1'deydi. FILE_RECEIPT(n) kaybolursa RECEIPT(n+1) karşıya ulaşsa bile alıcının akış-1 sıra tamponunda n kurtarılana dek bekler. Böylece TEXT'in "teslim edildi" durumu bir dosya kaydının kurtarılmasına bağlanır. Kontrol katmanının önceliği bunu kaldırmaz: öncelik gönderendeki emisyon sırasını belirler, alıcıdaki sıra beklemesini değil. Ek gecikme ≥ kayıp ilanı + kurtarma emisyonunun hizmeti; 31 B/s'de onlarca saniye [çıkarım; B30-taban ölçer].
+
+**Seçenekler (DUR-06-27):**
+- **(a)** Tek `Ordered` akış 1 (rev4): karşı örnek yapısal olarak kırmızı.
+- **(b)** Ayrı `Ordered` şeritler: RECEIPT şeridi + dosya kontrol şeridi (FILE_RECEIPT, FILE_ABORT). Karşı örnek yeşile döner. Kalan bağımlılıkların semantik gerekçesi yoktur: RECEIPT(n) kaybı RECEIPT(n+1)'i bekletir; FILE_RECEIPT(t1) kaybı FILE_RECEIPT(t2)'yi ve FILE_ABORT'u bekletir. İkincisi, kontrol düzeyinde "bir dosya diğerini kilitlemez" kuralını (C15 v3 §9.3) bozar. Bedel: bir kalıcı akış daha (kimlikler kayar: Ek A, testler); şerit başına kredi; H_C_tavan bölünür.
+- **(c)** **`Independent` kip, akış 0 ve 1** (§3). Teslim sırasızdır. Oturum içinde tam bir kez: transport `flow_seq` ile tekilleştirir. Oturumlar arası tekrarı uygulama, kaydın kimliğiyle tekilleştirir (§4.1). Karşı örnek ve kardeşleri yeşile döner: FILE_RECEIPT(t1) ↔ FILE_RECEIPT(t2), FLOW_RESET(k1) ↔ FLOW_RESET(k2). Tel değişmez (`flow_seq` zaten var). Transport AMP çözmez (D4): tekilleştirme transport kimliğiyle, idempotentlik uygulamada. Bedel: yeni `FlowMode::Independent` (S1, A.1; seam metni A.7); alıcıda şerit başına W bit; kredi kuralı `max_seq = floor + W`.
+- **(d)** Kayıt başına sıralama anahtarı (aynı anahtarlı kayıtlar sıralı). Denetim şerit içinde sıra isteyen bir anahtar bulmadı. Anahtar ya transporta uygulama anlamı taşır ya da nesne başına akış ister → reddedilir.
+- **Öneri (c).**
+
+**(D) Şeritler arası bağımlılık: FILE_ABORT ↔ FILE_BEGIN (DUR-06-28).**
+- **Durum:** rev4'te gönderenin Faz G iptali = FILE_ABORT (akış 1) + `reset_flow` (akış 0). Bu iptal, aktarımın FILE_BEGIN'ini (akış k) geçebilir. FILE_BEGIN, RESET yüzünden hiç teslim edilmeyebilir de: A.7 istisna (ii), ACK'lenmiş ama teslim edilmemiş birim atılır.
+- **Bugünkü erken iptal kaydı neden yetmez:** kayıt (`file_transfer.rs:139-156`) yalnız oturumlar arası sırasızlık için türetilmiştir (drain T_g 30 s < `FILE_IDLE_TTL` 60 s; eş başına ≤ 2 kayıt). Oturum içinde "FILE_BEGIN(t) hiç gelmeyecek" sinyali yoktur. Bu yüzden kayıtlar birikir ve sayım tavanında en eski düşer. Düşen kayıt hâlâ gerekli olabilir; o durumda geç gelen FILE_BEGIN hayalet aktarım başlatır. 05f `FILE_IDLE_TTL`'i kaldırdığı için zaman sınırı da kalkar.
+
+Seçenekler:
+- **(a)** **Faz G iptali = `reset_flow(k, kod u8)`.**
+  - FLOW_RESET gövdesi bir uygulama kodunu opak taşır. Emsal: RFC 9000 §19.4 RESET_STREAM "Application Protocol Error Code". Transport kodu yorumlamaz (D4).
+  - Alıcıya `FlowEnded { Reset { kod } }` verilir. Kod değer kümesi = FILE_ABORT.reason (AMP §3).
+  - FILE_ABORT yalnız iki yerde kalır: Faz A (05f A dolumu) ve oturum değişimi (superseded). Faz A'da FILE_BEGIN teyitlidir ve RESET yoktur; INV-ACK-DELIVER-1 gereği teslim edilecektir. Oturum değişiminde eski oturum kapanınca kayıt düşer (05f §9).
+  - Sonuç: oturum içinde erken iptal kaydı gerekmez. Kayıt yalnız "FILE_BEGIN kesin gelecek ya da oturumu kapanacak" durumunda doğar; zamanlayıcısızdır, tavanı türetilir (§16 YD-5).
+  - Bedel: FLOW_RESET +1 B; S1 `reset_flow(flow, code)` ve `FlowEnded { Reset { code } }` (A.1, A.2); AMP §3 FILE_ABORT kullanım metni (A.18); 05f §8.3 G dolumunun 2. adımı kalkar (kod 1. adımda gider).
+- **(b)** FILE_ABORT akış 1'de kalır; erken iptal kaydı oturumlu anahtar ve sayım tavanıyla tutulur. Kayıt düşerse hayalet aktarım `FlowEnded { Reset }` ile kapanır, ama neden bilinmez. Yeni tel yok.
+- **(c)** Bağımlılık işaretçisi: akış-1 birimine `DEP` bayrağı + `dep_flow u16`. Alıcı transport birimi, `dep_flow`'un ilk birimi teslim edilene ya da akış kapanana dek tutar. Kesin bir çözümdür; ama S1 `send`'e bağımlılık parametresi ve tele bayrak ekler, tek bir kayıt türü için genel bir mekanizma kurar.
+- **Öneri (a)** (05f ile ortak).
+
+**Alıcının sonlandırdığı akış:** `rejected`, `aborted_by_receiver` ve 05f R dolumu gibi durumlarda alıcı terminal FILE_RECEIPT'i akış 1'e verir ve akış k'yi yerelde durdurur (`stop_flow`, §16 YD-4). Yeni kredi ilan edilmez; gelen birimler ACK'lenip atılır (`late_after_close` yolu).
 
 ## 5. İki düzeyli seçici (S7 önerisi; DUR-38 ile ortak)
 
@@ -557,6 +607,19 @@ Sözleşme: (a) sığ giriş · (b1) `OpaqueUnit`'e alan (149 literal D8; K3 +1�
 **DUR-06-20 — Deney kapsamı ve FEC kolu** (§14).
 **KARAR (CEVAP 16 v2 §4): (a) KOŞULLU.** Deney kodunda FEC kapalı kabul (ürün profili dışı; B2'nin FEC kolu yalnız tabanda). **Koşul:** deney İKİ tabanda koşar — H `0c22a07d` (rev5 motorlu; tarihsel karşılaştırma) VE G = rev6 (#140 merge'ü) + yeniden tabanlanmış 05c'nin güncel birleşik adayı (hazır olunca). **Karar verdiren koşu G'dir;** bilinen eski zamanlayıcı kusurları yeni mimari kararını belirlemez. S7(a)'nın reddi ön-kayıtlıdır (B2: TEXT'in KENDİ kurtarma işi; iki taban). Uygulaması §14'te: koşu matrisi, ön-kayıt (T_BE^rec(H), T_BE^rec(G)), aday hazır değilken H'de yazıp G'ye taşıma ve maliyeti (≈ 2,25–3,5 iş günü [tahmin]). Kayıt için seçenekler: (a) yukarıdaki · (b) yeni kodda FEC dahil (+2–3 gün) · (c) yalnız K1.
 
+**DUR-06-27 — Kontrol şeritlerinin (akış 0 ve 1) teslim kipi** (§3, §4.1–§4.2; A.1, A.7, A.13, A.18, A.21; B30). Kaynak: CEVAP 16 v2 §4'ün zorunlu karşı örneği (INCELEMECI-8). Seçenekler:
+- (a) tek `Ordered` akış 1 (rev4);
+- (b) ayrı `Ordered` şeritler (RECEIPT / dosya kontrolü);
+- **(c) akış 0 ve 1 `Independent`:** sırasız; oturum içinde tam bir kez (`flow_seq` + `floor` / W bit haritası); oturumlar arası tekrar uygulama kimliğiyle;
+- (d) kayıt başına sıralama anahtarı.
+
+**Öneri (c).** Gerekçe:
+- AMP denetimi (§4.1) akış 1'in üç kaydında ve akış 0'ın tek kaydında şerit içi sıra gereksinimi bulmadı. Üçü de kodda kimlikle idempotent: `0c22a07d:messaging.rs:833-855`, `file_transfer.rs:1114-1160`; testler `kama-app/tests/text_receipt.rs:564`, `src/file_transfer.rs:2349`.
+- (b) karşı örneği kapatır ama aynı sınıfın ve dosyalar arası kontrolün bağımlılığını bırakır; B30 (b) kolu (b) seçeneğinde kırmızı beklenir.
+- (d) transporta uygulama anlamı taşır.
+
+Bedel (c): yeni teslim kipi (S1 FROZEN, A.1) ve seam metni (A.7); tel değişmez. Sırasızlık yalnız 0 ve 1'e uygulanır; TEXT, BK ve VO sıra kuralları aynen kalır (körlemesine sırasızlık yok). **Deneyden önce:** yön. Deney K2'de akış 1'in kipi anahtarlıdır: `Ordered` kolu (a)'yı, `Independent` kolu (c)'yi sınar (B30).
+
 ### Öncelik 2 — deney sonucunu bekler
 
 **DUR-06-10 — VO açıkken BK/BE birim boyu.** **(a) PoC'de beyan + ölçüm** (VO gecikmesi ≥ S_BK/r; B11 gecikme bileşeni) · (b) sınıf başına dinamik `preferred_plaintext_unit_bytes` · (c) BK transport parçalaması. Öneri (a): aktarım ortasında parça boyu değişemez (`file_transfer.rs:55-63`).
@@ -611,6 +674,13 @@ Sürekli dosya aktarımında toplam kontrol [hesap]: 31 B/s'de ≈ 1,3 + 0,04 �
 **DUR-06-25 — netem / T-hücre ölçüm kolu** (A.26, B20). Bench ürün kolu bugün örtük kipte koşar (`0c22a07d:crates/bench/src/kama_product.rs:1`, :36-41). (a) **bench'e S1-kipi ürün kolu (`kama-product-s1`, manifest `kip` alanı); B20 ön koşulu** · (b) yalnız örtük kipin FLOW_BATCH'e geçmesi (çerçeve ve tek akış FEC ölçülür; kredi, çoklu akış, BLOCKED ölçülmez) + A.26 beyanı · (c) yalnız beyan. Öneri (a); (a) Aşama 7'ye yetişmezse (b) + beyan.
 
 **DUR-06-26 — FIN sonrası tüketici tutması × 05f A saati** (05f DUR-05f-8 ile birlikte; §7.6, B29). Durum: FIN dahil bütün birimler kredi içinde kabul edilip teyit edildikten sonra alıcı tüketicisi akışı tutarsa FILE_RECEIPT doğmaz; gönderen Faz A'dadır ve A saati (`T_A = T_işlem + D_tük + T_ctrl`, 05f §7) tutmayı göremez. 05f B.4 (d) yalnız gönderim fazındaki tutmayı kapsar (kredi bloklu → G durur). Seçenekler: (a) D_tük > 0 [CAL], desteklenen azami tüketici tutması (başlangıç adayı: INT-02 `ek-tuketici-durak` 30 s'nin üstü); aşan tutma zarf dışı → yanlış "başarısız" mümkün (DUR-05f-11 beyanı) · **(b) alıcı, FIN'i almış ve tutulan akış için FLOW_CREDIT'e sabit boylu "tutuluyor" girdisini (11 B) T_BLK aralıkla koyar; girdi tazeyken gönderenin A saati durur; girdi kesilirse (oturum biter, eş susar) A saati sürer** · (c) FIN'den sonra `hold_flow` yasak (reddedilir: tüketicinin G/Ç durması alıcının elinde değildir). **Öneri (b):** 05f R1 ("kapasite beklemesi saate girmez") ile tutarlı; D_tük = 0 varsayımı geçerli kalır; bedel tutma süresince ≈ 39 B / T_BLK (31 B/s'de ≈ 1,3 B/s) [hesap] ve yeni bir girdi türü (tel, A.8). Kapanma güvencesi: tutan eş kaybolursa girdi kesilir ve A saati sonlu kalır; tutulan aktarımın gönderen tarafında payload'u yoktur (bütün birimler teyitli), yalnız aktarım kaydı bekler.
+
+**DUR-06-28 — Gönderen iptalinin akışa bağlanması** (05f ile ortak; §4.2 (D), §16 YD-4/YD-5; A.1, A.2, A.8, A.18, A.21; B31). Sorun: Faz G iptalinde FILE_ABORT (akış 1) aktarımın FILE_BEGIN'ini (akış k) geçebilir; FILE_BEGIN RESET ile hiç teslim edilmeyebilir. Bugünkü erken iptal kaydının türetimi (oturumlar arası, `FILE_IDLE_TTL`) oturum içinde geçmez ve 05f `FILE_IDLE_TTL`'i kaldırır. Seçenekler:
+- **(a) Faz G iptali = `reset_flow(k, kod u8)`:** FLOW_RESET uygulama kodunu opak taşır (RFC 9000 RESET_STREAM emsali); alıcıda `FlowEnded { Reset { kod } }`; FILE_ABORT yalnız Faz A ve oturum değişiminde; erken iptal kaydı zamanlayıcısız, tavanı türetilmiş (§16 YD-5);
+- (b) FILE_ABORT akış 1'de kalır + oturumlu anahtar ve sayım tavanlı kayıt (düşen kayıt hayalet aktarım doğurabilir; neden kaybolur);
+- (c) bağımlılık işaretçisi (`DEP` + `dep_flow u16`; S1 `send`'e parametre).
+
+**Öneri (a).** Gerekçe: iptal sinyali iptal edilen akışın kimliğine bağlanır, böylece "FILE_BEGIN gelecek mi" sorusu oturum içinde hiç doğmaz. Alıcı ya FILE_BEGIN'i RESET'ten önce teslim almıştır (aktarım bağlıdır → `Aborted(kod)`) ya da hiç almamıştır (aktarım hiç başlamamıştır → olay yok; doğru). Bedel: FLOW_RESET +1 B; S1 `reset_flow`/`FlowEnded` imzası (DUR-06-7 ile); AMP §3 FILE_ABORT kullanım metni (A.18); 05f §8.3 G dolumunda FILE_ABORT adımı kalkar, kod RESET'te gider (05f rev3). Yeni tel kaydı yok (FLOW_RESET zaten K4G-06'nın yeni birimi).
 
 ### Öncelik 4 — Aşama 7
 
