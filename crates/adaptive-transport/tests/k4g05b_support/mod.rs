@@ -308,10 +308,12 @@ pub enum Owner {
     Copy,
     /// Kayıp ilan edilmiş, ARQ planında (`pending_lost`).
     Arq,
-    /// Kuyruk-probu kapsamı etkin (prob açık, bütçe tükenmemiş) ve uçuşta kaydı var.
+    /// Kuyruk-probu kapsamı etkin (prob açık, bütçe tükenmemiş), uçuşta kaydı var ve H vadesi
+    /// (max(birimin son iletimi, son ilerleme) + H) geçmemiş — [K4G-05b DUR-45 (C)] prob kapsamı
+    /// H-sahiplenmesini kapatmaz; vade geçtiyse sahiplenme olmalıydı (bkz. [`owner_of`]).
     Probe,
     /// Prob kapsamı dışında, uçuşta kaydı var ve motor bir uyanma vadesi açıklıyor
-    /// (H sahiplenme vadesi EK4-A2 7. kaynak).
+    /// (H sahiplenme vadesi EK4-A2 7. kaynak; DUR-45 (C) adayıyla kapsamda da kaynaktır).
     HWindow,
 }
 
@@ -329,6 +331,21 @@ pub fn owner_of(s: &Sender, unit: u64) -> Option<Owner> {
     }
     let t = s.diag_recovery_timers();
     if t.tail_enabled && t.tail_probe_index < t.tail_max_probes {
+        // [K4G-05b DUR-45 (C) · wf_dd06f8bc] Prob kapsamı H-sahiplenmesini kapatmaz: kopya ve ARQ
+        // kaydı olmayan birimin H vadesi motor saatinde geçtiyse sahiplenme olmalıydı → Probe
+        // SAYILMAZ (sahipsiz). Pay %10: H tur içinde uçuş ortalaması değişince yeniden hesaplanır;
+        // gerileme (aç kalan prob + kapalı H) sınırsız aşar. PreConverge/Idle'da H-sahiplenmesi
+        // yoktur.
+        let anchor = r
+            .last_tx_ns
+            .unwrap_or(0)
+            .max(t.last_progress_ns.unwrap_or(0));
+        let h = t.unowned_horizon_ns;
+        let h_late = t.last_event_ns > anchor.saturating_add(h).saturating_add(h / 10);
+        let h_applies = !matches!(t.state, SenderState::PreConverge | SenderState::Idle);
+        if h_applies && h_late {
+            return None;
+        }
         return Some(Owner::Probe);
     }
     s.next_wakeup_ns().map(|_| Owner::HWindow)
@@ -376,8 +393,9 @@ pub struct Watch {
     /// `birim → (ilk kez kopya kuyruğunda görüldüğü an, ondan önceki son açıklanan uyanma vadesi)`.
     pub adopted_at: HashMap<u64, (u64, Option<u64>)>,
     last_wakeup: HashMap<u64, Option<u64>>,
-    /// `(an, birim, vade)` — prob kapsamı dışında, kopya kuyruğuna ve ARQ'ya girmemiş birim için
-    /// olay sonunda açıklanan uyanma vadesi YOK ya da geçmiş (H-sahiplenmesi kaçırıldı).
+    /// `(an, birim, vade)` — Probe sahibi sayılmayan (prob kapsamı dışında ya da H vadesi geçmiş),
+    /// kopya kuyruğuna ve ARQ'ya girmemiş birim için olay sonunda açıklanan uyanma vadesi YOK ya da
+    /// geçmiş (H-sahiplenmesi kaçırıldı).
     pub h_overdue: Vec<(u64, u64, Option<u64>)>,
     /// `(an, kopya kaydı, kopyası olan birim)` — kopya işi D_max × birim sayısını aştı.
     pub copy_work_over: Vec<(u64, u32, usize)>,

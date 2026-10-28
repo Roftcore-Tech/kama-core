@@ -12143,11 +12143,8 @@ mod tests {
     /// max(3·srtt, 2·EAI_maks)·1000/300, EAI_maks = 2·unit_max/R + 65/31 s; srtt R1'de sabittir
     /// (RTT örneği yok).
     fn d45_t_birim(rate: u64, srtt_ns: u64, unit_max: u64, n_live: u64) -> u64 {
-        let eai =
-            2 * unit_max * REV6_SEC / rate + EAI_SACK_WIRE_BYTES * REV6_SEC / EAI_RETURN_BW_PRIOR;
-        let h_max = (3 * srtt_ns).max(2 * eai) * 1000 / 300;
         let a = rto_max_ns();
-        h_max.max(a) + a + n_live * rev6_t_max(rate).2 + REV6_TICK
+        uk_h_max(rate, srtt_ns, unit_max).max(a) + a + n_live * rev6_t_max(rate).2 + REV6_TICK
     }
 
     /// D1 — R1 + kuyruk-probu + sürekli sınıf yükü (Ek B.6 h.9.6).
@@ -12377,6 +12374,10 @@ mod tests {
             }
         }
         let resent = r.other_services.values().filter(|&&n| n > 1).count();
+        // [wf_dd06f8bc] N_live = 5 sınırı yalnız zincir kolunun kapalı kümesinde geçerlidir; DATA
+        // kolunda (açık üretici) R1'de her birim teyitsiz kalır → gerçek N_live ile de basılır.
+        let n_live = 1 + r.other_services.len() as u64;
+        let t_birim_live = d45_t_birim(rate, srtt_ns, s_par, n_live);
         eprintln!(
             "[DUR-45 D1] {tag} · pencere {} s (2·T_birim(R0), T_birim {} ms) · U hizmeti {} {:?}",
             r.window_ns / REV6_SEC,
@@ -12385,11 +12386,13 @@ mod tests {
             r.u_services
         );
         eprintln!(
-            "[DUR-45 D1] {tag} · U en büyük hizmet yaşı {} ms (T_birim(R1) {} ms) · prob emisyonu \
-             {} · prob bekleyen tur {} / {} (ilk {:?} ms) · U kopya kuyruğunda {:?} ms · \
+            "[DUR-45 D1] {tag} · U en büyük hizmet yaşı {} ms (T_birim(R1) N_live = 5: {} ms — \
+             yalnız zincir kolunda geçerli; gerçek N_live {n_live}: {} ms) · prob emisyonu {} · \
+             prob bekleyen tur {} / {} (ilk {:?} ms) · U kopya kuyruğunda {:?} ms · \
              RECOVER_FWD {:?} ms · kapsam sönmesi {:?} ms",
             r.u_max_age_ns / MS,
             r.t_birim_r1_ns / MS,
+            t_birim_live / MS,
             r.probes,
             r.pending_turns,
             r.turns,
@@ -12741,10 +12744,14 @@ mod tests {
     }
 
     /// H_maks = max(3·srtt, 2·EAI_maks)·1000/300, EAI_maks = 2·unit_max/R + 65/31 s (Ek B.6 h.2).
+    /// Sabitler koddan (wf_dd06f8bc): `ACK_SILENCE_SRTT_MULT`, `K_CONF_EAI`, `EXPECTED_ACK_FREQ_N`,
+    /// `EAI_*`, `HysteresisConfig::fixture().escalate_permille` (`unowned_horizon_ns` ile aynı).
     fn uk_h_max(rate: u64, srtt_ns: u64, unit_max: u64) -> u64 {
-        let eai =
-            2 * unit_max * REV6_SEC / rate + EAI_SACK_WIRE_BYTES * REV6_SEC / EAI_RETURN_BW_PRIOR;
-        (3 * srtt_ns).max(2 * eai) * 1000 / 300
+        let data_ns = EXPECTED_ACK_FREQ_N * unit_max * REV6_SEC / rate;
+        let eai = data_ns + EAI_SACK_WIRE_BYTES * REV6_SEC / EAI_RETURN_BW_PRIOR;
+        let srtt_term = u64::from(ACK_SILENCE_SRTT_MULT) * srtt_ns;
+        let eai_term = u64::from(K_CONF_EAI) * eai;
+        srtt_term.max(eai_term) * 1000 / u64::from(HysteresisConfig::fixture().escalate_permille)
     }
 
     /// T_birim = max(H_maks, A) + A + N_live·T_max(kopya) + τ (Ek B.6 h.3, h.9.7).
