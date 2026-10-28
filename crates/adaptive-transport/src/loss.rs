@@ -298,6 +298,15 @@ impl ThresholdLossDetector {
         std::mem::take(&mut self.unlossed)
     }
 
+    /// [K4G-05b madde 1] Gönderim kaydını İLAN ETMEDEN unutur (sender'da yalnız-parite kaydının süre
+    /// dolumu). Yalnız haritadan düşer → sonraki paket/zaman
+    /// eşiği taramalarına girmez; `lost_units` / `sent_units` sayaçları, olay-ledger'ı, pencere
+    /// paydası ve `largest_acked` DEĞİŞMEZ (ilan yok, `tv_loss` davranışı aynı). Kayıt yoksa NO-OP.
+    /// Trait'e eklenmedi: yalnız somut dedektörün haritasına ait bir bakım işlemidir.
+    pub fn forget(&mut self, seq: u64) {
+        self.inflight.remove(&seq);
+    }
+
     /// Görülen en yüksek acked seq (un-loss'ta gözlenen-reorder mesafesi = largest − seq).
     #[must_use]
     pub fn largest_acked(&self) -> Option<u64> {

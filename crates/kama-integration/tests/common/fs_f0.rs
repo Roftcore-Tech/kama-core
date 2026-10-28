@@ -75,6 +75,36 @@ pub struct F0Result {
     pub spurious_retransmits: u64,
 }
 
+/// §8 zamanlama sınıflaması: FEC onarımı ARQ yeniden gönderiminin varışından ÖNCE ya da AYNI ANDA
+/// kullanılabildiyse (`t_repair_usable ≤ t_arq_arrival`) ya da yeniden gönderim hiç varmadıysa
+/// (`t_arq_arrival` yok) FEC kazanır; onarım hiç kullanılamadıysa kazanmaz. Saf fonksiyon
+/// ([K4G-05b DUR-44] `run_f0` içinden ayrıldı, davranış birebir; `fs_runner` CLI'nin `f0` kolu da bunu çağırır).
+#[must_use]
+pub fn fec_beats_arq(t_repair_usable: Option<u64>, t_arq_arrival: Option<u64>) -> bool {
+    match (t_repair_usable, t_arq_arrival) {
+        (Some(u), Some(a)) => u <= a,
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
+/// §8 SPURIOUS sayısı: en az bir kaynak FEC ile çözüldüyse VE FEC zamanlamada kazandıysa
+/// (`fec_beats_arq`) emitilen yeniden gönderimlerin HEPSİ spurious'tur, aksi hâlde 0. Saf fonksiyon
+/// ([K4G-05b DUR-44] belirlenimli birim testi `fs_fec_arms.rs` `dur44_classifier`).
+#[must_use]
+pub fn spurious_retransmits(
+    fec_decoded_sources: usize,
+    retransmits: u64,
+    t_repair_usable: Option<u64>,
+    t_arq_arrival: Option<u64>,
+) -> u64 {
+    if fec_decoded_sources > 0 && fec_beats_arq(t_repair_usable, t_arq_arrival) {
+        retransmits
+    } else {
+        0
+    }
+}
+
 /// F0 kapalı-döngü. Sealed-wire boyu GROUNDED (fs_sealed_len; source==repair AYNI — INV-ENGINE-SOC;
 /// eski uydurma parity_frame=108 KALDIRILDI → gerçek 26+11+E=101@E=64, protector.rs N7).
 pub fn run_f0(manual_r: u16, drop_initial: &[u16], link_bps: u64, owd_ns: u64) -> F0Result {
@@ -339,16 +369,13 @@ pub fn run_f0_paced(
     res.serialized_bytes = ch.serialized_bytes();
     // §8 SPURIOUS: FEC blok'u ERKEN tamamladıysa (t_repair_usable ≤ t_arq_arrival) emitilen retransmit'ler
     // SPURIOUS (hybrid-coordination-cost; BUDGET_MISMATCH-DEĞİL — total-outcome-cost'a ayrı yazılır).
-    let fec_beats_arq = match (timing.t_repair_usable, timing.t_arq_arrival) {
-        (Some(u), Some(a)) => u <= a,
-        (Some(_), None) => true,
-        _ => false,
-    };
-    res.spurious_retransmits = if res.fec_decoded_sources > 0 && fec_beats_arq {
-        res.retransmits
-    } else {
-        0
-    };
+    // [K4G-05b DUR-44] Sınıflama saf fonksiyona ayrıldı (davranış birebir; birim testi `fs_fec_arms.rs`).
+    res.spurious_retransmits = spurious_retransmits(
+        res.fec_decoded_sources,
+        res.retransmits,
+        timing.t_repair_usable,
+        timing.t_arq_arrival,
+    );
     let pt = s.path_timing_snapshot();
     res.path_timing = PathTimingLedger {
         path_srtt_ns: pt.srtt_ns,

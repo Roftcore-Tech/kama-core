@@ -15,10 +15,18 @@ use client_core::runtime::{
 use client_core::KamaV1Profile;
 
 /// Kimlikler TEK KAYNAKTAN ve donmuş değerlerde. Bench etiketi bu sabiti okur (INV-008).
+///
+/// [K4G-05b · Ek B.3 #7 — DUR-8 biçimi; sahip kararı CEVAP PAKETİ 5, 2026-10-16] NEDEN DEĞİŞTİ:
+/// yeniden-gönderim sahipliği (transport-layer-tdd §12 AMENDMENT-12) motor davranışını değiştirir;
+/// dosya başlığındaki kural ("assertion'ı değiştirmek = yeni sürüm kimliği") gereği kimlik v1.1'e
+/// taşınır. ESKİ İDDİA: `kama-v1-full` / `transport-v1` → YENİ İDDİA: `kama-v1.1-full` /
+/// `transport-v1.1` (yalnız iki `assert_eq!` değeri; test amacı aynı — kimlik tek kaynaktan ve
+/// donmuş). 2×2 beklentisi: eski kod + eski test YEŞİL · yeni kod + eski test KIRMIZI · yeni kod +
+/// yeni test YEŞİL · eski kod + yeni test KIRMIZI.
 #[test]
 fn kimlik_sabitleri_donmus() {
-    assert_eq!(TRANSPORT_V1_PROFILE_ID, "kama-v1-full");
-    assert_eq!(TRANSPORT_V1_ARCHITECTURE, "transport-v1");
+    assert_eq!(TRANSPORT_V1_PROFILE_ID, "kama-v1.1-full");
+    assert_eq!(TRANSPORT_V1_ARCHITECTURE, "transport-v1.1");
 }
 
 /// FEC geometrisi: profil 0x05 → birim tavanı 1013 = E 1024 − SOURCE_PREFIX 11 (katalog tek kaynak).

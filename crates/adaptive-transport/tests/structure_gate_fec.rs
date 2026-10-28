@@ -74,6 +74,70 @@ fn drive_until_loss_ack(units: u64, acked: Vec<u64>) -> (Sender, u64) {
     (s, t_ack)
 }
 
+/// [K4G-05b DUR-33] `drive_until_loss_ack`'in BİRİM UZAYINDA desenli ikizi: aynı sürüş, ama
+/// 45 s'deki ACK listesi birim sırası `ack_unit(k)` doğru olan birimlerin GERÇEK Data seq'lerinden
+/// kurulur (çıktıdan okunur). Seq paritesine bağlı desen, Data akışının ortasına giren her kopya ya
+/// da yeniden gönderim seq'inde birim uzayında kayar — v1.1'de PAY istisnası (engine §13 v1.1
+/// İSTİSNA, A.4) vadeli kopya başını her `K_ARQ_SHARE` turda DATA'dan önce gönderir (u1001'in
+/// §3.3-B kopyası ≈ 11.4 s'de akışa girer). Kader penceresi yalnız ORİJİNALLERİ sayar; desen
+/// birim uzayında tanımlanır, kopya/yeniden gönderim seq'leri ACK'lenmez.
+fn drive_until_loss_ack_by_unit(units: u64, ack_unit: impl Fn(u64) -> bool) -> (Sender, u64) {
+    let mut s = Sender::new();
+    // [DR-EST-1 IZOLASYONU] `drive_until_loss_ack` ile aynı gerekçe.
+    s.set_establish_probe(false);
+    let mut data_seq: std::collections::BTreeMap<u64, u64> = std::collections::BTreeMap::new();
+    let mut note = |out: Vec<TransmitDecision>| {
+        for d in out {
+            if d.kind == TransmitKind::Data {
+                data_seq.insert(d.unit_id, d.seq);
+            }
+        }
+    };
+    for i in 0..units {
+        note(s.on_event(
+            Event::AppData(OpaqueUnit {
+                id: 1000 + i,
+                size: 101,
+            }),
+            0,
+        ));
+    }
+    for t in 1..=20u64 {
+        note(s.on_event(Event::TimerFired(Timer::Pto), t * 200 * MS));
+    }
+    note(s.on_event(
+        Event::AckReceived(AckInfo {
+            acked_seqs: vec![0],
+            ack_delay: Duration::ZERO,
+        }),
+        4_100 * MS,
+    ));
+    for t in 21..=220u64 {
+        note(s.on_event(Event::TimerFired(Timer::Pto), t * 200 * MS));
+    }
+    let acked: Vec<u64> = data_seq
+        .iter()
+        .filter(|&(&u, _)| ack_unit(u - 1000))
+        .map(|(_, &q)| q)
+        .collect();
+    let t_ack = 45_000;
+    s.on_event(
+        Event::AckReceived(AckInfo {
+            acked_seqs: acked,
+            ack_delay: Duration::ZERO,
+        }),
+        t_ack * MS,
+    );
+    (s, t_ack)
+}
+
+/// [K4G-05b DUR-33] IID deseni birim uzayında: birim 0 (seq 0) 4.1 s'de ACK'lenir; 45 s'de çift
+/// sıralı birimler (k ≥ 2) S, tekler L — v1'de seq = birim sırası olduğundan eski seq-paritesi
+/// listesiyle (`(1..SEQ_SPAN).filter(q % 2 == 0)`) orijinaller için özdeş.
+fn iid_unit(k: u64) -> bool {
+    k > 0 && k.is_multiple_of(2)
+}
+
 /// Kayıp-ACK'inden sonra timer pompala; gate'in İLK ateşlediği event'te (sayaç artınca) o anki
 /// kararı döndür. Ateşlemezse `None`. Fate-finalize guard'ı (≈base_pto) bu pencerede geçer.
 fn pump_until_gate_opens(s: &mut Sender, t_ack: u64, steps: u64) -> Option<FusionDecision> {
@@ -90,10 +154,10 @@ fn pump_until_gate_opens(s: &mut Sender, t_ack: u64, steps: u64) -> Option<Fusio
 /// IID @ ~%50: her ikinci seq ACK'lenir → S L S L … → n11≈0 → p11 ≪ p01 → burst_delta belirgin
 /// NEGATİF → gate IID okur → fuzzy'nin fec=0'ı `fec_med`(500)'e açılır. Sonra trafik yok → ledger
 /// decay → gate KAPANIR (bayat-FEC yok; yapı-penceresi kalsa bile taze-kayıp şartı düşer).
+/// [K4G-05b DUR-33] Desen BİRİM uzayında kurulur (`iid_unit`; her ikinci birimin Data seq'i).
 #[test]
 fn iid_loss_opens_fec_through_structure_gate_then_closes_on_decay() {
-    let acked: Vec<u64> = (1..SEQ_SPAN).filter(|q| q % 2 == 0).collect();
-    let (mut s, t_ack) = drive_until_loss_ack(80, acked);
+    let (mut s, t_ack) = drive_until_loss_ack_by_unit(80, iid_unit);
     let fired = pump_until_gate_opens(&mut s, t_ack, 60);
     let f = s.diag_loss_structure();
     assert!(
@@ -277,9 +341,8 @@ fn evidenced_burst_opens_parity_under_burst_fusion_policy() {
 /// Bu asimetri kasıtlıdır ve owner kararı bekler.
 #[test]
 fn shipped_policy_decides_on_the_laplace_prior_while_burst_fusion_refuses() {
-    let iid_acks: Vec<u64> = (1..SEQ_SPAN).filter(|q| q % 2 == 0).collect();
-
-    let (mut shipped, t_ack) = drive_until_loss_ack(80, iid_acks.clone());
+    // [K4G-05b DUR-33] IID deseni birim uzayında (`iid_unit`).
+    let (mut shipped, t_ack) = drive_until_loss_ack_by_unit(80, iid_unit);
     let shipped_fired = pump_until_gate_opens(&mut shipped, t_ack, 60);
     let f = shipped.diag_loss_structure();
     assert_eq!(
@@ -296,7 +359,7 @@ fn shipped_policy_decides_on_the_laplace_prior_while_burst_fusion_refuses() {
         "AÇIK BORÇ: sevk politikası kanıtsız pencerede FEC açıyor (prior kararı)"
     );
 
-    let (mut fused, t_ack) = drive_until_loss_ack(80, iid_acks);
+    let (mut fused, t_ack) = drive_until_loss_ack_by_unit(80, iid_unit);
     fused.set_fec_structure_policy(FecStructurePolicy::BurstFusion);
     assert!(
         pump_until_gate_opens(&mut fused, t_ack, 60).is_none(),
