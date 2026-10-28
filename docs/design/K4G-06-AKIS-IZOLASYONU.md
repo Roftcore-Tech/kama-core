@@ -165,14 +165,15 @@ Seçenekler:
 - **(a)** **Faz G iptali = `reset_flow(k, kod u8)`.**
   - FLOW_RESET gövdesi bir uygulama kodunu opak taşır. Emsal: RFC 9000 §19.4 RESET_STREAM "Application Protocol Error Code". Transport kodu yorumlamaz (D4).
   - Alıcıya `FlowEnded { Reset { kod } }` verilir. Kod değer kümesi = FILE_ABORT.reason (AMP §3).
-  - FILE_ABORT yalnız iki yerde kalır: Faz A (05f A dolumu) ve oturum değişimi (superseded). Faz A'da FILE_BEGIN teyitlidir ve RESET yoktur; INV-ACK-DELIVER-1 gereği teslim edilecektir. Oturum değişiminde eski oturum kapanınca kayıt düşer (05f §9).
-  - Sonuç: oturum içinde erken iptal kaydı gerekmez. Kayıt yalnız "FILE_BEGIN kesin gelecek ya da oturumu kapanacak" durumunda doğar; zamanlayıcısızdır, tavanı türetilir (§16 YD-5).
+  - FILE_ABORT üç yerde kalır: Faz A (05f A dolumu), oturum değişimi (`superseded`) ve RESET'i teyit edilmeden oturumu değişen Faz G iptali (nedeni korunur; §16 YD-4).
+  - Sonuç: Faz G iptalinde erken iptal kaydı gerekmez. Diğer durumlarda kayıt yalnız eşin bağlanmamış (R0) bir akışı varken doğar ve andığı R0 akışları bağlanınca ya da bitince düşer; zamanlayıcısızdır, bir zaman eşitsizliğine dayanmaz (§16 YD-5, rev5.1). rev5'teki "Faz A'da FILE_BEGIN teyitlidir" öncülü 05f §9 ile çelişiyordu (oturum `floor ≤ fin_seq` iken biterse Faz A teyitsiz başlar) ve kaldırıldı.
+  - **Üçüncü durum (rev5.1):** alıcı aktarımı RESET gelmeden bitirmiş olabilir. G dolumu FIN sunulduktan sonra, FIN teyidi gelmeden olabilir; o zaman RESET alıcıda bayattır, dosya alıcıda kalır, gönderen yerel vazgeçme gösterir ve sonradan gelen `ok` yok sayılır. Bu beyanlı bir ayrışmadır (DUR-05f-11). Kullanıcı iptali bugünkü sınırla FILE_END kabulünden önce kalır (`file_transfer.rs:831`, :1539-1541); bu yüzden kullanıcı iptalinde üçüncü durum doğmaz.
   - Bedel: FLOW_RESET +1 B; S1 `reset_flow(flow, code)` ve `FlowEnded { Reset { code } }` (A.1, A.2); AMP §3 FILE_ABORT kullanım metni (A.18); 05f §8.3 G dolumunun 2. adımı kalkar (kod 1. adımda gider).
 - **(b)** FILE_ABORT akış 1'de kalır; erken iptal kaydı oturumlu anahtar ve sayım tavanıyla tutulur. Kayıt düşerse hayalet aktarım `FlowEnded { Reset }` ile kapanır, ama neden bilinmez. Yeni tel yok.
 - **(c)** Bağımlılık işaretçisi: akış-1 birimine `DEP` bayrağı + `dep_flow u16`. Alıcı transport birimi, `dep_flow`'un ilk birimi teslim edilene ya da akış kapanana dek tutar. Kesin bir çözümdür; ama S1 `send`'e bağımlılık parametresi ve tele bayrak ekler, tek bir kayıt türü için genel bir mekanizma kurar.
 - **Öneri (a)** (05f ile ortak).
 
-**Alıcının sonlandırdığı akış:** `rejected`, `aborted_by_receiver` ve 05f R dolumu gibi durumlarda alıcı terminal FILE_RECEIPT'i akış 1'e verir ve akış k'yi yerelde durdurur (`stop_flow`, §16 YD-4). Yeni kredi ilan edilmez; gelen birimler ACK'lenip atılır (`late_after_close` yolu).
+**Alıcının sonlandırdığı akış:** `rejected`, `aborted_by_receiver` ve 05f R dolumu gibi durumlarda alıcı terminal FILE_RECEIPT'i akış 1'e verir ve akış k'yi yerelde sıfırlar (`stop_flow`, §16 YD-2). Tamponlu birimler atılır, taahhüt serbest kalır, yeni kredi ilan edilmez, sonraki birimler ACK'lenip atılır (`late_after_close` yolu). Gönderen alındıyı alınca birimlerini yerelde iptal eder (`reset_flow_local`; telde FLOW_RESET yok, §16 YD-4).
 
 ## 5. İki düzeyli seçici (S7 önerisi; DUR-38 ile ortak)
 
@@ -224,7 +225,7 @@ Seçenekler:
 **7.4 İlan tetikleri (alıcı):** (i) bir sınır W/2 ilerleyince; (ii) bir BLOCKED bölümünden sonraki **ilk** artış hemen; (iii) **her BLOCKED(girdi) alındığında, güncel sınır girdideki değerleri aşıyorsa güncel sınır yeniden ilan edilir** (akış/sayım başına ≤ 1 / T_min; değişmemiş sınır, gönderen tarafındaki kayıp ilanı kurtarır); (iv) birden çok due girdi tek çerçevede birleştirilir. **Tek kural (rev5.1):** `max_seq = min(floor_a + W_D, c + W)`; `c` = tüketicinin aldığı farklı birim sayısı (akış 0'da transport, diğerlerinde uygulama), `floor_a` = ilk alınmamış `flow_seq`. `Ordered` akışta W_D = W ve `c` = teslim öneki olduğu için formül `c + W`'ye indirgenir. `Independent` akışta W_D ayrı türetilir (§3). `max_bytes` aynı kural: tüketilmiş bayt + W_bayt.
 **7.5 Canlılık (gönderen):** **etkin sınır artışı** = bekleyen başı her iki boyutta (`seq`, bayt) açan artış; açmayan artıştan sonra yeni BLOCKED bölümü başlar. BLOCKED girdisi `(flow_id, seq, bytes)` ya da sayım girdisi `(tür, değer)` taşır; bütün bloklu akışlar ve sayımlar tek çok girdili çerçevede (≤ FLOW_CREDIT_MAX_ENTRIES). Aralık 1·srtt → ×2 → tavan min(RTO_MAX = 30 s, `idle_hold`/2); tekrar, etkin sınır artana dek sürer ve alıcının sunucu yuvasını canlı tutar (`idle_hold` 105 s, `runtime.rs:280`). Bu kurallarla "artış ilanı kayboldu, tüketilecek veri kalmadı" durumu (rev2 senaryo A) sonraki BLOCKED + (iii) ile kapanır.
 **7.6 Yaşam döngüsü:**
-- **FIN:** son birimde bayrak (ya da FIN yuvasındaki boş birim). Alıcı `fin_seq`'e dek her birimi uygulamaya verince akış ve taahhüt serbest; tutulan akışın kapanışı uygulama tüketene dek bekler. **FIN sonrası tutma:** §16 YD-3 ("tutuluyor" girdisi; D_tük = 0 reddedildi; DUR-06-26; test B29).
+- **FIN:** son birimde bayrak (ya da FIN yuvasındaki boş birim). Alıcı `fin_seq`'e dek her birimi uygulamaya verince akış ve taahhüt serbest; tutulan akışın kapanışı uygulama tüketene dek bekler. **FIN sonrası tutma:** §16 YD-3 (D_tük = 0 reddedildi; iki seçenek, öneri (a) D_h = 30 s; DUR-06-26 = DUR-05f-14; test B29).
 - **RESET:** `reset_flow(flow, kod)` → motor akışın birimlerini iptal eder (§8.3) → akış 0'da güvenilir `FLOW_RESET(flow, final_seq, kod u8)` (kod uygulamanındır, transport yorumlamaz; DUR-06-28). İptal ve sonlandırma sinyallerinin tamamı §16 YD-4'te. Akış 0'ın tüketicisi transporttur (uygulama durgun olsa da işlenir); teyidi motorun teyit çıktısıdır. Alıcı akışın tamponunu — ACK'lenmiş ama teslim edilmemiş birimler dahil — atar (INV-ACK-DELIVER-1 istisnası, A.7) ve akışı kapalı işaretler.
 - **Kontrol yükümlülüğüne yer — H_C_tavan (eş başına, şerit başına) [türetim]:**
   - akış 1 (uygulama kontrolü): FILE_ABORT ≤ `MAX_OUTGOING_TRANSFERS` 4 + FILE_RECEIPT ≤ 2·`bk_flow_limit0` = 8 = **12**. FILE_RECEIPT'te kabul edilen ve REDDEDİLEN her gelen BK akışı bir alındı doğurur (`0c22a07d:file_transfer.rs:1018-1034`); drain oturumundaki akışların alındıları da güncel oturumun akış 1'inden gider (`:1247`), dolayısıyla eş başına iki oturum sayılır (rev5'te 4 + 4 = 8 idi). RECEIPT(delivered) 05d bit haritasında tut-ve-dur (≤ `MSG_DEDUP_WINDOW`). W_c = W_CTRL0 ≥ 12 + RECEIPT payı; başlangıç 32 [CAL] (rev5: 16). **Pay uygulamada ayrılır:** transport kayıt türünü görmez (D4). kama-app, akış 1'in kullanılabilir kredisi (`FlowTxProgress.available`, A.36) ≤ 12 iken RECEIPT sunmaz; RECEIPT 05d tut-ve-dur kuyruğunda bekler, FILE_* yükümlülükleri bu payı kullanır.
@@ -239,7 +240,7 @@ Seçenekler:
   - **Tavan:** eş başına `PTT_MAX_ACTIVE_STREAMS` (2) akış × (N demet + 1 CLOSE); aşımda PTT-R5 kuralı.
   - **Kapanmış akış kaydı** (`ptt.rs:112-120`, eş başına 2, ömür 120 s) yalnız oturumlar arası geç OPEN için türetilmiştir. Oturum içinde REL tam bir kez teslim edildiğinden geç bir OPEN yinelemesi gelemez, kayıt gerekmez [türetim taslağı]. B13 (d) kolu.
 - **Churn (BK):** açık küme ≤ `bk_flow_limit0`; kapalılık `max_seen` + açık kümeyle temsil edilir (§3).
-**7.7 Sayaçlar ve kapı:** krediyi ya da W_CTRL/W_TCTRL'yi aşan birim → ACK'siz ret + `credit_violations`; kredili birim (akış 0/1 dahil) için yer yoksa `capacity_defect`; **kabul kapısı yalnız `capacity_defect = 0`** (sahibin notu 2). VO demetinin havuz yüzünden düşmesi `media_dropped_rx` (ACK'lenir; yalnız REL'siz birim). Kapalı/bilinmeyen akış girdisi, RESET/FIN ile yarışan BLOCKED ya da kredi girdisi → girdi düzeyinde yok sayılır, `stale_ctrl_entries` (ihlal sayılmaz). `Independent` şeritte yinelenen birim → ACK'lenir, `dup_ctrl` (ihlal sayılmaz). Erken iptal kaydı taşması → `early_abort_evicted` (yapısal olarak 0; §16 YD-5).
+**7.7 Sayaçlar ve kapı:** krediyi ya da W_CTRL/W_TCTRL'yi aşan birim → ACK'siz ret + `credit_violations`; kredili birim (akış 0/1 dahil) için yer yoksa `capacity_defect`; **kabul kapısı yalnız `capacity_defect = 0`** (sahibin notu 2). VO demetinin havuz yüzünden düşmesi `media_dropped_rx` (ACK'lenir; yalnız REL'siz birim). Kapalı/bilinmeyen akış girdisi, RESET/FIN ile yarışan BLOCKED ya da kredi girdisi → girdi düzeyinde yok sayılır, `stale_ctrl_entries` (ihlal sayılmaz). `Independent` şeritte yinelenen birim → ACK'lenir, `dup_ctrl` (ihlal sayılmaz). Erken iptal kaydı: R0 akışı yokken gelen FILE_ABORT → `aborts_after_terminal`; tavan aşımı → `early_abort_overflow` (rapor; §16 YD-5).
 **7.8 Kontrol çerçevesi sınırları (ACK yolu ve DoS):** alıcıda srtt yoktur (`0c22a07d:runtime.rs:3654-3670`) → yanıt aralığı sabit T_min [CAL, ör. 1 s]. **ACK yolunda zorunlu sınır:** sunucu yuvası (eş) başına ≤ 1 FLOW_CREDIT çerçevesi / T_min; due girdiler birleştirilir (≤ FLOW_CREDIT_MAX_ENTRIES); BLOCKED, yanıtının boyuna dolgulanır (amp ≤ 1, emsal `0c22a07d:wire.rs:220-221`). Olağan yük tetiklerle (W/2, BLOCKED) sınırlıdır; T_min yalnız kötü niyetli BLOCKED seline karşı tavandır [hesap: eş başına ≤ 39–72 B/s ters yön (1–4 girdili çerçeve / T_min), yalnız saldırı altında]. Girdiler sabit boylu; çerçeve düzeyinde ret yalnız biçim hatalarında (ayrılmış bit, girdi sayısı aşımı) + kol sayacı. Gönderen store'u daima min(eşin kredisi, yerel sabit tavan) ile sınırlı.
 
 ## 8. FEC / ARQ / kopya; süre dolumu ve iptal
@@ -353,97 +354,126 @@ ADIM 1: sözleşme/arayüz taslağı + ayırt edici test planı. Hiçbir mekaniz
 
 **Kapsam ve sahiplik.** C16 v2 §3 (DUR-05f-8) ve §5 m.4 şunu ister: alıcı kredisi, kontrol yükümlülükleri, iptal, FIN ve timeout tek yaşam döngüsünde birleşir; ikinci bir geçici oturum-geneli erişimci ya da pencere tasarımı üretilmez. Bu bölüm, bir BK akışının ve onun AMP aktarımının tek yaşam döngüsüdür. Sahiplik:
 - **Bu bölüm (K4G-06):** durumlar, geçişler, sinyaller ve her saatin hangi koşulda çalışıp durduğu.
-- **05f rev3:** sınır sayıları ve zarf türetimi (T_G, T_R, T_A, T_ctrl, k_f, k_r, ε).
+- **05f rev3.x:** sınır sayıları ve zarf türetimi (T_G, T_R, T_A, T_ctrl, G_H, k_f, k_r, ε).
 - **05d:** RECEIPT tut-ve-dur.
 
-05f rev3 ve 05d A1 bu bölüme `06 §16 YD-n` biçiminde atıf verir. YD numaraları sonraki revizyonlarda değişmez; yeni madde sona eklenir.
+05f ve 05d A1 bu bölüme `06 §16 YD-n` biçiminde atıf verir. YD numaraları sonraki revizyonlarda değişmez; yeni madde sona eklenir (rev5.1: YD-10).
+
+**Öneri ile karar ayrımı (rev5.1):** DUR-06-26, DUR-06-27 ve DUR-06-28'e bağlı kurallar ÖNERİDİR; sahip kararı bekler. Bu bölümde "DUR-06-nn (x) seçilirse" biçiminde yazılır. Kararlaştırılmış olanlar yalnız C16 v2 §4'teki üç yön kararı ile §3'teki D_tük = 0 reddidir.
 
 **YD-1 Durumlar.**
 
 | Taraf | Durum | Giriş | Çıkış |
 |---|---|---|---|
-| Gönderen | S0 sunum | `send_file` | FILE_BEGIN akış k'de kabul edildi → S1 · kabulden önce iptal → `Cancelled`; tele bir şey çıkmaz (`0c22a07d:file_transfer.rs:812-823`) |
+| Gönderen | S0 sunum | `send_file` | FILE_BEGIN akış k'de kabul edildi → S1 · kabulden önce iptal → `Cancelled`; tele bir şey çıkmaz (`0c22a07d:file_transfer.rs:812-825`) |
 | Gönderen | S1 Faz G | FILE_BEGIN kabulü | `floor > fin_seq` → S2 (05f §5) · iptal ya da G dolumu → YD-4 · terminal FILE_RECEIPT → YD-4 |
-| Gönderen | S2 Faz A | FIN dahil bütün birimler teyitli | FILE_RECEIPT → `Delivered` / `SendFailed(statü)` · A dolumu → YD-4 |
-| Alıcı | R0 örtük açık | `k` açık kümeye girdi; FILE_RECEIPT yuvası ayrıldı (§7.6) | ilk birim teslim edildi → R1 · FLOW_RESET(k) → kapalı; aktarım hiç başlamadığı için olay yok |
-| Alıcı | R1 bağlı | FILE_BEGIN(t) teslim edildi: (oturum, k) ↔ t | FIN'e dek teslim + özet → FILE_RECEIPT(`ok` / `hash_mismatch`) · `FlowEnded { Reset { kod } }` → `Aborted(kod)` · ret, alıcı iptali, R dolumu → YD-4 |
-| Alıcı | R2 FIN kabul edildi, tüketilmedi | FIN dahil bütün birimler kabul edildi; uygulama FIN'i henüz almadı (tutma ya da tüketici durması) | tüketim → R1'in sonu · R2 sürerken "tutuluyor" girdisi (YD-3) |
-| Alıcı | R3 çözümlendi | FILE_RECEIPT akış 1'e kabul edildi ∨ yükümlülük RESET'le düştü | `bk_flow_limit` +1 (§3) |
+| Gönderen | S2 Faz A | FIN dahil bütün birimler teyitli **ya da** akışın oturumu `floor ≤ fin_seq` iken bitti (05f §9; bu ikinci girişte FILE_BEGIN dahil birimler teyitsiz olabilir) | FILE_RECEIPT → `Delivered` / `SendFailed(statü)` · A dolumu → YD-4 |
+| Alıcı | R0 bağlanmamış | `k` açık kümeye girdi; FILE_RECEIPT yuvası ayrıldı (§7.6). Uygulama aktarımı görmez; transport sayar (`FlowRxProgress`, A.36) | ilk birim uygulamaca okundu → R1 · FLOW_RESET(k) → kapalı; aktarım hiç başlamadığı için olay yok (YD-10) |
+| Alıcı | R1 bağlı | FILE_BEGIN(t) okundu: (oturum, k) ↔ t | FIN'e dek okuma + özet → FILE_RECEIPT(`ok` / `hash_mismatch`) · `FlowEnded { Reset { kod } }` → `Aborted(kod)` · FILE_ABORT (Faz A) → `Aborted` + `stop_flow` · ret, alıcı iptali, R dolumu → YD-4 |
+| Alıcı | R2 FIN kabul edildi, tüketilmedi | FIN dahil bütün birimler kabul edildi; uygulama FIN'i henüz almadı (tutma ya da tüketici durması) | tüketim → R1'in sonu · R2 sürerken YD-3 |
+| Alıcı | R3 çözümlendi | `resolve_flow(k)` (YD-2) ∨ RESET işlendi (transport kendiliğinden) | `bk_flow_limit` +1 (§3) |
 
-**YD-2 Kredi.**
-- Akış açılınca W0_BK verilir. Kredi yalnız uygulamanın tüketimiyle ilerler (§7.4). Tutma ve tüketici durması krediyi durdurur. Bu bir kapasite beklemesidir; saate girmez (05f R1).
-- **`stop_flow(k)` (alıcı, yeni):** yeni kredi ilan edilmez. Gelen birimler ACK'lenip atılır (`late_after_close` yolu; INV-ACK-DELIVER-1 istisna (iii), A.7). Gönderen en çok FILE_RECEIPT varışına dek BLOCKED kalır; bedeli birkaç BLOCKED çerçevesidir (≈ 39 B / aralık [hesap]).
-- RESET: tampon atılır, taahhüt serbest kalır (§7.6).
-- `bk_flow_limit` yalnız R3'te ilerler.
-- Kontrol şeritleri (0, 1) kendi kredileriyle ilerler (W_TCTRL, W_CTRL). `Independent` kipte `max_seq = floor + W` (§3).
+**YD-2 Kredi, `stop_flow` ve R3 mekanizması.**
+- Akış açılınca W0_BK verilir. Kredi yalnız tüketimle ilerler (§7.4 tek kural). Tutma ve tüketici durması krediyi durdurur; bu bir kapasite beklemesidir, saate girmez (05f R1).
+- **`stop_flow(k)` (alıcı; yerel sıfırlama):** tamponlanmış ve uygulamaca okunmamış birimleri atar, taahhüdü serbest bırakır, akışı kapalı işaretler. Sonraki birimler ACK'lenip atılır (`late_after_close`; INV-ACK-DELIVER-1 istisna (iii), A.7). Yeni kredi ilan edilmez. FILE_RECEIPT yuvası R3'e dek kalır. Gönderen en çok FILE_RECEIPT varışına dek BLOCKED kalır (≈ 39 B / aralık [hesap]).
+- **RESET:** uygulamaca okunmamış birimler dahil tampon atılır (YD-10), taahhüt serbest kalır.
+- **R3 mekanizması (rev5.1):** `bk_flow_limit` yalnız R3'te ilerler. Transport AMP'yi görmez (D4), bu yüzden R3 iki yoldan gelir:
+  1. RESET işlendi → transport kendiliğinden çözümler (yükümlülük RESET'le düşer).
+  2. Alıcı uygulaması `resolve_flow(k)` çağırır (yeni S1 çağrısı, A.2). Çağrı noktaları: FILE_RECEIPT akış 1'e kabul edildiğinde (`send` → `Ok`); FILE_ABORT uygulandığında (Faz A ya da `superseded`; önce `stop_flow(k)`); reddedilen FILE_BEGIN'in alındısı kabul edildiğinde.
+  - `resolve_flow` yalnız bitmiş (FIN tüketildi), durdurulmuş ya da RESET'lenmiş akışta geçerlidir; değilse `UnknownFlow` döner. Çağrı tek kabul yolunun parçasıdır (B24) ve B13 (f) / B31 (d) ile sınanır.
+  - rev5'te R3 transportun göremediği bir olaya bağlıydı ve Faz A FILE_ABORT yolunda hiç ateşlemiyordu: `bk_flow_limit0` = 4 Faz A zaman aşımından sonra eşin yeni BK akışları oturum boyunca `Backpressure` alırdı.
+- Kontrol şeritleri (0, 1) §3 ve §7.4'teki tek kuralla ilerler (W_TCTRL, W_c = W_CTRL; `Independent` kipte W_D ayrıca).
 
-**YD-3 FIN sonrası tüketici tutması — "tutuluyor" girdisi (DUR-06-26 önerisi (b)).**
+**YD-3 FIN sonrası tüketici tutması — iki seçenek (DUR-06-26 = DUR-05f-14), öneri (a).**
 - **Durum:** alıcı R2'de, gönderen S2'de; A saati yalnız alındıyı bekler. C16 v2 DUR-05f-8: **D_tük = 0 REDDEDİLDİ**, çünkü INT-02'nin `ek-tuketici-durak` kolundaki 30 s tüketici durması (DUR-05c-3) kapsam içindeki ürün senaryosudur.
-- **Kural (alıcı):** R2 en az T_min sürünce alıcı runtime'ı FLOW_CREDIT çerçevesine sabit boylu `HELD(flow_id, held_ms u32)` girdisini (11 B; `held_ms` = R2'nin başından beri geçen süre, alıcının monoton saatiyle) koyar. R2 sürdükçe girdiyi her T_BLK'da güncel `held_ms` ile yineler (eş başına ≤ 1 çerçeve / T_min, §7.8). Koşul transportta gözlenir: FIN kabul edildi ∧ FIN uygulamaya verilmedi. `hold_flow` ile tüketici durması ayrılmaz; ikisi de tüketicinin elindedir. Bütün süreç donmuşsa girdi de gitmez; o zaman A çalışır (doğru davranış).
-- **Kural (gönderen):** A saatinin değeri A(t) = max(0, (t − t_S2) − min(H, **D_tut,max**)); H = S2'de alınan en büyük `held_ms` (R2 tek bölümdür ve tüketim geri alınmaz, dolayısıyla H tekdüzedir). D_tut,max [CAL; ≥ 30 s (INT-02 `ek-tuketici-durak`); başlangıç adayı 600 s]. **Tek bir girdi kendisinden önceki bütün tutmayı kapsar**, dolayısıyla kaybolan girdiler birikmez: dönüş yolu %80 kayıpta da tek bir başarılı girdi yeter. Girdi kesilirse (alıcının oturumu biter, eş susar) H büyümez ve A işlemeye devam eder. Saatler arası tek fark süre ölçümüdür (mutlak zaman taşınmaz); R2 S2'den önce başlayabildiği için çıkarma en çok bir ACK yolu süresi kadar fazladır, yani güvenli yöndedir (yanlış vazgeçme üretmez, gerçek vazgeçmeyi o kadar geciktirir).
-- **Zarf (05f rev3 türetir):** T_A(E) = T_işlem + T_ctrl(E) + G_H(E); D_tük T_A'dan çıkar. G_H(E), son başarılı girdiden tutmanın bitişine dek A'ya sızan süredir [türetim taslağı: G_H ≤ (k_r + 1)·T_BLK + N_o·D_o, tek koşu, çünkü girdi birikimlidir; 05f rev3 doğrular]. D_tut,max zarf girdisidir: zarf içindeki tutma ≤ D_tut,max ise yanlış vazgeçme yoktur (deterministik sözleşme, DUR-05f-8 (i)).
-- **Neden (b), (a) değil:**
-  - (a) D_tük = 30 s her aktarımın T_A'sını 30 s büyütür; ölü eşin fark edilmesi gecikir. 30 s'den uzun tüketici durmasında yine yanlış "başarısız" verir.
-  - (b) yalnız gerçek tutmada süre harcar ve ölü eşte A'yı uzatmaz. Tavanı olduğu için aktarım "sonsuza kadar açık kalmaz" (C14 §6). Bu tavan önemlidir: Faz A'da kullanıcı iptali yoktur (`cancel_send` → `AlreadySent`, `file_transfer.rs:830`).
-  - Bedel (b): yeni girdi türü (tel, A.8); tutma süresince ≈ 39 B / T_BLK ≈ 1,3 B/s (31 B/s'de) [hesap].
-- **(b) reddedilirse geri dönüş:** (a) D_tük = 30 s [CAL] + beyan "FIN sonrası 30 s'den uzun tüketici durması zarf dışıdır; yanlış 'başarısız' mümkün" (DUR-05f-11 biçimi).
+- **(a) Tutma zarfa girdi olarak girer — öneri.** T_A = T_işlem + N_h·D_h + T_ctrl(E); N_h = 1, D_h ≥ 30 s [CAL] (05f rev3.1 §7). Tel değişmez, alıcıda mekanizma yoktur. Bedel: her aktarımın T_A'sına D_h eklenir. D_h'yi aşan tutma zarf dışıdır: vazgeçme mümkündür, > D_h + T_ctrl'de kesindir. Alıcının bütün veriye sahip olduğu durumda bu yanlış "başarısız" demektir (DUR-05f-11 beyanı).
+- **(b) Birikimli, tavanlı `HELD` girdisi.**
+  - Alıcı, R2 ≥ T_min iken FLOW_CREDIT'e `HELD(flow_id, held_ms u32)` girdisini koyar (11 B; `held_ms` = R2'nin başından beri geçen süre, alıcının monoton saatiyle; u32 ms'de doyar). R2 sürdükçe girdiyi her T_BLK'da yineler.
+  - Gönderen: A(t) = max(0, (t − t_S2) − min(H, D_tut,max)); H = alınan en büyük `held_ms`; D_tut,max [CAL; ≥ 30 s; aday 600 s].
+  - **Gönderende durum ömrü:** (oturum, akış) ilerleme kaydı FIN teyidinden FILE_RECEIPT'e, A dolumuna ya da `Closed`'a dek tutulur. Bu sürede gelen HELD bayat sayılmaz (§7.7'nin kapalı akış kuralının istisnası). S1'in sonunda, FIN teyidinden önce gelen HELD de H'ye katılır.
+  - T_A = T_işlem + T_ctrl(E) + G_H(E). **G_H (05f rev3.1 §7 türetimi):** T_min + (k_r + 1)·(T_BLK + T_min) + N_o·D_o + L. Terimler: ilk girdi ofseti; kayıp girdiler (girdi başına T_min hız sınırıyla); kesinti; son girdinin teslim gecikmesi L (31 B/s'de iletimdeki paket ≈ 33,9 s dahil). [hesap, 05f §7] G_H = 105–506 s. rev5'in G_H taslağı ilk ofseti, hız sınırını ve L'yi atlıyordu.
+  - **Fazla düşme:** H, R2'nin başından sayılır ve R2, S2'den önce başlar. Düşülen fazlalık ≤ min(D_tut,max, t_S2 − t_R2); t_S2 − t_R2 = FIN teyidinin geri dönüşü (05f ACK kurtarma terimi D_ack) + N_o·D_o. Güvenli yöndedir (yanlış vazgeçme üretmez), gerçek vazgeçmeyi geciktirir. rev5'in "en çok bir ACK yolu" cümlesi yanlıştı.
+- **Karşılaştırma (05f rev3.1 §7 ölçütüyle aynı):**
+  - Karşılanacak tutma D ise (a)'nın T_A'ya bedeli D, (b)'ninki G_H'dir. G_H bütün hücrelerde > 30 s olduğundan INT-02'nin 30 s'si için (a) daha ucuzdur.
+  - Ölü eş (a)'da daha erken fark edilir (T_işlem + D_h + T_ctrl < T_işlem + G_H + T_ctrl).
+  - (b) yalnız D > G_H olan tutmaları (dakikalar) karşılamak gerekirse kazanır.
+  - HELD aralığını kısaltmak bunu değiştirmez. L terimi 31 B/s'de tek başına ≈ 73 s'dir (05f L) ve 30 s'den büyüktür. Bant bedeli de artar: 5 s aralıkta ≈ 39 B / 5 s ≈ 7,8 B/s, yani 31 B/s'nin ≈ %25'i [hesap].
+  - rev5'in "(b) ölü eşte A'yı uzatmaz" ve "30 s durma tasarımla karşılanır" cümleleri geri çekildi: G_H sabit eşiğe koşulsuz girer, ve 30 s'yi D_tut,max değil G_H karşılıyordu.
+- **Öneri (a), D_h = 30 s [CAL].** (b), ürün D > G_H gerektirirse açılır; örneğin INT-03'te mobil cihazda dakikalarca süren FIN sonrası tüketici durması ölçülürse. Tel ve Ek A'daki HELD kalemleri "(b) seçilirse" koşulludur. Karar sahibindir. Hangi seçenek olursa olsun saat bu karardan önce kodlanmaz (C16 v2 §3).
+- **Beyanlar (iki seçenekte de):**
+  - (i) Alıcı süreci askıya alınırsa (mobil arka plan; monoton `Instant` askıyı saymaz) ne alındı ne HELD gider. A işler; D_h, (b)'de G_H/D_tut,max aşılınca gönderende yerel vazgeçme olur. Yanlış "başarısız" mümkündür, yanlış "teslim edildi" yoktur (DUR-05f-11). INT-03'te arka plan sıradan bir durumdur; ölçülecek [çıkarım].
+  - (ii) Faz A'da kullanıcı iptali yoktur (`cancel_send` → `AlreadySent`, `file_transfer.rs:831`). Kullanıcının azami beklemesi (a)'da T_A(E), (b)'de T_A(E) + D_tut,max. 05f D-3 hücresinde (a) 1 894,6 s, (b) 2 370,6 s + 600 s [hesap, 05f rev3.1 §7].
 
-**YD-4 İptal ve sonlandırma sinyalleri** (DUR-06-28 (a) önerisiyle).
+**YD-4 İptal ve sonlandırma sinyalleri** (DUR-06-28 (a) seçilirse; seçilmezse rev4 kuralı: Faz G iptali = FILE_ABORT + `reset_flow`).
 
 | Kim / ne zaman | Sinyal | Alıcıda | Yükümlülük |
 |---|---|---|---|
 | Gönderen, S0 | yok | — | yok |
-| Gönderen, S1 (Faz G): kullanıcı iptali, G dolumu | `reset_flow(k, kod)` (kod: `user_cancel` / `timeout`); **FILE_ABORT YOK** | `FlowEnded { Reset { kod } }`: R1/R2'de `Aborted(kod)`; R0'da olay yok | FILE_RECEIPT yükümlülüğü düşer (gönderen alındı beklemez) → R3 |
-| Gönderen, S2 (Faz A): A dolumu | FILE_ABORT(`timeout`) akış 1 | `Aborted(timeout)`; FILE_BEGIN henüz teslim edilmediyse erken iptal kaydı (YD-5) | aynı |
-| Gönderen, oturum değişimi (FIN kabul edilmemiş) | yeni oturumda FILE_ABORT(`superseded`) | `Aborted(superseded)`; FILE_BEGIN eski oturumun drain'indeyse kayıt (YD-5) | 05f §9 |
-| Alıcı: FILE_BEGIN reddi, kullanıcı iptali, R dolumu | `stop_flow(k)` + FILE_RECEIPT(`rejected` / `aborted_by_receiver` / `timeout`) akış 1 | gönderen S1'de `SendFailed(statü)` + `reset_flow(k, 0x00)` (yanıt kodu; alıcıda bayat girdi); S2'de `SendFailed(statü)` | FILE_RECEIPT kabulüyle düşer |
+| Gönderen, S1 (Faz G): kullanıcı iptali (yalnız FILE_END kabulünden önce; bugünkü sınır `file_transfer.rs:831`, :1539-1541 korunur) ya da G dolumu | `reset_flow(k, kod)` (kod: `user_cancel` / `timeout`); **FILE_ABORT YOK** | `FlowEnded { Reset { kod } }` (YD-10): R1/R2'de `Aborted(kod)`; R0'da olay yok. G dolumu FIN sunulduktan sonra olduysa alıcı aktarımı bitirmiş olabilir: RESET bayattır, dosya alıcıda kalır (beyanlı ayrışma, DUR-05f-11) | RESET'le düşer → R3 (transport) |
+| Gönderen, Faz G iptali sonrası, RESET teyit edilmeden oturum değişti | yeni oturumda FILE_ABORT(kod) — bugünkü AMP :92 kuralının karşılığı: bekleyen kullanıcı iptali yeni oturumdan gider, nedeni korunur | `Aborted(kod)` ya da erken iptal kaydı (YD-5) | 05f §9 |
+| Gönderen, S2 (Faz A): A dolumu | FILE_ABORT(`timeout`) akış 1 | bağlıysa `Aborted(timeout)` + `stop_flow` + `resolve_flow`; bağlı değil ve R0 varsa erken iptal kaydı; R0 yoksa `aborts_after_terminal` (YD-5) | FILE_ABORT uygulanınca düşer → `resolve_flow` |
+| Gönderen, oturum değişimi (FIN kabul edilmemiş) | yeni oturumda FILE_ABORT(`superseded`) | `Aborted(superseded)` ya da kayıt (YD-5) | 05f §9 |
+| Alıcı: FILE_BEGIN reddi, kullanıcı iptali, R dolumu | `stop_flow(k)` + FILE_RECEIPT(`rejected` / `aborted_by_receiver` / `timeout`) akış 1 | gönderen S1'de `SendFailed(statü)` + **`reset_flow_local(k)`** (motor `CancelFlow`; telde FLOW_RESET YOK); S2'de `SendFailed(statü)` | FILE_RECEIPT kabulünde `resolve_flow` |
 | Herhangi biri: oturum sonu | `Closed` | 05f §9 tablosu aynen | 05f §9 |
 
 - Her aktarımın tek terminal olayı vardır (05f P2, P5; ilk neden kalır). Yarışan iki sinyalde (RESET ve FILE_RECEIPT) ilk işlenen kazanır; ikincisi `receipts_ignored` ya da bayat girdi olarak sayılır.
-- RESET kodu 0x00 yalnız RESET'te anlamlıdır ("alıcının alındısına yanıt"); FILE_ABORT.reason'da 0x00 ayrılmış kalır (A.18).
+- rev5'teki `reset_flow(k, 0x00)` yanıtı kalktı. O yanıt W_TCTRL0 sınırını bozuyordu (alıcının R3'ü RESET teyidinden önce gelir; bekleyen FLOW_RESET 2·`bk_flow_limit0`'a çıkabilirdi) ve `stale_ctrl_entries`'i her olağan retle kirletiyordu.
+- **Bilinmeyen RESET kodu:** akış yine sıfırlanır. Uygulama olayı `Aborted { reason: Unspecified }` olur (A.37). FILE_ABORT'un "bilinmeyen → DROP" kuralı RESET'e uygulanamaz, çünkü akış zaten atılmıştır. Artık üretilmeyen 0x02/0x03 kodları da `Unspecified` sayılır.
 
-**YD-5 Erken iptal kaydı (alıcı) — zamanlayıcısız.**
-- DUR-06-28 (a) ile kayıt yalnız iki durumda doğar:
-  1. Faz A'nın FILE_ABORT'u, FILE_BEGIN teslim edilmeden gelir. Bu durumda FILE_BEGIN teyitlidir ve RESET yoktur; INV-ACK-DELIVER-1 gereği ya teslim edilir ya da oturum kapanır.
-  2. `superseded` FILE_ABORT'u, eski oturumun drain'indeki FILE_BEGIN'den önce gelir.
-- **Anahtar:** (eş, `transfer_id`).
-- **Düşme:** FILE_BEGIN(t) teslim edildi (→ FILE_RECEIPT(`rejected`), bugünkü kural) ya da eşin kayıt anındaki bütün oturumları `Closed` oldu. Bu, 05f §9 kuralının genelleşmesidir: kaydın kendi oturumu da dahil, çünkü Faz A durumunda FILE_BEGIN aynı oturumdadır. `FILE_IDLE_TTL` ömrü kalkar.
-- **Tavan [türetim]:** her kayıt eşin çözümlenmemiş bir gelen BK akışına karşılık gelir. (Oturum, eş) başına çözümlenmemiş akış ≤ `bk_flow_limit0` (§3). Bir eşin aynı anda en çok 2 oturumu teslim edebilir (güncel + drain; S1 K7). Buradan eş başına ≤ 2·`bk_flow_limit0` = 8, toplamda ≤ `max_peers` × 8. Taşma yapısal olarak erişilemezdir; erişilirse en eski düşer ve `early_abort_evicted` sayılır (kapı: 0).
+**YD-5 Erken iptal kaydı (alıcı) — R0 tabanlı, zamanlayıcısız (rev5.1).**
+- **Doğum:** kayıt yalnız eşin canlı (`Closed` olmamış) bir oturumunda bağlanmamış (R0) bir gelen BK akışı varken doğar. Yoksa kayıt açılmaz, `aborts_after_terminal` sayılır; tipik örnekler A dolumunun alıcının bitirdiği aktarıma gelmesi ve FILE_ABORT tekrarı. rev5 kuralı bu durumda kodun açtığı kaydı (`0c22a07d:file_transfer.rs:1120-1130`) oturum boyunca tutuyordu.
+- **Anahtar ve bağ:** (eş, `transfer_id`). Kayıt, doğduğu andaki R0 akışlarının kümesini (oturum, akış) anar.
+- **Düşme:** FILE_BEGIN(t) okundu (→ FILE_RECEIPT(`rejected`), bugünkü kural); ya da andığı R0 akışlarının hepsi bağlandı ya da bitti (RESET, `stop_flow`, oturum `Closed`). FILE_BEGIN akışın ilk birimidir; bu yüzden FILE_BEGIN(t) ancak bu akışlardan birinde gelebilir ve küme tükenince kayıt kesin olarak gereksizdir. Zamanlayıcı yoktur; T_A > T_g gibi bir zaman eşitsizliğine de dayanmaz.
+- **05f'nin iki Faz A girişini kapsar:** (i) FIN teyitliyse FILE_BEGIN ya okunmuştur (aktarım bağlıdır) ya da akış R0'dır; (ii) oturum `floor ≤ fin_seq` iken bittiyse o oturumun akışları `Closed` ile biter, kayıt ya hiç doğmaz ya da düşer.
+- **Tavan [türetim taslağı]:** her canlı kayıt en az bir R0 akışını anar; R0 akışları eş başına ≤ 2·`bk_flow_limit0` (iki oturum; §3). Bir R0 kümesi canlıyken uyumlu eşten gelebilecek FILE_ABORT'lar: kümenin akışlarına karşılık gelen aktarımlar (≤ 8) + o sırada Faz A'sı dolan aktarımlar (≤ eşin `MAX_OUTGOING_TRANSFERS` = 4; bu eşin kalibrasyonudur). Tavan C_EA = 12.
+- **Aşım:** yeni kayıt açılmaz, `early_abort_overflow` sayılır (rapor, kapı değil). Sonuç: geç FILE_BEGIN aktarımı başlatır. Faz A'da aktarım tamamlanır ve gönderen alındıyı yok sayar (DUR-05f-11 ayrışması); `superseded` durumunda eski oturum kapanınca 05f §9 satır 3 uygulanır. Yanlış "teslim edildi" yoktur.
 
-**YD-6 Kontrol yükümlülükleri: doğum, yer, ölüm** (H_C_tavan §7.6 aynen).
+**YD-6 Kontrol yükümlülükleri: doğum, yer, ölüm** (H_C_tavan §7.6).
 
 | Yükümlülük | Şerit | Doğar (yer ayrılır) | Ölür | Tavan |
 |---|---|---|---|---|
-| FILE_RECEIPT | 1 | gelen BK akışı açık kümeye girince (örtük açma dahil) | akış 1'e kabul edildi (oturumlar arası taşınır, 05f §9) ∨ RESET'le düştü | ≤ `bk_flow_limit0` |
-| FILE_ABORT (Faz A, `superseded`) | 1 | FILE_BEGIN kabulü | FILE_ABORT kabul edildi ∨ terminal FILE_RECEIPT geldi ∨ `Delivered` | ≤ `MAX_OUTGOING_TRANSFERS` 4 |
-| FLOW_RESET (+ kod) | 0 | giden BK akışı açılınca | FLOW_RESET teyidi ∨ FIN teyidi | ≤ açık giden BK akışı ≤ eşin `bk_flow_limit0` |
-| `HELD` girdisi | ACK yolu (şerit değil) | R2 | R2 bitti | akış başına 1 girdi; çerçeve ≤ FLOW_CREDIT_MAX_ENTRIES |
-| RECEIPT | 1 | TEXT işlendi | 05d (tut-ve-dur; canlı RECEIPT silinmez) | 05d |
+| FILE_RECEIPT | 1 | gelen BK akışı açık kümeye girince (örtük açma dahil) | akış 1'e kabul edildi (oturumlar arası taşınır, 05f §9) ∨ RESET'le düştü ∨ FILE_ABORT uygulandı (gönderen alındı beklemez); her durumda R3 (YD-2) | ≤ 2·`bk_flow_limit0` (drain dahil, §7.6) |
+| FILE_ABORT (Faz A, `superseded`, oturumu değişen Faz G iptali) | 1 | FILE_BEGIN kabulü | FILE_ABORT kabul edildi ∨ terminal FILE_RECEIPT geldi ∨ `Delivered` | ≤ `MAX_OUTGOING_TRANSFERS` 4 |
+| FLOW_RESET (+ kod) | 0 | giden BK akışı açılınca | FLOW_RESET teyidi ∨ FIN teyidi ∨ `reset_flow_local` | ≤ açık giden BK akışı ≤ eşin `bk_flow_limit0` |
+| `HELD` girdisi (yalnız DUR-06-26 (b) seçilirse) | ACK yolu (şerit değil) | R2 | R2 bitti | akış başına 1 girdi; çerçeve ≤ FLOW_CREDIT_MAX_ENTRIES |
+| RECEIPT | 1 | TEXT işlendi | 05d (tut-ve-dur; canlı RECEIPT silinmez) | 05d; akış-1 kredisinde FILE_* payının dışında (§7.6) |
 | PTT_OPEN / PTT_CLOSE | 4 | konuşma | REL teyidi | `max_rel0` |
 
-`Independent` kip H_C_tavan'ı değiştirmez; yalnız teslim sırasını değiştirir.
+Akış 1'de W_c ≥ 12 + RECEIPT payı (§7.6). `Independent` kip H_C_tavan'ı değiştirmez; yalnız teslim sırasını değiştirir.
 
-**YD-7 Saatler** (05f'nin G, R, A saatleri; sınırlar 05f rev3'te).
+**YD-7 Saatler** (05f'nin G, R, A saatleri; sınırlar 05f'de).
 
 | Koşul | G (gönderen, S1) | R (alıcı, R1) | A (gönderen, S2) |
 |---|---|---|---|
 | Kredi bloklu, teyitsiz birim yok | durur | — (bekleten alıcı) | — |
 | FIN öncesi tutma / tüketici durması | durur (BLOCKED) | durur | — |
-| FIN sonrası tutma / tüketici durması (R2) | — | — (kredi dolu) | bildirilen tutma süresi düşülür, en çok D_tut,max (YD-3) |
+| FIN sonrası tutma / tüketici durması (R2) | — | — (kredi dolu) | (a): çalışır, T_A'da D_h payı · (b) seçilirse: bildirilen tutma düşülür, en çok D_tut,max (YD-3) |
 | Kayıp kurtarma, ACK kaybı, hizmet sırası | çalışır | çalışır | — |
 | Alıcı işlemesi (T_işlem), FILE_RECEIPT yolculuğu | — | — | çalışır |
 | `stop_flow` sonrası (FILE_RECEIPT yolda) | durur (BLOCKED; yükümlülük düşmez, alındı gelir) | — (akış kapalı) | — |
+| FILE_RECEIPT, gönderenin KENDİ durgun akış-1 tüketicisi yüzünden kredi bekliyor | — | — | kapasite beklemesidir, A'ya girmez (05f R1; YD-9 m.5) |
 | Oturumsuz aralık | 05f §9 | 05f §9 | çalışır (kesinti bütçesi) |
 
-**YD-8 Testler:** B13 (b)(f), B29 (FIN sonrası tutma), B30 (kontrol şeridi bağımsızlığı), B31 (iptalin akışa bağlanması); 05f Ek B.1–B.8.
+**YD-8 Testler:** B13 (b)(d)(f), B26 (akış-1 seli + durgun tüketici), B29 (FIN sonrası tutma), B30 (kontrol şeridi bağımsızlığı), B31 (iptalin akışa bağlanması, erken iptal kaydı, `FlowEnded` sırası); 05f Ek B.
 
-**YD-9 05f rev3'e devredilenler** (bu bölümle tutarlı yazılması gerekenler):
-1. T_A'dan D_tük çıkar; G_H(E) ve D_tut,max zarfa girer (YD-3).
-2. §8.3 G dolumu = `reset_flow(f, 0x04 timeout)`; FILE_ABORT adımı kalkar (DUR-06-28 (a)). A dolumu aynen kalır (FILE_ABORT akış 1).
-3. §8.3 R dolumunun 1. adımı = `stop_flow` (YD-2, YD-4).
-4. §9'un son satırı: erken iptal kaydının düşmesi kaydın kendi oturumunu da kapsar (YD-5).
-5. T_ctrl(E) tek kontrol biriminin kendi kurtarma sınırıdır: `Independent` şeritte birim, aynı şeritteki başka bir kaydın kurtarılmasını beklemez (§4.2). `Ordered` şeritte (DUR-06-27 (a)/(b)) önceki kayıtların kurtarılması T_ctrl'ye eklenirdi.
-6. (k_f + 1)(k_r + 1) çarpanı ve gerçek ACK takvimi (C16 v2 §3) 05f'nindir. Bu bölüm yalnız saatlerin durma/çalışma koşullarını verir.
+**YD-9 05f ile hizalama (koşullu; sahip kararları bekleniyor):**
+1. **DUR-06-26 = DUR-05f-14:** iki not aynı ölçütü ve aynı öneriyi taşır: (a) D_h = 30 s. (b) seçilirse T_A'dan D_h çıkar; G_H (05f §7 formülü) ve D_tut,max girer.
+2. **DUR-06-28 (a) seçilirse:** G dolumu = `reset_flow(f, 0x04)`, FILE_ABORT adımı kalkar. A dolumu aynen (FILE_ABORT akış 1); alıcıda `stop_flow` + `resolve_flow`.
+3. **R dolumu:** `stop_flow` (YD-2) + FILE_RECEIPT(`timeout`); kabulünde `resolve_flow`.
+4. **Erken iptal kaydı:** YD-5'in R0 kuralı. 05f §9'un son satırı buna göre: "kaydın andığı R0 akışları bağlanınca ya da bitince".
+5. **T_ctrl(E):** DUR-06-27 (c) seçilirse tek kontrol biriminin kendi kurtarma sınırı + pencere beklemesidir:
+   - (i) tekilleştirme penceresi beklemesi: W_D türetimiyle zarf içinde 0 (§3);
+   - (ii) tüketim kredisi beklemesi: yalnız alındıyı bekleyen tarafın KENDİ akış-1 tüketicisi durgunken doğar. Kendi saatinde bir kapasite beklemesidir (05f R1) ve A'ya girmez; 05f bunu A'nın durma koşulu olarak yazar.
+   - (a)/(b) `Ordered` seçilirse öndeki kayıtların kurtarılması T_ctrl'ye eklenir.
+6. Çarpan ve ACK takvimi 05f'nindir. Bu bölüm yalnız saatlerin durma/çalışma koşullarını verir.
+
+**YD-10 `FlowEnded` ve teslim sırası (rev5.1).**
+- **Sorun:** `FlowEnded` bir `SessionEvent`'tir ve kama-app olayları birimlerden ÖNCE okur (`0c22a07d:messaging.rs:646-663`; adaptörde ayrı `events` ve `inbox` kuyrukları, `transport.rs:448-449`). Okunmamış bir FILE_BEGIN varken RESET işlenirse uygulama önce `FlowEnded`'i görür (bağ yok → olay yok), sonra FILE_BEGIN'i: hayalet aktarım. DUR-06-28 (a)'nın "ya teslim almıştır ya hiç almamıştır" ikiliği yalnız transport düzeyinde doğruydu.
+- **Kural:**
+  1. Runtime `FlowEnded`'i teslim kanalında, akışın son teslim birimlerinin ARDINA bant içi işaret olarak koyar.
+  2. Adaptör işareti alınca, `Reset` için akışın uygulamaca okunmamış birimlerini (akış hazır kuyruğu ve inbox) atomik olarak atar ve olayı ancak ondan sonra yayımlar. `Finished` için olayı, akışın hazır kuyruğu uygulamaca boşaltılınca yayımlar.
+- **Sonuç:** `Reset`'te uygulama FILE_BEGIN'i ya olaydan önce okumuştur ya da hiç okumaz; `Finished`'ta bütün birimleri olaydan önce okur.
+- A.7 (ii) ve A.15'e yazılır; B31 (k).
 
 ## Ek A — Onay gerektiren değişikliklerin TAM listesi (liste; yama metni DEĞİL)
 
