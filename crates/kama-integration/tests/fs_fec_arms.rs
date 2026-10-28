@@ -234,7 +234,10 @@ mod dur44_classifier {
         assert_eq!(spurious_retransmits(2, RETX, Some(100), Some(200)), RETX);
         assert_eq!(spurious_retransmits(1, 1, Some(0), Some(1)), 1);
         // r10'da basılan K3 öncesi değerler (9e0ea164): onarım 136.0 ms, ARQ varışı 144.808 ms → 1.
-        assert_eq!(spurious_retransmits(2, 1, Some(136_000_000), Some(144_808_000)), 1);
+        assert_eq!(
+            spurious_retransmits(2, 1, Some(136_000_000), Some(144_808_000)),
+            1
+        );
     }
 
     #[test]
@@ -242,7 +245,10 @@ mod dur44_classifier {
         assert!(!fec_beats_arq(Some(200), Some(100)));
         assert_eq!(spurious_retransmits(2, RETX, Some(200), Some(100)), 0);
         // r10'da basılan K3 sonrası değerler (bc913d49..): onarım 136.0 ms, ARQ varışı 135.808 ms → 0.
-        assert_eq!(spurious_retransmits(2, 1, Some(136_000_000), Some(135_808_000)), 0);
+        assert_eq!(
+            spurious_retransmits(2, 1, Some(136_000_000), Some(135_808_000)),
+            0
+        );
     }
 
     #[test]
