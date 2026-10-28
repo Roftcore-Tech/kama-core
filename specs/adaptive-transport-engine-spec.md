@@ -1040,7 +1040,7 @@ priority: retransmit(deadline) > FEC parity > yeni DATA > ACK-only (ACK-only ayr
   alan baş ≤ boy / pace_rate + bir tur içinde çıkar: sabit pace_rate, çalışan zamanlayıcı ve yeterli BURST kapasitesi
   koşuluyla; değişken hızda biriken token üzerinden hesaplanır (test iki kipte). ~~(ii) dışında gecikme sınırı
   VERİLMEZ.~~ (ii) ve (iii) dışında gecikme sınırı VERİLMEZ. (iii) HİZMET GARANTİSİ — PRE_CONVERGE dışında, uygun işi
-  olan her sınıf (DATA, ARQ, kopya) ve kopya sınıfı içinde her teyitsiz birim, teyitten bağımsız olarak, en geç
+  olan her sınıf (DATA, ARQ, kopya) ve ~~kopya sınıfı içinde her teyitsiz birim,~~ her iletilmiş teyitsiz birim (kopya kuyruğuna alınmadan önceki bekleme dahil; DUR-45 (C), sahip kararı bekliyor), teyitten bağımsız olarak, en geç
   ~~[kendi başının ve kendisinden önce rezerv alan hak sahiplerinin baş boyları toplamı] / pace_rate + K_ARQ_SHARE tur
   (birim için: T_birim)~~ [kendisinden önce rezerv alan her sahibin başının (aynı sınıf birden çok kez sayılır) ve kendi
   başının boyları toplamı + P_pf] / pace_rate + (K_ARQ_SHARE + aşama sayısı) tur (DUR-43) içinde bir gönderim fırsatı
@@ -1051,7 +1051,7 @@ priority: retransmit(deadline) > FEC parity > yeni DATA > ACK-only (ACK-only ayr
   B.6 h.2); tur = `schedule_transmit` çağrısı. Birim için T_birim = max(H_maks, RTO_MAX) + RTO_MAX + N_live ·
   T_max(kopya) + bir tur; N_live = iletilmiş, teyitsiz birim sayısı (kabul edilmiş, en az bir kez iletilmiş, teyitsiz
   birimlerin sonlu kümesi); H_maks = sahipsizlik süresi H'nin (transport-layer-tdd §12 [AMENDMENT-12]) bekleme
-  boyunca en büyük değeri; H'nin çapası son ilerlemedir: birimden ÖNCE gönderilmiş bir kaydın ilk onayı çapayı yeniler ve T_birim'e en çok bir H_maks ekler — sayısı beklemenin başında onaylanmamış eski kayıtlarla sınırlıdır —, birimden SONRA gönderilmiş kaydın onayı birimi kayıp ilanıyla ARQ yoluna alır (DUR-45 (C)); T_max(kopya) = kopya sınıfının yukarıdaki sınırı; sabit pace_rate ≥ taban, çalışan zamanlayıcı ve yeterli
+  boyunca en büyük değeri; H'nin çapası son ilerlemedir: birimden ÖNCE gönderilmiş bir kaydın ilk onayı çapayı yeniler ve T_birim'e en çok bir H_maks ekler — sayısı beklemenin başında onaylanmamış eski kayıtlarla sınırlıdır —, birimden SONRA gönderilmiş kaydın onayı birimi kayıp ilanıyla ARQ yoluna alır ~~(DUR-45 (C));~~ (DUR-45 (C), sahip kararı bekliyor); T_max(kopya) = kopya sınıfının yukarıdaki sınırı; sabit pace_rate ≥ taban, çalışan zamanlayıcı ve yeterli
   BURST kapasitesi koşuluyla; değişken hızda biriken token üzerinden. Sabit bir saniye değeri vaat edilmez; fikstür
   değerleri (31 B/s, 100 B/s) notta türetilir ve testte üst sınır olarak doğrulanır. Yukarıdaki priority satırıyla
   ayrışması bu kaydın kapsamı dışındadır.
