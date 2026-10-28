@@ -1165,3 +1165,33 @@ Mercekler: **L1** = §4.1 envanter · **L2** = §4.2 / DUR-06-27 / B30 · **L3**
 | L2-9 | not | akış-0 kardeşi için kol yok | işlendi | B30 (f) |
 | L3-11 | not | öneriler karar gibi yazılmış | işlendi: §16 başında öneri/karar ayrımı; A.23, YD-9, Karar özeti, §14 K2 koşullu | §16, A.23, YD-9, §14 |
 | L1-7 | not | metin ve atıf hataları | işlendi: FILE_ABORT hücresindeki rev4 RESET cümlesi; `AlreadySent` :831 (rev5 :830 yazıyordu); SIGNALING "zararsız" daraltıldı | §4.1, YD-1, YD-3 |
+
+### rev5.1 + 05f rev3.1 ortak doğrulaması (`k4g05f/joint-wf_c90086d9.json`; rev5.1 `11f91572`) → rev5.2
+
+Sonuçlar: **[0]** 05f §8.2 (refuted; 05f'nin) · **[1]** K4G-06 rev5.1 (holds_with_caveats) · **[2]** iki not tutarlılığı (refuted; kök neden: 05f rev3.1, K4G-06 rev5'e hizalı). Tutanlar aynen kaldı: (floor_a + W_D)/(c + W_c) ayrımı tek kural; hariç `max_seq`; B26 bellek sınırı; YD-10 Reset sırası; üç yeni S1 çağrısı Ek A'da. Reddedilen bulgu yok.
+
+| Bulgu | Önem | Kısa başlık | Karar (rev5.2) | Notta yeri |
+|---|---|---|---|---|
+| 1.0 | M | W_D hıza bağlı; 256 ≈ 273 B/s üstünde yetmez | işlendi: W_D(r, E) formülü (β hıza bağlı değil), D-3 tablosu, W_D = 2048 [CAL] (256 B), geçerlilik r ≤ ≈ 2,08 kB/s, üstünde beyanlı; T_düzey2 terimi; 139 → 141; U'da RECEIPT derinliği W_D − 13 | §3, §4.2, DUR-06-27, A.7, A.13 |
+| 1.1 | M | akış-1 kredi yenilemesi E_D'de tavansız yolda; FILE_* payı anlık eşik | işlendi: bugünkü sınır (çarpımsal) yazıldı; R-KRD önerisi (tükenmeye yaklaşınca N_b tekrar; toplanır T_kredi,ctrl); YD-9 m.5 (ii) ikiye ayrıldı; `available` tanımı; k sınıfları yöne göre (YD-9 m.7); B30 (g) | §7.4a, §7.6, YD-7, YD-9 m.5–m.7, A.36, B30 |
+| 0.0 | B (05f) | PreConverge'de T_ctrl sınır değil | ön koşul olarak yazıldı: motor ∉ {PreConverge, Idle}; yeni oturumda tutmaz → DUR adayı (05b kapsamı dışı; orkestratör sahibe) | §3, YD-9 m.5, A.7 |
+| 0.4 | M (05f) | HELD yuva ömrüyle durur | (b) için ek koşul (yuva canlı tutma ya da D_tut,max ≤ yuva ömrü); (a) önerisini ayrıca destekler | YD-3, YD-9 m.1 |
+| 1.2 | m | YD-5 R0 çapası açılmamış taşıyıcıyı kaçırıyor; ilgisiz R0; C_EA zaman öncülü | işlendi: iki çapa (kendi oturumunda R0 + eski canlı oturumlar); C_EA [CAL], türetim iddiası kalktı; B31 (e′)(h′) | YD-5, A.21, B31 |
+| 1.3 | m | tampondaki Live CLOSE zamanlayıcısız kalabilir | işlendi: `flow_seq` ≥ CLOSE + W_LIVE görülünce düşer | §7.6, A.18, B13 (d) |
+| 1.4 | m | R3 bir kez değil; S8 DROP çağrı noktası yok | işlendi: R3 akış başına en çok bir kez, `resolve_noop`; bağsız akış çağrı noktaları | YD-2, A.2, A.13, B13 (f) |
+| 1.5 | m | B30 (c) aynı-PN D'de yanlış | işlendi: R'de tek teslim + `dup_ctrl` +1 (ön-kayıtlı); Noise denetimi U/N+'da | B30 |
+| 1.6 | m | B30 D kolları üç yerde farklı | işlendi: D = (a)–(e) her yerde; K2'ye küçük W_D test kancası | §14, Ek B |
+| 1.7, 2.0 | m / M | 05f rev3.1 rev5.1'e hizalı değil | YD-9 tek kaynak eşleme tablosu (12 satır, 05f metni ve satırlarıyla); "iki notta aynı öneri" → hizalama bekleniyor | §16 YD-9, Karar özeti, Ek D |
+| 1.8 | not | YD-10 Finished inbox'ı beklemiyor | işlendi | YD-10, A.7, A.15 |
+| 2.1 | M | erken iptal kaydı iki notta farklı | tek kural YD-5; 05f karşılığı ve test eşlemesi YD-9 m.4 | YD-5, YD-9 |
+| 2.2 | M | T_ctrl / A saati iddiaları 05f'de yok | YD-9 m.5/m.6 05f'nin yazacağı metin olarak yazıldı ("05f yazar" iddiası kaldırıldı) | YD-9, YD-7 |
+| 2.3 | m | DUR-05f-14 önerisi farklı | YD-9 m.1 (05f §13/§12 metni); Ek D DUR-06-26 beyanı düzeltildi | YD-9, Ek D |
+| 2.4 | m | fazla düşme iki notta farklı; N_o·D_o iki kez | işlendi: t_S2 − t_R2 ≤ D_ack | YD-3, YD-9 m.1 |
+| 2.5 | m | DUR takvimi farklı | tek takvim YD-9 m.8; §13 ve Karar özeti buna göre | YD-9, §13, Karar özeti |
+| 2.6 | m | FILE_ABORT daralmasında oturum değişimi satırı | işlendi: üç durum YD-9 m.3; YD-4 son satırı "05f §9 (YD-5 ile güncellenmiş)" | YD-4, YD-9 |
+| 2.7 | m | k sınıfları akış-1 RECEIPT'i dışlıyor | yöne göre sınıf tanımı YD-9 m.7 | YD-9 |
+| 2.8 | m | bayat sabitler | işlendi: Ek D W_CTRL0 32; Ek C C_EA; 141 | Ek C, Ek D, §3 |
+| 2.9 | m | §16 dışında karar gibi yazılmış açık DUR'lar | işlendi: §4 tablo, §4.2, §7.6, YD-1, YD-6 koşullu | §4, §4.2, §7.6, §16 |
+| 2.10 | not | 05f artıkları | 05f'nin; YD-9 m.9, m.10 | YD-9 |
+| 2.11 | not | B29 ↔ 05f B.9 eşlemesi yok | YD-9 m.12 | YD-9 |
+| 0.1–0.3, 0.5–0.7 | — | 05f §8.2 türetim bulguları | 05f'nin (bu not sayıları 05f'den alır) | — |
