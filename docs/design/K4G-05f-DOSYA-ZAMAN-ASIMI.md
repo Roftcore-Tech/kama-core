@@ -405,7 +405,7 @@ Kapı yalnız deterministik hücrelerdedir (DUR-05f-12 (a)). Deterministik kayı
 - (g) **Faz A'da FILE_RECEIPT k_r kez düşer** → T_A içinde gelir → `Delivered`.
 - (h) **60 s kesinti** (D-1, D-2, D-3).
 
-**B.4′ E_D dışı, çarpımsal rejim — RAPOR, kapı değil:** k_r = K_slot + 1 = 12.
+**B.4′ E_D dışı, çarpımsal rejim — RAPOR, kapı değil:** k_r = K_slot + 1 = 12; k_f = 3; 1 × 60 s.
 - Yuva `idle_hold`'da emekliye ayrılır, yeni bir ileri tur gerekir (DUR-05f-15).
 - Ölçülen teyit anı ile formüldeki m = 2 sınırı (T_G ≈ 60 + 729,8 + 7·165,56 + 12·8,41 + 145,96 ≈ 2 195 s [hesap]) yan yana yazılır.
 
