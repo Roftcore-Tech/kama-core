@@ -176,11 +176,9 @@ fn main() {
             print_path_timing(&res.path_timing);
             // Timing-honest cause: blok'u FEC mi ARQ mı TAMAMLADI (retransmit-SAYISI değil — parity post-DATA
             // geç-varınca ARQ SPURIOUS retransmit sızdırabilir AMA FEC yine erken-tamamlar → cause=fec).
-            let fec_beats_arq = match (res.timing.t_repair_usable, res.timing.t_arq_arrival) {
-                (Some(u), Some(a)) => u <= a,
-                (Some(_), None) => true,
-                _ => false,
-            };
+            // [K4G-05b DUR-44] Paylaşılan saf sınıflayıcı (`fs_f0`; birim testi `fs_fec_arms.rs`), birebir.
+            let fec_beats_arq =
+                fs_f0::fec_beats_arq(res.timing.t_repair_usable, res.timing.t_arq_arrival);
             let fec_completed = res.fec_decoded_sources > 0 && fec_beats_arq;
             let cause = if fec_completed {
                 "fec"
@@ -190,7 +188,12 @@ fn main() {
                 "direct"
             };
             // FEC tamamladıysa emitilen retransmit'ler SPURIOUS (FEC-decode ARQ-emisyonundan geç-kaldı).
-            let spurious = if fec_completed { res.retransmits } else { 0 };
+            let spurious = fs_f0::spurious_retransmits(
+                res.fec_decoded_sources,
+                res.retransmits,
+                res.timing.t_repair_usable,
+                res.timing.t_arq_arrival,
+            );
             println!("completion_cause={cause} spurious_retransmits={spurious}");
             println!(
                 "INVALID={}",

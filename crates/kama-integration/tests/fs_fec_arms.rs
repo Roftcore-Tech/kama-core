@@ -216,3 +216,81 @@ fn f0_cost_split_under_product_default() {
         "startup pacing removes the D2/R2 late-parity spurious leak"
     );
 }
+
+/// [K4G-05b DUR-44 · CEVAP PAKETİ 16 v2 §1.1] `spurious_retransmits` sınıflayıcısının BELİRLENİMLİ birim
+/// testleri. `run_f0` ÇAĞRILMAZ: zamanlama yarışı sabitlenmez, girdi doğrudan verilir (`f0_cost_split_*`
+/// fikstürü spurious değerini yalnız basar). Sözleşme (§8): en az bir kaynak FEC ile çözüldüyse VE onarım
+/// ARQ yeniden gönderiminin varışından önce ya da aynı anda kullanılabildiyse (ya da yeniden gönderim hiç
+/// varmadıysa) yeniden gönderimlerin HEPSİ spurious'tur; aksi hâlde 0. Aynı fonksiyonu `run_f0` ve
+/// `fs_runner` CLI'nin `f0` kolu çağırır (`common/fs_f0.rs`).
+mod dur44_classifier {
+    use super::fs_f0::{fec_beats_arq, spurious_retransmits};
+
+    const RETX: u64 = 3;
+
+    #[test]
+    fn repair_before_arq_all_retransmits_spurious() {
+        assert!(fec_beats_arq(Some(100), Some(200)));
+        assert_eq!(spurious_retransmits(2, RETX, Some(100), Some(200)), RETX);
+        assert_eq!(spurious_retransmits(1, 1, Some(0), Some(1)), 1);
+        // r10'da basılan K3 öncesi değerler (9e0ea164): onarım 136.0 ms, ARQ varışı 144.808 ms → 1.
+        assert_eq!(spurious_retransmits(2, 1, Some(136_000_000), Some(144_808_000)), 1);
+    }
+
+    #[test]
+    fn repair_after_arq_none_spurious() {
+        assert!(!fec_beats_arq(Some(200), Some(100)));
+        assert_eq!(spurious_retransmits(2, RETX, Some(200), Some(100)), 0);
+        // r10'da basılan K3 sonrası değerler (bc913d49..): onarım 136.0 ms, ARQ varışı 135.808 ms → 0.
+        assert_eq!(spurious_retransmits(2, 1, Some(136_000_000), Some(135_808_000)), 0);
+    }
+
+    #[test]
+    fn simultaneous_repair_counts_as_fec_win() {
+        // Eşitlik FEC lehinedir (`u <= a`); `<=` → `<` mutasyonu bu testi kırar.
+        assert!(fec_beats_arq(Some(150), Some(150)));
+        assert_eq!(spurious_retransmits(2, RETX, Some(150), Some(150)), RETX);
+    }
+
+    #[test]
+    fn missing_timestamps() {
+        // Yeniden gönderim hiç varmadı, onarım kullanıldı → FEC kazanır.
+        assert!(fec_beats_arq(Some(10), None));
+        assert_eq!(spurious_retransmits(2, RETX, Some(10), None), RETX);
+        // Onarım kullanılamadı → FEC kazanmaz (ARQ varışı olsa da olmasa da).
+        assert!(!fec_beats_arq(None, Some(10)));
+        assert!(!fec_beats_arq(None, None));
+        assert_eq!(spurious_retransmits(2, RETX, None, Some(10)), 0);
+        assert_eq!(spurious_retransmits(2, RETX, None, None), 0);
+    }
+
+    #[test]
+    fn no_fec_decode_no_spurious() {
+        assert_eq!(spurious_retransmits(0, RETX, Some(100), Some(200)), 0);
+        assert_eq!(spurious_retransmits(0, RETX, Some(150), Some(150)), 0);
+        assert_eq!(spurious_retransmits(0, RETX, Some(10), None), 0);
+        assert_eq!(spurious_retransmits(0, RETX, None, None), 0);
+    }
+
+    /// Küçük tam tablo, bağımsız yazılmış kurala karşı; sonuç ∈ {0, retransmits} (spurious ≤ retransmits).
+    #[test]
+    fn exhaustive_small_grid_matches_rule() {
+        let ts = [None, Some(0_u64), Some(1), Some(2)];
+        for fec in [0_usize, 1, 8] {
+            for retx in [0_u64, 1, 5] {
+                for u in ts {
+                    for a in ts {
+                        let win = match u {
+                            None => false,
+                            Some(uv) => a.is_none_or(|av| uv <= av),
+                        };
+                        let want = if fec >= 1 && win { retx } else { 0 };
+                        let got = spurious_retransmits(fec, retx, u, a);
+                        assert_eq!(got, want, "fec={fec} retx={retx} u={u:?} a={a:?}");
+                        assert!(got == 0 || got == retx);
+                    }
+                }
+            }
+        }
+    }
+}
