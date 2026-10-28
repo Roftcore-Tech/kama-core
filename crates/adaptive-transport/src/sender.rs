@@ -784,6 +784,13 @@ pub struct RecoveryTimersDiag {
     pub tail_max_probes: u32,
     pub tail_pto_ns: u64,
     pub base_pto_ns: u64,
+    /// [K4G-05b DUR-45 · SALT GÖZLEM] Motorun son olay anı (`on_event_core` saati, ns).
+    pub last_event_ns: u64,
+    /// [K4G-05b DUR-45 · SALT GÖZLEM] Son ilerleme anı (bir iletim kaydını ilk kez onaylayan ACK;
+    /// H-sahiplenmesinin çapasının bir terimi); hiç ilerleme yoksa `None`.
+    pub last_progress_ns: Option<u64>,
+    /// [K4G-05b DUR-45 · SALT GÖZLEM] Sahipsizlik süresi H'nin şimdiki değeri (ns).
+    pub unowned_horizon_ns: u64,
 }
 
 /// [K4G-05 / INT-02 TEŞHİS] SALT GÖZLEM — tek bir kaynak birimin motordaki kayıtları
@@ -827,6 +834,9 @@ pub struct UnitRecoveryDiag {
     pub evidence_copy_loss: u32,
     pub evidence_arq_cap: u32,
     pub evidence_fire_once: u32,
+    /// [K4G-05b DUR-45 · SALT GÖZLEM] Birimin son iletim anı (her sınıf; H-sahiplenmesi çapasının
+    /// birim terimi — kaydı düşmüş iletimler dahil); dizinde girdi yoksa `None`.
+    pub last_tx_ns: Option<u64>,
 }
 
 /// Commit-G: latch-baskılama nedenleri (named; kalibrasyon-dışı-hücre-işaretleri).
@@ -2861,8 +2871,8 @@ impl Sender {
     ///   5. Tail-recovery PTO (`armed_at_ns + current_pto_ns`)
     ///   6. Pacer token yenilenmesi — bekleyen iş VARSA (`tx_queue|pending_lost|dup_queue|pending_fec`)
     ///      en küçük bekleyen birimin gönderilebilir olacağı an
-    ///   7. [K4G-05b madde 4 (c)] Sahipsizlik vadesi — prob kapsamı dışındaki en eski sahiplenme
-    ///      adayının `max(son ilerleme, son iletim) + H` anı
+    ///   7. [K4G-05b madde 4 (c)] Sahipsizlik vadesi — en eski sahiplenme adayının
+    ///      `max(son ilerleme, son iletim) + H` anı ([K4G-05b DUR-45 (C) aday] prob kapsamında da)
     #[must_use]
     pub fn next_wakeup_ns(&self) -> Option<u64> {
         // Kaynak 1-5 (timer'lar) + kaynak 6 (pacer-token'a bağlı due-now iş).
@@ -2977,8 +2987,8 @@ impl Sender {
         // 5. Tail-recovery PTO (config default OFF ⇒ aday yok).
         best = earlier(best, self.tail_probe_deadline_ns());
 
-        // 7. [K4G-05b madde 4 (c)] Sahipsizlik vadesi: prob kapsamı dışında en eski adayın
-        // `max(son ilerleme, son iletim) + H` anı (yeni zamanlayıcı yok: dizinden türetilir).
+        // 7. [K4G-05b madde 4 (c)] Sahipsizlik vadesi: en eski adayın `max(son ilerleme, son
+        // iletim) + H` anı — [DUR-45 (C) aday] prob kapsamında da (yeni zamanlayıcı yok: dizinden).
         best = earlier(best, self.adopt_due_ns());
 
         // NOT: `LostRec.deadline_ns` BİLEREK kaynak DEĞİL. `arq.rs:110-111` normatif: "deadline YALNIZ
@@ -5184,6 +5194,9 @@ impl Sender {
             tail_max_probes: tail.max_tail_probes,
             tail_pto_ns: self.tail_recovery.current_pto_ns(srtt_ns, rttvar_ns),
             base_pto_ns: self.tail_recovery.base_pto_ns(srtt_ns, rttvar_ns),
+            last_event_ns: self.last_now_ns,
+            last_progress_ns: self.last_progress_ns,
+            unowned_horizon_ns: self.unowned_horizon_ns(),
         }
     }
 
@@ -5246,6 +5259,7 @@ impl Sender {
             d.evidence_copy_loss = copy_loss;
             d.evidence_arq_cap = arq_cap;
             d.evidence_fire_once = fire_once;
+            d.last_tx_ns = Some(e.last_tx_ns);
         }
         if let Some((send_ns, seq, kind)) = latest {
             d.latest_send_ns = Some(send_ns);
