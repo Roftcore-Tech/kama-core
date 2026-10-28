@@ -1519,8 +1519,9 @@ struct UnitOwnership {
 
 impl UnitOwnership {
     /// [K4G-05b madde 4] Sahiplenme adayı: uçuşta kaydı olan, teyitsiz, geometrik kaydı olmayan
-    /// birim. Prob kapsamı etkinken kuyruk-probu izler (bütçe tükenince devir), kapsam dışında H
-    /// sahiplenmesi, RECOVER_FWD'de canlılık kolu bu kümeden sahiplendirir.
+    /// birim. Prob kapsamı etkinken kuyruk-probu izler (bütçe tükenince devir); H sahiplenmesi
+    /// ([K4G-05b DUR-45 (C) aday] prob kapsamında da) ve RECOVER_FWD'de canlılık kolu bu kümeden
+    /// sahiplendirir.
     fn adoptable(&self) -> bool {
         !self.confirmed && !self.geometric && self.inflight_n > 0
     }
@@ -4774,8 +4775,8 @@ impl Sender {
         // DR-ARQ-PRODUCT-TAIL-1 (gated; default OFF → no-op): forced PTO tail probe, state-independent, after the
         // normal ARQ planner (so it never double-plans a seq the planner already superseded).
         self.emit_tail_probe(&mut out, now_ns);
-        // [K4G-05b madde 4 (c)] Prob kapsamı dışında H geçen sahipsiz adayı kopya kuyruğuna al
-        // (PreConverge/Idle dışı; vadesi EK4-A2 7. uyanma kaynağı).
+        // [K4G-05b madde 4 (c) · DUR-45 (C) aday] H geçen sahipsiz adayı kopya kuyruğuna al — prob
+        // kapsamında da (PreConverge/Idle dışı; vadesi EK4-A2 7. uyanma kaynağı).
         self.adopt_unowned(now_ns);
         // [DR-EST-1] PreConverge kuruluş-denemesi: §3.3-B kopya-makinesi ilk-ölçüm-öncesi
         // PRE_CONVERGE_FLOOR_BW pacer'ına takılıp boğuluyordu (token-yok → break). Bu kol
@@ -6837,7 +6838,8 @@ impl Sender {
 
     /// [K4G-05b madde 4] Kuyruk-probu KAPSAMI etkin mi: prob açık ve bütçesi tükenmemiş. Kapsam
     /// etkinken uçuşta kaydı olan her teyitsiz birimi prob izler; bütçe tükendiği turda kapsamdaki
-    /// birimler devredilir, kapsam dışında H sahiplenmesi geçerlidir.
+    /// birimler devredilir. [K4G-05b DUR-45 (C) aday] Kapsam H sahiplenmesini KAPATMAZ: vadesi
+    /// gelip token bulamayan prob bütçeyi harcamaz, kapsam sönmez — kapı bu yüzden kalktı.
     fn probe_scope_active(&self) -> bool {
         self.tail_recovery.is_enabled()
             && self.tail_recovery.probe_index() < self.tail_recovery.config().max_tail_probes
@@ -6860,13 +6862,15 @@ impl Sender {
             / u64::from(self.hysteresis_cfg.escalate_permille.max(1))
     }
 
-    /// [K4G-05b madde 4 (c)] H-sahiplenmesinin vadesi (EK4-A2 7. uyanma kaynağı): prob kapsamı
-    /// dışında (prob kapalı ya da bütçe tükenmiş), PreConverge/Idle dışı, en eski adayın
-    /// `max(son ilerleme, son iletim) + H` anı. Aday yoksa `None`.
+    /// [K4G-05b madde 4 (c)] H-sahiplenmesinin vadesi (EK4-A2 7. uyanma kaynağı): PreConverge/Idle
+    /// dışı, en eski adayın `max(son ilerleme, son iletim) + H` anı. Aday yoksa `None`.
+    /// [K4G-05b DUR-45 (C) aday] Prob kapsamı kapısı (`|| self.probe_scope_active()`) KALKTI:
+    /// R1'de (bayat ACK) sınıf yükü altında vadeli prob token bulamıyor, bütçe tükenmiyor, kapsam
+    /// sönmüyor ve RECOVER_FWD'ye girilmiyordu → prob-yalnız birim hiç hizmet almıyordu (ölçüldü,
+    /// r13). Prob birimi iletirse son iletim çapayı yeniler; ilerleme sürerken çapa ilerlemedir —
+    /// davranış yalnız birimin kendi iletimi ve ilerleme olmadan H geçince değişir (Ek B.6 h.9.7).
     fn adopt_due_ns(&self) -> Option<u64> {
-        if matches!(self.state, SenderState::PreConverge | SenderState::Idle)
-            || self.probe_scope_active()
-        {
+        if matches!(self.state, SenderState::PreConverge | SenderState::Idle) {
             return None;
         }
         let &(tx_ns, _) = self.adopt_candidates.first()?;
@@ -6899,9 +6903,10 @@ impl Sender {
         }
     }
 
-    /// [K4G-05b madde 4 (c)] H-SAHİPLENMESİ: prob kapsamı dışındaki aday, ilerleme olmadan son
-    /// iletiminden beri H geçince kopya kuyruğuna alınır. Çapa ilerlemedir: alıcının sessizlikte
-    /// tekrarladığı bayat SACK RECOVER_FWD girişini erteleyebilir, H sahiplenmesini ertelemez.
+    /// [K4G-05b madde 4 (c)] H-SAHİPLENMESİ: aday ([K4G-05b DUR-45 (C) aday] prob kapsamında
+    /// da), ilerleme olmadan son iletiminden beri H geçince kopya kuyruğuna alınır. Çapa
+    /// ilerlemedir: alıcının sessizlikte tekrarladığı bayat SACK RECOVER_FWD girişini
+    /// erteleyebilir, H sahiplenmesini ertelemez.
     /// Olay güdümlü: küme son iletim sırasındadır, ilk aday vadesizse hiçbiri vadeli değildir.
     fn adopt_unowned(&mut self, now_ns: u64) {
         while let Some(due) = self.adopt_due_ns() {
