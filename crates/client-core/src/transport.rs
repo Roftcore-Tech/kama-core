@@ -81,6 +81,16 @@
 //! `ConnectAbandoned`'da `early_unit` gönderilmemiştir (S1 K6, §4); Application onu yeni
 //! `connect`'ten sonra yeniden verir.
 //!
+//! [DUR-05g-3 (B), CEVAP PAKETİ 16 §2] `connect` (ve kalıcı niyetin taze INIT'i, `reinitiate`)
+//! INIT'ten ÖNCE yerel soketi sınar: ucun açılışındaki AYNI kurulum (`runtime::bind_peer_socket`,
+//! bind + connect), uç görevi açılmadan; soket hemen bırakılır. Sınama başarısızsa INIT yola
+//! çıkmaz (Crypto'da bekleyen kayıt, karşı uçta kayıt oluşmaz) ve niyet
+//! `ConnectAbandoned(_, LocalPermanent)` ile biter — eşin adresi yokken olduğu gibi; sayaç
+//! [`ClientTransport::local_probe_failures`]. Sınama YARDIMCI ÖNLEMDİR, kaynak sınırı DEĞİLDİR:
+//! sınama ile gerçek açılış arasında koşul değişebilir (o zaman yukarıdaki açılış hatası kolları
+//! aynen çalışır; sınama onların yerine geçmez) ve gelen INIT yollarını (yanıtlayan, provisional)
+//! kapsamaz. Karşı uçtaki kaynak sınırı ayrı karttır (DUR-05g-3 (A)).
+//!
 //! # Bağlam-önce dağıtım (K4G-01 / D1 v1.1)
 //!
 //! Bağlam yükün tipinden türetilmez; bağlam dağıtıcıyı seçer. Yük, bağlam doğrulanmadan çözülmez.
@@ -126,8 +136,9 @@ use kama_contracts::s3::{
 use kama_noise_wire::protector::NoiseWireProtection;
 
 use crate::runtime::{
-    ClientEndpoint, ClientHandle, ClientLiveDiag, CtxDispatchCounters, CtxDispatchStats,
-    ExpectedSessions, Readiness, RuntimeConfig, RuntimeError, ServerEndpoint, ServerHandle,
+    bind_peer_socket, ClientEndpoint, ClientHandle, ClientLiveDiag, CtxDispatchCounters,
+    CtxDispatchStats, ExpectedSessions, Readiness, RuntimeConfig, RuntimeError, ServerEndpoint,
+    ServerHandle,
 };
 #[cfg(any(test, feature = "test-util"))]
 use crate::wire::decode_data;
@@ -496,6 +507,9 @@ pub struct ClientTransport<C: PacketProtection + SessionControl> {
     /// [K4G-05g] Salt gözlem: oturum ucunun kullanılamadığı deneme sayısı
     /// ([`Self::endpoint_open_failures`]). Hiçbir karar okumaz.
     endpoint_open_failures: u64,
+    /// [K4G-05g / DUR-05g-3 (B)] Salt gözlem: INIT öncesi yerel soket sınamasının başarısız olduğu
+    /// deneme sayısı ([`Self::local_probe_failures`]). Hiçbir karar okumaz.
+    local_probe_failures: u64,
     /// Sıradaki `send`'lerden kaçının ilk emisyonu kaybettirilecek (yalnız test).
     #[cfg(any(test, feature = "test-util"))]
     drops: usize,
@@ -503,6 +517,10 @@ pub struct ClientTransport<C: PacketProtection + SessionControl> {
     /// test; [`Self::set_endpoint_open_failures_for_test`]).
     #[cfg(any(test, feature = "test-util"))]
     endpoint_open_fail_next: usize,
+    /// [K4G-05g / DUR-05g-3 (B)] Sıradaki kaç yerel soket sınaması başarısız olacak (yalnız test;
+    /// [`Self::set_socket_probe_failures_for_test`]).
+    #[cfg(any(test, feature = "test-util"))]
+    socket_probe_fail_next: usize,
     /// [K4G-05g] Ucu açılamadığı için S1'e açılmayan son tutamaç (yalnız test).
     #[cfg(any(test, feature = "test-util"))]
     last_failed_activation: Option<SessionHandle>,
@@ -603,10 +621,13 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             ctx_counters,
             retired_diag: ClientLiveDiag::default(),
             endpoint_open_failures: 0,
+            local_probe_failures: 0,
             #[cfg(any(test, feature = "test-util"))]
             drops: 0,
             #[cfg(any(test, feature = "test-util"))]
             endpoint_open_fail_next: 0,
+            #[cfg(any(test, feature = "test-util"))]
+            socket_probe_fail_next: 0,
             #[cfg(any(test, feature = "test-util"))]
             last_failed_activation: None,
             server,
@@ -650,6 +671,14 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     #[must_use]
     pub fn endpoint_open_failures(&self) -> u64 {
         self.endpoint_open_failures
+    }
+
+    /// [K4G-05g / DUR-05g-3 (B)] Salt-okunur telemetri: `connect` (ya da kalıcı niyetin taze
+    /// INIT'i) öncesi yerel soket sınamasının başarısız olduğu ve bu yüzden INIT'in yola ÇIKMADIĞI
+    /// deneme sayısı. Durum değişmez.
+    #[must_use]
+    pub fn local_probe_failures(&self) -> u64 {
+        self.local_probe_failures
     }
 
     /// [K4G-05] Salt-okunur telemetri: ucu açık her S1 oturumunun motor / ARQ aynası
@@ -1079,6 +1108,15 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
 
     fn reinitiate(&mut self, i: usize) {
         let peer = self.intents[i].peer;
+        // [K4G-05g / DUR-05g-3 (B)] Taze INIT'ten ÖNCE yerel soket sınaması (bkz. modül belgesi).
+        if !self.local_socket_ok(peer) {
+            let it = self.intents.remove(i);
+            self.events.push_back(SessionEvent::ConnectAbandoned(
+                it.ticket,
+                AbandonReason::LocalPermanent,
+            ));
+            return;
+        }
         match self.command(SessionCommand::Initiate {
             peer,
             early_unit: None,
@@ -1205,6 +1243,36 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             .push_back(SessionEvent::Closed(old, CloseReason::Superseded));
     }
 
+    /// [K4G-05g / DUR-05g-3 (B)] INIT öncesi yerel soket sınaması: ucun açılışındaki AYNI soket
+    /// kurulumu (`runtime::bind_peer_socket`: bind + connect), uç görevi açılmadan; soket sınamadan
+    /// hemen sonra bırakılır. Eşin adresi yoksa ya da kurulum başarısızsa `false` ve
+    /// [`Self::local_probe_failures`] artar. Yardımcı önlemdir, kaynak sınırı DEĞİLDİR (sınama ile
+    /// açılış arasında koşul değişebilir; gelen INIT yollarını kapsamaz).
+    fn local_socket_ok(&mut self, peer: PeerRef) -> bool {
+        let ok = self.try_local_socket(peer);
+        if !ok {
+            self.local_probe_failures = self.local_probe_failures.saturating_add(1);
+        }
+        ok
+    }
+
+    fn try_local_socket(&mut self, peer: PeerRef) -> bool {
+        let Some(&addr) = self.peer_addrs.get(&peer) else {
+            return false;
+        };
+        // (yalnız test) Kalıcı yerel soket hatasının belirlenimli karşılığı; ürün derlemesinde
+        // yoktur.
+        #[cfg(any(test, feature = "test-util"))]
+        if self.socket_probe_fail_next > 0 {
+            self.socket_probe_fail_next -= 1;
+            return false;
+        }
+        // Soket çalışma-zamanının içinde açılır ve bırakılır (reaktör kaydı orada silinir).
+        self.rt
+            .block_on(async move { bind_peer_socket(addr).await.map(drop) })
+            .is_ok()
+    }
+
     /// Oturumun veri ucunu açar. Açılamazsa (`peer_addrs`'ta eşin adresi yok ya da
     /// `ClientEndpoint::connect_session_counted` hatası) `None` ve
     /// [`Self::endpoint_open_failures`] artar.
@@ -1323,6 +1391,15 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         self.endpoint_open_fail_next = n;
     }
 
+    /// [K4G-05g / DUR-05g-3 (B)] Sonraki `n` INIT öncesi yerel soket sınaması kalıcı yerel soket
+    /// hatası gibi başarısız olur (eşin adres denetiminden SONRA). Uç açılışını ETKİLEMEZ (o
+    /// [`Self::set_endpoint_open_failures_for_test`]'tir): "sınama geçti, açılış düştü" kolu ayrı
+    /// sınanır. `n` ATANIR (eklenmez); `0` kancayı kapatır. Ürün derlemesinde yoktur.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_socket_probe_failures_for_test(&mut self, n: usize) {
+        self.socket_probe_fail_next = n;
+    }
+
     /// [K4G-05g] Ucu açılamadığı için S1'e açılmayan ve Crypto oturumu kapatılan son tutamaç
     /// (Application bu tutamacı hiç görmez; fikstür Crypto'da zombi kalmadığını onunla sınar).
     #[cfg(any(test, feature = "test-util"))]
@@ -1435,6 +1512,16 @@ impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> 
         ));
         if !self.peer_addrs.contains_key(&peer) {
             // Direct-mode: eşin veri adresi yok → kalıcı yerel hata.
+            self.events.push_back(SessionEvent::ConnectAbandoned(
+                ticket,
+                AbandonReason::LocalPermanent,
+            ));
+            return Ok(ConnectResult::Pending(ticket));
+        }
+        // [K4G-05g / DUR-05g-3 (B)] INIT'ten ÖNCE yerel soket sınaması: kalıcı yerel hatada INIT
+        // yola çıkmaz (Crypto `Initiate` çağrılmaz, karşı uçta kayıt oluşmaz). Yardımcı önlemdir;
+        // açılış hatası kolu (`on_crypto_ready` (b)) aynen yerinde (bkz. modül belgesi).
+        if !self.local_socket_ok(peer) {
             self.events.push_back(SessionEvent::ConnectAbandoned(
                 ticket,
                 AbandonReason::LocalPermanent,

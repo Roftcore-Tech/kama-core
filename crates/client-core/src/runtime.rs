@@ -1535,6 +1535,22 @@ impl ClientSender {
     }
 }
 
+/// [K4G-05g] Oturum ucunun UDP soketi: eşin adres ailesinde efemeral bind + `connect(server)`.
+/// [`ClientEndpoint::connect_session_counted`] ve S1 adaptörünün INIT öncesi yerel sınaması
+/// (`ClientTransport::connect`, DUR-05g-3 (B)) AYNI kurulumu bu tek yardımcıdan kullanır.
+///
+/// # Errors
+/// Soket bind/connect hatası.
+pub(crate) async fn bind_peer_socket(server: SocketAddr) -> std::io::Result<UdpSocket> {
+    let sock = UdpSocket::bind(match server {
+        SocketAddr::V4(_) => "0.0.0.0:0",
+        SocketAddr::V6(_) => "[::]:0",
+    })
+    .await?;
+    sock.connect(server).await?;
+    Ok(sock)
+}
+
 impl ClientEndpoint {
     /// Bağlan ve görevi başlat. `seam` = güvenlik dikişi (stub: [`crate::seam::IdentitySeam`]).
     ///
@@ -1607,12 +1623,7 @@ impl ClientEndpoint {
         ctx_counters: CtxDispatchCounters,
     ) -> Result<ClientHandle, RuntimeError> {
         validate_fec(&cfg)?; // [S1] koşu-öncesi typed FEC-config doğrulaması
-        let sock = UdpSocket::bind(match server {
-            SocketAddr::V4(_) => "0.0.0.0:0",
-            SocketAddr::V6(_) => "[::]:0",
-        })
-        .await?;
-        sock.connect(server).await?;
+        let sock = bind_peer_socket(server).await?;
         let (offer_tx, offer_rx) = mpsc::channel::<(Vec<u8>, Option<u64>)>(cfg.offer_queue);
         let (acked_tx, acked_rx) = mpsc::channel(cfg.offer_queue.max(cfg.max_inflight_units));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
