@@ -1,27 +1,33 @@
-# K4G-06 — Akış izolasyonu ve teslim sözleşmesi — tasarım notu rev4 (ADIM 1: sözleşme/arayüz taslağı + ayırt edici test planı)
+# K4G-06 — Akış izolasyonu ve teslim sözleşmesi — tasarım notu rev5 (ADIM 1: sözleşme/arayüz taslağı + ayırt edici test planı)
 
 ## 0. Künye
 
-- **Kart / dal / durum:** K4G-06 · `k4g/06-tasarim` (taban main `1b1425d2`) · **rev4 TASLAK** (rev3 = `dfd3a5e5`). Kod yok, ölçüm yok; deney dalı (`k4g/06-deney`) açılmadı.
-- **rev4 (küçük):** 05f rev2 (`3e0ec8fa`) ile dört hizalama — §10 ilerleme tanımı, A.23 + ortak A.36/A.37, B22 iki kol, FIN sonrası tutma (§7.6, DUR-06-26, B29); Ek F son bölüm.
-- **Sürümler:** rev1 = `2656953c` (inceleme `k4g06/inceleme-wf_4a961b72.json`) · rev2 = `9cda1fab` (doğrulama `k4g06/rev2-dogrulama-wf_86a0d33e.json`; 31 kontrol, 26 yeni bulgu) · rev3 = `dfd3a5e5` · rev4 = bu sürüm. Her iki turun bütün bulgularının izlemesi Ek F'de. rev3'ün ana değişiklikleri: KARAR-1 için tarihli ek açıkça gerekli ilan edildi; FEC blok sınırı onarım çerçevesine taşındı (blok kimliği yeniden oturum boyu monoton); transport kontrolü ayrı kalıcı akışa alındı (TCTRL bayrağı kalktı); VO'da `REL` bayrağı; kredi canlılık kuralları tamamlandı; seçicide rezerv hiyerarşisi.
-- **Otorite sırası:** CEVAP 15 EK-1 > CEVAP 15 v3 > 14 > …; donmuş belgeler kendi değişiklik kuralıyla (PoC-KAPSAM-001 yalnız sahibin tarihli ekiyle; ccr/noise-wire/transport-tdd yalnız sahip kararıyla). Sahibin iki ek notu bağlayıcı. İnceleme ve doğrulama kayıtları kanıt girdisidir.
+- **Kart / dal / durum:** K4G-06 · `k4g/06-tasarim` (taban main `1b1425d2`) · **rev5 TASLAK** (rev4 = `1f0e032c`). Kod yok, ölçüm yok. **Deney kodu (`k4g/06-deney`) bu turda YOK**; dal açılmadı.
+- **rev5:** CEVAP 16 v2 §4'ün üç kararı işlendi (Karar özeti, §13, Ek D); DUR-06-20 iki tabanlı deney planı (§14); AMP kontrol kayıtları envanteri ve kontrol sıralama tasarımı (§4.1–§4.2; DUR-06-27, DUR-06-28; B30, B31); ortak yaşam döngüsü bölümü (§16; D_tük = 0 reddi üzerine DUR-06-26 yeniden yazıldı; B29); Ek A değişti; Ek F son bölüm.
+- **Sürümler:** rev1 = `2656953c` (inceleme `k4g06/inceleme-wf_4a961b72.json`) · rev2 = `9cda1fab` (doğrulama `k4g06/rev2-dogrulama-wf_86a0d33e.json`; 31 kontrol, 26 yeni bulgu) · rev3 = `dfd3a5e5` · rev4 = `1f0e032c` (05f rev2 `3e0ec8fa` ile dört hizalama) · rev5 = bu sürüm. Bütün turların izlemesi Ek F'de. rev3'ün ana değişiklikleri: KARAR-1 için tarihli ek açıkça gerekli ilan edildi; FEC blok sınırı onarım çerçevesine taşındı (blok kimliği yeniden oturum boyu monoton); transport kontrolü ayrı kalıcı akışa alındı (TCTRL bayrağı kalktı); VO'da `REL` bayrağı; kredi canlılık kuralları tamamlandı; seçicide rezerv hiyerarşisi.
+- **Otorite sırası:** CEVAP 16 v2 > CEVAP 15 EK-1 > CEVAP 15 v3 > 14 > …; donmuş belgeler kendi değişiklik kuralıyla (PoC-KAPSAM-001 yalnız sahibin tarihli ekiyle; ccr/noise-wire/transport-tdd yalnız sahip kararıyla). Sahibin iki ek notu bağlayıcı. İnceleme ve doğrulama kayıtları (bağımsız inceleme `decisions/incelemeci/INCELEMECI-8-05b-rev6-inceleme.md`, K4G-06 bölümü dahil) kanıt girdisidir.
 - **Atıf biçimi:** `SHA:dosya:satır`. Kısa dosya adları: `runtime.rs`/`transport.rs`/`wire.rs`/`batch.rs` = `crates/client-core/src/`; `sender.rs`/`arq.rs` = `crates/adaptive-transport/src/`; `s1.rs` = `crates/kama-contracts/src/`; `ptt.rs`/`file_transfer.rs`/`messaging.rs` = `crates/kama-app/src/`; `node.rs` = `crates/kama-node/src/`. Belgeler tam yolla.
-- **SHA'lar (origin'de, 2026-10-25):** `0c22a07d` = `k4g/05c-kod` (05b rev5 `35a02fcf` + 05c) · `37b78aad` = `k4g/05b-retx-fix`, **05b rev6** (B′, K3, DUR-40; Ek A A.4 rev6, Ek B.6 (g)(h)) — `0c22a07d` rev6'yı İÇERMEZ · `1b1425d2` = main · `cf270a6c` = 05d · `e5514e7a` = 05f rev1 · `0b216f07` = 05g origin ucu (yerel `c9c2ea22` YEREL, dayanak değil).
+- **SHA'lar (2026-10-28; CEVAP 16 v2 dayanağı):** `0c22a07d` = `k4g/05c-kod` (05b rev5 `35a02fcf` + 05c) · `37b78aad` = `k4g/05b-retx-fix` rev6 ara ucu (B′, K3, DUR-40; bu notun rev6 satır atıfları buradandır) · **`593029eb` = #140 ucu, 05b rev6 son aday** (Ek A 283 satır `7bfa5e05…158c`; DUR-41 ortak kayıp kanıtı dahil; `37b78aad` atıfları burada kayabilir) — `0c22a07d` rev6'yı İÇERMEZ · `1b1425d2` = main · `cf270a6c` = 05d · `e5514e7a` = 05f rev1 · `3e0ec8fa` = 05f rev2 · `c9c2ea22` = 05g.
 - **Ek A sha256:** `8f2ce1d4663ee69a76a188bfbcab4ca76b8e1999b25a5e5ae07218e4481adcfe` — kapsam `## Ek A` satırından `## Ek B`'den önceki son boş olmayan satıra dek, 46 satır, her satır `\n` ile (`~/kama-k4g-work/tools/eka-sha.sh`); 37 kalem. rev3 Ek A (`18b2ee65…`), rev2 Ek A (`013ec64b…`) ve rev1 Ek A (`e497640e…`) geçersizdir.
 - **Etiketler:** [olgu] koddan · [hesap] aritmetik, ölçülmedi · [çıkarım] test edilmedi · [türetim] koddan önce yazılan sınır · [CAL] deney başlangıç değeri.
 
 ## Karar özeti
 
-**Şimdi istenen onay:** yalnız §14 deney kapsamı, deneyden ÖNCE gereken iki yön (DUR-06-5, DUR-06-2) ve deney kapsam daraltması (DUR-06-20). Ürün kodu, merge ya da donmuş metin değişikliği istenmiyor.
+**CEVAP 16 v2 §4 kararları (yalnız deney yönü; ürün ya da merge onayı DEĞİL):**
+- **DUR-06-5 — (B + B-iii) yön GO, yalnız deney dalı için.** KARAR-1 ve ccr §35.14'e tarihli sahip ekinin GEREKLİ olduğu KABUL edildi. Ek şimdi YAZILMAZ; ürün aşamasında Ek A'nın tam yama metniyle yazılır (A.9). Hub'ın gördüğü zarf değişmez.
+- **DUR-06-2 — (b2) + (i) yön GO.** Motor içinde tek saf seçici; eklemeli `AppDataTagged(OpaqueUnit, ServiceTag)`; etiketsiz = rev6; rezerv hiyerarşisi. DUR-38 ile ORTAK seçim/rezerv: iki istisna sistemi üst üste büyümez.
+- **DUR-06-20 — (a) KOŞULLU.** Deney kodunda FEC kapalı. Deney İKİ tabanda koşar: H `0c22a07d` (tarihsel) ve G güncel birleşik aday (#140 merge + yeniden tabanlanmış 05c, hazır olunca). **Karar verdiren koşu G'dir** (§14). S7(a) reddi ön-kayıtlı (B2).
 
-1. **Birim çerçevesi (DUR-06-5, öneri B): KARAR-1'in canonical `BatchPayload` alt mesaj çerçevesini korur, ama KARAR-1'e ve ccr §35.14'e tarihli sahip EKİ GEREKTİRİR** (rev2'nin "KARAR-1 ile çelişmeyen tek seçenek" iddiası geri çekildi). Ek gereken dört nokta: v0 kabuk tip baytı (ccr'de yok), alt mesaj akış başlığı `flags · flow_id u16 · flow_seq u32`, S1 kipinde `submsg_count ∈ {0, 1}`, açık parçalayıcı (0x05) istisnası. Örtük kip de FLOW_BATCH'e geçer; ürün runtime'ında tek veri çerçevesi tanımı kalır. Başlık 10 B (kayıt ≤ 239 B) / 12 B; bugün 11 B [hesap].
-2. **FEC kimliği:** `block_id` bugünkü gibi oturum + yön boyu monoton (§2.6 ID-SCOPE değişmez); blok tek akışın ardışık birimlerinden oluşur; blok sınırı onarım çerçevesinde taşınır (`first_seq` u32, onarım sembolü başına +4 B). Kaynak sembol öneki S1 kipinde kendini tanıtır: `message_id := flow_seq`, `chunk_offset := flow_id`, `source_flags`'ta FIN ve REL. Kısmi blok kapanışı serbesttir, blok kimliği yeniden kullanılmaz.
-3. **S7 (b): motor içinde tek, saf seçici; eklemeli API** (`Event::AppDataTagged`; etiketsiz = tek akış = rev6). Rezerv hiyerarşisi: katman 0/1, kova payları içinde katman-2 rezervinin önüne geçer; K1 (a) katman 2 içinde aynen. S7(a)'nın reddi B2'ye bağlı (TEXT'in KENDİ kurtarma işi; iki taban; ön-kayıtlı).
-4. **Kredi ve kontrol:** akış başına mutlak artan sınırlar; sayım sınırları (`bk_flow_limit`, `max_rel`) aynı FLOW_CREDIT'te; BLOCKED iki boyutlu, çok girdili, etkin sınır artana dek tekrarlanır; alıcı her BLOCKED'e güncel sınırı ≤ 1 / T_min ile yeniden ilan eder. Transport kontrolü (akış 0) transportun kendi tükettiği şerit, uygulama kontrolü (akış 1) ayrı. Kabul kapısı yalnız `capacity_defect = 0` (sahibin notu 2).
-5. **PTT ve S5:** canlı PTT (C15 v3 §9.3 / S5) PoC-KAPSAM-001'in PTT satırını, K8 "sıfır bozuk hece" ölçütünü ve S5 dondurmasını (`:34`, K6 `:54`) değiştirir; hepsi tek bir tarihli sahip ekiyle (EK-4, DUR-06-18) olur. Live'a bağlı DUR'lar (06-1, 06-6, 06-11 Live kısmı, 06-23) DUR-06-18 (a)'ya koşulludur.
+**rev5'te istenen:** DUR-06-27 (kontrol şeritlerinin teslim kipi; deneyden ÖNCE, çünkü B30 deneyde koşar) · DUR-06-26 ve DUR-06-28 yönü (05f ile ortak; 05f rev3 bunlara göre yazılır). Ürün kodu, merge ya da donmuş metin değişikliği istenmiyor.
 
-**Deneyden ÖNCE gerekenler:** DUR-06-5 ve DUR-06-2 yön onayı (KARAR-1 ekinin gerekli olduğu kabulü dahil) · DUR-06-20 (deney kodunda FEC kapalı; B2 FEC kolu yalnız tabanda) · §14 kapsamı (≈ 5,5–7 iş günü; tahmin).
+1. **Birim çerçevesi (DUR-06-5, KARAR):** KARAR-1'in canonical `BatchPayload` alt mesaj çerçevesi + tarihli ek: v0 kabuk tip baytı, alt mesaj akış başlığı `flags · flow_id u16 · flow_seq u32`, S1 kipinde `submsg_count ∈ {0, 1}`, 0x05 parçalayıcı istisnası; örtük kip de FLOW_BATCH. Başlık 10 B (kayıt ≤ 239 B) / 12 B; bugün 11 B [hesap].
+2. **FEC kimliği (B-iii, KARAR):** `block_id` oturum + yön boyu monoton (§2.6 ID-SCOPE değişmez); blok tek akışın ardışık birimleri; blok sınırı onarım çerçevesinde (`first_seq` u32, +4 B/onarım sembolü); kendini tanıtan önek (`message_id := flow_seq`, `chunk_offset := flow_id`, FIN, REL).
+3. **S7 (b2) + (i) (KARAR):** tek saf seçici, eklemeli API; katman 0/1 kova payı içinde katman-2 rezervinin önüne geçer; K1 (a) katman 2 içinde aynen.
+4. **Kredi ve kontrol:** akış başına mutlak artan sınırlar; sayım sınırları aynı FLOW_CREDIT'te; BLOCKED iki boyutlu, çok girdili, etkin sınır artana dek tekrarlanır. **Kontrol şeritleri (akış 0 ve 1) `Independent` kipte: sırasız, oturum içinde tam bir kez; kayıtlar kendi kimlikleriyle idempotent** (AMP denetimi §4.1; tasarım §4.2; DUR-06-27). Faz G'deki gönderen iptali akış RESET'ine uygulama koduyla bağlanır (DUR-06-28). Kabul kapısı yalnız `capacity_defect = 0` (sahibin notu 2).
+5. **Ortak yaşam döngüsü (§16):** alıcı kredisi, kontrol yükümlülükleri, iptal, FIN ve zaman aşımı tek tabloda; 05f rev3 ve 05d A1 buna atıf verir. D_tük = 0 reddedildi: FIN sonrası tüketici tutması "tutuluyor" girdisiyle A saatini **tavanlı** durdurur (D_tut,max ≥ 30 s; DUR-06-26).
+6. **PTT ve S5:** canlı PTT PoC-KAPSAM-001'in PTT satırını, K8 "sıfır bozuk hece" ölçütünü ve S5 dondurmasını (`:34`, K6 `:54`) değiştirir; tek tarihli sahip ekiyle (EK-4, DUR-06-18). Live'a bağlı DUR'lar (06-1, 06-6, 06-11 Live, 06-23) DUR-06-18 (a)'ya koşulludur.
+
+**Deneyden ÖNCE gerekenler:** DUR-06-27 · §14'ün ön-kayıtları (T_BE, T_BE^rec(H), T_BE^rec(G), B30 taban beklentisi) K1'den önce commit · orkestratörün GO'su.
 
 ## 1. Amaç ve değişmeyenler
 
@@ -191,16 +197,17 @@ WMM adları niyet bildirir; garanti §5 seçicisinden gelir.
 
 1. 05b #140 (rev6) → 05g → 05c merge (05c rev6 üstüne yeniden tabanlanır).
 2. **Deney dalı** (§14; merge yok; FROZEN dosyalar yalnız orada "DENEY" etiketiyle).
-3. rev4 + CEVAP 16 → ürün kodu (API-first): (i) S1 + KM-SEAM-AT-001 + drift · (ii) client-core çerçeve + akış/kredi + alıcı · (iii) motor S7(b) + engine §13 / AMENDMENT-13 · (iv) kama-app + AMP + PoC-KAPSAM EK-4 + 05d A1 / 05f rev2 · (v) UniFFI/S5 + kama-node + INT-02 + bench S1 kolu.
+3. Deney (G) + CEVAP 17 → ürün kodu (API-first; 05d A1 + 05f rev3 + K4G-06 birlikte, §16; C16 v2 §5 m.4): (i) S1 + KM-SEAM-AT-001 + drift · (ii) client-core çerçeve + akış/kredi + alıcı · (iii) motor S7(b) + engine §13 / AMENDMENT-13 · (iv) kama-app + AMP + PoC-KAPSAM EK-4 + 05d A1 / 05f rev3 · (v) UniFFI/S5 + kama-node + INT-02 + bench S1 kolu.
 - **Çakışmalar:** 05c kabul/mesafe kodu (§9); 05g etkinleştirme kolları (akış yalnız `Ready` sonrası; `Closed` sonrası `UnknownFlow`); 05d M1 korunur, M2/A1 dönüşür; 05f rev2 akış başına; rev6 K-0…K-5 düzey-2 olur; KARAR-1 geçişi (`0c22a07d:specs/transport-layer-tdd.md:972-974`) K4G-06 ile birlikte.
 
 ## 13. DUR özeti (öncelikli; ayrıntı Ek D)
 
-| Öncelik | DUR | Soru | Önerim |
+| Öncelik | DUR | Soru | Önerim / karar |
 |---|---|---|---|
-| **1 — deneyden ÖNCE** | DUR-06-5 | Birim çerçevesi + FEC kimliği + **KARAR-1/ccr tarihli eki** + `flow_id` uzayı | B + B-iii; ek gerekir |
-| 1 | DUR-06-2 | S7 seçim sözleşmesi + rezerv hiyerarşisi | (b2) + (i) |
-| 1 | DUR-06-20 | Deney kapsamı; FEC kolunun yeni kodda ölçülmemesi | §14; B2-FEC yalnız tabanda |
+| **1 — deneyden ÖNCE** | DUR-06-5 | Birim çerçevesi + FEC kimliği + **KARAR-1/ccr tarihli eki** + `flow_id` uzayı | **KARAR (C16 v2 §4): B + B-iii yön GO, yalnız deney; ek gerekli kabul, ürün aşamasında yazılır** |
+| 1 | DUR-06-2 | S7 seçim sözleşmesi + rezerv hiyerarşisi | **KARAR: (b2) + (i) yön GO; DUR-38 ile ortak** |
+| 1 | DUR-06-20 | Deney kapsamı; FEC kolunun yeni kodda ölçülmemesi | **KARAR: (a) KOŞULLU — iki taban (H, G), karar G'de** (§14) |
+| 1 (rev5) | **DUR-06-27** | Kontrol şeritlerinin (akış 0, 1) teslim kipi — kontrol-alındısı karşı örneği | (c) `Independent`: sırasız, tam bir kez, kimlikli idempotent kayıt |
 | **2 — deney sonucunu bekler** | DUR-06-10 | VO açıkken BK/BE birim boyu | beyan + ölçüm |
 | 2 | DUR-06-11 | FEC kapsamı (Ordered kısmı) | akış başına blok, B-iii |
 | 2 | DUR-06-3 | Kontrol katmanı sayıları, akış 0/1 kredileri, havuz/bellek | §4/§7; sayılar deneyden sonra |
@@ -218,20 +225,47 @@ WMM adları niyet bildirir; garanti §5 seçicisinden gelir.
 | 3 | DUR-06-21 | ~190 testte DUR-8 yöntemi | toplu yöntem |
 | 3 | DUR-06-22 | INT-02/INT-03 kapı metni | `capacity_defect = 0` + sebep sütunları |
 | 3 | DUR-06-25 | netem/T-hücre ölçüm kolu | bench S1-kipi kolu |
-| 3 (05f ile ortak) | DUR-06-26 | FIN sonrası tüketici tutması × 05f A saati | "tutuluyor" girdisi; A saati durur |
+| 3 (05f ile ortak; 05f rev3'ten ÖNCE yön) | DUR-06-26 | FIN sonrası tüketici tutması × 05f A saati (**D_tük = 0 REDDEDİLDİ**, C16 v2 DUR-05f-8) | (b) "tutuluyor" girdisi A saatini tavanlı durdurur (D_tut,max ≥ 30 s) (§16) |
+| 3 (05f ile ortak; 05f rev3'ten ÖNCE yön) | **DUR-06-28** | Gönderen iptalinin akışa bağlanması (FILE_ABORT ↔ FILE_BEGIN çapraz şerit yarışı) | (a) Faz G'de `reset_flow(k, kod)`; FILE_ABORT yalnız Faz A ve oturum değişiminde (§4.2, §16) |
 | **4 — Aşama 7** | DUR-06-24 | PTT eşik dosyası onayı | kalibrasyondan sonra (yöntem sahibin 1. notu) |
 
 DUR'dan çıkarılanlar (C11 §3): rev1 DUR-06-4, -8 (→ 06-5 (iv)), -9 (→ 06-5 (iii)), -16 ([CAL] başlangıç değerleri orkestratörün; normatif olunca 06-3/-17).
 
-## 14. Deney dalı (ADIM 2) — kapsam
+## 14. Deney dalı (ADIM 2) — kapsam (DUR-06-20 (a) KOŞULLU: iki taban)
 
-**Taban:** `0c22a07d` (05c-kod, **05b rev5 motoru**; rev6 B′/K3/DUR-40 deneyde YOK). B2 tabanı ayrıca `37b78aad` üstünde (yalnız motor). Sonuçlar "**ürün profili dışı** (FEC kapalı; rev5 motoru)" etiketlidir. **Hüküm kapsamı:** deney yalnız S7(a)/(b) ayrımını ve izolasyonun en küçük kanıtını verir; rev6 + seçici etkileşimi ve rezerv hiyerarşisi U aşamasında sınanır (B10 (e), B14, B17).
-- **K1 (kod değişmeden):** B2'nin üç kolu (ARQ, kopya, FEC — ürün profilinde açık, `0c22a07d:runtime.rs:292`) iki tabanda; T_BE ve deney seçicisine göre T_BE^rec (Ek B B2) K1'den ÖNCE commit'lenir; B1-taban. ≈ 1 gün.
-- **K2 client-core:** FLOW_BATCH (B; FEC kapalı), (oturum, akış) kabul + sıra, örtük açma + `max_seen`/açık küme, akış başına hazır kuyruk + test-util `hold_flow`, tek kredi türü (birim; BLOCKED tek boyutlu `seq`) ACK yolunda §7.4 (i)–(iii) tetikleriyle ve T_min sınırıyla; **S1 kipinde mesafe kapısı kalkar** (örtük kip tek akışla). ≈ 2–3 gün.
-- **K3 motor ("DENEY"):** `AppDataTagged` + iki katman (BE/BK) DATA kuyruğu + **deney seçicisi = katı sınıf önceliği BE > BK** (ARQ, kopya ve DATA başı için); DRR yok (sıra 2, isteğe bağlı). ≈ 1–1,5 gün.
-- **K4 testler:** B1-en-küçük, B1b, B2 (ARQ, kopya; yeni kodda); B3 (b)(e) en küçük hâli isteğe bağlı (sıra 2). ≈ 1 gün.
-- **Regresyon alt kümesi:** `tv_*`, `k4g05b_scheduling` (tek akış), INV-ACK-DELIVER-1 testleri. ≈ 0,5 gün.
-- **Toplam ≈ 5,5–7 iş günü** (tahmin). Aşama 0 ≈ 9,5–12 iş günü (tasarım rev1–rev3 ≈ 2 gün harcandı); C15 v3 §7'nin "4–6 + 1–2"sinden ≈ +4 gün.
+**Durum:** deney kodu bu turda YOK; `k4g/06-deney` orkestratörün GO'suyla açılır. Kurallar EK-1 §3 (merge yok; FROZEN dosyalara yalnız bu dalda "DENEY" etiketiyle; vektör/seam değişmez).
+
+**Tabanlar:**
+- **H (tarihsel)** = `0c22a07d` (05b rev5 motoru + 05c). Etiket: "tarihsel; rev5 motoru; FEC kapalı; **karar vermez**".
+- **G (güncel birleşik aday; karar verdiren)** = #140 merge'ünden sonraki main (05b rev6 son hâli; bugün `593029eb`) + 05g + main üstüne yeniden tabanlanmış 05c. SHA henüz yok. "Hazır" = C16 v2 §5 m.1–m.2 kapandı ve yeniden tabanlanmış 05c tam yerel kapıdan (1.96.0, `--locked`) geçti. Etiket: "ürün profili dışı (FEC kapalı; deney seçicisi)". **Karar verdiren koşu G'dir:** rev5'in bilinen zamanlayıcı kusurları (kara delik; C16 v2 "iki kalıcı kayıt" (1)) yeni mimari kararını belirlemez.
+- rev4'teki `37b78aad` motor-only B2 kolu, G yokken rev6'nın vekiliydi. G rev6'nın son hâlini içerdiği için G'deki B2-taban onun yerine geçer. G gecikirse `593029eb` motor-only koşusu "vekil; karar vermez" etiketiyle koşulur.
+
+**Koşu matrisi:**
+
+| Koşu | H | G | Hüküm |
+|---|---|---|---|
+| **K1 — taban (kod değişmeden):** B1-taban, B1b-taban, B2-taban (ARQ, kopya, FEC — FEC ürün profilinde açık, `0c22a07d:runtime.rs:292`), **B30-taban** | evet (hemen) | evet (G hazır olunca) | ön-kayıtlı taban beklentisi G'de hükümdür; H tarihsel |
+| **K2–K4 — deney kodu:** B1 (en küçük), B1b, B2 (a)(b), **B30 (a)(b)**; B3 (b)(e) isteğe bağlı | G hazır değilse burada yazılır ve koşar | taşınır (ya da doğrudan yazılır) ve koşar | **yalnız G** |
+| **Regresyon alt kümesi:** `tv_*`, tek akış `k4g05b_scheduling`, INV-ACK-DELIVER-1 testleri; G'de ayrıca rev6 T1/T2 | evet | evet | G |
+
+**Ön-kayıt (K1'den ÖNCE commit; sonuç görülmeden):** T_BE (B2) · T_BE^rec(H) = (S_iletimde + S_t)/r + K_ARQ_SHARE·τ [türetim: rev5'te katı öncelik; t'nin kurtarma başı yalnız iletimdeki paketi ve kendi token birikimini bekler] · **T_BE^rec(G) = (S_iletimde + S_rez + S_t)/r + K_ARQ_SHARE·τ** [türetim: rev6'da K1 (a) katman 2 içinde aynen; BE başı, kurulu bir BK rezervinin dolmasını en çok S_rez ≤ S_max kadar bekler] · B30 taban beklentisi ve geçme ölçütü · [CAL] değerleri. H ve G aynı ön-kayıtla koşar; G'de sınır ifadesi değişirse yeni ön-kayıt sonuç görülmeden yazılır.
+
+**Kod parçaları:**
+- **K1** (kod yok): H ≈ 1 gün; G ≈ 0,5 gün (G hazır olunca).
+- **K2 client-core:** FLOW_BATCH (B; FEC kapalı), (oturum, akış) kabul + sıra, örtük açma + `max_seen`/açık küme, akış başına hazır kuyruk + test-util `hold_flow`, tek kredi türü (birim; BLOCKED tek boyutlu `seq`) ACK yolunda §7.4 (i)–(iii) tetikleri ve T_min sınırıyla; S1 kipinde mesafe kapısı kalkar (örtük kip tek akışla); **akış 1 `Independent` kipte** (alıcıda `floor` + W bit haritası, oturum içinde tam bir kez; DUR-06-27 (c); B30 bunu ister). ≈ 2,5–3,5 gün.
+- **K3 motor ("DENEY"):** `AppDataTagged` + katman başına DATA kuyruğu + **deney seçicisi = katı öncelik CTRL (akış 1) > BE > BK** (ARQ, kopya, DATA başı için); kova ve DRR yok (beyan; sıra 2, isteğe bağlı). ≈ 1–1,5 gün.
+- **K4 testler:** B1-en-küçük, B1b, B2 (a)(b), B30 (a)(b); B3 (b)(e) isteğe bağlı. ≈ 1,25–1,5 gün.
+- **Regresyon:** ≈ 0,5 gün.
+
+**Aday hazır değilken (H'de yaz, G'ye taşı):** kod `k4g/06-deney`'de H üstünde yazılır ve koşar; H koşusunun commit'i etiketle korunur. G hazır olunca kod G üstüne yeniden kurulur (aynı dalda yeniden tabanlama ya da `k4g/06-deney-g`; dal adı orkestratörün). **Taşıma yüzeyi [çıkarım; çakışma sayısı ölçülmedi]:**
+- (i) K2 — alıcı/gönderen (`runtime.rs`) ve `Reorder` (`transport.rs`): yeniden tabanlanmış 05c ve 05g'nin etkinleştirme kolları (`activate`, `abandon_successor`) aynı dosyalarda → ≈ 0,5–1 gün.
+- (ii) K3 — rev6 seçicisi (`refresh_reserve`, `assign_reserve_to_holder`, `ServiceRights`, yaşa göre kopya seçimi, DUR-41 ortak kayıp kanıtı) rev5'ten yapısal olarak farklı. Katı öncelik rev6'nın hak/rezerv yapısına yeniden uygulanır; mekanik taşıma değildir → ≈ 1–1,5 gün.
+- (iii) K4, regresyon, G'de K1 ve yeniden koşu → ≈ 0,75–1 gün.
+- **Taşıma toplamı ≈ 2,25–3,5 iş günü [tahmin].**
+
+**Süre [tahmin; toplanıp tarih üretilmez, C16 v2 §5]:** G hazırken doğrudan G'de ≈ 6,75–8,5 iş günü (K1 H + G 1,5 · K2 2,5–3,5 · K3 1–1,5 · K4 1,25–1,5 · regresyon 0,5). H'de yazılıp taşınırsa ≈ 6,25–8 + 2,25–3,5 ≈ 8,5–11,5 iş günü. rev4 tahmininden (5,5–7) artış: B30 ve `Independent` kipi (+0,75–1,25) ve ikinci taban (G'de K1, ya da taşıma). **Önerim:** K1 H'de hemen; K2 başlarken G hazırsa kod doğrudan G'de yazılır (taşıma maliyeti doğmaz), değilse H'de.
+
+**Hüküm kapsamı:** deney yalnız şunları verir: S7(a)/(b) ayrımı, kontrol-alındısı bağımsızlığı (B30) ve izolasyonun en küçük kanıtı. FEC kapalı, katı öncelikli bir deneydir. **FEC uyumu, BK açlıksızlığı (DRR), canlı PTT kalitesi ve ürünün bütünü için kabul kanıtı DEĞİLDİR** (INCELEMECI-8, K4G-06 bölümü). Rezerv hiyerarşisi, DRR ve rev6 + seçici etkileşimi U aşamasında sınanır (B10 (e), B14, B17). Öncelik 2–4 kararları deney kanıtına dayanır (CEVAP 17).
 
 ## 15. Bu notun sınırı
 
@@ -482,13 +516,15 @@ Kaynak: salt okuma taraması, `0c22a07d` (öneksiz) ve `cf270a6c` (`05d:` önekl
 
 **Toplam (kesişimli):** A 16 · B 34 · C 18 · D 16 · E 33 · F 149 literal (eklemeli API'de K) + 4 pin · G 4 + düzenek · H 12 · I 16 · J 14 + 20 · K 2 · L 4 kapı. kama-engine taranmadı değil: A.30 (eklemeli API'de değişmez hedefi); kama-noise-wire ve kama-store testleri A.6/A.35 gereği değişmez hedefidir, uygulama turunda doğrulanır.
 
-## Ek D — DUR'lar (CEVAP 16'ya): seçenekler, öneri, gerekçe — öncelik sırasıyla
+## Ek D — DUR'lar (CEVAP 16 v2 kararları işlendi; açıklar CEVAP 17'ye): seçenekler, öneri, gerekçe — öncelik sırasıyla
 
-C11 §3 süzgeci: DUR yalnız değişmez/sözleşme metni, yeni sayı, tel/vektör, FROZEN dosya, beyanlı sınır ya da bir testin amacı/eşiği değişince. Uygulama tercihleri ve deney başlangıç değerleri DUR değildir; orkestratör seçer ve raporlar. **Canlılık/kilitlenme açığı "deneyde görülür" diye bırakılmaz:** rev3'te bilinen her canlılık açığının ya metinde çözümü ya da aşağıda açık DUR'u vardır.
+C11 §3 süzgeci: DUR yalnız değişmez/sözleşme metni, yeni sayı, tel/vektör, FROZEN dosya, beyanlı sınır ya da bir testin amacı/eşiği değişince. Uygulama tercihleri ve deney başlangıç değerleri DUR değildir; orkestratör seçer ve raporlar. **Canlılık/kilitlenme açığı "deneyde görülür" diye bırakılmaz:** rev5'te bilinen her canlılık açığının ya metinde çözümü ya da aşağıda açık DUR'u vardır.
 
 ### Öncelik 1 — deneyden ÖNCE
 
-**DUR-06-5 — Birim çerçevesi, FEC kimliği, KARAR-1/ccr tarihli eki, `flow_id` uzayı** (A.8–A.11, A.27). Seçenekler: (W1) birim kimliği telde kalır + akış başlığı, yeni interim çerçeve · (W2) birim kimliği telden çıkar, yeni interim çerçeve (rev1) · **(B) akış başlığı `BatchSubMessage`'ta + FEC B-iii** · (B′) KARAR-1'i tarihli ekle değiştirip W2'yi canonical yapmak.
+**DUR-06-5 — Birim çerçevesi, FEC kimliği, KARAR-1/ccr tarihli eki, `flow_id` uzayı** (A.8–A.11, A.27).
+**KARAR (CEVAP 16 v2 §4, 2026-10-26): (B + B-iii) yön GO — yalnız deney dalı için.** KARAR-1 ve ccr §35.14'e tarihli sahip ekinin GEREKLİ olduğu KABUL edildi. Ek şimdi YAZILMAZ; ürün aşamasında (Öncelik 3 onay turu) Ek A'nın tam yama metniyle yazılı karar olur. ccr KAT-1..5 donmuş spec'tir: zarf içi olsa da sessiz değişmez. Hub'ın gördüğü zarf değişmez (Yaaz etkilenmez). Aşağıdaki seçenek tablosu kayıt içindir.
+Seçenekler: (W1) birim kimliği telde kalır + akış başlığı, yeni interim çerçeve · (W2) birim kimliği telden çıkar, yeni interim çerçeve (rev1) · **(B) akış başlığı `BatchSubMessage`'ta + FEC B-iii** · (B′) KARAR-1'i tarihli ekle değiştirip W2'yi canonical yapmak.
 
 | Ölçüt | W1 | W2 | **B (+ B-iii)** |
 |---|---|---|---|
@@ -512,11 +548,14 @@ C11 §3 süzgeci: DUR yalnız değişmez/sözleşme metni, yeni sayı, tel/vekt�
 - (vi) Örtük kip: **FLOW_BATCH'e geçer (tek kalıcı akış 2)**, 0x00 emekli; 0x05 yalnız açık opt-in parçalayıcıda beyanlı istisna — alternatif: KARAR-1 ekine "örtük kipte 0x00 kalır" istisnası (reddedilir: iki çerçeve tanımı).
 - (vii) S2 eşlemesi: extended yolda FLOW_BATCH için yeni `inner_kind` (0x1D+); legacy yolda ayrım baytı ccr'de yok → ekle karara bağlanır. S2'nin FEC_SOURCE yolu `block_id`/`esi`'yi zaten taşır; akış ve sıra önekte → S2 FEC düzeni değişmez.
 
-**Deneyden önce istenen:** yön (B + B-iii) ve KARAR-1/ccr tarihli ekinin GEREKLİ olduğunun kabulü; ek metni ve kesin bayt düzeni deneyden sonra.
+**Kalan:** ek metni ve kesin bayt düzeni ürün aşamasında (A.9); deney yalnız yön kararıyla yazılır.
 
-**DUR-06-2 — S7 seçim sözleşmesi ve rezerv hiyerarşisi** (A.17, A.16, A.20). Sözleşme: (a) sığ giriş · (b1) `OpaqueUnit`'e alan (149 literal D8; K3 +1–2 gün) · **(b2) eklemeli `Event::AppDataTagged`** · (c) enjekte `ServiceSelector`. Rezerv: **(i) katman başına rezerv; katman 0/1 kova payları içinde katman-2 rezervinin önüne geçer; K1 (a) katman 2 içinde aynen** · (ii) tek küresel rezerv, K1 (a) bütün katmanlara (VO ve kontrol BK başının token birikimini bekler: 300 B/s'de 1050 B için +3,5 s [hesap]; m.5 ve B11'e "rezerv beklemesi" terimi eklenir). **Öneri (b2) + (i).** Gerekçe: (a) önceden kabul edilmiş kurtarma işini sıralamaz (B2 tabanı KIRMIZI beklenir); (b2) pinleri korur, tek akışta rev6'ya indirgenir; (c) SoC/ADR-17 denetimini zorlaştırır; (i) §5 m.3'ün (1 − ρ_C − ρ_V,max)·r paydasıyla tutarlıdır ve K8'in bas→ilk ses hedefine BK rezerv beklemesi eklemez; katman 0/1 kovayla sınırlı olduğundan katman-2 rezervinin ömrü sonlu kalır. Bedel: FROZEN v1.1 motor revizyonu ve AMENDMENT-12 cümleleri (A.16). **Deneyden önce:** yön onayı.
+**DUR-06-2 — S7 seçim sözleşmesi ve rezerv hiyerarşisi** (A.17, A.16, A.20).
+**KARAR (CEVAP 16 v2 §4): (b2) + (i) yön GO.** Motor içinde tek saf seçici; eklemeli `Event::AppDataTagged(OpaqueUnit, ServiceTag { tier, flow (opak), expires_ns })`; etiketsiz = tek akış = rev6 davranışı; rezerv hiyerarşisi (katman 0/1 kova payı içinde katman-2 rezervinin önüne geçer; K1 (a) katman 2 içinde aynen). Motor kama-app mesaj tipini çözmez. **DUR-38 ile ORTAK seçim/rezerv mantığı:** iki istisna sistemi üst üste büyümez (EK-1 §1.5) — ürün kodunda rev6'nın `ServiceRights` / rezerv yapısı seçicinin düzey-2'si olur, yanına ikinci bir rezerv mekanizması yazılmaz (A.17).
+Sözleşme: (a) sığ giriş · (b1) `OpaqueUnit`'e alan (149 literal D8; K3 +1–2 gün) · **(b2) eklemeli `Event::AppDataTagged`** · (c) enjekte `ServiceSelector`. Rezerv: **(i) katman başına rezerv; katman 0/1 kova payları içinde katman-2 rezervinin önüne geçer; K1 (a) katman 2 içinde aynen** · (ii) tek küresel rezerv, K1 (a) bütün katmanlara (VO ve kontrol BK başının token birikimini bekler: 300 B/s'de 1050 B için +3,5 s [hesap]; m.5 ve B11'e "rezerv beklemesi" terimi eklenir). **Öneri (b2) + (i).** Gerekçe: (a) önceden kabul edilmiş kurtarma işini sıralamaz (B2 tabanı KIRMIZI beklenir); (b2) pinleri korur, tek akışta rev6'ya indirgenir; (c) SoC/ADR-17 denetimini zorlaştırır; (i) §5 m.3'ün (1 − ρ_C − ρ_V,max)·r paydasıyla tutarlıdır ve K8'in bas→ilk ses hedefine BK rezerv beklemesi eklemez; katman 0/1 kovayla sınırlı olduğundan katman-2 rezervinin ömrü sonlu kalır. Bedel: FROZEN v1.1 motor revizyonu ve AMENDMENT-12 cümleleri (A.16).
 
-**DUR-06-20 — Deney kapsamı ve FEC kolu** (§14). **(a) §14 kapsamı: yeni kodda FEC kapalı ("ürün profili dışı"); B2'nin FEC kolu yalnız tabanda; deney motoru rev5; deney seçicisi katı öncelik** · (b) yeni kodda FEC dahil (+2–3 gün) · (c) yalnız K1. **Öneri (a).** Zorunlu testin deneydeki kapsamını daraltır → sahip onayı. Hüküm yalnız S7(a)/(b); rev6 + seçici etkileşimi U'da.
+**DUR-06-20 — Deney kapsamı ve FEC kolu** (§14).
+**KARAR (CEVAP 16 v2 §4): (a) KOŞULLU.** Deney kodunda FEC kapalı kabul (ürün profili dışı; B2'nin FEC kolu yalnız tabanda). **Koşul:** deney İKİ tabanda koşar — H `0c22a07d` (rev5 motorlu; tarihsel karşılaştırma) VE G = rev6 (#140 merge'ü) + yeniden tabanlanmış 05c'nin güncel birleşik adayı (hazır olunca). **Karar verdiren koşu G'dir;** bilinen eski zamanlayıcı kusurları yeni mimari kararını belirlemez. S7(a)'nın reddi ön-kayıtlıdır (B2: TEXT'in KENDİ kurtarma işi; iki taban). Uygulaması §14'te: koşu matrisi, ön-kayıt (T_BE^rec(H), T_BE^rec(G)), aday hazır değilken H'de yazıp G'ye taşıma ve maliyeti (≈ 2,25–3,5 iş günü [tahmin]). Kayıt için seçenekler: (a) yukarıdaki · (b) yeni kodda FEC dahil (+2–3 gün) · (c) yalnız K1.
 
 ### Öncelik 2 — deney sonucunu bekler
 
