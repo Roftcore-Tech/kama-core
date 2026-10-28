@@ -108,10 +108,10 @@
 ## 3. İlkeler
 
 - **P1 — kanıt yoksa çıkarım yok.** Yeni teyit, yeni kabul ya da alındı gelmemesi karşı taraf hakkında bir durum türetmez.
-- **P2 — terminal durumlar açık sinyalle oluşur:** alındı · `FILE_ABORT` / `FLOW_RESET` · oturum sonu kuralı (§9) · kullanıcı iptali · yerel vazgeçme (P3).
+- **P2 — terminal durumlar açık sinyalle oluşur** (`06 §16 YD-4`): alındı · `FILE_ABORT` · `FLOW_RESET` (kodlu; DUR-06-28 (a) ile) · `stop_flow` + FILE_RECEIPT · oturum sonu kuralı (§9) · kullanıcı iptali · yerel vazgeçme (P3).
 - **P3 — yerel vazgeçme bir politikadır.** Yalnız yerel bir saat, E_D'den türetilmiş sınırını aşınca tetiklenir; nedeni "yerel vazgeçme"dir; karşıya açık mesajla bildirilir. E_D içinde tetiklenmez (KAPI, Ek B.4). Rastgele hücrelerde tetiklenebilir (RAPOR, Ek B.8 (ii)).
 - **P4 — akış başına.** Oturum geneli taban, oturum geneli "bekleyen = 0" ve ikinci bir geçici erişimci kullanılmaz (C16 v2 §5.4).
-- **P5 — vazgeçme yeni kapasite istemez.** H_C_tavan içinde yer önceden ayrılmıştır (`06:150-154`). Aktarım başına en çok bir FILE_ABORT (ilk neden kalır, `1b1425d2:file_transfer.rs:134`); gelen akış başına en çok bir FILE_RECEIPT.
+- **P5 — vazgeçme yeni kapasite istemez.** H_C_tavan içinde yer önceden ayrılmıştır (`06:206-210`; `06 §16 YD-6`). Aktarım başına en çok bir FILE_ABORT (ilk neden kalır, `1b1425d2:file_transfer.rs:134`); gelen akış başına en çok bir FILE_RECEIPT.
 
 ## 4. Kapasite · kuyruk gecikmesi · zaman aşımı (05d A1 · K4G-06 · 05f ortak bölüm)
 
@@ -167,41 +167,92 @@ Saat ve fazlar:
 
 ## 6. Alıcı dosya-idle (R saati) — `FILE_IDLE_TTL`'in yerine
 
-Erişimci `FlowRxProgress(oturum, akış)` — A.36:
+Erişimci `FlowRxProgress(oturum, akış)` — A.36 (`06:461`):
 - `received`: ilk kez kabul edilen farklı `flow_seq`; sırasızlar dahil.
 - `delivered`: uygulamaya verilen sıradaki `flow_seq`.
-- `granted`: ilan edilmiş `max_seq` (`06:145`).
+- `granted`: ilan edilmiş `max_seq` (`06:201`).
 - `held`: `hold_flow` etkin.
 
-R saati:
+R saati — R1'de (`06 §16 YD-1`, `YD-7`):
 - **Çalışır:** `granted`'ın altında henüz kabul edilmemiş `flow_seq` varken.
-- **Durur:** `held` ya da verilmiş kredinin tamamı kabul edilmiş.
-- **Sıfırlanır:** `received` artınca.
+- **Durur:**
+  - `held`;
+  - verilmiş kredinin tamamı kabul edilmiş;
+  - FIN dahil önek kabul edilmiş (R2: bundan sonrası A saatinin ve YD-3'ün konusudur);
+  - `stop_flow` edilmiş.
+- **Sıfırlanır:** `received` artınca. Gönderenin G sıfırlanmalarına bağlı değildir. Ölen bir yuvanın gecikmiş eski teyitleri R'yi etkilemez (T_R'nin ikinci terimi, §8.2).
 - **Dolum:** T_R(E_D) (§8.2) → §8.3.
 
 31 B/s'de iki tam birimin arasındaki 67,7 s, R saatini sıfırlayan bir ilerleme aralığıdır; vazgeçme yalnız T_R aşılırsa olur (C15 v3 §6: DUR-05f-4 gereksinimi).
 
-## 7. Alındı bekleme (A saati) ve tüketici tutması — tek yaşam döngüsüne bağlı
+## 7. Alındı bekleme (A saati) ve tüketici tutması — `06 §16 YD-3` ile hizalı
 
-- **Yer:** FILE_RECEIPT akış 1'de gider ve yuvası düşürülmez (`06:82`, A.21 `06:266`). Kontrol başı toplu verinin arkasında beklemez (`06:114`).
-- **A saati:** Faz A'nın başında başlar; oturumsuz aralık N_o·D_o'dan sayılır. Dolum = T_A(E_D) → §8.3.
-- **Tüketici tutması (C16 v2 §3, DUR-05f-8):** FIN dahil bütün birimler teyitliyken alıcı tüketicisi akışı tutarsa FILE_RECEIPT doğmaz. Faz G'deki tutma sorun değildir: kredi bloklu olduğu için G durur (`06:305` B1). Faz A için iki seçenek; ortak yaşam döngüsü bölümünün sahibi K4G-06'dır (DUR-06-26, `06:574`; B29, `06:335`):
+- **Yer:**
+  - FILE_RECEIPT akış 1'de gider ve yuvası düşürülmez (`06:90`, A.21 `06:446`; yükümlülük `06 §16 YD-6`).
+  - Akış 1 `Independent` ise FILE_RECEIPT öndeki bir kontrol kaydını beklemez (DUR-06-27 (c) = DUR-05f-17).
+- **A saati:**
+  - S2'de, yani Faz A'nın başında başlar (`06 §16 YD-1`).
+  - Oturumsuz aralık N_o·D_o'dan sayılır.
+  - Dolum = T_A(E_D) → §8.3.
+- **Durum:** FIN dahil bütün birimler teyitliyken alıcının tüketicisi FIN'i almazsa (R2, `06 §16 YD-1`) FILE_RECEIPT doğmaz. Faz G'deki tutma sorun değildir: kredi bloklu olduğu için G durur (`06 §16 YD-7`; B1 `06:484`).
 
-| | (a) Tutma zarfta: N_h × D_h, D_h ≥ 30 s | (b) "tutuluyor" sinyali A saatini durdurur (`06:148`, `:574`) |
+**Seçenekler (DUR-05f-14 = DUR-06-26; ikisi birlikte karar).**
+
+**(a) Tutma zarfa girdi olarak girer:**
+- T_A = T_işlem + N_h·D_h + T_ctrl(k_r), N_h = 1, D_h ≥ 30 s [CAL].
+
+**(b) K4G-06 önerisi kabul edilirse** — `06 §16 YD-3`: birikimli `HELD(flow_id, held_ms)`.
+- Alıcı: R2 ≥ T_min olunca girdiyi koyar, R2 sürdükçe her T_BLK'da yineler (eş başına ≤ 1 çerçeve / T_min).
+- Gönderen: A(t) = max(0, (t − t_S2) − min(H, D_tut,max)). H = S2'de alınan en büyük `held_ms`. D_tut,max ≥ 30 s [CAL], aday 600 s.
+- D_tut,max zarf girdisidir (§8.1). T_A = T_işlem + T_ctrl(k_r) + G_H.
+
+**G_H türetimi** — 05f'nin kendi sınaması [türetim; ölçülmedi]:
+- R2'nin başı t_R2, FIN kabulüdür; S2 ise t_S2 ≥ t_R2'de, FIN'in teyidiyle başlar.
+- A(t) = (t − t_S2) − H_alınan(t) ≤ (t − t_R2) − H_alınan(t) =: **gecikme(t)**. Bu, tutma süresinin henüz gönderene ulaşmamış kısmıdır.
+- Gecikmenin bileşenleri:
+  1. **İlk girdinin ofseti:** girdi R2 ≥ T_min olunca doğar → ≤ T_min.
+  2. **Kayıp girdiler:** HELD girdileri FLOW_CREDIT sınıfındadır (k_r). Ardışık en çok k_r girdi kaybolur; yinelemeler T_BLK aralıklıdır ve her biri T_min hız sınırıyla gecikebilir → ≤ (k_r + 1)·(T_BLK + T_min).
+  3. **Kesinti:** kesintide kaybolanlar k_r'ye sayılmaz → + N_o·D_o.
+  4. **Uçuş:** en son girdinin varışı → + L.
+- **G_H = T_min + (k_r + 1)·(T_BLK + T_min) + N_o·D_o + L.**
+  - Bu sınır, tutma sırasında A'nın zirvesini de, tutma bitince A'ya kalan sızıntıyı (t_end − t_son girdi) da kapsar.
+  - Birikimli girdi sayesinde kayıp girdiler birikmez; tek bir başarılı girdi öncesindeki bütün tutmayı kapsar (YD-3'ün kuralı doğrulandı).
+- **YD-3 taslağıyla fark:** YD-3 (`06:352`) G_H ≤ (k_r + 1)·T_BLK + N_o·D_o diyor. 05f'nin türetimi buna üç terim ekler: ilk girdi ofseti T_min, girdi başına hız sınırı T_min ve son girdinin uçuşu L.
+- **Doğrulamanın 6. bulgusu kapanır:** "ilk taze girdiye dek bekleme" G_H'ın 1. ve 2. terimleridir; T_A(b)'de artık sıfır pay yoktur.
+- **Tavan:** H > D_tut,max olursa A yeniden işler. D_tut,max'ı aşan tutma zarf dışıdır; vazgeçme mümkündür, > D_tut,max + G_H + T_ctrl'de kesindir.
+- **Güvenli yön:** t_R2 ≤ t_S2 olduğu için t_R2'den sayılan H, A'yı en çok bir ACK yolu kadar fazla düşer. Bu yanlış vazgeçme üretmez, gerçek vazgeçmeyi geciktirir (YD-3 ile aynı sonuç).
+- **Saat oranı:** iki taraf süre ölçer, mutlak zaman taşımaz. Monoton saatlerin oran farkı ppm mertebesidir ve ihmal edildi [çıkarım].
+
+**[hesap]** 31 B/s (§8.2 girdileri; T_işlem = 1 s; T_min = 1 s):
+
+| Hücre | T_ctrl(k_r) | (a) T_A, D_h = 30 s | G_H | (b) T_A |
+|---|---|---|---|---|
+| D-0 | 124,6 s | 155,6 s | 105,0 s | 230,6 s |
+| D-1 | 966,0 s | 997,0 s | 165,0 s | 1 132,0 s |
+| D-2 | 1 210,8 s | 1 241,8 s | 258,0 s | 1 469,8 s |
+| D-3′ | 1 292,4 s | 1 323,4 s | 289,0 s | 1 582,4 s |
+| D-3 | 1 863,6 s | 1 894,6 s | 506,0 s | 2 370,6 s |
+
+**Bedeller — eşit dürüstlükle:**
+
+| | (a) N_h·D_h | (b) HELD, birikimli, tavanlı |
 |---|---|---|
-| Mekanizma | T_A'ya T_tutma = N_h·D_h eklenir; yeni girdi, yeni sinyal yok | Alıcı, tutulan ve FIN'i almış akış için FLOW_CREDIT'e sabit boylu girdi koyar, aralık T_BLK. Girdi tazeyken A durur |
-| Tel | değişmez | **değişir:** yeni girdi türü (A.8, `06:253`) |
-| Yeni sayı | N_h, D_h [CAL]; INT-02 `ek-tuketici-durak` 30 s'yi kapsamak için D_h ≥ 30 s | Tazelik penceresi T_taze ≥ (k_r + 1)·T_BLK + L. k_r'den türer; yeni sayı değildir. Girdi dönüşte k_r kez üst üste kaybolabilir |
-| Bant | yok | 31 B/s'de tutma süresince ≈ 39 B / T_BLK ≈ 1,3 B/s [hesap, `06:574`] |
-| D_h'yi aşan tutma | Zarf dışıdır. Gönderen vazgeçer, `FILE_ABORT(timeout)` gider; alıcı **bütün veriye sahip olduğu hâlde** aktarımı iptal eder (yanlış "başarısız"; DUR-05f-11) | Zarf dışı değildir. Tutan eş sinyal verdikçe aktarım açık kalır; gönderende payload yoktur, yalnız aktarım kaydı bekler. Eş susarsa ya da oturum biterse A sürer ve sonludur |
-| "Sonsuza kadar açık kalmasın" (C14 §6) | sağlar | bilerek tutan eş için sağlamaz (beyan gerekir); kaybolan eş için sağlar |
-| Test | B29 (iii): D_h altı ve üstü kollar | B29 (i)–(ii) |
+| Her aktarımın T_A'sına eklenen | D_h (30 s) | G_H (105–506 s). Eş ölü olsa da sabit eşiğe girer, çünkü ilk girdiler kaybolmuş olabilir |
+| Karşıladığı tutma | ≤ D_h | ≤ D_tut,max (aday 600 s) |
+| Ölü eşin fark edilmesi | T_işlem + D_h + T_ctrl | T_işlem + G_H + T_ctrl. **(a)'dan geç**, çünkü G_H > 30 s; YD-3'ün "ölü eşte A uzamaz" ifadesi dinamik değer için doğru, sabit eşik için değil |
+| Sınırı aşan tutma | vazgeçme mümkün; > D_h + T_ctrl'de kesin. Alıcı bütün veriye sahipken aktarım biter (yanlış "başarısız") | vazgeçme mümkün; > D_tut,max + G_H + T_ctrl'de kesin |
+| Tel | değişmez | yeni girdi türü `HELD` (A.8 `06:433`) |
+| Alıcı mekanizması | yok | R2 sırasında T_BLK aralıklı, **istenmemiş** FLOW_CREDIT emisyonu: yeni bir alıcı zamanlayıcısı (bugün FLOW_CREDIT tetiklidir, `06:95`) |
+| Bant | yok | ≈ 39 B / T_BLK ≈ 1,3 B/s, 31 B/s'de, tutma süresince [hesap, `06:786`] |
+| Yeni sayı | N_h, D_h [CAL] | D_tut,max [CAL]; G_H türetilmiştir |
+| Spec | Ek A A.5'e tutma terimi | Ek A A.5 yeniden yazılır ("bildirilen tutma A'dan düşülür"); şu an Ek A bunu söylemiyor |
+| C14 §6 "sonsuza kadar açık kalmasın" | sağlar | tavanlı biçim sağlar (YD-3); tavansız biçim sahip istisnası isterdi (DUR-05f-7) |
 
-**05f tarafının görüşü:**
-- (b), R1 ("kapasite beklemesi saate girmez") ile tutarlıdır ve D_h aşımında bütün veriye sahip bir alıcının aktarımı kaybetmesini önler.
-- Bedelleri: tel değişikliği ve "bilerek tutan eş" beyanı.
-- (a) tel değiştirmez ama yeni bir sayı ve veri kaybettiren bir aşım davranışı getirir.
-- Karar tek yaşam döngüsünde, DUR-05f-14 = DUR-06-26 olarak verilir. **Saat o karardan önce kodlanmaz** (C16 v2 §3).
+**Ölçüt (05f):** karşılanması gereken tutma süresi D ise (a)'nın bedeli D, (b)'ninki G_H'tir. Dolayısıyla:
+- D ≤ G_H → (a) daha ucuz. INT-02'nin 30 s'si için bütün hücrelerde böyle.
+- D > G_H → (b) daha ucuz (D = 600 s gibi).
+
+Karar sahibindir. Hangi seçenek olursa olsun saat bu karardan önce kodlanmaz (C16 v2 §3).
 
 ## 8. Yerel vazgeçme politikası — iki sözleşme ve türetim
 
@@ -296,24 +347,32 @@ Girdiler (31 B/s): T_D = T_max(DATA) = 101,68 s · P_c = 135,56 s · A = 30 s ·
   - D-3: 2 066–2 138 s < 2 492,8 s.
 - **Ürün sabitleri:** E_D'nin bir hücresinden, ürün kipi sınırlarıyla (T1′/T2′) hesaplanır. Fikstür değerleriyle hesaplanmaz (DUR-05f-13).
 
-**8.3 Vazgeçme eylemleri** — rev2'den değişmedi:
-- **G dolumu:** `reset_flow` + akış 1'e `FILE_ABORT(0x04 timeout)` + tek `SendFailed(LocallyAbandoned)`.
-- **A dolumu:** `FILE_ABORT(0x04)` + `SendFailed(LocallyAbandoned)`; geç gelen `ok` → `receipts_ignored` (`1b1425d2:file_transfer.rs:1152`).
-- **R dolumu:** akış yerelde kapanır (sonraki birimler ACK'lenir ve atılır, `late_after_close`, `06:54`) + `FILE_RECEIPT(0x03)` + `Failed(LocallyAbandoned)`.
-- **Karşı taraf:** alıcıda `Aborted(Timeout)` (`1b1425d2:file_transfer.rs:1114-1132`), gönderende `SendFailed(ReceiverTimeout)` (`:351-360`).
-- Varyant adları DUR-05f-9 (a) kararıdır.
+**8.3 Vazgeçme eylemleri** — `06 §16 YD-4` ile hizalı. Varyant adları DUR-05f-9 (a) kararıdır.
+
+| Dolum | DUR-06-28 = DUR-05f-18 (a) kabul edilirse (K4G-06 önerisi) | (a) reddedilirse (rev3 kuralı) |
+|---|---|---|
+| **G (S1, Faz G)** | `reset_flow(f, 0x04 timeout)`: motor akışın birimlerini iptal eder (`06:205`, `:221`); **FILE_ABORT yok**. Alıcı `FlowEnded { Reset { 0x04 } }` → R1 / R2'de `Aborted(timeout)`, R0'da olay yok. Yükümlülük düşer → R3 | `reset_flow(f)` + akış 1'e `FILE_ABORT(0x04 timeout)` |
+| **A (S2, Faz A)** | akış 1'e `FILE_ABORT(0x04 timeout)` (aynen). FILE_BEGIN teslim edilmediyse alıcıda erken iptal kaydı (`06 §16 YD-5`) | aynı |
+| **R (alıcı, R1)** | **`stop_flow(k)`** (yeni kredi yok; gelen birimler ACK'lenip atılır, `06 §16 YD-2`) + akış 1'e `FILE_RECEIPT(0x03 timeout)`. Gönderen S1'de `SendFailed(ReceiverTimeout)` + `reset_flow(k, 0x00)`; S2'de `SendFailed(ReceiverTimeout)` | akışı yerelde kapat (`late_after_close`) + `FILE_RECEIPT(0x03)` |
+| Her biri | Tek `SendFailed(LocallyAbandoned)` ya da `Failed(LocallyAbandoned)`. Yarışan iki sinyalde ilk işlenen kazanır (YD-4) | aynı |
+
+- **Sonrası:**
+  - Geç gelen `ok` → `receipts_ignored` (`1b1425d2:file_transfer.rs:1152`).
+  - `stop_flow` sonrası gönderen BLOCKED kalır ve G durur (`06 §16 YD-7`); FILE_RECEIPT gelince biter.
+- **Ek A etkisi:** DUR-06-28 (a) seçilirse Ek A A.2 ve A.5'in FILE_ABORT cümleleri ("kalan birimleri iptal eder ve FILE_ABORT(timeout) gönderir") Faz A'ya daralır. AMP'deki kullanım metni K4G-06 A.18'dedir. Ek A o karardan sonra değişir.
 
 ## 9. Oturum geçişi
 
-Kurallar rev2'den değişmedi; ortak yaşam döngüsünün oturum satırı K4G-06'dadır (`06:155`).
+Ortak yaşam döngüsünün oturum satırları K4G-06'dadır (`06:211`; `06 §16 YD-4` son satır). 05f'nin kuralları:
 
 | Durum | Gönderen | Alıcı |
 |---|---|---|
-| Faz G'de oturum değişti | `FILE_ABORT(superseded)`, `SendFailed(Superseded)` (`1b1425d2:file_transfer.rs:1509-1515`; `AMP:92`) | `Aborted(Superseded)` |
-| FIN kabul edilmiş, `floor ≤ fin_seq` iken oturum bitti | Faz A o anda başlar (`1b1425d2:transport.rs:45`) | — |
-| Alıcıda `Closed(h)`, akış eksik | — | Teslim artık gelmez (`1b1425d2:transport.rs:1069-1072`) → `Failed(SessionEnded)` + sıradaki oturumda `FILE_RECEIPT(0x03)` |
+| Faz G'de oturum değişti (FIN kabul edilmemiş) | yeni oturumdan `FILE_ABORT(superseded)`, `SendFailed(Superseded)` (`1b1425d2:file_transfer.rs:1509-1515`; `AMP:92`; YD-4) | `Aborted(superseded)`; FILE_BEGIN eski oturumun drain'indeyse erken iptal kaydı (YD-5) |
+| FIN kabul edilmiş, `floor ≤ fin_seq` iken oturum bitti | Faz A o anda başlar (`1b1425d2:transport.rs:45`). Yuva ≈ 1 s içinde ölür ve SACK durumu kaybolur (`1b1425d2:runtime.rs:3428`, `:3154-3158`), dolayısıyla teyit bir daha gelmez | — |
+| Alıcıda `Closed(h)`, akış eksik | — | Teslim artık gelmez (`1b1425d2:transport.rs:1069-1072`) → `Failed(SessionEnded)` + sıradaki oturumda `FILE_RECEIPT(0x03)` (yükümlülük oturumlar arası taşınır, YD-6) |
 | Faz A'da oturum değişti | Etkisiz (`1b1425d2:file_transfer.rs:1135-1149`) | Alındı yuvadan yeni oturuma gider |
-| Yeniden bağlanma | Oturumsuz aralık N_o·D_o'ya yazılır | Erken iptal kaydı, eski oturumlar `Closed` olunca zamanlayıcısız düşer |
+| Yeniden bağlanma | Oturumsuz aralık N_o·D_o'ya yazılır | — |
+| Erken iptal kaydı (YD-5) | — | **Zamanlayıcısız düşer:** FILE_BEGIN(t) teslim edildiğinde (→ `FILE_RECEIPT(rejected)`), ya da eşin **kayıt anındaki bütün oturumları — kaydın kendi oturumu dahil —** `Closed` olunca |
 
 ## 10. Bağımlılık ve sıra
 
@@ -331,16 +390,25 @@ Kurallar rev2'den değişmedi; ortak yaşam döngüsünün oturum satırı K4G-0
 - kama-node / kama-mobile yüzeyi (K4G-06 aynasıyla tek pakette): 0,25.
 - **Toplam ≈ 3,75–5.** INT-02 kolu ayrı. Rev2'nin 3,25–4,5'inden fark: tutma seçeneği ve deterministik enjektör.
 
-## 12. K4G-06 ile çelişkiler ve öneriler (rev5 yaşam döngüsü bölümüne)
+## 12. K4G-06 ile hizalama (rev5 `a517d4a0`, `06 §16`)
 
-1. **Kapandı** (rev4 işledi, `06:178`): ilerleme = yeni benzersiz teyit.
-2. **Kapandı** (rev4, `06:268`): A.23 ve A.36/A.37 05f DUR'larına bağlandı.
-3. **Kapandı** (rev4, `06:328`): B22 iki kol. rev3'e göre kalan tek fark: B22 kayıplı hücreleri **rapor** olur, kapı değildir (DUR-05f-12 (a)). B22 hüküm sütunundaki "zarf içinde yerel vazgeçme = 0 (kapı)" yalnız deterministik hücrelere uygulanmalı.
-4. **Açık — DUR-06-26 = DUR-05f-14:** FIN sonrası tutma, §7. Yaşam döngüsü bölümünün sahibi K4G-06; 05f'nin seçenekleri ve bedelleri §7'de.
-5. **Uyumlu:** H_C_tavan, `reset_flow`, `max_seen` + açık küme.
-6. **Yeni — akış 1 sıralaması ve T_ctrl** (C16 v2 §4 karşı örneği). FILE_RECEIPT, RECEIPT ve FILE_ABORT ile aynı `Ordered` akışta kalırsa, öndeki kayıp bir kontrol kaydı FILE_RECEIPT'i bekletir ve T_ctrl bu kurtarmayı da içermelidir. K4G-06'nın kontrol sıralama kararı (bağımsız kayıtlarda sırasız teslim ya da ayrı sıralama alanı) T_ctrl formülünü belirler. 05f'nin §8.2'si "FILE_RECEIPT sıra beklemez" koşuluyla yazıldı.
-7. **Yeni öneri — kredi yolu çarpımı:** FLOW_CREDIT yalnız BLOCKED'e tetikli yanıtsa (`06:145`) kredi yenilemesi iki yönün kaybını çarpar: (k_f + 1)(k_r + 1)·T_BLK, D-3'te 1 440 s. Güncel sınırın periyodik SACK'e bindirilmesi bunu toplanır hâle getirir. Karar K4G-06'nındır; 05f'nin T_R'si iki hâli de kapsar.
-8. **Yeni — yuva emekliliği:** periyodik SACK yalnız yuva ömrü boyunca sürer (`idle_hold`). K4G-06 BLOCKED'in yuvayı canlı tuttuğunu söyler (`06:146`), ama bu yalnız bloklu akış içindir. Veri akarken yuva ömrü K_slot'u belirler (DUR-05f-15).
+K4G-06'nın önerileri sahip kararı değildir (DUR-06-26/27/28 açık). 05f bunlara koşullu bağlanır; ortak seçenekler DUR satırlarında iki numarayla birlikte yazılır.
+
+| YD-9 maddesi | 05f rev3.1'de | Koşul |
+|---|---|---|
+| 1. T_A'dan D_tük çıkar; G_H ve D_tut,max zarfa girer | §7 (b), §8.1. 05f'nin G_H'ı YD-3 taslağından üç terim fazladır (T_min, girdi başına T_min, L) | DUR-05f-14 = DUR-06-26 (b) |
+| 2. G dolumu = `reset_flow(f, 0x04)`, FILE_ABORT yok; A dolumu aynen | §8.3 | DUR-05f-18 = DUR-06-28 (a) |
+| 3. R dolumu = `stop_flow` | §8.3, §6 | YD-2 / YD-4 (DUR-06-28 ile) |
+| 4. Erken iptal kaydı kendi oturumu kapanınca da düşer | §9 son satır | YD-5 |
+| 5. T_ctrl şerit sırası beklemesi içermez | §8.2 T_ctrl ön koşulu | DUR-05f-17 = DUR-06-27 (c) |
+| 6. Çarpan ve ACK takvimi 05f'nindir | §2, §8.2 | — |
+
+**K4G-06 rev5'e öneriler** (05f'nin türetiminden):
+1. **YD-3'ün G_H taslağı eksik.** İlk girdi ofseti T_min, girdi başına T_min hız sınırı ve son girdinin uçuşu L eklenmeli (§7). YD-3'ün "(b) ölü eşte A'yı uzatmaz" cümlesi yalnız A'nın dinamik değeri için doğrudur. Sabit eşik T_A(b), G_H kadar büyür ve G_H bütün hücrelerde > 30 s'dir. §7 tablosu bu yüzden (a) ile (b)'yi eşit ölçütle karşılaştırır.
+2. **Kredi yolu çarpımı.** FLOW_CREDIT yalnız BLOCKED'e tetikli yanıtsa (`06:95`, `:201`) T_kredi'de (k_f + 1)(k_r + 1)·T_BLK çarpımı vardır (D-3'te 1 440 s). Güncel sınırın periyodik SACK'e bindirilmesi bunu toplanır yapar. Bunu yalnız K4G-06 karar verebilir.
+3. **Yuva emekliliği.** Periyodik SACK yalnız yuva ömrü boyunca sürer; kesinti ve oturum kapanışı pencereyi kısaltır (§2, §8.2 Adım 2). BLOCKED yuvayı canlı tutar (`06:202`), ama yalnız bloklu akışta (DUR-05f-15).
+4. **B22 hüküm sütunu** (`06:507`). "Zarf içinde yerel vazgeçme = 0 (kapı)" yalnız deterministik hücrelere uygulanmalı. p = 0 hücreleri deterministik kapıya, kayıplı hücreler rapora (DUR-05f-12 (a)).
+5. **Uyumlu, değişiklik yok:** H_C_tavan (`06:206-210`, YD-6; aktarım başına bir FILE_ABORT, gelen akış başına bir FILE_RECEIPT), `max_seen` + açık küme, tek sonlandırma çıktısı (`06:221`).
 
 ## 13. DUR listesi
 
