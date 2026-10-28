@@ -12074,9 +12074,10 @@ mod tests {
     //
     // Tasarım ve önceden kayıtlı tahminler: tasarım notu Ek B.6 h.9.6 (fikstürden ÖNCE, ea55fa6c).
     // Yalnız ölçer ve basar; sonuç iddiası YOK. Ön koşul kurulmadıysa "FİKSTÜR GEÇERSİZ" (kırmızı).
-    // Tek isteğe bağlı iddia ("U ölçüm penceresinde ≥ 1 hizmet aldı") ayrı `*_u_served_*`
-    // testlerindedir; önceden kayıtlı tahmin KIRMIZI. Ürün yapılandırması: kuyruk-probu
-    // `validated_v1`, FEC `Manual{enabled: true}`, CS kapalı. Beyaz kutu düzeni T1 ile aynı.
+    // Tek iddia ayrı `*_u_served_*` testlerindedir: r13'te (aday öncesi) KIRMIZI ölçüldü;
+    // DUR-45 (C) adayıyla BEKÇİ — U, türetilmiş T_birim(R1) içinde hizmet alır (Ek B.6 h.9.7). Ürün
+    // yapılandırması: kuyruk-probu `validated_v1`, FEC `Manual{enabled: true}`, CS kapalı. Beyaz
+    // kutu düzeni T1 ile aynı.
 
     const D45_U_ID: u64 = 5;
     const D45_U_SIZE: u64 = 150;
@@ -12104,10 +12105,12 @@ mod tests {
         R1b,
     }
 
-    /// D1 ölçümü (basılır; `*_u_served_*` testi `u_services`'i okur).
+    /// D1 ölçümü (basılır; `*_u_served_*` bekçisi `u_services`, `u_max_age_ns` ve `t_birim_r1_ns`'i
+    /// okur).
     #[derive(Debug, Default)]
     struct D45D1 {
         window_ns: u64,
+        t_birim_r1_ns: u64,
         u_services: Vec<(u64, TransmitKind)>,
         u_max_age_ns: u64,
         probes: u64,
@@ -12120,6 +12123,17 @@ mod tests {
         rearm_frames: u64,
         stale_frames: u64,
         other_services: BTreeMap<u64, u32>,
+    }
+
+    /// T_birim (Ek B.6 h.3; R1 için h.9.7) uçuştaki en büyük kayıt boyu `unit_max` ile: H_maks =
+    /// max(3·srtt, 2·EAI_maks)·1000/300, EAI_maks = 2·unit_max/R + 65/31 s; srtt R1'de sabittir
+    /// (RTT örneği yok).
+    fn d45_t_birim(rate: u64, srtt_ns: u64, unit_max: u64, n_live: u64) -> u64 {
+        let eai =
+            2 * unit_max * REV6_SEC / rate + EAI_SACK_WIRE_BYTES * REV6_SEC / EAI_RETURN_BW_PRIOR;
+        let h_max = (3 * srtt_ns).max(2 * eai) * 1000 / 300;
+        let a = rto_max_ns();
+        h_max.max(a) + a + n_live * rev6_t_max(rate).2 + REV6_TICK
     }
 
     /// D1 — R1 + kuyruk-probu + sürekli sınıf yükü (Ek B.6 h.9.6).
@@ -12216,6 +12230,7 @@ mod tests {
         let end = t_c + 2 * t_unit;
         let mut r = D45D1 {
             window_ns: end - t_c,
+            t_birim_r1_ns: d45_t_birim(rate, srtt_ns, s_par, 5),
             ..D45D1::default()
         };
         let mut acked_full: Vec<u64> = vec![w_seq];
@@ -12356,10 +12371,11 @@ mod tests {
             r.u_services
         );
         eprintln!(
-            "[DUR-45 D1] {tag} · U en büyük hizmet yaşı {} ms · prob emisyonu {} · prob bekleyen \
-             tur {} / {} (ilk {:?} ms) · U kopya kuyruğunda {:?} ms · RECOVER_FWD {:?} ms · \
-             kapsam sönmesi {:?} ms",
+            "[DUR-45 D1] {tag} · U en büyük hizmet yaşı {} ms (T_birim(R1) {} ms) · prob emisyonu \
+             {} · prob bekleyen tur {} / {} (ilk {:?} ms) · U kopya kuyruğunda {:?} ms · \
+             RECOVER_FWD {:?} ms · kapsam sönmesi {:?} ms",
             r.u_max_age_ns / MS,
+            r.t_birim_r1_ns / MS,
             r.probes,
             r.pending_turns,
             r.turns,
@@ -12411,15 +12427,28 @@ mod tests {
         dur45_d1(100, D45Load::Data, D45Ret::R1a);
     }
 
-    /// [DUR-45 (2)] Tek isteğe bağlı iddia: U ölçüm penceresinde ≥ 1 hizmet aldı. Önceden kayıtlı
-    /// tahmin KIRMIZI (Ek B.6 h.9.6); main'e girmez.
+    /// [DUR-45 (2) · aday (C) bekçisi] U ölçüm penceresinde hizmet alır ve en büyük hizmet yaşı
+    /// (t_c'den, her turda) türetilmiş T_birim(R1) = max(H_maks, A) + A + 5·T_max(kopya) + τ'yu
+    /// aşmaz (Ek B.6 h.9.7; H_maks uçuştaki en büyük kayıtla, 1051 B parite). r13'te (aday öncesi)
+    /// KIRMIZI ölçüldü; aday geri alınınca (`adopt_due_ns`'e `|| self.probe_scope_active()` geri
+    /// eklenince) KIRMIZI beklenir.
     fn dur45_d1_u_served(rate: u64) {
         let r = dur45_d1(rate, D45Load::Chains, D45Ret::R1a);
+        assert!(
+            r.window_ns > r.t_birim_r1_ns,
+            "FİKSTÜR GEÇERSİZ: pencere T_birim(R1)'den kısa"
+        );
         assert!(
             !r.u_services.is_empty(),
             "DUR-45 D1 R={rate} B/s: U {} s pencerede hizmet almadı (en büyük hizmet yaşı {} ms)",
             r.window_ns / REV6_SEC,
             r.u_max_age_ns / MS
+        );
+        assert!(
+            r.u_max_age_ns <= r.t_birim_r1_ns,
+            "DUR-45 D1 R={rate} B/s: U hizmet yaşı {} ms > T_birim(R1) {} ms",
+            r.u_max_age_ns / MS,
+            r.t_birim_r1_ns / MS
         );
     }
 
