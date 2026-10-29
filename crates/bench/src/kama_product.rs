@@ -466,6 +466,46 @@ fn print_activation(stats: &client_core::runtime::ClientStats) {
     );
 }
 
+/// [KTP2-F0 / Ajan D] Karışık-akış kolu ([`crate::mixed`]) için BAYRAKSIZ ürün profili.
+///
+/// `serve`/`client` komutlarının bayraksız yoluyla ALAN ALAN aynıdır (FEC profili ürün sabiti,
+/// adaptif mod, bounded_v1 risk kolu, IW ürün değeri, `quota_r` = 4); tek girdi `payload_bytes`
+/// (= en büyük öğe; fragmenter bundan türer). KP-MANIFEST satırını yazar ve sapma listesini döner
+/// (boş değilse kol `kama-custom`'dır — ör. 1 KB öğe FEC sembolüne sığmadığında `max_message_bytes`).
+pub(crate) fn canonical_cfg_for_mixed(
+    role: &str,
+    payload_bytes: u64,
+) -> (RuntimeConfig, Vec<String>) {
+    let c = runtime_cfg(ArmCfg {
+        payload_bytes,
+        quota_r: 4,
+        fec: FecArm::from_args(
+            KamaV1Profile::FEC_PROFILE_ID,
+            0,
+            crate::transport::FecModeArg::Adaptive,
+            0,
+        ),
+        burst_fusion: false,
+        bootstrap_rtt: false,
+        initial_window_bytes: 0,
+        bootstrap_fast: false,
+        loss_confirm_k: 0,
+        fec_risk: false,
+        ts_sample: false,
+        spec_l1: None,
+        spec_l2: None,
+        gate: None,
+        persist_mode: None,
+        persist_alpha: None,
+        persist_rho: None,
+        persist_q: None,
+        rp_suppress: None,
+    });
+    print_manifest(role, &c);
+    let d = profile_delta(&c);
+    (c, d)
+}
+
 fn rt_err(what: &str, e: RuntimeError) -> BenchError {
     BenchError::Other(format!("kama-product {what}: {e}"))
 }

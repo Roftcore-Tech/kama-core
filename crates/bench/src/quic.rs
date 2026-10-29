@@ -176,12 +176,36 @@ fn transport_config(cc: Cc) -> Arc<TransportConfig> {
     t.initial_mtu(1452);
     t.enable_segmentation_offload(false);
     t.max_concurrent_bidi_streams(512u32.into());
+    // [KTP2-F0 / D] Rakip-kol ayarları YALNIZ açık bayrakla (bkz. `crate::rival`); bayraksız yol
+    // yukarıdaki ve aşağıdaki varsayılanların birebir aynısıdır.
+    let tu = crate::rival::get();
+    if tu.transport_ack() {
+        // Mesaj başına tek-yönlü stream: kredi bi-stream'le aynı (512), yoksa quinn varsayılanı
+        // 100 eşzamanlı uni-stream `open_uni`'yi yapay olarak bekletirdi.
+        t.max_concurrent_uni_streams(512u32.into());
+    }
+    if let Some(r) = tu.quinn_initial_rtt {
+        t.initial_rtt(r);
+    }
+    if let Some(k) = tu.quinn_keepalive {
+        t.keep_alive_interval(Some(k));
+    }
     match cc {
         Cc::Cubic => {
-            t.congestion_controller_factory(Arc::new(CubicConfig::default()));
+            let mut c = CubicConfig::default();
+            if let Some(w) = tu.quinn_iw_bytes {
+                c.initial_window(w);
+            }
+            t.congestion_controller_factory(Arc::new(c));
         }
         Cc::Bbr => {
-            t.congestion_controller_factory(Arc::new(BbrConfig::default()));
+            // quinn-proto 0.11.18 BbrConfig varsayılan ilk pencere = 200 × 1200 B = 240 000 B
+            // (Cubic: 12 000 B). `--quinn-iw-bytes` bunu açıkça değiştirir.
+            let mut c = BbrConfig::default();
+            if let Some(w) = tu.quinn_iw_bytes {
+                c.initial_window(w);
+            }
+            t.congestion_controller_factory(Arc::new(c));
         }
     }
     Arc::new(t)
@@ -237,6 +261,17 @@ impl BenchTransport for QuinnTransport {
     }
 
     async fn run_client(&self, cfg: ClientCfg) -> Result<RunOutput, BenchError> {
+        // [KTP2-F0 / D] Rakip-kol ayarları (bayraksız = eski kol; bkz. `crate::rival`).
+        let tu = crate::rival::get();
+        let tack = tu.transport_ack();
+        let tr_label = if tack { "quinn-tack" } else { "quinn" };
+        let delta = tu.quinn_delta();
+        let arm_label = tu.quinn_label(cfg.cc.label());
+        if tack && cfg.warmup_msgs > 0 {
+            return Err(BenchError::Other(
+                "--rival-delivery transport-ack ile --warmup-msgs desteklenmez".into(),
+            ));
+        }
         let (mut endpoint, gov) =
             build_endpoint("[::]:0".parse().expect("valid addr"), None, cfg.budget)?;
         endpoint.set_default_client_config(client_config(cfg.cc)?);
@@ -253,13 +288,19 @@ impl BenchTransport for QuinnTransport {
         let connecting = endpoint
             .connect(cfg.server, "localhost")
             .map_err(|e| BenchError::Quic(e.to_string()))?;
-        let conn = match timeout(cfg.max_deadline, connecting).await {
+        // [KTP2-F0 / D] `--handshake-timeout-s` verilmişse el sıkışma tavanı odur (kurulum teslim
+        // penceresinden AYRI raporlanır); verilmemişse eski kural (max_deadline).
+        let hs_timeout = tu.handshake_timeout.unwrap_or(cfg.max_deadline);
+        let conn = match timeout(hs_timeout, connecting).await {
             Ok(Ok(c)) => c,
             Ok(Err(_handshake_err)) => {
                 return Ok(handshake_failed_output(
                     &cfg,
                     gov.as_ref(),
                     setup_ns_of(setup_clock),
+                    tr_label,
+                    &arm_label,
+                    &delta,
                 ))
             }
             Err(_timed_out) => {
@@ -267,6 +308,9 @@ impl BenchTransport for QuinnTransport {
                     &cfg,
                     gov.as_ref(),
                     setup_ns_of(setup_clock),
+                    tr_label,
+                    &arm_label,
+                    &delta,
                 ))
             }
         };
@@ -360,7 +404,11 @@ impl BenchTransport for QuinnTransport {
                     tokio::time::sleep(submit_at).await;
                 }
                 let sent_ns = start.elapsed().as_nanos() as u64;
-                let delivered_ns = send_one(&conn, &payload, deadline, start).await;
+                let delivered_ns = if tack {
+                    send_one_tack(&conn, &payload, deadline, start).await
+                } else {
+                    send_one(&conn, &payload, deadline, start).await
+                };
                 RawEvent {
                     msg_id,
                     sent_ns,
@@ -376,6 +424,9 @@ impl BenchTransport for QuinnTransport {
         events.sort_by_key(|e| e.msg_id);
 
         let stats = conn.stats();
+        if tu.stats {
+            print_quinn_stats(tr_label, cfg.cc.label(), setup_ns, &stats, &stats0);
+        }
         conn.close(0u32.into(), b"done");
         // wait_idle'ı da BOUNDED yap: delivered_ns'leri zaten kaydettik; kayıp CONNECTION_CLOSE
         // altında tam drain'i beklemek koşuyu 300s idle'a kadar asabilir. 3s temiz kapanışa yeter.
@@ -385,7 +436,7 @@ impl BenchTransport for QuinnTransport {
             meta: RunMeta {
                 profile: cfg.profile,
                 cc: cfg.cc.label().to_string(),
-                transport: "quinn".to_string(),
+                transport: tr_label.to_string(),
                 quinn_version: QUINN_VERSION.to_string(),
                 seed: cfg.seed,
                 repeat: cfg.repeat,
@@ -395,7 +446,8 @@ impl BenchTransport for QuinnTransport {
                 udp_tx_bytes: stats.udp_tx.bytes.saturating_sub(stats0.udp_tx.bytes),
                 udp_rx_bytes: stats.udp_rx.bytes.saturating_sub(stats0.udp_rx.bytes),
                 tx: TxComponents::default(),
-                kama_arm: String::new(),
+                // [KTP2-F0 / D] Bayraksız yolda ikisi de boş (eski kol aynen).
+                kama_arm: arm_label,
                 submit_interval_ns: u64::try_from(cfg.submit_interval.as_nanos())
                     .unwrap_or(u64::MAX),
                 budget: gov.as_ref().map(GovHandle::snapshot).unwrap_or_default(),
@@ -406,7 +458,7 @@ impl BenchTransport for QuinnTransport {
                 setup_ns,
                 setup_in_window: false,
                 profile_id: String::new(),
-                profile_delta: Vec::new(),
+                profile_delta: delta,
             },
             events,
         })
@@ -422,7 +474,14 @@ fn setup_ns_of(clock: Instant) -> u64 {
     u64::try_from(clock.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
-fn handshake_failed_output(cfg: &ClientCfg, gov: Option<&GovHandle>, setup_ns: u64) -> RunOutput {
+fn handshake_failed_output(
+    cfg: &ClientCfg,
+    gov: Option<&GovHandle>,
+    setup_ns: u64,
+    transport: &str,
+    arm_label: &str,
+    delta: &[String],
+) -> RunOutput {
     let events = (0..cfg.msg_count)
         .map(|msg_id| RawEvent {
             msg_id,
@@ -435,7 +494,7 @@ fn handshake_failed_output(cfg: &ClientCfg, gov: Option<&GovHandle>, setup_ns: u
         meta: RunMeta {
             profile: cfg.profile.clone(),
             cc: cfg.cc.label().to_string(),
-            transport: "quinn".to_string(),
+            transport: transport.to_string(),
             quinn_version: QUINN_VERSION.to_string(),
             seed: cfg.seed,
             repeat: cfg.repeat,
@@ -445,7 +504,7 @@ fn handshake_failed_output(cfg: &ClientCfg, gov: Option<&GovHandle>, setup_ns: u
             udp_tx_bytes: 0,
             udp_rx_bytes: 0,
             tx: TxComponents::default(),
-            kama_arm: String::new(),
+            kama_arm: arm_label.to_string(),
             submit_interval_ns: u64::try_from(cfg.submit_interval.as_nanos()).unwrap_or(u64::MAX),
             budget: gov.map(GovHandle::snapshot).unwrap_or_default(),
             t0_unix_ns: 0,
@@ -456,7 +515,7 @@ fn handshake_failed_output(cfg: &ClientCfg, gov: Option<&GovHandle>, setup_ns: u
             setup_ns,
             setup_in_window: false,
             profile_id: String::new(),
-            profile_delta: Vec::new(),
+            profile_delta: delta.to_vec(),
         },
         events,
     }
@@ -507,7 +566,18 @@ async fn run_server_loop(endpoint: Endpoint, gov: Option<GovHandle>, gate_watche
                 h.arm_now();
             }
         }
+        let tack = crate::rival::get().transport_ack();
         tokio::spawn(async move {
+            if tack {
+                // [KTP2-F0 / D] transport-ack: uygulama yanıtı YOK. Mesaj başına tek-yönlü stream
+                // sonuna dek okunur; teslim istemcide eşin taşıma ACK'iyle (`stopped`) ölçülür.
+                while let Ok(mut recv) = conn.accept_uni().await {
+                    tokio::spawn(async move {
+                        let _ = recv.read_to_end(1 << 20).await;
+                    });
+                }
+                return;
+            }
             // Her STREAM ayrı task → HoL blocking YOK (workflow bulgusu #1/#3: bağlantı-başı
             // tek task + sıralı read_to_end, stalled stream sonrakilerin ack'ini bloklardı).
             while let Ok((mut send, mut recv)) = conn.accept_bi().await {
@@ -541,6 +611,76 @@ async fn send_one(
         Some(start.elapsed().as_nanos() as u64)
     };
     timeout(deadline, attempt).await.ok().flatten()
+}
+
+/// [KTP2-F0 / D] `transport-ack` teslimi: tek-yönlü stream aç, payload yaz + `finish`, eşin
+/// bütün stream verisini (FIN dahil) TAŞIMA düzeyinde ACK'lemesini bekle (`stopped()` →
+/// `Ok(None)`). Uygulama yanıtı YOKTUR → istemcinin ACK'lemesi gereken ek ack-eliciting paket de
+/// yoktur (Kama kolunun `acked()` tanımıyla aynı katman). Eş stream'i durdurursa (`Some(kod)`)
+/// ya da bağlantı düşerse teslim SAYILMAZ.
+async fn send_one_tack(
+    conn: &quinn::Connection,
+    payload: &[u8],
+    deadline: Duration,
+    start: Instant,
+) -> Option<u64> {
+    let attempt = async {
+        let mut send = conn.open_uni().await.ok()?;
+        send.write_all(payload).await.ok()?;
+        send.finish().ok()?;
+        match send.stopped().await {
+            Ok(None) => Some(start.elapsed().as_nanos() as u64),
+            Ok(Some(_)) | Err(_) => None,
+        }
+    };
+    timeout(deadline, attempt).await.ok().flatten()
+}
+
+/// [KTP2-F0 / D] `--rival-stats`: quinn'in kendi bağlantı sayaçları (salt-gözlem, c.err). Toplam
+/// değerler el sıkışma dahil bağlantı ömrüdür; `_t0` ekli olanlar ölçüm-t0'dan beri farktır.
+fn print_quinn_stats(
+    tr: &str,
+    cc: &str,
+    setup_ns: u64,
+    s: &quinn::ConnectionStats,
+    s0: &quinn::ConnectionStats,
+) {
+    let p = &s.path;
+    eprintln!(
+        "QUINN-STATS transport={tr} cc={cc} setup_ms={:.1} rtt_ms={:.1} min_rtt_ms={:.1} \
+         cwnd={} congestion_events={} lost_packets={} lost_bytes={} sent_packets={} mtu={} \
+         udp_tx={}B/{}dg udp_rx={}B/{}dg udp_tx_t0={}B/{}dg udp_rx_t0={}B/{}dg \
+         frame_tx=[stream={} acks={} crypto={} ping={} max_streams_bidi={} max_streams_uni={}] \
+         frame_rx=[stream={} acks={} crypto={}] lost_packets_t0={} lost_bytes_t0={}",
+        setup_ns as f64 / 1e6,
+        p.rtt.as_secs_f64() * 1e3,
+        p.min_rtt.as_secs_f64() * 1e3,
+        p.cwnd,
+        p.congestion_events,
+        p.lost_packets,
+        p.lost_bytes,
+        p.sent_packets,
+        p.current_mtu,
+        s.udp_tx.bytes,
+        s.udp_tx.datagrams,
+        s.udp_rx.bytes,
+        s.udp_rx.datagrams,
+        s.udp_tx.bytes.saturating_sub(s0.udp_tx.bytes),
+        s.udp_tx.datagrams.saturating_sub(s0.udp_tx.datagrams),
+        s.udp_rx.bytes.saturating_sub(s0.udp_rx.bytes),
+        s.udp_rx.datagrams.saturating_sub(s0.udp_rx.datagrams),
+        s.frame_tx.stream,
+        s.frame_tx.acks,
+        s.frame_tx.crypto,
+        s.frame_tx.ping,
+        s.frame_tx.max_streams_bidi,
+        s.frame_tx.max_streams_uni,
+        s.frame_rx.stream,
+        s.frame_rx.acks,
+        s.frame_rx.crypto,
+        p.lost_packets.saturating_sub(s0.path.lost_packets),
+        p.lost_bytes.saturating_sub(s0.path.lost_bytes),
+    );
 }
 
 /// [inceleme #0] Warmup mesajı: teslim → true; 10 s tavanında stream RESET edilir (post-t0
@@ -827,6 +967,41 @@ mod loopback_tests {
             "0ns: hiçbiri (latency>0)"
         );
         assert_eq!(m.per_deadline[1].completion, 1.0, "30s: hepsi");
+    }
+
+    /// [KTP2-F0 / D] `transport-ack` teslimi: tek-yönlü stream + `stopped()` uygulama yanıtı
+    /// OLMADAN teslim damgası verir (eş yalnız okur). Global ayar KULLANILMAZ (sunucu elle).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tack_uni_stream_stopped_ile_teslim() {
+        let sc = server_config(Cc::Cubic).expect("server config");
+        let server_ep = Endpoint::server(sc, "127.0.0.1:0".parse().unwrap()).expect("server bind");
+        let addr = server_ep.local_addr().expect("local addr");
+        tokio::spawn(async move {
+            while let Some(incoming) = server_ep.accept().await {
+                let Ok(conn) = incoming.await else { continue };
+                tokio::spawn(async move {
+                    while let Ok(mut recv) = conn.accept_uni().await {
+                        tokio::spawn(async move {
+                            let _ = recv.read_to_end(1 << 20).await;
+                        });
+                    }
+                });
+            }
+        });
+        let mut ep = Endpoint::client("127.0.0.1:0".parse().unwrap()).expect("client bind");
+        ep.set_default_client_config(client_config(Cc::Cubic).expect("client config"));
+        let conn = ep
+            .connect(addr, "localhost")
+            .expect("connect")
+            .await
+            .expect("handshake");
+        let start = Instant::now();
+        let payload = vec![0x5Au8; 128];
+        for _ in 0..5 {
+            let d = send_one_tack(&conn, &payload, Duration::from_secs(5), start).await;
+            assert!(d.is_some(), "loopback'te taşıma ACK'i gelmeli");
+        }
+        conn.close(0u32.into(), b"done");
     }
 
     // Handshake BOUNDED: ölü adrese (kimse QUIC konuşmuyor) bağlan → handshake tamamlanamaz.

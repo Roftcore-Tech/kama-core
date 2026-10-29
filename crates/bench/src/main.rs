@@ -8,9 +8,11 @@ mod kama;
 mod kama_product;
 mod manifest;
 mod metrics;
+mod mixed;
 mod outcome;
 mod qdgram;
 mod quic;
+mod rival;
 mod tcp;
 mod transport;
 
@@ -135,6 +137,20 @@ enum Cmd {
         /// [KURULUŞ] Bootstrap merdivenini kuruluş-hızlı yap (0.2/0.6/1.8/5.4 s). Bütçe değişmez.
         #[arg(long, default_value_t = false)]
         bootstrap_fast: bool,
+        /// [KTP2-F0 / D] Rakip kolların (quinn, tcp) teslim tanımı: `app-reply` (eski; uygulama
+        /// yanıtı) | `transport-ack` (eşin taşıma ACK'i; uygulama yanıtı YOK). İSTEMCİYLE AYNI.
+        #[arg(long, value_enum, default_value_t = rival::Delivery::AppReply)]
+        rival_delivery: rival::Delivery,
+        /// [KTP2-F0 / D] quinn ilk RTT (ms; 0 = quinn varsayılanı 333 ms). İki uçta aynı.
+        #[arg(long, default_value_t = 0)]
+        quinn_initial_rtt_ms: u64,
+        /// [KTP2-F0 / D] quinn CC ilk penceresi (bayt; 0 = CC varsayılanı: cubic 12000,
+        /// bbr 240000).
+        #[arg(long, default_value_t = 0)]
+        quinn_iw_bytes: u64,
+        /// [KTP2-F0 / D] quinn keep-alive aralığı (ms; 0 = yok).
+        #[arg(long, default_value_t = 0)]
+        quinn_keepalive_ms: u64,
     },
     /// Client: N mesaj gönder, ham event JSONL yaz.
     Client {
@@ -267,6 +283,25 @@ enum Cmd {
         /// [KURULUŞ] Bkz. `serve --bootstrap-fast`. SUNUCUYLA AYNI verilmelidir.
         #[arg(long, default_value_t = false)]
         bootstrap_fast: bool,
+        /// [KTP2-F0 / D] Bkz. `serve --rival-delivery`. SUNUCUYLA AYNI verilmelidir.
+        #[arg(long, value_enum, default_value_t = rival::Delivery::AppReply)]
+        rival_delivery: rival::Delivery,
+        /// [KTP2-F0 / D] El sıkışma / bağlanma tavanı (s; 0 = eski: quinn `--max-deadline-s`,
+        /// tcp 20 s). Kurulum teslim penceresinin DIŞINDADIR, `setup_ns` olarak ayrı raporlanır.
+        #[arg(long, default_value_t = 0)]
+        handshake_timeout_s: u64,
+        /// [KTP2-F0 / D] Bkz. `serve --quinn-initial-rtt-ms`.
+        #[arg(long, default_value_t = 0)]
+        quinn_initial_rtt_ms: u64,
+        /// [KTP2-F0 / D] Bkz. `serve --quinn-iw-bytes`.
+        #[arg(long, default_value_t = 0)]
+        quinn_iw_bytes: u64,
+        /// [KTP2-F0 / D] Bkz. `serve --quinn-keepalive-ms`.
+        #[arg(long, default_value_t = 0)]
+        quinn_keepalive_ms: u64,
+        /// [KTP2-F0 / D] Koşu sonunda `QUINN-STATS` satırı (c.err; salt-gözlem).
+        #[arg(long, default_value_t = false)]
+        rival_stats: bool,
         #[arg(long)]
         out: PathBuf,
     },
@@ -298,6 +333,10 @@ enum Cmd {
         #[arg(long, default_value_t = outcome::DEFAULT_CI_PERMILLE)]
         ci_permille: u32,
     },
+    /// [KTP2-F0 / D] Karışık akış (dosya + TEXT + PTT) sunucusu: alım günlüğü yazar.
+    MixedServe(mixed::ServeArgs),
+    /// [KTP2-F0 / D] Karışık akış istemcisi: sunum planı + taşıma sayaçları (taşıma düzeyi).
+    MixedClient(mixed::ClientArgs),
 }
 
 /// CLI karşılığı — `transport::FecModeArg`'a birebir eşlenir.
@@ -454,7 +493,20 @@ async fn main() -> Result<(), BenchError> {
             bootstrap_rtt,
             initial_window_bytes,
             bootstrap_fast,
+            rival_delivery,
+            quinn_initial_rtt_ms,
+            quinn_iw_bytes,
+            quinn_keepalive_ms,
         } => {
+            // [KTP2-F0 / D] Rakip-kol ayarları (bayraksız = eski davranış; Kama kollarına etkisiz).
+            rival::set(rival::RivalTuning::from_cli(
+                rival_delivery,
+                0,
+                quinn_initial_rtt_ms,
+                quinn_iw_bytes,
+                quinn_keepalive_ms,
+                false,
+            ));
             run_server(
                 transport,
                 ServerCfg {
@@ -531,8 +583,23 @@ async fn main() -> Result<(), BenchError> {
             bootstrap_rtt,
             initial_window_bytes,
             bootstrap_fast,
+            rival_delivery,
+            handshake_timeout_s,
+            quinn_initial_rtt_ms,
+            quinn_iw_bytes,
+            quinn_keepalive_ms,
+            rival_stats,
             out,
         } => {
+            // [KTP2-F0 / D] Rakip-kol ayarları (bayraksız = eski davranış; Kama kollarına etkisiz).
+            rival::set(rival::RivalTuning::from_cli(
+                rival_delivery,
+                handshake_timeout_s,
+                quinn_initial_rtt_ms,
+                quinn_iw_bytes,
+                quinn_keepalive_ms,
+                rival_stats,
+            ));
             let cfg = ClientCfg {
                 server,
                 msg_count: msgs,
@@ -615,7 +682,8 @@ async fn main() -> Result<(), BenchError> {
                     submit_interval_ns: output.meta.submit_interval_ns,
                     seed: output.meta.seed,
                     repeat: output.meta.repeat,
-                    wire_accounting_note: if tr == "tcp-default" {
+                    // [KTP2-F0 / D] `tcp-tack` da çekirdek ek yükünü göremez (aynı sınır).
+                    wire_accounting_note: if tr.starts_with("tcp") {
                         "app-layer bytes only; kernel TCP overhead invisible".to_string()
                     } else {
                         "full harness-observed wire bytes".to_string()
@@ -797,7 +865,7 @@ async fn main() -> Result<(), BenchError> {
             for o in &outputs {
                 let m = &o.meta;
                 let payload = m.msg_count.saturating_mul(m.payload_bytes);
-                let visibility = if m.transport == "tcp-default" {
+                let visibility = if m.transport.starts_with("tcp") {
                     "UYGULAMA-KATMANI (çekirdek TCP ek yükü GÖRÜNMEZ)"
                 } else {
                     "tam harness-gözlemli tel"
@@ -916,6 +984,8 @@ async fn main() -> Result<(), BenchError> {
             println!("# claim class (§12.2): {}", st.all_runs.claim.label());
             Ok(())
         }
+        Cmd::MixedServe(a) => mixed::serve(a).await,
+        Cmd::MixedClient(a) => mixed::client(a).await,
     }
 }
 
