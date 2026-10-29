@@ -126,16 +126,16 @@ impl BenchTransport for TcpTransport {
             // Bu sessiz bir kurulum-sınıfı karışımıdır (kıyas geçersiz). Kural TEK: kurulum AYRI
             // ölçülür ve completion penceresinin DIŞINDA kalır. Sayı manifeste yazılır.
             let setup_clock = Instant::now();
-            let sock =
-                match tokio::time::timeout(connect_timeout, TcpStream::connect(cfg.server)).await {
-                    Ok(Ok(s)) => s,
-                    _ => {
-                        let ns =
-                            u64::try_from(setup_clock.elapsed().as_nanos()).unwrap_or(u64::MAX);
-                        eprintln!("TCP-CLIENT connect FAILED (setup_ns={ns})");
-                        return Ok(failed_output(&cfg, ns, TCP_LEGACY, delta));
-                    }
-                };
+            let sock = match tokio::time::timeout(connect_timeout, TcpStream::connect(cfg.server))
+                .await
+            {
+                Ok(Ok(s)) => s,
+                _ => {
+                    let ns = u64::try_from(setup_clock.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                    eprintln!("TCP-CLIENT connect FAILED (setup_ns={ns})");
+                    return Ok(failed_output(&cfg, ns, TCP_LEGACY, delta));
+                }
+            };
             sock.set_nodelay(true).ok();
             let setup_ns = u64::try_from(setup_clock.elapsed().as_nanos()).unwrap_or(u64::MAX);
             // Ölçüm saati kurulumdan SONRA başlar (dört kolda aynı).
@@ -651,7 +651,12 @@ mod tests {
         srv.abort();
         assert_eq!(out.meta.transport, TCP_TACK);
         assert!(out.meta.kama_arm.starts_with("tcp-tack;"));
-        assert_eq!(out.meta.profile_delta.len(), 3, "{:?}", out.meta.profile_delta);
+        assert_eq!(
+            out.meta.profile_delta.len(),
+            3,
+            "{:?}",
+            out.meta.profile_delta
+        );
         assert_eq!(out.events.len(), n as usize);
         for (i, e) in out.events.iter().enumerate() {
             assert_eq!(e.sent_ns, 10_000_000 * i as u64, "sunum anı PLAN olmalı");

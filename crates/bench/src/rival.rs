@@ -140,9 +140,7 @@ impl RivalTuning {
     pub fn tcp_delta(&self) -> Vec<String> {
         let mut d = Vec::new();
         if self.transport_ack() {
-            d.push(
-                "delivery app-ack(8B) -> transport-ack(snd_una via /proc/self/net/tcp)".into(),
-            );
+            d.push("delivery app-ack(8B) -> transport-ack(snd_una via /proc/self/net/tcp)".into());
             d.push("offer_clock write-time -> schedule".into());
         }
         if let Some(t) = self.handshake_timeout {
