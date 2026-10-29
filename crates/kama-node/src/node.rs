@@ -59,6 +59,8 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "test-util")]
+use client_core::transport::UnitTraceRecord;
 use client_core::transport::MAX_INBOX;
 use kama_app::codec::PttCodec;
 use kama_app::file_transfer::{FileEvent, FileSendError, FileTransfer, TransferId};
@@ -155,6 +157,12 @@ pub(crate) enum Command {
     #[cfg(feature = "test-util")]
     Probe {
         reply: Reply<NodeProbe>,
+    },
+    /// [KTP2-F0 · A] YALNIZ test-util: Transport birim izinin okunmamış kayıtları
+    /// (`KamaNode::take_unit_trace_for_test`; iz boşalır, motor durumu değişmez).
+    #[cfg(feature = "test-util")]
+    TakeUnitTrace {
+        reply: Reply<(Vec<UnitTraceRecord>, u64)>,
     },
     /// Döngüyü bitirir. `KamaNode::stop` onu kuyruğun SONUNA koyar: döngü ona vardığında önündeki
     /// komutların hepsi işlenmiştir (ardında komut olmaz — kapanıştan sonra çağıran kalmaz). Kuyruk
@@ -338,6 +346,11 @@ impl NodeLoop {
             Command::DrainBackground { reply } => answer(&reply, self.drain_background()),
             #[cfg(feature = "test-util")]
             Command::Probe { reply } => answer(&reply, Ok(self.probe())),
+            #[cfg(feature = "test-util")]
+            Command::TakeUnitTrace { reply } => answer(
+                &reply,
+                Ok(self.messenger.transport_mut().take_unit_trace_for_test()),
+            ),
             // `run` döngüyü bundan önce bitirir.
             Command::Shutdown => {}
         }
@@ -832,6 +845,14 @@ impl NodeLoop {
     #[cfg(feature = "test-util")]
     pub(crate) fn set_live_diag_for_test(&mut self, on: bool) {
         self.messenger.transport_mut().set_live_diag_for_test(on);
+    }
+
+    /// [KTP2-F0 · A] Transport birim izi (`ClientTransport::set_unit_trace_for_test`; salt gözlem).
+    /// YALNIZ ölçüm kurucusu (`KamaNode::start_with_link_for_test`); düğüm iş parçacığı başlamadan
+    /// çağrılır.
+    #[cfg(feature = "test-util")]
+    pub(crate) fn set_unit_trace_for_test(&mut self, on: bool) {
+        self.messenger.transport_mut().set_unit_trace_for_test(on);
     }
 }
 
