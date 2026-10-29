@@ -89,7 +89,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle, ThreadId};
 use std::time::Duration;
 
-use client_core::transport::ClientTransportConfig;
+use client_core::transport::{ClientTransportConfig, EnvelopeLink};
 use kama_app::clock::{MonotonicClock, SystemClock};
 use kama_app::codec::limits::TEXT_PREFIX_BYTES;
 use kama_app::codec::{AmpLimits, PttCodec};
@@ -235,6 +235,20 @@ impl KamaNode {
         listener: Box<dyn NodeListener>,
         app_clock: Arc<dyn MonotonicClock>,
     ) -> Result<Built, NodeError> {
+        Self::build_with_link(config_path, data_dir, listener, app_clock, None)
+    }
+
+    /// [`Self::build`]'in gövdesi. `link` = `None` → ürün zarf taşıyıcısı (süreç-içi röle kaydı;
+    /// ürün yolunun tek değeri). `Some` YALNIZ ölçüm kurucusundan gelir
+    /// ([`Self::start_with_link_for_test`], `test-util`; KTP2-F0 iki süreçli düzenek): taşıyıcı
+    /// çağıranındır, röle kaydı yapılmaz. Kurulum sırası iki durumda da aynıdır.
+    fn build_with_link(
+        config_path: &Path,
+        data_dir: &Path,
+        listener: Box<dyn NodeListener>,
+        app_clock: Arc<dyn MonotonicClock>,
+        link: Option<Box<dyn EnvelopeLink>>,
+    ) -> Result<Built, NodeError> {
         // (1) Provisioning — yalnız bu dosya; kimlik/anahtar/eş dizini bellekte (D8, D9).
         let config = load_device_config(config_path)?;
         let peers = Arc::new(PeerBook::from_config(&config));
@@ -248,7 +262,10 @@ impl KamaNode {
         // Gizli anahtar taşıyan dosya içeriği burada düşer (Drop'ta sıfırlanır).
         drop(config);
         // (4) Zarf taşıyıcısı: süreç-içi röle kaydı (kimlik başına tek canlı düğüm).
-        let link = carrier::product_envelope_link(peers.me())?;
+        let link = match link {
+            Some(link) => link,
+            None => carrier::product_envelope_link(peers.me())?,
+        };
         let mut transport_config = ClientTransportConfig::product(data_bind);
         transport_config.peer_addrs = peers.peer_addrs();
         // (5) Transport: gerçek UDP veri yolu, ürün profili.
@@ -567,6 +584,56 @@ impl KamaNode {
         let mut probe = self.request(|reply| Command::Probe { reply })?;
         probe.envelopes = carrier::envelope_counts_for_test(self.peers.me());
         Ok(probe)
+    }
+
+    /// [KTP2-F0 · A] İKİ SÜREÇLİ ölçüm düzeneğinin kurucusu (akış bağımsızlığı): ürün yolunun AYNISI
+    /// (`KamaNode::build` gövdesi — ürün profili, ürün builder'ı, aynı kurulum sırası), yalnız zarf
+    /// taşıyıcısı çağıranındır (`link`; süreç-içi röleye kayıt YAPILMAZ). El sıkışma zarfları
+    /// (INIT/RESPONSE) bu taşıyıcıdan, veri yolunun DIŞINDA geçer — INT-02'deki beyanlı boşlukla
+    /// aynı (DUR-K4G-11 → B); taşıyıcı ürün taşıyıcısı değildir. Düğüm iş parçacığı başlamadan
+    /// `live_diag` açıksa Transport canlı teşhis aynası ([`Self::start_live_diag_for_test`] gibi),
+    /// `unit_trace` açıksa Transport birim izi açılır
+    /// (`ClientTransport::set_unit_trace_for_test`). İkisi de salt gözlemdir; motor kararları
+    /// değişmez. Ürün yolu ([`KamaNode::start`]) bu yöntemden etkilenmez. Sondanın el sıkışma zarfı
+    /// sayıları ([`NodeProbe`] `envelopes`) bu kurucuda sıfırdır (röle kaydı yok).
+    ///
+    /// # Errors
+    /// [`KamaNode::start`] ile aynı (`IdentityInUse` hariç).
+    #[cfg(feature = "test-util")]
+    pub fn start_with_link_for_test(
+        config_path: &Path,
+        data_dir: &Path,
+        listener: Box<dyn NodeListener>,
+        link: Box<dyn EnvelopeLink>,
+        live_diag: bool,
+        unit_trace: bool,
+    ) -> Result<Self, NodeError> {
+        let app_clock: Arc<dyn MonotonicClock> = Arc::new(SystemClock::new());
+        let mut built =
+            Self::build_with_link(config_path, data_dir, listener, app_clock, Some(link))?;
+        if live_diag {
+            built.node.set_live_diag_for_test(true);
+        }
+        if unit_trace {
+            built.node.set_unit_trace_for_test(true);
+        }
+        Self::spawn(built)
+    }
+
+    /// [KTP2-F0 · A] Transport birim izinin okunmamış kayıtları (eskiden yeniye) ve son okumadan
+    /// beri tavan dolu olduğu için düşen kayıt sayısı; iz boşalır (`ClientTransport::
+    /// take_unit_trace_for_test`). İz yalnız [`Self::start_with_link_for_test`]'te `unit_trace`
+    /// açıkken tutulur; değilse boş. Düğüm turunda tek bir komut olarak işlenir (ağ beklenmez);
+    /// motor durumu değişmez.
+    ///
+    /// # Errors
+    /// Kuyruk/iş parçacığı hataları ([`NodeError::Busy`], [`NodeError::Stopped`],
+    /// [`NodeError::ReentrantCall`]).
+    #[cfg(feature = "test-util")]
+    pub fn take_unit_trace_for_test(
+        &self,
+    ) -> Result<(Vec<client_core::transport::UnitTraceRecord>, u64), NodeError> {
+        self.request(|reply| Command::TakeUnitTrace { reply })
     }
 
     /// Düğümü kapatır: döngü biter, Transport (soketler, çalışma-zamanı) ve depo (dosya kilidi)
