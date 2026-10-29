@@ -368,6 +368,33 @@ Duman-2'de ölçülen koşu süreleri:
 
 Alındı payı 30 s olunca dosyalı koşulara ≤ 20 s eklenir. Toplam ≈ 21,8 koşu-saati (§4 tablosu).
 
+### 9.5 Duman-3 [ölçüldü, betimsel: N = 1]
+
+Kaynak: `/home/ryuzaki/kama-k4g-work/ktp2-f0/runs/duman-3/out`; 8/8 rc = 0. İkililer: taban `bin/taban-1f6c3433`, aday `bin/aday-0a251074`. Ortam beyanı: koşular ortak yuvanın dışındaydı ve aynı anda B'nin 11 hücresi çalışıyordu.
+
+**Karşı örnek (A-2'nin doğrudan ölçümü).** 4 dosyalı koşunun 2'sinde ateşlendi, ikisi de taban'da. Gönderenin yeni veri kuyruğu boş, eski dosya parçalarının kurtarması sürüyordu.
+
+| Ölçü | r12k_d300 | r1k_d300 |
+|---|---|---|
+| Tetik anı (t0'dan) | 82,3 s | 76,4 s |
+| K TEXT toplam gecikme p50 | 18,5 s | 26,4 s |
+| Gönderen kuyruğu (fifo) | 0,13 s | 0,14 s |
+| Alıcı sıralaması (reorder) | 17,6 s | 22,8 s |
+| Ağ + kendi kurtarması (net) | — | 3,3 s |
+| K PTT demeti p50 | 18,0 s | 25,9 s |
+
+Gönderende öncelik bu beklemeyi kaldırmaz; bekleme alıcının oturum geneli sıralamasındadır. Adayda tetik oluşmadı: FIFO dosyanın sonunda boşaldı (r12k 126,6 s, r1k 133,2 s), dosya o sırada bob'a ulaşmıştı.
+
+**Teslim kanalı taşması (A-4).** Taban `a_r12k_d300_l30_tasma_dosya` (2 MB, 240 s durma):
+- `delivery_channel_drops` = 312. Sayaç ilk kez 250,2 s'de görüldü; bob'un sondası durma boyunca bloklu olduğundan durma sonrası okundu.
+- bob'un sıralı teslim sınırı birim 10'da kaldı: o birim taşmada ACK'li düştü.
+- 1476 birim koşu sonuna dek tutuldu (< 4096, atlama yok). Durma sonrasında TEXT ve PTT teslimi %0.
+- Dosya bob'da `IdleTimeout` ile bitti (310 s).
+
+Aynı hücrede aday'da düşüş 0; o koşuda durmada gelen birim 1024'ü aşmadı. Hız sınırsız `rinf` hücresinde iki kolda da düşüş 0: pacer p50 7,9 / 3,2 kB/s (aday / taban) kaldı, alım hızı eşiğin altındaydı (ölçülemedi: alım hızı < 34 birim/s). §5.4 tahminiyle karşılaştırma: taban r12k'da tahmin 400–700, ölçülen 312.
+
+Diğer sayaçlar 8/8 koşuda: dinleyici düşüşü 0, birim izi düşüşü 0, kırpılan ilk iletim tahmini 0–1. Gönderende `ReceiptTimeout` 6/6 dosyalı koşuda (A-7).
+
 ### 5.4 Yeni hücrelerin ön-kaydı [çıkarım] (duman-2'den SONRA, ölçülmeden önce)
 
 - **`a_r12k_d300_l30_tasma_dosya`** (2 MB, durma 10–250 s): durmada bob'a ≈ 240 s × 6–7 birim/s ≈ 1400–1700 birim gelir. Bundan **≈ 400–700 birim ACK'li düşer** (iki kolda). İlk düşen birimden sonra bütün birimler `Reorder`'da kalır (tutulan < 4096 → atlama yok). Dosya bob'da `IdleTimeout` ile biter; durma bitiminden sonraki TEXT / sinyal / PTT teslim edilmez. Taban'da A-10 türü hız düşüşü olursa alım hızı düşer ve taşma azalır ya da hiç olmaz.
