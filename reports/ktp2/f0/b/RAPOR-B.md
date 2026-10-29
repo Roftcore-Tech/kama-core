@@ -615,6 +615,60 @@ Kaynak: `/home/ryuzaki/kama-k4g-work/ktp2-f0/runs/duman-2/out`; analiz `reports/
 - B-K14: r12k/d300/l30/65 B'de `kilit_gonderen` = 1 iki kolda (`gonderen_birikim_ms` 2091 / 3739; `btlbw_sunulan` 1,05 / 1,02; `jeton_ac_payi` 0,87 / 0,82). r1k/1 KB'de adayda da (1392 ms).
 - r1k/d1000/l20/1 KB tek yön p50: taban 6,75 s, aday 2,59 s, quinn 2,35 s, tcp 7,68 s.
 
+### 9.0c Tam set ara denetimi: P1'den ilk 4 hücre [ölçüldü, N = 30/kol; ızgara eksik, hüküm tam analizde]
+
+Hücreler: `b_r12k_d300_l0_p65`, `b_r12k_d1000_l0_p65`, `b_r12k_d300_l20_p65`, `b_r12k_d300_l0_p1000`. Koşu başına CSV: `reports/ktp2/f0/b/ara-1/`.
+- **Geçerlilik:** 480/480 koşu temiz.
+  - rc = 0, olaylar ve yakalama var;
+  - `kirli_baslangic` = 0, rx_log `dropped` = 0;
+  - eksik dosya ve analiz hatası yok.
+
+**İlk kıyas (medyan [Q1–Q3]):**
+
+| tahmin | sonuç |
+|---|---|
+| T-1, tek yön p50 | tuttu: oran 1,03 (d300/65 B), 1,04 (d300/1 KB), taban 1,28 / aday 1,19 (d1000/65 B) |
+| T-1, gönderen teyidi p50 | **tutmadı** (aşağıda) |
+| T-1, faydalı pay | tuttu: 65 B'de 0,478–0,483, 1 KB'de 0,924 |
+| T-6 | tuttu: r12k/d300/l20/65 B ACK aralığı 16 [16–16] |
+| T-7 | tuttu: aday srtt / RTT_fifo 0,98 [0,94–1,02], taban 1,04 [1,03–1,06]; srtt / ölçülen ağ RTT 0,97–1,01. Bu hücrelerde srtt şişmesi yok |
+| T-9 | tuttu: l20'de TCP tek yön p95 7,86 s [4,53–12,8], Kama 2,0–2,1 s |
+| T-12 | tuttu: kapasite reddi 0 |
+| T-15 | **kısmen**: `kilit_gonderen` taban 8/30, aday 15/30. "İki kolda ≥ yarı" tutmadı; çürütme eşiği (< %20) de aşılmadı |
+| T-17 | tuttu: kirli başlangıç 0 |
+
+**T-1, gönderen teyidi p50 tutmadı:**
+
+| hücre | taban | aday | tahmin edilen üst sınır (RTT_fifo + I) |
+|---|---|---|---|
+| r12k/d1000/l0/65 B | 2,85 s | 2,75 s | 2,41 s |
+| r12k/d300/l0/65 B | 0,703 s | 0,705 s | 0,698 s (5–7 ms aştı) |
+
+**Yeni gözlem, kayıpsız ve yüksek RTT'de başlangıç birikimi (B-K8'in r12k yüzü):** r12k/d1000/l0/65 B.
+- Tek yön p95:
+
+  | taban | aday | quinn | tcp |
+  |---|---|---|---|
+  | 3,58 s [3,34–3,76] | 3,43 s [2,98–3,81] | 1,45 s [1,42–1,47] | 2,41 s |
+
+- Mesaj başına: koşunun ilk ≈ 13 mesajı tek yön 1,2–1,5 s ile geçiyor; sonrakiler 2,7–3,7 s'ye çıkıyor.
+  - Tek yön > 2 s olan mesaj: taban 270/600 [45–476], aday 257/600 [51–339], quinn 0.
+  - Geç mesajlar koşunun ilk ≈ 10–11 s'sinde.
+- Gönderende bekleme p95: taban 2,36 s, aday 2,20 s. PreConverge çıkışı 2,2 s.
+- Geç kalma süresinde hat %70 boş, darboğaz kuyruk fazlası p95 0,22–0,24 s. Gecikme fiziksel kapasiteden değil, gönderen hızından geliyor.
+- Açıklama [çıkarım]: ilk RTT içinde IW (2400 B) ≈ 13 DATA + 9 PARAM + 2 kuruluş probunda tükeniyor. Sonra 31 B/s tabanı geçerli (B-K8). Birikim PreConverge çıkışından sonra ≈ 8 s'de eriyor.
+- B-K13 bu hücrede de var: d1000'de `param_sends` 9,5 [8–10].
+
+**Diğer gözlemler:**
+- r12k/d300/l20/65 B tek yön p50:
+
+  | taban | aday | quinn | tcp |
+  |---|---|---|---|
+  | 0,54 s | 0,72 s | 0,36 s | 2,37 s |
+
+  p95: Kama 2,0–2,1 s, quinn 1,24 s.
+- r12k/d300/l0/1 KB'de kayıpsızken `kilit_gonderen` taban 6/30, aday 2/30.
+
 ### 9.1 Teslim ve gecikme — (boş)
 ### 9.2 Hat kapasitesinin faydalı veriye giden payı (ileri / dönüş, sınıf sütunları) — (boş)
 ### 9.3 srtt ↔ gerçek RTT (taban / aday) — (boş)
