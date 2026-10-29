@@ -1,0 +1,38 @@
+# [KTP2-F0 / Ajan D] KARIŞIK AKIŞ (taşıma düzeyi; K-1 benzeri tek hücre) — bench mixed-serve/client.
+# Profil r12k_d300_l30 (KATALOG): 12,5 kB/s, RTT ≈ 600 ms, iki yön %30 rastgele kayıp.
+# Yük: dosya 192 000 B (1000 B parça; ürün birim tavanı 1013 B altında → kanonik profil, hepsi t0'da) + TEXT 30 × 65 B (1 s aralık) + PTT 150 × 39 B
+# (200 ms demet; 30 B kodlayıcı verisi + 9 B başlık). Her taşıma için dosyalı (_mix) ve dosyasız
+# (_nofile) kol; K-1 ölçütü bu çiftten. Teslim ALICIDA damgalı (mixed_rx.jsonl).
+# Kollar: taban/aday = kama-product tek oturum (motorun sırasız teslimi; S1 Reorder YOK) ·
+# quinn = BBR, akış başına uni-stream, öncelik PTT>TEXT>dosya · tcp = tek bağlantı, öncelikli yazıcı.
+# Analiz: python3 -I scripts/ktp2/f0/d/karisik_analiz.py <kök>
+CELL=d_mix_r12k_d300_l30
+FWD="delay 300ms 60ms distribution normal loss 30% rate 100kbit"
+REV="$FWD"
+REPS=30
+BUDGET_S=150
+ARMS="taban_mix taban_nofile aday_mix aday_nofile quinn_mix quinn_nofile tcp_mix tcp_nofile"
+
+_MX="--profile $CELL --repeat @REP@ --fwd-impair '$FWD' --rev-impair '$REV' --out @D@/mixed_tx.jsonl \
+--payload 1000 --text-count 30 --text-interval-ms 1000 --text-bytes 65 --ptt-count 150 \
+--ptt-interval-ms 200 --ptt-bytes 39 --tail-s 30 --handshake-timeout-s 60"
+_FILE="--file-bytes 192000 --file-chunk 1000"
+_NOFILE="--file-bytes 0"
+_RX="--rx-log @D@/mixed_rx.jsonl"
+
+for _k in taban aday; do
+  _B="@BIN_${_k^^}@"
+  for _v in mix nofile; do
+    [ "$_v" = mix ] && _F="$_FILE" || _F="$_NOFILE"
+    printf -v "ARM_${_k}_${_v}_SRV" '%s' "$_B mixed-serve --bind @SRV@ --transport kama-product --payload 1000 $_RX"
+    printf -v "ARM_${_k}_${_v}_CLI" '%s' "$_B mixed-client --server @SRV@ --transport kama-product $_MX $_F"
+  done
+done
+for _t in quinn tcp; do
+  [ "$_t" = quinn ] && _CC="--cc bbr" || _CC=""
+  for _v in mix nofile; do
+    [ "$_v" = mix ] && _F="$_FILE" || _F="$_NOFILE"
+    printf -v "ARM_${_t}_${_v}_SRV" '%s' "@BIN_TABAN@ mixed-serve --bind @SRV@ --transport $_t $_CC $_RX"
+    printf -v "ARM_${_t}_${_v}_CLI" '%s' "@BIN_TABAN@ mixed-client --server @SRV@ --transport $_t $_CC $_MX $_F"
+  done
+done
