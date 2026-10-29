@@ -30,7 +30,11 @@
    - Kilit, kolu ya da ikiliyi izlemiyor; aynı hücrede taban/aday ters yönde düşebiliyor.
    - Parite tel baytı btlbw'yi yükselttiği için `rs*` kolları r12k'da %20'de kilide 0/8 girdi (r1k'da 1/4).
    - Ön-kayıttaki M3 varsayımı ("veri sunum anında gönderilir") kilitli koşularda tutmuyor. Ön-kayıt değiştirilmedi; sapma §9'da.
-8. **İSTEK-C1 (Ajan D, yalnız bench).** `serve --rx-log` ile alıcıda birim başına varış damgası gerekir. Bugünkü `delivered_ns`, gönderenin ACK'i gördüğü andır (`kama_product.rs:24`, `:780-790`). Bu değer dönüş yolu gecikmesini (300/1000 ms) içerir; son tarih ölçüsü olarak kullanılamaz.
+8. **İSTEK-C1 (Ajan D, yalnız bench).** `serve --rx-log` ile alıcıda birim başına varış damgası gerekir. Bugünkü `delivered_ns`, gönderenin ACK'i gördüğü andır (`kama_product.rs:24`, `:780-790`). Bu değer dönüş yolu gecikmesini (300/1000 ms) içerir; son tarih ölçüsü olarak kullanılamaz. **Durum: yapıldı (taban `2cd9f68d`); duman-2'de doğrulandı (§10).**
+9. **Duman-2 (alıcı damgalı, N = 1/kol) [ölçüldü — duman, betimsel]:**
+   - B-C4 parite açlığı ölçüldü. r12k/RTT 600/%20'de parite kuyruk beklemesi (Little) 1,2–15 s. Blok T = 120 ms'de kapanıyor. Kaybolan DATA, ARQ ile ≈ 1,1–1,5 s'de geliyor; çoğu zaman parite ondan önce yetişmiyor.
+   - Aynı hücre RTT 2 s'de: bekleme 0,11–0,46 s. Son-tarih oranları (T2-800) ön-kayıtla uyumlu: arq 0,81, rs2 0,97–0,99, rs4 0,90–0,92.
+   - B-C9 gönderen birikimi alıcıda da görünüyor: pencere-minimum alıcı gecikmesi 0,25 s → 13 s.
 
 ---
 
@@ -252,7 +256,7 @@ Hepsi `--transport kama-product`, ürün runtime'ı. Sunucu ve istemci aynı FEC
 | `uyar` | FEC bayrağı yok (0x05, `adaptive`) | **ürün profilinin kendisi**: mevcut uyarlamalı FEC | `profile_delta` boş → `kama-v1-full` / `kama-v1.1-full` |
 | `rs2` | `--fec-profile 1 --fec-mode static --fec-r r` | sabit RS, K = 2, E = 64; r kayba göre (§3.5) | kontrolcü ve §8.5 kırpması YOK; pacer VAR (B-C4) |
 | `rs4` | `--fec-profile 2 --fec-mode static --fec-r r` | sabit RS, K = 4, E = 64; taslak §3.8 tablosu | (3,2) ve (4,9) katalogda yok → (4,2), (4,4) |
-| `tekrar` | `--fec-profile 0`, `--msgs 2N --submit-interval-ms T/2` | tekrar (vekil): her demet iki ayrı birim, T/2 arayla; çerçeve = ilk varan kopya | aşağıda |
+| `tekrar` | `--fec-profile 0`, istemci `--dup-copies 2` (İSTEK-C2; tam set) | tekrar: her sunumda iki kopya arka arkaya, birim = W + 2f + c; çerçeve = ilk varan kopya | duman-1/2'de C2 öncesi vekil koştu (`--msgs 2N --submit-interval-ms T/2`); aşağıda |
 | `uyar64` (teşhis) | `--fec-profile 2 --fec-mode adaptive` | uyarlamalı, E = 64: geometriyi kontrolcüden ayırır | yalnız taban, `cx_` hücreleri, N = 10 |
 | `pol` (teşhis) | `--fec-mode policy --fec-deadline-ms 800−T` | son tarih politikası (`calibration_v2_deadline`) | yalnız taban, `cx_`, N = 10; %30 bölge dışı (`loss_ppm_max 250 000`) |
 
@@ -266,10 +270,10 @@ Hepsi `--transport kama-product`, ürün runtime'ı. Sunucu ve istemci aynı FEC
 - Eklemek kodlayıcı kataloğu + PARAM özeti değişikliğidir; ürün kodu olduğu için yasak.
 - Olsaydı da onarım E'ye dolgulu ve 12 B FEC başlıklı olurdu. Yani "dolgulu tekrar" olurdu, düz kopya değil.
 
-**Tekrar vekilinin önyargıları (beyan).**
-- Her kopya ayrı birimdir ve ayrı ARQ'lanır. Kardeşi gelmiş kopya da yeniden gönderilir; tel baytı ideal tekrardan fazladır.
-- İkinci kopyanın gecikmesi T/2 fazladır.
-- İsteğe bağlı İSTEK-C2 (§7.1) gerçek tekrarı verir.
+**Tekrar kolunun önyargıları (beyan).**
+- Vekil ve C2'de ortak: her kopya ayrı birimdir ve ayrı ARQ'lanır. Kardeşi gelmiş kopya da yeniden gönderilir; tel baytı ideal tekrardan fazladır.
+- Yalnız vekilde: ikinci kopya T/2 sonra gider. C2'de iki kopya aynı sunumda arka arkaya gider.
+- Ön-kayıt iki kol için ayrı satırdadır: `tekrar` = vekil; `tekrar2` = C2. `tekrar2` sonradan eklendi; önceki 480 satır bayt bayt aynı kaldı (§10).
 
 **Aynı son tarih, aynı bant bütçesi.**
 - Son tarih bir koşu parametresi değil, analiz parametresidir. Aynı koşudan D = 400/800 ve iki tanım hesaplanır (§4).
@@ -530,7 +534,7 @@ Okuma [betimsel]:
 
 ### 7.1 İSTEKLER (Ajan D'ye)
 
-**İSTEK-C1 (zorunlu; tam setin ön koşulu): alıcı varış kaydı, yalnız bench.**
+**İSTEK-C1 (zorunlu; tam setin ön koşulu): alıcı varış kaydı, yalnız bench.** — *Yapıldı (Ajan D; taban `2cd9f68d`, aday `bf18dc35`), duman-2'de doğrulandı (§10.1).*
 - **Dosya/işlev:**
   - `crates/bench/src/main.rs` `Cmd::Serve`: yeni bayrak.
   - `crates/bench/src/transport.rs` `ServerCfg`: yeni alan `rx_log: Option<PathBuf>`.
@@ -546,7 +550,7 @@ Okuma [betimsel]:
 - **Ürün kodu değişmez.** `Delivery.unit_id` zaten var (`runtime.rs:1190-1197`). Kayıt döngüye bir `Vec::push` ekler; gecikme etkisi ns mertebesindedir ve ölçülmedi.
 - **Gerekçe:** B-C7. `delivered_ns` gönderen ACK anıdır. PTT son tarihi alıcı varışıyla ölçülür.
 
-**İSTEK-C2 (isteğe bağlı, düşük öncelik): gerçek tekrar kolu.**
+**İSTEK-C2 (isteğe bağlı, düşük öncelik): gerçek tekrar kolu.** — *Yapıldı (`client --dup-copies N`); tam setin tekrar kolu bunu kullanır (§10.3).*
 - `client --dup-copies N` (varsayılan 1).
 - Her sunumda aynı yükü N kez art arda `offer` et.
 - `sent_ns` çerçeve başına bir kez; `delivered_ns` = kopyalardan ilk teyit.
@@ -639,6 +643,116 @@ Bu turda yok.
 Duman tablosu T2-800, clamp ve bu alanları basıyor. Özet tablosuna "birikim ms", "btlbw/sunulan", "kilitli koşu" sütunları eklendi.
 
 **Karar.** Duman bütünlük açısından temiz, ölçü açısından değil. Vekil kip son tarih ölçüsü için kullanılamaz: r1k'da ve kilitsiz koşularda dönüş yolu payı var. Tam set İSTEK-C1 derlendikten sonra koşulmalı. Önce `--rx-log`'lu bir duman daha (aynı 4 hücre, 0,41 koşu-saati) ile alıcı damgası doğrulanmalı.
+
+## 10. Duman-2 (alıcı damgalı): denetim ve bulgular
+
+**Koşu.**
+- Kök: `/home/ryuzaki/kama-k4g-work/ktp2-f0/runs/duman-2/out` (`c_*` hücreleri).
+- İkililer: taban `ktp2-f0/bin/taban-2cd9f68d/bench` (`3311d8e0…`), aday `ktp2-f0/bin/aday-bf18dc35/bench` (`c893e840…`). İkisinde de İSTEK-C1/C2 var.
+- 4 hücre, 42 kol-koşusu, hepsi rc = 0.
+- j = 12 eşzamanlı. Her koşu temiz netem kuyruğuyla başladı (orkestratör beyanı).
+- Hücreler duman-1'le aynı; tekrar kolu hâlâ C2 öncesi vekil.
+- Çıktılar: `reports/ktp2/f0/c/duman-2/{DUMAN.md, kosular.csv, ozet.csv, OZET-C.md}`.
+
+### 10.1 Enstrüman denetimi: geçti
+
+- **Alıcı kaydı = teslim.**
+  - 42/42 koşuda `rx.jsonl` satır sayısı = sunucu `ServerStats.delivered`.
+  - `dropped = 0`.
+  - Tam teslimde 184 satır (16 ısınma + 168), vekil tekrarda 352.
+- **Saat hizası.** Negatif gecikme 0. İstemci `t0_unix_ns` + `sent_ns` ile sunucu CLOCK_REALTIME aynı tabanda.
+- **Alıcı gecikmesi ≈ OWD + serileştirme** (kilitsiz koşular, 14 çerçevelik pencere minimumları):
+
+  | hücre | ölçülen | beklenen |
+  |---|---|---|
+  | r12k/d300 | 194–301 ms | μ − 1,7σ + ser = 300 − 102 + 8,5 ≈ 207 |
+  | r12k/d1000 | 770–1100 ms | ≈ 669 + HOL |
+  | r1k/d300 | 309–480 ms | 300 − 102 + 118 ≈ 316 |
+
+  Doğrudan sınıf çerçevelerde titreşim + kuyruk artığı p50 10–72 ms, p95 124–224 ms (d300). σ = 60 ms ve netem FIFO etkisiyle tutarlı.
+- **Gönderen teyidi alıcı varışından sonra gelir.** Vekil ile alıcı ölçüsü arasındaki fark, duman-1'de "enstrüman" dediğim payı doğruluyor (§9). r1k ve kilitsiz r12k koşularının düşük vekil değerleri alıcı ölçüsünde düzeliyor, örnek: d1000 T2-800 vekil 0,56–0,88 → alıcı 0,78–0,99 (kilitsiz koşular).
+
+### 10.2 Davranış bulguları [ölçüldü — duman, N = 1/kol, betimsel]
+
+**B-C4 ölçüldü: parite pacer'da aç kalıyor.**
+
+| hücre | kol | parite tx / plan | bekleme (Little) | jeton reddi | sunucu kurtarma / çözülen blok |
+|---|---|---|---|---|---|
+| r12k d300 %20 | rs2_taban | 174 / 184 | 1,2 s | 16 061 | 22 / 76 |
+| r12k d300 %20 | rs2_aday | 146 / 184 | 4,2 s | 21 045 | 8 / 47 |
+| r12k d300 %20 | rs4_taban | 58 / 92 | 7,9 s | 19 642 | 9 / 9 |
+| r12k d300 %20 | rs4_aday | 45 / 92 | 15,1 s | 20 665 | 8 / 7 |
+| r12k d1000 %20 | rs2 / rs4 (4 koşu) | 184 / 184 · 92 / 92 | 0,11–0,46 s | 8181–11 644 | 27–42 |
+| r1k d300 %20 | rs2 / rs4 (4 koşu) | 16–60 | 1,5–17,8 s | 16 386–22 081 | 1–10 |
+
+- `rs2_taban` d300'de çözülen 76 bloğun yalnız 22'sinde kurtarılan birim alıcıya ilk kez ulaştı. Kalanında birim ARQ ile çoktan gelmişti; parite geç kaldı.
+- Geç çerçevelerin alıcı gecikmesi çoğunlukla 1,1–1,5 s (`rs2_taban`: 21 geç çerçevenin 15'i 1,0–1,5 s'de). Bu, ARQ zamanlamasına (T + RTT + OWD ≈ 1,02 s) uyuyor.
+- d300 ↔ d1000 farkı için [çıkarım]: d300'de ARQ tespiti ≈ 0,7 s'de olur. Yeniden gönderim pariteden önce jeton alır (`sender.rs:4292-4311` sırası; `K_ARQ_SHARE`). d1000'de tespit ≈ 2 s sürdüğü için parite önce gider.
+- Ön-kayıt §5.3 "≥ 2T ise B-C4 açlığı ölçülmüş olur" ölçütü d300 ve r1k'da sağlandı. d1000'de sağlanmadı.
+
+**Son-tarih oranı, kilitsiz koşular, ön-kayda karşı** [betimsel, N = 1]:
+
+| hücre / tanım | kol | ölçülen | ön-kayıt |
+|---|---|---|---|
+| d1000 T2-800 | arq | 0,81 | 0,79 |
+| | rs2 | 0,97 / 0,99 | 0,98 |
+| | rs4 | 0,90 / 0,92 | 0,93 (0,91–0,94) |
+| d300 T1-800 | rs2 | 0,81 / 0,88 | 0,98 (0,97–0,98) |
+| | rs4_taban | 0,79 | 0,88 (0,86–0,92) |
+| | tekrar_aday (vekil) | 0,93 | 0,96 |
+| | uyar64 | 0,76 | 0,80 |
+
+d300'deki rs açığı, modelin `pacer1.00` varyantından da büyük: model parite beklemesini ≤ 2T varsayıyor, ölçülen 1–15 s. Sapmanın kaynağı B-C4'tür.
+
+**B-C9 alıcıda.**
+- Kilitli koşularda pencere-minimum alıcı gecikmesi tırmanıyor: tekrar_taban d300 249 → 13 438 ms; uyar_taban d1000 841 → 8171 ms; arq_aday r1k 416 → 4713 ms.
+- Ara durumlar da var. arq_taban ve uyar_taban d300'de birikim tepesi 1053–1339 ms; oran 0,17–0,29.
+
+### 10.3 Araç ve hücre değişiklikleri
+
+Hepsi bu turda; ön-kayıt satırları değişmedi.
+
+**`analyze_c.py`:**
+- `--dup-copies N` düzeni: birim = W + f·N + c; sıralı teslim birim sırasıyla.
+- `birikim_tepe_ms`: tepe pencere-minimumu − ilk pencere. Birikim konuşma ortasında yükselip sonda sönebiliyor; "son − ilk" bunu kaçırıyordu.
+- `kilitli` eşiği tepe ≥ max(500 ms, 4σ) ya da ilk iletim payı < 0,95. **Bu eşik duman-2 verisi görüldükten sonra konuldu.** Betimseldir, karar ölçüsü değildir; tam sette sürekli `birikim_tepe_ms` dağılımı da raporlanır.
+- Duman-2'de kilitli koşu sayısı (yeni eşik):
+
+  | kol | kilitli |
+  |---|---|
+  | arq | 6/8 |
+  | uyar | 6/8 |
+  | tekrar (vekil) | 6/8 |
+  | rs4 | 4/8 |
+  | rs2 | 2/8 |
+  | pol | 1/1 |
+  | uyar64 | 0/1 |
+
+**`gen_cells.py`:** tekrar kolu artık İSTEK-C2 gerçek kolu (istemci `--dup-copies 2`, `--msgs N --submit-interval-ms T`). Vekil `--vekil-tekrar` ile yeniden üretilebilir. Bütün `cells/c/*.cell` yeniden üretildi; diğer kollar bayt bayt aynı.
+
+**`model_c.py`:** `tekrar2` kolu eklendi (iki kopya arka arkaya; ARQ tespiti bir sonraki sunuma göre). Önceki 480 satır bayt bayt aynı; tohum kol adına bağlı.
+
+Beklenen değerler, r12k / 120 ms:
+
+| gecikme | kayıp | T1-800 | T2-800 |
+|---|---|---|---|
+| d300 | %10 | 0,99 | 0,99 |
+| d300 | %20 | 0,96 | 0,96 |
+| d300 | %30 | 0,91 | 0,91 |
+| d1000 | %10 | — | 0,99 |
+| d1000 | %20 | — | 0,96 |
+| d1000 | %30 | — | 0,91 |
+
+Model gönderen kilidini içermez.
+
+### 10.4 Karar
+
+Enstrüman temiz. Tam set istenir.
+
+Kararı belirleyecek davranışlar: B-C4 (parite açlığı) ve B-C9 (gönderen birikimi). Tam set ikisini N = 30 ile ölçer:
+- kilit insidansı;
+- parite beklemesinin dağılımı;
+- son-tarih oranı (kilitli ve kilitsiz alt kümeler ayrı).
 
 ## Ek: Ajan E'ye iletilmek üzere taslak notu adayları [kod]
 

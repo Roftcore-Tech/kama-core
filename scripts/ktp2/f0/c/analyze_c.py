@@ -45,7 +45,7 @@ METRICS = ["ot_T1_400", "ot_T1_800", "ot_T2_400", "ot_T2_800", "ot_sirali_T1_800
            "ot_sirali_T2_800", "ack_T1_800", "teslim_orani", "B_cerceve_udp", "B_cerceve_l2",
            "rho_konusma", "zamaninda_per_kB", "parite_tx", "fec_kurtarilan", "parite_bekleme_ms",
            "retx_B_cerceve", "clamp", "lat_p50_ms", "lat_p95_ms", "btlbw_sunulan", "ilk_iletim_payi",
-           "birikim_ms", "birikim_egim_ms_s", "jeton_ac_payi", "kilitli"]
+           "birikim_ms", "birikim_tepe_ms", "birikim_egim_ms_s", "jeton_ac_payi", "kilitli"]
 
 
 def qtl(vals, x):
@@ -143,7 +143,7 @@ def parse_cmd(path):
             cli = line[4:]
     flags = {}
     for k in ("--msgs", "--submit-interval-ms", "--warmup-msgs", "--fec-profile", "--fec-mode",
-              "--fec-r", "--payload", "--fec-deadline-ms"):
+              "--fec-r", "--payload", "--fec-deadline-ms", "--dup-copies"):
         m = re.search(re.escape(k) + r"\s+(\S+)", cli)
         if m:
             flags[k] = m.group(1)
@@ -289,12 +289,23 @@ def analyze_run(cell, cm, arm, am, d):
         row.setdefault("gecersiz", "out.jsonl yok")
         row["gecerli"] = 0
         return row, None
-    copies = 2 if kind == "tekrar" else 1
+    # Kopya düzeni: (a) İSTEK-C2 `--dup-copies N` (gerçek tekrar): mesaj f = birimler W + f·N + c,
+    # teslim = ilk kopya; (b) eski tekrar vekili (C2 öncesi): çerçeve f = mesajlar (2f, 2f+1);
+    # (c) diğer kollar: çerçeve = mesaj = birim.
+    dup = int(flags.get("--dup-copies", 1) or 1)
+    if dup > 1:
+        copies_msg, ucopies = 1, dup
+    elif kind == "tekrar":
+        copies_msg, ucopies = 2, 1
+    else:
+        copies_msg, ucopies = 1, 1
+    copies = copies_msg * ucopies
     n_msgs = int(meta.get("msg_count", 0))
     exp_msgs = int(flags.get("--msgs", n_msgs))
     W = int(flags.get("--warmup-msgs", 0))
-    n_frames = n_msgs // copies
+    n_frames = n_msgs // copies_msg
     row["cerceve"] = n_frames
+    row["kopya"] = copies
     row["warmup_residue"] = meta.get("warmup_residue")
     if row["rc"] != 0 or n_msgs != exp_msgs or not row.get("kp_server"):
         row["gecersiz"] = (f"rc={row['rc']}" if row["rc"] != 0 else
@@ -310,50 +321,64 @@ def analyze_run(cell, cm, arm, am, d):
     row["rx_kaynak"] = "alici" if rx is not None else "vekil"
     row["rx_satir"] = rxinfo["lines"] if rxinfo else None
     row["rx_dusen"] = rxinfo.get("dropped") if rxinfo else None
+    mu_ns = int(mu * 1e6)
 
     def offer_unix(mid):
         return t0u + (sent[mid] - off)
 
+    def frame_msgs(f):
+        return [f * copies_msg + c for c in range(copies_msg)]
+
+    def frame_units(f):
+        return [W + m * ucopies + c for m in frame_msgs(f) for c in range(ucopies)]
+
+    def ack_abs(mid):  # vekil: gönderen ACK anı − OWD_nom, mutlak (unix ns)
+        a = acked.get(mid)
+        return offer_unix(mid) + (int(a) - sent[mid]) - mu_ns if a is not None else None
+
     lat = []  # çerçeve başına alıcı-varış gecikmesi (ms; inf = yok)
     ack_lat = []
     for f in range(n_frames):
-        mids = [f * copies + c for c in range(copies)]
-        o = offer_unix(mids[0])
+        o = offer_unix(frame_msgs(f)[0])
         best = math.inf
-        for mid in mids:
-            if rx is not None:
-                tr = rx.get(W + mid)
+        if rx is not None:
+            for u in frame_units(f):
+                tr = rx.get(u)
                 if tr is not None:
                     best = min(best, (tr - o) / 1e6)
-            else:
-                a = acked.get(mid)
-                if a is not None:
-                    best = min(best, (int(a) - sent[mids[0]]) / 1e6 - mu)
+        else:
+            for mid in frame_msgs(f):
+                t = ack_abs(mid)
+                if t is not None:
+                    best = min(best, (t - o) / 1e6)
         lat.append(best)
         ab = math.inf
-        for mid in mids:
+        for mid in frame_msgs(f):
             a = acked.get(mid)
             if a is not None:
-                ab = min(ab, (int(a) - sent[mids[0]]) / 1e6)
+                ab = min(ab, (int(a) - sent[frame_msgs(f)[0]]) / 1e6)
         ack_lat.append(ab)
     m2e = [t_ms + v for v in lat]
-    # sıralı teslim: birim sırası (ölçüm birimleri W..W+n_msgs-1)
-    rel_unit = []
+    # Sıralı teslim (oturum geneli tek sıra): birimler sırayla serbest kalır, rel_u = max(varış_v, v ≤ u)
+    # (mutlak zaman). Çerçeve, ilk biriminin serbest kaldığı anda oynatılabilir (rel monoton).
+    if rx is not None:
+        order = [u for f in range(n_frames) for u in frame_units(f)]
+        times = [rx.get(u, math.inf) for u in order]
+        first_idx = [f * copies for f in range(n_frames)]
+    else:
+        order = [m for f in range(n_frames) for m in frame_msgs(f)]
+        times = [(ack_abs(m) if ack_abs(m) is not None else math.inf) for m in order]
+        first_idx = [f * copies_msg for f in range(n_frames)]
+    rel = []
     run_max = -math.inf
-    for mid in range(n_msgs):
-        if rx is not None:
-            tr = rx.get(W + mid)
-            v = (tr - offer_unix(0)) / 1e6 if tr is not None else math.inf
-        else:
-            a = acked.get(mid)
-            v = (int(a) - sent[0]) / 1e6 - mu if a is not None else math.inf
-        run_max = max(run_max, v)
-        rel_unit.append(run_max)
+    for t in times:
+        run_max = max(run_max, t)
+        rel.append(run_max)
     sirali = []
     for f in range(n_frames):
-        mid = f * copies
-        o_rel = (offer_unix(mid) - offer_unix(0)) / 1e6
-        sirali.append(t_ms + rel_unit[mid] - o_rel)
+        o = offer_unix(frame_msgs(f)[0])
+        r = rel[first_idx[f]]
+        sirali.append(t_ms + ((r - o) / 1e6 if r < math.inf else math.inf))
     for D in M.DEADLINES_T1:
         row[f"ot_T1_{D}"] = sum(1 for v in m2e if v <= D) / n_frames
     for b in M.BUDGETS_T2:
@@ -389,10 +414,11 @@ def analyze_run(cell, cm, arm, am, d):
     pay = int(flags.get("--payload", 0) or 0)
     d_udp = M.SEAM_BENCH + M.HDR_DATA + pay
     talk_s = n_frames * t_ms / 1000.0
-    row["sunulan_udp_Bps"] = n_msgs * d_udp / talk_s if talk_s else None
+    n_units = n_msgs * ucopies
+    row["sunulan_udp_Bps"] = n_units * d_udp / talk_s if talk_s else None
     if row.get("btlbw") is not None and row["sunulan_udp_Bps"]:
         row["btlbw_sunulan"] = row["btlbw"] / row["sunulan_udp_Bps"]
-    row["ilk_iletim_payi"] = (tx.get("data") or 0) / (n_msgs * d_udp) if n_msgs and d_udp else None
+    row["ilk_iletim_payi"] = (tx.get("data") or 0) / (n_units * d_udp) if n_units and d_udp else None
     src = lat if rx is not None else ack_lat
     nwin = 12
     wlen = max(1, n_frames // nwin)
@@ -403,12 +429,21 @@ def analyze_run(cell, cm, arm, am, d):
     fin_w = [(i, v) for i, v in enumerate(wmins) if v < math.inf]
     if len(fin_w) >= 2:
         row["birikim_ms"] = fin_w[-1][1] - fin_w[0][1]
+        # [duman-2] tepe: birikim konuşma ortasında yükselip sonda kısmen sönebiliyor (son − ilk
+        # bunu kaçırır); ilk pencereye göre en yüksek pencere-minimumu.
+        row["birikim_tepe_ms"] = max(v for _, v in fin_w) - fin_w[0][1]
         span = (fin_w[-1][0] - fin_w[0][0]) * wlen * t_ms / 1000.0
         row["birikim_egim_ms_s"] = row["birikim_ms"] / span if span else None
+    # Pencerede hiç çerçeve gelmeyen pencereler (gönderen kuyruğu ölçüm sonuna taştı) tepeye
+    # sonsuz birikim olarak sayılır.
+    if any(v == math.inf for v in wmins[len(wmins) // 2:]):
+        row["birikim_tepe_ms"] = math.inf
     row["birikim_bos_pencere"] = sum(1 for v in wmins if v == math.inf)
-    # Sınıflama (betimsel eşik, karar değil): konuşma boyunca ≥ 1 s birikim YA DA ilk iletimlerin
-    # ≥ %5'i pencere içinde tele çıkmamış → gönderen kilidi (RAPOR-C §9, B-C9).
-    row["kilitli"] = int((row.get("birikim_ms") or 0) >= 1000.0
+    # Sınıflama (betimsel eşik, karar değil; eşik duman-2 sonrası konuldu — RAPOR-C §10): tepe
+    # birikim ≥ max(500 ms, 4σ_jitter) (d300/T=120/D=800'de son tarih payı ≈ 380 ms; d1000'de
+    # pencere-minimumunun jitter yayılımı büyük → 800 ms) YA DA ilk iletimlerin
+    # ≥ %5'i pencere içinde tele çıkmamış → gönderen birikimi (B-C9).
+    row["kilitli"] = int((row.get("birikim_tepe_ms") or 0) >= max(500.0, 4 * sig)
                          or (row["ilk_iletim_payi"] is not None and row["ilk_iletim_payi"] < 0.95))
     row.update(parse_ts(os.path.join(d, "ts.csv"), row.get("fec_repairs_tx"), d_udp))
     # gecikme bileşenleri (çerçeve düzeyi, hücre toplamı için)
@@ -464,14 +499,14 @@ def main():
 
     if a.duman:
         print("| hücre | kol | rep | rc | geçerli | rx | rx satır | çerçeve | T1-800 | T2-800 | parite tx | "
-              "fec kurt. | clamp | btlbw/sunulan | ilk iletim payı | birikim ms | jeton aç payı | kilitli | not |")
+              "fec kurt. | clamp | btlbw/sunulan | ilk iletim payı | birikim ms (son/tepe) | jeton aç payı | kilitli | not |")
         print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
         for r in rows:
             print(f"| {r['hucre']} | {r['kol']} | {r['rep']} | {r.get('rc')} | {r.get('gecerli')} | "
                   f"{r.get('rx_kaynak', '—')} | {fmt(r.get('rx_satir'))} | {fmt(r.get('cerceve'))} | "
                   f"{fmt(r.get('ot_T1_800'))} | {fmt(r.get('ot_T2_800'))} | {fmt(r.get('parite_tx'))} | "
                   f"{fmt(r.get('fec_kurtarilan'))} | {fmt(r.get('clamp'))} | {fmt(r.get('btlbw_sunulan'), 2)} | "
-                  f"{fmt(r.get('ilk_iletim_payi'), 2)} | {fmt(r.get('birikim_ms'), 0)} | "
+                  f"{fmt(r.get('ilk_iletim_payi'), 2)} | {fmt(r.get('birikim_ms'), 0)}/{fmt(r.get('birikim_tepe_ms'), 0)} | "
                   f"{fmt(r.get('jeton_ac_payi'), 2)} | {fmt(r.get('kilitli'))} | {r.get('gecersiz', '')} |")
         return 0
 
