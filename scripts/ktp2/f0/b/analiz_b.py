@@ -871,7 +871,7 @@ def analyze_run(rep, g, arm):
     # kapasite reddi (tanım: bkz. RAPOR-B §4.4)
     rej_keys = ("cli_refused_pkts", "srv_egress_refused_pkts", "srv_delivery_dropped",
                 "srv_dropped_new_peers", "srv_frag_chunk_dropped", "srv_msg_asm_evicted",
-                "srv_fec_blocks_evicted", "srv_fec_pre_param_dropped", "parity_denied")
+                "srv_fec_blocks_evicted", "srv_fec_pre_param_dropped")
     if any(k in r for k in rej_keys):
         r["cap_reject_total"] = sum(int(r.get(k) or 0) for k in rej_keys)
     tr = r.get("transport") or ""
@@ -949,6 +949,7 @@ OZET_METRICS = [
     ("tail_probes", "kuyruk probu (motor) [sayaç]"),
     ("establish_tx", "kuruluş probu [sayaç]"),
     ("parity", "FEC parite emisyonu [sayaç]"),
+    ("parity_denied", "parite jeton reddi [sayaç]"),
     ("setup_s", "kurulum süresi (s) [olay]"),
 ]
 
