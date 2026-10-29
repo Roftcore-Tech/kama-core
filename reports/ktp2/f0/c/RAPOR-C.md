@@ -24,7 +24,13 @@
    | tekrar | ≈ 0,96 |
 
    D = 400 ms'de tavan ≈ 0,32. RTT 2 s'de 400/800 ms fiziksel olarak imkânsızdır (§3.4).
-7. **İSTEK-C1 (Ajan D, yalnız bench).** `serve --rx-log` ile alıcıda birim başına varış damgası gerekir. Bugünkü `delivered_ns`, gönderenin ACK'i gördüğü andır (`kama_product.rs:24`, `:780-790`). Bu değer dönüş yolu gecikmesini (300/1000 ms) içerir; son tarih ölçüsü olarak kullanılamaz.
+7. **Duman (vekil kip, N = 1/kol, 42 koşu) yeni bir davranış gösterdi: gönderen kilidi (B-C9, §9) [ölçüldü — duman, betimsel].**
+   - 42 koşunun 21'inde pacer, sunulan + yeniden gönderim hızının altında kaldı.
+   - Gönderen kuyruğu konuşma boyunca büyüdü: kaybolmamış çerçevelerin bile en küçük ACK gecikmesi 0,5 s'den 5,5–8,8 s'ye çıktı. Bu koşularda son-tarih oranı ≈ 0,06–0,10.
+   - Kilit, kolu ya da ikiliyi izlemiyor; aynı hücrede taban/aday ters yönde düşebiliyor.
+   - Parite tel baytı btlbw'yi yükselttiği için `rs*` kolları r12k'da %20'de kilide 0/8 girdi (r1k'da 1/4).
+   - Ön-kayıttaki M3 varsayımı ("veri sunum anında gönderilir") kilitli koşularda tutmuyor. Ön-kayıt değiştirilmedi; sapma §9'da.
+8. **İSTEK-C1 (Ajan D, yalnız bench).** `serve --rx-log` ile alıcıda birim başına varış damgası gerekir. Bugünkü `delivered_ns`, gönderenin ACK'i gördüğü andır (`kama_product.rs:24`, `:780-790`). Bu değer dönüş yolu gecikmesini (300/1000 ms) içerir; son tarih ölçüsü olarak kullanılamaz.
 
 ---
 
@@ -183,6 +189,40 @@ Farklar:
 **Kök neden.** 05b dar düzeltmeleri ARQ sahipliği, srtt ve açlık içindir. FEC'e dokunmaz; paritenin önceliğini bir rezerv kadar daha düşürür [kod].
 
 **Ön-kayıt.** FEC kollarında aday ≈ taban; `rs*` parite beklemesinde aday ≥ taban [çıkarım].
+
+### B-C9 · Gönderen kilidi: pacer, kayıplı uygulama-sınırlı akışta gereken hızın altına kilitleniyor (duman bulgusu)
+
+**Ölçüm** [ölçüldü — duman, vekil kip, N = 1/kol; betimsel; §9].
+- `c_r12k_d300_l20_b120`'de 12 koşunun 5'i kilitli: arq_taban, uyar_aday, tekrar ×2, pol_taban.
+- Kilitli koşularda:
+  - pencere-minimum ACK gecikmesi konuşma boyunca 0,5 s'den 6–9 s'ye doğrusal artıyor (`birikim_ms` 5533–8837);
+  - son btlbw / sunulan UDP hızı 0,85–1,11;
+  - ts.csv'de koşunun son 2/3'ünde jeton < 1 DATA paketi (`jeton_ac_payi`) 0,98–0,99;
+  - son-tarih oranı (vekil) 0,06–0,10.
+- Kilitsiz koşular:
+  - birikim ≈ 0 (−49…156 ms);
+  - btlbw/sunulan 1,31–2,88;
+  - oran 0,65–0,86.
+- %50 kayıpta (`l50`) 10 koşunun 8'i kilitli. Bunların 5'inde ilk iletimlerin yalnız %34–73'ü pencere içinde tele çıktı (aralık 0,34–0,96).
+- srtt bütün koşularda gerçek RTT'ye yakın (r12k/d300'de 571–773 ms). Bu, srtt şişmesi değildir.
+
+**Dosya/işlev.**
+- `bw.rs:220-245` `BtlBwFilter::update`: uygulama-sınırlı örnek yalnız mevcut btlbw'den büyükse girer; kuyruk doluyken örnek = teslim edilen hız.
+- `rate.rs:164-180` `effective_send_rate`: hız = kazanç × btlbw, en çok cwnd/srtt.
+- `sender.rs:4237-4268` `compute_send_rate`: Steady kazancı 1.
+- ProbeUp periyodu 4 ack-epoch (`sender.rs:1537`, `:4098`); koşu başına 1–3 kez girildi (`probe_up` sayacı).
+- Aday aynı yolu kullanıyor (05b `sender.rs:4710-4740`).
+
+**Kök neden [çıkarım, kodla tutarlı].**
+- Teslim hızı örneği kaybolan baytı saymaz. Gönderen kuyruğu doluyken örnek ≈ pacer hızı × (1 − p).
+- Oysa kayıplı akışın gereken gönderim hızı ≈ sunulan / (1 − p).
+- Steady'de kazanç 1 olduğu için btlbw kendi teslim hızına kilitlenir. Kilitten çıkışın tek yolu seyrek ProbeUp'tır (1,25 ×). p = %20'de 1,25 × 0,8 = 1,0: nötr. p = %50'de 0,625: söner.
+- Koşunun kilide girip girmemesi, ısınma/Startup'ta yakalanan en yüksek örneğe bağlı görünüyor. Bu iki kararlı davranış N = 30 ile oran olarak ölçülecek.
+- FEC paritesi teslim edilen bayta eklendiği için btlbw'yi yükseltir. Duman'da `rs*` kolları r12k/%20'de 8/8 kilitsiz.
+
+INV-RATE-1 açısından: kayıp hızı açıkça düşürmüyor. Ama hız tahmincisi kayıplı teslimi ölçtüğü için yeniden gönderim bandı hiç ayrılmıyor.
+
+**En dar düzeltme (F1 önerisi; ölçülmedi).** Uygulama-sınırlı akışta pacer hızına bir alt sınır: son pencerede sunulan hız × (1 + pay). Sınır cwnd/srtt'yi aşmaz. Bu btlbw'ye sentetik örnek yazmaz; 05b'nin "startup floor" deseninin süreğen karşılığıdır. Ajan B'nin düşük bant hücreleriyle aynı kök olabilir; orkestratöre çapraz not.
 
 ### Ajan E notlarının doğrulaması
 
@@ -552,6 +592,53 @@ Koşu sonrası doldurulacak: `analyze_c.py --out reports/ktp2/f0/c/sonuc <kök>`
 - ön-kayıttan sapmanın dekompozisyonu (§5.4).
 
 Bu turda yok.
+
+## 9. Duman-1 (vekil kip): enstrüman mı, davranış mı
+
+**Koşu.**
+- Kök: `/home/ryuzaki/kama-k4g-work/ktp2-f0/runs/duman-c-vekil/out`.
+- İkililer: taban `wt/ktp2-f0/target/release/bench` (sha256 `14b5f7d3…`), aday `wt/ktp2-05b/target/release/bench` (`fd3089b1…`).
+- 4 duman hücresi, 42 kol-koşusu, hepsi rc = 0.
+- Hücrelerden yalnız ` --rx-log @D@/rx.jsonl` çıkarıldı (İSTEK-C1 yok). Ölçü vekil: ACK anı − OWD_nom.
+
+**Bütünlük.**
+- 42/42 geçerli; KP-CLIENT, KP-SERVER ve `ts.csv` okunuyor.
+- Isınma 40/42 koşuda 16/16 teyitli, 2 koşuda 15/16 (residue 1).
+- İstemci süresi medyanı: d300 28,9 s, d1000 35,3 s, l50 39,1 s, r1k 30,8 s. Tahmin (30/38/45/30 s) tutuyor.
+
+**Sayaçlar ön-kayıtla tutarlı [ölçüldü — duman, betimsel].**
+- `uyar`, `uyar64`, `pol` kollarında parite 0 (10/10 koşu).
+- Arbiter öneri üretiyor: yapı kapısı 0–17 068, spekülatif (L2) 10 747–41 863, politika 13 523.
+- §8.5 kırpması 19 134–42 520; latch `enq_r = 0`. B-C1 mekanizması bire bir görünüyor.
+- `rs2`/`rs4` paritesi beklenen sayıda:
+  - `rs2` (2,2): 184 = (168 + 16)/2 × 2;
+  - `rs4` (4,2): 92;
+  - r1k'da r = 1.
+- Sunucu `fec_recovered_units` > 0.
+
+**Orkestratörün işaret ettiği değerler.**
+
+| gözlem | sınıf | kanıt |
+|---|---|---|
+| `tekrar_*` ve `pol_taban` r12k/l20'de 0,060 | **davranış** (B-C9 gönderen kilidi) | birikim 5904–8837 ms; btlbw/sunulan 0,85–1,11; jeton aç payı 0,98. 0,060 = 10/168: birikim başlamadan önceki ilk çerçeveler. Payda doğru (168 çerçeve; tekrarda 336 birim → 168 çerçeve). |
+| `uyar_aday` 0,101 ↔ `uyar_taban` 0,702 | **davranış**; taban/aday farkı değil, koşu başına iki kararlı durum | uyar_aday kilitli (6150 ms, 1,00), uyar_taban kilitsiz (−49 ms, 1,44). arq'ta tersi: taban kilitli (5533 ms), aday kilitsiz (156 ms). Parite ikisinde de 0. |
+| l50'de çoğu kol ≈ 0 | **davranış** | 10 koşunun 8'i kilitli; bunların 5'inde ilk iletim payı 0,34–0,73, yani çerçevelerin bir kısmı pencerede hiç gönderilmedi. Kilitsiz iki koşu: rs4_taban 0,34, uyar_aday 0,19. |
+| d1000'de T1-800 = 0 | **tanım gereği** (§3.4: OWD > D) | aynı koşularda T2-800 0,56–0,88; duman tablosu artık T2'yi de basıyor. |
+| r1k'da kilitsiz koşular da düşük (T1-800 0,01–0,19) | **enstrüman** (vekil) | r1k'da srtt 834–1023 ms (nominal 600). Dönüş yolunda ACK serileştirmesi + kuyruk vekile ekleniyor. r1k hücreleri ancak `--rx-log` ile yorumlanabilir. |
+| kilitsiz r12k/d300 koşuları ön-kayıttan 0,1–0,15 düşük | **enstrüman** (vekil) | ACK gecikmesi + dönüş yolu jitteri (σ 60) + %20 dönüş kaybında bir sonraki ACK'e kayma. Alıcı damgası olmadan ön-kayıtla kıyaslanamaz. |
+
+**Ön-kayıt sapması (beyan).** M3 ("veri sunum anında gönderilir") kilitli koşularda tutmuyor. Model gönderen kuyruğunu içermiyor. Ön-kayıt tabloları değiştirilmedi. Tam sette kilitli/kilitsiz koşular ayrı sayılacak (`kilitli`, `kilit_n`). Son-tarih oranı her iki alt kümeyle birlikte ve ayrı raporlanacak.
+
+**Araç değişikliği** (`analyze_c.py`; hücre ve kol değişmedi). Koşu başına yeni alanlar:
+- `sunulan_udp_Bps`, `btlbw_sunulan`;
+- `ilk_iletim_payi`;
+- `birikim_ms` / `birikim_egim_ms_s` (pencere-minimum gecikme artışı; alıcı damgası varsa ondan);
+- `jeton_ac_payi` (ts.csv);
+- `kilitli` (birikim ≥ 1 s ya da ilk iletim payı < 0,95).
+
+Duman tablosu T2-800, clamp ve bu alanları basıyor. Özet tablosuna "birikim ms", "btlbw/sunulan", "kilitli koşu" sütunları eklendi.
+
+**Karar.** Duman bütünlük açısından temiz, ölçü açısından değil. Vekil kip son tarih ölçüsü için kullanılamaz: r1k'da ve kilitsiz koşularda dönüş yolu payı var. Tam set İSTEK-C1 derlendikten sonra koşulmalı. Önce `--rx-log`'lu bir duman daha (aynı 4 hücre, 0,41 koşu-saati) ile alıcı damgası doğrulanmalı.
 
 ## Ek: Ajan E'ye iletilmek üzere taslak notu adayları [kod]
 

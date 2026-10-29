@@ -18,6 +18,9 @@ KARAR ÖLÇÜSÜ (RAPOR-C §4): son tarihe yetişen ses çerçevesi oranı ve te
   Tekrar kolu: çerçeve f = birimler (2f, 2f+1); varış = ikisinin en erkeni; sunum = ilk kopya.
   Sıralı teslim (türetilmiş): client-core oturum-geneli sıralamasının (transport.rs `Reorder`)
   karşılığı: rel_u = max(varış_v, v ≤ u); çerçeve sıralı m2e'si rel'den hesaplanır.
+Gönderen birikimi (duman-1 bulgusu): pencere-minimum gecikmesinin konuşma boyunca artışı
+(`birikim_ms`), motorun son btlbw'si / sunulan UDP hızı (`btlbw_sunulan`), ilk iletimlerin pencerede
+tele çıkan payı (`ilk_iletim_payi`), pacer aç kalma payı (`jeton_ac_payi`, ts.csv).
 İstatistik: birim = koşu. Hücre × kol başına medyan, IQR, min–maks; kola karşı arq farkı
 medyan farkı + tohumlu bootstrap %95 aralığı. N < 30 → `betimsel`.
 """
@@ -41,7 +44,8 @@ FEC_K = {"rs2": 2, "rs4": 4, "uyar": 8, "uyar64": 4, "pol": 8}
 METRICS = ["ot_T1_400", "ot_T1_800", "ot_T2_400", "ot_T2_800", "ot_sirali_T1_800",
            "ot_sirali_T2_800", "ack_T1_800", "teslim_orani", "B_cerceve_udp", "B_cerceve_l2",
            "rho_konusma", "zamaninda_per_kB", "parite_tx", "fec_kurtarilan", "parite_bekleme_ms",
-           "retx_B_cerceve", "clamp", "lat_p50_ms", "lat_p95_ms"]
+           "retx_B_cerceve", "clamp", "lat_p50_ms", "lat_p95_ms", "btlbw_sunulan", "ilk_iletim_payi",
+           "birikim_ms", "birikim_egim_ms_s", "jeton_ac_payi", "kilitli"]
 
 
 def qtl(vals, x):
@@ -191,7 +195,7 @@ def parse_server_err(path):
     return d
 
 
-def parse_ts(path, repairs_tx):
+def parse_ts(path, repairs_tx, data_udp=None):
     txt = read_text(path)
     if not txt:
         return {}
@@ -199,15 +203,17 @@ def parse_ts(path, repairs_tx):
     hdr = lines[0].split(",")
     try:
         it, ip, ifr = hdr.index("t_ms"), hdr.index("pending_parity"), hdr.index("final_ratio")
+        itk = hdr.index("pacer_tokens")
     except ValueError:
         return {}
     prev_t = None
     area = 0.0
     pmax = 0
     fr = []
+    toks = []
     for line in lines[1:]:
         c = line.split(",")
-        if len(c) <= max(it, ip, ifr):
+        if len(c) <= max(it, ip, ifr, itk):
             continue
         t, pend, frv = int(c[it]), int(c[ip]), int(c[ifr])
         if prev_t is not None:
@@ -215,9 +221,16 @@ def parse_ts(path, repairs_tx):
         prev_t = t
         pmax = max(pmax, pend)
         fr.append(frv)
+        toks.append(int(c[itk]))
     out = {"parite_kuyruk_max": pmax,
            "final_ratio_ort": (sum(fr) / len(fr)) if fr else None,
            "final_ratio_pozitif_pay": (sum(1 for v in fr if v > 0) / len(fr)) if fr else None}
+    if data_udp and toks:
+        # [DUMAN-1] Pacer aç kalma payı: koşunun son 2/3'ünde jetonun tek DATA paketine yetmediği
+        # örneklerin payı. Kırpma (B-C4) yüzünden kilitsiz koşuda da yüksektir (~0,75); kilitli
+        # koşuda ≈ 1 — tek başına değil, birikim_ms ile birlikte okunur.
+        tail = toks[len(toks) // 3:]
+        out["jeton_ac_payi"] = sum(1 for v in tail if v < data_udp) / len(tail)
     if repairs_tx:
         out["parite_bekleme_ms"] = area / repairs_tx  # Little: ∫kuyruk dt / emisyon
     return out
@@ -368,7 +381,36 @@ def analyze_run(cell, cm, arm, am, d):
     row["zamaninda_per_kB"] = row["ot_T1_800"] * n_frames / (l2b / 1000.0) if l2b else None
     row["parite_tx"] = row.get("fec_repairs_tx")
     row["fec_kurtarilan"] = row.get("s_fec_recovered_units")
-    row.update(parse_ts(os.path.join(d, "ts.csv"), row.get("fec_repairs_tx")))
+    # [DUMAN-1 bulgusu] GÖNDEREN BİRİKİMİ teşhisi. Sunum başına UDP boyu (bench: dikiş 16 + DATA 11 +
+    # yük) ve sunulan hız; motorun son btlbw'si buna oranla; ilk iletimlerin pencerede tele çıkan payı;
+    # pencere-minimum gecikmesinin konuşma boyunca artışı (alıcı damgası varsa ondan, yoksa ham ACK
+    # gecikmesinden — sabit ofset artışı etkilemez). Kayıp çerçeve minimumu etkilemez; artış =
+    # kaybolmamış çerçevelerin de geç çıkması (gönderen kuyruğu).
+    pay = int(flags.get("--payload", 0) or 0)
+    d_udp = M.SEAM_BENCH + M.HDR_DATA + pay
+    talk_s = n_frames * t_ms / 1000.0
+    row["sunulan_udp_Bps"] = n_msgs * d_udp / talk_s if talk_s else None
+    if row.get("btlbw") is not None and row["sunulan_udp_Bps"]:
+        row["btlbw_sunulan"] = row["btlbw"] / row["sunulan_udp_Bps"]
+    row["ilk_iletim_payi"] = (tx.get("data") or 0) / (n_msgs * d_udp) if n_msgs and d_udp else None
+    src = lat if rx is not None else ack_lat
+    nwin = 12
+    wlen = max(1, n_frames // nwin)
+    wmins = []
+    for k in range(0, n_frames - wlen + 1, wlen):
+        v = [x for x in src[k:k + wlen] if x < math.inf]
+        wmins.append(min(v) if v else math.inf)
+    fin_w = [(i, v) for i, v in enumerate(wmins) if v < math.inf]
+    if len(fin_w) >= 2:
+        row["birikim_ms"] = fin_w[-1][1] - fin_w[0][1]
+        span = (fin_w[-1][0] - fin_w[0][0]) * wlen * t_ms / 1000.0
+        row["birikim_egim_ms_s"] = row["birikim_ms"] / span if span else None
+    row["birikim_bos_pencere"] = sum(1 for v in wmins if v == math.inf)
+    # Sınıflama (betimsel eşik, karar değil): konuşma boyunca ≥ 1 s birikim YA DA ilk iletimlerin
+    # ≥ %5'i pencere içinde tele çıkmamış → gönderen kilidi (RAPOR-C §9, B-C9).
+    row["kilitli"] = int((row.get("birikim_ms") or 0) >= 1000.0
+                         or (row["ilk_iletim_payi"] is not None and row["ilk_iletim_payi"] < 0.95))
+    row.update(parse_ts(os.path.join(d, "ts.csv"), row.get("fec_repairs_tx"), d_udp))
     # gecikme bileşenleri (çerçeve düzeyi, hücre toplamı için)
     ser_d = (M.data_udp(t_ms) + M.L2) / rate * 1000.0
     extra = {"lat": lat, "m2e": m2e, "ser_d": ser_d, "mu": mu, "sig": sig, "t_ms": t_ms,
@@ -421,13 +463,16 @@ def main():
         return 1
 
     if a.duman:
-        print("| hücre | kol | rep | rc | geçerli | rx | rx satır | çerçeve | T1-800 | parite tx | fec kurt. | not |")
-        print("|---|---|---|---|---|---|---|---|---|---|---|---|")
+        print("| hücre | kol | rep | rc | geçerli | rx | rx satır | çerçeve | T1-800 | T2-800 | parite tx | "
+              "fec kurt. | clamp | btlbw/sunulan | ilk iletim payı | birikim ms | jeton aç payı | kilitli | not |")
+        print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
         for r in rows:
             print(f"| {r['hucre']} | {r['kol']} | {r['rep']} | {r.get('rc')} | {r.get('gecerli')} | "
                   f"{r.get('rx_kaynak', '—')} | {fmt(r.get('rx_satir'))} | {fmt(r.get('cerceve'))} | "
-                  f"{fmt(r.get('ot_T1_800'))} | {fmt(r.get('parite_tx'))} | {fmt(r.get('fec_kurtarilan'))} | "
-                  f"{r.get('gecersiz', '')} |")
+                  f"{fmt(r.get('ot_T1_800'))} | {fmt(r.get('ot_T2_800'))} | {fmt(r.get('parite_tx'))} | "
+                  f"{fmt(r.get('fec_kurtarilan'))} | {fmt(r.get('clamp'))} | {fmt(r.get('btlbw_sunulan'), 2)} | "
+                  f"{fmt(r.get('ilk_iletim_payi'), 2)} | {fmt(r.get('birikim_ms'), 0)} | "
+                  f"{fmt(r.get('jeton_ac_payi'), 2)} | {fmt(r.get('kilitli'))} | {r.get('gecersiz', '')} |")
         return 0
 
     os.makedirs(a.out, exist_ok=True)
@@ -459,6 +504,7 @@ def main():
             s[f"{mname}_q3"] = qtl(vals, 0.75)
             s[f"{mname}_min"] = min(vals) if vals else None
             s[f"{mname}_max"] = max(vals) if vals else None
+        s["kilit_n"] = sum(1 for r in ok if r.get("kilitli"))
         # arq'a karşı fark (aynı ikili)
         binv = arm.split("_")[1]
         base = groups.get((cell, f"arq_{binv}"), [])
@@ -516,7 +562,8 @@ def main():
                 cur = s["hucre"]
                 f.write(f"\n## {cur}\n\n| kol | N (geçerli/alıcı) | etiket | T1-400 | T1-800 | T2-400 | T2-800 | "
                         "sıralı T1-800 | Δ T1-800 vs arq [%95] | B/çerçeve L2 | parite tx | FEC kurt. | "
-                        "parite bekleme ms | clamp |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+                        "parite bekleme ms | clamp | birikim ms | btlbw/sunulan | kilitli koşu |\n"
+                        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 
             def cellv(m):
                 return (f"{fmt(s.get(m + '_med'))} [{fmt(s.get(m + '_q1'))}, {fmt(s.get(m + '_q3'))}] "
@@ -528,7 +575,8 @@ def main():
                     f"{cellv('ot_T1_400')} | {cellv('ot_T1_800')} | {cellv('ot_T2_400')} | {cellv('ot_T2_800')} | "
                     f"{cellv('ot_sirali_T1_800')} | {dlt} | {fmt(s.get('B_cerceve_l2_med'), 1)} | "
                     f"{fmt(s.get('parite_tx_med'), 0)} | {fmt(s.get('fec_kurtarilan_med'), 0)} | "
-                    f"{fmt(s.get('parite_bekleme_ms_med'), 0)} | {fmt(s.get('clamp_med'), 0)} |\n")
+                    f"{fmt(s.get('parite_bekleme_ms_med'), 0)} | {fmt(s.get('clamp_med'), 0)} | "
+                    f"{cellv('birikim_ms')} | {fmt(s.get('btlbw_sunulan_med'), 2)} | {s.get('kilit_n', 0)}/{s['N_gecerli']} |\n")
         f.write("\n## Gecikme bileşenleri (ms)\n\n| hücre | kol | demet | blok ort/max | seri veri | ağ (OWD) | "
                 "titreşim+kuyruk p50/p95 | parite bekleme | konuma göre T1-800 |\n|---|---|---|---|---|---|---|---|---|\n")
         for s in summ:
