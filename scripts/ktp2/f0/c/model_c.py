@@ -190,8 +190,11 @@ def simulate(cell, arm, variant, rng):
     p = loss / 100.0
     n_frames = int(round(TALK_S / T))
     sd = data_udp(t_ms)
-    copies = 2 if arm == "tekrar" else 1
-    gap = T / copies
+    # tekrar  = C2 öncesi vekil: iki ayrı birim T/2 arayla (duman-1'de koşan kol);
+    # tekrar2 = İSTEK-C2 `--dup-copies 2`: iki kopya aynı sunumda arka arkaya (tam setin kolu).
+    copies = 2 if arm in ("tekrar", "tekrar2") else 1
+    spacing = (T / copies) if arm == "tekrar" else 1e-3
+    gap = T / copies if arm == "tekrar" else T  # ARQ tespiti: bir sonraki farklı sunum
     if arm in RS_ARMS:
         a = RS_ARMS[arm]
         K, E = a["K"], a["E"]
@@ -211,7 +214,7 @@ def simulate(cell, arm, variant, rng):
         offers = []
         for f in range(n_frames):
             for c in range(copies):
-                offers.append((f * T + c * gap, f))
+                offers.append((f * T + c * spacing, f))
         blocks = {}
         if K:
             for b in range(n_frames // K):
@@ -358,7 +361,7 @@ def main():
     for cell in cells:
         rate_key, d_key, loss, t = cell
         rate = RATES[rate_key]
-        for arm, variants in (("arq", ["ideal"]), ("tekrar", ["ideal"]),
+        for arm, variants in (("arq", ["ideal"]), ("tekrar", ["ideal"]), ("tekrar2", ["ideal"]),
                               ("rs2", ["ideal", "pacer1.25", "pacer1.00"]),
                               ("rs4", ["ideal", "pacer1.25", "pacer1.00"]),
                               ("uyar_ates", ["ideal", "pacer1.25"])):
@@ -366,9 +369,9 @@ def main():
                 seed = hash_seed(cell, arm, v)
                 rng = random.Random(seed)
                 K, r, E, ratios = simulate(cell, arm, v, rng)
-                copies = 2 if arm == "tekrar" else 1
+                copies = 2 if arm in ("tekrar", "tekrar2") else 1
                 a_l2, a_l2_arq, rho, rho_arq = wire_rate(t, K, r, E or 64, copies, loss / 100.0, rate)
-                pp = (1 - (loss / 100.0) ** 2) if arm == "tekrar" else p_play(K, r, loss / 100.0)
+                pp = (1 - (loss / 100.0) ** 2) if copies == 2 else p_play(K, r, loss / 100.0)
                 row = {"hiz": rate_key, "gecikme": d_key, "kayip": loss, "demet_ms": t,
                        "kol": arm, "varyant": v, "K": K or "", "r": r if K else "",
                        "E": E or "", "l2_Bps": round(a_l2, 1), "l2_Bps_arq_dahil": round(a_l2_arq, 1),
