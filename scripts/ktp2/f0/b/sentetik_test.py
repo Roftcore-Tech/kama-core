@@ -20,6 +20,7 @@ import sys
 import tempfile
 
 HERE = pathlib.Path(__file__).resolve().parent
+sys.dont_write_bytecode = True
 T0 = 1_800_000_000.0
 PORT = 23456
 CPORT = 40000

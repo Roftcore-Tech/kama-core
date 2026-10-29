@@ -17,6 +17,7 @@ import tarfile
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+sys.dont_write_bytecode = True  # depoya __pycache__ yazılmasın
 import fizik  # noqa: E402
 
 ARSIV = HERE.parents[3] / "reports/ktp2/f0/05b-netem/oturum-2-49864510/run-49864510.tar.xz"

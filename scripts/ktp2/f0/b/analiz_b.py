@@ -30,6 +30,7 @@ import sys
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))  # -I betik dizinini eklemez; kendi modülümüz açıkça
+sys.dont_write_bytecode = True  # depoya __pycache__ yazılmasın
 import fizik  # noqa: E402
 
 KAMA_K = 8  # profil 0x05 k_shape (unit_id = block × K + esi; runtime.rs RECOVERED yolu)

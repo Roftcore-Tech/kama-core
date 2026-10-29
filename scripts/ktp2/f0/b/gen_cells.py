@@ -12,6 +12,7 @@ import sys
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))  # -I betik dizinini sys.path'e koymaz; kendi modülümüz açıkça
+sys.dont_write_bytecode = True  # depoya __pycache__ yazılmasın
 import fizik  # noqa: E402
 
 CELLS = HERE.parent / "cells" / "b"
