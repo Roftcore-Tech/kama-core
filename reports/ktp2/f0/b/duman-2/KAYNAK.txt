@@ -1,0 +1,12 @@
+kaynak=/home/ryuzaki/kama-k4g-work/ktp2-f0/runs/duman-2/out
+kosu=F0_REPS=1 f0_grid.sh -j 12 (orkestratör, A/C/D hücreleriyle eşzamanlı), DUMAN-2.txt @ a9a31ae9 (ktp2/f0-taban kopyası)
+BIN_ADAY=/home/ryuzaki/kama-k4g-work/ktp2-f0/bin/aday-bf18dc35/bench
+BIN_ADAY_sha256=c893e84047757007b9e7bdd4d330683de1a01cf4f671d1dfaa3f50accd4a2860
+BIN_F0A_ADAY=/home/ryuzaki/kama-k4g-work/ktp2-f0/bin/aday-bf18dc35/f0_flows
+BIN_F0A_ADAY_sha256=72739b7401c8c017b221147595c7f543b27a52a7f296e0c13e091fd042cb4760
+BIN_F0A_TABAN=/home/ryuzaki/kama-k4g-work/ktp2-f0/bin/taban-2cd9f68d/f0_flows
+BIN_F0A_TABAN_sha256=28b5a8ccfc54a7ca737f17b765ce8cc93019dd4ececd7e2ff2330c750c56d05c
+BIN_TABAN=/home/ryuzaki/kama-k4g-work/ktp2-f0/bin/taban-2cd9f68d/bench
+BIN_TABAN_sha256=3311d8e0c6d0026a17f48eeeeaf09566741a4de5d60e7ce6a97d1c999ea0ecbe
+kosucu=aa9935ac sonrası (koşu başı netem boşaltma)
+analiz=python3 -I scripts/ktp2/f0/b/analiz_b.py /home/ryuzaki/kama-k4g-work/ktp2-f0/runs/duman-2/out --out reports/ktp2/f0/b/duman-2

@@ -193,8 +193,50 @@ titreşim tamponu (PTT oranı tek-yön taşıma gecikmesidir, ağızdan kulağa 
 
 ## 8. Ölçüm sonuçları
 
-Henüz koşu yok. (Koşu sonrası: hücre tabloları, kazanılan/kaybedilen hücre listesi, K-2 kesişim
-tablosu, kurulum ve tel muhasebesi.)
+### 8.1 Duman (duman-2, N = 1 / hücre — BETİMSEL, hüküm yok)
+
+Kök `/home/ryuzaki/kama-k4g-work/ktp2-f0/runs/duman-2/out`; ikililer taban `2cd9f68d`
+(sha256 `3311d8e0…`), aday `bf18dc35` (`c893e840…`); `F0_REPS=1`, j = 12 (diğer şeritlerle
+eşzamanlı). Analiz: `rakip_analiz.py` / `karisik_analiz.py` (bu dal).
+
+Düzenek denetimi [ölçüldü]: 6 hücre, 32/32 koşu rc = 0; koşu öncesi netem kuyruğu dolu (kirli)
+koşu 0 (İSTEK-O-D1 etkin); `bench fairness` hiçbir çiftte engelleyici fark bulmadı; anlam farkları
+(teslim tanımı, sıra) beyan edildi (`non-normalized`, beklenen). Alıcı damgası (`rx_log.jsonl`)
+kama, tcp, quinn'de yazıldı; tcp için t0 `t_start + setup_ns` yaklaşıklamasıyla (≈ 10 ms erken).
+
+| hücre (N=1) | taban (Kama) | quinn (BBR, tack) | tcp (tack) | betimsel kollar |
+|---|---|---|---|---|
+| d_hs_r25_d300_l0 (65 B × 6, 15 s) | 1/6 teslim (60 s); tel 4208 B: data 552, retx 357, **dup 2024, ctrl 1275**; `state=PreConverge`, srtt 0, `pace=31 B/s` > hat 25 B/s; koşu sonu ileri kuyruk 32 paket / 3769 B | bağlantı **107,5 s** (öngörü ≈ 100 s), 0/6 | bağlantı 6,45 s (öngörü 6,5 s), 6/6; p95 gönderen 32,6 s / alıcı 29,6 s | quinn_rpl: 60 s el sıkışma tavanı, 0/6 · tcp_rpl 6/6 |
+| d_hs_r25_d300_l20 | 1/6 (60 s) | bağlantı 113 s, 0/6 | 3/6 (ilk üç mesaj 92 s'de birlikte: HOL; alıcı ilk ikisini ≈ 46 s'de almış, gönderen ACK'i geç görmüş) | tcp_rpl 5/6 |
+| d_irtt_r1k_d1000_l10 (1000 B × 20, 5 s) | 20/20; p95 15,4 s | 20/20; p95 11,3 s; kurulum 4,9 s | 20/20; p95 11,3 s | quinn_irtt kurulum **18,6 s** (initial_rtt 2 s → PTO 6 s; kayıp el sıkışma paketi 6 s+ bekletir), p95 7,6 s |
+| d_cc_r12k_d300_l30 (1000 B × 150, 200 ms) | 150/150; p95 11,5 s | 150/150; p95 3,4 s | 0,667 (60 s) | quinn_cubic 1,0; p95 37,4 s |
+| d_cc_r12k_d1000_l10 | **0,793**; ss@30 0,013; BtlBw kestirimi 2981 B/s (hat 12 500), `pace=2981 B/s` < sunulan ≈ 5 kB/s → gönderen kuyruğu | 150/150; p95 5,0 s | 150/150; p95 6,8 s | quinn_cubic 1,0; p95 45,5 s |
+
+Karışık akış `d_mix_r12k_d300_l30` (N=1): üç taşıma uçtan uca çalıştı (372/372 öğe kama ve quinn'de
+alındı). TEXT p95 dosyalı/dosyasız: taban 18,7/8,7 s · aday 24,7/4,1 s · quinn 12,3/8,8 s · tcp ∞/15,4 s
+(tcp dosyalıda TEXT@10 s = 0,033, dosya %63,5). PTT@0,4 s dosyasız kollarda bile 0,07–0,53: bu
+profilde netem'in sıra koruyan jitter'ı tek-yön gecikmeyi profil değerinin üstüne taşıyor (Ajan B
+İSTEK-O1) → 0,4 s son tarihi fiziksel olarak dar; analiz 1,2 s'yi de raporlayacak.
+
+Önceden kayıtlı öngörülerden sapmalar (beklenti-kaydı; N = 1, yön bilgisi):
+- **Tutan:** quinn 25 B/s bağlantısı ≈ 100 s (ölçülen 107/113 s), quinn r25'te 0 teslim; TCP
+  r25 bağlantısı ≈ 6,5 s; tcp karışık akışta HOL.
+- **Tutmayan:** (a) "Cubic asgari pencerede çöker" öngörüsü r12k_d1000_l10'da TCP için tutmadı
+  (150/150, p95 6,8 s); quinn_cubic tamamladı ama p95 45 s. (b) quinn_irtt'in el sıkışmayı
+  hızlandıracağı öngörüsü tersine döndü (kurulum 4,9 → 18,6 s): uzun initial_rtt kayıpta PTO'yu da
+  uzatıyor. (c) Kama'nın 25 B/s'de kayıpsız profilde bile çoğu mesajı teslim edemeyeceği ve
+  r12k_d1000_l10'da BtlBw'yi hattın ≈ %24'ü kestireceği ÖNGÖRÜLMEMİŞTİ.
+
+Şerit-dışı bulgu adayları (ölçüm N = 1; kök neden Ajan B'nin alanı — yalnız iletiyorum):
+- **K-r25:** 25 B/s'de Kama'nın asgari pacing hızı (31 B/s, `KP-ACTIVATION est pace`) hat
+  hızının üstünde; RTT örneği olmadan PreConverge'den çıkılmıyor (srtt 0) ve çoğaltma + kontrol
+  baytı veri baytının ≈ 6 katı. Kuyruk sınırsız büyüyor.
+- **K-r12k-d1000:** RTT 2 s, %10 kayıpta BtlBw kestirimi hattın ≈ %24'ü; pacing sunulan yükün
+  altında kalıyor, gecikme 30 s+.
+
+### 8.2 Tam set
+
+Henüz koşulmadı.
 
 ## 9. İSTEK'ler
 

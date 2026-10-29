@@ -267,12 +267,21 @@ class Run:
     tcp_cc: str = ""
     manifest: dict | None = None
     note: str = ""
+    # Alıcı-tarafı tek-yön gecikme (rx_log.jsonl; teslim edilmeyen = inf). None = kayıt yok.
+    ow_s: list[float] | None = None
+    ow_note: str = ""
 
     def completion(self, d_s: float, cold: bool = False) -> float:
         if not self.ok or self.n == 0:
             return 0.0
         add = self.setup_ns / NS if cold else 0.0
         return sum(1 for x in self.lat_s if x + add <= d_s) / self.n
+
+    def ow_completion(self, d_s: float) -> float:
+        """Alıcıya tek-yön teslim oranı (sunum planından alıcı uygulamaya ≤ d_s)."""
+        if not self.ok or self.n == 0 or self.ow_s is None:
+            return float("nan")
+        return sum(1 for x in self.ow_s if x <= d_s) / self.n
 
     def contaminated(self) -> bool:
         return any(
@@ -304,6 +313,7 @@ def load_run(cell: str, arm: str, rep: int, d: str) -> Run:
         r.udp_tx = int(meta.get("udp_tx_bytes", 0) or 0)
         r.udp_rx = int(meta.get("udp_rx_bytes", 0) or 0)
         r.tx_comp = meta.get("tx", {}) or {}
+        sent_by_id = {int(e.get("msg_id", -1)): int(e.get("sent_ns", 0)) for e in ev}
         lat = []
         for e in ev:
             dn = e.get("delivered_ns")
@@ -316,6 +326,7 @@ def load_run(cell: str, arm: str, rep: int, d: str) -> Run:
         r.lat_s = sorted(lat)
         if r.rc not in (0, None):
             r.note = f"rc={r.rc} ama out.jsonl var"
+        one_way(r, d, meta, sent_by_id)
     else:
         r.note = f"out.jsonl yok/bozuk (rc={r.rc})"
     pre = read_json_objects(os.path.join(d, "realized_pre.json"))
@@ -340,6 +351,72 @@ def load_run(cell: str, arm: str, rep: int, d: str) -> Run:
         except json.JSONDecodeError:
             r.manifest = None
     return r
+
+
+DUP_RE = re.compile(r"-dup(\d+)")
+
+
+def one_way(r: Run, d: str, meta: dict, sent_by_id: dict[int, int]) -> None:
+    """rx_log.jsonl (şema ktp2-c-rx-v1) varsa alıcı-tarafı tek-yön gecikmeyi kurar.
+
+    Sunum anı (unix): kama = t0_unix + (sent_ns − events_epoch_offset_ns); quinn = t0_unix + sent_ns;
+    tcp: bench t0_unix kaydetmez → t_start + setup_ns YAKLAŞIKLAMASI (istemci süreç açılışı kadar,
+    ≈ 10 ms mertebesi erken; gecikme o kadar büyük görünür) — `ow_note` bunu yazar.
+    Birim → mesaj: kama = birim // N (`-dupN` etiketi; warmup F0'da 0), tcp = çerçeve msg_id,
+    quinn = yükün ilk 8 baytı (u64::MAX = kimliksiz, sayılmaz).
+    """
+    objs = []
+    t = read_text(os.path.join(d, "rx_log.jsonl"))
+    if not t:
+        return
+    for line in t.splitlines():
+        try:
+            objs.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    if not objs or objs[0].get("rx_log_schema") != "ktp2-c-rx-v1":
+        r.ow_note = "rx_log şeması tanınmadı"
+        return
+    tr = meta.get("transport", "")
+    t0 = int(meta.get("t0_unix_ns", 0) or 0)
+    off = int(meta.get("events_epoch_offset_ns", 0) or 0)
+    if tr.startswith("tcp") and t0 == 0:
+        ts = read_text(os.path.join(d, "t_start"))
+        try:
+            t0 = int(float(ts.strip()) * 1e9) + r.setup_ns
+            r.ow_note = "tcp t0 ≈ t_start + setup_ns (yaklaşık)"
+        except (AttributeError, ValueError):
+            r.ow_note = "tcp t0 yok"
+            return
+    if t0 == 0:
+        r.ow_note = "t0_unix yok"
+        return
+    m = DUP_RE.search(meta.get("kama_arm", "") or "")
+    dup = int(m.group(1)) if (m and tr.startswith("kama")) else 1
+    first: dict[int, int] = {}
+    unknown = 0
+    for o in objs[1:]:
+        u = o.get("u")
+        if u is None:
+            continue
+        if u >= 2 ** 64 - 1:
+            unknown += 1
+            continue
+        mid = u // dup
+        if mid not in first or o["t"] < first[mid]:
+            first[mid] = o["t"]
+    ow = []
+    for mid in range(r.n):
+        if mid in first and mid in sent_by_id:
+            sent_unix = t0 + sent_by_id[mid] - off
+            ow.append(max(0, first[mid] - sent_unix) / NS)
+        else:
+            ow.append(INF)
+    r.ow_s = sorted(ow)
+    if unknown:
+        r.ow_note = (r.ow_note + f"; kimliksiz {unknown} kayıt").strip("; ")
+    if objs[0].get("dropped"):
+        r.ow_note = (r.ow_note + f"; rx_log dropped={objs[0]['dropped']}").strip("; ")
 
 
 def discover(roots: list[str]) -> dict[str, dict[str, list[Run]]]:
@@ -402,11 +479,21 @@ def arm_summary(runs: list[Run], deadlines: list[float]) -> dict:
     s["rev_bytes"] = quartiles([r.rev.get("bytes", 0) for r in runs if r.rev.get("ok")])
     s["transport"] = sorted({r.transport for r in runs if r.transport})
     s["cc"] = sorted({r.cc for r in runs if r.cc})
-    s["tcp_cc"] = sorted({r.tcp_cc for r in runs if r.tcp_cc})
-    s["retx_segs"] = quartiles([r.tcp_snmp.get("RetransSegs", 0) for r in runs if r.tcp_snmp])
+    s["tcp_cc"] = sorted({r.tcp_cc for r in runs if r.tcp_cc and r.transport.startswith("tcp")})
+    s["retx_segs"] = quartiles([r.tcp_snmp.get("RetransSegs", 0) for r in runs
+                                if r.tcp_snmp and r.transport.startswith("tcp")])
     s["quinn_lost"] = quartiles([float(r.quinn.get("lost_packets_t0", r.quinn.get("lost_packets", 0))) for r in runs if r.quinn])
-    s["kama_retx"] = quartiles([float(r.tx_comp.get("retx", 0)) for r in runs
-                                if r.tx_comp and r.transport.startswith("kama")])
+    kr = [r for r in runs if r.tx_comp and r.transport.startswith("kama")]
+    s["kama_retx"] = quartiles([float(r.tx_comp.get("retx", 0)) for r in kr])
+    s["kama_tx"] = {k: quartiles([float(r.tx_comp.get(k, 0)) for r in kr])[2]
+                    for k in ("data", "retx", "dup", "fec", "ctrl")} if kr else {}
+    ow_runs = [r for r in runs if r.ow_s is not None]
+    s["ow_n"] = len(ow_runs)
+    s["ow_notes"] = sorted({r.ow_note for r in runs if r.ow_note})
+    for d in deadlines:
+        s[f"ow@{d:g}"] = quartiles([r.ow_completion(d) for r in ow_runs])
+    pooled_ow = sorted(x for r in ow_runs for x in r.ow_s)
+    s["ow_p95"] = quantile_nr(pooled_ow, 0.95) if pooled_ow else float("nan")
     s["notes"] = sorted({r.note for r in runs if r.note})
     return s
 
@@ -455,12 +542,14 @@ def fairness_py(runs_by_arm: dict[str, list[Run]]) -> list[str]:
 
 
 def fairness_bench(bench: str, runs_by_arm: dict[str, list[Run]]) -> list[str]:
-    paths = []
+    paths: list[str] = []
+    order: list[str] = []
     for arm in sorted(runs_by_arm):
         p = next((os.path.join(r.path, "manifest.json") for r in runs_by_arm[arm]
                   if os.path.exists(os.path.join(r.path, "manifest.json"))), None)
         if p:
             paths.append(p)
+            order.append(arm)
     if len(paths) < 2:
         return ["(fairness: < 2 manifest)"]
     try:
@@ -469,7 +558,9 @@ def fairness_bench(bench: str, runs_by_arm: dict[str, list[Run]]) -> list[str]:
         return [f"(fairness çalıştırılamadı: {e})"]
     lines = [ln for ln in (cp.stdout + cp.stderr).splitlines()
              if ln.startswith(("BLOCKING", "NON-NORMALIZED", "NORMALIZED", "  semantics", "comparison=", "INVALID", "DENEY"))]
-    return [f"rc={cp.returncode}"] + lines
+    # bench çıktısı yalnız "rep1/manifest.json" yazar; çiftler kol sırasıyla (i<j) gelir.
+    pairs = [f"{order[i]}~{order[j]}" for i in range(len(order)) for j in range(i + 1, len(order))]
+    return [f"rc={cp.returncode} kol sırası: {', '.join(order)}; çift sırası: {', '.join(pairs)}"] + lines
 
 
 def k2_crossing(cells: dict, deadline: float, cold: bool) -> list[dict]:
@@ -522,8 +613,9 @@ def render(cells, deadlines, primary, kama, bench) -> tuple[str, dict]:
         md.append(f"\n## {cell}\n")
         md.append("| kol | taşıma/cc | N | düşen | kirli | " +
                   " | ".join(f"ss@{d:g} medyan [IQR] (min–maks)" for d in deadlines) +
-                  f" | cold@{primary:g} medyan | p95 gecikme (havuz) | kurulum s medyan | tel B/mesaj | yararlı/ileri |")
-        md.append("|" + "---|" * (10 + len(deadlines)))
+                  f" | cold@{primary:g} medyan | p95 gecikme (havuz) | alıcı tek-yön@{primary:g} medyan"
+                  f" | alıcı p95 (havuz) | kurulum s medyan | tel B/mesaj | yararlı/ileri |")
+        md.append("|" + "---|" * (12 + len(deadlines)))
         for arm in sorted(arms):
             s = summ[arm]
             cols = []
@@ -536,7 +628,8 @@ def render(cells, deadlines, primary, kama, bench) -> tuple[str, dict]:
                 tr += f" (tcp_cc={','.join(s['tcp_cc'])})"
             md.append(f"| {arm} | {tr} | {s['N']} ({s['claim']}) | {s['dusen']} | {s['kirli']} | " +
                       " | ".join(cols) +
-                      f" | {fmt(qc[2])} | {fmt(s['lat_pooled'][0.95], 2)} | {fmt(s['setup_s'][2], 3)} | "
+                      f" | {fmt(qc[2])} | {fmt(s['lat_pooled'][0.95], 2)} | {fmt(s[f'ow@{primary:g}'][2])}"
+                      f" | {fmt(s['ow_p95'], 2)} | {fmt(s['setup_s'][2], 3)} | "
                       f"{fmt(s['wire_per_msg'][2], 0)} | {fmt(s['useful_fwd'][2])} |")
         # kazanılan / kaybedilen
         kama_arms = [a for a in arms if is_kama(a, kama)]
@@ -565,8 +658,12 @@ def render(cells, deadlines, primary, kama, bench) -> tuple[str, dict]:
                 extra.append(f"{arm}: TCP RetransSegs medyan {fmt(s['retx_segs'][2], 0)}")
             if s["quinn_lost"][2] == s["quinn_lost"][2]:
                 extra.append(f"{arm}: quinn lost_packets(t0) medyan {fmt(s['quinn_lost'][2], 0)}")
-            if s["kama_retx"][2] == s["kama_retx"][2]:
-                extra.append(f"{arm}: Kama retx B medyan {fmt(s['kama_retx'][2], 0)}")
+            if s["kama_tx"]:
+                kt = s["kama_tx"]
+                extra.append(f"{arm}: Kama tel dökümü medyan B — " +
+                             " ".join(f"{k}={fmt(kt[k], 0)}" for k in ("data", "retx", "dup", "fec", "ctrl")))
+            for nt in s["ow_notes"]:
+                extra.append(f"{arm}: alıcı damgası: {nt}")
             for nt in s["notes"]:
                 extra.append(f"{arm}: {nt}")
             if s["kirli"]:
