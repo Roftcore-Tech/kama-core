@@ -400,3 +400,48 @@ Diğer sayaçlar 8/8 koşuda: dinleyici düşüşü 0, birim izi düşüşü 0, 
 - **`a_r12k_d300_l30_tasma_dosya`** (2 MB, durma 10–250 s): durmada bob'a ≈ 240 s × 6–7 birim/s ≈ 1400–1700 birim gelir. Bundan **≈ 400–700 birim ACK'li düşer** (iki kolda). İlk düşen birimden sonra bütün birimler `Reorder`'da kalır (tutulan < 4096 → atlama yok). Dosya bob'da `IdleTimeout` ile biter; durma bitiminden sonraki TEXT / sinyal / PTT teslim edilmez. Taban'da A-10 türü hız düşüşü olursa alım hızı düşer ve taşma azalır ya da hiç olmaz.
 - **`a_rinf_d300_l30_tasma_dosya`** (8 MB, 20–50 s): bu tahmin düşük güvenli; hız sınırsız hatta pacer'ın varacağı hız bilinmiyor. Dosyalı r12k'daki 9–11 kB/s'nin üstünde kalırsa ≥ 37 kB/s'de taşma olur. Altında kalırsa `delivery_channel_drops = 0` olur ve hücre "ölçülemedi: alım hızı < 34 birim/s" sayılır.
 - **Karşı örnek** (dosyalı hücreler, `2d64a013` sonrası): taban'da yeni veri kuyruğu dosyanın ilk geçişinden sonra boşalır. Taban r12k'da tetik ≈ 70–90 s'de, karşı örnek TEXT toplamı ≈ 5–30 s, reorder baskın. Aday'da tetik dosya sonuna yakın ya da hiç (§5.1 ile aynı).
+
+## 10. Tam set ara notu 1 — `a_r12k_d300_l30_dosyasiz` [ölçüldü, N = 30/kol]
+
+Kaynak: `~/kama-k4g-work/ktp2-f0/runs/tam/a/out/a_r12k_d300_l30_dosyasiz`. DONE 2026-10-29T22:12:35Z. Hücre dosyası sha256 `550d6fc6…`, dalda commit'li olanla aynı. İkililer: taban `taban-1f6c3433` (`d330b82e…`), aday `aday-0a251074` (`02340156…`). Tam analiz bütün hücreler bitince yapılacak; bu not yalnız geçerlilik ve ilk gözlemdir.
+
+**Geçerlilik (60/60 koşu).**
+- rc = 0 her koşuda; alice.json / bob.json tam.
+- Olay sayıları sıfır değil (send, rx, ts ≥ 100).
+- Zarf taşıyıcısı `inits = 1` ve hatasız.
+- Dinleyici düşüşü, iz düşüşü ve JSONL hatası 0.
+- Netem: pre sayaçları her koşuda 0 (temiz kuyruk); seçenekler profille aynı (delay 0,3 s, jitter 0,06 s, loss 0,30, rate 12 500 B/s).
+- Gerçekleşen kayıp, koşu medyanı (min–maks):
+
+  | Yön | taban | aday |
+  |---|---|---|
+  | ileri | %31,1 (21,4–35,2) | %30,3 (23,6–35,3) |
+  | dönüş | %29,8 (22,9–35,6) | %29,6 (20,1–35,3) |
+
+- 1/60 koşu `incomplete` (taban rep11). Düzenek kusuru değil, ürün davranışı (aşağıda A-11).
+
+**İlk gözlem.** Hücre içi değerler koşular arası medyan [Q1–Q3], saniye.
+
+| Ölçü | taban | aday |
+|---|---|---|
+| TEXT p50 | 2,53 [1,52–5,77] | 1,31 [0,96–3,09] |
+| TEXT p95 | 13,49 [10,27–18,88] | 10,74 [7,19–14,49] |
+| TEXT p95 katmanları (fifo / net / reorder) | 3,7 / 7,3 / 8,3 | 6,7 / 4,7 / 4,6 |
+| PTT demeti p50 | 5,29 | 4,78 |
+| PTT demeti p95 | 15,22 | 12,35 |
+| PTT ≤ 800 ms % | 2 [0–8] | 4 [2–8] |
+| Sinyal p95 | 14,26 | 11,20 |
+| TEXT alındısı p95 | 19,42 | 13,53 |
+| `delivery_channel_drops` | 0 (30/30) | 0 (30/30) |
+| NotReady düşüşü | 0 | 0 |
+| Alıcıda en çok tutulan birim | 20 (11–37) | 15 (7–24) |
+| alice pacer p50 (B/s; hat 12 500) | 362 [244–646] | 318 [247–643] |
+
+- **Dosya olmadan da akışlar birbirini bekletiyor.** p95'te sıralama payı taban'da 8,3 s, aday'da 4,6 s; kaynak, kaybolan küçük birimlerin (TEXT / PTT / sinyal) oturum geneli `Reorder`'daki bekleme etkisi.
+- **Gönderen kuyruğu payı A-9'dan geliyor.** Pacer hattın ≈ %3'ünde kalıyor; PTT basışı FIFO'da birikiyor.
+- **Ön-kayıtla karşılaştırma:** §5.1'de TEXT p95 ≈ 2 s [1–4] demiştim; ölçülen 10,7–13,5 s. Sapma üç terimden geliyor: fifo (A-9), net (seyrek trafikte kendi kaybının PTO tabanlı kurtarması) ve reorder (A-2). PTT ≤ 800 ms tahminim %60–80'di; ölçülen %2–4.
+
+**A-11 Tabanda kuyruk sonu birimi takılıyor (1/30).**
+- Ölçüm: taban rep11'de son TEXT (birim 106, t0 + 103,5 s) ilk iletildi ama bob'a hiç ulaşmadı. alice'te `un = 1`, `inf = 1` olarak koşu sonuna dek (403 s) kaldı.
+- Yeniden gönderim sayaçları ≈ 134 s'den sonra durdu (`rtx = 49`, `tlp = 24`); durum DrainRtprop'tan RecoverFwd'ye geçti ama yeni emisyon yok. Aday'da 0/30.
+- Dosya/işlev: tail-recovery / PTO bütçesi (`sender.rs` `emit_tail_probe` `:5890`; `tail_max_probes`). Kök neden ve en dar düzeltme tam analizde, diğer taban hücreleriyle birlikte yazılacak.
