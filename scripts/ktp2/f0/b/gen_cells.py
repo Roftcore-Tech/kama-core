@@ -30,7 +30,7 @@ DUMAN = [
 TEMPLATE = """# [KTP2-F0 / Ajan B] {cell} — ÜRETİLDİ: scripts/ktp2/f0/b/gen_cells.py (fizik.py). ELLE DÜZENLEME.
 # öncelik={prio} tür={kind} N={reps} · ρ_ileri={rho:.3f} (tek iletim Kama veri paketi / hat) ·
 # veri paketi {s_data} B tel · RTT_fiz {rtt:.3f} s (0 aralıklı ACK) / {rtt16:.3f} s (16 aralıklı) ·
-# tek yön alt sınır {ow:.3f} s · ideal ARQ p95 tek yön {p95:.2f} s
+# RTT_fifo {rttf:.3f} s (netem sıra-koruyan jitter) · tek yön alt sınır {ow:.3f} s · ideal ARQ p95 tek yön {p95:.2f} s
 CELL={cell}
 RATE_ID={rate_id}
 DELAY_ID={delay_id}
@@ -65,7 +65,7 @@ def main():
         txt = TEMPLATE.format(
             cell=c["cell"], prio=c["prio"], kind=c["kind"], reps=c["reps"], rho=c["rho_fwd"],
             s_data=c["s_data_l2"], rtt=c["rtt_phys_s"], rtt16=c["rtt_phys_r16_s"],
-            ow=c["oneway_lb_s"], p95=c["ideal_arq_oneway_p95_s"], rate_id=c["rate_id"],
+            rttf=c["rtt_fifo_s"], ow=c["oneway_lb_s"], p95=c["ideal_arq_oneway_p95_s"], rate_id=c["rate_id"],
             delay_id=c["delay_id"], loss=c["loss"], rate=c["rate_Bps"], delay=c["delay_ms"],
             jit=c["jitter_ms"], msgs=c["msgs"], pay=c["payload"], ival=c["ival_ms"],
             dl=c["deadline_s"], netem=c["netem"], budget=fizik.budget_s(c))

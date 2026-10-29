@@ -97,6 +97,38 @@ def ser(nbytes, rate):
     return nbytes / rate
 
 
+_FIFO_CACHE = {}
+
+
+def fifo_owd(d, sigma, spacing, ser_s, n=20000, seed=1):
+    """netem `rate` + jitter tek yön gecikmesi (kendi serileştirmesi hariç) — ortalama ve p95.
+
+    netem_enqueue (sch_netem.c, rate kolu): kuyrukta paket varsa
+      time_to_send = max(son.time_to_send, şimdi + delay_j) + ser_j
+    → paketler sıra DEĞİŞTİRMEZ (KATALOG §2 beyanı) ve gecikme, önceki paketlerin gecikmesinin
+    "aralık kadar azaltılmış" değeriyle maks alınır: σ ≥ aralık olduğunda ortalama tek yön gecikmesi
+    profil değerinin ÜSTÜNE çıkar. Monte Carlo, sabit tohum (model kodu; ürün değil). [çıkarım]
+    """
+    key = (round(d, 6), round(sigma, 6), round(spacing, 6), round(ser_s, 6))
+    if key in _FIFO_CACHE:
+        return _FIFO_CACHE[key]
+    import random
+    r = random.Random(seed)
+    last_tts = -1e18
+    t = 0.0
+    out = []
+    for _ in range(n):
+        t += spacing
+        dj = max(0.0, r.gauss(d, sigma))
+        start = max(last_tts, t + dj) if last_tts > t else t + dj
+        last_tts = start + ser_s
+        out.append(start - t)
+    out = sorted(out[500:])
+    res = (sum(out) / len(out), out[int(0.95 * (len(out) - 1))])
+    _FIFO_CACHE[key] = res
+    return res
+
+
 def netem_str(rate_id, delay_id, loss):
     """KATALOG §2 sırası: delay … distribution normal [loss N%] rate X."""
     d, j = DELAYS[delay_id]
@@ -148,6 +180,13 @@ def phys(rate_id, delay_id, loss, p):
         k = max(1, math.ceil(math.log(1 - pct) / math.log(qq) - 1e-12))
         return oneway_lb + t_data + (k - 1) * rtt_phys
     exp_tx = 1 / (1 - q) if q < 1 else float("inf")
+    # netem FIFO-jitter düzeltmesi: ileri aralık = I; dönüş ACK aralığı ≈ 2I (ACK_FREQ_N = 2,
+    # receiver.rs:76) — I ≥ 8,39 s'de (cadence tabanı, receiver.rs:93) mesaj başına ACK → I.
+    j = j_ms / 1000.0
+    ack_sp = I if I >= 8.387 else 2 * I
+    owd_f, owd_f95 = fifo_owd(d, j, I, t_data)
+    owd_r, _ = fifo_owd(d, j, ack_sp, ser(s_ack0, R))
+    rtt_fifo = owd_f + t_data + owd_r + ser(s_ack0, R)
     return {
         "cell": cell_name(rate_id, delay_id, loss, p),
         "rate_id": rate_id, "delay_id": delay_id, "loss": loss, "payload": p,
@@ -158,6 +197,8 @@ def phys(rate_id, delay_id, loss, p):
         "t_ser_data_s": t_data, "t_ser_ack0_s": ser(s_ack0, R), "t_ser_ack16_s": ser(s_ack16, R),
         "rtt_phys_s": rtt_phys, "rtt_phys_r16_s": rtt_phys_r16,
         "oneway_lb_s": oneway_lb, "conf_lb_s": rtt_phys,
+        "owd_fwd_fifo_s": owd_f, "owd_fwd_fifo_p95_s": owd_f95, "owd_rev_fifo_s": owd_r,
+        "rtt_fifo_s": rtt_fifo, "oneway_fifo_s": owd_f + t_data,
         "rho_fwd": rho_fwd, "rho_fwd_arq": rho_fwd * exp_tx,
         "rho_rev_ack_per_msg_r16": ser(s_ack16, R) / I,
         "useful_share_lb": p / s_data,  # tek iletim, ACK hariç: faydalı yük / veri paketi
@@ -257,14 +298,15 @@ def budget_s(c):
 def cmd_tablo():
     cells = grid()
     print("| hücre | öncelik | N | I (ms) | M | D (s) | ρ ileri | ρ ileri (ideal ARQ) | veri paketi (B) | "
-          "ser. veri (s) | ser. ACK 0/16 (s) | RTT_fiz 0/16 (s) | tek yön alt sınır (s) | "
+          "ser. veri (s) | ser. ACK 0/16 (s) | RTT_fiz 0/16 (s) | RTT_fifo (s) | tek yön alt sınır / fifo (s) | "
           "ideal ARQ p95 tek yön (s) | ideal ARQ D içinde | faydalı yük payı ≤ |")
-    print("|" + "---|" * 16)
+    print("|" + "---|" * 17)
     for c in cells:
         print(f"| {c['cell']} | {c['prio']} | {c['reps']} | {c['ival_ms']} | {c['msgs']} | {c['deadline_s']} | "
               f"{c['rho_fwd']:.3f} | {c['rho_fwd_arq']:.3f} | {c['s_data_l2']} | {c['t_ser_data_s']:.3f} | "
               f"{c['t_ser_ack0_s']:.3f}/{c['t_ser_ack16_s']:.3f} | {c['rtt_phys_s']:.3f}/{c['rtt_phys_r16_s']:.3f} | "
-              f"{c['oneway_lb_s']:.3f} | {c['ideal_arq_oneway_p95_s']:.2f} | {c['ideal_arq_within_D']:.4f} | "
+              f"{c['rtt_fifo_s']:.3f} | {c['oneway_lb_s']:.3f}/{c['oneway_fifo_s']:.3f} | "
+              f"{c['ideal_arq_oneway_p95_s']:.2f} | {c['ideal_arq_within_D']:.4f} | "
               f"{c['useful_share_lb']:.3f} |")
 
 

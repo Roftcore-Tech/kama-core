@@ -344,9 +344,12 @@ def kama_capture(rep, g, meta, ev):
         return {"cap": "yok"}
     port = server_port(rep)
     R = g["rate_Bps"]
-    d_nom = g["delay_ms"] / 1000.0
+    # Referans tek yön gecikmesi: netem FIFO-jitter beklenen değeri (fizik.fifo_owd; aralık = I).
+    # Profil değeri (delay_ms) σ ≥ aralıkta gerçek ortalamanın altında kalır → "kuyruk fazlası"
+    # sıfır kuyrukta bile pozitif çıkardı.
+    d_nom = g["owd_fwd_fifo_s"]
     jit = g["jitter_ms"] / 1000.0
-    rtt_phys = g["rtt_phys_r16_s"] if g["loss"] else g["rtt_phys_s"]
+    rtt_phys = max(g["rtt_fifo_s"], g["rtt_phys_r16_s"] if g["loss"] else g["rtt_phys_s"])
 
     def udp(rows, direction, to_server):
         out = []
@@ -847,6 +850,7 @@ def analyze_run(rep, g, arm):
         r["srtt_s"] = r["est_srtt"] / 1e6
         r["srtt_over_rttphys"] = r["srtt_s"] / g["rtt_phys_s"]
         r["srtt_over_rttphys16"] = r["srtt_s"] / g["rtt_phys_r16_s"]
+        r["srtt_over_rttfifo"] = r["srtt_s"] / g["rtt_fifo_s"]
     if r.get("est_rtprop") is not None:
         r["rtprop_s"] = r["est_rtprop"] / 1e6
     if r.get("est_pace") is not None:
@@ -871,6 +875,8 @@ def analyze_run(rep, g, arm):
     else:
         cap = {"cap": "bilinmeyen-taşıyıcı"}
     r.update(cap)
+    if r.get("srtt_s") and r.get("rtt_net_last20_med_s"):
+        r["srtt_over_rttnet"] = r["srtt_s"] / r["rtt_net_last20_med_s"]
     # faydalı yük payı (ileri, hattan geçen) — sınıf sütunları + kapasiteye oran
     tot = r.get("wf_total")
     if tot:
@@ -913,7 +919,10 @@ OZET_METRICS = [
     ("cp_sent_after_conf", "teyit geldikten sonra gönderilen kopya [yakalama]"),
     ("tcp_retx_B", "TCP yeniden gönderim baytı [yakalama]"),
     ("srtt_s", "motor srtt (s, kapanış) [sayaç]"),
-    ("srtt_over_rttphys", "srtt / RTT_fiz [sayaç+model]"),
+    ("srtt_over_rttphys", "srtt / RTT_fiz (profil) [sayaç+model]"),
+    ("srtt_over_rttfifo", "srtt / RTT_fifo (netem sıra-koruyan jitter) [sayaç+model]"),
+    ("srtt_over_rttnet", "srtt / ölçülen ağ RTT (son 20) [sayaç+yakalama]"),
+    ("rtt_samples", "RTT örneği sayısı [sayaç]"),
     ("rtt_net_last20_med_s", "ölçülen ağ RTT, son 20 orijinal (s) [yakalama]"),
     ("ack_hold_med_s", "alıcı ACK tutması medyanı (s) [yakalama]"),
     ("ack_hold_p95_s", "alıcı ACK tutması p95 (s) [yakalama]"),
@@ -1020,6 +1029,7 @@ def main():
         L.append(f"## {c} — {g['prio']} {g['kind']}{'' if done else ' (DONE YOK: yarım)'}")
         L.append(f"`{g['netem']}` · M={g['msgs']} × {g['payload']} B @ {g['ival_ms']} ms · D={g['deadline_s']} s · "
                  f"ρ_ileri={g['rho_fwd']:.3f} · RTT_fiz={g['rtt_phys_s']:.3f}/{g['rtt_phys_r16_s']:.3f} s · "
+                 f"RTT_fifo={g['rtt_fifo_s']:.3f} s · "
                  f"tek yön alt sınır={g['oneway_lb_s']:.3f} s · ideal ARQ p95 tek yön={g['ideal_arq_oneway_p95_s']:.2f} s")
         L.append("")
         hdr = "| ölçü | " + " | ".join(arms_order) + " |"

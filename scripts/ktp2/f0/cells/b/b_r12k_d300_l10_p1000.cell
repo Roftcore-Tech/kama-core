@@ -1,7 +1,7 @@
 # [KTP2-F0 / Ajan B] b_r12k_d300_l10_p1000 — ÜRETİLDİ: scripts/ktp2/f0/b/gen_cells.py (fizik.py). ELLE DÜZENLEME.
 # öncelik=P3 tür=hukum N=30 · ρ_ileri=0.300 (tek iletim Kama veri paketi / hat) ·
 # veri paketi 1069 B tel · RTT_fiz 0.691 s (0 aralıklı ACK) / 0.696 s (16 aralıklı) ·
-# tek yön alt sınır 0.386 s · ideal ARQ p95 tek yön 1.08 s
+# RTT_fifo 0.691 s (netem sıra-koruyan jitter) · tek yön alt sınır 0.386 s · ideal ARQ p95 tek yön 1.08 s
 CELL=b_r12k_d300_l10_p1000
 RATE_ID=r12k
 DELAY_ID=d300
