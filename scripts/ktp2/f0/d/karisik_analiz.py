@@ -15,7 +15,7 @@ Girdi: f0_cell.sh kökü; kol dizinlerinde `bench mixed-client` çıktısı `mix
 K-1 uyarlaması (taşıma düzeyi; taslak §6): TEXT p95(dosyalı) ≤ p95(dosyasız) + 2 × en büyük paket
 serileştirmesi + 1 RTT; PTT son tarih oranı(dosyalı) ≥ 0,95 × (dosyasız). N < 30 → betimsel.
 
-Kullanım: python3 -I karisik_analiz.py KÖK [KÖK…] [--ptt-deadlines 0.4,0.8] [--md X] [--json Y]
+Kullanım: python3 -I karisik_analiz.py KÖK [KÖK…] [--ptt-deadlines 0.4,0.8,1.2] [--md X] [--json Y]
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ import os
 import re
 import sys
 
+sys.dont_write_bytecode = True  # depo ağacına __pycache__ yazma
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from rakip_analiz import (  # noqa: E402  (aynı dizindeki yardımcılar)
     INF, PROFILE_RE, RATE_BPS, RTT_S, fmt, median_ci, quantile_nr, quartiles, read_json_objects,
@@ -143,7 +144,7 @@ def summarize(runs: list[dict], ptt_d: list[float]) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("roots", nargs="+")
-    ap.add_argument("--ptt-deadlines", default="0.4,0.8")
+    ap.add_argument("--ptt-deadlines", default="0.4,0.8,1.2")
     ap.add_argument("--md", default="")
     ap.add_argument("--json", default="")
     a = ap.parse_args()
