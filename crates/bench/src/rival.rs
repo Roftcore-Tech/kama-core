@@ -95,6 +95,9 @@ impl RivalTuning {
             quinn_iw_bytes: nz(quinn_iw_bytes),
             quinn_keepalive: nz(quinn_keepalive_ms).map(Duration::from_millis),
             stats,
+            // Ayrı bayraklar: çağıran (main) açıkça yazar.
+            early_exit: false,
+            payload_id: false,
         }
     }
 
