@@ -16,8 +16,11 @@ Katmanlar (öğe başına, ms; anlar Unix epoch, iki süreç aynı makinede):
   t_send     uygulama çağrısı (alice `send.t`)
   t_accept   Transport kabulü (alice iz `S`: aynı boy, çağrı penceresi içinde)
   t_first    motor ilk iletimi — TÜRETİLMİŞ üst sınır: alice `ts` örneğinde
-             ilk_iletilen = kabul_sayısı(ta) − kanalda(out − un) − txq > birim olan ilk örneğin anı;
-             alt sınır bir önceki örnek (çözünürlük ≈ --probe-ms + 200 ms görüntü aralığı)
+             ilk_iletilen = kabul_sayısı(ta) − txq(ta) > birim olan ilk örneğin anı (iki terim de
+             görüntü anı `ta`'da; offer kanalında bekleyen birim depo doluyken (un ≥ 4000) out − un
+             ile düşülür, değilse 0 — runtime kanalı depoda yer varken hemen boşaltır); alt sınır bir
+             önceki örnek (çözünürlük ≈ 200 ms görüntü aralığı). t_first > t_drained ise t_drained'e
+             kırpılır ve sayılır (`first_clamped`).
   t_drained  alıcı motorun sırasız teslimi (bob iz `D`)
   t_released sıralı teslim (bob iz `R`: next > birim olan ilk kayıt)
   t_rx       uygulama teslimi (bob `rx`)
@@ -43,7 +46,8 @@ PROFILE_DELAY_MS = {"d300": 300.0, "d1000": 1000.0}
 MAX_PACKET_LINE_BYTES = 1013 + 11 + 22 + 42
 KARSI_SPURT = 90
 DEADLINES_MS = (400.0, 800.0)
-CLASSES = ("W", "T", "S", "P", "K", "KP", "O", "C")
+CLASSES = ("W", "T", "S", "P", "K", "KP", "O", "C", "RC")
+STORE_NEAR_FULL = 4000
 LAYERS = ("adapter", "fifo", "net", "reorder", "consumer", "total")
 
 
@@ -267,7 +271,8 @@ def analyze_run(run_dir, cell, arm, rep):
         rec = s["rec"]
         ta = rec["ta"]
         accepted = bisect.bisect_right(sent_times, ta)
-        in_channel = max(0, (ln.get("out") or 0) - rec["un"])
+        # `out` sondanın anındadır (ta'dan ≤ 200 ms sonra): yalnız depo doluyken kullanılır.
+        in_channel = max(0, (ln.get("out") or 0) - rec["un"]) if rec["un"] >= STORE_NEAR_FULL else 0
         fifo_samples.append((ta, accepted - in_channel - rec["txq"], rec["txq"], rec["un"]))
     fifo_samples.sort()
     ft, fc, run_max = [], [], -1
@@ -327,10 +332,17 @@ def analyze_run(run_dir, cell, arm, rep):
         if key in items and items[key].get("t_rx") is None:
             items[key]["t_rx"] = ln["t"]
     # Katmanlar.
+    first_clamped = 0
     for it in items.values():
         u = it["unit"]
         it["t_first"], it["t_first_lo"] = first_tx(u) if u is not None else (None, None)
         it["t_drained"] = drained.get(u) if u is not None else None
+        it["first_clamped"] = False
+        if it["t_first"] is not None and it["t_drained"] is not None and \
+                it["t_first"] > it["t_drained"]:
+            it["t_first"] = it["t_drained"]
+            it["first_clamped"] = True
+            first_clamped += 1
         it["t_released"] = released(u) if u is not None else None
         it.setdefault("t_rx", None)
         a, f, d, rl, x = it["t_accept"], it["t_first"], it["t_drained"], it["t_released"], it["t_rx"]
@@ -346,21 +358,32 @@ def analyze_run(run_dir, cell, arm, rep):
             it["stall_overlap"] = None
         it["rel_send_ms"] = r3(it["t_send"] - t0) if t0 else None
 
+    # Alındılar (RECEIPT; bob → alice yönü): TEXT başına alındı gecikmesi, sınıf "RC".
+    rc_rows = []
+    sends_by_mid = {s.get("mid"): s for s in sends if s.get("mid") is not None}
+    for ln in alice:
+        if ln.get("k") == "rcpt" and ln.get("first") and ln.get("mid") in sends_by_mid:
+            s0 = sends_by_mid[ln["mid"]]
+            rc_rows.append({"c": "RC", "total": r3(ln["t"] - s0["t"]), "unit": -1,
+                            **{l: None for l in LAYERS if l != "total"}})
+    n_texts = sum(1 for s0 in sends if s0["c"] in ("W", "T", "K"))
     # Sınıf başına.
     classes = {}
     for c in CLASSES:
-        its = [it for it in items.values() if it["c"] == c]
+        its = [it for it in items.values() if it["c"] == c] if c != "RC" else rc_rows
         if not its:
             continue
         tot = [it["total"] for it in its]
+        if c == "RC":
+            tot = tot + [None] * max(0, n_texts - len(tot))
         entry = {
-            "sent": len(its),
+            "sent": len(tot),
             "delivered": sum(1 for v in tot if v is not None),
-            "mapped_units": sum(1 for it in its if it["unit"] is not None),
+            "mapped_units": sum(1 for it in its if it.get("unit") is not None),
             "latency_ms": summary(tot),
-            "layers_p50": {l: r3(rank([it[l] for it in its if it[l] is not None], 0.5))
+            "layers_p50": {l: r3(rank([it[l] for it in its if it.get(l) is not None], 0.5))
                            for l in LAYERS},
-            "layers_p95": {l: r3(rank([it[l] for it in its if it[l] is not None], 0.95))
+            "layers_p95": {l: r3(rank([it[l] for it in its if it.get(l) is not None], 0.95))
                            for l in LAYERS},
         }
         entry["delivered_pct"] = r3(100.0 * entry["delivered"] / entry["sent"])
@@ -391,7 +414,14 @@ def analyze_run(run_dir, cell, arm, rep):
     never_below = [u for u in range(final_next) if u not in drained]
     sent_units = len(sent_recs)
     pending = [r["unit"] for r in sent_recs if r["unit"] not in drained]
+    pacer = [s.get("pr") for s in (session_of_peer(ln, "bob") for ln in alice if ln.get("k") == "ts")
+             if s and s.get("pr") is not None]
+    btlbw = [s.get("bw") for s in (session_of_peer(ln, "bob") for ln in alice if ln.get("k") == "ts")
+             if s and s.get("bw") is not None]
     res["counters"] = {
+        "first_clamped": first_clamped,
+        "alice_pacer_bps": summary(pacer),
+        "alice_btlbw_bps": summary(btlbw),
         "alice_units_sent": sent_units,
         "bob_units_drained": len(drained),
         "units_never_drained": len(pending),
@@ -418,7 +448,8 @@ def analyze_run(run_dir, cell, arm, rep):
         "bob_received_ms": r3(f_item["t_rx"] - f_item["t_send"]) if f_item["t_rx"] else None,
         "alice_delivered_ms": r3(fa["delivered"] - f_item["t_send"]) if fa.get("delivered")
         else None,
-        "alice_failed": fa.get("failed"), "why": fa.get("why"),
+        "alice_failed_ms": r3(fa["failed"] - f_item["t_send"]) if fa.get("failed") else None,
+        "why": fa.get("why"),
         "bob_status": ((b_sum or {}).get("file") or {}).get("status"),
         "bob_match": ((b_sum or {}).get("file") or {}).get("match"),
     }
@@ -493,6 +524,16 @@ def aggregate(runs):
         entry["file_fifo_empty_ms"] = spread([(r.get("file") or {}).get("fifo_empty_rel_ms")
                                               for r in valid])
         entry["karsi_fired"] = sum(1 for r in valid if r.get("karsi_trigger"))
+        files = [r.get("file") for r in valid if r.get("file")]
+        entry["file_outcomes"] = {
+            "bob_received": sum(1 for f in files if f.get("bob_status") == "received"),
+            "bob_failed": sum(1 for f in files if f.get("bob_status") == "failed"),
+            "alice_receipt_timeout": sum(1 for f in files if f.get("why") and
+                                         "ReceiptTimeout" in f["why"]),
+            "runs": len(files)}
+        entry["alice_pacer_p50_bps"] = spread([r["counters"]["alice_pacer_bps"].get("p50")
+                                               for r in valid])
+        entry["first_clamped"] = spread([r["counters"].get("first_clamped") for r in valid])
         entry["label"] = "hüküm" if len(valid) >= 30 else "betimsel (N<30)"
         out[f"{cell}|{arm}"] = entry
     return out
@@ -583,12 +624,18 @@ def write_md(path, cells, k1):
                              co=fmt(None if lp["consumer"] is None else lp["consumer"] / 1000, 2)))
     lines += ["", "## Alıcı kapasite / kayıp sayaçları", "",
               "| hücre | kol | N | etiket | teslim kanalı düşüşü | NotReady düşüşü | hiç teslim "
-              "edilmeyen birim | atlanan birim | en çok tutulan | dosya alındı (s) | karşı örnek |",
-              "|---|---|---|---|---|---|---|---|---|---|---|"]
+              "edilmeyen birim | atlanan birim | en çok tutulan | dosya alındı (s) | dosya: bob alındı / "
+              "bob hata / alice ReceiptTimeout | pacer p50 B/s | karşı örnek |",
+              "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for e in cells.values():
         c = e["counters"]
+        fo = e["file_outcomes"]
         lines.append("| {cell} | {arm} | {n} | {lab} | {dcd} | {nrd} | {nd} | {sk} | {hm} | {fr} | "
-                     "{k} |".format(
+                     "{fo} | {pr} | {k} |".format(
+                         fo=("—" if not fo["runs"] else
+                             f"{fo['bob_received']}/{fo['bob_failed']}/{fo['alice_receipt_timeout']}"
+                             f" ({fo['runs']})"),
+                         pr=fmt_spread(e["alice_pacer_p50_bps"]),
                          cell=e["cell"], arm=e["arm"], n=e["valid_runs"], lab=e["label"],
                          dcd=fmt_spread(c["bob_delivery_channel_drops"]),
                          nrd=fmt_spread(c["bob_not_ready_drops"]),

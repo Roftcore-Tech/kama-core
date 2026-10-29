@@ -18,6 +18,9 @@ PROFILES = {
     "r12k_d300_l30": "delay 300ms 60ms distribution normal loss 30% rate 100kbit",
     "r1k_d300_l30": "delay 300ms 60ms distribution normal loss 30% rate 8kbit",
     "r12k_d1000_l30": "delay 1000ms 200ms distribution normal loss 30% rate 100kbit",
+    # STRES (KATALOG dışı; İSTEK): hız sınırı yok — teslim kanalı taşmasının eşiğini 30 s
+    # durmada aşabilecek alım hızı için. Karar yönlendirmez.
+    "rinf_d300_l30": "delay 300ms 60ms distribution normal loss 30%",
 }
 
 # Dosya boyu = 990 B'lık parça sayısının katı (MAX_FILE_CHUNK_BYTES = 990; son parça da 1013 B
@@ -26,6 +29,7 @@ FILE_BYTES = {
     "r12k_d300_l30": 530 * 990,
     "r1k_d300_l30": 66 * 990,
     "r12k_d1000_l30": 530 * 990,
+    "rinf_d300_l30": 8474 * 990,
 }
 
 # Ortak zaman çizelgesi (t0 = alice Connected): 3 ısınma TEXT (0/0,5/1 s) · dosya 5 s · 40 TEXT
@@ -40,7 +44,7 @@ COMMON = [
     "--stall-at-ms 20000", "--stall-ms 30000",
     "--karsi on", "--karsi-texts 5", "--karsi-every-ms 500", "--karsi-bundles 10",
     "--karsi-min-unacked 3", "--karsi-text-bytes 48",
-    "--connect-timeout-s 30", "--probe-ms 200", "--live-diag on",
+    "--connect-timeout-s 30", "--probe-ms 200", "--live-diag on", "--receipt-grace-s 30",
 ]
 
 # (hücre soneki, senaryo, profil, REPS, pencere s, bütçe s, ek argümanlar, açıklama, sınıf)
@@ -53,12 +57,18 @@ CELLS = [
     ("dosyali", "dosyali", "r1k_d300_l30", 30, 300, 900, [], "dosyalı, durmasız", "birincil"),
     ("dosyali_dur", "dosyali_dur", "r1k_d300_l30", 30, 300, 900, [],
      "K-1: dosyalı + 30 s tüketici durması", "birincil"),
-    # Teslim kanalı taşması (orkestratör sorusu, 2026-10-29): durma sırasında > 1024 birim gelsin
-    # diye dosyasız + yoğun PTT (20 ms demet, 40 B ≈ 16 kbit/s ses; 15 s'den 60 s). Dosyalı
-    # hücrelerde demetler dosyanın arkasında FIFO'da beklediği için durmada taşma beklenmez.
-    ("tasma_ptt", "dosyasiz_dur", "r12k_d300_l30", 10, 90, 480,
+    # Teslim kanalı taşması (orkestratör sorusu, 2026-10-29). Koşul: durma süresi × alım hızı >
+    # 1024 birim. duman-2: yoğun PTT gönderen hızıyla sınırlı kaldı (pacer ≈ 76–334 B/s, FIFO
+    # ≈ 2900) → taşma ölçülemedi; hücre bu gözlem için N=5 kalır. Taşma için: r12k'da dosya
+    # alım hızı ≈ 6–7 birim/s (duman-2) → 240 s durma ≈ 1500 birim; hız sınırsız profilde 30 s.
+    ("tasma_ptt", "dosyasiz_dur", "r12k_d300_l30", 5, 90, 480,
      ["--ptt-at-ms 15000", "--ptt-bundles 3000", "--ptt-bundle-ms 20"],
-     "teslim kanalı taşması: durma + yoğun PTT", "betimsel"),
+     "yoğun PTT + durma (gönderen hızı sınırlı)", "betimsel"),
+    ("tasma_dosya", "dosyali_dur", "r12k_d300_l30", 10, 300, 600,
+     ["--file-bytes 2097810", "--stall-at-ms 10000", "--stall-ms 240000"],
+     "teslim kanalı taşması: 2 MB dosya + 240 s durma", "betimsel"),
+    ("tasma_dosya", "dosyali_dur", "rinf_d300_l30", 10, 60, 480, [],
+     "teslim kanalı taşması: hız sınırsız (STRES, KATALOG dışı) + 30 s durma", "betimsel"),
     ("dosyasiz_dur", "dosyasiz_dur", "r12k_d300_l30", 10, 300, 600, [],
      "durmanın tek başına etkisi", "betimsel"),
     ("dosyasiz", "dosyasiz", "r12k_d1000_l30", 10, 300, 900, [], "dosyasız taban (RTT 2 s)",
