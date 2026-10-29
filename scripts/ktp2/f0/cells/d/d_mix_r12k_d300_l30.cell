@@ -9,7 +9,7 @@
 CELL=d_mix_r12k_d300_l30
 FWD="delay 300ms 60ms distribution normal loss 30% rate 100kbit"
 REV="$FWD"
-REPS=30
+REPS="${F0_REPS:-30}"
 BUDGET_S=150
 ARMS="taban_mix taban_nofile aday_mix aday_nofile quinn_mix quinn_nofile tcp_mix tcp_nofile"
 

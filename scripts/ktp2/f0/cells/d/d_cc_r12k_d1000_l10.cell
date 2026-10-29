@@ -5,7 +5,7 @@
 CELL=d_cc_r12k_d1000_l10
 FWD="delay 1000ms 200ms distribution normal loss 10% rate 100kbit"
 REV="$FWD"
-REPS=10
+REPS="${F0_REPS:-10}"
 BUDGET_S=180
 PAY=1000; MSGS=150; IVAL_MS=200; DEADLINE_S=60; HS_TIMEOUT_S=60
 # shellcheck disable=SC1091

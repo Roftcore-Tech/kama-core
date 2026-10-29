@@ -6,7 +6,7 @@
 CELL=d_hs_r25_d300_l0
 FWD="delay 300ms 60ms distribution normal rate 200bit"
 REV="$FWD"
-REPS=10
+REPS="${F0_REPS:-10}"
 BUDGET_S=420
 PAY=65; MSGS=6; IVAL_MS=15000; DEADLINE_S=60; HS_TIMEOUT_S=240
 # shellcheck disable=SC1091
