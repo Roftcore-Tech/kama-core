@@ -37,6 +37,9 @@ Dizeler:
 
 Bilinen netem davranışları (beyan):
 - `rate` varken jitter paketleri yeniden sıralamaz. "Değişken gecikme" sırayı korur.
+  - Sırayı koruyan jitter, ortalama gecikmeyi profil değerinin üstüne çıkarır: bir paket, önündekinden önce çıkamaz.
+  - Örnek (Ajan B, `fizik.py`): r12k/d1000/65 B'de RTT 2,02 s yerine ≈ 2,37 s.
+  - Bu yüzden motor srtt'si iki ölçüyle kıyaslanır: profil RTT'si ve sıra-koruyan model RTT'si.
 - netem `rate`, paketin L2 dahil boyunu sayar: Ethernet 14 + IP 20 + UDP 8 = 42 B/paket. Kapasite muhasebesinde bu ayrı sütundur. Gerçek değer koşu başına `realized_pre/post.json` qdisc sayaçlarından doğrulanır.
 - Kayıp tohumsuzdur: çekirdek RNG'si hücre başına rastgele. Koşular eşlenemez. Birim = koşu.
 
