@@ -1780,7 +1780,11 @@ mod tests {
         assert!(units.iter().all(|&u| u < 18), "{units:?}");
         assert_eq!(out.events.len(), 6);
         assert!(out.events.iter().all(|e| e.delivered_ns.is_some()));
-        assert!(out.meta.kama_arm.ends_with("-dup3"), "{}", out.meta.kama_arm);
+        assert!(
+            out.meta.kama_arm.ends_with("-dup3"),
+            "{}",
+            out.meta.kama_arm
+        );
     }
 
     /// **Sprint-A'nın asıl iddiası:** ürün kolunda FEC AÇIKKEN wire'da gerçek repair-shard vardır.

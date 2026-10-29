@@ -275,11 +275,11 @@ fn plan(a: &ClientArgs) -> Result<Vec<Item>, BenchError> {
         for i in 0..a.file_bytes.div_ceil(chunk) {
             let rem = a.file_bytes - i * chunk;
             let bytes = rem.min(chunk).max(HDR as u64);
-            let at_ns = if a.file_rate_bps == 0 {
-                0
-            } else {
-                i.saturating_mul(chunk).saturating_mul(1_000_000_000) / a.file_rate_bps
-            };
+            let at_ns = i
+                .saturating_mul(chunk)
+                .saturating_mul(1_000_000_000)
+                .checked_div(a.file_rate_bps)
+                .unwrap_or(0);
             items.push(Item {
                 flow: Flow::File,
                 id,
@@ -697,7 +697,9 @@ async fn client_kama(a: &ClientArgs, items: &[Item]) -> Result<Outcome, BenchErr
     let end_sleep = sleep_until(end);
     tokio::pin!(end_sleep);
     while acked < total {
-        let due = items.get(next).map(|it| t0 + Duration::from_nanos(it.at_ns));
+        let due = items
+            .get(next)
+            .map(|it| t0 + Duration::from_nanos(it.at_ns));
         tokio::select! {
             () = &mut end_sleep => break,
             () = sleep_until(due.unwrap_or(end)), if due.is_some() => {
@@ -860,7 +862,12 @@ async fn client_tcp(a: &ClientArgs, items: &[Item]) -> Result<Outcome, BenchErro
     .await
     {
         Ok(Ok(s)) => s,
-        _ => return Ok(Outcome::failed(dur_ns(setup.elapsed()), "tcp connect failed/timeout")),
+        _ => {
+            return Ok(Outcome::failed(
+                dur_ns(setup.elapsed()),
+                "tcp connect failed/timeout",
+            ))
+        }
     };
     sock.set_nodelay(true).ok();
     let setup_ns = dur_ns(setup.elapsed());
