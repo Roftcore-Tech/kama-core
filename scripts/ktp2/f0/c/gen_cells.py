@@ -10,7 +10,8 @@ Kol şablonları (her kol iki ikiliyle: `_taban` = $BIN_TABAN, `_aday` = $BIN_AD
   uyar    mevcut uyarlamalı FEC  (FEC bayrağı yok = ürün profili 0x05, Controller)
   rs2     sabit RS K=2 E=64     --fec-profile 1 --fec-mode static --fec-r r
   rs4     sabit RS K=4 E=64     --fec-profile 2 --fec-mode static --fec-r r
-  tekrar  tekrar (vekil)        --fec-profile 0, her demet iki ayrı birim, T/2 arayla
+  tekrar  tekrar (İSTEK-C2)     --fec-profile 0, istemci --dup-copies 2 (iki kopya aynı sunumda)
+          (`--vekil-tekrar` ile C2 öncesi vekil: her demet iki ayrı mesaj, T/2 arayla — duman-1/2)
 Teşhis kolları (yalnız taban, ayrı `cx_` hücreleri, REPS=10, betimsel):
   uyar64  uyarlamalı, E=64      --fec-profile 2 --fec-mode adaptive
   pol     son tarih politikası  --fec-mode policy --fec-deadline-ms (800 − T)
@@ -19,7 +20,7 @@ Ortak: --transport kama-product, --payload = kodlayıcı(1,2 kbit/s·T) + 13 (AM
 --warmup-msgs 16, konuşma ≈ 20 s, --ts-out, --manifest; sunucu --rx-log (İSTEK-C1, Ajan D).
 `--no-rxlog` bayrağı İSTEK-C1 gelmeden duman için sunucu bayrağını çıkarır (sonuç [vekil] olur).
 
-Kullanım: python3 -I scripts/ktp2/f0/c/gen_cells.py [--no-rxlog]
+Kullanım: python3 -I scripts/ktp2/f0/c/gen_cells.py [--no-rxlog] [--vekil-tekrar]
 """
 
 import os
@@ -116,16 +117,20 @@ def fec_flags(kind, c):
 def arm_lines(kind, binv, c, name, rxlog):
     _, d, _, t = c
     payload = M.bench_payload(t)
-    copies = 2 if kind == "tekrar" else 1
+    # [duman-2 sonrası] tekrar = İSTEK-C2 gerçek kolu: her sunumda 2 kopya arka arkaya
+    # (`--dup-copies 2`, yalnız istemci). `--vekil-tekrar` eski vekili (T/2 arayla iki mesaj) üretir.
+    vekil = kind == "tekrar" and VEKIL_TEKRAR
+    copies = 2 if vekil else 1
     interval = t // copies
     msgs = frames(t) * copies
     fec = fec_flags(kind, c)
+    dup = " --dup-copies 2" if kind == "tekrar" and not vekil else ""
     b = "@BIN_TABAN@" if binv == "taban" else "@BIN_ADAY@"
     rx = " --rx-log @D@/rx.jsonl" if rxlog else ""
     srv = f"{b} serve --bind @SRV@ --transport kama-product --payload {payload} {fec}{rx}"
     cli = (f"{b} client --server @SRV@ --transport kama-product --msgs {msgs} --payload {payload} "
            f"--submit-interval-ms {interval} --warmup-msgs {WARMUP} --max-deadline-s {MAX_DEADLINE_S[d]} "
-           f"{fec} --profile {name} --repeat @REP@ --ts-out @D@/ts.csv --manifest @D@/manifest.json "
+           f"{fec}{dup} --profile {name} --repeat @REP@ --ts-out @D@/ts.csv --manifest @D@/manifest.json "
            f"--fwd-impair '$FWD' --rev-impair '$REV' --out @D@/out.jsonl")
     srv = " ".join(srv.split())
     cli = " ".join(cli.split())
@@ -169,6 +174,9 @@ def write_cell(path, c, name, kinds, bins, reps, prio, rxlog):
     with open(path, "w") as f:
         f.write("\n".join(hdr + body + lines) + "\n")
     return est, len(arms) * reps
+
+
+VEKIL_TEKRAR = "--vekil-tekrar" in sys.argv[1:]
 
 
 def main():
