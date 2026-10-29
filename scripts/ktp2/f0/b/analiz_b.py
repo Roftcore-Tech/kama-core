@@ -332,6 +332,20 @@ def overlap_total(ivs_sorted, a, b):
     return tot
 
 
+def emit_profile(pkts, R, t_lo, win, w):
+    """Gönderim hızı / hat hızı, w genişlikli pencerelerde (deneme düzlemi, L2 bayt). pkts=[(t, l2)]"""
+    nb = max(1, int(math.ceil(win / w)))
+    bins = [0.0] * nb
+    for t, l2 in pkts:
+        k = int((t - t_lo) / w)
+        if 0 <= k < nb:
+            bins[k] += l2
+    ratios = [b / (R * w) for b in bins]
+    return {"emit_ratio_p50": pct(ratios, .5), "emit_ratio_p95": pct(ratios, .95),
+            "emit_ratio_max": max(ratios) if ratios else None,
+            "emit_over_cap_frac": sum(1 for x in ratios if x > 1.0) / len(ratios), "emit_window_s": w}
+
+
 # ════════════════════════════════════════════════════════════════════════════════════════════
 # Kama yakalama analizi
 # ════════════════════════════════════════════════════════════════════════════════════════════
@@ -602,18 +616,7 @@ def kama_capture(rep, g, meta, ev):
             r[f"late_busy_{c}_frac"] = sum(overlap_total(iv, a, b) for a, b in late) / late_tot
     # hat doluluğu (pencere içinde) ve gönderim hızı/hat hızı pencereleri
     r["link_busy_frac"] = sum(b - a for a, b in all_busy) / win
-    w = max(1.0, 10 * ser)
-    nb = max(1, int(math.ceil(win / w)))
-    bins = [0.0] * nb
-    for p in a_out:
-        k = int((p["t"] - t_lo) / w)
-        if 0 <= k < nb:
-            bins[k] += p["l2"]
-    ratios = [b / (R * w) for b in bins]
-    r["emit_ratio_p50"], r["emit_ratio_p95"] = pct(ratios, .5), pct(ratios, .95)
-    r["emit_ratio_max"] = max(ratios) if ratios else None
-    r["emit_over_cap_frac"] = sum(1 for x in ratios if x > 1.0) / len(ratios)
-    r["emit_window_s"] = w
+    r.update(emit_profile([(p["t"], p["l2"]) for p in a_out], R, t_lo, win, max(1.0, 10 * ser)))
     # teyit gecikmesinin tel ayrıştırması: alıcı tutması + dönüş
     conf_wire = []
     for i, lst in txs.items():
@@ -749,6 +752,8 @@ def tcp_capture(rep, g, ev):
     r["wf_util"] = r.get("wf_total", 0) / (R * win)
     r["wr_util"] = r.get("wr_total", 0) / (R * win)
     r["wfa_offered_load"] = r.get("wfa_total", 0) / (R * win)
+    r.update(emit_profile([(s["t"], s["l2"]) for s in a_out], R, t_lo, win,
+                          max(1.0, 10 * g["s_data_l2"] / R)))
     r["wf_lost_pkts"] = max(0, len(a_out) - len(b_in))
     r["wr_lost_pkts"] = max(0, len(b_out) - len(a_in))
     return r
@@ -799,6 +804,10 @@ def quic_capture(rep, g, ev):
     r["wf_util"] = r.get("wf_total", 0) / (R * win)
     r["wr_util"] = r.get("wr_total", 0) / (R * win)
     r["wfa_offered_load"] = r.get("wfa_total", 0) / (R * win)
+    if allt:
+        aout = [(t / 1e9, ipl + 14) for t, dr, pr, ipl, sp, dp, x in cli
+                if pr == 17 and dr == "o" and (port is None or dp == port)]
+        r.update(emit_profile(aout, R, min(allt), win, max(1.0, 10 * g["s_data_l2"] / R)))
     r["wf_lost_pkts"] = r.get("wfa_pkts", 0) - r.get("wf_pkts", 0)
     r["wr_lost_pkts"] = r.get("wra_pkts", 0) - r.get("wr_pkts", 0)
     return r
