@@ -1,0 +1,278 @@
+######## scripts/ktp2/f0/e/fec_olasilik.py
+== FEC-01  §3.8 ses tablosu (taslak değeri → kesin binom) ==
+  p=0.10 (K,R)=(4,1) çarpan=1.2500 (taslak 1,25) | çerçeve=96.561% (taslak 96,6) | blok=91.854% (taslak 91,9) | ≥%95 çerçeve: True | eşleşme: EVET
+  p=0.20 (K,R)=(3,2) çarpan=1.6667 (taslak 1,67) | çerçeve=96.384% (taslak 96,4) | blok=94.208% (taslak 94,2) | ≥%95 çerçeve: True | eşleşme: EVET
+  p=0.30 (K,R)=(4,4) çarpan=2.0000 (taslak 2) | çerçeve=96.219% (taslak 96,2) | blok=94.203% (taslak 94,2) | ≥%95 çerçeve: True | eşleşme: EVET
+  p=0.50 (K,R)=(4,9) çarpan=3.2500 (taslak 3,25) | çerçeve=96.350% (taslak 96,4) | blok=95.386% (taslak 95,4) | ≥%95 çerçeve: True | eşleşme: EVET
+  p=0.80 (K,R)=(4,32) çarpan=9.0000 (taslak 9) | çerçeve=95.158% (taslak 95,2) | blok=94.777% (taslak 94,8) | ≥%95 çerçeve: True | eşleşme: EVET
+== FEC-02  §3.8 '%50'de (4,8) ve (2,4)' örnekleri ==
+  (K,R)=(4,8) çarpan=3.00 çerçeve=94.336% (taslak 94,3) blok=92.700% (taslak 92,7)
+  (K,R)=(2,4) çarpan=3.00 çerçeve=90.625% (taslak 90,6) blok=89.062% (taslak 89,1)
+== FEC-03  §2 adım 4: '%30 kayıpta 4 ses parçasına 3–4 onarım' ==
+  (4,3) p=0,30: çerçeve=92.329%  blok=87.396%  ≥%95 çerçeve: False
+  (4,4) p=0,30: çerçeve=96.219%  blok=94.203%  ≥%95 çerçeve: True
+== FEC-04  [betimsel] her kayıpta ≥%95 çerçeve sağlayan en küçük çarpan (K ≤ 4) ==
+  p=0.10: en küçük çarpan 1.2500, bu çarpanda (K,R) = [(4, 1)] ; çerçeve: (4,1)=96.56%
+  p=0.20: en küçük çarpan 1.6667, bu çarpanda (K,R) = [(3, 2)] ; çerçeve: (3,2)=96.38%
+  p=0.30: en küçük çarpan 2.0000, bu çarpanda (K,R) = [(3, 3), (4, 4)] ; çerçeve: (3,3)=95.11%, (4,4)=96.22%
+  p=0.50: en küçük çarpan 3.2500, bu çarpanda (K,R) = [(4, 9)] ; çerçeve: (4,9)=96.35%
+  p=0.80: en küçük çarpan 9.0000, bu çarpanda (K,R) = [(4, 32)] ; çerçeve: (4,32)=95.16%
+== FEC-05  §3.8 '8+4 RS: %10 → %99,6, %20 → %92,7' ==
+  p=0.10: P(12'den ≥8) = 99.567% (taslak 99,6)
+  p=0.20: P(12'den ≥8) = 92.744% (taslak 92,7)
+== FEC-06  §3.8 'paketlerin yarısını iki kez göndermek: %63 ve %34,8' ==
+  model: 8 kaynaktan 4'ü iki kez (12 iletim = 1,5×); blok tam = 8 kaynağın hepsi gelir
+  p=0.10: (1-p)^4 (1-p²)^4 = 63.025% (taslak 63)
+  p=0.20: (1-p)^4 (1-p²)^4 = 34.789% (taslak 34,8)
+== FEC-07  §3.8 güvenilir akış R = ⌈K·p/(1−p)·1,25⌉ ==
+  K=8 p=0.20: K·p/(1−p)·1,25 = 5/2 = 2.5000 → R=3 (taslak 3); [betimsel] blok çözme P((8,3)) = 83.89%
+  K=8 p=0.30: K·p/(1−p)·1,25 = 30/7 = 4.2857 → R=5 (taslak 5); [betimsel] blok çözme P((8,5)) = 83.46%
+  [betimsel] float: K=8 p=0.3333333333333333: 4.999999999999999 → ⌈⌉=5
+  [betimsel] float: K=4 p=0.2: 1.25 → ⌈⌉=2
+  [betimsel] float: K=8 p=0.2: 2.5 → ⌈⌉=3
+== FEC-08  §3.8 acil artıklık d = ⌈ln 0,1 / ln p⌉, en çok 8 ==
+  p=0.05: ln0,1/lnp=0.7686 → d=1  P(en az biri gelir)=95.00%
+  p=0.10: ln0,1/lnp=1.0000 → d=1  P(en az biri gelir)=90.00%
+  p=0.20: ln0,1/lnp=1.4307 → d=2  P(en az biri gelir)=96.00%
+  p=0.30: ln0,1/lnp=1.9125 → d=2  P(en az biri gelir)=91.00%
+  p=0.50: ln0,1/lnp=3.3219 → d=4  P(en az biri gelir)=93.75%
+  p=0.70: ln0,1/lnp=6.4557 → d=7  P(en az biri gelir)=91.76%
+  p=0.75: ln0,1/lnp=8.0039 → d=8  P(en az biri gelir)=89.99%
+  p=0.80: ln0,1/lnp=10.3189 → d=8  P(en az biri gelir)=83.22%
+  p=0.90: ln0,1/lnp=21.8543 → d=8  P(en az biri gelir)=56.95%
+  p=0.95: ln0,1/lnp=44.8906 → d=8  P(en az biri gelir)=33.66%
+  tavan 8'in bağladığı eşik: p > 0,1^(1/8) = 0.74989
+  uç durum p=0: ln 0 tanımsız (IEEE: -inf → oran +0 → ⌈0⌉ = 0 kopya); p=1: ln 1 = 0 → bölme sıfır
+######## scripts/ktp2/f0/e/iletim_dusuk_bant.py
+== K3-01  K-3 alt sınırlar: 65 B yük + 31 B = 96 B (taslak: 3,8 s / 30,7 s) ==
+  L yok: tel=96 B → 25 B/s: 3.840 s ; 3,125 B/s: 30.720 s
+  IPv4+UDP 28: tel=124 B → 25 B/s: 4.960 s ; 3,125 B/s: 39.680 s
+  Eth+IPv4+UDP 42: tel=138 B → 25 B/s: 5.520 s ; 3,125 B/s: 44.160 s
+== K3-02  K-3 '1 KB → 25 B/s ≈ 42 s' (tek paket mi, §3.9 parçalaması mı) ==
+  yük 1024 B tek paket: 1055 B → 42.20 s (L yok)
+    §3.9 (ses yok, T_ser 8 s): S=169 B, 7 parça, L yok: tel=1241 B → 49.64 s
+    §3.9 (ses yok, T_ser 8 s): S=169 B, 7 parça, IPv4+UDP 28: tel=1437 B → 57.48 s
+    §3.9 (ses yok, T_ser 8 s): S=169 B, 7 parça, Eth+IPv4+UDP 42: tel=1535 B → 61.40 s
+    §3.9 (ses etkin, T_ser 2 s): S=64 B, 16 parça, L yok: tel=1520 B → 60.80 s
+    §3.9 (ses etkin, T_ser 2 s): S=64 B, 16 parça, IPv4+UDP 28: tel=1968 B → 78.72 s
+    §3.9 (ses etkin, T_ser 2 s): S=64 B, 16 parça, Eth+IPv4+UDP 42: tel=2192 B → 87.68 s
+    tek paket IPv4+UDP 28: 43.32 s
+    tek paket Eth+IPv4+UDP 42: 43.88 s
+  yük 1000 B tek paket: 1031 B → 41.24 s (L yok)
+    §3.9 (ses yok, T_ser 8 s): S=169 B, 6 parça, L yok: tel=1186 B → 47.44 s
+    §3.9 (ses yok, T_ser 8 s): S=169 B, 6 parça, IPv4+UDP 28: tel=1354 B → 54.16 s
+    §3.9 (ses yok, T_ser 8 s): S=169 B, 6 parça, Eth+IPv4+UDP 42: tel=1438 B → 57.52 s
+    §3.9 (ses etkin, T_ser 2 s): S=64 B, 16 parça, L yok: tel=1496 B → 59.84 s
+    §3.9 (ses etkin, T_ser 2 s): S=64 B, 16 parça, IPv4+UDP 28: tel=1944 B → 77.76 s
+    §3.9 (ses etkin, T_ser 2 s): S=64 B, 16 parça, Eth+IPv4+UDP 42: tel=2168 B → 86.72 s
+    tek paket IPv4+UDP 28: 42.36 s
+    tek paket Eth+IPv4+UDP 42: 42.92 s
+== K3-03  K-3 not: %80 kayıpta iletim sayısı (taslak: ortalama 5, %90 güven ≈ 11) ==
+  ortalama 1/(1−p) = 5 ; %90: n=11 (ln0,1/ln0,8 = 10.319) ; %95: n=14
+== K3-04  K-3 not: süreler (taslak: ortalama ≈ 2,6 dk, %90 ≈ 5,6 dk; spec: 1,5–2 dk) ==
+  (a) taslağın okuması: 65 B YÜK + 31 B
+  (b) spec'in yazdığı 'SESSION_DATA ~65B' = UDP yükü (ccr §35.6: 22 B + yük) → tel 65 B
+  (a) 96 B L yok: tel=96 B, iletim=30.72 s → ortalama 5×=2.56 dk, %90 11×=5.63 dk, %95 14×=7.17 dk
+  (a) 96 B IPv4+UDP 28: tel=124 B, iletim=39.68 s → ortalama 5×=3.31 dk, %90 11×=7.27 dk, %95 14×=9.26 dk
+  (a) 96 B Eth+IPv4+UDP 42: tel=138 B, iletim=44.16 s → ortalama 5×=3.68 dk, %90 11×=8.10 dk, %95 14×=10.30 dk
+  (b) 65 B L yok: tel=65 B, iletim=20.80 s → ortalama 5×=1.73 dk, %90 11×=3.81 dk, %95 14×=4.85 dk
+  (b) 65 B IPv4+UDP 28: tel=93 B, iletim=29.76 s → ortalama 5×=2.48 dk, %90 11×=5.46 dk, %95 14×=6.94 dk
+  (b) 65 B Eth+IPv4+UDP 42: tel=107 B, iletim=34.24 s → ortalama 5×=2.85 dk, %90 11×=6.28 dk, %95 14×=7.99 dk
+== K3-05  K-3 ölçüt '25 B/s %20 kayıpta p95 ≤ 3 × alt sınır (≈ 12 s)' ==
+  3 × 3,84 = 11.52 s ; %95 için gereken iletim n = 2
+  L yok: sınır 3×3.84=11.52 s | ileri onarımla p95 ≤ 7.80 s (P(ikisi de kayıp)=0,04) | yalnız ARQ: srtt≥5.20 s, p95 ≥ 9.07 s (rttvar=0), 19.47 s (rttvar=srtt/2); sınır için rttvar ≤ 0.61 s (yayılım 0)
+  IPv4+UDP 28: sınır 3×4.96=14.88 s | ileri onarımla p95 ≤ 10.04 s (P(ikisi de kayıp)=0,04) | yalnız ARQ: srtt≥7.44 s, p95 ≥ 12.43 s (rttvar=0), 27.30 s (rttvar=srtt/2); sınır için rttvar ≤ 0.61 s (yayılım 0)
+  Eth+IPv4+UDP 42: sınır 3×5.52=16.56 s | ileri onarımla p95 ≤ 11.16 s (P(ikisi de kayıp)=0,04) | yalnız ARQ: srtt≥8.56 s, p95 ≥ 14.10 s (rttvar=0), 31.22 s (rttvar=srtt/2); sınır için rttvar ≤ 0.61 s (yayılım 0)
+== K2-01  K-2 '%80 iki yönlü kayıpta 1 KB için ideal ARQ ≈ 25 iletim' ==
+  teslim (alıcıya ilk varış) ortalaması: 1/q_ileri = 5
+  gönderenin teyit alması (her alınan kopyaya 1 ACK): 1/(q_ileri·q_dönüş) = 25
+  ACK her alımda 2 kez tekrarlanırsa: 1/(q_ileri·(1−0,8^2)) = 13.89
+  ACK her alımda 3 kez tekrarlanırsa: 1/(q_ileri·(1−0,8^3)) = 10.25
+  ACK her alımda 4 kez tekrarlanırsa: 1/(q_ileri·(1−0,8^4)) = 8.47
+  1 KB'ın parça sayısı (1000 B/s, T_ser 8 s): S=1100 → 1
+  1 KB'ın parça sayısı (12500 B/s, T_ser 8 s): S=1100 → 1
+== S9-01  §9 '1,2 kbit/s ≈ 150 B/s' ve '%95'te ≈ 20 iletim' ==
+  1200/8 = 150.0 B/s
+  tek yön ortalama 1/(1−p) = 20 ; iki yön (her kopyaya 1 ACK) 1/(1−p)² = 400
+  %90 teslim için n = 45
+  '§9 FEC'le 2–10 katı': yalnız FEC çarpanı 1,25 / 1,67 / 2 / 3,25 / 9 (tablo);
+    başlık dahil 200 ms demet: 305 B/s = 2.03×150 → FEC'le 2.54×, 3.39×, 4.07×, 6.61×, 18.30×
+    başlık dahil 40 ms demet: 925 B/s = 6.17×150 → FEC'le 7.71×, 10.28×, 12.33×, 20.04×, 55.50×
+== A4-01  Ek A.4 '31 B/s'de tek ilk paket (1200 B) ≈ 39 s' ==
+  UDP yükü: 38.71 s
+  +IPv4/UDP: 39.61 s
+  +Eth/IPv4/UDP: 40.06 s
+######## scripts/ktp2/f0/e/k6_ses.py
+== K6-01  ses tel hızı, FEC'siz (taslak: 925 / 667 / 408 / 305 B/s; başlık payı %84 … %51) ==
+  T=40 ms: yük=6 B, 925.00 B/s (taslak 925), başlık payı 83.8% | IPv4+UDP: 1625.0 B/s (pay 90.8%) | Eth+IPv4+UDP: 1975.0 B/s (pay 92.4%)
+  T=60 ms: yük=9 B, 666.67 B/s (taslak 667), başlık payı 77.5% | IPv4+UDP: 1133.3 B/s (pay 86.8%) | Eth+IPv4+UDP: 1366.7 B/s (pay 89.0%)
+  T=120 ms: yük=18 B, 408.33 B/s (taslak 408), başlık payı 63.3% | IPv4+UDP: 641.7 B/s (pay 76.6%) | Eth+IPv4+UDP: 758.3 B/s (pay 80.2%)
+  T=200 ms: yük=30 B, 305.00 B/s (taslak 305), başlık payı 50.8% | IPv4+UDP: 445.0 B/s (pay 66.3%) | Eth+IPv4+UDP: 515.0 B/s (pay 70.9%)
+== K6-02  '%20 kayıpta 200 ms demetle ≈ 510 B/s ≈ 4 kbit/s' ==
+  L yok: aynı boy 508.33 B/s (4.07 kbit/s) ; ONARIM 12 B başlıkla 518.33 B/s (4.15 kbit/s)
+  IPv4+UDP: aynı boy 741.67 B/s (5.93 kbit/s) ; ONARIM 12 B başlıkla 751.67 B/s (6.01 kbit/s)
+  Eth+IPv4+UDP: aynı boy 858.33 B/s (6.87 kbit/s) ; ONARIM 12 B başlıkla 868.33 B/s (6.95 kbit/s)
+== K6-03  tablodaki (K,R) ile 200 ms demette ses hızı ve '4–8 kbit/s' ==
+  p=0.10 (4,1): L yok 385.0 B/s = 3.08 kbit/s; IPv4+UDP 560.0 B/s = 4.48 kbit/s; Eth+IPv4+UDP 647.5 B/s = 5.18 kbit/s;
+  p=0.20 (3,2): L yok 518.3 B/s = 4.15 kbit/s; IPv4+UDP 751.7 B/s = 6.01 kbit/s; Eth+IPv4+UDP 868.3 B/s = 6.95 kbit/s;
+  p=0.30 (4,4): L yok 625.0 B/s = 5.00 kbit/s; IPv4+UDP 905.0 B/s = 7.24 kbit/s; Eth+IPv4+UDP 1045.0 B/s = 8.36 kbit/s;
+  p=0.50 (4,9): L yok 1025.0 B/s = 8.20 kbit/s; IPv4+UDP 1480.0 B/s = 11.84 kbit/s; Eth+IPv4+UDP 1707.5 B/s = 13.66 kbit/s;
+  p=0.80 (4,32): L yok 2865.0 B/s = 22.92 kbit/s; IPv4+UDP 4125.0 B/s = 33.00 kbit/s; Eth+IPv4+UDP 4755.0 B/s = 38.04 kbit/s;
+== K6-04  §3.6 ses tavanı = 1,5 × ses tel hızı (FEC'siz, K-6 tanımı) ile tablo çarpanı ==
+  T=60 ms: tavan 1000.0 B/s → p=0.1: gerek 845.8 (SIĞAR); p=0.2: gerek 1144.4 (SIĞMAZ); p=0.3: gerek 1383.3 (SIĞMAZ); p=0.5: gerek 2279.2 (SIĞMAZ); p=0.8: gerek 6400.0 (SIĞMAZ);
+  T=120 ms: tavan 612.5 B/s → p=0.1: gerek 516.7 (SIĞAR); p=0.2: gerek 697.2 (SIĞMAZ); p=0.3: gerek 841.7 (SIĞMAZ); p=0.5: gerek 1383.3 (SIĞMAZ); p=0.8: gerek 3875.0 (SIĞMAZ);
+  T=200 ms: tavan 457.5 B/s → p=0.1: gerek 385.0 (SIĞAR); p=0.2: gerek 518.3 (SIĞMAZ); p=0.3: gerek 625.0 (SIĞMAZ); p=0.5: gerek 1025.0 (SIĞMAZ); p=0.8: gerek 2865.0 (SIĞMAZ);
+== K6-05  K-6 bütçe örneği: '200 + 200 + ser + 300 + titreşim → ≈ 750 ms + ser + titreşim' ==
+  T_demet + (K−1)·T_demet + RTT/2 = 200 + 200 + 300 = 700 ms (taslak ≈ 750)
+  tablodaki K ile (200 ms demet, RTT 600 ms; ser ve titreşim hariç):
+    p=0.10 K=4: K·T + RTT/2 = 1100 ms
+    p=0.20 K=3: K·T + RTT/2 = 900 ms
+    p=0.30 K=4: K·T + RTT/2 = 1100 ms
+  serileştirme terimi (K+R)·paket/hız örnekleri (200 ms demet, (3,2)):
+    hız 500 B/s L yok: 610 ms
+    hız 500 B/s Eth+IPv4+UDP: 1030 ms
+    hız 1000 B/s L yok: 305 ms
+    hız 1000 B/s Eth+IPv4+UDP: 515 ms
+    hız 12500 B/s L yok: 24 ms
+    hız 12500 B/s Eth+IPv4+UDP: 41 ms
+== K6-06  [betimsel] D ≤ son tarih için azami demet T ≤ (D − RTT/2)/K (ser = titreşim = 0) ==
+  D=400 RTT=600: K=3 → T ≤ 33.3 ms ; K=4 → T ≤ 25.0 ms
+  D=400 RTT=2000: D − RTT/2 = -600 ms ≤ 0 → hiçbir demet/K ile olanaksız
+  D=800 RTT=600: K=3 → T ≤ 166.7 ms ; K=4 → T ≤ 125.0 ms
+  D=800 RTT=2000: D − RTT/2 = -200 ms ≤ 0 → hiçbir demet/K ile olanaksız
+== K6-07  §3.9 T_ser (ses etkinken 2 s) — kesilemeyen arka plan paketinin ses beklemesi ==
+  hız 500 B/s L yok: S=969 B → paket 1000 B → bekleme ≤ 2.000 s
+  hız 500 B/s Eth+IPv4+UDP: S=969 B → paket 1042 B → bekleme ≤ 2.084 s
+  hız 1000 B/s L yok: S=1100 B → paket 1131 B → bekleme ≤ 1.131 s
+  hız 1000 B/s Eth+IPv4+UDP: S=1100 B → paket 1173 B → bekleme ≤ 1.173 s
+  hız 12500 B/s L yok: S=1100 B → paket 1131 B → bekleme ≤ 0.090 s
+  hız 12500 B/s Eth+IPv4+UDP: S=1100 B → paket 1173 B → bekleme ≤ 0.094 s
+== K6-08  §3.2 ses kredisi 'son tarih penceresi kadar parça' (W = ⌊D/T⌋) ile kredi döngüsü ==
+  model: kredi = alıcıya varan (ya da süresi dolan) en yüksek sıra + W; kredi ACK'le döner →
+  döngü ≈ RTT (+ser). Sürekli ses için W·T ≥ RTT; gönderilebilen çerçeve oranı ≤ min(1, W·T/RTT).
+  (Yer, oynatma anında boşalıyorsa koşul W·T ≥ D + RTT/2 olur: W = D/T ile hiçbir RTT'de sağlanmaz.)
+  D=400 T=60: W=6 parça → RTT 600: oran ≤ 60% (gerek W ≥ 10); RTT 2000: oran ≤ 18% (gerek W ≥ 34);
+  D=400 T=120: W=3 parça → RTT 600: oran ≤ 60% (gerek W ≥ 5); RTT 2000: oran ≤ 18% (gerek W ≥ 17);
+  D=400 T=200: W=2 parça → RTT 600: oran ≤ 67% (gerek W ≥ 3); RTT 2000: oran ≤ 20% (gerek W ≥ 10);
+  D=800 T=60: W=13 parça → RTT 600: oran ≤ 100% (gerek W ≥ 10); RTT 2000: oran ≤ 39% (gerek W ≥ 34);
+  D=800 T=120: W=6 parça → RTT 600: oran ≤ 100% (gerek W ≥ 5); RTT 2000: oran ≤ 36% (gerek W ≥ 17);
+  D=800 T=200: W=4 parça → RTT 600: oran ≤ 100% (gerek W ≥ 3); RTT 2000: oran ≤ 40% (gerek W ≥ 10);
+######## scripts/ktp2/f0/e/sinirlar.py
+== S39-01  §3.9 '(64+31)/2 ≈ 47,5 B/s' ve '31 B/s'de ≈ 3,1 s' ==
+  L yok: en küçük paket 95 B → T_ser 2 s eşiği 47.50 B/s ; 31 B/s'de 3.065 s ; T_ser 8 s eşiği 11.875 B/s
+  IPv4+UDP: en küçük paket 123 B → T_ser 2 s eşiği 61.50 B/s ; 31 B/s'de 3.968 s ; T_ser 8 s eşiği 15.375 B/s
+  Eth+IPv4+UDP: en küçük paket 137 B → T_ser 2 s eşiği 68.50 B/s ; 31 B/s'de 4.419 s ; T_ser 8 s eşiği 17.125 B/s
+  31 B/s, ses YOK (T_ser 8 s): S=217 B → paket 248 B → 8.00 s ; ses etkin: S=64 B
+  64 B parçada başlık payı 31/95 = 32.6% ; payın 1/3'ü geçtiği eşik S < 62 B (31/(62+31) = 1/3)
+  L=42 ile 64 B parçada başlık payı 73/137 = 53.3%
+== S5-01  §5 hizmet payı: 1000 B/s, ses 300 B/s, mesaj+dosya dolu → mesaj ≥ 560, dosya ≥ 140 ==
+  taslak (ses 300, kontrol boş): r−r_ses=700.0 → mesaj ≥ 560.0, dosya ≥ 140.0 B/s (tel baytı)
+  kontrol da dolu (4/4/1): r−r_ses=700.0 → mesaj ≥ 311.1, dosya ≥ 77.8 B/s (tel baytı)
+  ses §3.6 tavanında (1,5×305=457,5): r−r_ses=542.5 → mesaj ≥ 434.0, dosya ≥ 108.5 B/s (tel baytı)
+  ses %30 FEC (4,4), 200 ms: 625: r−r_ses=375.0 → mesaj ≥ 300.0, dosya ≥ 75.0 B/s (tel baytı)
+== S5-02  §5 teyitsiz veri örneği: 31 B/s, W=16, S=64, pay %20 → ≈ 245 s ==
+  taslak (S=64, pay 1/5), L yok: 16×95/6.200 = 245.2 s
+  taslak (S=64, pay 1/5), Eth+IPv4+UDP: 16×137/6.200 = 353.5 s
+  §3.9 ses yok (S=217), pay 1/5, L yok: 16×248/6.200 = 640.0 s
+  §3.9 ses yok (S=217), pay 1/5, Eth+IPv4+UDP: 16×290/6.200 = 748.4 s
+  S=64, kontrol da dolu (pay 1/9), L yok: 16×95/3.444 = 441.3 s
+  S=64, kontrol da dolu (pay 1/9), Eth+IPv4+UDP: 16×137/3.444 = 636.4 s
+== S5-03  §5 'bugünkü motorun aynı koşuldaki en kötü sınırı ≈ 6,4 gün' (kaynağın yeniden kurulumu) ==
+  kaynak: 05b notu (aday 49864510) docs/design/K4G-05b-RETX-FIX.md B.1d satır 45b ve B.6 h.9.7:
+  T_birim(R1) ≤ max(H_maks, A) + A + N_cap·T_max(kopya) + τ; N_cap = 4096, birim 1046 B
+  31 B/s: baskın terim 4096×4×1046/31 = 552828 s = 6.398 gün ; notun değeri 553350 s = 6.405 gün (fark %0.09)
+  100 B/s: baskın terim 4096×4×1046/100 = 171377 s = 1.984 gün ; notun değeri 171590 s = 1.986 gün (fark %0.12)
+  aynı baskın terim 64 B yükle (bugünkü tel 64+33=97 B), 31 B/s tam hız: 51266 s = 14.2 sa ; pay %20 ile ×5: 2.97 gün
+== S5-04  §5 israf sınırı: yeniden gönderim / teslim ≤ 1,5·p/(1−p) ==
+  p=0.1: ideal ARQ beklenen oran p/(1−p) = 0.1111 ; sınır 1,5× = 0.1667
+  p=0.2: ideal ARQ beklenen oran p/(1−p) = 0.2500 ; sınır 1,5× = 0.3750
+  p=0.3: ideal ARQ beklenen oran p/(1−p) = 0.4286 ; sınır 1,5× = 0.6429
+  [kesin] ideal ARQ'nun tek koşuda sınırı AŞMA olasılığı, n parça (T ~ NegBin(n, 1−p)):
+  p=0.1: n=1: 10.00%; n=10: 30.26%; n=30: 13.16%; n=100: 7.02%; n=300: 0.43%; n=1000: 0.00%;
+  p=0.2: n=1: 20.00%; n=10: 25.27%; n=30: 10.22%; n=100: 1.82%; n=300: 0.02%; n=1000: 0.00%;
+  p=0.3: n=1: 30.00%; n=10: 17.53%; n=30: 7.00%; n=100: 0.53%; n=300: 0.00%; n=1000: 0.00%;
+  FEC onarımı sayılırsa, R = ⌈K·p/(1−p)·1,25⌉ ile R/K (sınırla kıyas):
+    K=4 p=0.1: R=1, R/K=0.2500 vs sınır 0.1667 → AŞAR
+    K=4 p=0.2: R=2, R/K=0.5000 vs sınır 0.3750 → AŞAR
+    K=4 p=0.3: R=3, R/K=0.7500 vs sınır 0.6429 → AŞAR
+    K=8 p=0.1: R=2, R/K=0.2500 vs sınır 0.1667 → AŞAR
+    K=8 p=0.2: R=3, R/K=0.3750 vs sınır 0.3750 → içinde
+    K=8 p=0.3: R=5, R/K=0.6250 vs sınır 0.6429 → içinde
+== S5-05  §5 bekleme sınırına kesilemeyen paket terimi (taslağın kendi K-1/§3.9 terimi) ==
+  31 B/s ses yok: en büyük paket 248 B → (S_maks+başlık)/r = 8.000 s
+  31 B/s ses etkin: en büyük paket 95 B → (S_maks+başlık)/r = 3.065 s
+  1000 B/s ses yok: en büyük paket 1131 B → (S_maks+başlık)/r = 1.131 s
+  1000 B/s ses etkin: en büyük paket 1131 B → (S_maks+başlık)/r = 1.131 s
+  12500 B/s ses yok: en büyük paket 1131 B → (S_maks+başlık)/r = 0.090 s
+  12500 B/s ses etkin: en büyük paket 1131 B → (S_maks+başlık)/r = 0.090 s
+== KR-01  §3.2 kredi pencereleri: parça × S_maks ve bant-gecikme çarpımı ==
+  STANDART mesaj: 32 × 1100 = 35200 B ; bayt sınırı 32 KB = 32768 B → bayt sınırı S > 1024 B iken bağlar
+  STANDART sinyal: 16 × 1100 = 17600 B ; bayt sınırı 16 KB = 16384 B → bayt sınırı S > 1024 B iken bağlar
+  ARKA PLAN dosya: 16 × 1100 = 17600 B ; bayt sınırı 64 KB = 65536 B → bayt sınırı HİÇ bağlamaz
+  r=25 B/s RTT=0.6 s: BDP=15 B ; dosya penceresi 16×169=2704 B → pencere/RTT=4507 B/s (≥ r)
+  r=25 B/s RTT=2.0 s: BDP=50 B ; dosya penceresi 16×169=2704 B → pencere/RTT=1352 B/s (≥ r)
+  r=1000 B/s RTT=0.6 s: BDP=600 B ; dosya penceresi 16×1100=17600 B → pencere/RTT=29333 B/s (≥ r)
+  r=1000 B/s RTT=2.0 s: BDP=2000 B ; dosya penceresi 16×1100=17600 B → pencere/RTT=8800 B/s (≥ r)
+  r=12500 B/s RTT=0.6 s: BDP=7500 B ; dosya penceresi 16×1100=17600 B → pencere/RTT=29333 B/s (≥ r)
+  r=12500 B/s RTT=2.0 s: BDP=25000 B ; dosya penceresi 16×1100=17600 B → pencere/RTT=8800 B/s (r’nin %70.4)
+== KR-02  §4 KREDİ 'oturum bayt sınırı 4 B' + 'mutlak, yalnız artar' → u32 taşma süresi ==
+  25 B/s: 2^32 B / r = 171798692 s = 1988.41 gün = 2863311.5 dk
+  1 kB/s: 2^32 B / r = 4294967 s = 49.71 gün = 71582.8 dk
+  12,5 kB/s: 2^32 B / r = 343597 s = 3.98 gün = 5726.6 dk
+  10 Mbit/s (K-9): 2^32 B / r = 3436 s = 0.04 gün = 57.3 dk
+== KR-03  §3.7 kredi güncellemesi '3 ACK'te' — üçünün de kaybolma olasılığı p_dönüş³ ==
+  p_dönüş=0.1: 0.1%
+  p_dönüş=0.3: 2.7%
+  p_dönüş=0.5: 12.5%
+  p_dönüş=0.8: 51.2%
+== AK-01  §3.11 ACK yükü ≤ ileri veri hızının %5'i → ACK aralığı alt sınırı ==
+  ileri 25 B/s, ACK 34 B (L yok): aralık ≥ 27.200 s
+  ileri 25 B/s, ACK 76 B (Eth+IPv4+UDP): aralık ≥ 60.800 s
+  ileri 1000 B/s, ACK 34 B (L yok): aralık ≥ 0.680 s
+  ileri 1000 B/s, ACK 76 B (Eth+IPv4+UDP): aralık ≥ 1.520 s
+  ileri 12500 B/s, ACK 34 B (L yok): aralık ≥ 0.054 s
+  ileri 12500 B/s, ACK 76 B (Eth+IPv4+UDP): aralık ≥ 0.122 s
+== PT-01  §3.10 'PTO yoklaması 30 s'de bir, ≤ 48 B (≤ 1,6 B/s)' ile §3.4 'PTO en eski teyitsiz parçayı gönderir' ==
+  48/30 = 1.60 B/s
+  parça S=64: paket 95 B (L yok) / 30 s = 3.17 B/s
+  parça S=64: paket 137 B (Eth+IPv4+UDP) / 30 s = 4.57 B/s
+  parça S=217: paket 248 B (L yok) / 30 s = 8.27 B/s
+  parça S=217: paket 290 B (Eth+IPv4+UDP) / 30 s = 9.67 B/s
+  parça S=1100: paket 1131 B (L yok) / 30 s = 37.70 B/s
+  parça S=1100: paket 1173 B (Eth+IPv4+UDP) / 30 s = 39.10 B/s
+  48 B'a sığan içerik: zarf 22 + YOKLAMA 1 + ACK 8+4n → n ≤ 4 aralık; AKIŞ çerçevesiyle en çok 17 B yük
+== K4-01  K-4 'kesinti sonrası ilk teslim ≤ 30 s + 2 RTT' ==
+  r=25 RTT=0.6: sınır 31.20 s | PTO veri taşır: 38.30 s | yalnız yoklama: 40.82 s
+  r=25 RTT=2.0: sınır 34.00 s | PTO veri taşır: 39.00 s | yalnız yoklama: 42.92 s
+  r=1000 RTT=0.6: sınır 31.20 s | PTO veri taşır: 31.43 s | yalnız yoklama: 32.08 s
+  r=1000 RTT=2.0: sınır 34.00 s | PTO veri taşır: 32.13 s | yalnız yoklama: 34.18 s
+  r=12500 RTT=0.6: sınır 31.20 s | PTO veri taşır: 30.39 s | yalnız yoklama: 30.99 s
+  r=12500 RTT=2.0: sınır 34.00 s | PTO veri taşır: 31.09 s | yalnız yoklama: 33.09 s
+######## scripts/ktp2/f0/e/yuk_tablosu.py
+== Y4-01  §4 çerçeve alan toplamları ==
+  AKIŞ: 1+2+4+2 = 9 (taslak 9) ✓
+  ONARIM: 1+2+4+1+1+1+2 = 12 (taslak 12) ✓
+  ACK (n=0): 1+4+2+1 = 8 (taslak 8) ✓
+  KURTARILDI: 1+2+4+2 = 9 (taslak 9) ✓
+  KREDİ (n=0): 1+4+1 = 6 (taslak 6) ✓
+  AKIŞ BİTİŞİ: 1+2+4 = 7 (taslak 7) ✓
+  AKIŞ İPTALİ: 1+2+1 = 4 (taslak 4) ✓
+  BLOK DURUMU: 1+2+4+1 = 8 (taslak 8) ✓
+  YOKLAMA: 1 = 1 (taslak 1) ✓
+  KREDİ tek girdi: 6 + 6·1 = 12 B (taslak §4.1 'akış başına 6 B' yalnız ek girdiyi sayar)
+== Y41-01  §4.1 veri paketi başlığı: bugün 22 + 11 = 33, KTP-2 22 + 9 = 31 ==
+  bugün LEGACY 22 + DATA 11 = 33 ; KTP-2 22 + 9 = 31
+== Y41-02  §4.1 '300 B mesajın FEC yolundaki tel boyu (onarım hariç) = 6 × (64 + 37) = 606 B' ==
+  (a) taslağın modeli = noise-wire EXTENDED FecShard, E=64: yük/sembol 53 B → 6 sembol × (64 + 26+11) = 606 B
+  (b) ÜRÜN a858f3fc (profil 0x05, parçalayıcı kapalı): kaynak = 0x00 DATA, sembol tele ÇIKMAZ:
+      kaynak 22+11+300 = 333 B ; her onarım 22+12+1024 = 1058 B
+  (c) E=64 profili + parçalayıcı açık (0x05 DATA_FRAG, client-core yolu): 5×97 + 79 = 564 B ; her onarım 22+12+64 = 98 B
+  KTP-2: 31 + 300 = 331 B ; onarım 22 + 12 + 300 = 334 B
+  (a)→KTP-2: tel 606→331 = %54.6 ; ek yük 306→31 = %10.1
+  (b)→KTP-2: tel 333→331 = %99.4
+== Y1-01  §1 '64 baytlık sembollere 37 bayt çerçeve (taban yükü yaklaşık iki kat)' ==
+  E=64, EXTENDED: (64+37)/64 = 1.578× sembol başına ; (64+37)/53 = 1.906× yük başına
+  ürün (E=1024) kaynak: ek yük 33 B (FEC'siz DATA ile aynı) ; onarım: 1058 B (yükten bağımsız)
+    65 B mesaj: kaynak 98 B, tek onarım 1058 B = kaynağın 10.80 katı
+    300 B mesaj: kaynak 333 B, tek onarım 1058 B = kaynağın 3.18 katı
+    1013 B mesaj: kaynak 1046 B, tek onarım 1058 B = kaynağın 1.01 katı
