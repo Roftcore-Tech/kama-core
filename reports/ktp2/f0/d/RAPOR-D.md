@@ -234,9 +234,56 @@ profilde netem'in sıra koruyan jitter'ı tek-yön gecikmeyi profil değerinin �
 - **K-r12k-d1000:** RTT 2 s, %10 kayıpta BtlBw kestirimi hattın ≈ %24'ü; pacing sunulan yükün
   altında kalıyor, gecikme 30 s+.
 
-### 8.2 Tam set
+### 8.2 Tam set — ara not 1: `d_mix_r12k_d300_l30` (N = 30 / kol, 2026-10-29 20:22→23:29Z)
 
-Henüz koşulmadı.
+Kök `~/kama-k4g-work/ktp2-f0/runs/tam/d/out/d_mix_r12k_d300_l30`; ikililer taban `2cd9f68d`
+(`3311d8e0…`), aday `bf18dc35` (`c893e840…`); hücre dosyası sha256 `5ecf9764…` (bu daldaki dosya).
+
+**Geçerlilik [ölçüldü]:**
+- 8 kol × 30 koşu, hepsi rc = 0; her koşuda olay var (tx 372 / 180 öğe); alıcı günlüğünde kimlik
+  hatası 0, mükerrer 0, plandan önce alım 0; tcp alım sırası yazma sırasıyla aynı (ihlal 0; quinn'de
+  dosya-sırası ihlalleri stream'ler arası eşzamanlı günlükten, beklenen).
+- Koşu öncesi netem: 240 koşunun 239'unda sayaçlar sıfır; `tcp_nofile rep2`'de ileri qdisc'te
+  `drops = 1`, `bytes = packets = backlog = 0` (kuyruk boş; sıfırlamayla `pre` arasında düşen tek
+  başıboş paket) — zararsız.
+- Gerçekleşen kayıp (profil %30): Kama ve quinn kollarında ileri 0,291–0,307, dönüş 0,297–0,310
+  (havuz; binom %95 aralıklarıyla tutarlı). tcp dönüş 0,308–0,309. **tcp_mix ileri 0,256 ± 0,018**
+  — sayaç yapıtı: aşağıdaki D-13.
+- quinn el sıkışma tavanına takılan: `quinn_nofile rep26` (60 s, `connected=false`) — geçerli 0,
+  ayrı sayıldı; diğer 59 quinn koşusu bağlandı (kurulum medyanı 1,76–1,80 s).
+- tcp `snd_una` kaydı (B ızgarasındaki 460 tcp-tack koşusu): `poll_fail = 0`, `polls > 0` her koşuda.
+  Karışık akışta tcp teslimi alıcıda damgalanır (snd_una kullanılmaz).
+
+**D-13 (yeni, ölçüldü) — tcp ileri yönde TSO çift-segment skb'leri.** Ölçüm: B ızgarasında r12k
+hücrelerinde netem ileri birimi / (OutSegs + RetransSegs) = 0,95–0,98 ve ölçülen tcp ileri kaybı
+profilden düşük (l20: 0,171–0,200; l30: 0,259–0,285); r1k'da 1,00 ve kayıp ≈ p; Kama/quinn her
+yerde ≈ p. Dosya/işlev: `scripts/netem/kapi3_harness.sh` `kapi3_setup` (offload kapatma ethtool'a
+bağlı; bu makinede `offload=ethtool-missing`). Kök neden: veth TSO açık → TCP 12,5 kB/s'de bir kısım
+skb'yi 2 segment yollar; netem kaybı skb başına çeker (`drops` skb sayar, `packets` gso_segs sayar).
+Nicelik [çıkarım, sayaçlardan]: l30 r12k'da skb'lerin ≈ %22'si çift segment (oran 0,945 öngörü ↔
+0,952 ölçülen). Segment başına marjinal kayıp yine p; ancak segmentlerin ≈ %37'si çift halinde
+birlikte kaybolur (kayıp olayları korelasyonlu). Etki yalnız tcp kollarında; yönü ölçülmedi. En dar
+düzeltme: `kapi3_setup`'ta `ip link set dev va0 gso_max_segs 1` (ve vb0), ya da ethtool kurulumu.
+
+**İlk gözlem (N = 30, karışık akış, taşıma düzeyi). Kama sayıları bench üst sınırıdır [D-9: S1
+Reorder ve Noise kripto baytları yok].** Hücre medyanı [IQR] koşu başına; K-1 havuzlanmış.
+
+| kol | TEXT p95 dosyalı | TEXT p95 dosyasız | Δ (dosya HOL) | PTT@0,8 s dosyalı / dosyasız | dosya bitiş s | K-1 |
+|---|---|---|---|---|---|---|
+| taban [D-9] | 24,5 s [20,3–29,1] | 4,9 s [3,7–7,6] | +19,6 s | 0,133 / 0,623 | 30,3 [26,0–37,8] | GEÇMEDİ |
+| aday [D-9] | 24,2 s [20,1–28,2] | 4,3 s [3,1–7,2] | +19,9 s | 0,080 / 0,387 | 27,4 [23,6–32,1] | GEÇMEDİ |
+| quinn | 12,8 s [11,5–14,0] | 2,3 s [1,9–4,9] | +10,5 s | 0,080 / 0,273 | 19,2 [18,3–28,4] | GEÇMEDİ |
+| tcp | ∞ (TEXT@10 s 0,033) | 36,4 s [11,0–∞] | — | 0,007 / 0,073 | bitmedi (dosyanın %34'ü) | GEÇMEDİ |
+
+- Dört kol da K-1'i (taşıma düzeyi uyarlaması) GEÇMEDİ. Dosya kaynaklı TEXT gecikmesi Kama'da
+  quinn'in ≈ 2 katı; tcp'de dosya TEXT'i pencere boyunca bekletiyor (tek bayt akışı).
+- Kama dosyasız PTT@0,8 s'de quinn'den yüksek (taban 0,623, aday 0,387 ↔ 0,273); dosyalıda ikisi de
+  ≈ 0,08–0,13.
+- Mekanizma [çıkarım, ölçülmedi]: Kama'da dosya t0'da tek FIFO sunum kuyruğuna giriyor; TEXT p95 ≈
+  dosya süresi (192 000 B / ≈ 6,5 kB/s ≈ 30 s). quinn'de gönderen önceliği var ama dosya verisi darboğaz
+  kuyruğunda (BBR ilk pencere 240 000 B) bekliyor; öncelik kuyruktaki paketin önüne geçemez.
+- İleri tel (medyan): taban 236,7 KB, aday 237,1 KB, quinn 229,7 KB (uygulama yükü 199,8 KB); tcp
+  71,1 KB (tamamlanmadı).
 
 ## 9. İSTEK'ler
 
