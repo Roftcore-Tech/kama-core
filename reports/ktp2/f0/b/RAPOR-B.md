@@ -1,6 +1,12 @@
 # KTP2-F0 / Ajan B — Düşük bant ve yüksek RTT: rapor taslağı
 
-**Tur 1 — koşu yok.** Bu taslakta ölçüm sonucu yoktur. Sayıların tamamı [kod] (kaynak okuması, dosya:satır) ya da [çıkarım] (ölçülmemiş akıl yürütme; `scripts/ktp2/f0/b/fizik.py` ile hesaplandı). §6'daki tek tablo 05b arşivinden [betimsel, sonradan] türetildi. Koşu sonrası §9 doldurulur; §5'teki tahminler o zaman sapma dekompozisyonuyla kıyaslanır.
+**Tur 2 — duman-1 sonrası, tam set öncesi.** Hüküm verecek ölçüm yok. Kaynaklar:
+- [kod] kaynak okuması (dosya:satır);
+- [çıkarım] `scripts/ktp2/f0/b/fizik.py` hesabı;
+- §6: 05b arşivi [betimsel, sonradan];
+- §9.0: duman-1 [ölçüldü, N = 1, betimsel]. Duman, koşucu düzeltmesi `aa9935ac`'den önce koştu; kirli koşular işaretlidir.
+
+Tam set sonrası §9 doldurulur. §5'teki tahminler o zaman sapma dekompozisyonuyla kıyaslanır.
 
 Dayanak: `ISEMRI-KTP2-F0-2026-10-29` §3 "Ajan B"; `scripts/ktp2/f0/KATALOG.md`; `ORTAK-KURALLAR.md`.
 Kollar: `taban` = main `a858f3fc` (+ ölçüm kodu), `aday` = 05b `49864510` (+ aynı ölçüm kodu), `quinn` / `tcp` = taban ikilisinin rakip kolları.
@@ -12,7 +18,10 @@ Kod farkı denetimi [kod]: B'nin dayandığı dosyalardan `receiver.rs`, `ack.rs
 
 ## 0. Bu turun özeti
 
-1. **Izgara:** 49 hücre. Bütçe içi P1–P4 için **≈ 92,9 koşu-saati** beklenir (en kötü 141,8). Dört kol ve `-j3` ile ≈ 31 saat duvar süresi tutar. Bütçe dışı ve budanan hücreler P5–P6'dadır. Ayrıntı §1 ve Ek B'de.
+1. **Izgara:** 58 hücre. 49 ana hücre var; r25'te quinn için 9 ayrı betimsel hücre ayrıldı (N = 5).
+   - P1–P5 için **≈ 94,6 koşu-saati** beklenir (en kötü 164,7). Bütçe dışı yalnız P6'dır (≈ 3,0 sa).
+   - Tur 1'de r25 l10/l30 (P5) budanmıştı. TCP kolu artık erken bittiği için (Ajan D, transport-ack) P5 bütçeye girdi.
+   - Ayrıntı §1 ve Ek B'de.
 2. **Sunulan yük:** ileri hat kapasitesinin %30'u. Ölçü, tek iletimli Kama veri paketinin L2 dahil boyudur. Mesaj boyları açık: 65 B ve 1000 B. "1 KB" için 1000 B seçildi, çünkü 1024 B ürün v1 profilinde tek birim olarak gönderilemez (B-K6).
 3. **Koddan en güçlü dört bulgu** (§4; hepsi [kod] + [çıkarım], ölçümle doğrulanacak):
    - **B-K1:** Kuyruk probu PTO'su 10 s'de kırpılıyor. 25 B/s'de RTT 8,9–12,8 s olduğundan, d1000'de her mesaj için gereksiz bir tam kopya bekleniyor.
@@ -21,7 +30,15 @@ Kod farkı denetimi [kod]: B'nin dayandığı dosyalardan `receiver.rs`, `ack.rs
    - **B-K3:** Yeniden gönderim yeni PN alıyor, bu yüzden SACK delikleri kalıcı. 16 kayıptan sonra her ACK 137 B olur (yalın ACK 73 B). 25 B/s'de bu, ACK başına +2,56 s demektir.
 4. **K-3 notu (Ajan E'ye):** Taslağın K-3 alt sınırı (96 B → 3,8 s) L2/L3/L4'ün 42 B'sini saymıyor. Bench'te 65 B'lik mesaj telde 134 B'dir; spec zarfıyla 140 B. 25 B/s'de tek yön alt sınır 5,66 s'dir (d300).
    %20 kayıpta ideal ARQ'nun p95'i 14,5 s'dir; bu, K-3 hedefi olan 12 s'nin üstündedir. Hedefi yalnız eşzamanlı 2 kopya karşılar (11,0 s) [çıkarım, fizik.py].
-5. **Ölçüm araçları:**
+5. **Duman-1 [ölçüldü, N = 1, betimsel; §9.0]:**
+   - **B-K13, yeni:** PARAM_SET 200 ms'de bir, 25 kez yeniden gönderiliyor (`runtime.rs:2554-2569`). 25 B/s'de bu 25 × 93 B = 2325 B, yani ≈ 93 s ileri hat süresi eder. Temiz r25 koşusunda aday için ölçülenler:
+     - ileri hattın geç kalma süresinin %57'si PARAM ile dolu;
+     - PreConverge 33 s sürdü, srtt 94,6 s;
+     - tek yön p50 74,8 s; 6 mesajın 1'i D içinde.
+   - **B-K8, ölçüldü:** r1k/d1000/l20/1 KB'de taban PreConverge'de 60,6 s kaldı. 31 B/s tabanıyla gönderende bekleme p95 48 s oldu (adayda 0,27 s).
+   - **B-K14 (= Ajan C B-C9), B ızgarasında da görüldü:** r12k/d300/l30/65 B'de iki kolda gecikme 2–3,5 s birikti. Birikimin tamamı gönderen kuyruğunda; darboğaz kuyruk fazlası p95 0,08 s, hat doluluğu ≤ 0,21. Fiziksel kapasite değil.
+   - **Kirli koşular:** r25 hücresinde tcp, taban ve quinn koşuları önceki koşunun netem artığıyla başladı (15,4 KB = 10 dk). `aa9935ac` bunu düzeltti; bu koşular yorumlanmaz.
+6. **Ölçüm araçları:**
    - Uç yakalama (`cap_b.py` + `cap_wrap.sh`): çerçeve türü, birim kimliği ve PN kaydedilir. Yeniden gönderimin faydalı/gereksiz ayrımı ve gerçek RTT ürün koduna dokunmadan ölçülür.
    - `analiz_b.py`: sentetik denetimden geçti (22 denetim, `sentetik_test.py`).
    - netem'in sıra koruyan jitter'ı ortalama tek yön gecikmesini profil değerinin üstüne çıkarır. Model `fifo_owd`'dir; srtt ayrıca bu değerle de kıyaslanır (§2.2).
@@ -52,22 +69,22 @@ Profil dizeleri KATALOG §2'den aynen alındı. Örnek: `delay 1000ms 200ms dist
 
 | öncelik | hücreler | N | beklenen koşu-saati (kümülatif) | en kötü (kümülatif) |
 |---|---|---|---|---|
-| **P1** | r1k/r12k × d300/d1000 × l0/l20/l30 × 65 B / 1000 B (24 hücre) | 30 | 50,3 (50,3) | 85,2 (85,2) |
-| **P2** | r25 × d300/d1000 × l0/l20 × yalnız 65 B (4 hücre) | 30 | 17,3 (67,7) | 18,8 (104,0) |
-| **P3** | r1k/r12k × d300/d1000 × l10 × 65 B / 1000 B (8 hücre) | 30 | 17,1 (84,8) | 28,4 (132,4) |
-| **P4** | stres: r1k/r12k × d300 × l50/l80 × 65 B / 1000 B (8 hücre) | 10 | 8,1 (92,9) | 9,5 (141,8) |
-| P5 (budandı) | r25 × d300/d1000 × l10/l30 × 65 B (4 hücre) | 30 | 18,4 (111,3) | 18,8 (160,7) |
-| P6 (budandı) | r25 × d300 × l0 × 1000 B (1 hücre) | 10 | 3,5 (114,8) | 3,5 (164,2) |
+| **P1** | r1k/r12k × d300/d1000 × l0/l20/l30 × 65 B / 1000 B (24 hücre, 4 kol) | 30 | 41,9 (41,9) | 89,5 (89,5) |
+| **P2** | r25 × d300/d1000 × l0/l20 × 65 B (4 hücre: taban, aday, tcp) + quinn (4 hücre) | 30 / quinn 5 | 14,3 (56,2) | 17,7 (107,2) |
+| **P3** | r1k/r12k × d300/d1000 × l10 × 65 B / 1000 B (8 hücre) | 30 | 14,4 (70,7) | 29,8 (137,1) |
+| **P4** | stres: r1k/r12k × d300 × l50/l80 × 65 B / 1000 B (8 hücre) | 10 | 8,0 (78,7) | 9,9 (147,0) |
+| **P5** | r25 × d300/d1000 × l10/l30 × 65 B (4 + 4 quinn hücre) | 30 / quinn 5 | 15,9 (94,6) | 17,7 (164,7) |
+| P6 (bütçe dışı) | r25 × d300 × l0 × 1000 B (1 + 1 quinn hücre) | 10 / quinn 5 | 3,0 (97,6) | 3,2 (167,8) |
 
-Budama açıktır:
-- r25'te yalnız 65 B ve l0/l20 hükümdedir. l10/l30 P5'tedir.
-- r25 – 1 KB P6'dadır: tek mesajın serileştirmesi 42,8 s; ρ = 0,3'te aralık 143 s; 10 tekrar ≈ 3,5 saat.
+Budama ve kararlar:
+- r25'te 1 KB P6'dadır, betimseldir: tek mesajın serileştirmesi 42,8 s; ρ = 0,3'te aralık 143 s.
+- **r25'te quinn ayrı hücrede, N = 5, betimsel.** İlk uçuş her yönde ≥ 1242 B olduğundan el sıkışma ≥ 99,4 s + 2d sürer; bu HS_TIMEOUT_S = D = 60 s'yi aşar (RFC 9000 §14.1; Ajan D'nin hesabı ≥ ≈ 100 s). Sonuç fizikle belirli: 0 teslim. 30 tekrar bütçe harcar, bilgi eklemez. Ana r25 hücreleri `taban aday tcp` koşar. Rapor cümlesi: "r25'te quinn D içinde bağlanamadı (N = 5, betimsel)".
 - Stres hücreleri yalnız d300'dedir.
 
 Koşu süresi modeli (`fizik.run_time`) [çıkarım]:
 - **Kama:** sunum + kuyruk süresi. Kuyruk, kayıpsızda RTT + I; kayıpta min(D, 4·RTT + I); streste D. İstemci, bütün teyitler gelince ya da son sunum + D'de biter (`kama_product.rs:757-781`).
 - **quinn:** el sıkışma + sunum + kuyruk. El sıkışma D ile sınırlıdır (`quic.rs:256`). r25'te başarısız el sıkışma sonrası mesaj sunulmaz.
-- **TCP:** her koşuda **sabit** min(D, 60 s) bekler (`tcp.rs:164`). Bu bekleme P1 bütçesinin ≈ %18'idir (9,0 / 50,3 sa); TCP kolu toplamda P1'in ≈ %37'si. Bkz. İSTEK-D1.
+- **TCP:** birincil kol artık `--rival-delivery transport-ack` (Ajan D, `run_client_tack`). Teslim `snd_una` ile ölçülür; bütün mesajlar teslim edilince ya da son plan + D'de biter. Bağlanma tavanı HS_TIMEOUT_S = D'dir. Tur 1'deki sabit bekleme (eski `tcp.rs:164`, İSTEK-D1) birincil kolda yok.
 
 Hücre zaman aşımı `BUDGET_S`, en kötü kol süresinin 30 s üstüdür.
 
@@ -88,7 +105,7 @@ Hücre zaman aşımı `BUDGET_S`, en kötü kol süresinin 30 s üstüdür.
 - `capb_*.csv.gz` iki uçta da var, `capb_*.FAIL` yok;
 - `analiz_b.py` analiz hatası 0;
 - dört kolda `cmd.txt` doğru;
-- quinn ve tcp'de `F0_RAKIP_TANIM=gecici-B` görünüyor (D'nin tanımı gelene kadar).
+- duman-1'de quinn ve tcp geçici tanımla koştu (`F0_RAKIP_TANIM=gecici-B`). Tam sette Ajan D'nin `rakip_arms`'ı kullanılır.
 
 ### 1.4 Kollar ve yakalama
 
@@ -97,10 +114,12 @@ Hücre zaman aşımı `BUDGET_S`, en kötü kol süresinin 30 s üstüdür.
   - `client … --msgs M --payload P --submit-interval-ms I --max-deadline-s D --seed @REP@ --repeat @REP@ --fwd-impair '<FWD>' --rev-impair '<REV>' --manifest @D@/manifest.json --out @D@/out.jsonl`
 
   Ürün v1 profili bench varsayılanlarıdır (fec 0x05 adaptive, tail validated_v1, IW 2400 B).
-- **quinn, tcp (GEÇİCİ):** `b/hucre_b.sh` → `b_rakip_gecici`.
-  - quinn: `--transport quinn --cc bbr`. tcp: `--transport tcp`.
-  - `cmd.txt`'de `env F0_RAKIP_TANIM=gecici-B` ile işaretlidir.
-  - `scripts/ktp2/f0/arms_rakip.sh` gelir ve `rakip_arms` işlevini sağlarsa hücreler kendiliğinden onu kullanır (İSTEK-D3).
+  Kama sunucusu `--rx-log @D@/rx_log.jsonl` yazar: alıcı teslim damgası, şema ktp2-c-rx-v1, dört kolda aynı (İSTEK-B-D). İstemci `--ts-out @D@/ts.csv` yazar: 50 ms motor zaman serisi, salt gözlem, Ajan C ile aynı. Bunlar `KAMA_RXLOG=1` ve `KAMA_TS=1` varsayılanlarıdır.
+- **quinn, tcp:** Ajan D'nin `scripts/ktp2/f0/arms_rakip.sh` → `rakip_arms`. Hücreler bunu kendiliğinden kullanır; `b/hucre_b.sh`'deki geçici tanım yalnız yedektir.
+  - Birincil kollar taşıma-ACK teslim tanımlıdır.
+    - quinn: mesaj başına uni-stream; teslim `SendStream::stopped`; BBR; `--payload-id` ile alıcı damgası.
+    - tcp: `snd_una`, erken bitiş.
+  - Eski uygulama yanıtlı kollar (`quinn_rpl`, `tcp_rpl`) B ızgarasında koşmaz. Ajan D'nin hücrelerindedir.
 - **Yakalama:** `b/cap_wrap.sh` her kolun SRV/CLI komutunu sarar. Komut anlamı, çıkış kodu ve SIGTERM iletimi korunur; bu, sahte komutla denendi.
   - Ad alanı içindeki uç arayüzler: istemci tarafı `va0`, sunucu tarafı `vb0`.
   - netem yalnız MID'dedir. Uç veth kayıpsızdır: `vb0`'a giren = darboğazdan geçen ileri trafik; `va0`'a giren = darboğazdan geçen dönüş trafiği.
@@ -174,6 +193,10 @@ Seçilmiş değerler [çıkarım]:
 | goodput | ileri faydalı yük baytı / pencere (ilk sunum → son varış) | yakalama |
 | hat payları | ileri ve dönüş ayrı, hattan geçen düzlemde. Sütunlar: L2/L3/L4 (42 B/paket), zarf (16 B/paket), çerçeve başlığı, faydalı yük (orijinal / kopya), gereksiz yük (orijinal / kopya), FEC onarımı, prob, kontrol, ACK, ayrıca ACK paketlerinin bütün baytı. Hat kapasitesine (hız × pencere) ve hattan geçen toplama oranı verilir. Deneme düzlemi (A'dan çıkan) ayrıca verilir | yakalama, qdisc ile çapraz denetim |
 | fiziksel / zamanlayıcı ayrımı | §3.1 | yakalama |
+| alıcı teslim | sunum → sunucunun uygulamaya teslimi; dört kolda aynı şema. Kama ve quinn'de sunum anı `t0_unix_ns`'ten; tcp'de yakalamadaki ilk veri segmentinden hizalanır. Çıktılar: `rx_deliv_D`, `rx_ow_p50/p95/p99_s` | rx_log |
+| gönderen kilidi (Ajan C B-C9 ile aynı tanım) | `btlbw_sunulan` = motor btlbw / (16 + 11 + yük)/I; `ilk_iletim_payi` = DATA baytı / (M × (16 + 11 + yük)); `birikim_ms` = mesaj sırasıyla 12 pencerede pencere-minimum gecikmenin son − ilk farkı (kaynak sırası: rx_log, yakalama, teyit); `jeton_ac_payi` = ts.csv'nin son 2/3'ünde jeton < tek DATA; `kilitli` = birikim ≥ 1 s ya da ilk iletim payı < 0,95 | sayaç, yakalama, ts.csv |
+| — B ayrımı | `gonderen_birikim_ms`: aynı pencere yöntemiyle sunum → A'dan ilk çıkış. `kilit_gonderen` = bu değer ≥ 1 s. Birikimin gönderen kuyruğunda mı, darboğazda mı (`queue_extra`) olduğunu ayırır. C'nin `kilitli` göstergesi darboğaz kuyruğunu da (örn. PARAM fırtınası) kilit sayar | yakalama |
+| kirli başlangıç | koşu başında MID netem kuyruğunda kalan bayt > 200 B. Bağlantı açılışının IPv6 ND/MLD paketleri (≈ 86–90 B) eşiğin altında kalır. `aa9935ac` sonrası 0 beklenir | qdisc |
 
 ### 3.1 Fiziksel kapasite yetersizliğini zamanlayıcı kaynaklı gecikmeden ayırma
 
@@ -307,12 +330,28 @@ Her bulgu dört parçalıdır. Ölçüm sütunu bu turda **beklenen** ölçümd�
 - **Kök neden:** IdentitySeam yalnız AEAD etiketini taklit ediyor; hub_handle 4 + seq 2 yok.
 - **En dar düzeltme:** ölçüm tarafında düzeltme sütunu yeterli. Bench'te +6 B taklit bütün şeritlerin telini değiştirir; bu turda yapılmaz.
 
-### B-K8 — PreConverge pacer tabanı 25 B/s hattından büyük; ilk pencere 2400 B
+### B-K8 — 31 B/s sabit hız tabanı: PreConverge'de 1 KB mesajı bekletiyor; yakınsamadan sonra da 25 B/s hattının üstünde
 
-- **Ölçüm:** bu ızgarada sınırlı (ρ = 0,3; PreConverge'de ≤ 1 mesaj). Patlama yükü olmadığı için IW etkisi ölçülemedi.
-- **Dosya/işlev:** `sender.rs:1485` (31 B/s); `pacer.rs:9` (2 × 1200 B); `runtime.rs:248` (`INITIAL_WINDOW_BYTES`).
-- **Kök neden:** taban hız sabit, hattan türetilmemiş. IW 2400 B, 25 B/s'de 96 s'lik kuyruktur.
-- **En dar düzeltme:** ölçülmeden önerilmez. Not olarak kalır (ölçülemedi: patlama yükü yok).
+- **Ölçüm [duman-1, N = 1, betimsel]:**
+  - r1k/d1000/l20/1 KB taban'da `left_preconv` 60,6 s (aday 3,3 s). Bu süre boyunca hız 31 B/s idi. 1027 B'lik birim ≈ 33 s jeton bekler.
+    - gönderende bekleme p95 48 s (aday 0,27 s);
+    - tek yön p50 32,8 s (aday 2,2 s); `gonderen_birikim_ms` 6440.
+  - Uzun PreConverge'in nedeni [çıkarım]: tabanda kuruluş probu (Duplicate) ve kopyaların ACK'leri RTT örneği vermez (B-K11). Yeni orijinal 31 B/s'de seyrek çıkar; ilk orijinalin ACK'i kaybolursa (%20) çıkış uzar.
+  - r25 aday: pacer 50 B/s, yani hattın veri payının 2,91 katı; gönderim / hat pencere p95 = 2,8.
+  - IW etkisi bu ızgarada ölçülemedi: patlama yükü yok.
+- **Dosya/işlev:**
+  - `sender.rs:1485` `PRE_CONVERGE_FLOOR_BW` 31 (PreConverge'de `compute_send_rate` `:4239-4244`).
+  - Yakınsamadan sonra kalıcı taban: `budget.rs:29` `min_rate_bps: 31` → `send_rate_final` (`sender.rs:4268`). Bu bulguyu Ajan E D-K3 olarak da kaydetti.
+  - Motor UDP yükü birimiyle sayar: 31 B/s, 65 B'de L2 dahil 45 B/s eder; 25 B/s hattın 1,8 katı.
+  - `pacer.rs:9` (2 × 1200 B IW); `runtime.rs:248`.
+- **Kök neden:** taban hız sabit ve hattan türetilmemiş.
+  - Düşük hatta (r25) taban hız hat hızının üstündedir. Gönderen kendi kuyruğunu netem'de büyütür; kopyalar ve PARAM birikir.
+  - Yüksek hatta (r1k, 1 KB) PreConverge'de hız 31 B/s'de kalır. Ölçüm yokken hat kapasitesinin %3'üyle gönderir.
+- **En dar düzeltme:** iki dar değişiklik.
+  1. PreConverge çıkışını Duplicate/kuruluş probu ACK'inden de mümkün kılmak. Bu, adayın madde 7 kabul kuralıdır; ölçülen davranış adayda düzelmiş [duman, N = 1].
+  2. `min_rate_bps`'yi ölçülen teslim hızının altına inebilir yapmak: `send_rate_final(…, min(min_rate_bps, btlbw), …)`. Örnek yoksa taban 31 B/s kalır.
+
+  Tel biçimi değişmez.
 
 ### B-K9 — Alıcıda birim mükerrer sayacı yok
 
@@ -323,10 +362,10 @@ Her bulgu dört parçalıdır. Ölçüm sütunu bu turda **beklenen** ölçümd�
 
 ### B-K10 — Bench'te gönderen tarafı kapasite reddi görünmüyor
 
-- **Ölçüm:** `offer()` QueueFull dönüşünde 1 ms uyuyup yeniden dener ve bunu saymaz. KP-CLIENT satırında `tx_datagrams`, `rx_datagrams`, `unaccepted_offers` yok; bu alanlar `ClientStats`'ta var.
+- **Ölçüm:** tur 1'de `offer()` QueueFull dönüşünde 1 ms uyuyup yeniden deniyor ve bunu saymıyordu. KP-CLIENT satırında `tx_datagrams`, `rx_datagrams`, `unaccepted_offers` yok; bu alanlar `ClientStats`'ta var.
 - **Dosya/işlev:** `bench/src/kama_product.rs:482-494` (`offer`), `:813` (KP-CLIENT); `runtime.rs:572-573`, `:585`.
 - **Kök neden:** teşhis satırı eksik.
-- **En dar düzeltme:** İSTEK-D4 (bench, D'nin dosyası).
+- **En dar düzeltme:** İSTEK-D4, karşılandı. `KP-CLIENT-OFFER tx_dgrams rx_dgrams unaccepted offer_qfull offer_qfull_wait_ms` satırı geldi (`c2f230b5`); `analiz_b.py` okuyor.
 
 ### B-K11 — RTT örnek kuralı iki kolda farklı (05b madde 7)
 
@@ -347,6 +386,36 @@ Her bulgu dört parçalıdır. Ölçüm sütunu bu turda **beklenen** ölçümd�
 - **Dosya/işlev:** RFC 9000 §14.1 (istemci ve sunucunun ack isteyen Initial datagram'ı ≥ 1200 B); `quinn-proto-0.11.18/src/lib.rs:330`; `bench/src/quic.rs:256` (el sıkışma D ile sınırlı).
 - **Kök neden:** fiziksel. İlk uçuş her yönde ≥ 49,7 s; el sıkışma ≥ 99,4 s + 2d. Başlangıç RTT'si 333 ms (`quinn-proto-0.11.18/src/config/transport.rs:383`) olduğundan PTO Initial'ı yeniden gönderir ve kuyruğu büyütür.
 - **En dar düzeltme:** yok (rakip kol). Rapor cümlesi: "r25'te quinn, D = 60 s içinde bağlanamadı" — ölçülürse.
+
+### B-K13 — PARAM_SET 200 ms'de bir, 25 kez: düşük bantta ilk dakikayı dolduruyor [kod + duman]
+
+- **Ölçüm:**
+  - [duman-1, N = 1] Bütün Kama koşularında `tx_ctrl_B` = 1275 B (25 × 51 B) gözlendi: r25, r12k/l80 ve r1k/d1000. PARAM_ACK RTT içinde dönmezse 25 deneme ≈ 5 s'de biter.
+  - r25'te bunun telde karşılığı 25 × 93 B = 2325 B, yani **93 s** ileri hat süresi; 6 mesajlık koşunun penceresi 150 s.
+  - Temiz r25 aday koşusu: geç kalma süresinde hattın %57'si PARAM ile dolu (`late_busy_ctrl_frac` 0,574); `queue_extra_p95` 116 s; `left_preconv` 33 s; srtt 94,6 s.
+  - r1k/d300'de 3 deneme (`tx_ctrl_B` 153): ACK çabuk dönüyor.
+- **Dosya/işlev:** `client-core/src/runtime.rs:2554-2569` (rtprop tick'inde `param_tries < 25 && now ≥ son + 200 ms`). İki kolda aynı.
+- **Kök neden:** yeniden deneme aralığı sabit ve RTT'den türetilmemiş. 25 B/s'de RTT ≥ 10 s. Bu yüzden 25 deneme PARAM_ACK dönmeden biter ve hepsi FIFO darboğazda veriden önce kuyruğa girer.
+- **En dar düzeltme:** aralığı katlamak (200 ms × 2^k, deneme tavanı 25 korunur) ya da `max(200 ms, srtt, rtt_floor)` yapmak. Burada `rtt_floor` = (35 + 16 + 65)/31 B/s ≈ 3,7 s; B-K2 ile aynı türetim. Tel biçimi değişmez. Katlamayla 25 B/s'nin ilk 10 s'sinde ≈ 6 deneme kalır (≈ 22 s hat süresi).
+
+### B-K14 — Gönderen kilidi (Ajan C B-C9) B ızgarasında da var; birikim gönderen kuyruğunda [duman]
+
+- **Ölçüm [duman-1, N = 1, betimsel]:** r12k/d300/l30/65 B (600 mesaj, 36 ms aralık).
+
+  | | taban | aday |
+  |---|---|---|
+  | `birikim_ms` | 2060 | 3500 |
+  | `gonderen_birikim_ms` | 2020 | 3490 |
+  | `btlbw_sunulan` | 1,00 | 1,07 |
+  | gönderende bekleme p95 | 2,2 s | 3,7 s |
+  | darboğaz kuyruk fazlası p95 | 0,08 s | 0,07 s |
+  | hat doluluğu | 0,17 | 0,21 |
+  | geç kalma süresinde hat boş | 0,80 | 0,76 |
+
+  Gecikme hat dolu olduğu için değil, gönderen tuttuğu için büyüyor. Benzer görünüm r12k/d1000/l10/1 KB taban'da var (`gonderen_birikim_ms` 2140, `btlbw_sunulan` 2,5). Bu ikinci hücrede btlbw sunulanın üstünde olduğu için kilit tek başına btlbw ile açıklanmaz; tam sette ayrıştırılır.
+- **Dosya/işlev:** Ajan C'nin izi [çıkarım]: `bw.rs:220-245` (kuyruk doluyken teslim örneği ≈ pacer × (1 − p)); `rate.rs:164-180` ve `sender.rs:4239-4268` (Steady kazancı 1); seyrek ProbeUp (`sender.rs:1537`).
+- **Kök neden [çıkarım]:** pacer sunulan hıza kilitlenir, yeniden gönderim bandı ayrılmaz. Kayıplar yeni veriyle aynı jetonları paylaşınca gönderen kuyruğu doğrusal büyür.
+- **En dar düzeltme:** Ajan C'nin RAPOR-C B-C9 önerisi esas. B tam sette `kilit_gonderen` ile hangi hücrelerde ve ne kadar olduğunu ölçer.
 
 ---
 
@@ -369,6 +438,17 @@ Bunlar koşudan önce yazıldı. Sapma, §9'da bileşenlerine ayrılarak raporla
 | T-11 | parite | l0'da 0; l20/l30'da ateşlenirse 65 B hücrelerinde `wf_fec_repair` ≥ faydalı yük baytı (B-K5) | – (betimsel) |
 | T-12 | kapasite reddi | `cap_reject_total` = 0 bütün birincil hücrelerde (ρ = 0,3; alıcı kuyrukları 1024) | > 0 |
 | T-13 | stres l80 | ρ_ARQ = 1,49 > 1: Kama teslim oranı < 1; hat doluluğu ≥ 0,9; betimsel | – |
+
+Duman-1'den sonra, tam setten önce eklenenler:
+- Bunlar ön-kayıttır ama duman verisini gördükten sonra yazıldı.
+- Duman-1'de T-13'ün "hat doluluğu ≥ 0,9" kısmı tutmadı: r12k/l80'de doluluk 0,09–0,11 [N = 1].
+
+| # | hücre sınıfı | tahmin | çürütme ölçütü |
+|---|---|---|---|
+| T-14 | r25 Kama, iki kol | `param_sends` medyanı = 25; `late_busy_ctrl_frac` medyanı ≥ 0,3 (B-K13) | `param_sends` medyanı < 10 |
+| T-15 | r12k 65 B l20/l30 | `kilit_gonderen` = 1 koşuların ≥ yarısında, iki kolda; `queue_extra_p95` < 0,2 s (B-K14) | `kilit_gonderen` = 1 koşuların < %20'sinde |
+| T-16 | r1k 1 KB l20/l30 | taban `left_preconv` medyanı ≥ 10 s, aday ≤ 5 s (B-K8, B-K11) | taban medyanı < 5 s |
+| T-17 | kirli başlangıç | `kirli_baslangic` = 0 bütün koşularda (`aa9935ac`) | > 0 |
 
 ---
 
@@ -401,6 +481,8 @@ Okuma sınırları:
 
 ## 7. İSTEKLER
 
+Durum (2026-10-29, duman-1 sonrası): D1–D4 Ajan D'de karşılandı (`c2f230b5`, `arms_rakip.sh`). Birincil tcp kolu erken biter; quinn `--rx-log` ve `--payload-id` aldı; `KP-CLIENT-OFFER` satırı geldi. O1 KATALOG §2'ye işlendi (`aa9935ac`). Koşular arası netem boşaltması `aa9935ac`'de (Ajan D İSTEK-O-D1; duman-1'in r25 kirliliği bu). E1 TASLAK-NOTLARI V-1/V-4'te. K1 koşullu kalır.
+
 | kod | kime | dosya / işlev / alan | ne | gerekçe |
 |---|---|---|---|---|
 | İSTEK-D1 | Ajan D | `crates/bench/src/tcp.rs:164` (`let wait = cfg.max_deadline.min(60 s)`) | TCP istemcisi bütün uygulama ACK'leri gelince ya da D dolunca bitsin (Kama/quinn ile aynı kural) | P1 bütçesinin ≈ %18'i (9,0 sa) TCP'nin sabit beklemesi; ölçüm anlamı değişmez |
@@ -415,15 +497,19 @@ Okuma sınırları:
 
 ## 8. KOŞU İSTEĞİ
 
-1. **Duman (önce):** `F0_REPS=1 scripts/ktp2/f0/f0_grid.sh -j3 <KÖK-DUMAN> $(cat scripts/ktp2/f0/cells/b/DUMAN.txt)`. 6 hücre, 24 koşu; beklenen ≈ 30 dk, en kötü ≈ 42 dk. Ortam: `BIN_TABAN`, `BIN_ADAY`.
-2. **Tam set (duman temizse), öncelik sırasıyla:**
-   - `cells/b/LISTE-P1.txt` — 24 hücre, 2880 koşu, ≈ 50,3 sa;
-   - `LISTE-P2.txt` — 4 hücre, 480 koşu, ≈ 17,3 sa;
-   - `LISTE-P3.txt` — 8 hücre, 960 koşu, ≈ 17,1 sa;
-   - `LISTE-P4.txt` — 8 hücre, 320 koşu, ≈ 8,1 sa.
+1. **Duman-1:** koştu (2026-10-29, 24/24 rc = 0). Sonuç §9.0'da.
+2. **Tam set, öncelik sırasıyla:**
 
-   Toplam ≈ 92,9 koşu-saati (en kötü 141,8). `-j3` ile ≈ 31 saat duvar süresi.
-   P5/P6 bütçe dışıdır; ancak bütçe kalırsa koşulur.
+   | liste | hücre | koşu | ≈ koşu-saati |
+   |---|---|---|---|
+   | `cells/b/LISTE-P1.txt` | 24 | 2880 | 41,9 |
+   | `LISTE-P2.txt` | 4 + 4 quinn | 360 + 20 | 14,3 |
+   | `LISTE-P3.txt` | 8 | 960 | 14,4 |
+   | `LISTE-P4.txt` | 8 | 320 | 8,0 |
+   | `LISTE-P5.txt` | 4 + 4 quinn | 360 + 20 | 15,9 |
+
+   - Toplam ≈ 94,6 koşu-saati (en kötü 164,7). P6 bütçe dışıdır (≈ 3,0 sa); ancak bütçe kalırsa koşulur.
+   - Ön koşul: bench iki kolda `ktp2/f0-taban`'dan (D birleşmesi `6cf74c69` sonrası) yeniden derlenmiş olmalı. `--rx-log`, `--ts-out`, `--rival-delivery` ve `--payload-id` bu derlemede gerekir; eski ikili `--rx-log`'u tanımaz.
 3. Hücre başına süre (koşu sayısı × koşu süresi): Ek B.
 4. Analiz: `python3 -I scripts/ktp2/f0/b/analiz_b.py <KÖK>` → `<KÖK>/analiz_b/{kosular_b.csv, hucre_b.csv, OZET-B.md}`.
 
@@ -437,6 +523,76 @@ Koşu sonrası doldurulacak. Kurallar:
 - N < 30 hücre betimseldir.
 - Her hücrede medyan, IQR ve min–maks verilir.
 - Ölçülemeyen hücre tek satırdır: "ölçülemedi: neden".
+
+### 9.0 Duman-1 [ölçüldü, N = 1, betimsel; hüküm yok]
+
+Kaynak: `/home/ryuzaki/kama-k4g-work/ktp2-f0/runs/duman-b/out`. Analiz: `reports/ktp2/f0/b/duman-1/` (`kosular_b.csv`, `OZET-B.md`, `KAYNAK.txt`).
+- İkililer: taban `14b5f7d3…` (a858f3fc), aday `fd3089b1…` (49864510). D birleşmesinden önceki bench; rx_log ve ts.csv yok.
+- Koşu `-j 6`, C'nin 4 duman hücresiyle eşzamanlı.
+- 24/24 koşu rc = 0, yakalama 48/48 dosya. Analiz hatası 0.
+
+**Araç denetimi.**
+- Ayrıştırma, yakalama çözümü, ACK kapsamı ve sınıf sütunları çalıştı. Örnek: r1k/d300/l0 tel sınıfları qdisc baytıyla tutarlı; ileri doluluk 0,31–0,32, beklenen ρ 0,30.
+- Duman sonrası araçta düzeltilenler (`e236f6e4`):
+  - srtt = 0 (örnek yok) oranı tanımsız yazıldı;
+  - B'ye varış yoksa pencere sıfırlanıyordu;
+  - geç kalma payına jitter p95 eklendi; l0'da jitter gecikmeyi "geç" sayıyordu;
+  - FEC birleştirici tahliyesi kapasite reddinden ayrıldı (r12k/l80'de 85/134; kullanıcı verisini düşürmez);
+  - kirli başlangıç sütunu eklendi.
+
+**Kirli başlangıç (koşucu kusuru, `aa9935ac` ile giderildi).** r25 hücresinde koşular önceki koşunun netem kuyruğuyla başladı:
+
+| kol | ileri artık |
+|---|---|
+| quinn | 1614 B / 13 paket |
+| tcp | 14 904 B / 12 paket (quinn'in 1242 B'lik Initial yeniden gönderimleri) |
+| taban | 15 422 B / 19 paket |
+
+- 25 B/s'de 15 KB ≈ 10 dk hat süresidir. Taban koşusunda sunucuya 150 s boyunca hiç Kama paketi ulaşmadı: `srv rx_datagrams` 0, vb0'da yalnız eski QUIC paketleri ve ICMP yanıtları görüldü.
+- Bu üç r25 koşusu yorumlanmaz. tcp'nin r25'te bağlanamaması (`setup_s` 20,0) da bu kirliliğin altındadır; kanıt sayılmaz.
+- Diğer hücrelerde artık ≤ 352 B. İlk koşudaki 86–90 B'lik paketler IPv6 ND/MLD'dir.
+
+**Koşu başına özet** (yakalamadan tek yön; sunum → B'ye ilk varış):
+
+| hücre | kol | kirli | teslim D | teyit p50 s | tek yön p50 s | tek yön p95 s | srtt/RTT_fifo | RTT örn. | kuyruk probu | kuruluş probu | PARAM | gereksiz kopya | faydalı pay (ileri) | gönd. birikim ms | geç kalmada hat boş | kurulum s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| r12k_d1000_l10_p1000 | taban | 0 | 1 | 9,37 | 8,03 | 13,3 | 1,1 | 53 | 0 | 2 | 12 | 2 | 0,909 | 2143 | 0,722 | 0,000107 |
+| r12k_d1000_l10_p1000 | aday | 1 | 1 | 4,41 | 3,27 | 5,46 | 1,09 | 66 | 0 | 2 | 10 | 2 | 0,91 | -0,208 | 0,7 | 0,000314 |
+| r12k_d1000_l10_p1000 | quinn | 0 | 1 | 2,29 | – | – | – | – | – | – | – | – | 0,815 | – | – | 1,89 |
+| r12k_d1000_l10_p1000 | tcp | 0 | 1 | 11,6 | 6,5 | 16,5 | – | – | – | – | – | – | 0,909 | – | – | 1,81 |
+| r12k_d300_l30_p65 | taban | 0 | 0,998 | 1,92 | 1,55 | 7,16 | 1,01 | 244 | 5 | 1 | 4 | 1 | 0,483 | 2020 | 0,8 | 0,000657 |
+| r12k_d300_l30_p65 | aday | 0 | 1 | 2,3 | 1,93 | 4,52 | 1,01 | 299 | 2 | 1 | 3 | 3 | 0,481 | 3492 | 0,764 | 0,000246 |
+| r12k_d300_l30_p65 | quinn | 0 | 1 | 1,41 | – | – | – | – | – | – | – | – | 0,275 | – | – | 0,944 |
+| r12k_d300_l30_p65 | tcp | 0 | 0,988 | 14,9 | 12,8 | 17,3 | – | – | – | – | – | – | 0,77 | – | – | 0,499 |
+| r12k_d300_l80_p65 | taban | 0 | 0,677 | 3,63 | 2,99 | 28,1 | 0,949 | 47 | 13 | 1 | 25 | 3 | 0,478 | 1,18 | 0,909 | 0,000204 |
+| r12k_d300_l80_p65 | aday | 0 | 0,763 | 6,81 | 6,68 | 30,4 | 0,866 | 84 | 2 | 2 | 25 | 12 | 0,472 | 17,4 | 0,892 | 0,000357 |
+| r12k_d300_l80_p65 | quinn | 0 | 0 | – | – | – | – | – | – | – | – | – | 0 | – | – | 30 |
+| r12k_d300_l80_p65 | tcp | 0 | 0,0217 | 7,49 | 0,531 | 11,3 | – | – | – | – | – | – | 0,639 | – | – | 5,77 |
+| r1k_d1000_l20_p1000 | taban | 0 | 0,95 | 33,9 | 32,8 | 52,2 | 1,25 | 9 | 1 | 5 | 12 | 6 | 0,726 | 6440 | 0,725 | 0,000344 |
+| r1k_d1000_l20_p1000 | aday | 0 | 1 | 6,97 | 2,2 | 12,6 | 1,08 | 11 | 8 | 2 | 13 | 7 | 0,676 | 0,0832 | 0,586 | 0,000303 |
+| r1k_d1000_l20_p1000 | quinn | 0 | 1 | 3,44 | – | – | – | – | – | – | – | – | 0,656 | – | – | 7,17 |
+| r1k_d1000_l20_p1000 | tcp | 0 | 0,3 | 60 | 55,1 | 60,4 | – | – | – | – | – | – | 0,862 | – | – | 2,08 |
+| r1k_d300_l0_p65 | taban | 0 | 1 | 1,13 | 0,471 | 0,672 | 1,06 | 55 | 4 | 1 | 3 | 5 | 0,453 | 0,0274 | 0,934 | 9,56e-05 |
+| r1k_d300_l0_p65 | aday | 0 | 1 | 1,13 | 0,44 | 0,58 | 0,943 | 54 | 4 | 1 | 3 | 5 | 0,453 | -0,00191 | 1 | 0,00059 |
+| r1k_d300_l0_p65 | quinn | 0 | 1 | 0,897 | – | – | – | – | – | – | – | – | 0,208 | – | – | 3,24 |
+| r1k_d300_l0_p65 | tcp | 0 | 1 | 0,83 | 0,46 | 0,55 | – | – | – | – | – | – | 0,308 | – | – | 0,737 |
+| r25_d1000_l20_p65 | taban | 1 | 0 | – | – | – | – | 0 | 3 | 21 | 25 | 0 | – | – | – | 0,000151 |
+| r25_d1000_l20_p65 | aday | 0 | 0,167 | 33 | 74,8 | 122 | 9,21 | 4 | 7 | 7 | 25 | 7 | 0,0412 | -0,116 | 0,132 | 0,000262 |
+| r25_d1000_l20_p65 | quinn | 1 | 0 | – | – | – | – | – | – | – | – | – | – | – | – | 60 |
+| r25_d1000_l20_p65 | tcp | 1 | 0 | – | – | – | – | – | – | – | – | – | – | – | – | 20 |
+
+Okuma:
+- **r25/d1000/l20, aday (temiz koşu):** 6 mesajın 1'i D içinde.
+  - Tek yön p50 74,8 s; alt sınır 6,36 s.
+  - Geç kalmada hat %13 boş, %57 PARAM, %28 gereksiz kopya ile dolu. Gecikme fiziksel kapasiteden değil, gönderenin kendi trafiğinden geliyor (B-K13, B-K2, B-K1).
+  - quinn: `setup_s` 60,0, yani el sıkışma zaman aşımı. B-K12 ile tutarlı; bu koşu da kirli başladı.
+- **r1k/d1000/l20/1 KB:** taban PreConverge'de 60,6 s kaldı; tek yön p50 32,8 s, teslim D içinde 0,95 (B-K8). Aday 3,3 s'de çıktı, tek yön p50 2,2 s. Adayda kuyruk probu 8, gereksiz kopya 7; faydalı pay 0,68 (B-K4 yönünde).
+- **r12k/d300/l30/65 B:** iki kolda gönderen kilidi (B-K14). srtt / RTT_fifo 1,01; ölçülen ağ RTT'si 0,64 s; ACK aralığı medyanı 16 (B-K3).
+- **r1k/d300/l0/65 B:**
+  - Kayıpsızken de 5 gereksiz kopya: 4 kuyruk probu + 1 kuruluş probu.
+  - ACK tutması medyanı 0,17–0,26 s, p95 0,54 s; I = 0,45 s (B-K4'ün küçük hâli).
+  - Tek yön p50 0,44–0,47 s; RTT_fifo tek yön alt sınırı 0,434 s.
+- **Stres l80 (r12k):** taban teslim 0,68, aday 0,76; quinn 0 (el sıkışma 30 s'de bitmedi); tcp 0,02.
 
 ### 9.1 Teslim ve gecikme — (boş)
 ### 9.2 Hat kapasitesinin faydalı veriye giden payı (ileri / dönüş, sınıf sütunları) — (boş)
@@ -459,7 +615,8 @@ Koşu sonrası doldurulacak. Kurallar:
 | `scripts/ktp2/f0/b/analiz_b.py` | analiz (salt okur) |
 | `scripts/ktp2/f0/b/sentetik_test.py` | analizin sentetik denetimi (`python3 -I …`, koşu yok) |
 | `scripts/ktp2/f0/b/arsiv_srtt.py` | §6 tablosu |
-| `scripts/ktp2/f0/cells/b/` | 49 hücre, öncelik listeleri, duman listesi |
+| `scripts/ktp2/f0/cells/b/` | 58 hücre (49 + 9 r25 quinn), öncelik listeleri, duman listesi |
+| `reports/ktp2/f0/b/duman-1/` | duman-1 analizi (koşu başına CSV, özet, kaynak) |
 
 <!-- EK-A-BASLA -->
 ## Ek A — Hücre başına fiziksel ve ideal sınırlar [kod boylar + çıkarım]
@@ -493,9 +650,13 @@ Koşu sonrası doldurulacak. Kurallar:
 | b_r1k_d300_l30_p1000 | P1 | 30 | 3600 | 20 | 60 | 0.297 | 0.424 | 1069 | 1.069 | 0.073/0.137 | 1.742/1.806 | 1.741 | 1.369/1.369 | 4.85 | 1.0000 | 0.935 |
 | b_r1k_d300_l30_p65 | P1 | 30 | 450 | 100 | 30 | 0.298 | 0.425 | 134 | 0.134 | 0.073/0.137 | 0.807/0.871 | 0.806 | 0.434/0.434 | 2.05 | 1.0000 | 0.485 |
 | b_r25_d1000_l0_p65 | P2 | 30 | 18000 | 6 | 60 | 0.298 | 0.298 | 134 | 5.360 | 2.920/5.480 | 10.280/12.840 | 10.278 | 6.360/6.359 | 6.36 | 1.0000 | 0.485 |
+| b_r25_d1000_l0_p65_quinn | P2 | 5 | 18000 | 6 | 60 | 0.298 | 0.298 | 134 | 5.360 | 2.920/5.480 | 10.280/12.840 | 10.278 | 6.360/6.359 | 6.36 | 1.0000 | 0.485 |
 | b_r25_d1000_l20_p65 | P2 | 30 | 18000 | 6 | 60 | 0.298 | 0.372 | 134 | 5.360 | 2.920/5.480 | 10.280/12.840 | 10.278 | 6.360/6.359 | 16.64 | 0.9999 | 0.485 |
+| b_r25_d1000_l20_p65_quinn | P2 | 5 | 18000 | 6 | 60 | 0.298 | 0.372 | 134 | 5.360 | 2.920/5.480 | 10.280/12.840 | 10.278 | 6.360/6.359 | 16.64 | 0.9999 | 0.485 |
 | b_r25_d300_l0_p65 | P2 | 30 | 18000 | 6 | 60 | 0.298 | 0.298 | 134 | 5.360 | 2.920/5.480 | 8.880/11.440 | 8.879 | 5.660/5.660 | 5.66 | 1.0000 | 0.485 |
+| b_r25_d300_l0_p65_quinn | P2 | 5 | 18000 | 6 | 60 | 0.298 | 0.298 | 134 | 5.360 | 2.920/5.480 | 8.880/11.440 | 8.879 | 5.660/5.660 | 5.66 | 1.0000 | 0.485 |
 | b_r25_d300_l20_p65 | P2 | 30 | 18000 | 6 | 60 | 0.298 | 0.372 | 134 | 5.360 | 2.920/5.480 | 8.880/11.440 | 8.879 | 5.660/5.660 | 14.54 | 1.0000 | 0.485 |
+| b_r25_d300_l20_p65_quinn | P2 | 5 | 18000 | 6 | 60 | 0.298 | 0.372 | 134 | 5.360 | 2.920/5.480 | 8.880/11.440 | 8.879 | 5.660/5.660 | 14.54 | 1.0000 | 0.485 |
 | b_r12k_d1000_l10_p1000 | P3 | 30 | 285 | 100 | 60 | 0.300 | 0.333 | 1069 | 0.086 | 0.006/0.011 | 2.091/2.096 | 2.137 | 1.086/1.130 | 3.18 | 1.0000 | 0.935 |
 | b_r12k_d1000_l10_p65 | P3 | 30 | 36 | 600 | 30 | 0.298 | 0.331 | 134 | 0.011 | 0.006/0.011 | 2.017/2.022 | 2.371 | 1.011/1.231 | 3.03 | 1.0000 | 0.485 |
 | b_r12k_d300_l10_p1000 | P3 | 30 | 285 | 100 | 60 | 0.300 | 0.333 | 1069 | 0.086 | 0.006/0.011 | 0.691/0.696 | 0.691 | 0.386/0.385 | 1.08 | 1.0000 | 0.935 |
@@ -513,73 +674,87 @@ Koşu sonrası doldurulacak. Kurallar:
 | b_r1k_d300_l80_p1000 | P4 | 10 | 3600 | 20 | 60 | 0.297 | 1.485 | 1069 | 1.069 | 0.073/0.137 | 1.742/1.806 | 1.741 | 1.369/1.369 | 24.02 | 0.9995 | 0.935 |
 | b_r1k_d300_l80_p65 | P4 | 10 | 450 | 100 | 30 | 0.298 | 1.489 | 134 | 0.134 | 0.073/0.137 | 0.807/0.871 | 0.806 | 0.434/0.434 | 10.92 | 0.9997 | 0.485 |
 | b_r25_d1000_l10_p65 | P5 | 30 | 18000 | 6 | 60 | 0.298 | 0.331 | 134 | 5.360 | 2.920/5.480 | 10.280/12.840 | 10.278 | 6.360/6.359 | 16.64 | 1.0000 | 0.485 |
+| b_r25_d1000_l10_p65_quinn | P5 | 5 | 18000 | 6 | 60 | 0.298 | 0.331 | 134 | 5.360 | 2.920/5.480 | 10.280/12.840 | 10.278 | 6.360/6.359 | 16.64 | 1.0000 | 0.485 |
 | b_r25_d1000_l30_p65 | P5 | 30 | 18000 | 6 | 60 | 0.298 | 0.425 | 134 | 5.360 | 2.920/5.480 | 10.280/12.840 | 10.278 | 6.360/6.359 | 26.92 | 0.9993 | 0.485 |
+| b_r25_d1000_l30_p65_quinn | P5 | 5 | 18000 | 6 | 60 | 0.298 | 0.425 | 134 | 5.360 | 2.920/5.480 | 10.280/12.840 | 10.278 | 6.360/6.359 | 26.92 | 0.9993 | 0.485 |
 | b_r25_d300_l10_p65 | P5 | 30 | 18000 | 6 | 60 | 0.298 | 0.331 | 134 | 5.360 | 2.920/5.480 | 8.880/11.440 | 8.879 | 5.660/5.660 | 14.54 | 1.0000 | 0.485 |
+| b_r25_d300_l10_p65_quinn | P5 | 5 | 18000 | 6 | 60 | 0.298 | 0.331 | 134 | 5.360 | 2.920/5.480 | 8.880/11.440 | 8.879 | 5.660/5.660 | 14.54 | 1.0000 | 0.485 |
 | b_r25_d300_l30_p65 | P5 | 30 | 18000 | 6 | 60 | 0.298 | 0.425 | 134 | 5.360 | 2.920/5.480 | 8.880/11.440 | 8.879 | 5.660/5.660 | 23.42 | 0.9998 | 0.485 |
+| b_r25_d300_l30_p65_quinn | P5 | 5 | 18000 | 6 | 60 | 0.298 | 0.425 | 134 | 5.360 | 2.920/5.480 | 8.880/11.440 | 8.879 | 5.660/5.660 | 23.42 | 0.9998 | 0.485 |
 | b_r25_d300_l0_p1000 | P6 | 10 | 143000 | 3 | 60 | 0.299 | 0.299 | 1069 | 42.760 | 2.920/5.480 | 46.280/48.840 | 46.279 | 43.060/43.060 | 43.06 | 1.0000 | 0.935 |
+| b_r25_d300_l0_p1000_quinn | P6 | 5 | 143000 | 3 | 60 | 0.299 | 0.299 | 1069 | 42.760 | 2.920/5.480 | 46.280/48.840 | 46.279 | 43.060/43.060 | 43.06 | 1.0000 | 0.935 |
 <!-- EK-A-BITIR -->
 
 <!-- EK-B-BASLA -->
 ## Ek B — Hücre başına koşu süresi ve koşu-saati [çıkarım]
 
-Üretim: `python3 -I scripts/ktp2/f0/b/fizik.py butce`. Kol süreleri koşu başına saniyedir (beklenen); hücre koşu-saati = N × (taban + aday + quinn + tcp) / 3600.
+Üretim: `python3 -I scripts/ktp2/f0/b/fizik.py butce`. Kol süreleri koşu başına saniyedir (beklenen; "–" = kol o hücrede yok); hücre koşu-saati = N × (hücredeki kolların toplamı) / 3600. tcp birincil kolu erken biter (transport-ack).
 
 | hücre | öncelik | N | taban/aday (s, beklenen) | quinn (s) | tcp (s) | hücre koşu-saati (beklenen) | en kötü (saat) | BUDGET_S |
 |---|---|---|---|---|---|---|---|---|
-| b_r12k_d1000_l0_p1000 | P1 | 30 | 34 | 43 | 96 | 1.71 | 3.75 | 185 |
-| b_r12k_d1000_l0_p65 | P1 | 30 | 27 | 36 | 59 | 1.23 | 2.28 | 118 |
-| b_r12k_d1000_l20_p1000 | P1 | 30 | 40 | 49 | 96 | 1.87 | 3.75 | 185 |
-| b_r12k_d1000_l20_p65 | P1 | 30 | 33 | 42 | 59 | 1.38 | 2.28 | 118 |
-| b_r12k_d1000_l30_p1000 | P1 | 30 | 40 | 49 | 96 | 1.87 | 3.75 | 185 |
-| b_r12k_d1000_l30_p65 | P1 | 30 | 33 | 42 | 59 | 1.38 | 2.28 | 118 |
-| b_r12k_d300_l0_p1000 | P1 | 30 | 32 | 37 | 94 | 1.63 | 3.75 | 185 |
-| b_r12k_d300_l0_p65 | P1 | 30 | 25 | 30 | 57 | 1.15 | 2.28 | 118 |
-| b_r12k_d300_l20_p1000 | P1 | 30 | 34 | 39 | 94 | 1.68 | 3.75 | 185 |
-| b_r12k_d300_l20_p65 | P1 | 30 | 27 | 32 | 57 | 1.20 | 2.28 | 118 |
-| b_r12k_d300_l30_p1000 | P1 | 30 | 34 | 39 | 94 | 1.68 | 3.75 | 185 |
-| b_r12k_d300_l30_p65 | P1 | 30 | 27 | 32 | 57 | 1.20 | 2.28 | 118 |
-| b_r1k_d1000_l0_p1000 | P1 | 30 | 78 | 91 | 139 | 3.22 | 5.12 | 225 |
-| b_r1k_d1000_l0_p65 | P1 | 30 | 50 | 63 | 82 | 2.05 | 3.05 | 141 |
-| b_r1k_d1000_l20_p1000 | P1 | 30 | 88 | 101 | 139 | 3.46 | 5.12 | 225 |
-| b_r1k_d1000_l20_p65 | P1 | 30 | 57 | 70 | 82 | 2.22 | 3.05 | 141 |
-| b_r1k_d1000_l30_p1000 | P1 | 30 | 88 | 101 | 139 | 3.46 | 5.12 | 225 |
-| b_r1k_d1000_l30_p65 | P1 | 30 | 57 | 70 | 82 | 2.22 | 3.05 | 141 |
-| b_r1k_d300_l0_p1000 | P1 | 30 | 77 | 85 | 138 | 3.14 | 5.12 | 225 |
-| b_r1k_d300_l0_p65 | P1 | 30 | 49 | 57 | 81 | 1.96 | 3.05 | 141 |
-| b_r1k_d300_l20_p1000 | P1 | 30 | 82 | 91 | 138 | 3.27 | 5.12 | 225 |
-| b_r1k_d300_l20_p65 | P1 | 30 | 51 | 60 | 81 | 2.03 | 3.05 | 141 |
-| b_r1k_d300_l30_p1000 | P1 | 30 | 82 | 91 | 138 | 3.27 | 5.12 | 225 |
-| b_r1k_d300_l30_p65 | P1 | 30 | 51 | 60 | 81 | 2.03 | 3.05 | 141 |
-| b_r25_d1000_l0_p65 | P2 | 30 | 121 | 66 | 181 | 4.08 | 4.71 | 223 |
-| b_r25_d1000_l20_p65 | P2 | 30 | 153 | 66 | 181 | 4.61 | 4.71 | 223 |
-| b_r25_d300_l0_p65 | P2 | 30 | 120 | 66 | 180 | 4.04 | 4.71 | 223 |
-| b_r25_d300_l20_p65 | P2 | 30 | 153 | 66 | 180 | 4.60 | 4.71 | 223 |
-| b_r12k_d1000_l10_p1000 | P3 | 30 | 40 | 49 | 96 | 1.87 | 3.75 | 185 |
-| b_r12k_d1000_l10_p65 | P3 | 30 | 33 | 42 | 59 | 1.38 | 2.28 | 118 |
-| b_r12k_d300_l10_p1000 | P3 | 30 | 34 | 39 | 94 | 1.68 | 3.75 | 185 |
-| b_r12k_d300_l10_p65 | P3 | 30 | 27 | 32 | 57 | 1.20 | 2.28 | 118 |
-| b_r1k_d1000_l10_p1000 | P3 | 30 | 88 | 101 | 139 | 3.46 | 5.12 | 225 |
-| b_r1k_d1000_l10_p65 | P3 | 30 | 57 | 70 | 82 | 2.22 | 3.05 | 141 |
-| b_r1k_d300_l10_p1000 | P3 | 30 | 82 | 91 | 138 | 3.27 | 5.12 | 225 |
-| b_r1k_d300_l10_p65 | P3 | 30 | 51 | 60 | 81 | 2.03 | 3.05 | 141 |
-| b_r12k_d300_l50_p1000 | P4 | 10 | 91 | 96 | 94 | 1.04 | 1.25 | 185 |
-| b_r12k_d300_l50_p65 | P4 | 10 | 55 | 60 | 57 | 0.63 | 0.76 | 118 |
-| b_r12k_d300_l80_p1000 | P4 | 10 | 91 | 96 | 94 | 1.04 | 1.25 | 185 |
-| b_r12k_d300_l80_p65 | P4 | 10 | 55 | 60 | 57 | 0.63 | 0.76 | 118 |
-| b_r1k_d300_l50_p1000 | P4 | 10 | 131 | 140 | 138 | 1.50 | 1.71 | 225 |
-| b_r1k_d300_l50_p65 | P4 | 10 | 78 | 86 | 81 | 0.89 | 1.02 | 141 |
-| b_r1k_d300_l80_p1000 | P4 | 10 | 131 | 140 | 138 | 1.50 | 1.71 | 225 |
-| b_r1k_d300_l80_p65 | P4 | 10 | 78 | 86 | 81 | 0.89 | 1.02 | 141 |
-| b_r25_d1000_l10_p65 | P5 | 30 | 153 | 66 | 181 | 4.61 | 4.71 | 223 |
-| b_r25_d1000_l30_p65 | P5 | 30 | 153 | 66 | 181 | 4.61 | 4.71 | 223 |
-| b_r25_d300_l10_p65 | P5 | 30 | 153 | 66 | 180 | 4.60 | 4.71 | 223 |
-| b_r25_d300_l30_p65 | P5 | 30 | 153 | 66 | 180 | 4.60 | 4.71 | 223 |
-| b_r25_d300_l0_p1000 | P6 | 10 | 349 | 66 | 501 | 3.51 | 3.55 | 544 |
+| b_r12k_d1000_l0_p1000 | P1 | 30 | 34 | 43 | 36 | 1.21 | 4.07 | 185 |
+| b_r12k_d1000_l0_p65 | P1 | 30 | 27 | 36 | 29 | 0.98 | 2.34 | 118 |
+| b_r12k_d1000_l20_p1000 | P1 | 30 | 40 | 49 | 42 | 1.42 | 4.07 | 185 |
+| b_r12k_d1000_l20_p65 | P1 | 30 | 33 | 42 | 35 | 1.18 | 2.34 | 118 |
+| b_r12k_d1000_l30_p1000 | P1 | 30 | 40 | 49 | 42 | 1.42 | 4.07 | 185 |
+| b_r12k_d1000_l30_p65 | P1 | 30 | 33 | 42 | 35 | 1.18 | 2.34 | 118 |
+| b_r12k_d300_l0_p1000 | P1 | 30 | 32 | 37 | 33 | 1.12 | 4.07 | 185 |
+| b_r12k_d300_l0_p65 | P1 | 30 | 25 | 30 | 26 | 0.89 | 2.34 | 118 |
+| b_r12k_d300_l20_p1000 | P1 | 30 | 34 | 39 | 35 | 1.19 | 4.07 | 185 |
+| b_r12k_d300_l20_p65 | P1 | 30 | 27 | 32 | 28 | 0.95 | 2.34 | 118 |
+| b_r12k_d300_l30_p1000 | P1 | 30 | 34 | 39 | 35 | 1.19 | 4.07 | 185 |
+| b_r12k_d300_l30_p65 | P1 | 30 | 27 | 32 | 28 | 0.95 | 2.34 | 118 |
+| b_r1k_d1000_l0_p1000 | P1 | 30 | 78 | 91 | 80 | 2.73 | 5.41 | 225 |
+| b_r1k_d1000_l0_p65 | P1 | 30 | 50 | 63 | 52 | 1.80 | 3.11 | 141 |
+| b_r1k_d1000_l20_p1000 | P1 | 30 | 88 | 101 | 90 | 3.05 | 5.41 | 225 |
+| b_r1k_d1000_l20_p65 | P1 | 30 | 57 | 70 | 59 | 2.03 | 3.11 | 141 |
+| b_r1k_d1000_l30_p1000 | P1 | 30 | 88 | 101 | 90 | 3.05 | 5.41 | 225 |
+| b_r1k_d1000_l30_p65 | P1 | 30 | 57 | 70 | 59 | 2.03 | 3.11 | 141 |
+| b_r1k_d300_l0_p1000 | P1 | 30 | 77 | 85 | 77 | 2.64 | 5.41 | 225 |
+| b_r1k_d300_l0_p65 | P1 | 30 | 49 | 57 | 50 | 1.70 | 3.11 | 141 |
+| b_r1k_d300_l20_p1000 | P1 | 30 | 82 | 91 | 83 | 2.82 | 5.41 | 225 |
+| b_r1k_d300_l20_p65 | P1 | 30 | 51 | 60 | 52 | 1.79 | 3.11 | 141 |
+| b_r1k_d300_l30_p1000 | P1 | 30 | 82 | 91 | 83 | 2.82 | 5.41 | 225 |
+| b_r1k_d300_l30_p65 | P1 | 30 | 51 | 60 | 52 | 1.79 | 3.11 | 141 |
+| b_r25_d1000_l0_p65 | P2 | 30 | 121 | – | 129 | 3.10 | 4.33 | 243 |
+| b_r25_d1000_l0_p65_quinn | P2 | 5 | – | 66 | – | 0.09 | 0.09 | 96 |
+| b_r25_d1000_l20_p65 | P2 | 30 | 153 | – | 161 | 3.89 | 4.33 | 243 |
+| b_r25_d1000_l20_p65_quinn | P2 | 5 | – | 66 | – | 0.09 | 0.09 | 96 |
+| b_r25_d300_l0_p65 | P2 | 30 | 120 | – | 126 | 3.05 | 4.33 | 243 |
+| b_r25_d300_l0_p65_quinn | P2 | 5 | – | 66 | – | 0.09 | 0.09 | 96 |
+| b_r25_d300_l20_p65 | P2 | 30 | 153 | – | 160 | 3.88 | 4.33 | 243 |
+| b_r25_d300_l20_p65_quinn | P2 | 5 | – | 66 | – | 0.09 | 0.09 | 96 |
+| b_r12k_d1000_l10_p1000 | P3 | 30 | 40 | 49 | 42 | 1.42 | 4.07 | 185 |
+| b_r12k_d1000_l10_p65 | P3 | 30 | 33 | 42 | 35 | 1.18 | 2.34 | 118 |
+| b_r12k_d300_l10_p1000 | P3 | 30 | 34 | 39 | 35 | 1.19 | 4.07 | 185 |
+| b_r12k_d300_l10_p65 | P3 | 30 | 27 | 32 | 28 | 0.95 | 2.34 | 118 |
+| b_r1k_d1000_l10_p1000 | P3 | 30 | 88 | 101 | 90 | 3.05 | 5.41 | 225 |
+| b_r1k_d1000_l10_p65 | P3 | 30 | 57 | 70 | 59 | 2.03 | 3.11 | 141 |
+| b_r1k_d300_l10_p1000 | P3 | 30 | 82 | 91 | 83 | 2.82 | 5.41 | 225 |
+| b_r1k_d300_l10_p65 | P3 | 30 | 51 | 60 | 52 | 1.79 | 3.11 | 141 |
+| b_r12k_d300_l50_p1000 | P4 | 10 | 91 | 96 | 92 | 1.03 | 1.36 | 185 |
+| b_r12k_d300_l50_p65 | P4 | 10 | 55 | 60 | 55 | 0.62 | 0.78 | 118 |
+| b_r12k_d300_l80_p1000 | P4 | 10 | 91 | 96 | 92 | 1.03 | 1.36 | 185 |
+| b_r12k_d300_l80_p65 | P4 | 10 | 55 | 60 | 55 | 0.62 | 0.78 | 118 |
+| b_r1k_d300_l50_p1000 | P4 | 10 | 131 | 140 | 132 | 1.49 | 1.80 | 225 |
+| b_r1k_d300_l50_p65 | P4 | 10 | 78 | 86 | 78 | 0.89 | 1.04 | 141 |
+| b_r1k_d300_l80_p1000 | P4 | 10 | 131 | 140 | 132 | 1.49 | 1.80 | 225 |
+| b_r1k_d300_l80_p65 | P4 | 10 | 78 | 86 | 78 | 0.89 | 1.04 | 141 |
+| b_r25_d1000_l10_p65 | P5 | 30 | 153 | – | 161 | 3.89 | 4.33 | 243 |
+| b_r25_d1000_l10_p65_quinn | P5 | 5 | – | 66 | – | 0.09 | 0.09 | 96 |
+| b_r25_d1000_l30_p65 | P5 | 30 | 153 | – | 161 | 3.89 | 4.33 | 243 |
+| b_r25_d1000_l30_p65_quinn | P5 | 5 | – | 66 | – | 0.09 | 0.09 | 96 |
+| b_r25_d300_l10_p65 | P5 | 30 | 153 | – | 160 | 3.88 | 4.33 | 243 |
+| b_r25_d300_l10_p65_quinn | P5 | 5 | – | 66 | – | 0.09 | 0.09 | 96 |
+| b_r25_d300_l30_p65 | P5 | 30 | 153 | – | 160 | 3.88 | 4.33 | 243 |
+| b_r25_d300_l30_p65_quinn | P5 | 5 | – | 66 | – | 0.09 | 0.09 | 96 |
+| b_r25_d300_l0_p1000 | P6 | 10 | 349 | – | 356 | 2.93 | 3.08 | 439 |
+| b_r25_d300_l0_p1000_quinn | P6 | 5 | – | 66 | – | 0.09 | 0.09 | 96 |
 
-P1: beklenen 50.3 sa (kümülatif 50.3) · en kötü 85.2 sa (kümülatif 85.2)
-P2: beklenen 17.3 sa (kümülatif 67.7) · en kötü 18.8 sa (kümülatif 104.0)
-P3: beklenen 17.1 sa (kümülatif 84.8) · en kötü 28.4 sa (kümülatif 132.4)
-P4: beklenen 8.1 sa (kümülatif 92.9) · en kötü 9.5 sa (kümülatif 141.8)
-P5: beklenen 18.4 sa (kümülatif 111.3) · en kötü 18.8 sa (kümülatif 160.7)
-P6: beklenen 3.5 sa (kümülatif 114.8) · en kötü 3.5 sa (kümülatif 164.2)
+P1: beklenen 41.9 sa (kümülatif 41.9) · en kötü 89.5 sa (kümülatif 89.5)
+P2: beklenen 14.3 sa (kümülatif 56.2) · en kötü 17.7 sa (kümülatif 107.2)
+P3: beklenen 14.4 sa (kümülatif 70.7) · en kötü 29.8 sa (kümülatif 137.1)
+P4: beklenen 8.0 sa (kümülatif 78.7) · en kötü 9.9 sa (kümülatif 147.0)
+P5: beklenen 15.9 sa (kümülatif 94.6) · en kötü 17.7 sa (kümülatif 164.7)
+P6: beklenen 3.0 sa (kümülatif 97.6) · en kötü 3.2 sa (kümülatif 167.8)
 <!-- EK-B-BITIR -->

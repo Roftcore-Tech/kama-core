@@ -244,6 +244,9 @@ pub fn write(path: &std::path::Path, m: &RunManifest) {
 pub fn arm_name(transport: &str) -> &str {
     match transport {
         "quinn" => "quinn-reliable-stream",
+        // [KTP2-F0 / D] `--rival-delivery transport-ack` kolları (ayrı anlam sınıfı).
+        "quinn-tack" => "quinn-uni-stream-transport-ack",
+        "tcp-tack" => "tcp-transport-ack",
         "qdgram" => "quinn-datagram-app-retry",
         "tcp-default" => "tcp-default",
         "kama" => "kama-stub-legacy",
@@ -267,6 +270,23 @@ pub fn semantics_for(transport: &str) -> Semantics {
             ordering: "total".into(),
             delivery_definition: "stream write acknowledged by peer".into(),
             duplicate_handling: "transport-dedup".into(),
+            retry_owner: "transport".into(),
+        },
+        // [KTP2-F0 / D] Mesaj başına bağımsız tek-yönlü stream: mesajlar arası sıra YOK; teslim
+        // eşin taşıma ACK'iyle (Kama kolunun `acked()` katmanı). Uygulama yanıtı yok.
+        "quinn-tack" => Semantics {
+            reliability: "reliable-messages".into(),
+            ordering: "none".into(),
+            delivery_definition: "peer transport ACK covers the whole message stream".into(),
+            duplicate_handling: "transport-dedup".into(),
+            retry_owner: "transport".into(),
+        },
+        // [KTP2-F0 / D] Tek bayt akışı (tam sıra); teslim = snd_una mesajın sonunu geçti.
+        "tcp-tack" => Semantics {
+            reliability: "reliable-ordered-stream".into(),
+            ordering: "total".into(),
+            delivery_definition: "transport ACK (snd_una) covers framed message".into(),
+            duplicate_handling: "kernel-dedup (stream)".into(),
             retry_owner: "transport".into(),
         },
         "qdgram" => Semantics {

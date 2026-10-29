@@ -112,6 +112,11 @@ def build(root):
         "KP-ACTIVATION cfg=[tail=true fec=true] fired=[tail_probe=0@0ms tail_cancel=0 parity=0 parity_denied=0 "
         "retx=1 dup=1] reach=[transitions=3 recover_arq=1 recover_fwd=0 probe_up=0 left_preconv=900ms] "
         "est=[btlbw=500B/s srtt=900000us rtprop=800000us qdelay=0us pace=600B/s tokens=0 inflight=0B]\n")
+    # alıcı damgası (bench serve --rx-log, şema ktp2-c-rx-v1): birim = mesaj, an = B varışı + 1 ms
+    with open(rep / "rx_log.jsonl", "w") as f:
+        f.write(json.dumps({"rx_log_schema": "ktp2-c-rx-v1", "dropped": 0}) + "\n")
+        for u, tb in ((0, 0.435), (2, 1.335), (1, 1.634), (3, 1.902)):
+            f.write(json.dumps({"u": u, "t": int((T0 + tb + 0.001) * 1e9), "n": 65}) + "\n")
     (rep / "s.err").write_text("KP-SERVER delivered=4 t=3.0s stats=ServerStats { delivered: 4, delivery_dropped: 0, "
                                "rx_datagrams: 5, tx_datagrams: 3, tx_bytes: 93 }\n")
     return cell
@@ -151,12 +156,15 @@ def main():
         # alıcı tutması: pn0 1,336−0,435 = 0,901; pn2 0,001; pn5 0,001 → medyan 0,001
         assert abs(f("ack_hold_med_s") - 0.001) < 2e-3, r["ack_hold_med_s"]
         assert r["data_denied"] in ("", None), "sched kapalıyken data_denied n/a olmalı"
+        # rx_log tek yön = yakalama tek yönü + 1 ms
+        assert abs(f("rx_ow_p50_s") - (f("ow_p50_s") + 0.001)) < 2e-3, (r["rx_ow_p50_s"], r["ow_p50_s"])
+        assert abs(f("rx_deliv_D") - 1.0) < 1e-9 and r["birikim_kaynak"] == "rx", r["birikim_kaynak"]
         del approx
         if bad:
             raise SystemExit("BAŞARISIZ:\n  " + "\n  ".join(bad))
         ozet = (root / "analiz_b" / "OZET-B.md").read_text()
         assert "b_r1k_d300_l20_p65" in ozet
-        print("sentetik_test: GEÇTİ (", len(checks) + 5, "denetim )")
+        print("sentetik_test: GEÇTİ (", len(checks) + 7, "denetim )")
 
 
 if __name__ == "__main__":

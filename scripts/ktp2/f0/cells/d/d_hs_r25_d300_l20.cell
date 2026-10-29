@@ -1,0 +1,18 @@
+# [KTP2-F0 / Ajan D] KURULUM MALİYETİ + TESLİM TANIMI ETKİSİ, 25 B/s (betimsel, N=10).
+# Soru: quinn'in 1200 B asgari Initial'ı ve PTO yoklamaları 25 B/s'de el sıkışmayı ve ilk teslimi
+# ne kadar geciktiriyor (öngörü: bağlanma ≈ 100 s, ilk veri yüzlerce s); TCP SYN maliyeti; eski
+# uygulama-yanıtı teslim tanımının (quinn_rpl, tcp_rpl) ileri yön yükü. El sıkışma tavanı 240 s
+# (kurulum pencere dışında, setup_ns ayrı). quinn_rpl eski kural: el sıkışma tavanı = 60 s.
+CELL=d_hs_r25_d300_l20
+FWD="delay 300ms 60ms distribution normal loss 20% rate 200bit"
+REV="$FWD"
+REPS="${F0_REPS:-10}"
+BUDGET_S=420
+PAY=65; MSGS=6; IVAL_MS=15000; DEADLINE_S=60; HS_TIMEOUT_S=240
+# shellcheck disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/../../arms_rakip.sh"
+rakip_arms
+# Kama kolu (taban): arms_kama.sh `kama_arm_cmds` ile aynı iş yükü; sunucu alıcı damgası da yazar.
+ARM_taban_SRV="@BIN_TABAN@ serve --bind @SRV@ --transport kama-product --payload $PAY --rx-log @D@/rx_log.jsonl"
+ARM_taban_CLI="@BIN_TABAN@ client --server @SRV@ --transport kama-product $RAKIP_LOAD_ARGS"
+ARMS="taban quinn quinn_rpl tcp tcp_rpl"

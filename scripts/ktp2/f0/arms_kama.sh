@@ -4,6 +4,10 @@
 #   MSGS=<mesaj> PAY=<yük B> IVAL_MS=<sunum aralığı ms> DEADLINE_S=<son tarih s>
 #   FWD="<netem>" REV="<netem>"            (manifest'e AYNEN yazılır: --fwd-impair/--rev-impair)
 #   KAMA_SRV_EXTRA / KAMA_CLI_EXTRA        (isteğe bağlı; iki kola AYNI eklenir, varsayılan boş)
+#   KAMA_RXLOG (varsayılan 1)              1 = sunucu `--rx-log @D@/rx_log.jsonl` (alıcı teslim damgası,
+#                                          şema ktp2-c-rx-v1; rakip kollarla aynı: arms_rakip.sh RAKIP_RXLOG)
+#   KAMA_TS (varsayılan 1)                 1 = istemci `--ts-out @D@/ts.csv` (50 ms motor zaman serisi;
+#                                          salt gözlem — pacer jetonu, ret sayaçları; Ajan C ile aynı)
 # Çıktı: ARM_taban_SRV, ARM_taban_CLI, ARM_aday_SRV, ARM_aday_CLI (f0_cell.sh yer tutucularıyla).
 #
 # Kol tanımı (KATALOG §1): ikili ürün kolu `--transport kama-product`, ürün v1 profili (bench
@@ -20,10 +24,13 @@ kama_arm_cmds() { # $1 = ikili yer tutucusu → _KSRV / _KCLI
   local bin="$1"
   : "${MSGS:?MSGS yok}" "${PAY:?PAY yok}" "${IVAL_MS:?IVAL_MS yok}" "${DEADLINE_S:?DEADLINE_S yok}"
   : "${FWD:?FWD yok}" "${REV:?REV yok}"
-  _KSRV="$bin serve --bind @SRV@ --transport kama-product --payload $PAY ${KAMA_SRV_EXTRA:-}"
+  local srx="" cts=""
+  [ "${KAMA_RXLOG:-1}" = 1 ] && srx="--rx-log @D@/rx_log.jsonl"
+  [ "${KAMA_TS:-1}" = 1 ] && cts="--ts-out @D@/ts.csv"
+  _KSRV="$bin serve --bind @SRV@ --transport kama-product --payload $PAY $srx ${KAMA_SRV_EXTRA:-}"
   _KCLI="$bin client --server @SRV@ --transport kama-product --msgs $MSGS --payload $PAY \
 --submit-interval-ms $IVAL_MS --max-deadline-s $DEADLINE_S --seed @REP@ --repeat @REP@ \
---fwd-impair '$FWD' --rev-impair '$REV' --manifest @D@/manifest.json --out @D@/out.jsonl ${KAMA_CLI_EXTRA:-}"
+--fwd-impair '$FWD' --rev-impair '$REV' --manifest @D@/manifest.json --out @D@/out.jsonl $cts ${KAMA_CLI_EXTRA:-}"
 }
 
 kama_arms() {

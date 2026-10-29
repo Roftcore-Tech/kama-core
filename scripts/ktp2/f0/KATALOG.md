@@ -8,8 +8,16 @@ Dayanak: `ISEMRI-KTP2-F0-2026-10-29` §1 (birincil hedef ağ) ve §3. Bu dosya o
 |---|---|---|---|
 | `taban` | `ktp2/f0-taban` (main `a858f3fc` + yalnız ölçüm kodu) | `$BIN_TABAN` | bugünkü ürün motoru |
 | `aday` | `ktp2/f0-kol-05b` (`49864510` + aynı ölçüm kodu, merge) | `$BIN_ADAY` | 05b adayı; yeni geliştirme yok |
-| `quinn` | taban ikilisinin quinn kolu | `$BIN_TABAN` | `--transport quinn --cc bbr`; mesaj başına bağımsız bi-stream (`quic.rs:536`) |
-| `tcp` | taban ikilisinin TCP kolu | `$BIN_TABAN` | `--transport tcp`; tek bağlantı (raporda yazılır) |
+| `quinn` | taban ikilisinin quinn kolu | `$BIN_TABAN` | BİRİNCİL = taşıma-ACK teslim tanımlı kol (`--rival-delivery transport-ack`); `scripts/ktp2/f0/arms_rakip.sh` `rakip_arms` (Ajan D). Mesaj başına bağımsız uni-stream; teslim = `SendStream::stopped`; BBR; el sıkışma tavanı `--handshake-timeout-s` |
+| `tcp` | taban ikilisinin TCP kolu | `$BIN_TABAN` | BİRİNCİL = taşıma-ACK kolu: teslim = `snd_una` (`/proc/self/net/tcp`). Tek bağlantı, cubic (makinede `tcp_bbr` yüklü değil), raporda yazılır |
+| `quinn_rpl`, `tcp_rpl` | eski kollar (uygulama yanıtıyla teslim) | `$BIN_TABAN` | YALNIZ betimsel. Uygulama yanıtı ileri yönde mesaj başına ek bir ACK paketi yükler (Ajan D, D-1) |
+
+**Bench Kama kolunun kapsamı (beyan, Ajan D D-9 ve Ajan B B-K7).** `bench --transport kama-product` motor ve ürün runtime'ıdır, ama:
+- kripto yok (`IdentitySeam`); kurulum maliyeti yapısal olarak sıfır;
+- zarf 16 B, ürün 22 B;
+- S1 `Reorder` sıralaması yok; teslim motorun sırasız teslimidir.
+
+Bu yüzden bench kıyasları Kama için ÜST SINIRDIR. Gerçek ürün yolu (Noise, 22 B zarf, oturum geneli sıralama, kama-app) Ajan A'nın `f0_flows` düzeneğinde ölçülür.
 
 - Ürün kodunun davranışı değişmez.
 - Ölçüm kodu (bench, örnekler, betikler) iki Kama koluna da AYNI commit'lerle girer. Örnekler: `crates/bench`, `crates/kama-integration/examples`, `scripts/ktp2/f0`.

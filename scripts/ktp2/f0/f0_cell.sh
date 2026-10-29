@@ -84,7 +84,11 @@ run_one() { # $1=kol $2=rep
   srv_t="ARM_${arm}_SRV"; cli_t="ARM_${arm}_CLI"
   srv_cmd="$(subst "${!srv_t}" "$d" "$rep")"; cli_cmd="$(subst "${!cli_t}" "$d" "$rep")"
   printf 'SRV: %s\nCLI: %s\n' "$srv_cmd" "$cli_cmd" > "$d/cmd.txt"
-  if [ -n "$TRACE" ]; then kapi3_netem none none; fi
+  # [İSTEK-O-D1] Her koşu temiz kuyrukla başlar: önceki koşunun netem kuyruğunda/gecikme hattında
+  # kalan paketleri düşürülür (qdisc silinip yeniden kurulur), sayaçlar sıfırlanır. Aksi hâlde
+  # düşük hızda bir kolun artığı sonraki kolun önüne geçer (r25'te yüzlerce saniye).
+  kapi3_netem none none
+  [ -z "$TRACE" ] && kapi3_netem "$FWD" "$REV"
   kapi3_realized "$d" pre
   [ "$CAPTURE" = 1 ] && kapi3_capture_start "$d/cap"
   ( cd "$d" && exec nsenter -t "$CHLB" -n bash -c "exec $srv_cmd" ) 2>"$d/s.err" >"$d/s.out" &
