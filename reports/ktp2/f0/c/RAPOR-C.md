@@ -754,6 +754,70 @@ Kararı belirleyecek davranışlar: B-C4 (parite açlığı) ve B-C9 (gönderen 
 - parite beklemesinin dağılımı;
 - son-tarih oranı (kilitli ve kilitsiz alt kümeler ayrı).
 
+## 11. Tam set ara denetimi 1: `c_r12k_d300_l20_b120`
+
+[ölçüldü, N = 30/kol, alıcı damgalı]
+
+**Kaynak.**
+- Kök: `~/kama-k4g-work/ktp2-f0/runs/tam/c/out/c_r12k_d300_l20_b120`.
+- Süre: 2026-10-29 20:19 → 22:44 Z.
+- Hücre `spec_sha256 = fc7f1308…`; `b58bf049`'daki hücre dosyasıyla aynı.
+- İkililer: taban `2cd9f68d` (`3311d8e0…`), aday `bf18dc35` (`c893e840…`).
+- Analiz çıktıları: `reports/ktp2/f0/c/tam-ara-1/{kosular.csv, ozet.csv, OZET-C.md}`.
+
+### 11.1 Geçerlilik: temiz
+
+- 10 kolun hepsi 30/30 rc = 0 ve 30/30 geçerli.
+- Her koşuda `out.jsonl` ve `rx.jsonl` var. `rx.jsonl` satırı = sunucu `delivered`: 300/300.
+- Isınma artığı 0: 300/300.
+- `realized_pre`'de netem `packets = drops = qlen = backlog = 0`: 300/300.
+- Gerçekleşen kayıp, koşu başına medyan:
+  - ileri yön 0,189–0,213 (min–maks 0,128–0,300);
+  - dönüş yönü 0,197–0,209.
+
+  Profil %20 ile tutarlı. Koşu başı yayılım binomdur (≈ 300 paket/koşu).
+
+### 11.2 İlk gözlem
+
+T1-800 = ağızdan kulağa ≤ 800 ms. Tablo: medyan [IQR] (min–maks).
+
+| kol | T1-800 | Δ arq [%95 bootstrap] | kilitli | kilitsiz alt küme T1-800 | parite tx (/plan) | FEC kurtarılan | parite beklemesi (Little) | B/çerçeve L2 |
+|---|---|---|---|---|---|---|---|---|
+| arq_taban | 0,196 [0,126, 0,443] (0,048–0,875) | — | 23/30 | 0,815 (n = 7) | 0 | 0 | — | 131 |
+| arq_aday | 0,217 [0,121, 0,317] (0,042–0,548) | — | 30/30 | — | 0 | 0 | — | 130 |
+| uyar_taban | 0,193 [0,112, 0,351] (0,030–0,804) | −0,003 [−0,158, 0,071] | 26/30 | 0,756 (n = 4) | **0 (30/30)** | 0 | — | 132 |
+| uyar_aday | 0,146 [0,067, 0,243] (0,036–0,857) | −0,071 [−0,167, 0,048] | 26/30 | 0,830 (n = 4) | **0 (30/30)** | 0 | — | 129 |
+| rs2_taban | 0,830 [0,821, 0,869] (0,762–0,988) | +0,634 [0,518, 0,688] | 0/30 | 0,830 | 160 [108–184] / 184 | 13 | 2,5 s | 246 |
+| rs2_aday | 0,842 [0,827, 0,871] (0,756–0,929) | +0,625 [0,554, 0,711] | 0/30 | 0,842 | 158 [99–184] / 184 | 13 | 2,8 s | 239 |
+| rs4_taban | 0,815 [0,798, 0,832] (0,423–0,893) | +0,619 [0,494, 0,664] | 1/30 | 0,815 | 84 [19–92] / 92 | 12 | 2,2 s | 188 |
+| rs4_aday | 0,839 [0,815, 0,860] (0,536–0,929) | +0,622 [0,554, 0,711] | 0/30 | 0,839 | 86 [21–92] / 92 | 13 | 2,5 s | 188 |
+| tekrar_taban (C2) | 0,253 [0,042, 0,942] (0,012–0,982) | +0,057 [−0,250, 0,741] | 17/30 | 0,952 (n = 13) | — | — | — | 240 |
+| tekrar_aday (C2) | 0,387 [0,048, 0,607] (0,012–0,964) | +0,170 [−0,182, 0,402] | 23/30 | 0,935 (n = 7) | — | — | — | 258 |
+
+**Okuma.** Yalnız bu hücre; diğer hücrelere genelleme yok.
+
+1. **B-C1 tam sette tuttu.**
+   - Ürün uyarlamalı FEC'i (`uyar`) 60/60 koşuda parite üretmedi.
+   - §8.5 kırpması medyan 28,7–28,9 bin karar.
+   - `uyar − arq` farkının aralığı iki ikilide de 0'ı kapsıyor. Bu hücrede uyarlamalı FEC'in ARQ'ya bir katkısı ölçülmedi.
+2. **Parite tele çıktı, ama geç.**
+   - `rs2`: planlanan 184 paritenin medyan 158–160'ı gitti. `rs4`: 92'nin 84–86'sı gitti.
+   - Kuyruk beklemesi medyanı 2,2–2,8 s; blok süresi 120–360 ms. B-C4 N = 30'da da görülüyor.
+   - Alıcıda FEC'le ilk kez ulaşan çerçeve medyanı 12–13 (168 çerçevenin ≈ %8'i; kaybolan ≈ 34'ün ≈ 1/3'ü). Kalan kayıplar ARQ ile ve son tarihten sonra geldi.
+3. **Kolları ayıran kilit (B-C9), FEC kurtarması değil.**
+   - Kilit oranları: arq 23–30/30, uyar 26/30, tekrar 17–23/30, rs 0–1/30. rs kollarında btlbw / sunulan oranı medyanı 1,9–2,5; arq/uyar'da 1,14–1,20.
+   - Kilitsiz alt kümelerde oranlar birbirine yakın: arq 0,815 (n = 7), uyar 0,76–0,83 (n = 4), rs 0,82–0,84. Kilitsiz tekrar 0,94–0,95 (n = 7–13) bu üçünden yüksek; rs'nin kurtarma katkısını parite gecikmesi siliyor.
+   - Yani rs − arq ≈ +0,62 farkının büyük kısmı, paritenin teslim edilen baytı artırıp pacer kilidini önlemesinden geliyor [çıkarım; kilitsiz alt küme karşılaştırması + sayaçlar]. FEC'in son tarih içindeki kurtarma katkısı ≈ +0,02–0,08.
+   - Kilitsiz arq/uyar alt kümeleri n = 4–7'dir; betimseldir.
+4. **Ön-kayda karşı.**
+   - Kilitsiz arq 0,815 ↔ ön-kayıt 0,80.
+   - Kilitsiz tekrar 0,94–0,95 ↔ `tekrar2` 0,96.
+   - rs2 0,83–0,84 ↔ 0,97–0,98, rs4 0,82–0,84 ↔ 0,86–0,92. Fark B-C4'ten.
+   - Kilitli koşular modelin dışında: M3 sapması, §9.
+5. **Sıralı teslim türevi** (client-core `Reorder` karşılığı): kol medyanları 0,02–0,41 (rs 0,31–0,41; diğerleri ≤ 0,05). Ürün uygulama yolunda (PTT `Reliable` + oturum geneli sıra) son-tarih oranının bench'teki sırasız değerden çok daha düşük olacağını gösteriyor [türetilmiş].
+
+**Durdurma gerekmiyor.** Enstrüman ve geçerlilik temiz. Kalan hücreler aynı iki davranışın (B-C4, B-C9) kayıp, RTT ve demet eksenindeki dağılımını ölçecek.
+
 ## Ek: Ajan E'ye iletilmek üzere taslak notu adayları [kod]
 
 - Taslak §1 "FEC varsayılan olarak kapalı": kodda açık (`runtime.rs:282-285`). Etkisizliği B-C1 kırpmasından gelir.
