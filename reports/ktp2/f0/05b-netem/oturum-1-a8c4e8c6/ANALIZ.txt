@@ -1,0 +1,61 @@
+# NETEM-7 analiz — /home/ryuzaki/kama-k4g-work/k4g05b/netem7/run-a8c4e8c6
+
+## p1_loss50  fwd='loss 50% rate 100kbit' rev='loss 50% rate 100kbit' geo=100x256B@50ms D=20s
+   taban 1b1425d2  aday a8c4e8c6
+   taban N=20 altyapı=0  M1 min=0.000 med=1.000 max=1.000 ≥0.99:16/20  M2 med=627 ms
+   aday  N=20 altyapı=0  M1 min=0.990 med=1.000 max=1.000 ≥0.99:20/20  M2 med=722 ms
+   M1 Δmed=+0.000 p=0.1366 → kayma yok
+   M2 oran=1.153 p=0.6017 → kayma yok
+
+## p2_loss80  fwd='loss 80% rate 200kbit' rev='loss 80% rate 200kbit' geo=100x256B@50ms D=20s
+   taban 1b1425d2  aday a8c4e8c6
+   taban N=20 altyapı=0  M1 min=0.000 med=0.150 max=0.990 ≥0.99:1/20  M2 med=4742 ms
+   aday  N=20 altyapı=0  M1 min=0.000 med=0.875 max=0.980 ≥0.99:0/20  M2 med=3395 ms
+   M1 Δmed=+0.725 p=0.3492 → kayma yok
+   M2 oran=0.716 p=0.2517 → kayma yok
+
+## p3_loss95  fwd='loss 95% rate 100kbit' rev='loss 95% rate 100kbit' geo=100x256B@50ms D=20s
+   taban 1b1425d2  aday a8c4e8c6
+   taban N=20 altyapı=0  M1 min=0.000 med=0.000 max=0.010 ≥0.99:0/20  M2 med=3593 ms
+   aday  N=20 altyapı=0  M1 min=0.000 med=0.000 max=0.430 ≥0.99:0/20  M2 med=9978 ms
+   M1 Δmed=+0.000 p=0.04712 → kayma yok
+   M2 oran=2.777 p=0.3333 → kayma yok
+
+## p4_jitter  fwd='delay 200ms 100ms distribution normal rate 100kbit' rev='delay 200ms 100ms distribution normal rate 100kbit' geo=100x256B@50ms D=20s
+   taban 1b1425d2  aday a8c4e8c6
+   taban N=20 altyapı=0  M1 min=1.000 med=1.000 max=1.000 ≥0.99:20/20  M2 med=574 ms
+   aday  N=20 altyapı=0  M1 min=1.000 med=1.000 max=1.000 ≥0.99:20/20  M2 med=607 ms
+   M1 Δmed=+0.000 p=1 → kayma yok
+   M2 oran=1.058 p=0.1826 → kayma yok
+
+## p5_revpath  fwd='loss 5% rate 100kbit' rev='loss 80% rate 100kbit' geo=100x256B@50ms D=20s
+   taban 1b1425d2  aday a8c4e8c6
+   taban N=20 altyapı=0  M1 min=0.000 med=1.000 max=1.000 ≥0.99:19/20  M2 med=433 ms
+   aday  N=20 altyapı=0  M1 min=0.920 med=1.000 max=1.000 ≥0.99:19/20  M2 med=531 ms
+   M1 Δmed=+0.000 p=1 → kayma yok
+   M2 oran=1.225 p=0.6667 → kayma yok
+
+## p6_blackout  fwd='trace' rev='trace' geo=100x256B@1000ms D=20s
+   taban 1b1425d2  aday a8c4e8c6
+   taban N=20 altyapı=0  M1 min=0.890 med=0.890 max=0.900 ≥0.99:0/20  M2 med=29 ms
+   aday  N=20 altyapı=0  M1 min=0.890 med=0.900 max=0.900 ≥0.99:0/20  M2 med=28 ms
+   M1 Δmed=+0.010 p=0.007912 → kayma yok
+   M2 oran=0.973 p=2.403e-06 → kayma yok
+
+## p7_bbr  fwd='loss 2% rate 50kbit' rev='loss 2% rate 50kbit' geo=100x256B@50ms D=20s
+   taban 1b1425d2  aday a8c4e8c6
+   taban N=20 altyapı=0  M1 min=1.000 med=1.000 max=1.000 ≥0.99:20/20  M2 med=213 ms
+   aday  N=20 altyapı=0  M1 min=1.000 med=1.000 max=1.000 ≥0.99:20/20  M2 med=225 ms
+   M1 Δmed=+0.000 p=1 → kayma yok
+   M2 oran=1.059 p=0.2534 → kayma yok
+
+# ÖZET
+   p1_loss50    kayma yok
+   p2_loss80    kayma yok
+   p3_loss95    kayma yok
+   p4_jitter    kayma yok
+   p5_revpath   kayma yok
+   p6_blackout  kayma yok
+   p7_bbr       kayma yok
+
+# HÜKÜM (ön-kayıtlı kural): yedi profilde ön-kayıtlı kayma saptanmadı

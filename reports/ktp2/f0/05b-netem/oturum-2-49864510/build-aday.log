@@ -1,0 +1,5 @@
+   Compiling adaptive-transport v0.1.0 (/home/ryuzaki/kama-k4g-work/wt/05b-son/crates/adaptive-transport)
+   Compiling client-core v0.1.0 (/home/ryuzaki/kama-k4g-work/wt/05b-son/crates/client-core)
+   Compiling bench v0.1.0 (/home/ryuzaki/kama-k4g-work/wt/05b-son/crates/bench)
+    Finished `release` profile [optimized] target(s) in 45.11s
+build rc=0

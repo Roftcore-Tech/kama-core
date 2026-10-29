@@ -1,0 +1,5 @@
+rustc 1.96.0 (ac68faa20 2026-05-25)
+cargo 1.96.0 (30a34c682 2026-05-25)
+1.96.0-x86_64-unknown-linux-gnu (overridden by '/home/ryuzaki/kama-k4g-work/wt/05b-son/rust-toolchain.toml')
+593029ebe10532a131639740d82dc505f4f5c77f
+0
