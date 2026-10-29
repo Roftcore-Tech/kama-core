@@ -523,14 +523,31 @@ async fn offer(
     tx: &ClientSender,
     payload: &[u8],
     deadline_ns: Option<u64>,
+    st: &mut OfferStats,
 ) -> Result<(), BenchError> {
     loop {
         match tx.send_with_deadline(payload.to_vec(), deadline_ns) {
             Ok(()) => return Ok(()),
-            Err(RuntimeError::QueueFull) => tokio::time::sleep(OFFER_RETRY).await,
+            Err(RuntimeError::QueueFull) => {
+                // [İSTEK-D4] salt-gözlem: kaç kez ve ne kadar beklendi (davranış aynı).
+                let t = Instant::now();
+                tokio::time::sleep(OFFER_RETRY).await;
+                st.qfull_retries += 1;
+                st.qfull_wait_ns = st.qfull_wait_ns.saturating_add(elapsed_ns(t));
+            }
             Err(e) => return Err(rt_err("offer", e)),
         }
     }
+}
+
+/// [KTP2-F0 / İSTEK-D4] Uygulama tarafı sunum geri basıncı sayaçları (salt-gözlem;
+/// `KP-CLIENT-OFFER` satırı).
+#[derive(Debug, Default)]
+struct OfferStats {
+    /// `QueueFull` sonrası yeniden deneme sayısı.
+    qfull_retries: u64,
+    /// Bu denemelerde beklenen toplam süre (ns).
+    qfull_wait_ns: u64,
 }
 
 /// Ürün-runtime bench kolu. `BenchTransport` sözleşmesi diğer kollarla birebir aynı.
@@ -741,6 +758,8 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
     // Warmup birimleri 0..warmup_msgs-1 id'lerini işgal eder; ölçüm birimleri warmup_msgs'ten
     // başlar. Amaç: estimator/pacer/RTT + PARAM bağlanması ölçümden ÖNCE otursun.
     let mut warm_acked: u64 = 0;
+    // [İSTEK-D4] Sunum geri basıncı sayaçları; ölçüm-t0'da sıfırlanır (warmup sayılmaz).
+    let mut offer_st = OfferStats::default();
     if cfg.warmup_msgs > 0 {
         let cap = Duration::from_nanos(interval_ns.saturating_mul(cfg.warmup_msgs))
             .saturating_add(WARMUP_CAP_EXTRA);
@@ -756,7 +775,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
                         .saturating_add(interval_ns.saturating_mul(wnext))
                         .saturating_sub(elapsed_ns(start)),
                 )), if wnext < cfg.warmup_msgs => {
-                    offer(&tx, &payload, deadline_ns).await?;
+                    offer(&tx, &payload, deadline_ns, &mut offer_st).await?;
                     wnext += 1;
                 }
                 a = cli.acked() => {
@@ -785,6 +804,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
     // normalizasyon için `armed_at_ns − events_epoch_offset_ns` DEĞİL, snapshot'taki
     // `first_refusal_ns − armed_at_ns` farkı kullanılır (r5 inceleme #18 kuralı).
     cli.mark_t0().await;
+    offer_st = OfferStats::default();
 
     // ── FAZ-1: ölçüm ──────────────────────────────────────────────────────────────────────
     let base_id = cfg.warmup_msgs;
@@ -800,7 +820,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         for slot in &mut sent_ns {
             *slot = Some(elapsed_ns(start));
             for _ in 0..copies {
-                offer(&tx, &payload, deadline_ns).await?;
+                offer(&tx, &payload, deadline_ns, &mut offer_st).await?;
             }
         }
         next_submit = msg_count;
@@ -829,7 +849,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
                 }
                 next_submit += 1;
                 for _ in 0..copies {
-                    offer(&tx, &payload, deadline_ns).await?;
+                    offer(&tx, &payload, deadline_ns, &mut offer_st).await?;
                 }
             }
             a = cli.acked() => {
@@ -921,6 +941,18 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         stats.fate.fec_spec_transitions.0,
         stats.fate.fec_spec_transitions.1,
         stats.fate.sched,
+    );
+    // [KTP2-F0 / İSTEK-D4] Ayrı satır (KP-CLIENT satırının biçimi korunur). Datagram ve
+    // `unaccepted_offers` runtime'ın kendi sayaçlarıdır (bağlantı ömrü); `offer_qfull*` ölçüm
+    // fazında `QueueFull` sonrası yeniden deneme sayısı ve toplam bekleme.
+    eprintln!(
+        "KP-CLIENT-OFFER tx_dgrams={} rx_dgrams={} unaccepted={} offer_qfull={} \
+         offer_qfull_wait_ms={:.1}",
+        stats.tx_datagrams,
+        stats.rx_datagrams,
+        stats.unaccepted_offers,
+        offer_st.qfull_retries,
+        offer_st.qfull_wait_ns as f64 / 1e6,
     );
     print_activation(&stats);
     // [HANDOFF ENSTRÜMANI] zaman serisini CSV'ye dök (varsa).

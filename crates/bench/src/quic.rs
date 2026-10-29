@@ -256,7 +256,15 @@ impl BenchTransport for QuinnTransport {
         let sc = server_config(cfg.cc)?;
         let (endpoint, gov) = build_endpoint(cfg.bind, Some(sc), cfg.budget)?;
         spawn_gate_watch(gov.clone(), cfg.gate_watch.clone());
-        run_server_loop(endpoint, gov, cfg.gate_watch.is_some()).await;
+        // [KTP2-F0 / İSTEK-C1/D2] Alıcı-tarafı damga — yalnız `--rx-log` ile (None = eski yol).
+        let rx: Option<crate::rxlog::SharedRx> = cfg
+            .rx_log
+            .clone()
+            .map(|p| Arc::new(Mutex::new(crate::rxlog::RxRecorder::new(p))));
+        if let Some(r) = rx.clone() {
+            crate::rxlog::write_on_signal(r).map_err(BenchError::Io)?;
+        }
+        run_server_loop(endpoint, gov, cfg.gate_watch.is_some(), rx).await;
         Ok(())
     }
 
@@ -264,6 +272,7 @@ impl BenchTransport for QuinnTransport {
         // [KTP2-F0 / D] Rakip-kol ayarları (bayraksız = eski kol; bkz. `crate::rival`).
         let tu = crate::rival::get();
         let tack = tu.transport_ack();
+        let payload_id = tu.payload_id;
         let tr_label = if tack { "quinn-tack" } else { "quinn" };
         let delta = tu.quinn_delta();
         let arm_label = tu.quinn_label(cfg.cc.label());
@@ -404,10 +413,23 @@ impl BenchTransport for QuinnTransport {
                     tokio::time::sleep(submit_at).await;
                 }
                 let sent_ns = start.elapsed().as_nanos() as u64;
-                let delivered_ns = if tack {
-                    send_one_tack(&conn, &payload, deadline, start).await
+                // [İSTEK-D2] `--payload-id`: kimlik ilk 8 bayta (boy aynı); yoksa paylaşılan dolgu.
+                let tagged: Vec<u8> = if payload_id && payload.len() >= 8 {
+                    let mut v = payload.to_vec();
+                    v[..8].copy_from_slice(&msg_id.to_be_bytes());
+                    v
                 } else {
-                    send_one(&conn, &payload, deadline, start).await
+                    Vec::new()
+                };
+                let body: &[u8] = if tagged.is_empty() {
+                    &payload[..]
+                } else {
+                    &tagged[..]
+                };
+                let delivered_ns = if tack {
+                    send_one_tack(&conn, body, deadline, start).await
+                } else {
+                    send_one(&conn, body, deadline, start).await
                 };
                 RawEvent {
                     msg_id,
@@ -537,7 +559,12 @@ pub(crate) fn spawn_gate_watch(gov: Option<GovHandle>, gate: Option<std::path::P
     }
 }
 
-async fn run_server_loop(endpoint: Endpoint, gov: Option<GovHandle>, gate_watched: bool) {
+async fn run_server_loop(
+    endpoint: Endpoint,
+    gov: Option<GovHandle>,
+    gate_watched: bool,
+    rx: Option<crate::rxlog::SharedRx>,
+) {
     // [KAPI-1 W2] reverse-yön bütçe raporu: server RunOutput üretmez → periyodik BUDGET-REV satırı.
     if let Some(h) = gov.clone() {
         tokio::spawn(async move {
@@ -567,13 +594,18 @@ async fn run_server_loop(endpoint: Endpoint, gov: Option<GovHandle>, gate_watche
             }
         }
         let tack = crate::rival::get().transport_ack();
+        let rx = rx.clone();
         tokio::spawn(async move {
             if tack {
                 // [KTP2-F0 / D] transport-ack: uygulama yanıtı YOK. Mesaj başına tek-yönlü stream
                 // sonuna dek okunur; teslim istemcide eşin taşıma ACK'iyle (`stopped`) ölçülür.
                 while let Ok(mut recv) = conn.accept_uni().await {
+                    let rx = rx.clone();
                     tokio::spawn(async move {
-                        let _ = recv.read_to_end(1 << 20).await;
+                        if let Ok(data) = recv.read_to_end(1 << 20).await {
+                            let id = crate::rxlog::id_prefix(&data);
+                            crate::rxlog::record_shared(rx.as_ref(), id, data.len());
+                        }
                     });
                 }
                 return;
@@ -581,9 +613,13 @@ async fn run_server_loop(endpoint: Endpoint, gov: Option<GovHandle>, gate_watche
             // Her STREAM ayrı task → HoL blocking YOK (workflow bulgusu #1/#3: bağlantı-başı
             // tek task + sıralı read_to_end, stalled stream sonrakilerin ack'ini bloklardı).
             while let Ok((mut send, mut recv)) = conn.accept_bi().await {
+                let rx = rx.clone();
                 tokio::spawn(async move {
                     // Yalnız mesaj TAM okunursa ack (read hatası/aşımı → teslim SAYILMAZ).
-                    if recv.read_to_end(1 << 20).await.is_ok() {
+                    if let Ok(data) = recv.read_to_end(1 << 20).await {
+                        // [İSTEK-D2] alıcı damgası (rx None ise iş yok).
+                        let id = crate::rxlog::id_prefix(&data);
+                        crate::rxlog::record_shared(rx.as_ref(), id, data.len());
                         let _ = send.write_all(&[1u8]).await;
                         let _ = send.finish();
                     }
@@ -758,7 +794,7 @@ mod loopback_tests {
         let sc = server_config(Cc::Cubic).expect("server config");
         let server_ep = Endpoint::server(sc, "127.0.0.1:0".parse().unwrap()).expect("server bind");
         let addr = server_ep.local_addr().expect("local addr");
-        tokio::spawn(run_server_loop(server_ep, None, false));
+        tokio::spawn(run_server_loop(server_ep, None, false, None));
 
         let out = QuinnTransport
             .run_client(ClientCfg {
@@ -823,7 +859,7 @@ mod loopback_tests {
         let sc = server_config(Cc::Cubic).expect("server config");
         let server_ep = Endpoint::server(sc, "127.0.0.1:0".parse().unwrap()).expect("server bind");
         let addr = server_ep.local_addr().expect("local addr");
-        tokio::spawn(run_server_loop(server_ep, None, false));
+        tokio::spawn(run_server_loop(server_ep, None, false, None));
 
         let dir = std::env::temp_dir().join(format!("kapi-gate-q-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -898,7 +934,7 @@ mod loopback_tests {
         let sc = server_config(Cc::Cubic).expect("server config");
         let server_ep = Endpoint::server(sc, "127.0.0.1:0".parse().unwrap()).expect("server bind");
         let addr = server_ep.local_addr().expect("local addr");
-        tokio::spawn(run_server_loop(server_ep, None, false));
+        tokio::spawn(run_server_loop(server_ep, None, false, None));
 
         let out = QuinnTransport
             .run_client(ClientCfg {

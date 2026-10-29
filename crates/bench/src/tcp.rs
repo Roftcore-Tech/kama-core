@@ -32,7 +32,6 @@ use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::signal::unix::{signal, SignalKind};
 
 use crate::error::BenchError;
 use crate::event::{RawEvent, RunMeta, RunOutput, TxComponents};
@@ -57,23 +56,12 @@ impl BenchTransport for TcpTransport {
             // [KTP2-F0 / C1] Alıcı-tarafı damga — yalnız `--rx-log` ile. Bu sunucu döngüsü
             // kendiliğinden çıkmaz (kill ile biter): SIGTERM/SIGINT yakalanır, kayıt yazılır, süreç
             // çıkar. Bayraksız yolda sinyal işleyicisi KURULMAZ (eski davranış aynen).
-            let rx_rec = cfg
+            let rx_rec: Option<crate::rxlog::SharedRx> = cfg
                 .rx_log
                 .clone()
                 .map(|p| Arc::new(Mutex::new(crate::rxlog::RxRecorder::new(p))));
             if let Some(r) = rx_rec.clone() {
-                let mut term = signal(SignalKind::terminate()).map_err(BenchError::Io)?;
-                let mut int = signal(SignalKind::interrupt()).map_err(BenchError::Io)?;
-                tokio::spawn(async move {
-                    tokio::select! {
-                        _ = term.recv() => {},
-                        _ = int.recv() => {},
-                    }
-                    if let Ok(g) = r.lock() {
-                        g.write_or_warn();
-                    }
-                    std::process::exit(0);
-                });
+                crate::rxlog::write_on_signal(r).map_err(BenchError::Io)?;
             }
             loop {
                 let Ok((mut sock, _peer)) = listener.accept().await else {
@@ -106,11 +94,7 @@ impl BenchTransport for TcpTransport {
                         }
                         app_rx += (FRAME_HDR + len) as u64;
                         delivered += 1;
-                        if let Some(r) = rec.as_ref() {
-                            if let Ok(mut g) = r.lock() {
-                                g.record(msg_id, len);
-                            }
-                        }
+                        crate::rxlog::record_shared(rec.as_ref(), msg_id, len);
                         // Uygulama-düzeyi ACK (teslim tanımının taşıyıcısı; qdgram ile simetrik).
                         if !tack {
                             if sock.write_all(&msg_id.to_be_bytes()).await.is_err() {
@@ -203,7 +187,23 @@ impl BenchTransport for TcpTransport {
             }
             // Deadline penceresi dolana dek ACK'leri bekle, sonra bağlantıyı kapat.
             let wait = cfg.max_deadline.min(Duration::from_secs(60));
-            tokio::time::sleep(wait).await;
+            if tu.early_exit {
+                // [İSTEK-D1] Aynı pencere; bütün ACK'ler geldiyse erken çık. Damgalar okuyucu
+                // görevde konduğundan teslim olayları sabit beklemeyle birebir aynıdır.
+                let until = tokio::time::Instant::now() + wait;
+                loop {
+                    let all = delivered
+                        .lock()
+                        .map(|g| g.iter().all(Option::is_some))
+                        .unwrap_or(false);
+                    if all || tokio::time::Instant::now() >= until {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            } else {
+                tokio::time::sleep(wait).await;
+            }
             drop(wr);
             let app_rx = tokio::time::timeout(Duration::from_secs(2), reader)
                 .await

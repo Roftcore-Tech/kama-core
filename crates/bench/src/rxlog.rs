@@ -13,11 +13,16 @@
 //! ```
 //!
 //! Birim kimliği: `kama-product` = `Delivery::unit_id` (fragmenter açıkken mesaj kimliği;
-//! `warmup_msgs` ölçüm birimlerinin önündedir). `tcp` = çerçevedeki `msg_id`. quinn kolunda yük
-//! mesaj kimliği taşımadığı için desteklenmez.
+//! `warmup_msgs` ölçüm birimlerinin önündedir; `--dup-copies N` ile birim = mesaj × N + kopya).
+//! `tcp` = çerçevedeki `msg_id`. `quinn` = yükün ilk 8 baytı (BE) — istemci `--payload-id` ile
+//! yazar; yazılmamışsa ya da yük < 8 B ise `u64::MAX`. Damga anı: kama = teslim kanalından alındığı
+//! an; tcp = çerçevenin tamamı okunduğu an; quinn = stream sonuna (FIN) dek okunduğu an.
 
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+use tokio::signal::unix::{signal, SignalKind};
 
 /// Şema kimliği (C'nin analizörü bunu denetler).
 pub const RX_LOG_SCHEMA: &str = "ktp2-c-rx-v1";
@@ -30,6 +35,47 @@ pub fn unix_ns() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
+}
+
+/// Görevler arası paylaşılan kaydedici (quinn/tcp sunucuları bağlantı başına görev açar).
+pub type SharedRx = Arc<Mutex<RxRecorder>>;
+
+/// Kendiliğinden çıkmayan sunucular (quinn, tcp: `kill` ile biter) için: SIGTERM/SIGINT gelince
+/// kaydı yazar ve süreci 0 ile bitirir. YALNIZ `--rx-log` verilince çağrılır.
+///
+/// # Errors
+/// Sinyal işleyicisi kurulamazsa.
+pub fn write_on_signal(r: SharedRx) -> std::io::Result<()> {
+    let mut term = signal(SignalKind::terminate())?;
+    let mut int = signal(SignalKind::interrupt())?;
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = term.recv() => {},
+            _ = int.recv() => {},
+        }
+        if let Ok(g) = r.lock() {
+            g.write_or_warn();
+        }
+        std::process::exit(0);
+    });
+    Ok(())
+}
+
+/// Paylaşımlı kaydediciye tek kayıt (`None` = kayıt kapalı, hiçbir şey yapmaz).
+pub fn record_shared(r: Option<&SharedRx>, unit: u64, len: usize) {
+    if let Some(r) = r {
+        if let Ok(mut g) = r.lock() {
+            g.record(unit, len);
+        }
+    }
+}
+
+/// quinn yükünün ilk 8 baytı (BE) = mesaj kimliği (`client --payload-id`). Kısa yük → `u64::MAX`.
+#[must_use]
+pub fn id_prefix(data: &[u8]) -> u64 {
+    data.get(..8)
+        .and_then(|b| <[u8; 8]>::try_from(b).ok())
+        .map_or(u64::MAX, u64::from_be_bytes)
 }
 
 /// Sınırlı alım kaydedicisi.

@@ -152,8 +152,9 @@ enum Cmd {
         /// [KTP2-F0 / D] quinn keep-alive aralığı (ms; 0 = yok).
         #[arg(long, default_value_t = 0)]
         quinn_keepalive_ms: u64,
-        /// [KTP2-F0 / C1] Alıcı-tarafı teslim damgası (JSONL; `kama-product` ve `tcp`). Verilmezse
-        /// kayıt yok, dosya yok. Sunucu döngüsü çıkınca (SIGTERM dahil) atomik yazılır.
+        /// [KTP2-F0 / C1·D2] Alıcı-tarafı teslim damgası (JSONL, şema `ktp2-c-rx-v1`;
+        /// `kama-product`, `tcp`, `quinn`). Verilmezse kayıt yok, dosya yok. Sunucu çıkınca
+        /// (SIGTERM dahil) atomik yazılır. quinn'de kimlik için istemci `--payload-id` verir.
         #[arg(long)]
         rx_log: Option<PathBuf>,
     },
@@ -307,6 +308,14 @@ enum Cmd {
         /// [KTP2-F0 / D] Koşu sonunda `QUINN-STATS` satırı (c.err; salt-gözlem).
         #[arg(long, default_value_t = false)]
         rival_stats: bool,
+        /// [KTP2-F0 / D1] tcp (`app-reply`): bütün ACK'ler gelince ya da pencere dolunca bitir
+        /// (eski: sabit `min(max_deadline, 60 s)` bekleme). Teslim olayları değişmez.
+        #[arg(long, default_value_t = false)]
+        early_exit: bool,
+        /// [KTP2-F0 / D2] quinn: mesaj kimliği yükün ilk 8 baytına (BE) yazılır — sunucunun
+        /// `--rx-log` kaydı mesajı tanır. Yük boyu ve zamanlama aynı.
+        #[arg(long, default_value_t = false)]
+        payload_id: bool,
         /// [KTP2-F0 / C2] Yalnız `kama-product`: her ölçüm mesajı N ayrı birim olarak sunulur
         /// (gerçek tekrar kolu); teslim = ilk kopyanın teyidi. 1 = eski davranış.
         #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=64))]
@@ -509,12 +518,13 @@ async fn main() -> Result<(), BenchError> {
             rx_log,
         } => {
             // [KTP2-F0 / C1] Desteklenmeyen kolda sessizce kayıtsız koşmak yerine reddet.
-            let rx_supported = matches!(transport, TransportArg::KamaProduct | TransportArg::Tcp);
+            let rx_supported = matches!(
+                transport,
+                TransportArg::KamaProduct | TransportArg::Tcp | TransportArg::Quinn
+            );
             if rx_log.is_some() && !rx_supported {
                 return Err(BenchError::Other(
-                    "--rx-log yalnız --transport kama-product | tcp ile (quinn yükü mesaj \
-                     kimliği taşımaz)"
-                        .into(),
+                    "--rx-log yalnız --transport kama-product | tcp | quinn ile".into(),
                 ));
             }
             // [KTP2-F0 / D] Rakip-kol ayarları (bayraksız = eski davranış; Kama kollarına etkisiz).
@@ -609,6 +619,8 @@ async fn main() -> Result<(), BenchError> {
             quinn_iw_bytes,
             quinn_keepalive_ms,
             rival_stats,
+            early_exit,
+            payload_id,
             dup_copies,
             out,
         } => {
@@ -619,14 +631,17 @@ async fn main() -> Result<(), BenchError> {
                 ));
             }
             // [KTP2-F0 / D] Rakip-kol ayarları (bayraksız = eski davranış; Kama kollarına etkisiz).
-            rival::set(rival::RivalTuning::from_cli(
+            let mut tuning = rival::RivalTuning::from_cli(
                 rival_delivery,
                 handshake_timeout_s,
                 quinn_initial_rtt_ms,
                 quinn_iw_bytes,
                 quinn_keepalive_ms,
                 rival_stats,
-            ));
+            );
+            tuning.early_exit = early_exit;
+            tuning.payload_id = payload_id;
+            rival::set(tuning);
             let cfg = ClientCfg {
                 server,
                 msg_count: msgs,

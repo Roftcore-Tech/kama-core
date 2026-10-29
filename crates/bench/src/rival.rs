@@ -66,6 +66,14 @@ pub struct RivalTuning {
     pub quinn_keepalive: Option<Duration>,
     /// Koşu sonunda `QUINN-STATS` satırı (salt-gözlem; tele etkisi yok).
     pub stats: bool,
+    /// [İSTEK-D1] tcp `app-reply` kolu: bütün uygulama ACK'leri gelince ya da pencere dolunca
+    /// biter (eski: her koşuda sabit `min(max_deadline, 60 s)` bekler). Teslim olayları AYNIDIR —
+    /// damgaları okuyucu görev koyar; erken bitiş yalnız boş beklemeyi keser.
+    pub early_exit: bool,
+    /// [İSTEK-D2] quinn: mesaj kimliği yükün ilk 8 baytına (BE) yazılır (alıcının `--rx-log`
+    /// eşlemesi).
+    /// Yük boyu ve zamanlama değişmez; yalnız yük içeriği (`0x5A` dolgu yerine kimlik) farklıdır.
+    pub payload_id: bool,
 }
 
 impl RivalTuning {
@@ -118,6 +126,9 @@ impl RivalTuning {
         if let Some(k) = self.quinn_keepalive {
             d.push(format!("keep_alive none -> {}ms", k.as_millis()));
         }
+        if self.payload_id {
+            d.push("payload filler -> msg_id(8B BE)+filler".into());
+        }
         d
     }
 
@@ -133,6 +144,9 @@ impl RivalTuning {
         }
         if let Some(t) = self.handshake_timeout {
             d.push(format!("connect_timeout 20s -> {}s", t.as_secs()));
+        }
+        if self.early_exit && !self.transport_ack() {
+            d.push("exit fixed-wait -> early-exit(all-acked)".into());
         }
         d
     }
