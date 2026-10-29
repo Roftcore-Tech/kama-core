@@ -1,0 +1,33 @@
+# [KTP2-F0 · Ajan C] ÜRETİLDİ — scripts/ktp2/f0/c/gen_cells.py (elle düzenlemeyin).
+# öncelik=2  demet=120 ms  kayıp=%30  gecikme=d1000  hız=r12k  payload=37 B  çerçeve=168  ısınma=16
+# rs2 r=2, rs4 r=4
+# tahmini süre: 10 kol × 30 tekrar × ~38 s = 3.17 koşu-saati
+# rx-log: AÇIK (İSTEK-C1)
+CELL=c_r12k_d1000_l30_b120
+FWD="delay 1000ms 200ms distribution normal loss 30% rate 100kbit"
+REV="$FWD"
+REPS=30
+ARMS="arq_taban arq_aday uyar_taban uyar_aday rs2_taban rs2_aday rs4_taban rs4_aday tekrar_taban tekrar_aday"
+BUDGET_S=120
+CAPTURE=0
+SETTLE_S=1
+ARM_arq_taban_SRV="@BIN_TABAN@ serve --bind @SRV@ --transport kama-product --payload 37 --fec-profile 0 --rx-log @D@/rx.jsonl"
+ARM_arq_taban_CLI="@BIN_TABAN@ client --server @SRV@ --transport kama-product --msgs 168 --payload 37 --submit-interval-ms 120 --warmup-msgs 16 --max-deadline-s 10 --fec-profile 0 --profile c_r12k_d1000_l30_b120 --repeat @REP@ --ts-out @D@/ts.csv --manifest @D@/manifest.json --fwd-impair '$FWD' --rev-impair '$REV' --out @D@/out.jsonl"
+ARM_arq_aday_SRV="@BIN_ADAY@ serve --bind @SRV@ --transport kama-product --payload 37 --fec-profile 0 --rx-log @D@/rx.jsonl"
+ARM_arq_aday_CLI="@BIN_ADAY@ client --server @SRV@ --transport kama-product --msgs 168 --payload 37 --submit-interval-ms 120 --warmup-msgs 16 --max-deadline-s 10 --fec-profile 0 --profile c_r12k_d1000_l30_b120 --repeat @REP@ --ts-out @D@/ts.csv --manifest @D@/manifest.json --fwd-impair '$FWD' --rev-impair '$REV' --out @D@/out.jsonl"
+ARM_uyar_taban_SRV="@BIN_TABAN@ serve --bind @SRV@ --transport kama-product --payload 37 --rx-log @D@/rx.jsonl"
+ARM_uyar_taban_CLI="@BIN_TABAN@ client --server @SRV@ --transport kama-product --msgs 168 --payload 37 --submit-interval-ms 120 --warmup-msgs 16 --max-deadline-s 10 --profile c_r12k_d1000_l30_b120 --repeat @REP@ --ts-out @D@/ts.csv --manifest @D@/manifest.json --fwd-impair '$FWD' --rev-impair '$REV' --out @D@/out.jsonl"
+ARM_uyar_aday_SRV="@BIN_ADAY@ serve --bind @SRV@ --transport kama-product --payload 37 --rx-log @D@/rx.jsonl"
+ARM_uyar_aday_CLI="@BIN_ADAY@ client --server @SRV@ --transport kama-product --msgs 168 --payload 37 --submit-interval-ms 120 --warmup-msgs 16 --max-deadline-s 10 --profile c_r12k_d1000_l30_b120 --repeat @REP@ --ts-out @D@/ts.csv --manifest @D@/manifest.json --fwd-impair '$FWD' --rev-impair '$REV' --out @D@/out.jsonl"
+ARM_rs2_taban_SRV="@BIN_TABAN@ serve --bind @SRV@ --transport kama-product --payload 37 --fec-profile 1 --fec-mode static --fec-r 2 --rx-log @D@/rx.jsonl"
+ARM_rs2_taban_CLI="@BIN_TABAN@ client --server @SRV@ --transport kama-product --msgs 168 --payload 37 --submit-interval-ms 120 --warmup-msgs 16 --max-deadline-s 10 --fec-profile 1 --fec-mode static --fec-r 2 --profile c_r12k_d1000_l30_b120 --repeat @REP@ --ts-out @D@/ts.csv --manifest @D@/manifest.json --fwd-impair '$FWD' --rev-impair '$REV' --out @D@/out.jsonl"
+ARM_rs2_aday_SRV="@BIN_ADAY@ serve --bind @SRV@ --transport kama-product --payload 37 --fec-profile 1 --fec-mode static --fec-r 2 --rx-log @D@/rx.jsonl"
+ARM_rs2_aday_CLI="@BIN_ADAY@ client --server @SRV@ --transport kama-product --msgs 168 --payload 37 --submit-interval-ms 120 --warmup-msgs 16 --max-deadline-s 10 --fec-profile 1 --fec-mode static --fec-r 2 --profile c_r12k_d1000_l30_b120 --repeat @REP@ --ts-out @D@/ts.csv --manifest @D@/manifest.json --fwd-impair '$FWD' --rev-impair '$REV' --out @D@/out.jsonl"
+ARM_rs4_taban_SRV="@BIN_TABAN@ serve --bind @SRV@ --transport kama-product --payload 37 --fec-profile 2 --fec-mode static --fec-r 4 --rx-log @D@/rx.jsonl"
+ARM_rs4_taban_CLI="@BIN_TABAN@ client --server @SRV@ --transport kama-product --msgs 168 --payload 37 --submit-interval-ms 120 --warmup-msgs 16 --max-deadline-s 10 --fec-profile 2 --fec-mode static --fec-r 4 --profile c_r12k_d1000_l30_b120 --repeat @REP@ --ts-out @D@/ts.csv --manifest @D@/manifest.json --fwd-impair '$FWD' --rev-impair '$REV' --out @D@/out.jsonl"
+ARM_rs4_aday_SRV="@BIN_ADAY@ serve --bind @SRV@ --transport kama-product --payload 37 --fec-profile 2 --fec-mode static --fec-r 4 --rx-log @D@/rx.jsonl"
+ARM_rs4_aday_CLI="@BIN_ADAY@ client --server @SRV@ --transport kama-product --msgs 168 --payload 37 --submit-interval-ms 120 --warmup-msgs 16 --max-deadline-s 10 --fec-profile 2 --fec-mode static --fec-r 4 --profile c_r12k_d1000_l30_b120 --repeat @REP@ --ts-out @D@/ts.csv --manifest @D@/manifest.json --fwd-impair '$FWD' --rev-impair '$REV' --out @D@/out.jsonl"
+ARM_tekrar_taban_SRV="@BIN_TABAN@ serve --bind @SRV@ --transport kama-product --payload 37 --fec-profile 0 --rx-log @D@/rx.jsonl"
+ARM_tekrar_taban_CLI="@BIN_TABAN@ client --server @SRV@ --transport kama-product --msgs 336 --payload 37 --submit-interval-ms 60 --warmup-msgs 16 --max-deadline-s 10 --fec-profile 0 --profile c_r12k_d1000_l30_b120 --repeat @REP@ --ts-out @D@/ts.csv --manifest @D@/manifest.json --fwd-impair '$FWD' --rev-impair '$REV' --out @D@/out.jsonl"
+ARM_tekrar_aday_SRV="@BIN_ADAY@ serve --bind @SRV@ --transport kama-product --payload 37 --fec-profile 0 --rx-log @D@/rx.jsonl"
+ARM_tekrar_aday_CLI="@BIN_ADAY@ client --server @SRV@ --transport kama-product --msgs 336 --payload 37 --submit-interval-ms 60 --warmup-msgs 16 --max-deadline-s 10 --fec-profile 0 --profile c_r12k_d1000_l30_b120 --repeat @REP@ --ts-out @D@/ts.csv --manifest @D@/manifest.json --fwd-impair '$FWD' --rev-impair '$REV' --out @D@/out.jsonl"
