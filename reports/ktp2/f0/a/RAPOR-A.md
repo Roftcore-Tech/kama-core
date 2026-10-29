@@ -1,6 +1,8 @@
 # KTP2-F0 · Ajan A — Akış bağımsızlığı (taslak, ölçüm ÖNCESİ)
 
-**Durum:** taslak 1 (2026-10-29). Bu turda ölçüm YOK. §1–§2 kaynak okumasıdır [kod]; §5'teki sayılar
+**Durum:** taslak 2 (2026-10-29). §1–§8 taslak 1'dir (ön-kayıt `c42fcd0b`; §5 DEĞİŞTİRİLMEDİ).
+§9 duman-2 gözlemleridir [ölçüldü, betimsel: hücre × kol başına N = 1]; §5.4 yeni hücrelerin ön-kaydıdır.
+Taslak 1'de ölçüm yoktu. §1–§2 kaynak okumasıdır [kod]; §5'teki sayılar
 ölçülmemiş akıl yürütmedir [çıkarım] ve ön-kayıttır: koşu sonrası sapma bu tabloya göre ayrıştırılır.
 Taban = main `a858f3fc`; aday = 05b `49864510`. Satır numaraları aksi yazılmadıkça iki ağaçta da
 geçerlidir (değişen dosyalarda iki numara verilir: `taban / aday`).
@@ -177,11 +179,13 @@ rate 100kbit`. Kollar `taban aday`. Hücre dosyaları `scripts/ktp2/f0/cells/a/`
 | a_r1k_d300_l30_dosyasiz | birincil | 30 | ≈ 2,1 dk | 2,1 h |
 | a_r1k_d300_l30_dosyali | birincil | 30 | ≈ 3,0 dk (en kötü 4,2) | 3,0 h (4,2) |
 | a_r1k_d300_l30_dosyali_dur | birincil (K-1) | 30 | ≈ 3,0 dk (en kötü 4,2) | 3,0 h (4,2) |
-| a_r12k_d300_l30_tasma_ptt | betimsel (B9 taşması) | 10 | ≈ 3,7 dk (pencere 90 s dolar) | 1,2 h |
+| a_r12k_d300_l30_tasma_ptt | betimsel (§9: gönderen sınırlı) | 5 | 3,2 dk [ölçüldü duman-2] | 0,55 h |
+| a_r12k_d300_l30_tasma_dosya | betimsel (B9: 2 MB + 240 s durma) | 10 | ≈ 7,3 dk | 2,45 h |
+| a_rinf_d300_l30_tasma_dosya | betimsel, STRES, KATALOG dışı (B9: hız sınırsız + 30 s) | 10 | ≈ 3,3 dk | 1,1 h |
 | a_r12k_d300_l30_dosyasiz_dur | betimsel | 10 | ≈ 2,0 dk | 0,7 h |
 | a_r12k_d1000_l30_dosyasiz | isteğe bağlı | 10 | ≈ 2,3 dk | 0,8 h |
 | a_r12k_d1000_l30_dosyali_dur | isteğe bağlı | 10 | ≈ 2,8 dk | 0,9 h |
-| **Toplam** | | | | **≈ 17,9 h (en kötü ≈ 20,3 h)** |
+| **Toplam (taslak 2)** | | | | **≈ 21,8 h** (duman-2 süreleriyle; §9.4) |
 | Duman (10 hücre × 2 kol × 1) | | 1 | ≈ 2,5 dk | ≈ 0,8 h |
 
 Koşu süresi = kurulum (≈ 2 s) + plan (103,5 s son TEXT) ya da dosya tamamlanması + alındı payı +
@@ -297,3 +301,75 @@ bazında (fifo / net / reorder / consumer) ayrıştırılır; u'nun ölçülen d
 - Tüketici durması tüm akışların durmasıdır (dosyaya özgü durma mevcut ürün yolunda yok).
 - Kayıp tohumsuz (KATALOG §2): koşular eşlenemez; birim = koşu.
 - Dosya boyu K-1'in 2 MB'ı değil; etki büyüklüğü "önde kalan tel" ile ölçeklenir (§3.3).
+
+## 9. Duman-2 gözlemleri [ölçüldü, betimsel: N = 1]
+
+Kaynak: `/home/ryuzaki/kama-k4g-work/ktp2-f0/runs/duman-2/out/a_*_duman` (20 koşu, rc = 0); ikililer
+taban `bin/taban-2cd9f68d/f0_flows`, aday `bin/aday-bf18dc35/f0_flows`; analiz `f0a_analyze.py`
+(`6d69092e`). N = 1: hüküm yok; yalnız düzenek doğrulaması ve tam setin tasarımı için.
+
+### 9.1 Düzenek denetimi
+
+| Denetim | Sonuç |
+|---|---|
+| Zarf soketleri el sıkışmayı taşıyor | 20/20: alice `inits = 1`, `received = 1`, `send_errors = 0`, `malformed = 0`; bağlantı her koşuda kuruldu |
+| Öğe → birim eşlemesi (ısınma dahil) | 20/20 koşuda her sınıfın her öğesi bir birime eşlendi |
+| `net` negatif | ilk araçta vardı (dosyasız −0,8 s'ye dek, `tasma_ptt` −8 s): `out` sondanın anında, `txq` görüntünün anında okunuyordu. Düzeltme `6d69092e`; sonra koşu başına 0–7 kırpma |
+| bob çıkışı | 20/20 `bob_exit = true` |
+| Birim izi düşüşü / dinleyici düşüşü | 0 / 0 (20/20) |
+| Teslim kanalı düşüşü (`delivery_channel_drops`) | 0 (20/20; `tasma_ptt` dahil, §9.3) |
+| NotReady düşüşü | 0 (20/20) |
+| Karşı örnek | HİÇ ateşlenmedi (kusur, §9.2-c; düzeltme `2d64a013`) |
+
+### 9.2 Yeni bulgular
+
+**a) A-7 Dosya gönderende 60 s'de "başarısız" görünüyor.**
+- Ölçüm: 10/10 dosyalı koşuda alice, dosya gönderiminden 60,0 s sonra `SendFailed(ReceiptTimeout)` aldı. bob dosyayı 8/10 koşuda bayt-özdeş aldı (gönderimden 77,6–268,5 s sonra).
+- Dosya/işlev: `kama-app/src/file_transfer.rs:267` (`FILE_RECEIPT_TTL = 60 s`), `:111` (süre `FILE_END`'in Transport kabulünden başlar), `pump` `:866-909`.
+- Kök neden: `pump` dosyanın tamamını ilk turda Transport'a verdiği için `FILE_END` gönderimden birkaç ms sonra kabul ediliyor. 60 s'yi aşan her aktarım gönderende başarısız sayılıyor, teslim edilmiş olsa bile. Duman-2 hızlarıyla sınır yaklaşık r1k'da ≈ 40 KB, r12k'da ≈ 400 KB [çıkarım].
+- En dar düzeltme: alındı süresini `FILE_END`'in Transport teyidinden ya da son parça teyidinden başlatmak; ya da son ilerlemeden itibaren saymak.
+
+**b) A-8 Sıra beklemesi dosyayı alıcıda düşürüyor.**
+- Ölçüm: 2/10 koşuda bob'da `IdleTimeout` oluştu; ikisi de taban'da (`r12k_d300 dosyali_dur`, `r12k_d1000 dosyali_dur`).
+- Dosya/işlev: `file_transfer.rs:262` (`FILE_IDLE_TTL`) + B8/B6.
+- Kök neden: uygulamaya ≥ 60 s yeni parça çıkmıyor; parçalar ya `Reorder`'da ya da gönderende (A-10).
+- En dar düzeltme: A-2/A-3; ya da süreyi Transport ilerlemesine bağlamak.
+
+**c) Düzenek kusuru (düzeltildi, `2d64a013`).** Karşı örnek tetiği ve tamamlanma, alice'in kendi dosya sonucuna bakıyordu. A-7 nedeniyle bu sonuç 65. s'de "bitti" oluyordu. Artık bob'un durumuna bakılıyor.
+
+**d) A-9 Uygulamanın düşük hızla gönderdiği trafikte pacer hattın küçük bir kesrinde kalıyor (Ajan B'nin alanı; akış bağımsızlığına etkisi burada).**
+- Ölçüm: dosyasız r12k'da alice pacer p50'si 241–825 B/s (hat 12 500 B/s).
+- PTT basışı (≈ 640 B/s) bu hızda gönderen FIFO'sunda kuyruklanıyor. Dosyasız TEXT p95: taban 9,7 s, aday 19,5 s (aday p95 fifo payı 12,3 s). §5.1'deki "≈ 2 s [1–4]" tahmininden sapma burada.
+- `tasma_ptt`'de 6,4 kB/s PTT talebine karşı pacer p50 76 / 334 B/s (taban / aday), FIFO ≈ 2900 birim; bob'a 3000 demetten 61 / 385'i ulaştı.
+
+**e) A-10 Taban r12k_d1000'de hız çöküşü.**
+- Ölçüm: pacer 4,2 kB/s'ten 0,16 kB/s'e indi (400 s); `pending_lost` 30–37'de takıldı; `txq` 521'den 301'e indi.
+- bob 400 s'de yalnız 3 ısınma TEXT'ini teslim etti; 335 birim hiç alınmadı, `Reorder` 253 birim tuttu.
+- Aday aynı hücrede tamamlandı (dosya 263 s; pacer p50 2,6 kB/s).
+
+### 9.3 Orkestratör sorusu: tüketici durunca teslim kanalı doluyor mu?
+
+- **[ölçüldü, N = 1]** Birincil `*_dur` hücrelerinde (r12k / r1k, 30 s durma) teslim kanalı düşüşü iki kolda 0; TEXT / sinyal / PTT kaybı 0. Durma bu hücrelerde yalnız gecikme ekliyor.
+- **[çıkarım]** Koşul: durma süresi × alım hızı > 1024. Ölçülen alım hızları dosyalı r12k'da ≈ 6–7 birim/s (30 s'de ≈ 200), r1k'da ≈ 0,7 birim/s (30 s'de ≈ 20).
+- **[ölçüldü]** `tasma_ptt` taşmayı ölçemedi: yük gönderen FIFO'sunda kaldı (A-9).
+- Taşmayı doğrudan ölçmek için iki yeni hücre eklendi (§5.4):
+  - `a_r12k_d300_l30_tasma_dosya`: 2 MB dosya + 240 s durma.
+  - `a_rinf_d300_l30_tasma_dosya`: hız sınırsız + 30 s durma; STRES, KATALOG dışı.
+- **[kod]** Uygulama düzeyi: aynı oturumda yeniden gönderim yok. TEXT outbox'ta alındısız kalır (`messaging.rs` "Retry yok"); dosya `FILE_IDLE_TTL`'de biter (A-8); PTT kaybı sessiz; sinyal yalnız oturum değişiminde yeniden sunulur. Bu, A-4 taşması olursa kaybın kalıcı olduğu anlamına gelir.
+
+### 9.4 Duman-2 süreleri ve bütçe
+
+Duman-2'de ölçülen koşu süreleri:
+- dosyasız: 108–121 s;
+- dosyalı r12k: 104–151 s;
+- dosyalı r1k: 124–170 s;
+- r12k_d1000 dosyalı_dur: 291 s (aday) / 404 s (taban);
+- `tasma_ptt`: 194 s.
+
+Alındı payı 30 s olunca dosyalı koşulara ≤ 20 s eklenir. Toplam ≈ 21,8 koşu-saati (§4 tablosu).
+
+### 5.4 Yeni hücrelerin ön-kaydı [çıkarım] (duman-2'den SONRA, ölçülmeden önce)
+
+- **`a_r12k_d300_l30_tasma_dosya`** (2 MB, durma 10–250 s): durmada bob'a ≈ 240 s × 6–7 birim/s ≈ 1400–1700 birim gelir. Bundan **≈ 400–700 birim ACK'li düşer** (iki kolda). İlk düşen birimden sonra bütün birimler `Reorder`'da kalır (tutulan < 4096 → atlama yok). Dosya bob'da `IdleTimeout` ile biter; durma bitiminden sonraki TEXT / sinyal / PTT teslim edilmez. Taban'da A-10 türü hız düşüşü olursa alım hızı düşer ve taşma azalır ya da hiç olmaz.
+- **`a_rinf_d300_l30_tasma_dosya`** (8 MB, 20–50 s): bu tahmin düşük güvenli; hız sınırsız hatta pacer'ın varacağı hız bilinmiyor. Dosyalı r12k'daki 9–11 kB/s'nin üstünde kalırsa ≥ 37 kB/s'de taşma olur. Altında kalırsa `delivery_channel_drops = 0` olur ve hücre "ölçülemedi: alım hızı < 34 birim/s" sayılır.
+- **Karşı örnek** (dosyalı hücreler, `2d64a013` sonrası): taban'da yeni veri kuyruğu dosyanın ilk geçişinden sonra boşalır. Taban r12k'da tetik ≈ 70–90 s'de, karşı örnek TEXT toplamı ≈ 5–30 s, reorder baskın. Aday'da tetik dosya sonuna yakın ya da hiç (§5.1 ile aynı).
