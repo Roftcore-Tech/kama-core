@@ -245,6 +245,20 @@ def read_float(p):
         return None
 
 
+def snmp_tcp_delta(rep):
+    """Ajan D rival_wrap.sh: istemci netns'inin /proc/net/snmp önce/sonra → Tcp OutSegs/RetransSegs farkı."""
+    def tcp_row(p):
+        lines = [ln.split() for ln in read_text(p).splitlines() if ln.startswith("Tcp:")]
+        if len(lines) < 2:
+            return None
+        return dict(zip(lines[0][1:], (int(x) for x in lines[1][1:])))
+    a, b = tcp_row(rep / "snmp_pre.txt"), tcp_row(rep / "snmp_post.txt")
+    if not a or not b:
+        return {}
+    return {"snmp_tcp_outsegs": b.get("OutSegs", 0) - a.get("OutSegs", 0),
+            "snmp_tcp_retranssegs": b.get("RetransSegs", 0) - a.get("RetransSegs", 0)}
+
+
 def read_rxlog(rep):
     """bench `serve --rx-log` (şema ktp2-c-rx-v1): → ({birim: ilk teslim unix s}, dropped) ya da None."""
     p = rep / "rx_log.jsonl"
@@ -979,6 +993,7 @@ def analyze_run(rep, g, arm):
         cap = kama_capture(rep, g, meta, ev)
     elif tr.startswith("tcp"):
         cap = tcp_capture(rep, g, ev)
+        cap.update(snmp_tcp_delta(rep))  # çekirdek sayacıyla çapraz denetim (yakalama: tcp_retx_segs)
     elif tr.startswith("quinn"):
         cap = quic_capture(rep, g, ev)
     else:
@@ -993,14 +1008,14 @@ def analyze_run(rep, g, arm):
         offer_u = {e["msg_id"]: t0u + (e["sent_ns"] - off) / 1e9 for e in ev}
     rx_by = {}
     if rx is not None:
-        r["rx_log"] = "var"
+        r["rx_log"] = "var" if rx else "boş (teslim yok)"
         r["rx_dropped"] = rx_drop
         if offer_u:
             rx_by = {i: rx[i] - t for i, t in offer_u.items() if i in rx}
             vals = list(rx_by.values())
             r["rx_ow_p50_s"], r["rx_ow_p95_s"], r["rx_ow_p99_s"] = pct(vals, .5), pct(vals, .95), pct(vals, .99)
             r["rx_deliv_D"] = sum(1 for v in vals if v <= D) / n
-        else:
+        elif rx:
             r["rx_log"] = "hizalanamadı"
     # ── gönderen kilidi göstergeleri (Ajan C B-C9 tanımlarıyla aynı; yalnız Kama kolları) ─────
     I_s = g["ival_ms"] / 1000.0

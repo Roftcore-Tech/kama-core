@@ -594,6 +594,27 @@ Okuma:
   - Tek yön p50 0,44–0,47 s; RTT_fifo tek yön alt sınırı 0,434 s.
 - **Stres l80 (r12k):** taban teslim 0,68, aday 0,76; quinn 0 (el sıkışma 30 s'de bitmedi); tcp 0,02.
 
+### 9.0b Duman-2 [ölçüldü, N = 1, betimsel; araç denetimi]
+
+Kaynak: `/home/ryuzaki/kama-k4g-work/ktp2-f0/runs/duman-2/out`; analiz `reports/ktp2/f0/b/duman-2/`.
+- İkililer: taban `3311d8e0…` (`2cd9f68d`), aday `c893e840…` (`bf18dc35`). D birleşmesinden sonraki bench.
+- 4 hücre, 12/12 koşu rc = 0; `-j 12`, A/C/D ile eşzamanlı.
+
+**Denetim (hepsi tamam):**
+- `kirli_baslangic` = 0 ve koşu başı netem artığı 0 B, 12/12 koşuda.
+- `rx_log.jsonl`: 12/12, `dropped` = 0. Kama'da alıcı damgasının tek yön gecikmesi, yakalamanın B-varışıyla aynı (p50 / p95 eşit). tcp'de rx_log, yakalamadan türetilen sıralı teslimle aynı. quinn'de `t0_unix_ns` hizalamasıyla ölçüldü (r12k/l30 p50 0,47 s).
+- `ts.csv`: Kama 6/6; `jeton_ac_payi` hesaplandı.
+- `snmp_*` (D): rakip 6/6. tcp çekirdek sayacıyla çapraz denetim:
+  - OutSegs + RetransSegs, yakalamadaki A çıkışıyla ±3 tutuyor (r12k: 77 + 33 = 110 / 107).
+  - Yakalamanın `tcp_retx_segs`'i yalnız veri taşıyan yeniden gönderimleri sayar. SNMP RetransSegs SYN/FIN'i de sayar: r25'te 3 / 9, r1k'de 7 / 10. Fark SYN yeniden gönderimidir (ilk RTO 1 s < RTT).
+- `KP-CLIENT-OFFER`: `offer_qfull` 0 ve `unaccepted` 0 bütün Kama koşularında. `QUINN-STATS` ve `TCP-TACK-CLIENT` ayrıştırıldı.
+- quinn r25: `setup_s` 60,0, yani el sıkışma zaman aşımı; rx_log boş (B-K12, T-8 yönünde).
+
+**Duman-1 bulgularının tekrarı (temiz kuyrukla, N = 1):**
+- B-K13: r25'te iki kolda `param_sends` 25. Tek yön p50 taban 93,5 s, aday 66,8 s, tcp 17,9 s. D içinde teslim Kama 1/6, tcp 2/6.
+- B-K14: r12k/d300/l30/65 B'de `kilit_gonderen` = 1 iki kolda (`gonderen_birikim_ms` 2091 / 3739; `btlbw_sunulan` 1,05 / 1,02; `jeton_ac_payi` 0,87 / 0,82). r1k/1 KB'de adayda da (1392 ms).
+- r1k/d1000/l20/1 KB tek yön p50: taban 6,75 s, aday 2,59 s, quinn 2,35 s, tcp 7,68 s.
+
 ### 9.1 Teslim ve gecikme — (boş)
 ### 9.2 Hat kapasitesinin faydalı veriye giden payı (ileri / dönüş, sınıf sütunları) — (boş)
 ### 9.3 srtt ↔ gerçek RTT (taban / aday) — (boş)
