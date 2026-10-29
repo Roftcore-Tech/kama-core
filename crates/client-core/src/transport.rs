@@ -411,6 +411,66 @@ impl Reorder {
     }
 }
 
+// ── [KTP2-F0 · A] YALNIZ test-util: birim izi (salt gözlem) ─────────────────────────────────
+
+/// [KTP2-F0 · A] Birim izi kaydının türü ([`ClientTransport::take_unit_trace_for_test`]).
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnitTraceKind {
+    /// Gönderen: `send` birimi oturum ucuna kabul ettirdi. `unit` = oturumdaki birim sırası —
+    /// fragmenter kapalıyken (S1 birimi = veri birimi) veri yolunun `unit_id`'si.
+    Sent,
+    /// Alıcı: birim veri alıcısının teslim kanalından alındı ve oturumun teslim kapısından geçti
+    /// (motorun sırasız ilk teslimi; sıralamadan ÖNCE). `unit` = `unit_id`.
+    Drained,
+    /// Alıcı: oturumun sıralı teslim sınırı (`Reorder::next`) `unit` değerine ilerledi; ondan küçük
+    /// birimler teslim kuyruğuna verildi (ya da tutulan birim tavanı aşılınca atlandı).
+    Released,
+}
+
+/// [KTP2-F0 · A] Bir birim izi kaydı: tür, oturum, birim, birimin bayt boyu (`Released`'te 0) ve
+/// kaydın anı. Yük, zarf ya da kimlik baytı TAŞIMAZ.
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnitTraceRecord {
+    pub kind: UnitTraceKind,
+    pub session: SessionHandle,
+    pub unit: u64,
+    pub len: u32,
+    pub at: Instant,
+}
+
+/// [KTP2-F0 · A] Okunmamış birim izi kaydı tavanı (SR-AUDIT-001). Doluyken YENİ kayıt düşer ve
+/// sayılır; okuma ([`ClientTransport::take_unit_trace_for_test`]) izi boşaltır.
+#[cfg(any(test, feature = "test-util"))]
+pub const UNIT_TRACE_CAP: usize = 65_536;
+
+/// [KTP2-F0 · A] Birim izi (bkz. [`UnitTraceRecord`]); yalnız açıkken var olur.
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Default)]
+struct UnitTrace {
+    records: VecDeque<UnitTraceRecord>,
+    /// Son okumadan beri tavan dolu olduğu için düşen kayıt.
+    dropped: u64,
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl UnitTrace {
+    fn push(&mut self, kind: UnitTraceKind, session: SessionHandle, unit: u64, len: usize) {
+        if self.records.len() >= UNIT_TRACE_CAP {
+            self.dropped = self.dropped.saturating_add(1);
+            return;
+        }
+        self.records.push_back(UnitTraceRecord {
+            kind,
+            session,
+            unit,
+            len: u32::try_from(len).unwrap_or(u32::MAX),
+            at: Instant::now(),
+        });
+    }
+}
+
 // ── Adaptör ──────────────────────────────────────────────────────────────────────────────────
 
 /// S1 [`KamaTransport`]'un gerçek implementasyonu (bkz. modül belgesi).
@@ -455,6 +515,10 @@ pub struct ClientTransport<C: PacketProtection + SessionControl> {
     /// Sıradaki `send`'lerden kaçının ilk emisyonu kaybettirilecek (yalnız test).
     #[cfg(any(test, feature = "test-util"))]
     drops: usize,
+    /// [KTP2-F0 · A] Birim izi (yalnız test-util; `None` = kapalı, varsayılan). Salt gözlem: hiçbir
+    /// karar okumaz.
+    #[cfg(any(test, feature = "test-util"))]
+    unit_trace: Option<UnitTrace>,
     server: ServerHandle,
     /// SON alan: alanlar bildirim sırasıyla düşer — uç tutamaçları çalışma-zamanından önce.
     rt: tokio::runtime::Runtime,
@@ -553,6 +617,8 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             retired_diag: ClientLiveDiag::default(),
             #[cfg(any(test, feature = "test-util"))]
             drops: 0,
+            #[cfg(any(test, feature = "test-util"))]
+            unit_trace: None,
             server,
             rt,
         })
@@ -1071,13 +1137,25 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                 // Kapanmış / bilinmeyen oturumun teslimi düşer.
                 _ => continue,
             }
+            // [KTP2-F0 · A] Salt gözlem (yalnız test-util, iz açıkken): sırasız ilk teslim.
+            #[cfg(any(test, feature = "test-util"))]
+            if let Some(trace) = self.unit_trace.as_mut() {
+                trace.push(UnitTraceKind::Drained, h, d.unit_id, d.payload.len());
+            }
             // [K4G-01b] Sıra OTURUMUN (`h`), kaynak adresin (`d.peer`) değil: aynı adresten gelen
             // yeni oturum eski oturumun `next`'ine takılmaz; aynı oturumun başka bir yuvadan
             // (adres) gelen kopyası burada tekilleşir.
-            self.reorder
-                .entry(h)
-                .or_default()
-                .push(d.unit_id, h, d.payload, cap, &mut self.inbox);
+            let reorder = self.reorder.entry(h).or_default();
+            #[cfg(any(test, feature = "test-util"))]
+            let next_before = reorder.next;
+            reorder.push(d.unit_id, h, d.payload, cap, &mut self.inbox);
+            // [KTP2-F0 · A] Salt gözlem: sıralı teslim sınırı ilerlediyse yeni değeri.
+            #[cfg(any(test, feature = "test-util"))]
+            if reorder.next != next_before {
+                if let Some(trace) = self.unit_trace.as_mut() {
+                    trace.push(UnitTraceKind::Released, h, reorder.next, 0);
+                }
+            }
         }
     }
 
@@ -1101,6 +1179,29 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     #[cfg(any(test, feature = "test-util"))]
     pub fn set_live_diag_for_test(&mut self, on: bool) {
         self.runtime_cfg.live_diag = on;
+    }
+
+    /// [KTP2-F0 · A] Birim izini açar (`true`: boş iz) ya da kapatıp atar (`false`). Kapalıyken
+    /// (varsayılan) hiçbir kayıt tutulmaz. Açıkken `send` kabulü (`Sent`), teslim kanalından
+    /// alınan birim (`Drained`) ve sıralı teslim sınırının ilerlemesi (`Released`) kaydedilir.
+    /// SALT GÖZLEM: hiçbir karar izi okumaz; teslim, ACK ve gönderim yolları değişmez. YALNIZ
+    /// ölçüm düzeneği (`kama-node` `test-util`; KTP2-F0 akış bağımsızlığı).
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_unit_trace_for_test(&mut self, on: bool) {
+        self.unit_trace = on.then(UnitTrace::default);
+    }
+
+    /// [KTP2-F0 · A] Okunmamış birim izi kayıtları (eskiden yeniye) ve son okumadan beri tavan
+    /// ([`UNIT_TRACE_CAP`]) dolu olduğu için düşen kayıt sayısı; iz boşalır. İz kapalıyken boş.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn take_unit_trace_for_test(&mut self) -> (Vec<UnitTraceRecord>, u64) {
+        match self.unit_trace.as_mut() {
+            Some(trace) => (
+                trace.records.drain(..).collect(),
+                std::mem::take(&mut trace.dropped),
+            ),
+            None => (Vec::new(), 0),
+        }
     }
 
     /// Sonraki `n` `send`'in İLK emisyonu kaybettirilir (tel baytı bozulur; S1 kancası). Sıra
@@ -1280,6 +1381,9 @@ impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> 
             DeliveryPolicy::Reliable | DeliveryPolicy::BestEffort => None,
         };
         let endpoint = s.endpoint.as_ref().ok_or(TransportError::NotConnected)?;
+        // [KTP2-F0 · A] (yalnız test-util) Birim izi için boy, yük uca taşınmadan önce.
+        #[cfg(any(test, feature = "test-util"))]
+        let unit_len = unit.bytes.len();
         // (yalnız test) Kayıp, birim uca verilmeden ÖNCE kimliğiyle kaydedilir.
         #[cfg(any(test, feature = "test-util"))]
         let marked = self.drops > 0
@@ -1306,6 +1410,11 @@ impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> 
             }
         }
         if result.is_ok() {
+            // [KTP2-F0 · A] Salt gözlem (yalnız test-util, iz açıkken): kabul edilen birimin sırası.
+            #[cfg(any(test, feature = "test-util"))]
+            if let Some(trace) = self.unit_trace.as_mut() {
+                trace.push(UnitTraceKind::Sent, session, s.sent, unit_len);
+            }
             s.sent = s.sent.saturating_add(1);
         }
         result
