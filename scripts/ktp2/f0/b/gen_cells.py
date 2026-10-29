@@ -28,6 +28,15 @@ DUMAN = [
     "b_r12k_d300_l80_p65",
 ]
 
+# Duman-2 (F0_REPS=1, YENİ bench: rx_log, ts.csv, rakip_arms transport-ack): bayrak ve dosya
+# denetimi; kısa koşular önce.
+DUMAN2 = [
+    "b_r12k_d300_l30_p65",
+    "b_r1k_d1000_l20_p1000",
+    "b_r25_d300_l20_p65",
+    "b_r25_d300_l20_p65_quinn",
+]
+
 TEMPLATE = """# [KTP2-F0 / Ajan B] {cell} — ÜRETİLDİ: scripts/ktp2/f0/b/gen_cells.py (fizik.py). ELLE DÜZENLEME.
 # öncelik={prio} tür={kind} N={reps} · ρ_ileri={rho:.3f} (tek iletim Kama veri paketi / hat) ·
 # veri paketi {s_data} B tel · RTT_fiz {rtt:.3f} s (0 aralıklı ACK) / {rtt16:.3f} s (16 aralıklı) ·
@@ -46,7 +55,7 @@ DEADLINE_S={dl}
 FWD="{netem}"
 REV="$FWD"
 REPS="${{F0_REPS:-{reps}}}"
-ARMS="taban aday quinn tcp"
+ARMS="{arms}"
 BUDGET_S={budget}
 CAPTURE=0
 SETTLE_S=1.5
@@ -69,7 +78,7 @@ def main():
             rttf=c["rtt_fifo_s"], ow=c["oneway_lb_s"], p95=c["ideal_arq_oneway_p95_s"], rate_id=c["rate_id"],
             delay_id=c["delay_id"], loss=c["loss"], rate=c["rate_Bps"], delay=c["delay_ms"],
             jit=c["jitter_ms"], msgs=c["msgs"], pay=c["payload"], ival=c["ival_ms"],
-            dl=c["deadline_s"], netem=c["netem"], budget=fizik.budget_s(c))
+            dl=c["deadline_s"], netem=c["netem"], budget=fizik.budget_s(c), arms=" ".join(c["arms"]))
         (CELLS / f"{c['cell']}.cell").write_text(txt)
         by_prio.setdefault(c["prio"], []).append(c["cell"])
         names.add(c["cell"])
@@ -79,6 +88,10 @@ def main():
     if missing:
         raise SystemExit(f"duman hücresi ızgarada yok: {missing}")
     (CELLS / "DUMAN.txt").write_text("".join(f"scripts/ktp2/f0/cells/b/{n}.cell\n" for n in DUMAN))
+    missing = [n for n in DUMAN2 if n not in names]
+    if missing:
+        raise SystemExit(f"duman-2 hücresi ızgarada yok: {missing}")
+    (CELLS / "DUMAN-2.txt").write_text("".join(f"scripts/ktp2/f0/cells/b/{n}.cell\n" for n in DUMAN2))
     print(f"{len(names)} hücre yazıldı → {CELLS}")
 
 

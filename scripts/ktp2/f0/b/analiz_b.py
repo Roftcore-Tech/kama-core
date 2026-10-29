@@ -107,7 +107,7 @@ def parse_client_err(txt):
     r = {}
     sched_on = "diag-sched-telemetry=true" in txt
     for line in txt.splitlines():
-        if line.startswith("KP-CLIENT"):
+        if line.startswith("KP-CLIENT "):
             m = re.search(r"tx=(\d+)B\(data=(\d+) retx=(\d+) dup=(\d+) fec=(\d+) ctrl=(\d+)\)", line)
             if m:
                 (r["tx_total_B"], r["tx_data_B"], r["tx_retx_B"], r["tx_dup_B"], r["tx_fec_B"],
@@ -120,6 +120,8 @@ def parse_client_err(txt):
                             ("seal_fail", "seal_fail"), ("param_confirmed", "param_confirmed")):
                 r[name] = num(kv(line, k))
             r["state_end"] = kv(line, "state")
+            if "tx_ctrl_B" in r:
+                r["param_sends"] = r["tx_ctrl_B"] / 51  # PARAM_SET 35 + 16 B (wire.rs LEN_PARAM)
         elif line.startswith("KP-ACTIVATED"):
             for k in ("rtt_samples", "data_denied", "retx_denied", "spurious", "gate_opened"):
                 r[k] = num(kv(line, k))
@@ -136,9 +138,19 @@ def parse_client_err(txt):
                 r[k] = num(kv(line, k))
             for k in ("btlbw", "srtt", "rtprop", "qdelay", "pace", "tokens", "inflight"):
                 r["est_" + k] = num(kv(line, k))
-        elif line.startswith("TCP-CLIENT"):
+        elif line.startswith("KP-CLIENT-OFFER"):
+            # [İSTEK-D4] gönderen tarafı: datagram sayıları ve sunum reddi (QueueFull yeniden denemesi)
+            for k in ("tx_dgrams", "rx_dgrams", "unaccepted", "offer_qfull", "offer_qfull_wait_ms"):
+                r[k] = num(kv(line, k))
+        elif line.startswith("TCP-CLIENT") or line.startswith("TCP-TACK-CLIENT"):
             r["tcp_cli_delivered"] = num(kv(line, "delivered"))
             r["tcp_send_errors"] = num(kv(line, "send_errors"))
+            if "connect FAILED" in line:
+                r["tcp_connect_failed"] = 1
+        elif line.startswith("QUINN-STATS"):
+            for k in ("setup_ms", "rtt_ms", "min_rtt_ms", "cwnd", "congestion_events", "lost_packets_t0",
+                      "lost_bytes_t0"):
+                r["q_" + k] = num(kv(line, k))
     if "KP-MANIFEST" in txt and not sched_on:
         # zamanlayıcı ret sayaçları yalnız diag-sched-telemetry derlemesinde dolar (sender.rs:4611-4632);
         # varsayılan derlemede 0 yazılır — "ret yok" diye okunmasın.
@@ -189,6 +201,10 @@ def parse_realized(rep):
         a, b = snaps.get("pre", {}).get(dev), snaps.get("post", {}).get(dev)
         if a is None or b is None:
             continue
+        # [duman-B] Koşu başında netem kuyruğunda kalan bayt: önceki koşunun artığı (25 B/s'de
+        # 15 KB = 10 dk). > 0 ise koşu "kirli başlangıç"tır (RAPOR-B §9.0, İSTEK-O2).
+        out[f"q_{name}_backlog_pre"] = a.get("backlog", 0)
+        out[f"q_{name}_qlen_pre"] = a.get("qlen", 0)
         out[f"q_{name}_bytes"] = b.get("bytes", 0) - a.get("bytes", 0)
         out[f"q_{name}_pkts"] = b.get("packets", 0) - a.get("packets", 0)
         out[f"q_{name}_drops"] = b.get("drops", 0) - a.get("drops", 0)
@@ -227,6 +243,69 @@ def read_float(p):
         return float(read_text(p).strip())
     except ValueError:
         return None
+
+
+def read_rxlog(rep):
+    """bench `serve --rx-log` (şema ktp2-c-rx-v1): → ({birim: ilk teslim unix s}, dropped) ya da None."""
+    p = rep / "rx_log.jsonl"
+    if not p.exists():
+        return None, None
+    first, dropped = {}, None
+    for line in open(p, errors="replace"):
+        try:
+            j = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if "rx_log_schema" in j:
+            dropped = j.get("dropped")
+            continue
+        u, t = j.get("u"), j.get("t")
+        if u is None or t is None:
+            continue
+        if u not in first or t / 1e9 < first[u]:
+            first[u] = t / 1e9
+    return first, dropped
+
+
+def window_growth(by_msg, I_s, nwin=12):
+    """Ajan C'nin `birikim_ms` tanımı (analyze_c.py): mesaj sırasıyla nwin pencere, pencere-minimum
+    gecikme; son − ilk (ms) ve eğim (ms/s). Kayıp mesaj minimumu etkilemez."""
+    n = (max(by_msg) + 1) if by_msg else 0
+    if n < 2:
+        return None, None
+    wlen = max(1, n // nwin)
+    wmins = []
+    for k in range(0, n - wlen + 1, wlen):
+        v = [by_msg[i] for i in range(k, k + wlen) if i in by_msg]
+        wmins.append(min(v) if v else None)
+    fin = [(i, v) for i, v in enumerate(wmins) if v is not None]
+    if len(fin) < 2:
+        return None, None
+    b = (fin[-1][1] - fin[0][1]) * 1000.0
+    span = (fin[-1][0] - fin[0][0]) * wlen * I_s
+    return b, (b / span if span else None)
+
+
+def parse_ts_tokens(rep, d_udp):
+    """Ajan C'nin `jeton_ac_payi` tanımı: ts.csv'nin son 2/3'ünde pacer jetonu < tek DATA (UDP)."""
+    txt = read_text(rep / "ts.csv")
+    if not txt:
+        return None
+    lines = txt.splitlines()
+    try:
+        itk = lines[0].split(",").index("pacer_tokens")
+    except ValueError:
+        return None
+    toks = []
+    for line in lines[1:]:
+        c = line.split(",")
+        if len(c) > itk:
+            try:
+                toks.append(int(c[itk]))
+            except ValueError:
+                pass
+    tail = toks[len(toks) // 3:]
+    return (sum(1 for v in tail if v < d_udp) / len(tail)) if tail else None
 
 
 # ════════════════════════════════════════════════════════════════════════════════════════════
@@ -469,8 +548,9 @@ def kama_capture(rep, g, meta, ev):
     conf = {e["msg_id"]: t0u + (e["delivered_ns"] - off) / 1e9 for e in ev
             if e.get("delivered_ns") is not None}
     t_lo = min(offer.values()) if offer else a_out[0]["t"]
-    t_hi = max([p["t"] for p in b_in] + [p["t"] for p in a_in] + [t_lo])
-    win = max(t_hi - t_lo, 1e-9)
+    # Pencere: ilk sunum → herhangi bir düzlemdeki son paket (varış yoksa deneme düzlemi).
+    t_hi = max([p["t"] for p in b_in + a_in + a_out + b_out] + [t_lo])
+    win = max(t_hi - t_lo, 1.0)
     r["win_s"] = win
     r["wf_cap_B"] = R * win
     r["wf_util"] = r.get("wf_total", 0) / (R * win)
@@ -555,9 +635,12 @@ def kama_capture(rep, g, meta, ev):
     # ── mesaj zaman ayrıştırması ───────────────────────────────────────────────────────────
     s_data = g["s_data_l2"]
     ser = s_data / R
+    # Geç kalma payı: jitter'ın kendisi geç kalma sayılmasın → ideal başlangıç tek yön p95'le.
+    d_late = max(d_nom, g.get("owd_fwd_fifo_p95_s") or d_nom)
     ideal_end = -1e18
     ow, sw, rw, so, qx, exc, phys_lb = [], [], [], [], [], [], []
     late_iv = []
+    ow_by, sw_by = {}, {}
     for i in sorted(offer):
         t_off = offer[i]
         ideal_start = max(t_off, ideal_end)
@@ -574,13 +657,15 @@ def kama_capture(rep, g, meta, ev):
         lb = (ideal_end - t_off) + d_nom + n_lost_before * rtt_phys
         ow.append(t_arr - t_off)
         sw.append(lst[0]["t"] - t_off)
+        ow_by[i] = t_arr - t_off
+        sw_by[i] = lst[0]["t"] - t_off
         rw.append(t_dtx - lst[0]["t"])
         so.append(t_arr - t_dtx)
         qx.append((t_arr - t_dtx) - ser - d_nom)
         phys_lb.append(lb)
         exc.append((t_arr - t_off) - lb)
-        a = t_off + lb - ser          # ideal serileştirme başlangıcı (gecikme hattından sonra)
-        b = t_arr - ser               # gerçek serileştirme başlangıcı
+        a = t_off + lb - d_nom + d_late - ser  # ideal serileştirme başlangıcı + jitter payı
+        b = t_arr - ser                        # gerçek serileştirme başlangıcı
         if b > a:
             late_iv.append((a, b))
     r["ow_p50_s"], r["ow_p95_s"], r["ow_p99_s"] = pct(ow, .5), pct(ow, .95), pct(ow, .99)
@@ -610,6 +695,7 @@ def kama_capture(rep, g, meta, ev):
     late = merge_iv(late_iv)
     late_tot = sum(b - a for a, b in late)
     r["late_s"] = late_tot
+    r["late_msgs"] = len(late_iv)
     if late_tot > 0:
         busy_in_late = sum(overlap_total(all_busy, a, b) for a, b in late)
         r["late_idle_frac"] = 1 - busy_in_late / late_tot
@@ -626,6 +712,8 @@ def kama_capture(rep, g, meta, ev):
             conf_wire.append(tc - offer[i])
     r["conf_wire_p95_s"] = pct(conf_wire, .95)
     r["jitter_sigma_s"] = jit
+    r["_ow_by_msg"], r["_sw_by_msg"] = ow_by, sw_by
+    r["_offer_unix"] = offer
     return r
 
 
@@ -742,13 +830,16 @@ def tcp_capture(rep, g, ev):
         offset = first_data["t"] - ev[0]["sent_ns"] / 1e9
         ow = [inorder_t[e["msg_id"]] - (offset + e["sent_ns"] / 1e9) for e in ev
               if e["msg_id"] in inorder_t]
+        r["_ow_by_msg"] = {e["msg_id"]: inorder_t[e["msg_id"]] - (offset + e["sent_ns"] / 1e9)
+                           for e in ev if e["msg_id"] in inorder_t}
+        r["_offer_unix"] = {e["msg_id"]: offset + e["sent_ns"] / 1e9 for e in ev}
         r["ow_p50_s"], r["ow_p95_s"], r["ow_p99_s"] = pct(ow, .5), pct(ow, .95), pct(ow, .99)
         r["ow_n"] = len(ow)
         t_lo = offset
     else:
         t_lo = a_out[0]["t"]
-    t_hi = max([s["t"] for s in b_in + a_in] + [t_lo])
-    win = max(t_hi - t_lo, 1e-9)
+    t_hi = max([s["t"] for s in b_in + a_in + a_out + b_out] + [t_lo])
+    win = max(t_hi - t_lo, 1.0)
     r["win_s"] = win
     r["wf_util"] = r.get("wf_total", 0) / (R * win)
     r["wr_util"] = r.get("wr_total", 0) / (R * win)
@@ -800,7 +891,7 @@ def quic_capture(rep, g, ev):
     r["wf_pay_useful"] = delivered * g["payload"]
     allt = r.pop("wf_t") + r.pop("wr_t") + r.pop("wfa_t") + r.pop("wra_t")
     win = (max(allt) - min(allt)) if allt else 0
-    win = max(win, 1e-9)
+    win = max(win, 1.0)
     r["win_s"] = win
     r["wf_util"] = r.get("wf_total", 0) / (R * win)
     r["wr_util"] = r.get("wr_total", 0) / (R * win)
@@ -850,18 +941,24 @@ def analyze_run(rep, g, arm):
     r.update(parse_client_err(read_text(rep / "c.err")))
     r.update(parse_server_err(read_text(rep / "s.err")))
     r.update(parse_realized(rep))
+    bl = (r.get("q_fwd_backlog_pre") or 0) + (r.get("q_rev_backlog_pre") or 0)
+    if "q_fwd_backlog_pre" in r:
+        # Eşik: bağlantı açılışındaki IPv6 ND/MLD paketleri (≈ 86–90 B, yalnız hücrenin ilk koşusu)
+        # hariç; bunun üstü önceki koşunun artığıdır.
+        r["pre_backlog_B"] = bl
+        r["kirli_baslangic"] = int(bl > 200)
     win = r.get("run_wall_s")
     if win:
         for dname in ("fwd", "rev"):
             if f"q_{dname}_bytes" in r:
                 r[f"q_{dname}_util_wall"] = r[f"q_{dname}_bytes"] / (g["rate_Bps"] * win)
     # srtt — gerçek RTT kıyası (yalnız Kama kolları sayaç verir)
-    if r.get("est_srtt") is not None:
+    if r.get("est_srtt"):  # 0 = örnek yok (PreConverge'den çıkılmadı) → oran tanımsız
         r["srtt_s"] = r["est_srtt"] / 1e6
         r["srtt_over_rttphys"] = r["srtt_s"] / g["rtt_phys_s"]
         r["srtt_over_rttphys16"] = r["srtt_s"] / g["rtt_phys_r16_s"]
         r["srtt_over_rttfifo"] = r["srtt_s"] / g["rtt_fifo_s"]
-    if r.get("est_rtprop") is not None:
+    if r.get("est_rtprop"):
         r["rtprop_s"] = r["est_rtprop"] / 1e6
     if r.get("est_pace") is not None:
         # motor bayt birimi = mühürlü UDP yükü (runtime.rs wire_len); hat hızının veri payına çevrimi
@@ -870,9 +967,11 @@ def analyze_run(rep, g, arm):
         if r.get("est_btlbw") is not None:
             r["btlbw_over_link"] = r["est_btlbw"] / (g["rate_Bps"] * udp_share)
     # kapasite reddi (tanım: bkz. RAPOR-B §4.4)
+    # Kullanıcı verisini etkileyen retler. FEC birleştirici tahliyesi (`srv_fec_blocks_evicted`,
+    # RX_BLOCKS_CAP 32, runtime.rs) birimin kendisini düşürmez → ayrı raporlanır.
     rej_keys = ("cli_refused_pkts", "srv_egress_refused_pkts", "srv_delivery_dropped",
                 "srv_dropped_new_peers", "srv_frag_chunk_dropped", "srv_msg_asm_evicted",
-                "srv_fec_blocks_evicted", "srv_fec_pre_param_dropped")
+                "srv_fec_pre_param_dropped")
     if any(k in r for k in rej_keys):
         r["cap_reject_total"] = sum(int(r.get(k) or 0) for k in rej_keys)
     tr = r.get("transport") or ""
@@ -885,6 +984,48 @@ def analyze_run(rep, g, arm):
     else:
         cap = {"cap": "bilinmeyen-taşıyıcı"}
     r.update(cap)
+    priv = {k: r.pop(k) for k in [k for k in r if k.startswith("_")]}
+    # ── alıcı teslim damgası (rx_log; dört kolda aynı şema) ────────────────────────────────
+    rx, rx_drop = read_rxlog(rep)
+    offer_u = priv.get("_offer_unix")
+    if offer_u is None and meta and meta.get("t0_unix_ns"):
+        t0u, off = meta["t0_unix_ns"] / 1e9, meta.get("events_epoch_offset_ns", 0)
+        offer_u = {e["msg_id"]: t0u + (e["sent_ns"] - off) / 1e9 for e in ev}
+    rx_by = {}
+    if rx is not None:
+        r["rx_log"] = "var"
+        r["rx_dropped"] = rx_drop
+        if offer_u:
+            rx_by = {i: rx[i] - t for i, t in offer_u.items() if i in rx}
+            vals = list(rx_by.values())
+            r["rx_ow_p50_s"], r["rx_ow_p95_s"], r["rx_ow_p99_s"] = pct(vals, .5), pct(vals, .95), pct(vals, .99)
+            r["rx_deliv_D"] = sum(1 for v in vals if v <= D) / n
+        else:
+            r["rx_log"] = "hizalanamadı"
+    # ── gönderen kilidi göstergeleri (Ajan C B-C9 tanımlarıyla aynı; yalnız Kama kolları) ─────
+    I_s = g["ival_ms"] / 1000.0
+    lat_src = rx_by or priv.get("_ow_by_msg") or {
+        e["msg_id"]: (e["delivered_ns"] - e["sent_ns"]) / 1e9 for e in ev if e.get("delivered_ns") is not None}
+    r["birikim_kaynak"] = "rx" if rx_by else ("yakalama" if priv.get("_ow_by_msg") else "teyit")
+    r["birikim_ms"], r["birikim_egim_ms_s"] = window_growth(lat_src, I_s)
+    if priv.get("_sw_by_msg"):
+        r["gonderen_birikim_ms"], _ = window_growth(priv["_sw_by_msg"], I_s)
+    if tr.startswith("kama"):
+        d_udp = 16 + 11 + g["payload"]
+        sunulan = d_udp / I_s
+        r["sunulan_udp_Bps"] = sunulan
+        if r.get("est_btlbw") is not None:
+            r["btlbw_sunulan"] = r["est_btlbw"] / sunulan
+        if r.get("tx_data_B") is not None and n:
+            r["ilk_iletim_payi"] = r["tx_data_B"] / (n * d_udp)
+        r["jeton_ac_payi"] = parse_ts_tokens(rep, d_udp)
+        r["kilitli"] = int((r.get("birikim_ms") or 0) >= 1000.0
+                           or (r.get("ilk_iletim_payi") is not None and r["ilk_iletim_payi"] < 0.95))
+        # [B ayrımı] C'nin `kilitli`'si birikimin YERİNİ ayırmaz: darboğaz kuyruğu (fiziksel ya da
+        # kendi trafiğiyle) da birikim üretir. Gönderen kilidi = birikimin ilk iletimden ÖNCE, yani
+        # gönderen kuyruğunda olması (yakalama: sunum → A'dan ilk çıkış).
+        if r.get("gonderen_birikim_ms") is not None:
+            r["kilit_gonderen"] = int(r["gonderen_birikim_ms"] >= 1000.0)
     if r.get("srtt_s") and r.get("rtt_net_last20_med_s"):
         r["srtt_over_rttnet"] = r["srtt_s"] / r["rtt_net_last20_med_s"]
     # faydalı yük payı (ileri, hattan geçen) — sınıf sütunları + kapasiteye oran
@@ -916,6 +1057,22 @@ OZET_METRICS = [
     ("ow_p50_s", "tek yön p50 (s) [yakalama]"),
     ("ow_p95_s", "tek yön p95 (s) [yakalama]"),
     ("ow_p99_s", "tek yön p99 (s) [yakalama]"),
+    ("rx_deliv_D", "alıcı teslim oranı (D içinde) [rx_log]"),
+    ("rx_ow_p50_s", "alıcı teslim gecikmesi p50 (s) [rx_log]"),
+    ("rx_ow_p95_s", "alıcı teslim gecikmesi p95 (s) [rx_log]"),
+    ("rx_ow_p99_s", "alıcı teslim gecikmesi p99 (s) [rx_log]"),
+    ("btlbw_sunulan", "btlbw / sunulan UDP hızı [sayaç] (C: B-C9)"),
+    ("ilk_iletim_payi", "ilk iletim payı [sayaç] (C: B-C9)"),
+    ("birikim_ms", "gecikme birikimi, pencere-min son−ilk (ms) (C: B-C9)"),
+    ("gonderen_birikim_ms", "gönderende bekleme birikimi (ms) [yakalama]"),
+    ("jeton_ac_payi", "pacer jeton açlığı payı [ts.csv] (C: B-C9)"),
+    ("kilitli", "kilit, C tanımı (1/0) (C: B-C9)"),
+    ("kilit_gonderen", "kilit, birikim gönderen kuyruğunda (1/0) [yakalama]"),
+    ("kirli_baslangic", "koşu başında netem artığı > 200 B (1/0) [qdisc]"),
+    ("offer_qfull", "sunum reddi: QueueFull yeniden denemesi [sayaç]"),
+    ("offer_qfull_wait_ms", "sunum reddi bekleme (ms) [sayaç]"),
+    ("q_rtt_ms", "quinn srtt (ms) [QUINN-STATS]"),
+    ("q_lost_packets_t0", "quinn kayıp paket (t0 sonrası) [QUINN-STATS]"),
     ("wf_useful_share", "ileri hattan geçenin faydalı yük payı [yakalama]"),
     ("wf_useful_of_cap", "ileri kapasitenin faydalı yük payı [yakalama]"),
     ("wf_util", "ileri hat doluluğu [yakalama]"),
@@ -946,7 +1103,12 @@ OZET_METRICS = [
     ("late_idle_frac", "geç kalma süresinde hat BOŞ payı (zamanlayıcı) [yakalama]"),
     ("late_busy_useful_frac", "geç kalma süresinde hat faydalı yükle dolu [yakalama]"),
     ("late_busy_redund_frac", "geç kalma süresinde hat gereksiz kopyayla dolu [yakalama]"),
-    ("cap_reject_total", "kapasite reddi toplamı [sayaç]"),
+    ("cap_reject_total", "kapasite reddi toplamı (kullanıcı verisi) [sayaç]"),
+    ("srv_fec_blocks_evicted", "FEC birleştirici tahliyesi [sayaç]"),
+    ("param_sends", "PARAM_SET gönderimi [sayaç]"),
+    ("tx_ctrl_B", "kontrol baytı (PARAM) [sayaç]"),
+    ("left_preconv", "PreConverge çıkışı (ms) [sayaç]"),
+    ("pre_backlog_B", "koşu başında netem artığı (B) [qdisc]"),
     ("tail_probes", "kuyruk probu (motor) [sayaç]"),
     ("establish_tx", "kuruluş probu [sayaç]"),
     ("parity", "FEC parite emisyonu [sayaç]"),
