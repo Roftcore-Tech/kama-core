@@ -115,8 +115,6 @@ const RETRY_WAIT: Duration = Duration::from_millis(10);
 const MARK_POLL: Duration = Duration::from_millis(20);
 /// alice'in bob'un çıkışını bekleme üst sınırı.
 const BOB_EXIT_WAIT: Duration = Duration::from_secs(20);
-/// Alındı (RECEIPT) için bob tamamlandıktan sonraki ek bekleme.
-const RECEIPT_GRACE: Duration = Duration::from_secs(10);
 /// bob'un alice.done'u bekleme payı (alice'in planı + pencere üstüne).
 const BOB_SLACK: Duration = Duration::from_secs(60);
 /// Karşı örnek basışının akış kimliği (sürücü numarası; telde değil).
@@ -145,7 +143,8 @@ kullanım: f0_flows --role alice|bob --dir <koşu dizini> --alice-addr IP:PORT -
                 [--stall-at-ms MS=20000] [--stall-ms MS=30000]
                 [--karsi on|off=on] [--karsi-texts N=5] [--karsi-every-ms MS=500]
                 [--karsi-bundles N=10] [--karsi-min-unacked N=3] [--karsi-text-bytes B=48]
-                [--window-s S=300] [--connect-timeout-s S=30] [--probe-ms MS=200]
+                [--window-s S=300] [--receipt-grace-s S=30] [--connect-timeout-s S=30]
+                [--probe-ms MS=200]
                 [--live-diag on|off=on]
        f0_flows --help
 
@@ -237,9 +236,11 @@ struct Config {
     connect_timeout: Duration,
     probe_every: Duration,
     live_diag: bool,
+    /// bob her öğeyi aldıktan sonra TEXT alındıları (RECEIPT) için ek bekleme üst sınırı.
+    receipt_grace: Duration,
 }
 
-const KNOWN_FLAGS: [&str; 37] = [
+const KNOWN_FLAGS: [&str; 38] = [
     "--role",
     "--dir",
     "--alice-addr",
@@ -275,6 +276,7 @@ const KNOWN_FLAGS: [&str; 37] = [
     "--connect-timeout-s",
     "--probe-ms",
     "--live-diag",
+    "--receipt-grace-s",
     "--help",
     "-h",
 ];
@@ -359,6 +361,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         connect_timeout: Duration::from_secs(number(v, "--connect-timeout-s", 30)?),
         probe_every: millis(v, "--probe-ms", 200)?,
         live_diag: on_off(v, "--live-diag", true)?,
+        receipt_grace: Duration::from_secs(number(v, "--receipt-grace-s", 30)?),
     };
     validate(&cfg)?;
     Ok(Parsed::Run(Box::new(cfg)))
@@ -1119,7 +1122,7 @@ fn header_line(cfg: &Config, clock: &Clock) -> String {
          \"sig_bytes\":{},\"ptt_at_ms\":[{}],\"ptt_bundles\":{},\"ptt_bundle_ms\":{},\"ptt_bytes\":{},\
          \"stall_at_ms\":{},\"stall_ms\":{},\"karsi\":{},\"karsi_texts\":{},\"karsi_every_ms\":{},\
          \"karsi_bundles\":{},\"karsi_min_unacked\":{},\"karsi_text_bytes\":{},\"window_s\":{},\
-         \"connect_timeout_s\":{},\"probe_ms\":{},\"live_diag\":{}}}}}",
+         \"connect_timeout_s\":{},\"probe_ms\":{},\"live_diag\":{},\"receipt_grace_s\":{}}}}}",
         js(SCHEMA),
         js(if cfg.role == Role::Alice { ALICE } else { BOB }),
         js(cfg.scenario.name()),
@@ -1160,7 +1163,8 @@ fn header_line(cfg: &Config, clock: &Clock) -> String {
         cfg.window.as_secs(),
         cfg.connect_timeout.as_secs(),
         cfg.probe_every.as_millis(),
-        cfg.live_diag
+        cfg.live_diag,
+        cfg.receipt_grace.as_secs()
     )
 }
 
@@ -1286,12 +1290,6 @@ struct FileLog {
     delivered_at: Option<Instant>,
     failed_at: Option<Instant>,
     failed_reason: Option<String>,
-}
-
-impl FileLog {
-    fn terminal(&self) -> bool {
-        self.delivered_at.is_some() || self.failed_at.is_some()
-    }
 }
 
 struct Alice {
@@ -1608,21 +1606,25 @@ impl Alice {
             .iter()
             .filter(|(c, _)| **c != 'F')
             .all(|(c, n)| self.bob_counts.get(c).copied().unwrap_or(0) >= *n);
+        // alice'in gönderen zaman aşımı (`FILE_RECEIPT_TTL`, 60 s; duman-2'de her dosyalı koşuda
+        // 65. s'de) bob'un alımını bitirmez: kesin sonuç bob'unkidir (alındı ya da alıcıda hata).
         let file = !self.cfg.scenario.has_file()
             || self.bob_file == "received"
-            || self.bob_file == "failed"
-            || self.file.failed_at.is_some();
+            || self.bob_file == "failed";
         items && file
     }
 
     /// Karşı örnek tetiği (bkz. modül belgesi): yeni veri kuyruğu boş, eski dosya parçalarının
-    /// kurtarması canlı, dosya henüz teslim edilmedi.
+    /// kurtarması canlı, bob dosyayı henüz bitirmedi. alice'in kendi dosya sonucu ölçüt DEĞİLDİR:
+    /// gönderen `FILE_RECEIPT_TTL`'i (60 s) `FILE_END`'in Transport kabulünden sayar ve dosya
+    /// hâlâ yoldayken `ReceiptTimeout` verir (duman-2).
     fn maybe_karsi(&mut self) {
         if !self.cfg.karsi
             || !self.cfg.scenario.has_file()
             || self.karsi_at.is_some()
             || self.file.sent_at.is_none()
-            || self.file.terminal()
+            || self.bob_file == "received"
+            || self.bob_file == "failed"
         {
             return;
         }
@@ -1704,7 +1706,7 @@ impl Alice {
         let now = Instant::now();
         let since = *self.bob_complete_at.get_or_insert(now);
         let texts_sent = self.msg_items.len();
-        self.receipts.len() >= texts_sent || now >= since + RECEIPT_GRACE
+        self.receipts.len() >= texts_sent || now >= since + self.cfg.receipt_grace
     }
 
     fn plan_end(&self) -> Instant {
