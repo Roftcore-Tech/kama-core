@@ -51,6 +51,7 @@ QUIC_INITIAL_UDP = 1200  # RFC 9000 §14.1
 RATES = {"r25": (25, "200bit"), "r1k": (1000, "8kbit"), "r12k": (12500, "100kbit")}
 DELAYS = {"d300": (300, 60), "d1000": (1000, 200)}
 LOSSES_PRIMARY = [0, 10, 20, 30]
+ARMS = ["taban", "aday", "quinn", "tcp"]
 LOSSES_STRESS = [50, 80]
 PAYLOADS = [65, 1000]
 
@@ -224,11 +225,24 @@ def phys(rate_id, delay_id, loss, p):
 #   P6  BÜTÇE DIŞI (budandı): r25 × d300 × l0 × 1 KB            (betimsel, N = 10)
 # r25'te 1 KB birincil ızgaradan çıkarıldı: tek mesajın serileştirmesi 42,8 s; ρ = 0,3'te aralık
 # 143 s → hücre başına ≈ 4 saat yalnız 10 tekrar için.
+# r25'te quinn ayrı hücrede, N = 5, betimsel: ilk uçuş her yönde ≥ 1242 B → el sıkışma ≥ 99,4 s
+# + 2d > HS_TIMEOUT_S = D = 60 s (RFC 9000 §14.1; Ajan D'nin hesabı da ≥ ≈ 100 s). Sonuç fizikle
+# belirli (0 teslim); 30 tekrar bütçe harcar, bilgi eklemez. Ana r25 hücreleri: taban aday tcp.
+R25_QUINN_N = 5
+
+
 def grid():
     cells = []
-    def add(rate_id, delay_id, loss, p, prio, reps, kind):
+    def add(rate_id, delay_id, loss, p, prio, reps, kind, arms=None, suffix=""):
         c = phys(rate_id, delay_id, loss, p)
-        c.update({"prio": prio, "reps": reps, "kind": kind})
+        c.update({"prio": prio, "reps": reps, "kind": kind, "arms": arms or list(ARMS)})
+        if suffix:
+            c["cell"] += suffix
+        if rate_id == "r25" and arms is None:
+            c["arms"] = ["taban", "aday", "tcp"]
+            cells.append(c)
+            add(rate_id, delay_id, loss, p, prio, R25_QUINN_N, "betimsel", ["quinn"], "_quinn")
+            return
         cells.append(c)
     for loss_set, prio in (((0, 20, 30), "P1"), ((10,), "P3")):
         for rate_id in ("r1k", "r12k"):
@@ -250,7 +264,6 @@ def grid():
     return sorted(cells, key=lambda c: (c["prio"], c["cell"]))
 
 
-ARMS = ["taban", "aday", "quinn", "tcp"]
 OVERHEAD_S = 1.5 + 0.5 + 1.0  # SETTLE_S (hücre: 1,5 s) + kapanış uykusu + kurulum/sökme (f0_cell.sh)
 
 
@@ -283,16 +296,16 @@ def run_time(c, arm):
         hs = min(hs, dl)
         return hs + pres + tail + 3 + OVERHEAD_S, dl + pres + dl + 3 + OVERHEAD_S
     if arm == "tcp":
-        # TCP istemcisi tüm mesajları yazdıktan sonra SABİT min(D, 60 s) bekler (tcp.rs:164-165).
+        # Birincil tcp kolu (arms_rakip.sh, --rival-delivery transport-ack): snd_una teslimi, hepsi
+        # teslim edilince ya da son plan + D'de biter (tcp.rs run_client_tack); bağlanma ≤ HS = D.
         setup = 2 * c["delay_ms"] / 1000.0 + 2 * ser(74, c["rate_Bps"])
-        t = setup + m * I + min(dl, 60) + 2 + OVERHEAD_S
-        return t, 20 + m * I + min(dl, 60) + 2 + OVERHEAD_S
+        return setup + pres + tail + OVERHEAD_S, dl + pres + dl + OVERHEAD_S
     raise ValueError(arm)
 
 
 def budget_s(c):
     """Hücre zaman aşımı (BUDGET_S): her kolun en kötü süresinin üstü + 30 s pay."""
-    return int(math.ceil(max(run_time(c, a)[1] for a in ARMS))) + 30
+    return int(math.ceil(max(run_time(c, a)[1] for a in c.get("arms", ARMS)))) + 30
 
 
 def cmd_tablo():
@@ -317,13 +330,14 @@ def cmd_butce():
     print("| hücre | öncelik | N | taban/aday (s, beklenen) | quinn (s) | tcp (s) | hücre koşu-saati (beklenen) | en kötü (saat) | BUDGET_S |")
     print("|---|---|---|---|---|---|---|---|---|")
     for c in cells:
-        e = {a: run_time(c, a) for a in ARMS}
+        e = {a: run_time(c, a) for a in c["arms"]}
         h = c["reps"] * sum(v[0] for v in e.values()) / 3600
         w = c["reps"] * sum(v[1] for v in e.values()) / 3600
         tot[c["prio"]] = tot.get(c["prio"], 0) + h
         tot_w[c["prio"]] = tot_w.get(c["prio"], 0) + w
-        print(f"| {c['cell']} | {c['prio']} | {c['reps']} | {e['taban'][0]:.0f} | {e['quinn'][0]:.0f} | "
-              f"{e['tcp'][0]:.0f} | {h:.2f} | {w:.2f} | {budget_s(c)} |")
+        g = lambda a: f"{e[a][0]:.0f}" if a in e else "–"  # noqa: E731
+        print(f"| {c['cell']} | {c['prio']} | {c['reps']} | {g('taban')} | {g('quinn')} | "
+              f"{g('tcp')} | {h:.2f} | {w:.2f} | {budget_s(c)} |")
     print()
     cum = 0.0
     cum_w = 0.0
@@ -338,7 +352,7 @@ def cmd_json():
     for c in grid():
         c = dict(c)
         c["budget_s"] = budget_s(c)
-        c["run_time_expected_s"] = {a: run_time(c, a)[0] for a in ARMS}
+        c["run_time_expected_s"] = {a: run_time(c, a)[0] for a in c["arms"]}
         out.append(c)
     json.dump(out, sys.stdout, indent=1, ensure_ascii=False)
     print()

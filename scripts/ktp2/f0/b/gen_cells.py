@@ -46,7 +46,7 @@ DEADLINE_S={dl}
 FWD="{netem}"
 REV="$FWD"
 REPS="${{F0_REPS:-{reps}}}"
-ARMS="taban aday quinn tcp"
+ARMS="{arms}"
 BUDGET_S={budget}
 CAPTURE=0
 SETTLE_S=1.5
@@ -69,7 +69,7 @@ def main():
             rttf=c["rtt_fifo_s"], ow=c["oneway_lb_s"], p95=c["ideal_arq_oneway_p95_s"], rate_id=c["rate_id"],
             delay_id=c["delay_id"], loss=c["loss"], rate=c["rate_Bps"], delay=c["delay_ms"],
             jit=c["jitter_ms"], msgs=c["msgs"], pay=c["payload"], ival=c["ival_ms"],
-            dl=c["deadline_s"], netem=c["netem"], budget=fizik.budget_s(c))
+            dl=c["deadline_s"], netem=c["netem"], budget=fizik.budget_s(c), arms=" ".join(c["arms"]))
         (CELLS / f"{c['cell']}.cell").write_text(txt)
         by_prio.setdefault(c["prio"], []).append(c["cell"])
         names.add(c["cell"])
