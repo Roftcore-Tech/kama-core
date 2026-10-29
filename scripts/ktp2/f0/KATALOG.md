@@ -38,6 +38,7 @@ Kimlik biçimi `<hız>_<gecikme>_<kayıp>`.
 | | `d1000` | `delay 1000ms 200ms distribution normal` | RTT ≈ 2 s, tek yön σ 200 ms |
 | kayıp (birincil) | `l0` `l10` `l20` `l30` | `loss N%` | rastgele, bağımsız |
 | kayıp (stres) | `l50` `l80` | `loss N%` | yalnız raporlanır; karar yönlendirmez |
+| hız (stres) | `rinf` | `rate` parçası YOK | hız sınırı yok. Yalnız Ajan A'nın teslim kanalı taşma hücresinde (`tasma_dosya`) kullanılır; betimseldir |
 
 Dizeler:
 - Sıra her zaman şudur: `delay … distribution normal loss N% rate X`. `l0`'da `loss` parçası yazılmaz.
