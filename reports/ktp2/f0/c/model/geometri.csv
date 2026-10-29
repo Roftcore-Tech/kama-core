@@ -1,0 +1,4 @@
+demet_ms,kodlayici_B,paket_s,bench_payload_B,bench_udp_B,urun_udp_legacy22_B,urun_udp_ext26_B,udp_Bps_legacy22,ip_Bps_legacy22,l2_Bps_bench,baslik_payi_udp,rho_r1k,rho_r12k,parite_E64_udp_B,parite_E1024_udp_B
+60,9.0,16.667,28,55,55.0,59.0,916.7,1383.3,1616.7,0.836,1.617,0.129,92,1052
+120,18.0,8.333,37,64,64.0,68.0,533.3,766.7,883.3,0.719,0.883,0.071,92,1052
+200,30.0,5.0,49,76,76.0,80.0,380.0,520.0,590.0,0.605,0.59,0.047,92,1052
