@@ -1,0 +1,16 @@
+# [KTP2-F0 · A] dosyasız taban — birincil. Üretici: scripts/ktp2/f0/a/f0a_cells.py (elle düzenlemeyin).
+# İkililer: BIN_F0A_TABAN / BIN_F0A_ADAY = <kol ağacı>/target/release/examples/f0_flows.
+# Zarflar Unix soketinden (netem dışı, beyanlı); veri UDP + yön başına netem.
+CELL=a_r12k_d300_l30_dosyasiz
+FWD="delay 300ms 60ms distribution normal loss 30% rate 100kbit"
+REV="delay 300ms 60ms distribution normal loss 30% rate 100kbit"
+REPS=30
+ARMS="taban aday"
+BUDGET_S=600
+CAPTURE=0
+SETTLE_S=1
+F0A_ARGS='--dir @D@ --alice-addr @CLI_IP@:@PORT@ --bob-addr @SRV_IP@:@PORT@ --scenario dosyasiz --profile r12k_d300_l30 --rep @REP@ --file-bytes 524700 --window-s 300 --warmup-texts 3 --warmup-every-ms 500 --file-at-ms 5000 --texts 40 --text-at-ms 6000 --text-every-ms 2500 --text-bytes 64 --sigs 10 --sig-at-ms 7000 --sig-every-ms 10000 --sig-bytes 120 --ptt-bundles 25 --ptt-bundle-ms 200 --ptt-bytes 40 --stall-at-ms 20000 --stall-ms 30000 --karsi on --karsi-texts 5 --karsi-every-ms 500 --karsi-bundles 10 --karsi-min-unacked 3 --karsi-text-bytes 48 --connect-timeout-s 30 --probe-ms 200 --live-diag on --ptt-at-ms 15000,60000'
+ARM_taban_SRV="@BIN_F0A_TABAN@ --role bob $F0A_ARGS"
+ARM_taban_CLI="@BIN_F0A_TABAN@ --role alice $F0A_ARGS"
+ARM_aday_SRV="@BIN_F0A_ADAY@ --role bob $F0A_ARGS"
+ARM_aday_CLI="@BIN_F0A_ADAY@ --role alice $F0A_ARGS"
