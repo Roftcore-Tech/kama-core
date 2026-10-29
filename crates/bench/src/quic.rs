@@ -793,6 +793,7 @@ mod loopback_tests {
                 rp_suppress: None,
                 spec_l2_permille: None,
                 spec_l1_permille: None,
+                dup_copies: 1,
             })
             .await
             .expect("governed run bounded Ok");
@@ -872,6 +873,7 @@ mod loopback_tests {
                 rp_suppress: None,
                 spec_l2_permille: None,
                 spec_l1_permille: None,
+                dup_copies: 1,
             })
             .await
             .expect("client run");
@@ -931,6 +933,7 @@ mod loopback_tests {
                 rp_suppress: None,
                 spec_l2_permille: None,
                 spec_l1_permille: None,
+                dup_copies: 1,
             })
             .await
             .expect("client run (ALPN/provider/handshake OK)");
@@ -1045,6 +1048,7 @@ mod loopback_tests {
                 rp_suppress: None,
                 spec_l2_permille: None,
                 spec_l1_permille: None,
+                dup_copies: 1,
             })
             .await
             .expect("bounded return, HANG değil");

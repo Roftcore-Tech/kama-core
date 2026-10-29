@@ -51,6 +51,7 @@ use tokio::time::{sleep, sleep_until, timeout, Instant};
 
 use crate::budget::BudgetMode;
 use crate::error::BenchError;
+use crate::rxlog::unix_ns;
 use crate::transport::Cc;
 
 /// Öğe başlığı: `flow u8 ‖ id u64`.
@@ -243,12 +244,6 @@ pub struct ClientArgs {
     /// İstemci çıktısı (JSONL).
     #[arg(long)]
     pub out: PathBuf,
-}
-
-fn unix_ns() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
 }
 
 fn dur_ns(d: Duration) -> u64 {

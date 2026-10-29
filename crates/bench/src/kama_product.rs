@@ -600,6 +600,8 @@ async fn server_loop(cfg: ServerCfg) -> Result<(), BenchError> {
     }
     let mut poll = interval(GATE_POLL);
     let mut delivered: u64 = 0;
+    // [KTP2-F0 / C1] Alıcı-tarafı damga — yalnız `--rx-log` ile (None = eski davranış).
+    let mut rx_rec = cfg.rx_log.clone().map(crate::rxlog::RxRecorder::new);
     // [KAPI-DÜZELTME] Kapanış sinyali. Bu kol olmadan `server_loop` YAPISAL OLARAK istatistik
     // yazamıyordu: döngü yalnız `next_delivery()` None dönünce çıkar → bunun için `server_task`
     // bitmeli → bunun için `shutdown()` çağrılmalı → o da döngüden SONRA. Dairesel bağımlılık;
@@ -628,12 +630,19 @@ async fn server_loop(cfg: ServerCfg) -> Result<(), BenchError> {
                 }
             }
             d = srv.next_delivery() => {
-                if d.is_none() {
+                let Some(d) = d else {
                     break; // endpoint görevi kapandı
-                }
+                };
                 delivered += 1;
+                if let Some(r) = rx_rec.as_mut() {
+                    r.record(d.unit_id, d.payload.len());
+                }
             }
         }
+    }
+    // [KTP2-F0 / C1] Döngü SIGTERM/SIGINT ile de buraya çıkar → kayıt her yolda yazılır.
+    if let Some(r) = rx_rec.as_ref() {
+        r.write_or_warn();
     }
 
     let stats = srv.shutdown().await;
@@ -784,11 +793,15 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
     let mut delivered_count: u64 = 0;
 
     let mut next_submit: u64 = 0;
+    // [KTP2-F0 / C2] Ölçüm mesajı başına AYRI birim sayısı (1 = eski davranış, döngü tek tur).
+    let copies = u64::from(cfg.dup_copies.max(1));
     if interval_ns == 0 {
         // burst: tümü t0'da sunulur (mevcut kolların davranışıyla aynı).
         for slot in &mut sent_ns {
             *slot = Some(elapsed_ns(start));
-            offer(&tx, &payload, deadline_ns).await?;
+            for _ in 0..copies {
+                offer(&tx, &payload, deadline_ns).await?;
+            }
         }
         next_submit = msg_count;
     }
@@ -815,14 +828,17 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
                     *slot = Some(elapsed_ns(start));
                 }
                 next_submit += 1;
-                offer(&tx, &payload, deadline_ns).await?;
+                for _ in 0..copies {
+                    offer(&tx, &payload, deadline_ns).await?;
+                }
             }
             a = cli.acked() => {
                 let Some(unit) = a else { break }; // endpoint öldü → deadline'a kadar beklemeye gerek yok
                 // Teslim-teyidi ACK'ten de FEC-RECOVERED'dan da gelebilir; ikisi de aynı akış.
                 // Warmup id'leri (unit < base_id) checked_sub ile YAPISAL olarak düşer.
                 let Some(idx) = unit.checked_sub(base_id) else { continue };
-                let Ok(i) = usize::try_from(idx) else { continue };
+                // [KTP2-F0 / C2] Kopyalar ardışık birimlerdir: mesaj = birim / kopya (1 → aynen).
+                let Ok(i) = usize::try_from(idx / copies) else { continue };
                 if let Some(slot) = delivered_ns.get_mut(i) {
                     if slot.is_none() {
                         *slot = Some(elapsed_ns(start));
@@ -970,7 +986,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         // fec-off kollarıyla BYTE-ÖZDEŞ oluyordu ve provenans yalnız DİZİN ADINA dayanıyordu.
         // Dosya kopyalanınca/havuzlanınca kanıt tanımlanamaz hale gelirdi.
         kama_arm: format!(
-            "kama-product-tailv1-{}{}{}{}{}",
+            "kama-product-tailv1-{}{}{}{}{}{}",
             cfg.fec.label(),
             if cfg.burst_fusion { "-burstfusion" } else { "" },
             if cfg.bootstrap_rtt {
@@ -987,6 +1003,12 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
                 "-fastladder"
             } else {
                 ""
+            },
+            // [KTP2-F0 / C2] tekrar kolu etiketi (1 kopya = eski etiket aynen).
+            if cfg.dup_copies > 1 {
+                format!("-dup{}", cfg.dup_copies)
+            } else {
+                String::new()
             },
         ),
         submit_interval_ns: interval_ns,
@@ -1063,6 +1085,7 @@ mod tests {
             gate_permille: None,
             spec_l2_permille: None,
             spec_l1_permille: None,
+            dup_copies: 1,
         }
     }
 
@@ -1186,6 +1209,7 @@ mod tests {
             rp_suppress: None,
             spec_l2_permille: None,
             spec_l1_permille: None,
+            rx_log: None,
         }
     }
 
@@ -1666,6 +1690,65 @@ mod tests {
             sum, out.meta.udp_tx_bytes,
             "bileşen toplamı udp_tx_bytes'a eşit olmalı"
         );
+    }
+
+    /// [KTP2-F0 / C2] `dup_copies = 3`: her mesaj 3 ayrı birim; gönderen tarafı teslim kopyalardan
+    /// ilkinin teyidiyle (mesaj = birim / 3) ve alıcı 3 × N ayrı birim görür; etiket `-dup3`.
+    #[tokio::test]
+    async fn dup_copies_her_mesaji_n_birim_sunar() {
+        let srv = ServerEndpoint::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            runtime_cfg(ArmCfg {
+                payload_bytes: 48,
+                quota_r: 4,
+                fec: FecArm::Off,
+                burst_fusion: false,
+                bootstrap_rtt: false,
+                initial_window_bytes: 0,
+                bootstrap_fast: false,
+                loss_confirm_k: 0,
+                fec_risk: false,
+                ts_sample: false,
+                gate: None,
+                persist_mode: None,
+                persist_alpha: None,
+                persist_rho: None,
+                persist_q: None,
+                rp_suppress: None,
+                spec_l2: None,
+                spec_l1: None,
+            }),
+            Box::new(IdentitySeam::new()),
+        )
+        .await
+        .expect("bind");
+        let addr = srv.local_addr();
+        let seen = Arc::new(Mutex::new(std::collections::BTreeSet::new()));
+        let seen2 = Arc::clone(&seen);
+        let pump = tokio::spawn(async move {
+            let mut srv = srv;
+            while let Some(d) = srv.next_delivery().await {
+                if let Ok(mut g) = seen2.lock() {
+                    g.insert(d.unit_id);
+                }
+            }
+        });
+        let mut c = cfg(addr, 6, 3_000, FecArm::Off);
+        c.dup_copies = 3;
+        let out = KamaProductTransport
+            .run_client(c)
+            .await
+            .expect("client koşusu");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        pump.abort();
+        let units = seen.lock().map(|g| g.clone()).unwrap_or_default();
+        // Kopyalar FIFO sunulur: son mesajın ilk kopyası (birim 15) teyit edildiyse 0..=15 yola
+        // çıkmıştır (loopback kayıpsız) → en az 16 AYRI birim; kimlikler 6 × 3 = 18'in altında.
+        assert!(units.len() >= 16, "kopyalar ayrı birim olmalı: {units:?}");
+        assert!(units.iter().all(|&u| u < 18), "{units:?}");
+        assert_eq!(out.events.len(), 6);
+        assert!(out.events.iter().all(|e| e.delivered_ns.is_some()));
+        assert!(out.meta.kama_arm.ends_with("-dup3"), "{}", out.meta.kama_arm);
     }
 
     /// **Sprint-A'nın asıl iddiası:** ürün kolunda FEC AÇIKKEN wire'da gerçek repair-shard vardır.

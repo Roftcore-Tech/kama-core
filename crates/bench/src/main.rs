@@ -13,6 +13,7 @@ mod outcome;
 mod qdgram;
 mod quic;
 mod rival;
+mod rxlog;
 mod tcp;
 mod transport;
 
@@ -151,6 +152,10 @@ enum Cmd {
         /// [KTP2-F0 / D] quinn keep-alive aralığı (ms; 0 = yok).
         #[arg(long, default_value_t = 0)]
         quinn_keepalive_ms: u64,
+        /// [KTP2-F0 / C1] Alıcı-tarafı teslim damgası (JSONL; `kama-product` ve `tcp`). Verilmezse
+        /// kayıt yok, dosya yok. Sunucu döngüsü çıkınca (SIGTERM dahil) atomik yazılır.
+        #[arg(long)]
+        rx_log: Option<PathBuf>,
     },
     /// Client: N mesaj gönder, ham event JSONL yaz.
     Client {
@@ -302,6 +307,10 @@ enum Cmd {
         /// [KTP2-F0 / D] Koşu sonunda `QUINN-STATS` satırı (c.err; salt-gözlem).
         #[arg(long, default_value_t = false)]
         rival_stats: bool,
+        /// [KTP2-F0 / C2] Yalnız `kama-product`: her ölçüm mesajı N ayrı birim olarak sunulur
+        /// (gerçek tekrar kolu); teslim = ilk kopyanın teyidi. 1 = eski davranış.
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=64))]
+        dup_copies: u32,
         #[arg(long)]
         out: PathBuf,
     },
@@ -497,7 +506,17 @@ async fn main() -> Result<(), BenchError> {
             quinn_initial_rtt_ms,
             quinn_iw_bytes,
             quinn_keepalive_ms,
+            rx_log,
         } => {
+            // [KTP2-F0 / C1] Desteklenmeyen kolda sessizce kayıtsız koşmak yerine reddet.
+            let rx_supported = matches!(transport, TransportArg::KamaProduct | TransportArg::Tcp);
+            if rx_log.is_some() && !rx_supported {
+                return Err(BenchError::Other(
+                    "--rx-log yalnız --transport kama-product | tcp ile (quinn yükü mesaj \
+                     kimliği taşımaz)"
+                        .into(),
+                ));
+            }
             // [KTP2-F0 / D] Rakip-kol ayarları (bayraksız = eski davranış; Kama kollarına etkisiz).
             rival::set(rival::RivalTuning::from_cli(
                 rival_delivery,
@@ -537,6 +556,7 @@ async fn main() -> Result<(), BenchError> {
                     bootstrap_rtt,
                     initial_window_bytes,
                     bootstrap_fast,
+                    rx_log,
                 },
             )
             .await
@@ -589,8 +609,15 @@ async fn main() -> Result<(), BenchError> {
             quinn_iw_bytes,
             quinn_keepalive_ms,
             rival_stats,
+            dup_copies,
             out,
         } => {
+            // [KTP2-F0 / C2] Yalnız ürün kolunda anlamlı; diğer kollarda sessizce yok sayılmaz.
+            if dup_copies > 1 && transport != TransportArg::KamaProduct {
+                return Err(BenchError::Other(
+                    "--dup-copies yalnız --transport kama-product ile".into(),
+                ));
+            }
             // [KTP2-F0 / D] Rakip-kol ayarları (bayraksız = eski davranış; Kama kollarına etkisiz).
             rival::set(rival::RivalTuning::from_cli(
                 rival_delivery,
@@ -636,6 +663,7 @@ async fn main() -> Result<(), BenchError> {
                 bootstrap_rtt,
                 initial_window_bytes,
                 bootstrap_fast,
+                dup_copies,
             };
             let output = run_client(transport, cfg).await?;
             // [FAZ-4] KOŞU MANİFESTİ — ölçümle BİRLİKTE, yapılandırılmış. Kıyas raporları

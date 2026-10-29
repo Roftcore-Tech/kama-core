@@ -27,11 +27,12 @@
 //! ürün-benzeri ayar). Başka hiçbir socket ayarı değiştirilmez.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::signal::unix::{signal, SignalKind};
 
 use crate::error::BenchError;
 use crate::event::{RawEvent, RunMeta, RunOutput, TxComponents};
@@ -53,6 +54,27 @@ impl BenchTransport for TcpTransport {
     async fn run_server(&self, cfg: ServerCfg) -> Result<(), BenchError> {
         {
             let listener = TcpListener::bind(cfg.bind).await.map_err(BenchError::Io)?;
+            // [KTP2-F0 / C1] Alıcı-tarafı damga — yalnız `--rx-log` ile. Bu sunucu döngüsü
+            // kendiliğinden çıkmaz (kill ile biter): SIGTERM/SIGINT yakalanır, kayıt yazılır, süreç
+            // çıkar. Bayraksız yolda sinyal işleyicisi KURULMAZ (eski davranış aynen).
+            let rx_rec = cfg
+                .rx_log
+                .clone()
+                .map(|p| Arc::new(Mutex::new(crate::rxlog::RxRecorder::new(p))));
+            if let Some(r) = rx_rec.clone() {
+                let mut term = signal(SignalKind::terminate()).map_err(BenchError::Io)?;
+                let mut int = signal(SignalKind::interrupt()).map_err(BenchError::Io)?;
+                tokio::spawn(async move {
+                    tokio::select! {
+                        _ = term.recv() => {},
+                        _ = int.recv() => {},
+                    }
+                    if let Ok(g) = r.lock() {
+                        g.write_or_warn();
+                    }
+                    std::process::exit(0);
+                });
+            }
             loop {
                 let Ok((mut sock, _peer)) = listener.accept().await else {
                     continue;
@@ -60,6 +82,7 @@ impl BenchTransport for TcpTransport {
                 sock.set_nodelay(true).ok();
                 // [KTP2-F0 / D] transport-ack: uygulama ACK'i YAZILMAZ (teslim istemcide snd_una).
                 let tack = crate::rival::get().transport_ack();
+                let rec = rx_rec.clone();
                 tokio::spawn(async move {
                     let mut delivered: u64 = 0;
                     let mut app_rx: u64 = 0;
@@ -83,6 +106,11 @@ impl BenchTransport for TcpTransport {
                         }
                         app_rx += (FRAME_HDR + len) as u64;
                         delivered += 1;
+                        if let Some(r) = rec.as_ref() {
+                            if let Ok(mut g) = r.lock() {
+                                g.record(msg_id, len);
+                            }
+                        }
                         // Uygulama-düzeyi ACK (teslim tanımının taşıyıcısı; qdgram ile simetrik).
                         if !tack {
                             if sock.write_all(&msg_id.to_be_bytes()).await.is_err() {
@@ -486,6 +514,7 @@ mod tests {
                     rp_suppress: None,
                     spec_l2_permille: None,
                     spec_l1_permille: None,
+                    rx_log: None,
                 })
                 .await;
         });
@@ -524,6 +553,7 @@ mod tests {
                 gate_permille: None,
                 spec_l2_permille: None,
                 spec_l1_permille: None,
+                dup_copies: 1,
             })
             .await
             .expect("client");
@@ -612,6 +642,7 @@ mod tests {
                 gate_permille: None,
                 spec_l2_permille: None,
                 spec_l1_permille: None,
+                dup_copies: 1,
             },
             &tu,
         )
