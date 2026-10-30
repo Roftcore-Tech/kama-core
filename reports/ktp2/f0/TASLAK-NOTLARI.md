@@ -14,7 +14,7 @@ Yeniden üretim: `for f in fec_olasilik iletim_dusuk_bant k6_ses sinirlar yuk_ta
 - Kayıp bağımsız Bernoulli. "İletim sayısı" ileri yönde ilk başarılı alıma kadardır; ACK yolu ve iki yönlü kayıp ayrıca yazılmıştır.
 - "n iletimin süresi" = n × serileştirme (art arda gönderim; ARQ beklemesi yok) — taslağın K-3 modeli. ARQ yolu ayrı hesaplandı (V-4).
 
-Sayım: **hata 15** (hesap/iç tutarlılık 10, kod iddiası 5) · **varsayıma duyarlı 26** (2'si [ölçülen itiraz]) · **doğrulanan 24** (hesap 20, kod 4).
+Sayım: **hata 16** (hesap/iç tutarlılık 11, kod iddiası 5) · **varsayıma duyarlı 26** (2'si [ölçülen itiraz]) · **doğrulanan 24** (hesap 20, kod 4).
 
 ---
 
@@ -67,6 +67,10 @@ Sayım: **hata 15** (hesap/iç tutarlılık 10, kod iddiası 5) · **varsayıma 
 - Kaynak [kod]: 05b notu, aday `49864510`, `docs/design/K4G-05b-RETX-FIX.md` B.1d satır 45b ve B.6 h.9.7: T_birim(R1) ≤ max(H_maks, A) + A + N_cap·T_max(kopya) + τ; N_cap = 4096 (`max_inflight_units`, `runtime.rs:259`); 1046 B birim; 31 B/s tam pace hızı → 553 350 s.
 - Doğru: aritmetik tutuyor — baskın terim 4096 × 4 × 1046 / 31 = 552 828 s = 6,40 gün (notla %0,09 fark) [hesap; `sinirlar.py · S5-03`]. Ama (i) türetim **05b adayının** R1 rejimidir (DUR-45 (C) H-sahiplenmesi; 49864510'da var), taban `a858f3fc`'nin değil — H-sahiplenmesi 05b mekanizmasıdır (`adopt_due_ns` / `adopt_unowned` tabanın `sender.rs`'inde 0 kez, adayınkinde 6 kez geçer), taban için bu sınır türetilmemiş; (ii) koşul aynı değil: 1046 B birim / tam hız / 4096 birim ↔ taslağın S = 64 B / %20 pay / W = 16. Aynı baskın terim 64 B yükle (bugünkü tel 97 B), tam hızda **51 266 s ≈ 14,2 sa**; %20 payla ≈ 2,97 gün.
 - Etki: 245 s ↔ 6,4 gün karşılaştırması farklı koşulların oranıdır; "bugünkü motor" ifadesi tabanı değil adayı anlatıyor.
+
+**H-16 · §4 ONARIM çerçevesi ↔ §3.8 "Kurtarılan parça" (numara, H-11…H-15 atıfları korunsun diye sırada değil)**
+- Taslak: §4 ONARIM = "tür 1 · akış 2 · blok ilk sırası 4 · K 1 · R 1 · onarım sırası 1 · uzunluk 2 · veri"; §3.8 "onarım parçası parça boyundadır" ve "Kurtarılan parça normal gelen parçayla aynı kabul ve kredi yolundan geçer". Bir parçanın boyu ve işaretleri (son-parça, mesaj-sonu) yalnız kendi AKIŞ çerçevesindedir; parça kaybolunca o çerçeve de kaybolur. ONARIM'daki `uzunluk` onarım verisinin boyudur.
+- Doğru: kurtarılan parça için iki bilgi eksik: (i) gerçek boyu, (ii) işaretleri. Akış ve sıra numarası telden çıkar (akış, blok ilk sırası + konum). Blok eşit boylu değilse "parça boyu" da tek değer değildir ve kurtarılan parçanın uzunluğu tanımsızdır. Bu durum taslağın kendi kurallarından doğar: mesajın son parçası S'ten kısa olabilir, §3.8 kuyruk koruması tam o bloğa onarım ekler, §3.9'da S hıza göre değişir. Eşit boylu blokta (sabit hızlı ses) boy onarım `uzunluk`'undan çıkar, işaretler yine eksiktir.
 
 ## 2. Hatalar — kod iddiaları [kod]
 
