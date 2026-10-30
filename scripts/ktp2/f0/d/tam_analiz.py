@@ -49,6 +49,7 @@ KAMA = ("taban", "aday")
 MIX_CENSOR_S = 60.0
 STRESS = (50, 80)
 BOOT_B = 2000
+BOOT_ADJ = 10000
 
 
 def is_kama(arm: str) -> bool:
@@ -261,6 +262,65 @@ def s4_summary(cells) -> list[str]:
 
         md.append(f"| {cell} | {D:g} | {st('taban')} | {st('aday')} | {st('quinn')} | {st('tcp')} | "
                   f"{vd('taban', 'quinn')} | {vd('taban', 'tcp')} | {vd('aday', 'taban')} |")
+    return md
+
+
+def boot_sorted(a: list[float], b: list[float], key: str, n_boot: int) -> list[float]:
+    seed = int(hashlib.sha256(key.encode()).hexdigest()[:12], 16)
+    rng = random.Random(seed)
+    na, nb = len(a), len(b)
+    med = statistics.median
+    return sorted(med(rng.choices(a, k=na)) - med(rng.choices(b, k=nb)) for _ in range(n_boot))
+
+
+def family_counts(cells) -> list[str]:
+    """Birincil hücre ailesinde yön sayımı: düzeltmesiz %95 ve Bonferroni (α = 0,05 / m) aralıklarıyla.
+
+    Aile = aynı kol çifti + aynı ölçü; m = iki kolu da N ≥ 30 olan birincil hücre sayısı. Ön-kayıtlı
+    GA kuralının DIŞINDAKİ yön iddiaları için çoklu karşılaştırma denetimi. Stres ve N < 30 aile dışı.
+    """
+    pairs = [("taban", "quinn"), ("aday", "quinn"), ("taban", "tcp"), ("aday", "tcp"), ("aday", "taban")]
+    md = ["\n## 0b. Çoklu karşılaştırma denetimi — birincil hücre ailesi\n",
+          f"Birim koşu; fark = koşu-başı değerlerin medyan farkı (ilk kol − ikinci kol); bootstrap B = {BOOT_ADJ}. "
+          "`düz.` = %95 düzeltmesiz, `Bonf.` = α = 0,05/m. K = ilk kol iyi, R = ikinci kol iyi, = aralık 0'ı kapsıyor. "
+          "p95 D'de sansürlü (düşük iyi); teslim@D gönderen teyidi (yüksek iyi).\n",
+          "| çift | ölçü | m | düz. K / R / = | Bonf. K / R / = | Bonf. sonrası kalan hücreler (fark) |",
+          "|---|---|---|---|---|---|"]
+    prim = [c for c in sorted(cells) if c.startswith("b_") and (loss_of(c) or 0) not in STRESS]
+    for x, y in pairs:
+        fam = [c for c in prim if x in cells[c] and y in cells[c]
+               and len(cells[c][x]) >= 30 and len(cells[c][y]) >= 30]
+        m = len(fam)
+        if m == 0:
+            continue
+        for metric in ("p95", "teslim"):
+            cnt = {"düz": [0, 0, 0], "bonf": [0, 0, 0]}
+            keep = []
+            for c in fam:
+                D = cell_deadline(cells[c])
+                if metric == "p95":
+                    a = [p95_cens(r, D) for r in cells[c][x]]
+                    b = [p95_cens(r, D) for r in cells[c][y]]
+                else:
+                    a = [r.completion(D) for r in cells[c][x]]
+                    b = [r.completion(D) for r in cells[c][y]]
+                diffs = boot_sorted(a, b, f"{c}|{x}|{y}|{metric}|fam", BOOT_ADJ)
+                good_low = metric == "p95"
+                for tag, alpha in (("düz", 0.05), ("bonf", 0.05 / m)):
+                    lo = diffs[int(alpha / 2 * BOOT_ADJ)]
+                    hi = diffs[min(BOOT_ADJ - 1, int((1 - alpha / 2) * BOOT_ADJ))]
+                    if lo > 0:
+                        i = 1 if good_low else 0
+                    elif hi < 0:
+                        i = 0 if good_low else 1
+                    else:
+                        i = 2
+                    cnt[tag][i] += 1
+                    if tag == "bonf" and i != 2:
+                        d = statistics.median(a) - statistics.median(b)
+                        keep.append(f"{c[2:]} {d:+.2f}")
+            md.append(f"| {x} − {y} | {metric} | {m} | {cnt['düz'][0]} / {cnt['düz'][1]} / {cnt['düz'][2]} | "
+                      f"{cnt['bonf'][0]} / {cnt['bonf'][1]} / {cnt['bonf'][2]} | {'; '.join(keep) or '—'} |")
     return md
 
 
@@ -567,6 +627,7 @@ def main() -> int:
     md = ["# KTP2-F0 / D — TAM SONUÇ (otomatik; tam_analiz.py)\n",
           "Kökler: " + ", ".join(a.roots) + "\n"]
     md += s4_summary(cells)
+    md += family_counts(cells)
     md += grid_md(cells, pending)
     md += k2_md(cells)
     md += hs_md(cells)
