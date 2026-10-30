@@ -316,12 +316,14 @@ baytları yok]; ürün yolu sayısı = Ajan A. tcp kolları [D-13]: veth TSO aç
   "zaman-aşımı" 0. Çıktısı olmayan koşu 0.
 - Koşu öncesi kuyruğu boş olmayan 3 koşu (her biri tek paket, 70–86 B; `b_r12k_d1000_l20_p65`
   taban rep1 ve tcp rep8, `b_r1k_d1000_l30_p1000` aday rep1); atılmadı, işaretli.
-- Gerçekleşen kayıp profille tutarlı (Kama/quinn ileri ve dönüş koşu medyanları l10/l20/l30/l50/l80
-  için 0,10/0,20/0,30/0,49–0,52/0,80–0,86). tcp ileri yönü D-13 nedeniyle düşük görünür
+- Gerçekleşen kayıp profille tutarlı. Kama koşu medyanları, ileri ve dönüş: l50 0,48–0,52,
+  l80 0,79–0,84. quinn l80'de 0,82–0,94; az paket gönderdiği için saçılım geniş. Birincil kayıplarda
+  Kama ve quinn p ± 0,01 içinde (TAM-OTOMATIK §1). tcp ileri yönü D-13 nedeniyle düşük görünür
   (r12k l30: 0,26–0,29).
 - El sıkışma yok (geçerli 0, ayrı sayıldı): quinn r25 bütün hücrelerde 5/5 (60 s tavan); r12k
   l30_p65 2/30; stres l50 p1000 1/10, l80 p1000 4/10, l80 p65 9/10, r1k_d300_l50_p65 3/10,
-  r1k_d300_l80_p65 10/10 (teslim 0); tcp l80 p1000 4/10, p65 3/10. `d_hs_*` quinn_rpl 10/10 (eski 60 s
+  r1k_d300_l80_p65 8/10 (bağlanan 2 koşuda da teslim 0); tcp r12k l80 p1000 4/10, p65 3/10,
+  r1k l80 p65 4/10. `d_hs_*` quinn_rpl 10/10 (eski 60 s
   kuralı).
 - quinn UDP GSO etkisi ihmal edilebilir [çıkarım, sayaç oranından: quinn drops/(packets+drops) ≈ p
   bütün kayıplı hücrelerde; GSO olsaydı `packets` gso_segs saydığı için p'nin altında kalırdı].
@@ -353,6 +355,7 @@ aday 26,2 s ↔ quinn 8,7 s; r12k_d1000_l20_p1000 16,4 / 12,5 ↔ 5,8 s; r1k_d30
   noktası arasında **fark gösterilmedi**; K-2'nin "QUIC'inkinden ileride" ölçütü bu aralıkta
   ayırt edici değil.
 - r25 (65 B): Kama 0,17 (l0 ve l20, iki kol) → kesişim l0; quinn 0,00 (bağlanamadı); tcp 1,00 (l0, l20).
+- Stres hücrelerinde el sıkışma: quinn r12k l80 4/10 (1000 B) ve 9/10 (65 B), r1k l80 8/10 bağlanamadı.
 - Stres (N = 10, betimsel): r12k_d300 l80: taban 0,04 (1000 B) / 0,58 (65 B), aday 0,40 / 0,77,
   quinn 0,00 / 0,00, tcp 0,00 / 0,00. r1k_d300_l80_p65: taban 0,57, aday 0,68, quinn 0,00, tcp 0,00.
   l50: r12k p1000 taban 0,46 ↔ aday 0,99 ↔ quinn 1,00 ↔ tcp 0,05; r12k p65 Kama 1,00 ↔ quinn 1,00;
