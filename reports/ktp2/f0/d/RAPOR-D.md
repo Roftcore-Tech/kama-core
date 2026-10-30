@@ -300,12 +300,11 @@ Reorder ve Noise kripto baytları yok].** Hücre medyanı [IQR] koşu başına; 
   mesaj×N+kopya), tcp = çerçeve `msg_id`, quinn = yükün ilk 8 baytı (`--payload-id`; yoksa
   `u64::MAX`). Karışık akış kendi günlüğünü (`mixed_rx.jsonl`, akış alanlı) yazar.
 
-## 9. TAM SONUÇ — aşama 2 (ortak kuyruk bitti; anlık görüntü 2026-10-30 11:50Z)
+## 9. TAM SONUÇ — aşama 2 (ortak kuyruk ve D-13 doğrulama hücresi bitti; bekleyen hücre yok)
 
 Kapsam: `runs/tam/d/out` (6 d_* hücresi) + `runs/tam/b/out` (B'nin bütün hücreleri; `_quinn` sonekli r25
-hücreleri taban profiline birleştirildi). 53 ızgara/betimsel hücre + 1 karışık hücre, 5400 koşu.
-Tek açık kalem: `d_tcp_gso1_r12k_d300_l30` (D-13 doğrulaması) koşuyor; **D-13 yönü: bekliyor.**
-Bütün tablolar: `reports/ktp2/f0/d/tam/TAM-OTOMATIK.md`.
+hücreleri taban profiline birleştirildi). 53 ızgara/betimsel hücre + 2 karışık hücre, 5460 koşu.
+Bütün tablolar: `reports/ktp2/f0/d/tam/TAM-OTOMATIK.md`; D-13 doğrulaması: `tam/D13.md`.
 
 Etiketler: [ölçüldü] koşu çıktısı · [türetilmiş] ölçülen sayılardan hesap · [çıkarım] ölçülmemiş akıl
 yürütme · [kod] kaynak okuması · [tahmin] beklenen etki, sonuç değildir. Kama sayıları bench üst
@@ -325,7 +324,7 @@ B = 10000, TAM-OTOMATIK §0b) yazıldı.
 
 ### 9.1 Geçerlilik [ölçüldü]
 
-- 5400 koşunun tamamı rc = 0; düşen, zaman aşımına uğrayan, çıktısı olmayan koşu 0.
+- 5460 koşunun tamamı rc = 0; düşen, zaman aşımına uğrayan, çıktısı olmayan koşu 0.
 - El sıkışma yok (geçerli 0, ayrı sayıldı; `quinn_nofile rep26` karışık hücrede):
 
   | hücre | quinn | tcp |
@@ -454,9 +453,52 @@ TAM-OTOMATIK §0; fark aralıkları §3.
 
 ### 9.6 tcp ve D-13
 
-tcp kollarının her sayısı D-13 sınırlamasını taşır. Yön: **bekliyor** (`d_tcp_gso1_r12k_d300_l30`, N = 30,
-betimsel; karar yönlendirmez). Sayaç yorumu orkestratör tarafından `kapi3_harness.sh:78-86`'dan doğrulandı
-[kod]. tcp kolu çekirdek cubic'tir; `tcp_bbr` yüklü değil (D-10).
+tcp kollarının bütün sayıları D-13 sınırlamasını taşır: veth TSO açık, kayıplar kısmen ikişerli [kod:
+`kapi3_harness.sh:78-86`, ethtool yok]. tcp kolu çekirdek cubic'tir; `tcp_bbr` yüklü değil (D-10).
+
+**Doğrulama hücresi** `d_tcp_gso1_r12k_d300_l30` (BETİMSEL; karar yönlendirmez; yalnız bu profil):
+N = 30/kol, tcp_mix + tcp_nofile, `d_mix_r12k_d300_l30` tcp kollarıyla aynı ikili ve iş yükü, tek fark
+`gso_max_segs 1`. 60/60 rc = 0, bağlanamayan 0, koşu öncesi kuyruk boş. Geri okuma her koşuda pre ve post
+`va0=1;ma0=1;mb0=1;vb0=1` [ölçüldü]. **Sınır:** iki hücre farklı oturumda koştu (d_mix 2026-10-29, kuyruk
+yükü altında; doğrulama 2026-10-30, kuyruktan sonra). Aralıklar koşular arası saçılımı taşır, oturum
+farkını taşımaz. Karşılaştırmalar düzeltmesizdir.
+
+| kol | ölçü | TSO açık medyan [Q1–Q3] | gso1 medyan [Q1–Q3] | fark gso1 − açık [%95] | yön |
+|---|---|---|---|---|---|
+| tcp_mix | TEXT p95 s | 60 [60–60] (sansür tavanı) | 60 [60–60] (sansür tavanı) | +0,000 [+0,000, +0,000] | ayıramıyor (iki kol tavanda) |
+| tcp_mix | TEXT ≤10 s oranı | 0,033 [0,033–0,033] | 0,033 [0,033–0,058] | +0,000 [+0,000, +0,000] | fark gösterilmedi |
+| tcp_mix | PTT ≤0,8 s oranı | 0,007 [0,000–0,007] | 0,007 [0,000–0,007] | +0,000 [+0,000, +0,007] | fark gösterilmedi |
+| tcp_mix | dosya bitiş s | 60 [60–60] (sansür tavanı) | 60 [60–60] (sansür tavanı) | +0,000 [+0,000, +0,000] | ayıramıyor (iki kol tavanda) |
+| tcp_mix | dosya oranı | 0,344 [0,176–0,449] | 0,365 [0,272–0,492] | +0,021 [−0,065, +0,177] | fark gösterilmedi |
+| tcp_nofile | TEXT p95 s | 36,4 [11,0–60] | 29,5 [17,5–60] | −7,0 [−37,9, +44,5] | fark gösterilmedi |
+| tcp_nofile | TEXT ≤10 s oranı | 0,750 [0,167–0,925] | 0,633 [0,283–0,792] | −0,117 [−0,383, +0,350] | fark gösterilmedi |
+| tcp_nofile | PTT ≤0,8 s oranı | 0,073 [0,027–0,165] | 0,110 [0,037–0,173] | +0,037 [−0,037, +0,100] | fark gösterilmedi |
+
+Sonradan eklenen ölçüler (POST HOC: yukarıdaki iki ölçü tavanda kaldığı için ilk tablo görüldükten
+sonra eklendi; ön-kayıtlı değil, düzeltmesiz):
+
+| kol | ölçü | TSO açık | gso1 | fark [%95] | yön |
+|---|---|---|---|---|---|
+| tcp_mix | TEXT teslim oranı, pencere sonu | 0,033 [0,033–0,033] | 0,183 [0,075–0,292] | +0,150 [+0,067, +0,200] | iyileşiyor |
+| tcp_mix | PTT teslim oranı, pencere sonu | 0,007 [0,007–0,007] | 0,173 [0,050–0,298] | +0,167 [+0,083, +0,240] | iyileşiyor |
+| tcp_nofile | TEXT teslim oranı, pencere sonu | 1,000 [0,742–1,000] | 1,000 [0,700–1,000] | +0,000 [−0,200, +0,183] | fark gösterilmedi |
+| tcp_nofile | PTT teslim oranı, pencere sonu | 1,000 [0,720–1,000] | 1,000 [0,702–1,000] | +0,000 [−0,193, +0,180] | fark gösterilmedi |
+
+Sayaçlar (payda netem sayaç birimi, havuz; `qlen` dahil):
+
+| kol | hücre | ileri kayıp m (±%95) | koşu medyanı | birim/segment [türetilmiş] |
+|---|---|---|---|---|
+| tcp_mix | TSO açık | 0,2554 ± 0,0174 (n = 2404) | 0,270 | 0,940 [0,919, 0,963] |
+| tcp_mix | gso1 | 0,3034 ± 0,0168 (n = 2887) | 0,301 | 1,005 [0,981, 1,030] |
+| tcp_nofile | TSO açık | 0,2996 ± 0,0212 (n = 1789) | 0,303 | 0,999 [0,970, 1,031] |
+| tcp_nofile | gso1 | 0,3055 ± 0,0217 (n = 1725) | 0,302 | 1,008 [0,977, 1,040] |
+
+- Birim/segment doğrudan ölçülmedi: karışık kollarda `/proc/net/snmp` görüntüsü yok. Değer (1 − p) / (1 − m)
+  ile türetildi (p = 0,30; skb başına kaybın p olduğu varsayımıyla) ve m'nin dönüşümüdür, bağımsız kanıt
+  değildir. Doğrudan ölçüm B ızgarasındadır (TSO açık, r12k l20–l30: 0,95–0,98, §8.2 D-13).
+- **Sayaç [ölçüldü]:** gso_max_segs 1 ile tcp_mix ileri kaybı profil değerine geldi (0,255 → 0,303); dosyasız kolda zaten p'ydi. D-13'ün sayaç yorumuyla tutarlı.
+- **Yön, yalnız bu profil:** istenen ölçülerde TSO kapalıyken fark gösterilmedi. tcp_mix TEXT p95 ve dosya bitişi iki durumda da sansür tavanında olduğu için bu iki ölçü yönü ayıramıyor. Post hoc ölçülerde tcp_mix pencere sonu TEXT ve PTT teslimi TSO kapalıyken yüksek; bu yön iyileşme tarafındadır, ama sonradan eklendi, düzeltmesizdir ve oturum farkını taşımaz. Mekanizma ölçülmedi.
+- B ızgarasındaki tcp hücrelerine genellenmez. tcp sayıları D-13 etiketiyle okunmaya devam eder.
 
 ### 9.7 Bulgular (dört alan)
 
@@ -525,11 +567,12 @@ Bütün beklenen etkiler [tahmin]dir.
 - %80 kayıpta (N = 10, betimsel) dört hücrede Kama 0,04–0,77 teslim etti, quinn ve tcp 0. %50'de tablo karışık: 12,5 kB/s, 1000 B'de taban 0,46, aday 0,99, quinn 1,00.
 - Karışık akışta (12,5 kB/s, %30; N = 30) dört taşıma da K-1 uyarlamasını geçmedi. Dosya TEXT p95'i taban'da +19,6 s, quinn'de +10,5 s uzattı; taban − quinn dosyalı +11,7 [+7,9, +14,7] s. PTT ≤0,8 s dosyalıda fark gösterilmedi.
 - 05b: teslimde 40/40 ayrışmadı; gecikmede 6 hücrede düşük (hepsi 1000 B), karışık akışta ve 25 B/s'de fark gösterilmedi.
-- Ölçülemeyen: tcp'de D-13 yönü (doğrulama hücresi koşuyor); bozuk dönüş yolu ve gerçek Noise kurulumu bu şeritte ölçülmedi.
+- D-13 doğrulaması (yalnız r12k_d300_l30, karışık akış, N = 30/kol, betimsel): gso_max_segs 1 ile tcp_mix ileri sayaç kaybı 0,255'ten 0,303'e geldi (profil 0,30). İstenen ölçülerde TSO kapalıyken fark gösterilmedi; tcp_mix TEXT p95 ve dosya bitişi iki durumda da 60 s sansür tavanında, yönü ayıramıyor. Post hoc pencere sonu teslimi tcp_mix'te iyileşme yönünde (TEXT +0,150 [+0,067, +0,200], PTT +0,167 [+0,083, +0,240]; düzeltmesiz, hücreler farklı oturum).
+- Ölçülemeyen: bozuk dönüş yolu ve gerçek Noise kurulumu bu şeritte ölçülmedi.
 
 ### 9.11 Ölçülemedi / açık
 
-- D-13 yönü: bekliyor (`d_tcp_gso1_r12k_d300_l30`).
+- D-13: `d_tcp_gso1_r12k_d300_l30` tamamlandı (§9.6). Açık kalan: tcp_mix TEXT p95 ve dosya bitişinde yön ölçülemedi (iki durum da 60 s sansür tavanında); birim/segment bu hücrede doğrudan ölçülemedi (snmp görüntüsü yok); B ızgarasında TSO kapalı tcp ölçülmedi.
 - Kama ↔ quinn teslim@D hükmü r25'te: ölçülemedi, quinn N = 5 (betimsel; iki taraf da < 0,90).
 - Karışık hücrede Kama gönderen FIFO ↔ darboğaz payı: bench'te katman damgası yok, ölçülemedi (ürün yolu A).
 - Gerçek Noise SESSION_INIT maliyeti: bench'te ölçülemedi (D-9).
@@ -542,7 +585,9 @@ python3 -I scripts/ktp2/f0/d/tam_analiz.py ~/kama-k4g-work/ktp2-f0/runs/tam/d/ou
   --product-note reports/ktp2/f0/d/tam/urun_yolu_A.md
 ```
 
-sha256 (`reports/ktp2/f0/d/tam/SHA256SUMS`): `4c2e9038…` TAM-OTOMATIK.md · `c35aff99…` kosular.csv ·
-`feb9b4c3…` karisik_kosular.csv. Çıktı deterministiktir (bootstrap tohumu sha256'dan). İkililer: bench
+D-13: `python3 -I scripts/ktp2/f0/d/d13_analiz.py --md reports/ktp2/f0/d/tam/D13.md` (sha256 `c692659f…`).
+
+sha256 (`reports/ktp2/f0/d/tam/SHA256SUMS`): `86457455…` TAM-OTOMATIK.md · `c35aff99…` kosular.csv ·
+`b773dbc9…` karisik_kosular.csv. Çıktı deterministiktir (bootstrap tohumu sha256'dan). İkililer: bench
 taban `2cd9f68d` (`3311d8e0…`), aday `bf18dc35` (`c893e840…`), `cell.env` içinde. Ham koşu dizinleri git'te
 değil. Ürün yolu satırı: `reports/ktp2/f0/a/tam/tablolar.md`.
