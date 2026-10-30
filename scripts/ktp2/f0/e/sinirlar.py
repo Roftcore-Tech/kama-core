@@ -140,6 +140,31 @@ def main():
             yok = 30 + 48 / hiz + rtt + ser + rtt / 2  # yalnız 48 B yoklama → ACK → veri
             print(f"  r={hiz} RTT={rtt}: sınır {30 + 2 * rtt:.2f} s | PTO veri taşır: {veri:.2f} s | yalnız yoklama: {yok:.2f} s")
 
+    print("== BW-01  §3.5 'örnekleyici ve bant filtresi aynen': hat tıkalı değilken örnek ≈ pacer × (1 − p) ==")
+    print("  BtlBw'nin sönmemesi için kazanç g ≥ 1/(1−p); ProbeUp 1,25 ile g(1−p):")
+    for p in (F(1, 10), F(2, 10), F(3, 10), F(5, 10)):
+        print(f"  p={float(p):.1f}: 1/(1−p) = {float(1 / (1 - p)):.3f} ; 1,25·(1−p) = {float(F(5, 4) * (1 - p)):.3f}")
+
+    print("== UT-01  §3.5/§3.10 uçuş tavanı max(2 paket, …): RAPOR-B B-K15 hesabının doğrulanması ==")
+    import math
+    print(f"  B'nin değeri: 2 × 1100 / 2,1 = {2 * 1100 / 2.1:.1f} B/s")
+    for L, ad in L_SECENEK[::2]:
+        w = 2 * (1100 + KTP2 + L)
+        print(f"  {ad}: 2 tam boy paket = {w} B → RTT 2,10 s: {w / 2.1:.1f} B/s ; RTT 2,37 s: {w / 2.37:.1f} B/s")
+    print(f"  küçük paket (65 B yük, çerçeve birleştirme yok): 2 × 96 = 192 B → {192 / 2.1:.1f} B/s")
+    print(f"  bugünkü min_cwnd 4 × 1200 = 4800 B → RTT 2,10 s: {4800 / 2.1:.1f} B/s ; 2,37 s: {4800 / 2.37:.1f} B/s")
+    print(f"  taban oranı 2262/4800 = {2262 / 4800:.3f}")
+    for ad, yuk_, I in (("r12k_d1000_l30_p1000", 1000, 0.285), ("r12k_d1000_l0_p65", 65, 0.036)):
+        bench = (16 + 11 + yuk_) / I
+        ktp = (KTP2 + yuk_) / I
+        print(f"  {ad}: sunulan (bench UDP) {bench:.1f} B/s ; KTP-2 telinde {ktp:.1f} B/s ;"
+              f" taban/sunulan {2262 / 2.1 / bench:.3f} ; bugünkü/sunulan {4800 / 2.1 / bench:.3f}")
+    print("  rampa modeli [çıkarım]: r(n+1) = g·r(n), g = 2(1−p)·rtprop/srtt (RAPOR-B T§19 g_cwnd)")
+    print(f"  KTP-2 tabanının bugünküne göre ek RTT'si = ln(4800/2262)/ln g, ln(4800/2262) = {math.log(4800 / 2262):.4f}:")
+    for ad, g in (("l0", 1.67), ("l0", 1.53), ("l30", 1.18), ("l30", 1.04)):
+        n = math.log(4800 / 2262) / math.log(g)
+        print(f"    {ad} g={g}: {n:.2f} RTT = {n * 2.1:.1f} s (RTT 2,1 s)")
+
 
 if __name__ == "__main__":
     main()

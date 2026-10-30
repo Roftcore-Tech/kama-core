@@ -106,6 +106,25 @@ def main():
                 satir += f" RTT {RTT}: oran ≤ {float(oran) * 100:.0f}% (gerek W ≥ {ceil(F(RTT, T))});"
             print(satir)
 
+    print("== K6-09  K-6 ses tel hızı AMP kaydı 13 B ile (limits.rs:24 5 B + :93 8 B; taslak bunu saymıyor) ==")
+    AMP = 13
+    for T in (40, 60, 120, 200):
+        y = yuk(T) + AMP
+        satir = f"  T={T} ms: KTP-2 + AMP:"
+        for L, ad in L_SECENEK[::2]:
+            satir += f" {ad} {float((y + KTP2 + L) * F(1000, T)):.1f} B/s;"
+        satir += f" bugünkü hub zarfı + DATA + AMP: {float((y + 33) * F(1000, T)):.1f} B/s, L=42 {float((y + 33 + 42) * F(1000, T)):.1f} B/s"
+        print(satir)
+    print("  200 ms demet, tablodaki (K,R), onarım başlığı 12 B, AMP dahil:")
+    for p, K, R in TABLO[:3]:
+        satir = f"    p={float(p):.1f} ({K},{R}):"
+        for L, ad in L_SECENEK[::2]:
+            src = yuk(200) + AMP + KTP2 + L
+            rep = yuk(200) + AMP + ONARIM + L
+            v = F(5) / K * (K * src + R * rep)
+            satir += f" {ad} {float(v):.1f} B/s = {float(v) * 8 / 1000:.2f} kbit/s;"
+        print(satir)
+
 
 if __name__ == "__main__":
     main()

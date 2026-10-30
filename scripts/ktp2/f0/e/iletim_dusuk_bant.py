@@ -97,6 +97,20 @@ def main():
             f" {arq_ilk:.2f} s (rttvar=srtt/2); sınır için rttvar ≤ {rttvar_tavan:.2f} s (yayılım 0)"
         )
 
+    print("== K3-06  K-3 / İSTEK-E1: L = 42 ve yayılımla yalnız ARQ p95; literal 12 s hedefiyle kıyas ==")
+    print("  model: p95 = ikinci iletimin varışı = PTO + ser + RTT_y/2; PTO = srtt + 25 ms, srtt = ser + ACK ser + RTT_y")
+    print("  (rttvar = 0, ACK kaybı yok). B'nin fizik.py modeli: tek yön alt sınır + RTT_fiz (PTO'suz).")
+    for ad, veri, ack in (("KTP-2 (138 B, ACK 76 B)", 138, 76), ("B bench (134 B, ACK 73 B)", 134, 73), ("bugün hub zarfı (140 B, ACK 79 B)", 140, 79)):
+        for y_ad, rtt_y in (("yayılım 0", 0.0), ("d300", 0.6), ("d1000", 2.0)):
+            ser = veri / 25
+            srtt = ser + ack / 25 + rtt_y
+            oneri = srtt + ser + rtt_y / 2
+            print(f"  {ad} {y_ad}: alt sınır {ser + rtt_y / 2:.2f} s ; ideal ARQ (PTO=RTT_fiz) p95 {oneri:.2f} s ; +25 ms {oneri + 0.025:.2f} s")
+    print("  genel koşul (L yok): p95 ≤ 11,52 s ⇔ 1,5·RTT_y + 4·rttvar ≤ 11,52 − (5,20 + 0,025 + 3,84)")
+    print(f"    sağ taraf = {11.52 - (5.20 + 0.025 + 3.84):.3f} s")
+    print("  kaynak + onarım (L=42) yayılımla: " + ", ".join(
+        f"{ad}: {(65 + KTP2 + 42) / 25 + (65 + ZARF + ONARIM_BASLIK + 42) / 25 + y / 2:.2f} s" for ad, y in (("yayılım 0", 0.0), ("d300", 0.6), ("d1000", 2.0))))
+
     print("== K2-01  K-2 '%80 iki yönlü kayıpta 1 KB için ideal ARQ ≈ 25 iletim' ==")
     qf = qr = F(2, 10)
     print(f"  teslim (alıcıya ilk varış) ortalaması: 1/q_ileri = {1 / qf}")
