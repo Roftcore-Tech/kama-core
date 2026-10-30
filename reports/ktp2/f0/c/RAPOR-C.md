@@ -35,6 +35,7 @@
    - B-C4 parite açlığı ölçüldü. r12k/RTT 600/%20'de parite kuyruk beklemesi (Little) 1,2–15 s. Blok T = 120 ms'de kapanıyor. Kaybolan DATA, ARQ ile ≈ 1,1–1,5 s'de geliyor; çoğu zaman parite ondan önce yetişmiyor.
    - Aynı hücre RTT 2 s'de: bekleme 0,11–0,46 s. Son-tarih oranları (T2-800) ön-kayıtla uyumlu: arq 0,81, rs2 0,97–0,99, rs4 0,90–0,92.
    - B-C9 gönderen birikimi alıcıda da görünüyor: pencere-minimum alıcı gecikmesi 0,25 s → 13 s.
+10. **Tam set sonuçları:** bu raporun `# TAM SONUÇ` bölümü (4160 koşu). Yukarıdaki maddeler ön-kayıt ve duman dönemine aittir; çelişkide TAM SONUÇ geçerlidir.
 
 ---
 
@@ -83,7 +84,7 @@ Her bulgu dört parçalıdır: ölçüm · dosya/işlev · kök neden · öneril
 
 **Kök neden.** Blok oluşturma süresi, bloğun i'nci çerçevesi için (K − 1 − i) × T'dir. Ürün profilinde K = 8: blok başı 7T bekler. Taslağın "blok süresi dolunca kısmi blok" kuralının (§3.8) kodda karşılığı yok. Konuşmanın son, K'ya tamamlanmayan çerçeveleri korumasızdır. Onların paritesi oturum kapanırken üretilir.
 
-**En dar düzeltme.** Sınıf başına blok zamanlayıcısı: `cur_block` boş değilse ve ilk birimin yaşı T_blok'u geçtiyse, mevcut kısmi-blok kodu (`runtime.rs:2580-2630`, Model-A known-zero) ana döngüde de çalıştırılır. Kısmi blok decode'u alıcıda zaten var (`runtime.rs:3279-3285`).
+**En dar düzeltme.** ~~Sınıf başına blok zamanlayıcısı: mevcut kısmi-blok kodu ana döngüde de çalıştırılır.~~ **Düzeltme (TAM SONUÇ TS.3):** bu öneri tek başına yetmez. Blok ve ESI iki uçta da `unit_id`'den türer (`runtime.rs:2498`, `:3617-3618`); bloğu erken kapatmak sonraki birimlerin eşlemesini bozar, kimlik atlamak da `Reorder`'ı durdurur. Ses için K = 2 profili yeterli bir karşılıktır (ölçüldü).
 
 ### B-C3 · Onarım E bayta dolduruluyor; ürün profilinde E = 1024
 
@@ -685,7 +686,7 @@ Duman tablosu T2-800, clamp ve bu alanları basıyor. Özet tablosuna "birikim m
 | r12k d1000 %20 | rs2 / rs4 (4 koşu) | 184 / 184 · 92 / 92 | 0,11–0,46 s | 8181–11 644 | 27–42 |
 | r1k d300 %20 | rs2 / rs4 (4 koşu) | 16–60 | 1,5–17,8 s | 16 386–22 081 | 1–10 |
 
-- `rs2_taban` d300'de çözülen 76 bloğun yalnız 22'sinde kurtarılan birim alıcıya ilk kez ulaştı. Kalanında birim ARQ ile çoktan gelmişti; parite geç kaldı.
+- ~~`rs2_taban` d300'de çözülen 76 bloğun yalnız 22'sinde kurtarılan birim alıcıya ilk kez ulaştı. Kalanında birim ARQ ile çoktan gelmişti; parite geç kaldı.~~ **Düzeltme (TS.3):** bu çıkarım yanlıştı. r ≥ K kolunda tamamlanmış blok geç onarımla yeniden çözülür (`fec_ingest`); oran gecikme ölçüsü değildir. Parite gecikmesinin kanıtı kuyruk beklemesi ve FEC'le ilk ulaşan / kaybolan payıdır.
 - Geç çerçevelerin alıcı gecikmesi çoğunlukla 1,1–1,5 s (`rs2_taban`: 21 geç çerçevenin 15'i 1,0–1,5 s'de). Bu, ARQ zamanlamasına (T + RTT + OWD ≈ 1,02 s) uyuyor.
 - d300 ↔ d1000 farkı için [çıkarım]: d300'de ARQ tespiti ≈ 0,7 s'de olur. Yeniden gönderim pariteden önce jeton alır (`sender.rs:4292-4311` sırası; `K_ARQ_SHARE`). d1000'de tespit ≈ 2 s sürdüğü için parite önce gider.
 - Ön-kayıt §5.3 "≥ 2T ise B-C4 açlığı ölçülmüş olur" ölçütü d300 ve r1k'da sağlandı. d1000'de sağlanmadı.
@@ -817,6 +818,354 @@ T1-800 = ağızdan kulağa ≤ 800 ms. Tablo: medyan [IQR] (min–maks).
 5. **Sıralı teslim türevi** (client-core `Reorder` karşılığı): kol medyanları 0,02–0,41 (rs 0,31–0,41; diğerleri ≤ 0,05). Ürün uygulama yolunda (PTT `Reliable` + oturum geneli sıra) son-tarih oranının bench'teki sırasız değerden çok daha düşük olacağını gösteriyor [türetilmiş].
 
 **Durdurma gerekmiyor.** Enstrüman ve geçerlilik temiz. Kalan hücreler aynı iki davranışın (B-C4, B-C9) kayıp, RTT ve demet eksenindeki dağılımını ölçecek.
+
+# TAM SONUÇ (2026-10-30)
+
+**Kaynak.** `~/kama-k4g-work/ktp2-f0/runs/tam/c/out/`: 21 hücre, 4160 koşu.
+- İkililer: bench taban-2cd9f68d (`3311d8e0…`), aday-bf18dc35 (`c893e840…`).
+- Satır numaraları taban `a858f3fc`'ye göredir; adayda (`49864510`) farklıysa "/ aday" ile verilir.
+- Bütün sayılar `reports/ktp2/f0/c/tam/` altındaki betik çıktısındandır (T.n = `tablolar.md`).
+
+**Okuma kuralları.**
+- ARQ her kolda açıktır. `arq` = ARQ + parite 0. Bütün farklar "ARQ + artıklık − ARQ"dır; "ARQ'ya karşı FEC" karşılaştırması değildir.
+- **Bütün sayılar bench üst sınırıdır [D-9]:** S1 `Reorder` ve Noise yok, tek akış. Ürün yolu sayısı değildir; ürün yolu = Ajan A `f0_flows`.
+- Ana ölçü (hücre başına tek ölçü): r12k/d300 ve r1k → T1-800 (ağızdan kulağa ≤ 800 ms). d1000 → T2-800 (ağızdan kulağa ≤ 1800 ms = OWD_nom + 800).
+- Değerler koşular arası medyan; dörtte birlikler doğrusal ara değerlidir (Ajan A en yakın sıra kullanır; küçük farklar bundandır).
+- Payda: oranın paydası **çerçeve**, dağılım ve fark biriminin paydası **koşu**.
+- Fark: medyan farkı, koşu birimli yüzdelik bootstrap %95 (B = 4000). Kollar eşlenemez; ayrı yeniden örneklenir. "f.g." = fark gösterilmedi (aralık 0'ı kapsıyor); "sınırda" = aralık 0'ı dışlıyor, yakın uç < 0,02.
+- Çoklu karşılaştırma: birincil aile 11 hücre × 2 ikili × 4 kol = 88 karşılaştırma. %95 aralıklar düzeltmesizdir. Bonferroni aralığı (α = 0,05/88, B = 20 000) T.3'te. Diğer karşılaştırmalar (farklar.csv) keşif amaçlıdır.
+- N = 10 hücreler ve %50 stres hücresi betimseldir; hüküm cümlesinde kullanılmaz.
+
+## TS.1 Geçerlilik [T.1]
+
+| | değer |
+|---|---|
+| hücre | 21: 11 birincil (N = 30/kol), 8 betimsel (N = 10/kol), 2 teşhis (`cx_`, 3 kol × N = 10) |
+| koşu | 4160; rc = 0: 4160; geçerli: 4160. Düşen, zaman aşımı, yeniden koşu: 0 |
+| `rx.jsonl` satırı = sunucu `delivered` | 4160/4160 |
+| ısınma artığı > 0 | 16 koşu (12'si %50 stres hücresinde) |
+| `realized_pre` temiz | 4159/4160. İstisna: `c_r12k_d300_l10_b60/arq_aday/rep1`, `ma0` kuyruğunda 1 paket (90 B); betimsel hücre, koşu tutuldu |
+| gerçekleşen kayıp, hücre medyanı | %10: 0,097–0,105 · %20: 0,198–0,205 · %30: 0,297–0,302 · %50: 0,500 (ileri); dönüş aynı aralıkta. Koşu başına min–maks T.1'de |
+
+**Ölçülemedi:**
+- r12k/d1000, Tanım-1 (D = 400 ve 800 ms): fiziksel olarak olanaksız (OWD 1000 ms > D). T1-800 medyanı bütün kollarda ≤ 0,01. d1000 hücreleri Tanım-2 ile raporlanır.
+- r25 ve r1k + 60 ms demet: ses hatta sığmaz (590 B/s > 25 B/s; ρ = 1,62). Hücre yok.
+- K = 8 / E = 1024 ile son tarih: ürün kolu konuşma penceresinde hiç parite üretmedi (840/840 koşu). Ürün geometrisi yalnız modelde [çıkarım] (`uyar_ates`).
+- Çerçeve başına "FEC ile mi ARQ ile mi geldi": `Delivery` kaynak taşımıyor (`runtime.rs:1190-1197`). Yalnız koşu toplamı var.
+- r1k'da kilit/parite ayrıştırması: R referansı geçersiz (TS.3 no. 1).
+- 20 s'den uzun konuşma ölçülmedi. d1000'de parite kuyruğu ≈ 15 s'de büyümeye başlıyor; sonrası bilinmiyor (TS.3 no. 2).
+- Ürün yolu PTT son tarih oranı (bench dışı): Ajan A.
+
+## TS.2 Sonuç tabloları
+
+### Ana ölçü, sırasız [bench üst sınırı, D-9] — taban · aday
+
+Tam dağılım (medyan [Q1–Q3] (min–maks), T1-400/T1-800/T2-400/T2-800, L2 bayt): T.2. N = 10 hücreler de T.2'de.
+
+| hücre | arq | uyar | rs2 | rs4 | tekrar |
+|---|---|---|---|---|---|
+| r12k_d300_l10_b120 | 0,658 · 0,479 | 0,702 · 0,548 | 0,932 · 0,929 | 0,917 · 0,908 | 0,598 · 0,545 |
+| r12k_d300_l20_b120 | 0,196 · 0,217 | 0,193 · 0,146 | 0,830 · 0,842 | 0,815 · 0,839 | 0,253 · 0,387 |
+| r12k_d300_l30_b120 | 0,134 · 0,077 | 0,131 · 0,068 | 0,726 · 0,744 | 0,726 · 0,720 | 0,045 · 0,131 |
+| r12k_d300_l20_b60 | 0,190 · 0,180 | 0,193 · 0,132 | 0,860 · 0,850 | 0,842 · 0,832 | 0,478 · 0,427 |
+| r12k_d300_l20_b200 | 0,389 · 0,212 | 0,457 · 0,173 | 0,856 · 0,846 | 0,817 · 0,784 | 0,053 · 0,062 |
+| r12k_d1000_l10_b120 | 0,884 · 0,887 | 0,890 · 0,887 | 0,970 · 0,973 | 0,952 · 0,946 | 0,884 · 0,845 |
+| r12k_d1000_l20_b120 | 0,774 · 0,783 | 0,783 · 0,777 | 0,952 · 0,958 | 0,917 · 0,932 | 0,949 · 0,792 |
+| r12k_d1000_l30_b120 | 0,661 · 0,598 | 0,673 · 0,634 | 0,911 · 0,911 | 0,887 · 0,887 | 0,598 · 0,789 |
+| r1k_d300_l10_b200 | 0,534 · 0,399 | 0,524 · 0,317 | 0,736 · 0,793 | 0,779 · 0,764 | 0,058 · 0,058 |
+| r1k_d300_l20_b200 | 0,274 · 0,149 | 0,183 · 0,130 | 0,663 · 0,630 | 0,553 · 0,298 | 0,058 · 0,062 |
+| r1k_d300_l30_b200 | 0,106 · 0,096 | 0,130 · 0,135 | 0,442 · 0,260 | 0,245 · 0,120 | 0,062 · 0,038 |
+
+### Fark: kol − arq (ana ölçü, aynı ikili) [%95]
+
+| hücre | ikili | uyar − arq | rs2 − arq | rs4 − arq | tekrar − arq |
+|---|---|---|---|---|---|
+| r12k_d300_l10_b120 | taban | 0,045 [-0,289, 0,250] (f.g.) | 0,274 [0,205, 0,470] | 0,259 [0,193, 0,452] | -0,060 [-0,438, 0,262] (f.g.) |
+| r12k_d300_l10_b120 | aday | 0,068 [-0,256, 0,268] (f.g.) | 0,449 [0,271, 0,530] | 0,429 [0,253, 0,509] | 0,065 [-0,554, 0,318] (f.g.) |
+| r12k_d300_l20_b120 | taban | -0,003 [-0,152, 0,074] (f.g.) | 0,634 [0,506, 0,688] | 0,619 [0,491, 0,664] | 0,057 [-0,250, 0,741] (f.g.) |
+| r12k_d300_l20_b120 | aday | -0,071 [-0,161, 0,048] (f.g.) | 0,625 [0,554, 0,714] | 0,622 [0,554, 0,711] | 0,170 [-0,182, 0,393] (f.g.) |
+| r12k_d300_l30_b120 | taban | -0,003 [-0,086, 0,101] (f.g.) | 0,592 [0,524, 0,676] | 0,592 [0,524, 0,670] | -0,089 [-0,155, 0,033] (f.g.) |
+| r12k_d300_l30_b120 | aday | -0,009 [-0,039, 0,021] (f.g.) | 0,667 [0,634, 0,685] | 0,643 [0,607, 0,661] | 0,054 [-0,048, 0,256] (f.g.) |
+| r12k_d300_l20_b60 | taban | 0,003 [-0,254, 0,124] (f.g.) | 0,670 [0,429, 0,747] | 0,652 [0,411, 0,735] | 0,287 [-0,226, 0,545] (f.g.) |
+| r12k_d300_l20_b60 | aday | -0,048 [-0,152, 0,089] (f.g.) | 0,670 [0,536, 0,731] | 0,652 [0,549, 0,716] | 0,247 [0,126, 0,396] |
+| r12k_d300_l20_b200 | taban | 0,067 [-0,269, 0,361] (f.g.) | 0,466 [0,226, 0,740] | 0,428 [0,183, 0,692] | -0,337 [-0,582, -0,072] |
+| r12k_d300_l20_b200 | aday | -0,038 [-0,231, 0,058] (f.g.) | 0,635 [0,442, 0,688] | 0,572 [0,389, 0,635] | -0,149 [-0,337, 0,062] (f.g.) |
+| r12k_d1000_l10_b120 | taban | 0,006 [-0,009, 0,021] (f.g.) | 0,086 [0,071, 0,101] | 0,068 [0,054, 0,077] | 0,000 [-0,036, 0,074] (f.g.) |
+| r12k_d1000_l10_b120 | aday | 0,000 [-0,012, 0,033] (f.g.) | 0,086 [0,074, 0,116] | 0,060 [0,051, 0,095] | -0,042 [-0,077, 0,000] (f.g.) |
+| r12k_d1000_l20_b120 | taban | 0,009 [-0,018, 0,030] (f.g.) | 0,179 [0,149, 0,202] | 0,143 [0,110, 0,158] | 0,176 [0,146, 0,193] |
+| r12k_d1000_l20_b120 | aday | -0,006 [-0,042, 0,042] (f.g.) | 0,176 [0,158, 0,223] | 0,149 [0,122, 0,196] | 0,009 [-0,030, 0,140] (f.g.) |
+| r12k_d1000_l30_b120 | taban | 0,012 [-0,057, 0,039] (f.g.) | 0,250 [0,199, 0,277] | 0,226 [0,185, 0,250] | -0,062 [-0,548, 0,238] (f.g.) |
+| r12k_d1000_l30_b120 | aday | 0,036 [-0,402, 0,461] (f.g.) | 0,312 [0,244, 0,744] | 0,289 [0,202, 0,708] | 0,190 [-0,006, 0,637] (f.g.) |
+| r1k_d300_l10_b200 | taban | -0,010 [-0,164, 0,154] (f.g.) | 0,202 [0,135, 0,346] | 0,245 [0,159, 0,389] | -0,476 [-0,538, -0,337] |
+| r1k_d300_l10_b200 | aday | -0,082 [-0,245, 0,067] (f.g.) | 0,394 [0,226, 0,490] | 0,365 [0,173, 0,447] | -0,341 [-0,505, -0,250] |
+| r1k_d300_l20_b200 | taban | -0,091 [-0,269, 0,087] (f.g.) | 0,389 [0,231, 0,534] | 0,279 [0,077, 0,452] | -0,216 [-0,365, -0,072] |
+| r1k_d300_l20_b200 | aday | -0,019 [-0,144, 0,053] (f.g.) | 0,481 [0,332, 0,529] | 0,149 [-0,043, 0,274] (f.g.) | -0,087 [-0,212, -0,058] |
+| r1k_d300_l30_b200 | taban | 0,024 [-0,038, 0,077] (f.g.) | 0,337 [0,221, 0,452] | 0,139 [0,053, 0,202] | -0,043 [-0,096, -0,010] (sınırda) |
+| r1k_d300_l30_b200 | aday | 0,038 [-0,010, 0,091] (f.g.) | 0,163 [0,067, 0,298] | 0,024 [-0,014, 0,091] (f.g.) | -0,058 [-0,101, -0,010] (sınırda) |
+
+Sayım (22 karşılaştırma/kol):
+- `uyar`: 22/22 f.g.
+- `rs2`: 22/22 ayrıştı; Bonferroni aralığı 22/22 sıfırın üstünde.
+- `rs4`: 20/22 ayrıştı, 2/22 f.g. (r1k l20 aday, r1k l30 aday); Bonferroni aralığı 18/22 sıfırın üstünde.
+- `tekrar`: 7 ayrıştı (2'si artı yönde, 5'i eksi yönde), 2 sınırda, 13 f.g.
+
+### Reorder türevi (sıralı teslim) [türetilmiş, bench üst sınırı] — taban · aday
+
+PTT-yalnız oturumda S1 `Reorder`'ın karşılığı. Başka akış yok; ürün yolunda sıra başı boşlukları diğer akışlardan da gelir, gerçek değer bundan düşük olur.
+
+| hücre | arq | uyar | rs2 | rs4 | tekrar |
+|---|---|---|---|---|---|
+| r12k_d300_l10_b120 | 0,202 · 0,235 | 0,226 · 0,280 | 0,708 · 0,685 | 0,628 · 0,586 | 0,128 · 0,155 |
+| r12k_d300_l20_b120 | 0,033 · 0,051 | 0,036 · 0,033 | 0,384 · 0,405 | 0,312 · 0,387 | 0,024 · 0,018 |
+| r12k_d300_l30_b120 | 0,012 · 0,018 | 0,012 · 0,012 | 0,134 · 0,143 | 0,179 · 0,170 | 0,006 · 0,012 |
+| r12k_d300_l20_b60 | 0,028 · 0,018 | 0,019 · 0,016 | 0,396 · 0,338 | 0,333 · 0,217 | 0,006 · 0,009 |
+| r12k_d300_l20_b200 | 0,058 · 0,058 | 0,072 · 0,062 | 0,587 · 0,466 | 0,356 · 0,365 | 0,019 · 0,019 |
+| r12k_d1000_l10_b120 | 0,125 · 0,125 | 0,146 · 0,113 | 0,690 · 0,714 | 0,664 · 0,649 | 0,024 · 0,039 |
+| r12k_d1000_l20_b120 | 0,024 · 0,012 | 0,021 · 0,021 | 0,711 · 0,702 | 0,568 · 0,619 | 0,006 · 0,006 |
+| r12k_d1000_l30_b120 | 0,006 · 0,012 | 0,018 · 0,006 | 0,304 · 0,304 | 0,610 · 0,580 | 0,006 · 0,006 |
+| r1k_d300_l10_b200 | 0,207 · 0,188 | 0,163 · 0,183 | 0,495 · 0,538 | 0,413 · 0,466 | 0,024 · 0,019 |
+| r1k_d300_l20_b200 | 0,067 · 0,058 | 0,038 · 0,019 | 0,240 · 0,231 | 0,130 · 0,077 | 0,010 · 0,010 |
+| r1k_d300_l30_b200 | 0,024 · 0,010 | 0,019 · 0,010 | 0,038 · 0,077 | 0,038 · 0,029 | 0,010 · 0,010 |
+
+Sıralı ölçüde arq ve uyar 0,01–0,28 aralığında; rs2 − arq farkları T.4'te. Ajan A'nın ürün yolu ölçümü (`a_r12k_d300_l30_dosyasiz`, 200 ms demet): PTT ≤ 800 ms %2–4. Aynı mertebede bench türevi: `c_r12k_d300_l30_b200` (N = 10, betimsel) `arq`, `uyar` sıralı T1-800 0,01–0,04 [T.2/hucreler.csv].
+
+### Sıkı son tarih — T1-400 (d300, r1k) ve T2-400 (d1000), taban · aday
+
+| hücre | arq | uyar | rs2 | rs4 | tekrar |
+|---|---|---|---|---|---|
+| r12k_d300_l10_b120 | 0,048 · 0,077 | 0,071 · 0,054 | 0,140 · 0,161 | 0,167 · 0,158 | 0,051 · 0,057 |
+| r12k_d300_l20_b120 | 0,024 · 0,030 | 0,030 · 0,021 | 0,101 · 0,110 | 0,125 · 0,119 | 0,030 · 0,039 |
+| r12k_d300_l30_b120 | 0,018 · 0,012 | 0,018 · 0,012 | 0,095 · 0,086 | 0,092 · 0,089 | 0,012 · 0,027 |
+| r12k_d300_l20_b60 | 0,068 · 0,052 | 0,049 · 0,046 | 0,381 · 0,369 | 0,403 · 0,403 | 0,134 · 0,153 |
+| r12k_d300_l20_b200 | 0,000 · 0,005 | 0,000 · 0,000 | 0,010 · 0,010 | 0,010 · 0,005 | 0,000 · 0,000 |
+| r12k_d1000_l10_b120 | 0,747 · 0,729 | 0,780 · 0,747 | 0,810 · 0,815 | 0,786 · 0,807 | 0,652 · 0,607 |
+| r12k_d1000_l20_b120 | 0,655 · 0,658 | 0,655 · 0,643 | 0,726 · 0,750 | 0,714 · 0,717 | 0,726 · 0,557 |
+| r12k_d1000_l30_b120 | 0,557 · 0,446 | 0,554 · 0,485 | 0,682 · 0,705 | 0,613 · 0,619 | 0,387 · 0,583 |
+| r1k_d300_l10_b200 | 0,000 · 0,000 | 0,000 · 0,000 | 0,000 · 0,000 | 0,000 · 0,000 | 0,000 · 0,000 |
+| r1k_d300_l20_b200 | 0,000 · 0,000 | 0,000 · 0,000 | 0,000 · 0,000 | 0,000 · 0,000 | 0,000 · 0,000 |
+| r1k_d300_l30_b200 | 0,000 · 0,000 | 0,000 · 0,000 | 0,000 · 0,000 | 0,000 · 0,000 | 0,000 · 0,000 |
+
+### Kilitli koşu sayısı (n/30) — taban · aday
+
+| hücre | arq | uyar | rs2 | rs4 | tekrar |
+|---|---|---|---|---|---|
+| r12k_d300_l10_b120 | 16 · 24 | 16 · 20 | 0 · 0 | 0 · 0 | 18 · 20 |
+| r12k_d300_l20_b120 | 23 · 30 | 26 · 26 | 0 · 0 | 1 · 0 | 17 · 23 |
+| r12k_d300_l30_b120 | 26 · 29 | 28 · 29 | 0 · 0 | 0 · 1 | 22 · 27 |
+| r12k_d300_l20_b60 | 25 · 26 | 23 · 27 | 0 · 0 | 0 · 0 | 22 · 24 |
+| r12k_d300_l20_b200 | 18 · 27 | 18 · 26 | 0 · 0 | 0 · 1 | 23 · 26 |
+| r12k_d1000_l10_b120 | 3 · 7 | 4 · 5 | 0 · 0 | 1 · 0 | 7 · 13 |
+| r12k_d1000_l20_b120 | 5 · 9 | 5 · 9 | 0 · 0 | 0 · 0 | 6 · 18 |
+| r12k_d1000_l30_b120 | 8 · 18 | 8 · 13 | 0 · 2 | 0 · 1 | 18 · 15 |
+| r1k_d300_l10_b200 | 17 · 22 | 17 · 23 | 2 · 1 | 0 · 3 | 30 · 30 |
+| r1k_d300_l20_b200 | 19 · 27 | 24 · 29 | 0 · 3 | 10 · 21 | 30 · 30 |
+| r1k_d300_l30_b200 | 25 · 30 | 29 · 29 | 12 · 19 | 20 · 28 | 30 · 30 |
+
+### Bant bütçesi [T.12]
+
+- **rs ↔ arq eşit bütçe değildir:** L2 bayt/çerçeve oranı rs2 1,32–2,08 ×, rs4 1,14–1,87 ×. Yukarıdaki rs − arq farkları ek bant karşılığıdır; "aynı bütçede" denemez.
+- **rs2 ↔ tekrar** (±%10 eşit) l20 hücrelerinin çoğunda eşit bütçededir (T.12 `eşit bütçe çiftleri`); %10 hücrelerinde değildir (rs2/tekrar 0,75–0,78).
+- Kilitli kollarda ölçülen bayt düşüktür, çünkü çerçevelerin bir bölümü pencerede tele çıkmaz. Bu kollarda "daha az bayt" kazanç değildir.
+- Bayt başına: r12k/d1000 hücrelerinde `arq` zamanında çerçeve/kB'de rs'den yüksektir (l20: 5,7–5,9 ↔ 3,7–3,9 rs2). Son tarih oranı artıyor, bayt verimi düşüyor.
+
+### Gecikme bütçesi bileşenleri [T.5] (ms; seçili hücreler, tamamı T.5)
+
+`demet`, `blok` yapılandırma · `seri` hesap (L2/hız) · `ağ nominal` netem · diğerleri ölçüm. Gönderen kuyruğu = pencere-minimum gecikmesinin ilk pencerelere göre artışı [türetilmiş]. Titreşim = doğrudan sınıf çerçevelerde artık. Geç = doğrudan sınıf dışı çerçeve.
+
+| hücre | kol | demet | blok ort/maks | seri | ağ nominal | ilk pencere gecikmesi p50 | gönderen kuyruğu med / p95 | titreşim p50 / p95 | geç pay / gecikme | parite alt–üst |
+|---|---|---|---|---|---|---|---|---|---|---|
+| r12k_d300_l20_b120 | arq_taban | 120 | — | 8,5 | 300 | 347 | 638 / 1405 | 33 / 192 | 0,286 / 1656 | — |
+| r12k_d300_l20_b120 | arq_aday | 120 | — | 8,5 | 300 | 333 | 1177 / 3312 | 22 / 203 | 0,384 / 1282 | — |
+| r12k_d300_l20_b120 | rs2_taban | 120 | 60/120 | 8,5 | 300 | 315 | 38 / 92 | -6 / 96 | 0,173 / 1238 | 2213–2543 |
+| r12k_d300_l20_b120 | rs2_aday | 120 | 60/120 | 8,5 | 300 | 327 | 35 / 87 | -5 / 103 | 0,161 / 1271 | 2354–2774 |
+| r12k_d300_l20_b120 | rs4_taban | 120 | 180/360 | 8,5 | 300 | 325 | 36 / 90 | -4 / 113 | 0,190 / 1356 | 2114–2213 |
+| r12k_d300_l20_b120 | tekrar_taban | 120 | — | 8,5 | 300 | 360 | 2610 / 4848 | 20 / 181 | 0,220 / 1318 | — |
+| r12k_d1000_l20_b120 | arq_taban | 120 | — | 8,5 | 1000 | 1143 | 102 / 309 | -15 / 269 | 0,208 / 3781 | — |
+| r12k_d1000_l20_b120 | arq_aday | 120 | — | 8,5 | 1000 | 1135 | 125 / 294 | -1 / 280 | 0,208 / 3689 | — |
+| r12k_d1000_l20_b120 | rs2_taban | 120 | 60/120 | 8,5 | 1000 | 1164 | 91 / 212 | 59 / 334 | 0,039 / 3508 | 323–323 |
+| r12k_d1000_l20_b120 | rs2_aday | 120 | 60/120 | 8,5 | 1000 | 1122 | 78 / 192 | 75 / 344 | 0,036 / 3546 | 162–162 |
+| r12k_d1000_l20_b120 | rs4_taban | 120 | 180/360 | 8,5 | 1000 | 1149 | 121 / 258 | 3 / 367 | 0,071 / 3490 | 203–203 |
+| r12k_d1000_l20_b120 | tekrar_taban | 120 | — | 8,5 | 1000 | 1174 | 62 / 290 | 95 / 358 | 0,042 / 3611 | — |
+| r1k_d300_l20_b200 | arq_taban | 200 | — | 118,0 | 300 | 444 | 246 / 1258 | 8 / 177 | 0,260 / 2194 | — |
+| r1k_d300_l20_b200 | arq_aday | 200 | — | 118,0 | 300 | 447 | 841 / 2399 | 6 / 191 | 0,327 / 2019 | — |
+| r1k_d300_l20_b200 | rs2_taban | 200 | 100/200 | 118,0 | 300 | 454 | 63 / 165 | 24 / 158 | 0,192 / 2122 | 3048–3804 |
+| r1k_d300_l20_b200 | rs2_aday | 200 | 100/200 | 118,0 | 300 | 471 | 86 / 217 | 8 / 167 | 0,197 / 2033 | 4020–5540 |
+| r1k_d300_l20_b200 | rs4_taban | 200 | 300/600 | 118,0 | 300 | 455 | 114 / 259 | 7 / 163 | 0,236 / 2247 | 6304–8979 |
+| r1k_d300_l20_b200 | tekrar_taban | 200 | — | 118,0 | 300 | 550 | 7028 / 10618 | 40 / 207 | 0,457 / 1109 | — |
+
+- Ağ + serileştirme ölçümü: ilk pencere p50 d300'de 315–347 ms (nominal 308,5), d1000'de 1143–1164 ms (1008,5), r1k'da 444–454 ms (418). Nominalin üstündeki pay netem FIFO etkisidir.
+- Serileştirme denetimi [T.5]: r1k − r12k ilk pencere minimumu farkı 129,6 ms, hesap 108,6 ms; 21 ms kuyruk.
+- Bu üç hücrede bileşen sıralaması: `arq`'ta ağın üstündeki en büyük terim gönderen kuyruğu (medyan 0,1–1,2 s, p95 0,3–3,3 s). `rs`'de d300 ve r1k'da en büyük terim parite beklemesi. Blok oluşturma (T = 120, K = 2/4: 60–180 ms ortalama) ikincildir.
+
+### Parite akıbeti [T.10] — taban · aday
+
+| hücre | rs2 tx/plan (taban · aday) | rs2 bekleme alt–üst ms | rs4 tx/plan | rs4 bekleme alt–üst ms | FEC ilk ulaşan rs2 · rs4 (taban) |
+|---|---|---|---|---|---|
+| r12k_d300_l10_b120 | 91/92 · 90/92 | 1323–1323 · 1364–1507 | 46/46 · 42/46 | 1907–1977 · 3052–3052 | 9 · 7 |
+| r12k_d300_l20_b120 | 160/184 · 158/184 | 2213–2543 · 2354–2774 | 84/92 · 86/92 | 2114–2213 · 2286–2464 | 13 · 12 |
+| r12k_d300_l30_b120 | 132/184 · 114/184 | 4425–6498 · 5030–8137 | 157/184 · 128/184 | 3533–3990 · 4332–6283 | 14 · 14 |
+| r12k_d300_l20_b60 | 333/352 · 315/352 | 1519–1549 · 2159–2368 | 161/176 · 132/176 | 2520–2990 · 3343–4389 | 30 · 22 |
+| r12k_d300_l20_b200 | 120/120 · 112/120 | 788–795 · 2118–2186 | 56/60 · 53/60 | 2579–2919 · 1850–2083 | 14 · 8 |
+| r12k_d1000_l10_b120 | 92/92 · 92/92 | 103–103 · 89–89 | 46/46 · 46/46 | 105–105 · 91–91 | 15 · 14 |
+| r12k_d1000_l20_b120 | 184/184 · 184/184 | 323–323 · 162–162 | 92/92 · 92/92 | 203–203 · 207–207 | 32 · 29 |
+| r12k_d1000_l30_b120 | 184/184 · 184/184 | 275–275 · 221–221 | 184/184 · 184/184 | 359–359 · 398–398 | 43 · 48 |
+| r1k_d300_l10_b200 | 60/60 · 59/60 | 1390–1493 · 1413–1468 | 30/30 · 30/30 | 3023–3038 · 2071–2071 | 5 · 4 |
+| r1k_d300_l20_b200 | 54/60 · 50/60 | 3048–3804 · 4020–5540 | 22/30 · 21/30 | 6304–8979 · 6576–10592 | 6 · 5 |
+| r1k_d300_l30_b200 | 34/60 · 35/60 | 9619–17291 · 8781–15400 | 18/30 · 12/30 | 9985–16266 · 11347–29921 | 5 · 4 |
+
+Kaybolan kaynak birim ≈ p × (çerçeve + 16): %20/120 ms'de ≈ 37. FEC'le ilk ulaşan: d300 12–13 (≈ %33), d1000 29–32 (≈ %78–86).
+
+## TS.3 Bulgular (ölçüm · dosya:işlev:satır · kök neden · en dar düzeltme)
+
+**1. Gönderen kilidi (B-C9 = B-K14 = A-9) — asıl engel.**
+- **Ölçüm.** 11 birincil hücre, kilitli koşu (taban → aday, /330): arq 185 → 249, uyar 198 → 236, tekrar 223 → 256, rs2 14 → 25, rs4 32 → 55 [T.13, T.19]. Etki, r12k_d300_l20_b120: kilitli arq medyan 0,167 (n = 23), kilitsiz 0,815 (n = 7) [T.6]. Çeyrek profili (arq_taban): Ç1 0,667 → Ç2 0,155 → Ç3 0,000 → Ç4 0,000 [T.17]. N = 30.
+- **Dosya.** `bw.rs:BtlBw::update:220-245`; `rate.rs:effective_send_rate:164-180`; `sender.rs:compute_send_rate:4239-4268` / aday `:4710`; `sender.rs:on_event_core:2354-2361` / aday `:2637-2644`; `sender.rs:startup_plateau:4208-4235`.
+- **Kök neden.**
+  - [ölçüldü] Son `btlbw` / (veri + yeniden gönderim hızı) `hız payı`: arq %20–30 hücrelerinde 0,78–0,99; rs kollarında 1,5–2,2 (r12k) [hucreler.csv]. Darboğaz değil: ρ 0,09, r12k.
+  - [çıkarım] Kuyruk doluyken teslim örneği kaybolan baytı saymaz; Steady kazancı 1'de pacer teslim hızına kilitlenir; yeniden gönderim bandı ayrılmaz.
+  - [ölçüldü] Kilit başlangıcı medyanı d300'de konuşmanın 3,2–10,4. saniyesi, d1000 %10–20'de 9,2–18,5, %30'da 3,4–5,0; oturum yaşı d300'de 13–22 RTT, d1000'de 9–11 RTT [T.14]. Startup platosu RTT saatlidir [kod]; başlangıcın Startup çıkışına bağlanması [çıkarım], durum zaman çizelgesi kaydedilmedi.
+  - Sınır: %10 hücrelerinde arq `hız payı` > 1 iken de kilit var (16–24/30). Son btlbw anlık görüntüdür; kök neden tek başına bu oranla açıklanmaz.
+- **En dar düzeltme.** `sender.rs:on_event_core:2361`: uygulama-sınırlı akışta pacer alt sınırı = son pencerede sunulan + yeniden gönderilen hız × (1 + pay), `cwnd_over_srtt` tavanıyla. btlbw'ye sentetik örnek yazılmaz. Mevcut `startup_pacing_floor` deseni. **Motor çekirdeği.**
+
+**2. Parite pacer'da aç kalıyor (B-C4).**
+- **Ölçüm.** Kuyruk beklemesi alt–üst (Little), koşular arası medyan, N = 30 [T.10]: r12k/d300 rs2 788–8137 ms, rs4 1850–6283 ms; r1k rs2 1390–17 291 ms, rs4 2071–29 921 ms; d1000 rs2 89–323 ms, rs4 91–398 ms. T = 120 ms. Tele çıkan pay r12k/d300 rs2 0,62–1,00; jeton reddi koşu başına 15,5–21 bin [hücre medyanları, T.10].
+- **Zaman profili** [T.18]: rs2_taban r12k_d300_l20_b120 bekleyen parite 0,5 → 3,9 → 10,5 → 20,2 → 26,0 → 29,9 → 34,8 (3 s kutu). d1000_l20_b120: 15 s'ye kadar ≈ 0,5, sonra 2,8 → 10,7. Parite katkısı (Ç − R) d300 %20: Ç1 +0,11…+0,16 → Ç4 ≈ 0; d1000 %20: Ç1–3 +0,16…+0,18, Ç4 +0,09 [T.21].
+- **Dosya.** `sender.rs:schedule_transmit:4292` < `:4311`; `sender.rs:plan_fec_parity:5319-5354` / aday `:5857-5868` (`copy_reserve_allows`); `sender.rs:on_event_core:2366-2381` / aday `burst_floor_bytes:7520-7531` (parite yok).
+- **Kök neden.** [ölçüldü] parite kuyruğu varış hızından yavaş boşalıyor. [kod] parite son sınıf, jeton her DATA'da kırpılır. [çıkarım] rs kollarında hız payı ≈ 2 olsa da bu payın üstü pariteye gider: (2,2) kolunda parite talebi veri talebinin 1,44 katı. d1000'de kuyruk büyümesi ≈ 12 s geç başlar; neden ayrılmadı (Startup süresi RTT saatli olduğu için [çıkarım]). **d1000 sonuçları 20 s konuşmayla sınırlıdır.**
+- **En dar düzeltme.** Bekleyen parite başı kova tabanına girsin; son tarihli sınıfta parite DATA'dan hemen sonra, ARQ'dan önce planlansın. **Motor çekirdeği.** No. 1'e bağlı.
+
+**3. Ürün uyarlamalı FEC konuşmada parite üretmiyor (B-C1).**
+- **Ölçüm.** `uyar`: 840 koşu, konuşma penceresinde parite baytı > 0 olan koşu **0** [T.9]. 10 koşuda ısınmada 1 blok (2 onarım, 20 onarım toplam); neden [çıkarım]: btlbw örneği yokken kırpma uygulanmıyor (`:3769`). `uyar64` 20/20 ve `pol` 20/20 parite 0. Kırpma medyanı 23,3–37,7 bin karar; arbiter önerisi 23,3–39,5 bin; btlbw 258–1127 B/s. `uyar − arq`: 22/22 f.g.
+- **Dosya.** `sender.rs:fuzzy_evaluate:3763-3796` / aday `:4240-4267`; `budget.rs:budget_cap_permille:38-41`; `sender.rs:compute_requested_r:1026-1031`.
+- **Kök neden.** [ölçüldü + kod] cap = btlbw × 1000 / 125 000 = 2–9 ‰; K = 8'de r ≥ 1 için ≥ 63 ‰ gerekir. Sıfırlama reddi permille düzeyinde (`:3786`).
+- **En dar düzeltme.** Ses oturumunda denetleyici yerine `manual_r` yolu (`runtime.rs:2503-2507`, §8.5'i atlar; `rs*` kolları bunu kullandı). **Dar**, client-core. Genel akış için r düzeyinde sıfırlama reddi: **motor çekirdeği**, ayrı ölçüm ister.
+
+**4. Blok süresi ve K (B-C2).**
+- **Ölçüm.** K = 8: ölçülemedi (no. 3). K = 2 ↔ 4: parite zamanındayken, Ç1 − R (r12k/d300/%20, taban + aday): T = 60 ms rs2 +0,156, rs4 +0,123; T = 120 +0,127, +0,074; T = 200 +0,107, +0,024 [T.21]. Bütün konuşmada bloktaki konum etkisi küçük: rs4 konum 0 → 3 farkı ≤ 0,09 [T.11]; parite gecikmesi bunu örtüyor. Ön-kayıt "konum etkisi belirgin" tutmadı.
+- **Dosya.** `runtime.rs:client_task:2500`; `:2579-2632`.
+- **Kök neden.** [kod] kapanış yalnız K dolunca. [türetilmiş] T = 200, K = 4'te blok 600 ms; d300 D = 800 payı ≈ 290 ms.
+- **En dar düzeltme.** Ses için K = 2 profili (0x01). **Önceki önerim düzeltildi:** kısmi blok kodunu ana döngüye taşımak yetmez; blok ve ESI `unit_id`'den türer (`runtime.rs:2498`, `:3617-3618`), erken kapanış eşlemeyi bozar, kimlik atlamak `Reorder`'ı durdurur. Süre tabanlı kapanış ancak A-2 çözülürse ya da kaynak çerçevesi blok kimliği taşırsa mümkün. **Sözleşme.**
+
+**5. E = 1024 onarımı (B-C3).**
+- **Ölçüm.** Konuşma penceresinde ölçülemedi (0 parite). Isınmada 20 onarım × 1052 B (bench; hub zarfıyla 1058 B). Hesap: r1k'da tek onarım 1094 ms, r12k'da 87,5 ms. `rs*` E = 64: 92 B. Karşı-olgu [çıkarım, model]: `uyar_ates` r1k ρ 2,0–2,1; r12k T1-800 kazancı ≤ 0,03.
+- **Dosya.** `runtime.rs:2472`, `:2501`; `profile.rs:85-91`.
+- **Kök neden.** [kod] sembol E'ye dolgulu; onarım yükten bağımsız.
+- **En dar düzeltme.** Ses oturumu profili 0x01/0x02 (E = 64). Oturum başına tek profil var (`runtime.rs:282`) ve bloklar bütün trafiği karıştırıyor (Ajan A): ayrı PTT oturumu ya da akış başına FEC gerekir. **Sözleşme.**
+
+**6. Sıralı teslim ve Reliable (B-C6, A-2).**
+- **Ölçüm.** Ana ölçü sırasız → sıralı [T.4], r12k_d1000_l20_b120: arq 0,77 → 0,02; rs2 0,95 → 0,71. r12k_d300_l20_b120: arq 0,20 → 0,03; rs2 0,83 → 0,38. r12k_d300_l30_b120: rs2 0,73 → 0,13. Yeniden gönderim, arq: 6,7–26,3 B/çerçeve, ARQ varışı son tarihten sonra [türetilmiş; T.5 geç gecikme r12k/d300 1,3–1,9 s, d1000 3,7–4,0 s].
+- **Dosya.** `kama-app/src/ptt.rs:Ptt::send_bundle:627`; `client-core/src/transport.rs:Reorder:367-412`, `:1272-1281`; `runtime.rs:Delivery:1190-1197`; `sender.rs:declare_delivery_deadline:4354-4359`.
+- **Kök neden.** [kod] PTT Reliable, oturum geneli tek sıra; `DeadlineBounded` yalnız FEC politika girdisi; `Delivery` politika taşımıyor. [türetilmiş] kaybolan her çerçeve sonraki çerçeveleri ARQ süresi kadar bekletir; FEC son tarih içinde kurtarırsa bu duruş kalkar (d1000: +0,69).
+- **En dar düzeltme.** A'nın F1-A6'sı (akış başına sıra) ya da PTT için sıra atlayan tel bayrağı; K4G-08 sahibi kararı. **Sözleşme.**
+
+**7. 05b adayı kilidi artırıyor.**
+- **Ölçüm.** CMH (11 tabaka), aday ↔ taban kilit OR: arq 3,60 (p = 1,2e-09), uyar 2,21 (p = 0,00021), rs4 4,63 (p = 0,00013), tekrar 1,94 (p = 0,0014), rs2 2,74 (p = 0,037; 5 kol Bonferroni'de, α = 0,01, ayrışmıyor) [T.19]. `kilitli` eşiği duman-2 sonrası konmuştur; eşik sonrası sınama olarak okunmalıdır. Ana ölçüde aday − taban: 55 karşılaştırmada 4 ayrıştı (hepsi eksi yönde), 4 sınırda (1'i artı yönde), 47 f.g. [T.13].
+- **Dosya.** 05b `sender.rs` tamamı; tek satıra indirilmedi.
+- **Kök neden.** Ayrılmadı.
+- **En dar düzeltme.** Yok. No. 1 yapılırsa aday ve taban ayrı ölçülmeli.
+
+**8. Küçük kusur: geç onarım tamamlanmış bloğu yeniden çözüyor.**
+- **Ölçüm.** rs2 r = 2 kolunda FEC ilk ulaşan / çözülen 0,21–0,62, r < K kollarında ≥ 0,83 [T.10]. Gereksiz RS hesabı; gecikme etkisi ölçülmedi.
+- **Dosya.** `runtime.rs:fec_ingest:3232`, `:3255`.
+- **Kök neden.** [kod] tamamlanan blok haritadan silinir, geç onarım boş kayıt açar; r ≥ K'da kaynaksız "çözülür".
+- **En dar düzeltme.** Tamamlanan blok kimliğini sınırlı süre hatırla. **Dar.** Duman-2'deki "76/22" yorumum bu yüzden yanlıştı; §10.2'de düzeltildi.
+
+### Soruların cevabı
+
+**Ara nottaki çıkarım tam sette [T.7, T.21].** R = ort(1 − p_ileri) referansıyla ort(rs) − ort(arq) = kilit bileşeni + parite bileşeni (ortalama, %95 bootstrap):
+
+| hücre kümesi | toplam | kilit bileşeni | parite bileşeni | kilit payı |
+|---|---|---|---|---|
+| r12k/d300 (5 hücre) | +0,35…+0,62 | +0,33…+0,58 | −0,03…+0,06 | 0,87–1,06 |
+| r12k/d1000 (3 hücre) | +0,07…+0,44 | +0,04…+0,27 | +0,03…+0,19 | 0,25–0,65 |
+
+- **d300: evet.** rs − arq farkının ≥ %87'si kilit bileşenidir. **d1000: hayır.** Farkın %35–75'i son tarih içinde parite katkısıdır. Ara nottaki genelleme yalnız d300 için tutar.
+- Son tarih içinde parite ile telafi edilen kayıp payı: d300 rs2 %11–32, rs4 −13…+23 (aralık bazı hücrelerde 0'ı kapsıyor); d1000 rs2 %58–76, rs4 %29–62.
+- r1k: R referansı geçersiz (kilitsiz arq 0,58–0,75 < R 0,69–0,90; hat doluluğu T1-800 tavanını düşürüyor). Ölçülemedi.
+- Kilitli/kilitsiz alt küme N'leri T.6'da. rs'de kilitli hücreler r1k dışında 0–2/30. arq kilitsiz n: d300 %20–30 hücrelerinde 0–12, %10'da 6–14, d1000'de 12–27. n < 30 betimseldir; `kilitli` sonuçtan türer, alt küme kıyası nedensel değildir. R referansı bu seçimden bağımsızdır.
+
+**Kilitsiz alt kümede tekrar neden rs'den yüksek?** [T.8]
+- d300: tekrar 0,92–0,96 (n = 3–13), rs2 0,73–0,86, rs4 0,72–0,84. d1000: tekrar 0,89–0,95, rs2 0,91–0,97.
+- [ölçüldü] Fark, parite zamanında olduğu hücrede kapanıyor. tekrar ≈ 1 − p̄² (kopya aynı sunumda, DATA sınıfında gider). rs2 d300'de 1 − p̄'a yakın, binom değerine (0,94–0,98) yalnız Ç1'de yaklaşıyor.
+- Yani fark kodlamadan değil zamanlamadan (no. 2). Bütün koşularda ise tekrar, DATA talebini iki katına çıkardığı için en sık kilitlenen koldur (223–256/330) ve r1k'da 30/30.
+
+**R2A/FS-1 ile ilişki.** Çelişki yok; ölçü ve düzenek farklı (§6.2).
+- R2A 59–66/100 ↔ 12–14/100: süreç-içi model, 48 sembollük mesaj, ufuk içinde tamamlanma, parite doğrudan kanala. Son tarih isabeti ≈ 0.
+- F0: ürün runtime'ı, çerçeve başına son tarih, parite pacer'dan geçiyor. Yön d1000'de aynı (+0,09…+0,31). d300'de parite zamanında olduğu ilk 5 s'de aynı, sonra kayboluyor.
+- FS-1'in "kodlama > kör çoğaltma" sonucu: rs2 − tekrar 22 karşılaştırmada 18 ayrıştı, 2 sınırda, 2 f.g. (hepsi artı yönde), ama bu fark kilitten geliyor; kilitsiz alt kümede d300'de ters yönde [T.8, betimsel]. Kodlama kazancı ürün yolunda son tarih ölçüsüyle ayrılmadı. Yeni iddia üretilmedi.
+
+### Ön-kayıt ↔ ölçüm [T.15]
+
+| öngörü | sonuç | sapma ayrıştırması |
+|---|---|---|
+| arq/uyar T1-800 ≈ 1 − p | **Tutmadı.** r12k/d300 0,07–0,70. Kilitsiz alt küme 0,65–0,84 | Fark = kilit (M3 çürüdü) |
+| uyar parite 0, ≥ %95 koşu | **Tuttu.** 830/840; konuşmada 840/840 | — |
+| rs2 d300 0,90–0,98 (l20), rs4 0,83–0,95 | **Tutmadı.** rs2 0,83–0,86, rs4 0,78–0,84; Ç1 rs2 0,92–0,98 | −0,13 parite açlığı; pacer1.00 varyantı da yetmedi |
+| d1000 T2-800 arq 0,79, rs2 0,98, rs4 0,93 | **Tuttu** (l20): 0,77–0,78, 0,95–0,96, 0,92–0,93 | Ç4'te düşüş başlıyor |
+| parite bekleme < T | **Tutmadı.** d300 ≥ 3,9T, r1k ≥ 7T, d1000 0,7–3,3T | B-C4 |
+| rs4 konum etkisi belirgin | **Tutmadı** (bütün konuşmada); Ç1'de K etkisi var | parite gecikmesi örtüyor |
+| taban ≈ aday (FEC kollarında ±0,02) | **Kısmen.** r12k tuttu, r1k tutmadı (rs4 −0,13…−0,26) | aday kilit artışı |
+| tekrar kilitsiz 0,96 | **Tuttu:** 0,92–0,96 | — |
+
+## TS.4 Sınıflandırma (ISEMRI §5)
+
+Sınıf dili: **dar** (tek crate, motor dışı) · **sözleşme** (S1, AMP ya da tel; sahip onayı) · **motor çekirdeği** (`adaptive-transport`).
+
+| davranış | (i) 05b düzeltiyor mu (aday ölçümü) | (ii) sınıf ve gerekçe | (iii) KTP-2 0.3 | (iv) korunacak avantaj |
+|---|---|---|---|---|
+| Gönderen kilidi (no. 1) | **hayır**; kilit sıklığı aday'da yüksek (OR 1,9–4,6) | **motor çekirdeği**: pacer hız kararı | §3.5 "teslim hızı örnekleyicisi ve bant filtresi aynen": **bu kusuru taşır** [çıkarım]; ses tavanı §3.6, H-3 | kayıpta hız düşürmeme (INV-RATE-1): alt sınır yalnız yükseltir |
+| Parite açlığı (no. 2) | **hayır**; bekleme aynı mertebe, aday'da rezerv ek | **motor çekirdeği**: `schedule_transmit` sırası, kova | §3.8 "onarım hemen", §3.6 adım 2 ve 5 | d1000 kazancı +0,09…+0,31 |
+| Uyarlamalı parite 0 (no. 3) | **hayır**; aday 410/410 konuşmada parite 0 | **dar** (ses için `manual_r`) ya da **motor çekirdeği** (genel) | §3.8 tablo; denetleyici kalkar | RS kodlayıcı |
+| K = 8, süre sınırı yok (no. 4) | **hayır** [kod] | **sözleşme**: blok `unit_id`'ye bağlı | §3.8 blok süresi; H-1 | — |
+| E = 1024 (no. 5) | **hayır** [kod] | **sözleşme**: oturum başına tek profil | §3.8 "sembol = parça", H-11, H-12 | — |
+| PTT Reliable, sıralı (no. 6) | **hayır** [kod]; sıralı türev aday'da aynı mertebe | **sözleşme**: S1 §4, AMP PTT-R0 | §3.1, §3.2 | mesaj alındısı yükümlülüğü |
+| Süre dolumu yok | **hayır** [kod] | **motor çekirdeği** + sözleşme | §3.6 adım 1 | — |
+
+## TS.5 F1 girdisi (ISEMRI §5.5: FEC ürün yolunda son tarihli PTT için nasıl etkinleştirilecek)
+
+Sıra bağımlılığa göredir. Beklenen etkiler [tahmin]dir; dayandığı ölçülen sayı yazılıdır. Bütün dayanak sayılar bench üst sınırıdır.
+
+| # | crate / dosya | değişiklik | sınıf · bağımlılık | ölçü ve beklenen etki [tahmin] | süre |
+|---|---|---|---|---|---|
+| F1-C1 | adaptive-transport `sender.rs:on_event_core:2361` | Uygulama-sınırlı akışa pacer alt sınırı: son pencere sunulan + yeniden gönderilen × (1 + pay), `cwnd_over_srtt` tavanlı | **motor çekirdeği** · yok. B-K14 / A-9 ile aynı iş | K-6, K-2: kilit 185–249/330 → < %5; arq T1-800 %20 0,20 → ≈ 0,80 (dayanak: kilitsiz 0,815, n = 7; R 0,80). INV-RATE-1 golden'ı güncellenir | 2 |
+| F1-C2 | `sender.rs:schedule_transmit:4292-4311`, `plan_fec_parity:5319`, `on_event_core:2366-2381` | Son tarihli blok paritesi DATA'dan hemen sonra, ARQ'dan önce; kova tabanı parite başını kapsar | **motor çekirdeği** · F1-C1 | K-6: rs2 r12k/d300 %20 T1-800 0,83 → 0,93–0,98 (dayanak: Ç1 0,93–0,98; d1000 0,95) | 2 |
+| F1-C3 | client-core `runtime.rs` (`fec_manual_r` yolu `:2503`) | Ses oturumunda r'yi ölçülen kayıptan tablo ile seç (taslak §3.8), §8.5 atlanır | **dar** · F1-C2 | K-6: parite 0 → plan = (K, r); bant 1,5–2,1 × arq (T.12) | 1 |
+| F1-C4 | kama-node + client-core + S1 | PTT için ayrı oturum/uç ya da akış başına FEC; profil 0x01 (K = 2, E = 64) | **sözleşme** · F1-C3, F1-A6 | K-6: blok ≤ T, onarım 98 B (hub zarfı). Dayanak: rs2 ↔ rs4 Ç1 farkı +0,03…+0,08 | 3 |
+| F1-C5 | kama-app `ptt.rs:627`, client-core `transport.rs:1272`, `sender.rs` | PTT `DeadlineBounded`; süresi geçen birim kuyruk ve ARQ'dan silinir (K-6) | **sözleşme** (K4G-08, sahip) + **motor çekirdeği** · F1-C1 | K-6, K-7: son tarih sonrası yeniden gönderim 6,7–26 B/çerçeve → ≈ 0; r1k'da L2 baytın ≈ %7–15'i | 2 |
+| F1-C6 | client-core `transport.rs:Reorder`, `runtime.rs:Delivery`, tel bayrağı | PTT sıra beklemesini atlar (A-2); `Delivery` politika taşır ya da akış başına sıra (F1-A6) | **sözleşme** (S1 §4) · F1-A6 | K-6: sıralı → sırasız (d1000 rs2 0,71 → 0,95; d300 rs2 0,38 → 0,83, F1-C2 sonrası ≥ 0,93) | 2 (F1-A6 içinde) |
+| F1-C7 | client-core `runtime.rs:fec_ingest:3232` | Tamamlanan bloğu sınırlı hatırla | **dar** · yok | CPU; son tarih etkisi beklenmez | 0,5 |
+
+Sıra: F1-C1 → F1-C2 → F1-C3 → F1-C4 / F1-A6 → F1-C5 → F1-C6. F1-C1 ve F1-C2 olmadan parite açmak d300'de ilk 5 s dışında kazanç vermez (T.21). F1-C6 olmadan sıralı türev rs2'de sırasız oranın %9–76'sında kalır (T.4).
+
+## TS.6 TABAN girdisi (S3)
+
+**S3. Yüksek RTT'de FEC, ARQ'ya göre son tarih içinde ne kazandırıyor?** (ARQ her kolda açık; sayılar bench üst sınırı [D-9], ürün yolu değil. Kama r12k = 100 kbit/s, r1k = 8 kbit/s; 20 s konuşma.)
+
+- **Ürün FEC'i bugün kazandırmıyor.** 840 koşuda konuşma penceresinde parite 0; `uyar − arq` 22/22 fark gösterilmedi. Kök neden §8.5 kırpması (`sender.rs:3763-3796`).
+- **Sabit RS (motora dokunmadan), RTT 2 s, ağızdan kulağa ≤ 1,8 s:** rs2 %10 +0,09 [0,07, 0,10] → 0,97; %20 +0,18 [0,15, 0,20] → 0,95; %30 +0,25 [0,20, 0,28] → 0,91. Bant 1,5–2,0 ×. Son tarih içinde kaybın %58–76'sı telafi ediliyor. Bu sonuç 20 s konuşmayla sınırlı: parite kuyruğu ≈ 15 s'den sonra büyüyor.
+- **RTT 600 ms, ≤ 800 ms:** rs2 +0,27…+0,67, ama farkın ≥ %87'si gönderen kilidinin önlenmesinden geliyor; son tarih içinde parite katkısı +0,03…+0,06. Parite kuyrukta 0,8–8 s bekliyor; katkı ilk 5 s'de +0,11…+0,16, sonra ≈ 0.
+- **RTT 2 s'de 400/800 ms fiziksel olarak olanaksız. RTT 600 ms'de 400 ms'ye en iyi medyan 0,40 (60 ms demet, %20).** ≥ %95 medyanı yalnız d1000 + 1,8 s'de görüldü (rs2 %10–20, rs4 %10 taban).
+- **8 kbit/s:** yalnız 200 ms demet sığıyor; rs2 +0,16…+0,48, tekrar 30/30 kilitli.
+- **Sıralı teslimde (S1 `Reorder` türevi):** arq 0,01–0,24, rs2 0,04–0,71. FEC'in asıl ürün değeri burada: RTT 2 s %20'de 0,02 → 0,71.
+- **Eşit bütçe uyarısı:** rs ↔ arq eşit bütçe değildir; `tekrar` ile rs2 %20'de eşittir, ama tekrar 223–256/330 koşuda kilitleniyor.
+- **Gerekli sıra (§5.5):** pacer alt sınırı → parite önceliği → ses için `manual_r` → K = 2/E = 64 → süre dolumu → sıra atlama.
+
+## TS.7 Yeniden üretim
+
+```
+python3 -I scripts/ktp2/f0/c/tam_c.py --csv reports/ktp2/f0/c/tam ~/kama-k4g-work/ktp2-f0/runs/tam/c/out > reports/ktp2/f0/c/tam/tablolar.md
+python3 -I scripts/ktp2/f0/c/tam_c_ek.py reports/ktp2/f0/c/tam/kosular.csv >> reports/ktp2/f0/c/tam/tablolar.md
+```
+
+- Ham kök git dışı: `~/kama-k4g-work/ktp2-f0/runs/tam/c/out/`.
+- Betikler: `scripts/ktp2/f0/c/{analyze_c.py, tam_c.py, tam_c_ek.py, model_c.py}`.
+- Bu bölümün özet tabloları `hucreler.csv` ve `farklar.csv`'den üretildi.
+- Çıktılar iki bağımsız koşuda bayt bayt aynı (tohumlar sabit). sha256:
+  - `kosular.csv` `e0e58e7ee64a135df912d89d51de563501668634a011054e0ada3278c4ce09e8`
+  - `hucreler.csv` `536700ae389f550f3eb67f82747b6a0045a06411eabecca7593b9ef1cc82e339`
+  - `farklar.csv` `42500aeba5c450a31ca2fb0df5f4b2012ef7699f2397fb495d9c0c6b59313dfd`
+  - `ayristirma.csv` `0fc6e80cd41f65ead9fe35381a20680f8e027a3db7a3c3b0fe47f94875ac645d`
+  - `tablolar.md` `af1745581d396329115e9d0df5301188d69448e2573cf3477121f65d7d5ddcc0`
 
 ## Ek: Ajan E'ye iletilmek üzere taslak notu adayları [kod]
 

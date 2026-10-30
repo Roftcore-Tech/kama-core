@@ -231,6 +231,7 @@ def parse_ts(path, repairs_tx, data_udp=None):
         # koşuda ≈ 1 — tek başına değil, birikim_ms ile birlikte okunur.
         tail = toks[len(toks) // 3:]
         out["jeton_ac_payi"] = sum(1 for v in tail if v < data_udp) / len(tail)
+    out["parite_alan_ms"] = area  # ∫kuyruk dt (örnekli, 50 ms); tam_c.py alt sınırı buradan
     if repairs_tx:
         out["parite_bekleme_ms"] = area / repairs_tx  # Little: ∫kuyruk dt / emisyon
     return out
@@ -383,8 +384,10 @@ def analyze_run(cell, cm, arm, am, d):
         row[f"ot_T1_{D}"] = sum(1 for v in m2e if v <= D) / n_frames
     for b in M.BUDGETS_T2:
         row[f"ot_T2_{b}"] = sum(1 for v in m2e if v <= mu + b) / n_frames
-    row["ot_sirali_T1_800"] = sum(1 for v in sirali if v <= 800) / n_frames
-    row["ot_sirali_T2_800"] = sum(1 for v in sirali if v <= mu + 800) / n_frames
+    for D in M.DEADLINES_T1:
+        row[f"ot_sirali_T1_{D}"] = sum(1 for v in sirali if v <= D) / n_frames
+    for b in M.BUDGETS_T2:
+        row[f"ot_sirali_T2_{b}"] = sum(1 for v in sirali if v <= mu + b) / n_frames
     row["ack_T1_800"] = sum(1 for v in ack_lat if t_ms + v <= 800) / n_frames
     fin = [v for v in m2e if v < math.inf]
     row["teslim_orani"] = len(fin) / n_frames
