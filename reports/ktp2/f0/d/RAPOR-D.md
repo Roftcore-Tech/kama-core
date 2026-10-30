@@ -82,7 +82,7 @@ quinn-proto `config/transport.rs:383` (`initial_rtt 333 ms`), `connection/paths.
 (PTO = srtt + 4·rttvar = 999 ms), `connection/mod.rs:1679-1690` (PTO başına **2** yoklama),
 `:789-790` + `lib.rs:330` (istemcinin Initial içeren her datagramı ≥ 1200 B'a doldurulur). Kök
 neden: ilk turda PTO, gerçek tur süresinden (serileştirme dahil) kısa. Etki §4'te. Düzeltme
-(betimsel kol): `--quinn-initial-rtt-ms`. Kama'ya eşdeğer bir ön bilgi verilmediği için birincil
+(betimsel kol): `--quinn-initial-rtt-ms`. Kama'ya aynı ön bilgi verilmediği için birincil
 kolda kullanılmadı.
 
 **D-7 Hücre koşucusu koşular arasında netem kuyruğunu boşaltmıyor.** Dosya:
