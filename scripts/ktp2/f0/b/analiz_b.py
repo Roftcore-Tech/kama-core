@@ -615,6 +615,7 @@ def kama_capture(rep, g, meta, ev):
     r["ack_hold_med_s"] = med(hold)
     r["ack_hold_p95_s"] = pct(hold, 0.95)
     r["ack_ranges_med"] = med([p.get("ranges") for p in b_out if p["type"] == "ack"])
+    r["rev_soj_med_s"] = med([p["t"] - bout_t[p["pn"]] for p in a_in if p["type"] == "ack" and p["pn"] in bout_t])
 
     # ── kopyalar: faydalı / gereksiz / kayıp; gereksizin zamanlaması ───────────────────────
     n_cp = n_cp_useful = n_cp_red_arr = n_cp_lost = n_cp_after_arr = n_cp_after_conf = 0
@@ -638,6 +639,7 @@ def kama_capture(rep, g, meta, ev):
                 n_cp_after_arr += 1
                 if tconf is not None and p["t"] > tconf:
                     n_cp_after_conf += 1
+    r["cp_lost_l2B"] = sum(p["l2"] for lst in txs.values() for p in lst[1:] if p["pn"] not in b_in_t)
     r.update({"cp_tx": n_cp, "cp_useful": n_cp_useful, "cp_redund_arr": n_cp_red_arr,
               "cp_lost": n_cp_lost, "cp_sent_after_arrival": n_cp_after_arr,
               "cp_sent_after_conf": n_cp_after_conf, "cp_useful_l2B": b_cp_useful,
@@ -655,6 +657,8 @@ def kama_capture(rep, g, meta, ev):
     ow, sw, rw, so, qx, exc, phys_lb = [], [], [], [], [], [], []
     late_iv = []
     ow_by, sw_by = {}, {}
+    exc_g = exc_k = exc_q = 0.0
+    sw200 = []
     for i in sorted(offer):
         t_off = offer[i]
         ideal_start = max(t_off, ideal_end)
@@ -673,6 +677,12 @@ def kama_capture(rep, g, meta, ev):
         sw.append(lst[0]["t"] - t_off)
         ow_by[i] = t_arr - t_off
         sw_by[i] = lst[0]["t"] - t_off
+        # ideal sınırı aşan fazlanın üç bileşeni (işaretli; toplamı Σ excess)
+        exc_g += (lst[0]["t"] - t_off) - (ideal_start - t_off)
+        exc_k += (t_dtx - lst[0]["t"]) - n_lost_before * rtt_phys
+        exc_q += (t_arr - t_dtx) - ser - d_nom
+        if lst[0]["t"] - t_off > 0.2:
+            sw200.append(t_off - t_lo)
         rw.append(t_dtx - lst[0]["t"])
         so.append(t_arr - t_dtx)
         qx.append((t_arr - t_dtx) - ser - d_nom)
@@ -694,6 +704,9 @@ def kama_capture(rep, g, meta, ev):
     r["queue_extra_p50_s"], r["queue_extra_p95_s"] = pct(qx, .5), pct(qx, .95)
     r["queue_extra_max_s"] = max(qx) if qx else None
     r["excess_p50_s"], r["excess_p95_s"] = pct(exc, .5), pct(exc, .95)
+    r["exc_top_s"], r["exc_gonderen_s"], r["exc_kurtarma_s"], r["exc_kuyruk_s"] = sum(exc), exc_g, exc_k, exc_q
+    r["sw200_n"] = len(sw200)                       # ilk iletimi sunumdan > 0,2 s sonra çıkan mesaj
+    r["sw200_son_s"] = max(sw200) if sw200 else 0.0  # bunların en sonuncusunun sunum anı (t0'dan)
     r["phys_lb_p95_s"] = pct(phys_lb, .95)
 
     # hat meşgul aralıkları (ileri, varış düzlemi): [B_in − ser_j, B_in], sınıfa göre
@@ -726,6 +739,10 @@ def kama_capture(rep, g, meta, ev):
             conf_wire.append(tc - offer[i])
     r["conf_wire_p95_s"] = pct(conf_wire, .95)
     r["jitter_sigma_s"] = jit
+    lp = num(kv(next((ln for ln in read_text(rep / "c.err").splitlines() if ln.startswith("KP-ACTIVATION")), ""),
+                "left_preconv"))
+    if lp:  # PreConverge çıkışına dek ilk iletimi yapılan mesaj (IW + 31 B/s tabanı)
+        r["preconv_msj"] = sum(1 for lst in txs.values() if lst[0]["t"] <= t_lo + lp / 1000.0)
     r["_ow_by_msg"], r["_sw_by_msg"] = ow_by, sw_by
     r["_offer_unix"] = offer
     return r
@@ -961,9 +978,14 @@ def analyze_run(rep, g, arm):
         # hariç; bunun üstü önceki koşunun artığıdır.
         r["pre_backlog_B"] = bl
         r["kirli_baslangic"] = int(bl > 200)
+    # gerçekleşen netem kaybı: düşen / (geçen + düşen). Birim Kama ve quinn'de paket; tcp'de `drops`
+    # skb, `packets` segment sayar (Ajan D, D-13) → tcp değeri p'nin altında okunur.
+    for dname, tr_name in (("fwd", "ileri"), ("rev", "donus")):
+        pk, dr = r.get(f"q_{dname}_pkts"), r.get(f"q_{dname}_drops")
+        if pk is not None and dr is not None and pk + dr > 0:
+            r[f"kayip_{tr_name}"] = dr / (pk + dr)
     win = r.get("run_wall_s")
     if win:
-        for dname in ("fwd", "rev"):
             if f"q_{dname}_bytes" in r:
                 r[f"q_{dname}_util_wall"] = r[f"q_{dname}_bytes"] / (g["rate_Bps"] * win)
     # srtt — gerçek RTT kıyası (yalnız Kama kolları sayaç verir)
@@ -974,6 +996,11 @@ def analyze_run(rep, g, arm):
         r["srtt_over_rttfifo"] = r["srtt_s"] / g["rtt_fifo_s"]
     if r.get("est_rtprop"):
         r["rtprop_s"] = r["est_rtprop"] / 1e6
+        if r.get("srtt_s"):
+            # BtlBw büyüme çarpanı üst sınırı (B-K15): cwnd/srtt tavanında tur başına
+            # 2 × (1 − p) × rtprop/srtt (rate.rs effective_send_rate); ≤ 1 → büyüme durur.
+            r["rtprop_srtt"] = r["rtprop_s"] / r["srtt_s"]
+            r["g_cwnd"] = 2 * (1 - g["loss"] / 100.0) * r["rtprop_srtt"]
     if r.get("est_pace") is not None:
         # motor bayt birimi = mühürlü UDP yükü (runtime.rs wire_len); hat hızının veri payına çevrimi
         udp_share = (g["s_data_l2"] - 42) / g["s_data_l2"]
@@ -991,6 +1018,8 @@ def analyze_run(rep, g, arm):
     tr = r.get("transport") or ""
     if tr.startswith("kama"):
         cap = kama_capture(rep, g, meta, ev)
+        if cap.get("wf_total") and r.get("q_fwd_bytes"):
+            cap["yakalama_qdisc_ileri"] = cap["wf_total"] / r["q_fwd_bytes"]
     elif tr.startswith("tcp"):
         cap = tcp_capture(rep, g, ev)
         cap.update(snmp_tcp_delta(rep))  # çekirdek sayacıyla çapraz denetim (yakalama: tcp_retx_segs)
