@@ -82,7 +82,7 @@ quinn-proto `config/transport.rs:383` (`initial_rtt 333 ms`), `connection/paths.
 (PTO = srtt + 4·rttvar = 999 ms), `connection/mod.rs:1679-1690` (PTO başına **2** yoklama),
 `:789-790` + `lib.rs:330` (istemcinin Initial içeren her datagramı ≥ 1200 B'a doldurulur). Kök
 neden: ilk turda PTO, gerçek tur süresinden (serileştirme dahil) kısa. Etki §4'te. Düzeltme
-(betimsel kol): `--quinn-initial-rtt-ms`. Kama'ya eşdeğer bir ön bilgi verilmediği için birincil
+(betimsel kol): `--quinn-initial-rtt-ms`. Kama'ya aynı ön bilgi verilmediği için birincil
 kolda kullanılmadı.
 
 **D-7 Hücre koşucusu koşular arasında netem kuyruğunu boşaltmıyor.** Dosya:
@@ -300,167 +300,249 @@ Reorder ve Noise kripto baytları yok].** Hücre medyanı [IQR] koşu başına; 
   mesaj×N+kopya), tcp = çerçeve `msg_id`, quinn = yükün ilk 8 baytı (`--payload-id`; yoksa
   `u64::MAX`). Karışık akış kendi günlüğünü (`mixed_rx.jsonl`, akış alanlı) yazar.
 
-## 9. TAM SONUÇ — aşama 1 (anlık görüntü 2026-10-30 08:09Z)
+## 9. TAM SONUÇ — aşama 2 (ortak kuyruk bitti; anlık görüntü 2026-10-30 11:50Z)
 
-Kapsam: `runs/tam/d/out` (6 d_* hücresi) + `runs/tam/b/out`'ta DONE olan B hücreleri (r25 quinn
-hücreleri `_quinn` sonekiyle taban profiline birleştirildi). Bekliyor (aşama 2):
-`b_r1k_d300_l50_p1000`, `b_r1k_d300_l80_p1000`, `b_r25_d1000_l10_p65`, `b_r25_d1000_l30_p65`,
-`b_r25_d300_l10_p65`, `b_r25_d300_l30_p65` (Kama/tcp kolları; quinn kolları geldi) ve D-13
-doğrulama hücresi `d_tcp_gso1_r12k_d300_l30` (kuyruk sonrası). Bütün tablolar:
-`reports/ktp2/f0/d/tam/TAM-OTOMATIK.md`. Kama sayıları bench üst sınırıdır [D-9: S1 `Reorder` ve Noise
-baytları yok]; ürün yolu sayısı = Ajan A. tcp kolları [D-13]: veth TSO açık, kayıplar kısmen ikişerli.
+Kapsam: `runs/tam/d/out` (6 d_* hücresi) + `runs/tam/b/out` (B'nin bütün hücreleri; `_quinn` sonekli r25
+hücreleri taban profiline birleştirildi). 53 ızgara/betimsel hücre + 1 karışık hücre, 5400 koşu.
+Tek açık kalem: `d_tcp_gso1_r12k_d300_l30` (D-13 doğrulaması) koşuyor; **D-13 yönü: bekliyor.**
+Bütün tablolar: `reports/ktp2/f0/d/tam/TAM-OTOMATIK.md`.
+
+Etiketler: [ölçüldü] koşu çıktısı · [türetilmiş] ölçülen sayılardan hesap · [çıkarım] ölçülmemiş akıl
+yürütme · [kod] kaynak okuması · [tahmin] beklenen etki, sonuç değildir. Kama sayıları bench üst
+sınırıdır [D-9: S1 `Reorder` ve Noise baytları yok]; ürün yolu sayısı Ajan A'nındır. tcp kolları
+[D-13]: veth TSO açık, kayıplar kısmen ikişerli.
+
+**Payda ve birim (bütün bölüm).** Teslim oranı: koşu içinde payda MESAJ (ya da öğe); hücre değeri
+bu oranların KOŞU birimli medyanıdır. Gecikme p95: koşu-başı p95'in hücre medyanı, D'de sansürlü
+(teslim edilmeyen ya da > D → D). Havuzlanmış öğe paydası kullanılan tek yer §9.4'teki etkin-dosya
+ayrımıdır ve orada yazılıdır. D = hücrenin penceresi (1000 B → 60 s; 65 B → r1k/r12k 30 s, r25 60 s).
+
+**Çoklu karşılaştırma.** Hüküm yalnız ön-kayıtlı GA kuralıdır (§7: teslim@D, iki medyan GA'sı
+örtüşmüyor; N ≥ 30, stres dışı). Gecikme ve tel yönleri bu kuralın dışındadır: 32–40 hücre × 5 kol
+çifti × 2+ ölçü, bootstrap aralıkları düzeltmesizdir (B = 2000, sabit tohum, koşu birimli). Bunlar
+hüküm değil betimsel sayımdır; yanına Bonferroni sayımı (aile = kol çifti + ölçü, α = 0,05/m,
+B = 10000, TAM-OTOMATIK §0b) yazıldı.
 
 ### 9.1 Geçerlilik [ölçüldü]
 
-- 51 ızgara/betimsel hücre + 1 karışık hücre; her kolda bütün koşular rc = 0, "düşen" ve
-  "zaman-aşımı" 0. Çıktısı olmayan koşu 0.
-- Koşu öncesi kuyruğu boş olmayan 3 koşu (her biri tek paket, 70–86 B; `b_r12k_d1000_l20_p65`
-  taban rep1 ve tcp rep8, `b_r1k_d1000_l30_p1000` aday rep1); atılmadı, işaretli.
-- Gerçekleşen kayıp profille tutarlı. Kama koşu medyanları, ileri ve dönüş: l50 0,48–0,52,
-  l80 0,79–0,84. quinn l80'de 0,82–0,94; az paket gönderdiği için saçılım geniş. Birincil kayıplarda
-  Kama ve quinn p ± 0,01 içinde (TAM-OTOMATIK §1). tcp ileri yönü D-13 nedeniyle düşük görünür
-  (r12k l30: 0,26–0,29).
-- El sıkışma yok (geçerli 0, ayrı sayıldı): quinn r25 bütün hücrelerde 5/5 (60 s tavan); r12k
-  l30_p65 2/30; stres l50 p1000 1/10, l80 p1000 4/10, l80 p65 9/10, r1k_d300_l50_p65 3/10,
-  r1k_d300_l80_p65 8/10 (bağlanan 2 koşuda da teslim 0); tcp r12k l80 p1000 4/10, p65 3/10,
-  r1k l80 p65 4/10. `d_hs_*` quinn_rpl 10/10 (eski 60 s
-  kuralı).
-- quinn UDP GSO etkisi ihmal edilebilir [çıkarım, sayaç oranından: quinn drops/(packets+drops) ≈ p
-  bütün kayıplı hücrelerde; GSO olsaydı `packets` gso_segs saydığı için p'nin altında kalırdı].
+- 5400 koşunun tamamı rc = 0; düşen, zaman aşımına uğrayan, çıktısı olmayan koşu 0.
+- El sıkışma yok (geçerli 0, ayrı sayıldı; `quinn_nofile rep26` karışık hücrede):
 
-### 9.2 Sonuç (S4) — ızgara, N = 30 / kol (stres N = 10, betimsel)
+  | hücre | quinn | tcp |
+  |---|---|---|
+  | b_r25_* (8 hücre, tavan 60 s) | 5/5 her hücrede | 0 |
+  | b_r12k_d1000_l30_p65 | 2/30 | 0 |
+  | b_r12k_d300_l50_p1000 | 1/10 | 0 |
+  | b_r12k_d300_l80_p1000 | 4/10 | 4/10 |
+  | b_r12k_d300_l80_p65 | 9/10 | 3/10 |
+  | b_r1k_d300_l50_p65 | 3/10 | 0 |
+  | b_r1k_d300_l80_p1000 | 3/10 | 4/10 |
+  | b_r1k_d300_l80_p65 | 8/10 | 4/10 |
+  | d_hs_r25_* quinn_rpl (eski 60 s kuralı) | 10/10 × 2 | — |
 
-Yöntem: kol başına koşu-başı değerlerin medyanı; fark = medyan farkı, %95 aralık = koşu birimli
-yüzdelik bootstrap (B = 2000, hücre|kol|kol|ölçü'den sabit tohum). Teslim oranı hükmü ön-kayıtlı
-kuraldır (iki medyan GA'sı örtüşmüyorsa). Gecikme p95 = koşu-başı p95, D'de sansürlü. D = hücrenin
-penceresi (1000 B → 60 s; 65 B → r1k/r12k 30 s, r25 60 s). Tam tablo: TAM-OTOMATIK §0 ve §3.
+- Koşu öncesi kuyruk: 3 koşuda tek paket (70–86 B; `b_r12k_d1000_l20_p65` taban rep1, tcp rep8;
+  `b_r1k_d1000_l30_p1000` aday rep1). Atılmadı, işaretli. Geri kalan koşularda kuyruk boş.
+- Gerçekleşen kayıp (koşu medyanları): r12k/r1k'da Kama + quinn ileri yön l10 0,100, l20 0,203, l30 0,299.
+  Stres: l50 0,48–0,52, l80 0,79–0,84 (Kama); quinn l80'de az paket gönderdiği için 0,82–0,94. Tam
+  dökümü TAM-OTOMATIK §1. tcp ileri yönü D-13 sayaç yapıtıyla düşük görünür (r12k l30: 0,26–0,29).
+- quinn UDP GSO etkisi ihmal edilebilir [çıkarım, sayaç oranından]: quinn drops/(packets+drops) ≈ p
+  bütün kayıplı birincil hücrelerde; UDP GSO kullanılsaydı `packets` gso_segs saydığı için oran p'nin
+  altında kalırdı.
+- Karışık hücre: 8 kol × 30, kimlik hatası 0, mükerrer 0 (§8.2).
 
-| karşılaştırma (36 birincil hücre: r12k/r1k × d300/d1000 × l0–l30 × 65/1000 B + r25 l0/l20) | teslim@D | gecikme p95 |
-|---|---|---|
-| taban [D-9] ↔ quinn | 32 ayrışmadı, 4 betimsel (r25: quinn N=5) | quinn düşük 22, Kama düşük 2 (r1k_*_l0_p65: −2,6 / −4,2 s), fark gösterilmedi 12 |
-| aday [D-9] ↔ quinn | 32 ayrışmadı | quinn düşük 19, Kama düşük 3 (r1k_*_l0_p65, r1k_d300_l30_p1000 −11,4 s), fark gösterilmedi 14 |
-| taban [D-9] ↔ tcp [D-13] | Kama üstün 6 (bütün l30 r12k + r1k_p65 l30), tcp üstün 4 (r25 l0/l20 × 2 gecikme), ayrışmadı 26 | Kama düşük 15 (l20–l30 ağırlıklı), tcp düşük 14 (l0–l10 ve r25), fark gösterilmedi 7 |
-| aday ↔ taban | 36 ayrışmadı | aday düşük 6 (r12k_d300_l30_p1000 −3,9 s; r1k p1000 beş hücre −0,4…−12,7 s), 30 fark gösterilmedi |
+### 9.2 Sonuç (S4) — birincil ızgara
 
-En büyük gecikme farkları (Kama aleyhine, quinn'e karşı): r12k_d1000_l30_p1000 p95 taban 32,5 s /
-aday 26,2 s ↔ quinn 8,7 s; r12k_d1000_l20_p1000 16,4 / 12,5 ↔ 5,8 s; r1k_d300_l20_p1000 22,8 / 11,7
-↔ 11,6 s. Tel baytı / teslim edilen mesaj (netem, iki yön): r12k p1000 Kama 1130–1192 ↔ quinn
-1200–1271 ↔ tcp 1112–1245 B; r1k p65 Kama 195–238 ↔ quinn 304–390 ↔ tcp 134–216 B.
+40 birincil hücre: r12k ve r1k × d300 ve d1000 × l0/l10/l20/l30 × 65 ve 1000 B (32 hücre), r25 × d300 ve
+d1000 × l0–l30 × 65 B (8 hücre). Kol başına N = 30; r25 quinn N = 5 (betimsel). Hücre hücre tablo:
+TAM-OTOMATIK §0; fark aralıkları §3.
 
-### 9.3 K-2 kesişimi ve yüksek kayıp (§5.4)
+| çift | m | teslim@D, ön-kayıtlı hüküm | gecikme p95, düzeltmesiz (ilk kol iyi / ikinci iyi / aralık 0'ı kapsıyor) | gecikme p95, Bonferroni |
+|---|---|---|---|---|
+| taban [D-9] ↔ quinn | 32 | 32 ayrışmadı | 2 / 22 / 8 | 2 / 15 / 15 |
+| aday [D-9] ↔ quinn | 32 | 32 ayrışmadı | 3 / 19 / 10 | 2 / 16 / 14 |
+| taban [D-9] ↔ tcp [D-13] | 40 | Kama iyi 6, tcp iyi 8, ayrışmadı 26 | 14 / 16 / 10 | 13 / 14 / 13 |
+| aday [D-9] ↔ tcp [D-13] | 40 | Kama iyi 6, tcp iyi 8, ayrışmadı 26 | 14 / 15 / 11 | 13 / 14 / 13 |
+| aday ↔ taban | 40 | 40 ayrışmadı | 6 / 0 / 34 | 5 / 0 / 35 |
 
-- Birincil aralıkta (l0–l30) teslim@D medyanı Kama (taban, aday) ve quinn için hiçbir hız/gecikme/
-  yük grubunda 0,90'ın altına düşmedi (`>l30`, üç görünümde de: gönderen / cold / alıcı). tcp her
-  r12k ve r1k grubunda l30'da düştü (0,42–0,86). Ölçülen aralıkta Kama ile QUIC'in kesişim
-  noktası arasında **fark gösterilmedi**; K-2'nin "QUIC'inkinden ileride" ölçütü bu aralıkta
-  ayırt edici değil.
-- r25 (65 B): Kama 0,17 (l0 ve l20, iki kol) → kesişim l0; quinn 0,00 (bağlanamadı); tcp 1,00 (l0, l20).
-- Stres hücrelerinde el sıkışma: quinn r12k l80 4/10 (1000 B) ve 9/10 (65 B), r1k l80 8/10 bağlanamadı.
-- Stres (N = 10, betimsel): r12k_d300 l80: taban 0,04 (1000 B) / 0,58 (65 B), aday 0,40 / 0,77,
-  quinn 0,00 / 0,00, tcp 0,00 / 0,00. r1k_d300_l80_p65: taban 0,57, aday 0,68, quinn 0,00, tcp 0,00.
-  l50: r12k p1000 taban 0,46 ↔ aday 0,99 ↔ quinn 1,00 ↔ tcp 0,05; r12k p65 Kama 1,00 ↔ quinn 1,00;
-  r1k p65 taban 0,88, aday 0,99, quinn 0,80, tcp 0,01.
-- **Korunması gereken avantaj (ölçülen hücrelerde):** %80 iki yönlü kayıpta Kama mesaj teslim etti,
-  quinn ve tcp etmedi (quinn'in büyük kısmı bağlanamadı); %30'da tcp'ye karşı teslim oranı üstünlüğü
-  (6 hücre). %50'de taban 1000 B'de quinn'in gerisinde, aday değil.
+- **Kazanılan hücreler [ölçüldü], ön-kayıtlı kural.** Kama (iki kol) ↔ tcp, teslim@D:
+  r12k_d1000_l30_p1000, r12k_d1000_l30_p65, r12k_d300_l30_p1000, r12k_d300_l30_p65, r1k_d1000_l30_p65,
+  r1k_d300_l30_p65 (tcp 0,42–0,86, Kama 1,00). Taban farkı +0,145…+0,584; aralıklar 0'ı dışlıyor.
+  Sınırda: r12k_d300_l30_p65 [+0,039, +0,703]; alıcı görünümünde r12k_d300_l30_p65 alt uç +0,005,
+  r1k_d1000_l30_p65 ve r1k_d300_l30_p65 alt uç 0,000. Bonferroni sonrası yalnız üçü kalıyor
+  (r12k_d1000_l30_p1000, r12k_d1000_l30_p65, r1k_d1000_l30_p65).
+- **Kaybedilen hücreler [ölçüldü], ön-kayıtlı kural.** Kama (iki kol) ↔ tcp, teslim@D: 8 r25 hücresinin
+  tamamı (Kama 0,17–0,25, tcp 0,83–1,00). Bonferroni sonrası 8'i de kalıyor.
+- **quinn'e karşı teslim@D:** 32 hücrede ayrışmadı. Hücrelerin hepsinde iki kol da medyan 1,00; bu
+  ölçü bu hücrelerde ayırt edici değil. Ayrıştıran ölçü gecikme ve teldir (betimsel).
+- **Gecikme, quinn'e karşı (betimsel, düzeltmesiz).** Quinn düşük: 22 hücre (taban). En büyükler: r12k_d1000_l30_p1000
+  32,5 ↔ 8,7 s (aday 26,2), r12k_d1000_l20_p1000 16,4 ↔ 5,8 s (aday 12,5), r1k_d300_l20_p1000 22,8 ↔
+  11,6 s (aday 11,7, fark gösterilmedi). Kama düşük: r1k_d300_l0_p65 1,4 ↔ 5,6 s; r1k_d1000_l0_p65
+  3,0 ↔ 5,6 s. Aday ek olarak r1k_d300_l30_p1000'de (−11,4 s, Bonferroni sonrası kalmıyor).
+- **Tel B / teslim edilen mesaj (netem, iki yön, L2 dahil; koşu medyanı) [ölçüldü].** Kama'da üst
+  sınır uyarısı burada da geçerli: gerçek Noise baytları yok, bench zarfı spec'ten 6 B küçük (B-K7).
 
-### 9.4 K-1 (karışık akış, taşıma düzeyi; N = 30)
+  | grup | Kama (taban, aday) | quinn | tcp [D-13] |
+  |---|---|---|---|
+  | r12k, 1000 B, l0–l30 | 1131–1192 | 1200–1271 | 1112–1245 |
+  | r12k, 65 B, l0–l30 | 199–234 | 190–205 | 91–208 |
+  | r1k, 1000 B, l0–l30 | 1441–1922 | 1767–2008 | 1180–1451 |
+  | r1k, 65 B, l0–l30 | 195–238 | 304–390 | 134–216 |
 
-| kol | TEXT p50 dosyalı | TEXT p95 dosyalı | Δ TEXT p95 (dosyalı − dosyasız) [%95] | PTT ≤0,8 s dosyalı / dosyasız | dosya bitiş s | tel/faydalı (dosyalı) |
+- **aday ↔ taban:** teslimde 40/40 ayrışmadı. p95'te aday 6 hücrede düşük (düzeltmesiz), 5'i Bonferroni
+  sonrası kalıyor (r12k_d300_l30_p1000 −3,9 s; r1k_d1000_l0_p1000 −0,4; r1k_d1000_l10_p1000 −4,7;
+  r1k_d300_l20_p1000 −11,2; r1k_d300_l30_p1000 −12,7). Hepsi 1000 B hücresi.
+- Betimsel d_* hücreleri (N = 10) TAM-OTOMATIK §2'de: `d_cc_r12k_d300_l30` Kama p95 28,6 s, teslim
+  medyanı 1,00 ama Q1 0,26 ve min 0,013 (koşular arası geniş dağılım; nedeni ayrıştırılmadı) ↔ quinn 3,7 s ↔ quinn_cubic
+  45,4 s ↔ tcp ∞ (0,43). `d_irtt`: quinn_irtt kurulumu 4,6 ↔ quinn 4,3 s; medyanlar yakın, maks 20,0 s.
+
+### 9.3 K-2 ve yüksek kayıp (§5.4)
+
+- **K-2 birincil aralık [ölçüldü].** r12k ve r1k'nın 8 hız × gecikme × yük grubunda Kama (iki kol) ve quinn
+  için teslim@D medyanı l30'a dek 0,90'ın altına düşmedi (`>l30`; gönderen, cold, alıcı görünümleri). tcp
+  8 grubun 8'inde l30'da düştü (0,42–0,86; alıcı görünümünde r1k_d300_p65 düşmedi). Kama ile QUIC'in
+  kesişimi arasında bu aralıkta **fark gösterilmedi**; K-2'nin "QUIC'inkinden ileride" ölçütü
+  ölçülen aralıkta ayırt edici değil.
+- **r25 (65 B) [ölçüldü].** Kama taban 0,17 (l0–l30); aday 0,17 (l0–l20), 0,25 (l30). Kesişim l0.
+  quinn 0,00 (N = 5, 8 hücrede 40/40 bağlanamadı). tcp 1,00 (l0–l20), 0,83 (l30) → kesişim l30 (cold: l20).
+- **Stres (N = 10, BETİMSEL; hüküm cümlesinde kullanılmaz) [ölçüldü].**
+
+  | hücre (teslim@D medyanı) | taban [D-9] | aday [D-9] | quinn | tcp [D-13] |
+  |---|---|---|---|---|
+  | r12k_d300_l50 1000 B / 65 B | 0,46 / 1,00 | 0,99 / 1,00 | 1,00 / 1,00 | 0,05 / 0,04 |
+  | r1k_d300_l50 1000 B / 65 B | 0,85 / 0,88 | 0,97 / 0,99 | 0,90 / 0,80 | 0,10 / 0,01 |
+  | r12k_d300_l80 1000 B / 65 B | 0,04 / 0,58 | 0,40 / 0,77 | 0,00 / 0,00 | 0,00 / 0,00 |
+  | r1k_d300_l80 1000 B / 65 B | 0,08 / 0,57 | 0,28 / 0,68 | 0,00 / 0,00 | 0,00 / 0,00 |
+
+- **Korunması gereken avantaj, ölçülen hücrelerle sınırlı.** %80 iki yönlü rastgele kayıpta dört hücrede
+  Kama mesaj teslim etti (0,04–0,77), quinn ve tcp etmedi (betimsel). %50'de tablo karışık: tcp'nin üstünde,
+  quinn ile 1000 B r12k'da taban geride (0,46 ↔ 1,00), aday değil (0,99). %30'da tcp'ye karşı §9.2'deki 6
+  hücre. Kök neden payı için iki etken: el sıkışmasız başlangıç [D-9: bench'te gerçek Noise SESSION_INIT
+  yok, bu pay ürün yolunda doğrulanmadı] ve kayıpta hızı düşürmeyen pacer [kod: INV-RATE-1]. Bozuk dönüş
+  yolu bu hücrelerde ölçülmedi.
+
+### 9.4 K-1 (karışık akış `d_mix_r12k_d300_l30`, taşıma düzeyi; N = 30 / kol)
+
+| kol | TEXT p50 s | TEXT p95 s | Δ TEXT p95, dosyalı − dosyasız [%95] | PTT ≤0,8 s dosyalı / dosyasız | dosya bitiş s | tel / faydalı B |
 |---|---|---|---|---|---|---|
 | taban [D-9] | 9,97 | 24,50 | +19,60 [+15,64, +22,76] | 0,133 / 0,623 | 30,3 | 1,31 |
 | aday [D-9] | 10,81 | 24,15 | +19,85 [+16,39, +22,76] | 0,080 / 0,387 | 27,4 | 1,31 |
 | quinn | 3,22 | 12,80 | +10,46 [+9,39, +11,29] | 0,080 / 0,273 | 19,2 | 1,27 |
-| tcp [D-13] | ∞ | ∞ | +23,57 [+0,00, +46,71] (60 s sansür) | 0,007 / 0,073 | ∞ (dosyanın %34'ü) | 1,18 |
+| tcp [D-13] | ∞ | ∞ | +23,57 [+0,00, +46,71] (60 s sansür; sınırda) | 0,007 / 0,073 | ∞ (dosyanın %34'ü) | 1,18 |
 
-- K-1 dört kolda da GEÇMEDİ. Dosyalı Kama − quinn: TEXT p95 +11,70 [+7,92, +14,71] s, dosya bitiş
-  +11,09 [+6,92, +14,75] s, PTT ≤0,8 s +0,05 [−0,03, +0,12] (fark gösterilmedi). aday − taban: üç
-  ölçüde de fark gösterilmedi.
-- Ürün yolu (A, aynı profil, FARKLI iş yükü: 524,7 kB dosya, seyrek TEXT): TEXT p95 dosyalı taban
-  107,1 s, aday 73,1 s; dosyasız 13,5 / 10,7 s; PTT ≤0,8 s dosyalı %0. Bench Kama sayıları bunun
-  üst sınırıdır.
+- K-1 taşıma düzeyi uyarlaması (TEXT p95 payı 0,842 s; PTT ≥ 0,95 × dosyasız) dört kolda GEÇMEDİ [ölçüldü].
+  PTT oranları tek-yön taşıma gecikmesidir, ağızdan kulağa değil; 0,4 s bu profilde netem'in sıra koruyan
+  jitter'ıyla dar (dosyasız 0,02–0,37).
+- Kollar arası, dosyalı [ölçüldü, düzeltmesiz]: taban − quinn TEXT p95 +11,70 [+7,92, +14,71] s; dosya
+  bitiş +11,09 [+6,92, +14,75] s; PTT ≤0,8 s +0,05 [−0,03, +0,12] (fark gösterilmedi). aday − taban: üç
+  ölçüde de fark gösterilmedi. taban − tcp TEXT p95 −35,50 [−38,97, −32,47] s (sansürlü).
+- Etkin dosya ayrımı [türetilmiş; havuzlanmış, payda ÖĞE, koşu birimli değil, betimsel]: TEXT gecikmesi
+  dosya sürerken ↔ dosya bittikten sonra (p50 s): taban 13,97 ↔ 0,37; aday 15,08 ↔ 0,39; quinn 7,12 ↔ 0,39.
+  Fark dosya etkinliğine bağlı; dosya bittikten sonra üç kol aynı mertebede.
+- Ürün yolu (Ajan A, aynı netem profili, FARKLI iş yükü; doğrudan fark alınmaz): TEXT p95 dosyalı taban
+  113,6 s, aday 73,9 s; dosyasız 13,5 / 10,7 s; PTT ≤0,8 s %0 (dosyalı), %2 / %4 (dosyasız). Kaynak
+  `reports/ktp2/f0/a/tam/tablolar.md` T.9. Bench Kama sayıları bunun üst sınırıdır.
 
 ### 9.5 quinn el sıkışma
 
-- r25 (B hücreleri, tavan 60 s): bağlanamayan oran 5/5 her hücrede (%95 Clopper–Pearson [0,48, 1,00]).
-- r25 (`d_hs_*`, tavan 240 s, N = 10): 0/10 bağlanamadı; kurulum l0 100,0 s [99,9–100,0]
-  (99,9–106,1), l20 100,1 s [100,0–112,3] (99,8–139,3); yine de 60 s içinde teslim 0 (PTO yoklama
-  kuyruğu). Ön-kayıt "≈ 100 s" ile sapma +0…+12 %.
-- r1k: 3,1 s (d300) / 4,5 s (d1000); r12k: 0,8 s / 2,3 s (l0 medyanları, §4 öngörüsü 3,1/4,5/0,8/2,2 s).
+- r25, tavan 60 s (B, 8 hücre × N = 5): 40/40 bağlanamadı. Hücre başına %95 Clopper–Pearson [0,48, 1,00];
+  8 hücrenin havuzu ayrı bir ölçüm olarak yazılmaz.
+- r25, tavan 240 s (`d_hs_*`, N = 10): 0/10 bağlanamadı; kurulum l0 100,0 s [99,9–100,0] (99,9–106,1), l20
+  100,1 s [100,0–112,3] (99,8–139,3). Bağlansa da 60 s içinde teslim 0. Ön-kayıt ≈ 100 s; sapma medyanda
+  ≈ 0, maks +39 s (kayıp).
+- r1k kurulum medyanı (l0): 3,1 s (d300), 4,5 s (d1000); r12k: 0,8 s, 2,3 s. Ön-kayıt 3,1 / 4,5 / 0,8 / 2,2 s.
+- Bench Kama kurulumu yapısal olarak 0'dır [D-9]; kıyas bu sınırla okunur.
 
-### 9.6 Bulgular (dört alan)
+### 9.6 tcp ve D-13
 
-1. **D-T1 · r25'te Kama kendi trafiğiyle hattı dolduruyor.**
-   - Ölçüm: b_r25_d300_l0_p65 ve b_r25_d1000_l0_p65 taban ve aday teslim@60 s = 0,167, 30/30 koşuda (alıcı tek-yön aynı); tcp 1,00 (N=30).
-   - İleri tel ≈ 3665 B/koşu: hattın pencere boyu kapasitesi kadar. Döküm, taban/aday: data 552, retx 357/828, dup 2208/368, ctrl 1275/1275 B.
-   - Dosya: `adaptive-transport/src/sender.rs:1485` `PRE_CONVERGE_FLOOR_BW = 31` (a858f3fc; aday :1672), kullanım :4243; kuruluş probu ve PARAM_SET: Ajan B B-K2, B-K8, B-K13.
-   - Kök neden [ölçüldü: tel dökümü; çıkarım: sıra]: 31 B/s taban > 25 B/s hat, PARAM_SET + kopya + yeniden gönderim veri birimlerinin önünde netem kuyruğunda.
-   - En dar düzeltme: B-K8 (taban ≤ ölçülen teslim hızı) + B-K13 (PARAM_SET aralığı) + B-K2 (kuruluş probu jetonlu).
-2. **D-T2 · Kararlı durumda quinn'e karşı gecikme.**
-   - Ölçüm: 36 birincil hücrenin 22'sinde quinn p95'i düşük. Örnek: r12k_d1000_l30_p1000 taban 32,5 / aday 26,2 ↔ quinn 8,7 s (Δ taban +23,8 s, aralık 0'ı dışlıyor). Teslim@D farkı yok.
-   - Dosya: B'nin atfı `bw.rs:220-245`, `rate.rs:164-180`, `sender.rs:4239-4268` (B-K14 / B-C9).
-   - Kök neden [çıkarım, B]: pacer sunulan hıza kilitleniyor, yeniden gönderim bandı ayrılmıyor.
-   - En dar düzeltme: B'nin önerisi (Steady'de kurtarma bandı / kazanç). 05b kısmen: aday 6 hücrede tabandan düşük.
+tcp kollarının her sayısı D-13 sınırlamasını taşır. Yön: **bekliyor** (`d_tcp_gso1_r12k_d300_l30`, N = 30,
+betimsel; karar yönlendirmez). Sayaç yorumu orkestratör tarafından `kapi3_harness.sh:78-86`'dan doğrulandı
+[kod]. tcp kolu çekirdek cubic'tir; `tcp_bbr` yüklü değil (D-10).
+
+### 9.7 Bulgular (dört alan)
+
+1. **D-T1 · 25 B/s'de Kama hattı kendi trafiğiyle dolduruyor.**
+   - **Ölçüm** [ölçüldü]: b_r25_d300_l0_p65 ve b_r25_d1000_l0_p65, taban ve aday, N = 30/kol: teslim@60 s 0,167 her koşuda; alıcı tek-yön aynı. tcp 1,00. Motor UDP gönderimi (koşu medyanı, b_r25_d300_l0_p65 taban / aday): data 552 / 552, retx 357 / 828, dup 2208 / 368, ctrl 1275 / 1275 B. Netem'den geçen ileri tel 3731 / 3665 B (L2 dahil). Katmanlar farklıdır, doğrudan toplanmaz.
+   - **Dosya:** `client-core/src/runtime.rs:2554-2569` PARAM_SET yeniden denemesi (B-K13); `adaptive-transport/src/sender.rs:1485` `PRE_CONVERGE_FLOOR_BW` (a858f3fc; aday `:1672`), kullanım `:4243` (B-K8); `sender.rs:1490-1491` kuruluş probu (B-K2).
+   - **Kök neden:** [türetilmiş] veri, motor UDP gönderiminin %13'ü (taban) / %18'i (aday). [çıkarım, B-K13] PARAM_SET hattın büyük kısmını veriden önce dolduruyor.
+   - **En dar düzeltme:** B-K13 (yeniden deneme aralığı RTT'den) + B-K8 (taban ≤ ölçülen teslim) + B-K2 (kuruluş probu).
+2. **D-T2 · Kararlı durumda gecikme quinn'in üstünde.**
+   - **Ölçüm** [ölçüldü, betimsel sayım]: 32 r12k/r1k hücresinin 22'sinde taban p95 > quinn (Bonferroni 15). r12k_d1000_l30_p1000 taban 32,5, aday 26,2, quinn 8,7 s (Δ taban +23,8 s). Teslim@D farkı gösterilmedi.
+   - **Dosya:** `sender.rs:4239-4268`, `bw.rs:220-245`, `rate.rs:164-180` (B-K14 / B-C9 izi).
+   - **Kök neden** [çıkarım, B/C]: pacer sunulan hıza kilitleniyor, yeniden gönderim bandı ayrılmıyor. D şeridi bench'te katman ayrımı ölçmedi. B ara denetimi T-15: `kilit_gonderen` taban 8/30, aday 15/30 (r12k_d300_l30_p65; "kısmen"); B'nin tam sonucu bu turda dalda değil, sayılar oradan alınmalı.
+   - **En dar düzeltme:** RAPOR-C B-C9 önerisi (Steady'de kurtarma bandı).
 3. **D-T3 · Karışık akışta dosya TEXT'i bekletiyor (taşıma düzeyi).**
-   - Ölçüm: §9.4. Kama dosyalı TEXT p95 +19,6 s; quinn'den +11,7 s fazla.
-   - Dosya: motor yeni-veri FIFO'su (iş emri §3 A; Ajan A A-9) ve `mixed.rs` sunum sırası.
-   - Kök neden [çıkarım]: tek FIFO, öncelik yok; Kama'nın dosya bitişi quinn'den 11 s uzun (teslim hızı).
-   - En dar düzeltme: gönderen tarafında sınıf kuyrukları (A'nın F1 maddesi). quinn ölçümü gösteriyor ki yalnız gönderen önceliği K-1'i geçirmiyor (+10,5 s, darboğaz kuyruğu) [çıkarım].
-4. **D-T4 · %80 kayıpta teslim.**
-   - Ölçüm: stres hücrelerinde Kama > 0, quinn ve tcp = 0 (§9.3, betimsel N=10).
-   - Dosya: el sıkışmasız kuruluş (`kama_product.rs` IdentitySeam yolu, D-9) ve kayıpta hızı düşürmeyen pacer (INV-RATE-1).
-   - Kök neden [ölçüldü: quinn el sıkışma 4/10–10/10 başarısız].
-   - En dar düzeltme: yok. Korunacak davranış; KTP-2 §3.5 "loss hızı düşürmez" ve el sıkışmasız akış korunmalı. Gerçek Noise SESSION_INIT maliyeti ölçülmedi (D-9).
-5. **D-T5 · quinn 65 B r1k'da Kama'dan yavaş ve iki kat tel harcıyor.**
-   - Ölçüm: r1k_d300_l0_p65 p95 quinn 5,6 ↔ taban 1,4 s; tel/mesaj 390 ↔ 195 B (N=30).
-   - Dosya: `quic.rs` mesaj başına uni-stream (rakip yapısı).
-   - Kök neden [çıkarım]: stream başına çerçeve + ACK/MAX_STREAMS yükü 1 kB/s'de belirgin.
-   - En dar düzeltme: Kama tarafında yok. Kazanılan hücre olarak yazıldı.
-6. **D-13 (tcp TSO), D-T6 (quinn_irtt kurulumu 4,6 s ↔ 4,3 s, betimsel, ön-kayıt sapması), D-1…D-12 (bench):** §3 ve §8.
+   - **Ölçüm** [ölçüldü]: §9.4. Dosyalı − dosyasız TEXT p95 +19,6 s (taban), +19,9 s (aday), +10,5 s (quinn).
+   - **Dosya:** motor yeni-veri FIFO'su (Ajan A A-1); bench sunum sırası `mixed.rs` `client_kama`.
+   - **Kök neden** [çıkarım]: Kama'da tek FIFO, sınıf önceliği yok. quinn'de gönderen önceliği var, buna karşın dosya sürerken TEXT p50 7,1 s [türetilmiş, §9.4]; pay darboğaz kuyruğunda [çıkarım: BBR ilk pencere 240 000 B, D-5; katman ölçülmedi].
+   - **En dar düzeltme:** A'nın F1-A4 / F1-A6 maddeleri. Yalnız gönderen önceliği quinn'de K-1 uyarlamasını geçirmedi [ölçüldü].
+4. **D-T4 · %80 kayıpta teslim (betimsel).**
+   - **Ölçüm** [ölçüldü, N = 10]: §9.3 tablosu; quinn el sıkışması 3/10–9/10 başarısız.
+   - **Dosya:** `kama_product.rs:17-20` (IdentitySeam yolu); INV-RATE-1 pacer [kod].
+   - **Kök neden** [ölçüldü: rakip bağlanamıyor; çıkarım: Kama payı]: el sıkışma turu yok, kayıpta hız düşmüyor.
+   - **En dar düzeltme:** yok. Korunacak davranış. Gerçek Noise kurulumu ölçülmedi (D-9).
+5. **D-T5 · quinn 65 B, 1 kB/s'de pahalı.**
+   - **Ölçüm** [ölçüldü, N = 30]: r1k_d300_l0_p65 p95 quinn 5,6 ↔ taban 1,4 s; tel/mesaj 390 ↔ 195 B.
+   - **Dosya:** `quic.rs` `send_one_tack` (mesaj başına uni-stream).
+   - **Kök neden** [çıkarım]: stream başına çerçeve + ACK / MAX_STREAMS yükü; ayrıca el sıkışma sonrası PTO kuyruğu olabilir (§4). Ayrıştırılmadı.
+   - **En dar düzeltme:** yok (rakip davranışı). Kazanılan gecikme hücresi olarak yazıldı; akış başına stream kolu ölçülmedi.
 
-Ön-kayıt sapmaları:
-- "Cubic çöker" öngörüsü tcp için r12k_d1000_l10'da tutmadı (`d_cc`: tcp p95 8,0 s, tamam); r12k_d300_l30'da tuttu (tcp 0,43).
-- Kama'nın r25'te 1/6'da kalacağı öngörülmemişti (B-K8 bulgusu).
-- "Kama karışık akışta K-1'i taşıma düzeyinde geçmez" öngörüsü tuttu.
+**Ön-kayıt sapmaları.** Tutan: quinn r25 ≈ 100 s; quinn r25'te 0 teslim; tcp r25 bağlantısı ≈ 6,5 s; karışık akışta tcp HOL; Kama K-1 uyarlamasını geçmez. Tutmayan: "Cubic asgari pencerede çöker" r12k_d1000_l10'da tutmadı (`d_cc`: tcp p95 8,0 s, quinn_cubic 6,2 s), r12k_d300_l30'da yön tuttu (quinn_cubic 45,4 s; tcp 0,43). quinn_irtt'in el sıkışmayı hızlandıracağı öngörüsü tutmadı (4,6 ↔ 4,3 s). Duman N=1'deki `d_cc_r12k_d1000_l10` Kama 0,793 değeri tam sette tekrarlanmadı (N=10, 1,00): duman tek koşuydu. Kama'nın r25'te 1/6'da kalması öngörülmemişti.
 
-### 9.7 Sınıflandırma (ISEMRI §5)
+### 9.8 Sınıflandırma (ISEMRI §5)
 
-| davranış | (i) 05b düzeltiyor mu (aday ölçümü) | (ii) dar mı / çekirdek mi | (iii) KTP-2 0.3 | (iv) korunacak avantaj |
+Sınıf dili: **dar** (tek crate, motor dışı) · **sözleşme** (S1, AMP ya da tel; sahip onayı) · **motor çekirdeği** (adaptive-transport).
+
+| davranış | (i) 05b (aday ölçümü) | (ii) sınıf | (iii) KTP-2 0.3 | (iv) korunacak avantaj |
 |---|---|---|---|---|
-| D-T1 r25 hat doldurma | hayır (0,167 her iki kol) | dar: sabit/pacer tabanı, PARAM_SET ve kuruluş probu kuralları; mimari değişmez | §3.5 hız, §3.9 düşük bant; K-3 (TASLAK-NOTLARI B'nin İSTEK-E1'i: 96 B → 134–140 B) | — |
-| D-T2 Steady gecikme ↔ quinn | kısmen (6/36 hücrede aday düşük; en büyük farkta 32,5 → 26,2 s) | dar (pacer/kurtarma bandı, B) | §3.5, §3.6 | teslim@D eşit |
-| D-T3 karışık akışta dosya HOL | hayır (aday − taban fark gösterilmedi) | gönderen sınıfları dar yapılabilir; alıcı sıralaması (A-2) ve darboğaz kuyruğu payı çekirdek/akış modeli ister [çıkarım] | §3.2 akışlar, §3.6 zamanlayıcı, §3.3 | — |
-| D-T4 %80'de teslim | aday daha yüksek (0,40 ↔ 0,04 r12k p1000; betimsel) | — | §3.5, §3.10 | evet (ölçülen stres hücreleri) |
-| tcp l30 HOL | — (rakip) | — | — | evet: l30'da 6 hücrede tcp'ye karşı teslim üstünlüğü |
+| D-T1 r25 hat doldurma | hayır: teslim 0,167 iki kolda; dup azaldı (2208 → 368 B), retx arttı (357 → 828 B) | PARAM_SET aralığı: **dar** (client-core). 31 B/s taban ve kuruluş probu: **motor çekirdeği** | §3.5, §3.9; K-3 notu TASLAK-NOTLARI (B İSTEK-E1) | — |
+| D-T2 Steady gecikme ↔ quinn | kısmen: 40 hücrede 6'sında aday p95 düşük; en büyük farkta 32,5 → 26,2 s (bu hücrede aday − taban fark gösterilmedi) | **motor çekirdeği** (B-K14 / B-C9: `sender.rs`, `bw.rs`, `rate.rs`) | §3.5, §3.6 | teslim@D farkı gösterilmedi |
+| D-T3a alıcı sıralaması (bench'te YOK; A-2) | A: kısmen, toplamda fark gösterilmedi | **sözleşme** (S1 §4) + adaptör; motor değişmez (A-2) | §3.1, §3.2 | — |
+| D-T3b gönderen FIFO (bench'te ölçülen pay) | hayır: aday − taban üç ölçüde fark gösterilmedi | A-1: W penceresi **sözleşme**; iki FIFO **sözleşme + motor çekirdeği** | §3.6, §3.7 | — |
+| D-T3c darboğaz kuyruğu payı | ölçülmedi (bench'te katman yok) | pacer'ın hat kuyruğunu doldurma payı: **motor çekirdeği** [çıkarım]. Ürün yolunda küçük: A `net` p95 2,1–11,0 s, `fifo` p95 70,6–94,7 s [ölçüldü, A]. Sözleşme ya da dar sınıfına girmez | §3.5, §3.6 | — |
+| D-T4 %80'de teslim | aday yüksek (betimsel; 0,04 → 0,40, 0,58 → 0,77, 0,08 → 0,28, 0,57 → 0,68) | değişiklik yok | §3.5, §3.10 | evet, ölçülen stres hücreleri |
+| tcp l30 teslim | — (rakip) | — | — | evet, §9.2'deki 6 hücre |
 
-### 9.8 F1 girdisi (D şeridinin gözüyle; uygulama B/A şeritlerinde)
+### 9.9 F1 girdisi (D şeridinin gözüyle; uygulama sahibi B/A)
 
-| # | dosya / crate | değişiklik | bağımlılık | ölçü ve beklenen etki [tahmin] | süre |
-|---|---|---|---|---|---|
-| 1 | adaptive-transport `sender.rs:1485`, client-core `runtime.rs` (PARAM_SET), kuruluş probu | taban hızı ≤ ölçülen teslim; PARAM_SET seyrek; kuruluş probu jetonlu (B-K8/K13/K2) | B şeridi | K-3: r25 teslim@60 s 0,167 → ≥ 0,83. Dayanak: ileri tel 3665 B'nin 1275 B'ı ctrl, 2208 B'ı dup (taban); 6 × 140 B = 840 B, pencerede ≈ 1500 B kapasite kalıyor | 1–1,5 ajan-gün |
-| 2 | adaptive-transport `rate.rs` / `bw.rs` (B'nin atfı) | Steady'de kurtarma bandı | 1 | K-2 p95: r12k_d1000_l30_p1000'de 32,5 s → quinn'in 8,7 s'sine doğru. Dayanak: teslim@D eşit, fark kuyrukta | 2 ajan-gün |
-| 3 | client-core runtime sunum katmanı | sınıf başına sunum kuyruğu (PTT > TEXT > dosya) | A'nın planı | K-1 TEXT p95 dosyalı 24,5 s → ≤ quinn'in 12,8 s'si. Tek başına K-1'i geçirmez (quinn +10,5 s) | 2 ajan-gün |
-| 4 | bench (ölçüm) | `--rx-log` bütün kollarda varsayılan hücre şablonu; tcp t0_unix kaydı | — | ölçüm doğruluğu (tcp tek-yön yaklaşıklaması kalkar) | 0,25 |
+Bütün beklenen etkiler [tahmin]dir.
 
-### 9.9 TABAN girdisi — S4 "Kama aynı koşullarda QUIC'in ve TCP'nin neresinde?"
+| # | dosya / crate | değişiklik | sınıf | bağımlılık | ölçü, beklenen etki, dayanak | süre |
+|---|---|---|---|---|---|---|
+| 1 | client-core `runtime.rs:2554-2569` | PARAM_SET yeniden denemesi RTT'den | dar | — | K-3 [tahmin]: r25 teslim@60 s 0,167 → yükselir. Dayanak: ctrl 1275 B, motor gönderiminin %29'u (taban) / %42'si (aday) [türetilmiş]; B-K13 telde 2325 B | 0,5 ajan-gün |
+| 2 | adaptive-transport `sender.rs:1485`, `:4243`, kuruluş probu | taban ≤ ölçülen teslim; prob aralığı RTT tabanlı (B-K8, B-K2) | motor çekirdeği | 1 | K-3 [tahmin]: 1 + 2 ile r25 teslim ≥ 0,83. Dayanak: 6 mesaj × 140 B = 840 B ≈ 34 s hat süresi < 60 s; tcp aynı hatta 1,00 [ölçüldü] | 1 ajan-gün |
+| 3 | adaptive-transport `rate.rs`, `bw.rs`, `sender.rs` (B-C9) | Steady'de kurtarma bandı | motor çekirdeği | — | K-2 gecikme [tahmin]: r12k_d1000_l30_p1000 p95 32,5 s → quinn'in 8,7 s'sine doğru. Dayanak: teslim@D farkı yok, fark gönderen kuyruğunda (B-K14) | 2 ajan-gün |
+| 4 | A'nın F1-A4 / F1-A6 | dosya penceresi + akış başına sıra | sözleşme | sahip onayı | K-1 [tahmin]: A'nın tablosu. Bench dayanağı: dosyalı TEXT p95 24,5 s, dosyasız 4,9 s | A'nın tahmini |
+| 5 | bench | tcp `t0_unix_ns` kaydı (bugün `t_start + setup_ns` yaklaşıklaması) | ölçüm | — | tek-yön tcp ±10 ms | 0,1 ajan-gün |
 
-- Ölçülen 36 birincil hücrede (12,5 kB/s ve 1 kB/s; RTT 0,6/2 s; kayıp %0–30; 65 B ve 1000 B; N = 30) bench Kama kolu (üst sınır; ürün yolu değil) ile quinn (BBR, mesaj başına stream, taşıma ACK'i) arasında pencere içi teslim oranında fark gösterilmedi; ikisi de 1,00.
-- Gecikmede quinn 22 hücrede önde. En büyük fark 12,5 kB/s, RTT 2 s, %30, 1000 B'de: p95 32,5 ↔ 8,7 s. Kama 2 hücrede önde (1 kB/s, 65 B, kayıpsız).
-- 05b adayı teslimde fark yaratmadı, gecikmede 6 hücrede tabandan düşük.
-- tcp (tek bağlantı; D-13) %30'da 6 hücrede pencere içi teslimde Kama'nın gerisinde (0,42–0,85 ↔ 1,00). %0–10'da gecikmede önde.
-- 25 B/s'de Kama 6 mesajın 1'ini teslim etti (iki kol, 30/30 koşu). Kendi kontrol, kopya ve yeniden gönderim trafiği hattı dolduruyor. tcp 6/6, quinn 0/6: QUIC el sıkışması ≈ 100 s, 60 s tavanda 5/5 bağlanamadı.
-- K-2: birincil aralıkta Kama ile QUIC'in %90 kesişimi arasında fark gösterilmedi (ikisi de > %30); tcp %30'da kesişti.
-- Stres %80'de (N = 10, betimsel) Kama 0,04–0,77 teslim etti, quinn ve tcp 0. Bu, korunması gereken ölçülmüş avantajdır.
-- Karışık akışta (12,5 kB/s, %30) dört taşıma da K-1'i geçmedi. Dosya Kama'da TEXT p95'i 19,6 s, quinn'de 10,5 s uzattı.
+### 9.10 TABAN girdisi — S4 "Kama aynı koşullarda QUIC'in ve TCP'nin neresinde?"
 
-### 9.10 Yeniden üretim
+- Kama sayıları bench üst sınırıdır (D-9): S1 sıralaması ve Noise baytları yok; ürün yolu Ajan A'da. tcp tek bağlantıdır, çekirdek cubic, D-13 sınırlamasıyla.
+- 12,5 kB/s ve 1 kB/s, RTT 0,6 ve 2 s, kayıp %0–30, 65 ve 1000 B'de (32 hücre, N = 30/kol) Kama ile quinn arasında pencere içi teslim oranında fark gösterilmedi; iki taraf da medyan 1,00. Bu ölçü bu aralıkta ayırt etmiyor.
+- Aynı 32 hücrede gecikme p95'inde quinn 22 hücrede, Kama 2 hücrede düşük (düzeltmesiz; Bonferroni sonrası 15 ve 2). En büyük fark 12,5 kB/s, RTT 2 s, %30, 1000 B: 32,5 ↔ 8,7 s (aday 26,2 s).
+- tcp'ye karşı ön-kayıtlı kuralla 6 hücre kazanıldı (%30; tcp 0,42–0,86, Kama 1,00), 8 hücre kaybedildi (25 B/s'nin tamamı).
+- 25 B/s'de (65 B, 8 hücre) Kama 6 mesajın 1'ini teslim etti (0,17; adayda %30'da 0,25). Motor gönderiminin %13–18'i veri; kontrol, kopya ve yeniden gönderim hattı dolduruyor. tcp 0,83–1,00. quinn 60 s içinde bağlanamadı (40/40; 240 s tavanla bağlantı ≈ 100 s).
+- K-2: l30'a dek Kama ile QUIC'in %90 kesişimi arasında fark gösterilmedi (ikisi de > %30); tcp 8 grubun 8'inde %30'da düştü.
+- %80 kayıpta (N = 10, betimsel) dört hücrede Kama 0,04–0,77 teslim etti, quinn ve tcp 0. %50'de tablo karışık: 12,5 kB/s, 1000 B'de taban 0,46, aday 0,99, quinn 1,00.
+- Karışık akışta (12,5 kB/s, %30; N = 30) dört taşıma da K-1 uyarlamasını geçmedi. Dosya TEXT p95'i taban'da +19,6 s, quinn'de +10,5 s uzattı; taban − quinn dosyalı +11,7 [+7,9, +14,7] s. PTT ≤0,8 s dosyalıda fark gösterilmedi.
+- 05b: teslimde 40/40 ayrışmadı; gecikmede 6 hücrede düşük (hepsi 1000 B), karışık akışta ve 25 B/s'de fark gösterilmedi.
+- Ölçülemeyen: tcp'de D-13 yönü (doğrulama hücresi koşuyor); bozuk dönüş yolu ve gerçek Noise kurulumu bu şeritte ölçülmedi.
+
+### 9.11 Ölçülemedi / açık
+
+- D-13 yönü: bekliyor (`d_tcp_gso1_r12k_d300_l30`).
+- Kama ↔ quinn teslim@D hükmü r25'te: ölçülemedi, quinn N = 5 (betimsel; iki taraf da < 0,90).
+- Karışık hücrede Kama gönderen FIFO ↔ darboğaz payı: bench'te katman damgası yok, ölçülemedi (ürün yolu A).
+- Gerçek Noise SESSION_INIT maliyeti: bench'te ölçülemedi (D-9).
+
+### 9.12 Yeniden üretim
 
 ```
 python3 -I scripts/ktp2/f0/d/tam_analiz.py ~/kama-k4g-work/ktp2-f0/runs/tam/d/out \
   ~/kama-k4g-work/ktp2-f0/runs/tam/b/out --out reports/ktp2/f0/d/tam \
   --product-note reports/ktp2/f0/d/tam/urun_yolu_A.md
-python3 -I scripts/ktp2/f0/a/f0a_analyze.py --out <geçici> <a_r12k_d300_l30_{dosyasiz,dosyali} kökleri>   # ürün yolu satırı
 ```
-sha256 (`reports/ktp2/f0/d/tam/SHA256SUMS`):
-`5e480fcd…` TAM-OTOMATIK.md · `fc2b318a…` kosular.csv · `feb9b4c3…` karisik_kosular.csv.
-İkililer: bench taban 2cd9f68d (3311d8e0…), aday bf18dc35 (c893e840…). Ham koşu dizinleri git'te değil.
+
+sha256 (`reports/ktp2/f0/d/tam/SHA256SUMS`): `4c2e9038…` TAM-OTOMATIK.md · `c35aff99…` kosular.csv ·
+`feb9b4c3…` karisik_kosular.csv. Çıktı deterministiktir (bootstrap tohumu sha256'dan). İkililer: bench
+taban `2cd9f68d` (`3311d8e0…`), aday `bf18dc35` (`c893e840…`), `cell.env` içinde. Ham koşu dizinleri git'te
+değil. Ürün yolu satırı: `reports/ktp2/f0/a/tam/tablolar.md`.
