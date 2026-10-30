@@ -4,7 +4,7 @@
 **Kod tabanı:** taban `a858f3fc` (bu worktree; `crates/` farkı yok), aday `49864510` (`wt/ktp2-05b`). Aşağıda anılan kod satırları tabandadır; aday ağacında `transport.rs`, `wire.rs`, `budget.rs`, `kama-fec-codec` değişmedi, `runtime.rs`/`sender.rs`'te ilgili satırların içeriği aynı, yalnız numaralar kayar.
 **Kapsam:** yalnız taslağın fiziksel/matematiksel tutarlılığı ve koddan iddiaları. Tasarım önerisi yok; her maddede yalnız doğru değer.
 
-**Etiketler:** [hesap] = betikteki kesin aritmetik (Fraction/math.comb; ölçüm değildir) · [kod] = kaynak okuması (dosya:satır) · [çıkarım] = ölçülmemiş akıl yürütme · [betimsel] = karar dışı bilgi. Bu belgede [ölçüldü] yoktur.
+**Etiketler:** [hesap] = betikteki kesin aritmetik (Fraction/math.comb; ölçüm değildir) · [kod] = kaynak okuması (dosya:satır) · [çıkarım] = ölçülmemiş akıl yürütme · [betimsel] = karar dışı bilgi. Bu şerit koşu yapmadı; [ölçüldü] yalnız V-25 ve V-26'da, B ve C raporlarından aktarılan sayılardadır. [ölçülen itiraz] = taslağın varsayımına bu ölçümlerden gelen itiraz; hesap hatası değildir.
 
 **Betikler** (`scripts/ktp2/f0/e/`, `python3 -I`, birleşik çıktı `CIKTI.txt`): `fec_olasilik.py` · `iletim_dusuk_bant.py` · `k6_ses.py` · `sinirlar.py` · `yuk_tablosu.py`. Her sayının yanında `betik · etiket` yazılıdır; etiket betik çıktısındaki `== ETİKET ==` satırıdır.
 Yeniden üretim: `for f in fec_olasilik iletim_dusuk_bant k6_ses sinirlar yuk_tablosu; do python3 -I scripts/ktp2/f0/e/$f.py; done`
@@ -14,7 +14,7 @@ Yeniden üretim: `for f in fec_olasilik iletim_dusuk_bant k6_ses sinirlar yuk_ta
 - Kayıp bağımsız Bernoulli. "İletim sayısı" ileri yönde ilk başarılı alıma kadardır; ACK yolu ve iki yönlü kayıp ayrıca yazılmıştır.
 - "n iletimin süresi" = n × serileştirme (art arda gönderim; ARQ beklemesi yok) — taslağın K-3 modeli. ARQ yolu ayrı hesaplandı (V-4).
 
-Sayım: **hata 15** (hesap/iç tutarlılık 10, kod iddiası 5) · **varsayıma duyarlı 23** · **doğrulanan 24** (hesap 20, kod 4).
+Sayım: **hata 16** (hesap/iç tutarlılık 11, kod iddiası 5) · **varsayıma duyarlı 26** (2'si [ölçülen itiraz]) · **doğrulanan 24** (hesap 20, kod 4).
 
 ---
 
@@ -68,6 +68,10 @@ Sayım: **hata 15** (hesap/iç tutarlılık 10, kod iddiası 5) · **varsayıma 
 - Doğru: aritmetik tutuyor — baskın terim 4096 × 4 × 1046 / 31 = 552 828 s = 6,40 gün (notla %0,09 fark) [hesap; `sinirlar.py · S5-03`]. Ama (i) türetim **05b adayının** R1 rejimidir (DUR-45 (C) H-sahiplenmesi; 49864510'da var), taban `a858f3fc`'nin değil — H-sahiplenmesi 05b mekanizmasıdır (`adopt_due_ns` / `adopt_unowned` tabanın `sender.rs`'inde 0 kez, adayınkinde 6 kez geçer), taban için bu sınır türetilmemiş; (ii) koşul aynı değil: 1046 B birim / tam hız / 4096 birim ↔ taslağın S = 64 B / %20 pay / W = 16. Aynı baskın terim 64 B yükle (bugünkü tel 97 B), tam hızda **51 266 s ≈ 14,2 sa**; %20 payla ≈ 2,97 gün.
 - Etki: 245 s ↔ 6,4 gün karşılaştırması farklı koşulların oranıdır; "bugünkü motor" ifadesi tabanı değil adayı anlatıyor.
 
+**H-16 · §4 ONARIM çerçevesi ↔ §3.8 "Kurtarılan parça" (numara, H-11…H-15 atıfları korunsun diye sırada değil)**
+- Taslak: §4 ONARIM = "tür 1 · akış 2 · blok ilk sırası 4 · K 1 · R 1 · onarım sırası 1 · uzunluk 2 · veri"; §3.8 "onarım parçası parça boyundadır" ve "Kurtarılan parça normal gelen parçayla aynı kabul ve kredi yolundan geçer". Bir parçanın boyu ve işaretleri (son-parça, mesaj-sonu) yalnız kendi AKIŞ çerçevesindedir; parça kaybolunca o çerçeve de kaybolur. ONARIM'daki `uzunluk` onarım verisinin boyudur.
+- Doğru: kurtarılan parça için iki bilgi eksik: (i) gerçek boyu, (ii) işaretleri. Akış ve sıra numarası telden çıkar (akış, blok ilk sırası + konum). Blok eşit boylu değilse "parça boyu" da tek değer değildir ve kurtarılan parçanın uzunluğu tanımsızdır. Bu durum taslağın kendi kurallarından doğar: mesajın son parçası S'ten kısa olabilir, §3.8 kuyruk koruması tam o bloğa onarım ekler, §3.9'da S hıza göre değişir. Eşit boylu blokta (sabit hızlı ses) boy onarım `uzunluk`'undan çıkar, işaretler yine eksiktir.
+
 ## 2. Hatalar — kod iddiaları [kod]
 
 **H-11 · §1 "64 baytlık sembollere 37 bayt çerçeve ekleniyor (taban yükü yaklaşık iki kat)"**
@@ -100,7 +104,7 @@ Sayım: **hata 15** (hesap/iç tutarlılık 10, kod iddiası 5) · **varsayıma 
 
 **V-3 · K-3 notu ve Ek A.1 madde 9 (spec'in "0,025 kbit/s / %80'de 1,5–2 dk" satırı).** Taslak spec'in mesajını "65 B yük (+31 B)" okur. Spec satırı "Mesaj (SESSION_DATA ~65B)" der (`specs/transport-layer-tdd.md:250`); ccr §35.6'ya göre SESSION_DATA UDP yükü = 22 B + yük. Bu okumayla tel 65 B: iletim 20,80 s, ortalama 5 × = **1,73 dk** (spec aralığının içinde), %90 11 × = **3,81 dk**, %95 14 × = 4,85 dk; L = 28: 2,48 / 5,46 dk; L = 42: 2,85 / 6,28 dk. Taslağın 96 B okumasıyla 2,56 / 5,63 dk [hesap; `K3-04`]. "Ortalamaya yakın, %90 güvenle değil" yargısı iki okumada da tutar; A.1 madde 9'daki "≈ 5–6 dk" yalnız 96 B ya da L ≥ 28 okumasında.
 
-**V-4 · K-3 ölçütü "25 B/s %20 kayıpta p95 ≤ 3 × alt sınır (≈ 12 s)".** %95 için 2 iletim gerekir. Taslağın §3.8 güvenilir akış kuralıyla (K = 1 → R = 1) p95 ≤ **7,80 s** (L = 42: 11,16 s ≤ 16,56). Yalnız ARQ'da tek mesajın kaybı PTO ile anlaşılır: p95 = PTO + ser ≥ **9,07 s** (srtt ≥ 5,20 s, rttvar = 0, yayılım 0); sınır ancak yayılım + 4·rttvar ≤ 2,45 s iken tutar; ilk örnek rttvar = srtt/2 ile 19,47 s [hesap; `K3-05`]. §3.11 ACK tavanı bütün ACK'lere uygulanırsa 25 B/s'de ACK aralığı ≥ 27,2 s (V-18), srtt/PTO buna göre büyür [çıkarım].
+**V-4 · K-3 ölçütü "25 B/s %20 kayıpta p95 ≤ 3 × alt sınır (≈ 12 s)".** %95 için 2 iletim gerekir. Taslağın §3.8 güvenilir akış kuralıyla (K = 1 → R = 1) p95 ≤ **7,80 s** (L = 42: 11,16 s ≤ 16,56). Yalnız ARQ'da tek mesajın kaybı PTO ile anlaşılır: p95 = PTO + ser + RTT_y/2 ≥ **9,07 s** (srtt ≥ 5,20 s, rttvar = 0, yayılım RTT_y = 0); sınır ancak 1,5·RTT_y + 4·rttvar ≤ 2,45 s iken tutar; ilk örnek rttvar = srtt/2 ile 19,47 s [hesap; `K3-05`, `K3-06`]. (Düzeltme: ilk sürümdeki "yayılım + 4·rttvar" tek yön yayılımını atlıyordu.) **"≈ 12 s" sabit okunur ve L = 42 sayılırsa (B İSTEK-E1):** alt sınır 96 B yerine 134–140 B tel (V-1); yalnız ARQ p95 **14,10 s** (138 B, ACK 76 B, yayılım 0), d300'de 15,00 s, d1000'de 17,10 s, üçü de 12 s'nin üstünde. B'nin `fizik.py` değerleri (134 B, ACK 73 B: d300 14,54 s, d1000 16,64 s) yeniden üretildi. Kaynak + onarım 11,16 / 11,46 / 12,16 s [hesap; `K3-06`]. §3.11 ACK tavanı bütün ACK'lere uygulanırsa 25 B/s'de ACK aralığı ≥ 27,2 s (V-18), srtt/PTO buna göre büyür [çıkarım].
 
 **V-5 · K-2 "%80 iki yönlü kayıpta 1 KB için ideal ARQ ≈ 25 iletim".** 25 = 1/(0,2 × 0,2): her alınan kopyaya tek ACK, gönderen teyit alana dek. K-2'nin ölçütü teslimdir: alıcıya ilk varış ortalaması **5** iletim. ACK alım başına 2/3/4 kez tekrarlanırsa 13,9 / 10,3 / 8,5. 8 ve 100 kbit/s'de 1 KB tek parçadır (S = 1100) [hesap; `K2-01`].
 
@@ -139,6 +143,24 @@ Sayım: **hata 15** (hesap/iç tutarlılık 10, kod iddiası 5) · **varsayıma 
 **V-22 · §3.5 "taban hız … bugünkü 31 B/s".** 31 B/s, K-3 hatlarının üstünde (25 B/s'nin 1,24 katı, 3,125 B/s'nin 9,9 katı). KTP-2'de uçuş tavanı (2 paket) kuyruğu sınırlar. Bugünkü motorda 31 B/s yalnız başlangıç değil kalıcı tabandır [kod: D-K3].
 
 **V-23 · §2 hikâye (8 kbit/s, %30, PTT + mesaj + dosya).** (4, 4) 200 ms ses 625 B/s (L = 0) = hattın %62,5'i ve §3.6 tavanının (457,5) üstünde (H-3); L = 42 ile 1045 B/s > 1000 B/s, hatta sığmaz [hesap; `K6-03`].
+
+**V-24 · [kod] K-6 "Ses tel hızı (başlık dahil, FEC'siz)".** 925 / 667 / 408 / 305 B/s yalnız 31 B sayar; uygulama kaydının 13 B'ı dahil değil: `APP_RECORD_HEADER_BYTES` 5 (`kama-app/src/codec/limits.rs:24`) + `MEDIA_BUNDLE_PREFIX_BYTES` 8 (`:93`). PTT bugün bu kapla gider (`kama-app/src/ptt.rs:12`); taslak kaydın kalktığını yazmıyor (Ek A.1'de yok, §7 uygulama katmanı kalır). Kalırsa 40 / 60 / 120 / 200 ms → 1250 / 883 / 517 / 370 B/s (L = 42: 2300 / 1583 / 867 / 580). 200 ms FEC'li: %10 466, %20 627 (5,01 kbit/s), %30 755 B/s (6,04 kbit/s); L = 42 ile 729, 977 (7,81 kbit/s), 1175 B/s (9,40 kbit/s > 8 kbit/s). Bugünkü motor + uygulama 120 ms'de UDP 533, L = 42 ile 883 B/s (RAPOR-C §3.2 yeniden hesaplandı) [hesap; `K6-09`].
+
+### Ölçülen itirazlar (hesap hatası değil)
+
+Ölçüm bugünkü motorundur (taban, aday); KTP-2 ölçülmedi, taslağa aktarım [çıkarım]dır. ✱ = ham CSV'den yeniden sayıldı (`reports/ktp2/f0/c/tam/kosular.csv`; `ktp2/f0-b` dalında `reports/ktp2/f0/b/tam/kosular_b.csv.gz`, `a10_kosular.csv`).
+
+**V-25 · [ölçülen itiraz] §3.5 "bugünkü teslim hızı örnekleyicisi ve bant filtresi aynen kullanılır" (§7: `bw` kalır).**
+- Beklenti: bu iki bileşen aynen alınırsa KTP-2'nin gönderen kilidini (B-K14 / B-C9) ve hız çöküşünü (A-10) taşıması beklenir [çıkarım].
+- Mekanizma [kod]: örnek = teyit edilen bayt / aralık, kaybolan bayt sayılmaz (`bw.rs:98-109`); filtre pencereli azami (`bw.rs:221-245`); hız = kazanç × BtlBw, en çok cwnd/srtt (`rate.rs:164-180`). Hat tıkalı değilken örnek ≈ pacer × (1 − p) [çıkarım; B, C]. BtlBw'nin sönmemesi için kazanç ≥ 1/(1 − p) gerekir: %10'da 1,11, %20'de 1,25, %30'da 1,43; bugünkü ProbeUp'ın 1,25(1 − p) değeri 1,125 / 1,000 / 0,875 [hesap; `sinirlar.py · BW-01`]. §3.5 kazanç kuralı yazmıyor.
+- Ölçüm [ölçüldü; N = 30; taban ↔ aday]: `kilit_gönderen` r12k l30 78/120 ↔ 92/120, r1k l30 36/120 ↔ 56/120 (B)✱; arq kolu 11 hücrede 185/330 ↔ 249/330 (C)✱; hız çöküşü 12/225 ↔ 14/225, rinf hariç (B)✱. r12k_d300_l30_p65'te hat doluluğu %22,8 / %21,2: kilit darboğaz kuyruğu değil (RAPOR-B TS.3 no. 3).
+- Sınırlar: (a) bugünkü sürdürmenin bir kısmı durum makinesindedir (`pending_lost` → RecoverArq, kazanç 1, ProbeUp iptali: `sender.rs:3993`, `:4076`, `:4252-4255`); §3.5 bu durumları almıyor, o parça aynen taşınmaz. (b) `kilitli` tanımı gecikmeden türer; kilitli/kilitsiz kıyası betimseldir. (c) FEC'li kollarda kilit seyrek: rs2 14/330 ↔ 25/330, rs4 32/330 ↔ 55/330 (C)✱; §3.8 güvenilir akış onarımının bu etkiyi ne kadar azaltacağı ölçülmedi.
+
+**V-26 · [ölçülen itiraz] §3.5 / §3.10 uçuş tavanı "max(2 paket, 2 × bant tahmini × en küçük RTT)".**
+- B'nin hesabı doğrulandı [hesap; `sinirlar.py · UT-01`]: 2 tam boy paket 2 × 1131 = 2262 B; RTT 2,10–2,37 s'de **1077–954 B/s** (L = 42: 1117–990; B'nin 2 × 1100 B ile değeri 1048 B/s). Gerekli: r12k_d1000_l30_p1000'de sunulan 1027 B / 285 ms = **3604 B/s** (KTP-2 telinde 3618), r12k_d1000_l0_p65'te 2556 B/s (2667). Taban, sunulanın %30'u / %42'si.
+- Bugünkü taban 4 × 1200 = 4800 B (`rate.rs:18`, `:101`; cwnd = max(2 × BDP, min_cwnd), `:173`) → 2286–2025 B/s, sunulanın %63'ü / %89'u. Bu tabanla r12k_d1000_l0_p65'te 600 mesajın 298 / 286'sı sunumdan > 0,2 s sonra çıktı; r12k_d1000_l30_p1000'de ilk 5 s emisyon 1956 B/s (taban) [ölçüldü; RAPOR-B TS.3 no. 4, N = 30/kol]. KTP-2 tabanı bugünkünün 0,47 katı.
+- Kapsam: taban yalnız ilk teslim örneğine kadar bağlar; sonra ikinci terim gelir, o da bugünkü 2 × BDP ile aynı biçimdedir. Rampa modeliyle (g = 2(1 − p)·rtprop/srtt; RAPOR-B T§19: l0 1,53–1,67, l30 1,04–1,18) taban farkı l0'da 1,5–1,8 RTT (3–4 s), l30'da 4,5–19 RTT (10–40 s) ek gecikme eder [çıkarım; `UT-01`]. Tavan backlog boyunca sürmez: pacer × srtt ≈ 4800 B yalnız backlog örneklerinin %3–7'sinde (RAPOR-B T§10). §3.10'da bant tahmini korunduğu için taban kesinti sonrası tek RTT bağlar [çıkarım].
+- Varsayım: "paket" boyu taslakta tanımsız; değerler tam boy paket üst sınırıdır. Çerçeve birleştirmesiz 96 B'lik paketlerle 2 paket = 192 B → 91 B/s. İlk turda §3.5 taban hızı (31 B/s) daha dar bağlayabilir (V-22).
 
 ---
 

@@ -609,7 +609,7 @@ def mixed_md(mixed: dict[str, str], prod_rows: list[str]) -> tuple[list[str], li
                 bd = boot_diff(va, vb, f"{cell}|{a}|{b}|{k}") if va and vb else None
                 cells_.append("—" if bd is None else f"{bd[0]:+.2f} [{bd[1]:+.2f}, {bd[2]:+.2f}]")
             md.append(f"| {a} − {b} | " + " | ".join(cells_) + " |")
-        if prod_rows:
+        if prod_rows and cell == "d_mix_r12k_d300_l30":
             md.append("")
             md += prod_rows
         md.append("")

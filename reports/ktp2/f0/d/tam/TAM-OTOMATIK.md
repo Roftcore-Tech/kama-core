@@ -296,8 +296,6 @@ Sınıflar: ok · el-sıkışma-yok (geçerli 0) · zaman-aşımı · düşen ·
 | d_irtt_r1k_d1000_l10 | quinn_rpl | 10 | ok=10 | 0 | 0.104 (0.070–0.192) | 0.112 (0.055–0.179) |
 | d_irtt_r1k_d1000_l10 | tcp_rpl | 10 | ok=10 | 0 | 0.086 (0.057–0.125) | 0.103 (0.056–0.135) |
 
-Bekliyor (DONE yok; bu turda analiz dışı): d_tcp_gso1_r12k_d300_l30
-
 ## 2. Sonuç tabloları — completion (gönderen teyidi), alıcı tek-yön, gecikme, tel
 
 Kama değerleri bench üst sınırıdır [D-9]. D = hücrenin teslim penceresi.
@@ -941,4 +939,17 @@ kama-app dahil. Bench karışık hücresinden farkları: dosya ≈ 2,7 kat, TEXT
 | aday dosyasız | 30 | 1,3 [1,0–3,1] | 10,7 [7,2–14,5] | 4 |
 | taban dosyalı | 30 | 68,6 [33,9–139,3] | 113,6 [78,9–184,3] | 0 |
 | aday dosyalı | 30 | 31,2 [23,2–92,8] | 73,9 [67,7–134,7] | 0 |
+
+### d_tcp_gso1_r12k_d300_l30
+
+| kol | N (bağlanmadı) | TEXT p50 s | TEXT p95 s | PTT ≤0,8 s | PTT ≤1,2 s | dosya bitiş s | dosya oranı | tel B / faydalı B |
+|---|---|---|---|---|---|---|---|---|
+| tcp_mix [D-13] | 30 (0) | ∞ [∞–∞] (15.14–∞) | ∞ [∞–∞] (34.64–∞) | 0.007 [0.000–0.007] (0.000–0.007) | 0.007 [0.007–0.007] (0.000–0.007) | ∞ [∞–∞] (∞–∞) | 0.365 [0.272–0.492] (0.000–0.844) | 1.184 [1.165–1.247] (1.125–135.487) |
+| tcp_nofile [D-13] | 30 (0) | 6.12 [2.79–19.59] (1.59–∞) | 29.47 [17.48–∞] (4.58–∞) | 0.110 [0.037–0.173] (0.000–0.267) | 0.163 [0.067–0.272] (0.007–0.433) | — | — | 2.165 [1.959–2.627] (1.363–7.613) |
+
+Dosya kaynaklı fark (dosyalı − dosyasız, aynı taşıma) ve taşımalar arası fark (dosyalı): Δ medyan [%95 koşu-birimli bootstrap]. TEXT p95 ve dosya bitişi gözlem penceresinde sansürlüdür: ∞ (pencere içinde gelmedi) → 60 s.
+
+| karşılaştırma | TEXT p95 Δ s | PTT ≤0,8 s Δ | dosya bitiş Δ s |
+|---|---|---|---|
+| tcp_mix − tcp_nofile | +30.53 [+0.00, +41.67] | -0.10 [-0.15, -0.05] | — |
 
