@@ -21,12 +21,18 @@ Katmanlar (öğe başına, ms; anlar Unix epoch, iki süreç aynı makinede):
              ile düşülür, değilse 0 — runtime kanalı depoda yer varken hemen boşaltır); alt sınır bir
              önceki örnek (çözünürlük ≈ 200 ms görüntü aralığı). t_first > t_drained ise t_drained'e
              kırpılır ve sayılır (`first_clamped`).
-  t_drained  alıcı motorun sırasız teslimi (bob iz `D`)
+  t_drained  client-core adaptörünün birimi runtime teslim kanalından çektiği an (bob iz `D`,
+             `drive_deliveries`, düğüm iş parçacığında; motorun sırasız teslim anı DEĞİL)
   t_released sıralı teslim (bob iz `R`: next > birim olan ilk kayıt)
   t_rx       uygulama teslimi (bob `rx`)
-Bileşenler: adapter = accept − send · fifo = first − accept · net = drained − first (ağ + birimin
-kendi kayıp kurtarması) · reorder = released − drained · consumer = rx − released · total = rx − send.
-fifo/net ayrımı türetilmiştir (± örnekleme aralığı); toplamları kesindir.
+Bileşenler: adapter = accept − send · fifo = first − accept (offer kanalı + depo + tx_queue +
+pacing; motorun yeniden gönderim payı dahil) · net = drained − first (ağ + birimin kendi kayıp
+kurtarması + alıcıda runtime teslim kanalında bekleme + alıcı düğüm iş parçacığı blokajı; *_dur
+hücrelerinde 30 s durma buraya düşer) · reorder = released − drained · consumer = rx − released ·
+total = rx − send. fifo/net ayrımı türetilmiştir (± örnekleme aralığı); toplamları kesindir.
+İlk engelleyici (öğe başına, `blk_unit`/`blk_c`): öğe teslim kanalından çekildiği anda Reorder'ın
+beklediği birim (o anki `next`), sınıfı: öğe birimiyse öğe sınıfı, değilse 1013 B → `F` (dosya
+parçası), başka boy → `X` (dosya denetimi ya da eşlenmemiş). [türetilmiş]
 
 Etiket: bu betiğin çıktısı [ölçüldü]dür; t_first'e dayanan bileşenler [türetilmiş]dir. N < 30
 hücreler OZET.md'de "betimsel" işaretlenir. Hüküm yalnız birincil hücrelerde (N ≥ 30).
@@ -43,7 +49,8 @@ import sys
 PROFILE_RATE = {"r25": 25.0, "r1k": 1000.0, "r12k": 12500.0}
 PROFILE_DELAY_MS = {"d300": 300.0, "d1000": 1000.0}
 # Dosya parçası birimi 1013 B + DATA başlığı 11 + legacy zarf 22 + L2/IP/UDP 42 (netem sayar).
-MAX_PACKET_LINE_BYTES = 1013 + 11 + 22 + 42
+FILE_CHUNK_UNIT_BYTES = 1013
+MAX_PACKET_LINE_BYTES = FILE_CHUNK_UNIT_BYTES + 11 + 22 + 42
 KARSI_SPURT = 90
 DEADLINES_MS = (400.0, 800.0)
 CLASSES = ("W", "T", "S", "P", "K", "KP", "O", "C", "RC")
@@ -331,6 +338,11 @@ def analyze_run(run_dir, cell, arm, rep):
             key = (c, -1, ln.get("i"))
         if key in items and items[key].get("t_rx") is None:
             items[key]["t_rx"] = ln["t"]
+    # Birim → sınıf (ilk engelleyici için).
+    unit_cls = {r["unit"]: ("F" if r["len"] == FILE_CHUNK_UNIT_BYTES else "X") for r in sent_recs}
+    for it in items.values():
+        if it["unit"] is not None:
+            unit_cls[it["unit"]] = it["c"]
     # Katmanlar.
     first_clamped = 0
     for it in items.values():
@@ -357,6 +369,13 @@ def analyze_run(run_dir, cell, arm, rep):
         else:
             it["stall_overlap"] = None
         it["rel_send_ms"] = r3(it["t_send"] - t0) if t0 else None
+        it["blk_unit"], it["blk_c"] = None, None
+        if u is not None and d is not None and rl is not None:
+            i = bisect.bisect_right(rel_t, d)
+            nxt = rel_next[i - 1] if i > 0 else 0
+            if nxt < u:
+                it["blk_unit"] = nxt
+                it["blk_c"] = unit_cls.get(nxt, "X")
 
     # Alındılar (RECEIPT; bob → alice yönü): TEXT başına alındı gecikmesi, sınıf "RC".
     rc_rows = []
