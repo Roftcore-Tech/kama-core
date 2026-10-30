@@ -83,6 +83,21 @@
   L yok: sınır 3×3.84=11.52 s | ileri onarımla p95 ≤ 7.80 s (P(ikisi de kayıp)=0,04) | yalnız ARQ: srtt≥5.20 s, p95 ≥ 9.07 s (rttvar=0), 19.47 s (rttvar=srtt/2); sınır için rttvar ≤ 0.61 s (yayılım 0)
   IPv4+UDP 28: sınır 3×4.96=14.88 s | ileri onarımla p95 ≤ 10.04 s (P(ikisi de kayıp)=0,04) | yalnız ARQ: srtt≥7.44 s, p95 ≥ 12.43 s (rttvar=0), 27.30 s (rttvar=srtt/2); sınır için rttvar ≤ 0.61 s (yayılım 0)
   Eth+IPv4+UDP 42: sınır 3×5.52=16.56 s | ileri onarımla p95 ≤ 11.16 s (P(ikisi de kayıp)=0,04) | yalnız ARQ: srtt≥8.56 s, p95 ≥ 14.10 s (rttvar=0), 31.22 s (rttvar=srtt/2); sınır için rttvar ≤ 0.61 s (yayılım 0)
+== K3-06  K-3 / İSTEK-E1: L = 42 ve yayılımla yalnız ARQ p95; literal 12 s hedefiyle kıyas ==
+  model: p95 = ikinci iletimin varışı = PTO + ser + RTT_y/2; PTO = srtt + 25 ms, srtt = ser + ACK ser + RTT_y
+  (rttvar = 0, ACK kaybı yok). B'nin fizik.py modeli: tek yön alt sınır + RTT_fiz (PTO'suz).
+  KTP-2 (138 B, ACK 76 B) yayılım 0: alt sınır 5.52 s ; ideal ARQ (PTO=RTT_fiz) p95 14.08 s ; +25 ms 14.10 s
+  KTP-2 (138 B, ACK 76 B) d300: alt sınır 5.82 s ; ideal ARQ (PTO=RTT_fiz) p95 14.98 s ; +25 ms 15.00 s
+  KTP-2 (138 B, ACK 76 B) d1000: alt sınır 6.52 s ; ideal ARQ (PTO=RTT_fiz) p95 17.08 s ; +25 ms 17.10 s
+  B bench (134 B, ACK 73 B) yayılım 0: alt sınır 5.36 s ; ideal ARQ (PTO=RTT_fiz) p95 13.64 s ; +25 ms 13.67 s
+  B bench (134 B, ACK 73 B) d300: alt sınır 5.66 s ; ideal ARQ (PTO=RTT_fiz) p95 14.54 s ; +25 ms 14.57 s
+  B bench (134 B, ACK 73 B) d1000: alt sınır 6.36 s ; ideal ARQ (PTO=RTT_fiz) p95 16.64 s ; +25 ms 16.66 s
+  bugün hub zarfı (140 B, ACK 79 B) yayılım 0: alt sınır 5.60 s ; ideal ARQ (PTO=RTT_fiz) p95 14.36 s ; +25 ms 14.38 s
+  bugün hub zarfı (140 B, ACK 79 B) d300: alt sınır 5.90 s ; ideal ARQ (PTO=RTT_fiz) p95 15.26 s ; +25 ms 15.29 s
+  bugün hub zarfı (140 B, ACK 79 B) d1000: alt sınır 6.60 s ; ideal ARQ (PTO=RTT_fiz) p95 17.36 s ; +25 ms 17.38 s
+  genel koşul (L yok): p95 ≤ 11,52 s ⇔ 1,5·RTT_y + 4·rttvar ≤ 11,52 − (5,20 + 0,025 + 3,84)
+    sağ taraf = 2.455 s
+  kaynak + onarım (L=42) yayılımla: yayılım 0: 11.16 s, d300: 11.46 s, d1000: 12.16 s
 == K2-01  K-2 '%80 iki yönlü kayıpta 1 KB için ideal ARQ ≈ 25 iletim' ==
   teslim (alıcıya ilk varış) ortalaması: 1/q_ileri = 5
   gönderenin teyit alması (her alınan kopyaya 1 ACK): 1/(q_ileri·q_dönüş) = 25
@@ -157,6 +172,15 @@
   D=800 T=60: W=13 parça → RTT 600: oran ≤ 100% (gerek W ≥ 10); RTT 2000: oran ≤ 39% (gerek W ≥ 34);
   D=800 T=120: W=6 parça → RTT 600: oran ≤ 100% (gerek W ≥ 5); RTT 2000: oran ≤ 36% (gerek W ≥ 17);
   D=800 T=200: W=4 parça → RTT 600: oran ≤ 100% (gerek W ≥ 3); RTT 2000: oran ≤ 40% (gerek W ≥ 10);
+== K6-09  K-6 ses tel hızı AMP kaydı 13 B ile (limits.rs:24 5 B + :93 8 B; taslak bunu saymıyor) ==
+  T=40 ms: KTP-2 + AMP: L yok 1250.0 B/s; Eth+IPv4+UDP 2300.0 B/s; bugünkü hub zarfı + DATA + AMP: 1300.0 B/s, L=42 2350.0 B/s
+  T=60 ms: KTP-2 + AMP: L yok 883.3 B/s; Eth+IPv4+UDP 1583.3 B/s; bugünkü hub zarfı + DATA + AMP: 916.7 B/s, L=42 1616.7 B/s
+  T=120 ms: KTP-2 + AMP: L yok 516.7 B/s; Eth+IPv4+UDP 866.7 B/s; bugünkü hub zarfı + DATA + AMP: 533.3 B/s, L=42 883.3 B/s
+  T=200 ms: KTP-2 + AMP: L yok 370.0 B/s; Eth+IPv4+UDP 580.0 B/s; bugünkü hub zarfı + DATA + AMP: 380.0 B/s, L=42 590.0 B/s
+  200 ms demet, tablodaki (K,R), onarım başlığı 12 B, AMP dahil:
+    p=0.1 (4,1): L yok 466.2 B/s = 3.73 kbit/s; Eth+IPv4+UDP 728.8 B/s = 5.83 kbit/s;
+    p=0.2 (3,2): L yok 626.7 B/s = 5.01 kbit/s; Eth+IPv4+UDP 976.7 B/s = 7.81 kbit/s;
+    p=0.3 (4,4): L yok 755.0 B/s = 6.04 kbit/s; Eth+IPv4+UDP 1175.0 B/s = 9.40 kbit/s;
 ######## scripts/ktp2/f0/e/sinirlar.py
 == S39-01  §3.9 '(64+31)/2 ≈ 47,5 B/s' ve '31 B/s'de ≈ 3,1 s' ==
   L yok: en küçük paket 95 B → T_ser 2 s eşiği 47.50 B/s ; 31 B/s'de 3.065 s ; T_ser 8 s eşiği 11.875 B/s
@@ -248,6 +272,27 @@
   r=1000 RTT=2.0: sınır 34.00 s | PTO veri taşır: 32.13 s | yalnız yoklama: 34.18 s
   r=12500 RTT=0.6: sınır 31.20 s | PTO veri taşır: 30.39 s | yalnız yoklama: 30.99 s
   r=12500 RTT=2.0: sınır 34.00 s | PTO veri taşır: 31.09 s | yalnız yoklama: 33.09 s
+== BW-01  §3.5 'örnekleyici ve bant filtresi aynen': hat tıkalı değilken örnek ≈ pacer × (1 − p) ==
+  BtlBw'nin sönmemesi için kazanç g ≥ 1/(1−p); ProbeUp 1,25 ile g(1−p):
+  p=0.1: 1/(1−p) = 1.111 ; 1,25·(1−p) = 1.125
+  p=0.2: 1/(1−p) = 1.250 ; 1,25·(1−p) = 1.000
+  p=0.3: 1/(1−p) = 1.429 ; 1,25·(1−p) = 0.875
+  p=0.5: 1/(1−p) = 2.000 ; 1,25·(1−p) = 0.625
+== UT-01  §3.5/§3.10 uçuş tavanı max(2 paket, …): RAPOR-B B-K15 hesabının doğrulanması ==
+  B'nin değeri: 2 × 1100 / 2,1 = 1047.6 B/s
+  L yok: 2 tam boy paket = 2262 B → RTT 2,10 s: 1077.1 B/s ; RTT 2,37 s: 954.4 B/s
+  Eth+IPv4+UDP: 2 tam boy paket = 2346 B → RTT 2,10 s: 1117.1 B/s ; RTT 2,37 s: 989.9 B/s
+  küçük paket (65 B yük, çerçeve birleştirme yok): 2 × 96 = 192 B → 91.4 B/s
+  bugünkü min_cwnd 4 × 1200 = 4800 B → RTT 2,10 s: 2285.7 B/s ; 2,37 s: 2025.3 B/s
+  taban oranı 2262/4800 = 0.471
+  r12k_d1000_l30_p1000: sunulan (bench UDP) 3603.5 B/s ; KTP-2 telinde 3617.5 B/s ; taban/sunulan 0.299 ; bugünkü/sunulan 0.634
+  r12k_d1000_l0_p65: sunulan (bench UDP) 2555.6 B/s ; KTP-2 telinde 2666.7 B/s ; taban/sunulan 0.421 ; bugünkü/sunulan 0.894
+  rampa modeli [çıkarım]: r(n+1) = g·r(n), g = 2(1−p)·rtprop/srtt (RAPOR-B T§19 g_cwnd)
+  KTP-2 tabanının bugünküne göre ek RTT'si = ln(4800/2262)/ln g, ln(4800/2262) = 0.7524:
+    l0 g=1.67: 1.47 RTT = 3.1 s (RTT 2,1 s)
+    l0 g=1.53: 1.77 RTT = 3.7 s (RTT 2,1 s)
+    l30 g=1.18: 4.55 RTT = 9.5 s (RTT 2,1 s)
+    l30 g=1.04: 19.18 RTT = 40.3 s (RTT 2,1 s)
 ######## scripts/ktp2/f0/e/yuk_tablosu.py
 == Y4-01  §4 çerçeve alan toplamları ==
   AKIŞ: 1+2+4+2 = 9 (taslak 9) ✓
