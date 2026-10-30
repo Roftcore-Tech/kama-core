@@ -1,6 +1,6 @@
 # F0 ham veri ve komutlar
 
-**Sapma beyanı:** iş emri ham veriyi raporlarla aynı dizinde istiyor. Ham koşu dizinleri ≈ 1,5 GB, sıkıştırılmış ≈ 230 MB olduğu için git'e girmedi. Git'te koşu başına türetilmiş CSV'ler, bütün betikler ve ham arşivin sha256 listesi (`ham-veri.sha256`) var. Ham veri bu makinede; depoya ya da başka bir yere taşınması sahip kararına bağlı.
+**Sapma beyanı:** iş emri ham veriyi raporlarla aynı dizinde istiyor. Ham koşu dizinleri ≈ 1,5 GB, sıkıştırılmış 182 MB olduğu için git'e girmedi. Git'te koşu başına türetilmiş CSV'ler, bütün betikler ve ham arşivin sha256 listesi (`ham-veri.sha256`) var. Ham veri bu makinede; depoya ya da başka bir yere taşınması sahip kararına bağlı.
 
 ## Yerler
 
