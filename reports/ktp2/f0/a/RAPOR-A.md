@@ -445,3 +445,206 @@ Kaynak: `~/kama-k4g-work/ktp2-f0/runs/tam/a/out/a_r12k_d300_l30_dosyasiz`. DONE 
 - Ölçüm: taban rep11'de son TEXT (birim 106, t0 + 103,5 s) ilk iletildi ama bob'a hiç ulaşmadı. alice'te `un = 1`, `inf = 1` olarak koşu sonuna dek (403 s) kaldı.
 - Yeniden gönderim sayaçları ≈ 134 s'den sonra durdu (`rtx = 49`, `tlp = 24`); durum DrainRtprop'tan RecoverFwd'ye geçti ama yeni emisyon yok. Aday'da 0/30.
 - Dosya/işlev: tail-recovery / PTO bütçesi (`sender.rs` `emit_tail_probe` `:5890`; `tail_max_probes`). Kök neden ve en dar düzeltme tam analizde, diğer taban hücreleriyle birlikte yazılacak.
+
+---
+
+# TAM SONUÇ (2026-10-30)
+
+Kaynak: `~/kama-k4g-work/ktp2-f0/runs/tam/a/out/`. 12 hücre, 470 koşu. İkililer: f0_flows taban-1f6c3433 (`d330b82e…`), aday-0a251074 (`02340156…`). Hücre dosyaları `1f6c3433`'ten beri aynı. Ön-kayıt §5 / §5.4 değiştirilmedi.
+
+Satır numaraları taban `a858f3fc`'ye göredir; adayda (`49864510`) farklıysa "/ aday" ile verilir. Değerler koşular arası medyan [Q1–Q3] (min–maks), saniye. N < 30 olan ve stres (rinf) hücreleri betimseldir; hüküm cümlesinde kullanılmaz. Tablonun tamamı `reports/ktp2/f0/a/tam/tablolar.md`'de (T.1–T.8).
+
+## TS.1 Geçerlilik
+
+| hücre | N/kol | rc | alice tamam/eksik/yok (taban · aday) | ileri / dönüş kayıp % (medyan) |
+|---|---|---|---|---|
+| r12k_d300 dosyasiz | 30 | 0×30 · 0×30 | 29/1/0 · 30/0/0 | 30,9 / 29,7 · 30,2 / 29,5 |
+| r12k_d300 dosyali | 30 | 0×30 · 0×30 | 28/2/0 · 26/4/0 | 30,5 / 29,2 · 29,7 / 29,6 |
+| r12k_d300 dosyali_dur | 30 | 0×30 · 0×30 | 28/2/0 · 29/1/0 | 30,1 / 30,3 · 29,9 / 29,5 |
+| r1k_d300 dosyasiz | 30 | 0×30 · 0×30 | 29/1/0 · 30/0/0 | 29,5 / 28,1 · 29,0 / 29,8 |
+| r1k_d300 dosyali | 30 | 0×30 · 0×30 | 30/0/0 · 30/0/0 | 29,6 / 29,0 · 29,0 / 28,4 |
+| r1k_d300 dosyali_dur | 30 | 0×30 · 0×30 | 30/0/0 · 29/1/0 | 30,1 / 30,2 · 29,9 / 30,7 |
+| r12k_d300 dosyasiz_dur (betimsel) | 10 | 0×10 · 0×10 | 9/1/0 · 10/0/0 | 30,7 / 28,9 · 30,0 / 31,0 |
+| r12k_d300 tasma_ptt (betimsel) | 5 | 0×5 · 0×5 | 0/5/0 · 0/5/0 | 28,0 / 29,5 · 30,2 / 31,1 |
+| r12k_d300 tasma_dosya (betimsel) | 10 | 0×10 · 0×10 | 0/10/0 · 0/10/0 | 30,1 / 30,4 · 29,6 / 28,6 |
+| rinf_d300 tasma_dosya (betimsel, stres) | 10 | 0×9 + 124×1 · 0×9 + 124×1 | 0/9/1 · 0/9/1 | 30,5 / 29,1 · 29,2 / 29,5 |
+| r12k_d1000 dosyasiz (betimsel) | 10 | 0×10 · 0×10 | 10/0/0 · 10/0/0 | 29,0 / 30,6 · 30,6 / 29,7 |
+| r12k_d1000 dosyali_dur (betimsel) | 10 | 0×10 · 0×10 | 6/4/0 · 3/7/0 | 30,2 / 30,6 · 31,8 / 30,5 |
+
+**Bütün koşularda:**
+- Dinleyici düşüşü, birim izi düşüşü ve JSONL hatası 0.
+- netem pre sayaçları 0 (temiz kuyruk).
+- Oturum kapanma olayı (`Closed`) iki uçta toplam 0: 470/470 koşuda oturum hiç kopmadı.
+- "Eksik", pencere içinde bitmemiş koşudur ve geçerli ölçümdür. Teslim edilmeyen öğe, gözlem sonundan alt sınırla (sansürlü) sayıldı.
+
+**Ölçülemedi:**
+- **rinf tasma_dosya, taban rep5 ve aday rep6 (rc = 124).** El sıkışma t0'da tamam. Dosya gönderen deposunu (4096) ve offer kanalını (1024) doldurdu. alice'in TEXT / sinyal gönderimleri geri basınçla bekledi: son gönderim 314 / 301 s'de, plan bitmedi. Pacer 165 / 89 B/s'de, durum RecoverFwd. Plan ve pencere 480 s bütçeyi aştı; `timeout` alice'i öldürdü. bob kendi süresinde (316 s) çıktı. Takılma düzenek kusuru değil, gönderen geri basıncıdır (B2 + A-10).
+- **tasma_dosya (r12k ve rinf) TEXT / PTT gecikmesi.** Öğeler 2 MB / 8 MB dosyanın arkasındaydı ve pencere içinde teslim edilmedi. Değer sansürlüdür; gecikme sayısı olarak kullanılmaz.
+
+## TS.2 Sonuç tabloları (birincil, N = 30/kol)
+
+**TEXT (T) ve PTT demeti (P) teslim gecikmesi.** Bileşenler [türetilmiş]: fifo = gönderen yeni veri kuyruğu; net = ağ + birimin kendi kayıp kurtarması; reorder = alıcı oturum geneli sıralama, yani başka birimlerin kurtarmasını bekleme. Bileşen yüzdelikleri ayrı öğe kümelerindendir, toplanmaz.
+
+| hücre | kol | T p50 | T p95 | T p50 fifo/net/reorder | T p95 fifo/net/reorder | P p95 | P ≤ 800 ms % |
+|---|---|---|---|---|---|---|---|
+| r12k dosyasiz | taban | 2,5 [1,5–5,8] | 13,5 [10,3–18,9] | 0,1/0,3/0,0 | 3,7/7,3/8,2 | 15,2 [11,4–18,4] | 2 [0–8] |
+| r12k dosyasiz | aday | 1,3 [1,0–3,1] | 10,7 [7,2–14,5] | 0,1/0,3/0,0 | 6,7/4,7/4,6 | 12,3 [8,5–17,2] | 4 [2–8] |
+| r12k dosyali | taban | 68,6 [33,9–139,3] | 113,6 [78,9–184,3] | 50,5/0,3/13,2 | 94,7/11,0/15,1 | 109,0 | 0 |
+| r12k dosyali | aday | 31,2 [23,2–92,8] | 73,9 [67,7–134,7] | 26,8/0,3/1,5 | 70,6/2,1/2,5 | 71,5 | 0 |
+| r12k dosyali_dur | taban | 52,8 [33,0–125,1] | 97,8 [77,7–169,8] | 38,0/0,3/10,5 | 82,5/8,9/12,4 | 93,2 | 0 |
+| r12k dosyali_dur | aday | 58,8 [32,8–134,6] | 103,8 [76,3–179,0] | 56,3/0,3/1,8 | 99,3/2,2/3,5 | 99,2 | 0 |
+| r1k dosyasiz | taban | 6,3 [3,7–14,4] | 22,3 [14,1–35,2] | 0,2/0,4/1,6 | 8,9/11,1/12,0 | 23,2 [16,2–33,1] | 0 |
+| r1k dosyasiz | aday | 4,6 [2,5–11,2] | 14,7 [10,1–25,0] | 0,2/0,4/0,4 | 8,9/6,6/8,0 | 16,4 [12,3–30,7] | 2 |
+| r1k dosyali | taban | 59,1 [53,3–77,1] | 102,3 [92,8–120,2] | 28,4/1,4/26,7 | 69,0/25,8/34,8 | 98,0 | 0 |
+| r1k dosyali | aday | 63,8 [48,8–84,7] | 97,5 [87,5–117,1] | 55,1/0,6/3,5 | 89,3/6,0/8,3 | 94,4 | 0 |
+| r1k dosyali_dur | taban | 56,8 [50,6–66,8] | 97,6 [92,3–110,0] | 25,6/2,0/25,6 | 66,3/24,6/33,1 | 96,0 | 0 |
+| r1k dosyali_dur | aday | 60,3 [51,0–78,7] | 96,0 [87,0–108,8] | 54,1/0,6/3,7 | 85,9/5,7/9,8 | 97,2 | 0 |
+
+**Kol farkları.** Taban − aday, medyan farkı (s), %95 aralığı. Yöntem: koşu birimli bootstrap, her kol kendi içinde yerine koyarak örneklendi, B = 10 000, tohum 20261030, %2,5–%97,5 yüzdelikleri.
+
+| hücre | T p95 | T reorder p95 | T fifo p95 |
+|---|---|---|---|
+| r12k dosyasiz | +2,8 [−0,3, +6,6] | +3,7 [+1,1, +6,0] | −3,0 [−5,1, +2,0] |
+| r12k dosyali | +39,7 [+2,2, +65,4] | +12,7 [+8,9, +16,3] | +24,1 [+1,0, +56,9] |
+| r12k dosyali_dur | −6,1 [−51,3, +25,2] | +8,9 [+7,2, +14,1] | −16,8 [−63,4, +5,0] |
+| r1k dosyasiz | +7,5 [−3,9, +13,9] | +3,9 [+0,4, +12,0] | −0,0 [−4,7, +2,9] |
+| r1k dosyali | +4,9 [−3,1, +17,6] | +26,5 [+22,0, +32,9] | −20,3 [−28,7, −11,6] |
+| r1k dosyali_dur | +1,6 [−7,4, +14,0] | +23,3 [+17,8, +26,2] | −19,5 [−30,8, −12,4] |
+
+**Dosya etkisi (kol içi).** dosyali − dosyasiz, T p95 farkı, aynı yöntem:
+
+| profil | taban | aday |
+|---|---|---|
+| r12k | +100,1 [+70,9, +125,5] | +63,2 [+58,4, +74,3] |
+| r1k | +80,1 [+71,9, +91,5] | +82,8 [+70,9, +89,1] |
+
+**Durma etkisi (kol içi).** dosyali_dur − dosyali ve dosyasiz_dur − dosyasiz, T p95 farkı, aynı yöntem:
+
+| karşıt | profil | taban | aday |
+|---|---|---|---|
+| dosyali_dur − dosyali | r12k | −15,9 [−54,0, +24,5] | +29,9 [+1,5, +73,5] |
+| dosyali_dur − dosyali | r1k | −4,7 [−12,4, +6,1] | −1,5 [−11,3, +12,6] |
+| dosyasiz_dur − dosyasiz (betimsel N = 10) | r12k | +15,9 [+10,8, +24,8] | +16,1 [+14,6, +19,2] |
+
+**K-1** (TEXT p95 ≤ dosyasız p95 + 2 × 1088 B serileştirmesi + 1 RTT; PTT ≤ 800 ms oranı ≥ dosyasızın %95'i): 4 birincil hücre × 2 kolun hepsinde KALDI. Aşım r12k'da 59–99 s, r1k'da 75–83 s.
+
+## TS.3 Bulgular (ölçüm · dosya:işlev:satır · kök neden · en dar düzeltme)
+
+1. **A-1 Gönderen tek FIFO, dosya tek seferde dökülüyor.**
+   - Ölçüm: TEXT p95'te fifo bileşeni r12k dosyalıda 70,6–99,3 s (iki kol, N = 30); dosyasızda 3,7–6,7 s. Dosya etkisi T p95'te +63…+100 s.
+   - Dosya:işlev:satır: `kama-app/src/file_transfer.rs:866-909` `pump` (kabul edilmeyen kayda dek sunar); `adaptive-transport/src/sender.rs:2309` / aday `:2592` `tx_queue.push_back`; `:6109` / aday `:7560` `drain_new_data`.
+   - Kök neden [ölçüldü + kod]: bütün akışlar tek birim dizisine ve tek yeni-veri FIFO'suna giriyor; dosya ilk turda kuyruğa doluyor.
+   - En dar düzeltme: FileTransfer'da teyitsiz dosya kaydı ≤ W (S1'den oturum başına teyitsiz sayaç gerekir) + motorda etkileşimli / toplu iki FIFO.
+2. **A-2 Alıcıda oturum geneli tek `Reorder` (karşı örnek).**
+   - Ölçüm: gönderen yeni veri kuyruğu boşken (fifo p50 0,11 s), taban'da TEXT p50 r12k'da 10,2 s (reorder 9,3 s; 33 ateşlenen koşu), r1k'da 30,0 s (reorder 25,1 s; 57 ateşlenen koşu). Aday r12k'da 1,5 s (reorder 0,8 s; 24 ateşlenen koşu); fark +8,6 s [+7,4, +10,7]. PTT demeti de aynı bekliyor (taban r12k 9,7 s). Ateşlenen koşu sayısı hücre başına < 30: betimsel.
+   - Dosya:işlev:satır: `client-core/src/transport.rs:367-412` `Reorder::push`; `:1053-1082` `drive_deliveries`.
+   - Kök neden [ölçüldü]: TEXT ve PTT, kaybolan eski dosya parçalarının kurtarılmasını alıcının oturum geneli sırasında bekliyor. Gönderende öncelik bu beklemeyi kaldırmaz.
+   - En dar düzeltme: akış başına sıralama. Birim başlığında akış kimliği (tel) ya da sırasız teslim + kama-app'te akış başına sıra (S1 §4 değişikliği).
+3. **A-4 Teslim kanalı taşması = teyitli kayıp.**
+   - Ölçüm: yalnız taşma hücrelerinde ateşledi; birincil 240 koşuda 0.
+
+     | hücre | taban: koşu (düşüş) | aday: koşu (düşüş) |
+     |---|---|---|
+     | tasma_dosya | 3/10 (168–531) | 5/10 (32–367) |
+     | tasma_ptt | 1/5 (633) | 3/5 (162–535) |
+     | rinf | 1/10 (1630) | 2/10 (437–1429) |
+
+   - Sonrası:
+     - r12k: tutulan birim < 4096; sıralı teslim sınırı boşlukta kaldı. Boşluktan sonraki hiçbir öğe teslim edilmedi (tasma_ptt'de koşu sonunda 1374–1968 birim tutuluyordu). Dosya bob'da `IdleTimeout` ile bitti (8/8 dosyalı düşüşlü koşu).
+     - rinf: tutulan birim 4096'yı aşınca boşluk atlandı (atlanan = düşüş, 3/3). Sonraki TEXT teslim edildi, ama düşen birimler kalıcı kayıp; dosya bob'da başarısız.
+     - Uygulama kurtarmadı: Messenger `resent_on_new_session` = 0, alındısız TEXT outbox'ta kaldı.
+   - Dosya:işlev:satır: `client-core/src/runtime.rs:3010-3032` `push_delivery` (taşmada yalnız sayaç) ve ACK `:3602-3605` (teslimden bağımsız); aday `:3091-3113` / `:3683-3686`. Tüketim `transport.rs:1053-1082`, yalnız düğüm iş parçacığı `drive()` çağırınca.
+   - Kök neden [ölçüldü + kod]: ACK, teslim kanalına kabulden önce ve ondan bağımsız üretiliyor.
+   - En dar düzeltme: `on_datagram`'dan önce `delivery_tx.try_reserve()`. Yer yoksa NotReady kolu gibi ACK'siz düşür, ayrı sayaçla say; gönderen yeniden yollar.
+4. **A-5 Akış başına tüketici yok.**
+   - Ölçüm: dosyasiz_dur − dosyasiz T p95 r12k'da +15,9 / +16,1 s (betimsel N = 10).
+   - Dosya:işlev:satır: `kama-node/src/node.rs:465-484` `turn`, dinleyici `:697`, `:759` (düğüm iş parçacığında).
+   - Kök neden [ölçüldü]: tek tüketici iş parçacığı bütün akışları durduruyor.
+   - En dar düzeltme: dinleyiciyi sınırlı kuyrukla düğüm iş parçacığından ayırmak + akış türü başına olay kuyruğu (kama-node).
+5. **A-7 Gönderende 60 s `ReceiptTimeout`.**
+   - Ölçüm: rinf dışındaki 280/280 dosyalı koşuda alice 60,0–60,2 s'de `SendFailed(ReceiptTimeout)` aldı. bob dosyayı bu koşuların 195'inde bayt-özdeş aldı; birincil 240 koşunun 189'unda (taban 76/120, aday 113/120).
+   - Dosya:işlev:satır: `kama-app/src/file_transfer.rs:1541` (`AwaitingReceipt { since: now }`, `FILE_END` Transport'a kabul edildiği anda); `:1471-1476` `receipt_overdue`; `:267` `FILE_RECEIPT_TTL`.
+   - Kök neden [ölçüldü + kod]: süre teslimden değil `FILE_END` kabulünden başlıyor; `pump` (A-1) bunu dosyanın başına çekiyor.
+   - En dar düzeltme: süreyi son Transport teyidinden ya da son ilerlemeden başlatmak.
+6. **A-8 Alıcıda `IdleTimeout` sıralama beklemesiyle.**
+   - Ölçüm: r12k dosyalıda taban 34/60, aday 1/60 (Fisher p = 3,7e-12); r1k'da 10/60, 2/60 (p = 0,03).
+   - Dosya:işlev:satır: `file_transfer.rs:262` `FILE_IDLE_TTL`, `:1054` `last_chunk_at`, `:1165` `expire_incoming`.
+   - Kök neden [ölçüldü]: A-2 + A-3 nedeniyle uygulamaya 60 s parça çıkmıyor.
+   - En dar düzeltme: A-2; ya da süreyi Transport ilerlemesine bağlamak.
+7. **A-9 Uygulama sınırlı trafikte pacer düşük (= Ajan B B-K14).**
+   - Ölçüm: pacer p50 r12k dosyasızda hattın %2,9 (taban) / %2,5 (aday)'i; r1k dosyasızda %20,3 / %20,1. Dosyalıda %50–89. Dosyasız TEXT p95'te fifo 3,7–8,9 s.
+   - Dosya:işlev:satır ve kök neden: Ajan B (RAPOR-B B-K14).
+   - En dar düzeltme: Ajan B.
+8. **A-10 Hız çöküşü (iki kol).**
+   - Ölçüm: sonda yeni veri kuyruğu ≥ 50 birimken pacer hattın %5'inin altında. Taban 12/235, aday 14/235 (Fisher p = 0,84). d1000 dosyali_dur'da 4/10 ve 7/10; r12k dosyalıda 2/60 ve 5/60. Çöken koşuda pacer 31–122 B/s'ye iniyor, 600 birim kuyrukta kalıyor.
+   - Dosya:işlev:satır: pacer = BtlBw kestirimi (`sender.rs` hız boru hattı).
+   - Kök neden [çıkarım]: Ajan B'nin alanı.
+   - En dar düzeltme: Ajan B ile ortak.
+9. **A-11 Kuyruk sonu birimi takılıyor (yalnız taban).**
+   - Ölçüm: taban 4/235 (r12k dosyasiz rep11, r12k dosyasiz_dur rep9, r1k dosyasiz rep22, r12k dosyali rep5), aday 0/235 (Fisher p = 0,12: ölçülen hücrelerde fark istatistikle gösterilmedi).
+     - Son birim ilk iletiliyor; alice'te `un ≤ 1`, `txq = 0`, durum RecoverFwd.
+     - Son emisyon 107–253 s'de; sonra koşu sonuna (403 s) dek datagram yok.
+   - Dosya:işlev:satır: `tail_recovery.rs:221` (pencere başına en çok `max_tail_probes = 3`, `:80` `validated_v1`); `loss.rs:692` (zaman eşiği kaybı yalnız `seq < largest_acked`); `sender.rs:5947-5966` `plan_forward_duplication`, sessizlik kolunda yalnız `origin == Data` (`:5954`).
+   - Kök neden [kod + ölçüldü]: son birimden sonra ACK gelmediği için kayıp ilan edilmiyor (`pending_lost` boş). 3 kuyruk probu harcanınca birimin uçuş kaydı `Retransmit` kökenli oluyor; RecoverFwd sessizlik kolu onu kopyalamıyor; ARQ yalnız RecoverArq'ta. Hiçbir yol emisyon üretmiyor.
+   - Aday'da sahipsiz birim H süresinden sonra kopya kuyruğuna alınıyor (`sender.rs:6925` `adopt_unowned`).
+   - En dar düzeltme: 05b'nin sahiplenme kuralı; ya da sessizlik kolunda kökeni ne olursa olsun teyitsiz birimi kopyalamak.
+
+**Ön-kayıttan sapmalar (§5 / §5.4 → ölçüm).**
+- Dosyasız TEXT p95: r12k ≈ 2 → 10,7–13,5; r1k ≈ 4 → 14,7–22,3. Sapmanın kaynağı fifo (A-9), net (seyrek trafikte PTO ile kurtarma) ve reorder (küçük birimlerin birbirini beklemesi). Öngörü çürüdü.
+- PTT ≤ 800 ms dosyasız: %60–80 → %0–4. Çürüdü.
+- r1k dosyalı TEXT p50: ≈ 105 → 59–64. Dosya daha kısa sürdü; pacer hattın %74–89'u, öngörü u = 0,7–0,95 idi.
+- r12k dosyalı TEXT p95: ≈ 75 → 73,9 (aday) / 113,6 (taban).
+- `dosyali_dur ≈ dosyali` tutmadı: taban'da fark gösterilmedi, aday r12k'da +29,9 [+1,5, +73,5].
+- Karşı örnek: taban 5–15 s (r12k) ve 15–40 s (r1k), reorder baskın → ölçülen 10,2 / 30,0 s, reorder baskın; tuttu. Aday 1–5 s → 1,5 s; tuttu.
+- Teslim kanalı düşüşü: birincilde 0; tuttu. tasma_dosya'da 400–700 → 32–531, 8/20 koşuda. Aşağı sapma; alım hızı A-10 / A-9 ile düştü.
+- r1k taban `IdleTimeout` "olası" → 10/60; tuttu.
+
+## TS.4 Sınıflandırma (ISEMRI §5)
+
+| davranış | (i) 05b düzeltiyor mu (ölçüm) | (ii) dar mı çekirdek mi | (iii) KTP-2 0.3 | (iv) korunacak avantaj |
+|---|---|---|---|---|
+| A-2 oturum geneli tek Reorder | **kısmen**: reorder p95 r1k dosyalıda −26,5 s [−32,9, −22,0], karşı örnekte 10,2 → 1,5 s. Yapı aynı, T p95 toplamı r1k'da fark gösterilmedi | **çekirdek / sözleşme**: sıra S1 §4'te oturum geneli; akış kimliği tele ya da S1'e girmeli | §3.1 (parça kimliği = akış + sıra), §3.2 ("hiçbir akış başka akışı sıra yoluyla bekletemez") | — |
+| A-1 gönderen FIFO + toplu döküm | **hayır**: fifo p95 aday'da daha büyük (r1k +20,3 s [11,6, 28,7]) | **dar** (kama-app pencere W) + **orta** (motorda iki FIFO, S1 öncelik ipucu) | §3.6 zamanlayıcı, §3.7 akış kredisi, §3.9 parça boyu | — |
+| A-4 ACK'li düşüş | **hayır**: aday 10/235, taban 5/235 düşüşlü koşu | **dar**: `runtime.rs` ACK'ten önce yer ayırma | §3.7 ("kredi verdiğini asla reddetmez"); TASLAK-NOTLARI H-14 (taslağın "teyitsiz red" tarifi bu yolda yanlış) | — |
+| A-5 tek tüketici | **hayır** (+15,9 / +16,1 s) | **dar** (kama-node dinleyici ayrımı) + uygulama API'sinde akış başına kuyruk | §3.7 akış başına geri basınç | — |
+| A-7 ReceiptTimeout | **hayır** (280/280; iki kol) | **dar** (kama-app) | karşılığı yok (uygulama) | — |
+| A-8 IdleTimeout | **kısmen**: 34/60 → 1/60 (r12k), 10/60 → 2/60 (r1k) | **dar** (kama-app süresi) ya da A-2 | §3.2 dolaylı | — |
+| A-11 kuyruk sonu takılması | **evet** (aday 0/235; mekanizma `adopt_unowned`) | **dar** (05b kuralı) | §3.4 "asla vazgeçmez", PTO 30 s'de bir sürer (TASLAK-NOTLARI D-K4: bugün 3 prob) | — |
+| A-10 hız çöküşü | **hayır** (14/235 vs 12/235) | Ajan B | §3.5 hız | — |
+
+(iv) Bu şeritte ölçülen korunacak özellik: %30 iki yönlü kayıpta 470/470 koşuda oturum kopmadı; 240 s tüketici durması dahil. Dosya, A-11 / A-10 / A-8 olmayan koşularda bayt-özdeş teslim edildi. Rakip kıyası bu şeridin işi değil (Ajan D).
+
+## TS.5 F1 girdisi (dar düzeltme yolu için uygulama listesi)
+
+| # | crate / dosya | değişiklik | bağımlılık | ölçü ve beklenen etki [tahmin] | süre |
+|---|---|---|---|---|---|
+| F1-A1 | client-core `runtime.rs` (`server_task`, `push_delivery`) | ACK'ten önce teslim kanalında yer ayır; yer yoksa ACK'siz düşür + `delivery_refused` sayacı | yok | K-1 / K-10: düşüş 0 (ölçülen 32–1630 birim / koşu), boşluğa takılma yok | 0,5 ajan-gün |
+| F1-A2 | adaptive-transport `sender.rs` | A-11 için 05b'nin sahiplenme kuralı ya da sessizlik kolunda köken filtresini kaldırmak | 05b kararı | K-4 / K-8: kuyruk sonu takılması 4/235 → 0 (aday ölçümü 0/235) | 05b alınırsa 0; ayrı ise 1 ajan-gün |
+| F1-A3 | kama-app `file_transfer.rs:1541` | `FILE_RECEIPT_TTL` süresini son ilerlemeden başlat | yok | dosya sonucu: yanlış `ReceiptTimeout` 280/280 → bob'un alındığı koşularda 0 (bob alındı 195/280) | 0,5 ajan-gün |
+| F1-A4 | kama-app `file_transfer.rs` (`pump`) + kama-contracts S1 (oturum başına teyitsiz sayaç, sahip onayı) | Dosya kaydı uçuş penceresi W = 8 | S1 sözleşme ek alanı | K-1: TEXT fifo p95 70–99 s → ≤ W × 1088 B / hız (r12k 0,7 s, r1k 8,7 s). Toplam T p95'i A-2 sınırlar: dosyasız p95 + reorder (aday 2,5–8,3 s) | 2 ajan-gün |
+| F1-A5 | kama-node `node.rs` | dinleyiciyi sınırlı kuyrukla düğüm iş parçacığından ayır; akış türü başına olay kuyruğu | kama-mobile API notu | K-1 durma terimi: dosyasiz_dur'da +16 s → ~0 (TEXT tüketicisi ayrıysa) | 1,5 ajan-gün |
+| F1-A6 | client-core `transport.rs` + kama-app (akış başına sıra) | Reliable birimleri sırasız teslim; kama-app akış başına sıralar (FILE_BEGIN / PTT_OPEN ön-tamponu) | S1 §4 değişikliği (sahip) | K-1: karşı örnek 10–30 s → ağ + kendi kurtarması (aday reorder p50 0,8 s ölçüldü). Dosyalı T p95 reorder bileşeni 2,5–34,8 s → ~0 | 4 ajan-gün |
+
+## TS.6 TABAN girdisi (S1)
+
+**S1 — Akışlar birbirini bloke ediyor mu? Evet; ölçülen bütün hücrelerde ve iki kolda.** Ürün yolu `f0_flows`, iki süreç, %30 iki yönlü kayıp, N = 30/kol.
+
+- **Dosya:** 512 KiB (r12k) / 64 KiB (r1k) dosya varken TEXT p95 dosyasıza göre +63…+100 s (r12k) ve +80…+83 s (r1k) uzuyor. K-1 4/4 hücrede iki kolda kalıyor. PTT demetlerinin 800 ms içinde teslimi %0.
+- **Gönderen kuyruğu:** beklemenin büyük kısmı (TEXT p95'te 66–99 s) gönderenin tek yeni-veri FIFO'sunda (`sender.rs` `tx_queue`). `FileTransfer::pump` dosyanın tamamını ilk turda kuyruğa döküyor.
+- **Alıcı sıralaması:** ikinci katman oturum geneli tek `Reorder` (`transport.rs:367-412`).
+  - Tabanda TEXT p95'in 12–35 s'si, adayda 2,5–10 s'si burada.
+  - Karşı örnek: gönderen kuyruğu boşken (fifo 0,11 s) TEXT, eski dosya parçalarının kurtarmasını alıcıda bekliyor. Taban'da p50 10,2 s (r12k) / 30,0 s (r1k); 05b adayında 1,5 s (r12k).
+- **Alıcı kapasite reddi:** birincil hücrelerde 0. Teslim kanalı taşınca (yalnız taşma hücreleri) birim ACK'lenip düşüyor (`runtime.rs:3010-3032` + `:3602-3605`). Sonraki bütün öğeler oturumda takılıyor ya da 4096 birim sonra sessiz atlanıyor; uygulama kurtarmıyor.
+- **Tüketici:** tek düğüm iş parçacığı; 30 s durma bütün akışlara +16 s p95 ekliyor.
+- **05b:** sıralama beklemesini azaltıyor (r1k dosyalı reorder p95 −26,5 s [−32,9, −22,0]) ama yükü gönderen kuyruğuna kaydırıyor. Toplam TEXT p95'te yalnız r12k dosyalıda aday daha kısa (−39,7 s [−65,4, −2,2]); diğer hücrelerde fark gösterilmedi.
+- **Dar düzeltmeyle çözülenler:** ACK'li düşüş, kuyruk sonu takılması, 60 s yanlış dosya hatası.
+- **Çekirdek değişikliği isteyenler:** akış başına sıralama ve kuyruk (KTP-2 §3.2 / §3.6 / §3.7).
+
+## TS.7 Yeniden üretim
+
+```
+python3 -I scripts/ktp2/f0/a/f0a_analyze.py --out <A> ~/kama-k4g-work/ktp2-f0/runs/tam/a/out
+python3 -I scripts/ktp2/f0/a/f0a_tam.py --analiz <A> --csv reports/ktp2/f0/a/tam > reports/ktp2/f0/a/tam/tablolar.md
+```
+
+`<A>/OZET.md` → `reports/ktp2/f0/a/tam/OZET-analyze.md`. Ham kök: `~/kama-k4g-work/ktp2-f0/runs/tam/a/out/` (git dışı). sha256: `kosular.csv` 633e967b…, `hucreler.csv` 3bca1eb3…, `farklar.csv` 22524197…, `tablolar.md` cad5e0f6…, `OZET-analyze.md` 2ae5d805… (tam değerler commit'teki dosyalardan).
