@@ -389,7 +389,13 @@ def one_way(r: Run, d: str, meta: dict, sent_by_id: dict[int, int]) -> None:
             r.ow_note = "tcp t0 yok"
             return
     if t0 == 0:
-        r.ow_note = "t0_unix yok"
+        # El sıkışma olmadı: ölçüm t0'ı yok ve alıcıya hiçbir şey ulaşmadı → geçerli 0 (sansür).
+        delivered = sum(1 for x in r.lat_s if not math.isinf(x))
+        if delivered == 0 and len(objs) == 1:
+            r.ow_s = [INF] * r.n
+            r.ow_note = "el sıkışma yok: alıcı teslimi 0"
+        else:
+            r.ow_note = "t0_unix yok"
         return
     m = DUP_RE.search(meta.get("kama_arm", "") or "")
     dup = int(m.group(1)) if (m and tr.startswith("kama")) else 1
