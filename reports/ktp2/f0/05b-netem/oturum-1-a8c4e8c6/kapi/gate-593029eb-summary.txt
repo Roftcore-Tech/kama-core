@@ -1,0 +1,29 @@
+01 layer_check                  exit=0      1s  python3 scripts/ci/layer_check.py --selftest && python3 scripts/ci/layer_check.py
+02 no_inline                    exit=0      0s  python3 scripts/ci/no_inline_expected.py --selftest && python3 scripts/ci/no_inline_expected.py --min-files 1
+03 word_coverage                exit=0      1s  python3 scripts/ci/word_coverage.py --selftest && python3 scripts/ci/word_coverage.py
+04 fmt                          exit=0      3s  cargo fmt --all -- --check
+05 clippy_all                   exit=0      2s  cargo clippy --all-targets --all-features -- -D warnings
+06 clippy_nodef                 exit=0      1s  cargo clippy --all-targets --no-default-features -- -D warnings
+07 extra                        exit=0      1s  cargo metadata --locked --format-version 1 >/dev/null && cargo check --workspace --all-targets --all-features --locked
+08 sealed_type                  exit=0      1s  out=$(cargo test -p kama-noise-wire --locked --test trybuild -- --list) && echo "$out" && echo "$out" | grep -q sealed_type_cannot_be_forged && echo "$out" | grep -q hub_handle_cannot_stand_in_for_session_handle
+09 test_fast                    exit=0    265s  cargo test --workspace --all-features --exclude kama-integration
+10 product_profile              exit=0      0s  cargo test -p client-core --all-features --test product_profile_v1 2>&1 | tee "/home/ryuzaki/kama-k4g-work/k4g05b/gate-593029eb/pp.txt" && grep -Eq "test result: ok\. [1-9][0-9]* passed" "/home/ryuzaki/kama-k4g-work/k4g05b/gate-593029eb/pp.txt" && cargo test -p adaptive-transport --all-features --test fec_loss_risk
+11 conformance_self             exit=0     68s  scripts/ci/conformance-selftest.sh
+12 conformance                  exit=0     11s  scripts/ci/conformance.sh
+13 seam_self                    exit=0    192s  scripts/ci/seam-conformance-selftest.sh
+14 seam_mock                    exit=0     14s  scripts/ci/seam-conformance.sh --target mock
+15 seam_real                    exit=0     13s  scripts/ci/seam-conformance.sh --target real
+16 noise_mock                   exit=0      3s  scripts/ci/noise-conformance.sh --target mock
+17 noise_identity               exit=0      0s  scripts/ci/noise-conformance.sh --target identity
+18 noise_vectors                exit=0      1s  scripts/ci/noise-conformance.sh --target vectors
+19 noise_real                   exit=0      4s  scripts/ci/noise-conformance.sh --target real
+20 vectors_self                 exit=0     13s  scripts/vectors/selftest.sh
+21 vectors_valid                exit=0      0s  python3 scripts/vectors/validate.py vectors/ --canonical --min-files 2 --require-cross-check
+22 spec_coverage                exit=0      0s  python3 scripts/vectors/spec_coverage.py
+23 ref_crypto                   exit=0      4s  python3 ref/crypto/selftest.py && python3 ref/crypto/gen_vectors.py --check
+24 integration                  exit=0   1688s  cargo test -p kama-integration --all-features
+25 deny                         exit=0      2s  cargo deny check
+BİTTİ
+Cargo.lock değişmedi mi: EVET
+ağaç temiz mi: 0 değişiklik
+HEAD sonra: 593029ebe10532a131639740d82dc505f4f5c77f

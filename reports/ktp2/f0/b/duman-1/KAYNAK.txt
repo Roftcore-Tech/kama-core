@@ -1,0 +1,8 @@
+kaynak=/home/ryuzaki/kama-k4g-work/ktp2-f0/runs/duman-b/out
+kosu=F0_REPS=1 f0_grid.sh -j 6 (orkestratör, 2026-10-29T18:26:03Z–18:32:40Z), DUMAN.txt @ 26073d68
+BIN_ADAY=/home/ryuzaki/kama-k4g-work/wt/ktp2-05b/target/release/bench
+BIN_ADAY_sha256=fd3089b14dc2fe54b8c7ba27a3cc783e71bdf088b8f164a56989c57cbe79dd30
+BIN_TABAN=/home/ryuzaki/kama-k4g-work/wt/ktp2-f0/target/release/bench
+BIN_TABAN_sha256=14b5f7d3b8d6f62193ea0b8d22f9a00737a33bbf0a45db8d38a12910845e0dfc
+kosucu=aa9935ac ÖNCESİ: koşular arası netem kuyruğu boşaltılmıyordu (kirli_baslangic sütunu)
+analiz=python3 -I scripts/ktp2/f0/b/analiz_b.py /home/ryuzaki/kama-k4g-work/ktp2-f0/runs/duman-b/out --out reports/ktp2/f0/b/duman-1
