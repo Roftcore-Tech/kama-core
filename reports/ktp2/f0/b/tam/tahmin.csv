@@ -1,0 +1,35 @@
+T,parca,kapsam,tutan,toplam,ayrinti
+T-1,teslim D = 1,r1k/r12k l0,16,16,
+T-1,"tek yön p50 / RTT_fifo tek yön ∈ [1,0; 1,3]",r1k/r12k l0,14,16,r12k_d1000_l0_p1000/taban; r12k_d1000_l0_p1000/aday
+T-1,teyit p50 ∈ RTT_fifo + [0; I],r1k/r12k l0,10,16,r12k_d300_l0_p65/taban; r12k_d300_l0_p65/aday; r12k_d1000_l0_p65/taban; r12k_d1000_l0_p65/aday; r12k_d1000_l0_p1000/taban; r12k_d1000_l0_p1000/aday
+T-1,"faydalı pay 65 B ∈ [0,44; 0,485]",r1k/r12k l0 65 B,7,8,r1k_d1000_l0_p65/taban
+T-1,"faydalı pay 1 KB ∈ [0,85; 0,935]",r12k l0 1 KB,4,4,
+T-2,"kuyruk probu ≥ 0,4 M",r1k 1 KB,6,16,r1k_d300_l20_p1000/taban; r1k_d300_l30_p1000/taban; r1k_d1000_l0_p1000/taban; r1k_d1000_l0_p1000/aday; r1k_d1000_l10_p1000/taban; r1k_d1000_l10_p1000/aday; r1k_d1000_l20_p1000/taban; r1k_d1000_l20_p1000/aday; r1k_d1000_l30_p1000/taban; r1k_d1000_l30_p1000/aday
+T-2,"gereksiz kopya ≥ 0,4 M",r1k 1 KB,6,16,r1k_d300_l20_p1000/taban; r1k_d300_l30_p1000/taban; r1k_d300_l30_p1000/aday; r1k_d1000_l0_p1000/taban; r1k_d1000_l10_p1000/taban; r1k_d1000_l10_p1000/aday; r1k_d1000_l20_p1000/taban; r1k_d1000_l20_p1000/aday; r1k_d1000_l30_p1000/taban; r1k_d1000_l30_p1000/aday
+T-2,"ACK tutma p95 ≥ 0,8 I",r1k 1 KB,15,16,r1k_d300_l0_p1000/taban
+T-2,"çürütme eşiği: kuyruk probu ≥ 0,2 M",r1k 1 KB,16,16,
+T-3,kuyruk probu ≥ M − 1,r25 d1000,8,8,
+T-3,"RTT örneği taban ≤ 3, aday ≥ M − 2",r25 d1000,8,8,
+T-4,kuruluş probu = 4,r25,8,16,r25_d300_l0_p65/taban; r25_d300_l10_p65/taban; r25_d300_l20_p65/taban; r25_d300_l30_p65/taban; r25_d1000_l0_p65/taban; r25_d1000_l10_p65/taban; r25_d1000_l20_p65/taban; r25_d1000_l30_p65/taban
+T-4,çürütme eşiği: kuruluş probu > 2,r25,16,16,
+T-5,K-3 (tek yön p95 ≤ 12 s) sağlanmaz,r25 l20 (tcp dahil),6,6,
+T-6,ACK aralık medyanı = 16,r1k/r12k 65 B l10–l30,16,24,r1k_d300_l10_p65/taban; r1k_d300_l10_p65/aday; r1k_d300_l20_p65/taban; r1k_d300_l20_p65/aday; r1k_d1000_l10_p65/taban; r1k_d1000_l10_p65/aday; r1k_d1000_l20_p65/taban; r1k_d1000_l20_p65/aday
+T-6,çürütme eşiği: ≥ 12,r1k/r12k 65 B l10–l30,20,24,r1k_d300_l10_p65/taban; r1k_d300_l10_p65/aday; r1k_d1000_l10_p65/taban; r1k_d1000_l10_p65/aday
+T-7,"aday srtt/RTT_fifo ∈ [0,9; 1,4]",bütün hüküm hücreleri,32,40,r25_d300_l0_p65/aday; r25_d300_l10_p65/aday; r25_d300_l20_p65/aday; r25_d300_l30_p65/aday; r25_d1000_l0_p65/aday; r25_d1000_l10_p65/aday; r25_d1000_l20_p65/aday; r25_d1000_l30_p65/aday
+T-7,taban ≥ aday (medyan),r1k/r12k l20/l30,16,16,
+T-8,quinn r25 teslim = 0,"r25 (N = 5, betimsel)",8,8,
+T-8,quinn l0 teslim = 1,r1k/r12k l0,8,8,
+T-9,tcp p95 > Kama p95,r12k 65 B l20/l30,8,8,
+T-11,l0'da parite = 0,l0,20,20,
+T-12,kapasite reddi = 0 (medyan),hüküm hücreleri,80,80,
+T-12,kapasite reddi = 0 (bütün koşular),hüküm hücreleri,80,80,
+T-13,teslim < 1,l80 †,8,8,
+T-13,"hat doluluğu ≥ 0,9",l80 †,0,8,r1k_d300_l80_p65/taban; r1k_d300_l80_p65/aday; r1k_d300_l80_p1000/taban; r1k_d300_l80_p1000/aday; r12k_d300_l80_p65/taban; r12k_d300_l80_p65/aday; r12k_d300_l80_p1000/taban; r12k_d300_l80_p1000/aday
+T-14,PARAM = 25,r25,16,16,
+T-14,"geç kalmada hat PARAM ile ≥ 0,3",r25,16,16,
+T-15,kilit_gönderen ≥ yarı,r12k 65 B l20/l30,4,8,r12k_d300_l20_p65/taban; r12k_d300_l30_p65/taban; r12k_d1000_l20_p65/taban; r12k_d1000_l20_p65/aday
+T-15,çürütme eşiği: ≥ %20,r12k 65 B l20/l30,6,8,r12k_d1000_l20_p65/taban; r12k_d1000_l20_p65/aday
+T-15,"kuyruk fazlası p95 < 0,2 s",r12k 65 B l20/l30,4,8,r12k_d1000_l20_p65/taban; r12k_d1000_l20_p65/aday; r12k_d1000_l30_p65/taban; r12k_d1000_l30_p65/aday
+T-16,"PreConverge taban ≥ 10 s, aday ≤ 5 s",r1k 1 KB l20/l30,6,8,r1k_d300_l30_p1000/taban; r1k_d1000_l20_p1000/taban
+T-16,çürütme eşiği: taban ≥ 5 s,r1k 1 KB l20/l30,3,4,r1k_d1000_l20_p1000/taban
+T-17,kirli başlangıç = 0,4920 koşu,4920,4920,0 koşu
