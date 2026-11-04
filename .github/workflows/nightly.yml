@@ -198,7 +198,7 @@ jobs:
           set -o pipefail
           D="$RUNNER_TEMP/act-${{ matrix.regime }}"
           bash scripts/netem/v1_activation_proof.sh "$D" 2>&1 | tee /tmp/act.txt
-          grep -q "profile=kama-v1-full" /tmp/act.txt \
+          grep -q "profile=kama-v1.1-full" /tmp/act.txt \
             || { echo "::error title=BENCHMARK_FAILURE::kosu urun profili DEGIL (kama-custom)"; exit 1; }
       - name: manifest gate (§14 — sapma varsa Kama v1 etiketi REDDEDİLİR)
         run: |
@@ -211,7 +211,7 @@ jobs:
             delta=$(python3 -c "import json,sys;print(len(json.load(open(sys.argv[1]))['profile_delta']))" "$m")
             act=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['activation']['fec_configured'])" "$m")
             echo "$m arm=$arm delta=$delta fec_configured=$act"
-            [ "$arm" = "kama-v1-full" ] && [ "$delta" = "0" ] \
+            [ "$arm" = "kama-v1.1-full" ] && [ "$delta" = "0" ] \
               || { echo "::error title=BENCHMARK_FAILURE::$m urun profili DEGIL (arm=$arm delta=$delta)"; exit 1; }
           done
       - name: upload results

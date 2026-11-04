@@ -1,0 +1,44 @@
+{
+  "artifact": "SPURIOUS-RETRANSMIT-SUPERSESSION-K4G05B-DUR44",
+  "hashed_before_test_edit": true,
+  "supersedes": {
+    "artifact": "SPURIOUS-RETRANSMIT-SUPERSESSION.md",
+    "sha256": "7718b94f99193bd80ba692d693ea677a846586e820b4d6fcd635d5e85d2ec8b3",
+    "scope": "the startup-pacing-OFF row (spurious > 0, passes) and discipline item 2 (original preserved verbatim on the pacing-INACTIVE path)",
+    "old_artifact_modified": false
+  },
+  "test": "kama-integration/tests/fs_fec_arms.rs::f0_cost_split_intervention_vs_total_outcome",
+  "owner_decision": "pending - K4G-05b design note Ek B.1d DUR-44",
+  "measured": {
+    "source": "~/kama-k4g-work/k4g05b/kod-run/r10/",
+    "bisect": {
+      "pass": ["35a02fcf", "9e0ea164"],
+      "fail_from": "bc913d49",
+      "fail_through": "20a92477",
+      "dur41_chain_related": false
+    },
+    "fixture": "run_f0_paced(2, &[2, 5], 1_000_000, 20 ms, Some(false))",
+    "rows": {
+      "9e0ea164": {"retransmits": 1, "completion_ms": 136, "t_arq_wire_ms": 124, "t_arq_arrival_ms": 144.808, "t_repair_usable_ms": 136.0, "spurious_retransmits": 1},
+      "bc913d49_eq_20a92477": {"retransmits": 1, "completion_ms": 136, "t_arq_wire_ms": 115, "t_arq_arrival_ms": 135.808, "t_repair_usable_ms": 136.0, "spurious_retransmits": 0}
+    },
+    "common": {"parity_emitted": 2, "realized_sealed_wire_bytes": 202, "arq_retransmit_bytes": 101, "fec_decoded_sources": 2},
+    "product_default_startup_pacing_on": {"retransmits": 0, "completion_ms": 67, "changed": false}
+  },
+  "mechanism": {
+    "status": "code reading; confirming mutation pending",
+    "attributed_to": "K3 ARQ-share reserve (CEVAP PAKETI 15 v3 section 2.3), sender.rs plan_arq_retransmits(share = true)",
+    "sequence": "at the ARQ-share turn the head cannot reach its tokens -> ARQ reserve; DATA cannot take tokens below it -> the retransmit and the last original DATA swap slots (115 ms <-> 124 ms); at 136 ms the receiver decodes with 5 originals + retransmit + 2 parity and recovers the other dropped source and the delayed original",
+    "retransmit_role": "useful (one of the K decoded symbols), not spurious",
+    "inactive_before_first_arq": ["B-prime rights (no prior copy or ARQ emission)", "DUR-40 (no due copy record; section 3.3-B copies due after ~8 s)"]
+  },
+  "why_supersession_not_regression": "identical counts, bytes and completion; the retransmit costs the same 101 B but is now used, not wasted; the old line documented the presence of a cost channel, not a safety property",
+  "test_change_dur44_option_a": {
+    "removed_assertion": "spurious_retransmits > 0",
+    "kept_assertions": ["fec_decoded_sources == 2", "realized_sealed_wire_bytes == 2 * fs_sealed_len(64)", "arq_retransmit_bytes == retransmits * sealed", "spurious_retransmits <= retransmits"],
+    "added_assertions": ["retransmits >= 1", "delivered == 8", "completion_ns.is_some()"],
+    "printed_not_asserted": ["spurious_retransmits", "sign of t_arq_arrival - t_repair_usable (old +8.808 ms, K3 -0.192 ms)"]
+  },
+  "companion_test_unchanged": "f0_cost_split_under_product_default",
+  "result": "K3-ARQ-SHARE-RESERVE-REMOVES-PACING-OFF-SPURIOUS-LEAK · COST-SPLIT-ASSERTIONS-PRESERVED · SPURIOUS-PRINTED-NOT-ASSERTED (DUR-44 (a), owner decision pending)"
+}

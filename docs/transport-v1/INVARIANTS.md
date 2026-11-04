@@ -1,5 +1,7 @@
 # Kama Transport v1 — MİMARİ İNVARYANTLAR
 
+> **YAMA KAYDI — 2026-10-24 [v1.1 · K4G-05b — AMENDMENT-12 işaretçisi; sahip kararları CEVAP PAKETİ 7, 2026-10-18, DUR-4 (b); CEVAP PAKETİ 9, 2026-10-24 (RTT kabulü) — `docs/decisions/K4G-CEVAP-PAKETLERI-4-7.md`]:** v1.1'de AMENDMENT-12'ye tabi (otorite: `specs/transport-layer-tdd.md` §12 [AMENDMENT-12]): INV-008/INV-009 kanonik kimliği `kama-v1.1-full`'dür (`TRANSPORT_V1_PROFILE_ID`; tablodaki `kama-v1-full` v1 içindir) · INV-012 "RTT Karn-dışlamalı" v1.1'de engine §6 KABUL KURALI'yla değişti (her iletim taze seq; örnek çerçevenin en büyük yeni-onaylı seq'inin kendi gönderim anından; FEC onarım sembolü örnek vermez; Karn dışlaması kalktı) · INV-004: FEC onarım sembolünün ACK'i kaynak birimi teyit ETMEZ (motor ACK yolunda ESI'nin birim kimliğiyle çakışması v1.1'de kapatılır) · yeni INV-NO-ORPHAN (sahip metni) AMENDMENT-12'dedir. Bu belgenin metni değiştirilmedi; düzeltmesi "INT-02 GEÇTİ" sonrası ayrı doküman PR'ı.
+
 Gelecek iş bunları ya **bilinçli korur** ya da **açık sürüm-kırmasıyla** değiştirir
 (EVOLUTION §9.5). Her invaryant için: ifade · gerekçe · birincil modül · doğrulama kanıtı ·
 onu kıracak değişiklik türü. Repo-genel invaryantlar (INV-RATE-1, INV-FEC-1, INV-ENGINE-SOC,

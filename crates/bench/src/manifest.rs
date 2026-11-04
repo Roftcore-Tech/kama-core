@@ -65,7 +65,8 @@ pub struct ActivationSummary {
 pub struct RunManifest {
     pub schema: String,
     pub commit: String,
-    /// `kama-v1-full` · `kama-custom` · `quinn-reliable-stream` · `quinn-datagram-app-retry` · `tcp-default`
+    /// `TRANSPORT_V1_PROFILE_ID` (v1.1: `kama-v1.1-full`) · `kama-custom` · `quinn-reliable-stream` ·
+    /// `quinn-datagram-app-retry` · `tcp-default`
     pub arm: String,
     pub transport: String,
     /// Ürün profilinden sapmalar (Kama kolları; boş = kanonik profil).
@@ -314,11 +315,28 @@ mod tests {
         }
     }
 
-    /// [M0] Kanonik profil `kama-v1-full`; TEK alan sapması `kama-custom` yapar.
+    /// [M0] Kanonik profil (`TRANSPORT_V1_PROFILE_ID`); TEK alan sapması `kama-custom` yapar.
+    ///
+    /// [K4G-05b · Ek B.3 #7b — DUR-8 biçimi] NEDEN DEĞİŞTİ: kanonik kimlik v1.1'de `kama-v1.1-full`
+    /// (transport-layer-tdd §12 AMENDMENT-12); `is_canonical_kama()` etiketi
+    /// `client_core::runtime::TRANSPORT_V1_PROFILE_ID` ile karşılaştırdığından `kama-v1-full`
+    /// literali artık kanonik değildir. ESKİ İDDİA: `base("kama-v1-full", …)` kanoniktir → YENİ
+    /// İDDİA: `base(<TRANSPORT_V1_PROFILE_ID>, …)` kanoniktir (literal tek kaynağa bağlandı) VE v1
+    /// arşiv etiketi `kama-v1-full` v1.1'de kanonik DEĞİLDİR (Ek B.4: arşiv manifestleri
+    /// `canonical_kama=false` sayılır). Sapma ve "yalan etiket" iddiaları aynen. 2×2: eski kod +
+    /// eski test YEŞİL · yeni kod + eski test KIRMIZI · yeni kod + yeni test YEŞİL · eski kod +
+    /// yeni test KIRMIZI (v1 etiketi eski kodda kanoniktir).
     #[test]
     fn m0_profil_kimligi_deterministik() {
-        let canon = base("kama-v1-full", "kama-product");
+        let canon = base(
+            client_core::runtime::TRANSPORT_V1_PROFILE_ID,
+            "kama-product",
+        );
         assert!(canon.is_canonical_kama());
+        assert!(
+            !base("kama-v1-full", "kama-product").is_canonical_kama(),
+            "v1 arşiv etiketi v1.1'de kanonik sayılamaz (kimlik değişti)"
+        );
         let mut custom = canon.clone();
         custom.arm = "kama-custom".into();
         custom.profile_delta = vec!["initial_window_bytes 0 != 2400".into()];

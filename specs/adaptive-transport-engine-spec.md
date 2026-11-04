@@ -1,5 +1,9 @@
 # Kama — Adaptive Transport Engine Spec (Implementable)
 
+> **YAMA KAYDI — 2026-10-24 [v1.1 · K4G-05b — RTT örnek kabulü + kopya kuyruğu sırası + BURST_CAP tur başı tabanı + sınıflar arası kopya payı + §16.2 saat-sınıfı satırı; sahip kararları CEVAP PAKETİ 5, 2026-10-16; CEVAP PAKETİ 7, 2026-10-18 (DUR-3 (b), DUR-9 (a)); CEVAP PAKETİ 7-EK, 2026-10-18 (B1); CEVAP PAKETİ 9, 2026-10-24 (RTT kabulü, BURST_CAP, sınıflar arası pay; DUR-1 (a) srtt-yok istisnası kaldırıldı); CEVAP PAKETİ 10, 11, 11-EK, 12 ve 13, 2026-10-24 (sınıflar arası payın kapsamı ve rezervasyonu; K_MAP adet sınırı, budama K4G-05c); CEVAP PAKETİ 15 v3 ve 15 EK-1, 2026-10-25 (DUR-38: B′, K1–K3; DUR-40) — `docs/decisions/K4G-CEVAP-PAKETLERI-4-7.md`]:** §6 Girdi satırına **v1.1 KABUL KURALI** eklendi (çerçevedeki sender seq'lerinin en büyüğü bu çerçeveyle ilk kez onaylanıyorsa yalnız onun kaydı, aksi hâlde örnek yok · köken Data, Retransmit ya da Duplicate, zaman o iletimin gönderim anı; FEC onarım sembolü örnek vermez · doygun olmayan ack_delay · tutma süresiyle şişmemiş örnek; geri düşüş yok; srtt yokken de aynı kural) ve **tazelik ölçütü** (yalnız gözlem: `rtt_stale` sayacı); §6 min-rtt guard'ının RAW kolu ve "örnek ATLANMAZ" hükmü bu kurala bağlandı; §5 TUR-2a/TUR-2b kol-1 ve TUR-2c kol-2 RTT'si bu kurala bağlandı (superseded işareti RTT'yi dışlamaz; BW-örneği ve delivered-kredi DEĞİŞMEDİ; birim başına kayıt budamasıyla (K4G-05c) düşen kaydın geç-ACK'i Expired/Unknown); §5'te kol-2 "RTT ALINMAZ", ZEYL'deki "(superseded iletimin RTT'si güven-dışı)" ve §6 Girdi satırındaki "her acked paket için" üstü çizildi; §13'e kopya kuyruğu içi sıra (en eski onaysız birim önce), BURST_CAP tur başı tabanı (DATA — kuyruk boşsa DEFAULT_MTU, v1 —, ARQ planı, kuyruk-probu hedefi ve kopya sırası başı; ilk kırpmadan önce; token üretilmez — PRE_CONVERGE'de v1, beyanlı), RTO_MAX tavanı ve sınıflar arası sıranın ~~TEK istisnası (PRE_CONVERGE hariç bütün durumlarda vadesi gelmiş kopya kuyruğu başı en geç her K_ARQ_SHARE'inci turda DATA'dan önce hizmet hakkı kazanır; token bulamazsa rezerv — başın kopyası dışındaki hiçbir token tüketicisi rezervin altına inemez)~~ istisna ve karşılık kuralı (PRE_CONVERGE hariç bütün durumlarda: karşılık hakkı, sahipli tek rezerv — kopya, ARQ ya da DATA başı —, ARQ payı rezervi, yaş tavanlı HOL, (iii) HİZMET GARANTİSİ — engine §13) eklendi; §13 ekleme kuralındaki öne çekmeye sıklık atfı eklendi (zincir dönemi başına en çok bir kez — transport-layer-tdd §12 [AMENDMENT-12]; DUR-41 (B), sahip kararı bekliyor — tasarım notu Ek B.1d); §16.2 saat-sınıfı tablosuna TEK satır eklendi (kopya kuyruğu aralık tavanı + sahipsizlik süresi + parite kaydı süre dolumu + RTT tazelik ölçütü). Otoriter v1.1 kaydı: transport-layer-tdd §12 [AMENDMENT-12]. Kuantum döngüsü, tel, codec ve altın vektörler (tv_*) DEĞİŞMEDİ. Üstü çizili metin silinmedi.
+
+> **YAMA KAYDI — 2026-10-24 [v1.1 · K4G-05b — AMENDMENT-12 işaretçisi; sahip kararı CEVAP PAKETİ 7, 2026-10-18, DUR-4 (b) — `docs/decisions/K4G-CEVAP-PAKETLERI-4-7.md`]:** Yama yetkisi (§5/§6/§13 + §16.2'de tek satır) dışında kalıp v1.1'de bayatlayan şu ifadeler DEĞİŞTİRİLMEDİ; v1.1 için otorite transport-layer-tdd §12 [AMENDMENT-12]: §2.1 `ack_delay_saturated` "beklenen 0" (en büyük seq'in alımından 16.78 s sonra gönderilen ACK doyar; v1.1'de doygun ack_delay'li örnek §6 KABUL KURALI (d) ile alınmaz) · §5.1 sessizlik eşiği `ACK_SILENCE_MULT × srtt` (v1 kodu: max(3·srtt, K_CONF_EAI·EAI); sahipsizlik süresi H bu eşikten türer) · §9.1 ARQ_RETX_CAP "veya connection-fail" (v1.1: hiçbir politikada düşürme yok, birim kopya kuyruğuna devredilir) · §12 "PTO backoff exponential (2^n)" (üst sınır RTO_MAX = 30 s) · §16.2 "geometrik kopya deadline'sızlığı" satırı (PRE_CONVERGE dışı aralık tavanı hemen altındaki v1.1 satırında) ve K-1 KAPANIŞ DURUMU'ndaki kol-1 RTT'si (§6 KABUL KURALI'na bağlı) · EK4-A2 uyanma envanteri (`reports/ek4-a2/EK4-A2-NEXT-WAKEUP-CONTRACT.md`; sha256-pinli, dokunulmadı): v1.1'de 7. kaynak = sahipsizlik vadesi; 3. kaynak (kopya kuyruğu) drenajla aynı sıra başını raporlar, aralığı PRE_CONVERGE dışında RTO_MAX'la sınırlı. Düzeltmeleri "INT-02 GEÇTİ" sonrası ayrı doküman PR'ı.
+
 > **YAMA KAYDI — 2026-10-04b [K3 — D2 / Tema E KAPANDI, Abkarada kararı]:** §2'ye not: **ürün ACK'i = engine `ACK_FRAME_V2` (0x14)**; WS-D1'de `meta.full_wire_pn`'e anahtarlanır (her yeniden gönderim yeni PN; tablo PN → mantıksal birim). noise-wire `Control::Ack/Sack` (0x10/0x11) ailesi SİLİNDİ (noise-wire §2.56/§2.57). Bu belgedeki çerçeve yerleşimi DEĞİŞMEDİ. SPEC-ONLY.
 
 > **YAMA KAYDI — 2026-10-04 [DR-CONNECT-1 H4 — sahip kararı]:** §1.1 transport-control `frame_type` registry'sine iki codepoint açıldı: **`0x1B HEARTBEAT`**, **`0x1C HEARTBEAT_ACK`** (hop heartbeat; HubChannel ctx; otoriter çerçeve + kurallar transport-layer-tdd §10 [AMENDMENT-10]). Çakışma tarandı: §1.1'de boştu; noise-wire §2.56 E2E registry'sinde reserved(reject) kalır. Mevcut codepoint'lerin anlamı/yerleşimi DEĞİŞMEDİ. SPEC-ONLY.
@@ -461,7 +465,9 @@ Packet kayıp SAYILIR (recovery için) eğer:
   cadence-taban, geç-SACK'in makul varış penceresi) | Spurious (geç-ACK geldi → GERİ-ALINDI:
   pending-retransmit İPTAL + ReorderTracker.note_spurious beslenir + packet-threshold
   k = max(K, ρ×recent_max_reorder) TÜKETİLİR (§9.3 kablolandı) + retx_count==0 ise orijinal
-  RTT örneği GEÇERLİ [kol-1]); pencere-dışına yaşlanan olay düşer (Expired → doğal decay).
+  RTT örneği GEÇERLİ [kol-1] **[v1.1: retx_count'tan bağımsız, yalnız §6 KABUL KURALI sağlanırsa — kayıt ilan
+  anında largest_acked'in altındadır, alıcının en büyüğü monoton büyür (INV-003): ürün yolunda yalnız ters-yol ACK
+  yeniden sıralamasında erişilir]**); pencere-dışına yaşlanan olay düşer (Expired → doğal decay).
   Ledger + pencere-paydası bounded: LEDGER_MAX=4096, en-eski-önce eviction + audit (SR-AUDIT-001).
 [TUR-2b / D-1/4] ACTIVE-FLIGHT / TOMBSTONE AYRIMI (NORMATİF): kayıp-ilanı "inflight'tan silinir"
   DEĞİLDİR — İKİ ayrı kavram: (a) *active-flight muhasebesi*: şüpheli paket bytes_in_flight/cwnd'den
@@ -470,14 +476,19 @@ Packet kayıp SAYILIR (recovery için) eğer:
   TTL = K_tomb×T_loss(ilan-anı) [zeyl: onaylı `min(mesaj-deadline,…)` kolu motorda uygulanamaz —
   per-unit deadline engine'e taşınmıyor]; tavan TOMBSTONE_MAX, en-eski-önce eviction +
   `tombstone_evicted` audit. Geç-ACK çarparsa: kol-1 (retx_count==0) → BW-örneği NORMAL + Data'ysa
-  RTT (sansür biter — K-1 sansür-kolu kapanışı); **kol-2 [TUR-2c, NORMATİF]** (superseded —
+  RTT **[v1.1: köken Data, Retransmit ya da Duplicate; yalnız §6 KABUL KURALI sağlanırsa (TUR-2a erişim notu);
+  BW-örneği koşulsuz]** (sansür biter — K-1 sansür-kolu kapanışı); **kol-2 [TUR-2c, NORMATİF]** (superseded —
   retransmit EMİT edilirken orijinalin tombstone'u işaretlenir, kayıt ilan-anında DONMAZ):
-  RTT ALINMAZ + bu ACK'ten rate-örneği ÜRETİLMEZ + **delivered-KREDİSİ girer** (`credit_delivered`:
+  RTT ~~ALINMAZ~~ **[v1.1: §6 KABUL KURALI'yla — superseded işareti RTT'yi dışlamaz; örnek o iletimin gönderim
+  anından]** + bu ACK'ten rate-örneği ÜRETİLMEZ + **delivered-KREDİSİ girer** (`credit_delivered`:
   byte'lar wire'ı gerçekten geçti → sampler kümülatifine; gelecek örnek-delta'larına dürüst yansır)
   + `sample_skipped_ambiguous` sayacı. ZEYL: per-transmission-seq tasarımında (retransmit YENİ seq)
   klasik Karn-belirsizliği zayıftır — seq iletimi tekil tanımlar; kurallar yine MUHAFAZAKÂR tutulur
-  (superseded iletimin RTT'si güven-dışı). Retransmit-seq'in KENDİ ACK'i inflight-yolundan tam örnek
-  verir (belirsizlik yok). Süresi/tavanı dolan kaydın geç-ACK'i → Expired/Unknown (örneksiz;
+  ~~(superseded iletimin RTT'si güven-dışı).~~ **[v1.1: RTT için kalktı — §6 KABUL KURALI; muhafazakâr kural
+  BW-örneği için DEĞİŞMEDİ]** Retransmit-seq'in KENDİ ACK'i inflight-yolundan tam örnek
+  verir (belirsizlik yok) **[v1.1: RTT yalnız §6 KABUL KURALI sağlanırsa]**. Süresi/tavanı dolan kaydın **[v1.1: ya
+  da birim başına K_MAP budamasıyla (K4G-05c) düşen kaydın — transport-layer-tdd §12 AMENDMENT-12; birimi TEYİT ETMEZ]**
+  geç-ACK'i → Expired/Unknown (örneksiz;
   teslim-damgası app/bench-katmanında bağımsız).
   ZEYL-2 [review]: superseded-işaret TEKDÜZEDİR — birimin HERHANGİ yeniden-emisyonu (ARQ retransmit,
   FWD-dup pending-drain, CapExceeded→HandToForward) orijinalin tombstone'unu işaretler; kol-1/kol-2
@@ -535,14 +546,34 @@ gelince silence sıfırlanır). Somut `ACK_SILENCE_MULT` [CAL] netem baseline'da
 ## 6. RTT / Jitter / Queue-Delay Estimator (NORMATİF — formüller)
 
 ```
-Girdi: her acked paket için rtt_sample = ack_recv_time − pkt.send_time − ack.ack_delay
+Girdi: ~~her acked paket için~~ **[v1.1: aşağıdaki KABUL KURALI'nı sağlayan iletim için; ACK çerçevesi başına ≤ 1]**
+       rtt_sample = ack_recv_time − pkt.send_time − ack.ack_delay
        (ack_delay çıkarılır; negatifse ack_delay untrusted → sample invalid, §7.3)
        [TUR-1x] min-rtt guard (RFC 9002 §5.3 semantiği, NORMATİF): düzeltme yalnız
        `raw − ack_delay ≥ gözlenen_min_rtt (rtprop)` ise uygulanır; underflow ya da min-rtt-altı
-       → RAW sample işlenir, örnek ATLANMAZ (sample-skip = estimator açlığı, K-1 sınıfı YASAK).
+       → RAW sample işlenir **[v1.1: rtprop VARKEN ack_delay ≥ rtprop ise örnek ALINMAZ — KABUL KURALI (e)]**, örnek
+       ATLANMAZ (sample-skip = estimator açlığı, K-1 sınıfı YASAK) **[v1.1: yasak kabul edilmiş örneğe aittir;
+       KABUL KURALI reddi beyanlı estimator-donmasıdır, tazelik ölçütüyle izlenir]**.
        Bozuk/kötü ack_delay path-RTT'yi gözlenen-min altına çökertEMEZ. Saat-sınıfı: gözlenen-min
        (kanal-türevi) — mutlak wall-clock taban (1ms) 4-decade'de GEÇERSİZ çıktı (loopback gerçek
        RTT sub-ms; bench loopback ÖLÇÜMÜYLE yanlışlandı) → CANCELLED, ZM-2 örneği.
+       [v1.1 · K4G-05b, NORMATİF — sahip kararları CEVAP PAKETİ 5, 2026-10-16; CEVAP PAKETİ 9, 2026-10-24] KABUL
+       KURALI: ACK çerçevesi başına en çok BİR örnek; yalnız şunlar birlikte sağlanırsa alınır — (a) çerçevedeki
+       gönderilmiş (sender'ın ürettiği) seq'lerin EN BÜYÜĞÜ ele alınır (en yeni iletim, §3.1; ack_delay onundur,
+       §2.1); (b) bu seq bu çerçeveyle İLK KEZ onaylanır (uçuştaki kayıt, kol-1 ya da kol-2 tombstone, un-loss
+       eşleşmesi) — değilse bu çerçeveden örnek ALINMAZ; daha küçük yeni-onaylı kayda GERİ DÜŞÜLMEZ; (c) kaydın kökeni
+       Data, Retransmit ya da Duplicate'tir ve gönderim zamanı O İLETİMİN gönderim anıdır — her iletim taze seq alır,
+       eşleşme tek anlamlıdır, Karn dışlaması gerekmez; FEC onarım sembolü örnek VERMEZ; (d) ack_delay kodlama
+       tavanında DEĞİLDİR (V2: 65535 × 256 µs ≈ 16.78 s, §2.1 satürasyonu: alıcının tutma süresi bilinmez; V1 çerçeve
+       yalnız decode-uyumluluk içindir, üründe üretilmez); (e) rtprop varken min-rtt guard düzeltmeyi reddederse
+       ack_delay < rtprop olmalıdır — aksi hâlde RAW, tutma süresiyle en az rtprop kadar şişmiştir (FLOOR kodlama:
+       decoded ≤ gerçek tutma, §2.1). Bayat örnek alınmaz. Kural srtt yokken (ilk örnek) de AYNEN geçerlidir. Kesinti
+       sonrası ilk taze örnek döngüyü yeniden başlatır: DEĞİŞMEYEN kuantum döngüsü Δt ≥ 64·T iken n = 64 uygular.
+       Beyanlı sonuç: çerçevenin en büyüğü FEC onarım sembolü ya da daha önce onaylanmış bir seq olduğunda örnek
+       alınmaz — srtt donar, şişmez. TAZELİK ÖLÇÜTÜ (yalnız gözlem; karar girdisi DEĞİL): son kabul edilen örneğin
+       yaşı ≤ max(10 × srtt, RTO_MAX) (RTO_MAX = 30 s, transport-layer-tdd §12 [AMENDMENT-12]); aşılırsa `rtt_stale`
+       sayacı artar (eşiği aşan her dönemde bir kez). Teslim teyidi, BW-örneği ve delivered-kredi bu kurala BAĞLI
+       DEĞİLDİR (§5 kol-1/kol-2 aynen). Karar metinleri: `docs/decisions/K4G-CEVAP-PAKETLERI-4-7.md`.
 
 srtt / rttvar (RFC 6298 türevi, EWMA):
   ilk sample: srtt = rtt_sample;            rttvar = rtt_sample / 2
@@ -960,6 +991,70 @@ Token bucket:
   gönder: paket ancak tokens ≥ pkt.size ise; değilse pacing kuyruğunda bekle (Tokio timer)
 inter-packet gap = pkt.size / pace_rate    (düzgün pacing; ACK-clock değil, rate-clock — BBR pacing)
 priority: retransmit(deadline) > FEC parity > yeni DATA > ACK-only (ACK-only ayrı küçük budget)
+[v1.1 · K4G-05b, NORMATİF — sahip kararları CEVAP PAKETİ 5, 2026-10-16; CEVAP PAKETİ 7, 2026-10-18 (DUR-9 (a));
+  CEVAP PAKETİ 7-EK, 2026-10-18 (B1); CEVAP PAKETİ 9, 2026-10-24; CEVAP PAKETİ 10, 11, 11-EK, 12 ve 13, 2026-10-24
+  (DUR-24, DUR-31); CEVAP PAKETİ 15 v3 ve 15 EK-1, 2026-10-25 (DUR-38: B′, K1–K3; DUR-40) —
+  `docs/decisions/K4G-CEVAP-PAKETLERI-4-7.md`]
+  KOPYA KUYRUĞU İÇİ SIRA (PRE_CONVERGE DIŞINDA): vadesi gelmiş kopya kayıtlarından EN ESKİ ONAYSIZ birimin kaydı
+  önce gönderilir (ölçüt: en küçük birim kimliği — ürün yolunda kimlik oturum içi gönderim sırasıdır; eşitlikte
+  erken vade, sonra kuyruk sırası); YAŞ TAVANI (DUR-40) — vadesinden bu yana en az RTO_MAX geçmiş kaydı olan birim
+  varsa sıranın başı, bu birimler arasında son hizmeti (birimin herhangi bir sınıftan son iletimi) EN ESKİ olan
+  birimin en erken vadeli kaydıdır (eşitlikte küçük kimlik); bir birim bir planlama turunda — hangi sınıftan olursa
+  olsun — en çok bir kez gönderilir; token yetmezse o tur DURUR — arkadaki kayıt sıranın başını GEÇEMEZ, istisnasız.
+  Teyit edilmiş birimin kaydı gönderilmez. Bir birimin bekleyen tek seferlik kopya kaydı ≤ D − 1 tutulur (ekleme
+  anında sayılır, fazlası eklenmez); geometrik kaydı varken yeni kayıt açılmaz, yalnız onun vadesi öne çekilir
+  (öne çekme sıklığı: zincir dönemi başına en çok bir kez — transport-layer-tdd §12 [AMENDMENT-12]).
+  BURST_CAP TUR BAŞI TABANI (PRE_CONVERGE DIŞINDA): her planlama turunun başında, İLK kırpmadan önce, BURST_CAP alt
+  sınırı = max(kuyruk başındaki DATA biriminin boyutu — kuyruk boşsa DEFAULT_MTU, v1 aynen —, ARQ planının ilk
+  kaydının boyutu, bekleyen kuyruk-probu hedefinin boyutu, yukarıdaki ölçüte göre ilk vadesi gelmiş kopya kaydının
+  boyutu); üst sınır en az alt sınırdır; aynı turda oluşan kayıt sonraki turun tabanına girer. Token ÜRETİLMEZ;
+  token tavana dek birikebilir; pace_rate DEĞİŞMEZ (INV-RATE-1). Yol seçimi ve bir sonraki uyanma aynı başları
+  kullanır. PRE_CONVERGE'de taban v1'dir (max(kuyruk başındaki DATA biriminin boyutu, ilk-uçuş bütçesi)): ilk-uçuş
+  bütçesi kaydın boyutundan küçükken BURST_CAP'i aşan kayıt bu kayıtla kapsanmaz (beyanlı istisna,
+  transport-layer-tdd §12 [AMENDMENT-12]); çıkış turu tek turdur. Geometrik aralık ×2, üst sınır RTO_MAX
+  (transport-layer-tdd §12 [AMENDMENT-12]). PRE_CONVERGE'de §3.3-B sırası ve takvimi DEĞİŞMEZ; PRE_CONVERGE
+  çıkışında bekleyen kopyaların aralığı ve vadesi RTO_MAX'a kırpılır. SINIFLAR ARASI SIRA ~~tek istisnayla~~
+  istisna ve karşılık kuralıyla DEĞİŞMEDİ: v1 tahkimi kod sırasıdır (DATA → ARQ → kuyruk-probu → kuruluş probu →
+  kopya kuyruğu → FEC parity; RECOVER_ARQ'da her K_ARQ_SHARE'inci tur ARQ ile başlar). İSTİSNA — PRE_CONVERGE hariç
+  bütün durumlarda (PRE_CONVERGE'de v1 sırası ve §3.3-B takvimi değişmez; hak ve sınıf rezervi yoktur; bu kapsam
+  rev4 notunun "PRE_CONVERGE dahil" önerisini DEĞİŞTİRİR; CEVAP PAKETİ 10 (2026-10-24) "her durumda" ifadesi CEVAP
+  PAKETİ 11-EK (2026-10-24) §6 ile geri alındı): UYGUN İŞ (tur başında) — DATA: kuyrukta birim; ARQ: RECOVER_ARQ'da
+  vadesi gelmiş, tavan altı kayıp kaydı; kopya: vadesi gelmiş, teyitsiz, o turda gönderilmemiş kopya kaydı (tur başında; bir emisyondan
+  sonraki KARŞILIK sınamasında tur içi birim dışlaması uygulanmaz: birimi bu turda başka sınıftan giden kaydın
+  sınıfı da hak ve rezerv alır, kayıt bir sonraki turda gider); token
+  yetersizliği uygun işi kaldırmaz, vadesi gelmemiş iş uygun iş değildir. (i) SEÇİLME — karşılık hakkı yokken (ve
+  aynı turda ARQ payı rezerv almamışken) gönderilmeye uygun (vadesi gelmiş) kopya kuyruğu başı en geç
+  K_ARQ_SHARE'inci `schedule_transmit` çağrısında DATA'dan ÖNCE hizmet hakkı kazanır; aynı K_ARQ_SHARE; kopya payı
+  RECOVER_ARQ'nun ARQ payı sayacından bağımsız sayılır, yeni sayı ve ayrı token kovası YOK; aynı turda ARQ payı da
+  vadeliyse ARQ önce, sonra kopya başı. ARQ PAYI REZERVİ (CEVAP PAKETİ 15 v3 K3) — ARQ payı turunda ARQ planının başı
+  token'a yetişemezse ve rezerv yoksa REZERV ARQ başı için açılır. REZERVASYON — hak kazanan baş token'a
+  yetişemezse REZERV açılır; rezerv tek ve sahiplidir (kopya kuyruğu başı, ARQ planı başı ya da karşılık hakkındaki
+  DATA başı): sahibin başı dışındaki her token tüketicisi (DATA, ARQ, kopya kuyruğu — drenaj dahil —, kuyruk-probu,
+  FEC parity, kuruluş probu) rezervin altına inemez, rezervin ÜSTÜNDEKİ token'ı kullanabilir; rezerv ≤ bir kayıt boyu,
+  aynı anda tek rezerv; token ÜRETİLMEZ; rezerv sahibin başının gönderiminde, birim teyit edilince, hedef ya da
+  sahibin uygun işi geçersizleşince ve oturum kapanınca temizlenir; baş değişirse yeni başın boyuna güncellenir;
+  artık rezerv testle sınanır. KARŞILIK — bir kopya ya da ARQ emisyonundan sonra (her yoldan) o anda uygun işi olan
+  diğer sınıfların her biri bir karşılık hakkı alır; sınıf başına en çok bir hak; DATA emisyonu hak üretmez; hak,
+  sınıfın kendi emisyonuyla ya da uygun işi bitince düşer, başka düşme yolu yoktur; hak sahibi varken ve rezerv yokken rezerv ARQ >
+  DATA > kopya sırasıyla ilk hak sahibinin başı için kurulur ve kopya payı rezerv kurmaz. (ii) GÖNDERİLME — rezervi
+  alan baş ≤ boy / pace_rate + bir tur içinde çıkar: sabit pace_rate, çalışan zamanlayıcı ve yeterli BURST kapasitesi
+  koşuluyla; değişken hızda biriken token üzerinden hesaplanır (test iki kipte). ~~(ii) dışında gecikme sınırı
+  VERİLMEZ.~~ (ii) ve (iii) dışında gecikme sınırı VERİLMEZ. (iii) HİZMET GARANTİSİ — PRE_CONVERGE dışında, uygun işi
+  olan her sınıf (DATA, ARQ, kopya) ve ~~kopya sınıfı içinde her teyitsiz birim,~~ her iletilmiş teyitsiz birim (kopya kuyruğuna alınmadan önceki bekleme dahil; DUR-45 (C), sahip kararı bekliyor), teyitten bağımsız olarak, en geç
+  ~~[kendi başının ve kendisinden önce rezerv alan hak sahiplerinin baş boyları toplamı] / pace_rate + K_ARQ_SHARE tur
+  (birim için: T_birim)~~ [kendisinden önce rezerv alan her sahibin başının (aynı sınıf birden çok kez sayılır) ve kendi
+  başının boyları toplamı + P_pf] / pace_rate + (K_ARQ_SHARE + aşama sayısı) tur (DUR-43) içinde bir gönderim fırsatı
+  alır — aşama = rezervi alan bir sahibin emisyonu, aşama sayısı ≤ 4; en kötü diziler (S_c, S_a, S_d kopya, ARQ,
+  DATA baş boyu üst sınırı): DATA ← kopya, ARQ, DATA (S_c + S_a + S_d; 3 aşama); ARQ ← DATA, kopya, ARQ (S_d + S_c
+  + S_a; 3 aşama); kopya ← DATA, ARQ, DATA, kopya (2·S_d + S_a + S_c; 4 aşama); P_pf = beklemede rezerv yokken ya da
+  rezervin üstünde token alan sınırlı tüketicilerin (kuyruk-probu, FEC parity, kuruluş/CS probu) baytı (tasarım notu
+  B.6 h.2); tur = `schedule_transmit` çağrısı. Birim için T_birim = max(H_maks, RTO_MAX) + RTO_MAX + N_live ·
+  T_max(kopya) + bir tur; N_live = iletilmiş, teyitsiz birim sayısı (kabul edilmiş, en az bir kez iletilmiş, teyitsiz
+  birimlerin sonlu kümesi); N_live beklemenin başında — birimin son hizmeti anında — sayılır, açık üreticiyle oturum süresiyle büyüyebilir (DUR-45 (2′), sahip kararı bekliyor); H_maks = sahipsizlik süresi H'nin (transport-layer-tdd §12 [AMENDMENT-12]) bekleme
+  boyunca en büyük değeri; ~~H'nin çapası son ilerlemedir:~~ H'nin çapası max(son ilerleme, birimin son iletimi)'dir: ~~birimden~~ birimin son iletiminden ÖNCE gönderilmiş bir kaydın ilk onayı çapayı yeniler ve T_birim'e en çok bir H_maks ekler — sayısı beklemenin başında onaylanmamış eski kayıtlarla sınırlıdır; bu ilerleme RTT örneği verirse H_maks beklemede kabul edilen en büyük RTT örneğiyle sınırlıdır —, ~~birimden~~ birimin son iletiminden SONRA gönderilmiş kaydın onayı birimi kayıp ilanıyla ~~ARQ yoluna alır~~ ARQ ya da kopya yoluna (RECOVER_FWD'de kopya dönüşümüyle) alır ~~(DUR-45 (C));~~ (DUR-45 (C), sahip kararı bekliyor); T_max(kopya) = kopya sınıfının yukarıdaki sınırı; sabit pace_rate ≥ taban, çalışan zamanlayıcı ve yeterli
+  BURST kapasitesi koşuluyla; değişken hızda biriken token üzerinden. Sabit bir saniye değeri vaat edilmez; fikstür
+  değerleri (31 B/s, 100 B/s) notta türetilir ve testte üst sınır olarak doğrulanır. Yukarıdaki priority satırıyla
+  ayrışması bu kaydın kapsamı dışındadır.
 ```
 
 ---
@@ -1145,6 +1240,7 @@ ZM-4  Karşılaştırmanın İKİ YANI aynı saati kullanmalı (örn. loss-thres
 | loss_pre_fec_ppm ömür-boyu | loss.rs | ~~monoton ratchet (W_loss YOK)~~ → **FIXED [TUR-2a]**: W_loss olay-ledger'ı (`Suspected→Confirmed\|Spurious`, pencere-dışı Expired) + UN-LOSS (geç-ACK → Spurious: pending-retransmit iptal + `note_spurious` kablosu + kol-1 orijinal-RTT) + fuzzy girdisi `loss_windowed_ppm = Confirmed/pencere-gönderim` | (eski) false-loss kalıcı loss.high → fuzzy zehirlenirdi; ölçüm: p5-r4'te olaylar pencere-dışı decay (lppm→0), p5-r6'da canlı lppm=3% + ARQ tam draini | ✓ W_loss = K_wl×ack_epoch; confirm = cadence-taban (kanal-türevi, ZM-2) |
 | MIN_CWND=4800B | rate.rs:93 | byte-mutlak | BDP'nin 3-48× → inflight-cap kolu hiç seçilmez | k×BDP tabanı |
 | geometrik kopya deadline'sızlığı | sender dup_queue | deadline-türevi AMA tavansız | ölü kanalda sonsuz reschedule (COPY_MAX_INTERVAL/RETRY_BUDGET kodda yok) | §12 deadline tavanı DupRec'e |
+| [v1.1] kopya kuyruğu aralık tavanı + sahipsizlik süresi + parite kaydı süre dolumu + RTT tazelik ölçütü | sender dup_queue / adopt_unowned / parite kaydı / RTT kabulü | RTO_MAX = 30 s wall-clock TAVAN (taban srtt-türevi); H = max(3·srtt, 2·EAI)·1000/escalate_permille kanal-türevi; parite kaydı süre dolumu K_MAP × RTO_MAX (parite kaydı için bellek sınırı; birim geç-ACK garantisi değildir — K_MAP = 8 ADET sınırıdır, süre garantisi değildir); tazelik max(10·srtt, RTO_MAX) (yalnız gözlem, `rtt_stale`) | ölü kanalda tam sessizlik / sahipsiz birim / birim başına tavansız kayıt (adet sınırı K4G-05c) / görünmez estimator donması (v1) | 4-decade kanıtı BEKLİYOR (v1.1 T-hücreleri D = 20 s tavana ulaşmaz; uzun pencereli hücreler DEMO-01 öncesi ön-kayıtlı gece kartında) — transport-layer-tdd AMENDMENT-12 |
 | SAFE (doğru sınıf, örnek): pacer refill+kalan [R1], BURST_WINDOW [R3], PC geometrik takvim (RTT_floor-türevi), ACK_SILENCE=3·srtt, K=3 packet-threshold, ilk-SACK cadence-exempt | — | — | — | — |
 
 **K-1 — Bilinen ölümcül KOMPOZİSYON (TUR-A ölçüm, atıflama sayaçlı):** temiz 1 kbps'te 27/27 loss-ilanı

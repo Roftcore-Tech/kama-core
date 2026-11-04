@@ -25,11 +25,19 @@ pub struct LostSeq {
 }
 
 /// ARQ_RETX_CAP aşımında politika (§9.1 — spec iki seçeneği de sunar).
+///
+/// **[v1.1 · K4G-05b madde 3 — transport-layer-tdd §12 AMENDMENT-12]** Cap aşımı HER politikada
+/// yalnız birimin izleme YOLUNU değiştirir, birimi ASLA düşürmez: sender birimi kopya kuyruğundaki
+/// TEK kalıcı geometrik sahibine devreder (aralık ≤ RTO_MAX, teyide dek; INV-NO-ORPHAN). Bu modül
+/// yalnız kararı üretir (`RetxDecision::CapExceeded { policy }`); politika değeri birimin kaderini
+/// belirlemez, v1.1 sender'ında iki değer de aynı devre yol açar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CapExceedPolicy {
-    /// Forward-recovery'ye devret (recovery-obsesif default; "veri ulaşsın").
+    /// Forward-recovery'ye devret (recovery-obsesif default; "veri ulaşsın"). v1.1: kalıcı
+    /// geometrik kopya sahibine devir (v1'deki tek seferlik kopya değil).
     HandToForward,
-    /// Bağlantıyı fail-closed kapat.
+    /// Bağlantıyı fail-closed kapat. v1.1: birim yine düşürülmez — `HandToForward` ile aynı devir
+    /// (bağlantı-düzeyi sonlandırma bu türün işi değildir; §0 kapalı sonlandırma listesi).
     ConnectionFail,
 }
 

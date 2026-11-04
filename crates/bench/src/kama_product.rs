@@ -249,8 +249,8 @@ fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
 // ── [DENETİM] MİMARİ-AKTİF MANİFEST ────────────────────────────────────────────────────────────
 // Her koşu, NE koştuğunu ve NEYİN fiilen ateşlendiğini kendisi beyan eder. Amacı tek bir sınıf
 // hatayı imkânsız kılmak: bir ARQ-only alt-kümesini "Kama tam mimarisi" diye etiketlemek.
-// Kıyas raporları `profile=` alanını AYNEN taşımak zorundadır (`kama-v1-full` dışındaki hiçbir
-// koşu "Kama v1" adıyla raporlanamaz).
+// Kıyas raporları `profile=` alanını AYNEN taşımak zorundadır (`TRANSPORT_V1_PROFILE_ID` —
+// v1.1'de `kama-v1.1-full`, K4G-05b — dışındaki hiçbir koşu "Kama v1" adıyla raporlanamaz).
 
 /// Yürürlükteki config'in v1 ürün profilinden sapmaları (boş liste = tam v1 profili).
 fn profile_delta(c: &RuntimeConfig) -> Vec<String> {

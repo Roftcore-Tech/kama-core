@@ -1,5 +1,7 @@
 # Kama Transport v1 — dizin
 
+> **YAMA KAYDI — 2026-10-24 [v1.1 · K4G-05b — AMENDMENT-12 işaretçisi; sahip kararı CEVAP PAKETİ 7, 2026-10-18, DUR-4 (b) — `docs/decisions/K4G-CEVAP-PAKETLERI-4-7.md`]:** "Durum" ve "Kanonik kimlik" satırları transport v1'i tanımlar; v1.1'de kod kimliği `kama-v1.1-full` / `transport-v1.1`'dir (`TRANSPORT_V1_PROFILE_ID` / `TRANSPORT_V1_ARCHITECTURE`); yeniden-gönderim sahipliği, RTT örnek kabulü, kopya kuyruğu sırası ve RTO_MAX = 30 s AMENDMENT-12'dedir (otorite: `specs/transport-layer-tdd.md` §12 [AMENDMENT-12]). v1 kanıt bankası (`reports/transport-v1/`) ve Faz-5 betikleri bayt-özdeş kalır; v1.1 T-hücre kanıtı `reports/transport-v1.1/tcell/` altında ayrı etiketlidir (CEVAP PAKETİ 7, 2026-10-18, DUR-6 (a); CEVAP PAKETİ 7-EK, 2026-10-18, A2). Bu belgenin metni değiştirilmedi; düzeltmesi "INT-02 GEÇTİ" sonrası ayrı doküman PR'ı.
+
 **Ne:** hostile/zayıflamış ağlar (yüksek ve burst kayıp, düşük bant, yüksek RTT, asimetrik yol,
 bozuk geri-besleme) için veri-öncelikli, mesaj-granülü, ARQ+FEC'li, yönlü-geri-besleme okuyan
 uyarlanır güvenilir taşıyıcı. Kripto TUTMAZ (INV-ENGINE-SOC); güvenlik katmanının müşterisidir.
