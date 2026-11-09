@@ -714,3 +714,153 @@ impl LossDetector for ThresholdLossDetector {
         ratio_ppm(self.unrecovered_units, self.sent_units)
     }
 }
+
+// ── [E2a gösterim alt kümesi] ISEMRI-YOL3-M1 (KK-M1-02) ─────────────────────────────────────
+//
+// Bayraklar TEK yapıda; varsayılan = bugünkü davranış BİT-AYNI (hepsi kapalı, g = 1 ms,
+// pto_probes = 1). Geçersiz değer tip kurucusunda tipli hatadır: alanlar dışarıdan doğrudan
+// yazılamaz, yalnız [`E2aFlags::new`] (doğrulamalı) ve [`Default`] (geçerli) kurar. Böylece
+// geçersiz değer `RuntimeConfig`'e hiç giremez ve `Sender::set_e2a_flags` hata döndürmez.
+
+/// [E2a m1] `g` alt sınırı (ns): RFC 9002 kGranularity = 1 ms.
+pub const E2A_TT_GRANULARITY_MIN_NS: u64 = 1_000_000;
+/// [E2a m1] `g` üst sınırı (ns): YOL PLANI v2 §5.1 madde 1 "g ∈ [1, 200] ms [CAL]".
+pub const E2A_TT_GRANULARITY_MAX_NS: u64 = 200_000_000;
+
+/// [E2a m8 · engine §6 v1.1 KABUL KURALI (d)] Doygun `ack_delay`: V2 kodlama tavanı
+/// `ACK_DELAY_UNIT_US × u16::MAX` ≈ 16.78 s (alıcının tutma süresi bilinmez). Yeni sayı değil:
+/// iki mevcut sabitin çarpımı (K4G-05b madde 7'nin aynı tanımı).
+pub const E2A_ACK_DELAY_SATURATED: Duration =
+    Duration::from_micros(crate::ack::ACK_DELAY_UNIT_US * u16::MAX as u64);
+
+/// [E2a gösterim] `E2aFlags::new` doğrulama hataları (tipli; panik yok).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum E2aFlagsError {
+    /// `pto_probes ∉ {1, 2}`.
+    #[error("pto_probes = {0}: izinli değerler 1 ve 2")]
+    PtoProbesOutOfRange(u8),
+    /// `tt_granularity_ns ∉ [1 ms, 200 ms]`.
+    #[error("tt_granularity_ns = {0}: izinli aralık [1 ms, 200 ms]")]
+    GranularityOutOfRange(u64),
+    /// `gap_ack` (m5) bu sürümde uygulanmadı (KK-M1-08; Aralık) — açılamaz.
+    #[error("gap_ack (m5) uygulanmadı: FeatureNotImplemented")]
+    GapAckNotImplemented,
+}
+
+/// [E2a gösterim] Motor kural bayrakları (ISEMRI-YOL3-M1 KK-M1-02).
+///
+/// * `tt_rfc` (m1): zaman eşiği = max(9/8·max(srtt, latest_rtt), g); cadence tabanı zaman-kayıp
+///   tüketicilerinden çıkar. "Daha yüksek seq ACK'lendi" ön şartı korunur.
+/// * `tt_granularity_ns` (m1): `g`, [1 ms, 200 ms].
+/// * `rtt_rule_v11` (m8): engine §6 v1.1 KABUL KURALI (05b RTT örnek kuralı).
+/// * `iw_idle_hold` (m6): Idle'da (ölçümsüz) kova ilk pencerede tutulur.
+/// * `pto_probes` (PTO 2): PTO turu başına prob sayısı, {1, 2}.
+/// * `gap_ack` (m5): boşlukta anında ACK — bu sürümde UYGULANMADI, `true` tipli hatadır.
+///
+/// Varsayılan: hepsi kapalı, `g` = 1 ms, `pto_probes` = 1 → bugünkü davranış bit-aynı.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct E2aFlags {
+    tt_rfc: bool,
+    tt_granularity_ns: u64,
+    rtt_rule_v11: bool,
+    iw_idle_hold: bool,
+    pto_probes: u8,
+    gap_ack: bool,
+}
+
+impl Default for E2aFlags {
+    fn default() -> Self {
+        Self {
+            tt_rfc: false,
+            tt_granularity_ns: E2A_TT_GRANULARITY_MIN_NS,
+            rtt_rule_v11: false,
+            iw_idle_hold: false,
+            pto_probes: 1,
+            gap_ack: false,
+        }
+    }
+}
+
+impl E2aFlags {
+    /// Doğrulamalı kurucu; argüman sırası KK-M1-02 alan sırasıdır.
+    ///
+    /// # Errors
+    /// [`E2aFlagsError`] — `pto_probes ∉ {1, 2}`, `tt_granularity_ns ∉ [1 ms, 200 ms]` ya da
+    /// `gap_ack = true` (m5 uygulanmadı).
+    pub fn new(
+        tt_rfc: bool,
+        tt_granularity_ns: u64,
+        rtt_rule_v11: bool,
+        iw_idle_hold: bool,
+        pto_probes: u8,
+        gap_ack: bool,
+    ) -> Result<Self, E2aFlagsError> {
+        if !(1..=2).contains(&pto_probes) {
+            return Err(E2aFlagsError::PtoProbesOutOfRange(pto_probes));
+        }
+        if !(E2A_TT_GRANULARITY_MIN_NS..=E2A_TT_GRANULARITY_MAX_NS).contains(&tt_granularity_ns) {
+            return Err(E2aFlagsError::GranularityOutOfRange(tt_granularity_ns));
+        }
+        if gap_ack {
+            return Err(E2aFlagsError::GapAckNotImplemented);
+        }
+        Ok(Self {
+            tt_rfc,
+            tt_granularity_ns,
+            rtt_rule_v11,
+            iw_idle_hold,
+            pto_probes,
+            gap_ack,
+        })
+    }
+
+    /// m1 bayrağı.
+    #[must_use]
+    pub fn tt_rfc(self) -> bool {
+        self.tt_rfc
+    }
+    /// m1 `g` (ns).
+    #[must_use]
+    pub fn tt_granularity_ns(self) -> u64 {
+        self.tt_granularity_ns
+    }
+    /// m1 `g` (süre).
+    #[must_use]
+    pub fn tt_granularity(self) -> Duration {
+        Duration::from_nanos(self.tt_granularity_ns)
+    }
+    /// m8 bayrağı.
+    #[must_use]
+    pub fn rtt_rule_v11(self) -> bool {
+        self.rtt_rule_v11
+    }
+    /// m6 bayrağı.
+    #[must_use]
+    pub fn iw_idle_hold(self) -> bool {
+        self.iw_idle_hold
+    }
+    /// PTO turu başına prob sayısı ({1, 2}).
+    #[must_use]
+    pub fn pto_probes(self) -> u8 {
+        self.pto_probes
+    }
+    /// m5 bayrağı (bu sürümde daima `false`).
+    #[must_use]
+    pub fn gap_ack(self) -> bool {
+        self.gap_ack
+    }
+}
+
+/// [E2a gözlem] Sender'ın E2a kollarının SALT GÖZLEM sayaçları (INV-007: karar girdisi değil).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct E2aDiag {
+    /// m8 KABUL KURALI (d)/(e) ile reddedilen RTT örneği sayısı (yalnız `rtt_rule_v11` açıkken artar).
+    pub rtt_rule_refused: u64,
+    /// Estimator'a ACK yolundan kabul edilen son RTT örneğinin anı (ns); tazelik bunun yaşından
+    /// okunur (engine §6 v1.1 TAZELİK yalnız gözlem; eşikli `rtt_stale` sayacı Aralık).
+    pub rtt_last_accept_ns: Option<u64>,
+    /// PTO 2: ikinci prob wire emisyonu sayısı.
+    pub pto2_emitted: u64,
+    /// PTO 2: tur değiştiği ya da hedef artık teyitsiz olmadığı için boşaltılan ikinci prob yuvası.
+    pub pto2_cleared: u64,
+}

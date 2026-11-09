@@ -85,6 +85,7 @@ async fn transport_api_v0_surface_is_frozen() {
         drain_cap: _,
         idle_hold: _,
         initial_window_bytes: _, // v0.5 (IW): minor-EKLEME, kasıtlı pin-güncellemesi
+        e2a_flags: _, // v0.15 (E2a gösterim bayrakları): minor-EKLEME, kasıtlı pin-güncellemesi
         bootstrap_rtt: _,
         bootstrap_fast_ladder: _, // v0.6 (kuruluş merdiveni): kasıtlı pin-güncellemesi // v0.4 (DR-CS-3 kablolama): minor-EKLEME, kasıtlı pin-güncellemesi
         fec_structure_policy: _,  // v0.3 (BURST-FUSION): minor-EKLEME, kasıtlı pin-güncellemesi
