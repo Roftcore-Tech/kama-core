@@ -1,0 +1,18 @@
+# [KTP2-F0 / Ajan D] YÜKSEK RTT'DE quinn AYAR DUYARLILIĞI, 1 kB/s, RTT ≈ 2 s, %10 (betimsel, N=10).
+# quinn initial_rtt varsayılanı 333 ms → PTO ≈ 1 s < RTT: el sıkışmada sahte yoklamalar (her biri
+# 1200 B ≈ 1,24 s hat süresi). quinn_irtt: initial_rtt = 2000 ms + IW 12 000 B. Ayrıca eski teslim
+# tanımı kolları (quinn_rpl, tcp_rpl). Yük: 1000 B × 20, 5 s aralık (≈ %21 hat yükü), pencere 60 s.
+CELL=d_irtt_r1k_d1000_l10
+FWD="delay 1000ms 200ms distribution normal loss 10% rate 8kbit"
+REV="$FWD"
+REPS="${F0_REPS:-10}"
+BUDGET_S=260
+PAY=1000; MSGS=20; IVAL_MS=5000; DEADLINE_S=60; HS_TIMEOUT_S=60
+RTT_HINT_MS=2000
+# shellcheck disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/../../arms_rakip.sh"
+rakip_arms
+# Kama kolu (taban): arms_kama.sh `kama_arm_cmds` ile aynı iş yükü; sunucu alıcı damgası da yazar.
+ARM_taban_SRV="@BIN_TABAN@ serve --bind @SRV@ --transport kama-product --payload $PAY --rx-log @D@/rx_log.jsonl"
+ARM_taban_CLI="@BIN_TABAN@ client --server @SRV@ --transport kama-product $RAKIP_LOAD_ARGS"
+ARMS="taban quinn quinn_irtt quinn_rpl tcp tcp_rpl"

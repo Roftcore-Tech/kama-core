@@ -1,0 +1,8 @@
+scripts/ktp2/f0/cells/b/b_r12k_d1000_l10_p1000.cell
+scripts/ktp2/f0/cells/b/b_r12k_d1000_l10_p65.cell
+scripts/ktp2/f0/cells/b/b_r12k_d300_l10_p1000.cell
+scripts/ktp2/f0/cells/b/b_r12k_d300_l10_p65.cell
+scripts/ktp2/f0/cells/b/b_r1k_d1000_l10_p1000.cell
+scripts/ktp2/f0/cells/b/b_r1k_d1000_l10_p65.cell
+scripts/ktp2/f0/cells/b/b_r1k_d300_l10_p1000.cell
+scripts/ktp2/f0/cells/b/b_r1k_d300_l10_p65.cell

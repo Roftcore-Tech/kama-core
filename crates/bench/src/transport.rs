@@ -209,6 +209,10 @@ pub struct ClientCfg {
     pub persist_rho: Option<u32>,
     pub persist_q: Option<u32>,
     pub rp_suppress: Option<u32>,
+    /// [KTP2-F0 / C2] Yalnız `kama-product`: her ölçüm mesajı bu kadar AYRI birim olarak sunulur
+    /// (gerçek tekrar kolu); teslim = kopyalardan ilkinin teyidi. `1` = eski davranış (kopya yok).
+    /// Birim kimliği: `warmup_msgs + msg_id × dup_copies + kopya`.
+    pub dup_copies: u32,
 }
 
 /// [KAPI-1 W6] Dosya-tabanlı barrier: `<gate>.ready` yaz → `<gate>.go` bekle (5 ms poll, 120 s
@@ -277,6 +281,9 @@ pub struct ServerCfg {
     pub persist_rho: Option<u32>,
     pub persist_q: Option<u32>,
     pub rp_suppress: Option<u32>,
+    /// [KTP2-F0 / C1] Alıcı-tarafı teslim damgası (`serve --rx-log`; bkz. [`crate::rxlog`]).
+    /// `None` = kayıt yok, dosya yok (eski davranış). `kama-product` ve `tcp` sunucularında.
+    pub rx_log: Option<std::path::PathBuf>,
 }
 
 /// Bench transport portu. quinn impl + kama stub aynı harness'ta koşar (ADIM 5).

@@ -85,6 +85,15 @@ kapi3_setup() { # yalnız unshare -rnm İÇİNDE
   else
     KAPI3_OFFLOAD="ethtool-missing"
   fi
+  # GSO/TSO segment tavanı (KTP2-F0 D-13): ethtool yokken veth TSO açık kalır; tcp çift-segment skb
+  # yollar ve netem kaybı skb başına çekildiği için kayıplar ikişerli korelasyonlu olur.
+  # KAPI3_GSO_MAX_SEGS verilirse dört veth ucunda gso_max_segs uygulanır; boş = bugünkü davranış.
+  if [ -n "${KAPI3_GSO_MAX_SEGS:-}" ]; then
+    ip link set dev va0 gso_max_segs "$KAPI3_GSO_MAX_SEGS"
+    nsenter -t "$MID" -n ip link set dev ma0 gso_max_segs "$KAPI3_GSO_MAX_SEGS"
+    nsenter -t "$MID" -n ip link set dev mb0 gso_max_segs "$KAPI3_GSO_MAX_SEGS"
+    nsenter -t "$CHLB" -n ip link set dev vb0 gso_max_segs "$KAPI3_GSO_MAX_SEGS"
+  fi
   export MID CHLB KAPI3_OFFLOAD
 }
 
@@ -156,6 +165,8 @@ kapi3_realized() { # $1=dizin $2=etiket
   local d="$1" tag="$2"
   {
     echo "{\"tag\":\"$tag\",\"t_ns\":$(date +%s%N),\"offload\":\"$KAPI3_OFFLOAD\","
+    # D-13 bayrağı verildiyse uygulanan değer dört uçtan geri okunur (boşken çıktı değişmez).
+    [ -n "${KAPI3_GSO_MAX_SEGS:-}" ] && echo "\"gso_max_segs\":\"va0=$(ip -d link show va0 | grep -oE 'gso_max_segs [0-9]+' | cut -d' ' -f2);ma0=$(nsenter -t "$MID" -n ip -d link show ma0 | grep -oE 'gso_max_segs [0-9]+' | cut -d' ' -f2);mb0=$(nsenter -t "$MID" -n ip -d link show mb0 | grep -oE 'gso_max_segs [0-9]+' | cut -d' ' -f2);vb0=$(nsenter -t "$CHLB" -n ip -d link show vb0 | grep -oE 'gso_max_segs [0-9]+' | cut -d' ' -f2)\","
     echo "\"mid_qdisc\":$(nsenter -t "$MID" -n tc -s -j qdisc show 2>/dev/null || echo '[]'),"
     echo "\"neigh_a\":\"$(ip neigh show dev va0 | tr '\n' ';')\","
     echo "\"neigh_b\":\"$(nsenter -t "$CHLB" -n ip neigh show dev vb0 | tr '\n' ';')\"}"
