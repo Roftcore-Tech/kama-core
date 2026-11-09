@@ -116,7 +116,16 @@ pub struct TailRecovery {
     probe_due_edge_count: u64,
     /// Whether the previous `on_timer` returned `ProbeDue` (edge detection state).
     was_due: bool,
+    /// [Q1 A-5] RFC 9002 §6.2 / quinn-proto 0.11.18 PTO mode (default false = shipped behaviour):
+    /// anchor = last ack-eliciting send, no per-window probe cap, base `srtt + max(4·var, 1 ms) + mad`.
+    rfc_mode: bool,
+    /// [Q1 A-5] Time of the most recent ack-eliciting send (`Sender::track_sent`). Written always,
+    /// read only in `rfc_mode` (quinn `time_of_last_ack_eliciting_packet`).
+    last_ack_eliciting_send_ns: Option<u64>,
 }
+
+/// [Q1 A-5] RFC 9002 kGranularity (1 ms) — quinn-proto 0.11.18 `lib.rs:334` `TIMER_GRANULARITY`.
+const PTO_RFC_GRANULARITY_NS: u64 = 1_000_000;
 
 impl TailRecovery {
     /// [FAZ-3 TELEMETRİ] Yürürlükteki yapılandırma (salt gözlem; "yapılandırıldı" olgusu
@@ -141,7 +150,40 @@ impl TailRecovery {
             probe_due_count: 0,
             probe_due_edge_count: 0,
             was_due: false,
+            rfc_mode: false,
+            last_ack_eliciting_send_ns: None,
         }
+    }
+
+    /// [Q1 A-5] RFC/quinn PTO mode switch (`E2aFlags::pto_rfc`). Off = shipped behaviour bit-for-bit.
+    pub fn set_rfc_mode(&mut self, on: bool) {
+        self.rfc_mode = on;
+    }
+
+    /// [Q1 A-5] Whether RFC/quinn PTO mode is on.
+    #[must_use]
+    pub fn rfc_mode(&self) -> bool {
+        self.rfc_mode
+    }
+
+    /// [Q1 A-5] Record an ack-eliciting emission (data / retransmit / probe / duplicate). Pure
+    /// bookkeeping; read only in `rfc_mode`.
+    pub fn note_ack_eliciting_sent(&mut self, now_ns: u64) {
+        self.last_ack_eliciting_send_ns = Some(now_ns);
+    }
+
+    /// EK4-A2 + [Q1 A-5]: absolute PTO deadline of the current round (read-only). Shipped mode:
+    /// `armed_at + current_pto`. RFC mode: `last_ack_eliciting_send + current_pto` (quinn-proto
+    /// 0.11.18 `connection/mod.rs` `pto_time_and_space`; MIT/Apache-2.0). `None` ⇒ disarmed.
+    #[must_use]
+    pub fn pto_deadline_ns(&self, srtt_ns: Option<u64>, rttvar_ns: u64) -> Option<u64> {
+        let armed = self.armed_at_ns?;
+        let anchor = if self.rfc_mode {
+            self.last_ack_eliciting_send_ns.unwrap_or(armed)
+        } else {
+            armed
+        };
+        Some(anchor.saturating_add(self.current_pto_ns(srtt_ns, rttvar_ns)))
     }
 
     #[must_use]
@@ -156,8 +198,14 @@ impl TailRecovery {
         match srtt_ns {
             None => self.cfg.initial_pto_ns,
             Some(srtt) => {
+                // [Q1 A-5] RFC mode: max(4·rttvar, kGranularity) (quinn `paths.rs` `pto_base`).
+                let var_term = if self.rfc_mode {
+                    rttvar_ns.saturating_mul(4).max(PTO_RFC_GRANULARITY_NS)
+                } else {
+                    rttvar_ns.saturating_mul(4)
+                };
                 let raw = srtt
-                    .saturating_add(rttvar_ns.saturating_mul(4))
+                    .saturating_add(var_term)
                     .saturating_add(self.cfg.max_ack_delay_ns);
                 raw.clamp(self.cfg.min_pto_ns, self.cfg.max_pto_ns)
             }
@@ -218,19 +266,33 @@ impl TailRecovery {
         let armed = *self
             .armed_at_ns
             .get_or_insert(now_ns.max(self.last_progress_ns));
-        if self.probe_index >= self.cfg.max_tail_probes {
+        // [Q1 A-5] RFC mode: no per-window probe cap (RFC 9002 has backoff, not a cap; the
+        // backed-off PTO stays bounded by `max_backoff_pto_ns`, so probes are rate-bounded).
+        if !self.rfc_mode && self.probe_index >= self.cfg.max_tail_probes {
             self.was_due = false; // edge-detect: leaving the due state
             return ProbeDecision::Idle; // bounded — never unbounded retransmission.
         }
         let pto = self.current_pto_ns(srtt_ns, rttvar_ns);
-        // reordering / delayed-ACK guard: never probe within one PTO of the most recent ACK progress.
-        if now_ns.saturating_sub(self.last_progress_ns) < pto {
-            self.was_due = false; // edge-detect: leaving the due state
-            return ProbeDecision::Idle;
-        }
-        if now_ns.saturating_sub(armed) < pto {
-            self.was_due = false; // edge-detect: leaving the due state
-            return ProbeDecision::Idle; // not yet due.
+        if self.rfc_mode {
+            // [Q1 A-5] quinn-proto 0.11.18 `pto_time_and_space` (MIT/Apache-2.0): deadline =
+            // last ack-eliciting send + PTO·2^count. The probe itself is an ack-eliciting send, so
+            // the next round re-anchors on it (backoff). No separate ACK-progress guard: progress
+            // resets `probe_index` (quinn `pto_count = 0`) via `on_ack_progress`.
+            let anchor = self.last_ack_eliciting_send_ns.unwrap_or(armed);
+            if now_ns.saturating_sub(anchor) < pto {
+                self.was_due = false; // edge-detect: leaving the due state
+                return ProbeDecision::Idle; // not yet due.
+            }
+        } else {
+            // reordering / delayed-ACK guard: never probe within one PTO of the most recent ACK progress.
+            if now_ns.saturating_sub(self.last_progress_ns) < pto {
+                self.was_due = false; // edge-detect: leaving the due state
+                return ProbeDecision::Idle;
+            }
+            if now_ns.saturating_sub(armed) < pto {
+                self.was_due = false; // edge-detect: leaving the due state
+                return ProbeDecision::Idle; // not yet due.
+            }
         }
         // DUE — but do NOT consume the attempt here (§3 probe-due ≠ probe-sent). The sender consumes it via
         // `on_probe_sent` ONLY after a successful emission (token available + target still outstanding). While a
@@ -612,6 +674,142 @@ mod tests {
         assert_ne!(
             d.max_tail_probes, v.max_tail_probes,
             "the default (cap 2) was never validated; it must not silently converge on v1"
+        );
+    }
+}
+
+// ── [Q1 A-5] RFC 9002 / quinn-proto 0.11.18 PTO mode: anchor = last ack-eliciting send, no cap ──
+#[cfg(test)]
+mod q1_pto_rfc_tests {
+    use super::*;
+
+    const RTT: u64 = 100_000_000; // 100 ms srtt
+    const VAR: u64 = 0;
+
+    fn cfg() -> TailRecoveryConfig {
+        TailRecoveryConfig {
+            enabled: true,
+            min_pto_ns: 1_000_000,
+            max_pto_ns: 10_000_000_000,
+            initial_pto_ns: 500_000_000,
+            max_backoff_pto_ns: 60_000_000_000,
+            max_ack_delay_ns: 0,
+            max_tail_probes: 2,
+        }
+    }
+
+    fn machine(rfc: bool) -> TailRecovery {
+        let mut t = TailRecovery::new(cfg());
+        t.set_rfc_mode(rfc);
+        t
+    }
+
+    #[test]
+    fn off_is_default_and_base_pto_unchanged() {
+        let t = TailRecovery::new(cfg());
+        assert!(!t.rfc_mode());
+        // Shipped base: srtt + 4·var (+mad). RFC: srtt + max(4·var, 1 ms) (+mad).
+        assert_eq!(t.base_pto_ns(Some(RTT), 0), RTT);
+        assert_eq!(machine(true).base_pto_ns(Some(RTT), 0), RTT + 1_000_000);
+        assert_eq!(
+            machine(true).base_pto_ns(Some(RTT), 10_000_000),
+            RTT + 40_000_000,
+            "4·var > 1 ms → same as shipped"
+        );
+    }
+
+    #[test]
+    fn anchor_is_last_send_not_ack_progress() {
+        // ACK progress at 0, last ack-eliciting send at 50 ms.
+        for rfc in [false, true] {
+            let mut t = machine(rfc);
+            t.on_ack_progress(0);
+            t.note_ack_eliciting_sent(50_000_000);
+            let pto = t.current_pto_ns(Some(RTT), VAR);
+            let due_at = if rfc { 50_000_000 + pto } else { pto };
+            assert_eq!(
+                t.pto_deadline_ns(Some(RTT), VAR),
+                Some(due_at),
+                "rfc={rfc}: deadline"
+            );
+            assert_eq!(
+                t.on_timer(due_at - 1, Some(RTT), VAR, Some(4)),
+                ProbeDecision::Idle,
+                "rfc={rfc}: before deadline"
+            );
+            assert_eq!(
+                t.on_timer(due_at, Some(RTT), VAR, Some(4)),
+                ProbeDecision::ProbeDue {
+                    target_seq: 4,
+                    probe_index: 0
+                },
+                "rfc={rfc}: at deadline"
+            );
+        }
+    }
+
+    #[test]
+    fn rfc_has_no_round_cap_and_backs_off_from_each_probe() {
+        let mut off = machine(false);
+        let mut on = machine(true);
+        for t in [&mut off, &mut on] {
+            t.on_ack_progress(0);
+            t.note_ack_eliciting_sent(0);
+        }
+        // Drive 6 rounds: each probe is itself an ack-eliciting send (re-anchor) and doubles PTO.
+        let mut now = 0u64;
+        let mut fired_on = Vec::new();
+        for _ in 0..6 {
+            let dl = on.pto_deadline_ns(Some(RTT), VAR).expect("armed");
+            now = now.max(dl);
+            if let ProbeDecision::ProbeDue { probe_index, .. } =
+                on.on_timer(now, Some(RTT), VAR, Some(1))
+            {
+                fired_on.push((now, probe_index));
+                on.on_probe_sent(now);
+                on.note_ack_eliciting_sent(now);
+            }
+        }
+        // PTO_k = (RTT + 1 ms)·2^k; deadlines 101, 101+202, ... ms.
+        let base = RTT + 1_000_000;
+        let mut expect = Vec::new();
+        let mut t = 0u64;
+        for k in 0..6u32 {
+            t += base << k;
+            expect.push((t, k));
+        }
+        assert_eq!(fired_on, expect, "uncapped rounds with doubling backoff");
+        // Shipped mode stops after max_tail_probes = 2 rounds.
+        let mut n_off = 0;
+        let mut now = 0u64;
+        for k in 0..60u64 {
+            now += RTT * (1 << (k % 8));
+            if let ProbeDecision::ProbeDue { .. } = off.on_timer(now, Some(RTT), VAR, Some(1)) {
+                off.on_probe_sent(now);
+                off.note_ack_eliciting_sent(now);
+                n_off += 1;
+            }
+        }
+        assert_eq!(n_off, 2, "shipped cap = 2 rounds");
+    }
+
+    #[test]
+    fn rfc_backoff_bounded_by_ceiling_and_progress_resets() {
+        let mut t = machine(true);
+        t.on_ack_progress(0);
+        for _ in 0..100 {
+            t.on_probe_sent(0);
+        }
+        assert_eq!(
+            t.current_pto_ns(Some(RTT), VAR),
+            cfg().max_backoff_pto_ns,
+            "probe_index ≫ 64 → saturating, capped (overflow-safe)"
+        );
+        t.on_ack_progress(5);
+        assert_eq!(
+            t.probe_index(),
+            0,
+            "ACK progress resets the round (quinn pto_count = 0)"
         );
     }
 }

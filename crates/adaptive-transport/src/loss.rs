@@ -733,6 +733,15 @@ pub const E2A_TT_GRANULARITY_MAX_NS: u64 = 200_000_000;
 pub const E2A_ACK_DELAY_SATURATED: Duration =
     Duration::from_micros(crate::ack::ACK_DELAY_UNIT_US * u16::MAX as u64);
 
+/// [Q1 A-2] Rejim kapısı (B/s): bunun altında 31 B/s dönüş önseli devrede kalır (QUINN-FARKI §0:
+/// "ölçülen rate < 1 kB/s iken önsel devrede") [CAL]. Gönderici pace'i, alıcı varış debisini kıyaslar.
+pub const E2A_RETURN_REGIME_MIN_BPS: u64 = 1_000;
+
+/// [Q1 A-2] Rejim içinde alıcı cadence alt sınırı (ns) = 25 ms: RFC 9000 §18.2 `max_ack_delay`
+/// varsayılanı; quinn-proto 0.11.18 `transport_parameters.rs:60` (`max_ack_delay = 25`, ms).
+/// Göndericinin PTO modelindeki `TailRecoveryConfig::max_ack_delay_ns` (25 ms) ile AYNI sayı.
+pub const E2A_ACK_CADENCE_MIN_NS: u64 = 25_000_000;
+
 /// [E2a gösterim] `E2aFlags::new` doğrulama hataları (tipli; panik yok).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum E2aFlagsError {
@@ -742,9 +751,8 @@ pub enum E2aFlagsError {
     /// `tt_granularity_ns ∉ [1 ms, 200 ms]`.
     #[error("tt_granularity_ns = {0}: izinli aralık [1 ms, 200 ms]")]
     GranularityOutOfRange(u64),
-    /// `gap_ack` (m5) bu sürümde uygulanmadı (KK-M1-08; Aralık) — açılamaz.
-    #[error("gap_ack (m5) uygulanmadı: FeatureNotImplemented")]
-    GapAckNotImplemented,
+    // [Q1] `GapAckNotImplemented` kaldırıldı: m5 (`gap_ack`) artık uygulanıyor
+    // (`receiver.rs`, RFC 9000 §13.2.1 / quinn-proto 0.11.18 `PendingAcks::is_out_of_order`).
 }
 
 /// [E2a gösterim] Motor kural bayrakları (ISEMRI-YOL3-M1 KK-M1-02).
@@ -755,7 +763,20 @@ pub enum E2aFlagsError {
 /// * `rtt_rule_v11` (m8): engine §6 v1.1 KABUL KURALI (05b RTT örnek kuralı).
 /// * `iw_idle_hold` (m6): Idle'da (ölçümsüz) kova ilk pencerede tutulur.
 /// * `pto_probes` (PTO 2): PTO turu başına prob sayısı, {1, 2}.
-/// * `gap_ack` (m5): boşlukta anında ACK — bu sürümde UYGULANMADI, `true` tipli hatadır.
+/// * `gap_ack` (m5): ALICI sıra dışı / boşluk yaratan datagramda anında ACK (RFC 9000 §13.2.1;
+///   quinn `reordering_threshold = 1`).
+///
+/// [Q1] Kurucu imzası değişmeden `with_*` ile açılan ek kollar (QUINN-FARKI §3-A; rapor
+/// `Q1-KAYIP-ACK.md`):
+/// * `return_prior_gated` (A-2): 31 B/s dönüş önseli REJİM KAPILI. Gönderici: pace ≥
+///   [`E2A_RETURN_REGIME_MIN_BPS`] iken kayıp tabanının (`cadence_loss_floor`) dönüş terimi
+///   `SACK_WIRE / rb`, rb = ölçülen dönüş debisi (varsa) yoksa pace. Alıcı: varış debisi ≥ aynı
+///   eşik iken bekleyen-bilgi cadence'i ve kota aralığı `max(`[`E2A_ACK_CADENCE_MIN_NS`]`, ·)`.
+///   Eşiğin altında eski önsel.
+/// * `pto_rfc` (A-5): PTO çapası = son ack-eliciting gönderim (quinn
+///   `time_of_last_ack_eliciting_packet`), tur tavanı (`max_tail_probes`) yok, taban
+///   `srtt + max(4·rttvar, 1 ms) + max_ack_delay`. Prob sayısı `pto_probes` ile (A-5 = `pto_rfc`
+///   + `pto_probes = 2`).
 ///
 /// Varsayılan: hepsi kapalı, `g` = 1 ms, `pto_probes` = 1 → bugünkü davranış bit-aynı.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -766,6 +787,8 @@ pub struct E2aFlags {
     iw_idle_hold: bool,
     pto_probes: u8,
     gap_ack: bool,
+    return_prior_gated: bool,
+    pto_rfc: bool,
 }
 
 impl Default for E2aFlags {
@@ -777,6 +800,8 @@ impl Default for E2aFlags {
             iw_idle_hold: false,
             pto_probes: 1,
             gap_ack: false,
+            return_prior_gated: false,
+            pto_rfc: false,
         }
     }
 }
@@ -785,8 +810,7 @@ impl E2aFlags {
     /// Doğrulamalı kurucu; argüman sırası KK-M1-02 alan sırasıdır.
     ///
     /// # Errors
-    /// [`E2aFlagsError`] — `pto_probes ∉ {1, 2}`, `tt_granularity_ns ∉ [1 ms, 200 ms]` ya da
-    /// `gap_ack = true` (m5 uygulanmadı).
+    /// [`E2aFlagsError`] — `pto_probes ∉ {1, 2}` ya da `tt_granularity_ns ∉ [1 ms, 200 ms]`.
     pub fn new(
         tt_rfc: bool,
         tt_granularity_ns: u64,
@@ -801,9 +825,6 @@ impl E2aFlags {
         if !(E2A_TT_GRANULARITY_MIN_NS..=E2A_TT_GRANULARITY_MAX_NS).contains(&tt_granularity_ns) {
             return Err(E2aFlagsError::GranularityOutOfRange(tt_granularity_ns));
         }
-        if gap_ack {
-            return Err(E2aFlagsError::GapAckNotImplemented);
-        }
         Ok(Self {
             tt_rfc,
             tt_granularity_ns,
@@ -811,7 +832,22 @@ impl E2aFlags {
             iw_idle_hold,
             pto_probes,
             gap_ack,
+            ..Self::default()
         })
+    }
+
+    /// [Q1 A-2] `return_prior_gated` kolu (bool; geçersiz değer yok → hatasız).
+    #[must_use]
+    pub fn with_return_prior_gated(mut self, on: bool) -> Self {
+        self.return_prior_gated = on;
+        self
+    }
+
+    /// [Q1 A-5] `pto_rfc` kolu (bool; hatasız).
+    #[must_use]
+    pub fn with_pto_rfc(mut self, on: bool) -> Self {
+        self.pto_rfc = on;
+        self
     }
 
     /// m1 bayrağı.
@@ -844,10 +880,20 @@ impl E2aFlags {
     pub fn pto_probes(self) -> u8 {
         self.pto_probes
     }
-    /// m5 bayrağı (bu sürümde daima `false`).
+    /// m5 bayrağı (alıcı: sıra dışında anında ACK).
     #[must_use]
     pub fn gap_ack(self) -> bool {
         self.gap_ack
+    }
+    /// A-2 bayrağı (31 B/s dönüş önseli rejim kapılı).
+    #[must_use]
+    pub fn return_prior_gated(self) -> bool {
+        self.return_prior_gated
+    }
+    /// A-5 bayrağı (RFC 9002 / quinn PTO çapası ve tavansız tur).
+    #[must_use]
+    pub fn pto_rfc(self) -> bool {
+        self.pto_rfc
     }
 }
 

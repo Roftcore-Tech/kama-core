@@ -2209,6 +2209,8 @@ impl Sender {
     /// Additive; does not touch any other sender state. INV-CS-4 supersession (docs/design/DR-ARQ-PRODUCT-TAIL-1-TDD).
     pub fn set_tail_recovery_config(&mut self, cfg: TailRecoveryConfig) {
         self.tail_recovery = TailRecovery::new(cfg);
+        // [Q1 A-5] Kurulum sırası bağımsız: E2a bayrağı yeni makineye de taşınır (kapalı = bit-aynı).
+        self.tail_recovery.set_rfc_mode(self.e2a.pto_rfc());
         self.tail_probe_pending = None;
         self.tail_probe_cancelled = 0;
     }
@@ -2218,6 +2220,7 @@ impl Sender {
     /// bayraklar = bugünkü davranış bit-aynı. İkinci prob yuvası boşaltılır (yeni yapılandırma).
     pub fn set_e2a_flags(&mut self, flags: crate::loss::E2aFlags) {
         self.e2a = flags;
+        self.tail_recovery.set_rfc_mode(flags.pto_rfc()); // [Q1 A-5]
         self.e2a_tail_probe2 = None;
     }
 
@@ -2714,9 +2717,10 @@ impl Sender {
         if !self.tail_recovery.is_enabled() {
             return None;
         }
-        let armed = self.tail_recovery.armed_at_ns()?;
+        // [Q1 A-5] Deadline tek kaynaktan: kapalı = `armed_at + current_pto` (bugünkü ifade);
+        // `pto_rfc` açık = `son ack-eliciting gönderim + current_pto`.
         let pt = self.path_timing_snapshot();
-        Some(armed.saturating_add(self.tail_recovery.current_pto_ns(pt.srtt_ns, pt.rttvar_ns)))
+        self.tail_recovery.pto_deadline_ns(pt.srtt_ns, pt.rttvar_ns)
     }
 
     /// EK4-A2 kaynak-6: pacer-token'a bağlı bekleyen iş için ilerleme anı (SALT-OKUMA).
@@ -3479,13 +3483,47 @@ impl Sender {
     /// inflight-ortalama birim) + worst-corner return-önseli [CAL — §3.3-E-FULL'de ölçülen
     /// return_bw ile değişir). Amaç (ZM-4): elapsed'in içindeki "SACK'i henüz gelmedi" süresi
     /// eşiğin saatinde TEMSİL edilsin — kanıtlı-ama-cadence yanlış-sınıflandırması yapısal biter.
+    ///
+    /// [Q1 A-2] `return_prior_gated` açıkken EAI'nin dönüş terimi [`Self::loss_floor_return_bw`]
+    /// ile kurulur. Tüketiciler = kayıp-tabanı ailesi: zaman-eşiği tabanı, tombstone T_loss (ikisi
+    /// de `tt_rfc` KAPALIYKEN; açıkken onların tabanı zaten `g`), legacy onay ufku (`tt_rfc`'den
+    /// bağımsız). `expected_ack_interval()`'in diğer tüketicileri (`ack_epoch`/W pencereleri,
+    /// `ack_confidence`, ProbeUp/Drain) önselde KALIR — A-3/A-4 bölgesine dokunulmaz.
     fn cadence_loss_floor(&self) -> Duration {
-        Duration::from_nanos(dur_ns(self.expected_ack_interval()) * CADENCE_KC_NUM / CADENCE_KC_DEN)
+        let eai = self.expected_ack_interval_with(self.loss_floor_return_bw());
+        Duration::from_nanos(dur_ns(eai) * CADENCE_KC_NUM / CADENCE_KC_DEN)
+    }
+
+    /// [Q1 A-2] Kayıp tabanının dönüş-debisi girdisi (B/s), REJİM KAPILI (QUINN-FARKI §3-A-2).
+    /// * bayrak kapalı ya da pace < [`crate::loss::E2A_RETURN_REGIME_MIN_BPS`] → önsel (bit-aynı);
+    /// * rejim içinde → ölçülen dönüş debisi (`ReturnPathObserver`, varsa) yoksa pace (simetri
+    ///   varsayımı); her iki durumda en az önsel.
+    ///
+    /// Neden alt sınır önsel: `measured_return_bw_bps` ACK DEBİSİDİR (alıcının ACK ritmiyle sınırlı
+    /// alt sınır, kapasite değil). Seyrek ACK'te ≈ 65 B / 8,39 s ≈ 7,7 B/s olur [türetilmiş]; alt
+    /// sınırsız kullanılsa taban bugünkünden de uzardı (seyrek ACK → düşük ölçüm → uzun taban).
+    fn loss_floor_return_bw(&self) -> u64 {
+        if !self.e2a.return_prior_gated() {
+            return EAI_RETURN_BW_PRIOR;
+        }
+        let pace = self.pacer.rate();
+        if pace < crate::loss::E2A_RETURN_REGIME_MIN_BPS {
+            return EAI_RETURN_BW_PRIOR;
+        }
+        let measured = self.return_path.measured_return_bw_bps();
+        let rb = if measured > 0 { measured } else { pace };
+        rb.max(EAI_RETURN_BW_PRIOR)
     }
 
     /// [TUR-1b/2a] Beklenen-ACK-aralığı EAI (K_c'siz ham değer) — cadence-taban ve
     /// `ack_epoch = max(srtt, EAI)` (ledger W_loss penceresi, D-2/1 tanımı) bundan türer.
     fn expected_ack_interval(&self) -> Duration {
+        self.expected_ack_interval_with(EAI_RETURN_BW_PRIOR)
+    }
+
+    /// EAI, dönüş-debisi girdisi parametreli: `ACK_FREQ_N × ort_birim / rate + sack_wire / rb`.
+    /// `rb = EAI_RETURN_BW_PRIOR` iken [`Self::expected_ack_interval`] ile aynı tamsayı ifadesi.
+    fn expected_ack_interval_with(&self, return_bw_bps: u64) -> Duration {
         let unit = if self.inflight.is_empty() {
             DEFAULT_MTU
         } else {
@@ -3493,7 +3531,7 @@ impl Sender {
         };
         let rate = self.pacer.rate().max(1);
         let eai_ns = EXPECTED_ACK_FREQ_N * unit * 1_000_000_000 / rate
-            + EAI_SACK_WIRE_BYTES * 1_000_000_000 / EAI_RETURN_BW_PRIOR;
+            + EAI_SACK_WIRE_BYTES * 1_000_000_000 / return_bw_bps.max(1);
         Duration::from_nanos(eai_ns)
     }
 
@@ -6395,6 +6433,8 @@ impl Sender {
         if self.first_send_ns.is_none() {
             self.first_send_ns = Some(now_ns);
         }
+        // [Q1 A-5] PTO çapası (quinn `time_of_last_ack_eliciting_packet`); yalnız `pto_rfc` okur.
+        self.tail_recovery.note_ack_eliciting_sent(now_ns);
         let more_pending = !self.tx_queue.is_empty()
             || !self.pending_lost.is_empty()
             || !self.dup_queue.is_empty();
@@ -9082,10 +9122,26 @@ mod tests {
             }
             assert!(E2aFlags::new(true, MS, false, false, 2, false).is_ok());
             assert!(E2aFlags::new(true, 200 * MS, false, false, 2, false).is_ok());
+            // [Q1] m5 uygulandı: `gap_ack = true` artık geçerli (tipli hata kaldırıldı).
+            let g = E2aFlags::new(false, MS, false, false, 1, true).expect("m5 geçerli");
+            assert!(g.gap_ack());
+            // [Q1] A-2/A-5 varsayılanı kapalı; `with_*` yalnız kendi alanını değiştirir.
+            assert!(!d.return_prior_gated() && !d.pto_rfc());
+            let q = d.with_return_prior_gated(true).with_pto_rfc(true);
+            assert!(q.return_prior_gated() && q.pto_rfc());
             assert_eq!(
-                E2aFlags::new(false, MS, false, false, 1, true),
-                Err(E2aFlagsError::GapAckNotImplemented),
-                "m5 uygulanmadı → tipli hata (todo!/panik yok)"
+                (
+                    q.tt_rfc(),
+                    q.tt_granularity_ns(),
+                    q.pto_probes(),
+                    q.gap_ack()
+                ),
+                (false, MS, 1, false)
+            );
+            assert_eq!(
+                q.with_return_prior_gated(false).with_pto_rfc(false),
+                d,
+                "kollar kapatılınca varsayılana döner"
             );
         }
 
@@ -9637,6 +9693,172 @@ mod tests {
                 assert_eq!(got, u32::from(!on), "on={on}: doygun ack_delay");
                 assert_eq!(s.diag_e2a().rtt_rule_refused, u64::from(on));
             }
+        }
+
+        // ── [Q1 A-2] kayıp tabanı: 31 B/s dönüş önseli rejim kapılı ──
+
+        fn feed_return(s: &mut Sender, wire_bytes: u64, gap_ns: u64, n: u64, t0: u64) {
+            for i in 0..n {
+                s.observe_ack_feedback(
+                    crate::return_path::AckObservation {
+                        wire_bytes,
+                        seen_count: 0,
+                        v2: false,
+                        sent_datagrams: 0,
+                    },
+                    t0 + i * gap_ns,
+                );
+            }
+        }
+
+        fn floor_of(s: &Sender, rb: u64) -> Duration {
+            Duration::from_nanos(
+                dur_ns(s.expected_ack_interval_with(rb)) * CADENCE_KC_NUM / CADENCE_KC_DEN,
+            )
+        }
+
+        #[test]
+        fn q1_a2_loss_floor_regime_gated() {
+            let gated = E2aFlags::default().with_return_prior_gated(true);
+            let (mut off, _) = m1_gap_flow(E2aFlags::default());
+            let (mut on, _) = m1_gap_flow(gated);
+            let pace = on.pacer.rate();
+            assert_eq!(pace, off.pacer.rate(), "aynı akış");
+            assert!(
+                pace >= crate::loss::E2A_RETURN_REGIME_MIN_BPS,
+                "senaryo rejim içinde: pace {pace} B/s"
+            );
+            // Kapalı: bugünkü ifade (önsel) BİREBİR.
+            assert_eq!(off.loss_floor_return_bw(), EAI_RETURN_BW_PRIOR);
+            assert_eq!(
+                off.cadence_loss_floor(),
+                Duration::from_nanos(
+                    dur_ns(off.expected_ack_interval()) * CADENCE_KC_NUM / CADENCE_KC_DEN
+                )
+            );
+            // Açık, ölçüm yok → pace (simetri varsayımı).
+            assert_eq!(on.loss_floor_return_bw(), pace);
+            assert_eq!(on.cadence_loss_floor(), floor_of(&on, pace));
+            assert!(on.cadence_loss_floor() < off.cadence_loss_floor());
+            // Açık, ölçüm var (70 B / 200 ms = 350 B/s) → ölçüm.
+            feed_return(&mut on, 70, 200 * MS, 4, 40 * MS);
+            feed_return(&mut off, 70, 200 * MS, 4, 40 * MS);
+            assert_eq!(on.return_path.measured_return_bw_bps(), 350);
+            assert_eq!(on.loss_floor_return_bw(), 350);
+            assert_eq!(on.cadence_loss_floor(), floor_of(&on, 350));
+            assert_eq!(
+                off.loss_floor_return_bw(),
+                EAI_RETURN_BW_PRIOR,
+                "kapalı ölçümü okumaz"
+            );
+            // Diğer EAI tüketicileri (ack_epoch, ack_confidence, ProbeUp) önselde kalır.
+            assert_eq!(on.expected_ack_interval(), off.expected_ack_interval());
+        }
+
+        #[test]
+        fn q1_a2_below_regime_and_low_measurement_fall_back_to_prior() {
+            let gated = E2aFlags::default().with_return_prior_gated(true);
+            // pace < 1 kB/s → önsel (ölçüm olsa bile).
+            let (mut on, _) = m1_gap_flow(gated);
+            let (mut off, _) = m1_gap_flow(E2aFlags::default());
+            for s in [&mut on, &mut off] {
+                s.pacer.set_rate(500);
+                feed_return(s, 70, 200 * MS, 4, 40 * MS);
+            }
+            assert_eq!(on.loss_floor_return_bw(), EAI_RETURN_BW_PRIOR);
+            assert_eq!(on.cadence_loss_floor(), off.cadence_loss_floor());
+            // Rejimde ama ölçüm önselin altında (65 B / 8,39 s ≈ 7 B/s) → önsel alt sınırı.
+            let (mut low, _) = m1_gap_flow(gated);
+            feed_return(&mut low, 65, 8_390 * MS, 4, 40 * MS);
+            assert!(low.return_path.measured_return_bw_bps() < EAI_RETURN_BW_PRIOR);
+            assert_eq!(low.loss_floor_return_bw(), EAI_RETURN_BW_PRIOR);
+        }
+
+        #[test]
+        fn q1_a2_with_tt_rfc_only_confirm_horizon_remains() {
+            // tt_rfc açıkken zaman eşiği tabanı zaten g: A-2 eşiği DEĞİŞTİRMEZ (çakışma yok);
+            // A-2'nin kalan tüketicisi legacy onay ufkudur (cadence_loss_floor).
+            let both = flags(true, MS, false, false, 1).with_return_prior_gated(true);
+            let (on, _) = m1_gap_flow(both);
+            let (tt_only, _) = m1_gap_flow(flags(true, MS, false, false, 1));
+            let srtt = on.rtt.srtt().expect("srtt");
+            assert_eq!(on.time_loss_inputs(srtt), tt_only.time_loss_inputs(srtt));
+            assert_eq!(
+                on.time_loss_threshold_ns(srtt),
+                tt_only.time_loss_threshold_ns(srtt)
+            );
+            assert!(on.cadence_loss_floor() < tt_only.cadence_loss_floor());
+        }
+
+        // ── [Q1 A-5] PTO: çapa = son ack-eliciting gönderim, tur tavanı yok ──
+
+        fn pto_rfc_flow(rfc: bool, probes: u8, ticks: u64) -> (Sender, Vec<(u64, usize)>) {
+            let mut s = Sender::new();
+            s.set_tail_recovery_config(tail_cfg(2, MS));
+            s.set_e2a_flags(flags(false, MS, false, false, probes).with_pto_rfc(rfc));
+            s.on_event(Event::AppData(unit(200)), 0);
+            s.on_event(ack(&[0]), 10 * MS);
+            s.on_event(Event::AppData(small(99)), 20 * MS);
+            let mut fired = Vec::new();
+            for t in 1..=ticks {
+                let now = (20 + t * 100) * MS;
+                let out = s.on_event(Event::TimerFired(Timer::Pto), now);
+                let n = out
+                    .iter()
+                    .filter(|d| d.kind == TransmitKind::Retransmit)
+                    .count();
+                if n > 0 {
+                    fired.push((now, n));
+                }
+            }
+            (s, fired)
+        }
+
+        #[test]
+        fn q1_a5_pto_rfc_set_order_independent_and_off_is_default() {
+            let mut a = Sender::new();
+            a.set_e2a_flags(E2aFlags::default().with_pto_rfc(true));
+            a.set_tail_recovery_config(tail_cfg(2, MS));
+            let mut b = Sender::new();
+            b.set_tail_recovery_config(tail_cfg(2, MS));
+            b.set_e2a_flags(E2aFlags::default().with_pto_rfc(true));
+            assert!(a.tail_recovery.rfc_mode() && b.tail_recovery.rfc_mode());
+            assert!(!Sender::new().tail_recovery.rfc_mode());
+        }
+
+        #[test]
+        fn q1_a5_anchor_last_send_fires_earlier_and_rounds_uncapped() {
+            let (off, f_off) = pto_rfc_flow(false, 1, 60);
+            let (on, f_on) = pto_rfc_flow(true, 1, 60);
+            // Kapalı: tavan 2 tur; ilk tur ilk tikte kurulan pencereden (120 ms) bir PTO sonra.
+            assert_eq!(f_off.len(), 2, "kapalı: max_tail_probes = 2: {f_off:?}");
+            // Açık: çapa = son gönderim (20 ms) → ilk tikte (120 ms) vadesi gelmiş.
+            assert_eq!(f_on[0].0, 120 * MS, "açık: {f_on:?}");
+            assert!(
+                f_on[0].0 < f_off[0].0,
+                "çapa son gönderim → daha erken: {f_off:?}"
+            );
+            assert!(f_on.len() > 2, "açık: tur tavanı yok: {f_on:?}");
+            // Geri çekilme: ardışık turlar arası artar (2^k).
+            for w in f_on.windows(3) {
+                assert!(w[2].0 - w[1].0 >= w[1].0 - w[0].0, "backoff: {f_on:?}");
+            }
+            assert!(on.tail_recovery.probe_index() > 2);
+            assert_eq!(off.tail_recovery.probe_index(), 2);
+            // Uyanış kaynağı aynı çapayı kullanır (EK4-A2 tutarlılığı).
+            let pt = on.path_timing_snapshot();
+            assert_eq!(
+                on.tail_probe_deadline_ns(),
+                on.tail_recovery.pto_deadline_ns(pt.srtt_ns, pt.rttvar_ns)
+            );
+        }
+
+        #[test]
+        fn q1_a5_full_arm_is_pto_rfc_plus_two_probes() {
+            // A-5 tam kol = `pto_rfc` + `pto_probes = 2`: her turda iki prob, tavansız.
+            let (_, f) = pto_rfc_flow(true, 2, 60);
+            assert!(f.len() > 2, "{f:?}");
+            assert!(f.iter().all(|&(_, n)| n == 2), "tur başına iki prob: {f:?}");
         }
 
         #[test]
