@@ -320,3 +320,70 @@ fn preconverge_still_freezes_time_threshold_declaration() {
         "time-threshold declaration is frozen in PreConverge"
     );
 }
+
+/// [E2a m1 · ISEMRI-YOL3-M1 KK-M1-12] `tt_rfc` açıkken zaman-kayıp uyanışı YENİ eşikte gelir
+/// (`send + max(9/8·max(srtt, latest_rtt), g)`) ve yalnız uyanışla sürülen sürücü (periyodik tik
+/// YOK) kaybı ilan edip kurtarma emisyonu üretir. Kapalı kolda uyanış eski eşikte (cadence tabanı
+/// 1,5 × EAI ≥ 3 s) kalır — aynı akış, tek fark bayrak.
+#[test]
+fn e2a_m1_wakeup_at_rfc_threshold_and_wakeup_driven_progress() {
+    use adaptive_transport::loss::E2aFlags;
+    let flow = |tt_rfc: bool| {
+        let mut s = Sender::new();
+        if tt_rfc {
+            s.set_e2a_flags(E2aFlags::new(true, MS, false, false, 1, false).expect("geçerli"));
+        }
+        let zero = |seqs: Vec<u64>| {
+            Event::AckReceived(AckInfo {
+                acked_seqs: seqs,
+                ack_delay: Duration::ZERO,
+            })
+        };
+        // Isınma: seq 0 @0, ACK @10 ms → örnek 10 ms.
+        s.on_event(
+            Event::AppData(OpaqueUnit {
+                id: 200,
+                size: UNIT,
+            }),
+            0,
+        );
+        s.on_event(zero(vec![0]), 10 * MS);
+        // seq 1, 2 @20 ms; yalnız seq 2 ACK'lenir @30 ms (örnek 10 ms) → seq 1 boşlukta.
+        let mut sent = Vec::new();
+        for id in [1u64, 2] {
+            for d in s.on_event(Event::AppData(OpaqueUnit { id, size: 100 }), 20 * MS) {
+                if d.kind == TransmitKind::Data {
+                    sent.push(d.seq);
+                }
+            }
+        }
+        assert_eq!(sent, vec![1, 2], "iki orijinal @20 ms");
+        s.on_event(zero(vec![2]), 30 * MS);
+        s
+    };
+
+    let mut on = flow(true);
+    let srtt = on.path_timing_snapshot().srtt_ns.expect("srtt");
+    let latest = 10 * MS; // son örnek (raw 10 ms, ack_delay 0)
+    let expected = 20 * MS + (srtt.max(latest) * 9 / 8).max(MS);
+    assert_eq!(
+        on.next_wakeup_ns(),
+        Some(expected),
+        "açık: uyanış = send + max(9/8·max(srtt, latest_rtt), g)"
+    );
+    let off = flow(false);
+    let w_off = off.next_wakeup_ns().expect("kapalı kolda da uyanış var");
+    assert!(
+        w_off > 20 * MS + 3 * SEC,
+        "kapalı: uyanış eski eşikte (cadence tabanı); {w_off}"
+    );
+
+    // Yalnız uyanışla sür: ilk uyanışta seq 1 zaman eşiğiyle ilan edilir, kurtarma çıkar.
+    let (fired, iters, wakeups) = drive_by_wakeup(&mut on, 30 * MS, 64);
+    assert_eq!(on.diag_loss().1, 1, "açık: zaman eşiği ilanı (seq 1)");
+    assert!(
+        fired,
+        "açık: uyanış güdümlü sürücü kurtarma emisyonu üretir; {iters} uyanış {wakeups:?}"
+    );
+    assert!(iters < 64, "yakınsar ({iters})");
+}

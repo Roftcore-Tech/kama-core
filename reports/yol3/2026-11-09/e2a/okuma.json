@@ -1,0 +1,321 @@
+{
+ "secim": null,
+ "S": {
+  "neden": "hiçbir E1 kolu uygun değil; K0r şartı sağlanmadı → K0",
+  "satirlar": {
+   "K1": {
+    "i": null,
+    "ii": null,
+    "iii": null,
+    "iv": false,
+    "uygun": false
+   },
+   "K2": {
+    "i": null,
+    "ii": null,
+    "iii": null,
+    "iv": false,
+    "uygun": false
+   },
+   "K2mc": {
+    "i": null,
+    "ii": null,
+    "iii": null,
+    "iv": false,
+    "uygun": false
+   },
+   "K2me": {
+    "i": null,
+    "ii": null,
+    "iii": null,
+    "iv": false,
+    "uygun": false
+   },
+   "K0r": {
+    "i": null,
+    "ii(0,90)": null
+   }
+  },
+  "file_med": {
+   "K0": null,
+   "K0r": null,
+   "K1": 20.415809,
+   "K2": null,
+   "K2mc": null,
+   "K2me": null,
+   "K1a": 21.282193499999998,
+   "K0a": 23.334534499999997
+  },
+  "ptt_med": {
+   "K0": null,
+   "K0r": null,
+   "K1": 9.816073500000002,
+   "K2": null,
+   "K2mc": null,
+   "K2me": null,
+   "K1a": 10.688243,
+   "K0a": 12.734744
+  },
+  "ratio_med": {
+   "K0": null,
+   "K2": null,
+   "K2mc": null,
+   "K1": null,
+   "K2me": null,
+   "K1a": null,
+   "K0a": null
+  },
+  "R3": {
+   "l0": null,
+   "r25": null,
+   "gecer": false,
+   "l0_med": {
+    "K0": null,
+    "K2": null
+   },
+   "r25_med": {
+    "K0": [
+     null,
+     null
+    ],
+    "K2": [
+     null,
+     null
+    ]
+   }
+  }
+ },
+ "R1": {
+  "K0": {
+   "tuzaksiz_n": 0,
+   "n": 0,
+   "kullanilan": "bütün (tuzaksız < 7)",
+   "med": null,
+   "med_butun": null,
+   "gecer": null
+  },
+  "K2": {
+   "tuzaksiz_n": 0,
+   "n": 0,
+   "kullanilan": "bütün (tuzaksız < 7)",
+   "med": null,
+   "med_butun": null,
+   "gecer": null
+  },
+  "K2mc": {
+   "tuzaksiz_n": 0,
+   "n": 0,
+   "kullanilan": "bütün (tuzaksız < 7)",
+   "med": null,
+   "med_butun": null,
+   "gecer": null
+  }
+ },
+ "R4": {
+  "manset": {
+   "K0": {
+    "sw95_med": null,
+    "sw95_9": null,
+    "n": 0,
+    "pace_med": null,
+    "srtt_med": null,
+    "eai_s": null,
+    "kayip_esigi_s": null,
+    "rtprop_med": null,
+    "probe_up_med": null,
+    "rtprop_K0_orani": null
+   },
+   "K2": {
+    "sw95_med": null,
+    "sw95_9": null,
+    "n": 0,
+    "pace_med": null,
+    "srtt_med": null,
+    "eai_s": null,
+    "kayip_esigi_s": null,
+    "rtprop_med": null,
+    "probe_up_med": null,
+    "rtprop_K0_orani": null
+   },
+   "K2mc": {
+    "sw95_med": null,
+    "sw95_9": null,
+    "n": 0,
+    "pace_med": null,
+    "srtt_med": null,
+    "eai_s": null,
+    "kayip_esigi_s": null,
+    "rtprop_med": null,
+    "probe_up_med": null,
+    "rtprop_K0_orani": null
+   }
+  },
+  "analog": {
+   "K0": {
+    "pace_med": null,
+    "srtt_med": null,
+    "eai_s": null,
+    "kayip_esigi_s": null,
+    "rtprop_med": null,
+    "probe_up_med": null,
+    "rtprop_K0_orani": null
+   },
+   "K0r": {
+    "pace_med": null,
+    "srtt_med": null,
+    "eai_s": null,
+    "kayip_esigi_s": null,
+    "rtprop_med": null,
+    "probe_up_med": null,
+    "rtprop_K0_orani": null
+   },
+   "K1": {
+    "pace_med": 12643.5,
+    "srtt_med": 0.338999,
+    "eai_s": 2.257014633300038,
+    "kayip_esigi_s": 3.385521949950057,
+    "rtprop_med": 0.323888,
+    "probe_up_med": 1.0,
+    "rtprop_K0_orani": null
+   },
+   "K2": {
+    "pace_med": null,
+    "srtt_med": null,
+    "eai_s": null,
+    "kayip_esigi_s": null,
+    "rtprop_med": null,
+    "probe_up_med": null,
+    "rtprop_K0_orani": null
+   },
+   "K2mc": {
+    "pace_med": null,
+    "srtt_med": null,
+    "eai_s": null,
+    "kayip_esigi_s": null,
+    "rtprop_med": null,
+    "probe_up_med": null,
+    "rtprop_K0_orani": null
+   },
+   "K2me": {
+    "pace_med": null,
+    "srtt_med": null,
+    "eai_s": null,
+    "kayip_esigi_s": null,
+    "rtprop_med": null,
+    "probe_up_med": null,
+    "rtprop_K0_orani": null
+   },
+   "K1a": {
+    "pace_med": 11825.5,
+    "srtt_med": 0.33093300000000003,
+    "eai_s": 2.2680988732659464,
+    "kayip_esigi_s": 3.4021483098989194,
+    "rtprop_med": 0.32383700000000004,
+    "probe_up_med": 1.0,
+    "rtprop_K0_orani": null
+   },
+   "K0a": {
+    "pace_med": 10556.5,
+    "srtt_med": 0.331955,
+    "eai_s": 2.288693863893672,
+    "kayip_esigi_s": 3.4330407958405083,
+    "rtprop_med": 0.323824,
+    "probe_up_med": 3.0,
+    "rtprop_K0_orani": null
+   }
+  },
+  "startup_kaybi_0_20": "ölçülmedi (araç yok; capture eşlemesi gerekir)",
+  "diag_probe": "ölçülmedi (aynada yok); probe_up_entries raporlanır"
+ },
+ "iii_sunulan_bps_KK_ORK_03": {
+  "a_r12k_d150_l20_foto150k": [
+   630.0
+  ]
+ },
+ "E2a_kiyas": {
+  "a_r12k_d150_l20_foto150k": {
+   "K1a": {
+    "taban": "K1",
+    "file": {
+     "kol": 21.282193499999998,
+     "taban": 20.415809,
+     "oran": 1.0424369418816564
+    },
+    "ptt": {
+     "kol": 10.688243,
+     "taban": 9.816073500000002,
+     "oran": 1.088851158255895
+    },
+    "pace": {
+     "kol": 11825.5,
+     "taban": 12643.5,
+     "oran": 0.9353027247202119
+    },
+    "srtt": {
+     "kol": 0.33093300000000003,
+     "taban": 0.338999,
+     "oran": 0.9762064194879632
+    },
+    "rtprop": {
+     "kol": 0.32383700000000004,
+     "taban": 0.323888,
+     "oran": 0.9998425381613398
+    },
+    "pu": {
+     "kol": 1.0,
+     "taban": 1.0,
+     "oran": 1.0
+    },
+    "n": {
+     "kol": 10,
+     "taban": 10
+    },
+    "alinmayan_dosya": {
+     "kol": 0,
+     "taban": 0
+    }
+   },
+   "K0a": {
+    "taban": "K0",
+    "file": {
+     "kol": 23.334534499999997,
+     "taban": null,
+     "oran": null
+    },
+    "ptt": {
+     "kol": 12.734744,
+     "taban": null,
+     "oran": null
+    },
+    "pace": {
+     "kol": 10556.5,
+     "taban": null,
+     "oran": null
+    },
+    "srtt": {
+     "kol": 0.331955,
+     "taban": null,
+     "oran": null
+    },
+    "rtprop": {
+     "kol": 0.323824,
+     "taban": null,
+     "oran": null
+    },
+    "pu": {
+     "kol": 3.0,
+     "taban": null,
+     "oran": null
+    },
+    "n": {
+     "kol": 10,
+     "taban": 0
+    },
+    "alinmayan_dosya": {
+     "kol": 0,
+     "taban": 0
+    }
+   }
+  }
+ }
+}
