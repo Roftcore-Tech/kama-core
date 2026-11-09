@@ -683,7 +683,7 @@ impl KamaNode {
         link: Box<dyn EnvelopeLink>,
         live_diag: bool,
         unit_trace: bool,
-        cfg_hook: Option<Box<dyn FnOnce(&mut ClientTransportConfig) + Send>>,
+        cfg_hook: Option<TransportCfgHook>,
         playout: Option<kama_app::playout::PlayoutConfig>,
     ) -> Result<Self, NodeError> {
         Self::start_with_link_impl(
