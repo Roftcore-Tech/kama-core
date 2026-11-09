@@ -86,7 +86,7 @@ use std::time::{Duration, Instant};
 use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
 use kama_contracts::s1::{
     AbandonReason, ConnectPhase, ConnectResult, ConnectTicket, Delivered, DeliveryPolicy,
-    KamaTransport, PreparedUnit, SessionEvent, TransportCapabilities, TransportError,
+    KamaTransport, PreparedUnit, SessionEvent, TrafficClass, TransportCapabilities, TransportError,
 };
 use kama_contracts::s3::{
     HubHandle, Opened, PacketProtection, ProtectionClass, ProtectionContext, ProtectionLimits,
@@ -1255,6 +1255,7 @@ impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> 
         session: SessionHandle,
         unit: PreparedUnit,
         policy: DeliveryPolicy,
+        _class: TrafficClass,
     ) -> Result<(), TransportError> {
         let unit_cap = self.caps.max_plaintext_unit_bytes as usize;
         let s = self

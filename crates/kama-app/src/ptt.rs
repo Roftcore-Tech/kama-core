@@ -193,7 +193,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use kama_contracts::handles::{PeerRef, SessionHandle};
-use kama_contracts::s1::{DeliveryPolicy, KamaTransport, SessionEvent, TransportError};
+use kama_contracts::s1::{
+    DeliveryPolicy, KamaTransport, SessionEvent, TrafficClass, TransportError,
+};
 
 use crate::clock::MonotonicClock;
 use crate::codec::limits::MEDIA_BUNDLE_PREFIX_BYTES;
@@ -958,7 +960,7 @@ fn send_record<T: KamaTransport>(
     let unit = codec::encode(message, messenger.limits()).map_err(PttError::Encode)?;
     messenger
         .transport_mut()
-        .send(handle, unit, policy)
+        .send(handle, unit, policy, TrafficClass::VoRel)
         .map_err(PttError::Transport)
 }
 
@@ -1020,6 +1022,7 @@ mod tests {
             session: SessionHandle,
             _unit: PreparedUnit,
             _policy: DeliveryPolicy,
+            _class: TrafficClass,
         ) -> Result<(), TransportError> {
             self.sent_on.push(session);
             Ok(())
