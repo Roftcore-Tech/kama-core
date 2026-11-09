@@ -65,6 +65,12 @@ kama-app = { path = "../kama-app" }
 [[example]]
 name = "int02_node"
 
+# [KTP2-F0 · A] Akış bağımsızlığı düzeneği — İKİ süreç (alice ns-A istemci, bob ns-B sunucu;
+# `scripts/ktp2/f0/f0_cell.sh`), ürün yolu (`KamaNode::start_with_link_for_test`, test-util). El
+# sıkışma zarfları koşu dizinindeki Unix soketinden geçer (netem dışı, beyanlı). Özellik gerektirmez.
+[[example]]
+name = "f0_flows"
+
 # CLOSURE-2 (DR-CS-1b/A2): A2-RX netem runner (gerçek ReceiverHost product-path + /proc/self/statm RSS).
 [[example]]
 name = "a2_rx_netem_runner"

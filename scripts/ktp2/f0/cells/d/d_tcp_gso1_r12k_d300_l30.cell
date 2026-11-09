@@ -1,0 +1,30 @@
+# [KTP2-F0 / Ajan D] D-13 DOĞRULAMA (betimsel; karar yönlendirmez): tcp karışık akış, TSO kapalı.
+# d_mix_r12k_d300_l30'un tcp_mix / tcp_nofile kollarının AYNISI; tek fark harness'in her iki uçta
+# `ip link set dev … gso_max_segs 1` uygulaması (KAPI3_GSO_MAX_SEGS=1). Soru: veth TSO'nun çift-
+# segment skb'leri (D-13: netem kaybı skb başına, kayıplar ikişerli korelasyonlu) tcp sayılarını
+# hangi yönde etkiliyor. Kıyas: d_mix_r12k_d300_l30 tcp_* (aynı ikili, aynı iş yükü, TSO açık).
+# Analiz: python3 -I scripts/ktp2/f0/d/karisik_analiz.py <kök>; ayrıca netem ileri birimi / segment
+# oranı ≈ 1,00 ve ölçülen ileri kayıp ≈ 0,30 beklenir (D-13 sayaç yapıtı ortadan kalkmalı).
+CELL=d_tcp_gso1_r12k_d300_l30
+FWD="delay 300ms 60ms distribution normal loss 30% rate 100kbit"
+REV="$FWD"
+REPS="${F0_REPS:-30}"
+BUDGET_S=150
+ARMS="tcp_mix tcp_nofile"
+# Harness bayrağı (orkestratör ekler; boş = bugünkü davranış). Bayrağı tanımayan harness'le bu hücre
+# SESSİZCE TSO-açık koşmasın diye koşu başlamadan durur (fail-closed).
+export KAPI3_GSO_MAX_SEGS=1
+if ! grep -q 'KAPI3_GSO_MAX_SEGS' "${HDIR:?HDIR yok}/kapi3_harness.sh"; then
+  echo "d_tcp_gso1: $HDIR/kapi3_harness.sh KAPI3_GSO_MAX_SEGS'i tanımıyor — hücre koşulmadı" >&2
+  exit 5
+fi
+
+# İş yükü d_mix_r12k_d300_l30 ile BAYT BAYT aynı.
+_MX="--profile $CELL --repeat @REP@ --fwd-impair '$FWD' --rev-impair '$REV' --out @D@/mixed_tx.jsonl \
+--payload 1000 --text-count 30 --text-interval-ms 1000 --text-bytes 65 --ptt-count 150 \
+--ptt-interval-ms 200 --ptt-bytes 39 --tail-s 30 --handshake-timeout-s 60"
+_RX="--rx-log @D@/mixed_rx.jsonl"
+ARM_tcp_mix_SRV="@BIN_TABAN@ mixed-serve --bind @SRV@ --transport tcp $_RX"
+ARM_tcp_mix_CLI="@BIN_TABAN@ mixed-client --server @SRV@ --transport tcp $_MX --file-bytes 192000 --file-chunk 1000"
+ARM_tcp_nofile_SRV="@BIN_TABAN@ mixed-serve --bind @SRV@ --transport tcp $_RX"
+ARM_tcp_nofile_CLI="@BIN_TABAN@ mixed-client --server @SRV@ --transport tcp $_MX --file-bytes 0"
