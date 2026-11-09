@@ -92,4 +92,19 @@ fn product_v1_profile_is_pinned() {
     // [K4G-05 / DUR-19] Canlı teşhis aynası ürün yolunda kapalı (salt gözlem; INT-02 düzeneği
     // açar).
     assert!(!c.live_diag, "ürün varsayılanında kapalı");
+    // [E1 gösterim bayrakları, CC §4.1] Beşi de ürün varsayılanında kapalı (yalnız gösterim
+    // düğümü `transport-v1.x-goster` ve teşhis kolları açar).
+    assert_eq!(
+        c.e1_flags,
+        adaptive_transport::rate::E1Flags::default(),
+        "e1_flags varsayılanı kapalı"
+    );
+    assert!(
+        !c.e1_flags.e1_startup_cwnd
+            && !c.e1_flags.e1_applimited_plateau
+            && !c.e1_flags.e1_drainrt_gate
+            && !c.e1_flags.e1_probe_keep
+            && !c.e1_flags.retx_first,
+        "e1_flags varsayılanı kapalı (alan alan)"
+    );
 }
