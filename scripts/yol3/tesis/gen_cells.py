@@ -5,6 +5,7 @@
     python3 -I scripts/yol3/tesis/gen_cells.py --check    # yazmaz; 16 dosya / 160 iş + bayt eşitliği
     python3 -I scripts/yol3/tesis/gen_cells.py --komut    # orkestratörün koşu komutu (§8.2)
     python3 -I scripts/yol3/tesis/gen_cells.py --set e2a [--check|--komut]   # E2a kıyası
+    python3 -I scripts/yol3/tesis/gen_cells.py --set goster [--check|--komut]  # şeritli gösterim
 
 Seçenekler (M2 manifestinin satırları; varsayılanlar aşağıda, değişirse dosyalar yeniden üretilir):
     --analog y10|l30   gösterim analoğu: `a_r12k_d150_l20_foto150k` (Y10, varsayılan) ya da
@@ -20,6 +21,10 @@ Seçenekler (M2 manifestinin satırları; varsayılanlar aşağıda, değişirse
                        K0a} (3 dosya, 30 iş). K1a = K1 + E2a, K0a = yalnız E2a; E2a = M1 `E2aFlags`
                        tt_rfc (g = 1 ms) + rtt_rule_v11 + iw_idle_hold + pto_probes = 2. Tek
                        değişken K1 ↔ K1a; ikili yol2/o1-e2a (iki kol AYNI ikiliden).
+                       `goster`: şeritli gösterim → cells-goster/ + SIRA-GOSTER.txt; gösterim
+                       analoğu × {K1, K1a, K0}, her kolda `--goster on` (YOL3-T1 S1 şeritleri
+                       W = 5 + PTT oynatma tamponu T = 2,0 s; f0_flows). 3 dosya, 30 iş; ikili
+                       yol2/goster. Yalnız A hücresi (bench'te şerit yok).
 
 Geometri (FWD/REV, zaman çizelgesi, bütçe) kaynak F0/YOL3 hücresinin AYNISI: kaynak dosya
 ayrıştırılır, yalnız CELL, REPS, ARMS ve kol bayrağı değişir. Kaynak dosyanın sha256'sı başlığa
@@ -80,11 +85,19 @@ TABLE_E2A = [
     (1, "ANALOG", ["K1", "K1a", "K0a"], "E2a kıyası: K1 ↔ K1a tek değişken, K0a yalnız E2a"),
 ]
 
+# [Şeritli gösterim] Gösterim hücresi × {K1, K1a, K0}, `--goster on`; ilk iki satır K1 ↔ K1a.
+TABLE_GOSTER = [
+    (1, "ANALOG", ["K1", "K1a", "K0"], "şeritli gösterim: K1 ↔ K1a, K0 (--goster on)"),
+]
+
 # Set → (tablo, hücre dizini, sıra dosyası, ağaç, koşu kökü).
 SETS = {
     "g2": (TABLE, "cells", "SIRA.txt", "yol2/o1", "2026-11-11"),
     "e2a": (TABLE_E2A, "cells-e2a", "SIRA-E2A.txt", "yol2/o1-e2a", "2026-11-09-e2a"),
+    "goster": (TABLE_GOSTER, "cells-goster", "SIRA-GOSTER.txt", "yol2/goster", "2026-11-09-goster"),
 }
+# `--goster on` taşıyan setler (f0_flows: S1 şeritleri + oynatma tamponu, iki uca aynı).
+GOSTER_SETS = {"goster"}
 
 A_KEYS = ["FWD", "REV", "BUDGET_S", "CAPTURE", "SETTLE_S", "F0A_ARGS"]
 B_KEYS = ["RATE_ID", "DELAY_ID", "LOSS_PCT", "RATE_BPS", "DELAY_MS", "JITTER_MS", "MSGS", "PAY",
@@ -120,7 +133,7 @@ def e2a_text(arm):
     return f" · E2a {E2A_TEXT} (M1 E2aFlags)" if arm in E2A_ARMS else ""
 
 
-def a_body(cell, arm, rel, sha, lines, fec, edar_yok, purpose, row, tree):
+def a_body(cell, arm, rel, sha, lines, fec, edar_yok, purpose, row, tree, goster=False):
     for k in A_KEYS:
         if k not in lines:
             raise SystemExit(f"{rel}: {k} yok")
@@ -128,7 +141,7 @@ def a_body(cell, arm, rel, sha, lines, fec, edar_yok, purpose, row, tree):
     if not m or "'" in m.group(1):
         raise SystemExit(f"{rel}: F0A_ARGS biçimi beklenen gibi değil")
     args = m.group(1).split()
-    for flag in ("--e1-arm", "--fec-off", "--e1-edar"):
+    for flag in ("--e1-arm", "--fec-off", "--e1-edar", "--goster", "--playout-ms"):
         if flag in args:
             raise SystemExit(f"{rel}: kaynak hücrede {flag} zaten var")
     extra = [f"--e1-arm {arm}"]
@@ -136,6 +149,8 @@ def a_body(cell, arm, rel, sha, lines, fec, edar_yok, purpose, row, tree):
         extra.append("--fec-off on")
     if edar_yok:
         extra.append("--e1-edar off")
+    if goster:
+        extra.append("--goster on")
     f0a = m.group(1) + " " + " ".join(extra)
     return "\n".join([
         f"# [YOL3 · Ö · teşhis] {cell} — sıra {row}; {purpose}. Üretici: "
@@ -146,6 +161,10 @@ def a_body(cell, arm, rel, sha, lines, fec, edar_yok, purpose, row, tree):
         f"FEC {fec}{ork(fec)}.",
         f"# İkili: BIN_TESIS = <{tree}>/target/release/examples/f0_flows (orkestratör, D-34). "
         "Zarflar Unix soketinden (netem dışı, beyanlı).",
+    ] + ([
+        "# Gösterim (YOL3-T1, --goster on): S1 şeritleri LaneConfig::default (W = 5) + PTT oynatma "
+        "tamponu T = 2,0 s; oku.py PTT varış ve oynatma p95'ini ayrı yazar.",
+    ] if goster else []) + [
         f"CELL={cell}",
         lines["FWD"],
         lines["REV"],
@@ -161,7 +180,9 @@ def a_body(cell, arm, rel, sha, lines, fec, edar_yok, purpose, row, tree):
     ])
 
 
-def b_body(cell, arm, rel, sha, lines, fec, edar_yok, purpose, row, tree):
+def b_body(cell, arm, rel, sha, lines, fec, edar_yok, purpose, row, tree, goster=False):
+    if goster:
+        raise SystemExit(f"{rel}: --goster yalnız A hücresinde (bench'te S1 şeridi yok)")
     for k in B_KEYS:
         if k not in lines:
             raise SystemExit(f"{rel}: {k} yok")
@@ -217,7 +238,8 @@ def plan(analog, fec, edar_yok, which="g2"):
                 continue  # (e-dar) çıkınca K2−e = K2 (CC §4.2 ön testler; §10)
             cell = f"{base}__{arm}"
             body_fn = a_body if base.startswith("a_") else b_body
-            body = body_fn(cell, arm, rel, sha, lines, fec, edar_yok, purpose, row, tree)
+            body = body_fn(cell, arm, rel, sha, lines, fec, edar_yok, purpose, row, tree,
+                           which in GOSTER_SETS)
             items.append((row, f"{cell}.cell", body))
     return items
 

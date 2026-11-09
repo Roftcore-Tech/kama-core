@@ -630,6 +630,7 @@ impl KamaNode {
             live_diag,
             unit_trace,
             None,
+            None,
         )
     }
 
@@ -660,11 +661,47 @@ impl KamaNode {
             live_diag,
             unit_trace,
             Some(cfg_hook),
+            None,
         )
     }
 
-    /// İki ölçüm kurucusunun ortak gövdesi (`cfg_hook` = `None` → `start_with_link_for_test`).
+    /// [YOL3 · gösterim] [`Self::start_with_link_cfg_for_test`]'in AYNISI (kanca isteğe bağlı), ek
+    /// olarak PTT oynatma tamponu (`kama_app::ptt::Ptt::set_playout`, YOL3-T1 KK-T1-11) düğüm iş
+    /// parçacığı başlamadan kurulur: `Some(T)` ise `PttBundle` olayı demetin Rust'a varışından T
+    /// sonra (oynatma anında) gelir, `None` = bugünkü davranış. Şeritler (YOL3-T1 KK-T1-05)
+    /// kancadan `ClientTransportConfig.lanes` ile açılır. Ürün yolu ([`KamaNode::start`]) bu
+    /// yöntemden etkilenmez; sapma çağıranın beyanıdır (INV-009).
+    ///
+    /// # Errors
+    /// [`KamaNode::start`] ile aynı (`IdentityInUse` hariç).
     #[cfg(feature = "test-util")]
+    #[allow(clippy::too_many_arguments)] // ölçüm kurucusu; ürün API'si değil
+    pub fn start_with_link_cfg_playout_for_test(
+        config_path: &Path,
+        data_dir: &Path,
+        listener: Box<dyn NodeListener>,
+        link: Box<dyn EnvelopeLink>,
+        live_diag: bool,
+        unit_trace: bool,
+        cfg_hook: Option<Box<dyn FnOnce(&mut ClientTransportConfig) + Send>>,
+        playout: Option<kama_app::playout::PlayoutConfig>,
+    ) -> Result<Self, NodeError> {
+        Self::start_with_link_impl(
+            config_path,
+            data_dir,
+            listener,
+            link,
+            live_diag,
+            unit_trace,
+            cfg_hook,
+            playout,
+        )
+    }
+
+    /// Ölçüm kurucularının ortak gövdesi (`cfg_hook` = `None` ∧ `playout` = `None` →
+    /// `start_with_link_for_test`).
+    #[cfg(feature = "test-util")]
+    #[allow(clippy::too_many_arguments)] // özel gövde; üç ölçüm kurucusu buraya iner
     fn start_with_link_impl(
         config_path: &Path,
         data_dir: &Path,
@@ -673,6 +710,7 @@ impl KamaNode {
         live_diag: bool,
         unit_trace: bool,
         cfg_hook: Option<TransportCfgHook>,
+        playout: Option<kama_app::playout::PlayoutConfig>,
     ) -> Result<Self, NodeError> {
         let app_clock: Arc<dyn MonotonicClock> = Arc::new(SystemClock::new());
         let mut built = Self::build_with_link(
@@ -688,6 +726,9 @@ impl KamaNode {
         }
         if unit_trace {
             built.node.set_unit_trace_for_test(true);
+        }
+        if playout.is_some() {
+            built.node.set_playout_for_test(playout);
         }
         Self::spawn(built)
     }

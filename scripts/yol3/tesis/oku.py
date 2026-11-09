@@ -44,6 +44,17 @@ metni değişmez); S tablosuna ve R4'e veri varsa satır olarak eklenir, ayrıca
 her A hücresinde kolu tabanıyla (K1a↔K1, K0a↔K0) aynı ölçülerle yan yana yazar: medyan ve oran,
 eşik YOK (betimsel). Analog hücrede E2a kolu var ama K0 yoksa S uygulanmaz ("Gösterim seti: —");
 E2a kolu olmayan kökte (G2) çıktı öncekiyle bayt bayt aynıdır.
+
+Şeritli gösterim (yol2/goster; gen_cells.py --set goster; f0_flows --goster on = S1 şeritleri +
+PTT oynatma tamponu T): koşu başlığı `yol3.goster` true olan kökte S uygulanmaz. "PTT varış /
+oynatma" bölümü (gösterim ya da E2a kökünde) iki ölçüyü AYRI yazar, ikisi de alice gönderim
+anından (f0a `t_send`) ve koşu başına nearest-rank p95 (f0a_tam `rank`), sonra koşu medyanı:
+  varış    bob Transport'unun birimi Application'a verdiği an (f0a `t_released`, iz "R"): demet
+           Rust'a varmıştır, oynatma tamponu ÖNCESİ. Birim eşlenmediyse oynatma değeri yazılır
+           (üst sınır; "eşlenmemiş" sayılır); teslim edilmeyen demet sansürlü (run_row ile aynı).
+  oynatma  bob `PttBundle` olayı (f0a `t_rx`; f0a_tam `P_p95`, yukarıdaki (ii)'nin ölçtüğü):
+           tampon açıkken ≈ varış + T, kapalıyken varış + düğüm turu.
+  ilk demet varış  her basışın ilk demetinin (i = 0) varışı; koşu başına basışların en geci.
 """
 
 import argparse
@@ -218,10 +229,46 @@ def table_arms(d, cell):
 
 
 def s_uygulanir(d):
-    """S analog hücrede K0'a göredir; E2a kökünde (E2a kolu var, K0 yok) uygulanmaz."""
+    """S analog hücrede K0'a göredir; E2a kökünde (E2a kolu var, K0 yok) ve şeritli gösterim
+    kökünde (`yol3.goster`) uygulanmaz."""
     a = d.get("analog", ANALOG)
     cell = d.get(a, {})
+    if d.get("goster_kok"):
+        return False
     return not (any(k in cell for k in E2A_ARMS) and "K0" not in cell)
+
+
+def s_neden(d):
+    if d.get("goster_kok"):
+        return "şeritli gösterim kökü (--goster on)"
+    return "analog hücrede K0 verisi yok; E2a kıyas kökü"
+
+
+def ptt_varis(items, ended, rank_fn):
+    """P sınıfı (karşı basış hariç): (varış p95 ms, ilk demet varışı en geç ms, eşlenmemiş n).
+    Varış = t_released − t_send; eşlenmemiş birimde oynatma değeri (t_rx − t_send, üst sınır);
+    teslim edilmeyen demet run_row gibi sansürlü (ended − t_send, yoksa ∞)."""
+    vals, first, unmapped = [], {}, 0
+    for it in items:
+        if it.get("c") != "P":
+            continue
+        if it.get("t_rx") is None:
+            v = (ended - it["t_send"]) if ended else INF
+        elif it.get("t_released") is not None:
+            v = it["t_released"] - it["t_send"]
+        else:
+            v = it["total"]
+            unmapped += 1
+        vals.append(v)
+        if it.get("i") == 0:
+            first[it.get("sp")] = v
+    return (rank_fn(vals, .95) if vals else None,
+            max(first.values()) if first else None, unmapped)
+
+
+def show_ptt_section(d):
+    a = d.get("analog", ANALOG)
+    return bool(d.get("goster_kok")) or any(k in d.get(a, {}) for k in E2A_ARMS)
 
 
 def ratio(x, y):
@@ -267,6 +314,18 @@ def sunulan_ptt_bps(params):
         return None
     per = params["ptt_bytes"] + PTT_UNIT_FRAMING + DATA_HDR + SEAL_OVERHEAD
     return n * per / (n * ms / 1000.0)
+
+
+def hdr_yol3(alice_jsonl):
+    """f0_flows koşu başlığının `yol3` nesnesi (yoksa boş)."""
+    try:
+        with open(alice_jsonl, encoding="utf-8") as f:
+            for ln in f:
+                if '"k":"hdr"' in ln:
+                    return json.loads(ln).get("yol3") or {}
+    except (OSError, ValueError):
+        return {}
+    return {}
 
 
 def hdr_params(alice_jsonl):
@@ -362,7 +421,23 @@ def extract(kok, work):
             d.setdefault("sunulan_bps", {}).setdefault(base, set()).add(offered)
         e = d.setdefault(base, {}).setdefault(arm, {k: [] for k in
                                                     ("file", "ptt", "ratio", "pace", "srtt",
-                                                     "rtprop", "pu")})
+                                                     "rtprop", "pu", "ptt_varis", "ptt_ilk",
+                                                     "ptt_esl", "goster")})
+        y3 = hdr_yol3(os.path.join(rj["dir"], "alice.jsonl"))
+        e["goster"].append(bool(y3.get("goster")))
+        if y3.get("goster"):
+            d["goster_kok"] = True
+        items_path = (str(p).replace(os.sep + "runs" + os.sep, os.sep + "items" + os.sep)
+                      .replace(".json", ".jsonl"))
+        try:
+            with open(items_path, encoding="utf-8") as f:
+                its = [json.loads(x) for x in f]
+        except OSError:
+            its = []
+        pv, pf, pe = ptt_varis(its, (rj.get("alice_summary") or {}).get("ended"), f0a_tam.rank)
+        e["ptt_varis"].append(pv / 1000.0 if pv is not None else None)
+        e["ptt_ilk"].append(pf / 1000.0 if pf is not None else None)
+        e["ptt_esl"].append(pe)
         fb = row.get("file_bob_ms")
         e["file"].append(fb / 1000.0 if fb is not None else INF)
         e["ptt"].append(row["P_p95"] / 1000.0 if row.get("P_p95") is not None else None)
@@ -410,12 +485,11 @@ def report(d, man_sha):
     if not s_ok:
         choice = None
     L = [tek_satir(choice, R1) if s_ok else
-         "Gösterim seti: — (S uygulanmadı: analog hücrede K0 verisi yok; E2a kıyas kökü).", "",
+         f"Gösterim seti: — (S uygulanmadı: {s_neden(d)}).", "",
          f"manifest sha256 {man_sha or MANIFEST_SHA256 + ' (beyan; dosya denetlenmedi)'} · "
          f"analog {d.get('analog', ANALOG)} · etiket: gösterim; kapılı PoC ölçümü Aralık; ARQ "
          "yolu, FEC Aralık'ta · N < 30: betimsel", "",
-         "## S (bağlayıcı) — " + (S["neden"] if s_ok else
-                                  "uygulanmadı: analog hücrede K0 verisi yok"), "",
+         "## S (bağlayıcı) — " + (S["neden"] if s_ok else f"uygulanmadı: {s_neden(d)}"), "",
          "| kol | dosya bitiş med (s) | PTT p95 med (s) | emisyon/sunulan | (i) | (ii) | (iii) | (iv) R3 | uygun |",
          "|---|---|---|---|---|---|---|---|---|"]
     for k in table_arms(d, a):
@@ -456,6 +530,31 @@ def report(d, man_sha):
           f"diag_probe: {R4['diag_probe']}"]
     sun = {c: sorted(v) for c, v in (d.get("sunulan_bps") or {}).items()}
     js = {"secim": choice, "S": S, "R1": R1, "R4": R4, "iii_sunulan_bps_KK_ORK_03": sun}
+    if show_ptt_section(d):
+        P = {}
+        L += ["", "## PTT varış / oynatma (raporlanan; eşik yok) — alice gönderiminden; varış = bob "
+              "Transport → Application (oynatma tamponu öncesi), oynatma = bob PttBundle olayı "
+              "(= (ii) PTT p95)", "",
+              "| hücre | kol | goster | n | varış p95 med (s) | oynatma p95 med (s) | "
+              "ilk demet varış (basışların en geci) med (s) | eşlenmemiş birim (toplam) |",
+              "|---|---|---|---|---|---|---|---|"]
+        for cell in sorted(c for c in d if c.startswith("a_") and isinstance(d[c], dict)):
+            for k in table_arms(d, cell):
+                e = d[cell].get(k)
+                if not e:
+                    continue
+                g = e.get("goster", [])
+                row = {"n": len(e.get("ptt", [])),
+                       "goster": (all(g) if g else None),
+                       "varis_p95_med": med(e.get("ptt_varis", [])),
+                       "oynatma_p95_med": med(e.get("ptt", [])),
+                       "ilk_demet_varis_med": med(e.get("ptt_ilk", [])),
+                       "eslenmemis": sum(x for x in e.get("ptt_esl", []) if x)}
+                P.setdefault(cell, {})[k] = row
+                L.append(f"| {cell} | {show(k)} | {row['goster']} | {row['n']} | "
+                         f"{fmt(row['varis_p95_med'])} | {fmt(row['oynatma_p95_med'])} | "
+                         f"{fmt(row['ilk_demet_varis_med'])} | {row['eslenmemis']} |")
+        js["PTT_varis_oynatma"] = P
     K = e2a_kiyas(d)
     if K:
         js["E2a_kiyas"] = K
@@ -594,7 +693,8 @@ def oz_test():
     # E2a kıyası: G2 kökünde bölüm yok ve seçim aynı; E2a kolu S adayı değil; K0'sız kökte S yok.
     c0, md0, js0 = report(_base(), None); n += 1
     chk("E2a: kolu olmayan kökte bölüm/anahtar yok, seçim K2−c",
-        "E2a kıyası" not in md0 and "E2a_kiyas" not in js0 and c0 == "K2mc")
+        "E2a kıyası" not in md0 and "E2a_kiyas" not in js0 and c0 == "K2mc"
+        and "PTT varış" not in md0 and "PTT_varis_oynatma" not in js0)
     d = _base()
     d[ANALOG]["K1a"] = {**d[ANALOG]["K1"], "file": [40.0] * 10, "ptt": [0.50] * 10}
     c, md, js = report(d, None); n += 3
@@ -615,6 +715,33 @@ def oz_test():
         and k0a["alinmayan_dosya"]["kol"] == 6 and k0a["file"]["kol"] == INF)
     chk("E2a: R4 analog satırları K1a ve K0a'yı içerir",
         "| analog | K1a |" in md and "| analog | K0a |" in md)
+    # PTT varış / oynatma: varış = t_released − t_send; eşlenmemişte oynatma; sansür; ilk demet.
+    its = [{"c": "P", "sp": 0, "i": 0, "t_send": 0, "t_released": 900, "t_rx": 2900,
+            "total": 2900},
+           {"c": "P", "sp": 0, "i": 1, "t_send": 200, "t_released": 1100, "t_rx": 3100,
+            "total": 2900},
+           {"c": "P", "sp": 1, "i": 0, "t_send": 1000, "t_released": None, "t_rx": 4000,
+            "total": 3000},
+           {"c": "P", "sp": 1, "i": 1, "t_send": 1200, "t_released": None, "t_rx": None,
+            "total": None},
+           {"c": "KP", "sp": 9, "i": 0, "t_send": 0, "t_released": 99999, "t_rx": 99999,
+            "total": 99999}]
+    pv, pf, pe = ptt_varis(its, 10_000, lambda v, q: sorted(v)[max(1, math.ceil(q * len(v))) - 1])
+    n += 3
+    chk("PTT varış: p95 sansürlü (ended − t_send = 8800), KP hariç", pv == 8800)
+    chk("PTT ilk demet: basışların en geci = eşlenmemiş basış 1'in oynatma değeri 3000", pf == 3000)
+    chk("PTT eşlenmemiş 1 (teslim edilmeyen eşlenmemiş sayılmaz)", pe == 1)
+    d = _base()
+    d["goster_kok"] = True
+    for k in ALL_ARMS:
+        d[ANALOG][k].update({"ptt_varis": [0.9] * 10, "ptt_ilk": [1.0] * 10,
+                             "ptt_esl": [0] * 10, "goster": [True] * 10})
+    c, md, js = report(d, None); n += 2
+    chk("gösterim kökü: S uygulanmadı",
+        c is None and md.startswith("Gösterim seti: — (S uygulanmadı: şeritli gösterim kökü"))
+    chk("gösterim kökü: varış 0,90 ve oynatma (ii) ayrı satırda",
+        f"| {ANALOG} | K1 | True | 10 | 0.90 | 2.71 | 1.00 | 0 |" in md
+        and js["PTT_varis_oynatma"][ANALOG]["K1"]["oynatma_p95_med"] == 2.71)
     # Çıkarım yardımcıları: srate (ACIL S) ve pacer (a_ts) sahte dosyalarla.
     with tempfile.TemporaryDirectory() as t:
         z = 1_000_000_000_000

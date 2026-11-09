@@ -854,6 +854,17 @@ impl NodeLoop {
     pub(crate) fn set_unit_trace_for_test(&mut self, on: bool) {
         self.messenger.transport_mut().set_unit_trace_for_test(on);
     }
+
+    /// [YOL3 · gösterim] PTT oynatma tamponu (`Ptt::set_playout`, YOL3-T1 KK-T1-11; `None` =
+    /// bugünkü davranış, demet varışta). YALNIZ ölçüm kurucusu
+    /// (`KamaNode::start_with_link_cfg_playout_for_test`); düğüm iş parçacığı başlamadan çağrılır.
+    #[cfg(feature = "test-util")]
+    pub(crate) fn set_playout_for_test(
+        &mut self,
+        config: Option<kama_app::playout::PlayoutConfig>,
+    ) {
+        self.ptt.set_playout(config);
+    }
 }
 
 /// Yanıt kanalına tek yanıt. Kanal kapasitesi bir ve tek gönderim olduğundan bloklamaz; çağıran
