@@ -94,3 +94,20 @@ Transport davranışını değiştiren HER değişiklik, PR açıklamasında ŞU
 Hiçbir transport yaması doğrulanmış v1 mimarisini sessizce değiştirip aynı `kama-v1-full`
 semantiğini iddia edemez. Bu beyanları taşımayan bir PR'ın performans/uyumluluk iddiası
 geçersizdir.
+
+### §22 — `transport-v1.x-goster` gösterim beyanı (2026-11; ISEMRI-YOL3-M2)
+
+E1 gösterim bayrakları (`RuntimeConfig.e1_flags`: (c) `e1_startup_cwnd`, (d) `e1_applimited_plateau`,
+DrainRtprop `e1_drainrt_gate`, (e-dar) `e1_probe_keep`, `retx_first`; CC §4.1, CC-K5) için altı beyan:
+
+1. **Donmuş invaryant:** varsayılanda değişmez (bayraklar kapalı = önceki kod yolu). Bayrak açıkken
+   `INVARIANTS.md` "Beyanlı sınırlar (gösterim, 2026-11)" üç satırı (CC §4.4) geçerlidir.
+2. **`KamaV1Profile` alanı:** değer değişmez; yeni alan `e1_flags`, varsayılan kapalı
+   (`PRODUCT-PROFILE.md`, `product_v1_profile_is_pinned`).
+3. **Kimlik:** ürün `kama-v1-full` / `transport-v1` değişmez; gösterim düğümü `transport-v1.x-goster`.
+4. **Geçersiz T0–T7 hücresi:** varsayılanda yok; gösterim profili T0–T7'de doğrulanmamıştır.
+5. **Yeniden koşulacak doğrulama:** mini-Ö (G4, 13 Kas), Aralık G-CC.
+6. **Sürüm:** `transport-v1.x` kalır.
+
+Gösterim seti (G2 seçimi) ve profil satırları: `PRODUCT-PROFILE.md` "`transport-v1.x-goster`" bölümü.
+Teşhis manifesti: `docs/design/E1-TESHIS-G2.md`.
