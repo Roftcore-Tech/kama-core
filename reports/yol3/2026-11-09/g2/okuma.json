@@ -1,0 +1,210 @@
+{
+ "secim": "K1",
+ "S": {
+  "neden": "uygun ['K1', 'K2', 'K2mc', 'K2me']; en düşük PTT %10 bandı ['K1', 'K2me', 'K2']",
+  "satirlar": {
+   "K1": {
+    "i": true,
+    "ii": true,
+    "iii": true,
+    "iv": true,
+    "uygun": true
+   },
+   "K2": {
+    "i": true,
+    "ii": true,
+    "iii": true,
+    "iv": true,
+    "uygun": true
+   },
+   "K2mc": {
+    "i": true,
+    "ii": true,
+    "iii": true,
+    "iv": true,
+    "uygun": true
+   },
+   "K2me": {
+    "i": true,
+    "ii": true,
+    "iii": true,
+    "iv": true,
+    "uygun": true
+   }
+  },
+  "file_med": {
+   "K0": 23.854861500000002,
+   "K0r": 26.65044,
+   "K1": 19.218939,
+   "K2": 17.475595499999997,
+   "K2mc": 20.8034055,
+   "K2me": 19.697316999999998
+  },
+  "ptt_med": {
+   "K0": 15.289245999999999,
+   "K0r": 16.367303999999997,
+   "K1": 8.627248,
+   "K2": 9.242612000000001,
+   "K2mc": 10.2237765,
+   "K2me": 9.207621
+  },
+  "ratio_med": {
+   "K0": 1.0883720930232559,
+   "K2": 4.898837209302325,
+   "K2mc": 3.691860465116279,
+   "K1": 4.898837209302325,
+   "K2me": 4.898837209302325
+  },
+  "R3": {
+   "l0": true,
+   "r25": true,
+   "gecer": true,
+   "l0_med": {
+    "K0": 5.089495667725,
+    "K2": 4.478141400775
+   },
+   "r25_med": {
+    "K0": [
+     6.0,
+     2075.0
+    ],
+    "K2": [
+     6.0,
+     2123.5
+    ]
+   }
+  }
+ },
+ "R1": {
+  "K0": {
+   "tuzaksiz_n": 10,
+   "n": 10,
+   "kullanilan": "tuzaksız",
+   "med": 0.5465937331172339,
+   "med_butun": 0.5465937331172339,
+   "gecer": false
+  },
+  "K2": {
+   "tuzaksiz_n": 7,
+   "n": 10,
+   "kullanilan": "tuzaksız",
+   "med": 1.021372231226364,
+   "med_butun": 1.0014235548352242,
+   "gecer": true
+  },
+  "K2mc": {
+   "tuzaksiz_n": 8,
+   "n": 10,
+   "kullanilan": "tuzaksız",
+   "med": 0.5625526742301459,
+   "med_butun": 0.526645056726094,
+   "gecer": false
+  }
+ },
+ "R4": {
+  "manset": {
+   "K0": {
+    "sw95_med": 12.711803704500198,
+    "sw95_9": 34.89025552272796,
+    "n": 10,
+    "pace_med": 4394.0,
+    "srtt_med": 2.3070125,
+    "eai_s": 2.557857488951209,
+    "kayip_esigi_s": 3.836786233426814,
+    "rtprop_med": 1.791949,
+    "probe_up_med": 0.0,
+    "rtprop_K0_orani": 1.0
+   },
+   "K2": {
+    "sw95_med": 6.279069906473159,
+    "sw95_9": 63.75167769193649,
+    "n": 10,
+    "pace_med": 7491.0,
+    "srtt_med": 2.36755,
+    "eai_s": 2.3672320763410717,
+    "kayip_esigi_s": 3.5508481145116075,
+    "rtprop_med": 1.8024580000000001,
+    "probe_up_med": 0.0,
+    "rtprop_K0_orani": 1.0058645642258792
+   },
+   "K2mc": {
+    "sw95_med": 25.385921818017955,
+    "sw95_9": 66.55660490989685,
+    "n": 10,
+    "pace_med": 4377.0,
+    "srtt_med": 2.2344,
+    "eai_s": 2.559648308238814,
+    "kayip_esigi_s": 3.8394724623582213,
+    "rtprop_med": 1.7547825000000001,
+    "probe_up_med": 1.0,
+    "rtprop_K0_orani": 0.9792591753448341
+   }
+  },
+  "analog": {
+   "K0": {
+    "pace_med": 6263.5,
+    "srtt_med": 0.337547,
+    "eai_s": 2.420235517089538,
+    "kayip_esigi_s": 3.6303532756343073,
+    "rtprop_med": 0.32415499999999997,
+    "probe_up_med": 4.5,
+    "rtprop_K0_orani": 1.0
+   },
+   "K0r": {
+    "pace_med": 4029.5,
+    "srtt_med": 0.3464435,
+    "eai_s": 2.599566103214599,
+    "kayip_esigi_s": 3.8993491548218984,
+    "rtprop_med": 0.325837,
+    "probe_up_med": 4.5,
+    "rtprop_K0_orani": 1.0051888756921843
+   },
+   "K1": {
+    "pace_med": 12262.5,
+    "srtt_med": 0.3336175,
+    "eai_s": 2.2619933576666336,
+    "kayip_esigi_s": 3.3929900364999503,
+    "rtprop_med": 0.32388549999999994,
+    "probe_up_med": 1.0,
+    "rtprop_K0_orani": 0.9991686076105566
+   },
+   "K2": {
+    "pace_med": 8055.0,
+    "srtt_med": 0.339569,
+    "eai_s": 2.348294988085941,
+    "kayip_esigi_s": 3.5224424821289118,
+    "rtprop_med": 0.3238415,
+    "probe_up_med": 1.5,
+    "rtprop_K0_orani": 0.9990328700775865
+   },
+   "K2mc": {
+    "pace_med": 10287.5,
+    "srtt_med": 0.332857,
+    "eai_s": 2.2937122251401245,
+    "kayip_esigi_s": 3.4405683377101868,
+    "rtprop_med": 0.324061,
+    "probe_up_med": 1.5,
+    "rtprop_K0_orani": 0.9997100152704725
+   },
+   "K2me": {
+    "pace_med": 8423.0,
+    "srtt_med": 0.34233899999999995,
+    "eai_s": 2.33730607055183,
+    "kayip_esigi_s": 3.505959105827745,
+    "rtprop_med": 0.323845,
+    "probe_up_med": 3.0,
+    "rtprop_K0_orani": 0.9990436673813454
+   }
+  },
+  "startup_kaybi_0_20": "ölçülmedi (araç yok; capture eşlemesi gerekir)",
+  "diag_probe": "ölçülmedi (aynada yok); probe_up_entries raporlanır"
+ },
+ "iii_sunulan_bps_KK_ORK_03": {
+  "a_r12k_d150_l20_foto150k": [
+   630.0
+  ],
+  "a_r12k_d300_l30_dosyasiz": [
+   430.0
+  ]
+ }
+}

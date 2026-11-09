@@ -1,0 +1,16 @@
+başlangıç 2026-11-09T21:34:22+03:00
+ağaç: yol2/o1-e2a b3511591857113f7c540bd1d16aa4a0d178a49f1 = 5fdad83b + yol3/m1-e2a-goster 46c0d30d + yol3/o-goster 502fce94
+de73e0eb14c1ac97ce60adcdc56e5872b8f1e2a3f3bdc2a94ac45c1a5d8659ac  target/release/examples/f0_flows
+0e2c10b84cda206de815531d12a618c31d99864a34adafc53408edd1c20aa4a5  target/release/bench
+37bcabe31107a464970a54f5073a36d1d0e65e1cba558c1bf363360c0cb56e1a  docs/design/E1-TESHIS-G2.md
+9e7ea3a22173ce08ad1e5cd2bc1579204c55f9428155416fc8b8bbe3f637501f  scripts/yol3/tesis/SIRA-E2A.txt
+KK-ORK-01: FEC kapalı (hücre tanımı). D-18: ölçüm süresince ortak cargo kilidi tutuldu; -j 11
+ölçüm başlangıç 2026-11-09T21:39:16+03:00
+grid rc=0 bitiş 2026-11-09T21:57:34+03:00
+oku rc=0
+03ae29e7a8973db8de4a61c998f73c24a3883972ff277b88e07e3258006510c0  /home/ryuzaki/kama-k4g-work/yol3/tesis/2026-11-09-e2a/okuma/okuma.json
+fef6f1aba42b554248b3476ecfc182113b1ef17cd09d8157d82ef80c70536500  /home/ryuzaki/kama-k4g-work/yol3/tesis/2026-11-09-e2a/okuma/OKUMA.md
+okuma notu (orkestratör, 2026-11-09 22:10):
+- R4 "kayıp eşiği" sütunu oku.py formülü (max(9/8·srtt, 1 ms, 1,5·EAI)); tt_rfc açıkken geçersiz (K1a/K0a). Kodda gerçek eşik ölçülmedi.
+- ayristirma_util.py (alice ts anlıkları, dosya sent→delivered penceresi): retx payı (rtxb/txb) medyan K1 0,202 · K1a 0,221 · K0a 0,200 (G2: K0 0,206 · K1 0,198 · K2 0,197); tel hızı medyan K1 10033 · K1a 9686 · K0a 8853 B/s.
+- K1 iki koşu arası (G2 ↔ bu koşu, aynı davranış, E2a kapalı): PTT p95 8,63 ↔ 9,82 s; dosya 19,2 ↔ 20,4 s. K1a ↔ K1 farkı (0,87 s) bu aralığın içinde.
