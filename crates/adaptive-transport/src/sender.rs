@@ -9754,4 +9754,277 @@ mod tests {
             assert!(srtt <= 2 * rtprop, "srtt/rtprop ≤ 2 (flag={flag})");
         }
     }
+
+    // ── Q2 (§3-A 3 ve 4; QUINN-FARKI-KOD-KARSILASTIRMA-2026-11-09.md) — aynı düzenek ──
+
+    /// A-3 doğrudan: ön sırada 100 B'lık birim varken kova tavanı. Kalkış hızı ≈ 9,6 kB/s
+    /// (rate·40 ms ≈ 384 B). KAPALI: tavan = clamp(384, 100, 2400) < 1200 ⇒ 1200 B'lık birim
+    /// için `ns_until_sendable` `None` (hiç gönderilemez). AÇIK: tavan = 2·MTU ⇒ `Some`.
+    #[test]
+    fn q2_a3_burst_floor_admits_unit_larger_than_front() {
+        for flag in [false, true] {
+            let mut s = e1_sender(E1Flags {
+                a3_burst_floor: flag,
+                ..E1Flags::default()
+            });
+            s.on_event(Event::AppData(unit(200)), 0);
+            s.on_event(ack(&[0]), 500 * MS);
+            for i in 1..=50u64 {
+                s.on_event(Event::AppData(small(i)), 501 * MS);
+            }
+            assert_ne!(s.state(), SenderState::PreConverge, "kurulum: ölçüm var");
+            assert_eq!(
+                s.tx_queue.front().map(|u| u.size),
+                Some(100),
+                "kurulum: ön sırada küçük birim (flag={flag})"
+            );
+            let cap = s.pacer.burst_cap();
+            if flag {
+                assert_eq!(cap, 2 * DEFAULT_MTU, "AÇIK: tavan 2·MTU");
+                assert!(
+                    s.pacer.ns_until_sendable(DEFAULT_MTU).is_some(),
+                    "AÇIK: MTU'luk birim kovaya sığar"
+                );
+            } else {
+                assert!(cap < DEFAULT_MTU, "KAPALI: tavan birimin altında ({cap})");
+                assert_eq!(
+                    s.pacer.ns_until_sendable(DEFAULT_MTU),
+                    None,
+                    "KAPALI: bugünkü davranış — MTU'luk birim gönderilemez"
+                );
+            }
+        }
+    }
+
+    /// A-3 BİLİNEN SINIR (kapsam dışı, raporlanır): 5 kB/s hat (bütün hızlar < 27,5 kB/s ⇒
+    /// rate·40 ms < 1100 B). 1100 B'lık birimin ilk iletimi düşer, arkasında 80 × 1000 B. KAPALI:
+    /// tavan = max(rate·40 ms, ön=1000) < 1100 ⇒ kurtarma gönderilemez. AÇIK: tavan 2400, ama
+    /// DATA-önce sırası (`schedule_transmit`: `drain_new_data` → `plan_arq_retransmits`) kovayı ön
+    /// birim boyunda (1000 B) tüketir; jeton 1100'e ulaşmaz ⇒ iki kolda da kurtarma DATA kuyruğu
+    /// boşaldıktan SONRA çıkar. A-3 "asla"yı kaldırır, sırayı değiştirmez.
+    #[test]
+    fn q2_a3_residual_data_first_still_holds_larger_rescue() {
+        let run = |flag: bool| {
+            let mut s = e1_sender(E1Flags {
+                a3_burst_floor: flag,
+                ..E1Flags::default()
+            });
+            let mut sim = E1Sim::new(5_000, 150);
+            let mut offers = vec![(0u64, 100u64), (2_000, 1_100)];
+            offers.extend((0..80).map(|_| (2_000u64, 1_000u64)));
+            // id 0 = ısınma, id 1 = 1100 B (ilk iletimi düşer), id 2..=81 = 1000 B.
+            let mut drop_first_big = |d: &TransmitDecision, _: &E1SendCtx| {
+                d.kind == TransmitKind::Data && d.unit_id == 1
+            };
+            sim.run(&mut s, &offers, 40_000, &mut drop_first_big);
+            let rescue = sim
+                .trace
+                .iter()
+                .find(|(_, d)| d.unit_id == 1 && d.kind != TransmitKind::Data)
+                .map(|(t, _)| *t);
+            let last_data = sim
+                .trace
+                .iter()
+                .filter(|(_, d)| d.kind == TransmitKind::Data && d.unit_id >= 2)
+                .map(|(t, _)| *t)
+                .max()
+                .expect("kurulum: DATA çıktı");
+            (rescue, last_data, sim.dropped.len())
+        };
+        let (r_off, last_off, drop_off) = run(false);
+        let (r_on, last_on, drop_on) = run(true);
+        eprintln!(
+            "q2_a3 kapalı: kurtarma={:?} ms son_data={} ms · açık: kurtarma={:?} ms son_data={} ms",
+            r_off.map(|t| t / MS),
+            last_off / MS,
+            r_on.map(|t| t / MS),
+            last_on / MS
+        );
+        assert_eq!((drop_off, drop_on), (1, 1), "kurulum: tek kayıp");
+        for (name, r, last) in [("KAPALI", r_off, last_off), ("AÇIK", r_on, last_on)] {
+            let r = r.unwrap_or_else(|| panic!("{name}: kurtarma kuyruk boşalınca çıkar"));
+            assert!(
+                r >= last,
+                "{name}: DATA-önce sırası büyük kurtarma birimini kuyruk sonuna bırakır"
+            );
+        }
+    }
+
+    /// A-3 kapalı döngü (etkinin gösterildiği yer): 12,5 kB/s · 150 ms. 1100 B'lık birimin ilk
+    /// iletimi düşer; ardından 18 s boyunca her 20 ms'de 93 B'lık küçük birim (ses/metin deseni).
+    /// KAPALI: küçük birim ön sıradayken her olayda tavan = clamp(rate·40 ms, 93, 2400) < 1100 ve
+    /// `set_burst_cap` jetonu buna kırpar ⇒ kurtarma küçük birim akışı bitene kadar bekler. AÇIK:
+    /// tavan 2·MTU, kırpma yok ⇒ kurtarma kayıp ilanıyla çıkar.
+    #[test]
+    fn q2_a3_burst_floor_rescue_not_starved_by_small_front() {
+        let run = |flag: bool| {
+            let mut s = e1_sender(E1Flags {
+                a3_burst_floor: flag,
+                ..E1Flags::default()
+            });
+            let mut sim = E1Sim::new(12_500, 150);
+            let mut offers = vec![(0u64, 100u64), (2_000, 1_100)];
+            offers.extend((0..900u64).map(|k| (2_100 + 20 * k, 93u64)));
+            // id 0 = ısınma, id 1 = 1100 B (ilk iletimi düşer), id 2.. = 93 B.
+            let mut drop_first_big = |d: &TransmitDecision, _: &E1SendCtx| {
+                d.kind == TransmitKind::Data && d.unit_id == 1
+            };
+            sim.run(&mut s, &offers, 30_000, &mut drop_first_big);
+            let rescue = sim
+                .trace
+                .iter()
+                .find(|(_, d)| d.unit_id == 1 && d.kind != TransmitKind::Data)
+                .map(|(t, _)| *t);
+            let last_small = sim
+                .trace
+                .iter()
+                .filter(|(_, d)| d.kind == TransmitKind::Data && d.unit_id >= 2)
+                .map(|(t, _)| *t)
+                .max()
+                .expect("kurulum: küçük birimler çıktı");
+            (rescue, last_small, sim.dropped.len())
+        };
+        let (r_off, last_off, drop_off) = run(false);
+        let (r_on, last_on, drop_on) = run(true);
+        eprintln!(
+            "q2_a3 küçük-ön: kapalı kurtarma={:?} ms son_küçük={} ms · açık kurtarma={:?} ms son_küçük={} ms",
+            r_off.map(|t| t / MS),
+            last_off / MS,
+            r_on.map(|t| t / MS),
+            last_on / MS
+        );
+        assert_eq!((drop_off, drop_on), (1, 1), "kurulum: tek kayıp");
+        assert!(
+            r_off.is_none_or(|t| t >= last_off),
+            "KAPALI: kurtarma küçük birim akışı bitene kadar bekler (bugünkü davranış)"
+        );
+        let r_on = r_on.expect("AÇIK: kurtarma tele çıkar");
+        assert!(
+            r_on + 10_000 * MS < last_on,
+            "AÇIK: kurtarma küçük birim akışının arkasında beklemez"
+        );
+    }
+
+    /// A-4 (a): proba atfedilmiş kayıp, bekleyen küme boş, qd = 0. Dört birleşim: iptal yalnız iki
+    /// bayrak da kapalıyken (bugünkü davranış); `a4_probe_srtt` ya da (e-dar) tek başına kapatır.
+    #[test]
+    fn q2_a4_attributed_loss_does_not_abort_probe_up() {
+        for (keep, a4) in [(false, false), (true, false), (false, true), (true, true)] {
+            let mut s = e1_sender(E1Flags {
+                e1_probe_keep: keep,
+                a4_probe_srtt: a4,
+                ..E1Flags::default()
+            });
+            s.on_event(Event::AppData(unit(200)), 0);
+            s.on_event(ack(&[0]), 500 * MS);
+            for i in 1..=6u64 {
+                s.on_event(Event::AppData(unit(i)), (500 + i) * MS);
+            }
+            s.state = SenderState::ProbeUp;
+            s.probe_entry_ns = Some(510 * MS);
+            s.probe_epoch_entry_ns = 100_000 * MS; // dwell 400 s → zaman aşımı yok
+            s.probe_btlbw_entry = 1_000_000_000; // başarı erişilmez
+            s.probe_delivered_entry = s.bw_sampler.delivered();
+            s.probe_loss_attributed = true;
+            s.on_event(Event::TimerFired(Timer::Pto), 520 * MS);
+            assert!(s.pending_lost.is_empty(), "kurulum: bekleyen kayıp yok");
+            if !keep && !a4 {
+                assert_eq!(
+                    s.state(),
+                    SenderState::Steady,
+                    "KAPALI: atıflı kayıp iptal eder"
+                );
+                assert_eq!(s.diag_probe(), (0, 1, 0, 0), "iptal muhasebeleşir");
+            } else {
+                assert_eq!(
+                    s.state(),
+                    SenderState::ProbeUp,
+                    "keep={keep} a4={a4}: iptal yalnız qd"
+                );
+                assert_eq!(s.diag_probe(), (0, 0, 0, 0));
+            }
+        }
+    }
+
+    /// A-4 (b): prob saati. srtt = 0,5 s, EAI ≈ 2,3 s (31 B/s önseli). AÇIK: periyot 4·srtt = 2 s
+    /// dolunca girer, giriş-donuk epoch = srtt, dwell 4·srtt'de zaman aşımı. KAPALI: aynı anda girmez
+    /// (periyot 4·max(srtt, EAI)).
+    #[test]
+    fn q2_a4_probe_clock_is_k_srtt_without_eai() {
+        for flag in [false, true] {
+            let mut s = e1_sender(E1Flags {
+                a4_probe_srtt: flag,
+                ..E1Flags::default()
+            });
+            s.on_event(Event::AppData(unit(200)), 0);
+            s.on_event(ack(&[0]), 500 * MS);
+            s.state = SenderState::Steady;
+            let srtt = dur_ns(s.rtt.srtt().expect("srtt"));
+            assert!(
+                dur_ns(s.expected_ack_interval()) > srtt,
+                "kurulum: EAI baskın (flag={flag})"
+            );
+            let t_e = u64::from(K_PROBE_PERIOD_EPOCH) * srtt + 10 * MS;
+            for i in 1..=4u64 {
+                s.on_event(Event::AppData(unit(i)), t_e + i);
+            }
+            if !flag {
+                assert_eq!(
+                    s.state(),
+                    SenderState::Steady,
+                    "KAPALI: 4·srtt'de giriş yok"
+                );
+                assert_eq!(s.act_probe_up_entries, 0);
+                continue;
+            }
+            assert_eq!(s.state(), SenderState::ProbeUp, "AÇIK: 4·srtt'de girer");
+            assert_eq!(
+                s.probe_epoch_entry_ns, srtt,
+                "AÇIK: giriş-donuk epoch = srtt"
+            );
+            s.probe_btlbw_entry = 1_000_000_000; // başarı erişilmez
+            let entry = s.probe_entry_ns.expect("giriş anı");
+            let dwell = u64::from(PROBE_MAX_DWELL_EPOCH) * srtt;
+            s.on_event(Event::TimerFired(Timer::Pto), entry + dwell - MS);
+            assert_eq!(s.state(), SenderState::ProbeUp, "AÇIK: dwell içinde sürer");
+            s.on_event(Event::TimerFired(Timer::Pto), entry + dwell + MS);
+            assert_eq!(
+                s.state(),
+                SenderState::Steady,
+                "AÇIK: 4·srtt'de zaman aşımı"
+            );
+            assert_eq!(s.diag_probe(), (0, 0, 1, 0));
+        }
+    }
+
+    /// A-4 kapalı döngü, (e-dar) açık iki kolda (K1 tabanı gibi): 12,5 kB/s · 150 ms, her 5. DATA
+    /// düşer (deterministik %20). AÇIK kolda ProbeUp girişi kapalıdan fazla (saat srtt, EAI'siz).
+    #[test]
+    fn q2_a4_more_probe_entries_under_e_dar() {
+        let run = |flag: bool| {
+            let mut s = e1_sender(E1Flags {
+                e1_probe_keep: true,
+                a4_probe_srtt: flag,
+                ..E1Flags::default()
+            });
+            let mut sim = E1Sim::new(12_500, 150);
+            let mut n = 0u64;
+            let mut every_fifth = |d: &TransmitDecision, _: &E1SendCtx| {
+                if d.kind != TransmitKind::Data {
+                    return false;
+                }
+                n += 1;
+                n.is_multiple_of(5)
+            };
+            sim.run(&mut s, &e1_bulk(400), 40_000, &mut every_fifth);
+            (s.act_probe_up_entries, s.diag_probe())
+        };
+        let (off, d_off) = run(false);
+        let (on, d_on) = run(true);
+        eprintln!("q2_a4 ProbeUp girişi kapalı={off} {d_off:?} · açık={on} {d_on:?}");
+        assert!(
+            on > off,
+            "AÇIK: prob saati srtt ⇒ daha sık giriş ({on} > {off})"
+        );
+    }
 }
