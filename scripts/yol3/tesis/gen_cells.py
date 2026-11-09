@@ -213,6 +213,9 @@ systemd-inhibit --what=sleep:idle --why="YOL3 teshis" setsid \\
   scripts/ktp2/f0/f0_grid.sh -j 11 ~/kama-k4g-work/yol3/tesis/2026-11-11 $(cat scripts/yol3/tesis/SIRA.txt)
 # Yalnız 1. sıra önce (ayrı parti; aynı kök, DONE'u olan hücre ikinci partide atlanır):
 #   ... f0_grid.sh -j 11 ~/kama-k4g-work/yol3/tesis/2026-11-11 $(head -n {n1} scripts/yol3/tesis/SIRA.txt)
+# Okuma (koşu bitince; manifest sha256 denetlenir, farklıysa okuma yok):
+python3 -I scripts/yol3/tesis/oku.py --kok ~/kama-k4g-work/yol3/tesis/2026-11-11 \\
+  --manifest docs/design/E1-TESHIS-G2.md      # çıktı <kök>/okuma/{{OKUMA.md,okuma.json}}
 """
 
 
