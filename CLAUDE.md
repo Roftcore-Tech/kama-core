@@ -1,6 +1,6 @@
 # Kama Core — CLAUDE.md
 
-> Bu dosya Claude Code'un kalıcı proje bağlamıdır. Kod yazmadan önce OKU. Otorite belgeler `specs/` altında; çelişkide **spec kazanır**.
+> Bu dosya Claude Code'un kalıcı proje bağlamıdır. Kod yazmadan önce OKU. Otorite belgeler `specs/` altında; çelişkide **spec kazanır**. İstisna: sahibin tarihli kararı (§3 son paragrafı; EK-1 D-01, depoda `docs/decisions/KARAR-KAYDI-2026-11.md` §1).
 
 ## 1. Proje nedir
 
@@ -30,6 +30,8 @@ tech-stack-adr.md                      ADR-01..19 (teknoloji kararları)
 adaptive-transport-engine-spec.md      transport HOW/engine (implementable blueprint)
 ```
 Bunlar KAT-1..5 GO-FREEZE. Değiştirme; uygula.
+
+Spec ↔ spec çelişkisinde ve donmuş metin değişikliğinde yetki yalnız sahibin tarihli kararıdır (YOL PLANI v2 EK-1, D-numaralı; depoda erişilebilen maddeler `docs/decisions/KARAR-KAYDI-2026-11.md`). Listelenen yamalar aynı PR'da üstü çizili + YAMA KAYDI ile. Listede olmayan donmuş metin değişmez.
 
 ## 4. Mimari invariant'lar — İHLAL ETME
 
@@ -83,6 +85,8 @@ ADR-19  Deploy: musl statik-binary + systemd. K8s Beta+. Docker yalnız test/CI.
 - Conventional commits (feat:/fix:/chore:/docs:/test:/refactor:). Cargo.lock DAİMA commit.
 - Deprecated içerik → appendix'e taşı + "MUST NOT IMPLEMENT". Sessizce SİLME.
 - Surgical edit: byte-layout / imza değişikliği talimatsız YAPMA. Rewrite yerine cerrahi patch.
+- EK-1 D-23'te listelenen kartlar (liste: `docs/decisions/KARAR-KAYDI-2026-11.md` §3) için ≤ 7 iş günü istisnası (saatlik commit; main'in dala günlük merge'ü;
+  rebase/force-push yok). EK-1'de listelenen imza ve bayt düzeni değişiklikleri talimat sayılır.
 ```
 
 ## 7. CI kapıları (her PR yeşil olmalı)
@@ -92,6 +96,8 @@ GitHub-hosted (her PR): cargo fmt --check + clippy -D warnings + test --all-feat
                         miri (yalnız crypto, ccr-codec)
 Self-hosted (nightly):  netem benchmark (7 profil vs quinn+BBR) — §4.4 gate, regresyon = fail
 ```
+Hosted CI fatura ya da altyapı yüzünden başlamazsa EK-1 D-17'deki yerel kapı geçerlidir (`scripts/ci/local-gate.sh`; yalnız
+KARAR-KAYDI-2026-11 §2'deki düzeltilmiş hâli main'deyken).
 
 ## 8. YAPMA listesi (hızlı yasak referansı)
 
@@ -126,3 +132,9 @@ BENCH-01   blackout survival İKİLİ metriği (oturum N-sn kesintiyi sağ atlat
            ölüm değil). Ama §4.4 Tier-2 kazanma kriteri "QUIC handshake kurar, blackout sonrası session
            survival KAYBEDER" iddiası ikili metrik olmadan yapılamaz — Kama karşılaştırmasında lazım.
 ```
+
+## YAMA KAYDI
+
+- 2026-11-09 · EK-1 D-01 (A), sahip imzası 2026-11-04 (v3 Bölüm I), uygulama v4 Bölüm II Y9: §3 sonuna yetki sırası,
+  satır 3'e istisna atfı, §6'ya D-23 dal süresi ve imza/bayt istisnası, §7'ye yerel kapı satırı. Mevcut satır silinmedi.
+  Atıf yaptığı EK-1 maddeleri depoda: `docs/decisions/KARAR-KAYDI-2026-11.md`.
