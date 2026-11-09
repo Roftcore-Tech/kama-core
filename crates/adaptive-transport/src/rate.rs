@@ -269,8 +269,8 @@ mod e1_tests {
 
     #[test]
     fn e1_cwnd_gain_integer_two_matches_legacy_rate() {
-        // Kazanç 2/1 ile eklemeli işlev eski `effective_send_rate` ile aynı sonucu verir (aritmetik
-        // eşdeğerlik; bayrak kapalıyken motor zaten eski işlevi çağırır).
+        // Kazanç 2/1 ile eklemeli işlev eski `effective_send_rate` ile aynı sonucu verir (örnek
+        // girdilerde; bayrak kapalıyken motor zaten eski işlevi çağırır).
         let cfg = SrcConfig::default();
         let two = Gain {
             num: CWND_GAIN,
