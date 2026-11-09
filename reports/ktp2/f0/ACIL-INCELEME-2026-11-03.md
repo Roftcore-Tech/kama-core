@@ -712,9 +712,17 @@ r ≥ 1 için gereken BtlBw:
   - Yalnız ideal ARQ için doğru.
   - Gerçek kollarda eksik koşular var: taban 40, aday 17, quinn 53 / 960.
 - **"ProbeUp 1,25 × 0,7 < 1, p > %20'de aritmetik olarak ulaşılamaz."**
-  - Başarı testi ölçekten bağımsız, bu yüzden aritmetik geçersiz.
+  - ~~Başarı testi ölçekten bağımsız, bu yüzden aritmetik geçersiz.~~
+    **[CORRIGENDUM-1 (2026-11-09)]** Bu çürütme yanlış; iddia (aritmetik) geçerli.
+    - Başarı testi (`sender.rs:4072-4075`, `a858f3fc`) probun max-filtresini giriş anındaki BtlBw'nin 1,025 katıyla kıyaslıyor.
+    - Steady'de pace = 1 × BtlBw (`:4255`). Giriş değeri zaten bir teslim hızı. Prob 1,25 × giriş gönderiyor; teslim örneği ≈ 1,25 · (1 − p) · (1 + b′) × giriş.
+    - (1 − p) yalnız bir kez giriyor. %30'da 1,25 × 0,7 = 0,875 < 1,025; başarı ancak gürültü payı b′ > 0,17 olursa geliyor. Ölçülen max-filtre payı b ≈ 0,06–0,11 [türetilmiş].
+    - Çürütme yalnız Steady gönderimi BtlBw/(1 − p) olsaydı doğru olurdu.
+    - Doğru ifade: ProbeUp %30 kayıpta yalnız gürültüyle başarılı kapanır; ayrıca aşağıdaki mekanizmalar da onu kesiyor. İkisi birlikte çalışıyor.
+    - Dayanak: orkestratörün 2026-11-04 sıkışıklık denetleyicisi çalışması §1.3; sahip kararı v4 (2026-11-09) Bölüm I "Corrigendum EVET".
   - İşleyen mekanizma: RecoverArq önceliği, bekleyen kayıpta preempt ve atıflı kayıpta abort.
   - Başarı/abort sayacı yok.
+    **[CORRIGENDUM-1 (2026-11-09)]** Sayaç F0 verisinde yok; üründe var: `diag_probe()` (başarı, iptal, zaman aşımı, preempt; `sender.rs:6418-6426`, `a858f3fc`). F0 düzeneği basmadı.
 - **"İstenen hücrelerde blok bekleyişi ≥ RTT."**
   - Yalnız r1k, r25 ve c_b120'de doğru.
   - Manşette 2,00 s < srtt.
