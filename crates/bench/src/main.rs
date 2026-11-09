@@ -2,6 +2,7 @@
 //! `metrics` HESAP yapar (transport'a dokunmaz). quinn baseline (§4.4.1) + kama stub.
 
 mod budget;
+mod e1arm;
 mod error;
 mod event;
 mod kama;
@@ -157,6 +158,13 @@ enum Cmd {
         /// (SIGTERM dahil) atomik yazılır. quinn'de kimlik için istemci `--payload-id` verir.
         #[arg(long)]
         rx_log: Option<PathBuf>,
+        /// [YOL3 · Ö] E1 teşhis kolu (KK-Ö-05; yalnız `--transport kama-product`; iki uca AYNI).
+        /// K0 = bayraklar kapalı (bugünkü davranış). Bkz. `e1arm.rs`.
+        #[arg(long, value_enum, default_value_t = e1arm::E1Arm::K0)]
+        e1_arm: e1arm::E1Arm,
+        /// [YOL3 · Ö] `off`: ön test geçmediyse (CC §4.2) kolun setinden (e-dar) düşer.
+        #[arg(long, value_enum, default_value_t = e1arm::E1Edar::On)]
+        e1_edar: e1arm::E1Edar,
     },
     /// Client: N mesaj gönder, ham event JSONL yaz.
     Client {
@@ -322,6 +330,13 @@ enum Cmd {
         dup_copies: u32,
         #[arg(long)]
         out: PathBuf,
+        /// [YOL3 · Ö] E1 teşhis kolu (KK-Ö-05; yalnız `--transport kama-product`; iki uca AYNI).
+        /// K0 = bayraklar kapalı (bugünkü davranış). Bkz. `e1arm.rs`.
+        #[arg(long, value_enum, default_value_t = e1arm::E1Arm::K0)]
+        e1_arm: e1arm::E1Arm,
+        /// [YOL3 · Ö] `off`: ön test geçmediyse (CC §4.2) kolun setinden (e-dar) düşer.
+        #[arg(long, value_enum, default_value_t = e1arm::E1Edar::On)]
+        e1_edar: e1arm::E1Edar,
     },
     /// [FAZ-4 §17] İki veya daha fazla koşu manifestini KIYAS-ADALETİ açısından denetle.
     /// Fark bulunursa exit=2 → kıyas raporu `non-normalized` işaretlenmeden yayımlanamaz.
@@ -516,7 +531,16 @@ async fn main() -> Result<(), BenchError> {
             quinn_iw_bytes,
             quinn_keepalive_ms,
             rx_log,
+            e1_arm,
+            e1_edar,
         } => {
+            // [YOL3 · Ö] Bayraklı kol bu ikilide koşulamazsa koşu başlamaz (sessiz K0 yok).
+            e1arm::E1Sel {
+                arm: e1_arm,
+                edar: e1_edar,
+            }
+            .refuse_unavailable(transport == TransportArg::KamaProduct)
+            .map_err(BenchError::Other)?;
             // [KTP2-F0 / C1] Desteklenmeyen kolda sessizce kayıtsız koşmak yerine reddet.
             let rx_supported = matches!(
                 transport,
@@ -623,7 +647,16 @@ async fn main() -> Result<(), BenchError> {
             payload_id,
             dup_copies,
             out,
+            e1_arm,
+            e1_edar,
         } => {
+            // [YOL3 · Ö] Bayraklı kol bu ikilide koşulamazsa koşu başlamaz (sessiz K0 yok).
+            e1arm::E1Sel {
+                arm: e1_arm,
+                edar: e1_edar,
+            }
+            .refuse_unavailable(transport == TransportArg::KamaProduct)
+            .map_err(BenchError::Other)?;
             // [KTP2-F0 / C2] Yalnız ürün kolunda anlamlı; diğer kollarda sessizce yok sayılmaz.
             if dup_copies > 1 && transport != TransportArg::KamaProduct {
                 return Err(BenchError::Other(

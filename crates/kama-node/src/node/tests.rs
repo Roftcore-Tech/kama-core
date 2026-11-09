@@ -1073,3 +1073,29 @@ fn receipt_completion_is_reported_in_chain_order_within_the_turn() {
         .expect("metin aynı turda");
     assert!(delivered < text, "zincir sırası: {order:?}");
 }
+
+/// [YOL3 · Ö] KK-Ö-04: Transport yapılandırma kancası `build_with_link`'te tam bir kez, ürün
+/// yapılandırması (ürün profili: FEC açık) ve eş adresleri kurulduktan SONRA çağrılır; kancanın
+/// yazdığı `runtime.fec = None` ile düğüm kurulur. Kancasız yol (`None`) bu dosyadaki diğer
+/// testlerin hepsidir.
+#[test]
+fn transport_cfg_hook_runs_once_after_product_config() {
+    let _serial = support::serial();
+    let root = TempDir::new("cfg-hook");
+    let phones = support::provision(root.path(), &[ALICE, BOB]);
+    let seen: Arc<Mutex<Vec<(bool, usize)>>> = Arc::new(Mutex::new(Vec::new()));
+    let record = Arc::clone(&seen);
+    let hook = Box::new(
+        move |cfg: &mut client_core::transport::ClientTransportConfig| {
+            lock(&record).push((cfg.runtime.fec.is_some(), cfg.peer_addrs.len()));
+            cfg.runtime.fec = None;
+        },
+    );
+    let (_alice, _events) =
+        support::manual_with_cfg_hook(&phones[ALICE], support::system_clock(), hook);
+    assert_eq!(
+        *lock(&seen),
+        vec![(true, 1)],
+        "kanca bir kez, ürün yapılandırmasıyla"
+    );
+}

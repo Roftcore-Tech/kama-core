@@ -61,7 +61,8 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use client_core::transport::{
-    EnvelopeLink, LinkAttempt, LinkError, LinkEvent, UnitTraceKind, UnitTraceRecord,
+    ClientTransportConfig, EnvelopeLink, LinkAttempt, LinkError, LinkEvent, UnitTraceKind,
+    UnitTraceRecord,
 };
 use kama_app::codec::PttCodec;
 use kama_app::messaging::MessengerError;
@@ -146,12 +147,15 @@ kullanım: f0_flows --role alice|bob --dir <koşu dizini> --alice-addr IP:PORT -
                 [--window-s S=300] [--receipt-grace-s S=30] [--connect-timeout-s S=30]
                 [--probe-ms MS=200]
                 [--live-diag on|off=on]
+                [--e1-arm K0|K0r|K1|K2|K2mc|K2me=K0] [--e1-edar on|off=on] [--fec-off on|off=off]
        f0_flows --help
 
 İki süreç aynı argümanlarla (yalnız --role farklı) başlatılır; önce bob. bob provisioning'i koşu
 dizinine yazar (prov/), alice prov/READY ve sync/bob.up işaretlerini bekler. Zarflar Unix
 soketlerinden (netem dışı, beyanlı), veri gerçek UDP'den. Çıktı: <rol>.jsonl + <rol>.json.
 Zaman ofsetleri alice'in Connected anına (t0) göredir; bob durmayı sync/t0'dan hizalar.
+YOL3 teşhis: --e1-arm kolu (M2 manifesti bayrak tablosu), --e1-edar off ön test yedeği, --fec-off on
+runtime.fec = None; varsayılanlarda düğüm F0 ile aynı kurucudan başlar (kanca yok).
 ";
 
 // ── Yapılandırma ─────────────────────────────────────────────────────────────────────────────
@@ -199,6 +203,133 @@ impl Scenario {
     }
 }
 
+// ── [YOL3 · Ö] E1 teşhis kolu ve düğüm yapılandırma kancası (KK-Ö-04, KK-Ö-05) ─────────────────
+
+/// E1 teşhis kolu (`--e1-arm`; CC §4.2). Adlar `f0_cell.sh` `ARM_<kol>_SRV` değişkenine uysun diye
+/// K2−c → `K2mc`, K2−e → `K2me`. Varsayılan `K0` = bayraklar kapalı (bugünkü davranış).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum E1Arm {
+    K0,
+    K0r,
+    K1,
+    K2,
+    K2mc,
+    K2me,
+}
+
+/// Bir kolun açtığı E1 bayrakları (CC §4.1 adlarıyla; M2 `E1Flags` alanlarının aynı sırası).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct E1Set {
+    /// (c) `e1_startup_cwnd`.
+    startup_cwnd: bool,
+    /// (d) `e1_applimited_plateau`.
+    applimited_plateau: bool,
+    /// DrainRtprop `e1_drainrt_gate`.
+    drainrt_gate: bool,
+    /// (e-dar) `e1_probe_keep`.
+    probe_keep: bool,
+    /// `retx_first`.
+    retx_first: bool,
+}
+
+impl E1Arm {
+    const ALL: [Self; 6] = [
+        Self::K0,
+        Self::K0r,
+        Self::K1,
+        Self::K2,
+        Self::K2mc,
+        Self::K2me,
+    ];
+
+    fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|arm| arm.name() == name)
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::K0 => "K0",
+            Self::K0r => "K0r",
+            Self::K1 => "K1",
+            Self::K2 => "K2",
+            Self::K2mc => "K2mc",
+            Self::K2me => "K2me",
+        }
+    }
+
+    /// Kol → bayraklar: M2 teşhis manifestinin tablosu (KK-M2-09; ISEMRI-YOL3-Ö KK-Ö-05) AYNEN.
+    /// K0 hiçbiri · K0r retx_first · K1 c+d+DrainRtprop+e-dar · K2 beşi ·
+    /// K2−c d+DrainRtprop+e-dar+retx_first · K2−e c+d+DrainRtprop+retx_first.
+    fn set(self) -> E1Set {
+        let (c, d, dr, e, r) = match self {
+            Self::K0 => (false, false, false, false, false),
+            Self::K0r => (false, false, false, false, true),
+            Self::K1 => (true, true, true, true, false),
+            Self::K2 => (true, true, true, true, true),
+            Self::K2mc => (false, true, true, true, true),
+            Self::K2me => (true, true, true, false, true),
+        };
+        E1Set {
+            startup_cwnd: c,
+            applimited_plateau: d,
+            drainrt_gate: dr,
+            probe_keep: e,
+            retx_first: r,
+        }
+    }
+}
+
+impl E1Set {
+    fn any(self) -> bool {
+        self != Self::default()
+    }
+
+    /// Başlık etiketi: açık bayraklar `+` ile (CC §4.2 adları); hiçbiri → `-`.
+    fn label(self) -> String {
+        let names: Vec<&str> = [
+            (self.startup_cwnd, "c"),
+            (self.applimited_plateau, "d"),
+            (self.drainrt_gate, "DrainRtprop"),
+            (self.probe_keep, "e-dar"),
+            (self.retx_first, "retx_first"),
+        ]
+        .into_iter()
+        .filter_map(|(on, name)| on.then_some(name))
+        .collect();
+        if names.is_empty() {
+            "-".to_owned()
+        } else {
+            names.join("+")
+        }
+    }
+}
+
+/// Düğümün Transport yapılandırma kancası (`KamaNode::start_with_link_cfg_for_test`, KK-Ö-04).
+type TransportHook = Box<dyn FnOnce(&mut ClientTransportConfig) + Send>;
+
+/// Kol ve FEC seçimini düğüm yapılandırmasına çevirir. Hiçbir bayrak açık değil ve FEC ürün
+/// değerindeyse `None` (F0 hücreleriyle AYNI kurucu, kanca yok). E1 bayrağı isteyen kol bu ikilide
+/// bayrak alanı yoksa SESSİZCE K0 koşmaz: hata (koşu başlamaz). Bayrak alanı M2'nin `E1Flags`'i
+/// (`RuntimeConfig.e1_flags`) main'e girince bağlanır (KK-Ö-27; bağımlı commit).
+fn transport_hook(cfg: &Config) -> Result<Option<TransportHook>, String> {
+    let set = cfg.e1_set();
+    if set.any() {
+        return Err(format!(
+            "--e1-arm {} ({}): bu ikilide E1 bayrak alanı yok (RuntimeConfig.e1_flags, M2; \
+             KK-Ö-27) — koşu başlatılmadı",
+            cfg.e1_arm.name(),
+            set.label()
+        ));
+    }
+    if !cfg.fec_off {
+        return Ok(None);
+    }
+    Ok(Some(Box::new(|c: &mut ClientTransportConfig| {
+        // Gösterim düğümü / FEC kapalı kol: PARAM_SET gönderilmez (runtime.rs:2555-2559).
+        c.runtime.fec = None;
+    })))
+}
+
 #[derive(Debug, Clone)]
 struct Config {
     role: Role,
@@ -238,9 +369,26 @@ struct Config {
     live_diag: bool,
     /// bob her öğeyi aldıktan sonra TEXT alındıları (RECEIPT) için ek bekleme üst sınırı.
     receipt_grace: Duration,
+    /// [YOL3 · Ö] E1 teşhis kolu (`--e1-arm`, varsayılan K0; iki uçta aynı).
+    e1_arm: E1Arm,
+    /// [YOL3 · Ö] `--e1-edar off`: ön test geçmediyse (CC §4.2) kolun setinden (e-dar) düşer.
+    e1_edar: bool,
+    /// [YOL3 · Ö] `--fec-off on`: `runtime.fec = None` (gösterim düğümü; teşhis FEC kapalı kolu).
+    fec_off: bool,
 }
 
-const KNOWN_FLAGS: [&str; 38] = [
+impl Config {
+    /// Kolun etkin bayrak seti (`--e1-edar off` ise `e1_probe_keep` düşmüş).
+    fn e1_set(&self) -> E1Set {
+        let mut set = self.e1_arm.set();
+        if !self.e1_edar {
+            set.probe_keep = false;
+        }
+        set
+    }
+}
+
+const KNOWN_FLAGS: [&str; 41] = [
     "--role",
     "--dir",
     "--alice-addr",
@@ -277,6 +425,9 @@ const KNOWN_FLAGS: [&str; 38] = [
     "--probe-ms",
     "--live-diag",
     "--receipt-grace-s",
+    "--e1-arm",
+    "--e1-edar",
+    "--fec-off",
     "--help",
     "-h",
 ];
@@ -362,6 +513,13 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         probe_every: millis(v, "--probe-ms", 200)?,
         live_diag: on_off(v, "--live-diag", true)?,
         receipt_grace: Duration::from_secs(number(v, "--receipt-grace-s", 30)?),
+        e1_arm: match values.get("--e1-arm").copied() {
+            None => E1Arm::K0,
+            Some(name) => E1Arm::parse(name)
+                .ok_or_else(|| format!("--e1-arm K0|K0r|K1|K2|K2mc|K2me olmalı: {name:?}"))?,
+        },
+        e1_edar: on_off(v, "--e1-edar", true)?,
+        fec_off: on_off(v, "--fec-off", false)?,
     };
     validate(&cfg)?;
     Ok(Parsed::Run(Box::new(cfg)))
@@ -927,6 +1085,18 @@ fn session_json(s: &mut String, clock: &Clock, sp: &SessionProbe) {
         c.inflight_bytes,
         state
     );
+    // [YOL3 · Ö] KK-Ö-08 eklemeli alanlar (salt gözlem, aynadan): RTprop (ms; örnek yoksa null),
+    // ProbeUp giriş sayacı, PreConverge çıkış anı (ns, ucun başlangıcından; 0 = çıkılmadı).
+    let rtprop = if d.rtt_samples > 0 {
+        format!("{:.3}", d.rtprop_us as f64 / 1000.0)
+    } else {
+        "null".to_owned()
+    };
+    let _ = write!(
+        s,
+        ",\"rtp\":{},\"pu\":{},\"lpc\":{}",
+        rtprop, c.probe_up_entries, d.left_preconverge_ns
+    );
     match &d.recovery {
         Some(r) => {
             let t = &r.timers;
@@ -1094,14 +1264,26 @@ fn provision(cfg: &Config) -> Result<(), String> {
 fn start_node(cfg: &Config, me: &str, tap: Tap, link: SockLink) -> Result<KamaNode, String> {
     let config = device_path(me)?;
     let data = PathBuf::from(format!("node-{me}"));
-    let node = KamaNode::start_with_link_for_test(
-        &config,
-        &data,
-        Box::new(tap),
-        Box::new(link),
-        cfg.live_diag,
-        true,
-    )
+    // [YOL3 · Ö] Varsayılan bayraklarda (K0, FEC ürün) kanca YOK: F0 hücreleriyle aynı kurucu.
+    let node = match transport_hook(cfg)? {
+        None => KamaNode::start_with_link_for_test(
+            &config,
+            &data,
+            Box::new(tap),
+            Box::new(link),
+            cfg.live_diag,
+            true,
+        ),
+        Some(hook) => KamaNode::start_with_link_cfg_for_test(
+            &config,
+            &data,
+            Box::new(tap),
+            Box::new(link),
+            cfg.live_diag,
+            true,
+            hook,
+        ),
+    }
     .map_err(|e| format!("{me} başlatılamadı: {e}"))?;
     // Anahtarlar bellekte; cihaz dosyası diskte kalmaz.
     let _ = fs::remove_file(&config);
@@ -1122,7 +1304,8 @@ fn header_line(cfg: &Config, clock: &Clock) -> String {
          \"sig_bytes\":{},\"ptt_at_ms\":[{}],\"ptt_bundles\":{},\"ptt_bundle_ms\":{},\"ptt_bytes\":{},\
          \"stall_at_ms\":{},\"stall_ms\":{},\"karsi\":{},\"karsi_texts\":{},\"karsi_every_ms\":{},\
          \"karsi_bundles\":{},\"karsi_min_unacked\":{},\"karsi_text_bytes\":{},\"window_s\":{},\
-         \"connect_timeout_s\":{},\"probe_ms\":{},\"live_diag\":{},\"receipt_grace_s\":{}}}}}",
+         \"connect_timeout_s\":{},\"probe_ms\":{},\"live_diag\":{},\"receipt_grace_s\":{}}},\
+         \"yol3\":{{\"e1_arm\":{},\"e1_edar\":{},\"e1_set\":{},\"fec_off\":{}}}}}",
         js(SCHEMA),
         js(if cfg.role == Role::Alice { ALICE } else { BOB }),
         js(cfg.scenario.name()),
@@ -1164,7 +1347,11 @@ fn header_line(cfg: &Config, clock: &Clock) -> String {
         cfg.connect_timeout.as_secs(),
         cfg.probe_every.as_millis(),
         cfg.live_diag,
-        cfg.receipt_grace.as_secs()
+        cfg.receipt_grace.as_secs(),
+        js(cfg.e1_arm.name()),
+        cfg.e1_edar,
+        js(&cfg.e1_set().label()),
+        cfg.fec_off
     )
 }
 
@@ -2410,5 +2597,128 @@ fn main() -> ExitCode {
     } else {
         eprintln!("f0_flows: {role}: hata (bkz. {role}.json)");
         ExitCode::from(1)
+    }
+}
+
+// ── [YOL3 · Ö] Argüman ve kanca testleri (`cargo test -p kama-integration --example f0_flows`) ──
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// F0 A hücresinin argümanları (`scripts/ktp2/f0/cells/a/a_r12k_d300_l30_dosyali.cell`
+    /// `F0A_ARGS`, yer tutucular doldurulmuş).
+    const F0_CELL_ARGS: &str = "--dir /tmp/f0 --alice-addr 10.10.0.1:20001 \
+        --bob-addr 10.10.1.1:20001 --scenario dosyali --profile r12k_d300_l30 --rep 1 \
+        --file-bytes 524700 --window-s 300 --warmup-texts 3 --warmup-every-ms 500 \
+        --file-at-ms 5000 --texts 40 --text-at-ms 6000 --text-every-ms 2500 --text-bytes 64 \
+        --sigs 10 --sig-at-ms 7000 --sig-every-ms 10000 --sig-bytes 120 --ptt-bundles 25 \
+        --ptt-bundle-ms 200 --ptt-bytes 40 --stall-at-ms 20000 --stall-ms 30000 --karsi on \
+        --karsi-texts 5 --karsi-every-ms 500 --karsi-bundles 10 --karsi-min-unacked 3 \
+        --karsi-text-bytes 48 --connect-timeout-s 30 --probe-ms 200 --live-diag on \
+        --receipt-grace-s 30 --ptt-at-ms 15000,60000";
+
+    fn parse(extra: &str) -> Result<Config, String> {
+        let args: Vec<String> = ["--role", "alice"]
+            .into_iter()
+            .chain(F0_CELL_ARGS.split_whitespace())
+            .chain(extra.split_whitespace())
+            .map(str::to_owned)
+            .collect();
+        match parse_args(&args)? {
+            Parsed::Run(cfg) => Ok(*cfg),
+            Parsed::Help => Err("help".to_owned()),
+        }
+    }
+
+    #[test]
+    fn f0_cell_command_line_keeps_the_f0_path() {
+        let cfg = parse("").expect("F0 hücre komutu ayrışmalı");
+        assert_eq!(cfg.scenario, Scenario::Dosyali);
+        assert_eq!(cfg.file_bytes, 524_700);
+        assert_eq!(cfg.ptt_bytes, 40);
+        assert_eq!(cfg.ptt_at.len(), 2);
+        assert_eq!(cfg.e1_arm, E1Arm::K0);
+        assert!(cfg.e1_edar);
+        assert!(!cfg.fec_off);
+        assert!(!cfg.e1_set().any());
+        assert!(
+            transport_hook(&cfg).expect("K0").is_none(),
+            "varsayılanlarda kanca yok: F0 ile aynı kurucu"
+        );
+    }
+
+    #[test]
+    fn arm_table_matches_the_teshis_manifest() {
+        let want = [
+            ("K0", "-"),
+            ("K0r", "retx_first"),
+            ("K1", "c+d+DrainRtprop+e-dar"),
+            ("K2", "c+d+DrainRtprop+e-dar+retx_first"),
+            ("K2mc", "d+DrainRtprop+e-dar+retx_first"),
+            ("K2me", "c+d+DrainRtprop+retx_first"),
+        ];
+        for (name, label) in want {
+            let cfg = parse(&format!("--e1-arm {name}")).expect("kol ayrışmalı");
+            assert_eq!(cfg.e1_arm.name(), name);
+            assert_eq!(cfg.e1_set().label(), label, "{name}");
+        }
+        assert_eq!(E1Arm::ALL.len(), want.len());
+    }
+
+    #[test]
+    fn edar_off_drops_probe_keep_only() {
+        let k2 = parse("--e1-arm K2 --e1-edar off").expect("ayrışmalı");
+        assert_eq!(k2.e1_set(), E1Arm::K2me.set(), "(e-dar) çıkınca K2 = K2−e");
+        let k1 = parse("--e1-arm K1 --e1-edar off").expect("ayrışmalı");
+        assert_eq!(k1.e1_set().label(), "c+d+DrainRtprop");
+        let k0r = parse("--e1-arm K0r --e1-edar off").expect("ayrışmalı");
+        assert_eq!(k0r.e1_set(), E1Arm::K0r.set());
+    }
+
+    #[test]
+    fn bad_values_are_refused() {
+        assert!(parse("--e1-arm K3").is_err());
+        assert!(parse("--e1-arm k2").is_err());
+        assert!(parse("--fec-off yes").is_err());
+        assert!(parse("--e1-edar 0").is_err());
+        assert!(parse("--e1-arm K0 --e1-arm K2").is_err(), "çift bayrak");
+    }
+
+    #[test]
+    fn fec_off_hook_clears_fec_only() {
+        let cfg = parse("--fec-off on").expect("ayrışmalı");
+        let hook = transport_hook(&cfg)
+            .expect("K0 + FEC kapalı")
+            .expect("FEC kapalıyken kanca var");
+        let addr: SocketAddr = "127.0.0.1:1".parse().expect("adres");
+        let mut c = ClientTransportConfig::product(addr);
+        let before = c.runtime.max_unit_bytes;
+        assert!(c.runtime.fec.is_some(), "ürün profilinde FEC açık");
+        hook(&mut c);
+        assert!(c.runtime.fec.is_none());
+        assert_eq!(c.runtime.max_unit_bytes, before);
+        assert_eq!(c.data_bind, addr);
+    }
+
+    /// Bağımlı commit gelene dek (M2 `E1Flags`, KK-Ö-27) bayraklı kol koşu başlatmaz.
+    #[test]
+    fn flagged_arm_is_refused_until_the_flag_field_exists() {
+        let cfg = parse("--e1-arm K2mc").expect("ayrışmalı");
+        let err = transport_hook(&cfg).err().expect("bayrak alanı yok → hata");
+        assert!(err.contains("e1_flags"), "{err}");
+    }
+
+    #[test]
+    fn header_carries_the_arm() {
+        let cfg = parse("--e1-arm K2mc --fec-off on").expect("ayrışmalı");
+        let hdr = header_line(&cfg, &Clock::new());
+        assert!(
+            hdr.ends_with(
+                ",\"yol3\":{\"e1_arm\":\"K2mc\",\"e1_edar\":true,\
+                 \"e1_set\":\"d+DrainRtprop+e-dar+retx_first\",\"fec_off\":true}}"
+            ),
+            "{hdr}"
+        );
     }
 }
