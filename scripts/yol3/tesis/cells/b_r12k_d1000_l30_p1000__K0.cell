@@ -1,0 +1,28 @@
+# [YOL3 · Ö · teşhis] b_r12k_d1000_l30_p1000__K0 — sıra 2; manşet: E1 var/yok (hız). Üretici: scripts/yol3/tesis/gen_cells.py (elle düzenlemeyin).
+# Kaynak hücre: scripts/ktp2/f0/cells/b/b_r12k_d1000_l30_p1000.cell (sha256 271b87766bd1128851882bd883454123b283d9639d80962477d833a6f8a593f4) — geometri AYNEN; fark yalnız CELL, REPS, ARMS, kol bayrağı.
+# Kol K0: hiçbiri (bayraklar kapalı) (M2 manifesti KK-M2-09) · FEC urun.
+# İkili: BIN_TESIS_BENCH = <yol2/o1>/target/release/bench (orkestratör, D-34); kol arms_kama.sh kama_e1_arm.
+CELL=b_r12k_d1000_l30_p1000__K0
+RATE_ID=r12k
+DELAY_ID=d1000
+LOSS_PCT=30
+RATE_BPS=12500
+DELAY_MS=1000
+JITTER_MS=200
+MSGS=100
+PAY=1000
+IVAL_MS=285
+DEADLINE_S=60
+FWD="delay 1000ms 200ms distribution normal loss 30% rate 100kbit"
+REV="$FWD"
+REPS="${F0_REPS:-10}"
+ARMS="K0"
+BUDGET_S=185
+CAPTURE=0
+SETTLE_S=1.5
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../ktp2/f0/b" && pwd)/hucre_b.sh"
+# shellcheck disable=SC1091
+source "$F0_DIR/arms_kama.sh"
+kama_e1_arm K0 K0
+b_cap_wrap

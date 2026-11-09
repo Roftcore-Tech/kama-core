@@ -40,3 +40,19 @@ kama_arms() {
   ARM_aday_SRV="$_KSRV"; ARM_aday_CLI="$_KCLI"
   unset _KSRV _KCLI
 }
+
+# [YOL3 · Ö] EKLEMELİ (KK-Ö-06): E1 teşhis kolu — tek kol, tek ikili, kol bayrağı komut satırında.
+#   kama_e1_arm <kol> <e1-arm> [ikili yer tutucusu = @BIN_TESIS_BENCH@]
+#     <kol>    = ARMS'taki ad (f0_cell.sh `ARM_<kol>_SRV/CLI`; yalnız [A-Za-z0-9_])
+#     <e1-arm> = bench `--e1-arm` değeri (K0|K0r|K1|K2|K2mc|K2me); İKİ uca AYNI verilir
+#   Geometri ve isteğe bağlı ekler `kama_arm_cmds` ile aynı (KAMA_SRV_EXTRA / KAMA_CLI_EXTRA ile
+#   ör. FEC kapalı kol: `--fec-profile 0`). Mevcut `kama_arms` (taban, aday) değişmez.
+kama_e1_arm() {
+  local arm="${1:?kama_e1_arm: kol adı yok}" e1="${2:?kama_e1_arm: --e1-arm değeri yok}"
+  local bin="${3:-@BIN_TESIS_BENCH@}"
+  case "$arm" in *[!A-Za-z0-9_]*) echo "kama_e1_arm: geçersiz kol adı: $arm" >&2; return 2;; esac
+  kama_arm_cmds "$bin"
+  printf -v "ARM_${arm}_SRV" '%s' "$_KSRV --e1-arm $e1"
+  printf -v "ARM_${arm}_CLI" '%s' "$_KCLI --e1-arm $e1"
+  unset _KSRV _KCLI
+}
