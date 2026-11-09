@@ -840,6 +840,7 @@ dependencies = [
  "kama-noise-wire",
  "kama-provision",
  "kama-transport-schema",
+ "kama-vectors",
  "thiserror",
  "zeroize",
 ]
