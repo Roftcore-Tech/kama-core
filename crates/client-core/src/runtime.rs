@@ -128,6 +128,12 @@ pub struct RuntimeConfig {
     /// n=6 diye bozuk default'u korumak yanlış risk takasıdır. Ön-kayıtlı doğrulama borç olarak
     /// kayıtlı. `0` = eski davranış (clamp geri gelir).
     pub initial_window_bytes: u64,
+    /// [E2a gösterim] Motor kural bayrakları (`adaptive_transport::loss::E2aFlags`; ISEMRI-YOL3-M1):
+    /// m1 zaman eşiği (`tt_rfc`, `g`), m8 RTT kuralı (`rtt_rule_v11`), m6 ilk-pencere yarışı
+    /// (`iw_idle_hold`), PTO prob sayısı (`pto_probes` ∈ {1, 2}). **Varsayılan KAPALI** = sevk
+    /// davranışı bit-aynı. Çalışma-zamanı yapılandırmasıdır; geçersiz değer tip kurucusunda tipli
+    /// hatadır (`E2aFlags::new`), bu alana giremez. KEEP-EXPERIMENTAL: açık kol doğrulanmadı.
+    pub e2a_flags: adaptive_transport::loss::E2aFlags,
     /// [KURULUŞ] `bootstrap_rtt` açıkken merdiven seçimi. `false` (default) = sevk varsayılanı
     /// (3/9/21/45 s — BLACKOUT için kalibre edilmiştir, kuruluş için değil). `true` =
     /// kuruluş-hızlı (0.2/0.6/1.8/5.4 s; ilk basamak 2×`INITIAL_RTT`). Probe BÜTÇESİ değişmez
@@ -269,6 +275,9 @@ impl KamaV1Profile {
             drain_cap: Duration::from_secs(3),
             idle_hold: Duration::from_secs(105),
             initial_window_bytes: Self::INITIAL_WINDOW_BYTES,
+            // [E2a gösterim] Motor kural bayrakları ürün yolunda KAPALI (bit-aynı); gösterim düğümü
+            // yapılandırmayla açar (ISEMRI-YOL3-M1 KK-M1-03/14).
+            e2a_flags: adaptive_transport::loss::E2aFlags::default(),
             bootstrap_rtt: false,
             bootstrap_fast_ladder: false,
             fec_structure_policy: FecStructurePolicy::default(),
@@ -1852,6 +1861,8 @@ async fn client_task(
     if let Some(p) = cfg.fusion_policy {
         session.sender_mut().set_fusion_policy(p);
     }
+    // [E2a gösterim] Kural bayrakları (varsayılan kapalı = bit-aynı; doğrulama tip kurucusunda).
+    session.sender_mut().set_e2a_flags(cfg.e2a_flags);
     // [IW] İlk-uçuş penceresi (0 = sevk davranışı, clamp'e dokunulmaz).
     session
         .sender_mut()
