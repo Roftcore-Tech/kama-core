@@ -9470,6 +9470,42 @@ mod tests {
             assert!(s.e2a_tail_probe2.is_none());
         }
 
+        #[test]
+        fn e2a_pto2_waiting_second_probe_is_a_wakeup_source() {
+            // EK4-A2: bekleyen ikinci prob uyanış kümesindedir; yalnız `next_wakeup_ns` ile
+            // sürülen sürücü (periyodik tik YOK) onu sonraki turdan önce çıkarır.
+            let mut s = Sender::new();
+            s.set_establish_probe(false);
+            s.set_tail_recovery_config(tail_cfg(3, 60_000 * MS));
+            s.set_e2a_flags(flags(false, MS, false, false, 2));
+            s.on_event(Event::AppData(OpaqueUnit { id: 7, size: 1000 }), 0);
+            let mut now = 0u64;
+            let mut probes: Vec<u64> = Vec::new();
+            for _ in 0..10_000 {
+                let Some(w) = s.next_wakeup_ns() else { break };
+                now = w.max(now);
+                let out = s.on_event(Event::TimerFired(Timer::Pto), now);
+                let before = probes.len();
+                probes.extend(
+                    out.iter()
+                        .filter(|d| d.kind == TransmitKind::Retransmit)
+                        .map(|_| now),
+                );
+                if before == 0 && probes.len() == 1 {
+                    let ready = s.e2a_probe2_ready_ns().expect("ikinci prob jeton bekliyor");
+                    assert!(
+                        s.next_wakeup_ns().is_some_and(|w| w <= ready),
+                        "uyanış ≤ ikinci prob hazır anı"
+                    );
+                }
+                if probes.len() >= 2 {
+                    break;
+                }
+            }
+            assert_eq!(probes.len(), 2, "iki prob: {probes:?}");
+            assert!(probes[1] > probes[0] && probes[1] < probes[0] + 120_000 * MS);
+        }
+
         // ── m8: engine §6 v1.1 KABUL KURALI ──
 
         fn v11(on: bool) -> E2aFlags {
