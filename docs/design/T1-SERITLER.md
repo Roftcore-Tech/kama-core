@@ -69,9 +69,11 @@ sayılır (bugün bütün kama-app noktaları Reliable).
 
 Kendi yenilememizde RESPONSE eski oturumun ucu boşalana dek tutulur (`outstanding() == 0`,
 `transport.rs:787-791`); şeritler açıkken ek şart "o oturumun şeritleri boş". `renew_drain_cap`
-dolunca kesinti yine olur. Şeritler oturum başınadır: birim yeni oturuma TAŞINMAZ; supersede
-edilmiş oturumun şeridi ucu yaşadıkça uca verilmeye devam eder, `Closed`'da kalan birimler düşer
-ve sayılır (S1 K7: "kalan birimler eski oturumda kalır").
+dolunca kesinti yine olur. Şeritler oturum başınadır: birim yeni oturuma TAŞINMAZ. Oturum etkin
+olmaktan çıkınca (supersede ya da kapanış) şeridinde bekleyen birimler düşer ve `lane_dropped`'ta
+sayılır (KK-T1-18; S1 K7: teslim edilmemiş birimi Application yeni oturumda yeniden sunar —
+TEXT outbox, D5 yeniden PTT_OPEN, dosyada `superseded` ABORT). Uca verilmiş birimler ucun
+boşaltmasıyla sürer (bugünkü gibi).
 
 ## 7. Oynatma tamponu (KK-T1-11)
 
@@ -80,7 +82,7 @@ bugünkü davranış. Akış (eş, `stream_id`) başına: `PttStarted` hemen; il
 `PttAudio` a0 + T'de (T ∈ [1,5; 2,5] s, `Default` 2,0 s, aralık dışı tipli hata); sonrakiler
 `bundle_ms` aralıkla; geç demet beklenir, ATLANMAZ, gelince hemen verilir ve takvim ona yeniden
 çapalanır (`playout_stalls`, `playout_stall_ms`); `PttEnded` yalnız tampon boşalınca, en erken
-son demetin verilişi + `bundle_ms`'te (KK-T1-16). Saat `Ptt`'nin enjekte saati (`ptt.rs:439`).
+son demetin verilişi + `bundle_ms`'te (KK-T1-17). Saat `Ptt`'nin enjekte saati (`ptt.rs:439`).
 Akış başına tavan 256 demet; aşılırsa en eski demet beklemeden verilir (düşürme yok,
 `playout_overflow`). Kotlin tarafı: Ek A.
 
@@ -113,8 +115,10 @@ motorun send_rate'i değildir (INV-RATE-1 motor kuralıdır, motora dokunulmaz);
 
 Varsayılanlar `lanes = None`, `playout = None` (ürün yolu değişmez; davranış-nötrlük T-L6,
 T-P5). Gösterim düğümüne geçiş yalnız Ö'nün test-util kancası / kama-node `goster` özelliği;
-T1 kama-node'a ve kama-mobile'a dokunmaz. Testler: T-L1…T-L10 (`client-core`), T-P1…T-P8
-(`kama-app`, sahte saat); S1 v2 için seam mock/real + drift kapısı.
+T1 kama-node'a ve kama-mobile'a dokunmaz. Testler: T-L1…T-L5, T-L9, T-L10 birim
+(`client-core/src/lanes.rs`), T-L6, T-L8, T-L10 adaptör (`client-core/tests/lanes_e2e.rs`),
+T-L7 (yenileme) G2; T-P1…T-P8 (`kama-app/tests/ptt.rs`, sahte saat); S1 v2 için seam mock/real
++ drift kapısı. Gözlem: `ClientTransport::lane_stats`/`lane_backlog`, `Ptt::playout_stats`.
 
 ## Ek A — Rust ↔ Kotlin PTT oynatma sözleşmesi v1 (2026-11-09; Hasan, H2)
 
