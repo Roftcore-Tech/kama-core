@@ -6,6 +6,7 @@
     python3 -I scripts/yol3/tesis/gen_cells.py --komut    # orkestratörün koşu komutu (§8.2)
     python3 -I scripts/yol3/tesis/gen_cells.py --set e2a [--check|--komut]   # E2a kıyası
     python3 -I scripts/yol3/tesis/gen_cells.py --set goster [--check|--komut]  # şeritli gösterim
+    python3 -I scripts/yol3/tesis/gen_cells.py --set a [--check|--komut]       # A merdiveni
 
 Seçenekler (M2 manifestinin satırları; varsayılanlar aşağıda, değişirse dosyalar yeniden üretilir):
     --analog y10|l30   gösterim analoğu: `a_r12k_d150_l20_foto150k` (Y10, varsayılan) ya da
@@ -25,6 +26,11 @@ Seçenekler (M2 manifestinin satırları; varsayılanlar aşağıda, değişirse
                        analoğu × {K1, K1a, K0}, her kolda `--goster on` (YOL3-T1 S1 şeritleri
                        W = 5 + PTT oynatma tamponu T = 2,0 s; f0_flows). 3 dosya, 30 iş; ikili
                        yol2/goster. Yalnız A hücresi (bench'te şerit yok).
+                       `a`: A paketi merdiveni (Q1 + Q2) → cells-a/ + SIRA-A.txt; gösterim analoğu
+                       × {K0, K1, K1a, K1g, K1gr, K1grp, K1A}, `--goster on`, FEC kapalı (7 dosya,
+                       70 iş); ikili yol2/goster-a. K1g = K1 + gap_ack · K1gr = K1g +
+                       return_prior_gated · K1grp = K1gr + pto_rfc + pto_probes = 2 · K1A = K1 +
+                       E2a'nın hepsi + a3_burst_floor + a4_probe_srtt.
 
 Geometri (FWD/REV, zaman çizelgesi, bütçe) kaynak F0/YOL3 hücresinin AYNISI: kaynak dosya
 ayrıştırılır, yalnız CELL, REPS, ARMS ve kol bayrağı değişir. Kaynak dosyanın sha256'sı başlığa
@@ -61,8 +67,20 @@ ARM_FLAGS = {
 ALL_ARMS = ["K0", "K0r", "K1", "K2", "K2mc", "K2me"]
 # [E2a kıyası] K1a = K1'in E1 seti + E2a; K0a = yalnız E2a. E2a seti iki kolda aynı (M1 E2aFlags).
 ARM_FLAGS.update({"K1a": ARM_FLAGS["K1"], "K0a": []})
-E2A_ARMS = ["K1a", "K0a"]
 E2A_TEXT = "tt_rfc(g=1ms)+rtt_rule_v11+iw_idle_hold+pto_probes=2"
+# [A merdiveni] Q1 (E2aFlags) + Q2 (E1Flags) kolları; E1 tabanı K1, K1A'da Q2'nin iki bayrağı.
+ARM_FLAGS.update({"K1g": ARM_FLAGS["K1"], "K1gr": ARM_FLAGS["K1"], "K1grp": ARM_FLAGS["K1"],
+                  "K1A": ARM_FLAGS["K1"] + ["a3_burst_floor", "a4_probe_srtt"]})
+# Kol → E2a etiketi (ikilinin `e2a_set` etiketiyle aynı sıra).
+E2A_BY_ARM = {
+    "K1a": E2A_TEXT,
+    "K0a": E2A_TEXT,
+    "K1g": "gap_ack",
+    "K1gr": "gap_ack+return_prior_gated",
+    "K1grp": "pto_probes=2+gap_ack+return_prior_gated+pto_rfc",
+    "K1A": E2A_TEXT + "+gap_ack+return_prior_gated+pto_rfc",
+}
+E2A_ARMS = list(E2A_BY_ARM)
 
 ANALOG = {
     "y10": "scripts/yol3/cells/a/a_r12k_d150_l20_foto150k.cell",
@@ -90,14 +108,21 @@ TABLE_GOSTER = [
     (1, "ANALOG", ["K1", "K1a", "K0"], "şeritli gösterim: K1 ↔ K1a, K0 (--goster on)"),
 ]
 
+# [A merdiveni] Gösterim hücresi × 7 kol, `--goster on`; K1 taban, oranlar oku.py'de K1'e.
+TABLE_A = [
+    (1, "ANALOG", ["K0", "K1", "K1a", "K1g", "K1gr", "K1grp", "K1A"],
+     "A paketi merdiveni (Q1 + Q2; --goster on)"),
+]
+
 # Set → (tablo, hücre dizini, sıra dosyası, ağaç, koşu kökü).
 SETS = {
     "g2": (TABLE, "cells", "SIRA.txt", "yol2/o1", "2026-11-11"),
     "e2a": (TABLE_E2A, "cells-e2a", "SIRA-E2A.txt", "yol2/o1-e2a", "2026-11-09-e2a"),
     "goster": (TABLE_GOSTER, "cells-goster", "SIRA-GOSTER.txt", "yol2/goster", "2026-11-09-goster"),
+    "a": (TABLE_A, "cells-a", "SIRA-A.txt", "yol2/goster-a", "2026-11-09-a"),
 }
 # `--goster on` taşıyan setler (f0_flows: S1 şeritleri + oynatma tamponu, iki uca aynı).
-GOSTER_SETS = {"goster"}
+GOSTER_SETS = {"goster", "a"}
 
 A_KEYS = ["FWD", "REV", "BUDGET_S", "CAPTURE", "SETTLE_S", "F0A_ARGS"]
 B_KEYS = ["RATE_ID", "DELAY_ID", "LOSS_PCT", "RATE_BPS", "DELAY_MS", "JITTER_MS", "MSGS", "PAY",
@@ -128,9 +153,19 @@ def flags_text(arm, edar_yok):
     return "+".join(fl) if fl else "hiçbiri (bayraklar kapalı)"
 
 
+def e1_src(arm):
+    """E1 bayraklarının kaynağı; Q2 bayrağı taşıyan kolda ek (diğer setler bayt bayt aynı)."""
+    if any(f in ARM_FLAGS[arm] for f in ("a3_burst_floor", "a4_probe_srtt")):
+        return "(M2 manifesti KK-M2-09; a3/a4 Q2 E1Flags)"
+    return "(M2 manifesti KK-M2-09)"
+
+
 def e2a_text(arm):
     """E2a kolunda başlık eki; diğer kollarda boş (G2 dosyaları bayt bayt aynı kalır)."""
-    return f" · E2a {E2A_TEXT} (M1 E2aFlags)" if arm in E2A_ARMS else ""
+    if arm not in E2A_BY_ARM:
+        return ""
+    src = "M1 E2aFlags" if arm in ("K1a", "K0a") else "M1+Q1 E2aFlags"
+    return f" · E2a {E2A_BY_ARM[arm]} ({src})"
 
 
 def a_body(cell, arm, rel, sha, lines, fec, edar_yok, purpose, row, tree, goster=False):
@@ -157,7 +192,7 @@ def a_body(cell, arm, rel, sha, lines, fec, edar_yok, purpose, row, tree, goster
         "scripts/yol3/tesis/gen_cells.py (elle düzenlemeyin).",
         f"# Kaynak hücre: {rel} (sha256 {sha}) — geometri AYNEN; fark yalnız CELL, REPS, ARMS, "
         "kol bayrağı.",
-        f"# Kol {arm}: {flags_text(arm, edar_yok)} (M2 manifesti KK-M2-09){e2a_text(arm)} · "
+        f"# Kol {arm}: {flags_text(arm, edar_yok)} {e1_src(arm)}{e2a_text(arm)} · "
         f"FEC {fec}{ork(fec)}.",
         f"# İkili: BIN_TESIS = <{tree}>/target/release/examples/f0_flows (orkestratör, D-34). "
         "Zarflar Unix soketinden (netem dışı, beyanlı).",
@@ -196,7 +231,7 @@ def b_body(cell, arm, rel, sha, lines, fec, edar_yok, purpose, row, tree, goster
         "scripts/yol3/tesis/gen_cells.py (elle düzenlemeyin).",
         f"# Kaynak hücre: {rel} (sha256 {sha}) — geometri AYNEN; fark yalnız CELL, REPS, ARMS, "
         "kol bayrağı.",
-        f"# Kol {arm}: {flags_text(arm, edar_yok)} (M2 manifesti KK-M2-09){e2a_text(arm)} · "
+        f"# Kol {arm}: {flags_text(arm, edar_yok)} {e1_src(arm)}{e2a_text(arm)} · "
         f"FEC {fec}{ork(fec)}.",
         f"# İkili: BIN_TESIS_BENCH = <{tree}>/target/release/bench (orkestratör, D-34); kol "
         "arms_kama.sh kama_e1_arm.",

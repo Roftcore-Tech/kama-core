@@ -151,7 +151,8 @@ kullanım: f0_flows --role alice|bob --dir <koşu dizini> --alice-addr IP:PORT -
                 [--window-s S=300] [--receipt-grace-s S=30] [--connect-timeout-s S=30]
                 [--probe-ms MS=200]
                 [--live-diag on|off=on]
-                [--e1-arm K0|K0r|K1|K2|K2mc|K2me|K1a|K0a=K0] [--e1-edar on|off=on]
+                [--e1-arm K0|K0r|K1|K2|K2mc|K2me|K1a|K0a|K1g|K1gr|K1grp|K1A=K0]
+                [--e1-edar on|off=on]
                 [--fec-off on|off=off] [--goster on|off=off] [--playout-ms MS=2000]
        f0_flows --help
 
@@ -162,7 +163,9 @@ Zaman ofsetleri alice'in Connected anına (t0) göredir; bob durmayı sync/t0'da
 YOL3 teşhis: --e1-arm kolu (M2 manifesti bayrak tablosu), --e1-edar off ön test yedeği, --fec-off on
 runtime.fec = None; varsayılanlarda düğüm F0 ile aynı kurucudan başlar (kanca yok).
 E2a kıyası: K1a = K1 + E2a, K0a = yalnız E2a (M1 E2aFlags: tt_rfc g=1ms, rtt_rule_v11,
-iw_idle_hold, pto_probes=2).
+iw_idle_hold, pto_probes=2). A merdiveni (Q1+Q2): K1g = K1 + gap_ack, K1gr = K1g +
+return_prior_gated, K1grp = K1gr + pto_rfc + pto_probes=2, K1A = K1 + E2a'nın hepsi +
+a3_burst_floor + a4_probe_srtt.
 Gösterim (YOL3-T1): --goster on → S1 şeritleri (LaneConfig::default, W=5) + PTT oynatma tamponu
 (T = --playout-ms, [1500, 2500], varsayılan 2000); --playout-ms yalnız --goster on ile. İki uca aynı.
 ";
@@ -228,6 +231,14 @@ enum E1Arm {
     K1a,
     /// [E2a kıyası] Yalnız E2a seti (E1 kapalı).
     K0a,
+    /// [A merdiveni] K1 + gap_ack (Q1 A-1).
+    K1g,
+    /// [A merdiveni] K1g + return_prior_gated (Q1 A-2).
+    K1gr,
+    /// [A merdiveni] K1gr + pto_rfc + pto_probes = 2 (Q1 A-5).
+    K1grp,
+    /// [A merdiveni] K1 + E2a'nın hepsi + a3_burst_floor + a4_probe_srtt (Q1 + Q2).
+    K1A,
 }
 
 /// Bir kolun açtığı E1 bayrakları (CC §4.1 adlarıyla; M2 `E1Flags` alanlarının aynı sırası).
@@ -243,10 +254,14 @@ struct E1Set {
     probe_keep: bool,
     /// `retx_first`.
     retx_first: bool,
+    /// [Q2 A-3] `a3_burst_floor`.
+    a3_burst_floor: bool,
+    /// [Q2 A-4] `a4_probe_srtt`.
+    a4_probe_srtt: bool,
 }
 
 impl E1Arm {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 12] = [
         Self::K0,
         Self::K0r,
         Self::K1,
@@ -255,6 +270,10 @@ impl E1Arm {
         Self::K2me,
         Self::K1a,
         Self::K0a,
+        Self::K1g,
+        Self::K1gr,
+        Self::K1grp,
+        Self::K1A,
     ];
 
     fn parse(name: &str) -> Option<Self> {
@@ -271,6 +290,10 @@ impl E1Arm {
             Self::K2me => "K2me",
             Self::K1a => "K1a",
             Self::K0a => "K0a",
+            Self::K1g => "K1g",
+            Self::K1gr => "K1gr",
+            Self::K1grp => "K1grp",
+            Self::K1A => "K1A",
         }
     }
 
@@ -278,43 +301,59 @@ impl E1Arm {
     /// K0 hiçbiri · K0r retx_first · K1 c+d+DrainRtprop+e-dar · K2 beşi ·
     /// K2−c d+DrainRtprop+e-dar+retx_first · K2−e c+d+DrainRtprop+retx_first.
     /// [E2a kıyası] K1a = K1'in E1 seti · K0a hiçbiri (fark yalnız [`Self::e2a`]).
+    /// [A merdiveni] K1g, K1gr, K1grp = K1'in E1 seti · K1A = K1 + a3_burst_floor + a4_probe_srtt.
     fn set(self) -> E1Set {
         let (c, d, dr, e, r) = match self {
             Self::K0 | Self::K0a => (false, false, false, false, false),
             Self::K0r => (false, false, false, false, true),
-            Self::K1 | Self::K1a => (true, true, true, true, false),
+            Self::K1 | Self::K1a | Self::K1g | Self::K1gr | Self::K1grp | Self::K1A => {
+                (true, true, true, true, false)
+            }
             Self::K2 => (true, true, true, true, true),
             Self::K2mc => (false, true, true, true, true),
             Self::K2me => (true, true, true, false, true),
         };
+        let q2 = self == Self::K1A;
         E1Set {
             startup_cwnd: c,
             applimited_plateau: d,
             drainrt_gate: dr,
             probe_keep: e,
             retx_first: r,
+            a3_burst_floor: q2,
+            a4_probe_srtt: q2,
         }
     }
 }
 
 impl E1Arm {
     /// [E2a kıyası] Kol → E2a seti (bench `e1arm.rs` `E1Arm::e2a` ile aynı): K1a ve K0a
-    /// `tt_rfc` (g = 1 ms) + `rtt_rule_v11` + `iw_idle_hold` + `pto_probes = 2`; diğerleri kapalı.
+    /// `tt_rfc` (g = 1 ms) + `rtt_rule_v11` + `iw_idle_hold` + `pto_probes = 2`. [A merdiveni] K1g
+    /// gap_ack · K1gr + return_prior_gated · K1grp + pto_rfc + pto_probes = 2 · K1A yedisi.
+    /// Diğerleri kapalı.
     fn e2a(self) -> E2aSet {
-        match self {
-            Self::K1a | Self::K0a => E2aSet {
-                tt_rfc: true,
-                rtt_rule_v11: true,
-                iw_idle_hold: true,
-                pto_probes: 2,
-            },
-            _ => E2aSet::default(),
+        let (tt, v11, iw, probes, gap, rpg, pto) = match self {
+            Self::K1a | Self::K0a => (true, true, true, 2, false, false, false),
+            Self::K1g => (false, false, false, 1, true, false, false),
+            Self::K1gr => (false, false, false, 1, true, true, false),
+            Self::K1grp => (false, false, false, 2, true, true, true),
+            Self::K1A => (true, true, true, 2, true, true, true),
+            _ => return E2aSet::default(),
+        };
+        E2aSet {
+            tt_rfc: tt,
+            rtt_rule_v11: v11,
+            iw_idle_hold: iw,
+            pto_probes: probes,
+            gap_ack: gap,
+            return_prior_gated: rpg,
+            pto_rfc: pto,
         }
     }
 }
 
-/// [E2a kıyası] Bir kolun açtığı E2a bayrakları (M1 `E2aFlags` alanlarının sırası). `g` daima
-/// 1 ms (`E2A_TT_GRANULARITY_MIN_NS`, varsayılan); `gap_ack` kapalı (uygulanmadı).
+/// [E2a kıyası] Bir kolun açtığı E2a bayrakları (M1 + Q1 `E2aFlags` alanlarının sırası). `g`
+/// daima 1 ms (`E2A_TT_GRANULARITY_MIN_NS`, varsayılan).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct E2aSet {
     /// m1 `tt_rfc` (g = 1 ms).
@@ -325,16 +364,25 @@ struct E2aSet {
     iw_idle_hold: bool,
     /// PTO turu başına prob sayısı ({1, 2}).
     pto_probes: u8,
+    /// [Q1 A-1] m5 `gap_ack`.
+    gap_ack: bool,
+    /// [Q1 A-2] `return_prior_gated`.
+    return_prior_gated: bool,
+    /// [Q1 A-5] `pto_rfc`.
+    pto_rfc: bool,
 }
 
 impl Default for E2aSet {
-    /// M1 `E2aFlags::default()` ile aynı: hepsi kapalı, `pto_probes = 1`.
+    /// `E2aFlags::default()` ile aynı: hepsi kapalı, `pto_probes = 1`.
     fn default() -> Self {
         Self {
             tt_rfc: false,
             rtt_rule_v11: false,
             iw_idle_hold: false,
             pto_probes: 1,
+            gap_ack: false,
+            return_prior_gated: false,
+            pto_rfc: false,
         }
     }
 }
@@ -352,8 +400,12 @@ impl E2aSet {
             self.rtt_rule_v11,
             self.iw_idle_hold,
             self.pto_probes,
-            false,
+            self.gap_ack,
         )
+        .map(|f| {
+            f.with_return_prior_gated(self.return_prior_gated)
+                .with_pto_rfc(self.pto_rfc)
+        })
         .map_err(|e| format!("E2a bayrakları geçersiz: {e}"))
     }
 
@@ -364,6 +416,9 @@ impl E2aSet {
             (self.rtt_rule_v11, "rtt_rule_v11"),
             (self.iw_idle_hold, "iw_idle_hold"),
             (self.pto_probes == 2, "pto_probes=2"),
+            (self.gap_ack, "gap_ack"),
+            (self.return_prior_gated, "return_prior_gated"),
+            (self.pto_rfc, "pto_rfc"),
         ]
         .into_iter()
         .filter_map(|(on, name)| on.then_some(name))
@@ -389,8 +444,8 @@ impl E1Set {
             e1_drainrt_gate: self.drainrt_gate,
             e1_probe_keep: self.probe_keep,
             retx_first: self.retx_first,
-            a3_burst_floor: false,
-            a4_probe_srtt: false,
+            a3_burst_floor: self.a3_burst_floor,
+            a4_probe_srtt: self.a4_probe_srtt,
         }
     }
 
@@ -402,6 +457,8 @@ impl E1Set {
             (self.drainrt_gate, "DrainRtprop"),
             (self.probe_keep, "e-dar"),
             (self.retx_first, "retx_first"),
+            (self.a3_burst_floor, "a3_burst_floor"),
+            (self.a4_probe_srtt, "a4_probe_srtt"),
         ]
         .into_iter()
         .filter_map(|(on, name)| on.then_some(name))
@@ -650,7 +707,9 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         e1_arm: match values.get("--e1-arm").copied() {
             None => E1Arm::K0,
             Some(name) => E1Arm::parse(name).ok_or_else(|| {
-                format!("--e1-arm K0|K0r|K1|K2|K2mc|K2me|K1a|K0a olmalı: {name:?}")
+                format!(
+                    "--e1-arm K0|K0r|K1|K2|K2mc|K2me|K1a|K0a|K1g|K1gr|K1grp|K1A olmalı: {name:?}"
+                )
             })?,
         },
         e1_edar: on_off(v, "--e1-edar", true)?,
@@ -2824,6 +2883,10 @@ mod tests {
             ("K2me", "c+d+DrainRtprop+retx_first"),
             ("K1a", "c+d+DrainRtprop+e-dar"),
             ("K0a", "-"),
+            ("K1g", "c+d+DrainRtprop+e-dar"),
+            ("K1gr", "c+d+DrainRtprop+e-dar"),
+            ("K1grp", "c+d+DrainRtprop+e-dar"),
+            ("K1A", "c+d+DrainRtprop+e-dar+a3_burst_floor+a4_probe_srtt"),
         ];
         for (name, label) in want {
             let cfg = parse(&format!("--e1-arm {name}")).expect("kol ayrışmalı");
@@ -2947,6 +3010,68 @@ mod tests {
             ),
             "{hdr}"
         );
+    }
+
+    /// [A merdiveni] Kanca kolun E1 ve E2a setini AYNEN yazar; başlık açık bayrakları taşır.
+    #[test]
+    fn a_ladder_hook_and_header_carry_the_flags() {
+        let addr: SocketAddr = "127.0.0.1:1".parse().expect("adres");
+        let want = [
+            ("K1g", "gap_ack", false),
+            ("K1gr", "gap_ack+return_prior_gated", false),
+            (
+                "K1grp",
+                "pto_probes=2+gap_ack+return_prior_gated+pto_rfc",
+                false,
+            ),
+            (
+                "K1A",
+                "tt_rfc(g=1ms)+rtt_rule_v11+iw_idle_hold+pto_probes=2+gap_ack+\
+                 return_prior_gated+pto_rfc",
+                true,
+            ),
+        ];
+        for (name, e2a_label, q2) in want {
+            let cfg = parse(&format!("--e1-arm {name} --fec-off on --goster on")).expect("ok");
+            let set = cfg.e1_arm.e2a();
+            assert_eq!(set.label(), e2a_label, "{name}");
+            let mut c = ClientTransportConfig::product(addr);
+            transport_hook(&cfg).expect("ok").expect("kanca")(&mut c);
+            let f = c.runtime.e2a_flags;
+            assert_eq!(
+                (
+                    f.gap_ack(),
+                    f.return_prior_gated(),
+                    f.pto_rfc(),
+                    f.pto_probes()
+                ),
+                (
+                    set.gap_ack,
+                    set.return_prior_gated,
+                    set.pto_rfc,
+                    set.pto_probes
+                ),
+                "{name}"
+            );
+            assert_eq!(f.tt_rfc(), set.tt_rfc, "{name}");
+            let e1 = c.runtime.e1_flags;
+            assert_eq!((e1.a3_burst_floor, e1.a4_probe_srtt), (q2, q2), "{name}");
+            assert_eq!(
+                E1Flags {
+                    a3_burst_floor: false,
+                    a4_probe_srtt: false,
+                    ..e1
+                },
+                E1Arm::K1.set().flags(),
+                "{name}: E1 tabanı K1"
+            );
+            assert!(c.lanes.is_some(), "{name}: şeritli");
+            let hdr = header_line(&cfg, &Clock::new());
+            assert!(
+                hdr.contains(&format!("\"e2a_set\":\"{e2a_label}\"")),
+                "{name}: {hdr}"
+            );
+        }
     }
 
     #[test]

@@ -1,0 +1,7 @@
+scripts/yol3/tesis/cells-a/a_r12k_d150_l20_foto150k__K0.cell
+scripts/yol3/tesis/cells-a/a_r12k_d150_l20_foto150k__K1.cell
+scripts/yol3/tesis/cells-a/a_r12k_d150_l20_foto150k__K1a.cell
+scripts/yol3/tesis/cells-a/a_r12k_d150_l20_foto150k__K1g.cell
+scripts/yol3/tesis/cells-a/a_r12k_d150_l20_foto150k__K1gr.cell
+scripts/yol3/tesis/cells-a/a_r12k_d150_l20_foto150k__K1grp.cell
+scripts/yol3/tesis/cells-a/a_r12k_d150_l20_foto150k__K1A.cell
