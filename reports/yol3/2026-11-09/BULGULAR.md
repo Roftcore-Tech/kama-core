@@ -53,6 +53,42 @@ Tanımlar `oku.py` (i) ve (ii); koşu medyanları.
 - Aynı K1 iki koşuda (G2 ↔ E2a; E2a kapalı, davranış aynı): PTT p95 8,63 ↔ 9,82 s, dosya 19,2 ↔ 20,4 s. Koşular arası aralık bu büyüklükte.
 - G2 seçim kuralının (S) sonucu: "Gösterim seti: K1. E1 (manşet, tuzaksız): K2 1.02, K2−c 0.56." (`g2/OKUMA.md`).
 
+## 2b. Şeritli ağaç ve A paketi (`yol2/goster-a` 56313c73) [ölçüldü]
+
+Ağaç ve kollar:
+- Ağaç: `yol2/goster` 9e157992 (o1-e2a + T1 şeritleri 4c1b96cf + düzenek) + `yol3/q1-quinn-ack` 507417b7 + `yol3/q2-quinn-pacer-prob` c8450809. Kayıt: `goster-a/KOSU-KAYDI.txt`.
+- `--goster on` iki uçta: şeritler (W = 5) ve oynatma tamponu (T = 2,0 s).
+- Önceki üç koşuda şeritler ve tampon ürün yolunda kapalıydı: `product()` → `lanes: None` (client-core `transport.rs:221`), kama-node `set_playout` çağırmıyor (`lib.rs:293`) [kod].
+- Kollar (hepsi K1 + …):
+  - K1a: M1 E2a.
+  - K1g: `gap_ack`.
+  - K1gr: K1g + `return_prior_gated`.
+  - K1grp: K1gr + `pto_rfc` + `pto_probes = 2`.
+  - K1A: E2a'nın yedi bayrağı + `a3_burst_floor` + `a4_probe_srtt`.
+
+Ölçü tanımları:
+- PTT varış = bob'da tampon öncesi teslim − gönderim.
+- PTT oynatma = bob `PttBundle` olayı (G2'deki (ii) tanımı).
+- İlk demet = basışların en geç ilk demet varışı.
+
+| kol | dosya tamam | dosya bitiş med (s) | PTT varış p95 med (s) | PTT oynatma p95 med (s) | ilk demet varış med (s) | tel hızı med (B/s) | retx payı med |
+|---|---|---|---|---|---|---|---|
+| K0 | 8/10 | 34,3 | 4,57 | 4,98 | 1,44 | 6 165 | 0,198 |
+| K1 | 10/10 | 30,3 | 1,94 | 3,66 | 1,49 | 7 002 | 0,215 |
+| K1a | 10/10 | 27,6 | 1,28 | 2,65 | 0,63 | 7 481 | 0,228 |
+| K1g | 10/10 | 28,3 | 1,51 | 3,27 | 1,06 | 7 282 | 0,201 |
+| K1gr | 10/10 | 22,6 | 1,29 | 2,69 | 0,67 | 8 559 | 0,183 |
+| K1grp | 10/10 | 24,4 | 1,41 | 2,91 | 0,89 | 8 356 | 0,189 |
+| K1A | 10/10 | 21,2 | 1,77 | 3,01 | 0,87 | 9 509 | 0,178 |
+
+- K0'da iki koşuda dosya alınmadı; birinin nedeni `Outgoing(ReceiverTimeout)`.
+- Şeritler PTT'yi dosyanın arkasından çıkardı: K1 PTT varış 8,63 s (şeritsiz, G2) → 1,94 s.
+- Dosya yavaşladı: K1 19,2 → 30,3 s; tel hızı 10,3 → 7,0 kB/s. Dosya şeridinin penceresi (W = 5 birim) tel hızını sınırlıyor olabilir [çıkarım].
+- A paketinin kolları dosyayı geri hızlandırıyor: K1A 21,2 s, K1gr 22,6 s; tel hızı 9,5 / 8,6 kB/s. Yorum: pencere içinde ACK dönüşü hızlanınca pencere daha sık boşalıyor [çıkarım].
+- quinn (§2, öncelik yok, tampon yok): PTT p95 1,51–2,16 s, dosya 13,6–14,8 s. Kama'nın şeritli PTT varışı (1,28–1,94 s) bu aralıkta. Dosyada Kama hâlâ ≈ 1,5 kat yavaş.
+- Kollar arası farklar N = 10'da koşular arası aralıkla kıyaslanmalı (§2: aynı K1 iki koşuda %14 fark). Bu yüzden K1a/K1gr/K1grp/K1A arasında sıralama yapılmıyor.
+- Q1'in istediği motor alanları (`gap_ack_emits`, `regime_timer_emits`, `measured_return_bw_bps`, ilan→retx) aynada yok.
+
 ## 3. Ham veriden ayrıştırma (`ayristirma_util.py`) [ölçüldü / türetilmiş]
 
 Pencere: alice `file.sent → file.delivered`. Kaynak: gönderici ayna anlıkları (`k = "ts"`), `txb`/`rtxb`/`rtx` farkları.
@@ -84,7 +120,7 @@ Faydalı dosya debisi = 150 480 B / dosya bitiş [türetilmiş]:
 **B1 — PTT farkı sıralamadan.**
 - quinn aynı öncelikli akışları paket paket sırayla döndürüyor (quinn-proto 0.11.18 `connection/streams/mod.rs:393-426`, send_fairness varsayılan açık) [kod].
 - Her PTT demeti ayrı akış olduğu için dosyanın arkasında beklemiyor. quinn öncelik kapalıyken PTT p95 1,51–2,16 s; Kama şeritsiz ağaçta 8,63–16,37 s [ölçüldü].
-- Kama'da bunun karşılığı şeritlerdir (T1, `yol3/t1-seritler` 4c1b96cf); bu klasörde ölçülmedi.
+- Kama'da bunun karşılığı şeritlerdir (T1, `yol3/t1-seritler` 4c1b96cf). Şeritli ölçüm §2b'de: PTT varış p95 1,28–1,94 s.
 
 **B2 — Kama hattı doldurmuyor.**
 - Q-bbr'nin faydalı debisi 11,06 kB/s, 12,5 × (1 − 0,2) = 10 kB/s'nin üstünde. Bu, netem'in kaybı hız sınırlayıcıdan önce düşürdüğünü, kaybın hat kapasitesi harcamadığını gösteriyor [türetilmiş]. Faydalı tavan ≈ 12,5 kB/s, dosya alt sınırı ≈ 12 s (başlık hariç).
@@ -125,9 +161,10 @@ Faydalı dosya debisi = 150 480 B / dosya bitiş [türetilmiş]:
 
 Açık kalemler:
 - B2(b): tel hızının pacer hedefinin altında kalma nedeni.
-- Şeritli ağaçta K1 ↔ quinn.
+- Şeritli ağaçta dosya yavaşlaması (§2b) ve W'nin etkisi.
+- quinn'in öncelikli kolu (PTT > TEXT > dosya; `--q-oncelik on`, hücresi yok).
 
-Kodlanmış, ölçülmemiş (origin dalları, bayraklar varsayılan kapalı):
+Kodlanmış ve §2b'de şeritli ağaçta ölçülmüş (origin dalları, bayraklar varsayılan kapalı):
 - `yol3/q1-quinn-ack` 507417b7:
   - A-1 boşlukta anında ACK (`gap_ack`)
   - A-2 31 B/s önseli 1 kB/s altına kapılı (`return_prior_gated`)
