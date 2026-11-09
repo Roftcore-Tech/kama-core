@@ -39,6 +39,8 @@
 #![forbid(unsafe_code)]
 
 pub mod batch;
+/// [S2-A3] Hub istemcisi (S4). GEÇİCİ satır: HB1'in `pub mod hub;` satırıyla aynı.
+pub mod hub;
 /// [L-T1] Bellek içi zarf taşıyıcısı — YALNIZ test.
 #[cfg(any(test, feature = "test-util"))]
 pub mod memory_link;
