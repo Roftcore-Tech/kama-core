@@ -133,6 +133,11 @@ pub struct RuntimeConfig {
     /// (`iw_idle_hold`), PTO prob sayısı (`pto_probes` ∈ {1, 2}). **Varsayılan KAPALI** = sevk
     /// davranışı bit-aynı. Çalışma-zamanı yapılandırmasıdır; geçersiz değer tip kurucusunda tipli
     /// hatadır (`E2aFlags::new`), bu alana giremez. KEEP-EXPERIMENTAL: açık kol doğrulanmadı.
+    /// [Q1] Aynı değer server ucunun eş-başı `Receiver`'ına da kurulur (A-1 `gap_ack`, A-2
+    /// `return_prior_gated`); A-5 `pto_rfc` göndericidedir. Alıcının A-2 rejim kapısı ve debisi
+    /// ileri yön varış debisinden (simetri vekili; `Receiver::observe_arrival_bytes`). Ölçülen
+    /// dönüş debisi ipucu (`Receiver::set_return_bw_hint`) bu runtime'da BESLENMEZ (alıcı ucunda
+    /// kaynak yok); gönderici tarafı `ReturnPathObserver` ölçümünü kullanır.
     pub e2a_flags: adaptive_transport::loss::E2aFlags,
     /// [KURULUŞ] `bootstrap_rtt` açıkken merdiven seçimi. `false` (default) = sevk varsayılanı
     /// (3/9/21/45 s — BLACKOUT için kalibre edilmiştir, kuruluş için değil). `true` =
@@ -3566,10 +3571,16 @@ async fn server_task(
                         stats.dropped_new_peers += 1;
                         continue;
                     }
-                    peers.insert(key, PeerSlot::new(seam_ctx, cfg.quota_r, now));
+                    let mut slot = PeerSlot::new(seam_ctx, cfg.quota_r, now);
+                    // [Q1] Alıcı kolları aynı yapılandırmadan (A-1 `gap_ack`, A-2);
+                    // varsayılan kapalı = bit-aynı. Gönderici alanlarını alıcı okumaz.
+                    slot.rx.set_e2a_flags(cfg.e2a_flags);
+                    peers.insert(key, slot);
                 }
                 let Some(slot) = peers.get_mut(&key) else { continue };
                 slot.last_seen_ns = now;
+                // [Q1 A-2] İleri yön varış debisi ölçümü (salt ölçüm; bayrak kapalıyken okunmaz).
+                slot.rx.observe_arrival_bytes(n as u64, now);
                 match parsed {
                     // [S1B] İki DATA çerçevesi TEK kolda işlenir. Fark yalnızca chunk
                     // metadata'sının NEREDEN geldiğidir:

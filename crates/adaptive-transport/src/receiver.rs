@@ -85,13 +85,23 @@ const SACK_WIRE_BYTES: u64 = 65;
 const RETURN_BUDGET_PERMIL: u64 = 250;
 /// [K2/§3.3-E] cold-start return_bw önseli (B/s); worst-corner 0.25 kbps = 31.25 B/s → 31 (int floor).
 const RETURN_BW_PRIOR: u64 = 31;
+/// [Q1 A-2] Cadence tabanı, dönüş-debisi girdisi parametreli: `sack_wire / (Y · rb)` (ns).
+/// `rb = RETURN_BW_PRIOR` iken [`ACK_CADENCE_FLOOR_NS`] ile AYNI tamsayı ifadesi (bit-aynı).
+const fn cadence_floor_for(return_bw_bps: u64) -> u64 {
+    let rb = if return_bw_bps == 0 { 1 } else { return_bw_bps };
+    SACK_WIRE_BYTES * 1_000_000_000 * 1000 / (RETURN_BUDGET_PERMIL * rb)
+}
+/// [Q1 A-2] Kota-modu aralığı, dönüş-debisi girdisi parametreli: `sack_wire / rb` (ns).
+const fn t_spacing_for(return_bw_bps: u64) -> u64 {
+    let rb = if return_bw_bps == 0 { 1 } else { return_bw_bps };
+    SACK_WIRE_BYTES * 1_000_000_000 / rb
+}
 /// [K2/R1/R15/§3.3-E/§12] ACK_CADENCE cold-start floor = sack_wire/(Y·return_bw_önsel) ≈ 8.4s.
 /// TIMER-SACK'ları bununla seyrekleşir: kbps'te sabit 20ms tick → SACK-seli/self-congestion (19s-lag);
 /// throttle bunu keser. Frequency-yolu (§2.1, on_datagram) DATA-oranıyla eşleşir → hızlı kanalda responsive
 /// kalır (timer yalnız tail backstop). İlk timer-SACK cadence-exempt ([R1]); return_bw öğrenilince FULL
 /// adaptif hızlanma D2 sonrası (§3.3-E). Sabit const → ADR-17 determinizm (RNG yok).
-const ACK_CADENCE_FLOOR_NS: u64 =
-    SACK_WIRE_BYTES * 1_000_000_000 * 1000 / (RETURN_BUDGET_PERMIL * RETURN_BW_PRIOR);
+const ACK_CADENCE_FLOOR_NS: u64 = cadence_floor_for(RETURN_BW_PRIOR);
 /// [TUR-3b commit-C, karar-a DAR-PARÇA] Tail-muafiyeti çarpanı [CAL {1,2,4}]: beklemede-veri varken
 /// sessizlik ≥ K_TAIL×son-varış-aralığı → timer-SACK cadence-MUAF (R1 ilk-SACK muafiyetinin
 /// tail-simetriği). Formül KANAL-ÖLÇÜLÜ (per-arrival aralık; yeni ms-sabiti YOK — ZM-2): fast'ta
@@ -112,7 +122,7 @@ const QUOTA_R_DEFAULT: u32 = 4;
 /// [r3 §2] Kota-modu emisyon-aralığı = SACK worst-corner serialization'ı ≈ 2.1s.
 /// STATİK-ÖNSEL-TÜREVİ (dürüst-etiket; E-FULL'de ölçülen return_bw'ye bağlanır —
 /// §3.7 statik-prior borcunun yeni-tüketicisi). Dekorelasyon + dar-dönüş doğal-seyrekleşme.
-const T_SPACING_NS: u64 = SACK_WIRE_BYTES * 1_000_000_000 / RETURN_BW_PRIOR;
+const T_SPACING_NS: u64 = t_spacing_for(RETURN_BW_PRIOR);
 /// [r3 §3] §3.3-E MİNİMAL-TABAN çarpanı [CAL {2,4}] ({1} elendi: yapısal paket-başı-ACK):
 /// beklemede-yeni-bilgi varken timer-cadence = clamp(K_ARR×last_gap, T_SPACING, FLOOR).
 const K_ARR: u64 = 2;
@@ -124,6 +134,21 @@ const K_ARR: u64 = 2;
 /// (ya da çok-uzun-ömürlü) ayrık-seq akışında en-eski seq O(log n) `pop_first` ile düşer; kümülatif
 /// SACK kaybı telafi eder (pencere-dışı çok-geç dup teorik — E2E envelope §4 + client-core dedup nihai).
 const RX_DEDUP_WINDOW: usize = 4096;
+
+/// [Q1 A-2] Varış-debisi halkası boyu (son N varış; sabit bellek, SR-AUDIT-001). Debi = halkadaki
+/// ilk varış hariç baytlar / (en yeni − en eski varış anı) — tek tek aralık oranlarının EWMA'sı
+/// DEĞİL (yığılmış varışta yukarı sapmaz).
+const ARRIVAL_RATE_RING: usize = 8;
+
+/// [Q1] Alıcının E2a kollarının SALT GÖZLEM sayaçları (karar girdisi değil).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RxE2aDiag {
+    /// A-1 (`gap_ack`): sıra dışı / boşluk yaratan datagram yüzünden ANINDA üretilen ACK sayısı
+    /// (frekans yolunun zaten üreteceği ACK'ler dahil değil).
+    pub gap_ack_emits: u64,
+    /// A-2: rejim içinde (önsel dışı) hesaplanmış timer-cadence ile üretilen ACK sayısı.
+    pub regime_timer_emits: u64,
+}
 
 /// Receiver state machine (§4). rx-set + SACK üretimi; `on_datagram` / `on_ack_timer` ile sürülür.
 pub struct Receiver {
@@ -154,6 +179,16 @@ pub struct Receiver {
     last_arrival_ns: u64, // [3b-C] HERHANGİ datagram'ın son varışı (dup dahil — kanal-tempo kanıtı)
     last_gap_ns: u64, // [3b-C] son varış-aralığı (serialization-vekili; 0 = henüz tek varış)
     last_tail_ack_ns: u64, // [3b-C rev2] tail-SACK'in KENDİ ritim-sayacı (cadence'ten bağımsız)
+    // ── [Q1] E2a alıcı kolları (varsayılan kapalı = bit-aynı) ──
+    e2a: crate::loss::E2aFlags,
+    /// A-2: bu alıcının ACK (çıkış) yönü için çağıranın verdiği ölçülen debi (B/s); 0 = yok.
+    return_bw_hint_bps: u64,
+    /// A-2: ileri yön varış halkası `(an_ns, bayt)` — göndericinin pace'inin alıcıdaki vekili.
+    /// Yalnız [`Receiver::observe_arrival_bytes`] yazar; bayrak kapalıyken hiçbir karar okumaz.
+    arrivals: [(u64, u64); ARRIVAL_RATE_RING],
+    arrivals_len: usize,
+    arrivals_idx: usize,
+    e2a_diag: RxE2aDiag,
 }
 
 impl Receiver {
@@ -186,6 +221,105 @@ impl Receiver {
             last_arrival_ns: 0,
             last_gap_ns: 0,
             last_tail_ack_ns: 0,
+            e2a: crate::loss::E2aFlags::default(),
+            return_bw_hint_bps: 0,
+            arrivals: [(0, 0); ARRIVAL_RATE_RING],
+            arrivals_len: 0,
+            arrivals_idx: 0,
+            e2a_diag: RxE2aDiag::default(),
+        }
+    }
+
+    /// [Q1] Alıcı kural bayraklarını kurar: A-1 `gap_ack`, A-2 `return_prior_gated`. Diğer
+    /// alanlar göndericiye aittir, burada okunmaz. Varsayılan kapalı.
+    pub fn set_e2a_flags(&mut self, flags: crate::loss::E2aFlags) {
+        self.e2a = flags;
+    }
+
+    /// [Q1] Kurulu bayraklar (gözlem/test).
+    #[must_use]
+    pub fn e2a_flags(&self) -> crate::loss::E2aFlags {
+        self.e2a
+    }
+
+    /// [Q1 A-2] Bu alıcının ACK yönünün ölçülen debisi (B/s; 0 = ölçüm yok). Kaynak çağıranındır
+    /// (alıcı kendi çıkış yolunu ölçemez: ACK'lerin ACK'i yok). Rejim içinde varış debisinin
+    /// (simetri vekili) yerine geçer; rejim kapısı yine varış debisiyle.
+    pub fn set_return_bw_hint(&mut self, bps: u64) {
+        self.return_bw_hint_bps = bps;
+    }
+
+    /// [Q1 A-2] İleri yön datagramının TELDEKİ boyu (çağıran, `on_datagram`'dan önce). Salt
+    /// ölçüm: sabit halka; bayrak kapalıyken hiçbir karar okumaz (bit-aynı).
+    pub fn observe_arrival_bytes(&mut self, wire_bytes: u64, now_ns: u64) {
+        self.arrivals[self.arrivals_idx] = (now_ns, wire_bytes);
+        self.arrivals_idx = (self.arrivals_idx + 1) % ARRIVAL_RATE_RING;
+        self.arrivals_len = (self.arrivals_len + 1).min(ARRIVAL_RATE_RING);
+    }
+
+    /// [Q1 A-2] İleri yön varış debisi (B/s): halkadaki en eski varış hariç baytlar / zaman
+    /// açıklığı. < 2 örnek ya da sıfır açıklık → 0 (ölçüm yok).
+    #[must_use]
+    pub fn arrival_rate_bps(&self) -> u64 {
+        let n = self.arrivals_len;
+        if n < 2 {
+            return 0;
+        }
+        // En eski = yazma imlecinin n adım gerisi (halka doluysa imlecin kendisi).
+        let oldest = (self.arrivals_idx + ARRIVAL_RATE_RING - n) % ARRIVAL_RATE_RING;
+        let newest = (self.arrivals_idx + ARRIVAL_RATE_RING - 1) % ARRIVAL_RATE_RING;
+        let span = self.arrivals[newest]
+            .0
+            .saturating_sub(self.arrivals[oldest].0);
+        if span == 0 {
+            return 0;
+        }
+        let bytes: u64 = (1..n)
+            .map(|k| self.arrivals[(oldest + k) % ARRIVAL_RATE_RING].1)
+            .fold(0u64, u64::saturating_add);
+        u64::try_from(u128::from(bytes) * 1_000_000_000 / u128::from(span)).unwrap_or(u64::MAX)
+    }
+
+    /// [Q1] E2a alıcı kollarının salt gözlem sayaçları.
+    #[must_use]
+    pub fn diag_e2a(&self) -> RxE2aDiag {
+        self.e2a_diag
+    }
+
+    /// [Q1 A-2] Rejim içi dönüş debisi (B/s); `None` = önsel rejimi. Bayrak kapalı ya da varış
+    /// debisi (göndericinin pace'inin vekili) < [`crate::loss::E2A_RETURN_REGIME_MIN_BPS`] → `None`.
+    /// Rejimde: ölçülen ipucu (varsa) yoksa varış debisi (simetri varsayımı); en az önsel.
+    fn regime_return_bw(&self) -> Option<u64> {
+        if !self.e2a.return_prior_gated() {
+            return None;
+        }
+        let pace_proxy = self.arrival_rate_bps();
+        if pace_proxy < crate::loss::E2A_RETURN_REGIME_MIN_BPS {
+            return None;
+        }
+        let rb = if self.return_bw_hint_bps > 0 {
+            self.return_bw_hint_bps
+        } else {
+            pace_proxy
+        };
+        Some(rb.max(RETURN_BW_PRIOR))
+    }
+
+    /// [Q1 A-2] Bekleyen-bilgi cadence üst sınırı: önselde [`ACK_CADENCE_FLOOR_NS`]; rejimde
+    /// `max(25 ms, sack_wire / (Y·rb))`.
+    fn cadence_floor_ns(&self) -> u64 {
+        match self.regime_return_bw() {
+            None => ACK_CADENCE_FLOOR_NS,
+            Some(rb) => cadence_floor_for(rb).max(crate::loss::E2A_ACK_CADENCE_MIN_NS),
+        }
+    }
+
+    /// [Q1 A-2] Kota aralığı + bekleyen-bilgi cadence alt sınırı: önselde [`T_SPACING_NS`]; rejimde
+    /// `max(25 ms, sack_wire / rb)`.
+    fn t_spacing_ns(&self) -> u64 {
+        match self.regime_return_bw() {
+            None => T_SPACING_NS,
+            Some(rb) => t_spacing_for(rb).max(crate::loss::E2A_ACK_CADENCE_MIN_NS),
         }
     }
 
@@ -230,6 +364,15 @@ impl Receiver {
             };
         }
 
+        // [Q1 A-1 / m5] RFC 9000 §13.2.1 (quinn-proto 0.11.18 `connection/spaces.rs`
+        // `PendingAcks::is_out_of_order`, `reordering_threshold = 1`; MIT/Apache-2.0): yeni datagram
+        // görülen en büyükten KÜÇÜKSE (geç varış) ya da arada eksik bırakarak BÜYÜKSE (yeni boşluk)
+        // ACK gecikmesiz. En büyüğün üstünde hiçbir seq alınmamış olduğundan "arada eksik" ⟺
+        // `seq > largest + 1`. İlk datagram sınıflandırılmaz. Kayıt GÜNCELLENMEDEN önce okunur.
+        let out_of_order = self.e2a.gap_ack()
+            && self.have_recv
+            && (d.seq < self.largest_seq || d.seq > self.largest_seq.saturating_add(1));
+
         self.record_seq(d.seq, now_ns);
 
         let (delivered, is_shard) = match d.kind {
@@ -253,7 +396,11 @@ impl Receiver {
             RxState::Normal
         };
 
-        let ack = self.tick_ack(now_ns, false);
+        let freq_due = self.since_last_ack.saturating_add(1) >= self.ack_freq;
+        let ack = self.tick_ack(now_ns, out_of_order);
+        if out_of_order && !freq_due {
+            self.e2a_diag.gap_ack_emits = self.e2a_diag.gap_ack_emits.saturating_add(1);
+        }
         RxOutput {
             delivered,
             ack,
@@ -296,7 +443,7 @@ impl Receiver {
         // gecikmesiz (muafiyet — eski first_ack_sent'in genellemesi). Kopyalar yeni-varış
         // BEKLEMEZ (retry-semantiği; Ekleme-2 geri-çekildi, not §2 revizyonu).
         if self.quota > 0 {
-            if self.episode_first_pending || elapsed >= T_SPACING_NS {
+            if self.episode_first_pending || elapsed >= self.t_spacing_ns() {
                 self.since_last_ack = 0;
                 self.burn_quota();
                 self.record_ack_emit(now_ns);
@@ -306,13 +453,21 @@ impl Receiver {
         }
         // [r3 §3] Bacak-2 §3.3-E MİNİMAL-TABAN (kota-dışı): beklemede-yeni-bilgi varken cadence
         // varış-ritmine bağlanır; yoksa statik-önsel FLOOR (sessiz-dönem tekrarları korunur).
+        // [Q1 A-2] Bekleyen-bilgi kolunun sınırları rejim kapılı (bayrak kapalı → sabitler).
+        // BOŞTA tekrar (yeni bilgi yok) tabanı bilinçli olarak önselde KALIR: rejimde o kol 25 ms'de
+        // bir sınırsız tekrar SACK'i olurdu (quinn yeni veri yokken hiç ACK üretmez) [kod].
         let cadence_eff = if self.since_last_ack > 0 && self.last_gap_ns > 0 {
-            (K_ARR.saturating_mul(self.last_gap_ns)).clamp(T_SPACING_NS, ACK_CADENCE_FLOOR_NS)
+            (K_ARR.saturating_mul(self.last_gap_ns))
+                .clamp(self.t_spacing_ns(), self.cadence_floor_ns())
         } else {
             ACK_CADENCE_FLOOR_NS
         };
         if elapsed < cadence_eff {
             return None;
+        }
+        if cadence_eff < T_SPACING_NS {
+            // Önsel rejiminde clamp alt sınırı T_SPACING'dir; altı yalnız A-2 rejiminde mümkün.
+            self.e2a_diag.regime_timer_emits = self.e2a_diag.regime_timer_emits.saturating_add(1);
         }
         if cadence_eff < ACK_CADENCE_FLOOR_NS {
             self.diag_accel_emits += 1;
@@ -935,5 +1090,275 @@ mod return_supply_tests {
         let ack = r.on_ack_timer(7_900 * MS);
         assert!(ack.is_some(), "accel-penceresinde emisyon");
         assert_eq!(r.diag_return_supply().2, 1, "hızlanmış-cadence sayacı");
+    }
+}
+
+// ── [Q1] QUINN-FARKI §3-A alıcı kolları: A-1 gap_ack · A-2 return_prior_gated ──
+// Her kol iki kollu (kapalı = bugünkü çıktı, açık = yeni çıktı), sahte saatli, deterministik.
+#[cfg(test)]
+mod q1_tests {
+    use super::*;
+    use crate::loss::{E2aFlags, E2A_ACK_CADENCE_MIN_NS};
+
+    const MS: u64 = 1_000_000;
+
+    fn data(seq: u64) -> RxDatagram {
+        RxDatagram {
+            seq,
+            unit_id: 1000 + seq,
+            kind: RxKind::Data,
+        }
+    }
+
+    fn rx(f: E2aFlags) -> Receiver {
+        let mut r = Receiver::new();
+        r.set_e2a_flags(f);
+        r
+    }
+
+    fn gap_on() -> E2aFlags {
+        E2aFlags::new(false, MS, false, false, 1, true).expect("geçerli")
+    }
+
+    fn gated() -> E2aFlags {
+        E2aFlags::default().with_return_prior_gated(true)
+    }
+
+    /// Varış: bayt ölçümü + motor (runtime sırası).
+    fn arrive(r: &mut Receiver, seq: u64, bytes: u64, t: u64) -> RxOutput {
+        r.observe_arrival_bytes(bytes, t);
+        r.on_datagram(data(seq), t)
+    }
+
+    // ── A-1 (m5): boşlukta / geç varışta anında ACK ──
+
+    #[test]
+    fn a1_gap_ack_immediate_on_new_gap_and_late_arrival() {
+        // 0,1 sıralı (frekans ACK'i) · 3 (yeni boşluk: 2 eksik) · 2 (geç varış) · 4 (sıralı).
+        let seqs = [
+            (0, 0),
+            (1, 10 * MS),
+            (3, 20 * MS),
+            (2, 30 * MS),
+            (4, 40 * MS),
+        ];
+        let run = |r: &mut Receiver| -> Vec<bool> {
+            seqs.iter()
+                .map(|&(s, t)| r.on_datagram(data(s), t).ack.is_some())
+                .collect()
+        };
+        let mut off = Receiver::new();
+        let mut on = rx(gap_on());
+        // Kapalı: yalnız frekans (her 2 datagram).
+        assert_eq!(run(&mut off), vec![false, true, false, true, false]);
+        // Açık: 3 (yeni boşluk) ve 2 (geç varış) gecikmesiz; 4 sıralı → frekansı bekler.
+        assert_eq!(run(&mut on), vec![false, true, true, true, false]);
+        assert_eq!(off.diag_e2a(), RxE2aDiag::default());
+        // 3'teki ACK frekans sayacını sıfırladığından 2'deki de frekansa ulaşmaz → ikisi de ek.
+        assert_eq!(on.diag_e2a().gap_ack_emits, 2);
+    }
+
+    #[test]
+    fn a1_gap_ack_reports_the_gap() {
+        let mut on = rx(gap_on());
+        on.on_datagram(data(0), 0);
+        on.on_datagram(data(1), 10 * MS);
+        let a = on
+            .on_datagram(data(3), 20 * MS)
+            .ack
+            .expect("boşlukta anında ACK");
+        assert_eq!((a.largest_seq, a.block0_len), (3, 1));
+        assert_eq!(a.ranges, vec![crate::ack::AckRange { gap: 2, len: 2 }]);
+    }
+
+    #[test]
+    fn a1_in_order_stream_is_identical_in_both_arms() {
+        // Sıra dışı yokken kol yol üstünde değil: bütün ACK ve timer çıktıları birebir aynı.
+        let run = |f: E2aFlags| {
+            let mut r = rx(f);
+            let mut out = Vec::new();
+            for i in 0..40u64 {
+                out.push(r.on_datagram(data(i), i * 37 * MS).ack.map(|a| a.encode()));
+                out.push(r.on_ack_timer(i * 37 * MS + 20 * MS).map(|a| a.encode()));
+            }
+            for k in 0..600u64 {
+                out.push(
+                    r.on_ack_timer(40 * 37 * MS + k * 20 * MS)
+                        .map(|a| a.encode()),
+                );
+            }
+            (out, r.diag_return_supply())
+        };
+        assert_eq!(run(E2aFlags::default()), run(gap_on()));
+    }
+
+    #[test]
+    fn a1_first_datagram_not_classified_and_duplicate_unchanged() {
+        let mut on = rx(gap_on());
+        assert!(
+            on.on_datagram(data(5), 0).ack.is_none(),
+            "ilk datagram sınıflandırılmaz (taban yok)"
+        );
+        let d = on.on_datagram(data(5), MS);
+        assert!(
+            d.was_duplicate && d.ack.is_some(),
+            "kopya teyidi bugünkü gibi"
+        );
+        assert_eq!(on.diag_e2a().gap_ack_emits, 0);
+    }
+
+    // ── A-2: 31 B/s önseli rejim kapılı ──
+
+    #[test]
+    fn a2_prior_formulas_reproduce_shipped_constants() {
+        assert_eq!(cadence_floor_for(RETURN_BW_PRIOR), ACK_CADENCE_FLOOR_NS);
+        assert_eq!(t_spacing_for(RETURN_BW_PRIOR), T_SPACING_NS);
+        assert_eq!(ACK_CADENCE_FLOOR_NS, 8_387_096_774);
+        assert_eq!(T_SPACING_NS, 2_096_774_193);
+        let r = Receiver::new();
+        assert_eq!(r.e2a_flags(), E2aFlags::default());
+        assert_eq!(
+            (r.cadence_floor_ns(), r.t_spacing_ns()),
+            (ACK_CADENCE_FLOOR_NS, T_SPACING_NS)
+        );
+    }
+
+    #[test]
+    fn a2_arrival_rate_ring() {
+        let mut r = Receiver::new();
+        assert_eq!(r.arrival_rate_bps(), 0, "örnek yok");
+        r.observe_arrival_bytes(1200, 0);
+        assert_eq!(r.arrival_rate_bps(), 0, "tek örnek");
+        for k in 1..=20u64 {
+            r.observe_arrival_bytes(1200, k * 100 * MS);
+        }
+        // Son 8 varış: 7 × 1200 B / 0,7 s = 12 000 B/s (yığılmaya duyarsız oran, EWMA değil).
+        assert_eq!(r.arrival_rate_bps(), 12_000);
+        // Aynı anda ikinci varış (yığılma). Halka 1,4…2,0 s + 2,0 s: 7 × 1200 B / 0,6 s =
+        // 14 000 B/s — sınırlı artış (aralık-oranı EWMA'sında sıfır aralık örneği sonsuza giderdi).
+        r.observe_arrival_bytes(1200, 2_000 * MS);
+        assert_eq!(r.arrival_rate_bps(), 14_000);
+    }
+
+    /// 100 ms aralıklı 1200 B varış (12 kB/s), 0..=7 ve 800 ms'de bekleyen 8; 20 ms tik.
+    /// Dönüş: 8'den sonraki ilk ACK anı.
+    fn first_ack_after_pending(f: E2aFlags, bytes: u64, gap: u64) -> u64 {
+        let mut r = rx(f);
+        for i in 0..8u64 {
+            arrive(&mut r, i, bytes, i * gap);
+        }
+        assert!(arrive(&mut r, 8, bytes, 8 * gap).ack.is_none());
+        let mut t = 8 * gap;
+        loop {
+            t += 20 * MS;
+            if r.on_ack_timer(t).is_some() {
+                return t;
+            }
+            assert!(t < 60_000 * MS, "ACK hiç gelmedi");
+        }
+    }
+
+    #[test]
+    fn a2_in_regime_pending_cadence_is_25ms_class() {
+        // Kapalı: bekleyen tek datagramın ACK'i tail muafiyetiyle K_TAIL × 100 ms = 200 ms sonra.
+        assert_eq!(
+            first_ack_after_pending(E2aFlags::default(), 1200, 100 * MS),
+            1_000 * MS
+        );
+        // Açık (12 kB/s ≥ 1 kB/s): cadence = clamp(2×100 ms, 25 ms, 25 ms) = 25 ms; son emisyon
+        // 700 ms'de → 800 ms'deki varıştan sonraki ilk tik.
+        assert_eq!(first_ack_after_pending(gated(), 1200, 100 * MS), 820 * MS);
+        let mut r = rx(gated());
+        for i in 0..8u64 {
+            arrive(&mut r, i, 1200, i * 100 * MS);
+        }
+        assert_eq!(
+            r.t_spacing_ns(),
+            E2A_ACK_CADENCE_MIN_NS,
+            "max(25 ms, 65 B/12 kB/s)"
+        );
+        assert_eq!(r.cadence_floor_ns(), E2A_ACK_CADENCE_MIN_NS);
+    }
+
+    #[test]
+    fn a2_below_regime_is_identical_to_off() {
+        // PTT benzeri 80 B / 200 ms ≈ 400 B/s < 1 kB/s → önsel; çıktı dizisi kapalı kolla aynı.
+        let run = |f: E2aFlags| {
+            let mut r = rx(f);
+            let mut out = Vec::new();
+            for i in 0..30u64 {
+                out.push(arrive(&mut r, i, 80, i * 200 * MS).ack.map(|a| a.encode()));
+                for k in 1..10u64 {
+                    out.push(
+                        r.on_ack_timer(i * 200 * MS + k * 20 * MS)
+                            .map(|a| a.encode()),
+                    );
+                }
+            }
+            for k in 0..1000u64 {
+                out.push(r.on_ack_timer(6_000 * MS + k * 20 * MS).map(|a| a.encode()));
+            }
+            (out, r.diag_return_supply(), r.diag_e2a())
+        };
+        let off = run(E2aFlags::default());
+        assert_eq!(run(gated()), off);
+        assert_eq!(off.2, RxE2aDiag::default());
+    }
+
+    #[test]
+    fn a2_off_ignores_measurements_entirely() {
+        // Kapalı kol: yüksek varış debisi ve ipucu verilse bile sabitler (bit-aynı).
+        let mut r = Receiver::new();
+        r.set_return_bw_hint(12_500);
+        for i in 0..8u64 {
+            arrive(&mut r, i, 1200, i * 100 * MS);
+        }
+        assert_eq!(
+            (r.cadence_floor_ns(), r.t_spacing_ns()),
+            (ACK_CADENCE_FLOOR_NS, T_SPACING_NS)
+        );
+    }
+
+    #[test]
+    fn a2_hint_replaces_symmetric_proxy_in_regime() {
+        let mut r = rx(gated());
+        for i in 0..8u64 {
+            arrive(&mut r, i, 1200, i * 100 * MS);
+        }
+        r.set_return_bw_hint(350);
+        // Ölçülen dönüş debisi 350 B/s: t_spacing = 65 B / 350 B/s ≈ 185,7 ms > 25 ms.
+        assert_eq!(r.t_spacing_ns(), t_spacing_for(350));
+        assert_eq!(t_spacing_for(350), 185_714_285);
+        assert_eq!(r.cadence_floor_ns(), cadence_floor_for(350));
+    }
+
+    #[test]
+    fn a2_idle_repeat_floor_stays_on_prior_in_regime() {
+        // Rejimde bile yeni bilgi yokken tekrar SACK aralığı ≥ 8,39 s (25 ms'lik tekrar seli yok).
+        let mut r = rx(gated());
+        for i in 0..8u64 {
+            arrive(&mut r, i, 1200, i * 100 * MS);
+        }
+        let mut emits = Vec::new();
+        let mut t = 700 * MS;
+        while t < 60_000 * MS {
+            t += 20 * MS;
+            if r.on_ack_timer(t).is_some() {
+                emits.push(t);
+            }
+        }
+        // Frekans ACK'leri kotayı (R = 4) zaten yaktı; geriye yalnız boşta tekrar kalır.
+        assert!(!emits.is_empty());
+        for w in emits.windows(2) {
+            assert!(
+                w[1] - w[0] >= ACK_CADENCE_FLOOR_NS,
+                "boşta tekrar önselde: {w:?}"
+            );
+        }
+        assert_eq!(
+            r.diag_e2a().regime_timer_emits,
+            0,
+            "boşta kol rejim cadence'i değil"
+        );
     }
 }
