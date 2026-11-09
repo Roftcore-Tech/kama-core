@@ -1,0 +1,3 @@
+scripts/yol3/tesis/cells-e2a/a_r12k_d150_l20_foto150k__K1.cell
+scripts/yol3/tesis/cells-e2a/a_r12k_d150_l20_foto150k__K1a.cell
+scripts/yol3/tesis/cells-e2a/a_r12k_d150_l20_foto150k__K0a.cell

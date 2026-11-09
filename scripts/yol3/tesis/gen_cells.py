@@ -4,6 +4,7 @@
     python3 -I scripts/yol3/tesis/gen_cells.py            # cells/ + SIRA.txt yazar
     python3 -I scripts/yol3/tesis/gen_cells.py --check    # yazmaz; 16 dosya / 160 iş + bayt eşitliği
     python3 -I scripts/yol3/tesis/gen_cells.py --komut    # orkestratörün koşu komutu (§8.2)
+    python3 -I scripts/yol3/tesis/gen_cells.py --set e2a [--check|--komut]   # E2a kıyası
 
 Seçenekler (M2 manifestinin satırları; varsayılanlar aşağıda, değişirse dosyalar yeniden üretilir):
     --analog y10|l30   gösterim analoğu: `a_r12k_d150_l20_foto150k` (Y10, varsayılan) ya da
@@ -14,6 +15,11 @@ Seçenekler (M2 manifestinin satırları; varsayılanlar aşağıda, değişirse
                        (ürün profili, FEC açık)
     --edar-yok         ön test geçmediyse (CC §4.2): her kolda `--e1-edar off` (e1_probe_keep düşer);
                        K2−e K2 ile aynı sete indiği için çıkar (15 dosya, 150 iş)
+    --set g2|e2a       `g2` (varsayılan): G2 teşhis seti → cells/ + SIRA.txt (yukarıdaki tablo).
+                       `e2a`: E2a kıyası → cells-e2a/ + SIRA-E2A.txt; gösterim analoğu × {K1, K1a,
+                       K0a} (3 dosya, 30 iş). K1a = K1 + E2a, K0a = yalnız E2a; E2a = M1 `E2aFlags`
+                       tt_rfc (g = 1 ms) + rtt_rule_v11 + iw_idle_hold + pto_probes = 2. Tek
+                       değişken K1 ↔ K1a; ikili yol2/o1-e2a (iki kol AYNI ikiliden).
 
 Geometri (FWD/REV, zaman çizelgesi, bütçe) kaynak F0/YOL3 hücresinin AYNISI: kaynak dosya
 ayrıştırılır, yalnız CELL, REPS, ARMS ve kol bayrağı değişir. Kaynak dosyanın sha256'sı başlığa
@@ -34,8 +40,6 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(HERE, "..", "..", ".."))
-CELLS_DIR = os.path.join(HERE, "cells")
-SIRA = os.path.join(HERE, "SIRA.txt")
 
 REPS = 10
 
@@ -50,6 +54,10 @@ ARM_FLAGS = {
     "K2me": ["c", "d", "DrainRtprop", "retx_first"],
 }
 ALL_ARMS = ["K0", "K0r", "K1", "K2", "K2mc", "K2me"]
+# [E2a kıyası] K1a = K1'in E1 seti + E2a; K0a = yalnız E2a. E2a seti iki kolda aynı (M1 E2aFlags).
+ARM_FLAGS.update({"K1a": ARM_FLAGS["K1"], "K0a": []})
+E2A_ARMS = ["K1a", "K0a"]
+E2A_TEXT = "tt_rfc(g=1ms)+rtt_rule_v11+iw_idle_hold+pto_probes=2"
 
 ANALOG = {
     "y10": "scripts/yol3/cells/a/a_r12k_d150_l20_foto150k.cell",
@@ -66,6 +74,17 @@ TABLE = [
     (3, "scripts/ktp2/f0/cells/b/b_r12k_d1000_l0_p1000.cell", ["K0", "K2"], "koruma: T0"),
     (3, "scripts/ktp2/f0/cells/b/b_r25_d300_l20_p65.cell", ["K0", "K2"], "koruma: K-3"),
 ]
+
+# [E2a kıyası] Gösterim hücresi (analog) × {K1, K1a, K0a}; ilk iki satır = tek değişkenli çift.
+TABLE_E2A = [
+    (1, "ANALOG", ["K1", "K1a", "K0a"], "E2a kıyası: K1 ↔ K1a tek değişken, K0a yalnız E2a"),
+]
+
+# Set → (tablo, hücre dizini, sıra dosyası, ağaç, koşu kökü).
+SETS = {
+    "g2": (TABLE, "cells", "SIRA.txt", "yol2/o1", "2026-11-11"),
+    "e2a": (TABLE_E2A, "cells-e2a", "SIRA-E2A.txt", "yol2/o1-e2a", "2026-11-09-e2a"),
+}
 
 A_KEYS = ["FWD", "REV", "BUDGET_S", "CAPTURE", "SETTLE_S", "F0A_ARGS"]
 B_KEYS = ["RATE_ID", "DELAY_ID", "LOSS_PCT", "RATE_BPS", "DELAY_MS", "JITTER_MS", "MSGS", "PAY",
@@ -96,7 +115,12 @@ def flags_text(arm, edar_yok):
     return "+".join(fl) if fl else "hiçbiri (bayraklar kapalı)"
 
 
-def a_body(cell, arm, rel, sha, lines, fec, edar_yok, purpose, row):
+def e2a_text(arm):
+    """E2a kolunda başlık eki; diğer kollarda boş (G2 dosyaları bayt bayt aynı kalır)."""
+    return f" · E2a {E2A_TEXT} (M1 E2aFlags)" if arm in E2A_ARMS else ""
+
+
+def a_body(cell, arm, rel, sha, lines, fec, edar_yok, purpose, row, tree):
     for k in A_KEYS:
         if k not in lines:
             raise SystemExit(f"{rel}: {k} yok")
@@ -118,8 +142,9 @@ def a_body(cell, arm, rel, sha, lines, fec, edar_yok, purpose, row):
         "scripts/yol3/tesis/gen_cells.py (elle düzenlemeyin).",
         f"# Kaynak hücre: {rel} (sha256 {sha}) — geometri AYNEN; fark yalnız CELL, REPS, ARMS, "
         "kol bayrağı.",
-        f"# Kol {arm}: {flags_text(arm, edar_yok)} (M2 manifesti KK-M2-09) · FEC {fec}{ork(fec)}.",
-        "# İkili: BIN_TESIS = <yol2/o1>/target/release/examples/f0_flows (orkestratör, D-34). "
+        f"# Kol {arm}: {flags_text(arm, edar_yok)} (M2 manifesti KK-M2-09){e2a_text(arm)} · "
+        f"FEC {fec}{ork(fec)}.",
+        f"# İkili: BIN_TESIS = <{tree}>/target/release/examples/f0_flows (orkestratör, D-34). "
         "Zarflar Unix soketinden (netem dışı, beyanlı).",
         f"CELL={cell}",
         lines["FWD"],
@@ -136,7 +161,7 @@ def a_body(cell, arm, rel, sha, lines, fec, edar_yok, purpose, row):
     ])
 
 
-def b_body(cell, arm, rel, sha, lines, fec, edar_yok, purpose, row):
+def b_body(cell, arm, rel, sha, lines, fec, edar_yok, purpose, row, tree):
     for k in B_KEYS:
         if k not in lines:
             raise SystemExit(f"{rel}: {k} yok")
@@ -150,8 +175,9 @@ def b_body(cell, arm, rel, sha, lines, fec, edar_yok, purpose, row):
         "scripts/yol3/tesis/gen_cells.py (elle düzenlemeyin).",
         f"# Kaynak hücre: {rel} (sha256 {sha}) — geometri AYNEN; fark yalnız CELL, REPS, ARMS, "
         "kol bayrağı.",
-        f"# Kol {arm}: {flags_text(arm, edar_yok)} (M2 manifesti KK-M2-09) · FEC {fec}{ork(fec)}.",
-        "# İkili: BIN_TESIS_BENCH = <yol2/o1>/target/release/bench (orkestratör, D-34); kol "
+        f"# Kol {arm}: {flags_text(arm, edar_yok)} (M2 manifesti KK-M2-09){e2a_text(arm)} · "
+        f"FEC {fec}{ork(fec)}.",
+        f"# İkili: BIN_TESIS_BENCH = <{tree}>/target/release/bench (orkestratör, D-34); kol "
         "arms_kama.sh kama_e1_arm.",
         f"CELL={cell}",
     ]
@@ -178,10 +204,11 @@ def b_body(cell, arm, rel, sha, lines, fec, edar_yok, purpose, row):
     return "\n".join(out)
 
 
-def plan(analog, fec, edar_yok):
+def plan(analog, fec, edar_yok, which="g2"):
     """[(sıra, dosya adı, gövde)] öncelik sırasıyla."""
+    table, _, _, tree, _ = SETS[which]
     items = []
-    for row, src, arms, purpose in TABLE:
+    for row, src, arms, purpose in table:
         rel = ANALOG[analog] if src == "ANALOG" else src
         lines, sha = read_cell(rel)
         base = os.path.basename(rel)[: -len(".cell")]
@@ -190,31 +217,33 @@ def plan(analog, fec, edar_yok):
                 continue  # (e-dar) çıkınca K2−e = K2 (CC §4.2 ön testler; §10)
             cell = f"{base}__{arm}"
             body_fn = a_body if base.startswith("a_") else b_body
-            body = body_fn(cell, arm, rel, sha, lines, fec, edar_yok, purpose, row)
+            body = body_fn(cell, arm, rel, sha, lines, fec, edar_yok, purpose, row, tree)
             items.append((row, f"{cell}.cell", body))
     return items
 
 
-def sira_text(items):
-    return "".join(f"scripts/yol3/tesis/cells/{name}\n" for _, name, _ in items)
+def sira_text(items, which="g2"):
+    cells = SETS[which][1]
+    return "".join(f"scripts/yol3/tesis/{cells}/{name}\n" for _, name, _ in items)
 
 
-def komut(items, fec, analog):
+def komut(items, fec, analog, which="g2"):
     n1 = sum(1 for row, _, _ in items if row == 1)
+    _, _, sira, tree, kok = SETS[which]
     return f"""\
 # [YOL3 · Ö] Teşhis koşusu (§8.2) — orkestratör koşar (D-18); ajan ve cargo durur (v2 §11.5).
-# Depo kökünden. İkililer yol2/o1 release (orkestratör derler, D-34).
+# Depo kökünden. İkililer {tree} release (orkestratör derler, D-34).
 # Koşu kaydı: manifest docs/design/E1-TESHIS-G2.md sha256 37bcabe3…; FEC {fec}{ork(fec)};
-#   analog {analog}; SIRA.txt sha256 ve ikili sha256'ları (cell.env) kayda.
-export BIN_TESIS=<yol2/o1 ağacı>/target/release/examples/f0_flows
-export BIN_TESIS_BENCH=<yol2/o1 ağacı>/target/release/bench
+#   analog {analog}; {sira} sha256 ve ikili sha256'ları (cell.env) kayda.
+export BIN_TESIS=<{tree} ağacı>/target/release/examples/f0_flows
+export BIN_TESIS_BENCH=<{tree} ağacı>/target/release/bench
 # Tamamı ({len(items)} dosya, {len(items) * REPS} iş; ilk {n1} satır = 1. sıra, {n1 * REPS} iş):
 systemd-inhibit --what=sleep:idle --why="YOL3 teshis" setsid \\
-  scripts/ktp2/f0/f0_grid.sh -j 11 ~/kama-k4g-work/yol3/tesis/2026-11-11 $(cat scripts/yol3/tesis/SIRA.txt)
+  scripts/ktp2/f0/f0_grid.sh -j 11 ~/kama-k4g-work/yol3/tesis/{kok} $(cat scripts/yol3/tesis/{sira})
 # Yalnız 1. sıra önce (ayrı parti; aynı kök, DONE'u olan hücre ikinci partide atlanır):
-#   ... f0_grid.sh -j 11 ~/kama-k4g-work/yol3/tesis/2026-11-11 $(head -n {n1} scripts/yol3/tesis/SIRA.txt)
+#   ... f0_grid.sh -j 11 ~/kama-k4g-work/yol3/tesis/{kok} $(head -n {n1} scripts/yol3/tesis/{sira})
 # Okuma (koşu bitince; manifest sha256 denetlenir, farklıysa okuma yok):
-python3 -I scripts/yol3/tesis/oku.py --kok ~/kama-k4g-work/yol3/tesis/2026-11-11 \\
+python3 -I scripts/yol3/tesis/oku.py --kok ~/kama-k4g-work/yol3/tesis/{kok} \\
   --manifest docs/design/E1-TESHIS-G2.md      # çıktı <kök>/okuma/{{OKUMA.md,okuma.json}}
 """
 
@@ -224,51 +253,54 @@ def main():
     ap.add_argument("--analog", choices=sorted(ANALOG), default="y10")
     ap.add_argument("--fec", choices=["off", "urun"], default="off")  # KK-ORK-01
     ap.add_argument("--edar-yok", action="store_true")
+    ap.add_argument("--set", dest="which", choices=sorted(SETS), default="g2")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--komut", action="store_true")
     a = ap.parse_args()
-    items = plan(a.analog, a.fec, a.edar_yok)
+    items = plan(a.analog, a.fec, a.edar_yok, a.which)
+    cells_dir = os.path.join(HERE, SETS[a.which][1])
+    sira_path = os.path.join(HERE, SETS[a.which][2])
     if a.komut:
-        print(komut(items, a.fec, a.analog), end="")
+        print(komut(items, a.fec, a.analog, a.which), end="")
         return 0
     if a.check:
         errs = []
         want = {name for _, name, _ in items}
-        have = set(os.listdir(CELLS_DIR)) if os.path.isdir(CELLS_DIR) else set()
+        have = set(os.listdir(cells_dir)) if os.path.isdir(cells_dir) else set()
         for extra in sorted(have - want):
-            errs.append(f"fazla dosya: cells/{extra}")
+            errs.append(f"fazla dosya: {SETS[a.which][1]}/{extra}")
         for _, name, body in items:
             try:
-                with open(os.path.join(CELLS_DIR, name), encoding="utf-8") as f:
+                with open(os.path.join(cells_dir, name), encoding="utf-8") as f:
                     if f.read() != body:
-                        errs.append(f"cells/{name}: üretilenle aynı değil")
+                        errs.append(f"{SETS[a.which][1]}/{name}: üretilenle aynı değil")
             except OSError as e:
-                errs.append(f"cells/{name}: {e}")
+                errs.append(f"{SETS[a.which][1]}/{name}: {e}")
         try:
-            with open(SIRA, encoding="utf-8") as f:
-                if f.read() != sira_text(items):
-                    errs.append("SIRA.txt: üretilenle aynı değil")
+            with open(sira_path, encoding="utf-8") as f:
+                if f.read() != sira_text(items, a.which):
+                    errs.append(f"{SETS[a.which][2]}: üretilenle aynı değil")
         except OSError as e:
-            errs.append(f"SIRA.txt: {e}")
+            errs.append(f"{SETS[a.which][2]}: {e}")
         for e in errs:
             print(f"FARK: {e}", file=sys.stderr)
         n1 = sum(1 for row, _, _ in items if row == 1)
         print(f"{len(items)} dosya · {len(items) * REPS} iş · 1. sıra {n1} dosya / {n1 * REPS} iş"
-              f" · analog={a.analog} fec={a.fec} edar_yok={a.edar_yok} · "
+              f" · set={a.which} analog={a.analog} fec={a.fec} edar_yok={a.edar_yok} · "
               f"{'temiz' if not errs else f'{len(errs)} fark'}")
         return 1 if errs else 0
-    os.makedirs(CELLS_DIR, exist_ok=True)
+    os.makedirs(cells_dir, exist_ok=True)
     want = {name for _, name, _ in items}
-    for old in os.listdir(CELLS_DIR):
+    for old in os.listdir(cells_dir):
         if old.endswith(".cell") and old not in want:
-            os.remove(os.path.join(CELLS_DIR, old))
+            os.remove(os.path.join(cells_dir, old))
     for _, name, body in items:
-        with open(os.path.join(CELLS_DIR, name), "w", encoding="utf-8") as f:
+        with open(os.path.join(cells_dir, name), "w", encoding="utf-8") as f:
             f.write(body)
-    with open(SIRA, "w", encoding="utf-8") as f:
-        f.write(sira_text(items))
-    print(f"{len(items)} dosya, {len(items) * REPS} iş → {os.path.relpath(CELLS_DIR, REPO)}; "
-          f"{os.path.relpath(SIRA, REPO)}")
+    with open(sira_path, "w", encoding="utf-8") as f:
+        f.write(sira_text(items, a.which))
+    print(f"{len(items)} dosya, {len(items) * REPS} iş → {os.path.relpath(cells_dir, REPO)}; "
+          f"{os.path.relpath(sira_path, REPO)}")
     return 0
 
 

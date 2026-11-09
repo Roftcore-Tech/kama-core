@@ -44,7 +44,8 @@ kama_arms() {
 # [YOL3 · Ö] EKLEMELİ (KK-Ö-06): E1 teşhis kolu — tek kol, tek ikili, kol bayrağı komut satırında.
 #   kama_e1_arm <kol> <e1-arm> [ikili yer tutucusu = @BIN_TESIS_BENCH@]
 #     <kol>    = ARMS'taki ad (f0_cell.sh `ARM_<kol>_SRV/CLI`; yalnız [A-Za-z0-9_])
-#     <e1-arm> = bench `--e1-arm` değeri (K0|K0r|K1|K2|K2mc|K2me); İKİ uca AYNI verilir
+#     <e1-arm> = bench `--e1-arm` değeri (K0|K0r|K1|K2|K2mc|K2me|K1a|K0a; K1a = K1 + E2a,
+#                K0a = yalnız E2a — M1 E2aFlags); İKİ uca AYNI verilir
 #   Geometri ve isteğe bağlı ekler `kama_arm_cmds` ile aynı (KAMA_SRV_EXTRA / KAMA_CLI_EXTRA ile
 #   ör. FEC kapalı kol: `--fec-profile 0`). Mevcut `kama_arms` (taban, aday) değişmez.
 kama_e1_arm() {

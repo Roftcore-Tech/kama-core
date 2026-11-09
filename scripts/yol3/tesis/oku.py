@@ -37,6 +37,13 @@ aşağıdaki TANIMLAR'dadır — her biri mevcut F0 analizörünün ya da ACIL b
                      dönemi kaybı [0, 20) s: araç yok → "ölçülmedi".
 
 Bütün medyanlar koşu (rep) değerleri üzerindendir (birim = koşu). Veri eksik kol uygun sayılmaz.
+
+E2a kıyası (yol2/o1-e2a; gen_cells.py --set e2a): K1a = K1 + E2a, K0a = yalnız E2a (M1 E2aFlags:
+tt_rfc g=1ms, rtt_rule_v11, iw_idle_hold, pto_probes=2). Bu kollar S'nin aday kümesine GİRMEZ (kural
+metni değişmez); S tablosuna ve R4'e veri varsa satır olarak eklenir, ayrıca "E2a kıyası" bölümü
+her A hücresinde kolu tabanıyla (K1a↔K1, K0a↔K0) aynı ölçülerle yan yana yazar: medyan ve oran,
+eşik YOK (betimsel). Analog hücrede E2a kolu var ama K0 yoksa S uygulanmaz ("Gösterim seti: —");
+E2a kolu olmayan kökte (G2) çıktı öncekiyle bayt bayt aynıdır.
 """
 
 import argparse
@@ -68,6 +75,9 @@ E1_ARMS = ["K1", "K2", "K2mc", "K2me"]
 ALL_ARMS = ["K0", "K0r"] + E1_ARMS
 FLAGS = {"K0": 0, "K0r": 1, "K1": 4, "K2": 5, "K2mc": 4, "K2me": 4}
 SHOW = {"K2mc": "K2−c", "K2me": "K2−e"}
+# E2a kıyası: kol → taban (tek değişken E2a). S adayı DEĞİL.
+E2A_ARMS = ["K1a", "K0a"]
+E2A_BASE = {"K1a": "K1", "K0a": "K0"}
 # KK-ORK-03: (iii) paydası pr ile aynı katmanda (mühürlü UDP yükü). Demeti taşıyan birimin ek
 # baytları: birim çerçevesi 5 + 8 (f0a_analyze unit_len "P"), DATA başlığı 11 (client-core
 # wire.rs HDR_DATA; FEC kapalı → parça başlığı yok, KK-ORK-01), mühür zarfı 22 (f0a_analyze :51).
@@ -172,7 +182,7 @@ def r4(d):
                             "rtprop_med": med(e.get("rtprop", [])),
                             "probe_up_med": med(e.get("pu", []))}
     a = d.get("analog", ANALOG)
-    for k in ALL_ARMS:
+    for k in table_arms(d, a):
         e = d.get(a, {}).get(k) or {}
         out["analog"][k] = {**eai(med(e.get("pace", [])), med(e.get("srtt", []))),
                             "rtprop_med": med(e.get("rtprop", [])),
@@ -200,6 +210,45 @@ def fmt(x, nd=2):
     if x == INF:
         return "∞"
     return f"{x:.{nd}f}"
+
+
+def table_arms(d, cell):
+    """Tablo satırları: ALL_ARMS + verisi olan E2a kolları (G2 kökünde = ALL_ARMS)."""
+    return ALL_ARMS + [k for k in E2A_ARMS if k in d.get(cell, {})]
+
+
+def s_uygulanir(d):
+    """S analog hücrede K0'a göredir; E2a kökünde (E2a kolu var, K0 yok) uygulanmaz."""
+    a = d.get("analog", ANALOG)
+    cell = d.get(a, {})
+    return not (any(k in cell for k in E2A_ARMS) and "K0" not in cell)
+
+
+def ratio(x, y):
+    if x is None or y is None or y == 0 or x == INF or y == INF:
+        return None
+    return x / y
+
+
+def e2a_kiyas(d):
+    """E2a kıyası (raporlanan, eşik yok): her A hücresinde kol ↔ taban medyanları ve oranı."""
+    out = {}
+    for cell in sorted(c for c in d if c.startswith("a_") and isinstance(d[c], dict)):
+        for k in E2A_ARMS:
+            if k not in d[cell]:
+                continue
+            b = E2A_BASE[k]
+            row = {"taban": b}
+            for key in ("file", "ptt", "pace", "srtt", "rtprop", "pu"):
+                mk, mb = m_of(d, cell, k, key), m_of(d, cell, b, key)
+                row[key] = {"kol": mk, "taban": mb, "oran": ratio(mk, mb)}
+            for who, arm in (("kol", k), ("taban", b)):
+                e = d[cell].get(arm) or {}
+                row.setdefault("n", {})[who] = len(e.get("file", []))
+                row.setdefault("alinmayan_dosya", {})[who] = sum(1 for x in e.get("file", [])
+                                                                 if x == INF)
+            out.setdefault(cell, {})[k] = row
+    return out
 
 
 def tek_satir(choice, R1):
@@ -356,15 +405,24 @@ def extract(kok, work):
 def report(d, man_sha):
     choice, S = select(d)
     R1, R4 = r1(d), r4(d)
-    L = [tek_satir(choice, R1), "",
+    a = d.get("analog", ANALOG)
+    s_ok = s_uygulanir(d)
+    if not s_ok:
+        choice = None
+    L = [tek_satir(choice, R1) if s_ok else
+         "Gösterim seti: — (S uygulanmadı: analog hücrede K0 verisi yok; E2a kıyas kökü).", "",
          f"manifest sha256 {man_sha or MANIFEST_SHA256 + ' (beyan; dosya denetlenmedi)'} · "
          f"analog {d.get('analog', ANALOG)} · etiket: gösterim; kapılı PoC ölçümü Aralık; ARQ "
          "yolu, FEC Aralık'ta · N < 30: betimsel", "",
-         "## S (bağlayıcı) — " + S["neden"], "",
+         "## S (bağlayıcı) — " + (S["neden"] if s_ok else
+                                  "uygulanmadı: analog hücrede K0 verisi yok"), "",
          "| kol | dosya bitiş med (s) | PTT p95 med (s) | emisyon/sunulan | (i) | (ii) | (iii) | (iv) R3 | uygun |",
          "|---|---|---|---|---|---|---|---|---|"]
-    for k in ALL_ARMS:
-        row = S["satirlar"].get(k, {})
+    for k in table_arms(d, a):
+        row = S["satirlar"].get(k, {}) if s_ok else {}
+        if k in E2A_ARMS:   # S adayı değil: yalnız ölçüler (aynı tanımlar)
+            S["file_med"][k], S["ptt_med"][k] = m_of(d, a, k, "file"), m_of(d, a, k, "ptt")
+            S["ratio_med"].setdefault(k, m_of(d, DOSYASIZ, k, "ratio"))
         L.append(f"| {show(k)} | {fmt(S['file_med'][k], 1)} | {fmt(S['ptt_med'][k])} | "
                  f"{fmt(S['ratio_med'].get(k))} | {row.get('i', '—')} | "
                  f"{row.get('ii', row.get('ii(0,90)', '—'))} | {row.get('iii', '—')} | "
@@ -397,8 +455,26 @@ def report(d, man_sha):
     L += ["", f"Startup dönemi kaybı [0, 20) s: {R4['startup_kaybi_0_20']}",
           f"diag_probe: {R4['diag_probe']}"]
     sun = {c: sorted(v) for c, v in (d.get("sunulan_bps") or {}).items()}
-    return choice, "\n".join(L) + "\n", {"secim": choice, "S": S, "R1": R1, "R4": R4,
-                                          "iii_sunulan_bps_KK_ORK_03": sun}
+    js = {"secim": choice, "S": S, "R1": R1, "R4": R4, "iii_sunulan_bps_KK_ORK_03": sun}
+    K = e2a_kiyas(d)
+    if K:
+        js["E2a_kiyas"] = K
+        L += ["", "## E2a kıyası (raporlanan; eşik yok, betimsel) — kol / taban (oran); tek "
+              "değişken: E1 seti aynı, fark yalnız E2a (M1 E2aFlags: tt_rfc g=1ms, rtt_rule_v11, "
+              "iw_idle_hold, pto_probes=2)", "",
+              "| hücre | kol ↔ taban | n | alınmayan dosya | dosya bitiş med (s) | PTT p95 med (s) | "
+              "pace med (B/s) | srtt med (s) | RTprop med (s) | probe_up med |",
+              "|---|---|---|---|---|---|---|---|---|---|"]
+
+        def pair(v, nd):
+            return f"{fmt(v['kol'], nd)} / {fmt(v['taban'], nd)} ({fmt(v['oran'])})"
+        for cell, rows in K.items():
+            for k, v in rows.items():
+                L.append(f"| {cell} | {k} ↔ {v['taban']} | {v['n']['kol']} / {v['n']['taban']} | "
+                         f"{v['alinmayan_dosya']['kol']} / {v['alinmayan_dosya']['taban']} | "
+                         f"{pair(v['file'], 1)} | {pair(v['ptt'], 2)} | {pair(v['pace'], 0)} | "
+                         f"{pair(v['srtt'], 3)} | {pair(v['rtprop'], 3)} | {pair(v['pu'], 0)} |")
+    return choice, "\n".join(L) + "\n", js
 
 
 # ── Öz-test (sahte veri; her kural dalı en az bir vaka) ──────────────────────────────────────
@@ -515,6 +591,30 @@ def oz_test():
     chk("sunulan: 80 B demet → 630 B/s; demet yok → None",
         sunulan_ptt_bps({"ptt_bytes": 80, "ptt_bundles": 20, "ptt_bundle_ms": 200}) == 630.0
         and sunulan_ptt_bps({"ptt_bytes": 40, "ptt_bundles": 0, "ptt_bundle_ms": 200}) is None)
+    # E2a kıyası: G2 kökünde bölüm yok ve seçim aynı; E2a kolu S adayı değil; K0'sız kökte S yok.
+    c0, md0, js0 = report(_base(), None); n += 1
+    chk("E2a: kolu olmayan kökte bölüm/anahtar yok, seçim K2−c",
+        "E2a kıyası" not in md0 and "E2a_kiyas" not in js0 and c0 == "K2mc")
+    d = _base()
+    d[ANALOG]["K1a"] = {**d[ANALOG]["K1"], "file": [40.0] * 10, "ptt": [0.50] * 10}
+    c, md, js = report(d, None); n += 3
+    chk("E2a: K1a en düşük PTT'de bile S adayı değil (seçim K2−c)", c == "K2mc")
+    chk("E2a: S tablosunda K1a satırı ölçülerle, ölçütler —",
+        "| K1a | 40.0 | 0.50 | — | — | — | — | — | — |" in md)
+    v = js["E2a_kiyas"][ANALOG]["K1a"]
+    chk("E2a: K1a ↔ K1 oranları (PTT 0,50/2,71, dosya 40/43,6)", v["taban"] == "K1"
+        and abs(v["ptt"]["oran"] - 0.50 / 2.71) < 1e-9 and abs(v["file"]["oran"] - 40 / 43.6) < 1e-9)
+    e = {ANALOG: {k: dict(d[ANALOG][k]) for k in ("K1", "K1a")}}
+    e[ANALOG]["K0a"] = {**d[ANALOG]["K1"], "file": [INF] * 6 + [50.0] * 4}
+    c, md, js = report(e, None); n += 3
+    chk("E2a kökü (K0 yok): S uygulanmadı, seçim yok",
+        c is None and md.startswith("Gösterim seti: — (S uygulanmadı"))
+    k0a = js["E2a_kiyas"][ANALOG]["K0a"]
+    chk("E2a: K0a tabanı K0 verisiz → oran —; alınmayan dosya 6",
+        k0a["taban"] == "K0" and k0a["ptt"]["oran"] is None
+        and k0a["alinmayan_dosya"]["kol"] == 6 and k0a["file"]["kol"] == INF)
+    chk("E2a: R4 analog satırları K1a ve K0a'yı içerir",
+        "| analog | K1a |" in md and "| analog | K0a |" in md)
     # Çıkarım yardımcıları: srate (ACIL S) ve pacer (a_ts) sahte dosyalarla.
     with tempfile.TemporaryDirectory() as t:
         z = 1_000_000_000_000
