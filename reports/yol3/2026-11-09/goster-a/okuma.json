@@ -1,0 +1,571 @@
+{
+ "secim": null,
+ "S": {
+  "neden": "hiçbir E1 kolu uygun değil; K0r şartı sağlanmadı → K0",
+  "satirlar": {
+   "K1": {
+    "i": true,
+    "ii": true,
+    "iii": null,
+    "iv": false,
+    "uygun": false
+   },
+   "K2": {
+    "i": null,
+    "ii": null,
+    "iii": null,
+    "iv": false,
+    "uygun": false
+   },
+   "K2mc": {
+    "i": null,
+    "ii": null,
+    "iii": null,
+    "iv": false,
+    "uygun": false
+   },
+   "K2me": {
+    "i": null,
+    "ii": null,
+    "iii": null,
+    "iv": false,
+    "uygun": false
+   },
+   "K0r": {
+    "i": null,
+    "ii(0,90)": null
+   }
+  },
+  "file_med": {
+   "K0": 34.3377245,
+   "K0r": null,
+   "K1": 30.295681499999997,
+   "K2": null,
+   "K2mc": null,
+   "K2me": null,
+   "K1a": 27.551657,
+   "K1g": 28.318179999999998,
+   "K1gr": 22.5674135,
+   "K1grp": 24.4375905,
+   "K1A": 21.153239499999998
+  },
+  "ptt_med": {
+   "K0": 4.980253,
+   "K0r": null,
+   "K1": 3.660522,
+   "K2": null,
+   "K2mc": null,
+   "K2me": null,
+   "K1a": 2.646733,
+   "K1g": 3.2686979999999997,
+   "K1gr": 2.686595,
+   "K1grp": 2.910975,
+   "K1A": 3.0109890000000004
+  },
+  "ratio_med": {
+   "K0": null,
+   "K2": null,
+   "K2mc": null,
+   "K1": null,
+   "K2me": null,
+   "K1a": null,
+   "K1g": null,
+   "K1gr": null,
+   "K1grp": null,
+   "K1A": null
+  },
+  "R3": {
+   "l0": null,
+   "r25": null,
+   "gecer": false,
+   "l0_med": {
+    "K0": null,
+    "K2": null
+   },
+   "r25_med": {
+    "K0": [
+     null,
+     null
+    ],
+    "K2": [
+     null,
+     null
+    ]
+   }
+  }
+ },
+ "R1": {
+  "K0": {
+   "tuzaksiz_n": 0,
+   "n": 0,
+   "kullanilan": "bütün (tuzaksız < 7)",
+   "med": null,
+   "med_butun": null,
+   "gecer": null
+  },
+  "K2": {
+   "tuzaksiz_n": 0,
+   "n": 0,
+   "kullanilan": "bütün (tuzaksız < 7)",
+   "med": null,
+   "med_butun": null,
+   "gecer": null
+  },
+  "K2mc": {
+   "tuzaksiz_n": 0,
+   "n": 0,
+   "kullanilan": "bütün (tuzaksız < 7)",
+   "med": null,
+   "med_butun": null,
+   "gecer": null
+  }
+ },
+ "R4": {
+  "manset": {
+   "K0": {
+    "sw95_med": null,
+    "sw95_9": null,
+    "n": 0,
+    "pace_med": null,
+    "srtt_med": null,
+    "eai_s": null,
+    "kayip_esigi_s": null,
+    "rtprop_med": null,
+    "probe_up_med": null,
+    "rtprop_K0_orani": null
+   },
+   "K2": {
+    "sw95_med": null,
+    "sw95_9": null,
+    "n": 0,
+    "pace_med": null,
+    "srtt_med": null,
+    "eai_s": null,
+    "kayip_esigi_s": null,
+    "rtprop_med": null,
+    "probe_up_med": null,
+    "rtprop_K0_orani": null
+   },
+   "K2mc": {
+    "sw95_med": null,
+    "sw95_9": null,
+    "n": 0,
+    "pace_med": null,
+    "srtt_med": null,
+    "eai_s": null,
+    "kayip_esigi_s": null,
+    "rtprop_med": null,
+    "probe_up_med": null,
+    "rtprop_K0_orani": null
+   }
+  },
+  "analog": {
+   "K0": {
+    "pace_med": 8374.0,
+    "srtt_med": 0.380958,
+    "eai_s": 2.338713529588511,
+    "kayip_esigi_s": 3.5080702943827666,
+    "rtprop_med": 0.324127,
+    "probe_up_med": 4.5,
+    "rtprop_K0_orani": 1.0
+   },
+   "K0r": {
+    "pace_med": null,
+    "srtt_med": null,
+    "eai_s": null,
+    "kayip_esigi_s": null,
+    "rtprop_med": null,
+    "probe_up_med": null,
+    "rtprop_K0_orani": null
+   },
+   "K1": {
+    "pace_med": 14083.0,
+    "srtt_med": 0.36130850000000003,
+    "eai_s": 2.240635586717456,
+    "kayip_esigi_s": 3.360953380076184,
+    "rtprop_med": 0.32383950000000006,
+    "probe_up_med": 0.0,
+    "rtprop_K0_orani": 0.9991130020023018
+   },
+   "K2": {
+    "pace_med": null,
+    "srtt_med": null,
+    "eai_s": null,
+    "kayip_esigi_s": null,
+    "rtprop_med": null,
+    "probe_up_med": null,
+    "rtprop_K0_orani": null
+   },
+   "K2mc": {
+    "pace_med": null,
+    "srtt_med": null,
+    "eai_s": null,
+    "kayip_esigi_s": null,
+    "rtprop_med": null,
+    "probe_up_med": null,
+    "rtprop_K0_orani": null
+   },
+   "K2me": {
+    "pace_med": null,
+    "srtt_med": null,
+    "eai_s": null,
+    "kayip_esigi_s": null,
+    "rtprop_med": null,
+    "probe_up_med": null,
+    "rtprop_K0_orani": null
+   },
+   "K1a": {
+    "pace_med": 17732.5,
+    "srtt_med": 0.33565100000000003,
+    "eai_s": 2.21102768290409,
+    "kayip_esigi_s": 3.3165415243561345,
+    "rtprop_med": 0.323655,
+    "probe_up_med": 0.0,
+    "rtprop_K0_orani": 0.9985437806785613
+   },
+   "K1g": {
+    "pace_med": 15400.5,
+    "srtt_med": 0.33612050000000004,
+    "eai_s": 2.2283283638675324,
+    "kayip_esigi_s": 3.3424925458012984,
+    "rtprop_med": 0.3237525,
+    "probe_up_med": 0.0,
+    "rtprop_K0_orani": 0.998844588695172
+   },
+   "K1gr": {
+    "pace_med": 17172.0,
+    "srtt_med": 0.3339165,
+    "eai_s": 2.2147569561852376,
+    "kayip_esigi_s": 3.3221354342778566,
+    "rtprop_med": 0.323713,
+    "probe_up_med": 0.0,
+    "rtprop_K0_orani": 0.9987227228833142
+   },
+   "K1grp": {
+    "pace_med": 14814.5,
+    "srtt_med": 0.336074,
+    "eai_s": 2.2335320996538917,
+    "kayip_esigi_s": 3.3502981494808375,
+    "rtprop_med": 0.323708,
+    "probe_up_med": 0.0,
+    "rtprop_K0_orani": 0.9987072968311803
+   },
+   "K1A": {
+    "pace_med": 17191.5,
+    "srtt_med": 0.32988799999999996,
+    "eai_s": 2.2146231305230546,
+    "kayip_esigi_s": 3.3219346957845817,
+    "rtprop_med": 0.32365350000000004,
+    "probe_up_med": 0.0,
+    "rtprop_K0_orani": 0.9985391528629212
+   }
+  },
+  "startup_kaybi_0_20": "ölçülmedi (araç yok; capture eşlemesi gerekir)",
+  "diag_probe": "ölçülmedi (aynada yok); probe_up_entries raporlanır"
+ },
+ "iii_sunulan_bps_KK_ORK_03": {
+  "a_r12k_d150_l20_foto150k": [
+   630.0
+  ]
+ },
+ "PTT_varis_oynatma": {
+  "a_r12k_d150_l20_foto150k": {
+   "K0": {
+    "n": 10,
+    "goster": true,
+    "varis_p95_med": 4.5674599609375,
+    "oynatma_p95_med": 4.980253,
+    "ilk_demet_varis_med": 1.4431080322265624,
+    "eslenmemis": 0
+   },
+   "K1": {
+    "n": 10,
+    "goster": true,
+    "varis_p95_med": 1.9442210693359376,
+    "oynatma_p95_med": 3.660522,
+    "ilk_demet_varis_med": 1.491194580078125,
+    "eslenmemis": 0
+   },
+   "K1a": {
+    "n": 10,
+    "goster": true,
+    "varis_p95_med": 1.2772581787109376,
+    "oynatma_p95_med": 2.646733,
+    "ilk_demet_varis_med": 0.629044921875,
+    "eslenmemis": 0
+   },
+   "K1g": {
+    "n": 10,
+    "goster": true,
+    "varis_p95_med": 1.508862060546875,
+    "oynatma_p95_med": 3.2686979999999997,
+    "ilk_demet_varis_med": 1.056189453125,
+    "eslenmemis": 0
+   },
+   "K1gr": {
+    "n": 10,
+    "goster": true,
+    "varis_p95_med": 1.2896239013671875,
+    "oynatma_p95_med": 2.686595,
+    "ilk_demet_varis_med": 0.6689645996093749,
+    "eslenmemis": 0
+   },
+   "K1grp": {
+    "n": 10,
+    "goster": true,
+    "varis_p95_med": 1.4076375732421873,
+    "oynatma_p95_med": 2.910975,
+    "ilk_demet_varis_med": 0.894255615234375,
+    "eslenmemis": 0
+   },
+   "K1A": {
+    "n": 10,
+    "goster": true,
+    "varis_p95_med": 1.7668645019531248,
+    "oynatma_p95_med": 3.0109890000000004,
+    "ilk_demet_varis_med": 0.8712734375,
+    "eslenmemis": 0
+   }
+  }
+ },
+ "E2a_kiyas": {
+  "a_r12k_d150_l20_foto150k": {
+   "K1a": {
+    "taban": "K1",
+    "file": {
+     "kol": 27.551657,
+     "taban": 30.295681499999997,
+     "oran": 0.9094252261663103
+    },
+    "ptt": {
+     "kol": 2.646733,
+     "taban": 3.660522,
+     "oran": 0.7230479696611576
+    },
+    "ptt_varis": {
+     "kol": 1.2772581787109376,
+     "taban": 1.9442210693359376,
+     "oran": 0.6569511044066579
+    },
+    "pace": {
+     "kol": 17732.5,
+     "taban": 14083.0,
+     "oran": 1.2591422282184195
+    },
+    "srtt": {
+     "kol": 0.33565100000000003,
+     "taban": 0.36130850000000003,
+     "oran": 0.9289872781847092
+    },
+    "rtprop": {
+     "kol": 0.323655,
+     "taban": 0.32383950000000006,
+     "oran": 0.9994302733298438
+    },
+    "pu": {
+     "kol": 0.0,
+     "taban": 0.0,
+     "oran": null
+    },
+    "n": {
+     "kol": 10,
+     "taban": 10
+    },
+    "alinmayan_dosya": {
+     "kol": 0,
+     "taban": 0
+    }
+   },
+   "K1g": {
+    "taban": "K1",
+    "file": {
+     "kol": 28.318179999999998,
+     "taban": 30.295681499999997,
+     "oran": 0.934726621020227
+    },
+    "ptt": {
+     "kol": 3.2686979999999997,
+     "taban": 3.660522,
+     "oran": 0.8929595287229526
+    },
+    "ptt_varis": {
+     "kol": 1.508862060546875,
+     "taban": 1.9442210693359376,
+     "oran": 0.7760753570386095
+    },
+    "pace": {
+     "kol": 15400.5,
+     "taban": 14083.0,
+     "oran": 1.0935525101185828
+    },
+    "srtt": {
+     "kol": 0.33612050000000004,
+     "taban": 0.36130850000000003,
+     "oran": 0.930286721735027
+    },
+    "rtprop": {
+     "kol": 0.3237525,
+     "taban": 0.32383950000000006,
+     "oran": 0.9997313483994384
+    },
+    "pu": {
+     "kol": 0.0,
+     "taban": 0.0,
+     "oran": null
+    },
+    "n": {
+     "kol": 10,
+     "taban": 10
+    },
+    "alinmayan_dosya": {
+     "kol": 0,
+     "taban": 0
+    }
+   },
+   "K1gr": {
+    "taban": "K1",
+    "file": {
+     "kol": 22.5674135,
+     "taban": 30.295681499999997,
+     "oran": 0.744905292855023
+    },
+    "ptt": {
+     "kol": 2.686595,
+     "taban": 3.660522,
+     "oran": 0.7339376733700822
+    },
+    "ptt_varis": {
+     "kol": 1.2896239013671875,
+     "taban": 1.9442210693359376,
+     "oran": 0.6633113495718198
+    },
+    "pace": {
+     "kol": 17172.0,
+     "taban": 14083.0,
+     "oran": 1.2193424696442519
+    },
+    "srtt": {
+     "kol": 0.3339165,
+     "taban": 0.36130850000000003,
+     "oran": 0.9241866715009471
+    },
+    "rtprop": {
+     "kol": 0.323713,
+     "taban": 0.32383950000000006,
+     "oran": 0.9996093743968846
+    },
+    "pu": {
+     "kol": 0.0,
+     "taban": 0.0,
+     "oran": null
+    },
+    "n": {
+     "kol": 10,
+     "taban": 10
+    },
+    "alinmayan_dosya": {
+     "kol": 0,
+     "taban": 0
+    }
+   },
+   "K1grp": {
+    "taban": "K1",
+    "file": {
+     "kol": 24.4375905,
+     "taban": 30.295681499999997,
+     "oran": 0.8066361042249537
+    },
+    "ptt": {
+     "kol": 2.910975,
+     "taban": 3.660522,
+     "oran": 0.7952349419017288
+    },
+    "ptt_varis": {
+     "kol": 1.4076375732421873,
+     "taban": 1.9442210693359376,
+     "oran": 0.7240110682078843
+    },
+    "pace": {
+     "kol": 14814.5,
+     "taban": 14083.0,
+     "oran": 1.0519420578001846
+    },
+    "srtt": {
+     "kol": 0.336074,
+     "taban": 0.36130850000000003,
+     "oran": 0.9301580228530465
+    },
+    "rtprop": {
+     "kol": 0.323708,
+     "taban": 0.32383950000000006,
+     "oran": 0.999593934649726
+    },
+    "pu": {
+     "kol": 0.0,
+     "taban": 0.0,
+     "oran": null
+    },
+    "n": {
+     "kol": 10,
+     "taban": 10
+    },
+    "alinmayan_dosya": {
+     "kol": 0,
+     "taban": 0
+    }
+   },
+   "K1A": {
+    "taban": "K1",
+    "file": {
+     "kol": 21.153239499999998,
+     "taban": 30.295681499999997,
+     "oran": 0.6982262306923183
+    },
+    "ptt": {
+     "kol": 3.0109890000000004,
+     "taban": 3.660522,
+     "oran": 0.8225572746182104
+    },
+    "ptt_varis": {
+     "kol": 1.7668645019531248,
+     "taban": 1.9442210693359376,
+     "oran": 0.9087775715529149
+    },
+    "pace": {
+     "kol": 17191.5,
+     "taban": 14083.0,
+     "oran": 1.2207271178016048
+    },
+    "srtt": {
+     "kol": 0.32988799999999996,
+     "taban": 0.36130850000000003,
+     "oran": 0.9130369199728208
+    },
+    "rtprop": {
+     "kol": 0.32365350000000004,
+     "taban": 0.32383950000000006,
+     "oran": 0.9994256414056962
+    },
+    "pu": {
+     "kol": 0.0,
+     "taban": 0.0,
+     "oran": null
+    },
+    "n": {
+     "kol": 10,
+     "taban": 10
+    },
+    "alinmayan_dosya": {
+     "kol": 0,
+     "taban": 0
+    }
+   }
+  }
+ },
+ "Q1_alanlari": {
+  "gap_ack_emits": "aynada yok",
+  "regime_timer_emits": "aynada yok",
+  "measured_return_bw_bps": "aynada yok",
+  "ilan_retx_ms": "aynada yok"
+ }
+}
