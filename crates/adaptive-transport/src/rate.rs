@@ -195,6 +195,11 @@ pub fn effective_send_rate(
 /// | `e1_drainrt_gate` | DrainRtprop girişi yalnız rtprop bayat ∧ qd ≥ [`E1_DRAINRT_QD_MIN_PERMILLE`] |
 /// | `e1_probe_keep` | (e-dar) bekleyen kayıp ProbeUp'ı kesmez; atıflı kayıp iptal ettirmez; qd iptali kalır; retx koşulu `!pending_lost.is_empty() ∧ state ≠ RecoverFwd` |
 /// | `retx_first` | ARQ-önce koşulu `retx_first ∨ tick % K_ARQ_SHARE == 0` |
+/// | `a3_burst_floor` | [Q2 A-3] kova tavanının alt sınırı `max(front, 2·MTU)` (PreConverge dışında; orada ilk-uçuş davranışı aynen) |
+/// | `a4_probe_srtt` | [Q2 A-4] ProbeUp atıflı-kayıp iptali yok (iptal yalnız qd); Steady'de prob saati `srtt` (EAI'siz): periyot `K_PROBE_PERIOD_EPOCH·srtt`, giriş-donuk dwell/volume aynı saatle |
+///
+/// Son iki satır Q2 eki (`QUINN-FARKI-KOD-KARSILASTIRMA-2026-11-09.md` §3-A 3 ve 4); onlarla birlikte
+/// 128 birleşimin hepsi geçerlidir. `Default` yedisini de kapatır.
 ///
 /// Hiçbir bayrak kaybı hız girdisi yapmaz (INV-RATE-1); `diag_*` sayaçları karar girdisi olmaz (INV-007).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -209,6 +214,11 @@ pub struct E1Flags {
     pub e1_probe_keep: bool,
     /// ARQ-önce her izinde (CC §4.1, CC-K6).
     pub retx_first: bool,
+    /// [Q2 A-3] Kova tavanı tabanı 2·MTU (PreConverge hariç): pacer'ın `size > burst_cap` yolu
+    /// (`ns_until_sendable` → `None`) ürün hızlarında retx/parite birimini kalıcı bekletmez.
+    pub a3_burst_floor: bool,
+    /// [Q2 A-4] ProbeUp: atıflı kayıp iptal ettirmez (iptal yalnız qd); prob saati `srtt` (EAI'siz).
+    pub a4_probe_srtt: bool,
 }
 
 /// [E1 DrainRtprop kapısı] DrainRtprop girişi için asgari kuyruk gecikmesi oranı (‰, qd/RTprop).
@@ -264,6 +274,8 @@ mod e1_tests {
                 && !f.e1_drainrt_gate
                 && !f.e1_probe_keep
                 && !f.retx_first
+                && !f.a3_burst_floor
+                && !f.a4_probe_srtt
         );
     }
 
