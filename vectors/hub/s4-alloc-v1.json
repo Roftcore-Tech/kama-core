@@ -1,0 +1,217 @@
+{
+  "schema_version": 2,
+  "suite": "s4-alloc-v1",
+  "spec_version": "km-seam-th-001@v1.3.1",
+  "generator": "ref/hub/gen_vectors.py 1",
+  "description": "S4 \u00a72.4(c) allocation_key baytlar\u0131 (sabit 77 B), \u00a72.4(f) RELAY_OPEN zarf\u0131 (16 B open_nonce) ve \u00a72.6 handle tahsisi (aday \u00fcretici, \u00e7ak\u0131\u015fma atlama, 8 ba\u015far\u0131s\u0131z deneme, sayac\u0131n ilerlemesi); handle_secret 32 B. 0 aday\u0131n\u0131n atlanmas\u0131 do\u011fal girdiyle \u00fcretilemez (olas\u0131l\u0131k 2^-32); kural birim testte sahte \u00fcreticiyle s\u0131nan\u0131r.",
+  "notes": {},
+  "case_count": 18,
+  "cases": [
+    {
+      "id": "s4-alloc-v1.relay-open-envelope",
+      "kind": "relay-open-envelope",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(f) RELAY_OPEN zarf\u0131 = open_nonce bytes16 (call_id yok)",
+      "input": {
+        "open_nonce_hex": "d4d8d9cfe20fe87ba42d997afe1abcc8"
+      },
+      "expected_hex": "d4d8d9cfe20fe87ba42d997afe1abcc8"
+    },
+    {
+      "id": "s4-alloc-v1.allocation-key.init",
+      "kind": "allocation-key",
+      "note": "envelope_hash8 = BLAKE2s-256(envelope)[0..8]; s4.rs \u00f6zet almaz, \u00e7a\u011f\u0131ran hesaplar.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(c) allocation_key (KR-19; = idempotency-key, \u00a77)",
+      "input": {
+        "envelope_hash8_hex": "2de1ce8c66c4a430",
+        "envelope_hex": "01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6",
+        "envelope_type_hex": "01",
+        "recipient_dest_hash_hex": "808d825bba92c7b4cf584b71b907bb391b99a1eab2afacbd3819fc190b094848",
+        "request_id_hex": "5a17c0e0",
+        "sender_dest_hash_hex": "a8e682239cbf2d662b7f6f0936b8b14a2c7004b56071e505389785ff7c9e4a76"
+      },
+      "expected_hex": "a8e682239cbf2d662b7f6f0936b8b14a2c7004b56071e505389785ff7c9e4a765a17c0e0808d825bba92c7b4cf584b71b907bb391b99a1eab2afacbd3819fc190b094848012de1ce8c66c4a430"
+    },
+    {
+      "id": "s4-alloc-v1.allocation-key.init-other-recipient",
+      "kind": "allocation-key",
+      "note": "Ayn\u0131 request_id, farkl\u0131 al\u0131c\u0131 \u2192 farkl\u0131 anahtar.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(c) allocation_key (KR-19; = idempotency-key, \u00a77)",
+      "input": {
+        "envelope_hash8_hex": "2de1ce8c66c4a430",
+        "envelope_hex": "01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6",
+        "envelope_type_hex": "01",
+        "recipient_dest_hash_hex": "917a0dac2856c20bedeb20a19eaf7ba4b22e9939cb05ad89fec3a4ec365ceb5b",
+        "request_id_hex": "5a17c0e0",
+        "sender_dest_hash_hex": "a8e682239cbf2d662b7f6f0936b8b14a2c7004b56071e505389785ff7c9e4a76"
+      },
+      "expected_hex": "a8e682239cbf2d662b7f6f0936b8b14a2c7004b56071e505389785ff7c9e4a765a17c0e0917a0dac2856c20bedeb20a19eaf7ba4b22e9939cb05ad89fec3a4ec365ceb5b012de1ce8c66c4a430"
+    },
+    {
+      "id": "s4-alloc-v1.allocation-key.init-other-envelope",
+      "kind": "allocation-key",
+      "note": "Ayn\u0131 request_id, farkl\u0131 i\u00e7erik \u2192 farkl\u0131 anahtar (yeniden ba\u015flam\u0131\u015f telefon, \u00a72.4(c)).",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(c) allocation_key (KR-19; = idempotency-key, \u00a77)",
+      "input": {
+        "envelope_hash8_hex": "80428a72b710fa90",
+        "envelope_hex": "02070c11161b20252a2f34393e43484d52575c61666b70757a7f84898e93989da2a7acb1b6bbc0c5cacfd4d9dee3e8edf2f7fc01060b10151a1f24292e33383d42474c51565b60656a6f74797e83888d92979ca1a6abb0b5babfc4c9ced3d8dde2e7ecf1f6fb00050a0f14191e23282d32373c41464b5055",
+        "envelope_type_hex": "01",
+        "recipient_dest_hash_hex": "808d825bba92c7b4cf584b71b907bb391b99a1eab2afacbd3819fc190b094848",
+        "request_id_hex": "5a17c0e0",
+        "sender_dest_hash_hex": "a8e682239cbf2d662b7f6f0936b8b14a2c7004b56071e505389785ff7c9e4a76"
+      },
+      "expected_hex": "a8e682239cbf2d662b7f6f0936b8b14a2c7004b56071e505389785ff7c9e4a765a17c0e0808d825bba92c7b4cf584b71b907bb391b99a1eab2afacbd3819fc190b0948480180428a72b710fa90"
+    },
+    {
+      "id": "s4-alloc-v1.allocation-key.relay-open",
+      "kind": "allocation-key",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(c) allocation_key (KR-19; = idempotency-key, \u00a77)",
+      "input": {
+        "envelope_hash8_hex": "63cfca3701fe355d",
+        "envelope_hex": "d4d8d9cfe20fe87ba42d997afe1abcc8",
+        "envelope_type_hex": "05",
+        "recipient_dest_hash_hex": "808d825bba92c7b4cf584b71b907bb391b99a1eab2afacbd3819fc190b094848",
+        "request_id_hex": "5a17c0e1",
+        "sender_dest_hash_hex": "a8e682239cbf2d662b7f6f0936b8b14a2c7004b56071e505389785ff7c9e4a76"
+      },
+      "expected_hex": "a8e682239cbf2d662b7f6f0936b8b14a2c7004b56071e505389785ff7c9e4a765a17c0e1808d825bba92c7b4cf584b71b907bb391b99a1eab2afacbd3819fc190b0948480563cfca3701fe355d"
+    },
+    {
+      "id": "s4-alloc-v1.handle-candidate.c100",
+      "kind": "handle-candidate",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.6 aday: BLAKE2s-256(handle_secret \u2016 alloc_counter u64)[0..4]",
+      "input": {
+        "alloc_counter_hex": "0000000000000100",
+        "handle_secret_hex": "247d85a00070f813093cbba0ffb3667f624d46cbe3efd7ce55a22dd1f9ed4ae2"
+      },
+      "expected_hex": "26f6be3b"
+    },
+    {
+      "id": "s4-alloc-v1.handle-candidate.c101",
+      "kind": "handle-candidate",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.6 aday: BLAKE2s-256(handle_secret \u2016 alloc_counter u64)[0..4]",
+      "input": {
+        "alloc_counter_hex": "0000000000000101",
+        "handle_secret_hex": "247d85a00070f813093cbba0ffb3667f624d46cbe3efd7ce55a22dd1f9ed4ae2"
+      },
+      "expected_hex": "8593b1ef"
+    },
+    {
+      "id": "s4-alloc-v1.handle-candidate.c102",
+      "kind": "handle-candidate",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.6 aday: BLAKE2s-256(handle_secret \u2016 alloc_counter u64)[0..4]",
+      "input": {
+        "alloc_counter_hex": "0000000000000102",
+        "handle_secret_hex": "247d85a00070f813093cbba0ffb3667f624d46cbe3efd7ce55a22dd1f9ed4ae2"
+      },
+      "expected_hex": "44b555e0"
+    },
+    {
+      "id": "s4-alloc-v1.handle-candidate.c103",
+      "kind": "handle-candidate",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.6 aday: BLAKE2s-256(handle_secret \u2016 alloc_counter u64)[0..4]",
+      "input": {
+        "alloc_counter_hex": "0000000000000103",
+        "handle_secret_hex": "247d85a00070f813093cbba0ffb3667f624d46cbe3efd7ce55a22dd1f9ed4ae2"
+      },
+      "expected_hex": "c1ebffb9"
+    },
+    {
+      "id": "s4-alloc-v1.handle-candidate.c104",
+      "kind": "handle-candidate",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.6 aday: BLAKE2s-256(handle_secret \u2016 alloc_counter u64)[0..4]",
+      "input": {
+        "alloc_counter_hex": "0000000000000104",
+        "handle_secret_hex": "247d85a00070f813093cbba0ffb3667f624d46cbe3efd7ce55a22dd1f9ed4ae2"
+      },
+      "expected_hex": "ff8387c1"
+    },
+    {
+      "id": "s4-alloc-v1.handle-candidate.c105",
+      "kind": "handle-candidate",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.6 aday: BLAKE2s-256(handle_secret \u2016 alloc_counter u64)[0..4]",
+      "input": {
+        "alloc_counter_hex": "0000000000000105",
+        "handle_secret_hex": "247d85a00070f813093cbba0ffb3667f624d46cbe3efd7ce55a22dd1f9ed4ae2"
+      },
+      "expected_hex": "90ab66bf"
+    },
+    {
+      "id": "s4-alloc-v1.handle-candidate.c106",
+      "kind": "handle-candidate",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.6 aday: BLAKE2s-256(handle_secret \u2016 alloc_counter u64)[0..4]",
+      "input": {
+        "alloc_counter_hex": "0000000000000106",
+        "handle_secret_hex": "247d85a00070f813093cbba0ffb3667f624d46cbe3efd7ce55a22dd1f9ed4ae2"
+      },
+      "expected_hex": "0fd0ddc7"
+    },
+    {
+      "id": "s4-alloc-v1.handle-candidate.c107",
+      "kind": "handle-candidate",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.6 aday: BLAKE2s-256(handle_secret \u2016 alloc_counter u64)[0..4]",
+      "input": {
+        "alloc_counter_hex": "0000000000000107",
+        "handle_secret_hex": "247d85a00070f813093cbba0ffb3667f624d46cbe3efd7ce55a22dd1f9ed4ae2"
+      },
+      "expected_hex": "2e0bb5b0"
+    },
+    {
+      "id": "s4-alloc-v1.handle-candidate.c108",
+      "kind": "handle-candidate",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.6 aday: BLAKE2s-256(handle_secret \u2016 alloc_counter u64)[0..4]",
+      "input": {
+        "alloc_counter_hex": "0000000000000108",
+        "handle_secret_hex": "247d85a00070f813093cbba0ffb3667f624d46cbe3efd7ce55a22dd1f9ed4ae2"
+      },
+      "expected_hex": "b76a0d79"
+    },
+    {
+      "id": "s4-alloc-v1.handle-alloc.first-free",
+      "kind": "handle-alloc",
+      "note": "beklenen = handle u32 \u2016 alloc_counter_sonra u64.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.6 (ilk aday bo\u015f \u2192 tahsis; saya\u00e7 +1)",
+      "input": {
+        "alloc_counter_hex": "0000000000000100",
+        "handle_secret_hex": "247d85a00070f813093cbba0ffb3667f624d46cbe3efd7ce55a22dd1f9ed4ae2",
+        "taken_handles_hex": ""
+      },
+      "expected_hex": "26f6be3b0000000000000101"
+    },
+    {
+      "id": "s4-alloc-v1.handle-alloc.skip-taken",
+      "kind": "handle-alloc",
+      "note": "\u0130lk aday aktif tabloda: ikinci aday verilir, saya\u00e7 +2.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.6 (aktif/tombstone aday atlan\u0131r; saya\u00e7 her denemede +1)",
+      "input": {
+        "alloc_counter_hex": "0000000000000100",
+        "handle_secret_hex": "247d85a00070f813093cbba0ffb3667f624d46cbe3efd7ce55a22dd1f9ed4ae2",
+        "taken_handles_hex": "26f6be3b"
+      },
+      "expected_hex": "8593b1ef0000000000000102"
+    },
+    {
+      "id": "s4-alloc-v1.handle-alloc.eight-collisions",
+      "kind": "handle-alloc",
+      "note": "handle 0 = tahsis yok; alloc_counter 8 ilerlemi\u015f.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.6 (8 denemede de \u00e7ak\u0131\u015fma \u2192 tahsis yok, HUB_CAPACITY; \u00fcst\u00fcne yazma yok); \u00a77 K6",
+      "input": {
+        "alloc_counter_hex": "0000000000000100",
+        "handle_secret_hex": "247d85a00070f813093cbba0ffb3667f624d46cbe3efd7ce55a22dd1f9ed4ae2",
+        "taken_handles_hex": "26f6be3b8593b1ef44b555e0c1ebffb9ff8387c190ab66bf0fd0ddc72e0bb5b0"
+      },
+      "expected_hex": "000000000000000000000108"
+    },
+    {
+      "id": "s4-alloc-v1.handle-alloc.after-eight-collisions",
+      "kind": "handle-alloc",
+      "note": "Bir \u00f6nceki vakan\u0131n sonraki sayac\u0131ndan: farkl\u0131 aday, tahsis ba\u015far\u0131l\u0131.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.6 (sonraki istek ayn\u0131 adaylar\u0131 yeniden denemez); KM-HUB-TDD-001 T-M5",
+      "input": {
+        "alloc_counter_hex": "0000000000000108",
+        "handle_secret_hex": "247d85a00070f813093cbba0ffb3667f624d46cbe3efd7ce55a22dd1f9ed4ae2",
+        "taken_handles_hex": "26f6be3b8593b1ef44b555e0c1ebffb9ff8387c190ab66bf0fd0ddc72e0bb5b0"
+      },
+      "expected_hex": "b76a0d790000000000000109"
+    }
+  ]
+}

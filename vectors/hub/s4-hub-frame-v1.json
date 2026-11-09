@@ -1,0 +1,200 @@
+{
+  "schema_version": 2,
+  "suite": "s4-hub-frame-v1",
+  "spec_version": "km-seam-th-001@v1.3.1",
+  "generator": "ref/hub/gen_vectors.py 1",
+  "description": "S4 \u00a72.1/\u00a72.2 HubChannel kontrol datagram\u0131: HEARTBEAT/HEARTBEAT_ACK (0 B ve 4 B g\u00f6vde), PLANE1_RPC sarmalay\u0131c\u0131s\u0131 ve \u00a73 H10 boyutlar\u0131; negatifler (g\u00f6vde boyu, bilinmeyen frame_type, \u00f6nek, kuyruk, boy s\u0131n\u0131rlar\u0131).",
+  "notes": {
+    "seam-open-hub": "Ret S3 HubChannel open_hub (seam) katman\u0131nda: 16 s\u0131f\u0131r kuyru\u011fu ve datagram boyu. s4.rs bu baytlar\u0131 eklemez/\u00e7\u0131karmaz (A2.2); t\u00fcketici \u00a72.1 kural\u0131n\u0131 uygular."
+  },
+  "case_count": 17,
+  "cases": [
+    {
+      "id": "s4-hub-frame-v1.heartbeat.empty",
+      "kind": "hub-frame",
+      "note": "21 B: en k\u0131sa kontrol datagram\u0131.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.2 HEARTBEAT (g\u00f6vde bo\u015f)",
+      "input": {
+        "body_hex": "",
+        "frame_type_hex": "1b"
+      },
+      "expected_hex": "000000001b00000000000000000000000000000000"
+    },
+    {
+      "id": "s4-hub-frame-v1.heartbeat.token",
+      "kind": "hub-frame",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.2 HEARTBEAT (echo_token u32)",
+      "input": {
+        "body_hex": "0000beef",
+        "frame_type_hex": "1b"
+      },
+      "expected_hex": "000000001b0000beef00000000000000000000000000000000"
+    },
+    {
+      "id": "s4-hub-frame-v1.heartbeat-ack.empty",
+      "kind": "hub-frame",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.2 HEARTBEAT_ACK (gelenle ayn\u0131 uzunluk)",
+      "input": {
+        "body_hex": "",
+        "frame_type_hex": "1c"
+      },
+      "expected_hex": "000000001c00000000000000000000000000000000"
+    },
+    {
+      "id": "s4-hub-frame-v1.heartbeat-ack.token",
+      "kind": "hub-frame",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.2 HEARTBEAT_ACK (token aynen)",
+      "input": {
+        "body_hex": "0000beef",
+        "frame_type_hex": "1c"
+      },
+      "expected_hex": "000000001c0000beef00000000000000000000000000000000"
+    },
+    {
+      "id": "s4-hub-frame-v1.plane1-rpc.client-bind-req",
+      "kind": "hub-frame",
+      "note": "CLIENT_BIND iste\u011finin tam datagram\u0131: 81 B.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.1 / \u00a72.2 PLANE1_RPC; \u00a73 H10",
+      "input": {
+        "body_hex": "01005a17c0de0000003200b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b100250310de4b0b721219d6cc09fcb46c9b",
+        "frame_type_hex": "1d"
+      },
+      "expected_hex": "000000001d01005a17c0de0000003200b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b100250310de4b0b721219d6cc09fcb46c9b00000000000000000000000000000000"
+    },
+    {
+      "id": "s4-hub-frame-v1.plane1-rpc.client-bind-resp",
+      "kind": "hub-frame",
+      "note": "CLIENT_BIND meydan okumas\u0131n\u0131n tam datagram\u0131: 66 B (\u2264 81 B istek).",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.1 / \u00a72.2 PLANE1_RPC; \u00a73 H10",
+      "input": {
+        "body_hex": "01015a17c0de00000023000000000000000000000000000000000000035140cadb4354f40f1da4bc7836be733c",
+        "frame_type_hex": "1d"
+      },
+      "expected_hex": "000000001d01015a17c0de00000023000000000000000000000000000000000000035140cadb4354f40f1da4bc7836be733c00000000000000000000000000000000"
+    },
+    {
+      "id": "s4-hub-frame-v1.plane1-rpc.bind-proof-req",
+      "kind": "hub-frame",
+      "note": "BIND_PROOF iste\u011finin tam datagram\u0131: 159 B.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.1 / \u00a72.2 PLANE1_RPC; \u00a73 H10",
+      "input": {
+        "body_hex": "0b005a17c0df00000080b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1250310de4b0b721219d6cc09fcb46c9b5140cadb4354f40f1da4bc7836be733c6594a3d4916c506646d4635d69ab9c3a93a766fc722f401a4285bbe00b892f22c96fdb4e86c811203924b227b6f2eb9fb9cd3819ea73fcf360b2a312712ca901",
+        "frame_type_hex": "1d"
+      },
+      "expected_hex": "000000001d0b005a17c0df00000080b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1250310de4b0b721219d6cc09fcb46c9b5140cadb4354f40f1da4bc7836be733c6594a3d4916c506646d4635d69ab9c3a93a766fc722f401a4285bbe00b892f22c96fdb4e86c811203924b227b6f2eb9fb9cd3819ea73fcf360b2a312712ca90100000000000000000000000000000000"
+    },
+    {
+      "id": "s4-hub-frame-v1.plane1-rpc.bind-proof-error",
+      "kind": "hub-frame",
+      "note": "BIND_PROOF hata yan\u0131t\u0131n\u0131n tam datagram\u0131: 35 B (\u2264 159 B istek).",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.1 / \u00a72.2 PLANE1_RPC; \u00a73 H10",
+      "input": {
+        "body_hex": "0b035a17c0df0000000401060000",
+        "frame_type_hex": "1d"
+      },
+      "expected_hex": "000000001d0b035a17c0df000000040106000000000000000000000000000000000000"
+    },
+    {
+      "id": "s4-hub-frame-v1.plane1-rpc.route-miss",
+      "kind": "hub-frame",
+      "note": "ROUTE_MISS tam datagram\u0131: 36 B.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.1 / \u00a72.2 PLANE1_RPC; \u00a73 H10",
+      "input": {
+        "body_hex": "8400000000000000000526f6be3b01",
+        "frame_type_hex": "1d"
+      },
+      "expected_hex": "000000001d8400000000000000000526f6be3b0100000000000000000000000000000000"
+    },
+    {
+      "id": "s4-hub-frame-v1.neg.heartbeat-body-len-2",
+      "kind": "decode-hub-frame",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.2 HEARTBEAT (ba\u015fka uzunluk \u2192 reject)",
+      "input_hex": "000000001b000100000000000000000000000000000000",
+      "expected": {
+        "result": "drop",
+        "reason": "bad-length"
+      }
+    },
+    {
+      "id": "s4-hub-frame-v1.neg.heartbeat-ack-body-len-5",
+      "kind": "decode-hub-frame",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.2 HEARTBEAT_ACK",
+      "input_hex": "000000001c000000000000000000000000000000000000000000",
+      "expected": {
+        "result": "drop",
+        "reason": "bad-length"
+      }
+    },
+    {
+      "id": "s4-hub-frame-v1.neg.unknown-frame-type",
+      "kind": "decode-hub-frame",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.2 (ba\u015fka frame_type \u2192 sessiz drop); \u00a73 H1",
+      "input_hex": "000000001a00000000000000000000000000000000",
+      "expected": {
+        "result": "drop",
+        "reason": "unknown-frame-type"
+      }
+    },
+    {
+      "id": "s4-hub-frame-v1.neg.unknown-frame-type-1e",
+      "kind": "decode-hub-frame",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.2; \u00a78 Y1 (0x1E/0x1F rezerve, PoC'de yok)",
+      "input_hex": "000000001e00000000000000000000000000000000",
+      "expected": {
+        "result": "drop",
+        "reason": "unknown-frame-type"
+      }
+    },
+    {
+      "id": "s4-hub-frame-v1.neg.prefix-nonzero",
+      "kind": "decode-hub-frame",
+      "note": "Kontrol \u00e7\u00f6z\u00fcc\u00fcs\u00fc ilk 4 bayt \u2260 0'\u0131 reddeder.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.1 (ilk 4 bayt 0 de\u011filse veri s\u0131n\u0131f\u0131)",
+      "input_hex": "000000011b00000000000000000000000000000000",
+      "expected": {
+        "result": "drop",
+        "reason": "not-control"
+      }
+    },
+    {
+      "id": "s4-hub-frame-v1.neg.trailer-nonzero",
+      "kind": "decode-hub-frame",
+      "flags": [
+        "seam-open-hub"
+      ],
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.1 (open_hub: son 16 bayt s\u0131f\u0131r)",
+      "input_hex": "000000001b00000000000000000000000000000001",
+      "expected": {
+        "result": "drop",
+        "reason": "trailer-nonzero"
+      }
+    },
+    {
+      "id": "s4-hub-frame-v1.neg.shorter-than-21",
+      "kind": "decode-hub-frame",
+      "flags": [
+        "seam-open-hub"
+      ],
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.1 (en az 21 B)",
+      "input_hex": "000000001b000000000000000000000000000000",
+      "expected": {
+        "result": "drop",
+        "reason": "truncated"
+      }
+    },
+    {
+      "id": "s4-hub-frame-v1.neg.over-max-datagram",
+      "kind": "decode-hub-frame",
+      "flags": [
+        "seam-open-hub"
+      ],
+      "note": "1281 B datagram.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72 (datagram \u2264 MAX_DATAGRAM); \u00a76 MAX_DATAGRAM = 1280",
+      "input_hex": "000000001d05005a17c0e0000004e10000000001808d825bba92c7b4cf584b71b907bb391b99a1eab2afacbd3819fc190b094848000004b800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "expected": {
+        "result": "drop",
+        "reason": "too-long"
+      }
+    }
+  ]
+}
