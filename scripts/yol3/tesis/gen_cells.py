@@ -8,9 +8,10 @@
 Seçenekler (M2 manifestinin satırları; varsayılanlar aşağıda, değişirse dosyalar yeniden üretilir):
     --analog y10|l30   gösterim analoğu: `a_r12k_d150_l20_foto150k` (Y10, varsayılan) ya da
                        `a_r12k_d300_l30_dosyali` (CC §4.2 "Y10 hazırsa, yoksa …")
-    --fec urun|off     bütün kollarda FEC durumu: `urun` (varsayılan; K0 = a858f3fc + düzenek, ürün
-                       profili) ya da `off` (`fec = None`: f0_flows `--fec-off on`, bench
-                       `--fec-profile 0`)
+    --fec off|urun     bütün kollarda FEC durumu: `off` (varsayılan; KK-ORK-01: teşhisin bütün
+                       kollarında FEC KAPALI — gösterim düğümü `runtime.fec = None`, v4 Y1, etiket
+                       "ARQ yolu"; f0_flows `--fec-off on`, bench `--fec-profile 0`) ya da `urun`
+                       (ürün profili, FEC açık)
     --edar-yok         ön test geçmediyse (CC §4.2): her kolda `--e1-edar off` (e1_probe_keep düşer);
                        K2−e K2 ile aynı sete indiği için çıkar (15 dosya, 150 iş)
 
@@ -86,6 +87,10 @@ def read_cell(rel):
     return lines, hashlib.sha256(raw).hexdigest()
 
 
+def ork(fec):
+    return " (KK-ORK-01)" if fec == "off" else ""
+
+
 def flags_text(arm, edar_yok):
     fl = [f for f in ARM_FLAGS[arm] if not (edar_yok and f == "e-dar")]
     return "+".join(fl) if fl else "hiçbiri (bayraklar kapalı)"
@@ -113,7 +118,7 @@ def a_body(cell, arm, rel, sha, lines, fec, edar_yok, purpose, row):
         "scripts/yol3/tesis/gen_cells.py (elle düzenlemeyin).",
         f"# Kaynak hücre: {rel} (sha256 {sha}) — geometri AYNEN; fark yalnız CELL, REPS, ARMS, "
         "kol bayrağı.",
-        f"# Kol {arm}: {flags_text(arm, edar_yok)} (M2 manifesti KK-M2-09) · FEC {fec}.",
+        f"# Kol {arm}: {flags_text(arm, edar_yok)} (M2 manifesti KK-M2-09) · FEC {fec}{ork(fec)}.",
         "# İkili: BIN_TESIS = <yol2/o1>/target/release/examples/f0_flows (orkestratör, D-34). "
         "Zarflar Unix soketinden (netem dışı, beyanlı).",
         f"CELL={cell}",
@@ -145,7 +150,7 @@ def b_body(cell, arm, rel, sha, lines, fec, edar_yok, purpose, row):
         "scripts/yol3/tesis/gen_cells.py (elle düzenlemeyin).",
         f"# Kaynak hücre: {rel} (sha256 {sha}) — geometri AYNEN; fark yalnız CELL, REPS, ARMS, "
         "kol bayrağı.",
-        f"# Kol {arm}: {flags_text(arm, edar_yok)} (M2 manifesti KK-M2-09) · FEC {fec}.",
+        f"# Kol {arm}: {flags_text(arm, edar_yok)} (M2 manifesti KK-M2-09) · FEC {fec}{ork(fec)}.",
         "# İkili: BIN_TESIS_BENCH = <yol2/o1>/target/release/bench (orkestratör, D-34); kol "
         "arms_kama.sh kama_e1_arm.",
         f"CELL={cell}",
@@ -194,11 +199,13 @@ def sira_text(items):
     return "".join(f"scripts/yol3/tesis/cells/{name}\n" for _, name, _ in items)
 
 
-def komut(items):
+def komut(items, fec, analog):
     n1 = sum(1 for row, _, _ in items if row == 1)
     return f"""\
 # [YOL3 · Ö] Teşhis koşusu (§8.2) — orkestratör koşar (D-18); ajan ve cargo durur (v2 §11.5).
 # Depo kökünden. İkililer yol2/o1 release (orkestratör derler, D-34).
+# Koşu kaydı: manifest docs/design/E1-TESHIS-G2.md sha256 37bcabe3…; FEC {fec}{ork(fec)};
+#   analog {analog}; SIRA.txt sha256 ve ikili sha256'ları (cell.env) kayda.
 export BIN_TESIS=<yol2/o1 ağacı>/target/release/examples/f0_flows
 export BIN_TESIS_BENCH=<yol2/o1 ağacı>/target/release/bench
 # Tamamı ({len(items)} dosya, {len(items) * REPS} iş; ilk {n1} satır = 1. sıra, {n1 * REPS} iş):
@@ -212,14 +219,14 @@ systemd-inhibit --what=sleep:idle --why="YOL3 teshis" setsid \\
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--analog", choices=sorted(ANALOG), default="y10")
-    ap.add_argument("--fec", choices=["urun", "off"], default="urun")
+    ap.add_argument("--fec", choices=["off", "urun"], default="off")  # KK-ORK-01
     ap.add_argument("--edar-yok", action="store_true")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--komut", action="store_true")
     a = ap.parse_args()
     items = plan(a.analog, a.fec, a.edar_yok)
     if a.komut:
-        print(komut(items), end="")
+        print(komut(items, a.fec, a.analog), end="")
         return 0
     if a.check:
         errs = []

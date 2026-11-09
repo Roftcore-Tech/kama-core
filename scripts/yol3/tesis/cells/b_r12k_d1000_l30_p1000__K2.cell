@@ -1,6 +1,6 @@
 # [YOL3 · Ö · teşhis] b_r12k_d1000_l30_p1000__K2 — sıra 2; manşet: E1 var/yok (hız). Üretici: scripts/yol3/tesis/gen_cells.py (elle düzenlemeyin).
 # Kaynak hücre: scripts/ktp2/f0/cells/b/b_r12k_d1000_l30_p1000.cell (sha256 271b87766bd1128851882bd883454123b283d9639d80962477d833a6f8a593f4) — geometri AYNEN; fark yalnız CELL, REPS, ARMS, kol bayrağı.
-# Kol K2: c+d+DrainRtprop+e-dar+retx_first (M2 manifesti KK-M2-09) · FEC urun.
+# Kol K2: c+d+DrainRtprop+e-dar+retx_first (M2 manifesti KK-M2-09) · FEC off (KK-ORK-01).
 # İkili: BIN_TESIS_BENCH = <yol2/o1>/target/release/bench (orkestratör, D-34); kol arms_kama.sh kama_e1_arm.
 CELL=b_r12k_d1000_l30_p1000__K2
 RATE_ID=r12k
@@ -20,6 +20,8 @@ ARMS="K2"
 BUDGET_S=185
 CAPTURE=0
 SETTLE_S=1.5
+KAMA_SRV_EXTRA="--fec-profile 0"
+KAMA_CLI_EXTRA="--fec-profile 0"
 # shellcheck disable=SC1091
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../ktp2/f0/b" && pwd)/hucre_b.sh"
 # shellcheck disable=SC1091

@@ -1,6 +1,6 @@
 # [YOL3 · Ö · teşhis] a_r12k_d300_l30_dosyasiz__K2mc — sıra 1; PTT-yalnız oturumda yeni veri emisyonu. Üretici: scripts/yol3/tesis/gen_cells.py (elle düzenlemeyin).
 # Kaynak hücre: scripts/ktp2/f0/cells/a/a_r12k_d300_l30_dosyasiz.cell (sha256 550d6fc6a8512963174d489ffdd358a8d630d7ee5dbaca800a6eeba28931c08f) — geometri AYNEN; fark yalnız CELL, REPS, ARMS, kol bayrağı.
-# Kol K2mc: d+DrainRtprop+e-dar+retx_first (M2 manifesti KK-M2-09) · FEC urun.
+# Kol K2mc: d+DrainRtprop+e-dar+retx_first (M2 manifesti KK-M2-09) · FEC off (KK-ORK-01).
 # İkili: BIN_TESIS = <yol2/o1>/target/release/examples/f0_flows (orkestratör, D-34). Zarflar Unix soketinden (netem dışı, beyanlı).
 CELL=a_r12k_d300_l30_dosyasiz__K2mc
 FWD="delay 300ms 60ms distribution normal loss 30% rate 100kbit"
@@ -10,6 +10,6 @@ ARMS="K2mc"
 BUDGET_S=600
 CAPTURE=0
 SETTLE_S=1
-F0A_ARGS='--dir @D@ --alice-addr @CLI_IP@:@PORT@ --bob-addr @SRV_IP@:@PORT@ --scenario dosyasiz --profile r12k_d300_l30 --rep @REP@ --file-bytes 524700 --window-s 300 --warmup-texts 3 --warmup-every-ms 500 --file-at-ms 5000 --texts 40 --text-at-ms 6000 --text-every-ms 2500 --text-bytes 64 --sigs 10 --sig-at-ms 7000 --sig-every-ms 10000 --sig-bytes 120 --ptt-bundles 25 --ptt-bundle-ms 200 --ptt-bytes 40 --stall-at-ms 20000 --stall-ms 30000 --karsi on --karsi-texts 5 --karsi-every-ms 500 --karsi-bundles 10 --karsi-min-unacked 3 --karsi-text-bytes 48 --connect-timeout-s 30 --probe-ms 200 --live-diag on --receipt-grace-s 30 --ptt-at-ms 15000,60000 --e1-arm K2mc'
+F0A_ARGS='--dir @D@ --alice-addr @CLI_IP@:@PORT@ --bob-addr @SRV_IP@:@PORT@ --scenario dosyasiz --profile r12k_d300_l30 --rep @REP@ --file-bytes 524700 --window-s 300 --warmup-texts 3 --warmup-every-ms 500 --file-at-ms 5000 --texts 40 --text-at-ms 6000 --text-every-ms 2500 --text-bytes 64 --sigs 10 --sig-at-ms 7000 --sig-every-ms 10000 --sig-bytes 120 --ptt-bundles 25 --ptt-bundle-ms 200 --ptt-bytes 40 --stall-at-ms 20000 --stall-ms 30000 --karsi on --karsi-texts 5 --karsi-every-ms 500 --karsi-bundles 10 --karsi-min-unacked 3 --karsi-text-bytes 48 --connect-timeout-s 30 --probe-ms 200 --live-diag on --receipt-grace-s 30 --ptt-at-ms 15000,60000 --e1-arm K2mc --fec-off on'
 ARM_K2mc_SRV="@BIN_TESIS@ --role bob $F0A_ARGS"
 ARM_K2mc_CLI="@BIN_TESIS@ --role alice $F0A_ARGS"
