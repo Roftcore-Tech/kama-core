@@ -13,10 +13,16 @@ aşağıdaki TANIMLAR'dadır — her biri mevcut F0 analizörünün ya da ACIL b
                      f0a_tam `run_row` `file_bob_ms`. Alınmayan dosya = +∞ (medyan sansürlü).
   (ii) PTT alıcı p95 f0a_tam `run_row` `P_p95` (iki basış birlikte; nearest-rank; teslim
                      edilmeyen demet sansürlü), ms; gösterim analoğu hücresi.
-  (iii) emisyon/sunulan  ACIL #15 tanımı: alice `ts` satırlarında eş `bob` oturumunun pacer hızı
-                     `pr` (Idle örnekleri hariç; acil-betikler/v-s3/a_ts.py) — koşu başına medyan,
-                     ÷ 640 B/s (PTT talebi; RAPOR-A §3). Dosyasız hücrede ölçülmeyen K1 ve K2−e
-                     için K2'nin sonucu (manifest §2).
+  (iii) emisyon/sunulan  pay ACIL #15 tanımı AYNEN: alice `ts` satırlarında eş `bob` oturumunun
+                     pacer hızı `pr` (Idle örnekleri hariç; acil-betikler/v-s3/a_ts.py), koşu
+                     başına medyan, mühürlü UDP yükü B/s (pacer jetonu `sealed_len(HDR_DATA +
+                     birim)` ile düşer: client-core runtime.rs `wire_len`). Payda AYNI katmanda
+                     (KK-ORK-03; 640 B/s L2 DEĞİL): hücrenin kendi zaman çizelgesinden
+                     `sunulan_ptt_bps` = (ptt_bytes + 5 + 8 [birim çerçevesi, f0a_analyze
+                     unit_len P] + 11 [HDR_DATA, client-core wire.rs] + 22 [mühür zarfı,
+                     f0a_analyze :51 / RAPOR-A §3 128 B tel]) B × demet ÷ basış süresi (demet ×
+                     ptt_bundle_ms) — dosyasız hücrede 86 B / 0,2 s = 430 B/s. Dosyasız hücrede
+                     ölçülmeyen K1 ve K2−e için K2'nin sonucu (manifest §2).
   R1   gönderim/gereken  ACIL srate.py `S(d, 3, 28)` (capb_cli 'o' satırları ip_len toplamı,
                      [3, 28) s, IP B/s) ÷ gereken = 3702/(1 − p) B/s (acil-betikler/v-s3/bins.py
                      `off`; p = hücrenin kaybı). Tuzaksız ⇔ 0 < left_preconv ≤ 10 000 ms (0 =
@@ -62,7 +68,12 @@ E1_ARMS = ["K1", "K2", "K2mc", "K2me"]
 ALL_ARMS = ["K0", "K0r"] + E1_ARMS
 FLAGS = {"K0": 0, "K0r": 1, "K1": 4, "K2": 5, "K2mc": 4, "K2me": 4}
 SHOW = {"K2mc": "K2−c", "K2me": "K2−e"}
-PTT_DEMAND_BPS = 640.0     # RAPOR-A §3: 128 B tel / 200 ms
+# KK-ORK-03: (iii) paydası pr ile aynı katmanda (mühürlü UDP yükü). Demeti taşıyan birimin ek
+# baytları: birim çerçevesi 5 + 8 (f0a_analyze unit_len "P"), DATA başlığı 11 (client-core
+# wire.rs HDR_DATA; FEC kapalı → parça başlığı yok, KK-ORK-01), mühür zarfı 22 (f0a_analyze :51).
+PTT_UNIT_FRAMING = 5 + 8
+DATA_HDR = 11
+SEAL_OVERHEAD = 22
 OFFERED_IP_BPS = 3702.0    # acil-betikler/v-s3/bins.py `off` (r12k, 1000 B, 285 ms)
 U_UNIT = 1013              # floor.py: p1000 → 1013
 INF = math.inf
@@ -198,6 +209,29 @@ def tek_satir(choice, R1):
 
 # ── Çıkarım katmanı (F0 analizörleri + ACIL tanımları) ────────────────────────────────────────
 
+def sunulan_ptt_bps(params):
+    """KK-ORK-03: PTT sunulan yükü, `pr`'nin katmanında (mühürlü UDP yükü B/s): demet başına
+    (ptt_bytes + birim çerçevesi + DATA başlığı + mühür zarfı) bayt, basış süresine bölünür
+    (basış süresi = demet × ptt_bundle_ms). `params` = f0_flows hdr `params`."""
+    n, ms = params["ptt_bundles"], params["ptt_bundle_ms"]
+    if not n or not ms:
+        return None
+    per = params["ptt_bytes"] + PTT_UNIT_FRAMING + DATA_HDR + SEAL_OVERHEAD
+    return n * per / (n * ms / 1000.0)
+
+
+def hdr_params(alice_jsonl):
+    """f0_flows koşu başlığının `params` nesnesi (ilk `hdr` satırı)."""
+    try:
+        with open(alice_jsonl, encoding="utf-8") as f:
+            for ln in f:
+                if '"k":"hdr"' in ln:
+                    return json.loads(ln).get("params")
+    except (OSError, ValueError):
+        return None
+    return None
+
+
 def acil_pacer_med(alice_jsonl):
     """acil-betikler/v-s3/a_ts.py: eş `bob`, Idle hariç `pr`; burada koşu başına medyan."""
     pr, srtt, rtp, pu = [], [], None, None
@@ -273,13 +307,17 @@ def extract(kok, work):
                                                   os.sep + "items" + os.sep)
                               .replace(".json", ".jsonl"))
         pace, srtt, rtp, pu = acil_pacer_med(os.path.join(rj["dir"], "alice.jsonl"))
+        prm = hdr_params(os.path.join(rj["dir"], "alice.jsonl"))
+        offered = sunulan_ptt_bps(prm) if prm else None
+        if offered is not None:
+            d.setdefault("sunulan_bps", {}).setdefault(base, set()).add(offered)
         e = d.setdefault(base, {}).setdefault(arm, {k: [] for k in
                                                     ("file", "ptt", "ratio", "pace", "srtt",
                                                      "rtprop", "pu")})
         fb = row.get("file_bob_ms")
         e["file"].append(fb / 1000.0 if fb is not None else INF)
         e["ptt"].append(row["P_p95"] / 1000.0 if row.get("P_p95") is not None else None)
-        e["ratio"].append(pace / PTT_DEMAND_BPS if pace is not None else None)
+        e["ratio"].append(pace / offered if (pace is not None and offered) else None)
         e["pace"].append(pace)
         e["srtt"].append(srtt)
         e["rtprop"].append(rtp / 1000.0 if rtp is not None else None)
@@ -331,6 +369,11 @@ def report(d, man_sha):
                  f"{fmt(S['ratio_med'].get(k))} | {row.get('i', '—')} | "
                  f"{row.get('ii', row.get('ii(0,90)', '—'))} | {row.get('iii', '—')} | "
                  f"{row.get('iv', '—')} | {row.get('uygun', '—')} |")
+    for cell, vals in sorted((d.get("sunulan_bps") or {}).items()):
+        if cell == DOSYASIZ:
+            L.append(f"\n(iii) payda (KK-ORK-03): {cell} sunulan = "
+                     f"{', '.join(fmt(v, 1) for v in sorted(vals))} B/s [türetilmiş; mühürlü UDP "
+                     "yükü, pr ile aynı katman]; pay = alice pr koşu medyanı (Idle hariç)")
     R3 = S["R3"]
     L += ["", f"## R3 (bağlayıcı): geçer = {R3['gecer']} · d1000 l0 p95 med K0 "
           f"{fmt(R3['l0_med']['K0'])} / K2 {fmt(R3['l0_med']['K2'])} → {R3['l0']} · r25 "
@@ -353,7 +396,9 @@ def report(d, man_sha):
                      f"{fmt(v['probe_up_med'], 0)} |")
     L += ["", f"Startup dönemi kaybı [0, 20) s: {R4['startup_kaybi_0_20']}",
           f"diag_probe: {R4['diag_probe']}"]
-    return choice, "\n".join(L) + "\n", {"secim": choice, "S": S, "R1": R1, "R4": R4}
+    sun = {c: sorted(v) for c, v in (d.get("sunulan_bps") or {}).items()}
+    return choice, "\n".join(L) + "\n", {"secim": choice, "S": S, "R1": R1, "R4": R4,
+                                          "iii_sunulan_bps_KK_ORK_03": sun}
 
 
 # ── Öz-test (sahte veri; her kural dalı en az bir vaka) ──────────────────────────────────────
@@ -463,6 +508,13 @@ def oz_test():
     line = tek_satir(c, r1(_base())); n += 1
     chk("tek satır biçimi", line == "Gösterim seti: K2−c. E1 (manşet, tuzaksız): K2 0.99, "
         "K2−c 0.45.")
+    # KK-ORK-03: (iii) paydası pr katmanında (dosyasız 40 B → 86 B / 0,2 s; Y10 80 B → 126 B).
+    n += 2
+    chk("sunulan: dosyasız 40 B demet → 430 B/s",
+        sunulan_ptt_bps({"ptt_bytes": 40, "ptt_bundles": 25, "ptt_bundle_ms": 200}) == 430.0)
+    chk("sunulan: 80 B demet → 630 B/s; demet yok → None",
+        sunulan_ptt_bps({"ptt_bytes": 80, "ptt_bundles": 20, "ptt_bundle_ms": 200}) == 630.0
+        and sunulan_ptt_bps({"ptt_bytes": 40, "ptt_bundles": 0, "ptt_bundle_ms": 200}) is None)
     # Çıkarım yardımcıları: srate (ACIL S) ve pacer (a_ts) sahte dosyalarla.
     with tempfile.TemporaryDirectory() as t:
         z = 1_000_000_000_000
@@ -476,6 +528,9 @@ def oz_test():
         n += 1
         chk("srate: [3, 28) s yalnız 'o' satırları / 25", acil_srate(t) == 2500 / 25)
         with open(os.path.join(t, "alice.jsonl"), "w", encoding="utf-8") as f:
+            f.write(json.dumps({"k": "hdr", "params": {"ptt_bytes": 40, "ptt_bundles": 25,
+                                                        "ptt_bundle_ms": 200}},
+                               separators=(",", ":")) + "\n")
             for pr_, st_ in ((300, "ProbeUp"), (900, "Idle"), (500, "Drain")):
                 f.write(json.dumps({"k": "ts", "s": [
                     {"peer": "bob", "st": st_, "pr": pr_, "srtt": 300.0, "rtp": 290.0, "pu": 2},
@@ -484,6 +539,11 @@ def oz_test():
         n += 1
         chk("pacer: eş bob, Idle hariç medyan; son rtp/pu",
             acil_pacer_med(os.path.join(t, "alice.jsonl")) == (400, 0.3, 290.0, 2))
+        n += 1
+        prm = hdr_params(os.path.join(t, "alice.jsonl"))
+        chk("hdr params → sunulan 430; oran = 400/430",
+            prm is not None and sunulan_ptt_bps(prm) == 430.0
+            and abs(400 / sunulan_ptt_bps(prm) - 0.930232558) < 1e-6)
     print(f"== öz-test: {ok[0]}/{n} geçti")
     return 0
 
