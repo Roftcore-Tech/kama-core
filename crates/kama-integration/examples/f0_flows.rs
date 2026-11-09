@@ -60,6 +60,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use adaptive_transport::rate::E1Flags;
 use client_core::transport::{
     ClientTransportConfig, EnvelopeLink, LinkAttempt, LinkError, LinkEvent, UnitTraceKind,
     UnitTraceRecord,
@@ -284,6 +285,17 @@ impl E1Set {
         self != Self::default()
     }
 
+    /// M2'nin çalışma zamanı bayrak yapısı (`RuntimeConfig.e1_flags`).
+    fn flags(self) -> E1Flags {
+        E1Flags {
+            e1_startup_cwnd: self.startup_cwnd,
+            e1_applimited_plateau: self.applimited_plateau,
+            e1_drainrt_gate: self.drainrt_gate,
+            e1_probe_keep: self.probe_keep,
+            retx_first: self.retx_first,
+        }
+    }
+
     /// Başlık etiketi: açık bayraklar `+` ile (CC §4.2 adları); hiçbiri → `-`.
     fn label(self) -> String {
         let names: Vec<&str> = [
@@ -308,25 +320,21 @@ impl E1Set {
 type TransportHook = Box<dyn FnOnce(&mut ClientTransportConfig) + Send>;
 
 /// Kol ve FEC seçimini düğüm yapılandırmasına çevirir. Hiçbir bayrak açık değil ve FEC ürün
-/// değerindeyse `None` (F0 hücreleriyle AYNI kurucu, kanca yok). E1 bayrağı isteyen kol bu ikilide
-/// bayrak alanı yoksa SESSİZCE K0 koşmaz: hata (koşu başlamaz). Bayrak alanı M2'nin `E1Flags`'i
-/// (`RuntimeConfig.e1_flags`) main'e girince bağlanır (KK-Ö-27; bağımlı commit).
+/// değerindeyse `None` (F0 hücreleriyle AYNI kurucu, kanca yok). Aksi hâlde kanca
+/// `runtime.e1_flags`'i (M2 `E1Flags`) kolun setiyle yazar ve `--fec-off on` ise `runtime.fec`'i
+/// kapatır; başka alana dokunmaz.
 fn transport_hook(cfg: &Config) -> Result<Option<TransportHook>, String> {
     let set = cfg.e1_set();
-    if set.any() {
-        return Err(format!(
-            "--e1-arm {} ({}): bu ikilide E1 bayrak alanı yok (RuntimeConfig.e1_flags, M2; \
-             KK-Ö-27) — koşu başlatılmadı",
-            cfg.e1_arm.name(),
-            set.label()
-        ));
-    }
-    if !cfg.fec_off {
+    let fec_off = cfg.fec_off;
+    if !set.any() && !fec_off {
         return Ok(None);
     }
-    Ok(Some(Box::new(|c: &mut ClientTransportConfig| {
-        // Gösterim düğümü / FEC kapalı kol: PARAM_SET gönderilmez (runtime.rs:2555-2559).
-        c.runtime.fec = None;
+    Ok(Some(Box::new(move |c: &mut ClientTransportConfig| {
+        c.runtime.e1_flags = set.flags();
+        if fec_off {
+            // Gösterim düğümü / FEC kapalı kol: PARAM_SET gönderilmez (runtime.rs:2555-2559).
+            c.runtime.fec = None;
+        }
     })))
 }
 
@@ -2697,16 +2705,46 @@ mod tests {
         assert!(c.runtime.fec.is_some(), "ürün profilinde FEC açık");
         hook(&mut c);
         assert!(c.runtime.fec.is_none());
+        assert_eq!(
+            c.runtime.e1_flags,
+            E1Flags::default(),
+            "K0: bayraklar kapalı"
+        );
         assert_eq!(c.runtime.max_unit_bytes, before);
         assert_eq!(c.data_bind, addr);
     }
 
-    /// Bağımlı commit gelene dek (M2 `E1Flags`, KK-Ö-27) bayraklı kol koşu başlatmaz.
     #[test]
-    fn flagged_arm_is_refused_until_the_flag_field_exists() {
+    fn flagged_arm_hook_writes_e1_flags_only() {
+        let addr: SocketAddr = "127.0.0.1:1".parse().expect("adres");
         let cfg = parse("--e1-arm K2mc").expect("ayrışmalı");
-        let err = transport_hook(&cfg).err().expect("bayrak alanı yok → hata");
-        assert!(err.contains("e1_flags"), "{err}");
+        let hook = transport_hook(&cfg)
+            .expect("ok")
+            .expect("bayraklı kolda kanca var");
+        let mut c = ClientTransportConfig::product(addr);
+        let fec = c.runtime.fec;
+        hook(&mut c);
+        assert_eq!(
+            c.runtime.e1_flags,
+            E1Flags {
+                e1_startup_cwnd: false,
+                e1_applimited_plateau: true,
+                e1_drainrt_gate: true,
+                e1_probe_keep: true,
+                retx_first: true,
+            }
+        );
+        assert_eq!(
+            c.runtime.fec.is_some(),
+            fec.is_some(),
+            "FEC ürün değerinde kalır"
+        );
+        let cfg = parse("--e1-arm K2 --e1-edar off --fec-off on").expect("ayrışmalı");
+        let hook = transport_hook(&cfg).expect("ok").expect("kanca var");
+        let mut c = ClientTransportConfig::product(addr);
+        hook(&mut c);
+        assert_eq!(c.runtime.e1_flags, E1Arm::K2me.set().flags());
+        assert!(c.runtime.fec.is_none());
     }
 
     #[test]

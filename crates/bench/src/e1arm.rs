@@ -3,10 +3,14 @@
 //!
 //! Kol → bayrak tablosu M2'nin teşhis manifestindeki tablonun aynısıdır (`docs/design/
 //! E1-TESHIS-G2.md`, KK-M2-09); `crates/kama-integration/examples/f0_flows.rs` `E1Arm::set` ile
-//! aynı. Bayrak alanı (`RuntimeConfig.e1_flags`, M2) bu ikilide yokken bayraklı kol SESSİZCE K0
-//! koşmaz: [`E1Sel::refuse_unavailable`] koşuyu başlatmadan reddeder. Alan main'e girince
-//! bağlanır (KK-Ö-27; bağımlı commit) — `runtime_cfg` ve `profile_delta` (INV-009, KK-Ö-26).
+//! aynı. Seçim süreç başına bir kez [`set`] edilir (main; `rival::set` deseni) ve
+//! `kama_product::runtime_cfg` onu `RuntimeConfig.e1_flags`'e (M2, `adaptive_transport::rate::
+//! E1Flags`) yazar; `profile_delta` sapmayı listeler (INV-009, KK-Ö-26). Bayraklı kol
+//! `kama-product` dışında koşu başlatmaz ([`E1Sel::refuse_unavailable`]).
 
+use std::sync::OnceLock;
+
+use adaptive_transport::rate::E1Flags;
 use clap::ValueEnum;
 
 /// E1 teşhis kolu. Adlar `f0_cell.sh` `ARM_<kol>_SRV` değişkenine uysun diye K2−c → `K2mc`,
@@ -93,6 +97,17 @@ impl E1Set {
         self != Self::default()
     }
 
+    /// M2'nin çalışma zamanı bayrak yapısı (`RuntimeConfig.e1_flags`).
+    pub fn flags(self) -> E1Flags {
+        E1Flags {
+            e1_startup_cwnd: self.startup_cwnd,
+            e1_applimited_plateau: self.applimited_plateau,
+            e1_drainrt_gate: self.drainrt_gate,
+            e1_probe_keep: self.probe_keep,
+            retx_first: self.retx_first,
+        }
+    }
+
     /// Etiket: açık bayraklar `+` ile (CC §4.2 adları); hiçbiri → `-`.
     pub fn label(self) -> String {
         let names: Vec<&str> = [
@@ -132,26 +147,30 @@ impl E1Sel {
         set
     }
 
-    /// Koşu ÖNCESİ ret: bayraklı kol yalnız `kama-product`'ta ve yalnız bayrak alanı olan ikilide.
-    /// `Ok` = seçim bu ikilide koşulabilir (bugün: yalnız bayraksız set).
+    /// Koşu ÖNCESİ ret: bayraklı kol yalnız `kama-product`'ta (rakip kollarda E1 yok; sessizce
+    /// yok sayılmaz).
     pub fn refuse_unavailable(self, kama_product: bool) -> Result<(), String> {
-        let set = self.set();
-        if !set.any() {
+        if !self.set().any() || kama_product {
             return Ok(());
         }
-        if !kama_product {
-            return Err(format!(
-                "--e1-arm {} yalnız --transport kama-product ile",
-                self.arm.name()
-            ));
-        }
         Err(format!(
-            "--e1-arm {} ({}): bu ikilide E1 bayrak alanı yok (RuntimeConfig.e1_flags, M2; \
-             KK-Ö-27) — koşu başlatılmadı",
+            "--e1-arm {} ({}) yalnız --transport kama-product ile",
             self.arm.name(),
-            set.label()
+            self.set().label()
         ))
     }
+}
+
+static SEL: OnceLock<E1Sel> = OnceLock::new();
+
+/// Süreç başına bir kez (main). İkinci çağrı yok sayılır.
+pub fn set(sel: E1Sel) {
+    let _ = SEL.set(sel);
+}
+
+/// Yürürlükteki seçim; hiç [`set`] edilmediyse K0 (bayraklar kapalı, bugünkü davranış).
+pub fn current() -> E1Sel {
+    SEL.get().copied().unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -196,20 +215,42 @@ mod tests {
     }
 
     #[test]
-    fn default_selection_runs_everywhere_and_flagged_arms_are_refused() {
+    fn flagged_arms_run_only_on_kama_product() {
         assert_eq!(E1Sel::default().refuse_unavailable(true), Ok(()));
         assert_eq!(E1Sel::default().refuse_unavailable(false), Ok(()));
         let k2mc = E1Sel {
             arm: E1Arm::K2mc,
             edar: E1Edar::On,
         };
+        assert_eq!(k2mc.refuse_unavailable(true), Ok(()));
         assert!(k2mc
             .refuse_unavailable(false)
             .expect_err("rakip kolda E1 yok")
             .contains("kama-product"));
-        assert!(k2mc
-            .refuse_unavailable(true)
-            .expect_err("bayrak alanı yok")
-            .contains("e1_flags"));
+    }
+
+    #[test]
+    fn flags_map_field_by_field() {
+        assert_eq!(E1Arm::K0.set().flags(), E1Flags::default());
+        assert_eq!(
+            E1Arm::K2mc.set().flags(),
+            E1Flags {
+                e1_startup_cwnd: false,
+                e1_applimited_plateau: true,
+                e1_drainrt_gate: true,
+                e1_probe_keep: true,
+                retx_first: true,
+            }
+        );
+        assert_eq!(
+            E1Arm::K1.set().flags(),
+            E1Flags {
+                e1_startup_cwnd: true,
+                e1_applimited_plateau: true,
+                e1_drainrt_gate: true,
+                e1_probe_keep: true,
+                retx_first: false,
+            }
+        );
     }
 }

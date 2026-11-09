@@ -534,13 +534,16 @@ async fn main() -> Result<(), BenchError> {
             e1_arm,
             e1_edar,
         } => {
-            // [YOL3 · Ö] Bayraklı kol bu ikilide koşulamazsa koşu başlamaz (sessiz K0 yok).
-            e1arm::E1Sel {
+            // [YOL3 · Ö] Bayraklı kol yalnız kama-product'ta (sessizce yok sayılmaz); seçim süreç
+            // başına bir kez kurulur, `kama_product::runtime_cfg` okur.
+            let e1_sel = e1arm::E1Sel {
                 arm: e1_arm,
                 edar: e1_edar,
-            }
-            .refuse_unavailable(transport == TransportArg::KamaProduct)
-            .map_err(BenchError::Other)?;
+            };
+            e1_sel
+                .refuse_unavailable(transport == TransportArg::KamaProduct)
+                .map_err(BenchError::Other)?;
+            e1arm::set(e1_sel);
             // [KTP2-F0 / C1] Desteklenmeyen kolda sessizce kayıtsız koşmak yerine reddet.
             let rx_supported = matches!(
                 transport,
@@ -650,13 +653,16 @@ async fn main() -> Result<(), BenchError> {
             e1_arm,
             e1_edar,
         } => {
-            // [YOL3 · Ö] Bayraklı kol bu ikilide koşulamazsa koşu başlamaz (sessiz K0 yok).
-            e1arm::E1Sel {
+            // [YOL3 · Ö] Bayraklı kol yalnız kama-product'ta (sessizce yok sayılmaz); seçim süreç
+            // başına bir kez kurulur, `kama_product::runtime_cfg` okur.
+            let e1_sel = e1arm::E1Sel {
                 arm: e1_arm,
                 edar: e1_edar,
-            }
-            .refuse_unavailable(transport == TransportArg::KamaProduct)
-            .map_err(BenchError::Other)?;
+            };
+            e1_sel
+                .refuse_unavailable(transport == TransportArg::KamaProduct)
+                .map_err(BenchError::Other)?;
+            e1arm::set(e1_sel);
             // [KTP2-F0 / C2] Yalnız ürün kolunda anlamlı; diğer kollarda sessizce yok sayılmaz.
             if dup_copies > 1 && transport != TransportArg::KamaProduct {
                 return Err(BenchError::Other(
