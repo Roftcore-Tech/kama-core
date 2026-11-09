@@ -1,3 +1,5 @@
+> **SUPERSEDED — 2026-10-14:** bu not `KM-SEAM-TH-001.md` v1.3.1 ile aşıldı; (a)–(d) oraya işlendi. Metin silinmedi.
+
 # KM-SEAM-TH-001 — Transport ↔ Hub dikişi (S4): arayüz taslak notu
 
 **Belge:** `docs/seams/KM-SEAM-TH-001-TASLAK.md` · **Tarih:** 2026-10-11 · **Kart:** K4G-13 (NON-GATING, belge-yalnız) · **Karar sahibi:** Abkarada
