@@ -157,6 +157,11 @@ pub(crate) fn build_endpoint(
 }
 
 pub(crate) const QUINN_VERSION: &str = "0.11.11";
+/// [YOL3 · QK] Sabitlenmiş ilk MTU (UDP yükü, B; PMTUD kapalı → koşu boyunca bu). `f0q` RFC 9002
+/// ilk penceresini bundan hesaplar; değer aşağıdaki `initial_mtu` çağrısıyla AYNIDIR.
+pub(crate) const INITIAL_MTU: u16 = 1452;
+/// [YOL3 · QK] Boşta kalma tavanı (iki uç; quinn min alır). Değer aşağıdaki çağrıyla AYNIDIR.
+pub(crate) const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const ALPN: &[u8] = b"kama-bench";
 
 fn transport_config(cc: Cc) -> Arc<TransportConfig> {
@@ -164,16 +169,14 @@ fn transport_config(cc: Cc) -> Arc<TransportConfig> {
     // max_idle_timeout default 30s < deadline (120s) → bağlantı 30s'de ÖLÜR, eğri kesilir
     // (workflow bulgusu #2). Ölçüm penceresini kapsayan cömert idle (her iki uç min alır).
     t.max_idle_timeout(Some(
-        Duration::from_secs(300)
-            .try_into()
-            .expect("300s valid idle timeout"),
+        IDLE_TIMEOUT.try_into().expect("300s valid idle timeout"),
     ));
     // [inceleme #8/#21/#23] Ön-kayıtlı profil-şeması pinleri (kapi_manifest full_schema):
     // pmtud_policy=off → MTU discovery kapalı; max_udp_payload=1452 → initial_mtu pini;
     // message_coalescing=off → segmentation-offload kapalı (Unlimited/sarmalanmamış yolda da);
     // warmup 10 bi-stream kredi tüketip burst-100 ölçümünü KISITLAMASIN → kredi 512.
     t.mtu_discovery_config(None);
-    t.initial_mtu(1452);
+    t.initial_mtu(INITIAL_MTU);
     t.enable_segmentation_offload(false);
     t.max_concurrent_bidi_streams(512u32.into());
     // [KTP2-F0 / D] Rakip-kol ayarları YALNIZ açık bayrakla (bkz. `crate::rival`); bayraksız yol

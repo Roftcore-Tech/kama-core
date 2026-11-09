@@ -5,6 +5,7 @@ mod budget;
 mod e1arm;
 mod error;
 mod event;
+mod f0q;
 mod kama;
 mod kama_product;
 mod manifest;
@@ -370,6 +371,9 @@ enum Cmd {
     MixedServe(mixed::ServeArgs),
     /// [KTP2-F0 / D] Karışık akış istemcisi: sunum planı + taşıma sayaçları (taşıma düzeyi).
     MixedClient(mixed::ClientArgs),
+    /// [YOL3 · QK] G2 gösterim sahnesi quinn kolu: f0_flows argümanları ve çıktı biçimi aynen.
+    #[command(name = "f0-quinn")]
+    F0Quinn(f0q::F0qArgs),
 }
 
 /// CLI karşılığı — `transport::FecModeArg`'a birebir eşlenir.
@@ -1068,6 +1072,7 @@ async fn main() -> Result<(), BenchError> {
         }
         Cmd::MixedServe(a) => mixed::serve(a).await,
         Cmd::MixedClient(a) => mixed::client(a).await,
+        Cmd::F0Quinn(a) => f0q::run(a).await,
     }
 }
 
