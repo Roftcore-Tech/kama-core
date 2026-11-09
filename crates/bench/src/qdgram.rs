@@ -609,6 +609,7 @@ mod tests {
             rp_suppress: None,
             spec_l2_permille: None,
             spec_l1_permille: None,
+            dup_copies: 1,
         }
     }
 

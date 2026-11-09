@@ -1,0 +1,25 @@
+# [KTP2-F0 / Ajan B] b_r12k_d1000_l30_p1000 — ÜRETİLDİ: scripts/ktp2/f0/b/gen_cells.py (fizik.py). ELLE DÜZENLEME.
+# öncelik=P1 tür=hukum N=30 · ρ_ileri=0.300 (tek iletim Kama veri paketi / hat) ·
+# veri paketi 1069 B tel · RTT_fiz 2.091 s (0 aralıklı ACK) / 2.096 s (16 aralıklı) ·
+# RTT_fifo 2.137 s (netem sıra-koruyan jitter) · tek yön alt sınır 1.086 s · ideal ARQ p95 tek yön 5.27 s
+CELL=b_r12k_d1000_l30_p1000
+RATE_ID=r12k
+DELAY_ID=d1000
+LOSS_PCT=30
+RATE_BPS=12500
+DELAY_MS=1000
+JITTER_MS=200
+MSGS=100
+PAY=1000
+IVAL_MS=285
+DEADLINE_S=60
+FWD="delay 1000ms 200ms distribution normal loss 30% rate 100kbit"
+REV="$FWD"
+REPS="${F0_REPS:-30}"
+ARMS="taban aday quinn tcp"
+BUDGET_S=185
+CAPTURE=0
+SETTLE_S=1.5
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../b" && pwd)/hucre_b.sh"
+b_hucre_kur
