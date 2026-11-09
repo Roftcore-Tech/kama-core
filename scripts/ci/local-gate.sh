@@ -1,26 +1,42 @@
 #!/usr/bin/env bash
-# Kama yerel kapı (EK-1 D-17). Hosted CI fatura ya da altyapı yüzünden başlamazsa merge'e yeten kapı
-# budur (CLAUDE.md §7). `.github/workflows/ci.yml` ve `spec-word-coverage.yml`'deki PR adımlarını
-# AYNI komutlarla (ci.yml'deki ::error ileti sarmalayıcıları hariç), ci.yml'deki sırayla, tek cargo süreciyle koşar.
+# Kama yerel kapı (EK-1 D-17; depoda docs/decisions/KARAR-KAYDI-2026-11.md §2). Hosted CI fatura ya da
+# altyapı yüzünden başlamazsa merge'e yeten kapı budur (CLAUDE.md §7). `.github/workflows/ci.yml` ve
+# `spec-word-coverage.yml`'deki PR adımlarını AYNI komutlarla (ci.yml'deki ::error ileti sarmalayıcıları
+# hariç), ci.yml'deki sırayla, tek cargo süreciyle koşar. İlk adım kapının kendi öz-testidir.
 #
 # Kullanım:
+#   scripts/ci/local-gate.sh --ref <REF> [--out DİZİN] [--base REF]     (ÖNERİLEN)
+#       adayı ayrı, sabit bir worktree'de sınar (git worktree add --detach). Başka ajanların aynı ağaca
+#       yazması koşuyu etkileyemez. Derleme önbelleği paylaşılır: CARGO_TARGET_DIR =
+#       KAMA_GATE_TARGET (varsayılan ~/.cache/kama-local-gate/target). Worktree koşu sonunda silinir.
 #   scripts/ci/local-gate.sh [--out DİZİN] [--base REF]
+#       içinde bulunulan ağacı sınar; ağaç TEMİZ olmalıdır (izlenmeyen dosya dahil), yoksa reddeder.
+#   scripts/ci/local-gate.sh --list
+#       adımları yazdırır, koşmaz.
 #     --out   çıktı dizini (varsayılan: ~/.cache/kama-local-gate/<kısa-sha>-<zaman>)
-#     --base  karşılaştırma tabanı (varsayılan: git merge-base HEAD origin/main);
-#             conformance teşhisi (CONF_DIFF_BASE) ve silme kapısı (--base) bunu kullanır
-#   scripts/ci/local-gate.sh --list    adımları yazdırır, koşmaz
+#     --base  karşılaştırma tabanı (varsayılan: git merge-base HEAD origin/main); conformance teşhisi
+#             (CONF_DIFF_BASE) ve silme kapısı (--base) bunu kullanır
+#
+# Sonuç ve çıkış kodu (özetin son satırı "SONUÇ: …"):
+#   0 YEŞİL       bütün adımlar geçti, CI tanımı kaymamış, ağaç koşu boyunca değişmedi
+#   1 KIRMIZI     en az bir adım kırmızı ya da CI tanımı bu betiğin yansıttığı sürümden kaymış (CI-DRIFT)
+#   2 REDDEDİLDİ  koşu başlamadı: kirli ağaç, kilit açılamadı/alınamadı, geçersiz argüman ya da worktree hatası
+#   3 GEÇERSİZ    koşu sırasında HEAD ya da çalışma ağacı değişti; sonuç hiçbir commit'i temsil etmez
 #
 # Kurallar:
-#   * Toolchain rust-toolchain.toml'dan gelir (1.96.0). CARGO_BUILD_JOBS=2.
-#   * Tek cargo süreci: betik başta D-34 kilidini alır (scripts/ci/cargo-lock.sh ile aynı kilit dosyası)
-#     ve sonuna dek tutar. Kilit alınamazsa bekler.
-#   * Kırmızıda DURMAZ; bütün adımları koşar, sonra çıkış kodu = kırmızı adım sayısı (0 = yeşil).
+#   * Toolchain rust-toolchain.toml'dan gelir (1.96.0). CARGO_BUILD_JOBS=2. PYTHONDONTWRITEBYTECODE=1
+#     (yalnız python önbellek dosyalarının ağaçta iz bırakmaması için; CI'da da etkisizdir).
+#   * Tek cargo süreci: betik D-34 kilidini (scripts/ci/cargo-lock.sh ile aynı dosya) alır ve sonuna dek
+#     tutar. Kilit dosyası açılamaz ya da flock başarısız olursa koşu başlamaz (çıkış 2).
+#   * Kırmızıda DURMAZ; bütün adımları koşar.
 #   * Hosted CI'a kalan adımlar (D-17, adıyla) burada KOŞMAZ ve özette öyle yazılır:
 #     miri (ci.yml miri), ASan (asan), MSan (msan), cargo audit (security), aead-differential.
-#   * Bu betik ci.yml'in belirli bir sürümünü yansıtır (aşağıdaki CI_SHA256). ci.yml değişmişse betik
-#     yine koşar ama özetin ilk satırı "CI-DRIFT" der; o durumda bu dosya aynı PR'da güncellenir.
+#   * Bu betik ci.yml'in belirli bir sürümünü yansıtır (CI_SHA256, SWC_SHA256). Sürüm kaymışsa sonuç
+#     KIRMIZI'dır; bu dosya ci.yml'i değiştiren PR'da güncellenir.
+#   * KAMA_GATE_SELFTEST=1 ve KAMA_GATE_STEPS yalnız öz-test içindir (scripts/ci/local-gate-selftest.sh);
+#     o kipte özet "ÖZ-TEST ADIM SETİ" satırını taşır ve gerçek kapı sonucu sayılmaz.
 #
-# PR'a yazılacak satır (D-17): "CI-KİLİT İSTİSNASI ile merge: yerel kapı <yeşil/kırmızı> @<sha>,
+# PR'a yazılacak satır (D-17): "CI-KİLİT İSTİSNASI ile merge: yerel kapı <SONUÇ> @<sha>,
 # özet: <out>/summary.txt" + summary.txt içeriği.
 set -u
 
@@ -28,11 +44,12 @@ CI_SHA256=4764f867d74479188488baab7ed4038e05d0d0695914b8296fa48567b9a9f919      
 SWC_SHA256=2907c16c67373aa7e95ecb0e072b9b746bc346b1ba462d56aa63a1c35664ab5d     # .github/workflows/spec-word-coverage.yml
 HOSTED_ONLY="miri · asan · msan · cargo audit · aead-differential"
 
-OUT=""; BASE=""; LIST=0
+OUT=""; BASE=""; LIST=0; REF=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --out)  OUT=$2; shift 2 ;;
-    --base) BASE=$2; shift 2 ;;
+    --out)  [ $# -ge 2 ] || { echo "--out değer ister" >&2; exit 2; }; OUT=$2; shift 2 ;;
+    --base) [ $# -ge 2 ] || { echo "--base değer ister" >&2; exit 2; }; BASE=$2; shift 2 ;;
+    --ref)  [ $# -ge 2 ] || { echo "--ref değer ister" >&2; exit 2; }; REF=$2; shift 2 ;;
     --list) LIST=1; shift ;;
     *) echo "bilinmeyen argüman: $1" >&2; exit 2 ;;
   esac
@@ -42,9 +59,11 @@ ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "git ağacı değil"
 cd "$ROOT" || exit 2
 
 # ── Adımlar: ad | komut. Komut metinleri ci.yml'deki `run:` satırlarıyla aynıdır. ──────────────────
-# ci.yml'de `/tmp/pp.txt` ve `miri.log` gibi sabit yollar $OUT altına alınmıştır; başka fark yoktur.
+# ci.yml'de `/tmp/pp.txt` gibi sabit yollar $OUT altına alınmıştır; başka fark yoktur.
 STEPS=()
 add() { STEPS+=("$1|$2"); }
+# kapının kendi kapısı (ci.yml'de yok; hata yollarının gerçekten kırmızı/ret/geçersiz verdiğini sınar)
+add gate_self        'scripts/ci/local-gate-selftest.sh'
 # static (ci.yml: static)
 add layer_check      'python3 scripts/ci/layer_check.py --selftest && python3 scripts/ci/layer_check.py'
 add systemd_unit     'systemd-analyze verify deploy/kama-hub.service'
@@ -79,40 +98,71 @@ add noise_real       'scripts/ci/noise-conformance.sh --target real'
 add word_cov_self    'python3 scripts/ci/word_coverage.py --selftest'
 add word_cov         'python3 scripts/ci/word_coverage.py --base "$BASE"'
 
+SELFTEST_MODE=0
+if [ "${KAMA_GATE_SELFTEST:-0}" = 1 ] && [ -n "${KAMA_GATE_STEPS:-}" ]; then
+  SELFTEST_MODE=1; STEPS=()
+  while IFS= read -r line; do [ -n "$line" ] && STEPS+=("$line"); done <<< "$KAMA_GATE_STEPS"
+fi
+
 if [ "$LIST" = 1 ]; then
   i=0; for s in "${STEPS[@]}"; do i=$((i+1)); printf '%02d %-17s %s\n' "$i" "${s%%|*}" "${s#*|}"; done
   echo "hosted'a kalan (koşmaz): $HOSTED_ONLY"
   exit 0
 fi
 
-[ -n "$BASE" ] || BASE=$(git merge-base HEAD origin/main 2>/dev/null) || { echo "taban bulunamadı (origin/main?); --base verin" >&2; exit 2; }
-HEAD_SHA=$(git rev-parse HEAD)
+# ── Aday ağacı: --ref ile ayrı worktree; yoksa içinde bulunulan ağaç ────────────────────────────────
+WT=""
+cleanup() { if [ -n "$WT" ]; then git -C "$ROOT" worktree remove --force "$WT" >/dev/null 2>&1 || true; fi; }
+trap cleanup EXIT
+if [ -n "$REF" ]; then
+  SHA=$(git rev-parse --verify -q "${REF}^{commit}") || { echo "REDDEDİLDİ: --ref çözülemedi: $REF" >&2; exit 2; }
+  WT_ROOT=${KAMA_GATE_WT_ROOT:-$HOME/.cache/kama-local-gate/wt}
+  mkdir -p "$WT_ROOT" || exit 2
+  WT="$WT_ROOT/${SHA:0:12}-$$"
+  git worktree add -q --detach "$WT" "$SHA" >/dev/null 2>&1 || { WT=""; echo "REDDEDİLDİ: worktree kurulamadı" >&2; exit 2; }
+  cd "$WT" || exit 2
+  export CARGO_TARGET_DIR=${KAMA_GATE_TARGET:-$HOME/.cache/kama-local-gate/target}
+fi
+
+[ -n "$BASE" ] || BASE=$(git merge-base HEAD origin/main 2>/dev/null) || { echo "REDDEDİLDİ: taban bulunamadı (origin/main?); --base verin" >&2; exit 2; }
+HEAD_SHA=$(git rev-parse HEAD) || exit 2
 [ -n "$OUT" ] || OUT="$HOME/.cache/kama-local-gate/${HEAD_SHA:0:8}-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$OUT" || exit 2
 export OUT BASE
-export CARGO_BUILD_JOBS=2 CARGO_TERM_COLOR=never CARGO_INCREMENTAL=0 RUST_BACKTRACE=1
-
-LOCK=${KAMA_CARGO_LOCK:-$HOME/.cache/kama-cargo.lock}
-mkdir -p "$(dirname "$LOCK")"
-exec 9>"$LOCK"
-echo "D-34 kilidi bekleniyor: $LOCK" >&2
-flock 9
-
+export CARGO_BUILD_JOBS=2 CARGO_TERM_COLOR=never CARGO_INCREMENTAL=0 RUST_BACKTRACE=1 PYTHONDONTWRITEBYTECODE=1
 SUM="$OUT/summary.txt"; : > "$SUM"
-drift=""
-[ "$(sha256sum .github/workflows/ci.yml | cut -d' ' -f1)" = "$CI_SHA256" ] || drift="ci.yml"
-[ "$(sha256sum .github/workflows/spec-word-coverage.yml | cut -d' ' -f1)" = "$SWC_SHA256" ] || drift="${drift:+$drift, }spec-word-coverage.yml"
-if [ -n "$drift" ]; then
-  echo "CI-DRIFT: $drift bu betiğin yansıttığı sürümden farklı — local-gate.sh güncellenmeli" >> "$SUM"
-fi
+
+reject() { echo "SONUÇ: REDDEDİLDİ — $1" | tee -a "$SUM" >&2; exit 2; }
+
+# ── D-34 kilidi: açılamaz ya da alınamazsa koşu yok ───────────────────────────────────────────────────
+LOCK=${KAMA_CARGO_LOCK:-$HOME/.cache/kama-cargo.lock}
+mkdir -p "$(dirname "$LOCK")" 2>/dev/null
+exec 9>"$LOCK" || reject "kilit dosyası açılamadı: $LOCK"
+echo "D-34 kilidi bekleniyor: $LOCK" >&2
+flock 9 || reject "kilit alınamadı (flock): $LOCK"
+
+# ── Başlangıç durumu: ağaç temiz olmalı (izlenmeyen dosya dahil; yoksayılanlar hariç) ───────────────
+START_STATUS=$(git status --porcelain --untracked-files=normal) || reject "git status okunamadı"
+[ -z "$START_STATUS" ] || reject "çalışma ağacı kirli (sonuç HEAD'i temsil etmezdi; --ref kullanın): $(printf '%s' "$START_STATUS" | head -3 | tr '\n' ' ')"
+
 {
+  [ "$SELFTEST_MODE" = 1 ] && echo "ÖZ-TEST ADIM SETİ (KAMA_GATE_STEPS) — gerçek kapı sonucu değildir"
   echo "HEAD $HEAD_SHA $(git log -1 --format=%s)"
   echo "BASE $BASE"
-  echo "toolchain $(rustc --version 2>/dev/null) · CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS"
-  if [ -n "$(git status --porcelain --untracked-files=no)" ]; then echo "UYARI: izlenen dosyalarda commit'lenmemiş değişiklik var"; fi
+  if [ -n "$WT" ]; then echo "ağaç: ayrı worktree ($WT) · CARGO_TARGET_DIR=$CARGO_TARGET_DIR"; else echo "ağaç: $(pwd) (temiz)"; fi
+  echo "toolchain $(rustc --version 2>/dev/null || echo yok) · CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS"
 } >> "$SUM"
 
-n=0; red=0
+red=0
+drift=""
+[ "$(sha256sum .github/workflows/ci.yml 2>/dev/null | cut -d' ' -f1)" = "$CI_SHA256" ] || drift="ci.yml"
+[ "$(sha256sum .github/workflows/spec-word-coverage.yml 2>/dev/null | cut -d' ' -f1)" = "$SWC_SHA256" ] || drift="${drift:+$drift, }spec-word-coverage.yml"
+if [ -n "$drift" ]; then
+  red=$((red+1))
+  echo "CI-DRIFT (KIRMIZI): $drift bu betiğin yansıttığı sürümden farklı — local-gate.sh güncellenmeden kapı geçemez" >> "$SUM"
+fi
+
+n=0
 for s in "${STEPS[@]}"; do
   n=$((n+1)); name=${s%%|*}; cmd=${s#*|}
   log=$(printf '%s/%02d-%s.log' "$OUT" "$n" "$name")
@@ -122,7 +172,22 @@ for s in "${STEPS[@]}"; do
   printf '%02d %-17s exit=%-3s %5ss\n' "$n" "$name" "$rc" "$((SECONDS-t0))" >> "$SUM"
 done
 echo "hosted'a kalan (koşmadı): $HOSTED_ONLY" >> "$SUM"
-if [ "$red" = 0 ]; then echo "SONUÇ: YEŞİL ($n/$n)" >> "$SUM"; else echo "SONUÇ: KIRMIZI ($red/$n adım)" >> "$SUM"; fi
+
+# ── Bitiş doğrulaması: HEAD ve çalışma ağacı başlangıçtakiyle aynı mı ───────────────────────────────
+END_HEAD=$(git rev-parse HEAD 2>/dev/null || echo "?")
+END_STATUS=$(git status --porcelain --untracked-files=normal 2>/dev/null || echo "?")
+if [ "$END_HEAD" != "$HEAD_SHA" ] || [ -n "$END_STATUS" ]; then
+  {
+    echo "SONUÇ: GEÇERSİZ — koşu sırasında ağaç değişti; sonuç hiçbir commit'i temsil etmez"
+    [ "$END_HEAD" = "$HEAD_SHA" ] || echo "  HEAD: $HEAD_SHA → $END_HEAD"
+    [ -z "$END_STATUS" ] || printf '  çalışma ağacı: %s\n' "$(printf '%s' "$END_STATUS" | head -5 | tr '\n' ' ')"
+  } >> "$SUM"
+  cat "$SUM"; echo "günlükler: $OUT" >&2
+  exit 3
+fi
+
+if [ "$red" = 0 ]; then echo "SONUÇ: YEŞİL ($n/$n)" >> "$SUM"; rcode=0
+else echo "SONUÇ: KIRMIZI ($red kırmızı: adım ve/veya CI-DRIFT)" >> "$SUM"; rcode=1; fi
 cat "$SUM"
 echo "günlükler: $OUT" >&2
-exit "$red"
+exit "$rcode"

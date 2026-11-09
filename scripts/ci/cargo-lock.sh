@@ -12,7 +12,9 @@
 #     tarih · ajan · başlangıç · süre_s · çıkış kodu · argümanlar.
 #     Bütçe aşılınca çağrı ENGELLENMEZ; stderr'e "BÜTÇE AŞIMI" yazılır ve orkestratör günlük raporda
 #     okur (KARAR-KAYDI: gösterim penceresinde derlemeyi durdurmak dondurmayı riske atar).
+#   * Kilit dosyası açılamaz ya da flock başarısız olursa cargo KOŞMAZ, çıkış 2.
 #   * Bulut oturumları bu sarmalayıcıyı kullanmaz (D-34 dışı).
+#   * Hata yolları: scripts/ci/local-gate-selftest.sh.
 set -u
 AGENT=${KAMA_AGENT:?KAMA_AGENT ayarlı değil (ör. KAMA_AGENT=M1)}
 LOCK=${KAMA_CARGO_LOCK:-$HOME/.cache/kama-cargo.lock}
@@ -26,8 +28,8 @@ if [ "$used" -ge "$BUDGET_S" ]; then
   echo "BÜTÇE AŞIMI: $AGENT bugün ${used}s cargo kullandı (bütçe ${BUDGET_S}s); çağrı yine koşuyor, raporlanacak" >&2
 fi
 
-exec 9>"$LOCK"
-flock 9
+exec 9>"$LOCK" || { echo "cargo-lock: kilit dosyası açılamadı: $LOCK — cargo koşmadı" >&2; exit 2; }
+flock 9 || { echo "cargo-lock: kilit alınamadı (flock): $LOCK — cargo koşmadı" >&2; exit 2; }
 export CARGO_BUILD_JOBS=2
 start=$(date +%H:%M:%S); t0=$SECONDS
 cargo "$@"; rc=$?
