@@ -248,6 +248,26 @@ pub(crate) fn manual(phone: &Phone, app_clock: Arc<dyn MonotonicClock>) -> (Buil
     (built, events)
 }
 
+/// [YOL3 · Ö] [`manual`], ürün zarf taşıyıcısıyla ve Transport yapılandırma kancasıyla
+/// (`KamaNode::build_with_link(.., None, Some(hook))`; KK-Ö-04).
+pub(crate) fn manual_with_cfg_hook(
+    phone: &Phone,
+    app_clock: Arc<dyn MonotonicClock>,
+    hook: Box<dyn FnOnce(&mut client_core::transport::ClientTransportConfig) + Send>,
+) -> (Built, Events) {
+    let (listener, events) = listener();
+    let built = KamaNode::build_with_link(
+        &phone.config,
+        &phone.data,
+        listener,
+        app_clock,
+        None,
+        Some(hook),
+    )
+    .expect("düğüm kurulmalı");
+    (built, events)
+}
+
 /// İş parçacıklı düğüm: ürün yolu (`KamaNode::start`).
 pub(crate) fn threaded(phone: &Phone) -> (KamaNode, Events) {
     let (listener, events) = listener();

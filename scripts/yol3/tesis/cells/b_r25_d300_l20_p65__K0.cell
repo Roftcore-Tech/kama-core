@@ -1,0 +1,30 @@
+# [YOL3 · Ö · teşhis] b_r25_d300_l20_p65__K0 — sıra 3; koruma: K-3. Üretici: scripts/yol3/tesis/gen_cells.py (elle düzenlemeyin).
+# Kaynak hücre: scripts/ktp2/f0/cells/b/b_r25_d300_l20_p65.cell (sha256 bf4d90acf9c8c003d15590b7f06a5abd34934ea123270d8bdb0cf3b23ae2374d) — geometri AYNEN; fark yalnız CELL, REPS, ARMS, kol bayrağı.
+# Kol K0: hiçbiri (bayraklar kapalı) (M2 manifesti KK-M2-09) · FEC off (KK-ORK-01).
+# İkili: BIN_TESIS_BENCH = <yol2/o1>/target/release/bench (orkestratör, D-34); kol arms_kama.sh kama_e1_arm.
+CELL=b_r25_d300_l20_p65__K0
+RATE_ID=r25
+DELAY_ID=d300
+LOSS_PCT=20
+RATE_BPS=25
+DELAY_MS=300
+JITTER_MS=60
+MSGS=6
+PAY=65
+IVAL_MS=18000
+DEADLINE_S=60
+FWD="delay 300ms 60ms distribution normal loss 20% rate 200bit"
+REV="$FWD"
+REPS="${F0_REPS:-10}"
+ARMS="K0"
+BUDGET_S=243
+CAPTURE=0
+SETTLE_S=1.5
+KAMA_SRV_EXTRA="--fec-profile 0"
+KAMA_CLI_EXTRA="--fec-profile 0"
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../ktp2/f0/b" && pwd)/hucre_b.sh"
+# shellcheck disable=SC1091
+source "$F0_DIR/arms_kama.sh"
+kama_e1_arm K0 K0
+b_cap_wrap

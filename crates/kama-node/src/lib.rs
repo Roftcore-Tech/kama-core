@@ -116,6 +116,11 @@ use node::{AppEngines, Command, NodeLoop, Reply, Shared, COMMAND_QUEUE_CAP, REPL
 use peers::PeerBook;
 use wiring::Transport;
 
+/// [YOL3 · Ö] Transport yapılandırma kancası (KK-Ö-04): `KamaNode::build_with_link`'te ürün
+/// yapılandırmasından sonra, `Transport::new`'den önce bir kez çağrılır. Ürün yolunda her zaman
+/// `None`; `Some` yalnız `test-util` ölçüm kurucusundan (`KamaNode::start_with_link_cfg_for_test`).
+type TransportCfgHook = Box<dyn FnOnce(&mut ClientTransportConfig) + Send>;
+
 /// Kalıcı deponun `data_dir` altındaki dosyası (redb; şema `kama-store` v0).
 pub const STORE_FILE_NAME: &str = "kama-node.redb";
 
@@ -235,19 +240,24 @@ impl KamaNode {
         listener: Box<dyn NodeListener>,
         app_clock: Arc<dyn MonotonicClock>,
     ) -> Result<Built, NodeError> {
-        Self::build_with_link(config_path, data_dir, listener, app_clock, None)
+        Self::build_with_link(config_path, data_dir, listener, app_clock, None, None)
     }
 
     /// [`Self::build`]'in gövdesi. `link` = `None` → ürün zarf taşıyıcısı (süreç-içi röle kaydı;
     /// ürün yolunun tek değeri). `Some` YALNIZ ölçüm kurucusundan gelir
     /// ([`Self::start_with_link_for_test`], `test-util`; KTP2-F0 iki süreçli düzenek): taşıyıcı
-    /// çağıranındır, röle kaydı yapılmaz. Kurulum sırası iki durumda da aynıdır.
+    /// çağıranındır, röle kaydı yapılmaz. `cfg_hook` = `None` → ürün yapılandırması olduğu gibi
+    /// (ürün yolunun tek değeri); `Some` YALNIZ `start_with_link_cfg_for_test`'ten gelir
+    /// (`test-util`; YOL3 teşhis/gösterim düzeneği, KK-Ö-04): ürün yapılandırması ve eş adresleri
+    /// kurulduktan SONRA, `Transport::new`'den hemen ÖNCE bir kez çağrılır. Kurulum sırası her
+    /// durumda aynıdır.
     fn build_with_link(
         config_path: &Path,
         data_dir: &Path,
         listener: Box<dyn NodeListener>,
         app_clock: Arc<dyn MonotonicClock>,
         link: Option<Box<dyn EnvelopeLink>>,
+        cfg_hook: Option<TransportCfgHook>,
     ) -> Result<Built, NodeError> {
         // (1) Provisioning — yalnız bu dosya; kimlik/anahtar/eş dizini bellekte (D8, D9).
         let config = load_device_config(config_path)?;
@@ -268,6 +278,10 @@ impl KamaNode {
         };
         let mut transport_config = ClientTransportConfig::product(data_bind);
         transport_config.peer_addrs = peers.peer_addrs();
+        // [YOL3 · Ö] Yapılandırma kancası (KK-Ö-04): yalnız ölçüm kurucusundan; ürün yolunda `None`.
+        if let Some(hook) = cfg_hook {
+            hook(&mut transport_config);
+        }
         // (5) Transport: gerçek UDP veri yolu, ürün profili.
         let transport = Transport::new(transport_config, protection, link)?;
         // (6) Application motorları; Application'ın saati Crypto'nunkinden AYRI.
@@ -608,9 +622,67 @@ impl KamaNode {
         live_diag: bool,
         unit_trace: bool,
     ) -> Result<Self, NodeError> {
+        Self::start_with_link_impl(
+            config_path,
+            data_dir,
+            listener,
+            link,
+            live_diag,
+            unit_trace,
+            None,
+        )
+    }
+
+    /// [YOL3 · Ö] [`Self::start_with_link_for_test`]'in AYNISI, ek olarak `cfg_hook` Transport
+    /// yapılandırmasına uygulanır (KK-Ö-04): ürün yapılandırması (`ClientTransportConfig::product`
+    /// ve eş adresleri) kurulduktan SONRA, `Transport::new`'den hemen ÖNCE, bir kez. Teşhis kolları
+    /// (E1 bayrakları), `runtime.fec = None` ve gösterim yapılandırması düğüme bu kapanışla verilir;
+    /// kurulum sırası, ürün builder'ı ve zarf taşıyıcısı değişmez. Ürün yolu ([`KamaNode::start`])
+    /// bu yöntemden etkilenmez. Kapanışın yazdığı her sapma çağıranın beyanıdır (INV-009).
+    ///
+    /// # Errors
+    /// [`KamaNode::start`] ile aynı (`IdentityInUse` hariç).
+    #[cfg(feature = "test-util")]
+    pub fn start_with_link_cfg_for_test(
+        config_path: &Path,
+        data_dir: &Path,
+        listener: Box<dyn NodeListener>,
+        link: Box<dyn EnvelopeLink>,
+        live_diag: bool,
+        unit_trace: bool,
+        cfg_hook: Box<dyn FnOnce(&mut ClientTransportConfig) + Send>,
+    ) -> Result<Self, NodeError> {
+        Self::start_with_link_impl(
+            config_path,
+            data_dir,
+            listener,
+            link,
+            live_diag,
+            unit_trace,
+            Some(cfg_hook),
+        )
+    }
+
+    /// İki ölçüm kurucusunun ortak gövdesi (`cfg_hook` = `None` → `start_with_link_for_test`).
+    #[cfg(feature = "test-util")]
+    fn start_with_link_impl(
+        config_path: &Path,
+        data_dir: &Path,
+        listener: Box<dyn NodeListener>,
+        link: Box<dyn EnvelopeLink>,
+        live_diag: bool,
+        unit_trace: bool,
+        cfg_hook: Option<TransportCfgHook>,
+    ) -> Result<Self, NodeError> {
         let app_clock: Arc<dyn MonotonicClock> = Arc::new(SystemClock::new());
-        let mut built =
-            Self::build_with_link(config_path, data_dir, listener, app_clock, Some(link))?;
+        let mut built = Self::build_with_link(
+            config_path,
+            data_dir,
+            listener,
+            app_clock,
+            Some(link),
+            cfg_hook,
+        )?;
         if live_diag {
             built.node.set_live_diag_for_test(true);
         }

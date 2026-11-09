@@ -242,6 +242,8 @@ fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
         // koşar, sevk davranışı). Politika fail-safe'tir: bütçe bildirilmezse ArqOnly.
         fusion_policy: matches!(fec, FecArm::PolicyV2Deadline { .. })
             .then(adaptive_transport::fusion_policy::FusionPolicy::calibration_v2_deadline),
+        // [YOL3 · Ö] E1 teşhis kolu (`--e1-arm`; KK-Ö-05). Seçilmediyse K0 = ürün değeri (kapalı).
+        e1_flags: crate::e1arm::current().set().flags(),
         ..RuntimeConfig::default()
     }
 }
@@ -312,6 +314,10 @@ fn profile_delta(c: &RuntimeConfig) -> Vec<String> {
     }
     if c.fusion_policy.is_some() != v.fusion_policy.is_some() {
         d.push("fusion_policy farkı".to_string());
+    }
+    // [YOL3 · Ö] KK-Ö-26 (INV-009): E1 bayrakları açık koşu `kama-custom` + sapma listesi taşır.
+    if c.e1_flags != v.e1_flags {
+        d.push(format!("e1_flags {:?} != {:?}", c.e1_flags, v.e1_flags));
     }
     if c.fec_structure_policy != v.fec_structure_policy {
         d.push(format!(
@@ -1215,6 +1221,18 @@ mod tests {
                 .any(|x| x.contains("structure_gate_level_permille")),
             "{d2:?}"
         );
+    }
+
+    /// [YOL3 · Ö] KK-Ö-26: tek E1 bayrağı açıkken sapma listesinde yalnız `e1_flags` (INV-009);
+    /// varsayılanda liste boş kalır (`tek_alan_sapmasi_gorunur` deseni).
+    #[test]
+    fn e1_bayragi_sapma_listesinde_gorunur() {
+        let mut c = KamaV1Profile::runtime_config();
+        assert!(profile_delta(&c).is_empty(), "ürün profili sapmasız");
+        c.e1_flags.retx_first = true;
+        let d = profile_delta(&c);
+        assert_eq!(d.len(), 1, "yalnız bir sapma beklenirdi: {d:?}");
+        assert!(d[0].starts_with("e1_flags"), "{d:?}");
     }
 
     fn srv_cfg(bind: SocketAddr, fec: FecArm) -> ServerCfg {

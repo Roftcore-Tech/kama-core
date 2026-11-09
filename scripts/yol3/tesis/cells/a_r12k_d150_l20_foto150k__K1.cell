@@ -1,0 +1,15 @@
+# [YOL3 · Ö · teşhis] a_r12k_d150_l20_foto150k__K1 — sıra 1; seçim: PTT p95, dosya bitişi. Üretici: scripts/yol3/tesis/gen_cells.py (elle düzenlemeyin).
+# Kaynak hücre: scripts/yol3/cells/a/a_r12k_d150_l20_foto150k.cell (sha256 cd869a427473e6bb4d934d2241652fd121fc32d50677d41ad9f7cb1651a9b884) — geometri AYNEN; fark yalnız CELL, REPS, ARMS, kol bayrağı.
+# Kol K1: c+d+DrainRtprop+e-dar (M2 manifesti KK-M2-09) · FEC off (KK-ORK-01).
+# İkili: BIN_TESIS = <yol2/o1>/target/release/examples/f0_flows (orkestratör, D-34). Zarflar Unix soketinden (netem dışı, beyanlı).
+CELL=a_r12k_d150_l20_foto150k__K1
+FWD="delay 150ms loss 20% rate 100kbit"
+REV="delay 150ms loss 20% rate 100kbit"
+REPS="${F0_REPS:-10}"
+ARMS="K1"
+BUDGET_S=600
+CAPTURE=0
+SETTLE_S=1
+F0A_ARGS='--dir @D@ --alice-addr @CLI_IP@:@PORT@ --bob-addr @SRV_IP@:@PORT@ --scenario dosyali --profile r12k_d150_l20 --rep @REP@ --file-bytes 150480 --window-s 300 --warmup-texts 3 --warmup-every-ms 500 --file-at-ms 5000 --texts 40 --text-at-ms 6000 --text-every-ms 2500 --text-bytes 64 --sigs 10 --sig-at-ms 7000 --sig-every-ms 10000 --sig-bytes 120 --ptt-bundles 25 --ptt-bundle-ms 200 --stall-at-ms 20000 --stall-ms 30000 --karsi on --karsi-texts 5 --karsi-every-ms 500 --karsi-bundles 10 --karsi-min-unacked 3 --karsi-text-bytes 48 --connect-timeout-s 30 --probe-ms 200 --live-diag on --receipt-grace-s 30 --ptt-bytes 80 --ptt-at-ms 15000,60000 --e1-arm K1 --fec-off on'
+ARM_K1_SRV="@BIN_TESIS@ --role bob $F0A_ARGS"
+ARM_K1_CLI="@BIN_TESIS@ --role alice $F0A_ARGS"

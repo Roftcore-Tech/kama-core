@@ -1,0 +1,16 @@
+scripts/yol3/tesis/cells/a_r12k_d150_l20_foto150k__K0.cell
+scripts/yol3/tesis/cells/a_r12k_d150_l20_foto150k__K0r.cell
+scripts/yol3/tesis/cells/a_r12k_d150_l20_foto150k__K1.cell
+scripts/yol3/tesis/cells/a_r12k_d150_l20_foto150k__K2.cell
+scripts/yol3/tesis/cells/a_r12k_d150_l20_foto150k__K2mc.cell
+scripts/yol3/tesis/cells/a_r12k_d150_l20_foto150k__K2me.cell
+scripts/yol3/tesis/cells/a_r12k_d300_l30_dosyasiz__K0.cell
+scripts/yol3/tesis/cells/a_r12k_d300_l30_dosyasiz__K2.cell
+scripts/yol3/tesis/cells/a_r12k_d300_l30_dosyasiz__K2mc.cell
+scripts/yol3/tesis/cells/b_r12k_d1000_l30_p1000__K0.cell
+scripts/yol3/tesis/cells/b_r12k_d1000_l30_p1000__K2.cell
+scripts/yol3/tesis/cells/b_r12k_d1000_l30_p1000__K2mc.cell
+scripts/yol3/tesis/cells/b_r12k_d1000_l0_p1000__K0.cell
+scripts/yol3/tesis/cells/b_r12k_d1000_l0_p1000__K2.cell
+scripts/yol3/tesis/cells/b_r25_d300_l20_p65__K0.cell
+scripts/yol3/tesis/cells/b_r25_d300_l20_p65__K2.cell
