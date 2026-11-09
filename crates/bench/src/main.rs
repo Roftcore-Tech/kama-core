@@ -159,7 +159,8 @@ enum Cmd {
         #[arg(long)]
         rx_log: Option<PathBuf>,
         /// [YOL3 · Ö] E1 teşhis kolu (KK-Ö-05; yalnız `--transport kama-product`; iki uca AYNI).
-        /// K0 = bayraklar kapalı (bugünkü davranış). Bkz. `e1arm.rs`.
+        /// K0 = bayraklar kapalı (bugünkü davranış). K1a = K1 + E2a, K0a = yalnız E2a (M1
+        /// `E2aFlags`). Bkz. `e1arm.rs`.
         #[arg(long, value_enum, default_value_t = e1arm::E1Arm::K0)]
         e1_arm: e1arm::E1Arm,
         /// [YOL3 · Ö] `off`: ön test geçmediyse (CC §4.2) kolun setinden (e-dar) düşer.
@@ -331,7 +332,8 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
         /// [YOL3 · Ö] E1 teşhis kolu (KK-Ö-05; yalnız `--transport kama-product`; iki uca AYNI).
-        /// K0 = bayraklar kapalı (bugünkü davranış). Bkz. `e1arm.rs`.
+        /// K0 = bayraklar kapalı (bugünkü davranış). K1a = K1 + E2a, K0a = yalnız E2a (M1
+        /// `E2aFlags`). Bkz. `e1arm.rs`.
         #[arg(long, value_enum, default_value_t = e1arm::E1Arm::K0)]
         e1_arm: e1arm::E1Arm,
         /// [YOL3 · Ö] `off`: ön test geçmediyse (CC §4.2) kolun setinden (e-dar) düşer.
@@ -543,7 +545,7 @@ async fn main() -> Result<(), BenchError> {
             e1_sel
                 .refuse_unavailable(transport == TransportArg::KamaProduct)
                 .map_err(BenchError::Other)?;
-            e1arm::set(e1_sel);
+            e1arm::set(e1_sel).map_err(BenchError::Other)?;
             // [KTP2-F0 / C1] Desteklenmeyen kolda sessizce kayıtsız koşmak yerine reddet.
             let rx_supported = matches!(
                 transport,
@@ -662,7 +664,7 @@ async fn main() -> Result<(), BenchError> {
             e1_sel
                 .refuse_unavailable(transport == TransportArg::KamaProduct)
                 .map_err(BenchError::Other)?;
-            e1arm::set(e1_sel);
+            e1arm::set(e1_sel).map_err(BenchError::Other)?;
             // [KTP2-F0 / C2] Yalnız ürün kolunda anlamlı; diğer kollarda sessizce yok sayılmaz.
             if dup_copies > 1 && transport != TransportArg::KamaProduct {
                 return Err(BenchError::Other(

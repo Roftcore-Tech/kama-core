@@ -244,6 +244,8 @@ fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
             .then(adaptive_transport::fusion_policy::FusionPolicy::calibration_v2_deadline),
         // [YOL3 · Ö] E1 teşhis kolu (`--e1-arm`; KK-Ö-05). Seçilmediyse K0 = ürün değeri (kapalı).
         e1_flags: crate::e1arm::current().set().flags(),
+        // [YOL3 · E2a kıyası] Aynı kolun E2a seti (K1a/K0a; diğer kollar ürün değeri = kapalı).
+        e2a_flags: crate::e1arm::current_e2a(),
         ..RuntimeConfig::default()
     }
 }
@@ -318,6 +320,10 @@ fn profile_delta(c: &RuntimeConfig) -> Vec<String> {
     // [YOL3 · Ö] KK-Ö-26 (INV-009): E1 bayrakları açık koşu `kama-custom` + sapma listesi taşır.
     if c.e1_flags != v.e1_flags {
         d.push(format!("e1_flags {:?} != {:?}", c.e1_flags, v.e1_flags));
+    }
+    // [YOL3 · E2a kıyası] E2a bayrakları (M1) açık koşu da `kama-custom` + sapma (INV-009).
+    if c.e2a_flags != v.e2a_flags {
+        d.push(format!("e2a_flags {:?} != {:?}", c.e2a_flags, v.e2a_flags));
     }
     if c.fec_structure_policy != v.fec_structure_policy {
         d.push(format!(
@@ -1233,6 +1239,37 @@ mod tests {
         let d = profile_delta(&c);
         assert_eq!(d.len(), 1, "yalnız bir sapma beklenirdi: {d:?}");
         assert!(d[0].starts_with("e1_flags"), "{d:?}");
+    }
+
+    /// [YOL3 · E2a kıyası] E2a seti açıkken sapma listesinde yalnız `e2a_flags`, alan alan
+    /// (koşu kaydı neyin açık olduğunu gösterir); K1a'da `e1_flags` ve `e2a_flags` ikisi.
+    #[test]
+    fn e2a_bayragi_sapma_listesinde_gorunur() {
+        let mut c = KamaV1Profile::runtime_config();
+        c.e2a_flags = crate::e1arm::E1Arm::K0a
+            .e2a()
+            .flags()
+            .expect("kol tablosu geçerli");
+        let d = profile_delta(&c);
+        assert_eq!(d.len(), 1, "yalnız bir sapma beklenirdi: {d:?}");
+        for part in [
+            "e2a_flags",
+            "tt_rfc: true",
+            "tt_granularity_ns: 1000000",
+            "rtt_rule_v11: true",
+            "iw_idle_hold: true",
+            "pto_probes: 2",
+            "gap_ack: false",
+        ] {
+            assert!(d[0].contains(part), "{part}: {d:?}");
+        }
+        c.e1_flags = crate::e1arm::E1Arm::K1a.set().flags();
+        let d = profile_delta(&c);
+        assert_eq!(d.len(), 2, "{d:?}");
+        assert!(
+            d[0].starts_with("e1_flags") && d[1].starts_with("e2a_flags"),
+            "{d:?}"
+        );
     }
 
     fn srv_cfg(bind: SocketAddr, fec: FecArm) -> ServerCfg {
