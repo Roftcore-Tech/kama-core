@@ -45,6 +45,7 @@ import subprocess
 import sys
 import tempfile
 
+sys.dont_write_bytecode = True  # F0 analizörleri içe aktarılır; depoya __pycache__ yazılmaz
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parents[2]
 F0 = REPO / "scripts" / "ktp2" / "f0"
