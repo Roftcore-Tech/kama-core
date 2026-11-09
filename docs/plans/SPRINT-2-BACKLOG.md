@@ -1,5 +1,10 @@
 # SPRINT_BACKLOG — Sprint 2: Hub + Deployment + UI → DEMO-01
 
+> **SUPERSEDED (yalnız süreç satırları) — 2026-11-09:** Bu backlog'un içeriği (kartların ne'si, S4/TDD atıfları, sayılar) geçerli. Aşağıdaki süreç satırları sahibin tarihli kararlarıyla aşıldı; metin silinmedi. Dayanak: `docs/decisions/KARAR-KAYDI-2026-11.md` §7.
+> - Künye satırındaki "Durum: TASLAK (… 'PLAN-SPRINT2 ONAYLANDI' mesajıyla kesinleşir)" ve "Süre: 16–30 Ekim 2026": S2-A bu mesajı beklemeden açıldı (EK-1 D-13).
+> - "A3 … 'INT-02 GEÇTİ'yi bekler" ve A3 bağımlılığındaki "'INT-02 GEÇTİ' (… A3 onun üstüne rebase'lenir)": A3 INT-02'yi beklemez, dumanı gerçek hub ikilisiyle koşar (EK-1 D-14). "INT-02 GEÇTİ" gösterimin şartı değildir.
+> - "Gün N" takvimi (Gün 1–2 … Gün 13–14; `.aar` "hedef Gün 6"; A5 "Gün 4–5"): geçersiz. Geçerli takvim iş emirlerindedir.
+
 Tarih: 2026-10-13 · Karar: Abkarada · Durum: TASLAK (K4G sprinti "INT-02 GEÇTİ" ile kapanınca "PLAN-SPRINT2 ONAYLANDI" mesajıyla kesinleşir) · Süre: 16–30 Ekim 2026
 
 > **Yama 2026-10-14:** hub ile ilgili bütün satırlar `KM-SEAM-TH-001` v1'e (S4; spec çıkarımı `S4-CIKARIM-2026-10-13.md` üzerine yazıldı) göre düzeltildi: mesaj adları spec'ten (`CLIENT_BIND`/`BIND_PROOF`, `STORE_MESSAGE`/`DELIVER`, `ROUTE_MISS`, `HEARTBEAT`), oturum başına tek handle, "1024'te rebind" ve "10 dk ev temizliği" kalktı, `flow` kalktı, medya = ikinci hat, tek soket. Değişen satırlar **[S4]** ile işaretli.
