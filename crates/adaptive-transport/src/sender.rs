@@ -2400,7 +2400,16 @@ impl Sender {
         } else {
             0
         };
-        let burst_lo = front_size.max(iw);
+        // [Q2 A-3] `a3_burst_floor` açık ∧ PreConverge dışı ⇒ alt sınır `max(front, 2·MTU)`
+        // (quinn `pacing.rs:132-139` alt sınır deseni, burada 2·MTU). Kapalıyken `front.max(iw)`
+        // eskisiyle BİREBİR. Açıkken iw = 0 (PreConverge dışı) ⇒ `burst_hi == burst_lo` ⇒ clamp
+        // geçerli (lo ≤ hi) ve tavan = max(front, 2·MTU): retx/parite birimi ön sıradaki birimden
+        // büyük olduğunda `TokenBucket::ns_until_sendable` artık `None` dönmez.
+        let burst_lo = if self.e1.a3_burst_floor && self.state != SenderState::PreConverge {
+            front_size.max(2 * DEFAULT_MTU)
+        } else {
+            front_size.max(iw)
+        };
         let burst_hi = front_size.max(2 * DEFAULT_MTU).max(iw);
         self.pacer
             .set_burst_cap(window_bytes.clamp(burst_lo, burst_hi));
@@ -4114,7 +4123,12 @@ impl Sender {
                                 + self.probe_btlbw_entry * PROBE_SUCCESS_EPS_PERMILLE / 1000;
                     // [E1 (e-dar), KK-M2-06 (2)] Bayrak açıkken proba atfedilen kayıp iptal ETTİRMEZ
                     // (`probe_loss_attributed` yine kurulur — gözlem); qd iptali aynen kalır.
-                    let loss_abort = self.probe_loss_attributed && !self.e1.e1_probe_keep;
+                    // [Q2 A-4 (a)] `a4_probe_srtt` açıkken de iptal yalnız qd (quinn `bbr/mod.rs:160-199`:
+                    // 1,25 fazı kayıpla iptal olmaz). (e-dar) açıksa bu terim zaten `false`: ikisi aynı
+                    // koşulu kapatır, birlikte açılmaları çelişmez.
+                    let loss_abort = self.probe_loss_attributed
+                        && !self.e1.e1_probe_keep
+                        && !self.e1.a4_probe_srtt;
                     let abort = qd_now > PROBE_QD_ABORT_PERMILLE || loss_abort;
                     let timeout =
                         elapsed >= epoch_e.saturating_mul(u64::from(PROBE_MAX_DWELL_EPOCH));
@@ -4130,12 +4144,17 @@ impl Sender {
                 }
                 // Steady: ProbeUp-giriş kontrolü (periyot CANLI-epoch'la — gain=1'de kirlenmez).
                 SenderState::Steady => {
-                    let epoch = dur_ns(
-                        self.rtt
-                            .srtt()
-                            .unwrap_or(INITIAL_RTT)
-                            .max(self.expected_ack_interval()),
-                    );
+                    let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
+                    // [Q2 A-4 (b)] `a4_probe_srtt` açıkken prob saati `srtt` (EAI'siz): EAI'nin
+                    // 65 B / 31 B/s (≈ 2,1 s) dönüş önseli 300 ms hatta periyodu ≈ 10 s'ye
+                    // çıkarıyordu. K = `K_PROBE_PERIOD_EPOCH` aynen (periyot 4·srtt); aynı `epoch`
+                    // aşağıda `probe_epoch_entry_ns`'e donar ⇒ dwell (4·srtt) ve volume
+                    // (BtlBw·2·srtt) aynı saatle. Kapalıyken ifade eskisiyle BİREBİR.
+                    let epoch = if self.e1.a4_probe_srtt {
+                        dur_ns(srtt)
+                    } else {
+                        dur_ns(srtt.max(self.expected_ack_interval()))
+                    };
                     let period_ok = now_ns.saturating_sub(self.last_probe_end_ns)
                         >= epoch.saturating_mul(u64::from(K_PROBE_PERIOD_EPOCH));
                     // Giriş-histerezisi (workflow N=0-bulgusu): qd zaten abort-eşiği üstündeyse GİRME.

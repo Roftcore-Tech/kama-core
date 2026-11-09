@@ -105,6 +105,8 @@ impl E1Set {
             e1_drainrt_gate: self.drainrt_gate,
             e1_probe_keep: self.probe_keep,
             retx_first: self.retx_first,
+            a3_burst_floor: false,
+            a4_probe_srtt: false,
         }
     }
 
@@ -240,6 +242,8 @@ mod tests {
                 e1_drainrt_gate: true,
                 e1_probe_keep: true,
                 retx_first: true,
+                a3_burst_floor: false,
+                a4_probe_srtt: false,
             }
         );
         assert_eq!(
@@ -250,6 +254,8 @@ mod tests {
                 e1_drainrt_gate: true,
                 e1_probe_keep: true,
                 retx_first: false,
+                a3_burst_floor: false,
+                a4_probe_srtt: false,
             }
         );
     }
