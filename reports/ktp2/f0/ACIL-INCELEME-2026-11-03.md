@@ -716,10 +716,10 @@ r ≥ 1 için gereken BtlBw:
     **[CORRIGENDUM-1 (2026-11-09)]** Bu çürütme yanlış; iddia (aritmetik) geçerli.
     - Başarı testi (`sender.rs:4072-4075`, `a858f3fc`) probun max-filtresini giriş anındaki BtlBw'nin 1,025 katıyla kıyaslıyor.
     - Steady'de pace = 1 × BtlBw (`:4255`). Giriş değeri zaten bir teslim hızı. Prob 1,25 × giriş gönderiyor; teslim örneği ≈ 1,25 · (1 − p) · (1 + b′) × giriş.
-    - (1 − p) yalnız bir kez giriyor. %30'da 1,25 × 0,7 = 0,875 < 1,025; başarı ancak gürültü payı b′ > 0,17 olursa geliyor. Ölçülen max-filtre payı b ≈ 0,06–0,11 [türetilmiş].
-    - Çürütme yalnız Steady gönderimi BtlBw/(1 − p) olsaydı doğru olurdu.
-    - Doğru ifade: ProbeUp %30 kayıpta yalnız gürültüyle başarılı kapanır; ayrıca aşağıdaki mekanizmalar da onu kesiyor. İkisi birlikte çalışıyor.
-    - Dayanak: orkestratörün 2026-11-04 sıkışıklık denetleyicisi çalışması §1.3; sahip kararı v4 (2026-11-09) Bölüm I "Corrigendum EVET".
+    - [model] Sabit kayıp varsayımı altında (ortalama teslim modeli; Steady pace = 1 × BtlBw; örnekleme sabit) (1 − p) yalnız bir kez giriyor. %30'da 1,25 × 0,7 = 0,875 < 1,025; başarı ancak gürültü payı b′ > 0,1714 (= 1,025/0,875 − 1) olursa geliyor. F0 verisinden türetilen max-filtre payı b ≈ 0,06–0,11 [türetilmiş; bu düzeltmede yeni ölçüm yok].
+    - [model] Çürütme yalnız Steady gönderimi BtlBw/(1 − p) olsaydı doğru olurdu.
+    - Doğru ifade [model]: sabit kayıp varsayımı altında ProbeUp %30 kayıpta ancak b′ > 0,1714 olursa başarılı kapanır; ayrıca aşağıdaki mekanizmalar da onu kesiyor, ikisi birlikte çalışıyor. Bu bir model sonucudur, kod garantisi değildir: gerçek hız hesabında fuzzy kazanç, pencere sınırı ve değişen teslim örnekleri var.
+    - Dayanak: orkestratörün 2026-11-04 sıkışıklık denetleyicisi çalışması §1.3 (model hesabı; depo dışı); onay `docs/decisions/KARAR-KAYDI-2026-11.md` §6.
   - İşleyen mekanizma: RecoverArq önceliği, bekleyen kayıpta preempt ve atıflı kayıpta abort.
   - Başarı/abort sayacı yok.
     **[CORRIGENDUM-1 (2026-11-09)]** Sayaç F0 verisinde yok; üründe var: `diag_probe()` (başarı, iptal, zaman aşımı, preempt; `sender.rs:6418-6426`, `a858f3fc`). F0 düzeneği basmadı.
