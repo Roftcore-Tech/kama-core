@@ -488,6 +488,144 @@ def oz_test():
     return 0
 
 
+# ── [YOL3 · QK] Gösterim sahnesi kol tablosu (raporlanan; S kuralına GİRMEZ) ───────────────────
+#
+# Analog hücresinde bulunan bütün kollar (Kama K*, quinn Q*) AYNI ölçülerle tek tabloda: dosya
+# bitiş (i) ve PTT p95 (ii) yukarıdaki tanımların aynısı (f0a_tam run_row, aynı sansür); teslim =
+# f0a_analyze sınıf sayaçları (koşu başına teslim / gönderilen), koşu medyanı; kurulum = alice `t0`
+# − `connect_requested` işareti (Kama: zarflar Unix soketinden, netem dışı; quinn: el sıkışma netem
+# içinde; ikisinde de ölçüm penceresi dışında). Bölüm yalnız en az bir Q kolu varken yazılır: Q
+# verisi olmayan kökte OKUMA.md ve okuma.json bayt bayt değişmez. Q kolları: crates/bench/src/f0q.rs,
+# hücreler scripts/yol3/tesis/gen_q_cells.py.
+
+Q_ARMS = ["Q_bbr", "Q_bbr_rfc", "Q_cubic"]
+Q_SHOW = {"Q_bbr": "Q-bbr", "Q_bbr_rfc": "Q-bbr-rfc", "Q_cubic": "Q-cubic"}
+TESLIM_SINIF = ("W", "T", "S", "P", "KP", "K", "O", "C")
+
+
+def kurulum_s(alice_jsonl):
+    """alice `t0` − `connect_requested` işareti (s); işaret yoksa None."""
+    t = {}
+    try:
+        with open(alice_jsonl, encoding="utf-8") as f:
+            for ln in f:
+                if '"k":"mark"' in ln:
+                    j = json.loads(ln)
+                    t.setdefault(j.get("m"), j.get("t"))
+    except (OSError, ValueError):
+        return None
+    a, b = t.get("connect_requested"), t.get("t0")
+    return (b - a) / 1000.0 if a is not None and b is not None else None
+
+
+def pct(num, den):
+    return 100.0 * num / den if den else None
+
+
+def sahne(d, work):
+    """Analog hücresinin kol satırları (Kama kolları ALL_ARMS sırasıyla, sonra Q); Q yoksa None."""
+    a = d.get("analog", ANALOG)
+    runs = {}
+    for p in sorted((pathlib.Path(work) / "A" / "runs").glob("*.json")):
+        rj = json.loads(p.read_text(encoding="utf-8"))
+        if "__" in rj["cell"] and rj["cell"].split("__", 1)[0] == a:
+            runs.setdefault(rj["arm"], []).append(rj)
+    if not any(k in runs for k in Q_ARMS):
+        return None
+    rows = []
+    for arm in [k for k in ALL_ARMS + Q_ARMS if k in runs]:
+        rs = sorted(runs[arm], key=lambda r: r.get("rep") or 0)
+        e = (d.get(a) or {}).get(arm) or {}
+        ptt_t, oge_t = [], []
+        for r in rs:
+            cl = r.get("classes") or {}
+            p = cl.get("P")
+            ptt_t.append(pct(p["delivered"], p["sent"]) if p else None)
+            n = sum(cl[c]["sent"] for c in TESLIM_SINIF if c in cl)
+            k = sum(cl[c]["delivered"] for c in TESLIM_SINIF if c in cl)
+            oge_t.append(pct(k, n))
+        files = [r.get("file") or {} for r in rs]
+        rows.append({
+            "kol": arm, "n": len(rs),
+            "gecerli": sum(1 for r in rs if r.get("valid")),
+            "tamam": sum(1 for r in rs
+                         if (r.get("alice_summary") or {}).get("result") == "complete"),
+            "dosya_alindi": sum(1 for f in files
+                                if f.get("bob_status") == "received" and f.get("bob_match") is True),
+            "dosya_med_s": med(e.get("file", [])),
+            "ptt_p95_med_s": med(e.get("ptt", [])),
+            "ptt_teslim_med_pct": med(ptt_t),
+            "oge_teslim_med_pct": med(oge_t),
+            "kurulum_med_s": med([kurulum_s(os.path.join(r["dir"], "alice.jsonl")) for r in rs]),
+        })
+    return rows
+
+
+def sahne_md(rows):
+    L = ["", "## Gösterim sahnesi — Kama ve quinn kolları aynı ölçülerle (raporlanan; S'ye girmez)",
+         "", "dosya bitiş = (i), PTT p95 = (ii) tanımları aynen; teslim = koşu başına teslim / "
+         "gönderilen (PTT: P; öğe: W, T, S, P, KP, K, O, C), koşu medyanı; kurulum = alice t0 − "
+         "connect_requested (Kama zarfları Unix soketinden, netem dışı; quinn el sıkışması netem "
+         "içinde; ikisi de pencere dışında). N < 30: betimsel.", "",
+         "| kol | N | geçerli | tamam | dosya alındı (doğru) | dosya bitiş med (s) | "
+         "PTT p95 med (s) | PTT teslim med % | öğe teslim med % | kurulum med (s) |",
+         "|---|---|---|---|---|---|---|---|---|---|"]
+    for r in rows:
+        k = r["kol"]
+        L.append(f"| {Q_SHOW.get(k, show(k))} | {r['n']} | {r['gecerli']} | {r['tamam']} | "
+                 f"{r['dosya_alindi']} | {fmt(r['dosya_med_s'], 1)} | {fmt(r['ptt_p95_med_s'])} | "
+                 f"{fmt(r['ptt_teslim_med_pct'], 1)} | {fmt(r['oge_teslim_med_pct'], 1)} | "
+                 f"{fmt(r['kurulum_med_s'], 3)} |")
+    return "\n".join(L) + "\n"
+
+
+def oz_test_sahne():
+    """Sahne tablosu: Q yokken None (çıktı değişmez); Q varken Kama ve Q satırları aynı ölçülerle."""
+    def run(t, arm, rep, p_sent, p_deliv, result="complete"):
+        rd = t / f"{ANALOG}__{arm}" / arm / f"rep{rep}"
+        rd.mkdir(parents=True)
+        with open(rd / "alice.jsonl", "w", encoding="utf-8") as f:
+            for m, tt in (("connect_requested", 1000.0), ("t0", 1000.0 + 250.0 * (arm != "K0"))):
+                f.write(json.dumps({"k": "mark", "t": tt, "m": m}, separators=(",", ":")) + "\n")
+        rj = {"cell": f"{ANALOG}__{arm}", "arm": arm, "rep": rep, "dir": str(rd), "valid": True,
+              "alice_summary": {"result": result},
+              "file": {"bob_status": "received", "bob_match": True},
+              "classes": {"P": {"sent": p_sent, "delivered": p_deliv},
+                          "T": {"sent": 40, "delivered": 40}}}
+        (t / "A" / "runs").mkdir(parents=True, exist_ok=True)
+        (t / "A" / "runs" / f"{ANALOG}__{arm}__{arm}__rep{rep}.json").write_text(
+            json.dumps(rj), encoding="utf-8")
+
+    n = 0
+    with tempfile.TemporaryDirectory() as td:
+        t = pathlib.Path(td)
+        run(t, "K0", 1, 50, 50)
+        d = {ANALOG: {"K0": {"file": [23.9], "ptt": [15.3]}}}
+        n += 1
+        if sahne(d, t) is not None:
+            raise SystemExit("öz-test kaldı: Q yokken sahne None olmalı")
+        print("  geçti: sahne: Q kolu yoksa bölüm yok (OKUMA.md değişmez)")
+        run(t, "Q_bbr", 1, 50, 45, result="incomplete")
+        d[ANALOG]["Q_bbr"] = {"file": [INF], "ptt": [2.5]}
+        rows = sahne(d, t)
+        n += 1
+        ok = (rows is not None and [r["kol"] for r in rows] == ["K0", "Q_bbr"]
+              and rows[1]["ptt_teslim_med_pct"] == 90.0
+              and abs(rows[1]["oge_teslim_med_pct"] - 100.0 * 85 / 90) < 1e-9
+              and rows[1]["tamam"] == 0 and rows[0]["tamam"] == 1
+              and rows[1]["kurulum_med_s"] == 0.25 and rows[0]["kurulum_med_s"] == 0.0)
+        if not ok:
+            raise SystemExit(f"öz-test kaldı: sahne satırları {rows}")
+        print("  geçti: sahne: Kama ve Q satırları; teslim, tamam, kurulum")
+        md = sahne_md(rows)
+        n += 1
+        if "| Q-bbr | 1 | 1 | 0 | 1 | ∞ | 2.50 | 90.0 | 94.4 | 0.250 |" not in md:
+            raise SystemExit(f"öz-test kaldı: sahne_md\n{md}")
+        print("  geçti: sahne_md biçimi (alınmayan dosya ∞)")
+    print(f"== öz-test (sahne): {n}/{n} geçti")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--kok")
@@ -496,7 +634,7 @@ def main():
     ap.add_argument("--oz-test", action="store_true")
     a = ap.parse_args()
     if a.oz_test:
-        return oz_test()
+        return oz_test() or oz_test_sahne()
     if not a.kok:
         ap.error("--kok zorunlu")
     man_sha = None
@@ -511,6 +649,10 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     d = extract(kok, out)
     choice, md, js = report(d, man_sha)
+    sh = sahne(d, out)          # [YOL3 · QK] yalnız Q kolu varken; yoksa çıktı aynen
+    if sh is not None:
+        md += sahne_md(sh)
+        js["sahne"] = sh
     (out / "OKUMA.md").write_text(md, encoding="utf-8")
     (out / "okuma.json").write_text(json.dumps(js, ensure_ascii=False, indent=1, default=str),
                                     encoding="utf-8")
