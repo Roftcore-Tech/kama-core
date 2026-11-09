@@ -1,0 +1,16 @@
+TEŞHİS KOŞU KAYDI (G2, öne alındı: Pzt 9 Kas akşam; tüm ajanlar boşta)
+başlangıç: 2026-11-09 18:22:53 +0300
+ağaç: yol2/o1 5fdad83b451f8b9042009fa67a84ff9bc7f05ff8 = dbea1ef3 + yol3/m2-e1-bayrak bd5492c5 + yol3/o-goster 97ebd596 (KK-ORK-02)
+manifest: docs/design/E1-TESHIS-G2.md sha256 37bcabe31107a464970a54f5073a36d1d0e65e1cba558c1bf363360c0cb56e1a
+SIRA.txt sha256 29058f137924ee48a73821b5bce9b6369a4750278ff7a6a48e9833e92fe3349e
+21662b512eefbcb0b63f381a15fb9b7d5ebf96857714531a2d382450156fc823  target/release/examples/f0_flows
+0c82a7c2436023f51e8fb392715ef2c083ea189c3d64b616270bc19636183977  target/release/bench
+KK-ORK-01: bütün kollarda FEC kapalı · KK-ORK-02: taban dbea1ef3 (M1 öncesi) · KK-ORK-03: (iii) payda pay ile aynı katmanda (oku.py @502fce94)
+D-18: ölçüm süresince ortak cargo kilidi tutuldu; -j 11
+KESİNTİ: önceki oturum ≈19:1x'te kapandı; koşu süreçleri sonlandı. 11/16 hücre DONE (110 koşu), 5 hücrede 27 kısmi rep (rc=0 olanlar dahil) _kesildi-2026-11-09/ altına taşındı, silinmedi, okumaya GİRMEZ.
+yeniden koşu (tam hücre, aynı ağaç ve ikili): a_r12k_d150_l20_foto150k__K0 a_r12k_d150_l20_foto150k__K0r a_r12k_d300_l30_dosyasiz__K0 b_r25_d300_l20_p65__K0 b_r25_d300_l20_p65__K2
+yeniden başlangıç: 2026-11-09 19:15:19 +0300
+yeniden bitiş: 2026-11-09 19:48:20 +0300 rc=0 süre=1981s
+29dd851b44170d11f22546c756a3a8ae79232123a659347feb042e623edfa32d  /home/ryuzaki/kama-k4g-work/yol3/tesis/2026-11-09-g2/okuma/OKUMA.md
+9b80e9547a6d12ac441d01651f9e5345832165f7c4ce34a12637ede46c51448b  /home/ryuzaki/kama-k4g-work/yol3/tesis/2026-11-09-g2/okuma/okuma.json
+okuma: oku.py @502fce94, 2026-11-09 19:49:57
