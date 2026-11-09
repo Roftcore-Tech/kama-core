@@ -105,6 +105,8 @@ async fn transport_api_v0_surface_is_frozen() {
         // v0.14 (K4G-05 / DUR-19): minor-EKLEME, kasıtlı pin-güncellemesi. Canlı teşhis aynası;
         // default false (ürün), salt gözlem — motor kararlarını değiştirmez.
         live_diag: _,
+        // v0.16 (E1 gösterim bayrakları, CC §4.1): minor-EKLEME, kasıtlı pin-güncellemesi
+        e1_flags: _,
     } = cfg.clone();
     let FecRuntimeConfig {
         profile_id: _,

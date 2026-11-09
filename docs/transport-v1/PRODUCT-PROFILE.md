@@ -40,6 +40,7 @@ buna devreder). Değerler koddan okunmuştur (2026-09-11), tahmin değildir. Pin
 | `idle_hold` | `105 s` | SHIP | SESSION_IDLE_HOLD hizası | — | — |
 | `ts_sample_period_ns` | `None` | diagnostic (salt gözlem) | handoff enstrümanı | — | INV-007 |
 | `live_diag` | `false` | diagnostic (salt gözlem) | K4G-05 canlı teşhis aynası ve yazıcısı (`ClientLiveDiag`); çalışma-zamanı bayrağı, feature değil; kapalıyken yazıcı çalışmaz, açıkken motor kararları değişmez, maliyeti ölçülmedi; INT-02 düzeneği açar (2026-10-24 eklendi) | DUR-19 (CEVAP PAKETİ 9) | `product_v1_profile_is_pinned` |
+| `e1_flags` | `E1Flags::default()` — beşi `false`: `e1_startup_cwnd`, `e1_applimited_plateau`, `e1_drainrt_gate`, `e1_probe_keep`, `retx_first` | KEEP-EXPERIMENTAL (varsayılan kapalı) | E1 gösterim bayrakları (CC §4.1, CC-K5): çalışma-zamanı bayrağı, feature değil; kapalıyken motor bugünkü kod yolunu aynen çağırır; yalnız gösterim düğümü (`transport-v1.x-goster`) ve G2 teşhis kolları açar (2026-11-09 eklendi) | CC §4.1; ISEMRI-YOL3-M2 KK-M2-01/-02 | `product_v1_profile_is_pinned` |
 
 ## `ClientSession`'ın kurduğu, `RuntimeConfig` DIŞI sevk ayarları
 
