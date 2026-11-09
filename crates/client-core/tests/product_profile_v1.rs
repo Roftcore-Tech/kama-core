@@ -89,6 +89,12 @@ fn product_v1_profile_is_pinned() {
         c.loss_confirm_horizon,
         LossConfirmHorizon::CadenceLegacy
     ));
+    // [E2a gösterim] Motor kural bayrakları ürün yolunda kapalı (bit-aynı; ISEMRI-YOL3-M1).
+    assert_eq!(
+        c.e2a_flags,
+        adaptive_transport::loss::E2aFlags::default(),
+        "e2a_flags varsayılanı kapalı"
+    );
     // [K4G-05 / DUR-19] Canlı teşhis aynası ürün yolunda kapalı (salt gözlem; INT-02 düzeneği
     // açar).
     assert!(!c.live_diag, "ürün varsayılanında kapalı");
