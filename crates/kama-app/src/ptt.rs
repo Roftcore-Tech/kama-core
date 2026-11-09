@@ -193,12 +193,15 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use kama_contracts::handles::{PeerRef, SessionHandle};
-use kama_contracts::s1::{DeliveryPolicy, KamaTransport, SessionEvent, TransportError};
+use kama_contracts::s1::{
+    DeliveryPolicy, KamaTransport, SessionEvent, TrafficClass, TransportError,
+};
 
 use crate::clock::MonotonicClock;
 use crate::codec::limits::MEDIA_BUNDLE_PREFIX_BYTES;
 use crate::codec::{self, AmpLimits, AppMessage, EncodeError, PttCodec};
 use crate::messaging::{Messenger, MessengerEvent, MAX_PEERS};
+use crate::playout::{Playout, PlayoutConfig, PlayoutStats};
 use crate::store::{AppStore, AppStoreError, CounterKind};
 
 /// `PTT_OPEN` / `PTT_CLOSE` / `MEDIA_BUNDLE` akış kimliği (AMP §3; telde `u32_be`).
@@ -449,6 +452,9 @@ pub struct Ptt {
     /// [`PTT_STREAM_IDLE_TTL`] (modül belgesi, "Alıcı").
     closed: BTreeMap<(PeerRef, StreamId), Duration>,
     stats: PttStats,
+    /// [YOL3-T1 KK-T1-11] Oynatma tamponu ([`crate::playout`]); `None` (varsayılan) = demetler
+    /// varışta verilir (bugünkü davranış).
+    playout: Option<Playout>,
 }
 
 /// Açık giden akış: talk-spurt'ün sabit parametreleri.
@@ -482,7 +488,29 @@ impl Ptt {
             incoming: BTreeMap::new(),
             closed: BTreeMap::new(),
             stats: PttStats::default(),
+            playout: None,
         }
+    }
+
+    /// [YOL3-T1 KK-T1-11] Oynatma tamponunu açar (`Some`), T'sini değiştirir ya da kapatır (`None`).
+    /// Kapatılırken tamponda bekleyen demetler DÜŞMEZ: sonraki `poll`'larda sırayla, beklemeden
+    /// verilir; tampon boşalınca kalkar. Gösterim; kapılı PoC ölçümü Aralık.
+    pub fn set_playout(&mut self, config: Option<PlayoutConfig>) {
+        match (self.playout.as_mut(), config) {
+            (Some(playout), Some(config)) => playout.set_config(config),
+            (Some(playout), None) => playout.start_draining(),
+            (None, Some(config)) => self.playout = Some(Playout::new(config)),
+            (None, None) => {}
+        }
+        if self.playout.as_ref().is_some_and(Playout::drained) {
+            self.playout = None;
+        }
+    }
+
+    /// Oynatma tamponu sayaçları; tampon kapalıysa `None`.
+    #[must_use]
+    pub fn playout_stats(&self) -> Option<PlayoutStats> {
+        self.playout.as_ref().map(Playout::stats)
     }
 
     /// Gözlem sayaçları.
@@ -669,8 +697,68 @@ impl Ptt {
     /// PTT-R4 denetimi yalnız burada yapılır: trafik olmasa da uygulama `poll`'u periyodik
     /// çağırmalıdır (zamanlayıcı ya da olay döngüsü turu); yoksa süresi dolan akış ancak sonraki
     /// `poll`'da biter.
+    ///
+    /// [YOL3-T1 KK-T1-11] Oynatma tamponu açıksa ([`Self::set_playout`]) `PttStarted` ve PTT dışı
+    /// olaylar hemen, `PttAudio` oynatma anında, `PttEnded` tampon boşalınca verilir
+    /// ([`crate::playout`]); zamanı gelmiş tampon olayı Messenger'dan önce verilir.
     #[must_use]
     pub fn poll<T: KamaTransport>(&mut self, messenger: &mut Messenger<T>) -> Option<PttEvent> {
+        let Some(mut playout) = self.playout.take() else {
+            return self.poll_direct(messenger);
+        };
+        let event = self.poll_through(&mut playout, messenger);
+        if !playout.drained() {
+            self.playout = Some(playout);
+        }
+        event
+    }
+
+    /// Tamponlu yol: önce zamanı gelmiş tampon olayı; yoksa tamponsuz yolun olayları tampona
+    /// süzülür (demet tutulur, akış sonu ertelenir, diğerleri aynen geçer).
+    fn poll_through<T: KamaTransport>(
+        &mut self,
+        playout: &mut Playout,
+        messenger: &mut Messenger<T>,
+    ) -> Option<PttEvent> {
+        let now = self.clock.now();
+        if let Some(event) = playout.release_due(now) {
+            return Some(event);
+        }
+        loop {
+            match self.poll_direct(messenger)? {
+                event @ PttEvent::PttStarted {
+                    peer,
+                    stream_id,
+                    bundle_ms,
+                    ..
+                } => {
+                    playout.on_started(peer, stream_id, bundle_ms);
+                    return Some(event);
+                }
+                PttEvent::PttAudio {
+                    peer,
+                    stream_id,
+                    payload,
+                } => {
+                    if let Some(event) = playout.on_audio(now, peer, stream_id, payload) {
+                        return Some(event);
+                    }
+                }
+                PttEvent::PttEnded { peer, stream_id } => {
+                    if let Some(event) = playout.on_ended(peer, stream_id) {
+                        return Some(event);
+                    }
+                }
+                event @ PttEvent::Messenger(_) => return Some(event),
+            }
+            if let Some(event) = playout.release_due(now) {
+                return Some(event);
+            }
+        }
+    }
+
+    /// Tamponsuz yol (bugünkü `poll` gövdesi, aynen).
+    fn poll_direct<T: KamaTransport>(&mut self, messenger: &mut Messenger<T>) -> Option<PttEvent> {
         self.reopen_all(messenger);
         if let Some(event) = self.end_orphaned(messenger) {
             return Some(event);
@@ -958,7 +1046,7 @@ fn send_record<T: KamaTransport>(
     let unit = codec::encode(message, messenger.limits()).map_err(PttError::Encode)?;
     messenger
         .transport_mut()
-        .send(handle, unit, policy)
+        .send(handle, unit, policy, TrafficClass::VoRel)
         .map_err(PttError::Transport)
 }
 
@@ -1020,6 +1108,7 @@ mod tests {
             session: SessionHandle,
             _unit: PreparedUnit,
             _policy: DeliveryPolicy,
+            _class: TrafficClass,
         ) -> Result<(), TransportError> {
             self.sent_on.push(session);
             Ok(())

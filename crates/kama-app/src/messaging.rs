@@ -138,7 +138,7 @@ use std::sync::Arc;
 use kama_contracts::handles::{PeerRef, SessionHandle};
 use kama_contracts::s1::{
     ConnectPhase, ConnectResult, ConnectTicket, Delivered, DeliveryPolicy, KamaTransport,
-    PreparedUnit, SessionEvent, TransportError,
+    PreparedUnit, SessionEvent, TrafficClass, TransportError,
 };
 
 use crate::codec::{self, AmpLimits, AppMessage, EncodeError, LimitsError, ReceiptKind};
@@ -630,10 +630,12 @@ impl<T: KamaTransport> Messenger<T> {
         };
         let unit = codec::encode(&message, &self.limits).map_err(MessengerError::Encode)?;
         persist_unsent(&*self.store, &mut self.stats, peer, msg_id, &unit)?;
-        if let Err(error) = self
-            .transport
-            .send(handle, unit.clone(), DeliveryPolicy::Reliable)
-        {
+        if let Err(error) = self.transport.send(
+            handle,
+            unit.clone(),
+            DeliveryPolicy::Reliable,
+            TrafficClass::Be,
+        ) {
             forget_unsent(&*self.store, &mut self.stats, peer, msg_id);
             return Err(MessengerError::Transport(error));
         }
@@ -1095,7 +1097,12 @@ fn flush_peer<T: KamaTransport>(
             continue;
         }
         if transport
-            .send(handle, entry.unit.clone(), DeliveryPolicy::Reliable)
+            .send(
+                handle,
+                entry.unit.clone(),
+                DeliveryPolicy::Reliable,
+                TrafficClass::Be,
+            )
             .is_err()
         {
             stats.resend_refused += 1;
@@ -1124,7 +1131,7 @@ fn send_receipt<T: KamaTransport>(
     // öneki); kodlama hatası yine de gönderilemeyen RECEIPT sayılır, panik yok.
     let accepted = match (session, codec::encode(&receipt, limits)) {
         (Some(handle), Ok(unit)) => transport
-            .send(handle, unit, DeliveryPolicy::Reliable)
+            .send(handle, unit, DeliveryPolicy::Reliable, TrafficClass::Ctrl)
             .is_ok(),
         _ => false,
     };
@@ -1336,6 +1343,7 @@ mod tests {
             _session: SessionHandle,
             _unit: PreparedUnit,
             _policy: DeliveryPolicy,
+            _class: TrafficClass,
         ) -> Result<(), TransportError> {
             Ok(())
         }
@@ -1383,6 +1391,7 @@ mod tests {
             session: SessionHandle,
             _unit: PreparedUnit,
             _policy: DeliveryPolicy,
+            _class: TrafficClass,
         ) -> Result<(), TransportError> {
             self.sent_on.push(session);
             Ok(())

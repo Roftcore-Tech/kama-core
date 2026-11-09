@@ -1725,6 +1725,13 @@ impl ClientHandle {
         self.acked_rx.recv().await
     }
 
+    /// [YOL3-T1 KK-T1-07] İlk-ACK olay akışının BLOKLAMAYAN okuması: bekleyen bir birim kimliği
+    /// varsa onu döndürür. Kanal `max(offer_queue, max_inflight_units)` olaylıktır ve dolunca olay
+    /// düşer; S1 şeritleri onu her `drive`'da boşaltır.
+    pub fn try_acked(&mut self) -> Option<u64> {
+        self.acked_rx.try_recv().ok()
+    }
+
     /// [L-T1] Kabul edilmiş ama app-düzeyi teyidi (ACK ya da FEC-RECOVERED) henüz gelmemiş mesaj
     /// sayısı. S1 adaptörü atomik cutover'dan önce eski oturumun boşaldığını buradan okur.
     #[must_use]

@@ -67,6 +67,51 @@ pub enum DeliveryPolicy {
     BestEffort,
 }
 
+/// [2026-11-09 S1 v2 — EK-1 D-08/D-09] Trafik sınıfı: Application'ın beyan ettiği POLİTİKA
+/// etiketi (K3: tip bilgisi değil). Transport sınıfı yalnız sunum sırası ve penceresi için okur;
+/// birim baytını ve kayıt türünü OKUMAZ (INV-ENGINE-SOC, D-04 notu). Telde karşılığı YOKTUR (tel ve
+/// altın vektörler değişmez). Küme kapalıdır; [`TrafficClass::code`] D-08 numarasıdır.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum TrafficClass {
+    /// BE 0 — sıradan veri (TEXT); `connect(early_unit)` da bu sınıftır (D-09).
+    Be,
+    /// CTRL 1 — küçük denetim kayıtları (alındılar).
+    Ctrl,
+    /// SIG 2 — sinyalleşme.
+    Sig,
+    /// BK 3 — toplu aktarım (dosya).
+    Bk,
+    /// VO 4 — canlı ses (gösterimde kullanılmaz; Aralık T1-5).
+    Vo,
+    /// VO_REL 5 — güvenilir ses (PTT; D-10 B).
+    VoRel,
+}
+
+impl TrafficClass {
+    /// Kapalı küme, D-08 sırasıyla.
+    pub const ALL: [Self; 6] = [
+        Self::Be,
+        Self::Ctrl,
+        Self::Sig,
+        Self::Bk,
+        Self::Vo,
+        Self::VoRel,
+    ];
+
+    /// EK-1 D-08 numarası. Telde taşınmaz (sınıf öneki T1-2b).
+    #[must_use]
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::Be => 0,
+            Self::Ctrl => 1,
+            Self::Sig => 2,
+            Self::Bk => 3,
+            Self::Vo => 4,
+            Self::VoRel => 5,
+        }
+    }
+}
+
 /// `recv()` çıktısı; `unit` gönderilen record ile byte-özdeştir (§2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Delivered {
@@ -188,6 +233,10 @@ pub trait KamaTransport {
     /// OKUNMASI arasında `send(h)` → `SessionSuperseded`; `Closed(h)` okunduktan sonra →
     /// `UnknownSession`. Application'ın `close(h)` çağırması GEREKMEZ (§3).
     ///
+    /// [2026-11-09 S1 v2 — D-09] `class` politika etiketidir ([`TrafficClass`]); Transport onu
+    /// yalnız sunum sırası/penceresi için okur. Aynı oturum ve aynı sınıf içinde `Reliable`
+    /// birimler gönderim sırasıyla teslim edilir (§4); sınıflar arası `send` sırası korunmayabilir.
+    ///
     /// # Errors
     /// `UnknownSession`, `SessionSuperseded`, `UnitTooLarge`, `Backpressure`, `DeadlineExpired`.
     fn send(
@@ -195,6 +244,7 @@ pub trait KamaTransport {
         session: SessionHandle,
         unit: PreparedUnit,
         policy: DeliveryPolicy,
+        class: TrafficClass,
     ) -> Result<(), TransportError>;
 
     fn recv(&mut self) -> Option<Delivered>;
@@ -262,6 +312,24 @@ mod tests {
                 | SessionEvent::ConnectProgress(..) => {}
             }
         }
+    }
+
+    /// [S1 v2] `TrafficClass` kapalı kümesi ve D-08 numaraları pinli: variant eklenirse eşleşme
+    /// derlenmez; numara değişirse test kırmızı.
+    #[test]
+    fn traffic_class_set_is_closed_and_numbered_by_d08() {
+        for class in TrafficClass::ALL {
+            match class {
+                TrafficClass::Be
+                | TrafficClass::Ctrl
+                | TrafficClass::Sig
+                | TrafficClass::Bk
+                | TrafficClass::Vo
+                | TrafficClass::VoRel => {}
+            }
+        }
+        let codes: Vec<u8> = TrafficClass::ALL.iter().map(|c| c.code()).collect();
+        assert_eq!(codes, [0, 1, 2, 3, 4, 5]);
     }
 
     /// `KamaTransport` dyn-uyumludur (Application onu `Box<dyn KamaTransport>` olarak tutabilir).
