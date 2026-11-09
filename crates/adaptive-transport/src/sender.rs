@@ -9476,6 +9476,9 @@ mod tests {
             // sürülen sürücü (periyodik tik YOK) onu sonraki turdan önce çıkarır.
             let mut s = Sender::new();
             s.set_establish_probe(false);
+            // Ürün runtime'ı gibi deneysel CS-probe şeridi kapalı: o şeridin zamanlayıcıları
+            // `TimerFired` ile değil `Event::Tick`/toplu API ile tüketilir (experimental-cold-start).
+            s.set_cs_probe_lane(false);
             s.set_tail_recovery_config(tail_cfg(3, 60_000 * MS));
             s.set_e2a_flags(flags(false, MS, false, false, 2));
             s.on_event(Event::AppData(OpaqueUnit { id: 7, size: 1000 }), 0);

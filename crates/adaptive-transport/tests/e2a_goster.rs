@@ -139,6 +139,10 @@ impl Link {
 /// (IW 2400, `validated_v1`, ilk olay Idle'da TimerFired); değilse çıplak `Sender::new()`.
 fn run(product: bool, configure: &dyn Fn(&mut Sender)) -> (u64, BTreeSet<u64>) {
     let mut s = Sender::new();
+    // Ürün runtime'ı gibi deneysel CS-probe şeridi kapalı (`experimental-cold-start` derlemesinde
+    // feature-varsayılanı açık; ürün `set_cs_probe_lane(false)` ile kapatır) → iz özellik kümesinden
+    // bağımsız kalır (varsayılan ve --all-features derlemesi aynı tabana karşı sınanır).
+    s.set_cs_probe_lane(false);
     if product {
         s.set_initial_window(InitialWindowConfig { bytes: 2400 });
         s.set_tail_recovery_config(TailRecoveryConfig::validated_v1());
@@ -205,7 +209,8 @@ fn run(product: bool, configure: &dyn Fn(&mut Sender)) -> (u64, BTreeSet<u64>) {
 }
 
 // ── taban izleri: 5de1ce3f (origin/main) ağacında bu dosyanın E2a'sız kopyasıyla kaydedildi ──
-// (2026-11-09; ayrı worktree, ayrı target; iki koşu da `delivered = 120`).
+// (2026-11-09; ayrı worktree, ayrı target; varsayılan ve --all-features derlemesinde AYNI değer;
+// iki kurulumda da `delivered = 120`).
 const BASE_DIGEST_PRODUCT: u64 = 0x1e49_5f75_283c_9675;
 const BASE_DIGEST_BARE: u64 = 0xa9f2_a6bc_da15_8482;
 
