@@ -8996,6 +8996,11 @@ mod tests {
         steps: Vec<(u64, SenderState, bool, Vec<TransmitDecision>, u32, bool)>,
         data_in_probe: u64,
         dropped: Vec<u64>,
+        /// Darboğaz tamponu (ns kuyruk bekleme); aşan emisyon kuyruk sonundan düşer (tıkanıklık
+        /// kaybı). `u64::MAX` = sınırsız.
+        buf_ns: u64,
+        /// Tampon taşmasıyla düşen emisyon sayısı.
+        congestion_drops: u64,
     }
 
     impl E1Sim {
@@ -9009,6 +9014,8 @@ mod tests {
                 steps: Vec::new(),
                 data_in_probe: 0,
                 dropped: Vec::new(),
+                buf_ns: u64::MAX,
+                congestion_drops: 0,
             }
         }
 
@@ -9034,6 +9041,10 @@ mod tests {
                     continue;
                 }
                 let start = now.max(self.link_free_ns);
+                if start - now > self.buf_ns {
+                    self.congestion_drops += 1;
+                    continue;
+                }
                 self.link_free_ns = start + d.size * 1_000_000_000 / self.rate_bps;
                 let ack_at = self.link_free_ns + 2 * self.owd_ns;
                 let pos = self.acks.partition_point(|&(t, _)| t <= ack_at);
@@ -9679,6 +9690,49 @@ mod tests {
                 succ, 0,
                 "beklenen 'kalır': ProbeUp başarıyla kapanmaz (flag={flag})"
             );
+        }
+    }
+
+    /// v2 §5.2 deterministik testi: "tıkanıklık kaybında qd iptali, srtt/rtprop ≤ 2". Sığ tampon
+    /// (450 ms kuyruk) darboğazında toplu aktarım; (e-dar) açıkken kayıp ProbeUp'ı iptal ettirmez,
+    /// iptal qd yolundan gelir ve duran kuyruk sınırlı kalır. Sayaçlar `--nocapture` ile basılır.
+    #[test]
+    fn e1_v2_congestion_loss_probe_aborts_on_qd_and_queue_bounded() {
+        for flag in [false, true] {
+            let mut s = e1_sender(E1Flags {
+                e1_probe_keep: flag,
+                ..E1Flags::default()
+            });
+            let mut sim = E1Sim::new(12_500, 150);
+            sim.buf_ns = 450 * MS;
+            let mut no_drop = |_: &TransmitDecision, _: &E1SendCtx| false;
+            sim.run(&mut s, &e1_bulk(700), 60_000, &mut no_drop);
+            let (succ, abort, timeout, preempt) = s.diag_probe();
+            let srtt = dur_ns(s.rtt.srtt().expect("srtt"));
+            let rtprop = dur_ns(s.rtt.rtprop().expect("rtprop"));
+            eprintln!(
+                "e1_v2_congestion flag={flag}: drops={} probe_up={} success={succ} abort={abort} \
+                 timeout={timeout} preempt={preempt} srtt/rtprop={}‰",
+                sim.congestion_drops,
+                s.act_probe_up_entries,
+                srtt * 1000 / rtprop
+            );
+            assert!(
+                sim.congestion_drops > 0,
+                "kurulum: tıkanıklık kaybı var (flag={flag})"
+            );
+            assert!(
+                s.act_probe_up_entries >= 1,
+                "kurulum: ProbeUp girildi (flag={flag})"
+            );
+            assert_eq!(succ, 0, "ProbeUp başarıyla kapanmadı (flag={flag})");
+            if flag {
+                // (e-dar): kayıp iptal ettirmez → iptal qd yolundan (bugün kayıp preempt eder).
+                assert!(abort >= 1, "AÇIK: qd iptali çalışır");
+            } else {
+                assert!(preempt >= 1, "KAPALI: bekleyen kayıp ProbeUp'ı keser");
+            }
+            assert!(srtt <= 2 * rtprop, "srtt/rtprop ≤ 2 (flag={flag})");
         }
     }
 }
