@@ -4001,6 +4001,8 @@ impl Sender {
             && self.dup_queue.is_empty();
         let emergency_active =
             level > EmergencyLevel::Arq || decision.mode == Mode::EmergencyForwardRedundancy;
+        // [E1 (e-dar), KK-M2-06 (1)] Bekleyen kayıp ProbeUp'ı keser mi: bayrak açıkken ProbeUp'ta HAYIR.
+        let pending_preempts_probe = self.state != SenderState::ProbeUp || !self.e1.e1_probe_keep;
 
         // [TUR-7 β1] PLATO BASE-ÜSTÜNDE: base==Startup iken round-değerlendirmesi HER durumda
         // (recovery-altında da) ilerler — ramp'in sonlanması kanal-ölçümüne bağlı kalır
@@ -4024,9 +4026,7 @@ impl Sender {
         } else if emergency_active {
             // ack_confidence LOW → forward-recovery (ACK-bağımsız, §11), her aktif fazdan (§3 AMENDMENT-1).
             SenderState::RecoverFwd
-        } else if !self.pending_lost.is_empty()
-            && !(self.e1.e1_probe_keep && self.state == SenderState::ProbeUp)
-        {
+        } else if !self.pending_lost.is_empty() && pending_preempts_probe {
             // residual loss + ack_confidence OK → selective retransmit (§9), her aktif fazdan
             // (§3 AMENDMENT-1; RECOVER_FWD ile simetrik: loss STARTUP'ta olsa da recovery tıkanmamalı).
             // [E1 (e-dar), KK-M2-06 (1)] Bayrak açıkken bekleyen kayıp ProbeUp'ı KESMEZ: ProbeUp kolu

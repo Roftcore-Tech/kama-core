@@ -103,8 +103,10 @@ fn fnv1a(trace: &[(u64, TransmitDecision)]) -> u64 {
     h
 }
 
-/// Senaryolar: (ad, teklifler, süre ms, hız B/s, tek yön ms, kayıp).
-fn scenarios() -> Vec<(&'static str, Vec<(u64, u64)>, u64, u64, u64, Loss)> {
+/// Senaryo: (ad, teklifler, süre ms, hız B/s, tek yön ms, kayıp).
+type Scenario = (&'static str, Vec<(u64, u64)>, u64, u64, u64, Loss);
+
+fn scenarios() -> Vec<Scenario> {
     let bulk = |n: u64| (0..n).map(|_| (0u64, 1200u64)).collect::<Vec<_>>();
     let ptt: Vec<(u64, u64)> = (0..250u64).map(|k| (80 * k, 160)).collect();
     let mut mixed = bulk(125);
