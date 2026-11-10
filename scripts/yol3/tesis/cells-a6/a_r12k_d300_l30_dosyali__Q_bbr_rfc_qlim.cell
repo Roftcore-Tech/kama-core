@@ -1,0 +1,18 @@
+# [YOL3 · A-6 gece] a_r12k_d300_l30_dosyali__Q_bbr_rfc_qlim — madde 5; küçük kuyruk q_limit (EK-A §10.3). Üretici: scripts/yol3/tesis/gen_cells.py --set a6 (elle düzenlemeyin).
+# Kaynak hücre: scripts/ktp2/f0/cells/a/a_r12k_d300_l30_dosyali.cell (sha256 9259e85cf3dce6ebce2648f8ba981c437a13e2af44fe98a2b944d1406106af43) — geometri AYNEN; fark yalnız CELL, REPS, ARMS, kol bayrağı ve netem `limit` (q_limit).
+# Kol Q_bbr_rfc_qlim: bench f0-quinn --q-kol Q_bbr_rfc — BBR, IW 14 520 B (RFC 9002 §7.2, MSS = initial_mtu 1452) · quinn 0.11.11/0.11.18, mesaj başına uni-stream, öncelik yok, oynatma tamponu yok (gövde: yol3/quinn-kol gen_q_cells.py @ d93aef10).
+# İkili: BIN_QK = <yol3/quinn-kol hedefi>/release/bench (orkestratör, D-34). El sıkışma netem içinde, t0 = bağlantı sonrası (Kama: zarflar Unix soketinden, netem dışı).
+# q_limit (EK-A §10.3): limit N = floor(2 × rate × RTT / 1200 B) = floor(2 × 12 500 B/s × 0,600 s / 1200 B) = floor(12,5) = 12 paket; rate = netem `rate 100kbit`, RTT = ileri 300 ms + dönüş 300 ms gecikme (jitter katılmaz); iki yöne `limit 12`.
+# Mevcut 1000 paket profili (netem varsayılanı) ayrı kollarda korunur; bu kol yalnız kuyruk boyuyla ayrılır.
+# Not: netem `limit` gecikme hattındaki paketleri de sayar (tfifo): hatta ≈ rate × tek yön gecikme / 1200 B ≈ 3,1 paket, kuyruğa kalan ≈ 8,9 paket (gerçek paket boyu kola göre değişir).
+CELL=a_r12k_d300_l30_dosyali__Q_bbr_rfc_qlim
+FWD="delay 300ms 60ms distribution normal loss 30% rate 100kbit limit 12"
+REV="delay 300ms 60ms distribution normal loss 30% rate 100kbit limit 12"
+REPS="${F0_REPS:-10}"
+ARMS="Q_bbr_rfc_qlim"
+BUDGET_S=600
+CAPTURE=0
+SETTLE_S=1
+F0A_ARGS='--dir @D@ --alice-addr @CLI_IP@:@PORT@ --bob-addr @SRV_IP@:@PORT@ --scenario dosyali --profile r12k_d300_l30 --rep @REP@ --file-bytes 524700 --window-s 300 --warmup-texts 3 --warmup-every-ms 500 --file-at-ms 5000 --texts 40 --text-at-ms 6000 --text-every-ms 2500 --text-bytes 64 --sigs 10 --sig-at-ms 7000 --sig-every-ms 10000 --sig-bytes 120 --ptt-bundles 25 --ptt-bundle-ms 200 --ptt-bytes 40 --stall-at-ms 20000 --stall-ms 30000 --karsi on --karsi-texts 5 --karsi-every-ms 500 --karsi-bundles 10 --karsi-min-unacked 3 --karsi-text-bytes 48 --connect-timeout-s 30 --probe-ms 200 --live-diag on --receipt-grace-s 30 --ptt-at-ms 15000,60000'
+ARM_Q_bbr_rfc_qlim_SRV="@BIN_QK@ f0-quinn --role bob $F0A_ARGS --q-kol Q_bbr_rfc"
+ARM_Q_bbr_rfc_qlim_CLI="@BIN_QK@ f0-quinn --role alice $F0A_ARGS --q-kol Q_bbr_rfc"
