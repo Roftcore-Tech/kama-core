@@ -1414,6 +1414,16 @@ impl ClientTransport<NoiseWireProtection> {
     }
 }
 
+/// [S2-A3-2 / HB2] Hub kipi kurulumunun (`HubCrypto<NoiseWireProtection>`) aynı salt-okunur
+/// telemetrisi (KK-H52, T4). Yukarıdaki blokla aynı sorgu; durum değişmez.
+impl ClientTransport<crate::hub::shared_crypto::HubCrypto<NoiseWireProtection>> {
+    /// Bkz. `ClientTransport::<NoiseWireProtection>::session_epoch`.
+    #[must_use]
+    pub fn session_epoch(&self, session: SessionHandle) -> Option<u8> {
+        lock(&self.crypto).session_send_epoch(session)
+    }
+}
+
 impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> {
     fn capabilities(&self) -> TransportCapabilities {
         self.caps

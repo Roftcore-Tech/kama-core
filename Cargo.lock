@@ -865,6 +865,7 @@ name = "kama-node"
 version = "0.1.0"
 dependencies = [
  "client-core",
+ "ed25519-dalek",
  "kama-app",
  "kama-contracts",
  "kama-node",

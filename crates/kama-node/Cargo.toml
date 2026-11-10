@@ -16,10 +16,12 @@ publish = false
 # budur (C7).
 #
 # D11: yeni harici bağımlılık YOK — yalnız workspace crate'leri + `thiserror` (workspace sürümü).
+# [S2-A3-2] istisna: ed25519-dalek (BindSigner; Cargo.lock'ta, yeni paket yok)
 # Yeni async runtime YOK: veri yolunun tokio'su `client-core`'un içindedir (`ClientTransport`
 # kendi çalışma-zamanını taşır); düğüm döngüsü bir `std::thread`'dir.
 [dependencies]
 client-core = { path = "../client-core" }
+ed25519-dalek = { version = "2", default-features = false, features = ["zeroize"] }
 kama-app = { path = "../kama-app" }
 kama-contracts = { path = "../kama-contracts" }
 kama-noise-wire = { path = "../kama-noise-wire" }

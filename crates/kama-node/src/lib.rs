@@ -73,6 +73,7 @@ mod error;
 mod event;
 mod files;
 mod handle;
+mod hub_mode;
 mod node;
 mod peers;
 #[cfg(feature = "test-util")]
@@ -252,24 +253,56 @@ impl KamaNode {
         // (1) Provisioning — yalnız bu dosya; kimlik/anahtar/eş dizini bellekte (D8, D9).
         let config = load_device_config(config_path)?;
         let peers = Arc::new(PeerBook::from_config(&config));
-        let data_bind = peers.own_addr().ok_or(NodeError::NoDirectAddress)?;
+        // [S2-A3-2] Hub kipi (KK-H50): dışarıdan taşıyıcı verilmemiş ∧ cihaz dosyasında `hub`.
+        // Hub kipinde veri alıcısı geri döngüdedir ve `direct_addrs` gerekmez (KK-H51, KK-H63).
+        let hub = match link {
+            None => hub_mode::params(&config)?,
+            Some(_) => None,
+        };
+        let data_bind = match hub {
+            Some(_) => hub_mode::DATA_BIND,
+            None => peers.own_addr().ok_or(NodeError::NoDirectAddress)?,
+        };
         // (2) Veri dizini + depo (AppStore + CounterStore = aynı nesne).
         files::create_private_dir(data_dir).map_err(NodeError::DataDir)?;
         let received = ReceivedFiles::open(data_dir).map_err(NodeError::DataDir)?;
         let store = Arc::new(RedbStore::open(&data_dir.join(STORE_FILE_NAME))?);
         // (3) Crypto: gerçek anahtarlar + Crypto'nun saati + OS entropisi + kalıcı init_counter.
         let protection = wiring::protection(&config, &store).map_err(NodeError::PeerDirectory)?;
+        // [S2-A3-2] Hub girdileri (imzacı dahil) dosya düşmeden kurulur (KK-H56).
+        let hub = hub.map(|params| hub_mode::inputs(&config, params));
         // Gizli anahtar taşıyan dosya içeriği burada düşer (Drop'ta sıfırlanır).
         drop(config);
         // (4) Zarf taşıyıcısı: süreç-içi röle kaydı (kimlik başına tek canlı düğüm).
-        let link = match link {
-            Some(link) => link,
-            None => carrier::product_envelope_link(peers.me())?,
+        let (protection, link, hub) = match link {
+            Some(link) => (wiring::direct_crypto(protection), link, None),
+            None => match hub {
+                // [S2-A3-2] Hub kipi: hub zarf taşıyıcısı + tek soket (KK-H50, KK-H51).
+                Some(inputs) => {
+                    let started = hub_mode::start(protection, inputs)?;
+                    (started.crypto, started.link, Some(started.side))
+                }
+                None => (
+                    wiring::direct_crypto(protection),
+                    carrier::product_envelope_link(peers.me())?,
+                    None,
+                ),
+            },
         };
         let mut transport_config = ClientTransportConfig::product(data_bind);
-        transport_config.peer_addrs = peers.peer_addrs();
+        transport_config.peer_addrs = match &hub {
+            // Hub kipinde her eşin veri adresi yerel rölenin adresidir (KK-H51).
+            Some(side) => peers
+                .iter()
+                .map(|(_, peer)| (peer, side.relay_addr()))
+                .collect(),
+            None => peers.peer_addrs(),
+        };
         // (5) Transport: gerçek UDP veri yolu, ürün profili.
         let transport = Transport::new(transport_config, protection, link)?;
+        if let Some(side) = &hub {
+            side.set_server_addr(transport.data_addr());
+        }
         // (6) Application motorları; Application'ın saati Crypto'nunkinden AYRI.
         let app_store: Arc<dyn AppStore> = store;
         let messenger = Messenger::with_store(transport, app_store).map_err(NodeError::Limits)?;
@@ -287,6 +320,7 @@ impl KamaNode {
             listener,
             Arc::clone(&shared),
             received,
+            hub,
         );
         Ok(Built {
             node,

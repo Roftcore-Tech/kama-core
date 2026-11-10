@@ -59,6 +59,8 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use client_core::hub::HubNotice;
+
 #[cfg(feature = "test-util")]
 use client_core::transport::UnitTraceRecord;
 use client_core::transport::MAX_INBOX;
@@ -77,6 +79,7 @@ use crate::event::{
 };
 use crate::files::{self, ReceivedFiles};
 use crate::handle::{FileHandle, HandleAllocator, Registry, StreamHandle};
+use crate::hub_mode::HubSide;
 use crate::peers::PeerBook;
 #[cfg(feature = "test-util")]
 use crate::probe::{NodeProbe, SessionEventCounts, SessionProbe};
@@ -95,6 +98,9 @@ pub(crate) const COMMAND_QUEUE_CAP: usize = 64;
 /// MAX_INBOX`; türetilmiş). Komutlar yoğun gelen trafikte aç kalmaz; tavana ulaşan tur bekleme
 /// yapmadan yeniden başlar, kuyruk her turda en az bir kez dolusu kadar boşalır.
 const MAX_EVENTS_PER_TURN: usize = MAX_INBOX;
+
+/// [S2-A3-2] Bir turda işlenen hub bildirimi tavanı (kalanlar sonraki turda).
+const HUB_NOTICES_PER_TURN: usize = 16;
 
 /// Tek yanıtlık kanal: her komut tam bir yanıt alır, gönderim bloklamaz.
 pub(crate) const REPLY_CAPACITY: usize = 1;
@@ -234,6 +240,8 @@ pub(crate) struct NodeLoop {
     up: BTreeSet<PeerRef>,
     /// Sıradaki `Metrics` olayının zamanı.
     metrics_due: Instant,
+    /// [S2-A3-2] Hub kipi tarafı (`HubEndpoint` + `HubLink`); doğrudan kipte `None`.
+    hub: Option<HubSide>,
     /// [K4G-05] YALNIZ test-util: işlenen S1 oturum olaylarının sayımı (ölçüm sondası).
     #[cfg(feature = "test-util")]
     session_events: SessionEventCounts,
@@ -246,6 +254,7 @@ impl NodeLoop {
         listener: Box<dyn NodeListener>,
         shared: Arc<Shared>,
         received: ReceivedFiles,
+        hub: Option<HubSide>,
     ) -> Self {
         let AppEngines {
             messenger,
@@ -268,6 +277,7 @@ impl NodeLoop {
             tickets: BTreeMap::new(),
             up: BTreeSet::new(),
             metrics_due: Instant::now(),
+            hub,
             #[cfg(feature = "test-util")]
             session_events: SessionEventCounts::default(),
         }
@@ -301,6 +311,7 @@ impl NodeLoop {
                 return;
             }
             let drained = self.turn();
+            self.drive_hub();
             self.publish_metrics();
             let busy = !drained || handled >= COMMAND_QUEUE_CAP;
             let wait = if busy { Duration::ZERO } else { NODE_TICK };
@@ -604,9 +615,44 @@ impl NodeLoop {
             return;
         }
         self.tickets.retain(|_, waiting| *waiting != peer);
+        // [S2-A3-2] KK-H58: hub kipinde T3 (INIT tekrarı) durur.
+        if let Some(hub) = &self.hub {
+            hub.peer_ready(peer);
+        }
         if self.up.insert(peer) {
             self.emit_for(peer, |peer_id| NodeEvent::Connected { peer_id });
         }
+    }
+
+    /// [S2-A3-2] KK-H57 (a): hub bildirimleri. `AttemptEnded` (`{UNKNOWN_HANDLE, 0}`, deneme yaşı,
+    /// çelişkili handle, yeniden bind) → bu düğümün bekleyen niyeti varsa niyet olay ÜRETMEDEN
+    /// bırakılır ve yeniden `connect` edilir: yeni kriptografik INIT, yeni `request_id`.
+    /// `HandleLost` (ROUTE_MISS) kurulu oturumu kapatmaz: KK-H57 (c) beyanlı sınır ("gösterimde hub
+    /// yeniden başlatılmaz"). `Bound` / `Disconnected` yalnız `HubLink` sayaçlarındadır.
+    fn drive_hub(&mut self) {
+        let Some(hub) = &self.hub else {
+            return;
+        };
+        for notice in hub.take_notices(HUB_NOTICES_PER_TURN) {
+            if let HubNotice::AttemptEnded { peer } = notice {
+                self.restart_attempt(peer);
+            }
+        }
+    }
+
+    fn restart_attempt(&mut self, peer: PeerRef) {
+        if self.messenger.session_of(peer).is_some() {
+            return;
+        }
+        let before = self.tickets.len();
+        self.tickets.retain(|_, waiting| *waiting != peer);
+        if self.tickets.len() == before {
+            return;
+        }
+        self.messenger.cancel_connect(peer);
+        // Hata yalnız Messenger'ın kalıcı outbox'ını yükleyemediği durumdur; niyet bırakılmış
+        // kalır ve `drain_background` yeniden dener.
+        let _ = self.connect(peer);
     }
 
     /// `Closed(h, reason)` işlendi: güncel oturumu kalmayan bağlı eşler `Closed` alır. Yerini yeni
@@ -826,6 +872,7 @@ impl NodeLoop {
             messenger: self.messenger.stats(),
             events: self.session_events,
             envelopes: crate::probe::EnvelopeCounts::default(),
+            hub: self.hub.as_ref().map(HubSide::counters),
         }
     }
 

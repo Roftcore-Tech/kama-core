@@ -174,6 +174,9 @@ pub const KNOWN_HANDLE_CAP: usize = 1024;
 struct HandleSet {
     set: HashSet<u32>,
     order: VecDeque<u32>,
+    /// Eş → taşıyıcının o eşin son denemesine/yanıtına bağladığı handle (KK-H58 `peer_ready`).
+    /// Boyu eş sayısıyla sınırlı değildir; `KNOWN_HANDLE_CAP` ile sınırlanır.
+    by_peer: HashMap<PeerRef, HubHandle>,
 }
 
 /// Taşıyıcının atadığı ya da teslim ettiği handle'lar (KK-H66). Paylaşılan, sınırlı.
@@ -218,6 +221,25 @@ impl KnownHandles {
     pub fn contains(&self, h: u32) -> bool {
         lock(&self.0).set.contains(&h)
     }
+
+    /// `peer`'in güncel handle'ını kaydeder (ve kümeye ekler).
+    pub fn bind_peer(&self, peer: PeerRef, h: HubHandle) {
+        if h.raw() == 0 {
+            return;
+        }
+        self.insert(h);
+        let mut s = lock(&self.0);
+        if s.by_peer.len() >= KNOWN_HANDLE_CAP && !s.by_peer.contains_key(&peer) {
+            return;
+        }
+        s.by_peer.insert(peer, h);
+    }
+
+    /// `peer`'e en son bağlanan handle.
+    #[must_use]
+    pub fn handle_of(&self, peer: PeerRef) -> Option<HubHandle> {
+        lock(&self.0).by_peer.get(&peer).copied()
+    }
 }
 
 /// Transport'a verilen `EnvelopeLink`'in gözlemcisi: davranışı DEĞİŞTİRMEZ (aynı çağrılar, aynı
@@ -225,13 +247,23 @@ impl KnownHandles {
 pub struct RecordingLink<L> {
     inner: L,
     known: KnownHandles,
+    /// `send_init`'in denemesi → eş (`HandleAssigned`'i eşe bağlamak için); ≤ `ATTEMPT_CAP`, en
+    /// eski düşer.
+    attempts: VecDeque<(LinkAttempt, PeerRef)>,
 }
+
+/// [`RecordingLink`]'in hatırladığı deneme tavanı (SR-AUDIT-001).
+const ATTEMPT_CAP: usize = 64;
 
 impl<L: EnvelopeLink> RecordingLink<L> {
     /// Sarar.
     #[must_use]
     pub fn new(inner: L, known: KnownHandles) -> Self {
-        Self { inner, known }
+        Self {
+            inner,
+            known,
+            attempts: VecDeque::new(),
+        }
     }
 }
 
@@ -242,7 +274,13 @@ impl<L: EnvelopeLink> EnvelopeLink for RecordingLink<L> {
         envelope_type: u8,
         bytes: Vec<u8>,
     ) -> Result<LinkAttempt, LinkError> {
-        self.inner.send_init(peer, envelope_type, bytes)
+        let attempt = self.inner.send_init(peer, envelope_type, bytes)?;
+        self.attempts.retain(|(_, p)| *p != peer);
+        if self.attempts.len() >= ATTEMPT_CAP {
+            self.attempts.pop_front();
+        }
+        self.attempts.push_back((attempt, peer));
+        Ok(attempt)
     }
 
     fn send_response(
@@ -252,7 +290,7 @@ impl<L: EnvelopeLink> EnvelopeLink for RecordingLink<L> {
         envelope_type: u8,
         bytes: Vec<u8>,
     ) -> Result<(), LinkError> {
-        self.known.insert(hub_handle);
+        self.known.bind_peer(peer, hub_handle);
         self.inner
             .send_response(peer, hub_handle, envelope_type, bytes)
     }
@@ -260,9 +298,16 @@ impl<L: EnvelopeLink> EnvelopeLink for RecordingLink<L> {
     fn poll(&mut self) -> Option<LinkEvent> {
         let ev = self.inner.poll()?;
         match &ev {
-            LinkEvent::HandleAssigned { hub_handle, .. }
-            | LinkEvent::IncomingInit { hub_handle, .. }
-            | LinkEvent::Response { hub_handle, .. } => self.known.insert(*hub_handle),
+            LinkEvent::HandleAssigned {
+                attempt,
+                hub_handle,
+            } => match self.attempts.iter().find(|(a, _)| a == attempt) {
+                Some((_, peer)) => self.known.bind_peer(*peer, *hub_handle),
+                None => self.known.insert(*hub_handle),
+            },
+            LinkEvent::IncomingInit { hub_handle, .. } | LinkEvent::Response { hub_handle, .. } => {
+                self.known.insert(*hub_handle);
+            }
         }
         Some(ev)
     }
@@ -1249,6 +1294,12 @@ mod tests {
         for h in [11, 12, 13, 14] {
             assert!(known.contains(h), "{h}");
         }
+        // KK-H58: deneme → eş eşlemesi (HandleAssigned) ve send_response eşi bağlar.
+        assert_eq!(known.handle_of(peer), Some(HubHandle::from_raw(11)));
+        let other = PeerRef::from_dest_hash([2; 32]);
+        assert_eq!(known.handle_of(other), None);
+        known.bind_peer(other, HubHandle::from_raw(21));
+        assert_eq!(known.handle_of(other), Some(HubHandle::from_raw(21)));
         assert!(!known.contains(15));
         known.insert(HubHandle::from_raw(0));
         assert!(!known.contains(0), "0 hiçbir zaman handle değildir");
