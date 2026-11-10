@@ -71,16 +71,22 @@ kıyaslar; boş değilse `arm = kama-custom`.
 ## `transport-v1.x-goster` — yalnız gösterim düğümü (ürün varsayılanı `kama-v1-full` değişmez)
 
 GÖSTERİM-α (18 Kasım 2026) düğümünün profili. Etiket: *gösterim; kapılı PoC ölçümü Aralık; ARQ yolu,
-FEC Aralık'ta.* Bu bölüm ürün profilini değiştirmez: yukarıdaki `kama-v1-full` tablosu aynen geçerlidir.
+FEC Aralık'ta; sığ tamponlu ağ gösterim kapsamı dışı* (son kısım: sahip kararı 2026-11-10 madde 5).
+Bu bölüm ürün profilini değiştirmez: yukarıdaki `kama-v1-full` tablosu aynen geçerlidir.
 Bu profille koşan her koşu `kama-custom` + sapma listesi taşır (INV-009). Düğüme uygulanması Ö'nündür
 (L yolu: test-util kancası; A yolu: kama-node `goster` özelliği); düzenek sabitleri bu bölümle aynı
 olur, fark çıkarsa bu bölüm kazanır ve kod düzeltilir (ISEMRI-YOL3-M2 KK-M2-15).
 
 | alan | gösterim değeri | kaynak |
 |---|---|---|
-| `e1_flags` | G2 seçimi (kol adı + bayraklar) — G2 Çar 11 Kas akşamı yazılır; seçim kuralı `docs/design/E1-TESHIS-G2.md` §2 S | ISEMRI-YOL3-M2 (bu satır M2'nin) |
-| `retx_first` | `e1_flags` içindedir; seçime göre | ISEMRI-YOL3-M2 |
+| `e1_flags` | ~~G2 seçimi (kol adı + bayraklar) — G2 Çar 11 Kas akşamı yazılır; seçim kuralı `docs/design/E1-TESHIS-G2.md` §2 S~~ → kol `K1A6`: (c) `e1_startup_cwnd` + (d) `e1_applimited_plateau` + DrainRtprop `e1_drainrt_gate` + (e-dar) `e1_probe_keep` + A-3 `a3_burst_floor` + A-4 `a4_probe_srtt` + A-6 `a6_iw_floor` ("max" okuması) | sahip kararı 2026-11-10 madde 3 ("Gösterim seti = K1 + A paketi (A-1…A-6) + şeritler"); kod `crates/kama-node/src/goster.rs` `GOSTER_E1` |
+| `retx_first` | `e1_flags` içindedir; ~~seçime göre~~ → kapalı | sahip v4 EK-A §2; madde 3 |
 | `fec` | `None` (PARAM_SET gönderilmez) | sahip v4 Y1 |
-| `e2a_flags` | bkz. ISEMRI-YOL3-M1 PR'ı | M1 |
+| `e2a_flags` | ~~bkz. ISEMRI-YOL3-M1 PR'ı~~ → m1 `tt_rfc` (g = 1 ms) + m8 `rtt_rule_v11` + m6 `iw_idle_hold` + `pto_probes = 2` + A-1 `gap_ack` + A-2 `return_prior_gated` + A-5 `pto_rfc` | M1; sahip kararı 2026-11-10 madde 3; kod `goster.rs` `GOSTER_E2A` |
 | W (teyitsiz dosya birimi) / T (oynatma tamponu) | W = 5; T ∈ [1,5; 2,5] s — mini-Ö sonrası teyit; bkz. T1/Ö | sahip v4 TD-2, III.1 |
 | kimlik | `transport-v1.x-goster` (EVOLUTION §22 gösterim beyanı) | sahip v4 Y6 |
+
+YAMA KAYDI — 2026-11-10: `e1_flags`, `retx_first`, `e2a_flags` satırları ve etiket sahip kararı
+2026-11-10 madde 3 ve 5'e göre dolduruldu (eski metin üstü çizili). Ölçüm durumu: gece ölçümü
+2026-11-10 `K1A6s` kolu (N = 10, betimsel); A paketi deney bayraklarıdır, varsayılan kapalı, yalnız bu
+profilde açılır.
