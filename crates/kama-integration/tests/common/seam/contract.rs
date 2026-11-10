@@ -112,7 +112,7 @@ pub mod rows {
     use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
     use kama_contracts::s1::{
         AbandonReason, CompressionPolicy, ConnectPhase, ConnectResult, ConnectTicket, Delivered,
-        DeliveryPolicy, KamaTransport, PreparedUnit, SessionEvent, TransportError,
+        DeliveryPolicy, KamaTransport, PreparedUnit, SessionEvent, TrafficClass, TransportError,
     };
 
     /// `Ready`'yi beklerken atılacak azami adım. Sınırsız döngü YOK: gerçek hedef ilerlemezse
@@ -224,6 +224,7 @@ pub mod rows {
                 compression_policy: CompressionPolicy::Never,
             },
             DeliveryPolicy::Reliable,
+            TrafficClass::Be,
         )
         .expect("send kuyruğa alınmalı (K8: Ok = kuyruğa alındı)");
 
@@ -508,7 +509,7 @@ pub mod rows {
         // `Closed` Application'a ulaştı: eski tutamaç artık BİLİNMİYOR. Satırın yazılı hâli budur
         // ("`Closed` sonrası `send(h)` → `UnknownSession`"); `close()` çağrısı İSTEMEZ.
         assert_eq!(
-            t.send(h, unit(b"gec"), DeliveryPolicy::Reliable),
+            t.send(h, unit(b"gec"), DeliveryPolicy::Reliable, TrafficClass::Be),
             Err(TransportError::UnknownSession)
         );
         // Hayri'nin özgün testindeki biçim: Application `Closed`'ı işleyip eski tutamacı kapatır
@@ -522,10 +523,18 @@ pub mod rows {
         );
         assert_no_event::<T>(&mut t, "Closed'ı okunmuş tutamaca close(h)");
         assert_eq!(
-            t.send(h, unit(b"gec"), DeliveryPolicy::Reliable),
+            t.send(h, unit(b"gec"), DeliveryPolicy::Reliable, TrafficClass::Be),
             Err(TransportError::UnknownSession)
         );
-        assert_eq!(t.send(h2, unit(b"yeni"), DeliveryPolicy::Reliable), Ok(()));
+        assert_eq!(
+            t.send(
+                h2,
+                unit(b"yeni"),
+                DeliveryPolicy::Reliable,
+                TrafficClass::Be
+            ),
+            Ok(())
+        );
 
         // F0.2(iii) + F07.1: aktif tutamacı kapatmak `Ok(())` döner ve tam BİR `Closed(h',
         // UserClosed)` üretir; sonra tutamaç bilinmez; ikinci `close` `Err(UnknownSession)` döner
@@ -544,7 +553,7 @@ pub mod rows {
         );
         assert_no_event::<T>(&mut t, "Closed kuyruktayken ikinci close(h')");
         assert_eq!(
-            t.send(h2, unit(b"gec"), DeliveryPolicy::Reliable),
+            t.send(h2, unit(b"gec"), DeliveryPolicy::Reliable, TrafficClass::Be),
             Err(TransportError::UnknownSession)
         );
         // (b) Closed okundu
@@ -587,7 +596,15 @@ pub mod rows {
         let h = establish::<T>(&mut t, peer, None);
 
         // Cutover öncesi ve yenileme SÜRERKEN h kabul eder.
-        assert_eq!(t.send(h, unit(b"once-1"), DeliveryPolicy::Reliable), Ok(()));
+        assert_eq!(
+            t.send(
+                h,
+                unit(b"once-1"),
+                DeliveryPolicy::Reliable,
+                TrafficClass::Be
+            ),
+            Ok(())
+        );
         T::require_renew(&mut t, h);
         assert_eq!(
             next_event::<T>(&mut t),
@@ -598,7 +615,15 @@ pub mod rows {
         // değil, Transport'un içinde bekleyen bir birimle de ölçülür.
         T::set_recovery(&mut t, true);
         T::drop_next_units(&mut t, 1);
-        assert_eq!(t.send(h, unit(b"once-2"), DeliveryPolicy::Reliable), Ok(()));
+        assert_eq!(
+            t.send(
+                h,
+                unit(b"once-2"),
+                DeliveryPolicy::Reliable,
+                TrafficClass::Be
+            ),
+            Ok(())
+        );
 
         // Cutover: Ready(h') geldi, Closed(h) henüz TESLİM EDİLMEDİ → h supersede edilmiş.
         T::complete_renew(&mut t, h);
@@ -607,7 +632,12 @@ pub mod rows {
             other => panic!("Ready(h') bekleniyordu, gelen {other:?}"),
         };
         assert_eq!(
-            t.send(h, unit(b"sonra"), DeliveryPolicy::Reliable),
+            t.send(
+                h,
+                unit(b"sonra"),
+                DeliveryPolicy::Reliable,
+                TrafficClass::Be
+            ),
             Err(TransportError::SessionSuperseded)
         );
         // F07.1: aynı pencerede `close(h)` → `Err(SessionSuperseded)` ve SAF no-op: durum
@@ -619,7 +649,12 @@ pub mod rows {
             "vaka 1: Ready(h') okundu, Closed(h) okunmadı — close(h)"
         );
         assert_eq!(
-            t.send(h, unit(b"sonra-2"), DeliveryPolicy::Reliable),
+            t.send(
+                h,
+                unit(b"sonra-2"),
+                DeliveryPolicy::Reliable,
+                TrafficClass::Be
+            ),
             Err(TransportError::SessionSuperseded),
             "vaka 1: close(h) durumu değiştirdi"
         );
@@ -632,7 +667,10 @@ pub mod rows {
 
         // h' üzerinden gönderim çalışır ve sıra korunur.
         for body in [&b"yeni-1"[..], &b"yeni-2"[..], &b"yeni-3"[..]] {
-            assert_eq!(t.send(h2, unit(body), DeliveryPolicy::Reliable), Ok(()));
+            assert_eq!(
+                t.send(h2, unit(body), DeliveryPolicy::Reliable, TrafficClass::Be),
+                Ok(())
+            );
         }
         for want in [&b"yeni-1"[..], &b"yeni-2"[..], &b"yeni-3"[..]] {
             let d = next_delivery::<T>(&mut t).expect("h' üzerinden teslim gelmedi");
@@ -657,7 +695,10 @@ pub mod rows {
         let mut t = fresh::<T>();
         let peer = crate::harness::test_peer(0xED);
         let h = establish::<T>(&mut t, peer, None);
-        assert_eq!(t.send(h, unit(b"pre"), DeliveryPolicy::Reliable), Ok(()));
+        assert_eq!(
+            t.send(h, unit(b"pre"), DeliveryPolicy::Reliable, TrafficClass::Be),
+            Ok(())
+        );
 
         // Onay: ilk olay doğrudan Ready(h') — öncesinde RenewRequired YOK.
         T::inject_peer_supersession(&mut t, h);
@@ -667,7 +708,12 @@ pub mod rows {
         };
         assert_ne!(h2, h, "peer supersession aynı tutamacı verdi");
         assert_eq!(
-            t.send(h, unit(b"sonra"), DeliveryPolicy::Reliable),
+            t.send(
+                h,
+                unit(b"sonra"),
+                DeliveryPolicy::Reliable,
+                TrafficClass::Be
+            ),
             Err(TransportError::SessionSuperseded)
         );
         // F07.1: aynı pencerede `close(h)` → `Err(SessionSuperseded)` ve SAF no-op: durum
@@ -679,7 +725,12 @@ pub mod rows {
             "vaka 2: Ready(h') okundu, Closed(h) okunmadı — close(h)"
         );
         assert_eq!(
-            t.send(h, unit(b"sonra-2"), DeliveryPolicy::Reliable),
+            t.send(
+                h,
+                unit(b"sonra-2"),
+                DeliveryPolicy::Reliable,
+                TrafficClass::Be
+            ),
             Err(TransportError::SessionSuperseded),
             "vaka 2: close(h) durumu değiştirdi"
         );
@@ -687,7 +738,15 @@ pub mod rows {
         // h'nin outstanding'i drain olur; h' çalışır; reddedilen birim sızmaz.
         let d = next_delivery::<T>(&mut t).expect("outstanding birim drain olmadı (vaka 2)");
         assert_eq!((d.session, d.unit.as_slice()), (h, &b"pre"[..]));
-        assert_eq!(t.send(h2, unit(b"yeni"), DeliveryPolicy::Reliable), Ok(()));
+        assert_eq!(
+            t.send(
+                h2,
+                unit(b"yeni"),
+                DeliveryPolicy::Reliable,
+                TrafficClass::Be
+            ),
+            Ok(())
+        );
         let d = next_delivery::<T>(&mut t).expect("h' üzerinden teslim gelmedi (vaka 2)");
         assert_eq!((d.session, d.unit.as_slice()), (h2, &b"yeni"[..]));
         assert!(
@@ -701,11 +760,16 @@ pub mod rows {
             Some(SessionEvent::Closed(h, CloseReason::Superseded))
         );
         assert_eq!(
-            t.send(h, unit(b"gec"), DeliveryPolicy::Reliable),
+            t.send(h, unit(b"gec"), DeliveryPolicy::Reliable, TrafficClass::Be),
             Err(TransportError::UnknownSession)
         );
         assert_eq!(
-            t.send(h2, unit(b"yeni-2"), DeliveryPolicy::Reliable),
+            t.send(
+                h2,
+                unit(b"yeni-2"),
+                DeliveryPolicy::Reliable,
+                TrafficClass::Be
+            ),
             Ok(())
         );
         // Closed sonrası kuyruk BOŞ: geç RenewRequired(h), ikinci Closed ya da ConnectProgress yok.
@@ -806,7 +870,12 @@ pub mod rows {
         let max = caps.max_plaintext_unit_bytes as usize;
 
         assert_eq!(
-            t.send(h, unit(&vec![0xA5; max]), DeliveryPolicy::Reliable),
+            t.send(
+                h,
+                unit(&vec![0xA5; max]),
+                DeliveryPolicy::Reliable,
+                TrafficClass::Be
+            ),
             Ok(()),
             "tam sınırda kabul edilmeli"
         );
@@ -814,7 +883,12 @@ pub mod rows {
         assert_eq!(d.unit.len(), max);
 
         assert_eq!(
-            t.send(h, unit(&vec![0xA5; max + 1]), DeliveryPolicy::Reliable),
+            t.send(
+                h,
+                unit(&vec![0xA5; max + 1]),
+                DeliveryPolicy::Reliable,
+                TrafficClass::Be
+            ),
             Err(TransportError::UnitTooLarge)
         );
         assert!(t.recv().is_none(), "reddedilen birim teslim edildi");
@@ -883,7 +957,10 @@ pub mod rows {
                 bytes: bytes.clone(),
                 compression_policy: policy,
             };
-            assert_eq!(t.send(h, u, DeliveryPolicy::Reliable), Ok(()));
+            assert_eq!(
+                t.send(h, u, DeliveryPolicy::Reliable, TrafficClass::Be),
+                Ok(())
+            );
             delivered.push(next_delivery::<T>(&mut t).expect("birim teslim edilmedi"));
         }
         assert_eq!(delivered[0].unit, bytes, "Never: byte'lar değişti");
@@ -913,11 +990,21 @@ pub mod rows {
         T::set_recovery(&mut t, true);
         T::drop_next_units(&mut t, 1);
         assert_eq!(
-            t.send(h, unit(b"kaybolan"), DeliveryPolicy::Reliable),
+            t.send(
+                h,
+                unit(b"kaybolan"),
+                DeliveryPolicy::Reliable,
+                TrafficClass::Be
+            ),
             Ok(())
         );
         assert_eq!(
-            t.send(h, unit(b"sonraki"), DeliveryPolicy::Reliable),
+            t.send(
+                h,
+                unit(b"sonraki"),
+                DeliveryPolicy::Reliable,
+                TrafficClass::Be
+            ),
             Ok(())
         );
         for want in [&b"kaybolan"[..], &b"sonraki"[..]] {
@@ -941,11 +1028,21 @@ pub mod rows {
         T::set_recovery(&mut t, false);
         T::drop_next_units(&mut t, 1);
         assert_eq!(
-            t.send(h, unit(b"kaybolan"), DeliveryPolicy::Reliable),
+            t.send(
+                h,
+                unit(b"kaybolan"),
+                DeliveryPolicy::Reliable,
+                TrafficClass::Be
+            ),
             Ok(())
         );
         assert_eq!(
-            t.send(h_control, unit(b"kontrol"), DeliveryPolicy::Reliable),
+            t.send(
+                h_control,
+                unit(b"kontrol"),
+                DeliveryPolicy::Reliable,
+                TrafficClass::Be
+            ),
             Ok(())
         );
         let d = next_delivery::<T>(&mut t)

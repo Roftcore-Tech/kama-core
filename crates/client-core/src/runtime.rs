@@ -190,6 +190,12 @@ pub struct RuntimeConfig {
     /// (salt gözlem: motor kararları bayraktan bağımsızdır). Açık kolun maliyeti ölçülmedi. Yalnız
     /// client ucu okur; server ucu bu alanı yok sayar.
     pub live_diag: bool,
+    /// [E1 gösterim bayrakları, CC §4.1 / CC-K5] Motorun (c), (d), DrainRtprop, (e-dar) ve
+    /// `retx_first` kuralları. **Ürün varsayılanı KAPALI** (beşi `false` = bugünkü davranış
+    /// bit-aynı). Çalışma-zamanı bayrağıdır, Cargo feature'ı DEĞİL: teşhis kolları ve gösterim
+    /// düğümü (`transport-v1.x-goster`) aynı ikilide açar. Alanlar `pub`: çağıran tipi adlandırmadan
+    /// `cfg.e1_flags.retx_first = true` yazabilir. Yalnız client ucu (gönderen) okur.
+    pub e1_flags: adaptive_transport::rate::E1Flags,
 }
 
 /// [HANDOFF ENSTRÜMANI] Zaman-serisi örnek tavanı (50 ms periyotta ≈ 205 s).
@@ -300,6 +306,8 @@ impl KamaV1Profile {
             // [K4G-05 / DUR-19] Canlı teşhis aynası ürün yolunda KAPALI: yazıcı çalışmaz, ayna
             // kurulmaz. INT-02 düzeneği açar (`kama-node` `test-util` kurucuları).
             live_diag: false,
+            // [E1 gösterim] Beş bayrak ürün yolunda KAPALI; yalnız gösterim düğümü/teşhis kolları açar.
+            e1_flags: adaptive_transport::rate::E1Flags::default(),
         }
     }
 }
@@ -1717,6 +1725,13 @@ impl ClientHandle {
         self.acked_rx.recv().await
     }
 
+    /// [YOL3-T1 KK-T1-07] İlk-ACK olay akışının BLOKLAMAYAN okuması: bekleyen bir birim kimliği
+    /// varsa onu döndürür. Kanal `max(offer_queue, max_inflight_units)` olaylıktır ve dolunca olay
+    /// düşer; S1 şeritleri onu her `drive`'da boşaltır.
+    pub fn try_acked(&mut self) -> Option<u64> {
+        self.acked_rx.try_recv().ok()
+    }
+
     /// [L-T1] Kabul edilmiş ama app-düzeyi teyidi (ACK ya da FEC-RECOVERED) henüz gelmemiş mesaj
     /// sayısı. S1 adaptörü atomik cutover'dan önce eski oturumun boşaldığını buradan okur.
     #[must_use]
@@ -1869,6 +1884,8 @@ async fn client_task(
         .set_initial_window(InitialWindowConfig {
             bytes: cfg.initial_window_bytes,
         });
+    // [E1 gösterim, CC §4.1] Beş çalışma-zamanı bayrağı (varsayılan kapalı = sevk davranışı).
+    session.sender_mut().set_e1_flags(cfg.e1_flags);
     let mut stats = ClientStats::default();
     let mut ts_last_ns: u64 = 0;
     // [S1] FEC-runtime kuruluşu (cfg.fec varsa): Controller-mode — yapı-gate'in (Q18) kararı

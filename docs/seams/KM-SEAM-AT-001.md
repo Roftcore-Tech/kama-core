@@ -6,6 +6,8 @@
 **Türetildiği kaynaklar (icat yok):** transport-tdd §0 INV-NEIGHBOR-1 / INV-PLAINTEXT-NOT-SEMANTICS · KM-SEAM-TC-001 (S3) §1.2 SessionControl/SessionEvent, K7, K8, K9 · app-rpc §2 (üç düzlem), AMENDMENT-7 (envelope_type) · application-message-protocol.md §1–§2, §5 · engine-spec §0.2 · ccr §35.6 BatchPayload (KARAR-1) · identity (multi-device limit=1)
 **Yazım:** her karar **K** · **G** (kaynak atfıyla) · **R** (reddedilen alternatif) · **S** (sınır).
 
+> **YAMA KAYDI — 2026-11-09 [S1 v2 — `send(.., class)`, EK-1 D-08/D-09; ISEMRI-YOL3-T1 KK-T1-01/02]:** §1 `send` satırına `class: TrafficClass` parametresi (eski satır fence içinde üstü çizili yorum olarak korundu) ve `TrafficClass` tip bildirimi (`{ Be, Ctrl, Sig, Bk, Vo, VoRel }`, D-08 numaraları 0–5; telde karşılığı YOK — tel ve altın vektörler DEĞİŞMEDİ). Sınıf Application'ın POLİTİKA etiketidir (K3: tip bilgisi değil; D-04 notu): Transport onu yalnız sunum sırası/penceresi için okur, birim baytını okumaz. `connect(early_unit)` imzası DEĞİŞMEDİ; erken birim BE sayılır. §4 sıralama maddesine tarihli ek: sıra aynı oturum VE aynı sınıf içindir; sınıflar arası `send` sırası korunmayabilir. §5: API v1 → v2 (imza değişimi = v2). `TransportError` kümesi ve diğer metotlar DEĞİŞMEDİ; aynı PR'da `crates/kama-contracts/src/s1.rs` aynı imzayı ve tipi taşır (drift kapısı). Merge: D-32(iii) — sahip "MERGE <PR#>". Üstü çizili metin silinmedi.
+
 > **YAMA KAYDI — 2026-10-08 [S1 — K6 `early_unit` taşıması, Abkarada kararı "S1 early_unit: iş emri geçerli … + S1 K6 YAMA"; L-T1]:** K6'ya bu sprintin taşıma kuralı: Transport `early_unit`'i S3 `Initiate`'e VERMEZ (`early_unit: None`), oturum `Ready` olunca **ilk normal `send()`** olarak yollar; `ConnectAbandoned`'da birim yollanmamıştır. `max_early_unit_bytes` bu sprint INIT zarfından değil birim tavanından türer (birim normal veri birimi olarak gider). INIT'e gömülü 0-RTT taşıma sonraki sprint. Trait imzaları ve `s1.rs` DEĞİŞMEDİ. Üstü çizili metin silinmedi.
 
 > **YAMA KAYDI — 2026-10-06c [L-F07 artıklar-2 F07.1/F07.2/F07.5 — Abkarada kararı]:** F07.1: `close` artık `Result<(), TransportError>` döner — §1 trait satırı (eski satır fence içinde üstü çizili yorum olarak korundu), §3 F0.2(i) paragrafına `Err(SessionSuperseded)` eklemesi, §4 F0.2(iii) maddesinde "hata dönmez" / "hata vermez" üstü çizildi: `Ok(())` ⟺ tam BİR `Closed(h, UserClosed)`; bilinmeyen ya da zaten kapatılmış tutamaç → `UnknownSession`, supersede penceresindeki tutamaç → `SessionSuperseded`, ikisinde de olay yok; §6 H-EVENTS ve H-CUTOVER hücrelerine tarihli ekler. F07.2: §1 `PeerRef` yorumunda "(bugün CI kapısı yok)" üstü çizildi — kama-app kaynağında `as_bytes` çağrısı layer_check C6 ile yasak. F07.5: §8 ⬛ İMZA satırı — "imza bekliyor (Hayri)" üstü çizildi; imza: Abkarada, 2026-10-06 (Hayri'nin kalemleri bu sprint Abkarada'ya devredildi; iş emri 2026-10-06 §0). `TransportError` kümesi ve diğer trait metotları DEĞİŞMEDİ; aynı PR'da `crates/kama-contracts/src/s1.rs` aynı imzayı taşır (drift kapısı). **G-S1: bu değişiklik main'e girince FROZEN (iş emri 2026-10-06 §8 ön-yetki); kama-contracts s1 ve handles.rs kilitlenir.** Üstü çizili metin silinmedi.
@@ -46,7 +48,8 @@ Application'ın tek alt komşusu Transport'tur (INV-NEIGHBOR-1). Bu belge kama-c
 pub trait KamaTransport {
     fn capabilities(&self) -> TransportCapabilities;
     fn connect(&mut self, peer: PeerRef, early_unit: Option<PreparedUnit>) -> Result<ConnectResult, TransportError>;
-    fn send(&mut self, session: SessionHandle, unit: PreparedUnit, policy: DeliveryPolicy) -> Result<(), TransportError>;
+    // ~~fn send(&mut self, session: SessionHandle, unit: PreparedUnit, policy: DeliveryPolicy) -> Result<(), TransportError>;~~ [2026-11-09 S1 v2, D-09]
+    fn send(&mut self, session: SessionHandle, unit: PreparedUnit, policy: DeliveryPolicy, class: TrafficClass) -> Result<(), TransportError>;
     fn recv(&mut self) -> Option<Delivered>;                  // poll; sıralama garantisi §4
     fn poll_event(&mut self) -> Option<SessionEvent>;         // Ready | RenewRequired | Closed | ~~ConnectFailed~~ ConnectAbandoned | ConnectProgress  [DR-CONNECT-1]
     // ~~fn close(&mut self, session: SessionHandle);~~ [2026-10-06 F07.1]
@@ -58,6 +61,7 @@ pub struct TransportCapabilities { pub max_plaintext_unit_bytes: u32, pub prefer
 pub struct PreparedUnit          { pub bytes: Bytes /* = AppMessageRecord, AMP §2 */, pub compression_policy: CompressionPolicy }
 pub enum   CompressionPolicy     { Never, AppCompressed /* bit0 zaten set */ }   // §1 K4
 pub enum   DeliveryPolicy        { Reliable, DeadlineBounded { deadline: Instant }, BestEffort }
+pub enum   TrafficClass          { Be, Ctrl, Sig, Bk, Vo, VoRel }   // [2026-11-09 S1 v2, EK-1 D-08/D-09] politika etiketi (K3; tip bilgisi değil); D-08 numaraları 0–5 (`code()`); telde YOK; Transport birim baytını okumaz
 pub struct Delivered             { pub session: SessionHandle, pub unit: Bytes /* AppMessageRecord */ }
 pub enum   SessionEvent          { Ready(SessionHandle, PeerRef), RenewRequired(SessionHandle), Closed(SessionHandle, CloseReason),
                                    /* ~~ConnectFailed(ConnectTicket)~~ [DR-CONNECT-1 H9: KALDIRILDI — deadline yok] */
@@ -148,11 +152,11 @@ ConnectAbandoned(ticket, reason) — reason ∈ { Cancelled, PeerClosed, KeyHygi
 - **[2026-10-06 — F0.2(iii)] `close(h)`:** senkron döner ~~(hata dönmez)~~ `Result<(), TransportError>` döner **[2026-10-06 F07.1]** ve tam BİR `Closed(h, UserClosed)` olayı üretir (`Ok(())` ⟺ tam BİR `Closed(h, UserClosed)`; hata dönüşünde olay yok); her oturum sonu tam bir `Closed` olayı. Bilinmeyen tutamaçta, zaten kapanmış (`Closed`'ı kuyrukta ya da okunmuş) ya da supersede edilmiş tutamaçta `close(h)` olay ÜRETMEZ ~~ve hata vermez~~ ve hata döner **[2026-10-06 F07.1]**: bilinmeyen ya da zaten kapatılmış (`close` ile; `Closed(h, UserClosed)`'ı kuyrukta ya da okunmuş) tutamaç ve `Closed(h, Superseded)`'ı okunmuş tutamaç → `UnknownSession`; supersede edilmiş tutamaç (`Ready(h')` ile `Closed(h)`'ın okunması arası) → `SessionSuperseded` (aynı pencerede `send(h)` ile aynı); iki hata yolunda da durum ve olay kuyruğu değişmez.
 - **T-18c ile ilişki [H11]:** 7 gün sonunda pending ephemeral silinir; NİYET KORUNUR; Transport yeni ephemeral ile yeni INIT üretir. 7 gün bir deadline değil, anahtar hijyenidir (identity §21 T-18c, §16).
 - **SESSION_MAX_AGE [H8, KS-AGE-1 = 7 gün, KAPANDI 2026-10-04]:** oturum yaşı aşılınca bir sonraki gönderimde `RenewRequired(h)` → KARAR-2 cutover. Timeout değildir; oturum ölmez, yenilenir (identity §16).
-- `recv()` sıralaması: **aynı session içinde `Reliable` birimler gönderim sırasında** (transport reassembly + E2E replay penceresi); `BestEffort`/`DeadlineBounded` sırasız gelebilir. Application AMP `msg_id` ile kendi sırasını tutar.
+- `recv()` sıralaması: **aynı session içinde `Reliable` birimler gönderim sırasında** (transport reassembly + E2E replay penceresi); `BestEffort`/`DeadlineBounded` sırasız gelebilir. Application AMP `msg_id` ile kendi sırasını tutar. **[2026-11-09 S1 v2, D-09]** Sıra aynı session VE aynı `TrafficClass` içindir: Transport sınıflar arası `send` sırasını koruMAYABİLİR (sunum önceliği/pencere); Application sınıflar arası sıra varsaymaz, varsayarsa o kayıtlara aynı sınıfı verir.
 - Application timer'ı yalnız UI/ürün amaçlı; **retransmit timer'ı YOKTUR** (LAW-5).
 
 ## 5. Sürümleme
-`KamaTransport` API v1 · `PreparedUnit` içi AMP `msg_version` (bağımsız) · `TransportCapabilities` alan ekleme = minor, imza değişimi = v2. Plane 1/2 sürümleri (app-rpc `protocol_version`, ccr) app'e görünmez.
+`KamaTransport` API ~~v1~~ v2 **[2026-11-09 S1 v2: `send(.., class)`, D-09]** · `PreparedUnit` içi AMP `msg_version` (bağımsız) · `TransportCapabilities` alan ekleme = minor, imza değişimi = v2. Plane 1/2 sürümleri (app-rpc `protocol_version`, ccr) app'e görünmez.
 
 ## 6. Conformance harness (= anlaşmanın kendisi)
 | Test | Kanıtladığı |

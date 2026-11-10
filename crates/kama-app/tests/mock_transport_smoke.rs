@@ -12,7 +12,7 @@ use common::mock_transport::MockTransport;
 use kama_contracts::handles::{CloseReason, PeerRef};
 use kama_contracts::s1::{
     CompressionPolicy, ConnectPhase, ConnectResult, DeliveryPolicy, KamaTransport, PreparedUnit,
-    SessionEvent, TransportCapabilities, TransportError,
+    SessionEvent, TrafficClass, TransportCapabilities, TransportError,
 };
 
 /// Smoke testin yer tutucu kapasiteleri — normatif değil (gerçek değerler K5 zincirinden).
@@ -60,7 +60,12 @@ fn connect_completes_and_roundtrips() {
         compression_policy: CompressionPolicy::Never,
     };
     transport
-        .send(session, unit.clone(), DeliveryPolicy::Reliable)
+        .send(
+            session,
+            unit.clone(),
+            DeliveryPolicy::Reliable,
+            TrafficClass::Be,
+        )
         .unwrap();
 
     let delivered = transport.recv().expect("unit should be delivered");
@@ -76,7 +81,7 @@ fn connect_completes_and_roundtrips() {
     );
     assert_eq!(transport.poll_event(), None);
     assert_eq!(
-        transport.send(session, unit, DeliveryPolicy::Reliable),
+        transport.send(session, unit, DeliveryPolicy::Reliable, TrafficClass::Be),
         Err(TransportError::UnknownSession)
     );
     assert_eq!(

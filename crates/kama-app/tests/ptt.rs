@@ -57,7 +57,7 @@ use kama_app::store::{
 use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
 use kama_contracts::s1::{
     CompressionPolicy, ConnectPhase, ConnectResult, ConnectTicket, Delivered, DeliveryPolicy,
-    KamaTransport, PreparedUnit, SessionEvent, TransportCapabilities, TransportError,
+    KamaTransport, PreparedUnit, SessionEvent, TrafficClass, TransportCapabilities, TransportError,
 };
 
 /// Test parametresi (normatif değil): codec vektörlerinin üretildiği değerle aynı.
@@ -468,6 +468,7 @@ impl KamaTransport for End {
         session: SessionHandle,
         unit: PreparedUnit,
         policy: DeliveryPolicy,
+        _class: TrafficClass,
     ) -> Result<(), TransportError> {
         let mut guard = self.link.borrow_mut();
         let link = &mut *guard;
@@ -2411,5 +2412,683 @@ fn store_failure_opens_nothing_and_sends_no_open() {
             PttCodec::Opus,
             TEST_BUNDLE_MS
         )]
+    );
+}
+
+// ── [YOL3-T1 KK-T1-11] Oynatma tamponu (T-P1…T-P8; sahte saat) ───────────────────────────────
+
+/// Test T'si: varsayılan (2,0 s).
+const PLAYOUT_T: Duration = kama_app::playout::PLAYOUT_DELAY_DEFAULT;
+/// Saatin en küçük adımı.
+const NANO: Duration = Duration::from_nanos(1);
+
+fn ms(n: u64) -> Duration {
+    Duration::from_millis(n)
+}
+
+/// Bob'un tamponu açık, Alice bir akış açmış düzenek; Bob `PttStarted`'ı hemen görmüş.
+fn playout_duo() -> (Duo, StreamId) {
+    let (mut duo, _handle) = Duo::connected();
+    duo.bob
+        .ptt
+        .set_playout(Some(kama_app::playout::PlayoutConfig::default()));
+    let s = duo
+        .alice
+        .open(BOB, PttCodec::Lyra, TEST_BUNDLE_MS)
+        .expect("akış açıldı");
+    assert_eq!(
+        duo.bob.drain(),
+        vec![started(ALICE, s, PttCodec::Lyra, TEST_BUNDLE_MS)],
+        "PttStarted hemen"
+    );
+    (duo, s)
+}
+
+/// T-P1: T dolmadan demet verilmez; ilk demet a0 + T'de.
+#[test]
+fn t_p1_first_bundle_waits_for_t_after_its_arrival() {
+    let (mut duo, s) = playout_duo();
+    duo.clock.advance(ms(30)); // a0 = 30 ms
+    duo.alice.send_bundle(s, &frame(0)).expect("demet");
+    assert!(duo.bob.drain().is_empty(), "varışta verilmez");
+    duo.clock.advance(PLAYOUT_T - NANO);
+    assert!(duo.bob.drain().is_empty(), "T dolmadan verilmez");
+    duo.clock.advance(NANO);
+    assert_eq!(duo.bob.drain(), vec![audio(ALICE, s, &frame(0))], "a0 + T");
+}
+
+/// T-P2: sonraki demetler `bundle_ms` aralıkla.
+#[test]
+fn t_p2_following_bundles_are_paced_by_bundle_ms() {
+    let (mut duo, s) = playout_duo();
+    for n in 0..TEST_SPURT_BUNDLES {
+        duo.alice.send_bundle(s, &frame(n)).expect("demet");
+    }
+    assert!(duo.bob.drain().is_empty());
+    duo.clock.advance(PLAYOUT_T);
+    assert_eq!(duo.bob.drain(), vec![audio(ALICE, s, &frame(0))]);
+    for n in 1..TEST_SPURT_BUNDLES {
+        duo.clock.advance(ms(u64::from(TEST_BUNDLE_MS)) - NANO);
+        assert!(duo.bob.drain().is_empty(), "bundle_ms dolmadan verilmez");
+        duo.clock.advance(NANO);
+        assert_eq!(duo.bob.drain(), vec![audio(ALICE, s, &frame(n))]);
+    }
+}
+
+/// T-P3: geç demet atlanmaz, gelince verilir, takvim ona yeniden çapalanır; sayaç artar.
+#[test]
+fn t_p3_late_bundle_is_waited_for_not_skipped_and_schedule_reanchors() {
+    let (mut duo, s) = playout_duo();
+    duo.alice.send_bundle(s, &frame(0)).expect("demet");
+    assert!(duo.bob.drain().is_empty(), "varış (damga) t = 0");
+    duo.clock.advance(PLAYOUT_T);
+    assert_eq!(duo.bob.drain(), vec![audio(ALICE, s, &frame(0))]);
+    // Demet 1'in takvimi T + 20 ms; ağ durur, demet 30 ms geç (T + 50 ms) gelir.
+    duo.clock.advance(ms(50));
+    assert!(duo.bob.drain().is_empty(), "boşluk atlanmaz: bekler");
+    duo.alice.send_bundle(s, &frame(1)).expect("demet");
+    duo.alice.send_bundle(s, &frame(2)).expect("demet");
+    assert_eq!(
+        duo.bob.drain(),
+        vec![audio(ALICE, s, &frame(1))],
+        "geç demet gelince hemen"
+    );
+    let stats = duo.bob.ptt.playout_stats().expect("tampon açık");
+    assert_eq!((stats.playout_stalls, stats.playout_stall_ms), (1, 30));
+    // Yeniden çapa: demet 2, demet 1'in verilişinden 20 ms sonra.
+    duo.clock.advance(ms(u64::from(TEST_BUNDLE_MS)) - NANO);
+    assert!(duo.bob.drain().is_empty());
+    duo.clock.advance(NANO);
+    assert_eq!(duo.bob.drain(), vec![audio(ALICE, s, &frame(2))]);
+}
+
+/// T-P4: `PttEnded` son demetten sonra, tampon boşalınca (PTT_CLOSE erken gelse bile); en erken
+/// son demetin verilişi + `bundle_ms` (KK-T1-17).
+#[test]
+fn t_p4_ended_comes_after_the_last_bundle_even_if_close_arrives_early() {
+    let (mut duo, s) = playout_duo();
+    duo.alice.send_bundle(s, &frame(0)).expect("demet");
+    duo.alice.send_bundle(s, &frame(1)).expect("demet");
+    duo.alice.close(s).expect("kapanış");
+    assert!(
+        duo.bob.drain().is_empty(),
+        "PTT_CLOSE geldi ama tampon dolu"
+    );
+    duo.clock.advance(PLAYOUT_T);
+    assert_eq!(duo.bob.drain(), vec![audio(ALICE, s, &frame(0))]);
+    duo.clock.advance(ms(u64::from(TEST_BUNDLE_MS)));
+    assert_eq!(duo.bob.drain(), vec![audio(ALICE, s, &frame(1))]);
+    duo.clock.advance(ms(u64::from(TEST_BUNDLE_MS)) - NANO);
+    assert!(
+        duo.bob.drain().is_empty(),
+        "son demetin süresi dolmadan bitmez"
+    );
+    duo.clock.advance(NANO);
+    assert_eq!(duo.bob.drain(), vec![ended(ALICE, s)]);
+    assert!(duo.bob.ptt.incoming_streams(ALICE).is_empty());
+}
+
+/// T-P5: tampon kapalı (varsayılan) → demet varışta, sayaç yok (mevcut testler de aynı yolu koşar).
+#[test]
+fn t_p5_playout_off_is_todays_behaviour() {
+    let (mut duo, _handle) = Duo::connected();
+    assert_eq!(duo.bob.ptt.playout_stats(), None);
+    let s = duo
+        .alice
+        .open(BOB, PttCodec::Lyra, TEST_BUNDLE_MS)
+        .expect("akış");
+    duo.alice.send_bundle(s, &frame(0)).expect("demet");
+    duo.alice.close(s).expect("kapanış");
+    assert_eq!(
+        duo.bob.drain(),
+        vec![
+            started(ALICE, s, PttCodec::Lyra, TEST_BUNDLE_MS),
+            audio(ALICE, s, &frame(0)),
+            ended(ALICE, s),
+        ]
+    );
+}
+
+/// T-P6: T aralık dışı → tipli hata, panik yok.
+#[test]
+fn t_p6_out_of_range_delay_is_a_typed_error() {
+    use kama_app::playout::{
+        PlayoutConfig, PlayoutConfigError, PLAYOUT_DELAY_MAX, PLAYOUT_DELAY_MIN,
+    };
+    for delay in [
+        PLAYOUT_DELAY_MIN - NANO,
+        PLAYOUT_DELAY_MAX + NANO,
+        Duration::ZERO,
+    ] {
+        assert_eq!(
+            PlayoutConfig::new(delay),
+            Err(PlayoutConfigError::DelayOutOfRange { delay })
+        );
+    }
+    for delay in [PLAYOUT_DELAY_MIN, PLAYOUT_DELAY_MAX, ms(2000)] {
+        assert_eq!(PlayoutConfig::new(delay).map(|c| c.delay()), Ok(delay));
+    }
+    assert_eq!(PlayoutConfig::default().delay(), ms(2000));
+}
+
+/// T-P7 (KK-T1-19; EK-A §10, KK-T1-EKA-2): akış tavanı aşımı = yerel sonlandırma — tampondaki
+/// demetler ve taşıran demet atılır (sayılır), `PttEnded` HEMEN verilir, hiçbir demet erken
+/// verilmez; gönderenin sonraki demetleri elenir (sayılır), Ptt'nin `PttEnded`'i yutulur (yaşam
+/// döngüsü başına tek `PttEnded`). Sonraki akış normal tamponlanır.
+///
+/// v1'de (aynı dalın önceki commit'i) KIRMIZI: taşmada en eski demet planından erken veriliyordu.
+#[test]
+fn t_p7_overflow_terminates_the_stream_locally_and_releases_nothing_early() {
+    use kama_app::playout::{PlayoutStats, PLAYOUT_MAX_BUNDLES_PER_STREAM};
+    let (mut duo, s) = playout_duo();
+    let payload = |i: usize| (i as u16).to_be_bytes().to_vec();
+    let mut events = Vec::new();
+    for i in 0..PLAYOUT_MAX_BUNDLES_PER_STREAM {
+        duo.alice.send_bundle(s, &payload(i)).expect("demet");
+        events.extend(duo.bob.drain());
+        // Sahte bağın gönderim kaydı (LINK_LOG_CAP) bu senaryoda sınır değildir.
+        duo.link.borrow_mut().endpoint(Side::Alice).sent.clear();
+    }
+    assert!(
+        events.is_empty(),
+        "tavana dek: T dolmadı, hiçbir şey verilmez"
+    );
+    duo.alice
+        .send_bundle(s, &payload(PLAYOUT_MAX_BUNDLES_PER_STREAM))
+        .expect("demet");
+    assert_eq!(
+        duo.bob.drain(),
+        vec![ended(ALICE, s)],
+        "taşma: yerel sonlandırma, PttEnded hemen"
+    );
+    // Gönderen akışı açık tutar: sonraki demetler elenir; PTT_CLOSE'un PttEnded'i yutulur.
+    for i in 0..3 {
+        duo.alice.send_bundle(s, &payload(i)).expect("demet");
+        assert!(
+            duo.bob.drain().is_empty(),
+            "sonlandırılmış akışın demeti elenir"
+        );
+    }
+    duo.alice.close(s).expect("kapanış");
+    assert!(
+        duo.bob.drain().is_empty(),
+        "yaşam döngüsü başına tek PttEnded"
+    );
+    duo.clock.advance(PLAYOUT_T * 2);
+    assert!(
+        duo.bob.drain().is_empty(),
+        "atılan demet sonradan da verilmez"
+    );
+    assert_eq!(
+        duo.bob.ptt.playout_stats(),
+        Some(PlayoutStats {
+            playout_overflow: 1,
+            playout_discarded: 257,
+            playout_late_eliminated: 3,
+            playout_peak_bundles: 256,
+            ..PlayoutStats::default()
+        })
+    );
+    // Sonraki akış normal: PttStarted hemen, demet a0 + T'de.
+    let s2 = duo
+        .alice
+        .open(BOB, PttCodec::Lyra, TEST_BUNDLE_MS)
+        .expect("yeni akış");
+    assert_eq!(
+        duo.bob.drain(),
+        vec![started(ALICE, s2, PttCodec::Lyra, TEST_BUNDLE_MS)]
+    );
+    duo.alice.send_bundle(s2, &frame(9)).expect("demet");
+    assert!(duo.bob.drain().is_empty(), "varış (damga) şimdi");
+    duo.clock.advance(PLAYOUT_T - NANO);
+    assert!(duo.bob.drain().is_empty());
+    duo.clock.advance(NANO);
+    assert_eq!(duo.bob.drain(), vec![audio(ALICE, s2, &frame(9))]);
+}
+
+/// T-P8: iki eşzamanlı akış bağımsız tamponlanır.
+#[test]
+fn t_p8_two_concurrent_streams_are_buffered_independently() {
+    let (mut duo, s1) = playout_duo();
+    duo.alice.send_bundle(s1, &frame(1)).expect("demet");
+    duo.alice.close(s1).expect("kapanış");
+    assert!(
+        duo.bob.drain().is_empty(),
+        "s1: varış t = 0, PttEnded ertelendi"
+    );
+    duo.clock.advance(ms(10));
+    let s2 = duo
+        .alice
+        .open(BOB, PttCodec::Lyra, OTHER_BUNDLE_MS)
+        .expect("ikinci akış");
+    duo.alice.send_bundle(s2, &frame(2)).expect("demet");
+    assert_eq!(
+        duo.bob.drain(),
+        vec![started(ALICE, s2, PttCodec::Lyra, OTHER_BUNDLE_MS)]
+    );
+    duo.clock.advance(PLAYOUT_T - ms(10));
+    assert_eq!(
+        duo.bob.drain(),
+        vec![audio(ALICE, s1, &frame(1))],
+        "s1: 0 + T"
+    );
+    duo.clock.advance(ms(10));
+    assert_eq!(
+        duo.bob.drain(),
+        vec![audio(ALICE, s2, &frame(2))],
+        "s2: 10 ms + T"
+    );
+    duo.clock.advance(ms(u64::from(TEST_BUNDLE_MS)) - ms(10));
+    assert_eq!(
+        duo.bob.drain(),
+        vec![ended(ALICE, s1)],
+        "s1 kendi takvimiyle biter"
+    );
+    duo.alice.close(s2).expect("kapanış");
+    duo.clock.advance(ms(u64::from(OTHER_BUNDLE_MS)));
+    assert_eq!(duo.bob.drain(), vec![ended(ALICE, s2)]);
+}
+
+/// Tampon kapatılırken bekleyen demetler düşmez ve planlarından ERKEN verilmez (EK-A §10):
+/// tampondaki akış planıyla biter, kapatmadan sonra başlayan akış tamponlanmaz; tablo boşalınca
+/// tampon kalkar.
+///
+/// v1'de (aynı dalın önceki commit'i) KIRMIZI: kapatmada bekleyen demetler beklemeden veriliyordu.
+#[test]
+fn playout_switched_off_keeps_buffered_plans_and_bypasses_new_streams() {
+    let (mut duo, s) = playout_duo();
+    duo.alice.send_bundle(s, &frame(0)).expect("demet");
+    duo.alice.send_bundle(s, &frame(1)).expect("demet");
+    duo.bob.ptt.set_playout(None);
+    duo.alice.send_bundle(s, &frame(2)).expect("demet");
+    assert!(duo.bob.drain().is_empty(), "plan sürer: erken verilmez");
+    assert!(duo.bob.ptt.playout_stats().is_some(), "akış bitmedi");
+    // Kapatmadan sonra açılan akış tamponsuz geçer (plan yok). Gönderen eşe en çok bir açık giden
+    // akış tuttuğu için ikinci akış ham kayıtla gelir (PTT-R5: eşten iki etkin akış).
+    let s2: StreamId = 100;
+    let lyra = PttCodec::Lyra;
+    duo.inject(Side::Bob, open_record(s2, lyra, OTHER_BUNDLE_MS));
+    duo.inject(
+        Side::Bob,
+        bundle_record(s2, lyra.code(), OTHER_BUNDLE_MS, &frame(9)),
+    );
+    duo.inject(Side::Bob, close_record(s2));
+    assert_eq!(
+        duo.bob.drain(),
+        vec![
+            started(ALICE, s2, PttCodec::Lyra, OTHER_BUNDLE_MS),
+            audio(ALICE, s2, &frame(9)),
+            ended(ALICE, s2),
+        ]
+    );
+    duo.clock.advance(PLAYOUT_T);
+    assert_eq!(duo.bob.drain(), vec![audio(ALICE, s, &frame(0))]);
+    duo.clock.advance(ms(u64::from(TEST_BUNDLE_MS)));
+    assert_eq!(duo.bob.drain(), vec![audio(ALICE, s, &frame(1))]);
+    duo.clock.advance(ms(u64::from(TEST_BUNDLE_MS)));
+    assert_eq!(duo.bob.drain(), vec![audio(ALICE, s, &frame(2))]);
+    duo.alice.close(s).expect("kapanış");
+    duo.clock.advance(ms(u64::from(TEST_BUNDLE_MS)));
+    assert_eq!(duo.bob.drain(), vec![ended(ALICE, s)]);
+    assert_eq!(duo.bob.ptt.playout_stats(), None, "boşalınca tampon kalkar");
+}
+
+// ── [YOL3-T1 EK-A §3, §10] Erken verilmeme, yerel sonlandırma, oturum değişimi (T-P9…T-P12) ──────
+
+/// Yaşam döngüsü denetimi (EK-A §3.1, KK-T1-20): anahtar (eş, `stream_id`) başına olaylar
+/// `PttStarted (PttAudio)* PttEnded` dizisinin tekrarıdır — açık olmayan anahtara demet ya da
+/// `PttEnded` yok, açık anahtara ikinci `PttStarted` yok.
+fn assert_lifecycles(events: &[PttEvent]) {
+    let mut open = std::collections::BTreeSet::new();
+    for event in events {
+        match event {
+            PttEvent::PttStarted {
+                peer, stream_id, ..
+            } => assert!(
+                open.insert((*peer, *stream_id)),
+                "iç içe yaşam döngüsü: {event:?}"
+            ),
+            PttEvent::PttAudio {
+                peer, stream_id, ..
+            } => assert!(
+                open.contains(&(*peer, *stream_id)),
+                "yaşam döngüsü dışında demet: {event:?}"
+            ),
+            PttEvent::PttEnded { peer, stream_id } => assert!(
+                open.remove(&(*peer, *stream_id)),
+                "açılmamış akışın sonu: {event:?}"
+            ),
+            PttEvent::Messenger(_) => {}
+        }
+    }
+}
+
+/// PTT dışı olayları atar.
+fn ptt_only(events: &[PttEvent]) -> Vec<PttEvent> {
+    events
+        .iter()
+        .filter(|event| !matches!(event, PttEvent::Messenger(_)))
+        .cloned()
+        .collect()
+}
+
+/// T-P9 (EK-A §10, KK-T1-EKA-2/8): hiçbir `PttAudio` planından ERKEN verilmez — `i`'inci demet en
+/// erken `a0 + T + i·bundle_ms`'te (`a0` = ilk demetin varışı); geç teslim mümkün kalır (durma).
+/// Tarama: T ∈ {alt, varsayılan, üst} × `bundle_ms` ∈ {20, 40} × dört varış deseni × ızgarayla
+/// hizasız 7 ms düğüm turu. Her koşuda bütün demetler sırayla ve eksiksiz, `PttEnded` son demetten
+/// sonra. Deterministik; RNG yok.
+///
+/// v1'de (aynı dalın önceki commit'i) AYNI DAVRANIŞ: taşma dışı yollar zaten erken vermiyordu
+/// (v1'in tek erken yolu taşmaydı, T-P7); regresyon kilidi.
+#[test]
+fn t_p9_no_bundle_is_released_before_its_plan() {
+    use kama_app::playout::{PlayoutConfig, PLAYOUT_DELAY_MAX, PLAYOUT_DELAY_MIN};
+    /// Akıştaki demet sayısı.
+    const BUNDLES: u64 = 24;
+    /// Bob'un yoklama aralığı (ms) — `bundle_ms` ızgarasıyla hizasız.
+    const TICK_MS: u64 = 7;
+    /// "durma" deseninde duran demet ve duraklama (ms): T üst sınırından uzun, ızgarayla hizasız —
+    /// tampon onu örtemez, geç teslim zorunlu.
+    const STALL_AT: u64 = 6;
+    const STALL_MS: u64 = 2_707;
+    /// "titreşim" deseninin ms kaymaları (< 20 ms: gönderim sırası korunur).
+    const JITTER_MS: [u64; 8] = [0, 11, 3, 17, 5, 0, 13, 2];
+    type Pattern = fn(u64, u64) -> u64;
+    let patterns: [(&str, Pattern); 4] = [
+        ("hepsi birden", |_, _| 0),
+        ("zamanında", |i, b| i * b),
+        ("durma", |i, b| {
+            if i < STALL_AT {
+                i * b
+            } else {
+                i * b + STALL_MS
+            }
+        }),
+        ("titreşim", |i, b| {
+            i * b + JITTER_MS[usize::try_from(i % 8).expect("küçük")]
+        }),
+    ];
+    let payload = |i: u64| i.to_be_bytes().to_vec();
+    for delay in [PLAYOUT_DELAY_MIN, PLAYOUT_T, PLAYOUT_DELAY_MAX] {
+        for bundle_ms in [TEST_BUNDLE_MS, OTHER_BUNDLE_MS] {
+            for (name, send_at) in patterns {
+                let b = u64::from(bundle_ms);
+                let (mut duo, _) = Duo::connected();
+                duo.bob
+                    .ptt
+                    .set_playout(Some(PlayoutConfig::new(delay).expect("aralıkta")));
+                let s = duo
+                    .alice
+                    .open(BOB, PttCodec::Lyra, bundle_ms)
+                    .expect("akış");
+                let sends: Vec<u64> = (0..BUNDLES).map(|i| send_at(i, b)).collect();
+                let last_send = *sends.last().expect("boş değil");
+                let delay_ms = u64::try_from(delay.as_millis()).expect("küçük");
+                let end_ms = last_send + delay_ms + (BUNDLES + 2) * b + 200;
+                // a0: Bob'un ilk demeti okuduğu tur (gönderimden sonraki ilk yoklama).
+                let a0 = sends[0].div_ceil(TICK_MS) * TICK_MS;
+                let mut log: Vec<(u64, PttEvent)> = Vec::new();
+                let mut next = 0;
+                for now in 0..=end_ms {
+                    while sends.get(next).is_some_and(|&at| at == now) {
+                        let i = u64::try_from(next).expect("küçük");
+                        duo.alice.send_bundle(s, &payload(i)).expect("demet");
+                        next += 1;
+                        if next == sends.len() {
+                            duo.alice.close(s).expect("kapanış");
+                        }
+                    }
+                    if now % TICK_MS == 0 {
+                        log.extend(duo.bob.drain().into_iter().map(|e| (now, e)));
+                    }
+                    duo.clock.advance(ms(1));
+                }
+                let ctx = format!("T={delay:?} bundle_ms={bundle_ms} desen={name}");
+                let events: Vec<PttEvent> = log.iter().map(|(_, e)| e.clone()).collect();
+                assert_lifecycles(&events);
+                let mut want = vec![started(ALICE, s, PttCodec::Lyra, bundle_ms)];
+                want.extend((0..BUNDLES).map(|i| audio(ALICE, s, &payload(i))));
+                want.push(ended(ALICE, s));
+                assert_eq!(ptt_only(&events), want, "{ctx}: sırayla, eksiksiz");
+                let mut late = false;
+                for (i, (at, _)) in log
+                    .iter()
+                    .filter(|(_, e)| matches!(e, PttEvent::PttAudio { .. }))
+                    .enumerate()
+                {
+                    let plan = a0 + delay_ms + u64::try_from(i).expect("küçük") * b;
+                    assert!(*at >= plan, "{ctx}: demet {i} erken ({at} < plan {plan})");
+                    late |= *at > plan + TICK_MS;
+                }
+                if name == "durma" {
+                    assert!(late, "{ctx}: durma geç teslim üretir");
+                    let stats = duo.bob.ptt.playout_stats().expect("tampon açık");
+                    assert!(stats.playout_stalls >= 1, "{ctx}: durma sayıldı");
+                }
+            }
+        }
+    }
+}
+
+/// T-P10 (KK-T1-20; EK-A §3.6, KK-T1-EKA-6): supersession'da eski oynatma durumu kapanır —
+/// tampondaki eski oturum demetleri çalınmaz (atılır, sayılır), `PttEnded` hemen; eski oturumun
+/// drain'inden geç gelen demet ve akışın yeni oturumdaki devamı (`seq`'siz ayırt edilemez) elenir
+/// (sayılır); Ptt'nin sonraki `PttEnded`'i yutulur. Yeni oturumda açılan yeni akış normal
+/// tamponlanır. Kullanıcıya hiçbir eski oturum demeti verilmez.
+///
+/// v1'de (aynı dalın önceki commit'i) KIRMIZI: eski oturum demetleri planlarıyla çalınıyor, geç
+/// drain demeti yeni oturumunkinden sonra veriliyordu.
+#[test]
+fn t_p10_supersession_closes_old_playout_and_eliminates_late_bundles() {
+    use kama_app::playout::{PlayoutConfig, PlayoutStats};
+    let (mut duo, first) = Duo::connected();
+    duo.bob.ptt.set_playout(Some(PlayoutConfig::default()));
+    let s = duo
+        .alice
+        .open(BOB, PttCodec::Lyra, TEST_BUNDLE_MS)
+        .expect("akış");
+    let mut bob = duo.bob.drain();
+    duo.alice.send_bundle(s, &frame(0)).expect("demet");
+    duo.alice.send_bundle(s, &frame(1)).expect("demet");
+    bob.extend(duo.bob.drain());
+    duo.alice.send_bundle(s, &frame(2)).expect("demet");
+    let in_flight = duo.take_inbox(Side::Bob);
+    let second = duo.link.borrow_mut().supersede();
+    assert_eq!(
+        duo.alice.drain(),
+        vec![
+            session(SessionEvent::Ready(second, BOB)),
+            session(SessionEvent::Closed(first, CloseReason::Superseded)),
+        ]
+    );
+    duo.alice
+        .send_bundle(s, &frame(3))
+        .expect("yeni oturumda devam (D5 yeniden PTT_OPEN)");
+    bob.extend(duo.bob.drain());
+    duo.deliver_late(Side::Bob, in_flight);
+    bob.extend(duo.bob.drain());
+    duo.clock.advance(PLAYOUT_T * 2);
+    bob.extend(duo.bob.drain());
+    duo.alice.close(s).expect("kapanış");
+    bob.extend(duo.bob.drain());
+    let s2 = duo
+        .alice
+        .open(BOB, PttCodec::Lyra, TEST_BUNDLE_MS)
+        .expect("yeni oturumda yeni akış");
+    duo.alice.send_bundle(s2, &frame(7)).expect("demet");
+    bob.extend(duo.bob.drain());
+    duo.clock.advance(PLAYOUT_T);
+    bob.extend(duo.bob.drain());
+    duo.alice.close(s2).expect("kapanış");
+    duo.clock.advance(ms(u64::from(TEST_BUNDLE_MS)));
+    bob.extend(duo.bob.drain());
+
+    assert_lifecycles(&bob);
+    assert_eq!(
+        ptt_only(&bob),
+        vec![
+            started(ALICE, s, PttCodec::Lyra, TEST_BUNDLE_MS),
+            ended(ALICE, s),
+            started(ALICE, s2, PttCodec::Lyra, TEST_BUNDLE_MS),
+            audio(ALICE, s2, &frame(7)),
+            ended(ALICE, s2),
+        ],
+        "eski oturum demeti (0, 1, geç 2) ve akışın devamı (3) kullanıcıya verilmez"
+    );
+    let ready_at = bob
+        .iter()
+        .position(|e| *e == session(SessionEvent::Ready(second, ALICE)))
+        .expect("Ready(h')");
+    let ended_at = bob
+        .iter()
+        .position(|e| *e == ended(ALICE, s))
+        .expect("PttEnded");
+    assert!(ready_at < ended_at, "eski durum oturum değişiminde kapanır");
+    assert_eq!(
+        duo.bob.ptt.playout_stats(),
+        Some(PlayoutStats {
+            playout_session_closes: 1,
+            playout_discarded: 2,
+            playout_late_eliminated: 2,
+            bundles_released: 1,
+            playout_peak_bundles: 2,
+            ..PlayoutStats::default()
+        })
+    );
+}
+
+/// T-P11 (KK-T1-20): oturum sonu + yeniden bağlanma — eşin oturumu biter (Ptt akışı bitirir,
+/// tamponda iki demet kalır), yeni oturumda gönderenin yeniden `PTT_OPEN`'ı (D5) AYNI `stream_id`
+/// ile yeni yaşam döngüsü başlatır: eski yaşam döngüsü önce kapanır (`PttEnded`, tampondaki eski
+/// oturum demetleri atılır), sonra yeni `PttStarted`; yeni yaşam döngüsü kendi `a0 + T`'siyle
+/// tamponlanır. İki yaşam döngüsü iç içe geçmez.
+///
+/// v1'de (aynı dalın önceki commit'i) KIRMIZI: yeni `PttStarted` eski yaşam döngüsü kapanmadan
+/// veriliyor, iki yaşam döngüsünün demetleri tek tampona karışıyordu.
+#[test]
+fn t_p11_reopen_after_session_end_starts_a_fresh_lifecycle() {
+    use kama_app::playout::{PlayoutConfig, PlayoutStats};
+    let (mut duo, first) = Duo::connected();
+    duo.bob.ptt.set_playout(Some(PlayoutConfig::default()));
+    let s = duo
+        .alice
+        .open(BOB, PttCodec::Lyra, TEST_BUNDLE_MS)
+        .expect("akış");
+    let mut bob = duo.bob.drain();
+    duo.alice.send_bundle(s, &frame(0)).expect("demet");
+    duo.alice.send_bundle(s, &frame(1)).expect("demet");
+    bob.extend(duo.bob.drain());
+    duo.link
+        .borrow_mut()
+        .end(Side::Bob, CloseReason::PeerClosed);
+    bob.extend(duo.bob.drain());
+    assert_eq!(
+        ptt_only(&bob),
+        vec![started(ALICE, s, PttCodec::Lyra, TEST_BUNDLE_MS)],
+        "oturum sonu: Ptt akışı bitirdi, tampon dolu — PttEnded bekler"
+    );
+    duo.clock.advance(ms(500));
+    duo.link
+        .borrow_mut()
+        .end(Side::Alice, CloseReason::PeerClosed);
+    let second = duo.link.borrow_mut().establish();
+    assert_eq!(
+        duo.alice.drain(),
+        vec![
+            session(SessionEvent::Closed(first, CloseReason::PeerClosed)),
+            session(SessionEvent::Ready(second, BOB)),
+        ]
+    );
+    duo.alice
+        .send_bundle(s, &frame(2))
+        .expect("yeni oturumda devam");
+    bob.extend(duo.bob.drain());
+    duo.clock.advance(PLAYOUT_T - NANO);
+    bob.extend(duo.bob.drain());
+    assert_eq!(
+        ptt_only(&bob),
+        vec![
+            started(ALICE, s, PttCodec::Lyra, TEST_BUNDLE_MS),
+            ended(ALICE, s),
+            started(ALICE, s, PttCodec::Lyra, TEST_BUNDLE_MS),
+        ],
+        "eski yaşam döngüsü yenisinden önce kapanır; yeni demet T dolmadan verilmez"
+    );
+    duo.clock.advance(NANO);
+    bob.extend(duo.bob.drain());
+    duo.alice.close(s).expect("kapanış");
+    duo.clock.advance(ms(u64::from(TEST_BUNDLE_MS)));
+    bob.extend(duo.bob.drain());
+    assert_lifecycles(&bob);
+    assert_eq!(
+        ptt_only(&bob),
+        vec![
+            started(ALICE, s, PttCodec::Lyra, TEST_BUNDLE_MS),
+            ended(ALICE, s),
+            started(ALICE, s, PttCodec::Lyra, TEST_BUNDLE_MS),
+            audio(ALICE, s, &frame(2)),
+            ended(ALICE, s),
+        ]
+    );
+    assert_eq!(
+        duo.bob.ptt.playout_stats(),
+        Some(PlayoutStats {
+            playout_session_closes: 1,
+            playout_discarded: 2,
+            bundles_released: 1,
+            playout_peak_bundles: 2,
+            ..PlayoutStats::default()
+        })
+    );
+}
+
+/// T-P12 (KK-T1-20): aynı oturumda aynı anahtara yeni yaşam döngüsü (kapanmış akış kaydı taştıktan
+/// sonra gelen `PTT_OPEN`, PTT-R1'in beyanlı sınırı) — tampondaki önceki yaşam döngüsü önce
+/// kapanır: `PttEnded` yeni `PttStarted`'dan ÖNCE verilir, önceki demet atılır ve sayılır.
+///
+/// v1'de (aynı dalın önceki commit'i) KIRMIZI: aynı anahtara ikinci `PttStarted` önceki yaşam
+/// döngüsü kapanmadan veriliyordu.
+#[test]
+fn t_p12_same_key_restart_closes_the_previous_lifecycle_first() {
+    use kama_app::playout::PlayoutConfig;
+    let (mut duo, _) = Duo::connected();
+    duo.bob.ptt.set_playout(Some(PlayoutConfig::default()));
+    let lyra = PttCodec::Lyra;
+    let (s, x, y): (StreamId, StreamId, StreamId) = (10, 11, 12);
+    duo.inject(Side::Bob, open_record(s, lyra, TEST_BUNDLE_MS));
+    duo.inject(
+        Side::Bob,
+        bundle_record(s, lyra.code(), TEST_BUNDLE_MS, &frame(1)),
+    );
+    duo.inject(Side::Bob, close_record(s));
+    let mut bob = duo.bob.drain();
+    assert_eq!(
+        ptt_only(&bob),
+        vec![started(ALICE, s, lyra, TEST_BUNDLE_MS)],
+        "PTT_CLOSE geldi, demet tamponda"
+    );
+    for id in [x, y] {
+        duo.inject(Side::Bob, open_record(id, lyra, TEST_BUNDLE_MS));
+        duo.inject(Side::Bob, close_record(id));
+    }
+    duo.inject(Side::Bob, open_record(s, lyra, TEST_BUNDLE_MS));
+    bob.extend(duo.bob.drain());
+    assert_lifecycles(&bob);
+    assert_eq!(
+        ptt_only(&bob),
+        vec![
+            started(ALICE, s, lyra, TEST_BUNDLE_MS),
+            started(ALICE, x, lyra, TEST_BUNDLE_MS),
+            ended(ALICE, x),
+            started(ALICE, y, lyra, TEST_BUNDLE_MS),
+            ended(ALICE, y),
+            ended(ALICE, s),
+            started(ALICE, s, lyra, TEST_BUNDLE_MS),
+        ]
+    );
+    let stats = duo.bob.ptt.playout_stats().expect("tampon açık");
+    assert_eq!(
+        (stats.playout_session_closes, stats.playout_discarded),
+        (1, 1)
     );
 }
