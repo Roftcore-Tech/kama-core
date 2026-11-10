@@ -30,8 +30,8 @@
 //! # HB1 sınırı
 //!
 //! [`HubControl`], HB1'in `HubLink` sans-IO çekirdeğinin `HubEndpoint`'in çağırdığı yüzeyidir
-//! (iş emri §6 sözleşmesi; imzalar `origin/s2a/v3-hb1-api`'deki `HubLink` ile birebir). HB1'in API
-//! PR'ı main'e girince `impl HubControl for HubLink` (saf iletim) eklenir.
+//! (iş emri §6 sözleşmesi; imzalar HB1 `HubLink` ile birebir, #158). `impl HubControl for HubLink`
+//! saf iletimdir; trait yalnız testlerde sahte çekirdek koyabilmek içindir.
 //!
 //! KK-H66 ("hub'ın atadığı handle = kriptonun yazdığı handle") ölçüsünün handle kümesi HB1
 //! dosyalarına dokunmadan tutulur: [`RecordingLink`] transport'a verilen `EnvelopeLink`'i sarar ve
@@ -56,6 +56,7 @@ use adaptive_transport::ack::{FRAME_TYPE_ACK, FRAME_TYPE_ACK_V2};
 use kama_contracts::handles::PeerRef;
 use kama_contracts::s3::{HubHandle, ProtectionContext};
 
+use super::link::HubLink;
 use super::shared_crypto::{HubCryptoAccess, StashCounters};
 use crate::transport::{EnvelopeLink, LinkAttempt, LinkError, LinkEvent};
 use crate::wire::{
@@ -137,6 +138,31 @@ pub trait HubControl: Send {
     fn on_socket_error(&mut self, now: Instant);
     /// Bind doğrulandı mı (C2: bind olmadan hiçbir şey gönderilmez).
     fn is_bound(&self) -> bool;
+}
+
+/// HB1 `HubLink`: saf iletim (her yöntem aynı adlı `HubLink` yöntemini çağırır).
+impl HubControl for HubLink {
+    fn on_control(&mut self, now: Instant, opened_frame: &[u8]) {
+        HubLink::on_control(self, now, opened_frame);
+    }
+    fn poll_transmit(&mut self, now: Instant) -> Option<Vec<u8>> {
+        HubLink::poll_transmit(self, now)
+    }
+    fn next_deadline(&self) -> Option<Instant> {
+        HubLink::next_deadline(self)
+    }
+    fn on_tick(&mut self, now: Instant) {
+        HubLink::on_tick(self, now);
+    }
+    fn on_session_traffic(&mut self, now: Instant, h: HubHandle, outbound: bool) {
+        HubLink::on_session_traffic(self, now, h, outbound);
+    }
+    fn on_socket_error(&mut self, now: Instant) {
+        HubLink::on_socket_error(self, now);
+    }
+    fn is_bound(&self) -> bool {
+        HubLink::is_bound(self)
+    }
 }
 
 // ── KK-H66 handle kümesi ─────────────────────────────────────────────────────────────────────
