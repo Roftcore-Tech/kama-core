@@ -127,6 +127,8 @@ const RX_DEDUP_WINDOW: usize = 4096;
 
 /// Receiver state machine (§4). rx-set + SACK üretimi; `on_datagram` / `on_ack_timer` ile sürülür.
 pub struct Receiver {
+    /// [CC-PORT] quinn ACK kuralları (bkz. [`Receiver::with_cc_port`]). `false` = bugünkü alıcı.
+    cc_port: bool,
     state: RxState,
     received: BTreeSet<u64>, // alınan full-counter seq'ler (SACK kaynağı)
     smallest_seq: u64,
@@ -161,6 +163,7 @@ impl Receiver {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            cc_port: false,
             state: RxState::Normal,
             received: BTreeSet::new(),
             smallest_seq: 0,
@@ -230,6 +233,11 @@ impl Receiver {
             };
         }
 
+        // [CC-PORT] Sırasız varış tespiti kayıttan ÖNCE: beklenen = largest+1 değilse (boşluk açıldı
+        // ya da boşluk doldu) anında ACK (RFC 9000 §13.2.1; quinn spaces.rs:718-725 `immediate_ack_pending`).
+        let out_of_order =
+            self.cc_port && self.have_recv && d.seq != self.largest_seq.wrapping_add(1);
+
         self.record_seq(d.seq, now_ns);
 
         let (delivered, is_shard) = match d.kind {
@@ -253,12 +261,27 @@ impl Receiver {
             RxState::Normal
         };
 
-        let ack = self.tick_ack(now_ns, false);
+        let ack = self.tick_ack(now_ns, out_of_order);
         RxOutput {
             delivered,
             ack,
             was_duplicate: false,
         }
+    }
+
+    /// [CC-PORT] quinn `max_ack_delay` (RFC 9000 §13.2.1 varsayılanı 25 ms): bekleyen yeni bilgi
+    /// varken zamanlayıcı SACK'i en geç bu kadar sonra çıkar; cadence tabanı (8,39 s) ve dönüş-kotası
+    /// uygulanmaz. Yalnız `cc_port` alıcısında.
+    const MAX_ACK_DELAY_NS: u64 = 25_000_000;
+
+    /// [CC-PORT] quinn ACK kurallarıyla alıcı: sırasız varışta anında ACK, zamanlayıcı
+    /// `max_ack_delay` 25 ms; cadence tabanı (8,39 s), tail muafiyeti ve dönüş kotası uygulanmaz.
+    /// `Receiver::new()` bugünkü alıcıdır (bit-eşit).
+    #[must_use]
+    pub fn with_cc_port() -> Self {
+        let mut r = Self::new();
+        r.cc_port = true;
+        r
     }
 
     /// §12 ACK_TIMER: zamanlayıcı ile ACK üret (frekans dolmasa da). [K2/R1/§3.3-E/§12] cadence-limitli:
@@ -269,6 +292,23 @@ impl Receiver {
         if !self.have_recv {
             return None;
         }
+        if self.cc_port {
+            // [CC-PORT] RFC 9000 §13.2.1: ack-eliciting paket bekliyorsa max_ack_delay içinde ACK.
+            if self.since_last_ack > 0
+                && now_ns.saturating_sub(self.last_emit_any()) >= Self::MAX_ACK_DELAY_NS
+            {
+                self.since_last_ack = 0;
+                self.burn_quota();
+                self.record_ack_emit(now_ns);
+                return self.build_ack(now_ns);
+            }
+            return None;
+        }
+        self.on_ack_timer_legacy(now_ns)
+    }
+
+    /// Eski zamanlayıcı yolu — `cc_port` kapalıyken bugünkü davranış BİREBİR.
+    fn on_ack_timer_legacy(&mut self, now_ns: u64) -> Option<AckFrame> {
         // [TUR-3b commit-C, karar-a] TAIL-MUAFİYETİ (R1 ilk-SACK muafiyetinin simetriği):
         // beklemede-veri (freq'e ulaşmamış varış) VE sessizlik ≥ K_TAIL×son-varış-aralığı →
         // bu bir TAIL'dir; cadence beklenmez (eski davranışta tek-kalan-paketin ACK'i 8.39s

@@ -34,6 +34,14 @@ pub struct SentPacket {
     gain_ge1: bool,
 }
 
+impl SentPacket {
+    /// [CC-PORT] Gönderim anında uygulamayla sınırlı mıydı (BBR app-limited işareti).
+    #[must_use]
+    pub fn is_app_limited(&self) -> bool {
+        self.is_app_limited
+    }
+}
+
 /// Bir ACK'ten türeyen delivery-rate örneği (engine §7.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RateSample {

@@ -1428,6 +1428,7 @@ enum ProbeExit {
 
 /// İlk RTT ölçülene kadar pacing/eşik için başlangıç RTT [CAL initial].
 const INITIAL_RTT: Duration = Duration::from_millis(100);
+
 /// [Q18-FIX] Yapı-gate alt kayıp-eşiği (ppm). Altında fuzzy'nin R1 `fec=0`'ı doğru (kayıp düşük,
 /// ARQ yeter); üstünde kayıp anlamlı ve yapı belirleyici.
 ///
@@ -1887,6 +1888,12 @@ pub struct Sender {
     // ── E1 gösterim bayrakları (CC §4.1; ISEMRI-YOL3-M2 KK-M2-02) — varsayılan beşi KAPALI ──
     /// Çalışma zamanı bayrakları ([`crate::rate::E1Flags`]); `Default` = bugünkü davranış bit-aynı.
     e1: crate::rate::E1Flags,
+    /// [CC-PORT] quinn-proto 0.11.18 BBR portu — `Some` iken (yalnız [`Sender::with_cc_port`])
+    /// hız/uçuş penceresinin TEK otoritesi (`crate::cc`). `None` = bugünkü motor, bit-eşit.
+    /// Faz makinesi (`update_state`) çalışmaya devam eder ama hız çıktısı okunmaz; pacer
+    /// parametreleri BBR'dan türetilir. Çalışma zamanı seçimi: cargo özelliği DEĞİL (CI'nın
+    /// `--all-features`'ı motoru değiştiremez; iki motor aynı süreçte eşli koşabilir).
+    cc: Option<crate::cc::Bbr>,
     /// (d) tur mandalı: bu Startup turunda `schedule_transmit` başında `tx_queue` boş ∧ kova dolu
     /// (`pacer.tokens() == pacer.burst_cap()`) görüldü mü. Tur işaretinde (`startup_plateau`) ve
     /// Startup (yeniden) girişinde sıfırlanır. Yalnız `e1.e1_applimited_plateau` açıkken kurulur.
@@ -2132,8 +2139,83 @@ impl Sender {
             },
             last_recovery: RecoveryAction::Arq,
             e1: crate::rate::E1Flags::default(),
+            cc: None,
             e1_round_app_limited: false,
         }
+    }
+
+    /// [CC-PORT] quinn-proto 0.11.18 BBR + RFC 9002 motoruyla gönderici (ISEMRI-CC-PORT).
+    /// `Sender::new()` bugünkü motordur; bu kurucu:
+    /// * `cc = Some(Bbr)` — ilk pencere RFC 9002 `min(10·MTU, max(2·MTU, 14720))`;
+    /// * PTO zorunlu ve tavansız (`TailRecoveryConfig::rfc9002_cc_port`; RFC 9002 §6.2, quinn'de
+    ///   kapatılamaz);
+    /// * yeniden iletim tavanı yok (`RetxConfig::rfc9002_cc_port`; quinn `send_buffer.rs`);
+    /// * E2a kuralları açık: zaman eşiği 9/8·max(srtt, latest) (g = 1 ms), RTT örneği v1.1, ilk
+    ///   pencere boşta korunur, PTO 2 prob. Alıcı tarafı [`crate::receiver::Receiver::with_cc_port`].
+    #[must_use]
+    pub fn with_cc_port() -> Self {
+        let mut s = Self::new();
+        s.cc = Some(crate::cc::Bbr::new(
+            DEFAULT_MTU,
+            crate::cc::rfc9002_initial_window(DEFAULT_MTU),
+        ));
+        s.arq = DeadlineArqScheduler::new(RetxConfig::rfc9002_cc_port());
+        s.tail_recovery = TailRecovery::new(TailRecoveryConfig::rfc9002_cc_port());
+        s.e2a = crate::loss::E2aFlags::new(true, 1_000_000, true, true, 2, false)
+            .expect("cc_port E2a bayrakları geçerli aralıkta");
+        s
+    }
+
+    /// [CC-PORT] Port motoru etkin mi.
+    #[inline]
+    #[must_use]
+    pub fn cc_on(&self) -> bool {
+        self.cc.is_some()
+    }
+
+    /// [CC-PORT] Portun uçuş tavanı (bayt); `cc` yokken `u64::MAX` (kapı yok — bugünkü davranış).
+    #[inline]
+    fn cc_window(&self) -> u64 {
+        self.cc.as_ref().map_or(u64::MAX, crate::cc::Bbr::window)
+    }
+
+    /// [CC-PORT] `size` baytlık yeni emisyon uçuş penceresine sığar mı (`inflight + size ≤ window`).
+    /// `cc` yokken daima `true`.
+    #[inline]
+    fn cc_fits(&self, size: u64) -> bool {
+        self.inflight_bytes.saturating_add(size) <= self.cc_window()
+    }
+
+    /// [CC-PORT] Teşhis: BBR durumu `(mode, window, delivery_rate, min_rtt_ns, tur, tıkanıklık olayı,
+    /// Startup çıkış turu, cwnd, recovery_window)`.
+    #[must_use]
+    #[allow(clippy::type_complexity)]
+    pub fn diag_cc(
+        &self,
+    ) -> Option<(
+        crate::cc::Mode,
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+        Option<u64>,
+        u64,
+        u64,
+    )> {
+        let cc = self.cc.as_ref()?;
+        let (r, ce, sx, cw, rw) = cc.diag();
+        Some((
+            cc.mode(),
+            cc.window(),
+            cc.delivery_rate(),
+            cc.min_rtt_ns(),
+            r,
+            ce,
+            sx,
+            cw,
+            rw,
+        ))
     }
 
     /// DR-CS-2 / DR-RATE-RAMP-1 (feature-gated): observation-only scheduler telemetry snapshot.
@@ -2411,7 +2493,37 @@ impl Sender {
             self.startup_pacing_floor_bps = self.grounded_startup_rate();
             self.startup_floor_armed_once = true; // may never arm again (§1A.2)
         }
-        let natural_rate = self.compute_send_rate(&decision);
+        // [CC-PORT] Hız/burst parametreleri quinn pencere pacer'ından: rate = 1,25·window/srtt,
+        // burst = clamp(window·2 ms/srtt, 10·MTU, 256·MTU). Faz makinesinin hızı, fuzzy throttle
+        // (`send_rate_gain_permille`) ve 31 B/s PreConverge tabanı OKUNMAZ; `cc` yokken eski blok.
+        if let Some(cc) = self.cc.as_ref() {
+            let srtt_ns = dur_ns(self.rtt.srtt().unwrap_or(INITIAL_RTT));
+            let p = crate::cc::PacerParams::from_window(cc.window(), srtt_ns, DEFAULT_MTU);
+            // Uyarlama 7 (cc/bbr.rs başlığı): BBR draft §4.2 `pacing_rate = pacing_gain × BtlBw`
+            // ölçüm varken hız kaynağıdır (Kama pacer'ı hız tabanlı); quinn'in pencere hızı
+            // (1,25·window/srtt) yalnız bant tahmini yokken kullanılır. Burst tavanı quinn formülü.
+            // Sebep: quinn pencere pacer'ı BBR'ın Drain/ProbeBW kazançlarını fiilen yok sayar
+            // (pacing_rate yalnız metrik; B5 bulgusu) → sığ kuyrukta Drain hiç boşaltmaz (ölçüldü,
+            // CC_TRACE: Drain'de kuyruk 6/6 sabit, 60 düşen paket).
+            let rate = if cc.pacing_rate() > 0 {
+                cc.pacing_rate()
+            } else {
+                p.rate_bps
+            };
+            self.pacer.set_rate(rate);
+            self.pacer.set_burst_cap(p.burst_cap);
+            if prev_state == SenderState::PreConverge && self.state != SenderState::PreConverge {
+                self.pacer.fill_to_cap();
+            }
+            // `decision.send_rate_gain_permille` (fuzzy throttle) bilinçli olarak okunmaz.
+        } else {
+            self.apply_legacy_rate(&decision, prev_state);
+        }
+    }
+
+    /// Eski (legacy) hız uygulaması — `cc` yokken bugünkü davranış BİREBİR.
+    fn apply_legacy_rate(&mut self, decision: &FusionDecision, prev_state: SenderState) {
+        let natural_rate = self.compute_send_rate(decision);
         // §1A.2: the structural HARD ceiling `cwnd/srtt` has the LAST WORD at every application, not just
         // at arming — so if the congestion/safety cap SHRINKS (e.g. after loss), the floor shrinks with it
         // and can never push the sender past the current cap.
@@ -3152,6 +3264,9 @@ impl Sender {
             None
         };
         let mut v11_send_ns: Option<u64> = None;
+        // [CC-PORT] Bu çerçevede ilk kez onaylanan iletimler (bayt, app_limited) — quinn `on_ack`
+        // RTT güncellemesinden SONRA çağrılır (connection/mod.rs: rtt.update → congestion.on_ack).
+        let mut cc_acked: Vec<(u64, bool)> = Vec::new();
         for &seq in &ack.acked_seqs {
             // [TUR-6] delivered-anchor round: marker-sonrası gönderilen seq'in ilk ACK'i.
             if seq >= self.startup_round_marker_seq {
@@ -3159,6 +3274,7 @@ impl Sender {
             }
             if let Some(p) = self.inflight.remove(&seq) {
                 self.inflight_bytes = self.inflight_bytes.saturating_sub(p.unit.size);
+                cc_acked.push((p.unit.size, p.bw_sample.is_app_limited()));
                 // Observation-only success evidence, ORIGINALS ONLY — the same Karn discipline the
                 // RTT sampler applies two lines below. A retransmit or duplicate proves nothing
                 // about the original's fate, and feeding one would corrupt the structure counters.
@@ -3185,6 +3301,7 @@ impl Sender {
                 // KURTARILIR (eski davranış: kayıt düşmüştü → sansür). Süresi geçmiş kayıt
                 // prune edilmişse buraya düşmez (Expired/Unknown — örneksiz).
                 self.diag_tomb_hits += 1;
+                cc_acked.push((t.unit.size, t.bw_sample.is_app_limited()));
                 acked_units.push(t.unit.id); // teslim teyidi → bekleyen kopyaları iptal et
                                              // S-0.7 correction leg (ESTIMATOR-LIFECYCLE §6.1): the ORIGINAL's own seq was
                                              // late-acked — the product just disproved the loss it declared, so the estimator's
@@ -3325,6 +3442,30 @@ impl Sender {
         // §3.3-B stop koşulu: teyit edilen birimlerin bekleyen geometrik kopyalarını İPTAL et.
         if !acked_units.is_empty() {
             self.dup_queue.retain(|d| !acked_units.contains(&d.unit.id));
+        }
+
+        // [CC-PORT] quinn `on_ack` (paket başına) + `on_end_acks` (çerçeve sonu). min RTT =
+        // Kama rtprop penceresi (quinn RttEstimator::min); uygulamayla-sınırlılık = gönderim anı
+        // damgası (bw.rs) ve çerçeve sonunda "gönderilecek iş yok".
+        let rtt_min_ns = self
+            .rtt
+            .rtprop()
+            .or_else(|| self.rtt.srtt())
+            .map_or(0, dur_ns);
+        let idle_now =
+            self.tx_queue.is_empty() && self.pending_lost.is_empty() && self.dup_queue.is_empty();
+        let btlbw = self.btlbw.btlbw();
+        let inflight = self.inflight_bytes;
+        let largest = self.loss.largest_acked();
+        if let Some(cc) = self.cc.as_mut() {
+            let mut any_app_limited = false;
+            for (bytes, app_limited) in cc_acked.drain(..) {
+                any_app_limited |= app_limited;
+                cc.on_ack(now_ns, bytes, app_limited, rtt_min_ns);
+            }
+            // Uyarlama 6 (cc/bbr.rs): bant tahmini Kama'nın BBR §7.1 örnekleyicisinden (bw.rs).
+            cc.set_external_bw(Some(btlbw));
+            cc.on_end_acks(now_ns, inflight, any_app_limited || idle_now, largest);
         }
 
         if self.state != SenderState::PreConverge || self.rtt.srtt().is_some() {
@@ -3540,7 +3681,8 @@ impl Sender {
     ///   alıcı tutması düşülmüş); RFC'nin ham `latest_rtt`'inden bu sapma beyanlıdır ("+ ack_delay"
     ///   terimi yok). "Daha yüksek seq ACK'lendi" ön şartı `loss.rs`'te değişmeden kalır.
     fn time_loss_inputs(&self, srtt: Duration) -> (Duration, Duration) {
-        if self.e2a.tt_rfc() {
+        // [CC-PORT] RFC 9002 §6.1.2 biçimi (quinn connection/mod.rs:1700): cadence tabanı yok.
+        if self.e2a.tt_rfc() || self.cc_on() {
             let latest = self.e2a_latest_rtt.unwrap_or(srtt);
             (srtt.max(latest), self.e2a.tt_granularity())
         } else {
@@ -3568,9 +3710,11 @@ impl Sender {
         let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
         let t_loss_ns = self.time_loss_threshold_ns(srtt); // [E2a m1] eşikle AYNI yardımcı
         let expiry_ns = now_ns.saturating_add(t_loss_ns.saturating_mul(u64::from(K_TOMB)));
+        let mut cc_lost_bytes = 0u64;
         for &seq in lost {
             if let Some(p) = self.inflight.remove(&seq) {
                 self.inflight_bytes = self.inflight_bytes.saturating_sub(p.unit.size);
+                cc_lost_bytes += p.unit.size;
                 // [TUR-3c workflow-bulgusu (a)] loss-abort YALNIZ probe-ATIFLI kayıpla:
                 // send_ns ≥ probe-girişi (probe-öncesi trafiğin geç-Confirmed'i probe'u öldürmesin;
                 // rastgele-kayıp vetosu da böyle daralır — INV-RATE-1 gerilimi düşer).
@@ -3667,6 +3811,13 @@ impl Sender {
                         },
                     );
                 }
+            }
+        }
+        // [CC-PORT] quinn `on_congestion_event`: kayıp baytı bu turun recovery_window hesabına girer
+        // (referans davranış; ISEMRI-CC-PORT §3 — kayıp filtresi deneyi ayrı bayrak, burada yok).
+        if cc_lost_bytes > 0 {
+            if let Some(cc) = self.cc.as_mut() {
+                cc.on_congestion_event(cc_lost_bytes);
             }
         }
     }
@@ -4466,7 +4617,7 @@ impl Sender {
     /// `state ≠ RecoverFwd` (RecoverFwd'de `plan_forward_duplication` bekleyen kaybı kopya kuyruğuna
     /// boşaltır — istisna şart); kapalıyken bugünkü `state == RecoverArq`.
     fn e1_retx_state_ok(&self) -> bool {
-        if self.e1.e1_probe_keep {
+        if self.e1.e1_probe_keep || self.cc_on() {
             self.state != SenderState::RecoverFwd
         } else {
             self.state == SenderState::RecoverArq
@@ -4505,7 +4656,9 @@ impl Sender {
         // [E1 retx_first, KK-M2-07] bayrak açıkken her izinde ARQ-önce; durum koşulu (e-dar)'a bağlı.
         if self.e1_retx_state_ok()
             && !self.pending_lost.is_empty()
-            && (self.e1.retx_first || self.arq_share_tick.is_multiple_of(K_ARQ_SHARE))
+            && (self.e1.retx_first
+                || self.cc_on() // [CC-PORT] quinn send_buffer.rs:93-113: yeniden iletim her zaman önce
+                || self.arq_share_tick.is_multiple_of(K_ARQ_SHARE))
         {
             self.plan_arq_retransmits(&mut out, now_ns);
         }
@@ -5550,7 +5703,8 @@ impl Sender {
                 break; // C1-canlı: kernel-limit (Leftover'da-None → hiç-girmez; baseline-özdeş)
             }
             let balance_before = self.pacer.tokens(); // READ-ONLY (mühürlü-TokenBucket'a-dokunulmaz)
-            if !self.pacer.try_send(p.size) {
+            if !self.cc_fits(p.size) || !self.pacer.try_send(p.size) {
+                // [CC-PORT] parite de uçuş penceresine tabi (quinn: tüm ack-eliciting baytlar)
                 // Commit-G: budget-denied-GÖRÜNÜRLÜĞÜ (gauge; 1b-tasarım-girdisi — politika-DEĞİŞMEDİ).
                 self.token_denied_r_gauge = self.pending_fec.len() as u64;
                 // [FAZ-3] parity token reddi — ürün derlemesinde görünür.
@@ -5963,6 +6117,23 @@ impl Sender {
     /// Commit-V: pre-parity-token-kapısı. OFF: saf-try_send (inline; byte-özdeş). ON: rezerv-korunur —
     /// `tokens < size + reserved` → red (yalnız-tokens≥size-iken-displacement-sayılır: "would-have-sent").
     #[inline]
+    /// [CC-PORT] PTO probu için jeton: pencere kapısı YOK (RFC 9002 §6.2.4), bütçe rezervi ve pacer
+    /// aynı. `cc` yokken `try_send_pre_parity(size, true)` ile birebir aynı (pencere kapısı zaten yok).
+    fn try_send_probe(&mut self, size: u64) -> bool {
+        #[cfg(feature = "experimental-fec-budget")]
+        {
+            let r = self.budget_ext.reserved_now;
+            if r > 0 && self.pacer.tokens() < size.saturating_add(r) {
+                if self.pacer.tokens() >= size {
+                    self.budget_ext.retx_displaced =
+                        self.budget_ext.retx_displaced.saturating_add(size);
+                }
+                return false;
+            }
+        }
+        self.pacer.try_send(size)
+    }
+
     fn try_send_pre_parity(&mut self, size: u64, is_retx: bool) -> bool {
         #[cfg(feature = "experimental-fec-budget")]
         {
@@ -5982,6 +6153,11 @@ impl Sender {
         }
         #[cfg(not(feature = "experimental-fec-budget"))]
         let _ = is_retx;
+        // [CC-PORT] Uçuş penceresi kapısı (quinn: `bytes_in_flight + size > window` → gönderme).
+        // `cc` yokken `cc_fits` daima true.
+        if !self.cc_fits(size) {
+            return false;
+        }
         self.pacer.try_send(size)
     }
 
@@ -6131,7 +6307,9 @@ impl Sender {
         {
             self.sched_diag.tail_probe_selected += 1;
         }
-        if !self.try_send_pre_parity(unit.size, true) {
+        // [CC-PORT] PTO probu uçuş penceresinden MUAF (RFC 9002 §6.2.4; quinn `poll_transmit`
+        // `loss_probes > 0` iken tıkanıklık kapısını atlar) — yalnız pacer jetonu. `cc` yokken aynı yol.
+        if !self.try_send_probe(unit.size) {
             #[cfg(feature = "diag-sched-telemetry")]
             {
                 self.sched_diag.tail_probe_token_denied += 1;
@@ -6202,7 +6380,9 @@ impl Sender {
             self.e2a_diag.pto2_cleared = self.e2a_diag.pto2_cleared.saturating_add(1);
             return;
         };
-        if !self.try_send_pre_parity(unit.size, true) {
+        // [CC-PORT] PTO probu uçuş penceresinden MUAF (RFC 9002 §6.2.4; quinn `poll_transmit`
+        // `loss_probes > 0` iken tıkanıklık kapısını atlar) — yalnız pacer jetonu. `cc` yokken aynı yol.
+        if !self.try_send_probe(unit.size) {
             self.e2a_tail_probe2 = Some((target, armed, index)); // jeton yok → yuvada bekler
             return;
         }
@@ -6533,6 +6713,9 @@ impl Sender {
         }
         let units = u64::from(origin == TransmitKind::Data); // yalnız orijinal DATA loss sayacına.
         self.loss.on_sent(seq, now_ns, units);
+        if let Some(cc) = self.cc.as_mut() {
+            cc.on_sent(now_ns, unit.size, seq); // quinn: her iletim tekil paket numarası (= seq)
+        }
         self.inflight_bytes += unit.size;
         self.inflight.insert(
             seq,
@@ -6590,6 +6773,15 @@ impl Sender {
     pub fn state(&self) -> SenderState {
         self.state
     }
+    /// [CC-PORT teşhis] Uçuştaki iletimler `(seq, unit_id, retx_count, origin)` — SALT GÖZLEM.
+    #[must_use]
+    pub fn diag_inflight_seqs(&self) -> Vec<(u64, u64, u8, TransmitKind)> {
+        self.inflight
+            .iter()
+            .map(|(&s, p)| (s, p.unit.id, p.retx_count, p.origin))
+            .collect()
+    }
+
     /// inflight bytes.
     #[must_use]
     pub fn inflight_bytes(&self) -> u64 {

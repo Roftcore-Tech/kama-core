@@ -77,6 +77,17 @@ impl RetxConfig {
             cap_exceed: CapExceedPolicy::HandToForward,
         }
     }
+
+    /// [CC-PORT] Yeniden iletim tavanı YOK (quinn `send_buffer.rs`: kayıp veri bağlantı yaşadıkça
+    /// yeniden gönderilir; tavan ve ileri-kopyaya devir yoktur). `arq_retx_cap = u8::MAX` fiilen
+    /// sınırsızdır; `reorder_*` fixture ile aynı. Yalnız `Sender::with_cc_port` kurucusunda kullanılır.
+    #[must_use]
+    pub fn rfc9002_cc_port() -> Self {
+        Self {
+            arq_retx_cap: u8::MAX,
+            ..Self::fixture()
+        }
+    }
 }
 
 /// Selective retransmit planlayıcı portu (clean-arch).
