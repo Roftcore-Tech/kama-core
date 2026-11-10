@@ -1,5 +1,9 @@
 # PROVISIONING-FORMAT-v0 — `kama-provision` çıktı biçimi (JSON v0)
 
+> **SUPERSEDED — 2026-11-10:** bu belgenin yerine `PROVISIONING-FORMAT-v1.md` geçti (S2-A2.5; `format_version 1`,
+> `hub.json`, `hub.ed25519_pub`, `--probe`). `kama-provision` artık v1 üretir ve v0 dosyasını **reddeder** (D4: her
+> kurulum yeni). Metin silinmedi; v0 için normatif değildir.
+
 | Alan | Değer |
 |---|---|
 | Karar sahibi | Abkarada |

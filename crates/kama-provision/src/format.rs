@@ -1,5 +1,5 @@
-//! PROVISIONING-FORMAT-v0 tipleri (serde) ve doğrulayan yükleyici
-//! (`docs/provisioning/PROVISIONING-FORMAT-v0.md` §3, §5).
+//! PROVISIONING-FORMAT-v1 tipleri (serde) ve doğrulayan yükleyici
+//! (`docs/provisioning/PROVISIONING-FORMAT-v1.md` §3, §5; v0'ın yerine geçer — v0 dosyası reddedilir).
 //!
 //! K4G-11 bileşim kökü cihaz dosyasını [`load_device_config`] ile okur ve
 //! [`DeviceConfig::local_identity`] + [`DeviceConfig::peer_directory`] ile `kama-noise-wire`'ın ürün
@@ -30,8 +30,15 @@ use crate::encoding::{
     base64_decode, base64_encode, hex_decode, hex_decode_into, hex_encode, DecodeError,
 };
 
-/// `format_version` (v0; göç yok).
-pub const FORMAT_VERSION: u32 = 0;
+/// `format_version` (v1; göç yok — v0 dosyası [`FormatError::UnsupportedVersion`], her kurulum yeni).
+pub const FORMAT_VERSION: u32 = 1;
+/// `hub.json` (v1 §3.3; KM-HUB-TDD-001 §6) — YALNIZ hub makinesine gider; tek gizli alanı hub'ın kendi
+/// anahtarıdır, cihaz gizli anahtarı taşımaz.
+pub const HUB_FILE_NAME: &str = "hub.json";
+/// `--probe` cihazının adı (v1 §3.4): eş listesi boş, diğer cihazların `peers`'ına girmez.
+pub const PROBE_NAME: &str = "probe";
+/// `hub.json` `listen` adresinin ana makine kısmı; port `--hub`'dan (v1 §3.3).
+pub const HUB_LISTEN_HOST: &str = "0.0.0.0";
 /// Kök dosyası — YALNIZ provisioning otoritesinde kalır (D9).
 pub const ROOT_FILE_NAME: &str = "root.json";
 /// Çıktı dizinine ilk yazılan dosya (§2).
@@ -324,13 +331,72 @@ pub struct PeerConfig {
     pub cert: CertBytes,
 }
 
-/// `hub` (§4.7). v0'da `x25519_pub` daima `null` yazılır; ham hub anahtarı otorite DEĞİLDİR (CLAUDE.md
-/// §4 cert-bound) ve v0 tüketicileri bu alanı kullanmaz.
+/// `hub` (v1 §4.7). `x25519_pub` daima `null` yazılır; ham hub anahtarı otorite DEĞİLDİR (CLAUDE.md §4
+/// cert-bound) ve tüketiciler bu alanı kullanmaz. `ed25519_pub` ZORUNLUDUR (S4 KR-13, §4 C2): istemci
+/// hub'ın BIND_PROOF yanıt imzasını bununla doğrular; `hub.json`'daki `hub_ed25519.pub` ile aynıdır.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HubConfig {
     pub addr: String,
     pub x25519_pub: Option<Public32>,
+    pub ed25519_pub: Public32,
+}
+
+/// `hub.json` `devices[]` kaydı (v1 §3.3; KM-HUB-TDD-001 §6): hub dizini. Gizli alan YOKTUR.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HubDevice {
+    pub name: DeviceName,
+    pub dest_hash: Public32,
+    pub cert: CertBytes,
+}
+
+/// `hub.json` (v1 §3.3; S4 KR-13; KM-HUB-TDD-001 §6). Dosyadaki TEK gizli alan `hub_ed25519.priv`'dir.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HubFile {
+    pub format_version: u32,
+    /// `"0.0.0.0:<--hub portu>"`.
+    pub listen: String,
+    pub hub_ed25519: KeyPair,
+    /// Bütün cihazlar (`--probe` verildiyse `probe` dahil).
+    pub devices: Vec<HubDevice>,
+}
+
+impl HubFile {
+    /// Yapısal tutarlılık: sürüm, `listen` soket adresi, anahtar çifti, cihaz tekilliği (ad, `dest_hash`,
+    /// `cert`). Hub'ın kendi katı okuyucusu (`hub-server` `config.rs`) ayrıca denetler.
+    ///
+    /// # Errors
+    /// [`FormatError::UnsupportedVersion`] · [`FormatError::Invalid`].
+    pub fn validate(&self) -> Result<(), FormatError> {
+        if self.format_version != FORMAT_VERSION {
+            return Err(FormatError::UnsupportedVersion(self.format_version));
+        }
+        if self.listen.parse::<SocketAddr>().is_err() {
+            return Err(FormatError::Invalid("hub.json listen is not ip:port"));
+        }
+        if ed25519_public_of(&self.hub_ed25519.secret) != self.hub_ed25519.public {
+            return Err(FormatError::Invalid(
+                "hub_ed25519.pub does not match its priv",
+            ));
+        }
+        if self.devices.is_empty() || self.devices.len() > MAX_DEVICES + 1 {
+            return Err(FormatError::Invalid("hub.json device count out of range"));
+        }
+        let mut names = BTreeSet::new();
+        let mut dest_hashes = BTreeSet::new();
+        let mut cert_refs = BTreeSet::new();
+        for device in &self.devices {
+            if !names.insert(&device.name)
+                || !dest_hashes.insert(device.dest_hash)
+                || !cert_refs.insert(device.cert.cert_ref())
+            {
+                return Err(FormatError::Invalid("hub.json lists a device twice"));
+            }
+        }
+        Ok(())
+    }
 }
 
 // ── Yükleyici ve doğrulama ───────────────────────────────────────────────────────────────────
@@ -473,7 +539,17 @@ impl DeviceConfig {
                 "cert does not carry this device's keys",
             ));
         }
-        if self.peers.is_empty() || self.peers.len() >= MAX_DEVICES {
+        // v1 §3.4 (KK-H19): boş eş listesi YALNIZ `probe` cihazında; probe hub'sız anlamsızdır.
+        let is_probe = self.device_id.as_str() == PROBE_NAME;
+        if self.peers.is_empty() {
+            if !is_probe {
+                return Err(FormatError::Invalid("peer count out of range"));
+            }
+            if self.hub.is_none() {
+                return Err(FormatError::Invalid("probe device file requires hub"));
+            }
+        }
+        if self.peers.len() >= MAX_DEVICES {
             return Err(FormatError::Invalid("peer count out of range"));
         }
         let mut names = BTreeSet::from([&self.device_id]);
