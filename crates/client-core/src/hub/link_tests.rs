@@ -1062,3 +1062,131 @@ fn envelope_link_facade_drives_core() {
     assert!(el.send_init(peer(0xB0), 3, vec![1]).is_err());
     assert_eq!(el.poll(), None);
 }
+
+// ── fix1: çelişkili handle (S4 C3) ve K9 ─────────────────────────────────────────────────────
+
+#[test]
+fn fix1_c3_store_resp_then_response_with_other_handle_ends_attempt() {
+    let mut t = bound();
+    let t0 = t.t0;
+    t.link.send_init(t0, peer(0xB0), 1, vec![1]).unwrap();
+    let f = init_out(&mut t, t0).remove(0);
+    t.link.on_control(t0, &store_resp(f.rid, code::OK, 0x77));
+    let _ = events(&mut t.link);
+    // Aynı denemenin eşinden, StoreResp'in söylediğinden farklı h ile RESPONSE.
+    t.link
+        .on_control(t0, &deliver(0x78, [0xB0; 32], 2, &[5; 20]));
+    assert!(events(&mut t.link).is_empty(), "farklı h zorla yazılmaz");
+    assert_eq!(t.link.counters().attempt_handle_conflict, 1);
+    assert_eq!(
+        notices(&mut t.link),
+        vec![HubNotice::AttemptEnded { peer: peer(0xB0) }]
+    );
+    for k in 1..40 {
+        assert!(init_out(&mut t, t0 + s(k)).is_empty(), "T3 durdu");
+    }
+}
+
+#[test]
+fn fix1_c3_held_response_then_store_resp_with_other_handle_ends_attempt() {
+    let mut t = bound();
+    let t0 = t.t0;
+    t.link.send_init(t0, peer(0xB0), 1, vec![1]).unwrap();
+    let f = init_out(&mut t, t0).remove(0);
+    // StoreResp kayboldu; RESPONSE h = 0x78 ile önce gelir (tutulur).
+    t.link
+        .on_control(t0, &deliver(0x78, [0xB0; 32], 2, &[5; 20]));
+    assert_eq!(t.link.counters().response_held, 1);
+    // T3'ün getirdiği StoreResp başka h söylüyor.
+    t.link
+        .on_control(t0 + s(1), &store_resp(f.rid, code::OK, 0x77));
+    assert!(events(&mut t.link).is_empty(), "HandleAssigned verilmez");
+    assert_eq!(t.link.counters().attempt_handle_conflict, 1);
+    assert_eq!(
+        notices(&mut t.link),
+        vec![HubNotice::AttemptEnded { peer: peer(0xB0) }]
+    );
+    assert!(t.link.held.is_empty(), "çelişen tutulan yanıt da düşer");
+}
+
+#[test]
+fn fix1_k9_late_response_of_ended_attempt_does_not_end_new_attempt() {
+    let mut t = bound();
+    let t0 = t.t0;
+    t.link.send_init(t0, peer(0xB0), 1, vec![1]).unwrap();
+    let old = init_out(&mut t, t0).remove(0);
+    t.link.on_control(t0, &store_resp(old.rid, code::OK, 0x66));
+    // Deneme 2 (aynı eşe yeni INIT) eskisini sonlandırır.
+    let a2 = t.link.send_init(t0 + s(1), peer(0xB0), 1, vec![2]).unwrap();
+    let new = init_out(&mut t, t0 + s(1)).remove(0);
+    t.link
+        .on_control(t0 + s(1), &store_resp(new.rid, code::OK, 0x77));
+    let _ = events(&mut t.link);
+    // Eski denemenin gecikmiş RESPONSE'u (h = 0x66): sayılır, deneme 2'yi bitirmez.
+    t.link
+        .on_control(t0 + s(2), &deliver(0x66, [0xB0; 32], 2, &[6; 20]));
+    assert!(events(&mut t.link).is_empty());
+    assert_eq!(t.link.counters().late_response, 1);
+    assert_eq!(t.link.counters().attempt_handle_conflict, 0);
+    assert!(notices(&mut t.link).is_empty());
+    // Deneme 2 kendi h'siyle kurulur.
+    t.link
+        .on_control(t0 + s(2), &deliver(0x77, [0xB0; 32], 2, &[7; 20]));
+    assert_eq!(
+        events(&mut t.link),
+        vec![LinkEvent::Response {
+            hub_handle: HubHandle::from_raw(0x77),
+            envelope_type: 2,
+            bytes: vec![7; 20]
+        }]
+    );
+    t.link.peer_ready(peer(0xB0), HubHandle::from_raw(0x77));
+    assert_eq!(t.link.counters().attempt_completed, 1);
+    let _ = a2;
+}
+
+#[test]
+fn fix1_k9_late_response_while_store_resp_pending_is_not_held() {
+    let mut t = bound();
+    let t0 = t.t0;
+    t.link.send_init(t0, peer(0xB0), 1, vec![1]).unwrap();
+    let old = init_out(&mut t, t0).remove(0);
+    t.link
+        .on_control(t0, &store_resp(old.rid, code::UNKNOWN_HANDLE, 0));
+    let _ = notices(&mut t.link);
+    // Önceki bir oturumun hattı (0x55) bilinen hat.
+    t.link.send_init(t0 + s(1), peer(0xB0), 1, vec![2]).unwrap();
+    let f = init_out(&mut t, t0 + s(1)).remove(0);
+    t.link
+        .on_control(t0 + s(1), &store_resp(f.rid, code::OK, 0x55));
+    t.link.peer_ready(peer(0xB0), HubHandle::from_raw(0x55));
+    let _ = events(&mut t.link);
+    // Deneme 3; StoreResp kayıp. Bilinen eski hattın (0x55) yinelenen RESPONSE'u gelir.
+    t.link
+        .send_init(t0 + s(10), peer(0xB0), 1, vec![3])
+        .unwrap();
+    let f3 = init_out(&mut t, t0 + s(10)).remove(0);
+    t.link
+        .on_control(t0 + s(10), &deliver(0x55, [0xB0; 32], 2, &[5; 20]));
+    assert!(t.link.held.is_empty(), "eski hattın yanıtı tutulmaz");
+    assert_eq!(t.link.counters().late_response, 1);
+    t.link
+        .on_control(t0 + s(11), &store_resp(f3.rid, code::OK, 0x99));
+    assert_eq!(t.link.counters().attempt_handle_conflict, 0);
+    assert_eq!(events(&mut t.link).len(), 1, "HandleAssigned");
+}
+
+#[test]
+fn fix1_response_from_other_peer_is_not_a_conflict() {
+    let mut t = bound();
+    let t0 = t.t0;
+    t.link.send_init(t0, peer(0xB0), 1, vec![1]).unwrap();
+    let f = init_out(&mut t, t0).remove(0);
+    t.link.on_control(t0, &store_resp(f.rid, code::OK, 0x77));
+    let _ = events(&mut t.link);
+    t.link
+        .on_control(t0, &deliver(0x78, [0xC0; 32], 2, &[5; 20]));
+    assert_eq!(t.link.counters().attempt_handle_conflict, 0);
+    assert_eq!(t.link.counters().late_response, 1);
+    assert!(notices(&mut t.link).is_empty());
+}
