@@ -103,3 +103,64 @@ Betimsel not: r25'te "bütün mesajlar D içinde" K0 9/10, K1 9/10, K1A 8/10, K1
 - İkililer: `f0_flows` 980f1c34…, `bench` 7e6eab9a…, quinn `bench` 26a702dc… (`gece-a6/KOSU-KAYDI.txt`).
 - mini-Ö: hücreler `scripts/yol3/mini-o/` (dal `yol2/goster` 1ee9ee68), kayıt `mini-o/KOSU-KAYDI.txt`, okuma `mini-o/OKUMA.md`.
 - Ham veri `ham/gece-a6/*.tar.zst`, `ham/mini-o/*.tar.zst`, sha256 `ham-veri.sha256`. Metin dosyalarındaki makine yolları yer tutucuyla değiştirildi (`<ölçüm-kökü>`, `<worktree-kökü>`).
+
+## 10. Öğleden sonra: gösterim seti, mini-Ö v2, r25 ablasyonu (sahip kararı 2026-11-10 madde 3–5)
+
+Etiket: gösterim; kapılı PoC ölçümü Aralık; ARQ yolu, FEC Aralık'ta; N < 30 betimsel; sığ tamponlu ağ gösterim kapsamı dışı.
+
+**Düzenek.** Gösterim seti = K1 + A (A-1…A-6) + şeritler = gece `K1A6s` kolu:
+- E1: c + d + DrainRtprop + e-dar + A-3 + A-4 + A-6 ("max" okuması).
+- E2a: tt_rfc (g = 1 ms) + rtt_rule_v11 + iw_idle_hold + PTO 2 + A-1 + A-2 + A-5.
+- W = 5, T = 2,0 s, FEC kapalı.
+
+Ağaç ve kayıt:
+- Ağaç `yol2/goster` b0862d6c: goster + goster-a6 + kama-node gösterim profili + v2 düzeneği. main'in bu dalda olmayan kısmı yalnız test ve belge (#161/#163'ün son hâlleri; `lanes_renewal.rs` testi ve belge satırları).
+- İkililer: `f0_flows` b175a771…, `bench` 643cf416….
+- Ön kayıt `scripts/yol3/mini-o/ONKAYIT-V2.md` (sha256 `136f4bc457a04d5708a59cd0fdd971c9b23a26c313f9f1fd924f7b480ba3ca53`) koşudan önce dondu.
+- Ön koşu (1 tekrar, sayılmaz) iki ucun uyguladığı bayrak setini, T1 sayaçlarını ve A-6 kaydını doğruladı (`mini-o-v2/ONKOSU-KAYDI.txt`).
+
+**mini-Ö v2** [ölçüldü]: 90 koşu, rc = 0 90/90. Okuma `mini-o-v2/OKUMA.md`. Etiket satırı okuma aracında eksikti; araç düzeltildi ve aynı koşu yeniden okundu, sayılar değişmedi (`mini-o-v2/KOSU-KAYDI.txt`).
+
+| hücre | ilk demet s | bütün demetler p95 s | ilk duyulabilir s | TEXT dosya sürerken s | dosya s | teslim |
+|---|---|---|---|---|---|---|
+| Y10 (`a_r12k_d150_l20_foto150k`) | 0,81 [1,41] | 1,54 [2,17] | 2,82 [3,43] | 1,30 [1,84] | 21,14 [26,35] | 10/10 |
+| `a_r12k_d300_l0_dosyali` | 0,63 [0,74] | 0,50 [0,63] | 2,64 [2,75] | 0,65 [4,98] | 83,54 [88,64] | 10/10 |
+| `a_r12k_d300_l30_dosyali` | 2,31 [3,57] | 2,89 [7,04] | 4,33 [5,59] | 5,98 [8,66] | 155,44 [163,13] | 10/10 |
+
+(Medyan [en kötü].)
+- **Y10 bağlayıcı dört ölçüt:** 10/10 başarılı. Doğrudan duraklama 0.
+- **ACK'li birim kaybı:** 0 → W = 5. T önerisi 2,30 s (D p95 2,00 s).
+- **d300 l30 (kötü ağ, raporlanan):** B1 ilk demet p95 3,44 s, eşik 3,00 s. B2 TEXT p95 4,34 s (≤ 10). 60 s'de %100 10/10.
+- **T1 sayaçları** (ilk kez kayıtta): tampon tepe 16 / 12 / 23 demet. Atılan, geç elenen, taşma 0. Şerit düşen ve süresi dolan 0. Dosya penceresi tepe 5.
+- **Olay/demet kaybı 0:** dinleyici düşüşü, eksik, yinelenen, sırasız yok.
+
+**R3 koruma hücreleri** (taban K0 aynı kök ve ikili) [ölçüldü]:
+
+| hücre | n | K1A6 | K0 | oran | R3 |
+|---|---|---|---|---|---|
+| `b_r12k_d1000_l0_p1000` teyit p95 | 10 / 10 | 3,80 s | 4,84 s | 0,785 | geçer |
+| `b_r25_d300_l20_p65` teslim@60 · gönderim | 20 / 20 | 6 · 2 556 B | 6 · 2 292 B | 1,116 | **kalır** |
+
+v2 "yeşil" değil. Kalan tek kalem R3-r25.
+
+**r25 ablasyonu** [ölçüldü]: ONKAYIT-V2 §6; 8 kol × 20 koşu, rc = 0 160/160. Okuma `mini-o-abl-r25/OKUMA.md`.
+- Aynı kökte K1A6 2 662 B, K0 2 835 B: oran 0,939, R3 geçer. İhlal bu kökte yeniden üretilmedi.
+- Altı bırak-birini-çıkar kolunun hepsi de geçer: 2 262–2 584 B, oran 0,798–0,911.
+- Kural (§6.3 b): hiçbir bayrak düşmez, gösterim seti değişmez. Okumanın sahibe satırı: "R3 ölçüsü kararsız".
+
+**r25 gönderim medyanları, aynı hücre geometrisi, dört kök** [ölçüldü]:
+
+| kök | N | K0 | K1A6 | K1 |
+|---|---|---|---|---|
+| gece | 10 | 2 610 | 2 546 | 2 386 |
+| mini-Ö v1 | 10 | 1 996 | — | 2 786 |
+| mini-Ö v2 | 20 | 2 292 | 2 556 | — |
+| ablasyon | 20 | 2 835 | 2 662 | — |
+
+[türetilmiş] Taban K0'ın kendi medyanı kökten köke 1 996–2 835 B arasında oynuyor. Bu açıklık, kuralın %10 payından geniş. K1A6 üç kökte 2 546–2 662 B. Kural bağlayıcı kalır (sahip madde 4); bu satır betimseldir.
+
+**r25'te teyit p95** (kural dışı, raporlanan): K0 46,7 s; K1A6 55,7 s; çıkarma kolları 48,2–54,5 s. En düşüğü A-5 çıkınca: 49,2 s, gönderim 2 262 B.
+
+**Yeniden üretme.**
+- Hücreler `scripts/yol3/mini-o/cells-v2/` ve `cells-abl/`; sıralar `SIRA-V2.txt` (sha256 `c98b05f4…884a`) ve `SIRA-ABL-r25.txt` (`8f3f3c68…cb64`); üretici `gen_cells.py --set v2|abl`; dal `yol2/goster` (koşu b0862d6c, okuma aracı düzeltmesi fdd6b22c).
+- Ham veri `ham/mini-o-v2/`, `ham/mini-o-v2-onkosu/`, `ham/mini-o-abl-r25/`; sha256 `ham-veri.sha256`. Metin dosyalarındaki makine yolları yer tutucuyla değiştirildi. Sıkıştırılmış yakalama dosyalarında (`capb_*.csv.gz`) yol yok, oldukları gibi kaldılar.
