@@ -19,11 +19,14 @@
 //! * `init_counter` deposu: `kama_store::RedbStore` — `CounterStore` olarak; aynı `Arc` nesnesi
 //!   Application'a `AppStore` olarak da verilir (D8: tek somut depo, iki ayrı arayüz).
 
+use std::fmt;
 use std::sync::Arc;
 
+use client_core::hub::signer::{BindSigner, BIND_SIGNATURE_LEN, BIND_TBS_LEN};
 use client_core::transport::ClientTransport;
+use ed25519_dalek::{Signer, SigningKey};
 use kama_noise_wire::clock::SystemClock;
-use kama_noise_wire::entropy::OsEntropy;
+use kama_noise_wire::entropy::{EntropySource, OsEntropy};
 use kama_noise_wire::protector::NoiseWireProtection;
 use kama_noise_wire::session_control::{ControlConfig, EnvelopeKind};
 use kama_noise_wire::CounterStore;
@@ -69,6 +72,54 @@ pub(crate) fn protection(
     }))
 }
 
+// ── [S2-A3-2] hub kipi kurulumu (KK-H56) ─────────────────────────────────────────────────────
+
+/// PoC-BIND imzacısı (S4 §2.4(b), KR-5): **cihaz** Ed25519 anahtarı (`DeviceConfig.ed25519`;
+/// sertifikadaki cihaz anahtarı, kimlik anahtarı DEĞİL). Anahtar `zeroize`'lı `SigningKey`
+/// içindedir, `Debug` basmaz; imzacı yalnız `HubLink`'in tipli alanlardan kurduğu 112 baytlık TBS'yi
+/// görür (imza kâhini yok, D-14).
+// GEÇİCİ: hub kipi seçimi (KK-H50) H-4 main'e girince bağlar; o commit'te kalkar.
+#[allow(dead_code)]
+pub(crate) struct DeviceBindSigner {
+    key: SigningKey,
+}
+
+impl fmt::Debug for DeviceBindSigner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("DeviceBindSigner(<redacted>)")
+    }
+}
+
+impl BindSigner for DeviceBindSigner {
+    fn sign_bind(&self, tbs: &[u8; BIND_TBS_LEN]) -> [u8; BIND_SIGNATURE_LEN] {
+        self.key.sign(tbs).to_bytes()
+    }
+}
+
+/// Cihaz dosyasından imzacı; `drop(config)`'tan ÖNCE çağrılır (`lib.rs` kurulum sırası).
+// GEÇİCİ: hub kipi seçimi (KK-H50) H-4 main'e girince bağlar; o commit'te kalkar.
+#[allow(dead_code)]
+pub(crate) fn bind_signer(config: &DeviceConfig) -> Box<dyn BindSigner> {
+    Box::new(DeviceBindSigner {
+        key: SigningKey::from_bytes(config.ed25519.secret.expose()),
+    })
+}
+
+/// `device_cert_ref = SHA-256(compact_device_cert)` (`kama_noise_wire::handshake::cert_ref_of`;
+/// S4 H2).
+// GEÇİCİ: hub kipi seçimi (KK-H50) H-4 main'e girince bağlar; o commit'te kalkar.
+#[allow(dead_code)]
+pub(crate) fn device_cert_ref(config: &DeviceConfig) -> [u8; 32] {
+    kama_noise_wire::handshake::cert_ref_of(config.cert.bytes())
+}
+
+/// `HubLink`'in entropisi (`request_id` başlangıcı, `client_nonce`): OS CSPRNG'i.
+// GEÇİCİ: hub kipi seçimi (KK-H50) H-4 main'e girince bağlar; o commit'te kalkar.
+#[allow(dead_code)]
+pub(crate) fn hub_entropy() -> Box<dyn EntropySource> {
+    Box::new(OsEntropy::new())
+}
+
 /// YALNIZ birim testleri: cihaz dosyalarını gerçek provisioning yolundan (`kama-provision`
 /// kütüphanesi, OS entropisi) üretir. Entropi kaynağının adı yalnız bu modülde geçer (C8).
 #[cfg(test)]
@@ -79,4 +130,50 @@ pub(crate) fn provision_for_test(request: &kama_provision::provision::InitReques
         .as_secs();
     kama_provision::provision::init(request, &mut OsEntropy::new(), created_at)
         .expect("provisioning");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::TempDir;
+    use kama_noise_wire::ed25519_strict::verify_strict;
+    use kama_provision::format::{load_device_config, DeviceName};
+    use kama_provision::provision::InitRequest;
+    use std::collections::BTreeMap;
+
+    /// KK-H56: imza CİHAZ anahtarıyla (`ed25519`), katı kipte doğrulanır; kimlik anahtarıyla
+    /// doğrulanmaz. `Debug` anahtar basmaz. `device_cert_ref` = SHA-256(cert).
+    #[test]
+    fn bind_signer_uses_the_device_key_and_verifies_strictly() {
+        let root = TempDir::new("bind-signer");
+        let name = DeviceName::new("alice").expect("ad");
+        let out_dir = root.path().join("authority");
+        provision_for_test(&InitRequest {
+            out_dir: out_dir.clone(),
+            devices: vec![name.clone(), DeviceName::new("bob").expect("ad")],
+            hub: None,
+            direct: BTreeMap::new(),
+        });
+        let config = load_device_config(&out_dir.join(name.file_name())).expect("cihaz dosyası");
+        let signer = bind_signer(&config);
+        let tbs: [u8; BIND_TBS_LEN] = core::array::from_fn(|i| i as u8);
+        let sig = signer.sign_bind(&tbs);
+        verify_strict(config.ed25519.public.bytes(), &tbs, &sig).expect("cihaz anahtarı");
+        assert!(
+            verify_strict(config.identity_ed25519.public.bytes(), &tbs, &sig).is_err(),
+            "kimlik anahtarı değil (S4 KR-5)"
+        );
+        assert_eq!(signer.sign_bind(&tbs), sig, "Ed25519 deterministik");
+        let mut other = tbs;
+        other[0] ^= 1;
+        assert!(verify_strict(config.ed25519.public.bytes(), &other, &sig).is_err());
+        let shown = format!(
+            "{:?}",
+            DeviceBindSigner {
+                key: SigningKey::from_bytes(config.ed25519.secret.expose()),
+            }
+        );
+        assert_eq!(shown, "DeviceBindSigner(<redacted>)");
+        assert_eq!(device_cert_ref(&config), config.cert.cert_ref());
+    }
 }
