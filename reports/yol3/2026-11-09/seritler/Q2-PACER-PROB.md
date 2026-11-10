@@ -2,7 +2,7 @@
 
 - Kaynak belge: `QUINN-FARKI-KOD-KARSILASTIRMA-2026-11-09.md` (sha256 85c4d27e…), §3-A'nın 3. ve 4. maddeleri.
 - Dal `yol3/q2-quinn-pacer-prob` @ **c8450809**. Taban `yol2/o1` 5fdad83b. Dal origin'de; main'e dokunulmadı.
-- Worktree: `/home/ryuzaki/kama-wt/yol3-q2`.
+- Worktree: `<worktree-kökü>/yol3-q2`.
 - Commit'ler:
   - c34e6d6c `feat`: bayraklar ve motor kodu;
   - c8450809 `test`: birim testleri.

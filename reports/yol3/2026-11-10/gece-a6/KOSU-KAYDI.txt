@@ -1,0 +1,16 @@
+başlangıç 2026-11-10T03:41:28+03:00; yuvalar bekleniyor
+yuvalar alındı (3/3) 2026-11-10T03:41:28+03:00
+ağaç: yol2/goster-a6 e332991b4a2e50c2043b279412f37201e8a11f22 (= yol2/goster-a 56313c73 + Q2 A-6 e9992229 + ENT-A6 düzenek)
+quinn ağacı: yol3/quinn-kol d93aef104b01f7363935e859de0f89c389f909ab
+diğer cargo/rustc süreçleri: 0/0
+980f1c3428b6b1fd9bad4e0ba37dec7155c14b31ebd1e9be0ac1dce247cf96be  <worktree-kökü>/target-goster-a6/release/examples/f0_flows
+7e6eab9af6503203cc44d5634192491dc85258c393f36c181cdd03f19ce08682  <worktree-kökü>/target-goster-a6/release/bench
+26a702dc00753d44fdd87135114f309d5f3495136142b5b71ddbc0a2d2a20193  <worktree-kökü>/target-quinn-kol/release/bench
+c99196ba2cd1ab1fd22512320d6af0cce0626540d6b7d82b7ab2e0c088f782c8  scripts/yol3/tesis/SIRA-A6.txt
+BIN_QK önceki quinn koşusunun ikilisi (beklenen 26a702dc…; d93aef10'dan yeniden derlenmedi)
+KK-ORK-01: FEC kapalı. s-kolları --goster on (W = 5, T = 2,0 s). q_limit kolları netem limit (hücre başlığında hesap). Paralellik f0_grid -j 11 (önceki Kama koşularıyla aynı; önceki quinn koşusu -j 3 idi).
+ölçüm başlangıç 2026-11-10T03:44:30+03:00
+grid rc=0 bitiş 2026-11-10T04:42:48+03:00
+oku rc=0
+52d8f7c82836f8fb735809f7583bd6a8662862d7a58e200b640dcc35cf501499  <ölçüm-kökü>/yol3/tesis/2026-11-10-a6/okuma-a6/okuma-a6.json
+c6341960b60567a7f478fa0b7165e8821e7f89a3602db63aba3b5f7833a78f59  <ölçüm-kökü>/yol3/tesis/2026-11-10-a6/okuma-a6/OKUMA-A6.md
