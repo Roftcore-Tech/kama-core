@@ -19,5 +19,7 @@ scripts/yol3/tesis/cells-a6/a_r12k_d300_l30_dosyali__Q_bbr_rfc_qlim.cell
 scripts/yol3/tesis/cells-a6/b_r25_d300_l20_p65__K1.cell
 scripts/yol3/tesis/cells-a6/b_r25_d300_l20_p65__K1A6.cell
 scripts/yol3/tesis/cells-a6/b_r25_d300_l20_p65__K1A.cell
+scripts/yol3/tesis/cells-a6/b_r25_d300_l20_p65__K0.cell
 scripts/yol3/tesis/cells-a6/b_r12k_d1000_l0_p1000__K1.cell
 scripts/yol3/tesis/cells-a6/b_r12k_d1000_l0_p1000__K1A6.cell
+scripts/yol3/tesis/cells-a6/b_r12k_d1000_l0_p1000__K0.cell

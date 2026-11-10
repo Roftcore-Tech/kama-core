@@ -1,4 +1,4 @@
-# [YOL3 · A-6 gece] b_r25_d300_l20_p65__K1 — madde 3; r25 teslim@60 ve gönderim; R3 (EK-A §9.3, §2.1). Üretici: scripts/yol3/tesis/gen_cells.py --set a6 (elle düzenlemeyin).
+# [YOL3 · A-6 gece] b_r25_d300_l20_p65__K1 — madde 3; r25 teslim@60 ve gönderim; R3 (EK-A §9.3, §2.1; K0 = R3 tabanı, aynı ikili). Üretici: scripts/yol3/tesis/gen_cells.py --set a6 (elle düzenlemeyin).
 # Kaynak hücre: scripts/ktp2/f0/cells/b/b_r25_d300_l20_p65.cell (sha256 bf4d90acf9c8c003d15590b7f06a5abd34934ea123270d8bdb0cf3b23ae2374d) — geometri AYNEN; fark yalnız CELL, REPS, ARMS, kol bayrağı.
 # Kol K1: c+d+DrainRtprop+e-dar (M2 manifesti KK-M2-09) · FEC off (KK-ORK-01).
 # İkili: BIN_TESIS_BENCH = <yol2/goster-a6>/target/release/bench (orkestratör, D-34); kol arms_kama.sh kama_e1_arm.

@@ -33,7 +33,7 @@ Seçenekler (M2 manifestinin satırları; varsayılanlar aşağıda, değişirse
                        return_prior_gated · K1grp = K1gr + pto_rfc + pto_probes = 2 · K1A = K1 +
                        E2a'nın hepsi + a3_burst_floor + a4_probe_srtt.
                        `a6`: A-6 gece ölçümü (sahip kararı v4 EK-A §9.3, §10.3, §10.4, §2.1;
-                       KK-Ö-EKA-2…4) → cells-a6/ + SIRA-A6.txt; 23 dosya, 230 iş; ikililer
+                       KK-Ö-EKA-2…4) → cells-a6/ + SIRA-A6.txt; 25 dosya, 250 iş; ikililer
                        yol2/goster-a6 (f0_flows, bench) ve yol3/quinn-kol (bench f0-quinn).
                        Kollar (A6_ARMS): K1 (şeritsiz) · K1A6 = K1A + a6_iw_floor (K1 + A-1…A-6) ·
                        K1A (K1 + A − 6) · K1s = K1 + `--goster on` · K1A6s = K1A6 + `--goster on`
@@ -45,8 +45,9 @@ Seçenekler (M2 manifestinin satırları; varsayılanlar aşağıda, değişirse
                          5  q_limit: 1 ve 2 × {K1A6s, Q_bbr_rfc}, kol adı `<kol>_qlim`; netem
                             dizesine iki yönde `limit N`, N = floor(2 × rate × RTT / 1200 B)
                             (RTT = iki yön gecikme toplamı), hesabı hücre başlığında
-                         3  b_r25_d300_l20_p65 × {K1, K1A6, K1A} (bench)
-                         4  b_r12k_d1000_l0_p1000 × {K1, K1A6} (bench; R3 koruması)
+                         3  b_r25_d300_l20_p65 × {K1, K1A6, K1A, K0} (bench)
+                         4  b_r12k_d1000_l0_p1000 × {K1, K1A6, K0} (bench; R3 koruması)
+                         (K0 = R3 tabanı, AYNI ikiliden; karma sürüm tabanı kullanılmaz)
                        Yazılmayanlar (nedenleri `--komut` çıktısında da): b hücrelerinde s-kolları
                        (bench'te S1 şeridi ve PTT yok; b_body `--goster`'i reddeder); b_r25'te
                        quinn (QUIC ilk uçuşu her yönde ≥ 1200 B UDP yükü, RFC 9000 §14.1 → 25 B/s'de
@@ -181,8 +182,10 @@ TABLE_A6 = [
     (2, A6_C2, A6_SEVEN, "7 kol, d300 l30 dosyalı (EK-A §9.3, §10.4)"),
     (5, A6_C1, A6_QLIM, "küçük kuyruk q_limit (EK-A §10.3)"),
     (5, A6_C2, A6_QLIM, "küçük kuyruk q_limit (EK-A §10.3)"),
-    (3, A6_C3, ["K1", "K1A6", "K1A"], "r25 teslim@60 ve gönderim; R3 (EK-A §9.3, §2.1)"),
-    (4, A6_C4, ["K1", "K1A6"], "R3 koruması d1000 l0 p95 (EK-A §2.1)"),
+    (3, A6_C3, ["K1", "K1A6", "K1A", "K0"],
+     "r25 teslim@60 ve gönderim; R3 (EK-A §9.3, §2.1; K0 = R3 tabanı, aynı ikili)"),
+    (4, A6_C4, ["K1", "K1A6", "K0"],
+     "R3 koruması d1000 l0 p95 (EK-A §2.1; K0 = R3 tabanı, aynı ikili)"),
 ]
 A6_TREE = "yol2/goster-a6"
 A6_KOK = "2026-11-10-a6"
@@ -481,7 +484,8 @@ def plan_a6():
         for arm in arms:
             cell = f"{base}__{arm}"
             if base.startswith("b_"):
-                if arm.endswith(QLIM) or A6_ARMS[arm][0] != "kama" or A6_ARMS[arm][2]:
+                if arm.endswith(QLIM) or arm not in ARM_FLAGS or (
+                        arm in A6_ARMS and (A6_ARMS[arm][0] != "kama" or A6_ARMS[arm][2])):
                     raise SystemExit(f"{cell}: b hücresinde yalnız şeritsiz Kama kolu")
                 body = b_body(cell, arm, rel, sha, lines, "off", False, purpose, row, A6_TREE,
                               tag="[YOL3 · A-6 gece]", gen="scripts/yol3/tesis/gen_cells.py --set a6",
@@ -546,9 +550,8 @@ export BIN_TESIS_BENCH=<{tree} hedefi>/release/bench
 export BIN_QK=<yol3/quinn-kol hedefi>/release/bench
 systemd-inhibit --what=sleep:idle --why="YOL3 A-6 gece" setsid \\
   scripts/ktp2/f0/f0_grid.sh -j 11 ~/kama-k4g-work/yol3/tesis/{kok} $(cat scripts/yol3/tesis/{sira})
-# Okuma (koşu bitince; R3 kıyası için K0 tabanı isteğe bağlı ayrı kökten, karma sürüm etiketiyle):
-python3 -I scripts/yol3/tesis/oku_a6.py --kok ~/kama-k4g-work/yol3/tesis/{kok} \\
-  [--r3-taban ~/kama-k4g-work/yol3/tesis/2026-11-09-g2]     # çıktı <kök>/okuma-a6/
+# Okuma (koşu bitince; R3 tabanı aynı kökteki K0 kolu, aynı ikili):
+python3 -I scripts/yol3/tesis/oku_a6.py --kok ~/kama-k4g-work/yol3/tesis/{kok}   # → <kök>/okuma-a6/
 # q_limit (EK-A §10.3; N = floor(2 × rate × RTT / {QLIM_MTU} B), RTT = iki yön gecikme toplamı):
 {ql}
 # Yazılmayan hücreler:
@@ -558,7 +561,7 @@ python3 -I scripts/yol3/tesis/oku_a6.py --kok ~/kama-k4g-work/yol3/tesis/{kok} \
 #     §14.1) → 25 B/s'de el sıkışma ≥ 99,4 s + 2d > D = 60 s (RAPOR-B hesabı); Q_*
 #     tanımı f0-quinn akış senaryosu, bench B'nin quinn kolu ayrı tanım.
 #   b_r25'te q_limit: N < 1 paket (yukarıda).
-#   b_r12k_d1000_l0_p1000'de quinn: iş emri bu hücrede yalnız K1, K1A6 ister.
+#   b_r12k_d1000_l0_p1000'de quinn: iş emri bu hücrede yalnız K1, K1A6 (+ R3 tabanı K0) ister.
 """
 
 

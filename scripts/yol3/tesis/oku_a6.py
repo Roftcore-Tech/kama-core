@@ -24,7 +24,8 @@ büyük. Tanımlar:
       baytını açmaz, kayıp ilan edilen bayt yazılır. `file.delivered` yoksa koşu bu sütunlara girmez.
   t(%10) = `file.sent`'ten gönderici sayacının (Kama txb, quinn tx_b) dosya boyunun %10'u kadar
       arttığı ilk örneğe dek süre: gönderici txb (yeniden gönderim ve dosya dışı trafik dahil), alıcı
-      ilerlemesi DEĞİL; çözünürlük örnek aralığı (probe_ms, 200 ms; üst sınır). Ulaşılmadı = ∞.
+      ilerlemesi DEĞİL; quinn'de sokete yazma anı (netem kuyruğu emer), tel ilerlemesi değil;
+      çözünürlük örnek aralığı (probe_ms, 200 ms; üst sınır). Ulaşılmadı = ∞.
   PTT (EK-A §10.4; üç ayrı sütun, karşı örnek basışı hariç; anlar alice gönderiminden):
       ilk demet varışı = her basışın ilk demetinin (i = 0) varışı, koşu başına basışların en geci;
       bütün demetler varış p95 = koşu başına nearest-rank p95 (oku.py `ptt_varis`; teslim edilmeyen
@@ -43,9 +44,10 @@ büyük. Tanımlar:
       realized_post netem (mb0) drops / (packets + drops) — kayıp ve kuyruk taşması BİRLİKTE.
   b hücreleri (R3; oku.py tanımı aynen): d1000 l0 p95 = analiz_b `conf_p95_s`; r25 teslim@60 =
       `deliv_D` × `n_msgs` (adet), gönderim = `tx_total_B`; kol medyanları; tamamlanma = koşu
-      başına bütün mesajlar D içinde. `--r3-taban` verilirse aynı hücrelerin K0 kolu o kökten okunur
-      ve oku.py `r3` kuralı (l0 p95 ≤ K0 × 1,10; r25 teslim ≥ K0 − 1 ∧ gönderim ≤ K0 × 1,10) kol
-      başına uygulanır — taban farklı ağaç ve ikili (karma sürüm), satırda etiketli.
+      başına bütün mesajlar D içinde. Taban = aynı kökün K0 kolu (aynı ikili; A-6 ızgarasında b
+      hücreleri × K0) ve oku.py `r3` kuralı (l0 p95 ≤ K0 × 1,10; r25 teslim ≥ K0 − 1 ∧ gönderim ≤
+      K0 × 1,10) kol başına uygulanır. `--r3-taban` yalnız eski kökler için: K0'ı başka kökten okur,
+      satır "karma sürüm" etiketli (A-6 kararında kullanılmaz).
 """
 
 import argparse
@@ -429,8 +431,9 @@ def extract_b(roots, arms=None):
     return out
 
 
-def r3_rows(b, taban, taban_kok):
-    """Kol başına R3: oku.py `r3` kuralı AYNEN (K2 yuvasına kol konur); taban yoksa yalnız değer."""
+def r3_rows(b, taban, taban_kok, karma=False):
+    """Kol başına R3: oku.py `r3` kuralı AYNEN (K2 yuvasına kol konur; taban K0). Taban yoksa
+    yalnız değer. `karma` = taban başka kökten (farklı ikili) okundu."""
     rows = []
     for (base, arm), e in sorted(b.items(), key=lambda kv: (kv[0][0], order_key(kv[0][1]))):
         row = {"hucre": base, "kol": arm, "n": len(e["rc"]),
@@ -444,7 +447,7 @@ def r3_rows(b, taban, taban_kok):
                        "K2": {"p95": e["p95"], "teslim": e["teslim"], "tx": e["tx"]}}
             v = oku.r3(d)
             row["l0" if base == oku.L0 else "r25"] = v["l0" if base == oku.L0 else "r25"]
-            row["taban"] = {"kok": taban_kok, "p95_med": med(k0["p95"]),
+            row["taban"] = {"kok": taban_kok, "karma": karma, "p95_med": med(k0["p95"]),
                             "teslim_med": med(k0["teslim"]), "tx_med": med(k0["tx"])}
         rows.append(row)
     return rows
@@ -495,7 +498,8 @@ def report(A, R3, roots):
           "mantığı); quinn retx = kayıp ilan edilen bayt / UDP gönderilen bayt (vekil). t(%10): "
           "gönderici txb (yeniden gönderim dahil), alıcı ilerlemesi değil; çözünürlük 200 ms.", "",
           "| hücre | kol | dosya bitiş med / p90 / en kötü (s) | faydalı debi (kB/s) | "
-          "tel debisi med (B/s) [n] | retx payı med | t(%10) med (s) | ileri netem düşüş payı med |",
+          "tel debisi med (B/s) [n] | retx payı med | t(%10) med (s) [gönderici txb; quinn: "
+          "sokete yazma anı, tel ilerlemesi değil] | ileri netem düşüş payı med |",
           "|---|---|---|---|---|---|---|---|"]
     for k in keys:
         e = A[k]
@@ -554,13 +558,17 @@ def report(A, R3, roots):
               "|---|---|---|---|---|---|---|---|---|"]
         for r in R3:
             t = r["taban"]
+            src = (f"{t['kok']}, karma sürüm" if t and t["karma"] else "aynı kök ve ikili") \
+                if t else ""
             if t is None:
                 v = "— (taban yok)"
+            elif r["kol"] == "K0" and not t["karma"]:
+                v = "taban"
             elif r["hucre"] == oku.L0:
-                v = f"{r['l0']} (K0 p95 {fmt(t['p95_med'])}; {t['kok']}, karma sürüm)"
+                v = f"{r['l0']} (K0 p95 {fmt(t['p95_med'])}; {src})"
             else:
                 v = (f"{r['r25']} (K0 teslim {fmt(t['teslim_med'], 1)}, gönderim "
-                     f"{fmt(t['tx_med'], 0)}; {t['kok']}, karma sürüm)")
+                     f"{fmt(t['tx_med'], 0)}; {src})")
             L.append(f"| {r['hucre']} | {r['kol']} | {r['n']} | {r['rc0']}/{r['n']} | "
                      f"{r['tamam']}/{r['n']} | {fmt(r['p95_med'])} | {fmt(r['teslim_med'], 1)} / "
                      f"{r['msgs'] or '—'} | {fmt(r['tx_med'], 0)} | {v} |")
@@ -661,7 +669,7 @@ def oz_test():
                            "rc": [0] * 10, "tamam": [False] * 10, "msgs": 6}}
     tb = {(oku.L0, "K0"): {"p95": [3.8] * 10, "teslim": [100] * 10, "tx": [1] * 10},
           (oku.R25, "K0"): {"p95": [9.0] * 10, "teslim": [5] * 10, "tx": [1000] * 10}}
-    rr = {r["hucre"]: r for r in r3_rows(b, tb, "g2")}
+    rr = {r["hucre"]: r for r in r3_rows(b, tb, "aynı kök")}
     chk("R3: l0 4,0 ≤ 3,8 × 1,10 → geçer", rr[oku.L0]["l0"] is True)
     chk("R3: r25 gönderim 1100 ≤ 1000 × 1,10 sınırda geçer", rr[oku.R25]["r25"] is True)
     rr = {r["hucre"]: r for r in r3_rows(b, {}, None)}
@@ -685,11 +693,12 @@ def main():
     out = pathlib.Path(a.out).expanduser() if a.out else roots[0] / "okuma-a6"
     out.mkdir(parents=True, exist_ok=True)
     A = extract_a(roots, out)
-    taban, tkok = {}, None
+    b = extract_b(roots)
     if a.r3_taban:
         tk = pathlib.Path(a.r3_taban).expanduser().resolve()
-        taban, tkok = extract_b([tk], arms={"K0"}), tk.name
-    R3 = r3_rows(extract_b(roots), taban, tkok)
+        R3 = r3_rows(b, extract_b([tk], arms={"K0"}), tk.name, karma=True)
+    else:   # varsayılan: aynı kökün K0 kolu (aynı ikili; A-6 ızgarasında b hücreleri × K0)
+        R3 = r3_rows(b, {k: v for k, v in b.items() if k[1] == "K0"}, "aynı kök")
     md, js = report(A, R3, roots)
     (out / "OKUMA-A6.md").write_text(md, encoding="utf-8")
     (out / "okuma-a6.json").write_text(json.dumps(js, ensure_ascii=False, indent=1, default=str),
