@@ -18,7 +18,12 @@ publish = false
 # D11: yeni harici bağımlılık YOK — yalnız workspace crate'leri + `thiserror` (workspace sürümü).
 # Yeni async runtime YOK: veri yolunun tokio'su `client-core`'un içindedir (`ClientTransport`
 # kendi çalışma-zamanını taşır); düğüm döngüsü bir `std::thread`'dir.
+# [YOL3 · gösterim] `adaptive-transport`: yalnız gösterim profilinin bayrak TİPLERİ (`E1Flags`,
+# `E2aFlags`; `src/goster.rs`). İsteğe bağlı: yalnız `goster` ve `test-util` açar (modül de yalnız
+# onlarla derlenir). Zaten `client-core` üzerinden grafikte; yeni derlenen paket yok, ürün API yüzeyi
+# (client-core) değişmez (KK-Ö-38).
 [dependencies]
+adaptive-transport = { path = "../adaptive-transport", optional = true }
 client-core = { path = "../client-core" }
 kama-app = { path = "../kama-app" }
 kama-contracts = { path = "../kama-contracts" }
@@ -36,14 +41,15 @@ thiserror.workspace = true
 # bu özellikten bağımsızdır; ürün bağımlılığında AÇILMAZ. `client-core/test-util`: kurtarma ve canlı
 # ayna anahtarları, oturum tablosu okuyucuları (`set_recovery_for_test`, `set_live_diag_for_test`,
 # `peer_of_for_test`, `outstanding_for_test`).
-test-util = ["client-core/test-util"]
+test-util = ["client-core/test-util", "dep:adaptive-transport"]
 # [YOL3 · Ö · KK-Ö-28] Gösterim düğümü (A yolu telefonları; `.so` `--features kama-node/goster` ile,
 # orkestratör derler): ürün kurucusu `KamaNode::start` gösterim profilini (`src/goster.rs`: FEC yok,
-# gösterim E1 kolu, S1 şeritleri W = 5, PTT oynatma tamponu T) kurar. Varsayılan KAPALI; kapalıyken
-# ürün yolu bit-aynı. `test-util` ile birlikte ETKİSİZ (KK-Ö-39: `--all-features` testleri ürün yolunu
-# sınamaya devam eder); gösterim ikilisi `test-util` açmadan derlenir. Yeni bağımlılık yok.
-# Gösterim; kapılı PoC ölçümü Aralık; ARQ yolu, FEC Aralık'ta.
-goster = []
+# gösterim seti K1A6 = K1 + A-1…A-6 (E1 + E2a bayrakları), S1 şeritleri W = 5, PTT oynatma tamponu
+# T) kurar. Varsayılan KAPALI; kapalıyken ürün yolu bit-aynı. `test-util` ile birlikte ETKİSİZ
+# (KK-Ö-39: `--all-features` testleri ürün yolunu sınamaya devam eder); gösterim ikilisi `test-util`
+# açmadan derlenir. Yeni dış bağımlılık yok.
+# Gösterim; kapılı PoC ölçümü Aralık; ARQ yolu, FEC Aralık'ta; sığ tamponlu ağ gösterim kapsamı dışı.
+goster = ["dep:adaptive-transport"]
 
 [dev-dependencies]
 # Kendi `test-util` özelliğini entegrasyon testlerine açar (client-core'daki kalıp; bkz. yukarıdaki

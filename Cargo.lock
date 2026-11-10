@@ -860,6 +860,7 @@ dependencies = [
 name = "kama-node"
 version = "0.1.0"
 dependencies = [
+ "adaptive-transport",
  "client-core",
  "kama-app",
  "kama-contracts",
