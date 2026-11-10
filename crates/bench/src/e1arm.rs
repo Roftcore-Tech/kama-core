@@ -1,6 +1,12 @@
 //! [YOL3 · Ö] E1 teşhis kolu (`--e1-arm`, `--e1-edar`; CC §4.1 "teşhis kolları bench komut
 //! satırından seçilir", KK-Ö-05). Yalnız `--transport kama-product`; iki uca AYNI verilir.
 //!
+//! [YOL3 · E2a kıyası] Aynı `--e1-arm` iki ek kol taşır (M1 `adaptive_transport::loss::E2aFlags`,
+//! ISEMRI-YOL3-M1): `K1a` = K1 + E2a, `K0a` = yalnız E2a. E2a seti `tt_rfc` (g = 1 ms) +
+//! `rtt_rule_v11` + `iw_idle_hold` + `pto_probes = 2`; `gap_ack` kapalı (uygulanmadı). Seçim
+//! `kama_product::runtime_cfg`'de `RuntimeConfig.e2a_flags`'e yazılır, `profile_delta` listeler.
+//! Diğer kolların E2a seti varsayılandır (kapalı = bugünkü davranış).
+//!
 //! Kol → bayrak tablosu M2'nin teşhis manifestindeki tablonun aynısıdır (`docs/design/
 //! E1-TESHIS-G2.md`, KK-M2-09); `crates/kama-integration/examples/f0_flows.rs` `E1Arm::set` ile
 //! aynı. Seçim süreç başına bir kez [`set`] edilir (main; `rival::set` deseni) ve
@@ -10,6 +16,7 @@
 
 use std::sync::OnceLock;
 
+use adaptive_transport::loss::{E2aFlags, E2aFlagsError, E2A_TT_GRANULARITY_MIN_NS};
 use adaptive_transport::rate::E1Flags;
 use clap::ValueEnum;
 
@@ -30,6 +37,12 @@ pub enum E1Arm {
     K2mc,
     #[value(name = "K2me")]
     K2me,
+    /// [E2a kıyası] K1 + E2a seti (K1 ↔ K1a tek değişken: yalnız E2a).
+    #[value(name = "K1a")]
+    K1a,
+    /// [E2a kıyası] Yalnız E2a seti (E1 kapalı; K0 ↔ K0a tek değişken).
+    #[value(name = "K0a")]
+    K0a,
 }
 
 /// `--e1-edar on|off` (varsayılan `on`): `off` → ön test geçmediyse (CC §4.2) kolun setinden
@@ -66,17 +79,19 @@ impl E1Arm {
             Self::K2 => "K2",
             Self::K2mc => "K2mc",
             Self::K2me => "K2me",
+            Self::K1a => "K1a",
+            Self::K0a => "K0a",
         }
     }
 
     /// Kol → bayraklar (M2 manifesti KK-M2-09 AYNEN): K0 hiçbiri · K0r retx_first ·
     /// K1 c+d+DrainRtprop+e-dar · K2 beşi · K2−c d+DrainRtprop+e-dar+retx_first ·
-    /// K2−e c+d+DrainRtprop+retx_first.
+    /// K2−e c+d+DrainRtprop+retx_first. [E2a kıyası] K1a = K1'in E1 seti · K0a hiçbiri.
     pub fn set(self) -> E1Set {
         let (c, d, dr, e, r) = match self {
-            Self::K0 => (false, false, false, false, false),
+            Self::K0 | Self::K0a => (false, false, false, false, false),
             Self::K0r => (false, false, false, false, true),
-            Self::K1 => (true, true, true, true, false),
+            Self::K1 | Self::K1a => (true, true, true, true, false),
             Self::K2 => (true, true, true, true, true),
             Self::K2mc => (false, true, true, true, true),
             Self::K2me => (true, true, true, false, true),
@@ -87,6 +102,88 @@ impl E1Arm {
             drainrt_gate: dr,
             probe_keep: e,
             retx_first: r,
+        }
+    }
+}
+
+impl E1Arm {
+    /// [E2a kıyası] Kol → E2a seti: K1a ve K0a `tt_rfc` + `rtt_rule_v11` + `iw_idle_hold` +
+    /// `pto_probes = 2`; diğer kollar varsayılan (kapalı, `pto_probes = 1`).
+    pub fn e2a(self) -> E2aSet {
+        match self {
+            Self::K1a | Self::K0a => E2aSet {
+                tt_rfc: true,
+                rtt_rule_v11: true,
+                iw_idle_hold: true,
+                pto_probes: 2,
+            },
+            _ => E2aSet::default(),
+        }
+    }
+}
+
+/// [E2a kıyası] Bir kolun açtığı E2a bayrakları (M1 `E2aFlags` alanlarının sırası). `g`
+/// (`tt_granularity_ns`) daima 1 ms (`E2A_TT_GRANULARITY_MIN_NS`, varsayılan); `gap_ack` kapalı.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct E2aSet {
+    /// m1 `tt_rfc` (g = 1 ms).
+    pub tt_rfc: bool,
+    /// m8 `rtt_rule_v11`.
+    pub rtt_rule_v11: bool,
+    /// m6 `iw_idle_hold`.
+    pub iw_idle_hold: bool,
+    /// PTO turu başına prob sayısı ({1, 2}).
+    pub pto_probes: u8,
+}
+
+impl Default for E2aSet {
+    /// M1 `E2aFlags::default()` ile aynı: hepsi kapalı, `pto_probes = 1`.
+    fn default() -> Self {
+        Self {
+            tt_rfc: false,
+            rtt_rule_v11: false,
+            iw_idle_hold: false,
+            pto_probes: 1,
+        }
+    }
+}
+
+impl E2aSet {
+    /// Varsayılandan farklı mı (en az bir E2a kuralı açık).
+    pub fn any(self) -> bool {
+        self != Self::default()
+    }
+
+    /// M1'in çalışma zamanı bayrak yapısı (`RuntimeConfig.e2a_flags`); doğrulama tip kurucusunda.
+    ///
+    /// # Errors
+    /// [`E2aFlagsError`] (`E2aFlags::new`); kol tablosunun değerleri geçerlidir.
+    pub fn flags(self) -> Result<E2aFlags, E2aFlagsError> {
+        E2aFlags::new(
+            self.tt_rfc,
+            E2A_TT_GRANULARITY_MIN_NS,
+            self.rtt_rule_v11,
+            self.iw_idle_hold,
+            self.pto_probes,
+            false,
+        )
+    }
+
+    /// Etiket: açık kurallar `+` ile (M1 alan adları); hiçbiri → `-`.
+    pub fn label(self) -> String {
+        let names: Vec<&str> = [
+            (self.tt_rfc, "tt_rfc(g=1ms)"),
+            (self.rtt_rule_v11, "rtt_rule_v11"),
+            (self.iw_idle_hold, "iw_idle_hold"),
+            (self.pto_probes == 2, "pto_probes=2"),
+        ]
+        .into_iter()
+        .filter_map(|(on, name)| on.then_some(name))
+        .collect();
+        if names.is_empty() {
+            "-".to_owned()
+        } else {
+            names.join("+")
         }
     }
 }
@@ -147,30 +244,50 @@ impl E1Sel {
         set
     }
 
-    /// Koşu ÖNCESİ ret: bayraklı kol yalnız `kama-product`'ta (rakip kollarda E1 yok; sessizce
-    /// yok sayılmaz).
+    /// [E2a kıyası] Kolun E2a seti (`--e1-edar` E2a'yı etkilemez).
+    pub fn e2a(self) -> E2aSet {
+        self.arm.e2a()
+    }
+
+    /// Koşu ÖNCESİ ret: bayraklı kol (E1 ya da E2a) yalnız `kama-product`'ta (rakip kollarda
+    /// yok; sessizce yok sayılmaz).
     pub fn refuse_unavailable(self, kama_product: bool) -> Result<(), String> {
-        if !self.set().any() || kama_product {
+        if !(self.set().any() || self.e2a().any()) || kama_product {
             return Ok(());
         }
         Err(format!(
-            "--e1-arm {} ({}) yalnız --transport kama-product ile",
+            "--e1-arm {} (E1 {}; E2a {}) yalnız --transport kama-product ile",
             self.arm.name(),
-            self.set().label()
+            self.set().label(),
+            self.e2a().label()
         ))
     }
 }
 
-static SEL: OnceLock<E1Sel> = OnceLock::new();
+/// Seçim ve doğrulanmış E2a bayrakları (`E2aFlags::new` [`set`]'te bir kez koşar).
+static SEL: OnceLock<(E1Sel, E2aFlags)> = OnceLock::new();
 
 /// Süreç başına bir kez (main). İkinci çağrı yok sayılır.
-pub fn set(sel: E1Sel) {
-    let _ = SEL.set(sel);
+///
+/// # Errors
+/// Kolun E2a seti `E2aFlags::new` doğrulamasından geçmezse (koşu başlamaz; kol tablosu geçerlidir).
+pub fn set(sel: E1Sel) -> Result<(), String> {
+    let e2a = sel
+        .e2a()
+        .flags()
+        .map_err(|e| format!("--e1-arm {}: E2a bayrakları geçersiz: {e}", sel.arm.name()))?;
+    let _ = SEL.set((sel, e2a));
+    Ok(())
 }
 
 /// Yürürlükteki seçim; hiç [`set`] edilmediyse K0 (bayraklar kapalı, bugünkü davranış).
 pub fn current() -> E1Sel {
-    SEL.get().copied().unwrap_or_default()
+    SEL.get().map(|s| s.0).unwrap_or_default()
+}
+
+/// [E2a kıyası] Yürürlükteki E2a bayrakları; hiç [`set`] edilmediyse `E2aFlags::default()` (ürün).
+pub fn current_e2a() -> E2aFlags {
+    SEL.get().map(|s| s.1).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -186,6 +303,8 @@ mod tests {
             ("K2", "c+d+DrainRtprop+e-dar+retx_first"),
             ("K2mc", "d+DrainRtprop+e-dar+retx_first"),
             ("K2me", "c+d+DrainRtprop+retx_first"),
+            ("K1a", "c+d+DrainRtprop+e-dar"),
+            ("K0a", "-"),
         ];
         for (name, label) in want {
             let arm = E1Arm::from_str(name, false).expect("kol adı ayrışmalı");
@@ -226,6 +345,49 @@ mod tests {
         assert!(k2mc
             .refuse_unavailable(false)
             .expect_err("rakip kolda E1 yok")
+            .contains("kama-product"));
+    }
+
+    #[test]
+    fn e2a_arms_differ_from_their_base_only_in_e2a() {
+        let on = "tt_rfc(g=1ms)+rtt_rule_v11+iw_idle_hold+pto_probes=2";
+        for (arm, base) in [(E1Arm::K1a, E1Arm::K1), (E1Arm::K0a, E1Arm::K0)] {
+            assert_eq!(
+                arm.set(),
+                base.set(),
+                "{}: E1 seti tabanla aynı",
+                arm.name()
+            );
+            assert_eq!(arm.e2a().label(), on, "{}", arm.name());
+            assert!(!base.e2a().any(), "{}: E2a kapalı", base.name());
+            let f = arm.e2a().flags().expect("kol tablosu geçerli");
+            assert!(f.tt_rfc() && f.rtt_rule_v11() && f.iw_idle_hold() && !f.gap_ack());
+            assert_eq!((f.tt_granularity_ns(), f.pto_probes()), (1_000_000, 2));
+        }
+        for arm in E1Arm::value_variants() {
+            if !matches!(arm, E1Arm::K1a | E1Arm::K0a) {
+                assert_eq!(arm.e2a().flags(), Ok(E2aFlags::default()), "{}", arm.name());
+                assert_eq!(arm.e2a().label(), "-");
+            }
+        }
+        let k1a = E1Sel {
+            arm: E1Arm::K1a,
+            edar: E1Edar::Off,
+        };
+        assert_eq!(
+            k1a.set().label(),
+            "c+d+DrainRtprop",
+            "(e-dar) düşer, E2a kalır"
+        );
+        assert_eq!(k1a.e2a(), E1Arm::K1a.e2a());
+        let k0a = E1Sel {
+            arm: E1Arm::K0a,
+            edar: E1Edar::On,
+        };
+        assert_eq!(k0a.refuse_unavailable(true), Ok(()));
+        assert!(k0a
+            .refuse_unavailable(false)
+            .expect_err("rakip kolda E2a yok")
             .contains("kama-product"));
     }
 
