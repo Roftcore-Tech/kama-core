@@ -69,12 +69,13 @@ use client_core::transport::{
 };
 use kama_app::codec::PttCodec;
 use kama_app::messaging::MessengerError;
-use kama_app::playout::{PlayoutConfig, PLAYOUT_DELAY_DEFAULT};
+use kama_app::playout::PlayoutConfig;
 use kama_app::ptt::PttError;
 use kama_app::signaling::SignalingError;
 use kama_contracts::handles::PeerRef;
 use kama_contracts::s1::TransportError;
 use kama_contracts::s3::HubHandle;
+use kama_node::goster::{GOSTER_FILE_WINDOW_UNITS, GOSTER_KOL, GOSTER_PLAYOUT_DELAY};
 use kama_node::{
     FileHandle, FileRef, FileStage, KamaNode, NodeError, NodeEvent, NodeListener, NodeProbe,
     SessionProbe, StreamHandle,
@@ -152,7 +153,7 @@ kullanım: f0_flows --role alice|bob --dir <koşu dizini> --alice-addr IP:PORT -
                 [--probe-ms MS=200]
                 [--live-diag on|off=on]
                 [--e1-arm K0|K0r|K1|K2|K2mc|K2me|K1a|K0a=K0] [--e1-edar on|off=on]
-                [--fec-off on|off=off] [--goster on|off=off] [--playout-ms MS=2000]
+                [--fec-off on|off=off] [--goster on|off=off] [--playout-ms MS=2000] [--lane-w N=5]
        f0_flows --help
 
 İki süreç aynı argümanlarla (yalnız --role farklı) başlatılır; önce bob. bob provisioning'i koşu
@@ -163,8 +164,10 @@ YOL3 teşhis: --e1-arm kolu (M2 manifesti bayrak tablosu), --e1-edar off ön tes
 runtime.fec = None; varsayılanlarda düğüm F0 ile aynı kurucudan başlar (kanca yok).
 E2a kıyası: K1a = K1 + E2a, K0a = yalnız E2a (M1 E2aFlags: tt_rfc g=1ms, rtt_rule_v11,
 iw_idle_hold, pto_probes=2).
-Gösterim (YOL3-T1): --goster on → S1 şeritleri (LaneConfig::default, W=5) + PTT oynatma tamponu
-(T = --playout-ms, [1500, 2500], varsayılan 2000); --playout-ms yalnız --goster on ile. İki uca aynı.
+Gösterim (YOL3-T1, KK-Ö-28): --goster on → gösterim profili kama_node::goster'dan: S1 şeritleri
+(W = --lane-w, varsayılan 5) + PTT oynatma tamponu (T = --playout-ms, [1500, 2500], varsayılan 2000);
+--e1-arm varsayılanı gösterim kolu (K1), --fec-off varsayılanı on. Açık bayrak geçersiz kılar.
+--playout-ms ve --lane-w yalnız --goster on ile. İki uca aynı.
 ";
 
 // ── Yapılandırma ─────────────────────────────────────────────────────────────────────────────
@@ -492,6 +495,9 @@ struct Config {
     /// [YOL3 · gösterim] Oynatma tamponunun T'si (`--playout-ms`; yalnız `--goster on`). `None` =
     /// tampon kapalı (demet varışta).
     playout: Option<Duration>,
+    /// [YOL3 · gösterim] W: FILE şeridinin teyitsiz birim tavanı (`--lane-w`; yalnız `--goster on`;
+    /// varsayılan `kama_node::goster::GOSTER_FILE_WINDOW_UNITS`).
+    lane_w: u32,
 }
 
 impl Config {
@@ -503,9 +509,11 @@ impl Config {
             .transpose()
     }
 
-    /// [YOL3 · gösterim] Şerit yapılandırması (`--goster on`): YOL3-T1 gösterim varsayılanı (W = 5).
+    /// [YOL3 · gösterim] Şerit yapılandırması (`--goster on`): W = `--lane-w` (varsayılan gösterim
+    /// profilinin W'si = `LaneConfig::default()`).
     fn lanes_cfg(&self) -> Option<LaneConfig> {
-        self.goster.then(LaneConfig::default)
+        self.goster
+            .then(|| LaneConfig::with_file_window(self.lane_w))
     }
 
     /// Kolun etkin bayrak seti (`--e1-edar off` ise `e1_probe_keep` düşmüş).
@@ -518,7 +526,7 @@ impl Config {
     }
 }
 
-const KNOWN_FLAGS: [&str; 43] = [
+const KNOWN_FLAGS: [&str; 44] = [
     "--role",
     "--dir",
     "--alice-addr",
@@ -560,6 +568,7 @@ const KNOWN_FLAGS: [&str; 43] = [
     "--fec-off",
     "--goster",
     "--playout-ms",
+    "--lane-w",
     "--help",
     "-h",
 ];
@@ -607,6 +616,8 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
             .collect::<Result<Vec<_>, _>>()?,
     };
     let bundle_ms = number(v, "--ptt-bundle-ms", 200)?;
+    // [YOL3 · gösterim] `--goster on` kol ve FEC varsayılanlarını gösterim profilinden alır (KK-Ö-28).
+    let goster = on_off(v, "--goster", false)?;
     let mut cfg = Config {
         role,
         dir: PathBuf::from(required(v, "--dir")?),
@@ -646,21 +657,34 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         live_diag: on_off(v, "--live-diag", true)?,
         receipt_grace: Duration::from_secs(number(v, "--receipt-grace-s", 30)?),
         e1_arm: match values.get("--e1-arm").copied() {
+            None if goster => E1Arm::parse(GOSTER_KOL)
+                .ok_or_else(|| format!("gösterim kolu {GOSTER_KOL:?} f0_flows'ta yok"))?,
             None => E1Arm::K0,
             Some(name) => E1Arm::parse(name).ok_or_else(|| {
                 format!("--e1-arm K0|K0r|K1|K2|K2mc|K2me|K1a|K0a olmalı: {name:?}")
             })?,
         },
         e1_edar: on_off(v, "--e1-edar", true)?,
-        fec_off: on_off(v, "--fec-off", false)?,
-        goster: on_off(v, "--goster", false)?,
+        fec_off: on_off(v, "--fec-off", goster)?,
+        goster,
         playout: None,
+        lane_w: GOSTER_FILE_WINDOW_UNITS,
     };
     cfg.playout = match (cfg.goster, values.contains_key("--playout-ms")) {
-        (true, _) => Some(millis(v, "--playout-ms", ms_u64(PLAYOUT_DELAY_DEFAULT))?),
+        (true, _) => Some(millis(v, "--playout-ms", ms_u64(GOSTER_PLAYOUT_DELAY))?),
         (false, false) => None,
         (false, true) => return Err("--playout-ms yalnız --goster on ile".to_owned()),
     };
+    match (cfg.goster, values.contains_key("--lane-w")) {
+        (true, true) => {
+            cfg.lane_w = number_u32(v, "--lane-w", u64::from(GOSTER_FILE_WINDOW_UNITS))?;
+            if cfg.lane_w == 0 {
+                return Err("--lane-w ≥ 1 olmalı".to_owned());
+            }
+        }
+        (false, true) => return Err("--lane-w yalnız --goster on ile".to_owned()),
+        _ => {}
+    }
     cfg.playout_cfg()?;
     validate(&cfg)?;
     Ok(Parsed::Run(Box::new(cfg)))
@@ -1309,7 +1333,7 @@ fn ts_line(clock: &Clock, at: Instant, p: &NodeProbe) -> String {
     let _ = write!(
         s,
         "],\"app\":{{\"rdrop\":{},\"unk\":{},\"dupt\":{},\"below\":{},\"rsent\":{},\
-         \"runsent\":{},\"rign\":{},\"resent\":{},\"refused\":{},\"store\":{}}}}}",
+         \"runsent\":{},\"rign\":{},\"resent\":{},\"refused\":{},\"store\":{}}}",
         m.records_dropped,
         m.units_unknown_session,
         m.duplicate_texts,
@@ -1321,7 +1345,66 @@ fn ts_line(clock: &Clock, at: Instant, p: &NodeProbe) -> String {
         m.resend_refused,
         m.store_errors
     );
+    // [YOL3 · Ö · KK-Ö-37] T1 sayaçları (eklemeli alan; şerit ve tampon kapalıysa `null`).
+    t1_json(&mut s, p);
+    s.push('}');
     s
+}
+
+/// `ts` satırının `t1` alanı: şerit sayaçları (`ln`; dizi sırası PTT, SIG, TEXT, FILE), şerit
+/// doluluğu (`bl` = [bekleyen, FILE penceresi], o anki değer) ve oynatma tamponu (`po`; `peak` =
+/// akış tamponunun tepe doluluğu). Kaynak `NodeProbe` (salt okuma).
+fn t1_json(s: &mut String, p: &NodeProbe) {
+    if p.lanes.is_none() && p.playout.is_none() {
+        s.push_str(",\"t1\":null");
+        return;
+    }
+    let arr = |a: &[u64; 4]| format!("[{},{},{},{}]", a[0], a[1], a[2], a[3]);
+    s.push_str(",\"t1\":{\"ln\":");
+    match &p.lanes {
+        Some(l) => {
+            let _ = write!(
+                s,
+                "{{\"acc\":{},\"giv\":{},\"ref\":{},\"exp\":{},\"drp\":{},\"gf\":{},\
+                 \"fack\":{},\"ackd\":{}}}",
+                arr(&l.accepted),
+                arr(&l.given),
+                arr(&l.refused),
+                l.lane_expired,
+                l.lane_dropped,
+                l.give_failed,
+                l.file_acked,
+                l.acks_drained
+            );
+        }
+        None => s.push_str("null"),
+    }
+    match p.lane_backlog {
+        Some((q, f)) => {
+            let _ = write!(s, ",\"bl\":[{q},{f}]");
+        }
+        None => s.push_str(",\"bl\":null"),
+    }
+    match &p.playout {
+        Some(o) => {
+            let _ = write!(
+                s,
+                ",\"po\":{{\"st\":{},\"stms\":{},\"ov\":{},\"sc\":{},\"tc\":{},\"disc\":{},\
+                 \"late\":{},\"rel\":{},\"peak\":{}}}",
+                o.playout_stalls,
+                o.playout_stall_ms,
+                o.playout_overflow,
+                o.playout_session_closes,
+                o.playout_table_closes,
+                o.playout_discarded,
+                o.playout_late_eliminated,
+                o.bundles_released,
+                o.playout_peak_bundles
+            );
+        }
+        None => s.push_str(",\"po\":null"),
+    }
+    s.push('}');
 }
 
 fn trace_line(clock: &Clock, at: Instant, records: &[UnitTraceRecord], dropped: u64) -> String {
@@ -2945,6 +3028,79 @@ mod tests {
         );
     }
 
+    /// KK-Ö-37: `ts` satırının `t1` alanı eklemelidir (önceki alanlar aynen); şerit ve tampon
+    /// kapalıyken `null`, açıkken T1 sayaçları (salt okuma) ve şerit doluluğu.
+    #[test]
+    fn ts_line_writes_t1_counters_additively() {
+        let clock = Clock::new();
+        let mut p = NodeProbe::default();
+        let line = ts_line(&clock, Instant::now(), &p);
+        assert!(line.ends_with(",\"store\":0},\"t1\":null}"), "{line}");
+        p.lanes = Some(client_core::lanes::LaneStats {
+            refused: [0, 0, 1, 2],
+            lane_dropped: 3,
+            ..Default::default()
+        });
+        p.lane_backlog = Some((4, 5));
+        p.playout = Some(kama_app::playout::PlayoutStats {
+            playout_stalls: 1,
+            playout_peak_bundles: 7,
+            ..Default::default()
+        });
+        let line = ts_line(&clock, Instant::now(), &p);
+        assert!(
+            line.ends_with(
+                ",\"t1\":{\"ln\":{\"acc\":[0,0,0,0],\"giv\":[0,0,0,0],\"ref\":[0,0,1,2],\
+                 \"exp\":0,\"drp\":3,\"gf\":0,\"fack\":0,\"ackd\":0},\"bl\":[4,5],\
+                 \"po\":{\"st\":1,\"stms\":0,\"ov\":0,\"sc\":0,\"tc\":0,\"disc\":0,\
+                 \"late\":0,\"rel\":0,\"peak\":7}}}"
+            ),
+            "{line}"
+        );
+        assert_eq!(line.matches('{').count(), line.matches('}').count());
+    }
+
+    /// KK-Ö-28 (iv): `--goster on` (açık bayraksız) düğüme `kama_node::goster`'ın yazdığının AYNISINI
+    /// yazar (L ve A yolu aynı değerler): FEC yok, gösterim E1 kolu, E2a ürün değeri, şeritler W,
+    /// tampon T. Açık `--e1-arm` / `--fec-off` / `--lane-w` / `--playout-ms` geçersiz kılar.
+    #[test]
+    fn goster_on_writes_exactly_the_kama_node_goster_profile() {
+        let addr: SocketAddr = "127.0.0.1:1".parse().expect("adres");
+        let cfg = parse("--goster on").expect("ayrışmalı");
+        assert_eq!(cfg.e1_arm.name(), GOSTER_KOL);
+        assert!(cfg.fec_off);
+        let mut l = ClientTransportConfig::product(addr);
+        transport_hook(&cfg).expect("ok").expect("kanca")(&mut l);
+        let mut a = ClientTransportConfig::product(addr);
+        kama_node::goster::apply(&mut a);
+        assert!(l.runtime.fec.is_none() && a.runtime.fec.is_none());
+        assert_eq!(l.runtime.e1_flags, a.runtime.e1_flags, "E1: gösterim kolu");
+        assert_eq!(l.runtime.e2a_flags, a.runtime.e2a_flags, "E2a: ürün değeri");
+        assert_eq!(l.lanes, a.lanes, "şeritler: aynı W");
+        assert_eq!(
+            cfg.playout_cfg().expect("ok"),
+            Some(kama_node::goster::playout())
+        );
+        // Geçersiz kılma: kol, FEC, W, T.
+        let cfg = parse("--goster on --e1-arm K0 --fec-off off --lane-w 4 --playout-ms 2500")
+            .expect("ayrışmalı");
+        assert_eq!(cfg.e1_arm, E1Arm::K0);
+        assert!(!cfg.fec_off);
+        assert_eq!(cfg.lanes_cfg(), Some(LaneConfig::with_file_window(4)));
+        assert_eq!(cfg.playout, Some(Duration::from_millis(2500)));
+        assert!(parse("--goster on --lane-w 0").is_err(), "W ≥ 1");
+        assert!(
+            parse("--lane-w 4").is_err(),
+            "--lane-w yalnız --goster on ile"
+        );
+        // Gösterim kapalıyken eski varsayılanlar aynen (F0/G2/E2a hücreleri).
+        let cfg = parse("").expect("ayrışmalı");
+        assert_eq!(
+            (cfg.e1_arm, cfg.fec_off, cfg.goster),
+            (E1Arm::K0, false, false)
+        );
+    }
+
     #[test]
     fn goster_turns_on_lanes_and_playout_and_is_refused_half_way() {
         let addr: SocketAddr = "127.0.0.1:1".parse().expect("adres");
@@ -2958,14 +3114,14 @@ mod tests {
         // --goster on: şeritler LaneConfig::default (W = 5), tampon T = 2000 ms; kollar aynen.
         for arm in ["K0", "K1", "K1a"] {
             let cfg = parse(&format!("--e1-arm {arm} --fec-off on --goster on")).expect("ok");
-            assert_eq!(cfg.playout, Some(PLAYOUT_DELAY_DEFAULT), "{arm}");
+            assert_eq!(cfg.playout, Some(GOSTER_PLAYOUT_DELAY), "{arm}");
             let mut c = ClientTransportConfig::product(addr);
             transport_hook(&cfg).expect("ok").expect("kanca")(&mut c);
             assert_eq!(c.lanes, Some(LaneConfig::default()), "{arm}");
             assert_eq!(c.runtime.e1_flags, cfg.e1_set().flags(), "{arm}");
             assert!(c.runtime.fec.is_none());
         }
-        // K0 + FEC ürün + --goster on: kanca yine var (şeritler sessizce kapalı kalmaz).
+        // --goster on (kol ve FEC gösterim profilinden): kanca var (şeritler sessizce kapalı kalmaz).
         let cfg = parse("--goster on").expect("ok");
         assert!(transport_hook(&cfg).expect("ok").is_some());
         let cfg = parse("--goster on --playout-ms 1500").expect("ok");
