@@ -9,7 +9,7 @@ Sahip kararı v4 EK-A §2 (KK-M2-EKA-1…5) için. Kaynak: G2 teşhis koşusu (`
 
 ## 0. Özet
 
-- **EKA-1:** bekleniyor (§1).
+- **EKA-1:** R3 koruması K1'de geçti: d1000 l0 teyit p95 medyanı K1 5,09 s ↔ K0 5,45 s; r25 teslim@60 6/6 ↔ 6/6, gönderim 2 386 ↔ 2 610 B (§1).
 - **EKA-2:** 4,90 pacer **iznidir**, emisyon değildir. Dosyasız hücrede K2'nin PTT pencerelerinde tele çıkan yeni veri sunulan yükün 1,00 katı (K0 0,62); toplam tel 1,28 katı, bunun 0,26'sı yeniden iletim. Koşu boyunca faydalı teslim / gönderilen 0,61 (1 − p_ileri 0,70). Manşette (tuzaksız) K2 faydalı/gönderilen 0,69, K0 0,68.
 - **EKA-3:** eksik koşu: analogda K0 2/10, K0r 3/10, E1 kolları 0/40; dosyasızda 0/30; manşette her kolda 2/10; l0 ve r25'te 0. K0r'nin üç eksiği aynı desen: Startup, BtlBw ısınma değerindeyken (250–324 B/s) bitti, BtlBw ≤ 392 B/s'de kilitlendi.
 - **EKA-4:** K2'nin üç tuzaklı koşusunda ilk 42–66 s tel neredeyse boş; 60 s içinde teslim %2–43; sw95 59–69 s. sw95 9. sıra 63,75 s bu koşulardan biridir (K0'ın 9. sırası 34,89 s, tuzaksız bir koşu).
@@ -17,7 +17,25 @@ Sahip kararı v4 EK-A §2 (KK-M2-EKA-1…5) için. Kaynak: G2 teşhis koşusu (`
 
 ## 1. EKA-1 — R3 koruması K1'de
 
-Orkestratörün gece koşusu (K1, N = 10, `b_r12k_d1000_l0_p1000` ve `b_r25_d300_l20_p65`) bekleniyor.
+Orkestratörün gece koşusu (K1, N = 10, `b_r12k_d1000_l0_p1000` ve `b_r25_d300_l20_p65`).
+
+- Koşu: koşu kökü 2026-11-10-a6. Ağaç `yol2/goster-a6` e332991b. Taban K0 aynı kökte ve aynı ikilide.
+- Okuma: `OKUMA-A6.md` §5 (sha256 c6341960…), oku.py R3 tanımı aynen, D = 60 s.
+- İkili: ağaç K1 kodunu ve A paketinin kod yolunu içeriyor; A bayrakları K1 kolunda kapalı. Karma sürüm değil, ama M2 dalının (G2 `yol2/o1` 5fdad83b) ikilisi de değil.
+
+| hücre | kol | n | rc = 0 | bütün mesajlar D içinde | teyit p95 med (s) | teslim@60 med | gönderim med (B) | R3 |
+|---|---|---|---|---|---|---|---|---|
+| b_r12k_d1000_l0_p1000 | K0 | 10 | 10/10 | 10/10 | 5.45 | 100 / 100 | 104754 | taban |
+| b_r12k_d1000_l0_p1000 | K1 | 10 | 10/10 | 10/10 | 5.09 | 100 / 100 | 104754 | geçti |
+| b_r25_d300_l20_p65 | K0 | 10 | 10/10 | 9/10 | 48.44 | 6 / 6 | 2610 | taban |
+| b_r25_d300_l20_p65 | K1 | 10 | 10/10 | 9/10 | 44.20 | 6 / 6 | 2386 | geçti |
+
+- Etiketler: ölçüler [ölçüldü] (OKUMA-A6.md §5); eşik kıyasları [türetilmiş].
+- d1000 l0: K1 5,09 s ≤ K0 × 1,10 = 6,00 s → geçti.
+- r25: teslim@60 K1 6 ≥ K0 − 1 = 5 ve gönderim K1 2 386 B ≤ K0 × 1,10 = 2 871 B → geçti.
+- Koruma K1'de kalmadığı için seçim kuralı yeniden işletilmez; gösterim seti K1 olarak kalır (EK-A §2.1).
+- "Bütün mesajlar D içinde" sütunu betimseldir, kapı değil: r25'te K0 9/10, K1 9/10. Aynı koşudaki A paketi kolları: K1A 8/10, K1A6 7/10.
+- r25 uyarısı (§5) bu hücre için de geçerli: G2'de (d) bu hücrede hiç devreye girmedi. R3-r25 geçişi (d) için bilgi taşımaz [çıkarım; K1 r25 koşusunun durum sayaçları burada okunmadı].
 
 ## 2. EKA-2 — emisyon/sunulan = 4,90 neyin oranı, pay nelerden oluşuyor
 
@@ -324,7 +342,6 @@ Sütun etiketleri:
 
 ## 6. Açık kalanlar
 
-- EKA-1 (orkestratörün gece koşusu).
 - K1 dosyasız hücrede ve manşette koşmadı. Gösterim seti için (iii) ve R1 değerleri K2'nindir (manifest §2). K1'in kendi değerleri ölçülmedi.
 - Kilit deseninin mekanizması ((d) adayı, §3) doğrulanmadı; Startup plato sayacı aynada yok. Doğrulama için CC-0 kablolaması (`diag_probe`/`diag_rate`) ya da aynaya tur sayacı gerekir (Aralık; v4 Bölüm V).
 - A hücrelerinde kopya baytı ayrı sayaç değil. Datagram kapanışı 0 olduğu için kalan bayt = kopya baytı [türetilmiş].
