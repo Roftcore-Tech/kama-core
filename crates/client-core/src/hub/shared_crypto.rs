@@ -673,13 +673,24 @@ mod tests {
             .seal(ProtectionContext::Session(ha), b"later")
             .expect("mühür")
             .bytes;
+        let before = lock(&tap.inner).state_fingerprint();
         assert!(lock(tap.stash()).reserve(HUB.raw()).is_none());
-        // Tüketici bir kaydı kabul eder → tutamaçta yer açılır.
+        // Tüketici bir kaydı kabul eder → tutamaçta yer açılır; kabul kriptoya dokunmaz.
         assert_eq!(hubc.open(&[0u8]).expect("kabul").frame, [0u8]);
+        assert_eq!(
+            lock(&tap.inner).state_fingerprint(),
+            before,
+            "reddedilen yuva ve kanaldan kabul kripto durumunu değiştirmez"
+        );
         let r = lock(tap.stash()).reserve(HUB.raw()).expect("yer açıldı");
         assert!(
             tap.open(&wire).is_some(),
             "reddedilen datagram kriptoya hiç gitmemişti"
+        );
+        assert_ne!(
+            lock(&tap.inner).state_fingerprint(),
+            before,
+            "parmak izi açmaya duyarlı (replay penceresi ilerledi)"
         );
         lock(tap.stash()).cancel(r);
         assert_eq!(lock(tap.stash()).counters().lost(), 0);
