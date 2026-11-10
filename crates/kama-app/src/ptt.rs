@@ -493,8 +493,9 @@ impl Ptt {
     }
 
     /// [YOL3-T1 KK-T1-11] Oynatma tamponunu açar (`Some`), T'sini değiştirir ya da kapatır (`None`).
-    /// Kapatılırken tamponda bekleyen demetler DÜŞMEZ: sonraki `poll`'larda sırayla, beklemeden
-    /// verilir; tampon boşalınca kalkar. Gösterim; kapılı PoC ölçümü Aralık.
+    /// Kapatılırken tamponda bekleyen demetler DÜŞMEZ ve planlarından ERKEN verilmez: tampondaki
+    /// yaşam döngüleri planlarıyla biter, yeni başlayanlar tamponlanmaz; tablo boşalınca tampon
+    /// kalkar ([`crate::playout`]). Gösterim; kapılı PoC ölçümü Aralık.
     pub fn set_playout(&mut self, config: Option<PlayoutConfig>) {
         match (self.playout.as_mut(), config) {
             (Some(playout), Some(config)) => playout.set_config(config),
@@ -699,8 +700,9 @@ impl Ptt {
     /// `poll`'da biter.
     ///
     /// [YOL3-T1 KK-T1-11] Oynatma tamponu açıksa ([`Self::set_playout`]) `PttStarted` ve PTT dışı
-    /// olaylar hemen, `PttAudio` oynatma anında, `PttEnded` tampon boşalınca verilir
-    /// ([`crate::playout`]); zamanı gelmiş tampon olayı Messenger'dan önce verilir.
+    /// olaylar hemen, `PttAudio` oynatma anında (planından erken değil), `PttEnded` tampon
+    /// boşalınca ya da yerel sonlandırmada verilir ([`crate::playout`]; KK-T1-19/20); zamanı gelmiş
+    /// tampon olayı Messenger'dan önce verilir.
     #[must_use]
     pub fn poll<T: KamaTransport>(&mut self, messenger: &mut Messenger<T>) -> Option<PttEvent> {
         let Some(mut playout) = self.playout.take() else {
@@ -713,15 +715,19 @@ impl Ptt {
         event
     }
 
-    /// Tamponlu yol: önce zamanı gelmiş tampon olayı; yoksa tamponsuz yolun olayları tampona
-    /// süzülür (demet tutulur, akış sonu ertelenir, diğerleri aynen geçer).
+    /// Tamponlu yol: önce oturum değişimi denetimi (KK-T1-20) ve takvim beklemeyen yaşam döngüsü
+    /// olayları, sonra zamanı gelmiş tampon olayı; yoksa tamponsuz yolun olayları tampona süzülür
+    /// (demet tutulur, akış sonu ertelenir, diğerleri aynen geçer). Her demet ve yaşam döngüsü
+    /// başlangıcı eşin o anki güncel oturumuyla tampona verilir.
     fn poll_through<T: KamaTransport>(
         &mut self,
         playout: &mut Playout,
         messenger: &mut Messenger<T>,
     ) -> Option<PttEvent> {
         let now = self.clock.now();
-        if let Some(event) = playout.release_due(now) {
+        playout.retain_terminated(|key| self.incoming.contains_key(key));
+        playout.close_superseded(|peer| messenger.session_of(peer));
+        if let Some(event) = playout.next_ready().or_else(|| playout.release_due(now)) {
             return Some(event);
         }
         loop {
@@ -732,26 +738,28 @@ impl Ptt {
                     bundle_ms,
                     ..
                 } => {
-                    playout.on_started(peer, stream_id, bundle_ms);
-                    return Some(event);
+                    let session = messenger.session_of(peer);
+                    playout.on_started(event, (peer, stream_id), bundle_ms, session);
                 }
                 PttEvent::PttAudio {
                     peer,
                     stream_id,
                     payload,
                 } => {
-                    if let Some(event) = playout.on_audio(now, peer, stream_id, payload) {
+                    let session = messenger.session_of(peer);
+                    if let Some(event) = playout.on_audio(now, (peer, stream_id), payload, session)
+                    {
                         return Some(event);
                     }
                 }
                 PttEvent::PttEnded { peer, stream_id } => {
-                    if let Some(event) = playout.on_ended(peer, stream_id) {
+                    if let Some(event) = playout.on_ended((peer, stream_id)) {
                         return Some(event);
                     }
                 }
                 event @ PttEvent::Messenger(_) => return Some(event),
             }
-            if let Some(event) = playout.release_due(now) {
+            if let Some(event) = playout.next_ready().or_else(|| playout.release_due(now)) {
                 return Some(event);
             }
         }
