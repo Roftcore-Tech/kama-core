@@ -344,6 +344,7 @@ name = "client-core"
 version = "0.1.0"
 dependencies = [
  "adaptive-transport",
+ "blake2",
  "client-core",
  "kama-contracts",
  "kama-engine",
@@ -832,6 +833,8 @@ version = "0.1.0"
 dependencies = [
  "adaptive-transport",
  "client-core",
+ "ed25519-dalek",
+ "hub-server",
  "kama-app",
  "kama-contracts",
  "kama-engine",
@@ -840,6 +843,7 @@ dependencies = [
  "kama-noise-wire",
  "kama-provision",
  "kama-transport-schema",
+ "kama-vectors",
  "thiserror",
  "zeroize",
 ]

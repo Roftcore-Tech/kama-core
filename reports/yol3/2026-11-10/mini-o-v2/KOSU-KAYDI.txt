@@ -1,0 +1,18 @@
+ön koşu (sayılmaz): ~/…/2026-11-10-v2-onkosu, F0_REPS=1, 3 hücre; hdr yol3 iki uç = §1 seti, flag_src goster.rs; t1 513/513 ts; a6 kaydı var; b K1A6 manifest e1/e2a alan alan, K0 yok → GEÇTİ. ONKAYIT-V2 dondu: 136f4bc457a04d5708a59cd0fdd971c9b23a26c313f9f1fd924f7b480ba3ca53 (b0862d6c). 2026-11-10T16:58:11+03:00
+ağaç: yol2/goster b0862d6c2452930e27f33c72ff0a56ec5de35cf5
+commit'ler 3beab598..HEAD:
+b0862d6c style: rustfmt (bench e1arm ablasyon testi, f0_flows etiket testi)
+142d99c2 docs(transport-v1): gösterim profili satırları sahip kararı 2026-11-10'a göre (K1A6, E2a, etiket)
+efa782a6 docs(duzenek): mini-Ö v2 ön kaydı ONKAYIT-V2.md (koşudan önce; sha256 136f4bc4…ca53)
+b175a771156de645b0abb727e14317adb241d14f93e63fee23df6a41ffb41e30  <worktree-kökü>/target-goster/release/examples/f0_flows
+643cf416c4eb4b495d10dba1394a818cb6e4fb285246b9133d14c64db7aa842d  <worktree-kökü>/target-goster/release/bench
+c98b05f4c7205837c0c63ff9537a2537628af052104ad351ff8ec249923f884a  scripts/yol3/mini-o/SIRA-V2.txt
+136f4bc457a04d5708a59cd0fdd971c9b23a26c313f9f1fd924f7b480ba3ca53  scripts/yol3/mini-o/ONKAYIT-V2.md
+KK-ORK-01: FEC kapalı. Gösterim seti K1A6s (A, --goster on, goster.rs) / K1A6 (b, bench); taban K0; W 5, T 2,0 s. f0_grid -j 11.
+diğer cargo/rustc: 0/0
+ölçüm başlangıç 2026-11-10T16:58:12+03:00
+grid rc=0 bitiş 2026-11-10T17:41:09+03:00
+oku rc=0
+95dec149b19a7e3aa611027b08616c9be8321b7d030d6fa43c890b5652288cdb  <ölçüm-kökü>/yol3/mini-o/2026-11-10-v2/okuma/okuma.json
+bcaa17e9a0de8e17043bebcbf9105afcdc49801ee07e4c1a60875cb758fdc471  <ölçüm-kökü>/yol3/mini-o/2026-11-10-v2/okuma/OKUMA.md
+ARAÇ DÜZELTMESİ 2026-11-10T18:28:18+03:00 (ONKAYIT-V2 §8): oku.py v2 başlığında etiket satırı eksikti ('sığ tamponlu ağ gösterim kapsamı dışı'); yalnız etiket dizgisi düzeltildi, kural/sayı değişmedi; v1 okuması bayt-aynı; v2 yeniden okundu: OKUMA.md a8fe3fb9d7f04c312656587acfa4d97616746fd6dc28dfcad7ea6f0f49bc76d1 · okuma.json 88f8013bc8dba6bc585be7839d8cfeb04161673748ba050658b5bf99861c6cf8 (ilk okuma bcaa17e9…/95dec149…, fark yalnız satır 3)

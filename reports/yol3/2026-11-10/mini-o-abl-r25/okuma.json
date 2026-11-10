@@ -1,0 +1,287 @@
+{
+ "hucre": "r25",
+ "karar": {
+  "aday": [
+   "K1A6mA1",
+   "K1A6mA2",
+   "K1A6mA3",
+   "K1A6mA4",
+   "K1A6mA5",
+   "K1A6mA6"
+  ],
+  "durum": "ihlal bu kökte yeniden üretilmedi → bayrak düşmez",
+  "dusen": null,
+  "marj": {
+   "K1A6mA1": [
+    0.887,
+    -0.0
+   ],
+   "K1A6mA2": [
+    0.895,
+    -0.0
+   ],
+   "K1A6mA3": [
+    0.911,
+    -0.0
+   ],
+   "K1A6mA4": [
+    0.905,
+    -0.0
+   ],
+   "K1A6mA5": [
+    0.798,
+    -0.0
+   ],
+   "K1A6mA6": [
+    0.882,
+    -0.0
+   ]
+  },
+  "r3": {
+   "K1A6": true,
+   "K1A6mA1": true,
+   "K1A6mA2": true,
+   "K1A6mA3": true,
+   "K1A6mA4": true,
+   "K1A6mA5": true,
+   "K1A6mA6": true
+  }
+ },
+ "oku_py_sha256": "4525407a9117856c5c0a3558e9768050df2869c73f8c44632b9b15d9655e40e6",
+ "onkayit": "ONKAYIT-V2.md sha256 136f4bc457a04d5708a59cd0fdd971c9b23a26c313f9f1fd924f7b480ba3ca53 (denetlendi)",
+ "satirlar": {
+  "K0": {
+   "dogrula": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ],
+   "n": 20,
+   "p95_med": 46.66270292125,
+   "rc0": 20,
+   "teslim_med": 6.0,
+   "tx_med": 2835.0
+  },
+  "K1A6": {
+   "dogrula": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ],
+   "n": 20,
+   "p95_med": 55.684428875075,
+   "rc0": 20,
+   "teslim_med": 6.0,
+   "tx_med": 2662.0
+  },
+  "K1A6mA1": {
+   "dogrula": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ],
+   "n": 20,
+   "p95_med": 54.529867916875,
+   "rc0": 20,
+   "teslim_med": 6.0,
+   "tx_med": 2516.0
+  },
+  "K1A6mA2": {
+   "dogrula": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ],
+   "n": 20,
+   "p95_med": 51.484193368875,
+   "rc0": 20,
+   "teslim_med": 6.0,
+   "tx_med": 2537.5
+  },
+  "K1A6mA3": {
+   "dogrula": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ],
+   "n": 20,
+   "p95_med": 53.467248587125,
+   "rc0": 20,
+   "teslim_med": 6.0,
+   "tx_med": 2583.5
+  },
+  "K1A6mA4": {
+   "dogrula": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ],
+   "n": 20,
+   "p95_med": 52.498508513874995,
+   "rc0": 20,
+   "teslim_med": 6.0,
+   "tx_med": 2564.5
+  },
+  "K1A6mA5": {
+   "dogrula": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ],
+   "n": 20,
+   "p95_med": 49.210833667,
+   "rc0": 20,
+   "teslim_med": 6.0,
+   "tx_med": 2262.0
+  },
+  "K1A6mA6": {
+   "dogrula": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ],
+   "n": 20,
+   "p95_med": 48.149829496875,
+   "rc0": 20,
+   "teslim_med": 6.0,
+   "tx_med": 2499.5
+  }
+ },
+ "surum": "abl"
+}

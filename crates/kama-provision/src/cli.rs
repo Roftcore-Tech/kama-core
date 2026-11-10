@@ -1,4 +1,4 @@
-//! `kama-provision` komut satırı (PROVISIONING-FORMAT-v0 §2). Argümanlar `std::env::args_os` ile
+//! `kama-provision` komut satırı (PROVISIONING-FORMAT-v1 §2). Argümanlar `std::env::args_os` ile
 //! ayrıştırılır (clap yok, D11); `--out` UTF-8 olmayan bir yol olabilir. Standart çıktıya yalnız
 //! yazılan dosyaların yolları basılır — anahtar, `dest_hash` ve sertifika basılmaz.
 
@@ -12,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use kama_noise_wire::entropy::OsEntropy;
 
 use crate::format::{DeviceName, NameError};
-use crate::provision::{init, InitError, InitRequest};
+use crate::provision::{init_with, InitError, InitOptions, InitRequest};
 
 /// Çalışma hatası çıkış kodu (G/Ç, entropi, saat, öz-denetim).
 pub const EXIT_FAILURE: u8 = 1;
@@ -23,27 +23,37 @@ const FLAG_OUT: &str = "--out";
 const FLAG_DEVICES: &str = "--devices";
 const FLAG_HUB: &str = "--hub";
 const FLAG_DIRECT: &str = "--direct";
+/// Değer almayan bayrak (v1).
+const FLAG_PROBE: &str = "--probe";
 const FLAGS: [&str; 4] = [FLAG_OUT, FLAG_DEVICES, FLAG_HUB, FLAG_DIRECT];
 
 /// Kullanım metni.
 pub const USAGE: &str = "\
 kullanım:
   kama-provision init --out <dizin> --devices <ad>,<ad>[,...]
-                      [--hub <host:port>] [--direct <ad>=<ip:port>[,...]]
+                      [--hub <host:port> [--probe]] [--direct <ad>=<ip:port>[,...]]
   kama-provision --help
 
-biçim: docs/provisioning/PROVISIONING-FORMAT-v0.md
+  --hub    hub Ed25519 çifti üretir, cihaz dosyalarına hub.ed25519_pub yazar, hub.json yazar
+  --probe  ek cihaz \"probe\" (device-probe.json; eşi yok, hub.json'da var); --hub gerektirir
+
+biçim: docs/provisioning/PROVISIONING-FORMAT-v1.md
 ";
 
 /// Başarılı `init` sonrası hatırlatma (D9).
 const ROOT_REMINDER: &str = "root.json provisioning otoritesinde kalır; cihaza, Git'e, release \
 paketine ve .so zip'ine girmez (D9).";
 
+/// `hub.json` yazıldıysa hatırlatma (v1 §3.3).
+const HUB_REMINDER: &str =
+    "hub.json yalnız hub makinesine gider (tek gizli alanı hub'ın anahtarı); \
+cihaza ve Git'e girmez.";
+
 /// Ayrıştırılmış komut.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Help,
-    Init(InitRequest),
+    Init(InitRequest, InitOptions),
 }
 
 /// Kullanım hatası. Kullanıcının verdiği değeri yalnız teşhis için taşır (CLI'a gizli değer verilmez).
@@ -82,24 +92,33 @@ where
         return Err(UsageError::MissingCommand);
     };
     match command.to_str() {
-        Some("init") => parse_init(rest).map(Command::Init),
+        Some("init") => parse_init(rest).map(|(request, options)| Command::Init(request, options)),
         Some("--help" | "-h" | "help") => Ok(Command::Help),
         _ => Err(UsageError::UnknownCommand(lossy(command))),
     }
 }
 
-/// `init` argümanları: her bayrak tam bir değer alır ve en çok bir kez verilir.
-fn parse_init(args: &[OsString]) -> Result<InitRequest, UsageError> {
+/// `init` argümanları: `--probe` dışındaki her bayrak tam bir değer alır; her bayrak en çok bir kez
+/// verilir.
+fn parse_init(args: &[OsString]) -> Result<(InitRequest, InitOptions), UsageError> {
     let mut out = None;
     let mut devices = None;
     let mut hub = None;
     let mut direct = None;
-    for pair in args.chunks(2) {
-        let flag = &pair[0];
+    let mut options = InitOptions::default();
+    let mut rest = args.iter();
+    while let Some(flag) = rest.next() {
+        if flag.to_str() == Some(FLAG_PROBE) {
+            if options.probe {
+                return Err(UsageError::Repeated(FLAG_PROBE));
+            }
+            options.probe = true;
+            continue;
+        }
         let Some(name) = known_flag(flag) else {
             return Err(UsageError::UnknownArgument(lossy(flag)));
         };
-        let value = pair.get(1).ok_or(UsageError::MissingValue(name))?;
+        let value = rest.next().ok_or(UsageError::MissingValue(name))?;
         let slot = match name {
             FLAG_OUT => &mut out,
             FLAG_DEVICES => &mut devices,
@@ -121,12 +140,13 @@ fn parse_init(args: &[OsString]) -> Result<InitRequest, UsageError> {
         Some(value) => parse_direct(utf8(value, FLAG_DIRECT)?)?,
         None => BTreeMap::new(),
     };
-    Ok(InitRequest {
+    let request = InitRequest {
         out_dir: PathBuf::from(out),
         devices,
         hub,
         direct,
-    })
+    };
+    Ok((request, options))
 }
 
 fn known_flag(flag: &OsStr) -> Option<&'static str> {
@@ -178,7 +198,7 @@ where
             print!("{USAGE}");
             ExitCode::SUCCESS
         }
-        Ok(Command::Init(request)) => run_init(&request),
+        Ok(Command::Init(request, options)) => run_init(&request, &options),
         Err(error) => {
             eprintln!("kama-provision: {error}");
             eprint!("{USAGE}");
@@ -187,20 +207,24 @@ where
     }
 }
 
-fn run_init(request: &InitRequest) -> ExitCode {
+fn run_init(request: &InitRequest, options: &InitOptions) -> ExitCode {
     let Ok(elapsed) = SystemTime::now().duration_since(UNIX_EPOCH) else {
         eprintln!("kama-provision: sistem saati Unix başlangıcından önce");
         return ExitCode::from(EXIT_FAILURE);
     };
     let mut entropy = OsEntropy::new();
-    match init(request, &mut entropy, elapsed.as_secs()) {
+    match init_with(request, options, &mut entropy, elapsed.as_secs()) {
         Ok(report) => {
             if !report.permissions_enforced {
                 eprintln!("kama-provision: uyarı: 0600/0700 izinleri yalnız Unix'te uygulanır");
             }
-            println!("kama-provision: {} cihaz yazıldı:", request.devices.len());
+            let count = request.devices.len() + usize::from(options.probe);
+            println!("kama-provision: {count} cihaz yazıldı:");
             for path in &report.written {
                 println!("  {}", path.display());
+            }
+            if request.hub.is_some() {
+                println!("{HUB_REMINDER}");
             }
             println!("{ROOT_REMINDER}");
             ExitCode::SUCCESS
@@ -254,8 +278,26 @@ mod tests {
             hub: Some("hub.example:7000".to_owned()),
             direct,
         };
-        assert_eq!(parsed, Ok(Command::Init(expected)));
+        assert_eq!(
+            parsed,
+            Ok(Command::Init(expected.clone(), InitOptions::default()))
+        );
         assert_eq!(parse_args(argv(&["--help"])), Ok(Command::Help));
+        // `--probe` değer almaz; yerinden bağımsız.
+        let list = [
+            "init",
+            "--probe",
+            "--out",
+            "/tmp/kama-out",
+            "--devices",
+            "alice,bob",
+            "--hub",
+            "hub.example:7000",
+            "--direct",
+            "alice=127.0.0.1:47001,bob=[::1]:47002",
+        ];
+        let probe = InitOptions { probe: true };
+        assert_eq!(parse_args(argv(&list)), Ok(Command::Init(expected, probe)));
     }
 
     #[test]
@@ -285,6 +327,10 @@ mod tests {
                 UsageError::UnknownArgument("--bogus".to_owned()),
             ),
             (&["init", "--out", "x", "--devices", "alice,Bob"], bad_name),
+            (
+                &["init", "--probe", "--out", "x", "--probe"],
+                UsageError::Repeated(FLAG_PROBE),
+            ),
         ];
         for (list, expected) in cases {
             let parsed = parse_args(argv(list));
