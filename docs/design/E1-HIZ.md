@@ -1,6 +1,6 @@
 # E1-HIZ — E1 gösterim bayrakları (tasarım notu, 1 sayfa)
 
-Etiket: *gösterim; kapılı PoC ölçümü Aralık; ARQ yolu, FEC Aralık'ta.* Dayanak: CC §2.1, §4.1, §4.4
+Etiket: *gösterim; kapılı PoC ölçümü Aralık; ARQ yolu, FEC Aralık'ta; N < 30 betimsel.* Dayanak: CC §2.1, §4.1, §4.4
 (CC-K5, CC-K6 imzalı); sahip kararı v4 I.3; ISEMRI-YOL3-M2 KK-M2-01..08. Bayraklar çalışma zamanı
 yapılandırmasıdır (`RuntimeConfig.e1_flags` → `Sender::set_e1_flags`), varsayılan beşi kapalı; kapalıyken
 motor önceki kod yolunu aynen çağırır (karar dizisi `origin/main` ile bit-aynı: `tests/e1_goster.rs`).
@@ -17,7 +17,11 @@ motor önceki kod yolunu aynen çağırır (karar dizisi `origin/main` ile bit-a
 `diag_*` karar girdisi olmaz (INV-007; `pacer.tokens()`/`burst_cap()` kovanın gerçek durumudur); SR1
 freni ve gain-cycling reddi aynen; RNG yok (ADR-17); tel biçimi değişmez.
 
-**G2 seçimi.** G2 Çar 11 Kas akşamı yazılır (`E1-TESHIS-G2.md` §2 S kuralı; model beklentisi K2−c).
+**G2 seçimi (2026-11-09 teşhisi; sahip v4 EK-A §2 kabulü).** Gösterim seti = **K1** = (c) + (d) + DrainRtprop
++ (e-dar); `retx_first` kapalı. Gösterim analoğunda PTT p95 medyanı K1 8,63 s ↔ K0 15,29 s, dosya bitişi
+19,2 ↔ 23,9 s; manşet R1 (tuzaksız) K2 1,02, K2−c 0,56 [ölçüldü; `reports/yol3/2026-11-09/g2/OKUMA.md`].
+Model beklentisi (K2−c) tutmadı. R3 koruması K1'de ayrıca koşar (EK-A §2.1); emisyon ayrıştırması, tamamlanma
+ve tuzaklı koşular `reports/yol3/2026-11-09/g2/EK-A-EKSIKLER.md`. N = 10, betimsel.
 
 **qd freni kararı (KK-M2-08).** GİRER — S1 Δ 0,000 (K2 0,878/0,878; K2−c 0,443/0,443), S3 PTT p95
 1,373/1,373 (K2), 1,297/1,297 (K2−c) [tahmin; N = 30, medyan; frenli/frensiz]. S3'te (d) hiç tur

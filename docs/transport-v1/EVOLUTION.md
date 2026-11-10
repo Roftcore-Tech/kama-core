@@ -109,5 +109,6 @@ DrainRtprop `e1_drainrt_gate`, (e-dar) `e1_probe_keep`, `retx_first`; CC §4.1, 
 5. **Yeniden koşulacak doğrulama:** mini-Ö (G4, 13 Kas), Aralık G-CC.
 6. **Sürüm:** `transport-v1.x` kalır.
 
-Gösterim seti (G2 seçimi) ve profil satırları: `PRODUCT-PROFILE.md` "`transport-v1.x-goster`" bölümü.
+Gösterim seti = K1 = (c) + (d) + DrainRtprop + (e-dar); `retx_first` kapalı (2026-11-09 teşhisi; sahip v4
+EK-A §2). Profil satırları: `PRODUCT-PROFILE.md` "`transport-v1.x-goster`" bölümü.
 Teşhis manifesti: `docs/design/E1-TESHIS-G2.md`.
