@@ -1,0 +1,17 @@
+# [YOL3 · Ö · mini-Ö v2] a_r12k_d300_l30_dosyali__K1A6s — G-K8 kötü ağ vekili: B1, B2, B5 raporlanan. Üretici: scripts/yol3/mini-o/gen_cells.py --set v2 (elle düzenlemeyin). Ön kayıt: scripts/yol3/mini-o/ONKAYIT-V2.md.
+# Kaynak hücre: scripts/ktp2/f0/cells/a/a_r12k_d300_l30_dosyali.cell (sha256 9259e85cf3dce6ebce2648f8ba981c437a13e2af44fe98a2b944d1406106af43) — geometri AYNEN; fark yalnız CELL, REPS, ARMS, kol ve gösterim bayrakları.
+# Kol K1A6s = gösterim seti (sahip kararı 2026-11-10 madde 3; gece K1A6s): f0_flows --goster on, --e1-arm YOK → E1/E2a bayrakları kama_node::goster'dan (başlık yol3.flag_src = goster.rs, yol3.e1_arm = K1A6).
+# E1 c+d+DrainRtprop+e-dar+a3_burst_floor+a4_probe_srtt+a6_iw_floor · E2a tt_rfc(g=1ms)+rtt_rule_v11+iw_idle_hold+pto_probes=2+gap_ack+return_prior_gated+pto_rfc · FEC off · şeritler W = 5 (LaneConfig::default) + oynatma tamponu T = 2000 ms (--goster on) · kaynak goster.rs.
+# İkili: BIN_GOSTER = <yol2/goster>/target/release/examples/f0_flows (orkestratör, D-34; goster.rs'i E2a ile kuran yeni ikili). İki ayrı süreç; zarflar Unix soketinden (netem dışı, beyanlı).
+# Etiket: gösterim; kapılı PoC ölçümü Aralık; ARQ yolu, FEC Aralık'ta; N < 30 betimsel; sığ tamponlu ağ gösterim kapsamı dışı.
+CELL=a_r12k_d300_l30_dosyali__K1A6s
+FWD="delay 300ms 60ms distribution normal loss 30% rate 100kbit"
+REV="delay 300ms 60ms distribution normal loss 30% rate 100kbit"
+REPS="${F0_REPS:-10}"
+ARMS="K1A6s"
+BUDGET_S=600
+CAPTURE=0
+SETTLE_S=1
+F0A_ARGS='--dir @D@ --alice-addr @CLI_IP@:@PORT@ --bob-addr @SRV_IP@:@PORT@ --scenario dosyali --profile r12k_d300_l30 --rep @REP@ --file-bytes 524700 --window-s 300 --warmup-texts 3 --warmup-every-ms 500 --file-at-ms 5000 --texts 40 --text-at-ms 6000 --text-every-ms 2500 --text-bytes 64 --sigs 10 --sig-at-ms 7000 --sig-every-ms 10000 --sig-bytes 120 --ptt-bundles 25 --ptt-bundle-ms 200 --ptt-bytes 40 --stall-at-ms 20000 --stall-ms 30000 --karsi on --karsi-texts 5 --karsi-every-ms 500 --karsi-bundles 10 --karsi-min-unacked 3 --karsi-text-bytes 48 --connect-timeout-s 30 --probe-ms 200 --live-diag on --receipt-grace-s 30 --ptt-at-ms 15000,60000 --goster on'
+ARM_K1A6s_SRV="@BIN_GOSTER@ --role bob $F0A_ARGS"
+ARM_K1A6s_CLI="@BIN_GOSTER@ --role alice $F0A_ARGS"

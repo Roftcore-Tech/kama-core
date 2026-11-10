@@ -1,0 +1,32 @@
+# [YOL3 · Ö · mini-Ö v2] b_r25_d300_l20_p65__K1A6mA3 — ablasyon r25: gösterim seti − A-3 a3_burst_floor. Üretici: scripts/yol3/mini-o/gen_cells.py --set abl (elle düzenlemeyin). Ön kayıt: scripts/yol3/mini-o/ONKAYIT-V2.md.
+# Kaynak hücre: scripts/ktp2/f0/cells/b/b_r25_d300_l20_p65.cell (sha256 bf4d90acf9c8c003d15590b7f06a5abd34934ea123270d8bdb0cf3b23ae2374d) — geometri AYNEN; fark yalnız CELL, REPS, ARMS, kol ve gösterim bayrakları.
+# Kol K1A6mA3 = ablasyon (bench --e1-arm K1A6mA3, iki uçta aynı): gösterim seti K1A6'dan TEK bayrak çıkmış (bench e1arm.rs) · FEC off (--fec-profile 0, v4 Y1).
+# bench'te S1 şeridi ve PTT oynatma tamponu YOK (beyanlı): bu satır yalnız motor bayraklarını (E1 + E2a) ölçer; gösterim setinin şerit/tampon kısmı A hücrelerinde.
+# İkili: BIN_GOSTER_BENCH = <yol2/goster>/target/release/bench (orkestratör, D-34); kol arms_kama.sh kama_e1_arm.
+# Etiket: gösterim; kapılı PoC ölçümü Aralık; ARQ yolu, FEC Aralık'ta; N < 30 betimsel; sığ tamponlu ağ gösterim kapsamı dışı.
+CELL=b_r25_d300_l20_p65__K1A6mA3
+RATE_ID=r25
+DELAY_ID=d300
+LOSS_PCT=20
+RATE_BPS=25
+DELAY_MS=300
+JITTER_MS=60
+MSGS=6
+PAY=65
+IVAL_MS=18000
+DEADLINE_S=60
+FWD="delay 300ms 60ms distribution normal loss 20% rate 200bit"
+REV="$FWD"
+REPS="${F0_REPS:-20}"
+ARMS="K1A6mA3"
+BUDGET_S=243
+CAPTURE=0
+SETTLE_S=1.5
+KAMA_SRV_EXTRA="--fec-profile 0"
+KAMA_CLI_EXTRA="--fec-profile 0"
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../ktp2/f0/b" && pwd)/hucre_b.sh"
+# shellcheck disable=SC1091
+source "$F0_DIR/arms_kama.sh"
+kama_e1_arm K1A6mA3 K1A6mA3 @BIN_GOSTER_BENCH@
+b_cap_wrap
