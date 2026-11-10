@@ -4304,4 +4304,43 @@ mod live_diag_mirror_tests {
             }
         }
     }
+
+    /// [Q2 A-6] `RuntimeConfig::e1_flags.a6_iw_floor` `Sender::set_e1_flags` yoluyla motora ulaşır ve
+    /// deney kaydı (`Sender::diag_a6`) canlı aynada `control.a6` olarak görünür. Bayrak kapalıyken
+    /// kayıt varsayılandır (`enabled == false`). Trafik: ilk emisyon düşer, ARQ kurtarır (kayıp
+    /// bekleyen kaldığı için PreConverge'den Startup'a geçilir ve taban kurulur).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a6_record_reaches_the_live_mirror() {
+        for on in [false, true] {
+            let cfg = RuntimeConfig {
+                e1_flags: adaptive_transport::rate::E1Flags {
+                    a6_iw_floor: on,
+                    ..adaptive_transport::rate::E1Flags::default()
+                },
+                ..no_fec(RuntimeConfig::default().drain_cap)
+            };
+            let (server, client) = pair(&cfg).await;
+            for i in 0..UNITS {
+                client
+                    .send(format!("ayna-{i}").into_bytes())
+                    .expect("offer");
+            }
+            let settled = wait_until(|| {
+                let live = client.live_diag();
+                client.outstanding() == 0
+                    && live.ack.frames >= 1
+                    && (!on || live.control.a6.armed_ns.is_some())
+            })
+            .await;
+            let a6 = client.live_diag().control.a6;
+            let _ = client.shutdown().await;
+            let _ = server.shutdown().await;
+            assert!(settled, "bayrak {on}: {a6:?}");
+            if on {
+                assert!(a6.enabled && a6.arms >= 1, "{a6:?}");
+            } else {
+                assert_eq!(a6, adaptive_transport::sender::A6FloorDiag::default());
+            }
+        }
+    }
 }

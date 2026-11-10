@@ -10234,4 +10234,282 @@ mod tests {
             "AÇIK: prob saati srtt ⇒ daha sık giriş ({on} > {off})"
         );
     }
+
+    // ── Q2 A-6 (§3-A 6; KK-Q2-EKA-1/2) — aynı düzenek, olay-başı gözlemli pompa ──
+    //
+    // Senaryo (F0 TEXT→dosya deseninin deterministik eşi): 12,5 kB/s · 150 ms tek yön. Isınma: 100 B'lık
+    // TEXT, 0–7600 ms arasında her 400 ms'de bir (20 adet; her biri tek başına ⇒ örnekler
+    // uygulamayla-sınırlı). Dosya: 8000 ms'de 80 × 1200 B. Kayıp yok. Koşu 20 s.
+
+    const A6_FILE_MS: u64 = 8_000;
+
+    fn a6_offers() -> Vec<(u64, OpaqueUnit)> {
+        let mut v: Vec<(u64, OpaqueUnit)> = (0..20u64)
+            .map(|k| (400 * k, OpaqueUnit { id: k, size: 100 }))
+            .collect();
+        v.extend((0..80u64).map(|k| {
+            (
+                A6_FILE_MS,
+                OpaqueUnit {
+                    id: 20 + k,
+                    size: 1200,
+                },
+            )
+        }));
+        v
+    }
+
+    /// Bir olay sonrası A-6 gözlemi.
+    #[derive(Debug, Clone, Copy)]
+    struct A6Step {
+        t: u64,
+        state: SenderState,
+        /// Pacer hızı (motorun bu olayda yazdığı gönderim hızı).
+        rate: u64,
+        /// `cwnd/srtt` tavanı ve `A6_IW_BYTES/srtt` (srtt yoksa 0).
+        cap: u64,
+        iw_rate: u64,
+        btlbw: u64,
+        armed: bool,
+        diag: A6FloorDiag,
+    }
+
+    fn a6_step(s: &Sender, t: u64) -> A6Step {
+        A6Step {
+            t,
+            state: s.state(),
+            rate: s.pacer.rate(),
+            cap: s.cwnd_over_srtt(),
+            iw_rate: s
+                .rtt
+                .srtt()
+                .map_or(0, |d| rate_per_srtt(crate::rate::A6_IW_BYTES, dur_ns(d))),
+            btlbw: s.btlbw.btlbw(),
+            armed: s.a6.armed,
+            diag: s.diag_a6(),
+        }
+    }
+
+    /// `E1Sim` pompası (`E1Sim::run` ile aynı sıra: ACK varışları, teklifler, 1 ms PTO, 200 ms
+    /// RtpropProbe); her olaydan sonra [`A6Step`] kaydı. Kayıp yok.
+    fn a6_run(flags: E1Flags, offers: &[(u64, OpaqueUnit)], dur_ms: u64) -> (Sender, Vec<A6Step>) {
+        let mut s = e1_sender(flags);
+        let mut sim = E1Sim::new(12_500, 150);
+        let mut nodrop = |_: &TransmitDecision, _: &E1SendCtx| false;
+        let mut log = Vec::new();
+        let mut next = 0usize;
+        for t_ms in 0..dur_ms {
+            let now = t_ms * MS;
+            while let Some(&(t, seq)) = sim.acks.first() {
+                if t > now {
+                    break;
+                }
+                sim.acks.remove(0);
+                sim.feed(&mut s, ack(&[seq]), t, &mut nodrop);
+                log.push(a6_step(&s, t));
+            }
+            while next < offers.len() && offers[next].0 == t_ms {
+                sim.feed(&mut s, Event::AppData(offers[next].1), now, &mut nodrop);
+                log.push(a6_step(&s, now));
+                next += 1;
+            }
+            sim.feed(&mut s, Event::TimerFired(Timer::Pto), now, &mut nodrop);
+            log.push(a6_step(&s, now));
+            if t_ms % 200 == 0 {
+                sim.feed(
+                    &mut s,
+                    Event::TimerFired(Timer::RtpropProbe),
+                    now,
+                    &mut nodrop,
+                );
+                log.push(a6_step(&s, now));
+            }
+        }
+        (s, log)
+    }
+
+    /// K1 kolunun bayrakları (c + d + DrainRtprop + e-dar; ölçüm K1+A ↔ K1+A−6) ve A-6.
+    fn a6_k1(a6: bool) -> E1Flags {
+        E1Flags {
+            e1_startup_cwnd: true,
+            e1_applimited_plateau: true,
+            e1_drainrt_gate: true,
+            e1_probe_keep: true,
+            a6_iw_floor: a6,
+            ..E1Flags::default()
+        }
+    }
+
+    /// Dosyanın İLK birimi kuyruğa girdikten hemen sonraki adım.
+    fn a6_file_step(log: &[A6Step]) -> A6Step {
+        *log.iter()
+            .find(|st| st.t == A6_FILE_MS * MS)
+            .expect("kurulum: dosya adımı")
+    }
+
+    /// Kapalı: motor A-6 kaydını yazmaz (`enabled == false`, alanlar varsayılan). Kapalı yolun bit-aynılığı
+    /// `tests/e1_goster.rs::e1_flags_off_trace_digest_reference` özetleriyle sınanır.
+    #[test]
+    fn q2_a6_off_writes_no_record() {
+        for flags in [E1Flags::default(), a6_k1(false)] {
+            let (s, log) = a6_run(flags, &a6_offers(), 12_000);
+            assert!(log
+                .iter()
+                .all(|st| !st.armed && st.diag == A6FloorDiag::default()));
+            assert_eq!(s.diag_a6(), A6FloorDiag::default());
+        }
+    }
+
+    /// Açık (1) + (3): uygulamayla-sınırlı ısınma (bw ≈ 100 B / 0,3 s) Startup'ı tohumlamaz. Dosya kuyruğa
+    /// girdiği olayda taban kurulu, bw terimi ≥ `A6_IW_BYTES/srtt`, gönderim hızı `cwnd/srtt` tavanına
+    /// çıkar (kapalı kol 2,885 × ısınma bw'sinde kalır). Tavan bağlar: `min_cwnd = 4·MTU` <
+    /// `A6_IW_BYTES` olduğundan taban hızı yükselttiği her kararda hız = `cwnd/srtt` < `A6_IW_BYTES/srtt`
+    /// [türetilmiş: taban bağlıyorken 2,885·BtlBw < IW/srtt ⇒ 2,885·BDP/srtt < IW/srtt]. srtt yokken
+    /// (PreConverge) taban kurulmaz.
+    #[test]
+    fn q2_a6_applimited_warmup_floor_lifts_file_start_to_cwnd_cap() {
+        let (_, on) = a6_run(a6_k1(true), &a6_offers(), 12_000);
+        let (_, off) = a6_run(a6_k1(false), &a6_offers(), 12_000);
+        let first = on[0];
+        assert_eq!(first.state, SenderState::PreConverge, "kurulum: ölçüm yok");
+        assert!(
+            !first.armed && first.diag.armed_ns.is_none(),
+            "srtt yok ⇒ taban yok"
+        );
+        let f_on = a6_file_step(&on);
+        let f_off = a6_file_step(&off);
+        eprintln!("q2_a6 dosya adımı açık={f_on:?}");
+        eprintln!("q2_a6 dosya adımı kapalı={f_off:?}");
+        assert!(
+            f_off.btlbw < 1_000,
+            "kurulum: ısınma bw'si uygulamayla sınırlı ve düşük ({})",
+            f_off.btlbw
+        );
+        assert!(f_on.armed, "AÇIK: dosya anında taban kurulu");
+        assert!(f_on.diag.armed_ns.is_some_and(|t| t < A6_FILE_MS * MS));
+        assert_eq!(f_on.diag.release, None);
+        assert_eq!(
+            f_on.diag.full_round_ns, None,
+            "ısınmada nitelikli tam tur yok"
+        );
+        assert!(
+            f_on.diag.rounds > 0,
+            "ısınmada (nitelikli olmayan) turlar kapandı"
+        );
+        assert!(
+            f_on.diag.bw_term_bps >= f_on.iw_rate,
+            "bw terimi ≥ IW/srtt ({} ≥ {})",
+            f_on.diag.bw_term_bps,
+            f_on.iw_rate
+        );
+        assert_eq!(f_on.rate, f_on.cap, "AÇIK: cwnd/srtt tavanı bağlar");
+        assert!(f_on.cap < f_on.iw_rate, "tavan IW/srtt'nin altında");
+        assert!(
+            f_off.rate * 10 < f_on.rate,
+            "KAPALI kol ısınma bw'siyle tohumlanır ({} ≪ {})",
+            f_off.rate,
+            f_on.rate
+        );
+        // (3) Tavan her adımda bağlar.
+        assert!(on.iter().all(|st| st.rate <= st.cap.max(31)));
+    }
+
+    /// Açık (2): dosyanın ilk uygulamayla-sınırlı-olmayan tam turu kapanınca taban `FullRound` ile kalkar
+    /// (kapı kalıcı); o tur dosya örnekleriyle gerçek kapasiteyi ölçmüştür. Sonra taban hızı yükseltmez.
+    #[test]
+    fn q2_a6_first_full_round_releases_floor() {
+        let (s, on) = a6_run(a6_k1(true), &a6_offers(), 20_000);
+        let rel = *on
+            .iter()
+            .find(|st| st.diag.full_round_ns.is_some())
+            .expect("AÇIK: tam tur görüldü");
+        eprintln!("q2_a6 kalkış adımı={rel:?}");
+        let d = rel.diag;
+        assert_eq!(d.release, Some(A6Release::FullRound));
+        assert_eq!(d.released_ns, d.full_round_ns);
+        assert_eq!(d.released_ns, Some(rel.t));
+        assert!(!rel.armed);
+        assert!(rel.t > A6_FILE_MS * MS, "tam tur dosya örnekleriyle");
+        assert!(
+            rel.btlbw > 5_000,
+            "tur gerçek kapasiteyi ölçtü (btlbw {} B/s; hat 12 500)",
+            rel.btlbw
+        );
+        assert!(d.raise_decisions > 0 && d.last_raise_ns.is_some_and(|t| t <= rel.t));
+        // Kapı kalıcı: sonrasında yeniden kurulma ve hız yükseltme yok.
+        let end = s.diag_a6();
+        assert_eq!(end.raise_decisions, d.raise_decisions);
+        assert_eq!(end.arms, d.arms);
+        assert!(on.iter().filter(|st| st.t > rel.t).all(|st| !st.armed));
+    }
+
+    /// Açık (4): kurulu rampa boyunca bw terimi düşmez, srtt büyüyüp `A6_IW_BYTES/srtt` gerilese de
+    /// (tepe değeri). Boş-geçişe karşı: en az bir adımda IW/srtt bw teriminin altına iner.
+    #[test]
+    fn q2_a6_bw_term_does_not_fall_in_startup() {
+        let (_, on) = a6_run(a6_k1(true), &a6_offers(), 20_000);
+        let applied: Vec<&A6Step> = on
+            .iter()
+            .filter(|st| st.armed && st.diag.bw_term_bps > 0)
+            .collect();
+        assert!(applied.len() > 10, "kurulum: kurulu adımlar");
+        for w in applied.windows(2) {
+            if w[0].diag.arms == w[1].diag.arms {
+                assert!(
+                    w[1].diag.bw_term_bps >= w[0].diag.bw_term_bps,
+                    "bw terimi düştü: {:?} → {:?}",
+                    w[0],
+                    w[1]
+                );
+            }
+        }
+        assert!(
+            applied
+                .iter()
+                .any(|st| st.iw_rate > 0 && st.iw_rate < st.diag.bw_term_bps),
+            "boş geçiş değil: IW/srtt en az bir adımda tepe değerin altında"
+        );
+    }
+
+    /// Açık, (d) KAPALI: uygulamayla-sınırlı ısınma turları plato sayılır, Startup rampası biter ⇒ taban
+    /// `StartupExit` ile kalkar (kapı açık kalır). Idle sonrası yeni rampada taban yeniden kurulur.
+    #[test]
+    fn q2_a6_startup_exit_releases_and_new_ramp_rearms() {
+        let flags = E1Flags {
+            a6_iw_floor: true,
+            ..E1Flags::default()
+        };
+        let (_, on) = a6_run(flags, &a6_offers(), 12_000);
+        let exit = on
+            .iter()
+            .find(|st| st.diag.release == Some(A6Release::StartupExit))
+            .expect("rampa ısınmada biter");
+        eprintln!("q2_a6 StartupExit adımı={exit:?}");
+        assert!(
+            !exit.armed && exit.diag.full_round_ns.is_none(),
+            "kapı açık"
+        );
+        assert!(
+            on.iter()
+                .any(|st| st.t > exit.t && st.armed && st.diag.arms >= 2),
+            "yeni rampada yeniden kurulur"
+        );
+    }
+
+    /// Açık (5): ayna alanları dolu (`diag_a6`); kapalı kolda varsayılan.
+    #[test]
+    fn q2_a6_mirror_fields_filled() {
+        let (s, _) = a6_run(a6_k1(true), &a6_offers(), 20_000);
+        let d = s.diag_a6();
+        eprintln!("q2_a6 ayna={d:?}");
+        assert!(d.enabled);
+        assert!(d.armed_ns.is_some() && d.arms >= 1);
+        assert!(d.released_ns.is_some() && d.release == Some(A6Release::FullRound));
+        assert!(d.raise_decisions > 0 && d.last_raise_ns.is_some());
+        assert!(d.full_round_ns.is_some() && d.rounds > 0);
+        assert!(d.bw_term_bps > 0);
+        assert!(!d.round_done_at_arm || d.rounds > 0);
+        let (off, _) = a6_run(a6_k1(false), &a6_offers(), 20_000);
+        assert_eq!(off.diag_a6(), A6FloorDiag::default());
+    }
 }
