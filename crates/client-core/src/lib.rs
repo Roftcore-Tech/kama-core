@@ -39,6 +39,7 @@
 #![forbid(unsafe_code)]
 
 pub mod batch;
+pub mod hub;
 /// [L-T1] Bellek içi zarf taşıyıcısı — YALNIZ test.
 #[cfg(any(test, feature = "test-util"))]
 pub mod memory_link;
