@@ -86,7 +86,7 @@ use std::time::{Duration, Instant};
 use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
 use kama_contracts::s1::{
     AbandonReason, ConnectPhase, ConnectResult, ConnectTicket, Delivered, DeliveryPolicy,
-    KamaTransport, PreparedUnit, SessionEvent, TransportCapabilities, TransportError,
+    KamaTransport, PreparedUnit, SessionEvent, TrafficClass, TransportCapabilities, TransportError,
 };
 use kama_contracts::s3::{
     HubHandle, Opened, PacketProtection, ProtectionClass, ProtectionContext, ProtectionLimits,
@@ -95,6 +95,7 @@ use kama_contracts::s3::{
 };
 use kama_noise_wire::protector::NoiseWireProtection;
 
+use crate::lanes::{LaneConfig, LaneConfigError, LaneState, LaneStats, QueuedUnit};
 use crate::runtime::{
     ClientEndpoint, ClientHandle, ClientLiveDiag, CtxDispatchCounters, CtxDispatchStats,
     ExpectedSessions, Readiness, RuntimeConfig, RuntimeError, ServerEndpoint, ServerHandle,
@@ -196,6 +197,11 @@ pub struct ClientTransportConfig {
     /// Yenilemede eski oturumun teyitsiz birimlerinin boşalması için azami bekleme; dolunca
     /// cutover yine yapılır (kalan birimler eski oturumda kalır, S1 K7).
     pub renew_drain_cap: Duration,
+    /// [YOL3-T1 KK-T1-05] İnce şeritler ([`crate::lanes`]): sınıf başına sunum kanalı, kabul sırası
+    /// PTT > SIG > TEXT > FILE, dosya penceresi W. `None` (ürün, [`Self::product`]) = şeritsiz,
+    /// bugünkü yol: `send` birimi doğrudan uca verir. Gösterim düğümüne yalnız test-util kancasıyla
+    /// geçer (gösterim; kapılı PoC ölçümü Aralık; ARQ yolu, FEC Aralık'ta).
+    pub lanes: Option<LaneConfig>,
 }
 
 impl ClientTransportConfig {
@@ -212,6 +218,7 @@ impl ClientTransportConfig {
             peer_addrs: HashMap::new(),
             recovery: true,
             renew_drain_cap,
+            lanes: None,
         }
     }
 }
@@ -231,6 +238,9 @@ pub enum TransportBuildError {
     /// Çalışma-zamanı kurulamadı.
     #[error("çalışma-zamanı: {0}")]
     Io(#[from] std::io::Error),
+    /// [YOL3-T1] Şerit yapılandırması geçersiz.
+    #[error("şerit yapılandırması: {0}")]
+    Lanes(#[from] LaneConfigError),
 }
 
 // ── Ortak Crypto dikişleri ───────────────────────────────────────────────────────────────────
@@ -512,6 +522,9 @@ pub struct ClientTransport<C: PacketProtection + SessionControl> {
     /// toplamı — ucun bırakıldığı andaki canlı aynasından ([`Self::retired_live_diag`]). Hiçbir
     /// karar okumaz. [DUR-19] Yalnız aynası olan uç eklenir (`RuntimeConfig::live_diag`).
     retired_diag: ClientLiveDiag,
+    /// [YOL3-T1 KK-T1-06 (i)] Şerit durumu; `None` = şeritsiz (ürün). Pompa çalışırken dışarı
+    /// alınır (`Option::take`): o sırada `send` şerit dalına girmez, birimi doğrudan uca verir.
+    lanes: Option<LaneState>,
     /// Sıradaki `send`'lerden kaçının ilk emisyonu kaybettirilecek (yalnız test).
     #[cfg(any(test, feature = "test-util"))]
     drops: usize,
@@ -561,6 +574,9 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     ) -> Result<Self, TransportBuildError> {
         if cfg.runtime.max_message_bytes.is_some() {
             return Err(TransportBuildError::FragmenterOn);
+        }
+        if let Some(lanes) = &cfg.lanes {
+            lanes.validate(cfg.runtime.offer_queue)?;
         }
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -615,6 +631,7 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             expected,
             ctx_counters,
             retired_diag: ClientLiveDiag::default(),
+            lanes: cfg.lanes.map(LaneState::new),
             #[cfg(any(test, feature = "test-util"))]
             drops: 0,
             #[cfg(any(test, feature = "test-util"))]
@@ -710,6 +727,7 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         self.drive_crypto_events();
         self.drive_deliveries();
         self.sync_expected();
+        self.pump_lanes();
     }
 
     /// [K4G-01 / D1 (v1.1) + INV-ACK-DELIVER-1] Veri alıcısının BEKLEDİĞİ oturum kümesini ve her
@@ -855,6 +873,8 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                 .get(&old)
                 .and_then(|s| s.endpoint.as_ref())
                 .is_none_or(|e| e.outstanding() == 0);
+            // [YOL3-T1 KK-T1-06 (iv)] Şeritler açıkken eski oturumun şeritleri de boş olmalı.
+            let drained = drained && self.lanes.as_ref().is_none_or(|l| l.is_empty(old));
             if !drained && now.saturating_duration_since(*since) < self.renew_drain_cap {
                 continue;
             }
@@ -1159,6 +1179,129 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         }
     }
 
+    // ── [YOL3-T1] şerit kancası (KK-T1-06, KK-T1-07) ──
+
+    /// Şerit sayaçları (salt gözlem); şeritler kapalıysa `None`.
+    #[must_use]
+    pub fn lane_stats(&self) -> Option<LaneStats> {
+        self.lanes.as_ref().map(LaneState::stats)
+    }
+
+    /// Bir oturumun şeritlerinde bekleyen ve FILE penceresindeki birim sayısı (salt gözlem);
+    /// şeritler kapalıysa `None`.
+    #[must_use]
+    pub fn lane_backlog(&self, session: SessionHandle) -> Option<(usize, usize)> {
+        let st = self.lanes.as_ref()?;
+        Some(
+            st.session(session)
+                .map_or((0, 0), |l| (l.len(), l.file_inflight())),
+        )
+    }
+
+    /// Şerit dalı: S1 `send` hata kümesi aynen ve gövdeyle aynı denetim sırasıyla (bilinmeyen /
+    /// supersede / kapalı tutamaç, birim tavanı, birim deadline'ı, uç) → şerit (tavan doluysa
+    /// `Backpressure`, KK-T1-10) → oturumun pompası.
+    fn send_via_lanes(
+        &mut self,
+        session: SessionHandle,
+        unit: PreparedUnit,
+        policy: DeliveryPolicy,
+        class: TrafficClass,
+    ) -> Result<(), TransportError> {
+        let unit_cap = self.caps.max_plaintext_unit_bytes as usize;
+        let s = self
+            .sessions
+            .get(&session)
+            .ok_or(TransportError::UnknownSession)?;
+        match s.phase {
+            Phase::Active => {}
+            Phase::Superseded => return Err(TransportError::SessionSuperseded),
+            Phase::Closed => return Err(TransportError::UnknownSession),
+        }
+        if unit.bytes.len() > unit_cap {
+            return Err(TransportError::UnitTooLarge);
+        }
+        if let DeliveryPolicy::DeadlineBounded { deadline } = policy {
+            if deadline <= Instant::now() {
+                return Err(TransportError::DeadlineExpired);
+            }
+        }
+        if s.endpoint.is_none() {
+            return Err(TransportError::NotConnected);
+        }
+        let Some(mut st) = self.lanes.take() else {
+            // Çağıran yalnız şeritler açıkken buraya girer; savunma: şeritsiz gövde.
+            return self.send(session, unit, policy, class);
+        };
+        let queued = st
+            .enqueue(
+                session,
+                QueuedUnit {
+                    bytes: unit.bytes,
+                    compression_policy: unit.compression_policy,
+                    policy,
+                    class,
+                },
+            )
+            .map_err(|_| TransportError::Backpressure);
+        if queued.is_ok() {
+            self.pump_session(&mut st, session);
+        }
+        self.lanes = Some(st);
+        queued
+    }
+
+    /// KK-T1-06 (iii): `drive()`'ın tek pompa çağrısı. (1) teyit boşaltma (KK-T1-07: her ucun
+    /// ilk-ACK kanalı `try_acked` ile; kanal 4096'lık ve dolunca olay düşer, `runtime.rs`), (2)
+    /// etkin olmayan oturumun şeridi düşer ve sayılır (S1 K7: yeni oturuma taşınmaz), (3) şerit →
+    /// uç, oturum sırasıyla.
+    fn pump_lanes(&mut self) {
+        let Some(mut st) = self.lanes.take() else {
+            return;
+        };
+        for (&h, s) in &mut self.sessions {
+            if let Some(endpoint) = s.endpoint.as_mut() {
+                while let Some(unit_id) = endpoint.try_acked() {
+                    st.on_acked(h, unit_id);
+                }
+            }
+        }
+        st.retain_active(|h| {
+            self.sessions
+                .get(&h)
+                .is_some_and(|s| s.phase == Phase::Active && s.endpoint.is_some())
+        });
+        for h in st.sessions_with_work() {
+            self.pump_session(&mut st, h);
+        }
+        self.lanes = Some(st);
+    }
+
+    /// Bir oturumun şeritlerini kabul sırasıyla uca verir; uç `QueueFull` (`Backpressure`) dönünce
+    /// birim şeridin başına döner ve pompa durur. Uca verme `send` gövdesinin kendisidir (şerit
+    /// durumu çağıranda, `self.lanes` boş): birim kimliği = verilmeden önceki `Sess::sent`.
+    fn pump_session(&mut self, st: &mut LaneState, session: SessionHandle) {
+        while let Some((lane, unit)) = st.pop_next(session, Instant::now()) {
+            let Some(unit_id) = self.sessions.get(&session).map(|s| s.sent) else {
+                st.push_front(session, lane, unit);
+                return;
+            };
+            let prepared = PreparedUnit {
+                bytes: unit.bytes.clone(),
+                compression_policy: unit.compression_policy,
+            };
+            match self.send(session, prepared, unit.policy, unit.class) {
+                Ok(()) => st.on_given(session, lane, unit_id),
+                Err(TransportError::Backpressure) => {
+                    st.push_front(session, lane, unit);
+                    return;
+                }
+                Err(TransportError::DeadlineExpired) => st.on_expired(),
+                Err(_) => st.on_give_failed(),
+            }
+        }
+    }
+
     // ── yalnız test (`test-util`) ──
 
     /// Uçların kurtarma anahtarı (S1 H-APP-RETRY-0 kancası). Sonradan açılan uçlara da uygulanır.
@@ -1356,7 +1499,14 @@ impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> 
         session: SessionHandle,
         unit: PreparedUnit,
         policy: DeliveryPolicy,
+        class: TrafficClass,
     ) -> Result<(), TransportError> {
+        // [YOL3-T1 KK-T1-06 (ii)] Şeritler açıkken birim sınıfının şeridine girer ve oturumun
+        // pompası aynı çağrıda çalışır; pompa uca vermeyi BU gövdeye yeniden girerek yapar (şerit
+        // durumu o sırada dışarıdadır → bu dal atlanır). Şeritsiz yolda `class` okunmaz.
+        if self.lanes.is_some() {
+            return self.send_via_lanes(session, unit, policy, class);
+        }
         let unit_cap = self.caps.max_plaintext_unit_bytes as usize;
         let s = self
             .sessions

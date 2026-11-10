@@ -56,7 +56,7 @@ use kama_app::store::{AppStore, MemoryAppStore};
 use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
 use kama_contracts::s1::{
     CompressionPolicy, ConnectResult, ConnectTicket, Delivered, DeliveryPolicy, KamaTransport,
-    PreparedUnit, SessionEvent, TransportCapabilities, TransportError,
+    PreparedUnit, SessionEvent, TrafficClass, TransportCapabilities, TransportError,
 };
 
 /// Test parametresi (normatif değil): codec vektörlerinin ve öbür motor testlerinin değeri.
@@ -339,6 +339,7 @@ impl KamaTransport for End {
         session: SessionHandle,
         unit: PreparedUnit,
         policy: DeliveryPolicy,
+        _class: TrafficClass,
     ) -> Result<(), TransportError> {
         let mut guard = self.link.borrow_mut();
         let link = &mut *guard;

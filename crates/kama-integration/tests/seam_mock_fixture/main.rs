@@ -32,7 +32,7 @@ use harness::target::{
 use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
 use kama_contracts::s1::{
     AbandonReason, CompressionPolicy, ConnectPhase, ConnectResult, ConnectTicket, Delivered,
-    DeliveryPolicy, KamaTransport, PreparedUnit, SessionEvent, TransportError,
+    DeliveryPolicy, KamaTransport, PreparedUnit, SessionEvent, TrafficClass, TransportError,
 };
 
 fn unit(bytes: &[u8]) -> PreparedUnit {
@@ -139,14 +139,24 @@ fn scripted_trace() -> Trace {
 
     t.drop_next_units(1);
     let mut sends = vec![
-        t.send(h, unit(b"bir"), DeliveryPolicy::Reliable),
-        t.send(h, unit(b"iki"), DeliveryPolicy::BestEffort),
+        t.send(h, unit(b"bir"), DeliveryPolicy::Reliable, TrafficClass::Be),
+        t.send(
+            h,
+            unit(b"iki"),
+            DeliveryPolicy::BestEffort,
+            TrafficClass::Be,
+        ),
     ];
     t.pump();
     t.request_renew(h);
     let h2 = t.complete_renew(h);
-    sends.push(t.send(h, unit(b"eski"), DeliveryPolicy::Reliable));
-    sends.push(t.send(h2, unit(b"yeni"), DeliveryPolicy::Reliable));
+    sends.push(t.send(h, unit(b"eski"), DeliveryPolicy::Reliable, TrafficClass::Be));
+    sends.push(t.send(
+        h2,
+        unit(b"yeni"),
+        DeliveryPolicy::Reliable,
+        TrafficClass::Be,
+    ));
     connects.push(t.connect(a, None));
     events.extend(drain_events(&mut t));
     Trace {
@@ -187,7 +197,8 @@ fn f3_mock_does_not_fabricate_delivery() {
         t.send(
             SessionHandle::from_raw(7),
             unit(b"kama"),
-            DeliveryPolicy::Reliable
+            DeliveryPolicy::Reliable,
+            TrafficClass::Be
         ),
         Err(TransportError::UnknownSession)
     );
@@ -198,7 +209,12 @@ fn f3_mock_does_not_fabricate_delivery() {
     let _ticket = pending(&mut t, harness::test_peer(9), None);
     let first_issued_id = SessionHandle::from_raw(1);
     assert_eq!(
-        t.send(first_issued_id, unit(b"erken"), DeliveryPolicy::Reliable),
+        t.send(
+            first_issued_id,
+            unit(b"erken"),
+            DeliveryPolicy::Reliable,
+            TrafficClass::Be
+        ),
         Err(TransportError::UnknownSession),
         "Ready gelmeden send kabul edildi"
     );
@@ -256,13 +272,13 @@ fn f6_mock_queues_are_bounded() {
     let h = ready(&mut t, harness::test_peer(3));
     for i in 0..MAX_INBOX {
         assert_eq!(
-            t.send(h, unit(b"x"), DeliveryPolicy::Reliable),
+            t.send(h, unit(b"x"), DeliveryPolicy::Reliable, TrafficClass::Be),
             Ok(()),
             "kuyruk dolmadan {i}. send reddedildi"
         );
     }
     assert_eq!(
-        t.send(h, unit(b"x"), DeliveryPolicy::Reliable),
+        t.send(h, unit(b"x"), DeliveryPolicy::Reliable, TrafficClass::Be),
         Err(TransportError::Backpressure),
         "teslim kuyruğu tavanında sessizce büyüdü"
     );
@@ -310,7 +326,10 @@ fn f7_loss_is_injected_only_when_armed_and_counted_exactly() {
     let payloads: Vec<Vec<u8>> = (0..UNITS).map(|i| vec![i; usize::from(i) + 1]).collect();
     let send_all = |t: &mut MockTransport, h: SessionHandle| {
         for p in &payloads {
-            assert_eq!(t.send(h, unit(p), DeliveryPolicy::Reliable), Ok(()));
+            assert_eq!(
+                t.send(h, unit(p), DeliveryPolicy::Reliable, TrafficClass::Be),
+                Ok(())
+            );
         }
     };
     let bodies = |ds: Vec<Delivered>, h: SessionHandle| -> Vec<Vec<u8>> {
@@ -445,7 +464,12 @@ fn f9_close_forgets_only_the_closed_handle() {
         "supersede edilmiş tutamaca close() (Closed okunmadan)"
     );
     assert_eq!(
-        t.send(old, unit(b"eski"), DeliveryPolicy::Reliable),
+        t.send(
+            old,
+            unit(b"eski"),
+            DeliveryPolicy::Reliable,
+            TrafficClass::Be
+        ),
         Err(TransportError::SessionSuperseded),
         "supersede edilmiş tutamaca close() Closed okunmadan tutamacı unutturdu"
     );
@@ -460,7 +484,12 @@ fn f9_close_forgets_only_the_closed_handle() {
     );
     // `Closed(old)` okundu → artık UnknownSession (send ve close); olay yok.
     assert_eq!(
-        t.send(old, unit(b"eski"), DeliveryPolicy::Reliable),
+        t.send(
+            old,
+            unit(b"eski"),
+            DeliveryPolicy::Reliable,
+            TrafficClass::Be
+        ),
         Err(TransportError::UnknownSession)
     );
     assert_eq!(t.close(old), Err(TransportError::UnknownSession));
@@ -473,7 +502,15 @@ fn f9_close_forgets_only_the_closed_handle() {
         Ok(ConnectResult::Ready(new)),
         "eski tutamacı kapatmak eşin yeni aktif oturumunu sildi"
     );
-    assert_eq!(t.send(new, unit(b"yeni"), DeliveryPolicy::Reliable), Ok(()));
+    assert_eq!(
+        t.send(
+            new,
+            unit(b"yeni"),
+            DeliveryPolicy::Reliable,
+            TrafficClass::Be
+        ),
+        Ok(())
+    );
 
     // Aktif tutamacı kapatmak onu unutturur, tam bir Closed(UserClosed) üretir ve eşi yeniden
     // bağlanılabilir kılar.
@@ -486,7 +523,12 @@ fn f9_close_forgets_only_the_closed_handle() {
         "aktif tutamaca close() tam bir Closed(UserClosed) üretmeli"
     );
     assert_eq!(
-        t.send(new, unit(b"gec"), DeliveryPolicy::Reliable),
+        t.send(
+            new,
+            unit(b"gec"),
+            DeliveryPolicy::Reliable,
+            TrafficClass::Be
+        ),
         Err(TransportError::UnknownSession)
     );
     assert!(
@@ -541,7 +583,15 @@ fn f11_accepted_early_unit_survives_a_full_inbox() {
     let mut t = build();
     let filler = ready(&mut t, harness::test_peer(12));
     for _ in 0..MAX_INBOX {
-        assert_eq!(t.send(filler, unit(b"x"), DeliveryPolicy::Reliable), Ok(()));
+        assert_eq!(
+            t.send(
+                filler,
+                unit(b"x"),
+                DeliveryPolicy::Reliable,
+                TrafficClass::Be
+            ),
+            Ok(())
+        );
     }
 
     let peer = harness::test_peer(13);
@@ -586,9 +636,22 @@ fn f12_dropped_closed_event_does_not_strand_the_handle() {
     assert_eq!(t.stats().events_dropped, CUTOVER_EVENTS);
 
     assert_eq!(
-        t.send(old, unit(b"eski"), DeliveryPolicy::Reliable),
+        t.send(
+            old,
+            unit(b"eski"),
+            DeliveryPolicy::Reliable,
+            TrafficClass::Be
+        ),
         Err(TransportError::UnknownSession),
         "Closed olayı düşen tutamaç supersede durumunda takılı kaldı"
     );
-    assert_eq!(t.send(new, unit(b"yeni"), DeliveryPolicy::Reliable), Ok(()));
+    assert_eq!(
+        t.send(
+            new,
+            unit(b"yeni"),
+            DeliveryPolicy::Reliable,
+            TrafficClass::Be
+        ),
+        Ok(())
+    );
 }

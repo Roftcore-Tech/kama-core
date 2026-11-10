@@ -24,6 +24,18 @@ ADR-17 determinizm, SR-AUDIT-001) `CLAUDE.md` §4'te; burada transport-v1'e özg
 | **INV-015** | Runtime davranışı tanı TÜKETİCİSİNE bağlı değildir: `diag_*` çağrılsa da çağrılmasa da karar dizisi aynıdır. | Heisenberg-ölçüm yasağı; ADR-17 | `sender.rs` (accessor'lar `&self`, yan-etkisiz) | `sim_determinism.rs`, `sender_diag_contract.rs` | Accessor'da durum değiştirmek |
 | **INV-016** | Transport kripto/anahtar TUTMAZ, opak birim iletir (INV-ENGINE-SOC'un transport-v1 karşılığı): `IdentitySeam` ürün-yolu stub'dır, güvenlik takılıp-çıkarılabilir. | Sprint-6/kripto katmanı transport'un müşterisidir | `client-core` `connect_with_policy(.., Box<dyn Seam>, ..)` | `api_surface_v0.rs`; audit tema E "post-v1" | Transport'a AEAD/anahtar koymak |
 
+## Beyanlı sınırlar (gösterim, 2026-11)
+
+CC §4.4 satırları **aynen** (CC-K2 imzalı; ISEMRI-YOL3-M2 KK-M2-14). Yukarıdaki invaryant satırları
+değişmez; E1 bayrakları (`RuntimeConfig.e1_flags`, CC §4.1) ürün varsayılanında kapalıdır ve yalnız
+gösterim düğümünde (`transport-v1.x-goster`) açılır. Satırlar Aralık CC-2 PR'ında güncellenir.
+
+1. "INV-RATE-1 formül düzeyinde kilitli. Kapalı döngüde (1−p) kanalı açık (F0 manşet: gönderim/gereken 0,50–0,55). Aralık CC-v2 ile kapanır."
+2. "Durum makinesinde doğrudan kanal: bekleyen kayıp ProbeUp'ı keser (kazanç 1,25 → 1), proba atfedilen kayıp iptal ettirir (sender.rs:3993-3996, :4076, :4252-4255). `e1_probe_keep` açıkken yalnız acil durum yolu kalır."
+3. "E1 bayrakları (yalnız gösterim düğümü): uygulamayla sınırlı akışta tıkanıklığa tepki toplam kayıp eşiği aşılana dek yok; ACK'siz dönemde kör emisyon O0'ın ≈ 1,5–2,2 katı; r25 uzun oturumda kalkış tabanı kalıcı."
+
+Satır numaraları `a858f3fc`'nindir (CC metni aynen).
+
 ## Kırma prosedürü
 
 Bir invaryantı değiştirmek gereken her değişiklik EVOLUTION §22 politikasındaki altı beyanı

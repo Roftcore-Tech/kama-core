@@ -175,3 +175,151 @@ pub fn effective_send_rate(
     let throttled = (u128::from(pacing) * u128::from(send_rate_gain_permille) / 1000) as u64;
     throttled.min(rate_from_window(cwnd, srtt))
 }
+
+// ── E1 gösterim bayrakları (CC §4.1, CC-K5; ISEMRI-YOL3-M2 KK-M2-01) ─────────────────────────────
+//
+// EKLEMELİ: yukarıdaki imzalar (`SrcConfig`, `evaluate`, `effective_send_rate`) DEĞİŞMEZ. Bayraklar
+// kapalıyken motor yalnız eski kod yolunu çağırır (bit-aynı); aşağıdaki işlevler yalnız bayrak açıkken
+// çağrılır.
+
+/// E1 gösterim bayrakları — çalışma zamanı yapılandırması (Cargo feature DEĞİL).
+///
+/// Adlar CC §4.1 tablosuyla **aynen**. `Default` = beşi de `false` = bugünkü davranış bit-aynı (ürün
+/// varsayılanı). 32 birleşimin hepsi geçerlidir; birleşim kuralı yoktur, tipli hata gerekmez. Yalnız
+/// gösterim düğümü (`transport-v1.x-goster`) ve G2 teşhis kolları açar.
+///
+/// | bayrak | kural (CC §4.1) |
+/// |---|---|
+/// | `e1_startup_cwnd` | (c) Startup cwnd kazancı 2,885 (`PacingPhase::Startup`'a bağlı; `cwnd/srtt` ve kalkış tabanı aynı kazancı kullanır; Drain hedefi 2×BDP kalır) |
+/// | `e1_applimited_plateau` | (d) uygulamayla sınırlı tur plato sayılmaz (ayrı tur mandalı) |
+/// | `e1_drainrt_gate` | DrainRtprop girişi yalnız rtprop bayat ∧ qd ≥ [`E1_DRAINRT_QD_MIN_PERMILLE`] |
+/// | `e1_probe_keep` | (e-dar) bekleyen kayıp ProbeUp'ı kesmez; atıflı kayıp iptal ettirmez; qd iptali kalır; retx koşulu `!pending_lost.is_empty() ∧ state ≠ RecoverFwd` |
+/// | `retx_first` | ARQ-önce koşulu `retx_first ∨ tick % K_ARQ_SHARE == 0` |
+///
+/// Hiçbir bayrak kaybı hız girdisi yapmaz (INV-RATE-1); `diag_*` sayaçları karar girdisi olmaz (INV-007).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct E1Flags {
+    /// (c) Startup cwnd kazancı 2,885 (CC §2.1 (c)).
+    pub e1_startup_cwnd: bool,
+    /// (d) uygulamayla sınırlı turlar plato sayılmaz (CC §2.1 (d)).
+    pub e1_applimited_plateau: bool,
+    /// DrainRtprop girişi yalnız rtprop bayat ∧ qd ≥ 250‰ (CC §2.1).
+    pub e1_drainrt_gate: bool,
+    /// (e-dar) bekleyen/atıflı kayıp ProbeUp'ı kesmez (CC §2.1 (e-dar), CC-K5).
+    pub e1_probe_keep: bool,
+    /// ARQ-önce her izinde (CC §4.1, CC-K6).
+    pub retx_first: bool,
+}
+
+/// [E1 DrainRtprop kapısı] DrainRtprop girişi için asgari kuyruk gecikmesi oranı (‰, qd/RTprop).
+/// Sahip sayısı (CC §4.1: "giriş yalnız rtprop bayat ∧ qd ≥ 250‰"); [CAL] DEĞİL.
+pub const E1_DRAINRT_QD_MIN_PERMILLE: u64 = 250;
+
+/// [E1 (d) qd freni] Uygulamayla sınırlı işaretli tur yine de değerlendirilir ⇔ tur işaretinde
+/// qd ≥ bu oran (‰). CC §2.1 (d) "turda qd ≥ 250‰ ise tur plato sayılır"; G1 model kararı (KK-M2-08)
+/// GİRER. Kayıp girdi DEĞİL (INV-RATE-1).
+pub const E1_PLATEAU_QD_BRAKE_PERMILLE: u64 = 250;
+
+/// [E1 (c)] cwnd kazancı (Startup fazında, bayrak açıkken): `Gain::STARTUP` = 2885/1000 (CC §2.1 (c)).
+pub const E1_STARTUP_CWND_GAIN: Gain = Gain::STARTUP;
+
+/// [E1 (c)] Kesirli cwnd kazancıyla cwnd: `max(cwnd_gain × BDP, min_cwnd)`. u128 ara-tip; taşma
+/// `u64::MAX`'e doyar (`SrcConfig.cwnd_gain.saturating_mul` deseniyle aynı yön).
+#[must_use]
+pub fn cwnd_with_gain(cfg: &SrcConfig, cwnd_gain: Gain, bdp: u64) -> u64 {
+    let den = u128::from(cwnd_gain.den.max(1));
+    let scaled = u128::from(bdp) * u128::from(cwnd_gain.num) / den;
+    u64::try_from(scaled).unwrap_or(u64::MAX).max(cfg.min_cwnd)
+}
+
+/// [E1 (c)] [`effective_send_rate`]'in kesirli cwnd kazançlı eşi: cwnd = [`cwnd_with_gain`].
+/// Geri kalan aritmetik [`effective_send_rate`] ile birebir aynıdır (tek `min()`, `cwnd/srtt` son söz).
+#[must_use]
+pub fn effective_send_rate_cwnd_gain(
+    cfg: &SrcConfig,
+    cwnd_gain: Gain,
+    btlbw: u64,
+    rtprop: Duration,
+    srtt: Duration,
+    pacing_gain: Gain,
+    send_rate_gain_permille: u32,
+) -> u64 {
+    let bdp = bdp_bytes(btlbw, rtprop);
+    let cwnd = cwnd_with_gain(cfg, cwnd_gain, bdp);
+    let pacing = pacing_gain.apply(btlbw);
+    let throttled = (u128::from(pacing) * u128::from(send_rate_gain_permille) / 1000) as u64;
+    throttled.min(rate_from_window(cwnd, srtt))
+}
+
+#[cfg(test)]
+mod e1_tests {
+    use super::*;
+
+    #[test]
+    fn e1_flags_default_all_off() {
+        let f = E1Flags::default();
+        assert!(
+            !f.e1_startup_cwnd
+                && !f.e1_applimited_plateau
+                && !f.e1_drainrt_gate
+                && !f.e1_probe_keep
+                && !f.retx_first
+        );
+    }
+
+    #[test]
+    fn e1_cwnd_gain_integer_two_matches_legacy_rate() {
+        // Kazanç 2/1 ile eklemeli işlev eski `effective_send_rate` ile aynı sonucu verir (örnek
+        // girdilerde; bayrak kapalıyken motor zaten eski işlevi çağırır).
+        let cfg = SrcConfig::default();
+        let two = Gain {
+            num: CWND_GAIN,
+            den: 1,
+        };
+        for &(bw, rtp_ms, srtt_ms, g) in &[
+            (12_500u64, 300u64, 450u64, 1000u32),
+            (1_000, 1_000, 1_400, 1000),
+            (250_000, 50, 90, 750),
+            (0, 300, 300, 1000),
+        ] {
+            let rtp = Duration::from_millis(rtp_ms);
+            let srtt = Duration::from_millis(srtt_ms);
+            for pg in [Gain::STARTUP, Gain::STEADY, Gain::PROBE_UP] {
+                assert_eq!(
+                    effective_send_rate_cwnd_gain(&cfg, two, bw, rtp, srtt, pg, g),
+                    effective_send_rate(&cfg, bw, rtp, srtt, pg, g)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn e1_cwnd_gain_startup_raises_cap_above_min_cwnd() {
+        // 12,5 kB/s × 300 ms = 3750 B BDP: 2×BDP = 7500 B, 2,885×BDP = 10818 B (> 4800 B MIN_CWND).
+        let cfg = SrcConfig::default();
+        let bdp = bdp_bytes(12_500, Duration::from_millis(300));
+        assert_eq!(bdp, 3750);
+        assert_eq!(cwnd_with_gain(&cfg, E1_STARTUP_CWND_GAIN, bdp), 10_818);
+        assert_eq!(
+            cwnd_with_gain(
+                &cfg,
+                Gain {
+                    num: CWND_GAIN,
+                    den: 1
+                },
+                bdp
+            ),
+            7_500
+        );
+        // Küçük BDP'de MIN_CWND bağlar: 2,885 × 1000 B < 4800 B.
+        assert_eq!(
+            cwnd_with_gain(&cfg, E1_STARTUP_CWND_GAIN, 1000),
+            4 * DEFAULT_MTU
+        );
+        // Taşma doyar.
+        assert_eq!(
+            cwnd_with_gain(&cfg, E1_STARTUP_CWND_GAIN, u64::MAX),
+            u64::MAX
+        );
+    }
+}

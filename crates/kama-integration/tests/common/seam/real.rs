@@ -46,7 +46,7 @@ use client_core::transport::{ClientTransport, ClientTransportConfig, LinkEvent, 
 use kama_contracts::handles::{PeerRef, SessionHandle};
 use kama_contracts::s1::{
     CompressionPolicy, ConnectResult, ConnectTicket, Delivered, DeliveryPolicy, KamaTransport,
-    PreparedUnit, SessionEvent, TransportCapabilities, TransportError,
+    PreparedUnit, SessionEvent, TrafficClass, TransportCapabilities, TransportError,
 };
 use kama_contracts::s3::HubHandle;
 use kama_noise_wire::clock::ManualClock;
@@ -167,7 +167,9 @@ impl RealHarness {
                     bytes: d.unit,
                     compression_policy: CompressionPolicy::Never,
                 };
-                let _ = cp.node.send(d.session, unit, DeliveryPolicy::Reliable);
+                let _ = cp
+                    .node
+                    .send(d.session, unit, DeliveryPolicy::Reliable, TrafficClass::Be);
                 echoed += 1;
             }
         }
@@ -247,8 +249,9 @@ impl KamaTransport for RealHarness {
         session: SessionHandle,
         unit: PreparedUnit,
         policy: DeliveryPolicy,
+        class: TrafficClass,
     ) -> Result<(), TransportError> {
-        self.t.send(session, unit, policy)
+        self.t.send(session, unit, policy, class)
     }
 
     fn recv(&mut self) -> Option<Delivered> {
