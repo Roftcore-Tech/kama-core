@@ -8,8 +8,8 @@ KK-ORK-01: FEC kapalı (hücre tanımı). D-18: ölçüm süresince ortak cargo 
 ölçüm başlangıç 2026-11-09T21:39:16+03:00
 grid rc=0 bitiş 2026-11-09T21:57:34+03:00
 oku rc=0
-03ae29e7a8973db8de4a61c998f73c24a3883972ff277b88e07e3258006510c0  /home/ryuzaki/kama-k4g-work/yol3/tesis/2026-11-09-e2a/okuma/okuma.json
-fef6f1aba42b554248b3476ecfc182113b1ef17cd09d8157d82ef80c70536500  /home/ryuzaki/kama-k4g-work/yol3/tesis/2026-11-09-e2a/okuma/OKUMA.md
+03ae29e7a8973db8de4a61c998f73c24a3883972ff277b88e07e3258006510c0  <ölçüm-kökü>/yol3/tesis/2026-11-09-e2a/okuma/okuma.json
+fef6f1aba42b554248b3476ecfc182113b1ef17cd09d8157d82ef80c70536500  <ölçüm-kökü>/yol3/tesis/2026-11-09-e2a/okuma/OKUMA.md
 okuma notu (orkestratör, 2026-11-09 22:10):
 - R4 "kayıp eşiği" sütunu oku.py formülü (max(9/8·srtt, 1 ms, 1,5·EAI)); tt_rfc açıkken geçersiz (K1a/K0a). Kodda gerçek eşik ölçülmedi.
 - ayristirma_util.py (alice ts anlıkları, dosya sent→delivered penceresi): retx payı (rtxb/txb) medyan K1 0,202 · K1a 0,221 · K0a 0,200 (G2: K0 0,206 · K1 0,198 · K2 0,197); tel hızı medyan K1 10033 · K1a 9686 · K0a 8853 B/s.
