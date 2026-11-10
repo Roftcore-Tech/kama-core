@@ -37,6 +37,9 @@ pub enum KamaArm {
     Arq,
     /// Bounded tail recovery, doğrulanmış v1 konfigürasyonuyla ON.
     TailV1,
+    /// [CC-PORT] quinn-proto 0.11.18 BBR + RFC 9002 motoru (`Sender::with_cc_port()`); sunucu
+    /// tarafında `--cc-port` ile `Receiver::with_cc_port()` kurulmalıdır (anında ACK / 25 ms).
+    CcPort,
 }
 
 impl KamaArm {
@@ -46,6 +49,7 @@ impl KamaArm {
         match self {
             Self::Arq => "kama-arq",
             Self::TailV1 => "kama-tail-v1",
+            Self::CcPort => "kama-cc-port",
         }
     }
 }
@@ -261,6 +265,9 @@ pub struct ServerCfg {
     pub bootstrap_rtt: bool,
     /// [IW] Bkz. [`ClientCfg::initial_window_bytes`] (alıcıda etkisiz; simetri için taşınır).
     pub initial_window_bytes: u64,
+    /// [CC-PORT] Alıcı quinn ACK kurallarıyla (`Receiver::with_cc_port`); istemci `--kama-arm
+    /// cc-port` ile AYNI olmalı. Yalnız `kama` transportunda okunur.
+    pub cc_port: bool,
     /// [KURULUŞ] Bkz. [`ClientCfg::bootstrap_fast`] (alıcıda etkisiz; simetri için taşınır).
     pub bootstrap_fast: bool,
     /// [ONAY UFKU] Kayıp-defteri confirm ufku: `0` = sevk davranışı (cadence-legacy),

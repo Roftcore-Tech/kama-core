@@ -80,6 +80,18 @@ impl TailRecoveryConfig {
             max_tail_probes: 3,
         }
     }
+
+    /// [CC-PORT] RFC 9002 §6.2 PTO biçimi (quinn `connection/mod.rs:1834-1870`): `validated_v1`
+    /// sınırlarıyla ama **prob turu tavanı yok** (üstel geri çekilme tek sınırlayıcı; quinn'de de
+    /// sayaç yoktur, bağlantı boşta-zaman-aşımına kadar prob sürer). ISEMRI-CC-PORT §1 #4
+    /// "3 prob sonra pes" belirtisinin karşılığı. Yalnız `Sender::with_cc_port` kurucusunda kullanılır.
+    #[must_use]
+    pub fn rfc9002_cc_port() -> Self {
+        Self {
+            max_tail_probes: u32::MAX,
+            ..Self::validated_v1()
+        }
+    }
 }
 
 /// Per-tick decision.

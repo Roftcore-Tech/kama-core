@@ -37,7 +37,13 @@ pub fn time_threshold_lost(
     num: u64,
     den: u64,
 ) -> bool {
-    elapsed > scale_duration(srtt, num, den).max(min_delay)
+    // [CC-PORT düzeltmesi] `>=`: vade (`next_time_loss_deadline_ns` = send + eşik) geldiğinde
+    // kayıp İLAN EDİLİR. Eskiden `>` idi: `now == send + eşik` anında vade gelmiş ama ilan yok →
+    // cold-start adaptörünün faz-3 döngüsü aynı vadeyi yeniden kurup dönüyordu (hosted CI,
+    // `--all-features`: "faz-3 due-döngüsü ilerleme-kaybı"). Eski motorda EAI tabanı ns-hassas
+    // olduğundan eşitlik pratikte görülmüyordu; portun 1 ms tabanıyla görüldü. E2a m1 sözleşmesi
+    // (uyanış = send + eşik, uyanışta ilan; KK-M1-04) bu yönle tutarlıdır.
+    elapsed >= scale_duration(srtt, num, den).max(min_delay)
 }
 
 fn scale_duration(d: Duration, num: u64, den: u64) -> Duration {

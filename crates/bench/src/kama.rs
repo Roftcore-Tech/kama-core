@@ -108,7 +108,10 @@ impl ClientRun {
     fn new(msg_count: usize, arm: KamaArm, budget: BudgetMode) -> Self {
         // KAPI-1 W4: kol seçimi Sender kuruluşunda uygulanır. TailV1 = adlandırılmış doğrulanmış
         // sabit; default bounds ile ENABLE ETME (o bounds hiç kampanya görmedi — tail_recovery.rs).
-        let mut sender = Sender::new();
+        let mut sender = match arm {
+            KamaArm::CcPort => Sender::with_cc_port(), // [CC-PORT] PTO/retx/E2a kurucuda
+            _ => Sender::new(),
+        };
         if arm == KamaArm::TailV1 {
             sender.set_tail_recovery_config(TailRecoveryConfig::validated_v1());
         }
@@ -551,6 +554,7 @@ async fn serve_loop(
     quota_r: u32,
     budget: BudgetMode,
     gate_watch: Option<std::path::PathBuf>,
+    cc_port: bool,
 ) -> Result<(), BenchError> {
     let mut peers: HashMap<SocketAddr, Receiver> = HashMap::new();
     let mut ack_timer = interval(ACK_TICK);
@@ -615,7 +619,11 @@ async fn serve_loop(
                 let Ok((n, peer)) = r else { continue };
                 let Some((wire_seq, unit_id)) = decode_data(&buf[..n]) else { continue };
                 let rx = peers.entry(peer).or_insert_with(|| {
-                    let mut r = Receiver::new();
+                    let mut r = if cc_port {
+                        Receiver::with_cc_port() // [CC-PORT] anında ACK + 25 ms
+                    } else {
+                        Receiver::new()
+                    };
                     r.set_quota_r(quota_r);
                     r
                 });
@@ -644,6 +652,7 @@ impl BenchTransport for KamaTransport {
             cfg.quota_r,
             cfg.budget,
             cfg.gate_watch,
+            cfg.cc_port,
         )
         .await
     }
@@ -722,6 +731,7 @@ mod tests {
             4,
             BudgetMode::Unlimited,
             None,
+            false,
         ));
 
         let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -766,6 +776,7 @@ mod tests {
             4,
             BudgetMode::Unlimited,
             None,
+            false,
         ));
 
         let dir = std::env::temp_dir().join(format!("kapi-gate-kama-{}", std::process::id()));
@@ -817,6 +828,7 @@ mod tests {
             4,
             BudgetMode::Unlimited,
             None,
+            false,
         ));
 
         let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -868,6 +880,7 @@ mod tests {
             4,
             BudgetMode::Unlimited,
             None,
+            false,
         ));
 
         let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -936,6 +949,7 @@ mod tests {
             4,
             BudgetMode::Unlimited,
             None,
+            false,
         ));
         let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let out = client_loop(client, cfg(saddr, 200, 5000), Instant::now())
