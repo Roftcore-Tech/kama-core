@@ -126,7 +126,7 @@ Faydalı dosya debisi = 150 480 B / dosya bitiş [türetilmiş]:
 - Q-bbr'nin faydalı debisi 11,06 kB/s, 12,5 × (1 − 0,2) = 10 kB/s'nin üstünde. Bu, netem'in kaybı hız sınırlayıcıdan önce düşürdüğünü, kaybın hat kapasitesi harcamadığını gösteriyor [türetilmiş]. Faydalı tavan ≈ 12,5 kB/s, dosya alt sınırı ≈ 12 s (başlık hariç).
 - Kama K1'in faydalı debisi 7,84 kB/s. İki kat görünüyor:
   - (a) Pacer hedefi teslim hızında (≈ 12,6 kB/s). Hattı doldurmak için ≈ 15,6 kB/s gerekir. Bu, teslim-hızı (1 − p) yanlılığı [türetilmiş].
-  - (b) Tel bu hedefin de altında (≈ 10 kB/s) [ölçüldü]. Nedeni ayrıştırılmadı.
+  - (b) ~~Tel bu hedefin de altında (≈ 10 kB/s) [ölçüldü]. Nedeni ayrıştırılmadı.~~ **Düzeltme 2026-11-10 (sahip kararı v4 EK-A §9.1, §10.1):** "tel hedefin altında" medyan yanılsamasıdır; fazlar içinde tel ≥ pacer hedefi. Ayrıntı §7.
 
 **B3 — Kayıp kuralı tek başına değiştirmedi.**
 - K1a ↔ K1: PTT p95 10,69 ↔ 9,82 s, dosya 21,3 ↔ 20,4 s. Fark, K1'in koşular arası aralığının (8,63–9,82 s) içinde [ölçüldü].
@@ -144,6 +144,7 @@ Faydalı dosya debisi = 150 480 B / dosya bitiş [türetilmiş]:
 
 ## 5. Düzeltmeler (aynı gün)
 
+- 2026-11-10: B2(b) "tel pacer hedefinin altında" medyan yanılsamasıydı (§7; sahip kararı v4 EK-A §9.1, §10.1).
 - "Fiziksel alt sınır ≈ 15 s" yanlış; doğrusu ≈ 12 s (B2).
 - "Öncelik olmadan hiçbir ARQ PTT'yi 3 s'ye indiremez" yanlış (B1).
 - "K1 hız kilidini açıyor" ifadesi geri çekildi. Emisyon/sunulan 4,90; yeni veri, retx, prob ve parite paylarına ayrılmadan kullanılmaz.
@@ -160,7 +161,13 @@ Faydalı dosya debisi = 150 480 B / dosya bitiş [türetilmiş]:
 ## 7. Açık kalemler ve kodlanmış ama ölçülmemiş işler
 
 Açık kalemler:
-- B2(b): tel hızının pacer hedefinin altında kalma nedeni.
+- ~~B2(b): tel hızının pacer hedefinin altında kalma nedeni.~~ Kapandı (2026-11-10, sahip kararı v4 EK-A §9.1, §10.1; K1 10 koşunun ham verisinden, `ayristirma_util.py` ile yeniden üretildi) [ölçüldü]:
+  - Göndericinin `txb` sayacı ilk 15 kB için medyan 5,2 s (K0 6,4; K1a 5,9). Başlangıç gönderimi yavaş: ilk 3 s'de ≈ 2 kB, ilk büyük gönderim ≈ 1,3 s. Startup pace ≈ 930 B/s (ısınma bw ≈ 325 B/s × 2,885).
+  - Alıcı tarafı ölçülmedi: aynada alıcı dosya ilerlemesi yok. `txb` yeniden gönderimi de içerir.
+  - Startup bant tahminini ısınma TEXT'lerinden (uygulamayla sınırlı) alıyor. 5–6 s'de ≈ 25 kB/s'ye taşıyor, netem'in 1000 paketlik kuyruğu doluyor, srtt 0,9–1,4 s. RecoverArq'ta cwnd/şişmiş srtt tavanıyla 8,5–9 kB/s boşaltıyor; 13 s'den sonra ProbeUp ≈ 15 kB/s.
+  - Fazlar içinde tel ≥ pacer hedefi; "tel hedefin altında" cümlesi medyan yanılsamasıydı.
+  - Önceki "kova kuantizasyonu dosya debisini düşürüyor" tahmini bu veriyle desteklenmedi, geri çekildi. A-3 parite/retx için kalır.
+  - Deney: A-6 (Startup pace tabanı 10·MTU/srtt, bayrak `a6_iw_floor`, varsayılan kapalı; EK-A §10.2 kapısıyla). A-6 aç/kapa kolu katkıyı ayıracak.
 - Şeritli ağaçta dosya yavaşlaması (§2b) ve W'nin etkisi.
 - quinn'in öncelikli kolu (PTT > TEXT > dosya; `--q-oncelik on`, hücresi yok).
 
@@ -174,7 +181,7 @@ Kodlanmış ve §2b'de şeritli ağaçta ölçülmüş (origin dalları, bayrakl
   - A-3 kova tabanı 2·MTU (`a3_burst_floor`)
   - A-4 prob abort yalnız qd, periyot 4·srtt (`a4_probe_srtt`)
   - Rapor: `seritler/Q2-PACER-PROB.md`
-- Bu maddeler bir karşılaştırma belgesinin §3-A paketinden alındı. O belge depoda değil.
+- Bu maddeler bir karşılaştırma belgesinin §3-A paketinden alındı. ~~O belge depoda değil.~~ Belge PR #152 ile `docs/design/QUINN-FARKI-KOD-KARSILASTIRMA-2026-11-09.md` (normatif değil).
 
 ## 8. Yeniden üretme
 

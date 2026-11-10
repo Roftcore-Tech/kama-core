@@ -37,6 +37,13 @@ thiserror.workspace = true
 # ayna anahtarları, oturum tablosu okuyucuları (`set_recovery_for_test`, `set_live_diag_for_test`,
 # `peer_of_for_test`, `outstanding_for_test`).
 test-util = ["client-core/test-util"]
+# [YOL3 · Ö · KK-Ö-28] Gösterim düğümü (A yolu telefonları; `.so` `--features kama-node/goster` ile,
+# orkestratör derler): ürün kurucusu `KamaNode::start` gösterim profilini (`src/goster.rs`: FEC yok,
+# gösterim E1 kolu, S1 şeritleri W = 5, PTT oynatma tamponu T) kurar. Varsayılan KAPALI; kapalıyken
+# ürün yolu bit-aynı. `test-util` ile birlikte ETKİSİZ (KK-Ö-39: `--all-features` testleri ürün yolunu
+# sınamaya devam eder); gösterim ikilisi `test-util` açmadan derlenir. Yeni bağımlılık yok.
+# Gösterim; kapılı PoC ölçümü Aralık; ARQ yolu, FEC Aralık'ta.
+goster = []
 
 [dev-dependencies]
 # Kendi `test-util` özelliğini entegrasyon testlerine açar (client-core'daki kalıp; bkz. yukarıdaki

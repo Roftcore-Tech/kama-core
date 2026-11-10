@@ -72,6 +72,11 @@ mod carrier;
 mod error;
 mod event;
 mod files;
+/// [YOL3 · Ö · KK-Ö-28] Gösterim profili `transport-v1.x-goster`: `goster` özelliğiyle (ve
+/// `test-util` kapalıyken; KK-Ö-39) ürün kurucusuna, `test-util` ile ölçüm düzeneğine (f0_flows
+/// `--goster on`, yapılandırma kancası) açılır. Varsayılan derlemede YOKTUR (ürün yolu bit-aynı).
+#[cfg(any(feature = "test-util", feature = "goster"))]
+pub mod goster;
 mod handle;
 mod node;
 mod peers;
@@ -278,6 +283,10 @@ impl KamaNode {
         };
         let mut transport_config = ClientTransportConfig::product(data_bind);
         transport_config.peer_addrs = peers.peer_addrs();
+        // [YOL3 · Ö] Gösterim profili (KK-Ö-28): yalnız `goster` özelliğiyle ve `test-util` KAPALIYKEN
+        // (KK-Ö-39: `--all-features` test derlemeleri ürün yolunu sınamaya devam eder).
+        #[cfg(all(feature = "goster", not(feature = "test-util")))]
+        goster::apply(&mut transport_config);
         // [YOL3 · Ö] Yapılandırma kancası (KK-Ö-04): yalnız ölçüm kurucusundan; ürün yolunda `None`.
         if let Some(hook) = cfg_hook {
             hook(&mut transport_config);
@@ -288,9 +297,17 @@ impl KamaNode {
         let app_store: Arc<dyn AppStore> = store;
         let messenger = Messenger::with_store(transport, app_store).map_err(NodeError::Limits)?;
         let limits = InputLimits::from_amp(messenger.limits());
+        let ptt = Ptt::new(Arc::clone(&app_clock));
+        // [YOL3 · Ö] Gösterim profili (KK-Ö-28, KK-Ö-39): PTT oynatma tamponu, aynı koşulla.
+        #[cfg(all(feature = "goster", not(feature = "test-util")))]
+        let ptt = {
+            let mut ptt = ptt;
+            goster::install_playout(&mut ptt);
+            ptt
+        };
         let engines = AppEngines {
             messenger,
-            ptt: Ptt::new(Arc::clone(&app_clock)),
+            ptt,
             files: FileTransfer::new(Arc::clone(&app_clock)),
             signaling: Signaling::new(app_clock),
         };

@@ -1099,3 +1099,39 @@ fn transport_cfg_hook_runs_once_after_product_config() {
         "kanca bir kez, ürün yapılandırmasıyla"
     );
 }
+
+/// [YOL3 · Ö] KK-Ö-28: gösterim profili ([`crate::goster::apply`] + `install_playout`) ürün kurucusu
+/// gövdesine (`build_with_link`, kanca yoluyla) uygulanınca gerçek Transport S1 şeritlerini
+/// (YOL3-T1 `ClientTransportConfig.lanes`) ve PTT motoru oynatma tamponunu (T = 2,0 s) kurar; ürün
+/// kurucusunda (`build` = `KamaNode::start`'ınki) test derlemesinde ikisi de YOKTUR — profil yalnız
+/// `goster` ∧ ¬`test-util` derlemesinde (telefon `.so`'su) etkindir (KK-Ö-39; o iki `cfg` satırı
+/// `cargo clippy -p kama-node --features goster` ile derlenir).
+#[test]
+fn goster_profile_sets_lanes_and_playout_and_product_path_has_neither() {
+    let _serial = support::serial();
+    let root = TempDir::new("goster");
+    let phones = support::provision(root.path(), &[ALICE, BOB]);
+    let (mut on, _on_events) = support::manual_with_cfg_hook(
+        &phones[ALICE],
+        support::system_clock(),
+        Box::new(crate::goster::apply),
+    );
+    crate::goster::install_playout(&mut on.node.ptt);
+    assert_eq!(
+        on.node.messenger.transport().lane_stats(),
+        Some(client_core::lanes::LaneStats::default()),
+        "gösterim: şeritler açık (boş)"
+    );
+    assert_eq!(
+        on.node.ptt.playout_stats(),
+        Some(kama_app::playout::PlayoutStats::default()),
+        "gösterim: oynatma tamponu açık (boş)"
+    );
+    let (off, _off_events) = support::manual(&phones[BOB], support::system_clock());
+    assert_eq!(
+        off.node.messenger.transport().lane_stats(),
+        None,
+        "ürün: şerit yok"
+    );
+    assert_eq!(off.node.ptt.playout_stats(), None, "ürün: tampon yok");
+}
