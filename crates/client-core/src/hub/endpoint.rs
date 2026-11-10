@@ -30,15 +30,21 @@
 //! # HB1 sınırı
 //!
 //! [`HubControl`], HB1'in `HubLink` sans-IO çekirdeğinin `HubEndpoint`'in çağırdığı yüzeyidir
-//! (iş emri §6 sözleşmesi). HB1'in API PR'ı main'e girince `impl HubControl for HubLink` eklenir;
-//! [`HubControl::knows_handle`] KK-H66 ölçüsü için sözleşmeye eklenmesi istenen tek yöntemdir.
+//! (iş emri §6 sözleşmesi; imzalar `origin/s2a/v3-hb1-api`'deki `HubLink` ile birebir). HB1'in API
+//! PR'ı main'e girince `impl HubControl for HubLink` (saf iletim) eklenir.
+//!
+//! KK-H66 ("hub'ın atadığı handle = kriptonun yazdığı handle") ölçüsünün handle kümesi HB1
+//! dosyalarına dokunmadan tutulur: [`RecordingLink`] transport'a verilen `EnvelopeLink`'i sarar ve
+//! taşıyıcının bildirdiği her handle'ı (`HandleAssigned`, `IncomingInit`, `Response`) ve
+//! `send_response`'un handle'ını [`KnownHandles`]'a yazar; `HubEndpoint` giden datagramın ilk dört
+//! baytını bu kümeyle karşılaştırır.
 //!
 //! # Kilit kuralı
 //!
 //! `HubControl` kilidi tutulurken kripto kilidi alınmaz; kripto kilidi bırakılmadan `HubControl`
 //! kilidi alınmaz. Kanal (`OpenedStash`) kilidi ikisinden biriyle birlikte tutulmaz.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -47,9 +53,11 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use adaptive_transport::ack::{FRAME_TYPE_ACK, FRAME_TYPE_ACK_V2};
-use kama_contracts::s3::ProtectionContext;
+use kama_contracts::handles::PeerRef;
+use kama_contracts::s3::{HubHandle, ProtectionContext};
 
 use super::shared_crypto::{HubCryptoAccess, StashCounters};
+use crate::transport::{EnvelopeLink, LinkAttempt, LinkError, LinkEvent};
 use crate::wire::{
     FRAME_CS_ECHO, FRAME_CS_PROBE, FRAME_DATA, FRAME_DATA_FRAG, FRAME_FEC, FRAME_PARAM,
     FRAME_PARAM_ACK, FRAME_RECOVERED,
@@ -124,13 +132,114 @@ pub trait HubControl: Send {
     /// Zamanlayıcı turu.
     fn on_tick(&mut self, now: Instant);
     /// Oturum trafiği (`outbound = true` giden; `false` hub'dan gelen — C9 yaşı).
-    fn on_session_traffic(&mut self, now: Instant, h: u32, outbound: bool);
+    fn on_session_traffic(&mut self, now: Instant, h: HubHandle, outbound: bool);
     /// Hub soketi hata verdi (KK-H41 yoklama tetiği).
     fn on_socket_error(&mut self, now: Instant);
     /// Bind doğrulandı mı (C2: bind olmadan hiçbir şey gönderilmez).
     fn is_bound(&self) -> bool;
-    /// `h` hub'ın atadığı ya da teslim ettiği tutamaç mı (KK-H66).
-    fn knows_handle(&self, h: u32) -> bool;
+}
+
+// ── KK-H66 handle kümesi ─────────────────────────────────────────────────────────────────────
+
+/// [`KnownHandles`]'ın tavanı (SR-AUDIT-001); dolunca en eski handle düşer.
+pub const KNOWN_HANDLE_CAP: usize = 1024;
+
+#[derive(Default)]
+struct HandleSet {
+    set: HashSet<u32>,
+    order: VecDeque<u32>,
+}
+
+/// Taşıyıcının atadığı ya da teslim ettiği handle'lar (KK-H66). Paylaşılan, sınırlı.
+#[derive(Clone, Default)]
+pub struct KnownHandles(Arc<Mutex<HandleSet>>);
+
+impl std::fmt::Debug for KnownHandles {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KnownHandles")
+            .field("len", &lock(&self.0).set.len())
+            .finish()
+    }
+}
+
+impl KnownHandles {
+    /// Boş küme.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `h`'yi ekler (`0` eklenmez).
+    pub fn insert(&self, h: HubHandle) {
+        let raw = h.raw();
+        if raw == 0 {
+            return;
+        }
+        let mut s = lock(&self.0);
+        if !s.set.insert(raw) {
+            return;
+        }
+        s.order.push_back(raw);
+        if s.set.len() > KNOWN_HANDLE_CAP {
+            if let Some(old) = s.order.pop_front() {
+                s.set.remove(&old);
+            }
+        }
+    }
+
+    /// `h` kümede mi.
+    #[must_use]
+    pub fn contains(&self, h: u32) -> bool {
+        lock(&self.0).set.contains(&h)
+    }
+}
+
+/// Transport'a verilen `EnvelopeLink`'in gözlemcisi: davranışı DEĞİŞTİRMEZ (aynı çağrılar, aynı
+/// dönüşler, aynı sıra), yalnız handle'ları [`KnownHandles`]'a yazar.
+pub struct RecordingLink<L> {
+    inner: L,
+    known: KnownHandles,
+}
+
+impl<L: EnvelopeLink> RecordingLink<L> {
+    /// Sarar.
+    #[must_use]
+    pub fn new(inner: L, known: KnownHandles) -> Self {
+        Self { inner, known }
+    }
+}
+
+impl<L: EnvelopeLink> EnvelopeLink for RecordingLink<L> {
+    fn send_init(
+        &mut self,
+        peer: PeerRef,
+        envelope_type: u8,
+        bytes: Vec<u8>,
+    ) -> Result<LinkAttempt, LinkError> {
+        self.inner.send_init(peer, envelope_type, bytes)
+    }
+
+    fn send_response(
+        &mut self,
+        peer: PeerRef,
+        hub_handle: HubHandle,
+        envelope_type: u8,
+        bytes: Vec<u8>,
+    ) -> Result<(), LinkError> {
+        self.known.insert(hub_handle);
+        self.inner
+            .send_response(peer, hub_handle, envelope_type, bytes)
+    }
+
+    fn poll(&mut self) -> Option<LinkEvent> {
+        let ev = self.inner.poll()?;
+        match &ev {
+            LinkEvent::HandleAssigned { hub_handle, .. }
+            | LinkEvent::IncomingInit { hub_handle, .. }
+            | LinkEvent::Response { hub_handle, .. } => self.known.insert(*hub_handle),
+        }
+        Some(ev)
+    }
 }
 
 // ── Hatalar ve sayaçlar ──────────────────────────────────────────────────────────────────────
@@ -168,7 +277,7 @@ pub struct HubEndpointCounters {
     pub hub_no_client_port: u64,
     /// Sunucu rolü çerçevesi, ama veri alıcısı adresi verilmedi.
     pub hub_no_server_addr: u64,
-    /// Giden oturum datagramının `h`'si `HubControl`'ün bildiği küme dışında (KK-H66).
+    /// Giden oturum datagramının `h`'si [`KnownHandles`] dışında (KK-H66).
     pub hub_out_unknown_handle: u64,
     /// Hub adresi dışından gelen datagram (sessiz düşer).
     pub hub_rx_foreign: u64,
@@ -277,6 +386,7 @@ struct Core {
     client_ports: Mutex<ClientPorts>,
     crypto: Box<dyn HubCryptoAccess>,
     control: Arc<Mutex<dyn HubControl>>,
+    known: KnownHandles,
     counters: Atomics,
     stop: AtomicBool,
 }
@@ -297,7 +407,7 @@ impl Core {
             None => inc(&self.counters.hub_open_fail),
             Some(0) => self.on_control_datagram(now, bytes),
             Some(h) => {
-                lock(&self.control).on_session_traffic(now, h, false);
+                lock(&self.control).on_session_traffic(now, HubHandle::from_raw(h), false);
                 self.on_session_datagram(now, h, bytes);
             }
         }
@@ -382,11 +492,11 @@ impl Core {
                 inc(&self.counters.hub_tx_unbound);
                 return;
             }
-            if !c.knows_handle(h) {
-                // Yine gönderilir (hub ROUTE_MISS verir); dumanda 0 olmalı.
-                inc(&self.counters.hub_out_unknown_handle);
-            }
-            c.on_session_traffic(now, h, true);
+            c.on_session_traffic(now, HubHandle::from_raw(h), true);
+        }
+        if !self.known.contains(h) {
+            // Yine gönderilir (hub ROUTE_MISS verir); dumanda 0 olmalı.
+            inc(&self.counters.hub_out_unknown_handle);
         }
         if let Err(HubSendError::Io(_)) =
             send_to_hub(&self.hub_sock, self.hub_addr, bytes, &self.counters)
@@ -544,6 +654,7 @@ impl HubEndpoint {
         cfg: HubEndpointConfig,
         crypto: Box<dyn HubCryptoAccess>,
         control: Arc<Mutex<dyn HubControl>>,
+        known: KnownHandles,
     ) -> io::Result<Self> {
         let hub_sock = UdpSocket::bind(cfg.hub_bind)?;
         let relay_sock = UdpSocket::bind(cfg.relay_bind)?;
@@ -559,6 +670,7 @@ impl HubEndpoint {
             client_ports: Mutex::new(ClientPorts::default()),
             crypto,
             control,
+            known,
             counters: Atomics::default(),
             stop: AtomicBool::new(false),
         });
@@ -712,10 +824,9 @@ mod tests {
     #[derive(Default)]
     struct FakeControl {
         bound: bool,
-        known: HashSet<u32>,
         control_in: Vec<Vec<u8>>,
         to_send: VecDeque<Vec<u8>>,
-        traffic: Vec<(u32, bool)>,
+        traffic: Vec<(HubHandle, bool)>,
         socket_errors: u32,
         ticks: u64,
     }
@@ -733,7 +844,7 @@ mod tests {
         fn on_tick(&mut self, _now: Instant) {
             self.ticks += 1;
         }
-        fn on_session_traffic(&mut self, _now: Instant, h: u32, outbound: bool) {
+        fn on_session_traffic(&mut self, _now: Instant, h: HubHandle, outbound: bool) {
             self.traffic.push((h, outbound));
         }
         fn on_socket_error(&mut self, _now: Instant) {
@@ -741,9 +852,6 @@ mod tests {
         }
         fn is_bound(&self) -> bool {
             self.bound
-        }
-        fn knows_handle(&self, h: u32) -> bool {
-            self.known.contains(&h)
         }
     }
 
@@ -802,10 +910,12 @@ mod tests {
         let crypto = FakeCrypto::new(stash);
         let control = Arc::new(Mutex::new(FakeControl {
             bound: true,
-            known: [H1, H2].into_iter().collect(),
             ..FakeControl::default()
         }));
         let ctl: Arc<Mutex<dyn HubControl>> = control.clone();
+        let known = KnownHandles::new();
+        known.insert(HubHandle::from_raw(H1));
+        known.insert(HubHandle::from_raw(H2));
         let ep = HubEndpoint::start(
             HubEndpointConfig {
                 hub_addr: hub.local_addr().expect("adres"),
@@ -814,6 +924,7 @@ mod tests {
             },
             Box::new(Arc::clone(&crypto)),
             ctl,
+            known,
         )
         .expect("başlat");
         let server = sock();
@@ -967,7 +1078,7 @@ mod tests {
         assert!(lock(&r.control)
             .traffic
             .iter()
-            .any(|(h, out)| *h == H1 && !*out));
+            .any(|(h, out)| h.raw() == H1 && !*out));
     }
 
     /// Tüketilmeyen kaydın zili yeniden çalınır; ikinci zil kriptoyu çağırmaz.
@@ -1053,5 +1164,71 @@ mod tests {
         s.send_to(&session_dgram(H1, FRAME_DATA, b"z"), relay)
             .expect("gönder");
         assert!(quiet(&r.hub));
+    }
+
+    struct ScriptLink(VecDeque<LinkEvent>);
+
+    impl EnvelopeLink for ScriptLink {
+        fn send_init(
+            &mut self,
+            _p: PeerRef,
+            _t: u8,
+            _b: Vec<u8>,
+        ) -> Result<LinkAttempt, LinkError> {
+            Ok(LinkAttempt(7))
+        }
+        fn send_response(
+            &mut self,
+            _p: PeerRef,
+            _h: HubHandle,
+            _t: u8,
+            _b: Vec<u8>,
+        ) -> Result<(), LinkError> {
+            Err(LinkError)
+        }
+        fn poll(&mut self) -> Option<LinkEvent> {
+            self.0.pop_front()
+        }
+    }
+
+    /// KK-H66: `RecordingLink` davranışı değiştirmez, taşıyıcının handle'larını kaydeder.
+    #[test]
+    fn recording_link_is_transparent_and_records_handles() {
+        let known = KnownHandles::new();
+        let events = [
+            LinkEvent::HandleAssigned {
+                attempt: LinkAttempt(7),
+                hub_handle: HubHandle::from_raw(11),
+            },
+            LinkEvent::IncomingInit {
+                hub_handle: HubHandle::from_raw(12),
+                envelope_type: 1,
+                bytes: vec![1],
+            },
+            LinkEvent::Response {
+                hub_handle: HubHandle::from_raw(13),
+                envelope_type: 2,
+                bytes: vec![2],
+            },
+        ];
+        let mut link = RecordingLink::new(ScriptLink(events.clone().into()), known.clone());
+        let peer = PeerRef::from_dest_hash([1; 32]);
+        assert_eq!(link.send_init(peer, 1, vec![]), Ok(LinkAttempt(7)));
+        assert_eq!(
+            link.send_response(peer, HubHandle::from_raw(14), 2, vec![]),
+            Err(LinkError)
+        );
+        let got: Vec<LinkEvent> = std::iter::from_fn(|| link.poll()).collect();
+        assert_eq!(got, events.to_vec());
+        for h in [11, 12, 13, 14] {
+            assert!(known.contains(h), "{h}");
+        }
+        assert!(!known.contains(15));
+        known.insert(HubHandle::from_raw(0));
+        assert!(!known.contains(0), "0 hiçbir zaman handle değildir");
+        for h in 100..(100 + KNOWN_HANDLE_CAP as u32 + 1) {
+            known.insert(HubHandle::from_raw(h));
+        }
+        assert!(!known.contains(11), "tavan: en eski düşer");
     }
 }
