@@ -33,11 +33,12 @@ büyük. Tanımlar:
       basışların en geci; şeritsiz Kama ve quinn kollarında "—". Varış: Kama = bob Transport →
       Application (iz R, `t_released`); quinn = bob stream okuma anı (tampon yok).
   A-6 kanıtı (EK-A §10.2; başlık `yol3.e1_set` a6_iw_floor içeren kollar): alice `ts` satırındaki
-      eş bob oturumunun `a6` nesnesi (alan adları A6_KEYS). Etkinleşti = dosya penceresinde
+      eş bob oturumunun `a6` nesnesi (Q2 aynası, alan adları A6_KEYS). Etkinleşti = dosya penceresinde
       (file.sent → file.delivered, yoksa koşu sonu) tabanın hızı yükselttiği karar sayısı arttı;
-      etkinleşme anı = tabanın kurulu görüldüğü ilk örnek − file.sent; kalkış nedeni ve anı; ısınmada
-      tam tur = ilk nitelikli tam tur dosyadan ÖNCE kapandı mı (+ motorun ilk kurulma anı kaydı).
-      Etkinleşmeyen koşu "A-6 ölçülmedi" sayılır. Aynada `a6` yoksa bölüm "aynada yok" yazar.
+      etkinleşme anı = pencerede ilk yükseltmenin görüldüğü ts örneği − file.sent; ilk kurulma, SON
+      kalkış (anı + nedeni) ve ilk nitelikli tam tur (kapı kapanışı) anları `o_ms` varsa kesin;
+      ısınmada tam tur = o tur dosyadan ÖNCE kapandı mı (+ r0: ilk kurulmada tur izleyicisi tam tur
+      kapatmış mıydı). Etkinleşmeyen ya da aynası olmayan koşu "A-6 ölçülmedi" sayılır.
   netem: limit = hücrenin realized_fwd.txt'sindeki `limit N` (q_limit kolu ayrı); ileri düşüş payı =
       realized_post netem (mb0) drops / (packets + drops) — kayıp ve kuyruk taşması BİRLİKTE.
   b hücreleri (R3; oku.py tanımı aynen): d1000 l0 p95 = analiz_b `conf_p95_s`; r25 teslim@60 =
@@ -74,12 +75,15 @@ ORDER = ["K1", "K1A6", "K1A", "K1s", "K1A6s", "Q_bbr_rfc", "Q_cubic", "K1A6s_qli
          "Q_bbr_rfc_qlim", "K0", "K0r", "K2", "K2mc", "K2me", "K1a", "K0a", "K1g", "K1gr",
          "K1grp", "Q_bbr"]
 LIMIT_RE = re.compile(r"\blimit (\d+)\b")
-# [Q2 A-6] `ts` oturum nesnesindeki `a6` alanlarının adları (f0_flows aynası; Q2 API'si gelince
-# kesinleşir). Anlam: on = bayrak açık · arms = kurulma sayısı · raise = tabanın hızı yükselttiği
-# karar sayısı (birikimli) · armed = şu an kurulu · rel = son kalkış nedeni (null = kalkmadı) ·
-# fr = ilk nitelikli tam tur kapandı mı · rda = ilk kurulmada tur izleyicisi tam tur görmüş müydü.
-A6_KEYS = {"on": "on", "arms": "arms", "raise": "raise", "armed": "armed", "rel": "rel",
-           "fr": "fr", "rda": "rda"}
+# [Q2 A-6] `ts` oturum nesnesindeki `a6` alanları (f0_flows `session_json`, Q2 cd2dcabc;
+# adaptive_transport::sender::A6FloorDiag). Nesne yalnız bayrak açıkken yazılır. Anlar ms, ucun saat
+# tabanında; `o_ms` = o tabanın sıfırının Unix ms'i (Ö eki; yoksa anlar örnekten). arm = ilk kurulma
+# · arms = kurulma sayısı · r0 = ilk kurulmada tur izleyicisi tam tur kapatmış mıydı · rel = SON
+# kalkış anı, why = nedeni (null = kalkmadı) · up = tabanın hızı yükselttiği karar sayısı (birikimli)
+# · lup = son yükseltme · fr = ilk nitelikli (uygulamayla-sınırlı-olmayan) tam tur = kapı kapanışı ·
+# rd = o güne dek kapanan tam tur · bwt = son bw terimi (B/s).
+A6_KEYS = {"arm": "arm_ms", "arms": "arms", "r0": "r0", "rel": "rel_ms", "why": "why",
+           "up": "up", "lup": "lup_ms", "fr": "fr_ms", "rd": "rd", "bwt": "bwt", "o": "o_ms"}
 
 
 def rank(vals, p):
@@ -221,7 +225,9 @@ def completion(rj, items):
 
 
 def a6_evidence(alice, t_file, t_end):
-    """A-6 deney kaydı (EK-A §10.2) alice ts → eş bob oturumu `a6` nesnesi; yoksa None."""
+    """A-6 deney kaydı (EK-A §10.2): alice ts → eş bob oturumu `a6` nesnesi (yalnız bayrak açıkken
+    yazılır); yoksa None. Anlar: `o_ms` (uç saat tabanının Unix ms'i) varsa kesin, yoksa alanın
+    ilk görüldüğü ts örneği (≤ probe_ms geç)."""
     k = A6_KEYS
     samples = []
     for ln in alice:
@@ -230,35 +236,46 @@ def a6_evidence(alice, t_file, t_end):
         s = next((x for x in ln.get("s", []) if x.get("peer") == "bob"), None)
         if s is not None and isinstance(s.get("a6"), dict):
             samples.append((ln["t"], s["a6"]))
-    if not samples or not any(o.get(k["on"]) for _, o in samples):
+    if not samples:
         return None
     samples.sort(key=lambda x: x[0])
+    last = samples[-1][1]
+    exact = last.get(k["o"]) is not None
 
     def val_at(t, key):
         best = None
         for ts, o in samples:
             if ts <= t:
-                best = o.get(key)
+                best = o.get(k[key])
             else:
                 break
         return best
 
+    def when(key):
+        v = last.get(k[key])
+        if v is None:
+            return None
+        if exact:
+            return last[k["o"]] + v
+        return next((ts for ts, o in samples if o.get(k[key]) is not None), None)
+
+    def rel(t):
+        return (t - t_file) / 1000.0 if (t is not None and t_file is not None) else None
+
     end = t_end if t_end is not None else samples[-1][0]
-    r0 = val_at(t_file, k["raise"]) if t_file is not None else 0
-    r1 = val_at(end, k["raise"])
-    act = r1 is not None and (r1 - (r0 or 0)) > 0
-    t_arm = next((ts for ts, o in samples if o.get(k["armed"]) or (o.get(k["arms"]) or 0) > 0),
-                 None)
-    t_rel = next((ts for ts, o in samples if t_arm is not None and ts >= t_arm
-                  and o.get(k["rel"]) is not None), None)
-    t_fr = next((ts for ts, o in samples if o.get(k["fr"])), None)
-    last = samples[-1][1]
-    return {"etkin": act, "raise_dosya": (r1 - (r0 or 0)) if r1 is not None else None,
-            "kurulma_rel_s": (t_arm - t_file) / 1000.0 if (t_arm and t_file) else None,
-            "kalkis_rel_s": (t_rel - t_file) / 1000.0 if (t_rel and t_file) else None,
-            "kalkis_neden": last.get(k["rel"]), "kurulma": last.get(k["arms"]),
-            "isinmada_tam_tur": (t_fr < t_file) if (t_fr is not None and t_file) else False,
-            "ilk_kurulmada_tur": last.get(k["rda"])}
+    up0 = (val_at(t_file, "up") or 0) if t_file is not None else 0
+    up1 = val_at(end, "up")
+    act = up1 is not None and up1 - up0 > 0
+    t_up = next((ts for ts, o in samples if t_file is not None and t_file < ts <= end
+                 and (o.get(k["up"]) or 0) > up0), None)
+    t_fr = when("fr")
+    return {"etkin": act, "yukseltme_dosya": (up1 - up0) if up1 is not None else None,
+            "ilk_yukseltme_rel_s": rel(t_up), "kurulma_rel_s": rel(when("arm")),
+            "kalkis_rel_s": rel(when("rel")), "kalkis_neden": last.get(k["why"]),
+            "kurulma": last.get(k["arms"]), "tam_tur_rel_s": rel(t_fr),
+            "isinmada_tam_tur": t_fr is not None and t_file is not None and t_fr < t_file,
+            "ilk_kurulmada_tur": last.get(k["r0"]), "tur": last.get(k["rd"]),
+            "anlar": "kesin" if exact else "örnek"}
 
 
 def a_run(rj, items, alice, realized):
@@ -335,14 +352,26 @@ def agg_a(runs, limit):
         "a6_kol": any("a6_iw_floor" in (r["e1_set"] or "") for r in runs),
         "a6_aynada": len(a6),
         "a6_etkin": sum(1 for x in a6 if x["etkin"]),
-        "a6_kurulma_med": med([x["kurulma_rel_s"] for x in a6 if x["etkin"]]),
-        "a6_kalkis_neden": sorted({str(x["kalkis_neden"]) for x in a6 if x["etkin"]}),
+        "a6_ilk_yukseltme_med": med([x["ilk_yukseltme_rel_s"] for x in a6 if x["etkin"]]),
+        "a6_kurulma_med": med([x["kurulma_rel_s"] for x in a6]),
+        "a6_kalkis_med": med([x["kalkis_rel_s"] for x in a6]),
+        "a6_kalkis_neden": neden_sayimi(x["kalkis_neden"] for x in a6),
         "a6_isinmada_tur": sum(1 for x in a6 if x["isinmada_tam_tur"]),
+        "a6_r0": sum(1 for x in a6 if x["ilk_kurulmada_tur"]),
+        "a6_anlar": sorted({x["anlar"] for x in a6}),
         "a6_olculmedi": [f"rep{r['rep']}" for r in runs
                          if "a6_iw_floor" in (r["e1_set"] or "")
                          and not (r["a6"] and r["a6"]["etkin"])],
     }
     return out
+
+
+def neden_sayimi(xs):
+    c = {}
+    for x in xs:
+        c[str(x) if x is not None else "kalkmadı"] = c.get(str(x) if x is not None else
+                                                           "kalkmadı", 0) + 1
+    return [f"{k}×{v}" for k, v in sorted(c.items())]
 
 
 def cell_limit(cell_dir):
@@ -496,15 +525,23 @@ def report(A, R3, roots):
         L.append("A-6 kollarında `a6` aynası yok → bütün koşular A-6 ölçülmedi: "
                  + ", ".join(f"{k[0]}/{k[1]}" for k in a6))
     else:
-        L += ["Etkinleşti = dosya penceresinde tabanın hızı yükselttiği karar sayısı arttı; "
-              "etkinleşmeyen koşu A-6 ölçülmedi sayılır. Anlar file.sent'e göre (200 ms örnek).", "",
-              "| hücre | kol | aynada | etkinleşti | etkinleşme anı med (s) | kalkış nedeni | "
-              "ısınmada tam tur (dosyadan önce) | A-6 ölçülmedi |", "|---|---|---|---|---|---|---|---|"]
+        L += ["Etkinleşti = dosya penceresinde (file.sent → file.delivered, yoksa koşu sonu) "
+              "tabanın hızı yükselttiği karar sayısı (`up`) arttı; etkinleşmeyen koşu A-6 ölçülmedi "
+              "sayılır. Anlar file.sent'e göre (eksi = dosyadan önce): ilk yükseltme ts örneğinden "
+              "(≤ 200 ms geç); kurulma, kalkış ve tam tur `o_ms` varsa kesin ("
+              + "/".join(sorted({x for k in a6 for x in A[k]["a6_anlar"]})) + "). Kalkış = SON "
+              "kalkış. Isınmada tam tur = ilk nitelikli tam tur (kapı kapanışı) dosyadan önce; "
+              "r0 = ilk kurulmada tur izleyicisi tam tur kapatmıştı.", "",
+              "| hücre | kol | aynada | etkinleşti | etkinleşme (ilk yükseltme) med (s) | ilk "
+              "kurulma med (s) | kalkış med (s) | kalkış nedeni | ısınmada tam tur | r0 | "
+              "A-6 ölçülmedi |", "|---|---|---|---|---|---|---|---|---|---|---|"]
         for k in a6:
             e = A[k]
-            L.append(f"| {k[0]} | {k[1]} | {e['a6_aynada']}/{e['n']} | {e['a6_etkin']}/{e['n']} | "
-                     f"{fmt(e['a6_kurulma_med'])} | {', '.join(e['a6_kalkis_neden']) or '—'} | "
-                     f"{e['a6_isinmada_tur']}/{e['a6_aynada']} | "
+            na = e["a6_aynada"]
+            L.append(f"| {k[0]} | {k[1]} | {na}/{e['n']} | {e['a6_etkin']}/{e['n']} | "
+                     f"{fmt(e['a6_ilk_yukseltme_med'])} | {fmt(e['a6_kurulma_med'])} | "
+                     f"{fmt(e['a6_kalkis_med'])} | {', '.join(e['a6_kalkis_neden']) or '—'} | "
+                     f"{e['a6_isinmada_tur']}/{na} | {e['a6_r0']}/{na} | "
                      f"{', '.join(e['a6_olculmedi']) or '—'} |")
     L += ["", "## 5. b hücreleri — R3 (oku.py tanımı aynen)", ""]
     if not R3:
@@ -590,19 +627,27 @@ def oz_test():
     chk("tamamlanma: dosya kısmi + PTT 1/2 + rc nedeni", not f_ok and not p_ok
         and why[:3] == ["dosya partial", "PTT kapanmadı (1/2)", "rc=124"])
     a6 = lambda t, **o: {"k": "ts", "t": t, "s": [{"peer": "bob", "txb": 0, "a6": o}]}
-    al = [a6(0, on=True, arms=0), a6(1000, on=True, arms=1, armed=True, fr=False),
-          a6(6000, on=True, arms=1, armed=True, fr=False),
-          a6(8000, on=True, arms=1, armed=False, rel="FullRound", fr=True)]
+    # uç saat sıfırı Unix 100 000 ms; kurulma 101 000, tam tur 108 000, kalkış 108 000 (FullRound)
+    al = [a6(100_500, arm_ms=None, arms=0, up=0, rel_ms=None, why=None, fr_ms=None, r0=False),
+          a6(101_200, arm_ms=1000.0, arms=1, up=2, rel_ms=None, why=None, fr_ms=None, r0=False),
+          a6(105_400, arm_ms=1000.0, arms=1, up=4, rel_ms=None, why=None, fr_ms=None, r0=False),
+          a6(106_000, arm_ms=1000.0, arms=1, up=9, rel_ms=None, why=None, fr_ms=None, r0=False),
+          a6(108_200, arm_ms=1000.0, arms=1, up=14, rel_ms=8000.0, why="FullRound",
+             fr_ms=8000.0, r0=False)]
+    ev = a6_evidence(al, 105_000, 109_000)
+    chk("A-6 (örnek anları): yükseltme 2 → 14 etkin; ilk yükseltme 0,4 s; kurulma −3,8 s; "
+        "kalkış FullRound 3,2 s", ev["etkin"] and ev["yukseltme_dosya"] == 12
+        and abs(ev["ilk_yukseltme_rel_s"] - 0.4) < 1e-9 and abs(ev["kurulma_rel_s"] + 3.8) < 1e-9
+        and abs(ev["kalkis_rel_s"] - 3.2) < 1e-9 and ev["kalkis_neden"] == "FullRound"
+        and ev["isinmada_tam_tur"] is False and ev["anlar"] == "örnek")
     for ln in al:
-        o = ln["s"][0]["a6"]
-        o["raise"] = {0: 0, 1000: 2, 6000: 9, 8000: 14}[ln["t"]]
-    ev = a6_evidence(al, 5000, 9000)
-    chk("A-6: dosya penceresinde yükseltme 2 → 14 → etkin; kurulma −4 s; kalkış FullRound 3 s",
-        ev["etkin"] and ev["raise_dosya"] == 12 and ev["kurulma_rel_s"] == -4.0
-        and ev["kalkis_rel_s"] == 3.0 and ev["kalkis_neden"] == "FullRound"
-        and ev["isinmada_tam_tur"] is False)
+        ln["s"][0]["a6"]["o_ms"] = 100_000.0
+    ev = a6_evidence(al, 105_000, 109_000)
+    chk("A-6 (o_ms kesin): kurulma −4 s, kalkış ve tam tur 3 s",
+        ev["kurulma_rel_s"] == -4.0 and ev["kalkis_rel_s"] == 3.0 and ev["tam_tur_rel_s"] == 3.0
+        and ev["anlar"] == "kesin")
     chk("A-6: ayna yoksa None (ölçülmedi)", a6_evidence([ts(0, 0, 0)], 0, 1) is None)
-    ev2 = a6_evidence(al, 9000, 9500)
+    ev2 = a6_evidence(al, 108_500, 109_000)
     chk("A-6: pencerede yükseltme yok → etkin değil; tam tur dosyadan önce",
         not ev2["etkin"] and ev2["isinmada_tam_tur"] is True)
     with tempfile.TemporaryDirectory() as t:
