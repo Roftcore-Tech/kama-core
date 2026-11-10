@@ -515,6 +515,7 @@ mod tests {
                     spec_l2_permille: None,
                     spec_l1_permille: None,
                     rx_log: None,
+                    cc_port: false,
                 })
                 .await;
         });

@@ -138,6 +138,9 @@ enum Cmd {
         /// [KURULUŞ] Bootstrap merdivenini kuruluş-hızlı yap (0.2/0.6/1.8/5.4 s). Bütçe değişmez.
         #[arg(long, default_value_t = false)]
         bootstrap_fast: bool,
+        /// [CC-PORT] Alıcı quinn ACK kurallarıyla; istemci `--kama-arm cc-port` ile AYNI olmalı.
+        #[arg(long, default_value_t = false)]
+        cc_port: bool,
         /// [KTP2-F0 / D] Rakip kolların (quinn, tcp) teslim tanımı: `app-reply` (eski; uygulama
         /// yanıtı) | `transport-ack` (eşin taşıma ACK'i; uygulama yanıtı YOK). İSTEMCİYLE AYNI.
         #[arg(long, value_enum, default_value_t = rival::Delivery::AppReply)]
@@ -427,6 +430,8 @@ enum TransportArg {
 enum KamaArmArg {
     Arq,
     TailV1,
+    /// [CC-PORT] quinn BBR + RFC 9002 motoru; sunucuda `--cc-port` ile eşle.
+    CcPort,
 }
 
 /// [KAPI-1 W2] CLI bütçe argları → `BudgetMode` (doğrulamalı: burst XOR paced; sessiz yanlış
@@ -473,6 +478,7 @@ impl From<KamaArmArg> for KamaArm {
         match a {
             KamaArmArg::Arq => KamaArm::Arq,
             KamaArmArg::TailV1 => KamaArm::TailV1,
+            KamaArmArg::CcPort => KamaArm::CcPort,
         }
     }
 }
@@ -516,6 +522,7 @@ async fn main() -> Result<(), BenchError> {
             quinn_iw_bytes,
             quinn_keepalive_ms,
             rx_log,
+            cc_port,
         } => {
             // [KTP2-F0 / C1] Desteklenmeyen kolda sessizce kayıtsız koşmak yerine reddet.
             let rx_supported = matches!(
@@ -567,6 +574,7 @@ async fn main() -> Result<(), BenchError> {
                     initial_window_bytes,
                     bootstrap_fast,
                     rx_log,
+                    cc_port,
                 },
             )
             .await
