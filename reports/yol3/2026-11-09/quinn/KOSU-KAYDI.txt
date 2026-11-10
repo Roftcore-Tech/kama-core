@@ -1,0 +1,16 @@
+başlangıç 2026-11-09T22:02:18+03:00
+ağaç: yol3/quinn-kol d93aef104b01f7363935e859de0f89c389f909ab = yol2/o1 5fdad83b + QK (354584d3, d93aef10)
+26a702dc00753d44fdd87135114f309d5f3495136142b5b71ddbc0a2d2a20193  <worktree-kökü>/target-quinn-kol/release/bench
+37bcabe31107a464970a54f5073a36d1d0e65e1cba558c1bf363360c0cb56e1a  docs/design/E1-TESHIS-G2.md
+02ed23aa0e438551103fb8ab4d604a8d7f9ac156ff44e50e8973c35c083a342b  scripts/yol3/tesis/SIRA-Q.txt
+Kama kolları G2 kökünden bağlandı (salt okuma). D-18: ölçüm süresince ortak cargo kilidi tutuldu; -j 3
+ölçüm başlangıç 2026-11-09T22:05:26+03:00
+grid rc=0 bitiş 2026-11-09T22:24:07+03:00
+oku rc=0
+6e171fe06f5c710161b52a568fd8e1a474516306e5f8628996032df58948297f  <ölçüm-kökü>/yol3/quinn/2026-11-09-q/okuma/okuma.json
+f664c92563451ec1cc56e7ba2ddc81a9a28827f0ba00be21cfd37abba95d18ef  <ölçüm-kökü>/yol3/quinn/2026-11-09-q/okuma/OKUMA.md
+okuma notu (orkestratör, 2026-11-09 22:30):
+- Gösterim sahnesi tablosu: dosya bitiş med / PTT p95 med — K1 19,2 / 8,63 · K2 17,5 / 9,24 · Q-bbr 13,6 / 2,16 · Q-bbr-rfc 14,8 / 1,51 · Q-cubic 26,8 / 1,79 s. Hepsi 10/10 tamam (K0 9/10, K0r 7/10).
+- Faydalı dosya debisi [türetilmiş, 150480 B / dosya bitiş]: K1 7,84 · K2 8,60 · Q-bbr 11,06 · Q-bbr-rfc 10,17 · Q-cubic 5,61 kB/s. Q-bbr 12,5·(1−0,2) = 10 kB/s'nin üstünde → netem kaybı hız sınırlayıcıdan ÖNCE düşürüyor; kayıp hat kapasitesi harcamıyor; faydalı tavan ≈ 12,5 kB/s (başlık hariç), dosya alt sınırı ≈ 12 s. E2a okuma notundaki "alt sınır ≈ 15 s" YANLIŞ (orkestratör), bu satırla düzeltildi.
+- quinn kollarında öncelik yok ama quinn aynı öncelikli akışları paket paket sırayla döndürüyor (quinn-proto 0.11.18 connection/streams/mod.rs:393-426, send_fairness varsayılan açık) → PTT fotoğrafın arkasında beklemiyor. Kama şeritsiz ağaçta tek sıralı kuyruk.
+- Adillik: quinn akış başına bağımsız teslim (üst sınır); Kama oturum geneli S1 sırası. Kurulum ikisinde de pencere dışında (quinn 0,50 s netem içinde, Kama 0,02 s soketten).

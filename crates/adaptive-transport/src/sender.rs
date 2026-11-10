@@ -1630,6 +1630,17 @@ pub struct Sender {
     #[cfg(feature = "diag-sched-telemetry")]
     sched_diag: SchedDiag,
     tail_probe_pending: Option<u64>, // oldest-inflight seq a PTO probe is due for (un-emitted); None ⇒ none.
+    /// [E2a gösterim] Kural bayrakları (ISEMRI-YOL3-M1 KK-M1-02/03). Varsayılan kapalı = bit-aynı.
+    e2a: crate::loss::E2aFlags,
+    /// [E2a m1] Estimator'a verilen SON RTT örneği (`apply_ack_delay` çıktısı; KK-M1-04). Yalnız
+    /// `tt_rfc` açıkken okunur; yokken (ör. örnek bootstrap echo'dan geldiyse) srtt kullanılır.
+    e2a_latest_rtt: Option<Duration>,
+    /// [E2a PTO 2] İkinci prob yuvası (KK-M1-07): `(hedef seq, tur kimliği)`; tur kimliği =
+    /// birinci prob emisyonundan hemen sonraki `(armed_at_ns, probe_index)`. Tek yuva (sınırlı);
+    /// tur değişince (ACK ilerlemesi, disarm, sonraki turun ilk probu) boşaltılır.
+    e2a_tail_probe2: Option<(u64, Option<u64>, u32)>,
+    /// [E2a gözlem] SALT GÖZLEM — hiçbir karar okumaz (INV-007).
+    e2a_diag: crate::loss::E2aDiag,
     tail_probe_cancelled: u64, // observation-only (§7): due probes cancelled at emission (ACK-race: target no
     // longer outstanding). Distinct from token-starved (kept pending). Only mutated on the ON path.
     dup_queue: Vec<DupRec>, // §11 zamanlanmış forward-recovery kopyaları
@@ -1873,6 +1884,13 @@ pub struct Sender {
     last_fusion_snapshot: Option<FusionInputSnapshot>,
     fusion_event_index: u64,
     last_recovery: RecoveryAction,
+    // ── E1 gösterim bayrakları (CC §4.1; ISEMRI-YOL3-M2 KK-M2-02) — varsayılan beşi KAPALI ──
+    /// Çalışma zamanı bayrakları ([`crate::rate::E1Flags`]); `Default` = bugünkü davranış bit-aynı.
+    e1: crate::rate::E1Flags,
+    /// (d) tur mandalı: bu Startup turunda `schedule_transmit` başında `tx_queue` boş ∧ kova dolu
+    /// (`pacer.tokens() == pacer.burst_cap()`) görüldü mü. Tur işaretinde (`startup_plateau`) ve
+    /// Startup (yeniden) girişinde sıfırlanır. Yalnız `e1.e1_applimited_plateau` açıkken kurulur.
+    e1_round_app_limited: bool,
 }
 
 impl Sender {
@@ -1937,6 +1955,10 @@ impl Sender {
             #[cfg(feature = "diag-sched-telemetry")]
             sched_diag: SchedDiag::default(),
             tail_probe_pending: None,
+            e2a: crate::loss::E2aFlags::default(), // [E2a] varsayılan kapalı = bit-aynı
+            e2a_latest_rtt: None,
+            e2a_tail_probe2: None,
+            e2a_diag: crate::loss::E2aDiag::default(),
             tail_probe_cancelled: 0,
             dup_queue: Vec::new(),
             establish_probe_enabled: true,
@@ -2109,6 +2131,8 @@ impl Sender {
                 no_rule: false,
             },
             last_recovery: RecoveryAction::Arq,
+            e1: crate::rate::E1Flags::default(),
+            e1_round_app_limited: false,
         }
     }
 
@@ -2159,6 +2183,22 @@ impl Sender {
         self.startup_pacing = cfg;
     }
 
+    /// [E1 gösterim, CC §4.1] Çalışma zamanı bayrakları (varsayılan beşi kapalı = bugünkü davranış).
+    /// Hata döndürmez: 32 birleşimin hepsi geçerlidir (KK-M2-01). (d) kapatılırsa tur mandalı da
+    /// temizlenir (bayat mandal yeniden açılışta bir turu yanlış işaretlemesin).
+    pub fn set_e1_flags(&mut self, flags: crate::rate::E1Flags) {
+        self.e1 = flags;
+        if !flags.e1_applimited_plateau {
+            self.e1_round_app_limited = false;
+        }
+    }
+
+    /// [E1 gösterim] Yürürlükteki bayraklar (SALT OKUMA).
+    #[must_use]
+    pub fn e1_flags(&self) -> crate::rate::E1Flags {
+        self.e1
+    }
+
     /// DR-RATE-RAMP-2 observation-only: the active bootstrap pacing floor (B/s); 0 = inactive.
     #[must_use]
     pub fn startup_pacing_floor_bps(&self) -> u64 {
@@ -2196,6 +2236,26 @@ impl Sender {
         self.tail_recovery = TailRecovery::new(cfg);
         self.tail_probe_pending = None;
         self.tail_probe_cancelled = 0;
+    }
+
+    /// [E2a gösterim] Kural bayraklarını kurar (ISEMRI-YOL3-M1 KK-M1-02/03). Hata DÖNDÜRMEZ:
+    /// doğrulama [`crate::loss::E2aFlags::new`]'de (geçersiz değer bu tipe hiç giremez). Varsayılan
+    /// bayraklar = bugünkü davranış bit-aynı. İkinci prob yuvası boşaltılır (yeni yapılandırma).
+    pub fn set_e2a_flags(&mut self, flags: crate::loss::E2aFlags) {
+        self.e2a = flags;
+        self.e2a_tail_probe2 = None;
+    }
+
+    /// [E2a gösterim] Kurulu kural bayrakları (gözlem/test).
+    #[must_use]
+    pub fn e2a_flags(&self) -> crate::loss::E2aFlags {
+        self.e2a
+    }
+
+    /// [E2a gözlem] SALT GÖZLEM sayaçları ([`crate::loss::E2aDiag`]); hiçbir karar okumaz.
+    #[must_use]
+    pub fn diag_e2a(&self) -> crate::loss::E2aDiag {
+        self.e2a_diag
     }
 
     /// FS-CAL-2 v3 §3 loss-STRUCTURE snapshot (observation-only).
@@ -2370,7 +2430,15 @@ impl Sender {
         // `TokenBucket::new`'in DOLU başlattığı kredi tek birime kırpılıp ATILMAZ. Kapalıyken
         // (bytes == 0) ifade eskisiyle BİREBİR aynıdır. Yalnız PreConverge'i etkiler: ölçüm
         // geldikten sonra pencere zaten kanal-türevlidir.
-        let iw = if self.state == SenderState::PreConverge {
+        // [E2a m6] (`iw_idle_hold`, KK-M1-05; ACIL #11 en dar düzeltme): ilk olay Idle'da (hiç
+        // ölçüm yokken; ör. AppData'dan önce gelen bir TimerFired) koşarsa kova ilk pencerede
+        // TUTULUR — aksi hâlde dolu başlayan kredi burada `front_size`'a kırpılır ve PreConverge'e
+        // geçildiğinde ilk uçuş yarıya iner (2400 → 1200 B). Ölçümden sonraki Idle'lara uygulanmaz.
+        let iw = if self.state == SenderState::PreConverge
+            || (self.e2a.iw_idle_hold()
+                && self.state == SenderState::Idle
+                && self.rtt.srtt().is_none())
+        {
             self.initial_window.bytes
         } else {
             0
@@ -2454,11 +2522,16 @@ impl Sender {
             return 0;
         }
         let bdp = bdp_bytes(self.btlbw.btlbw(), self.rtt.rtprop().unwrap_or(INITIAL_RTT));
-        let cwnd = self
-            .src_cfg
-            .cwnd_gain
-            .saturating_mul(bdp)
-            .max(self.src_cfg.min_cwnd);
+        // [E1 (c), KK-M2-03] Bayrak açık ∧ faz Startup (overlay dahil) ⇒ hızla AYNI kesirli kazanç
+        // (taban, tavan ve hız tek cwnd'yle). Kapalıyken eski ifade aynen (bit-aynı).
+        let cwnd = match self.e1_startup_cwnd_gain(self.pacing_phase()) {
+            Some(g) => crate::rate::cwnd_with_gain(&self.src_cfg, g, bdp),
+            None => self
+                .src_cfg
+                .cwnd_gain
+                .saturating_mul(bdp)
+                .max(self.src_cfg.min_cwnd),
+        };
         rate_per_srtt(cwnd, srtt_ns)
     }
 
@@ -2601,11 +2674,8 @@ impl Sender {
 
         // 2. ARQ time-threshold loss deadline (aynı çağrı (d)-kapsamının kullandığı).
         if let Some(srtt) = self.rtt.srtt() {
-            best = earlier(
-                best,
-                self.loss
-                    .next_time_loss_deadline_ns(srtt, self.cadence_loss_floor()),
-            );
+            let (tt_rtt, tt_floor) = self.time_loss_inputs(srtt); // [E2a m1] tek yardımcı
+            best = earlier(best, self.loss.next_time_loss_deadline_ns(tt_rtt, tt_floor));
         }
 
         // 3. §3.3-B zamanlanmış geometrik kopyalar — ELIGIBILITY + EMISSION birlikte.
@@ -2658,6 +2728,8 @@ impl Sender {
 
         // 5. Tail-recovery PTO (config default OFF ⇒ aday yok).
         best = earlier(best, self.tail_probe_deadline_ns());
+        // 5b. [E2a PTO 2] Jeton bekleyen ikinci prob (yuva boşsa aday yok ⇒ bit-aynı).
+        best = earlier(best, self.e2a_probe2_ready_ns());
 
         // NOT: `LostRec.deadline_ns` BİLEREK kaynak DEĞİL. `arq.rs:110-111` normatif: "deadline YALNIZ
         // SIRA — expired seq DROP EDİLMEZ, planda kalır" ⇒ o bir TESLİM-önceliği anahtarıdır, zamanlayıcı
@@ -2807,10 +2879,8 @@ impl Sender {
             self.cs_wakeup
                 .retain(|&(_, k)| !matches!(k, CsTimerKind::BootstrapPto));
             if let Some(srtt) = self.rtt.srtt() {
-                if let Some(d) = self
-                    .loss
-                    .next_time_loss_deadline_ns(srtt, self.cadence_loss_floor())
-                {
+                let (tt_rtt, tt_floor) = self.time_loss_inputs(srtt); // [E2a m1] tek yardımcı
+                if let Some(d) = self.loss.next_time_loss_deadline_ns(tt_rtt, tt_floor) {
                     self.cs_wakeup.push((d, CsTimerKind::BootstrapPto));
                 }
             }
@@ -2873,10 +2943,8 @@ impl Sender {
                     // EK4-A2 re-arm: kalan-eligible-birim-varsa YENİ-deadline (zorunlu-gelecek:
                     // az-önce-fire-edilen-eşik-altı-birimler declare-edilip-inflight'tan-düştü).
                     if let Some(srtt) = self.rtt.srtt() {
-                        if let Some(d) = self
-                            .loss
-                            .next_time_loss_deadline_ns(srtt, self.cadence_loss_floor())
-                        {
+                        let (tt_rtt, tt_floor) = self.time_loss_inputs(srtt); // [E2a m1]
+                        if let Some(d) = self.loss.next_time_loss_deadline_ns(tt_rtt, tt_floor) {
                             self.cs_wakeup.push((d, CsTimerKind::BootstrapPto));
                         }
                     }
@@ -3067,6 +3135,23 @@ impl Sender {
         let mut rtt_send_ns: Option<u64> = None;
         let mut largest = 0u64;
         let mut acked_units: Vec<u64> = Vec::new();
+        // [E2a m8] engine §6 v1.1 KABUL KURALI (a)/(b) (`rtt_rule_v11`, KK-M1-06; C5.md:19): çerçeve
+        // başına en çok BİR örnek — çerçevedeki gönderilmiş (sender'ın ürettiği) seq'lerin EN BÜYÜĞÜ
+        // (`ack_delay` onundur). Örnek YALNIZ o seq'in kaydı bu çerçeveyle İLK KEZ onaylanıyorsa
+        // (uçuş, tombstone kol-1/kol-2, un-loss) ve köken Data / Retransmit / Duplicate ise, O
+        // İLETİMİN gönderim anından (her iletim taze seq → eşleşme tek anlamlı). En büyük zaten
+        // onaylıysa, bilinmiyorsa ya da FEC onarım sembolüyse örnek YOK; daha küçük yeni-onaylı kayda
+        // GERİ DÜŞÜLMEZ. Bayrak kapalıyken `v11_frame_max = None` → v11 satırları hiç eşleşmez.
+        let v11_frame_max: Option<u64> = if self.e2a.rtt_rule_v11() {
+            ack.acked_seqs
+                .iter()
+                .copied()
+                .filter(|&s| s < self.next_seq)
+                .max()
+        } else {
+            None
+        };
+        let mut v11_send_ns: Option<u64> = None;
         for &seq in &ack.acked_seqs {
             // [TUR-6] delivered-anchor round: marker-sonrası gönderilen seq'in ilk ACK'i.
             if seq >= self.startup_round_marker_seq {
@@ -3090,6 +3175,10 @@ impl Sender {
                 if p.origin == TransmitKind::Data && (rtt_send_ns.is_none() || seq >= largest) {
                     largest = seq;
                     rtt_send_ns = Some(p.send_ns);
+                }
+                // [E2a m8] (a)/(b): uçuş kaydı, çerçevenin en büyüğü, onarım sembolü değil.
+                if Some(seq) == v11_frame_max && p.origin != TransmitKind::FecParity {
+                    v11_send_ns = Some(p.send_ns);
                 }
             } else if let Some(t) = self.tombstones.remove(&seq) {
                 // [TUR-2b D-1/4] GEÇ-ACK tombstone'a çarptı: kayıt korunmuştu → örnekler
@@ -3130,6 +3219,11 @@ impl Sender {
                     let la = self.loss.largest_acked().unwrap_or(seq);
                     self.reorder
                         .note_spurious(u32::try_from(la.saturating_sub(seq)).unwrap_or(u32::MAX));
+                }
+                // [E2a m8] (b): tombstone (kol-1 ya da kol-2) ilk-kez onay eşleşmesidir; superseded
+                // işareti örneği dışlamaz — seq iletimi tekil tanımlar, örnek o iletimin anından.
+                if Some(seq) == v11_frame_max && t.origin != TransmitKind::FecParity {
+                    v11_send_ns = Some(t.send_ns);
                 }
             }
         }
@@ -3173,6 +3267,11 @@ impl Sender {
                 if rec.retx_count == 0 && unloss_rtt.is_none_or(|(s, _)| rec.seq >= s) {
                     unloss_rtt = Some((rec.seq, rec.send_ns));
                 }
+                // [E2a m8] (b): yeniden planı bekleyen kaydın un-loss eşleşmesi de ilk-kez onaydır
+                // (`LostRec` yalnız birim kaydıdır: Data ya da Retransmit kökenli).
+                if Some(rec.seq) == v11_frame_max && v11_send_ns.is_none() {
+                    v11_send_ns = Some(rec.send_ns);
+                }
             }
             self.pending_lost = kept;
         }
@@ -3181,6 +3280,10 @@ impl Sender {
             if rtt_send_ns.is_none() || useq >= largest {
                 rtt_send_ns = Some(usend);
             }
+        }
+        // [E2a m8] Kural açıkken aday YALNIZ v1.1 seçimidir (Karn adayına geri düşüş yok).
+        if self.e2a.rtt_rule_v11() {
+            rtt_send_ns = v11_send_ns;
         }
 
         if let Some(send_ns) = rtt_send_ns {
@@ -3194,14 +3297,28 @@ impl Sender {
             if !corrected {
                 self.diag_rtt_rejected += 1; // §7.3 ack_delay_untrusted (düzeltme reddi; raw işlendi)
             }
-            self.rtt.observe(now_ns, sample);
-            // [FUSION-POLICY] Örnek sayacı + telemetri damgası: güvenlik doğrulayıcısının güven ve
-            // tazelik kapıları bunlara bakar (min_rtt_samples / max_telemetry_age_ns).
-            self.rtt_sample_count = self.rtt_sample_count.saturating_add(1);
-            self.last_telemetry_ns = now_ns;
-            // [TUR-3b D-2/3] DrainRtprop dwell'i içinde gelen rtt-örneği = qualifying.
-            if self.state == SenderState::DrainRtprop {
-                self.drain_rtprop_qualifying = true;
+            // [E2a m8] KABUL KURALI (d)/(e) (yalnız `rtt_rule_v11` açıkken): (d) doygun `ack_delay`
+            // (V2 kodlama tavanı — alıcının tutma süresi bilinmez) örnek VERMEZ; (e) rtprop varken
+            // guard düzeltmeyi reddettiyse `ack_delay < rtprop` olmalıdır, aksi hâlde RAW örnek tutma
+            // süresiyle en az rtprop kadar şişmiştir. Ret beyanlı estimator donmasıdır (gözlem sayacı).
+            let rule_refused = self.e2a.rtt_rule_v11()
+                && (ack.ack_delay >= crate::loss::E2A_ACK_DELAY_SATURATED
+                    || (!corrected && self.rtt.rtprop().is_some_and(|rp| ack.ack_delay >= rp)));
+            if rule_refused {
+                self.e2a_diag.rtt_rule_refused = self.e2a_diag.rtt_rule_refused.saturating_add(1);
+            } else {
+                self.rtt.observe(now_ns, sample);
+                // [E2a m1] latest_rtt = estimator'a verilen son örnek (KK-M1-04); [E2a gözlem] kabul anı.
+                self.e2a_latest_rtt = Some(sample);
+                self.e2a_diag.rtt_last_accept_ns = Some(now_ns);
+                // [FUSION-POLICY] Örnek sayacı + telemetri damgası: güvenlik doğrulayıcısının güven ve
+                // tazelik kapıları bunlara bakar (min_rtt_samples / max_telemetry_age_ns).
+                self.rtt_sample_count = self.rtt_sample_count.saturating_add(1);
+                self.last_telemetry_ns = now_ns;
+                // [TUR-3b D-2/3] DrainRtprop dwell'i içinde gelen rtt-örneği = qualifying.
+                if self.state == SenderState::DrainRtprop {
+                    self.drain_rtprop_qualifying = true;
+                }
             }
         }
 
@@ -3239,7 +3356,11 @@ impl Sender {
                         .rtt
                         .rtprop_age_ns(now_ns)
                         .is_some_and(|age| age >= self.rtt.rtprop_window_ns() / 2);
-                    if stale {
+                    // [E1 DrainRtprop kapısı, KK-M2-05] Bayrak açıkken giriş ayrıca qd ≥ 250‰ ister
+                    // (kuyruk yokken RTprop'u yeniden ölçmek için hızı düşürme). Kapalıyken `true`.
+                    let qd_gate = !self.e1.e1_drainrt_gate
+                        || self.qd_ratio_permille_now() >= crate::rate::E1_DRAINRT_QD_MIN_PERMILLE;
+                    if stale && qd_gate {
                         self.state = SenderState::DrainRtprop;
                         self.drain_rtprop_entry_ns = Some(now_ns);
                         self.drain_rtprop_qualifying = false;
@@ -3251,9 +3372,8 @@ impl Sender {
                 // (srtt BOŞ → tanımsız; geometrik kopya §3.3-B yerini alır). schedule_transmit yine çalışır.
                 if self.state != SenderState::PreConverge {
                     let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
-                    let lost =
-                        self.loss
-                            .detect_time_losses(now_ns, srtt, self.cadence_loss_floor());
+                    let (tt_rtt, tt_floor) = self.time_loss_inputs(srtt); // [E2a m1] tek yardımcı
+                    let lost = self.loss.detect_time_losses(now_ns, tt_rtt, tt_floor);
                     let before = self.pending_lost.len();
                     self.queue_losses(&lost, now_ns);
                     // [TUR-A teşhis] loss-atıflama: time-threshold (§5b) kaynaklı kuyruklanan kayıp.
@@ -3411,6 +3531,30 @@ impl Sender {
         Duration::from_nanos(eai_ns)
     }
 
+    /// [E2a m1] Zaman-kayıp eşiğinin girdileri — altı zaman-kayıp tüketicisinin TEK kaynağı
+    /// (KK-M1-04): `(eşik RTT'si, taban)`; eşik = `max(9/8 · eşik RTT'si, taban)`.
+    ///
+    /// * `tt_rfc` kapalı (varsayılan): `(srtt, cadence_loss_floor())` — bugünkü ifade BİREBİR.
+    /// * `tt_rfc` açık: `(max(srtt, latest_rtt), g)` — RFC 9002 §6.1.2 biçimi; cadence tabanı
+    ///   çıkar. `latest_rtt` = estimator'a verilen son örnek (`apply_ack_delay` çıktısı, yani
+    ///   alıcı tutması düşülmüş); RFC'nin ham `latest_rtt`'inden bu sapma beyanlıdır ("+ ack_delay"
+    ///   terimi yok). "Daha yüksek seq ACK'lendi" ön şartı `loss.rs`'te değişmeden kalır.
+    fn time_loss_inputs(&self, srtt: Duration) -> (Duration, Duration) {
+        if self.e2a.tt_rfc() {
+            let latest = self.e2a_latest_rtt.unwrap_or(srtt);
+            (srtt.max(latest), self.e2a.tt_granularity())
+        } else {
+            (srtt, self.cadence_loss_floor())
+        }
+    }
+
+    /// [E2a m1] T_loss (ns) = `max(9/8 · eşik RTT'si, taban)` — tombstone TTL tabanı (`queue_losses`,
+    /// `retire_inflight_to_tombstone`). Bayrak kapalıyken eski `max(9/8·srtt, cadence_floor)` ile aynı.
+    fn time_loss_threshold_ns(&self, srtt: Duration) -> u64 {
+        let (tt_rtt, tt_floor) = self.time_loss_inputs(srtt);
+        (dur_ns(tt_rtt) * 9 / 8).max(dur_ns(tt_floor))
+    }
+
     /// Kayıp seq'leri recovery kuyruğuna al. Duplicate-kökenli kayıp RE-QUEUE EDİLMEZ (redundancy'di).
     /// [TUR-2b D-1/4] ACTIVE-FLIGHT / TOMBSTONE ayrımı: inflight-muhasebesinden DÜŞER (gönderim
     /// durmaz) ama gönderim-kaydı SİLİNMEZ — geç-ACK eşleştirme için tombstone'a taşınır
@@ -3422,7 +3566,7 @@ impl Sender {
         }
         // TTL = K_TOMB × T_loss(ilan-anı); T_loss = max(9/8·srtt, cadence-taban) — eşikle AYNI saat.
         let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
-        let t_loss_ns = (dur_ns(srtt) * 9 / 8).max(dur_ns(self.cadence_loss_floor()));
+        let t_loss_ns = self.time_loss_threshold_ns(srtt); // [E2a m1] eşikle AYNI yardımcı
         let expiry_ns = now_ns.saturating_add(t_loss_ns.saturating_mul(u64::from(K_TOMB)));
         for &seq in lost {
             if let Some(p) = self.inflight.remove(&seq) {
@@ -3967,6 +4111,8 @@ impl Sender {
             && self.dup_queue.is_empty();
         let emergency_active =
             level > EmergencyLevel::Arq || decision.mode == Mode::EmergencyForwardRedundancy;
+        // [E1 (e-dar), KK-M2-06 (1)] Bekleyen kayıp ProbeUp'ı keser mi: bayrak açıkken ProbeUp'ta HAYIR.
+        let pending_preempts_probe = self.state != SenderState::ProbeUp || !self.e1.e1_probe_keep;
 
         // [TUR-7 β1] PLATO BASE-ÜSTÜNDE: base==Startup iken round-değerlendirmesi HER durumda
         // (recovery-altında da) ilerler — ramp'in sonlanması kanal-ölçümüne bağlı kalır
@@ -3990,9 +4136,12 @@ impl Sender {
         } else if emergency_active {
             // ack_confidence LOW → forward-recovery (ACK-bağımsız, §11), her aktif fazdan (§3 AMENDMENT-1).
             SenderState::RecoverFwd
-        } else if !self.pending_lost.is_empty() {
+        } else if !self.pending_lost.is_empty() && pending_preempts_probe {
             // residual loss + ack_confidence OK → selective retransmit (§9), her aktif fazdan
             // (§3 AMENDMENT-1; RECOVER_FWD ile simetrik: loss STARTUP'ta olsa da recovery tıkanmamalı).
+            // [E1 (e-dar), KK-M2-06 (1)] Bayrak açıkken bekleyen kayıp ProbeUp'ı KESMEZ: ProbeUp kolu
+            // aşağıda değerlendirilir; retx `schedule_transmit`'te durumdan bağımsız planlanır. Acil
+            // durum dalı (yukarıda) ProbeUp'ı kesmeye devam eder.
             SenderState::RecoverArq
         } else {
             match self.state {
@@ -4073,7 +4222,10 @@ impl Sender {
                         && self.btlbw.btlbw()
                             > self.probe_btlbw_entry
                                 + self.probe_btlbw_entry * PROBE_SUCCESS_EPS_PERMILLE / 1000;
-                    let abort = qd_now > PROBE_QD_ABORT_PERMILLE || self.probe_loss_attributed;
+                    // [E1 (e-dar), KK-M2-06 (2)] Bayrak açıkken proba atfedilen kayıp iptal ETTİRMEZ
+                    // (`probe_loss_attributed` yine kurulur — gözlem); qd iptali aynen kalır.
+                    let loss_abort = self.probe_loss_attributed && !self.e1.e1_probe_keep;
+                    let abort = qd_now > PROBE_QD_ABORT_PERMILLE || loss_abort;
                     let timeout =
                         elapsed >= epoch_e.saturating_mul(u64::from(PROBE_MAX_DWELL_EPOCH));
                     if success {
@@ -4148,6 +4300,8 @@ impl Sender {
             self.startup_round_marker_seq = self.next_seq;
             self.startup_round_complete = false;
             self.base_is_startup = true;
+            // [E1 (d)] yeni ramp'in ilk turu, giriş-öncesi (Idle/PreConverge/Steady) mandalı taşımaz.
+            self.e1_round_app_limited = false;
         }
         // [FAZ-3 TELEMETRİ] Faz geçişleri: hangi mekanizmanın NE ZAMAN devreye girdiğini ürün
         // derlemesinde kanıtlar (salt gözlem; kararı değiştirmez).
@@ -4215,8 +4369,19 @@ impl Sender {
         self.startup_round_complete = false;
         self.startup_round_marker_seq = self.next_seq;
         self.bw_sampled_since_round = false;
+        // [E1 (d), KK-M2-04] tur mandalı tur işaretinde TÜKETİLİR (her durumda sıfırlanır).
+        let round_app_limited = std::mem::take(&mut self.e1_round_app_limited);
         let bw = self.btlbw.btlbw();
         if bw == 0 {
+            return false;
+        }
+        // [E1 (d), KK-M2-04/-08] Uygulamayla sınırlı tur plato SAYILMAZ: sayaç ve `startup_last_btlbw`
+        // değişmeden `false`. qd freni (G1 model kararı, KK-M2-08): turda qd ≥ 250‰ ise tur yine
+        // değerlendirilir. Kayıp bu kararın girdisi DEĞİL (INV-RATE-1; "kayıp > p̂ ise plato" alınmaz).
+        if self.e1.e1_applimited_plateau
+            && round_app_limited
+            && self.qd_ratio_permille_now() < crate::rate::E1_PLATEAU_QD_BRAKE_PERMILLE
+        {
             return false;
         }
         let grew = bw
@@ -4242,7 +4407,38 @@ impl Sender {
         if self.state == SenderState::PreConverge {
             return PRE_CONVERGE_FLOOR_BW;
         }
-        let phase = match self.state {
+        let phase = self.pacing_phase();
+        let btlbw = self.btlbw.btlbw();
+        let rtprop = self.rtt.rtprop().unwrap_or(INITIAL_RTT);
+        let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
+        // [E1 (c), KK-M2-03] Bayrak açık ∧ faz Startup ⇒ kesirli cwnd kazancı (2,885); kapalıyken
+        // eski çağrı AYNEN (bit-aynı).
+        let fuzzy_rate = match self.e1_startup_cwnd_gain(phase) {
+            Some(cwnd_gain) => crate::rate::effective_send_rate_cwnd_gain(
+                &self.src_cfg,
+                cwnd_gain,
+                btlbw,
+                rtprop,
+                srtt,
+                phase.gain(),
+                decision.send_rate_gain_permille,
+            ),
+            None => effective_send_rate(
+                &self.src_cfg,
+                btlbw,
+                rtprop,
+                srtt,
+                phase.gain(),
+                decision.send_rate_gain_permille,
+            ),
+        };
+        budget::send_rate_final(fuzzy_rate, self.budget_cfg.min_rate_bps, u64::MAX)
+    }
+
+    /// Durumun pacing fazı (faz→gain eşlemesi; `compute_send_rate`'in tek kaynağı). PreConverge
+    /// burada `Steady`'ye düşer (`compute_send_rate` PreConverge'i bundan ÖNCE taban hızla döner).
+    fn pacing_phase(&self) -> PacingPhase {
+        match self.state {
             SenderState::Startup => PacingPhase::Startup,
             SenderState::Drain => PacingPhase::Drain, // [TUR-3b] 1/high_gain
             SenderState::ProbeUp => PacingPhase::ProbeUp, // [TUR-3c] 1.25× — AÇIK kol (sözleşme)
@@ -4253,19 +4449,41 @@ impl Sender {
                 PacingPhase::Startup
             }
             _ => PacingPhase::Steady,
-        };
-        let btlbw = self.btlbw.btlbw();
-        let rtprop = self.rtt.rtprop().unwrap_or(INITIAL_RTT);
-        let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
-        let fuzzy_rate = effective_send_rate(
-            &self.src_cfg,
-            btlbw,
-            rtprop,
-            srtt,
-            phase.gain(),
-            decision.send_rate_gain_permille,
-        );
-        budget::send_rate_final(fuzzy_rate, self.budget_cfg.min_rate_bps, u64::MAX)
+        }
+    }
+
+    /// [E1 (c), KK-M2-03] cwnd kazancı: `e1_startup_cwnd` açık ∧ faz `PacingPhase::Startup` (Startup ya
+    /// da Startup tabanlı RecoverArq/RecoverFwd overlay'i) ⇒ `Some(2885/1000)`; aksi hâlde `None` =
+    /// eski `SrcConfig.cwnd_gain` (= `CWND_GAIN` 2) yolu. Hız (`compute_send_rate`), tavan
+    /// (`cwnd_over_srtt`) ve kalkış tabanı (`grounded_startup_rate` → `cwnd_over_srtt`) bu tek
+    /// yardımcıdan okur. Drain hedefi (`CWND_GAIN × BDP`) ve MIN_CWND değişmez.
+    fn e1_startup_cwnd_gain(&self, phase: PacingPhase) -> Option<Gain> {
+        (self.e1.e1_startup_cwnd && phase == PacingPhase::Startup)
+            .then_some(crate::rate::E1_STARTUP_CWND_GAIN)
+    }
+
+    /// [E1, KK-M2-06 (3) / KK-M2-07] Retx planlamasının durum koşulu: `e1_probe_keep` açıkken
+    /// `state ≠ RecoverFwd` (RecoverFwd'de `plan_forward_duplication` bekleyen kaybı kopya kuyruğuna
+    /// boşaltır — istisna şart); kapalıyken bugünkü `state == RecoverArq`.
+    fn e1_retx_state_ok(&self) -> bool {
+        if self.e1.e1_probe_keep {
+            self.state != SenderState::RecoverFwd
+        } else {
+            self.state == SenderState::RecoverArq
+        }
+    }
+
+    /// [E1 (d), KK-M2-04] Tur mandalını kurar: bayrak açık ∧ `tx_queue` boş ∧ kova dolu. Yalnız
+    /// `schedule_transmit` başında, hiçbir emisyondan önce çağrılır. `pacer.burst_cap()` belge yorumu
+    /// "SALT-GÖZLEM (teşhis)" der; okunan değer kovanın GERÇEK durumudur, `diag_*` sayacı değildir
+    /// (INV-007 kapsamı dışı; emsal `expected_ack_interval` → `pacer.rate()`).
+    fn e1_mark_app_limited_round(&mut self) {
+        if self.e1.e1_applimited_plateau
+            && self.tx_queue.is_empty()
+            && self.pacer.tokens() == self.pacer.burst_cap()
+        {
+            self.e1_round_app_limited = true;
+        }
     }
 
     /// ScheduleTransmit (§3): pacing bütçesinde emit — sıra §3'e göre **DATA ÖNCE**, sonra recovery.
@@ -4282,10 +4500,12 @@ impl Sender {
         self.budget_reserve(now_ns);
         // [TUR-7 β2] ARQ token-payı: her K_ARQ_SHARE'inci grant'te retx ÖNCE dener (BOŞ-NÖBET
         // biter — retx fiilen wire'a çıkar); diğer grant'ler DATA-önce (ölçülü-karar korunur).
+        self.e1_mark_app_limited_round(); // [E1 (d), KK-M2-04] tur mandalı, emisyondan önce
         self.arq_share_tick = self.arq_share_tick.wrapping_add(1);
-        if self.state == SenderState::RecoverArq
+        // [E1 retx_first, KK-M2-07] bayrak açıkken her izinde ARQ-önce; durum koşulu (e-dar)'a bağlı.
+        if self.e1_retx_state_ok()
             && !self.pending_lost.is_empty()
-            && self.arq_share_tick.is_multiple_of(K_ARQ_SHARE)
+            && (self.e1.retx_first || self.arq_share_tick.is_multiple_of(K_ARQ_SHARE))
         {
             self.plan_arq_retransmits(&mut out, now_ns);
         }
@@ -4293,6 +4513,10 @@ impl Sender {
         match self.state {
             SenderState::RecoverArq => self.plan_arq_retransmits(&mut out, now_ns),
             SenderState::RecoverFwd => self.plan_forward_duplication(now_ns),
+            // [E1 (e-dar), KK-M2-06 (3)] bayrak açıkken retx `!pending_lost.is_empty() ∧ ≠ RecoverFwd`.
+            _ if self.e1.e1_probe_keep && !self.pending_lost.is_empty() => {
+                self.plan_arq_retransmits(&mut out, now_ns);
+            }
             _ => {}
         }
         // DR-ARQ-PRODUCT-TAIL-1 (gated; default OFF → no-op): forced PTO tail probe, state-independent, after the
@@ -5852,7 +6076,7 @@ impl Sender {
             return;
         }
         let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
-        let t_loss_ns = (dur_ns(srtt) * 9 / 8).max(dur_ns(self.cadence_loss_floor()));
+        let t_loss_ns = self.time_loss_threshold_ns(srtt); // [E2a m1] eşikle AYNI yardımcı
         let expiry_ns = now_ns.saturating_add(t_loss_ns.saturating_mul(u64::from(K_TOMB)));
         while self.tombstones.len() >= TOMBSTONE_MAX {
             match self.tombstone_order.pop_front() {
@@ -5892,6 +6116,9 @@ impl Sender {
             return;
         }
         let Some(target) = self.tail_probe_pending.take() else {
+            // [E2a PTO 2] Birinci yuva boş: bu turun bekleyen ikinci probu (varsa) denenir. Yuva
+            // `pto_probes = 1`'de hiç dolmaz → bugünkü yol bit-aynı.
+            self.e2a_emit_second_probe(out, now_ns);
             return;
         };
         let Some((unit, retx_count)) = self.inflight.get(&target).map(|r| (r.unit, r.retx_count))
@@ -5935,6 +6162,80 @@ impl Sender {
         });
         self.tail_recovery.on_probe_sent(now_ns); // spend the attempt only on a real emission.
         self.tail_recovery.record_probe(unit.size, false);
+        // [E2a PTO 2] (`pto_probes = 2`, KK-M1-07): bu turun ikinci probu. Hedef = birinci prob
+        // gönderildikten SONRA en eski teyitsiz kaynak (`inflight` en küçük seq); tek birim varsa bu,
+        // az önceki prob kopyasıdır (aynı birim taze seq ile ikinci kez — RFC 9002 §6.2.4 izinli).
+        // Yuva bu turun kimliğiyle (on_probe_sent SONRASI `(armed_at, probe_index)`) kurulur; önceki
+        // turdan kalan yuvanın üzerine yazılır (sonraki turun ilk probu yuvayı boşaltır).
+        if self.e2a.pto_probes() >= 2 {
+            self.e2a_tail_probe2 = self.inflight.keys().next().copied().map(|seq| {
+                (
+                    seq,
+                    self.tail_recovery.armed_at_ns(),
+                    self.tail_recovery.probe_index(),
+                )
+            });
+            self.e2a_emit_second_probe(out, now_ns);
+        }
+    }
+
+    /// [E2a PTO 2] İkinci prob yuvasının emisyonu (KK-M1-07). Birincinin kurallarıyla aynı:
+    /// * tur değiştiyse (ACK ilerlemesi `on_ack_progress`, `disarm`, yeni yapılandırma, sonraki turun
+    ///   ilk probu → `(armed_at, probe_index)` farklı) yuva boşaltılır;
+    /// * hedef artık teyitsiz değilse (ACK yarışı / zaten yeniden gönderildi) iptal;
+    /// * jeton yoksa yuvada BEKLER (`emit_tail_probe`'un "no token → keep pending" kuralı);
+    /// * emisyon güvenli jeton yolundan (`try_send_pre_parity`) + `track_sent`; kayıp İLANI yok
+    ///   (INV-RATE-1); orijinal tombstone'a emekli edilip superseded işaretlenir (Karn).
+    ///
+    /// Tavan ve geri çekilme TUR sayar: `on_probe_sent` burada ÇAĞRILMAZ (`max_tail_probes` ve
+    /// `validated_v1()` anlamı değişmez). Prob baytı `record_probe` ile sayılır (gözlem).
+    fn e2a_emit_second_probe(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+        let Some((target, armed, index)) = self.e2a_tail_probe2.take() else {
+            return;
+        };
+        if self.tail_recovery.armed_at_ns() != armed || self.tail_recovery.probe_index() != index {
+            self.e2a_diag.pto2_cleared = self.e2a_diag.pto2_cleared.saturating_add(1);
+            return;
+        }
+        let Some((unit, retx_count)) = self.inflight.get(&target).map(|r| (r.unit, r.retx_count))
+        else {
+            self.e2a_diag.pto2_cleared = self.e2a_diag.pto2_cleared.saturating_add(1);
+            return;
+        };
+        if !self.try_send_pre_parity(unit.size, true) {
+            self.e2a_tail_probe2 = Some((target, armed, index)); // jeton yok → yuvada bekler
+            return;
+        }
+        self.act_tail_probe_emitted = self.act_tail_probe_emitted.saturating_add(1);
+        if self.act_tail_probe_first_ns == 0 {
+            self.act_tail_probe_first_ns = now_ns;
+        }
+        self.retire_inflight_to_tombstone(target, now_ns);
+        self.mark_tombstone_superseded(target);
+        let new_seq = self.track_sent(
+            unit,
+            now_ns,
+            retx_count.saturating_add(1),
+            TransmitKind::Retransmit,
+        );
+        out.push(TransmitDecision {
+            kind: TransmitKind::Retransmit,
+            seq: new_seq,
+            unit_id: unit.id,
+            size: unit.size,
+            send_record: None,
+        });
+        self.tail_recovery.record_probe(unit.size, false);
+        self.e2a_diag.pto2_emitted = self.e2a_diag.pto2_emitted.saturating_add(1);
+    }
+
+    /// [E2a PTO 2 · EK4-A2] Bekleyen ikinci probun gönderilebilir olacağı an (SALT-OKUMA; yeni
+    /// timer değil). Yuva boşsa `None` → `pto_probes = 1`'de uyanış kümesi bit-aynı.
+    fn e2a_probe2_ready_ns(&self) -> Option<u64> {
+        let (target, _, _) = self.e2a_tail_probe2?;
+        let size = self.inflight.get(&target)?.unit.size;
+        let dt = self.pacer.ns_until_sendable(size)?;
+        Some(self.last_now_ns.saturating_add(dt))
     }
 
     /// RECOVER_FWD (§11): ACK-BAĞIMSIZ forward duplication. Kayıp birimleri `factor` kez zaman-aralıklı
@@ -8854,5 +9155,1401 @@ mod tests {
             s.inflight.len() as u64,
             "TTL-prune sonrası pif gerçek-uçuşa eşit olmalı (sızıntı-fix)"
         );
+    }
+
+    // ── E1 gösterim bayrakları (CC §4.1; ISEMRI-YOL3-M2) — sahte saatli, deterministik testler ──
+    //
+    // Düzenek: tek darboğaz (FIFO seri hız), sabit tek yön gecikmesi, her teslime anında tek-seq ACK
+    // (ack_delay 0). Pompa runtime'ınkiyle aynı: 1 ms `Timer::Pto`, 200 ms `Timer::RtpropProbe`.
+    // Kayıp yalnız deterministik yüklemle (RNG yok, ADR-17). Kayıt: her emisyon (zaman, karar).
+
+    use crate::rate::E1Flags;
+
+    /// Bir emisyon anındaki gözlem (yükleme verilir; kayıp kararı buna göre).
+    struct E1SendCtx {
+        state: SenderState,
+        nth_data_in_probe: u64,
+    }
+
+    struct E1Sim {
+        rate_bps: u64,
+        owd_ns: u64,
+        link_free_ns: u64,
+        acks: Vec<(u64, u64)>, // (varış ns, seq) — varışa göre sıralı tutulur
+        trace: Vec<(u64, TransmitDecision)>,
+        /// Her olay sonrası (zaman, durum, pending boş değil mi, çıktı, arq_share_tick, tx_queue boş
+        /// değil mi). `schedule_transmit` pending/tx_queue'ya EKLEMEZ: olay-sonrası "boş değil" ⇒
+        /// izin anında da boş değildi.
+        steps: Vec<(u64, SenderState, bool, Vec<TransmitDecision>, u32, bool)>,
+        data_in_probe: u64,
+        dropped: Vec<u64>,
+        /// Darboğaz tamponu (ns kuyruk bekleme); aşan emisyon kuyruk sonundan düşer (tıkanıklık
+        /// kaybı). `u64::MAX` = sınırsız.
+        buf_ns: u64,
+        /// Tampon taşmasıyla düşen emisyon sayısı.
+        congestion_drops: u64,
+    }
+
+    impl E1Sim {
+        fn new(rate_bps: u64, owd_ms: u64) -> Self {
+            Self {
+                rate_bps,
+                owd_ns: owd_ms * MS,
+                link_free_ns: 0,
+                acks: Vec::new(),
+                trace: Vec::new(),
+                steps: Vec::new(),
+                data_in_probe: 0,
+                dropped: Vec::new(),
+                buf_ns: u64::MAX,
+                congestion_drops: 0,
+            }
+        }
+
+        fn feed(
+            &mut self,
+            s: &mut Sender,
+            ev: Event,
+            now: u64,
+            drop: &mut dyn FnMut(&TransmitDecision, &E1SendCtx) -> bool,
+        ) {
+            let out = s.on_event(ev, now);
+            for d in &out {
+                let ctx = E1SendCtx {
+                    state: s.state(),
+                    nth_data_in_probe: self.data_in_probe,
+                };
+                if d.kind == TransmitKind::Data && s.state() == SenderState::ProbeUp {
+                    self.data_in_probe += 1;
+                }
+                self.trace.push((now, *d));
+                if drop(d, &ctx) {
+                    self.dropped.push(d.seq);
+                    continue;
+                }
+                let start = now.max(self.link_free_ns);
+                if start - now > self.buf_ns {
+                    self.congestion_drops += 1;
+                    continue;
+                }
+                self.link_free_ns = start + d.size * 1_000_000_000 / self.rate_bps;
+                let ack_at = self.link_free_ns + 2 * self.owd_ns;
+                let pos = self.acks.partition_point(|&(t, _)| t <= ack_at);
+                self.acks.insert(pos, (ack_at, d.seq));
+            }
+            self.steps.push((
+                now,
+                s.state(),
+                !s.pending_lost.is_empty(),
+                out,
+                s.arq_share_tick,
+                !s.tx_queue.is_empty(),
+            ));
+        }
+
+        /// `offers`: (ms, birim boyu) — aynı ms'de sırayla. `dur_ms` boyunca pompalar.
+        fn run(
+            &mut self,
+            s: &mut Sender,
+            offers: &[(u64, u64)],
+            dur_ms: u64,
+            drop: &mut dyn FnMut(&TransmitDecision, &E1SendCtx) -> bool,
+        ) {
+            let mut next_offer = 0usize;
+            let mut next_id = 0u64;
+            for t_ms in 0..dur_ms {
+                let now = t_ms * MS;
+                // ACK varışları (önceki tick ile bu tick arası), zaman sırasıyla.
+                while let Some(&(t, seq)) = self.acks.first() {
+                    if t > now {
+                        break;
+                    }
+                    self.acks.remove(0);
+                    self.feed(s, ack(&[seq]), t, drop);
+                }
+                while next_offer < offers.len() && offers[next_offer].0 == t_ms {
+                    let u = OpaqueUnit {
+                        id: next_id,
+                        size: offers[next_offer].1,
+                    };
+                    next_id += 1;
+                    next_offer += 1;
+                    self.feed(s, Event::AppData(u), now, drop);
+                }
+                self.feed(s, Event::TimerFired(Timer::Pto), now, drop);
+                if t_ms % 200 == 0 {
+                    self.feed(s, Event::TimerFired(Timer::RtpropProbe), now, drop);
+                }
+            }
+        }
+    }
+
+    fn e1_sender(f: E1Flags) -> Sender {
+        let mut s = Sender::new();
+        s.set_e1_flags(f);
+        s
+    }
+
+    fn e1_bulk(n: u64) -> Vec<(u64, u64)> {
+        (0..n).map(|_| (0, 1200)).collect()
+    }
+
+    #[test]
+    fn e1_default_flags_are_off_and_setter_round_trips() {
+        let s = Sender::new();
+        assert_eq!(
+            s.e1_flags(),
+            E1Flags::default(),
+            "Sender::new() bayrakları kapalı"
+        );
+        let f = E1Flags {
+            e1_probe_keep: true,
+            retx_first: true,
+            ..E1Flags::default()
+        };
+        let s2 = e1_sender(f);
+        assert_eq!(s2.e1_flags(), f);
+    }
+
+    /// Ön test 1 (CC §4.2; v2 §5.2): "ProbeUp sırasında retx sürer". Toplu aktarım, ProbeUp'ta
+    /// gönderilen İLK DATA düşürülür (tek kayıp). Kapalı: bekleyen kayıp ProbeUp'ı keser →
+    /// RecoverArq (bugünkü davranış, preempt +1). Açık (`e1_probe_keep` yalnız): durum ProbeUp kalır
+    /// ve retx ProbeUp içinde tele çıkar.
+    #[test]
+    fn e1_pretest1_retx_continues_during_probe_up() {
+        let run = |f: E1Flags| {
+            let mut s = e1_sender(f);
+            let mut sim = E1Sim::new(12_500, 150);
+            let mut drop_first_probe_data = |d: &TransmitDecision, c: &E1SendCtx| {
+                d.kind == TransmitKind::Data
+                    && c.state == SenderState::ProbeUp
+                    && c.nth_data_in_probe == 0
+            };
+            sim.run(&mut s, &e1_bulk(400), 40_000, &mut drop_first_probe_data);
+            (s, sim)
+        };
+        let (s_off, sim_off) = run(E1Flags::default());
+        let (s_on, sim_on) = run(E1Flags {
+            e1_probe_keep: true,
+            ..E1Flags::default()
+        });
+        for (name, sim) in [("off", &sim_off), ("on", &sim_on)] {
+            assert_eq!(
+                sim.dropped.len(),
+                1,
+                "{name}: kurulum — tam bir kayıp (ProbeUp'ta)"
+            );
+        }
+        // Kayıp ilanından sonraki ilk adımlar: kapalıda RecoverArq'a geçiş (preempt), açıkta ProbeUp.
+        let first_pending = |sim: &E1Sim| {
+            sim.steps
+                .iter()
+                .position(|st| st.2)
+                .expect("kurulum: kayıp bekleyen kümeye girdi")
+        };
+        let i_off = first_pending(&sim_off);
+        assert_eq!(
+            sim_off.steps[i_off].1,
+            SenderState::RecoverArq,
+            "KAPALI: bekleyen kayıp ProbeUp'ı keser (bugünkü davranış)"
+        );
+        assert!(s_off.diag_probe().3 >= 1, "KAPALI: preempt muhasebeleşir");
+        let i_on = first_pending(&sim_on);
+        assert_eq!(
+            sim_on.steps[i_on].1,
+            SenderState::ProbeUp,
+            "AÇIK: bekleyen kayıp ProbeUp'ı KESMEZ"
+        );
+        let retx_in_probe_on = sim_on
+            .steps
+            .iter()
+            .filter(|st| st.1 == SenderState::ProbeUp)
+            .flat_map(|st| st.3.iter())
+            .filter(|d| d.kind == TransmitKind::Retransmit)
+            .count();
+        assert!(
+            retx_in_probe_on >= 1,
+            "AÇIK: retx ProbeUp içinde tele çıkar"
+        );
+        let retx_in_probe_off = sim_off
+            .steps
+            .iter()
+            .filter(|st| st.1 == SenderState::ProbeUp)
+            .flat_map(|st| st.3.iter())
+            .filter(|d| d.kind == TransmitKind::Retransmit)
+            .count();
+        assert_eq!(retx_in_probe_off, 0, "KAPALI: ProbeUp'ta retx yok (bugün)");
+        assert_eq!(s_on.diag_probe().3, 0, "AÇIK: kayıp preempt üretmez");
+        // İki kolda da kayıp kurtarılır (birim teslim edilir) — gözlem: pending sonda boş.
+        assert!(s_off.pending_lost.is_empty() && s_on.pending_lost.is_empty());
+    }
+
+    /// Ön test 2 (CC §4.2; v2 §5.2): "(e-dar) yalnız, p = 0: tel baytı bayrak kapalıyla bit-aynı".
+    /// Kayıpsız kapalı döngü; toplu aktarım + PTT benzeri küçük ileti akışı; ProbeUp en az bir kez
+    /// girilir (boş geçiş değil). Kayıt: her emisyonun (zaman, tür, seq, birim, boyut, send_record).
+    #[test]
+    fn e1_pretest2_probe_keep_alone_p0_wire_identical() {
+        let mut offers = e1_bulk(150);
+        // 10 s'den sonra 3 s boyunca her 80 ms'de 160 B (PTT demeti benzeri), sonra yine toplu.
+        offers.extend((0..38u64).map(|k| (10_000 + 80 * k, 160)));
+        offers.extend((0..60u64).map(|_| (20_000, 1200)));
+        let run = |f: E1Flags| {
+            let mut s = e1_sender(f);
+            let mut sim = E1Sim::new(12_500, 150);
+            let mut no_drop = |_: &TransmitDecision, _: &E1SendCtx| false;
+            sim.run(&mut s, &offers, 40_000, &mut no_drop);
+            (s, sim)
+        };
+        let (s_off, sim_off) = run(E1Flags::default());
+        let (s_on, sim_on) = run(E1Flags {
+            e1_probe_keep: true,
+            ..E1Flags::default()
+        });
+        assert!(
+            s_off.act_probe_up_entries >= 1,
+            "boş geçiş değil: ProbeUp en az bir kez girildi"
+        );
+        let retx = sim_off
+            .trace
+            .iter()
+            .filter(|(_, d)| d.kind == TransmitKind::Retransmit)
+            .count();
+        assert_eq!(retx, 0, "p = 0: retx yok (kurulum)");
+        assert_eq!(
+            sim_off.trace.len(),
+            sim_on.trace.len(),
+            "emisyon sayısı aynı"
+        );
+        assert_eq!(sim_off.trace, sim_on.trace, "tel dizisi bit-aynı");
+        assert_eq!(
+            s_off.diag_probe(),
+            s_on.diag_probe(),
+            "prob muhasebesi aynı"
+        );
+    }
+
+    /// retx_first (CC §4.1; KK-M2-07): RecoverArq'ta her izinde ARQ-önce; kapalıyken yalnız her
+    /// `K_ARQ_SHARE`'inci izinde. Deterministik %20 DATA kaybı (her 5 DATA'dan 3.'sü), toplu aktarım.
+    /// Ölçü: RecoverArq'ta, izinden sonra hem bekleyen kayıp hem bekleyen DATA varken (yani izin anında
+    /// ikisi de vardı) izinin İLK emisyonunun türü.
+    #[test]
+    fn e1_retx_first_arq_first_on_every_grant() {
+        let run = |f: E1Flags| {
+            let mut s = e1_sender(f);
+            let mut sim = E1Sim::new(12_500, 150);
+            let mut n = 0u64;
+            let mut drop20 = |d: &TransmitDecision, _: &E1SendCtx| {
+                if d.kind != TransmitKind::Data {
+                    return false;
+                }
+                n += 1;
+                n % 5 == 3
+            };
+            sim.run(&mut s, &e1_bulk(300), 30_000, &mut drop20);
+            sim
+        };
+        // İzin = RecoverArq'ta, olay sonrası DATA hâlâ bekleyen (⇒ izin anında da bekliyordu) ve emisyon
+        // üreten adım: (ilk emisyon türü, tick, olay sonrası pending boş değil mi).
+        let grants = |sim: &E1Sim| -> Vec<(TransmitKind, u32, bool)> {
+            sim.steps
+                .iter()
+                .filter(|st| st.1 == SenderState::RecoverArq && st.5 && !st.3.is_empty())
+                .map(|st| (st.3[0].kind, st.4, st.2))
+                .collect()
+        };
+        let off = grants(&run(E1Flags::default()));
+        let on = grants(&run(E1Flags {
+            retx_first: true,
+            ..E1Flags::default()
+        }));
+        // DATA önce çıktı ve retx bekledi (olay sonrası pending dolu ⇒ izin anında da doluydu).
+        let data_first_while_pending = |v: &[(TransmitKind, u32, bool)]| {
+            v.iter()
+                .filter(|x| x.0 == TransmitKind::Data && x.2)
+                .count()
+        };
+        let retx_first_off_k = |v: &[(TransmitKind, u32, bool)]| {
+            v.iter()
+                .filter(|x| x.0 == TransmitKind::Retransmit && !x.1.is_multiple_of(K_ARQ_SHARE))
+                .count()
+        };
+        // KAPALI (bugün, TUR-7 β2): DATA beklerken retx yalnız tick % K_ARQ_SHARE == 0 iznide önce;
+        // diğer izinlerde DATA önce çıkar ve retx bekler.
+        assert!(
+            data_first_while_pending(&off) > 0,
+            "KAPALI: DATA-önce izinde retx bekler — off={off:?}"
+        );
+        assert_eq!(
+            retx_first_off_k(&off),
+            0,
+            "KAPALI: ARQ-önce yalnız her K'ıncı izinde"
+        );
+        // AÇIK: her izinde ARQ-önce — retx beklerken hiçbir izin DATA ile başlamaz; K'ıncı olmayan
+        // izinde de retx önce çıkar.
+        assert_eq!(
+            data_first_while_pending(&on),
+            0,
+            "AÇIK: retx beklerken DATA önce çıkmaz — on={on:?}"
+        );
+        assert!(
+            retx_first_off_k(&on) > 0,
+            "AÇIK: K'ıncı olmayan izinde de ARQ-önce (bayrak etkin)"
+        );
+    }
+
+    /// (c) KK-M2-03: bayrak açıkken cwnd kazancı faz `Startup`'ta (Startup ve Startup tabanlı
+    /// RecoverArq/RecoverFwd overlay'i) 2,885; diğer fazlarda 2. Hız (`compute_send_rate`), tavan
+    /// (`cwnd_over_srtt`) ve kalkış tabanı (`grounded_startup_rate`) aynı kazancı kullanır. Kapalıyken
+    /// her fazda 2 (bugün).
+    #[test]
+    fn e1_c_startup_cwnd_gain_shared_by_rate_ceiling_and_floor() {
+        let two = Gain {
+            num: crate::rate::CWND_GAIN,
+            den: 1,
+        };
+        for flag in [false, true] {
+            let mut s = e1_sender(E1Flags {
+                e1_startup_cwnd: flag,
+                ..E1Flags::default()
+            });
+            let mut sim = E1Sim::new(12_500, 150);
+            let mut no_drop = |_: &TransmitDecision, _: &E1SendCtx| false;
+            sim.run(&mut s, &e1_bulk(80), 2_500, &mut no_drop);
+            let btlbw = s.btlbw.btlbw();
+            let rtprop = s.rtt.rtprop().expect("kurulum: RTprop örneği var");
+            let srtt = s.rtt.srtt().expect("kurulum: srtt var");
+            let bdp = bdp_bytes(btlbw, rtprop);
+            assert!(
+                crate::rate::E1_STARTUP_CWND_GAIN.apply(bdp) > s.src_cfg.min_cwnd,
+                "kurulum: 2,885×BDP MIN_CWND'yi aşıyor (fark görünür) — bdp={bdp}"
+            );
+            for (state, base, startup_phase) in [
+                (SenderState::Startup, true, true),
+                (SenderState::RecoverArq, true, true),
+                (SenderState::RecoverFwd, true, true),
+                (SenderState::RecoverArq, false, false),
+                (SenderState::Steady, false, false),
+                (SenderState::Drain, false, false),
+                (SenderState::ProbeUp, false, false),
+                (SenderState::DrainRtprop, false, false),
+            ] {
+                s.state = state;
+                s.base_is_startup = base;
+                let g = if flag && startup_phase {
+                    crate::rate::E1_STARTUP_CWND_GAIN
+                } else {
+                    two
+                };
+                let cwnd = crate::rate::cwnd_with_gain(&s.src_cfg, g, bdp);
+                assert_eq!(
+                    s.cwnd_over_srtt(),
+                    rate_per_srtt(cwnd, dur_ns(srtt)),
+                    "tavan: flag={flag} {state:?} base={base}"
+                );
+                let dec = s.last_decision;
+                let want = budget::send_rate_final(
+                    crate::rate::effective_send_rate_cwnd_gain(
+                        &s.src_cfg,
+                        g,
+                        btlbw,
+                        rtprop,
+                        srtt,
+                        s.pacing_phase().gain(),
+                        dec.send_rate_gain_permille,
+                    ),
+                    s.budget_cfg.min_rate_bps,
+                    u64::MAX,
+                );
+                assert_eq!(
+                    s.compute_send_rate(&dec),
+                    want,
+                    "hız: flag={flag} {state:?} base={base}"
+                );
+                assert_eq!(
+                    s.grounded_startup_rate(),
+                    Gain::STARTUP
+                        .apply(rate_per_srtt(s.src_cfg.min_cwnd, dur_ns(srtt)))
+                        .min(rate_per_srtt(cwnd, dur_ns(srtt))),
+                    "kalkış tabanı aynı cwnd'yi kullanır: flag={flag} {state:?}"
+                );
+            }
+            // Fark gerçekten var: açıkken Startup tavanı kapalıdakinden büyük.
+            s.state = SenderState::Startup;
+            s.base_is_startup = true;
+            let startup_cap = s.cwnd_over_srtt();
+            s.state = SenderState::Steady;
+            s.base_is_startup = false;
+            let steady_cap = s.cwnd_over_srtt();
+            assert_eq!(startup_cap > steady_cap, flag, "flag={flag}");
+        }
+    }
+
+    /// Ortak kurulum: Startup, tek RTT örneği (rtprop = srtt = 500 ms), tx_queue boş.
+    fn e1_startup_fixture(f: E1Flags) -> Sender {
+        let mut s = e1_sender(f);
+        s.on_event(Event::AppData(unit(200)), 0);
+        s.on_event(Event::AppData(unit(201)), MS);
+        s.on_event(ack(&[0]), 500 * MS);
+        assert_eq!(s.state(), SenderState::Startup, "kurulum: Startup");
+        assert!(s.btlbw.btlbw() > 0, "kurulum: BtlBw örneği");
+        s.tx_queue.clear();
+        s
+    }
+
+    /// Tur işaretini taklit eder (L bölgesinin RTT örneklemesi bunu kurar) ve platoyu değerlendirir.
+    fn e1_complete_round(s: &mut Sender) -> bool {
+        s.startup_round_complete = true;
+        s.bw_sampled_since_round = true;
+        s.startup_plateau()
+    }
+
+    /// (d) KK-M2-04: mandal yalnız bayrak açık ∧ tx_queue boş ∧ kova dolu iken kurulur; işaretli tur
+    /// değerlendirilmez (sayaç ve `startup_last_btlbw` değişmez), mandal tur işaretinde tüketilir.
+    /// Kapalıyken (ve dolu kuyrukta) tur değerlendirilir — bugünkü davranış.
+    #[test]
+    fn e1_d_app_limited_round_is_not_counted() {
+        for flag in [false, true] {
+            let f = E1Flags {
+                e1_applimited_plateau: flag,
+                ..E1Flags::default()
+            };
+            // Uygulamayla sınırlı tur: kuyruk boş, kova dolu.
+            let mut s = e1_startup_fixture(f);
+            s.pacer.fill_to_cap();
+            s.e1_mark_app_limited_round();
+            assert_eq!(
+                s.e1_round_app_limited, flag,
+                "mandal yalnız bayrakla kurulur"
+            );
+            let bw = s.btlbw.btlbw();
+            s.startup_last_btlbw = bw; // büyüme yok → değerlendirilirse sayaç +1
+            s.startup_stable_rounds = 0;
+            assert!(!e1_complete_round(&mut s));
+            assert!(!s.e1_round_app_limited, "mandal tur işaretinde tüketilir");
+            assert_eq!(
+                s.startup_stable_rounds,
+                u32::from(!flag),
+                "AÇIK: işaretli tur sayılmaz; KAPALI: sayılır (flag={flag})"
+            );
+            assert_eq!(s.startup_last_btlbw, bw);
+            // Sonraki tur işaretsiz → değerlendirilir (iki kolda da).
+            let before = s.startup_stable_rounds;
+            assert!(!e1_complete_round(&mut s));
+            assert_eq!(s.startup_stable_rounds, before + 1, "işaretsiz tur sayılır");
+
+            // Dolu kuyruk: mandal kurulmaz → tur sayılır.
+            let mut s = e1_startup_fixture(f);
+            s.pacer.fill_to_cap();
+            s.tx_queue.push_back(unit(900));
+            s.e1_mark_app_limited_round();
+            assert!(!s.e1_round_app_limited, "kuyruk doluyken mandal yok");
+            // Kova dolu değil: mandal kurulmaz.
+            let mut s = e1_startup_fixture(f);
+            s.pacer.fill_to_cap();
+            assert!(s.pacer.try_send(1), "kurulum: kovadan 1 B harca");
+            s.e1_mark_app_limited_round();
+            assert!(!s.e1_round_app_limited, "kova dolu değilken mandal yok");
+        }
+    }
+
+    /// (d) qd freni (KK-M2-08 kararı GİRER): işaretli turda qd ≥ 250‰ ise tur yine değerlendirilir.
+    #[test]
+    fn e1_d_qd_brake_evaluates_marked_round_under_standing_queue() {
+        let mut s = e1_startup_fixture(E1Flags {
+            e1_applimited_plateau: true,
+            ..E1Flags::default()
+        });
+        // Kısa qd penceresi + rtprop'tan büyük örnek: qd = 700 − 500 = 200 ms → 400‰.
+        s.rtt.set_qd_window(Duration::from_millis(50));
+        s.rtt.observe(600 * MS, Duration::from_millis(700));
+        let qd = s.qd_ratio_permille_now();
+        assert!(
+            qd >= crate::rate::E1_PLATEAU_QD_BRAKE_PERMILLE,
+            "kurulum: qd={qd}"
+        );
+        s.pacer.fill_to_cap();
+        s.e1_mark_app_limited_round();
+        assert!(s.e1_round_app_limited);
+        let bw = s.btlbw.btlbw();
+        s.startup_last_btlbw = bw;
+        s.startup_stable_rounds = 0;
+        assert!(!e1_complete_round(&mut s));
+        assert_eq!(
+            s.startup_stable_rounds, 1,
+            "qd ≥ 250‰: işaretli tur yine sayılır"
+        );
+        assert!(!s.e1_round_app_limited);
+    }
+
+    /// (d) sahte saatli: PTT temposu (160 B / 80 ms ≈ 2 kB/s, kanal 12,5 kB/s) uygulamayla sınırlıdır.
+    /// KAPALI: plato sayılır → Startup biter (Drain/Steady görülür). AÇIK: işaretli turlar sayılmaz →
+    /// ramp sürer (Startup tabanı korunur).
+    #[test]
+    fn e1_d_ptt_cadence_does_not_count_as_plateau() {
+        let offers: Vec<(u64, u64)> = (0..250u64).map(|k| (80 * k, 160)).collect();
+        let run = |flag: bool| {
+            let mut s = e1_sender(E1Flags {
+                e1_applimited_plateau: flag,
+                ..E1Flags::default()
+            });
+            let mut sim = E1Sim::new(12_500, 150);
+            let mut no_drop = |_: &TransmitDecision, _: &E1SendCtx| false;
+            sim.run(&mut s, &offers, 20_000, &mut no_drop);
+            (s, sim)
+        };
+        let left_ramp = |sim: &E1Sim| {
+            sim.steps.iter().any(|st| {
+                matches!(
+                    st.1,
+                    SenderState::Drain | SenderState::Steady | SenderState::ProbeUp
+                )
+            })
+        };
+        let (_s_off, sim_off) = run(false);
+        let (s_on, sim_on) = run(true);
+        assert!(
+            left_ramp(&sim_off),
+            "KAPALI: uygulamayla sınırlı turlar plato sayılır"
+        );
+        assert!(
+            !left_ramp(&sim_on),
+            "AÇIK: uygulamayla sınırlı turlar plato sayılmaz"
+        );
+        assert!(s_on.base_is_startup, "AÇIK: Startup tabanı korunur");
+    }
+
+    /// DrainRtprop kapısı (KK-M2-05): rtprop bayat iken giriş, bayrak açıkken yalnız qd ≥ 250‰.
+    #[test]
+    fn e1_drainrt_gate_requires_standing_queue() {
+        for (flag, standing_queue, expect_drain) in [
+            (false, false, true),
+            (false, true, true),
+            (true, false, false),
+            (true, true, true),
+        ] {
+            let mut s = e1_startup_fixture(E1Flags {
+                e1_drainrt_gate: flag,
+                ..E1Flags::default()
+            });
+            let w = s.rtt.rtprop_window_ns();
+            let now = 500 * MS + w / 2 + 100 * MS; // min örneği (t=500 ms) bayat
+            if standing_queue {
+                s.rtt.set_qd_window(Duration::from_millis(50));
+                s.rtt.observe(now - 10 * MS, Duration::from_millis(700)); // qd 400‰
+            }
+            assert!(
+                s.rtt
+                    .rtprop_age_ns(now)
+                    .is_some_and(|a| a >= s.rtt.rtprop_window_ns() / 2),
+                "kurulum: rtprop bayat"
+            );
+            s.state = SenderState::Steady;
+            s.on_timer(Timer::RtpropProbe, now);
+            assert_eq!(
+                s.state == SenderState::DrainRtprop,
+                expect_drain,
+                "flag={flag} qd={} → {:?}",
+                s.qd_ratio_permille_now(),
+                s.state
+            );
+        }
+    }
+
+    /// (e-dar) PreConverge (KK-M2-06): srtt yokken kayıp kuyruklanmaz (`:3213` kapısı) → retx
+    /// planlanmaz; bayrak açık ve kapalı aynı emisyon dizisi.
+    #[test]
+    fn e1_e_dar_preconverge_plans_no_retx() {
+        let run = |flag: bool| {
+            let mut s = e1_sender(E1Flags {
+                e1_probe_keep: flag,
+                retx_first: flag,
+                ..E1Flags::default()
+            });
+            let mut trace = Vec::new();
+            for i in 0..4u64 {
+                trace.extend(s.on_event(Event::AppData(unit(i)), i * MS));
+            }
+            for k in 1..=300u64 {
+                trace.extend(s.on_event(Event::TimerFired(Timer::Pto), k * 10 * MS));
+                assert!(s.pending_lost.is_empty(), "PreConverge: pending boş");
+            }
+            assert_eq!(s.state(), SenderState::PreConverge, "kurulum: ACK yok");
+            assert!(
+                trace.iter().all(|d| d.kind != TransmitKind::Retransmit),
+                "PreConverge'de retx yok (flag={flag})"
+            );
+            trace
+        };
+        assert_eq!(run(false), run(true), "PreConverge'de bayraklar etkisiz");
+    }
+
+    /// (e-dar) acil durum yolu ProbeUp'ı kesmeye devam eder (KK-M2-06 (1)). ProbeUp'ta ACK'ler tamamen
+    /// kesilir; dwell uzun (zaman aşımı yok), başarı erişilmez. KAPALI: zaman-eşiği kaybı bekleyen
+    /// kümeye girer girmez ProbeUp kesilir. AÇIK: bekleyen kayıp kesmez; ACK sessizliği acil durumu
+    /// açınca ProbeUp RecoverFwd ile kesilir; ikisinde de preempt muhasebeleşir.
+    #[test]
+    fn e1_e_dar_emergency_still_preempts_probe_up() {
+        for flag in [false, true] {
+            let mut s = e1_sender(E1Flags {
+                e1_probe_keep: flag,
+                ..E1Flags::default()
+            });
+            s.on_event(Event::AppData(unit(200)), 0);
+            s.on_event(ack(&[0]), 500 * MS);
+            for i in 1..=6u64 {
+                s.on_event(Event::AppData(unit(i)), (500 + i) * MS);
+            }
+            s.state = SenderState::ProbeUp;
+            s.probe_entry_ns = Some(510 * MS);
+            s.probe_epoch_entry_ns = 100_000 * MS; // dwell 400 s → zaman aşımı yok
+            s.probe_btlbw_entry = 1_000_000_000; // başarı erişilmez
+            s.probe_delivered_entry = s.bw_sampler.delivered();
+            s.probe_loss_attributed = false;
+            let mut exit = None;
+            let mut pending_seen_in_probe = false;
+            for k in 1..=3_000u64 {
+                s.on_event(Event::TimerFired(Timer::Pto), 510 * MS + k * 10 * MS);
+                if s.state() == SenderState::ProbeUp {
+                    pending_seen_in_probe |= !s.pending_lost.is_empty();
+                } else {
+                    exit = Some(s.state());
+                    break;
+                }
+            }
+            if flag {
+                assert_eq!(
+                    exit,
+                    Some(SenderState::RecoverFwd),
+                    "AÇIK: acil durum keser (pending ProbeUp'ta görüldü: {pending_seen_in_probe})"
+                );
+            } else {
+                assert!(
+                    matches!(
+                        exit,
+                        Some(SenderState::RecoverArq | SenderState::RecoverFwd)
+                    ),
+                    "KAPALI: bugünkü kesme yolları — {exit:?}"
+                );
+            }
+            assert_eq!(s.diag_probe().3, 1, "preempt muhasebeleşir (flag={flag})");
+        }
+    }
+
+    /// v2 §5.2 deterministik testi, ön-kayıtlı beklenen sonuç KK-M2-12 / CC §6.4-7: "%30 IID +
+    /// backlog → ProbeUp başarıyla kapanır" → beklenen **"kalır"** (başarıyla kapanmaz). Aritmetik:
+    /// başarı `btlbw > giriş × 1,025`, Steady pace 1 × BtlBw, prob teslimi ≈ 1,25 × 0,7 = 0,875 ×
+    /// giriş. İki kolda koşar; sayaçlar raporlanır (`--nocapture`).
+    #[test]
+    fn e1_v2_iid30_backlog_probe_up_does_not_close_successfully() {
+        for flag in [false, true] {
+            let mut s = e1_sender(E1Flags {
+                e1_probe_keep: flag,
+                ..E1Flags::default()
+            });
+            let mut sim = E1Sim::new(12_500, 150);
+            // Sabit tohumlu LCG (Knuth MMIX): deterministik, IID-benzeri %30 kayıp (RNG motor
+            // girdisi değil; yalnız düzeneğin kayıp deseni).
+            let mut x = 0x2545_F491_4F6C_DD1Du64;
+            // Kayıp ilk ProbeUp girişinden itibaren başlar: baştan %30 kayıpta bekleyen küme hiç
+            // boşalmadığından Steady→ProbeUp girişi olmaz (ilk koşuda ölçüldü: giriş 0) — test o zaman
+            // boş geçerdi.
+            let mut iid30 = |d: &TransmitDecision, c: &E1SendCtx| {
+                if c.state != SenderState::ProbeUp && c.nth_data_in_probe == 0 {
+                    return false;
+                }
+                x = x
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                d.kind != TransmitKind::CsProbe && (x >> 33) % 1000 < 300
+            };
+            sim.run(&mut s, &e1_bulk(600), 60_000, &mut iid30);
+            let (succ, abort, timeout, preempt) = s.diag_probe();
+            eprintln!(
+                "e1_v2_iid30 flag={flag}: probe_up_entries={} success={succ} abort={abort} \
+                 timeout={timeout} preempt={preempt}",
+                s.act_probe_up_entries
+            );
+            assert!(
+                s.act_probe_up_entries >= 1,
+                "kurulum: ProbeUp girildi (flag={flag})"
+            );
+            assert_eq!(
+                succ, 0,
+                "beklenen 'kalır': ProbeUp başarıyla kapanmaz (flag={flag})"
+            );
+        }
+    }
+
+    /// v2 §5.2 deterministik testi: "tıkanıklık kaybında qd iptali, srtt/rtprop ≤ 2". Sığ tampon
+    /// (450 ms kuyruk) darboğazında toplu aktarım; (e-dar) açıkken kayıp ProbeUp'ı iptal ettirmez,
+    /// iptal qd yolundan gelir ve duran kuyruk sınırlı kalır. Sayaçlar `--nocapture` ile basılır.
+    #[test]
+    fn e1_v2_congestion_loss_probe_aborts_on_qd_and_queue_bounded() {
+        for flag in [false, true] {
+            let mut s = e1_sender(E1Flags {
+                e1_probe_keep: flag,
+                ..E1Flags::default()
+            });
+            let mut sim = E1Sim::new(12_500, 150);
+            sim.buf_ns = 450 * MS;
+            let mut no_drop = |_: &TransmitDecision, _: &E1SendCtx| false;
+            sim.run(&mut s, &e1_bulk(700), 60_000, &mut no_drop);
+            let (succ, abort, timeout, preempt) = s.diag_probe();
+            let srtt = dur_ns(s.rtt.srtt().expect("srtt"));
+            let rtprop = dur_ns(s.rtt.rtprop().expect("rtprop"));
+            eprintln!(
+                "e1_v2_congestion flag={flag}: drops={} probe_up={} success={succ} abort={abort} \
+                 timeout={timeout} preempt={preempt} srtt/rtprop={}‰",
+                sim.congestion_drops,
+                s.act_probe_up_entries,
+                srtt * 1000 / rtprop
+            );
+            assert!(
+                sim.congestion_drops > 0,
+                "kurulum: tıkanıklık kaybı var (flag={flag})"
+            );
+            assert!(
+                s.act_probe_up_entries >= 1,
+                "kurulum: ProbeUp girildi (flag={flag})"
+            );
+            assert_eq!(succ, 0, "ProbeUp başarıyla kapanmadı (flag={flag})");
+            if flag {
+                // (e-dar): kayıp iptal ettirmez → iptal qd yolundan (bugün kayıp preempt eder).
+                assert!(abort >= 1, "AÇIK: qd iptali çalışır");
+            } else {
+                assert!(preempt >= 1, "KAPALI: bekleyen kayıp ProbeUp'ı keser");
+            }
+            assert!(srtt <= 2 * rtprop, "srtt/rtprop ≤ 2 (flag={flag})");
+        }
+    }
+
+    // ── [E2a gösterim alt kümesi] ISEMRI-YOL3-M1 §6.3 — her kural iki kollu, sahte saatli ──────
+    //
+    // KK-M1-11: AYNI sahte saatli senaryo iki kolda: bayrak kapalı = eski davranış (beklenen eski
+    // sonuç), açık = yeni sonuç. Deterministik (RNG yok, ADR-17); yalnız iç durum okunur.
+    mod e2a_goster {
+        use super::*;
+        use crate::loss::{E2aFlags, E2aFlagsError};
+
+        fn flags(tt_rfc: bool, g_ns: u64, rtt_v11: bool, iw_hold: bool, probes: u8) -> E2aFlags {
+            E2aFlags::new(tt_rfc, g_ns, rtt_v11, iw_hold, probes, false).expect("geçerli bayrak")
+        }
+
+        fn data_count(out: &[TransmitDecision]) -> usize {
+            out.iter().filter(|d| d.kind == TransmitKind::Data).count()
+        }
+
+        // ── tip ve doğrulama ──
+
+        #[test]
+        fn e2a_flags_default_is_today_and_new_validates() {
+            let d = E2aFlags::default();
+            assert_eq!(Ok(d), E2aFlags::new(false, MS, false, false, 1, false));
+            assert!(!d.tt_rfc() && !d.rtt_rule_v11() && !d.iw_idle_hold() && !d.gap_ack());
+            assert_eq!((d.tt_granularity_ns(), d.pto_probes()), (MS, 1));
+            assert_eq!(Sender::new().e2a_flags(), d, "Sender varsayılanı kapalı");
+            for bad in [0u8, 3, 255] {
+                assert_eq!(
+                    E2aFlags::new(false, MS, false, false, bad, false),
+                    Err(E2aFlagsError::PtoProbesOutOfRange(bad))
+                );
+            }
+            for bad in [0u64, MS - 1, 200 * MS + 1, u64::MAX] {
+                assert_eq!(
+                    E2aFlags::new(true, bad, false, false, 1, false),
+                    Err(E2aFlagsError::GranularityOutOfRange(bad))
+                );
+            }
+            assert!(E2aFlags::new(true, MS, false, false, 2, false).is_ok());
+            assert!(E2aFlags::new(true, 200 * MS, false, false, 2, false).is_ok());
+            assert_eq!(
+                E2aFlags::new(false, MS, false, false, 1, true),
+                Err(E2aFlagsError::GapAckNotImplemented),
+                "m5 uygulanmadı → tipli hata (todo!/panik yok)"
+            );
+        }
+
+        // ── m6: Idle'daki ilk pencere kırpma yarışı ──
+
+        /// IW 2400; isteğe bağlı olarak ilk olay `TimerFired` (Idle, ölçümsüz); sonra t=0'da
+        /// 20 × 283 B sunulur. Dönüş: (TimerFired sonrası jeton, ilk AppData sonrası burst_cap,
+        /// ilk uçuştaki orijinal sayısı).
+        fn m6_first_flight(hold: bool, timer_first: bool) -> (u64, u64, usize) {
+            let mut s = Sender::new();
+            s.set_establish_probe(false);
+            s.set_initial_window(InitialWindowConfig { bytes: 2400 });
+            if hold {
+                s.set_e2a_flags(flags(false, MS, false, true, 1));
+            }
+            let mut tokens = s.pacer.tokens();
+            if timer_first {
+                s.on_event(Event::TimerFired(Timer::Pto), 0);
+                assert_eq!(s.state(), SenderState::Idle, "AppData'dan önce Idle");
+                tokens = s.pacer.tokens();
+            }
+            let mut n = data_count(&s.on_event(Event::AppData(OpaqueUnit { id: 0, size: 283 }), 0));
+            let cap_after_first = s.pacer.burst_cap();
+            for id in 1..20 {
+                n += data_count(&s.on_event(Event::AppData(OpaqueUnit { id, size: 283 }), 0));
+            }
+            (tokens, cap_after_first, n)
+        }
+
+        #[test]
+        fn e2a_m6_idle_first_timer_keeps_initial_window() {
+            let (tok_off, cap_off, n_off) = m6_first_flight(false, true);
+            let (tok_on, cap_on, n_on) = m6_first_flight(true, true);
+            let (_, _, n_ref) = m6_first_flight(false, false);
+            // Kapalı (eski): Idle'daki ilk olay dolu krediyi front_size'a (MTU 1200) kırpar.
+            assert_eq!(tok_off, 1200, "kapalı: kredi 2400 → 1200");
+            // Açık: kova ilk pencerede tutulur.
+            assert_eq!(tok_on, 2400, "açık: kredi 2400'de kalır");
+            assert_eq!(
+                (cap_off, cap_on),
+                (2400, 2400),
+                "PreConverge'de cap iki kolda IW"
+            );
+            assert_eq!(n_on, n_ref, "açık: ilk uçuş TimerFired'sız ilk uçuşla aynı");
+            assert!(
+                n_off < n_ref,
+                "kapalı: ilk uçuş yarıya iner ({n_off} < {n_ref})"
+            );
+            assert_eq!(n_ref, 8, "2400 / 283 → 8 orijinal");
+            assert_eq!(n_off, 4, "1200 / 283 → 4 orijinal");
+        }
+
+        #[test]
+        fn e2a_m6_does_not_touch_measured_idle() {
+            // Ölçümden sonraki Idle (srtt var): bayrak uygulanmaz — iki kol aynı pacer durumu.
+            let run = |hold: bool| {
+                let mut s = Sender::new();
+                s.set_initial_window(InitialWindowConfig { bytes: 2400 });
+                if hold {
+                    s.set_e2a_flags(flags(false, MS, false, true, 1));
+                }
+                s.on_event(Event::AppData(unit(0)), 0);
+                s.on_event(ack(&[0]), 30 * MS);
+                assert_eq!(s.state(), SenderState::Idle);
+                assert!(s.rtt.srtt().is_some());
+                s.on_event(Event::TimerFired(Timer::Pto), 40 * MS);
+                let out = s.on_event(Event::AppData(unit(1)), 50 * MS);
+                (s.diag_pacer(), out.len())
+            };
+            assert_eq!(run(false), run(true));
+        }
+
+        // ── m1: zaman eşiği ──
+
+        /// Isınma (srtt ≈ 10 ms) → iki küçük birim (seq 1, 2) → yalnız seq 2 ACK'lenir (seq 1
+        /// daha yüksek seq'in altında). Dönüş: (sender, seq 1'in gönderim anı).
+        fn m1_gap_flow(f: E2aFlags) -> (Sender, u64) {
+            let mut s = Sender::new();
+            s.set_e2a_flags(f);
+            s.on_event(Event::AppData(unit(200)), 0);
+            s.on_event(ack(&[0]), 10 * MS);
+            let mut send1 = None;
+            for id in [1u64, 2] {
+                for d in s.on_event(Event::AppData(small(id)), 20 * MS) {
+                    if d.kind == TransmitKind::Data && d.seq == 1 {
+                        send1 = Some(20 * MS);
+                    }
+                }
+            }
+            assert!(s.inflight.contains_key(&1) && s.inflight.contains_key(&2));
+            s.on_event(ack(&[2]), 30 * MS);
+            assert!(
+                s.inflight.contains_key(&1),
+                "seq 1 teyitsiz, largest_acked = 2"
+            );
+            (s, send1.expect("seq 1 gönderildi"))
+        }
+
+        #[test]
+        fn e2a_m1_time_threshold_rfc_vs_cadence_floor() {
+            // AÇIK (g = 1 ms): eşik = max(9/8·max(srtt, latest_rtt), g) ≈ 11–12 ms → 100 ms'de kayıp.
+            let (mut on, send1) = m1_gap_flow(flags(true, MS, false, false, 1));
+            let srtt = on.rtt.srtt().expect("srtt");
+            let latest = on.e2a_latest_rtt.expect("latest_rtt");
+            let thresh_on = (dur_ns(srtt.max(latest)) * 9 / 8).max(MS);
+            assert!(
+                thresh_on < 50 * MS,
+                "gösterim dışı küçük RTT: eşik {thresh_on} ns"
+            );
+            let lost_before = on.diag_loss_time;
+            on.on_event(Event::TimerFired(Timer::Pto), 100 * MS);
+            assert_eq!(
+                on.diag_loss_time,
+                lost_before + 1,
+                "açık: seq 1 zaman eşiğiyle kayıp"
+            );
+            assert!(!on.inflight.contains_key(&1));
+            // Tombstone TTL yeni T_loss'tan: K_TOMB × max(9/8·max(srtt, latest), g).
+            let t = on.tombstones.get(&1).expect("seq 1 tombstone'da");
+            assert_eq!(
+                t.expiry_ns,
+                100 * MS + thresh_on * u64::from(K_TOMB),
+                "TTL = K_TOMB × yeni T_loss"
+            );
+            assert!(100 * MS - send1 > thresh_on);
+
+            // KAPALI (eski): taban 1,5 × EAI (≥ 3,15 s) — 100 ms'de kayıp YOK; ilan anında
+            // geçen süre cadence tabanını aşmıştır ve TTL eski formüldendir.
+            let (mut off, send1) = m1_gap_flow(E2aFlags::default());
+            let lost_before = off.diag_loss_time;
+            off.on_event(Event::TimerFired(Timer::Pto), 100 * MS);
+            assert_eq!(
+                off.diag_loss_time, lost_before,
+                "kapalı: 100 ms'de zaman kaybı yok"
+            );
+            assert!(off.inflight.contains_key(&1));
+            let mut declared_at = None;
+            for k in 1..=2000u64 {
+                let now = 100 * MS + k * 10 * MS;
+                // ilan anındaki eski taban (aynı olayın girişindeki durumdan)
+                let floor_before = off.cadence_loss_floor();
+                let srtt_before = off.rtt.srtt().expect("srtt");
+                off.on_event(Event::TimerFired(Timer::Pto), now);
+                if off.diag_loss_time > lost_before {
+                    declared_at = Some((now, floor_before, srtt_before));
+                    break;
+                }
+            }
+            let (now, floor, srtt) = declared_at.expect("kapalı kol sonunda zaman kaybı ilan eder");
+            assert!(
+                Duration::from_nanos(now - send1) > floor,
+                "kapalı: cadence tabanından ({floor:?}) önce kayıp yok"
+            );
+            // 1,5 × EAI ≥ 1,5 × (65 B / 31 B/s) ≈ 3,145 s (dönüş önseli terimi tek başına).
+            let prior_floor = EAI_SACK_WIRE_BYTES * 1_000_000_000 / EAI_RETURN_BW_PRIOR
+                * CADENCE_KC_NUM
+                / CADENCE_KC_DEN;
+            assert!(
+                dur_ns(floor) >= prior_floor,
+                "1,5 × EAI ≥ {prior_floor} ns; {floor:?}"
+            );
+            if let Some(t) = off.tombstones.get(&1) {
+                let old_tloss = (dur_ns(srtt) * 9 / 8).max(dur_ns(floor));
+                assert_eq!(t.expiry_ns, now + old_tloss * u64::from(K_TOMB), "eski TTL");
+            }
+        }
+
+        #[test]
+        fn e2a_m1_pure_silence_declares_no_time_loss_in_either_arm() {
+            // Saf sessizlik (daha yüksek seq ACK'siz): iki kolda da zaman kaybı ilanı yok
+            // ("daha yüksek seq ACK'lendi" ön şartı korunur).
+            for f in [E2aFlags::default(), flags(true, MS, false, false, 1)] {
+                let mut s = Sender::new();
+                s.set_e2a_flags(f);
+                s.on_event(Event::AppData(unit(200)), 0);
+                s.on_event(ack(&[0]), 10 * MS);
+                s.on_event(Event::AppData(small(1)), 20 * MS);
+                s.on_event(Event::AppData(small(2)), 20 * MS);
+                for k in 1..=100u64 {
+                    s.on_event(Event::TimerFired(Timer::Pto), 20 * MS + k * 100 * MS);
+                }
+                assert_eq!(s.diag_loss_time, 0, "tt_rfc={}: saf sessizlik", f.tt_rfc());
+            }
+        }
+
+        #[test]
+        fn e2a_m1_granularity_floors_the_threshold() {
+            // g = 200 ms: küçük RTT'de eşik g'ye oturur → 100 ms'de kayıp yok, 250 ms'de var.
+            let (mut s, _) = m1_gap_flow(flags(true, 200 * MS, false, false, 1));
+            s.on_event(Event::TimerFired(Timer::Pto), 100 * MS);
+            assert_eq!(s.diag_loss_time, 0, "eşik = g = 200 ms; 80 ms geçti");
+            s.on_event(Event::TimerFired(Timer::Pto), 250 * MS);
+            assert_eq!(s.diag_loss_time, 1, "230 ms > g");
+        }
+
+        // ── PTO 2: tur başına iki prob ──
+
+        fn tail_cfg(max_probes: u32, initial_pto_ns: u64) -> TailRecoveryConfig {
+            TailRecoveryConfig {
+                enabled: true,
+                min_pto_ns: MS,
+                max_pto_ns: 1_000_000 * MS,
+                initial_pto_ns,
+                max_backoff_pto_ns: 10_000_000 * MS,
+                max_ack_delay_ns: 0,
+                max_tail_probes: max_probes,
+            }
+        }
+
+        /// Isınmış akış + terminal kuyruk birimleri; PTO tikleri. Dönüş: her tikin
+        /// Retransmit kararları (unit_id, seq).
+        fn pto_flow(probes: u8, tail_ids: &[u64], ticks: u64) -> (Sender, Vec<Vec<(u64, u64)>>) {
+            let mut s = Sender::new();
+            s.set_tail_recovery_config(tail_cfg(2, MS));
+            s.set_e2a_flags(flags(false, MS, false, false, probes));
+            s.on_event(Event::AppData(unit(200)), 0);
+            s.on_event(ack(&[0]), 10 * MS);
+            for &id in tail_ids {
+                s.on_event(Event::AppData(small(id)), 20 * MS);
+            }
+            let mut rounds = Vec::new();
+            for t in 1..=ticks {
+                let out = s.on_event(Event::TimerFired(Timer::Pto), (20 + t * 100) * MS);
+                rounds.push(
+                    out.iter()
+                        .filter(|d| d.kind == TransmitKind::Retransmit)
+                        .map(|d| (d.unit_id, d.seq))
+                        .collect(),
+                );
+            }
+            (s, rounds)
+        }
+
+        #[test]
+        fn e2a_pto2_two_units_two_distinct_probes_per_round() {
+            let (s, rounds) = pto_flow(2, &[98, 99], 40);
+            let fired: Vec<&Vec<(u64, u64)>> = rounds.iter().filter(|r| !r.is_empty()).collect();
+            assert_eq!(fired.len(), 2, "max_tail_probes = 2 TUR: {rounds:?}");
+            for r in &fired {
+                let ids: Vec<u64> = r.iter().map(|&(u, _)| u).collect();
+                assert_eq!(r.len(), 2, "tur başına iki prob: {r:?}");
+                assert!(
+                    ids.contains(&98) && ids.contains(&99),
+                    "iki farklı birim: {r:?}"
+                );
+            }
+            assert_eq!(s.tail_recovery.probe_index(), 2, "tavan TUR sayar");
+            assert_eq!(
+                s.tail_probe_diag().0,
+                4,
+                "2 tur × 2 prob emisyonu (bayt sayılır)"
+            );
+            assert_eq!(s.diag_e2a().pto2_emitted, 2);
+            // Kapalı (pto_probes = 1): tur başına bir prob, toplam 2.
+            let (s1, rounds1) = pto_flow(1, &[98, 99], 40);
+            let fired1: Vec<&Vec<(u64, u64)>> = rounds1.iter().filter(|r| !r.is_empty()).collect();
+            assert_eq!(fired1.len(), 2);
+            assert!(
+                fired1.iter().all(|r| r.len() == 1),
+                "pto_probes = 1: tek prob/tur"
+            );
+            assert_eq!(s1.tail_probe_diag().0, 2);
+            assert_eq!(s1.diag_e2a().pto2_emitted, 0);
+        }
+
+        #[test]
+        fn e2a_pto2_single_unit_probed_twice_with_fresh_seqs() {
+            let (s, rounds) = pto_flow(2, &[99], 40);
+            let first = rounds.iter().find(|r| !r.is_empty()).expect("prob turu");
+            assert_eq!(first.len(), 2, "tek birim: aynı birim iki kez");
+            assert!(first.iter().all(|&(u, _)| u == 99));
+            assert_ne!(first[0].1, first[1].1, "taze seq'ler");
+            // İkinci probun hedefi birincinin kopyasıydı: o kopya superseded tombstone'dadır.
+            let t = s
+                .tombstones
+                .get(&first[0].1)
+                .expect("birinci prob kopyası tombstone'da");
+            assert!(t.retx_count >= 1 && t.origin == TransmitKind::Retransmit);
+        }
+
+        #[test]
+        fn e2a_pto_probes_one_is_todays_decision_sequence() {
+            // `pto_probes = 1` (açık setter çağrısıyla) = setter'sız bugünkü yol: aynı karar dizisi.
+            let drive = |set: bool| {
+                let mut s = Sender::new();
+                s.set_tail_recovery_config(tail_cfg_on());
+                if set {
+                    s.set_e2a_flags(E2aFlags::default());
+                }
+                let mut trace: Vec<(TransmitKind, u64, u64, u64)> = Vec::new();
+                let mut push = |out: Vec<TransmitDecision>| {
+                    trace.extend(out.into_iter().map(|d| (d.kind, d.seq, d.unit_id, d.size)));
+                };
+                push(s.on_event(Event::AppData(unit(200)), 0));
+                push(s.on_event(ack(&[0]), 10 * MS));
+                push(s.on_event(Event::AppData(small(98)), 20 * MS));
+                push(s.on_event(Event::AppData(small(99)), 20 * MS));
+                for t in 1..=40u64 {
+                    push(s.on_event(Event::TimerFired(Timer::Pto), (20 + t * 100) * MS));
+                }
+                (trace, s.tail_probe_diag(), s.diag_e2a())
+            };
+            assert_eq!(drive(false), drive(true));
+        }
+
+        /// Kova tek birimlik (PreConverge tabanı 31 B/s, IW yok → cap = MTU 1200; birim 1000 B):
+        /// birinci prob jetonu tüketince ikinci prob ilk geçişte BEKLER, sonraki jetonla çıkar.
+        fn pto2_token_starved(ack_first_probe: bool) -> (Sender, Vec<(u64, u64, u64)>) {
+            let mut s = Sender::new();
+            s.set_establish_probe(false);
+            s.set_tail_recovery_config(tail_cfg(3, 60_000 * MS));
+            s.set_e2a_flags(flags(false, MS, false, false, 2));
+            let out = s.on_event(Event::AppData(OpaqueUnit { id: 7, size: 1000 }), 0);
+            assert_eq!(data_count(&out), 1);
+            let mut probes: Vec<(u64, u64, u64)> = Vec::new(); // (an, unit_id, seq)
+            for k in 1..=190u64 {
+                let now = k * 1_000 * MS;
+                // İptal kolu: ACK ilerlemesi turu sıfırlar; yeni tur en erken ACK + 60 s'de (srtt
+                // yok → initial_pto). İkinci prob jetonu ≈ 32 s'de yetişirdi → pencere ondan önce
+                // kapanmadan, yeni turdan önce durulur.
+                if ack_first_probe
+                    && probes
+                        .first()
+                        .is_some_and(|&(t1, _, _)| now > t1 + 59_000 * MS)
+                {
+                    break;
+                }
+                let out = s.on_event(Event::TimerFired(Timer::Pto), now);
+                let n_before = probes.len();
+                for d in out.iter().filter(|d| d.kind == TransmitKind::Retransmit) {
+                    probes.push((now, d.unit_id, d.seq));
+                }
+                if n_before == 0 && probes.len() == 1 {
+                    assert!(
+                        s.e2a_tail_probe2.is_some(),
+                        "birinci prob geçişinde ikinci prob yuvada bekler (jeton yok)"
+                    );
+                    if ack_first_probe {
+                        // İkinci probun hedefi ACK'lenir (gerçek ilerleme) → yuva boşalmalı.
+                        let (target, _, _) = s.e2a_tail_probe2.expect("yuva dolu");
+                        s.on_event(ack(&[target]), now + MS);
+                    }
+                }
+            }
+            (s, probes)
+        }
+
+        #[test]
+        fn e2a_pto2_second_probe_waits_for_token_then_emits() {
+            let (s, probes) = pto2_token_starved(false);
+            assert!(probes.len() >= 2, "iki prob: {probes:?}");
+            let (t1, u1, q1) = probes[0];
+            let (t2, u2, q2) = probes[1];
+            assert!(
+                t1 >= 60_000 * MS,
+                "birinci prob PTO'dan (60 s) önce değil: {probes:?}"
+            );
+            assert!(
+                t2 > t1,
+                "ikinci prob AYNI geçişte çıkmadı (jeton yok): {probes:?}"
+            );
+            assert!(
+                t2 < t1 + 120_000 * MS,
+                "ikinci prob sonraki turdan (geri çekilmiş PTO 120 s) önce, jetonla çıktı"
+            );
+            assert_eq!((u1, u2), (7, 7));
+            assert_ne!(q1, q2);
+            assert_eq!(s.diag_e2a().pto2_emitted, 1);
+            assert_eq!(s.tail_recovery.probe_index(), 1, "ikinci prob tur saymaz");
+        }
+
+        #[test]
+        fn e2a_pto2_second_probe_cancelled_when_target_acked() {
+            let (s, probes) = pto2_token_starved(true);
+            assert_eq!(
+                probes.len(),
+                1,
+                "hedef ACK'lendi → ikinci prob iptal: {probes:?}"
+            );
+            assert_eq!(s.diag_e2a().pto2_emitted, 0);
+            assert_eq!(s.diag_e2a().pto2_cleared, 1, "yuva boşaltıldı");
+            assert!(s.e2a_tail_probe2.is_none());
+        }
+
+        #[test]
+        fn e2a_pto2_waiting_second_probe_is_a_wakeup_source() {
+            // EK4-A2: bekleyen ikinci prob uyanış kümesindedir; yalnız `next_wakeup_ns` ile
+            // sürülen sürücü (periyodik tik YOK) onu sonraki turdan önce çıkarır.
+            let mut s = Sender::new();
+            s.set_establish_probe(false);
+            // Ürün runtime'ı gibi deneysel CS-probe şeridi kapalı: o şeridin zamanlayıcıları
+            // `TimerFired` ile değil `Event::Tick`/toplu API ile tüketilir (experimental-cold-start).
+            s.set_cs_probe_lane(false);
+            s.set_tail_recovery_config(tail_cfg(3, 60_000 * MS));
+            s.set_e2a_flags(flags(false, MS, false, false, 2));
+            s.on_event(Event::AppData(OpaqueUnit { id: 7, size: 1000 }), 0);
+            let mut now = 0u64;
+            let mut probes: Vec<u64> = Vec::new();
+            for _ in 0..10_000 {
+                let Some(w) = s.next_wakeup_ns() else { break };
+                now = w.max(now);
+                let out = s.on_event(Event::TimerFired(Timer::Pto), now);
+                let before = probes.len();
+                probes.extend(
+                    out.iter()
+                        .filter(|d| d.kind == TransmitKind::Retransmit)
+                        .map(|_| now),
+                );
+                if before == 0 && probes.len() == 1 {
+                    let ready = s.e2a_probe2_ready_ns().expect("ikinci prob jeton bekliyor");
+                    assert!(
+                        s.next_wakeup_ns().is_some_and(|w| w <= ready),
+                        "uyanış ≤ ikinci prob hazır anı"
+                    );
+                }
+                if probes.len() >= 2 {
+                    break;
+                }
+            }
+            assert_eq!(probes.len(), 2, "iki prob: {probes:?}");
+            assert!(probes[1] > probes[0] && probes[1] < probes[0] + 120_000 * MS);
+        }
+
+        // ── m8: engine §6 v1.1 KABUL KURALI ──
+
+        fn v11(on: bool) -> E2aFlags {
+            flags(false, MS, on, false, 1)
+        }
+
+        fn ack_d(seqs: &[u64], delay: Duration) -> Event {
+            Event::AckReceived(AckInfo {
+                acked_seqs: seqs.to_vec(),
+                ack_delay: delay,
+            })
+        }
+
+        /// Isınma (seq 0 @0, ACK @10 ms) + seq 1, 2, 3 @20 ms.
+        fn m8_flow(on: bool) -> Sender {
+            let mut s = Sender::new();
+            s.set_e2a_flags(v11(on));
+            s.on_event(Event::AppData(unit(200)), 0);
+            s.on_event(ack(&[0]), 10 * MS);
+            for id in 1..=3u64 {
+                s.on_event(Event::AppData(small(id)), 20 * MS);
+            }
+            assert!((1..=3).all(|q| s.inflight.contains_key(&q)));
+            s
+        }
+
+        #[test]
+        fn e2a_m8_a_frame_max_already_acked_gives_no_sample_and_no_fallback() {
+            for on in [false, true] {
+                let mut s = m8_flow(on);
+                s.on_event(ack(&[3]), 30 * MS);
+                let n = s.diag_rtt_sample_count();
+                // Çerçevenin en büyüğü (3) zaten onaylı; 1 ilk kez onaylanıyor (Data).
+                s.on_event(ack(&[1, 3]), 40 * MS);
+                let got = s.diag_rtt_sample_count() - n;
+                if on {
+                    assert_eq!(
+                        got, 0,
+                        "açık: en büyük bayat → örnek yok, küçüğe geri düşüş yok"
+                    );
+                } else {
+                    assert_eq!(got, 1, "kapalı (Karn): yeni-onaylı Data seq 1'den örnek");
+                }
+            }
+        }
+
+        #[test]
+        fn e2a_m8_b_retransmit_origin_first_ack_samples_only_when_on() {
+            for on in [false, true] {
+                let mut s = Sender::new();
+                s.set_tail_recovery_config(tail_cfg_on());
+                s.set_e2a_flags(v11(on));
+                s.on_event(Event::AppData(unit(200)), 0);
+                s.on_event(ack(&[0]), 10 * MS);
+                s.on_event(Event::AppData(small(99)), 20 * MS);
+                let mut probe = None;
+                for t in 1..=40u64 {
+                    let now = (20 + t * 100) * MS;
+                    let out = s.on_event(Event::TimerFired(Timer::Pto), now);
+                    if let Some(d) = out.iter().find(|d| d.kind == TransmitKind::Retransmit) {
+                        probe = Some((d.seq, now));
+                        break;
+                    }
+                }
+                let (pseq, ptx) = probe.expect("prob emisyonu (ön koşul)");
+                assert_eq!(
+                    s.inflight.get(&pseq).map(|p| p.origin),
+                    Some(TransmitKind::Retransmit)
+                );
+                let n = s.diag_rtt_sample_count();
+                let srtt_before = s.rtt.srtt().expect("srtt");
+                s.on_event(ack(&[pseq]), ptx + 5 * MS);
+                if on {
+                    assert_eq!(
+                        s.diag_rtt_sample_count(),
+                        n + 1,
+                        "açık: prob kopyasından örnek"
+                    );
+                    assert!(
+                        s.rtt.srtt().expect("srtt") < srtt_before,
+                        "5 ms örnek srtt'yi indirir"
+                    );
+                } else {
+                    assert_eq!(s.diag_rtt_sample_count(), n, "kapalı: Karn dışlaması");
+                    assert_eq!(s.rtt.srtt(), Some(srtt_before));
+                }
+            }
+        }
+
+        #[test]
+        fn e2a_m8_b_duplicate_origin_ack_exits_preconverge_only_when_on() {
+            // PC tuzağı: PreConverge'de orijinal kayıp, kuruluş kopyası (Duplicate) ulaştı.
+            for on in [false, true] {
+                let mut s = Sender::new();
+                s.set_e2a_flags(v11(on));
+                s.on_event(Event::AppData(unit(1)), 0);
+                let mut dup = None;
+                for k in 1..=200u64 {
+                    let now = k * 50 * MS;
+                    let out = s.on_event(Event::TimerFired(Timer::Pto), now);
+                    if let Some(d) = out.iter().find(|d| d.kind == TransmitKind::Duplicate) {
+                        dup = Some((d.seq, now));
+                        break;
+                    }
+                }
+                let (dseq, dtx) = dup.expect("PreConverge kuruluş kopyası (ön koşul)");
+                assert_eq!(s.state(), SenderState::PreConverge);
+                s.on_event(ack(&[dseq]), dtx + 40 * MS);
+                if on {
+                    assert!(s.rtt.srtt().is_some(), "açık: Duplicate'ten örnek");
+                    assert_ne!(s.state(), SenderState::PreConverge, "PreConverge çıkışı");
+                } else {
+                    assert!(s.rtt.srtt().is_none(), "kapalı: Karn → örnek yok");
+                    assert_eq!(s.state(), SenderState::PreConverge, "PC tuzağı (eski)");
+                }
+            }
+        }
+
+        #[test]
+        fn e2a_m8_d_saturated_ack_delay_gives_no_sample() {
+            for on in [false, true] {
+                let mut s = m8_flow(on);
+                let n = s.diag_rtt_sample_count();
+                s.on_event(ack_d(&[3], crate::loss::E2A_ACK_DELAY_SATURATED), 30 * MS);
+                let got = s.diag_rtt_sample_count() - n;
+                assert_eq!(got, u32::from(!on), "on={on}: doygun ack_delay");
+                assert_eq!(s.diag_e2a().rtt_rule_refused, u64::from(on));
+            }
+        }
+
+        #[test]
+        fn e2a_m8_e_refused_correction_with_inflated_ack_delay() {
+            for on in [false, true] {
+                // rtprop = 10 ms. raw = 20 ms, ack_delay = 15 ms → düzeltilmiş 5 ms < rtprop →
+                // guard reddeder; ack_delay ≥ rtprop → (e) açıkken örnek yok, kapalıyken RAW örnek.
+                let mut s = m8_flow(on);
+                assert_eq!(s.rtt.rtprop(), Some(Duration::from_millis(10)));
+                let n = s.diag_rtt_sample_count();
+                let rej = s.diag_rtt_rejected;
+                s.on_event(ack_d(&[3], Duration::from_millis(15)), 40 * MS);
+                assert_eq!(s.diag_rtt_rejected, rej + 1, "guard reddetti (iki kol)");
+                assert_eq!(
+                    s.diag_rtt_sample_count() - n,
+                    u32::from(!on),
+                    "on={on}: (e) ret"
+                );
+                assert_eq!(s.diag_e2a().rtt_rule_refused, u64::from(on));
+                // ack_delay < rtprop iken guard reddi örneği DÜŞÜRMEZ: raw = 15 ms, ack_delay =
+                // 9 ms → düzeltilmiş 6 ms < rtprop (guard reddi) ama 9 < 10 → RAW örnek iki kolda.
+                let mut s = m8_flow(on);
+                let n = s.diag_rtt_sample_count();
+                let rej = s.diag_rtt_rejected;
+                s.on_event(ack_d(&[3], Duration::from_millis(9)), 35 * MS);
+                assert_eq!(s.diag_rtt_rejected, rej + 1, "guard reddetti (iki kol)");
+                assert_eq!(
+                    s.diag_rtt_sample_count() - n,
+                    1,
+                    "on={on}: (e) şartı sağlandı"
+                );
+                assert_eq!(s.diag_e2a().rtt_rule_refused, 0);
+            }
+        }
     }
 }

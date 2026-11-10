@@ -320,3 +320,160 @@ fn preconverge_still_freezes_time_threshold_declaration() {
         "time-threshold declaration is frozen in PreConverge"
     );
 }
+
+/// [E1 (e-dar), ISEMRI-YOL3-M2 KK-M2-16] `e1_probe_keep` açıkken bekleyen kayıp ProbeUp'ı kesmez;
+/// `pending_work_ready_ns` "bekleyen kayıp her turda planlanır" varsayımına dayanır (sender.rs
+/// `pending_work_ready_ns` yorumu) — (e-dar) retx koşulu (`!pending_lost.is_empty() ∧ state ≠
+/// RecoverFwd`) bu varsayımı ProbeUp'ta da korur. Kapalı döngüyle ProbeUp'a gelinir, ProbeUp'ta
+/// gönderilen ilk DATA düşürülür; bekleyen kayıp ProbeUp'ta görülünce periyodik tick ve ACK kesilir,
+/// yalnız `next_wakeup_ns()` güdümlü sürücü: uyanış raporlanır ve retx ProbeUp içinde tele çıkar.
+#[test]
+fn e1_probe_keep_pending_in_probe_up_reports_wakeup_and_plans_retx() {
+    use adaptive_transport::rate::E1Flags;
+    let mut s = Sender::new();
+    s.set_e1_flags(E1Flags {
+        e1_probe_keep: true,
+        ..E1Flags::default()
+    });
+    let owd = 150 * MS;
+    let rate_bps = 12_500u64;
+    let mut link_free = 0u64;
+    let mut acks: Vec<(u64, u64)> = Vec::new();
+    let mut dropped = false;
+    for i in 0..400u64 {
+        let _ = s.on_event(
+            Event::AppData(OpaqueUnit {
+                id: 1_000 + i,
+                size: UNIT,
+            }),
+            0,
+        );
+    }
+    let mut send = |s: &Sender,
+                    out: Vec<TransmitDecision>,
+                    now: u64,
+                    acks: &mut Vec<(u64, u64)>,
+                    dropped: &mut bool| {
+        for d in out {
+            if !*dropped && d.kind == TransmitKind::Data && s.state() == SenderState::ProbeUp {
+                *dropped = true;
+                continue;
+            }
+            let start = now.max(link_free);
+            link_free = start + d.size * SEC / rate_bps;
+            let at = link_free + 2 * owd;
+            let pos = acks.partition_point(|&(t, _)| t <= at);
+            acks.insert(pos, (at, d.seq));
+        }
+    };
+    let mut found = None;
+    'outer: for t_ms in 0..60_000u64 {
+        let now = t_ms * MS;
+        while let Some(&(t, seq)) = acks.first() {
+            if t > now {
+                break;
+            }
+            acks.remove(0);
+            let out = s.on_event(ack(vec![seq]), t);
+            send(&s, out, t, &mut acks, &mut dropped);
+            if s.state() == SenderState::ProbeUp && s.diag_loss().2 > 0 {
+                found = Some(t);
+                break 'outer;
+            }
+        }
+        let out = s.on_event(Event::TimerFired(Timer::Pto), now);
+        send(&s, out, now, &mut acks, &mut dropped);
+        if s.state() == SenderState::ProbeUp && s.diag_loss().2 > 0 {
+            found = Some(now);
+            break;
+        }
+        if t_ms % 200 == 0 {
+            let out = s.on_event(Event::TimerFired(Timer::RtpropProbe), now);
+            send(&s, out, now, &mut acks, &mut dropped);
+        }
+    }
+    let start = found.expect("kurulum: ProbeUp'ta bekleyen kayıp görüldü (e-dar açık)");
+    assert!(dropped, "kurulum: ProbeUp'ta DATA düşürüldü");
+    // Yalnız uyanış güdümlü sürücü (periyodik tick ve ACK yok).
+    let mut now = start;
+    let mut retx_in_probe = false;
+    for _ in 0..200 {
+        let w = s
+            .next_wakeup_ns()
+            .expect("ProbeUp'ta bekleyen kayıp varken uyanış raporlanır");
+        now = w.max(now).saturating_add(MS);
+        let out = s.on_event(Event::TimerFired(Timer::Pto), now);
+        if out.iter().any(|d| d.kind == TransmitKind::Retransmit) {
+            retx_in_probe = s.state() == SenderState::ProbeUp;
+            break;
+        }
+    }
+    assert!(retx_in_probe, "retx ProbeUp içinde planlanır ve tele çıkar");
+}
+
+/// [E2a m1 · ISEMRI-YOL3-M1 KK-M1-12] `tt_rfc` açıkken zaman-kayıp uyanışı YENİ eşikte gelir
+/// (`send + max(9/8·max(srtt, latest_rtt), g)`) ve yalnız uyanışla sürülen sürücü (periyodik tik
+/// YOK) kaybı ilan edip kurtarma emisyonu üretir. Kapalı kolda uyanış eski eşikte (cadence tabanı
+/// 1,5 × EAI ≥ 3 s) kalır — aynı akış, tek fark bayrak.
+#[test]
+fn e2a_m1_wakeup_at_rfc_threshold_and_wakeup_driven_progress() {
+    use adaptive_transport::loss::E2aFlags;
+    let flow = |tt_rfc: bool| {
+        let mut s = Sender::new();
+        if tt_rfc {
+            s.set_e2a_flags(E2aFlags::new(true, MS, false, false, 1, false).expect("geçerli"));
+        }
+        let zero = |seqs: Vec<u64>| {
+            Event::AckReceived(AckInfo {
+                acked_seqs: seqs,
+                ack_delay: Duration::ZERO,
+            })
+        };
+        // Isınma: seq 0 @0, ACK @10 ms → örnek 10 ms.
+        s.on_event(
+            Event::AppData(OpaqueUnit {
+                id: 200,
+                size: UNIT,
+            }),
+            0,
+        );
+        s.on_event(zero(vec![0]), 10 * MS);
+        // seq 1, 2 @20 ms; yalnız seq 2 ACK'lenir @30 ms (örnek 10 ms) → seq 1 boşlukta.
+        let mut sent = Vec::new();
+        for id in [1u64, 2] {
+            for d in s.on_event(Event::AppData(OpaqueUnit { id, size: 100 }), 20 * MS) {
+                if d.kind == TransmitKind::Data {
+                    sent.push(d.seq);
+                }
+            }
+        }
+        assert_eq!(sent, vec![1, 2], "iki orijinal @20 ms");
+        s.on_event(zero(vec![2]), 30 * MS);
+        s
+    };
+
+    let mut on = flow(true);
+    let srtt = on.path_timing_snapshot().srtt_ns.expect("srtt");
+    let latest = 10 * MS; // son örnek (raw 10 ms, ack_delay 0)
+    let expected = 20 * MS + (srtt.max(latest) * 9 / 8).max(MS);
+    assert_eq!(
+        on.next_wakeup_ns(),
+        Some(expected),
+        "açık: uyanış = send + max(9/8·max(srtt, latest_rtt), g)"
+    );
+    let off = flow(false);
+    let w_off = off.next_wakeup_ns().expect("kapalı kolda da uyanış var");
+    assert!(
+        w_off > 20 * MS + 3 * SEC,
+        "kapalı: uyanış eski eşikte (cadence tabanı); {w_off}"
+    );
+
+    // Yalnız uyanışla sür: ilk uyanışta seq 1 zaman eşiğiyle ilan edilir, kurtarma çıkar.
+    let (fired, iters, wakeups) = drive_by_wakeup(&mut on, 30 * MS, 64);
+    assert_eq!(on.diag_loss().1, 1, "açık: zaman eşiği ilanı (seq 1)");
+    assert!(
+        fired,
+        "açık: uyanış güdümlü sürücü kurtarma emisyonu üretir; {iters} uyanış {wakeups:?}"
+    );
+    assert!(iters < 64, "yakınsar ({iters})");
+}

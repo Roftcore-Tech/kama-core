@@ -1,0 +1,11 @@
+başlangıç 2026-11-09T23:40:42+03:00
+ağaç: yol2/goster-a 56313c7313c8b79ee7e0265bbc3c9fe8df7fe819 = yol2/goster 9e157992 (o1-e2a b3511591 + T1 4c1b96cf + düzenek) + Q1 507417b7 + Q2 c8450809 + kol merdiveni
+311fd5071269ccc55b652b642eda0a92b9ad1df56165ed7b7b5eb7f3b7e454c8  target/release/examples/f0_flows
+37bcabe31107a464970a54f5073a36d1d0e65e1cba558c1bf363360c0cb56e1a  docs/design/E1-TESHIS-G2.md
+3ff56095fa4f4c2dc9810f678b4dfa334d205bded676b13dc2a3b28f57ed9ce7  scripts/yol3/tesis/SIRA-A.txt
+KK-ORK-01: FEC kapalı. Şeritler açık (--goster on, W=5, T=2,0 s varsayılan). D-18: ölçüm süresince ortak cargo kilidi tutuldu; -j 11
+ölçüm başlangıç 2026-11-09T23:42:46+03:00
+grid rc=0 bitiş 2026-11-10T00:05:58+03:00
+oku rc=0
+8484218b8f3a2f595031c72ff0fa2ba19ee4600299b1ed4ee107ef6e9d77201a  <ölçüm-kökü>/yol3/tesis/2026-11-09-a/okuma/okuma.json
+fea3dd080ed14b49b5ed9f3d2f3819e3624b64d77cd0bb697dde408c1a4f26d3  <ölçüm-kökü>/yol3/tesis/2026-11-09-a/okuma/OKUMA.md
