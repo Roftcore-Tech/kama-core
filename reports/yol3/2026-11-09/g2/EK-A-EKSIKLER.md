@@ -166,7 +166,11 @@ Sütun etiketleri: bütün sayımlar [ölçüldü] (`rc`, alice/bob özetleri `s
 - K0 rep3 aynı desen (Drain @ 6,3 s, BtlBw 336). K0 rep1 başka: Startup 5,5 s'de BtlBw 260 B/s'deyken bitti, ama BtlBw sonra 5 201 B/s'ye çıktı (tel [5, 65) s 1 065 B/s). bob dosyayı 115 s'de aldı, alice 60 s'de `ReceiptTimeout` gördü. Bu, file_transfer.rs:102'deki bilinen sınırdır (alıcıda olan dosya için gönderende "başarısız").
 - Tamamlanan koşularda Startup sonrası ilk durum 8,1–30,1 s'de ve BtlBw 9 378–12 284 B/s iken geliyor [ölçüldü].
 - Kilit deseni E1 kollarının 40 koşusunda yok, K0 + K0r'de 4/20 [ölçüldü]. Olayların hepsinin K0 + K0r'ye düşme olasılığı p = 0,0099 [türetilmiş]. K0r ↔ K0 farkı (3/10 ↔ 1/10) bu veriden ayrılamaz (p = 0,291) [türetilmiş].
-- Dört E1 kolunun ortak bayrakları (d) ve DrainRtprop. Aday mekanizma [çıkarım; plato sayacı aynada yok, doğrulanmadı]: (d) kapalıyken ısınma döneminin uygulamayla sınırlı turları plato sayılıyor; dosya başlayınca Startup az turla bitiyor. Startup'tan sonra ProbeUp BtlBw'yi yükseltemiyor: p = 0,2'de prob teslimi 1,25 × 0,8 = 1,00 < 1,025 başarı eşiği (KK-M2-12 aritmetiği) [türetilmiş]. Ölçülen ProbeUp girişleri: 5–10.
+- Dört E1 kolunun ortak bayrakları (d) ve DrainRtprop.
+- Aday mekanizma (d) [çıkarım; plato sayacı aynada yok, doğrulanmadı]:
+  - Kodda `base_is_startup` yalnız platoda düşer (sender.rs:4012-4013). Startup sayacı yalnız gerçek girişte sıfırlanır: `state == Startup ∧ !base_is_startup` (:4187) [kod].
+  - Isınmadan sonraki Idle → Startup (dosya, 5 s) bu yüzden sayacı sıfırlamaz. (d) kapalıyken ısınmanın uygulamayla sınırlı turları plato sayacında kalır; dosya başlayınca Startup az turla bitebilir.
+- Startup'tan sonra ProbeUp BtlBw'yi yükseltemiyor: p = 0,2'de prob teslimi 1,25 × 0,8 = 1,00 < 1,025 başarı eşiği (KK-M2-12 aritmetiği) [türetilmiş]. Ölçülen ProbeUp girişleri: 5–10.
 
 ## 4. EKA-4 — tuzaklı koşular
 
@@ -322,7 +326,7 @@ Sütun etiketleri:
 
 - EKA-1 (orkestratörün gece koşusu).
 - K1 dosyasız hücrede ve manşette koşmadı. Gösterim seti için (iii) ve R1 değerleri K2'nindir (manifest §2). K1'in kendi değerleri ölçülmedi.
-- Kilit deseninin mekanizması ((d) adayı) doğrulanmadı; Startup plato sayacı aynada yok. Doğrulama için CC-0 kablolaması (`diag_probe`/`diag_rate`) ya da aynaya tur sayacı gerekir (Aralık; v4 Bölüm V).
+- Kilit deseninin mekanizması ((d) adayı, §3) doğrulanmadı; Startup plato sayacı aynada yok. Doğrulama için CC-0 kablolaması (`diag_probe`/`diag_rate`) ya da aynaya tur sayacı gerekir (Aralık; v4 Bölüm V).
 - A hücrelerinde kopya baytı ayrı sayaç değil. Datagram kapanışı 0 olduğu için kalan bayt = kopya baytı [türetilmiş].
 - Startup dönemi kaybı [0, 20) s ve `diag_probe` sayaçları ölçülmedi (OKUMA.md ile aynı).
 
