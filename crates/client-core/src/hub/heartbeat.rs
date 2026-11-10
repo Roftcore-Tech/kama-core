@@ -21,7 +21,9 @@ use std::time::Instant;
 
 use blake2::{Blake2s256, Digest};
 
-use super::codec::{self, NONCE_LEN};
+use kama_contracts::s4::NONCE_LEN;
+
+use super::bind::heartbeat_frame;
 
 /// Ön plan kadansı (KS-HB-1): hub'a giden son datagramdan bu kadar sonra heartbeat.
 pub const HEARTBEAT_FOREGROUND: Duration = Duration::from_secs(8);
@@ -131,7 +133,7 @@ impl Heartbeat {
                     probes: 0,
                     next: now + ACK_WAIT,
                 };
-                HbOutcome::Send(codec::encode_heartbeat(token))
+                HbOutcome::Send(heartbeat_frame(token))
             }
             State::Waiting { probes, next, .. } => {
                 if now < *next {
@@ -155,7 +157,7 @@ impl Heartbeat {
                     *probes += 1;
                     *next = now + PROBE_INTERVAL;
                 }
-                HbOutcome::Send(codec::encode_heartbeat(token))
+                HbOutcome::Send(heartbeat_frame(token))
             }
         }
     }
@@ -218,14 +220,14 @@ mod tests {
         );
         assert_eq!(
             hb.on_tick(due, t0, &seed),
-            HbOutcome::Send(codec::encode_heartbeat(100))
+            HbOutcome::Send(heartbeat_frame(100))
         );
         let mut t = due;
         for k in 1..=3u32 {
             t += Duration::from_secs(1);
             assert_eq!(
                 hb.on_tick(t, due, &seed),
-                HbOutcome::Send(codec::encode_heartbeat(100 + k))
+                HbOutcome::Send(heartbeat_frame(100 + k))
             );
         }
         t += Duration::from_secs(1);
@@ -239,7 +241,7 @@ mod tests {
         hb.start_probe(t0);
         assert_eq!(
             hb.on_tick(t0, t0, &[0; 16]),
-            HbOutcome::Send(codec::encode_heartbeat(7))
+            HbOutcome::Send(heartbeat_frame(7))
         );
         assert!(!hb.on_ack(99));
         assert!(hb.on_ack(7));

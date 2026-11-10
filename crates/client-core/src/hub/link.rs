@@ -31,8 +31,14 @@ use kama_contracts::handles::PeerRef;
 use kama_contracts::s3::HubHandle;
 use kama_noise_wire::entropy::EntropySource;
 
-use super::bind::{BindDeps, BindMachine, BindOutcome, RequestIds};
-use super::codec::{self, code, envelope, flags, method, Inbound, MAX_ENVELOPE};
+use kama_contracts::s4::{
+    self, HubFrame, RpcBody, RpcMessage, S4Error, StoreMessageReq, ENVELOPE_RELAY_OPEN,
+    ENVELOPE_SESSION_INIT, ENVELOPE_SESSION_INIT_RESPONSE, ERROR_HUB_CAPACITY, ERROR_RATE_LIMITED,
+    METHOD_BIND_PROOF, METHOD_CLIENT_BIND, METHOD_STORE_MESSAGE, STATUS_OK, STATUS_PEER_UNBOUND,
+    STATUS_UNKNOWN_HANDLE,
+};
+
+use super::bind::{rpc_frame_checked, BindDeps, BindMachine, BindOutcome, RequestIds};
 use super::heartbeat::{HbOutcome, Heartbeat};
 use super::t3::{t3_delay, ATTEMPT_MAX_AGE, BACKOFF_MIN};
 use super::{BindSigner, HubConfig, HubCounters, HubError, HubNotice};
@@ -194,40 +200,50 @@ impl HubLink {
     pub fn on_control(&mut self, now: Instant, opened_frame: &[u8]) {
         bump(&mut self.counters.rx_frames);
         self.last_rx = Some(now);
-        match codec::decode_inbound(opened_frame) {
+        match HubFrame::decode(opened_frame) {
+            Err(S4Error::UnknownFrameType) | Ok(HubFrame::Heartbeat(_)) => {
+                bump(&mut self.counters.hub_frames_dropped);
+            }
             Err(_) => bump(&mut self.counters.rx_malformed),
-            Ok(Inbound::Unknown { .. }) => bump(&mut self.counters.hub_frames_dropped),
-            Ok(Inbound::HeartbeatAck { token }) => {
-                if self.bind.is_bound() && token.is_some_and(|t| self.hb.on_ack(t)) {
+            Ok(HubFrame::HeartbeatAck(ack)) => {
+                if self.bind.is_bound() && ack.token.is_some_and(|t| self.hb.on_ack(t)) {
                     bump(&mut self.counters.heartbeat_acks);
                 } else {
                     bump(&mut self.counters.heartbeat_ack_unmatched);
                 }
             }
-            Ok(Inbound::Rpc(rpc)) => self.on_rpc(now, &rpc),
+            Ok(HubFrame::Plane1Rpc(body)) => match RpcMessage::decode(body) {
+                Ok(msg) => self.on_rpc(now, msg),
+                Err(S4Error::UnknownMethod) => bump(&mut self.counters.hub_frames_dropped),
+                Err(_) => bump(&mut self.counters.rx_malformed),
+            },
         }
         self.on_tick(now);
     }
 
-    fn on_rpc(&mut self, now: Instant, rpc: &codec::RpcFrame<'_>) {
-        match (rpc.method_id, rpc.flags) {
-            (method::DELIVER, flags::REQUEST) if rpc.request_id == 0 => {
-                match codec::decode_deliver(rpc.payload) {
-                    Ok(d) => self.on_deliver(now, &d),
-                    Err(_) => bump(&mut self.counters.rx_malformed),
-                }
+    fn on_rpc(&mut self, now: Instant, msg: RpcMessage) {
+        let rid = msg.request_id;
+        match msg.body {
+            RpcBody::Deliver(d) => self.on_deliver(now, &d),
+            RpcBody::RouteMiss(r) => self.on_route_miss(now, r.hub_handle),
+            RpcBody::StoreMessageResp(r) => {
+                self.on_store_response(now, rid, r.status, r.assigned_handle, false);
             }
-            (method::ROUTE_MISS, flags::REQUEST) if rpc.request_id == 0 => {
-                match codec::decode_route_miss(rpc.payload) {
-                    Ok((h, codec::ROUTE_MISS_UNKNOWN_HANDLE)) => self.on_route_miss(now, h),
-                    _ => bump(&mut self.counters.rx_malformed),
-                }
-            }
-            (method::CLIENT_BIND | method::BIND_PROOF, flags::RESPONSE | flags::RESPONSE_ERROR) => {
+            RpcBody::Error {
+                method_id: METHOD_STORE_MESSAGE,
+                payload,
+            } => self.on_store_response(now, rid, payload.error_code, 0, true),
+            body @ (RpcBody::ClientBindResp(_)
+            | RpcBody::BindProofResp(_)
+            | RpcBody::Error {
+                method_id: METHOD_CLIENT_BIND | METHOD_BIND_PROOF,
+                ..
+            }) => {
                 let was_bound = self.bind.is_bound();
                 let out = self.bind.on_response(
                     now,
-                    rpc,
+                    rid,
+                    &body,
                     &mut BindDeps {
                         cfg: &self.cfg,
                         signer: self.signer.as_ref(),
@@ -243,9 +259,7 @@ impl HubLink {
                     BindOutcome::Bound => {}
                 }
             }
-            (method::STORE_MESSAGE, flags::RESPONSE | flags::RESPONSE_ERROR) => {
-                self.on_store_response(now, rpc);
-            }
+            // İstek satırları (tel → hub) hub'dan gelmez.
             _ => bump(&mut self.counters.hub_frames_dropped),
         }
     }
@@ -273,22 +287,20 @@ impl HubLink {
         }
     }
 
-    fn on_store_response(&mut self, now: Instant, rpc: &codec::RpcFrame<'_>) {
-        let parsed = if rpc.flags == flags::RESPONSE {
-            codec::decode_store_response(rpc.payload).map(|(s, h)| (s, h, false))
-        } else {
-            codec::decode_error(rpc.payload).map(|c| (c, 0, true))
-        };
-        let Ok((status, h, is_error)) = parsed else {
-            bump(&mut self.counters.rx_malformed);
-            return;
-        };
+    fn on_store_response(
+        &mut self,
+        now: Instant,
+        request_id: u32,
+        status: u16,
+        h: u32,
+        is_error: bool,
+    ) {
         let Some(i) = self
             .attempts
             .iter()
-            .position(|a| a.request_id == rpc.request_id)
+            .position(|a| a.request_id == request_id)
         else {
-            if self.response_store_ids.contains(&rpc.request_id) {
+            if self.response_store_ids.contains(&request_id) {
                 bump(&mut self.counters.response_store_resp);
             } else {
                 bump(&mut self.counters.late_store_resp);
@@ -296,7 +308,7 @@ impl HubLink {
             return;
         };
         match (is_error, status) {
-            (false, code::OK) if h != 0 => {
+            (false, STATUS_OK) if h != 0 => {
                 let h = HubHandle::from_raw(h);
                 match self.attempts[i].assigned {
                     None if self.held_conflicts(i, h) => {
@@ -326,13 +338,13 @@ impl HubLink {
                     }
                 }
             }
-            (false, code::UNKNOWN_HANDLE) => {
+            (false, STATUS_UNKNOWN_HANDLE) => {
                 // {UNKNOWN_HANDLE, 0}: deneme hub'da bitmiştir (KR-19).
                 let a = self.take_attempt(i);
                 bump(&mut self.counters.attempt_unknown_handle);
                 self.peer_notice(now, a.peer, HubNotice::AttemptEnded { peer: a.peer });
             }
-            (false, code::PEER_UNBOUND) | (true, code::RATE_LIMITED | code::HUB_CAPACITY) => {
+            (false, STATUS_PEER_UNBOUND) | (true, ERROR_RATE_LIMITED | ERROR_HUB_CAPACITY) => {
                 let a = &mut self.attempts[i];
                 a.next_send = a.next_send.max(now + BACKOFF_MIN);
                 bump(&mut self.counters.store_backoffs);
@@ -361,18 +373,16 @@ impl HubLink {
         }
     }
 
-    fn on_deliver(&mut self, now: Instant, d: &codec::Deliver<'_>) {
-        let Some(h) = (d.hub_handle != 0).then(|| HubHandle::from_raw(d.hub_handle)) else {
-            bump(&mut self.counters.rx_malformed);
-            return;
-        };
+    fn on_deliver(&mut self, now: Instant, d: &s4::Deliver) {
+        // `Deliver::decode` hub_handle ≠ 0 ve bilinen envelope_type'ı zaten denetledi.
+        let h = HubHandle::from_raw(d.hub_handle);
         match d.envelope_type {
-            envelope::SESSION_INIT => self.on_deliver_init(h, d.envelope_type, d.envelope),
-            envelope::SESSION_INIT_RESPONSE => {
-                let sender = PeerRef::from_dest_hash(d.sender);
-                self.on_deliver_response(now, h, sender, d.envelope_type, d.envelope);
+            ENVELOPE_SESSION_INIT => self.on_deliver_init(h, d.envelope_type, &d.envelope),
+            ENVELOPE_SESSION_INIT_RESPONSE => {
+                let sender = PeerRef::from_dest_hash(d.sender_dest_hash);
+                self.on_deliver_response(now, h, sender, d.envelope_type, &d.envelope);
             }
-            envelope::RELAY_OPEN => bump(&mut self.counters.deliver_relay_open),
+            ENVELOPE_RELAY_OPEN => bump(&mut self.counters.deliver_relay_open),
             _ => bump(&mut self.counters.hub_frames_dropped),
         }
     }
@@ -542,10 +552,10 @@ impl HubLink {
         envelope_type: u8,
         bytes: Vec<u8>,
     ) -> Result<LinkAttempt, HubError> {
-        if envelope_type != envelope::SESSION_INIT {
+        if envelope_type != ENVELOPE_SESSION_INIT {
             return Err(HubError::BadEnvelopeType);
         }
-        if bytes.len() > MAX_ENVELOPE {
+        if bytes.len() > StoreMessageReq::MAX_ENVELOPE {
             return Err(HubError::FrameTooLong);
         }
         if let Some(i) = self.attempts.iter().position(|a| a.peer == peer) {
@@ -556,8 +566,7 @@ impl HubLink {
             return Err(HubError::QueueFull);
         }
         let request_id = self.ids.next();
-        let frame = codec::encode_store(request_id, 0, envelope_type, peer.as_bytes(), &bytes)
-            .map_err(|_| HubError::FrameTooLong)?;
+        let frame = store_frame(request_id, 0, envelope_type, peer, bytes)?;
         let id = LinkAttempt(self.next_attempt);
         self.next_attempt = self.next_attempt.wrapping_add(1);
         self.attempts.push(InitAttempt {
@@ -588,19 +597,17 @@ impl HubLink {
         envelope_type: u8,
         bytes: Vec<u8>,
     ) -> Result<(), HubError> {
-        if envelope_type != envelope::SESSION_INIT_RESPONSE || h.raw() == 0 {
+        if envelope_type != ENVELOPE_SESSION_INIT_RESPONSE || h.raw() == 0 {
             return Err(HubError::BadEnvelopeType);
         }
-        if bytes.len() > MAX_ENVELOPE {
+        if bytes.len() > StoreMessageReq::MAX_ENVELOPE {
             return Err(HubError::FrameTooLong);
         }
         if !self.bind.is_bound() && self.queued_responses.len() >= MAX_QUEUED_RESPONSES {
             return Err(HubError::QueueFull);
         }
         let request_id = self.ids.next();
-        let frame =
-            codec::encode_store(request_id, h.raw(), envelope_type, peer.as_bytes(), &bytes)
-                .map_err(|_| HubError::FrameTooLong)?;
+        let frame = store_frame(request_id, h.raw(), envelope_type, peer, bytes)?;
         if let Some(r) = self
             .responder
             .iter_mut()
@@ -894,6 +901,24 @@ impl HubLink {
         }
         self.known_links.push_back((h, peer));
     }
+}
+
+/// STORE_MESSAGE isteği (S4 §2.4(c)) — `kama_contracts::s4` codec'iyle (KK-H34).
+fn store_frame(
+    request_id: u32,
+    hub_handle: u32,
+    envelope_type: u8,
+    peer: PeerRef,
+    envelope: Vec<u8>,
+) -> Result<Vec<u8>, HubError> {
+    let req = StoreMessageReq {
+        hub_handle,
+        envelope_type,
+        recipient_dest_hash: *peer.as_bytes(),
+        envelope,
+    };
+    req.validate().map_err(|_| HubError::BadEnvelopeType)?;
+    rpc_frame_checked(request_id, RpcBody::StoreMessageReq(req)).map_err(|_| HubError::FrameTooLong)
 }
 
 fn bump(c: &mut u64) {

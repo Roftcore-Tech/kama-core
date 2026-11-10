@@ -11,7 +11,42 @@
 //! ```
 
 use super::*;
-use crate::hub::codec::{code, envelope, flags, frame, method};
+use kama_contracts::s4;
+
+/// S4 sabitleri (`kama_contracts::s4`, KK-H34) — test gövdelerinin kısa adları.
+mod code {
+    pub use kama_contracts::s4::{
+        ERROR_BAD_COOKIE as BAD_COOKIE, ERROR_BAD_REQUEST as BAD_REQUEST,
+        ERROR_HUB_CAPACITY as HUB_CAPACITY, ERROR_POSSESSION_PROOF_FAIL as POSSESSION_PROOF_FAIL,
+        ERROR_RATE_LIMITED as RATE_LIMITED, STATUS_CHALLENGE as CHALLENGE, STATUS_OK as OK,
+        STATUS_PEER_UNBOUND as PEER_UNBOUND, STATUS_UNKNOWN_HANDLE as UNKNOWN_HANDLE,
+    };
+}
+mod envelope {
+    pub use kama_contracts::s4::{
+        ENVELOPE_RELAY_OPEN as RELAY_OPEN, ENVELOPE_SESSION_INIT as SESSION_INIT,
+        ENVELOPE_SESSION_INIT_RESPONSE as SESSION_INIT_RESPONSE,
+    };
+}
+mod flags {
+    pub const REQUEST: u8 = 0x00;
+    pub const RESPONSE: u8 = kama_contracts::s4::FLAG_RESPONSE;
+    pub const RESPONSE_ERROR: u8 =
+        kama_contracts::s4::FLAG_RESPONSE | kama_contracts::s4::FLAG_ERROR;
+}
+mod frame {
+    pub use kama_contracts::s4::{
+        FRAME_HEARTBEAT as HEARTBEAT, FRAME_HEARTBEAT_ACK as HEARTBEAT_ACK,
+        FRAME_PLANE1_RPC as PLANE1_RPC,
+    };
+}
+mod method {
+    pub use kama_contracts::s4::{
+        METHOD_BIND_PROOF as BIND_PROOF, METHOD_CLIENT_BIND as CLIENT_BIND,
+        METHOD_DELIVER as DELIVER, METHOD_ROUTE_MISS as ROUTE_MISS,
+        METHOD_STORE_MESSAGE as STORE_MESSAGE,
+    };
+}
 use kama_noise_wire::entropy::EntropyError;
 use std::net::{Ipv4Addr, SocketAddr};
 
@@ -747,12 +782,16 @@ fn c3_bad_inputs_are_rejected() {
         Err(HubError::BadEnvelopeType)
     );
     assert_eq!(
-        t.link
-            .send_init(t0, peer(1), 1, vec![0; codec::MAX_ENVELOPE + 1]),
+        t.link.send_init(
+            t0,
+            peer(1),
+            1,
+            vec![0; s4::StoreMessageReq::MAX_ENVELOPE + 1]
+        ),
         Err(HubError::FrameTooLong)
     );
     t.link
-        .send_init(t0, peer(1), 1, vec![0; codec::MAX_ENVELOPE])
+        .send_init(t0, peer(1), 1, vec![0; s4::StoreMessageReq::MAX_ENVELOPE])
         .unwrap();
     let f = drain(&mut t.link, t0).remove(0);
     assert_eq!(f.raw.len() + 16, 1280, "çerçeve + 16 B ≤ MAX_DATAGRAM");
