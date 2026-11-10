@@ -65,6 +65,8 @@ hub-server = { path = "../hub-server" }
 # [HB1 · KARAR-KAYDI] aynı testte cihazın BIND_PROOF imzası (`BindSigner` test gerçeklemesi). Cargo.lock'ta
 # mevcut (hub-server, kama-noise-wire, kama-provision ile aynı sürüm ve özellik); yeni paket YOK.
 ed25519-dalek = { version = "2", default-features = false, features = ["zeroize"] }
+# [S2-A2.2] S4 tüketici testi (`tests/s4_vectors.rs`): `vectors/hub/` yükleyicisi (workspace crate; KK-H12).
+kama-vectors = { path = "../kama-vectors" }
 
 # [K4G-05] INT-02 düğüm sürücüsü — tek süreçte iki `KamaNode`, tek satır JSON (netem sürücüsü
 # `scripts/netem/int02_run.sh`, analiz `scripts/netem/int02_analyze.py`). Özellik gerektirmez.
