@@ -210,6 +210,11 @@ fn s4_hub_smoke_text_round_trip() {
             "{who}: zarf süreç-içi röleden geçmedi (T11)"
         );
         let hub = probe.hub.expect("hub kipi");
+        // [S2-A5-min] C9: hub kipinde hub'dan gelen son datagramın yaşı dolu.
+        assert!(
+            node.metrics().last_heartbeat_age_s.is_some(),
+            "{who}: last_heartbeat_age_s (C9)"
+        );
         assert_eq!(hub.hub_out_unknown_handle, 0, "{who}: KK-H66");
         assert_eq!(hub.stash.lost(), 0, "{who}: hub_stash_miss");
         eprintln!("DUMAN-SAYAÇ {who}: {hub:?}");

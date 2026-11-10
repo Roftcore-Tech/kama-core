@@ -69,9 +69,10 @@ use kama_app::file_transfer::{FileEvent, FileSendError, FileTransfer, TransferId
 use kama_app::messaging::{ConnectState, Messenger, MessengerEvent, MsgId};
 use kama_app::ptt::{Ptt, PttEvent, StreamId};
 use kama_app::signaling::{Signaling, SignalingEvent, SignalingId};
-use kama_contracts::handles::{CloseReason, PeerRef};
+use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
 use kama_contracts::s1::{ConnectResult, ConnectTicket, SessionEvent};
 
+use crate::a5::{self, A5};
 use crate::error::NodeError;
 use crate::event::{
     CloseCause, FileFailReason, FileRef, FileStage, LinkState, NodeEvent, NodeMetrics,
@@ -242,6 +243,8 @@ pub(crate) struct NodeLoop {
     metrics_due: Instant,
     /// [S2-A3-2] Hub kipi tarafı (`HubEndpoint` + `HubLink`); doğrudan kipte `None`.
     hub: Option<HubSide>,
+    /// [S2-A5-min] `loss_pct` penceresi (KK-H59).
+    a5: A5,
     /// [K4G-05] YALNIZ test-util: işlenen S1 oturum olaylarının sayımı (ölçüm sondası).
     #[cfg(feature = "test-util")]
     session_events: SessionEventCounts,
@@ -278,6 +281,7 @@ impl NodeLoop {
             up: BTreeSet::new(),
             metrics_due: Instant::now(),
             hub,
+            a5: A5::default(),
             #[cfg(feature = "test-util")]
             session_events: SessionEventCounts::default(),
         }
@@ -798,12 +802,25 @@ impl NodeLoop {
                 }
             })
             .collect();
+        // [S2-A5-min] KK-H59: canlı aynadan; ayna kapalıyken (ürün varsayılanı) `None`.
+        let diags = transport.session_live_diags();
+        let ready: Vec<SessionHandle> = self
+            .peers
+            .iter()
+            .filter_map(|(_, peer)| match self.messenger.connect_state(peer) {
+                ConnectState::Ready(session) => Some(session),
+                _ => None,
+            })
+            .collect();
         NodeMetrics {
-            rtt_ms: None,
-            loss_pct: None,
+            rtt_ms: a5::rtt_ms(&diags, &ready),
+            loss_pct: self
+                .a5
+                .loss_pct(Instant::now(), &diags, &transport.retired_live_diag()),
             bitrate_kbps: None,
             epoch: connect_state.iter().filter_map(|peer| peer.epoch).min(),
-            last_heartbeat_age_s: None,
+            // C9: hub kipinde hub'dan gelen son datagramın yaşı; doğrudan kipte `None`.
+            last_heartbeat_age_s: self.hub.as_ref().and_then(HubSide::last_rx_age_s),
             ctx_mismatch_drops: ctx.ctx_mismatch_drops,
             hub_frames_dropped: ctx.hub_frames_dropped,
             delivery_channel_drops: transport.delivery_dropped(),

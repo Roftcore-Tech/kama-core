@@ -68,6 +68,7 @@
 
 #![forbid(unsafe_code)]
 
+mod a5;
 mod carrier;
 mod error;
 mod event;
