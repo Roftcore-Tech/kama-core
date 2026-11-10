@@ -49,6 +49,8 @@ pub const MAX_HELD_RESPONSES: usize = 16;
 pub const MAX_RESPONDER_RECORDS: usize = 64;
 /// Bilinen `h → eş` eşlemesi (ROUTE_MISS için; S4 `MAX_LINKS_PER_ENDPOINT` = 64).
 pub const MAX_KNOWN_LINKS: usize = 64;
+/// Biten denemelerin ve bırakılan hatların handle halkası (S4 §7 K9: geç yanıt ≠ çelişki).
+pub const MAX_RETIRED_HANDLES: usize = 64;
 /// RESPONSE STORE'larının `request_id` halkası (yanıt sınıflaması için).
 pub const MAX_RESPONSE_STORE_IDS: usize = 64;
 /// Gönderim kuyruğu.
@@ -86,6 +88,8 @@ struct ResponderRecord {
 /// StoreResp'ten önce gelen RESPONSE (K3; KK-H37).
 struct HeldResponse {
     h: HubHandle,
+    /// DELIVER'ın `sender_dest_hash`'i (bilgi; yalnız denemeye eşleme için, güvenlik kararı değil).
+    sender: PeerRef,
     envelope_type: u8,
     bytes: Vec<u8>,
     at: Instant,
@@ -107,6 +111,7 @@ pub struct HubLink {
     responder: VecDeque<ResponderRecord>,
     held: VecDeque<HeldResponse>,
     known_links: VecDeque<(HubHandle, PeerRef)>,
+    retired: VecDeque<HubHandle>,
     response_store_ids: VecDeque<u32>,
     queued_responses: VecDeque<Vec<u8>>,
     tx: VecDeque<Vec<u8>>,
@@ -165,6 +170,7 @@ impl HubLink {
             responder: VecDeque::new(),
             held: VecDeque::new(),
             known_links: VecDeque::new(),
+            retired: VecDeque::new(),
             response_store_ids: VecDeque::new(),
             queued_responses: VecDeque::new(),
             tx: VecDeque::new(),
@@ -252,7 +258,7 @@ impl HubLink {
             let mut i = 0;
             while i < self.attempts.len() {
                 if self.attempts[i].sends > 0 {
-                    let a = self.attempts.remove(i);
+                    let a = self.take_attempt(i);
                     bump(&mut self.counters.attempt_rebind_ended);
                     self.peer_notice(now, a.peer, HubNotice::AttemptEnded { peer: a.peer });
                 } else {
@@ -293,6 +299,14 @@ impl HubLink {
             (false, code::OK) if h != 0 => {
                 let h = HubHandle::from_raw(h);
                 match self.attempts[i].assigned {
+                    None if self.held_conflicts(i, h) => {
+                        // S4 C3: aynı denemede tutulan DELIVER{RESPONSE} başka h söylüyordu.
+                        let peer = self.attempts[i].peer;
+                        self.held.retain(|r| r.sender != peer);
+                        let a = self.take_attempt(i);
+                        bump(&mut self.counters.attempt_handle_conflict);
+                        self.peer_notice(now, a.peer, HubNotice::AttemptEnded { peer: a.peer });
+                    }
                     None => {
                         self.attempts[i].assigned = Some(h);
                         bump(&mut self.counters.handles_assigned);
@@ -306,7 +320,7 @@ impl HubLink {
                     }
                     Some(a) if a == h => bump(&mut self.counters.store_ok_duplicate),
                     Some(_) => {
-                        let a = self.attempts.remove(i);
+                        let a = self.take_attempt(i);
                         bump(&mut self.counters.attempt_handle_conflict);
                         self.peer_notice(now, a.peer, HubNotice::AttemptEnded { peer: a.peer });
                     }
@@ -314,7 +328,7 @@ impl HubLink {
             }
             (false, code::UNKNOWN_HANDLE) => {
                 // {UNKNOWN_HANDLE, 0}: deneme hub'da bitmiştir (KR-19).
-                let a = self.attempts.remove(i);
+                let a = self.take_attempt(i);
                 bump(&mut self.counters.attempt_unknown_handle);
                 self.peer_notice(now, a.peer, HubNotice::AttemptEnded { peer: a.peer });
             }
@@ -355,7 +369,8 @@ impl HubLink {
         match d.envelope_type {
             envelope::SESSION_INIT => self.on_deliver_init(h, d.envelope_type, d.envelope),
             envelope::SESSION_INIT_RESPONSE => {
-                self.on_deliver_response(now, h, d.envelope_type, d.envelope);
+                let sender = PeerRef::from_dest_hash(d.sender);
+                self.on_deliver_response(now, h, sender, d.envelope_type, d.envelope);
             }
             envelope::RELAY_OPEN => bump(&mut self.counters.deliver_relay_open),
             _ => bump(&mut self.counters.hub_frames_dropped),
@@ -395,7 +410,14 @@ impl HubLink {
         });
     }
 
-    fn on_deliver_response(&mut self, now: Instant, h: HubHandle, envelope_type: u8, bytes: &[u8]) {
+    fn on_deliver_response(
+        &mut self,
+        now: Instant,
+        h: HubHandle,
+        sender: PeerRef,
+        envelope_type: u8,
+        bytes: &[u8],
+    ) {
         if let Some(a) = self.attempts.iter_mut().find(|a| a.assigned == Some(h)) {
             if a.delivered_response.as_deref() == Some(bytes) {
                 bump(&mut self.counters.response_duplicate);
@@ -410,46 +432,92 @@ impl HubLink {
             });
             return;
         }
-        // K3 (KK-H37): StoreResp henüz gelmemiş, gönderilmiş ve h'si atanmamış bir deneme varsa
-        // tut; o denemenin StoreResp{OK, h}'si T3 ile yeniden gelir.
-        let awaiting = self
-            .attempts
-            .iter()
-            .any(|a| a.assigned.is_none() && a.sends > 0);
-        if !awaiting {
+        // Biten bir denemenin ya da bilinen (kurulmuş / bırakılmış) bir hattın yanıtı: geç (K9).
+        if self.is_old_handle(h) {
             bump(&mut self.counters.late_response);
             return;
         }
-        if self.held.iter().any(|r| r.h == h && r.bytes == bytes) {
-            bump(&mut self.counters.response_duplicate);
+        // Bu eşin açık denemesi (eş başına tek deneme; `send_init` eskisini sonlandırır).
+        let Some(i) = self.attempts.iter().position(|a| a.peer == sender) else {
+            bump(&mut self.counters.late_response);
+            return;
+        };
+        match self.attempts[i].assigned {
+            Some(_) => {
+                // S4 C3 çelişkili handle: StoreResp h_1 dedi, aynı denemenin RESPONSE'u h_2 diyor.
+                // "Yok say ve başarılı say" değil: deneme biter, farklı h oturuma yazılmaz.
+                let a = self.take_attempt(i);
+                bump(&mut self.counters.attempt_handle_conflict);
+                self.peer_notice(now, a.peer, HubNotice::AttemptEnded { peer: a.peer });
+            }
+            None if self.attempts[i].sends > 0 => {
+                // K3 (KK-H37): StoreResp henüz gelmedi; o denemenin StoreResp{OK, h}'si T3 ile gelir.
+                if self.held.iter().any(|r| r.h == h && r.bytes == bytes) {
+                    bump(&mut self.counters.response_duplicate);
+                    return;
+                }
+                if self.held.len() >= MAX_HELD_RESPONSES {
+                    self.held.pop_front();
+                    bump(&mut self.counters.bounded_drops);
+                }
+                self.held.push_back(HeldResponse {
+                    h,
+                    sender,
+                    envelope_type,
+                    bytes: bytes.to_vec(),
+                    at: now,
+                });
+                bump(&mut self.counters.response_held);
+            }
+            None => bump(&mut self.counters.late_response),
+        }
+    }
+
+    /// `i`'inci denemenin eşinden, `h`'den farklı ve eski olmayan bir handle ile tutulmuş yanıt var mı.
+    fn held_conflicts(&self, i: usize, h: HubHandle) -> bool {
+        let peer = self.attempts[i].peer;
+        self.held
+            .iter()
+            .any(|r| r.sender == peer && r.h != h && !self.is_old_handle(r.h))
+    }
+
+    fn is_old_handle(&self, h: HubHandle) -> bool {
+        self.retired.contains(&h) || self.known_links.iter().any(|(k, _)| *k == h)
+    }
+
+    /// Denemeyi kaldırır; atanmış handle'ı emekli halkasına yazar (K9 ayrımı).
+    fn take_attempt(&mut self, i: usize) -> InitAttempt {
+        let a = self.attempts.remove(i);
+        if let Some(h) = a.assigned {
+            self.retire(h);
+        }
+        a
+    }
+
+    fn retire(&mut self, h: HubHandle) {
+        if self.retired.contains(&h) {
             return;
         }
-        if self.held.len() >= MAX_HELD_RESPONSES {
-            self.held.pop_front();
-            bump(&mut self.counters.bounded_drops);
+        if self.retired.len() >= MAX_RETIRED_HANDLES {
+            self.retired.pop_front();
         }
-        self.held.push_back(HeldResponse {
-            h,
-            envelope_type,
-            bytes: bytes.to_vec(),
-            at: now,
-        });
-        bump(&mut self.counters.response_held);
+        self.retired.push_back(h);
     }
 
     fn on_route_miss(&mut self, now: Instant, raw: u32) {
         let h = HubHandle::from_raw(raw);
-        let peer = if let Some(i) = self.attempts.iter().position(|a| a.assigned == Some(h)) {
-            Some(self.attempts.remove(i).peer)
-        } else {
-            None
-        };
+        let peer = self
+            .attempts
+            .iter()
+            .position(|a| a.assigned == Some(h))
+            .map(|i| self.take_attempt(i).peer);
         let known = self
             .known_links
             .iter()
             .position(|(k, _)| *k == h)
             .and_then(|i| self.known_links.remove(i))
             .map(|(_, p)| p);
+        self.retire(h);
         self.responder.retain(|r| r.h != h);
         match peer.or(known) {
             Some(peer) => {
@@ -481,7 +549,7 @@ impl HubLink {
             return Err(HubError::FrameTooLong);
         }
         if let Some(i) = self.attempts.iter().position(|a| a.peer == peer) {
-            self.attempts.remove(i);
+            self.take_attempt(i);
             bump(&mut self.counters.attempt_superseded);
         }
         if self.attempts.len() >= MAX_ATTEMPTS {
@@ -576,7 +644,7 @@ impl HubLink {
             .iter()
             .position(|a| a.peer == peer && a.assigned == Some(h))
         {
-            self.attempts.remove(i);
+            self.take_attempt(i);
             bump(&mut self.counters.attempt_completed);
             self.remember_link(h, peer);
         } else if !self.known_links.iter().any(|&(k, p)| k == h && p == peer) {
@@ -694,7 +762,7 @@ impl HubLink {
         let mut i = 0;
         while i < self.attempts.len() {
             if now.saturating_duration_since(self.attempts[i].started) >= ATTEMPT_MAX_AGE {
-                let a = self.attempts.remove(i);
+                let a = self.take_attempt(i);
                 bump(&mut self.counters.attempt_expired);
                 self.peer_notice(now, a.peer, HubNotice::AttemptEnded { peer: a.peer });
             } else {
