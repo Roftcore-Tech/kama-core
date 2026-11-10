@@ -64,6 +64,9 @@ pub struct NodeProbe {
     pub events: SessionEventCounts,
     /// Bu düğümün süreç-içi röleye verdiği el sıkışma zarfları.
     pub envelopes: EnvelopeCounts,
+    /// [S2-A3-2] Hub kipinde `HubEndpoint` sayaçları (`stash.lost()` = `hub_stash_miss`,
+    /// `hub_out_unknown_handle` KK-H66); doğrudan kipte `None` (KK-H55).
+    pub hub: Option<client_core::hub::endpoint::HubEndpointCounters>,
 }
 
 /// Ucu açık bir S1 oturumu.

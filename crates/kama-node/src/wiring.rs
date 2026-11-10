@@ -22,6 +22,7 @@
 use std::fmt;
 use std::sync::Arc;
 
+use client_core::hub::shared_crypto::{HubCrypto, HubCryptoAccess, StashConfig};
 use client_core::hub::signer::{BindSigner, BIND_SIGNATURE_LEN, BIND_TBS_LEN};
 use client_core::transport::ClientTransport;
 use ed25519_dalek::{Signer, SigningKey};
@@ -36,8 +37,13 @@ use kama_store::RedbStore;
 // Eş dizini kurulamadı: `NodeError::PeerDirectory`'nin yükü (tip adı yalnız bu modülde geçer).
 pub(crate) use kama_noise_wire::peer_dir::DirectoryError;
 
-/// Ürün kriptosu.
-pub(crate) type Crypto = NoiseWireProtection;
+/// Ürün kriptosunun çekirdeği.
+pub(crate) type Inner = NoiseWireProtection;
+
+/// Ürün kriptosu: [`HubCrypto`] sarmalayıcısı (S2-A3-2, KK-H52). Doğrudan kipte
+/// `HubCrypto::Direct` saf geçiştir (aynı çağrılar aynı sırayla, ek kilit yok); hub kipinde
+/// `HubCrypto::Hub` tek-açma kanalıdır (`docs/design/HB2-ALIM-YOLU.md`).
+pub(crate) type Crypto = HubCrypto<Inner>;
 
 /// Ürün Transport'u: gerçek S1 adaptörü + ürün kriptosu + gerçek UDP veri yolu.
 pub(crate) type Transport = ClientTransport<Crypto>;
@@ -58,7 +64,7 @@ const ENVELOPE: EnvelopeKind = EnvelopeKind::Legacy;
 pub(crate) fn protection(
     config: &DeviceConfig,
     store: &Arc<RedbStore>,
-) -> Result<Crypto, DirectoryError> {
+) -> Result<Inner, DirectoryError> {
     let directory = config.peer_directory()?;
     let store: Arc<RedbStore> = Arc::clone(store);
     let counter_store: Arc<dyn CounterStore> = store;
@@ -72,14 +78,23 @@ pub(crate) fn protection(
     }))
 }
 
+/// Doğrudan kip: saf geçiş.
+pub(crate) fn direct_crypto(inner: Inner) -> Crypto {
+    HubCrypto::direct(inner)
+}
+
+/// Hub kipi: sarmalayıcı (transport'a) + erişim ucu (`HubEndpoint`'e).
+pub(crate) fn hub_crypto(inner: Inner) -> (Crypto, Box<dyn HubCryptoAccess>) {
+    let (crypto, tap) = HubCrypto::hub(inner, StashConfig::default());
+    (crypto, Box::new(tap))
+}
+
 // ── [S2-A3-2] hub kipi kurulumu (KK-H56) ─────────────────────────────────────────────────────
 
 /// PoC-BIND imzacısı (S4 §2.4(b), KR-5): **cihaz** Ed25519 anahtarı (`DeviceConfig.ed25519`;
 /// sertifikadaki cihaz anahtarı, kimlik anahtarı DEĞİL). Anahtar `zeroize`'lı `SigningKey`
 /// içindedir, `Debug` basmaz; imzacı yalnız `HubLink`'in tipli alanlardan kurduğu 112 baytlık TBS'yi
 /// görür (imza kâhini yok, D-14).
-// GEÇİCİ: hub kipi seçimi (KK-H50) H-4 main'e girince bağlar; o commit'te kalkar.
-#[allow(dead_code)]
 pub(crate) struct DeviceBindSigner {
     key: SigningKey,
 }
@@ -97,8 +112,6 @@ impl BindSigner for DeviceBindSigner {
 }
 
 /// Cihaz dosyasından imzacı; `drop(config)`'tan ÖNCE çağrılır (`lib.rs` kurulum sırası).
-// GEÇİCİ: hub kipi seçimi (KK-H50) H-4 main'e girince bağlar; o commit'te kalkar.
-#[allow(dead_code)]
 pub(crate) fn bind_signer(config: &DeviceConfig) -> Box<dyn BindSigner> {
     Box::new(DeviceBindSigner {
         key: SigningKey::from_bytes(config.ed25519.secret.expose()),
@@ -107,15 +120,11 @@ pub(crate) fn bind_signer(config: &DeviceConfig) -> Box<dyn BindSigner> {
 
 /// `device_cert_ref = SHA-256(compact_device_cert)` (`kama_noise_wire::handshake::cert_ref_of`;
 /// S4 H2).
-// GEÇİCİ: hub kipi seçimi (KK-H50) H-4 main'e girince bağlar; o commit'te kalkar.
-#[allow(dead_code)]
 pub(crate) fn device_cert_ref(config: &DeviceConfig) -> [u8; 32] {
     kama_noise_wire::handshake::cert_ref_of(config.cert.bytes())
 }
 
 /// `HubLink`'in entropisi (`request_id` başlangıcı, `client_nonce`): OS CSPRNG'i.
-// GEÇİCİ: hub kipi seçimi (KK-H50) H-4 main'e girince bağlar; o commit'te kalkar.
-#[allow(dead_code)]
 pub(crate) fn hub_entropy() -> Box<dyn EntropySource> {
     Box::new(OsEntropy::new())
 }
