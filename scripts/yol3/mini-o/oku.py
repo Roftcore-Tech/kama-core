@@ -635,9 +635,11 @@ def t1_ozet(t1):
 def report(S, onkayit_line):
     kol, taban = S["kol"], S["taban"]
     v2 = "yesil_v2" in S
+    # ONKAYIT-V2 §0 etiket satırı (sahip kararı 2026-11-10 madde 5); v1 metni aynen kalır.
+    sig = "; sığ tamponlu ağ gösterim kapsamı dışı" if v2 else ""
     L = ["# mini-Ö v2 okuması" if v2 else "# mini-Ö okuması", "",
          f"Ön kayıt: {onkayit_line} · kol {kol} · r25 tabanı {taban}. Etiket: gösterim; kapılı PoC "
-         "ölçümü Aralık; ARQ yolu, FEC Aralık'ta; N < 30 betimsel. Değerler [ölçüldü] (ham veriden, "
+         f"ölçümü Aralık; ARQ yolu, FEC Aralık'ta; N < 30 betimsel{sig}. Değerler [ölçüldü] (ham veriden, "
          "F0 analizörleri), T önerisi ve kıyaslar [türetilmiş]. ∞ = teslim edilmedi (sansür).", ""]
     L += ["## 1. Bağlayıcı dört ölçüt (Y10, 15 s basışı; ONKAYIT §3.4)", "",
           "| hücre | n | rc=0 | başarılı | ilk demet ≤ 3 s | TEXT ≤ 10 s | dosya ≤ 30 s | kesintisiz |"
