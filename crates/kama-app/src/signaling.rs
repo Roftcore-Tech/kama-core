@@ -159,7 +159,7 @@ use std::sync::Arc;
 
 use kama_contracts::handles::{PeerRef, SessionHandle};
 use kama_contracts::s1::{
-    DeliveryPolicy, KamaTransport, PreparedUnit, SessionEvent, TransportError,
+    DeliveryPolicy, KamaTransport, PreparedUnit, SessionEvent, TrafficClass, TransportError,
 };
 
 use crate::clock::MonotonicClock;
@@ -424,7 +424,12 @@ impl Signaling {
         let unit = codec::encode(&message, messenger.limits()).map_err(SignalingError::Encode)?;
         messenger
             .transport_mut()
-            .send(handle, unit.clone(), DeliveryPolicy::Reliable)
+            .send(
+                handle,
+                unit.clone(),
+                DeliveryPolicy::Reliable,
+                TrafficClass::Sig,
+            )
             .map_err(SignalingError::Transport)?;
         // Kabul edildi: kimlik ancak şimdi tüketilir; `u64` sonu kalıcı tükenmedir (sarma yok).
         let id = SignalingId(raw);
@@ -579,10 +584,12 @@ fn offer_queue<T: KamaTransport>(
             index += 1;
             continue;
         }
-        match messenger
-            .transport_mut()
-            .send(current, record.unit.clone(), DeliveryPolicy::Reliable)
-        {
+        match messenger.transport_mut().send(
+            current,
+            record.unit.clone(),
+            DeliveryPolicy::Reliable,
+            TrafficClass::Sig,
+        ) {
             Ok(()) => {
                 record.sent_on = current;
                 stats.resent_on_new_session += 1;
@@ -670,6 +677,7 @@ mod tests {
             session: SessionHandle,
             _unit: PreparedUnit,
             _policy: DeliveryPolicy,
+            _class: TrafficClass,
         ) -> Result<(), TransportError> {
             if let Some(error) = self.refuse.pop_front() {
                 return Err(error);

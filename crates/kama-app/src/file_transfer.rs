@@ -236,7 +236,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
 use kama_contracts::handles::{PeerRef, SessionHandle};
-use kama_contracts::s1::{DeliveryPolicy, KamaTransport, TransportError};
+use kama_contracts::s1::{DeliveryPolicy, KamaTransport, TrafficClass, TransportError};
 
 use crate::clock::MonotonicClock;
 use crate::codec::limits::WHOLE_FILE_HASH_BYTES;
@@ -1255,9 +1255,12 @@ impl FileTransfer {
             // `FILE_RECEIPT` gövdesi 9 B'tır ve her geçerli `AmpLimits`'e sığar (AMP §4 A2); kodlama
             // hatası yine de kalıcı ret sayılır, panik yok.
             let sent = match codec::encode(&message, messenger.limits()) {
-                Ok(unit) => messenger
-                    .transport_mut()
-                    .send(session, unit, DeliveryPolicy::Reliable),
+                Ok(unit) => messenger.transport_mut().send(
+                    session,
+                    unit,
+                    DeliveryPolicy::Reliable,
+                    TrafficClass::Ctrl,
+                ),
                 Err(_) => Err(TransportError::UnitTooLarge),
             };
             match sent {
@@ -1516,9 +1519,12 @@ fn offer<T: KamaTransport>(
     }
     let encoded = codec::encode(&transfer.message(transfer_id, step), messenger.limits());
     let sent = match encoded {
-        Ok(unit) => messenger
-            .transport_mut()
-            .send(session, unit, DeliveryPolicy::Reliable),
+        Ok(unit) => messenger.transport_mut().send(
+            session,
+            unit,
+            DeliveryPolicy::Reliable,
+            TrafficClass::Bk,
+        ),
         // Kuyruğa alınırken bu limitlere sığan kayıt burada sığmıyorsa `pump`'a başka bir motor
         // verilmiştir: kayıt birime sığmıyor (S1 K3) — Transport'un `UnitTooLarge`'ıyla aynı anlam.
         Err(_) => Err(TransportError::UnitTooLarge),
@@ -1862,6 +1868,7 @@ mod tests {
             _session: SessionHandle,
             unit: PreparedUnit,
             _policy: DeliveryPolicy,
+            _class: TrafficClass,
         ) -> Result<(), TransportError> {
             if let Some(error) = self.refuse {
                 return Err(error);

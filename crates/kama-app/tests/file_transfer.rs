@@ -63,7 +63,7 @@ use kama_app::store::{
 use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
 use kama_contracts::s1::{
     ConnectResult, ConnectTicket, Delivered, DeliveryPolicy, KamaTransport, PreparedUnit,
-    SessionEvent, TransportCapabilities, TransportError,
+    SessionEvent, TrafficClass, TransportCapabilities, TransportError,
 };
 
 /// Test parametresi (normatif değil): codec vektörlerinin ve `text_receipt.rs`'in değeri.
@@ -483,6 +483,7 @@ impl KamaTransport for End {
         session: SessionHandle,
         unit: PreparedUnit,
         _policy: DeliveryPolicy,
+        _class: TrafficClass,
     ) -> Result<(), TransportError> {
         let mut guard = self.link.borrow_mut();
         let link = &mut *guard;

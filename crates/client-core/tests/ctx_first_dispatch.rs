@@ -60,7 +60,7 @@ use client_core::wire::{
 };
 use kama_contracts::handles::{PeerRef, SessionHandle};
 use kama_contracts::s1::{
-    CompressionPolicy, ConnectResult, DeliveryPolicy, KamaTransport, PreparedUnit,
+    CompressionPolicy, ConnectResult, DeliveryPolicy, KamaTransport, PreparedUnit, TrafficClass,
 };
 use kama_contracts::s3::{
     HubHandle, Opened, PacketProtection, ProtectionClass, ProtectionContext, ProtectionLimits,
@@ -860,8 +860,13 @@ fn inv_ack_deliver_unit_of_a_not_ready_session_is_not_acked() {
     assert!(alice.active_session_for_test(id(BOB)).is_none());
 
     // RESPONSE hub'da TUTULURKEN Bob yollar.
-    bob.send(h_bob, unit(b"erken"), DeliveryPolicy::Reliable)
-        .expect("gönder");
+    bob.send(
+        h_bob,
+        unit(b"erken"),
+        DeliveryPolicy::Reliable,
+        TrafficClass::Be,
+    )
+    .expect("gönder");
     eventually("Ready olmayan oturumun DATA'sı ACK'siz düşmeli", || {
         alice.ctx_dispatch_stats().not_ready_drops >= 1
     });

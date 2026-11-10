@@ -1,0 +1,15 @@
+başlangıç 2026-11-10T03:44:18+03:00; a6 ızgarası bekleniyor
+a6 BITTI görüldü 2026-11-10T04:43:19+03:00; yuvalar bekleniyor
+yuvalar alındı (3/3) 2026-11-10T04:43:19+03:00
+ağaç: yol2/goster 1ee9ee684b4ff4d920140642106157ec7bc18901 (= 9e157992 + T1 9273e5b2 + Ö c45d81e4)
+diğer cargo/rustc süreçleri: 0/0
+4154533e9b58db521e48d127074cbe95659aabd46e8e183b081d7b7f1188bb57  <worktree-kökü>/target-goster/release/examples/f0_flows
+fa509bfa3b175593e7bfdd083b2669de9a93750f1e402d034ad11a6c31cf7cba  <worktree-kökü>/target-goster/release/bench
+44562bae041d59b6dff8d9989e3d12dd2b5d745be9f709e07846259fbd3c7667  scripts/yol3/mini-o/SIRA.txt
+8a96ca0ab660e83a09be9f17e5b3aadde48c17e2e3ad9e6a1f1cc39c2c657a8c  scripts/yol3/mini-o/ONKAYIT.md
+KK-ORK-01: FEC kapalı. Kol K1 (gösterim seti, EK-A §2); şeritler + tampon --goster on (W = 5, T = 2,0 s). Paralellik f0_grid -j 11.
+ölçüm başlangıç 2026-11-10T04:45:58+03:00
+grid rc=0 bitiş 2026-11-10T05:39:55+03:00
+oku rc=0
+3ad396ad221af94693c047d63fea26958bd48dbace82333ca146d1e6ca12e92f  <ölçüm-kökü>/yol3/mini-o/2026-11-10/okuma/okuma.json
+6684d2748084f30328a54036f552b13671efb59f79a79ba1ec1f553382be3ab8  <ölçüm-kökü>/yol3/mini-o/2026-11-10/okuma/OKUMA.md

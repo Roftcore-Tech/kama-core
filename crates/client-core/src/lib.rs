@@ -39,6 +39,9 @@
 #![forbid(unsafe_code)]
 
 pub mod batch;
+pub mod hub;
+/// [YOL3-T1] İnce şeritler: S1 `send(.., class)`'in sınıf başına sunum kanalları (gösterim).
+pub mod lanes;
 /// [L-T1] Bellek içi zarf taşıyıcısı — YALNIZ test.
 #[cfg(any(test, feature = "test-util"))]
 pub mod memory_link;

@@ -39,7 +39,7 @@ use kama_app::store::{
 use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
 use kama_contracts::s1::{
     CompressionPolicy, ConnectPhase, ConnectResult, ConnectTicket, Delivered, DeliveryPolicy,
-    KamaTransport, PreparedUnit, SessionEvent, TransportCapabilities, TransportError,
+    KamaTransport, PreparedUnit, SessionEvent, TrafficClass, TransportCapabilities, TransportError,
 };
 
 /// Test parametresi (normatif değil): codec vektörlerinin üretildiği değerle aynı.
@@ -395,6 +395,7 @@ impl KamaTransport for End {
         session: SessionHandle,
         unit: PreparedUnit,
         _policy: DeliveryPolicy,
+        _class: TrafficClass,
     ) -> Result<(), TransportError> {
         let mut guard = self.link.borrow_mut();
         let link = &mut *guard;
@@ -928,7 +929,12 @@ fn outbox_cap_is_typed_backpressure() {
     };
     messenger
         .transport_mut()
-        .send(handle, receipt_unit, DeliveryPolicy::Reliable)
+        .send(
+            handle,
+            receipt_unit,
+            DeliveryPolicy::Reliable,
+            TrafficClass::Be,
+        )
         .expect("yansıtılır");
     assert_eq!(drain(&mut messenger), vec![delivered(BOB, ids[0])]);
     let next = messenger.send_text(BOB, "yer açıldı").expect("yer var");

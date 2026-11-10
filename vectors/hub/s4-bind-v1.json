@@ -1,0 +1,253 @@
+{
+  "schema_version": 2,
+  "suite": "s4-bind-v1",
+  "spec_version": "km-seam-th-001@v1.3.1",
+  "generator": "ref/hub/gen_vectors.py 1",
+  "description": "S4 \u00a72.4(a) durumsuz cookie (fam 0x04/0x06, IPv4-e\u015flemeli normalizasyon, minute, bind_epoch 0/7) ve \u00a72.4(b) BIND_PROOF/ACK TBS + Ed25519 imzalar\u0131; sabit cihaz ve hub tohumlar\u0131. cookie_secret 32 B.",
+  "notes": {},
+  "case_count": 17,
+  "cases": [
+    {
+      "id": "s4-bind-v1.domain-sep.bind",
+      "kind": "domain-sep",
+      "note": "16 karakter: dolgu yok.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(b) domain_sep(\"KAMA-HUB-BIND-V1\")",
+      "input": {
+        "label_hex": "4b414d412d4855422d42494e442d5631"
+      },
+      "expected_hex": "4b414d412d4855422d42494e442d5631"
+    },
+    {
+      "id": "s4-bind-v1.domain-sep.ack",
+      "kind": "domain-sep",
+      "note": "15 karakter + bir 0x00.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(b) domain_sep(\"KAMA-HUB-ACK-V1\")",
+      "input": {
+        "label_hex": "4b414d412d4855422d41434b2d5631"
+      },
+      "expected_hex": "4b414d412d4855422d41434b2d563100"
+    },
+    {
+      "id": "s4-bind-v1.cookie-input.ipv4.epoch-0",
+      "kind": "cookie-input",
+      "note": "Bu cookie s4-apprpc-v1 meydan okumas\u0131ndaki hub_nonce't\u0131r.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(a) hub_nonce (fam 0x04, bind_epoch 0)",
+      "input": {
+        "bind_epoch_hex": "00000000",
+        "client_nonce_hex": "250310de4b0b721219d6cc09fcb46c9b",
+        "device_cert_ref_hex": "b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1",
+        "minute_hex": "000004d2",
+        "src_ip_hex": "c6336407",
+        "src_port_hex": "9c40"
+      },
+      "expected_hex": "04c63364079c40b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1250310de4b0b721219d6cc09fcb46c9b000004d200000000"
+    },
+    {
+      "id": "s4-bind-v1.cookie.ipv4.epoch-0",
+      "kind": "cookie",
+      "note": "Bu cookie s4-apprpc-v1 meydan okumas\u0131ndaki hub_nonce't\u0131r.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(a) hub_nonce (fam 0x04, bind_epoch 0)",
+      "input": {
+        "bind_epoch_hex": "00000000",
+        "client_nonce_hex": "250310de4b0b721219d6cc09fcb46c9b",
+        "cookie_secret_hex": "fe9f4b1223335ac383b2d64ade3760f1e002442adca67a4c35a4b9a15e95824c",
+        "device_cert_ref_hex": "b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1",
+        "minute_hex": "000004d2",
+        "src_ip_hex": "c6336407",
+        "src_port_hex": "9c40"
+      },
+      "expected_hex": "5140cadb4354f40f1da4bc7836be733c"
+    },
+    {
+      "id": "s4-bind-v1.cookie-input.ipv4.epoch-7",
+      "kind": "cookie-input",
+      "note": "Ayn\u0131 girdi, epoch 7: farkl\u0131 cookie (her kabul \u00f6nceki cookie'leri ge\u00e7ersizle\u015ftirir).",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(a) hub_nonce (fam 0x04, bind_epoch 7)",
+      "input": {
+        "bind_epoch_hex": "00000007",
+        "client_nonce_hex": "250310de4b0b721219d6cc09fcb46c9b",
+        "device_cert_ref_hex": "b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1",
+        "minute_hex": "000004d2",
+        "src_ip_hex": "c6336407",
+        "src_port_hex": "9c40"
+      },
+      "expected_hex": "04c63364079c40b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1250310de4b0b721219d6cc09fcb46c9b000004d200000007"
+    },
+    {
+      "id": "s4-bind-v1.cookie.ipv4.epoch-7",
+      "kind": "cookie",
+      "note": "Ayn\u0131 girdi, epoch 7: farkl\u0131 cookie (her kabul \u00f6nceki cookie'leri ge\u00e7ersizle\u015ftirir).",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(a) hub_nonce (fam 0x04, bind_epoch 7)",
+      "input": {
+        "bind_epoch_hex": "00000007",
+        "client_nonce_hex": "250310de4b0b721219d6cc09fcb46c9b",
+        "cookie_secret_hex": "fe9f4b1223335ac383b2d64ade3760f1e002442adca67a4c35a4b9a15e95824c",
+        "device_cert_ref_hex": "b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1",
+        "minute_hex": "000004d2",
+        "src_ip_hex": "c6336407",
+        "src_port_hex": "9c40"
+      },
+      "expected_hex": "5ab150eda54e7c9c4aa9499948286ea9"
+    },
+    {
+      "id": "s4-bind-v1.cookie-input.ipv4.prev-minute",
+      "kind": "cookie-input",
+      "note": "Bir \u00f6nceki dakika (hub do\u011frulamada \u015fimdi ve bir \u00f6nceki dakikay\u0131 dener).",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(a) minute; \u00a76 COOKIE_WINDOW",
+      "input": {
+        "bind_epoch_hex": "00000000",
+        "client_nonce_hex": "250310de4b0b721219d6cc09fcb46c9b",
+        "device_cert_ref_hex": "b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1",
+        "minute_hex": "000004d1",
+        "src_ip_hex": "c6336407",
+        "src_port_hex": "9c40"
+      },
+      "expected_hex": "04c63364079c40b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1250310de4b0b721219d6cc09fcb46c9b000004d100000000"
+    },
+    {
+      "id": "s4-bind-v1.cookie.ipv4.prev-minute",
+      "kind": "cookie",
+      "note": "Bir \u00f6nceki dakika (hub do\u011frulamada \u015fimdi ve bir \u00f6nceki dakikay\u0131 dener).",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(a) minute; \u00a76 COOKIE_WINDOW",
+      "input": {
+        "bind_epoch_hex": "00000000",
+        "client_nonce_hex": "250310de4b0b721219d6cc09fcb46c9b",
+        "cookie_secret_hex": "fe9f4b1223335ac383b2d64ade3760f1e002442adca67a4c35a4b9a15e95824c",
+        "device_cert_ref_hex": "b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1",
+        "minute_hex": "000004d1",
+        "src_ip_hex": "c6336407",
+        "src_port_hex": "9c40"
+      },
+      "expected_hex": "8125e8c89c591152bfc9477289033fd8"
+    },
+    {
+      "id": "s4-bind-v1.cookie-input.ipv6.epoch-0",
+      "kind": "cookie-input",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(a) hub_nonce (fam 0x06, 16 B src_ip)",
+      "input": {
+        "bind_epoch_hex": "00000000",
+        "client_nonce_hex": "250310de4b0b721219d6cc09fcb46c9b",
+        "device_cert_ref_hex": "b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1",
+        "minute_hex": "000004d2",
+        "src_ip_hex": "20010db8000000000000000000000007",
+        "src_port_hex": "9c40"
+      },
+      "expected_hex": "0620010db80000000000000000000000079c40b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1250310de4b0b721219d6cc09fcb46c9b000004d200000000"
+    },
+    {
+      "id": "s4-bind-v1.cookie.ipv6.epoch-0",
+      "kind": "cookie",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(a) hub_nonce (fam 0x06, 16 B src_ip)",
+      "input": {
+        "bind_epoch_hex": "00000000",
+        "client_nonce_hex": "250310de4b0b721219d6cc09fcb46c9b",
+        "cookie_secret_hex": "fe9f4b1223335ac383b2d64ade3760f1e002442adca67a4c35a4b9a15e95824c",
+        "device_cert_ref_hex": "b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1",
+        "minute_hex": "000004d2",
+        "src_ip_hex": "20010db8000000000000000000000007",
+        "src_port_hex": "9c40"
+      },
+      "expected_hex": "007b95301107f83f8da2b99946fdc754"
+    },
+    {
+      "id": "s4-bind-v1.cookie-input.ipv4-mapped.epoch-0",
+      "kind": "cookie-input",
+      "note": "::ffff:198.51.100.7 \u2014 ipv4.epoch-0 ile BAYT-\u00d6ZDE\u015e olmal\u0131.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(a) IPv4-e\u015flemeli IPv6 \u2192 IPv4 normalizasyonu",
+      "input": {
+        "bind_epoch_hex": "00000000",
+        "client_nonce_hex": "250310de4b0b721219d6cc09fcb46c9b",
+        "device_cert_ref_hex": "b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1",
+        "minute_hex": "000004d2",
+        "src_ip_hex": "00000000000000000000ffffc6336407",
+        "src_port_hex": "9c40"
+      },
+      "expected_hex": "04c63364079c40b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1250310de4b0b721219d6cc09fcb46c9b000004d200000000"
+    },
+    {
+      "id": "s4-bind-v1.cookie.ipv4-mapped.epoch-0",
+      "kind": "cookie",
+      "note": "::ffff:198.51.100.7 \u2014 ipv4.epoch-0 ile BAYT-\u00d6ZDE\u015e olmal\u0131.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(a) IPv4-e\u015flemeli IPv6 \u2192 IPv4 normalizasyonu",
+      "input": {
+        "bind_epoch_hex": "00000000",
+        "client_nonce_hex": "250310de4b0b721219d6cc09fcb46c9b",
+        "cookie_secret_hex": "fe9f4b1223335ac383b2d64ade3760f1e002442adca67a4c35a4b9a15e95824c",
+        "device_cert_ref_hex": "b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1",
+        "minute_hex": "000004d2",
+        "src_ip_hex": "00000000000000000000ffffc6336407",
+        "src_port_hex": "9c40"
+      },
+      "expected_hex": "5140cadb4354f40f1da4bc7836be733c"
+    },
+    {
+      "id": "s4-bind-v1.bind-tbs.alice",
+      "kind": "bind-tbs",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(b) client_signature TBS (112 B)",
+      "input": {
+        "client_nonce_hex": "250310de4b0b721219d6cc09fcb46c9b",
+        "device_cert_ref_hex": "b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1",
+        "hub_ed25519_pub_hex": "493a8bc66cb717a62dd303951aab5b070c299e3b3b8fcf760e19a4f78d33beb8",
+        "hub_nonce_hex": "5140cadb4354f40f1da4bc7836be733c"
+      },
+      "expected_hex": "4b414d412d4855422d42494e442d5631493a8bc66cb717a62dd303951aab5b070c299e3b3b8fcf760e19a4f78d33beb8b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1250310de4b0b721219d6cc09fcb46c9b5140cadb4354f40f1da4bc7836be733c"
+    },
+    {
+      "id": "s4-bind-v1.bind-tbs.other-hub",
+      "kind": "bind-tbs",
+      "note": "Ba\u015fka hub'\u0131n a\u00e7\u0131k anahtar\u0131: farkl\u0131 TBS (kan\u0131t ba\u015fka hub'a ta\u015f\u0131namaz).",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(b) TBS hub_ed25519_pub'a ba\u011fl\u0131",
+      "input": {
+        "client_nonce_hex": "250310de4b0b721219d6cc09fcb46c9b",
+        "device_cert_ref_hex": "b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1",
+        "hub_ed25519_pub_hex": "9a371db953f9a35e88abf87c72d833ab174e906018fa7638664299a1a697f45a",
+        "hub_nonce_hex": "5140cadb4354f40f1da4bc7836be733c"
+      },
+      "expected_hex": "4b414d412d4855422d42494e442d56319a371db953f9a35e88abf87c72d833ab174e906018fa7638664299a1a697f45ab9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1250310de4b0b721219d6cc09fcb46c9b5140cadb4354f40f1da4bc7836be733c"
+    },
+    {
+      "id": "s4-bind-v1.bind-sig.alice",
+      "kind": "bind-sig",
+      "note": "Cihaz Ed25519 = sertifikan\u0131n ilk 32 bayt\u0131 (\u00a73 H2); do\u011frulama kat\u0131 kip.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(b) client_signature (Ed25519, RFC 8032)",
+      "input": {
+        "client_nonce_hex": "250310de4b0b721219d6cc09fcb46c9b",
+        "device_cert_hex": "44f1ebd8e06885609c47c36072d1b8f24560c3b503e6766c84be0047ff98b18105121f2c394653606d7a8794a1aebbc8d5e2effc091623303d4a5764717e8b98a5b2bfccd9e6f3000d1a2734414e5b6875828f9ca9b6c3d0ddeaf704111e2b3845525f6c798693a0adbac7d4e1eefb0815222f3c495663707d8a97a4b1becbd8e5f2ff0c192633404d5a6774818e9ba8b5c2cfdce9f60310",
+        "device_cert_ref_hex": "b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1",
+        "device_ed25519_pub_hex": "44f1ebd8e06885609c47c36072d1b8f24560c3b503e6766c84be0047ff98b181",
+        "device_ed25519_seed_hex": "e7366d9fb4c09df28669d01cc25d4119e94fb4ebb47190af4a1507a9fc6f0c8d",
+        "hub_ed25519_pub_hex": "493a8bc66cb717a62dd303951aab5b070c299e3b3b8fcf760e19a4f78d33beb8",
+        "hub_nonce_hex": "5140cadb4354f40f1da4bc7836be733c"
+      },
+      "expected_hex": "6594a3d4916c506646d4635d69ab9c3a93a766fc722f401a4285bbe00b892f22c96fdb4e86c811203924b227b6f2eb9fb9cd3819ea73fcf360b2a312712ca901"
+    },
+    {
+      "id": "s4-bind-v1.ack-tbs.alice",
+      "kind": "ack-tbs",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(b) hub_signature TBS (83 B)",
+      "input": {
+        "bind_ok_hex": "01",
+        "client_nonce_hex": "250310de4b0b721219d6cc09fcb46c9b",
+        "device_cert_ref_hex": "b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1",
+        "error_code_hex": "0000",
+        "hub_nonce_hex": "5140cadb4354f40f1da4bc7836be733c"
+      },
+      "expected_hex": "4b414d412d4855422d41434b2d563100b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1250310de4b0b721219d6cc09fcb46c9b5140cadb4354f40f1da4bc7836be733c010000"
+    },
+    {
+      "id": "s4-bind-v1.ack-sig.alice",
+      "kind": "ack-sig",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(b) hub_signature (Ed25519, RFC 8032)",
+      "input": {
+        "bind_ok_hex": "01",
+        "client_nonce_hex": "250310de4b0b721219d6cc09fcb46c9b",
+        "device_cert_ref_hex": "b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1",
+        "error_code_hex": "0000",
+        "hub_ed25519_pub_hex": "493a8bc66cb717a62dd303951aab5b070c299e3b3b8fcf760e19a4f78d33beb8",
+        "hub_ed25519_seed_hex": "8542c656e2c1fdefbb10d9204f75988d454e5138f427308103bc1b04165b6313",
+        "hub_nonce_hex": "5140cadb4354f40f1da4bc7836be733c"
+      },
+      "expected_hex": "936a7a71588fc8aea007e2a4b3b07884d0c40b646061cdf8e6e7d7fdadfc54d7f7ac76e7f7a5bfefdbed01e3348ca1025caa98600a8a9010b77a058033c23205"
+    }
+  ]
+}
