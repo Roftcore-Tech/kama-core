@@ -3683,7 +3683,12 @@ mod tests {
         for arm in E1Arm::ALL {
             let f = arm.e2a().flags().expect("kol tablosu geçerli");
             assert_eq!(e2a_label(f), arm.e2a().label(), "{}", arm.name());
-            assert_eq!(e1_label(arm.set().flags()), arm.set().label(), "{}", arm.name());
+            assert_eq!(
+                e1_label(arm.set().flags()),
+                arm.set().label(),
+                "{}",
+                arm.name()
+            );
         }
         let g = E2aFlags::new(true, 5_000_000, false, false, 1, false).expect("geçerli");
         assert_eq!(e2a_label(g), "tt_rfc(g=5000000ns)");

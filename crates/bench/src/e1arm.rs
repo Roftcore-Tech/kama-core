@@ -453,7 +453,10 @@ mod tests {
                 "c+d+DrainRtprop+e-dar+a3_burst_floor+a4_probe_srtt+a6_iw_floor",
             ),
             ("K1A6mA3", "c+d+DrainRtprop+e-dar+a4_probe_srtt+a6_iw_floor"),
-            ("K1A6mA4", "c+d+DrainRtprop+e-dar+a3_burst_floor+a6_iw_floor"),
+            (
+                "K1A6mA4",
+                "c+d+DrainRtprop+e-dar+a3_burst_floor+a6_iw_floor",
+            ),
             (
                 "K1A6mA5",
                 "c+d+DrainRtprop+e-dar+a3_burst_floor+a4_probe_srtt+a6_iw_floor",
@@ -690,9 +693,18 @@ mod tests {
             assert_eq!(arm.set(), want_e1, "{}", arm.name());
             assert_eq!(arm.e2a(), want_e2a, "{}", arm.name());
             assert!(arm.e2a().flags().is_ok(), "{}", arm.name());
-            assert_ne!((arm.set(), arm.e2a()), (e1, e2a), "{}: tek fark", arm.name());
+            assert_ne!(
+                (arm.set(), arm.e2a()),
+                (e1, e2a),
+                "{}: tek fark",
+                arm.name()
+            );
         }
-        assert_eq!(E1Arm::K1A6mA5.e2a().pto_probes, 2, "A-5 düşünce PTO 2 kalır");
+        assert_eq!(
+            E1Arm::K1A6mA5.e2a().pto_probes,
+            2,
+            "A-5 düşünce PTO 2 kalır"
+        );
     }
 
     #[test]
