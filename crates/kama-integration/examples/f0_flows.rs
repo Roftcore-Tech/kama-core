@@ -75,7 +75,9 @@ use kama_app::signaling::SignalingError;
 use kama_contracts::handles::PeerRef;
 use kama_contracts::s1::TransportError;
 use kama_contracts::s3::HubHandle;
-use kama_node::goster::{GOSTER_FILE_WINDOW_UNITS, GOSTER_KOL, GOSTER_PLAYOUT_DELAY};
+use kama_node::goster::{
+    GOSTER_E1, GOSTER_E2A, GOSTER_FILE_WINDOW_UNITS, GOSTER_KOL, GOSTER_PLAYOUT_DELAY,
+};
 use kama_node::{
     FileHandle, FileRef, FileStage, KamaNode, NodeError, NodeEvent, NodeListener, NodeProbe,
     SessionProbe, StreamHandle,
@@ -171,8 +173,12 @@ return_prior_gated, K1grp = K1gr + pto_rfc + pto_probes=2, K1A = K1 + E2a'nın h
 a3_burst_floor + a4_probe_srtt. A-6 gece: K1A6 = K1A + a6_iw_floor (Q2 A-6).
 Gösterim (YOL3-T1, KK-Ö-28): --goster on → gösterim profili kama_node::goster'dan: S1 şeritleri
 (W = --lane-w, varsayılan 5) + PTT oynatma tamponu (T = --playout-ms, [1500, 2500], varsayılan 2000);
---e1-arm varsayılanı gösterim kolu (K1), --fec-off varsayılanı on. Açık bayrak geçersiz kılar.
---playout-ms ve --lane-w yalnız --goster on ile. İki uca aynı.
+--fec-off varsayılanı on. E1/E2a bayrakları TEK kaynaktan: --e1-arm verilmediyse kama_node::goster
+(gösterim seti K1A6 = K1 + A-1…A-6; başlık yol3.flag_src = goster.rs), verildiyse kolun tablosu
+(teşhis kolu; goster.rs'in bayrakları uygulanmaz; flag_src = e1-arm). --e1-edar off ikisinde de
+e1_probe_keep'i düşürür. Açık --fec-off / --lane-w / --playout-ms geçersiz kılar.
+--playout-ms ve --lane-w yalnız --goster on ile. İki uca aynı. Başlık yol3.e1_set / e2a_set
+düğüme UYGULANAN bayraklardan yazılır.
 Sahne (KK-Ö-13): --scenario goster = §8.6 zaman çizelgesi (verilmemiş bayraklara ön ayar, gösterim
 profili açık). İki laptop: --sync off (işaret dosyası yok; önce bob) + --prov-file (cihaz dosyası;
 provisioning bir kez --provision-only on). --view on: bob terminalinde olay çizgisi.
@@ -412,10 +418,6 @@ impl Default for E2aSet {
 }
 
 impl E2aSet {
-    fn any(self) -> bool {
-        self != Self::default()
-    }
-
     /// M1'in çalışma zamanı bayrak yapısı (`RuntimeConfig.e2a_flags`); doğrulama tip kurucusunda.
     fn flags(self) -> Result<E2aFlags, String> {
         E2aFlags::new(
@@ -433,7 +435,9 @@ impl E2aSet {
         .map_err(|e| format!("E2a bayrakları geçersiz: {e}"))
     }
 
-    /// Başlık etiketi: açık kurallar `+` ile (M1 alan adları); hiçbiri → `-`.
+    /// Kol tablosu etiketi: açık kurallar `+` ile (M1 alan adları); hiçbiri → `-`. Başlık
+    /// uygulanan bayraklardan [`e2a_label`] ile yazar; ikisinin aynılığı testte.
+    #[cfg(test)]
     fn label(self) -> String {
         let names: Vec<&str> = [
             (self.tt_rfc, "tt_rfc(g=1ms)"),
@@ -456,6 +460,7 @@ impl E2aSet {
 }
 
 impl E1Set {
+    #[cfg(test)]
     fn any(self) -> bool {
         self != Self::default()
     }
@@ -474,25 +479,79 @@ impl E1Set {
         }
     }
 
-    /// Başlık etiketi: açık bayraklar `+` ile (CC §4.2 adları); hiçbiri → `-`.
+    /// Kol tablosu etiketi ([`e1_label`]).
+    #[cfg(test)]
     fn label(self) -> String {
-        let names: Vec<&str> = [
-            (self.startup_cwnd, "c"),
-            (self.applimited_plateau, "d"),
-            (self.drainrt_gate, "DrainRtprop"),
-            (self.probe_keep, "e-dar"),
-            (self.retx_first, "retx_first"),
-            (self.a3_burst_floor, "a3_burst_floor"),
-            (self.a4_probe_srtt, "a4_probe_srtt"),
-            (self.a6_iw_floor, "a6_iw_floor"),
-        ]
-        .into_iter()
-        .filter_map(|(on, name)| on.then_some(name))
-        .collect();
-        if names.is_empty() {
-            "-".to_owned()
-        } else {
-            names.join("+")
+        e1_label(self.flags())
+    }
+}
+
+/// E1 etiketi: açık bayraklar `+` ile (CC §4.2 adları); hiçbiri → `-`. Başlık bunu düğüme UYGULANAN
+/// bayraklardan yazar ([`Config::flags`]).
+fn e1_label(f: E1Flags) -> String {
+    let names: Vec<&str> = [
+        (f.e1_startup_cwnd, "c"),
+        (f.e1_applimited_plateau, "d"),
+        (f.e1_drainrt_gate, "DrainRtprop"),
+        (f.e1_probe_keep, "e-dar"),
+        (f.retx_first, "retx_first"),
+        (f.a3_burst_floor, "a3_burst_floor"),
+        (f.a4_probe_srtt, "a4_probe_srtt"),
+        (f.a6_iw_floor, "a6_iw_floor"),
+    ]
+    .into_iter()
+    .filter_map(|(on, name)| on.then_some(name))
+    .collect();
+    if names.is_empty() {
+        "-".to_owned()
+    } else {
+        names.join("+")
+    }
+}
+
+/// E2a etiketi, düğüme UYGULANAN bayraklardan ([`E2aSet::label`] ile aynı biçim; `g` 1 ms değilse
+/// ns cinsinden yazılır). Hiçbiri → `-`.
+fn e2a_label(f: E2aFlags) -> String {
+    let tt = if f.tt_granularity_ns() == E2A_TT_GRANULARITY_MIN_NS {
+        "tt_rfc(g=1ms)".to_owned()
+    } else {
+        format!("tt_rfc(g={}ns)", f.tt_granularity_ns())
+    };
+    let names: Vec<String> = [
+        (f.tt_rfc(), tt),
+        (f.rtt_rule_v11(), "rtt_rule_v11".to_owned()),
+        (f.iw_idle_hold(), "iw_idle_hold".to_owned()),
+        (f.pto_probes() == 2, "pto_probes=2".to_owned()),
+        (f.gap_ack(), "gap_ack".to_owned()),
+        (f.return_prior_gated(), "return_prior_gated".to_owned()),
+        (f.pto_rfc(), "pto_rfc".to_owned()),
+    ]
+    .into_iter()
+    .filter_map(|(on, name)| on.then_some(name))
+    .collect();
+    if names.is_empty() {
+        "-".to_owned()
+    } else {
+        names.join("+")
+    }
+}
+
+/// [YOL3 · gösterim] Uygulanan E1/E2a bayraklarının kaynağı (tek kaynak; başlık `yol3.flag_src`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlagSrc {
+    /// `--e1-arm` kol tablosu ([`E1Arm::set`], [`E1Arm::e2a`]). `--goster on` ile birlikte
+    /// verildiyse de bu (teşhis kolu: gece K1s/K1A6s, A merdiveni); goster.rs'in bayrakları
+    /// uygulanmaz.
+    Arm,
+    /// `--goster on` ∧ `--e1-arm` verilmedi: `kama_node::goster::{GOSTER_E1, GOSTER_E2A}`.
+    Goster,
+}
+
+impl FlagSrc {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Arm => "e1-arm",
+            Self::Goster => "goster.rs",
         }
     }
 }
@@ -502,20 +561,18 @@ type TransportHook = Box<dyn FnOnce(&mut ClientTransportConfig) + Send>;
 
 /// Kol ve FEC seçimini düğüm yapılandırmasına çevirir. Hiçbir bayrak (E1, E2a) açık değil, FEC
 /// ürün değerinde ve `--goster off` ise `None` (F0 hücreleriyle AYNI kurucu, kanca yok). Aksi hâlde
-/// kanca `runtime.e1_flags`'i (M2 `E1Flags`) ve `runtime.e2a_flags`'i (M1 `E2aFlags`) kolun
-/// setleriyle, `lanes`'i `--goster`'e göre yazar ve `--fec-off on` ise `runtime.fec`'i kapatır;
-/// başka alana dokunmaz.
+/// kanca `runtime.e1_flags`'i (M2 `E1Flags`) ve `runtime.e2a_flags`'i (M1 `E2aFlags`)
+/// [`Config::flags`]'in tek kaynağından, `lanes`'i `--goster`'e göre yazar ve `--fec-off on` ise
+/// `runtime.fec`'i kapatır; başka alana dokunmaz.
 fn transport_hook(cfg: &Config) -> Result<Option<TransportHook>, String> {
-    let set = cfg.e1_set();
-    let e2a_set = cfg.e1_arm.e2a();
-    let e2a = e2a_set.flags()?;
+    let (e1, e2a) = cfg.flags()?;
     let fec_off = cfg.fec_off;
     let lanes = cfg.lanes_cfg();
-    if !set.any() && !e2a_set.any() && !fec_off && lanes.is_none() {
+    if e1 == E1Flags::default() && e2a == E2aFlags::default() && !fec_off && lanes.is_none() {
         return Ok(None);
     }
     Ok(Some(Box::new(move |c: &mut ClientTransportConfig| {
-        c.runtime.e1_flags = set.flags();
+        c.runtime.e1_flags = e1;
         c.runtime.e2a_flags = e2a;
         // [YOL3 · gösterim] S1 şeritleri (YOL3-T1 KK-T1-05); `None` = ürün (şeritsiz).
         c.lanes = lanes;
@@ -571,6 +628,8 @@ struct Config {
     e1_edar: bool,
     /// [YOL3 · Ö] `--fec-off on`: `runtime.fec = None` (gösterim düğümü; teşhis FEC kapalı kolu).
     fec_off: bool,
+    /// [YOL3 · gösterim] E1/E2a bayraklarının kaynağı ([`FlagSrc`]; [`Config::flags`]).
+    flag_src: FlagSrc,
     /// [YOL3 · gösterim] `--goster on`: S1 şeritleri (`ClientTransportConfig.lanes`, YOL3-T1
     /// KK-T1-05) ve PTT oynatma tamponu (`Ptt::set_playout`, KK-T1-11) açık; iki uçta aynı.
     goster: bool,
@@ -610,7 +669,27 @@ impl Config {
             .then(|| LaneConfig::with_file_window(self.lane_w))
     }
 
-    /// Kolun etkin bayrak seti (`--e1-edar off` ise `e1_probe_keep` düşmüş).
+    /// Düğüme uygulanan E1 ve E2a bayrakları — TEK kaynak: [`FlagSrc::Goster`] ise
+    /// `kama_node::goster` ([`GOSTER_E1`], [`GOSTER_E2A`]), [`FlagSrc::Arm`] ise kolun tablosu.
+    /// `--e1-edar off` iki kaynakta da `e1_probe_keep`'i düşürür.
+    fn flags(&self) -> Result<(E1Flags, E2aFlags), String> {
+        let (mut e1, e2a) = match self.flag_src {
+            FlagSrc::Goster => (
+                GOSTER_E1,
+                GOSTER_E2A
+                    .flags()
+                    .map_err(|e| format!("gösterim E2a bayrakları geçersiz: {e}"))?,
+            ),
+            FlagSrc::Arm => (self.e1_arm.set().flags(), self.e1_arm.e2a().flags()?),
+        };
+        if !self.e1_edar {
+            e1.e1_probe_keep = false;
+        }
+        Ok((e1, e2a))
+    }
+
+    /// Kolun etkin bayrak seti (`--e1-edar off` ise `e1_probe_keep` düşmüş; testler).
+    #[cfg(test)]
     fn e1_set(&self) -> E1Set {
         let mut set = self.e1_arm.set();
         if !self.e1_edar {
@@ -795,6 +874,11 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         },
         e1_edar: on_off(v, "--e1-edar", true)?,
         fec_off: on_off(v, "--fec-off", goster)?,
+        flag_src: if goster && !values.contains_key("--e1-arm") {
+            FlagSrc::Goster
+        } else {
+            FlagSrc::Arm
+        },
         goster,
         playout: None,
         lane_w: GOSTER_FILE_WINDOW_UNITS,
@@ -1729,6 +1813,12 @@ fn start_node(cfg: &Config, me: &str, tap: Tap, link: SockLink) -> Result<KamaNo
 }
 
 fn header_line(cfg: &Config, clock: &Clock) -> String {
+    // [YOL3 · gösterim] E1/E2a etiketleri düğüme UYGULANAN bayraklardan (kancayla aynı kaynak). Geçersiz
+    // set düğümü zaten başlatmaz (`transport_hook` hatası); başlıkta işaretlenir.
+    let (e1_lbl, e2a_lbl) = match cfg.flags() {
+        Ok((e1, e2a)) => (e1_label(e1), e2a_label(e2a)),
+        Err(_) => ("geçersiz".to_owned(), "geçersiz".to_owned()),
+    };
     let spurts: Vec<String> = cfg
         .ptt_at
         .iter()
@@ -1744,7 +1834,7 @@ fn header_line(cfg: &Config, clock: &Clock) -> String {
          \"karsi_bundles\":{},\"karsi_min_unacked\":{},\"karsi_text_bytes\":{},\"window_s\":{},\
          \"connect_timeout_s\":{},\"probe_ms\":{},\"live_diag\":{},\"receipt_grace_s\":{}}},\
          \"yol3\":{{\"e1_arm\":{},\"e1_edar\":{},\"e1_set\":{},\"fec_off\":{},\"e2a_set\":{},\
-         \"goster\":{},\"lanes_w\":{},\"playout_ms\":{}}}}}",
+         \"goster\":{},\"lanes_w\":{},\"playout_ms\":{},\"flag_src\":{}}}}}",
         js(SCHEMA),
         js(if cfg.role == Role::Alice { ALICE } else { BOB }),
         js(cfg.scenario.name()),
@@ -1789,14 +1879,15 @@ fn header_line(cfg: &Config, clock: &Clock) -> String {
         cfg.receipt_grace.as_secs(),
         js(cfg.e1_arm.name()),
         cfg.e1_edar,
-        js(&cfg.e1_set().label()),
+        js(&e1_lbl),
         cfg.fec_off,
-        js(&cfg.e1_arm.e2a().label()),
+        js(&e2a_lbl),
         cfg.goster,
         cfg.lanes_cfg()
             .map_or_else(|| "null".to_owned(), |l| l.file_window_units.to_string()),
         cfg.playout
-            .map_or_else(|| "null".to_owned(), |t| ms_u64(t).to_string())
+            .map_or_else(|| "null".to_owned(), |t| ms_u64(t).to_string()),
+        js(cfg.flag_src.name())
     )
 }
 
@@ -3382,7 +3473,7 @@ mod tests {
                 ",\"yol3\":{\"e1_arm\":\"K1a\",\"e1_edar\":true,\
                  \"e1_set\":\"c+d+DrainRtprop+e-dar\",\"fec_off\":true,\
                  \"e2a_set\":\"tt_rfc(g=1ms)+rtt_rule_v11+iw_idle_hold+pto_probes=2\",\
-                 \"goster\":false,\"lanes_w\":null,\"playout_ms\":null}}"
+                 \"goster\":false,\"lanes_w\":null,\"playout_ms\":null,\"flag_src\":\"e1-arm\"}}"
             ),
             "{hdr}"
         );
@@ -3493,30 +3584,82 @@ mod tests {
     }
 
     /// KK-Ö-28 (iv): `--goster on` (açık bayraksız) düğüme `kama_node::goster`'ın yazdığının AYNISINI
-    /// yazar (L ve A yolu aynı değerler): FEC yok, gösterim E1 kolu, E2a ürün değeri, şeritler W,
-    /// tampon T. Açık `--e1-arm` / `--fec-off` / `--lane-w` / `--playout-ms` geçersiz kılar.
+    /// yazar (L ve A yolu aynı değerler): FEC yok, E1 ve E2a bayrakları goster.rs'ten (tek kaynak,
+    /// `flag_src = "goster.rs"`), şeritler W, tampon T. Açık `--e1-arm` kol tablosuna geçer
+    /// (`flag_src = "e1-arm"`); `--fec-off` / `--lane-w` / `--playout-ms` geçersiz kılar.
     #[test]
     fn goster_on_writes_exactly_the_kama_node_goster_profile() {
         let addr: SocketAddr = "127.0.0.1:1".parse().expect("adres");
         let cfg = parse("--goster on").expect("ayrışmalı");
         assert_eq!(cfg.e1_arm.name(), GOSTER_KOL);
+        assert_eq!(cfg.flag_src, FlagSrc::Goster);
         assert!(cfg.fec_off);
         let mut l = ClientTransportConfig::product(addr);
         transport_hook(&cfg).expect("ok").expect("kanca")(&mut l);
         let mut a = ClientTransportConfig::product(addr);
         kama_node::goster::apply(&mut a);
         assert!(l.runtime.fec.is_none() && a.runtime.fec.is_none());
-        assert_eq!(l.runtime.e1_flags, a.runtime.e1_flags, "E1: gösterim kolu");
-        assert_eq!(l.runtime.e2a_flags, a.runtime.e2a_flags, "E2a: ürün değeri");
+        assert_eq!(l.runtime.e1_flags, a.runtime.e1_flags, "E1: goster.rs");
+        assert_eq!(l.runtime.e2a_flags, a.runtime.e2a_flags, "E2a: goster.rs");
+        assert_eq!(l.runtime.e1_flags, GOSTER_E1);
+        assert_eq!(
+            l.runtime.e2a_flags,
+            kama_node::goster::e2a_flags(),
+            "E2a: goster.rs"
+        );
+        assert_ne!(l.runtime.e2a_flags, E2aFlags::default(), "E2a açık");
         assert_eq!(l.lanes, a.lanes, "şeritler: aynı W");
         assert_eq!(
             cfg.playout_cfg().expect("ok"),
             Some(kama_node::goster::playout())
         );
+        // Ön koşu doğrulaması: başlık UYGULANAN seti, kaynağı, W ve T'yi taşır.
+        let hdr = header_line(&cfg, &Clock::new());
+        assert!(
+            hdr.ends_with(
+                ",\"yol3\":{\"e1_arm\":\"K1A6\",\"e1_edar\":true,\
+                 \"e1_set\":\"c+d+DrainRtprop+e-dar+a3_burst_floor+a4_probe_srtt+a6_iw_floor\",\
+                 \"fec_off\":true,\"e2a_set\":\"tt_rfc(g=1ms)+rtt_rule_v11+iw_idle_hold+\
+                 pto_probes=2+gap_ack+return_prior_gated+pto_rfc\",\"goster\":true,\"lanes_w\":5,\
+                 \"playout_ms\":2000,\"flag_src\":\"goster.rs\"}}"
+            ),
+            "{hdr}"
+        );
+        // Gece K1A6s hücresi (`--e1-arm K1A6 --goster on`): kol tablosundan, AYNI bayraklar.
+        let k = parse("--e1-arm K1A6 --goster on").expect("ayrışmalı");
+        assert_eq!(k.flag_src, FlagSrc::Arm);
+        let mut c = ClientTransportConfig::product(addr);
+        transport_hook(&k).expect("ok").expect("kanca")(&mut c);
+        assert_eq!(
+            (c.runtime.e1_flags, c.runtime.e2a_flags),
+            (l.runtime.e1_flags, l.runtime.e2a_flags),
+            "f0_flows K1A6 tablosu = goster.rs"
+        );
+        assert!(header_line(&k, &Clock::new()).ends_with(",\"flag_src\":\"e1-arm\"}}"));
+        // --e1-edar off gösterim kaynağında da yalnız e1_probe_keep'i düşürür.
+        let e = parse("--goster on --e1-edar off").expect("ayrışmalı");
+        let (e1, e2a) = e.flags().expect("geçerli");
+        assert_eq!(
+            e1,
+            E1Flags {
+                e1_probe_keep: false,
+                ..GOSTER_E1
+            }
+        );
+        assert_eq!(e2a, kama_node::goster::e2a_flags());
+        // Sahne: --scenario goster → gösterim kaynağı (açık --e1-arm yok).
+        assert_eq!(
+            parse_min("--scenario goster").expect("ok").flag_src,
+            FlagSrc::Goster
+        );
         // Geçersiz kılma: kol, FEC, W, T.
         let cfg = parse("--goster on --e1-arm K0 --fec-off off --lane-w 4 --playout-ms 2500")
             .expect("ayrışmalı");
-        assert_eq!(cfg.e1_arm, E1Arm::K0);
+        assert_eq!((cfg.e1_arm, cfg.flag_src), (E1Arm::K0, FlagSrc::Arm));
+        assert_eq!(
+            cfg.flags().expect("ok"),
+            (E1Flags::default(), E2aFlags::default())
+        );
         assert!(!cfg.fec_off);
         assert_eq!(cfg.lanes_cfg(), Some(LaneConfig::with_file_window(4)));
         assert_eq!(cfg.playout, Some(Duration::from_millis(2500)));
@@ -3528,9 +3671,23 @@ mod tests {
         // Gösterim kapalıyken eski varsayılanlar aynen (F0/G2/E2a hücreleri).
         let cfg = parse("").expect("ayrışmalı");
         assert_eq!(
-            (cfg.e1_arm, cfg.fec_off, cfg.goster),
-            (E1Arm::K0, false, false)
+            (cfg.e1_arm, cfg.fec_off, cfg.goster, cfg.flag_src),
+            (E1Arm::K0, false, false, FlagSrc::Arm)
         );
+    }
+
+    /// Başlığın E2a etiketi (uygulanan bayraklardan, [`e2a_label`]) her kolda kol tablosunun
+    /// etiketiyle ([`E2aSet::label`]) aynı; E1 etiketi de ([`e1_label`] = [`E1Set::label`]).
+    #[test]
+    fn applied_labels_match_the_arm_table() {
+        for arm in E1Arm::ALL {
+            let f = arm.e2a().flags().expect("kol tablosu geçerli");
+            assert_eq!(e2a_label(f), arm.e2a().label(), "{}", arm.name());
+            assert_eq!(e1_label(arm.set().flags()), arm.set().label(), "{}", arm.name());
+        }
+        let g = E2aFlags::new(true, 5_000_000, false, false, 1, false).expect("geçerli");
+        assert_eq!(e2a_label(g), "tt_rfc(g=5000000ns)");
+        assert_eq!(e2a_label(E2aFlags::default()), "-");
     }
 
     /// [A merdiveni] Kanca kolun E1 ve E2a setini AYNEN yazar; başlık açık bayrakları taşır.
@@ -3652,7 +3809,7 @@ mod tests {
             hdr.ends_with(
                 ",\"fec_off\":true,\
                  \"e2a_set\":\"tt_rfc(g=1ms)+rtt_rule_v11+iw_idle_hold+pto_probes=2\",\
-                 \"goster\":true,\"lanes_w\":5,\"playout_ms\":2000}}"
+                 \"goster\":true,\"lanes_w\":5,\"playout_ms\":2000,\"flag_src\":\"e1-arm\"}}"
             ),
             "{hdr}"
         );
@@ -3666,7 +3823,7 @@ mod tests {
             hdr.ends_with(
                 ",\"yol3\":{\"e1_arm\":\"K2mc\",\"e1_edar\":true,\
                  \"e1_set\":\"d+DrainRtprop+e-dar+retx_first\",\"fec_off\":true,\
-                 \"e2a_set\":\"-\",\"goster\":false,\"lanes_w\":null,\"playout_ms\":null}}"
+                 \"e2a_set\":\"-\",\"goster\":false,\"lanes_w\":null,\"playout_ms\":null,\"flag_src\":\"e1-arm\"}}"
             ),
             "{hdr}"
         );
