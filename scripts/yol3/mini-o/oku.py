@@ -46,7 +46,7 @@ F0 = REPO / "scripts" / "ktp2" / "f0"
 # ONKAYIT.md sha256 (ön kayıt donunca yazılır; okuma bu dosyaya bağlıdır).
 ONKAYIT_SHA256 = "8a96ca0ab660e83a09be9f17e5b3aadde48c17e2e3ad9e6a1f1cc39c2c657a8c"
 # ONKAYIT-V2.md sha256 (v2 ve ablasyon okuması buna bağlıdır; ön kayıt donunca yazılır).
-ONKAYIT_V2_SHA256 = "@ONKAYIT_V2_SHA256@"
+ONKAYIT_V2_SHA256 = "136f4bc457a04d5708a59cd0fdd971c9b23a26c313f9f1fd924f7b480ba3ca53"
 
 Y10 = "a_r12k_d150_l20_foto150k"
 L30 = "a_r12k_d300_l30_dosyali"
