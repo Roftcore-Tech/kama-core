@@ -1,6 +1,6 @@
 # Q1 — quinn kayıp/ACK farkı: A-1, A-2, A-5 kodu (2026-11-09)
 
-Dal `yol3/q1-quinn-ack` · taban `yol3/m1-e2a-goster` 46c0d30d · worktree `/home/ryuzaki/kama-wt/yol3-q1` · SHA **507417b7** (`b033b279` adaptive-transport + `507417b7` client-core), origin'e itildi.
+Dal `yol3/q1-quinn-ack` · taban `yol3/m1-e2a-goster` 46c0d30d · worktree `<worktree-kökü>/yol3-q1` · SHA **507417b7** (`b033b279` adaptive-transport + `507417b7` client-core), origin'e itildi.
 Kapsam: `QUINN-FARKI-KOD-KARSILASTIRMA-2026-11-09.md` (sha256 85c4d27e…) §3-A maddeleri **A-1, A-2, A-5**.
 Eşleme tablosu o belgede (§1); burada yalnız bu üç maddenin kodu. A-3/A-4 (kova tavanı, ProbeUp) başka şeritte:
 `sender.rs`'in o bölgelerine dokunulmadı. quinn kaynağı: `quinn-proto 0.11.18` (MIT/Apache-2.0; kopyalanan her

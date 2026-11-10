@@ -7,5 +7,5 @@ KK-ORK-01: FEC kapalı. Şeritler açık (--goster on, W=5, T=2,0 s varsayılan)
 ölçüm başlangıç 2026-11-09T23:42:46+03:00
 grid rc=0 bitiş 2026-11-10T00:05:58+03:00
 oku rc=0
-8484218b8f3a2f595031c72ff0fa2ba19ee4600299b1ed4ee107ef6e9d77201a  /home/ryuzaki/kama-k4g-work/yol3/tesis/2026-11-09-a/okuma/okuma.json
-fea3dd080ed14b49b5ed9f3d2f3819e3624b64d77cd0bb697dde408c1a4f26d3  /home/ryuzaki/kama-k4g-work/yol3/tesis/2026-11-09-a/okuma/OKUMA.md
+8484218b8f3a2f595031c72ff0fa2ba19ee4600299b1ed4ee107ef6e9d77201a  <ölçüm-kökü>/yol3/tesis/2026-11-09-a/okuma/okuma.json
+fea3dd080ed14b49b5ed9f3d2f3819e3624b64d77cd0bb697dde408c1a4f26d3  <ölçüm-kökü>/yol3/tesis/2026-11-09-a/okuma/OKUMA.md
