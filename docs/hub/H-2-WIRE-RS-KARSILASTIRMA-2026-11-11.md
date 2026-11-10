@@ -2,7 +2,7 @@
 
 | Alan | Değer |
 |---|---|
-| İş | S2-H2 (ISEMRI-S2A-v3-HA, HA-M3); v4 III.3 "H-2 wire.rs ↔ vektör uyuşmazlık listesi Yaaz'a (S4 kazanır)" |
+| İş | S2-H2 (ISEMRI-S2A-v3-HA, HA-M3); v4 III.3 "H-2 wire.rs ↔ vektör uyuşmazlık listesi hub-server sahibine (S4 kazanır)" |
 | Sınanan | `crates/hub-server` @ ``a858f3fc` (`wire.rs` son değişiklik `6bec6e1f`, #138; main `65cc7dba`'da aynı)` (`src/wire.rs`, ayrıca açık yardımcılar `bind::cookie`, `bind::HubIdentity::sign_ack`, `relay::valid_combination`, `relay::envelope_digest`, `table::handle_candidate`, `config::parse` ve alım yolu kuralları `lib.rs` `on_datagram`/`on_rpc`, `bind.rs` `on_heartbeat`, `relay.rs` `on_store`) |
 | Otorite | `docs/seams/KM-SEAM-TH-001.md` (S4 v1.3.1) §2; vektörler `vectors/hub/` @ `s2a/v3-ha-h1` @ `ad3233c6` (`ref/hub/gen_vectors.py`, PR #155) |
 | Yöntem | Salt-okur. `crates/hub-server/**`'a yazılmadı (KK-H14). |
@@ -171,10 +171,10 @@ Hiçbir **bayt düzeni** farkı yok: `wire.rs`'in ürettiği her datagram, yük,
 
 ## (e) İlke ve geçiş
 
-**S4 kazanır.** Düzeltme Yaaz'ın PR'ında yapılır, `crates/hub-server/**`'a bu işte yazılmadı. Önerilen geçiş: `kama_contracts::s4` main'e girdikten sonra (S2-A2.2, #156) `wire.rs` içeriği `pub use kama_contracts::s4::*` (+ hub'a özgü yardımcılar: `classify`, `control_datagram`, `cookie_input`'un sırlı biçimi) olur. U-1…U-4 bu geçişte kendiliğinden kapanır, çünkü `s4.rs` çözücüleri dört kuralı da uyguluyor ve her biri için negatif vektör var. Geçişte adlar değişir (`StoreRequest` → `StoreMessageReq`, `RpcFrame<'a>` → `AppRpcFrame` + `RpcMessage`, `WireError` → `S4Error`); bayt düzeni değişmez (bu belgedeki 93 eşit vaka).
+**S4 kazanır.** Düzeltme hub-server sahibinin PR'ında yapılır, `crates/hub-server/**`'a bu işte yazılmadı. Önerilen geçiş: `kama_contracts::s4` main'e girdikten sonra (S2-A2.2, #156) `wire.rs` içeriği `pub use kama_contracts::s4::*` (+ hub'a özgü yardımcılar: `classify`, `control_datagram`, `cookie_input`'un sırlı biçimi) olur. U-1…U-4 bu geçişte kendiliğinden kapanır, çünkü `s4.rs` çözücüleri dört kuralı da uyguluyor ve her biri için negatif vektör var. Geçişte adlar değişir (`StoreRequest` → `StoreMessageReq`, `RpcFrame<'a>` → `AppRpcFrame` + `RpcMessage`, `WireError` → `S4Error`); bayt düzeni değişmez (bu belgedeki 93 eşit vaka).
 
 ## (f) D-28 tarih isteği
 
-**Yaaz'a soru:** `wire.rs` düzeltme tarihi? (U-1…U-4, ya da doğrudan `pub use kama_contracts::s4::*` geçişi.) Duman için acil değil: dört uyuşmazlığın hiçbiri hub davranışını etkilemiyor (`H-2 U-n DUMANI ETKİLER` satırı yok).
+**hub-server sahibine soru:** `wire.rs` düzeltme tarihi? (U-1…U-4, ya da doğrudan `pub use kama_contracts::s4::*` geçişi.) Duman için acil değil: dört uyuşmazlığın hiçbiri hub davranışını etkilemiyor (`H-2 U-n DUMANI ETKİLER` satırı yok).
 
 Rapor satırı: `H-2 LİSTESİ: 4 uyuşmazlık · PR #<n>`.
