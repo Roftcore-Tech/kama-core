@@ -126,7 +126,7 @@ Varsayılanlar `lanes = None`, `playout = None` (ürün yolu değişmez; davran�
 T-P5). Gösterim düğümüne geçiş yalnız Ö'nün test-util kancası / kama-node `goster` özelliği;
 T1 kama-node'a ve kama-mobile'a dokunmaz. Testler: T-L1…T-L5, T-L9, T-L10 birim
 (`client-core/src/lanes.rs`), T-L6, T-L8, T-L10 adaptör (`client-core/tests/lanes_e2e.rs`),
-T-L7 (yenileme) G2; T-P1…T-P12 (`kama-app/tests/ptt.rs`, sahte saat; T-P9 erken verilmez
+T-L7 (yenileme, `client-core/tests/lanes_renewal.rs`, 2026-11-10); T-P1…T-P12 (`kama-app/tests/ptt.rs`, sahte saat; T-P9 erken verilmez
 taraması, T-P10…T-P12 oturum değişimi ve yaşam döngüsü, 2026-11-10); S1 v2 için seam mock/real
 + drift kapısı. Gözlem: `ClientTransport::lane_stats`/`lane_backlog`, `Ptt::playout_stats`.
 
