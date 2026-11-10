@@ -59,6 +59,12 @@ adaptive-transport = { path = "../adaptive-transport" }
 kama-node = { path = "../kama-node", features = ["test-util"] }
 kama-provision = { path = "../kama-provision" }
 kama-app = { path = "../kama-app" }
+# [HB1 · KK-H45] S4 hub istemcisi ↔ gerçek hub çekirdeği (`tests/s4_hub_client.rs`). Workspace crate'i;
+# yalnız test derlemesi. PR CI'da koşmaz (`--exclude kama-integration`).
+hub-server = { path = "../hub-server" }
+# [HB1 · KARAR-KAYDI] aynı testte cihazın BIND_PROOF imzası (`BindSigner` test gerçeklemesi). Cargo.lock'ta
+# mevcut (hub-server, kama-noise-wire, kama-provision ile aynı sürüm ve özellik); yeni paket YOK.
+ed25519-dalek = { version = "2", default-features = false, features = ["zeroize"] }
 
 # [K4G-05] INT-02 düğüm sürücüsü — tek süreçte iki `KamaNode`, tek satır JSON (netem sürücüsü
 # `scripts/netem/int02_run.sh`, analiz `scripts/netem/int02_analyze.py`). Özellik gerektirmez.

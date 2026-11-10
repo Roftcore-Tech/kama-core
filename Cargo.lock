@@ -833,6 +833,8 @@ version = "0.1.0"
 dependencies = [
  "adaptive-transport",
  "client-core",
+ "ed25519-dalek",
+ "hub-server",
  "kama-app",
  "kama-contracts",
  "kama-engine",
