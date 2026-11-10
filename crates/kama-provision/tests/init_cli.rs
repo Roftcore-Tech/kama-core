@@ -19,7 +19,9 @@ use kama_noise_wire::ed25519_strict::verify_strict;
 use kama_noise_wire::handshake::cert_ref_of;
 use kama_provision::cert;
 use kama_provision::encoding::{base64_encode, hex_encode};
-use kama_provision::format::{load_device_config, DeviceConfig, RootFile};
+use kama_provision::format::{
+    load_device_config, DeviceConfig, FormatError, HubFile, RootFile, FORMAT_VERSION,
+};
 use kama_vectors::Expected;
 use sha2::{Digest, Sha256};
 
@@ -182,6 +184,7 @@ fn init_writes_three_mutually_listed_devices_with_root_signed_certs() {
         "device-alice.json",
         "device-bob.json",
         "device-carol.json",
+        "hub.json",
         "root.json",
     ]
     .into_iter()
@@ -270,7 +273,7 @@ fn init_writes_three_mutually_listed_devices_with_root_signed_certs() {
         // `hub` ve `direct_addrs`.
         let hub = config.hub.as_ref().expect("--hub verildi");
         assert_eq!(hub.addr, "192.0.2.10:7000");
-        assert!(hub.x25519_pub.is_none(), "v0'da hub anahtarı yazılmaz");
+        assert!(hub.x25519_pub.is_none(), "ham hub x25519 anahtarı yazılmaz");
         let addrs: BTreeMap<&str, String> = config
             .direct_addrs
             .iter()
@@ -337,6 +340,199 @@ fn init_writes_three_mutually_listed_devices_with_root_signed_certs() {
     );
 }
 
+fn read_hub_file(out: &Path) -> (HubFile, Vec<u8>) {
+    let raw = fs::read(out.join("hub.json")).expect("hub.json okunamadı");
+    let hub: HubFile = serde_json::from_slice(&raw).expect("hub.json biçimi (bilinmeyen alan yok)");
+    hub.validate().expect("hub.json öz-denetimi");
+    (hub, raw)
+}
+
+/// A2.5 / v1 §3.3–§3.4: `--hub` + `--probe` → `hub.json` (hub TDD §6 şeması), her cihazda
+/// `hub.ed25519_pub`, `probe` eşsiz; gizli anahtarların yeri bayt aramasıyla.
+#[test]
+fn init_with_hub_and_probe_writes_hub_json_and_probe_device() {
+    let tmp = TempDir::new("hub-probe");
+    let out = tmp.path().join("prov");
+    let result = run_init(
+        &out,
+        &[
+            "--devices",
+            "alice,bob",
+            "--probe",
+            "--hub",
+            "127.0.0.1:47000",
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(result.status.success(), "init başarısız: {stderr}");
+
+    let listed: BTreeSet<String> = fs::read_dir(&out)
+        .expect("çıktı dizini")
+        .map(|entry| entry.expect("dizin girdisi").file_name())
+        .map(|file| file.to_string_lossy().into_owned())
+        .collect();
+    let expected: BTreeSet<String> = [
+        ".gitignore",
+        "device-alice.json",
+        "device-bob.json",
+        "device-probe.json",
+        "hub.json",
+        "root.json",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    assert_eq!(listed, expected);
+    // `.gitignore` = `*`: hub.json da kapsamda (KK-H21).
+    assert_eq!(
+        fs::read_to_string(out.join(".gitignore")).expect(".gitignore"),
+        "*\n"
+    );
+    assert_private_permissions(&out, &expected);
+
+    let names = ["alice", "bob", "probe"];
+    let provisioned = read_output(&out, &names);
+    let (hub, hub_raw) = read_hub_file(&out);
+    assert_eq!(hub.format_version, 1);
+    assert_eq!(hub.format_version, FORMAT_VERSION);
+    assert_eq!(hub.listen, "0.0.0.0:47000", "KK-H16");
+    let hub_pub = hub.hub_ed25519.public;
+    let hub_secret = *hub.hub_ed25519.secret.expose();
+    let hub_names: Vec<&str> = hub.devices.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(hub_names, names, "hub.json devices: cihazlar + probe");
+    for device in &hub.devices {
+        let (config, _) = &provisioned.devices[device.name.as_str()];
+        assert_eq!(device.dest_hash, config.dest_hash, "{}", device.name);
+        assert_eq!(device.cert, config.cert, "{}", device.name);
+    }
+
+    for (name, (config, _)) in &provisioned.devices {
+        assert_eq!(config.format_version, 1, "{name}");
+        let h = config.hub.as_ref().expect("hub alanı");
+        assert_eq!(h.addr, "127.0.0.1:47000", "{name}: hub.addr");
+        assert_eq!(
+            h.ed25519_pub, hub_pub,
+            "{name}: hub.ed25519_pub = hub.json pub"
+        );
+        assert!(h.x25519_pub.is_none(), "{name}: x25519_pub null");
+        let peer_names: BTreeSet<&str> = config.peers.iter().map(|p| p.name.as_str()).collect();
+        if name == "probe" {
+            assert!(config.peers.is_empty(), "probe'un eşi yok");
+            assert!(config.direct_addrs.is_empty());
+        } else {
+            assert!(
+                !peer_names.contains("probe"),
+                "{name}: probe eş listesine girmez"
+            );
+            assert_eq!(config.peers.len(), 1, "{name}");
+        }
+    }
+
+    // Bayt aramaları. Yöntem boş geçmiyor: her gizli kendi dosyasında bulunur.
+    let root_needles = secret_encodings(provisioned.root.ed25519.secret.expose());
+    let hub_needles = secret_encodings(&hub_secret);
+    let mut device_needles = Vec::new();
+    for (config, _) in provisioned.devices.values() {
+        device_needles.extend(secret_encodings(config.x25519_static.secret.expose()));
+        device_needles.extend(secret_encodings(config.ed25519.secret.expose()));
+        device_needles.extend(secret_encodings(config.identity_ed25519.secret.expose()));
+    }
+    assert!(
+        contains_any(&hub_raw, &hub_needles),
+        "arama hub.json'da hub gizlisini bulmalı"
+    );
+    assert!(contains_any(&provisioned.root_raw, &root_needles));
+    assert!(
+        !contains_any(&hub_raw, &device_needles),
+        "hub.json cihaz gizli anahtarı içeriyor"
+    );
+    assert!(
+        !contains_any(&hub_raw, &root_needles),
+        "hub.json kök gizlisini içeriyor"
+    );
+    assert!(
+        !contains_any(&provisioned.root_raw, &hub_needles),
+        "root.json hub gizlisini içeriyor"
+    );
+    for (name, (_, raw)) in &provisioned.devices {
+        assert!(
+            !contains_any(raw, &root_needles),
+            "device-{name}.json kök gizlisi"
+        );
+        assert!(
+            !contains_any(raw, &hub_needles),
+            "device-{name}.json hub gizlisi"
+        );
+    }
+    for stream in [&result.stdout, &result.stderr] {
+        assert!(!contains_any(stream, &hub_needles), "çıktıda hub gizlisi");
+        assert!(!contains_any(stream, &root_needles), "çıktıda kök gizlisi");
+        assert!(
+            !contains_any(stream, &device_needles),
+            "çıktıda cihaz gizlisi"
+        );
+    }
+    assert!(
+        load_device_config(&out.join("hub.json")).is_err(),
+        "hub.json cihaz dosyası değil"
+    );
+}
+
+/// v1 yükleyici: v0 dosyası reddedilir (KK-H18); boş `peers` yalnız `probe`'da (KK-H19); `hub` varsa
+/// `ed25519_pub` zorunlu (KK-H20).
+#[test]
+fn loader_rejects_v0_empty_peers_and_hub_without_ed25519_pub() {
+    let tmp = TempDir::new("loader");
+    let out = tmp.path().join("prov");
+    let result = run_init(
+        &out,
+        &[
+            "--devices",
+            "alice,bob",
+            "--probe",
+            "--hub",
+            "127.0.0.1:47000",
+        ],
+    );
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let edit = |name: &str, label: &str, f: &dyn Fn(&mut serde_json::Value)| {
+        let raw = fs::read(out.join(format!("device-{name}.json"))).expect("okunur");
+        let mut value: serde_json::Value = serde_json::from_slice(&raw).expect("json");
+        f(&mut value);
+        let path = tmp.path().join(format!("{label}.json"));
+        fs::write(&path, serde_json::to_vec(&value).expect("json")).expect("yazılır");
+        load_device_config(&path)
+    };
+    let v0 = edit("alice", "v0", &|v| v["format_version"] = 0.into());
+    assert!(
+        matches!(v0, Err(FormatError::UnsupportedVersion(0))),
+        "{v0:?}"
+    );
+    let empty = edit("alice", "empty", &|v| v["peers"] = serde_json::json!([]));
+    assert!(matches!(empty, Err(FormatError::Invalid(_))), "{empty:?}");
+    let probe_hubless = edit("probe", "probe-hubless", &|v| {
+        v["hub"] = serde_json::Value::Null
+    });
+    assert!(
+        matches!(probe_hubless, Err(FormatError::Invalid(_))),
+        "{probe_hubless:?}"
+    );
+    let no_pub = edit("bob", "no-pub", &|v| {
+        v["hub"].as_object_mut().expect("hub").remove("ed25519_pub");
+    });
+    assert!(
+        matches!(no_pub, Err(FormatError::Json { .. })),
+        "{no_pub:?}"
+    );
+    // Değişmemiş dosyalar yüklenir (yöntem boş geçmiyor).
+    assert!(edit("probe", "probe-ok", &|_| {}).is_ok());
+    assert!(edit("alice", "alice-ok", &|_| {}).is_ok());
+}
+
 #[test]
 fn every_run_generates_fresh_keys_and_optional_fields_stay_empty() {
     let tmp = TempDir::new("fresh");
@@ -373,6 +569,10 @@ fn every_run_generates_fresh_keys_and_optional_fields_stay_empty() {
         );
         assert_ne!(x.ed25519.public, a.root.ed25519.public, "cihaz ≠ kök");
         assert!(x.hub.is_none(), "--hub yokken hub null");
+        assert!(
+            !first.join("hub.json").exists(),
+            "--hub yokken hub.json yok"
+        );
         assert!(x.direct_addrs.is_empty(), "--direct yokken boş");
     }
 }
@@ -393,7 +593,7 @@ fn non_empty_output_directory_is_refused_and_left_untouched() {
 fn usage_errors_exit_2_and_create_nothing() {
     let tmp = TempDir::new("usage");
     let out = tmp.path().join("out");
-    let cases: [&[&str]; 7] = [
+    let cases: [&[&str]; 9] = [
         &["--devices", "alice"],
         &["--devices", "alice,alice"],
         &["--devices", "Alice,bob"],
@@ -401,6 +601,14 @@ fn usage_errors_exit_2_and_create_nothing() {
         &["--devices", "alice,bob", "--direct", "alice=localhost:1"],
         &["--devices", "alice,bob", "--hub", "hub-without-port"],
         &["--devices", "alice,bob", "--bogus", "x"],
+        &["--devices", "alice,bob", "--probe"],
+        &[
+            "--devices",
+            "alice,probe",
+            "--probe",
+            "--hub",
+            "127.0.0.1:47000",
+        ],
     ];
     for args in cases {
         let result = run_init(&out, args);
