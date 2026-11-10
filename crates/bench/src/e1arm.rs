@@ -107,6 +107,7 @@ impl E1Set {
             retx_first: self.retx_first,
             a3_burst_floor: false,
             a4_probe_srtt: false,
+            a6_iw_floor: false,
         }
     }
 
@@ -244,6 +245,7 @@ mod tests {
                 retx_first: true,
                 a3_burst_floor: false,
                 a4_probe_srtt: false,
+                a6_iw_floor: false,
             }
         );
         assert_eq!(
@@ -256,6 +258,7 @@ mod tests {
                 retx_first: false,
                 a3_burst_floor: false,
                 a4_probe_srtt: false,
+                a6_iw_floor: false,
             }
         );
     }

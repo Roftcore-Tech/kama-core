@@ -757,6 +757,64 @@ pub struct ActivationDiag {
     pub inflight_bytes: u64,
 }
 
+/// [Q2 A-6] Taban neden kalktı ([`A6FloorDiag::release`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum A6Release {
+    /// Bant tahmini uygulamayla-sınırlı-olmayan ilk tam turu gördü: kapı KALICI kapandı.
+    FullRound,
+    /// Startup rampası bitti (plato → Drain/Steady); kapı açık kalırsa yeni rampada yeniden kurulur.
+    StartupExit,
+}
+
+/// [Q2 A-6] SALT GÖZLEM — Startup bw-terimi tabanının deney kaydı ([`Sender::diag_a6`]). Hiçbir karar
+/// bu yapıyı OKUMAZ. Anlar motorun saat tabanındadır (`on_event`'e verilen ns). Bayrak kapalıyken
+/// `enabled == false` ve geri kalan alanlar `Default`'tur (motor yazmaz).
+///
+/// Tur: işaret = o anki `next_seq`; işaretten sonra gönderilen bir seq'in ACK'i turu kapatır (TUR-6
+/// delivered-anchor deseni). Tur "tam ve uygulamayla-sınırlı-olmayan" ⇔ işaret bir önceki tur
+/// kapanışında kurulmuş, turda en az bir bw örneği var ve turdaki her örnek gönderim anında
+/// uygulamayla-sınırlı DEĞİL ∧ gain ≥ 1 fazında (PreConverge tabanı / Drain / DrainRtprop DEĞİL).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct A6FloorDiag {
+    /// `E1Flags::a6_iw_floor` açık mı (okuma anında).
+    pub enabled: bool,
+    /// Tabanın İLK kurulduğu an: rampa (`base_is_startup`) ∧ kapı açık ∧ srtt var. `None` = hiç.
+    pub armed_ns: Option<u64>,
+    /// Kurulma sayısı (her yeni Startup rampası, kapı açıkken bir kez).
+    pub arms: u32,
+    /// İLK kurulma anında tur izleyicisi en az bir tam turu (nitelikli olmayan) kapatmış mıydı.
+    pub round_done_at_arm: bool,
+    /// Tabanın SON kalktığı an ve nedeni. `None` = kalkmadı (kurulu ya da hiç kurulmadı).
+    pub released_ns: Option<u64>,
+    pub release: Option<A6Release>,
+    /// Tabanın gönderim hızını bayraksız değerin üstüne çıkardığı karar sayısı ve son böyle karar anı.
+    pub raise_decisions: u64,
+    pub last_raise_ns: Option<u64>,
+    /// İlk uygulamayla-sınırlı-olmayan tam turun kapandığı an (kapı kapanışı). `None` = görülmedi.
+    pub full_round_ns: Option<u64>,
+    /// Kapı kapanana dek kapanan nitelikli-olmayan tam tur sayısı.
+    pub rounds: u32,
+    /// Son kurulu kararda bw terimi `max(gain·BtlBw, A6_IW_BYTES/srtt, rampa tepe değeri)` (B/s;
+    /// `cwnd/srtt` tavanından ÖNCE).
+    pub bw_term_bps: u64,
+}
+
+/// [Q2 A-6] Motor içi durum: tur izleyicisi + rampa tepe değeri + deney kaydı. Yalnız
+/// `e1.a6_iw_floor` açıkken yazılır.
+#[derive(Debug, Clone, Copy, Default)]
+struct A6State {
+    /// Açık turun işareti; `None` = izleyici başlamadı (ilk ACK'te kurulur, o kısmi tur sayılmaz).
+    round_marker: Option<u64>,
+    /// Açık turda bw örneği var mı / nitelik bozan örnek (uygulamayla-sınırlı ∨ gain < 1) var mı.
+    round_sampled: bool,
+    round_disq: bool,
+    /// Taban şu an kurulu mu (rampa ∧ kapı açık ∧ srtt var).
+    armed: bool,
+    /// Kurulu rampa boyunca bw teriminin tepe değeri ("Startup'ta bw terimi düşmez").
+    bw_hwm: u64,
+    diag: A6FloorDiag,
+}
+
 /// [K4G-05 / INT-02 TEŞHİS] SALT GÖZLEM — kurtarma kuyrukları ve zamanlayıcıları
 /// ([`Sender::diag_recovery_timers`]). Hiçbir karar bu yapıyı okumaz; üretmek motor durumunu
 /// değiştirmez ve motor olayı sürmez. Anlar motorun saat tabanındadır (`on_event`'e verilen ns).
@@ -1880,6 +1938,9 @@ pub struct Sender {
     /// (`pacer.tokens() == pacer.burst_cap()`) görüldü mü. Tur işaretinde (`startup_plateau`) ve
     /// Startup (yeniden) girişinde sıfırlanır. Yalnız `e1.e1_applimited_plateau` açıkken kurulur.
     e1_round_app_limited: bool,
+    /// [Q2 A-6] Startup bw-terimi tabanı: tur izleyicisi, rampa tepe değeri, deney kaydı. Yalnız
+    /// `e1.a6_iw_floor` açıkken yazılır (kapalıyken hiçbir yol okumaz).
+    a6: A6State,
 }
 
 impl Sender {
@@ -2118,6 +2179,7 @@ impl Sender {
             last_recovery: RecoveryAction::Arq,
             e1: crate::rate::E1Flags::default(),
             e1_round_app_limited: false,
+            a6: A6State::default(),
         }
     }
 
@@ -2172,9 +2234,22 @@ impl Sender {
     /// Hata döndürmez: 32 birleşimin hepsi geçerlidir (KK-M2-01). (d) kapatılırsa tur mandalı da
     /// temizlenir (bayat mandal yeniden açılışta bir turu yanlış işaretlemesin).
     pub fn set_e1_flags(&mut self, flags: crate::rate::E1Flags) {
+        // [Q2 A-6] Bayrak değişirse izleyici ve kayıt sıfırdan başlar (bayat tur işareti taşınmaz).
+        if flags.a6_iw_floor != self.e1.a6_iw_floor {
+            self.a6 = A6State::default();
+        }
         self.e1 = flags;
         if !flags.e1_applimited_plateau {
             self.e1_round_app_limited = false;
+        }
+    }
+
+    /// [Q2 A-6] Startup bw-terimi tabanının deney kaydı (SALT OKUMA; bkz. [`A6FloorDiag`]).
+    #[must_use]
+    pub fn diag_a6(&self) -> A6FloorDiag {
+        A6FloorDiag {
+            enabled: self.e1.a6_iw_floor,
+            ..self.a6.diag
         }
     }
 
@@ -2384,6 +2459,13 @@ impl Sender {
         // Bootstrap floor: a low self-clocked sample may not immediately drag the freshly initialized
         // pacing rate back down. `natural_rate` is left untouched so the release test below is honest.
         let send_rate = natural_rate.max(effective_floor);
+        // [Q2 A-6] Bayrak açıkken Startup bw-terimi tabanı (bkz. `a6_send_rate`); kapalıyken satır
+        // çalışmaz, `send_rate` eskisiyle BİREBİR.
+        let send_rate = if self.e1.a6_iw_floor {
+            self.a6_send_rate(&decision, send_rate, now_ns)
+        } else {
+            send_rate
+        };
         self.pacer.set_rate(send_rate);
         // [R3/ADIM-6] KANAL-TÜREVLİ burst cap: max(1 birim, rate·pencere), üstten ~2×MTU. Bant-kör 2400B
         // sabiti yerine → PreConverge floor'da 1-birim (self-congestion/backlog-spike yok), Startup+'ta
@@ -2499,6 +2581,125 @@ impl Sender {
                 .max(self.src_cfg.min_cwnd),
         };
         rate_per_srtt(cwnd, srtt_ns)
+    }
+
+    // ── [Q2 A-6] Startup bw-terimi tabanı (deney; varsayılan kapalı; KK-Q2-EKA-1/2) ─────────────
+    //
+    // Sahip kararı EK-A §9.2 + §10.2: Startup rampasında bw terimi
+    // `max(STARTUP_gain × BtlBw, A6_IW_BYTES / srtt)` ve rampa boyunca düşmez (tepe değeri tutulur).
+    // Fuzzy kazancı, `cwnd = max(cwnd_gain × BDP, min_cwnd)` ve `cwnd/srtt` tavanı AYNEN
+    // (`rate::effective_send_rate_bw_floor`). Kapı: bant tahmini uygulamayla-sınırlı-olmayan bir tam
+    // tur görmemişken; görüldüğü an kalıcı kalkar ("ölçülen bw < 1 kB/s" kapısı YOK). srtt yoksa taban
+    // YOK (Startup'a ölçümsüz girilmez; PreConverge'in kendi tabanı var). Rampa = `base_is_startup`
+    // (gerçek Startup girişinden plato'ya dek; Idle boşlukları ve kurtarma overlay'leri dahil): Idle
+    // boşluğu tabanı kaldırmaz, taban yalnız Startup pacing fazında hıza uygulanır. Kayıp hiçbir terimin
+    // girdisi değil (INV-RATE-1); `a6.diag` hiçbir kararın girdisi değil (INV-007).
+
+    /// [Q2 A-6] Bir bw örneğini açık turun niteliğine katar. Bayrak kapalıyken ya da kapı kapandıktan
+    /// sonra no-op.
+    fn a6_note_sample(&mut self, sample: &crate::bw::RateSample) {
+        if self.e1.a6_iw_floor && self.a6.diag.full_round_ns.is_none() {
+            self.a6.round_sampled |= sample.delivered > 0;
+            self.a6.round_disq |= sample.is_app_limited || !sample.gain_ge1;
+        }
+    }
+
+    /// [Q2 A-6] ACK sonu tur muhasebesi: işaretten sonra gönderilen bir seq teyit edildiyse tur kapanır;
+    /// nitelikliyse kapı kalıcı kapanır (kurulu taban `FullRound` ile kalkar), değilse yeni tur açılır.
+    fn a6_on_ack_round(&mut self, acked: &[u64], now_ns: u64) {
+        if self.a6.diag.full_round_ns.is_some() {
+            return;
+        }
+        let Some(marker) = self.a6.round_marker else {
+            // İlk ACK: izleyici başlar. Buraya dek görülen örnekler kısmi tura aitti, sayılmaz.
+            self.a6_open_round();
+            return;
+        };
+        if !acked.iter().any(|&seq| seq >= marker) {
+            return;
+        }
+        if self.a6.round_sampled && !self.a6.round_disq {
+            self.a6.diag.full_round_ns = Some(now_ns);
+            if self.a6.armed {
+                self.a6_release(now_ns, A6Release::FullRound);
+            }
+        } else {
+            self.a6.diag.rounds = self.a6.diag.rounds.saturating_add(1);
+            self.a6_open_round();
+        }
+    }
+
+    fn a6_open_round(&mut self) {
+        self.a6.round_marker = Some(self.next_seq);
+        self.a6.round_sampled = false;
+        self.a6.round_disq = false;
+    }
+
+    fn a6_release(&mut self, now_ns: u64, why: A6Release) {
+        self.a6.armed = false;
+        self.a6.bw_hwm = 0;
+        self.a6.diag.released_ns = Some(now_ns);
+        self.a6.diag.release = Some(why);
+    }
+
+    /// [Q2 A-6] Kurma/kaldırma ve hız: `base` bayraksız gönderim hızıdır (`natural.max(DR-RATE-RAMP-2
+    /// tabanı)`). Kurulu ∧ Startup pacing fazındayken taban'lı bw terimiyle aynı formülden hız
+    /// hesaplanır ve `base` ile büyüğü döner (bw terimi ≥ `STARTUP_gain × BtlBw` olduğundan bu değer
+    /// bayraksız doğal hızın altına inmez). Diğer her durumda `base` aynen.
+    fn a6_send_rate(&mut self, decision: &FusionDecision, base: u64, now_ns: u64) -> u64 {
+        if self.a6.armed && !self.base_is_startup {
+            self.a6_release(now_ns, A6Release::StartupExit);
+        }
+        let srtt = self.rtt.srtt().filter(|d| !d.is_zero());
+        if !self.a6.armed
+            && self.a6.diag.full_round_ns.is_none()
+            && self.base_is_startup
+            && srtt.is_some()
+        {
+            self.a6.armed = true;
+            self.a6.bw_hwm = 0;
+            if self.a6.diag.armed_ns.is_none() {
+                self.a6.diag.armed_ns = Some(now_ns);
+                self.a6.diag.round_done_at_arm = self.a6.diag.rounds > 0;
+            }
+            self.a6.diag.arms = self.a6.diag.arms.saturating_add(1);
+        }
+        let phase = self.pacing_phase();
+        let Some(srtt) = srtt else {
+            return base;
+        };
+        if !self.a6.armed || phase != PacingPhase::Startup {
+            return base;
+        }
+        let btlbw = self.btlbw.btlbw();
+        let bw_term = phase
+            .gain()
+            .apply(btlbw)
+            .max(rate_per_srtt(crate::rate::A6_IW_BYTES, dur_ns(srtt)))
+            .max(self.a6.bw_hwm);
+        self.a6.bw_hwm = bw_term;
+        self.a6.diag.bw_term_bps = bw_term;
+        let cwnd_gain = self.e1_startup_cwnd_gain(phase).unwrap_or(Gain {
+            num: self.src_cfg.cwnd_gain,
+            den: 1,
+        });
+        let floored = crate::rate::effective_send_rate_bw_floor(
+            &self.src_cfg,
+            cwnd_gain,
+            btlbw,
+            self.rtt.rtprop().unwrap_or(INITIAL_RTT),
+            srtt,
+            phase.gain(),
+            decision.send_rate_gain_permille,
+            bw_term,
+        );
+        let rate = budget::send_rate_final(floored, self.budget_cfg.min_rate_bps, u64::MAX);
+        let out = base.max(rate);
+        if out > base {
+            self.a6.diag.raise_decisions = self.a6.diag.raise_decisions.saturating_add(1);
+            self.a6.diag.last_raise_ns = Some(now_ns);
+        }
+        out
     }
 
     // ── DR-CS-1 M1 (EK5): ATOMİK BATCH GİRİŞİ + next_wakeup_ns + faz-makinesi ────────────────
@@ -3125,6 +3326,7 @@ impl Sender {
                 self.record_confirmed_logical(seq);
                 let sample = self.bw_sampler.on_ack(now_ns, p.bw_sample);
                 self.btlbw.update(sample, now_ns, sample.delivered > 0);
+                self.a6_note_sample(&sample); // [Q2 A-6] tur niteliği (bayrak kapalıyken no-op)
                 self.bw_sampled_since_round = true; // [TUR-A ölçüm-#1] plato round'u bw-örneğiyle sayılır
                 if p.origin == TransmitKind::Data && (rtt_send_ns.is_none() || seq >= largest) {
                     largest = seq;
@@ -3147,6 +3349,7 @@ impl Sender {
                     // kol-1 (tek gönderim, belirsizlik yok): BW-örneği NORMAL üretilir.
                     let sample = self.bw_sampler.on_ack(now_ns, t.bw_sample);
                     self.btlbw.update(sample, now_ns, sample.delivered > 0);
+                    self.a6_note_sample(&sample); // [Q2 A-6] tur niteliği (bayrak kapalıyken no-op)
                     self.bw_sampled_since_round = true;
                     self.diag_bw_recovered += 1;
                     if t.origin == TransmitKind::Data && (rtt_send_ns.is_none() || seq >= largest) {
@@ -3171,6 +3374,10 @@ impl Sender {
                         .note_spurious(u32::try_from(la.saturating_sub(seq)).unwrap_or(u32::MAX));
                 }
             }
+        }
+        // [Q2 A-6] Tur kapanışı (bu ACK'in örnekleri kapanan tura dahil); bayrak kapalıyken no-op.
+        if self.e1.a6_iw_floor {
+            self.a6_on_ack_round(&ack.acked_seqs, now_ns);
         }
 
         // loss tespiti (§5). loss = RECOVERY sinyali (INV-RATE-1: rate'e DEĞMEZ).

@@ -1111,6 +1111,9 @@ pub struct SenderControlDiag {
     pub fusion: Option<adaptive_transport::fusion::FusionInputSnapshot>,
     /// Dönüş yolu gözlemi (aynanın yazıldığı anda).
     pub return_path: adaptive_transport::return_path::ReturnPathState,
+    /// [Q2 A-6] Startup bw-terimi tabanının deney kaydı (`Sender::diag_a6`; bayrak kapalıyken
+    /// `enabled == false`, diğer alanlar varsayılan). Anlar ucun saat tabanında.
+    pub a6: adaptive_transport::sender::A6FloorDiag,
 }
 
 impl SenderControlDiag {
@@ -1139,6 +1142,7 @@ impl SenderControlDiag {
             send_rate_gain_permille: decision.send_rate_gain_permille,
             fusion: sender.diag_fusion_input_snapshot(),
             return_path: sender.diag_return_path(now_ns),
+            a6: sender.diag_a6(),
         }
     }
 }

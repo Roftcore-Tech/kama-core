@@ -295,6 +295,7 @@ impl E1Set {
             retx_first: self.retx_first,
             a3_burst_floor: false,
             a4_probe_srtt: false,
+            a6_iw_floor: false,
         }
     }
 
@@ -1107,6 +1108,33 @@ fn session_json(s: &mut String, clock: &Clock, sp: &SessionProbe) {
         ",\"rtp\":{},\"pu\":{},\"lpc\":{}",
         rtprop, c.probe_up_entries, d.left_preconverge_ns
     );
+    // [Q2 A-6] Startup bw-terimi tabanının deney kaydı (aynadan, salt gözlem). Yalnız bayrak açıkken
+    // yazılır; kapalı kollarda anahtar YOK (satır eskisiyle aynı). Anlar ms, ucun saat tabanında
+    // (`lpc` ile aynı taban); olmayan an `null`.
+    let a6 = &c.a6;
+    if a6.enabled {
+        let ms = |v: Option<u64>| {
+            v.map_or_else(|| "null".to_owned(), |ns| format!("{:.3}", ns as f64 / 1e6))
+        };
+        let why = a6
+            .release
+            .map_or_else(|| "null".to_owned(), |r| js(&format!("{r:?}")));
+        let _ = write!(
+            s,
+            ",\"a6\":{{\"arm_ms\":{},\"arms\":{},\"r0\":{},\"rel_ms\":{},\"why\":{},\"up\":{},\
+             \"lup_ms\":{},\"fr_ms\":{},\"rd\":{},\"bwt\":{}}}",
+            ms(a6.armed_ns),
+            a6.arms,
+            a6.round_done_at_arm,
+            ms(a6.released_ns),
+            why,
+            a6.raise_decisions,
+            ms(a6.last_raise_ns),
+            ms(a6.full_round_ns),
+            a6.rounds,
+            a6.bw_term_bps
+        );
+    }
     match &d.recovery {
         Some(r) => {
             let t = &r.timers;
@@ -2736,6 +2764,7 @@ mod tests {
                 retx_first: true,
                 a3_burst_floor: false,
                 a4_probe_srtt: false,
+                a6_iw_floor: false,
             }
         );
         assert_eq!(
