@@ -1,8 +1,8 @@
-//! `kama-provision init` — anahtar üretimi, öz-denetim ve dosya yazımı (PROVISIONING-FORMAT-v0 §2–§4).
+//! `kama-provision init` — anahtar üretimi, öz-denetim ve dosya yazımı (PROVISIONING-FORMAT-v1 §2–§4).
 //!
-//! Sıra: girdi denetimi → bellekte üretim (kök + cihaz anahtarları, sertifikalar) → öz-denetim
-//! (yükleyicinin denetimleri + sertifika köke karşı) → çıktı dizini → `.gitignore` → cihaz dosyaları →
-//! `root.json`. Girdi, entropi ve öz-denetim hatalarında dosya sistemine dokunulmaz. Yazım sırasında
+//! Sıra: girdi denetimi → bellekte üretim (kök + cihaz anahtarları, sertifikalar; `--hub` ile hub
+//! Ed25519 çifti; `--probe` ile `probe` cihazı) → öz-denetim (yükleyicinin denetimleri + sertifika köke
+//! karşı + `hub.json`) → çıktı dizini → `.gitignore` → cihaz dosyaları → `hub.json` → `root.json`. Girdi, entropi ve öz-denetim hatalarında dosya sistemine dokunulmaz. Yazım sırasında
 //! hata olursa bu koşunun yazdığı gizli dosyalar silinir; `.gitignore` ve (bu koşu oluşturduysa) dizin
 //! YALNIZ bütün gizli dosyalar gerçekten silindiyse silinir — silinemeyen yollar hataya
 //! ([`InitError::Cleanup`]) yalnız yol adıyla girer (D9). Dosyalar `O_EXCL` ile YENİ oluşturulur ve
@@ -28,9 +28,10 @@ use zeroize::Zeroizing;
 
 use crate::cert::{self, CertError, CertFields, ISSUER_KEY_ID_LEN, KEY_LEN};
 use crate::format::{
-    is_host_port, CertBytes, DeviceConfig, DeviceName, FormatError, HubConfig, KeyPair, PeerConfig,
-    Public32, RootFile, Secret32, FORMAT_VERSION, GITIGNORE_CONTENT, GITIGNORE_FILE_NAME,
-    MAX_DEVICES, MIN_DEVICES, ROOT_FILE_NAME,
+    is_host_port, CertBytes, DeviceConfig, DeviceName, FormatError, HubConfig, HubDevice, HubFile,
+    KeyPair, PeerConfig, Public32, RootFile, Secret32, FORMAT_VERSION, GITIGNORE_CONTENT,
+    GITIGNORE_FILE_NAME, HUB_FILE_NAME, HUB_LISTEN_HOST, MAX_DEVICES, MIN_DEVICES, PROBE_NAME,
+    ROOT_FILE_NAME,
 };
 
 /// Çıktı dizini izni (Unix).
@@ -53,10 +54,20 @@ pub struct InitRequest {
     pub direct: BTreeMap<DeviceName, SocketAddr>,
 }
 
+/// `init` seçenekleri (v1). [`InitRequest`]'e alan eklenmez (başka şeritlerin çağrı yerleri
+/// kırılmasın diye); yeni seçenekler buraya gelir ve [`init_with`]'e verilir. [`init`] varsayılanla
+/// çağırır.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InitOptions {
+    /// `--probe` (v1 §3.4): ek cihaz `probe` — `device-probe.json` (eşleri boş), diğer cihazların
+    /// `peers`'ına girmez, `hub.json` `devices`'a girer. `--hub` gerektirir.
+    pub probe: bool,
+}
+
 /// `init` sonucu.
 #[derive(Debug)]
 pub struct InitReport {
-    /// Yazılan dosyalar, yazım sırasıyla (`.gitignore`, cihazlar, `root.json`).
+    /// Yazılan dosyalar, yazım sırasıyla (`.gitignore`, cihazlar, `hub.json`, `root.json`).
     pub written: Vec<PathBuf>,
     /// Unix izinleri (`0700` dizin, `0600` dosya) uygulandı mı; Unix dışında `false` (§2).
     pub permissions_enforced: bool,
@@ -75,6 +86,10 @@ pub enum RequestError {
     DirectPort,
     #[error("--hub must be host:port with port 1-65535")]
     HubAddr,
+    #[error("--probe requires --hub")]
+    ProbeWithoutHub,
+    #[error("--probe adds a device named \"probe\"; --devices must not list it")]
+    ProbeNameTaken,
 }
 
 /// `init` hatası. Gizli değer taşımaz.
@@ -113,11 +128,23 @@ impl From<serde_json::Error> for InitError {
     }
 }
 
-/// Girdi kuralları (§2). Dosya sistemine dokunmaz.
+/// Girdi kuralları (§2), varsayılan seçeneklerle. Dosya sistemine dokunmaz.
 ///
 /// # Errors
 /// [`RequestError`].
 pub fn validate_request(request: &InitRequest) -> Result<(), RequestError> {
+    validate_request_with(request, &InitOptions::default())
+}
+
+/// Girdi kuralları (§2) + seçenek kuralları (`--probe` → `--hub` zorunlu, `probe` adı boş). Dosya
+/// sistemine dokunmaz.
+///
+/// # Errors
+/// [`RequestError`].
+pub fn validate_request_with(
+    request: &InitRequest,
+    options: &InitOptions,
+) -> Result<(), RequestError> {
     let count = request.devices.len();
     if !(MIN_DEVICES..=MAX_DEVICES).contains(&count) {
         return Err(RequestError::DeviceCount);
@@ -137,6 +164,14 @@ pub fn validate_request(request: &InitRequest) -> Result<(), RequestError> {
     if !request.hub.as_deref().is_none_or(is_host_port) {
         return Err(RequestError::HubAddr);
     }
+    if options.probe {
+        if request.hub.is_none() {
+            return Err(RequestError::ProbeWithoutHub);
+        }
+        if unique.iter().any(|name| name.as_str() == PROBE_NAME) {
+            return Err(RequestError::ProbeNameTaken);
+        }
+    }
     Ok(())
 }
 
@@ -152,7 +187,21 @@ pub fn init(
     entropy: &mut dyn EntropySource,
     created_at_unix: u64,
 ) -> Result<InitReport, InitError> {
-    validate_request(request)?;
+    init_with(request, &InitOptions::default(), entropy, created_at_unix)
+}
+
+/// [`init`] + seçenekler (v1 `--probe`). `--hub` verildiyse hub Ed25519 çifti üretilir, her cihaz
+/// dosyasına `hub.ed25519_pub` girer ve `hub.json` yazılır (hub'ın gizli anahtarı YALNIZ orada).
+///
+/// # Errors
+/// [`init`] ile aynı.
+pub fn init_with(
+    request: &InitRequest,
+    options: &InitOptions,
+    entropy: &mut dyn EntropySource,
+    created_at_unix: u64,
+) -> Result<InitReport, InitError> {
+    validate_request_with(request, options)?;
     let not_after = created_at_unix
         .checked_add(cert::DEVICE_CERT_VALIDITY_SECS)
         .ok_or(InitError::Clock)?;
@@ -167,14 +216,51 @@ pub fn init(
         let device = generate_device(name, entropy, &root, issuer_key_id, not_after)?;
         devices.push(device);
     }
+    let probe = if options.probe {
+        let name = DeviceName::new(PROBE_NAME).map_err(|_| RequestError::ProbeNameTaken)?;
+        Some(generate_device(
+            &name,
+            entropy,
+            &root,
+            issuer_key_id,
+            not_after,
+        )?)
+    } else {
+        None
+    };
+    // Hub Ed25519 çifti yalnız `--hub` ile; tohum `Zeroizing`'de kalır.
+    let hub_key = match request.hub.as_deref() {
+        Some(addr) => {
+            let seed = random_key(entropy)?;
+            Some((addr, SigningKey::from_bytes(&seed)))
+        }
+        None => None,
+    };
+    let hub = hub_key.as_ref().map(|(addr, key)| HubConfig {
+        addr: (*addr).to_owned(),
+        x25519_pub: None,
+        ed25519_pub: Public32::from_bytes(key.verifying_key().to_bytes()),
+    });
 
-    let mut files = Vec::with_capacity(devices.len() + 1);
-    for device in &devices {
-        let config = device_config(device, &devices, root_pub, request);
+    let mut files = Vec::with_capacity(devices.len() + 3);
+    // `probe`'un eşi yoktur ve kimsenin eşi değildir (v1 §3.4): kendi listesi ve `direct_addrs`'ı boş.
+    let listed = devices
+        .iter()
+        .map(|device| (device, devices.as_slice(), request.direct.clone()));
+    let probe_entry = probe
+        .iter()
+        .map(|device| (device, &[][..], BTreeMap::new()));
+    for (device, peers, direct) in listed.chain(probe_entry) {
+        let config = device_config(device, peers, root_pub, hub.clone(), direct);
         // Öz-denetim: yükleyicinin denetimleri + sertifika köke karşı (katı Ed25519).
         config.validate()?;
         cert::verify_compact_device_cert(&device.cert, &root_pub)?;
         files.push((device.name.file_name(), to_json(&config)?));
+    }
+    if let Some((addr, key)) = &hub_key {
+        let hub_file = hub_file(addr, key, devices.iter().chain(probe.as_ref()))?;
+        hub_file.validate()?;
+        files.push((HUB_FILE_NAME.to_owned(), to_json(&hub_file)?));
     }
     let root_file = RootFile {
         format_version: FORMAT_VERSION,
@@ -203,8 +289,8 @@ pub fn init(
     })
 }
 
-/// `.gitignore` ÖNCE (gizli dosya hiçbir an Git'e karşı korumasız kalmasın), sonra cihaz dosyaları, en
-/// son `root.json`.
+/// `.gitignore` ÖNCE (gizli dosya hiçbir an Git'e karşı korumasız kalmasın; `*` `hub.json`'u da kapsar),
+/// sonra cihaz dosyaları, `hub.json`, en son `root.json`.
 fn write_files(
     output: &mut Output,
     files: &[(String, Zeroizing<Vec<u8>>)],
@@ -219,6 +305,34 @@ fn write_files(
 fn join_paths(paths: &[PathBuf]) -> String {
     let shown: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
     shown.join(", ")
+}
+
+/// `hub.json` (v1 §3.3): `listen = "0.0.0.0:<--hub portu>"`, hub anahtar çifti, dizin. Cihaz gizli
+/// anahtarı GİRMEZ (yalnız `name`, `dest_hash`, `cert`).
+fn hub_file<'a>(
+    addr: &str,
+    key: &SigningKey,
+    devices: impl Iterator<Item = &'a DeviceMaterial>,
+) -> Result<HubFile, InitError> {
+    let port = addr
+        .rsplit_once(':')
+        .and_then(|(_, port)| port.parse::<u16>().ok())
+        .ok_or(RequestError::HubAddr)?;
+    Ok(HubFile {
+        format_version: FORMAT_VERSION,
+        listen: format!("{HUB_LISTEN_HOST}:{port}"),
+        hub_ed25519: KeyPair {
+            secret: Secret32::copy_from(key.as_bytes()),
+            public: Public32::from_bytes(key.verifying_key().to_bytes()),
+        },
+        devices: devices
+            .map(|device| HubDevice {
+                name: device.name.clone(),
+                dest_hash: Public32::from_bytes(device.dest_hash),
+                cert: CertBytes::from_bytes(device.cert),
+            })
+            .collect(),
+    })
 }
 
 /// Bir cihazın bellekteki anahtarları ve sertifikası (gizli alanlar Drop'ta sıfırlanır).
@@ -287,13 +401,14 @@ fn generate_device(
     })
 }
 
-/// `device-<ad>.json` içeriği: kendi kimlik ve cihaz anahtarları + diğer bütün cihazlar `peers`'ta
-/// (§3.2). Kökün yalnız açık anahtarı girer (D9).
+/// `device-<ad>.json` içeriği: kendi kimlik ve cihaz anahtarları + `all`'daki diğer cihazlar `peers`'ta
+/// (§3.2; `probe` için `all` boştur). Kökün yalnız açık anahtarı girer (D9).
 fn device_config(
     device: &DeviceMaterial,
     all: &[DeviceMaterial],
     root_pub: [u8; KEY_LEN],
-    request: &InitRequest,
+    hub: Option<HubConfig>,
+    direct_addrs: BTreeMap<DeviceName, SocketAddr>,
 ) -> DeviceConfig {
     let peers = all
         .iter()
@@ -306,10 +421,6 @@ fn device_config(
             cert: CertBytes::from_bytes(peer.cert),
         })
         .collect();
-    let hub = request.hub.as_ref().map(|addr| HubConfig {
-        addr: addr.clone(),
-        x25519_pub: None,
-    });
     DeviceConfig {
         format_version: FORMAT_VERSION,
         device_id: device.name.clone(),
@@ -331,7 +442,7 @@ fn device_config(
         root_pub: Public32::from_bytes(root_pub),
         peers,
         hub,
-        direct_addrs: request.direct.clone(),
+        direct_addrs,
     }
 }
 
