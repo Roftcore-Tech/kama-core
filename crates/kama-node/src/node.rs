@@ -69,7 +69,8 @@ use kama_app::file_transfer::{FileEvent, FileSendError, FileTransfer, TransferId
 use kama_app::messaging::{ConnectState, Messenger, MessengerEvent, MsgId};
 use kama_app::ptt::{Ptt, PttEvent, StreamId};
 use kama_app::signaling::{Signaling, SignalingEvent, SignalingId};
-use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
+use kama_contracts::handles::SessionHandle;
+use kama_contracts::handles::{CloseReason, PeerRef};
 use kama_contracts::s1::{ConnectResult, ConnectTicket, SessionEvent};
 
 use crate::a5::{self, A5};
