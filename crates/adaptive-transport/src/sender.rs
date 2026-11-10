@@ -10362,10 +10362,10 @@ mod tests {
 
     /// Açık (1) + (3): uygulamayla-sınırlı ısınma (bw ≈ 100 B / 0,3 s) Startup'ı tohumlamaz. Dosya kuyruğa
     /// girdiği olayda taban kurulu, bw terimi ≥ `A6_IW_BYTES/srtt`, gönderim hızı `cwnd/srtt` tavanına
-    /// çıkar (kapalı kol 2,885 × ısınma bw'sinde kalır). Tavan bağlar: `min_cwnd = 4·MTU` <
-    /// `A6_IW_BYTES` olduğundan taban hızı yükselttiği her kararda hız = `cwnd/srtt` < `A6_IW_BYTES/srtt`
-    /// [türetilmiş: taban bağlıyorken 2,885·BtlBw < IW/srtt ⇒ 2,885·BDP/srtt < IW/srtt]. srtt yokken
-    /// (PreConverge) taban kurulmaz.
+    /// çıkar (kapalı kol 2,885 × ısınma bw'sinde kalır). Tavan bağlar: bw terimini `A6_IW_BYTES/srtt`
+    /// belirlediği her kararda hız = `cwnd/srtt` < `A6_IW_BYTES/srtt` [türetilmiş: o kararda
+    /// 2,885·BtlBw < IW/srtt ve cwnd/srtt ≤ max(2,885·BtlBw, 4·MTU/srtt) < IW/srtt; `min_cwnd = 4·MTU`].
+    /// srtt yokken (PreConverge) taban kurulmaz.
     #[test]
     fn q2_a6_applimited_warmup_floor_lifts_file_start_to_cwnd_cap() {
         let (_, on) = a6_run(a6_k1(true), &a6_offers(), 12_000);
