@@ -8,7 +8,7 @@
 
 | Alan | Değer |
 |---|---|
-| Karar sahibi | Abkarada |
+| Karar sahibi | sahip |
 | Kart | K4G-12 (`KAMA-PLAN-4GUN-APP-KRIPTO` v1.1) — icra Claude Code L-PROV |
 | Dayanak | Plan D4 (v1.1), D9 (v1.1), D11 · **plan Ek 2026-10-11 (3) — DUR-K4G-12 cevabı** · PoC-KAPSAM-001 §2 "Provisioning", "Anahtarlar", §5 (EK-1) · ccr §6.3, §8.1, §13.1–§13.5 (§13.2 YAMA 2026-10-11), §35.2, §35.4 KAPALI-SİSTEM KİPİ (PR #101) |
 | Uygulama | `crates/kama-provision` — kütüphane `kama_provision::format` (tipler, yükleyici), `kama_provision::cert` (CompactDeviceCertV1), ikili `kama-provision` (CLI) |
@@ -329,7 +329,7 @@ başına ayrıca bir "kimlik" Ed25519 çifti — biçime hiçbir şey imzalamaya
 
 ### 4.5 `domain_sep("SR_CDC_V1")` — KARAR, DUR-K4G-12 (b) (plan Ek 2026-10-11 (3))
 
-~~**AÇIK — Abkarada kararı bekleniyor.**~~ **Kabul — spec kararı.** ccr §13.2 `domain_sep("SR_CDC_V1")`
+~~**AÇIK — sahip kararı bekleniyor.**~~ **Kabul — spec kararı.** ccr §13.2 `domain_sep("SR_CDC_V1")`
 için "16B sabit etiket" der; `SR_CDC_V1` 9 ASCII bayttır ve dolgu tanımlı değildi
 (`reports/spec-audit/SPEC-GAP-REGISTRY-2026-08-27.md`, S4-pki-discovery.6). ccr §13.2'ye **YAMA KAYDI
 2026-10-11 — K4G-12** yazıldı (bu PR): 16 B etiket = ASCII etiket ≤ 16 B + `0x00` dolgu (Noise protokol adı
