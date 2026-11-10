@@ -10,6 +10,11 @@
 //! gövdesi (§3.3-E FULL) spec tarafından ADIM-6'ya ertelenmiştir ve v1 kapsamı DIŞINDADIR; burada
 //! üretilen `measured_return_bw_bps` o borcun ölçüm yarısıdır.
 //!
+//! **[Q1] Tek istisna, bayrak arkasında:** `E2aFlags::return_prior_gated` (A-2, varsayılan KAPALI)
+//! açıkken ve pace ≥ 1 kB/s iken göndericinin kayıp tabanı (`cadence_loss_floor`)
+//! [`ReturnPathObserver::measured_return_bw_bps`] değerini okur (en az 31 B/s önseli). Kapalıyken bu
+//! modül hâlâ salt gözlemdir.
+//!
 //! **Mimari invaryant (INV-RETURN-1):** düşük dönüş bant genişliği ileri-yön kaybı DEĞİLDİR;
 //! eksik ACK "DATA kayboldu" DEMEK DEĞİLDİR. Bu modül dört fiziksel büyüklüğü ayrı tutar:
 //! kayıp · bant · gecikme · süreklilik.
@@ -190,6 +195,13 @@ impl ReturnPathObserver {
             self.prev_sent_at_ack = obs.sent_datagrams;
         }
         self.last_sent_seen = obs.sent_datagrams;
+    }
+
+    /// Ölçülen dönüş debisi (B/s, EWMA); örnek yokken 0. [`Self::state`] içindeki
+    /// `measured_return_bw_bps` ile AYNI değer — `now_ns` gerektirmez (sessizlikten bağımsız).
+    #[must_use]
+    pub fn measured_return_bw_bps(&self) -> u64 {
+        self.return_bw_ewma_bps
     }
 
     /// Anlık durum. `now_ns` ile sessizlik ve sağlık türetilir.

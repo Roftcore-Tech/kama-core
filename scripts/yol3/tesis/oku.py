@@ -44,6 +44,9 @@ metni değişmez); S tablosuna ve R4'e veri varsa satır olarak eklenir, ayrıca
 her A hücresinde kolu tabanıyla (K1a↔K1, K0a↔K0) aynı ölçülerle yan yana yazar: medyan ve oran,
 eşik YOK (betimsel). Analog hücrede E2a kolu var ama K0 yoksa S uygulanmaz ("Gösterim seti: —");
 E2a kolu olmayan kökte (G2) çıktı öncekiyle bayt bayt aynıdır.
+A merdiveni (yol2/goster-a; gen_cells.py --set a): K1g, K1gr, K1grp, K1A da aynı bölümde K1'e
+oranlanır ("E2a/A kıyası"); Q1 alanları (gap_ack_emits, regime_timer_emits, measured_return_bw_bps,
+ilan→retx aralığı) koşu jsonl'inin ts satırlarında yoksa "aynada yok" yazılır.
 
 Şeritli gösterim (yol2/goster; gen_cells.py --set goster; f0_flows --goster on = S1 şeritleri +
 PTT oynatma tamponu T): koşu başlığı `yol3.goster` true olan kökte S uygulanmaz. "PTT varış /
@@ -87,8 +90,14 @@ ALL_ARMS = ["K0", "K0r"] + E1_ARMS
 FLAGS = {"K0": 0, "K0r": 1, "K1": 4, "K2": 5, "K2mc": 4, "K2me": 4}
 SHOW = {"K2mc": "K2−c", "K2me": "K2−e"}
 # E2a kıyası: kol → taban (tek değişken E2a). S adayı DEĞİL.
-E2A_ARMS = ["K1a", "K0a"]
-E2A_BASE = {"K1a": "K1", "K0a": "K0"}
+E2A_ARMS = ["K1a", "K0a", "K1g", "K1gr", "K1grp", "K1A"]
+# [A merdiveni] Q1/Q2 kolları da K1'e oranlanır (tek ikili; fark kolun bayrakları, başlık
+# `yol3.e1_set` / `yol3.e2a_set`). S adayı DEĞİL.
+E2A_BASE = {"K1a": "K1", "K0a": "K0", "K1g": "K1", "K1gr": "K1", "K1grp": "K1", "K1A": "K1"}
+Q1_ARMS = ["K1g", "K1gr", "K1grp", "K1A"]
+# Q1 raporunun okunacak alanları (Q1-KAYIP-ACK.md §5): ts satırında bu adla varsa okunur, yoksa
+# "aynada yok" (ürün koduna ayna eklenmez).
+Q1_FIELDS = ["gap_ack_emits", "regime_timer_emits", "measured_return_bw_bps", "ilan_retx_ms"]
 # KK-ORK-03: (iii) paydası pr ile aynı katmanda (mühürlü UDP yükü). Demeti taşıyan birimin ek
 # baytları: birim çerçevesi 5 + 8 (f0a_analyze unit_len "P"), DATA başlığı 11 (client-core
 # wire.rs HDR_DATA; FEC kapalı → parça başlığı yok, KK-ORK-01), mühür zarfı 22 (f0a_analyze :51).
@@ -286,7 +295,7 @@ def e2a_kiyas(d):
                 continue
             b = E2A_BASE[k]
             row = {"taban": b}
-            for key in ("file", "ptt", "pace", "srtt", "rtprop", "pu"):
+            for key in ("file", "ptt", "ptt_varis", "pace", "srtt", "rtprop", "pu"):
                 mk, mb = m_of(d, cell, k, key), m_of(d, cell, b, key)
                 row[key] = {"kol": mk, "taban": mb, "oran": ratio(mk, mb)}
             for who, arm in (("kol", k), ("taban", b)):
@@ -296,6 +305,26 @@ def e2a_kiyas(d):
                                                                  if x == INF)
             out.setdefault(cell, {})[k] = row
     return out
+
+
+def q1_fields(paths):
+    """Q1 alanlarının ts satırlarındaki son değeri (oturum ya da satır düzeyi); yoksa anahtar yok."""
+    last = {}
+    for path in paths:
+        try:
+            f = open(path, encoding="utf-8")
+        except OSError:
+            continue
+        with f:
+            for ln in f:
+                if '"k":"ts"' not in ln or not any(k in ln for k in Q1_FIELDS):
+                    continue
+                j = json.loads(ln)
+                for obj in [j] + list(j.get("s", [])):
+                    for k in Q1_FIELDS:
+                        if obj.get(k) is not None:
+                            last[k] = obj[k]
+    return last
 
 
 def tek_satir(choice, R1):
@@ -423,8 +452,11 @@ def extract(kok, work):
                                                     ("file", "ptt", "ratio", "pace", "srtt",
                                                      "rtprop", "pu", "ptt_varis", "ptt_ilk",
                                                      "ptt_esl", "goster")})
+        q1 = q1_fields([os.path.join(rj["dir"], n) for n in ("alice.jsonl", "bob.jsonl")])
         y3 = hdr_yol3(os.path.join(rj["dir"], "alice.jsonl"))
         e["goster"].append(bool(y3.get("goster")))
+        for k in Q1_FIELDS:
+            e.setdefault("q1_" + k, []).append(q1.get(k))
         if y3.get("goster"):
             d["goster_kok"] = True
         items_path = (str(p).replace(os.sep + "runs" + os.sep, os.sep + "items" + os.sep)
@@ -558,12 +590,13 @@ def report(d, man_sha):
     K = e2a_kiyas(d)
     if K:
         js["E2a_kiyas"] = K
-        L += ["", "## E2a kıyası (raporlanan; eşik yok, betimsel) — kol / taban (oran); tek "
-              "değişken: E1 seti aynı, fark yalnız E2a (M1 E2aFlags: tt_rfc g=1ms, rtt_rule_v11, "
-              "iw_idle_hold, pto_probes=2)", "",
+        L += ["", "## E2a/A kıyası (raporlanan; eşik yok, betimsel) — kol / taban (oran); tek ikili, "
+              "fark yalnız kolun bayrakları (K1a, K1g, K1gr, K1grp, K1A ↔ K1; K0a ↔ K0; açık "
+              "bayraklar koşu başlığında yol3.e1_set / yol3.e2a_set)", "",
               "| hücre | kol ↔ taban | n | alınmayan dosya | dosya bitiş med (s) | PTT p95 med (s) | "
-              "pace med (B/s) | srtt med (s) | RTprop med (s) | probe_up med |",
-              "|---|---|---|---|---|---|---|---|---|---|"]
+              "PTT varış p95 med (s) | pace med (B/s) | srtt med (s) | RTprop med (s) | "
+              "probe_up med |",
+              "|---|---|---|---|---|---|---|---|---|---|---|"]
 
         def pair(v, nd):
             return f"{fmt(v['kol'], nd)} / {fmt(v['taban'], nd)} ({fmt(v['oran'])})"
@@ -571,8 +604,24 @@ def report(d, man_sha):
             for k, v in rows.items():
                 L.append(f"| {cell} | {k} ↔ {v['taban']} | {v['n']['kol']} / {v['n']['taban']} | "
                          f"{v['alinmayan_dosya']['kol']} / {v['alinmayan_dosya']['taban']} | "
-                         f"{pair(v['file'], 1)} | {pair(v['ptt'], 2)} | {pair(v['pace'], 0)} | "
+                         f"{pair(v['file'], 1)} | {pair(v['ptt'], 2)} | "
+                         f"{pair(v['ptt_varis'], 2)} | {pair(v['pace'], 0)} | "
                          f"{pair(v['srtt'], 3)} | {pair(v['rtprop'], 3)} | {pair(v['pu'], 0)} |")
+    q1_cells = {c: [k for k in Q1_ARMS if k in d[c]]
+                for c in sorted(c for c in d if c.startswith("a_") and isinstance(d[c], dict))}
+    if any(q1_cells.values()):
+        Q = {}
+        L += ["", "## Q1 alanları (raporlanan; ts satırlarından, koşu sonu değerin medyanı)", ""]
+        for f in Q1_FIELDS:
+            vals = {(c, k): med(d[c][k].get("q1_" + f, [])) for c, ks in q1_cells.items()
+                    for k in ks + ["K1"] if k in d[c]}
+            if all(v is None for v in vals.values()):
+                Q[f] = "aynada yok"
+                L.append(f"- {f}: aynada yok")
+            else:
+                Q[f] = {f"{c}/{k}": v for (c, k), v in vals.items()}
+                L.append(f"- {f}: " + ", ".join(f"{k} {fmt(v)}" for (c, k), v in vals.items()))
+        js["Q1_alanlari"] = Q
     return choice, "\n".join(L) + "\n", js
 
 
@@ -742,6 +791,26 @@ def oz_test():
     chk("gösterim kökü: varış 0,90 ve oynatma (ii) ayrı satırda",
         f"| {ANALOG} | K1 | True | 10 | 0.90 | 2.71 | 1.00 | 0 |" in md
         and js["PTT_varis_oynatma"][ANALOG]["K1"]["oynatma_p95_med"] == 2.71)
+    # A merdiveni: K1A K1'e oranlanır, S adayı değil; Q1 alanları jsonl'de yoksa "aynada yok".
+    d = _base()
+    d[ANALOG]["K1A"] = {**d[ANALOG]["K1"], "ptt": [1.355] * 10, "ptt_varis": [1.0] * 10}
+    d[ANALOG]["K1"]["ptt_varis"] = [2.0] * 10
+    c, md, js = report(d, None); n += 3
+    chk("A: K1A en düşük PTT'de bile S adayı değil (seçim K2−c)", c == "K2mc")
+    v = js["E2a_kiyas"][ANALOG]["K1A"]
+    chk("A: K1A ↔ K1 oranları (PTT 1,355/2,71 = 0,5; varış 1/2)", v["taban"] == "K1"
+        and abs(v["ptt"]["oran"] - 0.5) < 1e-9 and abs(v["ptt_varis"]["oran"] - 0.5) < 1e-9)
+    chk("A: Q1 alanları jsonl'de yoksa 'aynada yok'",
+        js["Q1_alanlari"] == {f: "aynada yok" for f in Q1_FIELDS} and
+        "- gap_ack_emits: aynada yok" in md)
+    with tempfile.TemporaryDirectory() as t:
+        path = os.path.join(t, "bob.jsonl")
+        with open(path, "w", encoding="utf-8") as f:
+            for g in (1, 4):
+                f.write(json.dumps({"k": "ts", "s": [{"peer": "alice", "gap_ack_emits": g}]},
+                                   separators=(",", ":")) + "\n")
+        n += 1
+        chk("A: Q1 alanı varsa son değer okunur", q1_fields([path]) == {"gap_ack_emits": 4})
     # Çıkarım yardımcıları: srate (ACIL S) ve pacer (a_ts) sahte dosyalarla.
     with tempfile.TemporaryDirectory() as t:
         z = 1_000_000_000_000

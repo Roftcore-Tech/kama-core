@@ -133,6 +133,11 @@ pub struct RuntimeConfig {
     /// (`iw_idle_hold`), PTO prob sayısı (`pto_probes` ∈ {1, 2}). **Varsayılan KAPALI** = sevk
     /// davranışı bit-aynı. Çalışma-zamanı yapılandırmasıdır; geçersiz değer tip kurucusunda tipli
     /// hatadır (`E2aFlags::new`), bu alana giremez. KEEP-EXPERIMENTAL: açık kol doğrulanmadı.
+    /// [Q1] Aynı değer server ucunun eş-başı `Receiver`'ına da kurulur (A-1 `gap_ack`, A-2
+    /// `return_prior_gated`); A-5 `pto_rfc` göndericidedir. Alıcının A-2 rejim kapısı ve debisi
+    /// ileri yön varış debisinden (simetri vekili; `Receiver::observe_arrival_bytes`). Ölçülen
+    /// dönüş debisi ipucu (`Receiver::set_return_bw_hint`) bu runtime'da BESLENMEZ (alıcı ucunda
+    /// kaynak yok); gönderici tarafı `ReturnPathObserver` ölçümünü kullanır.
     pub e2a_flags: adaptive_transport::loss::E2aFlags,
     /// [KURULUŞ] `bootstrap_rtt` açıkken merdiven seçimi. `false` (default) = sevk varsayılanı
     /// (3/9/21/45 s — BLACKOUT için kalibre edilmiştir, kuruluş için değil). `true` =
@@ -1120,6 +1125,9 @@ pub struct SenderControlDiag {
     pub fusion: Option<adaptive_transport::fusion::FusionInputSnapshot>,
     /// Dönüş yolu gözlemi (aynanın yazıldığı anda).
     pub return_path: adaptive_transport::return_path::ReturnPathState,
+    /// [Q2 A-6] Startup bw-terimi tabanının deney kaydı (`Sender::diag_a6`; bayrak kapalıyken
+    /// `enabled == false`, diğer alanlar varsayılan). Anlar ucun saat tabanında.
+    pub a6: adaptive_transport::sender::A6FloorDiag,
 }
 
 impl SenderControlDiag {
@@ -1148,6 +1156,7 @@ impl SenderControlDiag {
             send_rate_gain_permille: decision.send_rate_gain_permille,
             fusion: sender.diag_fusion_input_snapshot(),
             return_path: sender.diag_return_path(now_ns),
+            a6: sender.diag_a6(),
         }
     }
 }
@@ -3566,10 +3575,16 @@ async fn server_task(
                         stats.dropped_new_peers += 1;
                         continue;
                     }
-                    peers.insert(key, PeerSlot::new(seam_ctx, cfg.quota_r, now));
+                    let mut slot = PeerSlot::new(seam_ctx, cfg.quota_r, now);
+                    // [Q1] Alıcı kolları aynı yapılandırmadan (A-1 `gap_ack`, A-2);
+                    // varsayılan kapalı = bit-aynı. Gönderici alanlarını alıcı okumaz.
+                    slot.rx.set_e2a_flags(cfg.e2a_flags);
+                    peers.insert(key, slot);
                 }
                 let Some(slot) = peers.get_mut(&key) else { continue };
                 slot.last_seen_ns = now;
+                // [Q1 A-2] İleri yön varış debisi ölçümü (salt ölçüm; bayrak kapalıyken okunmaz).
+                slot.rx.observe_arrival_bytes(n as u64, now);
                 match parsed {
                     // [S1B] İki DATA çerçevesi TEK kolda işlenir. Fark yalnızca chunk
                     // metadata'sının NEREDEN geldiğidir:
@@ -4315,6 +4330,45 @@ mod live_diag_mirror_tests {
             } else {
                 assert!(!written, "kapalı: ayna trafik boyunca varsayılan kaldı");
                 assert_eq!(live, ClientLiveDiag::default());
+            }
+        }
+    }
+
+    /// [Q2 A-6] `RuntimeConfig::e1_flags.a6_iw_floor` `Sender::set_e1_flags` yoluyla motora ulaşır ve
+    /// deney kaydı (`Sender::diag_a6`) canlı aynada `control.a6` olarak görünür. Bayrak kapalıyken
+    /// kayıt varsayılandır (`enabled == false`). Trafik: ilk emisyon düşer, ARQ kurtarır (kayıp
+    /// bekleyen kaldığı için PreConverge'den Startup'a geçilir ve taban kurulur).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a6_record_reaches_the_live_mirror() {
+        for on in [false, true] {
+            let cfg = RuntimeConfig {
+                e1_flags: adaptive_transport::rate::E1Flags {
+                    a6_iw_floor: on,
+                    ..adaptive_transport::rate::E1Flags::default()
+                },
+                ..no_fec(RuntimeConfig::default().drain_cap)
+            };
+            let (server, client) = pair(&cfg).await;
+            for i in 0..UNITS {
+                client
+                    .send(format!("ayna-{i}").into_bytes())
+                    .expect("offer");
+            }
+            let settled = wait_until(|| {
+                let live = client.live_diag();
+                client.outstanding() == 0
+                    && live.ack.frames >= 1
+                    && (!on || live.control.a6.armed_ns.is_some())
+            })
+            .await;
+            let a6 = client.live_diag().control.a6;
+            let _ = client.shutdown().await;
+            let _ = server.shutdown().await;
+            assert!(settled, "bayrak {on}: {a6:?}");
+            if on {
+                assert!(a6.enabled && a6.arms >= 1, "{a6:?}");
+            } else {
+                assert_eq!(a6, adaptive_transport::sender::A6FloorDiag::default());
             }
         }
     }

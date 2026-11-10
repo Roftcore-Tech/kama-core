@@ -195,6 +195,12 @@ pub fn effective_send_rate(
 /// | `e1_drainrt_gate` | DrainRtprop girişi yalnız rtprop bayat ∧ qd ≥ [`E1_DRAINRT_QD_MIN_PERMILLE`] |
 /// | `e1_probe_keep` | (e-dar) bekleyen kayıp ProbeUp'ı kesmez; atıflı kayıp iptal ettirmez; qd iptali kalır; retx koşulu `!pending_lost.is_empty() ∧ state ≠ RecoverFwd` |
 /// | `retx_first` | ARQ-önce koşulu `retx_first ∨ tick % K_ARQ_SHARE == 0` |
+/// | `a3_burst_floor` | [Q2 A-3] kova tavanının alt sınırı `max(front, 2·MTU)` (PreConverge dışında; orada ilk-uçuş davranışı aynen) |
+/// | `a4_probe_srtt` | [Q2 A-4] ProbeUp atıflı-kayıp iptali yok (iptal yalnız qd); Steady'de prob saati `srtt` (EAI'siz): periyot `K_PROBE_PERIOD_EPOCH·srtt`, giriş-donuk dwell/volume aynı saatle |
+/// | `a6_iw_floor` | [Q2 A-6, deney] Startup rampasında, bant tahmini uygulamayla-sınırlı-olmayan tam bir tur görmemişken bw terimi `max(gain·BtlBw, A6_IW_BYTES/srtt)` ve rampa boyunca düşmez; fuzzy kazancı ve `cwnd/srtt` tavanı aynen |
+///
+/// Son üç satır Q2 eki (`QUINN-FARKI-KOD-KARSILASTIRMA-2026-11-09.md` §3-A 3, 4 ve 6); onlarla birlikte
+/// 256 birleşimin hepsi geçerlidir. `Default` sekizini de kapatır.
 ///
 /// Hiçbir bayrak kaybı hız girdisi yapmaz (INV-RATE-1); `diag_*` sayaçları karar girdisi olmaz (INV-007).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -209,6 +215,48 @@ pub struct E1Flags {
     pub e1_probe_keep: bool,
     /// ARQ-önce her izinde (CC §4.1, CC-K6).
     pub retx_first: bool,
+    /// [Q2 A-3] Kova tavanı tabanı 2·MTU (PreConverge hariç): pacer'ın `size > burst_cap` yolu
+    /// (`ns_until_sendable` → `None`) ürün hızlarında retx/parite birimini kalıcı bekletmez.
+    pub a3_burst_floor: bool,
+    /// [Q2 A-4] ProbeUp: atıflı kayıp iptal ettirmez (iptal yalnız qd); prob saati `srtt` (EAI'siz).
+    pub a4_probe_srtt: bool,
+    /// [Q2 A-6, deney; varsayılan kapalı] Startup bw-terimi tabanı [`A6_IW_BYTES`]`/srtt`. Kapı: bant
+    /// tahmini uygulamayla-sınırlı-olmayan tam bir tur görmemişken (görüldüğü an kalıcı kalkar).
+    /// Rampa boyunca bw terimi düşmez; `cwnd/srtt` tavanı aynen bağlar. Ayrıntı `Sender` A-6 bloğunda.
+    pub a6_iw_floor: bool,
+}
+
+/// [Q2 A-6] İlk pencere, MTU cinsinden: RFC 9002 §7.2 `kInitialWindow` = 10 · max_datagram_size
+/// (quinn `congestion/cubic.rs:266`). Sahip kararı (EK-A §9.2) sayısı; [CAL] DEĞİL.
+pub const A6_IW_MTUS: u64 = 10;
+
+/// [Q2 A-6] İlk pencere (bayt) = [`A6_IW_MTUS`] × [`DEFAULT_MTU`] = 12 000 B. Startup bw-terimi
+/// tabanı `A6_IW_BYTES / srtt` (B/s).
+pub const A6_IW_BYTES: u64 = A6_IW_MTUS * DEFAULT_MTU;
+
+/// [Q2 A-6] [`effective_send_rate_cwnd_gain`]'in bw-terimi tabanlı eşi: bw terimi
+/// `max(pacing_gain × BtlBw, bw_floor)`. Fuzzy kazancı, `cwnd = max(cwnd_gain × BDP, min_cwnd)` ve
+/// `cwnd/srtt` tavanı (son söz) aynen; `bw_floor` cwnd'ye GİRMEZ (BDP ölçülen BtlBw'den). `bw_floor = 0`
+/// ⇒ [`effective_send_rate_cwnd_gain`] ile aynı sonuç (kazanç ≤ 1000‰ iken; üstünde bu işlev
+/// `u64::MAX`'e doyar, eşi keser).
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn effective_send_rate_bw_floor(
+    cfg: &SrcConfig,
+    cwnd_gain: Gain,
+    btlbw: u64,
+    rtprop: Duration,
+    srtt: Duration,
+    pacing_gain: Gain,
+    send_rate_gain_permille: u32,
+    bw_floor: u64,
+) -> u64 {
+    let bdp = bdp_bytes(btlbw, rtprop);
+    let cwnd = cwnd_with_gain(cfg, cwnd_gain, bdp);
+    let pacing = pacing_gain.apply(btlbw).max(bw_floor);
+    let throttled = u64::try_from(u128::from(pacing) * u128::from(send_rate_gain_permille) / 1000)
+        .unwrap_or(u64::MAX);
+    throttled.min(rate_from_window(cwnd, srtt))
 }
 
 /// [E1 DrainRtprop kapısı] DrainRtprop girişi için asgari kuyruk gecikmesi oranı (‰, qd/RTprop).
@@ -264,6 +312,59 @@ mod e1_tests {
                 && !f.e1_drainrt_gate
                 && !f.e1_probe_keep
                 && !f.retx_first
+                && !f.a3_burst_floor
+                && !f.a4_probe_srtt
+                && !f.a6_iw_floor
+        );
+    }
+
+    #[test]
+    fn a6_iw_bytes_is_ten_mtu() {
+        assert_eq!(A6_IW_BYTES, 10 * DEFAULT_MTU);
+        assert_eq!(A6_IW_BYTES, 12_000);
+    }
+
+    #[test]
+    fn a6_bw_floor_zero_matches_cwnd_gain_variant_and_floor_only_lifts_bw_term() {
+        let cfg = SrcConfig::default();
+        let two = Gain {
+            num: CWND_GAIN,
+            den: 1,
+        };
+        for &(bw, rtp_ms, srtt_ms, g) in &[
+            (12_500u64, 300u64, 450u64, 1000u32),
+            (1_000, 1_000, 1_400, 1000),
+            (250_000, 50, 90, 750),
+            (0, 300, 300, 1000),
+        ] {
+            let rtp = Duration::from_millis(rtp_ms);
+            let srtt = Duration::from_millis(srtt_ms);
+            for pg in [Gain::STARTUP, Gain::STEADY, Gain::PROBE_UP] {
+                for cg in [two, E1_STARTUP_CWND_GAIN] {
+                    assert_eq!(
+                        effective_send_rate_bw_floor(&cfg, cg, bw, rtp, srtt, pg, g, 0),
+                        effective_send_rate_cwnd_gain(&cfg, cg, bw, rtp, srtt, pg, g)
+                    );
+                }
+            }
+        }
+        // 325 B/s uygulamayla-sınırlı ısınma bw'si, 300 ms: bw terimi 2,885 × 325 = 937 B/s; taban
+        // 12 000 B / 0,3 s = 40 000 B/s. Tavan cwnd = max(2 × 97 B, 4800 B) = 4800 B ⇒ 16 000 B/s bağlar.
+        let rtp = Duration::from_millis(300);
+        let floor = 40_000;
+        assert_eq!(
+            effective_send_rate_bw_floor(&cfg, two, 325, rtp, rtp, Gain::STARTUP, 1000, 0),
+            937
+        );
+        assert_eq!(
+            effective_send_rate_bw_floor(&cfg, two, 325, rtp, rtp, Gain::STARTUP, 1000, floor),
+            16_000,
+            "cwnd/srtt tavanı tabanın üstünde son sözü söyler"
+        );
+        // Fuzzy kazancı tabanlı bw terimine de uygulanır (yalnız bw terimi değişir).
+        assert_eq!(
+            effective_send_rate_bw_floor(&cfg, two, 325, rtp, rtp, Gain::STARTUP, 250, floor),
+            10_000
         );
     }
 
