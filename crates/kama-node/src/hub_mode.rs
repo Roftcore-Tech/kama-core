@@ -173,6 +173,13 @@ impl HubSide {
             .collect()
     }
 
+    /// C9 (A5-min): hub'dan gelen son datagramın (her tür) yaşı, saniye.
+    pub(crate) fn last_rx_age_s(&self) -> Option<u64> {
+        lock(&self.link)
+            .last_rx_age(Instant::now())
+            .map(|d| d.as_secs())
+    }
+
     /// `HubEndpoint` sayaçları (salt-okunur; ölçüm sondası).
     #[cfg(feature = "test-util")]
     pub(crate) fn counters(&self) -> HubEndpointCounters {
