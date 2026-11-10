@@ -16,6 +16,12 @@
 //! [YOL3 · A-6 gece] `K1A6` = K1A + Q2 A-6 `a6_iw_floor` (E1Flags; Startup bw-terimi tabanı
 //! 10·MTU/srtt, deney, varsayılan kapalı). E2a seti K1A'nınki.
 //!
+//! [YOL3 · gösterim ablasyonu] Gösterim seti = `K1A6` (sahip kararı 2026-11-10 madde 3; kama-node
+//! `goster::GOSTER_KOL`). R3 koruma hücresi tutmazsa bırak-birini-çıkar kolları (madde 3/4):
+//! `K1A6mA1` = K1A6 − gap_ack · `K1A6mA2` = − return_prior_gated · `K1A6mA3` = − a3_burst_floor ·
+//! `K1A6mA4` = − a4_probe_srtt · `K1A6mA5` = − pto_rfc (`pto_probes = 2` M1 E2a setinde kalır) ·
+//! K1A6 − a6_iw_floor = `K1A` (yeni ad yok). Ad deseni `K2mc` = K2−c ile aynı (`m` = eksi).
+//!
 //! Kol → bayrak tablosu M2'nin teşhis manifestindeki tablonun aynısıdır (`docs/design/
 //! E1-TESHIS-G2.md`, KK-M2-09); `crates/kama-integration/examples/f0_flows.rs` `E1Arm::set` ile
 //! aynı. Seçim süreç başına bir kez [`set`] edilir (main; `rival::set` deseni) ve
@@ -67,6 +73,21 @@ pub enum E1Arm {
     /// [A-6 gece] K1A + a6_iw_floor (Q2 A-6).
     #[value(name = "K1A6")]
     K1A6,
+    /// [Ablasyon] K1A6 − gap_ack (A-1).
+    #[value(name = "K1A6mA1")]
+    K1A6mA1,
+    /// [Ablasyon] K1A6 − return_prior_gated (A-2).
+    #[value(name = "K1A6mA2")]
+    K1A6mA2,
+    /// [Ablasyon] K1A6 − a3_burst_floor (A-3).
+    #[value(name = "K1A6mA3")]
+    K1A6mA3,
+    /// [Ablasyon] K1A6 − a4_probe_srtt (A-4).
+    #[value(name = "K1A6mA4")]
+    K1A6mA4,
+    /// [Ablasyon] K1A6 − pto_rfc (A-5; `pto_probes = 2` kalır).
+    #[value(name = "K1A6mA5")]
+    K1A6mA5,
 }
 
 /// `--e1-edar on|off` (varsayılan `on`): `off` → ön test geçmediyse (CC §4.2) kolun setinden
@@ -116,14 +137,33 @@ impl E1Arm {
             Self::K1grp => "K1grp",
             Self::K1A => "K1A",
             Self::K1A6 => "K1A6",
+            Self::K1A6mA1 => "K1A6mA1",
+            Self::K1A6mA2 => "K1A6mA2",
+            Self::K1A6mA3 => "K1A6mA3",
+            Self::K1A6mA4 => "K1A6mA4",
+            Self::K1A6mA5 => "K1A6mA5",
         }
+    }
+
+    /// [Ablasyon] K1A6 ailesi: K1A6 ve bırak-birini-çıkar kolları (a6_iw_floor hepsinde açık).
+    fn k1a6_family(self) -> bool {
+        matches!(
+            self,
+            Self::K1A6
+                | Self::K1A6mA1
+                | Self::K1A6mA2
+                | Self::K1A6mA3
+                | Self::K1A6mA4
+                | Self::K1A6mA5
+        )
     }
 
     /// Kol → bayraklar (M2 manifesti KK-M2-09 AYNEN): K0 hiçbiri · K0r retx_first ·
     /// K1 c+d+DrainRtprop+e-dar · K2 beşi · K2−c d+DrainRtprop+e-dar+retx_first ·
     /// K2−e c+d+DrainRtprop+retx_first. [E2a kıyası] K1a = K1'in E1 seti · K0a hiçbiri.
     /// [A merdiveni] K1g, K1gr, K1grp = K1'in E1 seti · K1A = K1 + a3_burst_floor + a4_probe_srtt.
-    /// [A-6 gece] K1A6 = K1A + a6_iw_floor.
+    /// [A-6 gece] K1A6 = K1A + a6_iw_floor. [Ablasyon] K1A6mA3 a3'süz, K1A6mA4 a4'süz; diğer
+    /// ablasyon kollarının E1 seti K1A6'nınki.
     pub fn set(self) -> E1Set {
         let (c, d, dr, e, r) = match self {
             Self::K0 | Self::K0a => (false, false, false, false, false),
@@ -134,21 +174,27 @@ impl E1Arm {
             | Self::K1gr
             | Self::K1grp
             | Self::K1A
-            | Self::K1A6 => (true, true, true, true, false),
+            | Self::K1A6
+            | Self::K1A6mA1
+            | Self::K1A6mA2
+            | Self::K1A6mA3
+            | Self::K1A6mA4
+            | Self::K1A6mA5 => (true, true, true, true, false),
             Self::K2 => (true, true, true, true, true),
             Self::K2mc => (false, true, true, true, true),
             Self::K2me => (true, true, true, false, true),
         };
-        let q2 = matches!(self, Self::K1A | Self::K1A6);
+        let a6 = self.k1a6_family();
+        let q2 = self == Self::K1A || a6;
         E1Set {
             startup_cwnd: c,
             applimited_plateau: d,
             drainrt_gate: dr,
             probe_keep: e,
             retx_first: r,
-            a3_burst_floor: q2,
-            a4_probe_srtt: q2,
-            a6_iw_floor: self == Self::K1A6,
+            a3_burst_floor: q2 && self != Self::K1A6mA3,
+            a4_probe_srtt: q2 && self != Self::K1A6mA4,
+            a6_iw_floor: a6,
         }
     }
 }
@@ -156,14 +202,21 @@ impl E1Arm {
 impl E1Arm {
     /// [E2a kıyası] Kol → E2a seti: K1a ve K0a `tt_rfc` + `rtt_rule_v11` + `iw_idle_hold` +
     /// `pto_probes = 2`. [A merdiveni] K1g gap_ack · K1gr + return_prior_gated · K1grp + pto_rfc +
-    /// pto_probes = 2 · K1A yedisi. Diğer kollar varsayılan (kapalı, `pto_probes = 1`).
+    /// pto_probes = 2 · K1A yedisi. [Ablasyon] K1A6mA1 gap_ack'sız, K1A6mA2 return_prior_gated'sız,
+    /// K1A6mA5 pto_rfc'siz (pto_probes = 2 kalır); K1A6mA3/mA4 yedisi. Diğer kollar varsayılan
+    /// (kapalı, `pto_probes = 1`).
     pub fn e2a(self) -> E2aSet {
         let (tt, v11, iw, probes, gap, rpg, pto) = match self {
             Self::K1a | Self::K0a => (true, true, true, 2, false, false, false),
             Self::K1g => (false, false, false, 1, true, false, false),
             Self::K1gr => (false, false, false, 1, true, true, false),
             Self::K1grp => (false, false, false, 2, true, true, true),
-            Self::K1A | Self::K1A6 => (true, true, true, 2, true, true, true),
+            Self::K1A | Self::K1A6 | Self::K1A6mA3 | Self::K1A6mA4 => {
+                (true, true, true, 2, true, true, true)
+            }
+            Self::K1A6mA1 => (true, true, true, 2, false, true, true),
+            Self::K1A6mA2 => (true, true, true, 2, true, false, true),
+            Self::K1A6mA5 => (true, true, true, 2, true, true, false),
             _ => return E2aSet::default(),
         };
         E2aSet {
@@ -391,6 +444,20 @@ mod tests {
                 "K1A6",
                 "c+d+DrainRtprop+e-dar+a3_burst_floor+a4_probe_srtt+a6_iw_floor",
             ),
+            (
+                "K1A6mA1",
+                "c+d+DrainRtprop+e-dar+a3_burst_floor+a4_probe_srtt+a6_iw_floor",
+            ),
+            (
+                "K1A6mA2",
+                "c+d+DrainRtprop+e-dar+a3_burst_floor+a4_probe_srtt+a6_iw_floor",
+            ),
+            ("K1A6mA3", "c+d+DrainRtprop+e-dar+a4_probe_srtt+a6_iw_floor"),
+            ("K1A6mA4", "c+d+DrainRtprop+e-dar+a3_burst_floor+a6_iw_floor"),
+            (
+                "K1A6mA5",
+                "c+d+DrainRtprop+e-dar+a3_burst_floor+a4_probe_srtt+a6_iw_floor",
+            ),
         ];
         for (name, label) in want {
             let arm = E1Arm::from_str(name, false).expect("kol adı ayrışmalı");
@@ -460,6 +527,11 @@ mod tests {
                     | E1Arm::K1grp
                     | E1Arm::K1A
                     | E1Arm::K1A6
+                    | E1Arm::K1A6mA1
+                    | E1Arm::K1A6mA2
+                    | E1Arm::K1A6mA3
+                    | E1Arm::K1A6mA4
+                    | E1Arm::K1A6mA5
             ) {
                 assert_eq!(arm.e2a().flags(), Ok(E2aFlags::default()), "{}", arm.name());
                 assert_eq!(arm.e2a().label(), "-");
@@ -552,11 +624,75 @@ mod tests {
         for arm in E1Arm::value_variants() {
             assert_eq!(
                 arm.set().flags().a6_iw_floor,
-                *arm == E1Arm::K1A6,
-                "{}",
+                arm.name().starts_with("K1A6"),
+                "{}: a6 yalnız K1A6 ailesinde",
                 arm.name()
             );
         }
+    }
+
+    /// [Ablasyon] Her K1A6mAi kolu K1A6'dan TAM BİR bayrakla ayrılır; K1A6 − A-6 = K1A.
+    #[test]
+    fn ablation_arms_drop_exactly_one_a_flag() {
+        let d = E1Arm::K1A6;
+        let (e1, e2a) = (d.set(), d.e2a());
+        let want = [
+            (
+                E1Arm::K1A6mA1,
+                e1,
+                E2aSet {
+                    gap_ack: false,
+                    ..e2a
+                },
+            ),
+            (
+                E1Arm::K1A6mA2,
+                e1,
+                E2aSet {
+                    return_prior_gated: false,
+                    ..e2a
+                },
+            ),
+            (
+                E1Arm::K1A6mA3,
+                E1Set {
+                    a3_burst_floor: false,
+                    ..e1
+                },
+                e2a,
+            ),
+            (
+                E1Arm::K1A6mA4,
+                E1Set {
+                    a4_probe_srtt: false,
+                    ..e1
+                },
+                e2a,
+            ),
+            (
+                E1Arm::K1A6mA5,
+                e1,
+                E2aSet {
+                    pto_rfc: false,
+                    ..e2a
+                },
+            ),
+            (
+                E1Arm::K1A,
+                E1Set {
+                    a6_iw_floor: false,
+                    ..e1
+                },
+                e2a,
+            ),
+        ];
+        for (arm, want_e1, want_e2a) in want {
+            assert_eq!(arm.set(), want_e1, "{}", arm.name());
+            assert_eq!(arm.e2a(), want_e2a, "{}", arm.name());
+            assert!(arm.e2a().flags().is_ok(), "{}", arm.name());
+            assert_ne!((arm.set(), arm.e2a()), (e1, e2a), "{}: tek fark", arm.name());
+        }
+        assert_eq!(E1Arm::K1A6mA5.e2a().pto_probes, 2, "A-5 düşünce PTO 2 kalır");
     }
 
     #[test]
