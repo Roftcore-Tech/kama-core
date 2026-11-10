@@ -172,6 +172,7 @@ fn e1_flags_reach_the_engine_through_the_public_setter() {
         retx_first: true,
         a3_burst_floor: false,
         a4_probe_srtt: false,
+        a6_iw_floor: false,
     };
     let mut differs = 0;
     for (_, offers, dur, rate, owd, loss) in scenarios() {

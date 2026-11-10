@@ -151,7 +151,7 @@ kullanım: f0_flows --role alice|bob --dir <koşu dizini> --alice-addr IP:PORT -
                 [--window-s S=300] [--receipt-grace-s S=30] [--connect-timeout-s S=30]
                 [--probe-ms MS=200]
                 [--live-diag on|off=on]
-                [--e1-arm K0|K0r|K1|K2|K2mc|K2me|K1a|K0a|K1g|K1gr|K1grp|K1A=K0]
+                [--e1-arm K0|K0r|K1|K2|K2mc|K2me|K1a|K0a|K1g|K1gr|K1grp|K1A|K1A6=K0]
                 [--e1-edar on|off=on]
                 [--fec-off on|off=off] [--goster on|off=off] [--playout-ms MS=2000]
        f0_flows --help
@@ -165,7 +165,7 @@ runtime.fec = None; varsayılanlarda düğüm F0 ile aynı kurucudan başlar (ka
 E2a kıyası: K1a = K1 + E2a, K0a = yalnız E2a (M1 E2aFlags: tt_rfc g=1ms, rtt_rule_v11,
 iw_idle_hold, pto_probes=2). A merdiveni (Q1+Q2): K1g = K1 + gap_ack, K1gr = K1g +
 return_prior_gated, K1grp = K1gr + pto_rfc + pto_probes=2, K1A = K1 + E2a'nın hepsi +
-a3_burst_floor + a4_probe_srtt.
+a3_burst_floor + a4_probe_srtt. A-6 gece: K1A6 = K1A + a6_iw_floor (Q2 A-6).
 Gösterim (YOL3-T1): --goster on → S1 şeritleri (LaneConfig::default, W=5) + PTT oynatma tamponu
 (T = --playout-ms, [1500, 2500], varsayılan 2000); --playout-ms yalnız --goster on ile. İki uca aynı.
 ";
@@ -239,6 +239,8 @@ enum E1Arm {
     K1grp,
     /// [A merdiveni] K1 + E2a'nın hepsi + a3_burst_floor + a4_probe_srtt (Q1 + Q2).
     K1A,
+    /// [A-6 gece] K1A + a6_iw_floor (Q2 A-6).
+    K1A6,
 }
 
 /// Bir kolun açtığı E1 bayrakları (CC §4.1 adlarıyla; M2 `E1Flags` alanlarının aynı sırası).
@@ -258,10 +260,12 @@ struct E1Set {
     a3_burst_floor: bool,
     /// [Q2 A-4] `a4_probe_srtt`.
     a4_probe_srtt: bool,
+    /// [Q2 A-6] `a6_iw_floor`.
+    a6_iw_floor: bool,
 }
 
 impl E1Arm {
-    const ALL: [Self; 12] = [
+    const ALL: [Self; 13] = [
         Self::K0,
         Self::K0r,
         Self::K1,
@@ -274,6 +278,7 @@ impl E1Arm {
         Self::K1gr,
         Self::K1grp,
         Self::K1A,
+        Self::K1A6,
     ];
 
     fn parse(name: &str) -> Option<Self> {
@@ -294,6 +299,7 @@ impl E1Arm {
             Self::K1gr => "K1gr",
             Self::K1grp => "K1grp",
             Self::K1A => "K1A",
+            Self::K1A6 => "K1A6",
         }
     }
 
@@ -302,18 +308,23 @@ impl E1Arm {
     /// K2−c d+DrainRtprop+e-dar+retx_first · K2−e c+d+DrainRtprop+retx_first.
     /// [E2a kıyası] K1a = K1'in E1 seti · K0a hiçbiri (fark yalnız [`Self::e2a`]).
     /// [A merdiveni] K1g, K1gr, K1grp = K1'in E1 seti · K1A = K1 + a3_burst_floor + a4_probe_srtt.
+    /// [A-6 gece] K1A6 = K1A + a6_iw_floor.
     fn set(self) -> E1Set {
         let (c, d, dr, e, r) = match self {
             Self::K0 | Self::K0a => (false, false, false, false, false),
             Self::K0r => (false, false, false, false, true),
-            Self::K1 | Self::K1a | Self::K1g | Self::K1gr | Self::K1grp | Self::K1A => {
-                (true, true, true, true, false)
-            }
+            Self::K1
+            | Self::K1a
+            | Self::K1g
+            | Self::K1gr
+            | Self::K1grp
+            | Self::K1A
+            | Self::K1A6 => (true, true, true, true, false),
             Self::K2 => (true, true, true, true, true),
             Self::K2mc => (false, true, true, true, true),
             Self::K2me => (true, true, true, false, true),
         };
-        let q2 = self == Self::K1A;
+        let q2 = matches!(self, Self::K1A | Self::K1A6);
         E1Set {
             startup_cwnd: c,
             applimited_plateau: d,
@@ -322,6 +333,7 @@ impl E1Arm {
             retx_first: r,
             a3_burst_floor: q2,
             a4_probe_srtt: q2,
+            a6_iw_floor: self == Self::K1A6,
         }
     }
 }
@@ -337,7 +349,7 @@ impl E1Arm {
             Self::K1g => (false, false, false, 1, true, false, false),
             Self::K1gr => (false, false, false, 1, true, true, false),
             Self::K1grp => (false, false, false, 2, true, true, true),
-            Self::K1A => (true, true, true, 2, true, true, true),
+            Self::K1A | Self::K1A6 => (true, true, true, 2, true, true, true),
             _ => return E2aSet::default(),
         };
         E2aSet {
@@ -446,6 +458,7 @@ impl E1Set {
             retx_first: self.retx_first,
             a3_burst_floor: self.a3_burst_floor,
             a4_probe_srtt: self.a4_probe_srtt,
+            a6_iw_floor: self.a6_iw_floor,
         }
     }
 
@@ -459,6 +472,7 @@ impl E1Set {
             (self.retx_first, "retx_first"),
             (self.a3_burst_floor, "a3_burst_floor"),
             (self.a4_probe_srtt, "a4_probe_srtt"),
+            (self.a6_iw_floor, "a6_iw_floor"),
         ]
         .into_iter()
         .filter_map(|(on, name)| on.then_some(name))
@@ -708,7 +722,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
             None => E1Arm::K0,
             Some(name) => E1Arm::parse(name).ok_or_else(|| {
                 format!(
-                    "--e1-arm K0|K0r|K1|K2|K2mc|K2me|K1a|K0a|K1g|K1gr|K1grp|K1A olmalı: {name:?}"
+                    "--e1-arm K0|K0r|K1|K2|K2mc|K2me|K1a|K0a|K1g|K1gr|K1grp|K1A|K1A6 olmalı: {name:?}"
                 )
             })?,
         },
@@ -1303,6 +1317,38 @@ fn session_json(s: &mut String, clock: &Clock, sp: &SessionProbe) {
         ",\"rtp\":{},\"pu\":{},\"lpc\":{}",
         rtprop, c.probe_up_entries, d.left_preconverge_ns
     );
+    // [Q2 A-6] Startup bw-terimi tabanının deney kaydı (aynadan, salt gözlem). Yalnız bayrak açıkken
+    // yazılır; kapalı kollarda anahtar YOK (satır eskisiyle aynı). Anlar ms, ucun saat tabanında
+    // (`lpc` ile aynı taban); olmayan an `null`. [Ö] `o_ms`: o tabanın sıfırının (`clock_origin`)
+    // Unix ms'i — okuma anları dosya başlangıcıyla aynı saatte kıyaslar (oku_a6.py); yoksa `null`.
+    let a6 = &c.a6;
+    if a6.enabled {
+        let origin = d
+            .clock_origin
+            .map_or_else(|| "null".to_owned(), |o| format!("{:.3}", clock.ms(o)));
+        let ms = |v: Option<u64>| {
+            v.map_or_else(|| "null".to_owned(), |ns| format!("{:.3}", ns as f64 / 1e6))
+        };
+        let why = a6
+            .release
+            .map_or_else(|| "null".to_owned(), |r| js(&format!("{r:?}")));
+        let _ = write!(
+            s,
+            ",\"a6\":{{\"arm_ms\":{},\"arms\":{},\"r0\":{},\"rel_ms\":{},\"why\":{},\"up\":{},\
+             \"lup_ms\":{},\"fr_ms\":{},\"rd\":{},\"bwt\":{},\"o_ms\":{}}}",
+            ms(a6.armed_ns),
+            a6.arms,
+            a6.round_done_at_arm,
+            ms(a6.released_ns),
+            why,
+            a6.raise_decisions,
+            ms(a6.last_raise_ns),
+            ms(a6.full_round_ns),
+            a6.rounds,
+            a6.bw_term_bps,
+            origin
+        );
+    }
     match &d.recovery {
         Some(r) => {
             let t = &r.timers;
@@ -2887,6 +2933,10 @@ mod tests {
             ("K1gr", "c+d+DrainRtprop+e-dar"),
             ("K1grp", "c+d+DrainRtprop+e-dar"),
             ("K1A", "c+d+DrainRtprop+e-dar+a3_burst_floor+a4_probe_srtt"),
+            (
+                "K1A6",
+                "c+d+DrainRtprop+e-dar+a3_burst_floor+a4_probe_srtt+a6_iw_floor",
+            ),
         ];
         for (name, label) in want {
             let cfg = parse(&format!("--e1-arm {name}")).expect("kol ayrışmalı");
@@ -2956,6 +3006,7 @@ mod tests {
                 retx_first: true,
                 a3_burst_floor: false,
                 a4_probe_srtt: false,
+                a6_iw_floor: false,
             }
         );
         assert_eq!(
@@ -3030,6 +3081,12 @@ mod tests {
                  return_prior_gated+pto_rfc",
                 true,
             ),
+            (
+                "K1A6",
+                "tt_rfc(g=1ms)+rtt_rule_v11+iw_idle_hold+pto_probes=2+gap_ack+\
+                 return_prior_gated+pto_rfc",
+                true,
+            ),
         ];
         for (name, e2a_label, q2) in want {
             let cfg = parse(&format!("--e1-arm {name} --fec-off on --goster on")).expect("ok");
@@ -3056,10 +3113,12 @@ mod tests {
             assert_eq!(f.tt_rfc(), set.tt_rfc, "{name}");
             let e1 = c.runtime.e1_flags;
             assert_eq!((e1.a3_burst_floor, e1.a4_probe_srtt), (q2, q2), "{name}");
+            assert_eq!(e1.a6_iw_floor, name == "K1A6", "{name}: a6 yalnız K1A6'da");
             assert_eq!(
                 E1Flags {
                     a3_burst_floor: false,
                     a4_probe_srtt: false,
+                    a6_iw_floor: false,
                     ..e1
                 },
                 E1Arm::K1.set().flags(),
@@ -3141,5 +3200,43 @@ mod tests {
             ),
             "{hdr}"
         );
+    }
+
+    /// [Q2 A-6 + Ö] `a6` ayna nesnesi yalnız bayrak açıkken yazılır (kapalı kolda satır aynı);
+    /// `o_ms` uç saat tabanının sıfırının Unix ms'i, diğer anlar o tabanda.
+    #[test]
+    fn a6_mirror_only_when_enabled_and_carries_clock_origin() {
+        let clock = Clock::new();
+        let origin = Instant::now();
+        let mut sp = SessionProbe {
+            session: kama_contracts::handles::SessionHandle::from_raw(0),
+            peer_id: Some(BOB.to_owned()),
+            epoch: None,
+            diag: client_core::runtime::ClientLiveDiag::default(),
+            reorder: None,
+        };
+        sp.diag.clock_origin = Some(origin);
+        let mut off = String::new();
+        session_json(&mut off, &clock, &sp);
+        assert!(!off.contains("\"a6\""), "{off}");
+        sp.diag.control.a6 = adaptive_transport::sender::A6FloorDiag {
+            enabled: true,
+            armed_ns: Some(1_500_000_000),
+            arms: 1,
+            released_ns: Some(4_000_000_000),
+            release: Some(adaptive_transport::sender::A6Release::FullRound),
+            raise_decisions: 7,
+            ..adaptive_transport::sender::A6FloorDiag::default()
+        };
+        let mut on = String::new();
+        session_json(&mut on, &clock, &sp);
+        let a6 = format!(
+            ",\"a6\":{{\"arm_ms\":1500.000,\"arms\":1,\"r0\":false,\"rel_ms\":4000.000,\
+             \"why\":\"FullRound\",\"up\":7,\"lup_ms\":null,\"fr_ms\":null,\"rd\":0,\"bwt\":0,\
+             \"o_ms\":{:.3}}}",
+            clock.ms(origin)
+        );
+        assert!(on.contains(&a6), "{on}");
+        assert_eq!(on.replacen(&a6, "", 1), off, "kapalı kolda satır aynı");
     }
 }

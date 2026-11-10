@@ -13,6 +13,9 @@
 //! pto_probes = 2 · `K1A` = K1 + E2a'nın hepsi (K1a'nın dördü + gap_ack + return_prior_gated +
 //! pto_rfc) + a3_burst_floor + a4_probe_srtt. Ürün değerleri (kapalı) diğer bütün kollarda.
 //!
+//! [YOL3 · A-6 gece] `K1A6` = K1A + Q2 A-6 `a6_iw_floor` (E1Flags; Startup bw-terimi tabanı
+//! 10·MTU/srtt, deney, varsayılan kapalı). E2a seti K1A'nınki.
+//!
 //! Kol → bayrak tablosu M2'nin teşhis manifestindeki tablonun aynısıdır (`docs/design/
 //! E1-TESHIS-G2.md`, KK-M2-09); `crates/kama-integration/examples/f0_flows.rs` `E1Arm::set` ile
 //! aynı. Seçim süreç başına bir kez [`set`] edilir (main; `rival::set` deseni) ve
@@ -61,6 +64,9 @@ pub enum E1Arm {
     /// [A merdiveni] K1 + E2a'nın hepsi + a3_burst_floor + a4_probe_srtt (Q1 + Q2).
     #[value(name = "K1A")]
     K1A,
+    /// [A-6 gece] K1A + a6_iw_floor (Q2 A-6).
+    #[value(name = "K1A6")]
+    K1A6,
 }
 
 /// `--e1-edar on|off` (varsayılan `on`): `off` → ön test geçmediyse (CC §4.2) kolun setinden
@@ -89,6 +95,8 @@ pub struct E1Set {
     pub a3_burst_floor: bool,
     /// [Q2 A-4] `a4_probe_srtt`.
     pub a4_probe_srtt: bool,
+    /// [Q2 A-6] `a6_iw_floor`.
+    pub a6_iw_floor: bool,
 }
 
 impl E1Arm {
@@ -107,6 +115,7 @@ impl E1Arm {
             Self::K1gr => "K1gr",
             Self::K1grp => "K1grp",
             Self::K1A => "K1A",
+            Self::K1A6 => "K1A6",
         }
     }
 
@@ -114,18 +123,23 @@ impl E1Arm {
     /// K1 c+d+DrainRtprop+e-dar · K2 beşi · K2−c d+DrainRtprop+e-dar+retx_first ·
     /// K2−e c+d+DrainRtprop+retx_first. [E2a kıyası] K1a = K1'in E1 seti · K0a hiçbiri.
     /// [A merdiveni] K1g, K1gr, K1grp = K1'in E1 seti · K1A = K1 + a3_burst_floor + a4_probe_srtt.
+    /// [A-6 gece] K1A6 = K1A + a6_iw_floor.
     pub fn set(self) -> E1Set {
         let (c, d, dr, e, r) = match self {
             Self::K0 | Self::K0a => (false, false, false, false, false),
             Self::K0r => (false, false, false, false, true),
-            Self::K1 | Self::K1a | Self::K1g | Self::K1gr | Self::K1grp | Self::K1A => {
-                (true, true, true, true, false)
-            }
+            Self::K1
+            | Self::K1a
+            | Self::K1g
+            | Self::K1gr
+            | Self::K1grp
+            | Self::K1A
+            | Self::K1A6 => (true, true, true, true, false),
             Self::K2 => (true, true, true, true, true),
             Self::K2mc => (false, true, true, true, true),
             Self::K2me => (true, true, true, false, true),
         };
-        let q2 = self == Self::K1A;
+        let q2 = matches!(self, Self::K1A | Self::K1A6);
         E1Set {
             startup_cwnd: c,
             applimited_plateau: d,
@@ -134,6 +148,7 @@ impl E1Arm {
             retx_first: r,
             a3_burst_floor: q2,
             a4_probe_srtt: q2,
+            a6_iw_floor: self == Self::K1A6,
         }
     }
 }
@@ -148,7 +163,7 @@ impl E1Arm {
             Self::K1g => (false, false, false, 1, true, false, false),
             Self::K1gr => (false, false, false, 1, true, true, false),
             Self::K1grp => (false, false, false, 2, true, true, true),
-            Self::K1A => (true, true, true, 2, true, true, true),
+            Self::K1A | Self::K1A6 => (true, true, true, 2, true, true, true),
             _ => return E2aSet::default(),
         };
         E2aSet {
@@ -261,6 +276,7 @@ impl E1Set {
             retx_first: self.retx_first,
             a3_burst_floor: self.a3_burst_floor,
             a4_probe_srtt: self.a4_probe_srtt,
+            a6_iw_floor: self.a6_iw_floor,
         }
     }
 
@@ -274,6 +290,7 @@ impl E1Set {
             (self.retx_first, "retx_first"),
             (self.a3_burst_floor, "a3_burst_floor"),
             (self.a4_probe_srtt, "a4_probe_srtt"),
+            (self.a6_iw_floor, "a6_iw_floor"),
         ]
         .into_iter()
         .filter_map(|(on, name)| on.then_some(name))
@@ -370,6 +387,10 @@ mod tests {
             ("K1gr", "c+d+DrainRtprop+e-dar"),
             ("K1grp", "c+d+DrainRtprop+e-dar"),
             ("K1A", "c+d+DrainRtprop+e-dar+a3_burst_floor+a4_probe_srtt"),
+            (
+                "K1A6",
+                "c+d+DrainRtprop+e-dar+a3_burst_floor+a4_probe_srtt+a6_iw_floor",
+            ),
         ];
         for (name, label) in want {
             let arm = E1Arm::from_str(name, false).expect("kol adı ayrışmalı");
@@ -432,7 +453,13 @@ mod tests {
         for arm in E1Arm::value_variants() {
             if !matches!(
                 arm,
-                E1Arm::K1a | E1Arm::K0a | E1Arm::K1g | E1Arm::K1gr | E1Arm::K1grp | E1Arm::K1A
+                E1Arm::K1a
+                    | E1Arm::K0a
+                    | E1Arm::K1g
+                    | E1Arm::K1gr
+                    | E1Arm::K1grp
+                    | E1Arm::K1A
+                    | E1Arm::K1A6
             ) {
                 assert_eq!(arm.e2a().flags(), Ok(E2aFlags::default()), "{}", arm.name());
                 assert_eq!(arm.e2a().label(), "-");
@@ -509,6 +536,29 @@ mod tests {
         assert_eq!(all.tt_granularity_ns(), 1_000_000);
     }
 
+    /// [A-6 gece] K1A6 = K1A + a6_iw_floor: E1'de tek fark a6, E2a seti K1A'nınki; a6 yalnız K1A6'da.
+    #[test]
+    fn k1a6_is_k1a_plus_a6_only() {
+        let a6 = E1Arm::K1A6.set().flags();
+        assert!(a6.a6_iw_floor);
+        assert_eq!(
+            E1Flags {
+                a6_iw_floor: false,
+                ..a6
+            },
+            E1Arm::K1A.set().flags()
+        );
+        assert_eq!(E1Arm::K1A6.e2a(), E1Arm::K1A.e2a());
+        for arm in E1Arm::value_variants() {
+            assert_eq!(
+                arm.set().flags().a6_iw_floor,
+                *arm == E1Arm::K1A6,
+                "{}",
+                arm.name()
+            );
+        }
+    }
+
     #[test]
     fn flags_map_field_by_field() {
         assert_eq!(E1Arm::K0.set().flags(), E1Flags::default());
@@ -522,6 +572,7 @@ mod tests {
                 retx_first: true,
                 a3_burst_floor: false,
                 a4_probe_srtt: false,
+                a6_iw_floor: false,
             }
         );
         assert_eq!(
@@ -534,6 +585,7 @@ mod tests {
                 retx_first: false,
                 a3_burst_floor: false,
                 a4_probe_srtt: false,
+                a6_iw_floor: false,
             }
         );
     }
