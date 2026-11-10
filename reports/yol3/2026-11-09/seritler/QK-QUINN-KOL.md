@@ -1,6 +1,6 @@
 # QK — G2 gösterim sahnesinde quinn kolu (2026-11-09)
 
-Dal `yol3/quinn-kol` @ **d93aef10** (origin'de) = yol2/o1 5fdad83b + 354584d3 (bench) + d93aef10 (düzenek). Worktree /home/ryuzaki/kama-wt/yol3-quinn-kol. Ürün crate'leri, tel ve altın vektörler değişmedi; Cargo.lock değişmedi.
+Dal `yol3/quinn-kol` @ **d93aef10** (origin'de) = yol2/o1 5fdad83b + 354584d3 (bench) + d93aef10 (düzenek). Worktree <worktree-kökü>/yol3-quinn-kol. Ürün crate'leri, tel ve altın vektörler değişmedi; Cargo.lock değişmedi.
 
 ## Kollar [kod]
 `bench f0-quinn --role alice|bob <hücrenin F0A_ARGS'ı aynen> --q-kol <kol>` (crates/bench/src/f0q.rs). f0_flows'un akış takvimi, gövde/boyları, sync işaretleri, tamamlanma kuralı ve çıktı biçimi aynen; f0a_analyze/f0a_tam/oku.py değişmeden okur.
@@ -12,11 +12,11 @@ Dal `yol3/quinn-kol` @ **d93aef10** (origin'de) = yol2/o1 5fdad83b + 354584d3 (b
 ## Koşu (KOSU-KAYDI biçimi; orkestratör)
 ```
 ağaç: yol3/quinn-kol d93aef104b01f7363935e859de0f89c389f909ab = yol2/o1 5fdad83b + QK
-derleme (D-34): KAMA_AGENT=ORK CARGO_TARGET_DIR=/home/ryuzaki/kama-wt/target-quinn-kol scripts/ci/cargo-lock.sh build --release --locked -p bench --bins
-export BIN_QK=/home/ryuzaki/kama-wt/target-quinn-kol/release/bench
-cd /home/ryuzaki/kama-wt/yol3-quinn-kol
-Q=~/kama-k4g-work/yol3/quinn/2026-11-10-q; mkdir -p "$Q"
-for c in ~/kama-k4g-work/yol3/tesis/2026-11-09-g2/a_r12k_d150_l20_foto150k__K*; do [ -d "$c" ] && ln -s "$c" "$Q/"; done
+derleme (D-34): KAMA_AGENT=ORK CARGO_TARGET_DIR=<worktree-kökü>/target-quinn-kol scripts/ci/cargo-lock.sh build --release --locked -p bench --bins
+export BIN_QK=<worktree-kökü>/target-quinn-kol/release/bench
+cd <worktree-kökü>/yol3-quinn-kol
+Q=<ölçüm-kökü>/yol3/quinn/2026-11-10-q; mkdir -p "$Q"
+for c in <ölçüm-kökü>/yol3/tesis/2026-11-09-g2/a_r12k_d150_l20_foto150k__K*; do [ -d "$c" ] && ln -s "$c" "$Q/"; done
 systemd-inhibit --what=sleep:idle --why="YOL3 quinn kolu" setsid scripts/ktp2/f0/f0_grid.sh -j 3 "$Q" $(cat scripts/yol3/tesis/SIRA-Q.txt)
 python3 -I scripts/yol3/tesis/oku.py --kok "$Q" --manifest docs/design/E1-TESHIS-G2.md   # → $Q/okuma/OKUMA.md "Gösterim sahnesi" tablosu
 ```

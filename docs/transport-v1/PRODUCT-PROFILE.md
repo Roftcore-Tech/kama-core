@@ -41,6 +41,7 @@ buna devreder). Değerler koddan okunmuştur (2026-09-11), tahmin değildir. Pin
 | `idle_hold` | `105 s` | SHIP | SESSION_IDLE_HOLD hizası | — | — |
 | `ts_sample_period_ns` | `None` | diagnostic (salt gözlem) | handoff enstrümanı | — | INV-007 |
 | `live_diag` | `false` | diagnostic (salt gözlem) | K4G-05 canlı teşhis aynası ve yazıcısı (`ClientLiveDiag`); çalışma-zamanı bayrağı, feature değil; kapalıyken yazıcı çalışmaz, açıkken motor kararları değişmez, maliyeti ölçülmedi; INT-02 düzeneği açar (2026-10-24 eklendi) | DUR-19 (CEVAP PAKETİ 9) | `product_v1_profile_is_pinned` |
+| `e1_flags` | `E1Flags::default()` — beşi `false`: `e1_startup_cwnd`, `e1_applimited_plateau`, `e1_drainrt_gate`, `e1_probe_keep`, `retx_first` | KEEP-EXPERIMENTAL (varsayılan kapalı) | E1 gösterim bayrakları (CC §4.1, CC-K5): çalışma-zamanı bayrağı, feature değil; kapalıyken motor bugünkü kod yolunu aynen çağırır; yalnız gösterim düğümü (`transport-v1.x-goster`) ve G2 teşhis kolları açar (2026-11-09 eklendi) | CC §4.1; ISEMRI-YOL3-M2 KK-M2-01/-02 | `product_v1_profile_is_pinned` |
 
 ## `ClientSession`'ın kurduğu, `RuntimeConfig` DIŞI sevk ayarları
 
@@ -66,3 +67,21 @@ ile duplicate) · `diag-sched-telemetry` (salt gözlem, `KP-ACTIVATED tail_probe
 `bench client --transport kama-product` bayraksız = bu profil. `--fec-profile` varsayılanı
 `KamaV1Profile::FEC_PROFILE_ID`'ye bağlıdır (literal değil). `profile_delta(&rt_cfg)` alan alan
 kıyaslar; boş değilse `arm = kama-custom`.
+
+## `transport-v1.x-goster` — yalnız gösterim düğümü (ürün varsayılanı `kama-v1-full` değişmez)
+
+GÖSTERİM-α (18 Kasım 2026) düğümünün profili. Etiket: *gösterim; kapılı PoC ölçümü Aralık; ARQ yolu,
+FEC Aralık'ta; N < 30 betimsel.* K1 deneysel gösterim profilidir; ürün çözümü ya da quinn'e karşı üstünlük
+iddiası değildir. Bu bölüm ürün profilini değiştirmez: yukarıdaki `kama-v1-full` tablosu aynen geçerlidir.
+Bu profille koşan her koşu `kama-custom` + sapma listesi taşır (INV-009). Düğüme uygulanması Ö'nündür
+(L yolu: test-util kancası; A yolu: kama-node `goster` özelliği); düzenek sabitleri bu bölümle aynı
+olur, fark çıkarsa bu bölüm kazanır ve kod düzeltilir (ISEMRI-YOL3-M2 KK-M2-15).
+
+| alan | gösterim değeri | kaynak |
+|---|---|---|
+| `e1_flags` | **K1** = (c) `e1_startup_cwnd` + (d) `e1_applimited_plateau` + DrainRtprop `e1_drainrt_gate` + (e-dar) `e1_probe_keep` (2026-11-09 teşhisi; seçim kuralı `docs/design/E1-TESHIS-G2.md` §2 S, okuma `reports/yol3/2026-11-09/g2/OKUMA.md`) | sahip v4 EK-A §2; ISEMRI-YOL3-M2 (bu satır M2'nin) |
+| `retx_first` | **kapalı** (`e1_flags` içinde `false`) | sahip v4 EK-A §2 (v4 II K4 değişikliği) |
+| `fec` | `None` (PARAM_SET gönderilmez) | sahip v4 Y1 |
+| `e2a_flags` | bkz. ISEMRI-YOL3-M1 (#150) | M1 |
+| W (teyitsiz dosya birimi) / T (oynatma tamponu) | W = 5; T ∈ [1,5; 2,5] s — mini-Ö sonrası teyit; bkz. T1/Ö | sahip v4 TD-2, III.1 |
+| kimlik | `transport-v1.x-goster` (EVOLUTION §22 gösterim beyanı) | sahip v4 Y6 |

@@ -26,6 +26,9 @@ pub mod heartbeat;
 pub mod link;
 pub mod signer;
 pub mod t3;
+// [S2-A3-2a / HB2] KK-H31: HB2 dosyaları.
+pub mod endpoint;
+pub mod shared_crypto;
 
 use core::fmt;
 use std::net::SocketAddr;

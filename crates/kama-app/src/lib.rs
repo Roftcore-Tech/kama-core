@@ -34,6 +34,8 @@ pub mod clock;
 pub mod codec;
 pub mod file_transfer;
 pub mod messaging;
+/// [YOL3-T1] PTT oynatma tamponu (gösterim).
+pub mod playout;
 pub mod ptt;
 pub mod signaling;
 pub mod store;

@@ -11,6 +11,6 @@ KESİNTİ: önceki oturum ≈19:1x'te kapandı; koşu süreçleri sonlandı. 11/
 yeniden koşu (tam hücre, aynı ağaç ve ikili): a_r12k_d150_l20_foto150k__K0 a_r12k_d150_l20_foto150k__K0r a_r12k_d300_l30_dosyasiz__K0 b_r25_d300_l20_p65__K0 b_r25_d300_l20_p65__K2
 yeniden başlangıç: 2026-11-09 19:15:19 +0300
 yeniden bitiş: 2026-11-09 19:48:20 +0300 rc=0 süre=1981s
-29dd851b44170d11f22546c756a3a8ae79232123a659347feb042e623edfa32d  /home/ryuzaki/kama-k4g-work/yol3/tesis/2026-11-09-g2/okuma/OKUMA.md
-9b80e9547a6d12ac441d01651f9e5345832165f7c4ce34a12637ede46c51448b  /home/ryuzaki/kama-k4g-work/yol3/tesis/2026-11-09-g2/okuma/okuma.json
+29dd851b44170d11f22546c756a3a8ae79232123a659347feb042e623edfa32d  <ölçüm-kökü>/yol3/tesis/2026-11-09-g2/okuma/OKUMA.md
+9b80e9547a6d12ac441d01651f9e5345832165f7c4ce34a12637ede46c51448b  <ölçüm-kökü>/yol3/tesis/2026-11-09-g2/okuma/okuma.json
 okuma: oku.py @502fce94, 2026-11-09 19:49:57

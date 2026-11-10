@@ -76,7 +76,7 @@ use std::time::Duration;
 use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
 use kama_contracts::s1::{
     AbandonReason, ConnectPhase, ConnectResult, ConnectTicket, Delivered, DeliveryPolicy,
-    KamaTransport, PreparedUnit, SessionEvent, TransportCapabilities, TransportError,
+    KamaTransport, PreparedUnit, SessionEvent, TrafficClass, TransportCapabilities, TransportError,
 };
 
 /// İstemci pending INIT tavanı (ccr §35.15 KS-DOS-1; tutarlılık zinciri gereği
@@ -454,6 +454,7 @@ impl KamaTransport for MockTransport {
         session: SessionHandle,
         unit: PreparedUnit,
         _policy: DeliveryPolicy,
+        _class: TrafficClass,
     ) -> Result<(), TransportError> {
         // K4: `compression_policy` Transport davranışını DEĞİŞTİRMEZ — burada okunmaz.
         if self.superseded.contains(&session) {
