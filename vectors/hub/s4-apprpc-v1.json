@@ -1,0 +1,669 @@
+{
+  "schema_version": 2,
+  "suite": "s4-apprpc-v1",
+  "spec_version": "km-seam-th-001@v1.3.1",
+  "generator": "ref/hub/gen_vectors.py 1",
+  "description": "S4 \u00a72.3 AppRpcFrame ve mesaj tablosunun her sat\u0131r\u0131 (istek / yan\u0131t / hata ayr\u0131 vaka), \u00a72.4(a)\u2013(e) y\u00fckleri, \u00a72.5 durum/hata kodlar\u0131; negatifler: \u00e7\u00f6zme (yap\u0131sal) ve STORE ge\u00e7erli-birle\u015fim do\u011frulamas\u0131 (\u00a72.4(c), BAD_REQUEST).",
+  "notes": {
+    "code-choice": "S4 bu sat\u0131r i\u00e7in hata kodu saymaz; vekt\u00f6r yaln\u0131z sat\u0131r\u0131n bi\u00e7imini (flags 0x03 + ErrorPayload) sabitler. Kod se\u00e7imi KARAR-KAYDI ile.",
+    "boundary": "S\u0131n\u0131r de\u011feri: izin verilen en b\u00fcy\u00fck boy (bir bayt fazlas\u0131 negatif vakad\u0131r)."
+  },
+  "case_count": 57,
+  "cases": [
+    {
+      "id": "s4-apprpc-v1.frame.request",
+      "kind": "apprpc-frame",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 AppRpcFrame (flags 00 istek)",
+      "input": {
+        "flags_hex": "00",
+        "method_id_hex": "01",
+        "payload_hex": "00b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b100250310de4b0b721219d6cc09fcb46c9b",
+        "request_id_hex": "5a17c0de"
+      },
+      "expected_hex": "01005a17c0de0000003200b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b100250310de4b0b721219d6cc09fcb46c9b"
+    },
+    {
+      "id": "s4-apprpc-v1.frame.empty-payload",
+      "kind": "apprpc-frame",
+      "note": "\u00c7er\u00e7eve d\u00fczeyinde bo\u015f y\u00fck ge\u00e7erlidir; mesaj d\u00fczeyinde her method kendi boyunu ister.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 AppRpcFrame (payload_len = 0)",
+      "input": {
+        "flags_hex": "01",
+        "method_id_hex": "05",
+        "payload_hex": "",
+        "request_id_hex": "00000001"
+      },
+      "expected_hex": "05010000000100000000"
+    },
+    {
+      "id": "s4-apprpc-v1.client-bind.request",
+      "kind": "client-bind-req",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 mesaj tablosu: CLIENT_BIND istek; \u00a72.4(a)",
+      "input": {
+        "client_nonce_hex": "250310de4b0b721219d6cc09fcb46c9b",
+        "device_cert_mode_hex": "00",
+        "device_cert_ref_hex": "b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1",
+        "presence_flags_hex": "00",
+        "request_id_hex": "5a17c0de"
+      },
+      "expected_hex": "01005a17c0de0000003200b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b100250310de4b0b721219d6cc09fcb46c9b"
+    },
+    {
+      "id": "s4-apprpc-v1.client-bind.response-challenge",
+      "kind": "client-bind-resp",
+      "note": "hub_nonce = s4-bind-v1 cookie.ipv4.epoch-0 (ayn\u0131 d\u00fcnya).",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 mesaj tablosu: CLIENT_BIND yan\u0131t (meydan okuma); \u00a72.4(a); \u00a72.5 CHALLENGE",
+      "input": {
+        "bind_ok_hex": "00",
+        "error_code_hex": "0003",
+        "hub_nonce_hex": "5140cadb4354f40f1da4bc7836be733c",
+        "mailbox_cursor_hex": "0000000000000000",
+        "request_id_hex": "5a17c0de",
+        "revocation_seq_hex": "0000000000000000"
+      },
+      "expected_hex": "01015a17c0de00000023000000000000000000000000000000000000035140cadb4354f40f1da4bc7836be733c"
+    },
+    {
+      "id": "s4-apprpc-v1.client-bind.error",
+      "kind": "error",
+      "flags": [
+        "code-choice"
+      ],
+      "note": "S4 CLIENT_BIND hatas\u0131 i\u00e7in kod saymaz; sat\u0131r\u0131n bi\u00e7im vekt\u00f6r\u00fc BAD_REQUEST ile.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 mesaj tablosu: CLIENT_BIND hata; \u00a72.5",
+      "input": {
+        "detail_hex": "",
+        "error_code_hex": "0601",
+        "method_id_hex": "01",
+        "request_id_hex": "5a17c0de"
+      },
+      "expected_hex": "01035a17c0de0000000406010000"
+    },
+    {
+      "id": "s4-apprpc-v1.bind-proof.request",
+      "kind": "bind-proof-req",
+      "note": "client_signature = s4-bind-v1 bind-sig.alice.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 mesaj tablosu: BIND_PROOF istek; \u00a72.4(b)",
+      "input": {
+        "client_nonce_hex": "250310de4b0b721219d6cc09fcb46c9b",
+        "client_signature_hex": "6594a3d4916c506646d4635d69ab9c3a93a766fc722f401a4285bbe00b892f22c96fdb4e86c811203924b227b6f2eb9fb9cd3819ea73fcf360b2a312712ca901",
+        "device_cert_ref_hex": "b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1",
+        "hub_nonce_hex": "5140cadb4354f40f1da4bc7836be733c",
+        "request_id_hex": "5a17c0df"
+      },
+      "expected_hex": "0b005a17c0df00000080b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1250310de4b0b721219d6cc09fcb46c9b5140cadb4354f40f1da4bc7836be733c6594a3d4916c506646d4635d69ab9c3a93a766fc722f401a4285bbe00b892f22c96fdb4e86c811203924b227b6f2eb9fb9cd3819ea73fcf360b2a312712ca901"
+    },
+    {
+      "id": "s4-apprpc-v1.bind-proof.response-bound",
+      "kind": "bind-proof-resp",
+      "note": "hub_signature = s4-bind-v1 ack-sig.alice.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 mesaj tablosu: BIND_PROOF yan\u0131t (ba\u011fland\u0131); \u00a72.4(b)",
+      "input": {
+        "bind_ok_hex": "01",
+        "error_code_hex": "0000",
+        "hub_signature_hex": "936a7a71588fc8aea007e2a4b3b07884d0c40b646061cdf8e6e7d7fdadfc54d7f7ac76e7f7a5bfefdbed01e3348ca1025caa98600a8a9010b77a058033c23205",
+        "mailbox_cursor_hex": "0000000000000000",
+        "request_id_hex": "5a17c0df",
+        "revocation_seq_hex": "0000000000000000"
+      },
+      "expected_hex": "0b015a17c0df0000005301000000000000000000000000000000000000936a7a71588fc8aea007e2a4b3b07884d0c40b646061cdf8e6e7d7fdadfc54d7f7ac76e7f7a5bfefdbed01e3348ca1025caa98600a8a9010b77a058033c23205"
+    },
+    {
+      "id": "s4-apprpc-v1.bind-proof.error.bad-cookie",
+      "kind": "error",
+      "note": "flags = 0x03, BIND_PROOF iste\u011fiyle ayn\u0131 request_id; imzas\u0131z.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 mesaj tablosu: BIND_PROOF hata; \u00a72.4(b); \u00a72.5",
+      "input": {
+        "detail_hex": "",
+        "error_code_hex": "0106",
+        "method_id_hex": "0b",
+        "request_id_hex": "5a17c0df"
+      },
+      "expected_hex": "0b035a17c0df0000000401060000"
+    },
+    {
+      "id": "s4-apprpc-v1.bind-proof.error.possession-proof-fail",
+      "kind": "error",
+      "note": "flags = 0x03, BIND_PROOF iste\u011fiyle ayn\u0131 request_id; imzas\u0131z.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 mesaj tablosu: BIND_PROOF hata; \u00a72.4(b); \u00a72.5",
+      "input": {
+        "detail_hex": "",
+        "error_code_hex": "0105",
+        "method_id_hex": "0b",
+        "request_id_hex": "5a17c0df"
+      },
+      "expected_hex": "0b035a17c0df0000000401050000"
+    },
+    {
+      "id": "s4-apprpc-v1.bind-proof.error.rate-limited",
+      "kind": "error",
+      "note": "flags = 0x03, BIND_PROOF iste\u011fiyle ayn\u0131 request_id; imzas\u0131z.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 mesaj tablosu: BIND_PROOF hata; \u00a72.4(b); \u00a72.5",
+      "input": {
+        "detail_hex": "",
+        "error_code_hex": "0502",
+        "method_id_hex": "0b",
+        "request_id_hex": "5a17c0df"
+      },
+      "expected_hex": "0b035a17c0df0000000405020000"
+    },
+    {
+      "id": "s4-apprpc-v1.bind-proof.error.hub-capacity",
+      "kind": "error",
+      "note": "flags = 0x03, BIND_PROOF iste\u011fiyle ayn\u0131 request_id; imzas\u0131z.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 mesaj tablosu: BIND_PROOF hata; \u00a72.4(b); \u00a72.5",
+      "input": {
+        "detail_hex": "",
+        "error_code_hex": "0501",
+        "method_id_hex": "0b",
+        "request_id_hex": "5a17c0df"
+      },
+      "expected_hex": "0b035a17c0df0000000405010000"
+    },
+    {
+      "id": "s4-apprpc-v1.store.request.init-new-link",
+      "kind": "store-message-req",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 mesaj tablosu: STORE_MESSAGE istek; \u00a72.4(c) {0, SESSION_INIT}",
+      "input": {
+        "envelope_hex": "01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6",
+        "envelope_type_hex": "01",
+        "hub_handle_hex": "00000000",
+        "recipient_dest_hash_hex": "808d825bba92c7b4cf584b71b907bb391b99a1eab2afacbd3819fc190b094848",
+        "request_id_hex": "5a17c0e0"
+      },
+      "expected_hex": "05005a17c0e0000000dd0000000001808d825bba92c7b4cf584b71b907bb391b99a1eab2afacbd3819fc190b094848000000b401080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6"
+    },
+    {
+      "id": "s4-apprpc-v1.store.request.response-on-link",
+      "kind": "store-message-req",
+      "note": "h = s4-alloc-v1 handle-alloc.first-free.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 mesaj tablosu: STORE_MESSAGE istek; \u00a72.4(c) {h, SESSION_INIT_RESPONSE}",
+      "input": {
+        "envelope_hex": "02070c11161b20252a2f34393e43484d52575c61666b70757a7f84898e93989da2a7acb1b6bbc0c5cacfd4d9dee3e8edf2f7fc01060b10151a1f24292e33383d42474c51565b60656a6f74797e83888d92979ca1a6abb0b5babfc4c9ced3d8dde2e7ecf1f6fb00050a0f14191e23282d32373c41464b5055",
+        "envelope_type_hex": "02",
+        "hub_handle_hex": "26f6be3b",
+        "recipient_dest_hash_hex": "a8e682239cbf2d662b7f6f0936b8b14a2c7004b56071e505389785ff7c9e4a76",
+        "request_id_hex": "2b0b0001"
+      },
+      "expected_hex": "05002b0b0001000000a126f6be3b02a8e682239cbf2d662b7f6f0936b8b14a2c7004b56071e505389785ff7c9e4a760000007802070c11161b20252a2f34393e43484d52575c61666b70757a7f84898e93989da2a7acb1b6bbc0c5cacfd4d9dee3e8edf2f7fc01060b10151a1f24292e33383d42474c51565b60656a6f74797e83888d92979ca1a6abb0b5babfc4c9ced3d8dde2e7ecf1f6fb00050a0f14191e23282d32373c41464b5055"
+    },
+    {
+      "id": "s4-apprpc-v1.store.request.relay-open-new-link",
+      "kind": "store-message-req",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 mesaj tablosu: STORE_MESSAGE istek; \u00a72.4(c) {0, RELAY_OPEN}; \u00a72.4(f) 16 B open_nonce",
+      "input": {
+        "envelope_hex": "d4d8d9cfe20fe87ba42d997afe1abcc8",
+        "envelope_type_hex": "05",
+        "hub_handle_hex": "00000000",
+        "recipient_dest_hash_hex": "808d825bba92c7b4cf584b71b907bb391b99a1eab2afacbd3819fc190b094848",
+        "request_id_hex": "5a17c0e1"
+      },
+      "expected_hex": "05005a17c0e1000000390000000005808d825bba92c7b4cf584b71b907bb391b99a1eab2afacbd3819fc190b09484800000010d4d8d9cfe20fe87ba42d997afe1abcc8"
+    },
+    {
+      "id": "s4-apprpc-v1.store.request.max-envelope",
+      "kind": "store-message-req",
+      "flags": [
+        "boundary"
+      ],
+      "note": "1208 B zarf: payload 1249 B, datagram tam 1280 B.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 payload_len \u2264 MAX_DATAGRAM \u2212 31; \u00a76 MAX_DATAGRAM",
+      "input": {
+        "envelope_hex": "090c0f1215181b1e2124272a2d303336393c3f4245484b4e5154575a5d606366696c6f7275787b7e8184878a8d909396999c9fa2a5a8abaeb1b4b7babdc0c3c6c9cccfd2d5d8dbdee1e4e7eaedf0f3f6f9fcff0205080b0e1114171a1d202326292c2f3235383b3e4144474a4d505356595c5f6265686b6e7174777a7d808386898c8f9295989b9ea1a4a7aaadb0b3b6b9bcbfc2c5c8cbced1d4d7dadde0e3e6e9eceff2f5f8fbfe0104070a0d101316191c1f2225282b2e3134373a3d404346494c4f5255585b5e6164676a6d707376797c7f8285888b8e9194979a9da0a3a6a9acafb2b5b8bbbec1c4c7cacdd0d3d6d9dcdfe2e5e8ebeef1f4f7fafd000306090c0f1215181b1e2124272a2d303336393c3f4245484b4e5154575a5d606366696c6f7275787b7e8184878a8d909396999c9fa2a5a8abaeb1b4b7babdc0c3c6c9cccfd2d5d8dbdee1e4e7eaedf0f3f6f9fcff0205080b0e1114171a1d202326292c2f3235383b3e4144474a4d505356595c5f6265686b6e7174777a7d808386898c8f9295989b9ea1a4a7aaadb0b3b6b9bcbfc2c5c8cbced1d4d7dadde0e3e6e9eceff2f5f8fbfe0104070a0d101316191c1f2225282b2e3134373a3d404346494c4f5255585b5e6164676a6d707376797c7f8285888b8e9194979a9da0a3a6a9acafb2b5b8bbbec1c4c7cacdd0d3d6d9dcdfe2e5e8ebeef1f4f7fafd000306090c0f1215181b1e2124272a2d303336393c3f4245484b4e5154575a5d606366696c6f7275787b7e8184878a8d909396999c9fa2a5a8abaeb1b4b7babdc0c3c6c9cccfd2d5d8dbdee1e4e7eaedf0f3f6f9fcff0205080b0e1114171a1d202326292c2f3235383b3e4144474a4d505356595c5f6265686b6e7174777a7d808386898c8f9295989b9ea1a4a7aaadb0b3b6b9bcbfc2c5c8cbced1d4d7dadde0e3e6e9eceff2f5f8fbfe0104070a0d101316191c1f2225282b2e3134373a3d404346494c4f5255585b5e6164676a6d707376797c7f8285888b8e9194979a9da0a3a6a9acafb2b5b8bbbec1c4c7cacdd0d3d6d9dcdfe2e5e8ebeef1f4f7fafd000306090c0f1215181b1e2124272a2d303336393c3f4245484b4e5154575a5d606366696c6f7275787b7e8184878a8d909396999c9fa2a5a8abaeb1b4b7babdc0c3c6c9cccfd2d5d8dbdee1e4e7eaedf0f3f6f9fcff0205080b0e1114171a1d202326292c2f3235383b3e4144474a4d505356595c5f6265686b6e7174777a7d808386898c8f9295989b9ea1a4a7aaadb0b3b6b9bcbfc2c5c8cbced1d4d7dadde0e3e6e9eceff2f5f8fbfe0104070a0d101316191c1f2225282b2e3134373a3d404346494c4f5255585b5e6164676a6d707376797c7f8285888b8e9194979a9da0a3a6a9acafb2b5b8bbbec1c4c7cacdd0d3d6d9dcdfe2e5e8ebeef1f4f7fafd000306090c0f1215181b1e2124272a2d303336393c3f4245484b4e5154575a5d606366696c6f7275787b7e8184878a8d909396999c9fa2a5a8abaeb1b4b7babdc0c3c6c9cccfd2d5d8dbdee1e4e7eaedf0f3f6f9fcff0205080b0e1114171a1d202326292c2f3235383b3e4144474a4d505356595c5f6265686b6e7174777a7d808386898c8f9295989b9ea1a4a7aaadb0b3b6b9bcbfc2c5c8cbced1d4d7dadde0e3e6e9eceff2f5f8fbfe0104070a0d101316191c1f2225282b2e",
+        "envelope_type_hex": "01",
+        "hub_handle_hex": "00000000",
+        "recipient_dest_hash_hex": "808d825bba92c7b4cf584b71b907bb391b99a1eab2afacbd3819fc190b094848",
+        "request_id_hex": "5a17c0e0"
+      },
+      "expected_hex": "05005a17c0e0000004e10000000001808d825bba92c7b4cf584b71b907bb391b99a1eab2afacbd3819fc190b094848000004b8090c0f1215181b1e2124272a2d303336393c3f4245484b4e5154575a5d606366696c6f7275787b7e8184878a8d909396999c9fa2a5a8abaeb1b4b7babdc0c3c6c9cccfd2d5d8dbdee1e4e7eaedf0f3f6f9fcff0205080b0e1114171a1d202326292c2f3235383b3e4144474a4d505356595c5f6265686b6e7174777a7d808386898c8f9295989b9ea1a4a7aaadb0b3b6b9bcbfc2c5c8cbced1d4d7dadde0e3e6e9eceff2f5f8fbfe0104070a0d101316191c1f2225282b2e3134373a3d404346494c4f5255585b5e6164676a6d707376797c7f8285888b8e9194979a9da0a3a6a9acafb2b5b8bbbec1c4c7cacdd0d3d6d9dcdfe2e5e8ebeef1f4f7fafd000306090c0f1215181b1e2124272a2d303336393c3f4245484b4e5154575a5d606366696c6f7275787b7e8184878a8d909396999c9fa2a5a8abaeb1b4b7babdc0c3c6c9cccfd2d5d8dbdee1e4e7eaedf0f3f6f9fcff0205080b0e1114171a1d202326292c2f3235383b3e4144474a4d505356595c5f6265686b6e7174777a7d808386898c8f9295989b9ea1a4a7aaadb0b3b6b9bcbfc2c5c8cbced1d4d7dadde0e3e6e9eceff2f5f8fbfe0104070a0d101316191c1f2225282b2e3134373a3d404346494c4f5255585b5e6164676a6d707376797c7f8285888b8e9194979a9da0a3a6a9acafb2b5b8bbbec1c4c7cacdd0d3d6d9dcdfe2e5e8ebeef1f4f7fafd000306090c0f1215181b1e2124272a2d303336393c3f4245484b4e5154575a5d606366696c6f7275787b7e8184878a8d909396999c9fa2a5a8abaeb1b4b7babdc0c3c6c9cccfd2d5d8dbdee1e4e7eaedf0f3f6f9fcff0205080b0e1114171a1d202326292c2f3235383b3e4144474a4d505356595c5f6265686b6e7174777a7d808386898c8f9295989b9ea1a4a7aaadb0b3b6b9bcbfc2c5c8cbced1d4d7dadde0e3e6e9eceff2f5f8fbfe0104070a0d101316191c1f2225282b2e3134373a3d404346494c4f5255585b5e6164676a6d707376797c7f8285888b8e9194979a9da0a3a6a9acafb2b5b8bbbec1c4c7cacdd0d3d6d9dcdfe2e5e8ebeef1f4f7fafd000306090c0f1215181b1e2124272a2d303336393c3f4245484b4e5154575a5d606366696c6f7275787b7e8184878a8d909396999c9fa2a5a8abaeb1b4b7babdc0c3c6c9cccfd2d5d8dbdee1e4e7eaedf0f3f6f9fcff0205080b0e1114171a1d202326292c2f3235383b3e4144474a4d505356595c5f6265686b6e7174777a7d808386898c8f9295989b9ea1a4a7aaadb0b3b6b9bcbfc2c5c8cbced1d4d7dadde0e3e6e9eceff2f5f8fbfe0104070a0d101316191c1f2225282b2e3134373a3d404346494c4f5255585b5e6164676a6d707376797c7f8285888b8e9194979a9da0a3a6a9acafb2b5b8bbbec1c4c7cacdd0d3d6d9dcdfe2e5e8ebeef1f4f7fafd000306090c0f1215181b1e2124272a2d303336393c3f4245484b4e5154575a5d606366696c6f7275787b7e8184878a8d909396999c9fa2a5a8abaeb1b4b7babdc0c3c6c9cccfd2d5d8dbdee1e4e7eaedf0f3f6f9fcff0205080b0e1114171a1d202326292c2f3235383b3e4144474a4d505356595c5f6265686b6e7174777a7d808386898c8f9295989b9ea1a4a7aaadb0b3b6b9bcbfc2c5c8cbced1d4d7dadde0e3e6e9eceff2f5f8fbfe0104070a0d101316191c1f2225282b2e"
+    },
+    {
+      "id": "s4-apprpc-v1.store.response.ok",
+      "kind": "store-message-resp",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 mesaj tablosu: STORE_MESSAGE yan\u0131t; \u00a72.4(c) {OK, h}",
+      "input": {
+        "assigned_handle_hex": "26f6be3b",
+        "request_id_hex": "5a17c0e0",
+        "status_hex": "0000"
+      },
+      "expected_hex": "05015a17c0e000000006000026f6be3b"
+    },
+    {
+      "id": "s4-apprpc-v1.store.response.peer-unbound",
+      "kind": "store-message-resp",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 mesaj tablosu: STORE_MESSAGE yan\u0131t; \u00a72.6 ad\u0131m 1 {PEER_UNBOUND, 0}",
+      "input": {
+        "assigned_handle_hex": "00000000",
+        "request_id_hex": "5a17c0e0",
+        "status_hex": "0301"
+      },
+      "expected_hex": "05015a17c0e000000006030100000000"
+    },
+    {
+      "id": "s4-apprpc-v1.store.response.unknown-handle-0",
+      "kind": "store-message-resp",
+      "note": "store-resp-unknown-handle-0: yeni-hat anahtar\u0131 tombstone'da; tahsis yok, DELIVER yok.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 mesaj tablosu: STORE_MESSAGE yan\u0131t; KR-19 emekli anahtar {UNKNOWN_HANDLE, 0}",
+      "input": {
+        "assigned_handle_hex": "00000000",
+        "request_id_hex": "5a17c0e0",
+        "status_hex": "0302"
+      },
+      "expected_hex": "05015a17c0e000000006030200000000"
+    },
+    {
+      "id": "s4-apprpc-v1.store.error.bad-request",
+      "kind": "error",
+      "note": "flags = 0x03, STORE iste\u011fiyle ayn\u0131 request_id.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 mesaj tablosu: STORE_MESSAGE hata; \u00a72.4(c); \u00a72.5",
+      "input": {
+        "detail_hex": "",
+        "error_code_hex": "0601",
+        "method_id_hex": "05",
+        "request_id_hex": "5a17c0e0"
+      },
+      "expected_hex": "05035a17c0e00000000406010000"
+    },
+    {
+      "id": "s4-apprpc-v1.store.error.rate-limited",
+      "kind": "error",
+      "note": "flags = 0x03, STORE iste\u011fiyle ayn\u0131 request_id.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 mesaj tablosu: STORE_MESSAGE hata; \u00a72.4(c); \u00a72.5",
+      "input": {
+        "detail_hex": "",
+        "error_code_hex": "0502",
+        "method_id_hex": "05",
+        "request_id_hex": "5a17c0e0"
+      },
+      "expected_hex": "05035a17c0e00000000405020000"
+    },
+    {
+      "id": "s4-apprpc-v1.store.error.hub-capacity",
+      "kind": "error",
+      "note": "flags = 0x03, STORE iste\u011fiyle ayn\u0131 request_id.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 mesaj tablosu: STORE_MESSAGE hata; \u00a72.4(c); \u00a72.5",
+      "input": {
+        "detail_hex": "",
+        "error_code_hex": "0501",
+        "method_id_hex": "05",
+        "request_id_hex": "5a17c0e0"
+      },
+      "expected_hex": "05035a17c0e00000000405010000"
+    },
+    {
+      "id": "s4-apprpc-v1.deliver.init",
+      "kind": "deliver",
+      "note": "flags = 0, request_id = 0 (hub ba\u015flat\u0131r).",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 mesaj tablosu: DELIVER; \u00a72.4(d) (INIT)",
+      "input": {
+        "envelope_hex": "01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6",
+        "envelope_type_hex": "01",
+        "hub_handle_hex": "26f6be3b",
+        "sender_dest_hash_hex": "a8e682239cbf2d662b7f6f0936b8b14a2c7004b56071e505389785ff7c9e4a76"
+      },
+      "expected_hex": "810000000000000000dd26f6be3ba8e682239cbf2d662b7f6f0936b8b14a2c7004b56071e505389785ff7c9e4a7601000000b401080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6"
+    },
+    {
+      "id": "s4-apprpc-v1.deliver.response",
+      "kind": "deliver",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 mesaj tablosu: DELIVER; \u00a72.4(d) (RESPONSE; handle atamas\u0131 \u00a74 C4)",
+      "input": {
+        "envelope_hex": "02070c11161b20252a2f34393e43484d52575c61666b70757a7f84898e93989da2a7acb1b6bbc0c5cacfd4d9dee3e8edf2f7fc01060b10151a1f24292e33383d42474c51565b60656a6f74797e83888d92979ca1a6abb0b5babfc4c9ced3d8dde2e7ecf1f6fb00050a0f14191e23282d32373c41464b5055",
+        "envelope_type_hex": "02",
+        "hub_handle_hex": "26f6be3b",
+        "sender_dest_hash_hex": "808d825bba92c7b4cf584b71b907bb391b99a1eab2afacbd3819fc190b094848"
+      },
+      "expected_hex": "810000000000000000a126f6be3b808d825bba92c7b4cf584b71b907bb391b99a1eab2afacbd3819fc190b094848020000007802070c11161b20252a2f34393e43484d52575c61666b70757a7f84898e93989da2a7acb1b6bbc0c5cacfd4d9dee3e8edf2f7fc01060b10151a1f24292e33383d42474c51565b60656a6f74797e83888d92979ca1a6abb0b5babfc4c9ced3d8dde2e7ecf1f6fb00050a0f14191e23282d32373c41464b5055"
+    },
+    {
+      "id": "s4-apprpc-v1.deliver.relay-open",
+      "kind": "deliver",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 mesaj tablosu: DELIVER; \u00a72.4(d) (RELAY_OPEN; yaln\u0131z bilgi, KR-17)",
+      "input": {
+        "envelope_hex": "d4d8d9cfe20fe87ba42d997afe1abcc8",
+        "envelope_type_hex": "05",
+        "hub_handle_hex": "8593b1ef",
+        "sender_dest_hash_hex": "a8e682239cbf2d662b7f6f0936b8b14a2c7004b56071e505389785ff7c9e4a76"
+      },
+      "expected_hex": "810000000000000000398593b1efa8e682239cbf2d662b7f6f0936b8b14a2c7004b56071e505389785ff7c9e4a760500000010d4d8d9cfe20fe87ba42d997afe1abcc8"
+    },
+    {
+      "id": "s4-apprpc-v1.route-miss",
+      "kind": "route-miss",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 mesaj tablosu: ROUTE_MISS; \u00a72.4(e) reason 0x01 UNKNOWN_HANDLE",
+      "input": {
+        "hub_handle_hex": "26f6be3b",
+        "reason_hex": "01"
+      },
+      "expected_hex": "8400000000000000000526f6be3b01"
+    },
+    {
+      "id": "s4-apprpc-v1.neg.header-short",
+      "kind": "decode-apprpc",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 (ba\u015fl\u0131k 10 B)",
+      "input_hex": "01005a17c0de000000",
+      "expected": {
+        "result": "reject",
+        "reason": "truncated"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.payload-len-mismatch",
+      "kind": "decode-apprpc",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 payload_len (kalan baytla tutmuyor)",
+      "input_hex": "01005a17c0de0000003300b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b100250310de4b0b721219d6cc09fcb46c9b",
+      "expected": {
+        "result": "reject",
+        "reason": "length-mismatch"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.payload-over-max",
+      "kind": "decode-apprpc",
+      "note": "payload 1250 B.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 payload_len \u2264 MAX_DATAGRAM \u2212 31",
+      "input_hex": "05005a17c0e0000004e20000000001808d825bba92c7b4cf584b71b907bb391b99a1eab2afacbd3819fc190b094848000004b9090c0f1215181b1e2124272a2d303336393c3f4245484b4e5154575a5d606366696c6f7275787b7e8184878a8d909396999c9fa2a5a8abaeb1b4b7babdc0c3c6c9cccfd2d5d8dbdee1e4e7eaedf0f3f6f9fcff0205080b0e1114171a1d202326292c2f3235383b3e4144474a4d505356595c5f6265686b6e7174777a7d808386898c8f9295989b9ea1a4a7aaadb0b3b6b9bcbfc2c5c8cbced1d4d7dadde0e3e6e9eceff2f5f8fbfe0104070a0d101316191c1f2225282b2e3134373a3d404346494c4f5255585b5e6164676a6d707376797c7f8285888b8e9194979a9da0a3a6a9acafb2b5b8bbbec1c4c7cacdd0d3d6d9dcdfe2e5e8ebeef1f4f7fafd000306090c0f1215181b1e2124272a2d303336393c3f4245484b4e5154575a5d606366696c6f7275787b7e8184878a8d909396999c9fa2a5a8abaeb1b4b7babdc0c3c6c9cccfd2d5d8dbdee1e4e7eaedf0f3f6f9fcff0205080b0e1114171a1d202326292c2f3235383b3e4144474a4d505356595c5f6265686b6e7174777a7d808386898c8f9295989b9ea1a4a7aaadb0b3b6b9bcbfc2c5c8cbced1d4d7dadde0e3e6e9eceff2f5f8fbfe0104070a0d101316191c1f2225282b2e3134373a3d404346494c4f5255585b5e6164676a6d707376797c7f8285888b8e9194979a9da0a3a6a9acafb2b5b8bbbec1c4c7cacdd0d3d6d9dcdfe2e5e8ebeef1f4f7fafd000306090c0f1215181b1e2124272a2d303336393c3f4245484b4e5154575a5d606366696c6f7275787b7e8184878a8d909396999c9fa2a5a8abaeb1b4b7babdc0c3c6c9cccfd2d5d8dbdee1e4e7eaedf0f3f6f9fcff0205080b0e1114171a1d202326292c2f3235383b3e4144474a4d505356595c5f6265686b6e7174777a7d808386898c8f9295989b9ea1a4a7aaadb0b3b6b9bcbfc2c5c8cbced1d4d7dadde0e3e6e9eceff2f5f8fbfe0104070a0d101316191c1f2225282b2e3134373a3d404346494c4f5255585b5e6164676a6d707376797c7f8285888b8e9194979a9da0a3a6a9acafb2b5b8bbbec1c4c7cacdd0d3d6d9dcdfe2e5e8ebeef1f4f7fafd000306090c0f1215181b1e2124272a2d303336393c3f4245484b4e5154575a5d606366696c6f7275787b7e8184878a8d909396999c9fa2a5a8abaeb1b4b7babdc0c3c6c9cccfd2d5d8dbdee1e4e7eaedf0f3f6f9fcff0205080b0e1114171a1d202326292c2f3235383b3e4144474a4d505356595c5f6265686b6e7174777a7d808386898c8f9295989b9ea1a4a7aaadb0b3b6b9bcbfc2c5c8cbced1d4d7dadde0e3e6e9eceff2f5f8fbfe0104070a0d101316191c1f2225282b2e3134373a3d404346494c4f5255585b5e6164676a6d707376797c7f8285888b8e9194979a9da0a3a6a9acafb2b5b8bbbec1c4c7cacdd0d3d6d9dcdfe2e5e8ebeef1f4f7fafd000306090c0f1215181b1e2124272a2d303336393c3f4245484b4e5154575a5d606366696c6f7275787b7e8184878a8d909396999c9fa2a5a8abaeb1b4b7babdc0c3c6c9cccfd2d5d8dbdee1e4e7eaedf0f3f6f9fcff0205080b0e1114171a1d202326292c2f3235383b3e4144474a4d505356595c5f6265686b6e7174777a7d808386898c8f9295989b9ea1a4a7aaadb0b3b6b9bcbfc2c5c8cbced1d4d7dadde0e3e6e9eceff2f5f8fbfe0104070a0d101316191c1f2225282b2e00",
+      "expected": {
+        "result": "reject",
+        "reason": "too-long"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.unknown-method",
+      "kind": "decode-apprpc",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 mesaj tablosu (yaln\u0131z 0x01/0x05/0x0B/0x81/0x84)",
+      "input_hex": "02005a17c0de0000003200b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b100250310de4b0b721219d6cc09fcb46c9b",
+      "expected": {
+        "result": "reject",
+        "reason": "unknown-method"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.flags-error-without-response",
+      "kind": "decode-apprpc",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 flags (yaln\u0131z 00 / 01 / 03)",
+      "input_hex": "01025a17c0de0000000406010000",
+      "expected": {
+        "result": "reject",
+        "reason": "bad-flags"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.flags-reserved-bit",
+      "kind": "decode-apprpc",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 flags (di\u011fer bitler 0)",
+      "input_hex": "01045a17c0de0000003200b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b100250310de4b0b721219d6cc09fcb46c9b",
+      "expected": {
+        "result": "reject",
+        "reason": "bad-flags"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.hub-initiated-with-response-flag",
+      "kind": "decode-apprpc",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 (bit7 = hub ba\u015flat\u0131r, yan\u0131t\u0131 yoktur; flags = 0); \u00a78 Y2",
+      "input_hex": "810100000000000000dd26f6be3ba8e682239cbf2d662b7f6f0936b8b14a2c7004b56071e505389785ff7c9e4a7601000000b401080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6",
+      "expected": {
+        "result": "reject",
+        "reason": "bad-flags"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.hub-initiated-request-id-nonzero",
+      "kind": "decode-apprpc",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 request_id (hub ba\u015flat\u0131yorsa 0); \u00a78 Y2",
+      "input_hex": "810000000007000000dd26f6be3ba8e682239cbf2d662b7f6f0936b8b14a2c7004b56071e505389785ff7c9e4a7601000000b401080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6",
+      "expected": {
+        "result": "reject",
+        "reason": "bad-request-id"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.client-bind-req-short",
+      "kind": "decode-apprpc",
+      "note": "k\u0131sa g\u00f6vde.",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(a) istek (50 B)",
+      "input_hex": "01005a17c0de0000003100b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b100250310de4b0b721219d6cc09fcb46c",
+      "expected": {
+        "result": "reject",
+        "reason": "truncated"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.client-bind-req-trailing",
+      "kind": "decode-apprpc",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(a) istek (50 B)",
+      "input_hex": "01005a17c0de0000003300b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b100250310de4b0b721219d6cc09fcb46c9b00",
+      "expected": {
+        "result": "reject",
+        "reason": "trailing-bytes"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.client-bind-req-cert-mode",
+      "kind": "decode-apprpc",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(a) device_cert_mode = 0x00",
+      "input_hex": "01005a17c0de0000003201b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b100250310de4b0b721219d6cc09fcb46c9b",
+      "expected": {
+        "result": "reject",
+        "reason": "bad-field"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.client-bind-req-presence-flags",
+      "kind": "decode-apprpc",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(a) presence_flags (PoC: 0)",
+      "input_hex": "01005a17c0de0000003200b9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b101250310de4b0b721219d6cc09fcb46c9b",
+      "expected": {
+        "result": "reject",
+        "reason": "bad-field"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.client-bind-resp-not-challenge",
+      "kind": "decode-apprpc",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(a) yan\u0131t error_code = 0x0003 CHALLENGE",
+      "input_hex": "01015a17c0de00000023000000000000000000000000000000000000005140cadb4354f40f1da4bc7836be733c",
+      "expected": {
+        "result": "reject",
+        "reason": "bad-field"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.bind-proof-resp-bind-ok-0",
+      "kind": "decode-apprpc",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(b) yan\u0131t bind_ok = 1",
+      "input_hex": "0b015a17c0df0000005300000000000000000000000000000000000000936a7a71588fc8aea007e2a4b3b07884d0c40b646061cdf8e6e7d7fdadfc54d7f7ac76e7f7a5bfefdbed01e3348ca1025caa98600a8a9010b77a058033c23205",
+      "expected": {
+        "result": "reject",
+        "reason": "bad-field"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.bind-proof-req-short",
+      "kind": "decode-apprpc",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(b) istek (128 B)",
+      "input_hex": "0b005a17c0df0000007fb9cbe1cc3ea348ebaa2e907884168de18efe34407509bc15d5f25e4e42f842b1250310de4b0b721219d6cc09fcb46c9b5140cadb4354f40f1da4bc7836be733c6594a3d4916c506646d4635d69ab9c3a93a766fc722f401a4285bbe00b892f22c96fdb4e86c811203924b227b6f2eb9fb9cd3819ea73fcf360b2a312712ca9",
+      "expected": {
+        "result": "reject",
+        "reason": "truncated"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.store-envelope-len-mismatch",
+      "kind": "decode-apprpc",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(c) envelope_len",
+      "input_hex": "05005a17c0e0000000dc0000000001808d825bba92c7b4cf584b71b907bb391b99a1eab2afacbd3819fc190b094848000000b401080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8df",
+      "expected": {
+        "result": "reject",
+        "reason": "length-mismatch"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.store-resp-unknown-status",
+      "kind": "decode-apprpc",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 STORE yan\u0131t status \u2208 {OK, PEER_UNBOUND, UNKNOWN_HANDLE}; \u00a72.5",
+      "input_hex": "05015a17c0e000000006000300000000",
+      "expected": {
+        "result": "reject",
+        "reason": "bad-code"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.store-resp-error-code-as-status",
+      "kind": "decode-apprpc",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.5 (hata kodlar\u0131 ErrorPayload'da, durum kodlar\u0131 yan\u0131t alan\u0131nda)",
+      "input_hex": "05015a17c0e000000006060100000000",
+      "expected": {
+        "result": "reject",
+        "reason": "bad-code"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.store-resp-ok-handle-0",
+      "kind": "decode-apprpc",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.1 (hub hub_handle = 0 hi\u00e7 vermez); \u00a72.4(c) {OK, h}",
+      "input_hex": "05015a17c0e000000006000000000000",
+      "expected": {
+        "result": "reject",
+        "reason": "zero-handle"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.error-payload-status-code",
+      "kind": "decode-apprpc",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.5 (PEER_UNBOUND yan\u0131t alan\u0131d\u0131r, ErrorPayload de\u011fil)",
+      "input_hex": "05035a17c0e00000000403010000",
+      "expected": {
+        "result": "reject",
+        "reason": "bad-code"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.error-payload-detail-len-mismatch",
+      "kind": "decode-apprpc",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.3 ErrorPayload detail_len",
+      "input_hex": "05035a17c0e00000000406010001",
+      "expected": {
+        "result": "reject",
+        "reason": "length-mismatch"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.deliver-handle-0",
+      "kind": "decode-apprpc",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.1 (hub_handle = 0 hi\u00e7 verilmez); \u00a72.4(d)",
+      "input_hex": "810000000000000000dd00000000a8e682239cbf2d662b7f6f0936b8b14a2c7004b56071e505389785ff7c9e4a7601000000b401080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6",
+      "expected": {
+        "result": "reject",
+        "reason": "zero-handle"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.deliver-unknown-envelope-type",
+      "kind": "decode-apprpc",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(c)/(d) envelope_type \u2208 {0x01, 0x02, 0x05}",
+      "input_hex": "810000000000000000dd26f6be3ba8e682239cbf2d662b7f6f0936b8b14a2c7004b56071e505389785ff7c9e4a7603000000b401080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6",
+      "expected": {
+        "result": "reject",
+        "reason": "unknown-envelope-type"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.route-miss-reason",
+      "kind": "decode-apprpc",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(e) reason (0x01 UNKNOWN_HANDLE)",
+      "input_hex": "8400000000000000000526f6be3b02",
+      "expected": {
+        "result": "reject",
+        "reason": "bad-field"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.route-miss-handle-0",
+      "kind": "decode-apprpc",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.1 (veri datagram\u0131nda hub_handle \u2260 0); \u00a72.4(e)",
+      "input_hex": "840000000000000000050000000001",
+      "expected": {
+        "result": "reject",
+        "reason": "zero-handle"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.store-combo-0-response",
+      "kind": "store-validate",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(c) tablo: 0 \u00b7 0x02 ge\u00e7ersiz",
+      "input_hex": "05005a17c0e0000000a10000000002808d825bba92c7b4cf584b71b907bb391b99a1eab2afacbd3819fc190b0948480000007802070c11161b20252a2f34393e43484d52575c61666b70757a7f84898e93989da2a7acb1b6bbc0c5cacfd4d9dee3e8edf2f7fc01060b10151a1f24292e33383d42474c51565b60656a6f74797e83888d92979ca1a6abb0b5babfc4c9ced3d8dde2e7ecf1f6fb00050a0f14191e23282d32373c41464b5055",
+      "expected": {
+        "result": "reject",
+        "reason": "bad-request"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.store-combo-h-init",
+      "kind": "store-validate",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(c) tablo: h \u00b7 0x01 ge\u00e7ersiz",
+      "input_hex": "05005a17c0e0000000dd26f6be3b01808d825bba92c7b4cf584b71b907bb391b99a1eab2afacbd3819fc190b094848000000b401080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6",
+      "expected": {
+        "result": "reject",
+        "reason": "bad-request"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.store-combo-h-relay-open",
+      "kind": "store-validate",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(c) tablo: h \u00b7 0x05 ge\u00e7ersiz (medya ACK'i E2E MEDIA_LINK, KR-17)",
+      "input_hex": "05005a17c0e00000003926f6be3b05808d825bba92c7b4cf584b71b907bb391b99a1eab2afacbd3819fc190b09484800000010d4d8d9cfe20fe87ba42d997afe1abcc8",
+      "expected": {
+        "result": "reject",
+        "reason": "bad-request"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.store-envelope-type-03",
+      "kind": "store-validate",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(c) tablo: 0x03 ge\u00e7ersiz",
+      "input_hex": "05005a17c0e0000000dd0000000003808d825bba92c7b4cf584b71b907bb391b99a1eab2afacbd3819fc190b094848000000b401080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6",
+      "expected": {
+        "result": "reject",
+        "reason": "bad-request"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.store-envelope-type-04",
+      "kind": "store-validate",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(c) tablo: 0x04 ge\u00e7ersiz",
+      "input_hex": "05005a17c0e0000000dd0000000004808d825bba92c7b4cf584b71b907bb391b99a1eab2afacbd3819fc190b094848000000b401080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6",
+      "expected": {
+        "result": "reject",
+        "reason": "bad-request"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.neg.store-relay-open-65",
+      "kind": "store-validate",
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(c) kurallar: RELAY_OPEN zarf\u0131 \u2264 64 B; \u00a76 RELAY_OPEN_MAX_ENVELOPE",
+      "input_hex": "05005a17c0e00000006a0000000005808d825bba92c7b4cf584b71b907bb391b99a1eab2afacbd3819fc190b094848000000410000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "expected": {
+        "result": "reject",
+        "reason": "bad-request"
+      }
+    },
+    {
+      "id": "s4-apprpc-v1.store.request.relay-open-64",
+      "kind": "store-message-req",
+      "flags": [
+        "boundary"
+      ],
+      "spec_ref": "KM-SEAM-TH-001.md \u00a72.4(c) kurallar: RELAY_OPEN zarf\u0131 \u2264 64 B (s\u0131n\u0131r)",
+      "input": {
+        "envelope_hex": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "envelope_type_hex": "05",
+        "hub_handle_hex": "00000000",
+        "recipient_dest_hash_hex": "808d825bba92c7b4cf584b71b907bb391b99a1eab2afacbd3819fc190b094848",
+        "request_id_hex": "5a17c0e1"
+      },
+      "expected_hex": "05005a17c0e1000000690000000005808d825bba92c7b4cf584b71b907bb391b99a1eab2afacbd3819fc190b0948480000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ]
+}

@@ -814,6 +814,13 @@ impl NodeLoop {
             })
             .collect();
         reorder.retain(|(handle, _)| !sessions.iter().any(|s| s.session == *handle));
+        // [YOL3 · Ö · KK-Ö-37] Şerit doluluğu: ucu açık oturumların toplamı (şeritler kapalıysa None).
+        let lane_backlog = transport.lane_stats().map(|_| {
+            sessions.iter().fold((0usize, 0usize), |(q, f), s| {
+                let (sq, sf) = transport.lane_backlog(s.session).unwrap_or((0, 0));
+                (q.saturating_add(sq), f.saturating_add(sf))
+            })
+        });
         NodeProbe {
             sessions,
             retired: transport.retired_live_diag(),
@@ -826,6 +833,9 @@ impl NodeLoop {
             messenger: self.messenger.stats(),
             events: self.session_events,
             envelopes: crate::probe::EnvelopeCounts::default(),
+            lanes: transport.lane_stats(),
+            lane_backlog,
+            playout: self.ptt.playout_stats(),
         }
     }
 

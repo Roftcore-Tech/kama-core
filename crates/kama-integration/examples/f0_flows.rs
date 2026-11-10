@@ -69,12 +69,13 @@ use client_core::transport::{
 };
 use kama_app::codec::PttCodec;
 use kama_app::messaging::MessengerError;
-use kama_app::playout::{PlayoutConfig, PLAYOUT_DELAY_DEFAULT};
+use kama_app::playout::PlayoutConfig;
 use kama_app::ptt::PttError;
 use kama_app::signaling::SignalingError;
 use kama_contracts::handles::PeerRef;
 use kama_contracts::s1::TransportError;
 use kama_contracts::s3::HubHandle;
+use kama_node::goster::{GOSTER_FILE_WINDOW_UNITS, GOSTER_KOL, GOSTER_PLAYOUT_DELAY};
 use kama_node::{
     FileHandle, FileRef, FileStage, KamaNode, NodeError, NodeEvent, NodeListener, NodeProbe,
     SessionProbe, StreamHandle,
@@ -152,7 +153,9 @@ kullanım: f0_flows --role alice|bob --dir <koşu dizini> --alice-addr IP:PORT -
                 [--probe-ms MS=200]
                 [--live-diag on|off=on]
                 [--e1-arm K0|K0r|K1|K2|K2mc|K2me|K1a|K0a=K0] [--e1-edar on|off=on]
-                [--fec-off on|off=off] [--goster on|off=off] [--playout-ms MS=2000]
+                [--fec-off on|off=off] [--goster on|off=off] [--playout-ms MS=2000] [--lane-w N=5]
+                [--sync files|off=files] [--provision-only on|off=off] [--prov-file YOL]
+                [--view on|off=off]
        f0_flows --help
 
 İki süreç aynı argümanlarla (yalnız --role farklı) başlatılır; önce bob. bob provisioning'i koşu
@@ -163,8 +166,13 @@ YOL3 teşhis: --e1-arm kolu (M2 manifesti bayrak tablosu), --e1-edar off ön tes
 runtime.fec = None; varsayılanlarda düğüm F0 ile aynı kurucudan başlar (kanca yok).
 E2a kıyası: K1a = K1 + E2a, K0a = yalnız E2a (M1 E2aFlags: tt_rfc g=1ms, rtt_rule_v11,
 iw_idle_hold, pto_probes=2).
-Gösterim (YOL3-T1): --goster on → S1 şeritleri (LaneConfig::default, W=5) + PTT oynatma tamponu
-(T = --playout-ms, [1500, 2500], varsayılan 2000); --playout-ms yalnız --goster on ile. İki uca aynı.
+Gösterim (YOL3-T1, KK-Ö-28): --goster on → gösterim profili kama_node::goster'dan: S1 şeritleri
+(W = --lane-w, varsayılan 5) + PTT oynatma tamponu (T = --playout-ms, [1500, 2500], varsayılan 2000);
+--e1-arm varsayılanı gösterim kolu (K1), --fec-off varsayılanı on. Açık bayrak geçersiz kılar.
+--playout-ms ve --lane-w yalnız --goster on ile. İki uca aynı.
+Sahne (KK-Ö-13): --scenario goster = §8.6 zaman çizelgesi (verilmemiş bayraklara ön ayar, gösterim
+profili açık). İki laptop: --sync off (işaret dosyası yok; önce bob) + --prov-file (cihaz dosyası;
+provisioning bir kez --provision-only on). --view on: bob terminalinde olay çizgisi.
 ";
 
 // ── Yapılandırma ─────────────────────────────────────────────────────────────────────────────
@@ -181,6 +189,8 @@ enum Scenario {
     Dosyali,
     DosyaliDur,
     DosyasizDur,
+    /// [YOL3 · Ö · KK-Ö-13] Gösterim sahnesi ([`GOSTER_SCENE`]).
+    Goster,
 }
 
 impl Scenario {
@@ -190,6 +200,7 @@ impl Scenario {
             "dosyali" => Self::Dosyali,
             "dosyali_dur" => Self::DosyaliDur,
             "dosyasiz_dur" => Self::DosyasizDur,
+            "goster" => Self::Goster,
             _ => return None,
         })
     }
@@ -200,11 +211,12 @@ impl Scenario {
             Self::Dosyali => "dosyali",
             Self::DosyaliDur => "dosyali_dur",
             Self::DosyasizDur => "dosyasiz_dur",
+            Self::Goster => "goster",
         }
     }
 
     fn has_file(self) -> bool {
-        matches!(self, Self::Dosyali | Self::DosyaliDur)
+        matches!(self, Self::Dosyali | Self::DosyaliDur | Self::Goster)
     }
 
     fn has_stall(self) -> bool {
@@ -492,6 +504,21 @@ struct Config {
     /// [YOL3 · gösterim] Oynatma tamponunun T'si (`--playout-ms`; yalnız `--goster on`). `None` =
     /// tampon kapalı (demet varışta).
     playout: Option<Duration>,
+    /// [YOL3 · gösterim] W: FILE şeridinin teyitsiz birim tavanı (`--lane-w`; yalnız `--goster on`;
+    /// varsayılan `kama_node::goster::GOSTER_FILE_WINDOW_UNITS`).
+    lane_w: u32,
+    /// [YOL3 · Ö · KK-Ö-13] `--sync files` (varsayılan): ortak koşu dizininde işaret dosyaları
+    /// (`prov/READY`, `sync/*`). `--sync off`: iki laptop — işaret dosyası yok, sıra elle (önce
+    /// bob); cihaz dosyası `--prov-file`'dan; alice tamamlanmayı kendi dosya alındısı ve TEXT
+    /// alındılarıyla, bob kendi beklenen sayımlarıyla ölçer.
+    sync: bool,
+    /// [YOL3 · Ö · KK-Ö-15] `--provision-only on`: yalnız provisioning (`prov/dev/`), düğüm yok.
+    provision_only: bool,
+    /// [YOL3 · Ö · KK-Ö-15] Cihaz dosyası (ana kopya dokunulmaz; koşu dizinine kopyalanır, düğüm
+    /// başlarken kopya silinir).
+    prov_file: Option<PathBuf>,
+    /// [YOL3 · Ö · KK-Ö-13] `--view on`: bob stderr'e olay başına tek satır (demet varış çizgisi).
+    view: bool,
 }
 
 impl Config {
@@ -503,9 +530,11 @@ impl Config {
             .transpose()
     }
 
-    /// [YOL3 · gösterim] Şerit yapılandırması (`--goster on`): YOL3-T1 gösterim varsayılanı (W = 5).
+    /// [YOL3 · gösterim] Şerit yapılandırması (`--goster on`): W = `--lane-w` (varsayılan gösterim
+    /// profilinin W'si = `LaneConfig::default()`).
     fn lanes_cfg(&self) -> Option<LaneConfig> {
-        self.goster.then(LaneConfig::default)
+        self.goster
+            .then(|| LaneConfig::with_file_window(self.lane_w))
     }
 
     /// Kolun etkin bayrak seti (`--e1-edar off` ise `e1_probe_keep` düşmüş).
@@ -518,7 +547,31 @@ impl Config {
     }
 }
 
-const KNOWN_FLAGS: [&str; 43] = [
+/// [YOL3 · Ö · KK-Ö-13] `--scenario goster` sahnesi (ISEMRI-YOL3-Ö §8.6; t0 = alice Connected):
+/// 3 ısınma TEXT (0 / 0,5 / 1,0 s; sınıf `W`, sayılmaz) · dosya t0 + 3 s, 150 480 B · 1 TEXT t0 + 4 s
+/// (64 B) · PTT t0 + 7 s, 20 demet × 200 ms × 80 B (4 s) · pencere 60 s. Sinyal, karşı örnek ve durma
+/// yok; gösterim profili açık (`--goster on`: kol, FEC, W, T `kama_node::goster`'dan). Sabit zaman
+/// çizelgesi: TEXT'in varışı beklenmez. Bu değerler yalnız VERİLMEMİŞ bayraklara yazılır; açık bayrak
+/// geçersiz kılar.
+const GOSTER_SCENE: [(&str, &str); 15] = [
+    ("--warmup-texts", "3"),
+    ("--warmup-every-ms", "500"),
+    ("--file-at-ms", "3000"),
+    ("--file-bytes", "150480"),
+    ("--texts", "1"),
+    ("--text-at-ms", "4000"),
+    ("--text-bytes", "64"),
+    ("--sigs", "0"),
+    ("--ptt-at-ms", "7000"),
+    ("--ptt-bundles", "20"),
+    ("--ptt-bundle-ms", "200"),
+    ("--ptt-bytes", "80"),
+    ("--karsi", "off"),
+    ("--window-s", "60"),
+    ("--goster", "on"),
+];
+
+const KNOWN_FLAGS: [&str; 48] = [
     "--role",
     "--dir",
     "--alice-addr",
@@ -560,6 +613,11 @@ const KNOWN_FLAGS: [&str; 43] = [
     "--fec-off",
     "--goster",
     "--playout-ms",
+    "--lane-w",
+    "--sync",
+    "--provision-only",
+    "--prov-file",
+    "--view",
     "--help",
     "-h",
 ];
@@ -582,6 +640,11 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         let value = it.next().ok_or_else(|| format!("{flag} için değer yok"))?;
         if values.insert(flag.as_str(), value.as_str()).is_some() {
             return Err(format!("{flag} birden fazla verildi"));
+        }
+    }
+    if values.get("--scenario").copied() == Some("goster") {
+        for (flag, value) in GOSTER_SCENE {
+            values.entry(flag).or_insert(value);
         }
     }
     let v = &values;
@@ -607,6 +670,8 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
             .collect::<Result<Vec<_>, _>>()?,
     };
     let bundle_ms = number(v, "--ptt-bundle-ms", 200)?;
+    // [YOL3 · gösterim] `--goster on` kol ve FEC varsayılanlarını gösterim profilinden alır (KK-Ö-28).
+    let goster = on_off(v, "--goster", false)?;
     let mut cfg = Config {
         role,
         dir: PathBuf::from(required(v, "--dir")?),
@@ -646,21 +711,49 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         live_diag: on_off(v, "--live-diag", true)?,
         receipt_grace: Duration::from_secs(number(v, "--receipt-grace-s", 30)?),
         e1_arm: match values.get("--e1-arm").copied() {
+            None if goster => E1Arm::parse(GOSTER_KOL)
+                .ok_or_else(|| format!("gösterim kolu {GOSTER_KOL:?} f0_flows'ta yok"))?,
             None => E1Arm::K0,
             Some(name) => E1Arm::parse(name).ok_or_else(|| {
                 format!("--e1-arm K0|K0r|K1|K2|K2mc|K2me|K1a|K0a olmalı: {name:?}")
             })?,
         },
         e1_edar: on_off(v, "--e1-edar", true)?,
-        fec_off: on_off(v, "--fec-off", false)?,
-        goster: on_off(v, "--goster", false)?,
+        fec_off: on_off(v, "--fec-off", goster)?,
+        goster,
         playout: None,
+        lane_w: GOSTER_FILE_WINDOW_UNITS,
+        sync: match values.get("--sync").copied() {
+            None | Some("files") => true,
+            Some("off") => false,
+            Some(other) => return Err(format!("--sync files|off olmalı: {other:?}")),
+        },
+        provision_only: on_off(v, "--provision-only", false)?,
+        prov_file: values.get("--prov-file").map(PathBuf::from),
+        view: on_off(v, "--view", false)?,
     };
+    if !cfg.sync && cfg.prov_file.is_none() && !cfg.provision_only {
+        return Err(
+            "--sync off için --prov-file gerekli (iki laptop: provisioning bir kez, \
+                    --provision-only on)"
+                .to_owned(),
+        );
+    }
     cfg.playout = match (cfg.goster, values.contains_key("--playout-ms")) {
-        (true, _) => Some(millis(v, "--playout-ms", ms_u64(PLAYOUT_DELAY_DEFAULT))?),
+        (true, _) => Some(millis(v, "--playout-ms", ms_u64(GOSTER_PLAYOUT_DELAY))?),
         (false, false) => None,
         (false, true) => return Err("--playout-ms yalnız --goster on ile".to_owned()),
     };
+    match (cfg.goster, values.contains_key("--lane-w")) {
+        (true, true) => {
+            cfg.lane_w = number_u32(v, "--lane-w", u64::from(GOSTER_FILE_WINDOW_UNITS))?;
+            if cfg.lane_w == 0 {
+                return Err("--lane-w ≥ 1 olmalı".to_owned());
+            }
+        }
+        (false, true) => return Err("--lane-w yalnız --goster on ile".to_owned()),
+        _ => {}
+    }
     cfg.playout_cfg()?;
     validate(&cfg)?;
     Ok(Parsed::Run(Box::new(cfg)))
@@ -1309,7 +1402,7 @@ fn ts_line(clock: &Clock, at: Instant, p: &NodeProbe) -> String {
     let _ = write!(
         s,
         "],\"app\":{{\"rdrop\":{},\"unk\":{},\"dupt\":{},\"below\":{},\"rsent\":{},\
-         \"runsent\":{},\"rign\":{},\"resent\":{},\"refused\":{},\"store\":{}}}}}",
+         \"runsent\":{},\"rign\":{},\"resent\":{},\"refused\":{},\"store\":{}}}",
         m.records_dropped,
         m.units_unknown_session,
         m.duplicate_texts,
@@ -1321,7 +1414,66 @@ fn ts_line(clock: &Clock, at: Instant, p: &NodeProbe) -> String {
         m.resend_refused,
         m.store_errors
     );
+    // [YOL3 · Ö · KK-Ö-37] T1 sayaçları (eklemeli alan; şerit ve tampon kapalıysa `null`).
+    t1_json(&mut s, p);
+    s.push('}');
     s
+}
+
+/// `ts` satırının `t1` alanı: şerit sayaçları (`ln`; dizi sırası PTT, SIG, TEXT, FILE), şerit
+/// doluluğu (`bl` = [bekleyen, FILE penceresi], o anki değer) ve oynatma tamponu (`po`; `peak` =
+/// akış tamponunun tepe doluluğu). Kaynak `NodeProbe` (salt okuma).
+fn t1_json(s: &mut String, p: &NodeProbe) {
+    if p.lanes.is_none() && p.playout.is_none() {
+        s.push_str(",\"t1\":null");
+        return;
+    }
+    let arr = |a: &[u64; 4]| format!("[{},{},{},{}]", a[0], a[1], a[2], a[3]);
+    s.push_str(",\"t1\":{\"ln\":");
+    match &p.lanes {
+        Some(l) => {
+            let _ = write!(
+                s,
+                "{{\"acc\":{},\"giv\":{},\"ref\":{},\"exp\":{},\"drp\":{},\"gf\":{},\
+                 \"fack\":{},\"ackd\":{}}}",
+                arr(&l.accepted),
+                arr(&l.given),
+                arr(&l.refused),
+                l.lane_expired,
+                l.lane_dropped,
+                l.give_failed,
+                l.file_acked,
+                l.acks_drained
+            );
+        }
+        None => s.push_str("null"),
+    }
+    match p.lane_backlog {
+        Some((q, f)) => {
+            let _ = write!(s, ",\"bl\":[{q},{f}]");
+        }
+        None => s.push_str(",\"bl\":null"),
+    }
+    match &p.playout {
+        Some(o) => {
+            let _ = write!(
+                s,
+                ",\"po\":{{\"st\":{},\"stms\":{},\"ov\":{},\"sc\":{},\"tc\":{},\"disc\":{},\
+                 \"late\":{},\"rel\":{},\"peak\":{}}}",
+                o.playout_stalls,
+                o.playout_stall_ms,
+                o.playout_overflow,
+                o.playout_session_closes,
+                o.playout_table_closes,
+                o.playout_discarded,
+                o.playout_late_eliminated,
+                o.bundles_released,
+                o.playout_peak_bundles
+            );
+        }
+        None => s.push_str(",\"po\":null"),
+    }
+    s.push('}');
 }
 
 fn trace_line(clock: &Clock, at: Instant, records: &[UnitTraceRecord], dropped: u64) -> String {
@@ -1404,6 +1556,29 @@ fn provision(cfg: &Config) -> Result<(), String> {
     }
     let _ = fs::remove_dir_all(&authority);
     write_marker(PROV_READY, "ok")
+}
+
+/// [YOL3 · Ö · KK-Ö-15] `--prov-file`: cihaz dosyasının KOPYASI koşu dizinindeki yerine
+/// (`prov/dev/<ad>`); düğüm başlarken kopya silinir, ana kopya dokunulmaz.
+fn install_prov_file(from: &Path, me: &str) -> Result<(), String> {
+    let to = device_path(me)?;
+    if let Some(dir) = to.parent() {
+        fs::create_dir_all(dir).map_err(|e| format!("{dir:?}: {e}"))?;
+    }
+    fs::copy(from, &to).map_err(|e| format!("--prov-file {from:?} → {to:?}: {e}"))?;
+    Ok(())
+}
+
+/// [YOL3 · Ö · KK-Ö-15] `--provision-only on`: provisioning (alice + bob) `prov/dev/`'e, düğüm yok.
+fn provision_only(cfg: &Config) -> Result<String, String> {
+    provision(cfg)?;
+    let alice = device_path(ALICE)?;
+    let bob = device_path(BOB)?;
+    Ok(format!(
+        "{{\"role\":\"provision\",\"result\":\"ok\",\"alice\":{},\"bob\":{}}}",
+        js(&alice.display().to_string()),
+        js(&bob.display().to_string())
+    ))
 }
 
 fn start_node(cfg: &Config, me: &str, tap: Tap, link: SockLink) -> Result<KamaNode, String> {
@@ -2050,7 +2225,16 @@ impl Alice {
         if self.next < self.plan.len() {
             return false;
         }
-        if !self.bob_has_everything() {
+        // `--sync off`: bob'un sayımları görünmez; dosya için alice'in kendi alındısı (FILE_RECEIPT)
+        // ya da hatası, TEXT'ler için alındılar (aşağıda) ölçüttür.
+        let peer_done = if self.cfg.sync {
+            self.bob_has_everything()
+        } else {
+            !self.cfg.scenario.has_file()
+                || self.file.delivered_at.is_some()
+                || self.file.failed_at.is_some()
+        };
+        if !peer_done {
             return false;
         }
         let now = Instant::now();
@@ -2066,12 +2250,14 @@ impl Alice {
 
     /// Bağlantı + plan + tamamlanma. `Ok(true)` = tamamlandı, `Ok(false)` = pencere doldu.
     fn execute_run(&mut self) -> Result<bool, String> {
-        wait_marker(MARK_BOB_UP, self.cfg.connect_timeout).ok_or_else(|| {
-            format!(
-                "{MARK_BOB_UP} {:?} içinde gelmedi",
-                self.cfg.connect_timeout
-            )
-        })?;
+        if self.cfg.sync {
+            wait_marker(MARK_BOB_UP, self.cfg.connect_timeout).ok_or_else(|| {
+                format!(
+                    "{MARK_BOB_UP} {:?} içinde gelmedi",
+                    self.cfg.connect_timeout
+                )
+            })?;
+        }
         self.node()?
             .connect(BOB)
             .map_err(|e| format!("alice connect: {e}"))?;
@@ -2093,7 +2279,9 @@ impl Alice {
         }
         let t0 = Instant::now();
         self.t0 = Some(t0);
-        write_marker(MARK_T0, &self.clock.unix_ns(t0).to_string())?;
+        if self.cfg.sync {
+            write_marker(MARK_T0, &self.clock.unix_ns(t0).to_string())?;
+        }
         self.out.line(&mark_line(&self.clock, t0, "t0", ""));
         self.next_probe = t0;
         let mut flush_at = t0;
@@ -2147,9 +2335,17 @@ impl Alice {
         let ended_at = Instant::now();
         self.pump_events();
         self.sample();
-        let _ = write_marker(MARK_ALICE_DONE, "done");
-        // bob son sondasını alıp çıkana dek bekle (olaylar işlenmeye devam eder).
-        let deadline = Instant::now() + BOB_EXIT_WAIT;
+        if self.cfg.sync {
+            let _ = write_marker(MARK_ALICE_DONE, "done");
+        }
+        // bob son sondasını alıp çıkana dek bekle (olaylar işlenmeye devam eder; `--sync off`'ta
+        // işaret yok → beklenmez).
+        let deadline = Instant::now()
+            + if self.cfg.sync {
+                BOB_EXIT_WAIT
+            } else {
+                Duration::ZERO
+            };
         let mut bob_exit = false;
         while Instant::now() < deadline {
             if read_marker(MARK_BOB_EXIT).is_some() {
@@ -2231,8 +2427,13 @@ fn start_alice_node(
     tap: Tap,
     counters: Arc<LinkCounters>,
 ) -> Result<KamaNode, String> {
-    wait_marker(PROV_READY, cfg.connect_timeout)
-        .ok_or_else(|| format!("{PROV_READY} {:?} içinde gelmedi", cfg.connect_timeout))?;
+    match &cfg.prov_file {
+        Some(from) => install_prov_file(from, ALICE)?,
+        None => {
+            wait_marker(PROV_READY, cfg.connect_timeout)
+                .ok_or_else(|| format!("{PROV_READY} {:?} içinde gelmedi", cfg.connect_timeout))?;
+        }
+    }
     let link = SockLink::bind(SOCK_ALICE, SOCK_BOB, 1, counters)?;
     start_node(cfg, ALICE, tap, link)
 }
@@ -2328,9 +2529,75 @@ struct Bob {
     next_probe: Instant,
     probes: u64,
     probe_errors: u64,
+    /// [YOL3 · Ö · `--sync off`] alice'in planından beklenen sınıf sayımları (karşı örnek hariç).
+    expected: BTreeMap<char, u32>,
+    /// [YOL3 · Ö · `--sync off`] beklenenlerin hepsinin geldiği an (sonra `receipt_grace`).
+    all_at: Option<Instant>,
+    /// [YOL3 · Ö · `--view`] çizginin sıfırı (bob'un Connected anı).
+    view_t0: Option<Instant>,
+    /// [YOL3 · Ö · `--view`] basış (sürücü numarası) → (ilk demet anı, gelen demet).
+    view_ptt: BTreeMap<u32, (Instant, u32)>,
+}
+
+/// [YOL3 · Ö · `--sync off`] alice'in planındaki öğelerin sınıf sayımları (bob'un `count` anahtarıyla
+/// aynı sınıflar; dosya ayrı, karşı örnek planda yok).
+fn expected_counts(cfg: &Config) -> BTreeMap<char, u32> {
+    let mut out = BTreeMap::new();
+    for a in build_plan(cfg) {
+        let class = match a.act {
+            Act::Text { class, .. } => class,
+            Act::Sig { .. } => 'S',
+            Act::PttOpen { .. } => 'O',
+            Act::PttPush { .. } => 'P',
+            Act::PttClose { .. } => 'C',
+            Act::File => continue,
+        };
+        *out.entry(class).or_insert(0) += 1;
+    }
+    out
 }
 
 impl Bob {
+    /// [YOL3 · Ö · `--sync off`] alice'in planı bob'a geldi mi (dosya: alındı ya da alıcıda hata).
+    fn has_everything(&self) -> bool {
+        let items = self
+            .expected
+            .iter()
+            .all(|(c, n)| self.counts.get(c).copied().unwrap_or(0) >= *n);
+        let file = !self.cfg.scenario.has_file() || self.file_status != "none";
+        items && file
+    }
+
+    /// [YOL3 · Ö · KK-Ö-13] `--view on`: olay başına tek satır, stderr (ses yerine demet varış
+    /// çizgisi; zaman bob'un Connected anından).
+    fn view(&mut self, at: Instant, what: &str) {
+        if !self.cfg.view {
+            return;
+        }
+        let t0 = *self.view_t0.get_or_insert(at);
+        let dt = at.saturating_duration_since(t0).as_secs_f64();
+        eprintln!("[{dt:7.2} s] {what}");
+    }
+
+    fn view_bundle(&mut self, at: Instant, spurt: u32) {
+        if !self.cfg.view {
+            return;
+        }
+        let total = if spurt == KARSI_SPURT {
+            self.cfg.karsi_bundles
+        } else {
+            self.cfg.ptt_bundles
+        };
+        let entry = self.view_ptt.entry(spurt).or_insert((at, 0));
+        entry.1 += 1;
+        let (first, got) = *entry;
+        let shown = usize::try_from(got.min(total)).unwrap_or(0);
+        let width = usize::try_from(total).unwrap_or(0);
+        let bar: String = "▮".repeat(shown) + &"░".repeat(width.saturating_sub(shown));
+        let since = at.saturating_duration_since(first).as_secs_f64();
+        let line = format!("PTT {bar} {got:>2}/{total} (ilk demetten +{since:.2} s)");
+        self.view(at, &line);
+    }
     fn count(&mut self, class: char, spurt: u32, idx: u32) -> bool {
         if self.seen.insert((class, spurt, idx)) {
             *self.counts.entry(class).or_insert(0) += 1;
@@ -2363,6 +2630,15 @@ impl Bob {
                         js(&class.to_string()),
                         text.len()
                     ));
+                    let note = if class == 'W' {
+                        " (ısınma, sayılmaz)"
+                    } else {
+                        ""
+                    };
+                    self.view(
+                        at,
+                        &format!("TEXT {class}{idx} geldi, {} B{note}", text.len()),
+                    );
                 }
                 None => self.unparsed += 1,
             },
@@ -2378,6 +2654,7 @@ impl Bob {
                 None => self.unparsed += 1,
             },
             NodeEvent::PttOpened { stream_id, .. } => {
+                self.view(at, &format!("PTT başladı (akış {stream_id})"));
                 let first = self.count('O', stream_id, 0);
                 self.out.line(&format!(
                     "{{\"k\":\"rx\",\"t\":{t:.3},\"c\":\"O\",\"stream\":{stream_id},\
@@ -2389,6 +2666,9 @@ impl Bob {
             } => match parse_bundle(&payload) {
                 Some((spurt, idx)) => {
                     let first = self.count('P', spurt, idx);
+                    if first {
+                        self.view_bundle(at, spurt);
+                    }
                     self.out.line(&format!(
                         "{{\"k\":\"rx\",\"t\":{t:.3},\"c\":\"P\",\"sp\":{spurt},\"i\":{idx},\
                          \"stream\":{stream_id},\"first\":{first}}}"
@@ -2397,6 +2677,7 @@ impl Bob {
                 None => self.unparsed += 1,
             },
             NodeEvent::PttClosed { stream_id, .. } => {
+                self.view(at, &format!("PTT bitti (akış {stream_id})"));
                 let first = self.count('C', stream_id, 0);
                 self.out.line(&format!(
                     "{{\"k\":\"rx\",\"t\":{t:.3},\"c\":\"C\",\"stream\":{stream_id},\
@@ -2417,6 +2698,8 @@ impl Bob {
                     "{{\"k\":\"rx\",\"t\":{t:.3},\"c\":\"F\",\"size\":{size},\"match\":{}}}",
                     matched.map_or_else(|| "null".to_owned(), |m| m.to_string())
                 ));
+                let ok = matched.map_or("bilinmiyor", |m| if m { "evet" } else { "HAYIR" });
+                self.view(at, &format!("DOSYA tamam, {size} B, içerik eşleşmesi {ok}"));
             }
             NodeEvent::FileFailed { file, reason, .. } => {
                 if matches!(file, FileRef::Incoming(_)) && self.file_at.is_none() {
@@ -2431,6 +2714,7 @@ impl Bob {
                 ));
             }
             NodeEvent::Connected { peer_id } => {
+                self.view(at, &format!("bağlandı: {peer_id}"));
                 self.out.line(&format!(
                     "{{\"k\":\"ev\",\"t\":{t:.3},\"e\":\"connected\",\"peer\":{}}}",
                     js(&peer_id)
@@ -2457,7 +2741,7 @@ impl Bob {
     }
 
     fn write_state(&mut self) {
-        if !self.state_dirty {
+        if !self.state_dirty || !self.cfg.sync {
             return;
         }
         let mut body = counts_text(&self.counts);
@@ -2572,8 +2856,16 @@ impl Bob {
                 self.out.flush();
                 flush_at = Instant::now() + Duration::from_secs(1);
             }
-            if read_marker(MARK_ALICE_DONE).is_some() {
-                return Ok(true);
+            if self.cfg.sync {
+                if read_marker(MARK_ALICE_DONE).is_some() {
+                    return Ok(true);
+                }
+            } else if self.has_everything() {
+                // `--sync off`: alındılar ve son ACK'ler alice'e ulaşsın diye `receipt_grace` kadar sür.
+                let now = Instant::now();
+                if now >= *self.all_at.get_or_insert(now) + self.cfg.receipt_grace {
+                    return Ok(true);
+                }
             }
             if Instant::now() >= deadline {
                 return Ok(false);
@@ -2643,13 +2935,18 @@ impl Bob {
             self.out.errors
         );
         self.out.flush();
-        let _ = write_marker(MARK_BOB_EXIT, "exit");
+        if self.cfg.sync {
+            let _ = write_marker(MARK_BOB_EXIT, "exit");
+        }
         (summary, ok)
     }
 }
 
 fn start_bob_node(cfg: &Config, tap: Tap, counters: Arc<LinkCounters>) -> Result<KamaNode, String> {
-    provision(cfg)?;
+    match &cfg.prov_file {
+        Some(from) => install_prov_file(from, BOB)?,
+        None => provision(cfg)?,
+    }
     let link = SockLink::bind(SOCK_BOB, SOCK_ALICE, 2, counters)?;
     start_node(cfg, BOB, tap, link)
 }
@@ -2704,12 +3001,28 @@ fn run_bob(cfg: Config) -> (String, bool) {
         next_probe: Instant::now(),
         probes: 0,
         probe_errors: 0,
+        expected: expected_counts(&cfg),
+        all_at: None,
+        view_t0: None,
+        view_ptt: BTreeMap::new(),
     };
+    if cfg.view {
+        eprintln!(
+            "f0_flows bob · sahne {} · ses yerine demet varış çizgisi (doğrudan kip; el sıkışma \
+             zarfları düzenek köprüsünden, netem dışında; hub ve telefon yolu Aralık)",
+            cfg.scenario.name()
+        );
+    }
     let tap = Tap { tx, dropped, stall };
     let result = match start_bob_node(&cfg, tap, link_counters) {
         Ok(node) => {
             bob.node = Some(node);
-            match write_marker(MARK_BOB_UP, "up") {
+            let up = if cfg.sync {
+                write_marker(MARK_BOB_UP, "up")
+            } else {
+                Ok(())
+            };
+            match up {
                 Ok(()) => {
                     bob.out
                         .line(&mark_line(&bob.clock, Instant::now(), "node_up", ""));
@@ -2745,6 +3058,18 @@ fn main() -> ExitCode {
     if let Err(e) = fs::create_dir_all(SYNC_DIR) {
         eprintln!("f0_flows: {SYNC_DIR}: {e}");
         return ExitCode::from(2);
+    }
+    if cfg.provision_only {
+        return match provision_only(&cfg) {
+            Ok(summary) => {
+                println!("{summary}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("f0_flows: --provision-only: {e}");
+                ExitCode::from(1)
+            }
+        };
     }
     let role_kind = cfg.role;
     let (role, (summary, ok)) = match role_kind {
@@ -2945,6 +3270,151 @@ mod tests {
         );
     }
 
+    /// Yalnız zorunlu bayraklarla (sahne testleri: F0 hücresinin açık bayrakları ön ayarı ezerdi).
+    fn parse_min(extra: &str) -> Result<Config, String> {
+        let base = "--role bob --dir /tmp/f0 --alice-addr 10.10.0.1:47100 \
+                    --bob-addr 10.10.1.1:47100 --profile goster";
+        let args: Vec<String> = base
+            .split_whitespace()
+            .chain(extra.split_whitespace())
+            .map(str::to_owned)
+            .collect();
+        match parse_args(&args)? {
+            Parsed::Run(cfg) => Ok(*cfg),
+            Parsed::Help => Err("help".to_owned()),
+        }
+    }
+
+    /// KK-Ö-13 / §8.6: `--scenario goster` sahnesi — zaman çizelgesi ve gösterim profili; açık
+    /// bayrak ön ayarı geçersiz kılar.
+    #[test]
+    fn goster_scene_is_the_section_8_6_timeline() {
+        let cfg = parse_min("--scenario goster").expect("ayrışmalı");
+        assert_eq!(cfg.scenario, Scenario::Goster);
+        assert!(cfg.scenario.has_file() && !cfg.scenario.has_stall());
+        assert_eq!(cfg.file_bytes, 150_480);
+        assert_eq!((cfg.texts, cfg.sigs, cfg.ptt_bundles), (1, 0, 20));
+        assert_eq!((cfg.ptt_bytes, cfg.ptt_bundle_ms), (80, 200));
+        assert_eq!(cfg.ptt_at, vec![Duration::from_millis(7000)]);
+        assert!(!cfg.karsi);
+        assert_eq!(cfg.window, Duration::from_secs(60));
+        assert!(cfg.goster && cfg.fec_off && cfg.e1_arm.name() == GOSTER_KOL);
+        let plan: Vec<(u64, Act)> = build_plan(&cfg)
+            .into_iter()
+            .map(|a| (ms_u64(a.due), a.act))
+            .collect();
+        let w: Vec<u64> = plan
+            .iter()
+            .filter(|(_, a)| matches!(a, Act::Text { class: 'W', .. }))
+            .map(|(t, _)| *t)
+            .collect();
+        assert_eq!(w, vec![0, 500, 1000], "3 ısınma TEXT");
+        assert!(plan.contains(&(3000, Act::File)), "dosya t0 + 3 s");
+        assert!(plan.contains(&(4000, Act::Text { class: 'T', idx: 0 })));
+        assert!(plan.contains(&(7000, Act::PttOpen { spurt: 0 })));
+        assert!(plan.contains(&(11_000, Act::PttPush { spurt: 0, idx: 19 })));
+        assert!(plan.contains(&(11_200, Act::PttClose { spurt: 0 })));
+        assert!(!plan.iter().any(|(_, a)| matches!(a, Act::Sig { .. })));
+        let want: BTreeMap<char, u32> = [('W', 3), ('T', 1), ('O', 1), ('P', 20), ('C', 1)]
+            .into_iter()
+            .collect();
+        assert_eq!(expected_counts(&cfg), want, "bob'un beklediği sayımlar");
+        let cfg = parse_min("--scenario goster --ptt-bundles 15 --e1-arm K1a").expect("ok");
+        assert_eq!((cfg.ptt_bundles, cfg.e1_arm), (15, E1Arm::K1a));
+        assert!(parse_min("--scenario goster --goster off").is_ok());
+    }
+
+    /// KK-Ö-13 / KK-Ö-15: `--sync off` yalnız `--prov-file` ile; `--provision-only` düğümsüz.
+    #[test]
+    fn sync_off_needs_a_device_file_and_defaults_stay_files() {
+        let cfg = parse_min("--scenario dosyali").expect("ayrışmalı");
+        assert!(cfg.sync && cfg.prov_file.is_none() && !cfg.provision_only && !cfg.view);
+        assert!(
+            parse_min("--scenario goster --sync off").is_err(),
+            "--prov-file gerekli"
+        );
+        let cfg = parse_min("--scenario goster --sync off --prov-file /x/alice.json --view on")
+            .expect("ayrışmalı");
+        assert!(!cfg.sync && cfg.view);
+        assert_eq!(cfg.prov_file, Some(PathBuf::from("/x/alice.json")));
+        let cfg = parse_min("--scenario goster --sync off --provision-only on").expect("ok");
+        assert!(cfg.provision_only);
+        assert!(parse_min("--scenario dosyali --sync maybe").is_err());
+    }
+
+    /// KK-Ö-37: `ts` satırının `t1` alanı eklemelidir (önceki alanlar aynen); şerit ve tampon
+    /// kapalıyken `null`, açıkken T1 sayaçları (salt okuma) ve şerit doluluğu.
+    #[test]
+    fn ts_line_writes_t1_counters_additively() {
+        let clock = Clock::new();
+        let mut p = NodeProbe::default();
+        let line = ts_line(&clock, Instant::now(), &p);
+        assert!(line.ends_with(",\"store\":0},\"t1\":null}"), "{line}");
+        p.lanes = Some(client_core::lanes::LaneStats {
+            refused: [0, 0, 1, 2],
+            lane_dropped: 3,
+            ..Default::default()
+        });
+        p.lane_backlog = Some((4, 5));
+        p.playout = Some(kama_app::playout::PlayoutStats {
+            playout_stalls: 1,
+            playout_peak_bundles: 7,
+            ..Default::default()
+        });
+        let line = ts_line(&clock, Instant::now(), &p);
+        assert!(
+            line.ends_with(
+                ",\"t1\":{\"ln\":{\"acc\":[0,0,0,0],\"giv\":[0,0,0,0],\"ref\":[0,0,1,2],\
+                 \"exp\":0,\"drp\":3,\"gf\":0,\"fack\":0,\"ackd\":0},\"bl\":[4,5],\
+                 \"po\":{\"st\":1,\"stms\":0,\"ov\":0,\"sc\":0,\"tc\":0,\"disc\":0,\
+                 \"late\":0,\"rel\":0,\"peak\":7}}}"
+            ),
+            "{line}"
+        );
+        assert_eq!(line.matches('{').count(), line.matches('}').count());
+    }
+
+    /// KK-Ö-28 (iv): `--goster on` (açık bayraksız) düğüme `kama_node::goster`'ın yazdığının AYNISINI
+    /// yazar (L ve A yolu aynı değerler): FEC yok, gösterim E1 kolu, E2a ürün değeri, şeritler W,
+    /// tampon T. Açık `--e1-arm` / `--fec-off` / `--lane-w` / `--playout-ms` geçersiz kılar.
+    #[test]
+    fn goster_on_writes_exactly_the_kama_node_goster_profile() {
+        let addr: SocketAddr = "127.0.0.1:1".parse().expect("adres");
+        let cfg = parse("--goster on").expect("ayrışmalı");
+        assert_eq!(cfg.e1_arm.name(), GOSTER_KOL);
+        assert!(cfg.fec_off);
+        let mut l = ClientTransportConfig::product(addr);
+        transport_hook(&cfg).expect("ok").expect("kanca")(&mut l);
+        let mut a = ClientTransportConfig::product(addr);
+        kama_node::goster::apply(&mut a);
+        assert!(l.runtime.fec.is_none() && a.runtime.fec.is_none());
+        assert_eq!(l.runtime.e1_flags, a.runtime.e1_flags, "E1: gösterim kolu");
+        assert_eq!(l.runtime.e2a_flags, a.runtime.e2a_flags, "E2a: ürün değeri");
+        assert_eq!(l.lanes, a.lanes, "şeritler: aynı W");
+        assert_eq!(
+            cfg.playout_cfg().expect("ok"),
+            Some(kama_node::goster::playout())
+        );
+        // Geçersiz kılma: kol, FEC, W, T.
+        let cfg = parse("--goster on --e1-arm K0 --fec-off off --lane-w 4 --playout-ms 2500")
+            .expect("ayrışmalı");
+        assert_eq!(cfg.e1_arm, E1Arm::K0);
+        assert!(!cfg.fec_off);
+        assert_eq!(cfg.lanes_cfg(), Some(LaneConfig::with_file_window(4)));
+        assert_eq!(cfg.playout, Some(Duration::from_millis(2500)));
+        assert!(parse("--goster on --lane-w 0").is_err(), "W ≥ 1");
+        assert!(
+            parse("--lane-w 4").is_err(),
+            "--lane-w yalnız --goster on ile"
+        );
+        // Gösterim kapalıyken eski varsayılanlar aynen (F0/G2/E2a hücreleri).
+        let cfg = parse("").expect("ayrışmalı");
+        assert_eq!(
+            (cfg.e1_arm, cfg.fec_off, cfg.goster),
+            (E1Arm::K0, false, false)
+        );
+    }
+
     #[test]
     fn goster_turns_on_lanes_and_playout_and_is_refused_half_way() {
         let addr: SocketAddr = "127.0.0.1:1".parse().expect("adres");
@@ -2958,14 +3428,14 @@ mod tests {
         // --goster on: şeritler LaneConfig::default (W = 5), tampon T = 2000 ms; kollar aynen.
         for arm in ["K0", "K1", "K1a"] {
             let cfg = parse(&format!("--e1-arm {arm} --fec-off on --goster on")).expect("ok");
-            assert_eq!(cfg.playout, Some(PLAYOUT_DELAY_DEFAULT), "{arm}");
+            assert_eq!(cfg.playout, Some(GOSTER_PLAYOUT_DELAY), "{arm}");
             let mut c = ClientTransportConfig::product(addr);
             transport_hook(&cfg).expect("ok").expect("kanca")(&mut c);
             assert_eq!(c.lanes, Some(LaneConfig::default()), "{arm}");
             assert_eq!(c.runtime.e1_flags, cfg.e1_set().flags(), "{arm}");
             assert!(c.runtime.fec.is_none());
         }
-        // K0 + FEC ürün + --goster on: kanca yine var (şeritler sessizce kapalı kalmaz).
+        // --goster on (kol ve FEC gösterim profilinden): kanca var (şeritler sessizce kapalı kalmaz).
         let cfg = parse("--goster on").expect("ok");
         assert!(transport_hook(&cfg).expect("ok").is_some());
         let cfg = parse("--goster on --playout-ms 1500").expect("ok");

@@ -541,6 +541,16 @@ def summarize(d, kol, taban):
     return S
 
 
+def t1_ozet(t1):
+    """`t1` varsa kısa özet (koşular arası en yüksek / son değer toplamı; ayrıntı okuma.json)."""
+    hi, last = t1.get("en_yuksek", {}), t1.get("son_toplam", {})
+    ref = sum(v for k, v in last.items() if k.startswith("alice.ln.ref["))
+    return (f"tampon tepe {hi.get('bob.po.peak', '—')} demet · tampon duraklama Σ "
+            f"{last.get('bob.po.st', '—')} · atılan Σ {last.get('bob.po.disc', '—')} · şerit ret Σ "
+            f"{ref} · şerit düşen Σ {last.get('alice.ln.drp', '—')} · şerit kuyruğu tepe (örn.) "
+            f"{hi.get('alice.bl[0]', '—')} · dosya penceresi tepe (örn.) {hi.get('alice.bl[1]', '—')}")
+
+
 def report(S, onkayit_line):
     kol, taban = S["kol"], S["taban"]
     L = ["# mini-Ö okuması", "",
@@ -582,7 +592,7 @@ def report(S, onkayit_line):
           "bob Reorder tutulan en yüksek | T1 sayaçları |", "|---|---|---|---|---|---|---|---|---|---|"]
     for key, e in S["hucreler"].items():
         o, k = e["olay"], e["kuyruk_max"]
-        t1 = "eksik (ts satırında `t1` yok)" if e["t1"] is None else "var (okuma.json)"
+        t1 = "eksik (ts satırında `t1` yok)" if e["t1"] is None else t1_ozet(e["t1"])
         L.append(f"| {key} | {o['dinleyici_dusus']} | {o['iz_dusus_kosu']} | {o['O_eksik']} / "
                  f"{o['C_eksik']} / {o['P_eksik']} | {o['yinelenen']} | {o['ayrisamayan']} | "
                  f"{o['sirasiz']} | {k.get('alice_out')}/{k.get('alice_txq')}/{k.get('alice_un')}/"
@@ -774,7 +784,13 @@ def oz_test():
             e["ilk_demet_s"][0] == 1.0 and T_MIN_S <= e["T_oneri_s"] <= T_MAX_S)
         chk("uçtan uca: W = 5, R3 veri yok → yeşil değil",
             S["W"] == 5 and S["yesil"]["gecer"] is False)
+        chk("uçtan uca: T1 sayaçları okunur (tampon tepe 4, şerit ret Σ 4, duraklama Σ 1)",
+            e["t1"]["en_yuksek"]["bob.po.peak"] == 4
+            and sum(v for k, v in e["t1"]["son_toplam"].items()
+                    if k.startswith("alice.ln.ref[")) == 4
+            and e["t1"]["son_toplam"]["bob.po.st"] == 1)
         md = report(S, "test")
+        chk("uçtan uca: T1 özeti raporda", "tampon tepe 4 demet" in md)
         chk("uçtan uca: rapor beş bölümü yazar", all(h in md for h in (
             "## 1.", "## 2.", "## 3.", "## 4.", "## 5.", "## 6.", "## 7.")))
     print("ÖZ-TEST " + ("TEMİZ" if ok_all else "KALDI"))
@@ -825,10 +841,16 @@ def write_synthetic_run(rd, late_ms):
     B.append({"k": "rx", "t": t0 + 25000, "c": "F", "size": 150480, "match": True})
     A.append({"k": "tr", "t": t0 + 30000, "drop": 0, "r": trs})
     B.append({"k": "tr", "t": t0 + 30000, "drop": 0, "r": trr})
+    t1a = {"ln": {"acc": [5, 0, 1, 0], "giv": [5, 0, 1, 0], "ref": [0, 0, 0, 2], "exp": 0,
+                  "drp": 0, "gf": 0, "fack": 0, "ackd": 7}, "bl": [3, 5], "po": None}
+    t1b = {"ln": None, "bl": None, "po": {"st": 1 if late_ms else 0, "stms": late_ms, "ov": 0,
+                                          "sc": 0, "tc": 0, "disc": 0, "late": 0, "rel": 5,
+                                          "peak": 4}}
     A.append({"k": "ts", "t": t0 + 30000, "out": 0, "nrd": 0, "dcd": 0, "cmd": 0, "s": [
-        {"peer": "bob", "rec": {"ta": t0 + 30000, "un": 0, "txq": 0, "pl": 0, "inf": 0, "dq": 0}}]})
+        {"peer": "bob", "rec": {"ta": t0 + 30000, "un": 0, "txq": 0, "pl": 0, "inf": 0, "dq": 0}}],
+        "t1": t1a})
     B.append({"k": "ts", "t": t0 + 30000, "out": 0, "nrd": 0, "dcd": 0, "cmd": 0, "s": [
-        {"peer": "alice", "reo": {"n": unit, "h": 0, "f": None}}]})
+        {"peer": "alice", "reo": {"n": unit, "h": 0, "f": None}}], "t1": t1b})
     for name, lines in (("alice.jsonl", A), ("bob.jsonl", B)):
         (rd / name).write_text("".join(json.dumps(x) + "\n" for x in lines), encoding="utf-8")
     (rd / "alice.json").write_text(json.dumps({

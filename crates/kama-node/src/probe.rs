@@ -23,12 +23,16 @@
 //! * Application: `Messenger::stats` (`resent_on_new_session`, `resend_refused`, …).
 //! * Oturum olayları: düğümün işlediği S1 olaylarının sayımı ([`SessionEventCounts`]).
 //! * Crypto el sıkışma zarfları: süreç-içi röle kutusunun gönderim kaydı ([`EnvelopeCounts`]).
+//! * [YOL3 · Ö] T1 şerit ve oynatma tamponu sayaçları: `ClientTransport::lane_stats` /
+//!   `lane_backlog`, `Ptt::playout_stats` (yalnız okuma; T1 koduna ekleme yok).
 
 use std::collections::VecDeque;
 
+use client_core::lanes::LaneStats;
 use client_core::runtime::ClientLiveDiag;
 use client_core::transport::ReorderDiag;
 use kama_app::messaging::MessengerStats;
+use kama_app::playout::PlayoutStats;
 use kama_contracts::handles::SessionHandle;
 
 /// Bir uç noktanın bayt-özdeş yeniden gönderimi tanımak için tuttuğu son zarf sayısı — yerel
@@ -64,6 +68,16 @@ pub struct NodeProbe {
     pub events: SessionEventCounts,
     /// Bu düğümün süreç-içi röleye verdiği el sıkışma zarfları.
     pub envelopes: EnvelopeCounts,
+    /// [YOL3 · Ö · KK-Ö-37] T1 şerit sayaçları (`ClientTransport::lane_stats`; salt okuma); şeritler
+    /// kapalıysa `None`.
+    pub lanes: Option<LaneStats>,
+    /// [YOL3 · Ö · KK-Ö-37] Ucu açık oturumların şeritlerinde bekleyen ve FILE penceresindeki
+    /// birimlerin toplamı (`ClientTransport::lane_backlog`; o anki değer, tepe DEĞİL); şeritler
+    /// kapalıysa `None`.
+    pub lane_backlog: Option<(usize, usize)>,
+    /// [YOL3 · Ö · KK-Ö-37] T1 PTT oynatma tamponu sayaçları (`Ptt::playout_stats`; tepe doluluk
+    /// dahil); tampon kapalıysa `None`.
+    pub playout: Option<PlayoutStats>,
 }
 
 /// Ucu açık bir S1 oturumu.
