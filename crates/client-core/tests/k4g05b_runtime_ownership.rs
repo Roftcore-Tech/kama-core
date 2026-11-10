@@ -35,7 +35,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use adaptive_transport::ack::{AckFrame, FRAME_TYPE_ACK, FRAME_TYPE_ACK_V2, MAX_ACK_RANGES};
@@ -83,8 +83,12 @@ const ACK_BLOCKS: u64 = MAX_ACK_RANGES as u64 + 1;
 /// Parçalama dolgusu: hedefin bloğunu ACK çerçevesinin dışına itmek için alıcıda hedefin üstünde
 /// `ACK_BLOCKS`'tan fazla blok gerekir; her tek sayılı dolgu bir boşluk açar (pay: 4 blok).
 const FRAG_FILLERS: u64 = 2 * (ACK_BLOCKS + 4);
-/// Tahliye dolgusu: her birinin ilk datagramı düşer → bir kayıp ilanı → bir tombstone.
-const CAP_FILLERS: u64 = TOMBSTONE_CAP as u64 + 4 * ACK_BLOCKS;
+/// Tahliye dolgusunda birim başına düşen ilk datagram sayısı (1: orijinal kaybolur → bir kayıp
+/// ilanı → bir tombstone). 2 denendi: yeniden gönderimler de düşünce ACK ilerlemesi durur ve kayıp
+/// ilanı yavaşlar (ölçüm: 25 s'de en çok 28 tombstone) — kullanılmaz.
+const CAP_DROPS_PER_FILLER: u32 = 1;
+/// Tahliye dolgusu: `CAP_DROPS_PER_FILLER` tombstone/birim ile tavan + pay.
+const CAP_FILLERS: u64 = TOMBSTONE_CAP as u64 / CAP_DROPS_PER_FILLER as u64 + 8 * ACK_BLOCKS;
 /// Bekleme boyunca trafik aralığı. Alıcı ACK_FREQ_N = 2 ile ilerleme ≈ 2 × bu aralıkta gelir; bu,
 /// tail-recovery PTO'sunun alt sınırının (`max_ack_delay` 25 ms) altındadır. Böylece hedefin
 /// kaydı prob emekliliğiyle çoğalmaz (birim başına kayıt sınırına ulaşmaz) ve kopyaları kayıp
@@ -283,8 +287,10 @@ struct NetState {
     target_pass_nth: u32,
     /// Faz B: hedefin bütün datagramları geçer (ve gövdeleri kaydedilir).
     target_open: bool,
-    /// İlk DATA datagramı düşen birimler (orijinal kaybolur, yeniden gönderimler geçer).
+    /// İlk DATA datagram(lar)ı düşen birimler (orijinal kaybolur, yeniden gönderimler geçer).
     drop_first: BTreeSet<u64>,
+    /// `drop_first` birimlerinde düşen ilk datagram sayısı (0 ya da 1 = yalnız orijinal).
+    drop_first_n: u32,
     /// Hedef dışı DATA kapısı.
     data_gate: DataGate,
     /// Bekçi kanalı (hedef dışı DATA ve bütün ACK'ler).
@@ -341,7 +347,7 @@ impl NetState {
             }
             return Forward::Drop;
         }
-        if nth == 0 && self.drop_first.contains(&unit) {
+        if nth < self.drop_first_n.max(1) && self.drop_first.contains(&unit) {
             return Forward::Drop;
         }
         if !self.data_gate.admits(unit) {
@@ -503,7 +509,16 @@ async fn relay(
 
 // ── Düzenek ──────────────────────────────────────────────────────────────────────────────────
 
+/// Gerçek zamanlı (loopback, zamanlama duyarlı) testler SIRAYLA koşar: test koşucusu testleri
+/// paralel iş parçacıklarında başlatır; CPU yarışı TTL/tahliye ön koşullarının zaman payını yer.
+fn serial() -> Arc<tokio::sync::Mutex<()>> {
+    static SERIAL: OnceLock<Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
+    Arc::clone(SERIAL.get_or_init(|| Arc::new(tokio::sync::Mutex::new(()))))
+}
+
 struct Rig {
+    /// Serileştirme kilidi (`serial`); düzenekle birlikte bırakılır.
+    _serial: tokio::sync::OwnedMutexGuard<()>,
     client: ClientHandle,
     server: ServerHandle,
     net: Net,
@@ -517,6 +532,7 @@ struct Rig {
 
 impl Rig {
     async fn new(cfg: RuntimeConfig) -> Self {
+        let serial = serial().lock_owned().await;
         let server = ServerEndpoint::bind(
             "127.0.0.1:0".parse().expect("adres"),
             cfg.clone(),
@@ -529,6 +545,7 @@ impl Rig {
             .await
             .expect("istemci");
         Self {
+            _serial: serial,
             client,
             server,
             net,
@@ -726,9 +743,42 @@ impl Rig {
                 s.held.first().cloned()
             })
             .expect("ağda tutulan geç ACK");
+        // Geç ACK'in teyit ettiği en büyük PN (rölenin gördüğü tel; istemcinin çözümüyle aynı).
+        let late_largest = self.net.with(|s| {
+            let expected = s.max_fwd_pn.map_or(0, |m| m + 1);
+            split_wire(&late)
+                .and_then(|(frame, _)| AckFrame::decode(frame).ok())
+                .and_then(|f| f.acked_full(expected).into_iter().max())
+        });
+        let frames_before = self.client.live_diag().ack.frames;
         let mark = self.acked.len();
         self.net.deliver_late(late).await;
-        // Bariyer: sonra sunulan birimin teyidi geldiğinde geç ACK işlenmiştir (aynı soket, sıra).
+        // Boşluk bekçisi: geç ACK çerçevesi istemcide İŞLENDİ ve PN'leri motor seq'ine ÇEVRİLDİ
+        // (aksi hâlde iddia 1 boş geçerdi — çerçeve seam'de reddedilmiş ya da ufuk dışı olurdu).
+        // Kayıt halkası sınırlı olduğundan çerçeve işlenir işlenmez yoklanır.
+        let mut late_rec = None;
+        self.wait(
+            &format!("[{path}] ön koşul: geç ACK çerçevesi istemcide işlenmeli"),
+            WAIT,
+            |r| {
+                late_rec = r
+                    .client
+                    .live_diag()
+                    .acks
+                    .recent()
+                    .find(|a| a.index > frames_before && a.largest_pn == late_largest)
+                    .copied();
+                late_rec.is_some()
+            },
+        )
+        .await;
+        assert!(
+            late_rec.is_some_and(|a| a.mapped_seqs > 0),
+            "[{path}] ön koşul: geç ACK çerçevesi (en büyük PN {late_largest:?}) motor seq'ine \
+             çevrilmeli: {late_rec:?}"
+        );
+        eprintln!("[{path}] geç ACK çerçevesi: {late_rec:?}");
+        // Bariyer: sonra sunulan birimin teyidi geldiğinde geç ACK'in teyit drenajı da bitmiştir.
         let barrier = self.send().await;
         self.wait("bariyer birimi teyit edilmeli", WAIT, |r| {
             r.acked_set.contains(&barrier)
@@ -863,15 +913,24 @@ async fn late_ack_after_cap_keeps_payload() {
         .expect("hedefin orijinali geçti");
     let first = rig.next_unit;
     let end = first + CAP_FILLERS;
-    rig.net.with(|s| s.drop_first.extend(first..end));
+    rig.net.with(|s| {
+        s.drop_first.extend(first..end);
+        s.drop_first_n = CAP_DROPS_PER_FILLER;
+    });
     let deadline = Instant::now() + CAP_WAIT;
     let mut max_tombs = 0u32;
-    let gone_at = loop {
+    // Tablonun tavana İLK ulaştığı görüntü (hedef kaydı o an canlı): tavan en eski kaydı tahliye
+    // eder, hedefin orijinali en eski kayıtlardandır.
+    let mut cap_reached_at: Option<Instant> = None;
+    let (gone_at, tombs_at_gone) = loop {
         let live = rig.client.live_diag();
         if let (Some(origin), Some(rec)) = (live.clock_origin, live.recovery) {
             max_tombs = max_tombs.max(rec.timers.tombstones_len);
             if record_gone(&rec, origin, t, passed_at) {
-                break rec.taken_at;
+                break (rec.taken_at, rec.timers.tombstones_len);
+            }
+            if cap_reached_at.is_none() && rec.timers.tombstones_len >= TOMBSTONE_CAP {
+                cap_reached_at = Some(rec.taken_at);
             }
         }
         assert!(
@@ -888,10 +947,19 @@ async fn late_ack_after_cap_keeps_payload() {
         rig.pump(STEP).await;
     };
     let gone = gone_at.duration_since(passed_at);
+    let cap_at = cap_reached_at.map(|c| c.duration_since(passed_at));
+    eprintln!(
+        "[cap] hedef kaydı geçişten {gone:?} sonra düştü (o an tombstone {tombs_at_gone}); tablo \
+         hedef kaydı canlıyken tavana {cap_at:?} sonra ulaştı; en büyük {max_tombs}"
+    );
+    // Tahliye: kayıt TTL alt sınırından önce düştü YA DA tablo, hedef kaydı canlıyken o sınırdan
+    // önce tavana ulaştı (gözlem çözünürlüğü RECOVERY_DIAG_PERIOD; TTL, geçişten değil kayıp
+    // ilanından başlar — yalnız alt sınır olarak kullanılır).
     assert!(
-        gone < TTL_LOWER_BOUND,
-        "ön koşul: kayıt TTL alt sınırından ({TTL_LOWER_BOUND:?}) önce düşmeli (tahliye); düştü: \
-         {gone:?}"
+        gone < TTL_LOWER_BOUND || cap_at.is_some_and(|c| c < TTL_LOWER_BOUND),
+        "ön koşul: kayıt tahliyeyle düşmeli — TTL alt sınırından ({TTL_LOWER_BOUND:?}) önce düşmeli \
+         ya da tablo hedef kaydı canlıyken o sınırdan önce tavana ulaşmalı; düştü {gone:?}, tavan \
+         {cap_at:?}"
     );
     assert!(
         max_tombs >= TOMBSTONE_CAP,
