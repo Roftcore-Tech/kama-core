@@ -344,6 +344,7 @@ name = "client-core"
 version = "0.1.0"
 dependencies = [
  "adaptive-transport",
+ "blake2",
  "client-core",
  "kama-contracts",
  "kama-engine",

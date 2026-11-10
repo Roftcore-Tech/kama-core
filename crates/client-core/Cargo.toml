@@ -35,6 +35,9 @@ kama-noise-wire = { path = "../kama-noise-wire" }
 # P1 runtime kabuğu (item 2/3/6/7): tokio UDP döngüsü (ADR-02) + typed hatalar.
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "sync", "time"] }
 thiserror.workspace = true
+# [HB1 · KK-H48] hub istemcisinin RNG'siz jitter'ı (BLAKE2s-256). Workspace bağımlılığı, Cargo.lock'ta
+# zaten var (hub-server, kama-noise-wire); yeni paket YOK.
+blake2.workspace = true
 
 [features]
 # Deterministik entropi (`seam::FixedEntropy`) ve `IdentitySeam` bağlam kaydı — YALNIZ test; üretim
