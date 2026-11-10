@@ -17,8 +17,9 @@ eklenince bayt bayt aynı kalır (`--check`). v2 ve abl ONKAYIT-V2.md'nin hücre
          farklıysa f0_flows'a açık bayrak olarak yazılır (o zaman T/W goster.rs'ten gelmez).
     abl  cells-abl/ + SIRA-ABL-r25.txt + SIRA-ABL-d1000.txt (SIRA-V2'de DEĞİL; yalnız ONKAYIT-V2 §6
          tetiklerse koşulur). R3 hücresi başına bırak-birini-çıkar: K1A6mA1 … K1A6mA5 (bench aynı
-         adlı kol) + K1A6mA6 (bench `--e1-arm K1A` = K1A6 − a6_iw_floor) + K0 tabanı; N tetikleyen
-         v2 hücresininki (r25 20, d1000 10). Kendi kökünde koşar (K0 tabanı aynı kök).
+         adlı kol) + K1A6mA6 (bench `--e1-arm K1A` = K1A6 − a6_iw_floor) + K0 tabanı + K1A6 (gösterim
+         seti; aynı kökte yeniden üretim kontrolü, ONKAYIT-V2 §6.2); N tetikleyen v2 hücresininki
+         (r25 20, d1000 10). Kendi kökünde koşar (K0 tabanı aynı kök).
 
 Seçenekler (varsayılanlar G4 mini-Ö'nündür; değişirse dosyalar yeniden üretilir ve SIRA.txt'nin
 sha256'sı koşu kaydına girer):
@@ -267,10 +268,13 @@ def v2_table():
 
 
 def abl_table(which):
-    """[(kaynak, kol etiketi, bench kolu, REPS, amaç)]: K0 tabanı + altı ablasyon kolu."""
+    """[(kaynak, kol etiketi, bench kolu, REPS, amaç)]: K0 tabanı + gösterim seti (yeniden üretim
+    kontrolü) + altı ablasyon kolu."""
     rel = ABL_CELLS[which]
     n = V2_REPS[which]
-    rows = [(rel, V2_TABAN, V2_TABAN, n, f"ablasyon {which}: taban K0 (aynı kök)")]
+    rows = [(rel, V2_TABAN, V2_TABAN, n, f"ablasyon {which}: taban K0 (aynı kök)"),
+            (rel, V2_B_KOL, V2_B_KOL, n,
+             f"ablasyon {which}: gösterim seti (aynı kökte yeniden üretim kontrolü)")]
     for arm, bench, cikan in ABL_ARMS:
         rows.append((rel, arm, bench, n, f"ablasyon {which}: gösterim seti − {cikan}"))
     return rows
@@ -496,7 +500,7 @@ def main_v(a):
         items = abl["r25"] + abl["d1000"]
         siras = [(SIRA_ABL[w], sira_v(REL_CELLS_ABL, abl[w])) for w in ("r25", "d1000")]
         groups = [(CELLS_ABL_DIR, REL_CELLS_ABL, items, siras)]
-        desc = "abl: r25 × 7 kol (N = 20) + d1000 × 7 kol (N = 10)"
+        desc = "abl: r25 × 8 kol (N = 20) + d1000 × 8 kol (N = 10)"
     errs = []
     for cells_dir, rel_dir, its, sr in groups:
         errs += write_or_check(cells_dir, rel_dir, its, sr, a.check)
