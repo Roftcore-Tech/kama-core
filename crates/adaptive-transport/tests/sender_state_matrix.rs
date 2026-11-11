@@ -163,8 +163,6 @@ struct Walk {
     outstanding: Vec<u64>,
     observed: [[bool; N]; N],
     visited: [bool; N],
-    /// [K4G-05b-R] İki tek turluk izinli adıma ayrıştırılan bileşke gözlem sayısı (bilgi).
-    composites: u64,
 }
 
 impl Walk {
@@ -177,7 +175,6 @@ impl Walk {
             outstanding: Vec::new(),
             observed: [[false; N]; N],
             visited: [false; N],
-            composites: 0,
         }
     }
 
@@ -233,7 +230,6 @@ impl Walk {
             _ => Event::TimerFired(Timer::RtpropProbe),
         };
 
-        let act0 = self.s.diag_activation();
         for d in self.s.on_event(ev, self.now) {
             self.outstanding.push(d.seq);
         }
@@ -243,39 +239,7 @@ impl Walk {
         }
 
         let next = self.s.state();
-        let act1 = self.s.diag_activation();
-        // [K4G-05b-R] `experimental-cold-start` derlemesinde `on_event` = `on_event_batch`: faz-3
-        // vadesi gelen iç Pto'yu AYNI çağrıda ikinci boru hattı turuyla işler (iki `update_state`).
-        // Aktivasyon sayacı o çağrıda İKİ geçiş gösteriyorsa gözlenen (prev, next) çifti iki tek
-        // turluk geçişin bileşkesidir. Çift tabloda izinliyse olduğu gibi kaydedilir; izinli değilse
-        // iki tek turluk İZİNLİ adıma ayrıştırılır (ara durum ≠ prev, ≠ next; Recover* girişi
-        // sayıldıysa ara durum o Recover*'dır) ve adımlar kaydedilir. Ayrıştırılamayan bileşke ya da
-        // tek turda (bir geçiş) gözlenen yasak çift yasak hücreye düşer.
-        let two_passes = act1.state_transitions == act0.state_transitions + 2;
-        let (p, n) = (idx(prev), idx(next));
-        let mid = if two_passes && !ALLOWED[p][n] {
-            let forced = if act1.recover_arq_entries > act0.recover_arq_entries {
-                Some(idx(SenderState::RecoverArq))
-            } else if act1.recover_fwd_entries > act0.recover_fwd_entries {
-                Some(idx(SenderState::RecoverFwd))
-            } else {
-                None
-            };
-            (0..N).find(|&m| {
-                m != p && m != n && ALLOWED[p][m] && ALLOWED[m][n] && forced.is_none_or(|f| f == m)
-            })
-        } else {
-            None
-        };
-        match mid {
-            Some(m) => {
-                self.observed[p][m] = true;
-                self.observed[m][n] = true;
-                self.visited[m] = true;
-                self.composites += 1;
-            }
-            None => self.observed[p][n] = true,
-        }
+        self.observed[idx(prev)][idx(next)] = true;
         self.visited[idx(next)] = true;
     }
 }
@@ -290,12 +254,6 @@ fn explore(seeds: &[u64], steps: usize) -> ([[bool; N]; N], [bool; N]) {
         let mut w = Walk::new(seed);
         for _ in 0..steps {
             w.step();
-        }
-        if w.composites > 0 {
-            eprintln!(
-                "[matris] tohum {seed}: iki turluk bileşke {} (izinli adımlara ayrıştırıldı)",
-                w.composites
-            );
         }
         for (i, row) in w.observed.iter().enumerate() {
             vis[i] |= w.visited[i];

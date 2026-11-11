@@ -484,8 +484,13 @@ fn f2b_di1a_overdue_pto_fires_same_batch() {
 }
 
 /// DI-1C (EK4-A2): re-armed-PTO yaşam-döngüsü — retransmit'in-ACK'i-de-düşer; SONRAKİ trafik-ACK'i
-/// largest'ı-yükseltince YENİ deadline next_wakeup'ta görünür; Tick-only ile-ikinci-retransmit;
-/// nihai-ACK TÜM BootstrapPto-kayıtlarını-retire-eder.
+/// largest'ı-yükseltince YENİ deadline next_wakeup'ta görünür; Tick-only ile o deadline'da kayıp
+/// ilanı (zaman eşiği) ve ikinci kurtarma emisyonu; nihai-ACK TÜM BootstrapPto-kayıtlarını-retire-eder.
+/// [K4G-05b-R] İkinci emisyonun TÜRÜ faza bağlıdır: ~60 s ACK sessizliğinde eski motor RecoverFwd'dadır
+/// ve ilan edilen kayıp ileri kopyayla (Duplicate) kurtarılır; RecoverArq'ta Retransmit olurdu. Sınanan
+/// özellik deadline'ın expose edilmesi + o deadline'daki kayıp ilanı + kurtarma emisyonudur; tür
+/// değil. (Önceki fikstür u1'in kuruluş kopyalarını ACK'lediğinden u1 teyitliydi ve beklenen ikinci
+/// Retransmit teyitli birime karardı.)
 #[test]
 fn f2b_di1c_rearmed_pto_lifecycle_exposure() {
     let mut s = Sender::new();
@@ -544,6 +549,7 @@ fn f2b_di1c_rearmed_pto_lifecycle_exposure() {
     }
     let s4 = s4_opt.expect("u4-emit (token-refill-sonrası)");
     assert!(s4 > rtx1_seq, "u4-seq monoton-yüksek");
+    let (_, time_losses0, _) = s.diag_loss();
     let b2 = s.on_event_batch(
         t1 + SEC,
         vec![Event::AckReceived(AckInfo {
@@ -553,8 +559,7 @@ fn f2b_di1c_rearmed_pto_lifecycle_exposure() {
     );
     // İkinci kurtarma emisyonu: overdue-ise-b2'de; değilse exposed-deadline'da Tick-only (EK4-A2).
     // [K4G-05b-R] u1 gerçekten kayıptır (kuruluş kopyaları da ACK'lenmedi); ~60 s ACK sessizliğinden
-    // sonra eski motor RecoverFwd'dadır ve kayıp kaydı ileri kopyayla (Duplicate) kurtarılır. Sabit
-    // `[1, 2]` ACK'iyle u1 teyitliyken beklenen ikinci Retransmit teyitli birime karardı.
+    // sonra eski motor RecoverFwd'dadır ve kayıp kaydı ileri kopyayla (Duplicate) kurtarılır.
     let (_ft2, fired2) = expect_emission_via_wakeup(
         &mut s,
         t1 + SEC,
@@ -570,6 +575,13 @@ fn f2b_di1c_rearmed_pto_lifecycle_exposure() {
         .unwrap()
         .seq;
     assert!(rtx2_seq > rtx1_seq, "yeni-seq (nonce-reuse-yok)");
+    // [K4G-05b-R] Emisyonun kaynağı re-armed deadline'daki zaman-eşiği kayıp ilanıdır (ilk
+    // retransmit'in kaydı; canlılık kopyası değil — o yalnız Data kökenli kayda kurulur).
+    let (_, time_losses2, _) = s.diag_loss();
+    assert!(
+        time_losses2 > time_losses0,
+        "ikinci emisyon re-armed deadline'daki zaman-eşiği kayıp ilanından"
+    );
     // Nihai-ACK → birim-outstanding'ten-çıkar → BootstrapPto-kayıtları-retire (EK4-A2-yaşam-döngüsü).
     let t_end = t1 + 600 * SEC;
     let _ = s.on_event_batch(

@@ -213,11 +213,11 @@ fn run(product: bool, configure: &dyn Fn(&mut Sender)) -> (u64, BTreeSet<u64>) {
 // iki kurulumda da `delivered = 120`).
 const BASE_DIGEST_PRODUCT: u64 = 0x1e49_5f75_283c_9675;
 // [K4G-05b-R · sahip kararı 2026-11-11] Çıplak izin tabanı yeniden kaydedildi. Önceki değer
-// 0xa9f2_a6bc_da15_8482 (5de1ce3f). Motor artık teyitli birimin bekleyen işini iptal eder: bu
-// senaryoda birim 0'ın orijinali (seq 0) kaybolur, kuruluş kopyası (seq 1, Duplicate) ulaşır ve
-// birimi teyit eder; önceki motor 10.635 s'de birim 0'a bir Retransmit daha veriyordu (teyitli
-// birime karar), şimdi vermez. Sonraki seq'ler bir kaydığından kayıp karması (seq'e bağlı) izin
-// geri kalanını değiştirir. Yeni değer bu dalın ağacında (bayrak kapalı) kaydedildi; ürün benzeri
+// 0xa9f2_a6bc_da15_8482 (5de1ce3f). Motor artık teyitli birime karar üretmez: bu senaryoda birim
+// 0'ın orijinali (seq 0) kaybolur, kuruluş kopyası (seq 1, Duplicate) ulaşır ve birimi teyit eder;
+// orijinalin sonraki kayıp ilanı birimi yeniden kuyruğa sokardı ve önceki motor 10.635 s'de birim
+// 0'a bir Retransmit daha veriyordu (teyitli birime karar), şimdi vermez. Sonraki seq'ler bir
+// kaydığından kayıp karması (seq'e bağlı) izin geri kalanını değiştirir. Yeni değer bu dalın ağacında (bayrak kapalı) kaydedildi; ürün benzeri
 // iz (`BASE_DIGEST_PRODUCT`) DEĞİŞMEDİ. "Bayrak kapalı = bayraksız" özdeşliği aşağıdaki ikinci
 // iddiada (`E2aFlags::default()`) aynen sınanır.
 const BASE_DIGEST_BARE: u64 = 0x9e4f_8cca_eac8_6803;
