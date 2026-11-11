@@ -719,8 +719,9 @@ pub struct ClientStats {
     pub frag_encode_failures: u64,
     /// [FAZ-2 KALEM-1] Akış sonunda zero-dolgu ile kapatılan KISMİ FEC bloğu sayısı (Model-A).
     pub fec_partial_blocks_closed: u64,
-    /// [FEC-E-ÖLÇEK] Kontrolcü yolunda parite tavanının bloğun kaynak tel baytıyla
-    /// sınırlandığı blok sayısı (`r · parite_tel ≤ Σ kaynak_tel`; fec-core §11 "sub-kbps ≠ E=1024").
+    /// [FEC-E-ÖLÇEK] Kontrolcü yolunda kaynak-bayt tavanının kontrolcünün istediği r'yi GERÇEKTEN
+    /// kestiği blok sayısı (`r · parite_tel ≤ Σ kaynak_tel`; fec-core §11 "sub-kbps ≠ E=1024";
+    /// elle-r yolunda sayılmaz).
     /// Küçük birimli (ör. 65 B ileti) blokta 1024 B'lik parite sembolü koruduğu veriden pahalıdır:
     /// 25 B/s'de her sembol ≈ 43 s hat; blok başına 2–3 sembol hattın üçte birini yutuyordu.
     pub fec_parity_payload_clamped: u64,
@@ -2769,9 +2770,6 @@ async fn client_task(
                     if cur_block.len() == p.k_shape_usize() {
                         let parity_wire = wire_len(seam.as_ref(), client_ctx, HDR_FEC + e);
                         let r_max = fec_payload_r_max(p.r_code_max, cur_block_wire, parity_wire);
-                        if r_max < p.r_code_max {
-                            stats.fec_parity_payload_clamped += 1;
-                        }
                         // Statik-r (Manual{true} + manuel-close) YA DA adaptif (Controller + latch).
                         let planned_r: u16 = if let Some(r) = fec_manual_r {
                             let auth = session.sender_mut().open_fec_block_authority();
@@ -2782,17 +2780,20 @@ async fn client_task(
                         } else {
                             let snap = session.sender().controller_decision_snapshot();
                             let auth = session.sender_mut().open_fec_block_authority();
-                            session
-                                .sender_mut()
-                                .fec_controller_latch(
-                                    auth,
-                                    snap,
-                                    u8::try_from(p.k_shape).unwrap_or(255),
-                                    r_max,
-                                    cur_block_id,
-                                    parity_wire,
-                                )
-                                .planned_r
+                            let latch = session.sender_mut().fec_controller_latch(
+                                auth,
+                                snap,
+                                u8::try_from(p.k_shape).unwrap_or(255),
+                                r_max,
+                                cur_block_id,
+                                parity_wire,
+                            );
+                            // Sayaç yalnız kontrolcü yolunda ve yalnız tavan GERÇEKTEN
+                            // kestiğinde (kontrolcünün istediği r > kaynak baytı tavanı).
+                            if latch.computed_r > r_max {
+                                stats.fec_parity_payload_clamped += 1;
+                            }
+                            latch.planned_r
                         };
                         if planned_r > 0 {
                             let srcs: Vec<SourceSymbol> = cur_block
@@ -2869,9 +2870,6 @@ async fn client_task(
             let k_actual = u8::try_from(cur_block.len()).unwrap_or(255);
             let parity_wire = wire_len(seam.as_ref(), client_ctx, HDR_FEC + p.e_usize());
             let r_max = fec_payload_r_max(p.r_code_max, cur_block_wire, parity_wire);
-            if r_max < p.r_code_max {
-                stats.fec_parity_payload_clamped += 1;
-            }
             let planned_r: u16 = if let Some(r) = fec_manual_r {
                 let auth = session.sender_mut().open_fec_block_authority();
                 session
@@ -2881,10 +2879,18 @@ async fn client_task(
             } else {
                 let snap = session.sender().controller_decision_snapshot();
                 let auth = session.sender_mut().open_fec_block_authority();
-                session
-                    .sender_mut()
-                    .fec_controller_latch(auth, snap, k_actual, r_max, cur_block_id, parity_wire)
-                    .planned_r
+                let latch = session.sender_mut().fec_controller_latch(
+                    auth,
+                    snap,
+                    k_actual,
+                    r_max,
+                    cur_block_id,
+                    parity_wire,
+                );
+                if latch.computed_r > r_max {
+                    stats.fec_parity_payload_clamped += 1;
+                }
+                latch.planned_r
             };
             if planned_r > 0 {
                 // Zero-slot dolgusu: ESI [K_actual, K_shape) canonical-zero (E byte). ENCODE'a
