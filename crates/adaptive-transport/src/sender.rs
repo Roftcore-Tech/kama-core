@@ -3368,8 +3368,9 @@ impl Sender {
             None
         };
         let mut v11_send_ns: Option<u64> = None;
-        // [CC-PORT] Bu çerçevede ilk kez onaylanan iletimler (bayt, app_limited) — quinn `on_ack`
-        // RTT güncellemesinden SONRA çağrılır (connection/mod.rs: rtt.update → congestion.on_ack).
+        // [CC-PORT] Bu çerçevede ilk kez onaylanan iletimler (bayt, app_limited). quinn'de sıra
+        // terstir: `congestion.on_ack` (connection/mod.rs:1530) RTT güncellemesinden (1551) ÖNCE
+        // çağrılır; Kama'da RTT örneği önce işlenir (beyanlı sıra farkı; D şeridi incelemesi 2026-11-11).
         let mut cc_acked: Vec<(u64, bool)> = Vec::new();
         for &seq in &ack.acked_seqs {
             // [TUR-6] delivered-anchor round: marker-sonrası gönderilen seq'in ilk ACK'i.
@@ -6758,8 +6759,9 @@ impl Sender {
         // Supersede the still-outstanding original: retire it inflight→tombstone (no loss declaration), then bump
         // the tombstone so the original's late ACK is Karn-excluded, then emit the probe copy under a fresh seq.
         //
-        // [CC-PORT U10] Port motorunda hedef UÇUŞTA KALIR (RFC 9002 §6.2.4: PTO kayıp ilanı değildir,
-        // prob ek bir pakettir; quinn `in_flight` değişmez). Eski yol hedefi tombstone'a emekli ediyor
+        // [CC-PORT U10] Port motorunda hedef UÇUŞTA KALIR (RFC 9002 §6.2 + §7.5: PTO kayıp ilanı
+        // değildir, prob ek bir pakettir; §6.2.4'ün "MAY mark … as lost" seçeneği KULLANILMAZ;
+        // quinn `in_flight` değişmez, q:1658-1693). Eski yol hedefi tombstone'a emekli ediyor
         // ve TTL'i `K_TOMB × T_loss(INITIAL_RTT)` (8 × 9/8 × 100 ms ≈ 0,9 s) olduğundan RTT örneği olmayan yüksek
         // gecikmeli / düşük bantlı hatta hedefin ACK'i süresi dolmuş kayda düşüyordu: RTT örneği YOK,
         // teyit YOK, her PTO turu yeni kopya (r25 sim: ilk örnek 85 s'de, retx 87 ↔ 24). Her iletim
@@ -6793,8 +6795,9 @@ impl Sender {
         // az önceki prob kopyasıdır (aynı birim taze seq ile ikinci kez — RFC 9002 §6.2.4 izinli).
         // Yuva bu turun kimliğiyle (on_probe_sent SONRASI `(armed_at, probe_index)`) kurulur; önceki
         // turdan kalan yuvanın üzerine yazılır (sonraki turun ilk probu yuvayı boşaltır).
-        // [CC-PORT U12] Port motorunda RTT örneği yokken tur başına TEK prob (RFC 9002 §6.2.4 "SHOULD
-        // send two" → "MUST send at least one"): hız/serileştirme bilinmezken ikinci kopya darboğaz
+        // [CC-PORT U12] Port motorunda RTT örneği yokken tur başına TEK prob (RFC 9002 §6.2.4 "MAY
+        // send up to two"; U14 ile portta RTT örneği yokken prob zaten kurulmaz — bu kural ilk
+        // örnekten sonraki örneksiz dönemler içindir): hız/serileştirme bilinmezken ikinci kopya darboğaz
         // kuyruğunu kendi eliyle doldurur (25 B/s: 130 B kopya ≈ 5,2 s). İlk örnekten sonra iki prob.
         let two_probes = self.e2a.pto_probes() >= 2 && (!self.cc_on() || self.rtt.srtt().is_some());
         if two_probes {

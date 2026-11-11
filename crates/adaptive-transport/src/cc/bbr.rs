@@ -21,7 +21,7 @@
 //!    kayıpsız 31 → 23 düşme; %20 kayıpta fazla gönderim 1,41 → 1,36; %30'da 1,68 → 1,45; derin
 //!    kuyruk %20 max 25,0 → 17,2 s; bedeli 1000 ms RTT kayıpsız hatta +1 s (12,8 → 13,9 s).
 //! 10. **U10–U13** (sender.rs / tail_recovery.rs, 2026-11-11, r25 düşük bant kökü): PTO probu
-//!     hedefi uçuşta kalır (RFC 9002 §6.2.4; eski yol ≈ 0,9 s TTL'li tombstone'a emekli ediyordu →
+//!     hedefi uçuşta kalır (RFC 9002 §6.2 + §7.5; eski yol ≈ 0,9 s TTL'li tombstone'a emekli ediyordu →
 //!     RTT örneği yok); taban PTO tavanı yok (§6.2.1); RTT örneği yokken tur başına tek prob;
 //!     taze kopyası uçuştaki kayıp yeniden kuyruklanmaz. **U14** RTT örneği yokken PTO probu
 //!     kurulmaz (§3.3-B geometrik kopya merdiveni zaten birimi yeniler; iki merdiven yan yana
