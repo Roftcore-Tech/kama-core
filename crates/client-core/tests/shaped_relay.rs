@@ -6,7 +6,8 @@
 //! Gerçek zamanlıdır (belirlenimli değil): kayıp deseni tohumla sabit, zamanlama değil. Kapı
 //! eşikleri bu yüzden geniştir. `CC_SHAPED=1` ile koşar (ölçüm); `CC_SHAPED_ENGINE=legacy|cc-port`
 //! tek motor; `CC_SHAPED_SEED`, `CC_SHAPED_UNITS`, `CC_SHAPED_RATE`, `CC_SHAPED_Q`,
-//! `CC_SHAPED_DELAY_MS`, `CC_SHAPED_LOSS_PM`, `CC_SHAPED_UNIT_BYTES`, `CC_SHAPED_TMAX_S` hücre anahtarları.
+//! `CC_SHAPED_DELAY_MS`, `CC_SHAPED_JITTER_MS` (normal σ; yeniden sıralama üretir), `CC_SHAPED_LOSS_PM`,
+//! `CC_SHAPED_UNIT_BYTES`, `CC_SHAPED_TMAX_S` hücre anahtarları.
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
@@ -27,6 +28,9 @@ struct Shaper {
     rate_bps: u64,
     limit: usize,
     delay: Duration,
+    /// Gecikme jitter'ı (normal dağılım σ; netem `delay 300ms 60ms` gibi). Varışlar varış anına
+    /// göre sıralanır → jitter yeniden sıralama üretir (netem'deki gibi).
+    jitter: Duration,
     loss_permille: u64,
     lcg: u64,
     /// Serileştirmesi süren paketlerin bitiş anları (kuyruk doluluğu).
@@ -40,11 +44,19 @@ struct Shaper {
 }
 
 impl Shaper {
-    fn new(rate_bps: u64, limit: usize, delay: Duration, loss_permille: u64, seed: u64) -> Self {
+    fn new(
+        rate_bps: u64,
+        limit: usize,
+        delay: Duration,
+        jitter: Duration,
+        loss_permille: u64,
+        seed: u64,
+    ) -> Self {
         Self {
             rate_bps,
             limit,
             delay,
+            jitter,
             loss_permille,
             lcg: seed
                 .wrapping_mul(6_364_136_223_846_793_005)
@@ -66,6 +78,27 @@ impl Shaper {
         (self.lcg >> 33) % 1000
     }
 
+    /// [0, 1) belirlenimli.
+    fn unit(&mut self) -> f64 {
+        self.lcg = self
+            .lcg
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        ((self.lcg >> 11) as f64) / ((1u64 << 53) as f64)
+    }
+
+    /// Jitter'lı gecikme: `delay + N(0, jitter)` (Box-Muller), alt sınır 0.
+    fn delay_sample(&mut self) -> Duration {
+        if self.jitter.is_zero() {
+            return self.delay;
+        }
+        let u1 = self.unit().max(1e-12);
+        let u2 = self.unit();
+        let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
+        let d = self.delay.as_secs_f64() + z * self.jitter.as_secs_f64();
+        Duration::from_secs_f64(d.max(0.0))
+    }
+
     fn offer(&mut self, now: Instant, pkt: Vec<u8>) {
         while self.busy.front().is_some_and(|&t| t <= now) {
             self.busy.pop_front();
@@ -85,7 +118,14 @@ impl Shaper {
             self.dropped_random += 1;
             return;
         }
-        self.wire.push_back((done + self.delay, pkt));
+        let at = done + self.delay_sample();
+        // Varış anına göre sıralı ekle (jitter yeniden sıralama üretebilir).
+        let pos = self
+            .wire
+            .iter()
+            .rposition(|(t, _)| *t <= at)
+            .map_or(0, |i| i + 1);
+        self.wire.insert(pos, (at, pkt));
     }
 
     fn take_due(&mut self, now: Instant) -> Vec<Vec<u8>> {
@@ -104,6 +144,7 @@ struct Dir {
     rate_bps: u64,
     limit: usize,
     delay: Duration,
+    jitter: Duration,
     loss_permille: u64,
 }
 
@@ -195,6 +236,7 @@ async fn run_cell(
         fwd_cfg.rate_bps,
         fwd_cfg.limit,
         fwd_cfg.delay,
+        fwd_cfg.jitter,
         fwd_cfg.loss_permille,
         seed,
     )));
@@ -202,6 +244,7 @@ async fn run_cell(
         rev_cfg.rate_bps,
         rev_cfg.limit,
         rev_cfg.delay,
+        rev_cfg.jitter,
         rev_cfg.loss_permille,
         seed ^ 0x5A5A,
     )));
@@ -225,10 +268,16 @@ async fn run_cell(
         client.send(payload).expect("offer");
     }
     let mut delivered = 0u64;
+    let mut marks: [Option<Duration>; 3] = [None; 3];
     let completed = tokio::time::timeout(t_max, async {
         while delivered < units {
             if server.next_delivery().await.is_some() {
                 delivered += 1;
+                for (i, pct) in [10u64, 50, 90].iter().enumerate() {
+                    if marks[i].is_none() && delivered * 100 >= units * pct {
+                        marks[i] = Some(t0.elapsed());
+                    }
+                }
             } else {
                 break;
             }
@@ -237,6 +286,14 @@ async fn run_cell(
     })
     .await
     .ok();
+    let f = |d: Option<Duration>| d.map_or("-".to_string(), |d| format!("{:.1}", d.as_secs_f64()));
+    println!(
+        "[{engine:?}] PROFİL: %10={} %50={} %90={} son={}",
+        f(marks[0]),
+        f(marks[1]),
+        f(marks[2]),
+        f(completed)
+    );
     let _ = client.shutdown().await;
     let _ = server.shutdown().await;
     let _ = stop_tx.send(());
@@ -275,6 +332,7 @@ async fn shaped_relay_measure() {
     let rate = env_u64("CC_SHAPED_RATE", 12_500);
     let q = env_u64("CC_SHAPED_Q", 6) as usize;
     let delay = Duration::from_millis(env_u64("CC_SHAPED_DELAY_MS", 300));
+    let jitter = Duration::from_millis(env_u64("CC_SHAPED_JITTER_MS", 0));
     let loss = env_u64("CC_SHAPED_LOSS_PM", 300);
     let units = env_u64("CC_SHAPED_UNITS", 150);
     let unit_bytes = env_u64("CC_SHAPED_UNIT_BYTES", 1000) as usize;
@@ -291,12 +349,14 @@ async fn shaped_relay_measure() {
                 rate_bps: rate,
                 limit: q,
                 delay,
+                jitter,
                 loss_permille: loss,
             },
             Dir {
                 rate_bps: rate,
                 limit: q.max(64),
                 delay,
+                jitter,
                 loss_permille: 0,
             },
             seed,
@@ -306,8 +366,9 @@ async fn shaped_relay_measure() {
         )
         .await;
         println!(
-            "[{eng:?}] shaped r{rate} q{q} d{}ms l{loss}‰ seed{seed}: tamamlanma={} teslim={}/{units} ileri={} pkt / {} B (kuyruk_düşen={} rastgele_düşen={}) dönüş={} pkt / {} B (düşen={})",
+            "[{eng:?}] shaped r{rate} q{q} d{}±{}ms l{loss}‰ u{units}×{unit_bytes} seed{seed}: tamamlanma={} teslim={}/{units} ileri={} pkt / {} B (kuyruk_düşen={} rastgele_düşen={}) dönüş={} pkt / {} B (düşen={})",
             delay.as_millis(),
+            jitter.as_millis(),
             o.completed.map_or("YOK".to_string(), |d| format!("{:.2} s", d.as_secs_f64())),
             o.delivered,
             o.stats.fwd_sent,
