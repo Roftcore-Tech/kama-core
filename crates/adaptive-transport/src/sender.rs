@@ -11853,7 +11853,9 @@ mod tests {
                 || d.dup_due_ns.is_some()
         }
 
-        /// Runtime'ın kurduğu motor: `ClientSession::new` = `Sender::new` + ürün kuyruk kurtarması.
+        /// Eski runtime motoru (`TransportEngine::Legacy`; #176'ya dek ürün varsayılanı):
+        /// `ClientSession::new` = `Sender::new` + ürün kuyruk kurtarması. #176'dan beri ürün
+        /// varsayılanı `Sender::with_cc_port`'tur (aşağıda "cc_port").
         fn legacy_runtime() -> Sender {
             let mut s = Sender::new();
             s.set_tail_recovery_config(TailRecoveryConfig::validated_v1());
@@ -11862,7 +11864,7 @@ mod tests {
 
         fn ghost_engines() -> [(&'static str, MakeSender); 3] {
             [
-                ("legacy+tail_v1 (runtime)", legacy_runtime),
+                ("legacy+tail_v1 (Legacy runtime)", legacy_runtime),
                 ("legacy", Sender::new),
                 ("cc_port", Sender::with_cc_port),
             ]
