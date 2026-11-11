@@ -6602,10 +6602,13 @@ impl Sender {
                     // [TUR-2c D-1/3 kol-2] Orijinalin tombstone'u SUPERSEDED: retx-sonrası-
                     // geç-orijinal-ACK kol-1'e düşemez (2b'de kayıt ilan-anında donuyordu).
                     self.mark_tombstone_superseded(seq);
+                    // [K4G-05b-R · HA bulgusu] Port motorunda tavan yok (`u8::MAX`): planlayıcı
+                    // 255'teki kaydı da yeniden iletir; düz `+ 1` debug'da taşma paniğiydi
+                    // (release'de 0'a sarardı). Doygun artırım (öbür üç yolla aynı).
                     let new_seq = self.track_sent(
                         rec.unit,
                         now_ns,
-                        rec.retx_count + 1,
+                        rec.retx_count.saturating_add(1),
                         TransmitKind::Retransmit,
                     );
                     out.push(TransmitDecision {
@@ -12006,6 +12009,38 @@ mod tests {
                 });
                 assert!(t.is_some(), "{name}: ilk örnekten sonra PTO probu çıkar");
             }
+        }
+
+        /// [K4G-05b-R · HA bulgusu, PR #186] Port motorunda tavan yok: ARQ planlayıcısı 255'te
+        /// doymuş kaydı da yeniden iletir; ARQ yolu `retx_count + 1` düz toplamaydı → debug'da
+        /// taşma paniği (release'de 0'a sarma). Doygun artırım: 255'teki kayıt `Retransmit`
+        /// olarak çıkar, yeni kaydın sayacı 255 kalır.
+        #[test]
+        fn arq_retransmit_at_saturated_retx_count_does_not_overflow() {
+            let mut r = Rig::new(Sender::with_cc_port);
+            r.warm(UID);
+            let id = UID + 1;
+            r.ev(Event::AppData(small(id)), 20 * MS);
+            let q = r.seq_of(id, TransmitKind::Data).expect("DATA hemen çıkar");
+            let unit = r.s.inflight.get(&q).expect("uçuşta").unit;
+            r.s.inflight.remove(&q);
+            r.s.pending_lost.push_back(LostRec {
+                seq: q,
+                unit,
+                deadline_ns: 20 * MS,
+                retx_count: u8::MAX,
+                send_ns: 20 * MS,
+            });
+            r.pump_until(21 * MS, PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                r.seq_of(id, TransmitKind::Retransmit).is_some()
+            })
+            .expect("255'teki kayıt yeniden iletilir (tavan yok)");
+            let nq = r.seq_of(id, TransmitKind::Retransmit).expect("retx");
+            assert_eq!(
+                r.s.inflight.get(&nq).map(|p| p.retx_count),
+                Some(u8::MAX),
+                "sayaç doygun kalır"
+            );
         }
 
         /// Sessiz kanalda kuyruk kurtarmasının prob turlarını kesin kapsayan bekleme.
