@@ -23,6 +23,8 @@
 //! * Application: `Messenger::stats` (`resent_on_new_session`, `resend_refused`, …).
 //! * Oturum olayları: düğümün işlediği S1 olaylarının sayımı ([`SessionEventCounts`]).
 //! * Crypto el sıkışma zarfları: süreç-içi röle kutusunun gönderim kaydı ([`EnvelopeCounts`]).
+//! * [HLR] Hat kaybı yenilemesi: `RelinkGovernor::stats` ve eş başına
+//!   `ClientTransport::renewal_state_for_test` ([`PeerSessionProbe`]).
 
 use std::collections::VecDeque;
 
@@ -67,6 +69,24 @@ pub struct NodeProbe {
     /// [S2-A3-2] Hub kipinde `HubEndpoint` sayaçları (`stash.lost()` = `hub_stash_miss`,
     /// `hub_out_unknown_handle` KK-H66); doğrudan kipte `None` (KK-H55).
     pub hub: Option<client_core::hub::endpoint::HubEndpointCounters>,
+    /// [HLR] Hat kaybı yenilemesi yöneticisinin sayaçları (S4 C5; doğrudan kipte hepsi 0).
+    pub relink: client_core::hub::relink::RelinkStats,
+    /// [HLR] Eş başına oturum durumu (provisioning adı sırasıyla; yalnız oturumu, yenilemesi ya da
+    /// provisional'ı olan eşler).
+    pub peers: Vec<PeerSessionProbe>,
+}
+
+/// [HLR] Bir eşin Transport oturum durumu (`ClientTransport::renewal_state_for_test`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerSessionProbe {
+    /// Eşin provisioning adı.
+    pub peer_id: String,
+    /// Gönderim kabul eden (etkin) oturum — sözleşme: en çok 1.
+    pub active: usize,
+    /// Bekleyen yenileme.
+    pub renewals: usize,
+    /// Onaysız provisional (eşin yenilemesi).
+    pub provisional: usize,
 }
 
 /// Ucu açık bir S1 oturumu.
