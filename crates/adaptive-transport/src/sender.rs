@@ -11007,11 +11007,7 @@ mod tests {
 
             /// Birim motorda hâlâ sahipli mi (uçuş/tombstone kaydı, ARQ ya da kopya işi).
             fn owned(&self, unit: u64) -> bool {
-                let d = self.s.diag_unit_recovery(unit);
-                d.inflight_records > 0
-                    || d.tombstone_records > 0
-                    || d.pending_lost_retx.is_some()
-                    || d.dup_due_ns.is_some()
+                engine_owns(&self.s, unit)
             }
         }
 
@@ -11789,6 +11785,357 @@ mod tests {
                     r.s.diag_unit_recovery(target),
                     tw.diag_unit_recovery(target),
                     "{name}"
+                );
+            }
+        }
+
+        // ── [K4G-05b-R · sahip kararı 2026-11-11] Hayalet ölçümü ───────────────────────────────
+        //
+        // Runtime, gövdesi olmayan kararı (teyitli birime motor kararı) tele ÇIKARMAZ. Motor kararı
+        // işlemiştir: kaydı uçuştadır ve ACK'i hiç gelmez. Bu ölçüm satır-7 durumundan (birim geç
+        // orijinalle teyit edildi, yeniden gönderim kaydı `pending_lost`'ta) sonra o birimin motordaki
+        // ardılını sayar. Motor kodu DEĞİŞMEZ; yalnız kanal modeli iki kol arasında ayrışır:
+        // "atla" — teyitli birime verilen kararlar tele çıkmaz (ACK yok; bu PR'ın runtime'ı);
+        // "başlık" — karar tele çıkar ve alıcı seq'i ACK'ler (önceki runtime'ın başlık-only emisyonu).
+        // Diğer bütün emisyonlar iki kolda da kayıpsız, sıralı, sabit gecikmeyle ACK'lenir. Yalnız
+        // güvenlik iddia edilir (panik yok, kuyruklar ve günlük sınırlı); sayılar `--nocapture` ile
+        // yazdırılır ve `docs/design/K4G-05b-RUNTIME-ENVANTER.md`'ye işlenir.
+
+        /// Teyitten sonraki ölçüm ufku (sahte saat).
+        const GHOST_HORIZON_NS: u64 = 120_000 * MS;
+        /// Pompa adımı: runtime her 1 ms'de `Pto` sürer (`PACE_TICK`); maliyet için 5 ms.
+        const GHOST_TICK_NS: u64 = 5 * MS;
+        /// Runtime `RTPROP_TICK` (200 ms).
+        const GHOST_RTPROP_NS: u64 = 200 * MS;
+        /// Kanal: tele çıkan her emisyonun ACK'i gönderimden bu kadar sonra gelir.
+        const GHOST_RTT_NS: u64 = 40 * MS;
+        /// Diğer birimlerin trafiği: bu aralıkla bir küçük birim.
+        const GHOST_OFFER_NS: u64 = 50 * MS;
+        /// Diğer birimlerin kimlik tabanı (kurulum birimlerinden uzak).
+        const GHOST_UNIT_BASE: u64 = UID + 10_000;
+        /// Örnekleme periyodu (hayalet uçuş baytı, kuyruk boyları).
+        const GHOST_SAMPLE_NS: u64 = 1_000 * MS;
+        /// Hayalet karar günlüğünün tavanı (aşan kararlar yalnız sayılır).
+        const GHOST_LOG_CAP: usize = 512;
+        /// Rapor kovası: hayalet kararlar 10 s'lik kovalarda.
+        const GHOST_BUCKET_NS: u64 = 10_000 * MS;
+        const GHOST_BUCKETS: usize = (GHOST_HORIZON_NS / GHOST_BUCKET_NS) as usize;
+        /// Güvenlik sınırı: uçuş, kayıp ve kopya kuyrukları ve kanal modelinin uçuş listesi.
+        const GHOST_QUEUE_BOUND: u32 = 4096;
+        /// Faz değişimi günlüğünün tavanı (aşan değişimler yalnız sayılır).
+        const GHOST_STATE_LOG_CAP: usize = 64;
+
+        /// Birim motorda sahipli mi (uçuş/tombstone kaydı, ARQ ya da kopya işi).
+        fn engine_owns(s: &Sender, unit: u64) -> bool {
+            let d = s.diag_unit_recovery(unit);
+            d.inflight_records > 0
+                || d.tombstone_records > 0
+                || d.pending_lost_retx.is_some()
+                || d.dup_due_ns.is_some()
+        }
+
+        /// Runtime'ın kurduğu motor: `ClientSession::new` = `Sender::new` + ürün kuyruk kurtarması.
+        fn legacy_runtime() -> Sender {
+            let mut s = Sender::new();
+            s.set_tail_recovery_config(TailRecoveryConfig::validated_v1());
+            s
+        }
+
+        fn ghost_engines() -> [(&'static str, MakeSender); 3] {
+            [
+                ("legacy+tail_v1 (runtime)", legacy_runtime),
+                ("legacy", Sender::new),
+                ("cc_port", Sender::with_cc_port),
+            ]
+        }
+
+        /// Bir kolun ölçümü (anlar teyitten beri).
+        #[derive(Debug, Default)]
+        struct GhostRun {
+            /// Satır-7 durumu kuruldu mu (teyit + yeniden gönderim kaydı `pending_lost`'ta).
+            row7: bool,
+            /// Teyit anında motorun uçuş kuyruğu ve hedefin kayıtları (iki kolda aynı).
+            inflight_at_confirm: u32,
+            unit_at_confirm: UnitRecoveryDiag,
+            /// Teyitten sonra hedefe verilen kararlar: toplam, günlük (ms, tür), 10 s kovaları.
+            ghost_total: u64,
+            ghost_log: Vec<(u64, TransmitKind)>,
+            ghost_buckets: [u64; GHOST_BUCKETS],
+            /// Motorun hedefi bıraktığı ilk örnek (ms); ufukta bırakmadıysa `None`.
+            released_ms: Option<u64>,
+            owned_end: bool,
+            unit_end: UnitRecoveryDiag,
+            /// (s, hedefin uçuş baytı, toplam uçuş baytı) örnekleri ve hedefin uçuş baytı tepesi.
+            phantom: Vec<(u64, u64, u64)>,
+            phantom_peak: u64,
+            /// Ufuk boyunca tail-probe artışı ve CS-probe kararı.
+            tail_probes: u64,
+            cs_probes: u64,
+            /// Diğer birimler: sunulan ve birim başına teyit gecikmesi (ns).
+            offered: u64,
+            latency: BTreeMap<u64, u64>,
+            /// Ufkun sonunda: kayıp atfı `(pkt, time, pending)`, hız `diag_rate`, BBR `(pencere,
+            /// tıkanıklık olayı, cwnd)` (yalnız cc_port), kuyruk tepeleri (uçuş, kayıp, kopya,
+            /// tombstone).
+            loss_end: (u64, u64, u64),
+            rate_end: Option<(SenderState, u64, u64, u64, u64)>,
+            cc_end: Option<(u64, u64, u64)>,
+            queue_peak: (u32, u32, u32, u32),
+            /// Faz değişimleri (ms, faz) ve ufuk sonunda `ActivationDiag` (faz geçişi, RecoverArq,
+            /// RecoverFwd, ProbeUp girişleri; ufuk boyunca artış).
+            states: Vec<(u64, SenderState)>,
+            activation: (u64, u64, u64, u64),
+        }
+
+        /// Kararları kanal modeline koyar; hedefe teyitten sonra verilen kararı sayar ve `skip`
+        /// kolunda tele çıkarmaz (ACK yok).
+        fn ghost_emit(
+            g: &mut GhostRun,
+            flight: &mut VecDeque<(u64, u64)>,
+            decisions: Vec<TransmitDecision>,
+            target: u64,
+            skip: bool,
+            t0: u64,
+            now: u64,
+        ) {
+            for d in decisions {
+                match d.kind {
+                    // Ayrı ad-uzayı, motor kaydı yok, ACK'lenmez.
+                    TransmitKind::CsProbe => g.cs_probes += 1,
+                    // unit_id ESI'dir (ayrı ad-uzayı); bu kanalda FEC kapalı.
+                    TransmitKind::FecParity => flight.push_back((now + GHOST_RTT_NS, d.seq)),
+                    TransmitKind::Data | TransmitKind::Retransmit | TransmitKind::Duplicate => {
+                        if d.unit_id == target {
+                            g.ghost_total += 1;
+                            let at = now - t0;
+                            if g.ghost_log.len() < GHOST_LOG_CAP {
+                                g.ghost_log.push((at / MS, d.kind));
+                            }
+                            let b = usize::try_from(at / GHOST_BUCKET_NS).unwrap_or(usize::MAX);
+                            if let Some(c) = g.ghost_buckets.get_mut(b.min(GHOST_BUCKETS - 1)) {
+                                *c += 1;
+                            }
+                            if skip {
+                                continue;
+                            }
+                        }
+                        flight.push_back((now + GHOST_RTT_NS, d.seq));
+                    }
+                }
+            }
+        }
+
+        fn ghost_run(mk: MakeSender, skip: bool) -> GhostRun {
+            let mut g = GhostRun::default();
+            // Satır-7 kurulumu (`k4g05br_decision_neutral_after_confirmation_with_pending_work`).
+            let (mut r, target, tseq, rseq, _t) = kol2_setup_on(Rig::new(mk));
+            let more: Vec<u64> = (1..=5u64).map(|i| UID + 400 + i).collect();
+            for &id in &more {
+                r.ev(Event::AppData(small(id)), r.last_now);
+            }
+            let from = r.last_now + PUMP_STEP_NS;
+            r.pump_until(from, from + PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                more.iter()
+                    .all(|&id| r.seq_of(id, TransmitKind::Data).is_some())
+            })
+            .expect("DATA tele çıkar");
+            let acks: Vec<u64> = more
+                .iter()
+                .map(|&id| r.seq_of(id, TransmitKind::Data).expect("DATA"))
+                .collect();
+            r.spend_tokens();
+            r.ev(ack(&acks), r.last_now);
+            let _ = r.s.take_confirmed_units();
+            let t0 = r.last_now;
+            let out = r.ev(ack(&[tseq]), t0);
+            let confirmed = r.s.take_confirmed_units();
+            g.row7 = confirmed.contains(&target) && r.has_pending(rseq);
+            g.inflight_at_confirm = r.s.diag_recovery_timers().inflight_len;
+            g.unit_at_confirm = r.s.diag_unit_recovery(target);
+            let mut flight: VecDeque<(u64, u64)> = VecDeque::new();
+            ghost_emit(&mut g, &mut flight, out, target, skip, t0, t0);
+
+            let s = &mut r.s;
+            let act0 = s.diag_activation();
+            let tail0 = act0.tail_probes;
+            let mut state = s.state();
+            g.states.push((0, state));
+            let unit_bytes = small(target).size;
+            let mut offers: BTreeMap<u64, u64> = BTreeMap::new();
+            let mut next_id = GHOST_UNIT_BASE;
+            let mut next_offer = t0 + GHOST_OFFER_NS;
+            let mut next_rtprop = t0 + GHOST_RTPROP_NS;
+            let mut next_sample = t0;
+            let end = t0 + GHOST_HORIZON_NS;
+            let mut now = t0;
+            while now < end {
+                now += GHOST_TICK_NS;
+                let mut events: Vec<Event> = Vec::new();
+                let mut seqs = Vec::new();
+                while let Some(&(at, q)) = flight.front() {
+                    if at > now {
+                        break;
+                    }
+                    flight.pop_front();
+                    seqs.push(q);
+                }
+                if !seqs.is_empty() {
+                    events.push(ack(&seqs));
+                }
+                if now >= next_offer {
+                    events.push(Event::AppData(small(next_id)));
+                    offers.insert(next_id, now);
+                    next_id += 1;
+                    g.offered += 1;
+                    next_offer += GHOST_OFFER_NS;
+                }
+                if now >= next_rtprop {
+                    events.push(Event::TimerFired(Timer::RtpropProbe));
+                    next_rtprop += GHOST_RTPROP_NS;
+                }
+                if events.is_empty() {
+                    events.push(Event::TimerFired(Timer::Pto));
+                }
+                for e in events {
+                    let out = s.on_event(e, now);
+                    for u in s.take_confirmed_units() {
+                        if let Some(at) = offers.remove(&u) {
+                            g.latency.insert(u, now - at);
+                        }
+                    }
+                    ghost_emit(&mut g, &mut flight, out, target, skip, t0, now);
+                }
+                if s.state() != state {
+                    state = s.state();
+                    if g.states.len() < GHOST_STATE_LOG_CAP {
+                        g.states.push(((now - t0) / MS, state));
+                    }
+                }
+                if now >= next_sample {
+                    next_sample += GHOST_SAMPLE_NS;
+                    let u = s.diag_unit_recovery(target);
+                    let phantom = u64::from(u.inflight_records) * unit_bytes;
+                    g.phantom_peak = g.phantom_peak.max(phantom);
+                    g.phantom
+                        .push(((now - t0) / (1_000 * MS), phantom, s.inflight_bytes()));
+                    if g.released_ms.is_none() && !engine_owns(s, target) {
+                        g.released_ms = Some((now - t0) / MS);
+                    }
+                    // Güvenlik: motor kuyrukları ve kanal modeli sınırlı, teyit çıktısı taşmadı.
+                    let tm = s.diag_recovery_timers();
+                    let p = &mut g.queue_peak;
+                    *p = (
+                        p.0.max(tm.inflight_len),
+                        p.1.max(tm.pending_lost_len),
+                        p.2.max(tm.dup_queue_len),
+                        p.3.max(tm.tombstones_len),
+                    );
+                    assert!(
+                        tm.inflight_len <= GHOST_QUEUE_BOUND
+                            && tm.pending_lost_len <= GHOST_QUEUE_BOUND
+                            && tm.dup_queue_len <= GHOST_QUEUE_BOUND
+                            && tm.tombstones_len as usize <= TOMBSTONE_MAX
+                            && flight.len() <= GHOST_QUEUE_BOUND as usize,
+                        "kuyruklar sınırlı kalmalı: {tm:?}, kanal {}",
+                        flight.len()
+                    );
+                    assert_eq!(s.diag_confirmed_units_overflow(), 0, "teyit çıktısı taşmaz");
+                }
+            }
+            g.owned_end = engine_owns(s, target);
+            g.unit_end = s.diag_unit_recovery(target);
+            let act = s.diag_activation();
+            g.tail_probes = act.tail_probes - tail0;
+            g.activation = (
+                act.state_transitions - act0.state_transitions,
+                act.recover_arq_entries - act0.recover_arq_entries,
+                act.recover_fwd_entries - act0.recover_fwd_entries,
+                act.probe_up_entries - act0.probe_up_entries,
+            );
+            g.loss_end = s.diag_loss();
+            g.rate_end = Some(s.diag_rate());
+            g.cc_end = s.diag_cc().map(|c| (c.1, c.5, c.7));
+            g
+        }
+
+        fn ghost_report(name: &str, arm: &str, g: &GhostRun) {
+            let kinds = |k: TransmitKind| g.ghost_log.iter().filter(|(_, x)| *x == k).count();
+            let head: Vec<_> = g.ghost_log.iter().take(12).collect();
+            let tail: Vec<_> = g.ghost_log.iter().rev().take(3).rev().collect();
+            let lat: Vec<u64> = g.latency.values().map(|ns| ns / MS).collect();
+            let mean = lat.iter().sum::<u64>() / (lat.len().max(1) as u64);
+            let samples: Vec<_> = g
+                .phantom
+                .iter()
+                .filter(|(sec, _, _)| sec % 10 == 0 || *sec < 5)
+                .collect();
+            eprintln!(
+                "[k4g05br hayalet] {name} kol={arm}: satır7={} teyit anı: uçuş {} hedef {:?}\n  \
+                 hayalet karar {} (günlükte Retransmit {} / Duplicate {} / Data {}); ilk {head:?} \
+                 son {tail:?}\n  10 s kovaları {:?}\n  bırakma {:?} ms; 120 s'de sahipli {} \
+                 ({:?})\n  hedef uçuş baytı tepe {} B; (s, hedef, toplam uçuş B) {samples:?}\n  \
+                 tail-probe +{} cs-probe {}; kayıp (pkt, time, pending) {:?}; hız {:?}; bbr \
+                 (pencere, tıkanıklık, cwnd) {:?}; kuyruk tepeleri (uçuş, kayıp, kopya, tombstone) \
+                 {:?}\n  faz (geçiş, RecoverArq, RecoverFwd, ProbeUp artışı) {:?}; ilk faz değişimleri \
+                 {:?}\n  diğer birimler: sunulan {} teyit {} ortalama {} ms en büyük {} ms",
+                g.row7,
+                g.inflight_at_confirm,
+                g.unit_at_confirm,
+                g.ghost_total,
+                kinds(TransmitKind::Retransmit),
+                kinds(TransmitKind::Duplicate),
+                kinds(TransmitKind::Data),
+                g.ghost_buckets,
+                g.released_ms,
+                g.owned_end,
+                g.unit_end,
+                g.phantom_peak,
+                g.tail_probes,
+                g.cs_probes,
+                g.loss_end,
+                g.rate_end,
+                g.cc_end,
+                g.queue_peak,
+                g.activation,
+                g.states.iter().take(12).collect::<Vec<_>>(),
+                g.offered,
+                g.latency.len(),
+                mean,
+                lat.iter().max().copied().unwrap_or(0),
+            );
+        }
+
+        /// Hayalet ölçümü (yalnız güvenlik iddia eder): iki motor, runtime kuyruk kurtarmalı eski
+        /// motor dahil; her biri "atla" ve "başlık" kollarıyla. Diğer birimlerin teyit gecikmesi
+        /// iki kol arasında birim birim karşılaştırılır (yazdırılır, iddia edilmez).
+        #[test]
+        fn k4g05br_ghost_after_skipped_stale_decision() {
+            for (name, mk) in ghost_engines() {
+                let skip = ghost_run(mk, true);
+                let head = ghost_run(mk, false);
+                ghost_report(name, "atla", &skip);
+                ghost_report(name, "başlık", &head);
+                let common: Vec<(u64, u64)> = skip
+                    .latency
+                    .iter()
+                    .filter_map(|(u, a)| head.latency.get(u).map(|b| (*a, *b)))
+                    .collect();
+                let changed = common.iter().filter(|(a, b)| a != b).count();
+                let max_diff = common.iter().map(|(a, b)| a.abs_diff(*b) / MS).max();
+                eprintln!(
+                    "[k4g05br hayalet] {name} diğer birimler atla↔başlık: ortak {} birim, gecikmesi \
+                     değişen {changed}, en büyük |fark| {max_diff:?} ms",
+                    common.len()
+                );
+                // Ön koşul (ölçüm boş geçmesin): satır-7 kuruldu ve teyitli birime karar üretildi.
+                assert!(skip.row7 && head.row7, "{name}: ön koşul — satır-7 durumu");
+                assert!(
+                    skip.ghost_total >= 1 && head.ghost_total >= 1,
+                    "{name}: ön koşul — teyitli birime en az bir karar"
+                );
+                assert!(
+                    skip.ghost_log.len() <= GHOST_LOG_CAP,
+                    "{name}: günlük sınırlı"
                 );
             }
         }
