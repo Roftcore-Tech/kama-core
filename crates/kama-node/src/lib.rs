@@ -291,6 +291,18 @@ impl KamaNode {
             },
         };
         let mut transport_config = ClientTransportConfig::product(data_bind);
+        // [CC-PORT] Motor anahtarı: `KAMA_TRANSPORT_ENGINE=cc-port` ⇒ quinn BBR + RFC 9002 portu
+        // (`RuntimeConfig::engine`). Cihaz dosyası ve `start` imzası değişmez (KK-H50); yalnız
+        // ölçüm/gösterim düzeneği kurar, iki uçta AYNI olmalıdır. Boş/`legacy` = ürün (bit-eşit);
+        // tanınmayan değer yapılandırma hatasıdır (sessizce legacy'ye düşmez).
+        if let Ok(v) = std::env::var("KAMA_TRANSPORT_ENGINE") {
+            transport_config.runtime.engine =
+                client_core::TransportEngine::parse(&v).ok_or_else(|| {
+                    NodeError::Config(kama_provision::format::FormatError::Invalid(
+                        "KAMA_TRANSPORT_ENGINE: 'legacy' ya da 'cc-port' olmalı",
+                    ))
+                })?;
+        }
         transport_config.peer_addrs = match &hub {
             // Hub kipinde her eşin veri adresi yerel rölenin adresidir (KK-H51).
             Some(side) => peers
