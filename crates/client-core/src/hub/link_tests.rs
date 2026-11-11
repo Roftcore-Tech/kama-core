@@ -976,6 +976,140 @@ fn c5_route_miss_on_responder_handle() {
     );
 }
 
+/// [HLR] Atanmış handle'ı ROUTE_MISS alan açılış denemesi biter → `AttemptEnded` (C3 gibi; niyet
+/// ya da yenileme yeni INIT ile yeniden başlar). ESKİ DAVRANIŞ: `HandleLost` veriliyordu; bileşim
+/// kökü kurulu oturum bulamaz, T3'ü durmuş deneme sessizce ölürdü.
+#[test]
+fn hlr_route_miss_on_an_attempts_handle_ends_the_attempt() {
+    let mut t = bound();
+    let t0 = t.t0;
+    t.link.send_init(t0, peer(0xB0), 1, vec![1]).unwrap();
+    let f = init_out(&mut t, t0).remove(0);
+    t.link.on_control(t0, &store_resp(f.rid, code::OK, 0x77));
+    let _ = events(&mut t.link);
+    t.link.on_control(t0, &route_miss(0x77));
+    assert_eq!(
+        notices(&mut t.link),
+        vec![HubNotice::AttemptEnded { peer: peer(0xB0) }]
+    );
+    assert_eq!(t.link.counters().route_miss, 1);
+    for k in 1..60 {
+        assert!(init_out(&mut t, t0 + s(k)).is_empty(), "T3 durdu");
+    }
+}
+
+/// `p` için `0x55` handle'lı kurulu hat (yanıtlayan rolü) + `t0`'da verilmiş bir `AttemptEnded`
+/// (eş başına aralığı `t0`'da başlatır).
+fn link_and_first_notice(t: &mut T, p: u8) {
+    let t0 = t.t0;
+    t.link.on_control(t0, &deliver(0x55, [p; 32], 1, &[5; 8]));
+    t.link
+        .send_response(t0, peer(p), HubHandle::from_raw(0x55), 2, vec![6; 8])
+        .unwrap();
+    let _ = (events(&mut t.link), drain(&mut t.link, t0));
+    t.link.send_init(t0, peer(p), 1, vec![1]).unwrap();
+    let f = init_out(t, t0).remove(0);
+    t.link
+        .on_control(t0, &store_resp(f.rid, code::UNKNOWN_HANDLE, 0));
+    assert_eq!(
+        notices(&mut t.link),
+        vec![HubNotice::AttemptEnded { peer: peer(p) }]
+    );
+}
+
+/// [HLR] KK-H39 aralığında ertelenen farklı türler birbirinin yerini ALMAZ: ertelenmiş
+/// `AttemptEnded`'den sonra gelen `HandleLost` ikisini de verir (önce `AttemptEnded`). ESKİ
+/// DAVRANIŞ: tek erteleme yuvası vardı; `HandleLost` `AttemptEnded`'in yerini alıyordu (yenilemenin
+/// bitmiş denemesi yeniden başlamazdı).
+#[test]
+fn hlr_deferred_notices_of_different_kinds_are_both_released() {
+    let mut t = bound();
+    let t0 = t.t0;
+    link_and_first_notice(&mut t, 0xB0);
+    t.link.send_init(t0 + s(1), peer(0xB0), 1, vec![2]).unwrap();
+    let f = init_out(&mut t, t0 + s(1)).remove(0);
+    t.link
+        .on_control(t0 + s(1), &store_resp(f.rid, code::UNKNOWN_HANDLE, 0));
+    t.link.on_control(t0 + s(2), &route_miss(0x55));
+    assert!(notices(&mut t.link).is_empty(), "aralık içinde ertelenir");
+    assert_eq!(t.link.next_deadline().map(|d| d <= t0 + s(5)), Some(true));
+    t.link.on_tick(t0 + s(5));
+    assert_eq!(
+        notices(&mut t.link),
+        vec![
+            HubNotice::AttemptEnded { peer: peer(0xB0) },
+            HubNotice::HandleLost {
+                peer: peer(0xB0),
+                h: HubHandle::from_raw(0x55)
+            }
+        ]
+    );
+}
+
+/// [HLR] Aralık dolduktan sonra (zamanlayıcı henüz dönmeden) gelen bildirim eşin ertelenmişini
+/// SİLMEZ: ikisi birlikte verilir. ESKİ DAVRANIŞ: ertelenmiş `AttemptEnded` sessizce düşüyordu.
+#[test]
+fn hlr_a_due_notice_flushes_the_deferred_one_instead_of_dropping_it() {
+    let mut t = bound();
+    let t0 = t.t0;
+    link_and_first_notice(&mut t, 0xB0);
+    t.link.send_init(t0 + s(1), peer(0xB0), 1, vec![2]).unwrap();
+    let f = init_out(&mut t, t0 + s(1)).remove(0);
+    t.link
+        .on_control(t0 + s(1), &store_resp(f.rid, code::UNKNOWN_HANDLE, 0));
+    assert!(notices(&mut t.link).is_empty());
+    // Vadesi (t0 + 5 s) geçti ama `on_tick` çağrılmadı; ROUTE_MISS t0 + 6 s'de gelir.
+    t.link.on_control(t0 + s(6), &route_miss(0x55));
+    assert_eq!(
+        notices(&mut t.link),
+        vec![
+            HubNotice::AttemptEnded { peer: peer(0xB0) },
+            HubNotice::HandleLost {
+                peer: peer(0xB0),
+                h: HubHandle::from_raw(0x55)
+            }
+        ]
+    );
+}
+
+/// [HLR] `known_links` dolunca önce yerini yenisi almış hatlar düşer: başka bir eşin hat
+/// çalkantısı (64+ yanıt / yeniden bağlantı) uzun süredir sessiz bir eşin TEK hattını unutturmaz;
+/// o hattın ROUTE_MISS'i `HandleLost` verir. ESKİ DAVRANIŞ: en eski girdi düşüyordu →
+/// `route_miss_unknown`, bildirim yok, oturum yeni INIT'siz kalırdı.
+#[test]
+fn hlr_known_links_keep_a_quiet_peers_only_link_under_churn() {
+    const CHURN: u32 = 8;
+    let mut t = bound();
+    let t0 = t.t0;
+    t.link.on_control(t0, &deliver(1, [0xA1; 32], 1, &[1; 8]));
+    t.link
+        .send_response(t0, peer(0xA1), HubHandle::from_raw(1), 2, vec![1; 8])
+        .unwrap();
+    let last = u32::try_from(MAX_KNOWN_LINKS).unwrap() + CHURN;
+    for i in 2..=last {
+        let init = i.to_be_bytes();
+        t.link.on_control(t0, &deliver(i, [0xA9; 32], 1, &init));
+        t.link
+            .send_response(t0, peer(0xA9), HubHandle::from_raw(i), 2, init.to_vec())
+            .unwrap();
+        let _ = drain(&mut t.link, t0);
+    }
+    let _ = events(&mut t.link);
+    assert_eq!(t.link.known_links.len(), MAX_KNOWN_LINKS);
+    t.link.on_control(t0, &route_miss(1));
+    assert_eq!(
+        notices(&mut t.link),
+        vec![HubNotice::HandleLost {
+            peer: peer(0xA1),
+            h: HubHandle::from_raw(1)
+        }]
+    );
+    assert_eq!(t.link.counters().route_miss_unknown, 0);
+    // Son hat da bilinir (yeni girdi düşmez).
+    t.link.on_control(t0, &route_miss(last));
+    assert_eq!(t.link.counters().route_miss, 2);
+}
+
 // ── C7: yeniden bind ─────────────────────────────────────────────────────────────────────────
 
 #[test]

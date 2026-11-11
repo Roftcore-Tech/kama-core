@@ -7,7 +7,7 @@
 //! | C2 bind | [`super::bind`] makinesi; bind olmadan STORE ve heartbeat gitmez (kuyrukta bekler) |
 //! | C3 INIT + T3 | `send_init` → `STORE{0, 0x01}`; aynı `request_id`, bayt-özdeş tekrar; yalnız `peer_ready` (eşleşen `h`), `{UNKNOWN_HANDLE, 0}`, çelişkili handle, `ATTEMPT_MAX_AGE`, aynı eşe yeni INIT ya da yeniden bind durdurur |
 //! | C4 RESPONSE | `send_response` → `STORE{h, 0x02}`; yinelenen `(h, INIT)` → saklı RESPONSE yeniden (KK-H38); K3 tutma (KK-H37) |
-//! | C5 ROUTE_MISS | `h` bırakılır, `HandleLost` (eş başına ≥ 5 s; KK-H39) |
+//! | C5 ROUTE_MISS | `h` bırakılır; kurulu hat → `HandleLost`, `h`'si atanmış açılış denemesi → `AttemptEnded` (eş başına ≥ 5 s, ertelenen bildirim tür başına bir; KK-H39) |
 //! | C6/C7 | [`super::heartbeat`]; "koptu" → yeniden bind; gönderilmiş, tamamlanmamış denemeler biter |
 //! | C8 | `0x1D` → RPC, `0x1C` → heartbeat eşleyici, başka → sayaç; imzasız hata yalnız ipucu |
 //! | C9 | [`HubLink::last_rx_age`] |
@@ -83,6 +83,42 @@ struct InitAttempt {
     delivered_response: Option<Vec<u8>>,
 }
 
+/// Eş başına aralık (KK-H39) dolmadan gelen, ertelenmiş bildirimler: TÜR başına en çok bir. Bir tür
+/// ötekinin yerini ALMAZ — `AttemptEnded` (deneme yeni INIT ile yeniden başlar) ile `HandleLost`
+/// (kurulu oturum için yeni INIT) bileşim kökünde farklı işlerdir.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Deferred {
+    attempt_ended: bool,
+    /// Aynı eşin birden çok hattı kaybolduysa sonuncusu (bileşim kökünün işi eş başınadır).
+    handle_lost: Option<HubHandle>,
+}
+
+impl Deferred {
+    /// Yalnız eş bildirimleri (`AttemptEnded`, `HandleLost`) ertelenir; diğerleri buraya gelmez.
+    fn add(&mut self, n: HubNotice) {
+        match n {
+            HubNotice::AttemptEnded { .. } => self.attempt_ended = true,
+            HubNotice::HandleLost { h, .. } => self.handle_lost = Some(h),
+            HubNotice::Bound | HubNotice::Disconnected => {}
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        !self.attempt_ended && self.handle_lost.is_none()
+    }
+
+    /// Ertelenmişleri verir ve boşaltır. Sıra: önce `AttemptEnded` (bitmiş denemenin yenilemesi
+    /// yeniden başlar), sonra `HandleLost` (bekleyen yenileme varsa ikincisi başlamaz) — ikisi
+    /// birlikte tek yeni INIT verir.
+    fn take(&mut self, peer: PeerRef) -> [Option<HubNotice>; 2] {
+        let d = core::mem::take(self);
+        [
+            d.attempt_ended.then_some(HubNotice::AttemptEnded { peer }),
+            d.handle_lost.map(|h| HubNotice::HandleLost { peer, h }),
+        ]
+    }
+}
+
 /// Yanıtlayanın `(h, INIT)` kaydı (KK-H38).
 struct ResponderRecord {
     h: HubHandle,
@@ -123,8 +159,8 @@ pub struct HubLink {
     tx: VecDeque<Vec<u8>>,
     events: VecDeque<LinkEvent>,
     notices: VecDeque<HubNotice>,
-    /// Eş başına son verilen bildirim zamanı ve ertelenmiş bildirim.
-    peer_notice: Vec<(PeerRef, Instant, Option<HubNotice>)>,
+    /// Eş başına son verilen bildirim zamanı ve ertelenmiş bildirimler.
+    peer_notice: Vec<(PeerRef, Instant, Deferred)>,
     last_rx: Option<Instant>,
     last_tx: Instant,
 }
@@ -516,12 +552,15 @@ impl HubLink {
 
     fn on_route_miss(&mut self, now: Instant, raw: u32) {
         let h = HubHandle::from_raw(raw);
-        let peer = self
+        // [HLR] `h`'si atanmış açılış denemesi biter: C3'teki gibi `AttemptEnded` (niyet ya da
+        // yenileme yeni INIT ile yeniden başlar). `HandleLost` kurulu hattındır; deneme için
+        // verilseydi bileşim kökü yenilenecek oturum bulamaz, deneme sessizce ölürdü.
+        let attempt = self
             .attempts
             .iter()
             .position(|a| a.assigned == Some(h))
             .map(|i| self.take_attempt(i).peer);
-        let known = self
+        let link = self
             .known_links
             .iter()
             .position(|(k, _)| *k == h)
@@ -529,12 +568,16 @@ impl HubLink {
             .map(|(_, p)| p);
         self.retire(h);
         self.responder.retain(|r| r.h != h);
-        match peer.or(known) {
-            Some(peer) => {
-                bump(&mut self.counters.route_miss);
-                self.peer_notice(now, peer, HubNotice::HandleLost { peer, h });
-            }
-            None => bump(&mut self.counters.route_miss_unknown),
+        if attempt.is_none() && link.is_none() {
+            bump(&mut self.counters.route_miss_unknown);
+            return;
+        }
+        bump(&mut self.counters.route_miss);
+        if let Some(peer) = attempt {
+            self.peer_notice(now, peer, HubNotice::AttemptEnded { peer });
+        }
+        if let Some(peer) = link {
+            self.peer_notice(now, peer, HubNotice::HandleLost { peer, h });
         }
     }
 
@@ -690,7 +733,7 @@ impl HubLink {
             take(r.at + ATTEMPT_MAX_AGE);
         }
         for (_, at, pending) in &self.peer_notice {
-            if pending.is_some() {
+            if !pending.is_empty() {
                 take(*at + NOTICE_BACKOFF);
             }
         }
@@ -848,41 +891,44 @@ impl HubLink {
         self.notices.push_back(n);
     }
 
-    /// Eş başına ≥ 5 s: aralık dolmadıysa bildirim ertelenir (aynı eşin ertelenmişinin yerini alır).
+    /// Eş başına ≥ 5 s (KK-H39): aralık dolmadıysa bildirim ertelenir — tür başına bir; bir tür
+    /// ötekinin yerini almaz ([`Deferred`]). Aralık dolduysa eşin ertelenmişleri de bu bildirimle
+    /// birlikte hemen verilir (silinmez).
     fn peer_notice(&mut self, now: Instant, peer: PeerRef, n: HubNotice) {
-        if let Some(e) = self.peer_notice.iter_mut().find(|e| e.0 == peer) {
+        if let Some(i) = self.peer_notice.iter().position(|e| e.0 == peer) {
+            let e = &mut self.peer_notice[i];
+            e.2.add(n);
             if now.saturating_duration_since(e.1) < NOTICE_BACKOFF {
-                e.2 = Some(n);
                 return;
             }
             e.1 = now;
-            e.2 = None;
-        } else {
-            if self.peer_notice.len() >= MAX_NOTICES {
-                // En eski, ertelenmişi olmayan girdiyi düşür; yoksa en eskiyi.
-                let i = self
-                    .peer_notice
-                    .iter()
-                    .position(|e| e.2.is_none())
-                    .unwrap_or(0);
-                if let Some(old) = self.peer_notice.get(i).and_then(|e| e.2) {
-                    self.push_notice(old);
-                }
-                self.peer_notice.remove(i);
-                bump(&mut self.counters.bounded_drops);
+            for due in e.2.take(peer).into_iter().flatten() {
+                self.push_notice(due);
             }
-            self.peer_notice.push((peer, now, None));
+            return;
         }
+        if self.peer_notice.len() >= MAX_NOTICES {
+            // En eski, ertelenmişi olmayan girdiyi düşür; yoksa en eskiyi (ertelenmişleri verilir).
+            let i = self
+                .peer_notice
+                .iter()
+                .position(|e| e.2.is_empty())
+                .unwrap_or(0);
+            let (old_peer, _, mut old) = self.peer_notice.remove(i);
+            for due in old.take(old_peer).into_iter().flatten() {
+                self.push_notice(due);
+            }
+            bump(&mut self.counters.bounded_drops);
+        }
+        self.peer_notice.push((peer, now, Deferred::default()));
         self.push_notice(n);
     }
 
     fn release_deferred_notices(&mut self, now: Instant) {
         let mut out = Vec::new();
         for e in &mut self.peer_notice {
-            if e.2.is_some() && now.saturating_duration_since(e.1) >= NOTICE_BACKOFF {
-                if let Some(n) = e.2.take() {
-                    out.push(n);
-                }
+            if !e.2.is_empty() && now.saturating_duration_since(e.1) >= NOTICE_BACKOFF {
+                out.extend(e.2.take(e.0).into_iter().flatten());
                 e.1 = now;
             }
         }
@@ -896,7 +942,14 @@ impl HubLink {
             self.known_links.remove(i);
         }
         if self.known_links.len() >= MAX_KNOWN_LINKS {
-            self.known_links.pop_front();
+            // [HLR] Önce, aynı eşin daha yeni bir hattı olan (yerini yenisi almış oturumun) en eski
+            // girdisi düşer; ancak böyle girdi yoksa en eskisi. Eşin güncel hattı düşerse o hattın
+            // ROUTE_MISS'i `HandleLost` üretemez (oturum yeni INIT'siz kalır).
+            let superseded = (0..self.known_links.len()).find(|&i| {
+                let p = self.known_links[i].1;
+                p == peer || self.known_links.iter().skip(i + 1).any(|e| e.1 == p)
+            });
+            self.known_links.remove(superseded.unwrap_or(0));
             bump(&mut self.counters.bounded_drops);
         }
         self.known_links.push_back((h, peer));

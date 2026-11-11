@@ -93,8 +93,9 @@ pub enum HubNotice {
     Disconnected,
     /// `ROUTE_MISS{h}`: `h` bırakıldı; oturum için yeni INIT gerekir (C5). Tetik HB2'de (KK-H39).
     HandleLost { peer: PeerRef, h: HubHandle },
-    /// Açılış denemesi sonlandı (`{UNKNOWN_HANDLE, 0}`, `ATTEMPT_MAX_AGE`, çelişkili handle ya da
-    /// yeniden bind sonrası; C3, C7). Niyet sürüyorsa yeni kriptografik INIT gerekir (KK-H39).
+    /// Açılış denemesi sonlandı (`{UNKNOWN_HANDLE, 0}`, `ATTEMPT_MAX_AGE`, çelişkili handle,
+    /// yeniden bind sonrası ya da atanmış handle'a `ROUTE_MISS`; C3, C5, C7). Niyet ya da yenileme
+    /// sürüyorsa yeni kriptografik INIT gerekir (KK-H39).
     AttemptEnded { peer: PeerRef },
 }
 
@@ -176,7 +177,7 @@ pub struct HubCounters {
     pub late_response: u64,
     /// `DELIVER{RELAY_OPEN}` (yalnız sayılır; KK-H42).
     pub deliver_relay_open: u64,
-    /// `ROUTE_MISS{h}` → `HandleLost`.
+    /// Bilinen `h` için `ROUTE_MISS` (kurulu hat → `HandleLost`, atanmış deneme → `AttemptEnded`).
     pub route_miss: u64,
     /// Bilinmeyen `h` için `ROUTE_MISS`.
     pub route_miss_unknown: u64,
