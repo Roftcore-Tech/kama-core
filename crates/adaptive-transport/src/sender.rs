@@ -1562,6 +1562,9 @@ const K_WL: u32 = 8;
 /// `min(mesaj-deadline, ...)` kolu motorda uygulanamaz (per-unit deadline engine'e taşınmıyor —
 /// bench/app katmanında) → TTL tek-kollu; spec §5 zeyli. Saat-sınıfı: T_loss-türevi (kanal, ZM-2).
 const K_TOMB: u32 = 8;
+/// [CC-PORT U10 sınır] Bir birimin uçuşta tutulan en çok kopya sayısı (orijinal + PTO probları).
+/// Aşınca en eski kopya tombstone'a emekli edilir; RFC 9002 davranışı (hepsi uçuşta) bu tavana dek.
+const CC_MAX_UNIT_COPIES_IN_FLIGHT: usize = 8;
 /// [TUR-3a D-2/1] Estimator pencere çarpanları [CAL, matris {6,8,10}]:
 /// W_BTLBW = max(10s, K_BW×ack_epoch); W_RTPROP = max(10s, K_RTPROP×corrected_srtt);
 /// ack_epoch = max(corrected_srtt, EAI). Saat-sınıfı: kanal-türevi (ZM-2 — 10s wall-clock
@@ -6670,6 +6673,25 @@ impl Sender {
         );
     }
 
+    /// [CC-PORT U10 sınır] Aynı birimin uçuştaki kopya sayısı `CC_MAX_UNIT_COPIES_IN_FLIGHT`'a
+    /// ulaştıysa en eski kopyayı tombstone'a emekli eder (SR-AUDIT-001: uzun kesintide tavansız PTO
+    /// uçuş haritasını sınırsız büyütmesin; tombstone havuzu kendi tavanıyla eski kaydı düşürür).
+    /// Yeni prob kopyası çağrıdan sonra `track_sent` ile eklenir; sınır bu yüzden "≥" ile bakılır.
+    fn cc_bound_unit_copies(&mut self, unit_id: u64, now_ns: u64) {
+        let copies: Vec<u64> = self
+            .inflight
+            .iter()
+            .filter(|(_, p)| p.unit.id == unit_id && p.origin != TransmitKind::FecParity)
+            .map(|(&seq, _)| seq)
+            .collect();
+        if copies.len() >= CC_MAX_UNIT_COPIES_IN_FLIGHT {
+            if let Some(&oldest) = copies.iter().min() {
+                self.retire_inflight_to_tombstone(oldest, now_ns);
+                self.mark_tombstone_superseded(oldest);
+            }
+        }
+    }
+
     /// DR-ARQ-PRODUCT-TAIL-1 (gated; default OFF → no-op): emit at most one forced PTO tail probe. Called from
     /// schedule_transmit AFTER the normal ARQ planner and REGARDLESS of sender state (a PTO probe is independent of
     /// the RecoverArq state machine). ARQ-eligibility override ONLY — emission still uses the safe token
@@ -6735,6 +6757,8 @@ impl Sender {
         if !self.cc_on() {
             self.retire_inflight_to_tombstone(target, now_ns);
             self.mark_tombstone_superseded(target);
+        } else {
+            self.cc_bound_unit_copies(unit.id, now_ns);
         }
         // [K4G-05b-R] Doygun: port motorunun yeniden iletim tavanı `u8::MAX`'tır
         // (`RetxConfig::rfc9002_cc_port`), 255'teki kayıt prob hedefi olabilir.
@@ -6829,6 +6853,8 @@ impl Sender {
         if !self.cc_on() {
             self.retire_inflight_to_tombstone(target, now_ns);
             self.mark_tombstone_superseded(target);
+        } else {
+            self.cc_bound_unit_copies(unit.id, now_ns);
         }
         let new_seq = self.track_sent(
             unit,
