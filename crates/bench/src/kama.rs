@@ -110,6 +110,7 @@ impl ClientRun {
         // sabit; default bounds ile ENABLE ETME (o bounds hiç kampanya görmedi — tail_recovery.rs).
         let mut sender = match arm {
             KamaArm::CcPort => Sender::with_cc_port(), // [CC-PORT] PTO/retx/E2a kurucuda
+            KamaArm::CcPortLf => Sender::with_cc_port_loss_filter(), // [CC-PORT DENEY]
             _ => Sender::new(),
         };
         if arm == KamaArm::TailV1 {

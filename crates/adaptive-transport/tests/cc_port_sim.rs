@@ -39,6 +39,8 @@ const FILE_BYTES: u64 = 150_000;
 enum Engine {
     Legacy,
     CcPort,
+    /// Port + kayıp filtresi deneyi (`cc/loss_class.rs`); kapı yok, yalnız rapor.
+    CcPortLf,
 }
 
 impl Engine {
@@ -46,22 +48,24 @@ impl Engine {
         match self {
             Engine::Legacy => "legacy (faz makinesi)",
             Engine::CcPort => "cc_port (quinn BBR + RFC 9002)",
+            Engine::CcPortLf => "cc_port+lf (kayıp filtresi deneyi)",
         }
     }
     fn sender(self) -> Sender {
         match self {
             Engine::Legacy => Sender::new(),
             Engine::CcPort => Sender::with_cc_port(),
+            Engine::CcPortLf => Sender::with_cc_port_loss_filter(),
         }
     }
     fn receiver(self) -> Receiver {
         match self {
             Engine::Legacy => Receiver::new(),
-            Engine::CcPort => Receiver::with_cc_port(),
+            Engine::CcPort | Engine::CcPortLf => Receiver::with_cc_port(),
         }
     }
 }
-const ENGINES: [Engine; 2] = [Engine::Legacy, Engine::CcPort];
+const ENGINES: [Engine; 3] = [Engine::Legacy, Engine::CcPort, Engine::CcPortLf];
 
 /// Sınırlı FIFO darboğaz: `rate_bps` serileştirme, `limit` paket kuyruk, `delay_ns` yayılım.
 struct Bottleneck {
