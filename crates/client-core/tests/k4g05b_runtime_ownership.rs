@@ -9,11 +9,18 @@
 //! gönderim gövdesiz (store-miss) çıkar. Bu dosya gerçek runtime ile (`ClientEndpoint` /
 //! `ServerEndpoint`, UDP loopback) her yolu AYRI sınar.
 //!
-//! **CI.** Testler gerçek zamanlıdır (toplam ≈ 2 dk, sırayla) ve `#[ignore]` ile hızlı kümeden
-//! (`test-fast`) çıkarılmıştır (sahip kararı 2026-11-11). Her PR'da paralel `test-runtime` işi
-//! (`.github/workflows/ci.yml`), main'de `core-main` / `product-profile` işi
-//! `cargo test -p client-core --all-features --test k4g05b_runtime_ownership -- --ignored` ile koşar
-//! ve koşan test sayısını birebir denetler (vakum bekçisi).
+//! **CI.** Testler gerçek zamanlıdır (sırayla; yerelde ≈ 2–2,5 dk) ve `#[ignore]` ile hızlı kümeden
+//! (`test-fast`) çıkarılmıştır (sahip kararı 2026-11-11). Her PR'da test-fast'a paralel `test-runtime`
+//! işi (`.github/workflows/ci.yml`; test-fast'ın özellik kümesiyle), main'de `core-main`
+//! `runtime-ownership` işi (ürün varsayılan derlemesi, all-features, release) `-- --ignored` ile koşar
+//! ve koşan test sayısını birebir denetler (vakum bekçisi; sayı `K4G05B_RUNTIME_TESTS`).
+//!
+//! **Motor.** `RuntimeConfig::default()` motoru #176'dan beri `CcPort`'tur. Tombstone TTL'i ve
+//! TOMBSTONE_MAX tahliyesi fikstürleri eski motorun (`Legacy`) zamanlamasına kalibredir: `CcPort`'ta
+//! hedefin kaydı PTO probuyla ≈ 0,16 s'de yenilenir (TTL ön koşulu tutmaz) ve tombstone tablosu
+//! tavana ulaşmaz (görülen 105) — bu iki test `Legacy`'ye sabitlidir; iki motorda aynı yollar motor
+//! düzeyinde `sender.rs` `tests::k4g05br_teyit` ile sınanır. Kopya kökenli kayıp, ESI adaşı ve iki
+//! bekçi her iki motorla koşar; FEC bekçisinin parçalamalı (DATA_FRAG) kolu `CcPort` iledir.
 //!
 //! AĞ: istemci ile sunucu arasında bir röle (gerçek UDP). `IdentitySeam` düz metin taşıdığından
 //! röle çerçeveyi okur ama yalnız ağın yapabildiğini yapar: datagramı geçirir, düşürür ya da
@@ -51,12 +58,12 @@ use std::time::{Duration, Instant};
 use adaptive_transport::ack::{AckFrame, FRAME_TYPE_ACK, FRAME_TYPE_ACK_V2, MAX_ACK_RANGES};
 use client_core::runtime::{
     ClientEndpoint, ClientHandle, ClientStats, FecRuntimeConfig, RuntimeConfig, RuntimeError,
-    SenderRecoveryDiag, ServerEndpoint, ServerHandle, ServerStats,
+    SenderRecoveryDiag, ServerEndpoint, ServerHandle, ServerStats, TransportEngine,
 };
 use client_core::seam::{IdentitySeam, IDENTITY_TAG};
 use client_core::wire::{
-    decode_data, decode_fec, FRAME_DATA, FRAME_DATA_FRAG, FRAME_FEC, HDR_DATA, HDR_DATA_FRAG,
-    HDR_FEC,
+    decode_data, decode_data_frag, decode_fec, FRAME_DATA, FRAME_DATA_FRAG, FRAME_FEC, HDR_DATA,
+    HDR_DATA_FRAG, HDR_FEC,
 };
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
@@ -144,6 +151,8 @@ const LCG_INC: u64 = 1_442_695_040_888_963_407;
 const PPM: u64 = 1_000_000;
 /// `IdentitySeam` etiketinde PN'in kapladığı önek (u64 BE; seam.rs S4).
 const PN_PREFIX: usize = 8;
+/// DATA_FRAG gövdesinin başındaki kaynak öneki (`SourcePrefix`, 11 B): iki başlık boyunun farkı.
+const FRAG_PREFIX: usize = HDR_DATA_FRAG - HDR_DATA;
 /// Rölenin gecikme kuyruğu tick'i ve gecikmiş datagram enjeksiyon kuyruğu.
 const RELAY_TICK: Duration = Duration::from_millis(1);
 const INJECT_QUEUE: usize = 64;
@@ -166,9 +175,11 @@ fn body(unit: u64) -> Vec<u8> {
     format!("k4g05b-birim-{unit:06}").into_bytes()
 }
 
-/// FEC kapalı, canlı ayna açık (teşhis aynası salt gözlemdir; ürün varsayılanı kapalı).
-fn cfg_no_fec() -> RuntimeConfig {
+/// FEC kapalı, canlı ayna açık (teşhis aynası salt gözlemdir; ürün varsayılanı kapalı). Motor
+/// açıkça seçilir (bkz. dosya başı "Motor").
+fn cfg_no_fec(engine: TransportEngine) -> RuntimeConfig {
     RuntimeConfig {
+        engine,
         fec: None,
         drain_cap: DRAIN,
         live_diag: true,
@@ -177,8 +188,9 @@ fn cfg_no_fec() -> RuntimeConfig {
 }
 
 /// Statik-r FEC (Manual): parite her blokta R adet, belirlenimli.
-fn cfg_fec_static() -> RuntimeConfig {
+fn cfg_fec_static(engine: TransportEngine) -> RuntimeConfig {
     RuntimeConfig {
+        engine,
         max_unit_bytes: FEC_UNIT_BYTES,
         fec: Some(FecRuntimeConfig {
             profile_id: FEC_PROFILE,
@@ -187,6 +199,16 @@ fn cfg_fec_static() -> RuntimeConfig {
         drain_cap: DRAIN,
         live_diag: true,
         ..RuntimeConfig::default()
+    }
+}
+
+/// Statik-r FEC + parçalama açık (`max_message_bytes` kurulu → DATA_FRAG, gövde `önek ‖ payload`).
+/// Gövdeler birim tavanından küçüktür: her mesaj tek parçadır, mesaj kimliği = birim kimliği
+/// (iki sayaç da 0'dan başlar), alıcı teslimi birim kimliğiyle eşleşir.
+fn cfg_fec_static_frag(engine: TransportEngine) -> RuntimeConfig {
+    RuntimeConfig {
+        max_message_bytes: Some(FEC_UNIT_BYTES),
+        ..cfg_fec_static(engine)
     }
 }
 
@@ -293,6 +315,9 @@ fn split_wire(wire: &[u8]) -> Option<(&[u8], u64)> {
 
 /// Tel bekçisi: istemcinin tele çıkardığı çerçeve gövdesiz mi — boş gövdeli DATA, yalnız önekli
 /// DATA_FRAG (canonical önek, payload yok) ya da boş sembollü FEC. Gövdesiz değilse `None`.
+/// Sınıflandırma yalnız bu fikstürlerde geçerlidir: burada her gövde boş değildir. Geçerli bir BOŞ
+/// uygulama mesajı (`send` boş payload'ı kabul eder) de tam başlık boyunda çıkar ve burada
+/// gövdesiz sayılırdı; o, gövdesi olmayan motor kararı DEĞİLDİR.
 fn bodyless_kind(frame: &[u8]) -> Option<&'static str> {
     match *frame.first()? {
         FRAME_DATA if frame.len() <= HDR_DATA => Some("DATA boş gövde"),
@@ -416,7 +441,10 @@ impl NetState {
             self.parity_pns.insert(pn);
             return Forward::Pass;
         }
-        let Some((_, unit, payload)) = decode_data(frame) else {
+        // DATA ya da DATA_FRAG (parçalamalı kol: gövdenin öneki atlanır, payload karşılaştırılır).
+        let Some((unit, payload)) = decode_data(frame).map(|(_, u, p)| (u, p)).or_else(|| {
+            decode_data_frag(frame).and_then(|(_, u, _, b)| b.get(FRAG_PREFIX..).map(|p| (u, p)))
+        }) else {
             return Forward::Pass; // PARAM / CS-probe: kontrol düzlemi geçer.
         };
         let seen = self.data_seen.entry(unit).or_insert(0);
@@ -953,10 +981,12 @@ impl Rig {
 /// Envanter satır 1 — **tombstone TTL'i**. Hedefin orijinali alıcıya ulaşır, ACK'i ağda tutulur;
 /// motor orijinali kayıp ilan eder (tombstone) ve TTL (K_TOMB × T_loss ≥ 25.2 s) dolunca kaydı
 /// unutur. Sonra tutulan ACK gelir. Taban: runtime payload'ı siler + `acked()` → (1) KIRMIZI.
+///
+/// Eski motora sabit (dosya başı "Motor"; `CcPort`'ta TTL ön koşulu tutmaz).
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "gerçek zamanlı runtime sahipliği (≈ 2 dk, UDP loopback): CI işi test-runtime, `-- --ignored`"]
+#[ignore = "gerçek zamanlı runtime sahipliği (UDP loopback): CI işi test-runtime, `-- --ignored`"]
 async fn late_ack_after_ttl_keeps_payload() {
-    let mut rig = Rig::new(cfg_no_fec()).await;
+    let mut rig = Rig::new(cfg_no_fec(TransportEngine::Legacy)).await;
     let t = rig.target_with_held_ack().await;
     let passed_at = rig
         .net
@@ -991,10 +1021,12 @@ async fn late_ack_after_ttl_keeps_payload() {
 /// Envanter satır 2 — **TOMBSTONE_MAX tahliyesi**. Kurulum TTL koluyla aynı; ardından her birinin
 /// orijinali düşen 4096+ dolgu birimi bir TTL içinde 4096+ tombstone üretir ve en eski kayıt
 /// (hedefin orijinali) tavandan tahliye edilir. Sonra tutulan ACK gelir.
+///
+/// Eski motora sabit (dosya başı "Motor"; `CcPort`'ta tablo tavana ulaşmaz).
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "gerçek zamanlı runtime sahipliği (≈ 2 dk, UDP loopback): CI işi test-runtime, `-- --ignored`"]
+#[ignore = "gerçek zamanlı runtime sahipliği (UDP loopback): CI işi test-runtime, `-- --ignored`"]
 async fn late_ack_after_cap_keeps_payload() {
-    let mut rig = Rig::new(cfg_no_fec()).await;
+    let mut rig = Rig::new(cfg_no_fec(TransportEngine::Legacy)).await;
     let t = rig.target_with_held_ack().await;
     let passed_at = rig
         .net
@@ -1067,9 +1099,20 @@ async fn late_ack_after_cap_keeps_payload() {
 /// kopya alıcıya ulaşır; kopyayı bildiren ACK ağda tutulur. Kuruluştan sonra kopya kayıp ilan
 /// edilir (kaydı silinir). Sonra tutulan ACK gelir.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "gerçek zamanlı runtime sahipliği (≈ 2 dk, UDP loopback): CI işi test-runtime, `-- --ignored`"]
+#[ignore = "gerçek zamanlı runtime sahipliği (UDP loopback): CI işi test-runtime, `-- --ignored`"]
 async fn late_ack_after_dup_loss_keeps_payload() {
-    let mut rig = Rig::new(cfg_no_fec()).await;
+    run_dup_loss(TransportEngine::Legacy, "dup_loss").await;
+}
+
+/// [`late_ack_after_dup_loss_keeps_payload`], port motoruyla (ürün varsayılanı, #176).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "gerçek zamanlı runtime sahipliği (UDP loopback): CI işi test-runtime, `-- --ignored`"]
+async fn late_ack_after_dup_loss_keeps_payload_cc_port() {
+    run_dup_loss(TransportEngine::CcPort, "dup_loss/cc_port").await;
+}
+
+async fn run_dup_loss(engine: TransportEngine, path: &str) {
+    let mut rig = Rig::new(cfg_no_fec(engine)).await;
     let t = rig.next_unit;
     rig.net.with(|s| {
         s.target = Some(t);
@@ -1132,7 +1175,7 @@ async fn late_ack_after_dup_loss_keeps_payload() {
             "ön koşul: kopyayı bildiren ACK ağda tutuldu"
         );
     });
-    rig.late_ack_keeps_payload_then_resend_confirms(t, "dup_loss", WAIT)
+    rig.late_ack_keeps_payload_then_resend_confirms(t, path, WAIT)
         .await;
 }
 
@@ -1145,11 +1188,22 @@ async fn late_ack_after_dup_loss_keeps_payload() {
 /// tamamlanır. Esi adaşı birimlerin kopyalarının parite ACK'inden sonra sürmesi #140'ın motor
 /// kısmına aittir (tabanda parite ACK'i o kopyaları iptal eder); burada iddia EDİLMEZ.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "gerçek zamanlı runtime sahipliği (≈ 2 dk, UDP loopback): CI işi test-runtime, `-- --ignored`"]
+#[ignore = "gerçek zamanlı runtime sahipliği (UDP loopback): CI işi test-runtime, `-- --ignored`"]
 async fn parity_ack_no_confirmation_payload_kept() {
+    run_esi(TransportEngine::Legacy, "esi").await;
+}
+
+/// [`parity_ack_no_confirmation_payload_kept`], port motoruyla (ürün varsayılanı, #176).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "gerçek zamanlı runtime sahipliği (UDP loopback): CI işi test-runtime, `-- --ignored`"]
+async fn parity_ack_no_confirmation_payload_kept_cc_port() {
+    run_esi(TransportEngine::CcPort, "esi/cc_port").await;
+}
+
+async fn run_esi(engine: TransportEngine, path: &str) {
     let k = block_k();
     let r = u64::from(PARITY_R);
-    let mut rig = Rig::new(cfg_fec_static()).await;
+    let mut rig = Rig::new(cfg_fec_static(engine)).await;
     rig.net.with(|s| s.data_gate = DataGate::Nothing);
     for _ in 0..k {
         rig.send().await;
@@ -1192,7 +1246,7 @@ async fn parity_ack_no_confirmation_payload_kept() {
         |x| x.client.outstanding() == 0,
     )
     .await;
-    eprintln!("[esi] faz 2 tamamlanma süresi {:?}", opened.elapsed());
+    eprintln!("[{path}] faz 2 tamamlanma süresi {:?}", opened.elapsed());
     rig.wait("bütün birimler teslim edilmeli", WAIT, |x| {
         (x.delivered.len() as u64) == k
     })
@@ -1200,13 +1254,13 @@ async fn parity_ack_no_confirmation_payload_kept() {
     let delivered_ok = (0..k).all(|u| rig.delivered.get(&u).is_some_and(|b| *b == body(u)));
     let rec = rig.fresh_recovery().await;
     assert_eq!(rec.unacked_units, 0, "{rec:?}");
-    assert_runtime_maps_empty(&rec, "esi");
+    assert_runtime_maps_empty(&rec, path);
     let (cs, ss, wire) = rig.finish().await;
     eprintln!(
-        "[esi] gözlem: acked={} fec_recovered_ctrl_units={} sunucu fec_recovered_units={}",
+        "[{path}] gözlem: acked={} fec_recovered_ctrl_units={} sunucu fec_recovered_units={}",
         cs.acked, cs.fec_recovered_ctrl_units, ss.fec_recovered_units
     );
-    assert_no_bodyless(&wire, &cs, "esi");
+    assert_no_bodyless(&wire, &cs, path);
     assert_eq!(cs.undelivered, 0, "{cs:?}");
     assert_eq!(
         cs.acked + cs.fec_recovered_ctrl_units,
@@ -1226,9 +1280,20 @@ async fn parity_ack_no_confirmation_payload_kept() {
 /// ve motor ona karar verebilir (envanter satır 7; budama motor kısmının işi): runtime o kararı
 /// atlar (`stale_skipped`), tele gövdesiz datagram çıkmaz (iddia 6).
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "gerçek zamanlı runtime sahipliği (≈ 2 dk, UDP loopback): CI işi test-runtime, `-- --ignored`"]
+#[ignore = "gerçek zamanlı runtime sahipliği (UDP loopback): CI işi test-runtime, `-- --ignored`"]
 async fn store_miss_guard_loss_and_reorder() {
-    let mut rig = Rig::new(cfg_no_fec()).await;
+    run_guard_loss(TransportEngine::Legacy, "bekçi-kayıp").await;
+}
+
+/// [`store_miss_guard_loss_and_reorder`], port motoruyla (ürün varsayılanı, #176).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "gerçek zamanlı runtime sahipliği (UDP loopback): CI işi test-runtime, `-- --ignored`"]
+async fn store_miss_guard_loss_and_reorder_cc_port() {
+    run_guard_loss(TransportEngine::CcPort, "bekçi-kayıp/cc_port").await;
+}
+
+async fn run_guard_loss(engine: TransportEngine, path: &str) {
+    let mut rig = Rig::new(cfg_no_fec(engine)).await;
     rig.net.with(|s| {
         s.chaos = Some(Chaos {
             state: GUARD_SEED,
@@ -1256,9 +1321,9 @@ async fn store_miss_guard_loss_and_reorder() {
     rig.pump(SETTLE).await;
     let rec = rig.fresh_recovery().await;
     assert_eq!(rec.unacked_units, 0, "{rec:?}");
-    assert_runtime_maps_empty(&rec, "bekçi-kayıp");
+    assert_runtime_maps_empty(&rec, path);
     let (cs, _ss, wire) = rig.finish().await;
-    assert_no_bodyless(&wire, &cs, "bekçi-kayıp");
+    assert_no_bodyless(&wire, &cs, path);
     assert_eq!(cs.undelivered, 0, "{cs:?}");
     assert_eq!(cs.acked, GUARD_UNITS, "her birim tam bir kez teyit: {cs:?}");
 }
@@ -1275,10 +1340,34 @@ async fn store_miss_guard_loss_and_reorder() {
 /// teyitli birimin işini budadığında bu ön koşul ters çevrilir. Ardından `stale_skipped`'in seyri
 /// `SKIP_OBSERVE` boyunca yazdırılır (gözlem; atlanan kararın motordaki ardılı).
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "gerçek zamanlı runtime sahipliği (≈ 2 dk, UDP loopback): CI işi test-runtime, `-- --ignored`"]
+#[ignore = "gerçek zamanlı runtime sahipliği (UDP loopback): CI işi test-runtime, `-- --ignored`"]
 async fn store_miss_guard_fec_recovered() {
+    run_guard_fec(cfg_fec_static(TransportEngine::Legacy), "bekçi-fec").await;
+}
+
+/// [`store_miss_guard_fec_recovered`], port motoruyla (ürün varsayılanı, #176).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "gerçek zamanlı runtime sahipliği (UDP loopback): CI işi test-runtime, `-- --ignored`"]
+async fn store_miss_guard_fec_recovered_cc_port() {
+    run_guard_fec(cfg_fec_static(TransportEngine::CcPort), "bekçi-fec/cc_port").await;
+}
+
+/// [`store_miss_guard_fec_recovered`], parçalama açık (DATA_FRAG), port motoruyla: atlanan karar
+/// parçalamalı dalda da datagram üretmez (eski davranış 11 B sıfır önekli DATA_FRAG'dı; tel
+/// bekçisi onu "DATA_FRAG yalnız önek" diye sayar). Vakum ön koşulu aynıdır (`stale_skipped ≥ 1`).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "gerçek zamanlı runtime sahipliği (UDP loopback): CI işi test-runtime, `-- --ignored`"]
+async fn store_miss_guard_fec_recovered_frag_cc_port() {
+    run_guard_fec(
+        cfg_fec_static_frag(TransportEngine::CcPort),
+        "bekçi-fec/frag/cc_port",
+    )
+    .await;
+}
+
+async fn run_guard_fec(cfg: RuntimeConfig, path: &str) {
     let k = block_k();
-    let mut rig = Rig::new(cfg_fec_static()).await;
+    let mut rig = Rig::new(cfg).await;
     rig.net
         .with(|s| s.data_gate = DataGate::Except(GUARD_ERASED.into_iter().collect()));
     for _ in 0..k {
@@ -1329,15 +1418,15 @@ async fn store_miss_guard_fec_recovered() {
         ));
     }
     eprintln!(
-        "[bekçi-fec] gözlem: ilk atlanan karar teyitten {first_skip:?} sonra; seyir (s, \
+        "[{path}] gözlem: ilk atlanan karar teyitten {first_skip:?} sonra; seyir (s, \
          stale_skipped, retransmits, dups, motor (uçuş, kayıp, kopya)) {series:?}"
     );
     let rec = rig.fresh_recovery().await;
     assert_eq!(rec.unacked_units, 0, "{rec:?}");
-    assert_runtime_maps_empty(&rec, "bekçi-fec");
+    assert_runtime_maps_empty(&rec, path);
     let erased = GUARD_ERASED.len() as u64;
     let (cs, ss, wire) = rig.finish().await;
-    assert_no_bodyless(&wire, &cs, "bekçi-fec");
+    assert_no_bodyless(&wire, &cs, path);
     assert!(
         cs.stale_skipped >= 1,
         "ön koşul (vakum): bekçide en az bir atlanan karar: {}",
