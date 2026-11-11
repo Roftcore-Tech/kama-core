@@ -399,6 +399,20 @@ fn validate_fec(cfg: &RuntimeConfig) -> Result<Option<FecProfile>, RuntimeError>
     Ok(Some(p))
 }
 
+/// [FEC-E-ÖLÇEK] Kontrolcü yolunda parite tavanı: `r · parity_wire ≤ payload_wire` (parite,
+/// koruduğu bloğun kaynak tel baytını aşmaz). fec-core §11: E=1024 bulk/yüksek-bant profilidir,
+/// "sub-kbps ≠ E=1024" — küçük-E profili seçilene dek bu tavan tek profilin küçük birimli
+/// bloklarda (ör. 65 B ileti: Σ ≈ 1 kB ↔ parite 1 080 B) hattı yutmasını önler. Birim ≈ E olan
+/// dosya/PTT bloklarında (Σ ≈ k·E) tavan `r_code_max`'ın altına inmez. Deterministik (ADR-17);
+/// elle `r` (Manual) yoluna uygulanmaz.
+#[must_use]
+pub fn fec_payload_r_max(r_code_max: u16, payload_wire: u64, parity_wire: u64) -> u16 {
+    let by_payload = payload_wire / parity_wire.max(1);
+    u16::try_from(by_payload)
+        .unwrap_or(u16::MAX)
+        .min(r_code_max)
+}
+
 /// [S1B] Bir FEC profilinin **chunk kapasitesi**: `E − SOURCE_PREFIX_LEN`, yani tek bir
 /// canonical source-symbol'ün taşıyabildiği en çok app byte'ı. `max_unit_bytes` bunu AŞAMAZ;
 /// daha büyük mesajlar fragmenter ile bu boyda chunk'lara bölünür. Bilinmeyen profil → `None`.
@@ -705,6 +719,11 @@ pub struct ClientStats {
     pub frag_encode_failures: u64,
     /// [FAZ-2 KALEM-1] Akış sonunda zero-dolgu ile kapatılan KISMİ FEC bloğu sayısı (Model-A).
     pub fec_partial_blocks_closed: u64,
+    /// [FEC-E-ÖLÇEK] Kontrolcü yolunda parite tavanının bloğun kaynak tel baytıyla
+    /// sınırlandığı blok sayısı (`r · parite_tel ≤ Σ kaynak_tel`; fec-core §11 "sub-kbps ≠ E=1024").
+    /// Küçük birimli (ör. 65 B ileti) blokta 1024 B'lik parite sembolü koruduğu veriden pahalıdır:
+    /// 25 B/s'de her sembol ≈ 43 s hat; blok başına 2–3 sembol hattın üçte birini yutuyordu.
+    pub fec_parity_payload_clamped: u64,
     /// [TEŞHİS] Yapı-gate'in karar tabanı (kapanış anındaki fotoğraf) — bkz. [`FateWindowDiag`].
     pub fate: FateWindowDiag,
     /// [DR-CS-3] Wire'a yazılan CS-probe (0 = bootstrap kapalı VEYA PreConverge hiç yaşanmadı).
@@ -2106,6 +2125,8 @@ async fn client_task(
     // `fec_repair_missing` + `stale_skipped`).
     let mut cur_block: Vec<Vec<u8>> = Vec::new();
     let mut cur_block_id: u32 = 0;
+    // [FEC-E-ÖLÇEK] Açık bloktaki kaynak birimlerin tel baytı toplamı (parite tavanı ölçeği).
+    let mut cur_block_wire: u64 = 0;
     // [FAZ-2 / KALEM-1] blok → (K_actual, repair'ler). K_actual kısmi/son blokta k_shape'ten
     // küçüktür ve TEL BAŞLIĞINDA taşınmak zorundadır (alıcı Model-A zero-enjeksiyonunu ondan türetir).
     let mut repair_store: BTreeMap<u32, (u8, Vec<RepairSymbol>)> = BTreeMap::new();
@@ -2744,8 +2765,13 @@ async fn client_task(
                     };
                     debug_assert_eq!(cur_block.len() as u64, id % u64::from(p.k_shape));
                     cur_block.push(sym);
+                    cur_block_wire += size;
                     if cur_block.len() == p.k_shape_usize() {
                         let parity_wire = wire_len(seam.as_ref(), client_ctx, HDR_FEC + e);
+                        let r_max = fec_payload_r_max(p.r_code_max, cur_block_wire, parity_wire);
+                        if r_max < p.r_code_max {
+                            stats.fec_parity_payload_clamped += 1;
+                        }
                         // Statik-r (Manual{true} + manuel-close) YA DA adaptif (Controller + latch).
                         let planned_r: u16 = if let Some(r) = fec_manual_r {
                             let auth = session.sender_mut().open_fec_block_authority();
@@ -2762,7 +2788,7 @@ async fn client_task(
                                     auth,
                                     snap,
                                     u8::try_from(p.k_shape).unwrap_or(255),
-                                    p.r_code_max,
+                                    r_max,
                                     cur_block_id,
                                     parity_wire,
                                 )
@@ -2787,6 +2813,7 @@ async fn client_task(
                             }
                         }
                         cur_block.clear();
+                        cur_block_wire = 0;
                         cur_block_id = cur_block_id.wrapping_add(1);
                     }
                 }
@@ -2798,10 +2825,19 @@ async fn client_task(
             }
             _ = rtprop.tick() => {
                 let now = elapsed_ns(start);
-                // [v1/PARAM] bounded retry (B2): confirmed olana dek her ≥200ms'de bir, ≤25 deneme.
+                // [v1/PARAM] bounded retry (B2): confirmed olana dek ≥200 ms aralıkla, ≤25 deneme.
+                // [PARAM-GERİ-ÇEKİLME 2026-11-11] Aralık 200 ms'den başlar, her denemede ikiye
+                // katlanır, 5 s'de durur (200, 400, 800 … 5000 ms). Sabit 200 ms kadans 25 B/s
+                // hatta ilk 5 s'de 25 × 79 B PARAM çerçevesi (≈ 80 s hat süresi) boşaltıyor, 20'lik
+                // darboğaz kuyruğunu taşırıyor ve ilk veri kopyalarını düşürüyordu (gerçek yığın r25
+                // izi: iki motorda da ilk ileti ≈ 2 dk). Onay 300 ms RTT + serileştirmeyle ≥ 6 s'de
+                // gelir; geri çekilmeyle o ana dek 6 çerçeve çıkar. İyi hatta ilk deneme yine 200 ms.
                 if let Some(plan) = param_plan.as_ref() {
                     let now_ms = now / 1_000_000;
-                    let due = param_tries == 0 || now_ms >= param_last_tick_ms + 200;
+                    let backoff_ms = 200u64
+                        .saturating_mul(1u64 << param_tries.saturating_sub(1).min(16))
+                        .min(5_000);
+                    let due = param_tries == 0 || now_ms >= param_last_tick_ms + backoff_ms;
                     if !param_confirmed && param_tries < 25 && due {
                         if let (Some(p), Control::ParamSet { param_hash, .. }) = (fec.as_ref(), &plan.control) {
                             let f = encode_param(p.profile_id, p.code_suite_id, param_hash);
@@ -2832,6 +2868,10 @@ async fn client_task(
         if !cur_block.is_empty() {
             let k_actual = u8::try_from(cur_block.len()).unwrap_or(255);
             let parity_wire = wire_len(seam.as_ref(), client_ctx, HDR_FEC + p.e_usize());
+            let r_max = fec_payload_r_max(p.r_code_max, cur_block_wire, parity_wire);
+            if r_max < p.r_code_max {
+                stats.fec_parity_payload_clamped += 1;
+            }
             let planned_r: u16 = if let Some(r) = fec_manual_r {
                 let auth = session.sender_mut().open_fec_block_authority();
                 session
@@ -2843,14 +2883,7 @@ async fn client_task(
                 let auth = session.sender_mut().open_fec_block_authority();
                 session
                     .sender_mut()
-                    .fec_controller_latch(
-                        auth,
-                        snap,
-                        k_actual,
-                        p.r_code_max,
-                        cur_block_id,
-                        parity_wire,
-                    )
+                    .fec_controller_latch(auth, snap, k_actual, r_max, cur_block_id, parity_wire)
                     .planned_r
             };
             if planned_r > 0 {
@@ -4065,6 +4098,34 @@ async fn server_task(
         }
     }
     stats
+}
+
+#[cfg(test)]
+mod fec_payload_cap_tests {
+    //! [FEC-E-ÖLÇEK] Parite tavanı bloğun kaynak tel baytıyla ölçeklenir: profil 0x05 (k 8, r 4,
+    //! E 1024; parite tel ≈ 1 080 B). 65 B ileti bloğu (Σ ≈ 960 B) parite almaz; 400 B PTT bloğu
+    //! (Σ ≈ 3 640 B) en çok 3; 1 000 B dosya bloğu (Σ ≈ 8 440 B) profil tavanında kalır.
+    use super::fec_payload_r_max;
+
+    #[test]
+    fn tiny_message_block_gets_no_parity() {
+        assert_eq!(fec_payload_r_max(4, 8 * 120, 1080), 0);
+    }
+
+    #[test]
+    fn ptt_block_is_capped_below_profile_max() {
+        assert_eq!(fec_payload_r_max(4, 8 * 455, 1080), 3);
+    }
+
+    #[test]
+    fn file_block_keeps_profile_max() {
+        assert_eq!(fec_payload_r_max(4, 8 * 1055, 1080), 4);
+    }
+
+    #[test]
+    fn zero_parity_wire_is_safe() {
+        assert_eq!(fec_payload_r_max(4, 100, 0), 4);
+    }
 }
 
 #[cfg(test)]
