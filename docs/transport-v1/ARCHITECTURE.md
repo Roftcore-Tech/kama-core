@@ -30,6 +30,12 @@ alıcı ─► dedup (RX_DUP_SUPPRESS) → FEC blok toplama/decode → Delivery{
 ```
 Teslim sırasız; `acked()` göndericiye ilk-ACK-kazanır birim id akışı verir.
 
+*(2026-11-11 notu — `transport-v1.1`: yukarıdaki pacer satırı eski motorundur. v1.1 ürün motoru
+(`engine = CcPort`, #176) uçuş penceresi kapısı ve BBR `pacing_rate` ile gönderir; ilk uçuş
+`max(initial_window_bytes, 4·MTU)` = 4 800 B. #174 sonrasında "ilk ACK" = motorun canlı kaydıyla
+eşleşen ilk ACK ya da RECOVERED (`docs/design/K4G-05b-RUNTIME-ENVANTER.md`). Ayrıntı: EVOLUTION §22
+"`transport-v1.1` beyanı", PRODUCT-PROFILE "`transport-v1.1` farkları".)*
+
 ## 4.3 ACK/SACK modeli
 
 * Yalnız **pozitif bilgi**: alıcı ne ALDIĞINI söyler (kümülatif + aralıklar, `MAX_ACK_RANGES 16`);
@@ -119,6 +125,12 @@ UYGULANMAZ (R8). Sınıflar aynı token havuzundan: **DATA** (orijinal) · **ARQ
 **tail probe** · **FEC repair** (token reddi → `parity_token_denied`; kuruluş probu token-muaf).
 Öncelik/tahkim mevcut kod sırasıdır; yeni tahkim SPEKÜLE EDİLMEZ. Emergency'de ACK decimation
 (§11) tanımlı, T0–T7'de ateşlememiş.
+
+*(2026-11-11 notu — `transport-v1.1`: bu bölüm eski motorun pacing modelidir. v1.1 ürün motorunda
+(`engine = CcPort`, #176) hız BBR `pacing_gain × BtlBw`'dir ve gönderim ayrıca uçuş penceresiyle
+kapılanır; kayıp pacing hızını düşürmez, o turdaki uçuş tavanını `recovery_window` ile sınırlar
+(INV-RATE-1 2026-11-11 metni). Yeniden iletim her zaman önce planlanır; PTO pencereden muaftır.
+Ayrıntı: EVOLUTION §22 madde 1–2, `docs/design/CC-PORT-ESLEME.md`.)*
 
 ## 4.10 Runtime telemetri
 

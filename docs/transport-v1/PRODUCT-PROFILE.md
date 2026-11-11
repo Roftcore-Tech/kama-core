@@ -62,9 +62,12 @@ listesi: EVOLUTION §22 "`transport-v1.1` beyanı".
 | ARQ (port) | `RetxConfig::rfc9002_cc_port()`: `arq_retx_cap = 255`, ileri kopyaya devir yok | SHIP | aşağıdaki `RetxConfig::fixture()` satırı eski motorundur |
 | Alıcı ACK (port) | `Receiver::with_cc_port()`: sırasız varışta anında ACK, 25 ms zamanlayıcı; 8,39 s cadence tabanı ve R-kota yok | SHIP | iki uç aynı motoru kurmalı |
 
-Bench `profile_delta` bugün `engine`, `e1_flags` ve `e2a_flags` alanlarını kıyaslamaz: bu alanlarda
-sapan koşu (ör. `KAMA_TRANSPORT_ENGINE=legacy`) yine `kama-v1.1-full` etiketi alır (INV-009 açığı;
-2026-11-11 kimlik PR'ında kapatılmadı, ayrı iş).
+Bench `profile_delta` `engine`, `e1_flags` ve `e2a_flags` alanlarını da kıyaslar (2026-11-11 kimlik
+PR'ı): bu alanlarda sapan istemci kolu (ör. `KAMA_TRANSPORT_ENGINE=legacy` ya da boş değer)
+`kama-custom` + sapma satırıyla kayda geçer (INV-009; test `motor_ve_bayrak_sapmasi_gorunur`).
+Sunucu ucunun motoru istemci manifestine girmez; sunucunun `KP-MANIFEST role=server` satırı aynı
+türetimle `profile=` ve `engine=` basar. `RuntimeConfig` dışı port ayarları (aşağıdaki satırlar)
+`profile_delta`'da ayrıca kıyaslanmaz; `engine`'den türerler.
 
 ## `ClientSession`'ın kurduğu, `RuntimeConfig` DIŞI sevk ayarları
 

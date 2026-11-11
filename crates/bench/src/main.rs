@@ -787,10 +787,13 @@ async fn main() -> Result<(), BenchError> {
                     println!("INVALID {}: {} etiketi ama sapma var", short(p), m.arm);
                     invalid += 1;
                 }
+                // [2026-11-11] Etiket tek başına sürüm söylemez (`manifest::PRIOR_PROFILE_IDS`
+                // notu): aynı `arm` farklı kodları taşıyabildiği için satır `commit`'i de basar.
                 println!(
-                    "{:<28} arm={} canonical_kama={} setup={} delta={}",
+                    "{:<28} arm={} commit={} canonical_kama={} setup={} delta={}",
                     short(p),
                     m.arm,
+                    m.commit,
                     canon,
                     m.setup_class,
                     m.profile_delta.len()

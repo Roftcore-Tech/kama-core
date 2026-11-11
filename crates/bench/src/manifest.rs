@@ -18,6 +18,11 @@ pub const MANIFEST_SCHEMA: &str = "kama-bench-manifest/v1";
 /// için (`bench fairness` etiket ↔ sapma denetimi). Yeni koşu bunları YAZMAZ: etiket daima
 /// `client_core::runtime::TRANSPORT_V1_PROFILE_ID`'den gelir. `kama-v1-full` = transport-v1
 /// dondurması (53e0c5c6, 2026-09-19) ile 2026-11-11 arası main.
+///
+/// Etiket TEK BAŞINA sürüm söylemez (EVOLUTION §22 "Etiket tarihçesi"): `kama-v1-full` 995e037e
+/// (#106) sonrasında dondurma davranışından farklı main'leri de taşır (#176 sonrasında port motoru
+/// dahil); `kama-v1.1-full` 2026-11-11'den önce merge edilmeyen #140 adayının (`k4g/05b-retx-fix`)
+/// manifestlerinde de geçer. Davranış manifestin `commit` alanından ve koşu tarihinden okunur.
 pub const PRIOR_PROFILE_IDS: &[&str] = &["kama-v1-full"];
 
 /// Uygulama-düzeyi anlam sözleşmesi. Kollar arası kıyas ancak bu alanlar eşleşiyorsa "adil"dir.
@@ -130,15 +135,17 @@ impl FairnessReport {
 
 impl RunManifest {
     /// Etiket bir ürün-profil kimliği mi iddia ediyor: güncel `TRANSPORT_V1_PROFILE_ID` ya da
-    /// [`PRIOR_PROFILE_IDS`] (tarihî manifest). Sürüm `arm` değerinin kendisinde okunur.
+    /// [`PRIOR_PROFILE_IDS`] (tarihî manifest). Etiketin kendisi sürümü tek başına belirlemez;
+    /// `commit` alanıyla birlikte okunur ([`PRIOR_PROFILE_IDS`] notu).
     #[must_use]
     pub fn claims_product_profile(&self) -> bool {
         self.arm == client_core::runtime::TRANSPORT_V1_PROFILE_ID
             || PRIOR_PROFILE_IDS.contains(&self.arm.as_str())
     }
 
-    /// Kanonik Kama profili mi (ürün-profil etiketi + sapma yok)? Tarihî manifest kendi
-    /// sürümünün kanonik profiliyse `true` döner; hangi sürüm olduğu `arm`'dadır.
+    /// Kanonik Kama profili mi (ürün-profil etiketi + sapma yok)? Tarihî manifest, yazıldığı
+    /// commit'in sapma listesine göre sapmasızsa `true` döner. Hangi kodun koştuğu `arm`'dan
+    /// değil `commit`'ten okunur ([`PRIOR_PROFILE_IDS`] notu).
     #[must_use]
     pub fn is_canonical_kama(&self) -> bool {
         self.claims_product_profile() && self.profile_delta.is_empty()

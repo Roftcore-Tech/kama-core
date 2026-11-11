@@ -130,6 +130,31 @@ Sabitlerin adları değişmedi. Bench, tarihî manifestlerdeki `kama-v1-full` et
 eder (`bench::manifest::PRIOR_PROFILE_IDS`); yeni koşu onu yazmaz. `reports/` altındaki tarihî
 çıktılar değiştirilmedi.
 
+**Etiket tarihçesi — etiket tek başına sürüm söylemez.** İki etiketin de 2026-11-11 öncesinde birden
+fazla kodu taşıdığı kayıtlarda görülüyor:
+
+- `kama-v1.1-full` bu beyandan önce #140 adayının (`k4g/05b-retx-fix`, `a8c4e8c6` / `49864510`;
+  F0 kolunda bench `bf18dc35`; son aday için netem-7 ön-kayıtlı hükmü DUR, merge yok) kimliğiydi:
+  `reports/ktp2/f0/05b-netem/README.md` ("aday `kama-v1.1-full`"), `reports/ktp2/f0/b/ara-1/` ve
+  `duman-1/`, `duman-2/` CSV'leri,
+  `reports/ktp2/f0/c/RAPOR-C.md`, `reports/ktp2/f0/ACIL-INCELEME-VERI.md`,
+  `docs/design/K4G-05b-RUNTIME-ENVANTER.md`. O koşular bu beyandaki v1.1 ürününü ölçmedi.
+- `kama-v1-full` dondurma davranışını yalnız `995e037e` (#106, 2026-10-08) öncesinde gösterir; o
+  tarihten 2026-11-11'e kadar main'de üretilen manifestler aşağıdaki listedeki değişikliklerin bir
+  kısmını taşır (#176 sonrasında port motoruyla koşan Ö-CC hücreleri dahil).
+
+Kıyasta davranış manifestin `commit` alanından ve koşu tarihinden okunur (`bench fairness` satırı
+2026-11-11'den beri `commit`'i basar). `commit = unknown` (derlemede `KAMA_GIT_SHA` yok) olan kayıtta
+ayrım koşu dizininin kaydındaki kaynak commit'e dayanır. Etiketi yeniden adlandırmak sahip kararıdır;
+bu beyan adı değiştirmez.
+
+**Bench etiketi motoru denetler (2026-11-11):** `profile_delta` `engine`, `e1_flags` ve `e2a_flags`
+alanlarını da kıyaslar. Eski motorla (`KAMA_TRANSPORT_ENGINE=legacy` ya da boş değer) ya da E1/E2a
+bayrağı açık koşan istemci kolu `kama-custom` + `engine Legacy != CcPort` (ya da bayrak) sapmasıyla
+kayda geçer ve gecelik manifest kapısından geçmez. Sunucu ucunun motoru istemci manifestine girmez;
+sunucunun `KP-MANIFEST role=server` satırı (`s.err`) aynı türetimle `profile=kama-custom` ve
+`engine=Legacy` basar.
+
 **Altı beyan:**
 
 1. **Donmuş invaryant:** INV-RATE-1 (repo geneli, `CLAUDE.md` §4) 2026-11-11 yeni metniyle geçerli
@@ -150,10 +175,12 @@ eder (`bench::manifest::PRIOR_PROFILE_IDS`); yeni koşu onu yazmaz. `reports/` a
    `Receiver::with_cc_port()` (sırasız varışta anında ACK, 25 ms zamanlayıcı; 8,39 s cadence tabanı ve
    R-kota yok). Diğer alan değerleri değişmedi (`transport_v1_freeze.rs`, `product_profile_v1.rs`).
 3. **Kimlik:** `kama-v1-full` → `kama-v1.1-full`; `transport-v1` → `transport-v1.1`. Geri alma yolu
-   (`engine: Legacy` / `KAMA_TRANSPORT_ENGINE=legacy`) v1.1 ürün profili değildir. Gösterim düğümü
+   (`engine: Legacy` / `KAMA_TRANSPORT_ENGINE=legacy`) v1.1 ürün profili değildir; bench bu koşuyu
+   `kama-custom` etiketler (yukarıdaki "Bench etiketi motoru denetler" paragrafı). Gösterim düğümü
    kimliği `transport-v1.x-goster` bu beyanla değişmedi.
-4. **Geçersiz T0–T7 hücreleri:** tamamı (T0–T7). Bankadaki T0–T7 sonuçları `53e0c5c6` koduna aittir;
-   ürün motoru (#176, #179), teyit sahipliği (#174), ACK kimliği (#106) ve alım yolu dağıtımı
+4. **Geçersiz T0–T7 hücreleri:** tamamı (T0–T7). Bankadaki T0–T7 sonuçları ölçüm commit'i
+   `e3c1e8bb`'nin (Faz-5, HOSTILE-ENVELOPE; dondurma squash'ı `53e0c5c6`) koduna aittir; ürün
+   motoru (#176, #179), teyit sahipliği (#174), ACK kimliği (#106) ve alım yolu dağıtımı
    (#114, #116) o koddan sonra değişti. Port motoru yalnız sim kapısında (`cc_port_sim`) ve Ö-CC
    hücrelerinde ölçüldü; T0–T7 sözleşmesiyle ölçülmedi.
 5. **Yeniden koşulacak doğrulama:** ADR-hostile-validation-contract ile T0 (temiz yol regresyon
