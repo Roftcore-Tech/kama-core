@@ -395,7 +395,8 @@ struct Sess {
     /// birim = mesaj), sıradaki birimin kimliği budur.
     sent: u64,
     /// [HLR-STALE] Oturumun hub hattı (S3 `AssignHandle` ile bağlanan handle: başlatan rolde
-    /// `HandleAssigned`'ın, yanıtlayan rolde gelen INIT'in handle'ı). Taşıyıcı bildirmediyse `None`.
+    /// `HandleAssigned`'ın, yanıtlayan rolde gelen INIT'in handle'ı; iki rolde de yalnız bağ
+    /// başarılıysa). Taşıyıcı bildirmediyse ya da bağ kurulmadıysa `None`.
     link: Option<HubHandle>,
     /// Uç dikişiyle paylaşılan ilk-emisyon kaybı kümesi (yalnız test).
     #[cfg(any(test, feature = "test-util"))]
@@ -865,11 +866,11 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                 envelope_type,
                 bytes,
             } => {
-                let _ = self.command(SessionCommand::AssignHandle {
-                    session,
-                    hub_handle,
-                });
-                self.hub_of.insert(session, hub_handle);
+                // [HLR-STALE] Hat yalnız Crypto oturumu bu handle'a bağladıysa kaydedilir (başlatan
+                // rolde olduğu gibi): bağ oturum içinde değişmez (§2.55 REUSE), aynı INIT'in başka
+                // bir handle'la yeniden teslimi (H-RETRY) `Failed` alır ve kayıtlı hattı ezmez.
+                // Etkin oturumun hattı (`Sess.link`) böylece Crypto'nun bağıyla aynı kalır.
+                self.bind_responder_line(session, hub_handle);
                 self.responder_peer.insert(session, peer);
                 // [K4G-01] RESPONSE'tan ÖNCE beklenir: başlatan ancak onu alınca veri yollar.
                 self.expected.insert_pending(session);
@@ -884,11 +885,7 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                 envelope_type,
                 bytes,
             } => {
-                let _ = self.command(SessionCommand::AssignHandle {
-                    session: new,
-                    hub_handle,
-                });
-                self.hub_of.insert(new, hub_handle);
+                self.bind_responder_line(new, hub_handle);
                 self.provisional.insert(new, (peer, supersedes));
                 // [K4G-01] Onayı getirecek ilk epoch-1 paketi bu oturumun bağlamında açılır:
                 // RESPONSE'tan ÖNCE beklenir.
@@ -899,6 +896,18 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             }
             // `Failed` OPAKTIR (S3 §3): sahte/bozuk/bayat INIT hiçbir olay üretmez.
             _ => {}
+        }
+    }
+
+    /// Yanıtlayan rolde gelen INIT'in handle'ını oturuma bağlar; hat (`hub_of` → `Sess.link`)
+    /// yalnız `AssignHandle` başarılıysa (`NoOutput`: yeni bağ ya da aynı bağın tekrarı) yazılır.
+    fn bind_responder_line(&mut self, session: SessionHandle, hub_handle: HubHandle) {
+        let r = self.command(SessionCommand::AssignHandle {
+            session,
+            hub_handle,
+        });
+        if r == SessionResult::NoOutput {
+            self.hub_of.insert(session, hub_handle);
         }
     }
 

@@ -933,9 +933,9 @@ impl HubLink {
         self.notices.push_back(n);
     }
 
-    /// Eş başına ≥ 5 s (KK-H39): aralık dolmadıysa bildirim ertelenir — `AttemptEnded` bir, kaybolan
-    /// her hat için bir `HandleLost`; bir tür ötekinin yerini almaz ([`Deferred`]). Aralık dolduysa eşin ertelenmişleri de bu bildirimle
-    /// birlikte hemen verilir (silinmez).
+    /// Eş başına ≥ 5 s (KK-H39): aralık dolmadıysa bildirim ertelenir — `AttemptEnded` bir,
+    /// kaybolan her hat için bir `HandleLost`; bir tür ötekinin yerini almaz ([`Deferred`]). Aralık
+    /// dolduysa eşin ertelenmişleri de bu bildirimle birlikte hemen verilir (silinmez).
     fn peer_notice(&mut self, now: Instant, peer: PeerRef, n: HubNotice) {
         if let Some(i) = self.peer_notice.iter().position(|e| e.0 == peer) {
             let e = &mut self.peer_notice[i];

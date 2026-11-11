@@ -57,6 +57,8 @@ struct HubState {
     refuse_inits: usize,
     /// [HLR-STALE] Sıradaki kaç INIT'in başlatanına `HandleAssigned` VERİLMEYECEK.
     withhold_assignments: usize,
+    /// [HLR-STALE] Sıradaki kaç INIT alıcıya ikinci kez, yeni bir handle'la teslim edilecek.
+    redeliver_inits: usize,
 }
 
 fn lock(m: &Mutex<HubState>) -> MutexGuard<'_, HubState> {
@@ -136,12 +138,26 @@ impl MemoryHub {
                             hub_handle,
                         });
                     }
+                    let again = if st.redeliver_inits > 0 {
+                        st.redeliver_inits -= 1;
+                        st.next_handle = st.next_handle.wrapping_add(1).max(1);
+                        Some((HubHandle::from_raw(st.next_handle), bytes.clone()))
+                    } else {
+                        None
+                    };
                     if let Some(q) = st.inboxes.get_mut(&to) {
                         q.push_back(LinkEvent::IncomingInit {
                             hub_handle,
                             envelope_type,
                             bytes,
                         });
+                        if let Some((hub_handle, bytes)) = again {
+                            q.push_back(LinkEvent::IncomingInit {
+                                hub_handle,
+                                envelope_type,
+                                bytes,
+                            });
+                        }
                     }
                 }
                 Outbound::Response {
@@ -180,6 +196,13 @@ impl MemoryHub {
     /// etkin oturumun hattı bilinmez (`ActiveLink::Unknown`).
     pub fn withhold_next_assignments(&self, n: usize) {
         lock(&self.inner).withhold_assignments = n;
+    }
+
+    /// [HLR-STALE] Sıradaki `n` INIT alıcıya İKİ kez teslim edilir: ikincisi byte-özdeş, yeni bir
+    /// handle'la (aynı INIT'in başka bir hatta yeniden teslimi; başlatana `HandleAssigned` yalnız
+    /// ilk handle için gider). Röle sayımında yine tek gönderimdir.
+    pub fn redeliver_next_inits(&self, n: usize) {
+        lock(&self.inner).redeliver_inits = n;
     }
 
     /// `to`'nun gelen kutusuna doğrudan bir olay koyar (ör. sahte RESPONSE) — röle beklemez.

@@ -712,3 +712,112 @@ fn line_loss_with_an_unknown_active_line_still_renews() {
         "yenilemenin hattı bilinir"
     );
 }
+
+/// [HLR-STALE] Yanıtlayan rolün `on_crypto_ready` (c) yolu (ilk `connect`'in yanıtlayanı; glare'i
+/// kaybedenin oturumu da buradan açılır): etkin oturumun hattı gelen INIT'in handle'ıdır ve
+/// başlatanınkiyle aynıdır. İki uç h1'deki oturumu kapatır, Alice yeniden bağlanır; Bob'da etkin
+/// oturum olmadığı için yeni oturum yine (c) yolundan, h2'de açılır. Bob'da ESKİ hattın geç
+/// `ROUTE_MISS{h1}`'i `Stale` (yenileme yok, tele bayt yok); etkin hattın (h2) kaybı Bob'un
+/// yenilemesini başlatır ve tek oturumda biter.
+///
+/// İnceleme bulgusu: (c) yolunda hat kaybolsa (`Sess.link = None`) Bob'da etkin hat `Unknown` olur
+/// ve eski hattın kaybı koşulsuz yenilemeye giderdi; bu yolu sınayan test yoktu.
+#[test]
+fn responder_line_from_an_incoming_init_filters_old_line_losses() {
+    let hub = MemoryHub::new();
+    let (mut a, mut b) = pair(&hub);
+    let (a0, b0) = establish(&mut a, &mut b, &hub);
+    let h1 = line(&a, b.me);
+    assert_eq!(
+        line(&b, a.me),
+        h1,
+        "yanıtlayanın hattı gelen INIT'in handle'ı"
+    );
+
+    a.t.close(a0).expect("Alice kapatır");
+    b.t.close(b0).expect("Bob kapatır");
+    for n in [&mut a, &mut b] {
+        n.pump();
+        n.events.clear();
+    }
+    assert_eq!(b.t.active_link(a.me), ActiveLink::NoSession);
+    let (a1, b1) = establish(&mut a, &mut b, &hub);
+    let h2 = line(&b, a.me);
+    assert_ne!(h2, h1);
+    assert_eq!(line(&a, b.me), h2, "iki uç aynı hatta");
+
+    let mut g = RelinkGovernor::new(SEED);
+    assert_eq!(
+        govern(&mut g, &mut b, lost(a.me, h1)),
+        NoticeRoute::Stale,
+        "Bob: eski hattın ROUTE_MISS'i"
+    );
+    assert_eq!(b.t.relink_line(a.me, h1), RelinkOutcome::Stale);
+    let st = g.stats();
+    assert_eq!(
+        (st.requests, st.started, st.stale_handle_lost),
+        (0, 0, 1),
+        "{st:?}"
+    );
+    assert_eq!(hub.relay(), 0, "tele INIT çıkmadı");
+    assert_eq!(b.t.active_session_for_test(a.me), Some(b1));
+
+    assert_eq!(
+        govern(&mut g, &mut b, lost(a.me, h2)),
+        NoticeRoute::Governed
+    );
+    assert_eq!(g.stats().started, 1, "Bob: h2 kaybı → yenileme");
+    let (b2, a2) = cut_over(&mut b, &mut a, &hub, (b1, a1));
+    assert_ne!(line(&b, a.me), h2);
+    assert_eq!(
+        (a.readies.as_slice(), b.readies.as_slice()),
+        ([a2].as_slice(), [b2].as_slice())
+    );
+}
+
+/// [HLR-STALE] Aynı INIT baytları yanıtlayana `Ready`'den önce ikinci kez, başka bir handle'la
+/// (h1') teslim edilir. Crypto aynı oturumu döner (H-RETRY); bağ h1'de kalır (`AssignHandle`
+/// `Failed`, §2.55 REUSE). Bob'un etkin oturumunun hattı da h1 olmalı: veri h1'de akar, hub h1'i
+/// emekli ederse `ROUTE_MISS{h1}` meşru kayıptır. `Stale` sayılıp düşseydi oturum yeni INIT'siz
+/// kalırdı (`HubLink` kaybolan hattı unutur, ikinci bildirim gelmez).
+///
+/// ESKİ DAVRANIŞ: yanıtlayan rolde hat `AssignHandle` sonucuna bakılmadan yazılıyordu →
+/// `Sess.link = h1'`, `relink_line(alice, h1)` = `Stale`.
+#[test]
+fn a_redelivered_init_does_not_move_the_responder_line() {
+    let hub = MemoryHub::new();
+    let (mut a, mut b) = pair(&hub);
+    hub.redeliver_next_inits(1);
+    let Ok(ConnectResult::Pending(_)) = a.t.connect(b.me, None) else {
+        panic!("bağlantı beklemede başlamalı");
+    };
+    assert_eq!(hub.relay(), 1, "INIT → Bob (iki teslim, iki handle)");
+    let b0 = b.wait_ready(a.me);
+    assert_eq!(hub.relay(), 2, "aynı oturumun iki RESPONSE'u → Alice");
+    let a0 = a.wait_ready(b.me);
+    a.send(a0, b"a0").expect("gönder");
+    b.expect_delivery(b0, b"a0");
+    b.send(b0, b"b0").expect("gönder");
+    a.expect_delivery(a0, b"b0");
+    for n in [&mut a, &mut b] {
+        n.pump();
+        n.events.clear();
+        n.readies.clear();
+    }
+    let h1 = line(&a, b.me);
+    assert_eq!(
+        line(&b, a.me),
+        h1,
+        "Bob'un hattı Crypto'nun bağladığı handle"
+    );
+
+    let mut g = RelinkGovernor::new(SEED);
+    assert_eq!(
+        govern(&mut g, &mut b, lost(a.me, h1)),
+        NoticeRoute::Governed,
+        "etkin hattın kaybı düşmez"
+    );
+    let st = g.stats();
+    assert_eq!((st.started, st.stale_handle_lost), (1, 0), "{st:?}");
+    cut_over(&mut b, &mut a, &hub, (b0, a0));
+}
