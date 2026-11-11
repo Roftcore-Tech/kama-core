@@ -1930,6 +1930,16 @@ async fn client_task(
         .set_initial_window(InitialWindowConfig {
             bytes: cfg.initial_window_bytes,
         });
+    // [CC-PORT · sahip kararı 2026-11-11] Port motorunda ilk uçuş = `initial_window_bytes`,
+    // taban 4·MTU (BBR min_cwnd). Ürün profili (2·MTU) → 4·MTU = 4 800 B; RFC 9002'nin 10·MTU'su
+    // (12 000 B) yalnız yapılandırmayla (gösterim/VPS hücresi). Gerekçe: 12 kB kör ilk uçuş sığ
+    // tamponda düşme, düşük bantta saniyeler; RFC 6928 §4 uyarısı.
+    if cfg.engine == TransportEngine::CcPort {
+        let iw = cfg
+            .initial_window_bytes
+            .max(4 * adaptive_transport::rate::DEFAULT_MTU);
+        session.sender_mut().set_cc_initial_window(iw);
+    }
     // [E1 gösterim, CC §4.1] Beş çalışma-zamanı bayrağı (varsayılan kapalı = sevk davranışı).
     session.sender_mut().set_e1_flags(cfg.e1_flags);
     let mut stats = ClientStats::default();
