@@ -15,6 +15,7 @@
 //! | sayaç sıfırlama | eş için [`RELINK_QUIET_RESET`] boyunca yeni istek yoksa |
 //! | yerel erteleme | tavana takılan (`Deferred`) istek kaybolmaz: [`RELINK_RETRY`]'den başlayıp ikiye katlanan aralıkla yeniden denenir (tele bayt çıkmaz) |
 //! | bellek | eş tablosu [`MAX_RELINK_PEERS`] (SR-AUDIT-001) |
+//! | eski hat | [HLR-STALE] `HandleLost{peer, h}` yalnız eşin ETKİN oturumunun hattı `h` ise yenilemeye gider: bildirim anında (`on_notice`, [`ActiveLink`]) ve uygulama anında (`RelinkLine(h)` → `ClientTransport::relink_line`) aynı kural; eski hattınki düşer ve sayılır (`stale_handle_lost`). Hat bilinmiyorsa düşmez (koşulsuz yenileme, `handle_lost_unverified`) |
 //!
 //! Tek hub'lı PoC'de app-rpc §6.11.1'in "K başarısızlıktan sonra sıradaki hub'a FAILOVER" kolu
 //! yoktur: K'den sonra aynı hub'a yalnız geri çekilmeyle dönülür (§6.11.1 "degraded hub için
@@ -25,12 +26,13 @@ use core::time::Duration;
 use std::time::Instant;
 
 use kama_contracts::handles::PeerRef;
+use kama_contracts::s3::HubHandle;
 use kama_contracts::s4::NONCE_LEN;
 
 use super::heartbeat::jitter;
 use super::t3::BACKOFF_MIN;
 use super::HubNotice;
-use crate::transport::RelinkOutcome;
+use crate::transport::{ActiveLink, RelinkOutcome};
 
 /// Jitter tohumunun boyu (KK-H48 `heartbeat::jitter` girdisi).
 pub const RELINK_SEED_LEN: usize = NONCE_LEN;
@@ -55,8 +57,12 @@ pub const MAX_RELINK_PEERS: usize = 256;
 pub enum RelinkOp {
     /// `ClientTransport::restart_renewal` (yenilemenin hub denemesi bitti).
     Restart,
-    /// `ClientTransport::relink` (kurulu oturumun hattı kayboldu).
+    /// `ClientTransport::relink` (kurulu oturum için koşulsuz yeni INIT: `Restart`'ın yerel tavana
+    /// takılan yeniden başlatması ya da hattı bilinmeyen oturumun kaybı).
     Relink,
+    /// [HLR-STALE] `ClientTransport::relink_line` (kurulu oturumun `h` hattı kayboldu): `h` artık
+    /// eşin etkin oturumunun hattı değilse transport `Stale` döner, iş yapılmaz.
+    RelinkLine(HubHandle),
 }
 
 /// Bir hub bildiriminin yönü ([`RelinkGovernor::on_notice`]).
@@ -67,6 +73,9 @@ pub enum NoticeRoute {
     /// Kurulu oturumu olmayan eşin açılış denemesi bitti: bekleyen niyet yeniden `connect` edilir
     /// (KK-H57 (a); bu yöneticinin işi değil).
     RestartIntent(PeerRef),
+    /// [HLR-STALE] `HandleLost{peer, h}`'nin `h`'si eşin etkin oturumunun hattı değil (yerini yenisi
+    /// almış oturumun eski hattı): düştü, `RelinkStats::stale_handle_lost` sayıldı.
+    Stale,
     /// İş yok (`Bound`, `Disconnected`).
     Ignore,
 }
@@ -84,6 +93,11 @@ pub struct RelinkStats {
     pub nothing: u64,
     /// Tablo dolu, istek düştü.
     pub dropped: u64,
+    /// [HLR-STALE] Eski hattın kaybı düştü: bildirim anında (`NoticeRoute::Stale`) ya da uygulama
+    /// anında (`RelinkOutcome::Stale`) `h` eşin etkin oturumunun hattı değildi.
+    pub stale_handle_lost: u64,
+    /// [HLR-STALE] Etkin oturumun hattı bilinmeden kabul edilen kayıp (koşulsuz yenilemeye gitti).
+    pub handle_lost_unverified: u64,
 }
 
 /// Bir eşin durumu.
@@ -92,6 +106,8 @@ struct Entry {
     peer: PeerRef,
     /// `HandleLost` bekliyor.
     relink: bool,
+    /// [HLR-STALE] Bekleyen `relink`'in uygulama anında denetlenecek hattı; `None` = koşulsuz.
+    line: Option<HubHandle>,
     /// Oturumlu eşin `AttemptEnded`'i bekliyor.
     restart: bool,
     /// Sayaç penceresinde yola çıkan yenileme.
@@ -130,13 +146,37 @@ impl RelinkGovernor {
         }
     }
 
-    /// Hub bildirimi. `has_session`: eşin kurulu (Application'da hazır) oturumu var mı.
-    pub fn on_notice(&mut self, now: Instant, notice: HubNotice, has_session: bool) -> NoticeRoute {
+    /// Hub bildirimi. `has_session`: eşin kurulu (Application'da hazır) oturumu var mı. `link`:
+    /// eşin etkin oturumunun hattı (`ClientTransport::active_link`; yalnız `HandleLost` okur).
+    ///
+    /// [HLR-STALE] `HandleLost{peer, h}`: `link = On(a)`, `a ≠ h` → eski hattın geç kaybı, düşer
+    /// (`Stale`, sayaç); istek kaydedilmez — kaydedilseydi aynı eşin bekleyen geçerli isteğinin
+    /// hattını ezebilirdi. `On(h)` / `NoSession` → `RelinkLine(h)` (uygulama anında yeniden
+    /// denetlenir). `Unknown` → koşulsuz `Relink` (yanlış negatif yok: doğrulanamayan kayıp
+    /// düşürülmez; `handle_lost_unverified`).
+    pub fn on_notice(
+        &mut self,
+        now: Instant,
+        notice: HubNotice,
+        has_session: bool,
+        link: ActiveLink,
+    ) -> NoticeRoute {
         match notice {
-            HubNotice::HandleLost { peer, .. } => {
-                self.request(now, peer, RelinkOp::Relink);
-                NoticeRoute::Governed
-            }
+            HubNotice::HandleLost { peer, h } => match link {
+                ActiveLink::On(active) if active != h => {
+                    bump(&mut self.stats.stale_handle_lost);
+                    NoticeRoute::Stale
+                }
+                ActiveLink::Unknown => {
+                    bump(&mut self.stats.handle_lost_unverified);
+                    self.request(now, peer, RelinkOp::Relink);
+                    NoticeRoute::Governed
+                }
+                ActiveLink::On(_) | ActiveLink::NoSession => {
+                    self.request(now, peer, RelinkOp::RelinkLine(h));
+                    NoticeRoute::Governed
+                }
+            },
             HubNotice::AttemptEnded { peer } if has_session => {
                 self.request(now, peer, RelinkOp::Restart);
                 NoticeRoute::Governed
@@ -151,8 +191,8 @@ impl RelinkGovernor {
     ///
     /// Sıra: `Restart` önce (bitmiş denemenin yenilemesi yeniden başlar; yeni INIT `Relink`'i de
     /// karşılar). `Restart` `Nothing` dönerse ve `Relink` bekliyorsa `Relink`. `Restart`
-    /// `Deferred` dönerse (eski bekleyen kapandı, yenisi tavana takıldı) istek `Relink` olarak
-    /// sürer.
+    /// `Deferred` dönerse (eski bekleyen kapandı, yenisi tavana takıldı) istek koşulsuz `Relink`
+    /// olarak sürer. [HLR-STALE] `RelinkLine(h)`'nin `Stale`'i isteği bitirir (sayaç).
     pub fn drive(&mut self, now: Instant, mut act: impl FnMut(PeerRef, RelinkOp) -> RelinkOutcome) {
         for i in 0..self.entries.len() {
             let e = &mut self.entries[i];
@@ -165,14 +205,19 @@ impl RelinkGovernor {
                 out = act(e.peer, RelinkOp::Restart);
                 if out == RelinkOutcome::Deferred {
                     e.relink = true;
+                    e.line = None;
                 }
             }
             if out == RelinkOutcome::Nothing && e.relink {
-                out = act(e.peer, RelinkOp::Relink);
+                out = act(
+                    e.peer,
+                    e.line.map_or(RelinkOp::Relink, RelinkOp::RelinkLine),
+                );
             }
             match out {
                 RelinkOutcome::Started => {
                     e.relink = false;
+                    e.line = None;
                     e.restart = false;
                     e.deferrals = 0;
                     e.starts = e.starts.saturating_add(1);
@@ -183,7 +228,13 @@ impl RelinkGovernor {
                 }
                 RelinkOutcome::Nothing => {
                     e.relink = false;
+                    e.line = None;
                     bump(&mut self.stats.nothing);
+                }
+                RelinkOutcome::Stale => {
+                    e.relink = false;
+                    e.line = None;
+                    bump(&mut self.stats.stale_handle_lost);
                 }
                 RelinkOutcome::Deferred => {
                     e.relink = true;
@@ -239,6 +290,7 @@ impl RelinkGovernor {
                 self.entries.push(Entry {
                     peer,
                     relink: false,
+                    line: None,
                     restart: false,
                     starts: 0,
                     deferrals: 0,
@@ -253,7 +305,18 @@ impl RelinkGovernor {
         e.last_request = now;
         match op {
             RelinkOp::Restart => e.restart = true,
-            RelinkOp::Relink => e.relink = true,
+            RelinkOp::Relink => {
+                e.relink = true;
+                e.line = None;
+            }
+            // Bekleyen koşulsuz istek koşulsuz kalır; bekleyen hatlı isteğin hattı en yenisidir
+            // (bildirim anında etkin oturumun hattıydı).
+            RelinkOp::RelinkLine(h) => {
+                if !e.relink || e.line.is_some() {
+                    e.line = Some(h);
+                }
+                e.relink = true;
+            }
         }
     }
 }
@@ -287,7 +350,6 @@ fn bump(c: &mut u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kama_contracts::s3::HubHandle;
 
     const SEED: [u8; RELINK_SEED_LEN] = [7; RELINK_SEED_LEN];
 
@@ -295,11 +357,20 @@ mod tests {
         PeerRef::from_dest_hash([b; 32])
     }
 
+    fn handle(p: u8) -> HubHandle {
+        HubHandle::from_raw(u32::from(p))
+    }
+
     fn lost(p: u8) -> HubNotice {
         HubNotice::HandleLost {
             peer: peer(p),
-            h: HubHandle::from_raw(u32::from(p)),
+            h: handle(p),
         }
+    }
+
+    /// Eşin etkin oturumu `lost(p)`'nin hattında.
+    fn on(p: u8) -> ActiveLink {
+        ActiveLink::On(handle(p))
     }
 
     fn s(n: u64) -> Duration {
@@ -326,7 +397,10 @@ mod tests {
         let mut now = t0;
         let mut starts = Vec::new();
         while now < t0 + s(3600) {
-            assert_eq!(g.on_notice(now, lost(1), true), NoticeRoute::Governed);
+            assert_eq!(
+                g.on_notice(now, lost(1), true, on(1)),
+                NoticeRoute::Governed
+            );
             if !turn(&mut g, now, RelinkOutcome::Started).is_empty() {
                 starts.push(now);
             }
@@ -360,16 +434,16 @@ mod tests {
         let t0 = Instant::now();
         for k in 0..RELINK_FREE_STARTS {
             let now = t0 + Duration::from_millis(u64::from(k));
-            g.on_notice(now, lost(1), true);
+            g.on_notice(now, lost(1), true, on(1));
             assert_eq!(turn(&mut g, now, RelinkOutcome::Started).len(), 1);
         }
         let later = t0 + RELINK_QUIET_RESET + s(1);
         turn(&mut g, later, RelinkOutcome::Started);
         assert!(g.is_empty(), "sessizlik → girdi silindi");
-        g.on_notice(later, lost(1), true);
+        g.on_notice(later, lost(1), true, on(1));
         assert_eq!(
             turn(&mut g, later, RelinkOutcome::Started),
-            vec![(peer(1), RelinkOp::Relink)],
+            vec![(peer(1), RelinkOp::RelinkLine(handle(1)))],
             "sıfırlanan sayaç: beklemesiz"
         );
     }
@@ -381,7 +455,7 @@ mod tests {
     fn deferred_request_is_retried_until_started() {
         let mut g = RelinkGovernor::new(SEED);
         let t0 = Instant::now();
-        g.on_notice(t0, lost(1), true);
+        g.on_notice(t0, lost(1), true, on(1));
         assert_eq!(turn(&mut g, t0, RelinkOutcome::Deferred).len(), 1);
         assert!(turn(
             &mut g,
@@ -394,7 +468,7 @@ mod tests {
         assert_eq!(turn(&mut g, t0 + s(3), RelinkOutcome::Deferred).len(), 1);
         assert_eq!(
             turn(&mut g, t0 + s(7), RelinkOutcome::Started),
-            vec![(peer(1), RelinkOp::Relink)]
+            vec![(peer(1), RelinkOp::RelinkLine(handle(1)))]
         );
         assert!(turn(&mut g, t0 + s(8), RelinkOutcome::Started).is_empty());
         let st = g.stats();
@@ -414,24 +488,27 @@ mod tests {
         let t0 = Instant::now();
         let ended = HubNotice::AttemptEnded { peer: peer(2) };
         assert_eq!(
-            g.on_notice(t0, ended, false),
+            g.on_notice(t0, ended, false, ActiveLink::NoSession),
             NoticeRoute::RestartIntent(peer(2))
         );
         assert_eq!(
-            g.on_notice(t0, HubNotice::Bound, false),
+            g.on_notice(t0, HubNotice::Bound, false, ActiveLink::NoSession),
             NoticeRoute::Ignore
         );
         assert!(g.is_empty());
 
-        g.on_notice(t0, ended, true);
-        g.on_notice(t0, lost(2), true);
+        g.on_notice(t0, ended, true, ActiveLink::NoSession);
+        g.on_notice(t0, lost(2), true, on(2));
         assert_eq!(
             turn(&mut g, t0, RelinkOutcome::Nothing),
-            vec![(peer(2), RelinkOp::Restart), (peer(2), RelinkOp::Relink)]
+            vec![
+                (peer(2), RelinkOp::Restart),
+                (peer(2), RelinkOp::RelinkLine(handle(2)))
+            ]
         );
         assert!(g.is_empty(), "iş çıkmadı, sayaç yok → girdi silinir");
 
-        g.on_notice(t0, ended, true);
+        g.on_notice(t0, ended, true, ActiveLink::NoSession);
         let mut calls = Vec::new();
         g.drive(t0, |p, op| {
             calls.push((p, op));
@@ -453,18 +530,124 @@ mod tests {
             let mut d = [0u8; 32];
             d[..8].copy_from_slice(&u64::try_from(i).unwrap_or(u64::MAX).to_be_bytes());
             let peer = PeerRef::from_dest_hash(d);
-            g.on_notice(t0, HubNotice::AttemptEnded { peer }, true);
+            g.on_notice(
+                t0,
+                HubNotice::AttemptEnded { peer },
+                true,
+                ActiveLink::NoSession,
+            );
         }
         assert_eq!(g.len(), MAX_RELINK_PEERS);
-        g.on_notice(t0, lost(0xEE), true);
+        g.on_notice(t0, lost(0xEE), true, on(0xEE));
         assert_eq!((g.len(), g.stats().dropped), (MAX_RELINK_PEERS, 1));
         // Hepsi başlar (istek biter, sayaç kalır) → yer açılır.
         turn(&mut g, t0, RelinkOutcome::Started);
-        g.on_notice(t0 + s(1), lost(0xEE), true);
+        g.on_notice(t0 + s(1), lost(0xEE), true, on(0xEE));
         assert_eq!((g.len(), g.stats().dropped), (MAX_RELINK_PEERS, 1));
         assert_eq!(
             turn(&mut g, t0 + s(1), RelinkOutcome::Started),
-            vec![(peer(0xEE), RelinkOp::Relink)]
+            vec![(peer(0xEE), RelinkOp::RelinkLine(handle(0xEE)))]
+        );
+    }
+
+    /// [HLR-STALE] Bildirim anı: etkin oturum h2'deyken eski hattın (h1) kaybı düşer ve sayılır;
+    /// istek kaydedilmez, `act` çağrılmaz. Aynı turda önce gelen GEÇERLİ kaybın (h2) bekleyen
+    /// isteğini ezmez (yanlış negatif yok): `RelinkLine(h2)` uygulanır. Sonra h2'nin kaybı yine
+    /// yeniler.
+    #[test]
+    fn stale_handle_lost_is_dropped_without_touching_a_valid_request() {
+        let mut g = RelinkGovernor::new(SEED);
+        let t0 = Instant::now();
+        let (h1, h2) = (handle(1), handle(2));
+        let stale = HubNotice::HandleLost {
+            peer: peer(1),
+            h: h1,
+        };
+        let valid = HubNotice::HandleLost {
+            peer: peer(1),
+            h: h2,
+        };
+        assert_eq!(
+            g.on_notice(t0, stale, true, ActiveLink::On(h2)),
+            NoticeRoute::Stale
+        );
+        assert!(
+            turn(&mut g, t0, RelinkOutcome::Started).is_empty(),
+            "iş yok"
+        );
+        assert!(g.is_empty(), "istek kaydedilmedi");
+        let st = g.stats();
+        assert_eq!((st.requests, st.stale_handle_lost, st.started), (0, 1, 0));
+
+        assert_eq!(
+            g.on_notice(t0, valid, true, ActiveLink::On(h2)),
+            NoticeRoute::Governed
+        );
+        assert_eq!(
+            g.on_notice(t0, stale, true, ActiveLink::On(h2)),
+            NoticeRoute::Stale
+        );
+        assert_eq!(
+            turn(&mut g, t0, RelinkOutcome::Started),
+            vec![(peer(1), RelinkOp::RelinkLine(h2))],
+            "geçerli istek ezilmedi"
+        );
+        let st = g.stats();
+        assert_eq!((st.requests, st.stale_handle_lost, st.started), (1, 2, 1));
+    }
+
+    /// [HLR-STALE] Uygulama anı: yöneticide bekleyen (geri çekilme / erteleme) `RelinkLine(h)`
+    /// arada etkin oturum değiştiyse transport'tan `Stale` alır: istek biter (yeniden denenmez),
+    /// `stale_handle_lost` sayılır, `nothing` sayılmaz.
+    #[test]
+    fn stale_at_drive_time_ends_the_request_and_is_counted() {
+        let mut g = RelinkGovernor::new(SEED);
+        let t0 = Instant::now();
+        g.on_notice(t0, lost(1), true, on(1));
+        assert_eq!(
+            turn(&mut g, t0, RelinkOutcome::Stale),
+            vec![(peer(1), RelinkOp::RelinkLine(handle(1)))]
+        );
+        assert!(turn(&mut g, t0 + s(1), RelinkOutcome::Started).is_empty());
+        let st = g.stats();
+        assert_eq!((st.stale_handle_lost, st.nothing, st.started), (1, 0, 0));
+    }
+
+    /// [HLR-STALE] Etkin oturumun hattı bilinmiyorsa kayıp DÜŞMEZ: koşulsuz `Relink`
+    /// (`handle_lost_unverified`). Bekleyen koşulsuz istek sonradan gelen hatlı istekle
+    /// koşullanmaz; `Restart`'ın ertelenen yeniden başlatması da koşulsuzdur.
+    #[test]
+    fn unverified_handle_lost_is_relinked_unconditionally() {
+        let mut g = RelinkGovernor::new(SEED);
+        let t0 = Instant::now();
+        assert_eq!(
+            g.on_notice(t0, lost(1), true, ActiveLink::Unknown),
+            NoticeRoute::Governed
+        );
+        g.on_notice(t0, lost(1), true, on(1));
+        assert_eq!(
+            turn(&mut g, t0, RelinkOutcome::Started),
+            vec![(peer(1), RelinkOp::Relink)]
+        );
+        let st = g.stats();
+        assert_eq!((st.handle_lost_unverified, st.stale_handle_lost), (1, 0));
+
+        g.on_notice(t0, HubNotice::AttemptEnded { peer: peer(2) }, true, on(2));
+        g.on_notice(t0, lost(2), true, on(2));
+        let mut calls = Vec::new();
+        g.drive(t0, |p, op| {
+            calls.push((p, op));
+            if op == RelinkOp::Restart {
+                RelinkOutcome::Deferred
+            } else {
+                RelinkOutcome::Started
+            }
+        });
+        assert_eq!(calls, vec![(peer(2), RelinkOp::Restart)]);
+        assert_eq!(
+            turn(&mut g, t0 + RELINK_RETRY, RelinkOutcome::Started),
+            vec![(peer(2), RelinkOp::Relink)],
+            "ertelenen yeniden başlatma koşulsuz"
         );
     }
 }

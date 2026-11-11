@@ -64,7 +64,7 @@ use client_core::hub::HubNotice;
 
 #[cfg(feature = "test-util")]
 use client_core::transport::UnitTraceRecord;
-use client_core::transport::MAX_INBOX;
+use client_core::transport::{ActiveLink, MAX_INBOX};
 use kama_app::codec::PttCodec;
 use kama_app::file_transfer::{FileEvent, FileSendError, FileTransfer, TransferId};
 use kama_app::messaging::{ConnectState, Messenger, MessengerEvent, MsgId};
@@ -642,21 +642,33 @@ impl NodeLoop {
     /// hub yeniden başlamış) → kurulu oturum için yeni INIT (`ClientTransport::relink`; yenileme
     /// yolu, eş bağlı kalır, olay yok). İkisi de eş başına sınırlı deneme + geri çekilmeyle
     /// ([`RelinkGovernor`]); yerel tavana takılan istek her turda vadesi gelince yeniden denenir.
+    /// [HLR-STALE] `HandleLost{peer, h}` yalnız `h` eşin ETKİN oturumunun hattıysa yenilemeye gider
+    /// (`ClientTransport::active_link`; yöneticide bildirim anında, transport'ta uygulama anında
+    /// `relink_line`): yerini yenisi almış oturumun eski hattının geç `ROUTE_MISS`'i çalışan oturumu
+    /// yenilemez, `RelinkStats::stale_handle_lost`'ta sayılır. Etkin oturumun hattı bilinmiyorsa
+    /// kayıp düşmez (`handle_lost_unverified`).
     /// `Bound` / `Disconnected` yalnız `HubLink` sayaçlarındadır.
     fn drive_hub(&mut self) {
         let Some(hub) = &self.hub else {
             return;
         };
-        let now = Instant::now();
-        for notice in hub.take_notices(HUB_NOTICES_PER_TURN) {
-            let has_session = match notice {
-                HubNotice::AttemptEnded { peer } | HubNotice::HandleLost { peer, .. } => {
-                    self.messenger.session_of(peer).is_some()
-                }
-                HubNotice::Bound | HubNotice::Disconnected => false,
+        let notices = hub.take_notices(HUB_NOTICES_PER_TURN);
+        self.on_hub_notices(Instant::now(), notices);
+    }
+
+    /// [HLR] Bir turun hub bildirimleri (`drive_hub`) ve yöneticinin vadesi gelen işleri. Birim
+    /// testleri bildirimi buradan verir (doğrudan kipte hub tarafı yoktur).
+    fn on_hub_notices(&mut self, now: Instant, notices: Vec<HubNotice>) {
+        for notice in notices {
+            let (has_session, link) = match notice {
+                HubNotice::AttemptEnded { peer } | HubNotice::HandleLost { peer, .. } => (
+                    self.messenger.session_of(peer).is_some(),
+                    self.messenger.transport().active_link(peer),
+                ),
+                HubNotice::Bound | HubNotice::Disconnected => (false, ActiveLink::NoSession),
             };
             if let NoticeRoute::RestartIntent(peer) =
-                self.relinks.on_notice(now, notice, has_session)
+                self.relinks.on_notice(now, notice, has_session, link)
             {
                 self.restart_attempt(peer);
             }
@@ -665,6 +677,7 @@ impl NodeLoop {
         self.relinks.drive(now, |peer, op| match op {
             RelinkOp::Restart => transport.restart_renewal(peer),
             RelinkOp::Relink => transport.relink(peer),
+            RelinkOp::RelinkLine(h) => transport.relink_line(peer, h),
         });
     }
 

@@ -1170,6 +1170,182 @@ fn hlr_unmatched_ready_handle_is_remembered_for_route_miss() {
     assert_eq!(t.link.counters().route_miss_unknown, 0);
 }
 
+/// [HLR-STALE] `p` eşiyle iki hat: ESKİ `h1` (`responder`: eşin INIT'ine verdiğimiz RESPONSE'un
+/// hattı; değilse tamamlanmış kendi açılış denemem) ve GÜNCEL `h2` (yenilemem; `peer_ready` ile
+/// tamamlandı). Dönen değer: h1'e ait STORE'un `request_id`'si (RESPONSE STORE'u ya da INIT
+/// denemesi).
+fn old_and_current_line(t: &mut T, p: u8, h1: u32, h2: u32, responder: bool) -> u32 {
+    let t0 = t.t0;
+    let old_rid = if responder {
+        t.link.on_control(t0, &deliver(h1, [p; 32], 1, &[5; 8]));
+        t.link
+            .send_response(t0, peer(p), HubHandle::from_raw(h1), 2, vec![6; 8])
+            .unwrap();
+        let store = init_out(t, t0).remove(0);
+        assert_eq!(store.payload[..4], h1.to_be_bytes(), "RESPONSE STORE{{h1}}");
+        store.rid
+    } else {
+        t.link.send_init(t0, peer(p), 1, vec![1]).unwrap();
+        let store = init_out(t, t0).remove(0);
+        t.link.on_control(t0, &store_resp(store.rid, code::OK, h1));
+        t.link.peer_ready(peer(p), HubHandle::from_raw(h1));
+        store.rid
+    };
+    t.link.send_init(t0 + s(1), peer(p), 1, vec![2]).unwrap();
+    let renewal = init_out(t, t0 + s(1)).remove(0);
+    t.link
+        .on_control(t0 + s(1), &store_resp(renewal.rid, code::OK, h2));
+    t.link.peer_ready(peer(p), HubHandle::from_raw(h2));
+    let _ = (events(&mut t.link), notices(&mut t.link));
+    assert!(t.link.attempts.is_empty(), "denemeler tamamlandı");
+    old_rid
+}
+
+/// [HLR-STALE] Sahip şartı, link düzeyi (iki handle): eşin yenilemesi `h2`'de kurulduktan sonra
+/// ESKİ hattın (`h1`) geç ROUTE_MISS'i `HandleLost{peer, h1}` verir — `HubLink` eski hattı
+/// `known_links`'te tutar (hangi hattın etkin oturuma ait olduğunu yalnız transport bilir) ve
+/// bildirim KAYBOLAN hattı adlandırır, eşin güncel hattını değil. Bileşim kökü ayrımı bu handle
+/// ile yapar (`RelinkGovernor::on_notice` + `ClientTransport::relink_line`; `kama-node`
+/// `hub_relink` testleri). Link kendiliğinden INIT çıkarmaz; ardından `h2`'nin kaybı
+/// `HandleLost{peer, h2}`.
+#[test]
+fn hlr_stale_old_line_route_miss_names_the_old_handle() {
+    for responder in [false, true] {
+        let mut t = bound();
+        let t0 = t.t0;
+        let (h1, h2) = (0x77, 0x78);
+        old_and_current_line(&mut t, 0xB0, h1, h2, responder);
+        t.link.on_control(t0 + s(2), &route_miss(h1));
+        assert_eq!(
+            notices(&mut t.link),
+            vec![HubNotice::HandleLost {
+                peer: peer(0xB0),
+                h: HubHandle::from_raw(h1)
+            }],
+            "responder={responder}: bildirim eski hattı adlandırır"
+        );
+        // T3 tekrarı (1 s, 2 s, 4 s …) olsaydı bu pencerede görülürdü; heartbeat yanıtsız kaldığı
+        // için pencere "koptu" ilanından (≈ 8 s + yoklama) önce biter.
+        for k in 2..8 {
+            assert!(init_out(&mut t, t0 + s(k)).is_empty(), "INIT yok");
+        }
+        t.link.on_control(t0 + s(8), &route_miss(h2));
+        assert_eq!(
+            notices(&mut t.link),
+            vec![HubNotice::HandleLost {
+                peer: peer(0xB0),
+                h: HubHandle::from_raw(h2)
+            }],
+            "responder={responder}: güncel hattın kaybı"
+        );
+        assert_eq!(t.link.counters().route_miss, 2);
+    }
+}
+
+/// [HLR-STALE] Sahip şartı, link düzeyi (`UNKNOWN_HANDLE`, iki handle): eski hatta (`h1`) ait geç
+/// `UNKNOWN_HANDLE` yanıtı bildirim ÜRETMEZ — ne RESPONSE STORE'umuzun (`STORE{h1, 0x02}`: "hat
+/// yok", S4 H6) yanıtı ne de tamamlanmış denemenin geç `{UNKNOWN_HANDLE, 0}`'ı (K9). `AttemptEnded`
+/// yalnız eşin AÇIK denemesi içindir; açık deneme yok. Link INIT çıkarmaz; `h2`'nin ROUTE_MISS'i yine
+/// `HandleLost{peer, h2}`.
+#[test]
+fn hlr_stale_late_unknown_handle_of_the_old_line_gives_no_notice() {
+    for responder in [false, true] {
+        let mut t = bound();
+        let t0 = t.t0;
+        let (h1, h2) = (0x55, 0x56);
+        let old_rid = old_and_current_line(&mut t, 0xB0, h1, h2, responder);
+        let before = t.link.counters();
+        t.link
+            .on_control(t0 + s(2), &store_resp(old_rid, code::UNKNOWN_HANDLE, 0));
+        assert!(
+            notices(&mut t.link).is_empty(),
+            "responder={responder}: eski hattın UNKNOWN_HANDLE'ı bildirim üretmez"
+        );
+        let after = t.link.counters();
+        assert_eq!(
+            (after.response_store_resp, after.late_store_resp),
+            if responder {
+                (before.response_store_resp + 1, before.late_store_resp)
+            } else {
+                (before.response_store_resp, before.late_store_resp + 1)
+            },
+            "responder={responder}: yalnız sayılır"
+        );
+        assert_eq!(after.attempt_unknown_handle, before.attempt_unknown_handle);
+        // T3 tekrarı (1 s, 2 s, 4 s …) olsaydı bu pencerede görülürdü; heartbeat yanıtsız kaldığı
+        // için pencere "koptu" ilanından (≈ 8 s + yoklama) önce biter.
+        for k in 2..8 {
+            assert!(init_out(&mut t, t0 + s(k)).is_empty(), "INIT yok");
+        }
+        t.link.on_control(t0 + s(8), &route_miss(h2));
+        assert_eq!(
+            notices(&mut t.link),
+            vec![HubNotice::HandleLost {
+                peer: peer(0xB0),
+                h: HubHandle::from_raw(h2)
+            }]
+        );
+    }
+}
+
+/// [HLR-STALE] Aynı eş aralığında (KK-H39) ertelenen İKİ hat kaybı — önce GÜNCEL hat (`h2`), sonra
+/// ESKİ hat (`h1`) — ikisi de verilir, geliş sırasıyla. Bileşim kökü (`RelinkGovernor`, etkin oturum
+/// `h2`'de) eski hattınkini düşürür, güncel hattınkiyle yeniler: yanlış negatif yok. ESKİ DAVRANIŞ
+/// (bu düzeltmeden önce): erteleme yuvası yalnız SONUNCUYU tutuyordu → tek bildirim `HandleLost{h1}`
+/// olurdu, süzgeçte düşer, `h2`'nin kaybı hiç görülmezdi.
+#[test]
+fn hlr_stale_deferred_current_and_old_line_losses_are_all_released() {
+    use crate::hub::relink::{NoticeRoute, RelinkGovernor, RelinkOp, RELINK_SEED_LEN};
+    use crate::transport::{ActiveLink, RelinkOutcome};
+
+    let mut t = bound();
+    let t0 = t.t0;
+    let (h1, h2) = (0x55, 0x56);
+    old_and_current_line(&mut t, 0xB0, h1, h2, true);
+    // Eş aralığını t0 + 2 s'de başlatan bildirim (açık denemenin sonu).
+    t.link.send_init(t0 + s(2), peer(0xB0), 1, vec![3]).unwrap();
+    let f = init_out(&mut t, t0 + s(2)).remove(0);
+    t.link
+        .on_control(t0 + s(2), &store_resp(f.rid, code::UNKNOWN_HANDLE, 0));
+    assert_eq!(
+        notices(&mut t.link),
+        vec![HubNotice::AttemptEnded { peer: peer(0xB0) }]
+    );
+    t.link.on_control(t0 + s(3), &route_miss(h2));
+    t.link.on_control(t0 + s(4), &route_miss(h1));
+    assert!(notices(&mut t.link).is_empty(), "aralık içinde ertelenir");
+    t.link.on_tick(t0 + s(7));
+    let released = notices(&mut t.link);
+    let lost = |h: u32| HubNotice::HandleLost {
+        peer: peer(0xB0),
+        h: HubHandle::from_raw(h),
+    };
+    assert_eq!(
+        released,
+        vec![lost(h2), lost(h1)],
+        "ikisi de, geliş sırasıyla"
+    );
+
+    let mut g = RelinkGovernor::new([7; RELINK_SEED_LEN]);
+    let active = ActiveLink::On(HubHandle::from_raw(h2));
+    let routes: Vec<NoticeRoute> = released
+        .iter()
+        .map(|n| g.on_notice(t0 + s(7), *n, true, active))
+        .collect();
+    assert_eq!(routes, vec![NoticeRoute::Governed, NoticeRoute::Stale]);
+    let mut calls = Vec::new();
+    g.drive(t0 + s(7), |p, op| {
+        calls.push((p, op));
+        RelinkOutcome::Started
+    });
+    assert_eq!(
+        calls,
+        vec![(peer(0xB0), RelinkOp::RelinkLine(HubHandle::from_raw(h2)))],
+        "güncel hattın kaybı yeniler"
+    );
+    assert_eq!(g.stats().stale_handle_lost, 1);
+}
+
 // ── C7: yeniden bind ─────────────────────────────────────────────────────────────────────────
 
 #[test]

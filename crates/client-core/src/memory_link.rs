@@ -55,6 +55,8 @@ struct HubState {
     cancelled: VecDeque<LinkAttempt>,
     /// [HLR] Sıradaki kaç `send_init` reddedilecek (taşıyıcı deneme tavanının karşılığı).
     refuse_inits: usize,
+    /// [HLR-STALE] Sıradaki kaç INIT'in başlatanına `HandleAssigned` VERİLMEYECEK.
+    withhold_assignments: usize,
 }
 
 fn lock(m: &Mutex<HubState>) -> MutexGuard<'_, HubState> {
@@ -126,7 +128,9 @@ impl MemoryHub {
                 } => {
                     st.next_handle = st.next_handle.wrapping_add(1).max(1);
                     let hub_handle = HubHandle::from_raw(st.next_handle);
-                    if let Some(q) = st.inboxes.get_mut(&from) {
+                    if st.withhold_assignments > 0 {
+                        st.withhold_assignments -= 1;
+                    } else if let Some(q) = st.inboxes.get_mut(&from) {
                         q.push_back(LinkEvent::HandleAssigned {
                             attempt,
                             hub_handle,
@@ -169,6 +173,13 @@ impl MemoryHub {
     /// [HLR] Sıradaki `n` `send_init`'i reddeder (`LinkError`; hub deneme tavanı dolu).
     pub fn refuse_next_inits(&self, n: usize) {
         lock(&self.inner).refuse_inits = n;
+    }
+
+    /// [HLR-STALE] Sıradaki `n` INIT'in rölesinde başlatana `HandleAssigned` verilmez (alıcı yine
+    /// aynı handle'la `IncomingInit` alır): taşıyıcının hattını bildirmediği oturum — transport'ta
+    /// etkin oturumun hattı bilinmez (`ActiveLink::Unknown`).
+    pub fn withhold_next_assignments(&self, n: usize) {
+        lock(&self.inner).withhold_assignments = n;
     }
 
     /// `to`'nun gelen kutusuna doğrudan bir olay koyar (ör. sahte RESPONSE) — röle beklemez.

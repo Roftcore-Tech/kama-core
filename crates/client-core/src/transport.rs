@@ -210,6 +210,23 @@ pub enum RelinkOutcome {
     /// Yerel tavan (Crypto bekleyen tavanı ya da zarf taşıyıcısının deneme tavanı) INIT'i yola
     /// çıkarmadı; yenileme KAYDEDİLMEDİ. Çağıran daha sonra yeniden dener.
     Deferred,
+    /// [HLR-STALE] Kaybolduğu bildirilen hat eşin etkin oturumunun hattı DEĞİL (yerini yenisi almış
+    /// oturumun eski hattı; [`ClientTransport::relink_line`]): çalışan oturum yenilenmedi, tele
+    /// bayt çıkmadı.
+    Stale,
+}
+
+/// [HLR-STALE] Eşin etkin oturumunun hub hattı ([`ClientTransport::active_link`]). Bileşim kökü
+/// `HubNotice::HandleLost{peer, h}`'yi bununla ayırır: `h` etkin oturumun hattı değilse kaybolan
+/// hat, yerini yenisi almış bir oturumun ESKİ hattıdır.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActiveLink {
+    /// Eşin etkin (gönderim kabul eden) oturumu yok.
+    NoSession,
+    /// Etkin oturum var; hattı bilinmiyor (zarf taşıyıcısı o oturumun INIT'ine handle bildirmedi).
+    Unknown,
+    /// Etkin oturum bu hattadır.
+    On(HubHandle),
 }
 
 // ── Yapılandırma ─────────────────────────────────────────────────────────────────────────────
@@ -377,6 +394,9 @@ struct Sess {
     /// Uca verilen birim sayısı: veri yolu birimlere sırayla kimlik verir (fragmenter kapalı →
     /// birim = mesaj), sıradaki birimin kimliği budur.
     sent: u64,
+    /// [HLR-STALE] Oturumun hub hattı (S3 `AssignHandle` ile bağlanan handle: başlatan rolde
+    /// `HandleAssigned`'ın, yanıtlayan rolde gelen INIT'in handle'ı). Taşıyıcı bildirmediyse `None`.
+    link: Option<HubHandle>,
     /// Uç dikişiyle paylaşılan ilk-emisyon kaybı kümesi (yalnız test).
     #[cfg(any(test, feature = "test-util"))]
     drop_ids: Arc<Mutex<BTreeSet<u64>>>,
@@ -941,7 +961,7 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         // (a) Kendi yenilemem tamamlandı: atomik cutover.
         if let Some(i) = self.renewals.iter().position(|r| r.pending == h) {
             let r = self.renewals.remove(i);
-            self.hub_of.remove(&h);
+            let link = self.hub_of.remove(&h);
             if let Some(old) = self.sessions.get_mut(&r.old) {
                 if old.phase == Phase::Active {
                     old.phase = Phase::Superseded;
@@ -955,20 +975,20 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                 self.abandon_renewal(r);
                 return;
             }
-            self.activate(h, peer, None);
+            self.activate(h, peer, None, link);
             return;
         }
         // (b) Başlattığım niyet çözüldü.
         if let Some(i) = self.intents.iter().position(|it| it.pending == h) {
             let it = self.intents.remove(i);
-            self.hub_of.remove(&h);
-            self.activate(h, it.peer, it.early);
+            let link = self.hub_of.remove(&h);
+            self.activate(h, it.peer, it.early, link);
             return;
         }
         // (c) Yanıtlayan rolde kurulan oturum. Glare'i kaybettiysek Crypto bu eşe bekleyen
         // INIT'imizi sildi; niyetimiz bu oturumla çözülür.
         if let Some(peer) = self.responder_peer.remove(&h) {
-            self.hub_of.remove(&h);
+            let link = self.hub_of.remove(&h);
             let early = self
                 .intents
                 .iter()
@@ -979,7 +999,7 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                     self.hub_of.remove(&it.pending);
                     it.early
                 });
-            self.activate(h, peer, early);
+            self.activate(h, peer, early, link);
         }
     }
 
@@ -987,7 +1007,7 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         let Some((peer, old)) = self.provisional.remove(&new) else {
             return;
         };
-        self.hub_of.remove(&new);
+        let link = self.hub_of.remove(&new);
         // [HLR] Eşin yenilemesi `old`'un yerini aldı: `old` için kendi bekleyen yenilememiz (glare
         // kaybında Crypto onun INIT'ini sildi; eşzamanlı yenilemede eş onu henüz onaylamadı) artık
         // gereksizdir. Sürerse tamamlanınca eşle ikinci bir etkin oturum açardı.
@@ -1006,7 +1026,7 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             self.close_unopened(new);
             return;
         }
-        self.activate(new, peer, None);
+        self.activate(new, peer, None, link);
     }
 
     fn on_renew_required(&mut self, h: SessionHandle) {
@@ -1081,6 +1101,19 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             .map(|(h, _)| *h)
     }
 
+    /// [HLR-STALE] Eşin etkin oturumunun hub hattı (bkz. [`ActiveLink`]).
+    #[must_use]
+    pub fn active_link(&self, peer: PeerRef) -> ActiveLink {
+        match self
+            .sessions
+            .values()
+            .find(|s| s.peer == peer && s.phase == Phase::Active)
+        {
+            None => ActiveLink::NoSession,
+            Some(s) => s.link.map_or(ActiveLink::Unknown, ActiveLink::On),
+        }
+    }
+
     // ── hub hattı kaybı (S4 C5, C3/C7) ──
 
     /// [HLR] S4 C5: eşin kurulu oturumunun hub hattı kayboldu (`ROUTE_MISS{h}` →
@@ -1109,6 +1142,21 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         let out = self.start_renewal(old, peer);
         self.sync_expected();
         out
+    }
+
+    /// [HLR-STALE] S4 C5, kaybolan hattı adlandırılmış bildirim (`HubNotice::HandleLost{peer,
+    /// lost}`). `lost` eşin etkin oturumunun hattıysa [`Self::relink`]. Etkin oturum başka bir
+    /// hattaysa `Stale`: kaybolan hat yerini yenisi almış bir oturumun ESKİ hattıdır (`HubLink` eski
+    /// hatları `known_links`'te tutar; bitmekte olan eski oturumun geç datagramı `ROUTE_MISS` alır)
+    /// — çalışan oturum yenilenmez. Etkin oturumun hattı bilinmiyorsa ([`ActiveLink::Unknown`])
+    /// kayıp kabul edilir ve [`Self::relink`]: doğrulanamayan bir kaybı düşürmek, kaybolan hattı
+    /// unutan taşıyıcıdan ikinci bildirim gelmeyeceği için oturumu yeni INIT'siz bırakabilirdi.
+    /// Etkin oturum yoksa `Nothing`.
+    pub fn relink_line(&mut self, peer: PeerRef, lost: HubHandle) -> RelinkOutcome {
+        match self.active_link(peer) {
+            ActiveLink::On(h) if h != lost => RelinkOutcome::Stale,
+            ActiveLink::On(_) | ActiveLink::Unknown | ActiveLink::NoSession => self.relink(peer),
+        }
     }
 
     /// [HLR] S4 C3/C7: eşin etkin oturumunun bekleyen yenilemesinin hub açılış denemesi bitti
@@ -1233,7 +1281,13 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     /// başına tek etkin oturum kuralı onu açmadan kapatırdı. Eşin terk ettiği INIT'lerin (glare,
     /// yeniden başlatılan yenileme) provisional'ı böylece `PROVISIONAL_TTL`'ye (Crypto'nun sessiz
     /// düşürmesi; transport'a olay gelmez) dek tablolarda kalmaz (SR-AUDIT-001).
-    fn activate(&mut self, h: SessionHandle, peer: PeerRef, early: Option<Vec<u8>>) {
+    fn activate(
+        &mut self,
+        h: SessionHandle,
+        peer: PeerRef,
+        early: Option<Vec<u8>>,
+        link: Option<HubHandle>,
+    ) {
         let stale: Vec<SessionHandle> = self
             .provisional
             .iter()
@@ -1266,6 +1320,7 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                 phase: Phase::Active,
                 endpoint,
                 sent,
+                link,
                 #[cfg(any(test, feature = "test-util"))]
                 drop_ids,
             },

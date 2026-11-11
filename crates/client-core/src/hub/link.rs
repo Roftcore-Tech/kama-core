@@ -83,39 +83,64 @@ struct InitAttempt {
     delivered_response: Option<Vec<u8>>,
 }
 
-/// Eş başına aralık (KK-H39) dolmadan gelen, ertelenmiş bildirimler: TÜR başına en çok bir. Bir tür
-/// ötekinin yerini ALMAZ — `AttemptEnded` (deneme yeni INIT ile yeniden başlar) ile `HandleLost`
-/// (kurulu oturum için yeni INIT) bileşim kökünde farklı işlerdir.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Eş başına aralık (KK-H39) dolmadan gelen, ertelenmiş bildirimler. Bir tür ötekinin yerini ALMAZ
+/// — `AttemptEnded` (deneme yeni INIT ile yeniden başlar) ile `HandleLost` (kurulu oturum için yeni
+/// INIT) bileşim kökünde farklı işlerdir. `AttemptEnded` en çok bir; `HandleLost` kaybolan HER hat
+/// için bir.
+///
+/// [HLR-STALE] Kaybolan hatların hepsi tutulur (yalnız sonuncusu DEĞİL): bileşim kökü
+/// `HandleLost{peer, h}`'yi eşin etkin oturumunun hattıyla süzer (eski hattınki düşer). Yalnız
+/// sonuncusu tutulsaydı, aynı aralıkta önce etkin hattın, sonra eski bir hattın kaybı geldiğinde
+/// verilen tek bildirim eski hattınki olur, süzgeçte düşer ve etkin hattın kaybı hiç görülmezdi
+/// (hat `known_links`'ten çıktığı için ikinci bildirim de gelmez). Her kayıp `known_links`'teki bir
+/// girdiden doğar ve onu siler: liste [`MAX_KNOWN_LINKS`]'i aşamaz (tavan yine denetlenir).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Deferred {
     attempt_ended: bool,
-    /// Aynı eşin birden çok hattı kaybolduysa sonuncusu (bileşim kökünün işi eş başınadır).
-    handle_lost: Option<HubHandle>,
+    /// Kaybolan hatlar, geliş sırasıyla (yinelenmez; ≤ [`MAX_KNOWN_LINKS`]).
+    handle_lost: Vec<HubHandle>,
 }
 
 impl Deferred {
     /// Yalnız eş bildirimleri (`AttemptEnded`, `HandleLost`) ertelenir; diğerleri buraya gelmez.
-    fn add(&mut self, n: HubNotice) {
+    /// `true` = tavan doluydu, en eski kayıp düştü (sayılır).
+    fn add(&mut self, n: HubNotice) -> bool {
         match n {
             HubNotice::AttemptEnded { .. } => self.attempt_ended = true,
-            HubNotice::HandleLost { h, .. } => self.handle_lost = Some(h),
+            HubNotice::HandleLost { h, .. } => {
+                if self.handle_lost.contains(&h) {
+                    return false;
+                }
+                let full = self.handle_lost.len() >= MAX_KNOWN_LINKS;
+                if full {
+                    self.handle_lost.remove(0);
+                }
+                self.handle_lost.push(h);
+                return full;
+            }
             HubNotice::Bound | HubNotice::Disconnected => {}
         }
+        false
     }
 
     fn is_empty(&self) -> bool {
-        !self.attempt_ended && self.handle_lost.is_none()
+        !self.attempt_ended && self.handle_lost.is_empty()
     }
 
     /// Ertelenmişleri verir ve boşaltır. Sıra: önce `AttemptEnded` (bitmiş denemenin yenilemesi
-    /// yeniden başlar), sonra `HandleLost` (bekleyen yenileme varsa ikincisi başlamaz) — ikisi
-    /// birlikte tek yeni INIT verir.
-    fn take(&mut self, peer: PeerRef) -> [Option<HubNotice>; 2] {
+    /// yeniden başlar), sonra `HandleLost`'lar geliş sırasıyla (bekleyen yenileme varsa ikincisi
+    /// başlamaz) — birlikte tek yeni INIT verir.
+    fn take(&mut self, peer: PeerRef) -> Vec<HubNotice> {
         let d = core::mem::take(self);
-        [
-            d.attempt_ended.then_some(HubNotice::AttemptEnded { peer }),
-            d.handle_lost.map(|h| HubNotice::HandleLost { peer, h }),
-        ]
+        d.attempt_ended
+            .then_some(HubNotice::AttemptEnded { peer })
+            .into_iter()
+            .chain(
+                d.handle_lost
+                    .into_iter()
+                    .map(|h| HubNotice::HandleLost { peer, h }),
+            )
+            .collect()
     }
 }
 
@@ -908,18 +933,20 @@ impl HubLink {
         self.notices.push_back(n);
     }
 
-    /// Eş başına ≥ 5 s (KK-H39): aralık dolmadıysa bildirim ertelenir — tür başına bir; bir tür
-    /// ötekinin yerini almaz ([`Deferred`]). Aralık dolduysa eşin ertelenmişleri de bu bildirimle
+    /// Eş başına ≥ 5 s (KK-H39): aralık dolmadıysa bildirim ertelenir — `AttemptEnded` bir, kaybolan
+    /// her hat için bir `HandleLost`; bir tür ötekinin yerini almaz ([`Deferred`]). Aralık dolduysa eşin ertelenmişleri de bu bildirimle
     /// birlikte hemen verilir (silinmez).
     fn peer_notice(&mut self, now: Instant, peer: PeerRef, n: HubNotice) {
         if let Some(i) = self.peer_notice.iter().position(|e| e.0 == peer) {
             let e = &mut self.peer_notice[i];
-            e.2.add(n);
+            if e.2.add(n) {
+                bump(&mut self.counters.bounded_drops);
+            }
             if now.saturating_duration_since(e.1) < NOTICE_BACKOFF {
                 return;
             }
             e.1 = now;
-            for due in e.2.take(peer).into_iter().flatten() {
+            for due in e.2.take(peer) {
                 self.push_notice(due);
             }
             return;
@@ -932,7 +959,7 @@ impl HubLink {
                 .position(|e| e.2.is_empty())
                 .unwrap_or(0);
             let (old_peer, _, mut old) = self.peer_notice.remove(i);
-            for due in old.take(old_peer).into_iter().flatten() {
+            for due in old.take(old_peer) {
                 self.push_notice(due);
             }
             bump(&mut self.counters.bounded_drops);
@@ -945,7 +972,7 @@ impl HubLink {
         let mut out = Vec::new();
         for e in &mut self.peer_notice {
             if !e.2.is_empty() && now.saturating_duration_since(e.1) >= NOTICE_BACKOFF {
-                out.extend(e.2.take(e.0).into_iter().flatten());
+                out.extend(e.2.take(e.0));
                 e.1 = now;
             }
         }
