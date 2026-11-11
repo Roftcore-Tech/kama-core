@@ -119,6 +119,17 @@ jobs:
         run: cargo test -p client-core --all-features --test product_profile_v1
       - name: runtime e2e (ürün yolu)
         run: cargo test -p client-core --all-features --test runtime_e2e
+      # [K4G-05b-R · sahip kararı 2026-11-11] Gerçek zamanlı runtime sahipliği: `#[ignore]` olduğundan
+      # full-workspace / semantic-matrix koşumlarına girmez; PR'da core-ci `test-runtime` işi, main'de
+      # bu adım koşar. Vakum bekçisi ve sayı ci.yml `test-runtime` adımıyla eş tutulur.
+      - name: runtime sahipliği (--ignored, vakum bekçili)
+        env:
+          K4G05B_RUNTIME_TESTS: "6"
+        run: |
+          set -o pipefail
+          cargo test -p client-core --all-features --test k4g05b_runtime_ownership -- --ignored 2>&1 | tee /tmp/rt.txt
+          grep -Eq "test result: ok\. ${K4G05B_RUNTIME_TESTS} passed; 0 failed" /tmp/rt.txt \
+            || { echo "::error title=TEST_FAILURE::runtime sahipligi ${K4G05B_RUNTIME_TESTS} test kosturmali (vakum bekcisi)"; exit 1; }
       # [OFF = OFF] bootstrap/cold-start izolasyonu: feature derlenmiş olsa bile ürün anahtarı kapatır.
       - name: feature-OFF isolation (experimental-cold-start derlenmişken)
         run: cargo test -p client-core --features diag-sched-telemetry --test runtime_e2e -- bootstrap

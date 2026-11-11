@@ -71,6 +71,8 @@ jobs:
         run: cargo clippy --all-targets --no-default-features -- -D warnings
 
   # ── Hızlı doğruluk: tam workspace, ağır entegrasyon panelleri hariç ──
+  # [K4G-05b-R] Gerçek zamanlı runtime sahipliği testleri burada `#[ignore]`'dur; paralel
+  # `test-runtime` işi koşar (aşağıda). Önbellek anahtarı o işle paylaşılır (`shared-key`).
   test-fast:
     name: test (all-features, hızlı küme)
     runs-on: ubuntu-latest
@@ -79,6 +81,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: core-ci-test
 
       # CI-01 — trybuild/K-WIRE-SEALED-TYPE-1 YALNIZ default-feature koşumunda çalışır.
       # [B1] Aynı dosyada H-HANDLE'ın tip yarısı da var (HubHandle ≠ SessionHandle); o testin
@@ -104,6 +108,38 @@ jobs:
           grep -Eq "test result: ok\. [1-9][0-9]* passed" /tmp/pp.txt \
             || { echo "::error title=TEST_FAILURE::urun-profili pin testi 0 test kosuyor"; exit 1; }
           cargo test -p adaptive-transport --all-features --test fec_loss_risk
+
+  # ── Gerçek zamanlı runtime sahipliği (K4G-05b-R; sahip kararı 2026-11-11) ──
+  # `crates/client-core/tests/k4g05b_runtime_ownership.rs`: gerçek runtime + UDP loopback röle,
+  # testler sırayla (serileştirme kilidi), toplam ≈ 2 dk. Hızlı kümeden (`test-fast`) `#[ignore]`
+  # ile çıkarıldı; burada HER PR'da test-fast'a PARALEL koşar: test kaybolmaz, duvar süresi
+  # test-fast'ı aşmadıkça büyümez. Yalnız client-core'un bu test hedefi derlenir.
+  # Önbellek: test-fast ile aynı `shared-key` (bağımlılık derlemesi paylaşılır). Bu iş önbelleği
+  # yalnız OKUR (`save-if: false`): alt-küme derleyen bu iş önce biterse aynı anahtara alt-kümeyi
+  # yazar, test-fast'ın kaydı (anahtar dolu) atlanır ve test-fast sonraki koşularda eksik önbellekle
+  # derlerdi.
+  test-runtime:
+    name: test-runtime (gerçek zamanlı runtime sahipliği)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: core-ci-test
+          save-if: false
+      # Vakum bekçisi: koşan test sayısı BİREBİR `K4G05B_RUNTIME_TESTS` (0 ya da eksik = kırmızı;
+      # ör. `#[ignore]` kaldırılan test bu kümeden düşer). Sayı main.yml `product-profile` işindeki
+      # aynı adımla eş tutulur.
+      - name: runtime sahipliği (--ignored, vakum bekçili)
+        env:
+          K4G05B_RUNTIME_TESTS: "6"
+        run: |
+          set -o pipefail
+          cargo test -p client-core --all-features --test k4g05b_runtime_ownership -- --ignored 2>&1 | tee /tmp/rt.txt
+          grep -Eq "test result: ok\. ${K4G05B_RUNTIME_TESTS} passed; 0 failed" /tmp/rt.txt \
+            || { echo "::error title=TEST_FAILURE::test-runtime ${K4G05B_RUNTIME_TESTS} test kosturmali (vakum bekcisi)"; exit 1; }
 
   # ── Conformance: vektör ↔ uygulama (T-00.3) ──
   # Vektör ya da ilgili kod değiştiğinde kimsenin "koşmayı unutması" mümkün olmasın.
@@ -315,7 +351,7 @@ jobs:
     name: ci verdict (failure classification)
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [static, test-fast, conformance, seam-conformance, miri, asan, msan, security, aead-differential, vectors]
+    needs: [static, test-fast, test-runtime, conformance, seam-conformance, miri, asan, msan, security, aead-differential, vectors]
     if: always()
     steps:
       - name: classify
