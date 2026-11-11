@@ -199,6 +199,8 @@ struct Outcome {
     delivered_units: usize,
     sent_data: u64,
     sent_retx: u64,
+    /// `sent_retx` içinde Duplicate kökenli (ileri kopya / kuruluş probu) sayısı.
+    sent_dup: u64,
     sent_parity: u64,
     sent_bytes: u64,
     dropped_queue: u64,
@@ -312,6 +314,7 @@ fn run_opt(
         delivered_units: 0,
         sent_data: 0,
         sent_retx: 0,
+        sent_dup: 0,
         sent_parity: 0,
         sent_bytes: 0,
         dropped_queue: 0,
@@ -338,7 +341,11 @@ fn run_opt(
         for d in decs {
             match d.kind {
                 TransmitKind::Data => o.sent_data += 1,
-                TransmitKind::Retransmit | TransmitKind::Duplicate => o.sent_retx += 1,
+                TransmitKind::Retransmit => o.sent_retx += 1,
+                TransmitKind::Duplicate => {
+                    o.sent_retx += 1;
+                    o.sent_dup += 1;
+                }
                 TransmitKind::FecParity => o.sent_parity += 1,
                 TransmitKind::CsProbe => {}
             }
@@ -598,13 +605,14 @@ fn fmt_s(v: Option<u64>) -> String {
 
 fn report(eng: Engine, label: &str, o: &Outcome) {
     println!(
-        "[{}] {label}: tamamlanma={} teslim={}/{} data={} retx={} parite={} bayt={} kuyruk_düşen={} rastgele_düşen={} sack={} dönüş_bayt={} dönüş_düşen={} birim_p50={} birim_p95={}",
+        "[{}] {label}: tamamlanma={} teslim={}/{} data={} retx={} (dup={}) parite={} bayt={} kuyruk_düşen={} rastgele_düşen={} sack={} dönüş_bayt={} dönüş_düşen={} birim_p50={} birim_p95={}",
         eng.name(),
         fmt_s(o.completed_ns),
         o.delivered_units,
         FILE_BYTES.div_ceil(MTU),
         o.sent_data,
         o.sent_retx,
+        o.sent_dup,
         o.sent_parity,
         o.sent_bytes,
         o.dropped_queue,
