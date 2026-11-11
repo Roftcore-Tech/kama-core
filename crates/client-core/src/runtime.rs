@@ -645,7 +645,7 @@ pub struct ClientStats {
     /// (1) Birim taşıyan karar (Data / Retransmit / Duplicate) store'da yok: store yalnız motorun
     /// teyit çıktısıyla boşaldığından bu, motorun TEYİTLİ birime karar üretmesi olurdu. Motor
     /// teyit olayında birimin bekleyen işini iptal eder (`Sender` `cancel_confirmed_units`: kayıp
-    /// kuyruğu, kopya kuyruğu, uçuştaki diğer kopyalar), bu yüzden bu kaynak beklenmez; oluşursa
+    /// kuyruğu, kopya kuyruğu; uçuştaki diğer kopyaları kararsız), bu yüzden bu kaynak beklenmez; oluşursa
     /// karar datagram üretmez (boş ya da yalnız önekli çerçeve tele çıkmaz), PN harcamaz, haritaya
     /// kayıt açmaz.
     /// (2) `FecParity` kararı runtime'da FEC kapalıyken ya da kararın gönderim kaydı (`send_record`)
@@ -1312,6 +1312,40 @@ pub struct Delivery {
     /// [L-T1] Datagramı açan koruma bağlamı (eş yuvasının `open` ile kimliklendirilmiş bağlamı) —
     /// S1 adaptörü teslimi bununla oturuma atfeder.
     pub ctx: ProtectionContext,
+}
+
+/// [K4G-05b-R · sahip kararı 2026-11-11] Birim taşıyan kararın (Data / Retransmit / Duplicate)
+/// tel çerçevesi. Gövde store'da yoksa `None`: karar ATLANIR, datagram üretilmez (boş gövdeli DATA
+/// ya da yalnız önekli DATA_FRAG tele çıkmaz). [S1B] store WIRE GÖVDESİNİ tutar: frag açıkken
+/// `prefix ‖ payload`, kapalıyken düz payload — emisyon tek şekilli kalır, prefix burada YENİDEN
+/// kurulmaz. [D1a] Çerçevedeki u16 `seq` ara çerçeve alanıdır (S3: interim çerçeve bu sprint beyanlı
+/// KARŞILANMAZ); ARQ kimliği DEĞİL — alıcı kimliği `meta.full_wire_pn`'den alır.
+fn unit_frame(
+    store: &HashMap<u64, Vec<u8>>,
+    seq: u64,
+    unit_id: u64,
+    frag_on: bool,
+) -> Option<Vec<u8>> {
+    let payload = store.get(&unit_id)?;
+    let wire_seq = (seq & 0xFFFF) as u16;
+    Some(if frag_on {
+        encode_data_frag(wire_seq, unit_id, payload)
+    } else {
+        encode_data(wire_seq, unit_id, payload)
+    })
+}
+
+/// [K4G-05b-R · sahip kararı 2026-11-11] FEC onarım kararının sembolü (repair-store'dan). Blok
+/// tahliye edilmiş ya da ESI yoksa `None`: karar ATLANIR, boş sembollü FEC çerçevesi tele çıkmaz.
+fn repair_symbol(
+    repair_store: &BTreeMap<u32, (u8, Vec<RepairSymbol>)>,
+    block_id: u32,
+    esi: u16,
+) -> Option<&[u8]> {
+    repair_store
+        .get(&block_id)
+        .and_then(|(_, rs)| rs.iter().find(|r| r.esi == esi))
+        .map(|r| r.bytes.as_slice())
 }
 
 fn elapsed_ns(start: Instant) -> u64 {
@@ -2278,11 +2312,8 @@ async fn client_task(
                             // çerçevesi çıkmaz, PN harcanmaz. Motor kararı zaten işledi; kaydın
                             // ACK'i gelmez, kayıt uçuşta kalır (parite kaydı kayıpta ARQ'ya girmez;
                             // ardılı `ClientStats::stale_skipped`). Sayaçlar: `fec_repair_missing`
-                            // (neden) + `stale_skipped` (toplam).
-                            let Some(sym) = entry
-                                .and_then(|(_, rs)| rs.iter().find(|r| r.esi == esi))
-                                .map(|r| r.bytes.as_slice())
-                            else {
+                            // (neden) + `stale_skipped` (toplam). Sınama: `skip_tests`.
+                            let Some(sym) = repair_symbol(&repair_store, block_id, esi) else {
                                 stats.fec_repair_missing += 1;
                                 stats.stale_skipped += 1;
                                 continue;
@@ -2342,19 +2373,11 @@ async fn client_task(
                 // da yalnız önekli çerçeve çıkmaz. Sayaçlar: `stale_decisions` (neden) +
                 // `stale_skipped` (toplam). Ölçümler: `docs/design/K4G-05b-RUNTIME-ENVANTER.md`
                 // "Atlama politikası".
-                let Some(payload) = store.get(&d.unit_id) else {
+                // Sınama: `skip_tests` (store-miss → çerçeve yok).
+                let Some(frame) = unit_frame(&store, d.seq, d.unit_id, frag_on) else {
                     stats.stale_decisions += 1;
                     stats.stale_skipped += 1;
                     continue;
-                };
-                // [S1B] store WIRE GÖVDESİNİ tutar: frag açıkken `prefix ‖ payload`, kapalıyken
-                // düz payload — emisyon tek şekilli kalır, prefix burada YENİDEN kurulmaz.
-                // [D1a] Çerçevedeki u16 `seq` ara çerçeve alanıdır (S3: interim çerçeve bu sprint
-                // beyanlı KARŞILANMAZ); ARQ kimliği DEĞİL — alıcı kimliği `meta.full_wire_pn`'den alır.
-                let frame = if frag_on {
-                    encode_data_frag((d.seq & 0xFFFF) as u16, d.unit_id, payload)
-                } else {
-                    encode_data((d.seq & 0xFFFF) as u16, d.unit_id, payload)
                 };
                 // Sınıf ayrımı motorun karar tipinden: ilk emisyon / ARQ retransmit / §11 dup.
                 let class = match d.kind {
@@ -4040,6 +4063,69 @@ async fn server_task(
         }
     }
     stats
+}
+
+#[cfg(test)]
+mod skip_tests {
+    //! [K4G-05b-R · sahip kararı 2026-11-11, #174 madde 2] Gövdesi olmayan karar datagram
+    //! üretmez. Motor teyitli birime karar üretmediğinden (teyitte bekleyen iş iptal) runtime
+    //! testlerinde bu dallar doğal trafikle KOŞMAZ (`stale_skipped == 0`); savunma dalının kendisi
+    //! burada sınanır: store-miss ve eksik onarım sembolü için çerçeve kurulmaz, store'daki gövde
+    //! için çerçeve gövdenin TAMAMINI taşır (başlık-only çerçeve yok).
+
+    use super::*;
+
+    const UNIT: u64 = 7;
+    const SEQ: u64 = 0x1_0005; // u16 ara alanda 5
+    const BLOCK: u32 = 3;
+    const ESI: u16 = 2;
+
+    #[test]
+    fn store_miss_builds_no_frame() {
+        let store: HashMap<u64, Vec<u8>> = HashMap::new();
+        for frag_on in [false, true] {
+            assert_eq!(
+                unit_frame(&store, SEQ, UNIT, frag_on),
+                None,
+                "frag={frag_on}"
+            );
+        }
+    }
+
+    #[test]
+    fn store_hit_frame_carries_whole_body() {
+        let body = vec![0xAB; 40];
+        let store: HashMap<u64, Vec<u8>> = HashMap::from([(UNIT, body.clone())]);
+        let plain = unit_frame(&store, SEQ, UNIT, false).expect("gövdeli DATA");
+        assert_eq!(plain, encode_data(5, UNIT, &body));
+        assert_eq!(
+            plain.len(),
+            HDR_DATA + body.len(),
+            "başlık + gövdenin tamamı"
+        );
+        let frag = unit_frame(&store, SEQ, UNIT, true).expect("gövdeli DATA_FRAG");
+        assert_eq!(frag, encode_data_frag(5, UNIT, &body));
+        // Başka birimin gövdesi kullanılmaz.
+        assert_eq!(unit_frame(&store, SEQ, UNIT + 1, false), None);
+    }
+
+    #[test]
+    fn missing_repair_symbol_builds_no_frame() {
+        let mut rs: BTreeMap<u32, (u8, Vec<RepairSymbol>)> = BTreeMap::new();
+        assert_eq!(repair_symbol(&rs, BLOCK, ESI), None, "blok yok (tahliye)");
+        rs.insert(
+            BLOCK,
+            (
+                4,
+                vec![RepairSymbol {
+                    esi: ESI + 1,
+                    bytes: vec![1, 2, 3],
+                }],
+            ),
+        );
+        assert_eq!(repair_symbol(&rs, BLOCK, ESI), None, "ESI yok");
+        assert_eq!(repair_symbol(&rs, BLOCK, ESI + 1), Some(&[1u8, 2, 3][..]));
+    }
 }
 
 #[cfg(test)]

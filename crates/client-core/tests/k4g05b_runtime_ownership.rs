@@ -43,7 +43,9 @@
 //!    runtime'da atlanır: `stale_skipped == stale_decisions + fec_repair_missing`.
 //! 7. Motor teyitli birime karar ÜRETMEZ (sahip kararı 2026-11-11; motor teyit olayında birimin
 //!    bekleyen işini iptal eder): `stale_decisions == 0`. Bunun ters çevrilmiş hâli (iptalden önce)
-//!    FEC bekçisinin vakum ön koşuluydu (`stale_skipped ≥ 1`).
+//!    FEC bekçisinin vakum ön koşuluydu (`stale_skipped ≥ 1`). Bu yüzden iddia 6'nın atlama dalı
+//!    burada doğal trafikle koşmaz; dalın kendisi (store-miss ve eksik onarım sembolünde çerçeve
+//!    kurulmaz) `runtime.rs` `skip_tests`'te sınanır.
 //!
 //! TABAN (`4a9e97f1`): iddia 1 KIRMIZI beklenir. İddia 5'in kancası
 //! (`SenderRecoveryDiag::{seq_to_unit_len, unit_seqs_len}`) tabanda yoktur.
@@ -1335,8 +1337,10 @@ async fn run_guard_loss(engine: TransportEngine, path: &str) {
 
 /// Store-miss bekçisi — FEC RECOVERED (statik-r): iki birimin DATA'sı kalıcı düşer, alıcı bloğu
 /// çözer ve RECOVERED bildirir. RECOVERED teyittir: motor kurtarılan birimin kayıp ve kopya işini
-/// ve uçuştaki kayıtlarını iptal eder (envanter satır 8), teyitli birime karar üretmez (iddia 7);
-/// tele gövdesiz datagram çıkmaz (iddia 6), runtime haritalarına kayıt açılmaz.
+/// iptal eder, uçuştaki kayıtlarını kararsız kılar (uçuşta kalırlar; ACK ya da kayıp ilanıyla ya da
+/// sessiz kanal sınırında düşerler, yeniden kuyruğa girmezler — envanter satır 8) ve teyitli birime
+/// karar üretmez (iddia 7); tele gövdesiz datagram çıkmaz (iddia 6), runtime haritalarına kayıt
+/// açılmaz. Atlama dallarının kendisi `runtime.rs` `skip_tests`'te sınanır (bu trafikte koşmazlar).
 ///
 /// Ters çevrilmiş vakum bekçisi (sahip kararı 2026-11-11): iptal öncesi silinen birimlerin
 /// kayıtları teyitten sonra motorda kalıyor, zaman eşiğiyle kayıp ilan ediliyor ve yeniden karar
