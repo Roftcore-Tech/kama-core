@@ -11,6 +11,7 @@
 //! | [`heartbeat`] | sessizlikte heartbeat, aktif yoklama, "koptu" (C6, C7); jitter (KK-H48) |
 //! | [`t3`] | T3 sabitleri ve aralık dizisi (KR-18, KK-H35) |
 //! | [`link`] | [`HubLink`] çekirdeği ve [`HubEnvelopeLink`] (`EnvelopeLink` cephesi) |
+//! | [`relink`] | [HLR] hat kaybı yenilemesinin eş başına sınırı ve geri çekilmesi (C5) |
 //! | [`signer`] | [`BindSigner`] (anahtar bileşim kökünde, KK-H43) |
 //!
 //! Çerçeve sınırı: [`HubLink`]'in verdiği ve aldığı kontrol çerçevesi **açılmış** biçimdedir:
@@ -23,6 +24,7 @@
 pub mod bind;
 pub mod heartbeat;
 pub mod link;
+pub mod relink;
 pub mod signer;
 pub mod t3;
 // [S2-A3-2a / HB2] KK-H31: HB2 dosyaları.
@@ -93,8 +95,9 @@ pub enum HubNotice {
     Disconnected,
     /// `ROUTE_MISS{h}`: `h` bırakıldı; oturum için yeni INIT gerekir (C5). Tetik HB2'de (KK-H39).
     HandleLost { peer: PeerRef, h: HubHandle },
-    /// Açılış denemesi sonlandı (`{UNKNOWN_HANDLE, 0}`, `ATTEMPT_MAX_AGE`, çelişkili handle ya da
-    /// yeniden bind sonrası; C3, C7). Niyet sürüyorsa yeni kriptografik INIT gerekir (KK-H39).
+    /// Açılış denemesi sonlandı (`{UNKNOWN_HANDLE, 0}`, `ATTEMPT_MAX_AGE`, çelişkili handle,
+    /// yeniden bind sonrası ya da atanmış handle'a `ROUTE_MISS`; C3, C5, C7). Niyet ya da yenileme
+    /// sürüyorsa yeni kriptografik INIT gerekir (KK-H39).
     AttemptEnded { peer: PeerRef },
 }
 
@@ -154,6 +157,8 @@ pub struct HubCounters {
     pub attempt_completed: u64,
     /// Eşleşen denemesi olmayan `peer_ready` (eski oturumun `Ready`'si; KK-H36).
     pub ready_unmatched: u64,
+    /// [HLR] Transport'un terk ettiği (bekleyeni kapatılmış) deneme: T3 durdu (`cancel_attempt`).
+    pub attempt_cancelled: u64,
     /// Sonlanmış / bilinmeyen denemenin geç `StoreResp`'i (K9; atanmaz).
     pub late_store_resp: u64,
     /// RESPONSE STORE'unun yanıtı (bilgi).
@@ -176,7 +181,7 @@ pub struct HubCounters {
     pub late_response: u64,
     /// `DELIVER{RELAY_OPEN}` (yalnız sayılır; KK-H42).
     pub deliver_relay_open: u64,
-    /// `ROUTE_MISS{h}` → `HandleLost`.
+    /// Bilinen `h` için `ROUTE_MISS` (kurulu hat → `HandleLost`, atanmış deneme → `AttemptEnded`).
     pub route_miss: u64,
     /// Bilinmeyen `h` için `ROUTE_MISS`.
     pub route_miss_unknown: u64,
