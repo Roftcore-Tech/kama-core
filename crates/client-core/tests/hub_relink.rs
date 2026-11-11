@@ -18,7 +18,7 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use client_core::memory_link::MemoryHub;
-use client_core::transport::{ClientTransport, ClientTransportConfig};
+use client_core::transport::{ClientTransport, ClientTransportConfig, RelinkOutcome};
 use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
 use kama_contracts::s1::{
     CompressionPolicy, ConnectResult, DeliveryPolicy, KamaTransport, PreparedUnit, SessionEvent,
@@ -214,7 +214,7 @@ fn settle(a: &mut Node, b: &mut Node, hub: &MemoryHub) {
 }
 
 /// Yeni çiftin iki yönde veri taşıdığı, eski oturumların drain sonunda `Superseded` kapandığı ve iki
-/// uçta tek etkin oturum / bekleyen yenileme yok olduğu.
+/// uçta tek etkin oturum / bekleyen yenileme yok / onaysız provisional artığı yok olduğu.
 fn assert_one_session(
     a: &mut Node,
     b: &mut Node,
@@ -227,13 +227,13 @@ fn assert_one_session(
     b.expect_delivery(b1, b"a1-2");
     assert_eq!(
         a.t.renewal_state_for_test(b.me),
-        (1, 0),
-        "Alice: tek etkin oturum"
+        (1, 0, 0),
+        "Alice: tek etkin oturum, artık yok"
     );
     assert_eq!(
         b.t.renewal_state_for_test(a.me),
-        (1, 0),
-        "Bob: tek etkin oturum"
+        (1, 0, 0),
+        "Bob: tek etkin oturum, artık yok"
     );
     a.clock.advance(GRACE_T_G);
     b.clock.advance(GRACE_T_G);
@@ -254,12 +254,17 @@ fn relink_renews_the_session_and_cuts_over() {
     let (mut a, mut b) = pair(&hub);
     let (a0, b0) = establish(&mut a, &mut b, &hub);
 
-    assert!(
-        !a.t.relink(id(CAROL)),
+    assert_eq!(
+        a.t.relink(id(CAROL)),
+        RelinkOutcome::Nothing,
         "oturumu olmayan eş: yenilenecek oturum yok"
     );
-    assert!(a.t.relink(b.me));
-    assert!(a.t.relink(b.me), "bekleyen yenileme sürer");
+    assert_eq!(a.t.relink(b.me), RelinkOutcome::Started);
+    assert_eq!(
+        a.t.relink(b.me),
+        RelinkOutcome::Nothing,
+        "bekleyen yenileme sürer"
+    );
     assert_eq!(hub.relay(), 1, "TEK yenileme INIT'i");
     b.pump();
     assert!(b.events.is_empty(), "provisional: Bob'da S1 olayı yok");
@@ -280,18 +285,24 @@ fn relink_renews_the_session_and_cuts_over() {
 }
 
 /// Bekleyen yenilemenin hub denemesi biterse (`AttemptEnded`) `restart_renewal` onu yeni
-/// kriptografik INIT ile yeniden başlatır: eski INIT'in geç RESPONSE'u hiçbir oturum açmaz (Crypto
-/// eski bekleyeni kapattı), yeni oturum TEK. Yenileme yokken etkisiz.
+/// kriptografik INIT ile yeniden başlatır: eski INIT'in taşıyıcı tekrarı durdurulur, geç RESPONSE'u
+/// hiçbir oturum açmaz (Crypto eski bekleyeni kapattı), yeni oturum TEK; Bob'da eski INIT'in
+/// provisional'ı yeni oturum açılınca kapanır (artık kalmaz). Yenileme yokken etkisiz.
 #[test]
 fn restart_renewal_replaces_the_unanswered_renewal() {
     let hub = MemoryHub::new();
     let (mut a, mut b) = pair(&hub);
     let (a0, b0) = establish(&mut a, &mut b, &hub);
 
-    assert!(!a.t.restart_renewal(b.me), "yenileme yok");
-    assert!(a.t.relink(b.me));
-    assert!(a.t.restart_renewal(b.me));
-    assert_eq!(hub.relay(), 2, "eski ve yeni INIT → Bob");
+    assert_eq!(
+        a.t.restart_renewal(b.me),
+        RelinkOutcome::Nothing,
+        "yenileme yok"
+    );
+    assert_eq!(a.t.relink(b.me), RelinkOutcome::Started);
+    assert_eq!(a.t.restart_renewal(b.me), RelinkOutcome::Started);
+    assert_eq!(hub.cancelled_inits().len(), 1, "eski INIT'in tekrarı durdu");
+    assert_eq!(hub.relay(), 2, "eski (gitmiş) ve yeni INIT → Bob");
     b.pump();
     assert!(b.events.is_empty(), "iki provisional: Bob'da S1 olayı yok");
     assert_eq!(hub.relay(), 2, "iki RESPONSE → Alice");
@@ -304,7 +315,40 @@ fn restart_renewal_replaces_the_unanswered_renewal() {
         (a.readies.as_slice(), b.readies.as_slice()),
         ([a1].as_slice(), [b1].as_slice())
     );
-    assert!(!a.t.restart_renewal(b.me), "yenileme bitti");
+    assert_eq!(
+        a.t.restart_renewal(b.me),
+        RelinkOutcome::Nothing,
+        "yenileme bitti"
+    );
+}
+
+/// [HLR] Taşıyıcı INIT'i almazsa (hub deneme tavanı dolu) yenileme KAYDEDİLMEZ (`Deferred`):
+/// bekleyen yenileme yok sayılmaz, sonraki `relink` yeni INIT başlatır. ESKİ DAVRANIŞ: taşıyıcısız
+/// yenileme kaydediliyordu — hiçbir `AttemptEnded` gelmez, `relink` onu "bekliyor" sayardı; oturum
+/// `HALF_OPEN_TTL`'ye dek yeni INIT'siz kalırdı.
+#[test]
+fn relink_whose_init_the_carrier_refuses_is_not_recorded() {
+    let hub = MemoryHub::new();
+    let (mut a, mut b) = pair(&hub);
+    let (a0, b0) = establish(&mut a, &mut b, &hub);
+
+    hub.refuse_next_inits(1);
+    assert_eq!(a.t.relink(b.me), RelinkOutcome::Deferred);
+    assert_eq!(
+        a.t.renewal_state_for_test(b.me),
+        (1, 0, 0),
+        "kayıt yok, eski oturum sürer"
+    );
+    assert_eq!(hub.relay(), 0, "INIT yok");
+    assert_eq!(a.t.relink(b.me), RelinkOutcome::Started, "yeniden deneme");
+    assert_eq!(hub.relay(), 1, "INIT → Bob");
+    b.pump();
+    assert_eq!(hub.relay(), 1, "RESPONSE → Alice");
+    let a1 = a.wait_ready(b.me);
+    a.send(a1, b"a1").expect("gönder");
+    let b1 = b.wait_ready(a.me);
+    b.expect_delivery(b1, b"a1");
+    assert_one_session(&mut a, &mut b, (a0, a1), (b0, b1));
 }
 
 /// İki uç da aynı anda hattını kaybetti (iki uç da `ROUTE_MISS` aldı): iki yenileme INIT'i çapraz
@@ -317,8 +361,8 @@ fn both_ends_relink_at_once_and_end_in_one_session() {
     let (mut a, mut b) = pair(&hub);
     let (a0, b0) = establish(&mut a, &mut b, &hub);
 
-    assert!(a.t.relink(b.me));
-    assert!(b.t.relink(a.me));
+    assert_eq!(a.t.relink(b.me), RelinkOutcome::Started);
+    assert_eq!(b.t.relink(a.me), RelinkOutcome::Started);
     assert_eq!(hub.relay(), 2, "iki INIT çapraz");
     a.pump();
     b.pump();
@@ -331,6 +375,11 @@ fn both_ends_relink_at_once_and_end_in_one_session() {
     assert_eq!(
         (a.readies.as_slice(), b.readies.as_slice()),
         ([a1].as_slice(), [b1].as_slice())
+    );
+    assert_eq!(
+        hub.cancelled_inits().len(),
+        1,
+        "glare'i kaybedenin (Bob) terk edilen yenilemesinin tekrarı durdu"
     );
 }
 
@@ -348,11 +397,15 @@ fn peer_relinks_after_answering_our_renewal(alice_first: bool) {
         } else {
             (&mut b, &mut a)
         };
-        assert!(x.t.relink(y.me));
+        assert_eq!(x.t.relink(y.me), RelinkOutcome::Started);
         assert_eq!(hub.relay(), 1, "ilk yenileme INIT'i");
         y.pump();
         assert!(y.events.is_empty(), "provisional: S1 olayı yok");
-        assert!(y.t.relink(x.me), "provisional onaysızken eş de yeniler");
+        assert_eq!(
+            y.t.relink(x.me),
+            RelinkOutcome::Started,
+            "provisional onaysızken eş de yeniler"
+        );
     }
     settle(&mut a, &mut b, &hub);
     let a1 = a.wait_ready(b.me);
@@ -363,6 +416,11 @@ fn peer_relinks_after_answering_our_renewal(alice_first: bool) {
     assert_eq!(
         (a.readies.as_slice(), b.readies.as_slice()),
         ([a1].as_slice(), [b1].as_slice())
+    );
+    assert_eq!(
+        hub.cancelled_inits().len(),
+        1,
+        "Bob'un terk edilen yenilemesinin tekrarı durdu"
     );
 }
 
@@ -379,9 +437,9 @@ fn peer_relinks_after_answering_our_renewal_glare_loser_first() {
 /// Eşin yenilemesi bizim cutover'ımızdan SONRA gelir: Alice yeniledi ve kesti (`a1`); Bob, Alice'in
 /// onayı gelmeden kendi yenilemesini başlattı; Bob'un INIT'i Alice'e cutover'dan sonra ulaştı
 /// (Alice'te `a1`'in yerini alacak provisional) ve Bob'un yenilemesi önce tamamlandı (`b1`).
-/// Alice'in `a1`'den gelen ilk birimi Bob'daki (yerini `b1` almış `b0`'ın) provisional'ını onaylar:
-/// bu oturum AÇILMAMALI (eş başına tek etkin oturum); Bob'un `b1`'den birimi Alice'i `b1`'in çiftine
-/// geçirir. Hub kaybı olmadan da doğan sıra: iki uçta yaklaşık aynı anda dolan `SESSION_MAX_AGE`
+/// Bob'daki (yerini `b1` almış `b0`'ın) provisional'ı AÇILMAMALI (eş başına tek etkin oturum): `b1`
+/// açılınca kapanır, Alice'in `a1`'den gelen birimi onu onaylayamaz; Bob'un `b1`'den birimi Alice'i
+/// `b1`'in çiftine geçirir. Hub kaybı olmadan da doğan sıra: iki uçta yaklaşık aynı anda dolan `SESSION_MAX_AGE`
 /// (yaş yenilemesi; bu test onunla kurulur).
 ///
 /// ESKİ DAVRANIŞ: onaylanan provisional, yerini yenisi almış oturum için de açılıyordu → Bob'da
@@ -413,13 +471,14 @@ fn a_peer_renewal_landing_after_our_cutover_opens_no_second_session() {
     let b1 = b.wait_ready(a.me);
     assert_ne!(b1, b0);
 
-    // (3) Alice'in a1'den birimi Bob'daki provisional'ı onaylar: ikinci oturum açılmaz.
+    // (3) [HLR] b1 açılınca Bob'daki provisional (Alice'in a1'i; yerini b1 almış b0 için) kapandı:
+    // Alice'in a1'den birimi onu onaylayamaz, ikinci oturum açılmaz.
+    assert_eq!(
+        b.t.renewal_state_for_test(a.me),
+        (1, 0, 0),
+        "Bob: b1 etkin, artık provisional yok"
+    );
     a.send(a1, b"a1").expect("gönder");
-    let deadline = Instant::now() + WAIT;
-    while b.t.ctx_dispatch_stats().not_ready_drops == 0 {
-        assert!(Instant::now() < deadline, "a1'in birimi Bob'a ulaşmadı");
-        std::thread::sleep(TICK);
-    }
     std::thread::sleep(QUIET);
     b.pump();
     assert_eq!(b.readies, vec![b1], "Bob'da ikinci etkin oturum açılmadı");

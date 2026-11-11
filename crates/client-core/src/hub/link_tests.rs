@@ -1110,6 +1110,66 @@ fn hlr_known_links_keep_a_quiet_peers_only_link_under_churn() {
     assert_eq!(t.link.counters().route_miss, 2);
 }
 
+/// [HLR] Terk edilen deneme (`cancel_attempt`; transport bekleyeni kapattı): T3 durur, bildirim
+/// yok, atanmış handle emekli halkasında (geç RESPONSE'u geç sayılır, K9). ESKİ DAVRANIŞ: iptal
+/// yolu yoktu; transport'un kapattığı yenilemenin T3'ü `ATTEMPT_MAX_AGE`'e (1 saat) dek sürüyordu.
+#[test]
+fn hlr_cancelled_attempt_stops_t3_without_notice() {
+    let mut t = bound();
+    let t0 = t.t0;
+    let id = t.link.send_init(t0, peer(0xB0), 1, vec![1]).unwrap();
+    let f = init_out(&mut t, t0).remove(0);
+    t.link.on_control(t0, &store_resp(f.rid, code::OK, 0x77));
+    let _ = events(&mut t.link);
+    t.link.cancel_attempt(id);
+    assert_eq!(t.link.counters().attempt_cancelled, 1);
+    assert!(notices(&mut t.link).is_empty(), "terk eden zaten biliyor");
+    for k in 1..120 {
+        assert!(init_out(&mut t, t0 + s(k)).is_empty(), "T3 durdu");
+    }
+    t.link.cancel_attempt(id);
+    assert_eq!(
+        t.link.counters().attempt_cancelled,
+        1,
+        "bitmiş deneme: etkisiz"
+    );
+    t.link
+        .on_control(t0 + s(2), &deliver(0x77, [0xB0; 32], 2, &[9; 8]));
+    assert!(events(&mut t.link).is_empty(), "geç RESPONSE");
+    assert_eq!(t.link.counters().late_response, 1);
+}
+
+/// [HLR] Denemesi bittikten sonra kurulan oturumun (`Ready`'si hiçbir denemeyle eşleşmez) handle'ı
+/// hatırlanır: o hattın ROUTE_MISS'i `HandleLost` verir. Sıra: yenilemenin RESPONSE'u boşalma için
+/// tutulurken denemesi biter (`{UNKNOWN_HANDLE, 0}` ya da yeniden bind), yenileme yine de o handle'da
+/// tamamlanır. ESKİ DAVRANIŞ: `route_miss_unknown`, bildirim yok — oturum yeni INIT'siz kalırdı.
+#[test]
+fn hlr_unmatched_ready_handle_is_remembered_for_route_miss() {
+    let mut t = bound();
+    let t0 = t.t0;
+    t.link.send_init(t0, peer(0xB0), 1, vec![1]).unwrap();
+    let f = init_out(&mut t, t0).remove(0);
+    t.link.on_control(t0, &store_resp(f.rid, code::OK, 0x77));
+    let _ = events(&mut t.link);
+    t.link
+        .on_control(t0, &store_resp(f.rid, code::UNKNOWN_HANDLE, 0));
+    assert_eq!(
+        notices(&mut t.link),
+        vec![HubNotice::AttemptEnded { peer: peer(0xB0) }]
+    );
+    t.link.peer_ready(peer(0xB0), HubHandle::from_raw(0x77));
+    assert_eq!(t.link.counters().ready_unmatched, 1);
+    t.link.on_control(t0 + s(10), &route_miss(0x77));
+    assert_eq!(
+        notices(&mut t.link),
+        vec![HubNotice::HandleLost {
+            peer: peer(0xB0),
+            h: HubHandle::from_raw(0x77)
+        }]
+    );
+    assert_eq!(t.link.counters().route_miss_unknown, 0);
+}
+
 // ── C7: yeniden bind ─────────────────────────────────────────────────────────────────────────
 
 #[test]

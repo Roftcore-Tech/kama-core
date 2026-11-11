@@ -10,7 +10,8 @@
 //!
 //! Jitter (KK-H48, transport-tdd §10 AMENDMENT-10 madde 5 "Jitter ZORUNLU"):
 //! `jitter = BLAKE2s-256(seed ‖ u32_be(deneme))[0..4] (u32 BE) mod pencere`, `pencere` = adımın %25'i
-//! (ms çözünürlüğü). Uygulandığı yerler: heartbeat vadesi ve tükenen bind turundan sonraki bekleme.
+//! (ms çözünürlüğü). Uygulandığı yerler: heartbeat vadesi ve tükenen bind turundan sonraki bekleme;
+//! [HLR] hat kaybı yenilemesinin geri çekilmesi ([`super::relink`]; tohum ayrı, bkz. orada).
 //! Uygulanmadığı yerler: S4'ün sabit tekrarları (bind turu 3 × 1 s, yoklama 3 × 1 s) ve T3. `seed` =
 //! bind sonrası son kabul edilen bind'in `client_nonce`'u, bind öncesi o denemenin `client_nonce`'u.
 //! `dest_hash` tohum DEĞİLDİR. AMENDMENT-10 madde 1'in "500 ms, ×2" prob merdiveni uygulanmaz: hub

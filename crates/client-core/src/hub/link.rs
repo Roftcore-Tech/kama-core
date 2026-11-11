@@ -5,7 +5,7 @@
 //! | yükümlülük | burada |
 //! |---|---|
 //! | C2 bind | [`super::bind`] makinesi; bind olmadan STORE ve heartbeat gitmez (kuyrukta bekler) |
-//! | C3 INIT + T3 | `send_init` → `STORE{0, 0x01}`; aynı `request_id`, bayt-özdeş tekrar; yalnız `peer_ready` (eşleşen `h`), `{UNKNOWN_HANDLE, 0}`, çelişkili handle, `ATTEMPT_MAX_AGE`, aynı eşe yeni INIT ya da yeniden bind durdurur |
+//! | C3 INIT + T3 | `send_init` → `STORE{0, 0x01}`; aynı `request_id`, bayt-özdeş tekrar; yalnız `peer_ready` (eşleşen `h`), `{UNKNOWN_HANDLE, 0}`, çelişkili handle, `ATTEMPT_MAX_AGE`, aynı eşe yeni INIT, yeniden bind ya da terk (`cancel_attempt`) durdurur |
 //! | C4 RESPONSE | `send_response` → `STORE{h, 0x02}`; yinelenen `(h, INIT)` → saklı RESPONSE yeniden (KK-H38); K3 tutma (KK-H37) |
 //! | C5 ROUTE_MISS | `h` bırakılır; kurulu hat → `HandleLost`, `h`'si atanmış açılış denemesi → `AttemptEnded` (eş başına ≥ 5 s, ertelenen bildirim tür başına bir; KK-H39) |
 //! | C6/C7 | [`super::heartbeat`]; "koptu" → yeniden bind; gönderilmiş, tamamlanmamış denemeler biter |
@@ -688,6 +688,12 @@ impl HubLink {
 
     /// Bileşim kökünden S1 `Ready` (KK-H36): `peer` için atanmış `h`'si EŞLEŞEN denemenin T3'ü durur.
     /// Eşleşmeyen (eski oturumun) `Ready`'si yeni denemeyi kapatmaz.
+    ///
+    /// [HLR] Eşleşmeyen `Ready`'nin `h`'si de kurulu hat olarak hatırlanır: denemesi bittikten
+    /// sonra (yeniden bind, `{UNKNOWN_HANDLE, 0}`) RESPONSE'u boşalma için tutulmuş bir yenileme
+    /// oturumunu o handle'da kurar; hatırlanmasaydı o hattın `ROUTE_MISS`'i `route_miss_unknown`
+    /// olur, `HandleLost` verilmez, oturum yeni INIT'siz kalırdı. Fazladan hatırlanan bir handle'ın
+    /// bedeli en çok bir `HandleLost`'tur (sınırı bileşim kökünde, S4 C5).
     pub fn peer_ready(&mut self, peer: PeerRef, h: HubHandle) {
         if let Some(i) = self
             .attempts
@@ -699,6 +705,17 @@ impl HubLink {
             self.remember_link(h, peer);
         } else if !self.known_links.iter().any(|&(k, p)| k == h && p == peer) {
             bump(&mut self.counters.ready_unmatched);
+            self.remember_link(h, peer);
+        }
+    }
+
+    /// [HLR] Terk edilen denemenin T3'ü durur (S4 C3: "bağlantı niyeti iptal edildi"; transport
+    /// bekleyeni kapattı). Bildirim YOK (terk eden zaten biliyor); atanmış handle emekli halkasına
+    /// yazılır (K9: geç yanıt ≠ çelişki). Bilinmeyen / bitmiş deneme etkisizdir.
+    pub fn cancel_attempt(&mut self, id: LinkAttempt) {
+        if let Some(i) = self.attempts.iter().position(|a| a.id == id) {
+            self.take_attempt(i);
+            bump(&mut self.counters.attempt_cancelled);
         }
     }
 
@@ -1051,6 +1068,10 @@ impl EnvelopeLink for HubEnvelopeLink {
 
     fn poll(&mut self) -> Option<LinkEvent> {
         self.with(|l, _| l.poll_event())
+    }
+
+    fn cancel_init(&mut self, attempt: LinkAttempt) {
+        self.with(|l, _| l.cancel_attempt(attempt));
     }
 }
 

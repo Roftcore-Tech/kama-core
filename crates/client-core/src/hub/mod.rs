@@ -11,6 +11,7 @@
 //! | [`heartbeat`] | sessizlikte heartbeat, aktif yoklama, "koptu" (C6, C7); jitter (KK-H48) |
 //! | [`t3`] | T3 sabitleri ve aralık dizisi (KR-18, KK-H35) |
 //! | [`link`] | [`HubLink`] çekirdeği ve [`HubEnvelopeLink`] (`EnvelopeLink` cephesi) |
+//! | [`relink`] | [HLR] hat kaybı yenilemesinin eş başına sınırı ve geri çekilmesi (C5) |
 //! | [`signer`] | [`BindSigner`] (anahtar bileşim kökünde, KK-H43) |
 //!
 //! Çerçeve sınırı: [`HubLink`]'in verdiği ve aldığı kontrol çerçevesi **açılmış** biçimdedir:
@@ -23,6 +24,7 @@
 pub mod bind;
 pub mod heartbeat;
 pub mod link;
+pub mod relink;
 pub mod signer;
 pub mod t3;
 // [S2-A3-2a / HB2] KK-H31: HB2 dosyaları.
@@ -155,6 +157,8 @@ pub struct HubCounters {
     pub attempt_completed: u64,
     /// Eşleşen denemesi olmayan `peer_ready` (eski oturumun `Ready`'si; KK-H36).
     pub ready_unmatched: u64,
+    /// [HLR] Transport'un terk ettiği (bekleyeni kapatılmış) deneme: T3 durdu (`cancel_attempt`).
+    pub attempt_cancelled: u64,
     /// Sonlanmış / bilinmeyen denemenin geç `StoreResp`'i (K9; atanmaz).
     pub late_store_resp: u64,
     /// RESPONSE STORE'unun yanıtı (bilgi).
