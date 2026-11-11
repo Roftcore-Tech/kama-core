@@ -1150,4 +1150,75 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// [Ö-P inceleme] `serve_loop` düzeyinde iki kopya yolu, iki motorda: aynı `seq`'in ikinci
+    /// varışı taşımada bastırılır ve satır YAZMAZ; aynı birimin YENİ `seq`'le gelişi `dup: true`
+    /// satırı yazar. Datagramlar tel biçimiyle (`encode_data`) elle gönderilir; son datagram
+    /// (birim 8) işarettir — satırı görününce öncekiler işlenmiştir (tek soket, sıralı döngü).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rx_log_dup_paths_serve_loop() {
+        for engine in [Engine::Legacy, Engine::CcPort] {
+            let dir = std::env::temp_dir().join(format!(
+                "kama-rxlog-dup-{}-{}",
+                engine.label(),
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("rx_log.jsonl");
+            let log = crate::rxlog::RxStream::create(&path, "kama", engine.label()).unwrap();
+            let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let saddr = server.local_addr().unwrap();
+            let task = tokio::spawn(serve_loop(
+                server,
+                Instant::now(),
+                4,
+                BudgetMode::Unlimited,
+                None,
+                engine,
+                Some(log),
+            ));
+            let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let payload = [0u8; 64];
+            // (seq, birim): ilk teslim · aynı seq (bastırılır) · yeni seq aynı birim (dup) · işaret.
+            for (seq, unit) in [(0u16, 7u64), (0, 7), (1, 7), (2, 8)] {
+                client
+                    .send_to(&encode_data(seq, unit, &payload), saddr)
+                    .await
+                    .unwrap();
+            }
+            let until = Instant::now() + Duration::from_secs(5);
+            let v: Vec<serde_json::Value> = loop {
+                let text = std::fs::read_to_string(&path).unwrap();
+                let v: Vec<serde_json::Value> = text
+                    .lines()
+                    .map(|l| serde_json::from_str(l).unwrap())
+                    .collect();
+                if v.iter().any(|r| r["u"] == 8) {
+                    break v;
+                }
+                assert!(Instant::now() < until, "işaret satırı gelmedi: {text}");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            };
+            task.abort();
+            assert_eq!(v[0]["engine"], engine.label());
+            let got: Vec<(u64, u64, bool)> = v[1..]
+                .iter()
+                .map(|r| {
+                    (
+                        r["u"].as_u64().unwrap(),
+                        r["s"].as_u64().unwrap(),
+                        r["dup"].as_bool().unwrap(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                got,
+                vec![(7, 0, false), (7, 1, true), (8, 2, false)],
+                "motor {}: aynı seq satır yazmamalı, yeni seq dup:true yazmalı",
+                engine.label()
+            );
+            assert!(v[1..].iter().all(|r| r["n"] == 64), "n = uygulama yükü");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
 }
