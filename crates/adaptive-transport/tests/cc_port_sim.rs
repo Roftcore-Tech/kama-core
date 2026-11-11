@@ -447,6 +447,14 @@ fn run_opt(
                 if delivered.insert(u) {
                     if let Some(&t0) = offer_at.get(&u) {
                         unit_delays.push(now - t0);
+                        if trace {
+                            println!(
+                                "[{}] t={:.2}s TESLİM birim={u} gecikme={:.2}s",
+                                eng.name(),
+                                now as f64 / SEC as f64,
+                                (now - t0) as f64 / SEC as f64
+                            );
+                        }
                     }
                 }
             }
@@ -791,7 +799,7 @@ fn matrix_explore() {
 
 /// r25 ileti hücresi (bench `b_r25_d300_l20_p65` yaklaşığı): 25 B/s İKİ yönde, 300 ms tek yön,
 /// %20 kayıp, 60 × 65 B ileti 10 s aralıkla (tel 130 B ≈ 5,2 s; yük ≈ %52). Ölçü: ileti teslim gecikmesi p50 ve teslim/60.
-/// Dönüş yolu serileştirilir (SACK ~65 B ≈ 2,6 s). Kapı: 60/60 teslim; port ileti p50 ≤ 20 s. `CC_R25_SEEDS=<n>` ile tohum sayısı (varsayılan 10).
+/// Dönüş yolu serileştirilir (SACK ~65 B ≈ 2,6 s). Kapı: 60/60 teslim; port ileti p50 ≤ 12 s. `CC_R25_SEEDS=<n>` ile tohum sayısı (varsayılan 10).
 #[test]
 fn r25_lowband_messages() {
     let seeds: u64 = std::env::var("CC_R25_SEEDS")
@@ -833,8 +841,8 @@ fn r25_lowband_messages() {
             p50(rev_b),
             p50(retx)
         );
-        // Kapı: her motor 60/60 teslim (medyan); port ileti p50 ≤ 20 s (U10–U12 öncesi 95 s; eski
-        // motor ~6,6 s — eşitlenince kapı sıkılaşır).
+        // Kapı: her motor 60/60 teslim (medyan); port ileti p50 ≤ 12 s (U10–U13 öncesi 95 s, sonrası
+        // 8,5 s; eski motor 5,4 s — eşitlenince kapı sıkılaşır).
         assert_eq!(
             p50(deliv),
             60,
@@ -843,8 +851,8 @@ fn r25_lowband_messages() {
         );
         if eng != Engine::Legacy {
             assert!(
-                p50(p50s) <= 20 * SEC,
-                "[{}] r25 ileti p50 medyanı > 20 s",
+                p50(p50s) <= 12 * SEC,
+                "[{}] r25 ileti p50 medyanı > 12 s",
                 eng.name()
             );
         }

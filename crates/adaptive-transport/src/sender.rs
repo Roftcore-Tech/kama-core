@@ -1693,6 +1693,9 @@ pub struct Sender {
     e2a_tail_probe2: Option<(u64, Option<u64>, u32)>,
     /// [E2a gözlem] SALT GÖZLEM — hiçbir karar okumaz (INV-007).
     e2a_diag: crate::loss::E2aDiag,
+    /// [CC-PORT U13] Kayıp ilan edilen birimin daha taze kopyası uçuşta olduğu için yeniden
+    /// kuyruklanmayan kayıt sayısı (salt gözlem).
+    diag_cc_lost_copy_in_flight: u64,
     tail_probe_cancelled: u64, // observation-only (§7): due probes cancelled at emission (ACK-race: target no
     // longer outstanding). Distinct from token-starved (kept pending). Only mutated on the ON path.
     dup_queue: Vec<DupRec>, // §11 zamanlanmış forward-recovery kopyaları
@@ -2031,6 +2034,7 @@ impl Sender {
             e2a_latest_rtt: None,
             e2a_tail_probe2: None,
             e2a_diag: crate::loss::E2aDiag::default(),
+            diag_cc_lost_copy_in_flight: 0,
             tail_probe_cancelled: 0,
             dup_queue: Vec::new(),
             establish_probe_enabled: true,
@@ -2402,6 +2406,12 @@ impl Sender {
     #[must_use]
     pub fn e2a_flags(&self) -> crate::loss::E2aFlags {
         self.e2a
+    }
+
+    /// [CC-PORT U13] Taze kopyası uçuşta olduğu için yeniden kuyruklanmayan kayıp sayısı.
+    #[must_use]
+    pub fn diag_cc_lost_copy_in_flight(&self) -> u64 {
+        self.diag_cc_lost_copy_in_flight
     }
 
     /// [E2a gözlem] SALT GÖZLEM sayaçları ([`crate::loss::E2aDiag`]); hiçbir karar okumaz.
@@ -3853,10 +3863,29 @@ impl Sender {
                 // RECOVERED ile teyitli): kayıp MUHASEBESİ yukarıda ve aşağıda öncekiyle aynı (uçuş
                 // baytı, CC kayıp baytı, prob atfı, kader kanıtı, tombstone); yalnız yeniden kuyruk
                 // (`pending_lost`) ve geometrik kopya kurulmaz — teyitli birime karar yok.
-                let requeue = p.confirmed_release_ns.is_none();
+                let mut requeue = p.confirmed_release_ns.is_none();
                 if !requeue {
                     let c = &mut self.confirmed_cancels;
                     c.lost_not_requeued = c.lost_not_requeued.saturating_add(1);
+                }
+                // [CC-PORT U13] Aynı birimin DAHA SONRA gönderilmiş, henüz kayıp ilan edilmemiş bir
+                // kopyası (PTO probu, U10 ile uçuşta kalan hedefin kopyası) uçuştaysa yeniden kuyruk
+                // yok: o kopya zaten bu birimin yeniden iletimidir. quinn/RFC 9002 çerçeve düzeyinde
+                // tekilleştirmez (kayıp paketin çerçeveleri yeniden kuyruğa girer, prob kopyası da
+                // uçuştadır → çift gönderim); düşük bantta her fazla kopya kuyruğu doldurur (r25 sim:
+                // retx 33 ↔ eski motor 16; kayıp 12). Kopya da kaybolursa kendi ilanı yeniden kuyruklar.
+                if requeue
+                    && self.cc_on()
+                    && p.origin != TransmitKind::FecParity
+                    && self.inflight.values().any(|q| {
+                        q.unit.id == p.unit.id
+                            && q.origin != TransmitKind::FecParity
+                            && q.send_ns > p.send_ns
+                    })
+                {
+                    requeue = false;
+                    self.diag_cc_lost_copy_in_flight =
+                        self.diag_cc_lost_copy_in_flight.saturating_add(1);
                 }
                 if p.origin == TransmitKind::Duplicate {
                     // [commit-B §3.7] Dup-kökenli kayıp tombstonesuz düşer → uçuş-sayısı burada.
