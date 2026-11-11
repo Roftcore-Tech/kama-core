@@ -269,6 +269,16 @@ fn run_opt(
         s.set_cc_initial_window(iw);
     }
     let mut r = eng.receiver();
+    // `CC_ACK_DELAY_MS=<ms>`: port alıcısında zamanlayıcı ACK gecikme tavanı (varsayılan 25 ms;
+    // düşük bant ACK kadansı deneyi).
+    if let Some(m) = std::env::var("CC_ACK_DELAY_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        if eng != Engine::Legacy {
+            r.set_max_ack_delay_ns(m * MS);
+        }
+    }
     if parity_per_block > 0 {
         s.set_fec_actuation_mode(FecActuationMode::Manual { enabled: true })
             .expect("manuel FEC kipi");
