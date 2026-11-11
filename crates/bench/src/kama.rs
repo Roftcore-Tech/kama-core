@@ -153,6 +153,8 @@ struct ClientRun {
     warmup_delivered: HashSet<u64>,
     /// [P0 teşhis] KAMA_BENCH_TRACE=1 → stderr'e TX/ACK birim izi.
     trace: bool,
+    /// [Ö-M] `client --cc-trace` izi (SALT GÖZLEM; `None` = eski yol). Bkz. [`crate::cctrace`].
+    cc_trace: Option<crate::cctrace::KamaTrace>,
 }
 
 impl ClientRun {
@@ -183,6 +185,18 @@ impl ClientRun {
             tx_dup: 0,
             warmup_delivered: HashSet::new(),
             trace: std::env::var_os("KAMA_BENCH_TRACE").is_some(),
+            cc_trace: None,
+        }
+    }
+
+    /// [Ö-M] İzin bench sayaçları (salt okuma; kopya).
+    fn trace_counters(&self) -> crate::cctrace::BenchCounters {
+        crate::cctrace::BenchCounters {
+            acked_units: self.delivered_count,
+            warmup_acked: self.warmup_delivered.len() as u64,
+            tx_data_b: self.tx_data,
+            tx_retx_b: self.tx_retx,
+            tx_dup_b: self.tx_dup,
         }
     }
 
@@ -301,6 +315,14 @@ impl ClientRun {
             }
             let _ = sock.send_to(&frame, server).await;
         }
+        // [Ö-M] İz (SALT GÖZLEM): kararlar tele yazıldıktan SONRA, göndericiyi `&Sender` olarak
+        // okur; dönüş değeri yok, hiçbir karar izden okumaz. `None` = eski yol (tek dal).
+        if self.cc_trace.is_some() {
+            let c = self.trace_counters();
+            if let Some(t) = self.cc_trace.as_mut() {
+                t.observe(&self.sender, now, c);
+            }
+        }
     }
 }
 
@@ -327,6 +349,14 @@ async fn client_loop(
         cfg.kama_arm.label(),
         engine.label()
     );
+    // [Ö-M] `--cc-trace`: dosya koşudan ÖNCE açılır; açılamazsa hata (sessiz izsiz koşu yok).
+    if let Some(p) = crate::cctrace::path() {
+        run.cc_trace = Some(crate::cctrace::KamaTrace::create(
+            p,
+            cfg.kama_arm.label(),
+            engine.label(),
+        )?);
+    }
 
     // Tüm birimleri t0'da enqueue — engine'in İÇ pacing'i yayılımı belirlesin (yapay serileştirme değil;
     // her iki transport da aynı start'tan aynı max_deadline bütçesini alır → adil karşılaştırma).
@@ -444,6 +474,12 @@ async fn client_loop(
     run.tx_data = 0;
     run.tx_retx = 0;
     run.tx_dup = 0;
+    if run.cc_trace.is_some() {
+        let c = run.trace_counters();
+        if let Some(t) = run.cc_trace.as_mut() {
+            t.mark_t0(&run.sender, t0, t0_unix_ns, c);
+        }
+    }
 
     if interval_ns == 0 {
         for id in 0..msg_count {
@@ -550,6 +586,14 @@ async fn client_loop(
                 let raw = buf[..n].to_vec();
                 run.handle_datagram(&raw, now, &sock, cfg.server, &payload).await;
             }
+        }
+    }
+
+    if run.cc_trace.is_some() {
+        let c = run.trace_counters();
+        let now = elapsed_ns(start);
+        if let Some(t) = run.cc_trace.as_mut() {
+            t.finish(&run.sender, now, c);
         }
     }
 

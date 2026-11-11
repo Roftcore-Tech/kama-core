@@ -376,6 +376,18 @@ impl BenchTransport for QuinnTransport {
                 .map_or(0, |d| d.as_nanos()),
         )
         .unwrap_or(0);
+        // [Ö-M] `--cc-trace` (SALT GÖZLEM): 100 ms'de bir `Connection::stats()` kopyası, ayrı
+        // görevde. Dosya ölçümden ÖNCE açılır; açılamazsa hata. `None` = eski yol.
+        let qtrace = match crate::cctrace::path() {
+            Some(p) => Some(crate::cctrace::QuinnTrace::spawn(
+                p,
+                conn.clone(),
+                &arm_label,
+                t0_unix_ns,
+                &stats0,
+            )?),
+            None => None,
+        };
 
         // Mesajlar EŞZAMANLI gönderilir: timeout'lu bir mesaj sonrakileri BLOKLAMAZ (aksi halde
         // %80 loss'ta koşu saatlerce sürerdi + sent_ns şişerdi). sent_ns/delivered_ns MUTLAK (start).
@@ -446,6 +458,9 @@ impl BenchTransport for QuinnTransport {
         events.sort_by_key(|e| e.msg_id);
 
         let stats = conn.stats();
+        if let Some(q) = qtrace {
+            q.finish(&stats).await;
+        }
         if tu.stats {
             print_quinn_stats(tr_label, cfg.cc.label(), setup_ns, &stats, &stats0);
         }

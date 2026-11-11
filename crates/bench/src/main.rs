@@ -2,6 +2,7 @@
 //! `metrics` HESAP yapar (transport'a dokunmaz). quinn baseline (§4.4.1) + kama stub.
 
 mod budget;
+mod cctrace;
 mod error;
 mod event;
 mod kama;
@@ -325,6 +326,11 @@ enum Cmd {
         /// (gerçek tekrar kolu); teslim = ilk kopyanın teyidi. 1 = eski davranış.
         #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=64))]
         dup_copies: u32,
+        /// [Ö-M] İstemci tıkanıklık izi (JSONL; SALT GÖZLEM; `kama` | `quinn`): kama'da BBR kip
+        /// geçişleri + 100 ms örnek (pencere, pacing, kayıp ilanı paket/zaman eşiği, PTO, retx),
+        /// quinn'de 100 ms `ConnectionStats`. Verilmezse kayıt yok, dosya yok. Bkz. `cctrace`.
+        #[arg(long)]
+        cc_trace: Option<PathBuf>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -635,6 +641,7 @@ async fn main() -> Result<(), BenchError> {
             early_exit,
             payload_id,
             dup_copies,
+            cc_trace,
             out,
         } => {
             // [KTP2-F0 / C2] Yalnız ürün kolunda anlamlı; diğer kollarda sessizce yok sayılmaz.
@@ -642,6 +649,15 @@ async fn main() -> Result<(), BenchError> {
                 return Err(BenchError::Other(
                     "--dup-copies yalnız --transport kama-product ile".into(),
                 ));
+            }
+            // [Ö-M] İz yalnız iki kolda yazılır; diğerinde sessizce izsiz koşmak yerine reddet.
+            if let Some(p) = cc_trace {
+                if !matches!(transport, TransportArg::Kama | TransportArg::Quinn) {
+                    return Err(BenchError::Other(
+                        "--cc-trace yalnız --transport kama | quinn ile".into(),
+                    ));
+                }
+                cctrace::set(p);
             }
             // [KTP2-F0 / D] Rakip-kol ayarları (bayraksız = eski davranış; Kama kollarına etkisiz).
             let mut tuning = rival::RivalTuning::from_cli(
