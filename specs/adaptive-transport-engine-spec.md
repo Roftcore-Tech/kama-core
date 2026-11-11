@@ -72,6 +72,19 @@ Sonuçlar (NORMATİF):
 
 ### 0.3 Rate-Control ailesi — SRC (Kama Rate Control), model-based
 
+> **YAMA KAYDI 2026-11-11 · CC-PORT (sahip kararı, gece yetkisi; PR-2 "CC-PORT VARSAYILAN"):** Bu bölümün, §3 (faz makinesi), §5 (loss = rate sinyali değil), §8 (SRC gentle probe), §12 (PTO tavanı)
+> ve §13 (BURST_CAP ≈ 1–2 MTU) hükümlerinin yerini **quinn-proto 0.11.18 BBR + RFC 9002 mekanizmaları** aldı
+> (`crates/adaptive-transport/src/cc/`; eşleme `docs/design/CC-PORT-ESLEME.md`). Eski metin üstü çizili değil,
+> yerinde ve "eski motor" (`TransportEngine::Legacy`, geri alma anahtarı) için geçerli kalır. Yeni normatif hükümler:
+> (1) BtlBw = BBR §7.1 paket-başına teslim hızı örnekleyicisi (bu belgenin §7'si, değişmedi); (2) pace =
+> `pacing_gain × BtlBw`, kazanç döngüsü BBR ProbeBW (1,25/0,75/1×6), Startup 2,885, Drain 1/2,885, ProbeRTT 200 ms /
+> 10 s; (3) uçuş tavanı `inflight ≤ window`, window = cwnd_gain × BDP (+ACK toplanması), recovery'de
+> `min(cwnd, recovery_window)`; (4) kayıp ilanı RFC 9002 §6.1.2: paket eşiği 3, zaman eşiği `9/8 × max(srtt, latest)`,
+> taban 1 ms; (5) PTO tavansız, pencereden muaf, 2 prob; (6) burst tavanı `clamp(window·2 ms/srtt, 10·MTU, 256·MTU)`;
+> (7) ilk uçuş ürün profilinden (4·MTU; RFC 9002'nin 10·MTU'su yalnız yapılandırmayla); (8) alıcı: sırasız varışta
+> anında ACK, max_ack_delay 25 ms. INV-RATE-1 yeni metni CLAUDE.md §4'te. Fuzzy (§15) FEC/ARQ politikasında kalır,
+> hız yolunda değildir.
+
 ```
 SRC = BBR-türevi delivery-rate model çekirdek + FEC/ARQ füzyonu + forward-recovery.
   ÜÇ ORTOGONAL SİNYAL (asla birbirine indirgenmez):
@@ -439,6 +452,9 @@ Akış:
 ---
 
 ## 5. Loss Detection (NORMATİF — loss = recovery sinyali, RATE sinyali DEĞİL)
+
+> **YAMA KAYDI 2026-11-11 · CC-PORT (sahip kararı, gece yetkisi; PR-2 "CC-PORT VARSAYILAN"):** Port motorunda (ürün varsayılanı) kayıp PACING hızını değiştirmez ama BBR `recovery_window` ile
+> uçuş tavanını sınırlar; zaman eşiği tabanı `K_c × EAI` değil 1 ms'dir. Eski cümleler eski motor için kalır.
 
 QUIC RFC 9002 packet-threshold(3)+time-threshold(9/8) **loss-based CC** içindir; biz loss'u rate'e bağlamayız (INV-RATE-1). Loss'u yalnız **recovery** (ARQ/FEC) ve **residual ölçüm** için tespit ederiz.
 
@@ -951,6 +967,10 @@ PATH_DEAD_TIMER: [R4] no_ack(T) → PATH_DEAD; T = IDLE_TIMEOUT'tan AYRI [CAL]. 
 ---
 
 ## 13. Pacing / Token Bucket (NORMATİF)
+
+> **YAMA KAYDI 2026-11-11 · CC-PORT (sahip kararı, gece yetkisi; PR-2 "CC-PORT VARSAYILAN"):** Port motorunda BURST_CAP = `clamp(window × 2 ms / srtt, 10·MTU, 256·MTU)` (quinn `pacing.rs`);
+> "≈ 1–2 × MTU" eski motor içindir. Ölçülen kusur: eski tavan 26,45 kB/s altında tek pakete düşüp FEC paritesini
+> tele çıkarmıyordu (`reports/ktp2/f0`); yeni tavanla parite akar (sim 8/30 → 30/30).
 
 ```
 pace_rate = send_rate_final (§8.5)     # bytes/sec

@@ -666,7 +666,10 @@ IF loss HIGH  AND  bandwidth LOW  AND  ack_confidence LOW:
 > Bu mod ne "hep ARQ" ne "hep FEC"dir; **ACK-bağımsız forward kurtarma**dır ve path iyileşince fuzzy tarafından geri çekilir — geri çekilme **asimetrik hysteresis'le** (yukarıda; tek-eşik salınımı yasak). `parity/duplication` yine `available_redundancy_budget` ile clamp'lenir (§5.5). **[AMENDMENT-3]:** bu cümle §11 MinimalParity istisnası için BAĞLAYICI DEĞİLDİR — istisna kendi üç kapısıyla sınırlıdır ve §5.5 bütçesine tabi değildir; normatif metin engine-spec §11 AMENDMENT-3 ve `docs/transport-v1/adr/ADR-minimal-parity-exception.md`.
 
 ### 5.4 Loss-Decoupling YAPISAL (INV-RATE-1 fuzzy'ye gömülü)
-> **NORMATİF:** `send_rate` çıktısı YALNIZCA bandwidth + queue_delay membership'ine bağlıdır; **loss_rate, rate çıktısının girdisi DEĞİLDİR.** Böylece "loss alone MUST NOT reduce rate" fuzzy tasarımın içine gömülüdür (kanal kaybı FEC/ARQ'yu etkiler, rate'i değil). queue_delay/RTprop inflation/delivery collapse rate'i düşürür.
+> ~~**NORMATİF:** `send_rate` çıktısı YALNIZCA bandwidth + queue_delay membership'ine bağlıdır; **loss_rate, rate çıktısının girdisi DEĞİLDİR.** Böylece "loss alone MUST NOT reduce rate" fuzzy tasarımın içine gömülüdür (kanal kaybı FEC/ARQ'yu etkiler, rate'i değil). queue_delay/RTprop inflation/delivery collapse rate'i düşürür.~~
+> **YAMA KAYDI 2026-11-11 · CC-PORT (sahip kararı, gece yetkisi; PR-2 "CC-PORT VARSAYILAN"):** Fuzzy çıktısı (`send_rate_gain_permille`) hız yolundan çıktı; pace = BBR `pacing_gain × BtlBw`
+> (loss'tan türetilmez). Loss, BBR `recovery_window` ile uçuş tavanını sınırlar (RFC 9002 referans davranışı) ve
+> FEC/ARQ politikasını besler. INV-RATE-1 yeni metni CLAUDE.md §4; eşleme `docs/design/CC-PORT-ESLEME.md`.
 
 ### 5.5 Budget clamp
 `fec_parity_ratio` defuzzified çıktısı **available_redundancy_budget** ile clamp'lenir (düşük bantta yüksek loss bile parity patlatamaz): `parity_final = min(fuzzy_parity, budget_cap, profile_cap)`.
@@ -986,7 +989,7 @@ Canonical app-envelope byte otoritesi: ccr §35. Boyutlar ccr §35 ile birebir.
 | INV-BIND-1 | Established mesaj bağı anahtardadır; wire'da görünür bağ (link_id/session_id/cert-ref/imza) YOK — yalnızca hub_handle (demux) + seq + AEAD tag. |
 | INV-WIRE-1 | SESSION_DATA = hub_handle(4B) + seq(2B) + ct + tag(16B); length implicit (UDP). Outer AEAD/FEC/prefix default YOK. |
 | INV-WIRE-2 | Per-mesaj imza YOK (Ed25519 yalnızca cert; N-türevi ss_s static-DH auth; SIGNED_CONTROL istisna). |
-| INV-RATE-1 | Loss alone MUST NOT reduce rate — fuzzy'de yapısal (loss, rate çıktısının girdisi değil). |
+| INV-RATE-1 | ~~Loss alone MUST NOT reduce rate — fuzzy'de yapısal (loss, rate çıktısının girdisi değil).~~ **2026-11-11 CC-PORT:** loss PACING hızını düşürmez (pace = pacing_gain × BtlBw); uçuş tavanı BBR recovery_window ile sınırlanabilir; fuzzy hız yolunda değil. |
 | INV-RATE-2 | Rate = SRC + fuzzy controller; recovery (ARQ/FEC/karma/none) da fuzzy-seçili; sabit strateji YOK. |
 | INV-FUZZY-1 | FEC/ARQ/rate kararı (compress: AMENDMENT-4 ile transport'tan ÇIKARILDI) fuzzy controller (loss/jitter/bw/queue → defuzzified); parity budget-clamp'li. |
 | INV-CLASS-2 | Loss rate MUST NOT be a direct bandwidth estimator (delivered-bytes/time). |

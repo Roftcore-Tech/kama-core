@@ -76,6 +76,8 @@ struct Bottleneck {
     dropped_random: u64,
     lcg: u64,
     loss_permille: u64,
+    /// Kesinti penceresi (ns): bu aralıkta ileri yönde %100 kayıp (gösterim "kesinti" profili).
+    blackout: Option<(u64, u64)>,
 }
 
 impl Bottleneck {
@@ -92,6 +94,7 @@ impl Bottleneck {
                 .wrapping_mul(6_364_136_223_846_793_005)
                 .wrapping_add(1_442_695_040_888_963_407),
             loss_permille,
+            blackout: None,
         }
     }
 
@@ -114,6 +117,10 @@ impl Bottleneck {
         let start = self.busy.back().copied().unwrap_or(now).max(now);
         let done = start + size * SEC / self.rate_bps;
         self.busy.push_back(done);
+        if self.blackout.is_some_and(|(a, b)| (a..b).contains(&now)) {
+            self.dropped_random += 1;
+            return;
+        }
         if self.loss_permille > 0 && self.rand_permille() < self.loss_permille {
             self.dropped_random += 1;
             return; // serileştirildi ama yolda düştü
@@ -142,6 +149,8 @@ struct Outcome {
     sent_bytes: u64,
     dropped_queue: u64,
     dropped_random: u64,
+    /// Alıcının ürettiği SACK sayısı (dönüş yolu maliyeti).
+    acks: u64,
 }
 
 /// Tek koşu. `units`: (birim sayısı, boyut); `parity_per_block > 0`: her 8 birimlik blok için
@@ -158,9 +167,21 @@ fn run_opt(
     t_max_s: u64,
     units: (u64, u64),
     parity_per_block: u16,
+    blackout: Option<(u64, u64)>,
 ) -> Outcome {
     let one_way = rtt_ms * MS / 2;
     let mut s = eng.sender();
+    // `CC_PTO_MAX_S=<s>`: port kolunda PTO geri çekilme tavanı (varsayılan validated_v1: 30 s).
+    if let Some(m) = std::env::var("CC_PTO_MAX_S")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        if eng != Engine::Legacy {
+            let mut c = adaptive_transport::tail_recovery::TailRecoveryConfig::rfc9002_cc_port();
+            c.max_backoff_pto_ns = m * SEC;
+            s.set_tail_recovery_config(c);
+        }
+    }
     // `CC_IW=<bayt>`: port motorunun ilk uçuş penceresi (varsayılan kurucu: 10·MTU; ürün: 4·MTU).
     if let Some(iw) = std::env::var("CC_IW")
         .ok()
@@ -174,7 +195,24 @@ fn run_opt(
             .expect("manuel FEC kipi");
     }
     let mut fwd = Bottleneck::new(rate_bps, queue_limit, one_way, loss_permille, seed);
+    // Kesinti penceresi `(başlangıç_s, süre_s)`: ileri yönde %100 kayıp (kesinti profili). Testler
+    // parametreyle verir (süreç-geneli ortam değişkeni paralel testlere sızar — CI'da görüldü);
+    // `CC_BLACKOUT=<başlangıç_s>,<süre_s>` yalnız elle koşular için yedek.
+    let blackout = blackout.or_else(|| {
+        let v = std::env::var("CC_BLACKOUT").ok()?;
+        let (a, d) = v.split_once(',')?;
+        Some((a.parse::<u64>().ok()?, d.parse::<u64>().ok()?))
+    });
+    if let Some((a, d)) = blackout {
+        fwd.blackout = Some((a * SEC, (a + d) * SEC));
+    }
     let mut rev: VecDeque<(u64, AckInfo)> = VecDeque::new();
+    // `CC_REV_LOSS=<binde>`: dönüş yolunda (SACK) rastgele kayıp; varsayılan 0 (kayıpsız dönüş).
+    let rev_loss: u64 = std::env::var("CC_REV_LOSS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let mut rev_lcg: u64 = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(12345);
     let mut acked_seen: HashSet<u64> = HashSet::new();
     let mut delivered: HashSet<u64> = HashSet::new();
     let (n_units, unit_size) = units;
@@ -187,6 +225,7 @@ fn run_opt(
         sent_bytes: 0,
         dropped_queue: 0,
         dropped_random: 0,
+        acks: 0,
     };
     let trace = std::env::var("CC_TRACE").is_ok();
     let emit = |decs: Vec<TransmitDecision>, now: u64, fwd: &mut Bottleneck, o: &mut Outcome| {
@@ -275,17 +314,32 @@ fn run_opt(
                 delivered.insert(u);
             }
             if let Some(frame) = out.ack {
+                o.acks += 1;
                 let expected = r.largest_seq().unwrap_or(seq) + 1;
                 push_ack(frame, expected, now, &mut acked_seen, &mut rev);
             }
         }
         if let Some(frame) = r.on_ack_timer(now) {
+            o.acks += 1;
             let expected = r.largest_seq().unwrap_or(0) + 1;
             push_ack(frame, expected, now, &mut acked_seen, &mut rev);
         }
-        // Dönüş yolu (kayıpsız, yalnız gecikme).
+        // Dönüş yolu (yalnız gecikme; `CC_REV_LOSS` ile rastgele SACK kaybı).
         while rev.front().is_some_and(|(t, _)| *t <= now) {
             let (_, ack) = rev.pop_front().unwrap();
+            if rev_loss > 0 {
+                rev_lcg = rev_lcg
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                if (rev_lcg >> 33) % 1000 < rev_loss {
+                    // SACK yolda düştü: içindeki seq'ler bir sonraki SACK'te yine gelir
+                    // (alıcı birikimli bildirir); `acked_seen` filtresi bu yüzden burada geri alınır.
+                    for q in &ack.acked_seqs {
+                        acked_seen.remove(q);
+                    }
+                    continue;
+                }
+            }
             let decs = s.on_event(Event::AckReceived(ack), now);
             emit(decs, now, &mut fwd, &mut o);
         }
@@ -332,6 +386,7 @@ fn run(
         t_max_s,
         (FILE_BYTES.div_ceil(MTU), MTU),
         0,
+        None,
     )
 }
 
@@ -343,7 +398,7 @@ fn fmt_s(v: Option<u64>) -> String {
 
 fn report(eng: Engine, label: &str, o: &Outcome) {
     println!(
-        "[{}] {label}: tamamlanma={} teslim={}/{} data={} retx={} parite={} bayt={} kuyruk_düşen={} rastgele_düşen={}",
+        "[{}] {label}: tamamlanma={} teslim={}/{} data={} retx={} parite={} bayt={} kuyruk_düşen={} rastgele_düşen={} sack={}",
         eng.name(),
         fmt_s(o.completed_ns),
         o.delivered_units,
@@ -353,7 +408,8 @@ fn report(eng: Engine, label: &str, o: &Outcome) {
         o.sent_parity,
         o.sent_bytes,
         o.dropped_queue,
-        o.dropped_random
+        o.dropped_random,
+        o.acks
     );
 }
 
@@ -448,7 +504,7 @@ fn deep_queue_file_loss20_ten_seeds() {
 #[test]
 fn ptt_bundle_first_delivery() {
     for eng in ENGINES {
-        let o = run_opt(eng, 12_500, 6, 300, 200, 7, 30, (6, 400), 0);
+        let o = run_opt(eng, 12_500, 6, 300, 200, 7, 30, (6, 400), 0, None);
         println!(
             "[{}] ptt 6×400B q6 l20: ilk demet={}",
             eng.name(),
@@ -481,6 +537,7 @@ fn fec_parity_reaches_the_wire_below_26kbps() {
             120,
             (FILE_BYTES.div_ceil(MTU), MTU),
             2,
+            None,
         );
         report(eng, "q1000 r12.5k d300 l0 + 2 parite/8 birim", &o);
         println!(
@@ -515,6 +572,49 @@ fn matrix_explore() {
     for (label, rate, q, rtt, loss) in cells {
         for eng in ENGINES {
             ten_seeds(eng, label, rate, q, rtt, loss);
+        }
+    }
+}
+
+/// Hücre 6: kesinti — 150 kB dosya, 12,5 kB/s, 300 ms, %20 kayıp; t = 3 s'de 60 s tam kesinti
+/// (gösterim "kesinti" profili: 60 s %100 kayıp, sonra eski profil). Oturum kesintiyi atlatmalı ve
+/// dosya kesinti bittikten sonra makul sürede tamamlanmalı (kapı: port ≤ 63 + 30 s).
+#[test]
+fn blackout_60s_session_survives_and_completes() {
+    for eng in ENGINES {
+        let mut times = Vec::new();
+        for seed in 1..=5 {
+            let o = run_opt(
+                eng,
+                12_500,
+                1000,
+                300,
+                200,
+                seed,
+                180,
+                (FILE_BYTES.div_ceil(MTU), MTU),
+                0,
+                Some((3, 60)),
+            );
+            report(eng, &format!("kesinti 60s @3s q1000 l20 seed{seed}"), &o);
+            if let Some(t) = o.completed_ns {
+                times.push(t);
+            }
+        }
+        println!(
+            "[{}] kesinti: teslim {}/5 p50={}",
+            eng.name(),
+            times.len(),
+            (!times.is_empty())
+                .then(|| p50(times.clone()))
+                .map_or("YOK".into(), |t| format!("{:.1} s", t as f64 / SEC as f64))
+        );
+        if eng == Engine::CcPort {
+            assert_eq!(times.len(), 5, "port: kesinti sonrası 5/5 tamamlanmalı");
+            assert!(
+                p50(times) <= 93 * SEC,
+                "port: kesinti sonrası ≤ 30 s içinde bitmeli"
+            );
         }
     }
 }
