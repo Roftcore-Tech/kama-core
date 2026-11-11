@@ -596,13 +596,15 @@ pub struct ClientStats {
     /// Açıldı ama tanınmayan çerçeve tipi (ne DATA ne ACK) — kontrol-düzlemi dal-noktası
     /// (item 6, workstream B'de kama-noise-wire formatıyla bağlanır); sessiz yutulmaz, sayılır.
     pub unknown_frames: u64,
-    /// Payload'ı store'da bulunamayan (çoktan ACK'lenmiş birime geç karar) emisyon — kayıp sayıldı.
+    /// Gövdesi olmadığı için tele ÇIKARILMAYAN (atlanan) motor kararı — neden sayacı; toplam
+    /// [`Self::stale_skipped`]'tedir. Motor kararı işlemişti; kaydın ACK'i gelmez, motor onu kayıp
+    /// gibi işler (INV-RATE-1).
     /// [K4G-05b-R · sahip kararı 2026-11-11] İki kaynağı vardır:
     /// (1) Birim taşıyan karar (Data / Retransmit / Duplicate) store'da yok: store yalnız motorun
     /// teyit çıktısıyla boşaldığından bu, motorun TEYİTLİ birime karar üretmesidir (ör. birim geç
     /// orijinalle teyit edildi, yeniden gönderim kaydı `pending_lost`'ta bekliyordu). Bu PR'da motor
-    /// teyitli birimin bekleyen işini budamaz, yani `> 0` olabilir; emisyon başlık-only gider,
-    /// haritaya kayıt açmaz.
+    /// teyitli birimin bekleyen işini budamaz, yani `> 0` olabilir; karar datagram üretmez (boş ya
+    /// da yalnız önekli çerçeve tele çıkmaz), PN harcamaz, haritaya kayıt açmaz.
     /// (2) `FecParity` kararı runtime'da FEC kapalıyken ya da kararın gönderim kaydı (`send_record`)
     /// yokken: tele çıkmaz, yalnız sayılır (ürün varsayılanları bu kararı üretmez).
     /// Değer > 0 okunurken iki kaynak ayrılmaz; (2) yalnız bu yapılandırmalarda katkı verir.
@@ -616,7 +618,9 @@ pub struct ClientStats {
     pub fec_blocks_latched: u64,
     /// [S1] Wire'a yazılan gerçek repair-shard.
     pub fec_repairs_tx: u64,
-    /// [S1] Repair-store'da bulunamayan FecParity kararı (evict/latch-0) — başlık-only gitti.
+    /// [S1] Repair-store'da sembolü bulunamayan FecParity kararı (evict/latch-0) — neden sayacı.
+    /// [K4G-05b-R · sahip kararı 2026-11-11] Karar tele ÇIKMAZ (boş sembollü FEC çerçevesi
+    /// üretilmez, PN harcanmaz); toplam [`Self::stale_skipped`]'tedir.
     pub fec_repair_missing: u64,
     /// [S1] RECOVERED-control ile teslim-teyidi alan birim (alıcı FEC-kurtardı → retransmit iptal,
     /// store'dan düşer, app `acked()` akışına girer).
@@ -667,6 +671,14 @@ pub struct ClientStats {
     /// [L-T1] Kurtarma kapalıyken ([`ClientHandle::set_recovery`]) tele ÇIKARILMAYAN ARQ
     /// retransmit / §11 kopya / FEC repair kararı (yalnız test yapılandırması).
     pub recovery_suppressed: u64,
+    /// [K4G-05b-R · sahip kararı 2026-11-11] Runtime'ın gövdesi olmadığı için tele ÇIKARMADIĞI
+    /// (atladığı) motor kararı sayısı: store'da payload'ı olmayan birim kararı ve FEC-kapalı /
+    /// gönderim kaydısız parite ([`Self::stale_decisions`]) + repair-store'da sembolü olmayan
+    /// parite ([`Self::fec_repair_missing`]). Tanım gereği
+    /// `stale_skipped == stale_decisions + fec_repair_missing`. Atlanan karar datagram üretmez:
+    /// tele boş gövdeli DATA, yalnız önekli DATA_FRAG ya da boş sembollü FEC çerçevesi çıkmaz.
+    /// Kurtarma kapalıyken bastırılan karar burada DEĞİL, [`Self::recovery_suppressed`]'te sayılır.
+    pub stale_skipped: u64,
 }
 
 /// Server koşu istatistikleri.
@@ -771,6 +783,9 @@ pub struct ClientLiveDiag {
     /// Kurtarma kapalıyken tele ÇIKMAYAN retransmit / kopya / FEC repair kararı —
     /// [`ClientStats::recovery_suppressed`].
     pub recovery_suppressed: u64,
+    /// [K4G-05b-R] Gövdesi olmadığı için tele çıkarılmayan (atlanan) motor kararı —
+    /// [`ClientStats::stale_skipped`].
+    pub stale_skipped: u64,
     /// Tele çıkan ARQ retransmit baytı — [`ClientStats::tx_retx_bytes`] (`mark_t0` sıfırlar).
     pub tx_retx_bytes: u64,
     /// Motorun aldığı RTT örneği sayısı (Karn: yalnız orijinal emisyonlardan).
@@ -1201,6 +1216,7 @@ impl ClientLiveDiag {
         self.dups = activation.dups;
         self.parity_emitted = activation.parity_emitted;
         self.recovery_suppressed = stats.recovery_suppressed;
+        self.stale_skipped = stats.stale_skipped;
         self.tx_retx_bytes = stats.tx_retx_bytes;
         self.rtt_samples = sender.diag_rtt_sample_count();
         self.srtt_us = activation.srtt_us;
@@ -1226,6 +1242,7 @@ impl ClientLiveDiag {
         self.recovery_suppressed = self
             .recovery_suppressed
             .saturating_add(other.recovery_suppressed);
+        self.stale_skipped = self.stale_skipped.saturating_add(other.stale_skipped);
         self.tx_retx_bytes = self.tx_retx_bytes.saturating_add(other.tx_retx_bytes);
         self.tx_datagrams = self.tx_datagrams.saturating_add(other.tx_datagrams);
         self.rx_datagrams = self.rx_datagrams.saturating_add(other.rx_datagrams);
@@ -1981,7 +1998,8 @@ async fn client_task(
     let mut msg_pending: HashMap<u32, u32> = HashMap::new();
     // [S1] Ardışık-blok birikimi: unit_id → (block = id/K, esi = id%K) deterministik (iki uç da
     // türetir); yalnız SON blok birikir. K dolunca same-event latch + gerçek RS-encode →
-    // bounded repair_store (en-eski düşer → o bloğun FecParity kararı başlık-only'e düşer).
+    // bounded repair_store (en-eski düşer → o bloğun FecParity kararı atlanır, tele çıkmaz;
+    // `fec_repair_missing` + `stale_skipped`).
     let mut cur_block: Vec<Vec<u8>> = Vec::new();
     let mut cur_block_id: u32 = 0;
     // [FAZ-2 / KALEM-1] blok → (K_actual, repair'ler). K_actual kısmi/son blokta k_shape'ten
@@ -2154,8 +2172,8 @@ async fn client_task(
             let decisions = session.on_event(ev, $now);
             // [K4G-05b-R] Teyit drenajı kararlar işlenmeden ÖNCE: motor aynı olayda teyit ettiği
             // birime karar üretebilir (bu PR'da motor teyitli birimin bekleyen işini budamaz); o
-            // karar aşağıda store-miss olarak sayılır (`stale_decisions`, panik yok) ve birime yeni
-            // harita kaydı açılmaz.
+            // karar aşağıda store-miss olarak atlanır (tele datagram çıkmaz; `stale_decisions` +
+            // `stale_skipped`, panik yok) ve birime yeni harita kaydı açılmaz.
             let confirmed_now: u32 = drain_confirmed!(via);
             for d in decisions {
                 // PN → seq çevirisi motor seq'i taşıyan HER kararda (repair'ler de seq işgal eder;
@@ -2174,9 +2192,7 @@ async fn client_task(
                     }
                 } else {
                     // [S1] FecParity (FEC-açıkken): repair-store'daki gerçek RS-repair →
-                    // FRAME_FEC → seam → wire. Bulunamazsa (evict/latch-0) başlık-only emisyon
-                    // (DATA store-miss gerekçesiyle aynı: motor her emisyonu inflight izler; hiç
-                    // göndermemek yapay kayıp sinyali üretirdi).
+                    // FRAME_FEC → seam → wire.
                     if d.kind == TransmitKind::FecParity {
                         // [L-T1] Kurtarma kapalıyken FEC repair da tele ÇIKMAZ: parity bir kurtarma
                         // mekanizmasıdır (ARQ ile aynı anahtar; yalnız test yapılandırması).
@@ -2187,18 +2203,25 @@ async fn client_task(
                         if let (Some(p), Some(hint)) = (fec.as_ref(), d.send_record) {
                             let SrLogicalRef::Fec { block_id, esi } = hint.logical_ref;
                             let entry = repair_store.get(&block_id);
-                            let sym: Option<&[u8]> = entry
+                            // [K4G-05b-R · sahip kararı 2026-11-11] Sembol repair-store'da yoksa
+                            // (blok tahliye edildi / latch-0) karar ATLANIR: tele boş sembollü FEC
+                            // çerçevesi çıkmaz, PN harcanmaz. Motor kararı zaten işledi; kaydın
+                            // ACK'i gelmez ve motor onu kayıp gibi işler (INV-RATE-1; parite kaydı
+                            // ARQ'ya girmez). Sayaçlar: `fec_repair_missing` (neden) +
+                            // `stale_skipped` (toplam).
+                            let Some(sym) = entry
                                 .and_then(|(_, rs)| rs.iter().find(|r| r.esi == esi))
-                                .map(|r| r.bytes.as_slice());
+                                .map(|r| r.bytes.as_slice())
+                            else {
+                                stats.fec_repair_missing += 1;
+                                stats.stale_skipped += 1;
+                                continue;
+                            };
                             // [FAZ-2 / KALEM-1] K_actual tel başlığında: tam blokta k_shape,
                             // kısmi/son blokta gerçek kaynak sayısı.
                             let k_actual_wire = entry
                                 .map_or_else(|| u8::try_from(p.k_shape).unwrap_or(255), |(k, _)| *k);
-                            if sym.is_some() {
-                                stats.fec_repairs_tx += 1;
-                            } else {
-                                stats.fec_repair_missing += 1;
-                            }
+                            stats.fec_repairs_tx += 1;
                             let frame = encode_fec(
                                 &FecFrameHeader {
                                     kind: inner_kind::FEC_REPAIR,
@@ -2209,7 +2232,7 @@ async fn client_task(
                                     // [D1a] ara çerçeve alanı; kimlik DEĞİL (alıcı PN'i kullanır).
                                     seq: (d.seq & 0xFFFF) as u16,
                                 },
-                                sym.unwrap_or(&[]),
+                                sym,
                             );
                             let pn = seal_send!(frame, TxClass::Fec, $now);
                             map_pn!(pn, d.seq);
@@ -2227,9 +2250,11 @@ async fn client_task(
                         let _ = seal_send!(f, TxClass::Ctrl, $now);
                         continue;
                     }
-                    // FEC-kapalıyken FecParity: v0 kabuk taşımaz, sayar (bootstrap OFF;
-                    // sevk default'larında üretilmezler — typed genişleme noktası).
+                    // FEC-kapalıyken (ya da gönderim kaydı olmadan) FecParity: v0 kabuk taşımaz,
+                    // tele ÇIKMAZ, sayar (bootstrap OFF; sevk default'larında üretilmezler — typed
+                    // genişleme noktası). Atlanan karar `stale_skipped`'e de girer.
                     stats.stale_decisions += 1;
+                    stats.stale_skipped += 1;
                     continue;
                 }
                 // [L-T1] Kurtarma kapalı (yalnız test yapılandırması): ARQ retransmit ve §11 kopya
@@ -2242,28 +2267,25 @@ async fn client_task(
                 }
                 // Store-miss: [K4G-05b-R] store yalnız motor teyidiyle boşaldığından bu, motorun
                 // TEYİTLİ birime karar üretmesidir (ör. geç orijinalle teyit edilen birimin
-                // `pending_lost`'taki yeniden gönderimi; `stale_decisions`, bu PR'da > 0 olabilir).
-                // Emisyon YİNE wire'a çıkar (başlık-only): motor her emisyonu inflight izler — hiç
-                // göndermemek yapay kayıp sinyali üretirdi (bench her kararı gönderirdi). Alıcı
-                // birimi dedup eder, seq'i ACK'ler → motor temiz kapatır.
-                let (payload, stale): (&[u8], bool) = match store.get(&d.unit_id) {
-                    Some(p) => (p.as_slice(), false),
-                    None => (&[], true),
-                };
-                if stale {
+                // `pending_lost`'taki yeniden gönderimi; bu PR'da motor teyitli birimin bekleyen
+                // işini budamaz, yani olabilir). [sahip kararı 2026-11-11] Gövdesi olmayan karar
+                // DATAGRAM ÜRETMEZ: karar atlanır (seal yok, PN harcanmaz, harita kaydı açılmaz);
+                // tele boş ya da yalnız önekli çerçeve çıkmaz. Motor kararı zaten işledi: kaydın
+                // ACK'i gelmez ve motor onu kayıp gibi işler (INV-RATE-1: kayıp hızı düşürmez,
+                // yalnız kurtarma kolunu besler). Sayaçlar: `stale_decisions` (neden) +
+                // `stale_skipped` (toplam). Atlamanın motordaki ardılı (aynı birime yeniden karar,
+                // uçuştaki kayıt) `docs/design/K4G-05b-RUNTIME-ENVANTER.md` "Atlama politikası".
+                let Some(payload) = store.get(&d.unit_id) else {
                     stats.stale_decisions += 1;
-                }
+                    stats.stale_skipped += 1;
+                    continue;
+                };
                 // [S1B] store WIRE GÖVDESİNİ tutar: frag açıkken `prefix ‖ payload`, kapalıyken
                 // düz payload — emisyon tek şekilli kalır, prefix burada YENİDEN kurulmaz.
-                // Stale (store-miss) emisyonda gövde boştur; frag çerçevesi ≥11 B ister, bu yüzden
-                // canonical sıfır-prefix konur: alıcı çözer, PN ACK'lenir, birleştiriciye
-                // len=0 katkısıyla girer (aynı esi'de gerçek symbol first-wins ile korunur).
                 // [D1a] Çerçevedeki u16 `seq` ara çerçeve alanıdır (S3: interim çerçeve bu sprint
                 // beyanlı KARŞILANMAZ); ARQ kimliği DEĞİL — alıcı kimliği `meta.full_wire_pn`'den alır.
-                let stale_body: [u8; SOURCE_PREFIX_LEN] = [0; SOURCE_PREFIX_LEN];
                 let frame = if frag_on {
-                    let body = if stale { &stale_body[..] } else { payload };
-                    encode_data_frag((d.seq & 0xFFFF) as u16, d.unit_id, body)
+                    encode_data_frag((d.seq & 0xFFFF) as u16, d.unit_id, payload)
                 } else {
                     encode_data((d.seq & 0xFFFF) as u16, d.unit_id, payload)
                 };

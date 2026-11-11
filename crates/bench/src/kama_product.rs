@@ -889,7 +889,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         "KP-CLIENT delivered={delivered_count}/{msg_count} warm_ack={warm_acked} residue={warmup_residue} \
          tx={}B(data={} retx={} dup={} fec={} ctrl={}) rx={}B refused={}B/{}pkt \
          fec_blocks={} fec_repairs_tx={} fec_recovered_ctrl={} param_confirmed={} \
-         seal_fail={} send_err={} stale={} cs_probe_tx={} cs_echo_rx={} \
+         seal_fail={} send_err={} stale={} stale_skipped={} cs_probe_tx={} cs_echo_rx={} \
          state={} left_preconv={} establish_tx={} \
          deadline_ns={:?} fusion={:?} last_obs={:?} bw_range={:?} loss_range={:?} ledger_peak={} ledger_now={} gate_opened={} ledger_int={:?} confirm_path={:?} tick_span={:?} spurious={} confirm_k={:?} latch={:?} suppress={:?} risk_t={:?} risk_ppm={:?} flow_end={} arb={:?} lvl={:?} spec={:?} persist={:?} em_l1={:?} em_l2={:?} sched={:?}",
         stats.tx_bytes,
@@ -908,6 +908,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         stats.seal_failures,
         stats.send_errors,
         stats.stale_decisions,
+        stats.stale_skipped,
         stats.cs_probes_tx,
         stats.cs_echoes_rx,
         stats.fate.sender_state,

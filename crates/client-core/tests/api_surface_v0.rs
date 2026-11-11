@@ -207,6 +207,9 @@ async fn transport_api_v0_surface_is_frozen() {
         ts: _,
         // v0.13 (L-T1): kurtarma kapalıyken tele çıkmayan retransmit/kopya kararı.
         recovery_suppressed: _,
+        // v0.17 (K4G-05b-R, sahip kararı 2026-11-11): minor-EKLEME, kasıtlı pin-güncellemesi —
+        // gövdesi olmadığı için tele çıkarılmayan (atlanan) motor kararı. Salt sayaç.
+        stale_skipped: _,
     } = ClientStats::default();
     let ServerStats {
         delivered: _,
