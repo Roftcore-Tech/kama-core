@@ -621,6 +621,22 @@ kaldırıldı).
   gerçekleşti. Birim başına iki düşüş denemesi ACK ilerlemesini
   durdurdu (25 s'de en çok 28 tombstone) ve bırakıldı. Tahliye kolunun TTL'e payı dardır; yavaş
   makinede ön koşul kırmızısı (iddia değil) beklenebilir.
+- **Tahliye fikstürü: ön koşul TTL yarışından ayrıldı (2026-11-11):** main `6716eb8d`'de testin tek
+  başına yerel koşusu (`--exact late_ack_after_cap_keeps_payload`; en çok 15 koşu, ilk kırmızıda dur)
+  4. koşuda ön koşulda kırmızıydı: kayıt geçişten 25,30 s sonra, tablo 3390'dayken düştü (TTL alt
+  sınırı 25,16 s); yeşil üç koşuda tahliye 9,95 / 21,96 / 21,99 s'de. O fikstürde (birim başına tek
+  düşüş, 4232 dolgu) teşhis koşularında uçuşta ≈ 1400 yeniden gönderim kaydı ≈ 3 s bekleyip zaman
+  eşiğiyle topluca kayıp ilan edildi, teklif alımı ilk ≈ 0,6 s'den sonra ≈ 100 birim/s'ye düştü ve
+  süreç CPU'su koşu boyunca ≈ %120'de kaldı (bir koşu, `/proc` örneklemesi): tavanın süresi makine
+  yüküne bağlıydı. Yeni fikstür: dolgu biriminin ilk üç datagramı düşer (orijinal + iki yeniden
+  gönderim → üç tombstone; eski motorda `arq_retx_cap` = 3), her sekizinci tahliye birimi
+  taşıyıcıdır (düşmez, ACK ilerlemesini taşır); 1720 tahliye birimi (1505 dolgu + 215 taşıyıcı).
+  Faz A öncesi boşaltma bekleme trafiğiyle (`wait_trickle`) yapılır: ilk 20'lik serinin 10.
+  koşusunda son dolguların düşen yeniden gönderimlerinden sonra tele geçen datagram kalmadı ve 21
+  dolgu 60 s teyitsiz kaldı (kuyruk probu 3/3; ön koşul o koşuda da tuttu, 2,81 s). Bu düzeltmeden
+  sonra 20 ardışık yerel koşu yeşil: tahliye 2,80–4,87 s (ortanca 3,42 s), tablo her koşuda 4096,
+  gövdesiz datagram 0, `stale_skipped` 0; dosyanın tamamı bir kez 11/11. İddialar, test adı ve
+  sayısı değişmedi; ürün kodu değişmedi.
 - **Boşluk bekçisi:** her geç-ACK kolunda geç ACK çerçevesinin istemcide işlendiği ve motor seq'ine
   çevrildiği (`mapped_seqs > 0`) iki kolda da doğrulandı; kollar yalnız `new_units`'te ayrışır.
 
