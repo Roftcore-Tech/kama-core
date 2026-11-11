@@ -627,6 +627,12 @@ impl Bbr {
         self.min_rtt_ns
     }
 
+    /// Kurulu ilk pencere (bayt; `min_cwnd` tabanlı).
+    #[must_use]
+    pub fn initial_window(&self) -> u64 {
+        self.init_cwnd
+    }
+
     /// Recovery içinde mi.
     #[must_use]
     pub fn in_recovery(&self) -> bool {
