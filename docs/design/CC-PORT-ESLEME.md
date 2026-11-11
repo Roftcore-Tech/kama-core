@@ -89,6 +89,15 @@ böyle bir çift merdiven yok (yalnız PTO); Kama'da geometrik kopya donmuş spe
 o, bastırılan PTO. Sim ürün zarfı: port 51,7 → **37,7 s** (eski 37,7 — eşit), dönüş baytı 9,0 → 8,5 k;
 varsayılan r25 hücresi 8,5 → **6,9 s** (eski 5,4). Öbür 7 hücre bayt düzeyinde aynı (ilk ACK 1 s'den
 önce geldiğinden PTO zaten ateşlenmiyordu). Gerçek yığın doğrulaması: PR #181 gövdesi.
+**U14 canlılık (Ö-CC ısınma gözlemi, #175):** dondurma yalnız merdiven en eski teyitsiz birimi GERÇEKTEN
+taşıyorsa (`dup_queue`'da `interval > 0` kaydı); kayıt yoksa (RecoverFwd'nin tek-atımlık kopyaları tükendi,
+merdiven düştü) RTT örneği olmasa da PTO kurulur. 7 hücre + r25 bayt düzeyinde aynı; test
+`u14_pto_probe_resumes_when_no_ladder_entry_serves_the_oldest_unit`. Denenip geri alınan: merdiven
+kopyasının pencereden muaf tutulması (60 s kesintide kopya seli). Sim'de ayrı, motor-bağımsız bulgu:
+t = 0'dan başlayan kesintide (`CC_BLACKOUT=0,3`, %30) iki motor da 1–3 birimi kalıcı unutuyor — RecoverFwd
+`pending_lost`'u tek-atımlık (`interval = 0`) `Duplicate` kopyalara boşaltıyor, Duplicate kaybı ne tombstone
+ne yeniden kuyruk üretiyor → bütün kopyalar kaybolursa birim motordan düşer (`inflight = 0`, teslim 122/125).
+Düzeltme adayı (iki motoru da değiştirir → sahip kararı): acil kopyalardan biri çapa (kaybı yeniden kuyruklar).
 
 ## (b) Paket/birim muhasebesi — koddan cevaplar
 

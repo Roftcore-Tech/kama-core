@@ -3688,9 +3688,23 @@ impl Sender {
                 // fazla 180 B paket ≈ 7 s kuyruk → ileti p50 +20 s). Spec §3.3-C ile aynı kural
                 // (PreConverge'de PTO dondurulur, geometrik kopya yerini alır); ilk örnekten sonra
                 // RFC 9002 PTO devreye girer (`on_ack_progress` kurar). `cc` yokken yol aynı.
-                let u14_hold = self.cc_on() && self.rtt.srtt().is_none();
+                // [CC-PORT U14 canlılık] Dondurma yalnız merdiven hedefi GERÇEKTEN taşıyorsa: en eski
+                // teyitsiz kaynak birimin `dup_queue`'da yeniden kurulan (interval > 0) bir kopya kaydı
+                // olmalı. Kayıt yoksa (ör. RecoverFwd'nin tek-atımlık kopyaları tükendi, merdiven
+                // teyitle/iptalle düştü) PTO probu kurulur — aksi hâlde RTT örneksiz hatta ilk paketin
+                // kaybı sessiz takılmaya dönerdi (Ö-CC ısınma gözlemi, #175: aday 4/50; bu dal PTO'yu
+                // yalnız merdiven canlıyken susturur). Merdiven kopyası pencere kapısına tabidir
+                // (denendi: pencereden muaf kopya 60 s kesintide kopya seli üretti — geri alındı).
+                let oldest = self.oldest_probe_target();
+                let ladder_serves_oldest = oldest
+                    .and_then(|seq| self.inflight.get(&seq).map(|p| p.unit.id))
+                    .is_some_and(|uid| {
+                        self.dup_queue
+                            .iter()
+                            .any(|d| d.unit.id == uid && d.interval_ns > 0)
+                    });
+                let u14_hold = self.cc_on() && self.rtt.srtt().is_none() && ladder_serves_oldest;
                 if self.tail_recovery.is_enabled() && !u14_hold {
-                    let oldest = self.oldest_probe_target();
                     let srtt = self.rtt.srtt().map(dur_ns);
                     let rttvar = dur_ns(self.rtt.rttvar());
                     if let ProbeDecision::ProbeDue { target_seq, .. } =
@@ -12012,6 +12026,28 @@ mod tests {
                 });
                 assert!(t.is_some(), "{name}: ilk örnekten sonra PTO probu çıkar");
             }
+        }
+
+        /// [CC-PORT U14 canlılık] Merdiven kaydı yoksa (kopya makinesi birimi artık taşımıyor) RTT
+        /// örneği olmasa da PTO probu kurulur: ilk paketin kaybı sessiz takılmaya dönmez.
+        #[test]
+        fn u14_pto_probe_resumes_when_no_ladder_entry_serves_the_oldest_unit() {
+            let mut r = Rig::new(Sender::with_cc_port);
+            let id = UID + 1;
+            r.ev(Event::AppData(small(id)), 0);
+            assert!(
+                r.s.dup_queue
+                    .iter()
+                    .any(|d| d.unit.id == id && d.interval_ns > 0),
+                "PreConverge merdiven kaydı kurulur"
+            );
+            // Merdiven düşmüş olsun (ör. tek-atımlık kopyalar tükendi / kayıt iptal edildi).
+            r.s.dup_queue.clear();
+            let t = r.pump_until(MS, 20_000 * MS, PUMP_STEP_NS, |r| {
+                r.seq_of(id, TransmitKind::Retransmit).is_some()
+            });
+            assert!(t.is_some(), "merdiven yokken PTO probu çıkar (canlılık)");
+            assert!(r.s.rtt.srtt().is_none(), "hâlâ RTT örneği yok");
         }
 
         /// [K4G-05b-R · HA bulgusu, PR #186] Port motorunda tavan yok: ARQ planlayıcısı 255'te
