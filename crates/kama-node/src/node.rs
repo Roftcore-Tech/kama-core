@@ -59,11 +59,12 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use client_core::hub::relink::{NoticeRoute, RelinkGovernor, RelinkOp};
 use client_core::hub::HubNotice;
 
 #[cfg(feature = "test-util")]
 use client_core::transport::UnitTraceRecord;
-use client_core::transport::MAX_INBOX;
+use client_core::transport::{ActiveLink, MAX_INBOX};
 use kama_app::codec::PttCodec;
 use kama_app::file_transfer::{FileEvent, FileSendError, FileTransfer, TransferId};
 use kama_app::messaging::{ConnectState, Messenger, MessengerEvent, MsgId};
@@ -244,6 +245,8 @@ pub(crate) struct NodeLoop {
     metrics_due: Instant,
     /// [S2-A3-2] Hub kipi tarafı (`HubEndpoint` + `HubLink`); doğrudan kipte `None`.
     hub: Option<HubSide>,
+    /// [HLR] S4 C5: hat kaybı yenilemesinin eş başına sınırı + geri çekilmesi (hub kipinde sürülür).
+    relinks: RelinkGovernor,
     /// [S2-A5-min] `loss_pct` penceresi (KK-H59).
     a5: A5,
     /// [K4G-05] YALNIZ test-util: işlenen S1 oturum olaylarının sayımı (ölçüm sondası).
@@ -282,6 +285,7 @@ impl NodeLoop {
             up: BTreeSet::new(),
             metrics_due: Instant::now(),
             hub,
+            relinks: RelinkGovernor::new(crate::wiring::relink_seed()),
             a5: A5::default(),
             #[cfg(feature = "test-util")]
             session_events: SessionEventCounts::default(),
@@ -630,25 +634,54 @@ impl NodeLoop {
     }
 
     /// [S2-A3-2] KK-H57 (a): hub bildirimleri. `AttemptEnded` (`{UNKNOWN_HANDLE, 0}`, deneme yaşı,
-    /// çelişkili handle, yeniden bind) → bu düğümün bekleyen niyeti varsa niyet olay ÜRETMEDEN
-    /// bırakılır ve yeniden `connect` edilir: yeni kriptografik INIT, yeni `request_id`.
-    /// `HandleLost` (ROUTE_MISS) kurulu oturumu kapatmaz: KK-H57 (c) beyanlı sınır ("gösterimde hub
-    /// yeniden başlatılmaz"). `Bound` / `Disconnected` yalnız `HubLink` sayaçlarındadır.
+    /// çelişkili handle, yeniden bind, atanmış handle'a ROUTE_MISS) → bu düğümün bekleyen niyeti
+    /// varsa niyet olay ÜRETMEDEN bırakılır ve yeniden `connect` edilir: yeni kriptografik INIT,
+    /// yeni `request_id`. [HLR] Eşin kurulu oturumu varsa bildirim oturumun yenilemesine gider:
+    /// `AttemptEnded` → bekleyen yenileme yeni INIT'le yeniden başlar
+    /// (`ClientTransport::restart_renewal`); `HandleLost` (S4 C5 `ROUTE_MISS{h}`: hat emekli ya da
+    /// hub yeniden başlamış) → kurulu oturum için yeni INIT (`ClientTransport::relink`; yenileme
+    /// yolu, eş bağlı kalır, olay yok). İkisi de eş başına sınırlı deneme + geri çekilmeyle
+    /// ([`RelinkGovernor`]); yerel tavana takılan istek her turda vadesi gelince yeniden denenir.
+    /// [HLR-STALE] `HandleLost{peer, h}` yalnız `h` eşin ETKİN oturumunun hattıysa yenilemeye gider
+    /// (`ClientTransport::active_link`; yöneticide bildirim anında, transport'ta uygulama anında
+    /// `relink_line`): yerini yenisi almış oturumun eski hattının geç `ROUTE_MISS`'i çalışan oturumu
+    /// yenilemez, `RelinkStats::stale_handle_lost`'ta sayılır. Etkin oturumun hattı bilinmiyorsa
+    /// kayıp düşmez (`handle_lost_unverified`).
+    /// `Bound` / `Disconnected` yalnız `HubLink` sayaçlarındadır.
     fn drive_hub(&mut self) {
         let Some(hub) = &self.hub else {
             return;
         };
-        for notice in hub.take_notices(HUB_NOTICES_PER_TURN) {
-            if let HubNotice::AttemptEnded { peer } = notice {
+        let notices = hub.take_notices(HUB_NOTICES_PER_TURN);
+        self.on_hub_notices(Instant::now(), notices);
+    }
+
+    /// [HLR] Bir turun hub bildirimleri (`drive_hub`) ve yöneticinin vadesi gelen işleri. Birim
+    /// testleri bildirimi buradan verir (doğrudan kipte hub tarafı yoktur).
+    fn on_hub_notices(&mut self, now: Instant, notices: Vec<HubNotice>) {
+        for notice in notices {
+            let (has_session, link) = match notice {
+                HubNotice::AttemptEnded { peer } | HubNotice::HandleLost { peer, .. } => (
+                    self.messenger.session_of(peer).is_some(),
+                    self.messenger.transport().active_link(peer),
+                ),
+                HubNotice::Bound | HubNotice::Disconnected => (false, ActiveLink::NoSession),
+            };
+            if let NoticeRoute::RestartIntent(peer) =
+                self.relinks.on_notice(now, notice, has_session, link)
+            {
                 self.restart_attempt(peer);
             }
         }
+        let transport = self.messenger.transport_mut();
+        self.relinks.drive(now, |peer, op| match op {
+            RelinkOp::Restart => transport.restart_renewal(peer),
+            RelinkOp::Relink => transport.relink(peer),
+            RelinkOp::RelinkLine(h) => transport.relink_line(peer, h),
+        });
     }
 
     fn restart_attempt(&mut self, peer: PeerRef) {
-        if self.messenger.session_of(peer).is_some() {
-            return;
-        }
         let before = self.tickets.len();
         self.tickets.retain(|_, waiting| *waiting != peer);
         if self.tickets.len() == before {
@@ -891,6 +924,20 @@ impl NodeLoop {
             events: self.session_events,
             envelopes: crate::probe::EnvelopeCounts::default(),
             hub: self.hub.as_ref().map(HubSide::counters),
+            relink: self.relinks.stats(),
+            peers: self
+                .peers
+                .iter()
+                .filter_map(|(name, peer)| {
+                    let (active, renewals, provisional) = transport.renewal_state_for_test(peer);
+                    (active + renewals + provisional > 0).then(|| crate::probe::PeerSessionProbe {
+                        peer_id: name.to_owned(),
+                        active,
+                        renewals,
+                        provisional,
+                    })
+                })
+                .collect(),
         }
     }
 

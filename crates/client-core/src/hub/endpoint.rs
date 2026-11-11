@@ -311,6 +311,10 @@ impl<L: EnvelopeLink> EnvelopeLink for RecordingLink<L> {
         }
         Some(ev)
     }
+
+    fn cancel_init(&mut self, attempt: LinkAttempt) {
+        self.inner.cancel_init(attempt);
+    }
 }
 
 // ── Hatalar ve sayaçlar ──────────────────────────────────────────────────────────────────────
