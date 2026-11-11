@@ -3273,9 +3273,14 @@ impl MsgAsm {
 }
 
 /// Teslim kanalına bir mesaj koyar (bounded; taşan teslim sayılır — app drenaj sözleşmesi).
+/// [INV-ACK-DELIVER-1 · F4] `permit`: datagram motora verilmeden ÖNCE `try_reserve` ile GERÇEKTEN
+/// ayrılmış kanal yeri (DATA yolu); `None` ise `try_send` (FEC kurtarımı gibi çok birimli yollar —
+/// yer yoksa birim kabul edilmez, çağıran bunu bildirmez/ACK'lemez).
+#[allow(clippy::too_many_arguments)]
 fn push_delivery(
     stats: &mut ServerStats,
     delivery_tx: &mpsc::Sender<Delivery>,
+    permit: Option<mpsc::Permit<'_, Delivery>>,
     peer: SocketAddr,
     ctx: ProtectionContext,
     unit_id: u64,
@@ -3288,7 +3293,14 @@ fn push_delivery(
         payload,
         ctx,
     };
-    if delivery_tx.try_send(d).is_ok() {
+    let ok = match permit {
+        Some(p) => {
+            p.send(d);
+            true
+        }
+        None => delivery_tx.try_send(d).is_ok(),
+    };
+    if ok {
         stats.delivered += 1;
         if from_fec {
             stats.fec_recovered_units += 1;
@@ -3310,6 +3322,7 @@ fn push_delivery(
 fn admit_chunk(
     stats: &mut ServerStats,
     delivery_tx: &mpsc::Sender<Delivery>,
+    permit: Option<mpsc::Permit<'_, Delivery>>,
     peer: SocketAddr,
     slot: &mut PeerSlot,
     frag_on: bool,
@@ -3329,6 +3342,7 @@ fn admit_chunk(
         if !push_delivery(
             stats,
             delivery_tx,
+            permit,
             peer,
             slot.ctx,
             unit_id,
@@ -3365,7 +3379,16 @@ fn admit_chunk(
         stats.msgs_reassembled += 1;
         // [F4] Tam mesaj kanala girmezse "teslim edildi" işaretlenmez; birleştirici girdisi
         // düştüğünden mesaj yeniden iletimle (bütün chunk'lar) yeniden toplanır.
-        if !push_delivery(stats, delivery_tx, peer, slot.ctx, mid, full, from_fec) {
+        if !push_delivery(
+            stats,
+            delivery_tx,
+            permit,
+            peer,
+            slot.ctx,
+            mid,
+            full,
+            from_fec,
+        ) {
             return false;
         }
         slot.delivered_seen.insert(mid);
@@ -3593,6 +3616,7 @@ fn fec_ingest(
                     if admit_chunk(
                         stats,
                         delivery_tx,
+                        None,
                         peer,
                         slot,
                         frag_on,
@@ -3845,12 +3869,13 @@ async fn server_task(
                         // VERİLMEZ (ACK üretilmez): gönderici ARQ ile yeniden iletir. Önceki yol
                         // motoru besleyip ACK'liyor, sonra `push_delivery` dolu kanalda düşüyordu →
                         // ACK'lenmiş birim kalıcı kaybolur, oturum sıralayıcısı o birimi bekler.
-                        // Tek görev tek üretici: kapasite ≥ 1 ise bu datagramın (en çok bir)
-                        // teslimi girer. (Sahip kararı 2026-11-11: "ACK'lenmiş birim kaybolmaz".)
-                        if delivery_tx.capacity() == 0 {
+                        // Yer `try_reserve` ile GERÇEKTEN ayrılır (izin); bu datagramın (en çok bir)
+                        // teslimi o izinle girer, izin kullanılmazsa bırakılır. (Sahip kararı
+                        // 2026-11-11: "ACK'lenmiş birim kaybolmaz".)
+                        let Ok(permit) = delivery_tx.try_reserve() else {
                             stats.data_not_admitted_full += 1;
                             continue;
-                        }
+                        };
                         let (unit_id, pfx, payload, body) = match parsed {
                             RxFrame::Data { unit_id, payload } => (
                                 unit_id,
@@ -3890,6 +3915,7 @@ async fn server_task(
                             admit_chunk(
                                 &mut stats,
                                 &delivery_tx,
+                                Some(permit),
                                 peer,
                                 slot,
                                 frag_on,
