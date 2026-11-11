@@ -149,6 +149,8 @@ struct Outcome {
     sent_bytes: u64,
     dropped_queue: u64,
     dropped_random: u64,
+    /// Alıcının ürettiği SACK sayısı (dönüş yolu maliyeti).
+    acks: u64,
 }
 
 /// Tek koşu. `units`: (birim sayısı, boyut); `parity_per_block > 0`: her 8 birimlik blok için
@@ -201,6 +203,7 @@ fn run_opt(
         sent_bytes: 0,
         dropped_queue: 0,
         dropped_random: 0,
+        acks: 0,
     };
     let trace = std::env::var("CC_TRACE").is_ok();
     let emit = |decs: Vec<TransmitDecision>, now: u64, fwd: &mut Bottleneck, o: &mut Outcome| {
@@ -289,11 +292,13 @@ fn run_opt(
                 delivered.insert(u);
             }
             if let Some(frame) = out.ack {
+                o.acks += 1;
                 let expected = r.largest_seq().unwrap_or(seq) + 1;
                 push_ack(frame, expected, now, &mut acked_seen, &mut rev);
             }
         }
         if let Some(frame) = r.on_ack_timer(now) {
+            o.acks += 1;
             let expected = r.largest_seq().unwrap_or(0) + 1;
             push_ack(frame, expected, now, &mut acked_seen, &mut rev);
         }
@@ -370,7 +375,7 @@ fn fmt_s(v: Option<u64>) -> String {
 
 fn report(eng: Engine, label: &str, o: &Outcome) {
     println!(
-        "[{}] {label}: tamamlanma={} teslim={}/{} data={} retx={} parite={} bayt={} kuyruk_düşen={} rastgele_düşen={}",
+        "[{}] {label}: tamamlanma={} teslim={}/{} data={} retx={} parite={} bayt={} kuyruk_düşen={} rastgele_düşen={} sack={}",
         eng.name(),
         fmt_s(o.completed_ns),
         o.delivered_units,
@@ -380,7 +385,8 @@ fn report(eng: Engine, label: &str, o: &Outcome) {
         o.sent_parity,
         o.sent_bytes,
         o.dropped_queue,
-        o.dropped_random
+        o.dropped_random,
+        o.acks
     );
 }
 
