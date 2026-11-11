@@ -625,6 +625,9 @@ pub struct ClientStats {
     /// App'ten kabul edilen birim.
     pub offered: u64,
     /// İlk-ACK'i görülen birim (ilk-ack-kazanır dedup).
+    /// [K4G-05b-R · sahip kararı 2026-11-11] "İlk ACK" = motorun canlı kaydıyla eşleşen ilk ACK
+    /// (`Sender::take_confirmed_units`; runtime birimi store varlığıyla bir kez sayar). Motorun
+    /// kaydını unuttuğu iletimin geç ACK'i sayılmaz; birim yeniden gönderimin ACK'iyle sayılır.
     pub acked: u64,
     /// Drain sonunda hâlâ teslim-teyitsiz birim (kabul edilen residue).
     pub undelivered: u64,
@@ -636,7 +639,18 @@ pub struct ClientStats {
     /// Açıldı ama tanınmayan çerçeve tipi (ne DATA ne ACK) — kontrol-düzlemi dal-noktası
     /// (item 6, workstream B'de kama-noise-wire formatıyla bağlanır); sessiz yutulmaz, sayılır.
     pub unknown_frames: u64,
-    /// Payload'ı store'da bulunamayan (çoktan ACK'lenmiş birime geç karar) emisyon — kayıp sayıldı.
+    /// Gövdesi olmadığı için tele ÇIKARILMAYAN (atlanan) motor kararı — neden sayacı; toplam
+    /// [`Self::stale_skipped`]'tedir.
+    /// [K4G-05b-R · sahip kararı 2026-11-11] İki kaynağı vardır:
+    /// (1) Birim taşıyan karar (Data / Retransmit / Duplicate) store'da yok: store yalnız motorun
+    /// teyit çıktısıyla boşaldığından bu, motorun TEYİTLİ birime karar üretmesi olurdu. Motor
+    /// teyit olayında birimin bekleyen işini iptal eder (`Sender` `cancel_confirmed_units`: kayıp
+    /// kuyruğu, kopya kuyruğu; uçuştaki diğer kopyaları kararsız), bu yüzden bu kaynak beklenmez; oluşursa
+    /// karar datagram üretmez (boş ya da yalnız önekli çerçeve tele çıkmaz), PN harcamaz, haritaya
+    /// kayıt açmaz.
+    /// (2) `FecParity` kararı runtime'da FEC kapalıyken ya da kararın gönderim kaydı (`send_record`)
+    /// yokken: tele çıkmaz, yalnız sayılır (ürün varsayılanları bu kararı üretmez).
+    /// Değer > 0 okunurken iki kaynak ayrılmaz; (2) yalnız bu yapılandırmalarda katkı verir.
     pub stale_decisions: u64,
     /// Soket send hatası (kanal kaybı eşdeğeri, INV-RATE-1).
     pub send_errors: u64,
@@ -647,10 +661,15 @@ pub struct ClientStats {
     pub fec_blocks_latched: u64,
     /// [S1] Wire'a yazılan gerçek repair-shard.
     pub fec_repairs_tx: u64,
-    /// [S1] Repair-store'da bulunamayan FecParity kararı (evict/latch-0) — başlık-only gitti.
+    /// [S1] Repair-store'da sembolü bulunamayan FecParity kararı (evict/latch-0) — neden sayacı.
+    /// [K4G-05b-R · sahip kararı 2026-11-11] Karar tele ÇIKMAZ (boş sembollü FEC çerçevesi
+    /// üretilmez, PN harcanmaz); toplam [`Self::stale_skipped`]'tedir.
     pub fec_repair_missing: u64,
     /// [S1] RECOVERED-control ile teslim-teyidi alan birim (alıcı FEC-kurtardı → retransmit iptal,
     /// store'dan düşer, app `acked()` akışına girer).
+    /// [K4G-05b-R · sahip kararı 2026-11-11] Teyit motorun çıktısından gelir (`RecoveredControl`
+    /// listelenen her birimi yankılar); daha önce ACK'le teyit edilmiş birim sayılmaz (eskisi gibi:
+    /// o birim store'da yoktu).
     pub fec_recovered_ctrl_units: u64,
     /// [v1] Typed seal-reddi (seam hazır-değil/PN) — emisyon kayıp sayıldı (INV-RATE-1).
     pub seal_failures: u64,
@@ -695,6 +714,23 @@ pub struct ClientStats {
     /// [L-T1] Kurtarma kapalıyken ([`ClientHandle::set_recovery`]) tele ÇIKARILMAYAN ARQ
     /// retransmit / §11 kopya / FEC repair kararı (yalnız test yapılandırması).
     pub recovery_suppressed: u64,
+    /// [K4G-05b-R · sahip kararı 2026-11-11] Runtime'ın gövdesi olmadığı için tele ÇIKARMADIĞI
+    /// (atladığı) motor kararı sayısı: store'da payload'ı olmayan birim kararı ve FEC-kapalı /
+    /// gönderim kaydısız parite ([`Self::stale_decisions`]) + repair-store'da sembolü olmayan
+    /// parite ([`Self::fec_repair_missing`]). Tanım gereği
+    /// `stale_skipped == stale_decisions + fec_repair_missing`. Atlanan karar datagram üretmez:
+    /// gövdesi olmayan motor kararı (store-miss ya da sembolsüz parite) için tele boş gövdeli DATA,
+    /// yalnız önekli DATA_FRAG ya da boş sembollü FEC çerçevesi çıkmaz. (Geçerli bir BOŞ uygulama
+    /// mesajı tam başlık boyunda DATA / yalnız önekli DATA_FRAG olarak çıkar; o, motor kararı
+    /// atlaması değildir.) Kurtarma kapalıyken bastırılan karar burada DEĞİL,
+    /// [`Self::recovery_suppressed`]'te sayılır.
+    ///
+    /// Motordaki ardılı: teyitli birime karar motorda kapatıldı (teyit olayında birimin bekleyen
+    /// işi iptal edilir; iki motorda). Önceden atlanan karar motorda uçuşta kalan, ACK'i hiç
+    /// gelmeyen bir kayıt bırakıyordu (yeniden kayıp ilanı ve yeni karar; port motorunda yapay
+    /// tıkanıklık olayı). Ölçümler (iptal öncesi ve sonrası):
+    /// `docs/design/K4G-05b-RUNTIME-ENVANTER.md` "Atlama politikası".
+    pub stale_skipped: u64,
 }
 
 /// Server koşu istatistikleri.
@@ -799,6 +835,9 @@ pub struct ClientLiveDiag {
     /// Kurtarma kapalıyken tele ÇIKMAYAN retransmit / kopya / FEC repair kararı —
     /// [`ClientStats::recovery_suppressed`].
     pub recovery_suppressed: u64,
+    /// [K4G-05b-R] Gövdesi olmadığı için tele çıkarılmayan (atlanan) motor kararı —
+    /// [`ClientStats::stale_skipped`].
+    pub stale_skipped: u64,
     /// Tele çıkan ARQ retransmit baytı — [`ClientStats::tx_retx_bytes`] (`mark_t0` sıfırlar).
     pub tx_retx_bytes: u64,
     /// Motorun aldığı RTT örneği sayısı (Karn: yalnız orijinal emisyonlardan).
@@ -861,6 +900,18 @@ pub struct SenderRecoveryDiag {
     pub tail_armed_for_ns: Option<u64>,
     /// Motorun kurtarma kuyrukları ve zamanlayıcıları.
     pub timers: adaptive_transport::sender::RecoveryTimersDiag,
+    /// [K4G-05b-R · sahip kararı 2026-11-11] Runtime'ın motor seq → birim haritasındaki ve
+    /// birim → seq listesindeki girdi sayısı. Girdiler yalnız teyitsiz (store'daki) birim için açılır ve birim
+    /// motorca teyit edilince düşer; teyitsiz birim yokken ikisi de 0 olmalıdır (sızıntı bekçisi).
+    /// SALT GÖZLEM.
+    pub seq_to_unit_len: u32,
+    pub unit_seqs_len: u32,
+    /// [K4G-05b-R · sahip kararı 2026-11-11] Motorun teyit çıktısı taşma sayacı
+    /// (`Sender::diag_confirmed_units_overflow`). Motor bir çağrının kendi teyitlerini düşürmez;
+    /// tavanı yalnız drenaj edilmemiş birikime, sonraki çağrının girişinde uygular. Runtime her
+    /// `on_event` çağrısından hemen sonra drenaj yaptığı için yapısal olarak 0'dır; 0 değilse drenaj
+    /// sözleşmesi çiğnenmiştir (düşen teyitlerin payload'ı store'da kalır). SALT GÖZLEM.
+    pub confirmed_units_overflow: u64,
 }
 
 /// [K4G-05 / INT-02 TEŞHİS] En eski teyitsiz birim ([`SenderRecoveryDiag::oldest_unacked`]).
@@ -889,6 +940,7 @@ pub struct StuckUnitDiag {
 fn capture_recovery(
     sender: &adaptive_transport::sender::Sender,
     store: &HashMap<u64, Vec<u8>>,
+    seq_to_unit: &HashMap<u64, u64>,
     unit_seqs: &HashMap<u64, Vec<u64>>,
     pn_seq: &VecDeque<(u64, u64)>,
     now_ns: u64,
@@ -927,6 +979,9 @@ fn capture_recovery(
         since_last_ack_ns: timers.last_ack_ns.map(since),
         tail_armed_for_ns: timers.tail_armed_at_ns.map(since),
         timers,
+        seq_to_unit_len: u32::try_from(seq_to_unit.len()).unwrap_or(u32::MAX),
+        unit_seqs_len: u32::try_from(unit_seqs.len()).unwrap_or(u32::MAX),
+        confirmed_units_overflow: sender.diag_confirmed_units_overflow(),
     }
 }
 
@@ -1047,7 +1102,8 @@ pub struct AckFrameDiag {
     /// boş listede erken döner, son-ACK anını tazelemez.
     pub mapped_seqs: u32,
     /// Bu çerçeveyle İLK kez teyit edilen birim (teyitsiz birim deposundan düşen). 0 = çerçeve yeni
-    /// hiçbir birimi onaylamadı.
+    /// hiçbir birimi onaylamadı. [K4G-05b-R] Teyit motorun teyit çıktısıdır
+    /// (`Sender::take_confirmed_units`): motorun kaydını unuttuğu iletimin geç ACK'i sayılmaz.
     pub new_units: u32,
     /// Motorun bu olayda planlayıp mühürlettiği datagram (`ClientStats::tx_datagrams` farkı).
     pub tx_datagrams_during: u32,
@@ -1212,6 +1268,7 @@ impl ClientLiveDiag {
         self.dups = activation.dups;
         self.parity_emitted = activation.parity_emitted;
         self.recovery_suppressed = stats.recovery_suppressed;
+        self.stale_skipped = stats.stale_skipped;
         self.tx_retx_bytes = stats.tx_retx_bytes;
         self.rtt_samples = sender.diag_rtt_sample_count();
         self.srtt_us = activation.srtt_us;
@@ -1237,6 +1294,7 @@ impl ClientLiveDiag {
         self.recovery_suppressed = self
             .recovery_suppressed
             .saturating_add(other.recovery_suppressed);
+        self.stale_skipped = self.stale_skipped.saturating_add(other.stale_skipped);
         self.tx_retx_bytes = self.tx_retx_bytes.saturating_add(other.tx_retx_bytes);
         self.tx_datagrams = self.tx_datagrams.saturating_add(other.tx_datagrams);
         self.rx_datagrams = self.rx_datagrams.saturating_add(other.rx_datagrams);
@@ -1254,6 +1312,40 @@ pub struct Delivery {
     /// [L-T1] Datagramı açan koruma bağlamı (eş yuvasının `open` ile kimliklendirilmiş bağlamı) —
     /// S1 adaptörü teslimi bununla oturuma atfeder.
     pub ctx: ProtectionContext,
+}
+
+/// [K4G-05b-R · sahip kararı 2026-11-11] Birim taşıyan kararın (Data / Retransmit / Duplicate)
+/// tel çerçevesi. Gövde store'da yoksa `None`: karar ATLANIR, datagram üretilmez (boş gövdeli DATA
+/// ya da yalnız önekli DATA_FRAG tele çıkmaz). [S1B] store WIRE GÖVDESİNİ tutar: frag açıkken
+/// `prefix ‖ payload`, kapalıyken düz payload — emisyon tek şekilli kalır, prefix burada YENİDEN
+/// kurulmaz. [D1a] Çerçevedeki u16 `seq` ara çerçeve alanıdır (S3: interim çerçeve bu sprint beyanlı
+/// KARŞILANMAZ); ARQ kimliği DEĞİL — alıcı kimliği `meta.full_wire_pn`'den alır.
+fn unit_frame(
+    store: &HashMap<u64, Vec<u8>>,
+    seq: u64,
+    unit_id: u64,
+    frag_on: bool,
+) -> Option<Vec<u8>> {
+    let payload = store.get(&unit_id)?;
+    let wire_seq = (seq & 0xFFFF) as u16;
+    Some(if frag_on {
+        encode_data_frag(wire_seq, unit_id, payload)
+    } else {
+        encode_data(wire_seq, unit_id, payload)
+    })
+}
+
+/// [K4G-05b-R · sahip kararı 2026-11-11] FEC onarım kararının sembolü (repair-store'dan). Blok
+/// tahliye edilmiş ya da ESI yoksa `None`: karar ATLANIR, boş sembollü FEC çerçevesi tele çıkmaz.
+fn repair_symbol(
+    repair_store: &BTreeMap<u32, (u8, Vec<RepairSymbol>)>,
+    block_id: u32,
+    esi: u16,
+) -> Option<&[u8]> {
+    repair_store
+        .get(&block_id)
+        .and_then(|(_, rs)| rs.iter().find(|r| r.esi == esi))
+        .map(|r| r.bytes.as_slice())
 }
 
 fn elapsed_ns(start: Instant) -> u64 {
@@ -1543,7 +1635,8 @@ pub struct ClientSender {
     /// [S1B] App-yüzü tavan MESAJ tavanıdır; birim (chunk) tavanı fragmenter'ın içinde kalır.
     max_message_bytes: usize,
     /// [L-T1] Kabul edilip henüz app-düzeyi teyidi gelmemiş mesaj sayısı: kabulde artar,
-    /// teyitte (ACK ya da FEC-RECOVERED) azalır (bkz. [`ClientHandle::outstanding`]).
+    /// teyitte (ACK ya da FEC-RECOVERED) azalır (bkz. [`ClientHandle::outstanding`]). [K4G-05b-R]
+    /// Teyit motorun teyit çıktısıdır (`Sender::take_confirmed_units`).
     outstanding: Arc<AtomicUsize>,
 }
 
@@ -1764,6 +1857,11 @@ impl ClientHandle {
     }
 
     /// İlk-ACK olay akışı (birim id'leri; ilk-ack-kazanır).
+    ///
+    /// [K4G-05b-R · sahip kararı 2026-11-11] Olay MOTOR TEYİDİNDE gelir
+    /// (`Sender::take_confirmed_units`): motorun kaydını unuttuğu bir iletimin geç ACK'i (tombstone
+    /// TTL'i, tavandan tahliye, kopya kökenli kayıp) teyit etmez — olay, birimin sonraki bir
+    /// iletiminin ACK'iyle gelir. Bu durumda teyit gecikebilir; payload sahipliği korunur.
     pub async fn acked(&mut self) -> Option<u64> {
         self.acked_rx.recv().await
     }
@@ -1853,6 +1951,26 @@ struct ClientTaskLinks {
     /// [K4G-05] Canlı salt-gözlem aynası (bkz. [`ClientHandle::live_diag`]); görev yalnız YAZAR.
     /// [DUR-19] `None` = [`RuntimeConfig::live_diag`] kapalı: görev hiçbir teşhis yazımı yapmaz.
     live: Option<Arc<Mutex<ClientLiveDiag>>>,
+}
+
+/// [K4G-05b-R · sahip kararı 2026-11-11] Motor teyidinin geldiği olay sınıfı — yalnız sayaç ayrımı
+/// ([`ClientStats::acked`] / [`ClientStats::fec_recovered_ctrl_units`]). Motor sözleşmesi gereği
+/// teyit yalnız ACK ve FEC RECOVERED olaylarından çıkar (`Sender::take_confirmed_units`); başka
+/// bir olaydan sonraki drenaj boştur, boş değilse ACK sınıfına sayılır.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfirmVia {
+    Ack,
+    Recovered,
+}
+
+impl ConfirmVia {
+    fn of(event: &Event) -> Self {
+        if matches!(event, Event::RecoveredControl(_)) {
+            Self::Recovered
+        } else {
+            Self::Ack
+        }
+    }
 }
 
 async fn client_task(
@@ -1984,16 +2102,26 @@ async fn client_task(
     let mut msg_pending: HashMap<u32, u32> = HashMap::new();
     // [S1] Ardışık-blok birikimi: unit_id → (block = id/K, esi = id%K) deterministik (iki uç da
     // türetir); yalnız SON blok birikir. K dolunca same-event latch + gerçek RS-encode →
-    // bounded repair_store (en-eski düşer → o bloğun FecParity kararı başlık-only'e düşer).
+    // bounded repair_store (en-eski düşer → o bloğun FecParity kararı atlanır, tele çıkmaz;
+    // `fec_repair_missing` + `stale_skipped`).
     let mut cur_block: Vec<Vec<u8>> = Vec::new();
     let mut cur_block_id: u32 = 0;
     // [FAZ-2 / KALEM-1] blok → (K_actual, repair'ler). K_actual kısmi/son blokta k_shape'ten
     // küçüktür ve TEL BAŞLIĞINDA taşınmak zorundadır (alıcı Model-A zero-enjeksiyonunu ondan türetir).
     let mut repair_store: BTreeMap<u32, (u8, Vec<RepairSymbol>)> = BTreeMap::new();
     const REPAIR_STORE_BLOCKS: usize = 64;
-    // unit-store: unit_id → payload; varlık = outstanding. İlk-ACK'te düşer (sınır: cfg).
+    // unit-store: unit_id → payload; varlık = outstanding (sınır: cfg).
+    // [K4G-05b-R · sahip kararı 2026-11-11] YALNIZ motor teyidinde düşer (`drain_confirmed!`): ACK'teki seq'in runtime haritasındaki
+    // birimi silme gerekçesi DEĞİLDİR — motor kaydı unuttuysa (tombstone TTL / tahliye / kopya
+    // kökenli kayıp) o geç ACK teyit etmez, birim motorda sahipli kalır ve yeniden gider.
     let mut store: HashMap<u64, Vec<u8>> = HashMap::new();
-    // seq → unit haritası + birim → seq'leri (ACK'te toplu budama — harita sınırlı kalır).
+    // seq → unit haritası + birim → seq'leri (teyitte toplu budama — harita store disipliniyle
+    // sınırlı kalır; teyitli birime kayıt eklenmez).
+    // [K4G-05b-R] `seq_to_unit` artık hiçbir yolda OKUNMAZ: teyit motorun çıktısından gelir, ACK
+    // yolu seq → birim araması yapmaz. Yalnız `SenderRecoveryDiag::seq_to_unit_len` sızıntı
+    // bekçisini besler (değeri `unit_seqs` listelerinin toplamına eşittir). Şekli #140'ın runtime
+    // kısmıyla aynı tutuldu (Aralık birleşmesinde çakışma olmasın); kaldırılması o birleşmeye kalır.
+    // `unit_seqs` ise `capture_recovery`'de en eski teyitsiz birimin seq'leri için okunur.
     let mut seq_to_unit: HashMap<u64, u64> = HashMap::new();
     let mut unit_seqs: HashMap<u64, Vec<u64>> = HashMap::new();
     // [D1a] ARQ kimliği = `meta.full_wire_pn` (BL D1; S3 K2/K4): her (yeniden) gönderim yeni bir
@@ -2072,142 +2200,13 @@ async fn client_task(
             }
         };
     }
-    macro_rules! drive {
-        ($ev:expr, $now:expr) => {
-            for d in session.on_event($ev, $now) {
-                // PN → seq çevirisi motor seq'i taşıyan HER kararda (repair'ler de seq işgal eder;
-                // `map_pn!`); ama seq→unit haritası YALNIZ birim-taşıyan kararlarda: FecParity'nin
-                // unit_id'si ESI'dir (AYRI ad-uzayı) — haritaya girseydi repair-ACK'i gerçek bir
-                // birimin store'unu silerdi (S1'de yakalanan tuzak).
-                let carries_unit = matches!(
-                    d.kind,
-                    TransmitKind::Data | TransmitKind::Retransmit | TransmitKind::Duplicate
-                );
-                if carries_unit {
-                    seq_to_unit.insert(d.seq, d.unit_id);
-                    unit_seqs.entry(d.unit_id).or_default().push(d.seq);
-                } else {
-                    // [S1] FecParity (FEC-açıkken): repair-store'daki gerçek RS-repair →
-                    // FRAME_FEC → seam → wire. Bulunamazsa (evict/latch-0) başlık-only emisyon
-                    // (DATA store-miss gerekçesiyle aynı: motor her emisyonu inflight izler; hiç
-                    // göndermemek yapay kayıp sinyali üretirdi).
-                    if d.kind == TransmitKind::FecParity {
-                        // [L-T1] Kurtarma kapalıyken FEC repair da tele ÇIKMAZ: parity bir kurtarma
-                        // mekanizmasıdır (ARQ ile aynı anahtar; yalnız test yapılandırması).
-                        if !*recovery_rx.borrow() {
-                            stats.recovery_suppressed += 1;
-                            continue;
-                        }
-                        if let (Some(p), Some(hint)) = (fec.as_ref(), d.send_record) {
-                            let SrLogicalRef::Fec { block_id, esi } = hint.logical_ref;
-                            let entry = repair_store.get(&block_id);
-                            let sym: Option<&[u8]> = entry
-                                .and_then(|(_, rs)| rs.iter().find(|r| r.esi == esi))
-                                .map(|r| r.bytes.as_slice());
-                            // [FAZ-2 / KALEM-1] K_actual tel başlığında: tam blokta k_shape,
-                            // kısmi/son blokta gerçek kaynak sayısı.
-                            let k_actual_wire = entry
-                                .map_or_else(|| u8::try_from(p.k_shape).unwrap_or(255), |(k, _)| *k);
-                            if sym.is_some() {
-                                stats.fec_repairs_tx += 1;
-                            } else {
-                                stats.fec_repair_missing += 1;
-                            }
-                            let frame = encode_fec(
-                                &FecFrameHeader {
-                                    kind: inner_kind::FEC_REPAIR,
-                                    profile_id: p.profile_id,
-                                    block_id,
-                                    esi,
-                                    k_actual: k_actual_wire,
-                                    // [D1a] ara çerçeve alanı; kimlik DEĞİL (alıcı PN'i kullanır).
-                                    seq: (d.seq & 0xFFFF) as u16,
-                                },
-                                sym.unwrap_or(&[]),
-                            );
-                            let pn = seal_send!(frame, TxClass::Fec, $now);
-                            map_pn!(pn, d.seq);
-                            continue;
-                        }
-                    }
-                    // [DR-CS-3] CS-probe: motor PreConverge'de RTT örneği üretmek için planlar.
-                    // probe_seq AYRI ad-uzayındadır (`bs_maybe_emit_probe`: "NOT a DATA seq, NOT
-                    // inflight-tracked") — seq→unit haritasına GİRMEZ, yukarıdaki carries_unit
-                    // dalı bunu zaten dışlıyor.
-                    if d.kind == TransmitKind::CsProbe {
-                        let f = encode_cs_probe(CS_PROBE_SUBTYPE, (d.seq & 0xFFFF) as u16);
-                        stats.cs_probes_tx += 1;
-                        // probe_seq ayrı ad-uzayı: PN tabloya GİRMEZ (alıcı probe'u ACK'lemez).
-                        let _ = seal_send!(f, TxClass::Ctrl, $now);
-                        continue;
-                    }
-                    // FEC-kapalıyken FecParity: v0 kabuk taşımaz, sayar (bootstrap OFF;
-                    // sevk default'larında üretilmezler — typed genişleme noktası).
-                    stats.stale_decisions += 1;
-                    continue;
-                }
-                // [L-T1] Kurtarma kapalı (yalnız test yapılandırması): ARQ retransmit ve §11 kopya
-                // tele ÇIKMAZ. Motor emisyonu zaten işledi; çıkmayan karar kayıp sayılır (INV-RATE-1).
-                if !*recovery_rx.borrow()
-                    && matches!(d.kind, TransmitKind::Retransmit | TransmitKind::Duplicate)
-                {
-                    stats.recovery_suppressed += 1;
-                    continue;
-                }
-                // Store-miss = birim BAŞKA bir kopyasıyla çoktan teslim edilmiş, motor eski seq'in
-                // retransmit'ini istiyor. Emisyon YİNE wire'a çıkar (başlık-only): motor her
-                // emisyonu inflight izler — hiç göndermemek yapay kayıp sinyali üretirdi (bench her
-                // kararı gönderirdi). Alıcı birimi dedup eder, seq'i ACK'ler → motor temiz kapatır.
-                let (payload, stale): (&[u8], bool) = match store.get(&d.unit_id) {
-                    Some(p) => (p.as_slice(), false),
-                    None => (&[], true),
-                };
-                if stale {
-                    stats.stale_decisions += 1;
-                }
-                // [S1B] store WIRE GÖVDESİNİ tutar: frag açıkken `prefix ‖ payload`, kapalıyken
-                // düz payload — emisyon tek şekilli kalır, prefix burada YENİDEN kurulmaz.
-                // Stale (store-miss) emisyonda gövde boştur; frag çerçevesi ≥11 B ister, bu yüzden
-                // canonical sıfır-prefix konur: alıcı çözer, PN ACK'lenir, birleştiriciye
-                // len=0 katkısıyla girer (aynı esi'de gerçek symbol first-wins ile korunur).
-                // [D1a] Çerçevedeki u16 `seq` ara çerçeve alanıdır (S3: interim çerçeve bu sprint
-                // beyanlı KARŞILANMAZ); ARQ kimliği DEĞİL — alıcı kimliği `meta.full_wire_pn`'den alır.
-                let stale_body: [u8; SOURCE_PREFIX_LEN] = [0; SOURCE_PREFIX_LEN];
-                let frame = if frag_on {
-                    let body = if stale { &stale_body[..] } else { payload };
-                    encode_data_frag((d.seq & 0xFFFF) as u16, d.unit_id, body)
-                } else {
-                    encode_data((d.seq & 0xFFFF) as u16, d.unit_id, payload)
-                };
-                // Sınıf ayrımı motorun karar tipinden: ilk emisyon / ARQ retransmit / §11 dup.
-                let class = match d.kind {
-                    TransmitKind::Retransmit => TxClass::Retx,
-                    TransmitKind::Duplicate => TxClass::Dup,
-                    _ => TxClass::Data,
-                };
-                let pn = seal_send!(frame, class, $now);
-                map_pn!(pn, d.seq);
-            }
-        };
-    }
-    // [HANDOFF ENSTRÜMANI] bounded zaman-serisi örnekleme — HER pace tick'inde (ana döngü + drenaj).
-    // Period-kapılı: aynı tick'te iki çağrı ikinci örnek üretmez. Salt gözlem.
-    macro_rules! ts_sample {
-        ($now:expr) => {
-            if let Some(p) = cfg.ts_sample_period_ns {
-                if $now.saturating_sub(ts_last_ns) >= p && stats.ts.len() < TS_CAP {
-                    stats.ts.push(($now, session.sender().diag_ts_sample()));
-                    ts_last_ns = $now;
-                }
-            }
-        };
-    }
     // [S1B] Bir BİRİMİN teslim-teyidi app'e nasıl yansır.
     //
     // Fragmentasyon KAPALIYKEN birim = mesaj → id doğrudan akar (eski davranış birebir).
-    // AÇIKKEN app mesaj granülünde konuşur: birim ACK'i mesajın kalan-chunk sayacını düşürür ve
+    // AÇIKKEN app mesaj granülünde konuşur: birim teyidi mesajın kalan-chunk sayacını düşürür ve
     // ACK yalnız SON chunk teyitlendiğinde verilir — yarım mesaj "teslim edildi" diye
-    // raporlanamaz. ACK ve FEC-RECOVERED yolları BU tek noktayı paylaşır.
+    // raporlanamaz. [K4G-05b-R] Tek çağıranı teyit drenajıdır (`drain_confirmed!`): ACK ve
+    // FEC-RECOVERED teyitleri motordan aynı noktadan gelir.
     macro_rules! unit_acked {
         ($unit:expr) => {
             if frag_on {
@@ -2232,6 +2231,177 @@ async fn client_task(
                 });
                 // app drenajı; taşarsa olay düşer, teslim durumu store'da zaten kesin.
                 let _ = acked_tx.try_send($unit);
+            }
+        };
+    }
+    // [K4G-05b-R · sahip kararı 2026-11-11] TEYİT DRENAJI — payload'ı silen ve app-düzeyi teyidi
+    // (`acked()` akışı, `outstanding` düşümü, `stats.acked` / `stats.fec_recovered_ctrl_units`)
+    // üreten TEK yol: motorun teyit çıktısı (`Sender::take_confirmed_units`). Motorun kaydını
+    // unuttuğu iletimin geç ACK'i (tombstone TTL'i, tahliye ya da kopya kökenli kayıpla düşmüş)
+    // teyit üretmez: payload yerinde kalır, sonraki iletim gövdeli gider ve onun ACK'i teyit eder
+    // (`docs/design/K4G-05b-RUNTIME-ENVANTER.md`). Motor olaylar arası tekilleştirmez; tekilleştirme
+    // store varlığıdır (birim kimliği yeniden kullanılmaz, ilk teyit store'dan düşürür). Birimin
+    // haritaları aynı yerde budanır. Teyit kaybı yapısal olarak yoktur: motor bir çağrının kendi
+    // teyitlerini düşürmez (tavanı yalnız drenaj edilmemiş birikime uygular) ve bu drenaj her
+    // `session.on_event` çağrısından hemen sonra koşar (`drive!`); store boyu, parçalama ya da ACK
+    // çerçevesi boyu bunu değiştirmez. Olay içi sıra artan birim kimliğidir.
+    // Değer: bu drenajda store'dan düşen birim sayısı.
+    macro_rules! drain_confirmed {
+        ($via:expr) => {{
+            let mut newly: u32 = 0;
+            for unit in session.sender_mut().take_confirmed_units() {
+                for old in unit_seqs.remove(&unit).unwrap_or_default() {
+                    seq_to_unit.remove(&old);
+                }
+                // Store'da olmayan birim çoktan teyit edilmiştir (başka bir canlı kaydının ACK'i
+                // ya da ACK sonrası RECOVERED): app olayı ve sayaç üretilmez.
+                if store.remove(&unit).is_none() {
+                    continue;
+                }
+                match $via {
+                    ConfirmVia::Recovered => stats.fec_recovered_ctrl_units += 1,
+                    ConfirmVia::Ack => stats.acked += 1,
+                }
+                newly = newly.saturating_add(1);
+                unit_acked!(unit);
+            }
+            newly
+        }};
+    }
+    // Değeri: olayın teyit drenajında store'dan düşen birim sayısı (`drain_confirmed!`).
+    macro_rules! drive {
+        ($ev:expr, $now:expr) => {{
+            let ev: Event = $ev;
+            let via = ConfirmVia::of(&ev);
+            let decisions = session.on_event(ev, $now);
+            // [K4G-05b-R] Teyit drenajı kararlar işlenmeden ÖNCE. Motor teyitli birime karar
+            // üretmez (teyitte bekleyen işi iptal edilir); yine de gelirse aşağıda store-miss olarak
+            // atlanır (tele datagram çıkmaz; `stale_decisions` + `stale_skipped`, panik yok) ve
+            // birime yeni harita kaydı açılmaz.
+            let confirmed_now: u32 = drain_confirmed!(via);
+            for d in decisions {
+                // PN → seq çevirisi motor seq'i taşıyan HER kararda (repair'ler de seq işgal eder;
+                // `map_pn!`); ama seq→unit haritası YALNIZ birim-taşıyan kararlarda: FecParity'nin
+                // unit_id'si ESI'dir (AYRI ad-uzayı) — haritaya girseydi repair-ACK'i gerçek bir
+                // birimin store'unu silerdi (S1'de yakalanan tuzak).
+                let carries_unit = matches!(
+                    d.kind,
+                    TransmitKind::Data | TransmitKind::Retransmit | TransmitKind::Duplicate
+                );
+                if carries_unit {
+                    // [K4G-05b-R] Teyitli (store'dan düşmüş) birim için kayıt EKLENMEZ.
+                    if store.contains_key(&d.unit_id) {
+                        seq_to_unit.insert(d.seq, d.unit_id);
+                        unit_seqs.entry(d.unit_id).or_default().push(d.seq);
+                    }
+                } else {
+                    // [S1] FecParity (FEC-açıkken): repair-store'daki gerçek RS-repair →
+                    // FRAME_FEC → seam → wire.
+                    if d.kind == TransmitKind::FecParity {
+                        // [L-T1] Kurtarma kapalıyken FEC repair da tele ÇIKMAZ: parity bir kurtarma
+                        // mekanizmasıdır (ARQ ile aynı anahtar; yalnız test yapılandırması).
+                        if !*recovery_rx.borrow() {
+                            stats.recovery_suppressed += 1;
+                            continue;
+                        }
+                        if let (Some(p), Some(hint)) = (fec.as_ref(), d.send_record) {
+                            let SrLogicalRef::Fec { block_id, esi } = hint.logical_ref;
+                            let entry = repair_store.get(&block_id);
+                            // [K4G-05b-R · sahip kararı 2026-11-11] Sembol repair-store'da yoksa
+                            // (blok tahliye edildi / latch-0) karar ATLANIR: tele boş sembollü FEC
+                            // çerçevesi çıkmaz, PN harcanmaz. Motor kararı zaten işledi; kaydın
+                            // ACK'i gelmez, kayıt uçuşta kalır (parite kaydı kayıpta ARQ'ya girmez;
+                            // ardılı `ClientStats::stale_skipped`). Sayaçlar: `fec_repair_missing`
+                            // (neden) + `stale_skipped` (toplam). Sınama: yardımcı `skip_tests`'te; bu
+                            // kol (sayaçlar, `continue`) testte koşmaz.
+                            let Some(sym) = repair_symbol(&repair_store, block_id, esi) else {
+                                stats.fec_repair_missing += 1;
+                                stats.stale_skipped += 1;
+                                continue;
+                            };
+                            // [FAZ-2 / KALEM-1] K_actual tel başlığında: tam blokta k_shape,
+                            // kısmi/son blokta gerçek kaynak sayısı.
+                            let k_actual_wire = entry
+                                .map_or_else(|| u8::try_from(p.k_shape).unwrap_or(255), |(k, _)| *k);
+                            stats.fec_repairs_tx += 1;
+                            let frame = encode_fec(
+                                &FecFrameHeader {
+                                    kind: inner_kind::FEC_REPAIR,
+                                    profile_id: p.profile_id,
+                                    block_id,
+                                    esi,
+                                    k_actual: k_actual_wire,
+                                    // [D1a] ara çerçeve alanı; kimlik DEĞİL (alıcı PN'i kullanır).
+                                    seq: (d.seq & 0xFFFF) as u16,
+                                },
+                                sym,
+                            );
+                            let pn = seal_send!(frame, TxClass::Fec, $now);
+                            map_pn!(pn, d.seq);
+                            continue;
+                        }
+                    }
+                    // [DR-CS-3] CS-probe: motor PreConverge'de RTT örneği üretmek için planlar.
+                    // probe_seq AYRI ad-uzayındadır (`bs_maybe_emit_probe`: "NOT a DATA seq, NOT
+                    // inflight-tracked") — seq→unit haritasına GİRMEZ, yukarıdaki carries_unit
+                    // dalı bunu zaten dışlıyor.
+                    if d.kind == TransmitKind::CsProbe {
+                        let f = encode_cs_probe(CS_PROBE_SUBTYPE, (d.seq & 0xFFFF) as u16);
+                        stats.cs_probes_tx += 1;
+                        // probe_seq ayrı ad-uzayı: PN tabloya GİRMEZ (alıcı probe'u ACK'lemez).
+                        let _ = seal_send!(f, TxClass::Ctrl, $now);
+                        continue;
+                    }
+                    // FEC-kapalıyken (ya da gönderim kaydı olmadan) FecParity: v0 kabuk taşımaz,
+                    // tele ÇIKMAZ, sayar (bootstrap OFF; sevk default'larında üretilmezler — typed
+                    // genişleme noktası). Atlanan karar `stale_skipped`'e de girer.
+                    stats.stale_decisions += 1;
+                    stats.stale_skipped += 1;
+                    continue;
+                }
+                // [L-T1] Kurtarma kapalı (yalnız test yapılandırması): ARQ retransmit ve §11 kopya
+                // tele ÇIKMAZ. Motor emisyonu zaten işledi; çıkmayan karar kayıp sayılır (INV-RATE-1).
+                if !*recovery_rx.borrow()
+                    && matches!(d.kind, TransmitKind::Retransmit | TransmitKind::Duplicate)
+                {
+                    stats.recovery_suppressed += 1;
+                    continue;
+                }
+                // Store-miss: [K4G-05b-R] store yalnız motor teyidiyle boşaldığından bu, motorun
+                // TEYİTLİ birime karar üretmesi olurdu; motor teyitte birimin bekleyen işini iptal
+                // ettiği için beklenmez. [sahip kararı 2026-11-11] Gövdesi olmayan karar DATAGRAM
+                // ÜRETMEZ: karar atlanır (seal yok, PN harcanmaz, harita kaydı açılmaz); tele boş ya
+                // da yalnız önekli çerçeve çıkmaz. Sayaçlar: `stale_decisions` (neden) +
+                // `stale_skipped` (toplam). Ölçümler: `docs/design/K4G-05b-RUNTIME-ENVANTER.md`
+                // "Atlama politikası".
+                // Sınama: yardımcı `skip_tests`'te (store-miss → çerçeve yok); bu kol (sayaçlar,
+                // `continue`) testte koşmaz.
+                let Some(frame) = unit_frame(&store, d.seq, d.unit_id, frag_on) else {
+                    stats.stale_decisions += 1;
+                    stats.stale_skipped += 1;
+                    continue;
+                };
+                // Sınıf ayrımı motorun karar tipinden: ilk emisyon / ARQ retransmit / §11 dup.
+                let class = match d.kind {
+                    TransmitKind::Retransmit => TxClass::Retx,
+                    TransmitKind::Duplicate => TxClass::Dup,
+                    _ => TxClass::Data,
+                };
+                let pn = seal_send!(frame, class, $now);
+                map_pn!(pn, d.seq);
+            }
+            confirmed_now
+        }};
+    }
+    // [HANDOFF ENSTRÜMANI] bounded zaman-serisi örnekleme — HER pace tick'inde (ana döngü + drenaj).
+    // Period-kapılı: aynı tick'te iki çağrı ikinci örnek üretmez. Salt gözlem.
+    macro_rules! ts_sample {
+        ($now:expr) => {
+            if let Some(p) = cfg.ts_sample_period_ns {
+                if $now.saturating_sub(ts_last_ns) >= p && stats.ts.len() < TS_CAP {
+                    stats.ts.push(($now, session.sender().diag_ts_sample()));
+                    ts_last_ns = $now;
+                }
             }
         };
     }
@@ -2293,22 +2463,18 @@ async fn client_task(
                         stats.unknown_frames += 1;
                     }
                 } else if plain.first() == Some(&FRAME_RECOVERED) {
-                    // [S1] RECOVERED-control: alıcı bu ESI'leri FEC ile kurtardı → birim teslim-
-                    // teyitli: store'dan düşer, app acked() akışına girer, motor saf-logical iptal
-                    // eder (retransmit israfı biter). unit_id = block*K + esi (deterministik atama).
+                    // [S1] RECOVERED-control: alıcı bu ESI'leri FEC ile kurtardı → motor
+                    // saf-logical iptal eder (retransmit israfı biter). unit_id = block*K + esi
+                    // (deterministik atama). [K4G-05b-R · sahip kararı 2026-11-11] Birim teyidini
+                    // MOTOR verir (`RecoveredControl` listelenen her birimi teyit çıktısına
+                    // yankılar): payload ve app acked() akışı `drive!`'ın teyit drenajında düşer —
+                    // burada doğrudan silme YOK.
                     match (fec.as_ref(), decode_recovered(&plain)) {
                         (Some(p), Some((block_id, esis))) => {
                             let mut units = Vec::with_capacity(esis.len());
                             for esi in esis {
                                 let unit =
                                     u64::from(block_id) * u64::from(p.k_shape) + u64::from(esi);
-                                if store.remove(&unit).is_some() {
-                                    stats.fec_recovered_ctrl_units += 1;
-                                    unit_acked!(unit);
-                                    for old in unit_seqs.remove(&unit).unwrap_or_default() {
-                                        seq_to_unit.remove(&old);
-                                    }
-                                }
                                 units.push(RecoveredUnit {
                                     unit_id: unit,
                                     block_id,
@@ -2361,19 +2527,6 @@ async fn client_task(
                                     .map(|i| pn_seq[i].1)
                             })
                             .collect();
-                        let mut new_units: u32 = 0;
-                        for s in &acked {
-                            let Some(&unit) = seq_to_unit.get(s) else { continue };
-                            if store.remove(&unit).is_some() {
-                                stats.acked += 1;
-                                new_units = new_units.saturating_add(1);
-                                unit_acked!(unit);
-                                // Birimin TÜM seq kayıtları budanır — haritalar store disipliniyle sınırlı kalır.
-                                for old in unit_seqs.remove(&unit).unwrap_or_default() {
-                                    seq_to_unit.remove(&old);
-                                }
-                            }
-                        }
                         // [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] Çerçeve kaydının motordan ÖNCEKİ yarısı.
                         // [DUR-19] Yalnız canlı ayna açıkken okunur.
                         let pre = pn_view.map(|(acked_pns, largest_pn)| AckFramePre {
@@ -2385,7 +2538,11 @@ async fn client_task(
                         });
                         // Kampanya-kanıtlı sözleşme (bench birebir): acked_full çıktısı diff'siz
                         // beslenir; motor inflight.remove ile idempotent işler.
-                        drive!(
+                        // [K4G-05b-R · sahip kararı 2026-11-11] Birim teyidini MOTOR verir:
+                        // runtime ACK'teki seq'i kendi haritasıyla birime çevirip silmez. Payload, app acked() akışı ve
+                        // `stats.acked` `drive!`'ın teyit drenajındadır; `new_units` = bu çerçevenin
+                        // motorca ilk kez teyit ettirdiği birim sayısı.
+                        let new_units: u32 = drive!(
                             Event::AckReceived(AckInfo {
                                 acked_seqs: acked,
                                 ack_delay: frame.ack_delay_duration(),
@@ -2457,6 +2614,7 @@ async fn client_task(
                 recovery = Some(capture_recovery(
                     session.sender(),
                     &store,
+                    &seq_to_unit,
                     &unit_seqs,
                     &pn_seq,
                     mirror_now_ns,
@@ -3907,6 +4065,71 @@ async fn server_task(
         }
     }
     stats
+}
+
+#[cfg(test)]
+mod skip_tests {
+    //! [K4G-05b-R · sahip kararı 2026-11-11, #174 madde 2] Gövdesi olmayan karar datagram
+    //! üretmez. Motor teyitli birime karar üretmediğinden (teyitte bekleyen iş iptal) runtime
+    //! testlerinde atlama dalları doğal trafikle KOŞMAZ (`stale_skipped == 0`). Burada yalnız dalların
+    //! kullandığı yardımcılar sınanır: store-miss ve eksik onarım sembolü için çerçeve kurulmaz,
+    //! store'daki gövde için çerçeve gövdenin TAMAMINI taşır. `drive!` içindeki `let … else` kolunun
+    //! kendisi (sayaçlar, seal/PN yokluğu, `continue`) hiçbir testte koşmaz; kod okumasıyla kapsanır
+    //! (`docs/design/K4G-05b-RUNTIME-ENVANTER.md` "Tel bekçisi ve mutasyon").
+
+    use super::*;
+
+    const UNIT: u64 = 7;
+    const SEQ: u64 = 0x1_0005; // u16 ara alanda 5
+    const BLOCK: u32 = 3;
+    const ESI: u16 = 2;
+
+    #[test]
+    fn store_miss_builds_no_frame() {
+        let store: HashMap<u64, Vec<u8>> = HashMap::new();
+        for frag_on in [false, true] {
+            assert_eq!(
+                unit_frame(&store, SEQ, UNIT, frag_on),
+                None,
+                "frag={frag_on}"
+            );
+        }
+    }
+
+    #[test]
+    fn store_hit_frame_carries_whole_body() {
+        let body = vec![0xAB; 40];
+        let store: HashMap<u64, Vec<u8>> = HashMap::from([(UNIT, body.clone())]);
+        let plain = unit_frame(&store, SEQ, UNIT, false).expect("gövdeli DATA");
+        assert_eq!(plain, encode_data(5, UNIT, &body));
+        assert_eq!(
+            plain.len(),
+            HDR_DATA + body.len(),
+            "başlık + gövdenin tamamı"
+        );
+        let frag = unit_frame(&store, SEQ, UNIT, true).expect("gövdeli DATA_FRAG");
+        assert_eq!(frag, encode_data_frag(5, UNIT, &body));
+        // Başka birimin gövdesi kullanılmaz.
+        assert_eq!(unit_frame(&store, SEQ, UNIT + 1, false), None);
+    }
+
+    #[test]
+    fn missing_repair_symbol_builds_no_frame() {
+        let mut rs: BTreeMap<u32, (u8, Vec<RepairSymbol>)> = BTreeMap::new();
+        assert_eq!(repair_symbol(&rs, BLOCK, ESI), None, "blok yok (tahliye)");
+        rs.insert(
+            BLOCK,
+            (
+                4,
+                vec![RepairSymbol {
+                    esi: ESI + 1,
+                    bytes: vec![1, 2, 3],
+                }],
+            ),
+        );
+        assert_eq!(repair_symbol(&rs, BLOCK, ESI), None, "ESI yok");
+        assert_eq!(repair_symbol(&rs, BLOCK, ESI + 1), Some(&[1u8, 2, 3][..]));
+    }
 }
 
 #[cfg(test)]
