@@ -98,6 +98,11 @@ r25 kuramsal değerleri: ileri paket 130 B → **5,2 s**; SACK (0 aralık) 65 B 
 Eski motor yolu main ile #181 arasında bayt düzeyinde aynıdır (`legacy` satırı iki tabanda özdeş;
 U10–U13 yalnız `cc_on()`).
 
+**Ek (2026-11-11, #181 @ `9de331eb`, U14 "RTT örneği yokken port PTO probu kurmaz" sonrası):** `cc-port`
+ileti p50 **6,9 s** [5,3..12,8], p95 32,3 s, 60/60, ileri 11 268 / dönüş 6 072 B, prob 14, retx 25 (4);
+`cc-port-iw4` aynı. U14, §8'deki "RTT örneksiz erken prob" kökünü port tarafında doğrudan kapatır
+(8,5 → 6,9 s); öbür kollar değişmedi (eski yol bayt düzeyinde aynı).
+
 ### 4.2 Ayrıştırma (#181 tabanı)
 
 | kol / anahtar | ileti p50 | prob | retx (dup) | kuyruk düşen |
