@@ -167,6 +167,7 @@ fn run_opt(
     t_max_s: u64,
     units: (u64, u64),
     parity_per_block: u16,
+    blackout: Option<(u64, u64)>,
 ) -> Outcome {
     let one_way = rtt_ms * MS / 2;
     let mut s = eng.sender();
@@ -194,13 +195,16 @@ fn run_opt(
             .expect("manuel FEC kipi");
     }
     let mut fwd = Bottleneck::new(rate_bps, queue_limit, one_way, loss_permille, seed);
-    // `CC_BLACKOUT=<başlangıç_s>,<süre_s>`: ileri yönde %100 kayıp penceresi (kesinti profili).
-    if let Ok(v) = std::env::var("CC_BLACKOUT") {
-        if let Some((a, d)) = v.split_once(',') {
-            if let (Ok(a), Ok(d)) = (a.parse::<u64>(), d.parse::<u64>()) {
-                fwd.blackout = Some((a * SEC, (a + d) * SEC));
-            }
-        }
+    // Kesinti penceresi `(başlangıç_s, süre_s)`: ileri yönde %100 kayıp (kesinti profili). Testler
+    // parametreyle verir (süreç-geneli ortam değişkeni paralel testlere sızar — CI'da görüldü);
+    // `CC_BLACKOUT=<başlangıç_s>,<süre_s>` yalnız elle koşular için yedek.
+    let blackout = blackout.or_else(|| {
+        let v = std::env::var("CC_BLACKOUT").ok()?;
+        let (a, d) = v.split_once(',')?;
+        Some((a.parse::<u64>().ok()?, d.parse::<u64>().ok()?))
+    });
+    if let Some((a, d)) = blackout {
+        fwd.blackout = Some((a * SEC, (a + d) * SEC));
     }
     let mut rev: VecDeque<(u64, AckInfo)> = VecDeque::new();
     // `CC_REV_LOSS=<binde>`: dönüş yolunda (SACK) rastgele kayıp; varsayılan 0 (kayıpsız dönüş).
@@ -382,6 +386,7 @@ fn run(
         t_max_s,
         (FILE_BYTES.div_ceil(MTU), MTU),
         0,
+        None,
     )
 }
 
@@ -499,7 +504,7 @@ fn deep_queue_file_loss20_ten_seeds() {
 #[test]
 fn ptt_bundle_first_delivery() {
     for eng in ENGINES {
-        let o = run_opt(eng, 12_500, 6, 300, 200, 7, 30, (6, 400), 0);
+        let o = run_opt(eng, 12_500, 6, 300, 200, 7, 30, (6, 400), 0, None);
         println!(
             "[{}] ptt 6×400B q6 l20: ilk demet={}",
             eng.name(),
@@ -532,6 +537,7 @@ fn fec_parity_reaches_the_wire_below_26kbps() {
             120,
             (FILE_BYTES.div_ceil(MTU), MTU),
             2,
+            None,
         );
         report(eng, "q1000 r12.5k d300 l0 + 2 parite/8 birim", &o);
         println!(
@@ -578,10 +584,18 @@ fn blackout_60s_session_survives_and_completes() {
     for eng in ENGINES {
         let mut times = Vec::new();
         for seed in 1..=5 {
-            // Kesinti penceresi ortam değişkeniyle (harness yerel; testler tek iş parçacığında koşar).
-            std::env::set_var("CC_BLACKOUT", "3,60");
-            let o = run(eng, 12_500, 1000, 300, 200, seed, 180);
-            std::env::remove_var("CC_BLACKOUT");
+            let o = run_opt(
+                eng,
+                12_500,
+                1000,
+                300,
+                200,
+                seed,
+                180,
+                (FILE_BYTES.div_ceil(MTU), MTU),
+                0,
+                Some((3, 60)),
+            );
             report(eng, &format!("kesinti 60s @3s q1000 l20 seed{seed}"), &o);
             if let Some(t) = o.completed_ns {
                 times.push(t);
