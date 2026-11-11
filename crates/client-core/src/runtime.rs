@@ -3411,6 +3411,15 @@ fn retire_closed_slots(peers: &mut HashMap<SlotKey, PeerSlot>, expected: &Expect
 /// [v1/PARAM] Per-peer pre-param hold tavanı (MAX_PREPARAM_SHARDS hizası, küçük: E≤1KB sınıfı).
 const PRE_PARAM_FEC_CAP: usize = 64;
 
+/// [v1/PARAM] FEC-shard yerel profile uyuyor mu: profil kimliği ve sembol boyu (E). `fec_ingest`'e
+/// giden her yol (bind-sonrası ingest, bind-öncesi bekletme, bind'de boşaltma) bu kapıdan geçer.
+/// Neden: birleştirici aynı ESI'de ilk-geleni tutar, codec boyu uymayan tek sembolde bütün kümeyi
+/// reddeder ve başarısız blok korunur — kapıdan kaçan tek shard o bloğun kurtarımını kalıcı kapatır;
+/// yanlış profilli sembol yerel profille çözülüp yanlış kaynak üretir.
+fn fec_shard_fits(p: &FecProfile, h: &FecFrameHeader, symbol: &[u8]) -> bool {
+    h.profile_id == p.profile_id && symbol.len() == p.e_usize()
+}
+
 /// Mühürlü wire boyu (pacing/FEC bütçe muhasebesi). `sealed_len` yapısal olarak reddederse
 /// (çerçeve bağlamın sınırını aşıyor / oturum yok) düz boy döner: o çerçevenin `seal()`'i de AYNI
 /// nedenle reddedilecek ve emisyon kayıp sayılacaktır (INV-RATE-1) — muhasebe burada uydurulmaz.
@@ -3912,7 +3921,11 @@ async fn server_task(
                         // ALMAZ, bekletilir; bind'de drain edilir. (Düşürme yarış-duyarlıydı:
                         // repair yeniden-üretilmediğinden kurtarım kalıcı kaybolurdu — CI'da yakalandı.)
                         if !slot.param.is_confirmed() {
-                            if slot.pre_param_fec.len() < PRE_PARAM_FEC_CAP {
+                            if !fec_shard_fits(p, &h, symbol) {
+                                // Uyumsuz shard bekletme yuvası ALMAZ (bind-sonrası dalla aynı
+                                // kapı ve sayaç); ACK'i aşağıda yine verilir.
+                                stats.unknown_frames += 1;
+                            } else if slot.pre_param_fec.len() < PRE_PARAM_FEC_CAP {
                                 slot.pre_param_fec.push((h, symbol.to_vec()));
                             } else {
                                 stats.fec_pre_param_dropped += 1; // taşan düşer (bounded).
@@ -3942,7 +3955,7 @@ async fn server_task(
                             }
                             continue;
                         }
-                        if h.profile_id != p.profile_id || symbol.len() != p.e_usize() {
+                        if !fec_shard_fits(p, &h, symbol) {
                             stats.unknown_frames += 1; // profil/symbol uyumsuz — fail-closed.
                             continue;
                         }
@@ -4030,6 +4043,11 @@ async fn server_task(
                                 // RECOVERED ile bildirilir).
                                 if let Some(p) = fec.as_ref() {
                                     for (fh, sym) in std::mem::take(&mut slot.pre_param_fec) {
+                                        // Bekletmede elendi; `fec_ingest` girişi yine aynı kapı.
+                                        if !fec_shard_fits(p, &fh, &sym) {
+                                            stats.unknown_frames += 1;
+                                            continue;
+                                        }
                                         let is_rep = fh.kind == inner_kind::FEC_REPAIR;
                                         let rec = fec_ingest(
                                             &mut stats,
@@ -4605,5 +4623,322 @@ mod live_diag_mirror_tests {
                 assert_eq!(live, ClientLiveDiag::default());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod pre_param_fec_guard_tests {
+    //! [v1/PARAM] Bind-öncesi FEC bekletmesinin profil/boy kapısı. Kapı eskiden yalnız bind-sonrası
+    //! daldaydı; bind-öncesi gelen shard denetimsiz bekletilip bind'de denetimsiz `fec_ingest`'e
+    //! boşaltılıyordu. Sonuç: (i) yanlış boylu tek shard bloğa girer, birleştirici aynı ESI'de
+    //! ilk-geleni tutar, codec boyu uymayan tek sembolde bütün kümeyi reddeder (`SymbolLen`) ve
+    //! başarısız blok korunur → o bloğun FEC kurtarımı kalıcı kapanır; (ii) yanlış profilli shard
+    //! yerel profille çözülür → yanlış kaynak; (iii) bu shard'lar `PRE_PARAM_FEC_CAP` yuvalarını
+    //! tüketip geçerli shard'ları taşırır. Kötü shard bind-öncesi yine ACK'lenir (bugünkü davranış).
+    //!
+    //! DÜZENEK: gerçek sunucu görevi (UDP loopback, `IdentitySeam`); karşı uç HAM eştir: çerçeveleri
+    //! test kurar, mühürler ve sırayla yollar. Blok 0'ın kaynak birimi 0 hiç yollanmaz; 1..K−1 DATA
+    //! ile, onarım ESI 1 FEC ile gelir → birim 0 yalnız FEC çözümüyle teslim edilebilir. Sıra
+    //! iddiası ACK bariyerine dayanır (bind-öncesi bütün PN'ler ACK'lenmeden PARAM yollanmaz);
+    //! süreler yalnız beklenen olayın üst sınırıdır.
+
+    use super::*;
+    use crate::seam::IdentitySeam;
+    use std::collections::BTreeSet;
+
+    const S: ProtectionContext = ProtectionContext::Session(IdentitySeam::SESSION);
+    /// Beklenen olayın (ACK, PARAM_ACK, teslim, RECOVERED) üst süre sınırı.
+    const WAIT: Duration = Duration::from_secs(10);
+    /// Hedef blok.
+    const BLOCK: u32 = 0;
+    /// Hedef bloğun hiç yollanmayan kaynak birimi (ESI 0).
+    const MISSING: u64 = 0;
+    /// Kötü shard'ların blok 0'dan ayrı bloğu (yuva tüketimi vakası blok 0'ı zehirlemesin).
+    const OTHER_BLOCK: u32 = 1;
+
+    fn profile() -> FecProfile {
+        by_id(KamaV1Profile::FEC_PROFILE_ID).expect("ürün profili katalogda")
+    }
+
+    fn k_actual(p: &FecProfile) -> u8 {
+        u8::try_from(p.k_shape).expect("k_shape u8'e sığar")
+    }
+
+    fn payload(unit: u64) -> Vec<u8> {
+        format!("on-param-{unit}").into_bytes()
+    }
+
+    /// Sunucunun 0x00 DATA için türettiği canonical source-symbol'ün aynısı.
+    fn source_symbol(p: &FecProfile, unit: u64) -> Vec<u8> {
+        let body = payload(unit);
+        let pfx = SourcePrefix {
+            message_id: (unit & 0xFFFF_FFFF) as u32,
+            chunk_offset: 0,
+            actual_payload_len: u16::try_from(body.len()).expect("kısa yük"),
+            source_flags: 0,
+        };
+        let mut sym = vec![0u8; p.e_usize()];
+        pfx.serialize_symbol(&body, &mut sym).expect("symbol");
+        sym
+    }
+
+    /// Blok 0'ın gerçek onarım sembolü.
+    fn repair_symbol(p: &FecProfile, esi: u16) -> Vec<u8> {
+        let k = u64::from(p.k_shape);
+        let syms: Vec<Vec<u8>> = (0..k)
+            .map(|i| source_symbol(p, u64::from(BLOCK) * k + i))
+            .collect();
+        let src: Vec<SourceSymbol<'_>> = syms
+            .iter()
+            .zip(0u16..)
+            .map(|(b, esi)| SourceSymbol { esi, bytes: b })
+            .collect();
+        RsSimdCodec
+            .encode(p, &src)
+            .expect("encode")
+            .into_iter()
+            .find(|r| r.esi == esi)
+            .expect("onarım ESI'si profilde")
+            .bytes
+    }
+
+    fn repair_frame(profile_id: u8, block_id: u32, esi: u16, k: u8, symbol: &[u8]) -> Vec<u8> {
+        encode_fec(
+            &FecFrameHeader {
+                kind: inner_kind::FEC_REPAIR,
+                profile_id,
+                block_id,
+                esi,
+                k_actual: k,
+                seq: 0,
+            },
+            symbol,
+        )
+    }
+
+    /// Ham karşı uç: tek UDP soketi + kendi `IdentitySeam`'i (PN'i o sayar).
+    struct RawPeer {
+        sock: UdpSocket,
+        server: SocketAddr,
+        seam: IdentitySeam,
+        next_pn: u64,
+        acked: BTreeSet<u64>,
+        param_acked: bool,
+        recovered: Vec<(u32, Vec<u16>)>,
+    }
+
+    impl RawPeer {
+        async fn new(server: SocketAddr) -> Self {
+            Self {
+                sock: UdpSocket::bind("127.0.0.1:0").await.expect("UDP soketi"),
+                server,
+                seam: IdentitySeam::new(),
+                next_pn: 0,
+                acked: BTreeSet::new(),
+                param_acked: false,
+                recovered: Vec::new(),
+            }
+        }
+
+        /// Çerçeveyi mühürler ve yollar; datagramın PN'ini döner.
+        async fn send(&mut self, frame: &[u8]) -> u64 {
+            let sealed = self.seam.seal(S, frame).expect("seal");
+            let pn = sealed.meta.full_wire_pn;
+            self.next_pn = pn + 1;
+            self.sock
+                .send_to(&sealed.bytes, self.server)
+                .await
+                .expect("send");
+            pn
+        }
+
+        /// Sunucudan gelenleri (`ACK`, `PARAM_ACK`, `RECOVERED`) `done` sağlanana dek işler; üst
+        /// sınır `WAIT`. Koşul sağlandıysa `true`.
+        async fn pump_until(&mut self, done: impl Fn(&Self) -> bool) -> bool {
+            let deadline = tokio::time::Instant::now() + WAIT;
+            let mut buf = vec![0u8; 2048];
+            while !done(self) {
+                let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if left.is_zero() {
+                    return false;
+                }
+                let Ok(Ok((n, _))) =
+                    tokio::time::timeout(left, self.sock.recv_from(&mut buf)).await
+                else {
+                    continue;
+                };
+                let Some(od) = self.seam.open(&buf[..n]) else {
+                    continue;
+                };
+                if let Ok(ack) = AckFrame::decode(&od.frame) {
+                    self.acked.extend(ack.acked_full(self.next_pn));
+                } else if decode_param_ack(&od.frame).is_some() {
+                    self.param_acked = true;
+                } else if let Some(r) = decode_recovered(&od.frame) {
+                    self.recovered.push(r);
+                }
+            }
+            true
+        }
+    }
+
+    struct Outcome {
+        stats: ServerStats,
+        /// Birim 0'ın teslim edilen yükü (`WAIT` içinde teslim yoksa `None`).
+        unit0: Option<Vec<u8>>,
+        bad_pns: Vec<u64>,
+        acked: BTreeSet<u64>,
+        recovered: Vec<(u32, Vec<u16>)>,
+    }
+
+    /// Bind-öncesi: `bad` çerçeveleri, ardından blok 0'ın geçerli onarımı (ESI 1) ve kaynaklar
+    /// 1..K−1 (DATA). Bariyer: bunların hepsi ACK'lenir. Sonra PARAM → PARAM_ACK (bind + boşaltma)
+    /// → birim 0'ın teslimi beklenir.
+    async fn run(bad: &[Vec<u8>]) -> Outcome {
+        let p = profile();
+        let k = u64::from(p.k_shape);
+        let mut server = ServerEndpoint::bind(
+            "127.0.0.1:0".parse().expect("adres"),
+            RuntimeConfig::default(),
+            Box::new(IdentitySeam::new()),
+        )
+        .await
+        .expect("server bind");
+        let mut peer = RawPeer::new(server.local_addr()).await;
+        let mut bad_pns = Vec::new();
+        for f in bad {
+            bad_pns.push(peer.send(f).await);
+        }
+        let valid = repair_frame(p.profile_id, BLOCK, 1, k_actual(&p), &repair_symbol(&p, 1));
+        peer.send(&valid).await;
+        for unit in 1..k {
+            peer.send(&encode_data(0, u64::from(BLOCK) * k + unit, &payload(unit)))
+                .await;
+        }
+        let sent = peer.next_pn;
+        let barrier = peer
+            .pump_until(|s| (0..sent).all(|pn| s.acked.contains(&pn)))
+            .await;
+        assert!(
+            barrier,
+            "bind-öncesi her datagram ACK'lenmeli (kötü shard'lar dahil); ACK'li: {:?}",
+            peer.acked
+        );
+        let Control::ParamSet { param_hash, .. } = plan_param_bootstrap(1, &param_fields_for(&p))
+            .expect("PARAM planı")
+            .control
+        else {
+            panic!("PARAM planı ParamSet olmalı");
+        };
+        peer.send(&encode_param(p.profile_id, p.code_suite_id, &param_hash))
+            .await;
+        assert!(
+            peer.pump_until(|s| s.param_acked).await,
+            "PARAM_ACK gelmedi"
+        );
+        let unit0 = tokio::time::timeout(WAIT, async {
+            while let Some(d) = server.next_delivery().await {
+                if d.unit_id == MISSING {
+                    return Some(d.payload);
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten();
+        if unit0.is_some() {
+            // Kurtarım bildirimi teslimden sonra yollanır; yalnız teslim olduysa beklenir.
+            let _ = peer.pump_until(|s| !s.recovered.is_empty()).await;
+        }
+        let stats = server.shutdown().await;
+        Outcome {
+            stats,
+            unit0,
+            bad_pns,
+            acked: peer.acked,
+            recovered: peer.recovered,
+        }
+    }
+
+    /// Ortak sonuç: blok 0 çözülür, birim 0 doğru yükle teslim edilir ve kurtarım bildirilir; kötü
+    /// shard'lar bind-sonrası dalın sayacıyla (`unknown_frames`) sayılır, bekletmeden taşma yok.
+    fn assert_block_decodes(o: &Outcome, bad: usize) {
+        assert_eq!(
+            o.unit0.as_deref(),
+            Some(payload(MISSING).as_slice()),
+            "birim 0 FEC çözümüyle doğru yükle teslim edilmeli: {:?}",
+            o.stats
+        );
+        assert_eq!(o.stats.fec_blocks_decoded, 1, "{:?}", o.stats);
+        assert_eq!(o.stats.fec_decode_failures, 0, "{:?}", o.stats);
+        assert_eq!(o.stats.fec_pre_param_dropped, 0, "{:?}", o.stats);
+        assert_eq!(o.stats.unknown_frames, bad as u64, "{:?}", o.stats);
+        assert_eq!(o.stats.param_bound_peers, 1, "{:?}", o.stats);
+        assert!(
+            o.recovered.contains(&(BLOCK, vec![0])),
+            "RECOVERED blok 0 · ESI 0 bildirilmeli: {:?}",
+            o.recovered
+        );
+    }
+
+    /// Bind-öncesi boş gövdeli onarım (blok 0 · ESI 0) bloğu kalıcı kapatmamalı.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wrong_length_shard_before_param_does_not_block_decode() {
+        let p = profile();
+        let bad = vec![repair_frame(p.profile_id, BLOCK, 0, k_actual(&p), &[])];
+        let o = run(&bad).await;
+        assert_block_decodes(&o, bad.len());
+    }
+
+    /// Bind-öncesi yanlış profil kimlikli (boyu doğru) onarım yerel profille çözülmemeli.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wrong_profile_shard_before_param_does_not_block_decode() {
+        let p = profile();
+        let other = p.profile_id.wrapping_add(1);
+        let garbage = vec![0x5Au8; p.e_usize()];
+        let bad = vec![repair_frame(other, BLOCK, 0, k_actual(&p), &garbage)];
+        let o = run(&bad).await;
+        assert_block_decodes(&o, bad.len());
+    }
+
+    /// `PRE_PARAM_FEC_CAP` kadar kötü shard (başka blokta) bekletme yuvası almamalı: ardından gelen
+    /// geçerli onarım taşmadan bekletilir ve blok 0'ı çözer.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wrong_shards_do_not_take_pre_param_hold_slots() {
+        let p = profile();
+        let one = repair_frame(p.profile_id, OTHER_BLOCK, 0, k_actual(&p), &[]);
+        let bad = vec![one; PRE_PARAM_FEC_CAP];
+        let o = run(&bad).await;
+        assert_block_decodes(&o, bad.len());
+    }
+
+    /// Kötü shard bind-öncesi yine ACK'lenir (PN işgal edildi; bugünkü ACK davranışı korunur):
+    /// boş, kısa, E'den uzun ve yanlış profilli onarımların hepsi.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wrong_shards_before_param_are_still_acked() {
+        let p = profile();
+        let e = p.e_usize();
+        let k = k_actual(&p);
+        let bad = vec![
+            repair_frame(p.profile_id, OTHER_BLOCK, 0, k, &[]),
+            repair_frame(p.profile_id, OTHER_BLOCK, 1, k, &vec![0x11u8; e - 1]),
+            repair_frame(p.profile_id, OTHER_BLOCK, 2, k, &vec![0x22u8; e + 1]),
+            repair_frame(
+                p.profile_id.wrapping_add(1),
+                OTHER_BLOCK,
+                3,
+                k,
+                &vec![0x33u8; e],
+            ),
+        ];
+        let o = run(&bad).await;
+        assert!(
+            o.bad_pns.iter().all(|pn| o.acked.contains(pn)),
+            "kötü shard PN'leri ACK'lenmeli: kötü {:?} · ACK'li {:?}",
+            o.bad_pns,
+            o.acked
+        );
+        assert_block_decodes(&o, bad.len());
     }
 }
