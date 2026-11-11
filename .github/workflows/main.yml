@@ -119,27 +119,51 @@ jobs:
         run: cargo test -p client-core --all-features --test product_profile_v1
       - name: runtime e2e (ürün yolu)
         run: cargo test -p client-core --all-features --test runtime_e2e
-      # [K4G-05b-R · sahip kararı 2026-11-11] Gerçek zamanlı runtime sahipliği: `#[ignore]` olduğundan
-      # full-workspace / semantic-matrix koşumlarına girmez; PR'da core-ci `test-runtime` işi, main'de
-      # bu adım koşar. Vakum bekçisi ve sayı ci.yml `test-runtime` adımıyla eş tutulur.
-      - name: runtime sahipliği (--ignored, vakum bekçili)
-        env:
-          K4G05B_RUNTIME_TESTS: "6"
-        run: |
-          set -o pipefail
-          cargo test -p client-core --all-features --test k4g05b_runtime_ownership -- --ignored 2>&1 | tee /tmp/rt.txt
-          grep -Eq "test result: ok\. ${K4G05B_RUNTIME_TESTS} passed; 0 failed" /tmp/rt.txt \
-            || { echo "::error title=TEST_FAILURE::runtime sahipligi ${K4G05B_RUNTIME_TESTS} test kosturmali (vakum bekcisi)"; exit 1; }
       # [OFF = OFF] bootstrap/cold-start izolasyonu: feature derlenmiş olsa bile ürün anahtarı kapatır.
       - name: feature-OFF isolation (experimental-cold-start derlenmişken)
         run: cargo test -p client-core --features diag-sched-telemetry --test runtime_e2e -- bootstrap
       - name: transport activation pins
         run: cargo test -p adaptive-transport --all-features --test fec_loss_risk
 
+  # ── [K4G-05b-R · sahip kararı 2026-11-11] Gerçek zamanlı runtime sahipliği ──
+  # `crates/client-core/tests/k4g05b_runtime_ownership.rs` `#[ignore]` olduğundan full-workspace /
+  # release-and-soak / semantic-matrix koşumlarına girmez. Ayrı iş: kırmızısı başka bir işin
+  # deterministik adımlarını atlatmaz. Üç derleme paralel: ürün varsayılanı (`-p client-core`;
+  # `--all-features` varsayılan derlemenin vekili DEĞİLDİR — M1), PR'daki core-ci `test-runtime`
+  # ile aynı birleşik all-features ve sevk edilen release. Hiçbir workspace crate'inin varsayılan
+  # özelliği olmadığından `--no-default-features` varsayılanla aynı derlemedir (ayrı bacak yok).
+  # Vakum bekçisi ve sayı ci.yml `test-runtime` adımıyla eş tutulur.
+  runtime-ownership:
+    name: runtime sahipliği (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default
+            args: "-p client-core"
+          - name: all-features
+            args: "--workspace --all-features --exclude kama-integration"
+          - name: release
+            args: "--workspace --all-features --exclude kama-integration --release"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: "runtime sahipliği (${{ matrix.name }}, --ignored, vakum bekçili)"
+        env:
+          K4G05B_RUNTIME_TESTS: "11"
+        run: |
+          set -o pipefail
+          cargo test ${{ matrix.args }} --test k4g05b_runtime_ownership -- --ignored 2>&1 | tee /tmp/rt.txt
+          grep -Eq "test result: ok\. ${K4G05B_RUNTIME_TESTS} passed; 0 failed" /tmp/rt.txt \
+            || { echo "::error title=TEST_FAILURE::runtime sahipligi (${{ matrix.name }}) ${K4G05B_RUNTIME_TESTS} test kosturmali (vakum bekcisi)"; exit 1; }
+
   main-verdict:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [full-workspace, release-and-soak, semantic-matrix, product-profile]
+    needs: [full-workspace, release-and-soak, semantic-matrix, product-profile, runtime-ownership]
     if: always()
     steps:
       - run: |

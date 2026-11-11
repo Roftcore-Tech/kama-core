@@ -40,7 +40,7 @@
 # özet: <out>/summary.txt" + summary.txt içeriği.
 set -u
 
-CI_SHA256=26fbe1ea022baa48a5d6fec8320dd0db978926dc1f1c923d99363ef9be92adc4      # .github/workflows/ci.yml
+CI_SHA256=6565f5a53a74e5638d2c58b9486ceae457241a8369ee7200d04f9d3252628e0f      # .github/workflows/ci.yml
 SWC_SHA256=2907c16c67373aa7e95ecb0e072b9b746bc346b1ba462d56aa63a1c35664ab5d     # .github/workflows/spec-word-coverage.yml
 HOSTED_ONLY="miri · asan · msan · cargo audit · aead-differential"
 
@@ -76,7 +76,7 @@ add sealed_type      'set -o pipefail; out=$(cargo test -p kama-noise-wire --loc
 add test_fast        'cargo test --workspace --all-features --exclude kama-integration'
 add product_profile  'set -o pipefail; cargo test -p client-core --all-features --test product_profile_v1 2>&1 | tee "$OUT/pp.txt" && grep -Eq "test result: ok\. [1-9][0-9]* passed" "$OUT/pp.txt" && cargo test -p adaptive-transport --all-features --test fec_loss_risk'
 # test-runtime (ci.yml: test-runtime) — adım env'i (K4G05B_RUNTIME_TESTS) komutun başında
-add test_runtime     'K4G05B_RUNTIME_TESTS=6; set -o pipefail; cargo test -p client-core --all-features --test k4g05b_runtime_ownership -- --ignored 2>&1 | tee "$OUT/rt.txt" && grep -Eq "test result: ok\. ${K4G05B_RUNTIME_TESTS} passed; 0 failed" "$OUT/rt.txt"'
+add test_runtime     'K4G05B_RUNTIME_TESTS=11; set -o pipefail; cargo test --workspace --all-features --exclude kama-integration --test k4g05b_runtime_ownership -- --ignored 2>&1 | tee "$OUT/rt.txt" && grep -Eq "test result: ok\. ${K4G05B_RUNTIME_TESTS} passed; 0 failed" "$OUT/rt.txt"'
 # conformance (ci.yml: conformance)
 add conformance_self 'scripts/ci/conformance-selftest.sh'
 add conformance      'CONF_DIFF_BASE="$BASE" scripts/ci/conformance.sh'
