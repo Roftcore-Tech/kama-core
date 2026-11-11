@@ -728,9 +728,11 @@ pub struct ClientStats {
     /// Motordaki ardılı (motor KODU değişmedi, kapalı-döngü karar akışı değişir): kayıt uçuşta kalır.
     /// Daha yeni bir seq ACK'lenirse kayıp ilan edilir ve birim yeniden kuyruğa girer (aynı birime
     /// yeni karar, o da atlanır; eski motorda ARQ tavanına dek, port motorunda tavan 255); sessiz
-    /// kanalda kayıt uçuşta kalır ve kuyruk kurtarmasının prob hedefi olabilir. Eski motorda kayıp
-    /// hızı düşürmez (INV-RATE-1); port motorunda (`TransportEngine::CcPort`, BBR portu) bu
-    /// hayalet kayıplar tıkanıklık olayıdır ve pencereyi daraltır. Kaynakta kapatma motorun teyitli
+    /// kanalda kayıt uçuşta kalır ve kuyruk kurtarmasının prob hedefi olabilir. Port motorunda
+    /// (`TransportEngine::CcPort`, BBR portu) her hayalet kayıp bir tıkanıklık olayıdır: BBR
+    /// `recovery_window` uçuş tavanını sınırlar (INV-RATE-1, 2026-11-11 metni) ve kurtarmadayken
+    /// `Startup`'tan çıkış tetiklenir (`check_if_full_bw_reached`). Kayıp sinyali yapaydır (birim
+    /// teslim edilmişti). Kaynakta kapatma motorun teyitli
     /// birimin bekleyen işini budamasıdır (#140 madde 2). Ölçümler:
     /// `docs/design/K4G-05b-RUNTIME-ENVANTER.md` "Atlama politikası".
     pub stale_skipped: u64,
@@ -2345,8 +2347,8 @@ async fn client_task(
                 // DATAGRAM ÜRETMEZ: karar atlanır (seal yok, PN harcanmaz, harita kaydı açılmaz);
                 // tele boş ya da yalnız önekli çerçeve çıkmaz. Motor kararı zaten işledi: kaydın
                 // ACK'i gelmez, kayıt uçuşta kalır. Daha yeni seq ACK'lenince kayıp ilan edilir ve
-                // birim yeniden kuyruğa girer (aynı birime yeni karar, o da atlanır); eski motorda
-                // kayıp hızı düşürmez (INV-RATE-1), port motorunda (BBR portu) tıkanıklık olayıdır.
+                // birim yeniden kuyruğa girer (aynı birime yeni karar, o da atlanır); port motorunda
+                // (BBR portu) bu yapay kayıp tıkanıklık olayıdır (`recovery_window`, INV-RATE-1).
                 // Ardılın tamamı `ClientStats::stale_skipped` belgesinde. Sayaçlar:
                 // `stale_decisions` (neden) + `stale_skipped` (toplam). Ölçümler:
                 // `docs/design/K4G-05b-RUNTIME-ENVANTER.md` "Atlama politikası".
