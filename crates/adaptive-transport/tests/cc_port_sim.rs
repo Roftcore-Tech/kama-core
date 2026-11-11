@@ -76,6 +76,8 @@ struct Bottleneck {
     dropped_random: u64,
     lcg: u64,
     loss_permille: u64,
+    /// Kesinti penceresi (ns): bu aralıkta ileri yönde %100 kayıp (gösterim "kesinti" profili).
+    blackout: Option<(u64, u64)>,
 }
 
 impl Bottleneck {
@@ -92,6 +94,7 @@ impl Bottleneck {
                 .wrapping_mul(6_364_136_223_846_793_005)
                 .wrapping_add(1_442_695_040_888_963_407),
             loss_permille,
+            blackout: None,
         }
     }
 
@@ -114,6 +117,10 @@ impl Bottleneck {
         let start = self.busy.back().copied().unwrap_or(now).max(now);
         let done = start + size * SEC / self.rate_bps;
         self.busy.push_back(done);
+        if self.blackout.is_some_and(|(a, b)| (a..b).contains(&now)) {
+            self.dropped_random += 1;
+            return;
+        }
         if self.loss_permille > 0 && self.rand_permille() < self.loss_permille {
             self.dropped_random += 1;
             return; // serileştirildi ama yolda düştü
@@ -167,6 +174,14 @@ fn run_opt(
             .expect("manuel FEC kipi");
     }
     let mut fwd = Bottleneck::new(rate_bps, queue_limit, one_way, loss_permille, seed);
+    // `CC_BLACKOUT=<başlangıç_s>,<süre_s>`: ileri yönde %100 kayıp penceresi (kesinti profili).
+    if let Ok(v) = std::env::var("CC_BLACKOUT") {
+        if let Some((a, d)) = v.split_once(',') {
+            if let (Ok(a), Ok(d)) = (a.parse::<u64>(), d.parse::<u64>()) {
+                fwd.blackout = Some((a * SEC, (a + d) * SEC));
+            }
+        }
+    }
     let mut rev: VecDeque<(u64, AckInfo)> = VecDeque::new();
     let mut acked_seen: HashSet<u64> = HashSet::new();
     let mut delivered: HashSet<u64> = HashSet::new();
@@ -508,6 +523,41 @@ fn matrix_explore() {
     for (label, rate, q, rtt, loss) in cells {
         for eng in ENGINES {
             ten_seeds(eng, label, rate, q, rtt, loss);
+        }
+    }
+}
+
+/// Hücre 6: kesinti — 150 kB dosya, 12,5 kB/s, 300 ms, %20 kayıp; t = 3 s'de 60 s tam kesinti
+/// (gösterim "kesinti" profili: 60 s %100 kayıp, sonra eski profil). Oturum kesintiyi atlatmalı ve
+/// dosya kesinti bittikten sonra makul sürede tamamlanmalı (kapı: port ≤ 63 + 30 s).
+#[test]
+fn blackout_60s_session_survives_and_completes() {
+    for eng in ENGINES {
+        let mut times = Vec::new();
+        for seed in 1..=5 {
+            // Kesinti penceresi ortam değişkeniyle (harness yerel; testler tek iş parçacığında koşar).
+            std::env::set_var("CC_BLACKOUT", "3,60");
+            let o = run(eng, 12_500, 1000, 300, 200, seed, 180);
+            std::env::remove_var("CC_BLACKOUT");
+            report(eng, &format!("kesinti 60s @3s q1000 l20 seed{seed}"), &o);
+            if let Some(t) = o.completed_ns {
+                times.push(t);
+            }
+        }
+        println!(
+            "[{}] kesinti: teslim {}/5 p50={}",
+            eng.name(),
+            times.len(),
+            (!times.is_empty())
+                .then(|| p50(times.clone()))
+                .map_or("YOK".into(), |t| format!("{:.1} s", t as f64 / SEC as f64))
+        );
+        if eng == Engine::CcPort {
+            assert_eq!(times.len(), 5, "port: kesinti sonrası 5/5 tamamlanmalı");
+            assert!(
+                p50(times) <= 93 * SEC,
+                "port: kesinti sonrası ≤ 30 s içinde bitmeli"
+            );
         }
     }
 }
