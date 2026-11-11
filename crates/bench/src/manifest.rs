@@ -14,6 +14,12 @@ use serde::{Deserialize, Serialize};
 /// Manifest şema kimliği — analizörler bunu kontrol eder.
 pub const MANIFEST_SCHEMA: &str = "kama-bench-manifest/v1";
 
+/// [2026-11-11 · transport-v1.1] ÖNCEKİ ürün-profil kimlikleri — YALNIZ tarihî manifestleri OKUMAK
+/// için (`bench fairness` etiket ↔ sapma denetimi). Yeni koşu bunları YAZMAZ: etiket daima
+/// `client_core::runtime::TRANSPORT_V1_PROFILE_ID`'den gelir. `kama-v1-full` = transport-v1
+/// dondurması (53e0c5c6, 2026-09-19) ile 2026-11-11 arası main.
+pub const PRIOR_PROFILE_IDS: &[&str] = &["kama-v1-full"];
+
 /// Uygulama-düzeyi anlam sözleşmesi. Kollar arası kıyas ancak bu alanlar eşleşiyorsa "adil"dir.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Semantics {
@@ -65,7 +71,8 @@ pub struct ActivationSummary {
 pub struct RunManifest {
     pub schema: String,
     pub commit: String,
-    /// `kama-v1-full` · `kama-custom` · `quinn-reliable-stream` · `quinn-datagram-app-retry` · `tcp-default`
+    /// `kama-v1.1-full` (`TRANSPORT_V1_PROFILE_ID`; tarihî manifestlerde `kama-v1-full`) ·
+    /// `kama-custom` · `quinn-reliable-stream` · `quinn-datagram-app-retry` · `tcp-default`
     pub arm: String,
     pub transport: String,
     /// Ürün profilinden sapmalar (Kama kolları; boş = kanonik profil).
@@ -122,10 +129,19 @@ impl FairnessReport {
 }
 
 impl RunManifest {
-    /// Kanonik Kama profili mi (sapma yok)?
+    /// Etiket bir ürün-profil kimliği mi iddia ediyor: güncel `TRANSPORT_V1_PROFILE_ID` ya da
+    /// [`PRIOR_PROFILE_IDS`] (tarihî manifest). Sürüm `arm` değerinin kendisinde okunur.
+    #[must_use]
+    pub fn claims_product_profile(&self) -> bool {
+        self.arm == client_core::runtime::TRANSPORT_V1_PROFILE_ID
+            || PRIOR_PROFILE_IDS.contains(&self.arm.as_str())
+    }
+
+    /// Kanonik Kama profili mi (ürün-profil etiketi + sapma yok)? Tarihî manifest kendi
+    /// sürümünün kanonik profiliyse `true` döner; hangi sürüm olduğu `arm`'dadır.
     #[must_use]
     pub fn is_canonical_kama(&self) -> bool {
-        self.arm == client_core::runtime::TRANSPORT_V1_PROFILE_ID && self.profile_delta.is_empty()
+        self.claims_product_profile() && self.profile_delta.is_empty()
     }
 
     /// [FAZ-4 §17] KIYAS DENETİMİ — İKİ AYRI SINIF, karıştırılmaz.
@@ -238,7 +254,7 @@ pub fn write(path: &std::path::Path, m: &RunManifest) {
 
 /// [FAZ-4 §15] KOL ADI POLİTİKASI — belirsiz `Quinn` / `Kama` etiketi YASAK. Rakip kolları
 /// hangi QUIC primitifini test ettiklerini adlarında TAŞIR; Kama kolunun adı profil kimliğinden
-/// (`kama-v1-full` / `kama-custom`) gelir, bu yüzden burada yer almaz.
+/// (`TRANSPORT_V1_PROFILE_ID` / `kama-custom`) gelir, bu yüzden burada yer almaz.
 #[must_use]
 pub fn arm_name(transport: &str) -> &str {
     match transport {
@@ -309,6 +325,9 @@ pub fn semantics_for(transport: &str) -> Semantics {
 mod tests {
     use super::*;
 
+    /// Güncel ürün-profil kimliği (tek kaynak; testler literal yazmaz).
+    const CANON: &str = client_core::runtime::TRANSPORT_V1_PROFILE_ID;
+
     fn base(arm: &str, transport: &str) -> RunManifest {
         RunManifest {
             schema: MANIFEST_SCHEMA.to_string(),
@@ -334,10 +353,58 @@ mod tests {
         }
     }
 
-    /// [M0] Kanonik profil `kama-v1-full`; TEK alan sapması `kama-custom` yapar.
+    /// [2026-11-11 · transport-v1.1] Tarihî manifest (`kama-v1-full`) okunmaya devam eder: etiket
+    /// ↔ sapma denetimi aynı kuralla işler. Yeni kimlik eskisinden FARKLIDIR, önceki listede yoktur.
+    #[test]
+    fn onceki_kimlik_tarihi_manifestte_taninir() {
+        assert_eq!(PRIOR_PROFILE_IDS, &["kama-v1-full"]);
+        assert!(
+            !PRIOR_PROFILE_IDS.contains(&CANON),
+            "güncel kimlik 'önceki' sayılamaz"
+        );
+        let old = base("kama-v1-full", "kama-product");
+        assert!(old.claims_product_profile());
+        assert!(
+            old.is_canonical_kama(),
+            "sapmasız tarihî manifest kendi sürümünde kanonik"
+        );
+        let mut old_lying = old.clone();
+        old_lying.profile_delta = vec!["initial_window_bytes 0 != 2400".into()];
+        assert!(old_lying.claims_product_profile());
+        assert!(
+            !old_lying.is_canonical_kama(),
+            "tarihî etiket + sapma listesi de kanonik SAYILAMAZ"
+        );
+        let custom = base("kama-custom", "kama-product");
+        assert!(!custom.claims_product_profile());
+        assert!(!custom.is_canonical_kama());
+    }
+
+    /// [2026-11-11] Gecelik ADR-18 kapısı (`.github/workflows/nightly.yml`) ürün etiketini literal
+    /// arar; değer tek kaynakla aynı olmalı, dondurma kimliği yeni koşuda aranmamalı.
+    #[test]
+    fn gecelik_kapi_kimligi_tek_kaynakla_ayni() {
+        let nightly = include_str!("../../../.github/workflows/nightly.yml");
+        assert!(
+            nightly.contains(&format!("profile={CANON}")),
+            "nightly activation proof `profile={CANON}` aramalı"
+        );
+        assert!(
+            nightly.contains(&format!("[ \"$arm\" = \"{CANON}\" ]")),
+            "nightly manifest kapısı arm={CANON} istemeli"
+        );
+        for old in PRIOR_PROFILE_IDS {
+            assert!(
+                !nightly.contains(old),
+                "nightly yeni koşuda önceki kimliği ({old}) aramamalı"
+            );
+        }
+    }
+
+    /// [M0] Kanonik profil `TRANSPORT_V1_PROFILE_ID`; TEK alan sapması `kama-custom` yapar.
     #[test]
     fn m0_profil_kimligi_deterministik() {
-        let canon = base("kama-v1-full", "kama-product");
+        let canon = base(CANON, "kama-product");
         assert!(canon.is_canonical_kama());
         let mut custom = canon.clone();
         custom.arm = "kama-custom".into();
@@ -359,7 +426,7 @@ mod tests {
     /// ENGELLER. Bu ayrım olmadan §4.4'ün ana kıyası (Kama ↔ quinn) her zaman "geçersiz" çıkardı.
     #[test]
     fn anlam_farki_beyan_kosul_farki_engel() {
-        let kama = base("kama-v1-full", "kama-product");
+        let kama = base(CANON, "kama-product");
 
         // (a) Kama güvenilir-mesaj ↔ qdgram: ANLAM farkı → beyan, ama kıyas YAPILABİLİR.
         let dgram = base("qdgram", "qdgram");
@@ -401,7 +468,7 @@ mod tests {
         );
 
         // (d) Yük farkı: engeller.
-        let mut big = base("kama-v1-full", "kama-product");
+        let mut big = base(CANON, "kama-product");
         big.payload_bytes = 1024;
         assert!(!kama.fairness_diff(&big).is_comparable());
     }
@@ -409,8 +476,8 @@ mod tests {
     /// Aynı kolun iki koşusu: ne engelleyici ne beyan farkı (yanlış alarm üretmez).
     #[test]
     fn ayni_kol_iki_kosu_farksiz() {
-        let a = base("kama-v1-full", "kama-product");
-        let b = base("kama-v1-full", "kama-product");
+        let a = base(CANON, "kama-product");
+        let b = base(CANON, "kama-product");
         let r = a.fairness_diff(&b);
         assert!(r.is_normalized(), "{r:?}");
     }
@@ -433,7 +500,7 @@ mod tests {
     /// Tel-muhasebesi sınırı farklıysa BEYAN edilir — byte kıyası doğrudan yapılamaz.
     #[test]
     fn tel_muhasebesi_farki_beyan_edilir() {
-        let kama = base("kama-v1-full", "kama-product");
+        let kama = base(CANON, "kama-product");
         let mut tcp = base("tcp-default", "tcp-default");
         tcp.wire_accounting_note = "app-layer bytes only; kernel TCP overhead invisible".into();
         let r = kama.fairness_diff(&tcp);

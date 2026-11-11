@@ -17,6 +17,8 @@ doğrulama (Faz-5, ölçüm SHA `e3c1e8bb`, 990 koşu, N=30). Hiçbir hücrede m
 kapanış commit'i). Kimlikler tek kaynaktan: `client_core::runtime::TRANSPORT_V1_PROFILE_ID`
 (`kama-v1-full`), `TRANSPORT_V1_ARCHITECTURE` (`transport-v1`), bench şeması
 `kama-bench-manifest/v1`.
+*(2026-11-11 notu: dondurma kimlikleri yukarıdaki gibidir; güncel değerler `kama-v1.1-full` /
+`transport-v1.1` — EVOLUTION §22 "`transport-v1.1` beyanı". Bu ADR'nin kararı değişmedi.)*
 
 **"Donmuş" şu demektir:**
 1. Transport runtime kararını değiştiren HİÇBİR değişiklik `kama-v1-full` kimliğini koruyamaz.

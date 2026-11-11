@@ -12,13 +12,33 @@ use adaptive_transport::tail_recovery::TailRecoveryConfig;
 use client_core::runtime::{
     fec_chunk_capacity, RuntimeConfig, TRANSPORT_V1_ARCHITECTURE, TRANSPORT_V1_PROFILE_ID,
 };
-use client_core::KamaV1Profile;
+use client_core::{KamaV1Profile, TransportEngine};
 
 /// Kimlikler TEK KAYNAKTAN ve donmuş değerlerde. Bench etiketi bu sabiti okur (INV-008).
+///
+/// [2026-11-11 · transport-v1.1] EVOLUTION §22 "transport-v1.1 beyanı": dondurma kimliği
+/// (`kama-v1-full` / `transport-v1`) ürün varsayılanını artık TANIMLAMAZ; yeni koşu onu taşıyamaz.
 #[test]
 fn kimlik_sabitleri_donmus() {
-    assert_eq!(TRANSPORT_V1_PROFILE_ID, "kama-v1-full");
-    assert_eq!(TRANSPORT_V1_ARCHITECTURE, "transport-v1");
+    assert_eq!(TRANSPORT_V1_PROFILE_ID, "kama-v1.1-full");
+    assert_eq!(TRANSPORT_V1_ARCHITECTURE, "transport-v1.1");
+    assert_ne!(
+        TRANSPORT_V1_PROFILE_ID, "kama-v1-full",
+        "dondurma profil kimliği davranış değişikliğinden sonra korunamaz (EVOLUTION §9.5)"
+    );
+    assert_ne!(TRANSPORT_V1_ARCHITECTURE, "transport-v1");
+}
+
+/// [transport-v1.1] Kimliği belirleyen profil alanı: ürün motoru = CC-PORT portu (#176). Bu
+/// assertion'ı değiştirmek yeni bir sürüm kimliği ister (geri alma yolu `engine: Legacy` /
+/// `KAMA_TRANSPORT_ENGINE=legacy` ürün profili DEĞİLDİR).
+#[test]
+fn v1_1_motoru_cc_port() {
+    assert_eq!(
+        KamaV1Profile::runtime_config().engine,
+        TransportEngine::CcPort
+    );
+    assert_eq!(RuntimeConfig::default().engine, TransportEngine::CcPort);
 }
 
 /// FEC geometrisi: profil 0x05 → birim tavanı 1013 = E 1024 − SOURCE_PREFIX 11 (katalog tek kaynak).
