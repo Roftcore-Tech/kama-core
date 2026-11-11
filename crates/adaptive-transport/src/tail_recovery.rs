@@ -186,7 +186,12 @@ impl TailRecovery {
     pub fn current_pto_ns(&self, srtt_ns: Option<u64>, rttvar_ns: u64) -> u64 {
         let base = self.base_pto_ns(srtt_ns, rttvar_ns);
         let factor = 1u64.checked_shl(self.probe_index).unwrap_or(u64::MAX);
-        base.saturating_mul(factor).min(self.cfg.max_backoff_pto_ns)
+        // [CC-PORT U15] Geri çekilme tavanı tabanın ALTINA inmez: taban PTO'su tavansızken
+        // (`max_pto_ns = u64::MAX`, `rfc9002_cc_port`) srtt + 4·rttvar > tavan olan hatta PTO
+        // ACK'ten önce ateşlemez (RFC 9002 §6.2.1: taban için üst sınır yok; D şeridi (6), #175).
+        // Eski kurucuda taban zaten `max_pto_ns` (10 s) ≤ tavan (30 s) → sonuç bit-aynı.
+        base.saturating_mul(factor)
+            .min(self.cfg.max_backoff_pto_ns.max(base))
     }
 
     /// ACK progress: newly-acked ack-eliciting data resets/cancels the timer (RFC-flavored) and clears backoff.
@@ -601,6 +606,24 @@ mod tests {
     /// fails, someone re-tuned the constant without a campaign — the exact drift the name exists
     /// to prevent. The default stays distinct and OFF: enabling goes through validated_v1, never
     /// through flipping the (never-validated) default bounds.
+    /// (Test gövdesi aşağıda: `validated_v1_pins_the_grid_config_and_default_stays_off`.)
+    ///
+    /// [CC-PORT U15 (d)] Geri çekilme tavanı tabanın altına inmez: taban 40 s iken ilk tur PTO'su
+    /// 30 s'e kırpılmaz (ACK'ten önce ateşlemezdi). Eski kurucuda taban ≤ 10 s → değişmez.
+    #[test]
+    fn backoff_cap_never_undercuts_the_base_pto() {
+        let t = TailRecovery::new(TailRecoveryConfig::rfc9002_cc_port());
+        let srtt = Some(40_000_000_000u64);
+        assert_eq!(t.current_pto_ns(srtt, 0), t.base_pto_ns(srtt, 0));
+        assert!(t.current_pto_ns(srtt, 0) > 30_000_000_000);
+        let v = TailRecovery::new(TailRecoveryConfig::validated_v1());
+        assert_eq!(
+            v.current_pto_ns(srtt, 0),
+            10_000_000_000,
+            "eski kurucu: taban tavanı 10 s"
+        );
+    }
+
     #[test]
     fn validated_v1_pins_the_grid_config_and_default_stays_off() {
         let v = TailRecoveryConfig::validated_v1();

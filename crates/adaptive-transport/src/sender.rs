@@ -1458,6 +1458,11 @@ struct TombstoneRec {
     retx_count: u8,
     origin: TransmitKind,
     expiry_ns: u64, // ilan + K_TOMB×T_loss(ilan-anı)
+    /// [CC-PORT U15] Port motorunda kopya sınırıyla (`cc_bound_unit_copies`) uçuştan emekli
+    /// edilen kayıt: kayıp ilanı DEĞİL, yeniden iletimle geçersizleşme DEĞİL — yalnız uçuş
+    /// haritası tavanı. Geç ACK'i quinn'deki gibi (kayıt `sent_packets`'ta kalırdı) ilerleme
+    /// sayılır, BW/RTT örneği normal üretilir, spurious kanıtı DEĞİLDİR.
+    copy_bound_retired: bool,
 }
 
 /// Zamanlanmış forward-recovery duplication kopyası (§11 spacing — burst-loss dayanıklılığı).
@@ -3372,6 +3377,9 @@ impl Sender {
         // terstir: `congestion.on_ack` (connection/mod.rs:1530) RTT güncellemesinden (1551) ÖNCE
         // çağrılır; Kama'da RTT örneği önce işlenir (beyanlı sıra farkı; D şeridi incelemesi 2026-11-11).
         let mut cc_acked: Vec<(u64, bool)> = Vec::new();
+        // [CC-PORT U15] Bu çerçevede kopya sınırıyla emekli edilmiş bir kayda geç ACK çarptı mı
+        // (kuyruk kurtarması için ilerleme; RFC 9002 §A.7 "newly acked" → pto_count = 0).
+        let mut copy_bound_hit = false;
         for &seq in &ack.acked_seqs {
             // [TUR-6] delivered-anchor round: marker-sonrası gönderilen seq'in ilk ACK'i.
             if seq >= self.startup_round_marker_seq {
@@ -3416,15 +3424,35 @@ impl Sender {
                 // late-acked — the product just disproved the loss it declared, so the estimator's
                 // fate is corrected in place. ORIGINALS ONLY: a superseded transmission's late ACK
                 // (kol-2, origin Retransmit) proves nothing about the original's fate.
+                // [CC-PORT U15] Kopya sınırıyla emekli edilen kayıt kayıp ilan edilmedi: düzeltme
+                // değil, normal orijinal-ACK kanıtı.
                 if t.origin == TransmitKind::Data {
-                    self.fate_estimator.correct_original_delivered(t.unit.id);
+                    if t.copy_bound_retired {
+                        self.fate_estimator.on_original_ack(t.unit.id);
+                    } else {
+                        self.fate_estimator.correct_original_delivered(t.unit.id);
+                    }
                 }
                 // [K4G-05b-R] Onarım sembolü (ESI ad-uzayı) kopya iptaline ve teyide girmez (uçuş
                 // dalıyla aynı kural).
                 if t.origin != TransmitKind::FecParity {
                     confirmed_units.push(t.unit.id); // [K4G-05b-R] canlı tombstone (kol-1/kol-2)
                 }
-                if t.retx_count == 0 {
+                if t.copy_bound_retired {
+                    // [CC-PORT U15] Kopya sınırıyla emekli edilen iletimin geç ACK'i: quinn'de kayıt
+                    // `sent_packets`'ta kalır ve ACK'i `on_packet_acked` + ilerlemedir. Burada da:
+                    // BW örneği normal, RTT adayı (Data kökenli ya da taze seq'li kopya), İLERLEME;
+                    // spurious kanıtı değil (kayıp ilan edilmedi), fate düzeltmesi yok.
+                    copy_bound_hit = true;
+                    let sample = self.bw_sampler.on_ack(now_ns, t.bw_sample);
+                    self.btlbw.update(sample, now_ns, sample.delivered > 0);
+                    self.bw_sampled_since_round = true;
+                    self.diag_bw_recovered += 1;
+                    if t.origin == TransmitKind::Data && (rtt_send_ns.is_none() || seq >= largest) {
+                        largest = seq;
+                        rtt_send_ns = Some(t.send_ns);
+                    }
+                } else if t.retx_count == 0 {
                     // kol-1 (tek gönderim, belirsizlik yok): BW-örneği NORMAL üretilir.
                     if t.origin == TransmitKind::Data {
                         kol1_original_hits.push(seq); // [K4G-05b-R · D12] un-loss adımında reorder
@@ -3614,7 +3642,9 @@ impl Sender {
         // DR-ARQ-PRODUCT-TAIL-1 (gated): real ACK progress (inflight shrank) resets the tail timer + clears backoff;
         // a drained inflight disarms. Duplicate/stale ACKs that remove nothing do NOT reset (§4).
         if self.tail_recovery.is_enabled() {
-            if self.inflight.len() < inflight_before {
+            // [CC-PORT U15] Kopya sınırıyla emekli edilmiş kaydın geç ACK'i de ilerlemedir
+            // (quinn: kayıt `sent_packets`'ta kalır → `newly_acked` → `pto_count = 0`).
+            if self.inflight.len() < inflight_before || copy_bound_hit {
                 self.tail_recovery.on_ack_progress(now_ns);
             }
             if self.inflight.is_empty() {
@@ -3984,6 +4014,7 @@ impl Sender {
                             retx_count: p.retx_count,
                             origin: p.origin,
                             expiry_ns,
+                            copy_bound_retired: false,
                         },
                     );
                 }
@@ -6681,6 +6712,7 @@ impl Sender {
                 retx_count: p.retx_count,
                 origin: p.origin,
                 expiry_ns,
+                copy_bound_retired: false,
             },
         );
     }
@@ -6699,7 +6731,11 @@ impl Sender {
         if copies.len() >= CC_MAX_UNIT_COPIES_IN_FLIGHT {
             if let Some(&oldest) = copies.iter().min() {
                 self.retire_inflight_to_tombstone(oldest, now_ns);
-                self.mark_tombstone_superseded(oldest);
+                // [CC-PORT U15] Superseded (Karn) işareti DEĞİL, kopya-sınırı işareti: kayıt
+                // geçersizleşmedi, yalnız uçuş haritasından düştü (D şeridi (3), #175).
+                if let Some(t) = self.tombstones.get_mut(&oldest) {
+                    t.copy_bound_retired = true;
+                }
             }
         }
     }
@@ -6801,7 +6837,18 @@ impl Sender {
         // kuyruğunu kendi eliyle doldurur (25 B/s: 130 B kopya ≈ 5,2 s). İlk örnekten sonra iki prob.
         let two_probes = self.e2a.pto_probes() >= 2 && (!self.cc_on() || self.rtt.srtt().is_some());
         if two_probes {
-            self.e2a_tail_probe2 = self.oldest_probe_target().map(|seq| {
+            // [CC-PORT U15] İkinci probun hedefi, portta, birincininkinden FARKLI en eski teyitsiz
+            // kaynak birim (RFC 9002 §6.2.4: "send new data if available … or the most recent
+            // unacknowledged data"; quinn iki ayrı paket gönderir — aynı birimin ikinci kopyası
+            // değil). Başka birim yoksa birincinin birimi (eski davranış). `cc` yokken yol aynı.
+            let first_unit = unit.id;
+            let target2 = if self.cc_on() {
+                self.oldest_probe_target_excluding(first_unit)
+                    .or_else(|| self.oldest_probe_target())
+            } else {
+                self.oldest_probe_target()
+            };
+            self.e2a_tail_probe2 = target2.map(|seq| {
                 (
                     seq,
                     self.tail_recovery.armed_at_ns(),
@@ -6822,6 +6869,18 @@ impl Sender {
         self.inflight
             .iter()
             .find(|(_, p)| p.origin != TransmitKind::FecParity && p.confirmed_release_ns.is_none())
+            .map(|(&seq, _)| seq)
+    }
+
+    /// [CC-PORT U15] `oldest_probe_target` ile aynı kural, `unit_id`'si `exclude` olan kayıtlar hariç.
+    fn oldest_probe_target_excluding(&self, exclude: u64) -> Option<u64> {
+        self.inflight
+            .iter()
+            .find(|(_, p)| {
+                p.origin != TransmitKind::FecParity
+                    && p.confirmed_release_ns.is_none()
+                    && p.unit.id != exclude
+            })
             .map(|(&seq, _)| seq)
     }
 
@@ -12043,6 +12102,89 @@ mod tests {
                 r.s.inflight.get(&nq).map(|p| p.retx_count),
                 Some(u8::MAX),
                 "sayaç doygun kalır"
+            );
+        }
+
+        /// [CC-PORT U15 (a)] Kopya sınırıyla emekli edilen kaydın geç ACK'i: ilerleme sayılır
+        /// (prob geri çekilmesi sıfırlanır), spurious kanıtı değildir (reorder toleransı büyümez),
+        /// kayıt `copy_bound_retired` işaretlidir (superseded değil: `retx_count` değişmez).
+        #[test]
+        fn u15_copy_bound_retired_late_ack_is_progress_not_spurious() {
+            let mut r = Rig::new(Sender::with_cc_port);
+            r.warm(UID);
+            let id = UID + 1;
+            r.ev(Event::AppData(small(id)), 20 * MS);
+            let q0 = r.seq_of(id, TransmitKind::Data).expect("DATA");
+            // Sessiz kanal: PTO probları aynı birimi kopyalar; 8. kopyada en küçük seq emekli olur.
+            r.pump_until(21 * MS, PUMP_LONG_HORIZON_NS, PUMP_LONG_STEP_NS, |r| {
+                r.s.tombstones.contains_key(&q0)
+            })
+            .expect("orijinal kopya sınırıyla tombstone'a emekli olur");
+            let t = r.s.tombstones.get(&q0).expect("tombstone");
+            assert!(t.copy_bound_retired, "kopya-sınırı işareti");
+            assert_eq!(
+                t.retx_count, 0,
+                "superseded işareti YOK (Karn dışlaması yok)"
+            );
+            let thresh_before = r.s.reorder.reorder_thresh(&r.s.retx_cfg);
+            assert!(
+                r.s.tail_recovery.probe_index() >= 1,
+                "geri çekilme ilerlemiş"
+            );
+            let now = r.last_now + MS;
+            r.ev(ack(&[q0]), now);
+            assert_eq!(
+                r.s.tail_recovery.probe_index(),
+                0,
+                "geç ACK ilerlemedir → geri çekilme sıfırlanır"
+            );
+            assert_eq!(
+                r.s.reorder.reorder_thresh(&r.s.retx_cfg),
+                thresh_before,
+                "spurious kanıtı değil: reorder toleransı büyümez"
+            );
+            assert!(r.s.take_confirmed_units().contains(&id), "birim teyitli");
+        }
+
+        /// [CC-PORT U15 (b)] İki teyitsiz birim varken turun iki probu FARKLI birimleri hedefler
+        /// (eski davranış: ikinci prob birincinin kopyasıydı). Eski motor yolu değişmez.
+        #[test]
+        fn u15_second_probe_targets_a_different_unit_on_port() {
+            let mut r = Rig::new(Sender::with_cc_port);
+            r.warm(UID);
+            let (a, b) = (UID + 1, UID + 2);
+            r.ev(Event::AppData(small(a)), 20 * MS);
+            r.ev(Event::AppData(small(b)), 21 * MS);
+            r.pump_until(22 * MS, PUMP_LONG_HORIZON_NS, PUMP_STEP_NS, |r| {
+                r.seq_of(a, TransmitKind::Retransmit).is_some()
+                    || r.seq_of(b, TransmitKind::Retransmit).is_some()
+            })
+            .expect("ilk prob");
+            // Aynı turun ikinci probu birkaç tik içinde çıkar (jeton); iki birim de prob almalı.
+            r.pump_until(
+                r.last_now + MS,
+                r.last_now + 2_000 * MS,
+                PUMP_STEP_NS,
+                |r| {
+                    r.seq_of(a, TransmitKind::Retransmit).is_some()
+                        && r.seq_of(b, TransmitKind::Retransmit).is_some()
+                },
+            )
+            .expect("ikinci prob öbür birimi hedefler");
+            let probes_a = r
+                .sent
+                .values()
+                .filter(|d| d.unit_id == a && d.kind == TransmitKind::Retransmit)
+                .count();
+            let probes_b = r
+                .sent
+                .values()
+                .filter(|d| d.unit_id == b && d.kind == TransmitKind::Retransmit)
+                .count();
+            assert_eq!(
+                (probes_a, probes_b),
+                (1, 1),
+                "tur başına birim başına bir prob"
             );
         }
 

@@ -90,6 +90,18 @@ o, bastırılan PTO. Sim ürün zarfı: port 51,7 → **37,7 s** (eski 37,7 — 
 varsayılan r25 hücresi 8,5 → **6,9 s** (eski 5,4). Öbür 7 hücre bayt düzeyinde aynı (ilk ACK 1 s'den
 önce geldiğinden PTO zaten ateşlenmiyordu). Gerçek yığın doğrulaması: PR #181 gövdesi.
 
+**U15 (2026-11-11, D şeridi §5 (ii) bağımsız çürütmesi; #181 sonrası ayrı PR)** — yalnız `cc_on()`, eski motor bit-aynı:
+(a) kopya sınırıyla (`cc_bound_unit_copies`) uçuştan emekli edilen kayıt `copy_bound_retired` işaretlidir (superseded
+DEĞİL: `retx_count` değişmez); geç ACK'i quinn'deki gibi (`sent_packets`'ta kalırdı) **ilerlemedir** (`on_ack_progress`,
+RFC 9002 §A.7 pto_count = 0), BW/RTT örneği normal, spurious kanıtı değildir (reorder toleransı büyümez), fate düzeltmesi
+değil normal orijinal-ACK kanıtı · (b) turun ikinci probu birincininkinden FARKLI en eski teyitsiz birimi hedefler
+(§6.2.4; quinn iki ayrı paket) — başka birim yoksa eski davranış · (c) `current_pto_ns`: geri çekilme tavanı tabanın
+altına inmez (`min(base·2^k, max(30 s, base))`) → taban gerçekten tavansız; eski kurucuda taban ≤ 10 s, bit-aynı.
+Sim: r25 ileti p50 6,9 → **6,15 s** (eski 5,35); kesinti hücresi tamamlanma eşit ya da ≤ 0,6 s iyi, retx −1…−4,
+bayt −1,2…−4,8 kB; öbür 6 hücre bayt düzeyinde aynı; eski motor 0 fark. Testler: `u15_copy_bound_retired_late_ack_is_
+progress_not_spurious`, `u15_second_probe_targets_a_different_unit_on_port`, `backoff_cap_never_undercuts_the_base_pto`.
+Açık (sahip kararı + ölçüm): kayıp ilanlı tombstone'un geç ACK'inin `cc.on_ack`'a girmesi; uyarlamalı paket eşiği; 30 s tavan.
+
 ## (b) Paket/birim muhasebesi — koddan cevaplar
 
 | olay | cevap (kod) |
