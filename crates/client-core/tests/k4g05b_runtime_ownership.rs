@@ -107,6 +107,11 @@ const CAP_FILLERS: u64 = TOMBSTONE_CAP as u64 / CAP_DROPS_PER_FILLER as u64 + 8 
 /// kaydı prob emekliliğiyle çoğalmaz (birim başına kayıt sınırına ulaşmaz) ve kopyaları kayıp
 /// ilanıyla düşer — TTL testinde kaydı TTL'den başka bir yol düşürmez.
 const TRICKLE: Duration = Duration::from_millis(5);
+/// Bekleme trafiğinin teyitsiz birim tavanı: trafik yalnız ACK akışını sürdürmek içindir, teklif
+/// kuyruğunu doldurmaz. Gönderici bu hızın gerisine düşerse (ölçüm: tahliye kolunda atlama
+/// politikasıyla faz B'de ≈ 1100 teyitsiz birim, hedefin vadesi geçmiş kopyası ≈ 10 s çıkmadı) yeni
+/// birim sunulmaz; aksi hâlde bekleme tavanı fikstürün kendi yüküyle aşılırdı.
+const TRICKLE_OUTSTANDING_MAX: usize = 64;
 /// FEC kolları: profil 0x03 (K = 8, R_max = 4, E = 64; `kama_fec_codec` katalogu).
 const FEC_PROFILE: u8 = 0x03;
 /// Statik parite sayısı = R_max: parite ESI'leri 0..R, kaynak birim 0..R ile ad çakışır.
@@ -706,7 +711,7 @@ impl Rig {
                 "{what}: {limit:?} içinde olmadı — {}",
                 self.describe()
             );
-            if Instant::now() >= next {
+            if Instant::now() >= next && self.client.outstanding() < TRICKLE_OUTSTANDING_MAX {
                 self.send().await;
                 next = Instant::now() + TRICKLE;
             }
