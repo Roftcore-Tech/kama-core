@@ -630,23 +630,34 @@ impl NodeLoop {
     }
 
     /// [S2-A3-2] KK-H57 (a): hub bildirimleri. `AttemptEnded` (`{UNKNOWN_HANDLE, 0}`, deneme yaşı,
-    /// çelişkili handle, yeniden bind) → bu düğümün bekleyen niyeti varsa niyet olay ÜRETMEDEN
-    /// bırakılır ve yeniden `connect` edilir: yeni kriptografik INIT, yeni `request_id`.
-    /// `HandleLost` (ROUTE_MISS) kurulu oturumu kapatmaz: KK-H57 (c) beyanlı sınır ("gösterimde hub
-    /// yeniden başlatılmaz"). `Bound` / `Disconnected` yalnız `HubLink` sayaçlarındadır.
+    /// çelişkili handle, yeniden bind, atanmış handle'a ROUTE_MISS) → bu düğümün bekleyen niyeti
+    /// varsa niyet olay ÜRETMEDEN bırakılır ve yeniden `connect` edilir: yeni kriptografik INIT,
+    /// yeni `request_id`; eşin oturumu varsa onun bekleyen yenilemesi aynı biçimde yeniden başlar.
+    /// [HLR] `HandleLost` (S4 C5 `ROUTE_MISS{h}`: hat emekli ya da hub yeniden başlamış) → kurulu
+    /// oturum için yeni INIT (`ClientTransport::relink`; yenileme yolu, eş bağlı kalır, olay yok).
+    /// `Bound` / `Disconnected` yalnız `HubLink` sayaçlarındadır.
     fn drive_hub(&mut self) {
         let Some(hub) = &self.hub else {
             return;
         };
         for notice in hub.take_notices(HUB_NOTICES_PER_TURN) {
-            if let HubNotice::AttemptEnded { peer } = notice {
-                self.restart_attempt(peer);
+            match notice {
+                HubNotice::AttemptEnded { peer } => self.restart_attempt(peer),
+                HubNotice::HandleLost { peer, .. } => {
+                    // `false` = eşin etkin oturumu yok (kapanmış ya da hiç kurulmamış): yenilenecek
+                    // oturum yoktur; bekleyen niyetin denemesi kendi bildirimiyle (`AttemptEnded`)
+                    // gelir.
+                    let _ = self.messenger.transport_mut().relink(peer);
+                }
+                HubNotice::Bound | HubNotice::Disconnected => {}
             }
         }
     }
 
     fn restart_attempt(&mut self, peer: PeerRef) {
         if self.messenger.session_of(peer).is_some() {
+            // [HLR] Kurulu oturumun bekleyen yenilemesinin denemesi bitti (yenileme yoksa etkisiz).
+            let _ = self.messenger.transport_mut().restart_renewal(peer);
             return;
         }
         let before = self.tickets.len();
