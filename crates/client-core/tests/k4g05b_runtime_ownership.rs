@@ -9,6 +9,12 @@
 //! gönderim gövdesiz (store-miss) çıkar. Bu dosya gerçek runtime ile (`ClientEndpoint` /
 //! `ServerEndpoint`, UDP loopback) her yolu AYRI sınar.
 //!
+//! **CI.** Testler gerçek zamanlıdır (toplam ≈ 2 dk, sırayla) ve `#[ignore]` ile hızlı kümeden
+//! (`test-fast`) çıkarılmıştır (sahip kararı 2026-11-11). Her PR'da paralel `test-runtime` işi
+//! (`.github/workflows/ci.yml`), main'de `core-main` / `product-profile` işi
+//! `cargo test -p client-core --all-features --test k4g05b_runtime_ownership -- --ignored` ile koşar
+//! ve koşan test sayısını birebir denetler (vakum bekçisi).
+//!
 //! AĞ: istemci ile sunucu arasında bir röle (gerçek UDP). `IdentitySeam` düz metin taşıdığından
 //! röle çerçeveyi okur ama yalnız ağın yapabildiğini yapar: datagramı geçirir, düşürür ya da
 //! geciktirir. Çerçeve değiştirilmez, üretilmez. "Geç ACK" = alıcının ürettiği gerçek ACK
@@ -20,12 +26,16 @@
 //! Her yol için beş iddia:
 //! 1. Geç ACK birimi teyit etmez (`acked()` olayı yok).
 //! 2. Payload yerinde: birim teyitsiz depoda.
-//! 3. Açılıştan sonraki İLK iletim payload'la çıkar (alıcıya giden gövde birimin gerçek gövdesidir)
-//!    ve gövdeli her iletim gerçek gövdedir. Teyitten SONRA karar verilmiş başlık-only emisyon bu
-//!    PR'da hoş görülür: motor teyitli birimin bekleyen işini budamaz (motor kısmının işi), bu
-//!    yüzden `stale_decisions` yalnız gözlem olarak yazılır.
+//! 3. Açılıştan sonraki her iletim birimin gerçek gövdesini taşır (store-miss yok, boş gövde yok).
 //! 4. O gönderimin ACK'i birimi teyit eder, payload düşer.
 //! 5. Runtime haritaları boştur (sızıntı yok).
+//!
+//! Ve her testte (sahip kararı 2026-11-11, tel bekçisi):
+//! 6. Tele gövdesiz datagram ÇIKMAZ: röle istemciden gelen her datagramı sayar; boş gövdeli DATA,
+//!    yalnız önekli DATA_FRAG ve boş sembollü FEC çerçevesi sayısı 0'dır. Motorun teyitli birime
+//!    verdiği karar (bu PR'da motor teyitli birimin bekleyen işini budamaz) runtime'da atlanır:
+//!    `stale_skipped == stale_decisions + fec_repair_missing`. Bekçi boş geçmesin diye FEC
+//!    bekçisinde en az bir atlanan karar ön koşuldur.
 //!
 //! TABAN (`4a9e97f1`): iddia 1 KIRMIZI beklenir. İddia 5'in kancası
 //! (`SenderRecoveryDiag::{seq_to_unit_len, unit_seqs_len}`) tabanda yoktur.
@@ -44,7 +54,10 @@ use client_core::runtime::{
     SenderRecoveryDiag, ServerEndpoint, ServerHandle, ServerStats,
 };
 use client_core::seam::{IdentitySeam, IDENTITY_TAG};
-use client_core::wire::{decode_data, decode_fec};
+use client_core::wire::{
+    decode_data, decode_fec, FRAME_DATA, FRAME_DATA_FRAG, FRAME_FEC, HDR_DATA, HDR_DATA_FRAG,
+    HDR_FEC,
+};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
@@ -131,6 +144,16 @@ const RELAY_TICK: Duration = Duration::from_millis(1);
 const INJECT_QUEUE: usize = 64;
 /// UDP datagram tamponu.
 const DATAGRAM_MAX: usize = 65_536;
+/// Tel bekçisi: gövdesiz datagram örneklerinin tavanı (sayım tavansız).
+const BODYLESS_LOG_CAP: usize = 8;
+/// Kapanıştan sonra rölenin soket kuyruğunu işlemesi için bekleme (loopback; üst sınır).
+const RELAY_SETTLE: Duration = Duration::from_millis(300);
+/// FEC bekçisi: ilk atlanan kararın bekleme tavanı (zaman eşiği kayıp ilanı ≥ 3.15 s + kuyruk
+/// kurtarması; pay) ve ardından `stale_skipped`'in izlendiği pencere (gözlem; iddia değil).
+const SKIP_FIRST_WAIT: Duration = Duration::from_secs(30);
+const SKIP_OBSERVE: Duration = Duration::from_secs(10);
+/// İzleme örnek aralığı.
+const SKIP_SAMPLE: Duration = Duration::from_secs(1);
 
 /// Birime özgü, SABİT boylu gövde: alıcıdaki bayt eşliği içerikle doğrulanır; boy eşitliği
 /// PRE_CONVERGE kuruluş probunun hedef seçimini belirlenimli kılar (eşit vade → önce sunulan).
@@ -186,6 +209,35 @@ fn assert_runtime_maps_empty(r: &SenderRecoveryDiag, path: &str) {
     );
 }
 
+/// İddia 6 — tel bekçisi (sahip kararı 2026-11-11): gövdesi olmayan karar datagram üretmez ve
+/// atlanan karar sayacı neden sayaçlarının toplamıdır.
+fn assert_no_bodyless(w: &WireSummary, cs: &ClientStats, path: &str) {
+    eprintln!(
+        "[{path}] gözlem: istemci datagramı {} (gövdesiz {}); stale_skipped={} \
+         (stale_decisions={} fec_repair_missing={})",
+        w.frames, w.bodyless, cs.stale_skipped, cs.stale_decisions, cs.fec_repair_missing
+    );
+    assert!(
+        w.frames > 0,
+        "[{path}] ön koşul: röle istemci datagramı gördü"
+    );
+    assert_eq!(
+        w.bodyless, 0,
+        "[{path}] (6) tele gövdesiz datagram çıkmamalı (boş DATA / yalnız önekli DATA_FRAG / boş \
+         sembollü FEC); ilk örnekler (PN, tür) {:?}",
+        w.examples
+    );
+    assert_eq!(
+        cs.stale_skipped,
+        cs.stale_decisions + cs.fec_repair_missing,
+        "[{path}] (6) atlanan karar = neden sayaçlarının toplamı: stale_skipped={} \
+         stale_decisions={} fec_repair_missing={}",
+        cs.stale_skipped,
+        cs.stale_decisions,
+        cs.fec_repair_missing
+    );
+}
+
 /// Faz B'nin bekleme tavanı: motorun hedef için bildirdiği sonraki iletim kaynağından türetilir.
 /// Kopya vadesi varsa vade + `WAIT`; kayıp kuyruğundaysa `WAIT`; yalnız uçuş kaydı varsa kayıp
 /// ilanı + `RETX_LOSS_MARGIN`. Hiçbiri yoksa motor birimi bırakmıştır → açık kırmızı.
@@ -232,6 +284,27 @@ fn split_wire(wire: &[u8]) -> Option<(&[u8], u64)> {
     let cut = wire.len().checked_sub(IDENTITY_TAG)?;
     let pn = u64::from_be_bytes(wire.get(cut..cut + PN_PREFIX)?.try_into().ok()?);
     Some((&wire[..cut], pn))
+}
+
+/// Tel bekçisi: istemcinin tele çıkardığı çerçeve gövdesiz mi — boş gövdeli DATA, yalnız önekli
+/// DATA_FRAG (canonical önek, payload yok) ya da boş sembollü FEC. Gövdesiz değilse `None`.
+fn bodyless_kind(frame: &[u8]) -> Option<&'static str> {
+    match *frame.first()? {
+        FRAME_DATA if frame.len() <= HDR_DATA => Some("DATA boş gövde"),
+        FRAME_DATA_FRAG if frame.len() <= HDR_DATA_FRAG => Some("DATA_FRAG yalnız önek"),
+        FRAME_FEC if frame.len() <= HDR_FEC => Some("FEC boş sembol"),
+        _ => None,
+    }
+}
+
+/// Tel bekçisinin özeti: rölenin istemciden gördüğü datagramlar.
+#[derive(Debug, Default, Clone)]
+struct WireSummary {
+    /// İstemciden gelen bütün datagramlar.
+    frames: u64,
+    /// Gövdesiz datagram sayısı ve ilk örnekleri (PN, tür).
+    bodyless: u64,
+    examples: Vec<(u64, &'static str)>,
 }
 
 /// Hedef DIŞI DATA datagramlarının kapısı.
@@ -301,6 +374,8 @@ struct NetState {
     /// Bütün dönüş datagramları tutulur (PRE_CONVERGE'i uzatmak için).
     hold_all: bool,
     // ── Gözlemler
+    /// Tel bekçisi (her datagram, kurallardan ÖNCE sayılır).
+    wire: WireSummary,
     max_fwd_pn: Option<u64>,
     data_seen: BTreeMap<u64, u32>,
     data_passed: BTreeMap<u64, u32>,
@@ -324,6 +399,13 @@ impl NetState {
         let Some((frame, pn)) = split_wire(wire) else {
             return Forward::Pass;
         };
+        self.wire.frames += 1;
+        if let Some(kind) = bodyless_kind(frame) {
+            self.wire.bodyless += 1;
+            if self.wire.examples.len() < BODYLESS_LOG_CAP {
+                self.wire.examples.push((pn, kind));
+            }
+        }
         self.max_fwd_pn = Some(self.max_fwd_pn.map_or(pn, |m| m.max(pn)));
         if decode_fec(frame).is_some() {
             self.parity_pns.insert(pn);
@@ -668,11 +750,19 @@ impl Rig {
         )
     }
 
-    async fn finish(self) -> (ClientStats, ServerStats) {
-        let Self { client, server, .. } = self;
+    /// Kapanış: istemci ve sunucu kapanır, röle kuyruğunu işler; tel bekçisinin özeti döner.
+    async fn finish(self) -> (ClientStats, ServerStats, WireSummary) {
+        let Self {
+            client,
+            server,
+            net,
+            ..
+        } = self;
         let cs = client.shutdown().await;
         let ss = server.shutdown().await;
-        (cs, ss)
+        tokio::time::sleep(RELAY_SETTLE).await;
+        let wire = net.with(|s| s.wire.clone());
+        (cs, ss, wire)
     }
 
     /// TTL ve tahliye kollarının ortak kurulumu: kuruluş birimi W teyitli; hedef T'nin YALNIZ ilk
@@ -817,23 +907,19 @@ impl Rig {
         )
         .await;
         eprintln!("[{path}] faz B teyit süresi {:?}", opened.elapsed());
-        // (3) Açılıştan sonraki ilk iletim gövdeli; gövdeli her iletim gerçek gövde. Teyit sonrası
-        // başlık-only emisyon (boş gövde) bu PR'da hoş görülür (motor bekleyen işi budamaz).
-        let (lens, first_ok, nonempty_ok) = self.net.with(|s| {
+        // (3) Açılıştan sonraki her iletim gerçek gövdeli: store-miss yok; teyitten sonra motorun
+        // verdiği karar (bekleyen işi budamaz) tele hiç çıkmaz (iddia 6), boş gövde görülmez.
+        let (lens, all_ok) = self.net.with(|s| {
             let want = body(t);
             (
                 s.target_after_open.iter().map(Vec::len).collect::<Vec<_>>(),
-                s.target_after_open.first().is_some_and(|b| *b == want),
-                s.target_after_open
-                    .iter()
-                    .filter(|b| !b.is_empty())
-                    .all(|b| *b == want),
+                !s.target_after_open.is_empty() && s.target_after_open.iter().all(|b| *b == want),
             )
         });
         assert!(
-            first_ok && nonempty_ok,
-            "[{path}] (3) açılıştan sonraki ilk iletim birimin gerçek gövdesini taşımalı \
-             (store-miss yok): gövde boyları {lens:?}, beklenen {}",
+            all_ok,
+            "[{path}] (3) açılıştan sonraki her iletim birimin gerçek gövdesini taşımalı \
+             (store-miss yok, boş gövde yok): gövde boyları {lens:?}, beklenen {}",
             body(t).len()
         );
         // (4) Teyit sonrası payload düştü; (5) haritalar boş.
@@ -850,12 +936,8 @@ impl Rig {
         assert_runtime_maps_empty(&rec, path);
 
         let total = self.next_unit;
-        let (cs, _ss) = self.finish().await;
-        eprintln!(
-            "[{path}] gözlem: stale_decisions={} (teyitli birime motor kararı; bu PR'da > 0 \
-             olabilir)",
-            cs.stale_decisions
-        );
+        let (cs, _ss, wire) = self.finish().await;
+        assert_no_bodyless(&wire, &cs, path);
         assert_eq!(cs.undelivered, 0, "[{path}] {cs:?}");
         assert_eq!(cs.acked, total, "[{path}] her birim bir kez teyit: {cs:?}");
     }
@@ -867,6 +949,7 @@ impl Rig {
 /// motor orijinali kayıp ilan eder (tombstone) ve TTL (K_TOMB × T_loss ≥ 25.2 s) dolunca kaydı
 /// unutur. Sonra tutulan ACK gelir. Taban: runtime payload'ı siler + `acked()` → (1) KIRMIZI.
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "gerçek zamanlı runtime sahipliği (≈ 2 dk, UDP loopback): CI işi test-runtime, `-- --ignored`"]
 async fn late_ack_after_ttl_keeps_payload() {
     let mut rig = Rig::new(cfg_no_fec()).await;
     let t = rig.target_with_held_ack().await;
@@ -904,6 +987,7 @@ async fn late_ack_after_ttl_keeps_payload() {
 /// orijinali düşen 4096+ dolgu birimi bir TTL içinde 4096+ tombstone üretir ve en eski kayıt
 /// (hedefin orijinali) tavandan tahliye edilir. Sonra tutulan ACK gelir.
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "gerçek zamanlı runtime sahipliği (≈ 2 dk, UDP loopback): CI işi test-runtime, `-- --ignored`"]
 async fn late_ack_after_cap_keeps_payload() {
     let mut rig = Rig::new(cfg_no_fec()).await;
     let t = rig.target_with_held_ack().await;
@@ -978,6 +1062,7 @@ async fn late_ack_after_cap_keeps_payload() {
 /// kopya alıcıya ulaşır; kopyayı bildiren ACK ağda tutulur. Kuruluştan sonra kopya kayıp ilan
 /// edilir (kaydı silinir). Sonra tutulan ACK gelir.
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "gerçek zamanlı runtime sahipliği (≈ 2 dk, UDP loopback): CI işi test-runtime, `-- --ignored`"]
 async fn late_ack_after_dup_loss_keeps_payload() {
     let mut rig = Rig::new(cfg_no_fec()).await;
     let t = rig.next_unit;
@@ -1055,6 +1140,7 @@ async fn late_ack_after_dup_loss_keeps_payload() {
 /// tamamlanır. Esi adaşı birimlerin kopyalarının parite ACK'inden sonra sürmesi #140'ın motor
 /// kısmına aittir (tabanda parite ACK'i o kopyaları iptal eder); burada iddia EDİLMEZ.
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "gerçek zamanlı runtime sahipliği (≈ 2 dk, UDP loopback): CI işi test-runtime, `-- --ignored`"]
 async fn parity_ack_no_confirmation_payload_kept() {
     let k = block_k();
     let r = u64::from(PARITY_R);
@@ -1110,12 +1196,12 @@ async fn parity_ack_no_confirmation_payload_kept() {
     let rec = rig.fresh_recovery().await;
     assert_eq!(rec.unacked_units, 0, "{rec:?}");
     assert_runtime_maps_empty(&rec, "esi");
-    let (cs, ss) = rig.finish().await;
+    let (cs, ss, wire) = rig.finish().await;
     eprintln!(
-        "[esi] gözlem: acked={} fec_recovered_ctrl_units={} stale_decisions={} \
-         sunucu fec_recovered_units={}",
-        cs.acked, cs.fec_recovered_ctrl_units, cs.stale_decisions, ss.fec_recovered_units
+        "[esi] gözlem: acked={} fec_recovered_ctrl_units={} sunucu fec_recovered_units={}",
+        cs.acked, cs.fec_recovered_ctrl_units, ss.fec_recovered_units
     );
+    assert_no_bodyless(&wire, &cs, "esi");
     assert_eq!(cs.undelivered, 0, "{cs:?}");
     assert_eq!(
         cs.acked + cs.fec_recovered_ctrl_units,
@@ -1132,8 +1218,10 @@ async fn parity_ack_no_confirmation_payload_kept() {
 /// 300 ms gecikir (geç orijinal yeniden gönderimden sonra gelir), ACK'lerin %10'u düşer. Bütün
 /// birimler teslim + teyit (her biri tam bir kez: store varlığıyla tekilleştirme), haritalar boş.
 /// Geç orijinalle teyit edilen birimin kaybolan yeniden gönderimi motorda `pending_lost`'ta kalır
-/// ve başlık-only gider (envanter satır 7; budama motor kısmının işi) — `stale_decisions` gözlemdir.
+/// ve motor ona karar verebilir (envanter satır 7; budama motor kısmının işi): runtime o kararı
+/// atlar (`stale_skipped`), tele gövdesiz datagram çıkmaz (iddia 6).
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "gerçek zamanlı runtime sahipliği (≈ 2 dk, UDP loopback): CI işi test-runtime, `-- --ignored`"]
 async fn store_miss_guard_loss_and_reorder() {
     let mut rig = Rig::new(cfg_no_fec()).await;
     rig.net.with(|s| {
@@ -1164,21 +1252,25 @@ async fn store_miss_guard_loss_and_reorder() {
     let rec = rig.fresh_recovery().await;
     assert_eq!(rec.unacked_units, 0, "{rec:?}");
     assert_runtime_maps_empty(&rec, "bekçi-kayıp");
-    let (cs, _ss) = rig.finish().await;
-    eprintln!(
-        "[bekçi-kayıp] gözlem: stale_decisions={} (envanter satır 7)",
-        cs.stale_decisions
-    );
+    let (cs, _ss, wire) = rig.finish().await;
+    assert_no_bodyless(&wire, &cs, "bekçi-kayıp");
     assert_eq!(cs.undelivered, 0, "{cs:?}");
     assert_eq!(cs.acked, GUARD_UNITS, "her birim tam bir kez teyit: {cs:?}");
 }
 
 /// Store-miss bekçisi — FEC RECOVERED (statik-r): iki birimin DATA'sı kalıcı düşer, alıcı bloğu
-/// çözer ve RECOVERED bildirir. Teyitten sonra motorun kalan kayıtları (uçuştaki yeniden
-/// gönderimler) sonradan ARQ'ya girip başlık-only karar üretebilir (envanter satır 8 → 7; budama
-/// motor kısmının işi) — `stale_decisions` gözlemdir. Bu PR'ın ayırt ettiği: o kararlar için runtime
-/// haritalarına kayıt AÇILMAZ (tabanda açılıp hiç budanmıyordu).
+/// çözer ve RECOVERED bildirir. Teyitten sonra motorun kalan kayıtları (uçuştaki iletimler) kayıp
+/// ilan edilip ARQ'ya girer ve motor teyitli birime karar üretir (envanter satır 8 → 7; budama
+/// motor kısmının işi). Runtime o kararları ATLAR: tele gövdesiz datagram çıkmaz (iddia 6) ve
+/// runtime haritalarına kayıt AÇILMAZ (tabanda açılıp hiç budanmıyordu).
+///
+/// Vakum bekçisi: silinen birimlerin kayıtları teyitten sonra motorda kalır (bu PR'ın motoru
+/// budamaz), zaman eşiğiyle kayıp ilan edilir ve yeniden karar üretilir — en az bir atlanan karar
+/// (`stale_skipped ≥ 1`) ön koşuldur; o olmadan iddia 6 boş geçerdi. Motor kısmı (#140 madde 2)
+/// teyitli birimin işini budadığında bu ön koşul ters çevrilir. Ardından `stale_skipped`'in seyri
+/// `SKIP_OBSERVE` boyunca yazdırılır (gözlem; atlanan kararın motordaki ardılı).
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "gerçek zamanlı runtime sahipliği (≈ 2 dk, UDP loopback): CI işi test-runtime, `-- --ignored`"]
 async fn store_miss_guard_fec_recovered() {
     let k = block_k();
     let mut rig = Rig::new(cfg_fec_static()).await;
@@ -1201,15 +1293,50 @@ async fn store_miss_guard_fec_recovered() {
         (0..k).all(|u| rig.delivered.get(&u).is_some_and(|b| *b == body(u))),
         "alıcı gerçek gövdeleri teslim etmeli (silinenler FEC ile)"
     );
-    rig.pump(SETTLE).await;
+    // Vakum bekçisi: ilk atlanan karar.
+    let confirmed_at = Instant::now();
+    rig.wait(
+        "ön koşul: motor teyitli birime en az bir karar vermeli ve runtime onu atlamalı",
+        SKIP_FIRST_WAIT,
+        |r| r.client.live_diag().stale_skipped >= 1,
+    )
+    .await;
+    let first_skip = confirmed_at.elapsed();
+    // Gözlem: atlanan kararın ardılı (`stale_skipped` ve motor kuyrukları, saniyede bir).
+    let mut series = Vec::new();
+    let observe_until = Instant::now() + SKIP_OBSERVE;
+    while Instant::now() < observe_until {
+        rig.pump(SKIP_SAMPLE).await;
+        let live = rig.client.live_diag();
+        let q = live.recovery.map(|r| {
+            (
+                r.timers.inflight_len,
+                r.timers.pending_lost_len,
+                r.timers.dup_queue_len,
+            )
+        });
+        series.push((
+            confirmed_at.elapsed().as_secs(),
+            live.stale_skipped,
+            live.retransmits,
+            live.dups,
+            q,
+        ));
+    }
+    eprintln!(
+        "[bekçi-fec] gözlem: ilk atlanan karar teyitten {first_skip:?} sonra; seyir (s, \
+         stale_skipped, retransmits, dups, motor (uçuş, kayıp, kopya)) {series:?}"
+    );
     let rec = rig.fresh_recovery().await;
     assert_eq!(rec.unacked_units, 0, "{rec:?}");
     assert_runtime_maps_empty(&rec, "bekçi-fec");
     let erased = GUARD_ERASED.len() as u64;
-    let (cs, ss) = rig.finish().await;
-    eprintln!(
-        "[bekçi-fec] gözlem: stale_decisions={} (envanter satır 8 → 7)",
-        cs.stale_decisions
+    let (cs, ss, wire) = rig.finish().await;
+    assert_no_bodyless(&wire, &cs, "bekçi-fec");
+    assert!(
+        cs.stale_skipped >= 1,
+        "ön koşul (vakum): bekçide en az bir atlanan karar: {}",
+        cs.stale_skipped
     );
     assert_eq!(cs.undelivered, 0, "{cs:?}");
     assert_eq!(
