@@ -14,6 +14,12 @@
 # OTORİTER enjeksiyon sayacı BudgetGovernor'dadır (bench RunMeta.budget); bu katman çapraz-teyit.
 #
 # pin_neigh: statik ARP dört arayüzde de (r5 J ön-koşulu; ARP-katmanı drop'u ayrıca doğrulanır).
+# IPv6 KAPALI (dört veth ucu, arayüzler kalkmadan ÖNCE): açıkken çekirdek her arayüz kalkınca kendi
+# IPv6 denetim trafiğini yollar (DAD NS, MLDv2 raporları, RS; RS geri çekilmeyle dakikalarca sürer).
+# Orta ad alanının ma0/mb0'dan yolladıkları netem kuyruğuna girer; düşük hızda (r25: 200 bit/s) yön
+# başına ~10 çerçeve hücrenin İLK koşusunda onlarca saniye hat süresi yer. KAPI3_IPV6=1 → eski davranış
+# (IPv6 açık). Uygulanan durum KAPI3_IPV6_STATE'te ve realized_*.json "ipv6" alanında: off | on |
+# off-FAILED:<arayüzler> (kapatılamadı: arayüzde inet6 adresi var).
 # Offload: ethtool VARSA gro/gso/tso/lro kapatılır; yoksa uyarı loglanır (küçük-UDP + GSO-wrapper
 # kapalıyken etki düşük; evaluation-preflight strict modda ethtool+tcpdump ZORUNLU).
 #
@@ -39,11 +45,24 @@ kapi3_setup() { # yalnız unshare -rnm İÇİNDE
   unshare -n sleep 100000 & CHLB=$!
   for _ in $(seq 1 50); do [ -e "/proc/$MID/ns/net" ] && [ -e "/proc/$CHLB/ns/net" ] && break; sleep 0.05; done
 
+  # IPv6 kapalı: yeni arayüzler (ve ad alanı değiştiren arayüz yeni ad alanında yeniden kaydolurken)
+  # varsayılandan doğar → önce üç ad alanında default, arayüzler taşındıktan sonra ayrıca arayüz başına.
+  if [ "${KAPI3_IPV6:-0}" != 1 ]; then
+    sysctl -qw net.ipv6.conf.default.disable_ipv6=1
+    nsenter -t "$MID" -n sysctl -qw net.ipv6.conf.default.disable_ipv6=1
+    nsenter -t "$CHLB" -n sysctl -qw net.ipv6.conf.default.disable_ipv6=1
+  fi
+
   ip link add va0 type veth peer name ma0
   ip link add vb0 type veth peer name mb0
   ip link set ma0 netns "$MID"
   ip link set mb0 netns "$MID"
   ip link set vb0 netns "$CHLB"
+  if [ "${KAPI3_IPV6:-0}" != 1 ]; then
+    sysctl -qw net.ipv6.conf.va0.disable_ipv6=1
+    nsenter -t "$MID" -n sysctl -qw net.ipv6.conf.ma0.disable_ipv6=1 net.ipv6.conf.mb0.disable_ipv6=1
+    nsenter -t "$CHLB" -n sysctl -qw net.ipv6.conf.vb0.disable_ipv6=1
+  fi
 
   ip addr add "$KAPI3_A_IP/24" dev va0; ip link set va0 up
   nsenter -t "$MID" -n ip link set lo up
@@ -54,6 +73,21 @@ kapi3_setup() { # yalnız unshare -rnm İÇİNDE
   nsenter -t "$CHLB" -n ip link set lo up
   nsenter -t "$CHLB" -n ip addr add "$KAPI3_B_IP/24" dev vb0
   nsenter -t "$CHLB" -n ip link set vb0 up
+  # Denetim: kalkmış arayüzde inet6 adresi kalmamalı (kalırsa IPv6 trafiği netem kuyruğuna girer).
+  if [ "${KAPI3_IPV6:-0}" = 1 ]; then
+    KAPI3_IPV6_STATE=on
+  else
+    local v6bad=""
+    [ -n "$(ip -6 addr show dev va0 2>/dev/null)" ] && v6bad="${v6bad}va0,"
+    [ -n "$(nsenter -t "$MID" -n ip -6 addr show dev ma0 2>/dev/null)" ] && v6bad="${v6bad}ma0,"
+    [ -n "$(nsenter -t "$MID" -n ip -6 addr show dev mb0 2>/dev/null)" ] && v6bad="${v6bad}mb0,"
+    [ -n "$(nsenter -t "$CHLB" -n ip -6 addr show dev vb0 2>/dev/null)" ] && v6bad="${v6bad}vb0,"
+    KAPI3_IPV6_STATE=off
+    if [ -n "$v6bad" ]; then
+      KAPI3_IPV6_STATE="off-FAILED:${v6bad%,}"
+      echo "KAPI3 UYARI: IPv6 kapatılamadı (${v6bad%,}) — denetim trafiği netem kuyruğuna girebilir" >&2
+    fi
+  fi
 
   # Orta-ns forward + rp_filter kapalı (asimetrik profillerde ters-yol filtresi paket yemesin).
   nsenter -t "$MID" -n sysctl -qw net.ipv4.ip_forward=1
@@ -94,7 +128,7 @@ kapi3_setup() { # yalnız unshare -rnm İÇİNDE
     nsenter -t "$MID" -n ip link set dev mb0 gso_max_segs "$KAPI3_GSO_MAX_SEGS"
     nsenter -t "$CHLB" -n ip link set dev vb0 gso_max_segs "$KAPI3_GSO_MAX_SEGS"
   fi
-  export MID CHLB KAPI3_OFFLOAD
+  export MID CHLB KAPI3_OFFLOAD KAPI3_IPV6_STATE
 }
 
 kapi3_a()   { "$@"; }
@@ -164,7 +198,7 @@ kapi3_capture_stop() {
 kapi3_realized() { # $1=dizin $2=etiket
   local d="$1" tag="$2"
   {
-    echo "{\"tag\":\"$tag\",\"t_ns\":$(date +%s%N),\"offload\":\"$KAPI3_OFFLOAD\","
+    echo "{\"tag\":\"$tag\",\"t_ns\":$(date +%s%N),\"offload\":\"$KAPI3_OFFLOAD\",\"ipv6\":\"${KAPI3_IPV6_STATE:-}\","
     # D-13 bayrağı verildiyse uygulanan değer dört uçtan geri okunur (boşken çıktı değişmez).
     [ -n "${KAPI3_GSO_MAX_SEGS:-}" ] && echo "\"gso_max_segs\":\"va0=$(ip -d link show va0 | grep -oE 'gso_max_segs [0-9]+' | cut -d' ' -f2);ma0=$(nsenter -t "$MID" -n ip -d link show ma0 | grep -oE 'gso_max_segs [0-9]+' | cut -d' ' -f2);mb0=$(nsenter -t "$MID" -n ip -d link show mb0 | grep -oE 'gso_max_segs [0-9]+' | cut -d' ' -f2);vb0=$(nsenter -t "$CHLB" -n ip -d link show vb0 | grep -oE 'gso_max_segs [0-9]+' | cut -d' ' -f2)\","
     echo "\"mid_qdisc\":$(nsenter -t "$MID" -n tc -s -j qdisc show 2>/dev/null || echo '[]'),"
