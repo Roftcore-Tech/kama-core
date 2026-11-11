@@ -640,14 +640,14 @@ pub struct ClientStats {
     /// (item 6, workstream B'de kama-noise-wire formatıyla bağlanır); sessiz yutulmaz, sayılır.
     pub unknown_frames: u64,
     /// Gövdesi olmadığı için tele ÇIKARILMAYAN (atlanan) motor kararı — neden sayacı; toplam
-    /// [`Self::stale_skipped`]'tedir. Motor kararı işlemişti ve kaydı uçuşta tutar; ACK'i hiç
-    /// gelmez (motordaki ardılı: [`Self::stale_skipped`]).
+    /// [`Self::stale_skipped`]'tedir.
     /// [K4G-05b-R · sahip kararı 2026-11-11] İki kaynağı vardır:
     /// (1) Birim taşıyan karar (Data / Retransmit / Duplicate) store'da yok: store yalnız motorun
-    /// teyit çıktısıyla boşaldığından bu, motorun TEYİTLİ birime karar üretmesidir (ör. birim geç
-    /// orijinalle teyit edildi, yeniden gönderim kaydı `pending_lost`'ta bekliyordu). Bu PR'da motor
-    /// teyitli birimin bekleyen işini budamaz, yani `> 0` olabilir; karar datagram üretmez (boş ya
-    /// da yalnız önekli çerçeve tele çıkmaz), PN harcamaz, haritaya kayıt açmaz.
+    /// teyit çıktısıyla boşaldığından bu, motorun TEYİTLİ birime karar üretmesi olurdu. Motor
+    /// teyit olayında birimin bekleyen işini iptal eder (`Sender` `cancel_confirmed_units`: kayıp
+    /// kuyruğu, kopya kuyruğu, uçuştaki diğer kopyalar), bu yüzden bu kaynak beklenmez; oluşursa
+    /// karar datagram üretmez (boş ya da yalnız önekli çerçeve tele çıkmaz), PN harcamaz, haritaya
+    /// kayıt açmaz.
     /// (2) `FecParity` kararı runtime'da FEC kapalıyken ya da kararın gönderim kaydı (`send_record`)
     /// yokken: tele çıkmaz, yalnız sayılır (ürün varsayılanları bu kararı üretmez).
     /// Değer > 0 okunurken iki kaynak ayrılmaz; (2) yalnız bu yapılandırmalarda katkı verir.
@@ -725,15 +725,10 @@ pub struct ClientStats {
     /// atlaması değildir.) Kurtarma kapalıyken bastırılan karar burada DEĞİL,
     /// [`Self::recovery_suppressed`]'te sayılır.
     ///
-    /// Motordaki ardılı (motor KODU değişmedi, kapalı-döngü karar akışı değişir): kayıt uçuşta kalır.
-    /// Daha yeni bir seq ACK'lenirse kayıp ilan edilir ve birim yeniden kuyruğa girer (aynı birime
-    /// yeni karar, o da atlanır; eski motorda ARQ tavanına dek, port motorunda tavan 255); sessiz
-    /// kanalda kayıt uçuşta kalır ve kuyruk kurtarmasının prob hedefi olabilir. Port motorunda
-    /// (`TransportEngine::CcPort`, BBR portu) her hayalet kayıp bir tıkanıklık olayıdır: BBR
-    /// `recovery_window` uçuş tavanını sınırlar (INV-RATE-1, 2026-11-11 metni) ve kurtarmadayken
-    /// `Startup`'tan çıkış tetiklenir (`check_if_full_bw_reached`). Kayıp sinyali yapaydır (birim
-    /// teslim edilmişti). Kaynakta kapatma motorun teyitli
-    /// birimin bekleyen işini budamasıdır (#140 madde 2). Ölçümler:
+    /// Motordaki ardılı: teyitli birime karar motorda kapatıldı (teyit olayında birimin bekleyen
+    /// işi iptal edilir; iki motorda). Önceden atlanan karar motorda uçuşta kalan, ACK'i hiç
+    /// gelmeyen bir kayıt bırakıyordu (yeniden kayıp ilanı ve yeni karar; port motorunda yapay
+    /// tıkanıklık olayı). Ölçümler (iptal öncesi ve sonrası):
     /// `docs/design/K4G-05b-RUNTIME-ENVANTER.md` "Atlama politikası".
     pub stale_skipped: u64,
 }
@@ -2245,10 +2240,10 @@ async fn client_task(
             let ev: Event = $ev;
             let via = ConfirmVia::of(&ev);
             let decisions = session.on_event(ev, $now);
-            // [K4G-05b-R] Teyit drenajı kararlar işlenmeden ÖNCE: motor aynı olayda teyit ettiği
-            // birime karar üretebilir (bu PR'da motor teyitli birimin bekleyen işini budamaz); o
-            // karar aşağıda store-miss olarak atlanır (tele datagram çıkmaz; `stale_decisions` +
-            // `stale_skipped`, panik yok) ve birime yeni harita kaydı açılmaz.
+            // [K4G-05b-R] Teyit drenajı kararlar işlenmeden ÖNCE. Motor teyitli birime karar
+            // üretmez (teyitte bekleyen işi iptal edilir); yine de gelirse aşağıda store-miss olarak
+            // atlanır (tele datagram çıkmaz; `stale_decisions` + `stale_skipped`, panik yok) ve
+            // birime yeni harita kaydı açılmaz.
             let confirmed_now: u32 = drain_confirmed!(via);
             for d in decisions {
                 // PN → seq çevirisi motor seq'i taşıyan HER kararda (repair'ler de seq işgal eder;
@@ -2341,17 +2336,12 @@ async fn client_task(
                     continue;
                 }
                 // Store-miss: [K4G-05b-R] store yalnız motor teyidiyle boşaldığından bu, motorun
-                // TEYİTLİ birime karar üretmesidir (ör. geç orijinalle teyit edilen birimin
-                // `pending_lost`'taki yeniden gönderimi; bu PR'da motor teyitli birimin bekleyen
-                // işini budamaz, yani olabilir). [sahip kararı 2026-11-11] Gövdesi olmayan karar
-                // DATAGRAM ÜRETMEZ: karar atlanır (seal yok, PN harcanmaz, harita kaydı açılmaz);
-                // tele boş ya da yalnız önekli çerçeve çıkmaz. Motor kararı zaten işledi: kaydın
-                // ACK'i gelmez, kayıt uçuşta kalır. Daha yeni seq ACK'lenince kayıp ilan edilir ve
-                // birim yeniden kuyruğa girer (aynı birime yeni karar, o da atlanır); port motorunda
-                // (BBR portu) bu yapay kayıp tıkanıklık olayıdır (`recovery_window`, INV-RATE-1).
-                // Ardılın tamamı `ClientStats::stale_skipped` belgesinde. Sayaçlar:
-                // `stale_decisions` (neden) + `stale_skipped` (toplam). Ölçümler:
-                // `docs/design/K4G-05b-RUNTIME-ENVANTER.md` "Atlama politikası".
+                // TEYİTLİ birime karar üretmesi olurdu; motor teyitte birimin bekleyen işini iptal
+                // ettiği için beklenmez. [sahip kararı 2026-11-11] Gövdesi olmayan karar DATAGRAM
+                // ÜRETMEZ: karar atlanır (seal yok, PN harcanmaz, harita kaydı açılmaz); tele boş ya
+                // da yalnız önekli çerçeve çıkmaz. Sayaçlar: `stale_decisions` (neden) +
+                // `stale_skipped` (toplam). Ölçümler: `docs/design/K4G-05b-RUNTIME-ENVANTER.md`
+                // "Atlama politikası".
                 let Some(payload) = store.get(&d.unit_id) else {
                     stats.stale_decisions += 1;
                     stats.stale_skipped += 1;

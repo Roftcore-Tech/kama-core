@@ -338,9 +338,21 @@ fn expect_retransmit_via_wakeup(
     first_out: &[TransmitDecision],
     unit_id: u64,
 ) -> (u64, Vec<TransmitDecision>) {
+    expect_emission_via_wakeup(s, first_t, first_out, unit_id, &[TransmitKind::Retransmit])
+}
+
+/// [K4G-05b-R] `expect_retransmit_via_wakeup`'ın tür listesi alan hâli: hedef birimin `kinds`
+/// türlerinden ilk kurtarma emisyonu (aynı exposed-deadline zinciri, yeni network-event yok).
+fn expect_emission_via_wakeup(
+    s: &mut Sender,
+    first_t: u64,
+    first_out: &[TransmitDecision],
+    unit_id: u64,
+    kinds: &[TransmitKind],
+) -> (u64, Vec<TransmitDecision>) {
     let has = |o: &[TransmitDecision]| {
         o.iter()
-            .any(|d| d.kind == TransmitKind::Retransmit && d.unit_id == unit_id)
+            .any(|d| kinds.contains(&d.kind) && d.unit_id == unit_id)
     };
     if has(first_out) {
         return (first_t, first_out.to_vec()); // overdue-aynı-batch (C2)
@@ -399,11 +411,18 @@ fn f2b_di1_first_data_loss_bootstrap_recovery() {
             3 * SEC + 400 * MS,
             vec![Event::AppData(OpaqueUnit { id: 2, size })],
         );
-        assert!(out2.iter().any(|d| d.kind == TransmitKind::Data), "u2-emit");
+        // [K4G-05b-R] ACK'lenen seq u2'nin GERÇEK DATA seq'idir. Sabit `1` u1'in PreConverge kuruluş
+        // kopyasıydı (Duplicate): o ACK u1'i teyit eder ve motor (sahip kararı 2026-11-11) teyitli
+        // birime yeniden gönderim üretmez. Senaryonun niyeti "sonraki trafiğin ACK'i" (DI-1A gibi).
+        let s2 = out2
+            .iter()
+            .find(|d| d.kind == TransmitKind::Data && d.unit_id == 2)
+            .map(|d| d.seq)
+            .expect("u2-emit");
         let ack_batch = s.on_event_batch(
             4 * SEC,
             vec![Event::AckReceived(AckInfo {
-                acked_seqs: vec![1],
+                acked_seqs: vec![s2],
                 ack_delay: Duration::from_millis(1),
             })],
         );
@@ -477,17 +496,26 @@ fn f2b_di1c_rearmed_pto_lifecycle_exposure() {
         vec![Event::CsProbeEcho { probe_seq: 0 }],
     );
     // u2/u3 emit + ACK → largest>0 → ilk-retransmit (u1).
-    let _ = s.on_event_batch(
+    // [K4G-05b-R] ACK'lenen seq'ler u2/u3'ün GERÇEK DATA seq'leridir (çıktıdan). Sabit `[1, 2]`
+    // u1'in PreConverge kuruluş kopyalarıydı: o ACK u1'i teyit eder ve motor (sahip kararı
+    // 2026-11-11) teyitli birime yeniden gönderim üretmez.
+    let out23 = s.on_event_batch(
         3 * SEC + 300 * MS,
         vec![
             Event::AppData(OpaqueUnit { id: 2, size: 1200 }),
             Event::AppData(OpaqueUnit { id: 3, size: 1200 }),
         ],
     );
+    let seqs23: Vec<u64> = out23
+        .iter()
+        .filter(|d| d.kind == TransmitKind::Data && (d.unit_id == 2 || d.unit_id == 3))
+        .map(|d| d.seq)
+        .collect();
+    assert!(!seqs23.is_empty(), "u2/u3-emit");
     let b1 = s.on_event_batch(
         4 * SEC,
         vec![Event::AckReceived(AckInfo {
-            acked_seqs: vec![1, 2],
+            acked_seqs: seqs23,
             ack_delay: Duration::from_millis(1),
         })],
     );
@@ -523,11 +551,22 @@ fn f2b_di1c_rearmed_pto_lifecycle_exposure() {
             ack_delay: Duration::from_millis(1),
         })],
     );
-    // İkinci-retransmit: overdue-ise-b2'de; değilse exposed-deadline'da Tick-only (EK4-A2).
-    let (_ft2, fired2) = expect_retransmit_via_wakeup(&mut s, t1 + SEC, &b2, 1);
+    // İkinci kurtarma emisyonu: overdue-ise-b2'de; değilse exposed-deadline'da Tick-only (EK4-A2).
+    // [K4G-05b-R] u1 gerçekten kayıptır (kuruluş kopyaları da ACK'lenmedi); ~60 s ACK sessizliğinden
+    // sonra eski motor RecoverFwd'dadır ve kayıp kaydı ileri kopyayla (Duplicate) kurtarılır. Sabit
+    // `[1, 2]` ACK'iyle u1 teyitliyken beklenen ikinci Retransmit teyitli birime karardı.
+    let (_ft2, fired2) = expect_emission_via_wakeup(
+        &mut s,
+        t1 + SEC,
+        &b2,
+        1,
+        &[TransmitKind::Retransmit, TransmitKind::Duplicate],
+    );
     let rtx2_seq = fired2
         .iter()
-        .find(|d| d.kind == TransmitKind::Retransmit && d.unit_id == 1)
+        .find(|d| {
+            matches!(d.kind, TransmitKind::Retransmit | TransmitKind::Duplicate) && d.unit_id == 1
+        })
         .unwrap()
         .seq;
     assert!(rtx2_seq > rtx1_seq, "yeni-seq (nonce-reuse-yok)");
@@ -560,14 +599,23 @@ fn f2b_di2_single_ack_erasure_spurious_expected() {
     );
     let (_, _, induced0, _) = s.diag_cs_bootstrap();
     assert_eq!(induced0, 0);
-    let _ = s.on_event_batch(
+    let out2 = s.on_event_batch(
         3 * SEC + 300 * MS,
         vec![Event::AppData(OpaqueUnit { id: 2, size: 1200 })],
     );
+    // [K4G-05b-R] ACK'lenen seq u2'nin GERÇEK DATA seq'idir; sabit `1` u1'in kuruluş kopyasıydı
+    // (o ACK u1'i teyit eder; motor teyitli birime yeniden gönderim üretmez — sahip kararı
+    // 2026-11-11). Senaryo: u1'in DATA'sı ulaştı, ACK'i düştü; u2'nin ACK'i u1'i spurious kayıp
+    // ilan ettirir.
+    let s2 = out2
+        .iter()
+        .find(|d| d.kind == TransmitKind::Data && d.unit_id == 2)
+        .map(|d| d.seq)
+        .expect("u2-emit");
     let b = s.on_event_batch(
         4 * SEC,
         vec![Event::AckReceived(AckInfo {
-            acked_seqs: vec![1],
+            acked_seqs: vec![s2],
             ack_delay: Duration::from_millis(1),
         })],
     );

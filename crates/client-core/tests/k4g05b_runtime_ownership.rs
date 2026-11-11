@@ -39,10 +39,11 @@
 //!
 //! Ve her testte (sahip kararı 2026-11-11, tel bekçisi):
 //! 6. Tele gövdesiz datagram ÇIKMAZ: röle istemciden gelen her datagramı sayar; boş gövdeli DATA,
-//!    yalnız önekli DATA_FRAG ve boş sembollü FEC çerçevesi sayısı 0'dır. Motorun teyitli birime
-//!    verdiği karar (bu PR'da motor teyitli birimin bekleyen işini budamaz) runtime'da atlanır:
-//!    `stale_skipped == stale_decisions + fec_repair_missing`. Bekçi boş geçmesin diye FEC
-//!    bekçisinde en az bir atlanan karar ön koşuldur.
+//!    yalnız önekli DATA_FRAG ve boş sembollü FEC çerçevesi sayısı 0'dır. Gövdesi olmayan karar
+//!    runtime'da atlanır: `stale_skipped == stale_decisions + fec_repair_missing`.
+//! 7. Motor teyitli birime karar ÜRETMEZ (sahip kararı 2026-11-11; motor teyit olayında birimin
+//!    bekleyen işini iptal eder): `stale_decisions == 0`. Bunun ters çevrilmiş hâli (iptalden önce)
+//!    FEC bekçisinin vakum ön koşuluydu (`stale_skipped ≥ 1`).
 //!
 //! TABAN (`4a9e97f1`): iddia 1 KIRMIZI beklenir. İddia 5'in kancası
 //! (`SenderRecoveryDiag::{seq_to_unit_len, unit_seqs_len}`) tabanda yoktur.
@@ -162,9 +163,9 @@ const DATAGRAM_MAX: usize = 65_536;
 const BODYLESS_LOG_CAP: usize = 8;
 /// Kapanıştan sonra rölenin soket kuyruğunu işlemesi için bekleme (loopback; üst sınır).
 const RELAY_SETTLE: Duration = Duration::from_millis(300);
-/// FEC bekçisi: ilk atlanan kararın bekleme tavanı (zaman eşiği kayıp ilanı ≥ 3.15 s + kuyruk
-/// kurtarması; pay) ve ardından `stale_skipped`'in izlendiği pencere (gözlem; iddia değil).
-const SKIP_FIRST_WAIT: Duration = Duration::from_secs(30);
+/// FEC bekçisi: teyitten sonra `stale_skipped` ve motor kuyruklarının izlendiği pencere. İptal
+/// öncesi bu pencerede atlanan karar görülüyordu (ilk atlama teyitten ≤ 0.42 s sonra; zaman eşiği
+/// kayıp ilanı + kuyruk kurtarması); şimdi pencere sonunda `stale_decisions == 0` iddia edilir.
 const SKIP_OBSERVE: Duration = Duration::from_secs(10);
 /// İzleme örnek aralığı.
 const SKIP_SAMPLE: Duration = Duration::from_secs(1);
@@ -262,6 +263,10 @@ fn assert_no_bodyless(w: &WireSummary, cs: &ClientStats, path: &str) {
         cs.stale_skipped,
         cs.stale_decisions,
         cs.fec_repair_missing
+    );
+    assert_eq!(
+        cs.stale_decisions, 0,
+        "[{path}] (7) motor teyitli birime karar üretmez (teyitte bekleyen iş iptal): {cs:?}"
     );
 }
 
@@ -1276,9 +1281,9 @@ async fn run_esi(engine: TransportEngine, path: &str) {
 /// Store-miss bekçisi — kayıp + yeniden sıralama (ARQ, FEC kapalı): DATA'nın %20'si düşer, %10'u
 /// 300 ms gecikir (geç orijinal yeniden gönderimden sonra gelir), ACK'lerin %10'u düşer. Bütün
 /// birimler teslim + teyit (her biri tam bir kez: store varlığıyla tekilleştirme), haritalar boş.
-/// Geç orijinalle teyit edilen birimin kaybolan yeniden gönderimi motorda `pending_lost`'ta kalır
-/// ve motor ona karar verebilir (envanter satır 7; budama motor kısmının işi): runtime o kararı
-/// atlar (`stale_skipped`), tele gövdesiz datagram çıkmaz (iddia 6).
+/// Geç orijinalle teyit edilen birimin kaybolan yeniden gönderimi (envanter satır 7) motorda
+/// teyitte iptal edilir: motor ona karar vermez (iddia 7), tele gövdesiz datagram çıkmaz (iddia 6).
+/// İptal öncesi port motoruyla bu bekçide 12 atlanan karar ölçülmüştü.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "gerçek zamanlı runtime sahipliği (UDP loopback): CI işi test-runtime, `-- --ignored`"]
 async fn store_miss_guard_loss_and_reorder() {
@@ -1329,16 +1334,14 @@ async fn run_guard_loss(engine: TransportEngine, path: &str) {
 }
 
 /// Store-miss bekçisi — FEC RECOVERED (statik-r): iki birimin DATA'sı kalıcı düşer, alıcı bloğu
-/// çözer ve RECOVERED bildirir. Teyitten sonra motorun kalan kayıtları (uçuştaki iletimler) kayıp
-/// ilan edilip ARQ'ya girer ve motor teyitli birime karar üretir (envanter satır 8 → 7; budama
-/// motor kısmının işi). Runtime o kararları ATLAR: tele gövdesiz datagram çıkmaz (iddia 6) ve
-/// runtime haritalarına kayıt AÇILMAZ (tabanda açılıp hiç budanmıyordu).
+/// çözer ve RECOVERED bildirir. RECOVERED teyittir: motor kurtarılan birimin kayıp ve kopya işini
+/// ve uçuştaki kayıtlarını iptal eder (envanter satır 8), teyitli birime karar üretmez (iddia 7);
+/// tele gövdesiz datagram çıkmaz (iddia 6), runtime haritalarına kayıt açılmaz.
 ///
-/// Vakum bekçisi: silinen birimlerin kayıtları teyitten sonra motorda kalır (bu PR'ın motoru
-/// budamaz), zaman eşiğiyle kayıp ilan edilir ve yeniden karar üretilir — en az bir atlanan karar
-/// (`stale_skipped ≥ 1`) ön koşuldur; o olmadan iddia 6 boş geçerdi. Motor kısmı (#140 madde 2)
-/// teyitli birimin işini budadığında bu ön koşul ters çevrilir. Ardından `stale_skipped`'in seyri
-/// `SKIP_OBSERVE` boyunca yazdırılır (gözlem; atlanan kararın motordaki ardılı).
+/// Ters çevrilmiş vakum bekçisi (sahip kararı 2026-11-11): iptal öncesi silinen birimlerin
+/// kayıtları teyitten sonra motorda kalıyor, zaman eşiğiyle kayıp ilan ediliyor ve yeniden karar
+/// üretiliyordu (`stale_skipped ≥ 1` ön koşuldu). Şimdi teyitten sonra `SKIP_OBSERVE` boyunca
+/// `stale_skipped` ve motor kuyrukları yazdırılır ve sonunda `stale_decisions == 0` iddia edilir.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "gerçek zamanlı runtime sahipliği (UDP loopback): CI işi test-runtime, `-- --ignored`"]
 async fn store_miss_guard_fec_recovered() {
@@ -1352,9 +1355,9 @@ async fn store_miss_guard_fec_recovered_cc_port() {
     run_guard_fec(cfg_fec_static(TransportEngine::CcPort), "bekçi-fec/cc_port").await;
 }
 
-/// [`store_miss_guard_fec_recovered`], parçalama açık (DATA_FRAG), port motoruyla: atlanan karar
-/// parçalamalı dalda da datagram üretmez (eski davranış 11 B sıfır önekli DATA_FRAG'dı; tel
-/// bekçisi onu "DATA_FRAG yalnız önek" diye sayar). Vakum ön koşulu aynıdır (`stale_skipped ≥ 1`).
+/// [`store_miss_guard_fec_recovered`], parçalama açık (DATA_FRAG), port motoruyla: teyitli birime
+/// karar yoktur, gövdesiz DATA_FRAG çıkmaz (eski davranış 11 B sıfır önekli DATA_FRAG'dı; tel
+/// bekçisi onu "DATA_FRAG yalnız önek" diye sayar). İddialar FEC bekçisiyle aynıdır.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "gerçek zamanlı runtime sahipliği (UDP loopback): CI işi test-runtime, `-- --ignored`"]
 async fn store_miss_guard_fec_recovered_frag_cc_port() {
@@ -1387,16 +1390,8 @@ async fn run_guard_fec(cfg: RuntimeConfig, path: &str) {
         (0..k).all(|u| rig.delivered.get(&u).is_some_and(|b| *b == body(u))),
         "alıcı gerçek gövdeleri teslim etmeli (silinenler FEC ile)"
     );
-    // Vakum bekçisi: ilk atlanan karar.
+    // Gözlem: teyitten sonra `stale_skipped` ve motor kuyrukları, saniyede bir.
     let confirmed_at = Instant::now();
-    rig.wait(
-        "ön koşul: motor teyitli birime en az bir karar vermeli ve runtime onu atlamalı",
-        SKIP_FIRST_WAIT,
-        |r| r.client.live_diag().stale_skipped >= 1,
-    )
-    .await;
-    let first_skip = confirmed_at.elapsed();
-    // Gözlem: atlanan kararın ardılı (`stale_skipped` ve motor kuyrukları, saniyede bir).
     let mut series = Vec::new();
     let observe_until = Instant::now() + SKIP_OBSERVE;
     while Instant::now() < observe_until {
@@ -1418,8 +1413,8 @@ async fn run_guard_fec(cfg: RuntimeConfig, path: &str) {
         ));
     }
     eprintln!(
-        "[{path}] gözlem: ilk atlanan karar teyitten {first_skip:?} sonra; seyir (s, \
-         stale_skipped, retransmits, dups, motor (uçuş, kayıp, kopya)) {series:?}"
+        "[{path}] gözlem: teyitten sonra seyir (s, stale_skipped, retransmits, dups, motor (uçuş, \
+         kayıp, kopya)) {series:?}"
     );
     let rec = rig.fresh_recovery().await;
     assert_eq!(rec.unacked_units, 0, "{rec:?}");
@@ -1427,11 +1422,6 @@ async fn run_guard_fec(cfg: RuntimeConfig, path: &str) {
     let erased = GUARD_ERASED.len() as u64;
     let (cs, ss, wire) = rig.finish().await;
     assert_no_bodyless(&wire, &cs, path);
-    assert!(
-        cs.stale_skipped >= 1,
-        "ön koşul (vakum): bekçide en az bir atlanan karar: {}",
-        cs.stale_skipped
-    );
     assert_eq!(cs.undelivered, 0, "{cs:?}");
     assert_eq!(
         (cs.acked, cs.fec_recovered_ctrl_units),
