@@ -249,6 +249,18 @@ fn run_opt(
             s.set_tail_recovery_config(c);
         }
     }
+    // `CC_PTO_INIT_MS=<ms>`: port kolunda RTT örneksiz ilk PTO (varsayılan 1000 ms; RFC 9002 §6.2.2
+    // "önceki ölçümden ilk RTT" deneyi).
+    if let Some(m) = std::env::var("CC_PTO_INIT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        if eng != Engine::Legacy {
+            let mut c = adaptive_transport::tail_recovery::TailRecoveryConfig::rfc9002_cc_port();
+            c.initial_pto_ns = m * MS;
+            s.set_tail_recovery_config(c);
+        }
+    }
     // `CC_IW=<bayt>`: port motorunun ilk uçuş penceresi (varsayılan kurucu: 10·MTU; ürün: 4·MTU).
     if let Some(iw) = std::env::var("CC_IW")
         .ok()
@@ -394,17 +406,20 @@ fn run_opt(
             .into_iter()
             .filter(|q| acked_seen.insert(*q))
             .collect();
-        if !new.is_empty() {
-            let size = frame.encode().len() as u64 + ACK_WIRE_OVERHEAD;
-            let ack = AckInfo {
-                acked_seqs: new.clone(),
-                ack_delay: frame.ack_delay_duration(),
-            };
-            if !rev.send(now, size, ack) {
-                // Dönüş kuyruğunda düştü: seq'ler sonraki birikimli SACK'te yine gelir.
-                for q in &new {
-                    acked_seen.remove(q);
-                }
+        // HER SACK çerçevesi tele çıkar (yinelenen bilgi taşısa da dönüş yolunun baytını ve
+        // kuyruğunu işgal eder — inceleme 2026-11-11: eskiden yalnız yeni seq taşıyan çerçeve
+        // kuyruğa giriyordu, ACK kadansının tel maliyeti eksik sayılıyordu). Gönderici yalnız
+        // yeni bilgi taşıyan çerçeveyle beslenir (boş AckInfo göndericiye verilmez: eski
+        // hücrelerde gönderici davranışı bayt düzeyinde aynı; dönüş yolu sınırsızken zamanlama da).
+        let size = frame.encode().len() as u64 + ACK_WIRE_OVERHEAD;
+        let ack = AckInfo {
+            acked_seqs: new.clone(),
+            ack_delay: frame.ack_delay_duration(),
+        };
+        if !rev.send(now, size, ack) {
+            // Dönüş kuyruğunda düştü: seq'ler sonraki birikimli SACK'te yine gelir.
+            for q in &new {
+                acked_seen.remove(q);
             }
         }
     };
@@ -479,6 +494,9 @@ fn run_opt(
         // Dönüş yolu (serileştirme + gecikme; `CC_REV_LOSS` ile rastgele SACK kaybı).
         while rev.wire.front().is_some_and(|(t, _)| *t <= now) {
             let (_, ack) = rev.wire.pop_front().unwrap();
+            if ack.acked_seqs.is_empty() {
+                continue; // yalnız tel maliyeti; gönderici için yeni bilgi yok
+            }
             if rev_loss > 0 {
                 rev_lcg = rev_lcg
                     .wrapping_mul(6_364_136_223_846_793_005)
