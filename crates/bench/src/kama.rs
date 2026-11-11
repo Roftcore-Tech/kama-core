@@ -81,6 +81,57 @@ fn elapsed_ns(start: Instant) -> u64 {
     u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
+/// [Ö-P] Bu kolun taşıma motoru — SALT-GÖZLEM etiketi (`stderr` başlangıç satırı, `--rx-log`
+/// başlığı, `RunMeta.engine`). Etiket bayraktan değil, motoru kuran koddan türetilir: istemcide
+/// kurulmuş `Sender`'ın [`Sender::cc_on`] sorgusu ([`Engine::of_sender`]), sunucuda `Receiver`
+/// kurucusunu seçen TEK eşleme ([`Engine::receiver`]; eş başına alıcılar yalnız buradan kurulur).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Engine {
+    /// Eski motor (`Sender::new` / `Receiver::new`).
+    Legacy,
+    /// quinn-proto 0.11.18 BBR + RFC 9002 portu (`Sender::with_cc_port` / `Receiver::with_cc_port`).
+    CcPort,
+}
+
+impl Engine {
+    /// Etiket (`client_core::runtime::TransportEngine::parse` ile aynı sözcükler).
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Legacy => "legacy",
+            Self::CcPort => "cc-port",
+        }
+    }
+
+    /// Kurulmuş göndericinin motoru.
+    fn of_sender(s: &Sender) -> Self {
+        if s.cc_on() {
+            Self::CcPort
+        } else {
+            Self::Legacy
+        }
+    }
+
+    /// Sunucu `--cc-port` bayrağının seçtiği alıcı motoru.
+    fn of_server_flag(cc_port: bool) -> Self {
+        if cc_port {
+            Self::CcPort
+        } else {
+            Self::Legacy
+        }
+    }
+
+    /// Bu motorun alıcısı — `serve_loop` eş alıcılarını YALNIZ buradan kurar (etiket ↔ kurucu tek
+    /// eşleme; `receiver_constructor_matches_label` pinler).
+    fn receiver(self, quota_r: u32) -> Receiver {
+        let mut r = match self {
+            Self::Legacy => Receiver::new(),
+            Self::CcPort => Receiver::with_cc_port(), // [CC-PORT] anında ACK + 25 ms
+        };
+        r.set_quota_r(quota_r);
+        r
+    }
+}
+
 /// Client koşu durumu: sender engine + ölçüm muhasebesi (seq→unit join, sent/delivered damgaları, byte sayaçları).
 struct ClientRun {
     sender: Sender,
@@ -268,6 +319,13 @@ async fn client_loop(
         usize::try_from(msg_count).unwrap_or(0),
         cfg.kama_arm,
         cfg.budget,
+    );
+    // [Ö-P] Koşu başında motor etiketi (salt gözlem): kurulmuş Sender'dan, kol bayrağından değil.
+    let engine = Engine::of_sender(&run.sender);
+    eprintln!(
+        "bench client: transport=kama arm={} engine={}",
+        cfg.kama_arm.label(),
+        engine.label()
     );
 
     // Tüm birimleri t0'da enqueue — engine'in İÇ pacing'i yayılımı belirlesin (yapay serileştirme değil;
@@ -541,6 +599,7 @@ async fn client_loop(
         setup_in_window: false,
         profile_id: String::new(),
         profile_delta: Vec::new(),
+        engine: engine.label().to_string(),
     };
     Ok(RunOutput { meta, events })
 }
@@ -548,13 +607,18 @@ async fn client_loop(
 /// Server event pump (§4 receiver): per-peer `Receiver`; select{ DATA→on_datagram→SACK / ACK-timer→SACK }.
 /// quinn accept-loop gibi sonsuz (harness process'i öldürür). Tek O(1) recv döngüsü per-mesaj izolasyonu
 /// verir → quinn'in stream-başı task fan-out'una gerek yok (HoL yok).
+///
+/// [Ö-P] `rx_log` verilirse her UYGULAMA teslimi (`RxOutput::delivered`) bir satır yazar
+/// ([`crate::rxlog::RxStream`]): damga `on_datagram` dönüşünde alınır, satır ACK gönderiminden
+/// SONRA yazılır (ACK zamanlaması dosya G/Ç'sinden etkilenmez). `None` = eski yol, damga da yok.
 async fn serve_loop(
     sock: UdpSocket,
     start: Instant,
     quota_r: u32,
     budget: BudgetMode,
     gate_watch: Option<std::path::PathBuf>,
-    cc_port: bool,
+    engine: Engine,
+    mut rx_log: Option<crate::rxlog::RxStream>,
 ) -> Result<(), BenchError> {
     let mut peers: HashMap<SocketAddr, Receiver> = HashMap::new();
     let mut ack_timer = interval(ACK_TICK);
@@ -618,24 +682,25 @@ async fn serve_loop(
             r = sock.recv_from(&mut buf) => {
                 let Ok((n, peer)) = r else { continue };
                 let Some((wire_seq, unit_id)) = decode_data(&buf[..n]) else { continue };
-                let rx = peers.entry(peer).or_insert_with(|| {
-                    let mut r = if cc_port {
-                        Receiver::with_cc_port() // [CC-PORT] anında ACK + 25 ms
-                    } else {
-                        Receiver::new()
-                    };
-                    r.set_quota_r(quota_r);
-                    r
-                });
+                let rx = peers.entry(peer).or_insert_with(|| engine.receiver(quota_r));
                 let expected = rx.largest_seq().map_or(0, |m| m + 1);
                 let full = resolve_seq(expected, wire_seq);
                 let now = elapsed_ns(start);
                 let out = rx.on_datagram(RxDatagram { seq: full, unit_id, kind: RxKind::Data }, now);
+                // [Ö-P] Teslim anı damgası (CLOCK_REALTIME) — yalnız kayıt açıkken alınır.
+                let t_deliver = rx_log.as_ref().map(|_| crate::rxlog::unix_ns());
                 if let Some(ack) = out.ack {
                     let mut bytes = ack.encode();
                     bytes.resize(bytes.len() + TAG_STUB, 0); // [inceleme #2] ACK'e de tag-stub
                     if gov.permit(bytes.len() as u64 + IPV4_UDP_OVERHEAD, now) {
                         let _ = sock.send_to(&bytes, peer).await;
+                    }
+                }
+                if let (Some(log), Some(t)) = (rx_log.as_mut(), t_deliver) {
+                    // Uygulama yükü = datagram − DATA başlığı − etiket taklidi.
+                    let app_len = n.saturating_sub(HDR_DATA + TAG_STUB);
+                    for &u in &out.delivered {
+                        log.record(peer, u, full, app_len, t);
                     }
                 }
             }
@@ -646,13 +711,24 @@ async fn serve_loop(
 impl BenchTransport for KamaTransport {
     async fn run_server(&self, cfg: ServerCfg) -> Result<(), BenchError> {
         let sock = UdpSocket::bind(cfg.bind).await?; // bind = setup hatası → Err (harness abort).
+
+        // [Ö-P] Motor etiketi (salt gözlem): eş alıcılarını kuran AYNI `Engine` değerinden.
+        let engine = Engine::of_server_flag(cfg.cc_port);
+        eprintln!("bench serve: transport=kama engine={}", engine.label());
+        // [Ö-P] Kayıt dosyası koşudan ÖNCE açılır; açılamazsa hata (sessiz kayıtsız koşu yok).
+        let rx_log = cfg
+            .rx_log
+            .as_deref()
+            .map(|p| crate::rxlog::RxStream::create(p, "kama", engine.label()))
+            .transpose()?;
         serve_loop(
             sock,
             Instant::now(),
             cfg.quota_r,
             cfg.budget,
             cfg.gate_watch,
-            cfg.cc_port,
+            engine,
+            rx_log,
         )
         .await
     }
@@ -731,7 +807,8 @@ mod tests {
             4,
             BudgetMode::Unlimited,
             None,
-            false,
+            Engine::Legacy,
+            None,
         ));
 
         let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -776,7 +853,8 @@ mod tests {
             4,
             BudgetMode::Unlimited,
             None,
-            false,
+            Engine::Legacy,
+            None,
         ));
 
         let dir = std::env::temp_dir().join(format!("kapi-gate-kama-{}", std::process::id()));
@@ -828,7 +906,8 @@ mod tests {
             4,
             BudgetMode::Unlimited,
             None,
-            false,
+            Engine::Legacy,
+            None,
         ));
 
         let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -880,7 +959,8 @@ mod tests {
             4,
             BudgetMode::Unlimited,
             None,
-            false,
+            Engine::Legacy,
+            None,
         ));
 
         let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -949,7 +1029,8 @@ mod tests {
             4,
             BudgetMode::Unlimited,
             None,
-            false,
+            Engine::Legacy,
+            None,
         ));
         let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let out = client_loop(client, cfg(saddr, 200, 5000), Instant::now())
@@ -964,5 +1045,109 @@ mod tests {
             span_ms < 500.0,
             "sent_ns app-offer penceresinde olmalı (enqueue, paced-emit değil); span={span_ms:.1}ms"
         );
+    }
+
+    /// [Ö-P] İstemci motor etiketi KURULMUŞ Sender'dan: yalnız `cc-port` kolu port motorunu kurar;
+    /// `tail-v1` ve `arq` eski motordur. Bu pin kırılırsa stderr/`RunMeta.engine` yanlış motoru
+    /// bildirir (yanlış motorla başlayan koşu kayda geçmez).
+    #[test]
+    fn engine_label_from_constructed_sender() {
+        let e = |a| Engine::of_sender(&ClientRun::new(1, a, BudgetMode::Unlimited).sender);
+        assert_eq!(e(KamaArm::CcPort), Engine::CcPort);
+        assert_eq!(e(KamaArm::TailV1), Engine::Legacy);
+        assert_eq!(e(KamaArm::Arq), Engine::Legacy);
+        assert_eq!(Engine::CcPort.label(), "cc-port");
+        assert_eq!(Engine::Legacy.label(), "legacy");
+    }
+
+    /// [Ö-P] Sunucu etiketi ↔ alıcı kurucusu tek eşleme: `CcPort` alıcısı sırasız varışta ANINDA
+    /// ACK verir (RFC 9000 §13.2.1), eski alıcı ACK_FREQ_N = 2'yi bekler. seq 0, 1 (frekans ACK'i),
+    /// sonra 3 (boşluk): yalnız port alıcısı üçüncüde ACK üretir. Kurucular yer değiştirirse kırılır.
+    #[test]
+    fn receiver_constructor_matches_label() {
+        assert_eq!(Engine::of_server_flag(true), Engine::CcPort);
+        assert_eq!(Engine::of_server_flag(false), Engine::Legacy);
+        let third_ack = |e: Engine| {
+            let mut r = e.receiver(4);
+            let mut last = None;
+            for (i, seq) in [0u64, 1, 3].into_iter().enumerate() {
+                let d = RxDatagram {
+                    seq,
+                    unit_id: seq,
+                    kind: RxKind::Data,
+                };
+                last = Some(r.on_datagram(d, 1_000_000 * (i as u64 + 1)).ack.is_some());
+            }
+            last.unwrap()
+        };
+        assert!(
+            third_ack(Engine::CcPort),
+            "port alıcısı sırasızda anında ACK"
+        );
+        assert!(!third_ack(Engine::Legacy), "eski alıcı frekansı bekler");
+    }
+
+    /// [Ö-P] Loopback uçtan uca: `--rx-log` her ölçüm birimini UYGULAMA teslimiyle bir kez
+    /// yazar; başlık sunucu motorunu taşır; `n` uygulama yükü (128 B); `t` istemcinin
+    /// `t0_unix_ns` saatiyle karşılaştırılabilir (aynı CLOCK_REALTIME): sunum ≤ alıcı teslimi ≤
+    /// istemci ACK varışı (5 ms pay). İstemci `RunMeta.engine` kurulmuş Sender'ı bildirir.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rx_log_records_app_delivery_loopback() {
+        let dir = std::env::temp_dir().join(format!("kama-rxlog-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rx_log.jsonl");
+        let log = crate::rxlog::RxStream::create(&path, "kama", Engine::CcPort.label()).unwrap();
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let saddr = server.local_addr().unwrap();
+        tokio::spawn(serve_loop(
+            server,
+            Instant::now(),
+            4,
+            BudgetMode::Unlimited,
+            None,
+            Engine::CcPort,
+            Some(log),
+        ));
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let mut c = cfg(saddr, 10, 5000);
+        c.kama_arm = KamaArm::CcPort;
+        let out = client_loop(client, c, Instant::now()).await.unwrap();
+        assert_eq!(out.meta.engine, "cc-port");
+        assert!(out.events.iter().all(|e| e.delivered_ns.is_some()));
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let v: Vec<serde_json::Value> = text
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(v[0]["kind"], "server_start");
+        assert_eq!(v[0]["engine"], "cc-port");
+        assert_eq!(v[0]["transport"], "kama");
+        let recs = &v[1..];
+        let first: HashMap<u64, u64> = recs
+            .iter()
+            .filter(|r| r["dup"] == false)
+            .map(|r| (r["u"].as_u64().unwrap(), r["t"].as_u64().unwrap()))
+            .collect();
+        assert_eq!(first.len(), 10, "10 birim, her biri bir ilk teslim: {text}");
+        assert!(recs.iter().all(|r| r["n"] == 128), "n = uygulama yükü");
+        let m = &out.meta;
+        let tol = 5_000_000u64;
+        for e in &out.events {
+            let t = first[&e.msg_id];
+            let sent_u = m.t0_unix_ns + e.sent_ns - m.events_epoch_offset_ns;
+            let ack_u = m.t0_unix_ns + e.delivered_ns.unwrap() - m.events_epoch_offset_ns;
+            assert!(
+                t + tol >= sent_u,
+                "birim {}: teslim {t} < sunum {sent_u}",
+                e.msg_id
+            );
+            assert!(
+                t <= ack_u + tol,
+                "birim {}: teslim {t} > ACK {ack_u}",
+                e.msg_id
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
