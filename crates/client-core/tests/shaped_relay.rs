@@ -4,7 +4,10 @@
 //! (`adaptive-transport/tests/cc_port_sim.rs`) ile netem arasındaki "gerçek yığın" boşluğunu kapatır.
 //!
 //! Gerçek zamanlıdır (belirlenimli değil): kayıp deseni tohumla sabit, zamanlama değil. Kapı
-//! eşikleri bu yüzden geniştir. `CC_SHAPED=1` ile koşar (ölçüm); `CC_SHAPED_ENGINE=legacy|cc-port`
+//! eşikleri bu yüzden geniştir. `CC_SHAPED=1` ile koşar (ölçüm); `CC_SHAPED_TRACE=1` rölede her
+//! sunulan paketi yazar (an, yön, tel baytı, kuyruk doluluğu, düşme) — paket boyutundan türü
+//! okunur (ör. 25 B/s hücresinde 120 B = 65 B ileti, 79 B = PARAM, 1080 B = FEC parite);
+//! `CC_SHAPED_ENGINE=legacy|cc-port`
 //! tek motor; `CC_SHAPED_SEED`, `CC_SHAPED_UNITS`, `CC_SHAPED_RATE`, `CC_SHAPED_Q`,
 //! `CC_SHAPED_DELAY_MS`, `CC_SHAPED_JITTER_MS` (normal σ; yeniden sıralama üretir), `CC_SHAPED_LOSS_PM`,
 //! `CC_SHAPED_UNIT_BYTES`, `CC_SHAPED_TMAX_S`, `CC_SHAPED_INTERVAL_MS` (ileti hücresi: birimler bu aralıkla
@@ -42,6 +45,8 @@ struct Shaper {
     bytes: u64,
     dropped_queue: u64,
     dropped_random: u64,
+    /// `CC_SHAPED_TRACE=1`: her sunulan paket (an, yön, bayt, kuyruk, sonuç) stdout'a.
+    trace: Option<(&'static str, Instant)>,
 }
 
 impl Shaper {
@@ -68,6 +73,7 @@ impl Shaper {
             bytes: 0,
             dropped_queue: 0,
             dropped_random: 0,
+            trace: None,
         }
     }
 
@@ -100,15 +106,27 @@ impl Shaper {
         Duration::from_secs_f64(d.max(0.0))
     }
 
+    fn trace_line(&self, now: Instant, size: u64, what: &str) {
+        if let Some((tag, t0)) = self.trace {
+            println!(
+                "İZ t={:.2}s {tag} bayt={size} kuyruk={} {what}",
+                now.duration_since(t0).as_secs_f64(),
+                self.busy.len()
+            );
+        }
+    }
+
     fn offer(&mut self, now: Instant, pkt: Vec<u8>) {
         while self.busy.front().is_some_and(|&t| t <= now) {
             self.busy.pop_front();
         }
+        let size = pkt.len() as u64 + UDP_IP_OVERHEAD;
         if self.busy.len() >= self.limit {
             self.dropped_queue += 1;
+            self.trace_line(now, size, "KUYRUK_DÜŞTÜ");
             return;
         }
-        let size = pkt.len() as u64 + UDP_IP_OVERHEAD;
+        self.trace_line(now, size, "");
         let start = self.busy.back().copied().unwrap_or(now).max(now);
         let ser = Duration::from_nanos(size * 1_000_000_000 / self.rate_bps.max(1));
         let done = start + ser;
@@ -117,6 +135,7 @@ impl Shaper {
         self.bytes += size;
         if self.loss_permille > 0 && self.rand_permille() < self.loss_permille {
             self.dropped_random += 1;
+            self.trace_line(now, size, "YOLDA_DÜŞTÜ");
             return;
         }
         let at = done + self.delay_sample();
@@ -250,6 +269,11 @@ async fn run_cell(
         rev_cfg.loss_permille,
         seed ^ 0x5A5A,
     )));
+    if std::env::var("CC_SHAPED_TRACE").is_ok() {
+        let t0 = Instant::now();
+        fwd.lock().expect("kilit").trace = Some(("İLERİ", t0));
+        rev.lock().expect("kilit").trace = Some(("DÖNÜŞ", t0));
+    }
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
     let relay_task = tokio::spawn(relay(
         front,
