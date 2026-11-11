@@ -620,8 +620,14 @@ kaldırıldı).
   tablo en çok 3973) — TTL tahliyeden önce geldi; serileştirmeyle (üç koşu) tahliye 9.7–20.5 s'de
   gerçekleşti. Birim başına iki düşüş denemesi ACK ilerlemesini
   durdurdu (25 s'de en çok 28 tombstone) ve bırakıldı. Tahliye kolunun TTL'e payı dardır; yavaş
-  makinede ön koşul kırmızısı (iddia değil) beklenebilir.
-- **Tahliye fikstürü: ön koşul TTL yarışından ayrıldı (2026-11-11):** main `6716eb8d`'de testin tek
+  makinede ön koşul kırmızısı (iddia değil) beklenebilir. (Önceki fikstür; 2026-11-11 fikstürü
+  için bir sonraki madde.)
+- **Tahliye fikstürü: ön koşulun TTL payı büyütüldü (2026-11-11).** Ön koşul hâlâ bir duvar saati
+  karşılaştırmasıdır (tahliye süresi ↔ TTL alt sınırı 25,16 s); yeni fikstür payı büyütür, yarışı
+  kaldırmaz. Yavaşlık yanlış yeşil değil, ön koşul kırmızısı üretir. Yukarıdaki tablonun tahliye
+  satırı önceki fikstürün sayılarıdır; yeni fikstürle taban (`4a9e97f1`) koşusu yapılmadı
+  (ayırt edicilik ön koşullarla korunur: `mapped_seqs > 0`, tahliye ön koşulu, tablo ≥ 4096; tabanda
+  kırmızı yeniden ölçülmedi). main `6716eb8d`'de testin tek
   başına yerel koşusu (`--exact late_ack_after_cap_keeps_payload`; en çok 15 koşu, ilk kırmızıda dur)
   4. koşuda ön koşulda kırmızıydı: kayıt geçişten 25,30 s sonra, tablo 3390'dayken düştü (TTL alt
   sınırı 25,16 s); yeşil üç koşuda tahliye 9,95 / 21,96 / 21,99 s'de. O fikstürde (birim başına tek
@@ -637,6 +643,30 @@ kaldırıldı).
   sonra 20 ardışık yerel koşu yeşil: tahliye 2,80–4,87 s (ortanca 3,42 s), tablo her koşuda 4096,
   gövdesiz datagram 0, `stale_skipped` 0; dosyanın tamamı bir kez 11/11. İddialar, test adı ve
   sayısı değişmedi; ürün kodu değişmedi.
+- **Tahliye boşaltmasının bütçesi (inceleme turu, 2026-11-11).** Bağımsız inceleme, CPU kısıtında
+  faz A öncesi tahliye boşaltmasının (bekleme trafiğiyle) 60 s bütçenin büyük kısmını harcadığını
+  ölçtü: tek çekirdeğe sabitli koşuda 42,1 s, aynı çekirdekte meşgul döngüyle 38,9 s; sabitlenmemiş
+  beş koşuda 0,7–1,2 s. Bu dalda aynı koşullarda 40,6 s ve 26,1 s ölçüldü; tek çekirdekte boşaltma
+  başında 1208 birim teyitsizdi (aşağıdaki 20'lik seride 126–565). Üç kısaltma denemesi ölçüldü ve
+  bırakıldı (her biri tek çekirdek + yarım çekirdek, birer koşu): (i) bekleme kapısı yalnız kendi
+  birimlerini sayar — 38,5 s; yarım çekirdekte 60 s'de bitmedi (289 teyitsiz); (ii) buna ek olarak
+  tahliyeden sonra düşüş kalkar — 49,8 s; yarım çekirdekte 60 s'de bitmedi (458 teyitsiz); (iii)
+  tahliye evresinde teyitsiz birim tavanı 256 ve tahliyeden sonra yeni birim yok — iki koşuda da ön
+  koşul kırmızı (kayıt 25,25 / 25,23 s'de düştü, tablo en çok 396 / 467; 25 s'de 291 birim
+  sunulabildi). Süreyi CPU kısıtında eski motorun kurtarma hızı belirliyor, fikstür değil; bu
+  oynaklık kaynağı giderilmedi. Uygulanan: bu adımın bütçesi `CAP_DRAIN_WAIT` = 120 s (`TTL_WAIT`).
+  Adım ön koşul değil kurulumdur: tahliye ön koşulu ondan önce denetlenir, iddialar değişmez.
+  Boşaltma başında istemcinin teyitsiz birim sayısı yazdırılır. CI'da (`--nocapture` yok) süre
+  satırları yalnız kırmızıda görünür. Bu değişiklikten sonraki ilk 20'lik seri 16. koşuda başka bir
+  adımda kırmızıydı: ön koşul ve boşaltma geçti (kayıt 1,78 s, tablo 4096; boşaltma 6,39 s), ortak
+  yoldaki boşluk bekçisi "geç ACK çerçevesi istemcide işlenmeli" 10 s'de düştü (makinenin yük
+  ortalaması 5,8–6,5). Bu adım bütçe değişikliğinden etkilenmez; kök belirlenemedi: kırmızı mesajı
+  geç datagramın istemciye hiç ulaşmadığını, ACK kayıt halkasından (32 kayıt) düştüğünü ya da başka
+  bir nedeni ayırmıyordu. Mesaja enjeksiyon sayacı (röle tarafı) ve halka özeti (index, en büyük
+  PN, `mapped_seqs`) eklendi; sayaç sıfırlandı. Ardından 20 ardışık yerel koşu yeşil (tek test,
+  her koşu ayrı çağrı): tahliye 2,39–5,86 s (ortanca 3,32 s), tablo her koşuda 4096; boşaltma
+  başında 126–565 birim teyitsiz, boşaltma 0,55–11,97 s (bütçe 120 s); gövdesiz datagram 0,
+  `stale_skipped` 0. Dosyanın tamamı bir kez 11/11 (110,9 s).
 - **Boşluk bekçisi:** her geç-ACK kolunda geç ACK çerçevesinin istemcide işlendiği ve motor seq'ine
   çevrildiği (`mapped_seqs > 0`) iki kolda da doğrulandı; kollar yalnız `new_units`'te ayrışır.
 

@@ -97,6 +97,15 @@ const TTL_WAIT: Duration = Duration::from_secs(120);
 /// geç ACK'i teyit etmez, birimler ek bir yeniden gönderim turuyla teyit edilir (beklenen bedel).
 /// Değer #140'ın motoruyla ölçülmüştü; bu PR'ın motorunda süre her koşuda yazdırılır.
 const CAP_WAIT: Duration = Duration::from_secs(60);
+/// Tahliye kolunda tahliye birimlerinin teyit bekleme tavanı (geç ACK öncesi, bekleme trafiğiyle).
+/// Ön koşul değil, kurulum bütçesidir: tahliye ön koşulu bu adımdan önce denetlenir; bu adım TTL'le
+/// yarışmaz, iddia taşımaz. Süre CPU kısıtında eski motorun kurtarma hızına bağlıdır (ölçüm, yerel
+/// loopback, bu fikstür: sabitlenmemiş beş koşuda 0,7–1,2 s; tek çekirdeğe sabitli iki koşuda
+/// 42,1 / 40,6 s, ikincisinde boşaltma başında 1208 birim teyitsiz; aynı çekirdekte meşgul döngüyle
+/// iki koşuda 38,9 / 26,1 s). Kısaltma denemeleri (bekleme kapısı yalnız kendi birimlerini sayar;
+/// tahliyeden sonra düşüş kalkar; tahliye evresinde teyitsiz birim tavanı 256) CPU kısıtında süreyi
+/// kısaltmadı ya da ön koşulu kırdı, bırakıldı. Değer `TTL_WAIT` ile aynıdır.
+const CAP_DRAIN_WAIT: Duration = TTL_WAIT;
 /// Motorun tombstone tavanı (`sender.rs` TOMBSTONE_MAX = 4096, v1; bu PR değiştirmez).
 const TOMBSTONE_CAP: u32 = 4096;
 /// Bir yoklama turunda sunulan tahliye dolgusu (teklif kuyruğu 1024'ün altında).
@@ -110,7 +119,9 @@ const FRAG_FILLERS: u64 = 2 * (ACK_BLOCKS + 4);
 /// düşer. Üçü de kopya OLMAYAN kayıttır (eski motorun ARQ tavanı 3: `arq_retx_cap`) → üç kayıp ilanı
 /// → üç tombstone; üçüncü yeniden gönderim geçer ve birimi teyit eder.
 ///
-/// Ön koşul TTL yarışından böyle ayrılır (ölçüm, main `6716eb8d`, yerel loopback): birim başına tek
+/// Ön koşul hâlâ duvar saati karşılaştırmasıdır (tahliye süresi ↔ `TTL_LOWER_BOUND`): bu fikstür
+/// TTL'e payı büyütür, yarışı kaldırmaz; yavaşlık yanlış yeşil değil, ön koşul kırmızısı üretir.
+/// Ölçüm (main `6716eb8d`, yerel loopback): birim başına tek
 /// düşüşle (önceki fikstür, 4232 dolgu birimi) tavan geçişten 10–22 s sonra geliyordu ve dört koşunun
 /// birinde kayıt 25,30 s'de, tablo 3390'dayken TTL'le düştü (TTL alt sınırı 25,16 s). O fikstürde
 /// uçuşta ≈ 1400 yeniden gönderim kaydı ≈ 3 s bekleyip zaman eşiğiyle topluca kayıp ilan ediliyor,
@@ -442,6 +453,9 @@ struct NetState {
     acks_forwarded: u64,
     acks_with_all_parity: u64,
     delayed: VecDeque<(Instant, Vec<u8>)>,
+    /// Gecikmiş datagram enjeksiyonu: istemciye gönderilen / gönderilemeyen (salt gözlem).
+    injected: u64,
+    inject_failed: u64,
 }
 
 impl NetState {
@@ -634,8 +648,14 @@ async fn relay(
             }
             m = inject.recv() => {
                 let Some(wire) = m else { break };
-                if let Some(to) = client {
-                    let _ = front.send_to(&wire, to).await;
+                let sent = match client {
+                    Some(to) => front.send_to(&wire, to).await.is_ok(),
+                    None => false,
+                };
+                if sent {
+                    lock(&state).injected += 1;
+                } else {
+                    lock(&state).inject_failed += 1;
                 }
             }
         }
@@ -786,7 +806,8 @@ impl Rig {
         format!(
             "outstanding={} son_teyitler={:?} rtt_samples={} retransmits={} dups={} \
              recovery={:?} hedef={:?} hedef_görülen={:?} hedef_pn={:?} tutulan_ack={} \
-             ön_tutulan={} parite_pn={} ack_geçen={}",
+             ön_tutulan={} parite_pn={} ack_geçen={} enjekte={} enjekte_hata={} \
+             ack_çerçeve={} son_ack_çerçeveleri(index, en büyük PN, mapped)={:?}",
             self.client.outstanding(),
             self.acked.iter().rev().take(8).collect::<Vec<_>>(),
             live.rtt_samples,
@@ -800,6 +821,13 @@ impl Rig {
             net.pre_held.len(),
             net.parity_pns.len(),
             net.acks_forwarded,
+            net.injected,
+            net.inject_failed,
+            live.ack.frames,
+            live.acks
+                .recent()
+                .map(|a| (a.index, a.largest_pn, a.mapped_seqs))
+                .collect::<Vec<_>>(),
         )
     }
 
@@ -901,7 +929,10 @@ impl Rig {
         // Kayıt halkası sınırlı olduğundan çerçeve işlenir işlenmez yoklanır.
         let mut late_rec = None;
         self.wait(
-            &format!("[{path}] ön koşul: geç ACK çerçevesi istemcide işlenmeli"),
+            &format!(
+                "[{path}] ön koşul: geç ACK çerçevesi istemcide işlenmeli (en büyük PN \
+                 {late_largest:?}; teslimden önceki çerçeve sayısı {frames_before})"
+            ),
             WAIT,
             |r| {
                 late_rec = r
@@ -1121,13 +1152,18 @@ async fn late_ack_after_cap_keeps_payload() {
     // ilerlemesi durur — paket/zaman eşiği kayıp ilan etmez, kuyruk probları da düşer ve tavana
     // ulaşır (ölçüm: 20 koşunun 10'uncusunda 21 dolgu 60 s teyitsiz kaldı, prob 3/3). Bekleme
     // trafiği (`TRICKLE`; birimleri tahliye aralığının dışında, düşmez) ACK ilerlemesini sürdürür.
+    // Bütçe `CAP_DRAIN_WAIT`'tir (CPU kısıtında süre eski motorun kurtarma hızına bağlıdır).
     let drained_from = Instant::now();
-    rig.wait_trickle("tahliye birimleri teyit edilmeli", CAP_WAIT, |r| {
+    eprintln!(
+        "[cap] boşaltma başında istemcide teyitsiz {}",
+        rig.client.outstanding()
+    );
+    rig.wait_trickle("tahliye birimleri teyit edilmeli", CAP_DRAIN_WAIT, |r| {
         r.acked_set.range(first..end).count() as u64 == end - first
     })
     .await;
     eprintln!(
-        "[cap] tahliye birimlerinin teyidi (bekleme trafiğiyle): {:?}",
+        "[cap] tahliye birimlerinin teyidi (bekleme trafiğiyle): {:?} (bütçe {CAP_DRAIN_WAIT:?})",
         drained_from.elapsed()
     );
     rig.late_ack_keeps_payload_then_resend_confirms(t, "cap", CAP_WAIT)
