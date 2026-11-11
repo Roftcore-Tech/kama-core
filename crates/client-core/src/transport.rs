@@ -44,6 +44,13 @@
 //! `Closed(h, Superseded)`. Böylece cutover anında `h`'nin içinde kurtarılmayı bekleyen birim
 //! kalmaz ve yeni oturuma hiçbir birim TAŞINMAZ (S1 K7).
 //!
+//! [HLR] Aynı yol hub hattı kaybında da kullanılır (S4 C5: `ROUTE_MISS{h}` → oturum için yeni
+//! INIT): bileşim kökü [`ClientTransport::relink`]'i, bekleyen yenilemenin hub denemesi bitince
+//! [`ClientTransport::restart_renewal`]'ı çağırır. Eş başına en çok BİR etkin oturum vardır: eşin
+//! yenilemesi (onaylanan provisional) `h`'nin yerini alınca `h` için kendi bekleyen yenilememiz
+//! kapatılır; yerini zaten başka bir oturum almış bir oturumun yenilemesi ya da onayı açılmaz,
+//! kapatılır. İki uç aynı anda yenilerse S3 glare kuralı (K10) tek oturum bırakır.
+//!
 //! # Kalıcı niyet (DR-CONNECT-1, INV-NO-IDLE-TEARDOWN)
 //!
 //! `connect` için zaman sınırı yoktur. Crypto bekleyen bir INIT'in yarım-açık kaydını anahtar
@@ -911,6 +918,12 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                     old.phase = Phase::Superseded;
                 }
             }
+            // [HLR] Eş başına tek etkin oturum: eş bu arada başka bir oturumu etkinleştirdiyse bu
+            // oturum fazladır — açılmaz, kapatılır (eş onu onaylamadan bırakır).
+            if self.active_session_of(r.peer).is_some() {
+                self.close_unopened(h);
+                return;
+            }
             self.activate(h, r.peer, None);
             return;
         }
@@ -944,10 +957,23 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             return;
         };
         self.hub_of.remove(&new);
+        // [HLR] Eşin yenilemesi `old`'un yerini aldı: `old` için kendi bekleyen yenilememiz (glare
+        // kaybında Crypto onun INIT'ini sildi; eşzamanlı yenilemede eş onu henüz onaylamadı) artık
+        // gereksizdir. Sürerse tamamlanınca eşle ikinci bir etkin oturum açardı.
+        if let Some(i) = self.renewals.iter().position(|r| r.old == old) {
+            let r = self.renewals.remove(i);
+            self.close_unopened(r.pending);
+        }
         if let Some(s) = self.sessions.get_mut(&old) {
             if s.phase == Phase::Active {
                 s.phase = Phase::Superseded;
             }
+        }
+        // [HLR] Eş başına tek etkin oturum: `old`'un yerini kendi yenilememiz zaten aldıysa bu
+        // oturum fazladır — açılmaz, kapatılır (eş, bizim yenilememizin oturumuna geçer).
+        if self.active_session_of(peer).is_some() {
+            self.close_unopened(new);
+            return;
         }
         self.activate(new, peer, None);
     }
@@ -965,24 +991,98 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         if self.renewals.iter().any(|r| r.old == h) {
             return;
         }
-        if let SessionResult::Initiated {
+        let _ = self.start_renewal(h, peer);
+    }
+
+    /// `old`'un yerini alacak oturum için yeni INIT (S3 `Renew`): yenileme kaydı + zarf. Olay
+    /// üretmez. `false` = Crypto INIT üretmedi (bekleyen tavanı dolu ya da oturum etkin değil).
+    fn start_renewal(&mut self, old: SessionHandle, peer: PeerRef) -> bool {
+        let SessionResult::Initiated {
             session: pending,
             envelope_type,
             bytes,
-        } = self.command(SessionCommand::Renew { session: h })
-        {
-            // [K4G-01] INIT'ten ÖNCE beklenir (tablo ile veri yolu arasında yarış yok).
-            self.expected.insert_pending(pending);
-            if let Ok(a) = self.link.send_init(peer, envelope_type, bytes) {
-                self.attempts.insert(a, pending);
-            }
-            self.renewals.push(Renewal {
-                old: h,
-                peer,
-                pending,
-                held: None,
-            });
+        } = self.command(SessionCommand::Renew { session: old })
+        else {
+            return false;
+        };
+        // [K4G-01] INIT'ten ÖNCE beklenir (tablo ile veri yolu arasında yarış yok).
+        self.expected.insert_pending(pending);
+        if let Ok(a) = self.link.send_init(peer, envelope_type, bytes) {
+            self.attempts.insert(a, pending);
         }
+        self.renewals.push(Renewal {
+            old,
+            peer,
+            pending,
+            held: None,
+        });
+        true
+    }
+
+    /// S1'e hiç açılmamış (bekleyen ya da fazla) bir Crypto oturumunu kapatır; zarf tablolarındaki
+    /// izi silinir. Crypto'nun `Closed(h, UserClosed)`'ı S1 olayı üretmez (`on_crypto_closed`: `h`
+    /// hiçbir tabloda değildir).
+    fn close_unopened(&mut self, h: SessionHandle) {
+        self.attempts.retain(|_, p| *p != h);
+        self.hub_of.remove(&h);
+        let _ = self.command(SessionCommand::Close { session: h });
+    }
+
+    /// Eşin gönderim kabul eden (etkin) oturumu.
+    fn active_session_of(&self, peer: PeerRef) -> Option<SessionHandle> {
+        self.sessions
+            .iter()
+            .find(|(_, s)| s.peer == peer && s.phase == Phase::Active)
+            .map(|(h, _)| *h)
+    }
+
+    // ── hub hattı kaybı (S4 C5, C3/C7) ──
+
+    /// [HLR] S4 C5: eşin kurulu oturumunun hub hattı kayboldu (`ROUTE_MISS{h}` →
+    /// `HubNotice::HandleLost`; hat emekli ya da hub yeniden başlamış) → oturum için yeni INIT.
+    /// Yeni oturum yenileme yoluyla kurulur (S1 KARAR-2): yanıt gelince eski oturumun teyitsiz
+    /// birimleri boşalana ya da `renew_drain_cap` dolana dek beklenir, sonra atomik cutover
+    /// (`Ready(h')`, `Closed(h, Superseded)`). Birim yeni oturuma TAŞINMAZ (S1 K7); Application
+    /// RECEIPT'i gelmemiş kayıtları `h'` üzerinden yeniden yollar. `RenewRequired` verilmez.
+    ///
+    /// `false` = eşin etkin oturumu yok ya da Crypto INIT üretmedi. O oturumun yenilemesi zaten
+    /// bekliyorsa ikincisi başlatılmaz (`true`): onun INIT'i yeni bir hatta gider, kaybolan hattan
+    /// etkilenmez; denemesi biterse [`Self::restart_renewal`] yeniler. Eşin aynı anda başlattığı
+    /// yenileme (iki uç da `ROUTE_MISS` aldı) S3 glare kuralıyla tek oturumda biter
+    /// (`on_confirmed`, `on_crypto_ready`: eş başına tek etkin oturum).
+    pub fn relink(&mut self, peer: PeerRef) -> bool {
+        let Some(old) = self.active_session_of(peer) else {
+            return false;
+        };
+        if self.renewals.iter().any(|r| r.old == old) {
+            return true;
+        }
+        let started = self.start_renewal(old, peer);
+        self.sync_expected();
+        started
+    }
+
+    /// [HLR] S4 C3/C7: eşin etkin oturumunun bekleyen yenilemesinin hub açılış denemesi bitti
+    /// (`HubNotice::AttemptEnded`: `{UNKNOWN_HANDLE, 0}`, `ATTEMPT_MAX_AGE`, çelişkili handle,
+    /// yeniden bind ya da atanmış handle'a `ROUTE_MISS`) → yenileme yeni kriptografik INIT ve yeni
+    /// denemeyle yeniden başlar; eski bekleyen kapatılır. RESPONSE'u gelmiş (boşalma için tutulan)
+    /// yenileme el sıkışmasını tamamlamıştır: dokunulmaz. `false` = yeniden başlatılan yok.
+    pub fn restart_renewal(&mut self, peer: PeerRef) -> bool {
+        let Some(old) = self.active_session_of(peer) else {
+            return false;
+        };
+        let Some(i) = self
+            .renewals
+            .iter()
+            .position(|r| r.old == old && r.held.is_none())
+        else {
+            return false;
+        };
+        let r = self.renewals.remove(i);
+        self.close_unopened(r.pending);
+        let started = self.start_renewal(old, peer);
+        self.sync_expected();
+        started
     }
 
     fn on_crypto_closed(&mut self, h: SessionHandle, reason: CloseReason) {
@@ -1390,6 +1490,20 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             .iter()
             .find(|(_, s)| s.peer == peer && s.phase == Phase::Active)
             .map(|(h, _)| *h)
+    }
+
+    /// [HLR] Eşin etkin oturum sayısı (sözleşme: en çok 1) ve bekleyen yenileme sayısı — fikstür
+    /// yenilemelerin tek oturumda bittiğini buradan okur.
+    #[cfg(any(test, feature = "test-util"))]
+    #[must_use]
+    pub fn renewal_state_for_test(&self, peer: PeerRef) -> (usize, usize) {
+        let active = self
+            .sessions
+            .values()
+            .filter(|s| s.peer == peer && s.phase == Phase::Active)
+            .count();
+        let renewals = self.renewals.iter().filter(|r| r.peer == peer).count();
+        (active, renewals)
     }
 
     /// S1'in bildiği bir oturumun eşi.
