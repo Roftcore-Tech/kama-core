@@ -3278,7 +3278,7 @@ impl Sender {
         // [K4G-05b-R] Birim teyit ÇIKTISI adayları: bu çerçevede canlı kaydı (uçuş, tombstone,
         // un-loss) İLK kez eşleşen birim iletimleri. FEC onarım sembolü HARİÇ (unit.id = ESI, ayrı
         // ad-uzayı). Yalnız `emit_unit_confirmations`'a gider; hiçbir karar bunu okumaz
-        // (`acked_units` bundan bağımsız, bayt-özdeş kalır).
+        // (`acked_units` kopya iptalidir; ikisi de onarım sembolünü dışlar).
         let mut confirmed_units: Vec<u64> = Vec::new();
         // [E2a m8] engine §6 v1.1 KABUL KURALI (a)/(b) (`rtt_rule_v11`, KK-M1-06; C5.md:19): çerçeve
         // başına en çok BİR örnek — çerçevedeki gönderilmiş (sender'ın ürettiği) seq'lerin EN BÜYÜĞÜ
@@ -3314,12 +3314,15 @@ impl Sender {
                 if p.origin == TransmitKind::Data {
                     self.fate_estimator.on_original_ack(p.unit.id);
                 }
-                acked_units.push(p.unit.id); // §3.3-B stop koşulu: teyit edilen birimin kopyaları iptal
-                                             // DR-S5-3 [SALT-LOGICAL — BtlBw'ye DEĞMEZ]: wire-ACK hangi-logical-paketi teyit-etti?
-                                             // Ayrı-defter (bounded); bw_sampler/btlbw'yi OKUMAZ/YAZMAZ (N8: recovered≠ACK tabanı).
+                // [K4G-05b-R] FEC onarım sembolünün `unit.id`'si ESI'dir (ayrı ad-uzayı): kopya
+                // iptaline (§3.3-B stop) de teyit çıktısına da GİRMEZ. Girseydi ESI ile aynı sayısal
+                // kimlikli KAYNAK birimin bekleyen kopyaları iptal olurdu.
                 if p.origin != TransmitKind::FecParity {
+                    acked_units.push(p.unit.id); // §3.3-B stop koşulu: teyit edilen birimin kopyaları iptal
                     confirmed_units.push(p.unit.id); // [K4G-05b-R] canlı uçuş kaydı
                 }
+                // DR-S5-3 [SALT-LOGICAL — BtlBw'ye DEĞMEZ]: wire-ACK hangi-logical-paketi teyit-etti?
+                // Ayrı-defter (bounded); bw_sampler/btlbw'yi OKUMAZ/YAZMAZ (N8: recovered≠ACK tabanı).
                 self.record_confirmed_logical(seq);
                 let sample = self.bw_sampler.on_ack(now_ns, p.bw_sample);
                 self.btlbw.update(sample, now_ns, sample.delivered > 0);
@@ -3338,15 +3341,17 @@ impl Sender {
                 // prune edilmişse buraya düşmez (Expired/Unknown — örneksiz).
                 self.diag_tomb_hits += 1;
                 cc_acked.push((t.unit.size, t.bw_sample.is_app_limited()));
-                acked_units.push(t.unit.id); // teslim teyidi → bekleyen kopyaları iptal et
-                                             // S-0.7 correction leg (ESTIMATOR-LIFECYCLE §6.1): the ORIGINAL's own seq was
-                                             // late-acked — the product just disproved the loss it declared, so the estimator's
-                                             // fate is corrected in place. ORIGINALS ONLY: a superseded transmission's late ACK
-                                             // (kol-2, origin Retransmit) proves nothing about the original's fate.
+                // S-0.7 correction leg (ESTIMATOR-LIFECYCLE §6.1): the ORIGINAL's own seq was
+                // late-acked — the product just disproved the loss it declared, so the estimator's
+                // fate is corrected in place. ORIGINALS ONLY: a superseded transmission's late ACK
+                // (kol-2, origin Retransmit) proves nothing about the original's fate.
                 if t.origin == TransmitKind::Data {
                     self.fate_estimator.correct_original_delivered(t.unit.id);
                 }
+                // [K4G-05b-R] Onarım sembolü (ESI ad-uzayı) kopya iptaline ve teyide girmez (uçuş
+                // dalıyla aynı kural).
                 if t.origin != TransmitKind::FecParity {
+                    acked_units.push(t.unit.id); // teslim teyidi → bekleyen kopyaları iptal et
                     confirmed_units.push(t.unit.id); // [K4G-05b-R] canlı tombstone (kol-1/kol-2)
                 }
                 if t.retx_count == 0 {
@@ -11438,6 +11443,95 @@ mod tests {
                 assert!(
                     !seen.contains(&namesake),
                     "{name}: ESI adaşı kaynak birim (seq {nseq}) hiç teyit edilmedi"
+                );
+            }
+        }
+
+        /// Vadesi ufkun çok ötesinde kopya kaydı (beyaz kutu kurulumu ateşlenmesin).
+        const DUP_FAR_NS: u64 = 3_600_000 * MS;
+
+        /// [K4G-05b-R · inceleme bulgusu, ESI ad-uzayı sızıntısı] Onarım sembolünün ACK'i (uçuşta ya
+        /// da tombstone'da) ESI ile AYNI sayısal kimlikli kaynak birimin bekleyen kopyasını iptal
+        /// ETMEZ: parite kaydının `unit.id`'si ESI'dir ve kopya iptaline girmez. Adaş birim gerçek ve
+        /// teyitsizdir (DATA'sı uçuşta, hiç ACK'lenmez); kopya kaydı beyaz kutu kurulur (vadesi uzak)
+        /// — sınanan yalnız iptal kuralıdır. Düzeltme öncesi iki dalda da kopya iptal oluyordu.
+        #[test]
+        #[allow(deprecated)] // enqueue_fec_parity: test-harness yolu (Commit-K)
+        fn k4g05br_parity_ack_keeps_esi_namesake_copies() {
+            const ESI: u16 = 3;
+            let namesake = u64::from(ESI);
+            let has_copy = |r: &Rig| {
+                r.s.dup_queue
+                    .iter()
+                    .any(|d| d.unit.id == namesake && d.due_ns == DUP_FAR_NS)
+            };
+            for (name, mk) in engines() {
+                let mut r = Rig::new(mk);
+                r.s.set_manual_fec_enabled(true).expect("manuel FEC");
+                r.warm(UID);
+                r.ev(Event::AppData(small(namesake)), 20 * MS);
+                r.s.dup_queue.push(DupRec {
+                    due_ns: DUP_FAR_NS,
+                    unit: small(namesake),
+                    interval_ns: 0,
+                });
+                // (1) Uçuştaki parite kaydının ACK'i.
+                r.s.enqueue_fec_parity(7, ESI, 100);
+                let t = r
+                    .pump_until(21 * MS, PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                        r.seq_of(namesake, TransmitKind::FecParity).is_some()
+                    })
+                    .expect("parity tele çıkar");
+                let pseq = r.seq_of(namesake, TransmitKind::FecParity).expect("parity");
+                assert!(r.s.inflight.contains_key(&pseq), "{name}: parity uçuşta");
+                r.ev(ack(&[pseq]), t);
+                assert!(
+                    !r.s.inflight.contains_key(&pseq),
+                    "{name}: parity kaydı kapandı"
+                );
+                assert!(
+                    has_copy(&r),
+                    "{name}: (1) uçuştaki parite ACK'i ESI adaşının kopyasını iptal etmez"
+                );
+
+                // (2) Tombstone'daki parite kaydının geç ACK'i.
+                r.s.enqueue_fec_parity(8, ESI, 100);
+                let t = r
+                    .pump_until(t + MS, t + PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                        r.sent
+                            .values()
+                            .any(|d| d.kind == TransmitKind::FecParity && d.seq != pseq)
+                    })
+                    .expect("ikinci parity tele çıkar");
+                let pseq2 = r.seq_of(namesake, TransmitKind::FecParity).expect("parity");
+                let more: Vec<u64> = (1..=5u64).map(|i| UID + 10 + i).collect();
+                for &id in &more {
+                    r.ev(Event::AppData(small(id)), t + MS);
+                }
+                let t2 = r
+                    .pump_until(t + 2 * MS, t + PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                        more.iter()
+                            .all(|&id| r.seq_of(id, TransmitKind::Data).is_some())
+                    })
+                    .expect("DATA tele çıkar");
+                let acks: Vec<u64> = more
+                    .iter()
+                    .map(|&id| r.seq_of(id, TransmitKind::Data).expect("DATA"))
+                    .collect();
+                r.ev(ack(&acks), t2);
+                assert!(
+                    r.s.tombstones
+                        .get(&pseq2)
+                        .is_some_and(|tb| tb.origin == TransmitKind::FecParity),
+                    "{name}: parity kaydı tombstone'da (ön koşul)"
+                );
+                assert!(has_copy(&r), "{name}: (2) ön koşul — kopya duruyor");
+                let hits0 = r.s.diag_tomb_hits;
+                r.ev(ack(&[pseq2]), t2 + MS);
+                assert_eq!(r.s.diag_tomb_hits - hits0, 1, "{name}: tombstone dalı");
+                assert!(
+                    has_copy(&r),
+                    "{name}: (2) tombstone'daki parite ACK'i ESI adaşının kopyasını iptal etmez"
                 );
             }
         }
