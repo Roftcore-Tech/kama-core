@@ -183,6 +183,12 @@ fn run_opt(
         }
     }
     let mut rev: VecDeque<(u64, AckInfo)> = VecDeque::new();
+    // `CC_REV_LOSS=<binde>`: dönüş yolunda (SACK) rastgele kayıp; varsayılan 0 (kayıpsız dönüş).
+    let rev_loss: u64 = std::env::var("CC_REV_LOSS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let mut rev_lcg: u64 = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(12345);
     let mut acked_seen: HashSet<u64> = HashSet::new();
     let mut delivered: HashSet<u64> = HashSet::new();
     let (n_units, unit_size) = units;
@@ -291,9 +297,22 @@ fn run_opt(
             let expected = r.largest_seq().unwrap_or(0) + 1;
             push_ack(frame, expected, now, &mut acked_seen, &mut rev);
         }
-        // Dönüş yolu (kayıpsız, yalnız gecikme).
+        // Dönüş yolu (yalnız gecikme; `CC_REV_LOSS` ile rastgele SACK kaybı).
         while rev.front().is_some_and(|(t, _)| *t <= now) {
             let (_, ack) = rev.pop_front().unwrap();
+            if rev_loss > 0 {
+                rev_lcg = rev_lcg
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                if (rev_lcg >> 33) % 1000 < rev_loss {
+                    // SACK yolda düştü: içindeki seq'ler bir sonraki SACK'te yine gelir
+                    // (alıcı birikimli bildirir); `acked_seen` filtresi bu yüzden burada geri alınır.
+                    for q in &ack.acked_seqs {
+                        acked_seen.remove(q);
+                    }
+                    continue;
+                }
+            }
             let decs = s.on_event(Event::AckReceived(ack), now);
             emit(decs, now, &mut fwd, &mut o);
         }
