@@ -3589,9 +3589,10 @@ impl Sender {
                 // DR-ARQ-PRODUCT-TAIL-1 (gated; default OFF → skipped, OFF-mode byte-identical): a PTO with
                 // outstanding data and no ACK progress for a PTO interval makes the OLDEST inflight probe-eligible.
                 // Emission (token + re-verify) happens in plan_arq_retransmits; the attempt is spent only on a real
-                // emission (§3 probe-due ≠ probe-sent).
+                // emission (§3 probe-due ≠ probe-sent). [K4G-05b-R] "Oldest" = oldest SOURCE-unit record
+                // (`oldest_probe_target`; a FEC repair record is never a probe target).
                 if self.tail_recovery.is_enabled() {
-                    let oldest = self.inflight.keys().next().copied();
+                    let oldest = self.oldest_probe_target();
                     let srtt = self.rtt.srtt().map(dur_ns);
                     let rttvar = dur_ns(self.rtt.rttvar());
                     if let ProbeDecision::ProbeDue { target_seq, .. } =
@@ -6497,7 +6498,7 @@ impl Sender {
         // Yuva bu turun kimliğiyle (on_probe_sent SONRASI `(armed_at, probe_index)`) kurulur; önceki
         // turdan kalan yuvanın üzerine yazılır (sonraki turun ilk probu yuvayı boşaltır).
         if self.e2a.pto_probes() >= 2 {
-            self.e2a_tail_probe2 = self.inflight.keys().next().copied().map(|seq| {
+            self.e2a_tail_probe2 = self.oldest_probe_target().map(|seq| {
                 (
                     seq,
                     self.tail_recovery.armed_at_ns(),
@@ -6506,6 +6507,18 @@ impl Sender {
             });
             self.e2a_emit_second_probe(out, now_ns);
         }
+    }
+
+    /// [K4G-05b-R · inceleme bulgusu] Kuyruk probunun hedefi: en eski (en küçük seq) KAYNAK birim
+    /// uçuş kaydı. FEC onarım sembolü atlanır: kaydının `unit.id`'si ESI'dir (ayrı ad-uzayı); prob
+    /// onu `unit_id = ESI` taşıyan `Retransmit` olarak yeniden gönderirdi (onarım sembolü ARQ'ya
+    /// girmez — `queue_losses` REPAIR FATE AYRIMI ile aynı kural). Uçuşta yalnız parite varsa `None`
+    /// (kuyruk kurtarması kurulmaz). Erken çıkışlı tarama, uçuş haritası seq sırasındadır.
+    fn oldest_probe_target(&self) -> Option<u64> {
+        self.inflight
+            .iter()
+            .find(|(_, p)| p.origin != TransmitKind::FecParity)
+            .map(|(&seq, _)| seq)
     }
 
     /// [E2a PTO 2] İkinci prob yuvasının emisyonu (KK-M1-07). Birincinin kurallarıyla aynı:
@@ -11579,6 +11592,71 @@ mod tests {
                     Some(u8::MAX),
                     "{name}: emekliye ayrılan hedefin superseded işareti de doygun"
                 );
+            }
+        }
+
+        /// Sessiz kanalda kuyruk kurtarmasının prob turlarını kesin kapsayan bekleme.
+        const PROBE_QUIET_NS: u64 = 5_000 * MS;
+
+        /// [K4G-05b-R · inceleme bulgusu] Kuyruk probu FEC onarım sembolünü hedeflemez. (1) Uçuşta
+        /// yalnız parite kaydı varken sessiz kanalda hiç `Retransmit` çıkmaz (önceden prob en eski
+        /// uçuş kaydını, pariteyi, `unit_id = ESI` ile `Retransmit` olarak yeniden gönderirdi).
+        /// (2) Paritenin ARKASINDA bir kaynak birim uçuştayken prob o birimi hedefler. ESI ile aynı
+        /// kimlikli kaynak birim bu testte yoktur: `unit_id == ESI` taşıyan her `Retransmit` hatadır.
+        #[test]
+        #[allow(deprecated)] // enqueue_fec_parity: test-harness yolu (Commit-K)
+        fn k4g05br_tail_probe_never_targets_parity() {
+            const ESI: u16 = 3;
+            let esi_id = u64::from(ESI);
+            for (name, mk) in tail_engines() {
+                let mut r = Rig::new(mk);
+                r.s.set_manual_fec_enabled(true).expect("manuel FEC");
+                r.warm(UID);
+                r.s.enqueue_fec_parity(7, ESI, 100);
+                let t = r
+                    .pump_until(21 * MS, PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                        r.seq_of(esi_id, TransmitKind::FecParity).is_some()
+                    })
+                    .expect("parity tele çıkar");
+                let pseq = r.seq_of(esi_id, TransmitKind::FecParity).expect("parity");
+                assert_eq!(
+                    r.s.inflight.keys().copied().collect::<Vec<_>>(),
+                    vec![pseq],
+                    "{name}: uçuşta yalnız parite (ön koşul)"
+                );
+                // (1) Sessiz kanal, uçuşta yalnız parite.
+                let t = t + MS;
+                let _ = r.pump_until(t, t + PROBE_QUIET_NS, PUMP_STEP_NS, |_| false);
+                let retx = |r: &Rig| {
+                    r.sent
+                        .values()
+                        .filter(|d| d.kind == TransmitKind::Retransmit)
+                        .map(|d| d.unit_id)
+                        .collect::<Vec<_>>()
+                };
+                assert!(
+                    retx(&r).is_empty(),
+                    "{name}: (1) parite prob hedefi olmaz: {:?}",
+                    retx(&r)
+                );
+                assert!(
+                    r.s.inflight.contains_key(&pseq),
+                    "{name}: parite kaydı uçuşta duruyor"
+                );
+                // (2) Paritenin arkasında kaynak birim: prob onu hedefler.
+                let id = UID + 1;
+                let t = r.last_now + MS;
+                r.ev(Event::AppData(small(id)), t);
+                r.pump_until(t + MS, t + PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                    !retx(r).is_empty()
+                })
+                .expect("kaynak birime kuyruk probu");
+                let ids = retx(&r);
+                assert!(
+                    ids.iter().all(|&u| u == id),
+                    "{name}: (2) prob yalnız kaynak birimi hedefler: {ids:?}"
+                );
+                assert!(!ids.contains(&esi_id), "{name}: ESI kimlikli prob yok");
             }
         }
 
