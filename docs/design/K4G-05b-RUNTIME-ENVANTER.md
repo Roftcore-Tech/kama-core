@@ -65,7 +65,10 @@ kama-engine `n8_v2`, client-core `ctx_first_dispatch`.
   `seq_to_unit_len` sızıntı bekçisini besler. Şekli #140'ın runtime kısmıyla aynı tutuldu;
   kaldırılması Aralık birleşmesine kalır.
 - `ClientStats::stale_decisions` iki kaynaklıdır: teyitli birime karar (satır 7) ve runtime'da FEC
-  kapalıyken ya da gönderim kaydı olmadan gelen `FecParity` kararı (ürün varsayılanlarında yok).
+  kapalıyken ya da gönderim kaydı olmadan gelen `FecParity` kararı (ürün varsayılanlarında yok). İki
+  kaynakta da karar tele ÇIKMAZ (aşağıda "Atlama politikası").
+- `ClientStats::stale_skipped` (ve `ClientLiveDiag::stale_skipped`, bench `KP-CLIENT` satırı):
+  gövdesi olmadığı için tele çıkarılmayan karar toplamı, `= stale_decisions + fec_repair_missing`.
 - ACK yolundaki seq → birim → `store.remove` döngüsü (taban 2303-2315) ve RECOVERED yolundaki doğrudan
   silme (taban 2244-2250) kalktı.
 - Teşhis: `SenderRecoveryDiag::{seq_to_unit_len, unit_seqs_len, confirmed_units_overflow}` (salt
@@ -85,7 +88,7 @@ runtime (taban) · geç ACK → runtime (bu PR) · test.
 | 4 | K_MAP budaması | Tabanda ve bu PR'da YOK | — | — | — | — | **Yalnız #140** |
 | 5 | **FEC parite ACK'i — ESI ad çakışması** | Parite kaydı `unit.id = esi`; uçuş dalı 3284 `acked_units.push(esi)` → 3443-3445 esi kimlikli KAYNAK birimin kopyaları iptal | Evet (FEC ürün profilinde açık) | Teyit YOK (`FecParity` süzgeci) | Parite seq'i haritaya girmez (`carries_unit` 2021-2025) → payload kalır | Aynı; teyit çıktısı süzgeci olmasaydı runtime 0..R birimlerini silerdi | `parity_ack_no_confirmation_payload_kept` (faz 1); motor `k4g05br_parity_ack_never_confirms_esi_namesake`. Kopya iptali (ters yön) bu PR'da AÇIK kalır — **#140 motor kısmı** |
 | 6 | Parite kaydının süre dolumu | Tabanda ve bu PR'da YOK | — | — | — | — | **Yalnız #140** |
-| 7 | **Teyit sonrası kalan kayıt** (ör. geç orijinal teyit eder, kaybolan yeniden gönderim `pending_lost`'ta) | Motor teyitli birimin `pending_lost` kaydını budamaz (taban = bu PR) | Evet | Kalan kayıt ARQ'ya girer (karar üretilir) | İlk ACK'te `store.remove`; kalan kararlar başlık-only (`stale_decisions`) VE harita kaydı açar (budanmaz) | `stale_decisions` sürer (budama #140 madde 2); harita kaydı AÇILMAZ | `store_miss_guard_loss_and_reorder`; motor `k4g05br_decision_neutral_after_confirmation_with_pending_work` |
+| 7 | **Teyit sonrası kalan kayıt** (ör. geç orijinal teyit eder, kaybolan yeniden gönderim `pending_lost`'ta) | Motor teyitli birimin `pending_lost` kaydını budamaz (taban = bu PR) | Evet | Kalan kayıt ARQ'ya girer (karar üretilir) | İlk ACK'te `store.remove`; kalan kararlar başlık-only (`stale_decisions`) VE harita kaydı açar (budanmaz) | Karar sürer (budama #140 madde 2) ama ATLANIR: tele datagram çıkmaz (`stale_decisions` + `stale_skipped`); harita kaydı AÇILMAZ; motorda ardılı "Atlama politikası" | `store_miss_guard_loss_and_reorder`; motor `k4g05br_decision_neutral_after_confirmation_with_pending_work` |
 | 8 | **FEC RECOVERED** | `on_recovered_control` 5589-5647: `pending_lost`/`dup_queue` iptali; uçuştaki kayıt kalır (satır 7'ye düşer) | Evet | Listelenen her birim teyit edilir | `store.remove` + `acked()` motordan ÖNCE | Drenajda (motordan SONRA); store'da varsa düşer — sonuç tabanla aynı | `store_miss_guard_fec_recovered` |
 | 8b | RECOVERED, motorun hiç göndermediği birim | — | #140 envanterine göre erişilemez (bu PR'da yeniden incelenmedi) | Bu PR: yankılanır (#140: teyit etmez) | Store'da varsa düşer | Aynı (tabanla) | **#140 ayrımı**; motor testi yalnız motorun bildiği birimi sınar |
 | 9 | Runtime `PN_SEQ_WINDOW` (65 536 PN) | runtime 78 | Evet | Çevrilmez → motora gitmez | Silme yok | Değişmez | — |
@@ -94,13 +97,93 @@ runtime (taban) · geç ACK → runtime (bu PR) · test.
 | 12 | Runtime `repair_store` tahliyesi (64 blok) | runtime 2565 | Evet | — | Parite gövdesi, birim payload'ı değil | Değişmez | — |
 | 13 | Bench / harness (ürün dışı; `crates/bench/src/kama.rs`, sim, `fs_harness`, `udp_runner`) | — | — | Drenaj yapmazlar: birikim her çağrı girişinde tavana iner (≈ 32 KiB + son çağrının teyitleri / Sender), taşma sayacı büyür | Payload deposu yok | Değişmez; karar etkisi yok (nötrlük testi taşan ikizle) | — |
 
-Satır 7 ve 8'de bu PR, tabandaki harita sızıntısını (kod okuması) kapatır ama başlık-only kararları
-(`stale_decisions`) kapatmaz: o, motorun teyitli birimin bekleyen işini budamasını ister (#140
-madde 2).
+Satır 7 ve 8'de bu PR, tabandaki harita sızıntısını (kod okuması) kapatır ve teyitli birime verilen
+kararı tele çıkarmaz (atlar). Kararın kendisini (`stale_decisions`) kapatmaz: o, motorun teyitli
+birimin bekleyen işini budamasını ister (#140 madde 2).
+
+## Atlama politikası (sahip kararı 2026-11-11, #174 madde 2)
+
+Karar metni: "gövdesiz gönderim DATAGRAM ÜRETMEMELİ — runtime o kararı atlamalı (sayaç:
+stale_skipped), tele boş/eksik çerçeve çıkmamalı."
+
+PR için tek cümle: **Gövdesi olmayan motor kararı (teyitli birime karar ya da repair-store'da
+sembolü olmayan parite) artık datagram üretmez; runtime kararı atlar ve `stale_skipped`'te sayar,
+tele boş gövdeli DATA, yalnız önekli DATA_FRAG ya da boş sembollü FEC çıkmaz (röle sayımıyla her
+runtime testinde 0).**
+
+| Yol (`runtime.rs` `drive!`) | Önceki (`36820b37`) | Bu PR | Neden sayacı |
+|---|---|---|---|
+| (a) Data / Retransmit / Duplicate, birim store'da yok (teyitli birim; satır 7, 8 → 7) | Başlık-only: boş gövdeli DATA; parçalama açıkken 11 B sıfır önekli DATA_FRAG | Atlanır (`continue`; seal yok, PN harcanmaz, harita kaydı yok) | `stale_decisions` |
+| (b) FecParity, FEC açık, sembol repair-store'da yok (blok tahliyesi / latch-0) | Boş sembollü FEC çerçevesi | Atlanır | `fec_repair_missing` |
+| (c) FecParity, FEC kapalı ya da gönderim kaydı yok | Zaten tele çıkmıyordu | Aynı | `stale_decisions` |
+
+`stale_skipped` = (a) + (b) + (c) = `stale_decisions + fec_repair_missing` (tanım; her runtime testinde
+iddia edilir). Kurtarma kapalıyken bastırılan karar ayrı sayaçtadır (`recovery_suppressed`). Sıfır-önek
+gövdesi (`stale_body`) kaldırıldı. Tel biçimi, golden vektörler ve profil kimliği değişmedi.
+
+**Ardıl (motorda).** Motor kararı işlemiştir: atlanan kararın kaydı uçuştadır ve ACK'i hiç gelmez;
+motor onu kayıp gibi işler (INV-RATE-1: kayıp hızı düşürmez, kurtarma kolunu besler). Önceki
+başlık-only emisyonda alıcı seq'i ACK'liyor ve motor kaydı kapatıyordu. Atlama bu kapanışı kaldırır;
+motor aynı birime yeniden karar verebilir ve bunlar da atlanır. Bu ardıl iki yerde ölçüldü:
+
+*Motor simi* (`sender.rs` `tests::k4g05br_teyit::k4g05br_ghost_after_skipped_stale_decision`; motor
+kodu değişmedi). Satır-7 durumu (geç orijinal birimi teyit eder, yeniden gönderim kaydı
+`pending_lost`'ta) kurulur; ardından 120 s sahte saat: runtime pompası taklidi (`Pto` 5 ms,
+`RtpropProbe` 200 ms), kayıpsız sıralı kanal (ACK gönderimden 40 ms sonra), diğer birimler 50 ms
+aralıkla (100 B). "Atla" kolunda teyitli birime verilen kararlar ACK'lenmez; "başlık" kolunda ACK'lenir.
+Tek koşu, belirlenimli; sayılar `--nocapture` çıktısıdır.
+
+| Motor | Kol | Hayalet karar (120 s) | Tür ve anlar (teyitten, ms) | 120 s'de motor birimi tutuyor mu | Hedefin uçuş baytı tepesi | Faz / hız sonu | Diğer birimler (2400 sunulan) |
+|---|---|---|---|---|---|---|---|
+| legacy + `validated_v1` kuyruk kurtarması (runtime motoru) | atla | 14 | 2 Retransmit (5, 60) + 12 Duplicate (1590, 3130, …, 24715, 45195, 91240); 10 s kovaları `[10,1,1,0,1,0,0,0,0,1,0,0]` | Evet: kopya kuyruğunda, aralık 81.9 s (sonraki ≈ 173 s) | 400 B | 49 faz geçişi, hiç `Idle` yok; son `DrainRtprop`, btlbw 2500, pacing 1875 | 2389 teyit; ortalama 143 ms, en büyük 1400 ms |
+| aynı | başlık | 1 (5 ms, Retransmit) | — | Hayır (26 s'de bıraktı) | 100 B | 3551 faz geçişi (`Idle` ↔ `Startup`/`Drain`); son `Startup` | 2399 teyit; ortalama 40 ms, en büyük 40 ms |
+| legacy (`Sender::new`, kuyruk kurtarması kapalı) | atla | 14 | 2 Retransmit (5, 1540) + 12 Duplicate (3040 … 96200) | Evet (aralık 81.9 s) | 400 B | 52 geçiş; son `DrainRtprop`, pacing 1875 | 2388 teyit; ortalama 116 ms, en büyük 720 ms |
+| aynı | başlık | 1 | — | Hayır (26 s) | 100 B | son `Startup` | 2399; 40 / 40 ms |
+| cc_port (`Sender::with_cc_port`) | atla | 266 | 254 Retransmit (ilk ≈ 13 s, ≈ 50 ms aralıkla) + 12 Duplicate; kovalar `[200,62,1,1,0,1,0,0,0,1,0,0]` | Evet (aralık 81.9 s) | 100 B | 253 zaman eşiği kaybı, 267 BBR tıkanıklık olayı; pencere 4800 B | 2399; 40 / 40 ms |
+| aynı | başlık | 1 | — | Hayır (1 s) | 100 B | 2 tıkanıklık olayı; pencere 254 700 B | 2399; 40 / 40 ms |
+
+Atla ↔ başlık, birim birim teyit gecikmesi: runtime motorunda 2389 ortak birimin 629'unda değişti
+(en büyük fark 1360 ms); kuyruk kurtarmasız legacy'de 2388'in 565'inde (680 ms); cc_port'ta 2399'un
+0'ında. Okuma: legacy motorda hayalet birim kopya kuyruğunda tavansız geometrik aralıkla kalır
+(yalnız birimin herhangi bir kaydının ACK'i iptal eder); kuyruk boş kalmadığı için motor `Idle`'a
+dönmez ve bu seyrek, app-limited kanalda `Steady`/`DrainRtprop`/`ProbeUp` döngüsüne girer
+(`DrainRtprop`'ta pacing 1875 < sunulan yük 2000 B/s). cc_port'ta yeniden iletim tavanı yoktur:
+atlanan her karar zaman eşiğiyle kayıp sayılır ve BBR penceresi tabana iner; bu yükte diğer
+birimlerin gecikmesi değişmedi, daha yüksek yükte etkisi ölçülmedi. Etkinin büyüklüğü bu kanal
+modeline özgüdür; netem ya da ürün koşusunda ölçülmedi. Bellek sınırlıdır (kopya kuyruğunda tek
+kayıt; uçuş, kayıp, kopya kuyruk tepeleri ≤ 5 / 0 / 1; tombstone ≤ 8), panik yok. Kaynakta kapatma
+#140 madde 2'dir (motor teyitli birimin bekleyen işini budar, karar üretmez).
+
+*Runtime* (legacy + `validated_v1`, gerçek UDP loopback; `store_miss_guard_fec_recovered`, tek koşu):
+blok teyidinden 0.36 s sonra ilk atlama; `stale_skipped` 1. s'de 2, 3. s'de 3, 10. s'ye dek 3 (yeni trafik
+yok); motorun uçuş kuyruğunda 2 kayıt 10 s boyunca kaldı, kopya yok. Aynı koşuda tahliye kolunda
+`stale_skipped = 123`, diğer kollarda 0 (aşağıdaki tablo).
+
+**Tel bekçisi ve mutasyon.** Runtime testlerinin röle düğümü istemciden gelen her datagramı kurallardan
+önce sayar; boş gövdeli DATA, yalnız önekli DATA_FRAG ve boş sembollü FEC sayısı her testte 0 olmalı
+(iddia 6). Vakum: FEC bekçisinde en az bir atlanan karar ön koşuldur (motor kısmı birimin işini
+budadığında ters çevrilir). Mutasyon (yerel, commit edilmedi, yedekten geri alındı): (a) yolunda
+başlık-only emisyon geri konunca FEC bekçisi kırmızı — 18 istemci datagramının 3'ü boş gövdeli DATA
+(PN 15, 16, 17). (b) yolunu tetikleyen runtime testi yok (repair-store tahliyesi ya da latch-0 bu
+fikstürlerde kurulmuyor); o yol kod okuması ve sayaç kimliğiyle kapsanır.
+
+## CI (sahip kararı 2026-11-11, #174 madde 1)
+
+`k4g05b_runtime_ownership` testleri (gerçek zamanlı, sırayla, yerel tek koşu 133.9 s) `#[ignore]` ile
+hızlı kümeden (`test-fast`) çıktı. Her PR'da test-fast'a paralel `test-runtime` işi
+`cargo test -p client-core --all-features --test k4g05b_runtime_ownership -- --ignored` koşar;
+vakum bekçisi "`test result: ok. 6 passed; 0 failed`" birebir. İş `ci-verdict` `needs` listesindedir.
+Önbellek: iki iş aynı `Swatinem/rust-cache` `shared-key`'ini (`core-ci-test`) kullanır, `test-runtime`
+yalnız okur (`save-if: false`). main'de testler `#[ignore]` olduğundan `full-workspace` koşumuna girmez;
+`core-main` `product-profile` işine aynı adım eklendi. Yerel kapı (`scripts/ci/local-gate.sh`) adımı ve
+`ci.yml` özeti güncellendi. Hayalet simi (`k4g05br_ghost_after_skipped_stale_decision`, belirlenimli,
+yerel ≈ 6 s) hızlı kümede kalır.
 
 ## Davranış farkı ve açık soru (EVOLUTION §9.5)
 
-Motor kararları ve tel biçimi değişmez. Runtime davranışı değişir: `ClientHandle::acked()`,
+Motor kararları ve tel biçimi değişmez. Tel TRAFİĞİ değişir: gövdesi olmayan karar artık datagram
+üretmez (önceki başlık-only emisyon kalktı; "Atlama politikası"), motor o kaydın ACK'ini almaz.
+Runtime davranışı değişir: `ClientHandle::acked()`,
 `outstanding()` düşümü, `ClientStats.acked` ve payload silme artık motorun teyit çıktısına bağlıdır.
 Motorun kaydını unuttuğu bir iletimin geç ACK'i (tombstone TTL'i ≥ ~25 s, TOMBSTONE_MAX tahliyesi,
 kopya kökenli kayıp, kopya kaydının kuyruk kurtarmasıyla emekliliği) birimi teyit etmez; birimin
@@ -147,7 +230,8 @@ CONFIRMED_UNITS_CAP` sabit karşılaştırmasıydı; tampon politikası düzeltm
 kaldırıldı).
 
 - **Bekçiler (satır 7, 8):** iki kolda da yeşil; bu koşuda ayırt edici değiller. `stale_decisions` iki
-  kolda aynıdır (satır 8'de 3): bu PR başlık-only kararları kapatmaz. Tabandaki harita sızıntısı kod
+  kolda aynıdır (satır 8'de 3): bu PR kararı kapatmaz (o koşuda karar başlık-only gidiyordu; atlama
+  politikasından sonra tele çıkmaz). Tabandaki harita sızıntısı kod
   okumasıdır (taban kancasız), ölçülmedi; dalda haritaların boş olduğu ölçüldü.
 - **Fikstür geçmişi (aynı gün, tabloya girmedi):** testler paralel koşarken tahliye kolu iki kolda da
   ön koşulda kırmızıydı (dal: kayıt 25.17 s'de düştü, tablo en çok 3078; taban: 25.21 s ve 25.17 s,
@@ -157,6 +241,19 @@ kaldırıldı).
   makinede ön koşul kırmızısı (iddia değil) beklenebilir.
 - **Boşluk bekçisi:** her geç-ACK kolunda geç ACK çerçevesinin istemcide işlendiği ve motor seq'ine
   çevrildiği (`mapped_seqs > 0`) iki kolda da doğrulandı; kollar yalnız `new_units`'te ayrışır.
+
+**Atlama politikasından sonraki koşu** (dal, `-- --ignored --nocapture`, tek koşu, yerel loopback,
+6/6 yeşil, 133.9 s). Yukarıdaki tabloyla kontrollü kıyas DEĞİLDİR (farklı derleme ve koşu; süreler
+gözlem):
+
+| Test | İstemci datagramı (gövdesiz) | `stale_skipped` (= `stale_decisions` + `fec_repair_missing`) | Gözlem |
+|---|---|---|---|
+| `late_ack_after_ttl_keeps_payload` | 7118 (0) | 0 | faz B 19.2 s |
+| `late_ack_after_cap_keeps_payload` | 13 820 (0) | 123 (123 + 0) | kayıt 17.6 s'de düştü (tablo 4096); faz B 23.8 s |
+| `late_ack_after_dup_loss_keeps_payload` | 209 (0) | 0 | faz B 0.87 s |
+| `parity_ack_no_confirmation_payload_kept` | 17 (0) | 0 | faz 2 3.1 s |
+| `store_miss_guard_loss_and_reorder` | 543 (0) | 0 | — |
+| `store_miss_guard_fec_recovered` | 15 (0) | 3 (3 + 0) | ilk atlama teyitten 0.36 s sonra |
 
 ## Motor birim testleri (`sender.rs` `tests::k4g05br_teyit`, iki motor: `Sender::new`, `Sender::with_cc_port`)
 
