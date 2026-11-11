@@ -6474,7 +6474,14 @@ impl Sender {
         // the tombstone so the original's late ACK is Karn-excluded, then emit the probe copy under a fresh seq.
         self.retire_inflight_to_tombstone(target, now_ns);
         self.mark_tombstone_superseded(target);
-        let new_seq = self.track_sent(unit, now_ns, retx_count + 1, TransmitKind::Retransmit);
+        // [K4G-05b-R] Doygun: port motorunun yeniden iletim tavanı `u8::MAX`'tır
+        // (`RetxConfig::rfc9002_cc_port`), 255'teki kayıt prob hedefi olabilir.
+        let new_seq = self.track_sent(
+            unit,
+            now_ns,
+            retx_count.saturating_add(1),
+            TransmitKind::Retransmit,
+        );
         out.push(TransmitDecision {
             kind: TransmitKind::Retransmit,
             seq: new_seq,
@@ -11532,6 +11539,45 @@ mod tests {
                 assert!(
                     has_copy(&r),
                     "{name}: (2) tombstone'daki parite ACK'i ESI adaşının kopyasını iptal etmez"
+                );
+            }
+        }
+
+        /// Kuyruk kurtarması açık iki motor: eski motor ürün runtime yapılandırmasıyla
+        /// (`validated_v1`), port motoru kurucusuyla (`rfc9002_cc_port`).
+        fn tail_engines() -> [(&'static str, MakeSender); 2] {
+            [
+                ("legacy+tail_v1", legacy_runtime),
+                ("cc_port", Sender::with_cc_port),
+            ]
+        }
+
+        /// [K4G-05b-R · inceleme bulgusu] Kuyruk probu hedef kaydın `retx_count`'unu DOYGUN artırır.
+        /// Port motorunda yeniden iletim tavanı `u8::MAX` olduğundan 255'teki kayıt prob hedefi
+        /// olabilir; `retx_count + 1` debug derlemesinde taşma paniğiydi. Sayaç beyaz kutu kurulur.
+        #[test]
+        fn k4g05br_tail_probe_retx_count_saturates() {
+            for (name, mk) in tail_engines() {
+                let mut r = Rig::new(mk);
+                r.warm(UID);
+                let id = UID + 1;
+                r.ev(Event::AppData(small(id)), 20 * MS);
+                let q = r.seq_of(id, TransmitKind::Data).expect("DATA hemen çıkar");
+                r.s.inflight.get_mut(&q).expect("uçuşta").retx_count = u8::MAX;
+                r.pump_until(21 * MS, PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                    r.seq_of(id, TransmitKind::Retransmit).is_some()
+                })
+                .expect("kuyruk probu");
+                let pq = r.seq_of(id, TransmitKind::Retransmit).expect("prob");
+                assert_eq!(
+                    r.s.inflight.get(&pq).map(|p| p.retx_count),
+                    Some(u8::MAX),
+                    "{name}: prob kopyasının sayacı doygun"
+                );
+                assert_eq!(
+                    r.s.tombstones.get(&q).map(|t| t.retx_count),
+                    Some(u8::MAX),
+                    "{name}: emekliye ayrılan hedefin superseded işareti de doygun"
                 );
             }
         }
