@@ -38,6 +38,16 @@ KAPI3_MIDA_IP=10.10.0.2
 KAPI3_MIDB_IP=10.10.1.2
 KAPI3_B_IP=10.10.1.1
 
+# 0 = betik konağın İLK ağ ad alanında (/proc/1 ile aynı). unshare -rnm içinde /proc/1'in ad alanı
+# okunamaz (kullanıcı ad alanı) ya da farklıdır → 1. kapi3_setup bunu varsayılan sysctl'i yazmadan önce
+# sorar: betik yanlışlıkla konakta root olarak kaynak alınırsa konağın IPv6 varsayılanı değişmez.
+kapi3_ilk_netns() {
+  local s i
+  s=$(stat -L -c %d:%i /proc/self/ns/net 2>/dev/null) || return 1
+  i=$(stat -L -c %d:%i /proc/1/ns/net 2>/dev/null) || return 1
+  [ "$s" = "$i" ]
+}
+
 kapi3_setup() { # yalnız unshare -rnm İÇİNDE
   ip link set lo up
   # İki child-netns: PID-referanslı (mount gerektirmez; faithful_harness deseninin genişletilmişi).
@@ -47,8 +57,14 @@ kapi3_setup() { # yalnız unshare -rnm İÇİNDE
 
   # IPv6 kapalı: yeni arayüzler (ve ad alanı değiştiren arayüz yeni ad alanında yeniden kaydolurken)
   # varsayılandan doğar → önce üç ad alanında default, arayüzler taşındıktan sonra ayrıca arayüz başına.
+  # Betiğin kendi ad alanında default yalnız ilk ad alanı DEĞİLSE yazılır (kapi3_ilk_netns); va0'ın
+  # arayüz başına ayarı her durumda aşağıda, arayüz kalkmadan önce yazılır.
   if [ "${KAPI3_IPV6:-0}" != 1 ]; then
-    sysctl -qw net.ipv6.conf.default.disable_ipv6=1
+    if kapi3_ilk_netns; then
+      echo "KAPI3 UYARI: konağın ilk ağ ad alanı — net.ipv6.conf.default'a dokunulmadı (unshare -rnm içinde kaynak alın)" >&2
+    else
+      sysctl -qw net.ipv6.conf.default.disable_ipv6=1
+    fi
     nsenter -t "$MID" -n sysctl -qw net.ipv6.conf.default.disable_ipv6=1
     nsenter -t "$CHLB" -n sysctl -qw net.ipv6.conf.default.disable_ipv6=1
   fi
