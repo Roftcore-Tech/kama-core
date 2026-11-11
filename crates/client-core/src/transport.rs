@@ -377,6 +377,10 @@ struct Renewal {
 struct Reorder {
     next: u64,
     held: BTreeMap<u64, (SessionHandle, Vec<u8>)>,
+    /// [F3] `cap` aşımıyla ATLANAN birim sayısı (boşluk → `next` ileri alındı). F4 (PR #183)
+    /// sonrası meşru trafikte 0 beklenir; sıfırdan büyükse teslim edilmemiş bir birimin üstünden
+    /// geçilmiştir — sessiz değil, sayaçla görünür (`reorder_diags`).
+    skipped_units: u64,
 }
 
 /// [K4G-05 / INT-02 TEŞHİS] Bir oturumun sıralı teslim durumu ([`ClientTransport::reorder_diags`]).
@@ -388,6 +392,8 @@ pub struct ReorderDiag {
     pub held_units: u32,
     /// Tutulan en küçük birim kimliği; tutulan yoksa `None`.
     pub first_held_unit: Option<u64>,
+    /// [F3] Oturum boyunca `cap` aşımıyla atlanan (teslim edilmeden üstünden geçilen) birim sayısı.
+    pub skipped_units: u64,
 }
 
 impl Reorder {
@@ -407,6 +413,10 @@ impl Reorder {
         self.held.entry(unit).or_insert((session, payload));
         if self.held.len() > cap {
             if let Some((&first, _)) = self.held.first_key_value() {
+                // [F3] Sessiz atlama yok: atlanan birim sayısı sayılır (`ReorderDiag::skipped_units`;
+                // günlük kütüphanesi yok — yeni bağımlılık yasak).
+                let skipped = first.saturating_sub(self.next);
+                self.skipped_units = self.skipped_units.saturating_add(skipped);
                 self.next = first;
             }
         }
@@ -720,6 +730,7 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                         next_unit: r.next,
                         held_units: u32::try_from(r.held.len()).unwrap_or(u32::MAX),
                         first_held_unit: r.held.keys().next().copied(),
+                        skipped_units: r.skipped_units,
                     },
                 )
             })
@@ -1703,6 +1714,13 @@ mod tests {
             [1, 2, 3, 4],
             "tavan aşılınca en küçük boşluk atlanır, sıra korunur"
         );
+        // [F3] Atlama sessiz değil: 0 numaralı birimin üstünden geçildi → 1 sayıldı.
+        assert_eq!(r.skipped_units, 1, "atlanan birim sayacı");
+        // Geç gelen atlanmış birim yok sayılır, sayaç değişmez.
+        let mut late = VecDeque::new();
+        r.push(0, h, vec![0], 3, &mut late);
+        assert!(late.is_empty());
+        assert_eq!(r.skipped_units, 1);
     }
 
     /// [K4G-11] Salt-okunur erişimciler taze ürün adaptöründe: Crypto'nun tutmadığı tutamacın
