@@ -3368,8 +3368,9 @@ impl Sender {
             None
         };
         let mut v11_send_ns: Option<u64> = None;
-        // [CC-PORT] Bu çerçevede ilk kez onaylanan iletimler (bayt, app_limited) — quinn `on_ack`
-        // RTT güncellemesinden SONRA çağrılır (connection/mod.rs: rtt.update → congestion.on_ack).
+        // [CC-PORT] Bu çerçevede ilk kez onaylanan iletimler (bayt, app_limited). quinn'de sıra
+        // terstir: `congestion.on_ack` (connection/mod.rs:1530) RTT güncellemesinden (1551) ÖNCE
+        // çağrılır; Kama'da RTT örneği önce işlenir (beyanlı sıra farkı; D şeridi incelemesi 2026-11-11).
         let mut cc_acked: Vec<(u64, bool)> = Vec::new();
         for &seq in &ack.acked_seqs {
             // [TUR-6] delivered-anchor round: marker-sonrası gönderilen seq'in ilk ACK'i.
@@ -3680,8 +3681,30 @@ impl Sender {
                 // Emission (token + re-verify) happens in plan_arq_retransmits; the attempt is spent only on a real
                 // emission (§3 probe-due ≠ probe-sent). [K4G-05b-R] "Oldest" = oldest SOURCE-unit record
                 // (`oldest_probe_target`; a FEC repair record is never a probe target).
-                if self.tail_recovery.is_enabled() {
-                    let oldest = self.oldest_probe_target();
+                // [CC-PORT U14] Port motorunda RTT örneği yokken PTO probu KURULMAZ: PreConverge'de
+                // §3.3-B geometrik kopya merdiveni (0,5/1,5/3,5/7,5 s…) zaten aynı birimi yeniler;
+                // RFC 9002 PTO merdiveni (1/3/7 s…) onunla yan yana koşunca aynı birim iki merdivenden
+                // kopya alır (ürün zarfıyla r25 sim: ilk 8 s'de 7 kopya ↔ eski motor 4; 25 B/s'de her
+                // fazla 180 B paket ≈ 7 s kuyruk → ileti p50 +20 s). Spec §3.3-C ile aynı kural
+                // (PreConverge'de PTO dondurulur, geometrik kopya yerini alır); ilk örnekten sonra
+                // RFC 9002 PTO devreye girer (`on_ack_progress` kurar). `cc` yokken yol aynı.
+                // [CC-PORT U14 canlılık] Dondurma yalnız merdiven hedefi GERÇEKTEN taşıyorsa: en eski
+                // teyitsiz kaynak birimin `dup_queue`'da yeniden kurulan (interval > 0) bir kopya kaydı
+                // olmalı. Kayıt yoksa (ör. RecoverFwd'nin tek-atımlık kopyaları tükendi, merdiven
+                // teyitle/iptalle düştü) PTO probu kurulur — aksi hâlde RTT örneksiz hatta ilk paketin
+                // kaybı sessiz takılmaya dönerdi (Ö-CC ısınma gözlemi, #175: aday 4/50; bu dal PTO'yu
+                // yalnız merdiven canlıyken susturur). Merdiven kopyası pencere kapısına tabidir
+                // (denendi: pencereden muaf kopya 60 s kesintide kopya seli üretti — geri alındı).
+                let oldest = self.oldest_probe_target();
+                let ladder_serves_oldest = oldest
+                    .and_then(|seq| self.inflight.get(&seq).map(|p| p.unit.id))
+                    .is_some_and(|uid| {
+                        self.dup_queue
+                            .iter()
+                            .any(|d| d.unit.id == uid && d.interval_ns > 0)
+                    });
+                let u14_hold = self.cc_on() && self.rtt.srtt().is_none() && ladder_serves_oldest;
+                if self.tail_recovery.is_enabled() && !u14_hold {
                     let srtt = self.rtt.srtt().map(dur_ns);
                     let rttvar = dur_ns(self.rtt.rttvar());
                     if let ProbeDecision::ProbeDue { target_seq, .. } =
@@ -6594,10 +6617,13 @@ impl Sender {
                     // [TUR-2c D-1/3 kol-2] Orijinalin tombstone'u SUPERSEDED: retx-sonrası-
                     // geç-orijinal-ACK kol-1'e düşemez (2b'de kayıt ilan-anında donuyordu).
                     self.mark_tombstone_superseded(seq);
+                    // [K4G-05b-R · HA bulgusu] Port motorunda tavan yok (`u8::MAX`): planlayıcı
+                    // 255'teki kaydı da yeniden iletir; düz `+ 1` debug'da taşma paniğiydi
+                    // (release'de 0'a sarardı). Doygun artırım (öbür üç yolla aynı).
                     let new_seq = self.track_sent(
                         rec.unit,
                         now_ns,
-                        rec.retx_count + 1,
+                        rec.retx_count.saturating_add(1),
                         TransmitKind::Retransmit,
                     );
                     out.push(TransmitDecision {
@@ -6747,9 +6773,10 @@ impl Sender {
         // Supersede the still-outstanding original: retire it inflight→tombstone (no loss declaration), then bump
         // the tombstone so the original's late ACK is Karn-excluded, then emit the probe copy under a fresh seq.
         //
-        // [CC-PORT U10] Port motorunda hedef UÇUŞTA KALIR (RFC 9002 §6.2.4: PTO kayıp ilanı değildir,
-        // prob ek bir pakettir; quinn `in_flight` değişmez). Eski yol hedefi tombstone'a emekli ediyor
-        // ve TTL'i `K_TOMB × T_loss(INITIAL_RTT)` (≈ 3 s) olduğundan RTT örneği olmayan yüksek
+        // [CC-PORT U10] Port motorunda hedef UÇUŞTA KALIR (RFC 9002 §6.2 + §7.5: PTO kayıp ilanı
+        // değildir, prob ek bir pakettir; §6.2.4'ün "MAY mark … as lost" seçeneği KULLANILMAZ;
+        // quinn `in_flight` değişmez, q:1658-1693). Eski yol hedefi tombstone'a emekli ediyor
+        // ve TTL'i `K_TOMB × T_loss(INITIAL_RTT)` (8 × 9/8 × 100 ms ≈ 0,9 s) olduğundan RTT örneği olmayan yüksek
         // gecikmeli / düşük bantlı hatta hedefin ACK'i süresi dolmuş kayda düşüyordu: RTT örneği YOK,
         // teyit YOK, her PTO turu yeni kopya (r25 sim: ilk örnek 85 s'de, retx 87 ↔ 24). Her iletim
         // taze seq taşıdığından (`rtt_rule_v11`) hangi kopya ACK'lenirse onun kaydından örnek alınır;
@@ -6782,8 +6809,9 @@ impl Sender {
         // az önceki prob kopyasıdır (aynı birim taze seq ile ikinci kez — RFC 9002 §6.2.4 izinli).
         // Yuva bu turun kimliğiyle (on_probe_sent SONRASI `(armed_at, probe_index)`) kurulur; önceki
         // turdan kalan yuvanın üzerine yazılır (sonraki turun ilk probu yuvayı boşaltır).
-        // [CC-PORT U12] Port motorunda RTT örneği yokken tur başına TEK prob (RFC 9002 §6.2.4 "SHOULD
-        // send two" → "MUST send at least one"): hız/serileştirme bilinmezken ikinci kopya darboğaz
+        // [CC-PORT U12] Port motorunda RTT örneği yokken tur başına TEK prob (RFC 9002 §6.2.4 "MAY
+        // send up to two"; U14 ile portta RTT örneği yokken prob zaten kurulmaz — bu kural ilk
+        // örnekten sonraki örneksiz dönemler içindir): hız/serileştirme bilinmezken ikinci kopya darboğaz
         // kuyruğunu kendi eliyle doldurur (25 B/s: 130 B kopya ≈ 5,2 s). İlk örnekten sonra iki prob.
         let two_probes = self.e2a.pto_probes() >= 2 && (!self.cc_on() || self.rtt.srtt().is_some());
         if two_probes {
@@ -11940,6 +11968,118 @@ mod tests {
                     );
                 }
             }
+        }
+
+        /// [CC-PORT U14] RTT örneği yokken (PreConverge, ısınma YOK) port motoru PTO probu
+        /// (`Retransmit`) ÇIKARMAZ: §3.3-B geometrik kopya merdiveni (`Duplicate`) birimi zaten
+        /// yeniler; iki merdiven yan yana koşunca aynı birim ilk 8 s'de 7 kopya alıyordu (r25,
+        /// ürün zarfı: eski motor 4). Eski motor (ürün profili) yolu değişmez: orada prob çıkar.
+        /// İlk RTT örneğinden sonra portta da PTO probu çıkar (sessiz kanalda ikinci birim).
+        #[test]
+        fn u14_no_pto_probe_before_first_rtt_sample_on_port() {
+            for (name, mk) in tail_engines() {
+                let mut r = Rig::new(mk);
+                let id = UID + 1;
+                r.ev(Event::AppData(small(id)), 0);
+                // (CS-probe kararları ayrı seq uzayındadır; `sent` haritasında DATA kaydının
+                // üstüne yazabilir — seq baştan alınır.)
+                let s0 = r
+                    .seq_of(id, TransmitKind::Data)
+                    .unwrap_or_else(|| panic!("{name}: DATA çıkar"));
+                // 8 s sessiz kanal, RTT örneği yok.
+                r.pump_until(MS, 8_000 * MS, PUMP_STEP_NS, |_| false);
+                let dups = r
+                    .sent
+                    .values()
+                    .filter(|d| d.unit_id == id && d.kind == TransmitKind::Duplicate)
+                    .count();
+                let probes = r
+                    .sent
+                    .values()
+                    .filter(|d| d.unit_id == id && d.kind == TransmitKind::Retransmit)
+                    .count();
+                assert!(
+                    dups >= 3,
+                    "{name}: geometrik kopya merdiveni koşar ({dups})"
+                );
+                if r.s.cc_on() {
+                    assert_eq!(probes, 0, "{name}: RTT örneği yokken PTO probu yok (U14)");
+                } else {
+                    assert!(probes >= 1, "{name}: eski yol değişmez, prob çıkar");
+                }
+                // İlk RTT örneği: en son geometrik kopya ACK'lenir (taze seq, `rtt_rule_v11`;
+                // eski motorda orijinal prob tarafından tombstone'a emekli edilmiş olabilir) →
+                // ikinci birim sessiz kanalda prob alır.
+                if !r.s.cc_on() {
+                    continue; // ikinci evre yalnız port için (U14 portun kuralı)
+                }
+                let last_dup = r
+                    .seq_of(id, TransmitKind::Duplicate)
+                    .unwrap_or_else(|| panic!("{name}: kopya"));
+                r.ev(ack(&[s0, last_dup]), 8_001 * MS);
+                let _ = r.s.take_confirmed_units();
+                assert!(r.s.rtt.srtt().is_some(), "{name}: ilk RTT örneği");
+                let id2 = UID + 2;
+                r.ev(Event::AppData(small(id2)), 8_010 * MS);
+                let t = r.pump_until(8_011 * MS, PUMP_LONG_HORIZON_NS, PUMP_LONG_STEP_NS, |r| {
+                    r.seq_of(id2, TransmitKind::Retransmit).is_some()
+                });
+                assert!(t.is_some(), "{name}: ilk örnekten sonra PTO probu çıkar");
+            }
+        }
+
+        /// [CC-PORT U14 canlılık] Merdiven kaydı yoksa (kopya makinesi birimi artık taşımıyor) RTT
+        /// örneği olmasa da PTO probu kurulur: ilk paketin kaybı sessiz takılmaya dönmez.
+        #[test]
+        fn u14_pto_probe_resumes_when_no_ladder_entry_serves_the_oldest_unit() {
+            let mut r = Rig::new(Sender::with_cc_port);
+            let id = UID + 1;
+            r.ev(Event::AppData(small(id)), 0);
+            assert!(
+                r.s.dup_queue
+                    .iter()
+                    .any(|d| d.unit.id == id && d.interval_ns > 0),
+                "PreConverge merdiven kaydı kurulur"
+            );
+            // Merdiven düşmüş olsun (ör. tek-atımlık kopyalar tükendi / kayıt iptal edildi).
+            r.s.dup_queue.clear();
+            let t = r.pump_until(MS, 20_000 * MS, PUMP_STEP_NS, |r| {
+                r.seq_of(id, TransmitKind::Retransmit).is_some()
+            });
+            assert!(t.is_some(), "merdiven yokken PTO probu çıkar (canlılık)");
+            assert!(r.s.rtt.srtt().is_none(), "hâlâ RTT örneği yok");
+        }
+
+        /// [K4G-05b-R · HA bulgusu, PR #186] Port motorunda tavan yok: ARQ planlayıcısı 255'te
+        /// doymuş kaydı da yeniden iletir; ARQ yolu `retx_count + 1` düz toplamaydı → debug'da
+        /// taşma paniği (release'de 0'a sarma). Doygun artırım: 255'teki kayıt `Retransmit`
+        /// olarak çıkar, yeni kaydın sayacı 255 kalır.
+        #[test]
+        fn arq_retransmit_at_saturated_retx_count_does_not_overflow() {
+            let mut r = Rig::new(Sender::with_cc_port);
+            r.warm(UID);
+            let id = UID + 1;
+            r.ev(Event::AppData(small(id)), 20 * MS);
+            let q = r.seq_of(id, TransmitKind::Data).expect("DATA hemen çıkar");
+            let unit = r.s.inflight.get(&q).expect("uçuşta").unit;
+            r.s.inflight.remove(&q);
+            r.s.pending_lost.push_back(LostRec {
+                seq: q,
+                unit,
+                deadline_ns: 20 * MS,
+                retx_count: u8::MAX,
+                send_ns: 20 * MS,
+            });
+            r.pump_until(21 * MS, PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                r.seq_of(id, TransmitKind::Retransmit).is_some()
+            })
+            .expect("255'teki kayıt yeniden iletilir (tavan yok)");
+            let nq = r.seq_of(id, TransmitKind::Retransmit).expect("retx");
+            assert_eq!(
+                r.s.inflight.get(&nq).map(|p| p.retx_count),
+                Some(u8::MAX),
+                "sayaç doygun kalır"
+            );
         }
 
         /// Sessiz kanalda kuyruk kurtarmasının prob turlarını kesin kapsayan bekleme.

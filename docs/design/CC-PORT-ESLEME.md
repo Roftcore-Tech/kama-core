@@ -28,14 +28,14 @@ aynı süreçte eşli koşar (`tests/cc_port_sim.rs`).
 | `:339-369` calculate_recovery_window | aynı | — | referans davranış (kayıp filtresi deneyi bu PR'da YOK) |
 | `:372-391` check_if_full_bw_reached | aynı | — | — |
 | `:395-398` on_sent | `sender.rs::track_sent` → `cc.on_sent(now, size, seq)` | — | — |
-| `:400-414` on_ack | `sender.rs::on_ack_received` (uçuş + tombstone kol-1/kol-2 kayıtları) | app_limited = gönderim anı damgası (`bw.rs::SentPacket`) | RTT min = `rtt.rtprop()` |
+| `:400-414` on_ack | `sender.rs::on_ack_received` (uçuş + tombstone kol-1/kol-2 kayıtları; quinn `on_packet_acked` 1616-1639, ACK'te `remove_in_flight` 1617) | app_limited = gönderim anı damgası (`bw.rs::SentPacket`); **tombstone sapması (beyanlı):** quinn'de kayıp ilan edilen paket `sent_packets`'tan düşer ve geç ACK'i CC'ye girmez; Kama'da Data/Retransmit/FecParity kökenli kayıp ilanlı tombstone'un geç ACK'i `cc.on_ack`'a GİRER (yalnız Duplicate kökenli girmez); sıra: Kama RTT örneğini önce işler, quinn `congestion.on_ack` (1530) RTT'den (1551) önce | RTT min = `rtt.rtprop()` |
 | `:416-466` on_end_acks | aynı yerde çerçeve sonunda | `largest_acked` = `loss.largest_acked()`; `in_flight` = `inflight_bytes` | app_limited ∨ "gönderilecek iş yok" |
 | `:468-476` on_congestion_event | `sender.rs::queue_losses` (kayıp ilan edilen uçuş baytı) | — | — |
 | `:485-492` window | `cc_window()` → `cc_fits(size)` kapısı (`try_send_pre_parity`, parite yolu) | **Kama'da uçuş kapısı yoktu** (yalnız hız) | yeni kapı |
 | `pacing.rs:116-139` optimal_capacity | `cc/mod.rs::PacerParams::from_window` → `pacer.set_burst_cap` | — | — |
 | `pacing.rs:92-95` 1,25·window/srtt | `PacerParams.rate_bps` — **yalnız bant tahmini yokken** | — | U7 |
 | `connection/mod.rs:1700` 9/8·max(srtt, latest) | `E2aFlags::tt_rfc` (`with_cc_port` açar) + `cc_on()` | — | mevcut E2a m1 |
-| `connection/mod.rs:1834-1870` PTO, backoff | `TailRecoveryConfig::rfc9002_cc_port()` (tavansız) + E2a `pto_probes = 2` | — | — |
+| `connection/mod.rs:1834-1870` PTO, backoff | `TailRecoveryConfig::rfc9002_cc_port()` (taban tavanı `u64::MAX`; **etkin taban tavanı 30 s, beyanlı:** `current_pto_ns` `max_backoff_pto_ns`'i probe_index = 0'da da uygular; D şeridi (6)) + E2a `pto_probes = 2`; RTT örneği yokken prob yok (U14); prob pacer jetonu bekler (quinn'de prob pencereyi de pacing'i de atlar, q:1894-1898) | 30 s etkin taban tavanı; jeton | U15 adayı |
 | `poll_transmit` loss_probes cwnd'yi atlar | `try_send_probe` (pencere kapısı yok) | — | — |
 | `send_buffer.rs:93-113` retx önce | `schedule_transmit`: `retx_first ∨ cc_on`; durum koşulu `e1_probe_keep ∨ cc_on` | — | — |
 | `send_buffer.rs` tavansız retx | `RetxConfig::rfc9002_cc_port()` (`arq_retx_cap = u8::MAX`) | Kama: 3 sonra ileri-kopyaya devir | tavan kalktı |
@@ -56,29 +56,58 @@ U6–U8 quinn'den değil BBR draft'ından alınmıştır; "quinn'e sadakat" değ
 **U9** Startup'ta paket koruması (Linux BBR v1; `bbr.rs` başlığı, PR #179).
 **U10–U13 (2026-11-11, r25 düşük bant kökü; PR #181)** — hepsi RFC 9002'ye *yaklaştırma*, ek sapma değil:
 **U10** PTO probu hedefi uçuşta KALIR (`sender.rs` `emit_tail_probe` / `e2a_emit_second_probe`,
-`!cc_on()` dalı eski yol). Eski yol hedefi `K_TOMB × T_loss(INITIAL_RTT)` ≈ 3 s TTL'li tombstone'a
+`!cc_on()` dalı eski yol). Eski yol hedefi `K_TOMB × T_loss(INITIAL_RTT)` = 8 × 9/8 × 100 ms ≈ 0,9 s TTL'li tombstone'a
 emekli ediyordu; RTT örneği olmayan yüksek gecikmeli hatta ACK süresi dolmuş kayda düşüyor → RTT örneği
-yok, teyit yok, her PTO turu yeni kopya (r25 sim: ilk RTT örneği 85 s'de). RFC 9002 §6.2.4 / quinn:
-PTO kayıp ilanı değildir, `in_flight` değişmez · **U11** `rfc9002_cc_port` taban PTO tavanı yok
+yok, teyit yok, her PTO turu yeni kopya (r25 sim: ilk RTT örneği 85 s'de). RFC 9002 §6.2 + §7.5 / quinn
+(q:1658-1693): PTO kayıp ilanı değildir, `in_flight` değişmez (§6.2.4'ün "MAY mark … as lost" seçeneği kullanılmaz) · **U11** `rfc9002_cc_port` taban PTO tavanı yok
 (`max_pto_ns = u64::MAX`; RFC 9002 §6.2.1 üst sınır tanımlamaz, quinn'de yok; eski 10 s tavanı srtt
-> 10 s'de ACK gelmeden prob) · **U12** RTT örneği yokken tur başına TEK prob (§6.2.4 "SHOULD send
-two" → "MUST send at least one"): serileştirme bilinmezken ikinci kopya kuyruğu kendi eliyle doldurur.
+> 10 s'de ACK gelmeden prob; **not:** geri çekilme tavanı 30 s `current_pto_ns`'te tabana da uygulanır → etkin
+taban tavanı 30 s, beyanlı; gerçekten tavansız taban U15 adayı) · **U12** RTT örneği yokken tur başına TEK prob
+(§6.2.4 "MAY send up to two"): serileştirme bilinmezken ikinci kopya kuyruğu kendi eliyle doldurur (U14 ile
+portta örneksizken prob zaten kurulmaz; U12 ilk örnekten sonraki örneksiz dönemler içindir).
 **U13** kayıp ilan edilen birimin DAHA TAZE kopyası (PTO probu) uçuştaysa yeniden kuyruk yok
-(`queue_losses`, `cc_on`): kopya zaten yeniden iletimdir; quinn/RFC 9002 çerçeve düzeyinde
-tekilleştirmez (çift gönderim). Kopya da kaybolursa kendi ilanı yeniden kuyruklar.
+(`queue_losses`, `cc_on`): kopya zaten yeniden iletimdir; Kama'ya özgü kural (D şeridi: quinn 0.11.18'de
+bu yol oluşmaz — akış verisi paket değil bayt aralığı olarak yeniden gönderilir). Kopya da kaybolursa kendi
+ilanı yeniden kuyruklar.
 Sim r25 (25 B/s iki yön, 300 ms, %20, 60 × 65 B / 10 s, 10 tohum medyanı): port ileti p50 95 → 17
-(U10+U11) → 11,4 (U12) → 8,5 s (U13), retx 87 → 28; eski motor 5,4 s / 17. Öbür hücreler bayt düzeyinde
-aynı (kesinti p50 84,8 → 84,3; U13 kesinti seed1 retx 83 → 82).
+(U10+U11) → 11,4 (U12) → 8,5 s (U13), retx 87 → 28. Sim'in `Legacy` kolu (`Sender::new()`, kuyruk
+kurtarması KAPALI, IW 0) 5,4 s / 17 — bu kol ürünün geri alma profili DEĞİLDİR; ürün eski profili
+(`validated_v1` + IW 2·MTU) sim'de 106,8 s (H2 bağımsız incelemesi, PR #185; aynı kök: RTT örneksiz prob +
+tombstone/Karn), bench netem'de ise 25–28 s → sim bu kolu abartır, doğru taban bench K0 / gerçek yığın.
+Öbür hücreler bayt düzeyinde aynı (kesinti p50 84,8 → 84,3; U13 kesinti seed1 retx 83 → 82).
+
+**U14 (2026-11-11, gerçek yığın r25 bulgusu; PR #181)** — RTT örneği yokken PTO probu KURULMAZ
+(`sender.rs` `Timer::Pto` dalı, `cc_on() && srtt.is_none()`). Gerçek yığında (`shaped_relay`, 25 B/s,
+65 B ileti → ~180 B paket, ~107 B ACK) port eski motorun gerisindeydi (ileti p50 184 ↔ 99 s); sim ancak
+ürün zarfıyla (`CC_R25_WIRE_OVERHEAD=115 CC_ACK_OVERHEAD=90`) aynı sırayı verdi (port 51,7 ↔ eski 37,7 s).
+İz: PreConverge'de §3.3-B geometrik kopya merdiveni (0,5/1,5/3,5/7,5 s…) ile RFC 9002 PTO merdiveni
+(1/3/7 s…) aynı birimi YAN YANA yeniliyordu → ilk 8 s'de 7 kopya (eski motor 4); 25 B/s'de her fazla
+180 B paket ≈ 7 s kuyruk; 10 s aralıklı ileti hücresi %72 yüklü olduğundan bu başlangıç kuyruğu hiç
+erimiyor (ileti p50 +20 s). Spec §3.3-C ile aynı kural (PreConverge'de PTO dondurulur, geometrik kopya
+yerini alır); ilk RTT örneğinden sonra `on_ack_progress` PTO'yu kurar, RFC 9002 PTO devreye girer. quinn'de
+böyle bir çift merdiven yok (yalnız PTO); Kama'da geometrik kopya donmuş spec metnidir, bu yüzden tutulan
+o, bastırılan PTO. Sim ürün zarfı: port 51,7 → **37,7 s** (eski 37,7 — eşit), dönüş baytı 9,0 → 8,5 k;
+varsayılan r25 hücresi 8,5 → **6,9 s** (eski 5,4). Öbür 7 hücre bayt düzeyinde aynı (ilk ACK 1 s'den
+önce geldiğinden PTO zaten ateşlenmiyordu). Gerçek yığın doğrulaması: PR #181 gövdesi.
+**U14 canlılık (Ö-CC ısınma gözlemi, #175):** dondurma yalnız merdiven en eski teyitsiz birimi GERÇEKTEN
+taşıyorsa (`dup_queue`'da `interval > 0` kaydı); kayıt yoksa (RecoverFwd'nin tek-atımlık kopyaları tükendi,
+merdiven düştü) RTT örneği olmasa da PTO kurulur. 7 hücre + r25 bayt düzeyinde aynı; test
+`u14_pto_probe_resumes_when_no_ladder_entry_serves_the_oldest_unit`. Denenip geri alınan: merdiven
+kopyasının pencereden muaf tutulması (60 s kesintide kopya seli). Sim'de ayrı, motor-bağımsız bulgu:
+t = 0'dan başlayan kesintide (`CC_BLACKOUT=0,3`, %30) iki motor da 1–3 birimi kalıcı unutuyor — RecoverFwd
+`pending_lost`'u tek-atımlık (`interval = 0`) `Duplicate` kopyalara boşaltıyor, Duplicate kaybı ne tombstone
+ne yeniden kuyruk üretiyor → bütün kopyalar kaybolursa birim motordan düşer (`inflight = 0`, teslim 122/125).
+Düzeltme adayı (iki motoru da değiştirir → sahip kararı): acil kopyalardan biri çapa (kaybı yeniden kuyruklar).
 
 ## (b) Paket/birim muhasebesi — koddan cevaplar
 
 | olay | cevap (kod) |
 |---|---|
 | bir birimin birden fazla iletimi | Kama her iletime **taze `seq`** verir (`track_sent`: `next_seq += 1`), `inflight` seq-anahtarlı. Dolayısıyla quinn'in paket numarası = `seq`; uçuş kaydı **iletim başına**. `cc.on_sent` her iletimde, `cc.on_ack` yalnız ilk kez onaylanan iletim kaydında (uçuş ya da tombstone) çağrılır. |
-| geç veya tekrarlanan SACK | `AckInfo.acked_seqs` çağıranda tekilleştirilir (`udp_runner`, sim: `acked_seen`); gönderici tarafında `inflight.remove`/`tombstones.remove` tek kez başarılı olur → teslim baytı ikinci kez sayılmaz. Un-loss (kayıp ilan edilmiş seq'in ACK'i) `cc.on_ack`'a **girmez** (quinn: kayıp ilan edilen paket `sent_packets`'tan düşer). |
+| geç veya tekrarlanan SACK | `AckInfo.acked_seqs` çağıranda tekilleştirilir (`udp_runner`, sim: `acked_seen`); gönderici tarafında `inflight.remove`/`tombstones.remove` tek kez başarılı olur → teslim baytı ikinci kez sayılmaz. Un-loss (kayıp ilan edilmiş seq'in ACK'i): Data/Retransmit/FecParity kökenli tombstone'da `cc.on_ack`'a **girer** (kol-1; D şeridi düzeltmesi 2026-11-11), yalnız Duplicate kökenli girmez. quinn'de kayıp ilan edilen paket `sent_packets`'tan düşer, geç ACK'i CC'ye girmez — **beyanlı sapma**, kapatılması sahip kararı/ölçüm ister. |
 | FEC ile kurtarma | `RecoveredControl` motor çekirdeğine girmez (N8); CC'ye de girmez. Teslim hızı yalnız wire-ACK'ten. Kurtarılan birimin orijinal iletimi kayıp sayılmaya devam eder (quinn eşdeğeri yok; beyanlı). [K4G-05b-R, 2026-11-11] RECOVERED birimi teyit eder: uçuştaki iletimi aşağıdaki satırdaki gibi kararsız işaretlenir (uçuş baytı ve CC girdisi DEĞİŞMEZ; kaybı yine `on_congestion_event`'tir), yalnız yeniden gönderilmez. |
 | teyitli birimin diğer iletimleri [K4G-05b-R, 2026-11-11] | Birim bir iletiminin ACK'iyle ya da RECOVERED ile teyit edilince uçuştaki DİĞER iletimleri **uçuşta kalır** ve kararsız işaretlenir (`InflightPacket::confirmed_release_ns`): ACK'leri `cc.on_ack`'a, kayıp ilanları `on_congestion_event`'e öncekiyle aynı girer; yalnız yeniden kuyruğa, kopyaya ve prob hedefine girmezler (quinn: verisi başka paketle onaylanmış paket `sent_packets`'ta kalır, ACK'te `on_packet_acked`, kayıpta `on_congestion_event`; kaybında o akış verisi yeniden gönderilmez). **Beyanlı uyarlama:** ACK'i de kayıp ilanı da teyitten `K_TOMB × T_loss` içinde gelmeyen kararsız iletim kayıp ilan edilmeden uçuştan düşer, tıkanıklık olayı yoktur. Bu başlıca sessiz kanalda (daha yeni ACK'lenmiş seq yok) ve PreConverge'ün kayıp-ilanı yasağında olur. Daha yeni seq ACK'lenmişken dedektör genellikle önce ilan eder; istisna dar bir penceredir: paket eşiği dolmamış (`la − seq` < reorder eşiği) VE zaman eşiği teyitten bu yana en az `K_TOMB` kat büyümüş (bırakma anında geçen süre en az `K_TOMB × T_loss(teyit anı)`'dır; eşik bu kadar ancak kuyruk birikimiyle, tek bir geç `latest_rtt` örneğiyle ya da ACK aralığının büyümesiyle büyür). O pencerede gerçekten kaybolan iletim tıkanıklık olayı doğurmaz; dedektör seq'i sonra yine ilan edebilir (yalnız kayıp metriği, uçuş kaydı olmadığından CC'ye girmez). Bırakma anı EK4-A2 uyanma adayıdır (`next_wakeup_ns`). quinn'de PTO probu (PING) sonraki ACK'le kaybı ilan ettirirdi; Kama'da sessizlik kayıp değildir (TUR-1a) ve teyitli birime prob kararı üretilmez. Sonuç TTL'ini doldurmuş tombstone ile aynıdır (sonraki ACK'i bilinmeyen seq). |
-| parite ve prob | Parite `track_sent` (origin `FecParity`) → `cc.on_sent`; ACK'lenirse `cc.on_ack`; uçuş penceresine tabi (`cc_fits` parite yolunda). PTO probu `track_sent` ile uçuşa girer ama **pencereden muaf** (`try_send_probe`). Tombstone'a emekli edilen orijinal uçuştan düşer, kaybı ilan edilmez (quinn PTO ile aynı). [K4G-05b-R] Prob hedefi en eski teyitsiz KAYNAK birim kaydıdır: parite (`unit.id` = ESI) ve kararsız iletim hedef olamaz; uygun kayıt yoksa prob yok. |
+| parite ve prob | Parite `track_sent` (origin `FecParity`) → `cc.on_sent`; ACK'lenirse `cc.on_ack`; uçuş penceresine tabi (`cc_fits` parite yolunda). PTO probu `track_sent` ile uçuşa girer ama **pencereden muaf** (`try_send_probe`; pacer jetonu bekler — quinn probu pacing'i de atlar). [U10] Port motorunda prob hedefi **uçuşta kalır** (quinn PTO ile aynı, q:1658-1693); eski yolda tombstone'a emekli edilir, kaybı ilan edilmez. 8-kopya sınırı (`CC_MAX_UNIT_COPIES_IN_FLIGHT`) en küçük seq'i superseded tombstone'a emekli eder; o kaydın geç ACK'i ilerleme sayılmaz (D şeridi (3); U15 adayı). [K4G-05b-R] Prob hedefi en eski teyitsiz KAYNAK birim kaydıdır: parite (`unit.id` = ESI) ve kararsız iletim hedef olamaz; uygun kayıt yoksa prob yok. |
 | ACK üretimi | Alıcı: her 2 ack-eliciting datagram (`ACK_FREQ_N`) ya da sırasız varış → anında; 25 ms zamanlayıcı. SACK'in kendisi uçuşa girmez (tek yönlü motor; dönüş yolu ayrı). ACK'e ACK yok. |
 
 ## Test matrisi

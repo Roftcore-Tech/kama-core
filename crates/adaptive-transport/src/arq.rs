@@ -79,8 +79,9 @@ impl RetxConfig {
     }
 
     /// [CC-PORT] Yeniden iletim tavanı YOK (quinn `send_buffer.rs`: kayıp veri bağlantı yaşadıkça
-    /// yeniden gönderilir; tavan ve ileri-kopyaya devir yoktur). `arq_retx_cap = u8::MAX` fiilen
-    /// sınırsızdır; `reorder_*` fixture ile aynı. Yalnız `Sender::with_cc_port` kurucusunda kullanılır.
+    /// yeniden gönderilir; tavan ve ileri-kopyaya devir yoktur). `arq_retx_cap = u8::MAX` = TAVAN YOK
+    /// (planlayıcı bu değeri özel okur; sayaç 255'te doysa da `CapExceeded` üretilmez). `reorder_*`
+    /// fixture ile aynı. Yalnız `Sender::with_cc_port` kurucusunda kullanılır.
     #[must_use]
     pub fn rfc9002_cc_port() -> Self {
         Self {
@@ -131,7 +132,11 @@ impl ArqScheduler for DeadlineArqScheduler {
         ordered
             .into_iter()
             .map(|l| {
-                if l.retx_count >= self.cfg.arq_retx_cap {
+                // [CC-PORT] `arq_retx_cap == u8::MAX` = TAVAN YOK: `retx_count` u8'de doyar (255),
+                // `255 >= 255` ile tavan sahte tetiklenirdi (HA incelemesi, PR #186 AÇIK-1: 255 yeniden
+                // iletimden sonra birim ileri kopyaya devredilip bırakılıyordu). RFC 9002 / quinn:
+                // kayıp veri bağlantı yaşadıkça yeniden gönderilir.
+                if self.cfg.arq_retx_cap != u8::MAX && l.retx_count >= self.cfg.arq_retx_cap {
                     RetxDecision::CapExceeded {
                         seq: l.seq,
                         policy: self.cfg.cap_exceed,
@@ -176,5 +181,34 @@ impl ReorderTracker {
     #[must_use]
     pub fn recent_max_reorder(&self) -> u32 {
         self.recent_max_reorder
+    }
+}
+
+#[cfg(test)]
+mod cc_port_cap_tests {
+    use super::*;
+
+    /// [CC-PORT] `arq_retx_cap = u8::MAX` tavan yoktur: sayaç 255'te doymuş kayıt da yeniden
+    /// gönderilir (HA incelemesi, PR #186 AÇIK-1: eskiden 255. yeniden iletimden sonra
+    /// `CapExceeded → HandToForward` ile birim bırakılıyordu).
+    #[test]
+    fn saturated_retx_count_is_still_retransmitted_under_cc_port() {
+        let s = DeadlineArqScheduler::new(RetxConfig::rfc9002_cc_port());
+        let lost = [LostSeq {
+            seq: 7,
+            deadline_ns: 0,
+            retx_count: u8::MAX,
+        }];
+        assert_eq!(
+            s.plan(&lost, 1000),
+            vec![RetxDecision::Retransmit { seq: 7 }],
+            "port: 255 yeniden iletimden sonra da tavan yok"
+        );
+        // Eski kurucu (tavan 3) aynı girdide tavanı aşar — davranış değişmedi.
+        let f = DeadlineArqScheduler::new(RetxConfig::fixture());
+        assert!(matches!(
+            f.plan(&lost, 1000)[0],
+            RetxDecision::CapExceeded { seq: 7, .. }
+        ));
     }
 }
