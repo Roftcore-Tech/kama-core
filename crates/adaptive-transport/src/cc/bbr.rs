@@ -23,7 +23,10 @@
 //! 10. **U10–U13** (sender.rs / tail_recovery.rs, 2026-11-11, r25 düşük bant kökü): PTO probu
 //!     hedefi uçuşta kalır (RFC 9002 §6.2.4; eski yol ≈ 0,9 s TTL'li tombstone'a emekli ediyordu →
 //!     RTT örneği yok); taban PTO tavanı yok (§6.2.1); RTT örneği yokken tur başına tek prob;
-//!     taze kopyası uçuştaki kayıp yeniden kuyruklanmaz. Ayrıntı: docs/design/CC-PORT-ESLEME.md.
+//!     taze kopyası uçuştaki kayıp yeniden kuyruklanmaz. **U14** RTT örneği yokken PTO probu
+//!     kurulmaz (§3.3-B geometrik kopya merdiveni zaten birimi yeniler; iki merdiven yan yana
+//!     koşunca ürün zarfıyla 25 B/s'de başlangıç kuyruğu hiç erimiyordu). Ayrıntı:
+//!     docs/design/CC-PORT-ESLEME.md.
 //! 5. `initial_window` varsayılanı quinn-Cubic/RFC 9002 ilk penceresi
 //!    `min(10·MTU, max(2·MTU, 14720))` = 10·MTU (= 12 000 B); quinn-BBR'ın 200·MTU
 //!    varsayılanı **alınmadı** (ISEMRI-CC-PORT §3).

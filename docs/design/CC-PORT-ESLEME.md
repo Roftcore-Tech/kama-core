@@ -73,6 +73,20 @@ kurtarması KAPALI, IW 0) 5,4 s / 17 — bu kol ürünün geri alma profili DEĞ
 tombstone/Karn), bench netem'de ise 25–28 s → sim bu kolu abartır, doğru taban bench K0 / gerçek yığın.
 Öbür hücreler bayt düzeyinde aynı (kesinti p50 84,8 → 84,3; U13 kesinti seed1 retx 83 → 82).
 
+**U14 (2026-11-11, gerçek yığın r25 bulgusu; PR #181)** — RTT örneği yokken PTO probu KURULMAZ
+(`sender.rs` `Timer::Pto` dalı, `cc_on() && srtt.is_none()`). Gerçek yığında (`shaped_relay`, 25 B/s,
+65 B ileti → ~180 B paket, ~107 B ACK) port eski motorun gerisindeydi (ileti p50 184 ↔ 99 s); sim ancak
+ürün zarfıyla (`CC_R25_WIRE_OVERHEAD=115 CC_ACK_OVERHEAD=90`) aynı sırayı verdi (port 51,7 ↔ eski 37,7 s).
+İz: PreConverge'de §3.3-B geometrik kopya merdiveni (0,5/1,5/3,5/7,5 s…) ile RFC 9002 PTO merdiveni
+(1/3/7 s…) aynı birimi YAN YANA yeniliyordu → ilk 8 s'de 7 kopya (eski motor 4); 25 B/s'de her fazla
+180 B paket ≈ 7 s kuyruk; 10 s aralıklı ileti hücresi %72 yüklü olduğundan bu başlangıç kuyruğu hiç
+erimiyor (ileti p50 +20 s). Spec §3.3-C ile aynı kural (PreConverge'de PTO dondurulur, geometrik kopya
+yerini alır); ilk RTT örneğinden sonra `on_ack_progress` PTO'yu kurar, RFC 9002 PTO devreye girer. quinn'de
+böyle bir çift merdiven yok (yalnız PTO); Kama'da geometrik kopya donmuş spec metnidir, bu yüzden tutulan
+o, bastırılan PTO. Sim ürün zarfı: port 51,7 → **37,7 s** (eski 37,7 — eşit), dönüş baytı 9,0 → 8,5 k;
+varsayılan r25 hücresi 8,5 → **6,9 s** (eski 5,4). Öbür 7 hücre bayt düzeyinde aynı (ilk ACK 1 s'den
+önce geldiğinden PTO zaten ateşlenmiyordu). Gerçek yığın doğrulaması: PR #181 gövdesi.
+
 ## (b) Paket/birim muhasebesi — koddan cevaplar
 
 | olay | cevap (kod) |

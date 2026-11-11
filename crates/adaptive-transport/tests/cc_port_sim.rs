@@ -10,7 +10,14 @@
 //! cargo test -p adaptive-transport --test cc_port_sim -- --nocapture
 //! CC_MATRIX=1 cargo test -p adaptive-transport --test cc_port_sim matrix_explore -- --nocapture
 //! CC_TRACE=1 CC_SEED=10 CC_LOSS=200 cargo test ... shallow_queue_file_no_loss -- --nocapture
+//! # r25 ürün zarfı keşfi (kapı uygulanmaz, yalnız rapor): ~180 B ileti paketi, ~107 B ACK
+//! CC_R25_WIRE_OVERHEAD=115 CC_ACK_OVERHEAD=90 CC_R25_TMAX_S=1500 cargo test ... r25 -- --nocapture
 //! ```
+//!
+//! `CC_TRACE=1` izi her gönderimi (`GÖNDER tür seq birim bayt kuyruk`), her teslimi ve göndericiye
+//! ulaşan her ACK'i yazar. r25 keşif anahtarları: `CC_R25_INTERVAL_MS` (ileti aralığı),
+//! `CC_R25_WIRE_OVERHEAD` (ileri zarf), `CC_R25_TMAX_S` (ufuk), `CC_ACK_OVERHEAD` (SACK zarfı);
+//! biri tanımlıysa r25 kapısı atlanır.
 //!
 //! Kabul (yalnız port kolu için bağlayıcı; legacy kolu rapor eder, kırmızı üretmez):
 //! * 6 paketlik kuyruk, 12,5 kB/s, 300 ms RTT, kayıp %0: 150 kB dosya ≤ 25 s (≈1,5 ×
@@ -127,6 +134,11 @@ impl Bottleneck {
         }
         self.wire
             .push_back((done + self.delay_ns, seq, unit_id, kind));
+    }
+
+    /// Serileştirme kuyruğundaki paket sayısı (iz için).
+    fn queue_len(&self) -> usize {
+        self.busy.len()
     }
 
     fn poll(&mut self, now: u64) -> Vec<(u64, u64, TransmitKind)> {
@@ -359,6 +371,12 @@ fn run_opt(
     let wire_overhead = wire_overhead
         .or_else(|| std::env::var("CC_WIRE_OVERHEAD").ok()?.parse::<u64>().ok())
         .unwrap_or(0);
+    // `CC_ACK_OVERHEAD=<bayt>`: SACK çerçevesine eklenen tel zarfı (varsayılan `ACK_WIRE_OVERHEAD`;
+    // ürün runtime'ında ölçülen ACK ortalama ~107 B → ~90).
+    let ack_overhead = std::env::var("CC_ACK_OVERHEAD")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(ACK_WIRE_OVERHEAD);
     let emit = |decs: Vec<TransmitDecision>, now: u64, fwd: &mut Bottleneck, o: &mut Outcome| {
         for d in decs {
             match d.kind {
@@ -372,6 +390,18 @@ fn run_opt(
                 TransmitKind::CsProbe => {}
             }
             o.sent_bytes += d.size + wire_overhead;
+            if trace {
+                println!(
+                    "[{}] t={:.2}s GÖNDER {:?} seq={} birim={} bayt={} kuyruk={}",
+                    eng.name(),
+                    now as f64 / SEC as f64,
+                    d.kind,
+                    d.seq,
+                    d.unit_id,
+                    d.size + wire_overhead,
+                    fwd.queue_len()
+                );
+            }
             fwd.send(now, d.seq, d.size + wire_overhead, d.unit_id, d.kind);
         }
     };
@@ -421,7 +451,7 @@ fn run_opt(
         // kuyruğa giriyordu, ACK kadansının tel maliyeti eksik sayılıyordu). Gönderici yalnız
         // yeni bilgi taşıyan çerçeveyle beslenir (boş AckInfo göndericiye verilmez: eski
         // hücrelerde gönderici davranışı bayt düzeyinde aynı; dönüş yolu sınırsızken zamanlama da).
-        let size = frame.encode().len() as u64 + ACK_WIRE_OVERHEAD;
+        let size = frame.encode().len() as u64 + ack_overhead;
         let ack = AckInfo {
             acked_seqs: new.clone(),
             ack_delay: frame.ack_delay_duration(),
@@ -835,7 +865,7 @@ fn matrix_explore() {
 
 /// r25 ileti hücresi (bench `b_r25_d300_l20_p65` yaklaşığı): 25 B/s İKİ yönde, 300 ms tek yön,
 /// %20 kayıp, 60 × 65 B ileti 10 s aralıkla (tel 130 B ≈ 5,2 s; yük ≈ %52). Ölçü: ileti teslim gecikmesi p50 ve teslim/60.
-/// Dönüş yolu serileştirilir (SACK ~65 B ≈ 2,6 s). Kapı: 60/60 teslim; port ileti p50 ≤ 12 s. `CC_R25_SEEDS=<n>` ile tohum sayısı (varsayılan 10).
+/// Dönüş yolu serileştirilir (SACK ~65 B ≈ 2,6 s). Kapı: 60/60 teslim; port ileti p50 ≤ 8 s. `CC_R25_SEEDS=<n>` ile tohum sayısı (varsayılan 10).
 #[test]
 fn r25_lowband_messages() {
     let seeds: u64 = std::env::var("CC_R25_SEEDS")
@@ -853,13 +883,26 @@ fn r25_lowband_messages() {
                 300,
                 200,
                 seed,
-                700,
+                std::env::var("CC_R25_TMAX_S")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(700),
                 (60, 65),
                 0,
                 None,
                 Some((25, 20)),
-                Some(10_000),
-                Some(65),
+                Some(
+                    std::env::var("CC_R25_INTERVAL_MS")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(10_000),
+                ),
+                Some(
+                    std::env::var("CC_R25_WIRE_OVERHEAD")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(65),
+                ),
             );
             report(eng, &format!("r25 seed{seed}"), &o);
             p50s.push(o.unit_delay_p50_ns);
@@ -877,8 +920,20 @@ fn r25_lowband_messages() {
             p50(rev_b),
             p50(retx)
         );
-        // Kapı: her motor 60/60 teslim (medyan); port ileti p50 ≤ 12 s (U10–U13 öncesi 95 s, sonrası
-        // 8,5 s; eski motor 5,4 s — eşitlenince kapı sıkılaşır).
+        // Kapı: her motor 60/60 teslim (medyan); port ileti p50 ≤ 8 s (U10–U13 öncesi 95 s, sonrası
+        // 8,5 s; U14 sonrası 6,9 s; eski motor 5,4 s — eşitlenince kapı sıkılaşır). Keşif anahtarları (`CC_R25_*`,
+        // `CC_ACK_OVERHEAD`) varken kapı uygulanmaz (yalnız rapor).
+        let explore = [
+            "CC_R25_INTERVAL_MS",
+            "CC_R25_WIRE_OVERHEAD",
+            "CC_R25_TMAX_S",
+            "CC_ACK_OVERHEAD",
+        ]
+        .iter()
+        .any(|k| std::env::var(k).is_ok());
+        if explore {
+            continue;
+        }
         assert_eq!(
             p50(deliv),
             60,
@@ -887,8 +942,8 @@ fn r25_lowband_messages() {
         );
         if eng != Engine::Legacy {
             assert!(
-                p50(p50s) <= 12 * SEC,
-                "[{}] r25 ileti p50 medyanı > 12 s",
+                p50(p50s) <= 8 * SEC,
+                "[{}] r25 ileti p50 medyanı > 8 s",
                 eng.name()
             );
         }

@@ -3680,7 +3680,15 @@ impl Sender {
                 // Emission (token + re-verify) happens in plan_arq_retransmits; the attempt is spent only on a real
                 // emission (§3 probe-due ≠ probe-sent). [K4G-05b-R] "Oldest" = oldest SOURCE-unit record
                 // (`oldest_probe_target`; a FEC repair record is never a probe target).
-                if self.tail_recovery.is_enabled() {
+                // [CC-PORT U14] Port motorunda RTT örneği yokken PTO probu KURULMAZ: PreConverge'de
+                // §3.3-B geometrik kopya merdiveni (0,5/1,5/3,5/7,5 s…) zaten aynı birimi yeniler;
+                // RFC 9002 PTO merdiveni (1/3/7 s…) onunla yan yana koşunca aynı birim iki merdivenden
+                // kopya alır (ürün zarfıyla r25 sim: ilk 8 s'de 7 kopya ↔ eski motor 4; 25 B/s'de her
+                // fazla 180 B paket ≈ 7 s kuyruk → ileti p50 +20 s). Spec §3.3-C ile aynı kural
+                // (PreConverge'de PTO dondurulur, geometrik kopya yerini alır); ilk örnekten sonra
+                // RFC 9002 PTO devreye girer (`on_ack_progress` kurar). `cc` yokken yol aynı.
+                let u14_hold = self.cc_on() && self.rtt.srtt().is_none();
+                if self.tail_recovery.is_enabled() && !u14_hold {
                     let oldest = self.oldest_probe_target();
                     let srtt = self.rtt.srtt().map(dur_ns);
                     let rttvar = dur_ns(self.rtt.rttvar());
@@ -11939,6 +11947,64 @@ mod tests {
                         "{name}: emekliye ayrılan hedefin superseded işareti de doygun"
                     );
                 }
+            }
+        }
+
+        /// [CC-PORT U14] RTT örneği yokken (PreConverge, ısınma YOK) port motoru PTO probu
+        /// (`Retransmit`) ÇIKARMAZ: §3.3-B geometrik kopya merdiveni (`Duplicate`) birimi zaten
+        /// yeniler; iki merdiven yan yana koşunca aynı birim ilk 8 s'de 7 kopya alıyordu (r25,
+        /// ürün zarfı: eski motor 4). Eski motor (ürün profili) yolu değişmez: orada prob çıkar.
+        /// İlk RTT örneğinden sonra portta da PTO probu çıkar (sessiz kanalda ikinci birim).
+        #[test]
+        fn u14_no_pto_probe_before_first_rtt_sample_on_port() {
+            for (name, mk) in tail_engines() {
+                let mut r = Rig::new(mk);
+                let id = UID + 1;
+                r.ev(Event::AppData(small(id)), 0);
+                // (CS-probe kararları ayrı seq uzayındadır; `sent` haritasında DATA kaydının
+                // üstüne yazabilir — seq baştan alınır.)
+                let s0 = r
+                    .seq_of(id, TransmitKind::Data)
+                    .unwrap_or_else(|| panic!("{name}: DATA çıkar"));
+                // 8 s sessiz kanal, RTT örneği yok.
+                r.pump_until(MS, 8_000 * MS, PUMP_STEP_NS, |_| false);
+                let dups = r
+                    .sent
+                    .values()
+                    .filter(|d| d.unit_id == id && d.kind == TransmitKind::Duplicate)
+                    .count();
+                let probes = r
+                    .sent
+                    .values()
+                    .filter(|d| d.unit_id == id && d.kind == TransmitKind::Retransmit)
+                    .count();
+                assert!(
+                    dups >= 3,
+                    "{name}: geometrik kopya merdiveni koşar ({dups})"
+                );
+                if r.s.cc_on() {
+                    assert_eq!(probes, 0, "{name}: RTT örneği yokken PTO probu yok (U14)");
+                } else {
+                    assert!(probes >= 1, "{name}: eski yol değişmez, prob çıkar");
+                }
+                // İlk RTT örneği: en son geometrik kopya ACK'lenir (taze seq, `rtt_rule_v11`;
+                // eski motorda orijinal prob tarafından tombstone'a emekli edilmiş olabilir) →
+                // ikinci birim sessiz kanalda prob alır.
+                if !r.s.cc_on() {
+                    continue; // ikinci evre yalnız port için (U14 portun kuralı)
+                }
+                let last_dup = r
+                    .seq_of(id, TransmitKind::Duplicate)
+                    .unwrap_or_else(|| panic!("{name}: kopya"));
+                r.ev(ack(&[s0, last_dup]), 8_001 * MS);
+                let _ = r.s.take_confirmed_units();
+                assert!(r.s.rtt.srtt().is_some(), "{name}: ilk RTT örneği");
+                let id2 = UID + 2;
+                r.ev(Event::AppData(small(id2)), 8_010 * MS);
+                let t = r.pump_until(8_011 * MS, PUMP_LONG_HORIZON_NS, PUMP_LONG_STEP_NS, |r| {
+                    r.seq_of(id2, TransmitKind::Retransmit).is_some()
+                });
+                assert!(t.is_some(), "{name}: ilk örnekten sonra PTO probu çıkar");
             }
         }
 
