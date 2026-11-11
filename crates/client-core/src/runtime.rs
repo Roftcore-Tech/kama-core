@@ -2312,7 +2312,8 @@ async fn client_task(
                             // çerçevesi çıkmaz, PN harcanmaz. Motor kararı zaten işledi; kaydın
                             // ACK'i gelmez, kayıt uçuşta kalır (parite kaydı kayıpta ARQ'ya girmez;
                             // ardılı `ClientStats::stale_skipped`). Sayaçlar: `fec_repair_missing`
-                            // (neden) + `stale_skipped` (toplam). Sınama: `skip_tests`.
+                            // (neden) + `stale_skipped` (toplam). Sınama: yardımcı `skip_tests`'te; bu
+                            // kol (sayaçlar, `continue`) testte koşmaz.
                             let Some(sym) = repair_symbol(&repair_store, block_id, esi) else {
                                 stats.fec_repair_missing += 1;
                                 stats.stale_skipped += 1;
@@ -2373,7 +2374,8 @@ async fn client_task(
                 // da yalnız önekli çerçeve çıkmaz. Sayaçlar: `stale_decisions` (neden) +
                 // `stale_skipped` (toplam). Ölçümler: `docs/design/K4G-05b-RUNTIME-ENVANTER.md`
                 // "Atlama politikası".
-                // Sınama: `skip_tests` (store-miss → çerçeve yok).
+                // Sınama: yardımcı `skip_tests`'te (store-miss → çerçeve yok); bu kol (sayaçlar,
+                // `continue`) testte koşmaz.
                 let Some(frame) = unit_frame(&store, d.seq, d.unit_id, frag_on) else {
                     stats.stale_decisions += 1;
                     stats.stale_skipped += 1;
@@ -4069,9 +4071,11 @@ async fn server_task(
 mod skip_tests {
     //! [K4G-05b-R · sahip kararı 2026-11-11, #174 madde 2] Gövdesi olmayan karar datagram
     //! üretmez. Motor teyitli birime karar üretmediğinden (teyitte bekleyen iş iptal) runtime
-    //! testlerinde bu dallar doğal trafikle KOŞMAZ (`stale_skipped == 0`); savunma dalının kendisi
-    //! burada sınanır: store-miss ve eksik onarım sembolü için çerçeve kurulmaz, store'daki gövde
-    //! için çerçeve gövdenin TAMAMINI taşır (başlık-only çerçeve yok).
+    //! testlerinde atlama dalları doğal trafikle KOŞMAZ (`stale_skipped == 0`). Burada yalnız dalların
+    //! kullandığı yardımcılar sınanır: store-miss ve eksik onarım sembolü için çerçeve kurulmaz,
+    //! store'daki gövde için çerçeve gövdenin TAMAMINI taşır. `drive!` içindeki `let … else` kolunun
+    //! kendisi (sayaçlar, seal/PN yokluğu, `continue`) hiçbir testte koşmaz; kod okumasıyla kapsanır
+    //! (`docs/design/K4G-05b-RUNTIME-ENVANTER.md` "Tel bekçisi ve mutasyon").
 
     use super::*;
 
