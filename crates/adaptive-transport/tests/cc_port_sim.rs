@@ -401,6 +401,10 @@ fn run_opt(
             }
         }
     };
+    let profile = std::env::var("CC_PROFILE").is_ok();
+    let mut prof_marks: [Option<u64>; 3] = [None; 3];
+    let mut prof_modes: Vec<(u64, adaptive_transport::cc::Mode)> = Vec::new();
+    let mut prof_last_mode: Option<adaptive_transport::cc::Mode> = None;
     let t_max = t_max_s * SEC;
     let mut now = 0u64;
     while now < t_max {
@@ -499,11 +503,44 @@ fn run_opt(
                 s.tail_probe_diag()
             );
         }
+        // `CC_PROFILE=1`: ilerleme profili (%10/%50/%90 teslim anı, son birim, kip geçişleri).
+        if profile {
+            let d = delivered.len() as u64;
+            for (i, pct) in [10u64, 50, 90].iter().enumerate() {
+                if prof_marks[i].is_none() && d * 100 >= n_units * pct {
+                    prof_marks[i] = Some(now);
+                }
+            }
+            if let Some((mode, ..)) = s.diag_cc() {
+                if prof_last_mode != Some(mode) {
+                    prof_modes.push((now, mode));
+                    prof_last_mode = Some(mode);
+                }
+            }
+        }
         if o.completed_ns.is_none() && delivered.len() as u64 >= n_units {
             o.completed_ns = Some(now);
             break;
         }
         now += MS;
+    }
+    if profile {
+        let f =
+            |t: Option<u64>| t.map_or("-".to_string(), |t| format!("{:.1}", t as f64 / SEC as f64));
+        println!(
+            "[{}] PROFİL seed{seed}: %10={} %50={} %90={} son={} retx={} prob={:?} kipler={:?}",
+            eng.name(),
+            f(prof_marks[0]),
+            f(prof_marks[1]),
+            f(prof_marks[2]),
+            f(o.completed_ns),
+            o.sent_retx,
+            s.tail_probe_diag(),
+            prof_modes
+                .iter()
+                .map(|(t, m)| format!("{:.1}s:{m:?}", *t as f64 / SEC as f64))
+                .collect::<Vec<_>>()
+        );
     }
     o.delivered_units = delivered.len();
     o.dropped_queue = fwd.dropped_queue;
