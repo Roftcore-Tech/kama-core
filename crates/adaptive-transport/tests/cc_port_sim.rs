@@ -727,6 +727,8 @@ struct H1Out {
     completed_ns: Option<u64>,
     /// Birim başına ilk erişilebilirlik anı: min(ARQ teslimi, (i) blok çözülebilir).
     per_unit_ns: Vec<Option<u64>>,
+    /// Birim sunum anı (aralık × i); gecikme = `per_unit_ns − offer_ns`.
+    offer_ns: Vec<u64>,
     /// (i) ARQ teslimiNDEN ÖNCE çözülebilir olan kaynak birim sayısı.
     recovered_before_arq: u64,
     data_bytes: u64,
@@ -790,6 +792,7 @@ fn run_h1(cell: &H1Cell, arm: FecArm, seed: u64, partial_close: bool) -> H1Out {
     let n = cell.units;
     let mut o = H1Out {
         per_unit_ns: vec![None; n as usize],
+        offer_ns: (0..n).map(|i| i * cell.offer_interval_ms * MS).collect(),
         ..H1Out::default()
     };
     let mut arq_ns: Vec<Option<u64>> = vec![None; n as usize];
@@ -1117,7 +1120,12 @@ fn aggregate(outs: &[H1Out]) -> H1Agg {
         if let Some(t) = o.completed_ns {
             comp.push(t);
         }
-        units.extend(o.per_unit_ns.iter().flatten().copied());
+        units.extend(
+            o.per_unit_ns
+                .iter()
+                .zip(&o.offer_ns)
+                .filter_map(|(t, off)| t.map(|t| t.saturating_sub(*off))),
+        );
         a.recovered += o.recovered_before_arq;
         a.data_b += o.data_bytes;
         a.retx_b += o.retx_bytes;
@@ -1260,7 +1268,7 @@ fn h1_fec_three_arms() {
         FecArm::Fuzzy,
         FecArm::FuzzyDeadline(deadline_ms * MS),
     ];
-    println!("| hücre | kol | teslim | tamamlanma p50 s | p95 s | max s | birim p50 s | birim p95 s | (i) ARQ'dan önce çözülebilir birim (Σ10) | veri B/koşu | retx B/koşu | parite B/koşu | toplam B/koşu | parite tele çıkan koşu |");
+    println!("| hücre | kol | teslim | tamamlanma p50 s | p95 s | max s | birim gecikmesi p50 s (teslim − sunum) | birim gecikmesi p95 s | (i) ARQ'dan önce çözülebilir birim (Σ10) | veri B/koşu | retx B/koşu | parite B/koşu | toplam B/koşu | parite tele çıkan koşu |");
     println!("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
     for cell in h1_cells() {
         for arm in arms {

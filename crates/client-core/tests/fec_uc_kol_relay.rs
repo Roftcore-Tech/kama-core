@@ -260,6 +260,7 @@ fn cells() -> Vec<Cell> {
 
 struct Run {
     completed: Option<Duration>,
+    /// Birim gecikmesi = teslim anı − sunum anı (t0 + aralık × i); dosya/PTT'de sunum t0'dır.
     unit_times: Vec<Duration>,
     /// Tamamlanma anında ileri yönde tele çıkan bayt (röle sayacı; UDP/IP dahil) — tel bütçesi.
     fwd_bytes_at_done: u64,
@@ -329,11 +330,14 @@ async fn run_cell(cell: &Cell, arm: Arm, seed: u64, deadline_ms: u64) -> Run {
     let mut fwd_at_done = 0;
     let completed = tokio::time::timeout(cell.t_max, async {
         while (unit_times.len() as u64) < units {
-            if server.next_delivery().await.is_some() {
-                unit_times.push(t0.elapsed());
-            } else {
+            let Some(d) = server.next_delivery().await else {
                 break;
-            }
+            };
+            let mut idx = [0u8; 8];
+            idx.copy_from_slice(&d.payload[..8]);
+            let i = u32::try_from(u64::from_be_bytes(idx)).unwrap_or(u32::MAX);
+            let offered_at = iv * i;
+            unit_times.push(t0.elapsed().saturating_sub(offered_at));
         }
         fwd_at_done = fwd.lock().expect("kilit").bytes;
         t0.elapsed()
@@ -437,7 +441,7 @@ async fn fec_three_arms_real_stack() {
             _ => None,
         })
         .collect();
-    println!("| hücre | kol | teslim | tamamlanma p50 s | p95 s | max s | birim p50 s | birim p95 s | (ii) FEC ile çözülüp teslim edilen birim (Σ) | yararlı parite (Σ) | veri B/koşu | retx+dup B/koşu | parite B/koşu | gönderici toplam B/koşu (kapanış dahil) | tel B/koşu tamamlanmada (UDP/IP dahil) | parite tele çıkan koşu |");
+    println!("| hücre | kol | teslim | tamamlanma p50 s | p95 s | max s | birim gecikmesi p50 s (teslim − sunum) | birim gecikmesi p95 s | (ii) FEC ile çözülüp teslim edilen birim (Σ) | yararlı parite (Σ) | veri B/koşu | retx+dup B/koşu | parite B/koşu | gönderici toplam B/koşu (kapanış dahil) | tel B/koşu tamamlanmada (UDP/IP dahil) | parite tele çıkan koşu |");
     println!("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
     for cell in cells()
         .iter()
