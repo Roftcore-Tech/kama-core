@@ -39,6 +39,16 @@ const FILE_BYTES: u64 = 150_000;
 enum Engine {
     Legacy,
     CcPort,
+    /// [H2] Ürünün eski motor profili (`ClientSession::new()`, `KAMA_TRANSPORT_ENGINE=legacy`):
+    /// `Sender::new()` + `validated_v1` kuyruk kurtarması + ilk pencere 2·MTU (`RuntimeConfig`
+    /// varsayılanı `DEFAULT_BURST_CAP`). E2a bayrakları ürün varsayılanında kapalı. Yalnız
+    /// `r25_arms` kullanır; mevcut testlerin kol listesi (`ENGINES`) değişmez.
+    LegacyProduct,
+    /// [H2] `LegacyProduct` + iş emrindeki E2a seti (K1A6: tt_rfc, g = 1 ms, rtt_rule_v11,
+    /// iw_idle_hold, pto_probes = 2).
+    LegacyProductK1A6,
+    /// [H2] Port + ürünün ilk uçuşu (4·MTU = 4 800 B; runtime `initial_window_bytes` tabanı).
+    CcPortProductIw,
 }
 
 impl Engine {
@@ -46,18 +56,42 @@ impl Engine {
         match self {
             Engine::Legacy => "legacy (faz makinesi)",
             Engine::CcPort => "cc_port (quinn BBR + RFC 9002)",
+            Engine::LegacyProduct => "legacy-ürün (validated_v1 + IW 2·MTU)",
+            Engine::LegacyProductK1A6 => "legacy-ürün+K1A6",
+            Engine::CcPortProductIw => "cc_port IW 4·MTU (ürün)",
         }
     }
     fn sender(self) -> Sender {
         match self {
             Engine::Legacy => Sender::new(),
             Engine::CcPort => Sender::with_cc_port(),
+            Engine::LegacyProduct | Engine::LegacyProductK1A6 => {
+                let mut s = Sender::new();
+                s.set_tail_recovery_config(
+                    adaptive_transport::tail_recovery::TailRecoveryConfig::validated_v1(),
+                );
+                s.set_initial_window(adaptive_transport::sender::InitialWindowConfig {
+                    bytes: 2 * MTU,
+                });
+                if self == Engine::LegacyProductK1A6 {
+                    s.set_e2a_flags(
+                        adaptive_transport::loss::E2aFlags::new(true, MS, true, true, 2, false)
+                            .expect("K1A6 bayrakları"),
+                    );
+                }
+                s
+            }
+            Engine::CcPortProductIw => {
+                let mut s = Sender::with_cc_port();
+                s.set_cc_initial_window(4 * MTU);
+                s
+            }
         }
     }
     fn receiver(self) -> Receiver {
         match self {
-            Engine::Legacy => Receiver::new(),
-            Engine::CcPort => Receiver::with_cc_port(),
+            Engine::Legacy | Engine::LegacyProduct | Engine::LegacyProductK1A6 => Receiver::new(),
+            Engine::CcPort | Engine::CcPortProductIw => Receiver::with_cc_port(),
         }
     }
 }
@@ -215,6 +249,10 @@ struct Outcome {
     unit_delay_p50_ns: u64,
     /// Birim teslim gecikmesi p95.
     unit_delay_p95_ns: u64,
+    /// [H2] Kuyruk kurtarması PTO zamanlayıcısının ateşleme sayısı (`tail_probe_diag_ext().5`).
+    pto_fires: u64,
+    /// [H2] Tele çıkan kuyruk probu (`tail_probe_diag_ext().1`).
+    probes_sent: u64,
 }
 
 /// Tek koşu. `units`: (birim sayısı, boyut); `parity_per_block > 0`: her 8 birimlik blok için
@@ -336,9 +374,12 @@ fn run_opt(
         rev_dropped_queue: 0,
         unit_delay_p50_ns: 0,
         unit_delay_p95_ns: 0,
+        pto_fires: 0,
+        probes_sent: 0,
     };
     // `CC_TRACE=1` iz; `CC_TRACE_MS=<ms>` iz aralığı (varsayılan 250).
     let trace = std::env::var("CC_TRACE").is_ok();
+    let sack_newonly = std::env::var("CC_SACK_NEWONLY").is_ok();
     let trace_every = std::env::var("CC_TRACE_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
@@ -411,6 +452,11 @@ fn run_opt(
         // kuyruğa giriyordu, ACK kadansının tel maliyeti eksik sayılıyordu). Gönderici yalnız
         // yeni bilgi taşıyan çerçeveyle beslenir (boş AckInfo göndericiye verilmez: eski
         // hücrelerde gönderici davranışı bayt düzeyinde aynı; dönüş yolu sınırsızken zamanlama da).
+        // [H2] `CC_SACK_NEWONLY=1`: düzeltme öncesi sim (yalnız yeni seq taşıyan SACK tele girer)
+        // — etkisini ayrı satırda ölçmek için; varsayılan yol değişmez.
+        if sack_newonly && new.is_empty() {
+            return;
+        }
         let size = frame.encode().len() as u64 + ACK_WIRE_OVERHEAD;
         let ack = AckInfo {
             acked_seqs: new.clone(),
@@ -575,6 +621,9 @@ fn run_opt(
                 .collect::<Vec<_>>()
         );
     }
+    let (_due, sent, _cancelled, _bytes, _spurious, fires) = s.tail_probe_diag_ext();
+    o.probes_sent = sent;
+    o.pto_fires = fires;
     o.delivered_units = delivered.len();
     o.dropped_queue = fwd.dropped_queue;
     o.dropped_random = fwd.dropped_random;
@@ -928,5 +977,95 @@ fn blackout_60s_session_survives_and_completes() {
                 "port: kesinti sonrası ≤ 30 s içinde bitmeli"
             );
         }
+    }
+}
+
+/// [H2] r25 bağımsız inceleme kolları (yalnız `CC_R25_ARMS=1`; kapı değil, rapor):
+/// `CC_R25_ARMS=legacy,legacy-product,legacy-k1a6,cc-port,cc-port-iw4` (varsayılan hepsi);
+/// `CC_R25_RTT=<ms>` (varsayılan 300 → tek yön 150 ms; bench `d300` tek yön 300 ms için 600);
+/// `CC_R25_SEEDS=<n>` (varsayılan 10). Mevcut testlerin kollarına ve sayılarına dokunmaz.
+#[test]
+fn r25_arms() {
+    if std::env::var("CC_R25_ARMS").is_err() {
+        return;
+    }
+    let want = std::env::var("CC_R25_ARMS").unwrap_or_default();
+    let all = [
+        ("legacy", Engine::Legacy),
+        ("legacy-product", Engine::LegacyProduct),
+        ("legacy-k1a6", Engine::LegacyProductK1A6),
+        ("cc-port", Engine::CcPort),
+        ("cc-port-iw4", Engine::CcPortProductIw),
+    ];
+    let arms: Vec<(&str, Engine)> = all
+        .into_iter()
+        .filter(|(n, _)| want == "1" || want.split(',').any(|w| w == *n))
+        .collect();
+    let seeds: u64 = std::env::var("CC_R25_SEEDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10);
+    let rtt: u64 = std::env::var("CC_R25_RTT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300);
+    for (tag, eng) in arms {
+        let mut cols: [Vec<u64>; 11] = Default::default();
+        for seed in 1..=seeds {
+            let o = run_opt(
+                eng,
+                25,
+                20,
+                rtt,
+                200,
+                seed,
+                700,
+                (60, 65),
+                0,
+                None,
+                Some((25, 20)),
+                Some(10_000),
+                Some(65),
+            );
+            if std::env::var("CC_VERBOSE").is_ok() {
+                report(eng, &format!("r25-arms seed{seed}"), &o);
+            }
+            for (c, v) in cols.iter_mut().zip([
+                o.unit_delay_p50_ns,
+                o.unit_delay_p95_ns,
+                o.delivered_units as u64,
+                o.sent_bytes,
+                o.rev_bytes,
+                o.acks,
+                o.pto_fires,
+                o.probes_sent,
+                o.sent_retx,
+                o.sent_dup,
+                o.dropped_queue + o.rev_dropped_queue,
+            ]) {
+                c.push(v);
+            }
+        }
+        let m: Vec<u64> = cols.iter().map(|c| p50(c.clone())).collect();
+        let (lo, hi) = (
+            cols[0].iter().min().copied().unwrap_or(0),
+            cols[0].iter().max().copied().unwrap_or(0),
+        );
+        println!(
+            "R25-ARM {tag} rtt={rtt} seeds={seeds}: p50={:.1}s [{:.1}..{:.1}] p95={:.1}s teslim={}/60 ileri={} dönüş={} sack={} pto_ateş={} prob={} retx={} dup={} kuyruk_düşen={}",
+            m[0] as f64 / SEC as f64,
+            lo as f64 / SEC as f64,
+            hi as f64 / SEC as f64,
+            m[1] as f64 / SEC as f64,
+            m[2],
+            m[3],
+            m[4],
+            m[5],
+            m[6],
+            m[7],
+            m[8],
+            m[9],
+            m[10]
+        );
     }
 }
