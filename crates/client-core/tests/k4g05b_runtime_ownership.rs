@@ -945,8 +945,8 @@ impl Rig {
         )
         .await;
         eprintln!("[{path}] faz B teyit süresi {:?}", opened.elapsed());
-        // (3) Açılıştan sonraki her iletim gerçek gövdeli: store-miss yok; teyitten sonra motorun
-        // verdiği karar (bekleyen işi budamaz) tele hiç çıkmaz (iddia 6), boş gövde görülmez.
+        // (3) Açılıştan sonraki her iletim gerçek gövdeli: store-miss yok; teyitten sonra motor birime
+        // karar vermez (bekleyen işi teyitte iptal edilir, iddia 7), verse de tele çıkmaz (iddia 6).
         let (lens, all_ok) = self.net.with(|s| {
             let want = body(t);
             (
