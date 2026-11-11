@@ -12,7 +12,7 @@
 //!   soketidir). `BAD_COOKIE` sonrası eski kanıt bir daha GÖNDERİLMEZ.
 //! * Hub imzası `kama_noise_wire::ed25519_strict::verify_strict` (katı kip) ile doğrulanmadan bind
 //!   "tamam" sayılmaz. İmzasız hata çerçeveleri yalnız ipucudur, bind'i düşürmez (C8).
-//! * Cihaz imzası [`BindSigner`] ile; TBS tipli alanlardan (`codec::bind_proof_tbs`), imza kâhini yok.
+//! * Cihaz imzası [`BindSigner`] ile; TBS tipli alanlardan (`kama_contracts::s4::bind_tbs`), imza kâhini yok.
 
 use core::time::Duration;
 use std::time::Instant;
@@ -20,10 +20,13 @@ use std::time::Instant;
 use kama_noise_wire::ed25519_strict::verify_strict;
 use kama_noise_wire::entropy::EntropySource;
 
-use super::codec::{self, code, flags, method, NONCE_LEN};
 use super::heartbeat::jitter;
 use super::t3::t3_delay;
 use super::{BindSigner, HubConfig, HubCounters};
+use kama_contracts::s4::{
+    self, ack_tbs, bind_tbs, BindProofReq, ClientBindReq, HubFrame, RpcBody, RpcMessage, S4Error,
+    ERROR_BAD_COOKIE, METHOD_BIND_PROOF, METHOD_CLIENT_BIND, NONCE_LEN, STATUS_OK,
+};
 
 /// Bir turdaki (CLIENT_BIND ya da BIND_PROOF) azami gönderim (C2 "en çok 3 kez, 1 s arayla").
 pub const BIND_ROUND_SENDS: u32 = 3;
@@ -147,7 +150,13 @@ impl BindMachine {
             return;
         }
         let request_id = deps.ids.next();
-        let frame = codec::encode_client_bind(request_id, &deps.cfg.device_cert_ref, &nonce);
+        let frame = rpc_frame(
+            request_id,
+            RpcBody::ClientBindReq(ClientBindReq {
+                device_cert_ref: deps.cfg.device_cert_ref,
+                client_nonce: nonce,
+            }),
+        );
         self.state = State::Round1 {
             nonce,
             request_id,
@@ -198,44 +207,48 @@ impl BindMachine {
         }
     }
 
-    /// CLIENT_BIND / BIND_PROOF yanıtı ya da hata çerçevesi.
+    /// CLIENT_BIND / BIND_PROOF yanıtı ya da hata çerçevesi (S4 §2.3 tablosuyla çözülmüş).
     pub(crate) fn on_response(
         &mut self,
         now: Instant,
-        rpc: &codec::RpcFrame<'_>,
+        request_id: u32,
+        body: &RpcBody,
         deps: &mut BindDeps<'_>,
     ) -> BindOutcome {
         let c = &mut *deps.counters;
-        match (&self.state, rpc.method_id) {
+        match (&self.state, body) {
+            (State::Round1 { request_id: r, .. }, RpcBody::Error { method_id, .. })
+                if *r == request_id && *method_id == METHOD_CLIENT_BIND =>
+            {
+                c.bind_error_hints = c.bind_error_hints.saturating_add(1);
+                BindOutcome::Nothing
+            }
             (
                 State::Round1 {
-                    nonce, request_id, ..
+                    nonce,
+                    request_id: r,
+                    ..
                 },
-                method::CLIENT_BIND,
-            ) if *request_id == rpc.request_id => {
-                if rpc.flags == flags::RESPONSE_ERROR {
-                    c.bind_error_hints = c.bind_error_hints.saturating_add(1);
-                    return BindOutcome::Nothing;
-                }
-                let Ok(hub_nonce) = codec::decode_challenge(rpc.payload) else {
-                    c.rx_malformed = c.rx_malformed.saturating_add(1);
-                    return BindOutcome::Nothing;
-                };
+                RpcBody::ClientBindResp(resp),
+            ) if *r == request_id => {
                 let nonce = *nonce;
-                let tbs = codec::bind_proof_tbs(
+                let hub_nonce = resp.hub_nonce;
+                let tbs = bind_tbs(
                     &deps.cfg.hub_ed25519_pub,
                     &deps.cfg.device_cert_ref,
                     &nonce,
                     &hub_nonce,
                 );
-                let sig = deps.signer.sign_bind(&tbs);
+                let client_signature = deps.signer.sign_bind(&tbs);
                 let request_id = deps.ids.next();
-                let frame = codec::encode_bind_proof(
+                let frame = rpc_frame(
                     request_id,
-                    &deps.cfg.device_cert_ref,
-                    &nonce,
-                    &hub_nonce,
-                    &sig,
+                    RpcBody::BindProofReq(BindProofReq {
+                        device_cert_ref: deps.cfg.device_cert_ref,
+                        client_nonce: nonce,
+                        hub_nonce,
+                        client_signature,
+                    }),
                 );
                 self.state = State::Round2 {
                     nonce,
@@ -247,40 +260,32 @@ impl BindMachine {
                 };
                 BindOutcome::Send(frame)
             }
+            (State::Round2 { request_id: r, .. }, RpcBody::Error { method_id, payload })
+                if *r == request_id && *method_id == METHOD_BIND_PROOF =>
+            {
+                if payload.error_code == ERROR_BAD_COOKIE {
+                    // 1. tura dön: yeni nonce, yeni cookie; eski kanıt bir daha gitmez.
+                    c.bind_bad_cookie = c.bind_bad_cookie.saturating_add(1);
+                    self.new_round(now, deps);
+                    return self
+                        .on_tick(now, deps)
+                        .map_or(BindOutcome::Nothing, BindOutcome::Send);
+                }
+                // POSSESSION_PROOF_FAIL / RATE_LIMITED / HUB_CAPACITY: yalnız ipucu (C8).
+                c.bind_error_hints = c.bind_error_hints.saturating_add(1);
+                BindOutcome::Nothing
+            }
             (
                 State::Round2 {
                     nonce,
                     hub_nonce,
-                    request_id,
+                    request_id: r,
                     ..
                 },
-                method::BIND_PROOF,
-            ) if *request_id == rpc.request_id => {
-                if rpc.flags == flags::RESPONSE_ERROR {
-                    if codec::decode_error(rpc.payload) == Ok(code::BAD_COOKIE) {
-                        // 1. tura dön: yeni nonce, yeni cookie; eski kanıt bir daha gitmez.
-                        c.bind_bad_cookie = c.bind_bad_cookie.saturating_add(1);
-                        self.new_round(now, deps);
-                        return self
-                            .on_tick(now, deps)
-                            .map_or(BindOutcome::Nothing, BindOutcome::Send);
-                    }
-                    // POSSESSION_PROOF_FAIL / RATE_LIMITED / HUB_CAPACITY / bozuk: yalnız ipucu (C8).
-                    c.bind_error_hints = c.bind_error_hints.saturating_add(1);
-                    return BindOutcome::Nothing;
-                }
-                let Ok(sig) = codec::decode_bind_ack(rpc.payload) else {
-                    c.rx_malformed = c.rx_malformed.saturating_add(1);
-                    return BindOutcome::Nothing;
-                };
-                let tbs = codec::bind_ack_tbs(
-                    &deps.cfg.device_cert_ref,
-                    nonce,
-                    hub_nonce,
-                    codec::BIND_OK,
-                    code::OK,
-                );
-                if verify_strict(&deps.cfg.hub_ed25519_pub, &tbs, &sig).is_err() {
+                RpcBody::BindProofResp(resp),
+            ) if *r == request_id => {
+                let tbs = ack_tbs(&deps.cfg.device_cert_ref, nonce, hub_nonce, 1, STATUS_OK);
+                if verify_strict(&deps.cfg.hub_ed25519_pub, &tbs, &resp.hub_signature).is_err() {
                     // Bağlı sayılmaz; tur kendi kadansıyla sürer.
                     c.bind_bad_signature = c.bind_bad_signature.saturating_add(1);
                     return BindOutcome::Nothing;
@@ -296,4 +301,24 @@ impl BindMachine {
             }
         }
     }
+}
+
+/// S4 PLANE1_RPC kontrol çerçevesi (kuyruksuz): `HubFrame::Plane1Rpc(RpcMessage)` —
+/// `kama_contracts::s4` codec'i (KK-H34). Bind ve heartbeat çerçeveleri sınırın çok altındadır;
+/// STORE'un sınırını çağıran ([`crate::hub::link`]) önceden denetler.
+pub(crate) fn rpc_frame_checked(request_id: u32, body: RpcBody) -> Result<Vec<u8>, S4Error> {
+    let rpc = RpcMessage { request_id, body }.encode()?;
+    HubFrame::Plane1Rpc(&rpc).encode()
+}
+
+/// [`rpc_frame_checked`]; yalnız sabit boyutlu (sınırın altında olduğu kesin) yükler için.
+pub(crate) fn rpc_frame(request_id: u32, body: RpcBody) -> Vec<u8> {
+    rpc_frame_checked(request_id, body).unwrap_or_default()
+}
+
+/// HEARTBEAT çerçevesi (S4 §2.2): `[0;4] ‖ 0x1B ‖ echo_token`.
+pub(crate) fn heartbeat_frame(token: u32) -> Vec<u8> {
+    HubFrame::Heartbeat(s4::Heartbeat { token: Some(token) })
+        .encode()
+        .unwrap_or_default()
 }
