@@ -154,10 +154,25 @@ modeline özgüdür; netem ya da ürün koşusunda ölçülmedi. Bellek sınırl
 kayıt; uçuş, kayıp, kopya kuyruk tepeleri ≤ 5 / 0 / 1; tombstone ≤ 8), panik yok. Kaynakta kapatma
 #140 madde 2'dir (motor teyitli birimin bekleyen işini budar, karar üretmez).
 
-*Runtime* (legacy + `validated_v1`, gerçek UDP loopback; `store_miss_guard_fec_recovered`, tek koşu):
-blok teyidinden 0.36 s sonra ilk atlama; `stale_skipped` 1. s'de 2, 3. s'de 3, 10. s'ye dek 3 (yeni trafik
-yok); motorun uçuş kuyruğunda 2 kayıt 10 s boyunca kaldı, kopya yok. Aynı koşuda tahliye kolunda
-`stale_skipped = 123`, diğer kollarda 0 (aşağıdaki tablo).
+*Runtime* (legacy + `validated_v1`, gerçek UDP loopback; `store_miss_guard_fec_recovered`): blok
+teyidinden 0.36 s sonra ilk atlama; `stale_skipped` 1. s'de 2, 3. s'de 3, 10. s'ye dek 3 (yeni trafik
+yok); motorun uçuş kuyruğunda 2 kayıt 10 s boyunca kaldı, kopya yok. İkinci koşu: ilk atlama 13 ms,
+1. s'de 3, 10. s'ye dek 3, uçuşta 2 kayıt.
+
+*Runtime, tahliye kolu* (`late_ack_after_cap_keeps_payload`; 4096+ dolgu birimi, her birinin orijinali
+düşer). Atlanan karar sayısı atlama kolunda 123, 227, 198, 495, 500 (beş koşu); aynı test kodunda
+başlık-only emisyon geri konunca (yerel mutasyon, commit edilmedi) geçerli tek koşuda 49 başlık-only
+karar (iddia 6 o kolda beklendiği gibi kırmızı). Atlanan karar aynı birime yeni karar doğurur
+(legacy: ARQ tavanı 3'e dek yeniden gönderim, sonra tavansız geometrik kopya); sayının artışı bu
+döngüyle tutarlıdır. Faz B (geç ACK'ten sonra hedefin yeniden gönderiminin ACK'i), bekleme trafiği
+tavansızken (5 ms'de bir birim): atlama kolunda 23.8 s ve 0.41 s (geçti) ve iki koşuda türetilmiş
+tavan (24.2 s, 22.2 s) aşıldı — o anda ≈ 1100 teyitsiz birim, gönderim kuyruğunda 1032 birim ve
+hedefin vadesi ≈ 10 s geçmiş kopyası; başlık-only kolda 0.18 s (geçerli tek koşu). Örnek küçüktür
+(atla 4, başlık 1 geçerli koşu); fark, atlamanın bu yük altındaki etkisine işaret eder, büyüklüğü
+ölçülmedi. Fikstür düzeltmesi: bekleme trafiği teyitsiz birim 64'e ulaşınca durur
+(`TRICKLE_OUTSTANDING_MAX`; trafik yalnız ACK akışı içindir). Sonra: faz B 9.3 / 12.5 / 21.3 s
+(tavanlar 18.9 / 21.4 / 26.8 s). İki koşuda (biri başlık-only kolda) tahliye kolu ön koşulda kırmızı
+oldu (TTL tahliyeden önce geldi; yukarıda "Fikstür geçmişi"nde beyanlı, bu PR'dan bağımsız).
 
 **Tel bekçisi ve mutasyon.** Runtime testlerinin röle düğümü istemciden gelen her datagramı kurallardan
 önce sayar; boş gövdeli DATA, yalnız önekli DATA_FRAG ve boş sembollü FEC sayısı her testte 0 olmalı
@@ -169,7 +184,7 @@ fikstürlerde kurulmuyor); o yol kod okuması ve sayaç kimliğiyle kapsanır.
 
 ## CI (sahip kararı 2026-11-11, #174 madde 1)
 
-`k4g05b_runtime_ownership` testleri (gerçek zamanlı, sırayla, yerel tek koşu 133.9 s) `#[ignore]` ile
+`k4g05b_runtime_ownership` testleri (gerçek zamanlı, sırayla, yerel koşular 133.9 s ve 106.4 s) `#[ignore]` ile
 hızlı kümeden (`test-fast`) çıktı. Her PR'da test-fast'a paralel `test-runtime` işi
 `cargo test -p client-core --all-features --test k4g05b_runtime_ownership -- --ignored` koşar;
 vakum bekçisi "`test result: ok. 6 passed; 0 failed`" birebir. İş `ci-verdict` `needs` listesindedir.
@@ -242,9 +257,11 @@ kaldırıldı).
 - **Boşluk bekçisi:** her geç-ACK kolunda geç ACK çerçevesinin istemcide işlendiği ve motor seq'ine
   çevrildiği (`mapped_seqs > 0`) iki kolda da doğrulandı; kollar yalnız `new_units`'te ayrışır.
 
-**Atlama politikasından sonraki koşu** (dal, `-- --ignored --nocapture`, tek koşu, yerel loopback,
-6/6 yeşil, 133.9 s). Yukarıdaki tabloyla kontrollü kıyas DEĞİLDİR (farklı derleme ve koşu; süreler
-gözlem):
+**Atlama politikasından sonraki koşu** (dal `d9f5372e`, bekleme trafiği tavansız; `-- --ignored
+--nocapture`, tek koşu, yerel loopback, 6/6 yeşil, 133.9 s). Yukarıdaki tabloyla kontrollü kıyas
+DEĞİLDİR (farklı derleme ve koşu; süreler gözlem). Bekleme trafiği tavanından sonraki tam koşu
+(`e16b0192` ağacı): 6/6 yeşil, 106.4 s; gövdesiz 0 her testte; `stale_skipped` tahliye 198, FEC bekçisi
+3, diğerleri 0.
 
 | Test | İstemci datagramı (gövdesiz) | `stale_skipped` (= `stale_decisions` + `fec_repair_missing`) | Gözlem |
 |---|---|---|---|
