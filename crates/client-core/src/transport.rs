@@ -373,6 +373,12 @@ struct Renewal {
 /// [K4G-01b] Adaptör bunu OTURUM başına tutar (`ClientTransport::reorder`, `SessionHandle`
 /// anahtarlı): karşı ucun bir oturumu tek bir uçtur. `unit < next` ve tutulan birim için ikinci
 /// kopya YOK SAYILIR — aynı oturumun farklı eş yuvalarından gelen kopyaları burada tekilleşir.
+///
+/// [F3] Eksik sıra başı HİÇBİR ZAMAN atlanmaz: buraya gelen her birim veri alıcısında ACK'lenmiştir,
+/// atlamak ACK'lenmiş birimi atmak olurdu. Bellek sınırı burada değil veri alıcısının kabul
+/// penceresindedir ([`ExpectedSessions::set_admit_window`]): `next`'ten pencere genişliği ve
+/// ötesindeki birim ACK'lenmez, buraya hiç gelmez; `held` en çok `genişlik − 1` birim tutar. `next`
+/// her ilerleyişte veri alıcısına yayımlanır ([`ExpectedSessions::advance_head`]).
 #[derive(Default)]
 struct Reorder {
     next: u64,
@@ -391,25 +397,18 @@ pub struct ReorderDiag {
 }
 
 impl Reorder {
-    /// Birimi koyar; sırası gelen birimler `out`'a akar. Tutulan birim `cap`'i aşarsa en küçük
-    /// boşluk atlanır (motorun gönderim penceresi bunu meşru trafikte imkânsız kılar).
+    /// Birimi koyar; sırası gelen birimler `out`'a akar. Eksik sıra başı beklenir, atlanmaz (F3).
     fn push(
         &mut self,
         unit: u64,
         session: SessionHandle,
         payload: Vec<u8>,
-        cap: usize,
         out: &mut VecDeque<Delivered>,
     ) {
         if unit < self.next {
             return; // veri alıcısının ilk-teslim penceresinin dışından gelen geç kopya
         }
         self.held.entry(unit).or_insert((session, payload));
-        if self.held.len() > cap {
-            if let Some((&first, _)) = self.held.first_key_value() {
-                self.next = first;
-            }
-        }
         while let Some(entry) = self.held.first_entry() {
             if *entry.key() != self.next {
                 break;
@@ -434,7 +433,8 @@ pub enum UnitTraceKind {
     /// (motorun sırasız ilk teslimi; sıralamadan ÖNCE). `unit` = `unit_id`.
     Drained,
     /// Alıcı: oturumun sıralı teslim sınırı (`Reorder::next`) `unit` değerine ilerledi; ondan küçük
-    /// birimler teslim kuyruğuna verildi (ya da tutulan birim tavanı aşılınca atlandı).
+    /// birimler teslim kuyruğuna verildi. [F3] Sınır yalnız sıradaki birim geldiğinde ilerler
+    /// (eksik sıra başı atlanmaz).
     Released,
 }
 
@@ -586,6 +586,11 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         // [K4G-01 / D1 (v1.1)] Veri alıcısının beklediği oturumlar bu adaptörün oturum tablosundan
         // yayımlanır (`sync_expected`); kurulumda tablo boştur → hiçbir `Session(_)` beklenmez.
         let expected = ExpectedSessions::new();
+        // [F3] Sıra başı için yer koruma: oturum sıralayıcısı ([`Reorder`]) eksik sıra başını
+        // atlamaz; veri alıcısı sıra başından `max_inflight_units` ve ötesindeki teslim kimliğini
+        // kabul etmez (ACK'siz; gönderici yeniden iletir). Tutulan birim sayısı böylece sınırlıdır.
+        expected
+            .set_admit_window(u64::try_from(cfg.runtime.max_inflight_units).unwrap_or(u64::MAX));
         let ctx_counters = CtxDispatchCounters::new();
         let server = rt.block_on(ServerEndpoint::bind_expecting(
             cfg.data_bind,
@@ -677,6 +682,15 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     #[must_use]
     pub fn data_not_admitted_full(&self) -> u64 {
         self.server.data_not_admitted_full()
+    }
+
+    /// [F3] Salt-okunur telemetri: oturumun kabul penceresinin dışında kaldığı için motora
+    /// verilmeyen (ACK'lenmeyen) DATA ve RECOVERED'a yazılmayan FEC kurtarımı sayısı
+    /// (`ServerStats::data_not_admitted_window`). Sıra başı eksikken gönderici ilerlediğinde artar;
+    /// birim kaybolmaz, sırası gelince yeniden iletimle kabul edilir.
+    #[must_use]
+    pub fn data_not_admitted_window(&self) -> u64 {
+        self.server.data_not_admitted_window()
     }
 
     /// [K4G-05] Salt-okunur telemetri: ucu açık her S1 oturumunun motor / ARQ aynası
@@ -1146,7 +1160,6 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     // ── teslimler ──
 
     fn drive_deliveries(&mut self) {
-        let cap = self.runtime_cfg.max_inflight_units;
         while self.inbox.len() < MAX_INBOX {
             let Some(d) = self.server.try_next_delivery() else {
                 break;
@@ -1175,14 +1188,16 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             // yeni oturum eski oturumun `next`'ine takılmaz; aynı oturumun başka bir yuvadan
             // (adres) gelen kopyası burada tekilleşir.
             let reorder = self.reorder.entry(h).or_default();
-            #[cfg(any(test, feature = "test-util"))]
             let next_before = reorder.next;
-            reorder.push(d.unit_id, h, d.payload, cap, &mut self.inbox);
-            // [KTP2-F0 · A] Salt gözlem: sıralı teslim sınırı ilerlediyse yeni değeri.
-            #[cfg(any(test, feature = "test-util"))]
-            if reorder.next != next_before {
+            reorder.push(d.unit_id, h, d.payload, &mut self.inbox);
+            let next = reorder.next;
+            if next != next_before {
+                // [F3] Sıra başı ilerledi: veri alıcısının kabul penceresi de ilerler.
+                self.expected.advance_head(h, next);
+                // [KTP2-F0 · A] Salt gözlem: sıralı teslim sınırının yeni değeri.
+                #[cfg(any(test, feature = "test-util"))]
                 if let Some(trace) = self.unit_trace.as_mut() {
-                    trace.push(UnitTraceKind::Released, h, reorder.next, 0);
+                    trace.push(UnitTraceKind::Released, h, next, 0);
                 }
             }
         }
@@ -1679,30 +1694,43 @@ mod tests {
         let h = SessionHandle::from_raw(7);
         let mut r = Reorder::default();
         let mut out = VecDeque::new();
-        r.push(1, h, b"b".to_vec(), 16, &mut out);
+        r.push(1, h, b"b".to_vec(), &mut out);
         assert!(out.is_empty(), "0 gelmeden 1 teslim edilmez");
-        r.push(0, h, b"a".to_vec(), 16, &mut out);
-        r.push(1, h, b"tekrar".to_vec(), 16, &mut out);
+        r.push(0, h, b"a".to_vec(), &mut out);
+        r.push(1, h, b"tekrar".to_vec(), &mut out);
         let got: Vec<Vec<u8>> = out.into_iter().map(|d| d.unit).collect();
         assert_eq!(got, [b"a".to_vec(), b"b".to_vec()]);
     }
 
+    /// [F3] Eksik sıra başı hiçbir sayıda tutulan birimde atlanmaz; gelince hepsi sırayla akar.
+    /// (Bellek sınırı veri alıcısının kabul penceresindedir: `tests/reorder_no_skip.rs`.)
     #[test]
-    fn reorder_is_bounded_and_advances_past_a_gap_only_over_cap() {
+    fn reorder_never_skips_a_missing_head() {
         let h = SessionHandle::from_raw(1);
         let mut r = Reorder::default();
         let mut out = VecDeque::new();
-        for u in 1..=3 {
-            r.push(u, h, vec![u as u8], 3, &mut out);
+        const AHEAD: u64 = 10_000;
+        for u in 1..=AHEAD {
+            r.push(u, h, u.to_be_bytes().to_vec(), &mut out);
         }
-        assert!(out.is_empty(), "tavan dolmadan boşluk atlanmaz");
-        r.push(4, h, vec![4], 3, &mut out);
-        let got: Vec<u8> = out.into_iter().map(|d| d.unit[0]).collect();
+        assert!(
+            out.is_empty(),
+            "sıra başı (0) eksikken hiçbir şey akmaz, atlama yok"
+        );
+        assert_eq!(r.next, 0);
+        assert_eq!(r.held.len() as u64, AHEAD);
+        r.push(0, h, 0u64.to_be_bytes().to_vec(), &mut out);
+        let got: Vec<u64> = out
+            .into_iter()
+            .map(|d| u64::from_be_bytes(d.unit.try_into().expect("8 B")))
+            .collect();
         assert_eq!(
             got,
-            [1, 2, 3, 4],
-            "tavan aşılınca en küçük boşluk atlanır, sıra korunur"
+            (0..=AHEAD).collect::<Vec<_>>(),
+            "sıra korunur, kayıp yok"
         );
+        assert!(r.held.is_empty());
+        assert_eq!(r.next, AHEAD + 1);
     }
 
     /// [K4G-11] Salt-okunur erişimciler taze ürün adaptöründe: Crypto'nun tutmadığı tutamacın

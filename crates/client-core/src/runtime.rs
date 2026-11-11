@@ -749,6 +749,10 @@ pub struct ServerStats {
     /// [F4] Çözülen ama teslim kanalına giremeyen FEC kurtarımı (RECOVERED'a yazılmadı;
     /// gönderici kaynak birimi yeniden iletir).
     pub fec_recovered_not_admitted: u64,
+    /// [F3] Oturumun kabul penceresinin DIŞINDA kaldığı için (teslim kimliği ≥ sıra başı + genişlik)
+    /// motora VERİLMEYEN (ACK'lenmeyen) DATA datagramı + RECOVERED'a yazılmayan FEC kurtarımı:
+    /// sıra başı eksikken gönderici ilerledi; birim yeniden iletimle sırası gelince kabul edilir.
+    pub data_not_admitted_window: u64,
     /// Peer-cap fail-closed reddi (yeni peer, tablo dolu).
     /// [K4G-01b] "Yeni peer" = yeni `(adres, SessionHandle)` yuvası.
     pub dropped_new_peers: u64,
@@ -1496,7 +1500,27 @@ pub enum Readiness {
 /// [K4G-01b] Eş yuvalarının ömrü de bu kümeye bağlıdır: bağlı oturumu kümeden çıkan (kapanan)
 /// `(adres, oturum)` yuvası `idle_hold`'u beklemeden emekliye ayrılır.
 #[derive(Debug, Clone, Default)]
-pub struct ExpectedSessions(Arc<Mutex<BTreeMap<SessionHandle, Readiness>>>);
+pub struct ExpectedSessions(
+    Arc<Mutex<BTreeMap<SessionHandle, Readiness>>>,
+    Arc<Mutex<AdmitWindow>>,
+);
+
+/// [F3 · sıra başı için yer koruma] Oturum başına teslim kabul penceresi.
+///
+/// S1 adaptörünün oturum sıralayıcısı (`Reorder`) eksik sıra başını ATLAMAZ; belleği sınırlı tutmak
+/// için sıra başından çok ilerideki veri hiç kabul edilmez. Adaptör sıralayıcının sıra başını
+/// (`next`) buraya yayımlar; veri alıcısı `teslim kimliği ≥ sıra başı + genişlik` olan DATA'yı motora
+/// VERMEZ (ACK yok; gönderici ARQ ile yeniden iletir) ve böyle bir FEC kurtarımını RECOVERED'a
+/// yazmaz. Sıra başı her zaman pencerenin içindedir; tutulan birim sayısı `genişlik − 1`'i aşamaz.
+///
+/// Yayımlanan sıra başı gerçeğinin GERİSİNDE kalabilir (adaptör teslimleri okudukça ilerletir);
+/// bu yalnız kabulü daha tutucu yapar. Sıra başı yalnız ileri gider. Genişlik ayarlanmamışsa
+/// (bağımsız `bind`: sıralayıcı yok) pencere yoktur.
+#[derive(Debug, Default)]
+struct AdmitWindow {
+    width: Option<u64>,
+    heads: BTreeMap<SessionHandle, u64>,
+}
 
 impl ExpectedSessions {
     /// Boş küme: hiçbir `Session(_)` beklenmiyor.
@@ -1525,10 +1549,43 @@ impl ExpectedSessions {
     }
 
     /// Kümeyi TEK adımda yeniden yayımlar: okuyucu ara hâli görmez. Aynı tutamaç birden çok kez
-    /// gelirse SONUNCUSU geçerlidir.
+    /// gelirse SONUNCUSU geçerlidir. [F3] Kümeden çıkan oturumun kabul penceresi sıra başı da
+    /// silinir (kalan oturumlarınki korunur: sıra başı geri gitmez).
     pub fn replace(&self, sessions: impl IntoIterator<Item = (SessionHandle, Readiness)>) {
         let next: BTreeMap<SessionHandle, Readiness> = sessions.into_iter().collect();
+        self.window_lock()
+            .heads
+            .retain(|session, _| next.contains_key(session));
         *self.lock() = next;
+    }
+
+    /// [F3] Kabul penceresini AÇAR: her `Ready` oturum için teslim kimliği
+    /// `[sıra başı, sıra başı + width)` aralığındaki veri kabul edilir. `width` en az 1'dir.
+    pub fn set_admit_window(&self, width: u64) {
+        self.window_lock().width = Some(width.max(1));
+    }
+
+    /// [F3] Oturumun sıralı teslim sınırı `head`'e ilerledi (bundan küçük kimlikler teslim edildi).
+    /// Sıra başı yalnız ileri gider; daha küçük değer yok sayılır.
+    pub fn advance_head(&self, session: SessionHandle, head: u64) {
+        let mut w = self.window_lock();
+        let slot = w.heads.entry(session).or_insert(0);
+        *slot = (*slot).max(head);
+    }
+
+    /// [F3] Oturumun kabul sınırı (dışlayıcı): bu değer ve üstündeki teslim kimliği kabul edilmez.
+    /// Pencere kapalıysa `None`. Sıra başı yayımlanmamış oturum için sıra başı 0'dır.
+    #[must_use]
+    pub fn admit_limit(&self, session: SessionHandle) -> Option<u64> {
+        let w = self.window_lock();
+        let width = w.width?;
+        Some(
+            w.heads
+                .get(&session)
+                .copied()
+                .unwrap_or(0)
+                .saturating_add(width),
+        )
     }
 
     /// `session` bekleniyorsa hazırlığı; beklenmiyorsa `None`.
@@ -1541,6 +1598,26 @@ impl ExpectedSessions {
     fn lock(&self) -> MutexGuard<'_, BTreeMap<SessionHandle, Readiness>> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
+
+    /// [F3] Kilit sırası: [`Self::replace`] önce bunu, sonra kümeyi alır; başka hiçbir yol iki kilidi
+    /// birlikte tutmaz.
+    fn window_lock(&self) -> MutexGuard<'_, AdmitWindow> {
+        self.1.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// [F3] Bağlam bir oturumsa onun kabul sınırı (bkz. [`ExpectedSessions::admit_limit`]).
+fn session_admit_limit(expected: &ExpectedSessions, ctx: ProtectionContext) -> Option<u64> {
+    match ctx {
+        ProtectionContext::Session(h) => expected.admit_limit(h),
+        ProtectionContext::HubChannel => None,
+    }
+}
+
+/// [F3] `id` (fragmenter kapalıyken birim, açıkken mesaj kimliği) oturumun kabul penceresinin
+/// DIŞINDA mı. Pencere yoksa ya da bağlam oturum değilse `false`.
+fn beyond_admit_window(expected: &ExpectedSessions, ctx: ProtectionContext, id: u64) -> bool {
+    session_admit_limit(expected, ctx).is_some_and(|limit| id >= limit)
 }
 
 /// [K4G-01 / D1 (v1.1) kol (b)] HubChannel dağıtıcısı — Session dağıtıcısından AYRI bir tip.
@@ -3038,6 +3115,8 @@ pub struct ServerHandle {
     /// [F4] [`ServerStats::data_not_admitted_full`]'ın canlı aynası (teslim kanalı doluyken motora
     /// verilmeyen, ACK'lenmeyen DATA; bkz. [`ServerHandle::data_not_admitted_full`]).
     data_not_admitted_full: Arc<AtomicU64>,
+    /// [F3] [`ServerStats::data_not_admitted_window`]'ın canlı aynası.
+    data_not_admitted_window: Arc<AtomicU64>,
 }
 
 impl ServerEndpoint {
@@ -3105,6 +3184,7 @@ impl ServerEndpoint {
         let (t0_tx, t0_rx) = mpsc::channel::<oneshot::Sender<()>>(1);
         let delivery_dropped = Arc::new(AtomicU64::new(0));
         let data_not_admitted_full = Arc::new(AtomicU64::new(0));
+        let data_not_admitted_window = Arc::new(AtomicU64::new(0));
         let task = tokio::spawn(server_task(
             sock,
             cfg,
@@ -3117,6 +3197,7 @@ impl ServerEndpoint {
             ctx_counters.clone(),
             Arc::clone(&delivery_dropped),
             Arc::clone(&data_not_admitted_full),
+            Arc::clone(&data_not_admitted_window),
         ));
         Ok(ServerHandle {
             delivery_rx,
@@ -3127,6 +3208,7 @@ impl ServerEndpoint {
             ctx_counters,
             delivery_dropped,
             data_not_admitted_full,
+            data_not_admitted_window,
         })
     }
 }
@@ -3181,6 +3263,13 @@ impl ServerHandle {
     #[must_use]
     pub fn data_not_admitted_full(&self) -> u64 {
         self.data_not_admitted_full.load(Ordering::Relaxed)
+    }
+
+    /// [F3] [`ServerStats::data_not_admitted_window`] ile AYNI sayaç, kapanışı beklemeden okunur:
+    /// kabul penceresinin dışında kaldığı için motora verilmeyen (ACK'lenmeyen) DATA.
+    #[must_use]
+    pub fn data_not_admitted_window(&self) -> u64 {
+        self.data_not_admitted_window.load(Ordering::Relaxed)
     }
 
     /// Kapanış → istatistik.
@@ -3524,6 +3613,8 @@ fn fec_ingest(
     // [S1B] Kurtarılan chunk'ların teslim kapısı için gereken fragmenter bağlamı.
     frag_on: bool,
     max_message_bytes: usize,
+    // [F3] Oturumun kabul sınırı (dışlayıcı teslim kimliği; `None` = pencere yok).
+    admit_limit: Option<u64>,
 ) -> Vec<u16> {
     let mut recovered_esis: Vec<u16> = Vec::new();
     let asm = slot.blocks.entry(block_id).or_insert_with(|| BlockAsm {
@@ -3604,6 +3695,16 @@ fn fec_ingest(
                     // [INV-ACK-DELIVER-1 · F4] Teslim kanalına GİREMEYEN kurtarılmış birim
                     // RECOVERED listesine yazılmaz: göndericinin ARQ'su kaynak birimi yeniden
                     // iletir (kaynak seq ACK'siz kaldı), DATA olarak gelince kabul edilir.
+                    // [F3] Kabul penceresinin dışındaki kurtarım da aynı yoldan gider.
+                    let delivery_id = if frag_on {
+                        u64::from(pfx.message_id)
+                    } else {
+                        unit_id
+                    };
+                    if admit_limit.is_some_and(|limit| delivery_id >= limit) {
+                        stats.data_not_admitted_window += 1;
+                        continue;
+                    }
                     if admit_chunk(
                         stats,
                         delivery_tx,
@@ -3662,6 +3763,7 @@ async fn server_task(
     ctx_counters: CtxDispatchCounters,
     delivery_dropped_seen: Arc<AtomicU64>,
     data_not_admitted_full_seen: Arc<AtomicU64>,
+    data_not_admitted_window_seen: Arc<AtomicU64>,
 ) -> ServerStats {
     // [K4G-01 / D1 (v1.1)] HubChannel dağıtıcısı: Session durumunun hiçbirini TUTMAZ (yalnız
     // sayaç).
@@ -3697,6 +3799,7 @@ async fn server_task(
         // yolları dahil). Sayaç yalnız `push_delivery`'de artar; burada okunur, değişmez.
         delivery_dropped_seen.store(stats.delivery_dropped, Ordering::Relaxed);
         data_not_admitted_full_seen.store(stats.data_not_admitted_full, Ordering::Relaxed);
+        data_not_admitted_window_seen.store(stats.data_not_admitted_window, Ordering::Relaxed);
         tokio::select! {
             _ = shutdown_rx.changed() => break,
             // Ölçüm-t0 (ServerHandle::mark_t0): wire sayaçları sıfır, ALICI DURUMU KORUNUR.
@@ -3863,10 +3966,6 @@ async fn server_task(
                         // Yer `try_reserve` ile GERÇEKTEN ayrılır (izin); bu datagramın (en çok bir)
                         // teslimi o izinle girer, izin kullanılmazsa bırakılır. (Sahip kararı
                         // 2026-11-11: "ACK'lenmiş birim kaybolmaz".)
-                        let Ok(permit) = delivery_tx.try_reserve() else {
-                            stats.data_not_admitted_full += 1;
-                            continue;
-                        };
                         let (unit_id, pfx, payload, body) = match parsed {
                             RxFrame::Data { unit_id, payload } => (
                                 unit_id,
@@ -3891,6 +3990,22 @@ async fn server_task(
                                 Some(body),
                             ),
                             _ => unreachable!("dış match yalnız iki DATA varyantını seçti"),
+                        };
+                        // [F3] Sıra başı için yer koruma: oturum sıralayıcısının penceresinin
+                        // dışındaki veri motora VERİLMEZ (ACK yok; gönderici yeniden iletir). Teslim
+                        // kimliği fragmenter açıkken mesaj, kapalıyken birim kimliğidir (`admit_chunk`).
+                        let delivery_id = if frag_on {
+                            u64::from(pfx.message_id)
+                        } else {
+                            unit_id
+                        };
+                        if beyond_admit_window(&expected, slot.ctx, delivery_id) {
+                            stats.data_not_admitted_window += 1;
+                            continue;
+                        }
+                        let Ok(permit) = delivery_tx.try_reserve() else {
+                            stats.data_not_admitted_full += 1;
+                            continue;
                         };
                         let out = slot.rx.on_datagram(
                             RxDatagram {
@@ -3953,6 +4068,7 @@ async fn server_task(
                                 }
                             }
                             let k = u8::try_from(p.k_shape).unwrap_or(255);
+                            let admit_limit = session_admit_limit(&expected, slot.ctx);
                             let rec = fec_ingest(
                                 &mut stats,
                                 &delivery_tx,
@@ -3966,6 +4082,7 @@ async fn server_task(
                                 false,
                                 frag_on,
                                 msg_cap,
+                                admit_limit,
                             );
                             if !rec.is_empty() {
                                 stats.fec_recovered_ctrl_tx += 1;
@@ -4038,6 +4155,7 @@ async fn server_task(
                             srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, ack.encode())
                                 .await;
                         }
+                        let admit_limit = session_admit_limit(&expected, slot.ctx);
                         let rec = fec_ingest(
                             &mut stats,
                             &delivery_tx,
@@ -4051,6 +4169,7 @@ async fn server_task(
                             is_repair,
                             frag_on,
                             msg_cap,
+                            admit_limit,
                         );
                         if !rec.is_empty() {
                             stats.fec_recovered_ctrl_tx += 1;
@@ -4103,6 +4222,7 @@ async fn server_task(
                                 if let Some(p) = fec.as_ref() {
                                     for (fh, sym) in std::mem::take(&mut slot.pre_param_fec) {
                                         let is_rep = fh.kind == inner_kind::FEC_REPAIR;
+                                        let admit_limit = session_admit_limit(&expected, slot.ctx);
                                         let rec = fec_ingest(
                                             &mut stats,
                                             &delivery_tx,
@@ -4116,6 +4236,7 @@ async fn server_task(
                                             is_rep,
                                             frag_on,
                                             msg_cap,
+                                            admit_limit,
                                         );
                                         if !rec.is_empty() {
                                             stats.fec_recovered_ctrl_tx += 1;
@@ -4218,6 +4339,42 @@ mod ctx_first_tests {
     const A: ProtectionContext = ProtectionContext::Session(SessionHandle::from_raw(1));
     const B: ProtectionContext = ProtectionContext::Session(SessionHandle::from_raw(2));
     const HUB: ProtectionContext = ProtectionContext::HubChannel;
+
+    #[test]
+    fn admit_window_tracks_the_head_and_never_moves_back() {
+        let h = SessionHandle::from_raw(1);
+        let other = SessionHandle::from_raw(2);
+        let expected = ExpectedSessions::new();
+        let ctx = ProtectionContext::Session(h);
+        // Pencere kapalıyken (bağımsız `bind`) sınır yok.
+        assert_eq!(expected.admit_limit(h), None);
+        assert!(!beyond_admit_window(&expected, ctx, u64::MAX));
+        expected.set_admit_window(4);
+        expected.insert_ready(h);
+        // Yayımlanmamış sıra başı 0: kabul 0..4.
+        assert_eq!(expected.admit_limit(h), Some(4));
+        assert!(!beyond_admit_window(&expected, ctx, 3));
+        assert!(beyond_admit_window(&expected, ctx, 4));
+        expected.advance_head(h, 3);
+        assert_eq!(expected.admit_limit(h), Some(7));
+        // Sıra başı geri gitmez.
+        expected.advance_head(h, 1);
+        assert_eq!(expected.admit_limit(h), Some(7));
+        // Yeniden yayında kalan oturumun sıra başı korunur, çıkanınki silinir.
+        expected.replace([(h, Readiness::Ready), (other, Readiness::Ready)]);
+        assert_eq!(expected.admit_limit(h), Some(7));
+        expected.replace([(other, Readiness::Ready)]);
+        assert_eq!(expected.admit_limit(h), Some(4));
+        // HubChannel pencereye tabi değildir.
+        assert!(!beyond_admit_window(
+            &expected,
+            ProtectionContext::HubChannel,
+            u64::MAX
+        ));
+        // Genişlik en az 1.
+        expected.set_admit_window(0);
+        assert_eq!(expected.admit_limit(other), Some(1));
+    }
 
     #[test]
     fn client_route_requires_the_exact_expected_handle() {
