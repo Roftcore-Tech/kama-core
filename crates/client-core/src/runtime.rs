@@ -738,7 +738,10 @@ pub struct ClientStats {
 pub struct ServerStats {
     /// App'e teslim edilen birim (ilk-teslim).
     pub delivered: u64,
-    /// Teslim kanalı doluyken düşen teslim (app drenaj sözleşmesi ihlali görünür olsun).
+    /// Teslim kanalı doluyken düşen teslim. [INV-ACK-DELIVER-1 · F4] Teslim artık yalnız ayrılmış
+    /// kanal yeriyle yapılır (DATA yolu yeri motordan önce, FEC yolu RECOVERED'dan önce ayırır);
+    /// düşme yolu yoktur, bu sayaç 0 kalır. Alan geriye uyum için durur: dolu kanalın görünür
+    /// izi [`Self::data_not_admitted_full`] ve [`Self::fec_recovered_not_admitted`]'tır.
     pub delivery_dropped: u64,
     /// [INV-ACK-DELIVER-1 · F4] Teslim kanalı doluyken motora VERİLMEYEN (ACK'lenmeyen) DATA
     /// datagramı: gönderici ARQ ile yeniden iletir; ACK'lenmiş birim kaybolmaz.
@@ -3272,44 +3275,37 @@ impl MsgAsm {
     }
 }
 
-/// Teslim kanalına bir mesaj koyar (bounded; taşan teslim sayılır — app drenaj sözleşmesi).
-/// [INV-ACK-DELIVER-1 · F4] `permit`: datagram motora verilmeden ÖNCE `try_reserve` ile GERÇEKTEN
-/// ayrılmış kanal yeri (DATA yolu); `None` ise `try_send` (FEC kurtarımı gibi çok birimli yollar —
-/// yer yoksa birim kabul edilmez, çağıran bunu bildirmez/ACK'lemez).
-#[allow(clippy::too_many_arguments)]
+/// Teslim kanalına bir mesaj koyar. [INV-ACK-DELIVER-1 · F4] Yalnız GERÇEKTEN ayrılmış kanal
+/// yeriyle (`permit`) çağrılır: teslim düşemez. Yer yoksa çağıran teslime hiç girişmez (DATA yolu
+/// datagramı motora vermez; FEC yolu kurtarımı RECOVERED'a yazmaz) — `delivery_dropped` artık hiçbir
+/// yolda artmaz (alan geriye uyum için durur).
 fn push_delivery(
     stats: &mut ServerStats,
-    delivery_tx: &mpsc::Sender<Delivery>,
-    permit: Option<mpsc::Permit<'_, Delivery>>,
+    permit: mpsc::Permit<'_, Delivery>,
     peer: SocketAddr,
     ctx: ProtectionContext,
     unit_id: u64,
     payload: Vec<u8>,
     from_fec: bool,
-) -> bool {
-    let d = Delivery {
+) {
+    permit.send(Delivery {
         peer,
         unit_id,
         payload,
         ctx,
-    };
-    let ok = match permit {
-        Some(p) => {
-            p.send(d);
-            true
-        }
-        None => delivery_tx.try_send(d).is_ok(),
-    };
-    if ok {
-        stats.delivered += 1;
-        if from_fec {
-            stats.fec_recovered_units += 1;
-        }
-        true
-    } else {
-        stats.delivery_dropped += 1;
-        false
+    });
+    stats.delivered += 1;
+    if from_fec {
+        stats.fec_recovered_units += 1;
     }
+}
+
+/// Verilmiş izni ya da (yoksa) kanalda şimdi ayrılan yeri döner; yer yoksa `None`.
+fn permit_or_reserve<'a>(
+    permit: Option<mpsc::Permit<'a, Delivery>>,
+    delivery_tx: &'a mpsc::Sender<Delivery>,
+) -> Option<mpsc::Permit<'a, Delivery>> {
+    permit.or_else(|| delivery_tx.try_reserve().ok())
 }
 
 /// [S1B] Alınan bir chunk'ı app'e teslim yoluna koyar — DATA ve FEC-kurtarma ORTAK kapısı.
@@ -3319,10 +3315,10 @@ fn push_delivery(
 /// AÇIKKEN: prefix'teki `(message_id, chunk_offset, FINAL)` ile birleştiriciye girer; mesaj
 /// tamamlanınca TAM payload TEK `Delivery` olarak akar ve dedup `message_id` üzerinde olur.
 #[allow(clippy::too_many_arguments)]
-fn admit_chunk(
+fn admit_chunk<'a>(
     stats: &mut ServerStats,
-    delivery_tx: &mpsc::Sender<Delivery>,
-    permit: Option<mpsc::Permit<'_, Delivery>>,
+    delivery_tx: &'a mpsc::Sender<Delivery>,
+    permit: Option<mpsc::Permit<'a, Delivery>>,
     peer: SocketAddr,
     slot: &mut PeerSlot,
     frag_on: bool,
@@ -3339,18 +3335,18 @@ fn admit_chunk(
         // [INV-ACK-DELIVER-1 · F4] Dedup penceresine YALNIZ teslim kanalına girdikten sonra
         // yazılır: dolu kanalda düşen birim "teslim edildi" sayılsaydı yeniden iletimi de yutulur,
         // ACK'lenmiş birim kalıcı kaybolurdu.
-        if !push_delivery(
+        let Some(permit) = permit_or_reserve(permit, delivery_tx) else {
+            return false;
+        };
+        push_delivery(
             stats,
-            delivery_tx,
             permit,
             peer,
             slot.ctx,
             unit_id,
             payload.to_vec(),
             from_fec,
-        ) {
-            return false;
-        }
+        );
         slot.delivered_seen.insert(unit_id);
         if slot.delivered_seen.len() > DELIVERED_DEDUP_WINDOW {
             slot.delivered_seen.pop_first();
@@ -3375,22 +3371,17 @@ fn admit_chunk(
         asm.take_if_complete()
     };
     if let Some(full) = complete {
+        // [F4 · FEC kolu] Yer, mesaj birleştiriciden ÇIKARILMADAN ÖNCE ayrılır. Yer yoksa mesaj
+        // birleştiricide (tamamlanmış hâliyle) KALIR ve bu chunk "kabul edilmedi" döner: FEC
+        // kurtarımı RECOVERED'a yazılmaz, gönderici chunk'ı yeniden iletir, o DATA izinle gelince
+        // mesaj teslim edilir. Önceki sıra (önce sil, sonra dene) mesajın daha önce ACK'lenmiş
+        // chunk'larını da silerdi: gönderici onları bir daha göndermez → mesaj kalıcı kaybolurdu.
+        let Some(permit) = permit_or_reserve(permit, delivery_tx) else {
+            return false;
+        };
         slot.msgs.remove(&pfx.message_id);
         stats.msgs_reassembled += 1;
-        // [F4] Tam mesaj kanala girmezse "teslim edildi" işaretlenmez; birleştirici girdisi
-        // düştüğünden mesaj yeniden iletimle (bütün chunk'lar) yeniden toplanır.
-        if !push_delivery(
-            stats,
-            delivery_tx,
-            permit,
-            peer,
-            slot.ctx,
-            mid,
-            full,
-            from_fec,
-        ) {
-            return false;
-        }
+        push_delivery(stats, permit, peer, slot.ctx, mid, full, from_fec);
         slot.delivered_seen.insert(mid);
         if slot.delivered_seen.len() > DELIVERED_DEDUP_WINDOW {
             slot.delivered_seen.pop_first();
@@ -3911,11 +3902,12 @@ async fn server_task(
                         );
                         // İlk-teslim: PN-yeni ise chunk teslim kapısına girer (dedup orada:
                         // fragmentasyon kapalı→birim-id, açık→mesaj-id).
+                        let mut permit = Some(permit);
                         if out.delivered.contains(&unit_id) {
                             admit_chunk(
                                 &mut stats,
                                 &delivery_tx,
-                                Some(permit),
+                                permit.take(),
                                 peer,
                                 slot,
                                 frag_on,
@@ -3926,6 +3918,10 @@ async fn server_task(
                                 false,
                             );
                         }
+                        // Kullanılmayan izin (yinelenen birim / mesajı tamamlamayan chunk) aynı
+                        // datagramın FEC kurtarımlarından ÖNCE bırakılır: aksi hâlde kurtarılan
+                        // birimler bir kanal yeri eksik görürdü.
+                        drop(permit);
                         if let Some(ack) = out.ack {
                             let sp = slot.ctx;
                             srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, ack.encode())
