@@ -60,6 +60,7 @@ pub use kama_noise_wire::opened::OpenedTransportShard;
 pub use kama_transport_schema::prefix::SourcePrefix;
 /// [v1] Ürün profili — tek doğruluk kaynağı (benchmark de bunu kullanır).
 pub use runtime::KamaV1Profile;
+pub use runtime::TransportEngine;
 
 /// Owns the egress decision engine and drives the ingress decode path.
 ///
@@ -93,6 +94,17 @@ impl ClientSession {
         let mut sender = Sender::new();
         sender.set_tail_recovery_config(TailRecoveryConfig::validated_v1());
         Self { sender }
+    }
+
+    /// [CC-PORT] quinn-proto 0.11.18 BBR + RFC 9002 motoruyla oturum (`Sender::with_cc_port`).
+    /// Tail recovery kurucuda `TailRecoveryConfig::rfc9002_cc_port()` (validated_v1 sınırları,
+    /// prob turu tavansız); burada ÜSTÜNE YAZILMAZ. Ürün varsayılanı [`Self::new`] olmaya devam
+    /// eder; bu kurucu `RuntimeConfig::engine = CcPort` ile seçilir (ölçüm/gösterim anahtarı).
+    #[must_use]
+    pub fn with_cc_port() -> Self {
+        Self {
+            sender: Sender::with_cc_port(),
+        }
     }
 
     /// Egress: feed one event and take the resulting send decisions.

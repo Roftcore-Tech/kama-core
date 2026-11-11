@@ -4859,6 +4859,25 @@ impl Sender {
         self.initial_window = cfg;
     }
 
+    /// [CC-PORT · sahip kararı 2026-11-11] Port motorunun ilk uçuş penceresi (bayt). Kurucu
+    /// RFC 9002 varsayılanıyla (10·MTU = 12 000 B; RFC 6928 "IW10") başlar — bu sabit iyi hat
+    /// web trafiğinden türemiştir, Kama'nın hedef ağları (düşük bant, sığ tampon) için değil.
+    /// Ürün profili bunu küçültür (runtime: `initial_window_bytes`, taban 4·MTU = BBR `min_cwnd`);
+    /// gösterim/VPS hücresi yapılandırmayla 10·MTU alabilir. RFC 6928 §4 "düşük bant hatlarda IW
+    /// küçük tutulmalı" uyarısının karşılığı. Yalnız ilk olaydan ÖNCE anlamlı: BBR durumunu
+    /// sıfırlayıp verilen pencereyle yeniden kurar (`cc` yoksa etkisiz).
+    pub fn set_cc_initial_window(&mut self, bytes: u64) {
+        if self.cc.is_some() {
+            self.cc = Some(crate::cc::Bbr::new(DEFAULT_MTU, bytes));
+        }
+    }
+
+    /// [CC-PORT] Port motorunun ilk uçuş penceresi (bayt); `cc` yoksa `None`.
+    #[must_use]
+    pub fn cc_initial_window(&self) -> Option<u64> {
+        self.cc.as_ref().map(crate::cc::Bbr::initial_window)
+    }
+
     /// Kurulu ilk-uçuş penceresi (gözlem/test).
     #[must_use]
     pub fn initial_window(&self) -> InitialWindowConfig {

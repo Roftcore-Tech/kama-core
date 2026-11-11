@@ -6,7 +6,7 @@
 //!
 //! | dosya | iş |
 //! |---|---|
-//! | [`codec`] | S4 §2'nin gereken alt kümesi (yerel tip; `kama_contracts::s4` gelene dek, KK-H34) |
+//! | (tel) | S4 §2 codec'i `kama_contracts::s4`'tedir (KK-H34; yerel codec kaldırıldı) |
 //! | [`bind`] | PoC-BIND: CLIENT_BIND → cookie → BIND_PROOF → imzalı yanıt (C2, C8) |
 //! | [`heartbeat`] | sessizlikte heartbeat, aktif yoklama, "koptu" (C6, C7); jitter (KK-H48) |
 //! | [`t3`] | T3 sabitleri ve aralık dizisi (KR-18, KK-H35) |
@@ -21,7 +21,6 @@
 //! `SESSION_INIT_REF`, mailbox, hop-ARQ, HANDLE_ASSIGN çerçevesi, extended zarf.
 
 pub mod bind;
-pub mod codec;
 pub mod heartbeat;
 pub mod link;
 pub mod signer;

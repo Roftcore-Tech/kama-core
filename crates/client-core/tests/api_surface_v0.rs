@@ -75,6 +75,7 @@ async fn transport_api_v0_surface_is_frozen() {
 
     // ── RuntimeConfig: TAM alan kümesi (eksiksiz destructure → alan ekle/sil = RED) ──
     let RuntimeConfig {
+        engine: _, // [CC-PORT] motor seçimi (varsayılan Legacy; API v0 davranışı değişmez)
         max_inflight_units: _,
         offer_queue: _,
         delivery_queue: _,

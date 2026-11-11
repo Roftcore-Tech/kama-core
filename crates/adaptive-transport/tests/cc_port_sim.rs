@@ -161,6 +161,13 @@ fn run_opt(
 ) -> Outcome {
     let one_way = rtt_ms * MS / 2;
     let mut s = eng.sender();
+    // `CC_IW=<bayt>`: port motorunun ilk uçuş penceresi (varsayılan kurucu: 10·MTU; ürün: 4·MTU).
+    if let Some(iw) = std::env::var("CC_IW")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        s.set_cc_initial_window(iw);
+    }
     let mut r = eng.receiver();
     if parity_per_block > 0 {
         s.set_fec_actuation_mode(FecActuationMode::Manual { enabled: true })

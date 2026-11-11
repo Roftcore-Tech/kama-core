@@ -80,6 +80,11 @@ const PN_SEQ_WINDOW: u64 = 1 << 16;
 /// Çalışma-zamanı konfigürasyonu. Tüm sınırlar açık; `Default` üretim-makul değerler.
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
+    /// [CC-PORT] Taşıma motoru seçimi. `Legacy` (varsayılan, ürün profili) = bugünkü motor,
+    /// bit-eşit. `CcPort` = quinn-proto 0.11.18 BBR + RFC 9002 portu (`Sender::with_cc_port` +
+    /// `Receiver::with_cc_port`); ölçüm ve gösterim anahtarı, varsayılan DEĞİL (PR-2 kararına dek).
+    /// İki uç AYNI motoru kurmalıdır (alıcının ACK kuralları göndericinin kayıp eşiğiyle eşleşir).
+    pub engine: TransportEngine,
     /// Aynı anda outstanding (teslim-bekleyen) birim tavanı — unit-store sınırı.
     pub max_inflight_units: usize,
     /// App→transport offer kuyruğu (bounded mpsc).
@@ -268,6 +273,11 @@ impl KamaV1Profile {
     #[must_use]
     pub fn runtime_config() -> RuntimeConfig {
         RuntimeConfig {
+            // [CC-PORT PR-2 · sahip kararı "CC-PORT VARSAYILAN <SHA>"] Ürün motoru = quinn-proto
+            // 0.11.18 BBR + RFC 9002 portu. Eski motor `KAMA_TRANSPORT_ENGINE=legacy` ile geri alınır
+            // (kama-node, bench) ya da `engine: Legacy`. Gerekçe: docs/design/CC-PORT-ESLEME.md ve
+            // Ö-CC hücreleri (CP-1: port 15,7 s / 10-10, eski 23,3 s / 10-10, eşli 0,67).
+            engine: TransportEngine::CcPort,
             max_inflight_units: 4096,
             offer_queue: 1024,
             delivery_queue: 1024,
@@ -308,6 +318,39 @@ impl KamaV1Profile {
             live_diag: false,
             // [E1 gösterim] Beş bayrak ürün yolunda KAPALI; yalnız gösterim düğümü/teşhis kolları açar.
             e1_flags: adaptive_transport::rate::E1Flags::default(),
+        }
+    }
+}
+
+/// [CC-PORT] Taşıma motoru (bkz. [`RuntimeConfig::engine`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TransportEngine {
+    /// Eski motor (faz makinesi); PR-2'den önce ürün profiliydi, `legacy` anahtarıyla geri alınır.
+    Legacy,
+    /// quinn-proto 0.11.18 BBR + RFC 9002 portu (ISEMRI-CC-PORT; `docs/design/CC-PORT-ESLEME.md`).
+    /// PR-2 ile ürün profili.
+    #[default]
+    CcPort,
+}
+
+impl TransportEngine {
+    /// Ortam değişkeni / argüman değerinden: `"cc-port"` → `CcPort`; `"legacy"` ya da boş →
+    /// `Legacy`; başka değer → `None` (çağıran hata verir).
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim() {
+            "" | "legacy" => Some(Self::Legacy),
+            "cc-port" | "cc_port" => Some(Self::CcPort),
+            _ => None,
+        }
+    }
+
+    /// Kol etiketi eki (`""` ya da `"-cc-port"`).
+    #[must_use]
+    pub fn label_suffix(self) -> &'static str {
+        match self {
+            Self::Legacy => "",
+            Self::CcPort => "-cc-port",
         }
     }
 }
@@ -1913,7 +1956,13 @@ async fn client_task(
     let start = Instant::now();
     // G2 sevk default'ları TEK kaynaktan: ClientSession (tail-ON validated_v1, startup-pacing motor
     // default'u ON, bootstrap OFF, FEC Manual-off). Burada default'a dokunulmaz.
-    let mut session = ClientSession::new();
+    // [CC-PORT] Motor seçimi: `Legacy` = bugünkü yol, bit-eşit; `CcPort` = port kurucusu (PTO,
+    // retx tavanı ve E2a kuralları kurucuda; aşağıdaki `set_e2a_flags` bu durumda ATLANIR, aksi
+    // hâlde ürün profilinin kapalı E2a bayrakları portun RFC 9002 kurallarını geri alırdı).
+    let mut session = match cfg.engine {
+        TransportEngine::Legacy => ClientSession::new(),
+        TransportEngine::CcPort => ClientSession::with_cc_port(),
+    };
     // [BURST-FUSION] Yapı-gate politikası config'ten; default sevk davranışıdır (byte-özdeş).
     session
         .sender_mut()
@@ -1952,13 +2001,25 @@ async fn client_task(
         session.sender_mut().set_fusion_policy(p);
     }
     // [E2a gösterim] Kural bayrakları (varsayılan kapalı = bit-aynı; doğrulama tip kurucusunda).
-    session.sender_mut().set_e2a_flags(cfg.e2a_flags);
+    if cfg.engine == TransportEngine::Legacy {
+        session.sender_mut().set_e2a_flags(cfg.e2a_flags);
+    }
     // [IW] İlk-uçuş penceresi (0 = sevk davranışı, clamp'e dokunulmaz).
     session
         .sender_mut()
         .set_initial_window(InitialWindowConfig {
             bytes: cfg.initial_window_bytes,
         });
+    // [CC-PORT · sahip kararı 2026-11-11] Port motorunda ilk uçuş = `initial_window_bytes`,
+    // taban 4·MTU (BBR min_cwnd). Ürün profili (2·MTU) → 4·MTU = 4 800 B; RFC 9002'nin 10·MTU'su
+    // (12 000 B) yalnız yapılandırmayla (gösterim/VPS hücresi). Gerekçe: 12 kB kör ilk uçuş sığ
+    // tamponda düşme, düşük bantta saniyeler; RFC 6928 §4 uyarısı.
+    if cfg.engine == TransportEngine::CcPort {
+        let iw = cfg
+            .initial_window_bytes
+            .max(4 * adaptive_transport::rate::DEFAULT_MTU);
+        session.sender_mut().set_cc_initial_window(iw);
+    }
     // [E1 gösterim, CC §4.1] Beş çalışma-zamanı bayrağı (varsayılan kapalı = sevk davranışı).
     session.sender_mut().set_e1_flags(cfg.e1_flags);
     let mut stats = ClientStats::default();
@@ -3283,8 +3344,12 @@ struct PeerSlot {
 
 impl PeerSlot {
     /// Taze yuva; oturum bağı (`ctx`) burada kurulur ve yuvanın ömrü boyunca değişmez.
-    fn new(ctx: ProtectionContext, quota_r: u32, now: u64) -> Self {
-        let mut rx = Receiver::new();
+    fn new(ctx: ProtectionContext, quota_r: u32, now: u64, engine: TransportEngine) -> Self {
+        // [CC-PORT] Alıcı motoru göndericiyle aynı: port ⇒ sırasız varışta anında ACK + 25 ms.
+        let mut rx = match engine {
+            TransportEngine::Legacy => Receiver::new(),
+            TransportEngine::CcPort => Receiver::with_cc_port(),
+        };
         rx.set_quota_r(quota_r);
         Self {
             rx,
@@ -3693,7 +3758,7 @@ async fn server_task(
                         stats.dropped_new_peers += 1;
                         continue;
                     }
-                    peers.insert(key, PeerSlot::new(seam_ctx, cfg.quota_r, now));
+                    peers.insert(key, PeerSlot::new(seam_ctx, cfg.quota_r, now, cfg.engine));
                 }
                 let Some(slot) = peers.get_mut(&key) else { continue };
                 slot.last_seen_ns = now;
@@ -4081,7 +4146,7 @@ mod ctx_first_tests {
         for h in [h1, h2, h3] {
             peers.insert(
                 (addr, h),
-                PeerSlot::new(ProtectionContext::Session(h), 4, 0),
+                PeerSlot::new(ProtectionContext::Session(h), 4, 0, TransportEngine::Legacy),
             );
         }
         assert_eq!(peers.len(), 3, "aynı adres, üç oturum → üç yuva");

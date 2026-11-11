@@ -150,7 +150,18 @@ fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
     // bounded_v1 risk kolu, yapı-gate 250) benchmark'a HİÇ ulaşmıyordu ve "sevk" etiketli kol
     // ürünün sevk etmediği bir yapılandırmayı ölçüyordu.
     let v1 = KamaV1Profile::runtime_config();
+    // [CC-PORT] Motor anahtarı kama-node ile aynı ortam değişkeni: `KAMA_TRANSPORT_ENGINE=cc-port`.
+    // İstemci ve sunucu süreçlerinde AYNI değer verilmelidir. Tanınmayan değer → panik (ölçüm
+    // aracı; sessiz düşüş istenmez).
+    let engine = std::env::var("KAMA_TRANSPORT_ENGINE")
+        .ok()
+        .map(|v| {
+            client_core::TransportEngine::parse(&v)
+                .expect("KAMA_TRANSPORT_ENGINE: 'legacy' ya da 'cc-port'")
+        })
+        .unwrap_or_default();
     RuntimeConfig {
+        engine,
         max_unit_bytes: unit.max(1),
         // Mesaj chunk'a sığmıyorsa fragmenter AÇIK (açık opt-in; eşitsizlikten türemez).
         max_message_bytes: (payload > unit).then_some(payload),
@@ -1019,7 +1030,13 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         // fec-off kollarıyla BYTE-ÖZDEŞ oluyordu ve provenans yalnız DİZİN ADINA dayanıyordu.
         // Dosya kopyalanınca/havuzlanınca kanıt tanımlanamaz hale gelirdi.
         kama_arm: format!(
-            "kama-product-tailv1-{}{}{}{}{}{}",
+            "kama-product-tailv1{}-{}{}{}{}{}{}",
+            // [CC-PORT] motor etiketi: port ⇒ "-cc-port" (provenans; sondaki `-dupN` eki korunur).
+            std::env::var("KAMA_TRANSPORT_ENGINE")
+                .ok()
+                .and_then(|v| client_core::TransportEngine::parse(&v))
+                .unwrap_or_default()
+                .label_suffix(),
             cfg.fec.label(),
             if cfg.burst_fusion { "-burstfusion" } else { "" },
             if cfg.bootstrap_rtt {
