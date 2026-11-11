@@ -23,7 +23,9 @@
 //! **Kapsam (Artım 1+3):** state machine + ölçüm + karar pipeline + DATA pacing + recovery İCRA
 //! (ARQ retransmit / forward duplication). Receiver (§4) = sonraki artım.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+#[cfg(feature = "experimental-cold-start")]
+use std::collections::BTreeSet;
+use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
 
 use crate::arq::{
@@ -1342,12 +1344,16 @@ struct PendingFecParity {
 /// (memory-hijyen; mühürlü-DEĞİL — logical-ledger'ın hiçbir mühürlü-muhasebeye etkisi yok).
 const CONFIRMED_LOGICAL_CAP: usize = 4096;
 
-/// [K4G-05b-R · sahip kararı 2026-11-11] Birim teyit çıktısı tamponunun üst sınırı
-/// ([`Sender::take_confirmed_units`]; SR-AUDIT-001 bounded). Runtime her olaydan sonra drenaj
-/// yaptığında tampon yalnız TEK olayın teyitlerini tutar; olay içi tekilleştirmeyle bu sayı olayda
-/// canlı kaydı eşleşen farklı birim sayısıdır. Değer runtime'ın varsayılan teyitsiz birim tavanına
-/// (`RuntimeConfig::max_inflight_units`) eşittir; o tavan bunu aşarsa client-core testi kırmızıdır.
-/// Tavan dolunca en eski teyit düşer ve [`Sender::diag_confirmed_units_overflow`] artar.
+/// [K4G-05b-R · sahip kararı 2026-11-11] Birim teyit çıktısında DRENAJ EDİLMEMİŞ birikimin üst
+/// sınırı ([`Sender::take_confirmed_units`]; SR-AUDIT-001 bounded). Tavan YALNIZ önceki
+/// çağrılardan kalan birikime uygulanır: her `on_event` / `on_event_batch` girişinde birikim bu
+/// sınırın üstündeyse en eski fazlası düşer ve [`Sender::diag_confirmed_units_overflow`] artar.
+/// Çağrının KENDİ ürettiği teyitler hiçbir zaman düşmez; sayıları çağrının girdisiyle sınırlıdır
+/// (ACK olayı: canlı kaydı eşleşen seq'ler — uçuş/tombstone dalında çerçevedeki seq başına en çok
+/// bir, un-loss dalında yeniden planı bekleyen kayıt başına en çok bir; RECOVERED olayı: listelenen
+/// birimler). Her çağrıdan sonra drenaj yapan tüketici (runtime) bu yüzden YAPISAL olarak teyit
+/// kaybetmez: tavanın değerinden, store sınırından, parçalama düzeninden ve ACK çerçevesi boyundan
+/// bağımsız. Tavan yalnız drenaj yapmayan çağıranların (bench/sim/harness) belleğini sınırlar.
 pub const CONFIRMED_UNITS_CAP: usize = 4096;
 
 /// sent_logical üst-sınırı (DR-S5-6; SR-AUDIT-001). GEREKÇE (M1-doğruluk-şartı, Abkarada şart-2):
@@ -1737,10 +1743,12 @@ pub struct Sender {
     diag_sent_logical_evicted: u64, // DR-S5-6: cap-eviction sayısı (M1-guard: hücrede 0-olmalı)
     diag_confirmed_logical_miss: u64, // DR-S5-6: ACK-teyidi kayıtsız-seq'e geldi (M1'de tüm-emisyon-register'lıyken = eviction-artefaktı)
     // ── [K4G-05b-R] birim teyit ÇIKTISI (SALT-ÇIKTI: hiçbir karar yolu OKUMAZ) ──
-    /// Son `take_confirmed_units`'ten bu yana teyit edilen birim kimlikleri (`OpaqueUnit::id`),
-    /// üretim sırasıyla. SINIRLI: [`CONFIRMED_UNITS_CAP`] (en eski düşer).
+    /// Son `take_confirmed_units`'ten bu yana teyit edilen birim kimlikleri (`OpaqueUnit::id`):
+    /// olaylar üretim sırasıyla, olay içinde artan kimlik sırasıyla. SINIRLI: çağrı girişinde drenaj
+    /// edilmemiş birikim [`CONFIRMED_UNITS_CAP`]'e indirilir (en eski düşer); çağrının kendi
+    /// teyitleri düşmez.
     confirmed_units_out: VecDeque<u64>,
-    /// Teyit çıktısı taşma sayacı (SALT-GÖZLEM).
+    /// Teyit çıktısı taşma sayacı: drenaj edilmeden düşen birikim (SALT-GÖZLEM).
     confirmed_units_overflow: u64,
 
     // ── ack_confidence (RECOVER_FWD tetiği): sessizlik-tabanlı ──
@@ -2430,6 +2438,8 @@ impl Sender {
         }
         #[cfg(not(feature = "experimental-cold-start"))]
         {
+            // [K4G-05b-R] Çağrı girişi: drenaj edilmemiş teyit birikimi tavana (SALT-ÇIKTI).
+            self.trim_undrained_confirmations();
             // DR-S5-4 SAF-LOGICAL erken-dönüş: RECOVERED-control pacer-saatine/fuzzy/rate/schedule'a
             // HİÇ girmez (emit-yok, kredi-yok, saat-ilerletme-yok — N8-bit-özdeşliğin yapısal-tabanı).
             if let Event::RecoveredControl(info) = &event {
@@ -2688,6 +2698,9 @@ impl Sender {
         if inbound.is_empty() && !any_due && !self.cs_has_pending_work() {
             return Vec::new();
         }
+        // [K4G-05b-R] Çağrı girişi: drenaj edilmemiş teyit birikimi tavana (SALT-ÇIKTI). E2 dönüşü
+        // teyit üretmez; birikim orada büyümez, budama bir sonraki işleyen çağrıya kalır.
+        self.trim_undrained_confirmations();
         let was_empty = inbound.is_empty();
         // Faz-1: tip-önceliği (EK5-iv; stable-sort → aynı-tip varış-sırası korunur).
         inbound.sort_by_key(Self::cs_type_priority);
@@ -3473,7 +3486,7 @@ impl Sender {
             self.dup_queue.retain(|d| !acked_units.contains(&d.unit.id));
         }
         // [K4G-05b-R] Teyit çıktısı: yalnız yazılır (karar yolu okumaz).
-        self.emit_unit_confirmations(&confirmed_units);
+        self.emit_unit_confirmations(confirmed_units);
 
         // [CC-PORT] quinn `on_ack` (paket başına) + `on_end_acks` (çerçeve sonu). min RTT =
         // Kama rtprop penceresi (quinn RttEstimator::min); uygulamayla-sınırlılık = gönderim anı
@@ -5680,29 +5693,38 @@ impl Sender {
         // listelenen her birim yankılanır (motor kaydı süzgeci YOK — süzgeç birim sahiplik dizini
         // ister, o motor değişikliği bu PR'ın dışında). Yalnız yazılır (karar yolu okumaz).
         let recovered: Vec<u64> = info.units.iter().map(|ru| ru.unit_id).collect();
-        self.emit_unit_confirmations(&recovered);
+        self.emit_unit_confirmations(recovered);
     }
 
-    /// [K4G-05b-R] Birim teyit çıktısı tamponuna yaz (SALT-ÇIKTI). Olay içi tekilleştirme ilk görülme
-    /// sırasını korur (BTreeSet — deterministik, ADR-17): aynı geç ACK tombstone ve un-loss dalına
-    /// birlikte düşebilir, bir çerçeve bir birimin birden çok kopyasını onaylayabilir. Olaylar arası
-    /// tekilleştirme YOK (runtime store varlığıyla tekilleştirir). Tavanda en eski düşer
-    /// ([`CONFIRMED_UNITS_CAP`]) ve taşma sayacı artar. Yalnız iki çıktı alanına yazar; hiçbir karar
-    /// durumu (kuyruk, zamanlayıcı, defter, hız) değişmez.
-    fn emit_unit_confirmations(&mut self, ids: &[u64]) {
+    /// [K4G-05b-R] Bir olayın birim teyitlerini çıktı tamponuna ekle (SALT-ÇIKTI). Olay içi
+    /// tekilleştirme yerinde sıralayıp yinelenenleri atar (ek ayırma yok; deterministik, ADR-17):
+    /// aynı geç ACK tombstone ve un-loss dalına birlikte düşebilir, bir çerçeve bir birimin birden
+    /// çok kopyasını onaylayabilir. Olay içi sıra bu yüzden artan birim kimliğidir. Olaylar arası
+    /// tekilleştirme YOK (runtime store varlığıyla tekilleştirir). Bu çağrının teyitleri DÜŞMEZ: tavan
+    /// yalnız çağrı girişinde drenaj edilmemiş birikime uygulanır
+    /// ([`Self::trim_undrained_confirmations`]). Yalnız çıktı tamponuna yazar; hiçbir karar durumu
+    /// (kuyruk, zamanlayıcı, defter, hız) değişmez.
+    fn emit_unit_confirmations(&mut self, mut ids: Vec<u64>) {
         if ids.is_empty() {
             return;
         }
-        let mut seen: BTreeSet<u64> = BTreeSet::new();
-        for &id in ids {
-            if !seen.insert(id) {
-                continue;
-            }
-            if self.confirmed_units_out.len() >= CONFIRMED_UNITS_CAP {
-                self.confirmed_units_out.pop_front(); // bounded (SR-AUDIT-001)
-                self.confirmed_units_overflow = self.confirmed_units_overflow.saturating_add(1);
-            }
-            self.confirmed_units_out.push_back(id);
+        ids.sort_unstable();
+        ids.dedup();
+        self.confirmed_units_out.extend(ids);
+    }
+
+    /// [K4G-05b-R] Çağrı girişinde (`on_event` / `on_event_batch`) drenaj edilmemiş teyit birikimini
+    /// [`CONFIRMED_UNITS_CAP`]'e indirir: en eski fazlası düşer, taşma sayacı düşen sayı kadar artar
+    /// (SR-AUDIT-001 bounded). Her çağrıdan sonra drenaj yapan tüketicide birikim girişte boştur ve
+    /// hiçbir şey düşmez. SALT-ÇIKTI: yalnız çıktı tamponu ve sayaç değişir.
+    fn trim_undrained_confirmations(&mut self) {
+        let len = self.confirmed_units_out.len();
+        if len > CONFIRMED_UNITS_CAP {
+            let excess = len - CONFIRMED_UNITS_CAP;
+            self.confirmed_units_out.drain(..excess);
+            self.confirmed_units_overflow = self
+                .confirmed_units_overflow
+                .saturating_add(u64::try_from(excess).unwrap_or(u64::MAX));
         }
     }
 
@@ -5739,8 +5761,8 @@ impl Sender {
     /// zamanlayıcısı, defteri ya da hızı bu çıktıya bağlı değildir.
     ///
     /// Döner: son çağrıdan bu yana teyit edilen birim kimlikleri (`OpaqueUnit::id`; ASLA iletim seq'i
-    /// ya da FEC ESI'si değil), üretim sırasıyla (ACK olayında çerçevenin `acked_seqs` sırasıyla
-    /// uçuş/tombstone eşleşmeleri, ardından un-loss eşleşmeleri), olay içinde tekil.
+    /// ya da FEC ESI'si değil). Olaylar üretim sırasıyla; bir olayın teyitleri olay içinde tekil ve
+    /// artan birim kimliği sırasıyla.
     ///
     /// Teyit ÜRETEN yollar YALNIZ:
     /// * (a) kökeni `FecParity` olmayan CANLI kayıtla eşleşen ACK: uçuştaki kayıt; tombstone
@@ -5755,16 +5777,19 @@ impl Sender {
     ///
     /// Olaylar arası tekilleştirme YOK: aynı birimin başka bir canlı kaydı sonraki bir olayda yine
     /// teyit üretebilir (birim kimlikleri yeniden kullanılmaz; tüketici ilk teyidi tutar). Drenaj
-    /// sözleşmesi: her `on_event` / `on_event_batch` çağrısından sonra bir kez. Tampon
-    /// [`CONFIRMED_UNITS_CAP`] ile sınırlı; drenajsız çağıranlarda en eski düşer ve
-    /// [`Self::diag_confirmed_units_overflow`] artar.
+    /// sözleşmesi: her `on_event` / `on_event_batch` çağrısından sonra bir kez. Bu sözleşmeye uyan
+    /// tüketici hiçbir teyidi kaybetmez: bir çağrının kendi teyitleri düşmez (sayıları çağrının
+    /// girdisiyle sınırlı). Drenaj edilmemiş birikim bir sonraki çağrının girişinde
+    /// [`CONFIRMED_UNITS_CAP`]'e indirilir (en eski düşer, [`Self::diag_confirmed_units_overflow`]
+    /// artar).
     #[must_use]
     pub fn take_confirmed_units(&mut self) -> Vec<u64> {
         self.confirmed_units_out.drain(..).collect()
     }
 
-    /// [K4G-05b-R] Teyit çıktısı taşma sayacı (SALT-GÖZLEM). Her olay sonrası drenaj yapan
-    /// tüketicide (runtime) 0 beklenir; drenaj yapmayan çağıranlarda (bench/sim) büyür.
+    /// [K4G-05b-R] Teyit çıktısı taşma sayacı: çağrı girişinde drenaj edilmeden düşen birikim
+    /// (SALT-GÖZLEM). Her çağrıdan sonra drenaj yapan tüketicide (runtime) yapısal olarak 0'dır;
+    /// drenaj yapmayan çağıranlarda (bench/sim) büyür.
     #[must_use]
     pub fn diag_confirmed_units_overflow(&self) -> u64 {
         self.confirmed_units_overflow
@@ -10846,7 +10871,8 @@ mod tests {
     // kimlikleri seq değerlerinden bilerek uzaktır (≥ `UID`): çıktı seq ya da ESI taşısaydı
     // ayrışırdı.
     // Sözleşme #140'ın motor kısmıyla da tutarlı alt kümedir: olaylar arası yeniden teyit ve motorun
-    // tanımadığı RECOVERED birimi teyit iddia EDİLMEZ.
+    // tanımadığı RECOVERED birimi teyit iddia EDİLMEZ. Tek istisna olay içi sıradır (artan birim
+    // kimliği; bu PR'ın tekilleştirme biçimi): #140 birleşmesinde motor modeliyle birlikte ele alınır.
     mod k4g05br_teyit {
         use super::*;
 
@@ -11062,7 +11088,8 @@ mod tests {
         #[test]
         fn k4g05br_inflight_ack_confirms_unit_ids_not_seqs() {
             for (name, mk) in engines() {
-                // (1) Data: tek birim; çok birimli çerçevede çıktı `acked_seqs` sırasıdır.
+                // (1) Data: tek birim; çok birimli çerçevede (seq'ler ters sırada) çıktı olay içinde
+                // artan birim kimliği sırasıdır.
                 let mut r = Rig::new(mk);
                 r.warm(UID);
                 assert!(
@@ -11089,11 +11116,10 @@ mod tests {
                     "{name}: dört kayıt uçuşta (ön koşul)"
                 );
                 r.ev(ack(&seqs_rev), t);
-                let want: Vec<u64> = ids.iter().rev().copied().collect();
                 assert_eq!(
                     r.s.take_confirmed_units(),
-                    want,
-                    "{name}: çıktı birim id'leri, acked_seqs sırasıyla (seq'ler {seqs_rev:?})"
+                    ids,
+                    "{name}: çıktı birim id'leri, artan kimlik sırasıyla (seq'ler {seqs_rev:?})"
                 );
                 assert!(
                     r.s.take_confirmed_units().is_empty(),
@@ -11429,47 +11455,75 @@ mod tests {
                 assert!(out.is_empty(), "{name}: RECOVERED karar üretmez (N8)");
                 assert_eq!(
                     r.s.take_confirmed_units(),
-                    vec![UID + 2, UID + 1, UID + 3],
-                    "{name}: bilgi sırası, olay içinde tekil"
+                    vec![UID + 1, UID + 2, UID + 3],
+                    "{name}: olay içinde tekil, artan kimlik sırasıyla"
                 );
             }
         }
 
+        /// Tek çağrı tavandan fazla teyit üretse de HİÇBİRİ düşmez (bir ACK çerçevesi ya da RECOVERED
+        /// tavandan çok birimi teyit edebilir); tavan yalnız drenaj edilmemiş birikime, sonraki
+        /// çağrının girişinde uygulanır ve düşen sayı kadar sayaç artar.
         #[test]
-        fn k4g05br_confirmed_units_buffer_bounded_drop_oldest() {
+        fn k4g05br_confirmed_units_call_output_never_dropped() {
             const EXTRA: usize = 37;
             const SMALL_EVENT: u64 = 5;
+            const BIG_BASE: u64 = 1_000_000;
+            const NEXT_BASE: u64 = 2_000_000;
             for (name, mk) in engines() {
+                let recovered = |ids: &[u64]| {
+                    Event::RecoveredControl(RecoveredInfo {
+                        units: ids.iter().map(|&u| rec(u)).collect(),
+                    })
+                };
+                // (a) Drenajlı tüketici: tavanı aşan TEK çağrının bütün teyitleri döner.
                 let mut s = mk();
-                // Drenajsız birkaç olay + tavanı aşan tek olay.
-                let first: Vec<u64> = (0..SMALL_EVENT).map(|i| UID + i).collect();
-                s.on_event(
-                    Event::RecoveredControl(RecoveredInfo {
-                        units: first.iter().map(|&u| rec(u)).collect(),
-                    }),
-                    0,
-                );
                 let big: Vec<u64> = (0..(CONFIRMED_UNITS_CAP + EXTRA) as u64)
-                    .map(|i| 1_000_000 + i)
+                    .map(|i| BIG_BASE + i)
                     .collect();
-                s.on_event(
-                    Event::RecoveredControl(RecoveredInfo {
-                        units: big.iter().map(|&u| rec(u)).collect(),
-                    }),
-                    0,
+                s.on_event(recovered(&big), 0);
+                assert_eq!(
+                    s.take_confirmed_units(),
+                    big,
+                    "{name}: tek çağrının teyitleri düşmez"
                 );
-                let dropped = EXTRA as u64 + SMALL_EVENT;
                 assert_eq!(
                     s.diag_confirmed_units_overflow(),
-                    dropped,
-                    "{name}: taşma sayacı"
+                    0,
+                    "{name}: drenajlı tüketicide taşma yok"
+                );
+
+                // (b) Drenajsız birikim: küçük olay + tavanı aşan olay birikir; tavan bir sonraki
+                // çağrının girişinde birikime uygulanır, o çağrının teyitleri yine düşmez.
+                let mut s = mk();
+                let first: Vec<u64> = (0..SMALL_EVENT).map(|i| UID + i).collect();
+                s.on_event(recovered(&first), 0);
+                s.on_event(recovered(&big), 0);
+                assert_eq!(
+                    s.diag_confirmed_units_overflow(),
+                    0,
+                    "{name}: girişte birikim (5) tavan altındaydı"
+                );
+                let next: Vec<u64> = (0..SMALL_EVENT).map(|i| NEXT_BASE + i).collect();
+                s.on_event(recovered(&next), 0);
+                let backlog = SMALL_EVENT as usize + big.len();
+                let dropped = backlog - CONFIRMED_UNITS_CAP;
+                assert_eq!(
+                    s.diag_confirmed_units_overflow(),
+                    dropped as u64,
+                    "{name}: girişte düşen birikim kadar sayaç"
                 );
                 let out = s.take_confirmed_units();
-                assert_eq!(out.len(), CONFIRMED_UNITS_CAP, "{name}: tavan aşılmaz");
+                let want: Vec<u64> = first
+                    .iter()
+                    .chain(big.iter())
+                    .skip(dropped)
+                    .chain(next.iter())
+                    .copied()
+                    .collect();
                 assert_eq!(
-                    out.as_slice(),
-                    &big[EXTRA..],
-                    "{name}: en yeni CAP teyit, sırayla"
+                    out, want,
+                    "{name}: birikimin en yeni CAP'i + son çağrının bütün teyitleri, sırayla"
                 );
                 assert!(
                     s.take_confirmed_units().is_empty(),
@@ -11477,7 +11531,7 @@ mod tests {
                 );
                 assert_eq!(
                     s.diag_confirmed_units_overflow(),
-                    dropped,
+                    dropped as u64,
                     "{name}: sayaç drenajla sıfırlanmaz"
                 );
             }
