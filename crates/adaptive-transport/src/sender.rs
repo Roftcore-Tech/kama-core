@@ -6695,8 +6695,18 @@ impl Sender {
         }
         // Supersede the still-outstanding original: retire it inflight→tombstone (no loss declaration), then bump
         // the tombstone so the original's late ACK is Karn-excluded, then emit the probe copy under a fresh seq.
-        self.retire_inflight_to_tombstone(target, now_ns);
-        self.mark_tombstone_superseded(target);
+        //
+        // [CC-PORT U10] Port motorunda hedef UÇUŞTA KALIR (RFC 9002 §6.2.4: PTO kayıp ilanı değildir,
+        // prob ek bir pakettir; quinn `in_flight` değişmez). Eski yol hedefi tombstone'a emekli ediyor
+        // ve TTL'i `K_TOMB × T_loss(INITIAL_RTT)` (≈ 3 s) olduğundan RTT örneği olmayan yüksek
+        // gecikmeli / düşük bantlı hatta hedefin ACK'i süresi dolmuş kayda düşüyordu: RTT örneği YOK,
+        // teyit YOK, her PTO turu yeni kopya (r25 sim: ilk örnek 85 s'de, retx 87 ↔ 24). Her iletim
+        // taze seq taşıdığından (`rtt_rule_v11`) hangi kopya ACK'lenirse onun kaydından örnek alınır;
+        // teyitli birimin öbür kopyaları K4G-05b-R kuralıyla kararsız düşer (yeniden kuyruk yok).
+        if !self.cc_on() {
+            self.retire_inflight_to_tombstone(target, now_ns);
+            self.mark_tombstone_superseded(target);
+        }
         // [K4G-05b-R] Doygun: port motorunun yeniden iletim tavanı `u8::MAX`'tır
         // (`RetxConfig::rfc9002_cc_port`), 255'teki kayıt prob hedefi olabilir.
         let new_seq = self.track_sent(
@@ -6719,7 +6729,11 @@ impl Sender {
         // az önceki prob kopyasıdır (aynı birim taze seq ile ikinci kez — RFC 9002 §6.2.4 izinli).
         // Yuva bu turun kimliğiyle (on_probe_sent SONRASI `(armed_at, probe_index)`) kurulur; önceki
         // turdan kalan yuvanın üzerine yazılır (sonraki turun ilk probu yuvayı boşaltır).
-        if self.e2a.pto_probes() >= 2 {
+        // [CC-PORT U12] Port motorunda RTT örneği yokken tur başına TEK prob (RFC 9002 §6.2.4 "SHOULD
+        // send two" → "MUST send at least one"): hız/serileştirme bilinmezken ikinci kopya darboğaz
+        // kuyruğunu kendi eliyle doldurur (25 B/s: 130 B kopya ≈ 5,2 s). İlk örnekten sonra iki prob.
+        let two_probes = self.e2a.pto_probes() >= 2 && (!self.cc_on() || self.rtt.srtt().is_some());
+        if two_probes {
             self.e2a_tail_probe2 = self.oldest_probe_target().map(|seq| {
                 (
                     seq,
@@ -6782,8 +6796,11 @@ impl Sender {
         if self.act_tail_probe_first_ns == 0 {
             self.act_tail_probe_first_ns = now_ns;
         }
-        self.retire_inflight_to_tombstone(target, now_ns);
-        self.mark_tombstone_superseded(target);
+        // [CC-PORT U10] Birinci probla aynı: port motorunda hedef uçuşta kalır.
+        if !self.cc_on() {
+            self.retire_inflight_to_tombstone(target, now_ns);
+            self.mark_tombstone_superseded(target);
+        }
         let new_seq = self.track_sent(
             unit,
             now_ns,
@@ -11849,11 +11866,24 @@ mod tests {
                     Some(u8::MAX),
                     "{name}: prob kopyasının sayacı doygun"
                 );
-                assert_eq!(
-                    r.s.tombstones.get(&q).map(|t| t.retx_count),
-                    Some(u8::MAX),
-                    "{name}: emekliye ayrılan hedefin superseded işareti de doygun"
-                );
+                if r.s.cc_on() {
+                    // [CC-PORT U10] Port motorunda hedef uçuşta kalır (tombstone'a emekli edilmez).
+                    assert_eq!(
+                        r.s.inflight.get(&q).map(|p| p.retx_count),
+                        Some(u8::MAX),
+                        "{name}: hedef uçuşta kalır, sayacı doygun"
+                    );
+                    assert!(
+                        !r.s.tombstones.contains_key(&q),
+                        "{name}: hedef tombstone'da değil"
+                    );
+                } else {
+                    assert_eq!(
+                        r.s.tombstones.get(&q).map(|t| t.retx_count),
+                        Some(u8::MAX),
+                        "{name}: emekliye ayrılan hedefin superseded işareti de doygun"
+                    );
+                }
             }
         }
 

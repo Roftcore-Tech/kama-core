@@ -53,6 +53,18 @@ Drain/ProbeBW kazançlarını yok sayar — ölçüldü: Drain hiç boşaltmaz, 
 **U8** ProbeRTT saati ilk min_rtt örneğinde başlar (quinn ilk ACK'te ProbeRTT'ye giriyor; 1 s kayıp).
 U6–U8 quinn'den değil BBR draft'ından alınmıştır; "quinn'e sadakat" değil "BBR'a sadakat"tir ve
 Ö-CC'de kapalı/açık karşılaştırılabilir.
+**U9** Startup'ta paket koruması (Linux BBR v1; `bbr.rs` başlığı, PR #179).
+**U10–U12 (2026-11-11, r25 düşük bant kökü; PR cc/u10)** — hepsi RFC 9002'ye *yaklaştırma*, ek sapma değil:
+**U10** PTO probu hedefi uçuşta KALIR (`sender.rs` `emit_tail_probe` / `e2a_emit_second_probe`,
+`!cc_on()` dalı eski yol). Eski yol hedefi `K_TOMB × T_loss(INITIAL_RTT)` ≈ 3 s TTL'li tombstone'a
+emekli ediyordu; RTT örneği olmayan yüksek gecikmeli hatta ACK süresi dolmuş kayda düşüyor → RTT örneği
+yok, teyit yok, her PTO turu yeni kopya (r25 sim: ilk RTT örneği 85 s'de). RFC 9002 §6.2.4 / quinn:
+PTO kayıp ilanı değildir, `in_flight` değişmez · **U11** `rfc9002_cc_port` taban PTO tavanı yok
+(`max_pto_ns = u64::MAX`; RFC 9002 §6.2.1 üst sınır tanımlamaz, quinn'de yok; eski 10 s tavanı srtt
+> 10 s'de ACK gelmeden prob) · **U12** RTT örneği yokken tur başına TEK prob (§6.2.4 "SHOULD send
+two" → "MUST send at least one"): serileştirme bilinmezken ikinci kopya kuyruğu kendi eliyle doldurur.
+Sim r25 (25 B/s iki yön, 300 ms, %20, 60 × 65 B / 10 s): port ileti p50 95 → 17 (U10+U11) → 11,4 s
+(U12), retx 87 → 33; eski motor 6,6 s / 24. Öbür hücreler bayt düzeyinde aynı (kesinti p50 84,8 → 84,3).
 
 ## (b) Paket/birim muhasebesi — koddan cevaplar
 
