@@ -1,0 +1,167 @@
+//! §5.1 `ack_confidence` — boşta geçen süre ACK SESSİZLİĞİ sayılmaz (port motoru).
+//!
+//! Spec `specs/adaptive-transport-engine-spec.md` §5.1 (NORMATİF):
+//!
+//! ```text
+//! active DEĞİLSE → ack_confidence = 1000 (FULL)      # outstanding iş yok, sessizlik anlamsız
+//! aksi: silence = now − max(last_ack_time, first_send_time)
+//! ```
+//!
+//! "yeni gönderilmiş paket 'düşük güven' DEĞİLDİR — henüz ACK'lenme zamanı gelmemiştir".
+//! `max` ancak `first_send_time` AKTİF DÖNEMİN ilk gönderimi olduğunda bir şey seçer: oturumun ilk
+//! gönderimi her ACK'ten önce geldiğinden oturum-başına tek damga ile `max` hep `last_ack` olur ve
+//! boşta geçen süre sessizliğe eklenir.
+//!
+//! Senaryo (iş emri §5 (iii)): ACK t = 1 s → 20 s boşta (iş yok) → yeni `AppData` t = 21 s.
+//! * Port motoru (`Sender::with_cc_port`): o tikte ve sonraki tikte RECOVER_FWD yok, emergency
+//!   `Arq`'ta kalır, güven 1000.
+//! * Koruma (yanlış negatif yok): uçuşta veri varken ACK gelmezse güven yine düşer ve
+//!   RECOVER_FWD'ye girilir; PTO probları sessizliği sıfırlamaz (aktif dönem içinde damga sabit).
+//! * Eski motor (`Sender::new`): bugünkü davranış pinli — düzeltme `cc_on()` ile kapılı, eski
+//!   motorda resume'un ilk mesajı RECOVER_FWD'ye girer (Dup2, sonraki tik Dup3).
+//!
+//! Koş: `cargo test -p adaptive-transport --test ack_confidence_idle`
+
+use adaptive_transport::emergency::EmergencyLevel;
+use adaptive_transport::sender::{
+    AckInfo, Event, OpaqueUnit, Sender, SenderState, Timer, TransmitKind,
+};
+use std::time::Duration;
+
+const MS: u64 = 1_000_000;
+const SEC: u64 = 1_000_000_000;
+/// Isınma gönderimi; ACK `T_ACK`'te gelir (srtt ≈ 50 ms).
+const T_WARM_SEND: u64 = 950 * MS;
+const T_ACK: u64 = SEC;
+/// 20 s boşta sonrası yeni mesaj.
+const T_RESUME: u64 = 21 * SEC;
+
+fn unit(id: u64) -> OpaqueUnit {
+    OpaqueUnit { id, size: 1200 }
+}
+
+fn ack(seqs: &[u64]) -> Event {
+    Event::AckReceived(AckInfo {
+        acked_seqs: seqs.to_vec(),
+        ack_delay: Duration::ZERO,
+    })
+}
+
+fn ack_conf(s: &Sender) -> u64 {
+    s.diag_fusion_input_snapshot()
+        .expect("her olay fuzzy değerlendirir")
+        .ack_confidence_permille
+}
+
+/// Isınma: tek birim gönder, t = 1 s'de tamamını ACK'le → RTT ölçüldü, iş yok (Idle).
+fn warm_then_idle(mut s: Sender) -> Sender {
+    let out = s.on_event(Event::AppData(unit(0)), T_WARM_SEND);
+    let seqs: Vec<u64> = out
+        .iter()
+        .filter(|d| d.kind != TransmitKind::FecParity)
+        .map(|d| d.seq)
+        .collect();
+    assert!(!seqs.is_empty(), "ısınma birimi tele çıkmalı");
+    s.on_event(ack(&seqs), T_ACK);
+    assert_eq!(s.state(), SenderState::Idle, "ısınma sonrası iş kalmamalı");
+    assert!(s.inflight_bytes() == 0, "ısınma sonrası uçuş boş");
+    s
+}
+
+/// Port motoru: 20 s boşta sonrası ilk mesaj ve sonraki tik RECOVER_FWD'ye girmez.
+#[test]
+fn cc_port_resume_after_idle_is_not_recover_fwd() {
+    let mut s = warm_then_idle(Sender::with_cc_port());
+    assert!(s.cc_on());
+
+    let out = s.on_event(Event::AppData(unit(1)), T_RESUME);
+    assert!(
+        out.iter().any(|d| d.kind == TransmitKind::Data),
+        "resume birimi aynı tikte tele çıkmalı"
+    );
+    assert_ne!(
+        s.state(),
+        SenderState::RecoverFwd,
+        "resume tikinde RECOVER_FWD yok"
+    );
+    assert_eq!(
+        s.emergency_level(),
+        EmergencyLevel::Arq,
+        "resume tikinde emergency yok"
+    );
+    assert_eq!(ack_conf(&s), 1000, "resume tikinde güven FULL");
+
+    // Sonraki tik: yeni birim uçuşta, ACK henüz gelmedi (taze gönderim LOW değil).
+    s.on_event(Event::TimerFired(Timer::Pto), T_RESUME + MS);
+    assert_ne!(
+        s.state(),
+        SenderState::RecoverFwd,
+        "sonraki tikte RECOVER_FWD yok"
+    );
+    assert_eq!(
+        s.emergency_level(),
+        EmergencyLevel::Arq,
+        "sonraki tikte emergency yok"
+    );
+    assert_eq!(ack_conf(&s), 1000, "sonraki tikte güven FULL");
+}
+
+/// Koruma: port motorunda resume sonrası ACK gelmezse (gerçek dönüş yolu sessizliği) güven
+/// düşer ve RECOVER_FWD'ye girilir. Sessizlik aktif dönemin ilk gönderiminden sayılır: PTO probları
+/// sessizliği sıfırlamaz (güven bu dönemde artmaz).
+#[test]
+fn cc_port_true_silence_after_resume_still_escalates() {
+    let mut s = warm_then_idle(Sender::with_cc_port());
+    s.on_event(Event::AppData(unit(1)), T_RESUME);
+    s.on_event(Event::AppData(unit(2)), T_RESUME + MS);
+
+    let mut saw_fwd = false;
+    let mut first_escalate_ns: Option<u64> = None;
+    let mut prev_conf = ack_conf(&s);
+    for k in 1..=40u64 {
+        let now = T_RESUME + k * SEC;
+        s.on_event(Event::TimerFired(Timer::Pto), now);
+        let conf = ack_conf(&s);
+        assert!(
+            conf <= prev_conf,
+            "sessizlik boyunca güven artmamalı (t={now} ns: {prev_conf} → {conf})"
+        );
+        prev_conf = conf;
+        if s.state() == SenderState::RecoverFwd {
+            saw_fwd = true;
+        }
+        if s.emergency_level() > EmergencyLevel::Arq && first_escalate_ns.is_none() {
+            first_escalate_ns = Some(now);
+        }
+    }
+    assert!(saw_fwd, "ACK yok → RECOVER_FWD'e girmeli (§11)");
+    let first = first_escalate_ns.expect("emergency bir noktada escalate etmeli");
+    assert!(
+        first > T_RESUME + 3 * SEC,
+        "escalation sessizlik eşiğinden önce olmamalı (ilk escalation t={first} ns)"
+    );
+}
+
+/// Eski motor: bugünkü davranış pinli (düzeltme `cc_on()` ile kapılı). Boşta süre sessizliğe
+/// eklendiği için resume'un ilk mesajı RECOVER_FWD'ye girer: tikte Dup2, sonraki tikte Dup3.
+#[test]
+fn legacy_resume_after_idle_behaviour_is_pinned() {
+    let mut s = warm_then_idle(Sender::new());
+    assert!(!s.cc_on());
+
+    s.on_event(Event::AppData(unit(1)), T_RESUME);
+    assert_eq!(
+        s.state(),
+        SenderState::RecoverFwd,
+        "eski motor: resume tikinde RECOVER_FWD"
+    );
+    assert_eq!(s.emergency_level(), EmergencyLevel::Dup2);
+    assert!(
+        ack_conf(&s) < 300,
+        "eski motor: güven escalate eşiğinin altında"
+    );
+
+    s.on_event(Event::TimerFired(Timer::Pto), T_RESUME + MS);
+    assert_eq!(s.state(), SenderState::RecoverFwd);
+    assert_eq!(s.emergency_level(), EmergencyLevel::Dup3);
+}

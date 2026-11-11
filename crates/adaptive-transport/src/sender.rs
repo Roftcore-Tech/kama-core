@@ -1798,6 +1798,8 @@ pub struct Sender {
 
     // ── ack_confidence (RECOVER_FWD tetiği): sessizlik-tabanlı ──
     last_ack_ns: Option<u64>,
+    /// §5.1 `first_send_time`. Eski motor: oturumun ilk gönderimi. [CC-PORT] bu aktif dönemin ilk
+    /// gönderimi (iş yokken gelen `AppData` sıfırlar, `track_sent` damgalar).
     first_send_ns: Option<u64>,
 
     // ── [TUR-3b] DrainRtprop sözleşme-durumu (D-2/3: giriş=pencere-doluşu; exit-invariant) ──
@@ -2520,6 +2522,11 @@ impl Sender {
 
         match event {
             Event::AppData(unit) => {
+                // [§5.1 · CC-PORT] İş yokken gelen birim yeni aktif dönemi açar: `first_send_ns`
+                // dönemin ilk gönderiminde yeniden damgalanır → boşta süre ACK sessizliği sayılmaz.
+                if self.cc_on() && !self.ack_conf_active() {
+                    self.first_send_ns = None;
+                }
                 self.tx_queue.push_back(unit);
                 #[cfg(feature = "diag-sched-telemetry")]
                 {
@@ -7130,6 +7137,14 @@ impl Sender {
         seq
     }
 
+    /// §5.1 `active`: bekleyen iş (uçuş ∨ bekleyen kayıp ∨ gönderim kuyruğu ∨ kopya kuyruğu) var mı.
+    fn ack_conf_active(&self) -> bool {
+        !self.inflight.is_empty()
+            || !self.pending_lost.is_empty()
+            || !self.tx_queue.is_empty()
+            || !self.dup_queue.is_empty()
+    }
+
     /// ack_confidence (per-mille, §5.1): reverse-path canlılığı = ACK SESSİZLİĞİ. Aktif iş varken son
     /// ACK'ten (ya da ilk gönderimden) geçen süre srtt katını aşarsa güven düşer. Yeni paket "düşük
     /// güven" DEĞİL — yalnız SESSİZLİK reverse-path çöküşüdür.
@@ -7139,16 +7154,21 @@ impl Sender {
         if self.state == SenderState::PreConverge {
             return 1000;
         }
-        let active = !self.inflight.is_empty()
-            || !self.pending_lost.is_empty()
-            || !self.tx_queue.is_empty()
-            || !self.dup_queue.is_empty();
-        if !active {
+        if !self.ack_conf_active() {
             return 1000;
         }
-        let anchor = match self.last_ack_ns.or(self.first_send_ns) {
-            Some(a) => a,
-            None => return 1000,
+        // §5.1: silence = now − max(last_ack, first_send). [CC-PORT] `first_send_ns` aktif dönemin
+        // ilk gönderimi; dönemde henüz gönderim yoksa beklenen ACK yok → FULL. Eski motor bit-aynı.
+        let anchor = if self.cc_on() {
+            match self.first_send_ns {
+                Some(f) => self.last_ack_ns.map_or(f, |a| a.max(f)),
+                None => return 1000,
+            }
+        } else {
+            match self.last_ack_ns.or(self.first_send_ns) {
+                Some(a) => a,
+                None => return 1000,
+            }
         };
         let silence = now_ns.saturating_sub(anchor);
         let srtt = dur_ns(self.rtt.srtt().unwrap_or(INITIAL_RTT));
