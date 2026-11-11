@@ -34,6 +34,8 @@ use crate::{KamaNode, NodeListener};
 mod glare;
 /// [HLR-STALE] Eski hattın geç hatası yeni oturumu yenilemez (`tests/hub_relink.rs`).
 mod hub_relink;
+/// [T3-GLARE] Niyetin terk edilen INIT'inin taşıyıcı tekrarı durur (`tests/intent_t3.rs`).
+mod intent_t3;
 
 const ALICE: &str = "alice";
 const BOB: &str = "bob";
