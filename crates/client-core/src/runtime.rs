@@ -640,8 +640,8 @@ pub struct ClientStats {
     /// (item 6, workstream B'de kama-noise-wire formatıyla bağlanır); sessiz yutulmaz, sayılır.
     pub unknown_frames: u64,
     /// Gövdesi olmadığı için tele ÇIKARILMAYAN (atlanan) motor kararı — neden sayacı; toplam
-    /// [`Self::stale_skipped`]'tedir. Motor kararı işlemişti; kaydın ACK'i gelmez, motor onu kayıp
-    /// gibi işler (INV-RATE-1).
+    /// [`Self::stale_skipped`]'tedir. Motor kararı işlemişti ve kaydı uçuşta tutar; ACK'i hiç
+    /// gelmez (motordaki ardılı: [`Self::stale_skipped`]).
     /// [K4G-05b-R · sahip kararı 2026-11-11] İki kaynağı vardır:
     /// (1) Birim taşıyan karar (Data / Retransmit / Duplicate) store'da yok: store yalnız motorun
     /// teyit çıktısıyla boşaldığından bu, motorun TEYİTLİ birime karar üretmesidir (ör. birim geç
@@ -719,8 +719,20 @@ pub struct ClientStats {
     /// gönderim kaydısız parite ([`Self::stale_decisions`]) + repair-store'da sembolü olmayan
     /// parite ([`Self::fec_repair_missing`]). Tanım gereği
     /// `stale_skipped == stale_decisions + fec_repair_missing`. Atlanan karar datagram üretmez:
-    /// tele boş gövdeli DATA, yalnız önekli DATA_FRAG ya da boş sembollü FEC çerçevesi çıkmaz.
-    /// Kurtarma kapalıyken bastırılan karar burada DEĞİL, [`Self::recovery_suppressed`]'te sayılır.
+    /// gövdesi olmayan motor kararı (store-miss ya da sembolsüz parite) için tele boş gövdeli DATA,
+    /// yalnız önekli DATA_FRAG ya da boş sembollü FEC çerçevesi çıkmaz. (Geçerli bir BOŞ uygulama
+    /// mesajı tam başlık boyunda DATA / yalnız önekli DATA_FRAG olarak çıkar; o, motor kararı
+    /// atlaması değildir.) Kurtarma kapalıyken bastırılan karar burada DEĞİL,
+    /// [`Self::recovery_suppressed`]'te sayılır.
+    ///
+    /// Motordaki ardılı (motor KODU değişmedi, kapalı-döngü karar akışı değişir): kayıt uçuşta kalır.
+    /// Daha yeni bir seq ACK'lenirse kayıp ilan edilir ve birim yeniden kuyruğa girer (aynı birime
+    /// yeni karar, o da atlanır; eski motorda ARQ tavanına dek, port motorunda tavan 255); sessiz
+    /// kanalda kayıt uçuşta kalır ve kuyruk kurtarmasının prob hedefi olabilir. Eski motorda kayıp
+    /// hızı düşürmez (INV-RATE-1); port motorunda (`TransportEngine::CcPort`, BBR portu) bu
+    /// hayalet kayıplar tıkanıklık olayıdır ve pencereyi daraltır. Kaynakta kapatma motorun teyitli
+    /// birimin bekleyen işini budamasıdır (#140 madde 2). Ölçümler:
+    /// `docs/design/K4G-05b-RUNTIME-ENVANTER.md` "Atlama politikası".
     pub stale_skipped: u64,
 }
 
@@ -2267,9 +2279,9 @@ async fn client_task(
                             // [K4G-05b-R · sahip kararı 2026-11-11] Sembol repair-store'da yoksa
                             // (blok tahliye edildi / latch-0) karar ATLANIR: tele boş sembollü FEC
                             // çerçevesi çıkmaz, PN harcanmaz. Motor kararı zaten işledi; kaydın
-                            // ACK'i gelmez ve motor onu kayıp gibi işler (INV-RATE-1; parite kaydı
-                            // ARQ'ya girmez). Sayaçlar: `fec_repair_missing` (neden) +
-                            // `stale_skipped` (toplam).
+                            // ACK'i gelmez, kayıt uçuşta kalır (parite kaydı kayıpta ARQ'ya girmez;
+                            // ardılı `ClientStats::stale_skipped`). Sayaçlar: `fec_repair_missing`
+                            // (neden) + `stale_skipped` (toplam).
                             let Some(sym) = entry
                                 .and_then(|(_, rs)| rs.iter().find(|r| r.esi == esi))
                                 .map(|r| r.bytes.as_slice())
@@ -2332,10 +2344,12 @@ async fn client_task(
                 // işini budamaz, yani olabilir). [sahip kararı 2026-11-11] Gövdesi olmayan karar
                 // DATAGRAM ÜRETMEZ: karar atlanır (seal yok, PN harcanmaz, harita kaydı açılmaz);
                 // tele boş ya da yalnız önekli çerçeve çıkmaz. Motor kararı zaten işledi: kaydın
-                // ACK'i gelmez ve motor onu kayıp gibi işler (INV-RATE-1: kayıp hızı düşürmez,
-                // yalnız kurtarma kolunu besler). Sayaçlar: `stale_decisions` (neden) +
-                // `stale_skipped` (toplam). Atlamanın motordaki ardılı (aynı birime yeniden karar,
-                // uçuştaki kayıt) `docs/design/K4G-05b-RUNTIME-ENVANTER.md` "Atlama politikası".
+                // ACK'i gelmez, kayıt uçuşta kalır. Daha yeni seq ACK'lenince kayıp ilan edilir ve
+                // birim yeniden kuyruğa girer (aynı birime yeni karar, o da atlanır); eski motorda
+                // kayıp hızı düşürmez (INV-RATE-1), port motorunda (BBR portu) tıkanıklık olayıdır.
+                // Ardılın tamamı `ClientStats::stale_skipped` belgesinde. Sayaçlar:
+                // `stale_decisions` (neden) + `stale_skipped` (toplam). Ölçümler:
+                // `docs/design/K4G-05b-RUNTIME-ENVANTER.md` "Atlama politikası".
                 let Some(payload) = store.get(&d.unit_id) else {
                     stats.stale_decisions += 1;
                     stats.stale_skipped += 1;
