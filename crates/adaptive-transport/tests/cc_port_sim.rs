@@ -170,6 +170,17 @@ fn run_opt(
 ) -> Outcome {
     let one_way = rtt_ms * MS / 2;
     let mut s = eng.sender();
+    // `CC_PTO_MAX_S=<s>`: port kolunda PTO geri çekilme tavanı (varsayılan validated_v1: 30 s).
+    if let Some(m) = std::env::var("CC_PTO_MAX_S")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        if eng != Engine::Legacy {
+            let mut c = adaptive_transport::tail_recovery::TailRecoveryConfig::rfc9002_cc_port();
+            c.max_backoff_pto_ns = m * SEC;
+            s.set_tail_recovery_config(c);
+        }
+    }
     let mut r = eng.receiver();
     if parity_per_block > 0 {
         s.set_fec_actuation_mode(FecActuationMode::Manual { enabled: true })
