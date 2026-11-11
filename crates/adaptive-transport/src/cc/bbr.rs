@@ -15,6 +15,11 @@
 //!    senkronizasyonu beyanlı sınır.
 //! 4. `RttEstimator` yerine çağıran **min RTT**'yi (ns) verir; `on_mtu_update` yok (Kama
 //!    MTU sabit, `DEFAULT_MTU`).
+//! 9. **Startup'ta paket koruması** (`PACKET_CONSERVATION_IN_STARTUP`): quinn `window()` Startup'ı
+//!    `recovery_window`'dan muaf tutar; Linux BBR v1 (`tcp_bbr.c` `bbr_set_cwnd_to_recover_or_restore`)
+//!    kaybı her kipte "cwnd = uçuş + ACK" ile sınırlar. Ölçüldü (sim, 6 paketlik kuyruk, 10 seed):
+//!    kayıpsız 31 → 23 düşme; %20 kayıpta fazla gönderim 1,41 → 1,36; %30'da 1,68 → 1,45; derin
+//!    kuyruk %20 max 25,0 → 17,2 s; bedeli 1000 ms RTT kayıpsız hatta +1 s (12,8 → 13,9 s).
 //! 5. `initial_window` varsayılanı quinn-Cubic/RFC 9002 ilk penceresi
 //!    `min(10·MTU, max(2·MTU, 14720))` = 10·MTU (= 12 000 B); quinn-BBR'ın 200·MTU
 //!    varsayılanı **alınmadı** (ISEMRI-CC-PORT §3).
@@ -42,6 +47,11 @@ const K_MIN_RTT_EXPIRY_NS: u64 = 10_000_000_000;
 const K_MODERATE_PROBE_RTT_MULTIPLIER_PM: u64 = 750;
 const PROBE_RTT_BASED_ON_BDP: bool = true;
 const DRAIN_TO_TARGET: bool = true;
+/// Uyarlama 9 (deneniyor): Startup'ta da paket koruması — quinn `window()` Startup'ı
+/// `recovery_window`'dan muaf tutar (q:487 `mode != Startup`); Linux BBR v1
+/// (`tcp_bbr.c` `bbr_set_cwnd_to_recover_or_restore`) kaybı her kipte "cwnd = uçuş + ACK" ile
+/// sınırlar. Sığ kuyrukta Startup taşmasını kesmek için ölçülüyor.
+const PACKET_CONSERVATION_IN_STARTUP: bool = true;
 
 /// BBR kipi (q:587-598).
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -579,7 +589,9 @@ impl Bbr {
     pub fn window(&self) -> u64 {
         if self.mode == Mode::ProbeRtt {
             return self.get_probe_rtt_cwnd();
-        } else if self.recovery_state.in_recovery() && self.mode != Mode::Startup {
+        } else if self.recovery_state.in_recovery()
+            && (self.mode != Mode::Startup || PACKET_CONSERVATION_IN_STARTUP)
+        {
             return self.cwnd.min(self.recovery_window);
         }
         self.cwnd
