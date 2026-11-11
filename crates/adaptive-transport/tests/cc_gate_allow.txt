@@ -1,0 +1,4 @@
+# CC gerileme kapısı muafiyetleri (scripts/ci/cc_gate_compare.py). Satır: <motor>|<hücre>|<gerekçe>
+# motor: cc_port | legacy. hücre: cc_port_sim.rs rapor etiketi (tohum eki olmadan).
+# Muafiyet bilinçli bir takas içindir (örn. bir hücrede +1 s karşılığında başka hücrede kazanım);
+# gerekçe PR'da görünür ve merge sonrası satır SİLİNİR (bir sonraki PR'ın tabanı artık yeni sayılardır).

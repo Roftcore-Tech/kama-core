@@ -551,7 +551,37 @@ fn fmt_s(v: Option<u64>) -> String {
     })
 }
 
+/// `CC_GATE_OUT=<dosya>`: her rapor satırı JSON satırı olarak dosyaya eklenir (CI gerileme kapısı;
+/// `scripts/ci/cc_gate_compare.py` taban ↔ aday karşılaştırır). Anahtar = (motor, hücre, tohum).
+fn gate_record(eng: Engine, label: &str, o: &Outcome) {
+    let Ok(path) = std::env::var("CC_GATE_OUT") else {
+        return;
+    };
+    let (cell, seed) = match label.rsplit_once(" seed") {
+        Some((c, s)) => (c, s.parse::<u64>().unwrap_or(0)),
+        None => (label, 0),
+    };
+    let engine = match eng {
+        Engine::Legacy => "legacy",
+        Engine::CcPort => "cc_port",
+    };
+    let completed = o.completed_ns.map_or("null".to_string(), |t| t.to_string());
+    let line = format!(
+        "{{\"engine\":\"{engine}\",\"cell\":\"{cell}\",\"seed\":{seed},\"completed_ns\":{completed},\"delivered\":{},\"sent_bytes\":{},\"sent_retx\":{},\"rev_bytes\":{},\"unit_delay_p50_ns\":{}}}\n",
+        o.delivered_units, o.sent_bytes, o.sent_retx, o.rev_bytes, o.unit_delay_p50_ns
+    );
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
 fn report(eng: Engine, label: &str, o: &Outcome) {
+    gate_record(eng, label, o);
     println!(
         "[{}] {label}: tamamlanma={} teslim={}/{} data={} retx={} parite={} bayt={} kuyruk_düşen={} rastgele_düşen={} sack={} dönüş_bayt={} dönüş_düşen={} birim_p50={} birim_p95={}",
         eng.name(),
@@ -592,6 +622,8 @@ fn ten_seeds(
         let o = run(eng, rate, q, rtt, loss, seed, 120);
         if std::env::var("CC_VERBOSE").is_ok() {
             report(eng, &format!("{label} seed{seed}"), &o);
+        } else {
+            gate_record(eng, &format!("{label} seed{seed}"), &o);
         }
         if let Some(t) = o.completed_ns {
             times.push(t);
@@ -678,6 +710,7 @@ fn ptt_bundle_first_delivery() {
             None,
             None,
         );
+        gate_record(eng, "ptt 6x400B q6 l20 seed7", &o);
         println!(
             "[{}] ptt 6×400B q6 l20: ilk demet={}",
             eng.name(),
