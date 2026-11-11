@@ -14,6 +14,13 @@
 //! CC_R25_WIRE_OVERHEAD=115 CC_ACK_OVERHEAD=90 CC_R25_TMAX_S=1500 cargo test ... r25 -- --nocapture
 //! ```
 //!
+//! `CC_LOSS_BEFORE_SER=1`: kayıp hız sınırlayıcıdan ÖNCE düşer (netem düzeni; düşen paket hat süresi
+//! tüketmez). Varsayılan telsiz düzeni: paket serileştirilir, yolda düşer (hat süresi tükenir). Ölçüm
+//! (q6, 12,5 kB/s, %30, 150 kB, 3 tohum): telsiz düzeninde port 17,6–19,4 s (taban 17,1 s = 12 s / 0,7 →
+//! taban + %5); netem düzeninde 16,2–16,4 s (taban 12 s → hat kullanımı %74 — BBR v1 BtlBw = teslim hızı
+//! ≤ (1 − p)·hat). Kayıp telafili BtlBw denemesi (`btlbw / (1 − p)`): netem düzeni 15,1 s (%80), telsiz
+//! düzeninde süre aynı, retx +40 %, sığ kuyruk taşması 30–50 → önerilmedi (INV-RATE-1 metniyle de çelişir).
+//!
 //! `CC_TRACE=1` izi her gönderimi (`GÖNDER tür seq birim bayt kuyruk`), her teslimi ve göndericiye
 //! ulaşan her ACK'i yazar. r25 keşif anahtarları: `CC_R25_INTERVAL_MS` (ileti aralığı),
 //! `CC_R25_WIRE_OVERHEAD` (ileri zarf), `CC_R25_TMAX_S` (ufuk), `CC_ACK_OVERHEAD` (SACK zarfı);
@@ -85,6 +92,8 @@ struct Bottleneck {
     loss_permille: u64,
     /// Kesinti penceresi (ns): bu aralıkta ileri yönde %100 kayıp (gösterim "kesinti" profili).
     blackout: Option<(u64, u64)>,
+    /// netem düzeni: kayıp serileştirmeden önce (bkz. `send`).
+    loss_before_ser: bool,
 }
 
 impl Bottleneck {
@@ -102,6 +111,7 @@ impl Bottleneck {
                 .wrapping_add(1_442_695_040_888_963_407),
             loss_permille,
             blackout: None,
+            loss_before_ser: std::env::var("CC_LOSS_BEFORE_SER").is_ok(),
         }
     }
 
@@ -121,6 +131,16 @@ impl Bottleneck {
             self.dropped_queue += 1;
             return;
         }
+        // `CC_LOSS_BEFORE_SER=1`: netem düzeni — kayıp, hız sınırlayıcıdan ÖNCE düşer; düşen paket
+        // hat süresi TÜKETMEZ (varsayılan: telsiz düzeni, düşen paket serileştirildi ama yolda
+        // düştü). Keşif anahtarı; varsayılan davranış bayt düzeyinde aynı.
+        if self.loss_before_ser
+            && self.loss_permille > 0
+            && self.rand_permille() < self.loss_permille
+        {
+            self.dropped_random += 1;
+            return;
+        }
         let start = self.busy.back().copied().unwrap_or(now).max(now);
         let done = start + size * SEC / self.rate_bps;
         self.busy.push_back(done);
@@ -128,7 +148,10 @@ impl Bottleneck {
             self.dropped_random += 1;
             return;
         }
-        if self.loss_permille > 0 && self.rand_permille() < self.loss_permille {
+        if !self.loss_before_ser
+            && self.loss_permille > 0
+            && self.rand_permille() < self.loss_permille
+        {
             self.dropped_random += 1;
             return; // serileştirildi ama yolda düştü
         }
