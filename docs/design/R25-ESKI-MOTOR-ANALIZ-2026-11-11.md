@@ -11,15 +11,17 @@ arası yön içindir, sahadaki süre değildir. "Geçti" yalnız koşmuş test i
    `Sender::new()` + `Receiver::new()`'dir: kuyruk kurtarması KAPALI, ilk pencere 0. Ürünün geri alma
    yolu (`KAMA_TRANSPORT_ENGINE=legacy`) `ClientSession::new()`'dir: `validated_v1` kuyruk kurtarması
    AÇIK + ilk pencere 2·MTU (`crates/client-core/src/lib.rs:93-97`, `runtime.rs:2005-2066`). Bu profil
-   sim'de r25'in **en kötü** koludur: ileti p50 **106,8 s** (#181 portu 8,5 s).
+   sim'de r25'in **en kötü** koludur: ileti p50 **106,8 s** (#181 portu 8,5 s). Sim bu kolu bench'e göre
+   abartır (bench K0 25–28 s; §2); gerçek yığında #181 portu ürün eski yoluyla aynı düzeydedir (§5).
 2. **Eski profilin r25 kökü #181'in port için bulduğu kökün aynısıdır (U10):** RTT örneksiz ilk PTO
    1 s; ilk paketin ACK'i ≥ 8,1 s'de gelebilir (130 B ileri ≈ 5,2 s + 65 B SACK ≈ 2,6 s + yayılım).
    Prob hedefi tombstone'a emekli edilir ve geç ACK'i Karn ile dışlanır → RTT örneği oluşmaz, her tur
    yeni kopya, 20 paketlik kuyruk taşar. Sınama: yalnız RTT örneksiz ilk PTO'yu 10 s yapmak eski profili
    **106,8 → 5,8 s**'ye indirir (prob 57 → 15, kopya 133 → 4, kuyruk düşen 150 → 0). 10 s taban PTO
    tavanını kaldırmak (U11'in eski karşılığı) etkisizdir (107,6 s).
-3. **Hipotezlerin sim'deki durumu:** H-a (ACK kadansı) — sim'de **çürütüldü** (port dönüş baytı eski
-   kollardan az; bkz. §5 gerçek yığın). H-b (10 s tavan) — port için doğru (#181 U11, 82,5 → 17,3 s),
+3. **Hipotezlerin durumu:** H-a (ACK kadansı) — **çürütüldü** (sim: port dönüş baytı eski kollardan
+   az; gerçek yığın: dönüş/ileri paket oranı iki motorda ~0,76, portun fazla dönüş baytı fazladan ileri
+   paketten — §5). H-b (10 s tavan) — port için doğru (#181 U11, 82,5 → 17,3 s),
    eski profil için **tek başına değil**. H-c (ilk uçuş 4·MTU) — bu hücrede **çürütüldü** (ileti 10 s
    aralıklı, hücre veriyle sınırlı; IW 4·MTU ile 12 000 B bayt düzeyinde aynı). H-d (RecoverFwd /
    kopya eski motorun teslim kaynağı) — **çürütüldü**: kazanan eski kol (tail kapalı) yalnız 4 kopya
@@ -49,10 +51,13 @@ rastgele kayıp (ileri), 60 × 65 B ileti / 10 s, ileri tel zarfı 65 B (paket 1
 Sim'in bench'ten bilinen sapmaları:
 - **Gecikme:** `run_opt` tek yönü `rtt_ms / 2` alır; r25 testi `300` verir → tek yön **150 ms**.
   Bench `d300` tek yön 300 ms'dir. `CC_R25_RTT=600` satırı aşağıda (sonuç yönü değişmez).
-- **Mutlak düzey:** gece bench'inde ürün eski profili (gösterim bench `K0`, bayraklar kapalı) r25'te
-  p50 25,2–28,6 s, port (U10 öncesi) 48,2–48,6 s idi. Sim ikisini de kötümser verir (106,8 s / 95,6 s);
-  sıralama bench'le **aynı** (eski profil ≤ U10 öncesi port), oran farklı. Sim kuyruk, kayıp ve
-  zamanlayıcıyı idealleştirir; netem/runtime'daki 20 ms ACK tik'i ve gerçek pacer davranışı yoktur.
+- **Mutlak düzey ve sıralama:** gece bench'inde ürün eski profili (gösterim bench `K0`, bayraklar
+  kapalı) r25'te p50 25,2–28,6 s, port (U10 öncesi) 48,2–48,6 s idi. Sim ikisini de kötümser verir
+  (106,8 s / 95,6 s) ve **sıralamayı ters çevirir**: sim'de eski profil U10 öncesi porttan kötü, bench'te
+  iyi. Gerçek yığın (§5, dosya benzeri hücre) bench yönündedir (eski 519 s < main portu 621 s). Yani sim
+  eski profilin RTT-siz prob sorununu **abartır**; o kolun sim sayısı yalnız mekanizmanın varlığını
+  gösterir, büyüklüğünü değil. Sim kuyruk, kayıp ve zamanlayıcıyı idealleştirir; runtime'ın 20 ms ACK
+  tik'i ve gerçek pacer davranışı yoktur.
 
 ## 3. Mekanizma tablosu
 
@@ -136,7 +141,38 @@ Sıralama ve büyüklükler 150 ms satırıyla aynı; gecikme serileştirmenin (
 
 ## 5. Gerçek yığın karşılığı (`shaped_relay`)
 
-(Doldurulacak.)
+`crates/client-core/tests/shaped_relay.rs` (dal `fix/ack-after-admit`, main'de değil): gerçek
+`ClientEndpoint` / `ServerEndpoint` (runtime, 20 ms ACK tik'i, IdentitySeam) + kullanıcı alanı
+biçimlendirici röle. Hücre `CC_SHAPED=1 CC_SHAPED_RATE=25 CC_SHAPED_Q=20 CC_SHAPED_DELAY_MS=300
+CC_SHAPED_LOSS_PM=200 CC_SHAPED_UNITS=60 CC_SHAPED_UNIT_BYTES=65 CC_SHAPED_TMAX_S=1500`, 3 tohum.
+Ağaçlar (yerel, push edilmedi): **A** = `fix/ack-after-admit` (main motoru + F4); **B** = #181 başı +
+aynı iki F4 commit'i. Eski kol ürün yoludur (`ClientSession::new()` = validated_v1 + IW 2·MTU); B'nin
+eski yolu A ile aynı kod olduğu için B'de yalnız port koşuldu. **Fark:** bu hücre 60 birimi t0'da
+sunar (dosya benzeri; ölçü toplam tamamlanma), sim'in r25 hücresi 10 s aralıklıdır (ölçü ileti p50).
+
+| kol | tamamlanma (tohum 1/2/3) | medyan | ileri pkt / B | dönüş pkt / B | dönüş pkt ÷ ileri pkt | röle kuyruk düşen |
+|---|---|---|---|---|---|---|
+| A eski (ürün) | 492 / 608 / 519 s | **519 s** | 94–106 / 12,2–13,6 k | 70–82 / 7,2–8,7 k | 0,77 | 163–182 |
+| A port (main) | 570 / 623 / 621 s | **621 s** | 120–133 / 15,3–16,8 k | 92–102 / 10,1–10,7 k | 0,77 | 174–184 |
+| B port (#181) | 469 / 821 / 493 s | **493 s** | 95–117 / 11,4–14,0 k | 74–81 / 6,8–8,3 k | 0,75 | 129–143 |
+
+Hepsi 60/60; dönüş kuyruğunda düşme 0.
+
+Okuma:
+- **Yön sim'le aynı:** main portu eskiden kötü (+%20), #181 portu medyanda eski düzeyinde (−%5; tohum 2
+  uç değer 821 s). 3 tohumla bu fark gürültü içindedir; "port eskiyi geçti" denmez.
+- **ACK kadansı (H-a):** dönüş paketinin ileri pakete oranı üç kolda ~0,76. Portun main'deki fazla dönüş
+  baytı (10,1–10,7 k ↔ eski 7,2–8,7 k, ~+%30) **fazladan ileri paketten** (120–133 ↔ 94–106) gelir;
+  port alıcısının paket başına ACK kuralı bu hücrede eski alıcıdan fazla ACK üretmez. Dönüş hattı bant
+  payı: main portu 10,2 kB / 621 s ≈ 16,4 B/s (%66), eski 7,8 kB / 519 s ≈ 15 B/s (%60), #181
+  7,6 kB / 493 s ≈ 15,5 B/s (%62). İş emrindeki "port 17 k ↔ eski 10 k" bu hücreyle aynı değil (farklı
+  hücre/sürüm olmalı); bu koşuda karşılığı 10,2 k ↔ 7,8 k ve #181 ile eşit.
+- **Ortak gözlem (iki motor):** röle kuyruğunda 130–184 düşme. Gönderici 20 paketlik 25 B/s kuyruğu
+  iki motorda da aşırı doldurur (eski PreConverge tabanı 31 B/s > 25 B/s hat; port ilk uçuş 4·MTU).
+  Bu, r25'in iki motorda ortak bir başlangıç maliyetidir; bu notun öneri kapsamı dışında.
+- Sim'deki "ürün eski profili 106,8 s" felaketi burada görünmez: dosya benzeri hücrede ilk birimler
+  arka arkaya gittiği için ilk RTT örneği erken oluşur. RTT-siz erken prob kökü, **ileti aralıklı**
+  (her birim kendi başına uçan) hücreye özgüdür; bench'in r25 ileti hücresi ve sim bu türdendir.
 
 ## 6. Hipotezler
 
@@ -147,7 +183,8 @@ Sıralama ve büyüklükler 150 ms satırıyla aynı; gecikme serileştirmenin (
   baytı (6 370) eski kollardan az (7 076; ürün eski 9 826), dönüş kuyruğunda düşme 0. Eski alıcının
   spec §12 "bant-farkında kadansı" **ölçülmüş bant kullanmaz**: önsel `RETURN_BW_PRIOR = 31 B/s` ve
   sabit `T_SPACING` 2,1 s / taban 8,39 s'dir (`receiver.rs:87, 93-94, 115`; adaptasyon D2 sonrası,
-  91-92). Gerçek yığın satırı §5'te.
+  91-92). Gerçek yığında da (§5) dönüş paketi ÷ ileri paket iki motorda ~0,76; port alıcısı fazla
+  ACK üretmiyor.
 - **H-b (10 s taban PTO tavanı):** port için **doğru** ve #181 U11'le giderildi (82,5 → 17,3 s,
   #181 tablosu). Eski profilde aynı tavan var ama tek başına **etkisiz** (§4.2: tavansız 107,6 s).
   "Eski motorda prob sayısı sınırlı" doğru (`max_tail_probes = 3`), ama sınır r25'i kurtarmaz.
@@ -174,12 +211,18 @@ gözlemi de destekleniyor: RTT örneksiz ilk PTO'yu 3 s'ye çıkarmak 8,5 → 7,
 
 **Eksik olan:**
 1. **Karşılaştırma tabanı ürün eski profili değil.** "Eski motor 5,4 s" kuyruk kurtarması kapalı,
-   ürünün göndermediği bir yapılandırmadır. Ürünün geri alma yolu sim'de 106,8 s'dir; yani sim'de #181
-   portu ürün eski profilinden **~12× iyidir**, ondan geride değildir. Bench'in gece K0 sonucu
-   (25–28 s) ile sim'in 106,8 s'si arasındaki fark sim'in kötümserliğidir (§2), yön aynıdır.
+   ürünün göndermediği bir yapılandırmadır. Ürünün geri alma yolu sim'de 106,8 s'dir. Ama sim bu kolu
+   bench'e göre abartır (§2: bench K0 25–28 s, sıralama sim'de ters). Doğru kıyas tabanı bench `K0`
+   (ya da gerçek yığında ürün eski yolu) olmalıdır: orada #181 portu eski profille **aynı düzeydedir**
+   (gerçek yığın medyanı 493 ↔ 519 s, 3 tohum, fark gürültü içinde); sim'deki "port 8,5 ↔ eski 5,4 s
+   açığı" ise ürünün göndermediği bir tabana göre ölçülmüştür.
 2. **Aynı kök eski profilde de var** ve geri alma yolu (`KAMA_TRANSPORT_ENGINE=legacy`) r25'te bu
    yüzden kötüdür. #181 U10'u yalnız `cc_on()` altında uygular.
-3. **ACK kadansı (gerçek yığında port 17 k ↔ eski 10 k dönüş baytı):** §5.
+3. **ACK kadansı:** gerçek yığında (§5) main portunun fazla dönüş baytı (~+%30) ACK kuralından değil
+   fazladan ileri paketten gelir; #181 ile dönüş baytı eski motorla eşit. Düşük bantta ACK kadansı
+   payı bu hücrede ikinci derecedir; ayrı bir ACK seyreltme kuralı gerekmez.
+5. **Gerçek yığın** #181 yönünü doğrular (main portu 621 s → #181 493 s, eski 519 s; 3 tohum), ama
+   r25 ileti hücresinin değil dosya benzeri hücrenin karşılığıdır.
 4. Küçük: `sender.rs:6752` ve `CC-PORT-ESLEME.md`'deki "tombstone TTL ≈ 3 s" port için 0,9 s'dir
    (`K_TOMB` 8 × 9/8 × `INITIAL_RTT` 100 ms; port tabanı g = 1 ms). Sonuç değişmez (ikisi de 8,1 s'den
    kısa).
@@ -225,5 +268,8 @@ CC_PTO_INIT_MS=3000 cargo test --locked -p adaptive-transport --all-features --t
 
 - Sim netem değildir; mutlak süreler bench'ten 2–4× uzun (§2). Yön ve ayrıştırma içindir.
 - `legacy-k1a6` gösterim K1A6'nın yalnız E2a alt kümesidir.
+- Gerçek yığın 3 tohum, dosya benzeri hücre (60 birim t0'da); r25 ileti hücresinin (10 s aralık)
+  gerçek yığın karşılığı koşulmadı (`shaped_relay`'de sunum aralığı anahtarı yok).
+- Bench gece K0 / port sayıları iş emrinden alıntıdır; bu not onları yeniden koşmadı.
 - Öneriler sim'de global yaklaşımla sınandı; önerilen biçimler (eş başına RTT, düşük bant
   tetikleyicisi, eski U10) uygulanmadı, sınanmadı.
