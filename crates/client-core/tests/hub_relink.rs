@@ -33,7 +33,7 @@ use kama_noise_wire::clock::ManualClock;
 use kama_noise_wire::epoch_machine::GRACE_T_G;
 use kama_noise_wire::protector::NoiseWireProtection;
 use kama_noise_wire::seam_mock::{fixture_directory, fixture_protection};
-use kama_noise_wire::session_control::{EnvelopeKind, SESSION_MAX_AGE};
+use kama_noise_wire::session_control::{EnvelopeKind, HALF_OPEN_TTL, SESSION_MAX_AGE};
 
 const ALICE: u8 = 0xA1;
 const BOB: u8 = 0xB0;
@@ -959,4 +959,53 @@ fn glare_resolved_session_is_renewed_after_its_line_is_lost_and_reconnects_after
     }
     establish(&mut a, &mut b, &hub);
     assert_eq!(hub.cancelled_inits(), cancelled, "yeni niyet terk edilmedi");
+}
+
+/// [T3-GLARE] Crypto niyetin bekleyen INIT'ini anahtar hijyeniyle düşürür (`HALF_OPEN_TTL`,
+/// `Closed(KeyHygiene)`; DR-CONNECT-1 H11): düşen INIT'in taşıyıcı denemesi terk edilir, niyet
+/// SÜRER — aynı bilet altında taze INIT yeni bir denemeyle yola çıkar (terk edilmez), Application
+/// olay görmez. Eş (Carol) rölede kayıtlı değildir: INIT'ler teslim edilmez, niyet bekler.
+///
+/// ESKİ DAVRANIŞ: düşen INIT'in denemesi terk edilmiyordu (`cancelled_inits` boş); `HubLink`'te
+/// onu yalnız aynı eşe yeni INIT'in rastlantısal yerine geçmesi durduruyordu.
+#[test]
+fn half_open_expiry_cancels_the_dropped_init_and_the_intent_lives_on() {
+    let hub = MemoryHub::new();
+    let mut a = node(ALICE, &hub);
+    let carol = id(CAROL);
+    a.t.add_peer_addr(carol, SocketAddr::from(([127, 0, 0, 1], 9)));
+    let Ok(ConnectResult::Pending(ticket)) = a.t.connect(carol, None) else {
+        panic!("beklemede başlamalı");
+    };
+    a.pump();
+    assert!(hub.cancelled_inits().is_empty());
+    a.clock.advance(HALF_OPEN_TTL);
+    a.pump();
+    assert_eq!(
+        hub.cancelled_inits(),
+        vec![LinkAttempt(1)],
+        "düşen INIT'in tekrarı durdu"
+    );
+    assert_eq!(
+        a.t.connect(carol, None),
+        Ok(ConnectResult::Pending(ticket)),
+        "niyet sürer, bilet aynı"
+    );
+    assert_eq!(hub.relay(), 0, "Carol kayıtsız: iki INIT de rölede bekler");
+    assert_eq!(hub.unregistered_destinations(), vec![carol]);
+    assert!(
+        !a.events.iter().any(|e| matches!(
+            e,
+            SessionEvent::ConnectAbandoned(..) | SessionEvent::Closed(..)
+        )),
+        "Application olay görmez: {:?}",
+        a.events
+    );
+    a.clock.advance(HALF_OPEN_TTL);
+    a.pump();
+    assert_eq!(
+        hub.cancelled_inits(),
+        vec![LinkAttempt(1), LinkAttempt(2)],
+        "taze INIT'in denemesi de düşünce terk edildi"
+    );
 }
