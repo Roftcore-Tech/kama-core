@@ -740,6 +740,12 @@ pub struct ServerStats {
     pub delivered: u64,
     /// Teslim kanalı doluyken düşen teslim (app drenaj sözleşmesi ihlali görünür olsun).
     pub delivery_dropped: u64,
+    /// [INV-ACK-DELIVER-1 · F4] Teslim kanalı doluyken motora VERİLMEYEN (ACK'lenmeyen) DATA
+    /// datagramı: gönderici ARQ ile yeniden iletir; ACK'lenmiş birim kaybolmaz.
+    pub data_not_admitted_full: u64,
+    /// [F4] Çözülen ama teslim kanalına giremeyen FEC kurtarımı (RECOVERED'a yazılmadı;
+    /// gönderici kaynak birimi yeniden iletir).
+    pub fec_recovered_not_admitted: u64,
     /// Peer-cap fail-closed reddi (yeni peer, tablo dolu).
     /// [K4G-01b] "Yeni peer" = yeni `(adres, SessionHandle)` yuvası.
     pub dropped_new_peers: u64,
@@ -3026,6 +3032,9 @@ pub struct ServerHandle {
     /// [`ServerHandle::delivery_dropped`]). Görev her döngü turunun başında sayacın o anki değerini
     /// buraya yazar; sayaç ve davranış değişmez.
     delivery_dropped: Arc<AtomicU64>,
+    /// [F4] [`ServerStats::data_not_admitted_full`]'ın canlı aynası (teslim kanalı doluyken motora
+    /// verilmeyen, ACK'lenmeyen DATA; bkz. [`ServerHandle::data_not_admitted_full`]).
+    data_not_admitted_full: Arc<AtomicU64>,
 }
 
 impl ServerEndpoint {
@@ -3092,6 +3101,7 @@ impl ServerEndpoint {
         // Kapasite 1 + onay-oneshot: mark_t0 görev işleyene dek bekler (ölçüm sözleşmesi).
         let (t0_tx, t0_rx) = mpsc::channel::<oneshot::Sender<()>>(1);
         let delivery_dropped = Arc::new(AtomicU64::new(0));
+        let data_not_admitted_full = Arc::new(AtomicU64::new(0));
         let task = tokio::spawn(server_task(
             sock,
             cfg,
@@ -3103,6 +3113,7 @@ impl ServerEndpoint {
             expected,
             ctx_counters.clone(),
             Arc::clone(&delivery_dropped),
+            Arc::clone(&data_not_admitted_full),
         ));
         Ok(ServerHandle {
             delivery_rx,
@@ -3112,6 +3123,7 @@ impl ServerEndpoint {
             local_addr,
             ctx_counters,
             delivery_dropped,
+            data_not_admitted_full,
         })
     }
 }
@@ -3159,6 +3171,13 @@ impl ServerHandle {
     #[must_use]
     pub fn delivery_dropped(&self) -> u64 {
         self.delivery_dropped.load(Ordering::Relaxed)
+    }
+
+    /// [F4] [`ServerStats::data_not_admitted_full`] ile AYNI sayaç, kapanışı beklemeden okunur:
+    /// teslim kanalı doluyken motora verilmeyen (ACK'lenmeyen; gönderici yeniden iletir) DATA.
+    #[must_use]
+    pub fn data_not_admitted_full(&self) -> u64 {
+        self.data_not_admitted_full.load(Ordering::Relaxed)
     }
 
     /// Kapanış → istatistik.
@@ -3262,7 +3281,7 @@ fn push_delivery(
     unit_id: u64,
     payload: Vec<u8>,
     from_fec: bool,
-) {
+) -> bool {
     let d = Delivery {
         peer,
         unit_id,
@@ -3274,8 +3293,10 @@ fn push_delivery(
         if from_fec {
             stats.fec_recovered_units += 1;
         }
+        true
     } else {
         stats.delivery_dropped += 1;
+        false
     }
 }
 
@@ -3297,15 +3318,15 @@ fn admit_chunk(
     pfx: &SourcePrefix,
     payload: &[u8],
     from_fec: bool,
-) {
+) -> bool {
     if !frag_on {
-        if !slot.delivered_seen.insert(unit_id) {
-            return; // birim çoktan teslim edildi (DATA/FEC ortak pencere)
+        if slot.delivered_seen.contains(&unit_id) {
+            return true; // birim çoktan teslim edildi (DATA/FEC ortak pencere)
         }
-        if slot.delivered_seen.len() > DELIVERED_DEDUP_WINDOW {
-            slot.delivered_seen.pop_first();
-        }
-        push_delivery(
+        // [INV-ACK-DELIVER-1 · F4] Dedup penceresine YALNIZ teslim kanalına girdikten sonra
+        // yazılır: dolu kanalda düşen birim "teslim edildi" sayılsaydı yeniden iletimi de yutulur,
+        // ACK'lenmiş birim kalıcı kaybolurdu.
+        if !push_delivery(
             stats,
             delivery_tx,
             peer,
@@ -3313,12 +3334,18 @@ fn admit_chunk(
             unit_id,
             payload.to_vec(),
             from_fec,
-        );
-        return;
+        ) {
+            return false;
+        }
+        slot.delivered_seen.insert(unit_id);
+        if slot.delivered_seen.len() > DELIVERED_DEDUP_WINDOW {
+            slot.delivered_seen.pop_first();
+        }
+        return true;
     }
     let mid = u64::from(pfx.message_id);
     if slot.delivered_seen.contains(&mid) {
-        return; // mesaj çoktan teslim edildi; geç chunk'lar (retransmit/kurtarma) yutulur
+        return true; // mesaj çoktan teslim edildi; geç chunk'lar (retransmit/kurtarma) yutulur
     }
     stats.frag_chunks_rx += 1;
     let complete = {
@@ -3335,16 +3362,21 @@ fn admit_chunk(
     };
     if let Some(full) = complete {
         slot.msgs.remove(&pfx.message_id);
+        stats.msgs_reassembled += 1;
+        // [F4] Tam mesaj kanala girmezse "teslim edildi" işaretlenmez; birleştirici girdisi
+        // düştüğünden mesaj yeniden iletimle (bütün chunk'lar) yeniden toplanır.
+        if !push_delivery(stats, delivery_tx, peer, slot.ctx, mid, full, from_fec) {
+            return false;
+        }
         slot.delivered_seen.insert(mid);
         if slot.delivered_seen.len() > DELIVERED_DEDUP_WINDOW {
             slot.delivered_seen.pop_first();
         }
-        stats.msgs_reassembled += 1;
-        push_delivery(stats, delivery_tx, peer, slot.ctx, mid, full, from_fec);
     } else if slot.msgs.len() > MSG_ASM_CAP {
         slot.msgs.pop_first();
         stats.msg_asm_evicted += 1;
     }
+    true
 }
 
 /// [K4G-01b] Eş yuvası anahtarı: `(kaynak adres, SessionHandle)` — adres tek başına DEĞİL. Aynı
@@ -3542,7 +3574,6 @@ fn fec_ingest(
                 // kurtarılan chunk'ı YANLIŞ birime bağlardı.
                 let k = u64::from(p.k_shape);
                 for r in recovered {
-                    recovered_esis.push(r.esi);
                     let unit_id = u64::from(block_id) * k + u64::from(r.esi);
                     let Ok(pfx) = SourcePrefix::parse(&r.bytes) else {
                         continue;
@@ -3556,7 +3587,10 @@ fn fec_ingest(
                     // doğrudan teslim, açıksa birleştiriciye girer — yani FEC kurtarımı ÇOK
                     // PARÇALI mesajlarda da işe yarar (kurtarılan symbol'ün prefix'i mesaj
                     // kimliğini ve offset'ini zaten taşır). İlk-teslim dedup penceresi ORTAK.
-                    admit_chunk(
+                    // [INV-ACK-DELIVER-1 · F4] Teslim kanalına GİREMEYEN kurtarılmış birim
+                    // RECOVERED listesine yazılmaz: göndericinin ARQ'su kaynak birimi yeniden
+                    // iletir (kaynak seq ACK'siz kaldı), DATA olarak gelince kabul edilir.
+                    if admit_chunk(
                         stats,
                         delivery_tx,
                         peer,
@@ -3567,7 +3601,11 @@ fn fec_ingest(
                         &pfx,
                         payload,
                         true,
-                    );
+                    ) {
+                        recovered_esis.push(r.esi);
+                    } else {
+                        stats.fec_recovered_not_admitted += 1;
+                    }
                 }
                 if let Some(a) = slot.blocks.remove(&block_id) {
                     stats.fec_repairs_useful += a.repairs.len() as u64;
@@ -3608,6 +3646,7 @@ async fn server_task(
     expected: ExpectedSessions,
     ctx_counters: CtxDispatchCounters,
     delivery_dropped_seen: Arc<AtomicU64>,
+    data_not_admitted_full_seen: Arc<AtomicU64>,
 ) -> ServerStats {
     // [K4G-01 / D1 (v1.1)] HubChannel dağıtıcısı: Session durumunun hiçbirini TUTMAZ (yalnız
     // sayaç).
@@ -3642,6 +3681,7 @@ async fn server_task(
         // [K4G-11] Salt gözlem: sayacın o anki değeri yayımlanır (önceki turun bütün `continue`
         // yolları dahil). Sayaç yalnız `push_delivery`'de artar; burada okunur, değişmez.
         delivery_dropped_seen.store(stats.delivery_dropped, Ordering::Relaxed);
+        data_not_admitted_full_seen.store(stats.data_not_admitted_full, Ordering::Relaxed);
         tokio::select! {
             _ = shutdown_rx.changed() => break,
             // Ölçüm-t0 (ServerHandle::mark_t0): wire sayaçları sıfır, ALICI DURUMU KORUNUR.
@@ -3801,6 +3841,16 @@ async fn server_task(
                     // Sonrasındaki her şey — motor beslemesi, ACK, symbol ingest, teslim —
                     // ortaktır; iki ayrı kopya bakım-zamanlı ayrışma riskiydi.
                     RxFrame::Data { .. } | RxFrame::DataFrag { .. } => {
+                        // [INV-ACK-DELIVER-1 · F4] Teslim kanalında yer yoksa datagram motora
+                        // VERİLMEZ (ACK üretilmez): gönderici ARQ ile yeniden iletir. Önceki yol
+                        // motoru besleyip ACK'liyor, sonra `push_delivery` dolu kanalda düşüyordu →
+                        // ACK'lenmiş birim kalıcı kaybolur, oturum sıralayıcısı o birimi bekler.
+                        // Tek görev tek üretici: kapasite ≥ 1 ise bu datagramın (en çok bir)
+                        // teslimi girer. (Sahip kararı 2026-11-11: "ACK'lenmiş birim kaybolmaz".)
+                        if delivery_tx.capacity() == 0 {
+                            stats.data_not_admitted_full += 1;
+                            continue;
+                        }
                         let (unit_id, pfx, payload, body) = match parsed {
                             RxFrame::Data { unit_id, payload } => (
                                 unit_id,
@@ -4269,8 +4319,9 @@ mod delivery_dropped_mirror_tests {
     use super::*;
     use crate::seam::IdentitySeam;
 
-    /// Beklenen sayaç değerinin üst süre sınırı.
-    const WAIT: Duration = Duration::from_secs(20);
+    /// Beklenen sayaç değerinin üst süre sınırı (F4 sonrası: düşme beklenmez; bu süre boyunca
+    /// sıfır kalmalı — 20 s yerine 2 s, test süresi).
+    const WAIT: Duration = Duration::from_secs(2);
     /// Yoklama adımı.
     const TICK: Duration = Duration::from_millis(5);
     /// Taşırılan teslim kanalının kapasitesi (en küçük geçerli değer).
@@ -4289,9 +4340,11 @@ mod delivery_dropped_mirror_tests {
         done()
     }
 
-    /// Teslimler BİLEREK drenaj edilmez: kanala ilk birim girer, kalan `UNITS − 1` birim sayılarak
-    /// düşer (her birim ilk teslimde tam bir kez `push_delivery`'ye gelir). Ayna bu değere
-    /// kapanıştan ÖNCE ulaşır ve kapanış istatistiğiyle aynıdır.
+    /// Teslimler BİLEREK drenaj edilmez: kanala ilk birim girer; kalan birimler
+    /// [INV-ACK-DELIVER-1 · F4] gereği motora VERİLMEZ (ACK yok, `data_not_admitted_full`
+    /// sayılır) — düşmezler. Ayna kapanıştan önce ve sonra aynı sayaçtır (0): eski davranış
+    /// (`UNITS − 1` düşme) sahip kararıyla (2026-11-11, "ACK'lenmiş birim kaybolmaz") değişti;
+    /// kanal doluyken ACK'lenip düşen birim artık yok.
     #[tokio::test(flavor = "multi_thread")]
     async fn live_value_equals_the_overflow_counter_before_shutdown() {
         let server = ServerEndpoint::bind(
@@ -4317,19 +4370,30 @@ mod delivery_dropped_mirror_tests {
                 .send(format!("taşma-{i}").into_bytes())
                 .expect("offer");
         }
-        let expected = UNITS - TINY_QUEUE as u64;
+        // Kanal dolana dek bekle: ilk birim teslim kanalına girer, sonrakiler motora verilmez.
+        // (Gözlem: kapanış istatistiği `data_not_admitted_full`; canlı ayna düşme sayacıdır.)
+        // `wait_until` burada hiç doğrulanmaz (düşme beklenmiyor); üst sınır süre kadar beklenir.
         assert!(
-            wait_until(|| server.delivery_dropped() == expected).await,
-            "canlı değer kapanıştan önce {expected} olmalı, gelen {}",
+            !wait_until(|| server.delivery_dropped() > 0).await,
+            "F4: dolu kanalda ACK'lenip düşen birim YOK (canlı ayna), gelen {}",
             server.delivery_dropped()
+        );
+        assert_eq!(
+            server.delivery_dropped(),
+            0,
+            "F4: dolu kanalda ACK'lenip düşen birim YOK (canlı ayna)"
         );
         client.shutdown().await;
         let stats = server.shutdown().await;
         assert_eq!(
-            stats.delivery_dropped, expected,
+            stats.delivery_dropped, 0,
             "erişimci ve kapanış istatistiği aynı sayaçtır: {stats:?}"
         );
         assert_eq!(stats.delivered, TINY_QUEUE as u64, "{stats:?}");
+        assert!(
+            stats.data_not_admitted_full >= UNITS - TINY_QUEUE as u64,
+            "kanal doluyken motora verilmeyen DATA sayıldı: {stats:?}"
+        );
     }
 }
 
