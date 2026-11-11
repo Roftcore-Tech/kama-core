@@ -220,6 +220,18 @@ impl Peer {
         });
     }
 
+    /// [HLR] Sonda: yenileme yöneticisinin başlattığı / ertelediği yenileme ve `other` ile (etkin
+    /// oturum, bekleyen yenileme, onaysız provisional).
+    fn relink_state(&self, other: &str) -> ((u64, u64), (usize, usize, usize)) {
+        let probe = self.node.probe_for_test().expect("sonda");
+        let peer = probe
+            .peers
+            .iter()
+            .find(|p| p.peer_id == other)
+            .map_or((0, 0, 0), |p| (p.active, p.renewals, p.provisional));
+        ((probe.relink.started, probe.relink.deferred), peer)
+    }
+
     /// Okunmuş olaylarda bu eş için `Closed` yok (hat kaybı Application'a görünmez).
     fn assert_never_closed(&mut self, peer: &str) {
         while let Ok(event) = self.rx.try_recv() {
@@ -406,6 +418,19 @@ fn s4_retired_link_route_miss_renews_the_session() {
         "RECEIPT'siz metin yeni oturumdan yeniden gitti: {:?}",
         probe.messenger
     );
+    // Üst sınırlar: bir kayıp hat → alice'te TEK yenileme (fırtına yok), bob en çok bir; iki uçta tek
+    // etkin oturum, bekleyen yenileme ve onaysız provisional artığı yok.
+    assert_eq!(
+        net.alice.relink_state(BOB),
+        ((1, 0), (1, 0, 0)),
+        "alice: (başlatılan, ertelenen), (etkin, yenileme, provisional)"
+    );
+    let ((bob_started, bob_deferred), bob_peer) = net.bob.relink_state(ALICE);
+    assert!(
+        bob_started <= 1 && bob_deferred == 0,
+        "bob: {bob_started}/{bob_deferred}"
+    );
+    assert_eq!(bob_peer, (1, 0, 0), "bob: (etkin, yenileme, provisional)");
     net.alice.assert_never_closed(BOB);
     net.bob.assert_never_closed(ALICE);
     net.shutdown();
@@ -413,7 +438,7 @@ fn s4_retired_link_route_miss_renews_the_session() {
 
 /// İki uç da aynı anda emekli hatta veri yollar → ikisi de `ROUTE_MISS` alır, ikisi de yeniler
 /// (S3 glare). Sonuç tek oturum: iki metin de ulaşır, ardından iki yönde ikinci tur da ulaşır; iki
-/// uçta `Closed` yok.
+/// uçta `Closed` yok; her uçta en çok bir yenileme, tek etkin oturum, artık yok.
 #[test]
 fn s4_both_ends_route_miss_at_once_end_in_one_session() {
     let deadline = Instant::now() + ATTEMPT;
@@ -432,6 +457,14 @@ fn s4_both_ends_route_miss_at_once_end_in_one_session() {
         net.bob.node.send_text(ALICE, &b).expect("TEXT");
         net.bob.text(ALICE, &a, deadline);
         net.alice.text(BOB, &b, deadline);
+    }
+    for (name, me, other) in [(ALICE, &net.alice, BOB), (BOB, &net.bob, ALICE)] {
+        let ((started, deferred), peer) = me.relink_state(other);
+        assert!(
+            started <= 1 && deferred == 0,
+            "{name}: {started}/{deferred}"
+        );
+        assert_eq!(peer, (1, 0, 0), "{name}: (etkin, yenileme, provisional)");
     }
     net.alice.assert_never_closed(BOB);
     net.bob.assert_never_closed(ALICE);
