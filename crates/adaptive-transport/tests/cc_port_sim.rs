@@ -49,6 +49,11 @@ enum Engine {
     LegacyProductK1A6,
     /// [H2] Port + ürünün ilk uçuşu (4·MTU = 4 800 B; runtime `initial_window_bytes` tabanı).
     CcPortProductIw,
+    /// [H2] Bench `tail-v1` kolu (`crates/bench/src/kama.rs`): `Sender::new()` + `validated_v1`,
+    /// ilk pencere ayarlanmaz (IW 0).
+    LegacyTailV1,
+    /// [H2] Ayrıştırma: `Sender::new()` + ilk pencere 2·MTU, kuyruk kurtarması KAPALI.
+    LegacyIw2,
 }
 
 impl Engine {
@@ -59,6 +64,8 @@ impl Engine {
             Engine::LegacyProduct => "legacy-ürün (validated_v1 + IW 2·MTU)",
             Engine::LegacyProductK1A6 => "legacy-ürün+K1A6",
             Engine::CcPortProductIw => "cc_port IW 4·MTU (ürün)",
+            Engine::LegacyTailV1 => "legacy tail-v1 (bench)",
+            Engine::LegacyIw2 => "legacy IW 2·MTU (tail kapalı)",
         }
     }
     fn sender(self) -> Sender {
@@ -86,11 +93,29 @@ impl Engine {
                 s.set_cc_initial_window(4 * MTU);
                 s
             }
+            Engine::LegacyTailV1 => {
+                let mut s = Sender::new();
+                s.set_tail_recovery_config(
+                    adaptive_transport::tail_recovery::TailRecoveryConfig::validated_v1(),
+                );
+                s
+            }
+            Engine::LegacyIw2 => {
+                let mut s = Sender::new();
+                s.set_initial_window(adaptive_transport::sender::InitialWindowConfig {
+                    bytes: 2 * MTU,
+                });
+                s
+            }
         }
     }
     fn receiver(self) -> Receiver {
         match self {
-            Engine::Legacy | Engine::LegacyProduct | Engine::LegacyProductK1A6 => Receiver::new(),
+            Engine::Legacy
+            | Engine::LegacyProduct
+            | Engine::LegacyProductK1A6
+            | Engine::LegacyTailV1
+            | Engine::LegacyIw2 => Receiver::new(),
             Engine::CcPort | Engine::CcPortProductIw => Receiver::with_cc_port(),
         }
     }
@@ -981,7 +1006,8 @@ fn blackout_60s_session_survives_and_completes() {
 }
 
 /// [H2] r25 bağımsız inceleme kolları (yalnız `CC_R25_ARMS=1`; kapı değil, rapor):
-/// `CC_R25_ARMS=legacy,legacy-product,legacy-k1a6,cc-port,cc-port-iw4` (varsayılan hepsi);
+/// `CC_R25_ARMS=legacy,legacy-product,legacy-k1a6,cc-port,cc-port-iw4,legacy-tailv1,legacy-iw2`
+/// (`1` = hepsi);
 /// `CC_R25_RTT=<ms>` (varsayılan 300 → tek yön 150 ms; bench `d300` tek yön 300 ms için 600);
 /// `CC_R25_SEEDS=<n>` (varsayılan 10). Mevcut testlerin kollarına ve sayılarına dokunmaz.
 #[test]
@@ -996,6 +1022,8 @@ fn r25_arms() {
         ("legacy-k1a6", Engine::LegacyProductK1A6),
         ("cc-port", Engine::CcPort),
         ("cc-port-iw4", Engine::CcPortProductIw),
+        ("legacy-tailv1", Engine::LegacyTailV1),
+        ("legacy-iw2", Engine::LegacyIw2),
     ];
     let arms: Vec<(&str, Engine)> = all
         .into_iter()
