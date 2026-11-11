@@ -2,10 +2,13 @@
 //!
 //! İki iddia, ikisi de test (ölçüm DEĞİL; hiçbir sayı performans olarak okunmaz):
 //! 1. **Bayrak kapalı = bit-aynı tel:** aynı sahte saatli senaryonun karar izi (her
-//!    `TransmitDecision`'ın anı, türü, seq'i, birimi, boyu + son durum) `origin/main`
-//!    5de1ce3f'de üretilen izle BİREBİR aynıdır. Taban izi bu dosyanın E2a'sız kopyasıyla
-//!    5de1ce3f ağacında koşularak kaydedildi (`BASE_DIGEST_*`); dört kural (m1 zaman-kayıp
-//!    tüketicileri, m6 Idle kovası, PTO 2 emisyonu, m8 RTT seçimi) bu senaryoda yol üstündedir.
+//!    `TransmitDecision`'ın anı, türü, seq'i, birimi, boyu + son durum) kayıtlı taban izle
+//!    BİREBİR aynıdır. Ürün benzeri iz (`BASE_DIGEST_PRODUCT`) bu dosyanın E2a'sız kopyasıyla
+//!    `origin/main` 5de1ce3f ağacında koşularak kaydedildi: o yarı "bayrak kapalı = E2a öncesi
+//!    ağaç" kanıtıdır (KK-M1-11). Çıplak iz (`BASE_DIGEST_BARE`) K4G-05b-R ağacında yeniden
+//!    kaydedildi (motor teyitli birime karar üretmez — gerekçe sabitin yanında); o yarı 5de1ce3f
+//!    özdeşliğinin kanıtı DEĞİL, gerileme pinidir. Dört kural (m1 zaman-kayıp tüketicileri, m6
+//!    Idle kovası, PTO 2 emisyonu, m8 RTT seçimi) bu senaryoda yol üstündedir.
 //! 2. **Bayrak açık canlılık:** her bayrak tek başına ve hepsi birlikte açıkken senaryo
 //!    deterministiktir ve sunulan her birim teslim edilir.
 //!
@@ -208,9 +211,10 @@ fn run(product: bool, configure: &dyn Fn(&mut Sender)) -> (u64, BTreeSet<u64>) {
     (h.0, link.delivered)
 }
 
-// ── taban izleri: 5de1ce3f (origin/main) ağacında bu dosyanın E2a'sız kopyasıyla kaydedildi ──
+// ── taban izleri ──
+// Ürün benzeri: 5de1ce3f (origin/main) ağacında bu dosyanın E2a'sız kopyasıyla kaydedildi
 // (2026-11-09; ayrı worktree, ayrı target; varsayılan ve --all-features derlemesinde AYNI değer;
-// iki kurulumda da `delivered = 120`).
+// iki kurulumda da `delivered = 120`). Çıplak: K4G-05b-R ağacında yeniden kaydedildi (aşağıda).
 const BASE_DIGEST_PRODUCT: u64 = 0x1e49_5f75_283c_9675;
 // [K4G-05b-R · sahip kararı 2026-11-11] Çıplak izin tabanı yeniden kaydedildi. Önceki değer
 // 0xa9f2_a6bc_da15_8482 (5de1ce3f). Motor artık teyitli birime karar üretmez: bu senaryoda birim
@@ -227,7 +231,9 @@ fn on(tt_rfc: bool, g_ns: u64, v11: bool, iw: bool, probes: u8) -> E2aFlags {
 }
 
 /// KK-M1-11 "bayrak kapalıyken tel baytı bit-aynı": setter'sız ve `E2aFlags::default()` ile iz,
-/// 5de1ce3f tabanının iziyle birebir aynı.
+/// kayıtlı taban izle birebir aynı. Ürün benzeri yarıda taban 5de1ce3f'nin izidir (E2a öncesi ağaçla
+/// özdeşlik); çıplak yarıda taban K4G-05b-R ağacında kaydedilmiş gerileme pinidir (5de1ce3f
+/// özdeşliği iddia edilmez — motor değişikliği karar-nötr değil, gerekçe `BASE_DIGEST_BARE`'de).
 #[test]
 fn e2a_flags_off_trace_is_bit_identical_to_base() {
     for (product, base) in [(true, BASE_DIGEST_PRODUCT), (false, BASE_DIGEST_BARE)] {
