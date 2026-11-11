@@ -3,8 +3,9 @@
 Tarih 2026-11-11. Dal `k4g/05b-r-runtime-sahiplik`. Taban: main `4a9e97f1` (CC-PORT #170 dahil).
 Kaynak: #140 (`49864510`) içindeki aynı adlı envanterin bu PR'a uyarlanmış hâli.
 
-**main birleştirmesi (2026-11-11).** Dala main `399b573f` (#173, #175, #176) birleştirildi (rebase
-yok, metin çatışması yok). #176'dan beri ürün varsayılan motoru `TransportEngine::CcPort`'tur
+**main birleştirmesi (2026-11-11).** Dala main `399b573f` (#173, #175, #176), ardından `1cfd4da9`
+(#178 INV-RATE-1 2026-11-11 metni, #179 CC-PORT U9) birleştirildi (rebase yok, metin çatışması
+yok). #176'dan beri ürün varsayılan motoru `TransportEngine::CcPort`'tur
 (`RuntimeConfig::default()`); bu PR'ın runtime değişikliği motordan bağımsızdır ve iki motorda
 da koşar. Aşağıdaki satır atıfları birleştirme ÖNCESİ dal içindir.
 
@@ -155,9 +156,12 @@ okuması, `sender.rs` / `loss.rs` / `tail_recovery.rs`):
   dönmez, sonraki toplu gönderim seyrek trafiğin hızından başlar. Toplu gönderimdeki etkinin
   büyüklüğü bu PR'da ölçülmedi (inceleme, depo dışı tek bir sim koşusunda iki motorda da yavaşlama
   bildirdi; yeniden üretilmedi).
-- Port motorunda (BBR portu) her hayalet kayıp bir tıkanıklık olayıdır: kurtarma penceresi
-  `window()`'u daraltır ve `Startup`'tan çıkışı zorlar. INV-RATE-1 ("kayıp hızı düşürmez") eski
-  motorun özelliğidir; port motoru için geçerli değildir.
+- Port motorunda (BBR portu) her hayalet kayıp bir tıkanıklık olayıdır: BBR `recovery_window`
+  uçuş tavanını (`window()`) sınırlar — INV-RATE-1'in 2026-11-11 metninin (#178) izin verdiği yol —
+  ve kurtarmadayken `Startup`'tan çıkış tetiklenir (`cc/bbr.rs` `check_if_full_bw_reached`;
+  `pacing_gain` düşer). Metin ağdaki gerçek kaybı öngörür; buradaki kayıplar yapaydır (birim
+  teslim edilmişti, kayıt yalnız atlandığı için ACK'lenmedi). Simde pencere 4800 ↔ 254 700 B, pacing 3125 ↔
+  1 200 000 B/s (aşağıda).
 - Kapanış drenajı `store.is_empty() && diag_pif() == 0` ya da `drain_cap` (varsayılan 3 s) ile biter;
   uçuşta kalan hayalet kayıt `diag_pif() > 0` tutar, drenaj `drain_cap`'e dek sürer (kod okuması;
   süre ölçülmedi).
