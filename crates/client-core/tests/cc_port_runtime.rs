@@ -76,6 +76,27 @@ async fn legacy_loopback_all_units_delivered_and_acked() {
     loopback(TransportEngine::Legacy, 200).await;
 }
 
+/// [IW] Port motorunda ilk uçuş: ürün profili (2·MTU) → taban 4·MTU; 12 000 yapılandırmayla.
+#[test]
+fn cc_port_initial_window_follows_profile_with_four_mtu_floor() {
+    use client_core::ClientSession;
+    let mut s = ClientSession::with_cc_port();
+    assert_eq!(
+        s.sender().cc_initial_window(),
+        Some(12_000),
+        "kurucu: RFC 9002 10·MTU"
+    );
+    s.sender_mut().set_cc_initial_window(2_400);
+    assert_eq!(s.sender().cc_initial_window(), Some(4_800), "taban 4·MTU");
+    s.sender_mut().set_cc_initial_window(12_000);
+    assert_eq!(s.sender().cc_initial_window(), Some(12_000));
+    assert_eq!(
+        RuntimeConfig::default().initial_window_bytes,
+        2_400,
+        "ürün profili 2·MTU → portta 4·MTU"
+    );
+}
+
 /// `TransportEngine::parse` sözleşmesi (kama-node `KAMA_TRANSPORT_ENGINE`, bench aynı).
 #[test]
 fn engine_parse_contract() {
@@ -93,5 +114,9 @@ fn engine_parse_contract() {
         Some(TransportEngine::CcPort)
     );
     assert_eq!(TransportEngine::parse("bbr"), None);
-    assert_eq!(RuntimeConfig::default().engine, TransportEngine::Legacy);
+    assert_eq!(
+        RuntimeConfig::default().engine,
+        TransportEngine::CcPort,
+        "PR-2: ürün motoru port"
+    );
 }

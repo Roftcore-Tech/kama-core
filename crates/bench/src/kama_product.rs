@@ -1029,7 +1029,13 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         // fec-off kollarıyla BYTE-ÖZDEŞ oluyordu ve provenans yalnız DİZİN ADINA dayanıyordu.
         // Dosya kopyalanınca/havuzlanınca kanıt tanımlanamaz hale gelirdi.
         kama_arm: format!(
-            "kama-product-tailv1-{}{}{}{}{}{}{}",
+            "kama-product-tailv1{}-{}{}{}{}{}{}",
+            // [CC-PORT] motor etiketi: port ⇒ "-cc-port" (provenans; sondaki `-dupN` eki korunur).
+            std::env::var("KAMA_TRANSPORT_ENGINE")
+                .ok()
+                .and_then(|v| client_core::TransportEngine::parse(&v))
+                .unwrap_or_default()
+                .label_suffix(),
             cfg.fec.label(),
             if cfg.burst_fusion { "-burstfusion" } else { "" },
             if cfg.bootstrap_rtt {
@@ -1053,13 +1059,6 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
             } else {
                 String::new()
             },
-            // [CC-PORT] motor etiketi: `KAMA_TRANSPORT_ENGINE=cc-port` ⇒ "-cc-port" (provenans;
-            // etiket davranış-seçici her bayrağı taşır).
-            std::env::var("KAMA_TRANSPORT_ENGINE")
-                .ok()
-                .and_then(|v| client_core::TransportEngine::parse(&v))
-                .unwrap_or_default()
-                .label_suffix(),
         ),
         submit_interval_ns: interval_ns,
         budget: snap,

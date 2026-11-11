@@ -273,7 +273,11 @@ impl KamaV1Profile {
     #[must_use]
     pub fn runtime_config() -> RuntimeConfig {
         RuntimeConfig {
-            engine: TransportEngine::Legacy,
+            // [CC-PORT PR-2 · sahip kararı "CC-PORT VARSAYILAN <SHA>"] Ürün motoru = quinn-proto
+            // 0.11.18 BBR + RFC 9002 portu. Eski motor `KAMA_TRANSPORT_ENGINE=legacy` ile geri alınır
+            // (kama-node, bench) ya da `engine: Legacy`. Gerekçe: docs/design/CC-PORT-ESLEME.md ve
+            // Ö-CC hücreleri (CP-1: port 15,7 s / 10-10, eski 23,3 s / 10-10, eşli 0,67).
+            engine: TransportEngine::CcPort,
             max_inflight_units: 4096,
             offer_queue: 1024,
             delivery_queue: 1024,
@@ -321,10 +325,11 @@ impl KamaV1Profile {
 /// [CC-PORT] Taşıma motoru (bkz. [`RuntimeConfig::engine`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TransportEngine {
-    /// Bugünkü motor (faz makinesi); ürün profili.
-    #[default]
+    /// Eski motor (faz makinesi); PR-2'den önce ürün profiliydi, `legacy` anahtarıyla geri alınır.
     Legacy,
     /// quinn-proto 0.11.18 BBR + RFC 9002 portu (ISEMRI-CC-PORT; `docs/design/CC-PORT-ESLEME.md`).
+    /// PR-2 ile ürün profili.
+    #[default]
     CcPort,
 }
 
@@ -1930,6 +1935,16 @@ async fn client_task(
         .set_initial_window(InitialWindowConfig {
             bytes: cfg.initial_window_bytes,
         });
+    // [CC-PORT · sahip kararı 2026-11-11] Port motorunda ilk uçuş = `initial_window_bytes`,
+    // taban 4·MTU (BBR min_cwnd). Ürün profili (2·MTU) → 4·MTU = 4 800 B; RFC 9002'nin 10·MTU'su
+    // (12 000 B) yalnız yapılandırmayla (gösterim/VPS hücresi). Gerekçe: 12 kB kör ilk uçuş sığ
+    // tamponda düşme, düşük bantta saniyeler; RFC 6928 §4 uyarısı.
+    if cfg.engine == TransportEngine::CcPort {
+        let iw = cfg
+            .initial_window_bytes
+            .max(4 * adaptive_transport::rate::DEFAULT_MTU);
+        session.sender_mut().set_cc_initial_window(iw);
+    }
     // [E1 gösterim, CC §4.1] Beş çalışma-zamanı bayrağı (varsayılan kapalı = sevk davranışı).
     session.sender_mut().set_e1_flags(cfg.e1_flags);
     let mut stats = ClientStats::default();
