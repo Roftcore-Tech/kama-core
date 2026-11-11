@@ -1219,15 +1219,3 @@ async fn store_miss_guard_fec_recovered() {
     );
     assert_eq!(ss.fec_recovered_units, erased, "{ss:?}");
 }
-
-/// Teyit çıktısı tavanı, runtime'ın varsayılan teyitsiz birim tavanını kapsar: bir olayda canlı
-/// kaydı eşleşen farklı birim sayısı store'daki birim sayısını (≤ `max_inflight_units`) aşamaz,
-/// dolayısıyla her olay sonrası drenajla taşma yalnız store dışı (çoktan teyitli) birimlerle olur.
-#[test]
-fn confirmed_units_cap_covers_default_store_bound() {
-    assert!(
-        RuntimeConfig::default().max_inflight_units
-            <= adaptive_transport::sender::CONFIRMED_UNITS_CAP,
-        "RuntimeConfig::default().max_inflight_units > CONFIRMED_UNITS_CAP"
-    );
-}

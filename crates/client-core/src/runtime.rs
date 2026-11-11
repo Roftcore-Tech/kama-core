@@ -597,10 +597,15 @@ pub struct ClientStats {
     /// (item 6, workstream B'de kama-noise-wire formatıyla bağlanır); sessiz yutulmaz, sayılır.
     pub unknown_frames: u64,
     /// Payload'ı store'da bulunamayan (çoktan ACK'lenmiş birime geç karar) emisyon — kayıp sayıldı.
-    /// [K4G-05b-R · sahip kararı 2026-11-11] Store yalnız motorun teyit çıktısıyla boşalır; bu sayaç
-    /// motorun TEYİTLİ birime karar üretmesidir (ör. birim geç orijinalle teyit edildi, yeniden
-    /// gönderim kaydı `pending_lost`'ta bekliyordu). Bu PR'da motor teyitli birimin bekleyen işini
-    /// budamaz, yani `> 0` olabilir; emisyon başlık-only gider, haritaya kayıt açmaz.
+    /// [K4G-05b-R · sahip kararı 2026-11-11] İki kaynağı vardır:
+    /// (1) Birim taşıyan karar (Data / Retransmit / Duplicate) store'da yok: store yalnız motorun
+    /// teyit çıktısıyla boşaldığından bu, motorun TEYİTLİ birime karar üretmesidir (ör. birim geç
+    /// orijinalle teyit edildi, yeniden gönderim kaydı `pending_lost`'ta bekliyordu). Bu PR'da motor
+    /// teyitli birimin bekleyen işini budamaz, yani `> 0` olabilir; emisyon başlık-only gider,
+    /// haritaya kayıt açmaz.
+    /// (2) `FecParity` kararı runtime'da FEC kapalıyken ya da kararın gönderim kaydı (`send_record`)
+    /// yokken: tele çıkmaz, yalnız sayılır (ürün varsayılanları bu kararı üretmez).
+    /// Değer > 0 okunurken iki kaynak ayrılmaz; (2) yalnız bu yapılandırmalarda katkı verir.
     pub stale_decisions: u64,
     /// Soket send hatası (kanal kaybı eşdeğeri, INV-RATE-1).
     pub send_errors: u64,
@@ -835,8 +840,10 @@ pub struct SenderRecoveryDiag {
     pub seq_to_unit_len: u32,
     pub unit_seqs_len: u32,
     /// [K4G-05b-R · sahip kararı 2026-11-11] Motorun teyit çıktısı taşma sayacı
-    /// (`Sender::diag_confirmed_units_overflow`). Runtime her olaydan sonra drenaj yaptığı için 0
-    /// beklenir; 0 değilse düşen teyitlerin payload'ı store'da kalır. SALT GÖZLEM.
+    /// (`Sender::diag_confirmed_units_overflow`). Motor bir çağrının kendi teyitlerini düşürmez;
+    /// tavanı yalnız drenaj edilmemiş birikime, sonraki çağrının girişinde uygular. Runtime her
+    /// `on_event` çağrısından hemen sonra drenaj yaptığı için yapısal olarak 0'dır; 0 değilse drenaj
+    /// sözleşmesi çiğnenmiştir (düşen teyitlerin payload'ı store'da kalır). SALT GÖZLEM.
     pub confirmed_units_overflow: u64,
 }
 
@@ -1988,6 +1995,11 @@ async fn client_task(
     let mut store: HashMap<u64, Vec<u8>> = HashMap::new();
     // seq → unit haritası + birim → seq'leri (teyitte toplu budama — harita store disipliniyle
     // sınırlı kalır; teyitli birime kayıt eklenmez).
+    // [K4G-05b-R] `seq_to_unit` artık hiçbir yolda OKUNMAZ: teyit motorun çıktısından gelir, ACK
+    // yolu seq → birim araması yapmaz. Yalnız `SenderRecoveryDiag::seq_to_unit_len` sızıntı
+    // bekçisini besler (değeri `unit_seqs` listelerinin toplamına eşittir). Şekli #140'ın runtime
+    // kısmıyla aynı tutuldu (Aralık birleşmesinde çakışma olmasın); kaldırılması o birleşmeye kalır.
+    // `unit_seqs` ise `capture_recovery`'de en eski teyitsiz birimin seq'leri için okunur.
     let mut seq_to_unit: HashMap<u64, u64> = HashMap::new();
     let mut unit_seqs: HashMap<u64, Vec<u64>> = HashMap::new();
     // [D1a] ARQ kimliği = `meta.full_wire_pn` (BL D1; S3 K2/K4): her (yeniden) gönderim yeni bir
@@ -2107,7 +2119,11 @@ async fn client_task(
     // teyit üretmez: payload yerinde kalır, sonraki iletim gövdeli gider ve onun ACK'i teyit eder
     // (`docs/design/K4G-05b-RUNTIME-ENVANTER.md`). Motor olaylar arası tekilleştirmez; tekilleştirme
     // store varlığıdır (birim kimliği yeniden kullanılmaz, ilk teyit store'dan düşürür). Birimin
-    // haritaları aynı yerde budanır. Değer: bu drenajda store'dan düşen birim sayısı.
+    // haritaları aynı yerde budanır. Teyit kaybı yapısal olarak yoktur: motor bir çağrının kendi
+    // teyitlerini düşürmez (tavanı yalnız drenaj edilmemiş birikime uygular) ve bu drenaj her
+    // `session.on_event` çağrısından hemen sonra koşar (`drive!`); store boyu, parçalama ya da ACK
+    // çerçevesi boyu bunu değiştirmez. Olay içi sıra artan birim kimliğidir.
+    // Değer: bu drenajda store'dan düşen birim sayısı.
     macro_rules! drain_confirmed {
         ($via:expr) => {{
             let mut newly: u32 = 0;
