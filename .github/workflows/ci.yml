@@ -71,6 +71,8 @@ jobs:
         run: cargo clippy --all-targets --no-default-features -- -D warnings
 
   # ── Hızlı doğruluk: tam workspace, ağır entegrasyon panelleri hariç ──
+  # [K4G-05b-R] Gerçek zamanlı runtime sahipliği testleri burada `#[ignore]`'dur; paralel
+  # `test-runtime` işi koşar (aşağıda).
   test-fast:
     name: test (all-features, hızlı küme)
     runs-on: ubuntu-latest
@@ -104,6 +106,37 @@ jobs:
           grep -Eq "test result: ok\. [1-9][0-9]* passed" /tmp/pp.txt \
             || { echo "::error title=TEST_FAILURE::urun-profili pin testi 0 test kosuyor"; exit 1; }
           cargo test -p adaptive-transport --all-features --test fec_loss_risk
+
+  # ── Gerçek zamanlı runtime sahipliği (K4G-05b-R; sahip kararı 2026-11-11) ──
+  # `crates/client-core/tests/k4g05b_runtime_ownership.rs`: gerçek runtime + UDP loopback röle,
+  # testler sırayla (serileştirme kilidi). Hızlı kümeden (`test-fast`) `#[ignore]` ile çıkarıldı;
+  # burada HER PR'da test-fast'a PARALEL koşar: test kaybolmaz, duvar süresi test-fast'ı aşmadıkça
+  # büyümez. Özellik kümesi test-fast'ınkiyle AYNI (`--workspace --all-features`, kama-integration
+  # hariç): testler bölünmeden önceki PR koşusuyla aynı birleşik derlemede koşar; `--test` süzgeci
+  # yalnız client-core'un bu hedefini ve bağımlılıklarını derler. Ürün varsayılan derlemesi ve
+  # release main'de: core-main `runtime-ownership` işi.
+  # Önbellek iş başınadır (Swatinem varsayılan anahtarı). core-ci yalnız PR'da koştuğu için main
+  # kapsamlı önbellek yoktur: bir PR'ın ilk koşusu soğuk derler, sonraki itmeler o PR'ın önbelleğini
+  # okur.
+  test-runtime:
+    name: test-runtime (gerçek zamanlı runtime sahipliği)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Vakum bekçisi: koşan test sayısı BİREBİR `K4G05B_RUNTIME_TESTS` (0 ya da eksik = kırmızı;
+      # ör. `#[ignore]` kaldırılan test bu kümeden düşer). Sayı main.yml `runtime-ownership` işi ve
+      # scripts/ci/local-gate.sh `test_runtime` adımıyla eş tutulur.
+      - name: runtime sahipliği (--ignored, vakum bekçili)
+        env:
+          K4G05B_RUNTIME_TESTS: "11"
+        run: |
+          set -o pipefail
+          cargo test --workspace --all-features --exclude kama-integration --test k4g05b_runtime_ownership -- --ignored 2>&1 | tee /tmp/rt.txt
+          grep -Eq "test result: ok\. ${K4G05B_RUNTIME_TESTS} passed; 0 failed" /tmp/rt.txt \
+            || { echo "::error title=TEST_FAILURE::test-runtime ${K4G05B_RUNTIME_TESTS} test kosturmali (vakum bekcisi)"; exit 1; }
 
   # ── Conformance: vektör ↔ uygulama (T-00.3) ──
   # Vektör ya da ilgili kod değiştiğinde kimsenin "koşmayı unutması" mümkün olmasın.
@@ -315,7 +348,7 @@ jobs:
     name: ci verdict (failure classification)
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [static, test-fast, conformance, seam-conformance, miri, asan, msan, security, aead-differential, vectors]
+    needs: [static, test-fast, test-runtime, conformance, seam-conformance, miri, asan, msan, security, aead-differential, vectors]
     if: always()
     steps:
       - name: classify

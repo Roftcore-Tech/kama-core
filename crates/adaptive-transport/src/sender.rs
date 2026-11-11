@@ -1344,6 +1344,50 @@ struct PendingFecParity {
 /// (memory-hijyen; mühürlü-DEĞİL — logical-ledger'ın hiçbir mühürlü-muhasebeye etkisi yok).
 const CONFIRMED_LOGICAL_CAP: usize = 4096;
 
+/// [K4G-05b-R · sahip kararı 2026-11-11] Birim teyit çıktısında DRENAJ EDİLMEMİŞ birikimin üst
+/// sınırı ([`Sender::take_confirmed_units`]; SR-AUDIT-001 bounded). Tavan YALNIZ önceki
+/// çağrılardan kalan birikime uygulanır: her `on_event` / `on_event_batch` girişinde birikim bu
+/// sınırın üstündeyse en eski fazlası düşer ve [`Sender::diag_confirmed_units_overflow`] artar.
+/// Çağrının KENDİ ürettiği teyitler hiçbir zaman düşmez; sayıları çağrının girdisiyle sınırlıdır
+/// (ACK olayı: canlı kaydı eşleşen seq'ler — uçuş/tombstone dalında çerçevedeki seq başına en çok
+/// bir, un-loss dalında yeniden planı bekleyen kayıt başına en çok bir; RECOVERED olayı: listelenen
+/// birimler). Her çağrıdan sonra drenaj yapan tüketici (runtime) bu yüzden YAPISAL olarak teyit
+/// kaybetmez: tavanın değerinden, store sınırından, parçalama düzeninden ve ACK çerçevesi boyundan
+/// bağımsız. Tavan yalnız drenaj yapmayan çağıranların (bench/sim/harness) belleğini sınırlar.
+pub const CONFIRMED_UNITS_CAP: usize = 4096;
+
+/// [K4G-05b-R · sahip kararı 2026-11-11] Teyit edilen birimlerin motorda iptal edilen ya da
+/// kararsız kılınan işi (oturum boyunca, doygun sayaçlar; SALT-GÖZLEM — hiçbir karar okumaz).
+/// Teyit olayları ACK (canlı kayıt) ve `RecoveredControl`'dür; iki kaynak da aynı sayaçlara yazar.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ConfirmedCancelDiag {
+    /// İptal edilen kayıp kuyruğu kaydı (ARQ yeniden gönderimi bekleyen).
+    pub pending_lost: u64,
+    /// İptal edilen kopya kuyruğu kaydı (§3.3-B stop koşulu dahil).
+    pub dup_queue: u64,
+    /// Gönderim kuyruğundan çıkarılan, hiç gönderilmemiş birim (yalnız `RecoveredControl`: alıcı
+    /// birimi FEC ile kurdu).
+    pub tx_queue: u64,
+    /// Teyit anında uçuşta olan ve KARARSIZ işaretlenen diğer kopya kaydı (uçuşta kalır; ACK ve
+    /// kayıp muhasebesi öncekiyle aynı).
+    pub inflight_marked: u64,
+    /// Kararsız kopyanın kayıp ilanı: kayıp muhasebesi yapıldı, birim YENİDEN KUYRUĞA GİRMEDİ
+    /// (Duplicate kökenlide geometrik kopya yeniden kurulmadı).
+    pub lost_not_requeued: u64,
+    /// Kararsız kopyanın bırakma anına dek ACK'i ya da kayıp ilanı gelmedi; kayıp ilan edilmeden
+    /// uçuştan düştü (sessiz kanal sınırı).
+    pub released: u64,
+}
+
+/// [K4G-05b-R] Kararsız kopyanın (teyitli birimin uçuştaki diğer kaydı) uçuşta kalabileceği en uzun
+/// süre, teyit anından, `T_loss` katı olarak. Tombstone TTL'iyle (`K_TOMB`) AYNI saat: bu süre
+/// dolduğunda ACK'i gelmemiş ve kayıp ilan edilmemiş kopya, TTL'ini doldurmuş tombstone gibi ele
+/// alınır (sonraki ACK'i bilinmeyen seq'tir). Kayıp dedektörü yalnız daha yeni bir seq'in ACK'iyle
+/// ilan ettiğinden (TUR-1a) bu sınır başlıca sessiz kanalda ve PreConverge'de (§3.3-C) devreye
+/// girer; daha yeni seq ACK'lenmişken yalnız paket eşiği dolmamış ve zaman eşiği teyitten bu yana bu
+/// kat kadar büyümüşse (dar pencere; kapsam `Sender::release_confirmed_copies`'te).
+const K_CONFIRMED_RELEASE: u32 = K_TOMB;
+
 /// sent_logical üst-sınırı (DR-S5-6; SR-AUDIT-001). GEREKÇE (M1-doğruluk-şartı, Abkarada şart-2):
 /// eviction ancak "kayıt ACK-dönmeden düşerse" M1-delivery'yi yapay-düşürür. Kalıcı-büyüme kaynağı
 /// in-flight DEĞİL (SACK-range'ler toplu-remove eder), KAYIP-ve-kurtarılmamış sızıntısıdır:
@@ -1381,6 +1425,13 @@ struct InflightPacket {
     bw_sample: SentPacket,
     retx_count: u8,
     origin: TransmitKind,
+    /// [K4G-05b-R · sahip kararı 2026-11-11] `Some(an)`: birim BAŞKA bir kaydıyla (ya da
+    /// RECOVERED ile) teyit edildi; bu kayıt KARARSIZDIR. Uçuşta gerçek bayt olarak kalır: ACK'i
+    /// (BW örneği, teslim kredisi, CC `on_ack`) ve kayıp ilanı (CC tıkanıklık olayı, tombstone,
+    /// kader kanıtı) öncekiyle aynı işlenir; ama yeniden kuyruğa, kopya kuyruğuna, canlılık
+    /// kopyasına ve prob hedefine GİRMEZ. `an` geçtiğinde hâlâ uçuştaysa kayıp ilan edilmeden düşer
+    /// (`release_confirmed_copies`). `None`: birim bu kayıt üzerinden teyitsiz.
+    confirmed_release_ns: Option<u64>,
 }
 
 /// Kayıp ilan edilmiş, recovery bekleyen kayıt (birim + öncelik metadata).
@@ -1730,6 +1781,20 @@ pub struct Sender {
     diag_recovered_cancels: u64, // DR-S5-4: RECOVERED ile iptal-edilen bekleyen-retransmit sayısı (K2/M1-sinyali)
     diag_sent_logical_evicted: u64, // DR-S5-6: cap-eviction sayısı (M1-guard: hücrede 0-olmalı)
     diag_confirmed_logical_miss: u64, // DR-S5-6: ACK-teyidi kayıtsız-seq'e geldi (M1'de tüm-emisyon-register'lıyken = eviction-artefaktı)
+    // ── [K4G-05b-R] birim teyit ÇIKTISI (SALT-ÇIKTI: hiçbir karar yolu OKUMAZ) ──
+    /// Son `take_confirmed_units`'ten bu yana teyit edilen birim kimlikleri (`OpaqueUnit::id`):
+    /// olaylar üretim sırasıyla, olay içinde artan kimlik sırasıyla. SINIRLI: çağrı girişinde drenaj
+    /// edilmemiş birikim [`CONFIRMED_UNITS_CAP`]'e indirilir (en eski düşer); çağrının kendi
+    /// teyitleri düşmez.
+    confirmed_units_out: VecDeque<u64>,
+    /// Teyit çıktısı taşma sayacı: drenaj edilmeden düşen birikim (SALT-GÖZLEM).
+    confirmed_units_overflow: u64,
+    /// [K4G-05b-R] Teyitle iptal edilen motor işi sayaçları (SALT-GÖZLEM; `cancel_confirmed_units`).
+    confirmed_cancels: ConfirmedCancelDiag,
+    /// [K4G-05b-R] Kararsız kopyaların en erken bırakma anının alt sınırı (`None` = taranacak kopya
+    /// yok). `release_confirmed_copies` taramasını kapılar ve EK4-A2 uyanma adayıdır
+    /// (`next_timer_deadline_ns` 5c); hiçbir karar okumaz.
+    confirmed_release_next_ns: Option<u64>,
 
     // ── ack_confidence (RECOVER_FWD tetiği): sessizlik-tabanlı ──
     last_ack_ns: Option<u64>,
@@ -2041,6 +2106,11 @@ impl Sender {
             diag_recovered_cancels: 0,      // DR-S5-4
             diag_sent_logical_evicted: 0,   // DR-S5-6
             diag_confirmed_logical_miss: 0, // DR-S5-6
+            // [K4G-05b-R] birim teyit çıktısı
+            confirmed_units_out: VecDeque::new(),
+            confirmed_units_overflow: 0,
+            confirmed_cancels: ConfirmedCancelDiag::default(),
+            confirmed_release_next_ns: None,
             last_ack_ns: None,
             first_send_ns: None,
             drain_rtprop_entry_ns: None,
@@ -2415,6 +2485,8 @@ impl Sender {
         }
         #[cfg(not(feature = "experimental-cold-start"))]
         {
+            // [K4G-05b-R] Çağrı girişi: drenaj edilmemiş teyit birikimi tavana (SALT-ÇIKTI).
+            self.trim_undrained_confirmations();
             // DR-S5-4 SAF-LOGICAL erken-dönüş: RECOVERED-control pacer-saatine/fuzzy/rate/schedule'a
             // HİÇ girmez (emit-yok, kredi-yok, saat-ilerletme-yok — N8-bit-özdeşliğin yapısal-tabanı).
             if let Event::RecoveredControl(info) = &event {
@@ -2673,6 +2745,9 @@ impl Sender {
         if inbound.is_empty() && !any_due && !self.cs_has_pending_work() {
             return Vec::new();
         }
+        // [K4G-05b-R] Çağrı girişi: drenaj edilmemiş teyit birikimi tavana (SALT-ÇIKTI). E2 dönüşü
+        // teyit üretmez; birikim orada büyümez, budama bir sonraki işleyen çağrıya kalır.
+        self.trim_undrained_confirmations();
         let was_empty = inbound.is_empty();
         // Faz-1: tip-önceliği (EK5-iv; stable-sort → aynı-tip varış-sırası korunur).
         inbound.sort_by_key(Self::cs_type_priority);
@@ -2750,7 +2825,8 @@ impl Sender {
     ///   2. ARQ time-threshold loss deadline (`loss.next_time_loss_deadline_ns`)
     ///   3. §3.3-B geometrik kopyalar (`dup_queue[*].due_ns`)
     ///   4. DR-CS-3 bootstrap merdiveni (`bs_armed_ns + BS_FIRES_NS[bs_next_step]`)
-    ///   5. Tail-recovery PTO (`armed_at_ns + current_pto_ns`)
+    ///   5. Tail-recovery PTO (`armed_at_ns + current_pto_ns`); 5b E2a ikinci prob; 5c [K4G-05b-R]
+    ///      kararsız kopya bırakma anı (`confirmed_release_next_ns`)
     ///   6. Pacer token yenilenmesi — bekleyen iş VARSA (`tx_queue|pending_lost|dup_queue|pending_fec`)
     ///      en küçük bekleyen birimin gönderilebilir olacağı an
     #[must_use]
@@ -2842,6 +2918,13 @@ impl Sender {
         best = earlier(best, self.tail_probe_deadline_ns());
         // 5b. [E2a PTO 2] Jeton bekleyen ikinci prob (yuva boşsa aday yok ⇒ bit-aynı).
         best = earlier(best, self.e2a_probe2_ready_ns());
+        // 5c. [K4G-05b-R] Kararsız kopyaların en erken bırakma anı (`release_confirmed_copies`, Pto'da
+        // uygulanır; yeni zamanlayıcı değil). Kararsız kopya kuyruk probu hedefi olmadığından, uçuşta
+        // yalnız o kaldığında başka aday kalmayabilir: bu aday olmadan `None` dönerdi. Değer alt
+        // sınırdır — işaretli kopya bu arada ACK'lenip ya da kayıp ilan edilip uçuştan çıktıysa bayattır
+        // ve en çok BİR uyanma doğurur (o Pto'daki tarama kopya bulamaz, değeri yeniden hesaplar: kalan
+        // en erken an ya da `None`). Kararsız kopya yoksa `None` ⇒ uyanma kümesi bit-aynı.
+        best = earlier(best, self.confirmed_release_next_ns);
 
         // NOT: `LostRec.deadline_ns` BİLEREK kaynak DEĞİL. `arq.rs:110-111` normatif: "deadline YALNIZ
         // SIRA — expired seq DROP EDİLMEZ, planda kalır" ⇒ o bir TESLİM-önceliği anahtarıdır, zamanlayıcı
@@ -3246,7 +3329,15 @@ impl Sender {
         // RTT: en yüksek yeni-acked ORİJİNAL (DATA) paketten örnekle (Karn: retransmit/dup'tan DEĞİL).
         let mut rtt_send_ns: Option<u64> = None;
         let mut largest = 0u64;
-        let mut acked_units: Vec<u64> = Vec::new();
+        // [K4G-05b-R] TEYİT edilen birimler: bu çerçevede canlı kaydı (uçuş, tombstone, un-loss) İLK
+        // kez eşleşen birim iletimleri. FEC onarım sembolü HARİÇ (unit.id = ESI, ayrı ad-uzayı). İki
+        // tüketicisi var: motorun iptali (`cancel_confirmed_units` — birimin bekleyen işi; eski
+        // `acked_units` kopya iptalinin yerine) ve teyit çıktısı (`emit_unit_confirmations`).
+        let mut confirmed_units: Vec<u64> = Vec::new();
+        // [K4G-05b-R · D12] Bu çerçevede kol-1 tombstone'una (tek gönderim) çarpan ORİJİNAL (`Data`)
+        // seq'ler: kayıp ilan edilmiş orijinalin geç ACK'i, aşağıdaki un-loss adımında reorder
+        // kanıtıdır. Çerçevenin ACK'lenen seq sayısıyla sınırlı (SR-AUDIT-001); ilk itişte ayrılır.
+        let mut kol1_original_hits: Vec<u64> = Vec::new();
         // [E2a m8] engine §6 v1.1 KABUL KURALI (a)/(b) (`rtt_rule_v11`, KK-M1-06; C5.md:19): çerçeve
         // başına en çok BİR örnek — çerçevedeki gönderilmiş (sender'ın ürettiği) seq'lerin EN BÜYÜĞÜ
         // (`ack_delay` onundur). Örnek YALNIZ o seq'in kaydı bu çerçeveyle İLK KEZ onaylanıyorsa
@@ -3281,9 +3372,14 @@ impl Sender {
                 if p.origin == TransmitKind::Data {
                     self.fate_estimator.on_original_ack(p.unit.id);
                 }
-                acked_units.push(p.unit.id); // §3.3-B stop koşulu: teyit edilen birimin kopyaları iptal
-                                             // DR-S5-3 [SALT-LOGICAL — BtlBw'ye DEĞMEZ]: wire-ACK hangi-logical-paketi teyit-etti?
-                                             // Ayrı-defter (bounded); bw_sampler/btlbw'yi OKUMAZ/YAZMAZ (N8: recovered≠ACK tabanı).
+                // [K4G-05b-R] FEC onarım sembolünün `unit.id`'si ESI'dir (ayrı ad-uzayı): kopya
+                // iptaline (§3.3-B stop) de teyit çıktısına da GİRMEZ. Girseydi ESI ile aynı sayısal
+                // kimlikli KAYNAK birimin bekleyen kopyaları iptal olurdu.
+                if p.origin != TransmitKind::FecParity {
+                    confirmed_units.push(p.unit.id); // [K4G-05b-R] canlı uçuş kaydı
+                }
+                // DR-S5-3 [SALT-LOGICAL — BtlBw'ye DEĞMEZ]: wire-ACK hangi-logical-paketi teyit-etti?
+                // Ayrı-defter (bounded); bw_sampler/btlbw'yi OKUMAZ/YAZMAZ (N8: recovered≠ACK tabanı).
                 self.record_confirmed_logical(seq);
                 let sample = self.bw_sampler.on_ack(now_ns, p.bw_sample);
                 self.btlbw.update(sample, now_ns, sample.delivered > 0);
@@ -3302,16 +3398,23 @@ impl Sender {
                 // prune edilmişse buraya düşmez (Expired/Unknown — örneksiz).
                 self.diag_tomb_hits += 1;
                 cc_acked.push((t.unit.size, t.bw_sample.is_app_limited()));
-                acked_units.push(t.unit.id); // teslim teyidi → bekleyen kopyaları iptal et
-                                             // S-0.7 correction leg (ESTIMATOR-LIFECYCLE §6.1): the ORIGINAL's own seq was
-                                             // late-acked — the product just disproved the loss it declared, so the estimator's
-                                             // fate is corrected in place. ORIGINALS ONLY: a superseded transmission's late ACK
-                                             // (kol-2, origin Retransmit) proves nothing about the original's fate.
+                // S-0.7 correction leg (ESTIMATOR-LIFECYCLE §6.1): the ORIGINAL's own seq was
+                // late-acked — the product just disproved the loss it declared, so the estimator's
+                // fate is corrected in place. ORIGINALS ONLY: a superseded transmission's late ACK
+                // (kol-2, origin Retransmit) proves nothing about the original's fate.
                 if t.origin == TransmitKind::Data {
                     self.fate_estimator.correct_original_delivered(t.unit.id);
                 }
+                // [K4G-05b-R] Onarım sembolü (ESI ad-uzayı) kopya iptaline ve teyide girmez (uçuş
+                // dalıyla aynı kural).
+                if t.origin != TransmitKind::FecParity {
+                    confirmed_units.push(t.unit.id); // [K4G-05b-R] canlı tombstone (kol-1/kol-2)
+                }
                 if t.retx_count == 0 {
                     // kol-1 (tek gönderim, belirsizlik yok): BW-örneği NORMAL üretilir.
+                    if t.origin == TransmitKind::Data {
+                        kol1_original_hits.push(seq); // [K4G-05b-R · D12] un-loss adımında reorder
+                    }
                     let sample = self.bw_sampler.on_ack(now_ns, t.bw_sample);
                     self.btlbw.update(sample, now_ns, sample.delivered > 0);
                     self.bw_sampled_since_round = true;
@@ -3368,15 +3471,17 @@ impl Sender {
                     continue;
                 }
                 self.diag_unloss += 1;
-                acked_units.push(rec.unit.id); // kopyaları aşağıdaki ortak iptale kat
-                                               // S-0.7 correction leg: un-loss = the declared-lost seq itself was acked, the loss
-                                               // hypothesis is withdrawn. retx_count == 0 ⟺ this record is the ORIGINAL emission
-                                               // (a lost retransmit re-enters pending_lost with retx_count ≥ 1 and its ACK proves
-                                               // only the retransmit's delivery). Exactly-once is carried by the estimator method:
-                                               // the same late ACK can hit both the tombstone branch and this drain in one event.
+                // S-0.7 correction leg: un-loss = the declared-lost seq itself was acked, the loss
+                // hypothesis is withdrawn. retx_count == 0 ⟺ this record is the ORIGINAL emission
+                // (a lost retransmit re-enters pending_lost with retx_count ≥ 1 and its ACK proves
+                // only the retransmit's delivery). Exactly-once is carried by the estimator method:
+                // the same late ACK can hit both the tombstone branch and this drain in one event.
                 if rec.retx_count == 0 {
                     self.fate_estimator.correct_original_delivered(rec.unit.id);
                 }
+                // [K4G-05b-R] un-loss eşleşmesi canlı kayıttır. `LostRec` hiçbir zaman onarım sembolü
+                // değildir (queue_losses FecParity'yi pending_lost'a sokmaz).
+                confirmed_units.push(rec.unit.id);
                 // §9.3: gözlenen reorder mesafesiyle toleransı yükselt (küçülmez).
                 self.reorder
                     .note_spurious(u32::try_from(la.saturating_sub(rec.seq)).unwrap_or(u32::MAX));
@@ -3391,6 +3496,19 @@ impl Sender {
                 }
             }
             self.pending_lost = kept;
+            // [K4G-05b-R · inceleme bulgusu, D12] Kayıp ilan edilmiş ORİJİNALİN geç ACK'i (kol-1
+            // tombstone, tek gönderim) spurious kanıtıdır; kanıt ARQ kuyruğunun durumuna bağlı
+            // değildir. Birimin `pending_lost` kaydı yoksa da (teyitli birimin kararsız kaydı yeniden
+            // kuyruğa girmedi, kaydı teyitte ya da RECOVERED'da iptal edildi) reorder toleransı
+            // yukarıdaki eşleşmeyle AYNI mesafeyle öğrenir. `note_spurious` koşan en büyüktür: kaydı
+            // eşleşen seq için ikinci çağrı aynı değeri yazar (çift sayım yok); `diag_unloss` yalnız
+            // iptal edilen kaydı sayar ve değişmez. Kader düzeltmesi ve RTT adayı kol-1 dalında.
+            for &seq in &kol1_original_hits {
+                if unlossed.contains(&seq) {
+                    self.reorder
+                        .note_spurious(u32::try_from(la.saturating_sub(seq)).unwrap_or(u32::MAX));
+                }
+            }
         }
         // RTT adayı birleşimi: en yüksek yeni-acked orijinal gönderim (inflight ∪ un-loss kol-1).
         if let Some((useq, usend)) = unloss_rtt {
@@ -3439,10 +3557,15 @@ impl Sender {
             }
         }
 
-        // §3.3-B stop koşulu: teyit edilen birimlerin bekleyen geometrik kopyalarını İPTAL et.
-        if !acked_units.is_empty() {
-            self.dup_queue.retain(|d| !acked_units.contains(&d.unit.id));
-        }
+        // [K4G-05b-R · sahip kararı 2026-11-11] Teyit edilen birimin bekleyen işi İPTAL (kayıp
+        // kuyruğu, kopya kuyruğu — §3.3-B stop koşulu) ve uçuştaki diğer kopyaları KARARSIZ: uçuşta
+        // kalırlar (aşağıdaki CC ve kayıp muhasebesi öncekiyle aynı), ama `queue_losses` onları
+        // yeniden kuyruğa sokmaz ve kuyruk probu hedeflemez. Teyit çıktısı yalnız yazılır (karar
+        // yolu okumaz).
+        confirmed_units.sort_unstable();
+        confirmed_units.dedup();
+        self.cancel_confirmed_units(&confirmed_units, now_ns);
+        self.emit_unit_confirmations(confirmed_units);
 
         // [CC-PORT] quinn `on_ack` (paket başına) + `on_end_acks` (çerçeve sonu). min RTT =
         // Kama rtprop penceresi (quinn RttEstimator::min); uygulamayla-sınırlılık = gönderim anı
@@ -3537,12 +3660,15 @@ impl Sender {
                         Some(_) => break,
                     }
                 }
+                // [K4G-05b-R] Kararsız kopyaların bırakma anı (tombstone TTL'iyle aynı saat).
+                self.release_confirmed_copies(now_ns);
                 // DR-ARQ-PRODUCT-TAIL-1 (gated; default OFF → skipped, OFF-mode byte-identical): a PTO with
                 // outstanding data and no ACK progress for a PTO interval makes the OLDEST inflight probe-eligible.
                 // Emission (token + re-verify) happens in plan_arq_retransmits; the attempt is spent only on a real
-                // emission (§3 probe-due ≠ probe-sent).
+                // emission (§3 probe-due ≠ probe-sent). [K4G-05b-R] "Oldest" = oldest SOURCE-unit record
+                // (`oldest_probe_target`; a FEC repair record is never a probe target).
                 if self.tail_recovery.is_enabled() {
-                    let oldest = self.inflight.keys().next().copied();
+                    let oldest = self.oldest_probe_target();
                     let srtt = self.rtt.srtt().map(dur_ns);
                     let rttvar = dur_ns(self.rtt.rttvar());
                     if let ProbeDecision::ProbeDue { target_seq, .. } =
@@ -3723,6 +3849,15 @@ impl Sender {
                         self.probe_loss_attributed = true;
                     }
                 }
+                // [K4G-05b-R · sahip kararı 2026-11-11] Kararsız kopya (birimi başka kaydıyla ya da
+                // RECOVERED ile teyitli): kayıp MUHASEBESİ yukarıda ve aşağıda öncekiyle aynı (uçuş
+                // baytı, CC kayıp baytı, prob atfı, kader kanıtı, tombstone); yalnız yeniden kuyruk
+                // (`pending_lost`) ve geometrik kopya kurulmaz — teyitli birime karar yok.
+                let requeue = p.confirmed_release_ns.is_none();
+                if !requeue {
+                    let c = &mut self.confirmed_cancels;
+                    c.lost_not_requeued = c.lost_not_requeued.saturating_add(1);
+                }
                 if p.origin == TransmitKind::Duplicate {
                     // [commit-B §3.7] Dup-kökenli kayıp tombstonesuz düşer → uçuş-sayısı burada.
                     self.bw_sampler.forget_in_flight();
@@ -3734,7 +3869,7 @@ impl Sender {
                     // yeniden-kur. Mevcut saf-sessizlik/PreConverge makinesinin aynısı; INV-RATE-1'e
                     // dokunmaz (dup_queue token-paced), loss METRİĞİNE dokunmaz. Kanıt: kapi-eval-v1
                     // exploratory h3 (GE-burst); regresyon kapısı tests/burst_loss_recovery.rs.
-                    if !self.dup_queue.iter().any(|d| d.unit.id == p.unit.id) {
+                    if requeue && !self.dup_queue.iter().any(|d| d.unit.id == p.unit.id) {
                         let srtt_ns = dur_ns(self.rtt.srtt().unwrap_or(INITIAL_RTT));
                         self.dup_queue.push(DupRec {
                             due_ns: now_ns.saturating_add(srtt_ns),
@@ -3777,7 +3912,7 @@ impl Sender {
                     // anlaşılsın) KORUNUR; yalnız ARQ kuyruğu atlanır.
                     if p.origin == TransmitKind::FecParity {
                         self.repair_loss_not_arqed = self.repair_loss_not_arqed.saturating_add(1);
-                    } else {
+                    } else if requeue {
                         self.pending_lost.push_back(LostRec {
                             seq,
                             unit: p.unit,
@@ -5605,6 +5740,11 @@ impl Sender {
     /// confirmed_logical'a dokunur; **bw_sampler/btlbw/credit_delivered/pacer'a SIFIR-satır**
     /// (recovered≠ACK — kredi-yolu AÇILMAZ; §0 yasak-6-blok). Emit-üretmez (saf-state; on_event
     /// erken-dönüşle schedule_transmit'i ATLAR).
+    ///
+    /// [K4G-05b-R · sahip kararı 2026-11-11] Kurtarılan birim TEYİTLİDİR (`cancel_confirmed_units`):
+    /// bekleyen kayıp ve kopya kaydı iptal, hiç gönderilmemişse gönderim kuyruğundan çıkar, uçuştaki
+    /// kopyaları KARARSIZ işaretlenir (uçuşta kalır; ACK ve kayıp muhasebesi değişmez). Uçuş baytı,
+    /// `bw_sampler`, BtlBw ve pacer'a yine SIFIR-satır (N8).
     fn on_recovered_control(&mut self, info: &RecoveredInfo) {
         // K-8/F4 TETİK-2b: TimedOut-SONRASI §11 forward-recovery RECOVERED → PostTimeoutNotice
         // (65B-sınıfı ACK-bağımsız heal; B1-amendman). SALT-LOGICAL (N8: BtlBw'ye dokunmaz). first-valid-
@@ -5620,16 +5760,11 @@ impl Sender {
                 );
             }
         }
+        // (i) retransmit-CANCEL ve (ii) retention-RELEASE: kurtarılan birimin bekleyen ARQ-retransmit'i
+        // ve forward-dup kopyaları aşağıda, teyit olayının ortak iptalinde (`cancel_confirmed_units`,
+        // ACK teyidiyle aynı yol) iptal edilir — FEC ana-avantajı (K2/M1: kurtardığını-retransmit-
+        // etmeme). Saf VecDeque-filtre; pacer yalnız retransmit-ATTEMPT'te okunur.
         for ru in &info.units {
-            // (i) retransmit-CANCEL: kurtarılan-unit'in bekleyen ARQ-retransmit'i iptal — FEC
-            // ana-avantajı (K2/M1: kurtardığını-retransmit-etmeme). Saf VecDeque-filtre;
-            // pacer yalnız retransmit-ATTEMPT'te okunur → cancel attempt'i hiç-başlatmaz.
-            let before = self.pending_lost.len();
-            self.pending_lost.retain(|r| r.unit.id != ru.unit_id);
-            self.diag_recovered_cancels += (before - self.pending_lost.len()) as u64;
-            // (ii) retention-RELEASE: bekleyen forward-dup kopyaları iptal (mevcut acked-cancel
-            // `dup_queue.retain(!acked_units.contains)` mekanizmasının birebir-paraleli).
-            self.dup_queue.retain(|d| d.unit.id != ru.unit_id);
             // (iii) logical-defter: recovered-teyit (ConfirmSource::Recovered; SALT-LOGICAL).
             self.record_recovered_logical(ru.block_id, ru.esi);
             // (iv) Commit-K parity-CANCEL: blok-decode-edildi (RS all-or-nothing) → o-bloğun-kuyruklu-
@@ -5664,6 +5799,172 @@ impl Sender {
                     self.budget_ext.tk_cancel_after.saturating_add(after_cnt);
             }
         }
+        // [K4G-05b-R] Teyit: RECOVERED alıcı tarafı (block, esi) kanıtıdır, seq ACK'i değil; listelenen
+        // her birim teyitlidir (motor kaydı süzgeci YOK — süzgeç birim sahiplik dizini ister, #140).
+        let mut recovered: Vec<u64> = info.units.iter().map(|ru| ru.unit_id).collect();
+        recovered.sort_unstable();
+        recovered.dedup();
+        // Alıcı birimi kurduysa henüz gönderilmemiş DATA'sı anlamsızdır (FEC bütçe kapısı veriyi
+        // bekletirken parite kendi bloğunun verisini geçebilir): gönderim kuyruğundan çıkar. Teyitli
+        // birimin payload'ı runtime'da teyitte silinir; kuyrukta kalsa gövdesiz karar doğardı.
+        // Yalnız RECOVERED'da taranır (ACK teyidinde birim gönderilmiştir, kuyrukta olamaz).
+        let before_tx = self.tx_queue.len();
+        self.tx_queue
+            .retain(|u| recovered.binary_search(&u.id).is_err());
+        let tx_removed = before_tx - self.tx_queue.len();
+        let c = &mut self.confirmed_cancels;
+        c.tx_queue = c.tx_queue.saturating_add(tx_removed as u64);
+        let cancelled = self.cancel_confirmed_units(&recovered, self.last_now_ns);
+        self.diag_recovered_cancels += cancelled.pending_lost;
+        // Teyit çıktısı yalnız yazılır (karar yolu okumaz).
+        self.emit_unit_confirmations(recovered);
+    }
+
+    /// [K4G-05b-R · sahip kararı 2026-11-11] TEYİTLİ BİRİME KARAR YOK — motor tarafı iptal.
+    ///
+    /// `ids`: bir olayda teyit edilen birim kimlikleri, ARTAN SIRALI ve TEKİL. Teyit olayları
+    /// [`Self::take_confirmed_units`]'i besleyenlerle aynıdır: kökeni `FecParity` olmayan canlı kaydın
+    /// ACK'i (uçuş, tombstone, un-loss) ve `RecoveredControl`. Olay anında:
+    /// * `pending_lost` kayıtları SİLİNİR (ARQ yeniden gönderimi, RecoverFwd devri, ARQ tavanı devri
+    ///   buradan beslenir);
+    /// * `dup_queue` kayıtları SİLİNİR (§3.3-B stop koşulu; önceki `acked_units` iptalinin yerine);
+    /// * uçuştaki DİĞER kopyaları (köken `FecParity` değil) KARARSIZ işaretlenir
+    ///   (`InflightPacket::confirmed_release_ns`). Kopya gerçekten tele çıkmıştır (runtime payload'ı
+    ///   yalnız teyitte siler) ve uçuşta kalır: ACK'i BW örneği, teslim kredisi, CC `on_ack` ve RTT
+    ///   kuralları; kayıp ilanı CC tıkanıklık olayı, tombstone (geç ACK'in spurious kanıtı: kol-2'de
+    ///   dalın kendisinde, kol-1'de `pending_lost` kaydı olmadan da un-loss adımında — D12), kader
+    ///   kanıtı ve prob atfı olarak ÖNCEKİYLE AYNI işlenir (quinn: verisi başka paketle onaylanmış paket
+    ///   ACK'e ya da kayıp ilanına dek uçuştadır). Yalnız karar kolları kapalıdır: kayıpta yeniden kuyruk
+    ///   ve geometrik kopya yok (`queue_losses`), canlılık kopyası yok (`plan_forward_duplication`),
+    ///   prob hedefi değil (`oldest_probe_target`; bekleyen prob ve E2a ikinci prob emisyonda yeniden
+    ///   doğrulanır → iptal). Sessiz kanal sınırı: teyitten `K_CONFIRMED_RELEASE × T_loss` sonra hâlâ
+    ///   uçuştaysa kayıp ilan edilmeden düşer (`release_confirmed_copies`; kapsamı orada).
+    ///
+    /// Yeni iletim yalnız `tx_queue`, `pending_lost`, `dup_queue` ve uçuş kaydından (prob) doğar; ACK
+    /// ile teyitli birim gönderilmiştir, `tx_queue`'da olamaz (RECOVERED'ın gönderilmemiş birimi
+    /// `on_recovered_control`'de kuyruktan çıkar). Bu yüzden teyit KÜMESİ tutulmaz: işaret kaydın
+    /// kendisindedir, kayıtla birlikte düşer. Dokunulmayanlar: tombstone kayıtları (karar doğurmaz)
+    /// ve kayıp dedektörünün kaydı. Bellek: ek ayırma yok (SR-AUDIT-001). Döner: bu çağrının iptal ve
+    /// işaret sayıları (oturum sayaçlarına da eklenir).
+    fn cancel_confirmed_units(&mut self, ids: &[u64], now_ns: u64) -> ConfirmedCancelDiag {
+        let mut d = ConfirmedCancelDiag::default();
+        if ids.is_empty() {
+            return d;
+        }
+        let confirmed = |u: u64| ids.binary_search(&u).is_ok();
+        let before = self.pending_lost.len();
+        self.pending_lost.retain(|r| !confirmed(r.unit.id));
+        d.pending_lost = (before - self.pending_lost.len()) as u64;
+        let before = self.dup_queue.len();
+        self.dup_queue.retain(|dr| !confirmed(dr.unit.id));
+        d.dup_queue = (before - self.dup_queue.len()) as u64;
+        let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
+        let release_ns = now_ns.saturating_add(
+            self.time_loss_threshold_ns(srtt)
+                .saturating_mul(u64::from(K_CONFIRMED_RELEASE)),
+        );
+        for p in self.inflight.values_mut() {
+            if p.origin != TransmitKind::FecParity
+                && p.confirmed_release_ns.is_none()
+                && confirmed(p.unit.id)
+            {
+                p.confirmed_release_ns = Some(release_ns);
+                d.inflight_marked += 1;
+            }
+        }
+        if d.inflight_marked > 0 {
+            self.confirmed_release_next_ns = Some(
+                self.confirmed_release_next_ns
+                    .map_or(release_ns, |n| n.min(release_ns)),
+            );
+        }
+        let c = &mut self.confirmed_cancels;
+        c.pending_lost = c.pending_lost.saturating_add(d.pending_lost);
+        c.dup_queue = c.dup_queue.saturating_add(d.dup_queue);
+        c.inflight_marked = c.inflight_marked.saturating_add(d.inflight_marked);
+        d
+    }
+
+    /// [K4G-05b-R] Kararsız kopyaların sessiz kanal sınırı (Pto zamanlayıcısında, zaman eşiği kayıp
+    /// tespiti ve tombstone TTL budamasından SONRA; yeni zamanlayıcı DEĞİL — bırakma anı EK4-A2 uyanma
+    /// kümesindedir, `next_timer_deadline_ns` 5c). Bırakma anı geçmiş ve hâlâ uçuşta olan kopya kayıp
+    /// İLAN EDİLMEDEN düşer: uçuş baytı (port motorunun CC uçuş baytı) ve `bw_sampler` uçuş sayısı
+    /// bırakılır; tıkanıklık olayı, kayıp sayacı ve tombstone YOK (sessizlik kayıp değildir — TUR-1a;
+    /// TTL'ini doldurmuş tombstone ile aynı sonuç: sonraki ACK'i bilinmeyen seq). Kapsam: (1) kopyadan
+    /// daha yeni ACK'lenmiş seq yok (sessiz kanal; dedektör ilan edemez); (2) PreConverge (§3.3-C
+    /// zaman eşiği yasağı); (3) dar pencere: daha yeni seq ACK'lenmiş ama paket eşiği dolmamış
+    /// (`la − seq` < reorder eşiği) VE zaman eşiği teyitten bu yana en az `K_CONFIRMED_RELEASE` kat
+    /// büyümüş — kopya teyitten önce gönderildiği için bırakma anında geçen süre en az
+    /// `K_CONFIRMED_RELEASE × T_loss(teyit anı)`'dır; eşik (`time_loss_inputs`: RTT girdisi ya da
+    /// cadence tabanı) bu kadar ancak kuyruk birikimiyle, port motorunda tek bir geç `latest_rtt`
+    /// örneğiyle ya da ACK aralığının büyümesiyle büyür. (3)'te kopya gerçekten kaybolmuşsa tıkanıklık
+    /// olayı oluşmaz; dedektör seq'i sonra yine ilan edebilir (yalnız kayıp metriği; uçuş kaydı
+    /// olmadığından `queue_losses` atlar). Bu kapsamların dışında kopya bu andan önce dedektörce ilan
+    /// edilir ve `queue_losses`'ta muhasebelenir.
+    /// Tarama `confirmed_release_next_ns` ile kapılıdır (kararsız kopya yoksa ya da en erken an
+    /// gelmediyse uçuş haritası taranmaz); geçici liste en çok uçuş haritası kadar (SR-AUDIT-001).
+    fn release_confirmed_copies(&mut self, now_ns: u64) {
+        match self.confirmed_release_next_ns {
+            Some(next) if next <= now_ns => {}
+            _ => return,
+        }
+        let due: Vec<u64> = self
+            .inflight
+            .iter()
+            .filter(|(_, p)| p.confirmed_release_ns.is_some_and(|r| r <= now_ns))
+            .map(|(&seq, _)| seq)
+            .collect();
+        for seq in &due {
+            if let Some(p) = self.inflight.remove(seq) {
+                self.inflight_bytes = self.inflight_bytes.saturating_sub(p.unit.size);
+                self.bw_sampler.forget_in_flight(); // ACK'lenmeyecek (bilinmeyen seq) → uçuş sayısından
+            }
+        }
+        let c = &mut self.confirmed_cancels;
+        c.released = c.released.saturating_add(due.len() as u64);
+        self.confirmed_release_next_ns = self
+            .inflight
+            .values()
+            .filter_map(|p| p.confirmed_release_ns)
+            .min();
+    }
+
+    /// [K4G-05b-R] Teyitle iptal edilen motor işi, oturum boyunca (SALT-GÖZLEM; karar okumaz).
+    #[must_use]
+    pub fn diag_confirmed_cancels(&self) -> ConfirmedCancelDiag {
+        self.confirmed_cancels
+    }
+
+    /// [K4G-05b-R] Bir olayın birim teyitlerini çıktı tamponuna ekle (SALT-ÇIKTI). Olay içi
+    /// tekilleştirme yerinde sıralayıp yinelenenleri atar (ek ayırma yok; deterministik, ADR-17):
+    /// aynı geç ACK tombstone ve un-loss dalına birlikte düşebilir, bir çerçeve bir birimin birden
+    /// çok kopyasını onaylayabilir. Olay içi sıra bu yüzden artan birim kimliğidir. Olaylar arası
+    /// tekilleştirme YOK (runtime store varlığıyla tekilleştirir). Bu çağrının teyitleri DÜŞMEZ: tavan
+    /// yalnız çağrı girişinde drenaj edilmemiş birikime uygulanır
+    /// ([`Self::trim_undrained_confirmations`]). Yalnız çıktı tamponuna yazar; hiçbir karar durumu
+    /// (kuyruk, zamanlayıcı, defter, hız) değişmez.
+    fn emit_unit_confirmations(&mut self, mut ids: Vec<u64>) {
+        if ids.is_empty() {
+            return;
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        self.confirmed_units_out.extend(ids);
+    }
+
+    /// [K4G-05b-R] Çağrı girişinde (`on_event` / `on_event_batch`) drenaj edilmemiş teyit birikimini
+    /// [`CONFIRMED_UNITS_CAP`]'e indirir: en eski fazlası düşer, taşma sayacı düşen sayı kadar artar
+    /// (SR-AUDIT-001 bounded). Her çağrıdan sonra drenaj yapan tüketicide birikim girişte boştur ve
+    /// hiçbir şey düşmez. SALT-ÇIKTI: yalnız çıktı tamponu ve sayaç değişir.
+    fn trim_undrained_confirmations(&mut self) {
+        let len = self.confirmed_units_out.len();
+        if len > CONFIRMED_UNITS_CAP {
+            let excess = len - CONFIRMED_UNITS_CAP;
+            self.confirmed_units_out.drain(..excess);
+            self.confirmed_units_overflow = self
+                .confirmed_units_overflow
+                .saturating_add(u64::try_from(excess).unwrap_or(u64::MAX));
+        }
     }
 
     /// DR-S5-4: recovered-logical'ı defter'e yaz (ConfirmSource::Recovered). sent_logical'da kayıtlı
@@ -5692,6 +5993,48 @@ impl Sender {
     /// ConfirmSource-marker). Salt-logical defter; BtlBw/rate ile ilgisi YOK.
     pub fn take_confirmed_logical(&mut self) -> Vec<(u64, SrLogicalRef, ConfirmSource)> {
         self.confirmed_logical.drain(..).collect()
+    }
+
+    /// [K4G-05b-R · sahip kararı 2026-11-11] BİRİM TEYİT ÇIKTISI — runtime'ın payload ve teslim
+    /// teyidi kaynağı. KARAR-NÖTR: çağrı yalnız tamponu boşaltır; motorun hiçbir kararı, kuyruğu,
+    /// zamanlayıcısı, defteri ya da hızı bu çıktıya (ve drenajına) bağlı değildir. Teyidin KENDİSİ
+    /// motorda birimin bekleyen işini iptal eder ve uçuştaki diğer kopyalarını kararsız kılar
+    /// (`cancel_confirmed_units`); bu, drenajdan bağımsız olarak teyit olayında olur.
+    ///
+    /// Döner: son çağrıdan bu yana teyit edilen birim kimlikleri (`OpaqueUnit::id`; ASLA iletim seq'i
+    /// ya da FEC ESI'si değil). Olaylar üretim sırasıyla; bir olayın teyitleri olay içinde tekil ve
+    /// artan birim kimliği sırasıyla.
+    ///
+    /// Teyit ÜRETEN yollar YALNIZ:
+    /// * (a) kökeni `FecParity` olmayan CANLI kayıtla eşleşen ACK: uçuştaki kayıt; tombstone
+    ///   (kol-1 ya da kol-2); kayıp ilan edilip yeniden planı bekleyen kaydın un-loss eşleşmesi;
+    /// * (b) `Event::RecoveredControl`: listelenen her birim (alıcının FEC kurtarma kanıtı).
+    ///
+    /// Teyit ÜRETMEYENLER: FEC onarım sembolünün ACK'i (uçuşta ya da tombstone'da); canlı kaydı
+    /// olmayan seq'in ACK'i (TTL'i dolup budanmış ya da tavandan tahliye edilmiş tombstone; tombstone
+    /// bırakmayan kopya kökenli kayıp; kuyruk kurtarmasının tombstone'suz emekliye ayırdığı kopya
+    /// kökenli kayıt; sessiz kanal sınırında uçuştan düşmüş kararsız kopya; hiç gönderilmemiş ya da
+    /// `next_seq` üstü seq); kaydı çoktan düşmüş seq'in yinelenen ACK'i; zamanlayıcılar ve süre
+    /// dolumları.
+    ///
+    /// Olaylar arası tekilleştirme YOK: aynı birimin başka bir canlı kaydı (uçuştaki kararsız kopyası,
+    /// tombstone'u) sonraki bir olayda yine teyit üretebilir, RECOVERED yinelenebilir (birim kimlikleri
+    /// yeniden kullanılmaz; tüketici ilk teyidi tutar). Drenaj sözleşmesi: her `on_event` / `on_event_batch` çağrısından sonra bir kez. Bu sözleşmeye uyan
+    /// tüketici hiçbir teyidi kaybetmez: bir çağrının kendi teyitleri düşmez (sayıları çağrının
+    /// girdisiyle sınırlı). Drenaj edilmemiş birikim bir sonraki çağrının girişinde
+    /// [`CONFIRMED_UNITS_CAP`]'e indirilir (en eski düşer, [`Self::diag_confirmed_units_overflow`]
+    /// artar).
+    #[must_use]
+    pub fn take_confirmed_units(&mut self) -> Vec<u64> {
+        self.confirmed_units_out.drain(..).collect()
+    }
+
+    /// [K4G-05b-R] Teyit çıktısı taşma sayacı: çağrı girişinde drenaj edilmeden düşen birikim
+    /// (SALT-GÖZLEM). Her çağrıdan sonra drenaj yapan tüketicide (runtime) yapısal olarak 0'dır;
+    /// drenaj yapmayan çağıranlarda (bench/sim) büyür.
+    #[must_use]
+    pub fn diag_confirmed_units_overflow(&self) -> u64 {
+        self.confirmed_units_overflow
     }
 
     /// DR-S5-4 (K2/M1-sinyali): RECOVERED ile iptal-edilen bekleyen-retransmit sayısı. M1'de
@@ -6316,7 +6659,12 @@ impl Sender {
             self.e2a_emit_second_probe(out, now_ns);
             return;
         };
-        let Some((unit, retx_count)) = self.inflight.get(&target).map(|r| (r.unit, r.retx_count))
+        // [K4G-05b-R] A target whose unit was confirmed meanwhile (decision-free record) is cancelled too.
+        let Some((unit, retx_count)) = self
+            .inflight
+            .get(&target)
+            .filter(|r| r.confirmed_release_ns.is_none())
+            .map(|r| (r.unit, r.retx_count))
         else {
             // target no longer outstanding (ACK race / already retransmitted) → cancelled; attempt NOT consumed.
             self.tail_probe_cancelled = self.tail_probe_cancelled.saturating_add(1);
@@ -6349,7 +6697,14 @@ impl Sender {
         // the tombstone so the original's late ACK is Karn-excluded, then emit the probe copy under a fresh seq.
         self.retire_inflight_to_tombstone(target, now_ns);
         self.mark_tombstone_superseded(target);
-        let new_seq = self.track_sent(unit, now_ns, retx_count + 1, TransmitKind::Retransmit);
+        // [K4G-05b-R] Doygun: port motorunun yeniden iletim tavanı `u8::MAX`'tır
+        // (`RetxConfig::rfc9002_cc_port`), 255'teki kayıt prob hedefi olabilir.
+        let new_seq = self.track_sent(
+            unit,
+            now_ns,
+            retx_count.saturating_add(1),
+            TransmitKind::Retransmit,
+        );
         out.push(TransmitDecision {
             kind: TransmitKind::Retransmit,
             seq: new_seq,
@@ -6365,7 +6720,7 @@ impl Sender {
         // Yuva bu turun kimliğiyle (on_probe_sent SONRASI `(armed_at, probe_index)`) kurulur; önceki
         // turdan kalan yuvanın üzerine yazılır (sonraki turun ilk probu yuvayı boşaltır).
         if self.e2a.pto_probes() >= 2 {
-            self.e2a_tail_probe2 = self.inflight.keys().next().copied().map(|seq| {
+            self.e2a_tail_probe2 = self.oldest_probe_target().map(|seq| {
                 (
                     seq,
                     self.tail_recovery.armed_at_ns(),
@@ -6374,6 +6729,19 @@ impl Sender {
             });
             self.e2a_emit_second_probe(out, now_ns);
         }
+    }
+
+    /// [K4G-05b-R · inceleme bulgusu] Kuyruk probunun hedefi: en eski (en küçük seq) TEYİTSİZ KAYNAK
+    /// birim uçuş kaydı. FEC onarım sembolü atlanır: kaydının `unit.id`'si ESI'dir (ayrı ad-uzayı);
+    /// prob onu `unit_id = ESI` taşıyan `Retransmit` olarak yeniden gönderirdi (onarım sembolü ARQ'ya
+    /// girmez — `queue_losses` REPAIR FATE AYRIMI ile aynı kural). Kararsız kopya (birimi teyitli,
+    /// `confirmed_release_ns`) atlanır: teyitli birime karar yok. Uygun kayıt yoksa `None` (kuyruk
+    /// kurtarması söner). Erken çıkışlı tarama, uçuş haritası seq sırasındadır.
+    fn oldest_probe_target(&self) -> Option<u64> {
+        self.inflight
+            .iter()
+            .find(|(_, p)| p.origin != TransmitKind::FecParity && p.confirmed_release_ns.is_none())
+            .map(|(&seq, _)| seq)
     }
 
     /// [E2a PTO 2] İkinci prob yuvasının emisyonu (KK-M1-07). Birincinin kurallarıyla aynı:
@@ -6394,7 +6762,12 @@ impl Sender {
             self.e2a_diag.pto2_cleared = self.e2a_diag.pto2_cleared.saturating_add(1);
             return;
         }
-        let Some((unit, retx_count)) = self.inflight.get(&target).map(|r| (r.unit, r.retx_count))
+        // [K4G-05b-R] Birimi bu arada teyit edilen (kararsız) hedef de iptal.
+        let Some((unit, retx_count)) = self
+            .inflight
+            .get(&target)
+            .filter(|r| r.confirmed_release_ns.is_none())
+            .map(|r| (r.unit, r.retx_count))
         else {
             self.e2a_diag.pto2_cleared = self.e2a_diag.pto2_cleared.saturating_add(1);
             return;
@@ -6432,7 +6805,13 @@ impl Sender {
     /// timer değil). Yuva boşsa `None` → `pto_probes = 1`'de uyanış kümesi bit-aynı.
     fn e2a_probe2_ready_ns(&self) -> Option<u64> {
         let (target, _, _) = self.e2a_tail_probe2?;
-        let size = self.inflight.get(&target)?.unit.size;
+        let rec = self.inflight.get(&target)?;
+        if rec.confirmed_release_ns.is_some() {
+            // [K4G-05b-R] Kararsız hedef: emisyonda iptal edilir; jeton beklemesi uyanma doğurmaz,
+            // yuva sonraki işlemde boşaltılır.
+            return None;
+        }
+        let size = rec.unit.size;
         let dt = self.pacer.ns_until_sendable(size)?;
         Some(self.last_now_ns.saturating_add(dt))
     }
@@ -6451,7 +6830,8 @@ impl Sender {
             let tail: Vec<OpaqueUnit> = self
                 .inflight
                 .values()
-                .filter(|p| p.origin == TransmitKind::Data)
+                // [K4G-05b-R] Kararsız kopya (birimi teyitli) canlılık kopyası doğurmaz.
+                .filter(|p| p.origin == TransmitKind::Data && p.confirmed_release_ns.is_none())
                 .map(|p| p.unit)
                 .filter(|u| !self.dup_queue.iter().any(|d| d.unit.id == u.id))
                 .collect();
@@ -6744,6 +7124,7 @@ impl Sender {
                 bw_sample,
                 retx_count,
                 origin,
+                confirmed_release_ns: None,
             },
         );
         seq
@@ -10761,6 +11142,2498 @@ mod tests {
                 );
                 assert_eq!(s.diag_e2a().rtt_rule_refused, 0);
             }
+        }
+    }
+
+    // ── [K4G-05b-R · sahip kararı 2026-11-11] Birim teyit çıktısı (`take_confirmed_units`) ──
+    //
+    // Her test İKİ motorda koşar: eski (`Sender::new`) ve port (`Sender::with_cc_port`). Birim
+    // kimlikleri seq değerlerinden bilerek uzaktır (≥ `UID`): çıktı seq ya da ESI taşısaydı
+    // ayrışırdı.
+    // Sözleşme #140'ın motor kısmıyla da tutarlı alt kümedir: olaylar arası yeniden teyit ve motorun
+    // tanımadığı RECOVERED birimi teyit iddia EDİLMEZ. Tek istisna olay içi sıradır (artan birim
+    // kimliği; bu PR'ın tekilleştirme biçimi): #140 birleşmesinde motor modeliyle birlikte ele alınır.
+    mod k4g05br_teyit {
+        use super::*;
+
+        /// Birim kimliği tabanı (seq'lerden uzak).
+        const UID: u64 = 1000;
+        /// PTO pompasının adımı ve üst sınırları (sahte saat).
+        const PUMP_STEP_NS: u64 = MS;
+        const PUMP_LONG_STEP_NS: u64 = 100 * MS;
+        const PUMP_SHORT_HORIZON_NS: u64 = 30_000 * MS;
+        const PUMP_LONG_HORIZON_NS: u64 = 600_000 * MS;
+        /// Tombstone TTL'ini kesin aşan bekleme (TTL = K_TOMB × T_loss; cadence tabanıyla ~25 s).
+        const BEYOND_TTL_NS: u64 = 400_000 * MS;
+
+        /// Motor kurucusu.
+        type MakeSender = fn() -> Sender;
+
+        fn engines() -> [(&'static str, MakeSender); 2] {
+            [("legacy", Sender::new), ("cc_port", Sender::with_cc_port)]
+        }
+
+        fn rec(unit_id: u64) -> RecoveredUnit {
+            RecoveredUnit {
+                unit_id,
+                block_id: 0,
+                esi: 0,
+            }
+        }
+
+        /// Olay sürücüsü: her kararı seq'iyle kaydeder (seq'ler tekildir). `twin` varsa her olay
+        /// HİÇ drenaj yapmayan ikiz motora da verilir ve kararlar/uyanma her olayda karşılaştırılır
+        /// (karar-nötrlük; `s` testin seçtiği anlarda drenaj yapar).
+        struct Rig {
+            s: Sender,
+            twin: Option<Sender>,
+            sent: BTreeMap<u64, TransmitDecision>,
+            last_now: u64,
+        }
+
+        impl Rig {
+            fn new(mk: fn() -> Sender) -> Self {
+                Self {
+                    s: mk(),
+                    twin: None,
+                    sent: BTreeMap::new(),
+                    last_now: 0,
+                }
+            }
+
+            fn with_twin(mk: fn() -> Sender) -> Self {
+                Self {
+                    twin: Some(mk()),
+                    ..Self::new(mk)
+                }
+            }
+
+            fn ev(&mut self, e: Event, now: u64) -> Vec<TransmitDecision> {
+                let out = match self.twin.as_mut() {
+                    Some(tw) => {
+                        let out = self.s.on_event(e.clone(), now);
+                        let tw_out = tw.on_event(e, now);
+                        assert_eq!(out, tw_out, "ikiz ayrıştı (an {now})");
+                        assert_eq!(
+                            self.s.next_wakeup_ns(),
+                            tw.next_wakeup_ns(),
+                            "ikiz uyanması ayrıştı (an {now})"
+                        );
+                        out
+                    }
+                    None => self.s.on_event(e, now),
+                };
+                for d in &out {
+                    self.sent.insert(d.seq, *d);
+                }
+                self.last_now = now;
+                out
+            }
+
+            /// Pacer'ın kalan token'ı harcanır (ikizde de): sonraki olay AYNI anda gelirse refill 0
+            /// → yeniden gönderim token bekler.
+            fn spend_tokens(&mut self) {
+                for s in std::iter::once(&mut self.s).chain(self.twin.as_mut()) {
+                    let tok = s.pacer.tokens();
+                    assert!(s.pacer.try_send(tok), "token harcandı");
+                }
+            }
+
+            /// Birimin `kind` türündeki en son iletiminin seq'i.
+            fn seq_of(&self, unit: u64, kind: TransmitKind) -> Option<u64> {
+                self.sent
+                    .values()
+                    .filter(|d| d.unit_id == unit && d.kind == kind)
+                    .map(|d| d.seq)
+                    .next_back()
+            }
+
+            /// `f` sağlanana dek `step` aralıklı PTO; sağlandığı an döner (`to`'yu aşarsa `None`).
+            fn pump_until(
+                &mut self,
+                from: u64,
+                to: u64,
+                step: u64,
+                f: impl Fn(&Rig) -> bool,
+            ) -> Option<u64> {
+                let mut t = from;
+                while t <= to {
+                    if f(self) {
+                        return Some(t);
+                    }
+                    self.ev(Event::TimerFired(Timer::Pto), t);
+                    t += step;
+                }
+                f(self).then_some(t)
+            }
+
+            /// Isınma: bir birim gönder, ACK'le (srtt kurulur, PreConverge biter), teyidi boşalt.
+            fn warm(&mut self, id: u64) {
+                self.ev(Event::AppData(unit(id)), 0);
+                let s0 = self
+                    .seq_of(id, TransmitKind::Data)
+                    .expect("ilk DATA hemen çıkar");
+                self.ev(ack(&[s0]), 10 * MS);
+                assert_eq!(self.s.take_confirmed_units(), vec![id], "ısınma teyidi");
+            }
+
+            fn has_tombstone(&self, seq: u64) -> bool {
+                self.s.tombstones.contains_key(&seq)
+            }
+
+            fn has_pending(&self, seq: u64) -> bool {
+                self.s.pending_lost.iter().any(|r| r.seq == seq)
+            }
+
+            /// Birim motorda hâlâ sahipli mi (uçuş/tombstone kaydı, ARQ ya da kopya işi).
+            fn owned(&self, unit: u64) -> bool {
+                engine_owns(&self.s, unit)
+            }
+        }
+
+        /// `queue_losses` / `retire_inflight_to_tombstone` tavan döngüsünün TEK adımı, hedef seq'e
+        /// uygulanır (TOMBSTONE_MAX doluşu 4096 kayıp ister; burada yalnız sonucu kurulur).
+        fn evict_tombstone(s: &mut Sender, seq: u64) {
+            s.tombstone_order.retain(|&q| q != seq);
+            if s.tombstones.remove(&seq).is_some() {
+                s.tombstone_evicted += 1;
+                s.bw_sampler.forget_in_flight();
+            }
+        }
+
+        /// Paket eşiğiyle kayıp kurulumu (kol-1): hedef seq tombstone + pending_lost'ta, yeniden
+        /// gönderimi HENÜZ yok. Döner: (rig, hedef birim, hedef seq, son an).
+        fn kol1_setup(mk: fn() -> Sender) -> (Rig, u64, u64, u64) {
+            let mut r = Rig::new(mk);
+            r.warm(UID + 100);
+            for i in 1..=5u64 {
+                r.ev(Event::AppData(unit(UID + i)), (10 + i) * MS);
+            }
+            // Backlog token tavanından büyük: DATA token'ı yer, yeniden gönderim aynı olayda doğmaz
+            // (tombstone_recovers_bw_and_rtt_from_late_ack kalıbı).
+            for i in 6..=23u64 {
+                r.ev(Event::AppData(unit(UID + 100 + i)), (16 + i) * MS);
+            }
+            const LAST_APPDATA_MS: u64 = 16 + 23;
+            let target = UID + 1;
+            let tseq = r.seq_of(target, TransmitKind::Data).expect("hedef DATA");
+            let acks: Vec<u64> = (2..=5u64)
+                .map(|i| r.seq_of(UID + i, TransmitKind::Data).expect("DATA"))
+                .collect();
+            // Yeniden gönderim tokensız kalsın: kalan token harcanır ve ACK son olayla AYNI anda
+            // gelir (refill 0). Port motoru ARQ'yu DATA'dan önce planlar; token varken kayıp ilanıyla
+            // aynı olayda yeniden gönderirdi (kol-2).
+            let t = LAST_APPDATA_MS * MS;
+            r.spend_tokens();
+            r.ev(ack(&acks), t);
+            let _ = r.s.take_confirmed_units();
+            (r, target, tseq, t)
+        }
+
+        /// Paket eşiği + aynı olayda yeniden gönderim (kol-2): hedefin tombstone'u superseded.
+        /// Döner: (rig, hedef birim, orijinal seq, yeniden gönderim seq'i, son an).
+        fn kol2_setup(mk: fn() -> Sender) -> (Rig, u64, u64, u64, u64) {
+            kol2_setup_on(Rig::new(mk))
+        }
+
+        fn kol2_setup_on(mut r: Rig) -> (Rig, u64, u64, u64, u64) {
+            r.warm(UID + 200);
+            let target = UID + 42;
+            r.ev(Event::AppData(small(target)), 20 * MS);
+            for i in 1..10u64 {
+                r.ev(Event::AppData(small(UID + 300 + i)), 20 * MS);
+            }
+            let tseq = r.seq_of(target, TransmitKind::Data).expect("hedef DATA");
+            let acks: Vec<u64> = (1..10u64)
+                .map(|i| r.seq_of(UID + 300 + i, TransmitKind::Data).expect("DATA"))
+                .collect();
+            r.ev(ack(&acks), 30 * MS);
+            let _ = r.s.take_confirmed_units();
+            let t = r
+                .pump_until(31 * MS, PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                    r.seq_of(target, TransmitKind::Retransmit).is_some()
+                })
+                .expect("hedefin yeniden gönderimi");
+            let _ = r.s.take_confirmed_units();
+            let rseq = r
+                .seq_of(target, TransmitKind::Retransmit)
+                .expect("yeniden gönderim seq'i");
+            (r, target, tseq, rseq, t)
+        }
+
+        #[test]
+        fn k4g05br_inflight_ack_confirms_unit_ids_not_seqs() {
+            for (name, mk) in engines() {
+                // (1) Data: tek birim; çok birimli çerçevede (seq'ler ters sırada) çıktı olay içinde
+                // artan birim kimliği sırasıdır.
+                let mut r = Rig::new(mk);
+                r.warm(UID);
+                assert!(
+                    r.s.take_confirmed_units().is_empty(),
+                    "{name}: ikinci drenaj boş"
+                );
+                let ids: Vec<u64> = (1..=4).map(|i| UID + i).collect();
+                for &id in &ids {
+                    r.ev(Event::AppData(small(id)), 20 * MS);
+                }
+                let t = r
+                    .pump_until(21 * MS, PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                        ids.iter()
+                            .all(|&id| r.seq_of(id, TransmitKind::Data).is_some())
+                    })
+                    .expect("dört DATA tele çıkar");
+                let seqs_rev: Vec<u64> = ids
+                    .iter()
+                    .rev()
+                    .map(|&id| r.seq_of(id, TransmitKind::Data).expect("DATA"))
+                    .collect();
+                assert!(
+                    seqs_rev.iter().all(|q| r.s.inflight.contains_key(q)),
+                    "{name}: dört kayıt uçuşta (ön koşul)"
+                );
+                r.ev(ack(&seqs_rev), t);
+                assert_eq!(
+                    r.s.take_confirmed_units(),
+                    ids,
+                    "{name}: çıktı birim id'leri, artan kimlik sırasıyla (seq'ler {seqs_rev:?})"
+                );
+                assert!(
+                    r.s.take_confirmed_units().is_empty(),
+                    "{name}: drenaj boşalttı"
+                );
+
+                // (2) Retransmit kökenli uçuş kaydı.
+                let (mut r, target, _tseq, rseq, t) = kol2_setup(mk);
+                assert!(r.s.inflight.contains_key(&rseq), "{name}: retx uçuşta");
+                r.ev(ack(&[rseq]), t + MS);
+                assert_eq!(
+                    r.s.take_confirmed_units(),
+                    vec![target],
+                    "{name}: Retransmit kaydının ACK'i birimi teyit eder"
+                );
+
+                // (3) Duplicate kökenli uçuş kaydı (PreConverge geometrik kopya).
+                let mut r = Rig::new(mk);
+                let dup_unit = UID + 7;
+                r.ev(Event::AppData(small(dup_unit)), 0);
+                let t = r
+                    .pump_until(
+                        PUMP_LONG_STEP_NS,
+                        PUMP_LONG_HORIZON_NS,
+                        PUMP_LONG_STEP_NS,
+                        |r| r.seq_of(dup_unit, TransmitKind::Duplicate).is_some(),
+                    )
+                    .expect("PreConverge kopyası");
+                let dseq = r.seq_of(dup_unit, TransmitKind::Duplicate).expect("kopya");
+                assert!(r.s.inflight.contains_key(&dseq), "{name}: kopya uçuşta");
+                assert!(
+                    r.s.take_confirmed_units().is_empty(),
+                    "{name}: ACK'siz teyit yok"
+                );
+                r.ev(ack(&[dseq]), t);
+                assert_eq!(
+                    r.s.take_confirmed_units(),
+                    vec![dup_unit],
+                    "{name}: Duplicate kaydının ACK'i birimi teyit eder"
+                );
+            }
+        }
+
+        #[test]
+        fn k4g05br_tombstone_late_ack_confirms_once_per_event() {
+            for (name, mk) in engines() {
+                // kol-1: tombstone + pending_lost, yeniden gönderim yok → iki dal birlikte eşleşir.
+                let (mut r, target, tseq, t) = kol1_setup(mk);
+                assert!(
+                    r.has_tombstone(tseq) && r.has_pending(tseq),
+                    "{name}: kol-1 ön koşulu (tombstone + pending_lost)"
+                );
+                assert!(
+                    r.seq_of(target, TransmitKind::Retransmit).is_none(),
+                    "{name}: kol-1 ön koşulu (yeniden gönderim yok)"
+                );
+                let hits0 = r.s.diag_tomb_hits;
+                let unloss0 = r.s.diag_unloss;
+                r.ev(ack(&[tseq]), t + 400 * MS);
+                assert_eq!(
+                    (r.s.diag_tomb_hits - hits0, r.s.diag_unloss - unloss0),
+                    (1, 1),
+                    "{name}: geç ACK iki dala da düştü"
+                );
+                assert_eq!(
+                    r.s.take_confirmed_units(),
+                    vec![target],
+                    "{name}: kol-1 — olay içinde tek teyit"
+                );
+
+                // kol-2: yeniden gönderim sonrası orijinalin geç ACK'i (superseded tombstone).
+                let (mut r, target, tseq, rseq, t) = kol2_setup(mk);
+                assert!(
+                    r.has_tombstone(tseq) && !r.has_pending(tseq),
+                    "{name}: kol-2 ön koşulu"
+                );
+                assert!(r.s.tombstones[&tseq].retx_count > 0, "{name}: superseded");
+                let amb0 = r.s.diag_ambiguous_skipped;
+                r.ev(ack(&[tseq]), t + 300 * MS);
+                assert_eq!(r.s.diag_ambiguous_skipped - amb0, 1, "{name}: kol-2 dalı");
+                assert_eq!(
+                    r.s.take_confirmed_units(),
+                    vec![target],
+                    "{name}: kol-2 — superseded tombstone canlı kayıttır"
+                );
+                // [sahip kararı 2026-11-11] Teyitte birimin uçuştaki diğer kaydı (yeniden gönderim)
+                // KARARSIZ işaretlenir ama uçuşta kalır: sonraki ACK'i uçuş kaydı ACK'idir (teslim
+                // kredisi, uçuş baytı düşer) ve canlı kayıt olarak teyidi yineler (olaylar arası
+                // tekilleştirme tüketicinindir); karar üretmez.
+                assert!(
+                    r.s.inflight
+                        .get(&rseq)
+                        .is_some_and(|p| p.confirmed_release_ns.is_some()),
+                    "{name}: kol-2 — yeniden gönderim uçuşta, kararsız"
+                );
+                let size = r.s.inflight[&rseq].unit.size;
+                let delivered0 = r.s.bw_sampler.delivered();
+                let bytes0 = r.s.inflight_bytes();
+                let out = r.ev(ack(&[rseq]), t + 400 * MS);
+                assert!(
+                    out.is_empty(),
+                    "{name}: kararsız kopyanın ACK'i karar üretmez"
+                );
+                assert_eq!(
+                    r.s.bw_sampler.delivered() - delivered0,
+                    size,
+                    "{name}: kararsız kopyanın ACK'i teslim kredisidir"
+                );
+                assert_eq!(r.s.inflight_bytes(), bytes0 - size, "{name}: uçuş baytı");
+                assert_eq!(
+                    r.s.take_confirmed_units(),
+                    vec![target],
+                    "{name}: canlı kaydın ACK'i teyidi yineler"
+                );
+            }
+        }
+
+        #[test]
+        fn k4g05br_unloss_without_tombstone_confirms() {
+            for (name, mk) in engines() {
+                let (mut r, target, tseq, t) = kol1_setup(mk);
+                assert!(
+                    r.has_tombstone(tseq) && r.has_pending(tseq),
+                    "{name}: ön koşul"
+                );
+                evict_tombstone(&mut r.s, tseq);
+                assert!(
+                    !r.has_tombstone(tseq) && r.has_pending(tseq),
+                    "{name}: tombstone tahliye edildi, kayıp kaydı yeniden planı bekliyor"
+                );
+                let hits0 = r.s.diag_tomb_hits;
+                let unloss0 = r.s.diag_unloss;
+                r.ev(ack(&[tseq]), t + 400 * MS);
+                assert_eq!(
+                    (r.s.diag_tomb_hits - hits0, r.s.diag_unloss - unloss0),
+                    (0, 1),
+                    "{name}: yalnız un-loss dalı"
+                );
+                assert_eq!(
+                    r.s.take_confirmed_units(),
+                    vec![target],
+                    "{name}: un-loss eşleşmesi canlı kayıttır"
+                );
+            }
+        }
+
+        #[test]
+        fn k4g05br_late_ack_without_live_record_does_not_confirm() {
+            for (name, mk) in engines() {
+                // (a) TTL'i dolup budanmış tombstone; yeniden gönderim çoktan çıkmış.
+                let (mut r, target, tseq, t) = kol1_setup(mk);
+                let t = r
+                    .pump_until(t + MS, t + BEYOND_TTL_NS, PUMP_LONG_STEP_NS, |r| {
+                        !r.has_tombstone(tseq)
+                            && !r.has_pending(tseq)
+                            && r.seq_of(target, TransmitKind::Retransmit).is_some()
+                    })
+                    .expect("TTL budaması + yeniden gönderim");
+                let _ = r.s.take_confirmed_units();
+                r.ev(ack(&[tseq]), t);
+                assert!(
+                    r.s.take_confirmed_units().is_empty(),
+                    "{name}: (a) budanmış tombstone'un geç ACK'i teyit etmez"
+                );
+                assert!(r.owned(target), "{name}: (a) birim motorda sahipli");
+
+                // (b) tavandan tahliye edilmiş tombstone; yeniden gönderim uçuşta.
+                let (mut r, target, tseq, rseq, t) = kol2_setup(mk);
+                evict_tombstone(&mut r.s, tseq);
+                assert!(
+                    !r.has_tombstone(tseq) && !r.has_pending(tseq),
+                    "{name}: (b) ön koşul"
+                );
+                assert!(r.s.inflight.contains_key(&rseq), "{name}: (b) retx uçuşta");
+                r.ev(ack(&[tseq]), t + MS);
+                assert!(
+                    r.s.take_confirmed_units().is_empty(),
+                    "{name}: (b) tahliye edilmiş kaydın geç ACK'i teyit etmez"
+                );
+                assert!(r.owned(target), "{name}: (b) birim motorda sahipli");
+
+                // (c) Kopya kökenli kayıp: tombstone bırakmaz, pending_lost'a girmez.
+                let mut r = Rig::new(mk);
+                let a = UID + 7;
+                r.ev(Event::AppData(small(a)), 0);
+                let t = r
+                    .pump_until(
+                        PUMP_LONG_STEP_NS,
+                        PUMP_LONG_HORIZON_NS,
+                        PUMP_LONG_STEP_NS,
+                        |r| r.seq_of(a, TransmitKind::Duplicate).is_some(),
+                    )
+                    .expect("PreConverge kopyası");
+                let dseq = r.seq_of(a, TransmitKind::Duplicate).expect("kopya");
+                // srtt kur (başka birimle), ardından kopyanın üstünde eşik kadar seq ACK'le.
+                r.ev(Event::AppData(small(UID + 8)), t);
+                let t = r
+                    .pump_until(t + MS, t + PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                        r.seq_of(UID + 8, TransmitKind::Data).is_some()
+                    })
+                    .expect("DATA tele çıkar");
+                let b = r.seq_of(UID + 8, TransmitKind::Data).expect("DATA");
+                r.ev(ack(&[b]), t + 10 * MS);
+                let more: Vec<u64> = (9..=13u64).map(|i| UID + i).collect();
+                for &id in &more {
+                    r.ev(Event::AppData(small(id)), t + 11 * MS);
+                }
+                let t2 = r
+                    .pump_until(t + 12 * MS, t + PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                        more.iter()
+                            .all(|&id| r.seq_of(id, TransmitKind::Data).is_some())
+                    })
+                    .expect("DATA tele çıkar");
+                let acks: Vec<u64> = more
+                    .iter()
+                    .map(|&id| r.seq_of(id, TransmitKind::Data).expect("DATA"))
+                    .collect();
+                r.ev(ack(&acks), t2);
+                let _ = r.s.take_confirmed_units();
+                assert!(
+                    !r.s.inflight.contains_key(&dseq)
+                        && !r.has_tombstone(dseq)
+                        && !r.has_pending(dseq),
+                    "{name}: (c) kopya kaydı kayıpla düştü (tombstone'suz)"
+                );
+                r.ev(ack(&[dseq]), t2 + MS);
+                assert!(
+                    r.s.take_confirmed_units().is_empty(),
+                    "{name}: (c) kopya kökenli kaybın geç ACK'i teyit etmez"
+                );
+                assert!(r.owned(a), "{name}: (c) birim motorda sahipli");
+
+                // (d) hiç gönderilmemiş / next_seq üstü seq.
+                let mut r = Rig::new(mk);
+                r.warm(UID);
+                r.ev(Event::AppData(small(UID + 1)), 20 * MS);
+                let next = r.s.next_seq;
+                r.ev(ack(&[next + 5, next]), 30 * MS);
+                assert!(
+                    r.s.take_confirmed_units().is_empty(),
+                    "{name}: (d) bilinmeyen seq teyit etmez"
+                );
+
+                // (e) kaydı çoktan düşmüş seq'in yinelenen ACK'i.
+                let s1 = r.seq_of(UID + 1, TransmitKind::Data).expect("DATA");
+                r.ev(ack(&[s1]), 40 * MS);
+                assert_eq!(r.s.take_confirmed_units(), vec![UID + 1], "{name}: ilk ACK");
+                r.ev(ack(&[s1]), 50 * MS);
+                assert!(
+                    r.s.take_confirmed_units().is_empty(),
+                    "{name}: (e) yinelenen ACK teyit etmez"
+                );
+            }
+        }
+
+        #[test]
+        #[allow(deprecated)] // enqueue_fec_parity: test-harness yolu (Commit-K)
+        fn k4g05br_parity_ack_never_confirms_esi_namesake() {
+            const ESI: u16 = 3;
+            let namesake = u64::from(ESI);
+            for (name, mk) in engines() {
+                let mut r = Rig::new(mk);
+                r.s.set_manual_fec_enabled(true).expect("manuel FEC");
+                r.warm(UID);
+                // ESI ile AYNI kimlikli gerçek kaynak birim (ad-uzayı çakışması).
+                r.ev(Event::AppData(small(namesake)), 20 * MS);
+                let nseq = r.seq_of(namesake, TransmitKind::Data).expect("DATA");
+                let mut seen: Vec<u64> = Vec::new();
+                // Uçuştaki parity kaydının ACK'i.
+                r.s.enqueue_fec_parity(7, ESI, 100);
+                let t = r
+                    .pump_until(21 * MS, PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                        r.seq_of(namesake, TransmitKind::FecParity).is_some()
+                    })
+                    .expect("parity tele çıkar");
+                let pseq = r.seq_of(namesake, TransmitKind::FecParity).expect("parity");
+                assert!(r.s.inflight.contains_key(&pseq), "{name}: parity uçuşta");
+                seen.extend(r.s.take_confirmed_units());
+                r.ev(ack(&[pseq]), t);
+                let out = r.s.take_confirmed_units();
+                assert!(out.is_empty(), "{name}: parity ACK'i teyit etmez: {out:?}");
+                assert!(
+                    !r.s.inflight.contains_key(&pseq),
+                    "{name}: parity kaydı kapandı"
+                );
+
+                // Tombstone'daki parity kaydının geç ACK'i.
+                r.s.enqueue_fec_parity(8, ESI, 100);
+                let t = r
+                    .pump_until(t + MS, t + PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                        r.sent
+                            .values()
+                            .any(|d| d.kind == TransmitKind::FecParity && d.seq != pseq)
+                    })
+                    .expect("ikinci parity tele çıkar");
+                let pseq2 = r.seq_of(namesake, TransmitKind::FecParity).expect("parity");
+                let more: Vec<u64> = (1..=5u64).map(|i| UID + 10 + i).collect();
+                for &id in &more {
+                    r.ev(Event::AppData(small(id)), t + MS);
+                }
+                let t2 = r
+                    .pump_until(t + 2 * MS, t + PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                        more.iter()
+                            .all(|&id| r.seq_of(id, TransmitKind::Data).is_some())
+                    })
+                    .expect("DATA tele çıkar");
+                let acks: Vec<u64> = more
+                    .iter()
+                    .map(|&id| r.seq_of(id, TransmitKind::Data).expect("DATA"))
+                    .collect();
+                r.ev(ack(&acks), t2);
+                seen.extend(r.s.take_confirmed_units());
+                assert!(
+                    r.s.tombstones
+                        .get(&pseq2)
+                        .is_some_and(|tb| tb.origin == TransmitKind::FecParity),
+                    "{name}: parity kaydı tombstone'da (ön koşul)"
+                );
+                let hits0 = r.s.diag_tomb_hits;
+                r.ev(ack(&[pseq2]), t2 + MS);
+                assert_eq!(r.s.diag_tomb_hits - hits0, 1, "{name}: tombstone dalı");
+                let out = r.s.take_confirmed_units();
+                assert!(
+                    out.is_empty(),
+                    "{name}: parity tombstone ACK'i teyit etmez: {out:?}"
+                );
+                assert!(
+                    !seen.contains(&namesake),
+                    "{name}: ESI adaşı kaynak birim (seq {nseq}) hiç teyit edilmedi"
+                );
+            }
+        }
+
+        /// Vadesi ufkun çok ötesinde kopya kaydı (beyaz kutu kurulumu ateşlenmesin).
+        const DUP_FAR_NS: u64 = 3_600_000 * MS;
+
+        /// [K4G-05b-R · inceleme bulgusu, ESI ad-uzayı sızıntısı] Onarım sembolünün ACK'i (uçuşta ya
+        /// da tombstone'da) ESI ile AYNI sayısal kimlikli kaynak birimin bekleyen kopyasını iptal
+        /// ETMEZ: parite kaydının `unit.id`'si ESI'dir ve kopya iptaline girmez. Adaş birim gerçek ve
+        /// teyitsizdir (DATA'sı uçuşta, hiç ACK'lenmez); kopya kaydı beyaz kutu kurulur (vadesi uzak)
+        /// — sınanan yalnız iptal kuralıdır. Düzeltme öncesi iki dalda da kopya iptal oluyordu.
+        #[test]
+        #[allow(deprecated)] // enqueue_fec_parity: test-harness yolu (Commit-K)
+        fn k4g05br_parity_ack_keeps_esi_namesake_copies() {
+            const ESI: u16 = 3;
+            let namesake = u64::from(ESI);
+            let has_copy = |r: &Rig| {
+                r.s.dup_queue
+                    .iter()
+                    .any(|d| d.unit.id == namesake && d.due_ns == DUP_FAR_NS)
+            };
+            for (name, mk) in engines() {
+                let mut r = Rig::new(mk);
+                r.s.set_manual_fec_enabled(true).expect("manuel FEC");
+                r.warm(UID);
+                r.ev(Event::AppData(small(namesake)), 20 * MS);
+                r.s.dup_queue.push(DupRec {
+                    due_ns: DUP_FAR_NS,
+                    unit: small(namesake),
+                    interval_ns: 0,
+                });
+                // (1) Uçuştaki parite kaydının ACK'i.
+                r.s.enqueue_fec_parity(7, ESI, 100);
+                let t = r
+                    .pump_until(21 * MS, PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                        r.seq_of(namesake, TransmitKind::FecParity).is_some()
+                    })
+                    .expect("parity tele çıkar");
+                let pseq = r.seq_of(namesake, TransmitKind::FecParity).expect("parity");
+                assert!(r.s.inflight.contains_key(&pseq), "{name}: parity uçuşta");
+                r.ev(ack(&[pseq]), t);
+                assert!(
+                    !r.s.inflight.contains_key(&pseq),
+                    "{name}: parity kaydı kapandı"
+                );
+                assert!(
+                    has_copy(&r),
+                    "{name}: (1) uçuştaki parite ACK'i ESI adaşının kopyasını iptal etmez"
+                );
+
+                // (2) Tombstone'daki parite kaydının geç ACK'i.
+                r.s.enqueue_fec_parity(8, ESI, 100);
+                let t = r
+                    .pump_until(t + MS, t + PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                        r.sent
+                            .values()
+                            .any(|d| d.kind == TransmitKind::FecParity && d.seq != pseq)
+                    })
+                    .expect("ikinci parity tele çıkar");
+                let pseq2 = r.seq_of(namesake, TransmitKind::FecParity).expect("parity");
+                let more: Vec<u64> = (1..=5u64).map(|i| UID + 10 + i).collect();
+                for &id in &more {
+                    r.ev(Event::AppData(small(id)), t + MS);
+                }
+                let t2 = r
+                    .pump_until(t + 2 * MS, t + PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                        more.iter()
+                            .all(|&id| r.seq_of(id, TransmitKind::Data).is_some())
+                    })
+                    .expect("DATA tele çıkar");
+                let acks: Vec<u64> = more
+                    .iter()
+                    .map(|&id| r.seq_of(id, TransmitKind::Data).expect("DATA"))
+                    .collect();
+                r.ev(ack(&acks), t2);
+                assert!(
+                    r.s.tombstones
+                        .get(&pseq2)
+                        .is_some_and(|tb| tb.origin == TransmitKind::FecParity),
+                    "{name}: parity kaydı tombstone'da (ön koşul)"
+                );
+                assert!(has_copy(&r), "{name}: (2) ön koşul — kopya duruyor");
+                let hits0 = r.s.diag_tomb_hits;
+                r.ev(ack(&[pseq2]), t2 + MS);
+                assert_eq!(r.s.diag_tomb_hits - hits0, 1, "{name}: tombstone dalı");
+                assert!(
+                    has_copy(&r),
+                    "{name}: (2) tombstone'daki parite ACK'i ESI adaşının kopyasını iptal etmez"
+                );
+            }
+        }
+
+        /// Kuyruk kurtarması açık iki motor: eski motor ürün runtime yapılandırmasıyla
+        /// (`validated_v1`), port motoru kurucusuyla (`rfc9002_cc_port`).
+        fn tail_engines() -> [(&'static str, MakeSender); 2] {
+            [
+                ("legacy+tail_v1", legacy_runtime),
+                ("cc_port", Sender::with_cc_port),
+            ]
+        }
+
+        /// [K4G-05b-R · inceleme bulgusu] Kuyruk probu hedef kaydın `retx_count`'unu DOYGUN artırır.
+        /// Port motorunda yeniden iletim tavanı `u8::MAX` olduğundan 255'teki kayıt prob hedefi
+        /// olabilir; `retx_count + 1` debug derlemesinde taşma paniğiydi. Sayaç beyaz kutu kurulur.
+        #[test]
+        fn k4g05br_tail_probe_retx_count_saturates() {
+            for (name, mk) in tail_engines() {
+                let mut r = Rig::new(mk);
+                r.warm(UID);
+                let id = UID + 1;
+                r.ev(Event::AppData(small(id)), 20 * MS);
+                let q = r.seq_of(id, TransmitKind::Data).expect("DATA hemen çıkar");
+                r.s.inflight.get_mut(&q).expect("uçuşta").retx_count = u8::MAX;
+                r.pump_until(21 * MS, PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                    r.seq_of(id, TransmitKind::Retransmit).is_some()
+                })
+                .expect("kuyruk probu");
+                let pq = r.seq_of(id, TransmitKind::Retransmit).expect("prob");
+                assert_eq!(
+                    r.s.inflight.get(&pq).map(|p| p.retx_count),
+                    Some(u8::MAX),
+                    "{name}: prob kopyasının sayacı doygun"
+                );
+                assert_eq!(
+                    r.s.tombstones.get(&q).map(|t| t.retx_count),
+                    Some(u8::MAX),
+                    "{name}: emekliye ayrılan hedefin superseded işareti de doygun"
+                );
+            }
+        }
+
+        /// Sessiz kanalda kuyruk kurtarmasının prob turlarını kesin kapsayan bekleme.
+        const PROBE_QUIET_NS: u64 = 5_000 * MS;
+
+        /// [K4G-05b-R · inceleme bulgusu] Kuyruk probu FEC onarım sembolünü hedeflemez. (1) Uçuşta
+        /// yalnız parite kaydı varken sessiz kanalda hiç `Retransmit` çıkmaz (önceden prob en eski
+        /// uçuş kaydını, pariteyi, `unit_id = ESI` ile `Retransmit` olarak yeniden gönderirdi).
+        /// (2) Paritenin ARKASINDA bir kaynak birim uçuştayken prob o birimi hedefler. ESI ile aynı
+        /// kimlikli kaynak birim bu testte yoktur: `unit_id == ESI` taşıyan her `Retransmit` hatadır.
+        #[test]
+        #[allow(deprecated)] // enqueue_fec_parity: test-harness yolu (Commit-K)
+        fn k4g05br_tail_probe_never_targets_parity() {
+            const ESI: u16 = 3;
+            let esi_id = u64::from(ESI);
+            for (name, mk) in tail_engines() {
+                let mut r = Rig::new(mk);
+                r.s.set_manual_fec_enabled(true).expect("manuel FEC");
+                r.warm(UID);
+                r.s.enqueue_fec_parity(7, ESI, 100);
+                let t = r
+                    .pump_until(21 * MS, PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                        r.seq_of(esi_id, TransmitKind::FecParity).is_some()
+                    })
+                    .expect("parity tele çıkar");
+                let pseq = r.seq_of(esi_id, TransmitKind::FecParity).expect("parity");
+                assert_eq!(
+                    r.s.inflight.keys().copied().collect::<Vec<_>>(),
+                    vec![pseq],
+                    "{name}: uçuşta yalnız parite (ön koşul)"
+                );
+                // (1) Sessiz kanal, uçuşta yalnız parite.
+                let t = t + MS;
+                let _ = r.pump_until(t, t + PROBE_QUIET_NS, PUMP_STEP_NS, |_| false);
+                let retx = |r: &Rig| {
+                    r.sent
+                        .values()
+                        .filter(|d| d.kind == TransmitKind::Retransmit)
+                        .map(|d| d.unit_id)
+                        .collect::<Vec<_>>()
+                };
+                assert!(
+                    retx(&r).is_empty(),
+                    "{name}: (1) parite prob hedefi olmaz: {:?}",
+                    retx(&r)
+                );
+                assert!(
+                    r.s.inflight.contains_key(&pseq),
+                    "{name}: parite kaydı uçuşta duruyor"
+                );
+                // (2) Paritenin arkasında kaynak birim: prob onu hedefler.
+                let id = UID + 1;
+                let t = r.last_now + MS;
+                r.ev(Event::AppData(small(id)), t);
+                r.pump_until(t + MS, t + PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                    !retx(r).is_empty()
+                })
+                .expect("kaynak birime kuyruk probu");
+                let ids = retx(&r);
+                assert!(
+                    ids.iter().all(|&u| u == id),
+                    "{name}: (2) prob yalnız kaynak birimi hedefler: {ids:?}"
+                );
+                assert!(!ids.contains(&esi_id), "{name}: ESI kimlikli prob yok");
+            }
+        }
+
+        #[test]
+        fn k4g05br_recovered_control_confirms_listed_units() {
+            for (name, mk) in engines() {
+                let mut r = Rig::new(mk);
+                r.warm(UID);
+                let ids = [UID + 1, UID + 2, UID + 3];
+                for &id in &ids {
+                    r.ev(Event::AppData(small(id)), 20 * MS);
+                }
+                let t = r
+                    .pump_until(21 * MS, PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                        ids.iter()
+                            .all(|&id| r.seq_of(id, TransmitKind::Data).is_some())
+                    })
+                    .expect("DATA tele çıkar");
+                assert!(
+                    ids.iter()
+                        .all(|&id| r.s.diag_unit_recovery(id).inflight_records > 0),
+                    "{name}: motorun bildiği birimler (ön koşul)"
+                );
+                let _ = r.s.take_confirmed_units();
+                let info = RecoveredInfo {
+                    units: vec![rec(UID + 2), rec(UID + 1), rec(UID + 2), rec(UID + 3)],
+                };
+                let out = r.ev(Event::RecoveredControl(info), t);
+                assert!(out.is_empty(), "{name}: RECOVERED karar üretmez (N8)");
+                assert_eq!(
+                    r.s.take_confirmed_units(),
+                    vec![UID + 1, UID + 2, UID + 3],
+                    "{name}: olay içinde tekil, artan kimlik sırasıyla"
+                );
+            }
+        }
+
+        /// Tek çağrı tavandan fazla teyit üretse de HİÇBİRİ düşmez (bir ACK çerçevesi ya da RECOVERED
+        /// tavandan çok birimi teyit edebilir); tavan yalnız drenaj edilmemiş birikime, sonraki
+        /// çağrının girişinde uygulanır ve düşen sayı kadar sayaç artar.
+        #[test]
+        fn k4g05br_confirmed_units_call_output_never_dropped() {
+            const EXTRA: usize = 37;
+            const SMALL_EVENT: u64 = 5;
+            const BIG_BASE: u64 = 1_000_000;
+            const NEXT_BASE: u64 = 2_000_000;
+            for (name, mk) in engines() {
+                let recovered = |ids: &[u64]| {
+                    Event::RecoveredControl(RecoveredInfo {
+                        units: ids.iter().map(|&u| rec(u)).collect(),
+                    })
+                };
+                // (a) Drenajlı tüketici: tavanı aşan TEK çağrının bütün teyitleri döner.
+                let mut s = mk();
+                let big: Vec<u64> = (0..(CONFIRMED_UNITS_CAP + EXTRA) as u64)
+                    .map(|i| BIG_BASE + i)
+                    .collect();
+                s.on_event(recovered(&big), 0);
+                assert_eq!(
+                    s.take_confirmed_units(),
+                    big,
+                    "{name}: tek çağrının teyitleri düşmez"
+                );
+                assert_eq!(
+                    s.diag_confirmed_units_overflow(),
+                    0,
+                    "{name}: drenajlı tüketicide taşma yok"
+                );
+
+                // (b) Drenajsız birikim: küçük olay + tavanı aşan olay birikir; tavan bir sonraki
+                // çağrının girişinde birikime uygulanır, o çağrının teyitleri yine düşmez.
+                let mut s = mk();
+                let first: Vec<u64> = (0..SMALL_EVENT).map(|i| UID + i).collect();
+                s.on_event(recovered(&first), 0);
+                s.on_event(recovered(&big), 0);
+                assert_eq!(
+                    s.diag_confirmed_units_overflow(),
+                    0,
+                    "{name}: girişte birikim (5) tavan altındaydı"
+                );
+                let next: Vec<u64> = (0..SMALL_EVENT).map(|i| NEXT_BASE + i).collect();
+                s.on_event(recovered(&next), 0);
+                let backlog = SMALL_EVENT as usize + big.len();
+                let dropped = backlog - CONFIRMED_UNITS_CAP;
+                assert_eq!(
+                    s.diag_confirmed_units_overflow(),
+                    dropped as u64,
+                    "{name}: girişte düşen birikim kadar sayaç"
+                );
+                let out = s.take_confirmed_units();
+                let want: Vec<u64> = first
+                    .iter()
+                    .chain(big.iter())
+                    .skip(dropped)
+                    .chain(next.iter())
+                    .copied()
+                    .collect();
+                assert_eq!(
+                    out, want,
+                    "{name}: birikimin en yeni CAP'i + son çağrının bütün teyitleri, sırayla"
+                );
+                assert!(
+                    s.take_confirmed_units().is_empty(),
+                    "{name}: drenaj boşalttı"
+                );
+                assert_eq!(
+                    s.diag_confirmed_units_overflow(),
+                    dropped as u64,
+                    "{name}: sayaç drenajla sıfırlanmaz"
+                );
+            }
+        }
+
+        // ── KARAR-NÖTRLÜK: drenaj yapan ve hiç drenaj yapmayan (taşan) motor aynı kararları verir ──
+
+        /// Knuth MMIX LCG sabitleri (deterministik iz; motor dışı RNG — ADR-17).
+        const LCG_MUL: u64 = 6_364_136_223_846_793_005;
+        const LCG_INC: u64 = 1_442_695_040_888_963_407;
+        const LCG_SHIFT: u32 = 33;
+        /// İz uzunluğu ve tohumlar.
+        const TRACE_STEPS: usize = 8000;
+        const TRACE_SEEDS: [u64; 3] = [1, 7, 2026];
+        /// Kanal modeli (her emisyonun kaderi emisyonda çekilir, yüzde): düşer / geç gelir (reorder,
+        /// geç orijinal) / zamanında gelir. Geç pencere iki motorun tombstone ufkunu da kapsar.
+        const TRACE_DROP_PCT: u64 = 15;
+        const TRACE_LATE_PCT: u64 = 15;
+        const TRACE_OWD_NS: u64 = 20 * MS;
+        const TRACE_JITTER_MS: u64 = 40;
+        const TRACE_LATE_MIN_NS: u64 = 150 * MS;
+        const TRACE_LATE_SPAN_MS: u64 = 3000;
+        /// Olaylar arası sahte saat adımı (1..=SPAN ms) ve birim boyu: yük pacer'ı doyurur, kayıp
+        /// kaydı yeniden planı token beklerken geç orijinal gelebilir (teyitli birimin bekleyen işi).
+        const TRACE_STEP_SPAN_MS: u64 = 8;
+        const TRACE_UNIT_MIN: u64 = 600;
+        const TRACE_UNIT_SPAN: u64 = 600;
+        /// Uçuştaki emisyon listesi tavanı (iz sürücüsü bounded; en eski düşer = kayıp).
+        const TRACE_FLIGHT_CAP: usize = 4096;
+        /// Kesinti benzeri sıçrama (eski motorun tombstone TTL'ini de aşar).
+        const TRACE_BLACKOUT_NS: u64 = 30_000 * MS;
+        const TRACE_BLACKOUT_ONE_IN: u64 = 500;
+        /// Drenajsız motoru taşırmak için sentetik RECOVERED olayı boyutu (iki olay > CAP).
+        const TRACE_SYNTH_RECOVERED: u64 = (CONFIRMED_UNITS_CAP as u64 / 2) + 64;
+        const TRACE_SYNTH_BASE: u64 = 50_000_000;
+
+        struct Lcg(u64);
+
+        impl Lcg {
+            fn next(&mut self) -> u64 {
+                self.0 = self.0.wrapping_mul(LCG_MUL).wrapping_add(LCG_INC);
+                self.0 >> LCG_SHIFT
+            }
+            fn below(&mut self, n: u64) -> u64 {
+                self.next() % n
+            }
+        }
+
+        #[allow(deprecated)] // enqueue_fec_parity: test-harness yolu (Commit-K)
+        fn neutrality_trace(name: &str, mk: fn() -> Sender, seed: u64) -> (usize, u64, u64) {
+            let mut a = mk(); // her olaydan sonra drenaj
+            let mut b = mk(); // hiç drenaj yok (tavanda taşar)
+            a.set_manual_fec_enabled(true).expect("manuel FEC");
+            b.set_manual_fec_enabled(true).expect("manuel FEC");
+            let mut rng = Lcg(seed);
+            let mut now = 0u64;
+            let mut next_unit = UID;
+            // (varış anı, seq): kanal modelinin ACK'e dönüşecek emisyonları.
+            let mut flight: VecDeque<(u64, u64)> = VecDeque::new();
+            let mut data_units: Vec<u64> = Vec::new();
+            let mut confirmed_a = 0usize;
+            let mut block = 0u32;
+            for step in 0..TRACE_STEPS {
+                now += MS + rng.below(TRACE_STEP_SPAN_MS) * MS;
+                if rng.below(TRACE_BLACKOUT_ONE_IN) == 0 {
+                    now += TRACE_BLACKOUT_NS;
+                }
+                let synth = step == TRACE_STEPS / 3 || step == 2 * TRACE_STEPS / 3;
+                let ev = if synth {
+                    let base = TRACE_SYNTH_BASE + step as u64 * TRACE_SYNTH_RECOVERED;
+                    Event::RecoveredControl(RecoveredInfo {
+                        units: (0..TRACE_SYNTH_RECOVERED).map(|i| rec(base + i)).collect(),
+                    })
+                } else {
+                    match rng.below(100) {
+                        0..=39 => {
+                            let u = OpaqueUnit {
+                                id: next_unit,
+                                size: TRACE_UNIT_MIN + rng.below(TRACE_UNIT_SPAN),
+                            };
+                            next_unit += 1;
+                            Event::AppData(u)
+                        }
+                        40..=69 => {
+                            // Varmış emisyonların ACK'i, karışık sırayla (reorder).
+                            let mut seqs = Vec::new();
+                            flight.retain(|&(arr, q)| {
+                                if arr <= now {
+                                    seqs.push(q);
+                                    false
+                                } else {
+                                    true
+                                }
+                            });
+                            for i in (1..seqs.len()).rev() {
+                                let j = rng.below(i as u64 + 1) as usize;
+                                seqs.swap(i, j);
+                            }
+                            if seqs.is_empty() {
+                                Event::TimerFired(Timer::Pto)
+                            } else {
+                                Event::AckReceived(AckInfo {
+                                    acked_seqs: seqs,
+                                    ack_delay: Duration::from_millis(rng.below(5)),
+                                })
+                            }
+                        }
+                        70..=82 => Event::TimerFired(Timer::Pto),
+                        83..=86 => Event::TimerFired(Timer::RtpropProbe),
+                        87..=91 if !data_units.is_empty() => {
+                            let n = 1 + rng.below(4);
+                            let units = (0..n)
+                                .map(|_| {
+                                    let i = rng.below(data_units.len() as u64) as usize;
+                                    RecoveredUnit {
+                                        unit_id: data_units[i],
+                                        block_id: block,
+                                        esi: u16::try_from(i % 8).unwrap_or(0),
+                                    }
+                                })
+                                .collect();
+                            Event::RecoveredControl(RecoveredInfo { units })
+                        }
+                        92..=96 => {
+                            block += 1;
+                            let esi = u16::try_from(rng.below(8)).unwrap_or(0);
+                            a.enqueue_fec_parity(block, esi, 400);
+                            b.enqueue_fec_parity(block, esi, 400);
+                            Event::TimerFired(Timer::Pto)
+                        }
+                        _ => Event::TimerFired(Timer::Pto),
+                    }
+                };
+                let da = a.on_event(ev.clone(), now);
+                confirmed_a += a.take_confirmed_units().len();
+                let db = b.on_event(ev, now);
+                assert_eq!(da, db, "{name} seed {seed} adım {step}: kararlar ayrıştı");
+                assert_eq!(
+                    a.next_wakeup_ns(),
+                    b.next_wakeup_ns(),
+                    "{name} seed {seed} adım {step}: uyanma ayrıştı"
+                );
+                for d in &da {
+                    if d.kind == TransmitKind::Data {
+                        data_units.push(d.unit_id);
+                    }
+                    let fate = rng.below(100);
+                    if fate < TRACE_DROP_PCT {
+                        continue;
+                    }
+                    let arr = if fate < TRACE_DROP_PCT + TRACE_LATE_PCT {
+                        now + TRACE_LATE_MIN_NS + rng.below(TRACE_LATE_SPAN_MS) * MS
+                    } else {
+                        now + TRACE_OWD_NS + rng.below(TRACE_JITTER_MS) * MS
+                    };
+                    if flight.len() >= TRACE_FLIGHT_CAP {
+                        flight.pop_front();
+                    }
+                    flight.push_back((arr, d.seq));
+                }
+            }
+            // Son durum özdeşliği (karar girdisi olan her gözlenebilir yüzey).
+            assert_eq!(
+                a.diag_recovery_timers(),
+                b.diag_recovery_timers(),
+                "{name}: zamanlayıcılar"
+            );
+            for id in UID..next_unit {
+                assert_eq!(
+                    a.diag_unit_recovery(id),
+                    b.diag_unit_recovery(id),
+                    "{name}: birim {id} kayıtları"
+                );
+            }
+            assert_eq!(
+                a.diag_sched_summary(),
+                b.diag_sched_summary(),
+                "{name}: planlayıcı"
+            );
+            assert_eq!(
+                a.diag_sent_logical(),
+                b.diag_sent_logical(),
+                "{name}: sent_logical"
+            );
+            assert_eq!(
+                a.take_confirmed_logical(),
+                b.take_confirmed_logical(),
+                "{name}: confirmed_logical"
+            );
+            assert_eq!(a.diag_cc(), b.diag_cc(), "{name}: CC durumu");
+            assert_eq!(a.diag_tombstone(), b.diag_tombstone(), "{name}: tombstone");
+            assert_eq!(a.diag_loss(), b.diag_loss(), "{name}: kayıp");
+            assert_eq!(a.diag_ledger(), b.diag_ledger(), "{name}: defter");
+            assert_eq!(a.diag_rate(), b.diag_rate(), "{name}: hız");
+            assert_eq!(
+                a.diag_confirmed_units_overflow(),
+                0,
+                "{name}: drenajlı motor taşmaz"
+            );
+            let over_b = b.diag_confirmed_units_overflow();
+            assert!(over_b > 0, "{name}: drenajsız motor taştı (iz bunu zorlar)");
+            (confirmed_a, over_b, a.diag_tombstone().1)
+        }
+
+        /// Satır-7 kurulumu (envanter): kol-2'den sonra yeniden gönderimin üstünde eşik kadar seq tele
+        /// çıkar ve ACK'lenir — yeniden gönderim (`rseq`) kayıp ilan edilir ve `pending_lost`'ta jeton
+        /// bekler. Geç orijinalin ACK'inden HEMEN ÖNCE döner: (rig, hedef, orijinal seq, `rseq`).
+        fn row7_setup_on(r: Rig) -> (Rig, u64, u64, u64) {
+            let (mut r, target, tseq, rseq, _t) = kol2_setup_on(r);
+            let more: Vec<u64> = (1..=5u64).map(|i| UID + 400 + i).collect();
+            for &id in &more {
+                r.ev(Event::AppData(small(id)), r.last_now);
+            }
+            let from = r.last_now + PUMP_STEP_NS;
+            r.pump_until(from, from + PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                more.iter()
+                    .all(|&id| r.seq_of(id, TransmitKind::Data).is_some())
+            })
+            .expect("DATA tele çıkar");
+            let acks: Vec<u64> = more
+                .iter()
+                .map(|&id| r.seq_of(id, TransmitKind::Data).expect("DATA"))
+                .collect();
+            r.spend_tokens();
+            r.ev(ack(&acks), r.last_now);
+            let _ = r.s.take_confirmed_units();
+            (r, target, tseq, rseq)
+        }
+
+        /// Birimin karar doğurabilen işi var mı: KARARSIZ OLMAYAN uçuş kaydı, kayıp kuyruğu, kopya
+        /// kuyruğu ya da gönderim kuyruğu kaydı (tombstone ve kararsız kopya karar doğurmaz).
+        fn has_decision_work(s: &Sender, unit: u64) -> bool {
+            let d = s.diag_unit_recovery(unit);
+            s.inflight
+                .values()
+                .any(|p| p.unit.id == unit && p.confirmed_release_ns.is_none())
+                || d.pending_lost_retx.is_some()
+                || d.dup_due_ns.is_some()
+                || s.tx_queue.iter().any(|u| u.id == unit)
+        }
+
+        /// Birimin uçuştaki kararsız kopya sayısı.
+        fn marked_copies(s: &Sender, unit: u64) -> usize {
+            s.inflight
+                .values()
+                .filter(|p| p.unit.id == unit && p.confirmed_release_ns.is_some())
+                .count()
+        }
+
+        /// `seq0`'dan (dahil) itibaren birime verilen kararlar `(tür, seq)`.
+        fn decisions_since(r: &Rig, unit: u64, seq0: u64) -> Vec<(TransmitKind, u64)> {
+            r.sent
+                .range(seq0..)
+                .filter(|(_, d)| {
+                    d.unit_id == unit
+                        && matches!(
+                            d.kind,
+                            TransmitKind::Data | TransmitKind::Retransmit | TransmitKind::Duplicate
+                        )
+                })
+                .map(|(_, d)| (d.kind, d.seq))
+                .collect()
+        }
+
+        /// Satır-7 durumu: geç orijinal birimi teyit eder, birimin kaybolan yeniden gönderimi
+        /// `pending_lost`'ta jeton bekler. [sahip kararı 2026-11-11] Teyit o kaydı İPTAL eder: birimin
+        /// kayıp, uçuş ve kopya kaydı kalmaz, sonraki pompalamada birime HİÇ karar üretilmez. Drenaj
+        /// yapan motor ile hiç drenaj yapmayan ikizi her olayda aynı kararı ve uyanmayı verir
+        /// (`Rig::ev`): drenaj karar-nötrdür, iptal teyit olayına aittir.
+        #[test]
+        fn k4g05br_decision_neutral_after_confirmation_with_pending_work() {
+            for (name, mk) in engines() {
+                let (mut r, target, tseq, rseq) = row7_setup_on(Rig::with_twin(mk));
+                assert!(
+                    r.has_pending(rseq),
+                    "{name}: satır-7 ön koşulu — yeniden gönderim kayıp kuyruğunda"
+                );
+                let c0 = r.s.diag_confirmed_cancels();
+                let seq0 = r.s.next_seq;
+                // Geç orijinal: superseded tombstone birimi teyit eder.
+                r.ev(ack(&[tseq]), r.last_now);
+                assert!(
+                    r.s.take_confirmed_units().contains(&target),
+                    "{name}: geç orijinal teyit eder"
+                );
+                let c1 = r.s.diag_confirmed_cancels();
+                assert_eq!(
+                    c1.pending_lost - c0.pending_lost,
+                    1,
+                    "{name}: kayıp kaydı iptal"
+                );
+                assert!(!r.has_pending(rseq), "{name}: rseq kayıp kuyruğunda değil");
+                assert!(
+                    !has_decision_work(&r.s, target),
+                    "{name}: birimin karar doğuran işi kalmadı: {:?}",
+                    r.s.diag_unit_recovery(target)
+                );
+                // Devam: ikiz karşılaştırması her olayda; birime karar yok.
+                let from = r.last_now + PUMP_STEP_NS;
+                let _ = r.pump_until(
+                    from,
+                    from + PUMP_SHORT_HORIZON_NS,
+                    PUMP_LONG_STEP_NS,
+                    |_| false,
+                );
+                assert_eq!(
+                    decisions_since(&r, target, seq0),
+                    vec![],
+                    "{name}: teyitli birime karar yok"
+                );
+                let tw = r.twin.as_ref().expect("ikiz");
+                assert_eq!(
+                    r.s.diag_recovery_timers(),
+                    tw.diag_recovery_timers(),
+                    "{name}"
+                );
+                assert_eq!(
+                    r.s.diag_unit_recovery(target),
+                    tw.diag_unit_recovery(target),
+                    "{name}"
+                );
+                assert_eq!(
+                    r.s.diag_confirmed_cancels(),
+                    tw.diag_confirmed_cancels(),
+                    "{name}"
+                );
+            }
+        }
+
+        /// [sahip kararı 2026-11-11] Teyitli birimin UÇUŞTAKİ diğer kopyası (kol-2: yeniden gönderim
+        /// uçuşta, geç orijinal teyit eder) KARARSIZ işaretlenir ve uçuşta kalır (uçuş baytı aynı).
+        /// Sonra daha yeni seq'ler ACK'lenince kopya kayıp ilan edilir: kayıp MUHASEBESİ yapılır
+        /// (tombstone, port motorunda tam bir tıkanıklık olayı — gerçek kayıp), ama birim kayıp
+        /// kuyruğuna girmez ve birime karar üretilmez. Kopyanın geç ACK'i (superseded tombstone) teslim
+        /// kredisi ve reorder kanıtıdır (`note_spurious`).
+        #[test]
+        fn k4g05br_confirmed_unit_inflight_copy_never_requeued() {
+            for (name, mk) in engines() {
+                let (mut r, target, tseq, rseq, t) = kol2_setup(mk);
+                let size = r.s.inflight.get(&rseq).map(|p| p.unit.size);
+                assert!(size.is_some(), "{name}: ön koşul — yeniden gönderim uçuşta");
+                let size = size.unwrap_or(0);
+                let bytes0 = r.s.inflight_bytes();
+                let pif0 = r.s.diag_pif();
+                let c0 = r.s.diag_confirmed_cancels();
+                let seq0 = r.s.next_seq;
+                let out = r.ev(ack(&[tseq]), t + MS);
+                assert!(
+                    out.is_empty(),
+                    "{name}: ön koşul — olayda karar yok: {out:?}"
+                );
+                assert_eq!(r.s.take_confirmed_units(), vec![target], "{name}: teyit");
+                assert_eq!(marked_copies(&r.s, target), 1, "{name}: kopya kararsız");
+                assert_eq!(
+                    r.s.diag_confirmed_cancels().inflight_marked - c0.inflight_marked,
+                    1,
+                    "{name}: bir uçuş kopyası işaretlendi"
+                );
+                assert_eq!(r.s.inflight_bytes(), bytes0, "{name}: kopya uçuş baytında");
+                // Uçuş sayısı yalnız tombstone'un geç ACK'iyle (kol-2 teslim kredisi) düşer.
+                assert_eq!(r.s.diag_pif(), pif0 - 1, "{name}: diag_pif");
+                assert!(
+                    !has_decision_work(&r.s, target),
+                    "{name}: karar doğuran iş yok"
+                );
+                // Daha yeni seq'ler tele çıkar ve ACK'lenir: rseq kayıp ilan edilir.
+                let cc0 = r.s.diag_cc().map(|c| c.5);
+                let more: Vec<u64> = (1..=5u64).map(|i| UID + 500 + i).collect();
+                for &id in &more {
+                    r.ev(Event::AppData(small(id)), r.last_now);
+                }
+                let from = r.last_now + PUMP_STEP_NS;
+                r.pump_until(from, from + PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                    more.iter()
+                        .all(|&id| r.seq_of(id, TransmitKind::Data).is_some())
+                })
+                .expect("DATA tele çıkar");
+                let acks: Vec<u64> = more
+                    .iter()
+                    .map(|&id| r.seq_of(id, TransmitKind::Data).expect("DATA"))
+                    .collect();
+                r.ev(ack(&acks), r.last_now + 10 * MS);
+                // Paket eşiği geç orijinalin reorder kanıtıyla yükselmiş olabilir: zaman eşiği Pto'da.
+                let from = r.last_now + PUMP_STEP_NS;
+                r.pump_until(from, from + PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                    !r.s.inflight.contains_key(&rseq)
+                })
+                .expect("kopya kayıp ilan edilir");
+                assert!(r.has_tombstone(rseq), "{name}: kopyanın tombstone'u");
+                assert!(!r.has_pending(rseq), "{name}: rseq kayıp kuyruğuna girmedi");
+                assert_eq!(
+                    r.s.diag_confirmed_cancels().lost_not_requeued - c0.lost_not_requeued,
+                    1,
+                    "{name}: kayıp ilanı yeniden kuyruksuz"
+                );
+                assert_eq!(
+                    r.s.diag_cc().map(|c| c.5),
+                    cc0.map(|c| c + 1),
+                    "{name}: gerçek kayıp tam bir tıkanıklık olayı (port motoru)"
+                );
+                let from = r.last_now + PUMP_STEP_NS;
+                let _ = r.pump_until(
+                    from,
+                    from + PUMP_SHORT_HORIZON_NS / 10,
+                    PUMP_LONG_STEP_NS,
+                    |_| false,
+                );
+                assert!(!has_decision_work(&r.s, target), "{name}: iş yok");
+                // Kopyanın geç ACK'i (tombstone hâlâ canlıysa): kol-2 teslim kredisi + reorder kanıtı.
+                if r.has_tombstone(rseq) {
+                    let delivered0 = r.s.bw_sampler.delivered();
+                    let amb0 = r.s.diag_ambiguous_skipped;
+                    r.ev(ack(&[rseq]), r.last_now + MS);
+                    assert_eq!(
+                        r.s.bw_sampler.delivered() - delivered0,
+                        size,
+                        "{name}: geç ACK teslim kredisi"
+                    );
+                    assert_eq!(
+                        r.s.diag_ambiguous_skipped - amb0,
+                        1,
+                        "{name}: geç ACK kol-2 dalı (note_spurious kablosu)"
+                    );
+                    let la = r.s.loss.largest_acked().unwrap_or(0);
+                    assert!(
+                        u64::from(r.s.reorder.recent_max_reorder()) >= la - rseq,
+                        "{name}: geç ACK reorder mesafesi kaydedildi"
+                    );
+                }
+                assert_eq!(
+                    decisions_since(&r, target, seq0),
+                    vec![],
+                    "{name}: teyitli birime karar yok"
+                );
+            }
+        }
+
+        /// [sahip kararı 2026-11-11] Sessiz kanal sınırı: teyitli birimin kararsız kopyası uçuşun EN
+        /// YENİ kaydıdır ve sonra hiç ACK gelmez (kayıp ilanı için daha yeni seq yok). Kopya bırakma
+        /// anında (`K_CONFIRMED_RELEASE × T_loss`) kayıp İLAN EDİLMEDEN uçuştan düşer: uçuş baytı ve
+        /// `diag_pif` bırakılır, port motorunda tıkanıklık olayı yok, kuyruk kurtarması hedef bulmaz
+        /// (prob yok), motor `Idle`'a döner; birime karar yok.
+        #[test]
+        fn k4g05br_confirmed_copy_released_in_silence() {
+            for (name, mk) in tail_engines().into_iter().chain(engines()) {
+                let (mut r, target, tseq, rseq, t) = kol2_setup(mk);
+                let size = r.s.inflight[&rseq].unit.size;
+                assert_eq!(
+                    r.s.inflight.keys().copied().collect::<Vec<_>>(),
+                    vec![rseq],
+                    "{name}: ön koşul — uçuşta yalnız yeniden gönderim"
+                );
+                let seq0 = r.s.next_seq;
+                r.ev(ack(&[tseq]), t + MS);
+                assert_eq!(r.s.take_confirmed_units(), vec![target], "{name}: teyit");
+                let release = r.s.inflight[&rseq]
+                    .confirmed_release_ns
+                    .expect("kararsız işaret");
+                let bytes0 = r.s.inflight_bytes();
+                let pif0 = r.s.diag_pif();
+                let cc0 = r.s.diag_cc().map(|c| c.5);
+                let c0 = r.s.diag_confirmed_cancels();
+                let probes0 = r.s.diag_activation().tail_probes;
+                // Bırakma anından hemen önce kopya hâlâ uçuşta.
+                let from = r.last_now + PUMP_STEP_NS;
+                let _ = r.pump_until(from, release - PUMP_STEP_NS, PUMP_LONG_STEP_NS, |_| false);
+                r.ev(Event::TimerFired(Timer::Pto), release - PUMP_STEP_NS);
+                assert!(
+                    r.s.inflight.contains_key(&rseq),
+                    "{name}: bırakma anından önce uçuşta"
+                );
+                r.ev(Event::TimerFired(Timer::Pto), release);
+                assert!(r.s.inflight.is_empty(), "{name}: bırakma anında düştü");
+                assert_eq!(r.s.inflight_bytes(), bytes0 - size, "{name}: uçuş baytı");
+                assert_eq!(r.s.diag_pif(), pif0 - 1, "{name}: diag_pif");
+                assert_eq!(
+                    r.s.diag_confirmed_cancels().released - c0.released,
+                    1,
+                    "{name}: bırakma sayacı"
+                );
+                assert_eq!(
+                    r.s.diag_cc().map(|c| c.5),
+                    cc0,
+                    "{name}: tıkanıklık olayı yok"
+                );
+                assert!(!r.has_tombstone(rseq), "{name}: tombstone yok");
+                let _ = r.pump_until(
+                    release + PUMP_STEP_NS,
+                    release + PUMP_SHORT_HORIZON_NS / 10,
+                    PUMP_LONG_STEP_NS,
+                    |_| false,
+                );
+                assert_eq!(r.s.state(), SenderState::Idle, "{name}: motor Idle");
+                assert_eq!(
+                    r.s.diag_activation().tail_probes,
+                    probes0,
+                    "{name}: kararsız kopyaya prob yok"
+                );
+                assert_eq!(
+                    decisions_since(&r, target, seq0),
+                    vec![],
+                    "{name}: teyitli birime karar yok"
+                );
+                // Bırakılan kopyanın çok geç ACK'i bilinmeyen seq'tir: teyit ve kredi yok.
+                let delivered0 = r.s.bw_sampler.delivered();
+                r.ev(ack(&[rseq]), r.last_now + MS);
+                assert!(r.s.take_confirmed_units().is_empty(), "{name}: teyit yok");
+                assert_eq!(r.s.bw_sampler.delivered(), delivered0, "{name}: kredi yok");
+            }
+        }
+
+        /// [sahip kararı 2026-11-11] PreConverge geometrik kopya yolu. (a) Orijinalin ACK'i birimin
+        /// kopya kaydını iptal eder (§3.3-B stop; önceki davranış). (b) Kopyanın ACK'i birimi teyit
+        /// eder: yeniden kurulmuş geometrik kayıt iptal edilir, uçuştaki ORİJİNAL kararsız işaretlenir
+        /// ve uçuşta kalır (PreConverge'de kayıp ilanı yok — §3.3-C); motor önce PreConverge'de bekler,
+        /// bırakma anında orijinal kayıp ilan edilmeden düşer ve motor `Idle`'a döner. Birime karar yok.
+        #[test]
+        fn k4g05br_confirmed_unit_dup_queue_cancelled() {
+            let a = UID + 7;
+            for (name, mk) in engines() {
+                // (a)
+                let mut r = Rig::new(mk);
+                r.ev(Event::AppData(small(a)), 0);
+                let q = r.seq_of(a, TransmitKind::Data).expect("ilk DATA");
+                assert!(
+                    r.s.dup_queue.iter().any(|d| d.unit.id == a),
+                    "{name}: (a) geometrik kopya kaydı (ön koşul)"
+                );
+                r.ev(ack(&[q]), 10 * MS);
+                assert_eq!(r.s.take_confirmed_units(), vec![a], "{name}: (a) teyit");
+                assert!(!has_decision_work(&r.s, a), "{name}: (a) iş yok");
+
+                // (b)
+                let mut r = Rig::new(mk);
+                r.ev(Event::AppData(small(a)), 0);
+                let q = r.seq_of(a, TransmitKind::Data).expect("ilk DATA");
+                let t = r
+                    .pump_until(
+                        PUMP_LONG_STEP_NS,
+                        PUMP_LONG_HORIZON_NS,
+                        PUMP_LONG_STEP_NS,
+                        |r| r.seq_of(a, TransmitKind::Duplicate).is_some(),
+                    )
+                    .expect("PreConverge kopyası");
+                let dseq = r.seq_of(a, TransmitKind::Duplicate).expect("kopya");
+                assert!(
+                    r.s.inflight.contains_key(&q) && r.s.inflight.contains_key(&dseq),
+                    "{name}: (b) orijinal ve kopya uçuşta (ön koşul)"
+                );
+                assert!(
+                    r.s.dup_queue.iter().any(|d| d.unit.id == a),
+                    "{name}: (b) geometrik kayıt yeniden kuruldu (ön koşul)"
+                );
+                let c0 = r.s.diag_confirmed_cancels();
+                let seq0 = r.s.next_seq;
+                r.ev(ack(&[dseq]), t);
+                assert_eq!(r.s.take_confirmed_units(), vec![a], "{name}: (b) teyit");
+                let c1 = r.s.diag_confirmed_cancels();
+                assert_eq!(
+                    c1.inflight_marked - c0.inflight_marked,
+                    1,
+                    "{name}: (b) uçuştaki orijinal kararsız"
+                );
+                assert!(c1.dup_queue > c0.dup_queue, "{name}: (b) kopya kaydı iptal");
+                // Orijinal ya uçuşta kararsızdır ya da aynı olayda (zaman eşiği; cold-start
+                // derlemesinde aynı çağrının ikinci boru hattı turu) yeniden kuyruksuz kayıp ilan
+                // edilmiştir.
+                assert!(
+                    r.s.inflight
+                        .get(&q)
+                        .map_or(c1.lost_not_requeued > c0.lost_not_requeued, |p| p
+                            .confirmed_release_ns
+                            .is_some()),
+                    "{name}: (b) orijinal kararsız ya da yeniden kuyruksuz kayıp"
+                );
+                assert!(!has_decision_work(&r.s, a), "{name}: (b) iş yok");
+                // Kopyanın ACK'i RTT örneği verdiyse (port motorunda v1.1 kuralı) orijinal zaman
+                // eşiğiyle kayıp ilan edilir (yeniden kuyruksuz); vermediyse (eski motor, Karn)
+                // PreConverge'de kayıp ilanı yoktur ve orijinal bırakma anında düşer.
+                let sampled = r.s.rtt.srtt().is_some();
+                if !sampled {
+                    assert_eq!(
+                        r.s.state(),
+                        SenderState::PreConverge,
+                        "{name}: (b) ölü orijinal uçuşta, ölçüm yok"
+                    );
+                }
+                let from = t + PUMP_LONG_STEP_NS;
+                let _ = r.pump_until(from, from + PUMP_LONG_HORIZON_NS, PUMP_LONG_STEP_NS, |r| {
+                    r.s.inflight.is_empty() && r.s.state() == SenderState::Idle
+                });
+                assert!(
+                    r.s.inflight.is_empty(),
+                    "{name}: (b) orijinal uçuştan çıktı"
+                );
+                let c2 = r.s.diag_confirmed_cancels();
+                assert_eq!(
+                    if sampled {
+                        (
+                            c2.lost_not_requeued - c0.lost_not_requeued,
+                            c2.released - c0.released,
+                        )
+                    } else {
+                        (
+                            c2.released - c0.released,
+                            c2.lost_not_requeued - c0.lost_not_requeued,
+                        )
+                    },
+                    (1, 0),
+                    "{name}: (b) örnekli: kayıp ilanı; örneksiz: bırakma"
+                );
+                assert_eq!(r.s.state(), SenderState::Idle, "{name}: (b) Idle");
+                assert_eq!(
+                    decisions_since(&r, a, seq0),
+                    vec![],
+                    "{name}: (b) teyitli birime karar yok"
+                );
+            }
+        }
+
+        /// [sahip kararı 2026-11-11] Vadesi gelmiş ama jeton bekleyen kuyruk probunun hedefi teyitli
+        /// birimin uçuştaki kopyasıysa prob İPTAL olur: hedef emisyonda yeniden doğrulanır ve kopya
+        /// teyitte kararsız işaretlenmiştir. Teyit olayında ve sonrasında birime karar çıkmaz.
+        /// Bekleyen prob yuvası beyaz kutu kurulur (jeton açlığında kalmış PTO probu).
+        #[test]
+        fn k4g05br_confirmed_unit_tail_probe_cancelled() {
+            for (name, mk) in tail_engines() {
+                let (mut r, target, tseq, rseq, t) = kol2_setup(mk);
+                assert!(
+                    r.s.inflight.contains_key(&rseq),
+                    "{name}: ön koşul — yeniden gönderim uçuşta"
+                );
+                r.s.tail_probe_pending = Some(rseq);
+                let cancelled0 = r.s.tail_probe_cancelled;
+                let seq0 = r.s.next_seq;
+                r.ev(ack(&[tseq]), t + 300 * MS);
+                assert_eq!(r.s.take_confirmed_units(), vec![target], "{name}: teyit");
+                assert_eq!(
+                    r.s.tail_probe_cancelled - cancelled0,
+                    1,
+                    "{name}: bekleyen prob iptal"
+                );
+                let from = r.last_now + PUMP_STEP_NS;
+                let _ = r.pump_until(
+                    from,
+                    from + PUMP_SHORT_HORIZON_NS,
+                    PUMP_LONG_STEP_NS,
+                    |_| false,
+                );
+                assert_eq!(
+                    decisions_since(&r, target, seq0),
+                    vec![],
+                    "{name}: teyitli birime karar yok"
+                );
+            }
+        }
+
+        /// [sahip kararı 2026-11-11] Kuyruk probu hedef seçimi kararsız kopyayı ATLAR: en eski uçuş
+        /// kaydı teyitli birimin kararsız kopyasıyken prob, arkasındaki teyitsiz birimi hedefler
+        /// (hedef seçilip emisyonda iptal edilseydi prob turu boşa gider, teyitsiz birim problanmazdı).
+        #[test]
+        fn k4g05br_tail_probe_skips_marked_copy() {
+            for (name, mk) in tail_engines() {
+                let (mut r, target, tseq, rseq, t) = kol2_setup(mk);
+                let x = UID + 600;
+                r.ev(Event::AppData(small(x)), t);
+                let t = r
+                    .pump_until(
+                        t + PUMP_STEP_NS,
+                        t + PUMP_SHORT_HORIZON_NS,
+                        PUMP_STEP_NS,
+                        |r| r.seq_of(x, TransmitKind::Data).is_some(),
+                    )
+                    .expect("x tele çıkar");
+                let xseq = r.seq_of(x, TransmitKind::Data).expect("x DATA");
+                assert!(
+                    rseq < xseq,
+                    "{name}: ön koşul — kararsız olacak kopya daha eski"
+                );
+                let seq0 = r.s.next_seq;
+                r.ev(ack(&[tseq]), t);
+                assert_eq!(r.s.take_confirmed_units(), vec![target], "{name}: teyit");
+                assert_eq!(marked_copies(&r.s, target), 1, "{name}: kopya kararsız");
+                let cancelled0 = r.s.tail_probe_cancelled;
+                r.pump_until(
+                    t + PUMP_STEP_NS,
+                    t + PUMP_SHORT_HORIZON_NS,
+                    PUMP_STEP_NS,
+                    |r| {
+                        r.sent
+                            .range(seq0..)
+                            .any(|(_, d)| d.kind == TransmitKind::Retransmit && d.unit_id == x)
+                    },
+                )
+                .expect("teyitsiz birime kuyruk probu");
+                assert_eq!(
+                    r.s.tail_probe_cancelled, cancelled0,
+                    "{name}: prob turu kararsız kopyada boşa gitmedi"
+                );
+                assert_eq!(
+                    decisions_since(&r, target, seq0),
+                    vec![],
+                    "{name}: teyitli birime karar yok"
+                );
+            }
+        }
+
+        /// [sahip kararı 2026-11-11] Teyitli birimin Duplicate kökenli kararsız kopyası sonradan kayıp
+        /// ilan edilir: kayıp muhasebesi yapılır ama geometrik kopya YENİDEN KURULMAZ (P0 burst
+        /// kurtarma kolu yalnız teyitsiz birim içindir). Kurulum: PreConverge'de orijinal ve kuruluş
+        /// kopyası uçuşta, orijinalin ACK'i birimi teyit eder (kopya kararsız); daha yeni seq'lerin
+        /// ACK'i kopyayı kayıp ilan ettirir.
+        #[test]
+        fn k4g05br_confirmed_unit_lost_duplicate_not_recreated() {
+            let a = UID + 8;
+            for (name, mk) in engines() {
+                let mut r = Rig::new(mk);
+                r.ev(Event::AppData(small(a)), 0);
+                let q = r.seq_of(a, TransmitKind::Data).expect("ilk DATA");
+                let t = r
+                    .pump_until(
+                        PUMP_LONG_STEP_NS,
+                        PUMP_LONG_HORIZON_NS,
+                        PUMP_LONG_STEP_NS,
+                        |r| r.seq_of(a, TransmitKind::Duplicate).is_some(),
+                    )
+                    .expect("PreConverge kopyası");
+                let dseq = r.seq_of(a, TransmitKind::Duplicate).expect("kopya");
+                let seq0 = r.s.next_seq;
+                let c0 = r.s.diag_confirmed_cancels();
+                r.ev(ack(&[q]), t);
+                assert_eq!(r.s.take_confirmed_units(), vec![a], "{name}: teyit");
+                assert!(
+                    r.s.inflight
+                        .get(&dseq)
+                        .is_some_and(|p| p.confirmed_release_ns.is_some()),
+                    "{name}: kopya uçuşta, kararsız"
+                );
+                assert!(
+                    r.s.rtt.srtt().is_some(),
+                    "{name}: ön koşul — orijinalden örnek"
+                );
+                let more: Vec<u64> = (1..=5u64).map(|i| UID + 700 + i).collect();
+                for &id in &more {
+                    r.ev(Event::AppData(small(id)), r.last_now);
+                }
+                let from = r.last_now + PUMP_STEP_NS;
+                r.pump_until(from, from + PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                    more.iter()
+                        .all(|&id| r.seq_of(id, TransmitKind::Data).is_some())
+                })
+                .expect("DATA tele çıkar");
+                let acks: Vec<u64> = more
+                    .iter()
+                    .map(|&id| r.seq_of(id, TransmitKind::Data).expect("DATA"))
+                    .collect();
+                r.ev(ack(&acks), r.last_now + 10 * MS);
+                let from = r.last_now + PUMP_STEP_NS;
+                r.pump_until(from, from + PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                    !r.s.inflight.contains_key(&dseq)
+                })
+                .expect("kopya uçuştan çıkar");
+                assert_eq!(
+                    r.s.diag_confirmed_cancels().lost_not_requeued - c0.lost_not_requeued,
+                    1,
+                    "{name}: kopya kayıp ilan edildi, yeniden kuyruksuz"
+                );
+                assert!(
+                    !r.s.dup_queue.iter().any(|d| d.unit.id == a),
+                    "{name}: geometrik kopya yeniden kurulmadı"
+                );
+                let from = r.last_now + PUMP_STEP_NS;
+                let _ = r.pump_until(
+                    from,
+                    from + PUMP_SHORT_HORIZON_NS,
+                    PUMP_LONG_STEP_NS,
+                    |_| false,
+                );
+                assert_eq!(
+                    decisions_since(&r, a, seq0),
+                    vec![],
+                    "{name}: teyitli birime karar yok"
+                );
+            }
+        }
+
+        /// [sahip kararı 2026-11-11] `RecoveredControl` teyididir: listelenen birimin bekleyen kopya
+        /// kaydı iptal (sayaçlar RECOVERED'da da yazılır), uçuştaki kaydı KARARSIZ işaretlenir ve
+        /// uçuşta kalır (uçuş baytı, `diag_pif`, teslim kredisi ve BtlBw değişmez — N8); listelenmeyen
+        /// birim etkilenmez; sonra kurtarılan birime karar yok.
+        #[test]
+        fn k4g05br_recovered_control_marks_inflight_copies() {
+            for (name, mk) in engines() {
+                let mut r = Rig::new(mk);
+                r.warm(UID);
+                let ids = [UID + 1, UID + 2];
+                for &id in &ids {
+                    r.ev(Event::AppData(small(id)), 20 * MS);
+                }
+                let t = r
+                    .pump_until(21 * MS, PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                        ids.iter()
+                            .all(|&id| r.seq_of(id, TransmitKind::Data).is_some())
+                    })
+                    .expect("DATA tele çıkar");
+                // Kurtarılan birimin bekleyen kopya kaydı (vadesi uzak; beyaz kutu).
+                r.s.dup_queue.push(DupRec {
+                    due_ns: DUP_FAR_NS,
+                    unit: small(UID + 1),
+                    interval_ns: 0,
+                });
+                let bytes0 = r.s.inflight_bytes();
+                let pif0 = r.s.diag_pif();
+                let bw0 = r.s.diag_wbtlbw();
+                let delivered0 = r.s.bw_sampler.delivered();
+                let c0 = r.s.diag_confirmed_cancels();
+                let seq0 = r.s.next_seq;
+                let out = r.ev(
+                    Event::RecoveredControl(RecoveredInfo {
+                        units: vec![rec(UID + 1)],
+                    }),
+                    t,
+                );
+                assert!(out.is_empty(), "{name}: RECOVERED karar üretmez");
+                assert_eq!(r.s.take_confirmed_units(), vec![UID + 1], "{name}: teyit");
+                let c1 = r.s.diag_confirmed_cancels();
+                assert_eq!(
+                    (
+                        c1.dup_queue - c0.dup_queue,
+                        c1.inflight_marked - c0.inflight_marked
+                    ),
+                    (1, 1),
+                    "{name}: RECOVERED sayaçları (kopya kaydı, işaret)"
+                );
+                assert_eq!(marked_copies(&r.s, UID + 1), 1, "{name}: kopya kararsız");
+                assert!(
+                    !has_decision_work(&r.s, UID + 1),
+                    "{name}: kurtarılan birimin işi yok"
+                );
+                assert!(
+                    has_decision_work(&r.s, UID + 2),
+                    "{name}: listelenmeyen birim etkilenmez"
+                );
+                assert_eq!(r.s.inflight_bytes(), bytes0, "{name}: uçuş baytı (N8)");
+                assert_eq!(r.s.diag_pif(), pif0, "{name}: diag_pif (N8)");
+                assert_eq!(
+                    r.s.bw_sampler.delivered(),
+                    delivered0,
+                    "{name}: teslim kredisi yok (N8)"
+                );
+                assert_eq!(r.s.diag_wbtlbw(), bw0, "{name}: BtlBw değişmez (N8)");
+                let from = t + PUMP_STEP_NS;
+                let _ = r.pump_until(
+                    from,
+                    from + PUMP_SHORT_HORIZON_NS,
+                    PUMP_LONG_STEP_NS,
+                    |_| false,
+                );
+                assert_eq!(
+                    decisions_since(&r, UID + 1, seq0),
+                    vec![],
+                    "{name}: kurtarılan birime karar yok"
+                );
+            }
+        }
+
+        /// [inceleme bulgusu · envanter satır 8b] RECOVERED, gönderim kuyruğunda bekleyen (hiç
+        /// gönderilmemiş) birimi listeler — FEC bütçe kapısı veriyi bekletirken parite kendi bloğunun
+        /// verisini geçebilir. Birim kuyruktan çıkar ve hiç `Data` olarak gönderilmez (runtime onun
+        /// payload'ını teyitte siler; gönderilseydi gövdesiz karar olurdu). Listelenmeyen ve aynı
+        /// anda kuyruktaki birim normal gönderilir.
+        #[test]
+        fn k4g05br_recovered_control_removes_unsent_unit() {
+            for (name, mk) in engines() {
+                let mut r = Rig::new(mk);
+                r.warm(UID);
+                let now = 20 * MS;
+                // Jeton yenilensin (aynı an), sonra harcansın: aynı anda gelen veri kuyrukta bekler.
+                r.ev(Event::TimerFired(Timer::Pto), now);
+                r.spend_tokens();
+                let (gone, kept) = (UID + 1, UID + 2);
+                for id in [gone, kept] {
+                    r.ev(Event::AppData(small(id)), now);
+                }
+                assert!(
+                    [gone, kept]
+                        .iter()
+                        .all(|&id| r.s.tx_queue.iter().any(|u| u.id == id)),
+                    "{name}: ön koşul — iki birim de gönderim kuyruğunda"
+                );
+                let c0 = r.s.diag_confirmed_cancels();
+                let out = r.ev(
+                    Event::RecoveredControl(RecoveredInfo {
+                        units: vec![rec(gone)],
+                    }),
+                    now,
+                );
+                assert!(out.is_empty(), "{name}: RECOVERED karar üretmez");
+                assert_eq!(r.s.take_confirmed_units(), vec![gone], "{name}: teyit");
+                assert_eq!(
+                    r.s.diag_confirmed_cancels().tx_queue - c0.tx_queue,
+                    1,
+                    "{name}: kuyruktan çıktı"
+                );
+                assert!(!has_decision_work(&r.s, gone), "{name}: iş yok");
+                r.pump_until(now + MS, now + PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                    r.seq_of(kept, TransmitKind::Data).is_some()
+                })
+                .expect("listelenmeyen birim gönderilir");
+                assert_eq!(
+                    decisions_since(&r, gone, 0),
+                    vec![],
+                    "{name}: kurtarılan birim hiç gönderilmedi"
+                );
+            }
+        }
+
+        /// Kayıp ilan edilmiş `seq`'in geç ACK'i (tek başına bir çerçeve): kol-1 tombstone dalı (tek
+        /// gönderim → BW örneği kurtarılır) ve reorder toleransı gözlenen mesafeyi öğrenir
+        /// (`note_spurious`, en yüksek ACK'lenen seq'e göre).
+        fn assert_late_ack_learns_reorder(r: &mut Rig, label: &str, seq: u64) {
+            let reorder0 = r.s.reorder.recent_max_reorder();
+            let recovered0 = r.s.diag_bw_recovered;
+            r.ev(ack(&[seq]), r.last_now + MS);
+            let la = r.s.loss.largest_acked().expect("ACK'lenen seq var");
+            let dist = u32::try_from(la - seq).unwrap_or(u32::MAX);
+            assert!(
+                dist > reorder0,
+                "{label}: ön koşul — mesafe henüz öğrenilmemiş ({dist} > {reorder0})"
+            );
+            assert_eq!(
+                r.s.diag_bw_recovered - recovered0,
+                1,
+                "{label}: geç ACK kol-1 tombstone dalı (BW örneği)"
+            );
+            assert_eq!(
+                r.s.reorder.recent_max_reorder(),
+                dist,
+                "{label}: geç ACK reorder mesafesini öğretti"
+            );
+        }
+
+        /// [inceleme bulgusu · D12] Teyitli birimin `Data` kökenli kaydı (tek gönderim, `retx_count`
+        /// 0) kayıp ilan edilir ve sonra geç ACK'lenir (spurious kayıp): birimin `pending_lost` kaydı
+        /// olmasa da reorder toleransı öğrenir — kanıt geç ACK'in kendisidir, ARQ kuyruğunun durumu
+        /// değil. Üç kurulum, iki motor:
+        /// (a) uçuştaki kayıt RECOVERED'la kararsız işaretlenir, sonra yeniden kuyruksuz kayıp ilan
+        ///     edilir (tabanda `pending_lost`'a girer, geç ACK un-loss eşleşmesiyle öğretirdi);
+        /// (b) kaydın `pending_lost` girdisi birimin başka bir kaydının (Duplicate) ACK'iyle teyitte
+        ///     iptal edilir (tabanda girdi kalırdı); kopya beyaz kutu `track_sent` ile uçuşa girer;
+        /// (c) aynı girdi RECOVERED'la iptal edilir (tabanda da iptaldi ve öğretmiyordu — eski boşluk).
+        /// Birime karar yok.
+        #[test]
+        fn k4g05br_marked_data_record_spurious_loss_feeds_reorder() {
+            for (name, mk) in engines() {
+                // (a)
+                let mut r = Rig::new(mk);
+                r.warm(UID);
+                let a = UID + 1;
+                let others: Vec<u64> = (2..=6u64).map(|i| UID + i).collect();
+                for &id in std::iter::once(&a).chain(&others) {
+                    r.ev(Event::AppData(small(id)), 20 * MS);
+                }
+                let t = r
+                    .pump_until(21 * MS, PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                        std::iter::once(&a)
+                            .chain(&others)
+                            .all(|&id| r.seq_of(id, TransmitKind::Data).is_some())
+                    })
+                    .expect("DATA tele çıkar");
+                let aseq = r.seq_of(a, TransmitKind::Data).expect("a DATA");
+                let seq0 = r.s.next_seq;
+                r.ev(
+                    Event::RecoveredControl(RecoveredInfo {
+                        units: vec![rec(a)],
+                    }),
+                    t,
+                );
+                assert_eq!(r.s.take_confirmed_units(), vec![a], "{name}: (a) teyit");
+                assert_eq!(marked_copies(&r.s, a), 1, "{name}: (a) kayıt kararsız");
+                let c0 = r.s.diag_confirmed_cancels();
+                let acks: Vec<u64> = others
+                    .iter()
+                    .map(|&id| r.seq_of(id, TransmitKind::Data).expect("DATA"))
+                    .collect();
+                r.ev(ack(&acks), t + MS);
+                let _ = r.s.take_confirmed_units();
+                let from = r.last_now + PUMP_STEP_NS;
+                r.pump_until(from, from + PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                    !r.s.inflight.contains_key(&aseq)
+                })
+                .expect("kayıt kayıp ilan edilir");
+                assert!(r.has_tombstone(aseq), "{name}: (a) tombstone");
+                assert!(!r.has_pending(aseq), "{name}: (a) kayıp kuyruğunda değil");
+                assert_eq!(
+                    r.s.diag_confirmed_cancels().lost_not_requeued - c0.lost_not_requeued,
+                    1,
+                    "{name}: (a) yeniden kuyruksuz kayıp ilanı"
+                );
+                assert_late_ack_learns_reorder(&mut r, &format!("{name}: (a)"), aseq);
+                assert_eq!(
+                    decisions_since(&r, a, seq0),
+                    vec![],
+                    "{name}: (a) teyitli birime karar yok"
+                );
+
+                // (b)
+                let (mut r, target, tseq, t) = kol1_setup(mk);
+                assert!(
+                    r.has_tombstone(tseq) && r.has_pending(tseq),
+                    "{name}: (b) ön koşul — kol-1 kayıp, yeniden gönderim yok"
+                );
+                let u =
+                    r.s.pending_lost
+                        .iter()
+                        .find(|x| x.seq == tseq)
+                        .map(|x| x.unit)
+                        .expect("kayıp kaydı");
+                let dseq = r.s.track_sent(u, t, 0, TransmitKind::Duplicate);
+                let seq0 = r.s.next_seq;
+                let c0 = r.s.diag_confirmed_cancels();
+                r.ev(ack(&[dseq]), t);
+                assert!(
+                    r.s.take_confirmed_units().contains(&target),
+                    "{name}: (b) kopyanın ACK'i teyit eder"
+                );
+                assert_eq!(
+                    r.s.diag_confirmed_cancels().pending_lost - c0.pending_lost,
+                    1,
+                    "{name}: (b) kayıp kaydı teyitte iptal"
+                );
+                assert!(!r.has_pending(tseq), "{name}: (b) kayıp kuyruğunda değil");
+                assert_late_ack_learns_reorder(&mut r, &format!("{name}: (b)"), tseq);
+                assert_eq!(
+                    decisions_since(&r, target, seq0),
+                    vec![],
+                    "{name}: (b) teyitli birime karar yok"
+                );
+
+                // (c)
+                let (mut r, target, tseq, t) = kol1_setup(mk);
+                let seq0 = r.s.next_seq;
+                r.ev(
+                    Event::RecoveredControl(RecoveredInfo {
+                        units: vec![rec(target)],
+                    }),
+                    t,
+                );
+                assert_eq!(
+                    r.s.take_confirmed_units(),
+                    vec![target],
+                    "{name}: (c) teyit"
+                );
+                assert!(!r.has_pending(tseq), "{name}: (c) kayıp kaydı iptal");
+                assert_late_ack_learns_reorder(&mut r, &format!("{name}: (c)"), tseq);
+                assert_eq!(
+                    decisions_since(&r, target, seq0),
+                    vec![],
+                    "{name}: (c) teyitli birime karar yok"
+                );
+            }
+        }
+
+        /// [inceleme bulgusu · EK4-A2] Kararsız kopyanın bırakma anı bir uyanma kaynağıdır: uçuşta
+        /// tek kayıt teyitli birimin kararsız kopyasıyken (kuyruk probu hedef bulmaz, kayıp
+        /// dedektörünün daha yeni ACK'i yok) yalnız `next_wakeup_ns`'e uyanan sürücü (periyodik tik
+        /// yok, her uyanmada `Pto`) kopyayı bırakma anında bırakır ve motor boşta kalır. Kopya
+        /// uçuştayken `next_wakeup_ns` `None` dönmez.
+        #[test]
+        fn k4g05br_release_deadline_wakes_wakeup_only_driver() {
+            const WAKEUP_BUDGET: u32 = 64;
+            for (name, mk) in tail_engines().into_iter().chain(engines()) {
+                let (mut r, target, tseq, rseq, t) = kol2_setup(mk);
+                r.ev(ack(&[tseq]), t + MS);
+                assert_eq!(r.s.take_confirmed_units(), vec![target], "{name}: teyit");
+                assert_eq!(
+                    r.s.inflight.keys().copied().collect::<Vec<_>>(),
+                    vec![rseq],
+                    "{name}: ön koşul — uçuşta yalnız kararsız kopya"
+                );
+                let release = r.s.inflight[&rseq]
+                    .confirmed_release_ns
+                    .expect("kararsız işaret");
+                let c0 = r.s.diag_confirmed_cancels();
+                let mut now = r.last_now;
+                let mut wakeups = 0u32;
+                while !r.s.inflight.is_empty() {
+                    let Some(w) = r.s.next_wakeup_ns() else {
+                        panic!("{name}: kararsız kopya uçuştayken uyanma yok (an {now})");
+                    };
+                    wakeups += 1;
+                    assert!(
+                        wakeups <= WAKEUP_BUDGET,
+                        "{name}: sürücü {WAKEUP_BUDGET} uyanmada yakınsamadı"
+                    );
+                    now = w.max(now).saturating_add(MS);
+                    r.ev(Event::TimerFired(Timer::Pto), now);
+                }
+                assert!(now >= release, "{name}: bırakma anından önce düşmedi");
+                assert_eq!(
+                    r.s.diag_confirmed_cancels().released - c0.released,
+                    1,
+                    "{name}: bırakma sayacı"
+                );
+                assert_eq!(r.s.next_wakeup_ns(), None, "{name}: gerçekten boşta");
+                assert_eq!(r.s.state(), SenderState::Idle, "{name}: motor Idle");
+            }
+        }
+
+        /// [inceleme bulgusu · E2a PTO 2] Port motorunun (`pto_probes = 2`) jeton bekleyen ikinci prob
+        /// yuvasının hedefi teyitli birimin kararsız kopyasıysa: (a) emisyon yolu yuvayı boşaltır
+        /// (`pto2_cleared` +1), ikinci prob çıkmaz (`pto2_emitted` aynı) — teyit geç orijinalin ACK'idir
+        /// ve uçuştan kayıt düşmez (tur aynı kalır, tur denetimi yuvayı boşaltmaz); (b) RECOVERED
+        /// teyidinden sonra (emisyon yolu çalışmaz) yuva uyanma doğurmaz (`e2a_probe2_ready_ns`), bir
+        /// sonraki emisyon yolu yuvayı aynı biçimde boşaltır. Yuva beyaz kutu kurulur (o turun
+        /// kimliğiyle; `k4g05br_confirmed_unit_tail_probe_cancelled` birinci yuva için aynı kalıp).
+        /// Birime karar yok.
+        #[test]
+        fn k4g05br_confirmed_unit_second_probe_cancelled() {
+            let name = "cc_port";
+            for teyit in ["ack", "recovered"] {
+                let (mut r, target, tseq, rseq, t) = kol2_setup(Sender::with_cc_port);
+                assert_eq!(r.s.e2a.pto_probes(), 2, "{name}: ön koşul — iki prob");
+                // Kuyruk zamanlayıcısı Pto'da kurulur (hedef = uçuştaki yeniden gönderim; vadesi uzak).
+                r.ev(Event::TimerFired(Timer::Pto), t);
+                assert!(
+                    r.s.tail_probe_pending.is_none(),
+                    "{name}: ön koşul — birinci prob vadesiz"
+                );
+                let armed = r.s.tail_recovery.armed_at_ns();
+                assert!(
+                    armed.is_some(),
+                    "{name}: ön koşul — kuyruk zamanlayıcısı kurulu"
+                );
+                let index = r.s.tail_recovery.probe_index();
+                r.s.tail_probe_pending = None;
+                r.s.e2a_tail_probe2 = Some((rseq, armed, index));
+                assert!(
+                    r.s.e2a_probe2_ready_ns().is_some(),
+                    "{name} {teyit}: ön koşul — teyitsiz hedefli yuva uyanma doğurur"
+                );
+                let d0 = r.s.diag_e2a();
+                let seq0 = r.s.next_seq;
+                if teyit == "ack" {
+                    r.ev(ack(&[tseq]), t + 300 * MS);
+                } else {
+                    r.ev(
+                        Event::RecoveredControl(RecoveredInfo {
+                            units: vec![rec(target)],
+                        }),
+                        t + 300 * MS,
+                    );
+                }
+                assert_eq!(
+                    r.s.take_confirmed_units(),
+                    vec![target],
+                    "{name} {teyit}: teyit"
+                );
+                assert_eq!(marked_copies(&r.s, target), 1, "{name} {teyit}: kararsız");
+                if teyit == "recovered" {
+                    assert!(
+                        r.s.e2a_tail_probe2.is_some(),
+                        "{name}: ön koşul — RECOVERED emisyon yolunu çalıştırmaz, yuva durur"
+                    );
+                    assert_eq!(
+                        r.s.e2a_probe2_ready_ns(),
+                        None,
+                        "{name}: kararsız hedefli yuva uyanma doğurmaz"
+                    );
+                    // İlerlemesiz olay (superseded orijinalin geç ACK'i): emisyon yolu çalışır.
+                    r.ev(ack(&[tseq]), t + 301 * MS);
+                    let _ = r.s.take_confirmed_units();
+                }
+                let d1 = r.s.diag_e2a();
+                assert_eq!(
+                    (
+                        d1.pto2_cleared - d0.pto2_cleared,
+                        d1.pto2_emitted - d0.pto2_emitted
+                    ),
+                    (1, 0),
+                    "{name} {teyit}: yuva boşaltıldı, ikinci prob yok"
+                );
+                assert!(r.s.e2a_tail_probe2.is_none(), "{name} {teyit}: yuva boş");
+                let from = r.last_now + PUMP_STEP_NS;
+                let _ = r.pump_until(
+                    from,
+                    from + PUMP_SHORT_HORIZON_NS,
+                    PUMP_LONG_STEP_NS,
+                    |_| false,
+                );
+                assert_eq!(
+                    decisions_since(&r, target, seq0),
+                    vec![],
+                    "{name} {teyit}: teyitli birime karar yok"
+                );
+            }
+        }
+
+        // ── [K4G-05b-R · sahip kararı 2026-11-11] Hayalet ölçümü ───────────────────────────────
+        //
+        // Runtime, gövdesi olmayan kararı (teyitli birime motor kararı) tele ÇIKARMAZ. Bu ölçüm satır-7
+        // durumundan (birim geç orijinalle teyit edildi, yeniden gönderim kaydı `pending_lost`'ta)
+        // sonra o birimin motordaki ardılını sayar. Kanal modeli iki kol arasında ayrışır:
+        // "atla" — teyitli birime verilen kararlar tele çıkmaz (ACK yok; bu PR'ın runtime'ı);
+        // "başlık" — karar tele çıkar ve alıcı seq'i ACK'ler (önceki runtime'ın başlık-only emisyonu).
+        // Diğer bütün emisyonlar iki kolda da kayıpsız, sıralı, sabit gecikmeyle ACK'lenir.
+        // [sahip kararı 2026-11-11] Motor teyitte birimin bekleyen işini iptal eder
+        // (`cancel_confirmed_units`): iki motorda ve iki kolda teyitten sonra birime HİÇ karar
+        // üretilmez (iddia), birimin kayıtları ufukta düşer, motor `Idle`'a döner, port motorunda
+        // tıkanıklık olayı kollar arasında aynıdır. Önceki (iptal öncesi) sayılar
+        // `docs/design/K4G-05b-RUNTIME-ENVANTER.md`'de; bu koşunun sayıları `--nocapture` ile yazdırılır.
+
+        /// Teyitten sonraki ölçüm ufku (sahte saat).
+        const GHOST_HORIZON_NS: u64 = 120_000 * MS;
+        /// Pompa adımı: runtime her 1 ms'de `Pto` sürer (`PACE_TICK`); maliyet için 5 ms.
+        const GHOST_TICK_NS: u64 = 5 * MS;
+        /// Runtime `RTPROP_TICK` (200 ms).
+        const GHOST_RTPROP_NS: u64 = 200 * MS;
+        /// Kanal: tele çıkan her emisyonun ACK'i gönderimden bu kadar sonra gelir.
+        const GHOST_RTT_NS: u64 = 40 * MS;
+        /// Diğer birimlerin trafiği: bu aralıkla bir küçük birim.
+        const GHOST_OFFER_NS: u64 = 50 * MS;
+        /// Diğer birimlerin kimlik tabanı (kurulum birimlerinden uzak).
+        const GHOST_UNIT_BASE: u64 = UID + 10_000;
+        /// Örnekleme periyodu (hayalet uçuş baytı, kuyruk boyları).
+        const GHOST_SAMPLE_NS: u64 = 1_000 * MS;
+        /// Hayalet karar günlüğünün tavanı (aşan kararlar yalnız sayılır).
+        const GHOST_LOG_CAP: usize = 512;
+        /// Rapor kovası: hayalet kararlar 10 s'lik kovalarda.
+        const GHOST_BUCKET_NS: u64 = 10_000 * MS;
+        const GHOST_BUCKETS: usize = (GHOST_HORIZON_NS / GHOST_BUCKET_NS) as usize;
+        /// Güvenlik sınırı: uçuş, kayıp ve kopya kuyrukları ve kanal modelinin uçuş listesi.
+        const GHOST_QUEUE_BOUND: u32 = 4096;
+        /// Faz değişimi günlüğünün tavanı (aşan değişimler yalnız sayılır).
+        const GHOST_STATE_LOG_CAP: usize = 64;
+
+        /// Birim motorda sahipli mi (uçuş/tombstone kaydı, ARQ ya da kopya işi).
+        fn engine_owns(s: &Sender, unit: u64) -> bool {
+            let d = s.diag_unit_recovery(unit);
+            d.inflight_records > 0
+                || d.tombstone_records > 0
+                || d.pending_lost_retx.is_some()
+                || d.dup_due_ns.is_some()
+        }
+
+        /// Eski runtime motoru (`TransportEngine::Legacy`; #176'ya dek ürün varsayılanı):
+        /// `ClientSession::new` = `Sender::new` + ürün kuyruk kurtarması. #176'dan beri ürün
+        /// varsayılanı `Sender::with_cc_port`'tur (aşağıda "cc_port").
+        fn legacy_runtime() -> Sender {
+            let mut s = Sender::new();
+            s.set_tail_recovery_config(TailRecoveryConfig::validated_v1());
+            s
+        }
+
+        fn ghost_engines() -> [(&'static str, MakeSender); 3] {
+            [
+                ("legacy+tail_v1 (Legacy runtime)", legacy_runtime),
+                ("legacy", Sender::new),
+                ("cc_port", Sender::with_cc_port),
+            ]
+        }
+
+        /// Bir kolun ölçümü (anlar teyitten beri).
+        #[derive(Debug, Default)]
+        struct GhostRun {
+            /// Satır-7 durumu kuruldu mu (teyit + yeniden gönderim kaydı `pending_lost`'ta).
+            row7: bool,
+            /// Teyit anında motorun uçuş kuyruğu ve hedefin kayıtları (iki kolda aynı).
+            inflight_at_confirm: u32,
+            unit_at_confirm: UnitRecoveryDiag,
+            /// Teyitten sonra hedefe verilen kararlar: toplam, günlük (ms, tür), 10 s kovaları.
+            ghost_total: u64,
+            ghost_log: Vec<(u64, TransmitKind)>,
+            ghost_buckets: [u64; GHOST_BUCKETS],
+            /// Motorun hedefi bıraktığı ilk örnek (ms); ufukta bırakmadıysa `None`.
+            released_ms: Option<u64>,
+            owned_end: bool,
+            unit_end: UnitRecoveryDiag,
+            /// (s, hedefin uçuş baytı, toplam uçuş baytı) örnekleri ve hedefin uçuş baytı tepesi.
+            phantom: Vec<(u64, u64, u64)>,
+            phantom_peak: u64,
+            /// Ufuk boyunca tail-probe artışı ve CS-probe kararı.
+            tail_probes: u64,
+            cs_probes: u64,
+            /// Diğer birimler: sunulan ve birim başına teyit gecikmesi (ns).
+            offered: u64,
+            latency: BTreeMap<u64, u64>,
+            /// Ufkun sonunda: kayıp atfı `(pkt, time, pending)`, hız `diag_rate`, BBR `(pencere,
+            /// tıkanıklık olayı, cwnd)` (yalnız cc_port), kuyruk tepeleri (uçuş, kayıp, kopya,
+            /// tombstone).
+            loss_end: (u64, u64, u64),
+            rate_end: Option<(SenderState, u64, u64, u64, u64)>,
+            cc_end: Option<(u64, u64, u64)>,
+            queue_peak: (u32, u32, u32, u32),
+            /// Faz değişimleri (ms, faz) ve ufuk sonunda `ActivationDiag` (faz geçişi, RecoverArq,
+            /// RecoverFwd, ProbeUp girişleri; ufuk boyunca artış).
+            states: Vec<(u64, SenderState)>,
+            activation: (u64, u64, u64, u64),
+            /// Teyitten sonra motor ilk kez `Idle`'a döndüğü an (ms); dönmediyse `None`.
+            idle_ms: Option<u64>,
+            /// Teyit olayında iptal edilen iş (`diag_confirmed_cancels` farkı).
+            cancels_at_confirm: ConfirmedCancelDiag,
+        }
+
+        /// Kararları kanal modeline koyar; hedefe teyitten sonra verilen kararı sayar ve `skip`
+        /// kolunda tele çıkarmaz (ACK yok).
+        fn ghost_emit(
+            g: &mut GhostRun,
+            flight: &mut VecDeque<(u64, u64)>,
+            decisions: Vec<TransmitDecision>,
+            target: u64,
+            skip: bool,
+            t0: u64,
+            now: u64,
+        ) {
+            for d in decisions {
+                match d.kind {
+                    // Ayrı ad-uzayı, motor kaydı yok, ACK'lenmez.
+                    TransmitKind::CsProbe => g.cs_probes += 1,
+                    // unit_id ESI'dir (ayrı ad-uzayı); bu kanalda FEC kapalı.
+                    TransmitKind::FecParity => flight.push_back((now + GHOST_RTT_NS, d.seq)),
+                    TransmitKind::Data | TransmitKind::Retransmit | TransmitKind::Duplicate => {
+                        if d.unit_id == target {
+                            g.ghost_total += 1;
+                            let at = now - t0;
+                            if g.ghost_log.len() < GHOST_LOG_CAP {
+                                g.ghost_log.push((at / MS, d.kind));
+                            }
+                            let b = usize::try_from(at / GHOST_BUCKET_NS).unwrap_or(usize::MAX);
+                            if let Some(c) = g.ghost_buckets.get_mut(b.min(GHOST_BUCKETS - 1)) {
+                                *c += 1;
+                            }
+                            if skip {
+                                continue;
+                            }
+                        }
+                        flight.push_back((now + GHOST_RTT_NS, d.seq));
+                    }
+                }
+            }
+        }
+
+        fn ghost_run(mk: MakeSender, skip: bool) -> GhostRun {
+            let mut g = GhostRun::default();
+            // Satır-7 kurulumu (`k4g05br_decision_neutral_after_confirmation_with_pending_work`).
+            let (mut r, target, tseq, rseq) = row7_setup_on(Rig::new(mk));
+            let pending_before = r.has_pending(rseq);
+            let c0 = r.s.diag_confirmed_cancels();
+            let t0 = r.last_now;
+            let out = r.ev(ack(&[tseq]), t0);
+            let confirmed = r.s.take_confirmed_units();
+            g.row7 = pending_before && confirmed.contains(&target);
+            let c1 = r.s.diag_confirmed_cancels();
+            g.cancels_at_confirm = ConfirmedCancelDiag {
+                pending_lost: c1.pending_lost - c0.pending_lost,
+                dup_queue: c1.dup_queue - c0.dup_queue,
+                tx_queue: c1.tx_queue - c0.tx_queue,
+                inflight_marked: c1.inflight_marked - c0.inflight_marked,
+                lost_not_requeued: c1.lost_not_requeued - c0.lost_not_requeued,
+                released: c1.released - c0.released,
+            };
+            g.inflight_at_confirm = r.s.diag_recovery_timers().inflight_len;
+            g.unit_at_confirm = r.s.diag_unit_recovery(target);
+            let mut flight: VecDeque<(u64, u64)> = VecDeque::new();
+            ghost_emit(&mut g, &mut flight, out, target, skip, t0, t0);
+
+            let s = &mut r.s;
+            let act0 = s.diag_activation();
+            let tail0 = act0.tail_probes;
+            let mut state = s.state();
+            g.states.push((0, state));
+            let unit_bytes = small(target).size;
+            let mut offers: BTreeMap<u64, u64> = BTreeMap::new();
+            let mut next_id = GHOST_UNIT_BASE;
+            let mut next_offer = t0 + GHOST_OFFER_NS;
+            let mut next_rtprop = t0 + GHOST_RTPROP_NS;
+            let mut next_sample = t0;
+            let end = t0 + GHOST_HORIZON_NS;
+            let mut now = t0;
+            while now < end {
+                now += GHOST_TICK_NS;
+                let mut events: Vec<Event> = Vec::new();
+                let mut seqs = Vec::new();
+                while let Some(&(at, q)) = flight.front() {
+                    if at > now {
+                        break;
+                    }
+                    flight.pop_front();
+                    seqs.push(q);
+                }
+                if !seqs.is_empty() {
+                    events.push(ack(&seqs));
+                }
+                if now >= next_offer {
+                    events.push(Event::AppData(small(next_id)));
+                    offers.insert(next_id, now);
+                    next_id += 1;
+                    g.offered += 1;
+                    next_offer += GHOST_OFFER_NS;
+                }
+                if now >= next_rtprop {
+                    events.push(Event::TimerFired(Timer::RtpropProbe));
+                    next_rtprop += GHOST_RTPROP_NS;
+                }
+                if events.is_empty() {
+                    events.push(Event::TimerFired(Timer::Pto));
+                }
+                for e in events {
+                    let out = s.on_event(e, now);
+                    for u in s.take_confirmed_units() {
+                        if let Some(at) = offers.remove(&u) {
+                            g.latency.insert(u, now - at);
+                        }
+                    }
+                    ghost_emit(&mut g, &mut flight, out, target, skip, t0, now);
+                }
+                if s.state() != state {
+                    state = s.state();
+                    if g.states.len() < GHOST_STATE_LOG_CAP {
+                        g.states.push(((now - t0) / MS, state));
+                    }
+                }
+                if g.idle_ms.is_none() && state == SenderState::Idle {
+                    g.idle_ms = Some((now - t0) / MS);
+                }
+                if now >= next_sample {
+                    next_sample += GHOST_SAMPLE_NS;
+                    let u = s.diag_unit_recovery(target);
+                    let phantom = u64::from(u.inflight_records) * unit_bytes;
+                    g.phantom_peak = g.phantom_peak.max(phantom);
+                    g.phantom
+                        .push(((now - t0) / (1_000 * MS), phantom, s.inflight_bytes()));
+                    if g.released_ms.is_none() && !engine_owns(s, target) {
+                        g.released_ms = Some((now - t0) / MS);
+                    }
+                    // Güvenlik: motor kuyrukları ve kanal modeli sınırlı, teyit çıktısı taşmadı.
+                    let tm = s.diag_recovery_timers();
+                    let p = &mut g.queue_peak;
+                    *p = (
+                        p.0.max(tm.inflight_len),
+                        p.1.max(tm.pending_lost_len),
+                        p.2.max(tm.dup_queue_len),
+                        p.3.max(tm.tombstones_len),
+                    );
+                    assert!(
+                        tm.inflight_len <= GHOST_QUEUE_BOUND
+                            && tm.pending_lost_len <= GHOST_QUEUE_BOUND
+                            && tm.dup_queue_len <= GHOST_QUEUE_BOUND
+                            && tm.tombstones_len as usize <= TOMBSTONE_MAX
+                            && flight.len() <= GHOST_QUEUE_BOUND as usize,
+                        "kuyruklar sınırlı kalmalı: {tm:?}, kanal {}",
+                        flight.len()
+                    );
+                    assert_eq!(s.diag_confirmed_units_overflow(), 0, "teyit çıktısı taşmaz");
+                }
+            }
+            g.owned_end = engine_owns(s, target);
+            g.unit_end = s.diag_unit_recovery(target);
+            let act = s.diag_activation();
+            g.tail_probes = act.tail_probes - tail0;
+            g.activation = (
+                act.state_transitions - act0.state_transitions,
+                act.recover_arq_entries - act0.recover_arq_entries,
+                act.recover_fwd_entries - act0.recover_fwd_entries,
+                act.probe_up_entries - act0.probe_up_entries,
+            );
+            g.loss_end = s.diag_loss();
+            g.rate_end = Some(s.diag_rate());
+            g.cc_end = s.diag_cc().map(|c| (c.1, c.5, c.7));
+            g
+        }
+
+        fn ghost_report(name: &str, arm: &str, g: &GhostRun) {
+            let kinds = |k: TransmitKind| g.ghost_log.iter().filter(|(_, x)| *x == k).count();
+            let head: Vec<_> = g.ghost_log.iter().take(12).collect();
+            let tail: Vec<_> = g.ghost_log.iter().rev().take(3).rev().collect();
+            let lat: Vec<u64> = g.latency.values().map(|ns| ns / MS).collect();
+            let mean = lat.iter().sum::<u64>() / (lat.len().max(1) as u64);
+            let samples: Vec<_> = g
+                .phantom
+                .iter()
+                .filter(|(sec, _, _)| sec % 10 == 0 || *sec < 5)
+                .collect();
+            eprintln!(
+                "[k4g05br hayalet] {name} kol={arm}: satır7={} teyitte iptal {:?}; ilk Idle {:?} ms; \
+                 teyit anı: uçuş {} hedef {:?}\n  \
+                 hayalet karar {} (günlükte Retransmit {} / Duplicate {} / Data {}); ilk {head:?} \
+                 son {tail:?}\n  10 s kovaları {:?}\n  bırakma {:?} ms; 120 s'de sahipli {} \
+                 ({:?})\n  hedef uçuş baytı tepe {} B; (s, hedef, toplam uçuş B) {samples:?}\n  \
+                 tail-probe +{} cs-probe {}; kayıp (pkt, time, pending) {:?}; hız {:?}; bbr \
+                 (pencere, tıkanıklık, cwnd) {:?}; kuyruk tepeleri (uçuş, kayıp, kopya, tombstone) \
+                 {:?}\n  faz (geçiş, RecoverArq, RecoverFwd, ProbeUp artışı) {:?}; ilk faz değişimleri \
+                 {:?}\n  diğer birimler: sunulan {} teyit {} ortalama {} ms en büyük {} ms",
+                g.row7,
+                g.cancels_at_confirm,
+                g.idle_ms,
+                g.inflight_at_confirm,
+                g.unit_at_confirm,
+                g.ghost_total,
+                kinds(TransmitKind::Retransmit),
+                kinds(TransmitKind::Duplicate),
+                kinds(TransmitKind::Data),
+                g.ghost_buckets,
+                g.released_ms,
+                g.owned_end,
+                g.unit_end,
+                g.phantom_peak,
+                g.tail_probes,
+                g.cs_probes,
+                g.loss_end,
+                g.rate_end,
+                g.cc_end,
+                g.queue_peak,
+                g.activation,
+                g.states.iter().take(12).collect::<Vec<_>>(),
+                g.offered,
+                g.latency.len(),
+                mean,
+                lat.iter().max().copied().unwrap_or(0),
+            );
+        }
+
+        /// Hayalet ölçümü: iki motor, runtime kuyruk kurtarmalı eski motor dahil; her biri "atla" ve
+        /// "başlık" kollarıyla. [sahip kararı 2026-11-11] İddialar: teyit olayı birimin kayıp kaydını
+        /// iptal eder; teyitten sonra birime HİÇ karar yok (iki kolda); birimin bütün kayıtları ufukta
+        /// düşer (tombstone TTL'i dahil); motor `Idle`'a döner; kuyruklar sınırlı; port motorunda
+        /// tıkanıklık olayı ve pencere iki kolda aynı; diğer birimlerin teyit gecikmesi iki kolda
+        /// birim birim aynı.
+        #[test]
+        fn k4g05br_ghost_after_skipped_stale_decision() {
+            for (name, mk) in ghost_engines() {
+                let skip = ghost_run(mk, true);
+                let head = ghost_run(mk, false);
+                ghost_report(name, "atla", &skip);
+                ghost_report(name, "başlık", &head);
+                let common: Vec<(u64, u64)> = skip
+                    .latency
+                    .iter()
+                    .filter_map(|(u, a)| head.latency.get(u).map(|b| (*a, *b)))
+                    .collect();
+                let changed = common.iter().filter(|(a, b)| a != b).count();
+                let max_diff = common.iter().map(|(a, b)| a.abs_diff(*b) / MS).max();
+                eprintln!(
+                    "[k4g05br hayalet] {name} diğer birimler atla↔başlık: ortak {} birim, gecikmesi \
+                     değişen {changed}, en büyük |fark| {max_diff:?} ms",
+                    common.len()
+                );
+                // Ön koşul (ölçüm boş geçmesin): satır-7 kuruldu (teyit anında kayıp kaydı vardı).
+                assert!(skip.row7 && head.row7, "{name}: ön koşul — satır-7 durumu");
+                for (arm, g) in [("atla", &skip), ("başlık", &head)] {
+                    assert_eq!(
+                        g.cancels_at_confirm.pending_lost, 1,
+                        "{name} {arm}: teyit kayıp kaydını iptal etti"
+                    );
+                    assert_eq!(
+                        g.ghost_total, 0,
+                        "{name} {arm}: teyitli birime karar yok ({:?})",
+                        g.ghost_log
+                    );
+                    assert!(
+                        g.released_ms.is_some() && !g.owned_end,
+                        "{name} {arm}: birim ufukta bırakıldı ({:?})",
+                        g.unit_end
+                    );
+                    assert!(g.idle_ms.is_some(), "{name} {arm}: motor Idle'a döndü");
+                }
+                assert_eq!(
+                    skip.cc_end, head.cc_end,
+                    "{name}: BBR (pencere, tıkanıklık olayı, cwnd) iki kolda aynı"
+                );
+                assert_eq!(
+                    changed, 0,
+                    "{name}: diğer birimlerin gecikmesi iki kolda aynı"
+                );
+                assert_eq!(
+                    skip.latency.len(),
+                    head.latency.len(),
+                    "{name}: teyit sayısı"
+                );
+            }
+        }
+
+        /// Bir motorun tüm tohumları. `confirmed` sentetik RECOVERED'ı da sayar; `real` yalnız izin
+        /// gerçek birimleri (motorun gönderdiği) — iz teyitsiz kalsaydı test boş geçerdi.
+        fn neutrality_all_seeds(name: &str, mk: fn() -> Sender) {
+            for seed in TRACE_SEEDS {
+                let (confirmed, over_b, tomb_hits) = neutrality_trace(name, mk, seed);
+                eprintln!(
+                    "[k4g05br nötrlük] {name} seed {seed}: drenajlı teyit {confirmed}, \
+                     drenajsız taşma {over_b}, tombstone isabeti {tomb_hits}"
+                );
+                let synth = 2 * TRACE_SYNTH_RECOVERED as usize;
+                assert!(
+                    confirmed > synth,
+                    "{name} seed {seed}: iz gerçek birim teyit etti"
+                );
+            }
+        }
+
+        #[test]
+        fn k4g05br_confirmation_output_is_decision_neutral_legacy() {
+            neutrality_all_seeds("legacy", Sender::new);
+        }
+
+        #[test]
+        fn k4g05br_confirmation_output_is_decision_neutral_cc_port() {
+            neutrality_all_seeds("cc_port", Sender::with_cc_port);
         }
     }
 }
