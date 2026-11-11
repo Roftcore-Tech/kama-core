@@ -27,7 +27,7 @@ use adaptive_transport::receiver::{Receiver, RxDatagram, RxKind};
 use adaptive_transport::sender::{
     AckInfo, Event, FecActuationMode, OpaqueUnit, Sender, Timer, TransmitDecision, TransmitKind,
 };
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 const MS: u64 = 1_000_000;
 const SEC: u64 = 1_000_000_000;
@@ -139,6 +139,60 @@ impl Bottleneck {
     }
 }
 
+/// Dönüş yolu (SACK) darboğazı: `rate_bps` serileştirme (0 = sınırsız), `limit` paket kuyruk,
+/// `delay_ns` yayılım. ACK baytı = kodlanmış çerçeve + `ACK_WIRE_OVERHEAD`. Düşük bant hücrelerinde
+/// (r25: 25 B/s iki yön) ACK'lerin dönüş hattını doldurması ancak bununla görünür.
+struct RevPath {
+    rate_bps: u64,
+    limit: usize,
+    delay_ns: u64,
+    busy: VecDeque<u64>,
+    wire: VecDeque<(u64, AckInfo)>,
+    dropped_queue: u64,
+    bytes: u64,
+}
+
+/// SACK çerçevesinin tel zarfı (Noise mühürlü başlık + UDP/IP) için yaklaşık ek — ürün ölçümü
+/// ~65 B toplam ACK; kodlanmış çerçeve ~17 B.
+const ACK_WIRE_OVERHEAD: u64 = 48;
+
+impl RevPath {
+    fn new(rate_bps: u64, limit: usize, delay_ns: u64) -> Self {
+        Self {
+            rate_bps,
+            limit,
+            delay_ns,
+            busy: VecDeque::new(),
+            wire: VecDeque::new(),
+            dropped_queue: 0,
+            bytes: 0,
+        }
+    }
+
+    /// `size` bayt ACK'i kuyruğa koyar; kuyruk doluysa düşer (SACK birikimli: sonraki ACK kapsar).
+    /// Döner: kuyruğa girdi mi.
+    fn send(&mut self, now: u64, size: u64, ack: AckInfo) -> bool {
+        if self.rate_bps == 0 {
+            self.bytes += size;
+            self.wire.push_back((now + self.delay_ns, ack));
+            return true;
+        }
+        while self.busy.front().is_some_and(|&t| t <= now) {
+            self.busy.pop_front();
+        }
+        if self.busy.len() >= self.limit {
+            self.dropped_queue += 1;
+            return false;
+        }
+        let start = self.busy.back().copied().unwrap_or(now).max(now);
+        let done = start + size * SEC / self.rate_bps;
+        self.busy.push_back(done);
+        self.bytes += size;
+        self.wire.push_back((done + self.delay_ns, ack));
+        true
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Outcome {
     completed_ns: Option<u64>,
@@ -151,6 +205,14 @@ struct Outcome {
     dropped_random: u64,
     /// Alıcının ürettiği SACK sayısı (dönüş yolu maliyeti).
     acks: u64,
+    /// Dönüş yolunda gönderilen bayt (SACK + zarf).
+    rev_bytes: u64,
+    /// Dönüş yolu kuyruğunda düşen SACK sayısı.
+    rev_dropped_queue: u64,
+    /// Birim teslim gecikmesi p50 (sunumdan alıcıya teslime; ileti hücreleri için "ileti p50").
+    unit_delay_p50_ns: u64,
+    /// Birim teslim gecikmesi p95.
+    unit_delay_p95_ns: u64,
 }
 
 /// Tek koşu. `units`: (birim sayısı, boyut); `parity_per_block > 0`: her 8 birimlik blok için
@@ -168,6 +230,9 @@ fn run_opt(
     units: (u64, u64),
     parity_per_block: u16,
     blackout: Option<(u64, u64)>,
+    rev_path: Option<(u64, usize)>,
+    app_interval_ms: Option<u64>,
+    wire_overhead: Option<u64>,
 ) -> Outcome {
     let one_way = rtt_ms * MS / 2;
     let mut s = eng.sender();
@@ -206,7 +271,33 @@ fn run_opt(
     if let Some((a, d)) = blackout {
         fwd.blackout = Some((a * SEC, (a + d) * SEC));
     }
-    let mut rev: VecDeque<(u64, AckInfo)> = VecDeque::new();
+    // `CC_REV_RATE=<bayt/s>` (0 = sınırsız) ve `CC_REV_Q=<paket>`: dönüş yolu darboğazı. Varsayılan
+    // sınırsız (eski davranış, bayt düzeyinde aynı). `rev_path` parametresi önceliklidir.
+    let (rev_rate, rev_q) = rev_path.unwrap_or_else(|| {
+        let rr = std::env::var("CC_REV_RATE")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0);
+        let rq = std::env::var("CC_REV_Q")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(queue_limit);
+        (rr, rq)
+    });
+    let mut rev = RevPath::new(rev_rate, rev_q, one_way);
+    // `CC_APP_INTERVAL_MS=<ms>`: birimler uygulamadan bu aralıkla sunulur (ileti hücresi);
+    // varsayılan 0 = hepsi t=0'da (dosya). `app_interval_ms` parametresi önceliklidir.
+    let app_interval = app_interval_ms
+        .or_else(|| {
+            std::env::var("CC_APP_INTERVAL_MS")
+                .ok()?
+                .parse::<u64>()
+                .ok()
+        })
+        .unwrap_or(0)
+        * MS;
+    let mut offer_at: HashMap<u64, u64> = HashMap::new();
+    let mut unit_delays: Vec<u64> = Vec::new();
     // `CC_REV_LOSS=<binde>`: dönüş yolunda (SACK) rastgele kayıp; varsayılan 0 (kayıpsız dönüş).
     let rev_loss: u64 = std::env::var("CC_REV_LOSS")
         .ok()
@@ -226,8 +317,23 @@ fn run_opt(
         dropped_queue: 0,
         dropped_random: 0,
         acks: 0,
+        rev_bytes: 0,
+        rev_dropped_queue: 0,
+        unit_delay_p50_ns: 0,
+        unit_delay_p95_ns: 0,
     };
+    // `CC_TRACE=1` iz; `CC_TRACE_MS=<ms>` iz aralığı (varsayılan 250).
     let trace = std::env::var("CC_TRACE").is_ok();
+    let trace_every = std::env::var("CC_TRACE_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(250)
+        * MS;
+    // `CC_WIRE_OVERHEAD=<bayt>`: ileri yönde her gönderime eklenen tel zarfı (Noise mühürlü başlık +
+    // UDP/IP); varsayılan 0 (eski davranış). `wire_overhead` parametresi önceliklidir.
+    let wire_overhead = wire_overhead
+        .or_else(|| std::env::var("CC_WIRE_OVERHEAD").ok()?.parse::<u64>().ok())
+        .unwrap_or(0);
     let emit = |decs: Vec<TransmitDecision>, now: u64, fwd: &mut Bottleneck, o: &mut Outcome| {
         for d in decs {
             match d.kind {
@@ -236,50 +342,73 @@ fn run_opt(
                 TransmitKind::FecParity => o.sent_parity += 1,
                 TransmitKind::CsProbe => {}
             }
-            o.sent_bytes += d.size;
-            fwd.send(now, d.seq, d.size, d.unit_id, d.kind);
+            o.sent_bytes += d.size + wire_overhead;
+            fwd.send(now, d.seq, d.size + wire_overhead, d.unit_id, d.kind);
         }
     };
-    // Dosya tek seferde kuyruğa girer (uygulama sınırlı değil).
-    for i in 0..n_units {
+    // Dosya tek seferde kuyruğa girer (uygulama sınırlı değil); ileti hücresinde birimler
+    // `app_interval` aralığıyla sunulur.
+    let mut next_offer: u64 = 0;
+    let offer = |i: u64,
+                 now: u64,
+                 s: &mut Sender,
+                 fwd: &mut Bottleneck,
+                 o: &mut Outcome,
+                 offer_at: &mut HashMap<u64, u64>| {
         let decs = s.on_event(
             Event::AppData(OpaqueUnit {
                 id: i,
                 size: unit_size,
             }),
-            0,
+            now,
         );
-        emit(decs, 0, &mut fwd, &mut o);
-        if parity_per_block > 0 && (i + 1) % 8 == 0 {
+        offer_at.insert(i, now);
+        emit(decs, now, fwd, o);
+        if parity_per_block > 0 && (i + 1).is_multiple_of(8) {
             let block_id = (i / 8) as u32;
             for esi in 0..parity_per_block {
                 s.enqueue_fec_parity(block_id, 8 + esi, unit_size);
             }
         }
+    };
+    if app_interval == 0 {
+        for i in 0..n_units {
+            offer(i, 0, &mut s, &mut fwd, &mut o, &mut offer_at);
+        }
+        next_offer = n_units;
     }
     let push_ack = |frame: adaptive_transport::ack::AckFrame,
                     expected: u64,
                     now: u64,
                     acked_seen: &mut HashSet<u64>,
-                    rev: &mut VecDeque<(u64, AckInfo)>| {
+                    rev: &mut RevPath| {
         let new: Vec<u64> = frame
             .acked_full(expected)
             .into_iter()
             .filter(|q| acked_seen.insert(*q))
             .collect();
         if !new.is_empty() {
-            rev.push_back((
-                now + one_way,
-                AckInfo {
-                    acked_seqs: new,
-                    ack_delay: frame.ack_delay_duration(),
-                },
-            ));
+            let size = frame.encode().len() as u64 + ACK_WIRE_OVERHEAD;
+            let ack = AckInfo {
+                acked_seqs: new.clone(),
+                ack_delay: frame.ack_delay_duration(),
+            };
+            if !rev.send(now, size, ack) {
+                // Dönüş kuyruğunda düştü: seq'ler sonraki birikimli SACK'te yine gelir.
+                for q in &new {
+                    acked_seen.remove(q);
+                }
+            }
         }
     };
     let t_max = t_max_s * SEC;
     let mut now = 0u64;
     while now < t_max {
+        // Uygulama sunumu (ileti hücresi).
+        while app_interval > 0 && next_offer < n_units && next_offer * app_interval <= now {
+            offer(next_offer, now, &mut s, &mut fwd, &mut o, &mut offer_at);
+            next_offer += 1;
+        }
         // Gönderici saati: 1 ms tick (pacer dolumu + PTO) — desen1_sim ile aynı sürüş.
         let decs = s.on_event(Event::TimerFired(Timer::Pto), now);
         emit(decs, now, &mut fwd, &mut o);
@@ -311,7 +440,11 @@ fn run_opt(
                 now,
             );
             for u in out.delivered {
-                delivered.insert(u);
+                if delivered.insert(u) {
+                    if let Some(&t0) = offer_at.get(&u) {
+                        unit_delays.push(now - t0);
+                    }
+                }
             }
             if let Some(frame) = out.ack {
                 o.acks += 1;
@@ -324,9 +457,9 @@ fn run_opt(
             let expected = r.largest_seq().unwrap_or(0) + 1;
             push_ack(frame, expected, now, &mut acked_seen, &mut rev);
         }
-        // Dönüş yolu (yalnız gecikme; `CC_REV_LOSS` ile rastgele SACK kaybı).
-        while rev.front().is_some_and(|(t, _)| *t <= now) {
-            let (_, ack) = rev.pop_front().unwrap();
+        // Dönüş yolu (serileştirme + gecikme; `CC_REV_LOSS` ile rastgele SACK kaybı).
+        while rev.wire.front().is_some_and(|(t, _)| *t <= now) {
+            let (_, ack) = rev.wire.pop_front().unwrap();
             if rev_loss > 0 {
                 rev_lcg = rev_lcg
                     .wrapping_mul(6_364_136_223_846_793_005)
@@ -340,10 +473,21 @@ fn run_opt(
                     continue;
                 }
             }
+            if trace {
+                println!(
+                    "[{}] t={:.2}s ACK seqs={:?} ack_delay={:?} rtt_samples={} e2a={:?}",
+                    eng.name(),
+                    now as f64 / SEC as f64,
+                    ack.acked_seqs,
+                    ack.ack_delay,
+                    s.diag_rtt_sample_count(),
+                    s.diag_e2a()
+                );
+            }
             let decs = s.on_event(Event::AckReceived(ack), now);
             emit(decs, now, &mut fwd, &mut o);
         }
-        if trace && now.is_multiple_of(250 * MS) {
+        if trace && now.is_multiple_of(trace_every) {
             println!(
                 "[{}] t={:.2}s st={:?} cc={:?} inflight={} delivered={} tail={:?}",
                 eng.name(),
@@ -364,6 +508,14 @@ fn run_opt(
     o.delivered_units = delivered.len();
     o.dropped_queue = fwd.dropped_queue;
     o.dropped_random = fwd.dropped_random;
+    o.rev_bytes = rev.bytes;
+    o.rev_dropped_queue = rev.dropped_queue;
+    if !unit_delays.is_empty() {
+        unit_delays.sort_unstable();
+        o.unit_delay_p50_ns = unit_delays[unit_delays.len() / 2];
+        o.unit_delay_p95_ns =
+            unit_delays[(unit_delays.len() * 95 / 100).min(unit_delays.len() - 1)];
+    }
     o
 }
 
@@ -387,6 +539,9 @@ fn run(
         (FILE_BYTES.div_ceil(MTU), MTU),
         0,
         None,
+        None,
+        None,
+        None,
     )
 }
 
@@ -398,7 +553,7 @@ fn fmt_s(v: Option<u64>) -> String {
 
 fn report(eng: Engine, label: &str, o: &Outcome) {
     println!(
-        "[{}] {label}: tamamlanma={} teslim={}/{} data={} retx={} parite={} bayt={} kuyruk_düşen={} rastgele_düşen={} sack={}",
+        "[{}] {label}: tamamlanma={} teslim={}/{} data={} retx={} parite={} bayt={} kuyruk_düşen={} rastgele_düşen={} sack={} dönüş_bayt={} dönüş_düşen={} birim_p50={} birim_p95={}",
         eng.name(),
         fmt_s(o.completed_ns),
         o.delivered_units,
@@ -409,7 +564,11 @@ fn report(eng: Engine, label: &str, o: &Outcome) {
         o.sent_bytes,
         o.dropped_queue,
         o.dropped_random,
-        o.acks
+        o.acks,
+        o.rev_bytes,
+        o.rev_dropped_queue,
+        fmt_s(Some(o.unit_delay_p50_ns)),
+        fmt_s(Some(o.unit_delay_p95_ns)),
     );
 }
 
@@ -504,7 +663,21 @@ fn deep_queue_file_loss20_ten_seeds() {
 #[test]
 fn ptt_bundle_first_delivery() {
     for eng in ENGINES {
-        let o = run_opt(eng, 12_500, 6, 300, 200, 7, 30, (6, 400), 0, None);
+        let o = run_opt(
+            eng,
+            12_500,
+            6,
+            300,
+            200,
+            7,
+            30,
+            (6, 400),
+            0,
+            None,
+            None,
+            None,
+            None,
+        );
         println!(
             "[{}] ptt 6×400B q6 l20: ilk demet={}",
             eng.name(),
@@ -537,6 +710,9 @@ fn fec_parity_reaches_the_wire_below_26kbps() {
             120,
             (FILE_BYTES.div_ceil(MTU), MTU),
             2,
+            None,
+            None,
+            None,
             None,
         );
         report(eng, "q1000 r12.5k d300 l0 + 2 parite/8 birim", &o);
@@ -576,6 +752,61 @@ fn matrix_explore() {
     }
 }
 
+/// r25 ileti hücresi (bench `b_r25_d300_l20_p65` yaklaşığı): 25 B/s İKİ yönde, 300 ms tek yön,
+/// %20 kayıp, 60 × 65 B ileti 10 s aralıkla (tel 130 B ≈ 5,2 s; yük ≈ %52). Ölçü: ileti teslim gecikmesi p50 ve teslim/60.
+/// Dönüş yolu serileştirilir (SACK ~65 B ≈ 2,6 s). Kapı: 60/60 teslim. `CC_R25_SEEDS=<n>` ile tohum sayısı (varsayılan 10).
+#[test]
+fn r25_lowband_messages() {
+    let seeds: u64 = std::env::var("CC_R25_SEEDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10);
+    for eng in ENGINES {
+        let (mut p50s, mut deliv, mut fwd_b, mut rev_b, mut retx) =
+            (vec![], vec![], vec![], vec![], vec![]);
+        for seed in 1..=seeds {
+            let o = run_opt(
+                eng,
+                25,
+                20,
+                300,
+                200,
+                seed,
+                700,
+                (60, 65),
+                0,
+                None,
+                Some((25, 20)),
+                Some(10_000),
+                Some(65),
+            );
+            report(eng, &format!("r25 seed{seed}"), &o);
+            p50s.push(o.unit_delay_p50_ns);
+            deliv.push(o.delivered_units as u64);
+            fwd_b.push(o.sent_bytes);
+            rev_b.push(o.rev_bytes);
+            retx.push(o.sent_retx);
+        }
+        println!(
+            "[{}] r25 ÖZET: ileti p50 medyan={} teslim medyan={}/60 ileri bayt medyan={} dönüş bayt medyan={} retx medyan={}",
+            eng.name(),
+            fmt_s(Some(p50(p50s.clone()))),
+            p50(deliv.clone()),
+            p50(fwd_b),
+            p50(rev_b),
+            p50(retx)
+        );
+        // Kapı: her motor 60/60 teslim (medyan). Port ileti p50 kapısı r25 düzeltmesiyle gelir.
+        assert_eq!(
+            p50(deliv),
+            60,
+            "[{}] r25 teslim medyanı < 60/60",
+            eng.name()
+        );
+        let _ = p50s;
+    }
+}
+
 /// Hücre 6: kesinti — 150 kB dosya, 12,5 kB/s, 300 ms, %20 kayıp; t = 3 s'de 60 s tam kesinti
 /// (gösterim "kesinti" profili: 60 s %100 kayıp, sonra eski profil). Oturum kesintiyi atlatmalı ve
 /// dosya kesinti bittikten sonra makul sürede tamamlanmalı (kapı: port ≤ 63 + 30 s).
@@ -595,6 +826,9 @@ fn blackout_60s_session_survives_and_completes() {
                 (FILE_BYTES.div_ceil(MTU), MTU),
                 0,
                 Some((3, 60)),
+                None,
+                None,
+                None,
             );
             report(eng, &format!("kesinti 60s @3s q1000 l20 seed{seed}"), &o);
             if let Some(t) = o.completed_ns {
