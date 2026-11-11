@@ -63,11 +63,16 @@
 //! `ConnectAbandoned` nedeniyle biter.
 //!
 //! [T3-GLARE] Niyetin terk edilen INIT'inin taşıyıcı tekrarı (T3) durdurulur
-//! ([`EnvelopeLink::cancel_init`]; S4 C3 "bağlantı niyeti iptal edildi"): `cancel`, glare kaybı
-//! (S3 K10: Crypto bekleyeni sildi, niyet kazananın oturumuyla çözülür) ve Crypto'nun bekleyeni
-//! düşürmesi (taze INIT yeni deneme açar). Kazananın kendi denemesinin tekrarı eşleşen `Ready`'de
-//! durur (bileşim kökü, `HubLink::peer_ready`). Niyet bu yüzden ölmez: çözüldüğü oturumun sonraki
-//! kaybı kurulu oturum yolundan ([`ClientTransport::relink`]) yenilenir.
+//! ([`EnvelopeLink::cancel_init`]). S4 C3'ün kapalı durma listesinden: `cancel` ("bağlantı niyeti
+//! iptal edildi") ve Crypto'nun bekleyeni düşürmesi ("deneme açıkça sonlandırılıp yeni denemeye
+//! geçildi": taze INIT yeni deneme açar). Glare kaybı (S3 K10: Crypto bekleyeni ve ephemeral'ini
+//! sildi, niyet kazananın oturumuyla çözülür) o listede ADIYLA YOKTUR; durdurma identity §16
+//! glare kuralından türetilir: o INIT'e gelecek her RESPONSE `Failed` olur, tekrar kazananda
+//! yalnız onaylanamayacak bir provisional doğurur. Kazananın kendi denemesinin tekrarı eşleşen
+//! `Ready`'de durur (bileşim kökü, `HubLink::peer_ready`). Niyet bu yüzden ölmez: çözüldüğü
+//! oturumun sonraki kaybı kurulu oturum yolundan ([`ClientTransport::relink`]) yenilenir.
+//! SINIR: yenileme glare'inde kaybedenin yenilemesi glare çözülünce terk EDİLMEZ (Crypto olay
+//! vermez); tek terk noktası eşin provisional'ının onayıdır (`on_confirmed`).
 //!
 //! # Bağlam-önce dağıtım (K4G-01 / D1 v1.1)
 //!
@@ -92,9 +97,10 @@
 //!
 //! # KAPSAM DIŞI (iş emri §4)
 //!
-//! `Suspended` / `LongOutage` tetikleri, heartbeat, backoff, rebind ve INIT'in byte-özdeş yeniden
-//! gönderimi (T3: oturum kayıp başlamadan kurulur) bu sprintte YOKTUR; `ConnectProgress` yalnız
-//! `Measuring` fazını üretir.
+//! `Suspended` / `LongOutage` tetikleri, heartbeat, backoff ve rebind bu adaptörde YOKTUR. INIT'in
+//! byte-özdeş yeniden gönderimi (T3) adaptörün değil taşıyıcının işidir (hub kipinde `HubLink`,
+//! S4 C3); adaptör yalnız terk ettiği denemeyi bildirir ([HLR], [T3-GLARE]). `ConnectProgress`
+//! yalnız `Measuring` fazını üretir.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::net::SocketAddr;
@@ -1007,7 +1013,8 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         }
         // (c) Yanıtlayan rolde kurulan oturum. Glare'i kaybettiysek Crypto bu eşe bekleyen
         // INIT'imizi sildi; niyetimiz bu oturumla çözülür. [T3-GLARE] O INIT terk edildi: taşıyıcı
-        // tekrarı durur (S4 C3). `Ready` onu güvenilir biçimde durdurmaz: bileşim kökünün
+        // tekrarı durur (S4 C3 listesinde adıyla yok; identity §16 glare'den türetilir, bkz. modül
+        // belgesi). `Ready` onu güvenilir biçimde durdurmaz: bileşim kökünün
         // `peer_ready`'ye verdiği handle eşe son bağlanan hattır — taşıyıcı sırasına göre eşin
         // INIT'inin hattı olabilir, bizim denememizinki değil — ve T3 `ATTEMPT_MAX_AGE`'e dek
         // sürerdi. Niyet bu oturumla çözüldüğü için ölmez: oturumun sonraki kaybı kurulu oturum
@@ -1117,9 +1124,9 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         self.close_unopened(r.pending);
     }
 
-    /// [T3-GLARE] Niyetin bekleyen INIT'i terk edildi (niyet iptal edildi ya da glare'i kaybedip
-    /// kazananın oturumuyla çözüldü; Crypto bekleyeni düşürdü): taşıyıcı tekrarı durur (S4 C3) ve
-    /// zarf tablolarındaki izi silinir. Crypto'ya komut VERMEZ (kapatmak çağıranın işidir).
+    /// [T3-GLARE] Niyetin bekleyen INIT'i terk edildi (niyet iptal edildi — S4 C3 — ya da glare'i
+    /// kaybedip kazananın oturumuyla çözüldü — identity §16, bkz. modül belgesi): taşıyıcı tekrarı
+    /// durur ve zarf tablolarındaki izi silinir. Crypto'ya komut VERMEZ (kapatmak çağıranın işidir).
     fn drop_intent_init(&mut self, it: &Intent) {
         if let Some(attempt) = it.attempt {
             self.link.cancel_init(attempt);
@@ -1222,7 +1229,8 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
 
     fn on_crypto_closed(&mut self, h: SessionHandle, reason: CloseReason) {
         // (1) Bekleyen niyetin INIT'i anahtar hijyeniyle düştü: niyet kalıcıdır → taze INIT.
-        // [T3-GLARE] Düşen INIT'in taşıyıcı tekrarı durur; yeni INIT yeni deneme açar.
+        // [T3-GLARE] Düşen INIT'in taşıyıcı tekrarı durur; yeni INIT yeni deneme açar (S4 C3
+        // "deneme açıkça sonlandırılıp yeni denemeye geçildi").
         if let Some(i) = self.intents.iter().position(|it| it.pending == h) {
             let attempt = self.intents[i].attempt.take();
             if let Some(attempt) = attempt {

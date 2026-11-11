@@ -1640,7 +1640,8 @@ fn init_offsets(stores: &[(Instant, Out)], p: u8, t0: Instant) -> Vec<u64> {
 /// INIT'i gitti ve `StoreResp{OK, h1}` aldı; eşin INIT'i başka bir handle'la (`h2`) geldi ve
 /// yanıtlandı; S1 `Ready` eşin hattıyla geldi (`peer_ready(eş, h2)`; bileşim kökü
 /// `KnownHandles::handle_of`'u kullanır, son bağ yanıtın hattıdır). Bu `Ready` kendi denemesiyle
-/// EŞLEŞMEZ: T3 sürer — durduracak olan transport'un terkidir (`cancel_attempt`; S4 C3, KR-18).
+/// EŞLEŞMEZ: T3 sürer — durduracak olan transport'un terkidir (`cancel_attempt`; glare kaybı
+/// S4 C3 / KR-18 durma listesinde adıyla yok, identity §16 glare kuralından türetilir).
 /// Terkten sonra `ATTEMPT_MAX_AGE`'e dek tele INIT çıkmaz ve bildirim yok. Yanıtlayan yolu
 /// etkilenmez (eşin INIT'i yeniden gelirse saklı RESPONSE bayt-özdeş gider), çözülen oturumun
 /// hattı kurulu hat olarak kalır (ROUTE_MISS{h2} → `HandleLost`: oturum yenilenebilir); terk

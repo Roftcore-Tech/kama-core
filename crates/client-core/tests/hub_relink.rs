@@ -961,6 +961,78 @@ fn glare_resolved_session_is_renewed_after_its_line_is_lost_and_reconnects_after
     assert_eq!(hub.cancelled_inits(), cancelled, "yeni niyet terk edilmedi");
 }
 
+/// (e) kazanan tarafı: glare'le çözülen oturumun hattını bu kez glare'i KAZANAN (Alice; niyeti kendi
+/// INIT'inin `Ready`'siyle çözüldü, `on_crypto_ready` (b)) kaybeder → yenileme INIT'i yola çıkar
+/// (terk EDİLMEZ), cutover, iki yönde veri, tek oturum. Glare'deki tek terk kaybedenin (Bob)
+/// niyet INIT'idir.
+#[test]
+fn glare_winners_session_is_renewed_after_its_line_is_lost() {
+    let hub = MemoryHub::new();
+    let (mut a, mut b) = pair(&hub);
+    let (a1, b1) = simultaneous_connect(&mut a, &mut b, &hub);
+    a.send(a1, b"a1").expect("gönder");
+    b.expect_delivery(b1, b"a1");
+    let cancelled = hub.cancelled_inits();
+    assert_eq!(cancelled, vec![LinkAttempt(2)], "glare'deki terk: Bob'un");
+
+    let h = line(&a, b.me);
+    assert_eq!(a.t.relink_line(b.me, h), RelinkOutcome::Started);
+    let (a2, _b2) = cut_over(&mut a, &mut b, &hub, (a1, b1));
+    assert_ne!(line(&a, b.me), h, "yeni hat");
+    assert_eq!(a.t.active_session_for_test(b.me), Some(a2));
+    assert_eq!(hub.cancelled_inits(), cancelled, "yenileme terk edilmedi");
+}
+
+/// SINIR (bu PR'da DÜZELTİLMEDİ; PR "Riskler"): yenileme glare'inde (iki uç aynı anda `relink`)
+/// kaybedenin (Bob) yenilemesi glare çözülünce terk EDİLMEZ. Crypto bekleyenini olaysız siler (S3
+/// K10); transport'un tek terk noktası eşin provisional'ının onayıdır (`on_confirmed`). Kazanan
+/// (Alice) cutover'dan sonra birim göndermedikçe Bob'un yenilemesi ve taşıyıcı denemesi kayıtlı
+/// kalır (`HubLink`'te T3 `ATTEMPT_MAX_AGE`'e dek sürer; deneme bitince `AttemptEnded` →
+/// `restart_renewal`). Alice'in ilk birimi (onay) Bob'un denemesini terk ettirir ve tek oturum
+/// kalır. Kaybedenin denemesini glare anında terk eden bir değişiklik bu testin ilk bölümünü
+/// çevirir.
+#[test]
+fn renewal_glare_losers_attempt_lives_until_the_winners_first_unit() {
+    let hub = MemoryHub::new();
+    let (mut a, mut b) = pair(&hub);
+    let (a0, b0) = establish(&mut a, &mut b, &hub);
+
+    assert_eq!(a.t.relink(b.me), RelinkOutcome::Started);
+    assert_eq!(b.t.relink(a.me), RelinkOutcome::Started);
+    assert_eq!(hub.relay(), 2, "iki INIT çapraz");
+    a.pump();
+    b.pump();
+    assert_eq!(hub.relay(), 1, "yalnız glare'i kaybeden (Bob) yanıtlar");
+    let a1 = a.wait_ready(b.me);
+
+    // Alice kesti ve birim göndermiyor: Bob'daki provisional onaysız.
+    std::thread::sleep(QUIET);
+    settle(&mut a, &mut b, &hub);
+    assert!(
+        hub.cancelled_inits().is_empty(),
+        "SINIR: kaybedenin yenileme denemesi glare'de terk edilmedi: {:?}",
+        hub.cancelled_inits()
+    );
+    assert_eq!(
+        b.t.renewal_state_for_test(a.me),
+        (1, 1, 1),
+        "Bob: eski oturum etkin, sahipsiz yenileme, onaysız provisional"
+    );
+    assert_eq!(a.t.renewal_state_for_test(b.me), (1, 0, 0));
+    assert!(b.readies.is_empty(), "Bob'da Ready yok: {:?}", b.readies);
+
+    // Onay: Alice'in ilk birimi → Bob'un yenilemesi terk edilir (eşin yenilemesi yerini aldı).
+    a.send(a1, b"a1").expect("gönder");
+    let b1 = b.wait_ready(a.me);
+    b.expect_delivery(b1, b"a1");
+    assert_eq!(
+        hub.cancelled_inits(),
+        vec![LinkAttempt(3)],
+        "onayda kaybedenin (Bob) yenileme denemesi terk edildi"
+    );
+    assert_one_session(&mut a, &mut b, (a0, a1), (b0, b1));
+}
+
 /// [T3-GLARE] Crypto niyetin bekleyen INIT'ini anahtar hijyeniyle düşürür (`HALF_OPEN_TTL`,
 /// `Closed(KeyHygiene)`; DR-CONNECT-1 H11): düşen INIT'in taşıyıcı denemesi terk edilir, niyet
 /// SÜRER — aynı bilet altında taze INIT yeni bir denemeyle yola çıkar (terk edilmez), Application

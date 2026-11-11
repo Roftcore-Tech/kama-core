@@ -1,4 +1,5 @@
-//! [T3-GLARE] Bileşim kökü düzeyi (#180 takibi; S4 C3 "bağlantı niyeti iptal edildi"): düğüm
+//! [T3-GLARE] Bileşim kökü düzeyi (#180 takibi; iptal: S4 C3 "bağlantı niyeti iptal edildi";
+//! glare kaybı: C3 listesinde adıyla yok, identity §16 glare kuralından türetilir): düğüm
 //! komutları (`Connect`, `CancelConnect`) Messenger → Transport yolundan geçer; niyetin terk edilen
 //! INIT'inin taşıyıcı tekrarı durdurulur (`EnvelopeLink::cancel_init`).
 //!
