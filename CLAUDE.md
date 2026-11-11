@@ -36,8 +36,14 @@ Spec ↔ spec çelişkisinde ve donmuş metin değişikliğinde yetki yalnız sa
 ## 4. Mimari invariant'lar — İHLAL ETME
 
 ```
-INV-RATE-1        loss send_rate'i DÜŞÜRMEZ. Rate = delivered-rate (BtlBw) + queue_delay ile pace edilir;
-                  loss ayrı sayaç, yalnız FEC/ARQ recovery kolunu besler. (recovery-obsesif taban)
+INV-RATE-1        [ÜSTÜ ÇİZİLDİ 2026-11-11, CC-PORT — eski metin:] loss send_rate'i DÜŞÜRMEZ. Rate =
+                  delivered-rate (BtlBw) + queue_delay ile pace edilir; loss ayrı sayaç, yalnız FEC/ARQ
+                  recovery kolunu besler. (recovery-obsesif taban)
+                  [YENİ METİN 2026-11-11:] loss PACING HIZINI düşürmez (pace = BBR pacing_gain × BtlBw;
+                  BtlBw loss'tan türetilmez). loss, BBR recovery_window ile o turdaki UÇUŞ TAVANINI
+                  sınırlar (RFC 9002 / BBR referans davranışı; quinn-proto 0.11.18 portu) ve FEC/ARQ
+                  kolunu besler. Kayıp filtresi (kuyruk gecikmesi yokken kaybı saymama) DENEYDİR,
+                  ürün kuralı değildir. Dayanak: docs/design/CC-PORT-ESLEME.md; Ö-CC CP-1.
 INV-FEC-1         CODE-THEN-ENCRYPT-AUTHENTICATE-SHARDS: FEC plaintext block'ta encode → per-shard AEAD →
                   wire'da yalnız ciphertext. Alıcı: AEAD verify SONRA decode (authenticate-before-decode).
                   ASLA "encrypt-then-code / ciphertext üstünde FEC" yazma.
@@ -109,7 +115,7 @@ KARAR-KAYDI-2026-11 §2'deki düzeltilmiş hâli main'deyken).
 ✗ raw hub_noise_x25519_pub'ı authoritative kaynak yapma (cert-bound HubEntryV3)
 ✗ IP-only hub enrollment (pubkey-bound CSR PoP)
 ✗ transport'a AEAD/anahtar koyma (INV-ENGINE-SOC — kripto ayrı katman)
-✗ loss ile send_rate düşürme (INV-RATE-1)
+✗ loss ile PACING HIZI düşürme (INV-RATE-1, 2026-11-11 metni; uçuş tavanı recovery_window ile sınırlanabilir)
 ✗ client'ı DHT'ye sokma (hub-mesh only)
 ✗ kripto primitifi registry (pki §13) dışından ekleme
 ✗ ölçülmemiş byte tahmini / "QUIC'i yendik" kanıtsız iddia (§4.4 ölç, varsayma)
@@ -134,6 +140,11 @@ BENCH-01   blackout survival İKİLİ metriği (oturum N-sn kesintiyi sağ atlat
 ```
 
 ## YAMA KAYDI
+
+- 2026-11-11 · CC-PORT (sahip, gece yetkisi; PR #170/#175/#176): §4 INV-RATE-1 yeni metin (eski satır üstü çizili,
+  silinmedi); §8 ilgili satır. Motor: `crates/adaptive-transport/src/cc/` (quinn-proto 0.11.18 BBR + RFC 9002 portu,
+  Apache-2.0/MIT atıflı; ADR-06/ADR-14 "fork yok" korunur — bağımlılık değil kod taşıma). Ürün varsayılanı port
+  (`RuntimeConfig::engine`), geri alma `KAMA_TRANSPORT_ENGINE=legacy`. Eşleme/muhasebe: docs/design/CC-PORT-ESLEME.md.
 
 - 2026-11-09 · EK-1 D-01 (A), sahip imzası 2026-11-04 (v3 Bölüm I), uygulama v4 Bölüm II Y9: §3 sonuna yetki sırası,
   satır 3'e istisna atfı, §6'ya D-23 dal süresi ve imza/bayt istisnası, §7'ye yerel kapı satırı. Mevcut satır silinmedi.

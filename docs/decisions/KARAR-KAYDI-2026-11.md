@@ -70,3 +70,18 @@ Backlog H-0 ile bayt-özdeş aktarıldı. İçeriği (kartların ne'si, S4/TDD a
 - S2-A şeridi, "PLAN-SPRINT2 ONAYLANDI" mesajını beklemeden açıldı (sahip imzası 2026-11-04, EK-1 D-13).
 - A3, "INT-02 GEÇTİ"yi beklemez; A3 dumanı gerçek hub ikilisiyle koşar (EK-1 D-14, 2026-11-04 ekiyle). "INT-02 GEÇTİ" gösterimin şartı değildir.
 - Backlog'daki "Gün N" takvimi geçersizdir. Geçerli takvim iş emirlerindedir.
+
+## §8 D-CC-1 — CC-PORT (2026-11-11, sahip, gece yetkisi)
+
+- **Karar.** Taşıma motorunun hız/tıkanıklık denetimi quinn-proto 0.11.18 BBR + RFC 9002 mekanizmalarıyla değiştirildi
+  (`crates/adaptive-transport/src/cc/`, Apache-2.0/MIT atıflı kod taşıma; ADR-06/ADR-14 "fork yok" korunur). PR #170
+  (motor, çalışma zamanı seçimli), #175 (ürün runtime'ı, `RuntimeConfig::engine`, ilk uçuş 4·MTU), #176 (ürün varsayılanı
+  port; geri alma `KAMA_TRANSPORT_ENGINE=legacy`). Spec yamaları: CLAUDE.md §4/§8, engine-spec §0.3/§5/§13,
+  transport-layer-tdd §5.4 ve invaryant tablosu (eski metin üstü çizili, silinmedi).
+- **Dayanak.** `docs/design/CC-PORT-ESLEME.md` (eşleme, muhasebe, uyarlamalar U1–U8); Ö-CC CP-1 netem (port 15,7 s /
+  10-10, eski 23,3 s / 10-10, eşli medyan 0,67); sim kapısı `tests/cc_port_sim.rs`.
+- **Deney (ürün kuralı değil).** Kayıp filtresi `cc-port-lf` (PR #177, taslak): yalnız r20/r30 hücresinde port K0'dan
+  geride kalırsa koşulur. Düşük bant kipi (0,025 kbps): ayrı deney, Aralık.
+- **Açık risk.** Startup taşması sığ kuyrukta (BBR v1 doğası); alıcıda sırasız varışta paket başına ACK (dönüş yolu
+  maliyeti; düşük bant kipinde sınırlanacak).
+- **Gösterim ağacı** (`yol2/goster`) etkilenmez; gösterim motoru seçimi CP-6 sonrası sahip kararı.
