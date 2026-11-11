@@ -273,7 +273,11 @@ impl KamaV1Profile {
     #[must_use]
     pub fn runtime_config() -> RuntimeConfig {
         RuntimeConfig {
-            engine: TransportEngine::Legacy,
+            // [CC-PORT PR-2 · sahip kararı "CC-PORT VARSAYILAN <SHA>"] Ürün motoru = quinn-proto
+            // 0.11.18 BBR + RFC 9002 portu. Eski motor `KAMA_TRANSPORT_ENGINE=legacy` ile geri alınır
+            // (kama-node, bench) ya da `engine: Legacy`. Gerekçe: docs/design/CC-PORT-ESLEME.md ve
+            // Ö-CC hücreleri (CP-1: port 15,7 s / 10-10, eski 23,3 s / 10-10, eşli 0,67).
+            engine: TransportEngine::CcPort,
             max_inflight_units: 4096,
             offer_queue: 1024,
             delivery_queue: 1024,
@@ -321,10 +325,11 @@ impl KamaV1Profile {
 /// [CC-PORT] Taşıma motoru (bkz. [`RuntimeConfig::engine`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TransportEngine {
-    /// Bugünkü motor (faz makinesi); ürün profili.
-    #[default]
+    /// Eski motor (faz makinesi); PR-2'den önce ürün profiliydi, `legacy` anahtarıyla geri alınır.
     Legacy,
     /// quinn-proto 0.11.18 BBR + RFC 9002 portu (ISEMRI-CC-PORT; `docs/design/CC-PORT-ESLEME.md`).
+    /// PR-2 ile ürün profili.
+    #[default]
     CcPort,
 }
 

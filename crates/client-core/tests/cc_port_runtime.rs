@@ -114,5 +114,9 @@ fn engine_parse_contract() {
         Some(TransportEngine::CcPort)
     );
     assert_eq!(TransportEngine::parse("bbr"), None);
-    assert_eq!(RuntimeConfig::default().engine, TransportEngine::Legacy);
+    assert_eq!(
+        RuntimeConfig::default().engine,
+        TransportEngine::CcPort,
+        "PR-2: ürün motoru port"
+    );
 }
