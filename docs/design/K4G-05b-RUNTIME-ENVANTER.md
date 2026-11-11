@@ -16,8 +16,11 @@ payload sahipliği (client-core) kısmını ayrı küçük PR olarak çıkar." B
 
 **Kapsam.** #140'ın motor kısmı (birim sahiplik dizini `UnitOwnership`, teyit kümesi, madde 1–4:
 parite kaydı sahibi, teyitli birime karar yok, RTO_MAX tavanı, sahiplenme adayları, K_MAP) bu PR'da
-YOKTUR. Motor yalnız KARAR-NÖTR bir teyit çıktısı verir; runtime payload'ı ve app teyidini yalnız
-o çıktıdan alır.
+YOKTUR. Motor KARAR-NÖTR bir teyit çıktısı verir; runtime payload'ı ve app teyidini yalnız o
+çıktıdan alır. **Ek (sahip kararı 2026-11-11, gece yetkisi §2.4):** motor teyit olayında birimin
+bekleyen işini (kayıp kuyruğu, kopya kuyruğu, uçuştaki diğer kopyaları) iptal eder — teyitli birime
+karar üretmez (#140 madde 2'nin amacı, `UnitOwnership` modeli OLMADAN). Bu motor değişikliği
+KARAR-NÖTR DEĞİLDİR; değişen kararların tam listesi "Motor: teyitli birime karar yok" bölümündedir.
 
 Satır atıfları: "taban" = `4a9e97f1`, "dal" = `f86f2b43` (`git show <sha>:<yol>`).
 
@@ -50,12 +53,199 @@ budanmış ya da tahliye edilmiş tombstone, kopya kökenli kayıp, kuyruk kurta
 emekliye ayırdığı kopya kaydı, bilinmeyen seq); kaydı çoktan düşmüş seq'in yinelenen ACK'i;
 zamanlayıcılar.
 
-**Karar-nötrlük.** Yeni kod yalnız iki çıktı alanına yazar (`confirmed_units_out`,
+**Karar-nötrlük (drenaj).** Teyit çıktısı kodu yalnız iki çıktı alanına yazar (`confirmed_units_out`,
 `confirmed_units_overflow`); hiçbir karar yolu onları okumaz (çağrı girişindeki budama da yalnız
-bu iki alana dokunur). `acked_units` (kopya iptali) bayt
-düzeyinde değişmedi. Pinler: `sender.rs` `tests::k4g05br_teyit` (aşağıda) ve değişmeden yeşil kalan
+bu iki alana dokunur): drenaj yapan ve yapmayan motor aynı kararı verir. Teyit OLAYI ise artık
+motorda birimin işini iptal eder (aşağıda "Motor: teyitli birime karar yok"; `acked_units` kalktı,
+yerine aynı noktada `cancel_confirmed_units`). Pinler: `sender.rs` `tests::k4g05br_teyit` (aşağıda) ve değişmeden yeşil kalan
 `tv_*`, `sim_determinism`, `cc_port_sim`, `sender_diag_contract`, `e1_goster`, `e2a_goster`,
 kama-engine `n8_v2`, client-core `ctx_first_dispatch`.
+
+## Motor: teyitli birime karar yok (sahip kararı 2026-11-11)
+
+Karar metni (gece yetkisi 2026-11-11 §2.4 ve öncesi): "geçmezse kökü motorda kapat (teyitli birimin
+bekleyen retx/prob kayıtlarını ACK anında iptal), iki kurucuyla test, yeniden koş, MERGE." ve
+"teyit edilen birimin bekleyen yeniden iletim / kopya kayıtları ACK anında iptal edilmeli (dup_queue
+için acked_units iptali zaten var; pending_lost ve tail probe için aynı iptal). İki kurucuda da test.
+Bu motor değişikliği karar-nötr değil ama 'teyitli birime karar üretme' #140'ın asıl amacı."
+
+**Bu motor değişikliği KARAR-NÖTR DEĞİLDİR (sahip kabulü).** Teyit çıktısının drenajı
+(`take_confirmed_units`) karar-nötr kalır (drenaj yapan ve yapmayan ikiz testleri değişmeden yeşil);
+karar değişikliği teyit OLAYININ kendisindedir.
+
+**Mekanizma** (`sender.rs` `Sender::cancel_confirmed_units`). Teyit olayları teyit çıktısını
+besleyenlerle aynıdır: kökeni `FecParity` olmayan canlı kaydın ACK'i (uçuş, tombstone, un-loss) ve
+`RecoveredControl`. Olay anında, artan sıralı tekil birim listesiyle:
+
+- `pending_lost` kayıtları silinir (ARQ yeniden gönderimi, RecoverFwd devri ve ARQ tavanı devri
+  buradan beslenir);
+- `dup_queue` kayıtları silinir (önceki `acked_units` iptalinin yerine, aynı noktada);
+- uçuştaki DİĞER kopyalar (köken `FecParity` değil) kayıp İLAN EDİLMEDEN uçuştan düşer:
+  `inflight_bytes` (port motorunun uçuş baytı) ve `bw_sampler` uçuş sayısı (`diag_pif`) bırakılır,
+  tıkanıklık olayı üretilmez. `queue_losses` yalnız uçuştaki kaydı işlediğinden düşen kopya sonradan
+  kayıp ilan edilse de yeniden kuyruğa giremez; kuyruk probu hedefi uçuştan seçildiğinden ve bekleyen
+  prob emisyonda yeniden doğrulandığından prob hedefi olamaz (bekleyen prob iptal sayılır).
+- Dokunulmayanlar: tombstone kayıtları (karar doğurmazlar; geç ACK'leri yol kanıtıdır — örnek
+  kurtarma, spurious — ve TTL ya da `TOMBSTONE_MAX` ile düşerler; her tombstone gibi `diag_pif`'i
+  TTL'e dek tutarlar) ve kayıp dedektörünün kaydı (ilan ve ledger öncekiyle aynı). Kuyruk
+  kurtarmasının "ACK ilerlemesi" kuralı değişmedi: teyitle düşen kopyalar ilerleme sayılmaz, uçuş
+  boşalırsa kurtarma söner.
+- Sınır (SR-AUDIT-001): teyit KÜMESİ tutulmaz. Yeni iletim yalnız `tx_queue`, `pending_lost`,
+  `dup_queue` ve uçuş kaydından doğar; teyitli birim `tx_queue`'da olamaz. Geçici seq listesi en çok
+  uçuş haritası kadardır; kalıcı ek bellek yalnız üç doygun sayaçtır (`ConfirmedCancelDiag`,
+  `Sender::diag_confirmed_cancels`, salt gözlem). Kopya kuyruğunun hayalet birim sayısıyla
+  büyümesi (önceki açık kalem) kapanır: teyitli birime kopya kaydı kurulmaz.
+
+Aynı seride, aynı yoldaki üç inceleme bulgusu (ayrı commit'ler):
+
+1. **ESI ad-uzayı sızıntısı.** Parite kaydının ACK'i (uçuş ve tombstone dalı) `acked_units`'e ESI'yi
+   itiyordu; ESI ile aynı sayısal kimlikli KAYNAK birimin kopyaları iptal oluyordu. Parite artık kopya
+   iptaline girmez (envanter satır 5'in "ters yönü" kapandı).
+2. **`emit_tail_probe` `retx_count + 1` (u8).** Port motorunun yeniden iletim tavanı 255 olduğundan
+   255'teki kayıt prob hedefi olabilir: debug'da taşma paniği, release'de 0'a sarma (0, kopyanın geç
+   ACK'ini kol-1 örneği yapardı). Artık doygun.
+3. **Kuyruk probu parite kaydını hedefliyordu** (hedef en eski uçuş kaydı; prob onu `unit_id = ESI`
+   taşıyan `Retransmit` olarak yeniden gönderirdi). Hedef artık en eski KAYNAK birim kaydıdır
+   (`oldest_probe_target`; E2a ikinci prob yuvası dahil). Uçuşta yalnız parite varsa prob yoktur
+   (kuyruk kurtarması söner).
+
+### Değişen kararlar (tam liste)
+
+| # | Ne | Ne zaman | Önce | Şimdi |
+|---|---|---|---|---|
+| D1 | Teyitli birime ARQ `Retransmit` | Birimin `pending_lost` kaydı varken başka bir kaydı ACK'lenir ya da RECOVERED gelir (satır 7) | Kayıt ARQ'ya girer, karar üretilir (port motorunda tavan 255) | Kayıt teyitte silinir, karar yok |
+| D2 | Teyitli birime RecoverFwd ileri kopyası / ARQ tavanı devri | Aynı (kopyalar `pending_lost`'tan doğar) | Üretilir | Yok |
+| D3 | Teyitli birimin uçuştaki diğer kopyasından doğan kararlar | Birimin bir kopyası teyit eder, diğeri uçuştadır (ör. kopya ACK'lenir, orijinal uçuşta; geç orijinal teyit eder, yeniden gönderim uçuşta) | Kopya sonradan kayıp ilan edilir → `pending_lost` / kopya kaydı (Duplicate kökenli kayıpta geometrik kopya yeniden kurulur) / saf-sessizlik canlılık kopyası / kuyruk probu hedefi | Kopya teyitte uçuştan düşer; bu kararların hiçbiri yok |
+| D4 | Port motoru tıkanıklık olayı | D3'teki kopya kayıp ilan edildiğinde | `on_congestion_event` (BBR `recovery_window`) | Yok (uçuş kaydı yok → kayıp baytı yok) |
+| D5 | Uçuş baytı ve uçuş sayısı | Teyit anı | Kopyalar ACK ya da kayıp ilanına dek uçuşta | Teyitte düşer: port motorunda `cc_fits` penceresi daha erken açılır, `on_end_acks` uçuş baytı küçük, iş kalmadıysa uygulama-sınırlı damgası daha erken; eski motorda EAI'nin ortalama birim boyu, `ack_confidence` etkinliği ve `Idle` geçişi (`update_state`) buna bağlıdır; `bw_sampler` uçuş sayısı 0'a inince gönderim çapası yeniden kurulur |
+| D6 | Düşen kopyanın sonraki ACK'i | Kopya tele çıkmıştı ve sonra ACK'lenir | Uçuş kaydı ACK'i: BW örneği, CC `on_ack`, ikinci teyit | Bilinmeyen seq: örnek, CC `on_ack` ve teyit yok (port motorunda RTT v1.1 kuralı çerçevenin en büyük seq'i buysa o çerçeveden örnek almaz) |
+| D7 | Faz | Eski motor, PreConverge, kuruluş kopyası birimi teyit eder, orijinal kayıp | PreConverge'de ölü orijinalle bekler | İş kalmadıysa `Idle`; sonraki veri yine PreConverge'e girer (ölçüm yok) |
+| D8 | Parite ACK'i, ESI adaşı kaynak birimin kopyaları | FEC açık, kaynak birim kimliği = ESI | Kopyalar iptal | Kopyalar sürer |
+| D9 | Kuyruk probu hedefi | En eski uçuş kaydı parite | Parite `Retransmit` (`unit_id = ESI`) olarak yeniden gönderilir | En eski kaynak birim kaydı; yalnız parite uçuştaysa prob yok |
+| D10 | Prob kopyasının `retx_count`'u | Hedefin sayacı 255 | Debug panik / release 0 | 255 |
+
+Teyit çıktısı da etkilenir (karar değil): düşen kopyanın geç ACK'i ikinci kez teyit üretmez; birimin
+tombstone kaydının geç ACK'i yine üretebilir (olaylar arası tekilleştirme tüketicinindir).
+
+### Hayalet ölçümü — önce ↔ sonra
+
+`tests::k4g05br_teyit::k4g05br_ghost_after_skipped_stale_decision` (kurulum ve kanal modeli aşağıda
+"Atlama politikası"nda; 120 s sahte saat, belirlenimli, tek koşu, `--nocapture`). "Önce" = dal
+`2c77970a` (motor iptali yok), "sonra" = bu seri. Sonra sütunlarında "atla" ve "başlık" kolları
+birebir aynıdır (teyitli birime karar olmadığından iki kol ayrışmaz).
+
+| Motor | Kol | Teyitten sonra birime karar (önce → sonra) | Birimin bırakılması (bütün kayıtlar) | Motor `Idle`'a döner mi | Faz geçişi (120 s) | BBR (pencere B, tıkanıklık olayı) | Diğer birimler: teyit / ort. / en büyük gecikme |
+|---|---|---|---|---|---|---|---|
+| legacy + `validated_v1` (`TransportEngine::Legacy`) | atla | 14 (2 Retransmit + 12 Duplicate) → **0** | Hiç (kopya vadesi ≈ 173 s) → **26 s** | Hayır → **evet, teyitten 5 ms sonra** | 49 → 3549 | — | 2389 / 143 / 1400 ms → **2399 / 40 / 40 ms** |
+| aynı | başlık | 1 → **0** | 26 s → 26 s | Evet → evet | 3551 → 3549 | — | 2399 / 40 / 40 → aynı |
+| legacy (`Sender::new`) | atla | 14 → **0** | Hiç → **26 s** | Hayır → **evet** | 52 → 3549 | — | 2388 / 116 / 720 ms → **2399 / 40 / 40 ms** |
+| aynı | başlık | 1 → **0** | 26 s → 26 s | Evet → evet | 3551 → 3549 | — | 2399 / 40 / 40 → aynı |
+| cc_port (`Sender::with_cc_port`, ürün varsayılanı) | atla | 266 (254 Retransmit + 12 Duplicate) → **0** | Hiç → **1 s** | Hayır → **evet** | 550 → 3549 | (4800, 267) → **(254 600, 2)** | 2399 / 40 / 40 → aynı |
+| aynı | başlık | 1 → **0** | 1 s → 1 s | Evet → evet | 3551 → 3549 | (254 700, 2) → (254 600, 2) | 2399 / 40 / 40 → aynı |
+
+Teyit olayında iptal edilen iş her kolda `pending_lost` 1, kopya 0, uçuş kopyası 0 (satır-7 kurulumunda
+birimin yeniden gönderimi kayıp kuyruğundadır). "Bırakma" birimin SON kaydının düştüğü ilk 1 s'lik
+örnektir: kalan kayıt yeniden gönderimin tombstone'udur ve TTL'le düşer (eski motorda TTL tabanı
+cadence, ≈ 26 s; port motorunda RFC 9002 biçimi, ≈ 1 s). Başlık kolunda port motorunun penceresi
+100 B küçüktür: önceki başlık-only hayalet `Retransmit` (100 B) ACK'lenip pencereye ekleniyordu.
+İddia edilenler (test): teyitte kayıp kaydı iptali = 1, teyitten sonra birime 0 karar, birim ufukta
+bırakılır, motor `Idle`'a döner, BBR iki kolda aynı, diğer birimlerin gecikmesi iki kolda birim birim
+aynı. Önceki inceleme gözlemleri ("ghost records consume the tail-probe budget", "dup_queue grows
+without cap", "shutdown drain runs to drain_cap because pif > 0") hayalet kayıt kalmadığı için bu
+yoldan oluşmaz; kapanış drenajında `diag_pif`'i yalnız tombstone'lar (her kayıp gibi) TTL'e dek tutar.
+
+### Pinlenmiş beklentilerde değişenler (her biri gerekçeli)
+
+- `tests/e2a_goster.rs` çıplak iz tabanı `0xa9f2_a6bc_da15_8482` → `0x9e4f_8cca_eac8_6803` (ürün
+  benzeri iz `0x1e49_5f75_283c_9675` DEĞİŞMEDİ). Karar dökümü (iki ağaç, ortam değişkeniyle geçici
+  döküm; commit edilmedi): birim 0'ın orijinali (seq 0) kaybolur, kuruluş kopyası (seq 1) ulaşır ve
+  birimi teyit eder; önceki motor 10.635 s'de birim 0'a `Retransmit` (seq 5) veriyordu, şimdi
+  vermez. Sonraki seq'ler kaydığından seq'e bağlı kayıp karması izin geri kalanını değiştirir (154 →
+  153 karar). Eski değer dosyada yorum olarak duruyor.
+- `tests/dr_cs1_acceptance.rs` DI-1, DI-1C, DI-2 (yalnız `--all-features`): sabit `acked_seqs: [1]` /
+  `[1, 2]` u2/u3'ün değil u1'in PreConverge kuruluş kopyalarının seq'leriydi; o ACK u1'i teyit
+  ettiğinden testler teyitli birime yeniden gönderim bekliyordu. Şimdi u2/u3'ün gerçek DATA seq'i
+  çıktıdan alınır (DI-1A zaten böyleydi). DI-1C'de u1 gerçekten kayıp kalır; ikinci kurtarma
+  emisyonu ≈ 60 s ACK sessizliğinden sonra RecoverFwd'da ileri kopyadır (Duplicate), yardımcı tür
+  listesi alır (`expect_emission_via_wakeup`). İddia edilen özellik (yeni ağ olayı olmadan açık
+  zamanlayıcıyla emisyon, busy-loop yok, nihai ACK'ten sonra vadesi geçmiş uyanma yok) değişmedi.
+- `tests/sender_state_matrix.rs` (yalnız `--all-features` kırmızıydı): `experimental-cold-start`
+  derlemesinde `on_event` = `on_event_batch`; faz-3 vadesi gelen iç Pto'yu AYNI çağrıda ikinci boru
+  hattı turuyla işler. Bir tohumda bir çağrı iki geçiş yaptı ve Startup → Steady göründü
+  (ayrıştırma: Startup → Drain → Steady; iki adım da tabloda izinli). Yürüyüş artık aktivasyon
+  sayacı iki geçiş gösteren çağrının yasak görünen çiftini iki izinli tek turluk adıma ayrıştırır
+  (Recover* girişi sayıldıysa ara durum o Recover*); ayrıştırılamayan ya da tek geçişli yasak çift
+  yine kırmızıdır. 8 tohum × 20 000 adımda 1 bileşke.
+- `sender.rs` `e2a_m8_b_duplicate_origin_ack_exits_preconverge_only_when_on` kapalı kolu (D7): kopya
+  ACK'inden sonra durum `PreConverge` yerine `Idle`; sonraki AppData yine `PreConverge`'e girer.
+- `k4g05br_decision_neutral_after_confirmation_with_pending_work` artık iptali iddia eder (önce
+  gözlemdi); drenaj ikizi karşılaştırması aynen sürer.
+- Runtime: FEC bekçisinin vakum ön koşulu (`stale_skipped ≥ 1`) ters çevrildi; her runtime testinde
+  yeni iddia 7: `stale_decisions == 0`.
+
+### `cc_port_sim` — önce ↔ sonra
+
+`cargo test -p adaptive-transport --test cc_port_sim -- --nocapture --test-threads=1`, aynı makine,
+tek koşu. 24 sonuç satırının 11'i değişti:
+
+| Hücre | Motor | Önce (`2c77970a`) | Sonra |
+|---|---|---|---|
+| kesinti 60 s, seed 5 | legacy | tamamlandı 119.88 s, 125/125, retx 494 | **tamamlanmadı (180 s), 124/125**, retx 487 |
+| kesinti özet | legacy | teslim 2/5, p50 119.9 s | **1/5**, p50 118.4 s |
+| kesinti 60 s, seed 1 / 2 / 3 / 4 / 5 | cc_port | 95.88 / 87.90 / 85.13 / 84.80 / 80.73 s; retx 86 / 93 / 60 / 61 / 85 | 77.17 / 81.47 / 85.15 / 84.81 / 80.62 s; retx 78 / 90 / 60 / 60 / 84 |
+| kesinti özet | cc_port | 5/5, p50 85.1 s | 5/5, p50 81.5 s |
+| q1000 l20, 10 seed | legacy | 7/10, p50 17.37 s, en büyük 60.50 s | **6/10**, p50 17.37 s, en büyük 54.31 s |
+| q6 l20, 10 seed | legacy | 7/10, p50 16.36 s, en büyük 59.98 s | **6/10**, p50 16.36 s, en büyük 54.11 s |
+| q6 l20, 10 seed | cc_port | 10/10, p50 15.89 s, en büyük 17.12 s | 10/10, p50 15.89 s, en büyük 17.28 s |
+
+Değişmeyen satırlar: q6 l0 (iki motor), q1000 l20 cc_port (10/10, p50 15.71 s, en büyük 17.34 s),
+PTT demeti (0.64 / 0.34 s), FEC parite hücresi, kesinti legacy seed 1–4. Port kolu (bağlayıcı) bütün
+eşiklerini geçer (7/7 test yeşil).
+
+Okuma sınırı: kanal modeli kayıp kararını her gönderimde LCG'den çeker; hayalet emisyonların kalkması
+sonraki çekimleri kaydırır, tohum başına önce ↔ sonra eşli bir kıyas DEĞİLDİR. Tek tohum teşhisi
+(q6 l20 legacy seed 10, iki ağaçta ortam değişkeniyle geçici karar dökümü; commit edilmedi): önce
+59.98 s'de tamamlanıyordu — birim 0 kuruluş kopyasıyla teyitliydi ama 39.94 s'de ona hayalet
+`Retransmit` gitti ve sonraki kayıp çekimleri bu emisyonla kaydı. Sonra: son emisyon 56.2 s'de birim
+89'un `Retransmit`'i; ondan sonra hiçbir emisyon yok, 120 s'ye dek uçuşta 1200 B, durum RecoverFwd.
+Kod okuması: sim'in eski kolu `Sender::new()` ile kuyruk kurtarması KAPALI koşar; kaybolan son
+`Retransmit`'ten sonra seq gönderilmediği için kayıt kayıp ilan edilmez ve RecoverFwd'un saf-sessizlik
+canlılık kolu (`plan_forward_duplication`) yalnız `Data` kökenli uçuş kayıtlarına kopya kurar. Aynı
+takılma tabanda seed 5'te zaten vardır (iki ağaçta karar dökümü birebir aynı, 124/125). Kesinti seed 5
+ve q1000 legacy değişimi ayrıca teşhis edilmedi. Ürün geri alma yolu (`TransportEngine::Legacy`)
+`validated_v1` kuyruk kurtarmasıyla koşar (prob hedefi her köken); sim kolu onu kurmaz. Bu canlılık
+deliği bu PR'da düzeltilmedi (açık kalem).
+
+### Runtime testleri (`k4g05b_runtime_ownership`, `-- --ignored`)
+
+PR `test-runtime` komutu (`--workspace --all-features --exclude kama-integration --test
+k4g05b_runtime_ownership -- --ignored --nocapture`), tek koşu, yerel loopback: **11/11 yeşil**, testler
+119.5 s. Her testte gövdesiz datagram 0 ve `stale_skipped = stale_decisions = fec_repair_missing = 0`.
+TTL ve tahliye fikstürleri (`Legacy`'ye sabit) ön koşulları ve iddialarıyla geçti; aynı yollar port
+motorunda motor düzeyinde (`tests::k4g05br_teyit`, iki motor) sınanır. Gözlem; kontrollü kıyas değil.
+
+| Test | Motor | İstemci datagramı (gövdesiz) | `stale_skipped` önce → sonra | Gözlem (sonra) |
+|---|---|---|---|---|
+| `late_ack_after_ttl_keeps_payload` | Legacy | 5399 (0) | 0 → 0 | faz B 8.3 s |
+| `late_ack_after_cap_keeps_payload` | Legacy | 9274 (0) | 68 → **0** | kayıt 17.5 s'de düştü (tablo 4096); faz B 0.11 s |
+| `late_ack_after_dup_loss_keeps_payload` | Legacy | 209 (0) | 0 → 0 | faz B 0.86 s |
+| `late_ack_after_dup_loss_keeps_payload_cc_port` | CcPort | 80 (0) | 0 → 0 | faz B 0.01 s |
+| `parity_ack_no_confirmation_payload_kept` | Legacy | 18 (0) | 0 → 0 | faz 2 3.1 s |
+| `parity_ack_no_confirmation_payload_kept_cc_port` | CcPort | 20 (0) | 8 → **0** | faz 2 0.56 s |
+| `store_miss_guard_loss_and_reorder` | Legacy | 545 (0) | 0 → 0 | — |
+| `store_miss_guard_loss_and_reorder_cc_port` | CcPort | 542 (0) | 12 → **0** | — |
+| `store_miss_guard_fec_recovered` | Legacy | 15 (0) | 3 → **0** | teyitten sonra 10 s: motor (uçuş, kayıp, kopya) her saniye (0, 0, 0) |
+| `store_miss_guard_fec_recovered_cc_port` | CcPort | 15 (0) | 16 → **0** | aynı, (0, 0, 0) |
+| `store_miss_guard_fec_recovered_frag_cc_port` | CcPort (DATA_FRAG) | 15 (0) | 8 → **0** | aynı, (0, 0, 0) |
+
+"Önce" sütunu yukarıdaki "main birleştirmesinden sonraki koşu" tablosudur (dal `d05cc48f` kodu, tek
+koşu); iki koşu aynı makinede ama farklı derleme ve zamanda, kontrollü kıyas değildir. İptal öncesi
+FEC bekçilerinde teyitten 10 s sonra motorda 2–3 uçuş kaydı kalıyordu; şimdi 0.
+
+YAMA ADAYI (specs/ düzenlenmedi): `adaptive-transport-engine-spec` §3.3-B "stop koşulu" yalnız kopya
+iptalini anar; teyit olayında `pending_lost` ve uçuş kopyalarının iptali, ve kuyruk probunun onarım
+sembolünü hedeflememesi için spec satırı adayı. Kimlik sorusu (§9.5) aşağıda açıktır.
+
 
 ## Runtime (bu PR)
 
@@ -72,7 +262,8 @@ kama-engine `n8_v2`, client-core `ctx_first_dispatch`.
   kaldırılması Aralık birleşmesine kalır.
 - `ClientStats::stale_decisions` iki kaynaklıdır: teyitli birime karar (satır 7) ve runtime'da FEC
   kapalıyken ya da gönderim kaydı olmadan gelen `FecParity` kararı (ürün varsayılanlarında yok). İki
-  kaynakta da karar tele ÇIKMAZ (aşağıda "Atlama politikası").
+  kaynakta da karar tele ÇIKMAZ (aşağıda "Atlama politikası"). Motor iptalinden sonra birinci kaynak
+  beklenmez; runtime testleri her testte `stale_decisions == 0` iddia eder (iddia 7).
 - `ClientStats::stale_skipped` (ve `ClientLiveDiag::stale_skipped`, bench `KP-CLIENT` satırı):
   gövdesi olmadığı için tele çıkarılmayan karar toplamı, `= stale_decisions + fec_repair_missing`.
 - ACK yolundaki seq → birim → `store.remove` döngüsü (taban 2303-2315) ve RECOVERED yolundaki doğrudan
@@ -92,10 +283,10 @@ runtime (taban) · geç ACK → runtime (bu PR) · test.
 | 3 | **Kopya kökenli kayıp** (tombstone bırakmaz, `pending_lost`'a girmez) | `queue_losses` 3726-3746 | Evet (PRE_CONVERGE kopyaları, RecoverFwd, ARQ tavanı sonrası devir) | Kayıt yok → teyit YOK | `store.remove` + `acked()` | Satır 1 ile aynı | `late_ack_after_dup_loss_keeps_payload` |
 | 3b | **Kopya kaydının kuyruk kurtarmasıyla emekliliği** (tombstone yok) | `retire_inflight_to_tombstone` 6249-6253 | Evet (tail-recovery ürün varsayılanı) | Satır 3 ile aynı | Satır 3 ile aynı | Satır 3 ile aynı | Ayrı test yok (aynı "kayıt yok → teyit yok" kolu; motor testi (c) kolu kayıp ilanıyla sınar) |
 | 4 | K_MAP budaması | Tabanda ve bu PR'da YOK | — | — | — | — | **Yalnız #140** |
-| 5 | **FEC parite ACK'i — ESI ad çakışması** | Parite kaydı `unit.id = esi`; uçuş dalı 3284 `acked_units.push(esi)` → 3443-3445 esi kimlikli KAYNAK birimin kopyaları iptal | Evet (FEC ürün profilinde açık) | Teyit YOK (`FecParity` süzgeci) | Parite seq'i haritaya girmez (`carries_unit` 2021-2025) → payload kalır | Aynı; teyit çıktısı süzgeci olmasaydı runtime 0..R birimlerini silerdi | `parity_ack_no_confirmation_payload_kept` (faz 1); motor `k4g05br_parity_ack_never_confirms_esi_namesake`. Kopya iptali (ters yön) bu PR'da AÇIK kalır — **#140 motor kısmı** |
+| 5 | **FEC parite ACK'i — ESI ad çakışması** | Parite kaydı `unit.id = esi`; uçuş dalı 3284 `acked_units.push(esi)` → 3443-3445 esi kimlikli KAYNAK birimin kopyaları iptal | Evet (FEC ürün profilinde açık) | Teyit YOK (`FecParity` süzgeci) | Parite seq'i haritaya girmez (`carries_unit` 2021-2025) → payload kalır | Aynı; teyit çıktısı süzgeci olmasaydı runtime 0..R birimlerini silerdi | `parity_ack_no_confirmation_payload_kept` (faz 1); motor `k4g05br_parity_ack_never_confirms_esi_namesake`. Kopya iptali (ters yön) KAPANDI: parite ACK'i kopya iptaline girmez (motor `k4g05br_parity_ack_keeps_esi_namesake_copies`) |
 | 6 | Parite kaydının süre dolumu | Tabanda ve bu PR'da YOK | — | — | — | — | **Yalnız #140** |
-| 7 | **Teyit sonrası kalan kayıt** (ör. geç orijinal teyit eder, kaybolan yeniden gönderim `pending_lost`'ta) | Motor teyitli birimin `pending_lost` kaydını budamaz (taban = bu PR) | Evet | Kalan kayıt ARQ'ya girer (karar üretilir) | İlk ACK'te `store.remove`; kalan kararlar başlık-only (`stale_decisions`) VE harita kaydı açar (budanmaz) | Karar sürer (budama #140 madde 2) ama ATLANIR: tele datagram çıkmaz (`stale_decisions` + `stale_skipped`); harita kaydı AÇILMAZ; motorda ardılı "Atlama politikası" | `store_miss_guard_loss_and_reorder`; motor `k4g05br_decision_neutral_after_confirmation_with_pending_work` |
-| 8 | **FEC RECOVERED** | `on_recovered_control` 5589-5647: `pending_lost`/`dup_queue` iptali; uçuştaki kayıt kalır (satır 7'ye düşer) | Evet | Listelenen her birim teyit edilir | `store.remove` + `acked()` motordan ÖNCE | Drenajda (motordan SONRA); store'da varsa düşer — sonuç tabanla aynı | `store_miss_guard_fec_recovered` |
+| 7 | **Teyit sonrası kalan kayıt** (ör. geç orijinal teyit eder, kaybolan yeniden gönderim `pending_lost`'ta) | Tabanda motor teyitli birimin `pending_lost` kaydını budamaz. Bu PR: teyitte kayıp, kopya ve uçuş kaydı iptal (`cancel_confirmed_units`) | Evet | Kayıt iptal; karar YOK | İlk ACK'te `store.remove`; kalan kararlar başlık-only (`stale_decisions`) VE harita kaydı açar (budanmaz) | Karar yok (`stale_decisions == 0`, iddia 7); gelirse atlanır (tele datagram çıkmaz, harita kaydı açılmaz) | `store_miss_guard_loss_and_reorder` (+ `_cc_port`); motor `k4g05br_decision_neutral_after_confirmation_with_pending_work`, `k4g05br_confirmed_unit_*` |
+| 8 | **FEC RECOVERED** | `on_recovered_control`: `pending_lost`/`dup_queue` iptali; tabanda uçuştaki kayıt kalır (satır 7'ye düşerdi). Bu PR: uçuştaki kayıtlar da kayıp ilan edilmeden düşer | Evet | Listelenen her birim teyit edilir | `store.remove` + `acked()` motordan ÖNCE | Drenajda (motordan SONRA); store'da varsa düşer — sonuç tabanla aynı; teyitten sonra karar yok | `store_miss_guard_fec_recovered` (+ `_cc_port`, `_frag_cc_port`); motor `k4g05br_recovered_control_retires_inflight_copies` |
 | 8b | RECOVERED, motorun hiç göndermediği birim | — | #140 envanterine göre erişilemez (bu PR'da yeniden incelenmedi) | Bu PR: yankılanır (#140: teyit etmez) | Store'da varsa düşer | Aynı (tabanla) | **#140 ayrımı**; motor testi yalnız motorun bildiği birimi sınar |
 | 9 | Runtime `PN_SEQ_WINDOW` (65 536 PN) | runtime 78 | Evet | Çevrilmez → motora gitmez | Silme yok | Değişmez | — |
 | 10 | Runtime store sınırı (`max_inflight_units` 4096) | teklif kapısı runtime 2458 (dal 2563) | Evet | — | Doluyken teklif alınmaz | Değişmez; teyit kaybı bu sınırdan bağımsız (motor çağrının kendi teyitlerini düşürmez; parçalama açıkken store bu sınırı aşabilir, sonuç değişmez) | motor `k4g05br_confirmed_units_call_output_never_dropped`; runtime testlerinde `confirmed_units_overflow == 0` |
@@ -103,9 +294,9 @@ runtime (taban) · geç ACK → runtime (bu PR) · test.
 | 12 | Runtime `repair_store` tahliyesi (64 blok) | runtime 2565 | Evet | — | Parite gövdesi, birim payload'ı değil | Değişmez | — |
 | 13 | Bench / harness (ürün dışı; `crates/bench/src/kama.rs`, sim, `fs_harness`, `udp_runner`) | — | — | Drenaj yapmazlar: birikim her çağrı girişinde tavana iner (≈ 32 KiB + son çağrının teyitleri / Sender), taşma sayacı büyür | Payload deposu yok | Değişmez; karar etkisi yok (nötrlük testi taşan ikizle) | — |
 
-Satır 7 ve 8'de bu PR, tabandaki harita sızıntısını (kod okuması) kapatır ve teyitli birime verilen
-kararı tele çıkarmaz (atlar). Kararın kendisini (`stale_decisions`) kapatmaz: o, motorun teyitli
-birimin bekleyen işini budamasını ister (#140 madde 2).
+Satır 7 ve 8'de bu PR, tabandaki harita sızıntısını (kod okuması) kapatır, teyitli birime verilen
+kararı tele çıkarmaz (atlar) ve — sahip kararıyla — kararın kendisini motorda kapatır (teyitte
+bekleyen iş iptal; bütün runtime testlerinde `stale_decisions == 0`).
 
 ## Atlama politikası (sahip kararı 2026-11-11, #174 madde 2)
 
@@ -130,7 +321,9 @@ sınıflandırması bu varsayıma dayanır).
 iddia edilir). Kurtarma kapalıyken bastırılan karar ayrı sayaçtadır (`recovery_suppressed`). Sıfır-önek
 gövdesi (`stale_body`) kaldırıldı. Tel biçimi, golden vektörler ve profil kimliği değişmedi.
 
-**Ardıl (motorda).** Motor KODU değişmedi; motorun kapalı-döngü karar akışı değişir. Motor kararı
+**Ardıl (motorda) — İPTAL ÖNCESİ (dal `2c77970a`'ya dek; tarihsel kayıt).** Bu alt bölüm motor
+iptali gelmeden önceki durumu ve ölçümlerini anlatır; motor artık teyitli birime karar üretmez
+("Motor: teyitli birime karar yok", önce ↔ sonra tablosu orada). Motor KODU değişmedi; motorun kapalı-döngü karar akışı değişir. Motor kararı
 işlemiştir: atlanan kararın kaydı uçuştadır ve ACK'i hiç gelmez. Önceki başlık-only emisyonda alıcı
 seq'i ACK'liyor ve motor kaydı kapatıyordu. Atlama bu kapanışı kaldırır. Kaydın akıbeti (kod
 okuması, `sender.rs` / `loss.rs` / `tail_recovery.rs`):
@@ -273,6 +466,11 @@ sabit), port motoruyla 5 (kopya kökenli kayıp, ESI, iki bekçi, parçalamalı 
 
 ## Davranış farkı ve açık soru (EVOLUTION §9.5)
 
+**Ek (motor iptali):** motor KODU artık değişir ve motor kararları değişir (KARAR-NÖTR DEĞİL, sahip
+kabulü; tam liste "Motor: teyitli birime karar yok" → "Değişen kararlar" D1–D10). Tel biçimi, golden
+vektörler ve profil kimliği değişmez. Aşağıdaki paragraf iptal öncesi metindir; kimlik sorusu
+(§9.5) AÇIK kalır ve artık motor kararı değişikliğini de kapsar.
+
 Motor KODU ve tel biçimi değişmez; motorun kapalı-döngü karar akışı değişir. Tel TRAFİĞİ değişir:
 gövdesi olmayan karar artık datagram üretmez (önceki başlık-only emisyon kalktı; "Atlama
 politikası"), motor o kaydın ACK'ini almaz ve aynı birime yeni kararlar, kuyruk kurtarması, `Idle`
@@ -390,8 +588,21 @@ runner'da bu kolun ön koşul kırmızısı ("Fikstür geçmişi") beklenebilir.
 - `k4g05br_confirmed_units_call_output_never_dropped` — (a) tavandan çok teyit üreten TEK çağrının
   bütün teyitleri döner, sayaç 0; (b) drenajsız birikim sonraki çağrının girişinde tavana iner (en
   eski fazlası düşer, sayaç düşen kadar), o çağrının teyitleri yine eksiksiz.
-- `k4g05br_decision_neutral_after_confirmation_with_pending_work` — satır 7 durumunda drenajlı motor
-  ile hiç drenajsız ikizi her olayda aynı karar ve uyanma.
+- `k4g05br_decision_neutral_after_confirmation_with_pending_work` — satır 7 durumunda teyit kayıp
+  kaydını iptal eder, birime sonra karar yok; drenajlı motor ile hiç drenajsız ikizi her olayda
+  aynı karar ve uyanma.
+- Motor iptali (sahip kararı 2026-11-11), iki motor: `k4g05br_confirmed_unit_inflight_copy_never_requeued`
+  (uçuş kopyası kayıp ilanı olmadan düşer; uçuş baytı ve `diag_pif` bırakılır; daha yeni seq ACK'i +
+  30 s sonra karar, kayıp kuyruğu ve port motorunda tıkanıklık olayı yok),
+  `k4g05br_confirmed_unit_dup_queue_cancelled` (PreConverge geometrik kopya; kopya ACK'iyle teyitte
+  uçuştaki orijinal düşer), `k4g05br_recovered_control_retires_inflight_copies` (RECOVERED; BtlBw
+  değişmez — N8); kuyruk kurtarmalı iki motor (`legacy+tail_v1`, `cc_port`):
+  `k4g05br_confirmed_unit_tail_probe_cancelled` (jeton bekleyen prob iptal).
+- İnceleme bulguları: `k4g05br_parity_ack_keeps_esi_namesake_copies` (iki motor),
+  `k4g05br_tail_probe_retx_count_saturates` ve `k4g05br_tail_probe_never_targets_parity` (kuyruk
+  kurtarmalı iki motor).
+- `k4g05br_ghost_after_skipped_stale_decision` — artık iddia eder: teyitten sonra birime 0 karar,
+  birim ufukta bırakılır, motor `Idle`'a döner, BBR ve diğer birimlerin gecikmesi iki kolda aynı.
 - `k4g05br_confirmation_output_is_decision_neutral_{legacy,cc_port}` — LCG izli kanal modeli (kayıp,
   geç teslim, kesinti, RECOVERED, parite); drenajlı motor ile taşan ikizi her olayda aynı karar ve
   uyanma, son durumda aynı tanı yüzeyleri.
@@ -412,9 +623,10 @@ kaldırılınca üç test kırmızı: sıra (`k4g05br_inflight_ack_confirms_unit
 
 ## #140'ta kalanlar
 
-- Motor: `UnitOwnership` dizini, teyit kümesi ("birim oturumda en çok bir kez"), teyitli birime karar
-  üretmeme (madde 2), RTO_MAX tavanı (madde 3), sahiplenme adayları (madde 4), K_MAP, parite kaydı
-  sahibi ve süre dolumu (madde 1). Satır 4, 6, 8b ve satır 5'in kopya iptali.
+- Motor: `UnitOwnership` dizini, teyit kümesi ("birim oturumda en çok bir kez"), RTO_MAX tavanı
+  (madde 3), sahiplenme adayları (madde 4), K_MAP, parite kaydı sahibi ve süre dolumu (madde 1).
+  Satır 4, 6, 8b. Teyitli birime karar üretmeme (madde 2) bu PR'da `UnitOwnership` OLMADAN olay
+  anında iptalle kapandı; satır 5'in kopya iptali bu PR'da kapandı.
 - Kimlik değişikliği (`transport_v1_freeze.rs` düzenlemesi) — bu PR kimlik değiştirmez.
 - Runtime testinin #140'taki parite faz 2'si ("esi adaşı kopyaları sürer, bölünme (r, k−r)") ve
   bekçilerdeki `stale_decisions == 0` iddiası: ikisi de motor kısmına bağlı.
