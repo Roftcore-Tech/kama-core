@@ -13,14 +13,30 @@
 //!   datagramları CEVAPSIZDIR → istemci "koptu"yu yalnız cevapsız aktif yoklamayla öğrenir (C6) ve
 //!   yeniden bind olur (C7); eski handle'a veri `ROUTE_MISS` alır, oturum yeni INIT'le yenilenir
 //!   (C5, C7 (b)).
-//! * Deploy TDD §6 süre kuralı: "hub yeniden başladığında ... eski handle ilk veride `ROUTE_MISS`
-//!   alır ve o oturum bir el sıkışmayla yeniden kurulur". Süre SAYISI spec'te yoktur; burada yalnız
-//!   gözlem olarak basılır (`HUB-RESTART-OLCUM`), üst sınır koşul döngüsünün deneme tavanıdır.
-//! * AMP §3 `msg_id` (+ kama-app `messaging` belgesi): gönderen `RECEIPT`'i gelmeyen TEXT'i kalıcı
-//!   outbox'tan sıradaki oturumda AYNI `msg_id` ile yeniden gönderir; alıcı dedup penceresinde ilk
-//!   kez görülen `msg_id`'yi bir kez teslim eder; `Receipt` `(eş, msg_id)` başına tam bir kez. Alıcı
-//!   teslim SIRASINI `msg_id` ile ZORLAMAZ (sıra yalnız oturum içinde Transport Reliable'dan gelir):
-//!   bu test sırayı İDDİA ETMEZ, gözlem olarak sayar.
+//! * Deploy TDD §6 süre kuralı (`docs/deploy/KM-DEPLOY-TDD-001.md` §6): telefon "koptu"yu yalnız
+//!   cevapsız aktif yoklamadan sonra ilan eder — **trafik varken** ARQ yedeklemesi + yoklama
+//!   patlaması içinde (≈ RTO + 3 s), **sessizlikte** heartbeat aralığı + yoklama patlaması içinde
+//!   (8 s ya da 25 s + 4 s); hub yeniden başlayınca eski handle ilk veride `ROUTE_MISS` alır ve
+//!   oturum bir el sıkışmayla yeniden kurulur. **Bilinen sapma:** trafik varken bu kural bugün
+//!   KARŞILANMAZ — S4 C6'nın "ARQ RTO yedeklemesi" yoklama tetiği uygulanmadı (`client-core`
+//!   `hub::heartbeat` belgesi, KK-H42); heartbeat ancak hub'a giden trafikte 8 s + jitter sessizlik
+//!   olunca çalışır, yeniden bind ARQ geri çekilmesinin o boşluğu açmasını bekler. Bu test süre
+//!   kuralını SINAMAZ: yalnız koşul döngüsünün üst sınırını ([`RECOVERY`]) sınar; yeniden bind ve
+//!   teslim süreleri gözlem olarak basılır (`HUB-RESTART-OLCUM`).
+//! * AMP §3 `msg_id` ([S2 2026-10-08]): gönderen `RECEIPT`'i gelmeyen TEXT'i kalıcı outbox'tan
+//!   sıradaki oturumda AYNI `msg_id` ile yeniden gönderir; alıcı dedup penceresinde görülmüş
+//!   `msg_id`'yi kullanıcıya yeniden teslim ETMEZ ama `RECEIPT(delivered)`'ı YENİDEN gönderir —
+//!   teldeki RECEIPT tek değildir. "`Receipt` olayı `(eş, msg_id)` başına tam bir kez" spec'in
+//!   değil kama-app'in sözleşmesidir (`messaging` `on_receipt`: `msg_id` başına motor ömründe tam
+//!   bir `Delivered`; bellekte karşılığı olmayan tekrar RECEIPT olay üretmez). Alıcı teslim
+//!   SIRASINI `msg_id` ile ZORLAMAZ (sıra yalnız oturum içinde Transport Reliable'dan gelir): bu
+//!   test sırayı İDDİA ETMEZ, gözlem olarak sayar.
+//! * `Closed` yok, `Connected` bir kez: INV-NO-IDLE-TEARDOWN (`specs/transport-layer-tdd.md`,
+//!   DR-CONNECT-1: oturum zaman geçtiği için sonlandırılmaz), S1'in KAPALI `CloseReason` kümesi
+//!   (`docs/seams/KM-SEAM-AT-001.md`: `Superseded`, `UserClosed`, `PeerClosed`, `KeyHygiene` —
+//!   hub kaybı ayrı bir kapanış nedeni değildir) ve kama-node'un supersession kapanışında olay
+//!   üretmeme sözleşmesi (`node` `note_down`: yerini yeni oturuma bırakan oturumun kapanışı `Closed`
+//!   ÜRETMEZ, eş bağlı kalır). S4 beyanlı sınır 3 yalnız "oturumlar yeniden kurulur" der.
 //! * Tek etkin oturum: S1 KARAR-2 (`docs/seams/KM-SEAM-AT-001.md`, atomik cutover — eşin TEK güncel
 //!   oturumu). "Bekleyen yenileme 0, onaysız provisional 0" spec metninde YOKTUR: #180'in uygulama
 //!   sözleşmesidir (S1 YAMA ADAYI 1) — burada BEYANLI VARSAYIM olarak sınanır.
@@ -35,10 +51,17 @@
 //! Hub'ın standart çıktısı (log satırları) geçici dizinde `hub-<n>.log`'a yazılır ve kırmızıda
 //! basılır.
 //!
-//! Akış: bağlan → (öncesi) alice→bob `PRE` metin, her biri teslim beklenerek → (uçuşta) `BURST`
-//! metin beklemeden + hemen `SIGKILL` → (sırası) hub ölüyken `DURING` metin + bob→alice bir metin →
+//! Akış: bağlan → (öncesi) alice→bob `PRE` metin, her biri teslim beklenerek → (uçuşta) hub
+//! aktarırken `BURST_LIVE` metin beklemeden → hub `SIGSTOP` ile dondurulur → `BURST_FROZEN` metin →
+//! [`FREEZE_WIRE`] bekleme → `SIGKILL` → (sırası) hub ölüyken `DURING` metin + bob→alice bir metin →
 //! yeniden başlat → (sonrası) `AFTER` metin → hepsinin teslimi ve alındısı → bob→alice ikinci tur +
 //! alice→bob dosya.
+//!
+//! Uçuştaki veri (düzenek ön koşulu, ürün iddiası değil): donmuş hub hiçbir datagramı aktaramaz,
+//! bu yüzden dondurmadan sonra gönderilen `BURST_FROZEN` metnin hiçbiri öldürmeden önce teslim
+//! EDİLEMEZ — pay bir yarışa bağlı değildir. Uçlardan hub'a giden datagramlar donmuş sürecin UDP
+//! soketinin alım kuyruğunda okunmadan bekler ve `SIGKILL` ile soketle birlikte yok olur; öldürme
+//! anında kuyruğun dolu olduğu `/proc/net/udp` `rx_queue` ile ölçülür (Linux).
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File};
@@ -67,9 +90,16 @@ const OUTAGE: Duration = Duration::from_secs(2);
 const KILL_DRAIN: Duration = Duration::from_millis(500);
 /// Koşul döngüsünün adımı.
 const POLL: Duration = Duration::from_millis(20);
-/// Öncesi / uçuşta / sırası / sonrası alice→bob metin sayıları.
+/// Hub dondurulduktan (`SIGSTOP`) sonra `SIGKILL`'e dek beklenen süre: uçların bu arada gönderdiği
+/// (yeni ya da yeniden gönderilen) datagramlar donmuş hub'ın alım kuyruğunda birikir. Düzenek
+/// parametresidir.
+const FREEZE_WIRE: Duration = Duration::from_secs(1);
+/// Öncesi / uçuşta / sırası / sonrası alice→bob metin sayıları. Uçuşta = hub aktarırken
+/// (`BURST_LIVE`) + hub donmuşken (`BURST_FROZEN`).
 const PRE: usize = 10;
-const BURST: usize = 40;
+const BURST_LIVE: usize = 20;
+const BURST_FROZEN: usize = 20;
+const BURST: usize = BURST_LIVE + BURST_FROZEN;
 const DURING: usize = 10;
 const AFTER: usize = 10;
 const TOTAL: usize = PRE + BURST + DURING + AFTER;
@@ -122,10 +152,47 @@ fn free_udp_port() -> u16 {
         .port()
 }
 
+/// UDP soket kuyruğu (`/proc/net/udp`, Linux): `rx_queue` = alım kuyruğunda okunmamış bayt (çekirdek
+/// muhasebesi), `drops` = kuyruk dolu olduğu için düşen datagram.
+#[derive(Clone, Copy)]
+struct UdpQueue {
+    rx_queue: u64,
+    drops: u64,
+}
+
+impl UdpQueue {
+    fn show(q: Option<Self>) -> String {
+        q.map_or_else(
+            || "yok".to_owned(),
+            |q| format!("rx_queue={}B,drops={}", q.rx_queue, q.drops),
+        )
+    }
+}
+
+/// Yerel portu `port` olan UDP soketinin kuyruğu; tablo okunamazsa ya da satır yoksa `None`.
+/// Sütunlar: `sl local_address rem_address st tx_queue:rx_queue tr tm->when retrnsmt uid timeout
+/// inode ref pointer drops` (adresler onaltılık).
+fn udp_queue(port: u16) -> Option<UdpQueue> {
+    let table = fs::read_to_string("/proc/net/udp").ok()?;
+    let suffix = format!(":{port:04X}");
+    table.lines().skip(1).find_map(|line| {
+        let cols: Vec<&str> = line.split_whitespace().take(16).collect();
+        if cols.len() < 13 || !cols[1].ends_with(&suffix) {
+            return None;
+        }
+        let (_, rx) = cols[4].split_once(':')?;
+        Some(UdpQueue {
+            rx_queue: u64::from_str_radix(rx, 16).ok()?,
+            drops: cols.last()?.parse().ok()?,
+        })
+    })
+}
+
 /// Gerçek hub süreci: aynı ikili, aynı `hub.json`, aynı `--listen`; her başlatma ayrı log dosyası.
 struct HubProcess {
     bin: PathBuf,
     config: PathBuf,
+    port: u16,
     listen: String,
     log_dir: PathBuf,
     child: Option<Child>,
@@ -173,6 +240,31 @@ impl HubProcess {
                 );
             }
             assert!(Instant::now() < deadline, "hub-server açılış satırı yok");
+            thread::sleep(POLL);
+        }
+    }
+
+    /// `SIGSTOP` (`kill -STOP`): süreç donar, soketi açık kalır; gelen datagramlar alım kuyruğunda
+    /// okunmadan bekler. Dönüşte süreç durdurulmuştur (`/proc/<pid>/stat` durumu `T`, Linux).
+    fn freeze(&mut self, deadline: Instant) {
+        let pid = self.child.as_ref().expect("çalışan hub").id();
+        let status = Command::new("kill")
+            .arg("-STOP")
+            .arg(pid.to_string())
+            .status()
+            .expect("kill -STOP çalıştı");
+        assert!(status.success(), "kill -STOP {pid}: {status}");
+        let stat = PathBuf::from(format!("/proc/{pid}/stat"));
+        loop {
+            let line = fs::read_to_string(&stat).expect("/proc/<pid>/stat (Linux)");
+            // `pid (comm) durum ...`: `comm` boşluk/parantez içerebilir, durum son `)`'dan sonradır.
+            let state = line
+                .rsplit_once(')')
+                .and_then(|(_, rest)| rest.split_whitespace().next());
+            if state == Some("T") {
+                return;
+            }
+            assert!(Instant::now() < deadline, "hub donmadı: {line}");
             thread::sleep(POLL);
         }
     }
@@ -295,7 +387,8 @@ impl Net {
     fn start(deadline: Instant) -> Self {
         let root = TempDir::new();
         let out = root.0.join("authority");
-        let listen = format!("127.0.0.1:{}", free_udp_port());
+        let port = free_udp_port();
+        let listen = format!("127.0.0.1:{port}");
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("saat")
@@ -317,6 +410,7 @@ impl Net {
         let mut hub = HubProcess {
             bin: hub_bin(),
             config: out.join(HUB_FILE_NAME),
+            port,
             listen,
             log_dir: root.0.clone(),
             child: None,
@@ -475,10 +569,19 @@ fn s4_hub_process_killed_mid_flight_restarts_and_sessions_recover() {
         });
     }
 
-    // Uçuşta: beklemeden BURST metin, ardından hemen SIGKILL.
-    for i in PRE..PRE + BURST {
+    // Uçuşta (1/2): hub aktarırken beklemeden BURST_LIVE metin.
+    for i in PRE..PRE + BURST_LIVE {
         send(&mut net, &mut sent, i);
     }
+    // Uçuşta (2/2): hub dondurulur, ardından BURST_FROZEN metin; donmuş hub hiçbirini aktaramaz.
+    let frozen = Instant::now();
+    net.hub.freeze(frozen + SETUP);
+    let queue_at_freeze = udp_queue(net.hub.port);
+    for i in PRE + BURST_LIVE..PRE + BURST {
+        send(&mut net, &mut sent, i);
+    }
+    thread::sleep(FREEZE_WIRE.saturating_sub(frozen.elapsed()));
+    let queue_at_kill = udp_queue(net.hub.port);
     let killed = Instant::now();
     net.hub.kill();
     let kill_call = killed.elapsed();
@@ -487,24 +590,42 @@ fn s4_hub_process_killed_mid_flight_restarts_and_sessions_recover() {
     thread::sleep(KILL_DRAIN);
     net.pump();
     let delivered_at_kill = delivered_distinct(&net.bob);
+    let frozen_delivered = (PRE + BURST_LIVE..PRE + BURST)
+        .filter(|i| delivered_count(&net.bob, &a2b(*i)) > 0)
+        .count();
     let alice_probe = net.alice.node.probe_for_test().expect("sonda");
     eprintln!(
         "HUB-RESTART-OLCUM kill: sent={sent_at_kill} delivered={delivered_at_kill} \
-         in_flight={} alice_outstanding_units={} kill_call_ms={}",
+         in_flight={} frozen_delivered={frozen_delivered} alice_outstanding_units={} \
+         frozen_ms={} hub_udp_at_freeze={} hub_udp_at_kill={} kill_call_ms={}",
         sent_at_kill - delivered_at_kill,
         alice_probe.outstanding_units,
+        ms(killed.duration_since(frozen)),
+        UdpQueue::show(queue_at_freeze),
+        UdpQueue::show(queue_at_kill),
         ms(kill_call)
     );
-    // Düzenek ön koşulu (ürün iddiası değil): öldürme anında teslim > 0, < N ve en az bir ileti
-    // gönderilmiş ama teslim edilmemiş.
+    // Düzenek ön koşulu (ürün iddiası değil): öldürme anında eski hub üstünden teslim > 0; donmuş
+    // hub'a gönderilenlerin hiçbiri teslim edilmedi (yarışsız: aktaracak süreç yoktu); donmuş hub'ın
+    // soketinde okunmamış datagram vardı (veri telde, hub'da, aktarılmamış).
     assert!(
-        delivered_at_kill > 0 && delivered_at_kill < TOTAL,
-        "ön koşul: 0 < teslim ({delivered_at_kill}) < N ({TOTAL})"
+        (PRE..TOTAL).contains(&delivered_at_kill),
+        "ön koşul: PRE ({PRE}) ≤ teslim ({delivered_at_kill}) < N ({TOTAL})"
+    );
+    assert_eq!(
+        frozen_delivered, 0,
+        "ön koşul: hub donmuşken gönderilen {BURST_FROZEN} metnin hiçbiri teslim edilmedi"
     );
     assert!(
-        delivered_at_kill < sent_at_kill,
-        "ön koşul: öldürme anında uçuşta ileti var (gönderilen {sent_at_kill}, teslim \
-         {delivered_at_kill})"
+        sent_at_kill - delivered_at_kill >= BURST_FROZEN,
+        "ön koşul: öldürme anında uçuşta ≥ {BURST_FROZEN} ileti (gönderilen {sent_at_kill}, \
+         teslim {delivered_at_kill})"
+    );
+    let queue_at_kill = queue_at_kill.expect("/proc/net/udp'de hub soketi (Linux)");
+    assert!(
+        queue_at_kill.rx_queue > 0,
+        "ön koşul: öldürme anında donmuş hub'ın alım kuyruğunda okunmamış datagram var ({})",
+        UdpQueue::show(Some(queue_at_kill))
     );
 
     // Sırası: hub ölüyken alice DURING metin, bob bir metin.
@@ -526,8 +647,9 @@ fn s4_hub_process_killed_mid_flight_restarts_and_sessions_recover() {
     net.respawn_hub(restart_at + SETUP);
     let restarted = Instant::now();
     eprintln!(
-        "HUB-RESTART-OLCUM restart: outage_ms={} spawn_ms={}",
+        "HUB-RESTART-OLCUM restart: outage_ms={} (dondurmadan: {}) spawn_ms={}",
         ms(restarted.duration_since(killed)),
+        ms(restarted.duration_since(frozen)),
         ms(restarted.duration_since(restart_at))
     );
 
@@ -575,11 +697,14 @@ fn s4_hub_process_killed_mid_flight_restarts_and_sessions_recover() {
     );
 
     // (e) ikinci tur: bob→alice B2A_AFTER metin + alice→bob dosya (yeni oturumda).
+    let mut b2a_sent: Vec<MsgId> = vec![b2a_during];
     for i in 1..=B2A_AFTER {
-        net.bob
-            .node
-            .send_text(ALICE, &b2a(i))
-            .unwrap_or_else(|e| panic!("bob send_text {i}: {e}"));
+        b2a_sent.push(
+            net.bob
+                .node
+                .send_text(ALICE, &b2a(i))
+                .unwrap_or_else(|e| panic!("bob send_text {i}: {e}")),
+        );
     }
     let payload: Vec<u8> = (0..FILE_BYTES)
         .map(|i| u8::try_from(i % 251).expect("< 256"))
@@ -593,6 +718,10 @@ fn s4_hub_process_killed_mid_flight_restarts_and_sessions_recover() {
         .expect("send_file");
     net.wait_until("ikinci tur: bob→alice metinler", recovery, |n| {
         (1..=B2A_AFTER).all(|i| n.alice.texts_from(BOB).iter().any(|(_, _, t)| *t == b2a(i)))
+    });
+    net.wait_until("ikinci tur: bob'da bütün alındılar", recovery, |n| {
+        let got = n.bob.receipts_from(ALICE);
+        b2a_sent.iter().all(|id| got.contains(id))
     });
     net.wait_until("ikinci tur: dosya teslim + alındı", recovery, |n| {
         n.bob
@@ -665,9 +794,19 @@ fn s4_hub_process_killed_mid_flight_restarts_and_sessions_recover() {
         B2A_AFTER + 1,
         "alice'te fazladan metin yok"
     );
+    let mut bob_receipts: HashMap<MsgId, usize> = HashMap::new();
+    for id in net.bob.receipts_from(ALICE) {
+        *bob_receipts.entry(id).or_default() += 1;
+    }
+    assert_eq!(
+        bob_receipts.len(),
+        b2a_sent.len(),
+        "bob'da her gönderdiği msg_id için alındı, bilinmeyen alındı yok: {bob_receipts:?}"
+    );
     assert!(
-        net.bob.receipts_from(ALICE).contains(&b2a_during),
-        "bob hub ölüyken yolladığı metnin alındısını aldı"
+        b2a_sent.iter().all(|id| bob_receipts.get(id) == Some(&1)),
+        "bob'da Receipt (eş, msg_id) başına tam bir kez (hub ölüyken yollanan dahil): \
+         {bob_receipts:?}"
     );
 
     // (a) iki uçta Closed yok; Connected bir kez (oturum kaybı Application'a görünmedi, düğüm
@@ -709,6 +848,15 @@ fn s4_hub_process_killed_mid_flight_restarts_and_sessions_recover() {
         bob_probe.delivery_channel_drops,
         bob_probe.not_ready_drops,
     );
+    // INT-03 (5) ölçütü (`docs/plans/SPRINT-2-BACKLOG.md` A6): bağlam uyuşmazlığı ve teslim kanalı
+    // düşmesi yok. `not_ready_drops` ölçüt değildir (gözlem).
+    for (name, p) in [(ALICE, &alice_probe), (BOB, &bob_probe)] {
+        assert_eq!(
+            (p.ctx_mismatch_drops, p.delivery_channel_drops),
+            (0, 0),
+            "{name}: (ctx_mismatch_drops, delivery_channel_drops)"
+        );
+    }
     eprintln!(
         "HUB-RESTART-OLCUM hub: alice={:?} bob={:?}",
         alice_probe.hub, bob_probe.hub
