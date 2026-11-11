@@ -113,6 +113,8 @@ jobs:
   # karşılaştırır: port kolunda tamamlanan tohum kaybı, süre/bayt/birim-teslim medyanı > taban × 1,02
   # ya da teslim düşüşü → KIRMIZI; eski motor (ürün geri alma yolu) bayt düzeyinde aynı olmalı.
   # Muafiyet yalnız `crates/adaptive-transport/tests/cc_gate_allow.txt` ile (gerekçeli, PR'da görünür).
+  # Kayıt bütünlüğü: beklenen hücre/tohum kümesi (`cc_gate_expect.txt`) iki tarafta da doğrulanır; eksik,
+  # fazla, yinelenen ya da yarım kayıt ve taban koşusu hatası KIRMIZI (yutulmaz).
   # Netem hücrelerini, dönüş yolu baytını ya da uygulama teslimini KORUMAZ (sim = motor; netem gece).
   cc-regression:
     name: cc regression gate (sim, taban ↔ aday)
@@ -130,21 +132,28 @@ jobs:
           rm -f "$RUNNER_TEMP/head.jsonl"
           CC_GATE_OUT="$RUNNER_TEMP/head.jsonl" cargo test -p adaptive-transport --all-features --locked --test cc_port_sim
           wc -l "$RUNNER_TEMP/head.jsonl"
-      - name: taban (PR base SHA, aynı target dizini)
+      - name: karşılaştırıcı öz-testi (kalıcı; inceleme 2026-11-11'deki iki yanlış-yeşil dahil)
+        run: python3 -I scripts/ci/cc_gate_compare.py --selftest
+      - name: taban (PR base SHA; AYNI düzenek — HEAD'in sim harness'ı taban motoruyla; aynı target dizini)
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -o pipefail
-          if [ -z "$BASE_SHA" ]; then echo "taban SHA yok (workflow_dispatch) — atlanıyor"; exit 0; fi
+          if [ -z "$BASE_SHA" ]; then echo "::error title=CC_GATE::taban SHA yok (yalnız pull_request tetiklemesinde koşar)"; exit 1; fi
           git worktree add "$RUNNER_TEMP/base" "$BASE_SHA"
+          # Aynı ölçüm düzeneği iki checkout'ta: tabanda harness (cc_port_sim.rs) HEAD'inkiyle değiştirilir;
+          # ölçülen şey taban MOTORUDUR. Harness taban API'siyle derlenmezse koşu kırmızıdır (yutulmaz):
+          # motor API'si değişen PR harness'ı iki tarafta da derlenir tutmalıdır.
+          cp crates/adaptive-transport/tests/cc_port_sim.rs "$RUNNER_TEMP/base/crates/adaptive-transport/tests/cc_port_sim.rs"
           rm -f "$RUNNER_TEMP/base.jsonl"
           ( cd "$RUNNER_TEMP/base" && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" CC_GATE_OUT="$RUNNER_TEMP/base.jsonl" \
-              cargo test -p adaptive-transport --all-features --locked --test cc_port_sim ) || echo "::warning title=CC_GATE::taban koşusu kırmızı/eksik — taban kaydı olmadan karşılaştırma atlanır"
-          [ -f "$RUNNER_TEMP/base.jsonl" ] && wc -l "$RUNNER_TEMP/base.jsonl" || true
-      - name: karşılaştır
+              cargo test -p adaptive-transport --all-features --locked --test cc_port_sim )
+          wc -l "$RUNNER_TEMP/base.jsonl"
+      - name: karşılaştır (tohum kümesi, bütünlük, gerileme)
         run: |
           python3 -I scripts/ci/cc_gate_compare.py "$RUNNER_TEMP/base.jsonl" "$RUNNER_TEMP/head.jsonl" \
-            --allow crates/adaptive-transport/tests/cc_gate_allow.txt --tol 0.02
+            --allow crates/adaptive-transport/tests/cc_gate_allow.txt \
+            --expect crates/adaptive-transport/tests/cc_gate_expect.txt --tol 0.02
 
   # ── Gerçek zamanlı runtime sahipliği (K4G-05b-R; sahip kararı 2026-11-11) ──
   # `crates/client-core/tests/k4g05b_runtime_ownership.rs`: gerçek runtime + UDP loopback röle,
