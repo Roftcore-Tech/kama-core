@@ -56,7 +56,7 @@ U6–U8 quinn'den değil BBR draft'ından alınmıştır; "quinn'e sadakat" değ
 **U9** Startup'ta paket koruması (Linux BBR v1; `bbr.rs` başlığı, PR #179).
 **U10–U13 (2026-11-11, r25 düşük bant kökü; PR #181)** — hepsi RFC 9002'ye *yaklaştırma*, ek sapma değil:
 **U10** PTO probu hedefi uçuşta KALIR (`sender.rs` `emit_tail_probe` / `e2a_emit_second_probe`,
-`!cc_on()` dalı eski yol). Eski yol hedefi `K_TOMB × T_loss(INITIAL_RTT)` ≈ 3 s TTL'li tombstone'a
+`!cc_on()` dalı eski yol). Eski yol hedefi `K_TOMB × T_loss(INITIAL_RTT)` = 8 × 9/8 × 100 ms ≈ 0,9 s TTL'li tombstone'a
 emekli ediyordu; RTT örneği olmayan yüksek gecikmeli hatta ACK süresi dolmuş kayda düşüyor → RTT örneği
 yok, teyit yok, her PTO turu yeni kopya (r25 sim: ilk RTT örneği 85 s'de). RFC 9002 §6.2.4 / quinn:
 PTO kayıp ilanı değildir, `in_flight` değişmez · **U11** `rfc9002_cc_port` taban PTO tavanı yok
@@ -67,8 +67,11 @@ two" → "MUST send at least one"): serileştirme bilinmezken ikinci kopya kuyru
 (`queue_losses`, `cc_on`): kopya zaten yeniden iletimdir; quinn/RFC 9002 çerçeve düzeyinde
 tekilleştirmez (çift gönderim). Kopya da kaybolursa kendi ilanı yeniden kuyruklar.
 Sim r25 (25 B/s iki yön, 300 ms, %20, 60 × 65 B / 10 s, 10 tohum medyanı): port ileti p50 95 → 17
-(U10+U11) → 11,4 (U12) → 8,5 s (U13), retx 87 → 28; eski motor 5,4 s / 17. Öbür hücreler bayt düzeyinde
-aynı (kesinti p50 84,8 → 84,3; U13 kesinti seed1 retx 83 → 82).
+(U10+U11) → 11,4 (U12) → 8,5 s (U13), retx 87 → 28. Sim'in `Legacy` kolu (`Sender::new()`, kuyruk
+kurtarması KAPALI, IW 0) 5,4 s / 17 — bu kol ürünün geri alma profili DEĞİLDİR; ürün eski profili
+(`validated_v1` + IW 2·MTU) sim'de 106,8 s (H2 bağımsız incelemesi, PR #185; aynı kök: RTT örneksiz prob +
+tombstone/Karn), bench netem'de ise 25–28 s → sim bu kolu abartır, doğru taban bench K0 / gerçek yığın.
+Öbür hücreler bayt düzeyinde aynı (kesinti p50 84,8 → 84,3; U13 kesinti seed1 retx 83 → 82).
 
 ## (b) Paket/birim muhasebesi — koddan cevaplar
 

@@ -6749,7 +6749,7 @@ impl Sender {
         //
         // [CC-PORT U10] Port motorunda hedef UÇUŞTA KALIR (RFC 9002 §6.2.4: PTO kayıp ilanı değildir,
         // prob ek bir pakettir; quinn `in_flight` değişmez). Eski yol hedefi tombstone'a emekli ediyor
-        // ve TTL'i `K_TOMB × T_loss(INITIAL_RTT)` (≈ 3 s) olduğundan RTT örneği olmayan yüksek
+        // ve TTL'i `K_TOMB × T_loss(INITIAL_RTT)` (8 × 9/8 × 100 ms ≈ 0,9 s) olduğundan RTT örneği olmayan yüksek
         // gecikmeli / düşük bantlı hatta hedefin ACK'i süresi dolmuş kayda düşüyordu: RTT örneği YOK,
         // teyit YOK, her PTO turu yeni kopya (r25 sim: ilk örnek 85 s'de, retx 87 ↔ 24). Her iletim
         // taze seq taşıdığından (`rtt_rule_v11`) hangi kopya ACK'lenirse onun kaydından örnek alınır;
