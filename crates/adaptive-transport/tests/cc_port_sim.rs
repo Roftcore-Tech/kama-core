@@ -74,9 +74,7 @@ impl Engine {
             Engine::CcPort => Sender::with_cc_port(),
             Engine::LegacyProduct | Engine::LegacyProductK1A6 => {
                 let mut s = Sender::new();
-                s.set_tail_recovery_config(
-                    adaptive_transport::tail_recovery::TailRecoveryConfig::validated_v1(),
-                );
+                s.set_tail_recovery_config(legacy_tail_config());
                 s.set_initial_window(adaptive_transport::sender::InitialWindowConfig {
                     bytes: 2 * MTU,
                 });
@@ -95,9 +93,7 @@ impl Engine {
             }
             Engine::LegacyTailV1 => {
                 let mut s = Sender::new();
-                s.set_tail_recovery_config(
-                    adaptive_transport::tail_recovery::TailRecoveryConfig::validated_v1(),
-                );
+                s.set_tail_recovery_config(legacy_tail_config());
                 s
             }
             Engine::LegacyIw2 => {
@@ -121,6 +117,24 @@ impl Engine {
     }
 }
 const ENGINES: [Engine; 2] = [Engine::Legacy, Engine::CcPort];
+
+/// [H2] Eski ürün kollarının kuyruk kurtarması: `validated_v1`; `CC_LEGACY_PTO_CAP_OFF=1` ile
+/// taban PTO tavanı (10 s) kaldırılır (portun U11'inin eski motordaki karşılığı; ayrıştırma
+/// deneyi, ürün değişikliği değil).
+fn legacy_tail_config() -> adaptive_transport::tail_recovery::TailRecoveryConfig {
+    let mut c = adaptive_transport::tail_recovery::TailRecoveryConfig::validated_v1();
+    if std::env::var("CC_LEGACY_PTO_CAP_OFF").is_ok() {
+        c.max_pto_ns = u64::MAX;
+    }
+    // `CC_LEGACY_PTO_INIT_MS=<ms>`: RTT örneksiz ilk PTO (validated_v1: 1 000 ms).
+    if let Some(m) = std::env::var("CC_LEGACY_PTO_INIT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        c.initial_pto_ns = m * MS;
+    }
+    c
+}
 
 /// Sınırlı FIFO darboğaz: `rate_bps` serileştirme, `limit` paket kuyruk, `delay_ns` yayılım.
 struct Bottleneck {
