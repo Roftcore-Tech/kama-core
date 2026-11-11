@@ -16,7 +16,9 @@
 //! * Port motoru (`Sender::with_cc_port`): o tikte ve sonraki tikte RECOVER_FWD yok, emergency
 //!   `Arq`'ta kalır, güven 1000.
 //! * Koruma (yanlış negatif yok): uçuşta veri varken ACK gelmezse güven yine düşer ve
-//!   RECOVER_FWD'ye girilir; PTO probları sessizliği sıfırlamaz (aktif dönem içinde damga sabit).
+//!   RECOVER_FWD'ye girilir; PTO probları da, dönem içinde gelen yeni `AppData` da sessizliği
+//!   sıfırlamaz (aktif dönem içinde damga sabit).
+//! * Çapanın `last_ack` yarısı: dönem içinde ACK'ler geldikçe sessizlik son ACK'ten sayılır.
 //! * Eski motor (`Sender::new`): bugünkü davranış pinli — düzeltme `cc_on()` ile kapılı, eski
 //!   motorda resume'un ilk mesajı RECOVER_FWD'ye girer (Dup2, sonraki tik Dup3).
 //!
@@ -136,10 +138,101 @@ fn cc_port_true_silence_after_resume_still_escalates() {
     }
     assert!(saw_fwd, "ACK yok → RECOVER_FWD'e girmeli (§11)");
     let first = first_escalate_ns.expect("emergency bir noktada escalate etmeli");
+    // Düzeltmesiz port resume tikinin kendisinde escalate eder (güven 210, Dup2). Düzeltmeyle güven
+    // ancak sessizlik `max(3·srtt, 2·EAI)` eşiğini aşınca düşer ve escalation güven < 300 ister
+    // (ölçülen: güven < 1000 ≈ +4.2 s, escalation ≈ +14 s). 3 s bu iki durumu ayıran gevşek sınırdır.
     assert!(
         first > T_RESUME + 3 * SEC,
-        "escalation sessizlik eşiğinden önce olmamalı (ilk escalation t={first} ns)"
+        "escalation resume'dan en az 3 s sonra olmalı (ilk escalation t={first} ns)"
     );
+}
+
+/// Koruma (aktif dönem kapısı): uygulama sessizlik boyunca yeni `AppData` vermeye devam ederse
+/// dönem KAPANMAZ ve sessizlik dönemin ilk gönderiminden sayılmaya devam eder. Aktif dönem içinde
+/// gelen `AppData` damgayı yenilerse dönüş yolu ölürken uygulama gönderdikçe motor hiç
+/// escalate etmez — bu test o yanlış negatifi yakalar.
+#[test]
+fn cc_port_app_keeps_sending_during_silence_still_escalates() {
+    let mut s = warm_then_idle(Sender::with_cc_port());
+    let mut saw_fwd = false;
+    let mut first_escalate_ns: Option<u64> = None;
+    let mut prev_conf = 1000;
+    // 60 s boyunca her 200 ms'de bir yeni birim; hiç ACK yok.
+    for k in 0..300u64 {
+        let now = T_RESUME + k * 200 * MS;
+        s.on_event(Event::AppData(unit(1 + k)), now);
+        assert!(
+            s.inflight_bytes() > 0,
+            "ACK yokken dönem kapanmamalı (t={now} ns)"
+        );
+        let conf = ack_conf(&s);
+        assert!(
+            conf <= prev_conf,
+            "sessizlik boyunca yeni AppData güveni artırmamalı (t={now} ns: {prev_conf} → {conf})"
+        );
+        prev_conf = conf;
+        if s.state() == SenderState::RecoverFwd {
+            saw_fwd = true;
+        }
+        if s.emergency_level() > EmergencyLevel::Arq && first_escalate_ns.is_none() {
+            first_escalate_ns = Some(now);
+        }
+    }
+    assert!(
+        prev_conf < 300,
+        "60 s ACK sessizliği sonunda güven escalate eşiğinin altında olmalı (güven {prev_conf})"
+    );
+    assert!(
+        saw_fwd,
+        "uygulama gönderse de ACK yok → RECOVER_FWD'e girmeli"
+    );
+    let first = first_escalate_ns.expect("uygulama gönderse de emergency escalate etmeli");
+    assert!(
+        first > T_RESUME + 3 * SEC,
+        "escalation resume'dan en az 3 s sonra olmalı (ilk escalation t={first} ns)"
+    );
+}
+
+/// `max(last_ack, first_send)` çapasının `last_ack` yarısı: aktif dönem içinde ACK'ler geldikçe
+/// sessizlik son ACK'ten sayılır, dönem başından değil. Her adımda yalnız önceki adımların
+/// birimleri ACK'lenir, en yeni birim uçuşta kalır → dönem 30 s boyunca hiç kapanmaz.
+#[test]
+fn cc_port_acks_inside_active_period_keep_confidence_full() {
+    let mut s = warm_then_idle(Sender::with_cc_port());
+    let mut unacked: Vec<u64> = Vec::new();
+    for k in 0..150u64 {
+        let t_send = T_RESUME + k * 200 * MS;
+        let out = s.on_event(Event::AppData(unit(1 + k)), t_send);
+        let fresh: Vec<u64> = out
+            .iter()
+            .filter(|d| d.kind != TransmitKind::FecParity)
+            .map(|d| d.seq)
+            .collect();
+        assert!(!fresh.is_empty(), "birim aynı tikte tele çıkmalı (k={k})");
+        assert_eq!(ack_conf(&s), 1000, "gönderim tikinde güven FULL (k={k})");
+
+        if !unacked.is_empty() {
+            let t_ack = t_send + 100 * MS;
+            s.on_event(ack(&unacked), t_ack);
+            assert!(
+                s.inflight_bytes() > 0,
+                "en yeni birim uçuşta: dönem açık kalmalı (k={k})"
+            );
+            assert_eq!(ack_conf(&s), 1000, "ACK tikinde güven FULL (k={k})");
+            unacked.clear();
+        }
+        unacked.extend(fresh);
+        assert_ne!(
+            s.state(),
+            SenderState::RecoverFwd,
+            "ACK akarken RECOVER_FWD yok (k={k})"
+        );
+        assert_eq!(
+            s.emergency_level(),
+            EmergencyLevel::Arq,
+            "ACK akarken emergency yok (k={k})"
+        );
+    }
 }
 
 /// Eski motor: bugünkü davranış pinli (düzeltme `cc_on()` ile kapılı). Boşta süre sessizliğe

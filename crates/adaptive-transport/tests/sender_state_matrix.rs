@@ -105,6 +105,8 @@ fn name(i: usize) -> &'static str {
 //        resume'un İLK paketi forward-redundancy (duplicate) rejimine girer. PreConverge donması
 //        bunu engellemez, çünkü önceki epizottan `srtt` Some'dur. Sub-kbps'te resume anında
 //        kopya üretmek, yolun kötü olduğuna dair HİÇBİR kanıt yokken bant harcamaktır.
+//        [CC-PORT] Port motorunda giderildi (§5.1 `first_send` aktif dönem başına;
+//        `tests/ack_confidence_idle.rs`). Eski motorda açık; davranış orada pinli.
 //
 // NORMATİF YASAK — belgelenmesi gereken üç sınıf (ölçümden SONRA da geçerli):
 //   (a) Idle ve PreConverge dışında HİÇBİR durumdan PreConverge'e dönülemez. Cold-start önseli
