@@ -3658,7 +3658,6 @@ fn fec_ingest(
                     // RECOVERED yalnız teslim kapısına giren birimi bildirir: gönderici bildirilen
                     // birimi iptal eder; ayrıştırılamayan (teslim edilmeyen) birim bildirilseydi
                     // sessizce kaybolurdu. Bildirilmeyen birimi ARQ taşımaya devam eder.
-                    recovered_esis.push(r.esi);
                     // [S1B] Kurtarılan chunk DATA ile AYNI kapıdan geçer: fragmentasyon kapalıysa
                     // doğrudan teslim, açıksa birleştiriciye girer — yani FEC kurtarımı ÇOK
                     // PARÇALI mesajlarda da işe yarar (kurtarılan symbol'ün prefix'i mesaj
