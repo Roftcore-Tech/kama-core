@@ -23,8 +23,10 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use client_core::transport::EnvelopeLink;
 use kama_app::clock::{MonotonicClock, SystemClock};
-use kama_provision::format::DeviceName;
+use kama_contracts::handles::PeerRef;
+use kama_provision::format::{load_device_config, DeviceName};
 use kama_provision::provision::InitRequest;
 
 use crate::{Built, KamaNode, NodeEvent, NodeListener, NODE_TICK};
@@ -245,6 +247,30 @@ pub(crate) fn manual(phone: &Phone, app_clock: Arc<dyn MonotonicClock>) -> (Buil
     let (listener, events) = listener();
     let built =
         KamaNode::build(&phone.config, &phone.data, listener, app_clock).expect("düğüm kurulmalı");
+    (built, events)
+}
+
+/// [T3-GLARE] [`manual`], dışarıdan verilen zarf taşıyıcısıyla (`KamaNode::build_with_link`; ölçüm
+/// kurucusunun gövdesi — röle kaydı yok, hub kipi yok). Taşıyıcı düğümün kimliğiyle kurulur
+/// (`link(me)`; ör. `client_core::memory_link::MemoryHub::link`).
+pub(crate) fn manual_with_link(
+    phone: &Phone,
+    app_clock: Arc<dyn MonotonicClock>,
+    link: impl FnOnce(PeerRef) -> Box<dyn EnvelopeLink>,
+) -> (Built, Events) {
+    let config = load_device_config(&phone.config).expect("cihaz dosyası");
+    let me = PeerRef::from_dest_hash(*config.dest_hash.bytes());
+    // Gizli anahtar taşıyan dosya içeriği burada düşer (kurulum dosyayı yeniden okur).
+    drop(config);
+    let (listener, events) = listener();
+    let built = KamaNode::build_with_link(
+        &phone.config,
+        &phone.data,
+        listener,
+        app_clock,
+        Some(link(me)),
+    )
+    .expect("düğüm kurulmalı");
     (built, events)
 }
 

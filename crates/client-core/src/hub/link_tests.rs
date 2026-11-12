@@ -1599,3 +1599,164 @@ fn fix1_response_from_other_peer_is_not_a_conflict() {
     assert_eq!(t.link.counters().late_response, 1);
     assert!(notices(&mut t.link).is_empty());
 }
+
+// ── [T3-GLARE] niyet yolunda terk edilen deneme (#180 takibi) ────────────────────────────────
+
+/// `from`'dan `until`'e (HARİÇ) zamanlayıcı vadeleriyle ilerler; heartbeat'leri yanıtlar (bağ
+/// düşmez: "INIT çıkmadı" iddiası bağsızlıktan boş geçmez) ve tele çıkan STORE_MESSAGE
+/// çerçevelerini çıktıkları anla döner.
+fn stores_until(t: &mut T, from: Instant, until: Instant) -> Vec<(Instant, Out)> {
+    /// Adım tavanı (bir saatte ≤ 30 s'lik T3 ve ≥ 8 s'lik heartbeat aralığı bunun çok altında).
+    const MAX_STEPS: usize = 10_000;
+    let mut out = Vec::new();
+    let mut now = from;
+    for _ in 0..MAX_STEPS {
+        for o in drain(&mut t.link, now) {
+            if o.method == frame::HEARTBEAT {
+                t.link.on_control(now, &hb_ack(o.rid));
+            } else if o.method == method::STORE_MESSAGE {
+                out.push((now, o));
+            }
+        }
+        assert!(t.link.is_bound(), "bağ sürdü (heartbeat yanıtlandı)");
+        match t.link.next_deadline() {
+            Some(d) if d < until => now = d.max(now),
+            _ => return out,
+        }
+    }
+    panic!("adım tavanı aşıldı");
+}
+
+/// `stores` içinde `p` eşine giden INIT STORE'larının `t0`'dan uzaklığı (saniye).
+fn init_offsets(stores: &[(Instant, Out)], p: u8, t0: Instant) -> Vec<u64> {
+    stores
+        .iter()
+        .filter(|(_, o)| o.payload[4] == envelope::SESSION_INIT && o.payload[5..37] == [p; 32])
+        .map(|(at, _)| (*at - t0).as_secs())
+        .collect()
+}
+
+/// [T3-GLARE] Glare'i KAYBEDEN ucun `HubLink` dizisi (S3 K10; transport'un çağrı sırası): kendi
+/// INIT'i gitti ve `StoreResp{OK, h1}` aldı; eşin INIT'i başka bir handle'la (`h2`) geldi ve
+/// yanıtlandı; S1 `Ready` eşin hattıyla geldi (`peer_ready(eş, h2)`; bileşim kökü
+/// `KnownHandles::handle_of`'u kullanır, son bağ yanıtın hattıdır). Bu `Ready` kendi denemesiyle
+/// EŞLEŞMEZ: T3 sürer — durduracak olan transport'un terkidir (`cancel_attempt`; glare kaybı
+/// S4 C3 / KR-18 durma listesinde adıyla yok, identity §16 glare kuralından türetilir).
+/// Terkten sonra `ATTEMPT_MAX_AGE`'e dek tele INIT çıkmaz ve bildirim yok. Yanıtlayan yolu
+/// etkilenmez (eşin INIT'i yeniden gelirse saklı RESPONSE bayt-özdeş gider), çözülen oturumun
+/// hattı kurulu hat olarak kalır (ROUTE_MISS{h2} → `HandleLost`: oturum yenilenebilir); terk
+/// edilen denemenin hattı bildirim üretmez.
+#[test]
+fn t3g_glare_losers_attempt_runs_until_cancelled_then_stays_quiet() {
+    let mut t = bound();
+    let t0 = t.t0;
+    let mine = t.link.send_init(t0, peer(0xB0), 1, vec![1]).unwrap();
+    let f = init_out(&mut t, t0).remove(0);
+    t.link.on_control(t0, &store_resp(f.rid, code::OK, 0x77));
+    let theirs = vec![0x33; 40];
+    t.link
+        .on_control(t0, &deliver(0x78, [0xB0; 32], 1, &theirs));
+    assert_eq!(
+        events(&mut t.link),
+        vec![
+            LinkEvent::HandleAssigned {
+                attempt: mine,
+                hub_handle: HubHandle::from_raw(0x77)
+            },
+            LinkEvent::IncomingInit {
+                hub_handle: HubHandle::from_raw(0x78),
+                envelope_type: 1,
+                bytes: theirs.clone()
+            }
+        ]
+    );
+    t.link
+        .send_response(t0, peer(0xB0), HubHandle::from_raw(0x78), 2, vec![0x44; 30])
+        .unwrap();
+    let resp = init_out(&mut t, t0).remove(0);
+    assert_eq!(resp.payload[4], envelope::SESSION_INIT_RESPONSE);
+    t.link.peer_ready(peer(0xB0), HubHandle::from_raw(0x78));
+    assert_eq!(
+        t.link.counters().attempt_completed,
+        0,
+        "Ready eşin hattıyla"
+    );
+    assert_eq!(
+        init_out(&mut t, t0 + s(1)),
+        vec![f.clone()],
+        "terk edilmeyen deneme T3'e devam eder"
+    );
+
+    t.link.cancel_attempt(mine);
+    assert_eq!(t.link.counters().attempt_cancelled, 1);
+    t.link
+        .on_control(t0 + s(2), &deliver(0x78, [0xB0; 32], 1, &theirs));
+    assert_eq!(
+        init_out(&mut t, t0 + s(2)),
+        vec![resp],
+        "yanıtlayan yolu sürer: saklı RESPONSE"
+    );
+    let quiet = stores_until(&mut t, t0 + s(2), t0 + ATTEMPT_MAX_AGE);
+    assert_eq!(
+        init_offsets(&quiet, 0xB0, t0),
+        Vec::<u64>::new(),
+        "terkten sonra tele INIT yok"
+    );
+    assert!(notices(&mut t.link).is_empty(), "terk bildirim üretmez");
+
+    let late = t0 + ATTEMPT_MAX_AGE;
+    t.link.on_control(late, &route_miss(0x77));
+    assert!(
+        notices(&mut t.link).is_empty(),
+        "terk edilen denemenin hattı"
+    );
+    assert_eq!(t.link.counters().route_miss_unknown, 1);
+    t.link.on_control(late, &route_miss(0x78));
+    assert_eq!(
+        notices(&mut t.link),
+        vec![HubNotice::HandleLost {
+            peer: peer(0xB0),
+            h: HubHandle::from_raw(0x78)
+        }],
+        "çözülen oturumun hattı kurulu hat"
+    );
+}
+
+/// [T3-GLARE] Koruma: terk YALNIZ o denemeyi durdurur. Başka eşin denemesi `StoreResp OK`'tan
+/// sonra da T3 kadansıyla sürer (KR-18: 1, 3, 7, 15, 31 s); aynı eşe sonradan açılan yeni deneme
+/// de öyle; eski kimliğin ikinci terki yeni denemeye dokunmaz.
+#[test]
+fn t3g_cancel_stops_only_that_attempt() {
+    let mut t = bound();
+    let t0 = t.t0;
+    let to_b = t.link.send_init(t0, peer(0xB0), 1, vec![1]).unwrap();
+    t.link.send_init(t0, peer(0xC0), 1, vec![2]).unwrap();
+    for (o, h) in init_out(&mut t, t0).iter().zip([0x77, 0x79]) {
+        t.link.on_control(t0, &store_resp(o.rid, code::OK, h));
+    }
+    assert_eq!(events(&mut t.link).len(), 2, "iki HandleAssigned");
+    t.link.cancel_attempt(to_b);
+    let first = stores_until(&mut t, t0, t0 + s(32));
+    assert_eq!(init_offsets(&first, 0xB0, t0), Vec::<u64>::new());
+    assert_eq!(init_offsets(&first, 0xC0, t0), vec![1, 3, 7, 15, 31]);
+
+    let t1 = t0 + s(40);
+    t.link.send_init(t1, peer(0xB0), 1, vec![3]).unwrap();
+    let new = stores_until(&mut t, t1, t1 + ms(1));
+    assert_eq!(init_offsets(&new, 0xB0, t1), vec![0], "yeni deneme gider");
+    t.link
+        .on_control(t1, &store_resp(new[0].1.rid, code::OK, 0x7B));
+    t.link.cancel_attempt(to_b);
+    assert_eq!(
+        t.link.counters().attempt_cancelled,
+        1,
+        "eski kimlik: etkisiz"
+    );
+    let second = stores_until(&mut t, t1, t1 + s(32));
+    assert_eq!(init_offsets(&second, 0xB0, t1), vec![1, 3, 7, 15, 31]);
+    assert_eq!(init_offsets(&second, 0xC0, t1), vec![21], "C: 61 s");
+}
+
+/// [T3-GLARE] Bileşim düzeyi (transport + gerçek `HubLink`, tel üzerinde T3 sayımı).
+#[path = "link_glare_tests.rs"]
+mod glare;
