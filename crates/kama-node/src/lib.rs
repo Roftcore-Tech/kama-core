@@ -111,7 +111,7 @@ pub use event::{
 pub use files::RECEIVED_FILES_DIR;
 pub use handle::{FileHandle, StreamHandle};
 #[cfg(feature = "test-util")]
-pub use probe::{EnvelopeCounts, NodeProbe, SessionEventCounts, SessionProbe};
+pub use probe::{EnvelopeCounts, NodeProbe, PeerSessionProbe, SessionEventCounts, SessionProbe};
 
 use files::ReceivedFiles;
 use node::{AppEngines, Command, NodeLoop, Reply, Shared, COMMAND_QUEUE_CAP, REPLY_CAPACITY};
