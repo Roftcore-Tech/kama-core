@@ -62,6 +62,18 @@
 //! INIT başlatır, Application hiçbir olay görmez. Niyet yalnız `Ready`, `cancel` ya da kapalı bir
 //! `ConnectAbandoned` nedeniyle biter.
 //!
+//! [T3-GLARE] Niyetin terk edilen INIT'inin taşıyıcı tekrarı (T3) durdurulur
+//! ([`EnvelopeLink::cancel_init`]). S4 C3'ün kapalı durma listesinden: `cancel` ("bağlantı niyeti
+//! iptal edildi") ve Crypto'nun bekleyeni düşürmesi ("deneme açıkça sonlandırılıp yeni denemeye
+//! geçildi": taze INIT yeni deneme açar). Glare kaybı (S3 K10: Crypto bekleyeni ve ephemeral'ini
+//! sildi, niyet kazananın oturumuyla çözülür) o listede ADIYLA YOKTUR; durdurma identity §16
+//! glare kuralından türetilir: o INIT'e gelecek her RESPONSE `Failed` olur, tekrar kazananda
+//! yalnız onaylanamayacak bir provisional doğurur. Kazananın kendi denemesinin tekrarı eşleşen
+//! `Ready`'de durur (bileşim kökü, `HubLink::peer_ready`). Niyet bu yüzden ölmez: çözüldüğü
+//! oturumun sonraki kaybı kurulu oturum yolundan ([`ClientTransport::relink`]) yenilenir.
+//! SINIR: yenileme glare'inde kaybedenin yenilemesi glare çözülünce terk EDİLMEZ (Crypto olay
+//! vermez); tek terk noktası eşin provisional'ının onayıdır (`on_confirmed`).
+//!
 //! # Bağlam-önce dağıtım (K4G-01 / D1 v1.1)
 //!
 //! Bağlam yükün tipinden türetilmez; bağlam dağıtıcıyı seçer. Yük, bağlam doğrulanmadan çözülmez.
@@ -85,9 +97,10 @@
 //!
 //! # KAPSAM DIŞI (iş emri §4)
 //!
-//! `Suspended` / `LongOutage` tetikleri, heartbeat, backoff, rebind ve INIT'in byte-özdeş yeniden
-//! gönderimi (T3: oturum kayıp başlamadan kurulur) bu sprintte YOKTUR; `ConnectProgress` yalnız
-//! `Measuring` fazını üretir.
+//! `Suspended` / `LongOutage` tetikleri, heartbeat, backoff ve rebind bu adaptörde YOKTUR. INIT'in
+//! byte-özdeş yeniden gönderimi (T3) adaptörün değil taşıyıcının işidir (hub kipinde `HubLink`,
+//! S4 C3); adaptör yalnız terk ettiği denemeyi bildirir ([HLR], [T3-GLARE]). `ConnectProgress`
+//! yalnız `Measuring` fazını üretir.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::net::SocketAddr;
@@ -411,6 +424,10 @@ struct Intent {
     pending: SessionHandle,
     /// `Ready`'de ilk gönderim olur (S1 K6; Crypto'ya verilmez).
     early: Option<Vec<u8>>,
+    /// [T3-GLARE] `pending`'in INIT'inin taşıyıcı denemesi (`None`: taşıyıcı INIT'i almadı). INIT
+    /// terk edilince — niyet iptal edildi, glare kaybedildi (niyet kazananın oturumuyla çözüldü) ya
+    /// da Crypto bekleyeni düşürdü — tekrarı durdurulur ([`EnvelopeLink::cancel_init`]).
+    attempt: Option<LinkAttempt>,
 }
 
 /// Kendi başlattığımız yenileme.
@@ -430,6 +447,12 @@ struct Renewal {
 /// [K4G-01b] Adaptör bunu OTURUM başına tutar (`ClientTransport::reorder`, `SessionHandle`
 /// anahtarlı): karşı ucun bir oturumu tek bir uçtur. `unit < next` ve tutulan birim için ikinci
 /// kopya YOK SAYILIR — aynı oturumun farklı eş yuvalarından gelen kopyaları burada tekilleşir.
+///
+/// [F3] Eksik sıra başı HİÇBİR ZAMAN atlanmaz: buraya gelen her birim veri alıcısında ACK'lenmiştir,
+/// atlamak ACK'lenmiş birimi atmak olurdu. Bellek sınırı burada değil veri alıcısının kabul
+/// penceresindedir ([`ExpectedSessions::set_admit_window`]): `next`'ten pencere genişliği ve
+/// ötesindeki birim ACK'lenmez, buraya hiç gelmez; `held` en çok `genişlik − 1` birim tutar. `next`
+/// her ilerleyişte veri alıcısına yayımlanır ([`ExpectedSessions::advance_head`]).
 #[derive(Default)]
 struct Reorder {
     next: u64,
@@ -448,25 +471,18 @@ pub struct ReorderDiag {
 }
 
 impl Reorder {
-    /// Birimi koyar; sırası gelen birimler `out`'a akar. Tutulan birim `cap`'i aşarsa en küçük
-    /// boşluk atlanır (motorun gönderim penceresi bunu meşru trafikte imkânsız kılar).
+    /// Birimi koyar; sırası gelen birimler `out`'a akar. Eksik sıra başı beklenir, atlanmaz (F3).
     fn push(
         &mut self,
         unit: u64,
         session: SessionHandle,
         payload: Vec<u8>,
-        cap: usize,
         out: &mut VecDeque<Delivered>,
     ) {
         if unit < self.next {
             return; // veri alıcısının ilk-teslim penceresinin dışından gelen geç kopya
         }
         self.held.entry(unit).or_insert((session, payload));
-        if self.held.len() > cap {
-            if let Some((&first, _)) = self.held.first_key_value() {
-                self.next = first;
-            }
-        }
         while let Some(entry) = self.held.first_entry() {
             if *entry.key() != self.next {
                 break;
@@ -491,7 +507,8 @@ pub enum UnitTraceKind {
     /// (motorun sırasız ilk teslimi; sıralamadan ÖNCE). `unit` = `unit_id`.
     Drained,
     /// Alıcı: oturumun sıralı teslim sınırı (`Reorder::next`) `unit` değerine ilerledi; ondan küçük
-    /// birimler teslim kuyruğuna verildi (ya da tutulan birim tavanı aşılınca atlandı).
+    /// birimler teslim kuyruğuna verildi. [F3] Sınır yalnız sıradaki birim geldiğinde ilerler
+    /// (eksik sıra başı atlanmaz).
     Released,
 }
 
@@ -643,6 +660,11 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         // [K4G-01 / D1 (v1.1)] Veri alıcısının beklediği oturumlar bu adaptörün oturum tablosundan
         // yayımlanır (`sync_expected`); kurulumda tablo boştur → hiçbir `Session(_)` beklenmez.
         let expected = ExpectedSessions::new();
+        // [F3] Sıra başı için yer koruma: oturum sıralayıcısı ([`Reorder`]) eksik sıra başını
+        // atlamaz; veri alıcısı sıra başından `max_inflight_units` ve ötesindeki teslim kimliğini
+        // kabul etmez (ACK'siz; gönderici yeniden iletir). Tutulan birim sayısı böylece sınırlıdır.
+        expected
+            .set_admit_window(u64::try_from(cfg.runtime.max_inflight_units).unwrap_or(u64::MAX));
         let ctx_counters = CtxDispatchCounters::new();
         let server = rt.block_on(ServerEndpoint::bind_expecting(
             cfg.data_bind,
@@ -725,6 +747,24 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     #[must_use]
     pub fn delivery_dropped(&self) -> u64 {
         self.server.delivery_dropped()
+    }
+
+    /// [F4] Salt-okunur telemetri: teslim kanalı doluyken motora verilmeyen (ACK'lenmeyen) DATA
+    /// datagramı sayısı (`ServerStats::data_not_admitted_full`). Uygulama `recv`'i sürdükçe sıfır
+    /// kalır; sıfırdan büyükse uygulama drenajı gecikmiştir — birim kaybolmaz, gönderici yeniden
+    /// iletir (INV-ACK-DELIVER-1).
+    #[must_use]
+    pub fn data_not_admitted_full(&self) -> u64 {
+        self.server.data_not_admitted_full()
+    }
+
+    /// [F3] Salt-okunur telemetri: oturumun kabul penceresinin dışında kaldığı için motora
+    /// verilmeyen (ACK'lenmeyen) DATA ve RECOVERED'a yazılmayan FEC kurtarımı sayısı
+    /// (`ServerStats::data_not_admitted_window`). Sıra başı eksikken gönderici ilerlediğinde artar;
+    /// birim kaybolmaz, sırası gelince yeniden iletimle kabul edilir.
+    #[must_use]
+    pub fn data_not_admitted_window(&self) -> u64 {
+        self.server.data_not_admitted_window()
     }
 
     /// [K4G-05] Salt-okunur telemetri: ucu açık her S1 oturumunun motor / ARQ aynası
@@ -995,7 +1035,13 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             return;
         }
         // (c) Yanıtlayan rolde kurulan oturum. Glare'i kaybettiysek Crypto bu eşe bekleyen
-        // INIT'imizi sildi; niyetimiz bu oturumla çözülür.
+        // INIT'imizi sildi; niyetimiz bu oturumla çözülür. [T3-GLARE] O INIT terk edildi: taşıyıcı
+        // tekrarı durur (S4 C3 listesinde adıyla yok; identity §16 glare'den türetilir, bkz. modül
+        // belgesi). `Ready` onu güvenilir biçimde durdurmaz: bileşim kökünün
+        // `peer_ready`'ye verdiği handle eşe son bağlanan hattır — taşıyıcı sırasına göre eşin
+        // INIT'inin hattı olabilir, bizim denememizinki değil — ve T3 `ATTEMPT_MAX_AGE`'e dek
+        // sürerdi. Niyet bu oturumla çözüldüğü için ölmez: oturumun sonraki kaybı kurulu oturum
+        // yolundan (`relink`, `restart_renewal`) yenilenir.
         if let Some(peer) = self.responder_peer.remove(&h) {
             let link = self.hub_of.remove(&h);
             let early = self
@@ -1004,8 +1050,7 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                 .position(|it| it.peer == peer)
                 .and_then(|i| {
                     let it = self.intents.remove(i);
-                    self.attempts.retain(|_, p| *p != it.pending);
-                    self.hub_of.remove(&it.pending);
+                    self.drop_intent_init(&it);
                     it.early
                 });
             self.activate(h, peer, early, link);
@@ -1102,6 +1147,17 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         self.close_unopened(r.pending);
     }
 
+    /// [T3-GLARE] Niyetin bekleyen INIT'i terk edildi (niyet iptal edildi — S4 C3 — ya da glare'i
+    /// kaybedip kazananın oturumuyla çözüldü — identity §16, bkz. modül belgesi): taşıyıcı tekrarı
+    /// durur ve zarf tablolarındaki izi silinir. Crypto'ya komut VERMEZ (kapatmak çağıranın işidir).
+    fn drop_intent_init(&mut self, it: &Intent) {
+        if let Some(attempt) = it.attempt {
+            self.link.cancel_init(attempt);
+        }
+        self.attempts.retain(|_, p| *p != it.pending);
+        self.hub_of.remove(&it.pending);
+    }
+
     /// Eşin gönderim kabul eden (etkin) oturumu.
     fn active_session_of(&self, peer: PeerRef) -> Option<SessionHandle> {
         self.sessions
@@ -1196,7 +1252,13 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
 
     fn on_crypto_closed(&mut self, h: SessionHandle, reason: CloseReason) {
         // (1) Bekleyen niyetin INIT'i anahtar hijyeniyle düştü: niyet kalıcıdır → taze INIT.
+        // [T3-GLARE] Düşen INIT'in taşıyıcı tekrarı durur; yeni INIT yeni deneme açar (S4 C3
+        // "deneme açıkça sonlandırılıp yeni denemeye geçildi").
         if let Some(i) = self.intents.iter().position(|it| it.pending == h) {
+            let attempt = self.intents[i].attempt.take();
+            if let Some(attempt) = attempt {
+                self.link.cancel_init(attempt);
+            }
             self.attempts.retain(|_, p| *p != h);
             self.hub_of.remove(&h);
             self.reinitiate(i);
@@ -1268,9 +1330,11 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                 self.intents[i].pending = session;
                 // [K4G-01] INIT'ten ÖNCE beklenir (tablo ile veri yolu arasında yarış yok).
                 self.expected.insert_pending(session);
-                if let Ok(a) = self.link.send_init(peer, envelope_type, bytes) {
+                let attempt = self.link.send_init(peer, envelope_type, bytes).ok();
+                if let Some(a) = attempt {
                     self.attempts.insert(a, session);
                 }
+                self.intents[i].attempt = attempt;
             }
             _ => {
                 // Kalıcı yerel hata (eş malzemesi yok): niyet kapalı nedenle biter.
@@ -1370,7 +1434,6 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     // ── teslimler ──
 
     fn drive_deliveries(&mut self) {
-        let cap = self.runtime_cfg.max_inflight_units;
         while self.inbox.len() < MAX_INBOX {
             let Some(d) = self.server.try_next_delivery() else {
                 break;
@@ -1399,14 +1462,16 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             // yeni oturum eski oturumun `next`'ine takılmaz; aynı oturumun başka bir yuvadan
             // (adres) gelen kopyası burada tekilleşir.
             let reorder = self.reorder.entry(h).or_default();
-            #[cfg(any(test, feature = "test-util"))]
             let next_before = reorder.next;
-            reorder.push(d.unit_id, h, d.payload, cap, &mut self.inbox);
-            // [KTP2-F0 · A] Salt gözlem: sıralı teslim sınırı ilerlediyse yeni değeri.
-            #[cfg(any(test, feature = "test-util"))]
-            if reorder.next != next_before {
+            reorder.push(d.unit_id, h, d.payload, &mut self.inbox);
+            let next = reorder.next;
+            if next != next_before {
+                // [F3] Sıra başı ilerledi: veri alıcısının kabul penceresi de ilerler.
+                self.expected.advance_head(h, next);
+                // [KTP2-F0 · A] Salt gözlem: sıralı teslim sınırının yeni değeri.
+                #[cfg(any(test, feature = "test-util"))]
                 if let Some(trace) = self.unit_trace.as_mut() {
-                    trace.push(UnitTraceKind::Released, h, reorder.next, 0);
+                    trace.push(UnitTraceKind::Released, h, next, 0);
                 }
             }
         }
@@ -1737,7 +1802,8 @@ impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> 
             } => {
                 // [K4G-01] INIT'ten ÖNCE beklenir (tablo ile veri yolu arasında yarış yok).
                 self.expected.insert_pending(session);
-                if let Ok(a) = self.link.send_init(peer, envelope_type, bytes) {
+                let attempt = self.link.send_init(peer, envelope_type, bytes).ok();
+                if let Some(a) = attempt {
                     self.attempts.insert(a, session);
                 }
                 self.intents.push(Intent {
@@ -1745,6 +1811,7 @@ impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> 
                     peer,
                     pending: session,
                     early: early_unit.map(|u| u.bytes),
+                    attempt,
                 });
             }
             // G1: dizinde olmayan eş → opak `Failed` → kalıcı yerel hata (eş malzemesi yok).
@@ -1894,8 +1961,8 @@ impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> 
         let _ = self.command(SessionCommand::Close {
             session: it.pending,
         });
-        self.attempts.retain(|_, p| *p != it.pending);
-        self.hub_of.remove(&it.pending);
+        // [T3-GLARE] S4 C3 "bağlantı niyeti iptal edildi": INIT'in taşıyıcı tekrarı durur.
+        self.drop_intent_init(&it);
         self.sync_expected();
         self.events.push_back(SessionEvent::ConnectAbandoned(
             ticket,
@@ -1922,30 +1989,43 @@ mod tests {
         let h = SessionHandle::from_raw(7);
         let mut r = Reorder::default();
         let mut out = VecDeque::new();
-        r.push(1, h, b"b".to_vec(), 16, &mut out);
+        r.push(1, h, b"b".to_vec(), &mut out);
         assert!(out.is_empty(), "0 gelmeden 1 teslim edilmez");
-        r.push(0, h, b"a".to_vec(), 16, &mut out);
-        r.push(1, h, b"tekrar".to_vec(), 16, &mut out);
+        r.push(0, h, b"a".to_vec(), &mut out);
+        r.push(1, h, b"tekrar".to_vec(), &mut out);
         let got: Vec<Vec<u8>> = out.into_iter().map(|d| d.unit).collect();
         assert_eq!(got, [b"a".to_vec(), b"b".to_vec()]);
     }
 
+    /// [F3] Eksik sıra başı hiçbir sayıda tutulan birimde atlanmaz; gelince hepsi sırayla akar.
+    /// (Bellek sınırı veri alıcısının kabul penceresindedir: `tests/reorder_no_skip.rs`.)
     #[test]
-    fn reorder_is_bounded_and_advances_past_a_gap_only_over_cap() {
+    fn reorder_never_skips_a_missing_head() {
         let h = SessionHandle::from_raw(1);
         let mut r = Reorder::default();
         let mut out = VecDeque::new();
-        for u in 1..=3 {
-            r.push(u, h, vec![u as u8], 3, &mut out);
+        const AHEAD: u64 = 10_000;
+        for u in 1..=AHEAD {
+            r.push(u, h, u.to_be_bytes().to_vec(), &mut out);
         }
-        assert!(out.is_empty(), "tavan dolmadan boşluk atlanmaz");
-        r.push(4, h, vec![4], 3, &mut out);
-        let got: Vec<u8> = out.into_iter().map(|d| d.unit[0]).collect();
+        assert!(
+            out.is_empty(),
+            "sıra başı (0) eksikken hiçbir şey akmaz, atlama yok"
+        );
+        assert_eq!(r.next, 0);
+        assert_eq!(r.held.len() as u64, AHEAD);
+        r.push(0, h, 0u64.to_be_bytes().to_vec(), &mut out);
+        let got: Vec<u64> = out
+            .into_iter()
+            .map(|d| u64::from_be_bytes(d.unit.try_into().expect("8 B")))
+            .collect();
         assert_eq!(
             got,
-            [1, 2, 3, 4],
-            "tavan aşılınca en küçük boşluk atlanır, sıra korunur"
+            (0..=AHEAD).collect::<Vec<_>>(),
+            "sıra korunur, kayıp yok"
         );
+        assert!(r.held.is_empty());
+        assert_eq!(r.next, AHEAD + 1);
     }
 
     /// [K4G-11] Salt-okunur erişimciler taze ürün adaptöründe: Crypto'nun tutmadığı tutamacın

@@ -1562,6 +1562,9 @@ const K_WL: u32 = 8;
 /// `min(mesaj-deadline, ...)` kolu motorda uygulanamaz (per-unit deadline engine'e taşınmıyor —
 /// bench/app katmanında) → TTL tek-kollu; spec §5 zeyli. Saat-sınıfı: T_loss-türevi (kanal, ZM-2).
 const K_TOMB: u32 = 8;
+/// [CC-PORT U10 sınır] Bir birimin uçuşta tutulan en çok kopya sayısı (orijinal + PTO probları).
+/// Aşınca en eski kopya tombstone'a emekli edilir; RFC 9002 davranışı (hepsi uçuşta) bu tavana dek.
+const CC_MAX_UNIT_COPIES_IN_FLIGHT: usize = 8;
 /// [TUR-3a D-2/1] Estimator pencere çarpanları [CAL, matris {6,8,10}]:
 /// W_BTLBW = max(10s, K_BW×ack_epoch); W_RTPROP = max(10s, K_RTPROP×corrected_srtt);
 /// ack_epoch = max(corrected_srtt, EAI). Saat-sınıfı: kanal-türevi (ZM-2 — 10s wall-clock
@@ -1693,6 +1696,11 @@ pub struct Sender {
     e2a_tail_probe2: Option<(u64, Option<u64>, u32)>,
     /// [E2a gözlem] SALT GÖZLEM — hiçbir karar okumaz (INV-007).
     e2a_diag: crate::loss::E2aDiag,
+    /// [CC-PORT U13] Kayıp ilan edilen birimin daha taze kopyası uçuşta olduğu için yeniden
+    /// kuyruklanmayan kayıt sayısı (salt gözlem).
+    diag_cc_lost_copy_in_flight: u64,
+    /// [CC-PORT U16 (b)] ARQ kuyruğundaki sıra başının pencereden muaf PTO probu olarak çıkış sayısı.
+    diag_cc_pto_from_arq: u64,
     tail_probe_cancelled: u64, // observation-only (§7): due probes cancelled at emission (ACK-race: target no
     // longer outstanding). Distinct from token-starved (kept pending). Only mutated on the ON path.
     dup_queue: Vec<DupRec>, // §11 zamanlanmış forward-recovery kopyaları
@@ -2033,6 +2041,8 @@ impl Sender {
             e2a_latest_rtt: None,
             e2a_tail_probe2: None,
             e2a_diag: crate::loss::E2aDiag::default(),
+            diag_cc_lost_copy_in_flight: 0,
+            diag_cc_pto_from_arq: 0,
             tail_probe_cancelled: 0,
             dup_queue: Vec::new(),
             establish_probe_enabled: true,
@@ -2404,6 +2414,17 @@ impl Sender {
     #[must_use]
     pub fn e2a_flags(&self) -> crate::loss::E2aFlags {
         self.e2a
+    }
+
+    /// [CC-PORT U16 (b)] ARQ kuyruğundaki sıra başının pencereden muaf PTO probu olarak çıkışı.
+    #[must_use]
+    pub fn diag_cc_pto_from_arq(&self) -> u64 {
+        self.diag_cc_pto_from_arq
+    }
+    /// [CC-PORT U13] Taze kopyası uçuşta olduğu için yeniden kuyruklanmayan kayıp sayısı.
+    #[must_use]
+    pub fn diag_cc_lost_copy_in_flight(&self) -> u64 {
+        self.diag_cc_lost_copy_in_flight
     }
 
     /// [E2a gözlem] SALT GÖZLEM sayaçları ([`crate::loss::E2aDiag`]); hiçbir karar okumaz.
@@ -3362,8 +3383,9 @@ impl Sender {
             None
         };
         let mut v11_send_ns: Option<u64> = None;
-        // [CC-PORT] Bu çerçevede ilk kez onaylanan iletimler (bayt, app_limited) — quinn `on_ack`
-        // RTT güncellemesinden SONRA çağrılır (connection/mod.rs: rtt.update → congestion.on_ack).
+        // [CC-PORT] Bu çerçevede ilk kez onaylanan iletimler (bayt, app_limited). quinn'de sıra
+        // terstir: `congestion.on_ack` (connection/mod.rs:1530) RTT güncellemesinden (1551) ÖNCE
+        // çağrılır; Kama'da RTT örneği önce işlenir (beyanlı sıra farkı; D şeridi incelemesi 2026-11-11).
         let mut cc_acked: Vec<(u64, bool)> = Vec::new();
         for &seq in &ack.acked_seqs {
             // [TUR-6] delivered-anchor round: marker-sonrası gönderilen seq'in ilk ACK'i.
@@ -3674,8 +3696,47 @@ impl Sender {
                 // Emission (token + re-verify) happens in plan_arq_retransmits; the attempt is spent only on a real
                 // emission (§3 probe-due ≠ probe-sent). [K4G-05b-R] "Oldest" = oldest SOURCE-unit record
                 // (`oldest_probe_target`; a FEC repair record is never a probe target).
-                if self.tail_recovery.is_enabled() {
-                    let oldest = self.oldest_probe_target();
+                // [CC-PORT U14] Port motorunda RTT örneği yokken PTO probu KURULMAZ: PreConverge'de
+                // §3.3-B geometrik kopya merdiveni (0,5/1,5/3,5/7,5 s…) zaten aynı birimi yeniler;
+                // RFC 9002 PTO merdiveni (1/3/7 s…) onunla yan yana koşunca aynı birim iki merdivenden
+                // kopya alır (ürün zarfıyla r25 sim: ilk 8 s'de 7 kopya ↔ eski motor 4; 25 B/s'de her
+                // fazla 180 B paket ≈ 7 s kuyruk → ileti p50 +20 s). Spec §3.3-C ile aynı kural
+                // (PreConverge'de PTO dondurulur, geometrik kopya yerini alır); ilk örnekten sonra
+                // RFC 9002 PTO devreye girer (`on_ack_progress` kurar). `cc` yokken yol aynı.
+                // [CC-PORT U14 canlılık] Dondurma yalnız merdiven hedefi GERÇEKTEN taşıyorsa: en eski
+                // teyitsiz kaynak birimin `dup_queue`'da yeniden kurulan (interval > 0) bir kopya kaydı
+                // olmalı. Kayıt yoksa (ör. RecoverFwd'nin tek-atımlık kopyaları tükendi, merdiven
+                // teyitle/iptalle düştü) PTO probu kurulur — aksi hâlde RTT örneksiz hatta ilk paketin
+                // kaybı sessiz takılmaya dönerdi (Ö-CC ısınma gözlemi, #175: aday 4/50; bu dal PTO'yu
+                // yalnız merdiven canlıyken susturur). Merdiven kopyası pencere kapısına tabidir
+                // (denendi: pencereden muaf kopya 60 s kesintide kopya seli üretti — geri alındı).
+                // [CC-PORT U16 (b)] Portta prob hedefi, uçuştaki en eski teyitsiz kaynak kaydı İLE
+                // ARQ kuyruğundaki (`pending_lost`) en eski kaydın birim kimliği küçük olanıdır (RFC
+                // 9002 §6.2.4 "en eski onaysız veri"). ARQ yeniden iletimi uçuş penceresine tabidir;
+                // alıcı pencere dışı veriyi ACK'lemeyince pencere hiç boşalmaz ve sıra başı
+                // `pending_lost`'ta kilitli kalırdı — pencereden muaf prob onu taşır (§3 entegrasyon
+                // ölçümü: 4096 pencerede kalıcı durma). `cc` yokken eski seçim.
+                let oldest = if self.cc_on() {
+                    self.oldest_probe_target_or_pending()
+                } else {
+                    self.oldest_probe_target()
+                };
+                let ladder_serves_oldest = oldest
+                    .and_then(|seq| {
+                        self.inflight.get(&seq).map(|p| p.unit.id).or_else(|| {
+                            self.pending_lost
+                                .iter()
+                                .find(|r| r.seq == seq)
+                                .map(|r| r.unit.id)
+                        })
+                    })
+                    .is_some_and(|uid| {
+                        self.dup_queue
+                            .iter()
+                            .any(|d| d.unit.id == uid && d.interval_ns > 0)
+                    });
+                let u14_hold = self.cc_on() && self.rtt.srtt().is_none() && ladder_serves_oldest;
+                if self.tail_recovery.is_enabled() && !u14_hold {
                     let srtt = self.rtt.srtt().map(dur_ns);
                     let rttvar = dur_ns(self.rtt.rttvar());
                     if let ProbeDecision::ProbeDue { target_seq, .. } =
@@ -3860,10 +3921,35 @@ impl Sender {
                 // RECOVERED ile teyitli): kayıp MUHASEBESİ yukarıda ve aşağıda öncekiyle aynı (uçuş
                 // baytı, CC kayıp baytı, prob atfı, kader kanıtı, tombstone); yalnız yeniden kuyruk
                 // (`pending_lost`) ve geometrik kopya kurulmaz — teyitli birime karar yok.
-                let requeue = p.confirmed_release_ns.is_none();
+                let mut requeue = p.confirmed_release_ns.is_none();
                 if !requeue {
                     let c = &mut self.confirmed_cancels;
                     c.lost_not_requeued = c.lost_not_requeued.saturating_add(1);
+                }
+                // [CC-PORT U13] Aynı birimin DAHA SONRA gönderilmiş, henüz kayıp ilan edilmemiş bir
+                // kopyası (PTO probu, U10 ile uçuşta kalan hedefin kopyası) uçuştaysa yeniden kuyruk
+                // yok: o kopya zaten bu birimin yeniden iletimidir. quinn/RFC 9002 çerçeve düzeyinde
+                // tekilleştirmez (kayıp paketin çerçeveleri yeniden kuyruğa girer, prob kopyası da
+                // uçuştadır → çift gönderim); düşük bantta her fazla kopya kuyruğu doldurur (r25 sim:
+                // retx 33 ↔ eski motor 16; kayıp 12). Kopya da kaybolursa kendi ilanı yeniden kuyruklar.
+                // [CC-PORT U16 (a)] Taze kopya yalnız kaybı ARQ'ya DÖNEN kökenlerden sayılır (Data /
+                // Retransmit). `Duplicate` kopya sayılmaz: Duplicate kaybı tombstone da yeniden kuyruk
+                // da üretmez (yalnız geometrik kopya makinesini yeniden kurar; büyük birimde ilk
+                // basamak 1,5·(birim+SACK)/31 B·s⁻¹ ≈ 61 s). Duplicate'i taze sayınca orijinal
+                // ARQ'dan düşüyor ve birim ikisi de kaybolunca unutuluyordu (sim: t = 0 kesintisinde
+                // 3 birim; §3 entegrasyon ölçümü A ağacı 3/10 kalıcı durma, #175).
+                if requeue
+                    && self.cc_on()
+                    && p.origin != TransmitKind::FecParity
+                    && self.inflight.values().any(|q| {
+                        q.unit.id == p.unit.id
+                            && matches!(q.origin, TransmitKind::Data | TransmitKind::Retransmit)
+                            && q.send_ns > p.send_ns
+                    })
+                {
+                    requeue = false;
+                    self.diag_cc_lost_copy_in_flight =
+                        self.diag_cc_lost_copy_in_flight.saturating_add(1);
                 }
                 if p.origin == TransmitKind::Duplicate {
                     // [commit-B §3.7] Dup-kökenli kayıp tombstonesuz düşer → uçuş-sayısı burada.
@@ -6569,10 +6655,13 @@ impl Sender {
                     // [TUR-2c D-1/3 kol-2] Orijinalin tombstone'u SUPERSEDED: retx-sonrası-
                     // geç-orijinal-ACK kol-1'e düşemez (2b'de kayıt ilan-anında donuyordu).
                     self.mark_tombstone_superseded(seq);
+                    // [K4G-05b-R · HA bulgusu] Port motorunda tavan yok (`u8::MAX`): planlayıcı
+                    // 255'teki kaydı da yeniden iletir; düz `+ 1` debug'da taşma paniğiydi
+                    // (release'de 0'a sarardı). Doygun artırım (öbür üç yolla aynı).
                     let new_seq = self.track_sent(
                         rec.unit,
                         now_ns,
-                        rec.retx_count + 1,
+                        rec.retx_count.saturating_add(1),
                         TransmitKind::Retransmit,
                     );
                     out.push(TransmitDecision {
@@ -6648,6 +6737,25 @@ impl Sender {
         );
     }
 
+    /// [CC-PORT U10 sınır] Aynı birimin uçuştaki kopya sayısı `CC_MAX_UNIT_COPIES_IN_FLIGHT`'a
+    /// ulaştıysa en eski kopyayı tombstone'a emekli eder (SR-AUDIT-001: uzun kesintide tavansız PTO
+    /// uçuş haritasını sınırsız büyütmesin; tombstone havuzu kendi tavanıyla eski kaydı düşürür).
+    /// Yeni prob kopyası çağrıdan sonra `track_sent` ile eklenir; sınır bu yüzden "≥" ile bakılır.
+    fn cc_bound_unit_copies(&mut self, unit_id: u64, now_ns: u64) {
+        let copies: Vec<u64> = self
+            .inflight
+            .iter()
+            .filter(|(_, p)| p.unit.id == unit_id && p.origin != TransmitKind::FecParity)
+            .map(|(&seq, _)| seq)
+            .collect();
+        if copies.len() >= CC_MAX_UNIT_COPIES_IN_FLIGHT {
+            if let Some(&oldest) = copies.iter().min() {
+                self.retire_inflight_to_tombstone(oldest, now_ns);
+                self.mark_tombstone_superseded(oldest);
+            }
+        }
+    }
+
     /// DR-ARQ-PRODUCT-TAIL-1 (gated; default OFF → no-op): emit at most one forced PTO tail probe. Called from
     /// schedule_transmit AFTER the normal ARQ planner and REGARDLESS of sender state (a PTO probe is independent of
     /// the RecoverArq state machine). ARQ-eligibility override ONLY — emission still uses the safe token
@@ -6666,6 +6774,41 @@ impl Sender {
             self.e2a_emit_second_probe(out, now_ns);
             return;
         };
+        // [CC-PORT U16 (b)] Hedef ARQ kuyruğunda (`pending_lost`) bekleyen sıra başıysa prob o
+        // kayıttır: pencere kapısı YOK (`try_send_probe`), kayıt `Retransmit` olarak uçuşa döner
+        // (kaybolursa yine ARQ'ya düşer). Jeton yoksa kayıt kuyrukta kalır, yuva korunur.
+        if self.cc_on() && !self.inflight.contains_key(&target) {
+            if let Some(pos) = self.pending_lost.iter().position(|r| r.seq == target) {
+                let rec = self.pending_lost[pos];
+                if !self.try_send_probe(rec.unit.size) {
+                    self.tail_probe_pending = Some(target);
+                    return;
+                }
+                self.pending_lost.remove(pos);
+                self.mark_tombstone_superseded(rec.seq);
+                self.act_tail_probe_emitted = self.act_tail_probe_emitted.saturating_add(1);
+                if self.act_tail_probe_first_ns == 0 {
+                    self.act_tail_probe_first_ns = now_ns;
+                }
+                let new_seq = self.track_sent(
+                    rec.unit,
+                    now_ns,
+                    rec.retx_count.saturating_add(1),
+                    TransmitKind::Retransmit,
+                );
+                out.push(TransmitDecision {
+                    kind: TransmitKind::Retransmit,
+                    seq: new_seq,
+                    unit_id: rec.unit.id,
+                    size: rec.unit.size,
+                    send_record: None,
+                });
+                self.tail_recovery.on_probe_sent(now_ns);
+                self.tail_recovery.record_probe(rec.unit.size, false);
+                self.diag_cc_pto_from_arq = self.diag_cc_pto_from_arq.saturating_add(1);
+                return;
+            }
+        }
         // [K4G-05b-R] A target whose unit was confirmed meanwhile (decision-free record) is cancelled too.
         let Some((unit, retx_count)) = self
             .inflight
@@ -6702,8 +6845,21 @@ impl Sender {
         }
         // Supersede the still-outstanding original: retire it inflight→tombstone (no loss declaration), then bump
         // the tombstone so the original's late ACK is Karn-excluded, then emit the probe copy under a fresh seq.
-        self.retire_inflight_to_tombstone(target, now_ns);
-        self.mark_tombstone_superseded(target);
+        //
+        // [CC-PORT U10] Port motorunda hedef UÇUŞTA KALIR (RFC 9002 §6.2 + §7.5: PTO kayıp ilanı
+        // değildir, prob ek bir pakettir; §6.2.4'ün "MAY mark … as lost" seçeneği KULLANILMAZ;
+        // quinn `in_flight` değişmez, q:1658-1693). Eski yol hedefi tombstone'a emekli ediyor
+        // ve TTL'i `K_TOMB × T_loss(INITIAL_RTT)` (8 × 9/8 × 100 ms ≈ 0,9 s) olduğundan RTT örneği olmayan yüksek
+        // gecikmeli / düşük bantlı hatta hedefin ACK'i süresi dolmuş kayda düşüyordu: RTT örneği YOK,
+        // teyit YOK, her PTO turu yeni kopya (r25 sim: ilk örnek 85 s'de, retx 87 ↔ 24). Her iletim
+        // taze seq taşıdığından (`rtt_rule_v11`) hangi kopya ACK'lenirse onun kaydından örnek alınır;
+        // teyitli birimin öbür kopyaları K4G-05b-R kuralıyla kararsız düşer (yeniden kuyruk yok).
+        if !self.cc_on() {
+            self.retire_inflight_to_tombstone(target, now_ns);
+            self.mark_tombstone_superseded(target);
+        } else {
+            self.cc_bound_unit_copies(unit.id, now_ns);
+        }
         // [K4G-05b-R] Doygun: port motorunun yeniden iletim tavanı `u8::MAX`'tır
         // (`RetxConfig::rfc9002_cc_port`), 255'teki kayıt prob hedefi olabilir.
         let new_seq = self.track_sent(
@@ -6726,7 +6882,12 @@ impl Sender {
         // az önceki prob kopyasıdır (aynı birim taze seq ile ikinci kez — RFC 9002 §6.2.4 izinli).
         // Yuva bu turun kimliğiyle (on_probe_sent SONRASI `(armed_at, probe_index)`) kurulur; önceki
         // turdan kalan yuvanın üzerine yazılır (sonraki turun ilk probu yuvayı boşaltır).
-        if self.e2a.pto_probes() >= 2 {
+        // [CC-PORT U12] Port motorunda RTT örneği yokken tur başına TEK prob (RFC 9002 §6.2.4 "MAY
+        // send up to two"; U14 ile portta RTT örneği yokken prob zaten kurulmaz — bu kural ilk
+        // örnekten sonraki örneksiz dönemler içindir): hız/serileştirme bilinmezken ikinci kopya darboğaz
+        // kuyruğunu kendi eliyle doldurur (25 B/s: 130 B kopya ≈ 5,2 s). İlk örnekten sonra iki prob.
+        let two_probes = self.e2a.pto_probes() >= 2 && (!self.cc_on() || self.rtt.srtt().is_some());
+        if two_probes {
             self.e2a_tail_probe2 = self.oldest_probe_target().map(|seq| {
                 (
                     seq,
@@ -6749,6 +6910,31 @@ impl Sender {
             .iter()
             .find(|(_, p)| p.origin != TransmitKind::FecParity && p.confirmed_release_ns.is_none())
             .map(|(&seq, _)| seq)
+    }
+
+    /// [CC-PORT U16 (b)] Uçuştaki en eski teyitsiz kaynak kaydı ile `pending_lost`'taki en eski
+    /// kaydın birim kimliği küçük olanının seq'i (eşitlikte uçuş kaydı). Sonuç `pending_lost`'tan
+    /// geliyorsa `emit_tail_probe` kaydı oradan alıp pencereden muaf yeniden iletir.
+    fn oldest_probe_target_or_pending(&self) -> Option<u64> {
+        let inflight = self
+            .inflight
+            .iter()
+            .filter(|(_, p)| {
+                p.origin != TransmitKind::FecParity && p.confirmed_release_ns.is_none()
+            })
+            .min_by_key(|(_, p)| p.unit.id)
+            .map(|(&seq, p)| (p.unit.id, seq));
+        let pending = self
+            .pending_lost
+            .iter()
+            .min_by_key(|r| r.unit.id)
+            .map(|r| (r.unit.id, r.seq));
+        match (inflight, pending) {
+            (Some((iu, is)), Some((pu, ps))) => Some(if pu < iu { ps } else { is }),
+            (Some((_, is)), None) => Some(is),
+            (None, Some((_, ps))) => Some(ps),
+            (None, None) => None,
+        }
     }
 
     /// [E2a PTO 2] İkinci prob yuvasının emisyonu (KK-M1-07). Birincinin kurallarıyla aynı:
@@ -6789,8 +6975,13 @@ impl Sender {
         if self.act_tail_probe_first_ns == 0 {
             self.act_tail_probe_first_ns = now_ns;
         }
-        self.retire_inflight_to_tombstone(target, now_ns);
-        self.mark_tombstone_superseded(target);
+        // [CC-PORT U10] Birinci probla aynı: port motorunda hedef uçuşta kalır.
+        if !self.cc_on() {
+            self.retire_inflight_to_tombstone(target, now_ns);
+            self.mark_tombstone_superseded(target);
+        } else {
+            self.cc_bound_unit_copies(unit.id, now_ns);
+        }
         let new_seq = self.track_sent(
             unit,
             now_ns,
@@ -11869,12 +12060,246 @@ mod tests {
                     Some(u8::MAX),
                     "{name}: prob kopyasının sayacı doygun"
                 );
+                if r.s.cc_on() {
+                    // [CC-PORT U10] Port motorunda hedef uçuşta kalır (tombstone'a emekli edilmez).
+                    assert_eq!(
+                        r.s.inflight.get(&q).map(|p| p.retx_count),
+                        Some(u8::MAX),
+                        "{name}: hedef uçuşta kalır, sayacı doygun"
+                    );
+                    assert!(
+                        !r.s.tombstones.contains_key(&q),
+                        "{name}: hedef tombstone'da değil"
+                    );
+                } else {
+                    assert_eq!(
+                        r.s.tombstones.get(&q).map(|t| t.retx_count),
+                        Some(u8::MAX),
+                        "{name}: emekliye ayrılan hedefin superseded işareti de doygun"
+                    );
+                }
+            }
+        }
+
+        /// [CC-PORT U14] RTT örneği yokken (PreConverge, ısınma YOK) port motoru PTO probu
+        /// (`Retransmit`) ÇIKARMAZ: §3.3-B geometrik kopya merdiveni (`Duplicate`) birimi zaten
+        /// yeniler; iki merdiven yan yana koşunca aynı birim ilk 8 s'de 7 kopya alıyordu (r25,
+        /// ürün zarfı: eski motor 4). Eski motor (ürün profili) yolu değişmez: orada prob çıkar.
+        /// İlk RTT örneğinden sonra portta da PTO probu çıkar (sessiz kanalda ikinci birim).
+        #[test]
+        fn u14_no_pto_probe_before_first_rtt_sample_on_port() {
+            for (name, mk) in tail_engines() {
+                let mut r = Rig::new(mk);
+                let id = UID + 1;
+                r.ev(Event::AppData(small(id)), 0);
+                // (CS-probe kararları ayrı seq uzayındadır; `sent` haritasında DATA kaydının
+                // üstüne yazabilir — seq baştan alınır.)
+                let s0 = r
+                    .seq_of(id, TransmitKind::Data)
+                    .unwrap_or_else(|| panic!("{name}: DATA çıkar"));
+                // 8 s sessiz kanal, RTT örneği yok.
+                r.pump_until(MS, 8_000 * MS, PUMP_STEP_NS, |_| false);
+                let dups = r
+                    .sent
+                    .values()
+                    .filter(|d| d.unit_id == id && d.kind == TransmitKind::Duplicate)
+                    .count();
+                let probes = r
+                    .sent
+                    .values()
+                    .filter(|d| d.unit_id == id && d.kind == TransmitKind::Retransmit)
+                    .count();
+                assert!(
+                    dups >= 3,
+                    "{name}: geometrik kopya merdiveni koşar ({dups})"
+                );
+                if r.s.cc_on() {
+                    assert_eq!(probes, 0, "{name}: RTT örneği yokken PTO probu yok (U14)");
+                } else {
+                    assert!(probes >= 1, "{name}: eski yol değişmez, prob çıkar");
+                }
+                // İlk RTT örneği: en son geometrik kopya ACK'lenir (taze seq, `rtt_rule_v11`;
+                // eski motorda orijinal prob tarafından tombstone'a emekli edilmiş olabilir) →
+                // ikinci birim sessiz kanalda prob alır.
+                if !r.s.cc_on() {
+                    continue; // ikinci evre yalnız port için (U14 portun kuralı)
+                }
+                let last_dup = r
+                    .seq_of(id, TransmitKind::Duplicate)
+                    .unwrap_or_else(|| panic!("{name}: kopya"));
+                r.ev(ack(&[s0, last_dup]), 8_001 * MS);
+                let _ = r.s.take_confirmed_units();
+                assert!(r.s.rtt.srtt().is_some(), "{name}: ilk RTT örneği");
+                let id2 = UID + 2;
+                r.ev(Event::AppData(small(id2)), 8_010 * MS);
+                let t = r.pump_until(8_011 * MS, PUMP_LONG_HORIZON_NS, PUMP_LONG_STEP_NS, |r| {
+                    r.seq_of(id2, TransmitKind::Retransmit).is_some()
+                });
+                assert!(t.is_some(), "{name}: ilk örnekten sonra PTO probu çıkar");
+            }
+        }
+
+        /// [CC-PORT U14 canlılık] Merdiven kaydı yoksa (kopya makinesi birimi artık taşımıyor) RTT
+        /// örneği olmasa da PTO probu kurulur: ilk paketin kaybı sessiz takılmaya dönmez.
+        #[test]
+        fn u14_pto_probe_resumes_when_no_ladder_entry_serves_the_oldest_unit() {
+            let mut r = Rig::new(Sender::with_cc_port);
+            let id = UID + 1;
+            r.ev(Event::AppData(small(id)), 0);
+            assert!(
+                r.s.dup_queue
+                    .iter()
+                    .any(|d| d.unit.id == id && d.interval_ns > 0),
+                "PreConverge merdiven kaydı kurulur"
+            );
+            // Merdiven düşmüş olsun (ör. tek-atımlık kopyalar tükendi / kayıt iptal edildi).
+            r.s.dup_queue.clear();
+            let t = r.pump_until(MS, 20_000 * MS, PUMP_STEP_NS, |r| {
+                r.seq_of(id, TransmitKind::Retransmit).is_some()
+            });
+            assert!(t.is_some(), "merdiven yokken PTO probu çıkar (canlılık)");
+            assert!(r.s.rtt.srtt().is_none(), "hâlâ RTT örneği yok");
+        }
+
+        /// [CC-PORT U16 (a)] Kayıp ilan edilen orijinalin uçuştaki tek "taze" kopyası bir `Duplicate`
+        /// (geometrik/acil kopya) ise orijinal ARQ'ya yeniden kuyruklanır: Duplicate kaybı ARQ'ya
+        /// dönmediğinden onu taze saymak birimi unutturuyordu. Uçuştaki taze kopya `Retransmit` ise
+        /// (PTO probu) yeniden kuyruk yok (U13 korunur).
+        #[test]
+        fn u16_duplicate_copy_does_not_suppress_arq_requeue_on_port() {
+            for (fresh_kind, expect_requeue) in [
+                (TransmitKind::Duplicate, true),
+                (TransmitKind::Retransmit, false),
+            ] {
+                let mut r = Rig::new(Sender::with_cc_port);
+                r.warm(UID);
+                let id = UID + 1;
+                r.ev(Event::AppData(small(id)), 20 * MS);
+                let q0 = r.seq_of(id, TransmitKind::Data).expect("DATA");
+                // Orijinalin kaybını ilan ettirecek daha yüksek seq'li birimler.
+                for i in 0..8u64 {
+                    r.ev(Event::AppData(small(UID + 10 + i)), 30 * MS + i * MS);
+                }
+                let later: Vec<u64> = (0..8u64)
+                    .filter_map(|i| r.seq_of(UID + 10 + i, TransmitKind::Data))
+                    .collect();
+                // Aynı birimin daha taze bir kopyasını uçuşa koy (beyaz kutu; seq'i ACK'lenecek
+                // seq'lerden büyük → kendisi kayıp ilan edilmez).
+                let unit = r.s.inflight.get(&q0).expect("uçuşta").unit;
+                let q1 = r.s.track_sent(unit, 45 * MS, 1, fresh_kind);
+                assert!(later.iter().all(|&l| l < q1));
+                // Orijinal kayıp ilan edilsin: daha yüksek seq'ler ACK'lenir (paket eşiği).
+                r.ev(ack(&later), 60 * MS);
+                assert!(
+                    r.s.inflight.contains_key(&q1),
+                    "{fresh_kind:?}: taze kopya uçuşta kalır"
+                );
+                let _ = r.s.take_confirmed_units();
+                assert!(
+                    !r.s.inflight.contains_key(&q0),
+                    "{fresh_kind:?}: orijinal kayıp ilan edildi"
+                );
+                // Yeniden kuyruk: ya `pending_lost`'ta bekler ya da aynı olayda ARQ yeniden
+                // iletimi olarak çıktı (`cc_on` → retx önce). Beyaz kutu kopya `sent`'te değildir.
+                let requeued =
+                    r.has_pending(q0) || r.seq_of(id, TransmitKind::Retransmit).is_some();
                 assert_eq!(
-                    r.s.tombstones.get(&q).map(|t| t.retx_count),
-                    Some(u8::MAX),
-                    "{name}: emekliye ayrılan hedefin superseded işareti de doygun"
+                    requeued, expect_requeue,
+                    "{fresh_kind:?}: ARQ yeniden kuyruğu"
                 );
             }
+        }
+
+        /// [CC-PORT U16 (b)] Prob hedefi birim kimliği en küçük teyitsiz kaynak kayıttır, seq'i en
+        /// küçük kayıt değil: sıra başının yeniden iletimi (büyük seq) pencere daha yeni birimlerle
+        /// doluyken ve hiçbir şey ACK'lenmiyorken, PTO probu sıra başını taşımalı — aksi hâlde
+        /// pencere dışı bir birimi kopyalar ve kilitlenme sürer (§3 entegrasyon ölçümü, #175).
+        #[test]
+        fn u16_pto_probe_targets_smallest_unit_id_not_smallest_seq() {
+            let mut r = Rig::new(Sender::with_cc_port);
+            r.warm(UID);
+            // Önce daha büyük kimlikli birimler (küçük seq'ler) pencereyi doldurur …
+            let mut t = 20 * MS;
+            for i in 0..64u64 {
+                r.ev(Event::AppData(unit(UID + 100 + i)), t);
+                r.pump_until(t + MS, t + 20 * MS, PUMP_STEP_NS, |_| false);
+                t += 20 * MS;
+            }
+            // … sonra sıra başının yeniden iletimi uçuşa girer (en küçük kimlik, en büyük seq;
+            // beyaz kutu — gerçek akışta pencere dolmadan önce çıkmış ARQ kopyası).
+            let head = UID + 1;
+            let qh = r.s.track_sent(unit(head), t, 1, TransmitKind::Retransmit);
+            assert!(
+                !r.s.cc_fits(unit(head).size),
+                "ön koşul: pencere dolu (uçuş {} B)",
+                r.s.inflight_bytes()
+            );
+            let min_seq_unit =
+                r.s.inflight
+                    .iter()
+                    .next()
+                    .map(|(_, p)| p.unit.id)
+                    .expect("uçuş boş değil");
+            assert_ne!(min_seq_unit, head, "ön koşul: en küçük seq sıra başı değil");
+            assert!(qh > 0);
+            // Sessizlik: hiçbir ACK yok. İlk PTO probu sıra başını kopyalamalı.
+            let before = r.sent.len();
+            r.pump_until(
+                t + 21 * MS,
+                t + PUMP_LONG_HORIZON_NS,
+                PUMP_LONG_STEP_NS,
+                |r| {
+                    r.sent
+                        .values()
+                        .any(|d| d.kind == TransmitKind::Retransmit && d.seq > qh)
+                },
+            )
+            .expect("PTO probu çıkar");
+            let first_probe = r
+                .sent
+                .values()
+                .filter(|d| d.kind == TransmitKind::Retransmit && d.seq > qh)
+                .min_by_key(|d| d.seq)
+                .expect("prob");
+            assert_eq!(
+                first_probe.unit_id,
+                head,
+                "prob hedefi en küçük birim kimliği (sıra başı); gönderim sayısı {} → {}",
+                before,
+                r.sent.len()
+            );
+        }
+
+        /// [K4G-05b-R · HA bulgusu, PR #186] Port motorunda tavan yok: ARQ planlayıcısı 255'te
+        /// doymuş kaydı da yeniden iletir; ARQ yolu `retx_count + 1` düz toplamaydı → debug'da
+        /// taşma paniği (release'de 0'a sarma). Doygun artırım: 255'teki kayıt `Retransmit`
+        /// olarak çıkar, yeni kaydın sayacı 255 kalır.
+        #[test]
+        fn arq_retransmit_at_saturated_retx_count_does_not_overflow() {
+            let mut r = Rig::new(Sender::with_cc_port);
+            r.warm(UID);
+            let id = UID + 1;
+            r.ev(Event::AppData(small(id)), 20 * MS);
+            let q = r.seq_of(id, TransmitKind::Data).expect("DATA hemen çıkar");
+            let unit = r.s.inflight.get(&q).expect("uçuşta").unit;
+            r.s.inflight.remove(&q);
+            r.s.pending_lost.push_back(LostRec {
+                seq: q,
+                unit,
+                deadline_ns: 20 * MS,
+                retx_count: u8::MAX,
+                send_ns: 20 * MS,
+            });
+            r.pump_until(21 * MS, PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
+                r.seq_of(id, TransmitKind::Retransmit).is_some()
+            })
+            .expect("255'teki kayıt yeniden iletilir (tavan yok)");
+            let nq = r.seq_of(id, TransmitKind::Retransmit).expect("retx");
+            assert_eq!(
+                r.s.inflight.get(&nq).map(|p| p.retx_count),
+                Some(u8::MAX),
+                "sayaç doygun kalır"
+            );
         }
 
         /// Sessiz kanalda kuyruk kurtarmasının prob turlarını kesin kapsayan bekleme.

@@ -138,6 +138,8 @@ pub struct Receiver {
     ack_epoch: u8,
     since_last_ack: u32,
     ack_freq: u32,
+    /// [CC-PORT] zamanlayıcı ACK gecikme tavanı (ns); kurucu `MAX_ACK_DELAY_NS`.
+    max_ack_delay_ns: u64,
     last_ack_ns: u64, // [K2/§12] son SACK emit anı (timer cadence gate kaynağı)
     // [TUR-5 r3] Epizot-dedektörü + kota (R1 ilk-SACK muafiyetinin genellemesi — first_ack_sent
     // bayrağının yerini oturum-ilk-epizot aldı):
@@ -173,6 +175,7 @@ impl Receiver {
             ack_epoch: 0,
             since_last_ack: 0,
             ack_freq: ACK_FREQ_N,
+            max_ack_delay_ns: Self::MAX_ACK_DELAY_NS,
             last_ack_ns: 0,
             gap_window: [0; 5],
             gap_len: 0,
@@ -295,7 +298,7 @@ impl Receiver {
         if self.cc_port {
             // [CC-PORT] RFC 9000 §13.2.1: ack-eliciting paket bekliyorsa max_ack_delay içinde ACK.
             if self.since_last_ack > 0
-                && now_ns.saturating_sub(self.last_emit_any()) >= Self::MAX_ACK_DELAY_NS
+                && now_ns.saturating_sub(self.last_emit_any()) >= self.max_ack_delay_ns
             {
                 self.since_last_ack = 0;
                 self.burn_quota();

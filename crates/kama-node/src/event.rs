@@ -207,8 +207,12 @@ pub struct NodeMetrics {
     /// K4G-01: HubChannel bağlamında açılan ve düşürülen datagram (direct-mode'da hub yok).
     pub hub_frames_dropped: u64,
     /// DUR-K4G-01 CEVAP (i): veri alıcısının teslim kanalı doluyken düşen teslim
-    /// (`ServerStats::delivery_dropped`). INT-02'de 0 olmalı.
+    /// (`ServerStats::delivery_dropped`). INT-02'de 0 olmalı. [F4, 2026-11-11] Artık hep 0:
+    /// dolu kanalda birim düşmez, motora verilmez (`delivery_channel_full`).
     pub delivery_channel_drops: u64,
+    /// [F4] Teslim kanalı doluyken motora verilmeyen (ACK'lenmeyen; gönderici yeniden iletir)
+    /// DATA datagramı (`ServerStats::data_not_admitted_full`). Uygulama drenajı gecikince artar.
+    pub delivery_channel_full: u64,
     /// Eş başına bağlantı durumu, ad sırasıyla (provisioning dosyasındaki bütün eşler).
     pub connect_state: Vec<PeerConnectState>,
 }
