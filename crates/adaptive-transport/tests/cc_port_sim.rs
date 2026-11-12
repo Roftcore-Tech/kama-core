@@ -10,7 +10,14 @@
 //! cargo test -p adaptive-transport --test cc_port_sim -- --nocapture
 //! CC_MATRIX=1 cargo test -p adaptive-transport --test cc_port_sim matrix_explore -- --nocapture
 //! CC_TRACE=1 CC_SEED=10 CC_LOSS=200 cargo test ... shallow_queue_file_no_loss -- --nocapture
+//! # r25 ürün zarfı keşfi (kapı uygulanmaz, yalnız rapor): ~180 B ileti paketi, ~107 B ACK
+//! CC_R25_WIRE_OVERHEAD=115 CC_ACK_OVERHEAD=90 CC_R25_TMAX_S=1500 cargo test ... r25 -- --nocapture
 //! ```
+//!
+//! `CC_TRACE=1` izi her gönderimi (`GÖNDER tür seq birim bayt kuyruk`), her teslimi ve göndericiye
+//! ulaşan her ACK'i yazar. r25 keşif anahtarları: `CC_R25_INTERVAL_MS` (ileti aralığı),
+//! `CC_R25_WIRE_OVERHEAD` (ileri zarf), `CC_R25_TMAX_S` (ufuk), `CC_ACK_OVERHEAD` (SACK zarfı);
+//! biri tanımlıysa r25 kapısı atlanır.
 //!
 //! Kabul (yalnız port kolu için bağlayıcı; legacy kolu rapor eder, kırmızı üretmez):
 //! * 6 paketlik kuyruk, 12,5 kB/s, 300 ms RTT, kayıp %0: 150 kB dosya ≤ 25 s (≈1,5 ×
@@ -152,6 +159,11 @@ impl Bottleneck {
             .push_back((done + self.delay_ns, seq, unit_id, kind));
     }
 
+    /// Serileştirme kuyruğundaki paket sayısı (iz için).
+    fn queue_len(&self) -> usize {
+        self.busy.len()
+    }
+
     fn poll(&mut self, now: u64) -> Vec<(u64, u64, TransmitKind)> {
         let mut out = Vec::new();
         while self.wire.front().is_some_and(|&(t, _, _, _)| t <= now) {
@@ -222,6 +234,8 @@ struct Outcome {
     delivered_units: usize,
     sent_data: u64,
     sent_retx: u64,
+    /// `sent_retx` içinde Duplicate kökenli (ileri kopya / kuruluş probu) sayısı.
+    sent_dup: u64,
     sent_parity: u64,
     sent_bytes: u64,
     dropped_queue: u64,
@@ -267,6 +281,18 @@ fn run_opt(
         if eng != Engine::Legacy {
             let mut c = adaptive_transport::tail_recovery::TailRecoveryConfig::rfc9002_cc_port();
             c.max_backoff_pto_ns = m * SEC;
+            s.set_tail_recovery_config(c);
+        }
+    }
+    // `CC_PTO_INIT_MS=<ms>`: port kolunda RTT örneksiz ilk PTO (varsayılan 1000 ms; RFC 9002 §6.2.2
+    // "önceki ölçümden ilk RTT" deneyi).
+    if let Some(m) = std::env::var("CC_PTO_INIT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        if eng != Engine::Legacy {
+            let mut c = adaptive_transport::tail_recovery::TailRecoveryConfig::rfc9002_cc_port();
+            c.initial_pto_ns = m * MS;
             s.set_tail_recovery_config(c);
         }
     }
@@ -335,6 +361,7 @@ fn run_opt(
         delivered_units: 0,
         sent_data: 0,
         sent_retx: 0,
+        sent_dup: 0,
         sent_parity: 0,
         sent_bytes: 0,
         dropped_queue: 0,
@@ -357,15 +384,37 @@ fn run_opt(
     let wire_overhead = wire_overhead
         .or_else(|| std::env::var("CC_WIRE_OVERHEAD").ok()?.parse::<u64>().ok())
         .unwrap_or(0);
+    // `CC_ACK_OVERHEAD=<bayt>`: SACK çerçevesine eklenen tel zarfı (varsayılan `ACK_WIRE_OVERHEAD`;
+    // ürün runtime'ında ölçülen ACK ortalama ~107 B → ~90).
+    let ack_overhead = std::env::var("CC_ACK_OVERHEAD")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(ACK_WIRE_OVERHEAD);
     let emit = |decs: Vec<TransmitDecision>, now: u64, fwd: &mut Bottleneck, o: &mut Outcome| {
         for d in decs {
             match d.kind {
                 TransmitKind::Data => o.sent_data += 1,
-                TransmitKind::Retransmit | TransmitKind::Duplicate => o.sent_retx += 1,
+                TransmitKind::Retransmit => o.sent_retx += 1,
+                TransmitKind::Duplicate => {
+                    o.sent_retx += 1;
+                    o.sent_dup += 1;
+                }
                 TransmitKind::FecParity => o.sent_parity += 1,
                 TransmitKind::CsProbe => {}
             }
             o.sent_bytes += d.size + wire_overhead;
+            if trace {
+                println!(
+                    "[{}] t={:.2}s GÖNDER {:?} seq={} birim={} bayt={} kuyruk={}",
+                    eng.name(),
+                    now as f64 / SEC as f64,
+                    d.kind,
+                    d.seq,
+                    d.unit_id,
+                    d.size + wire_overhead,
+                    fwd.queue_len()
+                );
+            }
             fwd.send(now, d.seq, d.size + wire_overhead, d.unit_id, d.kind);
         }
     };
@@ -410,20 +459,27 @@ fn run_opt(
             .into_iter()
             .filter(|q| acked_seen.insert(*q))
             .collect();
-        if !new.is_empty() {
-            let size = frame.encode().len() as u64 + ACK_WIRE_OVERHEAD;
-            let ack = AckInfo {
-                acked_seqs: new.clone(),
-                ack_delay: frame.ack_delay_duration(),
-            };
-            if !rev.send(now, size, ack) {
-                // Dönüş kuyruğunda düştü: seq'ler sonraki birikimli SACK'te yine gelir.
-                for q in &new {
-                    acked_seen.remove(q);
-                }
+        // HER SACK çerçevesi tele çıkar (yinelenen bilgi taşısa da dönüş yolunun baytını ve
+        // kuyruğunu işgal eder — inceleme 2026-11-11: eskiden yalnız yeni seq taşıyan çerçeve
+        // kuyruğa giriyordu, ACK kadansının tel maliyeti eksik sayılıyordu). Gönderici yalnız
+        // yeni bilgi taşıyan çerçeveyle beslenir (boş AckInfo göndericiye verilmez: eski
+        // hücrelerde gönderici davranışı bayt düzeyinde aynı; dönüş yolu sınırsızken zamanlama da).
+        let size = frame.encode().len() as u64 + ack_overhead;
+        let ack = AckInfo {
+            acked_seqs: new.clone(),
+            ack_delay: frame.ack_delay_duration(),
+        };
+        if !rev.send(now, size, ack) {
+            // Dönüş kuyruğunda düştü: seq'ler sonraki birikimli SACK'te yine gelir.
+            for q in &new {
+                acked_seen.remove(q);
             }
         }
     };
+    let profile = std::env::var("CC_PROFILE").is_ok();
+    let mut prof_marks: [Option<u64>; 3] = [None; 3];
+    let mut prof_modes: Vec<(u64, adaptive_transport::cc::Mode)> = Vec::new();
+    let mut prof_last_mode: Option<adaptive_transport::cc::Mode> = None;
     let t_max = t_max_s * SEC;
     let mut now = 0u64;
     while now < t_max {
@@ -466,6 +522,14 @@ fn run_opt(
                 if delivered.insert(u) {
                     if let Some(&t0) = offer_at.get(&u) {
                         unit_delays.push(now - t0);
+                        if trace {
+                            println!(
+                                "[{}] t={:.2}s TESLİM birim={u} gecikme={:.2}s",
+                                eng.name(),
+                                now as f64 / SEC as f64,
+                                (now - t0) as f64 / SEC as f64
+                            );
+                        }
                     }
                 }
             }
@@ -483,6 +547,9 @@ fn run_opt(
         // Dönüş yolu (serileştirme + gecikme; `CC_REV_LOSS` ile rastgele SACK kaybı).
         while rev.wire.front().is_some_and(|(t, _)| *t <= now) {
             let (_, ack) = rev.wire.pop_front().unwrap();
+            if ack.acked_seqs.is_empty() {
+                continue; // yalnız tel maliyeti; gönderici için yeni bilgi yok
+            }
             if rev_loss > 0 {
                 rev_lcg = rev_lcg
                     .wrapping_mul(6_364_136_223_846_793_005)
@@ -521,12 +588,54 @@ fn run_opt(
                 delivered.len(),
                 s.tail_probe_diag()
             );
+            let sd = s.diag_sched_summary();
+            println!(
+                "[{}] t={:.2}s pacer={:?} sched(data sel/deny/emit={}/{}/{} arq={}/{}/{} dup={}/{}/{}) loss={:?}",
+                eng.name(),
+                now as f64 / SEC as f64,
+                s.diag_pacer(),
+                sd[0], sd[1], sd[2], sd[3], sd[4], sd[5], sd[6], sd[7], sd[8],
+                s.diag_loss()
+            );
+        }
+        // `CC_PROFILE=1`: ilerleme profili (%10/%50/%90 teslim anı, son birim, kip geçişleri).
+        if profile {
+            let d = delivered.len() as u64;
+            for (i, pct) in [10u64, 50, 90].iter().enumerate() {
+                if prof_marks[i].is_none() && d * 100 >= n_units * pct {
+                    prof_marks[i] = Some(now);
+                }
+            }
+            if let Some((mode, ..)) = s.diag_cc() {
+                if prof_last_mode != Some(mode) {
+                    prof_modes.push((now, mode));
+                    prof_last_mode = Some(mode);
+                }
+            }
         }
         if o.completed_ns.is_none() && delivered.len() as u64 >= n_units {
             o.completed_ns = Some(now);
             break;
         }
         now += MS;
+    }
+    if profile {
+        let f =
+            |t: Option<u64>| t.map_or("-".to_string(), |t| format!("{:.1}", t as f64 / SEC as f64));
+        println!(
+            "[{}] PROFİL seed{seed}: %10={} %50={} %90={} son={} retx={} prob={:?} kipler={:?}",
+            eng.name(),
+            f(prof_marks[0]),
+            f(prof_marks[1]),
+            f(prof_marks[2]),
+            f(o.completed_ns),
+            o.sent_retx,
+            s.tail_probe_diag(),
+            prof_modes
+                .iter()
+                .map(|(t, m)| format!("{:.1}s:{m:?}", *t as f64 / SEC as f64))
+                .collect::<Vec<_>>()
+        );
     }
     o.delivered_units = delivered.len();
     o.dropped_queue = fwd.dropped_queue;
@@ -606,13 +715,14 @@ fn gate_record(eng: Engine, label: &str, o: &Outcome) {
 fn report(eng: Engine, label: &str, o: &Outcome) {
     gate_record(eng, label, o);
     println!(
-        "[{}] {label}: tamamlanma={} teslim={}/{} data={} retx={} parite={} bayt={} kuyruk_düşen={} rastgele_düşen={} sack={} dönüş_bayt={} dönüş_düşen={} birim_p50={} birim_p95={}",
+        "[{}] {label}: tamamlanma={} teslim={}/{} data={} retx={} (dup={}) parite={} bayt={} kuyruk_düşen={} rastgele_düşen={} sack={} dönüş_bayt={} dönüş_düşen={} birim_p50={} birim_p95={}",
         eng.name(),
         fmt_s(o.completed_ns),
         o.delivered_units,
         FILE_BYTES.div_ceil(MTU),
         o.sent_data,
         o.sent_retx,
+        o.sent_dup,
         o.sent_parity,
         o.sent_bytes,
         o.dropped_queue,
@@ -810,7 +920,7 @@ fn matrix_explore() {
 
 /// r25 ileti hücresi (bench `b_r25_d300_l20_p65` yaklaşığı): 25 B/s İKİ yönde, 300 ms tek yön,
 /// %20 kayıp, 60 × 65 B ileti 10 s aralıkla (tel 130 B ≈ 5,2 s; yük ≈ %52). Ölçü: ileti teslim gecikmesi p50 ve teslim/60.
-/// Dönüş yolu serileştirilir (SACK ~65 B ≈ 2,6 s). Kapı: 60/60 teslim. `CC_R25_SEEDS=<n>` ile tohum sayısı (varsayılan 10).
+/// Dönüş yolu serileştirilir (SACK ~65 B ≈ 2,6 s). Kapı: 60/60 teslim; port ileti p50 ≤ 8 s. `CC_R25_SEEDS=<n>` ile tohum sayısı (varsayılan 10).
 #[test]
 fn r25_lowband_messages() {
     let seeds: u64 = std::env::var("CC_R25_SEEDS")
@@ -828,13 +938,26 @@ fn r25_lowband_messages() {
                 300,
                 200,
                 seed,
-                700,
+                std::env::var("CC_R25_TMAX_S")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(700),
                 (60, 65),
                 0,
                 None,
                 Some((25, 20)),
-                Some(10_000),
-                Some(65),
+                Some(
+                    std::env::var("CC_R25_INTERVAL_MS")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(10_000),
+                ),
+                Some(
+                    std::env::var("CC_R25_WIRE_OVERHEAD")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(65),
+                ),
             );
             report(eng, &format!("r25 seed{seed}"), &o);
             p50s.push(o.unit_delay_p50_ns);
@@ -852,14 +975,37 @@ fn r25_lowband_messages() {
             p50(rev_b),
             p50(retx)
         );
-        // Kapı: her motor 60/60 teslim (medyan). Port ileti p50 kapısı r25 düzeltmesiyle gelir.
+        // Kapı: her motor 60/60 teslim (medyan); port ileti p50 ≤ 8 s (U10–U13 öncesi 95 s, sonrası
+        // 8,5 s; U14 sonrası 6,9 s; eski motor 5,4 s — eşitlenince kapı sıkılaşır). Keşif anahtarları (`CC_R25_*`,
+        // `CC_ACK_OVERHEAD`) varken kapı uygulanmaz (yalnız rapor). `CC_GATE_OUT` varken de uygulanmaz:
+        // CI gerileme kapısı bu harness'ı PR TABANININ motoruyla da koşturur (ci.yml `cc-regression`);
+        // mutlak eşik tabanda tutmayabilir (bu PR'ın düzelttiği gerileme gibi) — mutlak eşik `test`
+        // işinde, taban ↔ aday karşılaştırması `cc_gate_compare.py`'de doğrulanır.
+        let explore = [
+            "CC_R25_INTERVAL_MS",
+            "CC_R25_WIRE_OVERHEAD",
+            "CC_R25_TMAX_S",
+            "CC_ACK_OVERHEAD",
+            "CC_GATE_OUT",
+        ]
+        .iter()
+        .any(|k| std::env::var(k).is_ok());
+        if explore {
+            continue;
+        }
         assert_eq!(
             p50(deliv),
             60,
             "[{}] r25 teslim medyanı < 60/60",
             eng.name()
         );
-        let _ = p50s;
+        if eng != Engine::Legacy {
+            assert!(
+                p50(p50s) <= 8 * SEC,
+                "[{}] r25 ileti p50 medyanı > 8 s",
+                eng.name()
+            );
+        }
     }
 }
 

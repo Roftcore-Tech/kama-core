@@ -89,6 +89,11 @@ impl TailRecoveryConfig {
     pub fn rfc9002_cc_port() -> Self {
         Self {
             max_tail_probes: u32::MAX,
+            // [CC-PORT U11] Taban PTO tavanı YOK (RFC 9002 §6.2.1 üst sınır tanımlamaz; quinn'de yok).
+            // `validated_v1`'in 10 s tavanı srtt > 10 s olan hatta (25 B/s: 130 B paket ≈ 5,2 s
+            // serileştirme + kuyruk) PTO'yu ACK gelmeden ateşliyordu → her birime sahte prob
+            // (r25 sim: retx 71 ↔ 24). Geri çekilme tavanı (30 s) kesinti profili için kalır.
+            max_pto_ns: u64::MAX,
             ..Self::validated_v1()
         }
     }
