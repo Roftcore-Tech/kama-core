@@ -265,16 +265,17 @@ pub struct ClientTransportConfig {
     pub renew_drain_cap: Duration,
     /// [YOL3-T1 KK-T1-05] İnce şeritler ([`crate::lanes`]): sınıf başına sunum kanalı, kabul sırası
     /// PTT > SIG > TEXT > FILE, dosya penceresi W (yolun BDP'sinden, `lanes::file_window_for_path`),
-    /// alıcıda şerit başına sıralı teslim (`crate::unit_id`). `None` (ürün, [`Self::product`]) =
-    /// şeritsiz yol: `send` birimi doğrudan uca verir. Gösterim düğümüne yalnız test-util kancasıyla
-    /// geçer.
+    /// alıcıda şerit başına sıralı teslim (`crate::unit_id`). [ŞERİT-ÜRÜN] Ürün profili
+    /// ([`Self::product`]) AÇIK kurar: ürün hedefi "akışlar birbirini bloklamaz" (metin/PTT dosyanın
+    /// eksik parçasını beklemez). `None` = şeritsiz eski yol (`send` birimi doğrudan uca verir;
+    /// birim kimlikleri etiketsiz) — iki uç AYNI ayarla çalışmalıdır.
     pub lanes: Option<LaneConfig>,
 }
 
 impl ClientTransportConfig {
     /// Ürün profiliyle yapılandırma: kurtarma açık, yenileme boşaltma tavanı veri yolunun
-    /// kapanış boşaltma tavanıyla aynı. [DUR-19] Canlı teşhis aynası KAPALI
-    /// (`RuntimeConfig::live_diag = false`, ürün profilinden).
+    /// kapanış boşaltma tavanıyla aynı, şeritler açık ([`LaneConfig::default`]). [DUR-19] Canlı
+    /// teşhis aynası KAPALI (`RuntimeConfig::live_diag = false`, ürün profilinden).
     #[must_use]
     pub fn product(data_bind: SocketAddr) -> Self {
         let runtime = RuntimeConfig::default();
@@ -285,7 +286,7 @@ impl ClientTransportConfig {
             peer_addrs: HashMap::new(),
             recovery: true,
             renew_drain_cap,
-            lanes: None,
+            lanes: Some(LaneConfig::default()),
         }
     }
 }
