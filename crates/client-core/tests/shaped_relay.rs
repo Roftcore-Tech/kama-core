@@ -4,10 +4,14 @@
 //! (`adaptive-transport/tests/cc_port_sim.rs`) ile netem arasındaki "gerçek yığın" boşluğunu kapatır.
 //!
 //! Gerçek zamanlıdır (belirlenimli değil): kayıp deseni tohumla sabit, zamanlama değil. Kapı
-//! eşikleri bu yüzden geniştir. `CC_SHAPED=1` ile koşar (ölçüm); `CC_SHAPED_ENGINE=legacy|cc-port`
+//! eşikleri bu yüzden geniştir. `CC_SHAPED=1` ile koşar (ölçüm); `CC_SHAPED_TRACE=1` rölede her
+//! sunulan paketi yazar (an, yön, tel baytı, kuyruk doluluğu, düşme) — paket boyutundan türü
+//! okunur (ör. 25 B/s hücresinde 120 B = 65 B ileti, 79 B = PARAM, 1080 B = FEC parite);
+//! `CC_SHAPED_ENGINE=legacy|cc-port`
 //! tek motor; `CC_SHAPED_SEED`, `CC_SHAPED_UNITS`, `CC_SHAPED_RATE`, `CC_SHAPED_Q`,
 //! `CC_SHAPED_DELAY_MS`, `CC_SHAPED_JITTER_MS` (normal σ; yeniden sıralama üretir), `CC_SHAPED_LOSS_PM`,
-//! `CC_SHAPED_UNIT_BYTES`, `CC_SHAPED_TMAX_S` hücre anahtarları.
+//! `CC_SHAPED_UNIT_BYTES`, `CC_SHAPED_TMAX_S`, `CC_SHAPED_INTERVAL_MS` (ileti hücresi: birimler bu aralıkla
+//! sunulur; 0 = hepsi başta) hücre anahtarları.
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
@@ -41,6 +45,8 @@ struct Shaper {
     bytes: u64,
     dropped_queue: u64,
     dropped_random: u64,
+    /// `CC_SHAPED_TRACE=1`: her sunulan paket (an, yön, bayt, kuyruk, sonuç) stdout'a.
+    trace: Option<(&'static str, Instant)>,
 }
 
 impl Shaper {
@@ -67,6 +73,7 @@ impl Shaper {
             bytes: 0,
             dropped_queue: 0,
             dropped_random: 0,
+            trace: None,
         }
     }
 
@@ -99,15 +106,27 @@ impl Shaper {
         Duration::from_secs_f64(d.max(0.0))
     }
 
+    fn trace_line(&self, now: Instant, size: u64, what: &str) {
+        if let Some((tag, t0)) = self.trace {
+            println!(
+                "İZ t={:.2}s {tag} bayt={size} kuyruk={} {what}",
+                now.duration_since(t0).as_secs_f64(),
+                self.busy.len()
+            );
+        }
+    }
+
     fn offer(&mut self, now: Instant, pkt: Vec<u8>) {
         while self.busy.front().is_some_and(|&t| t <= now) {
             self.busy.pop_front();
         }
+        let size = pkt.len() as u64 + UDP_IP_OVERHEAD;
         if self.busy.len() >= self.limit {
             self.dropped_queue += 1;
+            self.trace_line(now, size, "KUYRUK_DÜŞTÜ");
             return;
         }
-        let size = pkt.len() as u64 + UDP_IP_OVERHEAD;
+        self.trace_line(now, size, "");
         let start = self.busy.back().copied().unwrap_or(now).max(now);
         let ser = Duration::from_nanos(size * 1_000_000_000 / self.rate_bps.max(1));
         let done = start + ser;
@@ -116,6 +135,7 @@ impl Shaper {
         self.bytes += size;
         if self.loss_permille > 0 && self.rand_permille() < self.loss_permille {
             self.dropped_random += 1;
+            self.trace_line(now, size, "YOLDA_DÜŞTÜ");
             return;
         }
         let at = done + self.delay_sample();
@@ -214,6 +234,7 @@ async fn run_cell(
     units: u64,
     unit_bytes: usize,
     t_max: Duration,
+    interval: Duration,
 ) -> Outcome {
     let cfg = RuntimeConfig {
         engine,
@@ -248,6 +269,11 @@ async fn run_cell(
         rev_cfg.loss_permille,
         seed ^ 0x5A5A,
     )));
+    if std::env::var("CC_SHAPED_TRACE").is_ok() {
+        let t0 = Instant::now();
+        fwd.lock().expect("kilit").trace = Some(("İLERİ", t0));
+        rev.lock().expect("kilit").trace = Some(("DÖNÜŞ", t0));
+    }
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
     let relay_task = tokio::spawn(relay(
         front,
@@ -262,17 +288,46 @@ async fn run_cell(
         .expect("client connect");
     let mut server = server;
     let t0 = Instant::now();
-    for i in 0..units {
+    let mut offered = 0u64;
+    let mut offer_at: Vec<Instant> = Vec::with_capacity(units as usize);
+    let mut offer_one = |client: &client_core::runtime::ClientHandle,
+                         offer_at: &mut Vec<Instant>| {
         let mut payload = vec![0x5Au8; unit_bytes];
-        payload[..8].copy_from_slice(&i.to_be_bytes());
+        payload[..8].copy_from_slice(&offered.to_be_bytes());
         client.send(payload).expect("offer");
+        offer_at.push(Instant::now());
+        offered += 1;
+    };
+    if interval.is_zero() {
+        for _ in 0..units {
+            offer_one(&client, &mut offer_at);
+        }
+    } else {
+        offer_one(&client, &mut offer_at);
     }
     let mut delivered = 0u64;
+    let mut delays: Vec<Duration> = Vec::new();
     let mut marks: [Option<Duration>; 3] = [None; 3];
     let completed = tokio::time::timeout(t_max, async {
+        let mut next_offer = tokio::time::interval(if interval.is_zero() {
+            Duration::from_secs(3600)
+        } else {
+            interval
+        });
+        next_offer.tick().await;
         while delivered < units {
-            if server.next_delivery().await.is_some() {
+            let d = tokio::select! {
+                d = server.next_delivery() => d,
+                _ = next_offer.tick(), if !interval.is_zero() && offer_at.len() < units as usize => {
+                    offer_one(&client, &mut offer_at);
+                    continue;
+                }
+            };
+            if let Some(d) = d {
                 delivered += 1;
+                if let Some(&t) = offer_at.get(d.unit_id as usize) {
+                    delays.push(t.elapsed());
+                }
                 for (i, pct) in [10u64, 50, 90].iter().enumerate() {
                     if marks[i].is_none() && delivered * 100 >= units * pct {
                         marks[i] = Some(t0.elapsed());
@@ -287,12 +342,21 @@ async fn run_cell(
     .await
     .ok();
     let f = |d: Option<Duration>| d.map_or("-".to_string(), |d| format!("{:.1}", d.as_secs_f64()));
+    delays.sort_unstable();
+    let p = |q: usize| {
+        delays
+            .get((delays.len() * q / 100).min(delays.len().saturating_sub(1)))
+            .map(|d| format!("{:.2}", d.as_secs_f64()))
+            .unwrap_or("-".to_string())
+    };
     println!(
-        "[{engine:?}] PROFİL: %10={} %50={} %90={} son={}",
+        "[{engine:?}] PROFİL: %10={} %50={} %90={} son={} birim_gecikme p50={} p95={}",
         f(marks[0]),
         f(marks[1]),
         f(marks[2]),
-        f(completed)
+        f(completed),
+        p(50),
+        p(95)
     );
     let _ = client.shutdown().await;
     let _ = server.shutdown().await;
@@ -363,6 +427,7 @@ async fn shaped_relay_measure() {
             units,
             unit_bytes,
             Duration::from_secs(env_u64("CC_SHAPED_TMAX_S", 180)),
+            Duration::from_millis(env_u64("CC_SHAPED_INTERVAL_MS", 0)),
         )
         .await;
         println!(

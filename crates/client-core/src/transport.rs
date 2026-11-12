@@ -44,12 +44,35 @@
 //! `Closed(h, Superseded)`. Böylece cutover anında `h`'nin içinde kurtarılmayı bekleyen birim
 //! kalmaz ve yeni oturuma hiçbir birim TAŞINMAZ (S1 K7).
 //!
+//! [HLR] Aynı yol hub hattı kaybında da kullanılır (S4 C5: `ROUTE_MISS{h}` → oturum için yeni
+//! INIT): bileşim kökü [`ClientTransport::relink`]'i, bekleyen yenilemenin hub denemesi bitince
+//! [`ClientTransport::restart_renewal`]'ı çağırır. Eş başına en çok BİR etkin oturum vardır: eşin
+//! yenilemesi (onaylanan provisional) `h`'nin yerini alınca `h` için kendi bekleyen yenilememiz
+//! kapatılır; yerini zaten başka bir oturum almış bir oturumun yenilemesi ya da onayı açılmaz,
+//! kapatılır. İki uç aynı anda yenilerse S3 glare kuralı (K10) tek oturum bırakır. Terk edilen
+//! yenilemenin INIT tekrarı taşıyıcıda durdurulur ([`EnvelopeLink::cancel_init`]); bir oturum
+//! açılınca eşin onaysız provisional'ları kapatılır (onaylansa da açılamazlardı). Taşıyıcının
+//! almadığı INIT için yenileme kaydedilmez ([`RelinkOutcome::Deferred`]). Eş başına deneme sınırı ve
+//! geri çekilme (S4 C5) çağıranın işidir: [`crate::hub::relink::RelinkGovernor`].
+//!
 //! # Kalıcı niyet (DR-CONNECT-1, INV-NO-IDLE-TEARDOWN)
 //!
 //! `connect` için zaman sınırı yoktur. Crypto bekleyen bir INIT'in yarım-açık kaydını anahtar
 //! hijyeni gereği düşürürse (`HALF_OPEN_TTL`) adaptör niyeti SÜRDÜRÜR: aynı bilet altında taze bir
 //! INIT başlatır, Application hiçbir olay görmez. Niyet yalnız `Ready`, `cancel` ya da kapalı bir
 //! `ConnectAbandoned` nedeniyle biter.
+//!
+//! [T3-GLARE] Niyetin terk edilen INIT'inin taşıyıcı tekrarı (T3) durdurulur
+//! ([`EnvelopeLink::cancel_init`]). S4 C3'ün kapalı durma listesinden: `cancel` ("bağlantı niyeti
+//! iptal edildi") ve Crypto'nun bekleyeni düşürmesi ("deneme açıkça sonlandırılıp yeni denemeye
+//! geçildi": taze INIT yeni deneme açar). Glare kaybı (S3 K10: Crypto bekleyeni ve ephemeral'ini
+//! sildi, niyet kazananın oturumuyla çözülür) o listede ADIYLA YOKTUR; durdurma identity §16
+//! glare kuralından türetilir: o INIT'e gelecek her RESPONSE `Failed` olur, tekrar kazananda
+//! yalnız onaylanamayacak bir provisional doğurur. Kazananın kendi denemesinin tekrarı eşleşen
+//! `Ready`'de durur (bileşim kökü, `HubLink::peer_ready`). Niyet bu yüzden ölmez: çözüldüğü
+//! oturumun sonraki kaybı kurulu oturum yolundan ([`ClientTransport::relink`]) yenilenir.
+//! SINIR: yenileme glare'inde kaybedenin yenilemesi glare çözülünce terk EDİLMEZ (Crypto olay
+//! vermez); tek terk noktası eşin provisional'ının onayıdır (`on_confirmed`).
 //!
 //! # Bağlam-önce dağıtım (K4G-01 / D1 v1.1)
 //!
@@ -74,9 +97,10 @@
 //!
 //! # KAPSAM DIŞI (iş emri §4)
 //!
-//! `Suspended` / `LongOutage` tetikleri, heartbeat, backoff, rebind ve INIT'in byte-özdeş yeniden
-//! gönderimi (T3: oturum kayıp başlamadan kurulur) bu sprintte YOKTUR; `ConnectProgress` yalnız
-//! `Measuring` fazını üretir.
+//! `Suspended` / `LongOutage` tetikleri, heartbeat, backoff ve rebind bu adaptörde YOKTUR. INIT'in
+//! byte-özdeş yeniden gönderimi (T3) adaptörün değil taşıyıcının işidir (hub kipinde `HubLink`,
+//! S4 C3); adaptör yalnız terk ettiği denemeyi bildirir ([HLR], [T3-GLARE]). `ConnectProgress`
+//! yalnız `Measuring` fazını üretir.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::net::SocketAddr;
@@ -177,6 +201,45 @@ pub trait EnvelopeLink: Send {
 
     /// Bekleyen bir taşıyıcı olayı varsa onu döndürür.
     fn poll(&mut self) -> Option<LinkEvent>;
+
+    /// [HLR] `send_init`'in denemesi terk edildi (Crypto bekleyeni kapatıldı): taşıyıcı o INIT'in
+    /// tekrarını durdurur (S4 C3: "bağlantı niyeti iptal edildi"). Bilinmeyen / bitmiş deneme
+    /// etkisizdir. Varsayılan: tekrarı olmayan taşıyıcıda yapılacak iş yok.
+    fn cancel_init(&mut self, attempt: LinkAttempt) {
+        let _ = attempt;
+    }
+}
+
+/// [HLR] Hat kaybı yenilemesi isteğinin sonucu ([`ClientTransport::relink`],
+/// [`ClientTransport::restart_renewal`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+pub enum RelinkOutcome {
+    /// Yeni INIT yola çıktı (yenileme başladı ya da yeniden başladı).
+    Started,
+    /// Yapılacak iş yok: eşin etkin oturumu yok; `relink` için yenileme zaten bekliyor,
+    /// `restart_renewal` için yeniden başlatılacak (RESPONSE'u gelmemiş) yenileme yok.
+    Nothing,
+    /// Yerel tavan (Crypto bekleyen tavanı ya da zarf taşıyıcısının deneme tavanı) INIT'i yola
+    /// çıkarmadı; yenileme KAYDEDİLMEDİ. Çağıran daha sonra yeniden dener.
+    Deferred,
+    /// [HLR-STALE] Kaybolduğu bildirilen hat eşin etkin oturumunun hattı DEĞİL (yerini yenisi almış
+    /// oturumun eski hattı; [`ClientTransport::relink_line`]): çalışan oturum yenilenmedi, tele
+    /// bayt çıkmadı.
+    Stale,
+}
+
+/// [HLR-STALE] Eşin etkin oturumunun hub hattı ([`ClientTransport::active_link`]). Bileşim kökü
+/// `HubNotice::HandleLost{peer, h}`'yi bununla ayırır: `h` etkin oturumun hattı değilse kaybolan
+/// hat, yerini yenisi almış bir oturumun ESKİ hattıdır.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActiveLink {
+    /// Eşin etkin (gönderim kabul eden) oturumu yok.
+    NoSession,
+    /// Etkin oturum var; hattı bilinmiyor (zarf taşıyıcısı o oturumun INIT'ine handle bildirmedi).
+    Unknown,
+    /// Etkin oturum bu hattadır.
+    On(HubHandle),
 }
 
 // ── Yapılandırma ─────────────────────────────────────────────────────────────────────────────
@@ -344,6 +407,10 @@ struct Sess {
     /// Uca verilen birim sayısı: veri yolu birimlere sırayla kimlik verir (fragmenter kapalı →
     /// birim = mesaj), sıradaki birimin kimliği budur.
     sent: u64,
+    /// [HLR-STALE] Oturumun hub hattı (S3 `AssignHandle` ile bağlanan handle: başlatan rolde
+    /// `HandleAssigned`'ın, yanıtlayan rolde gelen INIT'in handle'ı; iki rolde de yalnız bağ
+    /// başarılıysa). Taşıyıcı bildirmediyse ya da bağ kurulmadıysa `None`.
+    link: Option<HubHandle>,
     /// Uç dikişiyle paylaşılan ilk-emisyon kaybı kümesi (yalnız test).
     #[cfg(any(test, feature = "test-util"))]
     drop_ids: Arc<Mutex<BTreeSet<u64>>>,
@@ -357,6 +424,10 @@ struct Intent {
     pending: SessionHandle,
     /// `Ready`'de ilk gönderim olur (S1 K6; Crypto'ya verilmez).
     early: Option<Vec<u8>>,
+    /// [T3-GLARE] `pending`'in INIT'inin taşıyıcı denemesi (`None`: taşıyıcı INIT'i almadı). INIT
+    /// terk edilince — niyet iptal edildi, glare kaybedildi (niyet kazananın oturumuyla çözüldü) ya
+    /// da Crypto bekleyeni düşürdü — tekrarı durdurulur ([`EnvelopeLink::cancel_init`]).
+    attempt: Option<LinkAttempt>,
 }
 
 /// Kendi başlattığımız yenileme.
@@ -366,6 +437,9 @@ struct Renewal {
     pending: SessionHandle,
     /// Tutulan RESPONSE ve tutulmaya başlandığı an.
     held: Option<(Vec<u8>, Instant)>,
+    /// [HLR] INIT'in taşıyıcı denemesi: yenileme terk edilirse tekrarı durdurulur
+    /// ([`EnvelopeLink::cancel_init`]).
+    attempt: LinkAttempt,
 }
 
 /// Kaynak uç başına sıralı teslim (S1 §4).
@@ -832,11 +906,11 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                 envelope_type,
                 bytes,
             } => {
-                let _ = self.command(SessionCommand::AssignHandle {
-                    session,
-                    hub_handle,
-                });
-                self.hub_of.insert(session, hub_handle);
+                // [HLR-STALE] Hat yalnız Crypto oturumu bu handle'a bağladıysa kaydedilir (başlatan
+                // rolde olduğu gibi): bağ oturum içinde değişmez (§2.55 REUSE), aynı INIT'in başka
+                // bir handle'la yeniden teslimi (H-RETRY) `Failed` alır ve kayıtlı hattı ezmez.
+                // Etkin oturumun hattı (`Sess.link`) böylece Crypto'nun bağıyla aynı kalır.
+                self.bind_responder_line(session, hub_handle);
                 self.responder_peer.insert(session, peer);
                 // [K4G-01] RESPONSE'tan ÖNCE beklenir: başlatan ancak onu alınca veri yollar.
                 self.expected.insert_pending(session);
@@ -851,11 +925,7 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                 envelope_type,
                 bytes,
             } => {
-                let _ = self.command(SessionCommand::AssignHandle {
-                    session: new,
-                    hub_handle,
-                });
-                self.hub_of.insert(new, hub_handle);
+                self.bind_responder_line(new, hub_handle);
                 self.provisional.insert(new, (peer, supersedes));
                 // [K4G-01] Onayı getirecek ilk epoch-1 paketi bu oturumun bağlamında açılır:
                 // RESPONSE'tan ÖNCE beklenir.
@@ -866,6 +936,18 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             }
             // `Failed` OPAKTIR (S3 §3): sahte/bozuk/bayat INIT hiçbir olay üretmez.
             _ => {}
+        }
+    }
+
+    /// Yanıtlayan rolde gelen INIT'in handle'ını oturuma bağlar; hat (`hub_of` → `Sess.link`)
+    /// yalnız `AssignHandle` başarılıysa (`NoOutput`: yeni bağ ya da aynı bağın tekrarı) yazılır.
+    fn bind_responder_line(&mut self, session: SessionHandle, hub_handle: HubHandle) {
+        let r = self.command(SessionCommand::AssignHandle {
+            session,
+            hub_handle,
+        });
+        if r == SessionResult::NoOutput {
+            self.hub_of.insert(session, hub_handle);
         }
     }
 
@@ -928,37 +1010,50 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         // (a) Kendi yenilemem tamamlandı: atomik cutover.
         if let Some(i) = self.renewals.iter().position(|r| r.pending == h) {
             let r = self.renewals.remove(i);
-            self.hub_of.remove(&h);
+            let link = self.hub_of.remove(&h);
             if let Some(old) = self.sessions.get_mut(&r.old) {
                 if old.phase == Phase::Active {
                     old.phase = Phase::Superseded;
                 }
             }
-            self.activate(h, r.peer, None);
+            // [HLR] Eş başına tek etkin oturum: eş bu arada başka bir oturumu etkinleştirdiyse bu
+            // oturum fazladır — açılmaz, kapatılır (eş onu onaylamadan bırakır); INIT'inin
+            // taşıyıcı tekrarı da durur (`Ready` olmadığı için `peer_ready` onu durdurmazdı).
+            let peer = r.peer;
+            if self.active_session_of(peer).is_some() {
+                self.abandon_renewal(r);
+                return;
+            }
+            self.activate(h, peer, None, link);
             return;
         }
         // (b) Başlattığım niyet çözüldü.
         if let Some(i) = self.intents.iter().position(|it| it.pending == h) {
             let it = self.intents.remove(i);
-            self.hub_of.remove(&h);
-            self.activate(h, it.peer, it.early);
+            let link = self.hub_of.remove(&h);
+            self.activate(h, it.peer, it.early, link);
             return;
         }
         // (c) Yanıtlayan rolde kurulan oturum. Glare'i kaybettiysek Crypto bu eşe bekleyen
-        // INIT'imizi sildi; niyetimiz bu oturumla çözülür.
+        // INIT'imizi sildi; niyetimiz bu oturumla çözülür. [T3-GLARE] O INIT terk edildi: taşıyıcı
+        // tekrarı durur (S4 C3 listesinde adıyla yok; identity §16 glare'den türetilir, bkz. modül
+        // belgesi). `Ready` onu güvenilir biçimde durdurmaz: bileşim kökünün
+        // `peer_ready`'ye verdiği handle eşe son bağlanan hattır — taşıyıcı sırasına göre eşin
+        // INIT'inin hattı olabilir, bizim denememizinki değil — ve T3 `ATTEMPT_MAX_AGE`'e dek
+        // sürerdi. Niyet bu oturumla çözüldüğü için ölmez: oturumun sonraki kaybı kurulu oturum
+        // yolundan (`relink`, `restart_renewal`) yenilenir.
         if let Some(peer) = self.responder_peer.remove(&h) {
-            self.hub_of.remove(&h);
+            let link = self.hub_of.remove(&h);
             let early = self
                 .intents
                 .iter()
                 .position(|it| it.peer == peer)
                 .and_then(|i| {
                     let it = self.intents.remove(i);
-                    self.attempts.retain(|_, p| *p != it.pending);
-                    self.hub_of.remove(&it.pending);
+                    self.drop_intent_init(&it);
                     it.early
                 });
-            self.activate(h, peer, early);
+            self.activate(h, peer, early, link);
         }
     }
 
@@ -966,13 +1061,26 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         let Some((peer, old)) = self.provisional.remove(&new) else {
             return;
         };
-        self.hub_of.remove(&new);
+        let link = self.hub_of.remove(&new);
+        // [HLR] Eşin yenilemesi `old`'un yerini aldı: `old` için kendi bekleyen yenilememiz (glare
+        // kaybında Crypto onun INIT'ini sildi; eşzamanlı yenilemede eş onu henüz onaylamadı) artık
+        // gereksizdir. Sürerse tamamlanınca eşle ikinci bir etkin oturum açardı.
+        if let Some(i) = self.renewals.iter().position(|r| r.old == old) {
+            let r = self.renewals.remove(i);
+            self.abandon_renewal(r);
+        }
         if let Some(s) = self.sessions.get_mut(&old) {
             if s.phase == Phase::Active {
                 s.phase = Phase::Superseded;
             }
         }
-        self.activate(new, peer, None);
+        // [HLR] Eş başına tek etkin oturum: `old`'un yerini kendi yenilememiz zaten aldıysa bu
+        // oturum fazladır — açılmaz, kapatılır (eş, bizim yenilememizin oturumuna geçer).
+        if self.active_session_of(peer).is_some() {
+            self.close_unopened(new);
+            return;
+        }
+        self.activate(new, peer, None, link);
     }
 
     fn on_renew_required(&mut self, h: SessionHandle) {
@@ -988,37 +1096,178 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         if self.renewals.iter().any(|r| r.old == h) {
             return;
         }
-        if let SessionResult::Initiated {
+        let _ = self.start_renewal(h, peer);
+    }
+
+    /// `old`'un yerini alacak oturum için yeni INIT (S3 `Renew`): yenileme kaydı + zarf. Olay
+    /// üretmez. `Deferred` = Crypto INIT üretmedi (bekleyen tavanı dolu ya da oturum etkin değil)
+    /// ya da taşıyıcı INIT'i almadı (deneme tavanı); [HLR] ikinci durumda bekleyen kapatılır ve
+    /// yenileme KAYDEDİLMEZ — kaydedilseydi taşıyıcısız yenileme hiçbir bildirim almadan
+    /// `HALF_OPEN_TTL`'ye dek beklerdi ve `relink` onu "bekliyor" sayardı.
+    fn start_renewal(&mut self, old: SessionHandle, peer: PeerRef) -> RelinkOutcome {
+        let SessionResult::Initiated {
             session: pending,
             envelope_type,
             bytes,
-        } = self.command(SessionCommand::Renew { session: h })
-        {
-            // [K4G-01] INIT'ten ÖNCE beklenir (tablo ile veri yolu arasında yarış yok).
-            self.expected.insert_pending(pending);
-            if let Ok(a) = self.link.send_init(peer, envelope_type, bytes) {
-                self.attempts.insert(a, pending);
-            }
-            self.renewals.push(Renewal {
-                old: h,
-                peer,
-                pending,
-                held: None,
-            });
+        } = self.command(SessionCommand::Renew { session: old })
+        else {
+            return RelinkOutcome::Deferred;
+        };
+        // [K4G-01] INIT'ten ÖNCE beklenir (tablo ile veri yolu arasında yarış yok).
+        self.expected.insert_pending(pending);
+        let Ok(attempt) = self.link.send_init(peer, envelope_type, bytes) else {
+            self.close_unopened(pending);
+            return RelinkOutcome::Deferred;
+        };
+        self.attempts.insert(attempt, pending);
+        self.renewals.push(Renewal {
+            old,
+            peer,
+            pending,
+            held: None,
+            attempt,
+        });
+        RelinkOutcome::Started
+    }
+
+    /// S1'e hiç açılmamış (bekleyen ya da fazla) bir Crypto oturumunu kapatır; zarf tablolarındaki
+    /// izi silinir. Crypto'nun `Closed(h, UserClosed)`'ı S1 olayı üretmez (`on_crypto_closed`: `h`
+    /// hiçbir tabloda değildir).
+    fn close_unopened(&mut self, h: SessionHandle) {
+        self.attempts.retain(|_, p| *p != h);
+        self.hub_of.remove(&h);
+        let _ = self.command(SessionCommand::Close { session: h });
+    }
+
+    /// [HLR] Kayıttan çıkarılmış bir yenilemeyi terk eder: INIT'inin taşıyıcı tekrarı durur
+    /// (S4 C3/KR-18; terk edilen denemenin T3'ü `ATTEMPT_MAX_AGE`'e dek sürmez) ve bekleyeni
+    /// kapatılır.
+    fn abandon_renewal(&mut self, r: Renewal) {
+        self.link.cancel_init(r.attempt);
+        self.close_unopened(r.pending);
+    }
+
+    /// [T3-GLARE] Niyetin bekleyen INIT'i terk edildi (niyet iptal edildi — S4 C3 — ya da glare'i
+    /// kaybedip kazananın oturumuyla çözüldü — identity §16, bkz. modül belgesi): taşıyıcı tekrarı
+    /// durur ve zarf tablolarındaki izi silinir. Crypto'ya komut VERMEZ (kapatmak çağıranın işidir).
+    fn drop_intent_init(&mut self, it: &Intent) {
+        if let Some(attempt) = it.attempt {
+            self.link.cancel_init(attempt);
         }
+        self.attempts.retain(|_, p| *p != it.pending);
+        self.hub_of.remove(&it.pending);
+    }
+
+    /// Eşin gönderim kabul eden (etkin) oturumu.
+    fn active_session_of(&self, peer: PeerRef) -> Option<SessionHandle> {
+        self.sessions
+            .iter()
+            .find(|(_, s)| s.peer == peer && s.phase == Phase::Active)
+            .map(|(h, _)| *h)
+    }
+
+    /// [HLR-STALE] Eşin etkin oturumunun hub hattı (bkz. [`ActiveLink`]).
+    #[must_use]
+    pub fn active_link(&self, peer: PeerRef) -> ActiveLink {
+        match self
+            .sessions
+            .values()
+            .find(|s| s.peer == peer && s.phase == Phase::Active)
+        {
+            None => ActiveLink::NoSession,
+            Some(s) => s.link.map_or(ActiveLink::Unknown, ActiveLink::On),
+        }
+    }
+
+    // ── hub hattı kaybı (S4 C5, C3/C7) ──
+
+    /// [HLR] S4 C5: eşin kurulu oturumunun hub hattı kayboldu (`ROUTE_MISS{h}` →
+    /// `HubNotice::HandleLost`; hat emekli ya da hub yeniden başlamış) → oturum için yeni INIT.
+    /// Yeni oturum yenileme yoluyla kurulur (S1 KARAR-2): yanıt gelince eski oturumun teyitsiz
+    /// birimleri boşalana ya da `renew_drain_cap` dolana dek beklenir, sonra atomik cutover
+    /// (`Ready(h')`, `Closed(h, Superseded)`). Birim yeni oturuma TAŞINMAZ (S1 K7); Application
+    /// RECEIPT'i gelmemiş kayıtları `h'` üzerinden yeniden yollar. `RenewRequired` verilmez.
+    ///
+    /// `Nothing` = eşin etkin oturumu yok, ya da o oturumun yenilemesi zaten bekliyor (ikincisi
+    /// başlatılmaz: onun INIT'i yeni bir hatta gider, kaybolan hattan etkilenmez; denemesi biterse
+    /// [`Self::restart_renewal`] yeniler). `Deferred` = yerel tavan INIT'i yola çıkarmadı, kayıt yok;
+    /// çağıran yeniden dener. Eşin aynı anda başlattığı yenileme (iki uç da `ROUTE_MISS` aldı) S3
+    /// glare kuralıyla tek oturumda biter (`on_confirmed`, `on_crypto_ready`: eş başına tek etkin
+    /// oturum).
+    ///
+    /// Bu çağrı sınırsız tekrarı ÖNLEMEZ: eş başına sınırlı deneme + geri çekilme (S4 C5,
+    /// app-rpc §6.11.1) çağıranın işidir ([`crate::hub::relink::RelinkGovernor`]).
+    pub fn relink(&mut self, peer: PeerRef) -> RelinkOutcome {
+        let Some(old) = self.active_session_of(peer) else {
+            return RelinkOutcome::Nothing;
+        };
+        if self.renewals.iter().any(|r| r.old == old) {
+            return RelinkOutcome::Nothing;
+        }
+        let out = self.start_renewal(old, peer);
+        self.sync_expected();
+        out
+    }
+
+    /// [HLR-STALE] S4 C5, kaybolan hattı adlandırılmış bildirim (`HubNotice::HandleLost{peer,
+    /// lost}`). `lost` eşin etkin oturumunun hattıysa [`Self::relink`]. Etkin oturum başka bir
+    /// hattaysa `Stale`: kaybolan hat yerini yenisi almış bir oturumun ESKİ hattıdır (`HubLink` eski
+    /// hatları `known_links`'te tutar; bitmekte olan eski oturumun geç datagramı `ROUTE_MISS` alır)
+    /// — çalışan oturum yenilenmez. Etkin oturumun hattı bilinmiyorsa ([`ActiveLink::Unknown`])
+    /// kayıp kabul edilir ve [`Self::relink`]: doğrulanamayan bir kaybı düşürmek, kaybolan hattı
+    /// unutan taşıyıcıdan ikinci bildirim gelmeyeceği için oturumu yeni INIT'siz bırakabilirdi.
+    /// Etkin oturum yoksa `Nothing`.
+    pub fn relink_line(&mut self, peer: PeerRef, lost: HubHandle) -> RelinkOutcome {
+        match self.active_link(peer) {
+            ActiveLink::On(h) if h != lost => RelinkOutcome::Stale,
+            ActiveLink::On(_) | ActiveLink::Unknown | ActiveLink::NoSession => self.relink(peer),
+        }
+    }
+
+    /// [HLR] S4 C3/C7: eşin etkin oturumunun bekleyen yenilemesinin hub açılış denemesi bitti
+    /// (`HubNotice::AttemptEnded`: `{UNKNOWN_HANDLE, 0}`, `ATTEMPT_MAX_AGE`, çelişkili handle,
+    /// yeniden bind ya da atanmış handle'a `ROUTE_MISS`) → yenileme yeni kriptografik INIT ve yeni
+    /// denemeyle yeniden başlar; eski bekleyen kapatılır. RESPONSE'u gelmiş (boşalma için tutulan)
+    /// yenileme el sıkışmasını tamamlamıştır: dokunulmaz — oturumu bitmiş denemenin handle'ında
+    /// kurulursa o handle'ın kaybı `HubLink::peer_ready` kaydıyla yine `HandleLost` verir.
+    /// `Nothing` = yeniden başlatılacak yenileme yok. `Deferred` = eski bekleyen kapatıldı, yenisi
+    /// yerel tavana takıldı: çağıran [`Self::relink`] ile yeniden dener.
+    pub fn restart_renewal(&mut self, peer: PeerRef) -> RelinkOutcome {
+        let Some(old) = self.active_session_of(peer) else {
+            return RelinkOutcome::Nothing;
+        };
+        let Some(i) = self
+            .renewals
+            .iter()
+            .position(|r| r.old == old && r.held.is_none())
+        else {
+            return RelinkOutcome::Nothing;
+        };
+        let r = self.renewals.remove(i);
+        self.abandon_renewal(r);
+        let out = self.start_renewal(old, peer);
+        self.sync_expected();
+        out
     }
 
     fn on_crypto_closed(&mut self, h: SessionHandle, reason: CloseReason) {
         // (1) Bekleyen niyetin INIT'i anahtar hijyeniyle düştü: niyet kalıcıdır → taze INIT.
+        // [T3-GLARE] Düşen INIT'in taşıyıcı tekrarı durur; yeni INIT yeni deneme açar (S4 C3
+        // "deneme açıkça sonlandırılıp yeni denemeye geçildi").
         if let Some(i) = self.intents.iter().position(|it| it.pending == h) {
+            let attempt = self.intents[i].attempt.take();
+            if let Some(attempt) = attempt {
+                self.link.cancel_init(attempt);
+            }
             self.attempts.retain(|_, p| *p != h);
             self.hub_of.remove(&h);
             self.reinitiate(i);
             return;
         }
-        // (2) Bekleyen yenileme düştü: eski oturum sürer.
+        // (2) Bekleyen yenileme düştü: eski oturum sürer. [HLR] INIT'inin taşıyıcı tekrarı durur.
         if let Some(i) = self.renewals.iter().position(|r| r.pending == h) {
-            self.renewals.remove(i);
+            let r = self.renewals.remove(i);
+            self.link.cancel_init(r.attempt);
             self.attempts.retain(|_, p| *p != h);
             self.hub_of.remove(&h);
             return;
@@ -1063,7 +1312,7 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         self.events.push_back(SessionEvent::Closed(h, reason));
         if let Some(i) = self.renewals.iter().position(|r| r.old == h) {
             let r = self.renewals.remove(i);
-            let _ = self.command(SessionCommand::Close { session: r.pending });
+            self.abandon_renewal(r);
         }
     }
 
@@ -1081,9 +1330,11 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                 self.intents[i].pending = session;
                 // [K4G-01] INIT'ten ÖNCE beklenir (tablo ile veri yolu arasında yarış yok).
                 self.expected.insert_pending(session);
-                if let Ok(a) = self.link.send_init(peer, envelope_type, bytes) {
+                let attempt = self.link.send_init(peer, envelope_type, bytes).ok();
+                if let Some(a) = attempt {
                     self.attempts.insert(a, session);
                 }
+                self.intents[i].attempt = attempt;
             }
             _ => {
                 // Kalıcı yerel hata (eş malzemesi yok): niyet kapalı nedenle biter.
@@ -1097,7 +1348,29 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     }
 
     /// Oturumu S1'e açar: veri ucu + `Ready(h, peer)` + (varsa) `early_unit` ilk gönderim.
-    fn activate(&mut self, h: SessionHandle, peer: PeerRef, early: Option<Vec<u8>>) {
+    ///
+    /// [HLR] Eşin onaysız provisional'ları burada kapatılır: hepsi artık etkin olmayan bir oturumun
+    /// yerini almak içindi (Crypto provisional'ı o anki etkin oturuma bağlar) ve onaylansa bile eş
+    /// başına tek etkin oturum kuralı onu açmadan kapatırdı. Eşin terk ettiği INIT'lerin (glare,
+    /// yeniden başlatılan yenileme) provisional'ı böylece `PROVISIONAL_TTL`'ye (Crypto'nun sessiz
+    /// düşürmesi; transport'a olay gelmez) dek tablolarda kalmaz (SR-AUDIT-001).
+    fn activate(
+        &mut self,
+        h: SessionHandle,
+        peer: PeerRef,
+        early: Option<Vec<u8>>,
+        link: Option<HubHandle>,
+    ) {
+        let stale: Vec<SessionHandle> = self
+            .provisional
+            .iter()
+            .filter(|(n, (p, _))| *p == peer && **n != h)
+            .map(|(n, _)| *n)
+            .collect();
+        for n in stale {
+            self.provisional.remove(&n);
+            self.close_unopened(n);
+        }
         #[cfg(any(test, feature = "test-util"))]
         let drop_ids = Arc::new(Mutex::new(BTreeSet::new()));
         let endpoint = self.open_endpoint(
@@ -1120,6 +1393,7 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                 phase: Phase::Active,
                 endpoint,
                 sent,
+                link,
                 #[cfg(any(test, feature = "test-util"))]
                 drop_ids,
             },
@@ -1416,6 +1690,25 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             .map(|(h, _)| *h)
     }
 
+    /// [HLR] Eşin etkin oturum sayısı (sözleşme: en çok 1), bekleyen yenileme sayısı ve onaysız
+    /// provisional sayısı — fikstür yenilemelerin tek oturumda ve artıksız bittiğini buradan okur.
+    #[cfg(any(test, feature = "test-util"))]
+    #[must_use]
+    pub fn renewal_state_for_test(&self, peer: PeerRef) -> (usize, usize, usize) {
+        let active = self
+            .sessions
+            .values()
+            .filter(|s| s.peer == peer && s.phase == Phase::Active)
+            .count();
+        let renewals = self.renewals.iter().filter(|r| r.peer == peer).count();
+        let provisional = self
+            .provisional
+            .values()
+            .filter(|(p, _)| *p == peer)
+            .count();
+        (active, renewals, provisional)
+    }
+
     /// S1'in bildiği bir oturumun eşi.
     #[cfg(any(test, feature = "test-util"))]
     #[must_use]
@@ -1509,7 +1802,8 @@ impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> 
             } => {
                 // [K4G-01] INIT'ten ÖNCE beklenir (tablo ile veri yolu arasında yarış yok).
                 self.expected.insert_pending(session);
-                if let Ok(a) = self.link.send_init(peer, envelope_type, bytes) {
+                let attempt = self.link.send_init(peer, envelope_type, bytes).ok();
+                if let Some(a) = attempt {
                     self.attempts.insert(a, session);
                 }
                 self.intents.push(Intent {
@@ -1517,6 +1811,7 @@ impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> 
                     peer,
                     pending: session,
                     early: early_unit.map(|u| u.bytes),
+                    attempt,
                 });
             }
             // G1: dizinde olmayan eş → opak `Failed` → kalıcı yerel hata (eş malzemesi yok).
@@ -1649,7 +1944,7 @@ impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> 
         let _ = self.command(SessionCommand::Close { session });
         if let Some(i) = self.renewals.iter().position(|r| r.old == session) {
             let r = self.renewals.remove(i);
-            let _ = self.command(SessionCommand::Close { session: r.pending });
+            self.abandon_renewal(r);
         }
         self.sync_expected();
         self.events
@@ -1666,8 +1961,8 @@ impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> 
         let _ = self.command(SessionCommand::Close {
             session: it.pending,
         });
-        self.attempts.retain(|_, p| *p != it.pending);
-        self.hub_of.remove(&it.pending);
+        // [T3-GLARE] S4 C3 "bağlantı niyeti iptal edildi": INIT'in taşıyıcı tekrarı durur.
+        self.drop_intent_init(&it);
         self.sync_expected();
         self.events.push_back(SessionEvent::ConnectAbandoned(
             ticket,
