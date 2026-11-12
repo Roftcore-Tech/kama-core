@@ -424,39 +424,6 @@ fn validate_fec(cfg: &RuntimeConfig) -> Result<Option<FecProfile>, RuntimeError>
     Ok(Some(p))
 }
 
-/// [FEC-E-ÖLÇEK] Kontrolcü yolunda parite tavanı. İki terim:
-/// 1. **Zaman kapısı:** parite sembolünün bugünkü gönderim hızında serileştirme süresi
-///    `parity_wire / pacer_rate` ≤ 2 s ise tavan uygulanmaz (`r_code_max` kalır): o hızda bir
-///    sembol ucuzdur, küçük birimde de parite yerinde. Sınır sabittir — srtt'ye bağlanmadı, çünkü
-///    düşük bantta srtt kuyrukla 10–15 s'e şişer ve kapıyı tam gerektiği yerde açardı. Hız
-///    bilinmiyorsa (0) kapı kapalı sayılır.
-/// 2. **Bayt kapısı** (zaman kapısı aşılınca): `r · parity_wire ≤ payload_wire` — parite, koruduğu
-///    bloğun kaynak tel baytını aşmaz. 25 B/s'de 1 080 B sembol ≈ 43 s hat: 65 B ileti bloğu
-///    (Σ ≈ 1 kB) parite almaz; 1 000 B dosya bloğu (Σ ≈ 8 kB) profil tavanında kalır.
-///
-/// Dayanak fec-core §11: E=1024 bulk/yüksek-bant profilidir, "sub-kbps ≠ E=1024 — 1024 B sembol
-/// 33 s serileştirme, deadline ölür"; küçük-E profil seçici gelene dek köprü. Deterministik
-/// (ADR-17); elle `r` (Manual) yoluna uygulanmaz.
-#[must_use]
-pub fn fec_payload_r_max(
-    r_code_max: u16,
-    payload_wire: u64,
-    parity_wire: u64,
-    pacer_rate_bps: u64,
-) -> u16 {
-    const SEC: u64 = 1_000_000_000;
-    const PARITY_SER_LIMIT_NS: u64 = 2 * SEC;
-    if let Some(ser_ns) = parity_wire.saturating_mul(SEC).checked_div(pacer_rate_bps) {
-        if ser_ns <= PARITY_SER_LIMIT_NS {
-            return r_code_max;
-        }
-    }
-    let by_payload = payload_wire / parity_wire.max(1);
-    u16::try_from(by_payload)
-        .unwrap_or(u16::MAX)
-        .min(r_code_max)
-}
-
 /// [S1B] Bir FEC profilinin **chunk kapasitesi**: `E − SOURCE_PREFIX_LEN`, yani tek bir
 /// canonical source-symbol'ün taşıyabildiği en çok app byte'ı. `max_unit_bytes` bunu AŞAMAZ;
 /// daha büyük mesajlar fragmenter ile bu boyda chunk'lara bölünür. Bilinmeyen profil → `None`.
@@ -763,12 +730,6 @@ pub struct ClientStats {
     pub frag_encode_failures: u64,
     /// [FAZ-2 KALEM-1] Akış sonunda zero-dolgu ile kapatılan KISMİ FEC bloğu sayısı (Model-A).
     pub fec_partial_blocks_closed: u64,
-    /// [FEC-E-ÖLÇEK] Kontrolcü yolunda kaynak-bayt tavanının kontrolcünün istediği r'yi GERÇEKTEN
-    /// kestiği blok sayısı (`r · parite_tel ≤ Σ kaynak_tel`; fec-core §11 "sub-kbps ≠ E=1024";
-    /// elle-r yolunda sayılmaz).
-    /// Küçük birimli (ör. 65 B ileti) blokta 1024 B'lik parite sembolü koruduğu veriden pahalıdır:
-    /// 25 B/s'de her sembol ≈ 43 s hat; blok başına 2–3 sembol hattın üçte birini yutuyordu.
-    pub fec_parity_payload_clamped: u64,
     /// [TEŞHİS] Yapı-gate'in karar tabanı (kapanış anındaki fotoğraf) — bkz. [`FateWindowDiag`].
     pub fate: FateWindowDiag,
     /// [DR-CS-3] Wire'a yazılan CS-probe (0 = bootstrap kapalı VEYA PreConverge hiç yaşanmadı).
@@ -2269,8 +2230,6 @@ async fn client_task(
     // `fec_repair_missing` + `stale_skipped`).
     let mut cur_block: Vec<Vec<u8>> = Vec::new();
     let mut cur_block_id: u32 = 0;
-    // [FEC-E-ÖLÇEK] Açık bloktaki kaynak birimlerin tel baytı toplamı (parite tavanı ölçeği).
-    let mut cur_block_wire: u64 = 0;
     // [FAZ-2 / KALEM-1] blok → (K_actual, repair'ler). K_actual kısmi/son blokta k_shape'ten
     // küçüktür ve TEL BAŞLIĞINDA taşınmak zorundadır (alıcı Model-A zero-enjeksiyonunu ondan türetir).
     let mut repair_store: BTreeMap<u32, (u8, Vec<RepairSymbol>)> = BTreeMap::new();
@@ -2909,12 +2868,8 @@ async fn client_task(
                     };
                     debug_assert_eq!(cur_block.len() as u64, id % u64::from(p.k_shape));
                     cur_block.push(sym);
-                    cur_block_wire += size;
                     if cur_block.len() == p.k_shape_usize() {
                         let parity_wire = wire_len(seam.as_ref(), client_ctx, HDR_FEC + e);
-                        let pacer_rate = session.sender().diag_rate().3;
-                        let r_max =
-                            fec_payload_r_max(p.r_code_max, cur_block_wire, parity_wire, pacer_rate);
                         // Statik-r (Manual{true} + manuel-close) YA DA adaptif (Controller + latch).
                         let planned_r: u16 = if let Some(r) = fec_manual_r {
                             let auth = session.sender_mut().open_fec_block_authority();
@@ -2925,20 +2880,17 @@ async fn client_task(
                         } else {
                             let snap = session.sender().controller_decision_snapshot();
                             let auth = session.sender_mut().open_fec_block_authority();
-                            let latch = session.sender_mut().fec_controller_latch(
-                                auth,
-                                snap,
-                                u8::try_from(p.k_shape).unwrap_or(255),
-                                r_max,
-                                cur_block_id,
-                                parity_wire,
-                            );
-                            // Sayaç yalnız kontrolcü yolunda ve yalnız tavan GERÇEKTEN
-                            // kestiğinde (kontrolcünün istediği r > kaynak baytı tavanı).
-                            if latch.computed_r > r_max {
-                                stats.fec_parity_payload_clamped += 1;
-                            }
-                            latch.planned_r
+                            session
+                                .sender_mut()
+                                .fec_controller_latch(
+                                    auth,
+                                    snap,
+                                    u8::try_from(p.k_shape).unwrap_or(255),
+                                    p.r_code_max,
+                                    cur_block_id,
+                                    parity_wire,
+                                )
+                                .planned_r
                         };
                         if planned_r > 0 {
                             let srcs: Vec<SourceSymbol> = cur_block
@@ -2959,7 +2911,6 @@ async fn client_task(
                             }
                         }
                         cur_block.clear();
-                        cur_block_wire = 0;
                         cur_block_id = cur_block_id.wrapping_add(1);
                     }
                 }
@@ -3014,8 +2965,6 @@ async fn client_task(
         if !cur_block.is_empty() {
             let k_actual = u8::try_from(cur_block.len()).unwrap_or(255);
             let parity_wire = wire_len(seam.as_ref(), client_ctx, HDR_FEC + p.e_usize());
-            let pacer_rate = session.sender().diag_rate().3;
-            let r_max = fec_payload_r_max(p.r_code_max, cur_block_wire, parity_wire, pacer_rate);
             let planned_r: u16 = if let Some(r) = fec_manual_r {
                 let auth = session.sender_mut().open_fec_block_authority();
                 session
@@ -3025,18 +2974,17 @@ async fn client_task(
             } else {
                 let snap = session.sender().controller_decision_snapshot();
                 let auth = session.sender_mut().open_fec_block_authority();
-                let latch = session.sender_mut().fec_controller_latch(
-                    auth,
-                    snap,
-                    k_actual,
-                    r_max,
-                    cur_block_id,
-                    parity_wire,
-                );
-                if latch.computed_r > r_max {
-                    stats.fec_parity_payload_clamped += 1;
-                }
-                latch.planned_r
+                session
+                    .sender_mut()
+                    .fec_controller_latch(
+                        auth,
+                        snap,
+                        k_actual,
+                        p.r_code_max,
+                        cur_block_id,
+                        parity_wire,
+                    )
+                    .planned_r
             };
             if planned_r > 0 {
                 // Zero-slot dolgusu: ESI [K_actual, K_shape) canonical-zero (E byte). ENCODE'a
@@ -4432,52 +4380,6 @@ async fn server_task(
         }
     }
     stats
-}
-
-#[cfg(test)]
-mod fec_payload_cap_tests {
-    //! [FEC-E-ÖLÇEK] Zaman kapısı (sembol serileştirme ≤ 2 s → profil tavanı) + bayt kapısı: profil
-    //! 0x05 (k 8, r 4, E 1024; parite tel ≈ 1 080 B). 25 B/s'de (sembol 43 s) 65 B ileti bloğu
-    //! parite almaz, 400 B PTT ≤ 3, dosya profil tavanı; 12,5 kB/s'de (86 ms) hepsi profil tavanı.
-    use super::fec_payload_r_max;
-
-    const LOW: u64 = 25; // B/s
-    const GOOD: u64 = 12_500; // B/s
-
-    #[test]
-    fn tiny_message_block_gets_no_parity_at_low_band() {
-        assert_eq!(fec_payload_r_max(4, 8 * 120, 1080, LOW), 0);
-    }
-
-    #[test]
-    fn tiny_message_block_keeps_profile_parity_at_good_band() {
-        assert_eq!(fec_payload_r_max(4, 8 * 120, 1080, GOOD), 4);
-    }
-
-    #[test]
-    fn ptt_block_is_capped_only_at_low_band() {
-        assert_eq!(fec_payload_r_max(4, 8 * 455, 1080, LOW), 3);
-        assert_eq!(fec_payload_r_max(4, 8 * 455, 1080, GOOD), 4);
-    }
-
-    #[test]
-    fn file_block_keeps_profile_max_everywhere() {
-        assert_eq!(fec_payload_r_max(4, 8 * 1055, 1080, LOW), 4);
-        assert_eq!(fec_payload_r_max(4, 8 * 1055, 1080, GOOD), 4);
-    }
-
-    #[test]
-    fn unknown_rate_counts_as_slow_and_zero_parity_wire_is_safe() {
-        assert_eq!(fec_payload_r_max(4, 8 * 120, 1080, 0), 0);
-        assert_eq!(fec_payload_r_max(4, 100, 0, LOW), 4);
-    }
-
-    #[test]
-    fn time_gate_boundary_is_two_seconds() {
-        // 1 080 B sembol: 540 B/s → tam 2 s → kapı açık; 500 B/s → 2,16 s → bayt kapısı.
-        assert_eq!(fec_payload_r_max(4, 8 * 120, 1080, 540), 4);
-        assert_eq!(fec_payload_r_max(4, 8 * 120, 1080, 500), 0);
-    }
 }
 
 #[cfg(test)]
