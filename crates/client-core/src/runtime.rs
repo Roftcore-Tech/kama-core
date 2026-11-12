@@ -777,7 +777,10 @@ pub struct ClientStats {
 pub struct ServerStats {
     /// App'e teslim edilen birim (ilk-teslim).
     pub delivered: u64,
-    /// Teslim kanalı doluyken düşen teslim (app drenaj sözleşmesi ihlali görünür olsun).
+    /// Teslim kanalı doluyken düşen teslim. [INV-ACK-DELIVER-1 · F4] Teslim artık yalnız ayrılmış
+    /// kanal yeriyle yapılır (DATA yolu yeri motordan önce, FEC yolu RECOVERED'dan önce ayırır);
+    /// düşme yolu yoktur, bu sayaç 0 kalır. Alan geriye uyum için durur: dolu kanalın görünür
+    /// izi [`Self::data_not_admitted_full`] ve [`Self::fec_recovered_not_admitted`]'tır.
     pub delivery_dropped: u64,
     /// [INV-ACK-DELIVER-1 · F4] Teslim kanalı doluyken motora VERİLMEYEN (ACK'lenmeyen) DATA
     /// datagramı: gönderici ARQ ile yeniden iletir; ACK'lenmiş birim kaybolmaz.
@@ -785,6 +788,10 @@ pub struct ServerStats {
     /// [F4] Çözülen ama teslim kanalına giremeyen FEC kurtarımı (RECOVERED'a yazılmadı;
     /// gönderici kaynak birimi yeniden iletir).
     pub fec_recovered_not_admitted: u64,
+    /// [F3] Oturumun kabul penceresinin DIŞINDA kaldığı için (teslim kimliği ≥ sıra başı + genişlik)
+    /// motora VERİLMEYEN (ACK'lenmeyen) DATA datagramı + RECOVERED'a yazılmayan FEC kurtarımı:
+    /// sıra başı eksikken gönderici ilerledi; birim yeniden iletimle sırası gelince kabul edilir.
+    pub data_not_admitted_window: u64,
     /// Peer-cap fail-closed reddi (yeni peer, tablo dolu).
     /// [K4G-01b] "Yeni peer" = yeni `(adres, SessionHandle)` yuvası.
     pub dropped_new_peers: u64,
@@ -1532,7 +1539,27 @@ pub enum Readiness {
 /// [K4G-01b] Eş yuvalarının ömrü de bu kümeye bağlıdır: bağlı oturumu kümeden çıkan (kapanan)
 /// `(adres, oturum)` yuvası `idle_hold`'u beklemeden emekliye ayrılır.
 #[derive(Debug, Clone, Default)]
-pub struct ExpectedSessions(Arc<Mutex<BTreeMap<SessionHandle, Readiness>>>);
+pub struct ExpectedSessions(
+    Arc<Mutex<BTreeMap<SessionHandle, Readiness>>>,
+    Arc<Mutex<AdmitWindow>>,
+);
+
+/// [F3 · sıra başı için yer koruma] Oturum başına teslim kabul penceresi.
+///
+/// S1 adaptörünün oturum sıralayıcısı (`Reorder`) eksik sıra başını ATLAMAZ; belleği sınırlı tutmak
+/// için sıra başından çok ilerideki veri hiç kabul edilmez. Adaptör sıralayıcının sıra başını
+/// (`next`) buraya yayımlar; veri alıcısı `teslim kimliği ≥ sıra başı + genişlik` olan DATA'yı motora
+/// VERMEZ (ACK yok; gönderici ARQ ile yeniden iletir) ve böyle bir FEC kurtarımını RECOVERED'a
+/// yazmaz. Sıra başı her zaman pencerenin içindedir; tutulan birim sayısı `genişlik − 1`'i aşamaz.
+///
+/// Yayımlanan sıra başı gerçeğinin GERİSİNDE kalabilir (adaptör teslimleri okudukça ilerletir);
+/// bu yalnız kabulü daha tutucu yapar. Sıra başı yalnız ileri gider. Genişlik ayarlanmamışsa
+/// (bağımsız `bind`: sıralayıcı yok) pencere yoktur.
+#[derive(Debug, Default)]
+struct AdmitWindow {
+    width: Option<u64>,
+    heads: BTreeMap<SessionHandle, u64>,
+}
 
 impl ExpectedSessions {
     /// Boş küme: hiçbir `Session(_)` beklenmiyor.
@@ -1561,10 +1588,43 @@ impl ExpectedSessions {
     }
 
     /// Kümeyi TEK adımda yeniden yayımlar: okuyucu ara hâli görmez. Aynı tutamaç birden çok kez
-    /// gelirse SONUNCUSU geçerlidir.
+    /// gelirse SONUNCUSU geçerlidir. [F3] Kümeden çıkan oturumun kabul penceresi sıra başı da
+    /// silinir (kalan oturumlarınki korunur: sıra başı geri gitmez).
     pub fn replace(&self, sessions: impl IntoIterator<Item = (SessionHandle, Readiness)>) {
         let next: BTreeMap<SessionHandle, Readiness> = sessions.into_iter().collect();
+        self.window_lock()
+            .heads
+            .retain(|session, _| next.contains_key(session));
         *self.lock() = next;
+    }
+
+    /// [F3] Kabul penceresini AÇAR: her `Ready` oturum için teslim kimliği
+    /// `[sıra başı, sıra başı + width)` aralığındaki veri kabul edilir. `width` en az 1'dir.
+    pub fn set_admit_window(&self, width: u64) {
+        self.window_lock().width = Some(width.max(1));
+    }
+
+    /// [F3] Oturumun sıralı teslim sınırı `head`'e ilerledi (bundan küçük kimlikler teslim edildi).
+    /// Sıra başı yalnız ileri gider; daha küçük değer yok sayılır.
+    pub fn advance_head(&self, session: SessionHandle, head: u64) {
+        let mut w = self.window_lock();
+        let slot = w.heads.entry(session).or_insert(0);
+        *slot = (*slot).max(head);
+    }
+
+    /// [F3] Oturumun kabul sınırı (dışlayıcı): bu değer ve üstündeki teslim kimliği kabul edilmez.
+    /// Pencere kapalıysa `None`. Sıra başı yayımlanmamış oturum için sıra başı 0'dır.
+    #[must_use]
+    pub fn admit_limit(&self, session: SessionHandle) -> Option<u64> {
+        let w = self.window_lock();
+        let width = w.width?;
+        Some(
+            w.heads
+                .get(&session)
+                .copied()
+                .unwrap_or(0)
+                .saturating_add(width),
+        )
     }
 
     /// `session` bekleniyorsa hazırlığı; beklenmiyorsa `None`.
@@ -1577,6 +1637,26 @@ impl ExpectedSessions {
     fn lock(&self) -> MutexGuard<'_, BTreeMap<SessionHandle, Readiness>> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
+
+    /// [F3] Kilit sırası: [`Self::replace`] önce bunu, sonra kümeyi alır; başka hiçbir yol iki kilidi
+    /// birlikte tutmaz.
+    fn window_lock(&self) -> MutexGuard<'_, AdmitWindow> {
+        self.1.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// [F3] Bağlam bir oturumsa onun kabul sınırı (bkz. [`ExpectedSessions::admit_limit`]).
+fn session_admit_limit(expected: &ExpectedSessions, ctx: ProtectionContext) -> Option<u64> {
+    match ctx {
+        ProtectionContext::Session(h) => expected.admit_limit(h),
+        ProtectionContext::HubChannel => None,
+    }
+}
+
+/// [F3] `id` (fragmenter kapalıyken birim, açıkken mesaj kimliği) oturumun kabul penceresinin
+/// DIŞINDA mı. Pencere yoksa ya da bağlam oturum değilse `false`.
+fn beyond_admit_window(expected: &ExpectedSessions, ctx: ProtectionContext, id: u64) -> bool {
+    session_admit_limit(expected, ctx).is_some_and(|limit| id >= limit)
 }
 
 /// [K4G-01 / D1 (v1.1) kol (b)] HubChannel dağıtıcısı — Session dağıtıcısından AYRI bir tip.
@@ -3096,6 +3176,8 @@ pub struct ServerHandle {
     /// [F4] [`ServerStats::data_not_admitted_full`]'ın canlı aynası (teslim kanalı doluyken motora
     /// verilmeyen, ACK'lenmeyen DATA; bkz. [`ServerHandle::data_not_admitted_full`]).
     data_not_admitted_full: Arc<AtomicU64>,
+    /// [F3] [`ServerStats::data_not_admitted_window`]'ın canlı aynası.
+    data_not_admitted_window: Arc<AtomicU64>,
 }
 
 impl ServerEndpoint {
@@ -3163,6 +3245,7 @@ impl ServerEndpoint {
         let (t0_tx, t0_rx) = mpsc::channel::<oneshot::Sender<()>>(1);
         let delivery_dropped = Arc::new(AtomicU64::new(0));
         let data_not_admitted_full = Arc::new(AtomicU64::new(0));
+        let data_not_admitted_window = Arc::new(AtomicU64::new(0));
         let task = tokio::spawn(server_task(
             sock,
             cfg,
@@ -3175,6 +3258,7 @@ impl ServerEndpoint {
             ctx_counters.clone(),
             Arc::clone(&delivery_dropped),
             Arc::clone(&data_not_admitted_full),
+            Arc::clone(&data_not_admitted_window),
         ));
         Ok(ServerHandle {
             delivery_rx,
@@ -3185,6 +3269,7 @@ impl ServerEndpoint {
             ctx_counters,
             delivery_dropped,
             data_not_admitted_full,
+            data_not_admitted_window,
         })
     }
 }
@@ -3239,6 +3324,13 @@ impl ServerHandle {
     #[must_use]
     pub fn data_not_admitted_full(&self) -> u64 {
         self.data_not_admitted_full.load(Ordering::Relaxed)
+    }
+
+    /// [F3] [`ServerStats::data_not_admitted_window`] ile AYNI sayaç, kapanışı beklemeden okunur:
+    /// kabul penceresinin dışında kaldığı için motora verilmeyen (ACK'lenmeyen) DATA.
+    #[must_use]
+    pub fn data_not_admitted_window(&self) -> u64 {
+        self.data_not_admitted_window.load(Ordering::Relaxed)
     }
 
     /// Kapanış → istatistik.
@@ -3333,44 +3425,37 @@ impl MsgAsm {
     }
 }
 
-/// Teslim kanalına bir mesaj koyar (bounded; taşan teslim sayılır — app drenaj sözleşmesi).
-/// [INV-ACK-DELIVER-1 · F4] `permit`: datagram motora verilmeden ÖNCE `try_reserve` ile GERÇEKTEN
-/// ayrılmış kanal yeri (DATA yolu); `None` ise `try_send` (FEC kurtarımı gibi çok birimli yollar —
-/// yer yoksa birim kabul edilmez, çağıran bunu bildirmez/ACK'lemez).
-#[allow(clippy::too_many_arguments)]
+/// Teslim kanalına bir mesaj koyar. [INV-ACK-DELIVER-1 · F4] Yalnız GERÇEKTEN ayrılmış kanal
+/// yeriyle (`permit`) çağrılır: teslim düşemez. Yer yoksa çağıran teslime hiç girişmez (DATA yolu
+/// datagramı motora vermez; FEC yolu kurtarımı RECOVERED'a yazmaz) — `delivery_dropped` artık hiçbir
+/// yolda artmaz (alan geriye uyum için durur).
 fn push_delivery(
     stats: &mut ServerStats,
-    delivery_tx: &mpsc::Sender<Delivery>,
-    permit: Option<mpsc::Permit<'_, Delivery>>,
+    permit: mpsc::Permit<'_, Delivery>,
     peer: SocketAddr,
     ctx: ProtectionContext,
     unit_id: u64,
     payload: Vec<u8>,
     from_fec: bool,
-) -> bool {
-    let d = Delivery {
+) {
+    permit.send(Delivery {
         peer,
         unit_id,
         payload,
         ctx,
-    };
-    let ok = match permit {
-        Some(p) => {
-            p.send(d);
-            true
-        }
-        None => delivery_tx.try_send(d).is_ok(),
-    };
-    if ok {
-        stats.delivered += 1;
-        if from_fec {
-            stats.fec_recovered_units += 1;
-        }
-        true
-    } else {
-        stats.delivery_dropped += 1;
-        false
+    });
+    stats.delivered += 1;
+    if from_fec {
+        stats.fec_recovered_units += 1;
     }
+}
+
+/// Verilmiş izni ya da (yoksa) kanalda şimdi ayrılan yeri döner; yer yoksa `None`.
+fn permit_or_reserve<'a>(
+    permit: Option<mpsc::Permit<'a, Delivery>>,
+    delivery_tx: &'a mpsc::Sender<Delivery>,
+) -> Option<mpsc::Permit<'a, Delivery>> {
+    permit.or_else(|| delivery_tx.try_reserve().ok())
 }
 
 /// [S1B] Alınan bir chunk'ı app'e teslim yoluna koyar — DATA ve FEC-kurtarma ORTAK kapısı.
@@ -3380,10 +3465,10 @@ fn push_delivery(
 /// AÇIKKEN: prefix'teki `(message_id, chunk_offset, FINAL)` ile birleştiriciye girer; mesaj
 /// tamamlanınca TAM payload TEK `Delivery` olarak akar ve dedup `message_id` üzerinde olur.
 #[allow(clippy::too_many_arguments)]
-fn admit_chunk(
+fn admit_chunk<'a>(
     stats: &mut ServerStats,
-    delivery_tx: &mpsc::Sender<Delivery>,
-    permit: Option<mpsc::Permit<'_, Delivery>>,
+    delivery_tx: &'a mpsc::Sender<Delivery>,
+    permit: Option<mpsc::Permit<'a, Delivery>>,
     peer: SocketAddr,
     slot: &mut PeerSlot,
     frag_on: bool,
@@ -3400,18 +3485,18 @@ fn admit_chunk(
         // [INV-ACK-DELIVER-1 · F4] Dedup penceresine YALNIZ teslim kanalına girdikten sonra
         // yazılır: dolu kanalda düşen birim "teslim edildi" sayılsaydı yeniden iletimi de yutulur,
         // ACK'lenmiş birim kalıcı kaybolurdu.
-        if !push_delivery(
+        let Some(permit) = permit_or_reserve(permit, delivery_tx) else {
+            return false;
+        };
+        push_delivery(
             stats,
-            delivery_tx,
             permit,
             peer,
             slot.ctx,
             unit_id,
             payload.to_vec(),
             from_fec,
-        ) {
-            return false;
-        }
+        );
         slot.delivered_seen.insert(unit_id);
         if slot.delivered_seen.len() > DELIVERED_DEDUP_WINDOW {
             slot.delivered_seen.pop_first();
@@ -3436,22 +3521,17 @@ fn admit_chunk(
         asm.take_if_complete()
     };
     if let Some(full) = complete {
+        // [F4 · FEC kolu] Yer, mesaj birleştiriciden ÇIKARILMADAN ÖNCE ayrılır. Yer yoksa mesaj
+        // birleştiricide (tamamlanmış hâliyle) KALIR ve bu chunk "kabul edilmedi" döner: FEC
+        // kurtarımı RECOVERED'a yazılmaz, gönderici chunk'ı yeniden iletir, o DATA izinle gelince
+        // mesaj teslim edilir. Önceki sıra (önce sil, sonra dene) mesajın daha önce ACK'lenmiş
+        // chunk'larını da silerdi: gönderici onları bir daha göndermez → mesaj kalıcı kaybolurdu.
+        let Some(permit) = permit_or_reserve(permit, delivery_tx) else {
+            return false;
+        };
         slot.msgs.remove(&pfx.message_id);
         stats.msgs_reassembled += 1;
-        // [F4] Tam mesaj kanala girmezse "teslim edildi" işaretlenmez; birleştirici girdisi
-        // düştüğünden mesaj yeniden iletimle (bütün chunk'lar) yeniden toplanır.
-        if !push_delivery(
-            stats,
-            delivery_tx,
-            permit,
-            peer,
-            slot.ctx,
-            mid,
-            full,
-            from_fec,
-        ) {
-            return false;
-        }
+        push_delivery(stats, permit, peer, slot.ctx, mid, full, from_fec);
         slot.delivered_seen.insert(mid);
         if slot.delivered_seen.len() > DELIVERED_DEDUP_WINDOW {
             slot.delivered_seen.pop_first();
@@ -3615,6 +3695,8 @@ fn fec_ingest(
     // [S1B] Kurtarılan chunk'ların teslim kapısı için gereken fragmenter bağlamı.
     frag_on: bool,
     max_message_bytes: usize,
+    // [F3] Oturumun kabul sınırı (dışlayıcı teslim kimliği; `None` = pencere yok).
+    admit_limit: Option<u64>,
 ) -> Vec<u16> {
     let mut recovered_esis: Vec<u16> = Vec::new();
     let k_shape = u8::try_from(p.k_shape).unwrap_or(u8::MAX);
@@ -3726,6 +3808,16 @@ fn fec_ingest(
                     // [INV-ACK-DELIVER-1 · F4] Teslim kanalına GİREMEYEN kurtarılmış birim
                     // RECOVERED listesine yazılmaz: göndericinin ARQ'su kaynak birimi yeniden
                     // iletir (kaynak seq ACK'siz kaldı), DATA olarak gelince kabul edilir.
+                    // [F3] Kabul penceresinin dışındaki kurtarım da aynı yoldan gider.
+                    let delivery_id = if frag_on {
+                        u64::from(pfx.message_id)
+                    } else {
+                        unit_id
+                    };
+                    if admit_limit.is_some_and(|limit| delivery_id >= limit) {
+                        stats.data_not_admitted_window += 1;
+                        continue;
+                    }
                     if admit_chunk(
                         stats,
                         delivery_tx,
@@ -3784,6 +3876,7 @@ async fn server_task(
     ctx_counters: CtxDispatchCounters,
     delivery_dropped_seen: Arc<AtomicU64>,
     data_not_admitted_full_seen: Arc<AtomicU64>,
+    data_not_admitted_window_seen: Arc<AtomicU64>,
 ) -> ServerStats {
     // [K4G-01 / D1 (v1.1)] HubChannel dağıtıcısı: Session durumunun hiçbirini TUTMAZ (yalnız
     // sayaç).
@@ -3819,6 +3912,7 @@ async fn server_task(
         // yolları dahil). Sayaç yalnız `push_delivery`'de artar; burada okunur, değişmez.
         delivery_dropped_seen.store(stats.delivery_dropped, Ordering::Relaxed);
         data_not_admitted_full_seen.store(stats.data_not_admitted_full, Ordering::Relaxed);
+        data_not_admitted_window_seen.store(stats.data_not_admitted_window, Ordering::Relaxed);
         tokio::select! {
             _ = shutdown_rx.changed() => break,
             // Ölçüm-t0 (ServerHandle::mark_t0): wire sayaçları sıfır, ALICI DURUMU KORUNUR.
@@ -3985,10 +4079,6 @@ async fn server_task(
                         // Yer `try_reserve` ile GERÇEKTEN ayrılır (izin); bu datagramın (en çok bir)
                         // teslimi o izinle girer, izin kullanılmazsa bırakılır. (Sahip kararı
                         // 2026-11-11: "ACK'lenmiş birim kaybolmaz".)
-                        let Ok(permit) = delivery_tx.try_reserve() else {
-                            stats.data_not_admitted_full += 1;
-                            continue;
-                        };
                         let (unit_id, pfx, payload, body) = match parsed {
                             RxFrame::Data { unit_id, payload } => (
                                 unit_id,
@@ -4014,6 +4104,22 @@ async fn server_task(
                             ),
                             _ => unreachable!("dış match yalnız iki DATA varyantını seçti"),
                         };
+                        // [F3] Sıra başı için yer koruma: oturum sıralayıcısının penceresinin
+                        // dışındaki veri motora VERİLMEZ (ACK yok; gönderici yeniden iletir). Teslim
+                        // kimliği fragmenter açıkken mesaj, kapalıyken birim kimliğidir (`admit_chunk`).
+                        let delivery_id = if frag_on {
+                            u64::from(pfx.message_id)
+                        } else {
+                            unit_id
+                        };
+                        if beyond_admit_window(&expected, slot.ctx, delivery_id) {
+                            stats.data_not_admitted_window += 1;
+                            continue;
+                        }
+                        let Ok(permit) = delivery_tx.try_reserve() else {
+                            stats.data_not_admitted_full += 1;
+                            continue;
+                        };
                         let out = slot.rx.on_datagram(
                             RxDatagram {
                                 seq: pn,
@@ -4024,11 +4130,12 @@ async fn server_task(
                         );
                         // İlk-teslim: PN-yeni ise chunk teslim kapısına girer (dedup orada:
                         // fragmentasyon kapalı→birim-id, açık→mesaj-id).
+                        let mut permit = Some(permit);
                         if out.delivered.contains(&unit_id) {
                             admit_chunk(
                                 &mut stats,
                                 &delivery_tx,
-                                Some(permit),
+                                permit.take(),
                                 peer,
                                 slot,
                                 frag_on,
@@ -4039,6 +4146,10 @@ async fn server_task(
                                 false,
                             );
                         }
+                        // Kullanılmayan izin (yinelenen birim / mesajı tamamlamayan chunk) aynı
+                        // datagramın FEC kurtarımlarından ÖNCE bırakılır: aksi hâlde kurtarılan
+                        // birimler bir kanal yeri eksik görürdü.
+                        drop(permit);
                         if let Some(ack) = out.ack {
                             let sp = slot.ctx;
                             srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, ack.encode())
@@ -4070,6 +4181,7 @@ async fn server_task(
                                 }
                             }
                             let k = u8::try_from(p.k_shape).unwrap_or(255);
+                            let admit_limit = session_admit_limit(&expected, slot.ctx);
                             let rec = fec_ingest(
                                 &mut stats,
                                 &delivery_tx,
@@ -4083,6 +4195,7 @@ async fn server_task(
                                 false,
                                 frag_on,
                                 msg_cap,
+                                admit_limit,
                             );
                             if !rec.is_empty() {
                                 stats.fec_recovered_ctrl_tx += 1;
@@ -4159,6 +4272,7 @@ async fn server_task(
                             srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, ack.encode())
                                 .await;
                         }
+                        let admit_limit = session_admit_limit(&expected, slot.ctx);
                         let rec = fec_ingest(
                             &mut stats,
                             &delivery_tx,
@@ -4172,6 +4286,7 @@ async fn server_task(
                             is_repair,
                             frag_on,
                             msg_cap,
+                            admit_limit,
                         );
                         if !rec.is_empty() {
                             stats.fec_recovered_ctrl_tx += 1;
@@ -4229,6 +4344,7 @@ async fn server_task(
                                             continue;
                                         }
                                         let is_rep = fh.kind == inner_kind::FEC_REPAIR;
+                                        let admit_limit = session_admit_limit(&expected, slot.ctx);
                                         let rec = fec_ingest(
                                             &mut stats,
                                             &delivery_tx,
@@ -4242,6 +4358,7 @@ async fn server_task(
                                             is_rep,
                                             frag_on,
                                             msg_cap,
+                                            admit_limit,
                                         );
                                         if !rec.is_empty() {
                                             stats.fec_recovered_ctrl_tx += 1;
@@ -4390,6 +4507,42 @@ mod ctx_first_tests {
     const A: ProtectionContext = ProtectionContext::Session(SessionHandle::from_raw(1));
     const B: ProtectionContext = ProtectionContext::Session(SessionHandle::from_raw(2));
     const HUB: ProtectionContext = ProtectionContext::HubChannel;
+
+    #[test]
+    fn admit_window_tracks_the_head_and_never_moves_back() {
+        let h = SessionHandle::from_raw(1);
+        let other = SessionHandle::from_raw(2);
+        let expected = ExpectedSessions::new();
+        let ctx = ProtectionContext::Session(h);
+        // Pencere kapalıyken (bağımsız `bind`) sınır yok.
+        assert_eq!(expected.admit_limit(h), None);
+        assert!(!beyond_admit_window(&expected, ctx, u64::MAX));
+        expected.set_admit_window(4);
+        expected.insert_ready(h);
+        // Yayımlanmamış sıra başı 0: kabul 0..4.
+        assert_eq!(expected.admit_limit(h), Some(4));
+        assert!(!beyond_admit_window(&expected, ctx, 3));
+        assert!(beyond_admit_window(&expected, ctx, 4));
+        expected.advance_head(h, 3);
+        assert_eq!(expected.admit_limit(h), Some(7));
+        // Sıra başı geri gitmez.
+        expected.advance_head(h, 1);
+        assert_eq!(expected.admit_limit(h), Some(7));
+        // Yeniden yayında kalan oturumun sıra başı korunur, çıkanınki silinir.
+        expected.replace([(h, Readiness::Ready), (other, Readiness::Ready)]);
+        assert_eq!(expected.admit_limit(h), Some(7));
+        expected.replace([(other, Readiness::Ready)]);
+        assert_eq!(expected.admit_limit(h), Some(4));
+        // HubChannel pencereye tabi değildir.
+        assert!(!beyond_admit_window(
+            &expected,
+            ProtectionContext::HubChannel,
+            u64::MAX
+        ));
+        // Genişlik en az 1.
+        expected.set_admit_window(0);
+        assert_eq!(expected.admit_limit(other), Some(1));
+    }
 
     #[test]
     fn client_route_requires_the_exact_expected_handle() {

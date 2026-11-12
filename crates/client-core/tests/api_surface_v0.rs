@@ -222,6 +222,10 @@ async fn transport_api_v0_surface_is_frozen() {
         // yazılmayan kurtarım. Salt sayaç.
         data_not_admitted_full: _,
         fec_recovered_not_admitted: _,
+        // v0.19 (F3 sıra başı için yer koruma, iş emri 2026-11-11): minor-EKLEME, kasıtlı
+        // pin-güncellemesi — oturumun kabul penceresi dışında motora verilmeyen DATA ve RECOVERED'a
+        // yazılmayan kurtarım. Salt sayaç.
+        data_not_admitted_window: _,
         dropped_new_peers: _,
         retired_idle_peers: _,
         rx_datagrams: _,
