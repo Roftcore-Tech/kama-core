@@ -277,12 +277,6 @@ impl Receiver {
     /// uygulanmaz. Yalnız `cc_port` alıcısında.
     const MAX_ACK_DELAY_NS: u64 = 25_000_000;
 
-    /// [CC-PORT deney] `max_ack_delay` (ns) — yalnız `cc_port` alıcısında okunur; varsayılan
-    /// [`Self::MAX_ACK_DELAY_NS`]. Düşük bant ACK kadansı deneyi (sim `CC_ACK_DELAY_MS`).
-    pub fn set_max_ack_delay_ns(&mut self, ns: u64) {
-        self.max_ack_delay_ns = ns.max(1);
-    }
-
     /// [CC-PORT] quinn ACK kurallarıyla alıcı: sırasız varışta anında ACK, zamanlayıcı
     /// `max_ack_delay` 25 ms; cadence tabanı (8,39 s), tail muafiyeti ve dönüş kotası uygulanmaz.
     /// `Receiver::new()` bugünkü alıcıdır (bit-eşit).
