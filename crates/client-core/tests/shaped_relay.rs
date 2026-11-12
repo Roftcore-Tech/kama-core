@@ -10,7 +10,7 @@
 //! `CC_SHAPED_ENGINE=legacy|cc-port`
 //! tek motor; `CC_SHAPED_SEED`, `CC_SHAPED_UNITS`, `CC_SHAPED_RATE`, `CC_SHAPED_Q`,
 //! `CC_SHAPED_DELAY_MS`, `CC_SHAPED_JITTER_MS` (normal σ; yeniden sıralama üretir), `CC_SHAPED_LOSS_PM`,
-//! `CC_SHAPED_UNIT_BYTES`, `CC_SHAPED_TMAX_S`, `CC_SHAPED_INTERVAL_MS` (ileti hücresi: birimler bu aralıkla
+//! `CC_SHAPED_UNIT_BYTES`, `CC_SHAPED_REV_RATE` (dönüş hızı), `CC_SHAPED_LINK=1` (iki uca yön hızları: ACK bütçesi + yol ilk penceresi), `CC_SHAPED_IW`, `CC_SHAPED_TMAX_S`, `CC_SHAPED_INTERVAL_MS` (ileti hücresi: birimler bu aralıkla
 //! sunulur; 0 = hepsi başta) hücre anahtarları.
 
 use std::collections::VecDeque;
@@ -235,14 +235,38 @@ async fn run_cell(
     unit_bytes: usize,
     t_max: Duration,
     interval: Duration,
+    link_on: bool,
 ) -> Outcome {
     let cfg = RuntimeConfig {
         engine,
+        // `CC_SHAPED_LIVE=1`: gönderici canlı aynası (salt gözlem) — saniyede bir iz satırı.
+        live_diag: std::env::var("CC_SHAPED_LIVE").is_ok(),
+        // `CC_SHAPED_IW=<B>`: ilk pencere (keşif).
+        initial_window_bytes: std::env::var("CC_SHAPED_IW")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(client_core::runtime::KamaV1Profile::INITIAL_WINDOW_BYTES),
         ..RuntimeConfig::default()
+    };
+    // [ASİMETRİK-YOL] `CC_SHAPED_LINK=1`: iki uca yön hızları kendi bakış açısından — alıcı (sunucu)
+    // yukarı = dönüş, aşağı = ileri; gönderici (istemci) yukarı = ileri, aşağı = dönüş.
+    let server_cfg = RuntimeConfig {
+        link_rates: link_on.then_some(client_core::runtime::LinkRates {
+            uplink_bps: rev_cfg.rate_bps,
+            downlink_bps: fwd_cfg.rate_bps,
+        }),
+        ..cfg.clone()
+    };
+    let cfg = RuntimeConfig {
+        link_rates: link_on.then_some(client_core::runtime::LinkRates {
+            uplink_bps: fwd_cfg.rate_bps,
+            downlink_bps: rev_cfg.rate_bps,
+        }),
+        ..cfg
     };
     let server = ServerEndpoint::bind(
         "127.0.0.1:0".parse().unwrap(),
-        cfg.clone(),
+        server_cfg,
         Box::new(IdentitySeam::new()),
     )
     .await
@@ -315,9 +339,30 @@ async fn run_cell(
             interval
         });
         next_offer.tick().await;
+        let mut live_tick = tokio::time::interval(Duration::from_secs(1));
+        let live_on = std::env::var("CC_SHAPED_LIVE").is_ok();
         while delivered < units {
             let d = tokio::select! {
                 d = server.next_delivery() => d,
+                _ = live_tick.tick(), if live_on => {
+                    let l = client.live_diag();
+                    let c = l.control;
+                    println!(
+                        "CANLI t={:>5.1}s teslim={delivered} durum={:?} btlbw={} B/s pacer={} B/s uçuş={} B srtt={} ms rtprop={} ms rtt_örnek={} retx={} prob={} ack_çerçeve={}",
+                        t0.elapsed().as_secs_f64(),
+                        c.state,
+                        c.btlbw_bps,
+                        c.pacer_rate_bps,
+                        c.inflight_bytes,
+                        l.srtt_us / 1000,
+                        l.rtprop_us / 1000,
+                        l.rtt_samples,
+                        l.retransmits,
+                        l.tail_probes,
+                        l.ack.frames,
+                    );
+                    continue;
+                }
                 _ = next_offer.tick(), if !interval.is_zero() && offer_at.len() < units as usize => {
                     offer_one(&client, &mut offer_at);
                     continue;
@@ -417,7 +462,8 @@ async fn shaped_relay_measure() {
                 loss_permille: loss,
             },
             Dir {
-                rate_bps: rate,
+                // `CC_SHAPED_REV_RATE=<B/s>`: dönüş yolu hızı (asimetrik yol; varsayılan ileri hız).
+                rate_bps: env_u64("CC_SHAPED_REV_RATE", rate),
                 limit: q.max(64),
                 delay,
                 jitter,
@@ -428,6 +474,7 @@ async fn shaped_relay_measure() {
             unit_bytes,
             Duration::from_secs(env_u64("CC_SHAPED_TMAX_S", 180)),
             Duration::from_millis(env_u64("CC_SHAPED_INTERVAL_MS", 0)),
+            std::env::var("CC_SHAPED_LINK").is_ok(),
         )
         .await;
         println!(
@@ -445,4 +492,52 @@ async fn shaped_relay_measure() {
             o.stats.rev_dropped_queue,
         );
     }
+}
+
+/// [ASİMETRİK-YOL] Kalıcı kapı — saha koşulu: ileri 12,5 kB/s, dönüş 62 B/s (yukarı yön ≈ 0,5 kbit/s),
+/// tek yön 300 ms, %20 ileri kayıp, 40 × 1000 B. Yön hızları verilmezse port motoru bu hücrede 56–72 s
+/// sürüyor ve dönüşe 3,7–4,8 kB ACK basıyor: ACK'ler 62 B/s hatta sıra bekliyor, gönderici ACK-saatli
+/// döngüde yakınsamıyor. Yön hızlarıyla (alıcı ACK bütçesi + yol ilk penceresi) ölçüm: tohum 1–3
+/// 16–39 s, birim p50 2,4–3,0 s, ACK 1,0–2,1 kB. Eşikler gerçek zaman gürültüsüne geniş.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn asymmetric_return_path_with_link_rates_bounds_acks_and_completes() {
+    let fwd = Dir {
+        rate_bps: 12_500,
+        limit: 64,
+        delay: Duration::from_millis(300),
+        jitter: Duration::ZERO,
+        loss_permille: 200,
+    };
+    let rev = Dir {
+        rate_bps: 62,
+        limit: 64,
+        delay: Duration::from_millis(300),
+        jitter: Duration::ZERO,
+        loss_permille: 0,
+    };
+    let o = run_cell(
+        TransportEngine::CcPort,
+        fwd,
+        rev,
+        1,
+        40,
+        1000,
+        Duration::from_secs(120),
+        Duration::ZERO,
+        true,
+    )
+    .await;
+    let done = o
+        .completed
+        .expect("asimetrik hücre 120 s içinde tamamlanmalı");
+    assert_eq!(o.delivered, 40, "40/40 teslim");
+    assert!(
+        done <= Duration::from_secs(40),
+        "yön hızlarıyla tamamlanma {done:?} > 40 s (yön hızları olmadan 56–72 s)"
+    );
+    assert!(
+        o.stats.rev_bytes <= 2_500,
+        "dönüşe {} B ACK > 2500 B (bütçe ihlali; yön hızları olmadan 3,7–4,8 kB)",
+        o.stats.rev_bytes
+    );
 }

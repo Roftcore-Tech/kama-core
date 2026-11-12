@@ -85,6 +85,30 @@ const SACK_WIRE_BYTES: u64 = 65;
 const RETURN_BUDGET_PERMIL: u64 = 250;
 /// [K2/§3.3-E] cold-start return_bw önseli (B/s); worst-corner 0.25 kbps = 31.25 B/s → 31 (int floor).
 const RETURN_BW_PRIOR: u64 = 31;
+/// [DÖNÜŞ-BÜTÇESİ] ACK tel boyu aralık başına artışı (B): `AckFrame::encode` her aralık için gap + len
+/// (2 × u16) yazar. Tahmin = `SACK_WIRE_BYTES` (0 aralık) + 4 × aralık.
+const ACK_WIRE_PER_RANGE: u64 = 4;
+/// [DÖNÜŞ-BÜTÇESİ] Tipik ACK tel boyu (B): 4 aralık (ölçüldü: %20 kayıpta ortalama ≈ 80–86 B).
+const ACK_WIRE_TYPICAL_BYTES: u64 = SACK_WIRE_BYTES + 4 * ACK_WIRE_PER_RANGE;
+
+/// [DÖNÜŞ-BÜTÇESİ] Dönüş yolu `return_bw_bps` (B/s) iken bütçeli alıcının tipik ACK aralığı (ns):
+/// tipik ACK tel boyu / (Y · return_bw). Gönderici ilk penceresini bununla kurar (ACK'ler bu aralıkla
+/// geleceği için bir aralıkta gönderebileceği veri); alıcı ile gönderici AYNI formülü kullanır
+/// (deterministik, ADR-17). `0` → `u64::MAX`.
+#[must_use]
+pub fn budgeted_ack_interval_ns(return_bw_bps: u64) -> u64 {
+    let budget = return_bw_bps.saturating_mul(RETURN_BUDGET_PERMIL) / 1000;
+    if budget == 0 {
+        return u64::MAX;
+    }
+    u64::try_from(u128::from(ACK_WIRE_TYPICAL_BYTES) * 1_000_000_000 / u128::from(budget))
+        .unwrap_or(u64::MAX)
+}
+
+/// [DÖNÜŞ-BÜTÇESİ] Jeton kovası tavanı (B): en büyük iki ACK (MAX_ACK_RANGES aralıklı). Kova dolu
+/// başlar → oturumun İLK ACK'i bütçeden muaf (§12 [R1]).
+const ACK_BUDGET_CAP_BYTES: u64 =
+    2 * (SACK_WIRE_BYTES + ACK_WIRE_PER_RANGE * crate::ack::MAX_ACK_RANGES as u64);
 /// [K2/R1/R15/§3.3-E/§12] ACK_CADENCE cold-start floor = sack_wire/(Y·return_bw_önsel) ≈ 8.4s.
 /// TIMER-SACK'ları bununla seyrekleşir: kbps'te sabit 20ms tick → SACK-seli/self-congestion (19s-lag);
 /// throttle bunu keser. Frequency-yolu (§2.1, on_datagram) DATA-oranıyla eşleşir → hızlı kanalda responsive
@@ -158,6 +182,14 @@ pub struct Receiver {
     last_arrival_ns: u64, // [3b-C] HERHANGİ datagram'ın son varışı (dup dahil — kanal-tempo kanıtı)
     last_gap_ns: u64, // [3b-C] son varış-aralığı (serialization-vekili; 0 = henüz tek varış)
     last_tail_ack_ns: u64, // [3b-C rev2] tail-SACK'in KENDİ ritim-sayacı (cadence'ten bağımsız)
+    /// [DÖNÜŞ-BÜTÇESİ] ACK bayt bütçesi (B/s) = Y × dönüş bant genişliği (§16.1 RETURN_BUDGET_FRACTION).
+    /// `None` = bütçe yok (quinn kuralı aynen). Yalnız `cc_port` alıcısında okunur.
+    ack_budget_bps: Option<u64>,
+    /// [DÖNÜŞ-BÜTÇESİ] Kovadaki jeton (milibayt) ve son dolum anı (ns).
+    ack_tokens_mb: u64,
+    ack_tokens_at_ns: u64,
+    /// [DÖNÜŞ-BÜTÇESİ] Bütçe yetmediği için ertelenen ACK sayısı (SALT-GÖZLEM).
+    diag_ack_budget_deferred: u64,
 }
 
 impl Receiver {
@@ -192,6 +224,10 @@ impl Receiver {
             last_arrival_ns: 0,
             last_gap_ns: 0,
             last_tail_ack_ns: 0,
+            ack_budget_bps: None,
+            ack_tokens_mb: 0,
+            ack_tokens_at_ns: 0,
+            diag_ack_budget_deferred: 0,
         }
     }
 
@@ -287,6 +323,71 @@ impl Receiver {
         r
     }
 
+    /// [DÖNÜŞ-BÜTÇESİ] Dönüş yolunun (bu alıcının ACK'lerini taşıyan yön) bant genişliği (B/s).
+    /// Spec §2.1/§12/§16.1: "SACK + yankı dönüşü ≤ Y · return_bw"; dönüş kıtken ACK seyrekleşir.
+    /// Port alıcısı quinn kuralıyla ACK'ler (her `ACK_FREQ_N` DATA'da bir + her sırasız varışta
+    /// anında); bütçe verilince her ACK emisyonu jeton kovasından (`Y · return_bw` B/s dolum, tavan
+    /// iki ACK) geçer, jeton yetmezse ACK ERTELENİR — SACK kümülatif olduğundan bilgi kaybolmaz,
+    /// zamanlayıcı (`on_ack_timer`) jeton dolunca birleşik ACK'i çıkarır. `None` = bütçe yok
+    /// (bugünkü davranış). Yalnız `cc_port` alıcısında etkilidir.
+    pub fn set_return_bandwidth(&mut self, return_bw_bps: Option<u64>) {
+        self.ack_budget_bps =
+            return_bw_bps.map(|bw| (bw.saturating_mul(RETURN_BUDGET_PERMIL) / 1000).max(1));
+        self.ack_tokens_mb = ACK_BUDGET_CAP_BYTES * 1000;
+        self.ack_tokens_at_ns = 0;
+    }
+
+    /// [DÖNÜŞ-BÜTÇESİ] Bütçe yetmediği için ertelenen ACK emisyonu (SALT-GÖZLEM).
+    #[must_use]
+    pub fn diag_ack_budget_deferred(&self) -> u64 {
+        self.diag_ack_budget_deferred
+    }
+
+    /// [DÖNÜŞ-BÜTÇESİ] Kovayı `now`'a dek doldurur; `frame`'in tel maliyeti kadar jeton varsa düşer.
+    fn ack_budget_take(&mut self, now_ns: u64, frame: &AckFrame) -> bool {
+        let Some(rate) = self.ack_budget_bps else {
+            return true;
+        };
+        let cap = ACK_BUDGET_CAP_BYTES * 1000;
+        let dt = now_ns.saturating_sub(self.ack_tokens_at_ns);
+        self.ack_tokens_at_ns = now_ns;
+        // B/s × ns → milibayt: rate · dt / 1e6.
+        let add = u64::try_from(u128::from(rate) * u128::from(dt) / 1_000_000).unwrap_or(u64::MAX);
+        self.ack_tokens_mb = self.ack_tokens_mb.saturating_add(add).min(cap);
+        let cost = (SACK_WIRE_BYTES + ACK_WIRE_PER_RANGE * frame.ranges.len() as u64) * 1000;
+        if self.ack_tokens_mb >= cost {
+            self.ack_tokens_mb -= cost;
+            true
+        } else {
+            self.diag_ack_budget_deferred += 1;
+            false
+        }
+    }
+
+    /// ACK emisyonu (frekans/zorunlu/zamanlayıcı yollarının ortak gövdesi). [DÖNÜŞ-BÜTÇESİ] Port
+    /// alıcısında bütçe varken jeton yetmezse `None`: `since_last_ack` sıfırlanmaz, bekleyen bilgi
+    /// zamanlayıcıyla yeniden denenir. Bütçe yokken bugünkü sıra aynen (sayaç → kota → saat → kur).
+    fn emit_ack(&mut self, now_ns: u64) -> Option<AckFrame> {
+        if self.cc_port && self.ack_budget_bps.is_some() {
+            let (frame, saturated) = self.ack_frame(now_ns);
+            let frame = frame?;
+            if !self.ack_budget_take(now_ns, &frame) {
+                return None;
+            }
+            if saturated {
+                self.ack_delay_saturated += 1;
+            }
+            self.since_last_ack = 0;
+            self.burn_quota();
+            self.record_ack_emit(now_ns);
+            return Some(frame);
+        }
+        self.since_last_ack = 0;
+        self.burn_quota();
+        self.record_ack_emit(now_ns);
+        self.build_ack(now_ns)
+    }
+
     /// §12 ACK_TIMER: zamanlayıcı ile ACK üret (frekans dolmasa da). [K2/R1/§3.3-E/§12] cadence-limitli:
     /// İLK SACK henüz yollanmadıysa cadence-exempt (hemen — client PRE_CONVERGE'den hızlı çıksın); yollandıysa
     /// son SACK'ten `ACK_CADENCE_FLOOR_NS` geçmeden timer-SACK BASTIRILIR (kbps 20ms-sabit SACK-seli/19s-lag
@@ -300,10 +401,7 @@ impl Receiver {
             if self.since_last_ack > 0
                 && now_ns.saturating_sub(self.last_emit_any()) >= self.max_ack_delay_ns
             {
-                self.since_last_ack = 0;
-                self.burn_quota();
-                self.record_ack_emit(now_ns);
-                return self.build_ack(now_ns);
+                return self.emit_ack(now_ns);
             }
             return None;
         }
@@ -477,10 +575,8 @@ impl Receiver {
     fn tick_ack(&mut self, now_ns: u64, force: bool) -> Option<AckFrame> {
         self.since_last_ack += 1;
         if force || self.since_last_ack >= self.ack_freq {
-            self.since_last_ack = 0;
-            self.burn_quota(); // [r3 §2] freq/force emisyonları da kredi-muhasebesine girer
-            self.record_ack_emit(now_ns);
-            self.build_ack(now_ns)
+            // [r3 §2] freq/force emisyonları da kredi-muhasebesine girer (`emit_ack`).
+            self.emit_ack(now_ns)
         } else {
             None
         }
@@ -500,25 +596,33 @@ impl Receiver {
     /// Floor → receiver kendi delay'ini ŞİŞİRMEZ (decoded ≤ gerçek) → sender'ın path-RTT'si fazla
     /// KÜÇÜLMEZ. Satürasyon (hold > 16.78s) audit-sayacına yazılır — beklenen 0 (cadence 8.39s).
     fn build_ack(&mut self, now_ns: u64) -> Option<AckFrame> {
+        let (frame, saturated) = self.ack_frame(now_ns);
+        if saturated {
+            self.ack_delay_saturated += 1;
+        }
+        frame
+    }
+
+    /// ACK çerçevesini kurar (durum DEĞİŞMEZ); ikinci değer `ack_delay` doygunluğu (audit sayacı
+    /// yalnız ACK gerçekten çıkınca sayılır — bütçeyle ertelenen çerçeve saymaz).
+    fn ack_frame(&self, now_ns: u64) -> (Option<AckFrame>, bool) {
         let delay_us = now_ns
             .saturating_sub(self.largest_recv_ns)
             .checked_div(1000)
             .unwrap_or(0);
         let encoded = (delay_us / crate::ack::ACK_DELAY_UNIT_US).min(ACK_DELAY_ENC_MAX);
-        if encoded == ACK_DELAY_ENC_MAX {
-            self.ack_delay_saturated += 1;
-        }
         let received: Vec<u64> = self.received.iter().copied().collect();
         // arrival_rate: receiver bu artımda BOYUT görmüyor (RxDatagram size taşımaz) → ölçüm YOK →
         // sentinel (§2.2 zeyli: 0xFFFF = "ölçüm yok/üst-bantta, ipucu olarak KULLANMA"). K3
         // tüketicisi bağlandığında gerçek pencere-oranı ölçümüyle değiştirilir.
-        AckFrame::from_received(
+        let frame = AckFrame::from_received(
             &received,
             self.ack_epoch,
             encoded as u16,
             self.seen_total,
             crate::ack::ARRIVAL_RATE_SENTINEL,
-        )
+        );
+        (frame, encoded == ACK_DELAY_ENC_MAX)
     }
 
     // ── gözlemciler ──
@@ -588,6 +692,86 @@ mod tests {
             unit_id,
             kind: RxKind::Data,
         }
+    }
+
+    /// [DÖNÜŞ-BÜTÇESİ] Bütçeli port alıcısı: ilk ACK muaf (kova dolu başlar), sonrakiler jeton
+    /// yetmeyince ertelenir; zamanlayıcı jeton dolunca TEK birleşik ACK çıkarır ve o ACK ertelenen
+    /// bütün varışları kapsar. Bütçe yokken aynı akış her iki DATA'da bir ACK'ler.
+    #[test]
+    fn return_budget_defers_and_coalesces_acks_on_port_receiver() {
+        const SEC: u64 = 1_000_000_000;
+        // Dönüş 62 B/s → bütçe Y · 62 = 15 B/s; 0 aralıklı ACK 65 B ≈ 4,3 s'de bir.
+        let mut r = Receiver::with_cc_port();
+        r.set_return_bandwidth(Some(62));
+        let mut acks = 0u32;
+        // 40 DATA, 100 ms arayla (4 s): kova iki büyük ACK'lik doluyla başlar.
+        for i in 0..40u64 {
+            if r.on_datagram(data(i, i), i * 100 * MS).ack.is_some() {
+                acks += 1;
+            }
+        }
+        assert!(acks >= 1, "ilk ACK bütçeden muaf");
+        assert!(
+            acks <= 4,
+            "4 s'de ≤ 4 ACK (kova 2 büyük ACK + 4 s × 15 B/s): {acks}"
+        );
+        assert!(r.diag_ack_budget_deferred() > 0, "bütçe ACK'leri erteledi");
+        // Bütçesiz aynı akış: her 2 DATA'da bir → 20 ACK.
+        let mut q = Receiver::with_cc_port();
+        let mut q_acks = 0u32;
+        for i in 0..40u64 {
+            if q.on_datagram(data(i, i), i * 100 * MS).ack.is_some() {
+                q_acks += 1;
+            }
+        }
+        assert_eq!(q_acks, 20, "bütçesiz port alıcısı quinn kuralıyla ACK'ler");
+        assert_eq!(q.diag_ack_budget_deferred(), 0);
+        // Varışlar biter; zamanlayıcı jeton dolunca birleşik ACK'i çıkarır: en büyük seq 39'u ve
+        // 0..=39 bloğunun tamamını kapsar.
+        let mut t = 4 * SEC;
+        let ack = loop {
+            if let Some(a) = r.on_ack_timer(t) {
+                break a;
+            }
+            t += 20 * MS;
+            assert!(t < 20 * SEC, "zamanlayıcı bütçe dolunca ACK çıkarmalı");
+        };
+        assert_eq!(ack.largest_seq, 39);
+        assert_eq!(ack.block0_len, 40, "ertelenen bütün varışlar tek ACK'te");
+        assert!(
+            r.on_ack_timer(t + 20 * MS).is_none(),
+            "bekleyen bilgi yok → ACK yok"
+        );
+    }
+
+    /// [DÖNÜŞ-BÜTÇESİ] Eski alıcı bütçeden etkilenmez (kendi cadence tabanı var).
+    #[test]
+    fn return_budget_does_not_touch_the_legacy_receiver() {
+        let mut a = Receiver::new();
+        let mut b = Receiver::new();
+        b.set_return_bandwidth(Some(62));
+        for i in 0..40u64 {
+            let x = a.on_datagram(data(i, i), i * 100 * MS).ack;
+            let y = b.on_datagram(data(i, i), i * 100 * MS).ack;
+            assert_eq!(x, y, "eski alıcıda bütçe etkisiz (seq {i})");
+        }
+        assert_eq!(b.diag_ack_budget_deferred(), 0);
+    }
+
+    /// [DÖNÜŞ-BÜTÇESİ] Tipik ACK aralığı: dönüş hızıyla ters orantılı; simetrik hızlı yolda ≈ 26 ms
+    /// (göndericinin ilk penceresi ve PTO payı varsayılanda kalır).
+    #[test]
+    fn budgeted_ack_interval_scales_inversely_with_return_bandwidth() {
+        // Tipik ACK 81 B; Y = 0,25.
+        assert_eq!(budgeted_ack_interval_ns(62), 81 * 1_000_000_000 / 15);
+        assert_eq!(budgeted_ack_interval_ns(12_500), 81 * 1_000_000_000 / 3_125);
+        assert!(budgeted_ack_interval_ns(12_500) < 30 * MS);
+        assert_eq!(budgeted_ack_interval_ns(0), u64::MAX);
+        assert_eq!(
+            budgeted_ack_interval_ns(3),
+            u64::MAX,
+            "bütçe 0 B/s → ACK yok"
+        );
     }
 
     #[test]

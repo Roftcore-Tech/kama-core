@@ -111,6 +111,17 @@ pub struct RuntimeConfig {
     pub max_peers: usize,
     /// Alıcı R-kotası (sessizlik re-ACK bütçesi).
     pub quota_r: u32,
+    /// [ASİMETRİK-YOL] Bu düğümün yukarı/aşağı yön hızları ([`LinkRates`]) — dağıtım profilinin
+    /// (radyo sınıfı) bildiği değer; ölçülmez, deterministiktir (ADR-17). `None` (ürün varsayılanı)
+    /// = bugünkü davranış aynen. Verilince (yalnız port motorunda):
+    ///
+    /// - alıcı: gönderdiği ACK baytı ≤ Y · yukarı yön (spec §2.1/§12/§16.1, ACK seyreltme);
+    /// - gönderici: ACK'ler aşağı yönden `receiver::budgeted_ack_interval_ns(aşağı)` aralıkla gelir;
+    ///   ilk pencere bir aralıkta yukarı yönün taşıyabileceği veriye büyütülür (ACK beklemeden hattı
+    ///   doldurur). PTO'nun alıcı bekletme payı değişmez.
+    ///
+    /// Simetrik hızlı yolda aralık ≈ 25 ms → pencere varsayılanda kalır.
+    pub link_rates: Option<LinkRates>,
     /// Shutdown drain süre-tavanı (motor birim terk etmez → drain CAP'siz sonlanmayabilir, D8).
     pub drain_cap: Duration,
     /// Server idle-peer emeklilik eşiği (item 3; SESSION_IDLE_HOLD hizası 105 s).
@@ -288,6 +299,7 @@ impl KamaV1Profile {
             max_message_bytes: None,
             max_peers: 64,
             quota_r: 4,
+            link_rates: None,
             drain_cap: Duration::from_secs(3),
             idle_hold: Duration::from_secs(105),
             initial_window_bytes: Self::INITIAL_WINDOW_BYTES,
@@ -321,6 +333,19 @@ impl KamaV1Profile {
         }
     }
 }
+
+/// [ASİMETRİK-YOL] Bir düğümün yön hızları, B/s (UDP gövdesi + UDP/IP). Saha cihazı için tipik:
+/// aşağı yön kbit/s'ler, yukarı yön 0,5 kbit/s ≈ 62 B/s; karşı uçta (baz) ters çevrilmiş hâli.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinkRates {
+    /// Bu düğümün gönderdiği yön: kendi verisi ve gönderdiği ACK'ler.
+    pub uplink_bps: u64,
+    /// Bu düğümün aldığı yön: eşin verisi ve kendi verisinin ACK'leri.
+    pub downlink_bps: u64,
+}
+
+/// [ASİMETRİK-YOL] Yol-tabanlı ilk pencerenin üst sınırı (B; SR-AUDIT-001).
+pub const MAX_LINK_INITIAL_WINDOW_BYTES: u64 = 1 << 20;
 
 /// [CC-PORT] Taşıma motoru (bkz. [`RuntimeConfig::engine`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -2144,9 +2169,22 @@ async fn client_task(
     // (12 000 B) yalnız yapılandırmayla (gösterim/VPS hücresi). Gerekçe: 12 kB kör ilk uçuş sığ
     // tamponda düşme, düşük bantta saniyeler; RFC 6928 §4 uyarısı.
     if cfg.engine == TransportEngine::CcPort {
-        let iw = cfg
+        let mut iw = cfg
             .initial_window_bytes
             .max(4 * adaptive_transport::rate::DEFAULT_MTU);
+        // [ASİMETRİK-YOL] ACK'ler aşağı yönden bütçeli aralıkla gelir; ilk pencere o aralıkta yukarı
+        // yönün taşıyabileceği kadar (aksi hâlde gönderici her adımda saniyelerce ACK bekler ve BBR
+        // ACK-saatli döngüde hiç yakınsamaz — ölçüm: tests/shaped_relay.rs asimetrik hücre).
+        if let Some(l) = cfg.link_rates {
+            let t_ack = adaptive_transport::receiver::budgeted_ack_interval_ns(l.downlink_bps);
+            if t_ack != u64::MAX {
+                let link_iw =
+                    u64::try_from(u128::from(l.uplink_bps) * u128::from(t_ack) / 1_000_000_000)
+                        .unwrap_or(u64::MAX)
+                        .min(MAX_LINK_INITIAL_WINDOW_BYTES);
+                iw = iw.max(link_iw);
+            }
+        }
         session.sender_mut().set_cc_initial_window(iw);
     }
     // [E1 gösterim, CC §4.1] Beş çalışma-zamanı bayrağı (varsayılan kapalı = sevk davranışı).
@@ -3510,13 +3548,21 @@ struct PeerSlot {
 
 impl PeerSlot {
     /// Taze yuva; oturum bağı (`ctx`) burada kurulur ve yuvanın ömrü boyunca değişmez.
-    fn new(ctx: ProtectionContext, quota_r: u32, now: u64, engine: TransportEngine) -> Self {
+    fn new(
+        ctx: ProtectionContext,
+        quota_r: u32,
+        now: u64,
+        engine: TransportEngine,
+        ack_return_bw_bps: Option<u64>,
+    ) -> Self {
         // [CC-PORT] Alıcı motoru göndericiyle aynı: port ⇒ sırasız varışta anında ACK + 25 ms.
         let mut rx = match engine {
             TransportEngine::Legacy => Receiver::new(),
             TransportEngine::CcPort => Receiver::with_cc_port(),
         };
         rx.set_quota_r(quota_r);
+        // [DÖNÜŞ-BÜTÇESİ] Yalnız port alıcısında etkili (eski alıcının kendi cadence tabanı var).
+        rx.set_return_bandwidth(ack_return_bw_bps);
         Self {
             rx,
             last_seen_ns: now,
@@ -3999,7 +4045,13 @@ async fn server_task(
                         stats.dropped_new_peers += 1;
                         continue;
                     }
-                    peers.insert(key, PeerSlot::new(seam_ctx, cfg.quota_r, now, cfg.engine));
+                    peers.insert(key, PeerSlot::new(
+                            seam_ctx,
+                            cfg.quota_r,
+                            now,
+                            cfg.engine,
+                            cfg.link_rates.map(|l| l.uplink_bps),
+                        ));
                 }
                 let Some(slot) = peers.get_mut(&key) else { continue };
                 slot.last_seen_ns = now;
@@ -4532,7 +4584,13 @@ mod ctx_first_tests {
         for h in [h1, h2, h3] {
             peers.insert(
                 (addr, h),
-                PeerSlot::new(ProtectionContext::Session(h), 4, 0, TransportEngine::Legacy),
+                PeerSlot::new(
+                    ProtectionContext::Session(h),
+                    4,
+                    0,
+                    TransportEngine::Legacy,
+                    None,
+                ),
             );
         }
         assert_eq!(peers.len(), 3, "aynı adres, üç oturum → üç yuva");
