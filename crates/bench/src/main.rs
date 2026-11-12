@@ -158,6 +158,8 @@ enum Cmd {
         /// [KTP2-F0 / C1·D2] Alıcı-tarafı teslim damgası (JSONL, şema `ktp2-c-rx-v1`;
         /// `kama-product`, `tcp`, `quinn`). Verilmezse kayıt yok, dosya yok. Sunucu çıkınca
         /// (SIGTERM dahil) atomik yazılır. quinn'de kimlik için istemci `--payload-id` verir.
+        /// [Ö-P] `kama`: uygulama teslimi anında satır satır yazılır (tamponsuz; `kill` güvenli),
+        /// ilk satır `server_start` başlığı (motor etiketi) — bkz. `rxlog::RxStream`.
         #[arg(long)]
         rx_log: Option<PathBuf>,
     },
@@ -527,11 +529,14 @@ async fn main() -> Result<(), BenchError> {
             // [KTP2-F0 / C1] Desteklenmeyen kolda sessizce kayıtsız koşmak yerine reddet.
             let rx_supported = matches!(
                 transport,
-                TransportArg::KamaProduct | TransportArg::Tcp | TransportArg::Quinn
+                TransportArg::Kama
+                    | TransportArg::KamaProduct
+                    | TransportArg::Tcp
+                    | TransportArg::Quinn
             );
             if rx_log.is_some() && !rx_supported {
                 return Err(BenchError::Other(
-                    "--rx-log yalnız --transport kama-product | tcp | quinn ile".into(),
+                    "--rx-log yalnız --transport kama | kama-product | tcp | quinn ile".into(),
                 ));
             }
             // [KTP2-F0 / D] Rakip-kol ayarları (bayraksız = eski davranış; Kama kollarına etkisiz).
