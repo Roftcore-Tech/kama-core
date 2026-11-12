@@ -347,6 +347,19 @@ pub struct LinkRates {
 /// [ASİMETRİK-YOL] Yol-tabanlı ilk pencerenin üst sınırı (B; SR-AUDIT-001).
 pub const MAX_LINK_INITIAL_WINDOW_BYTES: u64 = 1 << 20;
 
+/// [ASİMETRİK-YOL] UDP/IPv4 zarfı (B). [`LinkRates`] bu zarfı içerir; pacer yalnız UDP gövdesini
+/// sayar.
+const LINK_UDP_IP_OVERHEAD: u64 = 28;
+
+/// [ASİMETRİK-YOL] Profil hızından (UDP gövdesi + UDP/IP, B/s) pacer tavanı (UDP gövdesi, B/s):
+/// tam boy (MTU) datagram oranıyla ölçeklenir; küçük datagramda zarf payı daha büyüktür, tavan o
+/// durumda hattın biraz üstünde kalır.
+fn link_pacing_cap_bps(uplink_bps: u64) -> u64 {
+    let mtu = adaptive_transport::rate::DEFAULT_MTU;
+    let cap = u128::from(uplink_bps) * u128::from(mtu) / u128::from(mtu + LINK_UDP_IP_OVERHEAD);
+    u64::try_from(cap).unwrap_or(u64::MAX).max(1)
+}
+
 /// [CC-PORT] Taşıma motoru (bkz. [`RuntimeConfig::engine`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TransportEngine {
@@ -2175,6 +2188,12 @@ async fn client_task(
         // [ASİMETRİK-YOL] ACK'ler aşağı yönden bütçeli aralıkla gelir; ilk pencere o aralıkta yukarı
         // yönün taşıyabileceği kadar (aksi hâlde gönderici her adımda saniyelerce ACK bekler ve BBR
         // ACK-saatli döngüde hiç yakınsamaz — ölçüm: tests/shaped_relay.rs asimetrik hücre).
+        //
+        // Büyütülen pencere profilin yukarı yön hızıyla serileşir (pacer tavanı): tavansız pacer
+        // ilk RTT örneğinden önce 1,25·pencere/100 ms ile çalışır ve pencerenin tamamını darboğaz
+        // kuyruğuna bir anda boşaltır (sığ kuyrukta taşma; düşen paketler uçuşun sonu olduğundan
+        // yalnız PTO ile sezilir). Tavan yalnız pencere profilden büyüdüğünde kurulur: simetrik
+        // hızlı yolda ve profilin pencereyi büyütmediği her durumda gönderici bugünkü gibidir.
         if let Some(l) = cfg.link_rates {
             let t_ack = adaptive_transport::receiver::budgeted_ack_interval_ns(l.downlink_bps);
             if t_ack != u64::MAX {
@@ -2182,7 +2201,12 @@ async fn client_task(
                     u64::try_from(u128::from(l.uplink_bps) * u128::from(t_ack) / 1_000_000_000)
                         .unwrap_or(u64::MAX)
                         .min(MAX_LINK_INITIAL_WINDOW_BYTES);
-                iw = iw.max(link_iw);
+                if link_iw > iw {
+                    iw = link_iw;
+                    session
+                        .sender_mut()
+                        .set_cc_profile_pacing_cap(Some(link_pacing_cap_bps(l.uplink_bps)));
+                }
             }
         }
         session.sender_mut().set_cc_initial_window(iw);

@@ -1969,6 +1969,9 @@ pub struct Sender {
     /// parametreleri BBR'dan türetilir. Çalışma zamanı seçimi: cargo özelliği DEĞİL (CI'nın
     /// `--all-features`'ı motoru değiştiremez; iki motor aynı süreçte eşli koşabilir).
     cc: Option<crate::cc::Bbr>,
+    /// [ASİMETRİK-YOL] Dağıtım profilinin yukarı yön hızı (B/s; pacer'ın saydığı tel baytı) —
+    /// [`Sender::set_cc_profile_pacing_cap`]. `None` = tavan yok (bugünkü yol, bit-eşit).
+    cc_profile_pacing_cap: Option<u64>,
     /// (d) tur mandalı: bu Startup turunda `schedule_transmit` başında `tx_queue` boş ∧ kova dolu
     /// (`pacer.tokens() == pacer.burst_cap()`) görüldü mü. Tur işaretinde (`startup_plateau`) ve
     /// Startup (yeniden) girişinde sıfırlanır. Yalnız `e1.e1_applimited_plateau` açıkken kurulur.
@@ -2222,6 +2225,7 @@ impl Sender {
             last_recovery: RecoveryAction::Arq,
             e1: crate::rate::E1Flags::default(),
             cc: None,
+            cc_profile_pacing_cap: None,
             e1_round_app_limited: false,
         }
     }
@@ -2605,11 +2609,18 @@ impl Sender {
             // Sebep: quinn pencere pacer'ı BBR'ın Drain/ProbeBW kazançlarını fiilen yok sayar
             // (pacing_rate yalnız metrik; B5 bulgusu) → sığ kuyrukta Drain hiç boşaltmaz (ölçüldü,
             // CC_TRACE: Drain'de kuyruk 6/6 sabit, 60 düşen paket).
-            let rate = if cc.pacing_rate() > 0 {
+            let mut rate = if cc.pacing_rate() > 0 {
                 cc.pacing_rate()
             } else {
                 p.rate_bps
             };
+            // [ASİMETRİK-YOL] Profil tavanı yalnız ölçümle desteklenmeyen hız payını keser: ilk
+            // örnekten önce pencere hızı (1,25·pencere/100 ms) ve Startup'ın ilk-pencere/min_rtt
+            // hızı profil penceresinden türer, ölçümden değil. Ölçülen hedef (kazanç × BtlBw)
+            // tavanı aşarsa ölçüm kazanır.
+            if let Some(cap) = self.cc_profile_pacing_cap {
+                rate = rate.min(cap.max(cc.measured_pacing_target()));
+            }
             self.pacer.set_rate(rate);
             self.pacer.set_burst_cap(p.burst_cap);
             if prev_state == SenderState::PreConverge && self.state != SenderState::PreConverge {
@@ -5054,6 +5065,17 @@ impl Sender {
         if self.cc.is_some() {
             self.cc = Some(crate::cc::Bbr::new(DEFAULT_MTU, bytes));
         }
+    }
+
+    /// [ASİMETRİK-YOL] Port pacer'ının profil tavanı (B/s, pacer'ın saydığı tel baytı cinsinden).
+    /// İlk pencere dağıtım profilinden büyütüldüğünde (`set_cc_initial_window`) o pencere profilin
+    /// yukarı yön hızıyla serileşir: tavan yokken ilk RTT örneğinden önce pacer
+    /// 1,25·pencere/100 ms (67 kB pencerede ≈ 840 kB/s) ile çalışır ve pencerenin tamamı darboğaz
+    /// kuyruğuna tek seferde boşalır; sığ kuyrukta kuyruk taşar, düşen paketler uçuşun kuyruğu
+    /// olduğu için yalnız PTO ile sezilir. Ölçülen hedef (BBR kazancı × BtlBw) tavanı aşarsa ölçüm
+    /// kazanır. `None` = tavan yok (bugünkü davranış); `cc` yoksa etkisiz.
+    pub fn set_cc_profile_pacing_cap(&mut self, cap_bps: Option<u64>) {
+        self.cc_profile_pacing_cap = cap_bps.filter(|&c| c > 0);
     }
 
     /// [CC-PORT] Port motorunun ilk uçuş penceresi (bayt); `cc` yoksa `None`.
@@ -14080,5 +14102,70 @@ mod tests {
         fn k4g05br_confirmation_output_is_decision_neutral_cc_port() {
             neutrality_all_seeds("cc_port", Sender::with_cc_port);
         }
+    }
+}
+
+#[cfg(test)]
+mod profile_pacing_cap_tests {
+    //! [ASİMETRİK-YOL] Profil pacer tavanı: profilden büyütülen ilk pencere profil hızıyla
+    //! serileşir; tavan yokken (bugünkü yol) pencere ilk RTT örneğinden önce 1,25·pencere/100 ms
+    //! hızla boşalır.
+    use super::*;
+
+    const MS: u64 = 1_000_000;
+    const IW: u64 = 67_500;
+    const CAP: u64 = 12_200;
+
+    /// 40 × 1200 B birim t = 0'da sunulur; 1 ms'lik tik (runtime pompası gibi) 200 ms koşar.
+    /// Dönen: (200 ms içinde tele çıkan DATA sayısı, son pacer hızı).
+    fn first_flight(cap: Option<u64>) -> (usize, u64) {
+        let mut s = Sender::with_cc_port();
+        s.set_cc_profile_pacing_cap(cap);
+        s.set_cc_initial_window(IW);
+        let mut data = 0usize;
+        let count =
+            |out: &[TransmitDecision]| out.iter().filter(|t| t.kind == TransmitKind::Data).count();
+        for i in 0..40u64 {
+            data += count(&s.on_event(Event::AppData(OpaqueUnit { id: i, size: 1200 }), 0));
+        }
+        for t in 1..=200u64 {
+            data += count(&s.on_event(Event::TimerFired(Timer::Pto), t * MS));
+        }
+        (data, s.diag_pacer().0)
+    }
+
+    #[test]
+    fn profile_cap_paces_the_enlarged_initial_window() {
+        let (free, free_rate) = first_flight(None);
+        let (capped, capped_rate) = first_flight(Some(CAP));
+        // Tavansız: 67,5 kB pencere 200 ms'de tamamen (40 birim = 48 kB) tele çıkar.
+        assert_eq!(free, 40, "tavansız ilk uçuş pencerenin tamamı");
+        assert!(
+            free_rate > 500_000,
+            "tavansız pacer 1,25·pencere/100 ms: {free_rate}"
+        );
+        // Tavanlı: başlangıç kovası (2·MTU) + 200 ms × 12,2 kB/s ≈ 4,8 kB → ≈ 4 birim.
+        assert_eq!(capped_rate, CAP, "ölçüm yokken pacer profil tavanında");
+        assert!(
+            (2..=5).contains(&capped),
+            "tavanlı ilk uçuş kova + profil hızı: {capped}"
+        );
+    }
+
+    #[test]
+    fn profile_cap_none_is_the_default_path() {
+        let mut a = Sender::with_cc_port();
+        let mut b = Sender::with_cc_port();
+        b.set_cc_profile_pacing_cap(None);
+        b.set_cc_profile_pacing_cap(Some(0)); // 0 = tavan yok
+        for i in 0..20u64 {
+            let ev = || Event::AppData(OpaqueUnit { id: i, size: 1200 });
+            assert_eq!(
+                a.on_event(ev(), i * MS),
+                b.on_event(ev(), i * MS),
+                "tavansız gönderici bugünkü yolla aynı (birim {i})"
+            );
+        }
+        assert_eq!(a.diag_pacer(), b.diag_pacer());
     }
 }
