@@ -249,8 +249,12 @@ async fn client_survives_server_death_mid_run() {
     );
 }
 
-/// Item 9 — teslim-kanalı taşması: app drenaj yapmazken bellek BÜYÜMEZ, taşan teslim SAYILIR,
-/// app sonradan drenaja dönebilir (kanal bozulmaz).
+/// Item 9 — teslim-kanalı taşması: app drenaj yapmazken bellek BÜYÜMEZ (kanal 4), kanal bozulmaz,
+/// app sonradan drenaja dönebilir. [INV-ACK-DELIVER-1 · F4, sahip kararı 2026-11-11 (gündüz
+/// planı, HA şeridi): "güvenilir birimi saklayacak yer ayrılmadan geri alınamaz ACK verilmez"]:
+/// kanal doluyken gelen DATA motora VERİLMEZ (ACK yok, `data_not_admitted_full`); gönderici ARQ
+/// ile yeniden iletir; drenaj dönünce HEPSİ teslim edilir ve ACK'lenir, hiçbiri düşmez. Eski
+/// sözleşme ("taşma ACK yolunu etkilemez, taşan sayılır ve düşer") ACK'lenmiş birimi kaybediyordu.
 #[tokio::test(flavor = "multi_thread")]
 async fn delivery_overflow_is_counted_not_grown() {
     let mut server = ServerEndpoint::bind(
@@ -275,8 +279,41 @@ async fn delivery_overflow_is_counted_not_grown() {
             .send(format!("overflow-{i}").into_bytes())
             .expect("offer");
     }
-    // App teslimleri BİLEREK drenaj etmiyor; birimlerin ACK'lenmesini bekle (teslim ≠ drenaj).
+    // App teslimleri BİLEREK drenaj etmiyor: kanal (4) dolar; kalan birimler ACK'lenmez (F4),
+    // gönderici yeniden iletir. Bu pencerede ACK sayısı kanal kapasitesini (+ yarış payı) aşmaz.
     let mut acked = 0u64;
+    let _ = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if client.acked().await.is_some() {
+                acked += 1;
+            }
+        }
+    })
+    .await;
+    assert!(
+        acked <= 4,
+        "F4: dolu kanalda ACK'lenen birim kanal kapasitesini aşmaz: {acked}"
+    );
+    assert_eq!(server.delivery_dropped(), 0, "F4: düşen teslim yok");
+    // Şimdi drenaja dön: kanal hâlâ işler; yeniden iletimlerle 40'ın hepsi gelir.
+    let mut got = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(30), async {
+        while got.len() < 40 {
+            let Some(d) = server.next_delivery().await else {
+                break;
+            };
+            assert!(d.payload.starts_with(b"overflow-"));
+            got.push(d.unit_id);
+        }
+    })
+    .await;
+    got.sort_unstable();
+    got.dedup();
+    assert_eq!(
+        got.len(),
+        40,
+        "drenaj dönünce 40 birimin hepsi tam bir kez teslim"
+    );
     let _ = tokio::time::timeout(Duration::from_secs(20), async {
         while acked < 40 {
             if client.acked().await.is_some() {
@@ -285,23 +322,15 @@ async fn delivery_overflow_is_counted_not_grown() {
         }
     })
     .await;
-    assert_eq!(acked, 40, "teslim-kanalı taşması ACK yolunu ETKİLEMEMELİ");
-    // Şimdi drenaja dön: kanal hâlâ işler (ilk 4 bekliyor).
-    let d = tokio::time::timeout(Duration::from_secs(5), server.next_delivery())
-        .await
-        .expect("drenaj dönünce teslim akmalı")
-        .expect("delivery");
-    assert!(d.payload.starts_with(b"overflow-"));
+    assert_eq!(acked, 40, "drenaj sonrası hepsi ACK'lenir");
     client.shutdown().await;
     let ss = server.shutdown().await;
+    assert_eq!(ss.delivery_dropped, 0, "taşan teslim DÜŞMEZ: {ss:?}");
     assert!(
-        ss.delivery_dropped > 0,
-        "taşan teslim sayaçla görünmeli: {ss:?}"
+        ss.data_not_admitted_full > 0,
+        "dolu kanalda motora verilmeyen DATA sayıldı: {ss:?}"
     );
-    assert!(
-        ss.delivered + ss.delivery_dropped >= 40,
-        "teslim + taşan ≥ 40 olmalı: {ss:?}"
-    );
+    assert_eq!(ss.delivered, 40, "{ss:?}");
 }
 
 /// Item 3 — idle-peer emekliliği: kısa idle_hold ile eş emekli edilir (sayaç), tablo boşalır ve

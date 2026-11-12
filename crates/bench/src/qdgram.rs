@@ -497,6 +497,7 @@ async fn client_loop(
             setup_in_window: false,
             profile_id: String::new(),
             profile_delta: Vec::new(),
+            engine: String::new(),
         },
         events,
     }
@@ -537,6 +538,7 @@ fn failed_output(cfg: &ClientCfg, gov: Option<&GovHandle>, setup_ns: u64) -> Run
             setup_in_window: false,
             profile_id: String::new(),
             profile_delta: Vec::new(),
+            engine: String::new(),
         },
         events,
     }
