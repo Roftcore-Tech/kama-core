@@ -119,11 +119,12 @@ use kama_contracts::s3::{
 };
 use kama_noise_wire::protector::NoiseWireProtection;
 
-use crate::lanes::{LaneConfig, LaneConfigError, LaneState, LaneStats, QueuedUnit};
+use crate::lanes::{Lane, LaneConfig, LaneConfigError, LaneState, LaneStats, QueuedUnit};
 use crate::runtime::{
     ClientEndpoint, ClientHandle, ClientLiveDiag, CtxDispatchCounters, CtxDispatchStats,
     ExpectedSessions, Readiness, RuntimeConfig, RuntimeError, ServerEndpoint, ServerHandle,
 };
+use crate::unit_id::{index_of_lane, lane_index_of, lane_seq_of, tagged, LANE_COUNT};
 #[cfg(any(test, feature = "test-util"))]
 use crate::wire::decode_data;
 use crate::wire::HDR_DATA;
@@ -404,9 +405,10 @@ struct Sess {
     peer: PeerRef,
     phase: Phase,
     endpoint: Option<ClientHandle>,
-    /// Uca verilen birim sayısı: veri yolu birimlere sırayla kimlik verir (fragmenter kapalı →
-    /// birim = mesaj), sıradaki birimin kimliği budur.
-    sent: u64,
+    /// [ŞERİT-SIRA] Şerit başına uca verilen birim sayısı: veri yolu birimlere şerit içinde sırayla
+    /// kimlik verir (fragmenter kapalı → birim = mesaj); şeridin sıradaki biriminin kimliği
+    /// `tagged(şerit, sent[şerit])`. Şeritler kapalıyken yalnız şerit 0 kullanılır.
+    sent: [u64; LANE_COUNT],
     /// [HLR-STALE] Oturumun hub hattı (S3 `AssignHandle` ile bağlanan handle: başlatan rolde
     /// `HandleAssigned`'ın, yanıtlayan rolde gelen INIT'in handle'ı; iki rolde de yalnız bağ
     /// başarılıysa). Taşıyıcı bildirmediyse ya da bağ kurulmadıysa `None`.
@@ -442,19 +444,32 @@ struct Renewal {
     attempt: LinkAttempt,
 }
 
-/// Kaynak uç başına sıralı teslim (S1 §4).
+/// Kaynak uç başına sıralı teslim (S1 §4) — [ŞERİT-SIRA] **şerit başına** bağımsız.
 ///
 /// [K4G-01b] Adaptör bunu OTURUM başına tutar (`ClientTransport::reorder`, `SessionHandle`
 /// anahtarlı): karşı ucun bir oturumu tek bir uçtur. `unit < next` ve tutulan birim için ikinci
 /// kopya YOK SAYILIR — aynı oturumun farklı eş yuvalarından gelen kopyaları burada tekilleşir.
 ///
+/// [ŞERİT-SIRA] S1 (D-09) sıralı teslimi aynı oturum ve aynı sınıf içinde garanti eder; sınıflar
+/// arası sıra garantisi YOKTUR. Birim kimliği şeridi ve şerit-içi sırayı taşır
+/// (`crate::unit_id`); her şerit kendi `next`/`held` çiftiyle sıralanır. Dosya şeridinin kayıp sıra
+/// başı metin ve PTT şeritlerinin teslimini BEKLETMEZ. Etiketsiz kimlikler (şeritler kapalı) şerit
+/// 0'dır: davranış eski tek-sıralayıcıyla aynıdır.
+///
 /// [F3] Eksik sıra başı HİÇBİR ZAMAN atlanmaz: buraya gelen her birim veri alıcısında ACK'lenmiştir,
 /// atlamak ACK'lenmiş birimi atmak olurdu. Bellek sınırı burada değil veri alıcısının kabul
-/// penceresindedir ([`ExpectedSessions::set_admit_window`]): `next`'ten pencere genişliği ve
-/// ötesindeki birim ACK'lenmez, buraya hiç gelmez; `held` en çok `genişlik − 1` birim tutar. `next`
-/// her ilerleyişte veri alıcısına yayımlanır ([`ExpectedSessions::advance_head`]).
+/// penceresindedir ([`ExpectedSessions::set_admit_window`]): şeridin `next`'inden pencere genişliği
+/// ve ötesindeki birim ACK'lenmez, buraya hiç gelmez; her şeridin `held`'i en çok `genişlik − 1`
+/// birim tutar. `next` her ilerleyişte veri alıcısına yayımlanır
+/// ([`ExpectedSessions::advance_head`], şerit etiketli).
 #[derive(Default)]
 struct Reorder {
+    lanes: [LaneOrder; LANE_COUNT],
+}
+
+/// Bir şeridin sıralı teslim durumu: `next` şerit-içi sıra, `held` şerit-içi sıra anahtarlı.
+#[derive(Default)]
+struct LaneOrder {
     next: u64,
     held: BTreeMap<u64, (SessionHandle, Vec<u8>)>,
 }
@@ -471,26 +486,50 @@ pub struct ReorderDiag {
 }
 
 impl Reorder {
-    /// Birimi koyar; sırası gelen birimler `out`'a akar. Eksik sıra başı beklenir, atlanmaz (F3).
+    /// Birimi şeridine koyar; sırası gelen birimler `out`'a akar. Eksik sıra başı beklenir,
+    /// atlanmaz (F3). Döndürdüğü değer: şeridin yeni sıra başı (şerit etiketli; ilerlemediyse
+    /// eski değer) — çağıran değişince veri alıcısına yayımlar.
     fn push(
         &mut self,
         unit: u64,
         session: SessionHandle,
         payload: Vec<u8>,
         out: &mut VecDeque<Delivered>,
-    ) {
-        if unit < self.next {
-            return; // veri alıcısının ilk-teslim penceresinin dışından gelen geç kopya
+    ) -> u64 {
+        let lane = lane_index_of(unit);
+        let seq = lane_seq_of(unit);
+        let lo = &mut self.lanes[lane];
+        if seq < lo.next {
+            return tagged(lane, lo.next); // ilk-teslim penceresinin dışından gelen geç kopya
         }
-        self.held.entry(unit).or_insert((session, payload));
-        while let Some(entry) = self.held.first_entry() {
-            if *entry.key() != self.next {
+        lo.held.entry(seq).or_insert((session, payload));
+        while let Some(entry) = lo.held.first_entry() {
+            if *entry.key() != lo.next {
                 break;
             }
             let (session, unit) = entry.remove();
             out.push_back(Delivered { session, unit });
-            self.next = self.next.saturating_add(1);
+            lo.next = lo.next.saturating_add(1);
         }
+        tagged(lane, lo.next)
+    }
+
+    /// Şeridin sıra başı (şerit etiketli).
+    fn head(&self, lane: usize) -> u64 {
+        tagged(lane, self.lanes[lane].next)
+    }
+
+    /// Bütün şeritlerde tutulan (sırası gelmemiş) birim sayısı.
+    fn held_total(&self) -> usize {
+        self.lanes.iter().map(|l| l.held.len()).sum()
+    }
+
+    /// Tutulan en küçük birim kimliği (şerit etiketli; şerit sırasıyla), yoksa `None`.
+    fn first_held(&self) -> Option<u64> {
+        self.lanes
+            .iter()
+            .enumerate()
+            .find_map(|(lane, l)| l.held.keys().next().map(|k| tagged(lane, *k)))
     }
 }
 
@@ -599,6 +638,9 @@ pub struct ClientTransport<C: PacketProtection + SessionControl> {
     /// [YOL3-T1 KK-T1-06 (i)] Şerit durumu; `None` = şeritsiz (ürün). Pompa çalışırken dışarı
     /// alınır (`Option::take`): o sırada `send` şerit dalına girmez, birimi doğrudan uca verir.
     lanes: Option<LaneState>,
+    /// [ŞERİT-SIRA] Şeritler yapılandırmada açık mı (pompa `lanes`'i geçici olarak dışarı alır;
+    /// birimin şerit etiketi bu bayrağa göre verilir).
+    lanes_enabled: bool,
     /// Sıradaki `send`'lerden kaçının ilk emisyonu kaybettirilecek (yalnız test).
     #[cfg(any(test, feature = "test-util"))]
     drops: usize,
@@ -710,6 +752,7 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             expected,
             ctx_counters,
             retired_diag: ClientLiveDiag::default(),
+            lanes_enabled: cfg.lanes.is_some(),
             lanes: cfg.lanes.map(LaneState::new),
             #[cfg(any(test, feature = "test-util"))]
             drops: 0,
@@ -805,9 +848,13 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                 (
                     *h,
                     ReorderDiag {
-                        next_unit: r.next,
-                        held_units: u32::try_from(r.held.len()).unwrap_or(u32::MAX),
-                        first_held_unit: r.held.keys().next().copied(),
+                        // [ŞERİT-SIRA] Tutulan birimi olan ilk şeridin sıra başı (boşluk oradadır);
+                        // hiçbir şerit tutmuyorsa şerit 0'ınki (etiketsiz kimliklerle eski değer).
+                        next_unit: r
+                            .first_held()
+                            .map_or_else(|| r.head(0), |u| r.head(lane_index_of(u))),
+                        held_units: u32::try_from(r.held_total()).unwrap_or(u32::MAX),
+                        first_held_unit: r.first_held(),
                     },
                 )
             })
@@ -1379,11 +1426,13 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             #[cfg(any(test, feature = "test-util"))]
             Arc::clone(&drop_ids),
         );
-        let mut sent = 0;
+        let mut sent = [0u64; LANE_COUNT];
         if let (Some(e), Some(bytes)) = (endpoint.as_ref(), early) {
             // Kuyruk taze uçta boştur; ret yalnız uç kurulamadıysa olur (birim düşer).
-            if e.send(bytes).is_ok() {
-                sent = 1;
+            // [ŞERİT-SIRA] `early_unit` BE sınıfıdır (D-09) → şeritler açıkken TEXT şeridi.
+            let lane = self.lane_of(TrafficClass::Be);
+            if e.send_in_lane(bytes, None, lane).is_ok() {
+                sent[lane] = 1;
             }
         }
         self.sessions.insert(
@@ -1431,6 +1480,15 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         Some(endpoint)
     }
 
+    /// [ŞERİT-SIRA] Sınıfın şerit indeksi; şeritler kapalıyken 0 (etiketsiz kimlik).
+    fn lane_of(&self, class: TrafficClass) -> usize {
+        if self.lanes_enabled {
+            index_of_lane(Lane::of(class))
+        } else {
+            0
+        }
+    }
+
     // ── teslimler ──
 
     fn drive_deliveries(&mut self) {
@@ -1462,9 +1520,8 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             // yeni oturum eski oturumun `next`'ine takılmaz; aynı oturumun başka bir yuvadan
             // (adres) gelen kopyası burada tekilleşir.
             let reorder = self.reorder.entry(h).or_default();
-            let next_before = reorder.next;
-            reorder.push(d.unit_id, h, d.payload, &mut self.inbox);
-            let next = reorder.next;
+            let next_before = reorder.head(lane_index_of(d.unit_id));
+            let next = reorder.push(d.unit_id, h, d.payload, &mut self.inbox);
             if next != next_before {
                 // [F3] Sıra başı ilerledi: veri alıcısının kabul penceresi de ilerler.
                 self.expected.advance_head(h, next);
@@ -1580,7 +1637,11 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     /// durumu çağıranda, `self.lanes` boş): birim kimliği = verilmeden önceki `Sess::sent`.
     fn pump_session(&mut self, st: &mut LaneState, session: SessionHandle) {
         while let Some((lane, unit)) = st.pop_next(session, Instant::now()) {
-            let Some(unit_id) = self.sessions.get(&session).map(|s| s.sent) else {
+            let Some(unit_id) = self
+                .sessions
+                .get(&session)
+                .map(|s| tagged(index_of_lane(lane), s.sent[index_of_lane(lane)]))
+            else {
                 st.push_front(session, lane, unit);
                 return;
             };
@@ -1837,6 +1898,8 @@ impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> 
             return self.send_via_lanes(session, unit, policy, class);
         }
         let unit_cap = self.caps.max_plaintext_unit_bytes as usize;
+        // [ŞERİT-SIRA] Birimin şeridi (oturum ödünç alınmadan önce).
+        let lane = self.lane_of(class);
         let s = self
             .sessions
             .get_mut(&session)
@@ -1860,6 +1923,8 @@ impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> 
             DeliveryPolicy::Reliable | DeliveryPolicy::BestEffort => None,
         };
         let endpoint = s.endpoint.as_ref().ok_or(TransportError::NotConnected)?;
+        // [ŞERİT-SIRA] Birimin (verilmeden önceki) kimliği: şerit etiketi + şerit-içi sıra.
+        let unit_id = tagged(lane, s.sent[lane]);
         // [KTP2-F0 · A] (yalnız test-util) Birim izi için boy, yük uca taşınmadan önce.
         #[cfg(any(test, feature = "test-util"))]
         let unit_len = unit.bytes.len();
@@ -1869,9 +1934,9 @@ impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> 
             && s.drop_ids
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .insert(s.sent);
+                .insert(unit_id);
         let result = endpoint
-            .send_with_deadline(unit.bytes, deadline_ns)
+            .send_in_lane(unit.bytes, deadline_ns, lane)
             .map_err(|e| match e {
                 RuntimeError::UnitTooLarge { .. } => TransportError::UnitTooLarge,
                 RuntimeError::QueueFull => TransportError::Backpressure,
@@ -1885,16 +1950,16 @@ impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> 
                 s.drop_ids
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
-                    .remove(&s.sent);
+                    .remove(&unit_id);
             }
         }
         if result.is_ok() {
             // [KTP2-F0 · A] Salt gözlem (yalnız test-util, iz açıkken): kabul edilen birimin sırası.
             #[cfg(any(test, feature = "test-util"))]
             if let Some(trace) = self.unit_trace.as_mut() {
-                trace.push(UnitTraceKind::Sent, session, s.sent, unit_len);
+                trace.push(UnitTraceKind::Sent, session, unit_id, unit_len);
             }
-            s.sent = s.sent.saturating_add(1);
+            s.sent[lane] = s.sent[lane].saturating_add(1);
         }
         result
     }
@@ -2012,8 +2077,8 @@ mod tests {
             out.is_empty(),
             "sıra başı (0) eksikken hiçbir şey akmaz, atlama yok"
         );
-        assert_eq!(r.next, 0);
-        assert_eq!(r.held.len() as u64, AHEAD);
+        assert_eq!(r.head(0), 0);
+        assert_eq!(r.held_total() as u64, AHEAD);
         r.push(0, h, 0u64.to_be_bytes().to_vec(), &mut out);
         let got: Vec<u64> = out
             .into_iter()
@@ -2024,8 +2089,62 @@ mod tests {
             (0..=AHEAD).collect::<Vec<_>>(),
             "sıra korunur, kayıp yok"
         );
-        assert!(r.held.is_empty());
-        assert_eq!(r.next, AHEAD + 1);
+        assert_eq!(r.held_total(), 0);
+        assert_eq!(r.head(0), AHEAD + 1);
+    }
+
+    /// [ŞERİT-SIRA] Şeritler birbirinden bağımsız sıralanır: dosya şeridinin (3) kayıp sıra başı
+    /// metin (2) ve PTT (0) şeritlerinin teslimini bekletmez; her şerit kendi içinde sıralıdır ve
+    /// hiçbir şeritte atlama yoktur.
+    #[test]
+    fn reorder_orders_each_lane_independently() {
+        let h = SessionHandle::from_raw(3);
+        let mut r = Reorder::default();
+        let mut out = VecDeque::new();
+        let file = index_of_lane(Lane::File);
+        let text = index_of_lane(Lane::Text);
+        let ptt = index_of_lane(Lane::Ptt);
+        // Dosya 0 kayıp; dosya 1..=4 geldi → tutulur.
+        for seq in 1..=4u64 {
+            r.push(
+                tagged(file, seq),
+                h,
+                format!("f{seq}").into_bytes(),
+                &mut out,
+            );
+        }
+        assert!(out.is_empty());
+        assert_eq!(r.held_total(), 4);
+        // Metin ve PTT dosyayı BEKLEMEZ.
+        let next_text = r.push(tagged(text, 0), h, b"t0".to_vec(), &mut out);
+        assert_eq!(
+            next_text,
+            tagged(text, 1),
+            "şeridin sıra başı etiketli döner"
+        );
+        r.push(tagged(ptt, 1), h, b"p1".to_vec(), &mut out);
+        r.push(tagged(ptt, 0), h, b"p0".to_vec(), &mut out);
+        let got: Vec<Vec<u8>> = out.drain(..).map(|d| d.unit).collect();
+        assert_eq!(
+            got,
+            [b"t0".to_vec(), b"p0".to_vec(), b"p1".to_vec()],
+            "metin ve PTT dosya boşluğunun arkasında beklemedi; PTT kendi içinde sıralı"
+        );
+        assert_eq!(r.first_held(), Some(tagged(file, 1)));
+        assert_eq!(r.head(file), tagged(file, 0));
+        // Dosya 0 gelince dosya şeridi sırayla akar.
+        let next_file = r.push(tagged(file, 0), h, b"f0".to_vec(), &mut out);
+        assert_eq!(next_file, tagged(file, 5));
+        let got: Vec<Vec<u8>> = out.drain(..).map(|d| d.unit).collect();
+        assert_eq!(
+            got,
+            ["f0", "f1", "f2", "f3", "f4"]
+                .iter()
+                .map(|x| x.as_bytes().to_vec())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(r.held_total(), 0);
+        assert_eq!(r.first_held(), None);
     }
 
     /// [K4G-11] Salt-okunur erişimciler taze ürün adaptöründe: Crypto'nun tutmadığı tutamacın
