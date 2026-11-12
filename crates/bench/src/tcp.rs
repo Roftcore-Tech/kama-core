@@ -281,6 +281,7 @@ fn meta_for(
         setup_in_window: false,
         profile_id: String::new(),
         profile_delta: delta,
+        engine: String::new(),
     }
 }
 
