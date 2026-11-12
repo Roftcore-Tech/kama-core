@@ -99,6 +99,22 @@ t = 0'dan başlayan kesintide (`CC_BLACKOUT=0,3`, %30) iki motor da 1–3 birimi
 ne yeniden kuyruk üretiyor → bütün kopyalar kaybolursa birim motordan düşer (`inflight = 0`, teslim 122/125).
 Düzeltme adayı (iki motoru da değiştirir → sahip kararı): acil kopyalardan biri çapa (kaybı yeniden kuyruklar).
 
+**U16 (2026-11-12, §3 entegrasyon kanıtı #181 × #186, #175)** — yalnız `cc_on()`, eski motor bit-aynı:
+(a) U13'ün "taze kopya" sayımı yalnız kaybı ARQ'ya dönen kökenleri (Data/Retransmit) sayar; `Duplicate`
+kopya sayılmaz (Duplicate kaybı tombstone/yeniden kuyruk üretmez, yalnız geometrik kopya makinesini kurar —
+büyük birimde ilk basamak ≈ 61 s). Duplicate'i taze sayınca orijinal ARQ'dan düşüyor, ikisi de kaybolunca
+birim unutuluyordu (sim: t = 0 kesintisi + %30 kayıpta 3 birim 120 s'de hiç; şimdi 125/125, 22–28 s).
+(b) PTO probu hedefi, uçuştaki en eski teyitsiz kaynak kaydı ile ARQ kuyruğundaki (`pending_lost`) en eski
+kaydın **birim kimliği** küçük olanıdır (RFC 9002 §6.2.4 "en eski onaysız veri"; önce: uçuştaki en küçük
+seq). Hedef ARQ kuyruğundaysa prob onu pencereden muaf (`try_send_probe`) taşır; kayıt `Retransmit` olarak
+uçuşa döner (`diag_cc_pto_from_arq`). Neden: ARQ yeniden iletimi uçuş penceresine tabidir; alıcı kabul
+penceresi (#186) dolunca pencere dışı veriyi ACK'lemez → gönderici penceresi hiç boşalmaz → sıra başı
+kuyrukta kilitli, prob ise pencere dışı birimi kopyalardı. Ölçüm (loopback, `reorder_no_skip` 4096 pencere,
+main + #186 + #181, 10 koşu): öncesi 3/10 kalıcı durma (yeşiller 11–25 s); (a) ile 2/10 durma;
+(a)+(b) ile **10/10 · 5–7 s**. Olduğu gibi 512 testi, `ack_after_admit`, `fec_admit_full` yeşil.
+Sim: r25 bayt düzeyinde aynı; kesinti hücresi retx −1…−4, süre ±0,2 s; öbür 6 hücre aynı. Testler:
+`u16_duplicate_copy_does_not_suppress_arq_requeue_on_port`, `u16_pto_probe_targets_smallest_unit_id_not_smallest_seq`.
+
 ## (b) Paket/birim muhasebesi — koddan cevaplar
 
 | olay | cevap (kod) |
