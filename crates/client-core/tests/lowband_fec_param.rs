@@ -170,12 +170,14 @@ async fn param_backoff_recovers_after_initial_blackout() {
 
 /// (2) Normal bant (loopback), küçük birimli akış, kontrolcü yolu (ürün profili 0x05, E 1024).
 /// Blok 0'da kayıp geçmişi kurulur (birim 3 kalıcı silinir), blok 1 kayıp geçmişiyle kapanır.
-/// 400 B birimlerde tavan `Σ kaynak_tel / parite_tel` = 3: kontrolcünün istediği r'yi kesmez
-/// (`fec_parity_payload_clamped = 0`); kontrolcü parite planlarsa blok 1'in silinen birimi (11)
-/// FEC ile kurtarılır. 65 B ileti bloklarında tavan 0: parite çıkmaz (`fec_repairs_tx = 0`),
-/// kontrolcü r istediyse sayaç artar; teslim ARQ ile sürer.
+/// Loopback hızında parite sembolünün serileştirme süresi zaman kapısının (≤ 2 s)
+/// altındadır → tavan ne 400 B ne 65 B birimde uygulanır (`fec_parity_payload_clamped = 0`).
+/// 400 B: kontrolcü parite planlar, tele çıkar, blok 1'in silinen birimi (11) FEC ile kurtarılır —
+/// koşulsuz iddia. 65 B: tavan uygulanmaz; kontrolcünün kendisi bu akışta r = 0 veriyor (ölçüldü:
+/// latched 0; tavanla ilgisi yok, kontrolcü kararı) → yalnız tavan sayacı ve teslim sınanır.
+/// Düşük banttaki tavan (65 B → 0) birim testinde ve gerçek yığın ölçümünde.
 #[tokio::test(flavor = "multi_thread")]
-async fn small_unit_flow_keeps_fec_at_normal_band_and_tiny_block_gets_no_parity() {
+async fn small_unit_flow_keeps_fec_at_normal_band_for_400b_and_65b_units() {
     const K: usize = 8;
     for unit_len in [400usize, 65usize] {
         let cfg = || RuntimeConfig {
@@ -223,29 +225,23 @@ async fn small_unit_flow_keeps_fec_at_normal_band_and_tiny_block_gets_no_parity(
             ss.fec_recovered_units,
             cs.undelivered
         );
-        assert!(
-            got1.len() >= K - 1,
-            "birim {unit_len} B: blok 1 en az 7/8: {cs:?}"
+        assert_eq!(
+            cs.fec_parity_payload_clamped, 0,
+            "birim {unit_len} B: loopback hızında tavan uygulanmaz: {cs:?}"
         );
         if unit_len == 400 {
-            assert_eq!(
-                cs.fec_parity_payload_clamped, 0,
-                "400 B birimde tavan kontrolcüyü kesmemeli: {cs:?}"
+            assert!(
+                cs.fec_blocks_latched >= 1,
+                "400 B: kayıp geçmişli blok 1 parite planlar: {cs:?}"
             );
-            if cs.fec_blocks_latched >= 1 {
-                // Kontrolcü parite planladıysa tavan onu engellememiş olmalı ve 11 kurtarılmalı.
-                assert!(cs.fec_repairs_tx >= 1, "parite tele çıkmalı: {cs:?}");
-                assert!(
-                    ss.fec_recovered_units >= 1,
-                    "birim 11 FEC ile kurtarılmalı: {ss:?}"
-                );
-            }
+            assert!(cs.fec_repairs_tx >= 1, "400 B: parite tele çıkar: {cs:?}");
+            assert!(
+                ss.fec_recovered_units >= 1,
+                "400 B: birim 11 FEC ile kurtarılır: {ss:?}"
+            );
+            assert_eq!(got1.len(), K, "400 B: blok 1 8/8 (11 FEC ile): {cs:?}");
         } else {
-            assert_eq!(
-                cs.fec_repairs_tx, 0,
-                "65 B ileti bloğuna parite çıkmamalı: {cs:?}"
-            );
-            assert_eq!(cs.tx_fec_bytes, 0, "65 B: FEC baytı 0: {cs:?}");
+            assert!(got1.len() >= K - 1, "65 B: blok 1 en az 7/8 (ARQ): {cs:?}");
         }
     }
 }

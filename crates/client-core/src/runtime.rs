@@ -399,14 +399,33 @@ fn validate_fec(cfg: &RuntimeConfig) -> Result<Option<FecProfile>, RuntimeError>
     Ok(Some(p))
 }
 
-/// [FEC-E-ÖLÇEK] Kontrolcü yolunda parite tavanı: `r · parity_wire ≤ payload_wire` (parite,
-/// koruduğu bloğun kaynak tel baytını aşmaz). fec-core §11: E=1024 bulk/yüksek-bant profilidir,
-/// "sub-kbps ≠ E=1024" — küçük-E profili seçilene dek bu tavan tek profilin küçük birimli
-/// bloklarda (ör. 65 B ileti: Σ ≈ 1 kB ↔ parite 1 080 B) hattı yutmasını önler. Birim ≈ E olan
-/// dosya/PTT bloklarında (Σ ≈ k·E) tavan `r_code_max`'ın altına inmez. Deterministik (ADR-17);
-/// elle `r` (Manual) yoluna uygulanmaz.
+/// [FEC-E-ÖLÇEK] Kontrolcü yolunda parite tavanı. İki terim:
+/// 1. **Zaman kapısı:** parite sembolünün bugünkü gönderim hızında serileştirme süresi
+///    `parity_wire / pacer_rate` ≤ 2 s ise tavan uygulanmaz (`r_code_max` kalır): o hızda bir
+///    sembol ucuzdur, küçük birimde de parite yerinde. Sınır sabittir — srtt'ye bağlanmadı, çünkü
+///    düşük bantta srtt kuyrukla 10–15 s'e şişer ve kapıyı tam gerektiği yerde açardı. Hız
+///    bilinmiyorsa (0) kapı kapalı sayılır.
+/// 2. **Bayt kapısı** (zaman kapısı aşılınca): `r · parity_wire ≤ payload_wire` — parite, koruduğu
+///    bloğun kaynak tel baytını aşmaz. 25 B/s'de 1 080 B sembol ≈ 43 s hat: 65 B ileti bloğu
+///    (Σ ≈ 1 kB) parite almaz; 1 000 B dosya bloğu (Σ ≈ 8 kB) profil tavanında kalır.
+///
+/// Dayanak fec-core §11: E=1024 bulk/yüksek-bant profilidir, "sub-kbps ≠ E=1024 — 1024 B sembol
+/// 33 s serileştirme, deadline ölür"; küçük-E profil seçici gelene dek köprü. Deterministik
+/// (ADR-17); elle `r` (Manual) yoluna uygulanmaz.
 #[must_use]
-pub fn fec_payload_r_max(r_code_max: u16, payload_wire: u64, parity_wire: u64) -> u16 {
+pub fn fec_payload_r_max(
+    r_code_max: u16,
+    payload_wire: u64,
+    parity_wire: u64,
+    pacer_rate_bps: u64,
+) -> u16 {
+    const SEC: u64 = 1_000_000_000;
+    const PARITY_SER_LIMIT_NS: u64 = 2 * SEC;
+    if let Some(ser_ns) = parity_wire.saturating_mul(SEC).checked_div(pacer_rate_bps) {
+        if ser_ns <= PARITY_SER_LIMIT_NS {
+            return r_code_max;
+        }
+    }
     let by_payload = payload_wire / parity_wire.max(1);
     u16::try_from(by_payload)
         .unwrap_or(u16::MAX)
@@ -2769,7 +2788,9 @@ async fn client_task(
                     cur_block_wire += size;
                     if cur_block.len() == p.k_shape_usize() {
                         let parity_wire = wire_len(seam.as_ref(), client_ctx, HDR_FEC + e);
-                        let r_max = fec_payload_r_max(p.r_code_max, cur_block_wire, parity_wire);
+                        let pacer_rate = session.sender().diag_rate().3;
+                        let r_max =
+                            fec_payload_r_max(p.r_code_max, cur_block_wire, parity_wire, pacer_rate);
                         // Statik-r (Manual{true} + manuel-close) YA DA adaptif (Controller + latch).
                         let planned_r: u16 = if let Some(r) = fec_manual_r {
                             let auth = session.sender_mut().open_fec_block_authority();
@@ -2869,7 +2890,8 @@ async fn client_task(
         if !cur_block.is_empty() {
             let k_actual = u8::try_from(cur_block.len()).unwrap_or(255);
             let parity_wire = wire_len(seam.as_ref(), client_ctx, HDR_FEC + p.e_usize());
-            let r_max = fec_payload_r_max(p.r_code_max, cur_block_wire, parity_wire);
+            let pacer_rate = session.sender().diag_rate().3;
+            let r_max = fec_payload_r_max(p.r_code_max, cur_block_wire, parity_wire, pacer_rate);
             let planned_r: u16 = if let Some(r) = fec_manual_r {
                 let auth = session.sender_mut().open_fec_block_authority();
                 session
@@ -4108,29 +4130,47 @@ async fn server_task(
 
 #[cfg(test)]
 mod fec_payload_cap_tests {
-    //! [FEC-E-ÖLÇEK] Parite tavanı bloğun kaynak tel baytıyla ölçeklenir: profil 0x05 (k 8, r 4,
-    //! E 1024; parite tel ≈ 1 080 B). 65 B ileti bloğu (Σ ≈ 960 B) parite almaz; 400 B PTT bloğu
-    //! (Σ ≈ 3 640 B) en çok 3; 1 000 B dosya bloğu (Σ ≈ 8 440 B) profil tavanında kalır.
+    //! [FEC-E-ÖLÇEK] Zaman kapısı (sembol serileştirme ≤ 2 s → profil tavanı) + bayt kapısı: profil
+    //! 0x05 (k 8, r 4, E 1024; parite tel ≈ 1 080 B). 25 B/s'de (sembol 43 s) 65 B ileti bloğu
+    //! parite almaz, 400 B PTT ≤ 3, dosya profil tavanı; 12,5 kB/s'de (86 ms) hepsi profil tavanı.
     use super::fec_payload_r_max;
 
+    const LOW: u64 = 25; // B/s
+    const GOOD: u64 = 12_500; // B/s
+
     #[test]
-    fn tiny_message_block_gets_no_parity() {
-        assert_eq!(fec_payload_r_max(4, 8 * 120, 1080), 0);
+    fn tiny_message_block_gets_no_parity_at_low_band() {
+        assert_eq!(fec_payload_r_max(4, 8 * 120, 1080, LOW), 0);
     }
 
     #[test]
-    fn ptt_block_is_capped_below_profile_max() {
-        assert_eq!(fec_payload_r_max(4, 8 * 455, 1080), 3);
+    fn tiny_message_block_keeps_profile_parity_at_good_band() {
+        assert_eq!(fec_payload_r_max(4, 8 * 120, 1080, GOOD), 4);
     }
 
     #[test]
-    fn file_block_keeps_profile_max() {
-        assert_eq!(fec_payload_r_max(4, 8 * 1055, 1080), 4);
+    fn ptt_block_is_capped_only_at_low_band() {
+        assert_eq!(fec_payload_r_max(4, 8 * 455, 1080, LOW), 3);
+        assert_eq!(fec_payload_r_max(4, 8 * 455, 1080, GOOD), 4);
     }
 
     #[test]
-    fn zero_parity_wire_is_safe() {
-        assert_eq!(fec_payload_r_max(4, 100, 0), 4);
+    fn file_block_keeps_profile_max_everywhere() {
+        assert_eq!(fec_payload_r_max(4, 8 * 1055, 1080, LOW), 4);
+        assert_eq!(fec_payload_r_max(4, 8 * 1055, 1080, GOOD), 4);
+    }
+
+    #[test]
+    fn unknown_rate_counts_as_slow_and_zero_parity_wire_is_safe() {
+        assert_eq!(fec_payload_r_max(4, 8 * 120, 1080, 0), 0);
+        assert_eq!(fec_payload_r_max(4, 100, 0, LOW), 4);
+    }
+
+    #[test]
+    fn time_gate_boundary_is_two_seconds() {
+        // 1 080 B sembol: 540 B/s → tam 2 s → kapı açık; 500 B/s → 2,16 s → bayt kapısı.
+        assert_eq!(fec_payload_r_max(4, 8 * 120, 1080, 540), 4);
+        assert_eq!(fec_payload_r_max(4, 8 * 120, 1080, 500), 0);
     }
 }
 
