@@ -10,8 +10,13 @@
 //! `CC_SHAPED_ENGINE=legacy|cc-port`
 //! tek motor; `CC_SHAPED_SEED`, `CC_SHAPED_UNITS`, `CC_SHAPED_RATE`, `CC_SHAPED_Q`,
 //! `CC_SHAPED_DELAY_MS`, `CC_SHAPED_JITTER_MS` (normal σ; yeniden sıralama üretir), `CC_SHAPED_LOSS_PM`,
-//! `CC_SHAPED_UNIT_BYTES`, `CC_SHAPED_REV_RATE` (dönüş hızı), `CC_SHAPED_LINK=1` (iki uca yön hızları: ACK bütçesi + yol ilk penceresi), `CC_SHAPED_IW`, `CC_SHAPED_TMAX_S`, `CC_SHAPED_INTERVAL_MS` (ileti hücresi: birimler bu aralıkla
-//! sunulur; 0 = hepsi başta) hücre anahtarları.
+//! `CC_SHAPED_UNIT_BYTES`, `CC_SHAPED_REV_RATE` (dönüş hızı), `CC_SHAPED_IW`, `CC_SHAPED_TMAX_S`,
+//! `CC_SHAPED_INTERVAL_MS` (ileti hücresi: birimler bu aralıkla sunulur; 0 = hepsi başta) hücre
+//! anahtarları. Yön hızları (dağıtım profili): `CC_SHAPED_LINK=1` iki uca verir (alıcıda ACK
+//! bütçesi, göndericide yol ilk penceresi ve profil pacer tavanı);
+//! `CC_SHAPED_LINK_SIDE=server|client` yalnız bir uca; `CC_SHAPED_LINK_FWD` / `CC_SHAPED_LINK_REV`
+//! profilin söylediği ileri/dönüş hızı (B/s; varsayılan hattın gerçek hızı — profil ≠ gerçek
+//! hücresi için).
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
@@ -219,6 +224,32 @@ async fn relay(
     }
 }
 
+/// [ASİMETRİK-YOL] Hücrenin dağıtım profili: uçlara verilen yön hızları. Profil gerçek hattan
+/// farklı olabilir (`fwd_bps`/`rev_bps` ≠ biçimlendirici hızları) ve yalnız bir uca verilebilir.
+#[derive(Debug, Clone, Copy)]
+struct LinkProfile {
+    /// Profilin söylediği ileri yön (istemci → sunucu) hızı, B/s.
+    fwd_bps: u64,
+    /// Profilin söylediği dönüş yönü (sunucu → istemci) hızı, B/s.
+    rev_bps: u64,
+    /// Alıcıya (sunucu) verilir: ACK dönüş bütçesi.
+    server: bool,
+    /// Göndericiye (istemci) verilir: yol ilk penceresi.
+    client: bool,
+}
+
+impl LinkProfile {
+    /// İki uca, gerçek hat hızlarıyla.
+    fn exact(fwd: Dir, rev: Dir) -> Self {
+        Self {
+            fwd_bps: fwd.rate_bps,
+            rev_bps: rev.rate_bps,
+            server: true,
+            client: true,
+        }
+    }
+}
+
 struct Outcome {
     completed: Option<Duration>,
     delivered: u64,
@@ -235,7 +266,7 @@ async fn run_cell(
     unit_bytes: usize,
     t_max: Duration,
     interval: Duration,
-    link_on: bool,
+    link: Option<LinkProfile>,
 ) -> Outcome {
     let cfg = RuntimeConfig {
         engine,
@@ -248,20 +279,24 @@ async fn run_cell(
             .unwrap_or(client_core::runtime::KamaV1Profile::INITIAL_WINDOW_BYTES),
         ..RuntimeConfig::default()
     };
-    // [ASİMETRİK-YOL] `CC_SHAPED_LINK=1`: iki uca yön hızları kendi bakış açısından — alıcı (sunucu)
-    // yukarı = dönüş, aşağı = ileri; gönderici (istemci) yukarı = ileri, aşağı = dönüş.
+    // [ASİMETRİK-YOL] Yön hızları her uca kendi bakış açısından — alıcı (sunucu) yukarı = dönüş,
+    // aşağı = ileri; gönderici (istemci) yukarı = ileri, aşağı = dönüş.
     let server_cfg = RuntimeConfig {
-        link_rates: link_on.then_some(client_core::runtime::LinkRates {
-            uplink_bps: rev_cfg.rate_bps,
-            downlink_bps: fwd_cfg.rate_bps,
-        }),
+        link_rates: link
+            .filter(|l| l.server)
+            .map(|l| client_core::runtime::LinkRates {
+                uplink_bps: l.rev_bps,
+                downlink_bps: l.fwd_bps,
+            }),
         ..cfg.clone()
     };
     let cfg = RuntimeConfig {
-        link_rates: link_on.then_some(client_core::runtime::LinkRates {
-            uplink_bps: fwd_cfg.rate_bps,
-            downlink_bps: rev_cfg.rate_bps,
-        }),
+        link_rates: link
+            .filter(|l| l.client)
+            .map(|l| client_core::runtime::LinkRates {
+                uplink_bps: l.fwd_bps,
+                downlink_bps: l.rev_bps,
+            }),
         ..cfg
     };
     let server = ServerEndpoint::bind(
@@ -451,36 +486,53 @@ async fn shaped_relay_measure() {
         Ok("cc-port") => vec![TransportEngine::CcPort],
         _ => vec![TransportEngine::Legacy, TransportEngine::CcPort],
     };
+    let fwd = Dir {
+        rate_bps: rate,
+        limit: q,
+        delay,
+        jitter,
+        loss_permille: loss,
+    };
+    let rev = Dir {
+        // `CC_SHAPED_REV_RATE=<B/s>`: dönüş yolu hızı (asimetrik yol; varsayılan ileri hız).
+        rate_bps: env_u64("CC_SHAPED_REV_RATE", rate),
+        limit: q.max(64),
+        delay,
+        jitter,
+        loss_permille: 0,
+    };
+    let side = std::env::var("CC_SHAPED_LINK_SIDE").ok();
+    let link = (std::env::var("CC_SHAPED_LINK").is_ok() || side.is_some()).then(|| LinkProfile {
+        fwd_bps: env_u64("CC_SHAPED_LINK_FWD", fwd.rate_bps),
+        rev_bps: env_u64("CC_SHAPED_LINK_REV", rev.rate_bps),
+        server: side.as_deref() != Some("client"),
+        client: side.as_deref() != Some("server"),
+    });
     for eng in engines {
         let o = run_cell(
             eng,
-            Dir {
-                rate_bps: rate,
-                limit: q,
-                delay,
-                jitter,
-                loss_permille: loss,
-            },
-            Dir {
-                // `CC_SHAPED_REV_RATE=<B/s>`: dönüş yolu hızı (asimetrik yol; varsayılan ileri hız).
-                rate_bps: env_u64("CC_SHAPED_REV_RATE", rate),
-                limit: q.max(64),
-                delay,
-                jitter,
-                loss_permille: 0,
-            },
+            fwd,
+            rev,
             seed,
             units,
             unit_bytes,
             Duration::from_secs(env_u64("CC_SHAPED_TMAX_S", 180)),
             Duration::from_millis(env_u64("CC_SHAPED_INTERVAL_MS", 0)),
-            std::env::var("CC_SHAPED_LINK").is_ok(),
+            link,
         )
         .await;
         println!(
-            "[{eng:?}] shaped r{rate} q{q} d{}±{}ms l{loss}‰ u{units}×{unit_bytes} seed{seed}: tamamlanma={} teslim={}/{units} ileri={} pkt / {} B (kuyruk_düşen={} rastgele_düşen={}) dönüş={} pkt / {} B (düşen={})",
+            "[{eng:?}] shaped r{rate} rr{} q{q} d{}±{}ms l{loss}‰ u{units}×{unit_bytes} seed{seed} profil={}: tamamlanma={} teslim={}/{units} ileri={} pkt / {} B (kuyruk_düşen={} rastgele_düşen={}) dönüş={} pkt / {} B (düşen={})",
+            rev.rate_bps,
             delay.as_millis(),
             jitter.as_millis(),
+            link.map_or("kapalı".to_string(), |l| format!(
+                "{}{}:{}/{}",
+                if l.server { "S" } else { "" },
+                if l.client { "C" } else { "" },
+                l.fwd_bps,
+                l.rev_bps
+            )),
             o.completed.map_or("YOK".to_string(), |d| format!("{:.2} s", d.as_secs_f64())),
             o.delivered,
             o.stats.fwd_sent,
@@ -497,9 +549,10 @@ async fn shaped_relay_measure() {
 /// [ASİMETRİK-YOL] Kalıcı kapı — saha koşulu: ileri 12,5 kB/s, dönüş 62 B/s (yukarı yön ≈ 0,5 kbit/s),
 /// tek yön 300 ms, %20 ileri kayıp, 40 × 1000 B. Yön hızları verilmezse port motoru bu hücrede 57–62 s
 /// sürüyor ve dönüşe 3,6–4,2 kB ACK basıyor: ACK'ler 62 B/s hatta sıra bekliyor, gönderici ACK-saatli
-/// döngüde yakınsamıyor. Yön hızlarıyla (alıcı ACK bütçesi + yol ilk penceresi; PARAM geri çekilmesi
-/// ile) ölçüm: tohum 1–3 16,8–20,8 s, tohum 1 × 6 13,8–19,9 s, birim p50 2,5–3,0 s, ACK 0,56–0,78 kB.
-/// Eşikler gerçek zaman gürültüsüne geniş.
+/// döngüde yakınsamıyor. Yön hızlarıyla (alıcı ACK bütçesi + yol ilk penceresi + profil pacer
+/// tavanı; PARAM geri çekilmesi tabanında) ölçüm: tohum 1–2 15,3–19,0 s, dönüş 565–693 B; bu kapı
+/// (tohum 1) 3 koşu 14,9–19,0 s, 630–693 B. Eşikler (≤ 35 s, ≤ 1 500 B) gerçek zaman gürültüsüne
+/// geniş; yön hızları olmadan hücre iki eşiği de aşar.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn asymmetric_return_path_with_link_rates_bounds_acks_and_completes() {
     let fwd = Dir {
@@ -525,9 +578,10 @@ async fn asymmetric_return_path_with_link_rates_bounds_acks_and_completes() {
         1000,
         Duration::from_secs(120),
         Duration::ZERO,
-        true,
+        Some(LinkProfile::exact(fwd, rev)),
     )
     .await;
+    report("B", &o);
     let done = o
         .completed
         .expect("asimetrik hücre 120 s içinde tamamlanmalı");
@@ -540,5 +594,174 @@ async fn asymmetric_return_path_with_link_rates_bounds_acks_and_completes() {
         o.stats.rev_bytes <= 1_500,
         "dönüşe {} B > 1500 B (bütçe ihlali; yön hızları olmadan 3,6–4,2 kB)",
         o.stats.rev_bytes
+    );
+}
+
+/// Kapı özeti (CI günlüğünde eşiklerin yanında görünür).
+fn report(tag: &str, o: &Outcome) {
+    println!(
+        "KAPI {tag}: tamamlanma={} teslim={} ileri_kuyruk_düşen={} ileri_rastgele_düşen={} dönüş={} pkt / {} B",
+        o.completed
+            .map_or("YOK".to_string(), |d| format!("{:.2} s", d.as_secs_f64())),
+        o.delivered,
+        o.stats.fwd_dropped_queue,
+        o.stats.fwd_dropped_random,
+        o.stats.rev_sent,
+        o.stats.rev_bytes
+    );
+}
+
+/// Tek yön 300 ms, jitter'sız yön.
+fn dir300(rate_bps: u64, limit: usize, loss_permille: u64) -> Dir {
+    Dir {
+        rate_bps,
+        limit,
+        delay: Duration::from_millis(300),
+        jitter: Duration::ZERO,
+        loss_permille,
+    }
+}
+
+/// [ASİMETRİK-YOL] Kalıcı kapı — doğru profil, sığ kuyruk: ileri 12,5 kB/s (kuyruk 16 paket), dönüş
+/// 62 B/s, %20 ileri kayıp, 40 × 1000 B, profil iki uçta ve hatla aynı. Profil ilk pencereyi
+/// ≈ 67 kB'ye büyütür; pencere profil hızıyla serileşir (pacer tavanı). Tavansız pacer ilk RTT
+/// örneğinden önce ≈ 840 kB/s ile çalışıyor ve 40 birimi 50 ms'de 16 paketlik kuyruğa boşaltıyordu:
+/// tohum 1/2 37,5/42,3 s, ileri kuyruk düşmesi 28/33 (düşenler uçuşun sonu, yalnız PTO ile
+/// seziliyordu). Tavanla tohum 1/2 14,9/19,5 s, düşme 0/1; bu kapı (tohum 1) 3 koşu 19,0–20,3 s,
+/// düşme 0–1. Eşik: düşme ≤ 8 (asıl ayırıcı), tamamlanma ≤ 35 s.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn link_rates_initial_window_is_paced_into_a_shallow_queue() {
+    let fwd = dir300(12_500, 16, 200);
+    let rev = dir300(62, 64, 0);
+    let o = run_cell(
+        TransportEngine::CcPort,
+        fwd,
+        rev,
+        1,
+        40,
+        1000,
+        Duration::from_secs(120),
+        Duration::ZERO,
+        Some(LinkProfile::exact(fwd, rev)),
+    )
+    .await;
+    report("C0", &o);
+    let done = o
+        .completed
+        .expect("sığ kuyruk hücresi 120 s içinde tamamlanmalı");
+    assert_eq!(o.delivered, 40, "40/40 teslim");
+    assert!(
+        o.stats.fwd_dropped_queue <= 8,
+        "ileri kuyrukta {} paket düştü > 8 (ilk pencere profil hızıyla serileşmiyor; tavansız 28–33)",
+        o.stats.fwd_dropped_queue
+    );
+    assert!(
+        done <= Duration::from_secs(35),
+        "tamamlanma {done:?} > 35 s (tavansız 37–42 s)"
+    );
+}
+
+/// [ASİMETRİK-YOL] Kalıcı kapı — fazla iyimser profil, sığ kuyruk: ileri gerçek 2,5 kB/s (kuyruk 8
+/// paket), profil 12,5 kB/s (5 kat); dönüş 62 B/s, %20 ileri kayıp, 24 × 1000 B. Profil ilk
+/// pencereyi gerçeğin 5 katına büyütür; ilk ACK'ten önce bunu bilecek ölçüm yoktur, fazlası
+/// kuyrukta düşer (16–17 paket). Teslim çökmemeli. Ölçüm (tohum 1, 3 koşu): 19,6–26,4 s, 24/24;
+/// aynı hatta yön hızları kapalı kol 33,9 s (3 koşu). Eşik 45 s (kapalı kolun ≈ 1,3 katı).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn overoptimistic_link_profile_on_shallow_queue_still_completes() {
+    let fwd = dir300(2_500, 8, 200);
+    let rev = dir300(62, 64, 0);
+    let o = run_cell(
+        TransportEngine::CcPort,
+        fwd,
+        rev,
+        1,
+        24,
+        1000,
+        Duration::from_secs(150),
+        Duration::ZERO,
+        Some(LinkProfile {
+            fwd_bps: 12_500,
+            ..LinkProfile::exact(fwd, rev)
+        }),
+    )
+    .await;
+    report("C", &o);
+    let done = o
+        .completed
+        .expect("fazla iyimser profil hücresi 150 s içinde tamamlanmalı");
+    assert_eq!(o.delivered, 24, "24/24 teslim");
+    assert!(
+        done <= Duration::from_secs(45),
+        "fazla iyimser profil: tamamlanma {done:?} > 45 s (yön hızları kapalı kol 33,9 s)"
+    );
+}
+
+/// [ASİMETRİK-YOL] Kalıcı kapı — profil yalnız alıcıda: ileri 12,5 kB/s, dönüş 62 B/s, tek yön
+/// 300 ms, %20 ileri kayıp, 20 × 1000 B. Alıcı ACK'leri bütçeyle seyreltir, göndericinin ilk
+/// penceresi büyümez (4,8 kB): ACK'ler saniyeler arayla gelir, gönderici küçük pencereyle ACK
+/// bekler. Kalıcı bekleme olmamalı. Ölçüm (tohum 1, 3 koşu): 21,5–25,5 s, dönüş 574–706 B; yön
+/// hızları kapalı aynı hücre 24,8–25,4 s, 1,6–1,7 kB (2 koşu). Eşik 60 s (ilerleyen taşımaya iki
+/// kattan fazla pay; kalıcı beklemede 150 s'de zaman aşımı).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn link_rates_on_receiver_only_completes() {
+    let fwd = dir300(12_500, 64, 200);
+    let rev = dir300(62, 64, 0);
+    let o = run_cell(
+        TransportEngine::CcPort,
+        fwd,
+        rev,
+        1,
+        20,
+        1000,
+        Duration::from_secs(150),
+        Duration::ZERO,
+        Some(LinkProfile {
+            client: false,
+            ..LinkProfile::exact(fwd, rev)
+        }),
+    )
+    .await;
+    report("D-alıcı", &o);
+    let done = o
+        .completed
+        .expect("yalnız alıcıda profil: 150 s içinde tamamlanmalı");
+    assert_eq!(o.delivered, 20, "20/20 teslim");
+    assert!(
+        done <= Duration::from_secs(60),
+        "yalnız alıcıda profil: tamamlanma {done:?} > 60 s"
+    );
+}
+
+/// [ASİMETRİK-YOL] Kalıcı kapı — profil yalnız göndericide: aynı hücre. İlk pencere büyür
+/// (≈ 67 kB, profil hızıyla serileşir), alıcı bütçesiz quinn kuralıyla ACK'ler: ACK'ler 62 B/s
+/// dönüş kuyruğunda birikir, RTT örnekleri şişer. Kalıcı bekleme olmamalı. Ölçüm (tohum 1, 3 koşu):
+/// 12,5–26,8 s, dönüş 1 717–1 838 B (bütçesiz). Eşik 60 s.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn link_rates_on_sender_only_completes() {
+    let fwd = dir300(12_500, 64, 200);
+    let rev = dir300(62, 64, 0);
+    let o = run_cell(
+        TransportEngine::CcPort,
+        fwd,
+        rev,
+        1,
+        20,
+        1000,
+        Duration::from_secs(150),
+        Duration::ZERO,
+        Some(LinkProfile {
+            server: false,
+            ..LinkProfile::exact(fwd, rev)
+        }),
+    )
+    .await;
+    report("D-gönderici", &o);
+    let done = o
+        .completed
+        .expect("yalnız göndericide profil: 150 s içinde tamamlanmalı");
+    assert_eq!(o.delivered, 20, "20/20 teslim");
+    assert!(
+        done <= Duration::from_secs(60),
+        "yalnız göndericide profil: tamamlanma {done:?} > 60 s"
     );
 }
