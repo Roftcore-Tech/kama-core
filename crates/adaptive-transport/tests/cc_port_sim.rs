@@ -88,6 +88,12 @@ struct Bottleneck {
     /// [H1] Gilbert-Elliott iki durumlu kümeli kayıp `(p_gb ppm, p_bg ppm, kötü_durumda_mı)`;
     /// `None` = Bernoulli `loss_permille` (mevcut testlerin yolu, bayt düzeyinde aynı).
     ge: Option<(u64, u64, bool)>,
+    /// netem düzeni: kayıp serileştirmeden önce (bkz. `send`).
+    loss_before_ser: bool,
+    /// `CC_JITTER_MS=<ms>`: yayılım gecikmesine ± jitter (netem `delay d j distribution normal`
+    /// benzeri: üç düzgün değişkenin toplamı, ±j kırpılmış). Yeniden sıralama OLUŞUR (varış
+    /// sırasına göre yerleştirilir). Varsayılan 0: bayt düzeyinde aynı.
+    jitter_ns: u64,
 }
 
 impl Bottleneck {
@@ -106,7 +112,14 @@ impl Bottleneck {
             loss_permille,
             blackout: None,
             ge: None,
+            loss_before_ser: std::env::var("CC_LOSS_BEFORE_SER").is_ok(),
+            jitter_ns: jitter_from_env(),
         }
+    }
+
+    /// Yayılım gecikmesi + jitter (ns); jitter 0 ise `delay_ns` birebir.
+    fn jittered_delay(&mut self) -> u64 {
+        jittered(self.delay_ns, self.jitter_ns, &mut self.lcg)
     }
 
     /// [H1] Gilbert-Elliott: KÖTÜ durumda paket düşer, İYİ durumda geçer; geçiş paket başına.
@@ -139,6 +152,16 @@ impl Bottleneck {
             self.dropped_queue += 1;
             return;
         }
+        // `CC_LOSS_BEFORE_SER=1`: netem düzeni — kayıp hız sınırlayıcıdan ÖNCE düşer, düşen paket hat
+        // süresi tüketmez (netem `loss` kuyruğa girişte uygulanır). Varsayılan: telsiz düzeni (paket
+        // serileştirilir, yolda düşer). Keşif anahtarı; varsayılan davranış bayt düzeyinde aynı.
+        if self.loss_before_ser
+            && self.loss_permille > 0
+            && self.rand_permille() < self.loss_permille
+        {
+            self.dropped_random += 1;
+            return;
+        }
         let start = self.busy.back().copied().unwrap_or(now).max(now);
         let done = start + size * SEC / self.rate_bps;
         self.busy.push_back(done);
@@ -151,12 +174,21 @@ impl Bottleneck {
                 self.dropped_random += 1;
                 return;
             }
-        } else if self.loss_permille > 0 && self.rand_permille() < self.loss_permille {
+        } else if !self.loss_before_ser
+            && self.loss_permille > 0
+            && self.rand_permille() < self.loss_permille
+        {
             self.dropped_random += 1;
             return; // serileştirildi ama yolda düştü
         }
-        self.wire
-            .push_back((done + self.delay_ns, seq, unit_id, kind));
+        let arrive = done + self.jittered_delay();
+        // Varış sırasına göre yerleştir (jitter yeniden sıralama üretir; jitter 0 → push_back).
+        let pos = self
+            .wire
+            .iter()
+            .rposition(|&(t, ..)| t <= arrive)
+            .map_or(0, |i| i + 1);
+        self.wire.insert(pos, (arrive, seq, unit_id, kind));
     }
 
     /// Serileştirme kuyruğundaki paket sayısı (iz için).
@@ -177,6 +209,34 @@ impl Bottleneck {
 /// Dönüş yolu (SACK) darboğazı: `rate_bps` serileştirme (0 = sınırsız), `limit` paket kuyruk,
 /// `delay_ns` yayılım. ACK baytı = kodlanmış çerçeve + `ACK_WIRE_OVERHEAD`. Düşük bant hücrelerinde
 /// (r25: 25 B/s iki yön) ACK'lerin dönüş hattını doldurması ancak bununla görünür.
+fn jitter_from_env() -> u64 {
+    std::env::var("CC_JITTER_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0)
+        * MS
+}
+
+/// `delay ± jitter`: üç düzgün değişkenin toplamı (yaklaşık normal, σ ≈ j/2), ±j kırpılmış;
+/// jitter 0 ise LCG İLERLEMEZ (mevcut tohum dizileri aynı kalır).
+fn jittered(delay_ns: u64, jitter_ns: u64, lcg: &mut u64) -> u64 {
+    if jitter_ns == 0 {
+        return delay_ns;
+    }
+    let mut acc: i64 = 0;
+    for _ in 0..3 {
+        *lcg = lcg
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let u = ((*lcg >> 33) % 2001) as i64 - 1000; // [-1000, 1000]
+        acc += u;
+    }
+    // acc ∈ [-3000, 3000] → ±jitter; ±1000 başına jitter/1.5 ölçek, ±j'ye kırp.
+    let j = jitter_ns as i64;
+    let off = (acc * j / 1500).clamp(-j, j);
+    (delay_ns as i64 + off).max(0) as u64
+}
+
 struct RevPath {
     rate_bps: u64,
     limit: usize,
@@ -185,6 +245,8 @@ struct RevPath {
     wire: VecDeque<(u64, AckInfo)>,
     dropped_queue: u64,
     bytes: u64,
+    jitter_ns: u64,
+    lcg: u64,
 }
 
 /// SACK çerçevesinin tel zarfı (Noise mühürlü başlık + UDP/IP) için yaklaşık ek — ürün ölçümü
@@ -201,7 +263,19 @@ impl RevPath {
             wire: VecDeque::new(),
             dropped_queue: 0,
             bytes: 0,
+            jitter_ns: jitter_from_env(),
+            lcg: 0x9E37_79B9_7F4A_7C15,
         }
+    }
+
+    fn push_wire(&mut self, arrive_base: u64, ack: AckInfo) {
+        let arrive = jittered(arrive_base, self.jitter_ns, &mut self.lcg);
+        let pos = self
+            .wire
+            .iter()
+            .rposition(|(t, _)| *t <= arrive)
+            .map_or(0, |i| i + 1);
+        self.wire.insert(pos, (arrive, ack));
     }
 
     /// `size` bayt ACK'i kuyruğa koyar; kuyruk doluysa düşer (SACK birikimli: sonraki ACK kapsar).
@@ -209,7 +283,8 @@ impl RevPath {
     fn send(&mut self, now: u64, size: u64, ack: AckInfo) -> bool {
         if self.rate_bps == 0 {
             self.bytes += size;
-            self.wire.push_back((now + self.delay_ns, ack));
+            let base = now + self.delay_ns;
+            self.push_wire(base, ack);
             return true;
         }
         while self.busy.front().is_some_and(|&t| t <= now) {
@@ -223,7 +298,8 @@ impl RevPath {
         let done = start + size * SEC / self.rate_bps;
         self.busy.push_back(done);
         self.bytes += size;
-        self.wire.push_back((done + self.delay_ns, ack));
+        let base = done + self.delay_ns;
+        self.push_wire(base, ack);
         true
     }
 }
@@ -774,6 +850,38 @@ fn ten_seeds(
         fmt_s(m)
     );
     (ok, p, m, overhead)
+}
+
+/// Keşif (yalnız `CC_MANSET=1`): manşet analoğu — 12,5 kB/s · kuyruk 1000 · 300 ms · %30 · 150 kB.
+/// `CC_LOSS_BEFORE_SER=1` ile netem düzeni. Rapor: tamamlanma, hat kullanımı (tele çıkan bayt /
+/// hattın o sürede taşıyabileceği bayt), CC izi (`CC_TRACE=1`).
+#[test]
+fn manset_cell_explore() {
+    if std::env::var("CC_MANSET").is_err() {
+        return;
+    }
+    let seed = std::env::var("CC_SEED")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
+    let only_port = std::env::var("CC_PORT_ONLY").is_ok();
+    for eng in ENGINES {
+        if only_port && eng != Engine::CcPort {
+            continue;
+        }
+        let o = run(eng, 12_500, 1000, 300, 300, seed, 200);
+        report(eng, "manset q1000 r12.5k d300 l30 150kB", &o);
+        if let Some(t) = o.completed_ns {
+            let cap = 12_500 * t / SEC;
+            println!(
+                "[{}] manşet: hat kullanımı = {} / {} = {:.3}",
+                eng.name(),
+                o.sent_bytes,
+                cap,
+                o.sent_bytes as f64 / cap as f64
+            );
+        }
+    }
 }
 
 /// Hücre 1: 6 paketlik kuyruk, kayıp yok — sığ kuyruk çöküşü (ISEMRI-CC-PORT §1 #4).

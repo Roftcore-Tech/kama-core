@@ -59,6 +59,21 @@ const DRAIN_TO_TARGET: bool = true;
 /// (`tcp_bbr.c` `bbr_set_cwnd_to_recover_or_restore`) kaybı her kipte "cwnd = uçuş + ACK" ile
 /// sınırlar. Sığ kuyrukta Startup taşmasını kesmek için ölçülüyor.
 const PACKET_CONSERVATION_IN_STARTUP: bool = true;
+/// **U17 (2026-11-12, manşet hat doluluğu)**: `recovery_window` tavanı yalnız kaybın ilan edildiği
+/// turda (Conservation) uygulanır; `Growth`'ta pencere BBR hedefine (`cwnd`) döner. quinn/Chromium
+/// kayıp bir tur boyunca kesilene dek `min(cwnd, recovery_window)` uygular; sürekli rastgele kayıpta
+/// (%30) o tur hiç gelmez, pencere "uçuş + ACK − kayıp" izinde kalır ve henüz kayıp ilan edilmemiş
+/// ölü paketler uçuşu şişirdiğinden canlı uçuş BDP'nin altına düşer → hat boş kalır (gerçek yığın:
+/// 86 s'lik koşuda 20 s boş, 241 küçük boşluk). Linux BBR v1 (`tcp_bbr.c`
+/// `bbr_set_cwnd_to_recover_or_restore`): paket koruması TEK tur (`packet_conservation`), sonra
+/// `cwnd = min(cwnd + acked, target_cwnd)` — kayıp pacing'i de hedef pencereyi de düşürmez.
+/// INV-RATE-1 (2026-11-11 metni) "o turdaki uçuş tavanı"nı korur: Conservation turu aynen.
+/// **Ölçüldü, KAPALI (2026-11-12):** gerçek yığın (`shaped_relay`, 525 × 1000 B, 12,5 kB/s,
+/// kuyruk 1000, 300 ± 60 ms, %30, telsiz düzeni) referans 86,4 / 88,8 s ↔ U17 86,9 / 82,0 / 89,8 s
+/// (koşudan koşuya gürültü ±4 s); sim manşet analoğu (3 tohum) ±%2. Gönderici zaman serisi
+/// (`CC_SHAPED_TS_MS`) hat boşluğunun %57'sinde KOVA (pacing = kazanç × BtlBw, BtlBw ≈ 0,85–0,92
+/// hat), %35'inde pencere sınırlı olduğunu gösterdi; tavan ikincil. Açılmadı.
+const RECOVERY_CAP_ONLY_IN_CONSERVATION: bool = false;
 
 /// BBR kipi (q:587-598).
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -598,6 +613,8 @@ impl Bbr {
             return self.get_probe_rtt_cwnd();
         } else if self.recovery_state.in_recovery()
             && (self.mode != Mode::Startup || PACKET_CONSERVATION_IN_STARTUP)
+            && (!RECOVERY_CAP_ONLY_IN_CONSERVATION
+                || self.recovery_state == RecoveryState::Conservation)
         {
             return self.cwnd.min(self.recovery_window);
         }

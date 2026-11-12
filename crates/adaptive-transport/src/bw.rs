@@ -265,6 +265,18 @@ impl BtlBwFilter {
     }
 
     /// DR-RATE-RAMP-1 observation-only filter acceptance lineage:
+    /// [Teşhis] Son tam-geçerli örneğin anlık hızı (B/s).
+    #[must_use]
+    pub fn last_full_bw(&self) -> u64 {
+        self.last_full_bw
+    }
+
+    /// [Teşhis] Filtredeki örnek sayısı.
+    #[must_use]
+    pub fn sample_count(&self) -> usize {
+        self.samples.len()
+    }
+
     /// `(offered, accepted, rejected_invalid, rejected_interval, rejected_app_limited)`.
     #[cfg(feature = "diag-sched-telemetry")]
     #[must_use]

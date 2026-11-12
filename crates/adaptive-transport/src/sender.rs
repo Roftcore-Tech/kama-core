@@ -552,6 +552,20 @@ pub struct TsSample {
     pub sched_retx_emitted: u64,
     pub sched_parity_emitted: u64,
     pub sched_data_emitted: u64,
+    /// [CC-PORT manşet 2026-11-12] Örnekleme anındaki uçuş tavanı (bayt; port: `cc.window()`,
+    /// eski motor: 0), uçuştaki bayt, pacer hızı (B/s) ve kuyruktaki birim sayısı — "hat boşken
+    /// gönderici pencereyle mi, kovayla mı, veriyle mi sınırlı" sorusu için. `diag_ts_sample`
+    /// çağrı anında tazelenir (arbiter anında değil).
+    pub cc_window: u64,
+    pub inflight_bytes: u64,
+    pub pacer_rate_bps: u64,
+    pub tx_queue_len: u64,
+    /// BtlBw max filtresi (B/s), son kabul edilen örneğin anlık hızı, filtre örnek sayısı,
+    /// srtt (µs) — örnekleyicinin gerçek yığındaki davranışı için.
+    pub btlbw_bps: u64,
+    pub btlbw_last_full_bps: u64,
+    pub btlbw_samples: u64,
+    pub srtt_us: u64,
 }
 
 /// [TEŞHİS] Arbiter sebep histogramı kova sayısı.
@@ -4347,6 +4361,14 @@ impl Sender {
             sched_retx_emitted: self.diag_sched_summary()[5],
             sched_parity_emitted: self.diag_sched_summary()[10],
             sched_data_emitted: self.diag_sched_summary()[2],
+            cc_window: 0,
+            inflight_bytes: 0,
+            pacer_rate_bps: 0,
+            tx_queue_len: 0,
+            btlbw_bps: 0,
+            btlbw_last_full_bps: 0,
+            btlbw_samples: 0,
+            srtt_us: 0,
         };
         d.fec_parity_ratio_permille = final_ratio;
         if final_ratio > 0 {
@@ -5122,7 +5144,20 @@ impl Sender {
     /// [HANDOFF ENSTRÜMANI] Son `fuzzy_evaluate` kararının anlık görüntüsü.
     #[must_use]
     pub fn diag_ts_sample(&self) -> TsSample {
-        self.diag_last_ts
+        let mut t = self.diag_last_ts;
+        t.cc_window = self.cc.as_ref().map_or(0, |c| c.window());
+        t.inflight_bytes = self.inflight_bytes;
+        t.pacer_rate_bps = self.pacer.rate();
+        t.pacer_tokens = self.pacer.tokens();
+        t.tx_queue_len = self.tx_queue.len() as u64;
+        t.btlbw_bps = self.btlbw.btlbw();
+        t.btlbw_last_full_bps = self.btlbw.last_full_bw();
+        t.btlbw_samples = self.btlbw.sample_count() as u64;
+        t.srtt_us = self
+            .rtt
+            .srtt()
+            .map_or(0, |d| u64::try_from(d.as_micros()).unwrap_or(u64::MAX));
+        t
     }
 
     /// [FEC-RISK v2 ENSTRÜMAN] `(persistent_ppm_peak, reorder_pressure_last, reorder_pressure_peak,

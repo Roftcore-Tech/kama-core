@@ -236,8 +236,12 @@ async fn run_cell(
     t_max: Duration,
     interval: Duration,
 ) -> Outcome {
+    // `CC_SHAPED_TS_MS=<ms>`: gönderici zaman serisi (uçuş tavanı / uçuş / pacer / kuyruk) örnekleme
+    // aralığı; sonunda "hat boşken gönderici neyle sınırlı" özeti basılır.
+    let ts_ms = env_u64("CC_SHAPED_TS_MS", 0);
     let cfg = RuntimeConfig {
         engine,
+        ts_sample_period_ns: (ts_ms > 0).then_some(ts_ms * 1_000_000),
         ..RuntimeConfig::default()
     };
     let server = ServerEndpoint::bind(
@@ -358,7 +362,54 @@ async fn run_cell(
         p(50),
         p(95)
     );
-    let _ = client.shutdown().await;
+    let cs = client.shutdown().await;
+    if ts_ms > 0 {
+        // Sınıflama: pencere-sınırlı (uçuş + MTU > tavan), kova-sınırlı (token < MTU), veri yok
+        // (kuyruk boş ∧ bekleyen kayıp yok), serbest (hiçbiri — gönderebilirdi).
+        let mtu = unit_bytes as u64 + 64;
+        let (mut win, mut tok, mut nodata, mut free) = (0u64, 0u64, 0u64, 0u64);
+        let mut lines = Vec::new();
+        for (t, x) in &cs.ts {
+            let w = x.cc_window > 0 && x.inflight_bytes + mtu > x.cc_window;
+            let k = x.pacer_tokens < mtu;
+            let nd = x.tx_queue_len == 0 && x.pending_lost == 0;
+            match (w, k, nd) {
+                (true, _, _) => win += 1,
+                (false, true, _) => tok += 1,
+                (false, false, true) => nodata += 1,
+                _ => free += 1,
+            }
+            if lines.len() < 2000 {
+                lines.push(format!(
+                    "TS t={:.2}s tavan={} uçuş={} pacer={}B/s token={} kuyruk={} kayıp_bekleyen={} btlbw={} son_örnek={} örnek_n={} srtt={}ms",
+                    *t as f64 / 1e9,
+                    x.cc_window,
+                    x.inflight_bytes,
+                    x.pacer_rate_bps,
+                    x.pacer_tokens,
+                    x.tx_queue_len,
+                    x.pending_lost,
+                    x.btlbw_bps,
+                    x.btlbw_last_full_bps,
+                    x.btlbw_samples,
+                    x.srtt_us / 1000
+                ));
+            }
+        }
+        if std::env::var("CC_SHAPED_TRACE").is_ok() {
+            for l in &lines {
+                println!("{l}");
+            }
+        }
+        println!(
+            "[{engine:?}] TS özeti: örnek={} pencere-sınırlı={} kova-sınırlı={} veri-yok={} serbest={}",
+            cs.ts.len(),
+            win,
+            tok,
+            nodata,
+            free
+        );
+    }
     let _ = server.shutdown().await;
     let _ = stop_tx.send(());
     let _ = relay_task.await;

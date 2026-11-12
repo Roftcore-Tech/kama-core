@@ -114,3 +114,55 @@ mod tests {
         assert_eq!(e.get_estimate(), 0);
     }
 }
+
+/// [CC-PORT manşet incelemesi 2026-11-12] quinn'in tahmincisi ↔ Kama §7.1 örnekleyicisi, pacer
+/// patlaması + ACK sıkışması altında. Hat 12,5 kB/s, 1200 B paketler; pacer iki paketi 1 ms arayla
+/// çıkarır (kova patlaması), jitter iki ACK'i 2 ms arayla getirir. quinn: örnek = min(son paketin
+/// baytı / son iki gönderim arası, son paketin baytı / son iki ACK olayı arası) = min(1,2 MB/s,
+/// 600 kB/s) = 600 kB/s (hattın 48 katı) max filtreye girer. Kama: aralık = max(ack_elapsed,
+/// send_elapsed), paketin gönderim anındaki `delivered_time`'a dayanır → örnek ≤ hat.
+///
+/// Bu fark, fork'suz quinn'in netem düzeninde (kayıp sınırlayıcıdan önce) hattı %99,9 doldurmasının
+/// kaynağıdır: şişmiş BtlBw ile hattın ~1,4 katı gönderir; düşen paketler hat süresi tüketmediği
+/// için kayıptan sağ kalanlar hattı doldurur. Port Kama örnekleyicisini kullandığından (Uyarlama 6)
+/// BtlBw ≤ hat kalır ve pacing ≈ hat → netem düzeninde doluluk ≈ 1 − p. Telsiz düzeninde (kayıp
+/// serileştirme sonrası) şişkin tahmin kuyruk ve ek yeniden iletim üretir (sim: `CC_JITTER_MS`).
+#[cfg(test)]
+mod ack_compression_contrast {
+    use super::*;
+    use crate::bw::{bw_bps, DeliveryRateSampler};
+
+    const MS: u64 = 1_000_000;
+    const LINK: u64 = 12_500;
+
+    #[test]
+    fn quinn_estimator_inflates_under_ack_compression_kama_sampler_does_not() {
+        // Gönderim: iki 1200 B paket 1 ms arayla (pacer patlaması). İlk ACK 300 ms RTT ile, ikinci
+        // ACK jitter yüzünden ilkinden yalnız 2 ms sonra (sıkışma).
+        let mut q = BandwidthEstimation::default();
+        let mut k = DeliveryRateSampler::new();
+        let s0 = 0;
+        let s1 = MS;
+        let p0 = k.on_sent(s0, 1200, false, true);
+        q.on_sent(s0, 1200);
+        let p1 = k.on_sent(s1, 1200, false, true);
+        q.on_sent(s1, 1200);
+        let a0 = s0 + 300 * MS;
+        let a1 = a0 + 2 * MS; // sıkışmış ACK
+        q.on_ack(a0, 1200, 1, false);
+        q.on_ack(a1, 1200, 1, false);
+        let r0 = k.on_ack(a0, p0);
+        let r1 = k.on_ack(a1, p1);
+        let quinn_bw = q.get_estimate();
+        let kama0 = bw_bps(r0.delivered, r0.interval);
+        let kama1 = bw_bps(r1.delivered, r1.interval);
+        assert!(
+            quinn_bw >= 40 * LINK,
+            "quinn tahmincisi sıkışmada şişer: {quinn_bw} B/s (hat {LINK})"
+        );
+        assert!(
+            kama0 <= LINK && kama1 <= LINK,
+            "Kama örnekleri hattı aşmaz: {kama0} / {kama1} B/s (hat {LINK})"
+        );
+    }
+}
