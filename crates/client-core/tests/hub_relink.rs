@@ -20,18 +20,20 @@ use std::time::{Duration, Instant};
 use client_core::hub::relink::{NoticeRoute, RelinkGovernor, RelinkOp, RELINK_SEED_LEN};
 use client_core::hub::HubNotice;
 use client_core::memory_link::MemoryHub;
-use client_core::transport::{ActiveLink, ClientTransport, ClientTransportConfig, RelinkOutcome};
+use client_core::transport::{
+    ActiveLink, ClientTransport, ClientTransportConfig, LinkAttempt, RelinkOutcome,
+};
 use kama_contracts::handles::{CloseReason, PeerRef, SessionHandle};
 use kama_contracts::s1::{
-    CompressionPolicy, ConnectResult, DeliveryPolicy, KamaTransport, PreparedUnit, SessionEvent,
-    TrafficClass, TransportError,
+    AbandonReason, CompressionPolicy, ConnectResult, DeliveryPolicy, KamaTransport, PreparedUnit,
+    SessionEvent, TrafficClass, TransportError,
 };
 use kama_contracts::s3::HubHandle;
 use kama_noise_wire::clock::ManualClock;
 use kama_noise_wire::epoch_machine::GRACE_T_G;
 use kama_noise_wire::protector::NoiseWireProtection;
 use kama_noise_wire::seam_mock::{fixture_directory, fixture_protection};
-use kama_noise_wire::session_control::{EnvelopeKind, SESSION_MAX_AGE};
+use kama_noise_wire::session_control::{EnvelopeKind, HALF_OPEN_TTL, SESSION_MAX_AGE};
 
 const ALICE: u8 = 0xA1;
 const BOB: u8 = 0xB0;
@@ -820,4 +822,262 @@ fn a_redelivered_init_does_not_move_the_responder_line() {
     let st = g.stats();
     assert_eq!((st.started, st.stale_handle_lost), (1, 0), "{st:?}");
     cut_over(&mut b, &mut a, &hub, (b0, a0));
+}
+
+// ── [T3-GLARE] niyet yolunda terk edilen INIT'in taşıyıcı tekrarı (#180 takibi) ──────────────
+//
+// `MemoryHub` T3 yapmaz; burada sınanan transport'un taşıyıcıya terk bildirimidir
+// (`EnvelopeLink::cancel_init` → `MemoryHub::cancelled_inits`). Tel üzerindeki T3 sayımı gerçek
+// `HubLink` bileşimiyle `client-core` `hub::link` testlerindedir (`link_glare_tests.rs`).
+// `MemoryHub` denemeleri gönderim sırasıyla 1'den numaralar.
+
+/// İki uç aynı anda `connect` eder: iki INIT de rölede, hiçbiri teslim edilmeden (gerçek glare;
+/// Alice'in denemesi 1, Bob'unki 2). S3 K10 / identity §16: Alice kazanır (Bob'un INIT'i sessiz
+/// düşer), Bob kaybeder (bekleyeni silinir, Alice'in INIT'ini yanıtlar; niyeti o oturumla çözülür).
+/// Olay kayıtları temizlenir.
+fn simultaneous_connect(
+    a: &mut Node,
+    b: &mut Node,
+    hub: &MemoryHub,
+) -> (SessionHandle, SessionHandle) {
+    assert!(a.me < b.me, "Alice glare'i kazanır");
+    let Ok(ConnectResult::Pending(_)) = a.t.connect(b.me, None) else {
+        panic!("Alice beklemede başlamalı");
+    };
+    let Ok(ConnectResult::Pending(_)) = b.t.connect(a.me, None) else {
+        panic!("Bob beklemede başlamalı");
+    };
+    assert_eq!(hub.relay(), 2, "iki INIT çapraz");
+    a.pump();
+    b.pump();
+    assert_eq!(hub.relay(), 1, "yalnız glare'i kaybeden (Bob) yanıtlar");
+    let b1 = b.wait_ready(a.me);
+    let a1 = a.wait_ready(b.me);
+    for n in [&mut *a, &mut *b] {
+        n.pump();
+        n.events.clear();
+        n.readies.clear();
+    }
+    (a1, b1)
+}
+
+/// (a) + (d) Glare'i kaybedenin (Bob) terk edilen niyet INIT'inin taşıyıcı tekrarı durur; kazananın
+/// (Alice) denemesi terk edilmez (eşleşen `Ready` onu durdurur). Tek oturum iki yönde veri taşır.
+///
+/// ESKİ DAVRANIŞ: `on_crypto_ready` (c) niyeti çözüyor, denemeyi terk etmiyordu (`cancelled_inits`
+/// boş) — `HubLink` üstünde Bob'un INIT'i `ATTEMPT_MAX_AGE`'e dek T3 ile tele çıkıyordu.
+#[test]
+fn glare_losers_intent_init_is_cancelled_and_one_session_carries_both_ways() {
+    let hub = MemoryHub::new();
+    let (mut a, mut b) = pair(&hub);
+    let (a1, b1) = simultaneous_connect(&mut a, &mut b, &hub);
+    assert_eq!(
+        hub.cancelled_inits(),
+        vec![LinkAttempt(2)],
+        "yalnız kaybedenin (Bob) INIT tekrarı durdu"
+    );
+    a.send(a1, b"a1").expect("gönder");
+    b.expect_delivery(b1, b"a1");
+    b.send(b1, b"b1").expect("gönder");
+    a.expect_delivery(a1, b"b1");
+    assert_eq!(a.t.renewal_state_for_test(b.me), (1, 0, 0));
+    assert_eq!(b.t.renewal_state_for_test(a.me), (1, 0, 0));
+    a.assert_no_close_or_renew_event();
+    b.assert_no_close_or_renew_event();
+}
+
+/// (b) Niyet iptali (S4 C3 "bağlantı niyeti iptal edildi"; S1 `cancel`): taşıyıcı denemesi terk
+/// edilir — handle atandıktan (`HandleAssigned`) sonra da (T3'ün `StoreResp OK`'tan sonra sürdüğü
+/// durum, KR-18). `ConnectAbandoned(Cancelled)` tek kez.
+///
+/// ESKİ DAVRANIŞ: `cancel` yalnız Crypto bekleyenini kapatıyordu (`cancelled_inits` boş).
+#[test]
+fn cancelled_intent_stops_its_init_after_its_handle_was_assigned() {
+    let hub = MemoryHub::new();
+    let (mut a, b) = pair(&hub);
+    let Ok(ConnectResult::Pending(ticket)) = a.t.connect(b.me, None) else {
+        panic!("beklemede başlamalı");
+    };
+    assert_eq!(hub.relay(), 1, "INIT → Bob (Bob yanıtlamaz)");
+    a.pump();
+    a.t.cancel(ticket);
+    a.wait_event(SessionEvent::ConnectAbandoned(
+        ticket,
+        AbandonReason::Cancelled,
+    ));
+    assert_eq!(hub.cancelled_inits(), vec![LinkAttempt(1)]);
+    a.t.cancel(ticket);
+    assert_eq!(hub.cancelled_inits().len(), 1, "ikinci iptal etkisiz");
+    a.pump();
+    assert!(
+        !a.events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::ConnectAbandoned(..))),
+        "ConnectAbandoned tek kez"
+    );
+}
+
+/// (c) Koruma: glare'siz meşru niyet terk edilmez — INIT'i yanıtlanır, `Ready` ile çözülür
+/// (taşıyıcıda tekrarı eşleşen `Ready` durdurur, `HubLink::peer_ready`).
+#[test]
+fn glare_free_intent_init_is_not_cancelled() {
+    let hub = MemoryHub::new();
+    let (mut a, mut b) = pair(&hub);
+    establish(&mut a, &mut b, &hub);
+    assert!(
+        hub.cancelled_inits().is_empty(),
+        "{:?}",
+        hub.cancelled_inits()
+    );
+}
+
+/// (e) DR-CONNECT-1 / INV-NO-IDLE-TEARDOWN gerilemesi yok: glare'le çözülen niyetin oturumu
+/// sonradan hattını kaybeder (S4 C5: `HandleLost` → `relink_line`) → yenileme INIT'i yola çıkar
+/// (terk EDİLMEZ), cutover, iki yönde veri, tek oturum. Ardından iki uç oturumu kapatır ve Alice
+/// yeniden bağlanır: yeni niyetin INIT'i de terk edilmez.
+#[test]
+fn glare_resolved_session_is_renewed_after_its_line_is_lost_and_reconnects_after_close() {
+    let hub = MemoryHub::new();
+    let (mut a, mut b) = pair(&hub);
+    let (a1, b1) = simultaneous_connect(&mut a, &mut b, &hub);
+    a.send(a1, b"a1").expect("gönder");
+    b.expect_delivery(b1, b"a1");
+    let cancelled = hub.cancelled_inits();
+    assert_eq!(cancelled.len(), 1, "glare'deki terk");
+
+    let h = line(&b, a.me);
+    assert_eq!(b.t.relink_line(a.me, h), RelinkOutcome::Started);
+    let (b2, a2) = cut_over(&mut b, &mut a, &hub, (b1, a1));
+    assert_ne!(line(&b, a.me), h, "yeni hat");
+    assert_eq!(hub.cancelled_inits(), cancelled, "yenileme terk edilmedi");
+
+    a.t.close(a2).expect("Alice kapatır");
+    b.t.close(b2).expect("Bob kapatır");
+    for n in [&mut a, &mut b] {
+        n.pump();
+        n.events.clear();
+    }
+    establish(&mut a, &mut b, &hub);
+    assert_eq!(hub.cancelled_inits(), cancelled, "yeni niyet terk edilmedi");
+}
+
+/// (e) kazanan tarafı: glare'le çözülen oturumun hattını bu kez glare'i KAZANAN (Alice; niyeti kendi
+/// INIT'inin `Ready`'siyle çözüldü, `on_crypto_ready` (b)) kaybeder → yenileme INIT'i yola çıkar
+/// (terk EDİLMEZ), cutover, iki yönde veri, tek oturum. Glare'deki tek terk kaybedenin (Bob)
+/// niyet INIT'idir.
+#[test]
+fn glare_winners_session_is_renewed_after_its_line_is_lost() {
+    let hub = MemoryHub::new();
+    let (mut a, mut b) = pair(&hub);
+    let (a1, b1) = simultaneous_connect(&mut a, &mut b, &hub);
+    a.send(a1, b"a1").expect("gönder");
+    b.expect_delivery(b1, b"a1");
+    let cancelled = hub.cancelled_inits();
+    assert_eq!(cancelled, vec![LinkAttempt(2)], "glare'deki terk: Bob'un");
+
+    let h = line(&a, b.me);
+    assert_eq!(a.t.relink_line(b.me, h), RelinkOutcome::Started);
+    let (a2, _b2) = cut_over(&mut a, &mut b, &hub, (a1, b1));
+    assert_ne!(line(&a, b.me), h, "yeni hat");
+    assert_eq!(a.t.active_session_for_test(b.me), Some(a2));
+    assert_eq!(hub.cancelled_inits(), cancelled, "yenileme terk edilmedi");
+}
+
+/// SINIR (bu PR'da DÜZELTİLMEDİ; PR "Riskler"): yenileme glare'inde (iki uç aynı anda `relink`)
+/// kaybedenin (Bob) yenilemesi glare çözülünce terk EDİLMEZ. Crypto bekleyenini olaysız siler (S3
+/// K10); transport'un tek terk noktası eşin provisional'ının onayıdır (`on_confirmed`). Kazanan
+/// (Alice) cutover'dan sonra birim göndermedikçe Bob'un yenilemesi ve taşıyıcı denemesi kayıtlı
+/// kalır (`HubLink`'te T3 `ATTEMPT_MAX_AGE`'e dek sürer; deneme bitince `AttemptEnded` →
+/// `restart_renewal`). Alice'in ilk birimi (onay) Bob'un denemesini terk ettirir ve tek oturum
+/// kalır. Kaybedenin denemesini glare anında terk eden bir değişiklik bu testin ilk bölümünü
+/// çevirir.
+#[test]
+fn renewal_glare_losers_attempt_lives_until_the_winners_first_unit() {
+    let hub = MemoryHub::new();
+    let (mut a, mut b) = pair(&hub);
+    let (a0, b0) = establish(&mut a, &mut b, &hub);
+
+    assert_eq!(a.t.relink(b.me), RelinkOutcome::Started);
+    assert_eq!(b.t.relink(a.me), RelinkOutcome::Started);
+    assert_eq!(hub.relay(), 2, "iki INIT çapraz");
+    a.pump();
+    b.pump();
+    assert_eq!(hub.relay(), 1, "yalnız glare'i kaybeden (Bob) yanıtlar");
+    let a1 = a.wait_ready(b.me);
+
+    // Alice kesti ve birim göndermiyor: Bob'daki provisional onaysız.
+    std::thread::sleep(QUIET);
+    settle(&mut a, &mut b, &hub);
+    assert!(
+        hub.cancelled_inits().is_empty(),
+        "SINIR: kaybedenin yenileme denemesi glare'de terk edilmedi: {:?}",
+        hub.cancelled_inits()
+    );
+    assert_eq!(
+        b.t.renewal_state_for_test(a.me),
+        (1, 1, 1),
+        "Bob: eski oturum etkin, sahipsiz yenileme, onaysız provisional"
+    );
+    assert_eq!(a.t.renewal_state_for_test(b.me), (1, 0, 0));
+    assert!(b.readies.is_empty(), "Bob'da Ready yok: {:?}", b.readies);
+
+    // Onay: Alice'in ilk birimi → Bob'un yenilemesi terk edilir (eşin yenilemesi yerini aldı).
+    a.send(a1, b"a1").expect("gönder");
+    let b1 = b.wait_ready(a.me);
+    b.expect_delivery(b1, b"a1");
+    assert_eq!(
+        hub.cancelled_inits(),
+        vec![LinkAttempt(3)],
+        "onayda kaybedenin (Bob) yenileme denemesi terk edildi"
+    );
+    assert_one_session(&mut a, &mut b, (a0, a1), (b0, b1));
+}
+
+/// [T3-GLARE] Crypto niyetin bekleyen INIT'ini anahtar hijyeniyle düşürür (`HALF_OPEN_TTL`,
+/// `Closed(KeyHygiene)`; DR-CONNECT-1 H11): düşen INIT'in taşıyıcı denemesi terk edilir, niyet
+/// SÜRER — aynı bilet altında taze INIT yeni bir denemeyle yola çıkar (terk edilmez), Application
+/// olay görmez. Eş (Carol) rölede kayıtlı değildir: INIT'ler teslim edilmez, niyet bekler.
+///
+/// ESKİ DAVRANIŞ: düşen INIT'in denemesi terk edilmiyordu (`cancelled_inits` boş); `HubLink`'te
+/// onu yalnız aynı eşe yeni INIT'in rastlantısal yerine geçmesi durduruyordu.
+#[test]
+fn half_open_expiry_cancels_the_dropped_init_and_the_intent_lives_on() {
+    let hub = MemoryHub::new();
+    let mut a = node(ALICE, &hub);
+    let carol = id(CAROL);
+    a.t.add_peer_addr(carol, SocketAddr::from(([127, 0, 0, 1], 9)));
+    let Ok(ConnectResult::Pending(ticket)) = a.t.connect(carol, None) else {
+        panic!("beklemede başlamalı");
+    };
+    a.pump();
+    assert!(hub.cancelled_inits().is_empty());
+    a.clock.advance(HALF_OPEN_TTL);
+    a.pump();
+    assert_eq!(
+        hub.cancelled_inits(),
+        vec![LinkAttempt(1)],
+        "düşen INIT'in tekrarı durdu"
+    );
+    assert_eq!(
+        a.t.connect(carol, None),
+        Ok(ConnectResult::Pending(ticket)),
+        "niyet sürer, bilet aynı"
+    );
+    assert_eq!(hub.relay(), 0, "Carol kayıtsız: iki INIT de rölede bekler");
+    assert_eq!(hub.unregistered_destinations(), vec![carol]);
+    assert!(
+        !a.events.iter().any(|e| matches!(
+            e,
+            SessionEvent::ConnectAbandoned(..) | SessionEvent::Closed(..)
+        )),
+        "Application olay görmez: {:?}",
+        a.events
+    );
+    a.clock.advance(HALF_OPEN_TTL);
+    a.pump();
+    assert_eq!(
+        hub.cancelled_inits(),
+        vec![LinkAttempt(1), LinkAttempt(2)],
+        "taze INIT'in denemesi de düşünce terk edildi"
+    );
 }

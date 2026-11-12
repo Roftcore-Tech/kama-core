@@ -858,6 +858,7 @@ impl NodeLoop {
             ctx_mismatch_drops: ctx.ctx_mismatch_drops,
             hub_frames_dropped: ctx.hub_frames_dropped,
             delivery_channel_drops: transport.delivery_dropped(),
+            delivery_channel_full: transport.data_not_admitted_full(),
             connect_state,
         }
     }
@@ -985,6 +986,7 @@ pub(crate) fn idle_metrics(peers: &PeerBook) -> NodeMetrics {
         ctx_mismatch_drops: 0,
         hub_frames_dropped: 0,
         delivery_channel_drops: 0,
+        delivery_channel_full: 0,
         connect_state: peers
             .iter()
             .map(|(name, _)| PeerConnectState {

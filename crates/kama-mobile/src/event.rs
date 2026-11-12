@@ -773,6 +773,10 @@ impl From<node::NodeMetrics> for NodeMetrics {
             ctx_mismatch_drops,
             hub_frames_dropped,
             delivery_channel_drops,
+            // [F4, 2026-11-11] Mobil FFI yüzeyi DEĞİŞMEZ (Kotlin bağlamaları yeniden üretilmez):
+            // dolu kanalda motora verilmeyen DATA sayacı çekirdek ölçüsünde kalır; telefona
+            // çıkarılması Aralık (ADR-15 kaba taneli yüzey).
+            delivery_channel_full: _,
             connect_state,
         } = metrics;
         Self {
@@ -922,6 +926,7 @@ mod tests {
             ctx_mismatch_drops: 2,
             hub_frames_dropped: 3,
             delivery_channel_drops: 4,
+            delivery_channel_full: 0, // [F4] mobil yüzeye taşınmaz (Aralık)
             connect_state: vec![node::PeerConnectState {
                 peer_id: "bob".to_owned(),
                 state: node::LinkState::Connecting(measuring),

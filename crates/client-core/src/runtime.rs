@@ -779,6 +779,12 @@ pub struct ServerStats {
     pub delivered: u64,
     /// Teslim kanalı doluyken düşen teslim (app drenaj sözleşmesi ihlali görünür olsun).
     pub delivery_dropped: u64,
+    /// [INV-ACK-DELIVER-1 · F4] Teslim kanalı doluyken motora VERİLMEYEN (ACK'lenmeyen) DATA
+    /// datagramı: gönderici ARQ ile yeniden iletir; ACK'lenmiş birim kaybolmaz.
+    pub data_not_admitted_full: u64,
+    /// [F4] Çözülen ama teslim kanalına giremeyen FEC kurtarımı (RECOVERED'a yazılmadı;
+    /// gönderici kaynak birimi yeniden iletir).
+    pub fec_recovered_not_admitted: u64,
     /// Peer-cap fail-closed reddi (yeni peer, tablo dolu).
     /// [K4G-01b] "Yeni peer" = yeni `(adres, SessionHandle)` yuvası.
     pub dropped_new_peers: u64,
@@ -3087,6 +3093,9 @@ pub struct ServerHandle {
     /// [`ServerHandle::delivery_dropped`]). Görev her döngü turunun başında sayacın o anki değerini
     /// buraya yazar; sayaç ve davranış değişmez.
     delivery_dropped: Arc<AtomicU64>,
+    /// [F4] [`ServerStats::data_not_admitted_full`]'ın canlı aynası (teslim kanalı doluyken motora
+    /// verilmeyen, ACK'lenmeyen DATA; bkz. [`ServerHandle::data_not_admitted_full`]).
+    data_not_admitted_full: Arc<AtomicU64>,
 }
 
 impl ServerEndpoint {
@@ -3153,6 +3162,7 @@ impl ServerEndpoint {
         // Kapasite 1 + onay-oneshot: mark_t0 görev işleyene dek bekler (ölçüm sözleşmesi).
         let (t0_tx, t0_rx) = mpsc::channel::<oneshot::Sender<()>>(1);
         let delivery_dropped = Arc::new(AtomicU64::new(0));
+        let data_not_admitted_full = Arc::new(AtomicU64::new(0));
         let task = tokio::spawn(server_task(
             sock,
             cfg,
@@ -3164,6 +3174,7 @@ impl ServerEndpoint {
             expected,
             ctx_counters.clone(),
             Arc::clone(&delivery_dropped),
+            Arc::clone(&data_not_admitted_full),
         ));
         Ok(ServerHandle {
             delivery_rx,
@@ -3173,6 +3184,7 @@ impl ServerEndpoint {
             local_addr,
             ctx_counters,
             delivery_dropped,
+            data_not_admitted_full,
         })
     }
 }
@@ -3220,6 +3232,13 @@ impl ServerHandle {
     #[must_use]
     pub fn delivery_dropped(&self) -> u64 {
         self.delivery_dropped.load(Ordering::Relaxed)
+    }
+
+    /// [F4] [`ServerStats::data_not_admitted_full`] ile AYNI sayaç, kapanışı beklemeden okunur:
+    /// teslim kanalı doluyken motora verilmeyen (ACK'lenmeyen; gönderici yeniden iletir) DATA.
+    #[must_use]
+    pub fn data_not_admitted_full(&self) -> u64 {
+        self.data_not_admitted_full.load(Ordering::Relaxed)
     }
 
     /// Kapanış → istatistik.
@@ -3315,28 +3334,42 @@ impl MsgAsm {
 }
 
 /// Teslim kanalına bir mesaj koyar (bounded; taşan teslim sayılır — app drenaj sözleşmesi).
+/// [INV-ACK-DELIVER-1 · F4] `permit`: datagram motora verilmeden ÖNCE `try_reserve` ile GERÇEKTEN
+/// ayrılmış kanal yeri (DATA yolu); `None` ise `try_send` (FEC kurtarımı gibi çok birimli yollar —
+/// yer yoksa birim kabul edilmez, çağıran bunu bildirmez/ACK'lemez).
+#[allow(clippy::too_many_arguments)]
 fn push_delivery(
     stats: &mut ServerStats,
     delivery_tx: &mpsc::Sender<Delivery>,
+    permit: Option<mpsc::Permit<'_, Delivery>>,
     peer: SocketAddr,
     ctx: ProtectionContext,
     unit_id: u64,
     payload: Vec<u8>,
     from_fec: bool,
-) {
+) -> bool {
     let d = Delivery {
         peer,
         unit_id,
         payload,
         ctx,
     };
-    if delivery_tx.try_send(d).is_ok() {
+    let ok = match permit {
+        Some(p) => {
+            p.send(d);
+            true
+        }
+        None => delivery_tx.try_send(d).is_ok(),
+    };
+    if ok {
         stats.delivered += 1;
         if from_fec {
             stats.fec_recovered_units += 1;
         }
+        true
     } else {
         stats.delivery_dropped += 1;
+        false
     }
 }
 
@@ -3350,6 +3383,7 @@ fn push_delivery(
 fn admit_chunk(
     stats: &mut ServerStats,
     delivery_tx: &mpsc::Sender<Delivery>,
+    permit: Option<mpsc::Permit<'_, Delivery>>,
     peer: SocketAddr,
     slot: &mut PeerSlot,
     frag_on: bool,
@@ -3358,28 +3392,35 @@ fn admit_chunk(
     pfx: &SourcePrefix,
     payload: &[u8],
     from_fec: bool,
-) {
+) -> bool {
     if !frag_on {
-        if !slot.delivered_seen.insert(unit_id) {
-            return; // birim çoktan teslim edildi (DATA/FEC ortak pencere)
+        if slot.delivered_seen.contains(&unit_id) {
+            return true; // birim çoktan teslim edildi (DATA/FEC ortak pencere)
         }
-        if slot.delivered_seen.len() > DELIVERED_DEDUP_WINDOW {
-            slot.delivered_seen.pop_first();
-        }
-        push_delivery(
+        // [INV-ACK-DELIVER-1 · F4] Dedup penceresine YALNIZ teslim kanalına girdikten sonra
+        // yazılır: dolu kanalda düşen birim "teslim edildi" sayılsaydı yeniden iletimi de yutulur,
+        // ACK'lenmiş birim kalıcı kaybolurdu.
+        if !push_delivery(
             stats,
             delivery_tx,
+            permit,
             peer,
             slot.ctx,
             unit_id,
             payload.to_vec(),
             from_fec,
-        );
-        return;
+        ) {
+            return false;
+        }
+        slot.delivered_seen.insert(unit_id);
+        if slot.delivered_seen.len() > DELIVERED_DEDUP_WINDOW {
+            slot.delivered_seen.pop_first();
+        }
+        return true;
     }
     let mid = u64::from(pfx.message_id);
     if slot.delivered_seen.contains(&mid) {
-        return; // mesaj çoktan teslim edildi; geç chunk'lar (retransmit/kurtarma) yutulur
+        return true; // mesaj çoktan teslim edildi; geç chunk'lar (retransmit/kurtarma) yutulur
     }
     stats.frag_chunks_rx += 1;
     let complete = {
@@ -3396,16 +3437,30 @@ fn admit_chunk(
     };
     if let Some(full) = complete {
         slot.msgs.remove(&pfx.message_id);
+        stats.msgs_reassembled += 1;
+        // [F4] Tam mesaj kanala girmezse "teslim edildi" işaretlenmez; birleştirici girdisi
+        // düştüğünden mesaj yeniden iletimle (bütün chunk'lar) yeniden toplanır.
+        if !push_delivery(
+            stats,
+            delivery_tx,
+            permit,
+            peer,
+            slot.ctx,
+            mid,
+            full,
+            from_fec,
+        ) {
+            return false;
+        }
         slot.delivered_seen.insert(mid);
         if slot.delivered_seen.len() > DELIVERED_DEDUP_WINDOW {
             slot.delivered_seen.pop_first();
         }
-        stats.msgs_reassembled += 1;
-        push_delivery(stats, delivery_tx, peer, slot.ctx, mid, full, from_fec);
     } else if slot.msgs.len() > MSG_ASM_CAP {
         slot.msgs.pop_first();
         stats.msg_asm_evicted += 1;
     }
+    true
 }
 
 /// [K4G-01b] Eş yuvası anahtarı: `(kaynak adres, SessionHandle)` — adres tek başına DEĞİL. Aynı
@@ -3471,6 +3526,27 @@ fn retire_closed_slots(peers: &mut HashMap<SlotKey, PeerSlot>, expected: &Expect
 
 /// [v1/PARAM] Per-peer pre-param hold tavanı (MAX_PREPARAM_SHARDS hizası, küçük: E≤1KB sınıfı).
 const PRE_PARAM_FEC_CAP: usize = 64;
+
+/// [v1/PARAM] FEC-shard başlığı ve sembolü yerel profile uyuyor mu (bloğun durumuna bakmayan
+/// denetim): tür yalnız `FEC_SOURCE`/`FEC_REPAIR` (§2.56: bilinmeyen codepoint fail-closed), profil
+/// kimliği, sembol boyu (E), türüne göre ESI aralığı (kaynak < K_shape, onarım < R_code_max) ve
+/// 1 ≤ k_actual ≤ K_shape (B4). FEC çerçevesinin `fec_ingest`'e giden her yolu (bind-sonrası
+/// ingest, bind-öncesi bekletme, bind'de boşaltma) bu kapıdan geçer. Neden: birleştirici aynı
+/// ESI'de ilk-geleni tutar; codec boyu ya da ESI'si aralık dışı tek sembolde bütün kümeyi reddeder
+/// ve başarısız blok korunur, yani kapıdan kaçan tek shard o bloğun kurtarımını kalıcı kapatır;
+/// yanlış profilli sembol yerel profille çözülüp yanlış kaynak üretir; bilinmeyen tür kaynak
+/// sayılıp ESI yuvasını kapar. k_actual'ın bloğun tuttuğu shard'larla tutarlılığı `fec_ingest`'te.
+fn fec_shard_fits(p: &FecProfile, h: &FecFrameHeader, symbol: &[u8]) -> bool {
+    let esi_end = match h.kind {
+        inner_kind::FEC_SOURCE => p.k_shape,
+        inner_kind::FEC_REPAIR => p.r_code_max,
+        _ => return false,
+    };
+    h.profile_id == p.profile_id
+        && symbol.len() == p.e_usize()
+        && h.esi < esi_end
+        && (1..=p.k_shape).contains(&u16::from(h.k_actual))
+}
 
 /// Mühürlü wire boyu (pacing/FEC bütçe muhasebesi). `sealed_len` yapısal olarak reddederse
 /// (çerçeve bağlamın sınırını aşıyor / oturum yok) düz boy döner: o çerçevenin `seal()`'i de AYNI
@@ -3541,8 +3617,29 @@ fn fec_ingest(
     max_message_bytes: usize,
 ) -> Vec<u16> {
     let mut recovered_esis: Vec<u16> = Vec::new();
+    let k_shape = u8::try_from(p.k_shape).unwrap_or(u8::MAX);
+    if is_repair {
+        // Tutarlılık (fail-closed, bloğa girmeden; reddedilen onarım boş blok açmaz): gerçek kaynak
+        // yalnız [0, K_actual)'da yaşar (§6), yani tutulan bir kaynağın ESI'si ≥ k_actual ise bu
+        // k_actual yanlıştır; bloğun kabul edilmiş onarımları (hepsi `asm.k`'yı taşır) başka bir
+        // k_actual söylüyorsa da. Böyle bir onarım girseydi küçük k bloğu kaynaklarıyla "tamam"
+        // sayıp silerdi ya da blok yanlış known-zero ile çözülüp yanlış kaynak teslim edilirdi.
+        let consistent = (1..=p.k_shape).contains(&u16::from(k_actual))
+            && slot.blocks.get(&block_id).is_none_or(|a| {
+                a.sources
+                    .last_key_value()
+                    .is_none_or(|(&e, _)| e < u16::from(k_actual))
+                    && (a.repairs.is_empty() || a.k == k_actual)
+            });
+        if !consistent {
+            stats.unknown_frames += 1;
+            return recovered_esis;
+        }
+    }
+    // Blok K_shape ile açılır; k'yı yalnız onarım değiştirir (FEC_SOURCE başlığındaki k_actual
+    // da DATA'daki gibi yok sayılır — otorite onarımdır).
     let asm = slot.blocks.entry(block_id).or_insert_with(|| BlockAsm {
-        k: k_actual,
+        k: k_shape,
         sources: BTreeMap::new(),
         repairs: BTreeMap::new(),
     });
@@ -3550,11 +3647,18 @@ fn fec_ingest(
         // [FAZ-2 / KALEM-1 — MODEL-A] `K_actual` OTORİTESİ REPAIR shard'ıdır: v0 telinde source
         // sembolleri DATA çerçevesiyle gider ve k_actual TAŞIMAZ (alıcı orada k_shape varsayar).
         // Repair başlığı gerçek k_actual'ı taşır (§6 NORMATİF) → blok girdisi burada düzeltilir.
-        if k_actual > 0 && usize::from(k_actual) <= p.k_shape_usize() {
-            asm.k = k_actual;
-        }
+        asm.k = k_actual;
         asm.repairs.entry(esi).or_insert(symbol);
     } else {
+        // Kaynak gerçekten var: ESI'si ≥ `asm.k` ise k'yı veren onarımlar çürümüştür (geriye
+        // dönük fail-closed): atılır, `unknown_frames`'e sayılır ve k K_shape'e döner. Böylece
+        // değişmez korunur: tutulan her kaynağın ESI'si < `asm.k`, tutulan her onarım `asm.k`'yı
+        // taşır (aksi hâlde blok yanlışlıkla "tamam" sayılır ya da codec kümeyi reddeder).
+        if esi >= u16::from(asm.k) {
+            stats.unknown_frames += asm.repairs.len() as u64;
+            asm.repairs.clear();
+            asm.k = k_shape;
+        }
         asm.sources.entry(esi).or_insert(symbol);
     }
     let (complete, ready) = {
@@ -3603,7 +3707,6 @@ fn fec_ingest(
                 // kurtarılan chunk'ı YANLIŞ birime bağlardı.
                 let k = u64::from(p.k_shape);
                 for r in recovered {
-                    recovered_esis.push(r.esi);
                     let unit_id = u64::from(block_id) * k + u64::from(r.esi);
                     let Ok(pfx) = SourcePrefix::parse(&r.bytes) else {
                         continue;
@@ -3613,13 +3716,20 @@ fn fec_ingest(
                     else {
                         continue;
                     };
+                    // RECOVERED yalnız teslim kapısına giren birimi bildirir: gönderici bildirilen
+                    // birimi iptal eder; ayrıştırılamayan (teslim edilmeyen) birim bildirilseydi
+                    // sessizce kaybolurdu. Bildirilmeyen birimi ARQ taşımaya devam eder.
                     // [S1B] Kurtarılan chunk DATA ile AYNI kapıdan geçer: fragmentasyon kapalıysa
                     // doğrudan teslim, açıksa birleştiriciye girer — yani FEC kurtarımı ÇOK
                     // PARÇALI mesajlarda da işe yarar (kurtarılan symbol'ün prefix'i mesaj
                     // kimliğini ve offset'ini zaten taşır). İlk-teslim dedup penceresi ORTAK.
-                    admit_chunk(
+                    // [INV-ACK-DELIVER-1 · F4] Teslim kanalına GİREMEYEN kurtarılmış birim
+                    // RECOVERED listesine yazılmaz: göndericinin ARQ'su kaynak birimi yeniden
+                    // iletir (kaynak seq ACK'siz kaldı), DATA olarak gelince kabul edilir.
+                    if admit_chunk(
                         stats,
                         delivery_tx,
+                        None,
                         peer,
                         slot,
                         frag_on,
@@ -3628,7 +3738,11 @@ fn fec_ingest(
                         &pfx,
                         payload,
                         true,
-                    );
+                    ) {
+                        recovered_esis.push(r.esi);
+                    } else {
+                        stats.fec_recovered_not_admitted += 1;
+                    }
                 }
                 if let Some(a) = slot.blocks.remove(&block_id) {
                     stats.fec_repairs_useful += a.repairs.len() as u64;
@@ -3669,6 +3783,7 @@ async fn server_task(
     expected: ExpectedSessions,
     ctx_counters: CtxDispatchCounters,
     delivery_dropped_seen: Arc<AtomicU64>,
+    data_not_admitted_full_seen: Arc<AtomicU64>,
 ) -> ServerStats {
     // [K4G-01 / D1 (v1.1)] HubChannel dağıtıcısı: Session durumunun hiçbirini TUTMAZ (yalnız
     // sayaç).
@@ -3703,6 +3818,7 @@ async fn server_task(
         // [K4G-11] Salt gözlem: sayacın o anki değeri yayımlanır (önceki turun bütün `continue`
         // yolları dahil). Sayaç yalnız `push_delivery`'de artar; burada okunur, değişmez.
         delivery_dropped_seen.store(stats.delivery_dropped, Ordering::Relaxed);
+        data_not_admitted_full_seen.store(stats.data_not_admitted_full, Ordering::Relaxed);
         tokio::select! {
             _ = shutdown_rx.changed() => break,
             // Ölçüm-t0 (ServerHandle::mark_t0): wire sayaçları sıfır, ALICI DURUMU KORUNUR.
@@ -3862,6 +3978,17 @@ async fn server_task(
                     // Sonrasındaki her şey — motor beslemesi, ACK, symbol ingest, teslim —
                     // ortaktır; iki ayrı kopya bakım-zamanlı ayrışma riskiydi.
                     RxFrame::Data { .. } | RxFrame::DataFrag { .. } => {
+                        // [INV-ACK-DELIVER-1 · F4] Teslim kanalında yer yoksa datagram motora
+                        // VERİLMEZ (ACK üretilmez): gönderici ARQ ile yeniden iletir. Önceki yol
+                        // motoru besleyip ACK'liyor, sonra `push_delivery` dolu kanalda düşüyordu →
+                        // ACK'lenmiş birim kalıcı kaybolur, oturum sıralayıcısı o birimi bekler.
+                        // Yer `try_reserve` ile GERÇEKTEN ayrılır (izin); bu datagramın (en çok bir)
+                        // teslimi o izinle girer, izin kullanılmazsa bırakılır. (Sahip kararı
+                        // 2026-11-11: "ACK'lenmiş birim kaybolmaz".)
+                        let Ok(permit) = delivery_tx.try_reserve() else {
+                            stats.data_not_admitted_full += 1;
+                            continue;
+                        };
                         let (unit_id, pfx, payload, body) = match parsed {
                             RxFrame::Data { unit_id, payload } => (
                                 unit_id,
@@ -3901,6 +4028,7 @@ async fn server_task(
                             admit_chunk(
                                 &mut stats,
                                 &delivery_tx,
+                                Some(permit),
                                 peer,
                                 slot,
                                 frag_on,
@@ -3973,7 +4101,11 @@ async fn server_task(
                         // ALMAZ, bekletilir; bind'de drain edilir. (Düşürme yarış-duyarlıydı:
                         // repair yeniden-üretilmediğinden kurtarım kalıcı kaybolurdu — CI'da yakalandı.)
                         if !slot.param.is_confirmed() {
-                            if slot.pre_param_fec.len() < PRE_PARAM_FEC_CAP {
+                            if !fec_shard_fits(p, &h, symbol) {
+                                // Uyumsuz shard bekletme yuvası ALMAZ (bind-sonrası dalla aynı
+                                // kapı ve sayaç); ACK'i aşağıda yine verilir.
+                                stats.unknown_frames += 1;
+                            } else if slot.pre_param_fec.len() < PRE_PARAM_FEC_CAP {
                                 slot.pre_param_fec.push((h, symbol.to_vec()));
                             } else {
                                 stats.fec_pre_param_dropped += 1; // taşan düşer (bounded).
@@ -4003,7 +4135,7 @@ async fn server_task(
                             }
                             continue;
                         }
-                        if h.profile_id != p.profile_id || symbol.len() != p.e_usize() {
+                        if !fec_shard_fits(p, &h, symbol) {
                             stats.unknown_frames += 1; // profil/symbol uyumsuz — fail-closed.
                             continue;
                         }
@@ -4091,6 +4223,11 @@ async fn server_task(
                                 // RECOVERED ile bildirilir).
                                 if let Some(p) = fec.as_ref() {
                                     for (fh, sym) in std::mem::take(&mut slot.pre_param_fec) {
+                                        // Bekletmede elendi; `fec_ingest` girişi yine aynı kapı.
+                                        if !fec_shard_fits(p, &fh, &sym) {
+                                            stats.unknown_frames += 1;
+                                            continue;
+                                        }
                                         let is_rep = fh.kind == inner_kind::FEC_REPAIR;
                                         let rec = fec_ingest(
                                             &mut stats,
@@ -4376,8 +4513,9 @@ mod delivery_dropped_mirror_tests {
     use super::*;
     use crate::seam::IdentitySeam;
 
-    /// Beklenen sayaç değerinin üst süre sınırı.
-    const WAIT: Duration = Duration::from_secs(20);
+    /// Beklenen sayaç değerinin üst süre sınırı (F4 sonrası: düşme beklenmez; bu süre boyunca
+    /// sıfır kalmalı — 20 s yerine 2 s, test süresi).
+    const WAIT: Duration = Duration::from_secs(2);
     /// Yoklama adımı.
     const TICK: Duration = Duration::from_millis(5);
     /// Taşırılan teslim kanalının kapasitesi (en küçük geçerli değer).
@@ -4396,9 +4534,11 @@ mod delivery_dropped_mirror_tests {
         done()
     }
 
-    /// Teslimler BİLEREK drenaj edilmez: kanala ilk birim girer, kalan `UNITS − 1` birim sayılarak
-    /// düşer (her birim ilk teslimde tam bir kez `push_delivery`'ye gelir). Ayna bu değere
-    /// kapanıştan ÖNCE ulaşır ve kapanış istatistiğiyle aynıdır.
+    /// Teslimler BİLEREK drenaj edilmez: kanala ilk birim girer; kalan birimler
+    /// [INV-ACK-DELIVER-1 · F4] gereği motora VERİLMEZ (ACK yok, `data_not_admitted_full`
+    /// sayılır) — düşmezler. Ayna kapanıştan önce ve sonra aynı sayaçtır (0): eski davranış
+    /// (`UNITS − 1` düşme) sahip kararıyla (2026-11-11, "ACK'lenmiş birim kaybolmaz") değişti;
+    /// kanal doluyken ACK'lenip düşen birim artık yok.
     #[tokio::test(flavor = "multi_thread")]
     async fn live_value_equals_the_overflow_counter_before_shutdown() {
         let server = ServerEndpoint::bind(
@@ -4424,19 +4564,30 @@ mod delivery_dropped_mirror_tests {
                 .send(format!("taşma-{i}").into_bytes())
                 .expect("offer");
         }
-        let expected = UNITS - TINY_QUEUE as u64;
+        // Kanal dolana dek bekle: ilk birim teslim kanalına girer, sonrakiler motora verilmez.
+        // (Gözlem: kapanış istatistiği `data_not_admitted_full`; canlı ayna düşme sayacıdır.)
+        // `wait_until` burada hiç doğrulanmaz (düşme beklenmiyor); üst sınır süre kadar beklenir.
         assert!(
-            wait_until(|| server.delivery_dropped() == expected).await,
-            "canlı değer kapanıştan önce {expected} olmalı, gelen {}",
+            !wait_until(|| server.delivery_dropped() > 0).await,
+            "F4: dolu kanalda ACK'lenip düşen birim YOK (canlı ayna), gelen {}",
             server.delivery_dropped()
+        );
+        assert_eq!(
+            server.delivery_dropped(),
+            0,
+            "F4: dolu kanalda ACK'lenip düşen birim YOK (canlı ayna)"
         );
         client.shutdown().await;
         let stats = server.shutdown().await;
         assert_eq!(
-            stats.delivery_dropped, expected,
+            stats.delivery_dropped, 0,
             "erişimci ve kapanış istatistiği aynı sayaçtır: {stats:?}"
         );
         assert_eq!(stats.delivered, TINY_QUEUE as u64, "{stats:?}");
+        assert!(
+            stats.data_not_admitted_full >= UNITS - TINY_QUEUE as u64,
+            "kanal doluyken motora verilmeyen DATA sayıldı: {stats:?}"
+        );
     }
 }
 
@@ -4712,5 +4863,610 @@ mod live_diag_mirror_tests {
                 assert_eq!(live, ClientLiveDiag::default());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod pre_param_fec_guard_tests {
+    //! [v1/PARAM] Bind-öncesi FEC bekletmesinin profil/boy kapısı. Kapı eskiden yalnız bind-sonrası
+    //! daldaydı; bind-öncesi gelen shard denetimsiz bekletilip bind'de denetimsiz `fec_ingest`'e
+    //! boşaltılıyordu. Sonuç: (i) yanlış boylu tek shard bloğa girer, birleştirici aynı ESI'de
+    //! ilk-geleni tutar, codec boyu uymayan tek sembolde bütün kümeyi reddeder (`SymbolLen`) ve
+    //! başarısız blok korunur → o bloğun FEC kurtarımı kalıcı kapanır; (ii) yanlış profilli shard
+    //! yerel profille çözülür → yanlış kaynak; (iii) bu shard'lar `PRE_PARAM_FEC_CAP` yuvalarını
+    //! tüketip geçerli shard'ları taşırır. Kötü shard bind-öncesi yine ACK'lenir (bugünkü davranış).
+    //!
+    //! Aynı aileden, iki yolda da açık olanlar: bilinmeyen tür kaynak sayılıyordu; aralık dışı ESI
+    //! codec'te bütün kümeyi reddettiriyordu; k_actual tutulan shard'larla çelişebiliyordu (blok
+    //! "tamam" sayılıp siliniyor ya da yanlış known-zero ile çözülüp yanlış yük teslim ediliyordu);
+    //! ayrıştırılamayan kurtarılmış kaynak teslim edilmediği hâlde RECOVERED'da bildiriliyordu.
+    //!
+    //! DÜZENEK: gerçek sunucu görevi (UDP loopback, `IdentitySeam`); karşı uç HAM eştir: çerçeveleri
+    //! test kurar, mühürler ve sırayla yollar. Blok 0'ın kaynak birimi 0 hiç yollanmaz; 1..K−1 DATA
+    //! ile, onarım ESI 1 FEC ile gelir → birim 0 yalnız FEC çözümüyle teslim edilebilir. Sıra
+    //! iddiası ACK bariyerine dayanır (bind-öncesi bütün PN'ler ACK'lenmeden PARAM yollanmaz);
+    //! süreler yalnız beklenen olayın üst sınırıdır.
+
+    use super::*;
+    use crate::seam::IdentitySeam;
+    use std::collections::BTreeSet;
+
+    const S: ProtectionContext = ProtectionContext::Session(IdentitySeam::SESSION);
+    /// Beklenen olayın (ACK, PARAM_ACK, teslim, RECOVERED) üst süre sınırı.
+    const WAIT: Duration = Duration::from_secs(10);
+    /// Hedef blok.
+    const BLOCK: u32 = 0;
+    /// Hedef bloğun hiç yollanmayan kaynak birimi (ESI 0).
+    const MISSING: u64 = 0;
+    /// Kötü shard'ların blok 0'dan ayrı bloğu (yuva tüketimi vakası blok 0'ı zehirlemesin).
+    const OTHER_BLOCK: u32 = 1;
+
+    fn profile() -> FecProfile {
+        by_id(KamaV1Profile::FEC_PROFILE_ID).expect("ürün profili katalogda")
+    }
+
+    fn k_actual(p: &FecProfile) -> u8 {
+        u8::try_from(p.k_shape).expect("k_shape u8'e sığar")
+    }
+
+    fn payload(unit: u64) -> Vec<u8> {
+        format!("on-param-{unit}").into_bytes()
+    }
+
+    /// Sunucunun 0x00 DATA için türettiği canonical source-symbol'ün aynısı.
+    fn source_symbol(p: &FecProfile, unit: u64) -> Vec<u8> {
+        let body = payload(unit);
+        let pfx = SourcePrefix {
+            message_id: (unit & 0xFFFF_FFFF) as u32,
+            chunk_offset: 0,
+            actual_payload_len: u16::try_from(body.len()).expect("kısa yük"),
+            source_flags: 0,
+        };
+        let mut sym = vec![0u8; p.e_usize()];
+        pfx.serialize_symbol(&body, &mut sym).expect("symbol");
+        sym
+    }
+
+    /// Blok 0'ın gerçek kaynak sembolleri (ESI 0..K).
+    fn block_sources(p: &FecProfile) -> Vec<Vec<u8>> {
+        let k = u64::from(p.k_shape);
+        (0..k)
+            .map(|i| source_symbol(p, u64::from(BLOCK) * k + i))
+            .collect()
+    }
+
+    /// Verilen K kaynak sembolünden (ESI 0..K) onarım sembolü.
+    fn repair_of(p: &FecProfile, sources: &[Vec<u8>], esi: u16) -> Vec<u8> {
+        let src: Vec<SourceSymbol<'_>> = sources
+            .iter()
+            .zip(0u16..)
+            .map(|(b, esi)| SourceSymbol { esi, bytes: b })
+            .collect();
+        RsSimdCodec
+            .encode(p, &src)
+            .expect("encode")
+            .into_iter()
+            .find(|r| r.esi == esi)
+            .expect("onarım ESI'si profilde")
+            .bytes
+    }
+
+    /// Blok 0'ın gerçek onarım sembolü.
+    fn repair_symbol(p: &FecProfile, esi: u16) -> Vec<u8> {
+        repair_of(p, &block_sources(p), esi)
+    }
+
+    /// Boyu doğru, içeriği anlamsız sembol.
+    fn garbage(p: &FecProfile) -> Vec<u8> {
+        vec![0x5Au8; p.e_usize()]
+    }
+
+    fn fec_frame(
+        kind: u8,
+        profile_id: u8,
+        block_id: u32,
+        esi: u16,
+        k: u8,
+        symbol: &[u8],
+    ) -> Vec<u8> {
+        encode_fec(
+            &FecFrameHeader {
+                kind,
+                profile_id,
+                block_id,
+                esi,
+                k_actual: k,
+                seq: 0,
+            },
+            symbol,
+        )
+    }
+
+    fn repair_frame(profile_id: u8, block_id: u32, esi: u16, k: u8, symbol: &[u8]) -> Vec<u8> {
+        fec_frame(inner_kind::FEC_REPAIR, profile_id, block_id, esi, k, symbol)
+    }
+
+    /// Blok 0'ın ESI `esi` kaynak birimi (0x00 DATA).
+    fn data_frame(p: &FecProfile, esi: u64) -> Vec<u8> {
+        let unit = u64::from(BLOCK) * u64::from(p.k_shape) + esi;
+        encode_data(0, unit, &payload(unit))
+    }
+
+    /// Blok 0'ın geçerli onarımı (ESI 1) ve kaynaklar 1..K−1 (DATA): birim 0 yalnız FEC ile gelir.
+    fn standard_block(p: &FecProfile) -> Vec<Vec<u8>> {
+        let mut v = vec![repair_frame(
+            p.profile_id,
+            BLOCK,
+            1,
+            k_actual(p),
+            &repair_symbol(p, 1),
+        )];
+        v.extend((1..u64::from(p.k_shape)).map(|esi| data_frame(p, esi)));
+        v
+    }
+
+    /// Profil kapısının her sınıfından bir kötü shard (hepsi `block_id`'de; boyu doğru olanların
+    /// içeriği anlamsız): boş, E−1, E+1, yanlış profil, bilinmeyen tür, aralık dışı onarım ESI'si,
+    /// aralık dışı kaynak ESI'si, K_shape'i aşan k_actual.
+    fn header_class_bad_shards(p: &FecProfile, block_id: u32) -> Vec<Vec<u8>> {
+        let e = p.e_usize();
+        let k = k_actual(p);
+        let pid = p.profile_id;
+        vec![
+            repair_frame(pid, block_id, 0, k, &[]),
+            repair_frame(pid, block_id, 1, k, &vec![0x11u8; e - 1]),
+            repair_frame(pid, block_id, 2, k, &vec![0x22u8; e + 1]),
+            repair_frame(pid.wrapping_add(1), block_id, 3, k, &vec![0x33u8; e]),
+            fec_frame(0x77, pid, block_id, 0, k, &garbage(p)),
+            repair_frame(pid, block_id, p.r_code_max, k, &garbage(p)),
+            fec_frame(
+                inner_kind::FEC_SOURCE,
+                pid,
+                block_id,
+                p.k_shape,
+                k,
+                &garbage(p),
+            ),
+            repair_frame(pid, block_id, 0, k + 1, &garbage(p)),
+        ]
+    }
+
+    /// Ham karşı uç: tek UDP soketi + kendi `IdentitySeam`'i (PN'i o sayar).
+    struct RawPeer {
+        sock: UdpSocket,
+        server: SocketAddr,
+        seam: IdentitySeam,
+        next_pn: u64,
+        acked: BTreeSet<u64>,
+        param_acked: bool,
+        recovered: Vec<(u32, Vec<u16>)>,
+    }
+
+    impl RawPeer {
+        async fn new(server: SocketAddr) -> Self {
+            Self {
+                sock: UdpSocket::bind("127.0.0.1:0").await.expect("UDP soketi"),
+                server,
+                seam: IdentitySeam::new(),
+                next_pn: 0,
+                acked: BTreeSet::new(),
+                param_acked: false,
+                recovered: Vec::new(),
+            }
+        }
+
+        /// Çerçeveyi mühürler ve yollar; datagramın PN'ini döner.
+        async fn send(&mut self, frame: &[u8]) -> u64 {
+            let sealed = self.seam.seal(S, frame).expect("seal");
+            let pn = sealed.meta.full_wire_pn;
+            self.next_pn = pn + 1;
+            self.sock
+                .send_to(&sealed.bytes, self.server)
+                .await
+                .expect("send");
+            pn
+        }
+
+        /// Çerçeveleri sırayla yollar; PN'lerini döner.
+        async fn send_all(&mut self, frames: &[Vec<u8>]) -> Vec<u64> {
+            let mut pns = Vec::with_capacity(frames.len());
+            for f in frames {
+                pns.push(self.send(f).await);
+            }
+            pns
+        }
+
+        /// Sıra bariyeri: `pns`'in hepsi ACK'lenmeli (sunucu datagramları sırayla işler).
+        async fn await_acked(&mut self, pns: &[u64]) {
+            let ok = self
+                .pump_until(|s| pns.iter().all(|pn| s.acked.contains(pn)))
+                .await;
+            assert!(
+                ok,
+                "her datagram ACK'lenmeli: beklenen {pns:?} · ACK'li: {:?}",
+                self.acked
+            );
+        }
+
+        /// PARAM → PARAM_ACK (bind; bekletilen shard'lar aynı adımda boşaltılır).
+        async fn bind(&mut self, p: &FecProfile) {
+            let Control::ParamSet { param_hash, .. } =
+                plan_param_bootstrap(1, &param_fields_for(p))
+                    .expect("PARAM planı")
+                    .control
+            else {
+                panic!("PARAM planı ParamSet olmalı");
+            };
+            self.send(&encode_param(p.profile_id, p.code_suite_id, &param_hash))
+                .await;
+            assert!(
+                self.pump_until(|s| s.param_acked).await,
+                "PARAM_ACK gelmedi"
+            );
+        }
+
+        /// Sunucudan gelenleri (`ACK`, `PARAM_ACK`, `RECOVERED`) `done` sağlanana dek işler; üst
+        /// sınır `WAIT`. Koşul sağlandıysa `true`.
+        async fn pump_until(&mut self, done: impl Fn(&Self) -> bool) -> bool {
+            let deadline = tokio::time::Instant::now() + WAIT;
+            let mut buf = vec![0u8; 2048];
+            while !done(self) {
+                let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if left.is_zero() {
+                    return false;
+                }
+                let Ok(Ok((n, _))) =
+                    tokio::time::timeout(left, self.sock.recv_from(&mut buf)).await
+                else {
+                    continue;
+                };
+                let Some(od) = self.seam.open(&buf[..n]) else {
+                    continue;
+                };
+                if let Ok(ack) = AckFrame::decode(&od.frame) {
+                    self.acked.extend(ack.acked_full(self.next_pn));
+                } else if decode_param_ack(&od.frame).is_some() {
+                    self.param_acked = true;
+                } else if let Some(r) = decode_recovered(&od.frame) {
+                    self.recovered.push(r);
+                }
+            }
+            true
+        }
+    }
+
+    struct Outcome {
+        stats: ServerStats,
+        /// Birim 0'ın teslim edilen yükü (`WAIT` içinde teslim yoksa `None`).
+        unit0: Option<Vec<u8>>,
+        bad_pns: Vec<u64>,
+        acked: BTreeSet<u64>,
+        recovered: Vec<(u32, Vec<u16>)>,
+    }
+
+    async fn start() -> (ServerHandle, RawPeer) {
+        let server = ServerEndpoint::bind(
+            "127.0.0.1:0".parse().expect("adres"),
+            RuntimeConfig::default(),
+            Box::new(IdentitySeam::new()),
+        )
+        .await
+        .expect("server bind");
+        let peer = RawPeer::new(server.local_addr()).await;
+        (server, peer)
+    }
+
+    /// Birim 0'ın teslimini bekler (`WAIT` üst sınırı); teslim olduysa RECOVERED'ı da bekler;
+    /// sunucuyu kapatır.
+    async fn finish(mut server: ServerHandle, mut peer: RawPeer, bad_pns: Vec<u64>) -> Outcome {
+        let unit0 = tokio::time::timeout(WAIT, async {
+            while let Some(d) = server.next_delivery().await {
+                if d.unit_id == MISSING {
+                    return Some(d.payload);
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten();
+        if unit0.is_some() {
+            // Kurtarım bildirimi teslimden sonra yollanır; yalnız teslim olduysa beklenir.
+            let _ = peer.pump_until(|s| !s.recovered.is_empty()).await;
+        }
+        let stats = server.shutdown().await;
+        Outcome {
+            stats,
+            unit0,
+            bad_pns,
+            acked: peer.acked,
+            recovered: peer.recovered,
+        }
+    }
+
+    /// Bind-öncesi `pre` sırayla yollanır (ilk `n_bad` tanesi kötü shard); bariyer: hepsi
+    /// ACK'lenir. Sonra PARAM → PARAM_ACK (bind + boşaltma) → birim 0'ın teslimi beklenir.
+    async fn run_pre(pre: &[Vec<u8>], n_bad: usize) -> Outcome {
+        let (server, mut peer) = start().await;
+        let pns = peer.send_all(pre).await;
+        peer.await_acked(&pns).await;
+        peer.bind(&profile()).await;
+        finish(server, peer, pns[..n_bad].to_vec()).await
+    }
+
+    /// Bind-öncesi: `bad` çerçeveleri, ardından blok 0'ın geçerli onarımı (ESI 1) ve kaynaklar
+    /// 1..K−1 (DATA).
+    async fn run(bad: &[Vec<u8>]) -> Outcome {
+        let mut pre = bad.to_vec();
+        pre.extend(standard_block(&profile()));
+        run_pre(&pre, bad.len()).await
+    }
+
+    /// Ortak sonuç: blok 0 çözülür, birim 0 doğru yükle teslim edilir ve kurtarım bildirilir; kötü
+    /// shard'lar bind-sonrası dalın sayacıyla (`unknown_frames`) sayılır, bekletmeden taşma yok.
+    fn assert_block_decodes(o: &Outcome, bad: usize) {
+        assert_eq!(
+            o.unit0.as_deref(),
+            Some(payload(MISSING).as_slice()),
+            "birim 0 FEC çözümüyle doğru yükle teslim edilmeli: {:?}",
+            o.stats
+        );
+        assert_eq!(o.stats.fec_blocks_decoded, 1, "{:?}", o.stats);
+        assert_eq!(o.stats.fec_decode_failures, 0, "{:?}", o.stats);
+        assert_eq!(o.stats.fec_pre_param_dropped, 0, "{:?}", o.stats);
+        assert_eq!(o.stats.unknown_frames, bad as u64, "{:?}", o.stats);
+        assert_eq!(o.stats.param_bound_peers, 1, "{:?}", o.stats);
+        assert!(
+            o.recovered.contains(&(BLOCK, vec![0])),
+            "RECOVERED blok 0 · ESI 0 bildirilmeli: {:?}",
+            o.recovered
+        );
+    }
+
+    /// Bind-öncesi boş gövdeli onarım (blok 0 · ESI 0) bloğu kalıcı kapatmamalı.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wrong_length_shard_before_param_does_not_block_decode() {
+        let p = profile();
+        let bad = vec![repair_frame(p.profile_id, BLOCK, 0, k_actual(&p), &[])];
+        let o = run(&bad).await;
+        assert_block_decodes(&o, bad.len());
+    }
+
+    /// Bind-öncesi yanlış profil kimlikli (boyu doğru) onarım yerel profille çözülmemeli.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wrong_profile_shard_before_param_does_not_block_decode() {
+        let p = profile();
+        let other = p.profile_id.wrapping_add(1);
+        let bad = vec![repair_frame(other, BLOCK, 0, k_actual(&p), &garbage(&p))];
+        let o = run(&bad).await;
+        assert_block_decodes(&o, bad.len());
+    }
+
+    /// `PRE_PARAM_FEC_CAP` kadar kötü shard (başka blokta) bekletme yuvası almamalı: ardından gelen
+    /// geçerli onarım taşmadan bekletilir ve blok 0'ı çözer.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wrong_shards_do_not_take_pre_param_hold_slots() {
+        let p = profile();
+        let one = repair_frame(p.profile_id, OTHER_BLOCK, 0, k_actual(&p), &[]);
+        let bad = vec![one; PRE_PARAM_FEC_CAP];
+        let o = run(&bad).await;
+        assert_block_decodes(&o, bad.len());
+    }
+
+    /// Kötü shard bind-öncesi yine ACK'lenir (PN işgal edildi; bugünkü ACK davranışı korunur):
+    /// profil kapısının her sınıfı (boş, E−1, E+1, yanlış profil, bilinmeyen tür, aralık dışı
+    /// onarım/kaynak ESI'si, K_shape'i aşan k_actual).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wrong_shards_before_param_are_still_acked() {
+        let p = profile();
+        let bad = header_class_bad_shards(&p, OTHER_BLOCK);
+        let o = run(&bad).await;
+        assert!(
+            o.bad_pns.iter().all(|pn| o.acked.contains(pn)),
+            "kötü shard PN'leri ACK'lenmeli: kötü {:?} · ACK'li {:?}",
+            o.bad_pns,
+            o.acked
+        );
+        assert_block_decodes(&o, bad.len());
+    }
+
+    /// Bind-öncesi bilinmeyen türlü (0x77) shard kaynak sayılıp blok 0'ın ESI 0 yuvasını kapmamalı
+    /// (§2.56: bilinmeyen codepoint fail-closed). Eskiden kaynak sayılıyor, K kaynakla blok
+    /// "tamam" sayılıp siliniyordu.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unknown_kind_shard_does_not_take_a_source_slot() {
+        let p = profile();
+        let bad = vec![fec_frame(
+            0x77,
+            p.profile_id,
+            BLOCK,
+            0,
+            k_actual(&p),
+            &garbage(&p),
+        )];
+        let o = run(&bad).await;
+        assert_block_decodes(&o, bad.len());
+    }
+
+    /// Bind-öncesi aralık dışı ESI'li onarım (ESI = R_code_max) bloğa girmemeli: codec bütün kümeyi
+    /// `EsiOutOfRange` ile reddeder, başarısız blok korunur → kurtarım kalıcı kapanırdı.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn out_of_range_repair_esi_does_not_block_decode() {
+        let p = profile();
+        let bad = vec![repair_frame(
+            p.profile_id,
+            BLOCK,
+            p.r_code_max,
+            k_actual(&p),
+            &garbage(&p),
+        )];
+        let o = run(&bad).await;
+        assert_block_decodes(&o, bad.len());
+    }
+
+    /// Bind-öncesi aralık dışı ESI'li kaynak (ESI = K_shape) bloğa girmemeli: K kaynak sayılıp blok
+    /// "tamam" diye silinirdi.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn out_of_range_source_esi_does_not_complete_the_block() {
+        let p = profile();
+        let bad = vec![fec_frame(
+            inner_kind::FEC_SOURCE,
+            p.profile_id,
+            BLOCK,
+            p.k_shape,
+            k_actual(&p),
+            &garbage(&p),
+        )];
+        let o = run(&bad).await;
+        assert_block_decodes(&o, bad.len());
+    }
+
+    /// Bind-öncesi K_shape'i aşan k_actual'lı onarım (B4 ihlali) bloğa girmemeli.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn k_actual_above_k_shape_is_rejected() {
+        let p = profile();
+        let bad = vec![repair_frame(
+            p.profile_id,
+            BLOCK,
+            0,
+            k_actual(&p) + 1,
+            &garbage(&p),
+        )];
+        let o = run(&bad).await;
+        assert_block_decodes(&o, bad.len());
+    }
+
+    /// Tutulan kaynakların çürüttüğü k_actual (kaynak 1..K−1 tutulurken k_actual = 1) bloğu "tamam"
+    /// sayıp kaynaklarıyla silmemeli: gerçek kaynak yalnız [0, K_actual)'da yaşar (§6).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn k_actual_refuted_by_held_sources_is_rejected() {
+        let p = profile();
+        let bad = vec![repair_frame(
+            p.profile_id,
+            BLOCK,
+            0,
+            1,
+            &repair_symbol(&p, 0),
+        )];
+        let o = run(&bad).await;
+        assert_block_decodes(&o, bad.len());
+    }
+
+    /// Bloğun kabul edilmiş onarımlarından farklı k_actual taşıyan onarım bloğa girmemeli; aksi hâlde
+    /// k değişir ve blok yanlış known-zero ile çözülür. Düzen: kaynak 1..K−2 (birim 0 ve K−1 yok),
+    /// onarım 0 (k = K), kötü onarım 1 (k = K−1; tutulan en büyük kaynak ESI'si K−2 < K−1, yani
+    /// kaynaklar bunu çürütmez), onarım 2 (k = K).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn k_actual_conflicting_with_accepted_repairs_is_rejected() {
+        let p = profile();
+        let k = k_actual(&p);
+        let pid = p.profile_id;
+        let last = u64::from(p.k_shape) - 1;
+        let mut pre = vec![
+            repair_frame(pid, BLOCK, 0, k, &repair_symbol(&p, 0)),
+            repair_frame(pid, BLOCK, 1, k - 1, &repair_symbol(&p, 1)),
+            repair_frame(pid, BLOCK, 2, k, &repair_symbol(&p, 2)),
+        ];
+        pre.extend((1..last).map(|esi| data_frame(&p, esi)));
+        let o = run_pre(&pre, 0).await;
+        assert_eq!(
+            o.unit0.as_deref(),
+            Some(payload(MISSING).as_slice()),
+            "birim 0 FEC çözümüyle doğru yükle teslim edilmeli: {:?}",
+            o.stats
+        );
+        assert_eq!(o.stats.fec_blocks_decoded, 1, "{:?}", o.stats);
+        assert_eq!(o.stats.fec_decode_failures, 0, "{:?}", o.stats);
+        assert_eq!(o.stats.unknown_frames, 1, "{:?}", o.stats);
+        let last_esi = u16::try_from(last).expect("ESI u16");
+        assert!(
+            o.recovered.contains(&(BLOCK, vec![0, last_esi])),
+            "RECOVERED blok 0 · ESI 0 ve {last_esi} bildirilmeli: {:?}",
+            o.recovered
+        );
+    }
+
+    /// Bind-sonrası: kaynak, bloğun kabul edilmiş onarım k'sını çürütürse (gelen kaynağın ESI'si
+    /// ≥ k) o onarımlar geçersizdir, atılır ve k K_shape'e döner; blok sonra geçerli onarımla
+    /// doğru çözülür. Sıra ACK bariyerleriyle: kötü onarım (k = 2) → kaynak K−1 (çürütür) →
+    /// kaynaklar 1..K−2 → geçerli onarım 1.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn source_refuting_repair_k_discards_those_repairs() {
+        let p = profile();
+        let pid = p.profile_id;
+        let last = u64::from(p.k_shape) - 1;
+        let (server, mut peer) = start().await;
+        peer.bind(&p).await;
+        let bad = peer
+            .send_all(&[repair_frame(pid, BLOCK, 0, 2, &garbage(&p))])
+            .await;
+        peer.await_acked(&bad).await;
+        let refute = peer.send_all(&[data_frame(&p, last)]).await;
+        peer.await_acked(&refute).await;
+        let rest: Vec<Vec<u8>> = (1..last).map(|esi| data_frame(&p, esi)).collect();
+        let rest = peer.send_all(&rest).await;
+        peer.await_acked(&rest).await;
+        peer.send_all(&[repair_frame(
+            pid,
+            BLOCK,
+            1,
+            k_actual(&p),
+            &repair_symbol(&p, 1),
+        )])
+        .await;
+        let o = finish(server, peer, bad).await;
+        assert_block_decodes(&o, 1);
+    }
+
+    /// Bind-sonrası profil kapısına takılan shard ACK'lenmeden reddedilir (bind-sonrası dalın
+    /// bugünkü profil/boy reddiyle aynı yol) ve blok 0'ı bozmaz.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wrong_shards_after_param_are_rejected_unacked() {
+        let p = profile();
+        let (server, mut peer) = start().await;
+        peer.bind(&p).await;
+        let bad = peer.send_all(&header_class_bad_shards(&p, BLOCK)).await;
+        let good = peer.send_all(&standard_block(&p)).await;
+        // Sunucu sırayla işler: sonraki geçerli PN'ler ACK'lendiyse kötüler de işlendi.
+        peer.await_acked(&good).await;
+        let o = finish(server, peer, bad).await;
+        assert!(
+            o.bad_pns.iter().all(|pn| !o.acked.contains(pn)),
+            "bind-sonrası kötü shard ACK'lenmemeli: kötü {:?} · ACK'li {:?}",
+            o.bad_pns,
+            o.acked
+        );
+        assert_block_decodes(&o, o.bad_pns.len());
+    }
+
+    /// Çözülen kaynak ayrıştırılamıyorsa (teslim edilmez) RECOVERED'da bildirilmemeli: gönderici
+    /// RECOVERED'daki birimi iptal eder; teslim edilmemiş birim böylece sessizce kaybolurdu.
+    /// Bildirilmeyen birimi ARQ taşımaya devam eder. Düzen: birim 0'ın kaynak sembolü ayrılmış
+    /// bayrakları dolu ve boy tavanını aşan bir dizi (0xFF…) iken üretilmiş geçerli onarım.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn undeliverable_recovered_source_is_not_reported() {
+        let p = profile();
+        let mut sources = block_sources(&p);
+        sources[0] = vec![0xFFu8; p.e_usize()];
+        let mut pre = vec![repair_frame(
+            p.profile_id,
+            BLOCK,
+            1,
+            k_actual(&p),
+            &repair_of(&p, &sources, 1),
+        )];
+        pre.extend((1..u64::from(p.k_shape)).map(|esi| data_frame(&p, esi)));
+        let (server, mut peer) = start().await;
+        let pns = peer.send_all(&pre).await;
+        peer.await_acked(&pns).await;
+        // Boşaltma PARAM_ACK'le aynı adımda koşar; görev kapanışı o adımdan sonra işlenir.
+        peer.bind(&p).await;
+        let stats = server.shutdown().await;
+        assert_eq!(stats.fec_blocks_decoded, 1, "blok çözülmeli: {stats:?}");
+        assert_eq!(stats.fec_recovered_units, 0, "{stats:?}");
+        assert_eq!(
+            stats.fec_recovered_ctrl_tx, 0,
+            "teslim edilmeyen birim RECOVERED'a girmemeli: {stats:?}"
+        );
     }
 }
