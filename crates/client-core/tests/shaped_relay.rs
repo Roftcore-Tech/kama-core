@@ -495,10 +495,11 @@ async fn shaped_relay_measure() {
 }
 
 /// [ASİMETRİK-YOL] Kalıcı kapı — saha koşulu: ileri 12,5 kB/s, dönüş 62 B/s (yukarı yön ≈ 0,5 kbit/s),
-/// tek yön 300 ms, %20 ileri kayıp, 40 × 1000 B. Yön hızları verilmezse port motoru bu hücrede 56–72 s
-/// sürüyor ve dönüşe 3,7–4,8 kB ACK basıyor: ACK'ler 62 B/s hatta sıra bekliyor, gönderici ACK-saatli
-/// döngüde yakınsamıyor. Yön hızlarıyla (alıcı ACK bütçesi + yol ilk penceresi) ölçüm: tohum 1–3
-/// 16–39 s, birim p50 2,4–3,0 s, ACK 1,0–2,1 kB. Eşikler gerçek zaman gürültüsüne geniş.
+/// tek yön 300 ms, %20 ileri kayıp, 40 × 1000 B. Yön hızları verilmezse port motoru bu hücrede 57–62 s
+/// sürüyor ve dönüşe 3,6–4,2 kB ACK basıyor: ACK'ler 62 B/s hatta sıra bekliyor, gönderici ACK-saatli
+/// döngüde yakınsamıyor. Yön hızlarıyla (alıcı ACK bütçesi + yol ilk penceresi; PARAM geri çekilmesi
+/// ile) ölçüm: tohum 1–3 16,8–20,8 s, tohum 1 × 6 13,8–19,9 s, birim p50 2,5–3,0 s, ACK 0,56–0,78 kB.
+/// Eşikler gerçek zaman gürültüsüne geniş.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn asymmetric_return_path_with_link_rates_bounds_acks_and_completes() {
     let fwd = Dir {
@@ -532,12 +533,12 @@ async fn asymmetric_return_path_with_link_rates_bounds_acks_and_completes() {
         .expect("asimetrik hücre 120 s içinde tamamlanmalı");
     assert_eq!(o.delivered, 40, "40/40 teslim");
     assert!(
-        done <= Duration::from_secs(40),
-        "yön hızlarıyla tamamlanma {done:?} > 40 s (yön hızları olmadan 56–72 s)"
+        done <= Duration::from_secs(35),
+        "yön hızlarıyla tamamlanma {done:?} > 35 s (yön hızları olmadan 57–62 s)"
     );
     assert!(
-        o.stats.rev_bytes <= 2_500,
-        "dönüşe {} B ACK > 2500 B (bütçe ihlali; yön hızları olmadan 3,7–4,8 kB)",
+        o.stats.rev_bytes <= 1_500,
+        "dönüşe {} B > 1500 B (bütçe ihlali; yön hızları olmadan 3,6–4,2 kB)",
         o.stats.rev_bytes
     );
 }
