@@ -481,6 +481,7 @@ impl BenchTransport for QuinnTransport {
                 setup_in_window: false,
                 profile_id: String::new(),
                 profile_delta: delta,
+                engine: String::new(),
             },
             events,
         })
@@ -538,6 +539,7 @@ fn handshake_failed_output(
             setup_in_window: false,
             profile_id: String::new(),
             profile_delta: delta.to_vec(),
+            engine: String::new(),
         },
         events,
     }

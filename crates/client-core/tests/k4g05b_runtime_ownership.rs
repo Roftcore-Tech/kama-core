@@ -97,6 +97,15 @@ const TTL_WAIT: Duration = Duration::from_secs(120);
 /// geç ACK'i teyit etmez, birimler ek bir yeniden gönderim turuyla teyit edilir (beklenen bedel).
 /// Değer #140'ın motoruyla ölçülmüştü; bu PR'ın motorunda süre her koşuda yazdırılır.
 const CAP_WAIT: Duration = Duration::from_secs(60);
+/// Tahliye kolunda tahliye birimlerinin teyit bekleme tavanı (geç ACK öncesi, bekleme trafiğiyle).
+/// Ön koşul değil, kurulum bütçesidir: tahliye ön koşulu bu adımdan önce denetlenir; bu adım TTL'le
+/// yarışmaz, iddia taşımaz. Süre CPU kısıtında eski motorun kurtarma hızına bağlıdır (ölçüm, yerel
+/// loopback, bu fikstür: sabitlenmemiş beş koşuda 0,7–1,2 s; tek çekirdeğe sabitli iki koşuda
+/// 42,1 / 40,6 s, ikincisinde boşaltma başında 1208 birim teyitsiz; aynı çekirdekte meşgul döngüyle
+/// iki koşuda 38,9 / 26,1 s). Kısaltma denemeleri (bekleme kapısı yalnız kendi birimlerini sayar;
+/// tahliyeden sonra düşüş kalkar; tahliye evresinde teyitsiz birim tavanı 256) CPU kısıtında süreyi
+/// kısaltmadı ya da ön koşulu kırdı, bırakıldı. Değer `TTL_WAIT` ile aynıdır.
+const CAP_DRAIN_WAIT: Duration = TTL_WAIT;
 /// Motorun tombstone tavanı (`sender.rs` TOMBSTONE_MAX = 4096, v1; bu PR değiştirmez).
 const TOMBSTONE_CAP: u32 = 4096;
 /// Bir yoklama turunda sunulan tahliye dolgusu (teklif kuyruğu 1024'ün altında).
@@ -106,11 +115,26 @@ const ACK_BLOCKS: u64 = MAX_ACK_RANGES as u64 + 1;
 /// Parçalama dolgusu: hedefin bloğunu ACK çerçevesinin dışına itmek için alıcıda hedefin üstünde
 /// `ACK_BLOCKS`'tan fazla blok gerekir; her tek sayılı dolgu bir boşluk açar (pay: 4 blok).
 const FRAG_FILLERS: u64 = 2 * (ACK_BLOCKS + 4);
-/// Tahliye dolgusunda birim başına düşen ilk datagram sayısı (1: orijinal kaybolur → bir kayıp
-/// ilanı → bir tombstone). 2 denendi: yeniden gönderimler de düşünce ACK ilerlemesi durur ve kayıp
-/// ilanı yavaşlar (ölçüm: 25 s'de en çok 28 tombstone) — kullanılmaz.
-const CAP_DROPS_PER_FILLER: u32 = 1;
-/// Tahliye dolgusu: `CAP_DROPS_PER_FILLER` tombstone/birim ile tavan + pay.
+/// Tahliye dolgusunda birim başına düşen ilk datagram sayısı: orijinal ile ilk iki yeniden gönderim
+/// düşer. Üçü de kopya OLMAYAN kayıttır (eski motorun ARQ tavanı 3: `arq_retx_cap`) → üç kayıp ilanı
+/// → üç tombstone; üçüncü yeniden gönderim geçer ve birimi teyit eder.
+///
+/// Ön koşul hâlâ duvar saati karşılaştırmasıdır (tahliye süresi ↔ `TTL_LOWER_BOUND`): bu fikstür
+/// TTL'e payı büyütür, yarışı kaldırmaz; yavaşlık yanlış yeşil değil, ön koşul kırmızısı üretir.
+/// Ölçüm (main `6716eb8d`, yerel loopback): birim başına tek
+/// düşüşle (önceki fikstür, 4232 dolgu birimi) tavan geçişten 10–22 s sonra geliyordu ve dört koşunun
+/// birinde kayıt 25,30 s'de, tablo 3390'dayken TTL'le düştü (TTL alt sınırı 25,16 s). O fikstürde
+/// uçuşta ≈ 1400 yeniden gönderim kaydı ≈ 3 s bekleyip zaman eşiğiyle topluca kayıp ilan ediliyor,
+/// teklif alımı ilk ≈ 0,6 s'den sonra ≈ 100 birim/s'ye düşüyordu (alıcıda her yeniden gönderim ayrı
+/// blok, ACK aralığı sınırının dışında kalan teyit edilmez — kod okuması). Bu fikstür tavanı 1720
+/// tahliye birimiyle, uçuşta birkaç düzine kayıtla kurar; süre her koşuda yazdırılır.
+const CAP_DROPS_PER_FILLER: u32 = 3;
+/// Taşıyıcı aralığı: tahliye birimlerinden her `CAP_CARRIER_PERIOD`'uncusu düşmez (taşıyıcı). ACK
+/// ilerlemesi dolguların yeniden gönderimlerine bağlı kalmaz: taşıyıcının ACK'i kendinden öncekileri
+/// paket eşiğiyle kayıp ilan eder. (Taşıyıcısız, birim başına iki düşüşte ACK ilerlemesi durmuştu:
+/// 25 s'de en çok 28 tombstone.)
+const CAP_CARRIER_PERIOD: u64 = 8;
+/// Tahliye dolgusu (taşıyıcılar hariç): `CAP_DROPS_PER_FILLER` tombstone/birim ile tavan + pay.
 const CAP_FILLERS: u64 = TOMBSTONE_CAP as u64 / CAP_DROPS_PER_FILLER as u64 + 8 * ACK_BLOCKS;
 /// Bekleme boyunca trafik aralığı. Alıcı ACK_FREQ_N = 2 ile ilerleme ≈ 2 × bu aralıkta gelir; bu,
 /// tail-recovery PTO'sunun alt sınırının (`max_ack_delay` 25 ms) altındadır. Böylece hedefin
@@ -429,6 +453,9 @@ struct NetState {
     acks_forwarded: u64,
     acks_with_all_parity: u64,
     delayed: VecDeque<(Instant, Vec<u8>)>,
+    /// Gecikmiş datagram enjeksiyonu: istemciye gönderilen / gönderilemeyen (salt gözlem).
+    injected: u64,
+    inject_failed: u64,
 }
 
 impl NetState {
@@ -621,8 +648,14 @@ async fn relay(
             }
             m = inject.recv() => {
                 let Some(wire) = m else { break };
-                if let Some(to) = client {
-                    let _ = front.send_to(&wire, to).await;
+                let sent = match client {
+                    Some(to) => front.send_to(&wire, to).await.is_ok(),
+                    None => false,
+                };
+                if sent {
+                    lock(&state).injected += 1;
+                } else {
+                    lock(&state).inject_failed += 1;
                 }
             }
         }
@@ -773,7 +806,8 @@ impl Rig {
         format!(
             "outstanding={} son_teyitler={:?} rtt_samples={} retransmits={} dups={} \
              recovery={:?} hedef={:?} hedef_görülen={:?} hedef_pn={:?} tutulan_ack={} \
-             ön_tutulan={} parite_pn={} ack_geçen={}",
+             ön_tutulan={} parite_pn={} ack_geçen={} enjekte={} enjekte_hata={} \
+             ack_çerçeve={} son_ack_çerçeveleri(index, en büyük PN, mapped)={:?}",
             self.client.outstanding(),
             self.acked.iter().rev().take(8).collect::<Vec<_>>(),
             live.rtt_samples,
@@ -787,6 +821,13 @@ impl Rig {
             net.pre_held.len(),
             net.parity_pns.len(),
             net.acks_forwarded,
+            net.injected,
+            net.inject_failed,
+            live.ack.frames,
+            live.acks
+                .recent()
+                .map(|a| (a.index, a.largest_pn, a.mapped_seqs))
+                .collect::<Vec<_>>(),
         )
     }
 
@@ -888,7 +929,10 @@ impl Rig {
         // Kayıt halkası sınırlı olduğundan çerçeve işlenir işlenmez yoklanır.
         let mut late_rec = None;
         self.wait(
-            &format!("[{path}] ön koşul: geç ACK çerçevesi istemcide işlenmeli"),
+            &format!(
+                "[{path}] ön koşul: geç ACK çerçevesi istemcide işlenmeli (en büyük PN \
+                 {late_largest:?}; teslimden önceki çerçeve sayısı {frames_before})"
+            ),
             WAIT,
             |r| {
                 late_rec = r
@@ -1026,8 +1070,9 @@ async fn late_ack_after_ttl_keeps_payload() {
 }
 
 /// Envanter satır 2 — **TOMBSTONE_MAX tahliyesi**. Kurulum TTL koluyla aynı; ardından her birinin
-/// orijinali düşen 4096+ dolgu birimi bir TTL içinde 4096+ tombstone üretir ve en eski kayıt
-/// (hedefin orijinali) tavandan tahliye edilir. Sonra tutulan ACK gelir.
+/// ilk üç datagramı düşen dolgu birimleri (aralarında taşıyıcılar; bkz. `CAP_DROPS_PER_FILLER`)
+/// bir TTL içinde 4096+ tombstone üretir ve en eski kayıt (hedefin orijinali) tavandan tahliye
+/// edilir. Sonra tutulan ACK gelir.
 ///
 /// Eski motora sabit (dosya başı "Motor"; `CcPort`'ta tablo tavana ulaşmaz).
 #[tokio::test(flavor = "multi_thread")]
@@ -1040,9 +1085,13 @@ async fn late_ack_after_cap_keeps_payload() {
         .with(|s| s.target_passed_at)
         .expect("hedefin orijinali geçti");
     let first = rig.next_unit;
-    let end = first + CAP_FILLERS;
+    // Her `CAP_CARRIER_PERIOD`'uncu birim taşıyıcıdır (düşmez); diğerleri dolgu.
+    let periods = CAP_FILLERS.div_ceil(CAP_CARRIER_PERIOD - 1);
+    let end = first + periods * CAP_CARRIER_PERIOD;
+    let is_carrier = |u: u64| (u - first) % CAP_CARRIER_PERIOD == CAP_CARRIER_PERIOD - 1;
     rig.net.with(|s| {
-        s.drop_first.extend(first..end);
+        s.drop_first
+            .extend((first..end).filter(|&u| !is_carrier(u)));
         s.drop_first_n = CAP_DROPS_PER_FILLER;
     });
     let deadline = Instant::now() + CAP_WAIT;
@@ -1078,7 +1127,10 @@ async fn late_ack_after_cap_keeps_payload() {
     let cap_at = cap_reached_at.map(|c| c.duration_since(passed_at));
     eprintln!(
         "[cap] hedef kaydı geçişten {gone:?} sonra düştü (o an tombstone {tombs_at_gone}); tablo \
-         hedef kaydı canlıyken tavana {cap_at:?} sonra ulaştı; en büyük {max_tombs}"
+         hedef kaydı canlıyken tavana {cap_at:?} sonra ulaştı; en büyük {max_tombs}; tahliye \
+         birimi {} (dolgu {}, birim başına {CAP_DROPS_PER_FILLER} düşüş; taşıyıcı {periods})",
+        end - first,
+        end - first - periods
     );
     // Tahliye: kayıt TTL alt sınırından önce düştü YA DA tablo, hedef kaydı canlıyken o sınırdan
     // önce tavana ulaştı (gözlem çözünürlüğü RECOVERY_DIAG_PERIOD; TTL, geçişten değil kayıp
@@ -1096,6 +1148,24 @@ async fn late_ack_after_cap_keeps_payload() {
     while rig.next_unit < end {
         rig.send().await;
     }
+    // Kuyruk: son dolguların düşen yeniden gönderimlerinden sonra tele geçen datagram kalmazsa ACK
+    // ilerlemesi durur — paket/zaman eşiği kayıp ilan etmez, kuyruk probları da düşer ve tavana
+    // ulaşır (ölçüm: 20 koşunun 10'uncusunda 21 dolgu 60 s teyitsiz kaldı, prob 3/3). Bekleme
+    // trafiği (`TRICKLE`; birimleri tahliye aralığının dışında, düşmez) ACK ilerlemesini sürdürür.
+    // Bütçe `CAP_DRAIN_WAIT`'tir (CPU kısıtında süre eski motorun kurtarma hızına bağlıdır).
+    let drained_from = Instant::now();
+    eprintln!(
+        "[cap] boşaltma başında istemcide teyitsiz {}",
+        rig.client.outstanding()
+    );
+    rig.wait_trickle("tahliye birimleri teyit edilmeli", CAP_DRAIN_WAIT, |r| {
+        r.acked_set.range(first..end).count() as u64 == end - first
+    })
+    .await;
+    eprintln!(
+        "[cap] tahliye birimlerinin teyidi (bekleme trafiğiyle): {:?} (bütçe {CAP_DRAIN_WAIT:?})",
+        drained_from.elapsed()
+    );
     rig.late_ack_keeps_payload_then_resend_confirms(t, "cap", CAP_WAIT)
         .await;
 }

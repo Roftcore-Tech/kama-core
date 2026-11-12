@@ -22,6 +22,7 @@
 use std::fmt;
 use std::sync::Arc;
 
+use client_core::hub::relink::RELINK_SEED_LEN;
 use client_core::hub::shared_crypto::{HubCrypto, HubCryptoAccess, StashConfig};
 use client_core::hub::signer::{BindSigner, BIND_SIGNATURE_LEN, BIND_TBS_LEN};
 use client_core::transport::ClientTransport;
@@ -127,6 +128,15 @@ pub(crate) fn device_cert_ref(config: &DeviceConfig) -> [u8; 32] {
 /// `HubLink`'in entropisi (`request_id` başlangıcı, `client_nonce`): OS CSPRNG'i.
 pub(crate) fn hub_entropy() -> Box<dyn EntropySource> {
     Box::new(OsEntropy::new())
+}
+
+/// [HLR] `RelinkGovernor`'ın jitter tohumu (KK-H48 jitter'ı; anahtar DEĞİLDİR): OS CSPRNG'i.
+/// Kaynak hata verirse sıfır tohum (`OsEntropy` hatada tamponu sıfırlar) — jitter yine deneme
+/// başına değişir, yalnız düğümler arası ayrışmaz.
+pub(crate) fn relink_seed() -> [u8; RELINK_SEED_LEN] {
+    let mut seed = [0u8; RELINK_SEED_LEN];
+    let _ = OsEntropy::new().fill(&mut seed);
+    seed
 }
 
 /// YALNIZ birim testleri: cihaz dosyalarını gerçek provisioning yolundan (`kama-provision`

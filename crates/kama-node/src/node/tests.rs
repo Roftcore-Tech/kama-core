@@ -32,6 +32,8 @@ use crate::{KamaNode, NodeListener};
 
 /// Eşzamanlı connect (glare) — DR-CONNECT-1 #4 / K2 (`tests/glare.rs`).
 mod glare;
+/// [HLR-STALE] Eski hattın geç hatası yeni oturumu yenilemez (`tests/hub_relink.rs`).
+mod hub_relink;
 
 const ALICE: &str = "alice";
 const BOB: &str = "bob";
