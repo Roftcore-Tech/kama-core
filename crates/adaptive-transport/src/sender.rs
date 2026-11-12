@@ -1432,6 +1432,9 @@ struct InflightPacket {
     /// kopyasına ve prob hedefine GİRMEZ. `an` geçtiğinde hâlâ uçuştaysa kayıp ilan edilmeden düşer
     /// (`release_confirmed_copies`). `None`: birim bu kayıt üzerinden teyitsiz.
     confirmed_release_ns: Option<u64>,
+    /// [CC-PORT · KADER-SIRASI] Köken `Data` ise bu orijinalin motor-içi gönderim sırası
+    /// (`Sender::next_data_ord`); başka kökende 0 ve okunmaz. Bkz. [`Sender::fate_key`].
+    data_ord: u64,
 }
 
 /// Kayıp ilan edilmiş, recovery bekleyen kayıt (birim + öncelik metadata).
@@ -1444,6 +1447,8 @@ struct LostRec {
     /// [TUR-2a D-1/3 kol-1] orijinal gönderim anı — un-loss'ta (retransmit HENÜZ yoksa,
     /// retx_count==0) orijinal RTT örneği GEÇERLİDİR; bu damgayla alınır.
     send_ns: u64,
+    /// [CC-PORT · KADER-SIRASI] Kaydın uçuş kaydından kopyası (`InflightPacket::data_ord`).
+    data_ord: u64,
 }
 
 /// [TUR-2b D-1/4] TOMBSTONE — kayıp-İLANI sonrası SAKLANAN gönderim kaydı (geç-ACK eşleştirme).
@@ -1458,6 +1463,8 @@ struct TombstoneRec {
     retx_count: u8,
     origin: TransmitKind,
     expiry_ns: u64, // ilan + K_TOMB×T_loss(ilan-anı)
+    /// [CC-PORT · KADER-SIRASI] Kaydın uçuş kaydından kopyası (`InflightPacket::data_ord`).
+    data_ord: u64,
 }
 
 /// Zamanlanmış forward-recovery duplication kopyası (§11 spacing — burst-loss dayanıklılığı).
@@ -1640,6 +1647,9 @@ pub struct Sender {
 
     // ── durum sayaçları ──
     next_seq: u64,
+    /// [CC-PORT · KADER-SIRASI] Sıradaki orijinal (`TransmitKind::Data`) iletimin motor-içi sırası;
+    /// yalnız [`Self::fate_key`] okur.
+    next_data_ord: u64,
     inflight_bytes: u64,
     inflight: BTreeMap<u64, InflightPacket>,
     /// FS-CAL-2 v3 §3 loss-STRUCTURE estimator. OBSERVATION-ONLY: it is fed by the same events the
@@ -2015,6 +2025,7 @@ impl Sender {
             pacer: TokenBucket::new(budget_cfg.min_rate_bps, DEFAULT_BURST_CAP),
             arq: DeadlineArqScheduler::new(RetxConfig::fixture()),
             next_seq: 0,
+            next_data_ord: 0,
             inflight_bytes: 0,
             inflight: BTreeMap::new(),
             fate_estimator: crate::fate_estimator::FateEstimator::new(),
@@ -2253,6 +2264,30 @@ impl Sender {
     #[must_use]
     pub fn cc_on(&self) -> bool {
         self.cc.is_some()
+    }
+
+    /// [CC-PORT · KADER-SIRASI] Kayıp-yapısı kestiricisinin (`fate_estimator`) bir orijinal için
+    /// kullandığı anahtar. Kestirici "mantıksal kaynak sırası" ister: pencere en büyük 256
+    /// anahtardır, geçiş yalnız `k`, `k+1` komşuluğunda sayılır. Eski motor birim kimliğini verir
+    /// (bit-aynı). Port motoru orijinalin motor-içi gönderim sırasını verir: birim kimliği opaktır
+    /// ve çağıran onu gönderim sırasında vermek zorunda değildir (client-core şeritleri kimliğin
+    /// üst bitine şeridi yazar — en küçük kimlik en eski birim değildir). Kimlik sırası kullanılsaydı
+    /// pencere en yüksek şeridin eski kayıtlarında donar, alttaki şeritlerin yeni kaderleri girer
+    /// girmez atılırdı. Tek şeritte (kimlikler 0'dan boşluksuz, her birim bir kez `Data`) iki
+    /// anahtar aynıdır.
+    #[inline]
+    fn fate_key(&self, unit_id: u64, data_ord: u64) -> u64 {
+        Self::fate_key_for(self.cc_on(), unit_id, data_ord)
+    }
+
+    /// [`Self::fate_key`]'in ödünçsüz biçimi (kayıt boşaltma döngüsünün içi için).
+    #[inline]
+    fn fate_key_for(cc_on: bool, unit_id: u64, data_ord: u64) -> u64 {
+        if cc_on {
+            data_ord
+        } else {
+            unit_id
+        }
     }
 
     /// [CC-PORT] Portun uçuş tavanı (bayt); `cc` yokken `u64::MAX` (kapı yok — bugünkü davranış).
@@ -3399,7 +3434,8 @@ impl Sender {
                 // RTT sampler applies two lines below. A retransmit or duplicate proves nothing
                 // about the original's fate, and feeding one would corrupt the structure counters.
                 if p.origin == TransmitKind::Data {
-                    self.fate_estimator.on_original_ack(p.unit.id);
+                    let key = self.fate_key(p.unit.id, p.data_ord);
+                    self.fate_estimator.on_original_ack(key);
                 }
                 // [K4G-05b-R] FEC onarım sembolünün `unit.id`'si ESI'dir (ayrı ad-uzayı): kopya
                 // iptaline (§3.3-B stop) de teyit çıktısına da GİRMEZ. Girseydi ESI ile aynı sayısal
@@ -3432,7 +3468,8 @@ impl Sender {
                 // fate is corrected in place. ORIGINALS ONLY: a superseded transmission's late ACK
                 // (kol-2, origin Retransmit) proves nothing about the original's fate.
                 if t.origin == TransmitKind::Data {
-                    self.fate_estimator.correct_original_delivered(t.unit.id);
+                    let key = self.fate_key(t.unit.id, t.data_ord);
+                    self.fate_estimator.correct_original_delivered(key);
                 }
                 // [K4G-05b-R] Onarım sembolü (ESI ad-uzayı) kopya iptaline ve teyide girmez (uçuş
                 // dalıyla aynı kural).
@@ -3493,6 +3530,7 @@ impl Sender {
             // Gözlenen-reorder mesafesi görülen EN YÜKSEK acked'e göredir (bu geç-ACK'in
             // kendi max'ı değil — kayıp-şüphesini yaratan önceki yüksek ACK'ler dahil).
             let la = self.loss.largest_acked().unwrap_or(0);
+            let fate_cc = self.cc_on();
             let mut kept = VecDeque::with_capacity(self.pending_lost.len());
             for rec in self.pending_lost.drain(..) {
                 if !unlossed.contains(&rec.seq) {
@@ -3506,7 +3544,8 @@ impl Sender {
                 // only the retransmit's delivery). Exactly-once is carried by the estimator method:
                 // the same late ACK can hit both the tombstone branch and this drain in one event.
                 if rec.retx_count == 0 {
-                    self.fate_estimator.correct_original_delivered(rec.unit.id);
+                    let key = Self::fate_key_for(fate_cc, rec.unit.id, rec.data_ord);
+                    self.fate_estimator.correct_original_delivered(key);
                 }
                 // [K4G-05b-R] un-loss eşleşmesi canlı kayıttır. `LostRec` hiçbir zaman onarım sembolü
                 // değildir (queue_losses FecParity'yi pending_lost'a sokmaz).
@@ -3988,8 +4027,8 @@ impl Sender {
                         let guard = self
                             .tail_recovery
                             .base_pto_ns(self.rtt.srtt().map(dur_ns), dur_ns(self.rtt.rttvar()));
-                        self.fate_estimator
-                            .on_loss_evidence(p.unit.id, now_ns, guard);
+                        let key = self.fate_key(p.unit.id, p.data_ord);
+                        self.fate_estimator.on_loss_evidence(key, now_ns, guard);
                     }
                     // [FAZ-2 / KALEM-3 — REPAIR FATE AYRIMI] Kaybolan bir REPAIR shard'ı ARQ
                     // kuyruğuna GİREMEZ. Parity `unit.id = esi` taşır (plan_fec_parity) ve ESI,
@@ -4012,6 +4051,7 @@ impl Sender {
                             deadline_ns: now_ns,
                             retx_count: p.retx_count,
                             send_ns: p.send_ns, // [TUR-2a] un-loss kol-1 RTT için orijinal damga
+                            data_ord: p.data_ord,
                         });
                     }
                     // [TUR-2b] tombstone: bounded, en-eski-önce eviction + audit.
@@ -4036,6 +4076,7 @@ impl Sender {
                             retx_count: p.retx_count,
                             origin: p.origin,
                             expiry_ns,
+                            data_ord: p.data_ord,
                         },
                     );
                 }
@@ -6733,6 +6774,7 @@ impl Sender {
                 retx_count: p.retx_count,
                 origin: p.origin,
                 expiry_ns,
+                data_ord: p.data_ord,
             },
         );
     }
@@ -7309,6 +7351,14 @@ impl Sender {
             _ => {}
         }
         let units = u64::from(origin == TransmitKind::Data); // yalnız orijinal DATA loss sayacına.
+                                                             // [CC-PORT · KADER-SIRASI] Orijinalin motor-içi gönderim sırası (bkz. `fate_key`).
+        let data_ord = if origin == TransmitKind::Data {
+            let o = self.next_data_ord;
+            self.next_data_ord = o.saturating_add(1);
+            o
+        } else {
+            0
+        };
         self.loss.on_sent(seq, now_ns, units);
         if let Some(cc) = self.cc.as_mut() {
             cc.on_sent(now_ns, unit.size, seq); // quinn: her iletim tekil paket numarası (= seq)
@@ -7323,6 +7373,7 @@ impl Sender {
                 retx_count,
                 origin,
                 confirmed_release_ns: None,
+                data_ord,
             },
         );
         seq
@@ -7748,6 +7799,7 @@ mod tests {
             deadline_ns: 0,
             retx_count: 0,
             send_ns: 0,
+            data_ord: 0,
         });
         s.dup_queue.push(DupRec {
             due_ns: 0,
@@ -12301,6 +12353,7 @@ mod tests {
                 deadline_ns: 20 * MS,
                 retx_count: u8::MAX,
                 send_ns: 20 * MS,
+                data_ord: 0,
             });
             r.pump_until(21 * MS, PUMP_SHORT_HORIZON_NS, PUMP_STEP_NS, |r| {
                 r.seq_of(id, TransmitKind::Retransmit).is_some()
@@ -14092,5 +14145,79 @@ mod tests {
         fn k4g05br_confirmation_output_is_decision_neutral_cc_port() {
             neutrality_all_seeds("cc_port", Sender::with_cc_port);
         }
+    }
+}
+
+/// [CC-PORT · KADER-SIRASI] Kayıp-yapısı kestiricisinin anahtarı: eski motor birim kimliği, port
+/// motoru orijinalin motor-içi gönderim sırası (`Sender::fate_key`).
+#[cfg(test)]
+mod fate_key_tests {
+    use super::*;
+
+    const MS: u64 = 1_000_000;
+
+    /// `ids` sırasıyla orijinal (`Data`) iletimler kurulur ve tek ACK ile teyit edilir; kestiricinin
+    /// penceresi döner.
+    fn window_after(mk: fn() -> Sender, ids: &[u64]) -> crate::fate_estimator::WindowFeatures {
+        let mut s = mk();
+        let seqs: Vec<u64> = ids
+            .iter()
+            .enumerate()
+            .map(|(i, &id)| {
+                s.track_sent(
+                    OpaqueUnit { id, size: 100 },
+                    (i as u64) * MS,
+                    0,
+                    TransmitKind::Data,
+                )
+            })
+            .collect();
+        s.on_event(
+            Event::AckReceived(AckInfo {
+                acked_seqs: seqs,
+                ack_delay: Duration::ZERO,
+            }),
+            (ids.len() as u64 + 1) * MS,
+        );
+        s.diag_loss_structure()
+    }
+
+    /// Opak kimlik gönderim sırasında değilse (client-core şeritleri kimliğin üst bitine şeridi
+    /// yazar: 300 dosya birimi, ardından 40 metin birimi — metin kimlikleri daha KÜÇÜK) port
+    /// motorunun penceresi son 256 orijinali gönderim sırasıyla tutar: metin kaderleri pencerededir.
+    /// Eski motor kimlik sırasını kullanır (değişmedi): pencere en büyük 256 kimliktir, metin girer
+    /// girmez atılır.
+    #[test]
+    fn port_window_follows_send_order_when_ids_are_lane_tagged() {
+        let file = |i: u64| (3u64 << 62) | i;
+        let text = |i: u64| (2u64 << 62) | i;
+        let ids: Vec<u64> = (0..300).map(file).chain((0..40).map(text)).collect();
+
+        let port = window_after(Sender::with_cc_port, &ids);
+        assert_eq!(port.n, 256);
+        assert_eq!(
+            port.window_ids,
+            (84..340).collect::<Vec<u64>>(),
+            "port: son 256 orijinal, gönderim sırasıyla (metin kaderleri dahil)"
+        );
+        assert_eq!(port.n00, 255, "ardışık 256 başarı → 255 geçiş");
+
+        let legacy = window_after(Sender::new, &ids);
+        assert_eq!(legacy.n, 256);
+        assert_eq!(
+            legacy.window_ids,
+            (44..300).map(file).collect::<Vec<u64>>(),
+            "eski motor: en büyük 256 kimlik (değişmedi)"
+        );
+    }
+
+    /// Şeritsiz kimliklerde (0'dan boşluksuz, her biri bir kez `Data`) iki motorun penceresi aynı.
+    #[test]
+    fn untagged_ids_give_the_same_window_in_both_engines() {
+        let ids: Vec<u64> = (0..300).collect();
+        let port = window_after(Sender::with_cc_port, &ids);
+        let legacy = window_after(Sender::new, &ids);
+        assert_eq!(port, legacy);
+        assert_eq!(port.window_ids, (44..300).collect::<Vec<u64>>());
     }
 }
