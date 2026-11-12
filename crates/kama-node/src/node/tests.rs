@@ -32,6 +32,10 @@ use crate::{KamaNode, NodeListener};
 
 /// Eşzamanlı connect (glare) — DR-CONNECT-1 #4 / K2 (`tests/glare.rs`).
 mod glare;
+/// [HLR-STALE] Eski hattın geç hatası yeni oturumu yenilemez (`tests/hub_relink.rs`).
+mod hub_relink;
+/// [T3-GLARE] Niyetin terk edilen INIT'inin taşıyıcı tekrarı durur (`tests/intent_t3.rs`).
+mod intent_t3;
 
 const ALICE: &str = "alice";
 const BOB: &str = "bob";
@@ -408,10 +412,11 @@ fn connect_after_cancel_in_one_batch_keeps_the_abandoned_event() {
 
 // ── Madde 2: teslim kanalı taşması ve epoch geçişi ölçüde ───────────────────────────────────
 
-/// Bob'un döngüsü sürülmezken veri alıcısı birimleri ACK'ler ve teslim kanalına koyar; kanalı
-/// boşaltan adaptör çağrılmaz. Alice kanal tavanını aşana dek demet yollar. Taşma Transport'un
-/// salt-okunur sayacında, sonra ürün döngüsünde `KamaNode::metrics().delivery_channel_drops`'ta
-/// görünür.
+/// Bob'un döngüsü sürülmezken veri alıcısı birimleri teslim kanalına koyar; kanalı boşaltan
+/// adaptör çağrılmaz. Alice kanal tavanını aşana dek demet yollar. [F4, sahip kararı 2026-11-11]
+/// Dolu kanalda birim DÜŞMEZ ve ACK'lenmez (motora verilmez): `delivery_channel_drops` 0 kalır,
+/// `delivery_channel_full` Transport'un salt-okunur sayacında, sonra ürün döngüsünde
+/// `KamaNode::metrics()`'te görünür.
 #[test]
 fn delivery_channel_overflow_reaches_node_metrics() {
     let _serial = support::serial();
@@ -445,14 +450,20 @@ fn delivery_channel_overflow_reaches_node_metrics() {
                 Err(other) => panic!("ptt_push: {other:?}"),
             }
         }
-        (bob.node.messenger.transport().delivery_dropped() > 0).then_some(())
+        (bob.node.messenger.transport().data_not_admitted_full() > 0).then_some(())
     });
+    assert_eq!(
+        bob.node.messenger.transport().delivery_dropped(),
+        0,
+        "F4: dolu kanalda düşen birim yok"
+    );
 
-    // Ürün döngüsü (`run`): her tur sonundaki anlık görüntü taşmayı taşır.
+    // Ürün döngüsü (`run`): her tur sonundaki anlık görüntü sayacı taşır.
     let bob = KamaNode::spawn(bob).expect("düğüm iş parçacığı");
-    support::until("bob: metrics().delivery_channel_drops > 0", || {
-        (bob.metrics().delivery_channel_drops > 0).then_some(())
+    support::until("bob: metrics().delivery_channel_full > 0", || {
+        (bob.metrics().delivery_channel_full > 0).then_some(())
     });
+    assert_eq!(bob.metrics().delivery_channel_drops, 0, "F4: düşme yok");
 }
 
 /// Ölçünün epoch yolu: yanıtlayanın oturumu hazır olduğunda epoch-0'dadır (başlatanın epoch-1

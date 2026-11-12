@@ -560,6 +560,7 @@ mod tests {
             setup_in_window: false,
             profile_id: String::new(),
             profile_delta: Vec::new(),
+            engine: String::new(),
         }
     }
 

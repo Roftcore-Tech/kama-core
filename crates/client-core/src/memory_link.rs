@@ -42,12 +42,23 @@ impl Outbound {
     }
 }
 
+/// [HLR] Kaydedilen `cancel_init` tavanı (SR-AUDIT-001; en eski düşer).
+pub const MAX_RECORDED_CANCELS: usize = 64;
+
 #[derive(Default)]
 struct HubState {
     next_attempt: u64,
     next_handle: u32,
     outbound: VecDeque<Outbound>,
     inboxes: BTreeMap<PeerRef, VecDeque<LinkEvent>>,
+    /// [HLR] `cancel_init` ile terk edilen denemeler (gönderim sırasıyla).
+    cancelled: VecDeque<LinkAttempt>,
+    /// [HLR] Sıradaki kaç `send_init` reddedilecek (taşıyıcı deneme tavanının karşılığı).
+    refuse_inits: usize,
+    /// [HLR-STALE] Sıradaki kaç INIT'in başlatanına `HandleAssigned` VERİLMEYECEK.
+    withhold_assignments: usize,
+    /// [HLR-STALE] Sıradaki kaç INIT alıcıya ikinci kez, yeni bir handle'la teslim edilecek.
+    redeliver_inits: usize,
 }
 
 fn lock(m: &Mutex<HubState>) -> MutexGuard<'_, HubState> {
@@ -119,18 +130,34 @@ impl MemoryHub {
                 } => {
                     st.next_handle = st.next_handle.wrapping_add(1).max(1);
                     let hub_handle = HubHandle::from_raw(st.next_handle);
-                    if let Some(q) = st.inboxes.get_mut(&from) {
+                    if st.withhold_assignments > 0 {
+                        st.withhold_assignments -= 1;
+                    } else if let Some(q) = st.inboxes.get_mut(&from) {
                         q.push_back(LinkEvent::HandleAssigned {
                             attempt,
                             hub_handle,
                         });
                     }
+                    let again = if st.redeliver_inits > 0 {
+                        st.redeliver_inits -= 1;
+                        st.next_handle = st.next_handle.wrapping_add(1).max(1);
+                        Some((HubHandle::from_raw(st.next_handle), bytes.clone()))
+                    } else {
+                        None
+                    };
                     if let Some(q) = st.inboxes.get_mut(&to) {
                         q.push_back(LinkEvent::IncomingInit {
                             hub_handle,
                             envelope_type,
                             bytes,
                         });
+                        if let Some((hub_handle, bytes)) = again {
+                            q.push_back(LinkEvent::IncomingInit {
+                                hub_handle,
+                                envelope_type,
+                                bytes,
+                            });
+                        }
                     }
                 }
                 Outbound::Response {
@@ -150,6 +177,32 @@ impl MemoryHub {
             }
         }
         moved
+    }
+
+    /// [HLR] `cancel_init` ile terk edilen denemeler (en çok [`MAX_RECORDED_CANCELS`]). Terk
+    /// edilen INIT rölede KALIR: hub'a gitmiş bir STORE'un karşılığı (tekrarı durur, ilki gitmiştir).
+    #[must_use]
+    pub fn cancelled_inits(&self) -> Vec<LinkAttempt> {
+        lock(&self.inner).cancelled.iter().copied().collect()
+    }
+
+    /// [HLR] Sıradaki `n` `send_init`'i reddeder (`LinkError`; hub deneme tavanı dolu).
+    pub fn refuse_next_inits(&self, n: usize) {
+        lock(&self.inner).refuse_inits = n;
+    }
+
+    /// [HLR-STALE] Sıradaki `n` INIT'in rölesinde başlatana `HandleAssigned` verilmez (alıcı yine
+    /// aynı handle'la `IncomingInit` alır): taşıyıcının hattını bildirmediği oturum — transport'ta
+    /// etkin oturumun hattı bilinmez (`ActiveLink::Unknown`).
+    pub fn withhold_next_assignments(&self, n: usize) {
+        lock(&self.inner).withhold_assignments = n;
+    }
+
+    /// [HLR-STALE] Sıradaki `n` INIT alıcıya İKİ kez teslim edilir: ikincisi byte-özdeş, yeni bir
+    /// handle'la (aynı INIT'in başka bir hatta yeniden teslimi; başlatana `HandleAssigned` yalnız
+    /// ilk handle için gider). Röle sayımında yine tek gönderimdir.
+    pub fn redeliver_next_inits(&self, n: usize) {
+        lock(&self.inner).redeliver_inits = n;
     }
 
     /// `to`'nun gelen kutusuna doğrudan bir olay koyar (ör. sahte RESPONSE) — röle beklemez.
@@ -183,6 +236,10 @@ impl EnvelopeLink for MemoryLink {
         bytes: Vec<u8>,
     ) -> Result<LinkAttempt, LinkError> {
         let mut st = lock(&self.hub);
+        if st.refuse_inits > 0 {
+            st.refuse_inits -= 1;
+            return Err(LinkError);
+        }
         st.next_attempt = st.next_attempt.wrapping_add(1);
         let attempt = LinkAttempt(st.next_attempt);
         st.outbound.push_back(Outbound::Init {
@@ -216,6 +273,14 @@ impl EnvelopeLink for MemoryLink {
             .inboxes
             .get_mut(&self.me)
             .and_then(VecDeque::pop_front)
+    }
+
+    fn cancel_init(&mut self, attempt: LinkAttempt) {
+        let mut st = lock(&self.hub);
+        if st.cancelled.len() >= MAX_RECORDED_CANCELS {
+            st.cancelled.pop_front();
+        }
+        st.cancelled.push_back(attempt);
     }
 }
 
