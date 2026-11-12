@@ -2,7 +2,3 @@
 # motor: cc_port | legacy. hücre: cc_port_sim.rs rapor etiketi (tohum eki olmadan).
 # Muafiyet bilinçli bir takas içindir (örn. bir hücrede +1 s karşılığında başka hücrede kazanım);
 # gerekçe PR'da görünür ve merge sonrası satır SİLİNİR (bir sonraki PR'ın tabanı artık yeni sayılardır).
-legacy|kesinti 60s @3s q1000 l20|harness: her SACK çerçevesi dönüş yoluna sayılır (cc_port_sim.rs inceleme 2026-11-11); yalnız rev_bytes değişir, gönderici alanları (completed/delivered/sent_bytes/sent_retx/p50) taban ile bayt-aynı — merge sonrası SİL
-legacy|q1000 r12.5k d300 l20|harness: her SACK çerçevesi dönüş yoluna sayılır; yalnız rev_bytes değişir, gönderici alanları taban ile bayt-aynı — merge sonrası SİL
-legacy|q6 r12.5k d300 l20|harness: her SACK çerçevesi dönüş yoluna sayılır; yalnız rev_bytes değişir, gönderici alanları taban ile bayt-aynı — merge sonrası SİL
-legacy|r25|harness: her SACK çerçevesi dönüş yoluna sayılır; yalnız rev_bytes değişir, gönderici alanları taban ile bayt-aynı — merge sonrası SİL

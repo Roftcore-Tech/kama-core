@@ -977,12 +977,16 @@ fn r25_lowband_messages() {
         );
         // Kapı: her motor 60/60 teslim (medyan); port ileti p50 ≤ 8 s (U10–U13 öncesi 95 s, sonrası
         // 8,5 s; U14 sonrası 6,9 s; eski motor 5,4 s — eşitlenince kapı sıkılaşır). Keşif anahtarları (`CC_R25_*`,
-        // `CC_ACK_OVERHEAD`) varken kapı uygulanmaz (yalnız rapor).
+        // `CC_ACK_OVERHEAD`) varken kapı uygulanmaz (yalnız rapor). `CC_GATE_OUT` varken de uygulanmaz:
+        // CI gerileme kapısı bu harness'ı PR TABANININ motoruyla da koşturur (ci.yml `cc-regression`);
+        // mutlak eşik tabanda tutmayabilir (bu PR'ın düzelttiği gerileme gibi) — mutlak eşik `test`
+        // işinde, taban ↔ aday karşılaştırması `cc_gate_compare.py`'de doğrulanır.
         let explore = [
             "CC_R25_INTERVAL_MS",
             "CC_R25_WIRE_OVERHEAD",
             "CC_R25_TMAX_S",
             "CC_ACK_OVERHEAD",
+            "CC_GATE_OUT",
         ]
         .iter()
         .any(|k| std::env::var(k).is_ok());
