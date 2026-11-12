@@ -219,11 +219,13 @@ fn estimator_has_exactly_one_reader() {
             "unexpected estimator use — this would make it decision-carrying: {u}"
         );
     }
-    // Exactly the wiring: two evidence writes, one lifecycle advance, two S-0.7 correction
-    // hooks (tombstone kol-1 + un-loss, both originals-gated), three observation-only reads
-    // (one snapshot + the correction-counter pair in diag_fate_corrections), and [Q18-FIX] the
-    // one decision-carrying snapshot read in `structure_gate_fec`.
-    assert_eq!(uses.len(), 9, "estimator use count changed: {uses:?}");
+    // Exactly the wiring: three evidence writes (uçuş orijinal-ACK, kayıp kanıtı ve [CC-PORT U15]
+    // kopya sınırıyla emekli edilen — kayıp ilan edilmemiş — orijinalin tombstone'daki geç ACK'i:
+    // düzeltme değil, orijinal-ACK kanıtı; originals-gated), one lifecycle advance, two S-0.7
+    // correction hooks (tombstone kol-1 + un-loss, both originals-gated), three observation-only
+    // reads (one snapshot + the correction-counter pair in diag_fate_corrections), and [Q18-FIX]
+    // the one decision-carrying snapshot read in `structure_gate_fec`.
+    assert_eq!(uses.len(), 10, "estimator use count changed: {uses:?}");
 }
 
 /// SOURCE-GROUNDING S-0.7 — ingest FIDELITY, not merely ingest presence.

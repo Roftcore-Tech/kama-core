@@ -94,6 +94,9 @@ struct Bottleneck {
     blackout: Option<(u64, u64)>,
     /// netem düzeni: kayıp serileştirmeden önce (bkz. `send`).
     loss_before_ser: bool,
+    /// [H1] Gilbert-Elliott iki durumlu kümeli kayıp `(p_gb ppm, p_bg ppm, kötü_durumda_mı)`;
+    /// `None` = Bernoulli `loss_permille` (mevcut testlerin yolu, bayt düzeyinde aynı).
+    ge: Option<(u64, u64, bool)>,
 }
 
 impl Bottleneck {
@@ -112,7 +115,22 @@ impl Bottleneck {
             loss_permille,
             blackout: None,
             loss_before_ser: std::env::var("CC_LOSS_BEFORE_SER").is_ok(),
+            ge: None,
         }
+    }
+
+    /// [H1] Gilbert-Elliott: KÖTÜ durumda paket düşer, İYİ durumda geçer; geçiş paket başına.
+    /// Durağan kayıp = p_gb / (p_gb + p_bg), ortalama patlama uzunluğu = 1 / p_bg.
+    fn ge_drop(&mut self) -> Option<bool> {
+        let (p_gb, p_bg, bad) = self.ge?;
+        self.lcg = self
+            .lcg
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let u = (self.lcg >> 33) % 1_000_000;
+        let next = if bad { u >= p_bg } else { u < p_gb };
+        self.ge = Some((p_gb, p_bg, next));
+        Some(bad)
     }
 
     fn rand_permille(&mut self) -> u64 {
@@ -148,7 +166,12 @@ impl Bottleneck {
             self.dropped_random += 1;
             return;
         }
-        if !self.loss_before_ser
+        if let Some(drop) = self.ge_drop() {
+            if drop {
+                self.dropped_random += 1;
+                return;
+            }
+        } else if !self.loss_before_ser
             && self.loss_permille > 0
             && self.rand_permille() < self.loss_permille
         {
@@ -304,16 +327,6 @@ fn run_opt(
         s.set_cc_initial_window(iw);
     }
     let mut r = eng.receiver();
-    // `CC_ACK_DELAY_MS=<ms>`: port alıcısında zamanlayıcı ACK gecikme tavanı (varsayılan 25 ms;
-    // düşük bant ACK kadansı deneyi).
-    if let Some(m) = std::env::var("CC_ACK_DELAY_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-    {
-        if eng != Engine::Legacy {
-            r.set_max_ack_delay_ns(m * MS);
-        }
-    }
     if parity_per_block > 0 {
         s.set_fec_actuation_mode(FecActuationMode::Manual { enabled: true })
             .expect("manuel FEC kipi");
@@ -693,7 +706,37 @@ fn fmt_s(v: Option<u64>) -> String {
     })
 }
 
+/// `CC_GATE_OUT=<dosya>`: her rapor satırı JSON satırı olarak dosyaya eklenir (CI gerileme kapısı;
+/// `scripts/ci/cc_gate_compare.py` taban ↔ aday karşılaştırır). Anahtar = (motor, hücre, tohum).
+fn gate_record(eng: Engine, label: &str, o: &Outcome) {
+    let Ok(path) = std::env::var("CC_GATE_OUT") else {
+        return;
+    };
+    let (cell, seed) = match label.rsplit_once(" seed") {
+        Some((c, s)) => (c, s.parse::<u64>().unwrap_or(0)),
+        None => (label, 0),
+    };
+    let engine = match eng {
+        Engine::Legacy => "legacy",
+        Engine::CcPort => "cc_port",
+    };
+    let completed = o.completed_ns.map_or("null".to_string(), |t| t.to_string());
+    let line = format!(
+        "{{\"engine\":\"{engine}\",\"cell\":\"{cell}\",\"seed\":{seed},\"completed_ns\":{completed},\"delivered\":{},\"sent_bytes\":{},\"sent_retx\":{},\"rev_bytes\":{},\"unit_delay_p50_ns\":{}}}\n",
+        o.delivered_units, o.sent_bytes, o.sent_retx, o.rev_bytes, o.unit_delay_p50_ns
+    );
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
 fn report(eng: Engine, label: &str, o: &Outcome) {
+    gate_record(eng, label, o);
     println!(
         "[{}] {label}: tamamlanma={} teslim={}/{} data={} retx={} (dup={}) parite={} bayt={} kuyruk_düşen={} rastgele_düşen={} sack={} dönüş_bayt={} dönüş_düşen={} birim_p50={} birim_p95={}",
         eng.name(),
@@ -735,6 +778,8 @@ fn ten_seeds(
         let o = run(eng, rate, q, rtt, loss, seed, 120);
         if std::env::var("CC_VERBOSE").is_ok() {
             report(eng, &format!("{label} seed{seed}"), &o);
+        } else {
+            gate_record(eng, &format!("{label} seed{seed}"), &o);
         }
         if let Some(t) = o.completed_ns {
             times.push(t);
@@ -821,6 +866,7 @@ fn ptt_bundle_first_delivery() {
             None,
             None,
         );
+        gate_record(eng, "ptt 6x400B q6 l20 seed7", &o);
         println!(
             "[{}] ptt 6×400B q6 l20: ilk demet={}",
             eng.name(),
@@ -954,12 +1000,16 @@ fn r25_lowband_messages() {
         );
         // Kapı: her motor 60/60 teslim (medyan); port ileti p50 ≤ 8 s (U10–U13 öncesi 95 s, sonrası
         // 8,5 s; U14 sonrası 6,9 s; eski motor 5,4 s — eşitlenince kapı sıkılaşır). Keşif anahtarları (`CC_R25_*`,
-        // `CC_ACK_OVERHEAD`) varken kapı uygulanmaz (yalnız rapor).
+        // `CC_ACK_OVERHEAD`) varken kapı uygulanmaz (yalnız rapor). `CC_GATE_OUT` varken de uygulanmaz:
+        // CI gerileme kapısı bu harness'ı PR TABANININ motoruyla da koşturur (ci.yml `cc-regression`);
+        // mutlak eşik tabanda tutmayabilir (bu PR'ın düzelttiği gerileme gibi) — mutlak eşik `test`
+        // işinde, taban ↔ aday karşılaştırması `cc_gate_compare.py`'de doğrulanır.
         let explore = [
             "CC_R25_INTERVAL_MS",
             "CC_R25_WIRE_OVERHEAD",
             "CC_R25_TMAX_S",
             "CC_ACK_OVERHEAD",
+            "CC_GATE_OUT",
         ]
         .iter()
         .any(|k| std::env::var(k).is_ok());
@@ -1026,4 +1076,726 @@ fn blackout_60s_session_survives_and_completes() {
             );
         }
     }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// [H1 · FEC üç kol] FEC kapalı / sabit parite / fuzzy kontrolcü — aynı tohum, aynı kayıp izi.
+//
+// Ürün yolunun blok kapanışını AYNEN taklit eder (`client-core/src/runtime.rs` offer kolu): her
+// `AppData`'dan hemen sonra blok birikir; `k_shape` (8) dolunca `open_fec_block_authority` +
+// (`close_fec_block_manual` | `controller_decision_snapshot` → `fec_controller_latch`). Kısmi blok
+// ürün yolunda YALNIZ oturum kapanışında kapanır; burada da kapanmaz (`partial_close` yalnız
+// karşı-olgusal kol, ürün davranışı DEĞİL). Gönderici ürün ayarlarıyla kurulur
+// (`RuntimeConfig::default`: port motoru, IW 2400 → port tabanı 4·MTU, `bounded_v1` kayıp riski,
+// yapı kapısı 250‰, profil 0x05: k = 8, r_code_max = 4, E = 1024).
+//
+// ALICI ÇÖZÜMÜ BURADA (i) "ÇÖZÜLEBİLİR"dir: bir blokta ≥ k geçerli sembol (kaynak + parite) gelince
+// o bloğun eksik kaynak birimleri o anda "kurtarılabilir" sayılır ve ürün alıcısının yaptığı gibi
+// göndericiye `RecoveredControl` (tek yön gecikmesiyle) gider. Gerçek RS çözümü ve uygulamaya teslim
+// (ii) burada YOKTUR; FEC hükmü bu sayılarla VERİLMEZ (iş emri H1 §2, §4).
+//
+// Yalnız `CC_FEC3=1` ile koşan ölçüm testi + her zaman koşan iki yapısal pin. Mevcut yedi test bu
+// bölümden etkilenmez (`run_opt` ve `Bottleneck`'in Bernoulli yolu değişmedi).
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+use adaptive_transport::sender::{
+    FecLossRiskConfig, InitialWindowConfig, RecoveredInfo, RecoveredUnit, SrLogicalRef,
+};
+
+/// Profil 0x05 (`kama_fec_codec::profile`): k_shape, r_code_max, E.
+const K_SHAPE: u64 = 8;
+const R_CODE_MAX: u16 = 4;
+const SYMBOL_E: u64 = 1024;
+/// Tel ek yükü: `HDR_DATA` 11 / `HDR_FEC` 12 (client-core `wire.rs`) + mühür 22 B (legacy zarf).
+const DATA_OVERHEAD: u64 = 11 + 22;
+const PARITY_OVERHEAD: u64 = 12 + 22;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FecArm {
+    /// FEC kapalı (ürün `manual_r: Some(0)`: çerçeve aynı, parite yok).
+    Off,
+    /// Sabit parite: her tam blokta `r` (ürün `manual_r: Some(r)`).
+    Fixed(u16),
+    /// Fuzzy kontrolcü, ürün yapılandırması (teslim süresi bildirilmez — ürün TEXT/PTT/dosya böyle).
+    Fuzzy,
+    /// Fuzzy kontrolcü + bildirilmiş teslim süresi (ns): paritenin devreye girebildiği kontrol kolu.
+    FuzzyDeadline(u64),
+}
+
+impl FecArm {
+    fn label(self) -> String {
+        match self {
+            Self::Off => "FEC kapalı".into(),
+            Self::Fixed(r) => format!("sabit {r}/8"),
+            Self::Fuzzy => "fuzzy (ürün)".into(),
+            Self::FuzzyDeadline(d) => format!("fuzzy+süre {} ms", d / MS),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LossModel {
+    /// Bağımsız kayıp (binde).
+    Bernoulli(u64),
+    /// Gilbert-Elliott (ppm): p_gb, p_bg.
+    Ge(u64, u64),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct H1Cell {
+    label: &'static str,
+    rate_bps: u64,
+    queue: usize,
+    rtt_ms: u64,
+    loss: LossModel,
+    units: u64,
+    unit_bytes: u64,
+    t_max_s: u64,
+    /// Sunum aralığı (ms): 0 = hepsi t = 0'da (dosya / PTT demeti); > 0 = uygulama sınırlı akış
+    /// (blok latch'leri ölçüm oluştuktan sonra düşer — kontrolcünün devreye girebildiği kol).
+    offer_interval_ms: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct H1Out {
+    /// Bütün birimler (ARQ ile teslim ya da (i) çözülebilir) — `None` = t_max içinde değil.
+    completed_ns: Option<u64>,
+    /// Birim başına ilk erişilebilirlik anı: min(ARQ teslimi, (i) blok çözülebilir).
+    per_unit_ns: Vec<Option<u64>>,
+    /// Birim sunum anı (aralık × i); gecikme = `per_unit_ns − offer_ns`.
+    offer_ns: Vec<u64>,
+    /// (i) ARQ teslimiNDEN ÖNCE çözülebilir olan kaynak birim sayısı.
+    recovered_before_arq: u64,
+    data_bytes: u64,
+    retx_bytes: u64,
+    parity_bytes: u64,
+    total_bytes: u64,
+    parity_pkts: u64,
+    /// Kapatılan (latch / manuel close) tam blok sayısı ve planlanan toplam parite.
+    blocks_closed: u64,
+    planned_parity: u64,
+    /// Hiç kapanmayan kısmi bloktaki birim sayısı (ürün yolunda parite almaz).
+    tail_units_unprotected: u64,
+    /// Latch baskılama nedenleri (kontrolcü kolu): yok-karar / olay-uyuşmazlığı / kural-yok /
+    /// sıfıra-yuvarlama; motor parite sayaçları: kuyruklanan / tele çıkan / iptal edilen.
+    sup_no_decision: u64,
+    sup_event_mismatch: u64,
+    sup_no_rule: u64,
+    sup_rounded_zero: u64,
+    fec_enqueued: u64,
+    fec_emitted: u64,
+    fec_canceled: u64,
+    /// Son latch'in istenen oranı (‰) ve baskılama nedeni.
+    last_latch: String,
+    /// Hakem gerekçe histogramı (None/ConfirmedFuzzy/ConfirmedPolicy/StructureGate/SpecBoot/
+    /// SpecPersistent/DeadlineAssisted), PreConverge'de bloklanan, bütçe clamp / sıfırlayacak.
+    arbiter: [u64; 7],
+    preconverge_blocked: u64,
+    budget_clamped: u64,
+    budget_would_zero: u64,
+}
+
+/// Alıcı blok defteri: (alınan kaynak esi'leri, alınan parite esi'leri, k_actual, çözülebilir anı).
+type BlockRx = (HashSet<u16>, HashSet<u16>, u64, Option<u64>);
+
+#[allow(clippy::too_many_lines)]
+fn run_h1(cell: &H1Cell, arm: FecArm, seed: u64, partial_close: bool) -> H1Out {
+    let one_way = cell.rtt_ms * MS / 2;
+    let mut s = Sender::with_cc_port();
+    // Ürün yapılandırması (`runtime.rs` connect yolu, `KamaV1Profile::runtime_config`).
+    s.set_fec_loss_risk(FecLossRiskConfig::bounded_v1());
+    s.set_structure_gate_level(Some(250));
+    s.set_initial_window(InitialWindowConfig {
+        bytes: adaptive_transport::pacer::DEFAULT_BURST_CAP,
+    });
+    s.set_cc_initial_window(
+        adaptive_transport::pacer::DEFAULT_BURST_CAP.max(4 * adaptive_transport::rate::DEFAULT_MTU),
+    );
+    let mode = match arm {
+        FecArm::Off | FecArm::Fixed(_) => FecActuationMode::Manual { enabled: true },
+        FecArm::Fuzzy | FecArm::FuzzyDeadline(_) => FecActuationMode::Controller,
+    };
+    s.set_fec_actuation_mode(mode).expect("FEC kipi");
+    let mut r = Receiver::with_cc_port();
+    let mut fwd = Bottleneck::new(cell.rate_bps, cell.queue, one_way, 0, seed);
+    match cell.loss {
+        LossModel::Bernoulli(pm) => fwd.loss_permille = pm,
+        LossModel::Ge(p_gb, p_bg) => fwd.ge = Some((p_gb, p_bg, false)),
+    }
+    let data_size = cell.unit_bytes + DATA_OVERHEAD;
+    let parity_size = SYMBOL_E + PARITY_OVERHEAD;
+    let n = cell.units;
+    let mut o = H1Out {
+        per_unit_ns: vec![None; n as usize],
+        offer_ns: (0..n).map(|i| i * cell.offer_interval_ms * MS).collect(),
+        ..H1Out::default()
+    };
+    let mut arq_ns: Vec<Option<u64>> = vec![None; n as usize];
+    // Parite seq → (blok, esi); blok → (alınan kaynak esi'leri, alınan parite esi'leri, k, çözülebilir anı).
+    let mut parity_of: HashMap<u64, (u32, u16)> = HashMap::new();
+    let mut blk_rx: HashMap<u32, BlockRx> = HashMap::new();
+    let mut closed_k: HashMap<u32, u64> = HashMap::new();
+    let mut rev: VecDeque<(u64, Event)> = VecDeque::new();
+    let mut acked_seen: HashSet<u64> = HashSet::new();
+
+    let emit = |decs: Vec<TransmitDecision>,
+                now: u64,
+                fwd: &mut Bottleneck,
+                o: &mut H1Out,
+                parity_of: &mut HashMap<u64, (u32, u16)>| {
+        for d in decs {
+            match d.kind {
+                TransmitKind::Data => o.data_bytes += d.size,
+                TransmitKind::Retransmit | TransmitKind::Duplicate => o.retx_bytes += d.size,
+                TransmitKind::FecParity => {
+                    o.parity_bytes += d.size;
+                    o.parity_pkts += 1;
+                    if let Some(h) = d.send_record {
+                        let SrLogicalRef::Fec { block_id, esi } = h.logical_ref;
+                        parity_of.insert(d.seq, (block_id, esi));
+                    }
+                }
+                TransmitKind::CsProbe => {}
+            }
+            o.total_bytes += d.size;
+            fwd.send(now, d.seq, d.size, d.unit_id, d.kind);
+        }
+    };
+
+    // Uygulama verisi t = 0'da (dosya / PTT demeti tek seferde); blok kapanışı ürün sırasıyla.
+    if let FecArm::FuzzyDeadline(d) = arm {
+        s.declare_delivery_deadline(d);
+    }
+    let mut cur: u64 = 0;
+    let mut block_id: u32 = 0;
+    let mut offered: u64 = 0;
+    let close = |s: &mut Sender, block_id: u32, k: u64| -> u16 {
+        let k8 = u8::try_from(k).unwrap_or(8);
+        match arm {
+            FecArm::Off => {
+                let auth = s.open_fec_block_authority();
+                s.close_fec_block_manual(auth, block_id, 0, parity_size)
+                    .unwrap_or(0)
+            }
+            FecArm::Fixed(rr) => {
+                let auth = s.open_fec_block_authority();
+                s.close_fec_block_manual(auth, block_id, rr, parity_size)
+                    .unwrap_or(0)
+            }
+            FecArm::Fuzzy | FecArm::FuzzyDeadline(_) => {
+                let snap = s.controller_decision_snapshot();
+                let auth = s.open_fec_block_authority();
+                s.fec_controller_latch(auth, snap, k8, R_CODE_MAX, block_id, parity_size)
+                    .planned_r
+            }
+        }
+    };
+
+    let t_max = cell.t_max_s * SEC;
+    let trace = std::env::var("CC_TRACE").is_ok();
+    let mut now = 0u64;
+    let mut done = 0u64;
+    while now < t_max {
+        // Uygulama sunumu: aralık 0 → hepsi t = 0; blok kapanışı ürün sırasıyla (AppData'dan hemen
+        // sonra, aynı olay — same-event latch guard'ı geçer).
+        while offered < n && offered * cell.offer_interval_ms * MS <= now {
+            let i = offered;
+            offered += 1;
+            let decs = s.on_event(
+                Event::AppData(OpaqueUnit {
+                    id: i,
+                    size: data_size,
+                }),
+                now,
+            );
+            emit(decs, now, &mut fwd, &mut o, &mut parity_of);
+            cur += 1;
+            if cur == K_SHAPE {
+                let planned = close(&mut s, block_id, K_SHAPE);
+                o.blocks_closed += 1;
+                o.planned_parity += u64::from(planned);
+                closed_k.insert(block_id, K_SHAPE);
+                cur = 0;
+                block_id += 1;
+            }
+            if offered == n && cur > 0 {
+                if partial_close {
+                    // KARŞI-OLGUSAL: kısmi blok son birimden hemen sonra kapanır (ürün yolu YAPMAZ).
+                    let planned = close(&mut s, block_id, cur);
+                    o.blocks_closed += 1;
+                    o.planned_parity += u64::from(planned);
+                    closed_k.insert(block_id, cur);
+                } else {
+                    o.tail_units_unprotected = cur;
+                }
+            }
+        }
+        let decs = s.on_event(Event::TimerFired(Timer::Pto), now);
+        emit(decs, now, &mut fwd, &mut o, &mut parity_of);
+        if now.is_multiple_of(200 * MS) {
+            let decs = s.on_event(Event::TimerFired(Timer::RtpropProbe), now);
+            emit(decs, now, &mut fwd, &mut o, &mut parity_of);
+        }
+        let mut ack_frames = Vec::new();
+        for (seq, uid, kind) in fwd.poll(now) {
+            if kind == TransmitKind::CsProbe {
+                continue;
+            }
+            // Blok defteri: hangi bloğun hangi sembolü geldi.
+            let (blk, esi, is_parity) = if kind == TransmitKind::FecParity {
+                let Some(&(b, e)) = parity_of.get(&seq) else {
+                    continue;
+                };
+                (b, e, true)
+            } else {
+                ((uid / K_SHAPE) as u32, (uid % K_SHAPE) as u16, false)
+            };
+            let rx_kind = if is_parity {
+                RxKind::FecShard {
+                    block_id: blk,
+                    esi,
+                    k_actual: u8::try_from(closed_k.get(&blk).copied().unwrap_or(K_SHAPE))
+                        .unwrap_or(8),
+                    is_repair: true,
+                }
+            } else {
+                RxKind::Data
+            };
+            let out = r.on_datagram(
+                RxDatagram {
+                    seq,
+                    unit_id: uid,
+                    kind: rx_kind,
+                },
+                now,
+            );
+            for u in out.delivered {
+                let ui = u as usize;
+                if ui < arq_ns.len() && arq_ns[ui].is_none() {
+                    arq_ns[ui] = Some(now);
+                }
+            }
+            if let Some(frame) = out.ack {
+                ack_frames.push(frame);
+            }
+            // (i) çözülebilirlik: yalnız kapanmış (parite planlanmış ya da planlanabilir) bloklar.
+            if let Some(&k) = closed_k.get(&blk) {
+                let e = blk_rx
+                    .entry(blk)
+                    .or_insert_with(|| (HashSet::new(), HashSet::new(), k, None));
+                if is_parity {
+                    e.1.insert(esi);
+                } else {
+                    e.0.insert(esi);
+                }
+                if e.3.is_none() && !e.1.is_empty() && (e.0.len() + e.1.len()) as u64 >= e.2 {
+                    e.3 = Some(now);
+                    // Eksik kaynakları "kurtarılabilir" say; ürün alıcısı gibi göndericiye bildir.
+                    let mut units = Vec::new();
+                    for x in 0..e.2 {
+                        let uid = u64::from(blk) * K_SHAPE + x;
+                        if !e.0.contains(&(x as u16)) && arq_ns[uid as usize].is_none() {
+                            units.push(RecoveredUnit {
+                                unit_id: uid,
+                                block_id: blk,
+                                esi: x as u16,
+                            });
+                        }
+                    }
+                    if !units.is_empty() {
+                        o.recovered_before_arq += units.len() as u64;
+                        for u in &units {
+                            let p = &mut o.per_unit_ns[u.unit_id as usize];
+                            if p.is_none() {
+                                *p = Some(now);
+                                done += 1;
+                            }
+                        }
+                        rev.push_back((
+                            now + one_way,
+                            Event::RecoveredControl(RecoveredInfo { units }),
+                        ));
+                    }
+                }
+            }
+        }
+        for frame in ack_frames {
+            let expected = r.largest_seq().unwrap_or(0) + 1;
+            let new: Vec<u64> = frame
+                .acked_full(expected)
+                .into_iter()
+                .filter(|q| acked_seen.insert(*q))
+                .collect();
+            if !new.is_empty() {
+                rev.push_back((
+                    now + one_way,
+                    Event::AckReceived(AckInfo {
+                        acked_seqs: new,
+                        ack_delay: frame.ack_delay_duration(),
+                    }),
+                ));
+            }
+        }
+        if let Some(frame) = r.on_ack_timer(now) {
+            let expected = r.largest_seq().unwrap_or(0) + 1;
+            let new: Vec<u64> = frame
+                .acked_full(expected)
+                .into_iter()
+                .filter(|q| acked_seen.insert(*q))
+                .collect();
+            if !new.is_empty() {
+                rev.push_back((
+                    now + one_way,
+                    Event::AckReceived(AckInfo {
+                        acked_seqs: new,
+                        ack_delay: frame.ack_delay_duration(),
+                    }),
+                ));
+            }
+        }
+        // ARQ teslimleri birim zamanına işlenir.
+        for (ui, t) in arq_ns.iter().enumerate() {
+            if let Some(t) = *t {
+                if o.per_unit_ns[ui].is_none() {
+                    o.per_unit_ns[ui] = Some(t);
+                    done += 1;
+                }
+            }
+        }
+        // Dönüş yolu: kayıpsız, tek yön gecikmesi (sıra korunur).
+        while rev.front().is_some_and(|(t, _)| *t <= now) {
+            let (_, ev) = rev.pop_front().expect("ön eleman");
+            let decs = s.on_event(ev, now);
+            emit(decs, now, &mut fwd, &mut o, &mut parity_of);
+        }
+        if trace && now.is_multiple_of(1000 * MS) {
+            let missing: Vec<usize> = o
+                .per_unit_ns
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.is_none())
+                .map(|(i, _)| i)
+                .take(8)
+                .collect();
+            println!(
+                "[h1 {}] t={}s teslim={done}/{n} sunulan={offered} inflight={} st={:?} tail={:?} eksik(ilk 8)={missing:?} düşen(kuyruk/rastgele)={}/{} ge={:?}",
+                arm.label(),
+                now / SEC,
+                s.inflight_bytes(),
+                s.state(),
+                s.tail_probe_diag(),
+                fwd.dropped_queue,
+                fwd.dropped_random,
+                fwd.ge
+            );
+        }
+        if done >= n {
+            o.completed_ns = Some(now);
+            break;
+        }
+        now += MS;
+    }
+    let d = s.diag_fec_actuation();
+    o.sup_no_decision = d.no_eligible_decision_count;
+    o.sup_event_mismatch = d.decision_event_mismatch_count;
+    o.sup_no_rule = d.no_rule_zero_count;
+    o.sup_rounded_zero = d.rounded_to_zero_count;
+    o.fec_enqueued = d.enqueued_r_total;
+    o.fec_emitted = d.emitted_r_total;
+    o.fec_canceled = d.canceled_r_total;
+    o.arbiter = s.diag_arbiter_reasons();
+    o.preconverge_blocked = s.diag_preconverge_parity_blocked();
+    o.budget_clamped = s.diag_parity_budget_clamped();
+    o.budget_would_zero = s.diag_parity_budget_would_zero();
+    o.last_latch = d.last_latch.map_or("yok".into(), |l| {
+        format!(
+            "istenen={}‰ planlanan={} neden={:?}",
+            l.requested_ratio_permille, l.planned_r, l.suppression
+        )
+    });
+    o
+}
+
+fn pct(v: &mut [u64], p: usize) -> Option<u64> {
+    if v.is_empty() {
+        return None;
+    }
+    v.sort_unstable();
+    Some(v[((v.len() - 1) * p) / 100])
+}
+
+/// Bir kolun 10 tohumluk özeti. `active_only`: yalnız parite tele çıkan koşular (alt küme).
+#[derive(Debug, Default, Clone)]
+struct H1Agg {
+    runs: usize,
+    completed: usize,
+    comp_p50: Option<u64>,
+    comp_p95: Option<u64>,
+    comp_max: Option<u64>,
+    unit_p50: Option<u64>,
+    unit_p95: Option<u64>,
+    recovered: u64,
+    data_b: u64,
+    retx_b: u64,
+    parity_b: u64,
+    total_b: u64,
+    parity_runs: usize,
+    planned: u64,
+    tail_unprot: u64,
+}
+
+fn aggregate(outs: &[H1Out]) -> H1Agg {
+    let mut a = H1Agg {
+        runs: outs.len(),
+        ..H1Agg::default()
+    };
+    let mut comp: Vec<u64> = Vec::new();
+    let mut units: Vec<u64> = Vec::new();
+    for o in outs {
+        if let Some(t) = o.completed_ns {
+            comp.push(t);
+        }
+        units.extend(
+            o.per_unit_ns
+                .iter()
+                .zip(&o.offer_ns)
+                .filter_map(|(t, off)| t.map(|t| t.saturating_sub(*off))),
+        );
+        a.recovered += o.recovered_before_arq;
+        a.data_b += o.data_bytes;
+        a.retx_b += o.retx_bytes;
+        a.parity_b += o.parity_bytes;
+        a.total_b += o.total_bytes;
+        a.planned += o.planned_parity;
+        a.tail_unprot += o.tail_units_unprotected;
+        if o.parity_pkts > 0 {
+            a.parity_runs += 1;
+        }
+    }
+    a.completed = comp.len();
+    a.comp_max = comp.iter().copied().max();
+    a.comp_p50 = pct(&mut comp.clone(), 50);
+    a.comp_p95 = pct(&mut comp, 95);
+    a.unit_p50 = pct(&mut units.clone(), 50);
+    a.unit_p95 = pct(&mut units, 95);
+    a
+}
+
+fn fs(v: Option<u64>) -> String {
+    v.map_or("—".into(), |t| format!("{:.2}", t as f64 / SEC as f64))
+}
+
+fn h1_row(cell: &H1Cell, arm_label: &str, a: &H1Agg) {
+    let k = a.runs.max(1) as u64;
+    println!(
+        "| {} | {} | {}/{} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {}/{} |",
+        cell.label,
+        arm_label,
+        a.completed,
+        a.runs,
+        fs(a.comp_p50),
+        fs(a.comp_p95),
+        fs(a.comp_max),
+        fs(a.unit_p50),
+        fs(a.unit_p95),
+        a.recovered,
+        a.data_b / k,
+        a.retx_b / k,
+        a.parity_b / k,
+        a.total_b / k,
+        a.parity_runs,
+        a.runs,
+    );
+}
+
+fn h1_cells() -> Vec<H1Cell> {
+    // GE: ortalama kayıp %20, ortalama patlama 4 paket → p_bg = 1/4, p_gb = 0,25 × 0,2 / 0,8.
+    let ge = LossModel::Ge(62_500, 250_000);
+    let ptt = |label, loss| H1Cell {
+        label,
+        rate_bps: 12_500,
+        queue: 6,
+        rtt_ms: 300,
+        loss,
+        units: 6,
+        unit_bytes: 400,
+        t_max_s: 60,
+        offer_interval_ms: 0,
+    };
+    let file = |label, loss| H1Cell {
+        label,
+        rate_bps: 12_500,
+        queue: 6,
+        rtt_ms: 300,
+        loss,
+        units: 150,
+        unit_bytes: 1000,
+        t_max_s: 240,
+        offer_interval_ms: 0,
+    };
+    // Kontrol hücresi: aynı 150×1000 B, uygulama sınırlı akış (160 ms arayla ≈ 6,25 kB/s, bağın
+    // yarısı) — blok latch'leri ölçüm oluştuktan sonra düşer; kontrolcünün devreye girip
+    // girmediği burada görülür.
+    let stream = |label, loss| H1Cell {
+        label,
+        rate_bps: 12_500,
+        queue: 6,
+        rtt_ms: 300,
+        loss,
+        units: 150,
+        unit_bytes: 1000,
+        t_max_s: 240,
+        offer_interval_ms: 160,
+    };
+    vec![
+        ptt("PTT 6×400 B · %20 rastgele", LossModel::Bernoulli(200)),
+        file("dosya 150×1000 B · %20 rastgele", LossModel::Bernoulli(200)),
+        ptt("PTT 6×400 B · %20 GE (patlama 4)", ge),
+        file("dosya 150×1000 B · %20 GE (patlama 4)", ge),
+        stream(
+            "akış 150×1000 B / 160 ms · %20 rastgele",
+            LossModel::Bernoulli(200),
+        ),
+        stream("akış 150×1000 B / 160 ms · %20 GE (patlama 4)", ge),
+    ]
+}
+
+/// [H1] Tek koşu izi (yalnız `CC_FEC3_ONE=<hücre-indisi>,<kol: off|fixed|fuzzy>,<tohum>` + `CC_TRACE=1`).
+#[test]
+fn h1_one_trace() {
+    let Ok(v) = std::env::var("CC_FEC3_ONE") else {
+        return;
+    };
+    let parts: Vec<&str> = v.split(',').collect();
+    let cell = h1_cells()[parts[0].parse::<usize>().expect("hücre")];
+    let arm = match parts[1] {
+        "off" => FecArm::Off,
+        "fixed" => FecArm::Fixed(2),
+        _ => FecArm::Fuzzy,
+    };
+    let o = run_h1(&cell, arm, parts[2].parse().expect("tohum"), false);
+    println!(
+        "{} {}: tamam={} retx_B={} parite_pkt={}",
+        cell.label,
+        arm.label(),
+        fs(o.completed_ns),
+        o.retx_bytes,
+        o.parity_pkts
+    );
+}
+
+/// [H1] Ölçüm (yalnız `CC_FEC3=1`): dört hücre × kollar × 10 tohum. Kapı değildir; markdown tablosu
+/// basar. `CC_FEC3_DEADLINE_MS` (varsayılan 600) fuzzy kontrol kolunun bildirilen teslim süresi;
+/// `CC_FEC3_PARTIAL=1` karşı-olgusal kısmi-blok kapanışlı ek satırlar.
+#[test]
+fn h1_fec_three_arms() {
+    if std::env::var("CC_FEC3").is_err() {
+        return;
+    }
+    let deadline_ms: u64 = std::env::var("CC_FEC3_DEADLINE_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(600);
+    let partial = std::env::var("CC_FEC3_PARTIAL").is_ok();
+    let arms = [
+        FecArm::Off,
+        FecArm::Fixed(2),
+        FecArm::Fuzzy,
+        FecArm::FuzzyDeadline(deadline_ms * MS),
+    ];
+    println!("| hücre | kol | teslim | tamamlanma p50 s | p95 s | max s | birim gecikmesi p50 s (teslim − sunum) | birim gecikmesi p95 s | (i) ARQ'dan önce çözülebilir birim (Σ10) | veri B/koşu | retx B/koşu | parite B/koşu | toplam B/koşu | parite tele çıkan koşu |");
+    println!("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+    for cell in h1_cells() {
+        for arm in arms {
+            let outs: Vec<H1Out> = (1..=10)
+                .map(|seed| run_h1(&cell, arm, seed, false))
+                .collect();
+            let all = aggregate(&outs);
+            h1_row(&cell, &arm.label(), &all);
+            if matches!(arm, FecArm::Fuzzy | FecArm::FuzzyDeadline(_)) {
+                let active: Vec<H1Out> =
+                    outs.iter().filter(|o| o.parity_pkts > 0).cloned().collect();
+                if !active.is_empty() && active.len() < outs.len() {
+                    h1_row(
+                        &cell,
+                        &format!("{} — yalnız parite çıkan alt küme", arm.label()),
+                        &aggregate(&active),
+                    );
+                }
+            }
+            if std::env::var("CC_FEC3_VERBOSE").is_ok() {
+                for (i, o) in outs.iter().enumerate() {
+                    println!(
+                        "  seed{} {}: tamam={} bloklar={} planlanan={} parite_pkt={} korumasız_kuyruk={} \
+                         kuyruk/çıkan/iptal={}/{}/{} baskı(yok-karar/olay/kural/yuvarla)={}/{}/{}/{} son_latch[{}] \
+                         hakem(yok/cf/cp/yapı/sb/sp/süre)={:?} preconv_blok={} bütçe_clamp/sıfır={}/{}",
+                        i + 1,
+                        arm.label(),
+                        fs(o.completed_ns),
+                        o.blocks_closed,
+                        o.planned_parity,
+                        o.parity_pkts,
+                        o.tail_units_unprotected,
+                        o.fec_enqueued,
+                        o.fec_emitted,
+                        o.fec_canceled,
+                        o.sup_no_decision,
+                        o.sup_event_mismatch,
+                        o.sup_no_rule,
+                        o.sup_rounded_zero,
+                        o.last_latch,
+                        o.arbiter,
+                        o.preconverge_blocked,
+                        o.budget_clamped,
+                        o.budget_would_zero
+                    );
+                }
+            }
+        }
+        if partial {
+            for arm in [FecArm::Fixed(2), FecArm::Fuzzy] {
+                let outs: Vec<H1Out> = (1..=10)
+                    .map(|seed| run_h1(&cell, arm, seed, true))
+                    .collect();
+                h1_row(
+                    &cell,
+                    &format!("{} · KARŞI-OLGUSAL kısmi blok kapanışı", arm.label()),
+                    &aggregate(&outs),
+                );
+            }
+        }
+    }
+}
+
+/// [H1 yapısal pin] 6 birimlik PTT demeti 8'lik bloğu kapatmaz: ürün yolunda hiçbir kolda parite
+/// planlanmaz ve tele çıkmaz (kısmi blok yalnız oturum kapanışında kapanır).
+#[test]
+fn h1_ptt_bundle_gets_no_parity_in_any_arm() {
+    let cell = h1_cells()[0];
+    for arm in [
+        FecArm::Off,
+        FecArm::Fixed(2),
+        FecArm::Fuzzy,
+        FecArm::FuzzyDeadline(600 * MS),
+    ] {
+        let o = run_h1(&cell, arm, 7, false);
+        assert_eq!(o.blocks_closed, 0, "{}: blok kapanmamalı", arm.label());
+        assert_eq!(o.parity_pkts, 0, "{}: parite tele çıkmamalı", arm.label());
+        assert_eq!(o.tail_units_unprotected, 6, "{}", arm.label());
+    }
+}
+
+/// [H1 yapısal pin] Sabit 2/8: 150 birim → 18 tam blok, 36 parite kuyruklanır ve en az biri tele
+/// çıkar; FEC kapalı kol aynı tohumda hiç parite göndermez ve hiçbir birimi (i) çözülebilir saymaz.
+/// (Paritenin ZAMANINDA ulaşıp ulaşmadığı bir ölçümdür, burada pinlenmez: `h1_fec_three_arms`.)
+#[test]
+fn h1_fixed_parity_reaches_the_wire_off_sends_none() {
+    let cell = h1_cells()[1];
+    let fixed = run_h1(&cell, FecArm::Fixed(2), 1, false);
+    assert_eq!(fixed.blocks_closed, 18, "150 birim → 18 tam blok");
+    assert_eq!(fixed.fec_enqueued, 36, "18 blok × 2 parite kuyruklanır");
+    assert!(fixed.parity_pkts > 0, "parite tele çıkmalı");
+    let off = run_h1(&cell, FecArm::Off, 1, false);
+    assert_eq!(off.parity_pkts, 0);
+    assert_eq!(off.recovered_before_arq, 0);
 }

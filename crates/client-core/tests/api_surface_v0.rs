@@ -215,6 +215,11 @@ async fn transport_api_v0_surface_is_frozen() {
     let ServerStats {
         delivered: _,
         delivery_dropped: _,
+        // v0.18 (INV-ACK-DELIVER-1 · F4, sahip kararı 2026-11-11): minor-EKLEME, kasıtlı
+        // pin-güncellemesi — dolu teslim kanalında motora verilmeyen DATA ve RECOVERED'a
+        // yazılmayan kurtarım. Salt sayaç.
+        data_not_admitted_full: _,
+        fec_recovered_not_admitted: _,
         dropped_new_peers: _,
         retired_idle_peers: _,
         rx_datagrams: _,

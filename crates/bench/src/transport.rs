@@ -289,7 +289,8 @@ pub struct ServerCfg {
     pub persist_q: Option<u32>,
     pub rp_suppress: Option<u32>,
     /// [KTP2-F0 / C1] Alıcı-tarafı teslim damgası (`serve --rx-log`; bkz. [`crate::rxlog`]).
-    /// `None` = kayıt yok, dosya yok (eski davranış). `kama-product` ve `tcp` sunucularında.
+    /// `None` = kayıt yok, dosya yok (eski davranış). `kama-product`, `tcp`, `quinn` ve [Ö-P]
+    /// `kama` sunucularında (`kama`: akışlı yazıcı [`crate::rxlog::RxStream`]).
     pub rx_log: Option<std::path::PathBuf>,
 }
 
