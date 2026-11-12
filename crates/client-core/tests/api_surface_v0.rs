@@ -197,6 +197,8 @@ async fn transport_api_v0_surface_is_frozen() {
         messages_acked: _,
         frag_encode_failures: _,
         fec_partial_blocks_closed: _,
+        // [FEC-E-ÖLÇEK] parite tavanının kaynak tel baytıyla sınırlandığı blok sayısı.
+        fec_parity_payload_clamped: _,
         // [TEŞHİS] yapı-gate karar tabanı + karar-yolu histogramı + kuruluş görünürlüğü.
         fate: _,
         // [DR-CS-3] cold-start probe/echo muhasebesi.
