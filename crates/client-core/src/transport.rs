@@ -744,6 +744,15 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         self.server.delivery_dropped()
     }
 
+    /// [F4] Salt-okunur telemetri: teslim kanalı doluyken motora verilmeyen (ACK'lenmeyen) DATA
+    /// datagramı sayısı (`ServerStats::data_not_admitted_full`). Uygulama `recv`'i sürdükçe sıfır
+    /// kalır; sıfırdan büyükse uygulama drenajı gecikmiştir — birim kaybolmaz, gönderici yeniden
+    /// iletir (INV-ACK-DELIVER-1).
+    #[must_use]
+    pub fn data_not_admitted_full(&self) -> u64 {
+        self.server.data_not_admitted_full()
+    }
+
     /// [K4G-05] Salt-okunur telemetri: ucu açık her S1 oturumunun motor / ARQ aynası
     /// ([`ClientHandle::live_diag`]), tutamaç sırasıyla. Ucu kurulamamış ya da bırakılmış
     /// oturum listede yoktur (onun sayaçları [`Self::retired_live_diag`]'dadır). Durum değişmez.
