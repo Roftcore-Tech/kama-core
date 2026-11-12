@@ -294,6 +294,7 @@ async fn main() {
     let adaptive = Some(FecRuntimeConfig {
         profile_id: PROFILE,
         manual_r: None,
+        channel_loss_permille: None,
     });
     let arms: Vec<(&str, Option<FecRuntimeConfig>, FecStructurePolicy)> = vec![
         (
@@ -306,6 +307,7 @@ async fn main() {
             Some(FecRuntimeConfig {
                 profile_id: PROFILE,
                 manual_r: Some(4),
+                channel_loss_permille: None,
             }),
             FecStructurePolicy::Q18Iid,
         ),

@@ -1717,7 +1717,19 @@ pub struct Sender {
 
     // ── FEC-emisyon (DR-S5-1; koşullu — guard-OFF'ta hot-path byte-değişmez) ──
     fec_mode: FecActuationMode, // Commit-G TEK-otorite (ayrı-bool-YOK); Manual{false}=DR-S5-1-default
-    instance_id: u64,           // Commit-K: process-yerel Sender-kimliği (yabancı-witness-reddi)
+    /// [FEC-PRIOR] Kanal profilinden gelen parite ÖN-ORANI (permille; 0 = yok). Yalnız
+    /// Controller modunda ve oturum kurulduktan sonra (PreConverge dışı); etkinlik kuralı
+    /// [`Self::fec_prior_active`] (kanıt penceresi dolmamış ∨ ölçülen kayıp ≥ profil/2). Etkinken
+    /// latch'te `max(kontrolcü oranı, ön-oran)`; değilken kontrolcü tek otoritedir (0 dahil).
+    /// ADR-17: belirlenimli, RNG yok. Bkz. `fec_controller_latch`.
+    fec_prior_ratio_permille: u32,
+    /// [FEC-PRIOR] Profilin beklenen kayıp oranı (permille). Kanıt penceresi dolduktan sonra ön-oran
+    /// yalnız ölçülen pencereli kayıp bunun YARISINI aşıyorsa (kanal profil kadar kötü) taban olarak
+    /// kalır; kanal beklenenden iyiyse kontrolcü tek otoritedir.
+    fec_prior_loss_permille: u32,
+    /// [FEC-PRIOR] Ön-oranın latch'te uygulandığı (kontrolcü oranını yükselttiği) sayısı.
+    fec_prior_applied: u64,
+    instance_id: u64, // Commit-K: process-yerel Sender-kimliği (yabancı-witness-reddi)
     fec_authority_generation: u64, // Commit-K: monoton açılış-generation (saturating)
     last_latch: Option<FecLatchResult>,
     latch_rounded_to_zero: u64, // [FAZ-6 §1.3] salt gözlem; hiçbir karar okumaz
@@ -2049,6 +2061,9 @@ impl Sender {
             establish_probe_emitted: 0,
             last_now_ns: 0,
             fec_mode: FecActuationMode::Manual { enabled: false }, // default: mevcut-davranış-birebir
+            fec_prior_ratio_permille: 0,
+            fec_prior_loss_permille: 0,
+            fec_prior_applied: 0,
             // Commit-K: process-yerel-kimlik. Relaxed-yeterli (yalnız-uniqueness; ordering-anlamı-yok).
             // Wrap 2^64-kuruluşta (ulaşılamaz-inşa-gereği; belgeli). Wire/golden/M1-çıktılarına-GİRMEZ.
             instance_id: NEXT_SENDER_INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
@@ -2515,6 +2530,25 @@ impl Sender {
                 return Vec::new();
             }
             self.on_event_core(event, now_ns);
+            self.schedule_transmit(now_ns)
+        }
+    }
+
+    /// [FEC-ERTELENMİŞ LATCH] Olaysız zamanlama turu: bekleyen iş (parite, yeniden iletim, veri)
+    /// için `schedule_transmit`; girdi olayı YOK, kestirici/kayıp defteri DEĞİŞMEZ. Çağıran
+    /// `fec_controller_latch` ile aynı olayın kararlarından sonra parite kuyruklamışsa, parite bir
+    /// sonraki olayı (ve o olayın tetikleyeceği ARQ'yu) beklemeden kaynaklarının arkasında çıkar.
+    /// Bekleyen iş yoksa boş döner. `experimental-cold-start`'ta `Tick` ile aynı yol.
+    pub fn schedule_pending(&mut self, now_ns: u64) -> Vec<TransmitDecision> {
+        #[cfg(feature = "experimental-cold-start")]
+        {
+            self.on_event_batch(now_ns, Vec::new())
+        }
+        #[cfg(not(feature = "experimental-cold-start"))]
+        {
+            let dt = Duration::from_nanos(now_ns.saturating_sub(self.last_now_ns));
+            self.pacer.refill(dt);
+            self.last_now_ns = now_ns;
             self.schedule_transmit(now_ns)
         }
     }
@@ -4883,6 +4917,22 @@ impl Sender {
         {
             self.plan_arq_retransmits(&mut out, now_ns);
         }
+        // [FEC-SIRA, 2026-11-12] Parite YENİ VERİDEN ÖNCE (yeniden iletimden sonra). Eski sıra
+        // (DR-S5-1/Commit-K: parite en sonda) toplu aktarımda pariteyi kuyruktaki BÜTÜN yeni verinin
+        // arkasına atıyordu: blok N'in paritesi ancak son blok da gittikten sonra tele çıkıyor, o
+        // sırada delikler ARQ ile çoktan dolmuş oluyordu (ölçüm: 12,5 kB/s %20 kayıp, 23 parite
+        // tele çıktı, alıcıda yararlı 0 — hepsi tamamlanmış bloğa geldi). İleri hata düzeltmenin
+        // işe yaraması için blok N'in paritesi blok N+1'in kaynaklarından ÖNCE gitmelidir; parite
+        // yalnız bloğun son kaynağı emitildikten sonra kuyruklandığından (ertelenmiş latch) bu
+        // sıra "kaynaklar → o bloğun paritesi → sonraki blok" demektir. Bütçe/uçuş penceresi aynı
+        // (`cc_fits` + pacer); yalnız sıra değişir. İSTİSNA — PreConverge: kuruluş yalnız orijinal
+        // DATA'nın RTT örneğiyle olur ([KURULUŞ-GUARD]); taban hızda (31 B/s) tek izni parite alırsa
+        // orijinal hiç çıkmaz ve oturum kurulamaz (n8_reverify_emit bunu gösterdi: statik-r/manuel
+        // kuyruk PreConverge'de parite üretebilir). Orada eski sıra (DATA → parite) korunur.
+        let parity_first = self.state != SenderState::PreConverge;
+        if parity_first {
+            self.plan_fec_parity(&mut out, now_ns);
+        }
         self.drain_new_data(&mut out, now_ns);
         match self.state {
             SenderState::RecoverArq => self.plan_arq_retransmits(&mut out, now_ns),
@@ -4903,10 +4953,14 @@ impl Sender {
         // (PreConverge-çıkışı). EK4-A2: vadesi next_timer_deadline_ns kümesine DAHİL.
         self.drain_establish_probe(&mut out, now_ns);
         self.drain_due_duplicates(&mut out, now_ns);
-        // DR-S5-1/Commit-K: FEC-parity DATA/recovery SONRASI (DATA-ÖNCE-sıralaması mühürlü). Drain'de
-        // mode-kapısı-YOK (üyelik=izin; girişte-kapılı) — buraya-drain-guard-EKLEME: Commit-K'nın
-        // kaldırdığı suppression-bug'ını-geri-getirir.
-        self.plan_fec_parity(&mut out, now_ns);
+        // DR-S5-1/Commit-K: parite drain'inde mode-kapısı-YOK (üyelik=izin; girişte-kapılı) —
+        // drain-guard-EKLEME: Commit-K'nın kaldırdığı suppression-bug'ını-geri-getirir. Drain
+        // [FEC-SIRA] ile yeni veriden ÖNCEYE alındı (`plan_fec_parity`, yukarıda); tur içinde tek
+        // geçiş: parite → yeni veri (`budget_equivalence_pin.rs` bu sırayı mühürler). PreConverge'de
+        // eski sıra: DATA (ve kurtarma) → parite.
+        if !parity_first {
+            self.plan_fec_parity(&mut out, now_ns);
+        }
         // Commit-V (U12-adım-8): gerçek-harcama-settle + waste-denetimi (normal-yolda-waste=0).
         #[cfg(feature = "experimental-fec-budget")]
         self.budget_settle();
@@ -4940,6 +4994,37 @@ impl Sender {
         self.last_transition_event_index = self.fusion_event_index;
         self.transition_applied_count = self.transition_applied_count.saturating_add(1);
         Ok(())
+    }
+
+    /// [FEC-PRIOR] Kanal profili: beklenen kayıp (permille) ve ondan türeyen parite ön-oranı
+    /// (permille). `ratio_permille = 0` kapatır. Uygulama kuralı [`Self::fec_prior_active`]'te.
+    pub fn set_fec_channel_prior(&mut self, loss_permille: u32, ratio_permille: u32) {
+        self.fec_prior_loss_permille = loss_permille.min(1000);
+        self.fec_prior_ratio_permille = ratio_permille.min(1000);
+    }
+
+    /// [FEC-PRIOR] Ön-oranın latch'te uygulandığı latch sayısı (salt gözlem).
+    #[must_use]
+    pub fn diag_fec_prior_applied(&self) -> u64 {
+        self.fec_prior_applied
+    }
+
+    /// [FEC-PRIOR] Ön-oran şu an etkin mi: yapılandırılmış ∧ oturum kurulmuş ∧ (kanıt penceresi
+    /// henüz dolmamış ∨ ölçülen pencereli kayıp profilin yarısını aşıyor). İkinci koşulun nedeni:
+    /// yapı-gate rastgele kaybı Laplace önseliyle "burst" okuyup pariteyi ARQ'ya bırakabiliyor
+    /// (kayıtlı açık borç, `structure_gate_fec`); kanal profil kadar kayıplıyken profil tabandır,
+    /// kontrolcü yalnız YÜKSELTİR. Kanal beklenenden iyiyse (kayıp < profil/2) kontrolcü tek
+    /// otoritedir. Latch dışında da okunabilir (test/teşhis).
+    #[must_use]
+    pub fn fec_prior_active(&self) -> bool {
+        // Kanıt ölçüsü: teyitli orijinal (RTT örneği) sayısı — yapı-gate'in pencere eşiğiyle aynı
+        // büyüklük. (Kestirici okunmaz: `estimator_has_exactly_one_reader` pini — gate dışında
+        // karar taşıyan okuyucu eklenmez.)
+        if self.fec_prior_ratio_permille == 0 || self.state == SenderState::PreConverge {
+            return false;
+        }
+        self.rtt_sample_count < STRUCTURE_GATE_MIN_N
+            || self.loss.loss_windowed_ppm() >= u64::from(self.fec_prior_loss_permille) * 500
     }
 
     /// [DEADLINE-EKSENİ] Uygulamanın teslim bütçesini bildirir (mesaj-başı; en sıkı olan tutulur).
@@ -5623,6 +5708,23 @@ impl Sender {
         let r = match authority.mode {
             FecActuationMode::Manual { .. } => zero(0, FecSuppressionReason::ManualDisabled, false),
             FecActuationMode::Controller => match snapshot {
+                // [FEC-PRIOR] Kontrolcü hiç koşmadıysa ya da kuralı yoksa, ön-oran etkinken
+                // (`fec_prior_active`) TEK kuraldır; etkin değilken eski dallar aynen.
+                None | Some(ControllerDecisionSnapshot { no_rule: true, .. })
+                    if self.fec_prior_active() =>
+                {
+                    self.fec_prior_applied = self.fec_prior_applied.saturating_add(1);
+                    let prior = self.fec_prior_ratio_permille;
+                    let (computed, clamped) = compute_requested_r(prior, k_actual, profile_r_max);
+                    FecLatchResult {
+                        requested_ratio_permille: prior,
+                        computed_r: computed,
+                        clamped_r: clamped,
+                        planned_r: clamped,
+                        same_event_eligible: true,
+                        suppression: None,
+                    }
+                }
                 None => {
                     self.no_eligible_decision_count =
                         self.no_eligible_decision_count.saturating_add(1);
@@ -5644,8 +5746,18 @@ impl Sender {
                     zero(0, FecSuppressionReason::NoRule, true) // LITERAL-0 (fec_zero-config'e-BAĞLI-DEĞİL)
                 }
                 Some(s) => {
-                    let (computed, clamped) =
-                        compute_requested_r(s.ratio_permille, k_actual, profile_r_max);
+                    // [FEC-PRIOR] Kanıt penceresi dolana dek ön-oran tabandır: kontrolcünün
+                    // (henüz ölçümsüz) oranını yalnız YÜKSELTİR, hiç düşürmez. Acil durum
+                    // (emergency) dalı kendi kuralını korur.
+                    let ratio = if self.fec_prior_active()
+                        && self.fec_prior_ratio_permille > s.ratio_permille
+                    {
+                        self.fec_prior_applied = self.fec_prior_applied.saturating_add(1);
+                        self.fec_prior_ratio_permille
+                    } else {
+                        s.ratio_permille
+                    };
+                    let (computed, clamped) = compute_requested_r(ratio, k_actual, profile_r_max);
                     if s.emergency {
                         // [FAZ-2 / KALEM-4 — SPEC UYUMU] Acil durumda davranış FRAMING'e bağlıdır
                         // (engine §11 L771-772 / TDD §5.6 L584-585, NORMATİF):
@@ -5685,7 +5797,7 @@ impl Sender {
                         }
                     } else {
                         FecLatchResult {
-                            requested_ratio_permille: s.ratio_permille,
+                            requested_ratio_permille: ratio,
                             computed_r: computed,
                             clamped_r: clamped,
                             planned_r: clamped,

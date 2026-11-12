@@ -82,6 +82,7 @@ fn cfg(frag: bool) -> RuntimeConfig {
         fec: Some(FecRuntimeConfig {
             profile_id: 0x03,
             manual_r: Some(4),
+            channel_loss_permille: None,
         }),
         drain_cap: Duration::from_millis(300),
         delivery_queue: QUEUE,

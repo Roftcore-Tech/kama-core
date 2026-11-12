@@ -216,6 +216,31 @@ pub struct FecRuntimeConfig {
     /// her blokta sabit r repair — kampanyaların STATIC_R kolu / operatör-forced FEC.
     /// `None` = Controller modu: yapı-gate (Q18-fix) kararı latch'e akar (adaptif).
     pub manual_r: Option<u16>,
+    /// [FEC-PRIOR] Kanal profilinin BEKLENEN kayıp oranı (permille). `Some(p)` = Controller
+    /// modunda, oturum kurulduktan sonra, (a) kontrolcü kanıt toplayana dek (teyitli orijinal
+    /// sayısı < 32) ve (b) sonrasında ölçülen pencereli kayıp `p/2`'yi aştığı sürece her blok EN AZ
+    /// [`fec_prior_ratio_permille`]`(p)` parite oranıyla kapanır; kontrolcü yalnız yükseltir.
+    /// Kanal beklenenden iyiyse (kayıp < p/2) kontrolcü tek otoritedir. Neden: kontrolcü kaybı
+    /// ÖLÇMEDEN parite açmaz (akışın başı korumasız; dosya aktarımında bütün bloklar, bkz.
+    /// ertelenmiş latch) ve yapı-gate rastgele kaybı Laplace önseliyle "burst" okuyup pariteyi
+    /// ARQ'ya bırakabiliyor; hedef ağ profili bilinen bir kanalda ölçüm beklemek gerekmez
+    /// (ADR-17: belirlenimli). `None` = ön-oran yok (eski davranış). Manual modda okunmaz.
+    pub channel_loss_permille: Option<u16>,
+}
+
+/// [FEC-PRIOR] Beklenen kayıp oranından parite ÖN-ORANI (permille): `1,5 × kayıp`, 1000 tavanlı.
+/// Rastgele (IID) kayıpta K=8 blokta 200‰ → 300‰ → r=2 (binom P(kayıp ≤ 2) ≈ %80), 300‰ → 450‰
+/// → r=4 (≈ %94). Emniyet payı blok başına beklenen kaybın yuvarlama kaybını örter; kalanı ARQ
+/// taşır (§8.4 füzyon). Belirlenimli; RNG yok.
+#[must_use]
+pub const fn fec_prior_ratio_permille(channel_loss_permille: u16) -> u32 {
+    let p = channel_loss_permille as u32;
+    let r = p + p / 2;
+    if r > 1000 {
+        1000
+    } else {
+        r
+    }
 }
 
 /// [KAMA TRANSPORT v1 ÜRÜN PROFİLİ] — sevk yapılandırmasının **TEK doğruluk kaynağı**.
@@ -255,6 +280,9 @@ impl KamaV1Profile {
     /// birimi 1013 B'de tutar, mühürlü FEC-shard 26+11+1024 = 1061 B < 1280 PMTU tabanı,
     /// sabit-overhead %3.5 — düşük-bant hedef rejimi için doğru takas (profile.rs:82-84).
     pub const FEC_PROFILE_ID: u8 = 0x05;
+    /// [FEC-PRIOR] Ürün profilinin beklenen kanal kaybı (permille): hedef ağ sınıfı (%20–30
+    /// rastgele kayıp) için 200‰ → ön-oran 300‰ → K=8'de r=2. Yalnız kanıt penceresi dolana dek.
+    pub const FEC_CHANNEL_LOSS_PERMILLE: u16 = 200;
 
     /// Birim (chunk) tavanı = `fec_chunk_capacity(FEC_PROFILE_ID)` = E − `SOURCE_PREFIX_LEN`.
     /// Bir birim tam olarak bir FEC source-symbol'üne oturur (§2.6 symbol_len kilidi).
@@ -307,6 +335,9 @@ impl KamaV1Profile {
             fec: Some(FecRuntimeConfig {
                 profile_id: Self::FEC_PROFILE_ID,
                 manual_r: None,
+                // [FEC-PRIOR, 2026-11-12] Hedef kanal profili (yüksek kayıp): kontrolcü kanıt
+                // toplayana dek bloklar ön-oranla kapanır (300‰ → r=2). Geri alma: `None`.
+                channel_loss_permille: Some(Self::FEC_CHANNEL_LOSS_PERMILLE),
             }),
             fusion_policy: None,
             loss_confirm_horizon: LossConfirmHorizon::CadenceLegacy,
@@ -505,6 +536,9 @@ pub struct FateWindowDiag {
     pub burst_delta_ppm: i64,
     /// Yapı-gate'in fuzzy `fec=0`'ı açtığı event sayısı (0 = hiç açmadı).
     pub structure_gate_opened: u64,
+    /// [FEC-PRIOR] Kanal ön-oranının latch'te uygulandığı (kontrolcü oranını yükselttiği ya da
+    /// tek kural olduğu) blok sayısı. 0 = ön-oran yok ya da kanıt zaten doluydu.
+    pub fec_prior_applied: u64,
     /// Ledger'ın pencereli kayıp oranı (ppm) — gate'in KAYIP önkoşulu bu değeri okur
     /// (`STRUCTURE_GATE_LOSS_MIN_PPM = 100_000`), fate-penceresinin `lost/n`'ini DEĞİL.
     ///
@@ -2167,6 +2201,12 @@ async fn client_task(
             .sender_mut()
             .set_fec_actuation_mode(mode)
             .expect("taze Sender mode-set kabul eder");
+        // [FEC-PRIOR] Kanal profili ön-oranı (yalnız Controller modunda anlamlı; Manual okumaz).
+        if let Some(p) = cfg.fec.and_then(|f| f.channel_loss_permille) {
+            session
+                .sender_mut()
+                .set_fec_channel_prior(u32::from(p), fec_prior_ratio_permille(p));
+        }
     }
     // [v2 / S3 K1] Koruma bağlamı. PN'i artık SEAM sayar (S3 K2) — burada sayaç YOK.
     // PoC: tek örtük oturum. Gerçek tutamaç `SessionControl`'ün `Ready`/`Established`'inden gelir
@@ -2190,8 +2230,17 @@ async fn client_task(
     // türetir); yalnız SON blok birikir. K dolunca same-event latch + gerçek RS-encode →
     // bounded repair_store (en-eski düşer → o bloğun FecParity kararı atlanır, tele çıkmaz;
     // `fec_repair_missing` + `stale_skipped`).
-    let mut cur_block: Vec<Vec<u8>> = Vec::new();
-    let mut cur_block_id: u32 = 0;
+    // [FEC-ERTELENMİŞ LATCH, 2026-11-12] Blok artık KUYRUĞA GİRİŞTE değil, bloğun SON kaynak
+    // biriminin ilk emisyonunda kapanır (`drive!` içindeki `TransmitKind::Data` dalı). Neden:
+    // kontrolcü anlık görüntüsü enqueue anında alınıyordu; toplu sunumda (dosya = tek mesajın
+    // chunk'ları) bütün bloklar t=0'da, hiçbir kayıp ölçülmeden kapanıyor ve r=0 kalıyordu
+    // (ölçüm: 12,5 kB/s %20 kayıpta gate 14 094 kez açtı, 0 blok latch'lendi). Emisyon anında
+    // kontrolcü o ana kadarki kanıtı görmüş olur; akışın başı için kanal ön-oranı (FEC-PRIOR).
+    // Bekleyen bloklar `pending_blocks` (blok → semboller); sınır `PENDING_BLOCKS_CAP`:
+    // aşılırsa en eski TAM blok hemen (eski davranışla) kapanır. Emisyonu bekleyen blok sayısı
+    // `cfg.max_inflight_units / K` ile zaten sınırlıdır (store sınırı).
+    let mut pending_blocks: BTreeMap<u32, Vec<Vec<u8>>> = BTreeMap::new();
+    const PENDING_BLOCKS_CAP: usize = 256;
     // [FAZ-2 / KALEM-1] blok → (K_actual, repair'ler). K_actual kısmi/son blokta k_shape'ten
     // küçüktür ve TEL BAŞLIĞINDA taşınmak zorundadır (alıcı Model-A zero-enjeksiyonunu ondan türetir).
     let mut repair_store: BTreeMap<u32, (u8, Vec<RepairSymbol>)> = BTreeMap::new();
@@ -2354,17 +2403,81 @@ async fn client_task(
             newly
         }};
     }
+    // [FEC-ERTELENMİŞ LATCH] TAM bloğu kapat: statik-r (Manual) ya da kontrolcü latch'i
+    // (Controller; anlık görüntü ŞİMDİ alınır → same-event guard geçer), RS-encode →
+    // repair_store. Çağıran bloğun K sembolünü `pending_blocks`'tan çıkarıp verir.
+    macro_rules! close_full_block {
+        ($block_id:expr, $syms:expr) => {{
+            let block_id: u32 = $block_id;
+            let syms: Vec<Vec<u8>> = $syms;
+            if let Some(p) = fec.as_ref() {
+                let parity_wire = wire_len(seam.as_ref(), client_ctx, HDR_FEC + p.e_usize());
+                let planned_r: u16 = if let Some(r) = fec_manual_r {
+                    let auth = session.sender_mut().open_fec_block_authority();
+                    session
+                        .sender_mut()
+                        .close_fec_block_manual(auth, block_id, r, parity_wire)
+                        .unwrap_or(0)
+                } else {
+                    let snap = session.sender().controller_decision_snapshot();
+                    let auth = session.sender_mut().open_fec_block_authority();
+                    session
+                        .sender_mut()
+                        .fec_controller_latch(
+                            auth,
+                            snap,
+                            u8::try_from(p.k_shape).unwrap_or(255),
+                            p.r_code_max,
+                            block_id,
+                            parity_wire,
+                        )
+                        .planned_r
+                };
+                if planned_r > 0 {
+                    let srcs: Vec<SourceSymbol> = syms
+                        .iter()
+                        .enumerate()
+                        .map(|(i, b)| SourceSymbol {
+                            esi: i as u16,
+                            bytes: b,
+                        })
+                        .collect();
+                    if let Ok(reps) = RsSimdCodec.encode(p, &srcs) {
+                        stats.fec_blocks_latched += 1;
+                        repair_store
+                            .insert(block_id, (u8::try_from(p.k_shape).unwrap_or(255), reps));
+                        while repair_store.len() > REPAIR_STORE_BLOCKS {
+                            repair_store.pop_first();
+                        }
+                    }
+                }
+            }
+        }};
+    }
     // Değeri: olayın teyit drenajında store'dan düşen birim sayısı (`drain_confirmed!`).
     macro_rules! drive {
         ($ev:expr, $now:expr) => {{
-            let ev: Event = $ev;
-            let via = ConfirmVia::of(&ev);
-            let decisions = session.on_event(ev, $now);
+            let mut next_ev: Option<Option<Event>> = Some(Some($ev));
+            let mut confirmed_now: u32 = 0;
+            // [FEC-ERTELENMİŞ LATCH] Bu olayın kararları işlenirken bir blok kapandıysa parite
+            // motor kuyruğuna girdi ama bu turun kararları çoktan üretilmişti → aynı anda olaysız
+            // ikinci zamanlama turu (`schedule_pending`): parite, kaynaklarının hemen arkasında (bir
+            // sonraki ACK'in tetikleyeceği ARQ yeniden iletiminden ÖNCE) tele çıkar. Bekleyen iş
+            // yoksa boş döner; latch olmadıysa döngü tek tur döner (eski davranış).
+            while let Some(ev) = next_ev.take() {
+            let (via, decisions) = match ev {
+                Some(ev) => {
+                    let via = ConfirmVia::of(&ev);
+                    (via, session.on_event(ev, $now))
+                }
+                None => (ConfirmVia::Ack, session.schedule_pending($now)),
+            };
+            let mut latched_now = false;
             // [K4G-05b-R] Teyit drenajı kararlar işlenmeden ÖNCE. Motor teyitli birime karar
             // üretmez (teyitte bekleyen işi iptal edilir); yine de gelirse aşağıda store-miss olarak
             // atlanır (tele datagram çıkmaz; `stale_decisions` + `stale_skipped`, panik yok) ve
             // birime yeni harita kaydı açılmaz.
-            let confirmed_now: u32 = drain_confirmed!(via);
+            confirmed_now = confirmed_now.saturating_add(drain_confirmed!(via));
             for d in decisions {
                 // PN → seq çevirisi motor seq'i taşıyan HER kararda (repair'ler de seq işgal eder;
                 // `map_pn!`); ama seq→unit haritası YALNIZ birim-taşıyan kararlarda: FecParity'nin
@@ -2467,6 +2580,25 @@ async fn client_task(
                     stats.stale_skipped += 1;
                     continue;
                 };
+                // [FEC-ERTELENMİŞ LATCH] Bloğun son kaynağı (esi = K−1) ilk kez tele çıkıyor →
+                // blok ŞİMDİ kapanır (kontrolcü bu ana kadarki kanıtla). Blok/esi iki uçta da
+                // birim kimliğinden türer (block = id/K, esi = id%K).
+                if d.kind == TransmitKind::Data {
+                    if let Some(p) = fec.as_ref() {
+                        let k = u64::from(p.k_shape);
+                        if d.unit_id % k == k - 1 {
+                            let block_id = u32::try_from(d.unit_id / k).unwrap_or(u32::MAX);
+                            let full = pending_blocks
+                                .get(&block_id)
+                                .is_some_and(|b| b.len() == p.k_shape_usize());
+                            if full {
+                                let syms = pending_blocks.remove(&block_id).unwrap_or_default();
+                                close_full_block!(block_id, syms);
+                                latched_now = true;
+                            }
+                        }
+                    }
+                }
                 // Sınıf ayrımı motorun karar tipinden: ilk emisyon / ARQ retransmit / §11 dup.
                 let class = match d.kind {
                     TransmitKind::Retransmit => TxClass::Retx,
@@ -2475,6 +2607,10 @@ async fn client_task(
                 };
                 let pn = seal_send!(frame, class, $now);
                 map_pn!(pn, d.seq);
+            }
+            if latched_now {
+                next_ev = Some(None); // olaysız tur: parite kaynaklarının arkasında çıkar
+            }
             }
             confirmed_now
         }};
@@ -2816,66 +2952,33 @@ async fn client_task(
                     if frag_on {
                         unit_msg.insert(id, msg_id);
                     }
-                    drive!(Event::AppData(OpaqueUnit { id, size }), now);
-                // [S1] Blok birikimi + K'de SAME-EVENT latch: drive! az önce on_event koşturdu →
-                // snapshot.event_index taze; arada başka event YOK (tek-task sıralılık) → latch'in
-                // same-event-causality guard'ı geçer.
+                // [S1] Blok birikimi — `drive!`'dan ÖNCE: sembol bekleyen bloğa eklenir; kapanış
+                // ertelenmiştir (`drive!` Data dalı — birim aynı olayda tele çıkabilir, blok o anda
+                // tam olmalı). Tavan aşılırsa en eski TAM blok hemen kapanır.
                 if let Some(p) = fec.as_ref() {
-                    let e = p.e_usize();
                     let Some(sym) = sym else {
                         // Ulaşılamaz (validate_fec body ≤ E garantiler); sessiz blok-desenkronu
                         // yerine sayaç — hizanın bozulduğu ANDA görünür.
                         stats.frag_encode_failures += 1;
                         continue;
                     };
-                    debug_assert_eq!(cur_block.len() as u64, id % u64::from(p.k_shape));
-                    cur_block.push(sym);
-                    if cur_block.len() == p.k_shape_usize() {
-                        let parity_wire = wire_len(seam.as_ref(), client_ctx, HDR_FEC + e);
-                        // Statik-r (Manual{true} + manuel-close) YA DA adaptif (Controller + latch).
-                        let planned_r: u16 = if let Some(r) = fec_manual_r {
-                            let auth = session.sender_mut().open_fec_block_authority();
-                            session
-                                .sender_mut()
-                                .close_fec_block_manual(auth, cur_block_id, r, parity_wire)
-                                .unwrap_or(0)
-                        } else {
-                            let snap = session.sender().controller_decision_snapshot();
-                            let auth = session.sender_mut().open_fec_block_authority();
-                            session
-                                .sender_mut()
-                                .fec_controller_latch(
-                                    auth,
-                                    snap,
-                                    u8::try_from(p.k_shape).unwrap_or(255),
-                                    p.r_code_max,
-                                    cur_block_id,
-                                    parity_wire,
-                                )
-                                .planned_r
-                        };
-                        if planned_r > 0 {
-                            let srcs: Vec<SourceSymbol> = cur_block
-                                .iter()
-                                .enumerate()
-                                .map(|(i, b)| SourceSymbol {
-                                    esi: i as u16,
-                                    bytes: b,
-                                })
-                                .collect();
-                            if let Ok(reps) = RsSimdCodec.encode(p, &srcs) {
-                                stats.fec_blocks_latched += 1;
-                                repair_store
-                                    .insert(cur_block_id, (u8::try_from(p.k_shape).unwrap_or(255), reps));
-                                while repair_store.len() > REPAIR_STORE_BLOCKS {
-                                    repair_store.pop_first();
-                                }
-                            }
+                    let k = u64::from(p.k_shape);
+                    let block_id = u32::try_from(id / k).unwrap_or(u32::MAX);
+                    let entry = pending_blocks.entry(block_id).or_default();
+                    debug_assert_eq!(entry.len() as u64, id % k);
+                    entry.push(sym);
+                    if pending_blocks.len() > PENDING_BLOCKS_CAP {
+                        let oldest_full = pending_blocks
+                            .iter()
+                            .find(|(_, b)| b.len() == p.k_shape_usize())
+                            .map(|(b, _)| *b);
+                        if let Some(b) = oldest_full {
+                            let syms = pending_blocks.remove(&b).unwrap_or_default();
+                            close_full_block!(b, syms);
                         }
-                        cur_block.clear();
-                        cur_block_id = cur_block_id.wrapping_add(1);
                     }
                 }
+                    drive!(Event::AppData(OpaqueUnit { id, size }), now);
                 } // [S1B] chunk döngüsü sonu
             }
             _ = pace.tick() => {
@@ -2914,6 +3017,20 @@ async fn client_task(
     // ENCODE'a katar (repair üretimi için), WIRE'a GÖNDERMEZ**. Eskiden blok YALNIZ tam
     // dolduğunda kapanıyordu (`cur_block.len() == k_shape`) → akışın SONUNDAKİ eksik blok ve
     // K'ya ulaşmayan kısa akışlar FEC korumasından TAMAMEN yoksundu (denetim B-2).
+    // Emisyonu beklerken kapanış gelen TAM bloklar: eski davranışla (enqueue-latch'i) kapanır.
+    if fec.is_some() {
+        let full: Vec<u32> = pending_blocks
+            .iter()
+            .filter(|(_, b)| fec.as_ref().is_some_and(|p| b.len() == p.k_shape_usize()))
+            .map(|(b, _)| *b)
+            .collect();
+        for b in full {
+            let syms = pending_blocks.remove(&b).unwrap_or_default();
+            close_full_block!(b, syms);
+        }
+    }
+    let (cur_block_id, cur_block): (u32, Vec<Vec<u8>>) =
+        pending_blocks.pop_last().unwrap_or((0, Vec::new()));
     if let Some(p) = fec.as_ref() {
         if !cur_block.is_empty() {
             let k_actual = u8::try_from(cur_block.len()).unwrap_or(255);
@@ -2963,7 +3080,6 @@ async fn client_task(
                     repair_store.insert(cur_block_id, (k_actual, reps));
                 }
             }
-            cur_block.clear();
         }
     }
 
@@ -3083,6 +3199,7 @@ async fn client_task(
                 }
             }),
         structure_gate_opened: session.sender().diag_structure_gate_opened(),
+        fec_prior_applied: session.sender().diag_fec_prior_applied(),
         ledger_loss_ppm: session.sender().diag_ledger().1,
         ledger_loss_ppm_peak: session.sender().diag_loss_ppm_peak(),
         gate_outcomes: session.sender().diag_gate_outcomes(),

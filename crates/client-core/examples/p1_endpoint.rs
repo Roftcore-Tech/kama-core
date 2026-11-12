@@ -44,6 +44,7 @@ fn build_cfg(a: &[String]) -> RuntimeConfig {
         c.fec = Some(FecRuntimeConfig {
             profile_id: 0x03,
             manual_r: if adaptive { None } else { Some(r) },
+            channel_loss_permille: None,
         });
     }
     c

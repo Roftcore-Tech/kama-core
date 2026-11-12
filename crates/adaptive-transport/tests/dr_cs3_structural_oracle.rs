@@ -893,13 +893,14 @@ const REGIME_CELLS: [RegimeCell; 5] = [
     // as genuine Probe-vs-DATA contention evidence, but it is NOT evidence of target-turn parity
     // ACTUATION and NOT evidence of parity-vs-DATA contention.
     //
-    // If parity were to consume the single grant ahead of DATA, the control arm would emit no DATA
-    // and the honest verdict is PARITY-ACTUATED-BUT-VACUOUS-FOR-DATA-DISPLACEMENT — the
-    // scheduler-order lineage and the observed front kind/size are printed either way, and nothing
-    // is forced to look like a pass. Product plan order (sender.rs schedule_transmit): DATA/ARQ →
-    // tail probe → duplicates → plan_fec_parity → budget_settle → legacy CS ladder → bootstrap
-    // probe. DATA is planned FIRST, which is exactly why a parity token denial in this turn is
-    // downstream of the DATA decision rather than a competitor to it.
+    // [FEC-SIRA, 2026-11-12] Product plan order is now: ARQ → plan_fec_parity → DATA → tail probe
+    // → duplicates → budget_settle → legacy CS ladder → bootstrap probe. Parity PENDING AT ENTRY
+    // therefore consumes the single grant AHEAD of DATA, the control arm emits no DATA, and the
+    // honest verdict is PARITY-ACTUATED-BUT-VACUOUS-FOR-DATA-DISPLACEMENT — the scheduler-order
+    // lineage and the observed front kind/size are printed, nothing is forced to look like a pass,
+    // and this cell leaves the Gate-5 denominator (cell_3, which stages no parity, carries the
+    // Probe-vs-DATA claim). Before [FEC-SIRA] DATA was planned first and this cell measured
+    // parity_pending_at_entry = 3, DATA grants = 1, FecParity decisions = 0.
     RegimeCell {
         id: "cell_7 probe-DUE x OneDataGrant x parity-PENDING-at-entry",
         target_ns: SATURATION_NS,
@@ -1551,15 +1552,37 @@ fn run_regime_cells(startup_pacing: bool, label: &str) -> MatrixResult {
                 .filter(|d| d.kind == TransmitKind::Data)
                 .map(|d| d.size)
                 .sum();
-            reds.push(format!(
-                "{}: actual_data_grants={actual_data_grants} != available_data_grants={available_data_grants} \
-                 (decision_entry={decision_entry_tokens}, paced_debit={paced_debit_bytes}, of which \
-                 DATA={data_bytes}, non-DATA={}) — a token grant the control arm could have spent on \
-                 DATA went elsewhere; scheduler-order lineage must be recorded before this is called \
-                 a pass",
-                c.id,
-                paced_debit_bytes - data_bytes
-            ));
+            let parity_bytes: u64 = off_out
+                .iter()
+                .filter(|d| d.kind == TransmitKind::FecParity)
+                .map(|d| d.size)
+                .sum();
+            // [FEC-SIRA, 2026-11-12] SCHEDULER-ORDER LINEAGE: `schedule_transmit` plans pending
+            // parity BEFORE new DATA (ARQ → parity → DATA → …; sender.rs "[FEC-SIRA]"). When parity
+            // was PENDING AT ENTRY, the grant the control arm "could have spent on DATA" is spent on
+            // parity BY DESIGN; the shortfall is explained exactly when the non-DATA paced debit is
+            // the FecParity decisions of this turn. That is PARITY-ACTUATED-BUT-VACUOUS-FOR-DATA-
+            // DISPLACEMENT (verdict below), not a red: the cell leaves the Gate-5 denominator.
+            let explained_by_parity_first = c.parity.is_some()
+                && parity_bytes > 0
+                && paced_debit_bytes - data_bytes == parity_bytes;
+            if explained_by_parity_first {
+                eprintln!(
+                    "  scheduler-order lineage  : parity-before-DATA [FEC-SIRA] — non-DATA debit \
+                     {}={parity_bytes} B of FecParity consumed the grant(s); DATA grants {actual_data_grants}/{available_data_grants}",
+                    paced_debit_bytes - data_bytes
+                );
+            } else {
+                reds.push(format!(
+                    "{}: actual_data_grants={actual_data_grants} != available_data_grants={available_data_grants} \
+                     (decision_entry={decision_entry_tokens}, paced_debit={paced_debit_bytes}, of which \
+                     DATA={data_bytes}, non-DATA={}) — a token grant the control arm could have spent on \
+                     DATA went elsewhere; scheduler-order lineage must be recorded before this is called \
+                     a pass",
+                    c.id,
+                    paced_debit_bytes - data_bytes
+                ));
+            }
         }
 
         let probe_emitted = on_out.iter().any(|d| d.kind == TransmitKind::CsProbe);

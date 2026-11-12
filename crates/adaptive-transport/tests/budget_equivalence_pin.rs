@@ -82,15 +82,21 @@ fn leftover_equivalence_pin_constants() {
     let parity_count = decisions.iter().filter(|x| x.0 == 3).count();
     let data_count = decisions.iter().filter(|x| x.0 == 0).count();
     assert_eq!((data_count, parity_count), (6, 3), "pin: karar-sayıları");
-    // DATA-ÖNCE-sıra-pini: son-DATA-index < ilk-parity-index.
+    // [FEC-SIRA, 2026-11-12] PARİTE-ÖNCE-sıra-pini: parite kuyruklandıktan sonra ilk parite,
+    // kuyrukta BEKLEYEN yeni veriden önce çıkar (ilk-parity-index < kalan-DATA'ların-indexi).
+    // Eski pin (DATA-önce: son-DATA < ilk-parity) blok N'in paritesini kuyruktaki bütün yeni
+    // verinin arkasına atıyor, toplu aktarımda pariteyi ARQ'dan sonraya düşürüyordu.
     let last_data = decisions.iter().rposition(|x| x.0 == 0).unwrap();
     let first_par = decisions.iter().position(|x| x.0 == 3).unwrap();
-    assert!(last_data < first_par, "pin: DATA-önce-parity");
+    assert!(first_par < last_data, "pin: parity-önce-kalan-DATA");
     // Karar-dizisi-özet-pini (toplam-byte + son-seq): rejim-drift'ini-yakalar.
     let total_bytes: u64 = decisions.iter().map(|x| x.2).sum();
     let max_seq = decisions.iter().map(|x| x.1).max().unwrap();
     assert_eq!(total_bytes, 6 * 1200 + 3 * 400, "pin: toplam-byte");
     assert_eq!(max_seq, 8, "pin: son-seq (6-DATA + 3-parity − 1)");
+    // [FEC-SIRA] Ardışık parite bloğu kesintisiz: 3 parite 3 ardışık seq'te (3, 4, 5).
+    let par_seqs: Vec<u64> = decisions.iter().filter(|x| x.0 == 3).map(|x| x.1).collect();
+    assert_eq!(par_seqs, vec![3, 4, 5], "pin: parite seq'leri");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
@@ -156,17 +162,19 @@ fn commit_w_turns(startup_pacing: bool) -> Vec<Vec<(u8, u64, u64)>> {
     turns
 }
 
-/// **SEALED INVARIANT (scheduler-turn level).** Within any single `schedule_transmit` result, no
-/// `Data` may follow a `FecParity` — `sender.rs:2831` "FEC-parity DATA/recovery SONRASI
-/// (DATA-ÖNCE-sıralaması mühürlü)". This must hold on BOTH sides of the pacing axis.
+/// **SEALED INVARIANT (scheduler-turn level), re-sealed [FEC-SIRA] 2026-11-12.** Within any single
+/// `schedule_transmit` result, no `FecParity` may follow a `Data`: pending parity (block N, queued
+/// after block N's last source went out) is drained BEFORE new data (block N+1) — `sender.rs`
+/// `schedule_transmit` "[FEC-SIRA]". The old seal (DATA before parity) is what made parity arrive
+/// after ARQ in bulk transfers. Must hold on BOTH sides of the pacing axis.
 #[test]
-fn data_before_parity_holds_within_every_scheduler_turn() {
+fn parity_before_data_holds_within_every_scheduler_turn() {
     for startup_pacing in [false, true] {
         for (i, turn) in commit_w_turns(startup_pacing).iter().enumerate() {
-            if let Some(first_par) = turn.iter().position(|x| x.0 == 3) {
+            if let Some(first_data) = turn.iter().position(|x| x.0 == 0) {
                 assert!(
-                    !turn[first_par..].iter().any(|x| x.0 == 0),
-                    "turn {i} (startup_pacing={startup_pacing}) emits DATA after parity \
+                    !turn[first_data..].iter().any(|x| x.0 == 3),
+                    "turn {i} (startup_pacing={startup_pacing}) emits parity after DATA \
                      within one schedule_transmit: {turn:?}"
                 );
             }
@@ -183,15 +191,17 @@ fn leftover_equivalence_decision_stream_is_feature_invariant() {
     assert_eq!(
         flat,
         vec![
+            // [FEC-SIRA, 2026-11-12] parite (seq 3–5) kuyruktaki kalan veriden (6–8) ÖNCE;
+            // eski dizi (0,3)(3,4)(3,5)(0,6)(0,7)(3,8) DATA-önce mührünün sonucuydu.
             (0, 0, 1200),
             (0, 1, 1200),
             (0, 2, 1200),
-            (0, 3, 1200),
+            (3, 3, 400),
             (3, 4, 400),
             (3, 5, 400),
             (0, 6, 1200),
             (0, 7, 1200),
-            (3, 8, 400),
+            (0, 8, 1200),
         ],
         "decision stream must be identical with and without `experimental-fec-budget`"
     );

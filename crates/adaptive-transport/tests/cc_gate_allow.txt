@@ -2,3 +2,5 @@
 # motor: cc_port | legacy. hücre: cc_port_sim.rs rapor etiketi (tohum eki olmadan).
 # Muafiyet bilinçli bir takas içindir (örn. bir hücrede +1 s karşılığında başka hücrede kazanım);
 # gerekçe PR'da görünür ve merge sonrası satır SİLİNİR (bir sonraki PR'ın tabanı artık yeni sayılardır).
+cc_port|q1000 r12.5k d300 l0 + 2 parite/8 birim|[FEC-SIRA 2026-11-12] parite yeni veriden ÖNCE zamanlanır; harness'ın istediği 2 parite/8 birim artık GERÇEKTEN tele çıkar (eskiden yeni verinin arkasında kalıp büyük kısmı hiç gitmiyordu — FEC'in ürün yolunda faydasız kalmasının kökü). Kayıpsız hücrede bu saf ek yük: +%24 süre, +26 kB. Bilinçli takas; ürün yolunda parite sayısını kontrolcü/profil belirler, harness'taki sabit 2/8 değil — merge sonrası SİL
+legacy|q1000 r12.5k d300 l0 + 2 parite/8 birim|[FEC-SIRA 2026-11-12] aynı sıra değişikliği iki motorda; tohum 0: sent_bytes 159600 → 186000 (parite artık tele çıkıyor), completed 13,6 → 16,4 s — merge sonrası SİL

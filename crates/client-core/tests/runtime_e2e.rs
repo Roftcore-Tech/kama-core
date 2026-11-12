@@ -443,6 +443,7 @@ async fn fec_static_r_recovers_permanently_erased_units_over_udp() {
         fec: Some(FecRuntimeConfig {
             profile_id: 0x03,
             manual_r: Some(4),
+            channel_loss_permille: None,
         }),
         drain_cap: Duration::from_millis(300),
         delivery_queue: q,
@@ -542,6 +543,7 @@ async fn fragmenter_carries_a_message_far_larger_than_one_fec_symbol() {
         fec: Some(FecRuntimeConfig {
             profile_id: 0x03,
             manual_r: Some(4),
+            channel_loss_permille: None,
         }),
         drain_cap: Duration::from_millis(300),
         ..RuntimeConfig::default()
@@ -622,6 +624,7 @@ async fn fragmenter_message_survives_a_permanently_erased_chunk_via_fec() {
         fec: Some(FecRuntimeConfig {
             profile_id: 0x03,
             manual_r: Some(4),
+            channel_loss_permille: None,
         }),
         drain_cap: Duration::from_millis(300),
         ..RuntimeConfig::default()
@@ -1144,6 +1147,7 @@ async fn partial_block_below_k_is_coded_and_recovers_model_a() {
         fec: Some(FecRuntimeConfig {
             profile_id: 0x03, // K=8, R_max=4, E=64
             manual_r: Some(4),
+            channel_loss_permille: None,
         }),
         drain_cap: Duration::from_millis(800),
         ..RuntimeConfig::default()

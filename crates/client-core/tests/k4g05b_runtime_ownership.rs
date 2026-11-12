@@ -222,6 +222,7 @@ fn cfg_fec_static(engine: TransportEngine) -> RuntimeConfig {
         fec: Some(FecRuntimeConfig {
             profile_id: FEC_PROFILE,
             manual_r: Some(PARITY_R),
+            channel_loss_permille: None,
         }),
         drain_cap: DRAIN,
         live_diag: true,

@@ -189,11 +189,13 @@ fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
             FecArm::StaticR { profile_id, r } => Some(FecRuntimeConfig {
                 profile_id,
                 manual_r: Some(r),
+                channel_loss_permille: None,
             }),
             FecArm::Adaptive { profile_id } | FecArm::PolicyV2Deadline { profile_id, .. } => {
                 Some(FecRuntimeConfig {
                     profile_id,
                     manual_r: None,
+                    channel_loss_permille: None,
                 })
             }
         },

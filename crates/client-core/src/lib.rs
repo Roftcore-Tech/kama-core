@@ -115,6 +115,12 @@ impl ClientSession {
         self.sender.on_event(event, now_ns)
     }
 
+    /// Olaysız zamanlama turu (bkz. [`Sender::schedule_pending`]): bir olayın kararları
+    /// işlenirken kuyruklanan iş (ertelenmiş FEC latch'inin paritesi) aynı anda tele çıkar.
+    pub fn schedule_pending(&mut self, now_ns: u64) -> Vec<TransmitDecision> {
+        self.sender.schedule_pending(now_ns)
+    }
+
     /// Ingress: admit an authenticated shard set and reassemble the payload.
     ///
     /// The shards must already be AEAD-opened — this crate does not hold keys and does not

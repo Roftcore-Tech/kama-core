@@ -220,6 +220,11 @@ async fn relay(
 }
 
 struct Outcome {
+    /// FEC sayaçları (gönderici, alıcı) — kalıcı FEC kapısı okur.
+    fec: Option<(
+        client_core::runtime::ClientStats,
+        client_core::runtime::ServerStats,
+    )>,
     completed: Option<Duration>,
     delivered: u64,
     stats: RelayStats,
@@ -236,10 +241,20 @@ async fn run_cell(
     t_max: Duration,
     interval: Duration,
 ) -> Outcome {
-    let cfg = RuntimeConfig {
+    let mut cfg = RuntimeConfig {
         engine,
         ..RuntimeConfig::default()
     };
+    // `CC_SHAPED_FEC=off` → FEC profili yok (A/B kolu); `=prior0` → profil var, kanal ön-oranı yok.
+    match std::env::var("CC_SHAPED_FEC").as_deref() {
+        Ok("off") => cfg.fec = None,
+        Ok("prior0") => {
+            if let Some(f) = cfg.fec.as_mut() {
+                f.channel_loss_permille = None;
+            }
+        }
+        _ => {}
+    }
     let server = ServerEndpoint::bind(
         "127.0.0.1:0".parse().unwrap(),
         cfg.clone(),
@@ -358,13 +373,34 @@ async fn run_cell(
         p(50),
         p(95)
     );
-    let _ = client.shutdown().await;
-    let _ = server.shutdown().await;
+    let cs = client.shutdown().await;
+    let ss = server.shutdown().await;
+    if std::env::var("CC_SHAPED_FEC_DIAG").is_ok() {
+        // FEC karar yolu teşhisi (yalnız elle koşular): gate/arbiter/latch sayaçları + alıcı FEC.
+        println!(
+            "[{engine:?}] FEC-TEŞHİS: durum={} kuruldu={} rtt_örnek={} ledger_loss={} tepe={} fate(n={} lost={} n00={} n01={} n10={} n11={} delta={}) gate_opened={} gate_outcomes={:?} arbiter={:?} spec_levels={:?} preconv_blocked={} latch={:?} son_bastırma={:?} blok_latched={} repair_tx={} fec_bytes={} completeness={:?} aktivasyon(fec_cfg={} parity_emit={} parity_denied={}) | alıcı: repairs_rx={} recovered={} decoded={} evicted={}",
+            cs.fate.sender_state, cs.fate.left_preconverge, cs.fate.rtt_samples,
+            cs.fate.ledger_loss_ppm, cs.fate.ledger_loss_ppm_peak,
+            cs.fate.n, cs.fate.lost, cs.fate.n00, cs.fate.n01, cs.fate.n10, cs.fate.n11, cs.fate.burst_delta_ppm,
+            cs.fate.structure_gate_opened, cs.fate.gate_outcomes, cs.fate.fec_arbiter_reasons, cs.fate.fec_spec_levels,
+            cs.fate.preconverge_parity_blocked, cs.fate.fec_latch_diag, cs.fate.fec_last_suppression,
+            cs.fec_blocks_latched, cs.fec_repairs_tx, cs.tx_fec_bytes, cs.fate.fec_completeness,
+            cs.fate.activation.fec_configured, cs.fate.activation.parity_emitted, cs.fate.activation.parity_token_denied,
+            ss.fec_repairs_rx, ss.fec_recovered_units, ss.fec_blocks_decoded, ss.fec_blocks_evicted,
+        );
+        println!(
+            "[{engine:?}] FEC-ALICI: repairs_useful={} wasted_complete={} wasted_evicted={} complete_with_repairs={} decode_failures={} recovered_not_admitted={} recovered_ctrl_tx={} pre_param_dropped={}",
+            ss.fec_repairs_useful, ss.fec_repairs_wasted_complete, ss.fec_repairs_wasted_evicted,
+            ss.fec_blocks_complete_with_repairs, ss.fec_decode_failures, ss.fec_recovered_not_admitted,
+            ss.fec_recovered_ctrl_tx, ss.fec_pre_param_dropped,
+        );
+    }
     let _ = stop_tx.send(());
     let _ = relay_task.await;
     let f = fwd.lock().expect("kilit");
     let r = rev.lock().expect("kilit");
     Outcome {
+        fec: Some((cs, ss)),
         completed,
         delivered,
         stats: RelayStats {
@@ -417,11 +453,11 @@ async fn shaped_relay_measure() {
                 loss_permille: loss,
             },
             Dir {
-                rate_bps: rate,
+                rate_bps: env_u64("CC_SHAPED_REV_RATE", rate),
                 limit: q.max(64),
                 delay,
                 jitter,
-                loss_permille: 0,
+                loss_permille: env_u64("CC_SHAPED_REV_LOSS_PM", 0),
             },
             seed,
             units,
@@ -445,4 +481,64 @@ async fn shaped_relay_measure() {
             o.stats.rev_dropped_queue,
         );
     }
+}
+
+/// [FEC-PRIOR + ERTELENMİŞ LATCH + FEC-SIRA] Kalıcı kapı: kanal profili verilmiş ürün
+/// yapılandırmasında (KamaV1: `channel_loss_permille = Some(200)`) FEC **ilk bloklardan itibaren**
+/// parite üretir ve kayıpta kurtarır. Hücre: ileri 12,5 kB/s · 300 ms · %25 rastgele kayıp;
+/// dönüş yolu 2 s gecikmeli (ARQ turu ≥ 2,3 s) → onarım sembolü ARQ'dan önce varır, kurtarma
+/// belirlenimli olarak FEC'e düşer. 64 × 1000 B toplu sunum (dosya örüntüsü — eski kodda bütün
+/// bloklar t=0'da r=0 ile kapanıyordu).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fec_profile_prior_protects_first_blocks_and_recovers_loss() {
+    let units = 64u64;
+    let o = run_cell(
+        TransportEngine::CcPort,
+        Dir {
+            rate_bps: 12_500,
+            limit: 6,
+            delay: Duration::from_millis(300),
+            jitter: Duration::ZERO,
+            loss_permille: 250,
+        },
+        Dir {
+            rate_bps: 12_500,
+            limit: 64,
+            delay: Duration::from_millis(2000),
+            jitter: Duration::ZERO,
+            loss_permille: 0,
+        },
+        7,
+        units,
+        1000,
+        Duration::from_secs(90),
+        Duration::ZERO,
+    )
+    .await;
+    assert_eq!(o.delivered, units, "teslim {}/{units}", o.delivered);
+    assert!(o.completed.is_some(), "90 s içinde tamamlanmadı");
+    let (cs, ss) = o.fec.expect("FEC sayaçları");
+    assert!(
+        cs.fate.fec_prior_applied >= 1,
+        "kanal ön-oranı hiçbir blokta uygulanmadı: {:?}",
+        cs.fate
+    );
+    assert!(
+        cs.fec_blocks_latched >= 6,
+        "latch'lenen blok {} < 6 (ertelenmiş latch çalışmadı?)",
+        cs.fec_blocks_latched
+    );
+    assert!(
+        cs.fec_repairs_tx >= 6,
+        "tele çıkan onarım {} < 6",
+        cs.fec_repairs_tx
+    );
+    assert!(ss.fec_repairs_rx >= 1, "alıcıya onarım ulaşmadı");
+    assert!(
+        ss.fec_recovered_units >= 1,
+        "kayıpta FEC kurtarması yok (useful={} wasted_complete={} decoded={})",
+        ss.fec_repairs_useful,
+        ss.fec_repairs_wasted_complete,
+        ss.fec_blocks_decoded
+    );
 }

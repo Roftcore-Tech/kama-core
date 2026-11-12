@@ -113,9 +113,12 @@ async fn transport_api_v0_surface_is_frozen() {
     let FecRuntimeConfig {
         profile_id: _,
         manual_r: _,
+        // v0.17 (FEC kanal ön-oranı): minor-EKLEME, kasıtlı pin-güncellemesi
+        channel_loss_permille: _,
     } = FecRuntimeConfig {
         profile_id: 0,
         manual_r: None,
+        channel_loss_permille: None,
     };
 
     // ── RuntimeError: TAM varyant kümesi (eksiksiz match, `_` yok → varyant ekle/sil = RED) ──

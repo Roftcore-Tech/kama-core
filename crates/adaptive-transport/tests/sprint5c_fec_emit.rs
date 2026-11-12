@@ -68,7 +68,10 @@ fn fec_on_emits_with_send_record() {
         .all(|d| d.send_record.is_none()));
 }
 
-// ── DATA-ÖNCE mühürlü: ilk-DATA ilk-FecParity'den ÖNCE (schedule DATA-önce sıralaması) ──
+// ── DATA-ÖNCE mühürlü — PreConverge'de: ilk-DATA ilk-FecParity'den ÖNCE. [FEC-SIRA, 2026-11-12]
+// Kurulmuş oturumda (Startup+) sıra parite → yeni veri'dir (`budget_equivalence_pin.rs`); bu test
+// taze Sender'da (PreConverge, taban hız) koşar ve kuruluş-guard'ının DATA-önce sırasını mühürler:
+// tek izni parite alsaydı orijinal çıkmaz, RTT örneği gelmez, oturum kurulamazdı.
 #[test]
 fn data_before_fec_parity() {
     let mut s = Sender::new();
@@ -86,7 +89,7 @@ fn data_before_fec_parity() {
         .count();
     assert_eq!(data_ct, 3, "3 DATA emit (hepsi drain)");
     assert_eq!(fec_ct, 1, "1 FecParity emit");
-    // DATA-ÖNCE mühürlü: plan_fec_parity drain_new_data'dan SONRA çağrılır → tüm-DATA FecParity'den ÖNCE.
+    // DATA-ÖNCE (PreConverge): plan_fec_parity drain_new_data'dan SONRA çağrılır → tüm-DATA FecParity'den ÖNCE.
     let last_data = decisions
         .iter()
         .rposition(|d| d.kind == TransmitKind::Data)
