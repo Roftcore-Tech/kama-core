@@ -93,13 +93,17 @@ async fn collect(
     got.into_iter().collect()
 }
 
-/// (1) İlk 1,5 s istemciden hiçbir şey çıkmaz: PARAM'ın ilk denemeleri (0 / 0,2 / 0,6 / 1,4 s)
-/// ve ilk veri kopyaları kaybolur. Beklenen: geri çekilmeli deneme (3,0 s) teyit alır, 8/8
-/// teslim (2'si FEC kurtarımı), PARAM deneme sayısı sınırlı (geri çekilme: ≤ 25, bu pencerede
-/// 5–7), `param_confirmed = 1`.
+/// İlk 6 s istemciden hiçbir datagram çıkmaz. Geri çekilmeli PARAM denemeleri en erken
+/// 0 / 0,2 / 0,6 / 1,4 / 3,0 / 6,2 s'de çıkar: ilk beşi yutulur, altıncısı teyit alır. Tik
+/// atlaması (200 ms'lik zamanlayıcının bir turu kaçırması) denemeleri yalnız GECİKTİRİR; beşinci
+/// deneme en geç ≈ 3,8 s'de, altıncısı en erken 6,2 s'de çıkar. Sonuç belirlenimli: 6 deneme,
+/// 5 yutulan. Sabit 200 ms kadansta (geri çekilmesiz) aynı 6 s'de en az 15 deneme yutulur, ya da
+/// 25'lik tavan dolar ve PARAM hiç teyit almaz. Beklenen ayrıca: 8/8 teslim (2'si FEC kurtarımı),
+/// `param_confirmed = 1`.
 #[tokio::test(flavor = "multi_thread")]
 async fn param_backoff_recovers_after_initial_blackout() {
     const K: usize = 8;
+    const BLACKOUT_NS: u64 = 6_000_000_000;
     let mut server = ServerEndpoint::bind(
         "127.0.0.1:0".parse().unwrap(),
         fec03(64),
@@ -115,17 +119,17 @@ async fn param_backoff_recovers_after_initial_blackout() {
         fec03(64),
         Box::new(IdentitySeam::new()),
         Some(Box::new(BlackoutEgress {
-            until_ns: 1_500_000_000,
+            until_ns: BLACKOUT_NS,
             refused: 0,
         })),
     )
     .await
     .expect("client connect");
 
-    // Karartma boyunca PARAM denemeleri (0 / 0,2 / 0,6 / 1,4 s) yutulur; 3,0 s'deki deneme geçer.
     // Veri karartma bittikten ve PARAM teyidi alındıktan sonra sunulur (onarım sembolleri
-    // PARAM'dan önce alıcıda anlamsızdır; bu test PARAM'ın toparlanmasını ölçer).
-    tokio::time::sleep(Duration::from_millis(3_600)).await;
+    // PARAM'dan önce alıcıda anlamsızdır; bu test PARAM'ın toparlanmasını ölçer). Altıncı deneme
+    // en geç ≈ 7,4 s'de çıkar (beş tik atlaması); 9 s pay bırakır.
+    tokio::time::sleep(Duration::from_secs(9)).await;
     for i in 0..K {
         client
             .send(format!("param-bo-{i}").into_bytes())
@@ -141,23 +145,22 @@ async fn param_backoff_recovers_after_initial_blackout() {
 
     let cs = client.shutdown().await;
     let ss = server.shutdown().await;
-    assert_eq!(got.len(), K, "8/8 teslim: {cs:?} {ss:?}");
-    acked.expect("8/8 teslim-teyidi (ACK + RECOVERED)");
+    // Önce geri çekilmenin kendisi: deneme sayısı ve yutulan deneme sayısı (karartmada başka
+    // datagram çıkmaz — veri 9 s'de sunulur).
+    assert!(
+        (5..=7).contains(&cs.param_sends),
+        "geri çekilmeli PARAM denemesi 6 olmalı (5–7 pay): {cs:?}"
+    );
+    assert!(
+        (4..=6).contains(&cs.egress_refused_pkts),
+        "karartma yalnız ilk beş PARAM denemesini yutmalı (4–6 pay): {cs:?}"
+    );
     assert_eq!(
         cs.param_confirmed, 1,
         "PARAM karartma sonrası teyit edilmeli: {cs:?}"
     );
-    assert!(
-        cs.egress_refused_pkts >= 3,
-        "karartma ilk denemeleri yutmalı: {cs:?}"
-    );
-    // Geri çekilme: 0 / 0,2 / 0,6 / 1,4 s yutulur (zamanlayıcı 200 ms adımlı; 4. deneme 1,6 s'ye
-    // kayabilir ve geçer); en geç 3,0 s'deki deneme geçer, teyit loopback'te hemen döner →
-    // 4–6 deneme. Sabit 200 ms kadansta karartma boyunca 8 deneme yutulurdu.
-    assert!(
-        (4..=6).contains(&cs.param_sends),
-        "geri çekilmeli PARAM denemesi 4–6 olmalı: {cs:?}"
-    );
+    assert_eq!(got.len(), K, "8/8 teslim: {cs:?} {ss:?}");
+    acked.expect("8/8 teslim-teyidi (ACK + RECOVERED)");
     assert_eq!(
         ss.fec_recovered_units, 2,
         "silinen 2 birim FEC'le kurtarılmalı: {ss:?}"
