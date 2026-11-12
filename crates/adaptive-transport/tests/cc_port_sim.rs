@@ -932,7 +932,6 @@ fn blackout_60s_session_survives_and_completes() {
 use adaptive_transport::sender::{
     FecLossRiskConfig, InitialWindowConfig, RecoveredInfo, RecoveredUnit, SrLogicalRef,
 };
-use std::collections::HashMap;
 
 /// Profil 0x05 (`kama_fec_codec::profile`): k_shape, r_code_max, E.
 const K_SHAPE: u64 = 8;
