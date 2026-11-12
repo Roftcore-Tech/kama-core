@@ -1726,6 +1726,16 @@ fn route_server(
 /// Client ucu: [`ClientSession`] (G2 sevk default'ları — tail-ON validated_v1) + UDP döngüsü.
 pub struct ClientEndpoint;
 
+/// [ŞERİT-W] Motorun son yol kestirimi — görev her motor olayından sonra YAZAR, tutamaç OKUR
+/// ([`ClientHandle::path_estimate`]). Salt gözlem: motor ve görev bu değeri hiçbir kararda okumaz.
+#[derive(Debug, Default)]
+struct PathEstimate {
+    /// BtlBw (B/s); örnek yoksa 0.
+    btlbw_bps: AtomicU64,
+    /// RTprop (ns); örnek yoksa 0.
+    rtprop_ns: AtomicU64,
+}
+
 /// Client tutamağı: bounded offer + ACK olay akışı + kontrollü kapanış.
 pub struct ClientHandle {
     offer: ClientSender,
@@ -1739,6 +1749,8 @@ pub struct ClientHandle {
     /// [K4G-05] Canlı salt-gözlem aynası (bkz. [`ClientHandle::live_diag`]). [DUR-19] Yalnız
     /// [`RuntimeConfig::live_diag`] açıkken kurulur; kapalıyken `None` (Mutex yok).
     live: Option<Arc<Mutex<ClientLiveDiag>>>,
+    /// [ŞERİT-W] Yol kestirimi (bkz. [`ClientHandle::path_estimate`]).
+    path: Arc<PathEstimate>,
     task: JoinHandle<ClientStats>,
 }
 
@@ -1904,6 +1916,7 @@ impl ClientEndpoint {
         let max_message_bytes = cfg.max_message_bytes.unwrap_or(cfg.max_unit_bytes);
         let (recovery_tx, recovery_rx) = watch::channel(true);
         let outstanding = Arc::new(AtomicUsize::new(0));
+        let path = Arc::new(PathEstimate::default());
         // [K4G-05 / DUR-19] Canlı ayna yalnız bayrak açıkken kurulur (kapalıyken Mutex yok).
         let live = cfg
             .live_diag
@@ -1923,6 +1936,7 @@ impl ClientEndpoint {
                 outstanding: Arc::clone(&outstanding),
                 ctx_counters: ctx_counters.clone(),
                 live: live.clone(),
+                path: Arc::clone(&path),
             },
         ));
         Ok(ClientHandle {
@@ -1937,6 +1951,7 @@ impl ClientEndpoint {
             recovery_tx,
             ctx_counters,
             live,
+            path,
             task,
         })
     }
@@ -2023,6 +2038,18 @@ impl ClientHandle {
         self.offer.outstanding.load(Ordering::Acquire)
     }
 
+    /// [ŞERİT-W] Motorun son yol kestirimi `(btlbw B/s, rtprop ns)`; örnek yoksa ilgili alan 0.
+    /// Görev her motor olayından sonra günceller (canlı aynadan bağımsız; ürün yolunda da var).
+    /// Şerit katmanı dosya penceresini bununla BDP'ye göre boyutlandırır
+    /// (`lanes::file_window_for_path`).
+    #[must_use]
+    pub fn path_estimate(&self) -> (u64, u64) {
+        (
+            self.path.btlbw_bps.load(Ordering::Relaxed),
+            self.path.rtprop_ns.load(Ordering::Relaxed),
+        )
+    }
+
     /// [L-T1] Kurtarma anahtarı — **yalnız test yapılandırması** (ürün builder'ı kapalı kurtarmayı
     /// reddeder; S1 `TransportCapabilities::reliable`). Kapalıyken motorun ARQ retransmit, §11
     /// kopya ve FEC repair kararları tele ÇIKMAZ (`ClientStats::recovery_suppressed`); ilk
@@ -2094,6 +2121,8 @@ struct ClientTaskLinks {
     /// [K4G-05] Canlı salt-gözlem aynası (bkz. [`ClientHandle::live_diag`]); görev yalnız YAZAR.
     /// [DUR-19] `None` = [`RuntimeConfig::live_diag`] kapalı: görev hiçbir teşhis yazımı yapmaz.
     live: Option<Arc<Mutex<ClientLiveDiag>>>,
+    /// [ŞERİT-W] Yol kestirimi; görev YAZAR (bkz. [`ClientHandle::path_estimate`]).
+    path: Arc<PathEstimate>,
 }
 
 /// [K4G-05b-R · sahip kararı 2026-11-11] Motor teyidinin geldiği olay sınıfı — yalnız sayaç ayrımı
@@ -2133,6 +2162,7 @@ async fn client_task(
         outstanding,
         ctx_counters,
         live,
+        path,
     } = links;
     // [K4G-01 / D1 (v1.1)] HubChannel dağıtıcısı: Session durumunun hiçbirini TUTMAZ (yalnız
     // sayaç).
@@ -2430,6 +2460,12 @@ async fn client_task(
             // atlanır (tele datagram çıkmaz; `stale_decisions` + `stale_skipped`, panik yok) ve
             // birime yeni harita kaydı açılmaz.
             let confirmed_now: u32 = drain_confirmed!(via);
+            // [ŞERİT-W] Yol kestirimi yayını (salt gözlem; iki gevşek atomik yazım).
+            {
+                let (bw, rtprop) = session.sender().path_estimate();
+                path.btlbw_bps.store(bw, Ordering::Relaxed);
+                path.rtprop_ns.store(rtprop, Ordering::Relaxed);
+            }
             for d in decisions {
                 // PN → seq çevirisi motor seq'i taşıyan HER kararda (repair'ler de seq işgal eder;
                 // `map_pn!`); ama seq→unit haritası YALNIZ birim-taşıyan kararlarda: FecParity'nin

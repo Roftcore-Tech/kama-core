@@ -7383,6 +7383,18 @@ impl Sender {
     pub fn last_decision(&self) -> FusionDecision {
         self.last_decision
     }
+    /// [ŞERİT-W] Yol kestirimi (SALT-OKUMA; davranış DEĞİŞMEZ): `(btlbw B/s, rtprop ns)`, örnek
+    /// yoksa ilgili alan 0. Üst katmanın (client-core şeritleri) motor kuyruğuna verdiği dosya
+    /// penceresini BDP'ye göre boyutlandırması için; motor bu değeri hiçbir kararda okumaz.
+    #[must_use]
+    pub fn path_estimate(&self) -> (u64, u64) {
+        let rtprop_ns = self
+            .rtt
+            .rtprop()
+            .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
+        (self.btlbw.btlbw(), rtprop_ns)
+    }
+
     /// TUR-A teşhis rate-trajektori snapshot'ı (SALT-GÖZLEM; davranış DEĞİŞMEZ):
     /// `(state, btlbw_bps, srtt_us, send_rate_bps, inflight_bytes)`. floor→btlbw ramp kilidini ölçmek için.
     #[must_use]

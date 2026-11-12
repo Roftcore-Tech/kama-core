@@ -119,7 +119,9 @@ use kama_contracts::s3::{
 };
 use kama_noise_wire::protector::NoiseWireProtection;
 
-use crate::lanes::{Lane, LaneConfig, LaneConfigError, LaneState, LaneStats, QueuedUnit};
+use crate::lanes::{
+    file_window_for_path, Lane, LaneConfig, LaneConfigError, LaneState, LaneStats, QueuedUnit,
+};
 use crate::runtime::{
     ClientEndpoint, ClientHandle, ClientLiveDiag, CtxDispatchCounters, CtxDispatchStats,
     ExpectedSessions, Readiness, RuntimeConfig, RuntimeError, ServerEndpoint, ServerHandle,
@@ -262,9 +264,10 @@ pub struct ClientTransportConfig {
     /// cutover yine yapılır (kalan birimler eski oturumda kalır, S1 K7).
     pub renew_drain_cap: Duration,
     /// [YOL3-T1 KK-T1-05] İnce şeritler ([`crate::lanes`]): sınıf başına sunum kanalı, kabul sırası
-    /// PTT > SIG > TEXT > FILE, dosya penceresi W. `None` (ürün, [`Self::product`]) = şeritsiz,
-    /// bugünkü yol: `send` birimi doğrudan uca verir. Gösterim düğümüne yalnız test-util kancasıyla
-    /// geçer (gösterim; kapılı PoC ölçümü Aralık; ARQ yolu, FEC Aralık'ta).
+    /// PTT > SIG > TEXT > FILE, dosya penceresi W (yolun BDP'sinden, `lanes::file_window_for_path`),
+    /// alıcıda şerit başına sıralı teslim (`crate::unit_id`). `None` (ürün, [`Self::product`]) =
+    /// şeritsiz yol: `send` birimi doğrudan uca verir. Gösterim düğümüne yalnız test-util kancasıyla
+    /// geçer.
     pub lanes: Option<LaneConfig>,
 }
 
@@ -1636,6 +1639,22 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     /// birim şeridin başına döner ve pompa durur. Uca verme `send` gövdesinin kendisidir (şerit
     /// durumu çağıranda, `self.lanes` boş): birim kimliği = verilmeden önceki `Sess::sent`.
     fn pump_session(&mut self, st: &mut LaneState, session: SessionHandle) {
+        // [ŞERİT-W] FILE penceresi yolun ölçülen BDP'sinden (`lanes::file_window_for_path`); ölçüm
+        // yokken yapılandırma tabanı. Sabit W dosya hızını W·S/RTT'de tavanlıyordu.
+        if let Some(e) = self
+            .sessions
+            .get(&session)
+            .and_then(|s| s.endpoint.as_ref())
+        {
+            let (btlbw, rtprop_ns) = e.path_estimate();
+            let w = file_window_for_path(
+                st.configured_file_window(),
+                u64::from(self.caps.max_plaintext_unit_bytes),
+                btlbw,
+                rtprop_ns,
+            );
+            st.set_file_window(session, w);
+        }
         while let Some((lane, unit)) = st.pop_next(session, Instant::now()) {
             let Some(unit_id) = self
                 .sessions

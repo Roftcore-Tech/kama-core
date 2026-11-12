@@ -33,6 +33,15 @@ use kama_contracts::s1::{CompressionPolicy, DeliveryPolicy, TrafficClass};
 /// [`file_window_covers_bdp`] (KK-T1-09).
 pub const DEFAULT_FILE_WINDOW_UNITS: u32 = 5;
 
+/// [ŞERİT-W] Yol-tabanlı dosya penceresinin BDP kazancı: pencere ≈ `2 × BtlBw × RTprop`. 2 = BBR'ın
+/// kendi uçuş hedefi (cwnd_gain): daha küçük pencere dosyayı uygulama-sınırlı bırakır (motor
+/// BtlBw'yi büyütemez), daha büyüğü yalnız metnin/PTT'nin önündeki motor kuyruğunu uzatır.
+pub const FILE_WINDOW_BDP_GAIN: u64 = 2;
+
+/// [ŞERİT-W] Yol-tabanlı dosya penceresinin üst sınırı (birim; SR-AUDIT-001 — uçuştaki dosya
+/// kimlikleri kümesi sınırlı kalır).
+pub const MAX_FILE_WINDOW_UNITS: u32 = 1024;
+
 /// PTT şeridinin varsayılan tavanı (birim) — `[KALİBRASYON]`, normatif DEĞİL.
 pub const DEFAULT_PTT_CAP: usize = 64;
 /// SIG şeridinin varsayılan tavanı (birim) — `[KALİBRASYON]`.
@@ -161,6 +170,31 @@ pub enum LaneConfigError {
     },
 }
 
+/// [ŞERİT-W] Yolun ölçülen BDP'sine göre dosya penceresi (birim):
+/// `clamp(⌈FILE_WINDOW_BDP_GAIN · btlbw · rtprop / unit_bytes⌉, min_units, MAX_FILE_WINDOW_UNITS)`.
+/// Ölçüm yoksa (`btlbw == 0` ya da `rtprop_ns == 0`) ya da `unit_bytes == 0` → `min_units`.
+///
+/// Neden: sabit W (gösterim varsayılanı 5) dosya hızını `W · S / RTT`'de tavanlar (5 × 1013 B /
+/// 0,3 s ≈ 17 kB/s); bunun üstündeki her bağlantıda dosya aktarımı bağlantıyı dolduramaz. Pencere
+/// BDP ile büyüyünce metnin/PTT'nin önündeki dosya verisi en çok `FILE_WINDOW_BDP_GAIN` BDP'dir
+/// (≈ 2·RTprop ek bekleme) — sınırlı ve bant genişliğinden bağımsız.
+#[must_use]
+pub fn file_window_for_path(
+    min_units: u32,
+    unit_bytes: u64,
+    btlbw_bps: u64,
+    rtprop_ns: u64,
+) -> u32 {
+    let floor = min_units.clamp(1, MAX_FILE_WINDOW_UNITS);
+    if btlbw_bps == 0 || rtprop_ns == 0 || unit_bytes == 0 {
+        return floor;
+    }
+    let bdp_bytes = u128::from(btlbw_bps) * u128::from(rtprop_ns) / 1_000_000_000;
+    let want = (u128::from(FILE_WINDOW_BDP_GAIN) * bdp_bytes).div_ceil(u128::from(unit_bytes));
+    let want = u32::try_from(want).unwrap_or(u32::MAX);
+    want.clamp(floor, MAX_FILE_WINDOW_UNITS)
+}
+
 /// KK-T1-09: `W` dosya birimi (her biri en çok `unit_bytes`) motor kuyruğunda en az bir BDP
 /// (`bottleneck_bytes_per_s × rtt_ms / 1000`) tutar mı.
 #[must_use]
@@ -277,6 +311,18 @@ impl SessionLanes {
         None
     }
 
+    /// [ŞERİT-W] FILE penceresini ayarlar (birim, ≥ 1). Daralma uçtaki birimi geri ALMAZ: pencere
+    /// yeniden açılana dek yeni dosya birimi verilmez.
+    pub fn set_file_window(&mut self, units: u32) {
+        self.window = usize::try_from(units.max(1)).unwrap_or(usize::MAX);
+    }
+
+    /// Geçerli FILE penceresi (birim).
+    #[must_use]
+    pub fn file_window(&self) -> usize {
+        self.window
+    }
+
     /// Birim uca verildi; FILE ise kimliği pencereye girer.
     pub fn on_given(&mut self, lane: Lane, unit_id: u64) {
         if lane == Lane::File {
@@ -372,6 +418,19 @@ impl LaneState {
     pub fn pop_next(&mut self, session: SessionHandle, now: Instant) -> Option<(Lane, QueuedUnit)> {
         let lanes = self.sessions.get_mut(&session)?;
         lanes.pop_next(now, &mut self.stats.lane_expired)
+    }
+
+    /// Yapılandırmadaki FILE penceresi (birim; yol-tabanlı pencerenin tabanı).
+    #[must_use]
+    pub fn configured_file_window(&self) -> u32 {
+        self.cfg.file_window_units
+    }
+
+    /// [ŞERİT-W] Oturumun FILE penceresini ayarlar ([`SessionLanes::set_file_window`]).
+    pub fn set_file_window(&mut self, session: SessionHandle, units: u32) {
+        if let Some(lanes) = self.sessions.get_mut(&session) {
+            lanes.set_file_window(units);
+        }
     }
 
     /// Birim uca verildi.
@@ -678,6 +737,70 @@ mod tests {
         let s = st.stats();
         assert_eq!(s.accepted, [1, 0, 3, 0]);
         assert_eq!(s.refused, [0, 0, 2, 0]);
+    }
+
+    /// [ŞERİT-W] Yol-tabanlı pencere: ölçüm yoksa taban; BDP büyüdükçe pencere ≈ 2·BDP/S; taban
+    /// ve tavan korunur.
+    #[test]
+    fn path_window_tracks_two_bdp_between_floor_and_cap() {
+        const MS: u64 = 1_000_000;
+        // Ölçüm yok → yapılandırma tabanı.
+        assert_eq!(file_window_for_path(5, UNIT_BYTES, 0, 300 * MS), 5);
+        assert_eq!(file_window_for_path(5, UNIT_BYTES, 12_500, 0), 5);
+        assert_eq!(file_window_for_path(5, 0, 12_500, 300 * MS), 5);
+        // Gösterim profili 12,5 kB/s × 300 ms: BDP 3750 B → ⌈7500/1013⌉ = 8.
+        assert_eq!(file_window_for_path(5, UNIT_BYTES, 12_500, 300 * MS), 8);
+        // Düşük bant 25 B/s × 1 s: BDP 25 B → 1 < taban → 5.
+        assert_eq!(file_window_for_path(5, UNIT_BYTES, 25, 1_000 * MS), 5);
+        // İyi bant 1 MB/s × 100 ms: BDP 100 kB → ⌈200 000/1013⌉ = 198. Sabit W = 5 burada dosyayı
+        // 5·1013 B / 0,1 s ≈ 50 kB/s'de tavanlardı.
+        assert_eq!(
+            file_window_for_path(5, UNIT_BYTES, 1_000_000, 100 * MS),
+            198
+        );
+        assert!(!file_window_covers_bdp(5, UNIT_BYTES, 1_000_000, 100));
+        assert!(file_window_covers_bdp(198, UNIT_BYTES, 1_000_000, 100));
+        // Tavan.
+        assert_eq!(
+            file_window_for_path(5, UNIT_BYTES, 100_000_000, 1_000 * MS),
+            MAX_FILE_WINDOW_UNITS
+        );
+        // Taban 0 → 1 (pencere asla kapanmaz).
+        assert_eq!(file_window_for_path(0, UNIT_BYTES, 0, 0), 1);
+    }
+
+    /// [ŞERİT-W] Pencere ayarı: büyüyünce bekleyen dosya birimleri verilir, daralınca uçtaki birim
+    /// geri alınmaz ama yeni birim verilmez.
+    #[test]
+    fn set_file_window_opens_and_closes_the_file_lane() {
+        let cfg = LaneConfig {
+            file_window_units: 2,
+            caps: [64, 64, 256, 32],
+        };
+        let mut s = SessionLanes::new(&cfg);
+        for i in 0..6 {
+            s.push(unit(TrafficClass::Bk, i)).expect("yer var");
+        }
+        let now = Instant::now();
+        let mut exp = 0;
+        let mut given = 0u64;
+        while let Some((lane, _)) = s.pop_next(now, &mut exp) {
+            s.on_given(lane, given);
+            given += 1;
+        }
+        assert_eq!(given, 2, "W = 2");
+        s.set_file_window(5);
+        while let Some((lane, _)) = s.pop_next(now, &mut exp) {
+            s.on_given(lane, given);
+            given += 1;
+        }
+        assert_eq!(given, 5, "W = 5'e büyüdü");
+        s.set_file_window(1);
+        assert!(
+            s.pop_next(now, &mut exp).is_none(),
+            "5 uçta, W = 1: yeni birim yok"
+        );
+        assert_eq!(s.file_window(), 1);
     }
 
     #[test]
