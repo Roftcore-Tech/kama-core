@@ -598,6 +598,15 @@ fn run_opt(
                 delivered.len(),
                 s.tail_probe_diag()
             );
+            let sd = s.diag_sched_summary();
+            println!(
+                "[{}] t={:.2}s pacer={:?} sched(data sel/deny/emit={}/{}/{} arq={}/{}/{} dup={}/{}/{}) loss={:?}",
+                eng.name(),
+                now as f64 / SEC as f64,
+                s.diag_pacer(),
+                sd[0], sd[1], sd[2], sd[3], sd[4], sd[5], sd[6], sd[7], sd[8],
+                s.diag_loss()
+            );
         }
         // `CC_PROFILE=1`: ilerleme profili (%10/%50/%90 teslim anı, son birim, kip geçişleri).
         if profile {

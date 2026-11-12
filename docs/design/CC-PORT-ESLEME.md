@@ -89,6 +89,31 @@ böyle bir çift merdiven yok (yalnız PTO); Kama'da geometrik kopya donmuş spe
 o, bastırılan PTO. Sim ürün zarfı: port 51,7 → **37,7 s** (eski 37,7 — eşit), dönüş baytı 9,0 → 8,5 k;
 varsayılan r25 hücresi 8,5 → **6,9 s** (eski 5,4). Öbür 7 hücre bayt düzeyinde aynı (ilk ACK 1 s'den
 önce geldiğinden PTO zaten ateşlenmiyordu). Gerçek yığın doğrulaması: PR #181 gövdesi.
+**U14 canlılık (Ö-CC ısınma gözlemi, #175):** dondurma yalnız merdiven en eski teyitsiz birimi GERÇEKTEN
+taşıyorsa (`dup_queue`'da `interval > 0` kaydı); kayıt yoksa (RecoverFwd'nin tek-atımlık kopyaları tükendi,
+merdiven düştü) RTT örneği olmasa da PTO kurulur. 7 hücre + r25 bayt düzeyinde aynı; test
+`u14_pto_probe_resumes_when_no_ladder_entry_serves_the_oldest_unit`. Denenip geri alınan: merdiven
+kopyasının pencereden muaf tutulması (60 s kesintide kopya seli). Sim'de ayrı, motor-bağımsız bulgu:
+t = 0'dan başlayan kesintide (`CC_BLACKOUT=0,3`, %30) iki motor da 1–3 birimi kalıcı unutuyor — RecoverFwd
+`pending_lost`'u tek-atımlık (`interval = 0`) `Duplicate` kopyalara boşaltıyor, Duplicate kaybı ne tombstone
+ne yeniden kuyruk üretiyor → bütün kopyalar kaybolursa birim motordan düşer (`inflight = 0`, teslim 122/125).
+Düzeltme adayı (iki motoru da değiştirir → sahip kararı): acil kopyalardan biri çapa (kaybı yeniden kuyruklar).
+
+**U16 (2026-11-12, §3 entegrasyon kanıtı #181 × #186, #175)** — yalnız `cc_on()`, eski motor bit-aynı:
+(a) U13'ün "taze kopya" sayımı yalnız kaybı ARQ'ya dönen kökenleri (Data/Retransmit) sayar; `Duplicate`
+kopya sayılmaz (Duplicate kaybı tombstone/yeniden kuyruk üretmez, yalnız geometrik kopya makinesini kurar —
+büyük birimde ilk basamak ≈ 61 s). Duplicate'i taze sayınca orijinal ARQ'dan düşüyor, ikisi de kaybolunca
+birim unutuluyordu (sim: t = 0 kesintisi + %30 kayıpta 3 birim 120 s'de hiç; şimdi 125/125, 22–28 s).
+(b) PTO probu hedefi, uçuştaki en eski teyitsiz kaynak kaydı ile ARQ kuyruğundaki (`pending_lost`) en eski
+kaydın **birim kimliği** küçük olanıdır (RFC 9002 §6.2.4 "en eski onaysız veri"; önce: uçuştaki en küçük
+seq). Hedef ARQ kuyruğundaysa prob onu pencereden muaf (`try_send_probe`) taşır; kayıt `Retransmit` olarak
+uçuşa döner (`diag_cc_pto_from_arq`). Neden: ARQ yeniden iletimi uçuş penceresine tabidir; alıcı kabul
+penceresi (#186) dolunca pencere dışı veriyi ACK'lemez → gönderici penceresi hiç boşalmaz → sıra başı
+kuyrukta kilitli, prob ise pencere dışı birimi kopyalardı. Ölçüm (loopback, `reorder_no_skip` 4096 pencere,
+main + #186 + #181, 10 koşu): öncesi 3/10 kalıcı durma (yeşiller 11–25 s); (a) ile 2/10 durma;
+(a)+(b) ile **10/10 · 5–7 s**. Olduğu gibi 512 testi, `ack_after_admit`, `fec_admit_full` yeşil.
+Sim: r25 bayt düzeyinde aynı; kesinti hücresi retx −1…−4, süre ±0,2 s; öbür 6 hücre aynı. Testler:
+`u16_duplicate_copy_does_not_suppress_arq_requeue_on_port`, `u16_pto_probe_targets_smallest_unit_id_not_smallest_seq`.
 
 **U15 (2026-11-11, D şeridi §5 (ii) bağımsız çürütmesi; #181 sonrası ayrı PR)** — yalnız `cc_on()`, eski motor bit-aynı:
 (a) kopya sınırıyla (`cc_bound_unit_copies`) uçuştan emekli edilen kayıt `copy_bound_retired` işaretlidir (superseded
