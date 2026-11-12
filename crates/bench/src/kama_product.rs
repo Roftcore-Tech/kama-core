@@ -1093,6 +1093,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         setup_in_window: false,
         profile_id: profile_id_label.clone(),
         profile_delta: profile_delta_v.clone(),
+        engine: String::new(),
     };
     Ok(RunOutput { meta, events })
 }
