@@ -1,0 +1,17 @@
+# CC gerileme kapısı — beklenen kayıt kümesi (scripts/ci/cc_gate_compare.py --expect).
+# Satır: <motor>|<hücre>|<tohum sayısı>. cc_port_sim.rs'e hücre/tohum eklenince bu dosya da değişir
+# (PR'da görünür); eksik ya da fazla kayıt kapıyı KIRMIZI yapar.
+cc_port|kesinti 60s @3s q1000 l20|5
+cc_port|ptt 6x400B q6 l20|1
+cc_port|q1000 r12.5k d300 l0 + 2 parite/8 birim|1
+cc_port|q1000 r12.5k d300 l20|10
+cc_port|q6 r12.5k d300 l0 150kB|1
+cc_port|q6 r12.5k d300 l20|10
+cc_port|r25|10
+legacy|kesinti 60s @3s q1000 l20|5
+legacy|ptt 6x400B q6 l20|1
+legacy|q1000 r12.5k d300 l0 + 2 parite/8 birim|1
+legacy|q1000 r12.5k d300 l20|10
+legacy|q6 r12.5k d300 l0 150kB|1
+legacy|q6 r12.5k d300 l20|10
+legacy|r25|10
