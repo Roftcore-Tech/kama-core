@@ -19,6 +19,7 @@
 
 pub mod bbr;
 mod bw_estimation;
+pub mod loss_class;
 mod min_max;
 
 pub use bbr::{rfc9002_initial_window, Bbr, Mode};

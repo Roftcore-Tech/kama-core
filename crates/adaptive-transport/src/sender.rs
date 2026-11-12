@@ -1959,6 +1959,12 @@ pub struct Sender {
     /// parametreleri BBR'dan türetilir. Çalışma zamanı seçimi: cargo özelliği DEĞİL (CI'nın
     /// `--all-features`'ı motoru değiştiremez; iki motor aynı süreçte eşli koşabilir).
     cc: Option<crate::cc::Bbr>,
+    /// [CC-PORT DENEY] Kayıp filtresi (`cc/loss_class.rs`): `true` ⇒ kuyruk gecikmesi yokken kayıp
+    /// `on_congestion_event`'e GİRMEZ. Yalnız `with_cc_port_loss_filter` kurucusunda; ürün kuralı
+    /// değil, Ö-CC deney kolu.
+    cc_loss_filter: bool,
+    /// [CC-PORT DENEY teşhis] Filtrenin tıkanıklık saymadığı kayıp olayı sayısı.
+    diag_cc_loss_filtered: u64,
     /// (d) tur mandalı: bu Startup turunda `schedule_transmit` başında `tx_queue` boş ∧ kova dolu
     /// (`pacer.tokens() == pacer.burst_cap()`) görüldü mü. Tur işaretinde (`startup_plateau`) ve
     /// Startup (yeniden) girişinde sıfırlanır. Yalnız `e1.e1_applimited_plateau` açıkken kurulur.
@@ -2210,6 +2216,8 @@ impl Sender {
             last_recovery: RecoveryAction::Arq,
             e1: crate::rate::E1Flags::default(),
             cc: None,
+            cc_loss_filter: false,
+            diag_cc_loss_filtered: 0,
             e1_round_app_limited: false,
         }
     }
@@ -2234,6 +2242,28 @@ impl Sender {
         s.e2a = crate::loss::E2aFlags::new(true, 1_000_000, true, true, 2, false)
             .expect("cc_port E2a bayrakları geçerli aralıkta");
         s
+    }
+
+    /// [CC-PORT DENEY] Port + kayıp filtresi (ISEMRI-CC-PORT v3 §3 deney kolu; bench
+    /// `--kama-arm cc-port-lf`). Kuyruk gecikmesi (`srtt − min_rtt`) eşiğin altındayken kayıp
+    /// BBR'ın `recovery_window`'una girmez; eşiğin üstünde referans davranış. Ürün kuralı DEĞİL.
+    #[must_use]
+    pub fn with_cc_port_loss_filter() -> Self {
+        let mut s = Self::with_cc_port();
+        s.cc_loss_filter = true;
+        s
+    }
+
+    /// [CC-PORT DENEY] Kayıp filtresi etkin mi.
+    #[must_use]
+    pub fn cc_loss_filter(&self) -> bool {
+        self.cc_loss_filter
+    }
+
+    /// [CC-PORT DENEY teşhis] Filtrelenen (tıkanıklık sayılmayan) kayıp olayı sayısı.
+    #[must_use]
+    pub fn diag_cc_loss_filtered(&self) -> u64 {
+        self.diag_cc_loss_filtered
     }
 
     /// [CC-PORT] Port motoru etkin mi.
@@ -3951,8 +3981,20 @@ impl Sender {
         // [CC-PORT] quinn `on_congestion_event`: kayıp baytı bu turun recovery_window hesabına girer
         // (referans davranış; ISEMRI-CC-PORT §3 — kayıp filtresi deneyi ayrı bayrak, burada yok).
         if cc_lost_bytes > 0 {
-            if let Some(cc) = self.cc.as_mut() {
-                cc.on_congestion_event(cc_lost_bytes);
+            // [CC-PORT DENEY] Kayıp filtresi: kuyruk gecikmesi yoksa kayıp tıkanıklık sayılmaz
+            // (`cc/loss_class.rs`); referans kolda her kayıp girer.
+            let srtt_ns = self.rtt.srtt().map_or(0, dur_ns);
+            let congestive = !self.cc_loss_filter
+                || crate::cc::loss_class::is_congestive(
+                    srtt_ns,
+                    self.cc.as_ref().map_or(0, crate::cc::Bbr::min_rtt_ns),
+                );
+            if congestive {
+                if let Some(cc) = self.cc.as_mut() {
+                    cc.on_congestion_event(cc_lost_bytes);
+                }
+            } else {
+                self.diag_cc_loss_filtered = self.diag_cc_loss_filtered.saturating_add(1);
             }
         }
     }

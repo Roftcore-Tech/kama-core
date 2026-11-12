@@ -40,6 +40,9 @@ pub enum KamaArm {
     /// [CC-PORT] quinn-proto 0.11.18 BBR + RFC 9002 motoru (`Sender::with_cc_port()`); sunucu
     /// tarafında `--cc-port` ile `Receiver::with_cc_port()` kurulmalıdır (anında ACK / 25 ms).
     CcPort,
+    /// [CC-PORT DENEY] Port + kayıp filtresi (`Sender::with_cc_port_loss_filter()`); sunucu yine
+    /// `--cc-port`. Ürün kuralı değil; Ö-CC'de referans portla yan yana.
+    CcPortLf,
 }
 
 impl KamaArm {
@@ -50,6 +53,7 @@ impl KamaArm {
             Self::Arq => "kama-arq",
             Self::TailV1 => "kama-tail-v1",
             Self::CcPort => "kama-cc-port",
+            Self::CcPortLf => "kama-cc-port-lf",
         }
     }
 }

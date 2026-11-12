@@ -434,6 +434,8 @@ enum KamaArmArg {
     TailV1,
     /// [CC-PORT] quinn BBR + RFC 9002 motoru; sunucuda `--cc-port` ile eşle.
     CcPort,
+    /// [CC-PORT DENEY] port + kayıp filtresi; sunucuda yine `--cc-port`.
+    CcPortLf,
 }
 
 /// [KAPI-1 W2] CLI bütçe argları → `BudgetMode` (doğrulamalı: burst XOR paced; sessiz yanlış
@@ -481,6 +483,7 @@ impl From<KamaArmArg> for KamaArm {
             KamaArmArg::Arq => KamaArm::Arq,
             KamaArmArg::TailV1 => KamaArm::TailV1,
             KamaArmArg::CcPort => KamaArm::CcPort,
+            KamaArmArg::CcPortLf => KamaArm::CcPortLf,
         }
     }
 }
