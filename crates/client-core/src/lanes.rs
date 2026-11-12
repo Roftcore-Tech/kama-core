@@ -244,6 +244,9 @@ pub struct LaneStats {
     pub give_failed: u64,
     /// FILE penceresinden teyitle düşen birimler.
     pub file_acked: u64,
+    /// [ŞERİT-AÇIKLIK] Pompa turunda FILE şeridinin, sıradaki birimi alıcının kabul penceresinin
+    /// dışına düşeceği için atlandığı sayı ([`SessionLanes::set_file_span_room`]).
+    pub file_span_blocked: u64,
     /// Teyit kanalından okunan bütün olaylar (her sınıf).
     pub acks_drained: u64,
 }
@@ -256,6 +259,11 @@ pub struct SessionLanes {
     window: usize,
     /// FILE şeridinin uca verdiği, teyidi gelmemiş birim kimlikleri (≤ W).
     file_inflight: BTreeSet<u64>,
+    /// [ŞERİT-AÇIKLIK] Alıcının kabul penceresi dolmadan daha kaç FILE birimi verilebilir
+    /// ([`Self::set_file_span_room`]); `u64::MAX` = sınır yok.
+    file_span_room: u64,
+    /// Son pompa turunda FILE açıklık yüzünden atlandı mı (sayaç için).
+    file_span_hit: bool,
 }
 
 impl SessionLanes {
@@ -267,6 +275,8 @@ impl SessionLanes {
             caps: cfg.caps,
             window: usize::try_from(cfg.file_window_units).unwrap_or(usize::MAX),
             file_inflight: BTreeSet::new(),
+            file_span_room: u64::MAX,
+            file_span_hit: false,
         }
     }
 
@@ -297,6 +307,10 @@ impl SessionLanes {
             if lane == Lane::File && self.file_inflight.len() >= self.window {
                 continue;
             }
+            if lane == Lane::File && self.file_span_room == 0 {
+                self.file_span_hit = !self.queues[lane.index()].is_empty();
+                continue;
+            }
             let q = &mut self.queues[lane.index()];
             while let Some(unit) = q.pop_front() {
                 if let DeliveryPolicy::DeadlineBounded { deadline } = unit.policy {
@@ -323,10 +337,34 @@ impl SessionLanes {
         self.window
     }
 
+    /// [ŞERİT-AÇIKLIK] FILE şeridinin AÇIKLIK sınırı: alıcının kabul penceresi dolmadan daha
+    /// kaç dosya birimi verilebilir (`room`; pompa her tur başında yeniden kurar, verilen her
+    /// dosya birimi bir düşer).
+    ///
+    /// Neden: W yalnız teyitsiz birim SAYISINI sınırlar. Dosyanın sıra başı uzun süre eksik
+    /// kalıp arkasındaki birimler teyit aldıkça şerit yeni birim vermeyi sürdürür; şeridin sıra
+    /// başından uzaklığı alıcının kabul penceresini (şerit başına `max_inflight_units`) aşınca
+    /// alıcı o birimleri kabul etmez, ACK'lemez. Motorun uçuşu ACK almayacak dosya birimleriyle
+    /// dolar, yeniden iletim önceliği onları dönüp dolaştırır; arkalarına kuyruklanmış PTT ve
+    /// metin tele çıkamaz — "akışlar birbirini bloklamaz" ihlali (ölçüm:
+    /// `tests/lane_two_heads_lost.rs`). Açıklık sınırıyla verilen her dosya birimi alıcının
+    /// penceresinin içindedir.
+    pub fn set_file_span_room(&mut self, room: u64) {
+        self.file_span_room = room;
+        self.file_span_hit = false;
+    }
+
+    /// Son pompa turunda FILE şeridi açıklık sınırına takıldı mı (bekleyen dosya birimi varken).
+    #[must_use]
+    pub fn file_span_hit(&self) -> bool {
+        self.file_span_hit
+    }
+
     /// Birim uca verildi; FILE ise kimliği pencereye girer.
     pub fn on_given(&mut self, lane: Lane, unit_id: u64) {
         if lane == Lane::File {
             self.file_inflight.insert(unit_id);
+            self.file_span_room = self.file_span_room.saturating_sub(1);
         }
     }
 
@@ -430,6 +468,24 @@ impl LaneState {
     pub fn set_file_window(&mut self, session: SessionHandle, units: u32) {
         if let Some(lanes) = self.sessions.get_mut(&session) {
             lanes.set_file_window(units);
+        }
+    }
+
+    /// [ŞERİT-AÇIKLIK] Oturumun FILE açıklık sınırı ([`SessionLanes::set_file_span_room`]).
+    pub fn set_file_span_room(&mut self, session: SessionHandle, room: u64) {
+        if let Some(lanes) = self.sessions.get_mut(&session) {
+            lanes.set_file_span_room(room);
+        }
+    }
+
+    /// [ŞERİT-AÇIKLIK] Pompa turu bitti: FILE şeridi açıklık sınırına takıldıysa sayılır.
+    pub fn note_pump_done(&mut self, session: SessionHandle) {
+        if self
+            .sessions
+            .get(&session)
+            .is_some_and(SessionLanes::file_span_hit)
+        {
+            self.stats.file_span_blocked += 1;
         }
     }
 

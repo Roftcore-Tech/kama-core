@@ -140,8 +140,36 @@ pub const PENDING_INIT_CAP: usize = 16;
 pub const MAX_EVENTS: usize = 256;
 
 /// Application okumadan birikebilecek teslim tavanı. Dolunca teslimler veri alıcısının kendi
-/// sınırlı kanalında bekler — adaptör teslim düşürmez.
+/// sınırlı kanalında bekler — adaptör teslim düşürmez. [TOPLAM-SINIR] Kesin tavandır: sıralayıcının
+/// sırası gelmiş koşusu da kutuya yalnız yer varken çıkar.
 pub const MAX_INBOX: usize = 1024;
+
+/// [TOPLAM-SINIR] Uygulama okumazken bir adaptörün alıcı tarafında tamponlayabileceği en çok
+/// birim (SR-AUDIT-001), `sessions` etkin oturum için:
+///
+/// ```text
+/// delivery_queue                      veri alıcısının teslim kanalı (`RuntimeConfig`)
+/// + MAX_INBOX                         adaptörün teslim kutusu
+/// + sessions × LANE_COUNT × genişlik  sıralayıcı: şerit başına en çok kabul penceresi
+///                                     (genişlik = `RuntimeConfig::max_inflight_units`)
+/// ```
+///
+/// Bileşenlerin her biri kendi yerinde zorlanır: kanal sınırlı `mpsc` (doluyken veri alıcısı
+/// datagramı motora vermez, ACK yok); kutu [`MAX_INBOX`]; sıralayıcının bir şeridi yalnız kabul
+/// penceresindeki birimi alır (`ExpectedSessions::admit_limits`). Şeritler kapalıyken yalnız şerit
+/// 0 dolar (gerçek tavan `sessions × genişlik`); formül şeritli üst sınırdır. Ürün profilinde
+/// (1024 + 1024 + 4 × 4096) bir oturum için 18 432 birim.
+#[must_use]
+pub fn receiver_buffer_bound_units(runtime: &RuntimeConfig, sessions: usize) -> usize {
+    runtime
+        .delivery_queue
+        .saturating_add(MAX_INBOX)
+        .saturating_add(
+            sessions
+                .saturating_mul(LANE_COUNT)
+                .saturating_mul(runtime.max_inflight_units),
+        )
+}
 
 // ── Zarf taşıyıcısı (iş emri T2) ─────────────────────────────────────────────────────────────
 
@@ -463,9 +491,14 @@ struct Renewal {
 /// [F3] Eksik sıra başı HİÇBİR ZAMAN atlanmaz: buraya gelen her birim veri alıcısında ACK'lenmiştir,
 /// atlamak ACK'lenmiş birimi atmak olurdu. Bellek sınırı burada değil veri alıcısının kabul
 /// penceresindedir ([`ExpectedSessions::set_admit_window`]): şeridin `next`'inden pencere genişliği
-/// ve ötesindeki birim ACK'lenmez, buraya hiç gelmez; her şeridin `held`'i en çok `genişlik − 1`
+/// ve ötesindeki birim ACK'lenmez, buraya hiç gelmez; her şeridin `held`'i en çok `genişlik`
 /// birim tutar. `next` her ilerleyişte veri alıcısına yayımlanır
 /// ([`ExpectedSessions::advance_head`], şerit etiketli).
+///
+/// [TOPLAM-SINIR] Sırası gelen birim teslim kutusuna yalnız kutuda yer varken çıkar
+/// ([`Self::push_bounded`], [`Self::release`]); kalan sıralı koşu `held`'de bekler ve `next`
+/// ilerlemez (kabul penceresi de ilerlemez — geri basınç veri alıcısına, oradan göndericiye
+/// geçer). Toplam sınır: [`receiver_buffer_bound_units`].
 #[derive(Default)]
 struct Reorder {
     lanes: [LaneOrder; LANE_COUNT],
@@ -492,13 +525,27 @@ pub struct ReorderDiag {
 impl Reorder {
     /// Birimi şeridine koyar; sırası gelen birimler `out`'a akar. Eksik sıra başı beklenir,
     /// atlanmaz (F3). Döndürdüğü değer: şeridin yeni sıra başı (şerit etiketli; ilerlemediyse
-    /// eski değer) — çağıran değişince veri alıcısına yayımlar.
+    /// eski değer) — çağıran değişince veri alıcısına yayımlar. Kutu sınırsız (birim testleri).
+    #[cfg(test)]
     fn push(
         &mut self,
         unit: u64,
         session: SessionHandle,
         payload: Vec<u8>,
         out: &mut VecDeque<Delivered>,
+    ) -> u64 {
+        self.push_bounded(unit, session, payload, out, usize::MAX)
+    }
+
+    /// [`Self::push`]; sırası gelen birimler yalnız `out.len() < cap` iken çıkar, kalanı
+    /// [`Self::release`]'i bekler.
+    fn push_bounded(
+        &mut self,
+        unit: u64,
+        session: SessionHandle,
+        payload: Vec<u8>,
+        out: &mut VecDeque<Delivered>,
+        cap: usize,
     ) -> u64 {
         let lane = lane_index_of(unit);
         let seq = lane_seq_of(unit);
@@ -507,7 +554,17 @@ impl Reorder {
             return tagged(lane, lo.next); // ilk-teslim penceresinin dışından gelen geç kopya
         }
         lo.held.entry(seq).or_insert((session, payload));
-        while let Some(entry) = lo.held.first_entry() {
+        self.release(lane, out, cap)
+    }
+
+    /// [TOPLAM-SINIR] Şeridin sırası gelmiş tutulan birimlerini `out.len() < cap` oldukça çıkarır;
+    /// döner: şeridin yeni sıra başı (şerit etiketli).
+    fn release(&mut self, lane: usize, out: &mut VecDeque<Delivered>, cap: usize) -> u64 {
+        let lo = &mut self.lanes[lane];
+        while out.len() < cap {
+            let Some(entry) = lo.held.first_entry() else {
+                break;
+            };
             if *entry.key() != lo.next {
                 break;
             }
@@ -1496,6 +1553,24 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     // ── teslimler ──
 
     fn drive_deliveries(&mut self) {
+        // [TOPLAM-SINIR] Önce kutu doluyken bekletilen sıralı koşular (PTT > SIG > TEXT > FILE):
+        // kutu [`MAX_INBOX`]'u hiç aşmaz. Eskiden bir boşluk dolunca şeridin bütün tutulan koşusu
+        // kutuya birden akıyordu (kutu `MAX_INBOX − 1 + pencere` birime çıkabiliyordu).
+        if self.inbox.len() < MAX_INBOX {
+            for (&h, r) in &mut self.reorder {
+                for lane in 0..LANE_COUNT {
+                    let before = r.head(lane);
+                    let next = r.release(lane, &mut self.inbox, MAX_INBOX);
+                    if next != before {
+                        self.expected.advance_head(h, next);
+                        #[cfg(any(test, feature = "test-util"))]
+                        if let Some(trace) = self.unit_trace.as_mut() {
+                            trace.push(UnitTraceKind::Released, h, next, 0);
+                        }
+                    }
+                }
+            }
+        }
         while self.inbox.len() < MAX_INBOX {
             let Some(d) = self.server.try_next_delivery() else {
                 break;
@@ -1525,7 +1600,7 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             // (adres) gelen kopyası burada tekilleşir.
             let reorder = self.reorder.entry(h).or_default();
             let next_before = reorder.head(lane_index_of(d.unit_id));
-            let next = reorder.push(d.unit_id, h, d.payload, &mut self.inbox);
+            let next = reorder.push_bounded(d.unit_id, h, d.payload, &mut self.inbox, MAX_INBOX);
             if next != next_before {
                 // [F3] Sıra başı ilerledi: veri alıcısının kabul penceresi de ilerler.
                 self.expected.advance_head(h, next);
@@ -1656,6 +1731,27 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             );
             st.set_file_window(session, w);
         }
+        // [ŞERİT-AÇIKLIK] Dosya şeridi alıcının kabul penceresini aşmaz: sıradaki dosya birimi,
+        // şeridin teyitsiz en küçük biriminden en çok `genişlik − 1` ileride olabilir (genişlik =
+        // `max_inflight_units`; iki uç aynı yapılandırmayla çalışır). Bkz.
+        // `lanes::SessionLanes::set_file_span_room`.
+        if let Some(s) = self.sessions.get(&session) {
+            if let Some(e) = s.endpoint.as_ref() {
+                let file = index_of_lane(Lane::File);
+                let next = s.sent[file];
+                let low = e
+                    .lowest_unconfirmed_in_lane(file)
+                    .map_or(next, |l| l.min(next));
+                let width = u64::try_from(self.runtime_cfg.max_inflight_units).unwrap_or(u64::MAX);
+                st.set_file_span_room(session, low.saturating_add(width).saturating_sub(next));
+            }
+        }
+        self.pump_lanes_of(st, session);
+        st.note_pump_done(session);
+    }
+
+    /// [`Self::pump_session`]'ın verme döngüsü.
+    fn pump_lanes_of(&mut self, st: &mut LaneState, session: SessionHandle) {
         while let Some((lane, unit)) = st.pop_next(session, Instant::now()) {
             let Some(unit_id) = self
                 .sessions
@@ -1749,6 +1845,18 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     #[must_use]
     pub fn inbox_len_for_test(&self) -> usize {
         self.inbox.len()
+    }
+
+    /// [TOPLAM-SINIR] Alıcı tarafında tamponlanan birimler: `(teslim kanalı, teslim kutusu,
+    /// sıralayıcıda tutulan)`; toplamın tavanı [`receiver_buffer_bound_units`].
+    #[cfg(any(test, feature = "test-util"))]
+    #[must_use]
+    pub fn receiver_buffered_for_test(&self) -> (usize, usize, usize) {
+        (
+            self.server.delivery_backlog(),
+            self.inbox.len(),
+            self.reorder.values().map(Reorder::held_total).sum(),
+        )
     }
 
     /// [K4G-01b] Sıralama durumu tutulan oturumlar (sıralı). Kapanan oturumunki silinir.

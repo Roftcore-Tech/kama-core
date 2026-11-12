@@ -18,7 +18,7 @@
 //! Boşalma idle-emeklilikle YA DA bağlı oturum oturum tablosundan çıkınca (kapanınca) olur —
 //! böyle bir yuva zaten erişilemezdir (bkz. "BAĞLAM-ÖNCE DAĞITIM"), ikisi de sayılır.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -51,7 +51,7 @@ use tokio::time::interval;
 
 use crate::unit_id::{
     fec_block_of, fec_esi_of, first_fec_block_of_lane, lane_index_of, lane_seq_of, next_fec_block,
-    tagged, unit_of_fec, LANE_COUNT,
+    tagged, unit_of_fec, FEC_BLOCK_LANE_SHIFT, LANE_COUNT,
 };
 use crate::wire::{
     decode_cs_echo, decode_cs_probe, decode_data, decode_data_frag, decode_fec, decode_param,
@@ -1734,6 +1734,10 @@ struct PathEstimate {
     btlbw_bps: AtomicU64,
     /// RTprop (ns); örnek yoksa 0.
     rtprop_ns: AtomicU64,
+    /// [ŞERİT-AÇIKLIK] Şerit başına motorca henüz teyit edilmemiş en küçük şerit-içi sıra
+    /// (`u64::MAX` = teyitsiz birim yok; başlangıçta 0 = henüz birim yok). Görev store'u her
+    /// değiştirdiğinde YAZAR; tutamaç OKUR ([`ClientHandle::lowest_unconfirmed_in_lane`]).
+    lane_low: [AtomicU64; LANE_COUNT],
 }
 
 /// Client tutamağı: bounded offer + ACK olay akışı + kontrollü kapanış.
@@ -2038,6 +2042,17 @@ impl ClientHandle {
         self.offer.outstanding.load(Ordering::Acquire)
     }
 
+    /// [ŞERİT-AÇIKLIK] Şeridin motorca henüz teyit edilmemiş en küçük şerit-içi sırası; teyitsiz
+    /// birimi yoksa `None`. Teyit = karşı ucun veri alıcısının birimi KABUL etmesi (ACK ya da
+    /// RECOVERED); kaynağı birim deposunun kendisidir (teyit olay kanalı değil — o kanal taşınca
+    /// olay düşer, bu değer düşmez). Şerit katmanı dosya şeridinin açıklığını bununla sınırlar
+    /// (`lanes::SessionLanes::set_file_span_room`).
+    #[must_use]
+    pub fn lowest_unconfirmed_in_lane(&self, lane: usize) -> Option<u64> {
+        let v = self.path.lane_low[lane & 0b11].load(Ordering::Relaxed);
+        (v != u64::MAX).then_some(v)
+    }
+
     /// [ŞERİT-W] Motorun son yol kestirimi `(btlbw B/s, rtprop ns)`; örnek yoksa ilgili alan 0.
     /// Görev her motor olayından sonra günceller (canlı aynadan bağımsız; ürün yolunda da var).
     /// Şerit katmanı dosya penceresini bununla BDP'ye göre boyutlandırır
@@ -2289,6 +2304,8 @@ async fn client_task(
     // [FAZ-2 / KALEM-1] blok → (K_actual, repair'ler). K_actual kısmi/son blokta k_shape'ten
     // küçüktür ve TEL BAŞLIĞINDA taşınmak zorundadır (alıcı Model-A zero-enjeksiyonunu ondan türetir).
     let mut repair_store: BTreeMap<u32, (u8, Vec<RepairSymbol>)> = BTreeMap::new();
+    // [ŞERİT-SIRA] Depoya giriş sırası (tahliye EN ESKİ GİRENDEN; bkz. `repair_store_insert`).
+    let mut repair_order: VecDeque<u32> = VecDeque::new();
     const REPAIR_STORE_BLOCKS: usize = 64;
     // unit-store: unit_id → payload; varlık = outstanding (sınır: cfg).
     // [K4G-05b-R · sahip kararı 2026-11-11] YALNIZ motor teyidinde düşer (`drain_confirmed!`): ACK'teki seq'in runtime haritasındaki
@@ -2316,6 +2333,12 @@ async fn client_task(
     let mut ack_counts = AckFrameCounts::default();
     // [ŞERİT-SIRA] Şerit başına boşluksuz sıra; kimlik = etiket + sıra (`crate::unit_id::tagged`).
     let mut next_unit: [u64; LANE_COUNT] = [0; LANE_COUNT];
+    // [ŞERİT-AÇIKLIK] Store'daki (teyitsiz) birimlerin şerit-içi sıraları; store ile aynı yerde
+    // eklenir/silinir, en küçüğü `PathEstimate::lane_low`'a yayımlanır. Sınır: store'un sınırı.
+    let mut unconfirmed: [BTreeSet<u64>; LANE_COUNT] = Default::default();
+    let publish_low = |path: &PathEstimate, lane: usize, set: &BTreeSet<u64>| {
+        path.lane_low[lane].store(set.first().copied().unwrap_or(u64::MAX), Ordering::Relaxed);
+    };
     let mut pace = interval(PACE_TICK);
     let mut rtprop = interval(RTPROP_TICK);
     let mut buf = vec![0u8; CLIENT_RECV_BUF];
@@ -2438,6 +2461,11 @@ async fn client_task(
                 // ya da ACK sonrası RECOVERED): app olayı ve sayaç üretilmez.
                 if store.remove(&unit).is_none() {
                     continue;
+                }
+                {
+                    let lane = lane_index_of(unit);
+                    unconfirmed[lane].remove(&lane_seq_of(unit));
+                    publish_low(&path, lane, &unconfirmed[lane]);
                 }
                 match $via {
                     ConfirmVia::Recovered => stats.fec_recovered_ctrl_units += 1,
@@ -2914,6 +2942,8 @@ async fn client_task(
                     let size = wire_len(seam.as_ref(), client_ctx, hdr + chunk.len());
                     // store WIRE GÖVDESİNİ tutar (frag: prefix‖payload, düz: payload).
                     store.insert(id, if frag_on { body } else { chunk.to_vec() });
+                    unconfirmed[lane].insert(lane_seq_of(id));
+                    publish_low(&path, lane, &unconfirmed[lane]);
                     if frag_on {
                         unit_msg.insert(id, msg_id);
                     }
@@ -2969,11 +2999,13 @@ async fn client_task(
                                 .collect();
                             if let Ok(reps) = RsSimdCodec.encode(p, &srcs) {
                                 stats.fec_blocks_latched += 1;
-                                repair_store
-                                    .insert(*cur_block_id, (u8::try_from(p.k_shape).unwrap_or(255), reps));
-                                while repair_store.len() > REPAIR_STORE_BLOCKS {
-                                    repair_store.pop_first();
-                                }
+                                repair_store_insert(
+                                    &mut repair_store,
+                                    &mut repair_order,
+                                    *cur_block_id,
+                                    (u8::try_from(p.k_shape).unwrap_or(255), reps),
+                                    Some(REPAIR_STORE_BLOCKS),
+                                );
                             }
                         }
                         cur_block.clear();
@@ -3069,7 +3101,15 @@ async fn client_task(
                 if let Ok(reps) = RsSimdCodec.encode(p, &srcs) {
                     stats.fec_blocks_latched += 1;
                     stats.fec_partial_blocks_closed += 1;
-                    repair_store.insert(cur_block_id, (k_actual, reps));
+                    // Kapanış eklemesi tahliye etmez (eski davranış): depo en çok
+                    // `REPAIR_STORE_BLOCKS + LANE_COUNT` blok.
+                    repair_store_insert(
+                        &mut repair_store,
+                        &mut repair_order,
+                        cur_block_id,
+                        (k_actual, reps),
+                        None,
+                    );
                 }
             }
             cur_block.clear();
@@ -3339,6 +3379,13 @@ impl ServerHandle {
         self.delivery_rx.try_recv().ok()
     }
 
+    /// [TOPLAM-SINIR] Teslim kanalında bekleyen (alınmamış) teslim sayısı; en çok
+    /// `RuntimeConfig::delivery_queue`. Salt okuma.
+    #[must_use]
+    pub fn delivery_backlog(&self) -> usize {
+        self.delivery_rx.len()
+    }
+
     /// Ölçüm-t0 işareti (dönüş yönü): wire sayaçları sıfırlanır, ALICI DURUMU KORUNUR ve varsa
     /// [`EgressPolicy`] arm edilir. Görev işleyene dek bekler — bkz. [`ClientHandle::mark_t0`].
     pub async fn mark_t0(&self) {
@@ -3396,7 +3443,78 @@ impl ServerHandle {
 const DELIVERED_DEDUP_WINDOW: usize = 8192;
 
 /// [S1] Peer-başına FEC blok-birleştirme tavanı (bounded, SR-AUDIT-001; en-eski düşer + sayaç).
+/// [ŞERİT-SIRA] "En eski" şerit içinde tanımlıdır: düşen, en kalabalık şeridin en küçük blok
+/// kimliğidir (`busiest_lane`).
 const RX_BLOCKS_CAP: usize = 32;
+
+/// [ŞERİT-SIRA] Tavanlı bir kimlik kümesinde (dedup penceresi, FEC blok birleştirici) tahliye
+/// edilecek şerit: en çok kaydı tutan şerit, eşitlikte düşük öncelikli olan (büyük indeks).
+///
+/// Neden: bu kümeler eskiden en küçük kimliği (`pop_first`) düşürüyordu; tek şeritte kimlikler
+/// gönderim sırasında arttığından bu "en eski"ydi. Şerit etiketi kimliğin üst bitlerindedir
+/// (`crate::unit_id`): en küçük kimlik PTT şeridinindir, en eski değil. Dosya şeridi kümeyi
+/// doldurunca PTT/SIG/TEXT kayıtları girer girmez atılırdı (FEC birleştiricide o şeridin yarım
+/// bloğu, dedup'ta ilk-teslim kaydı). Şerit içinde kimlik hâlâ gönderim sırasıdır; tahliye en
+/// kalabalık şeridin en küçük kimliğidir. Tek şeritte (yalnız şerit 0 dolu) davranış eskisiyle aynı.
+fn busiest_lane(per_lane: &[usize; LANE_COUNT]) -> usize {
+    let mut best = LANE_COUNT - 1;
+    for lane in (0..LANE_COUNT).rev() {
+        if per_lane[lane] > per_lane[best] {
+            best = lane;
+        }
+    }
+    best
+}
+
+/// FEC blok kimliğinin şerit indeksi (`crate::unit_id::fec_block_of` düzeni).
+fn fec_block_lane(block_id: u32) -> usize {
+    (block_id >> FEC_BLOCK_LANE_SHIFT) as usize
+}
+
+/// [ŞERİT-SIRA] Tavanı aşan FEC blok birleştiricisinden düşecek blok: [`busiest_lane`]'in en
+/// küçük blok kimliği. Boşsa `None`.
+fn rx_block_victim<V>(blocks: &BTreeMap<u32, V>) -> Option<u32> {
+    let mut per_lane = [0usize; LANE_COUNT];
+    for &b in blocks.keys() {
+        per_lane[fec_block_lane(b)] += 1;
+    }
+    let lane = busiest_lane(&per_lane);
+    blocks
+        .range(first_fec_block_of_lane(lane)..)
+        .next()
+        .map(|(&b, _)| b)
+}
+
+/// [ŞERİT-SIRA] Eş başına ilk-teslim dedup penceresi: kimlik kümesi + şerit başına kayıt sayısı.
+/// Tavan aşılınca [`busiest_lane`]'in en küçük kimliği düşer (tek şeritte eskisi gibi en küçük).
+/// Fragmenter açıkken kimlik mesaj kimliğidir (şerit 0).
+#[derive(Default)]
+struct DedupWindow {
+    ids: std::collections::BTreeSet<u64>,
+    per_lane: [usize; LANE_COUNT],
+}
+
+impl DedupWindow {
+    fn contains(&self, id: u64) -> bool {
+        self.ids.contains(&id)
+    }
+
+    fn insert(&mut self, id: u64, cap: usize) {
+        if !self.ids.insert(id) {
+            return;
+        }
+        self.per_lane[lane_index_of(id)] += 1;
+        while self.ids.len() > cap {
+            let lane = busiest_lane(&self.per_lane);
+            let Some(&victim) = self.ids.range(tagged(lane, 0)..).next() else {
+                break;
+            };
+            self.ids.remove(&victim);
+            let l = lane_index_of(victim);
+            self.per_lane[l] = self.per_lane[l].saturating_sub(1);
+        }
+    }
+}
 
 /// [S1] Blok-birleştirme durumu: esi→symbol. Source-symbol DATA payload'ından deterministik
 /// türetilir (TX ile aynı `SourcePrefix`); repair FRAME_FEC'ten gelir. BTreeMap = dup-ESI doğal
@@ -3527,7 +3645,7 @@ fn admit_chunk<'a>(
     from_fec: bool,
 ) -> bool {
     if !frag_on {
-        if slot.delivered_seen.contains(&unit_id) {
+        if slot.delivered_seen.contains(unit_id) {
             return true; // birim çoktan teslim edildi (DATA/FEC ortak pencere)
         }
         // [INV-ACK-DELIVER-1 · F4] Dedup penceresine YALNIZ teslim kanalına girdikten sonra
@@ -3545,14 +3663,11 @@ fn admit_chunk<'a>(
             payload.to_vec(),
             from_fec,
         );
-        slot.delivered_seen.insert(unit_id);
-        if slot.delivered_seen.len() > DELIVERED_DEDUP_WINDOW {
-            slot.delivered_seen.pop_first();
-        }
+        slot.delivered_seen.insert(unit_id, DELIVERED_DEDUP_WINDOW);
         return true;
     }
     let mid = u64::from(pfx.message_id);
-    if slot.delivered_seen.contains(&mid) {
+    if slot.delivered_seen.contains(mid) {
         return true; // mesaj çoktan teslim edildi; geç chunk'lar (retransmit/kurtarma) yutulur
     }
     stats.frag_chunks_rx += 1;
@@ -3580,10 +3695,7 @@ fn admit_chunk<'a>(
         slot.msgs.remove(&pfx.message_id);
         stats.msgs_reassembled += 1;
         push_delivery(stats, permit, peer, slot.ctx, mid, full, from_fec);
-        slot.delivered_seen.insert(mid);
-        if slot.delivered_seen.len() > DELIVERED_DEDUP_WINDOW {
-            slot.delivered_seen.pop_first();
-        }
+        slot.delivered_seen.insert(mid, DELIVERED_DEDUP_WINDOW);
     } else if slot.msgs.len() > MSG_ASM_CAP {
         slot.msgs.pop_first();
         stats.msg_asm_evicted += 1;
@@ -3600,7 +3712,7 @@ type SlotKey = (SocketAddr, SessionHandle);
 struct PeerSlot {
     rx: Receiver,
     last_seen_ns: u64,
-    delivered_seen: std::collections::BTreeSet<u64>,
+    delivered_seen: DedupWindow,
     /// [S1] FEC blok-birleştirici (bounded; yalnız FEC-açıkken dolar).
     blocks: BTreeMap<u32, BlockAsm>,
     /// [S1B] Mesaj yeniden-birleştirici (bounded `MSG_ASM_CAP`; yalnız fragmentasyon açıkken dolar).
@@ -3629,7 +3741,7 @@ impl PeerSlot {
         Self {
             rx,
             last_seen_ns: now,
-            delivered_seen: std::collections::BTreeSet::new(),
+            delivered_seen: DedupWindow::default(),
             blocks: BTreeMap::new(),
             msgs: BTreeMap::new(),
             ctx,
@@ -3720,6 +3832,32 @@ async fn srv_seal_send(
             }
         }
         Err(_) => stats.seal_failures += 1,
+    }
+}
+
+/// [ŞERİT-SIRA] Gönderici onarım deposuna blok ekler; `cap` verilmişse ve aşıldıysa EN ESKİ
+/// GİREN blok düşer. Eskiden anahtar sırasıyla (`pop_first`) düşüyordu: tek şeritte blok
+/// kimlikleri artan olduğundan bu "en eski"ydi. Şerit etiketli blok kimliğinde (`crate::unit_id`)
+/// en küçük kimlik PTT şeridinindir: dosya şeridi depoyu doldurunca PTT/SIG/TEXT bloklarının
+/// onarımları girer girmez atılır, o blokların FecParity kararı tele çıkmazdı. `order` deponun
+/// anahtarlarını giriş sırasıyla tam bir kez tutar (aynı anahtarın üzerine yazmak sırayı
+/// değiştirmez); deponun tek silme yolu buradaki tahliyedir. Tek şeritte davranış aynıdır.
+fn repair_store_insert(
+    store: &mut BTreeMap<u32, (u8, Vec<RepairSymbol>)>,
+    order: &mut VecDeque<u32>,
+    block_id: u32,
+    entry: (u8, Vec<RepairSymbol>),
+    cap: Option<usize>,
+) {
+    if store.insert(block_id, entry).is_none() {
+        order.push_back(block_id);
+    }
+    let Some(cap) = cap else { return };
+    while store.len() > cap {
+        let Some(oldest) = order.pop_front() else {
+            break;
+        };
+        store.remove(&oldest);
     }
 }
 
@@ -3895,7 +4033,12 @@ fn fec_ingest(
         }
     }
     while slot.blocks.len() > RX_BLOCKS_CAP {
-        if let Some((_, a)) = slot.blocks.pop_first() {
+        // [ŞERİT-SIRA] En kalabalık şeridin en eski bloğu (bkz. `busiest_lane`); tek şeritte
+        // eskisi gibi en küçük blok kimliği.
+        let Some(victim) = rx_block_victim(&slot.blocks) else {
+            break;
+        };
+        if let Some(a) = slot.blocks.remove(&victim) {
             let held = a.repairs.len() as u64;
             if held > 0 {
                 stats.fec_repairs_wasted_evicted += held;
@@ -5623,5 +5766,91 @@ mod pre_param_fec_guard_tests {
             stats.fec_recovered_ctrl_tx, 0,
             "teslim edilmeyen birim RECOVERED'a girmemeli: {stats:?}"
         );
+    }
+}
+
+/// [ŞERİT-SIRA · merge öncesi] Şerit etiketli kimliklerde tavanlı kümelerin tahliyesi: en küçük
+/// kimlik PTT şeridinindir, en eski değil. Tek şeritte davranış eskisiyle (en küçük düşer) aynı.
+#[cfg(test)]
+mod lane_eviction_tests {
+    use super::*;
+
+    const FILE: usize = 3;
+    const PTT: usize = 0;
+
+    /// Gönderici onarım deposu: dosya blokları depoyu doldurduktan sonra gelen PTT bloğu düşmez;
+    /// düşen, en eski giren dosya bloğudur. (Eski `pop_first` PTT bloğunu girer girmez atıyordu.)
+    #[test]
+    fn repair_store_evicts_the_oldest_inserted_block_not_the_lowest_id() {
+        let mut store: BTreeMap<u32, (u8, Vec<RepairSymbol>)> = BTreeMap::new();
+        let mut order = VecDeque::new();
+        let file0 = first_fec_block_of_lane(FILE);
+        for b in 0..4u32 {
+            repair_store_insert(&mut store, &mut order, file0 + b, (8, Vec::new()), Some(4));
+        }
+        let ptt0 = first_fec_block_of_lane(PTT);
+        repair_store_insert(&mut store, &mut order, ptt0, (8, Vec::new()), Some(4));
+        assert!(store.contains_key(&ptt0), "yeni PTT bloğu depoda");
+        assert!(
+            !store.contains_key(&file0),
+            "en eski giren dosya bloğu düştü"
+        );
+        assert_eq!(store.len(), 4);
+        assert_eq!(order.len(), store.len());
+        // Tek şerit: giriş sırası = kimlik sırası → eski davranış (en küçük düşer).
+        let mut store: BTreeMap<u32, (u8, Vec<RepairSymbol>)> = BTreeMap::new();
+        let mut order = VecDeque::new();
+        for b in 0..6u32 {
+            repair_store_insert(&mut store, &mut order, b, (8, Vec::new()), Some(4));
+        }
+        assert_eq!(store.keys().copied().collect::<Vec<_>>(), vec![2, 3, 4, 5]);
+        // Kapanış eklemesi tahliye etmez.
+        repair_store_insert(&mut store, &mut order, 6, (3, Vec::new()), None);
+        assert_eq!(store.len(), 5);
+    }
+
+    /// Alıcı FEC birleştiricisi: dosya şeridi tavanı doldurunca düşen, dosyanın en eski bloğudur;
+    /// PTT'nin yarım bloğu korunur. Tek şeritte en küçük blok düşer.
+    #[test]
+    fn rx_blocks_evict_the_busiest_lanes_oldest_block() {
+        let mut blocks: BTreeMap<u32, ()> = BTreeMap::new();
+        let ptt0 = first_fec_block_of_lane(PTT);
+        let file0 = first_fec_block_of_lane(FILE);
+        blocks.insert(ptt0, ());
+        for b in 0..5u32 {
+            blocks.insert(file0 + b, ());
+        }
+        assert_eq!(rx_block_victim(&blocks), Some(file0));
+        let mut single: BTreeMap<u32, ()> = (3..9u32).map(|b| (b, ())).collect();
+        assert_eq!(rx_block_victim(&single), Some(3));
+        single.clear();
+        assert_eq!(rx_block_victim(&single), None);
+    }
+
+    /// İlk-teslim dedup penceresi: dosya şeridi pencereyi doldurunca gelen PTT kaydı tutulur, en
+    /// kalabalık şeridin (dosya) en küçük kimliği düşer. Tek şeritte en küçük kimlik düşer.
+    #[test]
+    fn dedup_window_evicts_from_the_busiest_lane() {
+        let mut w = DedupWindow::default();
+        for i in 0..8u64 {
+            w.insert(tagged(FILE, i), 8);
+        }
+        w.insert(tagged(PTT, 0), 8);
+        assert!(w.contains(tagged(PTT, 0)), "PTT kaydı girer girmez düşmedi");
+        assert!(!w.contains(tagged(FILE, 0)), "dosyanın en eski kaydı düştü");
+        assert_eq!(w.ids.len(), 8);
+        assert_eq!(w.per_lane[FILE], 7);
+        assert_eq!(w.per_lane[PTT], 1);
+        let mut single = DedupWindow::default();
+        for i in 0..10u64 {
+            single.insert(i, 8);
+        }
+        assert_eq!(
+            single.ids.iter().copied().collect::<Vec<_>>(),
+            (2..10).collect::<Vec<_>>()
+        );
+        // Eşitlikte düşük öncelikli (büyük indeks) şerit düşer.
+        assert_eq!(busiest_lane(&[2, 0, 0, 2]), FILE);
+        assert_eq!(busiest_lane(&[3, 0, 0, 2]), PTT);
     }
 }

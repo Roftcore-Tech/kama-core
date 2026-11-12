@@ -22,10 +22,18 @@
 //!   kayıp olarak tanır; başka şeridin birimi boşluk yaratmaz.
 //! * Şeritler kapalıyken (ürün bugünkü yolu, bağımsız `bind`, bütün eski testler) her birim şerit
 //!   0'a yazılır: etiket 0, kimlikler eskisiyle **bayt-aynı**.
-//! * Motor (`adaptive-transport`) kimliği opak taşır. Kimlik sırasına bakan tek karar PTO prob
-//!   hedefi seçimidir ("en küçük birim kimliği", CC-PORT U16): etiketle bu sıra "önce şerit, sonra
-//!   sıra" olur — kayıp sıra başı önce PTT, sonra SIG, TEXT, FILE'da aranır; şerit kabul sırasıyla
-//!   tutarlıdır ve tek şeritte eski davranışla aynıdır.
+//! * **En küçük kimlik en eski birim DEĞİLDİR** (PTT kimlikleri her zaman dosya kimliklerinden
+//!   küçüktür). Kimlik sırasını "gönderim sırası" yerine kullanan yerler:
+//!   - Motor (`adaptive-transport`) kimliği opak taşır. PTO prob hedefi "en küçük birim kimliği"dir
+//!     (CC-PORT U16): etiketle bu sıra "önce şerit, sonra sıra" olur — prob önce PTT, sonra SIG,
+//!     TEXT, FILE'ın en eski teyitsiz birimini taşır; şerit kabul sırasıyla tutarlıdır, tek şeritte
+//!     eski davranışla aynıdır (bilinçli olarak korundu). PTO yalnız ACK ilerlemesi yokken çalışır.
+//!   - Port motorunun kayıp-yapısı kestiricisi kimlik yerine orijinalin motor-içi gönderim
+//!     sırasını kullanır (`Sender::fate_key`); kimlik sırası pencereyi en yüksek şeridin eski
+//!     kayıtlarında dondururdu.
+//!   - client-core'un tavanlı kümeleri (gönderici onarım deposu, alıcı FEC birleştiricisi, ilk-teslim
+//!     dedup penceresi) en küçük kimliği değil, en eski girişi / en kalabalık şeridin en eskisini
+//!     düşürür (`runtime.rs` `repair_store_insert`, `busiest_lane`).
 //!
 //! # FEC blok eşlemesi
 //!
