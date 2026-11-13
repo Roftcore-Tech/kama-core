@@ -119,6 +119,8 @@ pub struct RuntimeConfig {
     /// - gönderici: ACK'ler aşağı yönden `receiver::budgeted_ack_interval_ns(aşağı)` aralıkla gelir;
     ///   ilk pencere bir aralıkta yukarı yönün taşıyabileceği veriye büyütülür (ACK beklemeden hattı
     ///   doldurur). PTO'nun alıcı bekletme payı değişmez.
+    /// - gönderici: kendi datagramları (gövde + UDP/IP zarfı) yukarı yön hızında serileşir; kuyruk
+    ///   darboğazda değil göndericide bekler (`Sender::set_cc_line`).
     ///
     /// Simetrik hızlı yolda aralık ≈ 25 ms → pencere varsayılanda kalır.
     pub link_rates: Option<LinkRates>,
@@ -2213,6 +2215,18 @@ async fn client_task(
                         .set_cc_profile_pacing_cap(Some(link_pacing_cap_bps(l.uplink_bps)));
                 }
             }
+            // [HAT-MODELİ] Pencere büyüsün büyümesin kendi datagramlarımız (gövde + UDP/IP zarfı)
+            // profilin yukarı yön hızında serileşir: kuyruk darboğazda değil göndericide bekler.
+            // Tavan tek başına yetmez: kovanın en az 10·MTU burst'ü dar yukarı yönün bütün kısa
+            // mesaj akışını (ör. alıcı düğümün ters oturumu, 62 B/s hatta 37 B'lik mesajlar) bir anda
+            // darboğaz kuyruğuna bırakır; kopya saatleri orijinal hattan çıkmadan dolar ve aynı hattı
+            // paylaşan ACK'ler kuyruğun arkasında kalır (tests/shaped_relay.rs ters oturum ölçümü).
+            session
+                .sender_mut()
+                .set_cc_line(Some(adaptive_transport::pacer::LineModel {
+                    rate_bps: l.uplink_bps,
+                    datagram_overhead: LINK_UDP_IP_OVERHEAD,
+                }));
         }
         session.sender_mut().set_cc_initial_window(iw);
     }

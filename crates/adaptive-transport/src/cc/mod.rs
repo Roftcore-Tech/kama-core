@@ -24,7 +24,7 @@ mod min_max;
 pub use bbr::{rfc9002_initial_window, Bbr, Mode};
 
 /// quinn `connection/pacing.rs` sabitleri: 2 ms burst aralığı, 10..256 paket burst sınırı.
-const BURST_INTERVAL_NS: u128 = 2_000_000;
+pub(crate) const BURST_INTERVAL_NS: u128 = 2_000_000;
 const MIN_BURST_SIZE: u64 = 10;
 const MAX_BURST_SIZE: u64 = 256;
 /// RFC 9002 §7.7 "N = 1.25": kova bir RTT'de 1,25 pencere dolar (quinn `pacing.rs:92-95`).
