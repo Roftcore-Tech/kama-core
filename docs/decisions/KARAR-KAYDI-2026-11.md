@@ -86,3 +86,41 @@ Backlog H-0 ile bayt-özdeş aktarıldı. İçeriği (kartların ne'si, S4/TDD a
 - **Açık risk.** Startup taşması sığ kuyrukta (BBR v1 doğası; U9 paket koruması, PR #179, azaltır); alıcıda sırasız varışta paket başına ACK (dönüş yolu
   maliyeti; düşük bant kipinde sınırlanacak).
 - **Gösterim ağacı** (`yol2/goster`) etkilenmez; gösterim motoru seçimi CP-6 sonrası sahip kararı.
+
+## §9 D-MERGE-1 — Kontrollü birleştirme (2026-11-12, iş emri rev. 02:10)
+
+- **Yetki.** Sahip, 2026-11-12 02:00: `MERGE 191 194 187 182 192 183 196 193 189`. Her PR iş emrinin §2 şartıyla ve güncel main üzerinde birleşti. #181/#186 birlikte yetkisi yok (§3 kanıtı önce). #190 için ayrı `MERGE 190` gerekir.
+- **Yöntem.** Her aday için aynı adımlar:
+  1. `update-branch` ile main dala sunucu tarafında merge edilir (rebase yok).
+  2. PR kontrolleri ADLARIYLA doğrulanır (#182 sonrası 13 ad, `cc regression gate` dahil).
+  3. `gh pr merge --squash --match-head-commit <SHA>` ile birleştirilir.
+  4. core-main o SHA'da yeşil olur. core-main `cancel-in-progress` olduğu için kapı bitmeden sonraki merge yapılmaz.
+  5. Etkin farkın patch-id'si özgün farkla karşılaştırılır.
+
+| sıra | PR | squash | birleşen baş | kontroller | core-main | ek şart |
+|---|---|---|---|---|---|---|
+| 1 | #191 | cc7f912e | 3c587232 | 12/12 | success | — |
+| 2 | #194 | 7a40b18a | 8b91ee7a | 12/12 | success | — |
+| 3 | #187 | c9108b70 | 9320d2ab | 12/12 | success | — |
+| 4 | #182 | 2d290af5 | e64cd34b | 13/13 | success | muafiyet satırı 0 |
+| 5 | #192 | a4b4cb30 | d6b166ec | 13/13 | success | yerel `s4_hub_restart --ignored` 10/10, aynı ağaçtan hub-server |
+| 6 | #183 | 9d57995e | 86da6f64 | 13/13 | success | yerel `ack_after_admit` 3/3 |
+| 7 | #196 | d1c2d5b4 | 7f757caf | 13/13 | success | çakışma çözümü (aşağıda) |
+| 8 | #189 | 59311899 | 3b38fe8b | 13/13 | success | çakışma çözümü; 8 sim hücresi `CC_GATE_OUT` bayt aynı |
+| 9 | #193 | f1342814 | d83f6264 | 13/13 | success | önceki aday kırmızısı yerelde yeniden üretilemedi (aşağıda) |
+
+- **Çakışma çözümleri.** İkisinde de metin birleşimi temizdi, sonuç bozuktu.
+  - #196 ↔ #183: `fec_ingest`'te `recovered_esis.push` iki kez kaldı. Koşulsuz olanı F4'ü bozuyordu.
+  - #189 ↔ #182: `cc_port_sim.rs`'te `HashMap` iki kez içe aktarılmıştı (E0252).
+  - Her biri tek satır silindi; ayrıntı PR yorumlarında.
+- **Bitiş kapıları.** `cargo test --workspace --all-features` her squash SHA'sında core-main `full workspace` işinde koştu. `cc_gate_compare.py --selftest` main iş akışında yok ve ci.yml'de `workflow_dispatch` yok; bu yüzden f1342814'te yerelde koşuldu ve yeşil çıktı.
+- **Bekleyenler.**
+  - #181, #186: §3 entegrasyon kanıtı #175'te; karar sahipte.
+  - #195, #185: #181'i bekliyor.
+  - #190: `MERGE 190`; uzun ailede B'nin parite yolu gösterilmedi.
+  - #188: profil kararı bekliyor.
+  - #177: taslak.
+  - #140: `KAPAT 140` bekliyor.
+- **Açık.**
+  - `cc regression gate` zorunlu kontrol yapılmalı (depo ayarı, sahip).
+  - `ack_after_admit::legacy_stalled_consumer_loses_no_acked_unit` CI'da bir kez 60 s zaman aşımına uğradı. Yerelde main ağacında ve #193 adayında 10'ar koşunun hepsi geçti (AÇIK-3).
