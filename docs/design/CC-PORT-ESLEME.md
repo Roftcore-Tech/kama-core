@@ -155,6 +155,17 @@ Legacy'nin sim'deki ölümleri: kalkışta (PreConverge + 31 B/s) ve kuyrukta (1
 retx tavanı 3 → ileri-kopya kuyruğu 40 s). Sim legacy'nin netem'deki 91 s çöküşünü aynen
 üretmiyor (13 s) — harness netem değil; Ö-CC gerçek hücreyi koşar.
 
+## Yön hızlarıyla açılan sapmalar (asimetrik yol; varsayılan kapalı)
+
+`RuntimeConfig::link_rates = None` (ürün varsayılanı) iken aşağıdakilerin hiçbiri kurulmaz; port
+quinn'in yukarıdaki eşlemesiyle aynıdır. Verilince (dağıtım profili, ölçülmez):
+
+| quinn davranışı | Kama'da | gerekçe |
+|---|---|---|
+| alıcı her 2 pakette + sırasız varışta ACK (`spaces.rs`) | `Receiver::set_return_bandwidth`: ACK baytı ≤ Y · dönüş hızı (Y = 0,25; jeton kovası, ilk ACK muaf, ertelenen ACK birleşir) | spec §2.1/§12/§16.1 dönüş bütçesi |
+| ilk pencere sabit | `max(varsayılan, yukarı yön × bütçeli ACK aralığı)`, tavan 1 MiB | ACK'ler saniyeler arayla gelir |
+| `pacing.rs` 1,25·window/srtt (ölçüm yokken) ve Startup ilk-pencere/min_rtt | profil penceresi büyüdüyse pacer ≤ max(profil yukarı yön hızı, kazanç × BtlBw) (`Sender::set_cc_profile_pacing_cap`) | büyük pencere ölçümsüz hızla kuyruğa boşalmasın |
+
 ## Bilinen açık noktalar (PR-1 kapsamı dışı, Ö-CC'ye not)
 - Startup taşması sığ kuyrukta kayıpsız hücrede 48 düşme (%38 ek gönderim) — BBR v1 doğası; draft'ta
   Startup çıkışı kayıpla da tetiklenir (kodda var: `in_recovery` → full bw). 

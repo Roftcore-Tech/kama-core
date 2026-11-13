@@ -610,6 +610,14 @@ impl Bbr {
         self.pacing_rate
     }
 
+    /// Ölçümün desteklediği pacing hedefi (bayt/s): `pacing_gain × BtlBw` (draft §4.2); bant örneği
+    /// yoksa 0. `pacing_rate`'ten farkı: Startup'ın ilk-pencere/min_rtt tabanını ve "Startup'ta hız
+    /// düşmez" mandalını içermez. BBR'ın kendi kararları okumaz; göndericinin profil tavanı okur.
+    #[must_use]
+    pub fn measured_pacing_target(&self) -> u64 {
+        apply_pm(self.bw_estimate(), self.pacing_gain_pm)
+    }
+
     /// Kip.
     #[must_use]
     pub fn mode(&self) -> Mode {

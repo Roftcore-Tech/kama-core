@@ -83,6 +83,7 @@ async fn transport_api_v0_surface_is_frozen() {
         max_message_bytes: _, // v0.2 (S1B fragmenter): minor-EKLEME, kasıtlı pin-güncellemesi
         max_peers: _,
         quota_r: _,
+        link_rates: _, // v0.x (asimetrik yol: yön hızları): minor-EKLEME, kasıtlı pin-güncellemesi
         drain_cap: _,
         idle_hold: _,
         initial_window_bytes: _, // v0.5 (IW): minor-EKLEME, kasıtlı pin-güncellemesi
