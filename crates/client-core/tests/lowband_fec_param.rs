@@ -6,9 +6,9 @@
 //! ölçülmüş kapasite zaman kapısını açıyor mu; (5) hat akış sürerken 12,5 kB/s'den 25 B/s'ye
 //! düşünce zaman kapısı kapanıyor mu.
 //!
-//! Gerçek UDP; kayıp belirlenimli (egress kapısı / alıcı seam'i / hat ikizinde sıra numarası).
-//! (2) loopback; (3)–(4) netem `rate` + `delay` sıra kuralını uygulayan kullanıcı-alanı hat
-//! ikizi üzerinden (netem/tc gerekmez). (3)–(5) gerçek zamanlıdır: ≈ 50 s, ≈ 5 s, ≈ 20 s.
+//! Gerçek UDP; kayıp belirlenimli (alıcı seam'i / hat ikizinde sıra numarası). (2)–(5) netem
+//! `rate` + `delay` sıra kuralını uygulayan kullanıcı-alanı hat ikizi üzerinden (netem/tc
+//! gerekmez); gerçek zamanlıdır: (2) ≈ 4 s, (3) ≈ 50 s, (4) ≈ 5 s, (5) ≈ 20 s.
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
@@ -70,47 +70,51 @@ async fn collect(
     got.into_iter().collect()
 }
 
-/// (2) Normal bant (loopback), küçük birimli akış, kontrolcü yolu (ürün profili 0x05, E 1024).
-/// Blok 0'da kayıp geçmişi kurulur (birim 3 kalıcı silinir), blok 1 kayıp geçmişiyle kapanır.
-/// Tavanın girdisi ölçülmüş yol kapasitesidir. Loopback'te zaman kapısının açılması belirlenimli
-/// DEĞİLDİR: RTT 1 ms'nin altına inebilir ve o zaman teslim hızı örnekleri reddedilir
-/// (`bw.rs` `MIN_RATE_INTERVAL`); kapasite ölçülmemiş sayılır → bayt kapısı (400 B blokta r ≤ 3,
-/// 65 B blokta 0). Ölçüldü: 5 tekrardan birinde blok 1 kapanırken BtlBw 0'dı. Bu yüzden bu test
-/// kapıyı değil, normal bantta FEC'in fiilen çalıştığını sınar; kapının ölçülmüş kapasiteyle
-/// açılması (4) testinde (12,5 kB/s · 300 ms hat ikizi, belirlenimli).
-/// 400 B: kontrolcü parite planlar, tele çıkar, blok 1'in silinen birimi (11) FEC ile kurtarılır —
-/// iki kapıda da (bayt kapısı 400 B blokta 3 parite bırakır) koşulsuz iddia. 65 B: kontrolcü bu
-/// akışta çoğu koşuda r = 0 veriyor; kapı kapalı kalırsa bayt kapısı 0 verir → yalnız teslim
-/// sınanır. Uygulamayla sınırlı seyrek akışta ölçülen kapasite bir alt sınırdır ve eşiğin altında
-/// kalabilir (ör. 12,5 kB/s'de birim başına bir RTT → ≈ 150 B/s): o zaman 65 B blok bayt kapısıyla
-/// parite almaz; bu bilinçli (bkz. `fec_payload_r_max`). Düşük banttaki tavan (3) testinde.
-#[tokio::test(flavor = "multi_thread")]
+/// (2) Normal bant, küçük birimli akış, kontrolcü yolu (ürün profili 0x05, E 1024), hızlı hat
+/// ikizi (1,25 MB/s · tek yön 2 ms). Blok 0'da kayıp geçmişi kurulur (birim 3 alıcıda kalıcı
+/// silinir), 1,5 s duraklama, blok 1 kayıp geçmişiyle kapanır (birim 11 kalıcı silinir).
+///
+/// İddia (400 B): parite tavanı normal bantta FEC'i kesmez — kontrolcünün istediği r tavanın
+/// altında kalır (`fec_parity_payload_clamped = 0`), parite planlanır, tele çıkar, birim 11 FEC ile
+/// kurtarılır, blok 1 8/8. Koşulsuz ve belirlenimli:
+/// * Kontrolcünün oranı blok 1'de spekülatif koldan gelir (birim 3'ün şüpheli kaybı, L2 → 250‰ →
+///   r 2). Motorun bütçe kırpması (`cap = BtlBw · 1000 / 125 000`, sender `fuzzy_evaluate`) bu
+///   oranı ancak BtlBw ≥ 31,25 kB/s iken kesmez. RTT ≥ 4 ms olduğundan blok 0'ın ACK'leri geçerli
+///   teslim hızı örneği verir (≥ 1 ms aralık); patlama örneği ≥ ~100 kB/s → kırpma 900‰.
+/// * Tavan iki dalda da r 2'yi kesmez: zaman kapısı açıksa profil tavanı 4, kapalıysa bayt
+///   kapısı ⌊3 416 / 1 052⌋ = 3. Kapının girdisi son örneği de okur; blok 1'in ilk ACK'i duraklamayı
+///   kapsayan düşük örnek verebilir, sonuç değişmez.
+///
+/// Neden loopback değil: loopback'te RTT 1 ms'nin altına iner, blok 0'ın örnekleri reddedilir
+/// (`bw.rs` `MIN_RATE_INTERVAL`) ve BtlBw 0 kalır. Blok 1'in 8. sunumundan önce bir ACK işlenirse
+/// BtlBw duraklamayı kapsayan tek örnekle 284 B/s olur, bütçe kırpması 250‰'i 2‰'e indirir, r 0
+/// (ölçüldü: yük altında 160 koşuda 4; kırpma 2‰ ya da 6‰, BtlBw 284 / 852 B/s,
+/// `fec_parity_payload_clamped = 0` — tavan kesmedi).
+/// Bu, tavandan bağımsız bir motor davranışıdır; aynı kırpma (4) testinde de görülür: 12,5 kB/s'de
+/// BtlBw ≈ 3 kB/s → 24‰ → r 0.
+///
+/// 65 B: blok kaynağı 736 B < 1 052 B; zaman kapısı son örneğe bağlı (yukarıda) → bayt kapısında
+/// r 0 olabilir. Yalnız karar sayısı ve teslim sınanır.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn small_unit_flow_keeps_fec_at_normal_band_for_400b_and_65b_units() {
     const K: usize = 8;
     for unit_len in [400usize, 65usize] {
-        let cfg = || RuntimeConfig {
-            drain_cap: Duration::from_millis(600),
-            ..RuntimeConfig::default()
-        };
-        let mut server = ServerEndpoint::bind(
-            "127.0.0.1:0".parse().unwrap(),
-            cfg(),
+        let mut p = shaped_pair_with_delay(
+            1_250_000,
+            Duration::from_millis(2),
+            Start::DataFirst,
+            &[],
             Box::new(DropUnitsSeam {
                 drop: &[3, 11],
                 inner: IdentitySeam::new(),
             }),
         )
-        .await
-        .expect("server bind");
-        let client =
-            ClientEndpoint::connect(server.local_addr(), cfg(), Box::new(IdentitySeam::new()))
-                .await
-                .expect("client connect");
-        // Blok 0: kayıp geçmişi (birim 3 kalıcı düşer; ilk blok RTT örneksiz kapanır → r = 0).
+        .await;
+        // Blok 0: kayıp geçmişi (birim 3 kalıcı düşer; ilk blok ACK'siz kapanır → r = 0).
         for i in 0..K {
-            client.send(vec![i as u8; unit_len]).expect("offer");
+            p.client.send(vec![i as u8; unit_len]).expect("offer");
         }
-        let got0 = collect(&mut server, K - 1, Duration::from_secs(10)).await;
+        let got0 = collect(&mut p.server, K - 1, Duration::from_secs(10)).await;
         assert_eq!(
             got0.len(),
             K - 1,
@@ -119,11 +123,10 @@ async fn small_unit_flow_keeps_fec_at_normal_band_for_400b_and_65b_units() {
         tokio::time::sleep(Duration::from_millis(1500)).await;
         // Blok 1: kayıp geçmişiyle kapanır; birim 11 kalıcı düşer.
         for i in K..2 * K {
-            client.send(vec![i as u8; unit_len]).expect("offer");
+            p.client.send(vec![i as u8; unit_len]).expect("offer");
         }
-        let got1 = collect(&mut server, K, Duration::from_secs(20)).await;
-        let cs = client.shutdown().await;
-        let ss = server.shutdown().await;
+        let got1 = collect(&mut p.server, K, Duration::from_secs(20)).await;
+        let (cs, ss, _lens) = p.finish().await;
         println!(
             "[birim {unit_len} B] blok1 teslim={} karar={} zaman_kapısı={} kapasite_max={} B/s latched={} repairs_tx={} clamped={} recovered={} undelivered={}",
             got1.len(),
@@ -141,6 +144,10 @@ async fn small_unit_flow_keeps_fec_at_normal_band_for_400b_and_65b_units() {
             "birim {unit_len} B: iki tam blok: {cs:?}"
         );
         if unit_len == 400 {
+            assert_eq!(
+                cs.fec_parity_payload_clamped, 0,
+                "400 B: tavan normal bantta kontrolcünün r'sini kesmez: {cs:?}"
+            );
             assert!(
                 cs.fec_blocks_latched >= 1,
                 "400 B: kayıp geçmişli blok 1 parite planlar: {cs:?}"
@@ -324,7 +331,24 @@ async fn shaped_pair(
     drop_data: &'static [u64],
     server_seam: Box<dyn PacketProtection>,
 ) -> ShapedPair {
-    let delay = Duration::from_millis(300);
+    shaped_pair_with_delay(
+        rate_bps,
+        Duration::from_millis(300),
+        start,
+        drop_data,
+        server_seam,
+    )
+    .await
+}
+
+/// [`shaped_pair`], tek yön gecikmesi verilerek.
+async fn shaped_pair_with_delay(
+    rate_bps: u64,
+    delay: Duration,
+    start: Start,
+    drop_data: &'static [u64],
+    server_seam: Box<dyn PacketProtection>,
+) -> ShapedPair {
     let cfg = RuntimeConfig::default();
     let server = ServerEndpoint::bind("127.0.0.1:0".parse().unwrap(), cfg.clone(), server_seam)
         .await
