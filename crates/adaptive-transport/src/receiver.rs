@@ -197,6 +197,9 @@ pub struct Receiver {
     /// [DÖNÜŞ-BÜTÇESİ] `note_non_eliciting` ile kaydedilen en büyük PN (sıra denetimi; `None` =
     /// hiç çağrılmadı).
     non_eliciting_largest: Option<u64>,
+    /// [AKIŞ-SONU YEDEĞİ] DATA akışı sürerken gelen son ACK istemeyen varışın anı
+    /// (`note_non_eliciting`; 0 = hiç). Sessizlik denetimi onu eşin etkinliği sayar.
+    non_eliciting_at_ns: u64,
 }
 
 impl Receiver {
@@ -237,6 +240,7 @@ impl Receiver {
             ack_budget_first_done: false,
             diag_ack_budget_deferred: 0,
             non_eliciting_largest: None,
+            non_eliciting_at_ns: 0,
         }
     }
 
@@ -368,7 +372,15 @@ impl Receiver {
     /// kuralı) için ayrı en büyük (`non_eliciting_largest`) tutulur. Gönderici bu PN'leri birim
     /// kaydına eşlemediği için teyitleri yok sayılır. Runtime bunu yalnız dönüş bütçesi kurulu
     /// alıcıda çağırır (bütçesiz yol bayt-aynı).
-    pub fn note_non_eliciting(&mut self, seq: u64) {
+    ///
+    /// [AKIŞ-SONU YEDEĞİ] Varış anı (`now_ns`), DATA akışı sürerken (son DATA varışının sessizlik
+    /// penceresi içinde) geldiyse sessizlik denetimine (`arrivals_quiet`) eşin etkinliği olarak
+    /// girer; akış sessizleştikten sonra gelen kontrol trafiği akış sonu ACK'ini bekletmez. Epizot
+    /// ve varış aralığı ölçümüne girmez.
+    pub fn note_non_eliciting(&mut self, seq: u64, now_ns: u64) {
+        if !self.data_quiet(now_ns) {
+            self.non_eliciting_at_ns = self.non_eliciting_at_ns.max(now_ns);
+        }
         if self.received.contains(&seq) {
             return;
         }
@@ -431,7 +443,28 @@ impl Receiver {
     /// paketin boşluğu zaten 2 × aralık, ardışık iki kayıp 3 × — %20 kayıpta akış ortası "sessizlik"
     /// yedeği harcatıyordu (ölçüm: 2,18 s ve 3,26 s'de akış ortası ACK). Taban yokken (≤ 1 varış)
     /// sessiz sayılır.
+    ///
+    /// Sessizlik EŞİN sessizliğidir: ACK istemeyen varış (PARAM, cold-start probu;
+    /// `note_non_eliciting`) da saati tazeler. Yalnız DATA sayılınca, DATA kayıpları arasına düşen
+    /// bir PARAM yeniden denemesi eş gönderirken boşluğu eşiğin üstüne taşıyordu: üç DATA kaybı
+    /// 4 aralık, PARAM'ın serileşmesi de ≈ 9 ms ekliyor; 20 ms'lik ACK tikine göre bazı koşularda
+    /// akış ortası ACK yedeği harcıyor, akışın kayıp raporu bir bütçe aralığı (≈ 4,4 s) gecikiyordu
+    /// (tests/shaped_relay.rs asimetrik hücre, tohum 2: koşuların bir kısmında 10,7 → 15,1 s).
+    ///
+    /// Akış sessizleştikten sonra gelen ACK istemeyen paket saati tazelemez (`note_non_eliciting`):
+    /// akış bittikten sonra sessizlik penceresinden sık süren kontrol trafiği (PARAM yenilemesi,
+    /// prob) alıcıyı hiç "sessiz" bırakmaz, akış sonu ACK'i kovanın maliyet + yedeğe dolmasını
+    /// bekler (62 B/s dönüşte saniyeler). Böylece kontrol trafiği akış sonu ACK'ini en çok bir
+    /// sessizlik penceresi geciktirir.
     fn arrivals_quiet(&self, now_ns: u64) -> bool {
+        let base = self.episode_baseline();
+        let last = self.last_arrival_ns.max(self.non_eliciting_at_ns);
+        base == 0 || now_ns.saturating_sub(last) > base.saturating_mul(K_EPISODE)
+    }
+
+    /// [AKIŞ-SONU YEDEĞİ] Yalnız DATA'ya göre sessizlik: son DATA varışından beri > `K_EPISODE` ×
+    /// varış aralığı tabanı (taban yokken sessiz).
+    fn data_quiet(&self, now_ns: u64) -> bool {
         let base = self.episode_baseline();
         base == 0 || now_ns.saturating_sub(self.last_arrival_ns) > base.saturating_mul(K_EPISODE)
     }
@@ -892,7 +925,7 @@ mod tests {
                 "ACK_FREQ_N = 2"
             );
         }
-        with.note_non_eliciting(2); // PARAM
+        with.note_non_eliciting(2, 2 * MS); // PARAM
         assert!(
             with.on_ack_timer(2 * MS).is_none(),
             "ACK istemeyen PN ACK tetiklemez"
@@ -914,11 +947,126 @@ mod tests {
         assert_eq!(a.block0_len, 5);
         // En büyük PN ACK istemeyense: tel `largest_seq`'i odur, `largest_seq()` / ack_delay tabanı
         // son DATA'da kalır (göndericinin RTT örneği DATA'dan).
-        with.note_non_eliciting(5);
+        with.note_non_eliciting(5, 5 * MS);
         assert_eq!(with.largest_seq(), Some(4));
         let t = with.on_datagram(data(6, 4), 10 * MS);
         assert!(t.ack.is_none(), "5 kayıtlı → 6 sırada");
         assert_eq!(with.largest_seq(), Some(6));
+    }
+
+    /// Akış ortası boşluk (tests/shaped_relay.rs asimetrik hücre, tohum 2'nin yavaş koşusu): DATA
+    /// 84 ms arayla; son DATA'dan sonra iki DATA kaybı, PARAM yeniden denemesi (≈ 9 ms serileşir,
+    /// 2 aralık + 9 ms'de varır), bir DATA kaybı; sonraki DATA 4 aralık + 9 ms'de. ACK tiki 20 ms'de
+    /// bir, `phase` evresinde. Dönen: boşluk içinde çıkan ACK sayısı.
+    fn mid_flight_gap_acks(note_param: bool, phase: u64) -> u32 {
+        let slot = 84 * MS;
+        let mut r = Receiver::with_cc_port();
+        r.set_return_bandwidth(Some(62));
+        let t_last = 20 * slot;
+        let t_next = t_last + 4 * slot + 9 * MS;
+        // (an, PARAM mı, seq)
+        let mut events: Vec<(u64, bool, u64)> = (0..=20u64).map(|i| (i * slot, false, i)).collect();
+        if note_param {
+            events.push((t_last + 2 * slot + 9 * MS, true, 23));
+        }
+        events.push((t_next, false, 25));
+        events.sort_unstable();
+        let mut tick = phase;
+        let mut in_gap = 0;
+        for (t, param, seq) in events {
+            while tick < t {
+                if r.on_ack_timer(tick).is_some() && tick > t_last {
+                    in_gap += 1;
+                }
+                tick += 20 * MS;
+            }
+            if param {
+                r.note_non_eliciting(seq, t);
+            } else {
+                let _ = r.on_datagram(data(seq, seq), t);
+            }
+        }
+        in_gap
+    }
+
+    /// [AKIŞ-SONU YEDEĞİ] Eşin ACK istemeyen paketi sessizliği bozar: DATA kayıpları arasına düşen
+    /// PARAM varken yedek akış ortasında harcanmaz (her tik evresinde). PARAM kaydedilmeyince aynı
+    /// boşluk eşin gerçek sessizliğidir (345 ms > 4 × 84 ms): tikin eşikle sonraki DATA arasına düştüğü
+    /// evrelerde ACK çıkar — eski kuralda yavaş koşunun 2,18 s'deki fazladan ACK'i buydu.
+    #[test]
+    fn non_eliciting_arrival_keeps_the_reserve_inside_the_flight() {
+        for p in 0..20u64 {
+            assert_eq!(
+                mid_flight_gap_acks(true, p * MS),
+                0,
+                "PARAM varışı eşin etkinliği (evre {p} ms)"
+            );
+        }
+        let fired = (0..20u64)
+            .filter(|&p| mid_flight_gap_acks(false, p * MS) > 0)
+            .count();
+        assert!(
+            (1..20).contains(&fired),
+            "PARAM'sız boşlukta yalnız eşik sonrası evreler ACK çıkarır: {fired}/20"
+        );
+    }
+
+    /// Akış (DATA 0..=20, 84 ms arayla, kayıpsız) bittikten sonra eşin ACK istemeyen kontrol
+    /// paketleri `ctrl` aralıkla gelir (ilki son DATA'dan `ctrl` sonra; PARAM yeniden denemesi,
+    /// prob). ACK tiki 20 ms. Dönen: akış sonu ACK'inin son DATA'dan gecikmesi.
+    fn end_of_flight_ack_delay(ctrl: Option<u64>) -> u64 {
+        let slot = 84 * MS;
+        let mut r = Receiver::with_cc_port();
+        r.set_return_bandwidth(Some(62));
+        let t_last = 20 * slot;
+        let mut tick = 0;
+        for i in 0..=20u64 {
+            let t = i * slot;
+            while tick < t {
+                let _ = r.on_ack_timer(tick);
+                tick += 20 * MS;
+            }
+            let _ = r.on_datagram(data(i, i), t);
+        }
+        let mut next_ctrl = ctrl.map(|c| t_last + c);
+        let mut seq = 100;
+        loop {
+            while let Some(c) = next_ctrl.filter(|&c| c <= tick) {
+                r.note_non_eliciting(seq, c);
+                seq += 1;
+                next_ctrl = ctrl.map(|p| c + p);
+            }
+            if r.on_ack_timer(tick).is_some() {
+                return tick - t_last;
+            }
+            tick += 20 * MS;
+            assert!(
+                tick < t_last + 30_000 * MS,
+                "akış sonu ACK'i 30 s içinde çıkmalı"
+            );
+        }
+    }
+
+    /// [AKIŞ-SONU YEDEĞİ] Akış bittikten sonra süren kontrol trafiği son ACK'i bekletmez: eş
+    /// etkinliği yalnız DATA akışı sürerken (son DATA'nın sessizlik penceresi içinde) sayılır.
+    /// Kontrol trafiği varken akış sonu ACK'i, trafiksiz kola göre en çok bir sessizlik penceresi
+    /// (4 × 84 ms) geç çıkar — her aralıkta, sessizlik penceresinden sık trafikte de.
+    #[test]
+    fn end_of_flight_ack_is_not_held_by_control_traffic_after_the_flight() {
+        let quiet = end_of_flight_ack_delay(None);
+        assert!(
+            quiet <= 4 * 84 * MS + 20 * MS,
+            "trafiksiz: akış sonu ACK'i sessizlik penceresi + bir tik içinde: {quiet}"
+        );
+        for c in [50u64, 100, 250, 500, 1_000, 1_500] {
+            let d = end_of_flight_ack_delay(Some(c * MS));
+            assert!(
+                d <= quiet + 4 * 84 * MS,
+                "kontrol {c} ms aralıkla: akış sonu ACK'i {} ms (trafiksiz {} ms)",
+                d / MS,
+                quiet / MS
+            );
+        }
     }
 
     /// [DÖNÜŞ-BÜTÇESİ] Eski alıcı bütçeden etkilenmez (kendi cadence tabanı var).

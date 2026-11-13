@@ -2871,7 +2871,30 @@ impl Sender {
     #[must_use]
     pub fn next_wakeup_ns(&self) -> Option<u64> {
         // Kaynak 1-5 (timer'lar) + kaynak 6 (pacer-token'a bağlı due-now iş).
-        Self::earlier(self.next_timer_deadline_ns(), self.pending_work_ready_ns())
+        let best = Self::earlier(self.next_timer_deadline_ns(), self.pending_work_ready_ns());
+        Self::earlier(best, self.line_probe_ready_ns())
+    }
+
+    /// [HAT-MODELİ] Jeton ya da hat bekleyen kuyruk probunun (`tail_probe_pending`) çıkabileceği an.
+    /// Yalnız hat modeli kuruluyken aday üretir: hat, az önce çıkan bir datagramla meşgulken ateşlenen
+    /// PTO probu başka olay gelmeden de çıkabilsin. Model yoksa `None` → uyanma kümesi bit-aynı.
+    fn line_probe_ready_ns(&self) -> Option<u64> {
+        if !self.pacer.has_line() {
+            return None;
+        }
+        let target = self.tail_probe_pending?;
+        let size = self
+            .inflight
+            .get(&target)
+            .map(|r| r.unit.size)
+            .or_else(|| {
+                self.pending_lost
+                    .iter()
+                    .find(|r| r.seq == target)
+                    .map(|r| r.unit.size)
+            })?;
+        let dt = self.pacer.ns_until_sendable(size)?;
+        Some(self.last_now_ns.saturating_add(dt))
     }
 
     fn earlier(a: Option<u64>, b: Option<u64>) -> Option<u64> {
@@ -2936,7 +2959,15 @@ impl Sender {
             && self.state == SenderState::PreConverge
             && self.establish_due_ns > 0
         {
-            best = earlier(best, Some(self.establish_due_ns));
+            // [HAT-MODELİ] Vadesi geçmiş deneme hat açılınca çıkar (model yoksa ek 0 → bugünkü an).
+            let line = self.pacer.line_ns_until_open();
+            let due = if line > 0 {
+                self.establish_due_ns
+                    .max(self.last_now_ns.saturating_add(line))
+            } else {
+                self.establish_due_ns
+            };
+            best = earlier(best, Some(due));
         }
 
         // 4. DR-CS-3 bootstrap merdiveni (config default OFF ⇒ aday yok).
@@ -5078,6 +5109,44 @@ impl Sender {
         self.cc_profile_pacing_cap = cap_bps.filter(|&c| c > 0);
     }
 
+    /// [HAT-MODELİ] Port pacer'ına dağıtım profilinin yukarı yön hattını kurar
+    /// ([`crate::pacer::TokenBucket::set_line`]): kendi datagramlarımız (gövde + zarf) o hızda
+    /// serileşir, hattaki kendi kuyruğumuz bir burst aralığını aşarken pacer datagram vermez; kuyruk
+    /// darboğazda değil göndericide bekler. PreConverge kopya saatleri (§3.3-B merdiveni, DR-EST-1
+    /// kuruluş denemesi) birimin hattı terk ettiği andan başlar. `None` = model yok (bugünkü yol);
+    /// `cc` yoksa etkisiz (eski motor değişmez). Oturum başında, ilk olaydan önce çağrılır.
+    ///
+    /// Model yalnız **dar hatta** kurulur (`line_is_narrow`): tam boy bir datagramın (MTU + zarf)
+    /// serileşmesi en kısa kopya saatinden (DR-EST-1 ilk aralığı) uzunsa. Orada kopya saatleri tek
+    /// datagramın serileşmesiyle çelişir ve kovanın 10·MTU burst'ü dakikalarca hat süresidir. Daha
+    /// hızlı hatta kopya saatleri serileşmeyle çelişmez, pencere profilden büyüdüğünde profil tavanı
+    /// göndericiyi hatta bağlar; o göndericiler bugünkü gibidir.
+    ///
+    /// Port farkı (beyanlı, yalnız dar hatta): quinn pacer'ı en az 10·MTU burst verir
+    /// (`cc::PacerParams`) ve BBR kazancı (> 1) ölçülen hedefle hattın üstüne çıkabilir; dar hatta
+    /// kendi baytlarımız hattın hızını ve bir burst aralığını aşmaz. Hat hızının altındaki pacing
+    /// (BBR hedefi, profil tavanı) aynen geçerlidir.
+    pub fn set_cc_line(&mut self, line: Option<crate::pacer::LineModel>) {
+        if self.cc.is_some() {
+            self.pacer.set_line(line.filter(Self::line_is_narrow));
+        }
+    }
+
+    /// [HAT-MODELİ] Hat dar mı: tam boy datagram (MTU + zarf) bu hızda `ESTABLISH_PROBE_INITIAL_NS`'den
+    /// uzun sürede serileşiyorsa (zarf 28 B iken ≈ 2,4 kB/s altı).
+    fn line_is_narrow(line: &crate::pacer::LineModel) -> bool {
+        let bytes = u128::from(DEFAULT_MTU.saturating_add(line.datagram_overhead));
+        line.rate_bps > 0
+            && bytes * 1_000_000_000
+                > u128::from(ESTABLISH_PROBE_INITIAL_NS) * u128::from(line.rate_bps)
+    }
+
+    /// [HAT-MODELİ] Pacer'da hat modeli kurulu mu (gözlem/test).
+    #[must_use]
+    pub fn cc_line_installed(&self) -> bool {
+        self.pacer.has_line()
+    }
+
     /// [CC-PORT] Port motorunun ilk uçuş penceresi (bayt); `cc` yoksa `None`.
     #[must_use]
     pub fn cc_initial_window(&self) -> Option<u64> {
@@ -7103,12 +7172,18 @@ impl Sender {
         if self.dup_queue.is_empty() {
             return; // kaynak yok (ilk DATA henüz kopya planlamadı).
         }
+        // [HAT-MODELİ] Bilinen hatta deneme saati kendi baytlarımızın hattı terk ettiği andan
+        // başlar ve deneme hat açılmadan çıkmaz (jeton muafiyeti 31 B/s tabanına karşıdır, hatta
+        // değil): aksi hâlde kopya, orijinal dar hatta daha serileşmeden kuyruğa girer. Model yoksa
+        // iki ek de etkisizdir.
         if self.establish_due_ns == 0 {
             self.establish_interval_ns = ESTABLISH_PROBE_INITIAL_NS;
-            self.establish_due_ns = now_ns.saturating_add(self.establish_interval_ns);
+            self.establish_due_ns = now_ns
+                .saturating_add(self.pacer.line_ns_until_drained())
+                .saturating_add(self.establish_interval_ns);
             return;
         }
-        if now_ns < self.establish_due_ns {
+        if now_ns < self.establish_due_ns || !self.pacer.line_is_open() {
             return;
         }
         // En-eski vadeli §3.3-B kopyası; drain_due_duplicates gövdesinin try_send'siz tek-elemanlı
@@ -7131,10 +7206,12 @@ impl Sender {
             size: dup.unit.size,
             send_record: None,
         });
+        self.pacer.line_charge(dup.unit.size);
+        let left_line_ns = now_ns.saturating_add(self.pacer.line_ns_until_drained());
         if dup.interval_ns > 0 {
             let next_interval = dup.interval_ns.saturating_mul(PC_COPY_MULTIPLIER);
             self.dup_queue.push(DupRec {
-                due_ns: now_ns.saturating_add(next_interval),
+                due_ns: left_line_ns.saturating_add(next_interval),
                 unit: dup.unit,
                 interval_ns: next_interval,
             });
@@ -7144,7 +7221,7 @@ impl Sender {
             .establish_interval_ns
             .saturating_mul(2)
             .min(ESTABLISH_PROBE_CAP_NS);
-        self.establish_due_ns = now_ns.saturating_add(self.establish_interval_ns);
+        self.establish_due_ns = left_line_ns.saturating_add(self.establish_interval_ns);
     }
 
     /// [DR-EST-1] Kuruluş-kolu anahtarı (test-görünür; default-ON). Bkz. alan-doc'u.
@@ -7197,7 +7274,10 @@ impl Sender {
             if dup.interval_ns > 0 {
                 let next_interval = dup.interval_ns.saturating_mul(PC_COPY_MULTIPLIER);
                 self.dup_queue.push(DupRec {
-                    due_ns: now_ns.saturating_add(next_interval),
+                    // [HAT-MODELİ] Bilinen hatta kopyanın hattı terk ettiği andan (model yoksa 0).
+                    due_ns: now_ns
+                        .saturating_add(self.pacer.line_ns_until_drained())
+                        .saturating_add(next_interval),
                     unit: dup.unit,
                     interval_ns: next_interval,
                 });
@@ -7253,8 +7333,13 @@ impl Sender {
                     .checked_div(PRE_CONVERGE_FLOOR_BW)
                     .unwrap_or(0);
                 let first_delay = rtt_floor.saturating_mul(PC_KBASE_NUM) / PC_KBASE_DEN;
+                // [HAT-MODELİ] Bilinen hatta t₀ birimin hattı terk ettiği an: port pacer'ı hattan
+                // hızlıdır (31 B/s taban okunmaz), K-D2'nin "pacer serileştirir" öncülü yalnız hat
+                // modeliyle geçerli kalır. Model yoksa ek 0 (bugünkü t₀).
                 self.dup_queue.push(DupRec {
-                    due_ns: now_ns.saturating_add(first_delay),
+                    due_ns: now_ns
+                        .saturating_add(self.pacer.line_ns_until_drained())
+                        .saturating_add(first_delay),
                     unit: front,
                     interval_ns: first_delay, // reschedule aralığı (drain'de ×COPY_MULTIPLIER)
                 });

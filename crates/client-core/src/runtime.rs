@@ -119,6 +119,9 @@ pub struct RuntimeConfig {
     /// - gönderici: ACK'ler aşağı yönden `receiver::budgeted_ack_interval_ns(aşağı)` aralıkla gelir;
     ///   ilk pencere bir aralıkta yukarı yönün taşıyabileceği veriye büyütülür (ACK beklemeden hattı
     ///   doldurur). PTO'nun alıcı bekletme payı değişmez.
+    /// - gönderici, yalnız dar yukarı yönde (tam boy datagram 0,5 s'den uzun serileşiyorsa): kendi
+    ///   datagramları (gövde + UDP/IP zarfı) yukarı yön hızında serileşir; kuyruk darboğazda değil
+    ///   göndericide bekler (`Sender::set_cc_line`).
     ///
     /// Simetrik hızlı yolda aralık ≈ 25 ms → pencere varsayılanda kalır.
     pub link_rates: Option<LinkRates>,
@@ -2213,6 +2216,19 @@ async fn client_task(
                         .set_cc_profile_pacing_cap(Some(link_pacing_cap_bps(l.uplink_bps)));
                 }
             }
+            // [HAT-MODELİ] Dar yukarı yönde (motor karar verir: `Sender::set_cc_line`) kendi
+            // datagramlarımız (gövde + UDP/IP zarfı) profilin hızında serileşir: kuyruk darboğazda
+            // değil göndericide bekler. Pencere orada büyümez, tavan kurulmaz; kurulsa da yetmez:
+            // kovanın en az 10·MTU burst'ü kısa mesaj akışını (ör. alıcı düğümün ters oturumu, 62 B/s
+            // hatta 37 B'lik mesajlar) bir anda darboğaz kuyruğuna bırakır; kopya saatleri orijinal
+            // hattan çıkmadan dolar ve aynı hattı paylaşan ACK'ler kuyruğun arkasında kalır
+            // (tests/shaped_relay.rs ters oturum ölçümü).
+            session
+                .sender_mut()
+                .set_cc_line(Some(adaptive_transport::pacer::LineModel {
+                    rate_bps: l.uplink_bps,
+                    datagram_overhead: LINK_UDP_IP_OVERHEAD,
+                }));
         }
         session.sender_mut().set_cc_initial_window(iw);
     }
@@ -3631,9 +3647,9 @@ impl PeerSlot {
     /// [DÖNÜŞ-BÜTÇESİ] ACK istemeyen kontrol çerçevesinin (PARAM, cold-start probu) PN'i alıcı
     /// kümesine yazılır; yazılmazsa kalıcı delik olur (her ACK'e bir aralık, ardından gelen DATA'ya
     /// anında ACK — `Receiver::note_non_eliciting`). Yalnız bütçeli port alıcısında.
-    fn note_non_eliciting(&mut self, pn: u64) {
+    fn note_non_eliciting(&mut self, pn: u64, now: u64) {
         if self.echo_spacing_ns.is_some() {
-            self.rx.note_non_eliciting(pn);
+            self.rx.note_non_eliciting(pn, now);
         }
     }
 
@@ -4373,7 +4389,7 @@ async fn server_task(
                         // bozardı. ANTİ-AMPLİFİKASYON: echo 43 B < probe 44 B (amp ≤ 1).
                         // [DÖNÜŞ-BÜTÇESİ] Probe datagramının PN'i (seam ad-uzayı) bütçeli yolda alıcı
                         // kümesine ACK istemeyen olarak yazılır; ACK üretmez.
-                        slot.note_non_eliciting(pn);
+                        slot.note_non_eliciting(pn, now);
                         stats.cs_probes_rx += 1;
                         let f = encode_cs_echo(subtype, probe_seq, 0, 0);
                         debug_assert!(f.len() < LEN_CS_PROBE, "echo probe'dan küçük olmalı (amp≤1)");
@@ -4387,7 +4403,7 @@ async fn server_task(
                         param_hash,
                     } => {
                         // [DÖNÜŞ-BÜTÇESİ] PARAM'ın PN'i alıcı kümesine (ACK istemeyen).
-                        slot.note_non_eliciting(pn);
+                        slot.note_non_eliciting(pn, now);
                         // [v1/PARAM] §8 fail-closed doğrulama: yerel-beklenen alanlarla hash-verify
                         // → bind (admission açılır); mismatch → red-sayaç, ACK YOK.
                         let Some(exp) = param_expected.as_ref() else {
