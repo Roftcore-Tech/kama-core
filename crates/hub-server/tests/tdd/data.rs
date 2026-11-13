@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use hub_server::wire::{envelope, ROUTE_MISS_UNKNOWN_HANDLE};
+use hub_server::wire::{ENVELOPE_SESSION_INIT, ROUTE_MISS_UNKNOWN_HANDLE};
 
 use crate::harness::{data, only, route_miss, Phone, TestRng, World};
 
@@ -10,7 +10,7 @@ fn linked(world: &mut World) -> (Phone, Phone, u32) {
     let (mut alice, mut bob) = (Phone::alice(), Phone::bob());
     world.bind(&mut alice);
     world.bind(&mut bob);
-    let h = world.open(&mut alice, &bob, envelope::SESSION_INIT, b"INIT");
+    let h = world.open(&mut alice, &bob, ENVELOPE_SESSION_INIT, b"INIT");
     (alice, bob, h)
 }
 

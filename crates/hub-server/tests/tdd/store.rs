@@ -3,7 +3,10 @@
 use std::time::Duration;
 
 use hub_server::config::Limits;
-use hub_server::wire::{code, envelope};
+use hub_server::wire::{
+    ENVELOPE_RELAY_OPEN, ENVELOPE_SESSION_INIT, ENVELOPE_SESSION_INIT_RESPONSE, ERROR_BAD_REQUEST,
+    ERROR_RATE_LIMITED, STATUS_OK, STATUS_PEER_UNBOUND, STATUS_UNKNOWN_HANDLE,
+};
 
 use crate::harness::{data, deliver, error_code, only, sent_to, store_response, Phone, World};
 
@@ -30,7 +33,7 @@ fn assert_indexes(world: &World) {
 fn t_s1_store_init_allocates_and_delivers() {
     let mut world = World::new();
     let (mut alice, bob) = bound_pair(&mut world);
-    let h = world.open(&mut alice, &bob, envelope::SESSION_INIT, INIT); // yanıt + DELIVER doğrulanır
+    let h = world.open(&mut alice, &bob, ENVELOPE_SESSION_INIT, INIT); // yanıt + DELIVER doğrulanır
     assert_ne!(h, 0);
     let link = world.hub.table().link(h).expect("hat");
     assert_eq!((link.a, link.b), (alice.id, bob.id));
@@ -64,7 +67,7 @@ fn t_s2_repeated_store_returns_the_same_handle_and_redelivers() {
         );
         assert_eq!(
             deliver(sent_to(&again, bob.addr)),
-            (h, alice.id, envelope::SESSION_INIT, INIT.to_vec())
+            (h, alice.id, ENVELOPE_SESSION_INIT, INIT.to_vec())
         );
     }
     assert_eq!(world.hub.table().link_count(), 1);
@@ -87,11 +90,11 @@ fn t_s3_same_request_id_to_another_recipient_is_a_new_link() {
     let rid = alice.rid();
     let to_bob = world.deliver(
         alice.addr,
-        &alice.store(rid, 0, envelope::SESSION_INIT, &bob, INIT),
+        &alice.store(rid, 0, ENVELOPE_SESSION_INIT, &bob, INIT),
     );
     let to_carol = world.deliver(
         alice.addr,
-        &alice.store(rid, 0, envelope::SESSION_INIT, &carol, INIT),
+        &alice.store(rid, 0, ENVELOPE_SESSION_INIT, &carol, INIT),
     );
     let h_bob = store_response(sent_to(&to_bob, alice.addr)).assigned_handle;
     let h_carol = store_response(sent_to(&to_carol, alice.addr)).assigned_handle;
@@ -110,7 +113,7 @@ fn t_s4_unbound_recipient_is_peer_unbound() {
     let response = store_response(&only(&out).1);
     assert_eq!(
         (response.status, response.assigned_handle),
-        (code::PEER_UNBOUND, 0)
+        (STATUS_PEER_UNBOUND, 0)
     );
     assert_eq!(world.hub.table().link_count(), 0);
 }
@@ -120,17 +123,17 @@ fn t_s4_unbound_recipient_is_peer_unbound() {
 fn t_s5_response_on_the_link_is_delivered_to_the_initiator() {
     let mut world = World::new();
     let (mut alice, mut bob) = bound_pair(&mut world);
-    let h = world.open(&mut alice, &bob, envelope::SESSION_INIT, INIT);
+    let h = world.open(&mut alice, &bob, ENVELOPE_SESSION_INIT, INIT);
     let rid = bob.rid();
     let out = world.deliver(
         bob.addr,
-        &bob.store(rid, h, envelope::SESSION_INIT_RESPONSE, &alice, b"SSR1"),
+        &bob.store(rid, h, ENVELOPE_SESSION_INIT_RESPONSE, &alice, b"SSR1"),
     );
     let response = store_response(sent_to(&out, bob.addr));
-    assert_eq!((response.status, response.assigned_handle), (code::OK, h));
+    assert_eq!((response.status, response.assigned_handle), (STATUS_OK, h));
     assert_eq!(
         deliver(sent_to(&out, alice.addr)),
-        (h, bob.id, envelope::SESSION_INIT_RESPONSE, b"SSR1".to_vec())
+        (h, bob.id, ENVELOPE_SESSION_INIT_RESPONSE, b"SSR1".to_vec())
     );
 }
 
@@ -141,13 +144,13 @@ fn t_s6_response_to_someone_other_than_the_peer_is_bad_request() {
     let (mut alice, mut bob) = bound_pair(&mut world);
     let mut carol = Phone::carol();
     world.bind(&mut carol);
-    let h = world.open(&mut alice, &bob, envelope::SESSION_INIT, INIT);
+    let h = world.open(&mut alice, &bob, ENVELOPE_SESSION_INIT, INIT);
     let rid = bob.rid();
     let out = world.deliver(
         bob.addr,
-        &bob.store(rid, h, envelope::SESSION_INIT_RESPONSE, &carol, b"SSR1"),
+        &bob.store(rid, h, ENVELOPE_SESSION_INIT_RESPONSE, &carol, b"SSR1"),
     );
-    assert_eq!(error_code(&only(&out).1), code::BAD_REQUEST);
+    assert_eq!(error_code(&only(&out).1), ERROR_BAD_REQUEST);
 }
 
 /// T-S7 — `STORE{h,…}` hattın ucu olmayan carol'dan → `BAD_REQUEST`.
@@ -157,13 +160,13 @@ fn t_s7_store_on_a_link_by_a_stranger_is_bad_request() {
     let (mut alice, bob) = bound_pair(&mut world);
     let mut carol = Phone::carol();
     world.bind(&mut carol);
-    let h = world.open(&mut alice, &bob, envelope::SESSION_INIT, INIT);
+    let h = world.open(&mut alice, &bob, ENVELOPE_SESSION_INIT, INIT);
     let rid = carol.rid();
     let out = world.deliver(
         carol.addr,
-        &carol.store(rid, h, envelope::SESSION_INIT_RESPONSE, &bob, b"x"),
+        &carol.store(rid, h, ENVELOPE_SESSION_INIT_RESPONSE, &bob, b"x"),
     );
-    assert_eq!(error_code(&only(&out).1), code::BAD_REQUEST);
+    assert_eq!(error_code(&only(&out).1), ERROR_BAD_REQUEST);
 }
 
 /// T-S8 — `{0, RESPONSE}`, `{h, INIT}`, tip 0x03/0x04 → `BAD_REQUEST`.
@@ -171,10 +174,10 @@ fn t_s7_store_on_a_link_by_a_stranger_is_bad_request() {
 fn t_s8_invalid_handle_type_combinations_are_bad_request() {
     let mut world = World::new();
     let (mut alice, bob) = bound_pair(&mut world);
-    let h = world.open(&mut alice, &bob, envelope::SESSION_INIT, INIT);
+    let h = world.open(&mut alice, &bob, ENVELOPE_SESSION_INIT, INIT);
     for (handle, kind) in [
-        (0, envelope::SESSION_INIT_RESPONSE),
-        (h, envelope::SESSION_INIT),
+        (0, ENVELOPE_SESSION_INIT_RESPONSE),
+        (h, ENVELOPE_SESSION_INIT),
         (0, 0x03),
         (0, 0x04),
         (h, 0x03),
@@ -186,7 +189,7 @@ fn t_s8_invalid_handle_type_combinations_are_bad_request() {
         let out = world.deliver(alice.addr, &alice.store(rid, handle, kind, &bob, b"x"));
         assert_eq!(
             error_code(&only(&out).1),
-            code::BAD_REQUEST,
+            ERROR_BAD_REQUEST,
             "{handle} {kind}"
         );
     }
@@ -195,9 +198,9 @@ fn t_s8_invalid_handle_type_combinations_are_bad_request() {
         let rid = alice.rid();
         let out = world.deliver(
             alice.addr,
-            &alice.store(rid, 0, envelope::SESSION_INIT, &to, b"x"),
+            &alice.store(rid, 0, ENVELOPE_SESSION_INIT, &to, b"x"),
         );
-        assert_eq!(error_code(&only(&out).1), code::BAD_REQUEST);
+        assert_eq!(error_code(&only(&out).1), ERROR_BAD_REQUEST);
     }
     assert_eq!(world.hub.table().link_count(), 1);
 }
@@ -223,30 +226,30 @@ fn t_s9_store_from_an_unbound_address_is_silent() {
 fn t_s10_relay_open_is_an_ordinary_second_link() {
     let mut world = World::new();
     let (mut alice, bob) = bound_pair(&mut world);
-    let session = world.open(&mut alice, &bob, envelope::SESSION_INIT, INIT);
-    let media = world.open(&mut alice, &bob, envelope::RELAY_OPEN, &[0x6e; 16]);
+    let session = world.open(&mut alice, &bob, ENVELOPE_SESSION_INIT, INIT);
+    let media = world.open(&mut alice, &bob, ENVELOPE_RELAY_OPEN, &[0x6e; 16]);
     assert_ne!(media, session);
     assert_eq!(world.link_count_of(&alice), 2);
     for (handle, size) in [(0u32, 65usize), (media, 16)] {
         let rid = alice.rid();
         let out = world.deliver(
             alice.addr,
-            &alice.store(rid, handle, envelope::RELAY_OPEN, &bob, &vec![1; size]),
+            &alice.store(rid, handle, ENVELOPE_RELAY_OPEN, &bob, &vec![1; size]),
         );
         assert_eq!(
             error_code(&only(&out).1),
-            code::BAD_REQUEST,
+            ERROR_BAD_REQUEST,
             "{handle} {size}"
         );
     }
     let rid = alice.rid();
     let out = world.deliver(
         alice.addr,
-        &alice.store(rid, 0, envelope::RELAY_OPEN, &bob, &[1; 64]),
+        &alice.store(rid, 0, ENVELOPE_RELAY_OPEN, &bob, &[1; 64]),
     );
     assert_eq!(
         store_response(sent_to(&out, alice.addr)).status,
-        code::OK,
+        STATUS_OK,
         "64 B sınırda"
     );
     // İki hat ayrı ayrı iletir.
@@ -270,19 +273,19 @@ fn t_s11_store_and_allocation_rates() {
         let (_, request) = alice.init(&bob, format!("INIT {n}").as_bytes());
         assert_eq!(
             store_response(sent_to(&world.deliver(alice.addr, &request), alice.addr)).status,
-            code::OK
+            STATUS_OK
         );
     }
     let (_, request) = alice.init(&bob, b"INIT 10");
     assert_eq!(
         error_code(&only(&world.deliver(alice.addr, &request)).1),
-        code::RATE_LIMITED
+        ERROR_RATE_LIMITED
     );
     assert_eq!(world.hub.stats().rate_alloc, 1);
     world.advance(Duration::from_secs(1));
     assert_eq!(
         store_response(sent_to(&world.deliver(alice.addr, &request), alice.addr)).status,
-        code::OK
+        STATUS_OK
     );
 
     // STORE_RATE: patlama 20 (11 kullanıldı), tekrarlar da STORE sayılır ama tahsis sayılmaz.
@@ -290,7 +293,7 @@ fn t_s11_store_and_allocation_rates() {
     let mut limited = 0;
     for _ in 0..30 {
         let out = world.deliver(bob.addr, &repeat);
-        if out.len() == 1 && error_code(&out[0].1) == code::RATE_LIMITED {
+        if out.len() == 1 && error_code(&out[0].1) == ERROR_RATE_LIMITED {
             limited += 1;
         }
     }
@@ -318,7 +321,7 @@ fn t_s12_an_active_key_is_never_forgotten() {
         world.open(
             &mut carol,
             &dave,
-            envelope::SESSION_INIT,
+            ENVELOPE_SESSION_INIT,
             format!("c-d {n}").as_bytes(),
         );
     }
@@ -352,7 +355,7 @@ fn t_s13_a_retired_key_is_unknown_handle_without_allocation() {
     let (_, k) = alice.init(&bob, INIT);
     world.deliver(alice.addr, &k);
     world.advance(Duration::from_secs(1));
-    world.open(&mut alice, &bob, envelope::SESSION_INIT, b"yeni INIT"); // eski hat emekli (kota 1)
+    world.open(&mut alice, &bob, ENVELOPE_SESSION_INIT, b"yeni INIT"); // eski hat emekli (kota 1)
     assert_eq!(world.hub.table().tombstone_count(), 1);
     let links = world.hub.table().link_count();
 
@@ -360,7 +363,7 @@ fn t_s13_a_retired_key_is_unknown_handle_without_allocation() {
     let response = store_response(&only(&out).1);
     assert_eq!(
         (response.status, response.assigned_handle),
-        (code::UNKNOWN_HANDLE, 0)
+        (STATUS_UNKNOWN_HANDLE, 0)
     );
     assert_eq!(world.hub.table().link_count(), links);
     assert_eq!(world.hub.stats().store_key_retired, 1);
@@ -378,13 +381,13 @@ fn t_s14_after_seven_days_the_key_allocates_again() {
     let (_, k) = alice.init(&bob, INIT);
     let old = store_response(sent_to(&world.deliver(alice.addr, &k), alice.addr)).assigned_handle;
     world.advance(Duration::from_secs(1));
-    world.open(&mut alice, &bob, envelope::SESSION_INIT, b"yeni INIT");
+    world.open(&mut alice, &bob, ENVELOPE_SESSION_INIT, b"yeni INIT");
     world.advance(Duration::from_secs(7 * 86_400));
     world.tick();
     assert_eq!(world.hub.table().tombstone_count(), 0);
     let out = world.deliver(alice.addr, &k);
     let response = store_response(sent_to(&out, alice.addr));
-    assert_eq!(response.status, code::OK);
+    assert_eq!(response.status, STATUS_OK);
     assert_ne!(response.assigned_handle, old);
     assert_indexes(&world);
 }

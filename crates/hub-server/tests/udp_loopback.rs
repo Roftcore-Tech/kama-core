@@ -18,7 +18,8 @@ use harness::{
     base64, data, deliver, hex, hub_json, hub_public, reply, store_response, Phone, HUB_SEED,
 };
 use hub_server::wire::{
-    classify, code, envelope, frame, method, ClientBindResponse, Datagram, Payload,
+    classify, ClientBindResp, Datagram, ENVELOPE_SESSION_INIT, ENVELOPE_SESSION_INIT_RESPONSE,
+    FRAME_HEARTBEAT_ACK, METHOD_BIND_PROOF, STATUS_OK,
 };
 
 const BIN: &str = env!("CARGO_BIN_EXE_hub-server");
@@ -147,17 +148,13 @@ impl Device {
         let rid = self.phone.rid();
         self.send(&self.phone.bind1(rid, cn));
         let r = reply(&self.receive());
-        let hn = ClientBindResponse::decode(&r.payload)
+        let hn = ClientBindResp::decode(&r.payload)
             .expect("CHALLENGE")
             .hub_nonce;
         let rid = self.phone.rid();
         self.send(&self.phone.bind2(rid, hub_pub, cn, hn));
         let r = reply(&self.receive());
-        assert_eq!(
-            (r.method_id, r.flags),
-            (method::BIND_PROOF, 0x01),
-            "bind_ok"
-        );
+        assert_eq!((r.method_id, r.flags), (METHOD_BIND_PROOF, 0x01), "bind_ok");
     }
 }
 
@@ -176,7 +173,7 @@ fn bind_store_deliver_and_data_over_real_udp() {
     assert_eq!(
         classify(&alice.receive()),
         Ok(Datagram::Control {
-            frame_type: frame::HEARTBEAT_ACK,
+            frame_type: FRAME_HEARTBEAT_ACK,
             body: &[1, 2, 3, 4]
         })
     );
@@ -186,14 +183,14 @@ fn bind_store_deliver_and_data_over_real_udp() {
     let (_, init) = alice.phone.init(&bob_phone, b"SSI1 zarf");
     alice.send(&init);
     let response = store_response(&alice.receive());
-    assert_eq!(response.status, code::OK);
+    assert_eq!(response.status, STATUS_OK);
     let h = response.assigned_handle;
     assert_eq!(
         deliver(&bob.receive()),
         (
             h,
             alice.phone.id,
-            envelope::SESSION_INIT,
+            ENVELOPE_SESSION_INIT,
             b"SSI1 zarf".to_vec()
         )
     );
@@ -201,11 +198,11 @@ fn bind_store_deliver_and_data_over_real_udp() {
     bob.send(&bob.phone.store(
         rid,
         h,
-        envelope::SESSION_INIT_RESPONSE,
+        ENVELOPE_SESSION_INIT_RESPONSE,
         &alice.phone,
         b"SSR1",
     ));
-    assert_eq!(store_response(&bob.receive()).status, code::OK);
+    assert_eq!(store_response(&bob.receive()).status, STATUS_OK);
     assert_eq!(deliver(&alice.receive()).0, h);
 
     // Veri: en büyük datagram, iki yönde, bayt-özdeş; sınırın bir bayt üstü düşer, döngü sürer.

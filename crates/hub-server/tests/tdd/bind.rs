@@ -5,10 +5,12 @@ use std::time::Duration;
 use ed25519_dalek::SigningKey;
 use hub_server::config::Limits;
 use hub_server::rate::Rate;
-use hub_server::wire::{code, envelope, flags, method};
+use hub_server::wire::{
+    ENVELOPE_SESSION_INIT, ERROR_BAD_COOKIE, ERROR_POSSESSION_PROOF_FAIL, FLAG_ERROR,
+    FLAG_RESPONSE, METHOD_BIND_PROOF, STATUS_PEER_UNBOUND,
+};
 
 use crate::harness::{data, error_code, only, reply, Phone, TestRng, World};
-use hub_server::wire::Payload;
 
 /// T-B1 — iki tur doğru → `bind_ok=1`, hub imzası doğrulanır, `endpoints` dolu, `bind_epoch = 1`.
 #[test]
@@ -60,9 +62,9 @@ fn t_b3_wrong_key_or_wrong_hub_is_possession_proof_fail() {
     let r = reply(&only(&out).1);
     assert_eq!(
         (r.method_id, r.flags, r.request_id),
-        (method::BIND_PROOF, flags::RESPONSE_ERROR, rid)
+        (METHOD_BIND_PROOF, FLAG_RESPONSE | FLAG_ERROR, rid)
     );
-    assert_eq!(error_code(&only(&out).1), code::POSSESSION_PROOF_FAIL);
+    assert_eq!(error_code(&only(&out).1), ERROR_POSSESSION_PROOF_FAIL);
     assert_eq!(world.hub.bind_fail_entries(), 1, "bind_fail[src] yazıldı");
 
     let (_, cn, hn) = world.challenge(&mut alice);
@@ -71,7 +73,7 @@ fn t_b3_wrong_key_or_wrong_hub_is_possession_proof_fail() {
         .verifying_key()
         .to_bytes();
     let out = world.deliver(alice.addr, &alice.bind2(rid, &other_hub, cn, hn));
-    assert_eq!(error_code(&only(&out).1), code::POSSESSION_PROOF_FAIL);
+    assert_eq!(error_code(&only(&out).1), ERROR_POSSESSION_PROOF_FAIL);
 
     assert_eq!(world.hub.table().endpoint_count(), 0, "kayıt yok");
     assert_eq!(world.hub.stats().bind_fail, 2);
@@ -86,7 +88,7 @@ fn t_b4_two_minute_old_cookie_is_bad_cookie_and_costs_no_verification() {
     world.advance(Duration::from_secs(120));
     let rid = alice.rid();
     let out = world.deliver(alice.addr, &alice.bind2(rid, &world.hub_pub, cn, hn));
-    assert_eq!(error_code(&only(&out).1), code::BAD_COOKIE);
+    assert_eq!(error_code(&only(&out).1), ERROR_BAD_COOKIE);
     assert_eq!(
         world.hub.stats().verify_calls,
         0,
@@ -104,7 +106,7 @@ fn t_b5_rebinding_from_a_new_address_moves_it_and_keeps_links() {
     let (mut alice, mut bob) = (Phone::alice(), Phone::bob());
     world.bind(&mut alice);
     world.bind(&mut bob);
-    let h = world.open(&mut alice, &bob, envelope::SESSION_INIT, b"INIT");
+    let h = world.open(&mut alice, &bob, ENVELOPE_SESSION_INIT, b"INIT");
 
     let mut moved = alice.moved_to([100, 64, 9, 9], 31_337);
     world.bind(&mut moved);
@@ -145,7 +147,7 @@ fn t_b6_an_old_proof_never_moves_the_address_back() {
     }
     world.advance(Duration::from_secs(30));
     let out = world.deliver(alice.addr, &proof0);
-    assert_eq!(error_code(&only(&out).1), code::BAD_COOKIE);
+    assert_eq!(error_code(&only(&out).1), ERROR_BAD_COOKIE);
     let endpoint = world.hub.table().endpoint(&alice.id).expect("uç");
     assert_eq!((endpoint.addr, endpoint.bind_epoch), (Some(at_b.addr), 21));
 }
@@ -164,7 +166,7 @@ fn t_b6b_the_later_acceptance_invalidates_the_other_pending_proof() {
     world.expect_bound(&only(&out).1, &at_b, rid, cn_b, hn_b);
     let rid = alice.rid();
     let out = world.deliver(alice.addr, &alice.bind2(rid, &world.hub_pub, cn_a, hn_a));
-    assert_eq!(error_code(&only(&out).1), code::BAD_COOKIE);
+    assert_eq!(error_code(&only(&out).1), ERROR_BAD_COOKIE);
     assert_eq!(world.hub.table().bound_addr(&alice.id), Some(at_b.addr));
 }
 
@@ -214,7 +216,7 @@ fn t_b7b_after_moving_the_lost_ack_proof_is_stale() {
     let mut at_b = alice.moved_to([203, 0, 113, 200], 5_000);
     world.bind(&mut at_b);
     let out = world.deliver(alice.addr, &proof_a);
-    assert_eq!(error_code(&only(&out).1), code::BAD_COOKIE);
+    assert_eq!(error_code(&only(&out).1), ERROR_BAD_COOKIE);
     assert_eq!(world.hub.table().bound_addr(&alice.id), Some(at_b.addr));
 }
 
@@ -271,7 +273,7 @@ fn t_b8b_wrong_cookies_from_a_spoofed_address_lock_nothing() {
             alice.addr,
             &alice.bind2(rid, &world.hub_pub, [n; 16], [n; 16]),
         );
-        assert_eq!(error_code(&only(&out).1), code::BAD_COOKIE);
+        assert_eq!(error_code(&only(&out).1), ERROR_BAD_COOKIE);
     }
     assert_eq!(world.hub.bind_fail_entries(), 0);
     world.bind(&mut alice);
@@ -386,7 +388,7 @@ fn t_b12_a_second_identity_takes_the_address_and_the_first_keeps_its_links() {
     let response = crate::harness::store_response(&only(&out).1);
     assert_eq!(
         (response.status, response.assigned_handle),
-        (code::PEER_UNBOUND, 0)
+        (STATUS_PEER_UNBOUND, 0)
     );
     assert!(world.deliver(carol.addr, &data(h, b"veri")).is_empty());
     assert_eq!(world.hub.stats().drop_peer_unbound, 1);
@@ -417,7 +419,7 @@ fn t_b13_mapped_and_plain_ipv4_sources_get_the_same_cookie() {
         (
             rid,
             [9u8; 16],
-            hub_server::wire::ClientBindResponse::decode(&r.payload)
+            hub_server::wire::ClientBindResp::decode(&r.payload)
                 .expect("CHALLENGE")
                 .hub_nonce,
         )
@@ -430,7 +432,7 @@ fn t_b13_mapped_and_plain_ipv4_sources_get_the_same_cookie() {
     let rid = alice.rid();
     let out = world.deliver(mapped, &alice.bind1(rid, cn));
     let r = reply(&only(&out).1);
-    let hn_mapped = hub_server::wire::ClientBindResponse::decode(&r.payload)
+    let hn_mapped = hub_server::wire::ClientBindResp::decode(&r.payload)
         .expect("CHALLENGE")
         .hub_nonce;
     assert_eq!(hn_mapped, hn_v4);

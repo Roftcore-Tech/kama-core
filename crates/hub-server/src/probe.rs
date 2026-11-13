@@ -23,10 +23,11 @@ use kama_noise_wire::handshake::{cert_ref_of, COMPACT_DEVICE_CERT_LEN};
 
 use crate::config::{base64_decode, hex_decode};
 use crate::wire::{
-    bind_ack_tbs, bind_proof_tbs, classify, code, control_datagram, flags, frame, method,
-    BindProofRequest, BindProofResponse, CertRef, ClientBindRequest, ClientBindResponse, Datagram,
-    ErrorPayload, Nonce, Payload, RpcFrame, BIND_OK, ECHO_TOKEN_LEN, MAX_DATAGRAM, NONCE_LEN,
-    PUBLIC_KEY_LEN,
+    ack_tbs, bind_tbs, classify, control_datagram, BindProofReq, BindProofResp, CertRef,
+    ClientBindReq, ClientBindResp, Datagram, ErrorPayload, Nonce, RpcFrame, BIND_OK,
+    ECHO_TOKEN_LEN, ERROR_BAD_COOKIE, ERROR_RATE_LIMITED, FLAG_ERROR, FLAG_RESPONSE,
+    FRAME_HEARTBEAT, FRAME_HEARTBEAT_ACK, FRAME_PLANE1_RPC, MAX_DATAGRAM, METHOD_BIND_PROOF,
+    METHOD_CLIENT_BIND, NONCE_LEN, PUBLIC_KEY_LEN, STATUS_OK,
 };
 
 /// Bir isteğin gönderim sayısı ve bekleme süresi (S4 C2: en çok 3 kez, 1 s arayla).
@@ -195,7 +196,7 @@ pub fn run(
     let (request_id, bind_rtt) = loop {
         attempt += 1;
         match bind_once(&socket, device, rng) {
-            Err(ProbeError::Refused(code::BAD_COOKIE | code::RATE_LIMITED))
+            Err(ProbeError::Refused(ERROR_BAD_COOKIE | ERROR_RATE_LIMITED))
                 if attempt < ATTEMPTS =>
             {
                 std::thread::sleep(WAIT);
@@ -230,44 +231,43 @@ fn bind_once(
     let request_id = u32::from_be_bytes(rid_bytes.try_into().map_err(|_| ProbeError::Entropy)?);
     let client_nonce: Nonce = nonce_bytes.try_into().map_err(|_| ProbeError::Entropy)?;
 
-    let bind1 = ClientBindRequest {
-        cert_ref: device.cert_ref,
+    let bind1 = ClientBindReq {
+        device_cert_ref: device.cert_ref,
         client_nonce,
     };
     let (answer, _) = exchange(
         socket,
-        method::CLIENT_BIND,
+        METHOD_CLIENT_BIND,
         request_id,
-        &bind1.to_vec(),
+        &bind1.encode(),
         "CLIENT_BIND",
     )?;
-    let hub_nonce = ClientBindResponse::decode(&answer)
+    let hub_nonce = ClientBindResp::decode(&answer)
         .map_err(|_| ProbeError::Timeout("CLIENT_BIND"))?
         .hub_nonce;
 
-    let tbs = bind_proof_tbs(&device.hub_pub, &device.cert_ref, &client_nonce, &hub_nonce);
-    let proof = BindProofRequest {
-        cert_ref: device.cert_ref,
+    let tbs = bind_tbs(&device.hub_pub, &device.cert_ref, &client_nonce, &hub_nonce);
+    let proof = BindProofReq {
+        device_cert_ref: device.cert_ref,
         client_nonce,
         hub_nonce,
-        signature: device.signing.sign(&tbs).to_bytes(),
+        client_signature: device.signing.sign(&tbs).to_bytes(),
     };
     let proof_id = request_id.wrapping_add(1);
     let (answer, rtt) = exchange(
         socket,
-        method::BIND_PROOF,
+        METHOD_BIND_PROOF,
         proof_id,
-        &proof.to_vec(),
+        &proof.encode(),
         "BIND_PROOF",
     )?;
-    let response =
-        BindProofResponse::decode(&answer).map_err(|_| ProbeError::Timeout("BIND_PROOF"))?;
-    let ack = bind_ack_tbs(
+    let response = BindProofResp::decode(&answer).map_err(|_| ProbeError::Timeout("BIND_PROOF"))?;
+    let ack = ack_tbs(
         &device.cert_ref,
         &client_nonce,
         &hub_nonce,
         BIND_OK,
-        code::OK,
+        STATUS_OK,
     );
     verify_strict(&device.hub_pub, &ack, &response.hub_signature)
         .map_err(|_| ProbeError::BadHubSignature)?;
@@ -285,7 +285,7 @@ fn exchange(
     let mut datagram = Vec::new();
     RpcFrame {
         method_id,
-        flags: flags::REQUEST,
+        flags: 0,
         request_id,
         payload,
     }
@@ -296,7 +296,7 @@ fn exchange(
         socket.send(&datagram).map_err(ProbeError::Socket)?;
         while let Some(reply) = receive(socket, sent_at) {
             let Ok(Datagram::Control {
-                frame_type: frame::PLANE1_RPC,
+                frame_type: FRAME_PLANE1_RPC,
                 body,
             }) = classify(&reply)
             else {
@@ -308,11 +308,11 @@ fn exchange(
             if answer.method_id != method_id || answer.request_id != request_id {
                 continue;
             }
-            if answer.flags == flags::RESPONSE_ERROR {
-                let code = ErrorPayload::decode(answer.payload).map_or(0, |error| error.code);
+            if answer.flags == (FLAG_RESPONSE | FLAG_ERROR) {
+                let code = ErrorPayload::decode(answer.payload).map_or(0, |error| error.error_code);
                 return Err(ProbeError::Refused(code));
             }
-            if answer.flags == flags::RESPONSE {
+            if answer.flags == FLAG_RESPONSE {
                 return Ok((answer.payload.to_vec(), sent_at.elapsed()));
             }
         }
@@ -323,7 +323,7 @@ fn exchange(
 /// Bir heartbeat; aynı token'lı ACK geldiyse `true`.
 fn heartbeat(socket: &UdpSocket, token: [u8; ECHO_TOKEN_LEN]) -> bool {
     let mut datagram = Vec::new();
-    control_datagram(&mut datagram, frame::HEARTBEAT, &token);
+    control_datagram(&mut datagram, FRAME_HEARTBEAT, &token);
     for _ in 0..ATTEMPTS {
         let sent_at = Instant::now();
         if socket.send(&datagram).is_err() {
@@ -331,7 +331,7 @@ fn heartbeat(socket: &UdpSocket, token: [u8; ECHO_TOKEN_LEN]) -> bool {
         }
         while let Some(reply) = receive(socket, sent_at) {
             if let Ok(Datagram::Control {
-                frame_type: frame::HEARTBEAT_ACK,
+                frame_type: FRAME_HEARTBEAT_ACK,
                 body,
             }) = classify(&reply)
             {

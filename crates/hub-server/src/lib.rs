@@ -14,7 +14,7 @@
 //! | modül | iş |
 //! |---|---|
 //! | [`config`] | `hub.json` v1, S4 §6 sabitleri |
-//! | [`wire`] | S4 §2 codec'i ve bayt birleştiricileri (`kama-contracts::s4` gelene dek) |
+//! | [`wire`] | S4 §2 codec'i (`kama_contracts::s4` yeniden ihracı) + hub'a özgü çerçeve / cookie yardımcıları |
 //! | [`bind`] | cookie[`bind_epoch`], imzalar, kayıp-ACK tekrarı, adres kilidi; CLIENT_BIND / BIND_PROOF / HEARTBEAT |
 //! | [`table`] | uçlar, hatlar, tombstone'lar, tahsis anahtarı indeksleri, emeklilik planlayıcısı |
 //! | [`relay`] | STORE_MESSAGE, DELIVER, veri iletimi, ROUTE_MISS |
@@ -62,8 +62,9 @@ use crate::rate::TokenBucket;
 use crate::stats::{RateWindow, Sizes, Stats};
 use crate::table::Table;
 use crate::wire::{
-    classify, flags, frame, method, CertRef, Datagram, DestHash, ErrorPayload, Payload, RpcFrame,
-    DATA_MIN_LEN, PUBLIC_KEY_LEN,
+    classify, CertRef, Datagram, DestHash, ErrorPayload, RpcFrame, DATA_MIN_LEN, FLAG_ERROR,
+    FLAG_RESPONSE, FRAME_HEARTBEAT, FRAME_PLANE1_RPC, METHOD_BIND_PROOF, METHOD_CLIENT_BIND,
+    METHOD_HUB_INITIATED, METHOD_STORE_MESSAGE, PUBLIC_KEY_LEN,
 };
 
 /// Monoton saat: keyfi bir başlangıçtan (hub açılışı) bu yana geçen süre; asla geri gitmez. Cookie
@@ -181,9 +182,8 @@ pub struct Hub<C, R> {
     pub(crate) stats: Stats,
     window: RateWindow,
     last_sweep: Duration,
-    /// Gönderim tamponları; paket başına bellek ayrılmaz.
+    /// Gönderim tamponu; datagram başına yeniden ayrılmaz.
     pub(crate) tx: Vec<u8>,
-    pub(crate) payload_buffer: Vec<u8>,
 }
 
 impl<C: Clock, R: EntropySource> Hub<C, R> {
@@ -219,7 +219,6 @@ impl<C: Clock, R: EntropySource> Hub<C, R> {
             window: RateWindow::starting_at(now),
             last_sweep: now,
             tx: Vec::with_capacity(limits.max_datagram),
-            payload_buffer: Vec::with_capacity(limits.max_datagram),
             limits,
             clock,
             rng,
@@ -237,8 +236,8 @@ impl<C: Clock, R: EntropySource> Hub<C, R> {
         match classify(datagram) {
             Ok(Datagram::Data { handle }) => self.on_data(src, handle.get(), datagram, now, sink),
             Ok(Datagram::Control { frame_type, body }) => match frame_type {
-                frame::HEARTBEAT => self.on_heartbeat(src, body, now, sink),
-                frame::PLANE1_RPC => self.on_rpc(src, body, now, sink),
+                FRAME_HEARTBEAT => self.on_heartbeat(src, body, now, sink),
+                FRAME_PLANE1_RPC => self.on_rpc(src, body, now, sink),
                 _ => stats::bump(&mut self.stats.drop_unknown_frame),
             },
             Err(_) => stats::bump(&mut self.stats.drop_malformed),
@@ -251,14 +250,14 @@ impl<C: Clock, R: EntropySource> Hub<C, R> {
             return;
         };
         // Telefondan hub'a yalnız istek gelir.
-        if request.flags != flags::REQUEST || request.method_id & method::HUB_INITIATED != 0 {
+        if request.flags != 0 || request.method_id & METHOD_HUB_INITIATED != 0 {
             stats::bump(&mut self.stats.drop_malformed);
             return;
         }
         match request.method_id {
-            method::CLIENT_BIND => self.on_bind1(src, &request, now, sink),
-            method::BIND_PROOF => self.on_bind2(src, &request, now, sink),
-            method::STORE_MESSAGE => self.on_store(src, &request, now, sink),
+            METHOD_CLIENT_BIND => self.on_bind1(src, &request, now, sink),
+            METHOD_BIND_PROOF => self.on_bind2(src, &request, now, sink),
+            METHOD_STORE_MESSAGE => self.on_store(src, &request, now, sink),
             _ => stats::bump(&mut self.stats.drop_unknown_method),
         }
     }
@@ -320,18 +319,18 @@ impl<C: Clock, R: EntropySource> Hub<C, R> {
     // ── Gönderim yardımcıları ─────────────────────────────────────────────────────────────────
 
     /// İsteğe yanıt (aynı `method_id`, aynı `request_id`, `flags = 0x01`).
-    pub(crate) fn reply_rpc<'p, P: Payload<'p>>(
+    pub(crate) fn reply_rpc(
         &mut self,
         sink: &mut dyn Sink,
         src: SocketAddr,
         request: &RpcFrame<'_>,
-        payload: &P,
+        payload: &[u8],
     ) {
         self.reply_frame(
             sink,
             src,
             request.method_id,
-            flags::RESPONSE,
+            FLAG_RESPONSE,
             request.request_id,
             payload,
         );
@@ -345,34 +344,38 @@ impl<C: Clock, R: EntropySource> Hub<C, R> {
         request: &RpcFrame<'_>,
         code: u16,
     ) {
-        let payload = ErrorPayload { code };
+        let payload = ErrorPayload {
+            error_code: code,
+            detail: Vec::new(),
+        };
+        // `detail` boş: kodlama hatası erişilemez; yine de panik yok, yanıt yollanmaz.
+        let Ok(payload) = payload.encode() else {
+            return;
+        };
         self.reply_frame(
             sink,
             src,
             request.method_id,
-            flags::RESPONSE_ERROR,
+            FLAG_RESPONSE | FLAG_ERROR,
             request.request_id,
             &payload,
         );
     }
 
-    fn reply_frame<'p, P: Payload<'p>>(
+    fn reply_frame(
         &mut self,
         sink: &mut dyn Sink,
         src: SocketAddr,
         method_id: u8,
         flags: u8,
         request_id: u32,
-        payload: &P,
+        payload: &[u8],
     ) {
-        let mut body = core::mem::take(&mut self.payload_buffer);
-        body.clear();
-        payload.write(&mut body);
         let frame = RpcFrame {
             method_id,
             flags,
             request_id,
-            payload: &body,
+            payload,
         };
         let mut tx = core::mem::take(&mut self.tx);
         if frame.encode(&mut tx).is_ok() {
@@ -380,23 +383,21 @@ impl<C: Clock, R: EntropySource> Hub<C, R> {
             stats::bump(&mut self.stats.tx_reply);
         }
         self.tx = tx;
-        self.payload_buffer = body;
     }
 
     /// Yanıt datagramını yeni bir vektöre kodlar (bind ACK'i `last_accepted`'ta saklanır).
-    pub(crate) fn encode_rpc<'p, P: Payload<'p>>(
+    pub(crate) fn encode_rpc(
         &self,
         request: &RpcFrame<'_>,
         flags: u8,
-        payload: &P,
+        payload: &[u8],
     ) -> Option<Vec<u8>> {
-        let body = payload.to_vec();
         let mut out = Vec::new();
         RpcFrame {
             method_id: request.method_id,
             flags,
             request_id: request.request_id,
-            payload: &body,
+            payload,
         }
         .encode(&mut out)
         .ok()?;
