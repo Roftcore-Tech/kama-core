@@ -178,16 +178,18 @@ async fn param_backoff_recovers_after_initial_blackout() {
 
 /// (2) Normal bant (loopback), küçük birimli akış, kontrolcü yolu (ürün profili 0x05, E 1024).
 /// Blok 0'da kayıp geçmişi kurulur (birim 3 kalıcı silinir), blok 1 kayıp geçmişiyle kapanır.
-/// Tavanın girdisi ölçülmüş yol kapasitesidir: blok 0 ACK'siz kapanır (kapasite ölçülmemiş →
-/// bayt kapısı; kontrolcü de bu blokta r = 0 verir), blok 0'ın ACK'leri loopback'te on kB/s'ler
-/// mertebesinde teslim hızı örneği üretir → blok 1 zaman kapısından geçer (her iki birim boyunda
-/// `fec_cap_time_gate_open ≥ 1`, tavan kesmez: `fec_parity_payload_clamped = 0`).
+/// Tavanın girdisi ölçülmüş yol kapasitesidir. Loopback'te zaman kapısının açılması belirlenimli
+/// DEĞİLDİR: RTT 1 ms'nin altına inebilir ve o zaman teslim hızı örnekleri reddedilir
+/// (`bw.rs` `MIN_RATE_INTERVAL`); kapasite ölçülmemiş sayılır → bayt kapısı (400 B blokta r ≤ 3,
+/// 65 B blokta 0). Ölçüldü: 5 tekrardan birinde blok 1 kapanırken BtlBw 0'dı. Bu yüzden bu test
+/// kapıyı değil, normal bantta FEC'in fiilen çalıştığını sınar; kapının ölçülmüş kapasiteyle
+/// açılması (4) testinde (12,5 kB/s · 300 ms hat ikizi, belirlenimli).
 /// 400 B: kontrolcü parite planlar, tele çıkar, blok 1'in silinen birimi (11) FEC ile kurtarılır —
-/// koşulsuz iddia. 65 B: tavan uygulanmaz; kontrolcünün kendisi bu akışta r = 0 veriyor (ölçüldü:
-/// latched 0; tavanla ilgisi yok, kontrolcü kararı) → yalnız tavan sayaçları ve teslim sınanır.
-/// Uygulamayla sınırlı seyrek akışta ölçülen kapasite bir alt sınırdır ve eşiğin altında kalabilir
-/// (ör. 12,5 kB/s'de birim başına bir RTT → ≈ 150 B/s): o zaman 65 B blok bayt kapısıyla parite
-/// almaz; bu bilinçli (bkz. `fec_payload_r_max`). Düşük banttaki tavan (3) testinde.
+/// iki kapıda da (bayt kapısı 400 B blokta 3 parite bırakır) koşulsuz iddia. 65 B: kontrolcü bu
+/// akışta çoğu koşuda r = 0 veriyor; kapı kapalı kalırsa bayt kapısı 0 verir → yalnız teslim
+/// sınanır. Uygulamayla sınırlı seyrek akışta ölçülen kapasite bir alt sınırdır ve eşiğin altında
+/// kalabilir (ör. 12,5 kB/s'de birim başına bir RTT → ≈ 150 B/s): o zaman 65 B blok bayt kapısıyla
+/// parite almaz; bu bilinçli (bkz. `fec_payload_r_max`). Düşük banttaki tavan (3) testinde.
 #[tokio::test(flavor = "multi_thread")]
 async fn small_unit_flow_keeps_fec_at_normal_band_for_400b_and_65b_units() {
     const K: usize = 8;
@@ -241,16 +243,8 @@ async fn small_unit_flow_keeps_fec_at_normal_band_for_400b_and_65b_units() {
             cs.undelivered
         );
         assert_eq!(
-            cs.fec_parity_payload_clamped, 0,
-            "birim {unit_len} B: loopback hızında tavan uygulanmaz: {cs:?}"
-        );
-        assert_eq!(
             cs.fec_cap_decisions, 2,
             "birim {unit_len} B: iki tam blok: {cs:?}"
-        );
-        assert!(
-            cs.fec_cap_time_gate_open >= 1 && cs.fec_cap_path_bw_max_bps >= TIME_GATE_BPS,
-            "birim {unit_len} B: blok 1 ölçülmüş kapasiteyle zaman kapısından geçmeli: {cs:?}"
         );
         if unit_len == 400 {
             assert!(
