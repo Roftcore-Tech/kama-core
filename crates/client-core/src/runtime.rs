@@ -1722,7 +1722,8 @@ pub struct ClientSender {
     max_message_bytes: usize,
     /// [L-T1] Kabul edilip henüz app-düzeyi teyidi gelmemiş mesaj sayısı: kabulde artar,
     /// teyitte (ACK ya da FEC-RECOVERED) azalır (bkz. [`ClientHandle::outstanding`]). [K4G-05b-R]
-    /// Teyit motorun teyit çıktısıdır (`Sender::take_confirmed_units`).
+    /// Teyit motorun teyit çıktısıdır (`Sender::take_confirmed_units`). Artış kuyruğa koymadan
+    /// önce olur ([`admit_counted`]): teyit üreticinin dönüşünden önce gelse de düşüm kaybolmaz.
     outstanding: Arc<AtomicUsize>,
 }
 
@@ -1763,15 +1764,44 @@ impl ClientSender {
                 cap: self.max_message_bytes,
             });
         }
-        self.offer_tx
-            .try_send((payload, deadline_ns))
-            .map_err(|e| match e {
-                mpsc::error::TrySendError::Full(_) => RuntimeError::QueueFull,
-                mpsc::error::TrySendError::Closed(_) => RuntimeError::Closed,
-            })?;
-        self.outstanding.fetch_add(1, Ordering::AcqRel);
-        Ok(())
+        admit_counted(&self.outstanding, || {
+            self.offer_tx
+                .try_send((payload, deadline_ns))
+                .map_err(|e| match e {
+                    mpsc::error::TrySendError::Full(_) => RuntimeError::QueueFull,
+                    mpsc::error::TrySendError::Closed(_) => RuntimeError::Closed,
+                })
+        })
     }
+}
+
+/// Teyitsiz mesaj sayacının artış yönü ([`ClientSender::outstanding`]): sayaç mesaj kuyruğa
+/// girmeden ÖNCE artar, kuyruk reddederse geri alınır.
+///
+/// Sıra neden önemli: istemci görevi mesajı kuyruktan alır, gönderir ve teyidinde sayacı
+/// düşürür ([`release_outstanding`]); bu zincir, üretici `try_send`'den sonraki satıra geçmeden
+/// tamamlanabilir (loopback'te gidiş-dönüş ~0,5 ms; yüklü makinede üretici iş parçacığı bundan
+/// uzun bekletilebilir). Artış kuyruğa koymadan sonra gelseydi düşüm önce koşar, 0'da doyar ve
+/// kaybolurdu; gelen artış sayacı teyitsiz mesaj YOKKEN kalıcı 1'de bırakırdı. Artış önce
+/// olduğunda düşüm kendi artışından önce gelemez: görev mesajı ancak kuyruk gönderiminden sonra
+/// alabilir (kanal gönderimi alımdan önce gelir), artış da program sırasıyla gönderimden öncedir.
+/// Sayaç böylece hiçbir anda gerçek teyitsiz sayının altına inmez; reddedilen mesaj için kısa
+/// süre bir fazla görünür (yenileme boşaltması bunu "boşalmadı" okur — güvenli yön).
+fn admit_counted(
+    outstanding: &AtomicUsize,
+    enqueue: impl FnOnce() -> Result<(), RuntimeError>,
+) -> Result<(), RuntimeError> {
+    outstanding.fetch_add(1, Ordering::AcqRel);
+    enqueue().inspect_err(|_| release_outstanding(outstanding))
+}
+
+/// Teyitsiz mesaj sayacının düşüş yönü: teyit (ACK ya da FEC-RECOVERED) ve kuyruk reddi. Doygun:
+/// [`admit_counted`] sırası düşümü artışın arkasına koyduğu için 0'da düşüm beklenmez; doygunluk
+/// yalnız savunmadır (sarma yok).
+fn release_outstanding(outstanding: &AtomicUsize) {
+    let _ = outstanding.fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| {
+        Some(v.saturating_sub(1))
+    });
 }
 
 impl ClientEndpoint {
@@ -2302,19 +2332,13 @@ async fn client_task(
                         if *rem == 0 {
                             msg_pending.remove(&m);
                             stats.messages_acked += 1;
-                            let _ = outstanding.fetch_update(
-                                Ordering::AcqRel,
-                                Ordering::Acquire,
-                                |v| Some(v.saturating_sub(1)),
-                            );
+                            release_outstanding(&outstanding);
                             let _ = acked_tx.try_send(u64::from(m));
                         }
                     }
                 }
             } else {
-                let _ = outstanding.fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| {
-                    Some(v.saturating_sub(1))
-                });
+                release_outstanding(&outstanding);
                 // app drenajı; taşarsa olay düşer, teslim durumu store'da zaten kesin.
                 let _ = acked_tx.try_send($unit);
             }
@@ -4383,6 +4407,82 @@ mod skip_tests {
         );
         assert_eq!(repair_symbol(&rs, BLOCK, ESI), None, "ESI yok");
         assert_eq!(repair_symbol(&rs, BLOCK, ESI + 1), Some(&[1u8, 2, 3][..]));
+    }
+}
+
+#[cfg(test)]
+mod outstanding_counter_tests {
+    //! Teyitsiz mesaj sayacının (`ClientHandle::outstanding`) iki yönü. Üretici (`send`) ile istemci
+    //! görevi (teyit) ayrı iş parçacıklarındadır; sayaç teyit, üreticinin `try_send`'den dönüşünden
+    //! ÖNCE gelse de doğru kalmalıdır. O sıra burada zorlanır: kuyruğa koyma adımı mesajı görevin
+    //! yapacağı gibi hemen alır ve teyit eder (`release_outstanding` — görevin `unit_acked!`
+    //! dalındaki çağrı), üretici ancak sonra döner. Eski sıra (önce kuyruk, sonra artış) bu sırada
+    //! düşümü 0'da kaybeder ve sayaç teyitsiz mesaj yokken 1'de kalırdı.
+
+    use super::*;
+
+    type Offer = (Vec<u8>, Option<u64>);
+
+    fn sender(capacity: usize) -> (ClientSender, mpsc::Receiver<Offer>) {
+        let (offer_tx, offer_rx) = mpsc::channel::<Offer>(capacity);
+        let sender = ClientSender {
+            offer_tx,
+            max_message_bytes: 64,
+            outstanding: Arc::new(AtomicUsize::new(0)),
+        };
+        (sender, offer_rx)
+    }
+
+    fn count(sender: &ClientSender) -> usize {
+        sender.outstanding.load(Ordering::Acquire)
+    }
+
+    #[test]
+    fn confirmation_before_send_returns_leaves_no_phantom_outstanding() {
+        let (sender, mut offer_rx) = sender(4);
+        let r = admit_counted(&sender.outstanding, || {
+            sender
+                .offer_tx
+                .try_send((vec![1; 8], None))
+                .map_err(|_| RuntimeError::QueueFull)?;
+            // Görev: mesajı kuyruktan alır, yollar, teyidi gelir — üretici henüz dönmedi.
+            assert!(offer_rx.try_recv().is_ok(), "mesaj kuyrukta");
+            release_outstanding(&sender.outstanding);
+            Ok(())
+        });
+        assert!(r.is_ok());
+        assert_eq!(
+            count(&sender),
+            0,
+            "teyitli mesaj teyitsiz sayılmaz (düşüm kendi artışından önce gelemez)"
+        );
+    }
+
+    #[test]
+    fn refused_message_is_not_counted() {
+        let (sender, offer_rx) = sender(1);
+        assert!(matches!(
+            sender.send(vec![0; 65]),
+            Err(RuntimeError::UnitTooLarge { .. })
+        ));
+        assert_eq!(count(&sender), 0, "tavan reddi sayılmaz");
+        sender.send(vec![0; 8]).expect("kuyrukta yer var");
+        assert_eq!(count(&sender), 1);
+        assert!(matches!(
+            sender.send(vec![0; 8]),
+            Err(RuntimeError::QueueFull)
+        ));
+        assert_eq!(count(&sender), 1, "dolu kuyruk reddi geri alınır");
+        drop(offer_rx);
+        assert!(matches!(sender.send(vec![0; 8]), Err(RuntimeError::Closed)));
+        assert_eq!(count(&sender), 1, "kapalı kuyruk reddi geri alınır");
+    }
+
+    #[test]
+    fn release_saturates_at_zero() {
+        let outstanding = AtomicUsize::new(0);
+        release_outstanding(&outstanding);
+        assert_eq!(outstanding.load(Ordering::Acquire), 0, "sarma yok");
     }
 }
 
