@@ -1,5 +1,5 @@
-//! PR #190 kontrolleri (sahip, 2026-11-11): (1) ilk PARAM denemeleri ve teyitleri kaybolduğunda
-//! geri çekilmeli yeniden gönderim toparlıyor mu; (2) normal bantta küçük birimli akışta FEC
+//! PR #190 kontrolleri (sahip, 2026-11-11). (1) PARAM geri çekilmesi #202 ile main'e girdi; testi
+//! `tests/param_backoff.rs` (belirlenimli, 6 s karartma). (2) normal bantta küçük birimli akışta FEC
 //! teslimi/kurtarımı geriliyor mu (parite tavanı kontrolcü yolunda bloğun kaynak baytıyla
 //! ölçeklenir; elle-r koluna uygulanmaz); (3) 25 B/s hatta tavan kararı başlangıç sırasından
 //! (PARAM ↔ ilk veri, dolayısıyla ilk RTT) bağımsız mı; (4) şekillendirilmiş normal bant hatta
@@ -7,7 +7,7 @@
 //! düşünce zaman kapısı kapanıyor mu.
 //!
 //! Gerçek UDP; kayıp belirlenimli (egress kapısı / alıcı seam'i / hat ikizinde sıra numarası).
-//! (1)–(2) loopback; (3)–(4) netem `rate` + `delay` sıra kuralını uygulayan kullanıcı-alanı hat
+//! (2) loopback; (3)–(4) netem `rate` + `delay` sıra kuralını uygulayan kullanıcı-alanı hat
 //! ikizi üzerinden (netem/tc gerekmez). (3)–(5) gerçek zamanlıdır: ≈ 50 s, ≈ 5 s, ≈ 20 s.
 
 use std::collections::VecDeque;
@@ -15,31 +15,12 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use client_core::runtime::{
-    ClientEndpoint, EgressPolicy, FecRuntimeConfig, RuntimeConfig, ServerEndpoint,
-};
+use client_core::runtime::{ClientEndpoint, FecRuntimeConfig, RuntimeConfig, ServerEndpoint};
 use client_core::seam::IdentitySeam;
 use kama_contracts::s3::{
     Opened, PacketProtection, ProtectionClass, ProtectionContext, ProtectionLimits, SealError,
     SealedUnit,
 };
-
-/// İstemci çıkışı: koşu saatinin ilk `until_ns` nanosaniyesinde HİÇBİR datagram çıkmaz
-/// (PARAM denemeleri, ilk veri ve kopyaları dahil). `arm` no-op: kapı kuruluştan itibaren.
-struct BlackoutEgress {
-    until_ns: u64,
-    refused: u64,
-}
-
-impl EgressPolicy for BlackoutEgress {
-    fn admit(&mut self, _len: usize, now_ns: u64) -> bool {
-        if now_ns < self.until_ns {
-            self.refused += 1;
-            return false;
-        }
-        true
-    }
-}
 
 /// IdentitySeam + alıcıda belirli birimlerin DATA'sı kalıcı düşer (yeniden iletimler dahil);
 /// onarım sembolleri ve kontrol çerçeveleri geçer.
@@ -101,79 +82,6 @@ async fn collect(
     })
     .await;
     got.into_iter().collect()
-}
-
-/// (1) İlk 1,5 s istemciden hiçbir şey çıkmaz: PARAM'ın ilk denemeleri (0 / 0,2 / 0,6 / 1,4 s)
-/// ve ilk veri kopyaları kaybolur. Beklenen: geri çekilmeli deneme (3,0 s) teyit alır, 8/8
-/// teslim (2'si FEC kurtarımı), PARAM deneme sayısı sınırlı (geri çekilme: ≤ 25, bu pencerede
-/// 5–7), `param_confirmed = 1`.
-#[tokio::test(flavor = "multi_thread")]
-async fn param_backoff_recovers_after_initial_blackout() {
-    const K: usize = 8;
-    let mut server = ServerEndpoint::bind(
-        "127.0.0.1:0".parse().unwrap(),
-        fec03(64),
-        Box::new(DropUnitsSeam {
-            drop: &[2, 5],
-            inner: IdentitySeam::new(),
-        }),
-    )
-    .await
-    .expect("server bind");
-    let mut client = ClientEndpoint::connect_with_policy(
-        server.local_addr(),
-        fec03(64),
-        Box::new(IdentitySeam::new()),
-        Some(Box::new(BlackoutEgress {
-            until_ns: 1_500_000_000,
-            refused: 0,
-        })),
-    )
-    .await
-    .expect("client connect");
-
-    // Karartma boyunca PARAM denemeleri (0 / 0,2 / 0,6 / 1,4 s) yutulur; 3,0 s'deki deneme geçer.
-    // Veri karartma bittikten ve PARAM teyidi alındıktan sonra sunulur (onarım sembolleri
-    // PARAM'dan önce alıcıda anlamsızdır; bu test PARAM'ın toparlanmasını ölçer).
-    tokio::time::sleep(Duration::from_millis(3_600)).await;
-    for i in 0..K {
-        client
-            .send(format!("param-bo-{i}").into_bytes())
-            .expect("offer");
-    }
-    let got = collect(&mut server, K, Duration::from_secs(30)).await;
-    let acked = tokio::time::timeout(Duration::from_secs(10), async {
-        for _ in 0..K {
-            client.acked().await.expect("acked akışı");
-        }
-    })
-    .await;
-
-    let cs = client.shutdown().await;
-    let ss = server.shutdown().await;
-    assert_eq!(got.len(), K, "8/8 teslim: {cs:?} {ss:?}");
-    acked.expect("8/8 teslim-teyidi (ACK + RECOVERED)");
-    assert_eq!(
-        cs.param_confirmed, 1,
-        "PARAM karartma sonrası teyit edilmeli: {cs:?}"
-    );
-    assert!(
-        cs.egress_refused_pkts >= 3,
-        "karartma ilk denemeleri yutmalı: {cs:?}"
-    );
-    // Geri çekilme: 0 / 0,2 / 0,6 / 1,4 s yutulur (zamanlayıcı 200 ms adımlı; 4. deneme 1,6 s'ye
-    // kayabilir ve geçer); en geç 3,0 s'deki deneme geçer, teyit loopback'te hemen döner →
-    // 4–6 deneme. Sabit 200 ms kadansta karartma boyunca 8 deneme yutulurdu.
-    assert!(
-        (4..=6).contains(&cs.param_sends),
-        "geri çekilmeli PARAM denemesi 4–6 olmalı: {cs:?}"
-    );
-    assert_eq!(
-        ss.fec_recovered_units, 2,
-        "silinen 2 birim FEC'le kurtarılmalı: {ss:?}"
-    );
-    assert_eq!(ss.delivered, K as u64, "8/8: {ss:?}");
-    assert_eq!(cs.undelivered, 0, "residue yok: {cs:?}");
 }
 
 /// (2) Normal bant (loopback), küçük birimli akış, kontrolcü yolu (ürün profili 0x05, E 1024).
