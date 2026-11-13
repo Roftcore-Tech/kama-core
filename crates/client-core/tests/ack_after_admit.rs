@@ -60,8 +60,23 @@ async fn stalled_consumer(engine: TransportEngine, n: u64) {
         }
         got
     })
-    .await
-    .expect("60 s içinde hepsi teslim edilmeli");
+    .await;
+    // [TEŞHİS] Zaman aşımında iki ucun istatistiği ve eksik birimler dökülür (CI'da seyrek kırmızı:
+    // 2026-11-12 #193 a87e8cbf, eski motor kolu; zaman aşımı mesajı tek başına kök göstermiyordu).
+    // Şüphe: tüketici dururken kabul edilmeyen birimler için RecoverFwd'nin tek-atımlık kopyaları
+    // da reddedilirse birim motordan düşer (kopya kaybı yeniden kuyruklanmaz) — bu döküm onu ayırt
+    // eder (`undelivered` > 0 ve gönderici uçuşu boş ↔ hâlâ yeniden iletiyor).
+    let delivered = match delivered {
+        Ok(d) => d,
+        Err(_) => {
+            let cs = client.shutdown().await;
+            let ss = server.shutdown().await;
+            panic!(
+                "60 s içinde hepsi teslim edilmeli — eksik {} birim; istemci: {cs:?}; sunucu: {ss:?}",
+                n.saturating_sub(ss.delivered)
+            );
+        }
+    };
     let mut sorted = delivered.clone();
     sorted.sort_unstable();
     sorted.dedup();
