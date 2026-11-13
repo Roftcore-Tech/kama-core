@@ -1164,9 +1164,15 @@ async fn link_rates_initial_window_is_paced_into_a_shallow_queue() {
 
 /// [ASİMETRİK-YOL] Kalıcı kapı — fazla iyimser profil, sığ kuyruk: ileri gerçek 2,5 kB/s (kuyruk 8
 /// paket), profil 12,5 kB/s (5 kat); dönüş 62 B/s, %20 ileri kayıp, 24 × 1000 B. Profil ilk
-/// pencereyi gerçeğin 5 katına büyütür; ilk ACK'ten önce bunu bilecek ölçüm yoktur, fazlası
-/// kuyrukta düşer (16–17 paket). Teslim çökmemeli. Ölçüm (tohum 1, 3 koşu): 19,6–26,4 s, 24/24;
-/// aynı hatta yön hızları kapalı kol 33,9 s (3 koşu). Eşik 45 s (kapalı kolun ≈ 1,3 katı).
+/// pencereyi gerçeğin 5 katına büyütür; ilk ACK'ten önce bunu bilecek ölçüm yoktur, ilk uçuşun
+/// fazlası kuyrukta düşer (16–17 paket). Profil sınanmadan Startup hızı "ilk pencere / min_rtt"
+/// tabanında kilitli kalıyor, profil tavanı da ölçümden bağımsız taban gibi davranıyordu: kayıp
+/// raporunun açtığı yeniden iletimler 12,2 kB/s ve 10·MTU'luk patlamayla kuyruğa çıkıp yeniden
+/// düşüyordu. Tohum 1 × 2 koşu: profil sınamasız 40,4 s, kuyruk düşmesi 23; yön hızları kapalı kol
+/// 33,9 s; profil ilk yeterli ölçümde geri çekilince (`Sender::set_cc_profile_base_window`) 31,3 s,
+/// düşme 16. Tohum 2–8 (1–2 koşu) geri çekmeyle 17,5–46,2 s, sınamasız 24,3–51,0 s, kapalı kol
+/// 27,3–50,5 s. Eşikler: düşme ≤ 19 (asıl ayırıcı; sınamasız 21–23), tamamlanma ≤ 38 s
+/// (sınamasız 40,4 s; kapalı kolun ≈ 1,1 katı).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn overoptimistic_link_profile_on_shallow_queue_still_completes() {
     let fwd = dir300(2_500, 8, 200);
@@ -1192,8 +1198,13 @@ async fn overoptimistic_link_profile_on_shallow_queue_still_completes() {
         .expect("fazla iyimser profil hücresi 150 s içinde tamamlanmalı");
     assert_eq!(o.delivered, 24, "24/24 teslim");
     assert!(
-        done <= Duration::from_secs(45),
-        "fazla iyimser profil: tamamlanma {done:?} > 45 s (yön hızları kapalı kol 33,9 s)"
+        o.stats.fwd_dropped_queue <= 19,
+        "ileri kuyrukta {} paket düştü > 19 (profil ilk ölçümde geri çekilmedi; ilk uçuş 16–17)",
+        o.stats.fwd_dropped_queue
+    );
+    assert!(
+        done <= Duration::from_secs(38),
+        "fazla iyimser profil: tamamlanma {done:?} > 38 s (yön hızları kapalı kol 33,9 s)"
     );
 }
 
@@ -1236,7 +1247,9 @@ async fn link_rates_on_receiver_only_completes() {
 /// [ASİMETRİK-YOL] Kalıcı kapı — profil yalnız göndericide: aynı hücre. İlk pencere büyür
 /// (≈ 67 kB, profil hızıyla serileşir), alıcı bütçesiz quinn kuralıyla ACK'ler: ACK'ler 62 B/s
 /// dönüş kuyruğunda birikir, RTT örnekleri şişer. Kalıcı bekleme olmamalı. Ölçüm (tohum 1, 3 koşu):
-/// 12,5–26,8 s, dönüş 1 717–1 838 B (bütçesiz). Eşik 60 s.
+/// 12,5–26,8 s, dönüş 1 717–1 838 B (bütçesiz). Şişen örneklerle ilk yeterli teslim hızı profilin
+/// beşte birinin altında kalır, profil geri çekilir (yalnız Startup hız tabanı; pencere korunur):
+/// tohum 1 × 2 koşu 11,3 s, dönüş 1 721 B; geri çekmesiz 25,3 s (1 koşu). Eşik 60 s.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn link_rates_on_sender_only_completes() {
     let fwd = dir300(12_500, 64, 200);
