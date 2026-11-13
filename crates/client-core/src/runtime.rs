@@ -18,7 +18,7 @@
 //! Boşalma idle-emeklilikle YA DA bağlı oturum oturum tablosundan çıkınca (kapanınca) olur —
 //! böyle bir yuva zaten erişilemezdir (bkz. "BAĞLAM-ÖNCE DAĞITIM"), ikisi de sayılır.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -49,6 +49,10 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::interval;
 
+use crate::unit_id::{
+    fec_block_of, fec_esi_of, first_fec_block_of_lane, lane_index_of, lane_seq_of, next_fec_block,
+    tagged, unit_of_fec, FEC_BLOCK_LANE_SHIFT, LANE_COUNT,
+};
 use crate::wire::{
     decode_cs_echo, decode_cs_probe, decode_data, decode_data_frag, decode_fec, decode_param,
     decode_param_ack, decode_recovered, encode_cs_echo, encode_cs_probe, encode_data,
@@ -1518,9 +1522,23 @@ pub struct ExpectedSessions(
 /// (bağımsız `bind`: sıralayıcı yok) pencere yoktur.
 #[derive(Debug, Default)]
 struct AdmitWindow {
-    width: Option<u64>,
-    heads: BTreeMap<SessionHandle, u64>,
+    /// [ŞERİT-GENİŞLİK] Şerit başına genişlik; `None` = pencere kapalı.
+    width: Option<[u64; LANE_COUNT]>,
+    /// [ŞERİT-GENİŞLİK] `true` ([`ExpectedSessions::set_lane_admit_windows`]): pencerenin tabanı
+    /// `max(sıra başı, kabul sınırı)`'dır (bkz. `admitted`). `false` (eski yol,
+    /// [`ExpectedSessions::set_admit_window`]): taban yalnız sıra başı.
+    anchor_admitted: bool,
+    /// [ŞERİT-SIRA] Sıra başı oturum VE şerit başına (`crate::unit_id`): bir şeridin dolu penceresi
+    /// öbür şeridin kabulünü kapatmaz. Anahtar `(oturum, şerit)`; değer şerit-içi sıra.
+    heads: BTreeMap<(SessionHandle, usize), u64>,
+    /// [ŞERİT-GENİŞLİK] Veri alıcısının KABUL sınırı: şeritte bu sıranın altındaki her birim teslim
+    /// kanalına girdi (boşluksuz). Yalnız `anchor_admitted` iken yazılır
+    /// ([`ExpectedSessions::note_admitted`]).
+    admitted: BTreeMap<(SessionHandle, usize), u64>,
 }
+
+/// [F3 · ŞERİT-SIRA] Bir oturumun şerit başına kabul sınırları (dışlayıcı şerit-içi sıra).
+pub type LaneAdmitLimits = [u64; LANE_COUNT];
 
 impl ExpectedSessions {
     /// Boş küme: hiçbir `Session(_)` beklenmiyor.
@@ -1553,39 +1571,109 @@ impl ExpectedSessions {
     /// silinir (kalan oturumlarınki korunur: sıra başı geri gitmez).
     pub fn replace(&self, sessions: impl IntoIterator<Item = (SessionHandle, Readiness)>) {
         let next: BTreeMap<SessionHandle, Readiness> = sessions.into_iter().collect();
-        self.window_lock()
-            .heads
-            .retain(|session, _| next.contains_key(session));
+        {
+            let mut w = self.window_lock();
+            w.heads.retain(|(session, _), _| next.contains_key(session));
+            w.admitted
+                .retain(|(session, _), _| next.contains_key(session));
+        }
         *self.lock() = next;
     }
 
     /// [F3] Kabul penceresini AÇAR: her `Ready` oturum için teslim kimliği
     /// `[sıra başı, sıra başı + width)` aralığındaki veri kabul edilir. `width` en az 1'dir.
     pub fn set_admit_window(&self, width: u64) {
-        self.window_lock().width = Some(width.max(1));
+        let mut w = self.window_lock();
+        w.width = Some([width.max(1); LANE_COUNT]);
+        w.anchor_admitted = false;
+    }
+
+    /// [F3 · ŞERİT-GENİŞLİK] Kabul penceresini şerit başına genişlikle AÇAR: şerit `l`'nin birimi
+    /// `[taban(l), taban(l) + widths[l])` aralığındaysa kabul edilir. Genişlikler göndericinin
+    /// açıklık sınırıyla aynı kaynaktan gelir (`lanes::LaneConfig::admit_widths`); her biri en az
+    /// 1'dir.
+    ///
+    /// **Taban = max(sıra başı, kabul sınırı).** Gönderici şeridin açıklığını TEYİT sınırından
+    /// ölçer; teyit, birimin teslim kanalına KABULÜdür (ACK ya da RECOVERED). Sıra başı ise
+    /// adaptörün kanaldan çektiği ve teslim ettiğidir. İkisinin arasında kanalda bekleyen kabul
+    /// edilmiş birimler vardır (uygulama yavaşken, ya da eksik sıra başı geldiği anda adaptör onu
+    /// kanaldan henüz çekmemişken). Taban yalnız sıra başı olsaydı gönderici bu birimler kadar
+    /// pencerenin dışına yazardı: birimler ACK'siz kalır, kayıp ilan edilir, yeniden iletilir —
+    /// tıkanıklık olayı ve gereksiz yeniden iletim (ölçüm: `tests/lane_receiver_backpressure.rs`,
+    /// küçük sınırlar kolu, eski tabanla 7 birim). Taban kabul sınırı olunca göndericinin yazdığı
+    /// her birim pencerenin içindedir.
+    ///
+    /// **Sıralayıcı sınırı korunur:** şeridin sıralayıcıda tuttuğu birim yine en çok genişliktir.
+    /// Neden: teslim kanalı FIFO'dur; `u` birimi kabul edildiğinde kabul sınırının altındaki her
+    /// birim kanala ondan önce girmiştir. Adaptör kanaldan yalnız teslim kutusunda yer varken çeker
+    /// ve her çekişten önce bütün şeritlerin sırası gelmiş koşularını boşaltır
+    /// (`transport::Reorder::release`); kutu dolarsa çekmez. Dolayısıyla `u` çekildiğinde ondan
+    /// önceki birimler çekilmiş ve teslim edilmiştir: sıra başı en az `u`'nun kabul anındaki
+    /// kabul sınırıdır, `u` sıra başından en çok `genişlik − 1` ileridedir. Fazlalık yalnız teslim
+    /// kanalındadır ve kanal kendi kapasitesiyle sınırlıdır (`transport::receiver_buffer_bound_units`
+    /// değişmez).
+    pub fn set_lane_admit_windows(&self, widths: [u64; LANE_COUNT]) {
+        let mut w = self.window_lock();
+        w.width = Some(widths.map(|w| w.max(1)));
+        w.anchor_admitted = true;
+    }
+
+    /// [ŞERİT-GENİŞLİK] Veri alıcısı `id` birimini teslim kanalına koydu (ve ilk-teslim dedup
+    /// penceresine yazdı). Birim şeridin kabul sınırındaysa sınır, `contains`'in (aynı yuvanın
+    /// dedup penceresi) bildiği boşluksuz kabul edilmiş birimler boyunca ilerler. Yalnız şerit
+    /// kipinde ([`Self::set_lane_admit_windows`]) etkilidir. Başka yuvadan kabul edilmiş ya da
+    /// dedup penceresinden düşmüş birim ilerlemeyi durdurur: sınır yalnız tutucu yönde hata yapar.
+    pub fn note_admitted(&self, session: SessionHandle, id: u64, contains: impl Fn(u64) -> bool) {
+        let mut w = self.window_lock();
+        if !w.anchor_admitted {
+            return;
+        }
+        let lane = lane_index_of(id);
+        let seq = lane_seq_of(id);
+        let head = w.heads.get(&(session, lane)).copied().unwrap_or(0);
+        let a = w.admitted.entry((session, lane)).or_insert(0);
+        *a = (*a).max(head);
+        if seq != *a {
+            return;
+        }
+        *a = a.saturating_add(1);
+        while contains(tagged(lane, *a)) {
+            *a = a.saturating_add(1);
+        }
     }
 
     /// [F3] Oturumun sıralı teslim sınırı `head`'e ilerledi (bundan küçük kimlikler teslim edildi).
-    /// Sıra başı yalnız ileri gider; daha küçük değer yok sayılır.
+    /// Sıra başı yalnız ileri gider; daha küçük değer yok sayılır. [ŞERİT-SIRA] `head` şerit
+    /// etiketli birim kimliğidir: etiket şeridi, kalanı o şeridin sıra başını verir.
     pub fn advance_head(&self, session: SessionHandle, head: u64) {
         let mut w = self.window_lock();
-        let slot = w.heads.entry(session).or_insert(0);
-        *slot = (*slot).max(head);
+        let slot = w.heads.entry((session, lane_index_of(head))).or_insert(0);
+        *slot = (*slot).max(lane_seq_of(head));
     }
 
-    /// [F3] Oturumun kabul sınırı (dışlayıcı): bu değer ve üstündeki teslim kimliği kabul edilmez.
-    /// Pencere kapalıysa `None`. Sıra başı yayımlanmamış oturum için sıra başı 0'dır.
+    /// [F3] Oturumun şerit başına kabul sınırı (dışlayıcı şerit-içi sıra): bu değer ve üstündeki
+    /// sıra kabul edilmez. Pencere kapalıysa `None`. Sıra başı yayımlanmamış şerit için 0'dır.
     #[must_use]
-    pub fn admit_limit(&self, session: SessionHandle) -> Option<u64> {
+    pub fn admit_limits(&self, session: SessionHandle) -> Option<LaneAdmitLimits> {
         let w = self.window_lock();
         let width = w.width?;
-        Some(
-            w.heads
-                .get(&session)
-                .copied()
-                .unwrap_or(0)
-                .saturating_add(width),
-        )
+        let mut out = [0u64; LANE_COUNT];
+        for (lane, slot) in out.iter_mut().enumerate() {
+            let head = w.heads.get(&(session, lane)).copied().unwrap_or(0);
+            let base = if w.anchor_admitted {
+                head.max(w.admitted.get(&(session, lane)).copied().unwrap_or(0))
+            } else {
+                head
+            };
+            *slot = base.saturating_add(width[lane]);
+        }
+        Some(out)
+    }
+
+    /// [F3] Tek şeritli görünüm (şerit 0 = etiketsiz kimlikler): bkz. [`Self::admit_limits`].
+    #[must_use]
+    pub fn admit_limit(&self, session: SessionHandle) -> Option<u64> {
+        self.admit_limits(session).map(|l| l[0])
     }
 
     /// `session` bekleniyorsa hazırlığı; beklenmiyorsa `None`.
@@ -1606,18 +1694,28 @@ impl ExpectedSessions {
     }
 }
 
-/// [F3] Bağlam bir oturumsa onun kabul sınırı (bkz. [`ExpectedSessions::admit_limit`]).
-fn session_admit_limit(expected: &ExpectedSessions, ctx: ProtectionContext) -> Option<u64> {
+/// [F3] Bağlam bir oturumsa onun şerit başına kabul sınırları (bkz.
+/// [`ExpectedSessions::admit_limits`]).
+fn session_admit_limit(
+    expected: &ExpectedSessions,
+    ctx: ProtectionContext,
+) -> Option<LaneAdmitLimits> {
     match ctx {
-        ProtectionContext::Session(h) => expected.admit_limit(h),
+        ProtectionContext::Session(h) => expected.admit_limits(h),
         ProtectionContext::HubChannel => None,
     }
+}
+
+/// [F3 · ŞERİT-SIRA] `id` (şerit etiketli birim kimliği; fragmenter açıkken mesaj kimliği, şerit 0)
+/// kendi şeridinin kabul penceresinin DIŞINDA mı.
+fn beyond_lane_limits(limits: Option<LaneAdmitLimits>, id: u64) -> bool {
+    limits.is_some_and(|l| lane_seq_of(id) >= l[lane_index_of(id)])
 }
 
 /// [F3] `id` (fragmenter kapalıyken birim, açıkken mesaj kimliği) oturumun kabul penceresinin
 /// DIŞINDA mı. Pencere yoksa ya da bağlam oturum değilse `false`.
 fn beyond_admit_window(expected: &ExpectedSessions, ctx: ProtectionContext, id: u64) -> bool {
-    session_admit_limit(expected, ctx).is_some_and(|limit| id >= limit)
+    beyond_lane_limits(session_admit_limit(expected, ctx), id)
 }
 
 /// [K4G-01 / D1 (v1.1) kol (b)] HubChannel dağıtıcısı — Session dağıtıcısından AYRI bir tip.
@@ -1697,6 +1795,21 @@ fn route_server(
 /// Client ucu: [`ClientSession`] (G2 sevk default'ları — tail-ON validated_v1) + UDP döngüsü.
 pub struct ClientEndpoint;
 
+/// [ŞERİT-W] Motorun son yol kestirimi — görev her motor olayından sonra YAZAR, tutamaç OKUR
+/// ([`ClientHandle::path_estimate`]). Salt gözlem: motor ve görev bu değeri hiçbir kararda okumaz.
+#[derive(Debug, Default)]
+struct PathEstimate {
+    /// BtlBw (B/s); örnek yoksa 0.
+    btlbw_bps: AtomicU64,
+    /// RTprop (ns); örnek yoksa 0.
+    rtprop_ns: AtomicU64,
+    /// [ŞERİT-AÇIKLIK] Şerit başına TEYİT SINIRI (şerit-içi sıra): bunun altındaki her birim motorca
+    /// teyit edildi. Teyitsiz birim varsa en küçüğüdür, yoksa şeridin görevce verilecek sıradaki
+    /// sırasıdır (başlangıçta 0). Yalnız artar. Görev store'u her değiştirdiğinde YAZAR; tutamaç
+    /// OKUR ([`ClientHandle::lane_confirm_frontier`]).
+    lane_frontier: [AtomicU64; LANE_COUNT],
+}
+
 /// Client tutamağı: bounded offer + ACK olay akışı + kontrollü kapanış.
 pub struct ClientHandle {
     offer: ClientSender,
@@ -1710,6 +1823,8 @@ pub struct ClientHandle {
     /// [K4G-05] Canlı salt-gözlem aynası (bkz. [`ClientHandle::live_diag`]). [DUR-19] Yalnız
     /// [`RuntimeConfig::live_diag`] açıkken kurulur; kapalıyken `None` (Mutex yok).
     live: Option<Arc<Mutex<ClientLiveDiag>>>,
+    /// [ŞERİT-W] Yol kestirimi (bkz. [`ClientHandle::path_estimate`]).
+    path: Arc<PathEstimate>,
     task: JoinHandle<ClientStats>,
 }
 
@@ -1717,7 +1832,7 @@ pub struct ClientHandle {
 /// döngüden BAĞIMSIZ ödünç alınabilir (aynı `select!` içinde hem sunmak hem ACK drenajı).
 #[derive(Clone)]
 pub struct ClientSender {
-    offer_tx: mpsc::Sender<(Vec<u8>, Option<u64>)>,
+    offer_tx: mpsc::Sender<(Vec<u8>, Option<u64>, usize)>,
     /// [S1B] App-yüzü tavan MESAJ tavanıdır; birim (chunk) tavanı fragmenter'ın içinde kalır.
     max_message_bytes: usize,
     /// [L-T1] Kabul edilip henüz app-düzeyi teyidi gelmemiş mesaj sayısı: kabulde artar,
@@ -1758,15 +1873,32 @@ impl ClientSender {
         payload: Vec<u8>,
         deadline_ns: Option<u64>,
     ) -> Result<(), RuntimeError> {
+        self.send_in_lane(payload, deadline_ns, 0)
+    }
+
+    /// [ŞERİT-SIRA] Bir mesajı **şeride** sunar: birim kimliği şerit etiketi + şerit-içi sıra alır
+    /// (`crate::unit_id`), alıcı şeritleri birbirinden bağımsız sıralar. `lane` = şerit indeksi
+    /// (0 PTT · 1 SIG · 2 TEXT · 3 FILE); 0 = etiketsiz, [`Self::send`] ile aynı.
+    ///
+    /// # Errors
+    /// `UnitTooLarge` · `QueueFull` · `Closed`.
+    pub fn send_in_lane(
+        &self,
+        payload: Vec<u8>,
+        deadline_ns: Option<u64>,
+        lane: usize,
+    ) -> Result<(), RuntimeError> {
         if payload.len() > self.max_message_bytes {
             return Err(RuntimeError::UnitTooLarge {
                 got: payload.len(),
                 cap: self.max_message_bytes,
             });
         }
+        // [ŞERİT-SIRA + #203] Sayaç kuyruğa koymadan ÖNCE artar, ret halinde geri alınır
+        // (`admit_counted`); şerit kimliği mesajla birlikte kuyruğa girer.
         admit_counted(&self.outstanding, || {
             self.offer_tx
-                .try_send((payload, deadline_ns))
+                .try_send((payload, deadline_ns, lane & 0b11))
                 .map_err(|e| match e {
                     mpsc::error::TrySendError::Full(_) => RuntimeError::QueueFull,
                     mpsc::error::TrySendError::Closed(_) => RuntimeError::Closed,
@@ -1882,7 +2014,7 @@ impl ClientEndpoint {
         })
         .await?;
         sock.connect(server).await?;
-        let (offer_tx, offer_rx) = mpsc::channel::<(Vec<u8>, Option<u64>)>(cfg.offer_queue);
+        let (offer_tx, offer_rx) = mpsc::channel::<(Vec<u8>, Option<u64>, usize)>(cfg.offer_queue);
         let (acked_tx, acked_rx) = mpsc::channel(cfg.offer_queue.max(cfg.max_inflight_units));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         // Kapasite 1 + onay-oneshot: mark_t0 görev işleyene dek bekler (ölçüm sözleşmesi).
@@ -1890,6 +2022,7 @@ impl ClientEndpoint {
         let max_message_bytes = cfg.max_message_bytes.unwrap_or(cfg.max_unit_bytes);
         let (recovery_tx, recovery_rx) = watch::channel(true);
         let outstanding = Arc::new(AtomicUsize::new(0));
+        let path = Arc::new(PathEstimate::default());
         // [K4G-05 / DUR-19] Canlı ayna yalnız bayrak açıkken kurulur (kapalıyken Mutex yok).
         let live = cfg
             .live_diag
@@ -1909,6 +2042,7 @@ impl ClientEndpoint {
                 outstanding: Arc::clone(&outstanding),
                 ctx_counters: ctx_counters.clone(),
                 live: live.clone(),
+                path: Arc::clone(&path),
             },
         ));
         Ok(ClientHandle {
@@ -1923,6 +2057,7 @@ impl ClientEndpoint {
             recovery_tx,
             ctx_counters,
             live,
+            path,
             task,
         })
     }
@@ -1947,6 +2082,19 @@ impl ClientHandle {
         deadline_ns: Option<u64>,
     ) -> Result<(), RuntimeError> {
         self.offer.send_with_deadline(payload, deadline_ns)
+    }
+
+    /// [ŞERİT-SIRA] Bkz. [`ClientSender::send_in_lane`].
+    ///
+    /// # Errors
+    /// `UnitTooLarge` · `QueueFull` · `Closed`.
+    pub fn send_in_lane(
+        &self,
+        payload: Vec<u8>,
+        deadline_ns: Option<u64>,
+        lane: usize,
+    ) -> Result<(), RuntimeError> {
+        self.offer.send_in_lane(payload, deadline_ns, lane)
     }
 
     /// Klonlanabilir offer tutamağı (bkz. [`ClientSender`]).
@@ -1994,6 +2142,30 @@ impl ClientHandle {
     #[must_use]
     pub fn outstanding(&self) -> usize {
         self.offer.outstanding.load(Ordering::Acquire)
+    }
+
+    /// [ŞERİT-AÇIKLIK] Şeridin teyit sınırı (şerit-içi sıra): bunun altındaki her birim karşı ucun
+    /// veri alıcısınca KABUL edildi (ACK ya da RECOVERED). Teyitsiz birim varsa en küçüğü, yoksa
+    /// görevin şeride vereceği sıradaki sıra. Tutamaçtan verilip görevin henüz almadığı (teklif
+    /// kanalındaki) birimler her zaman bu değerin üstündedir, yani alt sınır olarak güvenlidir.
+    /// Kaynağı birim deposunun kendisidir (teyit olay kanalı değil — o kanal taşınca olay düşer,
+    /// bu değer düşmez). Şerit katmanı her şeridin açıklığını bununla sınırlar
+    /// (`lanes::SessionLanes::set_span_rooms`).
+    #[must_use]
+    pub fn lane_confirm_frontier(&self, lane: usize) -> u64 {
+        self.path.lane_frontier[lane & 0b11].load(Ordering::Relaxed)
+    }
+
+    /// [ŞERİT-W] Motorun son yol kestirimi `(btlbw B/s, rtprop ns)`; örnek yoksa ilgili alan 0.
+    /// Görev her motor olayından sonra günceller (canlı aynadan bağımsız; ürün yolunda da var).
+    /// Şerit katmanı dosya penceresini bununla BDP'ye göre boyutlandırır
+    /// (`lanes::file_window_for_path`).
+    #[must_use]
+    pub fn path_estimate(&self) -> (u64, u64) {
+        (
+            self.path.btlbw_bps.load(Ordering::Relaxed),
+            self.path.rtprop_ns.load(Ordering::Relaxed),
+        )
     }
 
     /// [L-T1] Kurtarma anahtarı — **yalnız test yapılandırması** (ürün builder'ı kapalı kurtarmayı
@@ -2052,7 +2224,7 @@ impl ClientHandle {
 #[allow(clippy::too_many_arguments)]
 /// Client görevinin kanal uçları + oturum bağlamı (argüman listesi sınırlı kalsın diye bir arada).
 struct ClientTaskLinks {
-    offer_rx: mpsc::Receiver<(Vec<u8>, Option<u64>)>,
+    offer_rx: mpsc::Receiver<(Vec<u8>, Option<u64>, usize)>,
     acked_tx: mpsc::Sender<u64>,
     shutdown_rx: watch::Receiver<bool>,
     t0_rx: mpsc::Receiver<oneshot::Sender<()>>,
@@ -2067,6 +2239,8 @@ struct ClientTaskLinks {
     /// [K4G-05] Canlı salt-gözlem aynası (bkz. [`ClientHandle::live_diag`]); görev yalnız YAZAR.
     /// [DUR-19] `None` = [`RuntimeConfig::live_diag`] kapalı: görev hiçbir teşhis yazımı yapmaz.
     live: Option<Arc<Mutex<ClientLiveDiag>>>,
+    /// [ŞERİT-W] Yol kestirimi; görev YAZAR (bkz. [`ClientHandle::path_estimate`]).
+    path: Arc<PathEstimate>,
 }
 
 /// [K4G-05b-R · sahip kararı 2026-11-11] Motor teyidinin geldiği olay sınıfı — yalnız sayaç ayrımı
@@ -2106,6 +2280,7 @@ async fn client_task(
         outstanding,
         ctx_counters,
         live,
+        path,
     } = links;
     // [K4G-01 / D1 (v1.1)] HubChannel dağıtıcısı: Session durumunun hiçbirini TUTMAZ (yalnız
     // sayaç).
@@ -2220,11 +2395,20 @@ async fn client_task(
     // türetir); yalnız SON blok birikir. K dolunca same-event latch + gerçek RS-encode →
     // bounded repair_store (en-eski düşer → o bloğun FecParity kararı atlanır, tele çıkmaz;
     // `fec_repair_missing` + `stale_skipped`).
-    let mut cur_block: Vec<Vec<u8>> = Vec::new();
-    let mut cur_block_id: u32 = 0;
+    // [ŞERİT-SIRA] Şerit başına blok birikimi: blok/ESI şerit-içi sıradan türer, blok kimliği
+    // şerit etiketlidir (`crate::unit_id`). Şeritler kapalıyken yalnız 0. şerit dolar (eski yol).
+    let mut cur_block: [Vec<Vec<u8>>; LANE_COUNT] = Default::default();
+    let mut cur_block_id: [u32; LANE_COUNT] = [
+        first_fec_block_of_lane(0),
+        first_fec_block_of_lane(1),
+        first_fec_block_of_lane(2),
+        first_fec_block_of_lane(3),
+    ];
     // [FAZ-2 / KALEM-1] blok → (K_actual, repair'ler). K_actual kısmi/son blokta k_shape'ten
     // küçüktür ve TEL BAŞLIĞINDA taşınmak zorundadır (alıcı Model-A zero-enjeksiyonunu ondan türetir).
     let mut repair_store: BTreeMap<u32, (u8, Vec<RepairSymbol>)> = BTreeMap::new();
+    // [ŞERİT-SIRA] Depoya giriş sırası (tahliye EN ESKİ GİRENDEN; bkz. `repair_store_insert`).
+    let mut repair_order: VecDeque<u32> = VecDeque::new();
     const REPAIR_STORE_BLOCKS: usize = 64;
     // unit-store: unit_id → payload; varlık = outstanding (sınır: cfg).
     // [K4G-05b-R · sahip kararı 2026-11-11] YALNIZ motor teyidinde düşer (`drain_confirmed!`): ACK'teki seq'in runtime haritasındaki
@@ -2250,7 +2434,15 @@ async fn client_task(
     // [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] ACK çerçevesi sayaçları (yalnız aynaya yazılır; görev
     // okumaz).
     let mut ack_counts = AckFrameCounts::default();
-    let mut next_unit: u64 = 0;
+    // [ŞERİT-SIRA] Şerit başına boşluksuz sıra; kimlik = etiket + sıra (`crate::unit_id::tagged`).
+    let mut next_unit: [u64; LANE_COUNT] = [0; LANE_COUNT];
+    // [ŞERİT-AÇIKLIK] Store'daki (teyitsiz) birimlerin şerit-içi sıraları; store ile aynı yerde
+    // eklenir/silinir. Teyit sınırı (en küçüğü; boşsa şeridin sıradaki sırası)
+    // `PathEstimate::lane_frontier`'a yayımlanır. Sınır: store'un sınırı.
+    let mut unconfirmed: [BTreeSet<u64>; LANE_COUNT] = Default::default();
+    let publish_frontier = |path: &PathEstimate, lane: usize, set: &BTreeSet<u64>, next: u64| {
+        path.lane_frontier[lane].store(set.first().copied().unwrap_or(next), Ordering::Relaxed);
+    };
     let mut pace = interval(PACE_TICK);
     let mut rtprop = interval(RTPROP_TICK);
     let mut buf = vec![0u8; CLIENT_RECV_BUF];
@@ -2368,6 +2560,11 @@ async fn client_task(
                 if store.remove(&unit).is_none() {
                     continue;
                 }
+                {
+                    let lane = lane_index_of(unit);
+                    unconfirmed[lane].remove(&lane_seq_of(unit));
+                    publish_frontier(&path, lane, &unconfirmed[lane], next_unit[lane]);
+                }
                 match $via {
                     ConfirmVia::Recovered => stats.fec_recovered_ctrl_units += 1,
                     ConfirmVia::Ack => stats.acked += 1,
@@ -2389,6 +2586,12 @@ async fn client_task(
             // atlanır (tele datagram çıkmaz; `stale_decisions` + `stale_skipped`, panik yok) ve
             // birime yeni harita kaydı açılmaz.
             let confirmed_now: u32 = drain_confirmed!(via);
+            // [ŞERİT-W] Yol kestirimi yayını (salt gözlem; iki gevşek atomik yazım).
+            {
+                let (bw, rtprop) = session.sender().path_estimate();
+                path.btlbw_bps.store(bw, Ordering::Relaxed);
+                path.rtprop_ns.store(rtprop, Ordering::Relaxed);
+            }
             for d in decisions {
                 // PN → seq çevirisi motor seq'i taşıyan HER kararda (repair'ler de seq işgal eder;
                 // `map_pn!`); ama seq→unit haritası YALNIZ birim-taşıyan kararlarda: FecParity'nin
@@ -2583,8 +2786,7 @@ async fn client_task(
                         (Some(p), Some((block_id, esis))) => {
                             let mut units = Vec::with_capacity(esis.len());
                             for esi in esis {
-                                let unit =
-                                    u64::from(block_id) * u64::from(p.k_shape) + u64::from(esi);
+                                let unit = unit_of_fec(block_id, esi, u64::from(p.k_shape));
                                 units.push(RecoveredUnit {
                                     unit_id: unit,
                                     block_id,
@@ -2785,7 +2987,8 @@ async fn client_task(
             }
             // Offer YALNIZ store'da yer varken alınır (bounds-before-alloc: kanal + store çift sınır).
             maybe = offer_rx.recv(), if store.len() < cfg.max_inflight_units => {
-                let Some((message, deadline_ns)) = maybe else { break }; // handle'lar düştü → drain
+                let Some((message, deadline_ns, lane)) = maybe else { break }; // handle'lar düştü → drain
+                let lane = lane & 0b11;
                 stats.offered += 1;
                 // [DEADLINE-EKSENİ] Politika girdisi; ARQ/pacing/loss durumuna DOKUNMAZ.
                 if let Some(d) = deadline_ns {
@@ -2806,8 +3009,8 @@ async fn client_task(
                 for ci in 0..n_chunks {
                     let off = ci * chunk_cap;
                     let chunk = &message[off..(off + chunk_cap).min(message.len())];
-                    let id = next_unit;
-                    next_unit += 1;
+                    let id = tagged(lane, next_unit[lane]);
+                    next_unit[lane] += 1;
                     // Canonical source-symbol prefix'i (§2.6). Fragmentasyon KAPALIYKEN alanlar
                     // eski değerlerini korur (message_id = unit_id, offset 0, flags 0) — alıcı
                     // onları türetir ve wire'da prefix TAŞINMAZ. AÇIKKEN prefix wire'a yazılır.
@@ -2837,6 +3040,8 @@ async fn client_task(
                     let size = wire_len(seam.as_ref(), client_ctx, hdr + chunk.len());
                     // store WIRE GÖVDESİNİ tutar (frag: prefix‖payload, düz: payload).
                     store.insert(id, if frag_on { body } else { chunk.to_vec() });
+                    unconfirmed[lane].insert(lane_seq_of(id));
+                    publish_frontier(&path, lane, &unconfirmed[lane], next_unit[lane]);
                     if frag_on {
                         unit_msg.insert(id, msg_id);
                     }
@@ -2852,7 +3057,10 @@ async fn client_task(
                         stats.frag_encode_failures += 1;
                         continue;
                     };
-                    debug_assert_eq!(cur_block.len() as u64, id % u64::from(p.k_shape));
+                    let cur_block = &mut cur_block[lane];
+                    let cur_block_id = &mut cur_block_id[lane];
+                    debug_assert_eq!(cur_block.len() as u64, lane_seq_of(id) % u64::from(p.k_shape));
+                    debug_assert_eq!(*cur_block_id, fec_block_of(id, u64::from(p.k_shape)));
                     cur_block.push(sym);
                     if cur_block.len() == p.k_shape_usize() {
                         let parity_wire = wire_len(seam.as_ref(), client_ctx, HDR_FEC + e);
@@ -2861,7 +3069,7 @@ async fn client_task(
                             let auth = session.sender_mut().open_fec_block_authority();
                             session
                                 .sender_mut()
-                                .close_fec_block_manual(auth, cur_block_id, r, parity_wire)
+                                .close_fec_block_manual(auth, *cur_block_id, r, parity_wire)
                                 .unwrap_or(0)
                         } else {
                             let snap = session.sender().controller_decision_snapshot();
@@ -2873,7 +3081,7 @@ async fn client_task(
                                     snap,
                                     u8::try_from(p.k_shape).unwrap_or(255),
                                     p.r_code_max,
-                                    cur_block_id,
+                                    *cur_block_id,
                                     parity_wire,
                                 )
                                 .planned_r
@@ -2889,15 +3097,17 @@ async fn client_task(
                                 .collect();
                             if let Ok(reps) = RsSimdCodec.encode(p, &srcs) {
                                 stats.fec_blocks_latched += 1;
-                                repair_store
-                                    .insert(cur_block_id, (u8::try_from(p.k_shape).unwrap_or(255), reps));
-                                while repair_store.len() > REPAIR_STORE_BLOCKS {
-                                    repair_store.pop_first();
-                                }
+                                repair_store_insert(
+                                    &mut repair_store,
+                                    &mut repair_order,
+                                    *cur_block_id,
+                                    (u8::try_from(p.k_shape).unwrap_or(255), reps),
+                                    Some(REPAIR_STORE_BLOCKS),
+                                );
                             }
                         }
                         cur_block.clear();
-                        cur_block_id = cur_block_id.wrapping_add(1);
+                        *cur_block_id = next_fec_block(*cur_block_id);
                     }
                 }
                 } // [S1B] chunk döngüsü sonu
@@ -2948,7 +3158,12 @@ async fn client_task(
     // dolduğunda kapanıyordu (`cur_block.len() == k_shape`) → akışın SONUNDAKİ eksik blok ve
     // K'ya ulaşmayan kısa akışlar FEC korumasından TAMAMEN yoksundu (denetim B-2).
     if let Some(p) = fec.as_ref() {
-        if !cur_block.is_empty() {
+        for lane in 0..LANE_COUNT {
+            let cur_block = &mut cur_block[lane];
+            let cur_block_id = cur_block_id[lane];
+            if cur_block.is_empty() {
+                continue;
+            }
             let k_actual = u8::try_from(cur_block.len()).unwrap_or(255);
             let parity_wire = wire_len(seam.as_ref(), client_ctx, HDR_FEC + p.e_usize());
             let planned_r: u16 = if let Some(r) = fec_manual_r {
@@ -2993,7 +3208,15 @@ async fn client_task(
                 if let Ok(reps) = RsSimdCodec.encode(p, &srcs) {
                     stats.fec_blocks_latched += 1;
                     stats.fec_partial_blocks_closed += 1;
-                    repair_store.insert(cur_block_id, (k_actual, reps));
+                    // Kapanış eklemesi tahliye etmez (eski davranış): depo en çok
+                    // `REPAIR_STORE_BLOCKS + LANE_COUNT` blok.
+                    repair_store_insert(
+                        &mut repair_store,
+                        &mut repair_order,
+                        cur_block_id,
+                        (k_actual, reps),
+                        None,
+                    );
                 }
             }
             cur_block.clear();
@@ -3263,6 +3486,13 @@ impl ServerHandle {
         self.delivery_rx.try_recv().ok()
     }
 
+    /// [TOPLAM-SINIR] Teslim kanalında bekleyen (alınmamış) teslim sayısı; en çok
+    /// `RuntimeConfig::delivery_queue`. Salt okuma.
+    #[must_use]
+    pub fn delivery_backlog(&self) -> usize {
+        self.delivery_rx.len()
+    }
+
     /// Ölçüm-t0 işareti (dönüş yönü): wire sayaçları sıfırlanır, ALICI DURUMU KORUNUR ve varsa
     /// [`EgressPolicy`] arm edilir. Görev işleyene dek bekler — bkz. [`ClientHandle::mark_t0`].
     pub async fn mark_t0(&self) {
@@ -3320,7 +3550,78 @@ impl ServerHandle {
 const DELIVERED_DEDUP_WINDOW: usize = 8192;
 
 /// [S1] Peer-başına FEC blok-birleştirme tavanı (bounded, SR-AUDIT-001; en-eski düşer + sayaç).
+/// [ŞERİT-SIRA] "En eski" şerit içinde tanımlıdır: düşen, en kalabalık şeridin en küçük blok
+/// kimliğidir (`busiest_lane`).
 const RX_BLOCKS_CAP: usize = 32;
+
+/// [ŞERİT-SIRA] Tavanlı bir kimlik kümesinde (dedup penceresi, FEC blok birleştirici) tahliye
+/// edilecek şerit: en çok kaydı tutan şerit, eşitlikte düşük öncelikli olan (büyük indeks).
+///
+/// Neden: bu kümeler eskiden en küçük kimliği (`pop_first`) düşürüyordu; tek şeritte kimlikler
+/// gönderim sırasında arttığından bu "en eski"ydi. Şerit etiketi kimliğin üst bitlerindedir
+/// (`crate::unit_id`): en küçük kimlik PTT şeridinindir, en eski değil. Dosya şeridi kümeyi
+/// doldurunca PTT/SIG/TEXT kayıtları girer girmez atılırdı (FEC birleştiricide o şeridin yarım
+/// bloğu, dedup'ta ilk-teslim kaydı). Şerit içinde kimlik hâlâ gönderim sırasıdır; tahliye en
+/// kalabalık şeridin en küçük kimliğidir. Tek şeritte (yalnız şerit 0 dolu) davranış eskisiyle aynı.
+fn busiest_lane(per_lane: &[usize; LANE_COUNT]) -> usize {
+    let mut best = LANE_COUNT - 1;
+    for lane in (0..LANE_COUNT).rev() {
+        if per_lane[lane] > per_lane[best] {
+            best = lane;
+        }
+    }
+    best
+}
+
+/// FEC blok kimliğinin şerit indeksi (`crate::unit_id::fec_block_of` düzeni).
+fn fec_block_lane(block_id: u32) -> usize {
+    (block_id >> FEC_BLOCK_LANE_SHIFT) as usize
+}
+
+/// [ŞERİT-SIRA] Tavanı aşan FEC blok birleştiricisinden düşecek blok: [`busiest_lane`]'in en
+/// küçük blok kimliği. Boşsa `None`.
+fn rx_block_victim<V>(blocks: &BTreeMap<u32, V>) -> Option<u32> {
+    let mut per_lane = [0usize; LANE_COUNT];
+    for &b in blocks.keys() {
+        per_lane[fec_block_lane(b)] += 1;
+    }
+    let lane = busiest_lane(&per_lane);
+    blocks
+        .range(first_fec_block_of_lane(lane)..)
+        .next()
+        .map(|(&b, _)| b)
+}
+
+/// [ŞERİT-SIRA] Eş başına ilk-teslim dedup penceresi: kimlik kümesi + şerit başına kayıt sayısı.
+/// Tavan aşılınca [`busiest_lane`]'in en küçük kimliği düşer (tek şeritte eskisi gibi en küçük).
+/// Fragmenter açıkken kimlik mesaj kimliğidir (şerit 0).
+#[derive(Default)]
+struct DedupWindow {
+    ids: std::collections::BTreeSet<u64>,
+    per_lane: [usize; LANE_COUNT],
+}
+
+impl DedupWindow {
+    fn contains(&self, id: u64) -> bool {
+        self.ids.contains(&id)
+    }
+
+    fn insert(&mut self, id: u64, cap: usize) {
+        if !self.ids.insert(id) {
+            return;
+        }
+        self.per_lane[lane_index_of(id)] += 1;
+        while self.ids.len() > cap {
+            let lane = busiest_lane(&self.per_lane);
+            let Some(&victim) = self.ids.range(tagged(lane, 0)..).next() else {
+                break;
+            };
+            self.ids.remove(&victim);
+            let l = lane_index_of(victim);
+            self.per_lane[l] = self.per_lane[l].saturating_sub(1);
+        }
+    }
+}
 
 /// [S1] Blok-birleştirme durumu: esi→symbol. Source-symbol DATA payload'ından deterministik
 /// türetilir (TX ile aynı `SourcePrefix`); repair FRAME_FEC'ten gelir. BTreeMap = dup-ESI doğal
@@ -3439,6 +3740,7 @@ fn permit_or_reserve<'a>(
 #[allow(clippy::too_many_arguments)]
 fn admit_chunk<'a>(
     stats: &mut ServerStats,
+    expected: &ExpectedSessions,
     delivery_tx: &'a mpsc::Sender<Delivery>,
     permit: Option<mpsc::Permit<'a, Delivery>>,
     peer: SocketAddr,
@@ -3451,7 +3753,7 @@ fn admit_chunk<'a>(
     from_fec: bool,
 ) -> bool {
     if !frag_on {
-        if slot.delivered_seen.contains(&unit_id) {
+        if slot.delivered_seen.contains(unit_id) {
             return true; // birim çoktan teslim edildi (DATA/FEC ortak pencere)
         }
         // [INV-ACK-DELIVER-1 · F4] Dedup penceresine YALNIZ teslim kanalına girdikten sonra
@@ -3469,14 +3771,16 @@ fn admit_chunk<'a>(
             payload.to_vec(),
             from_fec,
         );
-        slot.delivered_seen.insert(unit_id);
-        if slot.delivered_seen.len() > DELIVERED_DEDUP_WINDOW {
-            slot.delivered_seen.pop_first();
+        slot.delivered_seen.insert(unit_id, DELIVERED_DEDUP_WINDOW);
+        // [ŞERİT-GENİŞLİK] Kabul sınırı (pencere tabanı; bkz. `set_lane_admit_windows`).
+        if let ProtectionContext::Session(h) = slot.ctx {
+            let seen = &slot.delivered_seen;
+            expected.note_admitted(h, unit_id, |id| seen.contains(id));
         }
         return true;
     }
     let mid = u64::from(pfx.message_id);
-    if slot.delivered_seen.contains(&mid) {
+    if slot.delivered_seen.contains(mid) {
         return true; // mesaj çoktan teslim edildi; geç chunk'lar (retransmit/kurtarma) yutulur
     }
     stats.frag_chunks_rx += 1;
@@ -3504,10 +3808,7 @@ fn admit_chunk<'a>(
         slot.msgs.remove(&pfx.message_id);
         stats.msgs_reassembled += 1;
         push_delivery(stats, permit, peer, slot.ctx, mid, full, from_fec);
-        slot.delivered_seen.insert(mid);
-        if slot.delivered_seen.len() > DELIVERED_DEDUP_WINDOW {
-            slot.delivered_seen.pop_first();
-        }
+        slot.delivered_seen.insert(mid, DELIVERED_DEDUP_WINDOW);
     } else if slot.msgs.len() > MSG_ASM_CAP {
         slot.msgs.pop_first();
         stats.msg_asm_evicted += 1;
@@ -3524,7 +3825,7 @@ type SlotKey = (SocketAddr, SessionHandle);
 struct PeerSlot {
     rx: Receiver,
     last_seen_ns: u64,
-    delivered_seen: std::collections::BTreeSet<u64>,
+    delivered_seen: DedupWindow,
     /// [S1] FEC blok-birleştirici (bounded; yalnız FEC-açıkken dolar).
     blocks: BTreeMap<u32, BlockAsm>,
     /// [S1B] Mesaj yeniden-birleştirici (bounded `MSG_ASM_CAP`; yalnız fragmentasyon açıkken dolar).
@@ -3553,7 +3854,7 @@ impl PeerSlot {
         Self {
             rx,
             last_seen_ns: now,
-            delivered_seen: std::collections::BTreeSet::new(),
+            delivered_seen: DedupWindow::default(),
             blocks: BTreeMap::new(),
             msgs: BTreeMap::new(),
             ctx,
@@ -3647,6 +3948,32 @@ async fn srv_seal_send(
     }
 }
 
+/// [ŞERİT-SIRA] Gönderici onarım deposuna blok ekler; `cap` verilmişse ve aşıldıysa EN ESKİ
+/// GİREN blok düşer. Eskiden anahtar sırasıyla (`pop_first`) düşüyordu: tek şeritte blok
+/// kimlikleri artan olduğundan bu "en eski"ydi. Şerit etiketli blok kimliğinde (`crate::unit_id`)
+/// en küçük kimlik PTT şeridinindir: dosya şeridi depoyu doldurunca PTT/SIG/TEXT bloklarının
+/// onarımları girer girmez atılır, o blokların FecParity kararı tele çıkmazdı. `order` deponun
+/// anahtarlarını giriş sırasıyla tam bir kez tutar (aynı anahtarın üzerine yazmak sırayı
+/// değiştirmez); deponun tek silme yolu buradaki tahliyedir. Tek şeritte davranış aynıdır.
+fn repair_store_insert(
+    store: &mut BTreeMap<u32, (u8, Vec<RepairSymbol>)>,
+    order: &mut VecDeque<u32>,
+    block_id: u32,
+    entry: (u8, Vec<RepairSymbol>),
+    cap: Option<usize>,
+) {
+    if store.insert(block_id, entry).is_none() {
+        order.push_back(block_id);
+    }
+    let Some(cap) = cap else { return };
+    while store.len() > cap {
+        let Some(oldest) = order.pop_front() else {
+            break;
+        };
+        store.remove(&oldest);
+    }
+}
+
 /// [S1] Shard'ı peer'ın blok-birleştiricisine koyar; hazırsa reconstruct dener, kurtarılanları
 /// teslim eder. READINESS (receiver_host'taki sayım-bug'ının DÜZELTİLMİŞ hâli): yalnız
 /// eksik-source > 0 VE distinct(source)+distinct(repair) ≥ K iken denenir; reconstruct HATASI
@@ -3655,6 +3982,7 @@ async fn srv_seal_send(
 #[allow(clippy::too_many_arguments)]
 fn fec_ingest(
     stats: &mut ServerStats,
+    expected: &ExpectedSessions,
     delivery_tx: &mpsc::Sender<Delivery>,
     peer: SocketAddr,
     slot: &mut PeerSlot,
@@ -3667,8 +3995,8 @@ fn fec_ingest(
     // [S1B] Kurtarılan chunk'ların teslim kapısı için gereken fragmenter bağlamı.
     frag_on: bool,
     max_message_bytes: usize,
-    // [F3] Oturumun kabul sınırı (dışlayıcı teslim kimliği; `None` = pencere yok).
-    admit_limit: Option<u64>,
+    // [F3] Oturumun şerit başına kabul sınırı (dışlayıcı şerit-içi sıra; `None` = pencere yok).
+    admit_limit: Option<LaneAdmitLimits>,
 ) -> Vec<u16> {
     let mut recovered_esis: Vec<u16> = Vec::new();
     let k_shape = u8::try_from(p.k_shape).unwrap_or(u8::MAX);
@@ -3761,7 +4089,7 @@ fn fec_ingest(
                 // kurtarılan chunk'ı YANLIŞ birime bağlardı.
                 let k = u64::from(p.k_shape);
                 for r in recovered {
-                    let unit_id = u64::from(block_id) * k + u64::from(r.esi);
+                    let unit_id = unit_of_fec(block_id, r.esi, k);
                     let Ok(pfx) = SourcePrefix::parse(&r.bytes) else {
                         continue;
                     };
@@ -3786,12 +4114,13 @@ fn fec_ingest(
                     } else {
                         unit_id
                     };
-                    if admit_limit.is_some_and(|limit| delivery_id >= limit) {
+                    if beyond_lane_limits(admit_limit, delivery_id) {
                         stats.data_not_admitted_window += 1;
                         continue;
                     }
                     if admit_chunk(
                         stats,
+                        expected,
                         delivery_tx,
                         None,
                         peer,
@@ -3819,7 +4148,12 @@ fn fec_ingest(
         }
     }
     while slot.blocks.len() > RX_BLOCKS_CAP {
-        if let Some((_, a)) = slot.blocks.pop_first() {
+        // [ŞERİT-SIRA] En kalabalık şeridin en eski bloğu (bkz. `busiest_lane`); tek şeritte
+        // eskisi gibi en küçük blok kimliği.
+        let Some(victim) = rx_block_victim(&slot.blocks) else {
+            break;
+        };
+        if let Some(a) = slot.blocks.remove(&victim) {
             let held = a.repairs.len() as u64;
             if held > 0 {
                 stats.fec_repairs_wasted_evicted += held;
@@ -4106,6 +4440,7 @@ async fn server_task(
                         if out.delivered.contains(&unit_id) {
                             admit_chunk(
                                 &mut stats,
+                                &expected,
                                 &delivery_tx,
                                 permit.take(),
                                 peer,
@@ -4137,8 +4472,8 @@ async fn server_task(
                         // tamamlanamazdı (ilk koşuda yakalanan yarış). Fail-closed gate YALNIZ
                         // FEC-shard ingest'inde (mismatch/saldırı yüzeyi orası).
                         if let Some(p) = fec.as_ref() {
-                            let block_id = (unit_id / u64::from(p.k_shape)) as u32;
-                            let esi = (unit_id % u64::from(p.k_shape)) as u16;
+                            let block_id = fec_block_of(unit_id, u64::from(p.k_shape));
+                            let esi = fec_esi_of(unit_id, u64::from(p.k_shape));
                             let mut sym = vec![0u8; p.e_usize()];
                             match body {
                                 Some(b) if b.len() <= sym.len() => {
@@ -4156,6 +4491,7 @@ async fn server_task(
                             let admit_limit = session_admit_limit(&expected, slot.ctx);
                             let rec = fec_ingest(
                                 &mut stats,
+                                &expected,
                                 &delivery_tx,
                                 peer,
                                 slot,
@@ -4247,6 +4583,7 @@ async fn server_task(
                         let admit_limit = session_admit_limit(&expected, slot.ctx);
                         let rec = fec_ingest(
                             &mut stats,
+                            &expected,
                             &delivery_tx,
                             peer,
                             slot,
@@ -4319,6 +4656,7 @@ async fn server_task(
                                         let admit_limit = session_admit_limit(&expected, slot.ctx);
                                         let rec = fec_ingest(
                                             &mut stats,
+                                            &expected,
                                             &delivery_tx,
                                             peer,
                                             slot,
@@ -4430,7 +4768,8 @@ mod outstanding_counter_tests {
 
     use super::*;
 
-    type Offer = (Vec<u8>, Option<u64>);
+    /// Teklif kanalının öğesi: yük, son tarih, şerit indeksi ([`ClientSender::send_in_lane`]).
+    type Offer = (Vec<u8>, Option<u64>, usize);
 
     fn sender(capacity: usize) -> (ClientSender, mpsc::Receiver<Offer>) {
         let (offer_tx, offer_rx) = mpsc::channel::<Offer>(capacity);
@@ -4452,7 +4791,7 @@ mod outstanding_counter_tests {
         let r = admit_counted(&sender.outstanding, || {
             sender
                 .offer_tx
-                .try_send((vec![1; 8], None))
+                .try_send((vec![1; 8], None, 0))
                 .map_err(|_| RuntimeError::QueueFull)?;
             // Görev: mesajı kuyruktan alır, yollar, teyidi gelir — üretici henüz dönmedi.
             assert!(offer_rx.try_recv().is_ok(), "mesaj kuyrukta");
@@ -4509,6 +4848,40 @@ mod ctx_first_tests {
     const A: ProtectionContext = ProtectionContext::Session(SessionHandle::from_raw(1));
     const B: ProtectionContext = ProtectionContext::Session(SessionHandle::from_raw(2));
     const HUB: ProtectionContext = ProtectionContext::HubChannel;
+
+    /// [ŞERİT-GENİŞLİK] Şerit kipinde pencere tabanı `max(sıra başı, kabul sınırı)`'dır; kabul
+    /// sınırı boşluksuz kabul edilen birimler boyunca ilerler. Eski kipte (`set_admit_window`)
+    /// kabul sınırı yok sayılır.
+    #[test]
+    fn lane_admit_window_is_anchored_at_the_admission_frontier() {
+        let h = SessionHandle::from_raw(1);
+        let expected = ExpectedSessions::new();
+        expected.insert_ready(h);
+        expected.set_lane_admit_windows([4, 4, 4, 8]);
+        let text = 2usize;
+        let mut seen = std::collections::BTreeSet::new();
+        // 1 ve 2 kabul edildi, 0 eksik: sınır 0'da kalır.
+        for s in [1u64, 2] {
+            seen.insert(tagged(text, s));
+            expected.note_admitted(h, tagged(text, s), |id| seen.contains(&id));
+        }
+        assert_eq!(expected.admit_limits(h).map(|l| l[text]), Some(4));
+        // 0 kabul edildi: sınır 0, 1, 2 boyunca 3'e ilerler (adaptör henüz teslim etmedi).
+        seen.insert(tagged(text, 0));
+        expected.note_admitted(h, tagged(text, 0), |id| seen.contains(&id));
+        assert_eq!(expected.admit_limits(h).map(|l| l[text]), Some(3 + 4));
+        // Öbür şeritler etkilenmez; dosya kendi genişliğiyle.
+        assert_eq!(expected.admit_limits(h), Some([4, 4, 7, 8]));
+        // Sıra başı kabul sınırını geçerse taban sıra başıdır.
+        expected.advance_head(h, tagged(text, 5));
+        assert_eq!(expected.admit_limits(h).map(|l| l[text]), Some(5 + 4));
+        // Eski kip: kabul sınırı yok sayılır, taban yalnız sıra başı.
+        let legacy = ExpectedSessions::new();
+        legacy.insert_ready(h);
+        legacy.set_admit_window(4);
+        legacy.note_admitted(h, 0, |_| true);
+        assert_eq!(legacy.admit_limit(h), Some(4));
+    }
 
     #[test]
     fn admit_window_tracks_the_head_and_never_moves_back() {
@@ -5623,5 +5996,91 @@ mod pre_param_fec_guard_tests {
             stats.fec_recovered_ctrl_tx, 0,
             "teslim edilmeyen birim RECOVERED'a girmemeli: {stats:?}"
         );
+    }
+}
+
+/// [ŞERİT-SIRA · merge öncesi] Şerit etiketli kimliklerde tavanlı kümelerin tahliyesi: en küçük
+/// kimlik PTT şeridinindir, en eski değil. Tek şeritte davranış eskisiyle (en küçük düşer) aynı.
+#[cfg(test)]
+mod lane_eviction_tests {
+    use super::*;
+
+    const FILE: usize = 3;
+    const PTT: usize = 0;
+
+    /// Gönderici onarım deposu: dosya blokları depoyu doldurduktan sonra gelen PTT bloğu düşmez;
+    /// düşen, en eski giren dosya bloğudur. (Eski `pop_first` PTT bloğunu girer girmez atıyordu.)
+    #[test]
+    fn repair_store_evicts_the_oldest_inserted_block_not_the_lowest_id() {
+        let mut store: BTreeMap<u32, (u8, Vec<RepairSymbol>)> = BTreeMap::new();
+        let mut order = VecDeque::new();
+        let file0 = first_fec_block_of_lane(FILE);
+        for b in 0..4u32 {
+            repair_store_insert(&mut store, &mut order, file0 + b, (8, Vec::new()), Some(4));
+        }
+        let ptt0 = first_fec_block_of_lane(PTT);
+        repair_store_insert(&mut store, &mut order, ptt0, (8, Vec::new()), Some(4));
+        assert!(store.contains_key(&ptt0), "yeni PTT bloğu depoda");
+        assert!(
+            !store.contains_key(&file0),
+            "en eski giren dosya bloğu düştü"
+        );
+        assert_eq!(store.len(), 4);
+        assert_eq!(order.len(), store.len());
+        // Tek şerit: giriş sırası = kimlik sırası → eski davranış (en küçük düşer).
+        let mut store: BTreeMap<u32, (u8, Vec<RepairSymbol>)> = BTreeMap::new();
+        let mut order = VecDeque::new();
+        for b in 0..6u32 {
+            repair_store_insert(&mut store, &mut order, b, (8, Vec::new()), Some(4));
+        }
+        assert_eq!(store.keys().copied().collect::<Vec<_>>(), vec![2, 3, 4, 5]);
+        // Kapanış eklemesi tahliye etmez.
+        repair_store_insert(&mut store, &mut order, 6, (3, Vec::new()), None);
+        assert_eq!(store.len(), 5);
+    }
+
+    /// Alıcı FEC birleştiricisi: dosya şeridi tavanı doldurunca düşen, dosyanın en eski bloğudur;
+    /// PTT'nin yarım bloğu korunur. Tek şeritte en küçük blok düşer.
+    #[test]
+    fn rx_blocks_evict_the_busiest_lanes_oldest_block() {
+        let mut blocks: BTreeMap<u32, ()> = BTreeMap::new();
+        let ptt0 = first_fec_block_of_lane(PTT);
+        let file0 = first_fec_block_of_lane(FILE);
+        blocks.insert(ptt0, ());
+        for b in 0..5u32 {
+            blocks.insert(file0 + b, ());
+        }
+        assert_eq!(rx_block_victim(&blocks), Some(file0));
+        let mut single: BTreeMap<u32, ()> = (3..9u32).map(|b| (b, ())).collect();
+        assert_eq!(rx_block_victim(&single), Some(3));
+        single.clear();
+        assert_eq!(rx_block_victim(&single), None);
+    }
+
+    /// İlk-teslim dedup penceresi: dosya şeridi pencereyi doldurunca gelen PTT kaydı tutulur, en
+    /// kalabalık şeridin (dosya) en küçük kimliği düşer. Tek şeritte en küçük kimlik düşer.
+    #[test]
+    fn dedup_window_evicts_from_the_busiest_lane() {
+        let mut w = DedupWindow::default();
+        for i in 0..8u64 {
+            w.insert(tagged(FILE, i), 8);
+        }
+        w.insert(tagged(PTT, 0), 8);
+        assert!(w.contains(tagged(PTT, 0)), "PTT kaydı girer girmez düşmedi");
+        assert!(!w.contains(tagged(FILE, 0)), "dosyanın en eski kaydı düştü");
+        assert_eq!(w.ids.len(), 8);
+        assert_eq!(w.per_lane[FILE], 7);
+        assert_eq!(w.per_lane[PTT], 1);
+        let mut single = DedupWindow::default();
+        for i in 0..10u64 {
+            single.insert(i, 8);
+        }
+        assert_eq!(
+            single.ids.iter().copied().collect::<Vec<_>>(),
+            (2..10).collect::<Vec<_>>()
+        );
+        // Eşitlikte düşük öncelikli (büyük indeks) şerit düşer.
+        assert_eq!(busiest_lane(&[2, 0, 0, 2]), FILE);
+        assert_eq!(busiest_lane(&[3, 0, 0, 2]), PTT);
     }
 }

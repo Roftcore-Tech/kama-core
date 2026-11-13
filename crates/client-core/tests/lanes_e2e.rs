@@ -14,7 +14,7 @@
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-use client_core::lanes::{LaneConfig, DEFAULT_FILE_WINDOW_UNITS};
+use client_core::lanes::{LaneConfig, DEFAULT_ADMIT_WIDTHS, DEFAULT_FILE_WINDOW_UNITS};
 use client_core::memory_link::MemoryHub;
 use client_core::transport::{ClientTransport, ClientTransportConfig};
 use kama_contracts::handles::{PeerRef, SessionHandle};
@@ -274,6 +274,7 @@ fn t_l10_expired_unit_in_lane_is_dropped_and_counted_endpoint_not_called() {
     let cfg = LaneConfig {
         file_window_units: 1,
         caps: [8, 8, 8, 8],
+        admit_widths: DEFAULT_ADMIT_WIDTHS,
     };
     let (mut alice, mut bob, h) = pair(Some(cfg));
     // Pencereyi doldur: birinci dosya birimi uca verilir, ikincisi (kısa deadline'lı) şeritte bekler.
