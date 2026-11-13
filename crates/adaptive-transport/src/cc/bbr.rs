@@ -618,6 +618,31 @@ impl Bbr {
         apply_pm(self.bw_estimate(), self.pacing_gain_pm)
     }
 
+    /// Profilden büyütülmüş ilk pencereyi geri çeker: ölçüm profilin söylediği hızı çürüttüğünde
+    /// gönderici bundan sonra profilsiz (ilk pencere `base` ile) kurulmuş gibi sürer. Startup'ta
+    /// iki şey ilk pencereden türer ve ikisi de geri alınır: pencere (`cwnd` = ilk pencere +
+    /// ACK'lenen; fazlası düşülür) ve pacing hızının "ilk pencere / min_rtt" tabanı (Startup'ta hız
+    /// düşmediği için kendiliğinden inmez). Hız sıfırlanır; aynı ACK'in `on_end_acks`'ı onu
+    /// profilsiz göndericinin ilk RTT örneğinde kurduğu `base / min_rtt` tabanına kurar, sonraki
+    /// ACK'ler Startup kuralıyla `kazanç × BtlBw`'ye yükseltir. Hemen `kazanç × BtlBw`'ye kurmak
+    /// denendi: kayıp raporunun açtığı yeniden iletim turu gerçek hızın üstünde gidiyor, sığ
+    /// kuyruklu hücrede 2 koşudan 1'inde tamamlanma 37 → 51 s ve 63 → 101 s uzadı. Tam bant
+    /// bulunduysa ikisi de zaten ölçümden türer; yalnız ilk pencere kaydı güncellenir. `base` mevcut
+    /// ilk pencereden küçük değilse etkisiz. quinn'de karşılığı yok (dağıtım profili Kama
+    /// uyarlaması; `docs/design/CC-PORT-ESLEME.md`).
+    pub fn retract_initial_window(&mut self, base: u64) {
+        let base = base.max(self.min_cwnd);
+        if base >= self.init_cwnd {
+            return;
+        }
+        let excess = self.init_cwnd - base;
+        self.init_cwnd = base;
+        if !self.is_at_full_bandwidth {
+            self.cwnd = self.cwnd.saturating_sub(excess).max(self.min_cwnd);
+            self.pacing_rate = 0;
+        }
+    }
+
     /// Kip.
     #[must_use]
     pub fn mode(&self) -> Mode {

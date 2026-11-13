@@ -1480,6 +1480,13 @@ enum ProbeExit {
 /// İlk RTT ölçülene kadar pacing/eşik için başlangıç RTT [CAL initial].
 const INITIAL_RTT: Duration = Duration::from_millis(100);
 
+/// [ASİMETRİK-YOL] Profil çürütme payı: yeterli bir ölçümde BtlBw bu katsayıyla çarpılınca hâlâ
+/// profil tavanının altındaysa profil gerçeği fazla iyimser söylüyordur. Dönüş bütçeli seyrek
+/// ACK'te teslim hızı örneği gerçek hızın altında kalır (ölçüldü, `tests/shaped_relay.rs` doğru
+/// profil hücreleri: ilk yeterli örnek 12,2 kB/s tavanın 0,37–0,40'ı); profil 5 kat iyimserken
+/// 0,03–0,11'i. 5 iki tarafa da ≈ 2 kat pay bırakır.
+const PROFILE_DISPROOF_FACTOR: u64 = 5;
+
 /// [Q18-FIX] Yapı-gate alt kayıp-eşiği (ppm). Altında fuzzy'nin R1 `fec=0`'ı doğru (kayıp düşük,
 /// ARQ yeter); üstünde kayıp anlamlı ve yapı belirleyici.
 ///
@@ -1972,6 +1979,15 @@ pub struct Sender {
     /// [ASİMETRİK-YOL] Dağıtım profilinin yukarı yön hızı (B/s; pacer'ın saydığı tel baytı) —
     /// [`Sender::set_cc_profile_pacing_cap`]. `None` = tavan yok (bugünkü yol, bit-eşit).
     cc_profile_pacing_cap: Option<u64>,
+    /// [ASİMETRİK-YOL] Profil olmasaydı kurulacak ilk pencere (B) —
+    /// [`Sender::set_cc_profile_base_window`]. 0 = profil çürütülemez (geri çekme yok).
+    cc_profile_base_window: u64,
+    /// [ASİMETRİK-YOL] Bu ACK'te profili sınamaya yeterli bir teslim hızı örneği çıktı mı
+    /// (profilsiz ilk pencere kadar bayt); karar `on_ack_received`'ın CC bloğunda verilir.
+    cc_profile_sample_ready: bool,
+    /// [ASİMETRİK-YOL] Profil kararı: `None` henüz yok, `Some(true)` ölçüm profili taşıdı,
+    /// `Some(false)` ölçüm çürüttü ve profil geri çekildi. Tek seferlik.
+    cc_profile_verdict: Option<bool>,
     /// (d) tur mandalı: bu Startup turunda `schedule_transmit` başında `tx_queue` boş ∧ kova dolu
     /// (`pacer.tokens() == pacer.burst_cap()`) görüldü mü. Tur işaretinde (`startup_plateau`) ve
     /// Startup (yeniden) girişinde sıfırlanır. Yalnız `e1.e1_applimited_plateau` açıkken kurulur.
@@ -2226,6 +2242,9 @@ impl Sender {
             e1: crate::rate::E1Flags::default(),
             cc: None,
             cc_profile_pacing_cap: None,
+            cc_profile_base_window: 0,
+            cc_profile_sample_ready: false,
+            cc_profile_verdict: None,
             e1_round_app_limited: false,
         }
     }
@@ -3423,6 +3442,7 @@ impl Sender {
                 self.record_confirmed_logical(seq);
                 let sample = self.bw_sampler.on_ack(now_ns, p.bw_sample);
                 self.btlbw.update(sample, now_ns, sample.delivered > 0);
+                self.note_profile_sample(&sample);
                 self.bw_sampled_since_round = true; // [TUR-A ölçüm-#1] plato round'u bw-örneğiyle sayılır
                 if p.origin == TransmitKind::Data && (rtt_send_ns.is_none() || seq >= largest) {
                     largest = seq;
@@ -3457,6 +3477,7 @@ impl Sender {
                     }
                     let sample = self.bw_sampler.on_ack(now_ns, t.bw_sample);
                     self.btlbw.update(sample, now_ns, sample.delivered > 0);
+                    self.note_profile_sample(&sample);
                     self.bw_sampled_since_round = true;
                     self.diag_bw_recovered += 1;
                     if t.origin == TransmitKind::Data && (rtt_send_ns.is_none() || seq >= largest) {
@@ -3618,6 +3639,7 @@ impl Sender {
         let idle_now =
             self.tx_queue.is_empty() && self.pending_lost.is_empty() && self.dup_queue.is_empty();
         let btlbw = self.btlbw.btlbw();
+        let retract_to = self.judge_cc_profile(btlbw);
         let inflight = self.inflight_bytes;
         let largest = self.loss.largest_acked();
         if let Some(cc) = self.cc.as_mut() {
@@ -3628,6 +3650,10 @@ impl Sender {
             }
             // Uyarlama 6 (cc/bbr.rs): bant tahmini Kama'nın BBR §7.1 örnekleyicisinden (bw.rs).
             cc.set_external_bw(Some(btlbw));
+            // [ASİMETRİK-YOL] Çürütülen profil: pencere ve Startup hız tabanı profilsiz değere.
+            if let Some(base) = retract_to {
+                cc.retract_initial_window(base);
+            }
             cc.on_end_acks(now_ns, inflight, any_app_limited || idle_now, largest);
         }
 
@@ -5076,6 +5102,63 @@ impl Sender {
     /// kazanır. `None` = tavan yok (bugünkü davranış); `cc` yoksa etkisiz.
     pub fn set_cc_profile_pacing_cap(&mut self, cap_bps: Option<u64>) {
         self.cc_profile_pacing_cap = cap_bps.filter(|&c| c > 0);
+    }
+
+    /// [ASİMETRİK-YOL] Profil olmasaydı kurulacak ilk pencere (B). Verilince profil ilk yeterli
+    /// ölçümde sınanır: en az bu kadar baytı kapsayan, uygulamayla sınırlı olmayan bir teslim hızı
+    /// örneği geldiğinde BtlBw × [`PROFILE_DISPROOF_FACTOR`] profil tavanının altındaysa profil
+    /// çürütülmüş sayılır — ilk pencere bu değere geri çekilir (BBR'ın pencere ve Startup hız
+    /// tabanı, `Bbr::retract_initial_window`) ve tavan kalkar; gönderici bundan sonra profilsiz
+    /// gibi sürer. Aksi hâlde profil kalır. Karar tek seferliktir. Gerekçe: profil gerçeğin birkaç
+    /// katını söylediğinde Startup hızı ilk pencere / min_rtt tavanın üstünde kilitli kalıyor,
+    /// tavan da ölçümden bağımsız taban gibi davranıyordu; ilk ACK'lerden sonra bile gönderici
+    /// profil hızıyla ve büyük pencereyle gönderiyor, yeniden iletim seli sığ kuyruğu taşırıyordu.
+    /// 0 = sınama yok. Tavan kurulmadıysa (`set_cc_profile_pacing_cap(None)`) etkisiz.
+    pub fn set_cc_profile_base_window(&mut self, bytes: u64) {
+        self.cc_profile_base_window = bytes;
+    }
+
+    /// [ASİMETRİK-YOL] Profil kararı (gözlem): `None` henüz yok, `Some(true)` ölçüm profili
+    /// taşıdı, `Some(false)` profil geri çekildi.
+    #[must_use]
+    pub fn cc_profile_verdict(&self) -> Option<bool> {
+        self.cc_profile_verdict
+    }
+
+    /// [ASİMETRİK-YOL] Örnek profili sınamaya yeter mi: karar bekleniyor, örnek uygulamayla
+    /// sınırlı değil (alt sınır profili çürütemez) ve profilsiz ilk pencere kadar baytı kapsıyor
+    /// (oturumun ilk ACK'i çoğu kez tek paketi kapsar; örnek = MTU / RTT, hız değildir).
+    fn note_profile_sample(&mut self, sample: &crate::bw::RateSample) {
+        if self.cc_profile_verdict.is_none()
+            && self.cc_profile_pacing_cap.is_some()
+            && self.cc_profile_base_window > 0
+            && !sample.is_app_limited
+            && sample.delivered >= self.cc_profile_base_window
+            && !sample.interval.is_zero()
+        {
+            self.cc_profile_sample_ready = true;
+        }
+    }
+
+    /// [ASİMETRİK-YOL] Profil kararı (bkz. [`Sender::set_cc_profile_base_window`]). `btlbw`
+    /// bu ACK'in örnekleriyle güncellenmiş max filtre değeridir (yeterli örneğin üst sınırı).
+    /// Profil çürütüldüyse pencerenin geri çekileceği değeri döner (çağıran BBR'a uygular).
+    fn judge_cc_profile(&mut self, btlbw: u64) -> Option<u64> {
+        if !std::mem::take(&mut self.cc_profile_sample_ready) {
+            return None;
+        }
+        let cap = self.cc_profile_pacing_cap?;
+        if btlbw.saturating_mul(PROFILE_DISPROOF_FACTOR) >= cap {
+            self.cc_profile_verdict = Some(true);
+            return None;
+        }
+        self.cc_profile_verdict = Some(false);
+        self.cc_profile_pacing_cap = None;
+        // Profil hızıyla birikmiş jeton da ölçümsüz krediydi: kova yeni kurulmuş göndericinin
+        // dolumuna (2·MTU) iner; tavan bu olayın sonunda pencereden yeniden kurulur. Aksi hâlde
+        // kayıp raporuyla açılan yeniden iletimler 10·MTU'luk tek patlamayla kuyruğa düşer.
+        self.pacer.set_burst_cap(crate::pacer::DEFAULT_BURST_CAP);
+        Some(self.cc_profile_base_window)
     }
 
     /// [CC-PORT] Port motorunun ilk uçuş penceresi (bayt); `cc` yoksa `None`.

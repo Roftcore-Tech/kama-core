@@ -2207,6 +2207,10 @@ async fn client_task(
                         .unwrap_or(u64::MAX)
                         .min(MAX_LINK_INITIAL_WINDOW_BYTES);
                 if link_iw > iw {
+                    // Profil, ilk yeterli ölçümde gerçeğin çok altında kalırsa geri çekilir:
+                    // pencere profilsiz değere (`iw`) döner, tavan kalkar (sender.rs
+                    // `set_cc_profile_base_window`).
+                    session.sender_mut().set_cc_profile_base_window(iw);
                     iw = link_iw;
                     session
                         .sender_mut()
