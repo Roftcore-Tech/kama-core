@@ -3650,9 +3650,9 @@ impl Sender {
             }
             // Uyarlama 6 (cc/bbr.rs): bant tahmini Kama'nın BBR §7.1 örnekleyicisinden (bw.rs).
             cc.set_external_bw(Some(btlbw));
-            // [ASİMETRİK-YOL] Çürütülen profil: pencere ve Startup hız tabanı profilsiz değere.
+            // [ASİMETRİK-YOL] Çürütülen profil: Startup hız tabanı profilsiz ilk pencereden.
             if let Some(base) = retract_to {
-                cc.retract_initial_window(base);
+                cc.retract_initial_pacing(base);
             }
             cc.on_end_acks(now_ns, inflight, any_app_limited || idle_now, largest);
         }
@@ -5107,13 +5107,14 @@ impl Sender {
     /// [ASİMETRİK-YOL] Profil olmasaydı kurulacak ilk pencere (B). Verilince profil ilk yeterli
     /// ölçümde sınanır: en az bu kadar baytı kapsayan, uygulamayla sınırlı olmayan bir teslim hızı
     /// örneği geldiğinde BtlBw × [`PROFILE_DISPROOF_FACTOR`] profil tavanının altındaysa profil
-    /// çürütülmüş sayılır — ilk pencere bu değere geri çekilir (BBR'ın pencere ve Startup hız
-    /// tabanı, `Bbr::retract_initial_window`) ve tavan kalkar; gönderici bundan sonra profilsiz
-    /// gibi sürer. Aksi hâlde profil kalır. Karar tek seferliktir. Gerekçe: profil gerçeğin birkaç
-    /// katını söylediğinde Startup hızı ilk pencere / min_rtt tavanın üstünde kilitli kalıyor,
-    /// tavan da ölçümden bağımsız taban gibi davranıyordu; ilk ACK'lerden sonra bile gönderici
-    /// profil hızıyla ve büyük pencereyle gönderiyor, yeniden iletim seli sığ kuyruğu taşırıyordu.
-    /// 0 = sınama yok. Tavan kurulmadıysa (`set_cc_profile_pacing_cap(None)`) etkisiz.
+    /// çürütülmüş sayılır — BBR'ın Startup hız tabanı bu ilk pencereden yeniden kurulur
+    /// (`Bbr::retract_initial_pacing`), tavan kalkar, pacer jetonu 2·MTU'ya iner; pencere korunur
+    /// (alıcının bütçeli ACK aralığını karşılar). Aksi hâlde profil kalır. Karar tek seferliktir.
+    /// Gerekçe: profil gerçeğin birkaç katını söylediğinde Startup hızı ilk pencere / min_rtt
+    /// tavanın üstünde kilitli kalıyor, tavan da ölçümden bağımsız taban gibi davranıyordu; ilk
+    /// ACK'lerden sonra bile gönderici profil hızıyla gönderiyor, kayıp raporunun açtığı yeniden
+    /// iletimler tek patlamayla sığ kuyruğu taşırıyordu. 0 = sınama yok. Tavan kurulmadıysa
+    /// (`set_cc_profile_pacing_cap(None)`) etkisiz.
     pub fn set_cc_profile_base_window(&mut self, bytes: u64) {
         self.cc_profile_base_window = bytes;
     }
@@ -5142,7 +5143,8 @@ impl Sender {
 
     /// [ASİMETRİK-YOL] Profil kararı (bkz. [`Sender::set_cc_profile_base_window`]). `btlbw`
     /// bu ACK'in örnekleriyle güncellenmiş max filtre değeridir (yeterli örneğin üst sınırı).
-    /// Profil çürütüldüyse pencerenin geri çekileceği değeri döner (çağıran BBR'a uygular).
+    /// Profil çürütüldüyse profilsiz ilk pencereyi döner; çağıran BBR'ın Startup hız tabanını
+    /// ondan yeniden kurar.
     fn judge_cc_profile(&mut self, btlbw: u64) -> Option<u64> {
         if !std::mem::take(&mut self.cc_profile_sample_ready) {
             return None;
@@ -14272,20 +14274,29 @@ mod profile_pacing_cap_tests {
 
     /// Profil 5 kat iyimser (gerçek ≈ 1 kB/s): ilk ACK tek paketi kapsar (örnek = MTU / RTT,
     /// karar yok); profilsiz ilk pencere kadar baytı kapsayan ACK'te BtlBw × 5 < tavan → profil
-    /// geri çekilir: ilk pencere ve pencere profilsiz değere iner, pacer tavanın çok altına düşer.
+    /// geri çekilir: ilk pencere kaydı profilsiz değere iner, pencere korunur, pacer tavanın çok
+    /// altına düşer.
     #[test]
     fn profile_is_retracted_when_the_first_full_sample_is_far_below_it() {
         let (mut s, seqs) = profiled_flight(24, 4_800);
         ack(&mut s, &seqs[..1], 4_000);
-        assert_eq!(s.cc_profile_verdict(), None, "tek paketlik örnek profili sınamaz");
+        assert_eq!(
+            s.cc_profile_verdict(),
+            None,
+            "tek paketlik örnek profili sınamaz"
+        );
         assert_eq!(s.cc_initial_window(), Some(IW));
         ack(&mut s, &seqs[1..9], 10_000);
         assert_eq!(s.cc_profile_verdict(), Some(false));
-        assert_eq!(s.cc_initial_window(), Some(4_800), "ilk pencere profilsiz değere");
+        assert_eq!(
+            s.cc_initial_window(),
+            Some(4_800),
+            "ilk pencere profilsiz değere"
+        );
         let (_, window, ..) = s.diag_cc().expect("port motoru");
         assert!(
-            window <= 4_800 + 9 * 1_200,
-            "pencere profilsiz ilk pencere + ACK'lenen: {window}"
+            window >= IW,
+            "pencere korunur (bütçeli ACK aralığı): {window}"
         );
         assert!(
             s.diag_pacer().0 < CAP / 4,
@@ -14303,7 +14314,10 @@ mod profile_pacing_cap_tests {
         ack(&mut s, &seqs[1..30], 4_500);
         assert_eq!(s.cc_profile_verdict(), Some(true));
         assert_eq!(s.cc_initial_window(), Some(IW));
-        assert!(s.diag_pacer().0 >= CAP, "pacer profil tavanında ya da üstünde");
+        assert!(
+            s.diag_pacer().0 >= CAP,
+            "pacer profil tavanında ya da üstünde"
+        );
     }
 
     /// Profilsiz ilk pencere verilmezse (0) profil sınanmaz: bugünkü profil yolu aynen.

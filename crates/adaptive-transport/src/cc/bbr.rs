@@ -618,27 +618,29 @@ impl Bbr {
         apply_pm(self.bw_estimate(), self.pacing_gain_pm)
     }
 
-    /// Profilden büyütülmüş ilk pencereyi geri çeker: ölçüm profilin söylediği hızı çürüttüğünde
-    /// gönderici bundan sonra profilsiz (ilk pencere `base` ile) kurulmuş gibi sürer. Startup'ta
-    /// iki şey ilk pencereden türer ve ikisi de geri alınır: pencere (`cwnd` = ilk pencere +
-    /// ACK'lenen; fazlası düşülür) ve pacing hızının "ilk pencere / min_rtt" tabanı (Startup'ta hız
-    /// düşmediği için kendiliğinden inmez). Hız sıfırlanır; aynı ACK'in `on_end_acks`'ı onu
-    /// profilsiz göndericinin ilk RTT örneğinde kurduğu `base / min_rtt` tabanına kurar, sonraki
-    /// ACK'ler Startup kuralıyla `kazanç × BtlBw`'ye yükseltir. Hemen `kazanç × BtlBw`'ye kurmak
-    /// denendi: kayıp raporunun açtığı yeniden iletim turu gerçek hızın üstünde gidiyor, sığ
-    /// kuyruklu hücrede 2 koşudan 1'inde tamamlanma 37 → 51 s ve 63 → 101 s uzadı. Tam bant
-    /// bulunduysa ikisi de zaten ölçümden türer; yalnız ilk pencere kaydı güncellenir. `base` mevcut
-    /// ilk pencereden küçük değilse etkisiz. quinn'de karşılığı yok (dağıtım profili Kama
-    /// uyarlaması; `docs/design/CC-PORT-ESLEME.md`).
-    pub fn retract_initial_window(&mut self, base: u64) {
+    /// Profilden büyütülmüş ilk pencerenin Startup hız tabanını geri çeker: ölçüm profilin
+    /// söylediği ileri hızı çürüttüğünde Startup pacing'i profilsiz (ilk pencere `base` ile)
+    /// kurulmuş gibi sürer. Startup'ta hız ilk RTT örneğinde "ilk pencere / min_rtt" tabanına
+    /// kurulur ve düşmez; büyütülmüş pencereyle bu taban profil hızının da üstündedir, kendiliğinden
+    /// inmez. İlk pencere kaydı `base`'e iner, hız sıfırlanır; aynı ACK'in `on_end_acks`'ı onu
+    /// profilsiz göndericinin kurduğu `base / min_rtt` tabanına kurar, sonraki ACK'ler Startup
+    /// kuralıyla `kazanç × BtlBw`'ye yükseltir.
+    ///
+    /// Pencere (`cwnd`) korunur: büyütülmüş pencere alıcının bütçeli ACK aralığını karşılar ve o
+    /// aralık profilin çürütülmeyen dönüş yönünden gelir. Pencereyi de profilsiz değere indirmek
+    /// denendi: seyrek ACK'te gönderici her ACK turunda birkaç paketle sınırlandı, sığ kuyruklu
+    /// hücrelerde tamamlanma tohum 2'de 37 → 50 s (24 birim, kuyruk 8) ve 63 → 100 s (40 birim,
+    /// kuyruk 16) uzadı (`tests/shaped_relay.rs`, 2 koşu). Tam bant bulunduysa hız zaten ölçümden
+    /// türer; yalnız ilk pencere kaydı güncellenir. `base` mevcut ilk pencereden küçük değilse
+    /// etkisiz. quinn'de karşılığı yok (dağıtım profili Kama uyarlaması;
+    /// `docs/design/CC-PORT-ESLEME.md`).
+    pub fn retract_initial_pacing(&mut self, base: u64) {
         let base = base.max(self.min_cwnd);
         if base >= self.init_cwnd {
             return;
         }
-        let excess = self.init_cwnd - base;
         self.init_cwnd = base;
         if !self.is_at_full_bandwidth {
-            self.cwnd = self.cwnd.saturating_sub(excess).max(self.min_cwnd);
             self.pacing_rate = 0;
         }
     }
@@ -756,20 +758,33 @@ mod tests {
     }
 
     #[test]
-    fn retract_initial_window_returns_to_the_unprofiled_window_in_startup() {
-        // Profil ilk pencereyi 67,5 kB'ye büyüttü; ölçüm çürüttü → 4,8 kB'ye geri.
+    fn retract_initial_pacing_rebases_the_startup_rate_and_keeps_the_window() {
+        // Profil ilk pencereyi 67,5 kB'ye büyüttü; ilk RTT örneği (2 s) Startup hızını
+        // 67,5 kB / 2 s'ye kurdu. Ölçüm çürüttü → taban 4,8 kB / 2 s, pencere korunur.
         let mut b = Bbr::new(MTU, 67_500);
-        assert_eq!(b.window(), 67_500);
-        b.retract_initial_window(4_800);
+        b.on_sent(0, MTU, 0);
+        b.on_ack(2_000_000_000, MTU, false, 2_000_000_000);
+        b.set_external_bw(Some(1_000));
+        b.on_end_acks(2_000_000_000, 0, false, Some(0));
+        assert_eq!(b.pacing_rate(), 33_750, "ilk pencere / min_rtt");
+        let window = b.window();
+        assert!(window >= 67_500, "Startup'ta pencere küçülmez: {window}");
+        b.retract_initial_pacing(4_800);
         assert_eq!(b.initial_window(), 4_800);
-        assert_eq!(b.window(), 4_800, "Startup cwnd = ilk pencere + ACK'lenen (henüz 0)");
-        assert_eq!(b.pacing_rate(), 0, "hız tabanı sonraki on_end_acks'ta yeniden kurulur");
+        assert_eq!(b.window(), window, "pencere korunur");
+        assert_eq!(
+            b.pacing_rate(),
+            0,
+            "hız tabanı sonraki on_end_acks'ta yeniden kurulur"
+        );
+        b.on_end_acks(2_100_000_000, 0, false, None);
+        assert_eq!(b.pacing_rate(), 2_400, "profilsiz ilk pencere / min_rtt");
         // Daha büyük ya da eşit değer etkisiz; min_cwnd altına inilmez.
-        b.retract_initial_window(10_000);
-        assert_eq!(b.window(), 4_800);
+        b.retract_initial_pacing(10_000);
+        assert_eq!(b.initial_window(), 4_800);
         let mut c = Bbr::new(MTU, 67_500);
-        c.retract_initial_window(1_000);
-        assert_eq!(c.window(), 4 * MTU, "taban min_cwnd");
+        c.retract_initial_pacing(1_000);
+        assert_eq!(c.initial_window(), 4 * MTU, "taban min_cwnd");
     }
 
     #[test]
