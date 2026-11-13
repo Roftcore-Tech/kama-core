@@ -17,20 +17,65 @@
 //! `CC_SHAPED_LINK_SIDE=server|client` yalnız bir uca; `CC_SHAPED_LINK_FWD` / `CC_SHAPED_LINK_REV`
 //! profilin söylediği ileri/dönüş hızı (B/s; varsayılan hattın gerçek hızı — profil ≠ gerçek
 //! hücresi için).
+//!
+//! Kuyruk ayrıştırması (yalnız ölçüm; varsayılan kapalı): `CC_SHAPED_TL=1` rölenin gördüğü her
+//! paketi sabit boyutlu kayda yazar (koşu sırasında ayırma ve biçimlendirme yok), göndericinin
+//! birim teyitlerini toplar ve alıcı bütün birimleri teslim ettikten sonra göndericinin son teyidini
+//! bekler; koşu sonunda `ÖZET` / `TL-*` satırları yazılır (`CC_SHAPED_TL_DUMP=1` ileri paketleri de).
+//! `CC_SHAPED_LIVE=1` ile birlikte prob sayacı ve PTO durumu da örneklenir. Deney kancaları:
+//! `CC_SHAPED_DROP_UNIT=<birim>[:<n>]` bu birimin ileri yöndeki ilk `n` (varsayılan 1) iletimini
+//! düşürür; `CC_SHAPED_DROP_FINAL_ACKS=<k>` alıcı bütün birimleri aldıktan sonra dönüşe sunulan ilk
+//! `k` ACK çerçevesini düşürür.
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use adaptive_transport::ack::{AckFrame, FRAME_TYPE_ACK, FRAME_TYPE_ACK_V2};
 use client_core::runtime::{ClientEndpoint, RuntimeConfig, ServerEndpoint, TransportEngine};
-use client_core::seam::IdentitySeam;
+use client_core::seam::{IdentitySeam, IDENTITY_TAG};
+use client_core::wire::{decode_data, FRAME_PARAM_ACK, FRAME_RECOVERED};
 use tokio::net::UdpSocket;
 
 const DATAGRAM_MAX: usize = 2048;
 const TICK: Duration = Duration::from_millis(1);
 /// UDP/IP zarfı (serileştirme hesabına girer; röle yalnız UDP gövdesini görür).
 const UDP_IP_OVERHEAD: u64 = 28;
+/// [KUYRUK-AYRIŞTIRMA] Kayıtta tutulan düz çerçeve başı (en büyük ACK V2 çerçevesi 15 + 4 × 16 B).
+const TL_HEAD: usize = 80;
+/// [KUYRUK-AYRIŞTIRMA] Yön başına kayıt sığası (baştan ayrılır; dolunca kayıt düşer ve sayılır).
+const TL_CAP: usize = 4096;
+
+/// [KUYRUK-AYRIŞTIRMA] Rölenin gördüğü bir paket (sabit boyutlu; çözümleme koşu sonunda).
+#[derive(Debug, Clone, Copy)]
+struct TlRec {
+    offered: Instant,
+    /// Karşı uca varış anı; düşen pakette `None`.
+    arrives: Option<Instant>,
+    /// 0 iletildi · 1 kuyruk taştı · 2 rastgele kayıp · 3 deney düşürmesi.
+    fate: u8,
+    /// Tel boyu (UDP/IP dahil).
+    wire: u16,
+    /// IdentitySeam etiketindeki PN.
+    pn: u64,
+    head: [u8; TL_HEAD],
+    head_len: u8,
+}
+
+/// IdentitySeam datagramını düz çerçeve + PN'e ayırır (etiketin ilk 8 baytı PN, BE).
+fn seam_split(pkt: &[u8]) -> Option<(&[u8], u64)> {
+    if pkt.len() <= IDENTITY_TAG {
+        return None;
+    }
+    let (frame, tag) = pkt.split_at(pkt.len() - IDENTITY_TAG);
+    let pn = u64::from_be_bytes(tag[..8].try_into().ok()?);
+    Some((frame, pn))
+}
+
+fn is_ack_frame(frame: &[u8]) -> bool {
+    matches!(frame.first(), Some(&FRAME_TYPE_ACK | &FRAME_TYPE_ACK_V2))
+}
 
 /// Bir yönün biçimlendiricisi: serileştirme + sınırlı kuyruk + gecikme + rastgele kayıp.
 struct Shaper {
@@ -52,6 +97,15 @@ struct Shaper {
     dropped_random: u64,
     /// `CC_SHAPED_TRACE=1`: her sunulan paket (an, yön, bayt, kuyruk, sonuç) stdout'a.
     trace: Option<(&'static str, Instant)>,
+    /// [KUYRUK-AYRIŞTIRMA] `CC_SHAPED_TL=1` kayıtları (sığa `TL_CAP`, baştan ayrılır).
+    tl: Option<Vec<TlRec>>,
+    tl_overflow: u64,
+    /// [deney (i)] İleri yön: bu birimin kalan belirlenimli düşürme sayısı.
+    drop_unit: Option<(u64, u32)>,
+    /// [deney (ii)] Dönüş yönü: alıcı bütün birimleri aldıktan (`complete`) sonra düşecek ACK sayısı.
+    drop_final_acks: u32,
+    complete: Option<Instant>,
+    dropped_forced: u64,
 }
 
 impl Shaper {
@@ -79,7 +133,55 @@ impl Shaper {
             dropped_queue: 0,
             dropped_random: 0,
             trace: None,
+            tl: None,
+            tl_overflow: 0,
+            drop_unit: None,
+            drop_final_acks: 0,
+            complete: None,
+            dropped_forced: 0,
         }
+    }
+
+    /// [KUYRUK-AYRIŞTIRMA] Sabit boyutlu kayıt (sığa doluysa sayılır, ayırma yok).
+    fn tl_push(&mut self, now: Instant, arrives: Option<Instant>, fate: u8, size: u64, pkt: &[u8]) {
+        let Some(tl) = self.tl.as_mut() else {
+            return;
+        };
+        if tl.len() >= TL_CAP {
+            self.tl_overflow += 1;
+            return;
+        }
+        let (frame, pn) = seam_split(pkt).unwrap_or((&[], u64::MAX));
+        let n = frame.len().min(TL_HEAD);
+        let mut head = [0u8; TL_HEAD];
+        head[..n].copy_from_slice(&frame[..n]);
+        tl.push(TlRec {
+            offered: now,
+            arrives,
+            fate,
+            wire: u16::try_from(size).unwrap_or(u16::MAX),
+            pn,
+            head,
+            head_len: n as u8,
+        });
+    }
+
+    /// [deney (i)/(ii)] Bu paket belirlenimli düşer mi (eşleşen paket düşürme hakkını tüketir).
+    fn forced_drop(&mut self, pkt: &[u8]) -> bool {
+        let Some((frame, _)) = seam_split(pkt) else {
+            return false;
+        };
+        if let Some((unit, left)) = self.drop_unit.as_mut() {
+            if *left > 0 && decode_data(frame).is_some_and(|(_, u, _)| u == *unit) {
+                *left -= 1;
+                return true;
+            }
+        }
+        if self.complete.is_some() && self.drop_final_acks > 0 && is_ack_frame(frame) {
+            self.drop_final_acks -= 1;
+            return true;
+        }
+        false
     }
 
     fn rand_permille(&mut self) -> u64 {
@@ -129,6 +231,7 @@ impl Shaper {
         if self.busy.len() >= self.limit {
             self.dropped_queue += 1;
             self.trace_line(now, size, "KUYRUK_DÜŞTÜ");
+            self.tl_push(now, None, 1, size, &pkt);
             return;
         }
         self.trace_line(now, size, "");
@@ -138,12 +241,24 @@ impl Shaper {
         self.busy.push_back(done);
         self.sent += 1;
         self.bytes += size;
-        if self.loss_permille > 0 && self.rand_permille() < self.loss_permille {
+        // Rastgele çekim deney kancasından ÖNCE ve her pakette aynı sırayla: kanca açıkken de tohumun
+        // kayıp deseni değişmez.
+        let random_drop = self.loss_permille > 0 && self.rand_permille() < self.loss_permille;
+        let forced = self.forced_drop(&pkt);
+        if random_drop {
             self.dropped_random += 1;
             self.trace_line(now, size, "YOLDA_DÜŞTÜ");
+            self.tl_push(now, None, 2, size, &pkt);
+            return;
+        }
+        if forced {
+            self.dropped_forced += 1;
+            self.trace_line(now, size, "DENEY_DÜŞTÜ");
+            self.tl_push(now, None, 3, size, &pkt);
             return;
         }
         let at = done + self.delay_sample();
+        self.tl_push(now, Some(at), 0, size, &pkt);
         // Varış anına göre sıralı ekle (jitter yeniden sıralama üretebilir).
         let pos = self
             .wire
@@ -189,12 +304,17 @@ async fn relay(
     back: UdpSocket,
     fwd: Arc<Mutex<Shaper>>,
     rev: Arc<Mutex<Shaper>>,
+    units: u64,
     mut stop: tokio::sync::oneshot::Receiver<()>,
 ) {
     let mut client: Option<SocketAddr> = None;
     let mut up = vec![0u8; DATAGRAM_MAX];
     let mut down = vec![0u8; DATAGRAM_MAX];
     let mut tick = tokio::time::interval(TICK);
+    // [KUYRUK-AYRIŞTIRMA] Alıcıya varan farklı birimler: hepsi varınca dönüş yönü `complete`
+    // işaretlenir (deney (ii) ve son teyit ölçümü). Varan paketin başlığı okunur, ayırma yok.
+    let mut arrived = vec![false; usize::try_from(units).unwrap_or(0)];
+    let mut arrived_n = 0u64;
     loop {
         tokio::select! {
             r = front.recv_from(&mut up) => {
@@ -210,6 +330,20 @@ async fn relay(
                 let now = Instant::now();
                 let due_f = fwd.lock().expect("kilit").take_due(now);
                 for p in due_f {
+                    if arrived_n < units {
+                        let unit = seam_split(&p)
+                            .and_then(|(f, _)| decode_data(f))
+                            .map(|(_, u, _)| u);
+                        if let Some(slot) = unit.and_then(|u| arrived.get_mut(u as usize)) {
+                            if !*slot {
+                                *slot = true;
+                                arrived_n += 1;
+                                if arrived_n == units {
+                                    rev.lock().expect("kilit").complete = Some(now);
+                                }
+                            }
+                        }
+                    }
                     let _ = back.send(&p).await;
                 }
                 let due_r = rev.lock().expect("kilit").take_due(now);
@@ -254,6 +388,295 @@ struct Outcome {
     completed: Option<Duration>,
     delivered: u64,
     stats: RelayStats,
+}
+
+/// [KUYRUK-AYRIŞTIRMA] Ayna örneği sığası.
+const LIVE_CAP: usize = 8192;
+
+/// [KUYRUK-AYRIŞTIRMA] Göndericinin canlı aynasından prob sayacı ve PTO durumu (salt gözlem).
+#[derive(Debug, Clone, Copy)]
+struct LiveRec {
+    at: Instant,
+    tail_probes: u64,
+    retransmits: u64,
+    srtt_us: u64,
+    base_pto_ns: u64,
+    tail_pto_ns: u64,
+    probe_index: u32,
+    armed_at: Option<Instant>,
+    btlbw_bps: u64,
+    pacer_rate_bps: u64,
+    pacer_tokens: u64,
+    inflight_bytes: u64,
+    pending_lost: u32,
+}
+
+impl LiveRec {
+    fn of(at: Instant, l: &client_core::runtime::ClientLiveDiag) -> Self {
+        let timers = l.recovery.map(|r| r.timers);
+        let armed_at = match (l.clock_origin, timers.and_then(|t| t.tail_armed_at_ns)) {
+            (Some(o), Some(ns)) => Some(o + Duration::from_nanos(ns)),
+            _ => None,
+        };
+        Self {
+            at,
+            tail_probes: l.tail_probes,
+            retransmits: l.retransmits,
+            srtt_us: l.srtt_us,
+            base_pto_ns: timers.map_or(0, |t| t.base_pto_ns),
+            tail_pto_ns: timers.map_or(0, |t| t.tail_pto_ns),
+            probe_index: timers.map_or(0, |t| t.tail_probe_index),
+            armed_at,
+            btlbw_bps: l.control.btlbw_bps,
+            pacer_rate_bps: l.control.pacer_rate_bps,
+            pacer_tokens: l.control.pacer_tokens,
+            inflight_bytes: l.control.inflight_bytes,
+            pending_lost: timers.map_or(0, |t| t.pending_lost_len),
+        }
+    }
+
+    /// Kayda değer değişiklik: sayaç, tur ya da pencere değişti ya da son kayıttan 250 ms geçti.
+    fn differs(&self, next: &Self) -> bool {
+        self.tail_probes != next.tail_probes
+            || self.retransmits != next.retransmits
+            || self.probe_index != next.probe_index
+            || self.armed_at != next.armed_at
+            || self.pending_lost != next.pending_lost
+            || next.at.duration_since(self.at) >= Duration::from_millis(250)
+    }
+}
+
+struct TlInput<'a> {
+    t0: Instant,
+    seed: u64,
+    completed: Option<Duration>,
+    deliv_at: &'a [Option<Instant>],
+    conf_at: &'a [Option<Instant>],
+    fwd: &'a [TlRec],
+    rev: &'a [TlRec],
+    overflow: u64,
+    complete_at: Option<Instant>,
+    live: &'a [LiveRec],
+    live_end: Option<client_core::runtime::ClientLiveDiag>,
+    probes: u64,
+    retransmits: u64,
+    forced: u64,
+}
+
+/// [KUYRUK-AYRIŞTIRMA] Koşu sonu çözümleme ve yazım (ölçüm bittikten sonra; sıcak yol değil).
+fn tl_report(x: &TlInput<'_>) {
+    let s = |i: Instant| i.saturating_duration_since(x.t0).as_secs_f64();
+    let so = |i: Option<Instant>| i.map_or("-".to_string(), |i| format!("{:.2}", s(i)));
+    let fate = |f: u8| match f {
+        0 => "ok",
+        1 => "kuyruk_düştü",
+        2 => "yolda_düştü",
+        _ => "DENEY_düştü",
+    };
+    // PN → birim (ileri DATA kayıtlarından).
+    let mut pn_unit: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
+    let mut max_pn = 0u64;
+    for r in x.fwd {
+        if let Some((_, u, _)) = decode_data(&r.head[..usize::from(r.head_len)]) {
+            pn_unit.insert(r.pn, u);
+        }
+        if r.pn != u64::MAX {
+            max_pn = max_pn.max(r.pn);
+        }
+    }
+    let last_deliv = x.deliv_at.iter().flatten().max().copied();
+    let all_conf = x.conf_at.iter().all(Option::is_some);
+    let last_conf = if all_conf {
+        x.conf_at.iter().flatten().max().copied()
+    } else {
+        None
+    };
+    // Dönüş çözümlemesi: varış sırasıyla (FIFO, jitter yok) yeni teyit edilen birimler.
+    let mut acked_units: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    let (mut ack_n, mut ack_b, mut ack_b_conf, mut ack_b_done) = (0u64, 0u64, 0u64, 0u64);
+    let (mut pa_n, mut pa_b, mut rc_n, mut rc_b, mut other_b) = (0u64, 0u64, 0u64, 0u64, 0u64);
+    let done_inst = x.completed.map(|d| x.t0 + d);
+    let mut lines: Vec<String> = Vec::new();
+    for r in x.rev {
+        let frame = &r.head[..usize::from(r.head_len)];
+        let wire = u64::from(r.wire);
+        match frame.first() {
+            Some(&FRAME_TYPE_ACK | &FRAME_TYPE_ACK_V2) => {
+                ack_n += 1;
+                ack_b += wire;
+                if last_conf.is_none_or(|c| r.offered <= c) {
+                    ack_b_conf += wire;
+                }
+                if done_inst.is_none_or(|c| r.offered <= c) {
+                    ack_b_done += wire;
+                }
+                let Ok(a) = AckFrame::decode(frame) else {
+                    lines.push(format!("TL-ACK sunum={:.2} çözülemedi", s(r.offered)));
+                    continue;
+                };
+                let pns = a.acked_full(max_pn + 1);
+                let mut fresh: Vec<u64> = Vec::new();
+                if r.fate == 0 {
+                    for pn in &pns {
+                        if let Some(&u) = pn_unit.get(pn) {
+                            if acked_units.insert(u) {
+                                fresh.push(u);
+                            }
+                        }
+                    }
+                }
+                fresh.sort_unstable();
+                lines.push(format!(
+                    "TL-ACK sunum={:.2} varış={} sonuç={} bayt={wire} aralık={} alıcı_tutma={:.0}ms largest_pn={} teyitli_pn={} yeni_birim={fresh:?}",
+                    s(r.offered),
+                    so(r.arrives),
+                    fate(r.fate),
+                    a.ranges.len(),
+                    a.ack_delay_duration().as_secs_f64() * 1000.0,
+                    pns.iter().copied().max().unwrap_or(0),
+                    pns.len(),
+                ));
+            }
+            Some(&FRAME_PARAM_ACK) => {
+                pa_n += 1;
+                pa_b += wire;
+                lines.push(format!(
+                    "TL-PARAMACK sunum={:.2} varış={} bayt={wire}",
+                    s(r.offered),
+                    so(r.arrives)
+                ));
+            }
+            Some(&FRAME_RECOVERED) => {
+                rc_n += 1;
+                rc_b += wire;
+                lines.push(format!(
+                    "TL-RECOVERED sunum={:.2} varış={} bayt={wire}",
+                    s(r.offered),
+                    so(r.arrives)
+                ));
+            }
+            _ => other_b += wire,
+        }
+    }
+    // İleri: birim başına iletimler.
+    let mut per_unit: std::collections::BTreeMap<u64, Vec<&TlRec>> =
+        std::collections::BTreeMap::new();
+    let (mut data_n, mut data_b, mut param_n) = (0u64, 0u64, 0u64);
+    for r in x.fwd {
+        let frame = &r.head[..usize::from(r.head_len)];
+        if let Some((_, u, _)) = decode_data(frame) {
+            per_unit.entry(u).or_default().push(r);
+            data_n += 1;
+            data_b += u64::from(r.wire);
+        } else if frame.first() == Some(&client_core::wire::FRAME_PARAM) {
+            param_n += 1;
+        }
+    }
+    let gap = match (last_deliv, last_conf) {
+        (Some(d), Some(c)) => format!("{:.2}", c.saturating_duration_since(d).as_secs_f64()),
+        _ => "-".to_string(),
+    };
+    println!(
+        "ÖZET tohum={} tamamlanma={} alıcı_son_teslim={} hepsi_alıcıda={} gönderici_son_teyit={} teyit_farkı={gap} prob={} retx={} deney_düşürme={} ileri_veri={data_n}/{data_b}B param={param_n} dönüş_ack={ack_n}/{ack_b}B dönüş_ack_teslime_dek={ack_b_done}B dönüş_ack_teyide_dek={ack_b_conf}B param_ack={pa_n}/{pa_b}B recovered={rc_n}/{rc_b}B dönüş_diğer={other_b}B kayıt_taşma={}",
+        x.seed,
+        x.completed.map_or("YOK".to_string(), |d| format!("{:.2}", d.as_secs_f64())),
+        so(last_deliv),
+        so(x.complete_at),
+        so(last_conf),
+        x.probes,
+        x.retransmits,
+        x.forced,
+        x.overflow,
+    );
+    for l in &lines {
+        println!("{l}");
+    }
+    // Son 5 teslim edilen birim: iletimleri, teslim ve teyit.
+    let mut order: Vec<(Instant, u64)> = x
+        .deliv_at
+        .iter()
+        .enumerate()
+        .filter_map(|(u, t)| t.map(|t| (t, u as u64)))
+        .collect();
+    order.sort_unstable();
+    for &(t, u) in order.iter().rev().take(5) {
+        let tx: Vec<String> = per_unit
+            .get(&u)
+            .map(|v| {
+                v.iter()
+                    .map(|r| {
+                        format!(
+                            "{:.2}[pn{} {}→{}]",
+                            s(r.offered),
+                            r.pn,
+                            fate(r.fate),
+                            so(r.arrives)
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        println!(
+            "TL-BİRİM u={u} teslim={:.2} teyit={} iletim={}",
+            s(t),
+            so(x.conf_at.get(u as usize).copied().flatten()),
+            tx.join(" ")
+        );
+    }
+    for l in x.live {
+        println!(
+            "TL-CANLI t={:.2} prob={} retx={} srtt={}ms taban_pto={}ms pto={}ms tur={} pencere={} btlbw={} pacer={}B/s jeton={} uçuş={}B kayıp_kuyruğu={}",
+            s(l.at),
+            l.tail_probes,
+            l.retransmits,
+            l.srtt_us / 1000,
+            l.base_pto_ns / 1_000_000,
+            l.tail_pto_ns / 1_000_000,
+            l.probe_index,
+            so(l.armed_at),
+            l.btlbw_bps,
+            l.pacer_rate_bps,
+            l.pacer_tokens,
+            l.inflight_bytes,
+            l.pending_lost,
+        );
+    }
+    if let Some(l) = x.live_end.as_ref() {
+        let origin = l.clock_origin;
+        for a in l.acks.recent() {
+            let at = origin.map_or(0.0, |o| s(o + Duration::from_nanos(a.at_ns)));
+            println!(
+                "TL-MOTOR-ACK t={at:.2} yeni_birim={} uçuş={}→{} kayıp_kuyruğu={}→{} kopya={}→{} çıkan_datagram={} prob={}→{}",
+                a.new_units,
+                a.before.inflight_len,
+                a.after.inflight_len,
+                a.before.pending_lost_len,
+                a.after.pending_lost_len,
+                a.before.dup_queue_len,
+                a.after.dup_queue_len,
+                a.tx_datagrams_during,
+                a.before.tail_probes,
+                a.after.tail_probes,
+            );
+        }
+    }
+    if std::env::var("CC_SHAPED_TL_DUMP").is_ok() {
+        for r in x.fwd {
+            let frame = &r.head[..usize::from(r.head_len)];
+            let what = decode_data(frame).map_or_else(
+                || format!("tür=0x{:02x}", frame.first().copied().unwrap_or(0)),
+                |(_, u, _)| format!("birim={u}"),
+            );
+            println!(
+                "TL-İLERİ sunum={:.3} pn={} {what} bayt={} sonuç={} varış={}",
+                s(r.offered),
+                r.pn,
+                r.wire,
+                fate(r.fate),
+                so(r.arrives)
+            );
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -333,16 +756,35 @@ async fn run_cell(
         fwd.lock().expect("kilit").trace = Some(("İLERİ", t0));
         rev.lock().expect("kilit").trace = Some(("DÖNÜŞ", t0));
     }
+    // [KUYRUK-AYRIŞTIRMA] Kayıt ve deney kancaları (yalnız ölçüm anahtarlarıyla; kapalıyken röle
+    // bugünküyle aynı).
+    let tl_on = std::env::var("CC_SHAPED_TL").is_ok();
+    {
+        let mut f = fwd.lock().expect("kilit");
+        let mut r = rev.lock().expect("kilit");
+        if tl_on {
+            f.tl = Some(Vec::with_capacity(TL_CAP));
+            r.tl = Some(Vec::with_capacity(TL_CAP));
+        }
+        f.drop_unit = std::env::var("CC_SHAPED_DROP_UNIT").ok().and_then(|v| {
+            let mut it = v.split(':');
+            let unit = it.next()?.parse().ok()?;
+            let n = it.next().map_or(Some(1), |n| n.parse().ok())?;
+            Some((unit, n))
+        });
+        r.drop_final_acks = u32::try_from(env_u64("CC_SHAPED_DROP_FINAL_ACKS", 0)).unwrap_or(0);
+    }
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
     let relay_task = tokio::spawn(relay(
         front,
         back,
         Arc::clone(&fwd),
         Arc::clone(&rev),
+        units,
         stop_rx,
     ));
 
-    let client = ClientEndpoint::connect(front_addr, cfg, Box::new(IdentitySeam::new()))
+    let mut client = ClientEndpoint::connect(front_addr, cfg, Box::new(IdentitySeam::new()))
         .await
         .expect("client connect");
     let mut server = server;
@@ -367,7 +809,16 @@ async fn run_cell(
     let mut delivered = 0u64;
     let mut delays: Vec<Duration> = Vec::new();
     let mut marks: [Option<Duration>; 3] = [None; 3];
-    let completed = tokio::time::timeout(t_max, async {
+    // [KUYRUK-AYRIŞTIRMA] Birim başına alıcı teslimi ve gönderici teyidi (sığa baştan); ayna örnekleri.
+    let n_units = usize::try_from(units).unwrap_or(0);
+    let mut deliv_at: Vec<Option<Instant>> = vec![None; n_units];
+    let mut conf_at: Vec<Option<Instant>> = vec![None; n_units];
+    let mut confirmed = 0u64;
+    let mut done_at: Option<Duration> = None;
+    let live_on = std::env::var("CC_SHAPED_LIVE").is_ok();
+    let mut live_log: Vec<LiveRec> =
+        Vec::with_capacity(if tl_on && live_on { LIVE_CAP } else { 0 });
+    let loop_end = tokio::time::timeout(t_max, async {
         let mut next_offer = tokio::time::interval(if interval.is_zero() {
             Duration::from_secs(3600)
         } else {
@@ -375,11 +826,30 @@ async fn run_cell(
         });
         next_offer.tick().await;
         let mut live_tick = tokio::time::interval(Duration::from_secs(1));
-        let live_on = std::env::var("CC_SHAPED_LIVE").is_ok();
-        while delivered < units {
+        let mut conf_tick = tokio::time::interval(Duration::from_millis(2));
+        // TL kipinde alıcı bitirdikten sonra da göndericinin son teyidi beklenir.
+        while delivered < units || (tl_on && confirmed < units) {
             let d = tokio::select! {
-                d = server.next_delivery() => d,
-                _ = live_tick.tick(), if live_on => {
+                d = server.next_delivery(), if delivered < units => d,
+                _ = conf_tick.tick(), if tl_on => {
+                    let now = Instant::now();
+                    while let Some(u) = client.try_acked() {
+                        if let Some(slot) = conf_at.get_mut(u as usize) {
+                            if slot.is_none() {
+                                *slot = Some(now);
+                                confirmed += 1;
+                            }
+                        }
+                    }
+                    if live_on && live_log.len() < LIVE_CAP {
+                        let rec = LiveRec::of(now, &client.live_diag());
+                        if live_log.last().is_none_or(|p| p.differs(&rec)) {
+                            live_log.push(rec);
+                        }
+                    }
+                    continue;
+                }
+                _ = live_tick.tick(), if live_on && !tl_on => {
                     let l = client.live_diag();
                     let c = l.control;
                     println!(
@@ -408,10 +878,16 @@ async fn run_cell(
                 if let Some(&t) = offer_at.get(d.unit_id as usize) {
                     delays.push(t.elapsed());
                 }
+                if let Some(slot) = deliv_at.get_mut(d.unit_id as usize) {
+                    *slot = Some(Instant::now());
+                }
                 for (i, pct) in [10u64, 50, 90].iter().enumerate() {
                     if marks[i].is_none() && delivered * 100 >= units * pct {
                         marks[i] = Some(t0.elapsed());
                     }
+                }
+                if delivered == units {
+                    done_at = Some(t0.elapsed());
                 }
             } else {
                 break;
@@ -421,6 +897,10 @@ async fn run_cell(
     })
     .await
     .ok();
+    // TL kipinde tamamlanma = alıcının son teslimi (son teyit beklenirken zaman aşımı olsa da).
+    let completed = if tl_on { done_at } else { loop_end };
+    // [KUYRUK-AYRIŞTIRMA] Göndericinin ACK çerçevesi halkası (motorun olay öncesi/sonrası görünümü).
+    let live_end = (tl_on && live_on).then(|| client.live_diag());
     let f = |d: Option<Duration>| d.map_or("-".to_string(), |d| format!("{:.1}", d.as_secs_f64()));
     delays.sort_unstable();
     let p = |q: usize| {
@@ -438,12 +918,30 @@ async fn run_cell(
         p(50),
         p(95)
     );
-    let _ = client.shutdown().await;
+    let cstats = client.shutdown().await;
     let _ = server.shutdown().await;
     let _ = stop_tx.send(());
     let _ = relay_task.await;
     let f = fwd.lock().expect("kilit");
     let r = rev.lock().expect("kilit");
+    if tl_on {
+        tl_report(&TlInput {
+            t0,
+            seed,
+            completed,
+            deliv_at: &deliv_at,
+            conf_at: &conf_at,
+            fwd: f.tl.as_deref().unwrap_or(&[]),
+            rev: r.tl.as_deref().unwrap_or(&[]),
+            overflow: f.tl_overflow + r.tl_overflow,
+            complete_at: r.complete,
+            live: &live_log,
+            live_end,
+            probes: cstats.fate.activation.tail_probes,
+            retransmits: cstats.fate.activation.retransmits,
+            forced: f.dropped_forced + r.dropped_forced,
+        });
+    }
     Outcome {
         completed,
         delivered,
@@ -551,8 +1049,11 @@ async fn shaped_relay_measure() {
 /// sürüyor ve dönüşe 3,6–4,2 kB ACK basıyor: ACK'ler 62 B/s hatta sıra bekliyor, gönderici ACK-saatli
 /// döngüde yakınsamıyor. Yön hızlarıyla (alıcı ACK bütçesi + yol ilk penceresi + profil pacer
 /// tavanı; PARAM geri çekilmesi tabanında) ölçüm: tohum 1–2 15,3–19,0 s, dönüş 565–693 B; bu kapı
-/// (tohum 1) 3 koşu 14,9–19,0 s, 630–693 B. Eşikler (≤ 35 s, ≤ 1 500 B) gerçek zaman gürültüsüne
-/// geniş; yön hızları olmadan hücre iki eşiği de aşar.
+/// (tohum 1) 3 koşu 14,9–19,0 s, 630–693 B. Alıcının akış sonu yedeği + PARAM PN kaydı +
+/// PARAM_ACK seyreltmesi (`CC_SHAPED_TL` ayrıştırması; profil pacer tavanından önceki tabanda
+/// ölçüldü): tohum 1–3 × 2 alıcıda son teslim 16,8–20,2 s → 9,9–11,4 s. Eşikler (≤ 35 s,
+/// ≤ 1 500 B) gerçek zaman gürültüsüne geniş; yön hızları olmadan hücre iki eşiği de aşar. Kuyruk
+/// kuralları alıcı birim testlerinde belirlenimli sınanır.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn asymmetric_return_path_with_link_rates_bounds_acks_and_completes() {
     let fwd = Dir {

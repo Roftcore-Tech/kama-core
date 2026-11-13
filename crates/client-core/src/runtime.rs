@@ -360,6 +360,11 @@ fn link_pacing_cap_bps(uplink_bps: u64) -> u64 {
     u64::try_from(cap).unwrap_or(u64::MAX).max(1)
 }
 
+/// [DÖNÜŞ-BÜTÇESİ] Yinelenen PARAM_ACK aralığının üst sınırı (ns): çok dar dönüşte bile
+/// göndericinin sınırlı yeniden deneme süresi (≤ 25 deneme, 5 s'de bir) içinde ilk yanıt kaybolursa
+/// yeni yanıt çıkabilsin.
+const MAX_ECHO_SPACING_NS: u64 = 30_000_000_000;
+
 /// [CC-PORT] Taşıma motoru (bkz. [`RuntimeConfig::engine`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TransportEngine {
@@ -3577,6 +3582,11 @@ struct PeerSlot {
     /// [v1/PARAM] Bind-öncesi gelen FEC-shard'ların bounded bekletmesi (PreParamHold deseni;
     /// DÜŞÜRME yarış-duyarlıydı: repair'ler yeniden-üretilmez — CI yavaş-runner'da yakalandı).
     pre_param_fec: Vec<(FecFrameHeader, Vec<u8>)>,
+    /// [DÖNÜŞ-BÜTÇESİ] Bütçeli port alıcısında yinelenen PARAM_ACK aralığı (ns) =
+    /// `receiver::budgeted_ack_interval_ns(yukarı yön)`; `None` = bütçe yok (bugünkü davranış).
+    echo_spacing_ns: Option<u64>,
+    /// [DÖNÜŞ-BÜTÇESİ] Son PARAM_ACK anı (ns).
+    param_ack_last_ns: Option<u64>,
 }
 
 impl PeerSlot {
@@ -3596,6 +3606,14 @@ impl PeerSlot {
         rx.set_quota_r(quota_r);
         // [DÖNÜŞ-BÜTÇESİ] Yalnız port alıcısında etkili (eski alıcının kendi cadence tabanı var).
         rx.set_return_bandwidth(ack_return_bw_bps);
+        // [DÖNÜŞ-BÜTÇESİ] Kontrol yankısı aralığı: yalnız bütçeli port alıcısında (eski motor ve
+        // bütçesiz yol bugünkü gibi her PARAM'a yanıt verir, PN kaydı yapmaz).
+        let echo_spacing_ns = match engine {
+            TransportEngine::Legacy => None,
+            TransportEngine::CcPort => ack_return_bw_bps.map(|bw| {
+                adaptive_transport::receiver::budgeted_ack_interval_ns(bw).min(MAX_ECHO_SPACING_NS)
+            }),
+        };
         Self {
             rx,
             last_seen_ns: now,
@@ -3605,7 +3623,35 @@ impl PeerSlot {
             ctx,
             param: ParamState::new(),
             pre_param_fec: Vec::new(),
+            echo_spacing_ns,
+            param_ack_last_ns: None,
         }
+    }
+
+    /// [DÖNÜŞ-BÜTÇESİ] ACK istemeyen kontrol çerçevesinin (PARAM, cold-start probu) PN'i alıcı
+    /// kümesine yazılır; yazılmazsa kalıcı delik olur (her ACK'e bir aralık, ardından gelen DATA'ya
+    /// anında ACK — `Receiver::note_non_eliciting`). Yalnız bütçeli port alıcısında.
+    fn note_non_eliciting(&mut self, pn: u64) {
+        if self.echo_spacing_ns.is_some() {
+            self.rx.note_non_eliciting(pn);
+        }
+    }
+
+    /// [DÖNÜŞ-BÜTÇESİ] Bu PARAM'a PARAM_ACK gönderilsin mi. Bütçeli yolda bağlı oturumun YİNELENEN
+    /// PARAM'ı (gönderici önceki PARAM_ACK yolda iken yeniden denedi) en çok bir bütçe aralığında
+    /// bir yanıtlanır: PARAM_ACK ACK bütçesinin dışındadır ve 62 B/s dönüşte her biri 1,2 s hat
+    /// tutar (ölçüm: 2–5 yinelenen PARAM_ACK kritik kayıp raporunun önünde kuyruğa giriyordu).
+    /// Gönderici PARAM_ACK gelmezse yeniden dener; aralık dolunca yanıt yine çıkar (onay kaybolmaz,
+    /// gecikir). Bütçesiz yolda her PARAM yanıtlanır (bugünkü davranış).
+    fn param_ack_due(&mut self, already_bound: bool, now: u64) -> bool {
+        let due = match (self.echo_spacing_ns, self.param_ack_last_ns) {
+            (Some(spacing), Some(last)) if already_bound => now.saturating_sub(last) >= spacing,
+            _ => true,
+        };
+        if due {
+            self.param_ack_last_ns = Some(now);
+        }
+        due
     }
 }
 
@@ -4325,6 +4371,9 @@ async fn server_task(
                         // seen_count/arrival_gap 0 gönderilir — şema onları yalnız-ledger ilan
                         // eder (karar girdisi yapılamaz) ve durum tutmak stateless sözleşmesini
                         // bozardı. ANTİ-AMPLİFİKASYON: echo 43 B < probe 44 B (amp ≤ 1).
+                        // [DÖNÜŞ-BÜTÇESİ] Probe datagramının PN'i (seam ad-uzayı) bütçeli yolda alıcı
+                        // kümesine ACK istemeyen olarak yazılır; ACK üretmez.
+                        slot.note_non_eliciting(pn);
                         stats.cs_probes_rx += 1;
                         let f = encode_cs_echo(subtype, probe_seq, 0, 0);
                         debug_assert!(f.len() < LEN_CS_PROBE, "echo probe'dan küçük olmalı (amp≤1)");
@@ -4337,6 +4386,8 @@ async fn server_task(
                         code_suite_id,
                         param_hash,
                     } => {
+                        // [DÖNÜŞ-BÜTÇESİ] PARAM'ın PN'i alıcı kümesine (ACK istemeyen).
+                        slot.note_non_eliciting(pn);
                         // [v1/PARAM] §8 fail-closed doğrulama: yerel-beklenen alanlarla hash-verify
                         // → bind (admission açılır); mismatch → red-sayaç, ACK YOK.
                         let Some(exp) = param_expected.as_ref() else {
@@ -4355,9 +4406,12 @@ async fn server_task(
                                 if !was {
                                     stats.param_bound_peers += 1;
                                 }
-                                let f = encode_param_ack(&param_hash);
-                                let sp = slot.ctx;
-                                srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, f).await;
+                                // [DÖNÜŞ-BÜTÇESİ] Bütçeli yolda yinelenen PARAM_ACK seyreltilir.
+                                if slot.param_ack_due(was, now) {
+                                    let f = encode_param_ack(&param_hash);
+                                    let sp = slot.ctx;
+                                    srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, f).await;
+                                }
                                 // Bind: bekletilen shard'lar drain → normal ingest (kurtarımlar
                                 // RECOVERED ile bildirilir).
                                 if let Some(p) = fec.as_ref() {
@@ -4481,6 +4535,44 @@ mod ctx_first_tests {
 
     use super::*;
     use kama_contracts::s3::SealedPacketMeta;
+
+    /// [DÖNÜŞ-BÜTÇESİ] Yinelenen PARAM_ACK yalnız bütçeli port yuvasında seyreltilir: ilk yanıt ve
+    /// henüz bağlanmamış oturumun PARAM'ı daima yanıtlanır, aralık (62 B/s → 5,4 s) dolunca yine.
+    /// Bütçesiz port yuvası ve eski motor her PARAM'ı yanıtlar ve PN kaydı yapmaz.
+    #[test]
+    fn param_ack_echo_is_spaced_only_on_the_budgeted_port_slot() {
+        const SEC: u64 = 1_000_000_000;
+        let mut s = PeerSlot::new(A, 4, 0, TransportEngine::CcPort, Some(62));
+        let spacing = adaptive_transport::receiver::budgeted_ack_interval_ns(62);
+        assert_eq!(s.echo_spacing_ns, Some(spacing));
+        assert!(s.param_ack_due(false, SEC), "ilk PARAM yanıtlanır");
+        assert!(
+            !s.param_ack_due(true, 2 * SEC),
+            "yanıt yoldayken yineleme seyreltilir"
+        );
+        assert!(!s.param_ack_due(true, SEC + spacing - 1));
+        assert!(
+            s.param_ack_due(true, SEC + spacing),
+            "aralık dolunca yine yanıt"
+        );
+        assert!(
+            s.param_ack_due(false, SEC + spacing + 1),
+            "bağlanmamış oturum daima"
+        );
+        for (engine, bw) in [
+            (TransportEngine::CcPort, None),
+            (TransportEngine::Legacy, Some(62)),
+        ] {
+            let mut u = PeerSlot::new(A, 4, 0, engine, bw);
+            assert_eq!(u.echo_spacing_ns, None, "{engine:?} {bw:?}");
+            for k in 0..5u64 {
+                assert!(
+                    u.param_ack_due(k > 0, k * 10_000_000),
+                    "{engine:?} {bw:?}: her PARAM"
+                );
+            }
+        }
+    }
 
     const A: ProtectionContext = ProtectionContext::Session(SessionHandle::from_raw(1));
     const B: ProtectionContext = ProtectionContext::Session(SessionHandle::from_raw(2));
