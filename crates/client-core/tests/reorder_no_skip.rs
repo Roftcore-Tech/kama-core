@@ -129,6 +129,12 @@ fn cfg() -> ClientTransportConfig {
     // ~4096'ya dolar. Bu motor bulgusu PR gövdesinde AÇIK olarak yazılı; bu test onu değil
     // sıralayıcıyı ve kabul penceresini sınar.
     cfg.runtime.max_inflight_units = WINDOW as usize;
+    // [ŞERİT-ÜRÜN] Bu test ŞERİTSİZ yolun sıralayıcısını ve kabul penceresini sınar (birim
+    // kimlikleri etiketsiz; `unit_id` 0 = sıra başı). Şeritler açıkken (ürün profili) dosya
+    // şeridinin uca verdiği teyitsiz birim sayısı W ile sınırlıdır (`lanes::file_window_for_path`,
+    // ≤ 1024 < kabul penceresi): alıcı penceresinin dolduğu bu senaryo orada yapısal olarak
+    // oluşmaz; şerit yolunun bloklamama kanıtı `lane_no_hol_block.rs`.
+    cfg.lanes = None;
     cfg
 }
 
