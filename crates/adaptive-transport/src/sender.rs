@@ -7419,6 +7419,20 @@ impl Sender {
             self.inflight_bytes,
         )
     }
+    /// Ölçülmüş yol kapasitesi (bayt/s): BtlBw max filtresi (engine §7.2), teslim hızı
+    /// örneklerinden (§7.1: `teslim / max(ack_elapsed, send_elapsed)`). Filtreye henüz örnek
+    /// girmediyse `None` (hız bilinmiyor). İki motorda aynı kaynaktır; port motorunda BBR'ın bant
+    /// girdisi de budur (`on_ack_received` → `cc.set_external_bw`). quinn'in kendi
+    /// `min(gönderim, ACK)` tahmini (yalnız bu değer 0 iken BBR'ın yedeği) buradan OKUNMAZ.
+    ///
+    /// SALT-OKUMA: motorun hiçbir kararı bu erişimciyi kullanmaz; çağıran (runtime parite tavanı)
+    /// içindir. Pacer hedefi (`diag_rate().3`) yol kapasitesi DEĞİLDİR: port motorunda Startup'ta
+    /// ilk RTT'de `ilk_pencere / RTT₁`'e kurulur ve düşmez (`cc/bbr.rs` `calculate_pacing_rate`).
+    #[must_use]
+    pub fn measured_btlbw_bps(&self) -> Option<u64> {
+        let bw = self.btlbw.btlbw();
+        (bw > 0).then_some(bw)
+    }
     /// [TUR-A teşhis, ölçüm-#2] loss-atıflama (SALT-GÖZLEM): `(packet_threshold_queued,
     /// time_threshold_queued, pending_lost_now)`. Temiz kanalda hangi tetik spurious RecoverArq açıyor —
     /// gerçek gap (packet) mi, cadence-gap (time) mi.

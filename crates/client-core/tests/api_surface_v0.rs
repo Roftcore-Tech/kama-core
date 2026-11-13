@@ -198,6 +198,11 @@ async fn transport_api_v0_surface_is_frozen() {
         fec_partial_blocks_closed: _,
         // [FEC-E-ÖLÇEK] parite tavanının kaynak tel baytıyla sınırlandığı blok sayısı.
         fec_parity_payload_clamped: _,
+        // [FEC-E-ÖLÇEK] tavan kararı girdisi: karar sayısı, zaman kapısının açıldığı karar,
+        // karara giren ölçülmüş yol kapasitesinin en büyüğü (minor ekleme, salt gözlem).
+        fec_cap_decisions: _,
+        fec_cap_time_gate_open: _,
+        fec_cap_path_bw_max_bps: _,
         // [TEŞHİS] yapı-gate karar tabanı + karar-yolu histogramı + kuruluş görünürlüğü.
         fate: _,
         // [DR-CS-3] cold-start probe/echo muhasebesi.
