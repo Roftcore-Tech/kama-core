@@ -34,6 +34,14 @@
 //! geçer: mesaj dar dönüş hattından, ACK'leri ileri hattan. Ters oturum aktarımdan önce açılır ve
 //! `CC_SHAPED_RETURN_WARM_MS` (varsayılan 8 000) kadar ısınır. `ÖZET` sonuna `taklit_dönüş_son` ve
 //! `taklit_dönüş_bayt` eklenir.
+//!
+//! Akış sonrası kontrol trafiği (yalnız ölçüm; varsayılan kapalı): `CC_SHAPED_CTRL_AFTER_MS=<ms>`
+//! bütün birimler alıcıya vardıktan sonra röle, göndericinin ileri yönde gördüğü son PARAM
+//! datagramının kopyasını her `<ms>`'de bir ileri hatta yeniden sunar (aynı hız, kuyruk, kayıp).
+//! Alıcı için bu, eşten gelen ACK istemeyen kontrol paketidir (PARAM yeniden denemesi gibi; sunucu
+//! onu PARAM olarak işler). Göndericinin kendi trafiği değişmez. `ÖZET` sonuna `kontrol=` (aralık /
+//! yeniden sunulan kopya) ve `son_teyit_ack_çıkış=` (yeni birim teyit eden son ACK'in dönüşe
+//! sunulduğu an) eklenir.
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
@@ -116,6 +124,8 @@ struct Shaper {
     drop_final_acks: u32,
     complete: Option<Instant>,
     dropped_forced: u64,
+    /// [KONTROL-SONRASI] `CC_SHAPED_CTRL_AFTER_MS` ile ileri hatta yeniden sunulan PARAM kopyası.
+    ctrl_injected: u64,
 }
 
 impl Shaper {
@@ -149,6 +159,7 @@ impl Shaper {
             drop_final_acks: 0,
             complete: None,
             dropped_forced: 0,
+            ctrl_injected: 0,
         }
     }
 
@@ -459,11 +470,23 @@ async fn relay(
     // işaretlenir (deney (ii) ve son teyit ölçümü). Varan paketin başlığı okunur, ayırma yok.
     let mut arrived = vec![false; usize::try_from(units).unwrap_or(0)];
     let mut arrived_n = 0u64;
+    // [KONTROL-SONRASI] Akış sonrası kontrol trafiği: son PARAM datagramı ve sonraki sunum anı.
+    let ctrl_period = Some(env_u64("CC_SHAPED_CTRL_AFTER_MS", 0))
+        .filter(|&ms| ms > 0)
+        .map(Duration::from_millis);
+    let mut last_param: Option<Vec<u8>> = None;
+    let mut ctrl_next: Option<Instant> = None;
     loop {
         tokio::select! {
             r = front.recv_from(&mut up) => {
                 let Ok((n, from)) = r else { continue };
                 client = Some(from);
+                if ctrl_period.is_some()
+                    && seam_split(&up[..n])
+                        .is_some_and(|(f, _)| f.first() == Some(&client_core::wire::FRAME_PARAM))
+                {
+                    last_param = Some(up[..n].to_vec());
+                }
                 fwd.lock().expect("kilit").offer(Instant::now(), up[..n].to_vec());
             }
             r = back.recv(&mut down) => {
@@ -501,11 +524,20 @@ async fn relay(
                                 arrived_n += 1;
                                 if arrived_n == units {
                                     rev.lock().expect("kilit").complete = Some(now);
+                                    ctrl_next = ctrl_period.map(|p| now + p);
                                 }
                             }
                         }
                     }
                     let _ = back.send(&p).await;
+                }
+                if let (Some(at), Some(p), Some(period)) = (ctrl_next, last_param.as_ref(), ctrl_period) {
+                    if at <= now {
+                        let mut f = fwd.lock().expect("kilit");
+                        f.offer(now, p.clone());
+                        f.ctrl_injected += 1;
+                        ctrl_next = Some(at + period);
+                    }
                 }
                 let due_r = rev.lock().expect("kilit").take_due(now);
                 for (p, path) in due_r {
@@ -628,6 +660,8 @@ struct TlInput<'a> {
     forced: u64,
     ret_mode: Option<ReturnMsgMode>,
     ret_at: &'a [Option<Instant>],
+    /// [KONTROL-SONRASI] (aralık ms, yeniden sunulan kopya); `None` = kapalı.
+    ctrl: Option<(u64, u64)>,
 }
 
 /// [KUYRUK-AYRIŞTIRMA] Koşu sonu çözümleme ve yazım (ölçüm bittikten sonra; sıcak yol değil).
@@ -671,6 +705,8 @@ fn tl_report(x: &TlInput<'_>) {
     // [TAKLİT-DÖNÜŞ] Dönüş hattındaki taklit oturum paketleri: t0'dan sonra (mesaj, yeniden
     // iletim, PARAM) ve öncesi (ısınma: PARAM değişimi) ayrı.
     let (mut ret_n, mut ret_b, mut ret_data_n, mut ret_warm_b) = (0u64, 0u64, 0u64, 0u64);
+    // [KONTROL-SONRASI] Yeni birim teyit eden son ACK'in dönüşe sunulduğu an.
+    let mut last_fresh_ack: Option<Instant> = None;
     for r in x.rev {
         let frame = &r.head[..usize::from(r.head_len)];
         let wire = u64::from(r.wire);
@@ -710,6 +746,9 @@ fn tl_report(x: &TlInput<'_>) {
                     }
                 }
                 fresh.sort_unstable();
+                if !fresh.is_empty() {
+                    last_fresh_ack = Some(r.offered);
+                }
                 lines.push(format!(
                     "TL-ACK sunum={:.2} varış={} sonuç={} bayt={wire} aralık={} alıcı_tutma={:.0}ms largest_pn={} teyitli_pn={} yeni_birim={fresh:?}",
                     s(r.offered),
@@ -787,8 +826,14 @@ fn tl_report(x: &TlInput<'_>) {
         }
         None => "taklit_dönüş=kapalı".to_string(),
     };
+    let ctrl_fields = format!(
+        "kontrol={} son_teyit_ack_çıkış={}",
+        x.ctrl
+            .map_or("kapalı".to_string(), |(ms, n)| format!("{ms}ms/{n}")),
+        so(last_fresh_ack)
+    );
     println!(
-        "ÖZET tohum={} tamamlanma={} alıcı_son_teslim={} hepsi_alıcıda={} gönderici_son_teyit={} teyit_farkı={gap} prob={} retx={} deney_düşürme={} ileri_veri={data_n}/{data_b}B param={param_n} dönüş_ack={ack_n}/{ack_b}B dönüş_ack_teslime_dek={ack_b_done}B dönüş_ack_teyide_dek={ack_b_conf}B param_ack={pa_n}/{pa_b}B recovered={rc_n}/{rc_b}B dönüş_diğer={other_b}B kayıt_taşma={} {ret_fields}",
+        "ÖZET tohum={} tamamlanma={} alıcı_son_teslim={} hepsi_alıcıda={} gönderici_son_teyit={} teyit_farkı={gap} prob={} retx={} deney_düşürme={} ileri_veri={data_n}/{data_b}B param={param_n} dönüş_ack={ack_n}/{ack_b}B dönüş_ack_teslime_dek={ack_b_done}B dönüş_ack_teyide_dek={ack_b_conf}B param_ack={pa_n}/{pa_b}B recovered={rc_n}/{rc_b}B dönüş_diğer={other_b}B kayıt_taşma={} {ret_fields} {ctrl_fields}",
         x.seed,
         x.completed.map_or("YOK".to_string(), |d| format!("{:.2}", d.as_secs_f64())),
         so(last_deliv),
@@ -1255,6 +1300,9 @@ async fn run_cell(
             forced: f.dropped_forced + r.dropped_forced,
             ret_mode,
             ret_at: &ret_at,
+            ctrl: Some(env_u64("CC_SHAPED_CTRL_AFTER_MS", 0))
+                .filter(|&ms| ms > 0)
+                .map(|ms| (ms, f.ctrl_injected)),
         });
     }
     Outcome {
