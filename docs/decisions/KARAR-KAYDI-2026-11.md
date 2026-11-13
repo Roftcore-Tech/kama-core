@@ -120,7 +120,29 @@ Backlog H-0 ile bayt-özdeş aktarıldı. İçeriği (kartların ne'si, S4/TDD a
   - #190: `MERGE 190`; uzun ailede B'nin parite yolu gösterilmedi.
   - #188: profil kararı bekliyor.
   - #177: taslak.
-  - #140: `KAPAT 140` bekliyor.
+  - ~~#140: `KAPAT 140` bekliyor.~~ Merge edilmeden kapatıldı, 2026-11-13 (§10).
 - **Açık.**
   - `cc regression gate` zorunlu kontrol yapılmalı (depo ayarı, sahip).
   - `ack_after_admit::legacy_stalled_consumer_loses_no_acked_unit` CI'da bir kez 60 s zaman aşımına uğradı. Yerelde main ağacında ve #193 adayında 10'ar koşunun hepsi geçti (AÇIK-3).
+
+## §10 2026-11-13 — #140 kapanışı ve birleştirmeler
+
+- **Yetki.**
+  - Sahip, 2026-11-13: `KAPAT 140` ("merge etmeden kapat; `k4g/05b-retx-fix` dalı ve envanter kaydı korunsun"), `MERGE 200` ve `MERGE 202`. Sözler iş kuyruğu (#175) üzerinden geldi; yerel oturumda sahipten doğrudan teyit edildi.
+  - #197'nin yetkisi sahibin 2026-11-12 tarihli `197` GO sözü. Şartı #200'ün önce girmesiydi.
+- **#140.**
+  - Merge edilmeden kapatıldı.
+  - `k4g/05b-retx-fix` dalı (`49864510`) silinmedi, çünkü main'de 28 dosya bu başa atıf yapıyor.
+  - Envanter (#140 yorum 6832010314): taşınan 11 kalem, dışarıda kalan 18 kalem.
+- **Birleştirmeler.** §9'daki yöntemle yapıldı. Her birinde etkin farkın patch-id'si özgün farkla aynı, main ağacı da birleşen başın ağacıyla aynı.
+
+| sıra | PR | squash | birleşen baş | kontroller | core-main |
+|---|---|---|---|---|---|
+| 1 | #200 | 5b487ec8 | 28f0cbb6 | 13/13 | success (43334844042) |
+| 2 | #197 | c77bdcbe | c1ee1d69 | 13/13 | success (43339956173) |
+| 3 | #202 | 238a1d28 | bcdf46c0 | 13/13 | success (43343543089) |
+
+- **#202'nin yerel doğrulaması** (#202 yorumları):
+  - İlk test başında (`4d1e6fb4`) taban 35 koşunun 4'ünde yeşil verdi; test tabanı belirlenimli ayırmıyordu.
+  - Dalın yazarı testi değiştirdi (`e02ac36b`, 6 s karartma). Taban 10/10 kırmızı çıktı. Aday 20/20 yeşil; tanı kopyasında 20/20 koşu `param_sends` = 6.
+- **Kapsam dışı.** §9 "Bekleyenler"deki #181, #186, #195, #185 ve #190 satırları 2026-11-12'den sonraki birleştirme ve ölçümlerle bayatladı. Bu bölüm onları güncellemez.
