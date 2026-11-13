@@ -109,6 +109,8 @@ pub fn budgeted_ack_interval_ns(return_bw_bps: u64) -> u64 {
 /// başlar → oturumun İLK ACK'i bütçeden muaf (§12 [R1]).
 const ACK_BUDGET_CAP_BYTES: u64 =
     2 * (SACK_WIRE_BYTES + ACK_WIRE_PER_RANGE * crate::ack::MAX_ACK_RANGES as u64);
+/// [AKIŞ-SONU YEDEĞİ] Varışlar sürerken kovada bırakılan yedek (B): en büyük bir ACK (kovanın yarısı).
+const ACK_BUDGET_RESERVE_BYTES: u64 = ACK_BUDGET_CAP_BYTES / 2;
 /// [K2/R1/R15/§3.3-E/§12] ACK_CADENCE cold-start floor = sack_wire/(Y·return_bw_önsel) ≈ 8.4s.
 /// TIMER-SACK'ları bununla seyrekleşir: kbps'te sabit 20ms tick → SACK-seli/self-congestion (19s-lag);
 /// throttle bunu keser. Frequency-yolu (§2.1, on_datagram) DATA-oranıyla eşleşir → hızlı kanalda responsive
@@ -188,8 +190,13 @@ pub struct Receiver {
     /// [DÖNÜŞ-BÜTÇESİ] Kovadaki jeton (milibayt) ve son dolum anı (ns).
     ack_tokens_mb: u64,
     ack_tokens_at_ns: u64,
+    /// [AKIŞ-SONU YEDEĞİ] Bütçeli yolda ilk ACK çıktı mı (ilk ACK yedekten muaf).
+    ack_budget_first_done: bool,
     /// [DÖNÜŞ-BÜTÇESİ] Bütçe yetmediği için ertelenen ACK sayısı (SALT-GÖZLEM).
     diag_ack_budget_deferred: u64,
+    /// [DÖNÜŞ-BÜTÇESİ] `note_non_eliciting` ile kaydedilen en büyük PN (sıra denetimi; `None` =
+    /// hiç çağrılmadı).
+    non_eliciting_largest: Option<u64>,
 }
 
 impl Receiver {
@@ -227,7 +234,9 @@ impl Receiver {
             ack_budget_bps: None,
             ack_tokens_mb: 0,
             ack_tokens_at_ns: 0,
+            ack_budget_first_done: false,
             diag_ack_budget_deferred: 0,
+            non_eliciting_largest: None,
         }
     }
 
@@ -274,8 +283,13 @@ impl Receiver {
 
         // [CC-PORT] Sırasız varış tespiti kayıttan ÖNCE: beklenen = largest+1 değilse (boşluk açıldı
         // ya da boşluk doldu) anında ACK (RFC 9000 §13.2.1; quinn spaces.rs:718-725 `immediate_ack_pending`).
+        // [DÖNÜŞ-BÜTÇESİ] Kaydedilmiş ACK istemeyen PN'ler de sıraya sayılır (yalnız
+        // `note_non_eliciting` çağrıldıysa; yoksa ifade bugünküyle aynı).
+        let in_order_after = self
+            .non_eliciting_largest
+            .map_or(self.largest_seq, |n| n.max(self.largest_seq));
         let out_of_order =
-            self.cc_port && self.have_recv && d.seq != self.largest_seq.wrapping_add(1);
+            self.cc_port && self.have_recv && d.seq != in_order_after.wrapping_add(1);
 
         self.record_seq(d.seq, now_ns);
 
@@ -343,7 +357,44 @@ impl Receiver {
         self.diag_ack_budget_deferred
     }
 
+    /// [DÖNÜŞ-BÜTÇESİ] ACK istemeyen (non-ack-eliciting) bir datagramın PN'ini kaydeder: alıcı
+    /// motoruna birim taşımayan kontrol çerçeveleri (PARAM, cold-start probu). RFC 9000 §13.2.1:
+    /// alınan her paket ACK aralıklarına girer, yalnız ack-eliciting olanlar ACK tetikler.
+    /// Kaydedilmeyen PN kümede kalıcı DELİK olur: sonraki her ACK bir aralık fazla taşır (+4 B;
+    /// bütçeli yolda her ACK'in bekleme aralığı uzar) ve ardından gelen DATA sırasız sayılıp anında
+    /// ACK'e zorlanır (bütçe jetonunu akış ortasında harcar). Bu çağrı ACK üretmez, teslim etmez,
+    /// ACK sayacına girmez; `largest_seq` / `ack_delay` tabanı (en büyük ack-eliciting PN'in
+    /// varışı) değişmez — göndericinin RTT örneği o PN'den alınır. Sıra denetimi (anında ACK
+    /// kuralı) için ayrı en büyük (`non_eliciting_largest`) tutulur. Gönderici bu PN'leri birim
+    /// kaydına eşlemediği için teyitleri yok sayılır. Runtime bunu yalnız dönüş bütçesi kurulu
+    /// alıcıda çağırır (bütçesiz yol bayt-aynı).
+    pub fn note_non_eliciting(&mut self, seq: u64) {
+        if self.received.contains(&seq) {
+            return;
+        }
+        self.received.insert(seq);
+        if self.have_recv {
+            self.smallest_seq = self.smallest_seq.min(seq);
+        }
+        self.non_eliciting_largest = Some(self.non_eliciting_largest.map_or(seq, |n| n.max(seq)));
+        // [SR-AUDIT-001] `record_seq` ile aynı kayan pencere.
+        while self.received.len() > RX_DEDUP_WINDOW {
+            self.received.pop_first();
+            if let Some(&first) = self.received.first() {
+                self.smallest_seq = first;
+            }
+        }
+    }
+
     /// [DÖNÜŞ-BÜTÇESİ] Kovayı `now`'a dek doldurur; `frame`'in tel maliyeti kadar jeton varsa düşer.
+    ///
+    /// [AKIŞ-SONU YEDEĞİ] Bütçe bağlayıcıyken (bir varış aralığında dolan jeton bir tam ACK'e
+    /// yetmiyor) ve varışlar sürerken ACK, ardından kovada bir tam ACK'lik yedek
+    /// (`ACK_BUDGET_RESERVE_BYTES`) kalacaksa çıkar. Yedek, varışlar durunca (`arrivals_quiet`)
+    /// çıkan ACK'e aittir: o ACK akışın bütün kayıplarını bildirir. Yedeksiz kural jetonu akış ortasında tek birimlik haber taşıyan ACK'lere harcıyor,
+    /// akışın kayıp raporunu bir bütçe aralığı (62 B/s dönüşte 5–7 s) bekletiyordu
+    /// (tests/shaped_relay.rs asimetrik hücre, `CC_SHAPED_TL`). Oturumun ilk ACK'i yedekten muaf
+    /// (§12 [R1]). Bütçe bağlayıcı değilken (simetrik hızlı yol) kural bugünküyle aynı.
     fn ack_budget_take(&mut self, now_ns: u64, frame: &AckFrame) -> bool {
         let Some(rate) = self.ack_budget_bps else {
             return true;
@@ -355,13 +406,34 @@ impl Receiver {
         let add = u64::try_from(u128::from(rate) * u128::from(dt) / 1_000_000).unwrap_or(u64::MAX);
         self.ack_tokens_mb = self.ack_tokens_mb.saturating_add(add).min(cap);
         let cost = (SACK_WIRE_BYTES + ACK_WIRE_PER_RANGE * frame.ranges.len() as u64) * 1000;
-        if self.ack_tokens_mb >= cost {
+        let mut need = cost;
+        if self.ack_budget_first_done && !self.arrivals_quiet(now_ns) {
+            let gap = self.episode_baseline();
+            let refill_mb =
+                u64::try_from(u128::from(rate) * u128::from(gap) / 1_000_000).unwrap_or(u64::MAX);
+            if refill_mb < ACK_BUDGET_RESERVE_BYTES * 1000 {
+                need += ACK_BUDGET_RESERVE_BYTES * 1000;
+            }
+        }
+        if self.ack_tokens_mb >= need {
             self.ack_tokens_mb -= cost;
+            self.ack_budget_first_done = true;
             true
         } else {
             self.diag_ack_budget_deferred += 1;
             false
         }
+    }
+
+    /// [AKIŞ-SONU YEDEĞİ] Varışlar durdu mu: son varıştan beri > `K_EPISODE` × varış aralığı tabanı
+    /// (`episode_baseline`, son aralıkların kırpılmış medyanı — uzun bir boşluk tabanı şişirmez).
+    /// Eşik alıcının epizot kopma tanımıdır (`on_datagram`). `K_TAIL` (2) kullanılamaz: tek kayıp
+    /// paketin boşluğu zaten 2 × aralık, ardışık iki kayıp 3 × — %20 kayıpta akış ortası "sessizlik"
+    /// yedeği harcatıyordu (ölçüm: 2,18 s ve 3,26 s'de akış ortası ACK). Taban yokken (≤ 1 varış)
+    /// sessiz sayılır.
+    fn arrivals_quiet(&self, now_ns: u64) -> bool {
+        let base = self.episode_baseline();
+        base == 0 || now_ns.saturating_sub(self.last_arrival_ns) > base.saturating_mul(K_EPISODE)
     }
 
     /// ACK emisyonu (frekans/zorunlu/zamanlayıcı yollarının ortak gövdesi). [DÖNÜŞ-BÜTÇESİ] Port
@@ -742,6 +814,111 @@ mod tests {
             r.on_ack_timer(t + 20 * MS).is_none(),
             "bekleyen bilgi yok → ACK yok"
         );
+    }
+
+    /// [AKIŞ-SONU YEDEĞİ] Bütçe bağlayıcıyken (62 B/s dönüş) akış ortası ACK'leri kovanın yedeğine
+    /// dokunmaz — ardışık iki kaybın boşluğu (3 × aralık) da akış sonu sayılmaz; varışlar durunca
+    /// çıkan ACK beklemeden gider ve akışın en büyük seq'ini kapsar. Yedeksiz kural jetonu akış
+    /// ortasında bitiriyor, akış sonu ACK'i ~6 s bekliyordu; `K_TAIL` sessizlik eşiği çift kayıpta
+    /// yedeği harcatıyordu.
+    #[test]
+    fn return_budget_keeps_reserve_for_the_end_of_flight_ack() {
+        let mut r = Receiver::with_cc_port();
+        r.set_return_bandwidth(Some(62));
+        // 40 DATA, 84 ms arayla (12,5 kB/s'de 1 kB); her onlukta ardışık iki kayıp (4–5, 14–15 …).
+        let gap = 84 * MS;
+        let lost = |i: u64| i % 10 == 4 || i % 10 == 5;
+        let mut last_t = 0;
+        let mut mid = 0u32;
+        for i in 0..40u64 {
+            let t = i * gap;
+            // Zamanlayıcı da 20 ms'de bir koşar (runtime ACK_TICK).
+            let mut k = last_t + 20 * MS;
+            while k < t {
+                if r.on_ack_timer(k).is_some() {
+                    mid += 1;
+                }
+                k += 20 * MS;
+            }
+            if !lost(i) && r.on_datagram(data(i, i), t).ack.is_some() {
+                mid += 1;
+            }
+            last_t = t;
+        }
+        assert!(mid >= 1, "oturumun ilk ACK'i muaf");
+        assert!(mid <= 2, "akış ortasında yedeğe dokunulmaz: {mid} ACK");
+        // Akış bitti (son varış 39 · 84 ms): sessizlik > 4 × 84 ms → ilk uygun zamanlayıcı turunda.
+        let end = last_t;
+        let mut t = last_t + 20 * MS;
+        let ack = loop {
+            if let Some(a) = r.on_ack_timer(t) {
+                break a;
+            }
+            t += 20 * MS;
+            assert!(t < end + 500 * MS, "akış sonu ACK'i yedekten hemen çıkmalı");
+        };
+        assert_eq!(ack.largest_seq, 39, "akışın son varışını kapsar");
+        assert_eq!(ack.ranges.len(), 4, "akışın dört kayıp çiftini bildirir");
+    }
+
+    /// [AKIŞ-SONU YEDEĞİ] Bütçe bağlayıcı değilken (simetrik 12,5 kB/s dönüş, bütçe 3 125 B/s) yedek
+    /// kuralı devreye girmez: ACK'ler bütçesiz port alıcısıyla aynı anlarda çıkar.
+    #[test]
+    fn return_budget_reserve_is_inert_when_the_budget_does_not_bind() {
+        let mut a = Receiver::with_cc_port();
+        let mut b = Receiver::with_cc_port();
+        b.set_return_bandwidth(Some(12_500));
+        for i in 0..200u64 {
+            let t = i * 84 * MS;
+            let seq = i + i / 7; // aralıklı delik: sırasız varışta anında ACK
+            let x = a.on_datagram(data(seq, i), t).ack;
+            let y = b.on_datagram(data(seq, i), t).ack;
+            assert_eq!(x, y, "seq {seq}");
+        }
+        assert_eq!(b.diag_ack_budget_deferred(), 0);
+    }
+
+    /// [DÖNÜŞ-BÜTÇESİ] ACK istemeyen PN (PARAM) kaydedilince delik kapanır: ACK aralık taşımaz,
+    /// ardından gelen DATA sırasız sayılmaz (anında ACK yok), `largest_seq` / `ack_delay` tabanı
+    /// ack-eliciting PN'de kalır. Kaydedilmeyince bugünkü davranış: bir aralık + anında ACK.
+    #[test]
+    fn non_eliciting_pn_closes_the_hole_without_eliciting_an_ack() {
+        let mut with = Receiver::with_cc_port();
+        let mut without = Receiver::with_cc_port();
+        for r in [&mut with, &mut without] {
+            assert!(r.on_datagram(data(0, 0), 0).ack.is_none());
+            assert!(
+                r.on_datagram(data(1, 1), MS).ack.is_some(),
+                "ACK_FREQ_N = 2"
+            );
+        }
+        with.note_non_eliciting(2); // PARAM
+        assert!(
+            with.on_ack_timer(2 * MS).is_none(),
+            "ACK istemeyen PN ACK tetiklemez"
+        );
+        assert!(
+            with.on_datagram(data(3, 2), 3 * MS).ack.is_none(),
+            "PARAM'dan sonraki DATA sırada"
+        );
+        assert!(
+            without.on_datagram(data(3, 2), 3 * MS).ack.is_some(),
+            "kaydedilmeyen PN delik: anında ACK"
+        );
+        assert_eq!(with.largest_seq(), Some(3));
+        let a = with
+            .on_datagram(data(4, 3), 4 * MS)
+            .ack
+            .expect("frekans ACK'i");
+        assert!(a.ranges.is_empty(), "delik yok: {:?}", a.ranges);
+        assert_eq!(a.block0_len, 5);
+        // En büyük PN ACK istemeyense: tel `largest_seq`'i odur, `largest_seq()` / ack_delay tabanı
+        // son DATA'da kalır (göndericinin RTT örneği DATA'dan).
+        with.note_non_eliciting(5);
+        assert_eq!(with.largest_seq(), Some(4));
+        let t = with.on_datagram(data(6, 4), 10 * MS);
+        assert!(t.ack.is_none(), "5 kayıtlı → 6 sırada");
+        assert_eq!(with.largest_seq(), Some(6));
     }
 
     /// [DÖNÜŞ-BÜTÇESİ] Eski alıcı bütçeden etkilenmez (kendi cadence tabanı var).
