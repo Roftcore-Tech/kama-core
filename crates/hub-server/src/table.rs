@@ -542,11 +542,11 @@ mod tests {
 
     fn key(sender: u8, recipient: u8, request_id: u32) -> AllocationKey {
         AllocationKey {
-            sender: dest(sender),
+            sender_dest_hash: dest(sender),
             request_id,
-            recipient: dest(recipient),
+            recipient_dest_hash: dest(recipient),
             envelope_type: 1,
-            envelope_digest: [0; 8],
+            envelope_hash8: [0; 8],
         }
     }
 

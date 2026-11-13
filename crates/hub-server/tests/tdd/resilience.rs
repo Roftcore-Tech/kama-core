@@ -4,7 +4,11 @@ use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use hub_server::wire::{classify, envelope, flags, frame, method, Datagram, RpcFrame};
+use hub_server::wire::{
+    classify, Datagram, RpcFrame, ENVELOPE_RELAY_OPEN, ENVELOPE_SESSION_INIT,
+    ENVELOPE_SESSION_INIT_RESPONSE, FLAG_ERROR, FLAG_RESPONSE, FRAME_HEARTBEAT_ACK,
+    FRAME_PLANE1_RPC, METHOD_BIND_PROOF, METHOD_CLIENT_BIND, METHOD_DELIVER, METHOD_ROUTE_MISS,
+};
 
 use crate::harness::{
     data, heartbeat, hex, hub_public, rpc, Phone, Sent, TestRng, World, HUB_SEED,
@@ -32,7 +36,7 @@ fn assert_h10(
         assert!(forwards.is_empty(), "bağsız kaynak iletim tetikleyemez");
         for (_, bytes) in out {
             let Ok(Datagram::Control {
-                frame_type: frame::PLANE1_RPC,
+                frame_type: FRAME_PLANE1_RPC,
                 body,
             }) = classify(bytes)
             else {
@@ -46,7 +50,7 @@ fn assert_h10(
             );
             let f = RpcFrame::decode(body).expect("çerçeve");
             assert!(
-                f.method_id == method::CLIENT_BIND || f.method_id == method::BIND_PROOF,
+                f.method_id == METHOD_CLIENT_BIND || f.method_id == METHOD_BIND_PROOF,
                 "bağsız kaynağa yalnız bind yanıtı: 0x{:02x}",
                 f.method_id
             );
@@ -79,19 +83,19 @@ fn t_r2_a_million_random_and_truncated_datagrams_never_panic() {
     world.bind(&mut alice);
     world.bind(&mut bob);
     world.bind(&mut carol);
-    let h = world.open(&mut alice, &bob, envelope::SESSION_INIT, b"INIT");
+    let h = world.open(&mut alice, &bob, ENVELOPE_SESSION_INIT, b"INIT");
     let rid = alice.rid();
     let seeds: Vec<Vec<u8>> = vec![
         alice.bind1(rid, [1; 16]),
         alice.bind2(rid, &world.hub_pub, [1; 16], [2; 16]),
-        alice.store(rid, 0, envelope::SESSION_INIT, &bob, b"INIT INIT"),
-        bob.store(rid, h, envelope::SESSION_INIT_RESPONSE, &alice, b"SSR1"),
-        alice.store(rid, 0, envelope::RELAY_OPEN, &carol, &[9; 16]),
+        alice.store(rid, 0, ENVELOPE_SESSION_INIT, &bob, b"INIT INIT"),
+        bob.store(rid, h, ENVELOPE_SESSION_INIT_RESPONSE, &alice, b"SSR1"),
+        alice.store(rid, 0, ENVELOPE_RELAY_OPEN, &carol, &[9; 16]),
         heartbeat(&[1, 2, 3, 4]),
         heartbeat(&[]),
         data(h, &[0x77; 100]),
-        rpc(method::DELIVER, 0, 0, &[0; 41]),
-        rpc(method::CLIENT_BIND, flags::RESPONSE, 1, &[0; 35]),
+        rpc(METHOD_DELIVER, 0, 0, &[0; 41]),
+        rpc(METHOD_CLIENT_BIND, FLAG_RESPONSE, 1, &[0; 35]),
     ];
     let sources = [alice.addr, bob.addr, carol.addr];
     let mut datagram = Vec::with_capacity(2048);
@@ -104,7 +108,7 @@ fn t_r2_a_million_random_and_truncated_datagrams_never_panic() {
                 rng.fill_bytes(&mut datagram);
             }
             1 => {
-                datagram.extend_from_slice(&[0, 0, 0, 0, frame::PLANE1_RPC]);
+                datagram.extend_from_slice(&[0, 0, 0, 0, FRAME_PLANE1_RPC]);
                 let n = rng.below(200);
                 let start = datagram.len();
                 datagram.resize(start + n, 0);
@@ -170,7 +174,7 @@ fn t_r3_every_output_is_a_reply_or_a_forward_to_a_bound_endpoint() {
     }
     let h = {
         let bob = phones[1].clone();
-        world.open(&mut phones[0], &bob, envelope::SESSION_INIT, b"INIT")
+        world.open(&mut phones[0], &bob, ENVELOPE_SESSION_INIT, b"INIT")
     };
     for step in 0..20_000 {
         let i = rng.below(phones.len());
@@ -186,8 +190,8 @@ fn t_r3_every_output_is_a_reply_or_a_forward_to_a_bound_endpoint() {
             0 => p.bind1(rid, [rng.below(256) as u8; 16]),
             1 => p.bind2(rid, &world.hub_pub, [1; 16], [2; 16]),
             2 => heartbeat(&[1, 2, 3, 4]),
-            3 => p.store(rid, 0, envelope::SESSION_INIT, &peer, &rng.bytes(24)),
-            4 => p.store(rid, h, envelope::SESSION_INIT_RESPONSE, &peer, b"SSR1"),
+            3 => p.store(rid, 0, ENVELOPE_SESSION_INIT, &peer, &rng.bytes(24)),
+            4 => p.store(rid, h, ENVELOPE_SESSION_INIT_RESPONSE, &peer, b"SSR1"),
             5 => data(h, &rng.bytes(64)),
             6 => data(rng.below(1 << 20) as u32 + 1, b"veri"),
             _ => rng.bytes(40),
@@ -222,10 +226,10 @@ fn t_r4_responses_and_hub_methods_from_phones_are_malformed() {
     let payload = Phone::alice().bind1(1, [0; 16]);
     let body = &payload[10..payload.len() - 16];
     for (method_id, flag) in [
-        (method::CLIENT_BIND, flags::RESPONSE),
-        (method::CLIENT_BIND, flags::ERROR),
-        (method::DELIVER, 0),
-        (method::ROUTE_MISS, 0),
+        (METHOD_CLIENT_BIND, FLAG_RESPONSE),
+        (METHOD_CLIENT_BIND, FLAG_ERROR),
+        (METHOD_DELIVER, 0),
+        (METHOD_ROUTE_MISS, 0),
         (0x85, 0),
     ] {
         assert!(
@@ -239,7 +243,7 @@ fn t_r4_responses_and_hub_methods_from_phones_are_malformed() {
     assert!(world.deliver(alice.addr, &rpc(0x42, 0, 1, b"")).is_empty());
     assert_eq!(world.hub.stats().drop_unknown_method, 1);
     let mut unknown_frame = heartbeat(&[]);
-    unknown_frame[4] = frame::HEARTBEAT_ACK;
+    unknown_frame[4] = FRAME_HEARTBEAT_ACK;
     assert!(world.deliver(alice.addr, &unknown_frame).is_empty());
     assert_eq!(world.hub.stats().drop_unknown_frame, 1);
 }
@@ -260,16 +264,11 @@ fn t_l1_logs_never_contain_payload_envelopes_keys_or_full_identities() {
         .collect();
     world.bind(&mut alice);
     world.bind(&mut bob);
-    let h = world.open(&mut alice, &bob, envelope::SESSION_INIT, &envelope_bytes);
+    let h = world.open(&mut alice, &bob, ENVELOPE_SESSION_INIT, &envelope_bytes);
     world.deliver(alice.addr, &data(h, &payload));
     world.deliver(bob.addr, &data(h, b"GIZLI-MESAJ-METNI"));
     world.advance(Duration::from_secs(2));
-    world.open(
-        &mut alice,
-        &bob,
-        envelope::RELAY_OPEN,
-        &envelope_bytes[..16],
-    ); // emeklilik → link retire
+    world.open(&mut alice, &bob, ENVELOPE_RELAY_OPEN, &envelope_bytes[..16]); // emeklilik → link retire
     for _ in 0..400 {
         world.advance(Duration::from_secs(10));
         world.tick();
