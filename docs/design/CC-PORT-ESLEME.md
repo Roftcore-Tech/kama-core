@@ -165,6 +165,7 @@ quinn'in yukarıdaki eşlemesiyle aynıdır. Verilince (dağıtım profili, öl�
 | alıcı her 2 pakette + sırasız varışta ACK (`spaces.rs`) | `Receiver::set_return_bandwidth`: ACK baytı ≤ Y · dönüş hızı (Y = 0,25; jeton kovası, ilk ACK muaf, ertelenen ACK birleşir) | spec §2.1/§12/§16.1 dönüş bütçesi |
 | ilk pencere sabit | `max(varsayılan, yukarı yön × bütçeli ACK aralığı)`, tavan 1 MiB | ACK'ler saniyeler arayla gelir |
 | `pacing.rs` 1,25·window/srtt (ölçüm yokken) ve Startup ilk-pencere/min_rtt | profil penceresi büyüdüyse pacer ≤ max(profil yukarı yön hızı, kazanç × BtlBw) (`Sender::set_cc_profile_pacing_cap`) | büyük pencere ölçümsüz hızla kuyruğa boşalmasın |
+| ilk pencere oturum boyunca sabit (`bbr/mod.rs` `init_cwnd`) | profilsiz ilk pencere kadar baytı kapsayan ilk teslim hızı örneğinde BtlBw × 5 < profil tavanı ise profil geri çekilir: `Bbr::retract_initial_window` (Startup'ta `cwnd` fazlası ve "ilk pencere / min_rtt" hız tabanı), tavan kalkar, pacer jetonu 2·MTU (`Sender::set_cc_profile_base_window`) | profil gerçeğin birkaç katını söylediğinde ilk ACK'lerden sonra gönderici profilsiz gibi sürsün |
 
 ## Bilinen açık noktalar (PR-1 kapsamı dışı, Ö-CC'ye not)
 - Startup taşması sığ kuyrukta kayıpsız hücrede 48 düşme (%38 ek gönderim) — BBR v1 doğası; draft'ta
