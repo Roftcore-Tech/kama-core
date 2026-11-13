@@ -193,12 +193,11 @@ fn run(plan: &Plan) -> Measured {
     let mut bob_cfg = base_cfg(plan.lanes);
     bob_cfg.runtime.delivery_queue = plan.delivery_queue;
     let bound = receiver_buffer_bound_units(&bob_cfg.runtime, bob_cfg.lanes.as_ref(), 1);
-    let mut alice = ClientTransport::new(
-        base_cfg(plan.lanes),
-        crypto(ALICE),
-        Box::new(hub.link(id(ALICE))),
-    )
-    .expect("alice");
+    let diag_on = std::env::var_os("LBP_DIAG").is_some();
+    let mut alice_cfg = base_cfg(plan.lanes);
+    alice_cfg.runtime.live_diag = diag_on;
+    let mut alice = ClientTransport::new(alice_cfg, crypto(ALICE), Box::new(hub.link(id(ALICE))))
+        .expect("alice");
     let heads = if plan.heads_dropped {
         (0..4).map(|l| tagged(l, 0)).collect()
     } else {
@@ -330,6 +329,7 @@ fn run(plan: &Plan) -> Measured {
     // başı birlikte yalnız kısa süre kara delikte kalır (sürekli kaybolan dört birim motorun yeni
     // veri hızını düşürür; bu düzeneğin yapay koşuludur, alıcı tamponuyla ilgisi yoktur).
     let mut rt_on = !plan.heads_dropped;
+    let mut next_diag = Duration::ZERO;
     loop {
         step(&mut alice, &mut bob, &mut got, &mut m, true, rt_on);
         let full = if plan.heads_dropped {
@@ -341,6 +341,36 @@ fn run(plan: &Plan) -> Measured {
         };
         if full {
             break;
+        }
+        if diag_on && started.elapsed() >= next_diag {
+            next_diag += Duration::from_secs(1);
+            let st = alice.lane_stats().expect("ş");
+            let d = alice.session_live_diags();
+            let t = d
+                .first()
+                .and_then(|(_, d)| d.recovery.as_ref().map(|r| (r.timers, r.since_last_ack_ns)));
+            let c = d.first().map(|(_, d)| {
+                (
+                    d.control.inflight_bytes,
+                    d.control.state,
+                    d.retransmits,
+                    d.tail_probes,
+                    d.dups,
+                    d.srtt_us,
+                    d.tx_datagrams,
+                    d.rx_datagrams,
+                )
+            });
+            eprintln!(
+                "LBP t={:?} rt_on={rt_on} given={:?} bob={:?} naw={} naf={} ctl={:?} timers={:?}",
+                started.elapsed(),
+                st.given,
+                bob.receiver_buffered_for_test(),
+                bob.data_not_admitted_window(),
+                bob.data_not_admitted_full(),
+                c,
+                t
+            );
         }
         assert!(
             Instant::now() < deadline,
