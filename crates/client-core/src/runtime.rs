@@ -3092,10 +3092,19 @@ async fn client_task(
             }
             _ = rtprop.tick() => {
                 let now = elapsed_ns(start);
-                // [v1/PARAM] bounded retry (B2): confirmed olana dek her ≥200ms'de bir, ≤25 deneme.
+                // [v1/PARAM] bounded retry (B2): confirmed olana dek ≥200 ms aralıkla, ≤25 deneme.
+                // [PARAM-GERİ-ÇEKİLME 2026-11-11] Aralık 200 ms'den başlar, her denemede ikiye
+                // katlanır, 5 s'de durur (200, 400, 800 … 5000 ms). Sabit 200 ms kadans 25 B/s
+                // hatta ilk 5 s'de 25 × 79 B PARAM çerçevesi (≈ 80 s hat süresi) boşaltıyor, 20'lik
+                // darboğaz kuyruğunu taşırıyor ve ilk veri kopyalarını düşürüyordu (gerçek yığın r25
+                // izi: iki motorda da ilk ileti ≈ 2 dk). Onay 300 ms RTT + serileştirmeyle ≥ 6 s'de
+                // gelir; geri çekilmeyle o ana dek 6 çerçeve çıkar. İyi hatta ilk deneme yine 200 ms.
                 if let Some(plan) = param_plan.as_ref() {
                     let now_ms = now / 1_000_000;
-                    let due = param_tries == 0 || now_ms >= param_last_tick_ms + 200;
+                    let backoff_ms = 200u64
+                        .saturating_mul(1u64 << param_tries.saturating_sub(1).min(16))
+                        .min(5_000);
+                    let due = param_tries == 0 || now_ms >= param_last_tick_ms + backoff_ms;
                     if !param_confirmed && param_tries < 25 && due {
                         if let (Some(p), Control::ParamSet { param_hash, .. }) = (fec.as_ref(), &plan.control) {
                             let f = encode_param(p.profile_id, p.code_suite_id, param_hash);
