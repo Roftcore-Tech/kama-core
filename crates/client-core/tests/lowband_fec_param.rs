@@ -15,7 +15,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use client_core::runtime::{ClientEndpoint, FecRuntimeConfig, RuntimeConfig, ServerEndpoint};
+use client_core::runtime::{ClientEndpoint, RuntimeConfig, ServerEndpoint};
 use client_core::seam::IdentitySeam;
 use kama_contracts::s3::{
     Opened, PacketProtection, ProtectionClass, ProtectionContext, ProtectionLimits, SealError,
@@ -51,20 +51,6 @@ impl PacketProtection for DropUnitsSeam {
     }
     fn limits(&self, ctx: ProtectionContext) -> ProtectionLimits {
         self.inner.limits(ctx)
-    }
-}
-
-/// Profil 0x03 (K 8, R 4, E 64), elle r = 4; 48 B birim.
-fn fec03(delivery_queue: usize) -> RuntimeConfig {
-    RuntimeConfig {
-        max_unit_bytes: 48,
-        fec: Some(FecRuntimeConfig {
-            profile_id: 0x03,
-            manual_r: Some(4),
-        }),
-        drain_cap: Duration::from_millis(300),
-        delivery_queue,
-        ..RuntimeConfig::default()
     }
 }
 
