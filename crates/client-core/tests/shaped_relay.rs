@@ -26,6 +26,14 @@
 //! `CC_SHAPED_DROP_UNIT=<birim>[:<n>]` bu birimin ileri yöndeki ilk `n` (varsayılan 1) iletimini
 //! düşürür; `CC_SHAPED_DROP_FINAL_ACKS=<k>` alıcı bütün birimleri aldıktan sonra dönüşe sunulan ilk
 //! `k` ACK çerçevesini düşürür.
+//!
+//! Taklit dönüş mesajı (yalnız ölçüm; varsayılan kapalı): `CC_SHAPED_RETURN_MSG=1|birim|dosya`
+//! alıcı uygulamanın teslimde göndericiye döndürdüğü kısa mesajı TAKLİT eder (gerçek kama-app
+//! RECEIPT'i değil; bkz. `ReturnMsgMode`). Mesajlar iki düğüm arasındaki ters yönlü ikinci oturumdan
+//! (alıcı düğümde `ClientEndpoint`, gönderici düğümde `ServerEndpoint`) aynı iki biçimlendiriciden
+//! geçer: mesaj dar dönüş hattından, ACK'leri ileri hattan. Ters oturum aktarımdan önce açılır ve
+//! `CC_SHAPED_RETURN_WARM_MS` (varsayılan 8 000) kadar ısınır. `ÖZET` sonuna `taklit_dönüş_son` ve
+//! `taklit_dönüş_bayt` eklenir.
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
@@ -61,6 +69,8 @@ struct TlRec {
     pn: u64,
     head: [u8; TL_HEAD],
     head_len: u8,
+    /// Hangi oturumun paketi: 0 = veri oturumu, 1 = taklit dönüş oturumu (`CC_SHAPED_RETURN_MSG`).
+    path: u8,
 }
 
 /// IdentitySeam datagramını düz çerçeve + PN'e ayırır (etiketin ilk 8 baytı PN, BE).
@@ -89,8 +99,8 @@ struct Shaper {
     lcg: u64,
     /// Serileştirmesi süren paketlerin bitiş anları (kuyruk doluluğu).
     busy: VecDeque<Instant>,
-    /// Varış anı sırasıyla bekleyenler.
-    wire: VecDeque<(Instant, Vec<u8>)>,
+    /// Varış anı sırasıyla bekleyenler (varış anı, datagram, oturum yolu: 0 veri, 1 taklit dönüş).
+    wire: VecDeque<(Instant, Vec<u8>, u8)>,
     sent: u64,
     bytes: u64,
     dropped_queue: u64,
@@ -143,7 +153,15 @@ impl Shaper {
     }
 
     /// [KUYRUK-AYRIŞTIRMA] Sabit boyutlu kayıt (sığa doluysa sayılır, ayırma yok).
-    fn tl_push(&mut self, now: Instant, arrives: Option<Instant>, fate: u8, size: u64, pkt: &[u8]) {
+    fn tl_push(
+        &mut self,
+        now: Instant,
+        arrives: Option<Instant>,
+        fate: u8,
+        size: u64,
+        pkt: &[u8],
+        path: u8,
+    ) {
         let Some(tl) = self.tl.as_mut() else {
             return;
         };
@@ -163,6 +181,7 @@ impl Shaper {
             pn,
             head,
             head_len: n as u8,
+            path,
         });
     }
 
@@ -224,6 +243,13 @@ impl Shaper {
     }
 
     fn offer(&mut self, now: Instant, pkt: Vec<u8>) {
+        self.offer_path(now, pkt, 0);
+    }
+
+    /// `path` (0 veri, 1 taklit dönüş oturumu) yalnız varışta hedef soketi seçer ve kayda yazılır:
+    /// iki oturum aynı hız / kuyruk / gecikme / kayıp düzeneğini paylaşır (aynı fiziksel hat).
+    /// Deney kancaları yalnız veri oturumuna uygulanır.
+    fn offer_path(&mut self, now: Instant, pkt: Vec<u8>, path: u8) {
         while self.busy.front().is_some_and(|&t| t <= now) {
             self.busy.pop_front();
         }
@@ -231,7 +257,7 @@ impl Shaper {
         if self.busy.len() >= self.limit {
             self.dropped_queue += 1;
             self.trace_line(now, size, "KUYRUK_DÜŞTÜ");
-            self.tl_push(now, None, 1, size, &pkt);
+            self.tl_push(now, None, 1, size, &pkt, path);
             return;
         }
         self.trace_line(now, size, "");
@@ -244,35 +270,35 @@ impl Shaper {
         // Rastgele çekim deney kancasından ÖNCE ve her pakette aynı sırayla: kanca açıkken de tohumun
         // kayıp deseni değişmez.
         let random_drop = self.loss_permille > 0 && self.rand_permille() < self.loss_permille;
-        let forced = self.forced_drop(&pkt);
+        let forced = path == 0 && self.forced_drop(&pkt);
         if random_drop {
             self.dropped_random += 1;
             self.trace_line(now, size, "YOLDA_DÜŞTÜ");
-            self.tl_push(now, None, 2, size, &pkt);
+            self.tl_push(now, None, 2, size, &pkt, path);
             return;
         }
         if forced {
             self.dropped_forced += 1;
             self.trace_line(now, size, "DENEY_DÜŞTÜ");
-            self.tl_push(now, None, 3, size, &pkt);
+            self.tl_push(now, None, 3, size, &pkt, path);
             return;
         }
         let at = done + self.delay_sample();
-        self.tl_push(now, Some(at), 0, size, &pkt);
+        self.tl_push(now, Some(at), 0, size, &pkt, path);
         // Varış anına göre sıralı ekle (jitter yeniden sıralama üretebilir).
         let pos = self
             .wire
             .iter()
-            .rposition(|(t, _)| *t <= at)
+            .rposition(|(t, _, _)| *t <= at)
             .map_or(0, |i| i + 1);
-        self.wire.insert(pos, (at, pkt));
+        self.wire.insert(pos, (at, pkt, path));
     }
 
-    fn take_due(&mut self, now: Instant) -> Vec<Vec<u8>> {
+    fn take_due(&mut self, now: Instant) -> Vec<(Vec<u8>, u8)> {
         let mut out = Vec::new();
-        while self.wire.front().is_some_and(|(t, _)| *t <= now) {
-            if let Some((_, p)) = self.wire.pop_front() {
-                out.push(p);
+        while self.wire.front().is_some_and(|(t, _, _)| *t <= now) {
+            if let Some((_, p, path)) = self.wire.pop_front() {
+                out.push((p, path));
             }
         }
         out
@@ -298,18 +324,136 @@ struct RelayStats {
     rev_dropped_queue: u64,
 }
 
+/// [TAKLİT-DÖNÜŞ] Taklit dönüş oturumunun röle uçları: `front` alıcı düğümün dönüş mesajı
+/// göndericisine (`ClientEndpoint`) bakar, `back` gönderici düğümün dönüş mesajı alıcısına
+/// (`ServerEndpoint`) bağlıdır. Mesajlar dönüş biçimlendiricisinden, ACK'leri ileri biçimlendiriciden geçer.
+struct ReturnMsgSockets {
+    front: UdpSocket,
+    back: UdpSocket,
+}
+
+/// [TAKLİT-DÖNÜŞ] `CC_SHAPED_RETURN_MSG`: alıcı uygulamanın göndericiye döndürdüğü kısa mesajın
+/// TAKLİDİ. Gerçek kama-app RECEIPT'i DEĞİLDİR: AMP kaydı kurulmaz, codec ve Messenger çalışmaz,
+/// RECEIPT'in üretim / yeniden sunum kuralları sınanmaz. Yalnız boyut, sıklık ve veri yolu ürüne
+/// eşlenir; ölçtüğü şey bu yükün dar dönüş hattındaki kuyruk maliyetidir.
+///
+/// * `1` / `birim` — teslim edilen her birime bir mesaj, 10 B: AMP kayıt başlığı 5 B
+///   (`kama-app/src/codec/limits.rs:24` `APP_RECORD_HEADER_BYTES`) + RECEIPT gövdesi 5 B
+///   (`:87` `RECEIPT_BODY_BYTES`). Ürün: her TEXT'e (tekrar dahil) bir `RECEIPT(delivered)`
+///   (`kama-app/src/messaging.rs:11-13`, gönderim `:1119-1143`).
+/// * `dosya` — bütün birimler teslim edilince tek mesaj, 14 B: 5 B + FILE_RECEIPT gövdesi 9 B
+///   (`limits.rs:97`). Ürün: aktarım başına bir `FILE_RECEIPT` (`file_transfer.rs:14`, `:1251-1263`).
+///
+/// Ürün iki mesajı da `DeliveryPolicy::Reliable` ve `TrafficClass::Ctrl` ile oturumun ters
+/// yönlü uç noktasından verir; şeritler kapalıyken (varsayılan, `transport.rs:284`) sınıf okunmaz,
+/// birim aynı `ClientEndpoint` veri yolundan gider (`transport.rs:1834-1836`). Taklit de öyle
+/// yapar. `0` = kapalı.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReturnMsgMode {
+    PerUnit,
+    Once,
+}
+
+impl ReturnMsgMode {
+    /// AMP `RECEIPT` kaydının boyu (başlık 5 + gövde 5).
+    const RECEIPT_RECORD_BYTES: usize = 10;
+    /// AMP `FILE_RECEIPT` kaydının boyu (başlık 5 + gövde 9).
+    const FILE_RECEIPT_RECORD_BYTES: usize = 14;
+    /// Kimliğin kayıttaki konumu (RECEIPT gövdesinin `ref_msg_id u32` alanı; başlıktan sonra).
+    const REF_OFFSET: usize = 5;
+
+    fn from_env() -> Option<Self> {
+        match std::env::var("CC_SHAPED_RETURN_MSG").ok()?.as_str() {
+            "0" => None,
+            "dosya" => Some(Self::Once),
+            _ => Some(Self::PerUnit),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::PerUnit => "birim",
+            Self::Once => "dosya",
+        }
+    }
+
+    /// Beklenen mesaj sayısı.
+    fn messages(self, units: u64) -> u64 {
+        match self {
+            Self::PerUnit => units,
+            Self::Once => 1,
+        }
+    }
+
+    /// `delivered`. teslimde gönderilecek mesaj (birim kimliği kayda yazılır).
+    fn message_for(self, unit_id: u64, delivered: u64, units: u64) -> Option<Vec<u8>> {
+        match self {
+            Self::PerUnit => {
+                let mut m = vec![0u8; Self::RECEIPT_RECORD_BYTES];
+                let id = u32::try_from(unit_id).unwrap_or(u32::MAX);
+                m[Self::REF_OFFSET..Self::REF_OFFSET + 4].copy_from_slice(&id.to_be_bytes());
+                Some(m)
+            }
+            Self::Once => (delivered == units).then(|| vec![0u8; Self::FILE_RECEIPT_RECORD_BYTES]),
+        }
+    }
+
+    /// Gelen mesajın kayıt dizini (birim kipinde birim kimliği, tek kipte 0).
+    fn index_of(payload: &[u8]) -> usize {
+        payload
+            .get(Self::REF_OFFSET..Self::REF_OFFSET + 4)
+            .and_then(|b| b.try_into().ok())
+            .map_or(0, |b| u32::from_be_bytes(b) as usize)
+    }
+}
+
+/// Seçimli teslim okuması: uç yoksa hiç tamamlanmaz.
+async fn next_delivery_opt(
+    s: Option<&mut client_core::runtime::ServerHandle>,
+) -> Option<client_core::runtime::Delivery> {
+    match s {
+        Some(s) => s.next_delivery().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Seçimli soket okuması: soket yoksa hiç tamamlanmaz (`select!` dalı boşta kalır).
+async fn recv_from_opt(
+    s: Option<&UdpSocket>,
+    buf: &mut [u8],
+) -> std::io::Result<(usize, SocketAddr)> {
+    match s {
+        Some(s) => s.recv_from(buf).await,
+        None => std::future::pending().await,
+    }
+}
+
+async fn recv_opt(s: Option<&UdpSocket>, buf: &mut [u8]) -> std::io::Result<usize> {
+    match s {
+        Some(s) => s.recv(buf).await,
+        None => std::future::pending().await,
+    }
+}
+
 /// Röle: `front` (istemci tarafı) ↔ `back` (sunucuya bağlı). Kilit `await` boyunca tutulmaz.
+/// `ret` verilirse ters yönlü taklit dönüş oturumu aynı iki biçimlendiriciden geçer.
 async fn relay(
     front: UdpSocket,
     back: UdpSocket,
+    ret: Option<ReturnMsgSockets>,
     fwd: Arc<Mutex<Shaper>>,
     rev: Arc<Mutex<Shaper>>,
     units: u64,
     mut stop: tokio::sync::oneshot::Receiver<()>,
 ) {
     let mut client: Option<SocketAddr> = None;
+    let mut ret_client: Option<SocketAddr> = None;
     let mut up = vec![0u8; DATAGRAM_MAX];
     let mut down = vec![0u8; DATAGRAM_MAX];
+    let mut r_up = vec![0u8; DATAGRAM_MAX];
+    let mut r_down = vec![0u8; DATAGRAM_MAX];
+    let r_front = ret.as_ref().map(|r| &r.front);
+    let r_back = ret.as_ref().map(|r| &r.back);
     let mut tick = tokio::time::interval(TICK);
     // [KUYRUK-AYRIŞTIRMA] Alıcıya varan farklı birimler: hepsi varınca dönüş yönü `complete`
     // işaretlenir (deney (ii) ve son teyit ölçümü). Varan paketin başlığı okunur, ayırma yok.
@@ -326,10 +470,27 @@ async fn relay(
                 let Ok(n) = r else { continue };
                 rev.lock().expect("kilit").offer(Instant::now(), down[..n].to_vec());
             }
+            // [TAKLİT-DÖNÜŞ] Alıcı düğümün dönüş mesajları dar dönüş hattına; gönderici düğümün
+            // onlara verdiği ACK'ler ileri hatta.
+            r = recv_from_opt(r_front, &mut r_up) => {
+                let Ok((n, from)) = r else { continue };
+                ret_client = Some(from);
+                rev.lock().expect("kilit").offer_path(Instant::now(), r_up[..n].to_vec(), 1);
+            }
+            r = recv_opt(r_back, &mut r_down) => {
+                let Ok(n) = r else { continue };
+                fwd.lock().expect("kilit").offer_path(Instant::now(), r_down[..n].to_vec(), 1);
+            }
             _ = tick.tick() => {
                 let now = Instant::now();
                 let due_f = fwd.lock().expect("kilit").take_due(now);
-                for p in due_f {
+                for (p, path) in due_f {
+                    if path == 1 {
+                        if let (Some(s), Some(to)) = (r_front, ret_client) {
+                            let _ = s.send_to(&p, to).await;
+                        }
+                        continue;
+                    }
                     if arrived_n < units {
                         let unit = seam_split(&p)
                             .and_then(|(f, _)| decode_data(f))
@@ -347,8 +508,12 @@ async fn relay(
                     let _ = back.send(&p).await;
                 }
                 let due_r = rev.lock().expect("kilit").take_due(now);
-                if let Some(to) = client {
-                    for p in due_r {
+                for (p, path) in due_r {
+                    if path == 1 {
+                        if let Some(s) = r_back {
+                            let _ = s.send(&p).await;
+                        }
+                    } else if let Some(to) = client {
                         let _ = front.send_to(&p, to).await;
                     }
                 }
@@ -461,6 +626,8 @@ struct TlInput<'a> {
     probes: u64,
     retransmits: u64,
     forced: u64,
+    ret_mode: Option<ReturnMsgMode>,
+    ret_at: &'a [Option<Instant>],
 }
 
 /// [KUYRUK-AYRIŞTIRMA] Koşu sonu çözümleme ve yazım (ölçüm bittikten sonra; sıcak yol değil).
@@ -477,6 +644,10 @@ fn tl_report(x: &TlInput<'_>) {
     let mut pn_unit: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
     let mut max_pn = 0u64;
     for r in x.fwd {
+        // Taklit dönüş oturumunun ileri yöndeki paketleri (onun ACK'leri) ayrı PN uzayındadır.
+        if r.path != 0 {
+            continue;
+        }
         if let Some((_, u, _)) = decode_data(&r.head[..usize::from(r.head_len)]) {
             pn_unit.insert(r.pn, u);
         }
@@ -497,9 +668,22 @@ fn tl_report(x: &TlInput<'_>) {
     let (mut pa_n, mut pa_b, mut rc_n, mut rc_b, mut other_b) = (0u64, 0u64, 0u64, 0u64, 0u64);
     let done_inst = x.completed.map(|d| x.t0 + d);
     let mut lines: Vec<String> = Vec::new();
+    // [TAKLİT-DÖNÜŞ] Dönüş hattındaki taklit oturum paketleri: t0'dan sonra (mesaj, yeniden
+    // iletim, PARAM) ve öncesi (ısınma: PARAM değişimi) ayrı.
+    let (mut ret_n, mut ret_b, mut ret_data_n, mut ret_warm_b) = (0u64, 0u64, 0u64, 0u64);
     for r in x.rev {
         let frame = &r.head[..usize::from(r.head_len)];
         let wire = u64::from(r.wire);
+        if r.path != 0 {
+            if r.offered < x.t0 {
+                ret_warm_b += wire;
+            } else {
+                ret_n += 1;
+                ret_b += wire;
+                ret_data_n += u64::from(decode_data(frame).is_some());
+            }
+            continue;
+        }
         match frame.first() {
             Some(&FRAME_TYPE_ACK | &FRAME_TYPE_ACK_V2) => {
                 ack_n += 1;
@@ -562,8 +746,15 @@ fn tl_report(x: &TlInput<'_>) {
     let mut per_unit: std::collections::BTreeMap<u64, Vec<&TlRec>> =
         std::collections::BTreeMap::new();
     let (mut data_n, mut data_b, mut param_n) = (0u64, 0u64, 0u64);
+    let mut ret_ack_fwd_b = 0u64;
     for r in x.fwd {
         let frame = &r.head[..usize::from(r.head_len)];
+        if r.path != 0 {
+            if r.offered >= x.t0 {
+                ret_ack_fwd_b += u64::from(r.wire);
+            }
+            continue;
+        }
         if let Some((_, u, _)) = decode_data(frame) {
             per_unit.entry(u).or_default().push(r);
             data_n += 1;
@@ -576,8 +767,28 @@ fn tl_report(x: &TlInput<'_>) {
         (Some(d), Some(c)) => format!("{:.2}", c.saturating_duration_since(d).as_secs_f64()),
         _ => "-".to_string(),
     };
+    // [TAKLİT-DÖNÜŞ] Üçüncü zaman: taklit dönüş mesajının gönderici düğüme son varışı (hepsi
+    // geldiyse). Alanlar ÖZET'in SONUNA eklenir; öncekilerin sırası değişmez.
+    let ret_fields = match x.ret_mode {
+        Some(m) => {
+            let got = x.ret_at.iter().flatten().count();
+            let last = if got == x.ret_at.len() {
+                x.ret_at.iter().flatten().max().copied()
+            } else {
+                None
+            };
+            format!(
+                "taklit_dönüş={} taklit_dönüş_mesaj={got}/{} taklit_dönüş_ilk={} taklit_dönüş_son={} taklit_dönüş_bayt={ret_b}B taklit_dönüş_paket={ret_n} taklit_dönüş_veri_paketi={ret_data_n} taklit_dönüş_ack_ileri={ret_ack_fwd_b}B taklit_ısınma={ret_warm_b}B",
+                m.label(),
+                x.ret_at.len(),
+                so(x.ret_at.iter().flatten().min().copied()),
+                so(last),
+            )
+        }
+        None => "taklit_dönüş=kapalı".to_string(),
+    };
     println!(
-        "ÖZET tohum={} tamamlanma={} alıcı_son_teslim={} hepsi_alıcıda={} gönderici_son_teyit={} teyit_farkı={gap} prob={} retx={} deney_düşürme={} ileri_veri={data_n}/{data_b}B param={param_n} dönüş_ack={ack_n}/{ack_b}B dönüş_ack_teslime_dek={ack_b_done}B dönüş_ack_teyide_dek={ack_b_conf}B param_ack={pa_n}/{pa_b}B recovered={rc_n}/{rc_b}B dönüş_diğer={other_b}B kayıt_taşma={}",
+        "ÖZET tohum={} tamamlanma={} alıcı_son_teslim={} hepsi_alıcıda={} gönderici_son_teyit={} teyit_farkı={gap} prob={} retx={} deney_düşürme={} ileri_veri={data_n}/{data_b}B param={param_n} dönüş_ack={ack_n}/{ack_b}B dönüş_ack_teslime_dek={ack_b_done}B dönüş_ack_teyide_dek={ack_b_conf}B param_ack={pa_n}/{pa_b}B recovered={rc_n}/{rc_b}B dönüş_diğer={other_b}B kayıt_taşma={} {ret_fields}",
         x.seed,
         x.completed.map_or("YOK".to_string(), |d| format!("{:.2}", d.as_secs_f64())),
         so(last_deliv),
@@ -668,7 +879,24 @@ fn tl_report(x: &TlInput<'_>) {
                 |(_, u, _)| format!("birim={u}"),
             );
             println!(
-                "TL-İLERİ sunum={:.3} pn={} {what} bayt={} sonuç={} varış={}",
+                "TL-İLERİ yol={} sunum={:.3} pn={} {what} bayt={} sonuç={} varış={}",
+                r.path,
+                s(r.offered),
+                r.pn,
+                r.wire,
+                fate(r.fate),
+                so(r.arrives)
+            );
+        }
+        // [TAKLİT-DÖNÜŞ] Dönüş hattındaki taklit oturum paketleri (mesaj, yeniden iletim, PARAM).
+        for r in x.rev.iter().filter(|r| r.path != 0) {
+            let frame = &r.head[..usize::from(r.head_len)];
+            let what = decode_data(frame).map_or_else(
+                || format!("tür=0x{:02x}", frame.first().copied().unwrap_or(0)),
+                |(_, u, _)| format!("birim={u}"),
+            );
+            println!(
+                "TL-TAKLİT sunum={:.3} pn={} {what} bayt={} sonuç={} varış={}",
                 s(r.offered),
                 r.pn,
                 r.wire,
@@ -722,6 +950,11 @@ async fn run_cell(
             }),
         ..cfg
     };
+    // [TAKLİT-DÖNÜŞ] Ters yönlü oturumun uçları düğümlerinin yön hızlarını taşır: dönüş mesajı
+    // göndericisi alıcı düğümde (sunucunun yapılandırması), alıcısı gönderici düğümde.
+    let ret_mode = ReturnMsgMode::from_env();
+    let ret_client_cfg = server_cfg.clone();
+    let ret_server_cfg = cfg.clone();
     let server = ServerEndpoint::bind(
         "127.0.0.1:0".parse().unwrap(),
         server_cfg,
@@ -729,6 +962,38 @@ async fn run_cell(
     )
     .await
     .expect("server bind");
+    let mut ret_server = match ret_mode {
+        Some(_) => Some(
+            ServerEndpoint::bind(
+                "127.0.0.1:0".parse().unwrap(),
+                ret_server_cfg,
+                Box::new(IdentitySeam::new()),
+            )
+            .await
+            .expect("taklit dönüş sunucusu"),
+        ),
+        None => None,
+    };
+    let ret_sockets = match ret_server.as_ref() {
+        Some(rs) => {
+            let r_front = UdpSocket::bind("127.0.0.1:0").await.expect("röle dönüş ön");
+            let r_back = UdpSocket::bind("127.0.0.1:0")
+                .await
+                .expect("röle dönüş arka");
+            r_back
+                .connect(rs.local_addr())
+                .await
+                .expect("röle→dönüş sunucusu");
+            Some(ReturnMsgSockets {
+                front: r_front,
+                back: r_back,
+            })
+        }
+        None => None,
+    };
+    let ret_front_addr = ret_sockets
+        .as_ref()
+        .map(|s| s.front.local_addr().expect("adres"));
     let front = UdpSocket::bind("127.0.0.1:0").await.expect("röle ön");
     let back = UdpSocket::bind("127.0.0.1:0").await.expect("röle arka");
     back.connect(server.local_addr())
@@ -778,11 +1043,29 @@ async fn run_cell(
     let relay_task = tokio::spawn(relay(
         front,
         back,
+        ret_sockets,
         Arc::clone(&fwd),
         Arc::clone(&rev),
         units,
         stop_rx,
     ));
+    // [TAKLİT-DÖNÜŞ] Ürünün ters yönlü uç noktası oturum hazır olunca açılır
+    // (`ClientTransport::open_endpoint`): PARAM değişimi aktarımdan ÖNCE biter. Isınma bunu taklit
+    // eder (`CC_SHAPED_RETURN_WARM_MS`, varsayılan 8 s: 62 B/s'de PARAM ve yeniden denemeleri boşalır).
+    let ret_client = match ret_front_addr {
+        Some(addr) => {
+            let c = ClientEndpoint::connect(addr, ret_client_cfg, Box::new(IdentitySeam::new()))
+                .await
+                .expect("taklit dönüş istemcisi");
+            tokio::time::sleep(Duration::from_millis(env_u64(
+                "CC_SHAPED_RETURN_WARM_MS",
+                8_000,
+            )))
+            .await;
+            Some(c)
+        }
+        None => None,
+    };
 
     let mut client = ClientEndpoint::connect(front_addr, cfg, Box::new(IdentitySeam::new()))
         .await
@@ -818,6 +1101,10 @@ async fn run_cell(
     let live_on = std::env::var("CC_SHAPED_LIVE").is_ok();
     let mut live_log: Vec<LiveRec> =
         Vec::with_capacity(if tl_on && live_on { LIVE_CAP } else { 0 });
+    // [TAKLİT-DÖNÜŞ] Gönderici düğümde dönüş mesajlarının varışı (kipe göre birim başına ya da tek).
+    let ret_expected = ret_mode.map_or(0, |m| m.messages(units));
+    let mut ret_at: Vec<Option<Instant>> = vec![None; usize::try_from(ret_expected).unwrap_or(0)];
+    let mut ret_got = 0u64;
     let loop_end = tokio::time::timeout(t_max, async {
         let mut next_offer = tokio::time::interval(if interval.is_zero() {
             Duration::from_secs(3600)
@@ -827,10 +1114,23 @@ async fn run_cell(
         next_offer.tick().await;
         let mut live_tick = tokio::time::interval(Duration::from_secs(1));
         let mut conf_tick = tokio::time::interval(Duration::from_millis(2));
-        // TL kipinde alıcı bitirdikten sonra da göndericinin son teyidi beklenir.
-        while delivered < units || (tl_on && confirmed < units) {
+        // TL kipinde alıcı bitirdikten sonra da göndericinin son teyidi beklenir; taklit dönüş
+        // kipinde son dönüş mesajının gönderici düğüme varışı da.
+        while delivered < units || (tl_on && confirmed < units) || ret_got < ret_expected {
             let d = tokio::select! {
                 d = server.next_delivery(), if delivered < units => d,
+                r = next_delivery_opt(ret_server.as_mut()), if ret_got < ret_expected => {
+                    if let Some(r) = r {
+                        let idx = ReturnMsgMode::index_of(&r.payload);
+                        if let Some(slot) = ret_at.get_mut(idx) {
+                            if slot.is_none() {
+                                *slot = Some(Instant::now());
+                                ret_got += 1;
+                            }
+                        }
+                    }
+                    continue;
+                }
                 _ = conf_tick.tick(), if tl_on => {
                     let now = Instant::now();
                     while let Some(u) = client.try_acked() {
@@ -881,6 +1181,13 @@ async fn run_cell(
                 if let Some(slot) = deliv_at.get_mut(d.unit_id as usize) {
                     *slot = Some(Instant::now());
                 }
+                // [TAKLİT-DÖNÜŞ] Alıcı uygulama teslimde dönüş mesajını aynı düğüm çiftinin ters
+                // yönlü oturumuna verir.
+                if let (Some(m), Some(rc)) = (ret_mode, ret_client.as_ref()) {
+                    if let Some(msg) = m.message_for(d.unit_id, delivered, units) {
+                        rc.send(msg).expect("taklit dönüş mesajı");
+                    }
+                }
                 for (i, pct) in [10u64, 50, 90].iter().enumerate() {
                     if marks[i].is_none() && delivered * 100 >= units * pct {
                         marks[i] = Some(t0.elapsed());
@@ -920,6 +1227,12 @@ async fn run_cell(
     );
     let cstats = client.shutdown().await;
     let _ = server.shutdown().await;
+    if let Some(rc) = ret_client {
+        let _ = rc.shutdown().await;
+    }
+    if let Some(rs) = ret_server {
+        let _ = rs.shutdown().await;
+    }
     let _ = stop_tx.send(());
     let _ = relay_task.await;
     let f = fwd.lock().expect("kilit");
@@ -940,6 +1253,8 @@ async fn run_cell(
             probes: cstats.fate.activation.tail_probes,
             retransmits: cstats.fate.activation.retransmits,
             forced: f.dropped_forced + r.dropped_forced,
+            ret_mode,
+            ret_at: &ret_at,
         });
     }
     Outcome {
