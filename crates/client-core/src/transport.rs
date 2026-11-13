@@ -148,27 +148,32 @@ pub const MAX_INBOX: usize = 1024;
 /// birim (SR-AUDIT-001), `sessions` etkin oturum için:
 ///
 /// ```text
-/// delivery_queue                      veri alıcısının teslim kanalı (`RuntimeConfig`)
-/// + MAX_INBOX                         adaptörün teslim kutusu
-/// + sessions × LANE_COUNT × genişlik  sıralayıcı: şerit başına en çok kabul penceresi
-///                                     (genişlik = `RuntimeConfig::max_inflight_units`)
+/// delivery_queue                   veri alıcısının teslim kanalı (`RuntimeConfig`)
+/// + MAX_INBOX                      adaptörün teslim kutusu
+/// + sessions × Σ genişlik(şerit)   sıralayıcı: şerit başına en çok o şeridin kabul genişliği
 /// ```
 ///
-/// Bileşenlerin her biri kendi yerinde zorlanır: kanal sınırlı `mpsc` (doluyken veri alıcısı
-/// datagramı motora vermez, ACK yok); kutu [`MAX_INBOX`]; sıralayıcının bir şeridi yalnız kabul
-/// penceresindeki birimi alır (`ExpectedSessions::admit_limits`). Şeritler kapalıyken yalnız şerit
-/// 0 dolar (gerçek tavan `sessions × genişlik`); formül şeritli üst sınırdır. Ürün profilinde
-/// (1024 + 1024 + 4 × 4096) bir oturum için 18 432 birim.
+/// Şeritler açıkken genişlikler `LaneConfig::admit_widths`'tir (ürün: PTT/SIG/TEXT 256, FILE
+/// 4096 → bir oturum için 1024 + 1024 + 3 × 256 + 4096 = 6 912 birim); kapalıyken tek şerit,
+/// genişlik `RuntimeConfig::max_inflight_units`. Bileşenlerin her biri kendi yerinde zorlanır:
+/// kanal sınırlı `mpsc` (doluyken veri alıcısı datagramı motora vermez, ACK yok); kutu
+/// [`MAX_INBOX`]; sıralayıcının bir şeridi yalnız kabul penceresindeki birimi alır
+/// (`ExpectedSessions::admit_limits`).
 #[must_use]
-pub fn receiver_buffer_bound_units(runtime: &RuntimeConfig, sessions: usize) -> usize {
+pub fn receiver_buffer_bound_units(
+    runtime: &RuntimeConfig,
+    lanes: Option<&LaneConfig>,
+    sessions: usize,
+) -> usize {
+    let per_session = lanes.map_or(runtime.max_inflight_units, |l| {
+        l.admit_widths.iter().fold(0usize, |acc, &w| {
+            acc.saturating_add(usize::try_from(w).unwrap_or(usize::MAX))
+        })
+    });
     runtime
         .delivery_queue
         .saturating_add(MAX_INBOX)
-        .saturating_add(
-            sessions
-                .saturating_mul(LANE_COUNT)
-                .saturating_mul(runtime.max_inflight_units),
-        )
+        .saturating_add(sessions.saturating_mul(per_session))
 }
 
 // ── Zarf taşıyıcısı (iş emri T2) ─────────────────────────────────────────────────────────────
@@ -491,8 +496,8 @@ struct Renewal {
 /// [F3] Eksik sıra başı HİÇBİR ZAMAN atlanmaz: buraya gelen her birim veri alıcısında ACK'lenmiştir,
 /// atlamak ACK'lenmiş birimi atmak olurdu. Bellek sınırı burada değil veri alıcısının kabul
 /// penceresindedir ([`ExpectedSessions::set_admit_window`]): şeridin `next`'inden pencere genişliği
-/// ve ötesindeki birim ACK'lenmez, buraya hiç gelmez; her şeridin `held`'i en çok `genişlik`
-/// birim tutar. `next` her ilerleyişte veri alıcısına yayımlanır
+/// ve ötesindeki birim ACK'lenmez, buraya hiç gelmez; her şeridin `held`'i en çok o şeridin
+/// genişliği kadar birim tutar (`LaneConfig::admit_widths`). `next` her ilerleyişte veri alıcısına yayımlanır
 /// ([`ExpectedSessions::advance_head`], şerit etiketli).
 ///
 /// [TOPLAM-SINIR] Sırası gelen birim teslim kutusuna yalnız kutuda yer varken çıkar
@@ -764,10 +769,17 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         // yayımlanır (`sync_expected`); kurulumda tablo boştur → hiçbir `Session(_)` beklenmez.
         let expected = ExpectedSessions::new();
         // [F3] Sıra başı için yer koruma: oturum sıralayıcısı ([`Reorder`]) eksik sıra başını
-        // atlamaz; veri alıcısı sıra başından `max_inflight_units` ve ötesindeki teslim kimliğini
-        // kabul etmez (ACK'siz; gönderici yeniden iletir). Tutulan birim sayısı böylece sınırlıdır.
-        expected
-            .set_admit_window(u64::try_from(cfg.runtime.max_inflight_units).unwrap_or(u64::MAX));
+        // atlamaz; veri alıcısı sıra başından genişlik ve ötesindeki teslim kimliğini kabul etmez
+        // (ACK'siz; gönderici yeniden iletir). Tutulan birim sayısı böylece sınırlıdır.
+        // [ŞERİT-GENİŞLİK] Şeritler açıkken genişlik şerit başınadır ve göndericinin açıklık
+        // sınırıyla aynı kaynaktan gelir (`LaneConfig::admit_widths`); kapalıyken tek şerit,
+        // `max_inflight_units` (eski yol).
+        match &cfg.lanes {
+            Some(lanes) => expected.set_lane_admit_windows(lanes.admit_widths),
+            None => expected.set_admit_window(
+                u64::try_from(cfg.runtime.max_inflight_units).unwrap_or(u64::MAX),
+            ),
+        }
         let ctx_counters = CtxDispatchCounters::new();
         let server = rt.block_on(ServerEndpoint::bind_expecting(
             cfg.data_bind,
@@ -1731,19 +1743,21 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             );
             st.set_file_window(session, w);
         }
-        // [ŞERİT-AÇIKLIK] Dosya şeridi alıcının kabul penceresini aşmaz: sıradaki dosya birimi,
-        // şeridin teyitsiz en küçük biriminden en çok `genişlik − 1` ileride olabilir (genişlik =
-        // `max_inflight_units`; iki uç aynı yapılandırmayla çalışır). Bkz.
-        // `lanes::SessionLanes::set_file_span_room`.
+        // [ŞERİT-AÇIKLIK] Hiçbir şerit alıcının kabul penceresini aşmaz: şeridin sıradaki birimi,
+        // şeridin teyit sınırından en çok `genişlik − 1` ileride olabilir. Genişlik alıcının
+        // kullandığıyla aynı alandır (`LaneConfig::admit_widths`; iki uç aynı yapılandırmayla
+        // çalışır). Sınıra dayanan şerit şerit katmanında bekler, pompa öbür şeritlere geçer. Bkz.
+        // `lanes::SessionLanes::set_span_rooms`.
         if let Some(s) = self.sessions.get(&session) {
             if let Some(e) = s.endpoint.as_ref() {
-                let file = index_of_lane(Lane::File);
-                let next = s.sent[file];
-                let low = e
-                    .lowest_unconfirmed_in_lane(file)
-                    .map_or(next, |l| l.min(next));
-                let width = u64::try_from(self.runtime_cfg.max_inflight_units).unwrap_or(u64::MAX);
-                st.set_file_span_room(session, low.saturating_add(width).saturating_sub(next));
+                let widths = st.config().admit_widths;
+                let mut rooms = [0u64; LANE_COUNT];
+                for (lane, room) in rooms.iter_mut().enumerate() {
+                    let next = s.sent[lane];
+                    let frontier = e.lane_confirm_frontier(lane).min(next);
+                    *room = frontier.saturating_add(widths[lane]).saturating_sub(next);
+                }
+                st.set_span_rooms(session, rooms);
             }
         }
         self.pump_lanes_of(st, session);
@@ -1848,15 +1862,17 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     }
 
     /// [TOPLAM-SINIR] Alıcı tarafında tamponlanan birimler: `(teslim kanalı, teslim kutusu,
-    /// sıralayıcıda tutulan)`; toplamın tavanı [`receiver_buffer_bound_units`].
+    /// sıralayıcıda şerit başına tutulan)`; toplamın tavanı [`receiver_buffer_bound_units`].
     #[cfg(any(test, feature = "test-util"))]
     #[must_use]
-    pub fn receiver_buffered_for_test(&self) -> (usize, usize, usize) {
-        (
-            self.server.delivery_backlog(),
-            self.inbox.len(),
-            self.reorder.values().map(Reorder::held_total).sum(),
-        )
+    pub fn receiver_buffered_for_test(&self) -> (usize, usize, [usize; LANE_COUNT]) {
+        let mut held = [0usize; LANE_COUNT];
+        for r in self.reorder.values() {
+            for (lane, h) in held.iter_mut().enumerate() {
+                *h += r.lanes[lane].held.len();
+            }
+        }
+        (self.server.delivery_backlog(), self.inbox.len(), held)
     }
 
     /// [K4G-01b] Sıralama durumu tutulan oturumlar (sıralı). Kapanan oturumunki silinir.

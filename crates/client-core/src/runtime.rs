@@ -1522,10 +1522,19 @@ pub struct ExpectedSessions(
 /// (bağımsız `bind`: sıralayıcı yok) pencere yoktur.
 #[derive(Debug, Default)]
 struct AdmitWindow {
-    width: Option<u64>,
+    /// [ŞERİT-GENİŞLİK] Şerit başına genişlik; `None` = pencere kapalı.
+    width: Option<[u64; LANE_COUNT]>,
+    /// [ŞERİT-GENİŞLİK] `true` ([`ExpectedSessions::set_lane_admit_windows`]): pencerenin tabanı
+    /// `max(sıra başı, kabul sınırı)`'dır (bkz. `admitted`). `false` (eski yol,
+    /// [`ExpectedSessions::set_admit_window`]): taban yalnız sıra başı.
+    anchor_admitted: bool,
     /// [ŞERİT-SIRA] Sıra başı oturum VE şerit başına (`crate::unit_id`): bir şeridin dolu penceresi
     /// öbür şeridin kabulünü kapatmaz. Anahtar `(oturum, şerit)`; değer şerit-içi sıra.
     heads: BTreeMap<(SessionHandle, usize), u64>,
+    /// [ŞERİT-GENİŞLİK] Veri alıcısının KABUL sınırı: şeritte bu sıranın altındaki her birim teslim
+    /// kanalına girdi (boşluksuz). Yalnız `anchor_admitted` iken yazılır
+    /// ([`ExpectedSessions::note_admitted`]).
+    admitted: BTreeMap<(SessionHandle, usize), u64>,
 }
 
 /// [F3 · ŞERİT-SIRA] Bir oturumun şerit başına kabul sınırları (dışlayıcı şerit-içi sıra).
@@ -1562,16 +1571,75 @@ impl ExpectedSessions {
     /// silinir (kalan oturumlarınki korunur: sıra başı geri gitmez).
     pub fn replace(&self, sessions: impl IntoIterator<Item = (SessionHandle, Readiness)>) {
         let next: BTreeMap<SessionHandle, Readiness> = sessions.into_iter().collect();
-        self.window_lock()
-            .heads
-            .retain(|(session, _), _| next.contains_key(session));
+        {
+            let mut w = self.window_lock();
+            w.heads.retain(|(session, _), _| next.contains_key(session));
+            w.admitted
+                .retain(|(session, _), _| next.contains_key(session));
+        }
         *self.lock() = next;
     }
 
     /// [F3] Kabul penceresini AÇAR: her `Ready` oturum için teslim kimliği
     /// `[sıra başı, sıra başı + width)` aralığındaki veri kabul edilir. `width` en az 1'dir.
     pub fn set_admit_window(&self, width: u64) {
-        self.window_lock().width = Some(width.max(1));
+        let mut w = self.window_lock();
+        w.width = Some([width.max(1); LANE_COUNT]);
+        w.anchor_admitted = false;
+    }
+
+    /// [F3 · ŞERİT-GENİŞLİK] Kabul penceresini şerit başına genişlikle AÇAR: şerit `l`'nin birimi
+    /// `[taban(l), taban(l) + widths[l])` aralığındaysa kabul edilir. Genişlikler göndericinin
+    /// açıklık sınırıyla aynı kaynaktan gelir (`lanes::LaneConfig::admit_widths`); her biri en az
+    /// 1'dir.
+    ///
+    /// **Taban = max(sıra başı, kabul sınırı).** Gönderici şeridin açıklığını TEYİT sınırından
+    /// ölçer; teyit, birimin teslim kanalına KABULÜdür (ACK ya da RECOVERED). Sıra başı ise
+    /// adaptörün kanaldan çektiği ve teslim ettiğidir. İkisinin arasında kanalda bekleyen kabul
+    /// edilmiş birimler vardır (uygulama yavaşken, ya da eksik sıra başı geldiği anda adaptör onu
+    /// kanaldan henüz çekmemişken). Taban yalnız sıra başı olsaydı gönderici bu birimler kadar
+    /// pencerenin dışına yazardı: birimler ACK'siz kalır, kayıp ilan edilir, yeniden iletilir —
+    /// tıkanıklık olayı ve gereksiz yeniden iletim (ölçüm: `tests/lane_receiver_backpressure.rs`,
+    /// küçük sınırlar kolu, eski tabanla 7 birim). Taban kabul sınırı olunca göndericinin yazdığı
+    /// her birim pencerenin içindedir.
+    ///
+    /// **Sıralayıcı sınırı korunur:** şeridin sıralayıcıda tuttuğu birim yine en çok genişliktir.
+    /// Neden: teslim kanalı FIFO'dur; `u` birimi kabul edildiğinde kabul sınırının altındaki her
+    /// birim kanala ondan önce girmiştir. Adaptör kanaldan yalnız teslim kutusunda yer varken çeker
+    /// ve her çekişten önce bütün şeritlerin sırası gelmiş koşularını boşaltır
+    /// (`transport::Reorder::release`); kutu dolarsa çekmez. Dolayısıyla `u` çekildiğinde ondan
+    /// önceki birimler çekilmiş ve teslim edilmiştir: sıra başı en az `u`'nun kabul anındaki
+    /// kabul sınırıdır, `u` sıra başından en çok `genişlik − 1` ileridedir. Fazlalık yalnız teslim
+    /// kanalındadır ve kanal kendi kapasitesiyle sınırlıdır (`transport::receiver_buffer_bound_units`
+    /// değişmez).
+    pub fn set_lane_admit_windows(&self, widths: [u64; LANE_COUNT]) {
+        let mut w = self.window_lock();
+        w.width = Some(widths.map(|w| w.max(1)));
+        w.anchor_admitted = true;
+    }
+
+    /// [ŞERİT-GENİŞLİK] Veri alıcısı `id` birimini teslim kanalına koydu (ve ilk-teslim dedup
+    /// penceresine yazdı). Birim şeridin kabul sınırındaysa sınır, `contains`'in (aynı yuvanın
+    /// dedup penceresi) bildiği boşluksuz kabul edilmiş birimler boyunca ilerler. Yalnız şerit
+    /// kipinde ([`Self::set_lane_admit_windows`]) etkilidir. Başka yuvadan kabul edilmiş ya da
+    /// dedup penceresinden düşmüş birim ilerlemeyi durdurur: sınır yalnız tutucu yönde hata yapar.
+    pub fn note_admitted(&self, session: SessionHandle, id: u64, contains: impl Fn(u64) -> bool) {
+        let mut w = self.window_lock();
+        if !w.anchor_admitted {
+            return;
+        }
+        let lane = lane_index_of(id);
+        let seq = lane_seq_of(id);
+        let head = w.heads.get(&(session, lane)).copied().unwrap_or(0);
+        let a = w.admitted.entry((session, lane)).or_insert(0);
+        *a = (*a).max(head);
+        if seq != *a {
+            return;
+        }
+        *a = a.saturating_add(1);
+        while contains(tagged(lane, *a)) {
+            *a = a.saturating_add(1);
+        }
     }
 
     /// [F3] Oturumun sıralı teslim sınırı `head`'e ilerledi (bundan küçük kimlikler teslim edildi).
@@ -1591,12 +1659,13 @@ impl ExpectedSessions {
         let width = w.width?;
         let mut out = [0u64; LANE_COUNT];
         for (lane, slot) in out.iter_mut().enumerate() {
-            *slot = w
-                .heads
-                .get(&(session, lane))
-                .copied()
-                .unwrap_or(0)
-                .saturating_add(width);
+            let head = w.heads.get(&(session, lane)).copied().unwrap_or(0);
+            let base = if w.anchor_admitted {
+                head.max(w.admitted.get(&(session, lane)).copied().unwrap_or(0))
+            } else {
+                head
+            };
+            *slot = base.saturating_add(width[lane]);
         }
         Some(out)
     }
@@ -1734,10 +1803,11 @@ struct PathEstimate {
     btlbw_bps: AtomicU64,
     /// RTprop (ns); örnek yoksa 0.
     rtprop_ns: AtomicU64,
-    /// [ŞERİT-AÇIKLIK] Şerit başına motorca henüz teyit edilmemiş en küçük şerit-içi sıra
-    /// (`u64::MAX` = teyitsiz birim yok; başlangıçta 0 = henüz birim yok). Görev store'u her
-    /// değiştirdiğinde YAZAR; tutamaç OKUR ([`ClientHandle::lowest_unconfirmed_in_lane`]).
-    lane_low: [AtomicU64; LANE_COUNT],
+    /// [ŞERİT-AÇIKLIK] Şerit başına TEYİT SINIRI (şerit-içi sıra): bunun altındaki her birim motorca
+    /// teyit edildi. Teyitsiz birim varsa en küçüğüdür, yoksa şeridin görevce verilecek sıradaki
+    /// sırasıdır (başlangıçta 0). Yalnız artar. Görev store'u her değiştirdiğinde YAZAR; tutamaç
+    /// OKUR ([`ClientHandle::lane_confirm_frontier`]).
+    lane_frontier: [AtomicU64; LANE_COUNT],
 }
 
 /// Client tutamağı: bounded offer + ACK olay akışı + kontrollü kapanış.
@@ -2042,15 +2112,16 @@ impl ClientHandle {
         self.offer.outstanding.load(Ordering::Acquire)
     }
 
-    /// [ŞERİT-AÇIKLIK] Şeridin motorca henüz teyit edilmemiş en küçük şerit-içi sırası; teyitsiz
-    /// birimi yoksa `None`. Teyit = karşı ucun veri alıcısının birimi KABUL etmesi (ACK ya da
-    /// RECOVERED); kaynağı birim deposunun kendisidir (teyit olay kanalı değil — o kanal taşınca
-    /// olay düşer, bu değer düşmez). Şerit katmanı dosya şeridinin açıklığını bununla sınırlar
-    /// (`lanes::SessionLanes::set_file_span_room`).
+    /// [ŞERİT-AÇIKLIK] Şeridin teyit sınırı (şerit-içi sıra): bunun altındaki her birim karşı ucun
+    /// veri alıcısınca KABUL edildi (ACK ya da RECOVERED). Teyitsiz birim varsa en küçüğü, yoksa
+    /// görevin şeride vereceği sıradaki sıra. Tutamaçtan verilip görevin henüz almadığı (teklif
+    /// kanalındaki) birimler her zaman bu değerin üstündedir, yani alt sınır olarak güvenlidir.
+    /// Kaynağı birim deposunun kendisidir (teyit olay kanalı değil — o kanal taşınca olay düşer,
+    /// bu değer düşmez). Şerit katmanı her şeridin açıklığını bununla sınırlar
+    /// (`lanes::SessionLanes::set_span_rooms`).
     #[must_use]
-    pub fn lowest_unconfirmed_in_lane(&self, lane: usize) -> Option<u64> {
-        let v = self.path.lane_low[lane & 0b11].load(Ordering::Relaxed);
-        (v != u64::MAX).then_some(v)
+    pub fn lane_confirm_frontier(&self, lane: usize) -> u64 {
+        self.path.lane_frontier[lane & 0b11].load(Ordering::Relaxed)
     }
 
     /// [ŞERİT-W] Motorun son yol kestirimi `(btlbw B/s, rtprop ns)`; örnek yoksa ilgili alan 0.
@@ -2334,10 +2405,11 @@ async fn client_task(
     // [ŞERİT-SIRA] Şerit başına boşluksuz sıra; kimlik = etiket + sıra (`crate::unit_id::tagged`).
     let mut next_unit: [u64; LANE_COUNT] = [0; LANE_COUNT];
     // [ŞERİT-AÇIKLIK] Store'daki (teyitsiz) birimlerin şerit-içi sıraları; store ile aynı yerde
-    // eklenir/silinir, en küçüğü `PathEstimate::lane_low`'a yayımlanır. Sınır: store'un sınırı.
+    // eklenir/silinir. Teyit sınırı (en küçüğü; boşsa şeridin sıradaki sırası)
+    // `PathEstimate::lane_frontier`'a yayımlanır. Sınır: store'un sınırı.
     let mut unconfirmed: [BTreeSet<u64>; LANE_COUNT] = Default::default();
-    let publish_low = |path: &PathEstimate, lane: usize, set: &BTreeSet<u64>| {
-        path.lane_low[lane].store(set.first().copied().unwrap_or(u64::MAX), Ordering::Relaxed);
+    let publish_frontier = |path: &PathEstimate, lane: usize, set: &BTreeSet<u64>, next: u64| {
+        path.lane_frontier[lane].store(set.first().copied().unwrap_or(next), Ordering::Relaxed);
     };
     let mut pace = interval(PACE_TICK);
     let mut rtprop = interval(RTPROP_TICK);
@@ -2465,7 +2537,7 @@ async fn client_task(
                 {
                     let lane = lane_index_of(unit);
                     unconfirmed[lane].remove(&lane_seq_of(unit));
-                    publish_low(&path, lane, &unconfirmed[lane]);
+                    publish_frontier(&path, lane, &unconfirmed[lane], next_unit[lane]);
                 }
                 match $via {
                     ConfirmVia::Recovered => stats.fec_recovered_ctrl_units += 1,
@@ -2943,7 +3015,7 @@ async fn client_task(
                     // store WIRE GÖVDESİNİ tutar (frag: prefix‖payload, düz: payload).
                     store.insert(id, if frag_on { body } else { chunk.to_vec() });
                     unconfirmed[lane].insert(lane_seq_of(id));
-                    publish_low(&path, lane, &unconfirmed[lane]);
+                    publish_frontier(&path, lane, &unconfirmed[lane], next_unit[lane]);
                     if frag_on {
                         unit_msg.insert(id, msg_id);
                     }
@@ -3633,6 +3705,7 @@ fn permit_or_reserve<'a>(
 #[allow(clippy::too_many_arguments)]
 fn admit_chunk<'a>(
     stats: &mut ServerStats,
+    expected: &ExpectedSessions,
     delivery_tx: &'a mpsc::Sender<Delivery>,
     permit: Option<mpsc::Permit<'a, Delivery>>,
     peer: SocketAddr,
@@ -3664,6 +3737,11 @@ fn admit_chunk<'a>(
             from_fec,
         );
         slot.delivered_seen.insert(unit_id, DELIVERED_DEDUP_WINDOW);
+        // [ŞERİT-GENİŞLİK] Kabul sınırı (pencere tabanı; bkz. `set_lane_admit_windows`).
+        if let ProtectionContext::Session(h) = slot.ctx {
+            let seen = &slot.delivered_seen;
+            expected.note_admitted(h, unit_id, |id| seen.contains(id));
+        }
         return true;
     }
     let mid = u64::from(pfx.message_id);
@@ -3869,6 +3947,7 @@ fn repair_store_insert(
 #[allow(clippy::too_many_arguments)]
 fn fec_ingest(
     stats: &mut ServerStats,
+    expected: &ExpectedSessions,
     delivery_tx: &mpsc::Sender<Delivery>,
     peer: SocketAddr,
     slot: &mut PeerSlot,
@@ -4006,6 +4085,7 @@ fn fec_ingest(
                     }
                     if admit_chunk(
                         stats,
+                        expected,
                         delivery_tx,
                         None,
                         peer,
@@ -4325,6 +4405,7 @@ async fn server_task(
                         if out.delivered.contains(&unit_id) {
                             admit_chunk(
                                 &mut stats,
+                                &expected,
                                 &delivery_tx,
                                 permit.take(),
                                 peer,
@@ -4375,6 +4456,7 @@ async fn server_task(
                             let admit_limit = session_admit_limit(&expected, slot.ctx);
                             let rec = fec_ingest(
                                 &mut stats,
+                                &expected,
                                 &delivery_tx,
                                 peer,
                                 slot,
@@ -4466,6 +4548,7 @@ async fn server_task(
                         let admit_limit = session_admit_limit(&expected, slot.ctx);
                         let rec = fec_ingest(
                             &mut stats,
+                            &expected,
                             &delivery_tx,
                             peer,
                             slot,
@@ -4538,6 +4621,7 @@ async fn server_task(
                                         let admit_limit = session_admit_limit(&expected, slot.ctx);
                                         let rec = fec_ingest(
                                             &mut stats,
+                                            &expected,
                                             &delivery_tx,
                                             peer,
                                             slot,
@@ -4652,6 +4736,40 @@ mod ctx_first_tests {
     const A: ProtectionContext = ProtectionContext::Session(SessionHandle::from_raw(1));
     const B: ProtectionContext = ProtectionContext::Session(SessionHandle::from_raw(2));
     const HUB: ProtectionContext = ProtectionContext::HubChannel;
+
+    /// [ŞERİT-GENİŞLİK] Şerit kipinde pencere tabanı `max(sıra başı, kabul sınırı)`'dır; kabul
+    /// sınırı boşluksuz kabul edilen birimler boyunca ilerler. Eski kipte (`set_admit_window`)
+    /// kabul sınırı yok sayılır.
+    #[test]
+    fn lane_admit_window_is_anchored_at_the_admission_frontier() {
+        let h = SessionHandle::from_raw(1);
+        let expected = ExpectedSessions::new();
+        expected.insert_ready(h);
+        expected.set_lane_admit_windows([4, 4, 4, 8]);
+        let text = 2usize;
+        let mut seen = std::collections::BTreeSet::new();
+        // 1 ve 2 kabul edildi, 0 eksik: sınır 0'da kalır.
+        for s in [1u64, 2] {
+            seen.insert(tagged(text, s));
+            expected.note_admitted(h, tagged(text, s), |id| seen.contains(&id));
+        }
+        assert_eq!(expected.admit_limits(h).map(|l| l[text]), Some(4));
+        // 0 kabul edildi: sınır 0, 1, 2 boyunca 3'e ilerler (adaptör henüz teslim etmedi).
+        seen.insert(tagged(text, 0));
+        expected.note_admitted(h, tagged(text, 0), |id| seen.contains(&id));
+        assert_eq!(expected.admit_limits(h).map(|l| l[text]), Some(3 + 4));
+        // Öbür şeritler etkilenmez; dosya kendi genişliğiyle.
+        assert_eq!(expected.admit_limits(h), Some([4, 4, 7, 8]));
+        // Sıra başı kabul sınırını geçerse taban sıra başıdır.
+        expected.advance_head(h, tagged(text, 5));
+        assert_eq!(expected.admit_limits(h).map(|l| l[text]), Some(5 + 4));
+        // Eski kip: kabul sınırı yok sayılır, taban yalnız sıra başı.
+        let legacy = ExpectedSessions::new();
+        legacy.insert_ready(h);
+        legacy.set_admit_window(4);
+        legacy.note_admitted(h, 0, |_| true);
+        assert_eq!(legacy.admit_limit(h), Some(4));
+    }
 
     #[test]
     fn admit_window_tracks_the_head_and_never_moves_back() {

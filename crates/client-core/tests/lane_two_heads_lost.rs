@@ -7,8 +7,9 @@
 //! `client_core::unit_id`). Alice sürekli PTT gönderir (her [`PTT_PERIOD`]), aynı anda
 //! [`FILE_UNITS`] dosya ve [`TEXT_UNITS`] metin birimi.
 //!
-//! Yapılandırma iki uçta aynıdır. Şerit başına kabul penceresi (`max_inflight_units`) ürünün 4096'sı
-//! yerine [`ADMIT_WINDOW`]: pencerenin dolması kısa sürsün; dosya penceresi W = [`FILE_WINDOW`].
+//! Yapılandırma iki uçta aynıdır. Şerit başına kabul genişliği (`LaneConfig::admit_widths`) dört
+//! şeritte [`ADMIT_WINDOW`] (ürün FILE 4096): pencerenin dolması kısa sürsün; dosya penceresi
+//! W = [`FILE_WINDOW`].
 //!
 //! Kollar:
 //! * [`Arm::FirstEmission`] — iki sıra başının yalnız İLK emisyonu düşer; test hiçbir şeyi serbest
@@ -17,7 +18,7 @@
 //! * [`Arm::UntilRelease`] — iki sıra başının BÜTÜN emisyonları test serbest bırakana dek düşer;
 //!   sonra ARQ/PTO taşır (FEC kapalı). Dosya bu sırada [`BIG_FILE_UNITS`] birim akar: sıra başı
 //!   eksikken arkası teyit aldıkça şerit ilerler ve ALICININ KABUL PENCERESİNİ doldurur. Serbest bırakma ancak dosya şeridi açıklık sınırına dayandıktan
-//!   (`LaneStats::file_span_blocked > 0`) ve [`HOLD`] geçtikten sonradır. Bu kol açıklık sınırı
+//!   (`LaneStats::span_blocked[FILE] > 0`) ve [`HOLD`] geçtikten sonradır. Bu kol açıklık sınırı
 //!   yokken PTT'nin DURDUĞUNU yakaladı: alıcı pencere dışı dosya birimlerini kabul etmiyor,
 //!   motorun uçuşu ACK almayacak dosya birimleriyle doluyor, PTT ve metin tele çıkamıyordu (60 s
 //!   içinde metin sıra başının tek emisyonu bile yok).
@@ -69,8 +70,10 @@ const BOB: u8 = 0xB0;
 const FILE_UNITS: u64 = 400;
 /// Dosya birimi sayısı (serbest bırakmalı kol; > [`ADMIT_WINDOW`]).
 const BIG_FILE_UNITS: u64 = 600;
-/// Şerit başına kabul penceresi (iki uçta `max_inflight_units`).
-const ADMIT_WINDOW: usize = 256;
+/// Şerit başına kabul genişliği (iki uçta `LaneConfig::admit_widths`).
+const ADMIT_WINDOW: u64 = 256;
+/// `LaneStats::span_blocked` içinde FILE şeridinin indeksi.
+const FILE_IDX: usize = 3;
 /// PTT'nin en az bu kadar sürekli aktığı süre (kol ne kadar çabuk toparlanırsa toparlansın).
 const MIN_PTT_RUN: Duration = Duration::from_secs(1);
 /// Metin birimi sayısı (> FEC bloğu K = 8).
@@ -223,8 +226,9 @@ fn cfg(arm: Arm) -> ClientTransportConfig {
         }),
         Arm::FirstEmission | Arm::UntilRelease => None,
     };
-    cfg.runtime.max_inflight_units = ADMIT_WINDOW;
-    cfg.lanes = Some(LaneConfig::with_file_window(FILE_WINDOW));
+    let mut lanes = LaneConfig::with_file_window(FILE_WINDOW);
+    lanes.admit_widths = [ADMIT_WINDOW; 4];
+    cfg.lanes = Some(lanes);
     cfg
 }
 
@@ -430,8 +434,8 @@ fn run(arm: Arm) -> Measured {
             lost_at = Instant::now();
             break;
         }
-        let span_reached =
-            arm != Arm::UntilRelease || alice.lane_stats().expect("şeritler").file_span_blocked > 0;
+        let span_reached = arm != Arm::UntilRelease
+            || alice.lane_stats().expect("şeritler").span_blocked[FILE_IDX] > 0;
         if arm != Arm::FirstEmission && heads_dropped && span_reached && started.elapsed() >= HOLD {
             // Ön koşul: sıra başları hâlâ düşüyor, iki şeridin arkası Bob'da tutuluyor.
             assert!(
@@ -557,7 +561,7 @@ fn run(arm: Arm) -> Measured {
         text_repair_drops: drops.text_repairs.load(Ordering::Relaxed),
         not_admitted_window: bob.data_not_admitted_window(),
         max_file_inflight: tx.max_file_inflight,
-        file_span_blocked: alice.lane_stats().expect("şeritler").file_span_blocked,
+        file_span_blocked: alice.lane_stats().expect("şeritler").span_blocked[FILE_IDX],
         ptt_while_heads_missing,
     };
     eprintln!("ÖLÇÜM iki-şerit-kayıp {arm:?}: {m:?}");
