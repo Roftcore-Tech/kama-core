@@ -14192,7 +14192,7 @@ mod tests {
 mod profile_pacing_cap_tests {
     //! [ASİMETRİK-YOL] Profil pacer tavanı: profilden büyütülen ilk pencere profil hızıyla
     //! serileşir; tavan yokken (bugünkü yol) pencere ilk RTT örneğinden önce 1,25·pencere/100 ms
-    //! hızla boşalır.
+    //! hızla boşalır. İlk yeterli ölçüm profili çürütürse profil geri çekilir.
     use super::*;
 
     const MS: u64 = 1_000_000;
@@ -14233,6 +14233,87 @@ mod profile_pacing_cap_tests {
             (2..=5).contains(&capped),
             "tavanlı ilk uçuş kova + profil hızı: {capped}"
         );
+    }
+
+    /// Profil penceresiyle `units` birim t = 0'da sunulur ve 1 ms tikle 4 s koşulur (tavan
+    /// hızında hepsi tele çıkar). Dönen: gönderici ve tele çıkan DATA seq'leri (gönderim sırası).
+    fn profiled_flight(units: u64, base_window: u64) -> (Sender, Vec<u64>) {
+        let mut s = Sender::with_cc_port();
+        s.set_cc_profile_pacing_cap(Some(CAP));
+        s.set_cc_profile_base_window(base_window);
+        s.set_cc_initial_window(IW);
+        let mut seqs = Vec::new();
+        let mut take = |out: Vec<TransmitDecision>| {
+            seqs.extend(
+                out.iter()
+                    .filter(|t| t.kind == TransmitKind::Data)
+                    .map(|t| t.seq),
+            );
+        };
+        for i in 0..units {
+            take(s.on_event(Event::AppData(OpaqueUnit { id: i, size: 1200 }), 0));
+        }
+        for t in 1..=4_000u64 {
+            take(s.on_event(Event::TimerFired(Timer::Pto), t * MS));
+        }
+        assert_eq!(seqs.len() as u64, units, "ilk uçuş tamamen tele çıktı");
+        (s, seqs)
+    }
+
+    fn ack(s: &mut Sender, seqs: &[u64], at_ms: u64) {
+        s.on_event(
+            Event::AckReceived(AckInfo {
+                acked_seqs: seqs.to_vec(),
+                ack_delay: Duration::ZERO,
+            }),
+            at_ms * MS,
+        );
+    }
+
+    /// Profil 5 kat iyimser (gerçek ≈ 1 kB/s): ilk ACK tek paketi kapsar (örnek = MTU / RTT,
+    /// karar yok); profilsiz ilk pencere kadar baytı kapsayan ACK'te BtlBw × 5 < tavan → profil
+    /// geri çekilir: ilk pencere ve pencere profilsiz değere iner, pacer tavanın çok altına düşer.
+    #[test]
+    fn profile_is_retracted_when_the_first_full_sample_is_far_below_it() {
+        let (mut s, seqs) = profiled_flight(24, 4_800);
+        ack(&mut s, &seqs[..1], 4_000);
+        assert_eq!(s.cc_profile_verdict(), None, "tek paketlik örnek profili sınamaz");
+        assert_eq!(s.cc_initial_window(), Some(IW));
+        ack(&mut s, &seqs[1..9], 10_000);
+        assert_eq!(s.cc_profile_verdict(), Some(false));
+        assert_eq!(s.cc_initial_window(), Some(4_800), "ilk pencere profilsiz değere");
+        let (_, window, ..) = s.diag_cc().expect("port motoru");
+        assert!(
+            window <= 4_800 + 9 * 1_200,
+            "pencere profilsiz ilk pencere + ACK'lenen: {window}"
+        );
+        assert!(
+            s.diag_pacer().0 < CAP / 4,
+            "pacer profil tavanından ölçüme indi: {}",
+            s.diag_pacer().0
+        );
+    }
+
+    /// Doğru profil: ilk yeterli ACK uçuşun çoğunu kapsar, BtlBw × 5 ≥ tavan → profil kalır
+    /// (ilk pencere ve tavan değişmez), karar tek seferlik.
+    #[test]
+    fn profile_is_kept_when_the_first_full_sample_supports_it() {
+        let (mut s, seqs) = profiled_flight(40, 4_800);
+        ack(&mut s, &seqs[..1], 3_000);
+        ack(&mut s, &seqs[1..30], 4_500);
+        assert_eq!(s.cc_profile_verdict(), Some(true));
+        assert_eq!(s.cc_initial_window(), Some(IW));
+        assert!(s.diag_pacer().0 >= CAP, "pacer profil tavanında ya da üstünde");
+    }
+
+    /// Profilsiz ilk pencere verilmezse (0) profil sınanmaz: bugünkü profil yolu aynen.
+    #[test]
+    fn profile_without_base_window_is_never_judged() {
+        let (mut s, seqs) = profiled_flight(24, 0);
+        ack(&mut s, &seqs[..1], 4_000);
+        ack(&mut s, &seqs[1..9], 10_000);
+        assert_eq!(s.cc_profile_verdict(), None);
+        assert_eq!(s.cc_initial_window(), Some(IW));
     }
 
     #[test]

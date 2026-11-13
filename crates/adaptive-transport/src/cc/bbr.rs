@@ -756,6 +756,23 @@ mod tests {
     }
 
     #[test]
+    fn retract_initial_window_returns_to_the_unprofiled_window_in_startup() {
+        // Profil ilk pencereyi 67,5 kB'ye büyüttü; ölçüm çürüttü → 4,8 kB'ye geri.
+        let mut b = Bbr::new(MTU, 67_500);
+        assert_eq!(b.window(), 67_500);
+        b.retract_initial_window(4_800);
+        assert_eq!(b.initial_window(), 4_800);
+        assert_eq!(b.window(), 4_800, "Startup cwnd = ilk pencere + ACK'lenen (henüz 0)");
+        assert_eq!(b.pacing_rate(), 0, "hız tabanı sonraki on_end_acks'ta yeniden kurulur");
+        // Daha büyük ya da eşit değer etkisiz; min_cwnd altına inilmez.
+        b.retract_initial_window(10_000);
+        assert_eq!(b.window(), 4_800);
+        let mut c = Bbr::new(MTU, 67_500);
+        c.retract_initial_window(1_000);
+        assert_eq!(c.window(), 4 * MTU, "taban min_cwnd");
+    }
+
+    #[test]
     fn initial_window_is_rfc9002_ten_mtu() {
         let b = bbr();
         assert_eq!(b.window(), 12_000);
