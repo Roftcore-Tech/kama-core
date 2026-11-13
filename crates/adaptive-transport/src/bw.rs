@@ -186,6 +186,10 @@ pub struct BtlBwFilter {
     /// delivered-EAI cadence-girdisi: app-limited örnek W'yi KÜÇÜLTEMEZ (pin-iii; idle-sonrası
     /// kapasite-kaybı); yeni-örnek-yoksa son-geçerli-değer-tekrar (pin-iv).
     last_full_bw: u64,
+    /// SALT-GÖZLEM: son geçerli örneğin (valid ∧ interval≥1ms) anlık-bw'si — max-filtreye girsin
+    /// girmesin, uygulamayla sınırlı olsun olmasın. Filtre ve pencere bunu OKUMAZ; tüketicisi
+    /// runtime parite tavanıdır (`Sender::latest_delivery_rate_bps`).
+    last_offered_bw: u64,
 }
 
 impl Default for BtlBwFilter {
@@ -194,6 +198,7 @@ impl Default for BtlBwFilter {
             samples: Vec::new(),
             window_ns: dur_ns(W_BTLBW),
             last_full_bw: 0,
+            last_offered_bw: 0,
             #[cfg(feature = "diag-sched-telemetry")]
             diag_offered: 0,
             #[cfg(feature = "diag-sched-telemetry")]
@@ -238,6 +243,7 @@ impl BtlBwFilter {
         }
         if valid && sample.interval >= MIN_RATE_INTERVAL {
             let bw = bw_bps(sample.delivered, sample.interval);
+            self.last_offered_bw = bw; // salt gözlem: karar yolu okumaz
             let app_limited_ok = !sample.is_app_limited || bw >= self.btlbw();
             #[cfg(feature = "diag-sched-telemetry")]
             if app_limited_ok {
@@ -289,6 +295,12 @@ impl BtlBwFilter {
     #[must_use]
     pub fn last_sample_bw(&self) -> u64 {
         self.last_full_bw
+    }
+
+    /// SALT-GÖZLEM: son geçerli örneğin anlık-bw'si (filtreye girsin girmesin); örnek yoksa 0.
+    #[must_use]
+    pub fn last_offered_bw(&self) -> u64 {
+        self.last_offered_bw
     }
 
     /// [Y3-sim SALT-GÖZLEM] Aktif pencere (ns) — (b)-bug-arayışı: expiry-sonrası W yeniden-boyutlanıyor mu.
