@@ -3,11 +3,12 @@
 //! teslimi/kurtarımı geriliyor mu (parite tavanı kontrolcü yolunda bloğun kaynak baytıyla
 //! ölçeklenir; elle-r koluna uygulanmaz); (3) 25 B/s hatta tavan kararı başlangıç sırasından
 //! (PARAM ↔ ilk veri, dolayısıyla ilk RTT) bağımsız mı; (4) şekillendirilmiş normal bant hatta
-//! 400 B birimde parite gerçekten gidip kurtarıyor mu.
+//! ölçülmüş kapasite zaman kapısını açıyor mu; (5) hat akış sürerken 12,5 kB/s'den 25 B/s'ye
+//! düşünce zaman kapısı kapanıyor mu.
 //!
 //! Gerçek UDP; kayıp belirlenimli (egress kapısı / alıcı seam'i / hat ikizinde sıra numarası).
 //! (1)–(2) loopback; (3)–(4) netem `rate` + `delay` sıra kuralını uygulayan kullanıcı-alanı hat
-//! ikizi üzerinden (netem/tc gerekmez). (3)–(4) gerçek zamanlıdır: ≈ 50 s ve ≈ 5 s.
+//! ikizi üzerinden (netem/tc gerekmez). (3)–(5) gerçek zamanlıdır: ≈ 50 s, ≈ 5 s, ≈ 20 s.
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
@@ -424,6 +425,7 @@ struct ShapedPair {
     server: client_core::runtime::ServerHandle,
     client: client_core::runtime::ClientHandle,
     fwd: Arc<Mutex<Line>>,
+    rev: Arc<Mutex<Line>>,
     stop: tokio::sync::oneshot::Sender<()>,
     relay: tokio::task::JoinHandle<()>,
 }
@@ -456,7 +458,7 @@ async fn shaped_pair(
         front,
         back,
         Arc::clone(&fwd),
-        rev,
+        Arc::clone(&rev),
         start,
         stop_rx,
     ));
@@ -467,12 +469,20 @@ async fn shaped_pair(
         server,
         client,
         fwd,
+        rev,
         stop,
         relay,
     }
 }
 
 impl ShapedPair {
+    /// Hat hızını iki yönde birden değiştirir (kuyruktaki datagramların çıkış anı değişmez;
+    /// netem `tc qdisc change … rate` gibi).
+    fn set_rate(&self, rate_bps: u64) {
+        self.fwd.lock().expect("kilit").rate_bps = rate_bps;
+        self.rev.lock().expect("kilit").rate_bps = rate_bps;
+    }
+
     /// Kapatır: istemci ve sunucu istatistikleri, ileri hatta giren datagram boyları.
     async fn finish(
         self,
@@ -673,4 +683,70 @@ async fn normal_band_shaped_line_measured_capacity_opens_time_gate() {
         "normal bantta tavan kesmemeli: {cs:?}"
     );
     assert_eq!(got1.len(), K, "blok 1 8/8: {cs:?}");
+}
+
+/// (5) Hat akış sürerken düşer: 12,5 kB/s · 300 ms iki yön, sonra 25 B/s. Bloklar: 0 ve 1 hızlı
+/// hatta (8 × 400 B, bir arada), 2 düşük hatta (8 × 65 B). Düşüşten sonra bir ileti gönderilip
+/// ACK'i beklenir (hattın yeni hızını taşıyan ilk teslim hızı örneği), blok 2 ondan sonra kapanır.
+///
+/// BtlBw max filtresi hızlı hattın örneğini bırakmaz: düşük, uygulamayla sınırlı örnek yalnız mevcut
+/// en büyükten büyükse filtreye girer ve pencere dolunca en yeni kabul edilmiş örnek tutulur. Girdi
+/// yalnız BtlBw iken blok 2 de zaman kapısından geçiyordu (r_max = profil tavanı; 25 B/s'de
+/// 1 052 B parite ≈ 43 s hat). Girdi son teslim hızı örneğiyle sınırlanınca blok 2 bayt kapısında
+/// kalır: zaman kapısı yalnız blok 1'de açılır.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rate_drop_mid_flow_closes_time_gate() {
+    const K: usize = 8;
+    let mut p = shaped_pair(12_500, Start::DataFirst, &[], Box::new(IdentitySeam::new())).await;
+    for i in 0..K {
+        p.client.send(vec![i as u8; 400]).expect("offer");
+    }
+    let got0 = collect(&mut p.server, K, Duration::from_secs(20)).await;
+    assert_eq!(got0.len(), K, "blok 0 8/8");
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    for i in K..2 * K {
+        p.client.send(vec![i as u8; 400]).expect("offer");
+    }
+    let got1 = collect(&mut p.server, K, Duration::from_secs(20)).await;
+    assert_eq!(got1.len(), K, "blok 1 8/8");
+    // Blok 1'in ACK'leri istemciye dönsün (hızlı hat), sonra düşüş.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    p.set_rate(25);
+    let probe = 2 * K as u64;
+    p.client
+        .send(vec![0x5A; 65])
+        .expect("offer (düşüş sonrası ilk ileti)");
+    let probe_acked = tokio::time::timeout(Duration::from_secs(60), async {
+        while let Some(u) = p.client.acked().await {
+            if u == probe {
+                return true;
+            }
+        }
+        false
+    })
+    .await
+    .unwrap_or(false);
+    assert!(probe_acked, "düşüş sonrası ilk ileti ACK'lenmeli");
+    for i in 1..K {
+        p.client.send(vec![0x5A ^ i as u8; 65]).expect("offer");
+    }
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let (cs, _ss, _lens) = p.finish().await;
+    println!(
+        "[düşüş 12,5 kB/s → 25 B/s] karar={} zaman_kapısı={} kapasite_max={} B/s clamped={} latched={}",
+        cs.fec_cap_decisions,
+        cs.fec_cap_time_gate_open,
+        cs.fec_cap_path_bw_max_bps,
+        cs.fec_parity_payload_clamped,
+        cs.fec_blocks_latched,
+    );
+    assert_eq!(cs.fec_cap_decisions, 3, "üç tam blok: {cs:?}");
+    assert!(
+        cs.fec_cap_path_bw_max_bps >= TIME_GATE_BPS,
+        "blok 1 hızlı hatta zaman kapısından geçmeli: {cs:?}"
+    );
+    assert_eq!(
+        cs.fec_cap_time_gate_open, 1,
+        "zaman kapısı yalnız blok 1'de açılmalı (blok 2 düşük hatta): {cs:?}"
+    );
 }

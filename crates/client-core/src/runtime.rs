@@ -408,11 +408,11 @@ fn validate_fec(cfg: &RuntimeConfig) -> Result<Option<FecProfile>, RuntimeError>
 ///    koruduğu bloğun kaynak tel baytını aşmaz. 25 B/s'de 1 080 B sembol ≈ 43 s hat: 65 B ileti
 ///    bloğu (Σ ≈ 1 kB) parite almaz; 1 000 B dosya bloğu (Σ ≈ 8 kB) profil tavanında kalır.
 ///
-/// `path_bw` = gönderici BtlBw filtresi ([`adaptive_transport::sender::Sender::measured_btlbw_bps`]):
-/// teslim hızı örneklerinin pencereli en büyüğü. Uygulamayla sınırlı akışta bu bir ALT sınırdır
-/// (az veri → az teslim); alt sınır eşiği geçiyorsa hat gerçekten o kadar hızlıdır. `None` (henüz
-/// örnek yok) hız bilinmiyor demektir → bayt kapısı: pahalı parite hattın hızlı olduğu
-/// bilinmeden serbest bırakılmaz. Pacer hedefi bu girdi OLAMAZ: port motorunda Startup'ta ilk ACK'te
+/// `path_bw` = [`fec_parity_path_bw`]: gönderici BtlBw filtresi (teslim hızı örneklerinin pencereli
+/// en büyüğü), son teslim hızı örneğiyle sınırlı. Uygulamayla sınırlı akışta ikisi de bir ALT
+/// sınırdır (az veri → az teslim); alt sınır eşiği geçiyorsa hat gerçekten o kadar hızlıdır.
+/// `None` (henüz örnek yok) hız bilinmiyor demektir → bayt kapısı: pahalı parite hattın hızlı
+/// olduğu bilinmeden serbest bırakılmaz. Pacer hedefi bu girdi OLAMAZ: port motorunda Startup'ta ilk ACK'te
 /// `ilk_pencere / RTT₁` kurulur ve uygulamayla sınırlı akışta Startup'tan çıkılmadığı için düşmez;
 /// 25 B/s hatta RTT₁'e göre 226–545 B/s arasında kalıp kararı hat yerine ilk RTT'ye (başlangıçta
 /// PARAM ile verinin sırasına) bağlıyordu (eşik 526 B/s; koşuların bir kısmında kapı açılıyordu).
@@ -434,6 +434,27 @@ pub fn fec_payload_r_max(
     u16::try_from(by_payload)
         .unwrap_or(u16::MAX)
         .min(r_code_max)
+}
+
+/// [FEC-E-ÖLÇEK] Zaman kapısının girdisi: `min(BtlBw, son teslim hızı örneği)`.
+///
+/// BtlBw tek başına yetmez: hat hızlıdan yavaşa düşünce max filtre eski yüksek örneği bırakmaz.
+/// Uygulamayla sınırlı düşük örnek yalnız mevcut en büyükten büyükse filtreye girer, pencere
+/// dolunca da en yeni kabul edilmiş örnek tutulur (KEEP-LAST). 12,5 kB/s → 25 B/s düşüşünde BtlBw
+/// koşu sonuna dek hızlı hattın son örneğinde (ölçümde 0,9–12,2 kB/s) kalıyor ve zaman kapısını açık
+/// tutuyordu. Son örnek düşüşten sonraki ilk ACK'le hattın bugünkü hızına iner. Yalnız küçültür:
+/// hızlı hatta ikisi de eşiği geçiyorsa karar değişmez. Bedeli: hızlı hatta son örnek tek başına
+/// ACK'lenen bir iletimden geliyorsa eşiğin altında kalabilir; o blok bayt kapısına düşer (400 B
+/// blokta r ≤ 3, 65 B blokta 0 — hızlı hatta ARQ ucuzdur). Düşüşten sonraki ilk ACK'e dek (geri
+/// bildirim yokken) hızlı hattın son örneği geçerlidir; bu aralıkta kapanan blok kapıdan geçebilir.
+#[must_use]
+pub fn fec_parity_path_bw(sender: &adaptive_transport::sender::Sender) -> Option<u64> {
+    let max = sender.measured_btlbw_bps()?;
+    Some(
+        sender
+            .latest_delivery_rate_bps()
+            .map_or(max, |last| last.min(max)),
+    )
 }
 
 /// [FEC-E-ÖLÇEK] [`fec_payload_r_max`]'in zaman kapısı: parite sembolü ölçülmüş yol kapasitesinde
@@ -775,8 +796,9 @@ pub struct ClientStats {
     /// [FEC-E-ÖLÇEK] Bu kararlardan zaman kapısının açıldığı (ölçülmüş yol kapasitesinde parite
     /// sembolü ≤ 2 s; profil tavanı kaldı) sayı. Kalanında bayt kapısı uygulandı.
     pub fec_cap_time_gate_open: u64,
-    /// [FEC-E-ÖLÇEK] Bu kararlara giren ölçülmüş yol kapasitesinin en büyüğü (bayt/s; 0 = hiçbir
-    /// kararda ölçüm yoktu). Zaman kapısının eşiği `parite_tel / 2 s` (profil 0x05: 526 B/s).
+    /// [FEC-E-ÖLÇEK] Bu kararlara giren yol kapasitesinin ([`fec_parity_path_bw`]: BtlBw, son
+    /// teslim hızı örneğiyle sınırlı) en büyüğü (bayt/s; 0 = hiçbir kararda ölçüm yoktu). Zaman
+    /// kapısının eşiği `parite_tel / 2 s` (profil 0x05: 526 B/s).
     pub fec_cap_path_bw_max_bps: u64,
     /// [TEŞHİS] Yapı-gate'in karar tabanı (kapanış anındaki fotoğraf) — bkz. [`FateWindowDiag`].
     pub fate: FateWindowDiag,
@@ -2908,7 +2930,7 @@ async fn client_task(
                     cur_block_wire += size;
                     if cur_block.len() == p.k_shape_usize() {
                         let parity_wire = wire_len(seam.as_ref(), client_ctx, HDR_FEC + e);
-                        let path_bw = session.sender().measured_btlbw_bps();
+                        let path_bw = fec_parity_path_bw(session.sender());
                         let r_max =
                             fec_payload_r_max(p.r_code_max, cur_block_wire, parity_wire, path_bw);
                         // Statik-r (Manual{true} + manuel-close) YA DA adaptif (Controller + latch).
@@ -3011,7 +3033,7 @@ async fn client_task(
         if !cur_block.is_empty() {
             let k_actual = u8::try_from(cur_block.len()).unwrap_or(255);
             let parity_wire = wire_len(seam.as_ref(), client_ctx, HDR_FEC + p.e_usize());
-            let path_bw = session.sender().measured_btlbw_bps();
+            let path_bw = fec_parity_path_bw(session.sender());
             let r_max = fec_payload_r_max(p.r_code_max, cur_block_wire, parity_wire, path_bw);
             let planned_r: u16 = if let Some(r) = fec_manual_r {
                 let auth = session.sender_mut().open_fec_block_authority();

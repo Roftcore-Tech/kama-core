@@ -7433,6 +7433,22 @@ impl Sender {
         let bw = self.btlbw.btlbw();
         (bw > 0).then_some(bw)
     }
+    /// Son teslim hızı örneği (bayt/s): en son ACK'lenen iletimin `teslim / max(ack_elapsed,
+    /// send_elapsed)` değeri (engine §7.1), BtlBw max filtresine girsin girmesin, uygulamayla
+    /// sınırlı olsun olmasın. Henüz örnek yoksa `None`.
+    ///
+    /// Neden ayrı: BtlBw max filtresi hat yavaşlayınca eski yüksek örneği bırakmaz. Uygulamayla
+    /// sınırlı düşük örnek yalnız mevcut en büyükten büyükse filtreye girer (`bw.rs`
+    /// `app_limited_ok`), pencere dolunca da en yeni kabul edilmiş örnek tutulur (`bw.rs`
+    /// KEEP-LAST). 12,5 kB/s → 25 B/s düşüşünde BtlBw koşu sonuna dek hızlı hattın son örneğinde
+    /// kalıyor. Bu değer o düşüşten sonraki ilk ACK'le hattın bugünkü hızına iner.
+    ///
+    /// SALT-OKUMA: motorun hiçbir kararı bu erişimciyi kullanmaz.
+    #[must_use]
+    pub fn latest_delivery_rate_bps(&self) -> Option<u64> {
+        let bw = self.btlbw.last_offered_bw();
+        (bw > 0).then_some(bw)
+    }
     /// [TUR-A teşhis, ölçüm-#2] loss-atıflama (SALT-GÖZLEM): `(packet_threshold_queued,
     /// time_threshold_queued, pending_lost_now)`. Temiz kanalda hangi tetik spurious RecoverArq açıyor —
     /// gerçek gap (packet) mi, cadence-gap (time) mi.
