@@ -5116,14 +5116,35 @@ impl Sender {
     /// kuruluş denemesi) birimin hattı terk ettiği andan başlar. `None` = model yok (bugünkü yol);
     /// `cc` yoksa etkisiz (eski motor değişmez). Oturum başında, ilk olaydan önce çağrılır.
     ///
-    /// Port farkı (beyanlı): quinn pacer'ı en az 10·MTU burst verir (`cc::PacerParams`) ve BBR
-    /// kazancı (> 1) ölçülen hedefle hattın üstüne çıkabilir; bilinen hatta kendi baytlarımız
-    /// hattın hızını ve bir burst aralığını aşmaz. Hat hızının altındaki pacing (BBR hedefi, profil
-    /// tavanı) aynen geçerlidir.
+    /// Model yalnız **dar hatta** kurulur (`line_is_narrow`): tam boy bir datagramın (MTU + zarf)
+    /// serileşmesi en kısa kopya saatinden (DR-EST-1 ilk aralığı) uzunsa. Orada kopya saatleri tek
+    /// datagramın serileşmesiyle çelişir ve kovanın 10·MTU burst'ü dakikalarca hat süresidir. Daha
+    /// hızlı hatta kopya saatleri serileşmeyle çelişmez, pencere profilden büyüdüğünde profil tavanı
+    /// göndericiyi hatta bağlar; o göndericiler bugünkü gibidir.
+    ///
+    /// Port farkı (beyanlı, yalnız dar hatta): quinn pacer'ı en az 10·MTU burst verir
+    /// (`cc::PacerParams`) ve BBR kazancı (> 1) ölçülen hedefle hattın üstüne çıkabilir; dar hatta
+    /// kendi baytlarımız hattın hızını ve bir burst aralığını aşmaz. Hat hızının altındaki pacing
+    /// (BBR hedefi, profil tavanı) aynen geçerlidir.
     pub fn set_cc_line(&mut self, line: Option<crate::pacer::LineModel>) {
         if self.cc.is_some() {
-            self.pacer.set_line(line);
+            self.pacer.set_line(line.filter(Self::line_is_narrow));
         }
+    }
+
+    /// [HAT-MODELİ] Hat dar mı: tam boy datagram (MTU + zarf) bu hızda `ESTABLISH_PROBE_INITIAL_NS`'den
+    /// uzun sürede serileşiyorsa (zarf 28 B iken ≈ 2,4 kB/s altı).
+    fn line_is_narrow(line: &crate::pacer::LineModel) -> bool {
+        let bytes = u128::from(DEFAULT_MTU.saturating_add(line.datagram_overhead));
+        line.rate_bps > 0
+            && bytes * 1_000_000_000
+                > u128::from(ESTABLISH_PROBE_INITIAL_NS) * u128::from(line.rate_bps)
+    }
+
+    /// [HAT-MODELİ] Pacer'da hat modeli kurulu mu (gözlem/test).
+    #[must_use]
+    pub fn cc_line_installed(&self) -> bool {
+        self.pacer.has_line()
     }
 
     /// [CC-PORT] Port motorunun ilk uçuş penceresi (bayt); `cc` yoksa `None`.

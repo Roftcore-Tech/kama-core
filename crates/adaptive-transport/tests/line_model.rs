@@ -6,8 +6,10 @@
 //! darboğaz kuyruğuna iner; PreConverge kopya saatleri (§3.3-B merdiveni, DR-EST-1 kuruluş denemesi)
 //! emit anından başladığı için kopyalar orijinaller hattan çıkmadan ateşlenir ve aynı kuyruğa girer.
 //! Bu pinler: (1) hat modeli datagramı (gövde + zarf) hattın hızında serileştirir, model yokken kova
-//! aynendir; (2) ters oturum simülasyonunda dönüş paketleri mesaj sayısını en çok kuruluş denemesi
-//! payı kadar aşar ve her mesaj FIFO hattın serileşme sınırında teslim edilir.
+//! aynendir; (2) motor modeli yalnız dar hatta kurar (tam boy datagram en kısa kopya saatinden uzun
+//! serileşiyorsa), hızlı hatta gönderici bugünkü yoldadır; (3) ters oturum simülasyonunda dönüş
+//! paketleri mesaj sayısını en çok kuruluş denemesi payı kadar aşar ve her mesaj FIFO hattın
+//! serileşme sınırında teslim edilir.
 
 use adaptive_transport::pacer::{LineModel, TokenBucket};
 use adaptive_transport::sender::{AckInfo, Event, OpaqueUnit, Sender, Timer, TransmitKind};
@@ -106,6 +108,53 @@ fn line_none_is_the_plain_bucket() {
     assert!(b.line_is_open());
     assert_eq!(b.line_ns_until_open(), 0);
     assert_eq!(b.line_ns_until_drained(), 0);
+}
+
+#[test]
+fn sender_installs_the_line_model_only_on_a_narrow_line() {
+    let installed = |rate_bps: u64| {
+        let mut s = Sender::with_cc_port();
+        s.set_cc_line(Some(LineModel {
+            rate_bps,
+            datagram_overhead: 28,
+        }));
+        s.cc_line_installed()
+    };
+    // Sınır: (1200 + 28) B tam boy datagram 0,5 s'de = 2 456 B/s.
+    assert!(installed(62), "62 B/s: MTU datagramı 19,8 s");
+    assert!(installed(2_455));
+    assert!(!installed(2_456), "sınırda serileşme tam 0,5 s: dar değil");
+    assert!(!installed(12_500), "12,5 kB/s: MTU datagramı 98 ms");
+    assert!(!installed(0), "hız 0 = model yok");
+    // Eski motor: model kurulmaz.
+    let mut legacy = Sender::new();
+    legacy.set_cc_line(Some(NARROW));
+    assert!(!legacy.cc_line_installed());
+}
+
+#[test]
+fn fast_line_sender_is_the_default_path() {
+    let mut a = Sender::with_cc_port();
+    let mut b = Sender::with_cc_port();
+    a.set_cc_initial_window(67_500);
+    b.set_cc_initial_window(67_500);
+    b.set_cc_line(Some(LineModel {
+        rate_bps: 12_500,
+        datagram_overhead: 28,
+    }));
+    for i in 0..40u64 {
+        let ev = || Event::AppData(OpaqueUnit { id: i, size: 1027 });
+        assert_eq!(a.on_event(ev(), 0), b.on_event(ev(), 0), "birim {i}");
+    }
+    for t in 1..=3_000u64 {
+        let ev = || Event::TimerFired(Timer::Pto);
+        assert_eq!(
+            a.on_event(ev(), t * MS),
+            b.on_event(ev(), t * MS),
+            "t = {t} ms"
+        );
+    }
+    assert_eq!(a.diag_pacer(), b.diag_pacer());
 }
 
 /// Ters oturum simülasyonunun sonucu.
