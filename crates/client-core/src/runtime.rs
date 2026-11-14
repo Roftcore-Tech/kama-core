@@ -88,6 +88,10 @@ pub struct RuntimeConfig {
     /// bit-eşit. `CcPort` = quinn-proto 0.11.18 BBR + RFC 9002 portu (`Sender::with_cc_port` +
     /// `Receiver::with_cc_port`); ölçüm ve gösterim anahtarı, varsayılan DEĞİL (PR-2 kararına dek).
     /// İki uç AYNI motoru kurmalıdır (alıcının ACK kuralları göndericinin kayıp eşiğiyle eşleşir).
+    ///
+    /// [2026-11-11 · PR-2 (#176) sonrası] Yukarıdaki "varsayılan" ifadeleri PR-1b (#175) anınındır:
+    /// ürün profili artık `CcPort` (transport-v1.1 / `kama-v1.1-full`); `Legacy` geri alma yoludur
+    /// (`KAMA_TRANSPORT_ENGINE=legacy`) ve ürün profili DEĞİLDİR.
     pub engine: TransportEngine,
     /// Aynı anda outstanding (teslim-bekleyen) birim tavanı — unit-store sınırı.
     pub max_inflight_units: usize,
@@ -246,10 +250,18 @@ pub struct KamaV1Profile;
 /// [FAZ-6 DONDURMA] Transport v1 ÜRÜN-PROFİL kimliği — benchmark manifestlerindeki `arm` değeri.
 /// Yalnız `profile_delta` BOŞ olan koşu bu adı taşıyabilir; herhangi bir sapma `kama-custom`tur.
 /// Bu sabit tek kaynaktır: `crates/bench` etiketi buradan okur, elle yazmaz.
-pub const TRANSPORT_V1_PROFILE_ID: &str = "kama-v1-full";
+///
+/// [2026-11-11 · transport-v1.1] Değer `kama-v1-full` → `kama-v1.1-full` (EVOLUTION §22
+/// "transport-v1.1 beyanı"): dondurmadan (53e0c5c6) bu yana ürün varsayılan yolunda davranış
+/// değişti (motor = CC-PORT portu, #174 teyit sahipliği, AMENDMENT-11 PN kimliği, bağlam-önce
+/// dağıtım). Sabitin ADI değişmez (API). Eski değer yalnız tarihî manifestleri okumak için
+/// `bench::manifest::PRIOR_PROFILE_IDS` içinde tanınır.
+pub const TRANSPORT_V1_PROFILE_ID: &str = "kama-v1.1-full";
 /// [FAZ-6 DONDURMA] Mimari/spec sürüm kimliği. Davranış değiştiren her değişiklik bu kimliği
 /// `transport-v1.x` ya da `transport-v2` yapmak ZORUNDADIR (bkz. docs/transport-v1/EVOLUTION.md §9.5).
-pub const TRANSPORT_V1_ARCHITECTURE: &str = "transport-v1";
+///
+/// [2026-11-11] Değer `transport-v1` → `transport-v1.1` (EVOLUTION §22 "transport-v1.1 beyanı").
+pub const TRANSPORT_V1_ARCHITECTURE: &str = "transport-v1.1";
 
 impl KamaV1Profile {
     /// Sevk FEC profili: `kama_fec_codec` 0x05 — K_shape 8, R_code_max 4, **E = 1024**.

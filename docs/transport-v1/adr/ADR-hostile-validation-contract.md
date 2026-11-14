@@ -17,6 +17,8 @@ N=30'da yeniden üretilemedi ve geri çekildi. Metodoloji zayıflaması sessizce
 2. **Profil kimliği:** yalnız `profile_delta = []` olan koşu `kama-v1-full`
    (`client_core::runtime::TRANSPORT_V1_PROFILE_ID`) etiketi taşır; sapma → `kama-custom`, ürün
    sonucu olarak kullanılamaz (INV-008/009).
+   *(2026-11-11 notu: sabitin güncel değeri `kama-v1.1-full`; kural aynen geçerli — EVOLUTION §22
+   "`transport-v1.1` beyanı".)*
 3. **Ön-kayıt:** hücreler, geometri, deadline, metrik, N, çürütme ölçütleri ölçümden ÖNCE
    commit'lenir (`EXPECTATION.md` deseni). Sonuç görüldükten sonra hücre eklenmez/çıkarılmaz/
    düzenlenmez; kazanılan hücre seçilmez, kaybeden hücre uzatılmaz.

@@ -8,13 +8,15 @@ buna devreder). Değerler koddan okunmuştur (2026-09-11), tahmin değildir. Pin
 > **KURAL:** Bu profilden herhangi bir alanda sapan runtime yapılandırması Kama Transport v1
 > DEĞİLDİR ve `kama-v1-full` etiketi alamaz; benchmark bunu `kama-custom` + sapma listesi olarak
 > üretir (INV-008/009).
+> *(2026-11-11: etiket `kama-v1.1-full` — aşağıdaki "`transport-v1.1` farkları" ve EVOLUTION §22
+> "`transport-v1.1` beyanı".)*
 
 ## Kimlik
 
 | | değer | kaynak |
 |---|---|---|
-| profil kimliği (benchmark `arm`) | `kama-v1-full` | `TRANSPORT_V1_PROFILE_ID` |
-| mimari kimliği | `transport-v1` | `TRANSPORT_V1_ARCHITECTURE` |
+| profil kimliği (benchmark `arm`) | ~~`kama-v1-full`~~ `kama-v1.1-full` (2026-11-11) | `TRANSPORT_V1_PROFILE_ID` |
+| mimari kimliği | ~~`transport-v1`~~ `transport-v1.1` (2026-11-11) | `TRANSPORT_V1_ARCHITECTURE` |
 | manifest şeması | `kama-bench-manifest/v1` | `bench::manifest::MANIFEST_SCHEMA` |
 
 ## `RuntimeConfig` alanları
@@ -43,6 +45,30 @@ buna devreder). Değerler koddan okunmuştur (2026-09-11), tahmin değildir. Pin
 | `live_diag` | `false` | diagnostic (salt gözlem) | K4G-05 canlı teşhis aynası ve yazıcısı (`ClientLiveDiag`); çalışma-zamanı bayrağı, feature değil; kapalıyken yazıcı çalışmaz, açıkken motor kararları değişmez, maliyeti ölçülmedi; INT-02 düzeneği açar (2026-10-24 eklendi) | DUR-19 (CEVAP PAKETİ 9) | `product_v1_profile_is_pinned` |
 | `e1_flags` | `E1Flags::default()` — beşi `false`: `e1_startup_cwnd`, `e1_applimited_plateau`, `e1_drainrt_gate`, `e1_probe_keep`, `retx_first` | KEEP-EXPERIMENTAL (varsayılan kapalı) | E1 gösterim bayrakları (CC §4.1, CC-K5): çalışma-zamanı bayrağı, feature değil; kapalıyken motor bugünkü kod yolunu aynen çağırır; yalnız gösterim düğümü (`transport-v1.x-goster`) ve G2 teşhis kolları açar (2026-11-09 eklendi) | CC §4.1; ISEMRI-YOL3-M2 KK-M2-01/-02 | `product_v1_profile_is_pinned` |
 
+## `transport-v1.1` farkları (2026-11-11)
+
+Yukarıdaki tablo dondurma değerlerini taşır ve aynen kalır; v1.1 ürün profili (`kama-v1.1-full`) bu
+farklarla okunur. Kaynak: `crates/client-core/src/runtime.rs` (`KamaV1Profile::runtime_config`,
+`client_task`), `crates/adaptive-transport/src/sender.rs` (`Sender::with_cc_port`). Beyan ve davranış
+listesi: EVOLUTION §22 "`transport-v1.1` beyanı".
+
+| alan / ayar | v1.1 değeri | sınıf | not |
+|---|---|---|---|
+| `engine` | `TransportEngine::CcPort` (quinn-proto 0.11.18 BBR + RFC 9002 portu) | SHIP | #175 alan, #176 varsayılan; geri alma `KAMA_TRANSPORT_ENGINE=legacy` / `engine: Legacy` (ürün profili DEĞİL); pin `transport_v1_freeze.rs::v1_1_motoru_cc_port` |
+| ilk uçuş (port) | `max(initial_window_bytes, 4·MTU)` = 4 800 B | SHIP | `initial_window_bytes` alanı 2 400 kalır; eski motorda ilk uçuş 2 400 B |
+| `e2a_flags` | alan `E2aFlags::default()` kalır, port motorunda UYGULANMAZ | — | port kurucusu `tt_rfc`, `g` = 1 ms, `rtt_rule_v11`, `iw_idle_hold`, `pto_probes` = 2 açar; `gap_ack` kapalı |
+| `e1_flags` | `E1Flags::default()` (beşi kapalı) | KEEP-EXPERIMENTAL | port yeniden iletimi her zaman önce planlar ve retx durum koşulunu `≠ RecoverFwd` yapar (bayraktan bağımsız) |
+| Tail-recovery (port) | `TailRecoveryConfig::rfc9002_cc_port()` = `validated_v1` + `max_tail_probes = u32::MAX` | SHIP | aşağıdaki `validated_v1` satırı eski motorundur |
+| ARQ (port) | `RetxConfig::rfc9002_cc_port()`: `arq_retx_cap = 255`, ileri kopyaya devir yok | SHIP | aşağıdaki `RetxConfig::fixture()` satırı eski motorundur |
+| Alıcı ACK (port) | `Receiver::with_cc_port()`: sırasız varışta anında ACK, 25 ms zamanlayıcı; 8,39 s cadence tabanı ve R-kota yok | SHIP | iki uç aynı motoru kurmalı |
+
+Bench `profile_delta` `engine`, `e1_flags` ve `e2a_flags` alanlarını da kıyaslar (2026-11-11 kimlik
+PR'ı): bu alanlarda sapan istemci kolu (ör. `KAMA_TRANSPORT_ENGINE=legacy` ya da boş değer)
+`kama-custom` + sapma satırıyla kayda geçer (INV-009; test `motor_ve_bayrak_sapmasi_gorunur`).
+Sunucu ucunun motoru istemci manifestine girmez; sunucunun `KP-MANIFEST role=server` satırı aynı
+türetimle `profile=` ve `engine=` basar. `RuntimeConfig` dışı port ayarları (aşağıdaki satırlar)
+`profile_delta`'da ayrıca kıyaslanmaz; `engine`'den türerler.
+
 ## `ClientSession`'ın kurduğu, `RuntimeConfig` DIŞI sevk ayarları
 
 | mekanizma | donmuş v1 değeri | sınıf | doğrulama |
@@ -69,6 +95,9 @@ ile duplicate) · `diag-sched-telemetry` (salt gözlem, `KP-ACTIVATED tail_probe
 kıyaslar; boş değilse `arm = kama-custom`.
 
 ## `transport-v1.x-goster` — yalnız gösterim düğümü (ürün varsayılanı `kama-v1-full` değişmez)
+
+*(2026-11-11 notu: ürün varsayılanı artık `kama-v1.1-full`; bu bölümün başlığı ve metni yazıldığı
+anın kaydıdır, gösterim düğümü kimliği değişmedi.)*
 
 GÖSTERİM-α (18 Kasım 2026) düğümünün profili. Etiket: *gösterim; kapılı PoC ölçümü Aralık; ARQ yolu,
 FEC Aralık'ta; N < 30 betimsel.* K1 deneysel gösterim profilidir; ürün çözümü ya da quinn'e karşı üstünlük
