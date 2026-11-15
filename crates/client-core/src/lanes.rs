@@ -239,6 +239,36 @@ pub fn file_window_for_path(
     want.clamp(floor, MAX_FILE_WINDOW_UNITS)
 }
 
+/// [ASİMETRİK-YOL] Dosya penceresinin tabanı (birim; [`file_window_for_path`]'in `min_units`'i):
+/// yapılandırma tabanı ya da yön hızlarının port göndericisine verdiği ilk pencereyi
+/// (`runtime::link_profile_window_bytes`) dolduracak birim sayısı, büyüğü; tavanı
+/// [`MAX_FILE_WINDOW_UNITS`]. `profile_window_bytes == None` ya da `unit_bytes == 0` →
+/// `configured` (bugünkü yol).
+///
+/// Neden: BDP penceresi (`BtlBw × RTprop`) teyidin her RTprop'ta geldiğini varsayar. Yön hızları
+/// verildiğinde alıcı ACK'leri dar dönüş yönünün bütçesine göre aralıklar (62 B/s dönüşte
+/// ≈ 5,4 s'de bir); teyitsiz dosya birimi bir aralık boyunca pencerede kalır. Pencere 5 birimde
+/// kalırsa dosya `5 · birim / aralık` hızına iner (12,5 kB/s ileri, 62 B/s dönüş hücresinde
+/// ≈ 0,8 kB/s; ölçüm: 40 × 900 B şeritlerle 51,6 s, şeritsiz 13,4 s). Gönderici o aralığı zaten
+/// ilk penceresine katmıştır; şerit penceresi aynı pencereyi doldurabilmelidir.
+#[must_use]
+pub fn file_window_floor(
+    configured: u32,
+    unit_bytes: u64,
+    profile_window_bytes: Option<u64>,
+) -> u32 {
+    let Some(window) = profile_window_bytes else {
+        return configured;
+    };
+    if unit_bytes == 0 {
+        return configured;
+    }
+    let units = u32::try_from(window.div_ceil(unit_bytes))
+        .unwrap_or(u32::MAX)
+        .min(MAX_FILE_WINDOW_UNITS);
+    configured.max(units)
+}
+
 /// KK-T1-09: `W` dosya birimi (her biri en çok `unit_bytes`) motor kuyruğunda en az bir BDP
 /// (`bottleneck_bytes_per_s × rtt_ms / 1000`) tutar mı.
 #[must_use]
@@ -873,6 +903,37 @@ mod tests {
         );
         // Taban 0 → 1 (pencere asla kapanmaz).
         assert_eq!(file_window_for_path(0, UNIT_BYTES, 0, 0), 1);
+    }
+
+    /// [ASİMETRİK-YOL] Profil penceresi dosya penceresinin tabanını kurar: 12,5 kB/s ileri, 62 B/s
+    /// dönüş profilinde gönderici ilk penceresi 67 500 B → ⌈67 500/1013⌉ = 67 birim; BDP
+    /// penceresi (ölçülen BtlBw × RTprop) bunun altındaysa taban kazanır, üstündeyse BDP. Profil
+    /// yoksa (`None`) taban yapılandırmadır (bugünkü yol).
+    #[test]
+    fn profile_window_sets_the_file_window_floor() {
+        const MS: u64 = 1_000_000;
+        assert_eq!(file_window_floor(5, UNIT_BYTES, None), 5);
+        assert_eq!(file_window_floor(5, 0, Some(67_500)), 5);
+        assert_eq!(file_window_floor(5, UNIT_BYTES, Some(67_500)), 67);
+        // Profil penceresi küçükse yapılandırma tabanı kalır.
+        assert_eq!(file_window_floor(5, UNIT_BYTES, Some(2 * UNIT_BYTES)), 5);
+        // Tavan.
+        assert_eq!(
+            file_window_floor(5, UNIT_BYTES, Some(u64::MAX)),
+            MAX_FILE_WINDOW_UNITS
+        );
+        // BDP ile birlikte: ölçüm yokken ve ACK saatli düşük örnekte (1 kB/s × 1 s) taban; BDP
+        // tabanı aşınca (1 MB/s × 100 ms → 198) BDP.
+        let floor = file_window_floor(5, UNIT_BYTES, Some(67_500));
+        assert_eq!(file_window_for_path(floor, UNIT_BYTES, 0, 0), 67);
+        assert_eq!(
+            file_window_for_path(floor, UNIT_BYTES, 1_000, 1_000 * MS),
+            67
+        );
+        assert_eq!(
+            file_window_for_path(floor, UNIT_BYTES, 1_000_000, 100 * MS),
+            198
+        );
     }
 
     /// [ŞERİT-W] Pencere ayarı: büyüyünce bekleyen dosya birimleri verilir, daralınca uçtaki birim
