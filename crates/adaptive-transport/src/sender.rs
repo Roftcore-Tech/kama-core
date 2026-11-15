@@ -12487,7 +12487,10 @@ mod tests {
                 r.s.tx_queue.iter().any(|u| u.id == queued),
                 "ön koşul: küçük birim gönderim kuyruğunda bekler (pencere dolu)"
             );
-            assert!(r.sent.keys().next_back() == Some(&last_seq), "ön koşul: tele çıkmadı");
+            assert!(
+                r.sent.keys().next_back() == Some(&last_seq),
+                "ön koşul: tele çıkmadı"
+            );
             (r, filled, last_seq)
         }
 
@@ -12540,8 +12543,16 @@ mod tests {
                 .find(|d| d.seq > last_seq)
                 .copied()
                 .expect("prob");
-            assert_eq!(probe.kind, TransmitKind::Retransmit, "eski hedef: yeniden iletim");
-            assert_eq!(probe.unit_id, UID + 10_000, "en küçük kimlikli teyitsiz birim");
+            assert_eq!(
+                probe.kind,
+                TransmitKind::Retransmit,
+                "eski hedef: yeniden iletim"
+            );
+            assert_eq!(
+                probe.unit_id,
+                UID + 10_000,
+                "en küçük kimlikli teyitsiz birim"
+            );
             assert!(r.s.tx_queue.iter().any(|u| u.id == queued));
             assert_eq!(r.s.diag_cc_pto_new_data(), 0);
         }
