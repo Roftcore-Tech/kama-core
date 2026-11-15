@@ -181,7 +181,10 @@ pub struct Receiver {
     diag_emit_total: u64, // tüm SACK emisyonları (RTRAJ)
     ack_delay_saturated: u64, // [TUR-1x] encoded==65535 sayısı (hold > 16.78s — audit; beklenen 0)
     seen_total: u32, // [§2.2 V2 ölçüm eki] görülen TÜM datagram (birim+kopya+shard; saturating)
-    last_arrival_ns: u64, // [3b-C] HERHANGİ datagram'ın son varışı (dup dahil — kanal-tempo kanıtı)
+    // [3b-C] HERHANGİ datagram'ın son varışı (dup dahil — kanal-tempo kanıtı). [AKIŞ-SONU YEDEĞİ]
+    // Bütçeli port alıcısında akış sessizken gelen teslim edilmiş birim kopyası hariç
+    // (`redundant_copy_after_flight`).
+    last_arrival_ns: u64,
     last_gap_ns: u64, // [3b-C] son varış-aralığı (serialization-vekili; 0 = henüz tek varış)
     last_tail_ack_ns: u64, // [3b-C rev2] tail-SACK'in KENDİ ritim-sayacı (cadence'ten bağımsız)
     /// [DÖNÜŞ-BÜTÇESİ] ACK bayt bütçesi (B/s) = Y × dönüş bant genişliği (§16.1 RETURN_BUDGET_FRACTION).
@@ -200,6 +203,10 @@ pub struct Receiver {
     /// [AKIŞ-SONU YEDEĞİ] DATA akışı sürerken gelen son ACK istemeyen varışın anı
     /// (`note_non_eliciting`; 0 = hiç). Sessizlik denetimi onu eşin etkinliği sayar.
     non_eliciting_at_ns: u64,
+    /// [AKIŞ-SONU YEDEĞİ] Bütçeli port alıcısında teslim edilen DATA birim kimlikleri (kayan pencere
+    /// `RX_DEDUP_WINDOW`; başka yolda boş kalır). Yalnız `redundant_copy_after_flight` okur; teslim
+    /// tekilleştirmesi bu katmanda değildir.
+    delivered_units: BTreeSet<u64>,
 }
 
 impl Receiver {
@@ -241,6 +248,7 @@ impl Receiver {
             diag_ack_budget_deferred: 0,
             non_eliciting_largest: None,
             non_eliciting_at_ns: 0,
+            delivered_units: BTreeSet::new(),
         }
     }
 
@@ -249,11 +257,14 @@ impl Receiver {
         // [§2.2 V2] seen_count: HER görülen datagram sayılır (dup/shard DAHİL) — sender'ın
         // "seen vs sent" yön-ayrımlı kayıp kıyası için (K3 cold-start).
         self.seen_total = self.seen_total.saturating_add(1);
+        // [AKIŞ-SONU YEDEĞİ] Akış sessizken gelen teslim edilmiş birim kopyası varış ritmine ve
+        // sessizlik saatine girmez (`redundant_copy_after_flight`); kayıt ve ACK'i aşağıda aynen.
+        let redundant = self.redundant_copy_after_flight(&d, now_ns);
         // [TUR-5 r3 §1a] EPİZOT-DEĞERLENDİRME — pencere/last_gap GÜNCELLENMEDEN ÖNCE (kopma-gap'i
         // ritim-referansını zehirleyemez). Oturum-ilk = açık özel-durum. Dup dahil her datagram.
         if self.seen_total == 1 {
             self.open_episode();
-        } else {
+        } else if !redundant {
             let gap = now_ns.saturating_sub(self.last_arrival_ns);
             let baseline = self.episode_baseline();
             if baseline > 0 && gap > K_EPISODE.saturating_mul(baseline) {
@@ -270,10 +281,12 @@ impl Receiver {
         }
         // [3b-C] kanal-tempo ölçümü: varış-aralığı HAM kalır (tail/bacak-2 girdisi — anlık ritim;
         // epizot-penceresi AYRI iş, r3 §3).
-        if self.seen_total > 1 {
-            self.last_gap_ns = now_ns.saturating_sub(self.last_arrival_ns);
+        if !redundant {
+            if self.seen_total > 1 {
+                self.last_gap_ns = now_ns.saturating_sub(self.last_arrival_ns);
+            }
+            self.last_arrival_ns = now_ns;
         }
-        self.last_arrival_ns = now_ns;
         // Duplicate (zaten alınmış seq) → RX_DUP_SUPPRESS: teslim etme, yalnız ACK teyidi (§9.4).
         if self.received.contains(&d.seq) {
             self.state = RxState::DupSuppress;
@@ -298,7 +311,10 @@ impl Receiver {
         self.record_seq(d.seq, now_ns);
 
         let (delivered, is_shard) = match d.kind {
-            RxKind::Data => (vec![d.unit_id], false),
+            RxKind::Data => {
+                self.note_delivered_unit(d.unit_id);
+                (vec![d.unit_id], false)
+            }
             RxKind::FecShard { .. } => {
                 // ADMISSION-KÖPRÜSÜ (DR-S5-2): RxDatagram ZATEN open-edilmiş/authenticated (güvenlik-katmanı
                 // AEAD-verify etti — INV-FEC-1 authenticate-before-decode). Buraya YALNIZ sealed-type'tan-gelen
@@ -467,6 +483,43 @@ impl Receiver {
     fn data_quiet(&self, now_ns: u64) -> bool {
         let base = self.episode_baseline();
         base == 0 || now_ns.saturating_sub(self.last_arrival_ns) > base.saturating_mul(K_EPISODE)
+    }
+
+    /// [AKIŞ-SONU YEDEĞİ] Bütçeli port alıcısında, eş sessizken (`arrivals_quiet`) gelen ve bu
+    /// alıcının çoktan teslim ettiği birimi yeni PN'le taşıyan DATA mı (göndericinin PTO probu ya
+    /// da gereksiz yeniden iletimi). Böyle bir kopya akışı yeniden başlatmaz: son varış anına ve
+    /// varış aralığı penceresine yazılmaz. PN'i kümeye girer ve ACK sayacını artırır (gönderici
+    /// teyidini alır); akış sonu ACK'i sessiz akışın kuralıyla, yedek istemeden çıkar.
+    ///
+    /// Kopya akış sayılınca (`dc4365dd`) akış sonu ACK'i saniyelerce bekliyordu: (1) ACK yeniden
+    /// yedek istiyor, jeton yetecekken sessizliği bekliyordu; (2) kopyanın uzun boşluğu 4 × taban
+    /// olarak pencereye yazılıyor, önceki turun boşluğuyla birlikte tabanı 4 katına, sessizlik
+    /// penceresini 84 ms'lik ritimde 336 ms'den 1,34 s'ye çıkarıyordu; (3) bu pencere boyunca gelen
+    /// kontrol paketleri (`note_non_eliciting`) saati tazeliyordu (tests/shaped_relay.rs asimetrik
+    /// hücre, tohum 2, akış sonrası 250 ms kontrol trafiği: son ACK 17,16 s; kopyasız koşu 14,76 s).
+    ///
+    /// Akış sürerken gelen kopya (eş gönderiyor) ve yeni birim taşıyan varış bugünkü gibi akıştır.
+    /// Teslim edilmiş birim bu alıcının `delivered` çıktısıdır; FEC ile kurtarılan birimi alıcı
+    /// görmez, onun kopyası akış sayılır (bugünkü davranış).
+    fn redundant_copy_after_flight(&self, d: &RxDatagram, now_ns: u64) -> bool {
+        self.cc_port
+            && self.ack_budget_bps.is_some()
+            && matches!(d.kind, RxKind::Data)
+            && !self.received.contains(&d.seq)
+            && self.delivered_units.contains(&d.unit_id)
+            && self.arrivals_quiet(now_ns)
+    }
+
+    /// [AKIŞ-SONU YEDEĞİ] Teslim edilen DATA biriminin kimliği (yalnız bütçeli port alıcısında;
+    /// `RX_DEDUP_WINDOW` kayan pencere, en küçük kimlik düşer).
+    fn note_delivered_unit(&mut self, unit_id: u64) {
+        if !(self.cc_port && self.ack_budget_bps.is_some()) {
+            return;
+        }
+        self.delivered_units.insert(unit_id);
+        while self.delivered_units.len() > RX_DEDUP_WINDOW {
+            self.delivered_units.pop_first();
+        }
     }
 
     /// ACK emisyonu (frekans/zorunlu/zamanlayıcı yollarının ortak gövdesi). [DÖNÜŞ-BÜTÇESİ] Port
@@ -1067,6 +1120,164 @@ mod tests {
                 quiet / MS
             );
         }
+    }
+
+    /// Akış sonu kuyruğu kurgusundaki alıcı olayı.
+    #[derive(Clone, Copy)]
+    enum TailEv {
+        /// DATA (PN, birim kimliği).
+        Data(u64, u64),
+        /// ACK istemeyen kontrol paketi (PARAM, prob; PN).
+        Ctrl(u64),
+    }
+
+    /// Olayları sanal zamanda bütçeli (62 B/s dönüş) port alıcısına verir; ACK tiki 20 ms'de bir
+    /// (runtime `ACK_TICK`), bir anda önce o ana dek varan olaylar işlenir. Dönen: `after`'dan sonra
+    /// çıkan ilk ACK'in anı.
+    fn first_ack_after(events: &[(u64, TailEv)], after: u64) -> u64 {
+        let mut r = Receiver::with_cc_port();
+        r.set_return_bandwidth(Some(62));
+        let mut ev = events.to_vec();
+        ev.sort_by_key(|e| e.0);
+        let mut next = ev.iter().peekable();
+        let mut tick = 0;
+        loop {
+            while let Some(&&(t, e)) = next.peek().filter(|e| e.0 <= tick) {
+                next.next();
+                match e {
+                    TailEv::Data(seq, unit) => {
+                        if r.on_datagram(data(seq, unit), t).ack.is_some() && t > after {
+                            return t;
+                        }
+                    }
+                    TailEv::Ctrl(seq) => r.note_non_eliciting(seq, t),
+                }
+            }
+            if r.on_ack_timer(tick).is_some() && tick > after {
+                return tick;
+            }
+            tick += 20 * MS;
+            assert!(tick < after + 30_000 * MS, "ACK 30 s içinde çıkmalı");
+        }
+    }
+
+    /// Akış sonu kuyruğu (tests/shaped_relay.rs asimetrik hücre, tohum 2, `CC_SHAPED_CTRL_AFTER_MS`
+    /// kolu). DATA 84 ms arayla; PN 1 bir PARAM. A turu: PN 0..=39, PN 2, 5, …, 35 yolda düşer →
+    /// ACK'te 12 aralık (113 B); son dört PN kayıpsız (varış aralığı tabanı 84 ms). 2 s duraklamadan
+    /// sonra B turu iki yeniden iletim: PN 40 (birim 2) ve PN 41 (birim 5); jeton akış sonu ACK'ine
+    /// yetmez, ACK kovanın dolmasını bekler.
+    /// `copy`: (an, birim) tek DATA PN 42. `ctrl`: B turundan sonra o aralıkla PARAM'ın kopyası
+    /// (aynı PN 1; alıcıda küme değişmez, ACK boyu aynı kalır). Dönen: (olaylar, B turunun sonu).
+    fn tail_events(copy: Option<(u64, u64)>, ctrl: Option<u64>) -> (Vec<(u64, TailEv)>, u64) {
+        let slot = 84 * MS;
+        let mut ev: Vec<(u64, TailEv)> = (0..40u64)
+            .filter(|&i| i % 3 != 2 || i > 35)
+            .map(|i| {
+                let e = if i == 1 {
+                    TailEv::Ctrl(1)
+                } else {
+                    TailEv::Data(i, i)
+                };
+                (i * slot, e)
+            })
+            .collect();
+        let b0 = 39 * slot + 2_000 * MS;
+        ev.push((b0, TailEv::Data(40, 2)));
+        ev.push((b0 + slot, TailEv::Data(41, 5)));
+        let end = b0 + slot;
+        if let Some((at, unit)) = copy {
+            ev.push((at, TailEv::Data(42, unit)));
+        }
+        if let Some(p) = ctrl {
+            let mut t = end + p;
+            while t < end + 12_000 * MS {
+                ev.push((t, TailEv::Ctrl(1)));
+                t += p;
+            }
+        }
+        (ev, end)
+    }
+
+    /// [AKIŞ-SONU YEDEĞİ] Akış sessizken gelen, çoktan teslim edilmiş birimin kopyası (göndericinin
+    /// PTO probu) akışı yeniden başlatmaz: akış sonu ACK'i kopyasız koldaki anda çıkar, sonra gelen
+    /// kontrol trafiği onu uzatmaz. Eski kuralda kopya (1) yedek kuralını yeniden kuruyordu, (2)
+    /// uzun boşluğu 4 × taban olarak varış penceresine yazıp B turunun boşluğuyla birlikte tabanı
+    /// 84 → 336 ms'ye, sessizlik penceresini 1,34 s'ye şişiriyordu, (3) kontrol paketleri o pencere
+    /// boyunca saati tazeliyordu. Ölçülen koşu: kopyasız 14,76 s, kopyayla 17,16 s.
+    #[test]
+    fn redundant_copy_after_the_flight_does_not_hold_the_end_of_flight_ack() {
+        let window = K_EPISODE * 84 * MS;
+        let tick = 20 * MS;
+        let (ev, end) = tail_events(None, None);
+        let t0 = first_ack_after(&ev, end);
+        assert!(
+            t0 > end + window + 1_000 * MS,
+            "kurgu: akış sonu ACK'i jeton bekliyor ({} ms)",
+            (t0 - end) / MS
+        );
+        // Kopya, jeton yetmeden 150 ms önce varır (ölçülen koşu: 14,58 s ↔ 14,72 s).
+        let at = t0 - 150 * MS;
+        // Kontrol aralığı (ms; 0 = kontrol trafiği yok).
+        for ctrl in [0u64, 50, 100, 250, 500, 1_000, 1_500] {
+            let (ev, _) = tail_events(Some((at, 2)), (ctrl > 0).then_some(ctrl * MS));
+            let d = first_ack_after(&ev, end);
+            assert!(
+                d <= t0.max(at + window + tick),
+                "kopya + kontrol {ctrl} ms: akış sonu ACK'i {} ms (kopyasız {} ms)",
+                (d - end) / MS,
+                (t0 - end) / MS
+            );
+        }
+        // Sınır: aynı varış yeni birim taşırsa (birim 8, hiç ulaşmamıştı) akış yeniden başlar ve
+        // yedek kuralı ona uygulanır — muafiyet yalnız teslim edilmiş birimin kopyasınadır.
+        let (ev, _) = tail_events(Some((at, 8)), None);
+        assert!(
+            first_ack_after(&ev, end) > t0,
+            "yeni birim akışı yeniden başlatır"
+        );
+    }
+
+    /// Ölçülen koşunun alıcı tarafı (`CC_SHAPED_TL_DUMP`, `dc4365dd`, KT250 tohum 2, 1. koşu; 10 ms
+    /// çözünürlük): (PN, birim, varış ms). PN 2 ve 5 PARAM; 11,30 s'den sonra PN 22'li PARAM kopyaları
+    /// (kontrol trafiği), 14,58 s'de birim 6'nın PTO kopyası PN 60. Eski kuralda bu kayıt 17,26 s
+    /// veriyordu (ölçülen 17,16 s); kopyasız 14,72 s (ölçülen ikinci koşu 14,76 s).
+    #[test]
+    fn measured_tail_replay_copy_and_control_do_not_hold_the_last_ack() {
+        #[rustfmt::skip]
+        let d: &[(u64, u64, u64)] = &[
+            (0, 0, 380), (1, 1, 470), (3, 2, 560), (4, 3, 640), (6, 4, 740), (7, 5, 820),
+            (9, 7, 990), (11, 8, 1160), (13, 9, 1250), (14, 10, 1330), (18, 14, 1670),
+            (19, 15, 1750), (20, 16, 1840), (23, 18, 2010), (25, 1, 2180), (27, 21, 2350),
+            (29, 23, 2520), (30, 24, 2600), (31, 25, 2690), (32, 26, 2770), (33, 27, 2860),
+            (35, 29, 3030), (36, 30, 3110), (37, 31, 3200), (38, 32, 3280), (39, 33, 3360),
+            (40, 34, 3450), (42, 36, 3620), (45, 39, 3870), (47, 11, 6990), (48, 12, 7080),
+            (49, 13, 7160), (50, 17, 7250), (51, 19, 7330), (52, 20, 7410), (53, 22, 7500),
+            (54, 28, 7580), (56, 37, 7750), (57, 38, 7840), (58, 6, 10660), (59, 35, 10740),
+        ];
+        #[rustfmt::skip]
+        let ctrl_ms: &[u64] = &[
+            11300, 11550, 11800, 12050, 12300, 12550, 13050, 13300, 13550, 13800, 14050, 14300,
+            14800, 15050, 15300, 15550, 15800, 16050, 16300, 17050, 17300, 18050, 18300,
+        ];
+        let run = |copy: bool, ctrl: bool| {
+            let mut ev: Vec<(u64, TailEv)> = d
+                .iter()
+                .map(|&(s, u, t)| (t * MS, TailEv::Data(s, u)))
+                .collect();
+            ev.push((480 * MS, TailEv::Ctrl(2)));
+            ev.push((650 * MS, TailEv::Ctrl(5)));
+            if copy {
+                ev.push((14_580 * MS, TailEv::Data(60, 6)));
+            }
+            if ctrl {
+                ev.extend(ctrl_ms.iter().map(|&t| (t * MS, TailEv::Ctrl(22))));
+            }
+            first_ack_after(&ev, 10_740 * MS)
+        };
+        let base = run(false, false);
+        assert_eq!(run(false, true), base, "kopyasız: kontrol trafiği etkisiz");
+        assert_eq!(run(true, false), base, "kopya son ACK'i bekletmez");
+        assert_eq!(run(true, true), base, "kopya + kontrol son ACK'i bekletmez");
     }
 
     /// [DÖNÜŞ-BÜTÇESİ] Eski alıcı bütçeden etkilenmez (kendi cadence tabanı var).
