@@ -260,6 +260,9 @@ impl Receiver {
         // [AKIŞ-SONU YEDEĞİ] Akış sessizken gelen teslim edilmiş birim kopyası varış ritmine ve
         // sessizlik saatine girmez (`redundant_copy_after_flight`); kayıt ve ACK'i aşağıda aynen.
         let redundant = self.redundant_copy_after_flight(&d, now_ns);
+        // [AKIŞ-SONU YEDEĞİ] Bütçeli port alıcısında eş sessizken gelen varışın boşluğu sessizliği
+        // kapsar, ritmi değil: varış aralığı penceresine yazılmaz (`gap_spans_silence`).
+        let spans_silence = self.gap_spans_silence(now_ns);
         // [TUR-5 r3 §1a] EPİZOT-DEĞERLENDİRME — pencere/last_gap GÜNCELLENMEDEN ÖNCE (kopma-gap'i
         // ritim-referansını zehirleyemez). Oturum-ilk = açık özel-durum. Dup dahil her datagram.
         if self.seen_total == 1 {
@@ -272,12 +275,14 @@ impl Receiver {
             }
             // SİMETRİK CLAMP'Lİ-YAZIM (r3-doğrulama): zehirlenme-koruması + livelock-ölümü +
             // mikro-gap tabanı tek kuralda; count=0'da (ilk gap) ham — sınıflandırılamaz (beyanlı).
-            let written = if baseline > 0 {
-                gap.clamp(baseline / K_EPISODE, baseline.saturating_mul(K_EPISODE))
-            } else {
-                gap
-            };
-            self.push_gap(written);
+            if !spans_silence {
+                let written = if baseline > 0 {
+                    gap.clamp(baseline / K_EPISODE, baseline.saturating_mul(K_EPISODE))
+                } else {
+                    gap
+                };
+                self.push_gap(written);
+            }
         }
         // [3b-C] kanal-tempo ölçümü: varış-aralığı HAM kalır (tail/bacak-2 girdisi — anlık ritim;
         // epizot-penceresi AYRI iş, r3 §3).
@@ -502,18 +507,43 @@ impl Receiver {
     /// Teslim edilmiş birim bu alıcının `delivered` çıktısıdır; FEC ile kurtarılan birimi alıcı
     /// görmez, onun kopyası akış sayılır (bugünkü davranış).
     fn redundant_copy_after_flight(&self, d: &RxDatagram, now_ns: u64) -> bool {
-        self.cc_port
-            && self.ack_budget_bps.is_some()
+        self.reserve_path()
             && matches!(d.kind, RxKind::Data)
             && !self.received.contains(&d.seq)
             && self.delivered_units.contains(&d.unit_id)
             && self.arrivals_quiet(now_ns)
     }
 
+    /// [AKIŞ-SONU YEDEĞİ] Bütçeli port alıcısında, eş sessizken (`arrivals_quiet`, taban varken)
+    /// gelen varışın boşluğu sessizliği kapsar: varış aralığı penceresine yazılmaz. Varış akıştır
+    /// (son varış anı tazelenir, yedek kuralı ve epizot sayımı aynen); yalnız taban akışın ritminde
+    /// kalır. Akış ortasındaki boşluk (eş sessiz değil; araya PARAM düşen DATA kayıpları dahil) ve
+    /// ritimde gelen varış eskisi gibi yazılır.
+    ///
+    /// Yazılınca (`9b2ccee7`) akış sonrası tek PTO probu (yeni birim taşıyan) boşluğunu 4 × taban
+    /// olarak pencereye koyuyordu; önceki turun başındaki boşlukla pencerenin medyanı 4 katına,
+    /// sessizlik penceresi 84 ms'lik ritimde 336 ms'den 1,34 s'ye çıkıyordu. ACK probdan 1,35–1,46 s,
+    /// akış sonrası kontrol trafiğiyle 2,7 s sonra çıkıyordu. Gönderici kuyruktaki yeni birimi PTO
+    /// probuyla taşıdığında (şerit kipi) bu her durakta tekrarlar ve her prob tabanı bir kez daha 4
+    /// katına çıkarırdı.
+    ///
+    /// Bedel: ritim bir adımda 4 kattan fazla yavaşlarsa taban ona uyarlanmaz; her varış sessizlikten
+    /// sonra gelmiş sayılır ve ACK'i bir pencere sonra yedek istemeden çıkar (seyrek varışta ACK
+    /// beklemez). Eski motor ve bütçesiz yol eski uyarlamayı korur.
+    fn gap_spans_silence(&self, now_ns: u64) -> bool {
+        self.reserve_path() && self.episode_baseline() > 0 && self.arrivals_quiet(now_ns)
+    }
+
+    /// [AKIŞ-SONU YEDEĞİ] Akış sonu yedeği kurallarının geçerli olduğu yol: dönüş bütçesi kurulu port
+    /// alıcısı. Başka yolda bu kurallar çalışmaz (eski motor ve bütçesiz yol bayt-aynı).
+    fn reserve_path(&self) -> bool {
+        self.cc_port && self.ack_budget_bps.is_some()
+    }
+
     /// [AKIŞ-SONU YEDEĞİ] Teslim edilen DATA biriminin kimliği (yalnız bütçeli port alıcısında;
     /// `RX_DEDUP_WINDOW` kayan pencere, en küçük kimlik düşer).
     fn note_delivered_unit(&mut self, unit_id: u64) {
-        if !(self.cc_port && self.ack_budget_bps.is_some()) {
+        if !self.reserve_path() {
             return;
         }
         self.delivered_units.insert(unit_id);
@@ -1259,25 +1289,96 @@ mod tests {
             11300, 11550, 11800, 12050, 12300, 12550, 13050, 13300, 13550, 13800, 14050, 14300,
             14800, 15050, 15300, 15550, 15800, 16050, 16300, 17050, 17300, 18050, 18300,
         ];
-        let run = |copy: bool, ctrl: bool| {
+        // `probe`: 14,58 s'de PN 60'ın taşıdığı birim; `lost59`: PN 59 da yolda düşer (birim 35 hiç
+        // ulaşmaz). Dönen: `after`'dan sonraki ilk ACK.
+        let run = |probe: Option<u64>, ctrl: bool, lost59: bool, after: u64| {
             let mut ev: Vec<(u64, TailEv)> = d
                 .iter()
+                .filter(|&&(s, _, _)| !(lost59 && s == 59))
                 .map(|&(s, u, t)| (t * MS, TailEv::Data(s, u)))
                 .collect();
             ev.push((480 * MS, TailEv::Ctrl(2)));
             ev.push((650 * MS, TailEv::Ctrl(5)));
-            if copy {
-                ev.push((14_580 * MS, TailEv::Data(60, 6)));
+            if let Some(unit) = probe {
+                ev.push((14_580 * MS, TailEv::Data(60, unit)));
             }
             if ctrl {
                 ev.extend(ctrl_ms.iter().map(|&t| (t * MS, TailEv::Ctrl(22))));
             }
-            first_ack_after(&ev, 10_740 * MS)
+            first_ack_after(&ev, after)
         };
-        let base = run(false, false);
-        assert_eq!(run(false, true), base, "kopyasız: kontrol trafiği etkisiz");
-        assert_eq!(run(true, false), base, "kopya son ACK'i bekletmez");
-        assert_eq!(run(true, true), base, "kopya + kontrol son ACK'i bekletmez");
+        let end = 10_740 * MS;
+        let base = run(None, false, false, end);
+        assert_eq!(
+            run(None, true, false, end),
+            base,
+            "kopyasız: kontrol trafiği etkisiz"
+        );
+        assert_eq!(
+            run(Some(6), false, false, end),
+            base,
+            "kopya son ACK'i bekletmez"
+        );
+        assert_eq!(
+            run(Some(6), true, false, end),
+            base,
+            "kopya + kontrol son ACK'i bekletmez"
+        );
+        // PN 59 da düşseydi PTO probu YENİ birim 35'i taşırdı: akış yeniden başlar, ACK bir ritim
+        // penceresi (4 × 90 ms) ve jetonu bekler (400 ms); kontrol trafiği en çok bir pencere ekler
+        // (600 ms). Eski kural probun boşluğunu pencereye 4 × taban yazıyordu: probdan 1 460 ms,
+        // kontrol trafiğiyle 2 680 ms.
+        let probe = 14_580 * MS;
+        let quiet = run(Some(35), false, true, probe) - probe;
+        let ctrl = run(Some(35), true, true, probe) - probe;
+        assert!(
+            quiet <= 500 * MS,
+            "yeni birimli prob: ACK probdan {} ms sonra",
+            quiet / MS
+        );
+        assert!(
+            ctrl <= 800 * MS,
+            "yeni birimli prob + kontrol: ACK probdan {} ms sonra",
+            ctrl / MS
+        );
+    }
+
+    /// [AKIŞ-SONU YEDEĞİ] Akış sessizken gelen tek PTO probu YENİ birim taşırsa (birim 8, hiç
+    /// ulaşmamıştı) akış yeniden başlar ve ACK bir sessizlik penceresi (4 × 84 ms) bekler; ama
+    /// pencere probun uzun boşluğuyla şişmez, kontrol trafiği onu en çok bir pencere uzatır. Eski
+    /// kuralda probun boşluğu 4 × taban olarak varış penceresine yazılıyor, B turunun boşluğuyla
+    /// birlikte tabanı 84 → 336 ms'ye, pencereyi 1 344 ms'ye çıkarıyordu. Gönderici kuyruktaki yeni
+    /// birimi PTO probuyla taşıdığında (şerit kipinde) bu her durakta tekrarlar. Karşı olgu: probdan
+    /// 84 ms sonra ikinci yeni birim gelirse akış ritimde sürer, ACK ikinciden sonra bir pencere bekler.
+    #[test]
+    fn new_unit_probe_after_the_flight_restarts_it_for_one_rhythm_window() {
+        let window = K_EPISODE * 84 * MS;
+        let tick = 20 * MS;
+        let (ev, end) = tail_events(None, None);
+        let t0 = first_ack_after(&ev, end);
+        let at = t0 - 150 * MS;
+        // Kontrol aralığı (ms; 0 = kontrol trafiği yok).
+        for ctrl in [0u64, 50, 100, 250, 500, 1_000, 1_500] {
+            let (ev, _) = tail_events(Some((at, 8)), (ctrl > 0).then_some(ctrl * MS));
+            let d = first_ack_after(&ev, end) - at;
+            assert!(
+                d > window,
+                "yeni birim akışı yeniden başlatır (kontrol {ctrl} ms): ACK probdan {} ms sonra",
+                d / MS
+            );
+            let bound = if ctrl == 0 { window } else { 2 * window };
+            assert!(
+                d <= bound + tick,
+                "pencere probun boşluğuyla şişmez (kontrol {ctrl} ms): ACK probdan {} ms sonra",
+                d / MS
+            );
+        }
+        let (mut ev, _) = tail_events(Some((at, 8)), None);
+        ev.push((at + 84 * MS, TailEv::Data(43, 11)));
+        assert!(
+            first_ack_after(&ev, end) > at + 84 * MS + window,
+            "ritimde gelen ikinci yeni birim akıştır"
+        );
     }
 
     /// [DÖNÜŞ-BÜTÇESİ] Eski alıcı bütçeden etkilenmez (kendi cadence tabanı var).
