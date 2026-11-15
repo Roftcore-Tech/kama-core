@@ -26,7 +26,11 @@ use std::collections::{BTreeSet, VecDeque};
 use std::time::Duration;
 
 use adaptive_transport::receiver::{Receiver, RxDatagram, RxKind};
-use adaptive_transport::sender::{AckInfo, Event, OpaqueUnit, SenderState, Timer, TransmitKind};
+use adaptive_transport::sender::{
+    AckInfo, Event, FecActuationMode, InitialWindowConfig, OpaqueUnit, SenderState, Timer,
+    TransmitKind,
+};
+use client_core::runtime::{RuntimeConfig, TransportEngine};
 use client_core::{ClientSession, TransmitDecision};
 
 const MS: u64 = 1_000_000;
@@ -56,6 +60,41 @@ struct Outcome {
     refused_at_stall_end: u64,
     /// Benzetim boyunca gönderici RecoverFwd'e girdi mi.
     entered_recover_fwd: bool,
+}
+
+/// Çalışma zamanının (`runtime.rs` istemci görevi) ürün profilinde göndericiye uyguladığı,
+/// varsayılandan farklı ayarlar: ilk uçuş penceresi, spekülatif FEC kolu, yapı-gate seviyesi,
+/// FEC Controller kipi (port motorunda ilk pencere tabanı 4·MTU).
+fn product_session(engine: TransportEngine) -> ClientSession {
+    let cfg = RuntimeConfig {
+        engine,
+        ..RuntimeConfig::default()
+    };
+    let mut s = match engine {
+        TransportEngine::Legacy => ClientSession::new(),
+        TransportEngine::CcPort => ClientSession::with_cc_port(),
+    };
+    let tx = s.sender_mut();
+    tx.set_fec_structure_policy(cfg.fec_structure_policy);
+    tx.set_loss_confirm_horizon(cfg.loss_confirm_horizon);
+    tx.set_fec_loss_risk(cfg.fec_loss_risk);
+    tx.set_structure_gate_level(cfg.structure_gate_level_permille);
+    if engine == TransportEngine::Legacy {
+        tx.set_e2a_flags(cfg.e2a_flags);
+    }
+    tx.set_initial_window(InitialWindowConfig {
+        bytes: cfg.initial_window_bytes,
+    });
+    if engine == TransportEngine::CcPort {
+        tx.set_cc_initial_window(
+            cfg.initial_window_bytes
+                .max(4 * adaptive_transport::rate::DEFAULT_MTU),
+        );
+    }
+    tx.set_e1_flags(cfg.e1_flags);
+    tx.set_fec_actuation_mode(FecActuationMode::Controller)
+        .expect("taze Sender kip ayarını kabul eder");
+    s
 }
 
 fn simulate(mut s: ClientSession, mut rx: Receiver) -> Outcome {
@@ -190,7 +229,7 @@ fn simulate(mut s: ClientSession, mut rx: Receiver) -> Outcome {
 /// duran tüketici. Tavanlı yapılandırmada 60 s sonunda 4 teslim / 4 teyit kalıyordu.
 #[test]
 fn legacy_full_receiver_longer_than_three_ptos_does_not_stall_the_session() {
-    let o = simulate(ClientSession::new(), Receiver::new());
+    let o = simulate(product_session(TransportEngine::Legacy), Receiver::new());
     // Ön koşul — düzenek kusurun şeklini kuruyor: duraklama içinde en az üç prob tele çıktı ve
     // reddedildi, hiçbir §3.3-B kopyası yok (kurtarma rastlantıya kalmıyor), RecoverFwd yok.
     assert!(
@@ -232,7 +271,10 @@ fn legacy_full_receiver_longer_than_three_ptos_does_not_stall_the_session() {
 /// bu yüzden aynı yarışta durmuyordu. Eşlik kanıtı.
 #[test]
 fn port_full_receiver_longer_than_three_ptos_does_not_stall_the_session() {
-    let o = simulate(ClientSession::with_cc_port(), Receiver::with_cc_port());
+    let o = simulate(
+        product_session(TransportEngine::CcPort),
+        Receiver::with_cc_port(),
+    );
     let all: BTreeSet<u64> = (0..UNITS).collect();
     assert_eq!(o.delivered, all, "{o:?}");
     assert_eq!(o.confirmed, all, "{o:?}");
