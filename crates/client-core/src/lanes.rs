@@ -22,6 +22,14 @@
 //! Her şerit tavanlıdır ([`LaneConfig::caps`]); tavan doluyken yeni birim reddedilir
 //! ([`LaneFull`] → S1 `Backpressure`), tahsis tavan denetiminden SONRA yapılır. Uçuştaki dosya
 //! kimlikleri kümesi `W` ile sınırlıdır.
+//!
+//! # Şerit başına kabul genişliği
+//!
+//! [`LaneConfig::admit_widths`] (varsayılan PTT/SIG/TEXT 256, FILE 4096) iki uçta aynıdır. Alıcı
+//! bir şeridin birimini yalnız o şeridin penceresi içindeyse kabul eder; gönderici her şeritte
+//! sıradaki birimi şeridin teyit sınırından en çok `genişlik − 1` ileride verir
+//! ([`SessionLanes::set_span_rooms`]). Sınıra dayanan şerit burada bekler, pompa öbür şeritlere
+//! geçer: bir şeridin eksik sıra başı başka şeridin gönderimini durdurmaz.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Instant;
@@ -32,6 +40,28 @@ use kama_contracts::s1::{CompressionPolicy, DeliveryPolicy, TrafficClass};
 /// Gösterim varsayılanı W (v4 K6): teyitsiz dosya birimi sayısı. Türetme ve alt sınır:
 /// [`file_window_covers_bdp`] (KK-T1-09).
 pub const DEFAULT_FILE_WINDOW_UNITS: u32 = 5;
+
+/// [ŞERİT-W] Yol-tabanlı dosya penceresinin BDP kazancı: pencere ≈ `2 × BtlBw × RTprop`. 2 = BBR'ın
+/// kendi uçuş hedefi (cwnd_gain): daha küçük pencere dosyayı uygulama-sınırlı bırakır (motor
+/// BtlBw'yi büyütemez), daha büyüğü yalnız metnin/PTT'nin önündeki motor kuyruğunu uzatır.
+pub const FILE_WINDOW_BDP_GAIN: u64 = 2;
+
+/// [ŞERİT-W] Yol-tabanlı dosya penceresinin üst sınırı (birim; SR-AUDIT-001 — uçuştaki dosya
+/// kimlikleri kümesi sınırlı kalır).
+pub const MAX_FILE_WINDOW_UNITS: u32 = 1024;
+
+/// [ŞERİT-GENİŞLİK] PTT, SIG ve TEXT şeritlerinin varsayılan kabul genişliği (birim).
+pub const DEFAULT_RT_ADMIT_WIDTH: u64 = 256;
+/// [ŞERİT-GENİŞLİK] FILE şeridinin varsayılan kabul genişliği (birim; ürünün
+/// `RuntimeConfig::max_inflight_units` değeriyle aynı).
+pub const DEFAULT_FILE_ADMIT_WIDTH: u64 = 4096;
+/// [ŞERİT-GENİŞLİK] Varsayılan kabul genişlikleri, [`Lane::ALL`] sırasıyla.
+pub const DEFAULT_ADMIT_WIDTHS: [u64; 4] = [
+    DEFAULT_RT_ADMIT_WIDTH,
+    DEFAULT_RT_ADMIT_WIDTH,
+    DEFAULT_RT_ADMIT_WIDTH,
+    DEFAULT_FILE_ADMIT_WIDTH,
+];
 
 /// PTT şeridinin varsayılan tavanı (birim) — `[KALİBRASYON]`, normatif DEĞİL.
 pub const DEFAULT_PTT_CAP: usize = 64;
@@ -92,6 +122,19 @@ pub struct LaneConfig {
     pub file_window_units: u32,
     /// Şerit tavanları (birim), [`Lane::ALL`] sırasıyla: PTT, SIG, TEXT, FILE.
     pub caps: [usize; 4],
+    /// [ŞERİT-GENİŞLİK] Şerit başına kabul genişliği (birim), [`Lane::ALL`] sırasıyla. İKİ UÇ AYNI
+    /// değeri kullanır (öbür şerit ayarları gibi):
+    ///
+    /// * alıcı bir şeridin birimini yalnız o şeridin sıra başından bu kadar birim içindeyse kabul
+    ///   eder (`runtime::ExpectedSessions::set_lane_admit_windows`); sıralayıcı şerit başına en
+    ///   çok bu kadar birim tutar;
+    /// * gönderici bir şeritte sıradaki birimi, şeridin teyit sınırından en çok `genişlik − 1`
+    ///   ileride verir ([`SessionLanes::set_span_rooms`]). Sınıra dayanan şerit bekler, öbür
+    ///   şeritler vermeyi sürdürür.
+    ///
+    /// Varsayılan [`DEFAULT_ADMIT_WIDTHS`]: PTT/SIG/TEXT 256, FILE 4096. Tek oturumluk alıcı tampon
+    /// sınırı bunlardan türer (`transport::receiver_buffer_bound_units`).
+    pub admit_widths: [u64; 4],
 }
 
 impl LaneConfig {
@@ -104,11 +147,12 @@ impl LaneConfig {
         Self {
             file_window_units,
             caps: [DEFAULT_PTT_CAP, DEFAULT_SIG_CAP, DEFAULT_TEXT_CAP, file_cap],
+            admit_widths: DEFAULT_ADMIT_WIDTHS,
         }
     }
 
-    /// Tipli doğrulama: W ≥ 1, her tavan ≥ 1, tavanlar toplamı ≤ veri yolunun teklif kuyruğu
-    /// (`RuntimeConfig::offer_queue`).
+    /// Tipli doğrulama: W ≥ 1, her tavan ≥ 1, her kabul genişliği ≥ 1, tavanlar toplamı ≤ veri
+    /// yolunun teklif kuyruğu (`RuntimeConfig::offer_queue`).
     ///
     /// # Errors
     /// [`LaneConfigError`].
@@ -119,6 +163,9 @@ impl LaneConfig {
         for lane in Lane::ALL {
             if self.caps[lane.index()] == 0 {
                 return Err(LaneConfigError::ZeroCap { lane });
+            }
+            if self.admit_widths[lane.index()] == 0 {
+                return Err(LaneConfigError::ZeroAdmitWidth { lane });
             }
         }
         let total = self
@@ -151,6 +198,12 @@ pub enum LaneConfigError {
         /// Tavanı 0 olan şerit.
         lane: Lane,
     },
+    /// Bir şeridin kabul genişliği 0 (şerit hiç birim veremezdi).
+    #[error("şerit: {lane:?} kabul genişliği 0")]
+    ZeroAdmitWidth {
+        /// Genişliği 0 olan şerit.
+        lane: Lane,
+    },
     /// Tavanlar toplamı veri yolunun teklif kuyruğunu aşıyor.
     #[error("şerit: tavanlar toplamı {total} > teklif kuyruğu {offer_queue}")]
     CapsExceedOfferQueue {
@@ -159,6 +212,31 @@ pub enum LaneConfigError {
         /// `RuntimeConfig::offer_queue`.
         offer_queue: usize,
     },
+}
+
+/// [ŞERİT-W] Yolun ölçülen BDP'sine göre dosya penceresi (birim):
+/// `clamp(⌈FILE_WINDOW_BDP_GAIN · btlbw · rtprop / unit_bytes⌉, min_units, MAX_FILE_WINDOW_UNITS)`.
+/// Ölçüm yoksa (`btlbw == 0` ya da `rtprop_ns == 0`) ya da `unit_bytes == 0` → `min_units`.
+///
+/// Neden: sabit W (gösterim varsayılanı 5) dosya hızını `W · S / RTT`'de tavanlar (5 × 1013 B /
+/// 0,3 s ≈ 17 kB/s); bunun üstündeki her bağlantıda dosya aktarımı bağlantıyı dolduramaz. Pencere
+/// BDP ile büyüyünce metnin/PTT'nin önündeki dosya verisi en çok `FILE_WINDOW_BDP_GAIN` BDP'dir
+/// (≈ 2·RTprop ek bekleme) — sınırlı ve bant genişliğinden bağımsız.
+#[must_use]
+pub fn file_window_for_path(
+    min_units: u32,
+    unit_bytes: u64,
+    btlbw_bps: u64,
+    rtprop_ns: u64,
+) -> u32 {
+    let floor = min_units.clamp(1, MAX_FILE_WINDOW_UNITS);
+    if btlbw_bps == 0 || rtprop_ns == 0 || unit_bytes == 0 {
+        return floor;
+    }
+    let bdp_bytes = u128::from(btlbw_bps) * u128::from(rtprop_ns) / 1_000_000_000;
+    let want = (u128::from(FILE_WINDOW_BDP_GAIN) * bdp_bytes).div_ceil(u128::from(unit_bytes));
+    let want = u32::try_from(want).unwrap_or(u32::MAX);
+    want.clamp(floor, MAX_FILE_WINDOW_UNITS)
 }
 
 /// KK-T1-09: `W` dosya birimi (her biri en çok `unit_bytes`) motor kuyruğunda en az bir BDP
@@ -210,6 +288,10 @@ pub struct LaneStats {
     pub give_failed: u64,
     /// FILE penceresinden teyitle düşen birimler.
     pub file_acked: u64,
+    /// [ŞERİT-AÇIKLIK] Pompa turunda şeridin, sıradaki birimi alıcının kabul penceresinin dışına
+    /// düşeceği için atlandığı tur sayısı ([`SessionLanes::set_span_rooms`]), [`Lane::ALL`]
+    /// sırasıyla.
+    pub span_blocked: [u64; 4],
     /// Teyit kanalından okunan bütün olaylar (her sınıf).
     pub acks_drained: u64,
 }
@@ -222,6 +304,11 @@ pub struct SessionLanes {
     window: usize,
     /// FILE şeridinin uca verdiği, teyidi gelmemiş birim kimlikleri (≤ W).
     file_inflight: BTreeSet<u64>,
+    /// [ŞERİT-AÇIKLIK] Alıcının kabul penceresi dolmadan şerit başına daha kaç birim verilebilir
+    /// ([`Self::set_span_rooms`]); `u64::MAX` = sınır yok.
+    span_room: [u64; 4],
+    /// Son pompa turunda şerit açıklık yüzünden atlandı mı (sayaç için).
+    span_hit: [bool; 4],
 }
 
 impl SessionLanes {
@@ -233,6 +320,8 @@ impl SessionLanes {
             caps: cfg.caps,
             window: usize::try_from(cfg.file_window_units).unwrap_or(usize::MAX),
             file_inflight: BTreeSet::new(),
+            span_room: [u64::MAX; 4],
+            span_hit: [false; 4],
         }
     }
 
@@ -256,11 +345,17 @@ impl SessionLanes {
         self.queues[lane.index()].push_front(unit);
     }
 
-    /// Kabul sırasıyla uca verilecek sıradaki birim. FILE şeridi pencere doluysa atlanır.
-    /// Süresi dolmuş `DeadlineBounded` birim çıkarılır ve `expired`'da sayılır (uca verilmez).
+    /// Kabul sırasıyla uca verilecek sıradaki birim. FILE şeridi pencere doluysa atlanır; açıklık
+    /// sınırına dayanan HER şerit atlanır ve sıradaki uygun şeride geçilir (bir şeridin sınırı
+    /// öbürlerini durdurmaz). Süresi dolmuş `DeadlineBounded` birim çıkarılır ve `expired`'da
+    /// sayılır (uca verilmez).
     pub fn pop_next(&mut self, now: Instant, expired: &mut u64) -> Option<(Lane, QueuedUnit)> {
         for lane in Lane::ALL {
             if lane == Lane::File && self.file_inflight.len() >= self.window {
+                continue;
+            }
+            if self.span_room[lane.index()] == 0 {
+                self.span_hit[lane.index()] = !self.queues[lane.index()].is_empty();
                 continue;
             }
             let q = &mut self.queues[lane.index()];
@@ -277,8 +372,45 @@ impl SessionLanes {
         None
     }
 
-    /// Birim uca verildi; FILE ise kimliği pencereye girer.
+    /// [ŞERİT-W] FILE penceresini ayarlar (birim, ≥ 1). Daralma uçtaki birimi geri ALMAZ: pencere
+    /// yeniden açılana dek yeni dosya birimi verilmez.
+    pub fn set_file_window(&mut self, units: u32) {
+        self.window = usize::try_from(units.max(1)).unwrap_or(usize::MAX);
+    }
+
+    /// Geçerli FILE penceresi (birim).
+    #[must_use]
+    pub fn file_window(&self) -> usize {
+        self.window
+    }
+
+    /// [ŞERİT-AÇIKLIK] Şerit başına AÇIKLIK sınırı: alıcının kabul penceresi dolmadan şeride daha
+    /// kaç birim verilebilir (`rooms`, [`Lane::ALL`] sırasıyla; pompa her tur başında yeniden
+    /// kurar, verilen her birim kendi şeridininkini bir düşürür).
+    ///
+    /// Neden: alıcı bir şeridin birimini yalnız sıra başından [`LaneConfig::admit_widths`] içinde
+    /// kabul eder. Şeridin sıra başı uzun süre eksik kalıp arkasındaki birimler teyit aldıkça şerit
+    /// yeni birim vermeyi sürdürseydi, sıra başından uzaklık pencereyi aşar; alıcı o birimleri
+    /// kabul etmez, ACK'lemez. Motorun uçuşu ACK almayacak birimlerle dolar, yeniden iletim önceliği
+    /// onları dönüp dolaştırır, öbür şeritlerin birimleri tele çıkamaz — "akışlar birbirini
+    /// bloklamaz" ihlali (ölçüm: `tests/lane_two_heads_lost.rs`, `tests/lane_span_per_lane.rs`).
+    /// Açıklık sınırıyla verilen her birim alıcının penceresinin içindedir; sınıra dayanan şeridin
+    /// birimleri burada bekler.
+    pub fn set_span_rooms(&mut self, rooms: [u64; 4]) {
+        self.span_room = rooms;
+        self.span_hit = [false; 4];
+    }
+
+    /// Son pompa turunda şerit açıklık sınırına takıldı mı (bekleyen birimi varken).
+    #[must_use]
+    pub fn span_hit(&self, lane: Lane) -> bool {
+        self.span_hit[lane.index()]
+    }
+
+    /// Birim uca verildi: şeridin açıklığı bir azalır; FILE ise kimliği pencereye girer.
     pub fn on_given(&mut self, lane: Lane, unit_id: u64) {
+        let room = &mut self.span_room[lane.index()];
+        *room = room.saturating_sub(1);
         if lane == Lane::File {
             self.file_inflight.insert(unit_id);
         }
@@ -372,6 +504,37 @@ impl LaneState {
     pub fn pop_next(&mut self, session: SessionHandle, now: Instant) -> Option<(Lane, QueuedUnit)> {
         let lanes = self.sessions.get_mut(&session)?;
         lanes.pop_next(now, &mut self.stats.lane_expired)
+    }
+
+    /// Yapılandırmadaki FILE penceresi (birim; yol-tabanlı pencerenin tabanı).
+    #[must_use]
+    pub fn configured_file_window(&self) -> u32 {
+        self.cfg.file_window_units
+    }
+
+    /// [ŞERİT-W] Oturumun FILE penceresini ayarlar ([`SessionLanes::set_file_window`]).
+    pub fn set_file_window(&mut self, session: SessionHandle, units: u32) {
+        if let Some(lanes) = self.sessions.get_mut(&session) {
+            lanes.set_file_window(units);
+        }
+    }
+
+    /// [ŞERİT-AÇIKLIK] Oturumun şerit başına açıklık sınırı ([`SessionLanes::set_span_rooms`]).
+    pub fn set_span_rooms(&mut self, session: SessionHandle, rooms: [u64; 4]) {
+        if let Some(lanes) = self.sessions.get_mut(&session) {
+            lanes.set_span_rooms(rooms);
+        }
+    }
+
+    /// [ŞERİT-AÇIKLIK] Pompa turu bitti: açıklık sınırına takılan şeritler sayılır.
+    pub fn note_pump_done(&mut self, session: SessionHandle) {
+        if let Some(lanes) = self.sessions.get(&session) {
+            for lane in Lane::ALL {
+                if lanes.span_hit(lane) {
+                    self.stats.span_blocked[lane.index()] += 1;
+                }
+            }
+        }
     }
 
     /// Birim uca verildi.
@@ -515,6 +678,7 @@ mod tests {
         let cfg = LaneConfig {
             file_window_units: 5,
             caps: [64, 64, 256, 32],
+            admit_widths: DEFAULT_ADMIT_WIDTHS,
         };
         let mut l = SessionLanes::new(&cfg);
         for i in 0..20u8 {
@@ -664,6 +828,7 @@ mod tests {
         let cfg = LaneConfig {
             file_window_units: 1,
             caps: [2, 1, 3, 2],
+            admit_widths: DEFAULT_ADMIT_WIDTHS,
         };
         let mut st = LaneState::new(cfg);
         let h = SessionHandle::from_raw(9);
@@ -678,6 +843,71 @@ mod tests {
         let s = st.stats();
         assert_eq!(s.accepted, [1, 0, 3, 0]);
         assert_eq!(s.refused, [0, 0, 2, 0]);
+    }
+
+    /// [ŞERİT-W] Yol-tabanlı pencere: ölçüm yoksa taban; BDP büyüdükçe pencere ≈ 2·BDP/S; taban
+    /// ve tavan korunur.
+    #[test]
+    fn path_window_tracks_two_bdp_between_floor_and_cap() {
+        const MS: u64 = 1_000_000;
+        // Ölçüm yok → yapılandırma tabanı.
+        assert_eq!(file_window_for_path(5, UNIT_BYTES, 0, 300 * MS), 5);
+        assert_eq!(file_window_for_path(5, UNIT_BYTES, 12_500, 0), 5);
+        assert_eq!(file_window_for_path(5, 0, 12_500, 300 * MS), 5);
+        // Gösterim profili 12,5 kB/s × 300 ms: BDP 3750 B → ⌈7500/1013⌉ = 8.
+        assert_eq!(file_window_for_path(5, UNIT_BYTES, 12_500, 300 * MS), 8);
+        // Düşük bant 25 B/s × 1 s: BDP 25 B → 1 < taban → 5.
+        assert_eq!(file_window_for_path(5, UNIT_BYTES, 25, 1_000 * MS), 5);
+        // İyi bant 1 MB/s × 100 ms: BDP 100 kB → ⌈200 000/1013⌉ = 198. Sabit W = 5 burada dosyayı
+        // 5·1013 B / 0,1 s ≈ 50 kB/s'de tavanlardı.
+        assert_eq!(
+            file_window_for_path(5, UNIT_BYTES, 1_000_000, 100 * MS),
+            198
+        );
+        assert!(!file_window_covers_bdp(5, UNIT_BYTES, 1_000_000, 100));
+        assert!(file_window_covers_bdp(198, UNIT_BYTES, 1_000_000, 100));
+        // Tavan.
+        assert_eq!(
+            file_window_for_path(5, UNIT_BYTES, 100_000_000, 1_000 * MS),
+            MAX_FILE_WINDOW_UNITS
+        );
+        // Taban 0 → 1 (pencere asla kapanmaz).
+        assert_eq!(file_window_for_path(0, UNIT_BYTES, 0, 0), 1);
+    }
+
+    /// [ŞERİT-W] Pencere ayarı: büyüyünce bekleyen dosya birimleri verilir, daralınca uçtaki birim
+    /// geri alınmaz ama yeni birim verilmez.
+    #[test]
+    fn set_file_window_opens_and_closes_the_file_lane() {
+        let cfg = LaneConfig {
+            file_window_units: 2,
+            caps: [64, 64, 256, 32],
+            admit_widths: DEFAULT_ADMIT_WIDTHS,
+        };
+        let mut s = SessionLanes::new(&cfg);
+        for i in 0..6 {
+            s.push(unit(TrafficClass::Bk, i)).expect("yer var");
+        }
+        let now = Instant::now();
+        let mut exp = 0;
+        let mut given = 0u64;
+        while let Some((lane, _)) = s.pop_next(now, &mut exp) {
+            s.on_given(lane, given);
+            given += 1;
+        }
+        assert_eq!(given, 2, "W = 2");
+        s.set_file_window(5);
+        while let Some((lane, _)) = s.pop_next(now, &mut exp) {
+            s.on_given(lane, given);
+            given += 1;
+        }
+        assert_eq!(given, 5, "W = 5'e büyüdü");
+        s.set_file_window(1);
+        assert!(
+            s.pop_next(now, &mut exp).is_none(),
+            "5 uçta, W = 1: yeni birim yok"
+        );
+        assert_eq!(s.file_window(), 1);
     }
 
     #[test]

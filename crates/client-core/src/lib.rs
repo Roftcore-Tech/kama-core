@@ -49,6 +49,7 @@ pub mod runtime;
 pub mod seam;
 /// [L-T1] S1 `KamaTransport`'un gerçek adaptörü (veri yolu + S3 oturum kontrolü).
 pub mod transport;
+pub mod unit_id;
 pub mod wire;
 
 pub use adaptive_transport::sender::{Event, OpaqueUnit, Sender, TransmitDecision, TransmitKind};

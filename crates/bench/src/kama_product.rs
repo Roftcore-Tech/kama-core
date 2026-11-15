@@ -966,6 +966,22 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         offer_st.qfull_retries,
         offer_st.qfull_wait_ns as f64 / 1e6,
     );
+    // [FEC-E-ÖLÇEK] Ayrı satır (KP-CLIENT biçimi korunur): parite tavanı kararları ve girdisi.
+    // `decisions` kontrolcü yolunda tavan kararı verilen blok, `time_gate_open` bunlardan ölçülmüş
+    // yol kapasitesiyle profil tavanının kaldığı karar, `path_bw_max` karara giren kapasitenin en
+    // büyüğü (B/s; 0 = ölçüm yoktu), `clamped` tavanın kontrolcünün r'sini kestiği blok.
+    eprintln!(
+        "KP-CLIENT-FECCAP decisions={} time_gate_open={} path_bw_max={}B/s clamped={} \
+         latched={} repairs_tx={} param_sends={} param_confirmed={}",
+        stats.fec_cap_decisions,
+        stats.fec_cap_time_gate_open,
+        stats.fec_cap_path_bw_max_bps,
+        stats.fec_parity_payload_clamped,
+        stats.fec_blocks_latched,
+        stats.fec_repairs_tx,
+        stats.param_sends,
+        stats.param_confirmed,
+    );
     print_activation(&stats);
     // [HANDOFF ENSTRÜMANI] zaman serisini CSV'ye dök (varsa).
     if let Some(path) = cfg.ts_out.as_ref() {

@@ -1,0 +1,21 @@
+# [#190 parite tavanı] r25p-uzun: 25 B/s, iki yön %20 kayıp, 60 × 65 B × 10 s, son tarih 300 s.
+# Soru: düşük bantta parite tavanı kararı başlangıç sırasından (PARAM ↔ ilk veri) bağımsız mı;
+# küçük ileti bloklarında tavan her koşuda devrede mi (pahalı 1 052 B parite hatta çıkmıyor mu).
+# Kollar (arms_kama.sh): taban = karar girdisi pacer hedefi olan ikili, aday = karar girdisi
+# ölçülmüş yol kapasitesi (BtlBw) olan ikili; komutlar bayt bayt aynı, fark yalnız ikili.
+# İstemcinin KP-CLIENT-FECCAP satırı yalnız aday ikilide var; taban kolunda kapının açıldığı koşu
+# KP-CLIENT `fec_repairs_tx > 0` ile okunur. Netem tohumsuz: birim = koşu (KATALOG §2).
+CELL=r25_d300_l20_p65_uzun
+FWD="delay 300ms 60ms distribution normal loss 20% rate 200bit"
+REV="$FWD"
+REPS="${F0_REPS:-2}"
+BUDGET_S=960
+SETTLE_S=1
+MSGS=60
+PAY=65
+IVAL_MS=10000
+DEADLINE_S=300
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/arms_kama.sh"
+kama_arms
+ARMS="taban aday"
