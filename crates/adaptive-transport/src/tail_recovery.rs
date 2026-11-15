@@ -81,6 +81,25 @@ impl TailRecoveryConfig {
         }
     }
 
+    /// [ADAY · eski motor canlılığı] `validated_v1` sınırları, **prob turu tavanı yok**: ilk üç tur
+    /// `validated_v1` ile aynı anlarda ateşler (taban PTO · 2^k); üçüncüden sonra da üstel geri
+    /// çekilmeyle (30 s tavan) sürer. `validated_v1`'in üç turu, ACK ilerlemesi gelene dek
+    /// (`TailRecovery::on_ack_progress` sıfırlar) bütün boşta pencere için harcanır. Tavanlıyken
+    /// alıcı üç PTO turundan uzun
+    /// süre yeni veriyi ACK'lemezse (teslim kanalı dolu: alıcı veriyi motora vermez, eski durumu
+    /// ACK'lemeye devam eder) göndericinin kalan hiçbir yolu ateşlemiyordu: kuyruk birimleri
+    /// `largest_acked`'in üstünde (paket/zaman eşiği kör), eski durumun yinelenen ACK'leri
+    /// `ack_confidence`'ı tam tutar (RecoverFwd'e girilmez) → oturum kalıcı durur. RFC 9002 §6.2 ve
+    /// port motoru (`rfc9002_cc_port`) PTO'yu turla sınırlamaz. Taban PTO tavanı (10 s)
+    /// `validated_v1`'deki gibi kalır. Kullanıcısı: `client_core::ClientSession::new` (eski motor).
+    #[must_use]
+    pub fn validated_v1_uncapped() -> Self {
+        Self {
+            max_tail_probes: u32::MAX,
+            ..Self::validated_v1()
+        }
+    }
+
     /// [CC-PORT] RFC 9002 §6.2 PTO biçimi (quinn `connection/mod.rs:1834-1870`): `validated_v1`
     /// sınırlarıyla ama **prob turu tavanı yok** (üstel geri çekilme tek sınırlayıcı; quinn'de de
     /// sayaç yoktur, bağlantı boşta-zaman-aşımına kadar prob sürer). ISEMRI-CC-PORT §1 #4
@@ -623,6 +642,27 @@ mod tests {
                 3,
             ),
             "KAMA-TAIL-V1 drifted from the validated grid config"
+        );
+        // [ADAY] Tavansız eski motor yapılandırması validated_v1'den YALNIZ prob turu tavanında ayrılır.
+        let u = TailRecoveryConfig::validated_v1_uncapped();
+        assert_eq!(u.max_tail_probes, u32::MAX);
+        assert_eq!(
+            (
+                u.enabled,
+                u.min_pto_ns,
+                u.max_pto_ns,
+                u.initial_pto_ns,
+                u.max_backoff_pto_ns,
+                u.max_ack_delay_ns,
+            ),
+            (
+                v.enabled,
+                v.min_pto_ns,
+                v.max_pto_ns,
+                v.initial_pto_ns,
+                v.max_backoff_pto_ns,
+                v.max_ack_delay_ns,
+            ),
         );
         let d = TailRecoveryConfig::default();
         assert!(!d.enabled, "shipping default must remain OFF");

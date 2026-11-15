@@ -66,6 +66,11 @@ async fn stalled_consumer(engine: TransportEngine, n: u64) {
     // Şüphe: tüketici dururken kabul edilmeyen birimler için RecoverFwd'nin tek-atımlık kopyaları
     // da reddedilirse birim motordan düşer (kopya kaybı yeniden kuyruklanmaz) — bu döküm onu ayırt
     // eder (`undelivered` > 0 ve gönderici uçuşu boş ↔ hâlâ yeniden iletiyor).
+    // Kök (döküm: `tail_probes` 3, `dups` 0, `data_not_admitted_full` 63, durum Startup): şüphe
+    // değil. Eski motorun kuyruk probu turla tavanlıydı (3); üçü duraklamanın ilk ≈ 200 ms'sinde
+    // reddedilince başka yol ateşlemiyordu. Geçen koşular yalnız reddedilen birimlerin PreConverge
+    // kopyası (≈ 5 s) varsa kurtuluyordu — ilk ACK'in birimlerden önce gelip gelmediğine bağlı bir
+    // yarış. Deterministik ikizi: `legacy_tail_probe_liveness.rs`.
     let delivered = match delivered {
         Ok(d) => d,
         Err(_) => {

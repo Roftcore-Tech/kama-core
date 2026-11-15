@@ -90,10 +90,16 @@ impl ClientSession {
     /// The flip is exactly this construction calling `validated_v1()`. It is deliberately
     /// **never** a flip of `TailRecoveryConfig::default()`, whose bounds were never driven by
     /// any campaign — the R1 rule: unvalidated default bounds do not ship.
+    ///
+    /// [ADAY · eski motor canlılığı] Yapılandırma `validated_v1_uncapped()`: `validated_v1`
+    /// sınırları, prob turu tavanı yok (ilk üç tur aynı anlarda; sonrası üstel geri çekilme,
+    /// 30 s tavan). Tavanlı yapılandırmada teslim kanalı dolu alıcı (veriyi motora vermez, eski
+    /// durumu ACK'ler) üç PTO turundan uzun durursa oturum kalıcı duruyordu; bkz.
+    /// `TailRecoveryConfig::validated_v1_uncapped` ve `tests/legacy_tail_probe_liveness.rs`.
     #[must_use]
     pub fn new() -> Self {
         let mut sender = Sender::new();
-        sender.set_tail_recovery_config(TailRecoveryConfig::validated_v1());
+        sender.set_tail_recovery_config(TailRecoveryConfig::validated_v1_uncapped());
         Self { sender }
     }
 
