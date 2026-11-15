@@ -1854,6 +1854,20 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             .sum()
     }
 
+    /// [ŞERİT-W] Oturumun FILE şeridinin geçerli penceresi (birim): son pompa turunun başında
+    /// yolun ölçülen BDP'sinden kurulan değer (`lanes::file_window_for_path`; taban
+    /// `LaneConfig::file_window_units`). Şeridi henüz açılmamış oturumda yapılandırma tabanı;
+    /// şeritler kapalıysa `None`. Salt okuma.
+    #[cfg(any(test, feature = "test-util"))]
+    #[must_use]
+    pub fn file_window_for_test(&self, session: SessionHandle) -> Option<usize> {
+        let st = self.lanes.as_ref()?;
+        Some(st.session(session).map_or_else(
+            || usize::try_from(st.configured_file_window()).unwrap_or(usize::MAX),
+            |l| l.file_window(),
+        ))
+    }
+
     /// Teslim kuyruğunda (sıralı, okunmayı bekleyen) birim sayısı.
     #[cfg(any(test, feature = "test-util"))]
     #[must_use]
