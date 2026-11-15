@@ -1,26 +1,34 @@
-//! [ADAY · eski motor canlılığı] Teslim kanalı dolu alıcı, üç PTO turundan uzun durduğunda eski
-//! motor oturumu kalıcı durdurmamalı — deterministik benzetim (gerçek saat, soket, tokio YOK).
+//! [ADAY · eski motor canlılığı] Teslim kanalı dolu alıcı (veriyi motora vermez, ACK'lemez)
+//! birkaç PTO turundan uzun durduğunda eski motor oturumu durdurmamalı — deterministik benzetim
+//! (gerçek saat, soket, tokio YOK).
 //!
 //! Ne benzetiliyor: `ack_after_admit.rs` / `legacy_stalled_consumer_loses_no_acked_unit`
-//! düzeneği. Gönderici `ClientSession::new()` (eski motor, ürün yapılandırması); alıcı eski
-//! `Receiver` (`quota_r` 4, sunucu yuvasıyla aynı kurulum). Çalışma-zamanı yapıştırıcısının iki
-//! kuralı birebir: (1) teslim kanalı (4 yer) doluyken datagram alıcı motoruna VERİLMEZ, ACK
-//! üretilmez (`runtime.rs` sunucu görevi, `data_not_admitted_full`); (2) zamanlayıcılar çalışma
-//! zamanının aralıklarında: gönderici PTO 1 ms, RtpropProbe 200 ms, alıcı ACK zamanlayıcısı 20 ms.
-//! Bağlantı kayıpsız, tek yön gecikme bir tik (RTT ≈ 1 ms, geri döngü gibi).
+//! düzeneği. Gönderici `ClientSession::new()` (eski motor) + çalışma zamanının ürün profilinde
+//! göndericiye uyguladığı ayarlar; alıcı eski `Receiver` (`quota_r` 4, sunucu yuvasıyla aynı
+//! kurulum). Çalışma-zamanı yapıştırıcısının kuralları birebir: (1) teslim kanalı (4 yer)
+//! doluyken datagram alıcı motoruna VERİLMEZ, ACK üretilmez (`runtime.rs` sunucu görevi,
+//! `data_not_admitted_full`); (2) zamanlayıcılar çalışma zamanının aralıklarında: gönderici PTO
+//! 1 ms, RtpropProbe 200 ms, alıcı ACK zamanlayıcısı 20 ms. Bağlantı kayıpsız, tek yön gecikme
+//! bir tik (RTT ≈ 1 ms, geri döngü gibi). Tüketici 1,5 s durur, sonra tik başına BİR birim alır
+//! (bir patlamanın kanala ancak kanal yeri kadar girdiği hâl; CI'da yük altında görülen).
 //!
-//! Sıralama (CI dökümündeki yarış sonucu, sabitlenmiş): ilk 4 birim PreConverge'de gider; geri
-//! kalan 60 birim ilk ACK işlendikten SONRA sunulur. Böylece hiçbir reddedilen birimin §3.3-B
-//! PreConverge kopyası olmaz (dökümde `tx_dup_bytes: 0`, `left_preconverge_ns` ≈ 0,5 ms). Bu
-//! kopyalar (ilk gecikme ≈ 5 s) varsa oturum onlarla kurtulur; testin geçmesi o rastlantıya
-//! bağlıydı.
+//! İki kusur, iki senaryo (ikisi de CI dökümlerinde görüldü):
 //!
-//! Kusur (tavanlı `validated_v1`, prob turu tavanı 3): üç prob duraklamanın ilk ≈ 200 ms'sinde
-//! ateşler ve reddedilir; kuyruk birimleri `largest_acked`'in üstünde olduğundan paket/zaman
-//! eşiği kayıp ilan edemez; alıcının eski durumu yineleyen ACK'leri `ack_confidence`'ı tam tutar
-//! (RecoverFwd'e girilmez) → hiçbir yol ateşlemez, 60 s'de 60 birim eksik. Düzeltme adayı
-//! (`validated_v1_uncapped`): prob üstel geri çekilmeyle sürer, duraklama bitince ilk prob kabul
-//! edilir, ACK'i paket eşiğiyle kalanları ARQ'ya sokar.
+//! (A) Kuyruk probu turla tavanlıydı (`validated_v1`, 3). Reddedilen birimlerin hiçbirinin
+//! PreConverge kopyası yokken (ilk ACK birimlerden önce işlendi; döküm: `tx_dup_bytes: 0`) üç prob
+//! duraklamanın ilk ≈ 200 ms'sinde reddedilir; kuyruk birimleri `largest_acked`'in üstünde
+//! olduğundan paket/zaman eşiği kayıp ilan edemez; alıcının eski durumu yineleyen ACK'leri
+//! `ack_confidence`'ı tam tutar (RecoverFwd yok) → 60 s'de 60 birim eksik. Aday:
+//! `TailRecoveryConfig::validated_v1_uncapped` (prob üstel geri çekilmeyle sürer).
+//!
+//! (B) Bütün birimler PreConverge'de gidince her birinin §3.3-B kopyası aynı anlarda kurulur
+//! (31 B/s tabanından ≈ 5 / 15 / 35 / 75 s). Duraklama sonrası ARQ patlamaları kanala ancak yer
+//! kadar girer; tavana (3) ulaşan birimin HandToForward kopyası da reddedilince eski kural yeni
+//! kopya kurmaz ("planlı kopya var" — ama o kopya onlarca saniye sonra), kopya kaybı ARQ'ya
+//! dönmez, uçuşu boş göndericide kuyruk probu söner → birim yalnız merdivene kalır (döküm:
+//! birimin uçuş/ARQ kaydı yok, kopya vadesi 35,6 s / 76,2 s; 60 s'de 5–17 birim eksik). Aday:
+//! `Sender::queue_losses` kopya kaybında, birimin bir taban PTO içinde başka denemesi yoksa onu
+//! ARQ kuyruğuna döndürür.
 
 use std::collections::{BTreeSet, VecDeque};
 use std::time::Duration;
@@ -35,8 +43,6 @@ use client_core::{ClientSession, TransmitDecision};
 
 const MS: u64 = 1_000_000;
 const UNITS: u64 = 64;
-/// İlk sunulan (PreConverge'de giden) birim sayısı = teslim kanalının yeri.
-const FIRST: u64 = 4;
 const QUEUE: usize = 4;
 /// Birimin tel boyu (≈ "admit-unit-N" + DATA başlığı + mühür).
 const UNIT_WIRE: u64 = 40;
@@ -54,10 +60,13 @@ struct Outcome {
     confirmed: BTreeSet<u64>,
     /// Son birimin hem teslim hem teyit edildiği an (ns); bitmediyse `None`.
     done_ns: Option<u64>,
-    /// Duraklama sonunda: tele çıkan kuyruk probu, kopya (Duplicate) ve reddedilen datagram.
+    /// Duraklama sonunda: tele çıkan kuyruk probu ve kopya (Duplicate), reddedilen datagram,
+    /// kopya kuyruğundaki kayıt ve ilk reddedilen birimin (4) kopya vadesi (ns).
     tail_probes_at_stall_end: u64,
     dups_at_stall_end: u64,
     refused_at_stall_end: u64,
+    dup_queue_at_stall_end: u32,
+    first_refused_dup_due_ns: Option<u64>,
     /// Benzetim boyunca gönderici RecoverFwd'e girdi mi.
     entered_recover_fwd: bool,
 }
@@ -97,7 +106,13 @@ fn product_session(engine: TransportEngine) -> ClientSession {
     s
 }
 
-fn simulate(mut s: ClientSession, mut rx: Receiver) -> Outcome {
+/// `first` birim t = 0'da sunulur (PreConverge'de gider); kalanı ilk ACK işlendikten sonra.
+fn simulate(engine: TransportEngine, first: u64) -> Outcome {
+    let mut s = product_session(engine);
+    let mut rx = match engine {
+        TransportEngine::Legacy => Receiver::new(),
+        TransportEngine::CcPort => Receiver::with_cc_port(),
+    };
     rx.set_quota_r(4);
     // Gönderici → alıcı: (seq, birim); alıcı → gönderici: (onaylanan seq'ler, ack_delay).
     let mut to_rx: VecDeque<(u64, u64)> = VecDeque::new();
@@ -108,9 +123,9 @@ fn simulate(mut s: ClientSession, mut rx: Receiver) -> Outcome {
     let mut confirmed: BTreeSet<u64> = BTreeSet::new();
     let mut next_seq: u64 = 0;
     let mut refused: u64 = 0;
-    let mut rest_offered = false;
+    let mut rest_offered = first >= UNITS;
     let mut entered_recover_fwd = false;
-    let mut at_stall_end: Option<(u64, u64, u64)> = None;
+    let mut at_stall_end = None;
     let mut done_ns = None;
 
     let emit = |out: Vec<TransmitDecision>, to_rx: &mut VecDeque<(u64, u64)>, next: &mut u64| {
@@ -124,15 +139,18 @@ fn simulate(mut s: ClientSession, mut rx: Receiver) -> Outcome {
             }
         }
     };
-
-    for id in 0..FIRST {
-        let out = s.on_event(
+    let offer = |s: &mut ClientSession, id: u64, t: u64| {
+        s.on_event(
             Event::AppData(OpaqueUnit {
                 id,
                 size: UNIT_WIRE,
             }),
-            0,
-        );
+            t,
+        )
+    };
+
+    for id in 0..first.min(UNITS) {
+        let out = offer(&mut s, id, 0);
         emit(out, &mut to_rx, &mut next_seq);
     }
     let mut t = 0u64;
@@ -163,13 +181,23 @@ fn simulate(mut s: ClientSession, mut rx: Receiver) -> Outcome {
                 to_tx.push_back((a.acked_full(next_seq), a.ack_delay_duration()));
             }
         }
-        // Tüketici duraklama bitince her tikte kanalı boşaltır.
+        // Tüketici duraklama bitince tik başına bir birim alır.
         if t >= STALL_END_NS {
-            delivered.extend(channel.drain(..));
+            if let Some(u) = channel.pop_front() {
+                delivered.insert(u);
+            }
         }
         if t == STALL_END_NS {
             let a = s.sender().diag_activation();
-            at_stall_end = Some((a.tail_probes, a.dups, refused));
+            let q = s.sender().diag_recovery_timers();
+            let first_refused = s.sender().diag_unit_recovery(QUEUE as u64);
+            at_stall_end = Some((
+                a.tail_probes,
+                a.dups,
+                refused,
+                q.dup_queue_len,
+                first_refused.dup_due_ns,
+            ));
         }
         t += MS;
         // Gönderici: ACK'ler bir tik sonra varır.
@@ -187,14 +215,8 @@ fn simulate(mut s: ClientSession, mut rx: Receiver) -> Outcome {
                 // Kalan birimler ilk ACK işlendikten sonra (PreConverge'den çıkılmış).
                 rest_offered = true;
                 assert_ne!(s.sender().state(), SenderState::PreConverge);
-                for id in FIRST..UNITS {
-                    let out = s.on_event(
-                        Event::AppData(OpaqueUnit {
-                            id,
-                            size: UNIT_WIRE,
-                        }),
-                        t,
-                    );
+                for id in first..UNITS {
+                    let out = offer(&mut s, id, t);
                     emit(out, &mut to_rx, &mut next_seq);
                 }
             }
@@ -212,43 +234,24 @@ fn simulate(mut s: ClientSession, mut rx: Receiver) -> Outcome {
             break;
         }
     }
-    let (tail_probes_at_stall_end, dups_at_stall_end, refused_at_stall_end) =
+    let (tail_probes, dups, refused_at, dup_queue, first_due) =
         at_stall_end.expect("benzetim duraklama sonuna ulaştı");
     Outcome {
         delivered,
         confirmed,
         done_ns,
-        tail_probes_at_stall_end,
-        dups_at_stall_end,
-        refused_at_stall_end,
+        tail_probes_at_stall_end: tail_probes,
+        dups_at_stall_end: dups,
+        refused_at_stall_end: refused_at,
+        dup_queue_at_stall_end: dup_queue,
+        first_refused_dup_due_ns: first_due,
         entered_recover_fwd,
     }
 }
 
-/// Eski motor (geri alma yolu, `ClientSession::new()`): 64 birim, 4'lük teslim kanalı, 1,5 s
-/// duran tüketici. Tavanlı yapılandırmada 60 s sonunda 4 teslim / 4 teyit kalıyordu.
-#[test]
-fn legacy_full_receiver_longer_than_three_ptos_does_not_stall_the_session() {
-    let o = simulate(product_session(TransportEngine::Legacy), Receiver::new());
-    // Ön koşul — düzenek kusurun şeklini kuruyor: duraklama içinde en az üç prob tele çıktı ve
-    // reddedildi, hiçbir §3.3-B kopyası yok (kurtarma rastlantıya kalmıyor), RecoverFwd yok.
-    assert!(
-        o.tail_probes_at_stall_end >= 3,
-        "duraklama içinde en az üç kuyruk probu (eski tavan) beklenir: {o:?}"
-    );
-    assert_eq!(
-        o.dups_at_stall_end, 0,
-        "PreConverge kopyası olmamalı: {o:?}"
-    );
-    assert!(
-        o.refused_at_stall_end >= UNITS - FIRST + 3,
-        "60 birim + 3 prob reddedilmiş olmalı: {o:?}"
-    );
-    assert!(
-        !o.entered_recover_fwd,
-        "kurtarma RecoverFwd'den gelmemeli: {o:?}"
-    );
-    // İddia: oturum durmaz — her birim tam bir kez teslim edilir ve teyit edilir.
+/// Ortak iddia: oturum durmaz — her birim tam bir kez teslim edilir ve teyit edilir; duraklama
+/// bittikten sonra en çok bir duraklama süresi içinde biter (3 s = 2 × duraklama).
+fn assert_session_survives(o: &Outcome) {
     let all: BTreeSet<u64> = (0..UNITS).collect();
     assert_eq!(
         o.delivered,
@@ -257,28 +260,71 @@ fn legacy_full_receiver_longer_than_three_ptos_does_not_stall_the_session() {
         UNITS - o.delivered.len() as u64
     );
     assert_eq!(o.confirmed, all, "her birim teyit edilmeli: {o:?}");
-    // Canlılık sınırı: duraklama bittikten sonra ilk prob en çok bir geri çekilmiş PTO sonra gelir
-    // (≤ duraklama süresi kadar); 3 s = 2 × duraklama.
     let done = o.done_ns.expect("bitti");
     assert!(
         done <= 2 * STALL_END_NS,
-        "duraklama bitince oturum bir geri çekilmiş PTO içinde sürmeli: {} ms",
+        "duraklama bitince oturum bir duraklama süresi içinde sürmeli: {} ms; {o:?}",
         done / MS
     );
 }
 
-/// Port motoru (ürün varsayılanı) aynı benzetimde: prob turu tavanı yok (`rfc9002_cc_port`),
-/// bu yüzden aynı yarışta durmuyordu. Eşlik kanıtı.
+/// (A) Eski motor, reddedilen birimlerin hiçbirinde PreConverge kopyası yok. Tavanlı kuyruk
+/// probuyla 60 s sonunda 4 teslim / 4 teyit kalıyordu.
 #[test]
-fn port_full_receiver_longer_than_three_ptos_does_not_stall_the_session() {
-    let o = simulate(
-        product_session(TransportEngine::CcPort),
-        Receiver::with_cc_port(),
+fn legacy_full_receiver_without_cold_start_copies_does_not_stall() {
+    let o = simulate(TransportEngine::Legacy, 4);
+    // Ön koşul — düzenek kusurun şeklini kuruyor: duraklama içinde en az üç prob tele çıktı ve
+    // reddedildi, hiçbir §3.3-B kopyası yok (kurtarma rastlantıya kalmıyor), RecoverFwd yok.
+    assert!(
+        o.tail_probes_at_stall_end >= 3,
+        "duraklama içinde en az üç kuyruk probu (eski tavan) beklenir: {o:?}"
     );
-    let all: BTreeSet<u64> = (0..UNITS).collect();
-    assert_eq!(o.delivered, all, "{o:?}");
-    assert_eq!(o.confirmed, all, "{o:?}");
-    assert!(o.tail_probes_at_stall_end >= 3, "{o:?}");
-    let done = o.done_ns.expect("bitti");
-    assert!(done <= 2 * STALL_END_NS, "{} ms", done / MS);
+    assert_eq!(
+        (o.dups_at_stall_end, o.dup_queue_at_stall_end),
+        (0, 0),
+        "PreConverge kopyası olmamalı: {o:?}"
+    );
+    assert!(
+        o.refused_at_stall_end >= UNITS - 4 + 3,
+        "60 birim + 3 prob reddedilmiş olmalı: {o:?}"
+    );
+    assert!(
+        !o.entered_recover_fwd,
+        "kurtarma RecoverFwd'den gelmemeli: {o:?}"
+    );
+    assert_session_survives(&o);
+}
+
+/// (B) Eski motor, bütün birimler PreConverge'de gitti: her reddedilen birimin §3.3-B kopyası
+/// aynı uzak anlarda. Eski kuralla 60 s sonunda 46 teslim kalıyordu (kalanlar 35 s / 76 s
+/// basamaklarını bekliyordu).
+#[test]
+fn legacy_full_receiver_with_synchronised_cold_start_copies_does_not_stall() {
+    let o = simulate(TransportEngine::Legacy, UNITS);
+    // Ön koşul: ilk uçuş penceresine (2400 B) sığan birimler PreConverge'de gitti; reddedilenlerin
+    // kopyası kuyrukta ve vadesi duraklamanın çok ötesinde (31 B/s tabanı: ≈ 5 s); RecoverFwd yok.
+    assert!(
+        o.dup_queue_at_stall_end >= 50,
+        "reddedilen birimlerin PreConverge kopyası kuyrukta olmalı: {o:?}"
+    );
+    assert!(
+        o.first_refused_dup_due_ns
+            .is_some_and(|d| d > 2 * STALL_END_NS),
+        "PreConverge kopyasının vadesi duraklamanın çok ötesinde olmalı: {o:?}"
+    );
+    assert!(
+        !o.entered_recover_fwd,
+        "kurtarma RecoverFwd'den gelmemeli: {o:?}"
+    );
+    assert_session_survives(&o);
+}
+
+/// Port motoru (ürün varsayılanı) aynı benzetimde, iki senaryo: prob turu tavanı yok
+/// (`rfc9002_cc_port`), ARQ tavanı 255 (HandToForward'a düşmez). Eşlik kanıtı.
+#[test]
+fn port_full_receiver_does_not_stall_in_either_scenario() {
+    for first in [4, UNITS] {
+        let o = simulate(TransportEngine::CcPort, first);
+        assert_session_survives(&o);
+    }
 }

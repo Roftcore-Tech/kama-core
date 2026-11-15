@@ -4008,6 +4008,27 @@ impl Sender {
                             unit: p.unit,
                             interval_ns: srtt_ns.max(1), // >0 ⇒ drain_due_duplicates geometrik reschedule
                         });
+                    } else if requeue
+                        && !self.cc_on()
+                        && self.unit_parked_beyond_pto(p.unit.id, now_ns)
+                    {
+                        // [ADAY · eski motor canlılığı] Planlı kopya VAR ama bir PTO'dan sonra (ör.
+                        // PreConverge §3.3-B merdiveni: 31 B/s tabanından ≈ 5 / 15 / 35 / 75 s; o anda
+                        // gönderilen bütün birimlerde aynı anlar) ve birimin başka denemesi yok (uçuşta,
+                        // ARQ kuyruğunda). Eskiden birim yalnız o merdivene kalıyordu: kuyruk probu
+                        // uçuşu boş göndericide söner, kopya kaybı ARQ'ya dönmez → dolu teslim kanalında
+                        // birim onlarca saniye bekliyordu (her merdiven basamağının eşzamanlı patlaması
+                        // kanala ancak kanal yeri kadar girer). Birim ARQ kuyruğuna döner (ACK saatli
+                        // yeniden iletim; tavan dolunca HandToForward). Uzak kopya kuyrukta kalır, teyitte
+                        // iptal edilir. `retx_count ≥ 1`: kayıt orijinal sayılmaz (Karn, kader defteri).
+                        self.pending_lost.push_back(LostRec {
+                            seq,
+                            unit: p.unit,
+                            deadline_ns: now_ns,
+                            retx_count: p.retx_count.max(1),
+                            send_ns: p.send_ns,
+                            data_ord: p.data_ord,
+                        });
                     }
                 }
                 if p.origin != TransmitKind::Duplicate {
@@ -7099,6 +7120,27 @@ impl Sender {
                 });
             }
         }
+    }
+
+    /// [ADAY · eski motor canlılığı] Birimin bir taban PTO içinde başka denemesi yok mu: uçuşta
+    /// kaydı (FEC onarımı ve kararsız kopya hariç) ve ARQ kuyruğunda kaydı yok, kopya kuyruğundaki
+    /// her kaydının vadesi `now + taban PTO`'dan sonra. Yalnız `queue_losses`'un kopya kaybı kolu
+    /// okur (eski motor).
+    fn unit_parked_beyond_pto(&self, unit_id: u64, now_ns: u64) -> bool {
+        let pto = self
+            .tail_recovery
+            .base_pto_ns(self.rtt.srtt().map(dur_ns), dur_ns(self.rtt.rttvar()));
+        let horizon = now_ns.saturating_add(pto);
+        !self.inflight.values().any(|q| {
+            q.unit.id == unit_id
+                && q.origin != TransmitKind::FecParity
+                && q.confirmed_release_ns.is_none()
+        }) && !self.pending_lost.iter().any(|r| r.unit.id == unit_id)
+            && self
+                .dup_queue
+                .iter()
+                .filter(|d| d.unit.id == unit_id)
+                .all(|d| d.due_ns > horizon)
     }
 
     /// [TUR-2c] Orijinal iletimin tombstone'unu SUPERSEDED işaretle (retx_count++): birimin

@@ -95,7 +95,7 @@ impl ClientSession {
     /// sınırları, prob turu tavanı yok (ilk üç tur aynı anlarda; sonrası üstel geri çekilme,
     /// 30 s tavan). Tavanlı yapılandırmada teslim kanalı dolu alıcı (veriyi motora vermez, eski
     /// durumu ACK'ler) üç PTO turundan uzun durursa oturum kalıcı duruyordu; bkz.
-    /// `TailRecoveryConfig::validated_v1_uncapped` ve `tests/legacy_tail_probe_liveness.rs`.
+    /// `TailRecoveryConfig::validated_v1_uncapped` ve `tests/legacy_full_receiver_liveness.rs`.
     #[must_use]
     pub fn new() -> Self {
         let mut sender = Sender::new();
