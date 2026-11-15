@@ -457,8 +457,13 @@ fn diag_line(
                 r.timers.tail_probe_index,
                 r.timers.tail_pto_ns / 1_000_000,
                 r.since_last_ack_ns.map(|n| n / 1_000_000),
-                r.oldest_unacked
-                    .map(|u| (lane_index_of(u.unit_id), lane_seq_of(u.unit_id), u.emission_decisions)),
+                r.oldest_unacked.map(|u| {
+                    (
+                        lane_index_of(u.unit_id),
+                        lane_seq_of(u.unit_id),
+                        u.emission_decisions,
+                    )
+                }),
             )
         })
     });
