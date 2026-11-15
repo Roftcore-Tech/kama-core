@@ -7,7 +7,7 @@
 //! bir dosya biriminin art arda kaybı öbür şeritleri durdurabilir:
 //!
 //! 1. tıkanıklık penceresi en az 4 × MTU = 4 800 B'dir (`cc/bbr.rs` `calculate_min_window`); ürün
-//!    boyu birim telde ≈ 1 061 B'dir, yani pencere dört-beş birimle dolar;
+//!    boyu birim motorun uçuş muhasebesinde 1 046 B'dir, yani pencere dört-beş birimle dolar;
 //! 2. PTO probu pencereden muaftır ve en küçük kimlikli teyitsiz birimi taşır; kopyası uçuşta kalır,
 //!    birim başına en çok 8 kopya (`sender.rs` `oldest_probe_target_or_pending`,
 //!    `CC_MAX_UNIT_COPIES_IN_FLIGHT`);
@@ -36,7 +36,10 @@
 //!
 //! Kollar ([`Path`]):
 //! * [`Path::HeadOutage`] — sıra başı sonlu kesinti: dosya şeridinin 0. biriminin bütün DATA
-//!   emisyonları kesinti boyunca düşer, sonra geçer. Öbür birimler etkilenmez.
+//!   emisyonları ve dosya şeridinin ilk FEC bloğunun (0. birimi taşıyan blok) onarımları kesinti
+//!   boyunca düşer, sonra geçer. Öbür birimler etkilenmez. Onarımlar da düşer, çünkü ürün FEC'i
+//!   uyarlamalıdır: ilk koşuda (onarımlar geçerken) sıra başı 3–4 DATA kaybından sonra onarımla
+//!   kurtarıldı ve kesinti hiç sınanmadı.
 //! * [`Path::SizeSensitive`] — boyuta duyarlı yol: kesinti boyunca [`SIZE_LIMIT`] B'tan büyük her
 //!   datagram düşer (DATA, yeniden iletim, prob, FEC onarımı); küçükler geçer. Bütün dosya birimleri
 //!   etkilenir; PTT ve TEXT etkilenmez.
@@ -55,7 +58,7 @@
 //!   bitmeden en az 1 s önce sunulur, yani bütün metin kesinti içinde teslim edilmiş olmalı.
 //! * [`RECOVER_BOUND`] = 10 s: yol açıldıktan sonra dosyanın tamamlanması (yani akış başından
 //!   T_out + 10 s). Sıra başı kolunda kalan iş tek birimin bir yeniden iletimidir (arkası Bob'da
-//!   tutulur). Boyut kolunda bütün dosya (≤ 500 × ≈ 1 061 B ≈ 530 KB) yeniden gider; en küçük
+//!   tutulur). Boyut kolunda bütün dosya (500 × 1 046 B ≈ 523 KB) yeniden gider; en küçük
 //!   pencereyle (4 800 B) ve yükteki RTT ile (≤ 20 ms) bile ≈ 240 KB/s, ≈ 2,2 s. 10 s bunun
 //!   üstünde ve PTO geri çekilme tavanının (30 s) altında: ACK saati kesinti boyunca sürdüyse dosya
 //!   hemen devam eder; durduysa ilk prob geri çekilmiş PTO kadar gecikir ve sınır aşılır.
@@ -78,7 +81,9 @@ use client_core::lanes::{Lane, DEFAULT_ADMIT_WIDTHS};
 use client_core::memory_link::MemoryHub;
 use client_core::runtime::KamaV1Profile;
 use client_core::transport::{receiver_buffer_bound_units, ClientTransport, ClientTransportConfig};
-use client_core::unit_id::{index_of_lane, lane_index_of, lane_seq_of, tagged};
+use client_core::unit_id::{
+    first_fec_block_of_lane, index_of_lane, lane_index_of, lane_seq_of, tagged,
+};
 use client_core::wire::{decode_data, decode_fec};
 use kama_contracts::handles::{PeerRef, SessionHandle};
 use kama_contracts::s1::{
@@ -131,7 +136,7 @@ const TAG_PTT: u8 = 0x9A;
 /// Yolun kesinti biçimi.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Path {
-    /// Dosya şeridinin 0. biriminin her DATA emisyonu düşer.
+    /// Dosya şeridinin 0. biriminin her DATA emisyonu ve o birimin FEC bloğunun her onarımı düşer.
     HeadOutage,
     /// [`SIZE_LIMIT`]'ten büyük her datagram düşer.
     SizeSensitive,
@@ -196,7 +201,13 @@ impl PacketProtection for PathOutage {
         let wire_len = wire.len();
         let od = self.inner.open(wire)?;
         let data_unit = decode_data(&od.frame).map(|(_, u, _)| u);
-        let is_fec = data_unit.is_none() && decode_fec(&od.frame).is_some();
+        // v0 telinde FEC çerçevesi yalnız onarım taşır (kaynaklar DATA ile gider).
+        let fec_block = if data_unit.is_none() {
+            decode_fec(&od.frame).map(|(h, _)| h.block_id)
+        } else {
+            None
+        };
+        let is_fec = fec_block.is_some();
         if is_fec {
             self.drops.fec_seen.fetch_add(1, Ordering::Relaxed);
         }
@@ -205,7 +216,10 @@ impl PacketProtection for PathOutage {
         }
         let is_file = data_unit.is_some_and(|u| lane_index_of(u) == index_of_lane(Lane::File));
         let drop = match self.path {
-            Path::HeadOutage => data_unit == Some(file_head()),
+            Path::HeadOutage => {
+                data_unit == Some(file_head())
+                    || fec_block == Some(first_fec_block_of_lane(index_of_lane(Lane::File)))
+            }
             Path::SizeSensitive => wire_len > SIZE_LIMIT,
         };
         if !drop {
