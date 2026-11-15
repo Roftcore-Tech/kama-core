@@ -3930,7 +3930,9 @@ impl Sender {
         (dur_ns(tt_rtt) * 9 / 8).max(dur_ns(tt_floor))
     }
 
-    /// Kayıp seq'leri recovery kuyruğuna al. Duplicate-kökenli kayıp RE-QUEUE EDİLMEZ (redundancy'di).
+    /// Kayıp seq'leri recovery kuyruğuna al. Duplicate-kökenli kayıp RE-QUEUE EDİLMEZ (redundancy'di)
+    /// — [ADAY] eski motorda tek istisna: birimin bir taban PTO içinde başka denemesi yoksa
+    /// (`unit_parked_beyond_pto`).
     /// [TUR-2b D-1/4] ACTIVE-FLIGHT / TOMBSTONE ayrımı: inflight-muhasebesinden DÜŞER (gönderim
     /// durmaz) ama gönderim-kaydı SİLİNMEZ — geç-ACK eşleştirme için tombstone'a taşınır
     /// (bw_sample DAHİL → kol-1'de BW-örneği kurtarılabilir; eski davranış kaydı düşürüp
