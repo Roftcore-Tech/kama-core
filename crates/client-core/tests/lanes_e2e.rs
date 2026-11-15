@@ -243,7 +243,10 @@ fn t_l8_text_and_ptt_overtake_file_lane_and_everything_arrives_in_order() {
             }
         }
         let (pending, _) = alice.lane_backlog(h).expect("şeritler açık");
-        assert!(pending <= file_cap, "FILE şeridi tavanla sınırlı ({pending})");
+        assert!(
+            pending <= file_cap,
+            "FILE şeridi tavanla sınırlı ({pending})"
+        );
         if !text_sent && next_file >= 20 {
             let before = alice.lane_stats().expect("şeritler açık");
             file_given_before_text = before.given[FILE_IDX];
@@ -357,6 +360,14 @@ fn t_l10_expired_unit_in_lane_is_dropped_and_counted_endpoint_not_called() {
     };
     let (mut alice, mut bob, h) = pair(Some(cfg));
     // Pencereyi doldur: birinci dosya birimi uca verilir, ikincisi (kısa deadline'lı) şeritte bekler.
+    //
+    // W = 1 yapılandırmanın TABANIDIR; pompa her turda W'yi yolun ölçülen BDP'sinden yeniden kurar
+    // (`lanes::file_window_for_path`). Birinci birimin ACK'i ikinci `send`'den önce uçta işlenirse
+    // ve BDP kestirimi (BtlBw × RTprop) birim tavanının yarısını aşarsa (yüklü makinede RTprop
+    // şişer) W = 2 olur, ikinci birim de verilir. Ön koşulu kuruluşta sağlamak için birinci birimin İLK emisyonu düşürülür: ACK yok →
+    // BtlBw örneği yok → W tabanda kalır (ürün profilinde bu oturumda başka ACK alan çerçeve yok:
+    // FEC ve kuruluş yoklaması kapalı). Birim ARQ ile gelir; aşağıdaki döngüler onu bekler.
+    alice.drop_next_units_for_test(1);
     alice
         .send(
             h,
@@ -374,7 +385,12 @@ fn t_l10_expired_unit_in_lane_is_dropped_and_counted_endpoint_not_called() {
             TrafficClass::Bk,
         )
         .expect("kabul (şeritte bekler)");
-    let given_before = alice.lane_stats().expect("şeritler açık").given[3];
+    let given_before = alice.lane_stats().expect("şeritler açık").given[FILE_IDX];
+    assert_eq!(
+        alice.file_window_for_test(h),
+        Some(1),
+        "ön koşul: yol örneği yok, pencere tabanda"
+    );
     assert_eq!(given_before, 1, "pencere W = 1: ikinci birim şeritte");
     std::thread::sleep(Duration::from_millis(5));
     let mut got = Vec::new();
@@ -383,7 +399,7 @@ fn t_l10_expired_unit_in_lane_is_dropped_and_counted_endpoint_not_called() {
         spin(&mut alice, &mut bob, &mut got);
         let s = alice.lane_stats().expect("şeritler açık");
         if s.lane_expired == 1 {
-            assert_eq!(s.given[3], 1, "süresi dolan birim uca verilmedi");
+            assert_eq!(s.given[FILE_IDX], 1, "süresi dolan birim uca verilmedi");
             break;
         }
         assert!(Instant::now() < deadline, "süresi dolan birim sayılmadı");
