@@ -120,8 +120,8 @@ use kama_contracts::s3::{
 use kama_noise_wire::protector::NoiseWireProtection;
 
 use crate::lanes::{
-    file_window_floor, file_window_for_path, Lane, LaneConfig, LaneConfigError, LaneState,
-    LaneStats, QueuedUnit,
+    file_backlog_bound_units, file_window_floor, file_window_for_path, Lane, LaneConfig,
+    LaneConfigError, LaneState, LaneStats, QueuedUnit,
 };
 use crate::runtime::{
     link_profile_window_bytes, ClientEndpoint, ClientHandle, ClientLiveDiag, CtxDispatchCounters,
@@ -1636,7 +1636,9 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     }
 
     /// Bir oturumun şeritlerinde bekleyen ve FILE penceresindeki birim sayısı (salt gözlem);
-    /// şeritler kapalıysa `None`.
+    /// şeritler kapalıysa `None`. Pencere sayısı uca verilmiş teyitsiz birimlerle [ŞERİT-KUYRUK]
+    /// pencereye alınıp motorun birikimi yüzünden bekletilenlerin toplamıdır
+    /// (`lanes::SessionLanes::file_inflight`).
     #[must_use]
     pub fn lane_backlog(&self, session: SessionHandle) -> Option<(usize, usize)> {
         let st = self.lanes.as_ref()?;
@@ -1733,24 +1735,35 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         // yokken yapılandırma tabanı. Sabit W dosya hızını W·S/RTT'de tavanlıyordu.
         // [ASİMETRİK-YOL] Yön hızları port göndericisinin ilk penceresini büyüttüyse taban o
         // pencereyi doldurur (`lanes::file_window_floor`); yön hızı yokken taban yapılandırmadır.
-        if let Some(e) = self
-            .sessions
-            .get(&session)
-            .and_then(|s| s.endpoint.as_ref())
-        {
-            let (btlbw, rtprop_ns) = e.path_estimate();
-            let unit_bytes = u64::from(self.caps.max_plaintext_unit_bytes);
-            let w = file_window_for_path(
-                file_window_floor(
-                    st.configured_file_window(),
+        let profile_window = link_profile_window_bytes(&self.runtime_cfg);
+        if let Some(s) = self.sessions.get(&session) {
+            if let Some(e) = s.endpoint.as_ref() {
+                let (btlbw, rtprop_ns) = e.path_estimate();
+                let unit_bytes = u64::from(self.caps.max_plaintext_unit_bytes);
+                let w = file_window_for_path(
+                    file_window_floor(st.configured_file_window(), unit_bytes, profile_window),
                     unit_bytes,
-                    link_profile_window_bytes(&self.runtime_cfg),
-                ),
-                unit_bytes,
-                btlbw,
-                rtprop_ns,
-            );
-            st.set_file_window(session, w);
+                    btlbw,
+                    rtprop_ns,
+                );
+                st.set_file_window(session, w);
+                // [ŞERİT-KUYRUK] Profil penceresi büyükken dosya birimi motora ancak motorun
+                // gönderilmemiş birikimi (teklif kanalı + gönderim kuyruğu) sınırın altındayken
+                // verilir: motor kuyruğu FIFO boşalır ve şerit sırasını bilmez, sonradan gelen metin
+                // bütün pencerenin arkasında beklerdi. Pencere aynı kalır; fazlası şerit katmanında
+                // pencereye alınmış bekler. Profil pencereyi büyütmüyorsa (yön hızı yok, eski motor,
+                // simetrik yol) `None`: bugünkü yol, bu blok hiçbir şeyi değiştirmez.
+                let room = match (profile_window, self.runtime_cfg.link_rates) {
+                    (Some(_), Some(l)) => {
+                        let bound = file_backlog_bound_units(unit_bytes, l.uplink_bps);
+                        let offered: u64 = s.sent.iter().sum();
+                        let unsent = offered.saturating_sub(e.send_queue_drained());
+                        Some(bound.saturating_sub(unsent))
+                    }
+                    _ => None,
+                };
+                st.set_file_backlog_room(session, room);
+            }
         }
         // [ŞERİT-AÇIKLIK] Hiçbir şerit alıcının kabul penceresini aşmaz: şeridin sıradaki birimi,
         // şeridin teyit sınırından en çok `genişlik − 1` ileride olabilir. Genişlik alıcının

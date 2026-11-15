@@ -1982,6 +1982,11 @@ struct PathEstimate {
     /// sırasıdır (başlangıçta 0). Yalnız artar. Görev store'u her değiştirdiğinde YAZAR; tutamaç
     /// OKUR ([`ClientHandle::lane_confirm_frontier`]).
     lane_frontier: [AtomicU64; LANE_COUNT],
+    /// [ŞERİT-KUYRUK] Görevin teklif kanalından alıp motora verdiği ve motorun gönderim
+    /// kuyruğundan (`tx_queue`) çıkmış birim sayısı (tele çıktı ya da teyitle iptal edildi):
+    /// `Σ next_unit − Sender::unsent_units`. Yalnız artar. Görev her motor olayından sonra YAZAR;
+    /// tutamaç OKUR ([`ClientHandle::send_queue_drained`]).
+    send_queue_drained: AtomicU64,
 }
 
 /// Client tutamağı: bounded offer + ACK olay akışı + kontrollü kapanış.
@@ -2340,6 +2345,21 @@ impl ClientHandle {
             self.path.btlbw_bps.load(Ordering::Relaxed),
             self.path.rtprop_ns.load(Ordering::Relaxed),
         )
+    }
+
+    /// [ŞERİT-KUYRUK] Bu uca sunulan birimlerden motorun gönderim kuyruğunu (`tx_queue`) terk
+    /// etmiş olanların sayısı: tele en az bir kez çıktı ya da teyitle kuyruktan iptal edildi.
+    /// Görev her motor olayından sonra yayımlar (gevşek atomik; en çok bir olay geride).
+    ///
+    /// Çağıran uca kaç birim sunduğunu bilir (her kabul edilen `send` bir birim; parçalama
+    /// kapalıyken mesaj = birim). Fark, henüz hiç tele çıkmamış birikimdir: teklif kanalında
+    /// bekleyen + motor kuyruğundaki. Değer en çok bir olay geride kaldığından fark gerçek
+    /// birikimin altına inmez. Şerit katmanı dosya birimini motora bu birikim küçükken verir
+    /// (`lanes::SessionLanes::set_file_backlog_room`): motor kuyruğu FIFO boşalır, şerit sırasını
+    /// bilmez.
+    #[must_use]
+    pub fn send_queue_drained(&self) -> u64 {
+        self.path.send_queue_drained.load(Ordering::Relaxed)
     }
 
     /// [L-T1] Kurtarma anahtarı — **yalnız test yapılandırması** (ürün builder'ı kapalı kurtarmayı
@@ -2781,6 +2801,12 @@ async fn client_task(
                 let (bw, rtprop) = session.sender().path_estimate();
                 path.btlbw_bps.store(bw, Ordering::Relaxed);
                 path.rtprop_ns.store(rtprop, Ordering::Relaxed);
+                // [ŞERİT-KUYRUK] Gönderim kuyruğunu terk eden birim sayısı (salt gözlem; motor
+                // kuyruğu yalnız `on_event` içinde değişir).
+                let taken: u64 = next_unit.iter().sum();
+                let unsent = session.sender().unsent_units() as u64;
+                path.send_queue_drained
+                    .store(taken.saturating_sub(unsent), Ordering::Relaxed);
             }
             for d in decisions {
                 // PN → seq çevirisi motor seq'i taşıyan HER kararda (repair'ler de seq işgal eder;
