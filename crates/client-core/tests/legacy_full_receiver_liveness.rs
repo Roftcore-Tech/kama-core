@@ -176,7 +176,7 @@ fn simulate(engine: TransportEngine, first: u64) -> Outcome {
                 to_tx.push_back((a.acked_full(next_seq), a.ack_delay_duration()));
             }
         }
-        if t % ACK_TIMER_NS == 0 {
+        if t.is_multiple_of(ACK_TIMER_NS) {
             if let Some(a) = rx.on_ack_timer(t) {
                 to_tx.push_back((a.acked_full(next_seq), a.ack_delay_duration()));
             }
@@ -223,7 +223,7 @@ fn simulate(engine: TransportEngine, first: u64) -> Outcome {
         }
         let out = s.on_event(Event::TimerFired(Timer::Pto), t);
         emit(out, &mut to_rx, &mut next_seq);
-        if t % RTPROP_TICK_NS == 0 {
+        if t.is_multiple_of(RTPROP_TICK_NS) {
             let out = s.on_event(Event::TimerFired(Timer::RtpropProbe), t);
             emit(out, &mut to_rx, &mut next_seq);
         }
