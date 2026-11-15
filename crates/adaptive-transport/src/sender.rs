@@ -2300,7 +2300,24 @@ impl Sender {
     /// `cc` yokken daima `true`.
     #[inline]
     fn cc_fits(&self, size: u64) -> bool {
-        self.inflight_bytes.saturating_add(size) <= self.cc_window()
+        self.cc_gate_bytes().saturating_add(size) <= self.cc_window()
+    }
+
+    /// [DENEY B] Pencere kapısının saydığı uçuş baytı: port motorunda aynı birimin uçuştaki
+    /// kopyaları tek sayılır (FEC onarımı ayrı kimlik uzayında, her kaydı sayılır). `cc` yokken
+    /// uçuş baytı.
+    fn cc_gate_bytes(&self) -> u64 {
+        if !self.cc_on() {
+            return self.inflight_bytes;
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut bytes = 0u64;
+        for p in self.inflight.values() {
+            if p.origin == TransmitKind::FecParity || seen.insert(p.unit.id) {
+                bytes = bytes.saturating_add(p.unit.size);
+            }
+        }
+        bytes
     }
 
     /// [CC-PORT] Teşhis: BBR durumu `(mode, window, delivery_rate, min_rtt_ns, tur, tıkanıklık olayı,
