@@ -120,11 +120,13 @@ use kama_contracts::s3::{
 use kama_noise_wire::protector::NoiseWireProtection;
 
 use crate::lanes::{
-    file_window_for_path, Lane, LaneConfig, LaneConfigError, LaneState, LaneStats, QueuedUnit,
+    file_window_floor, file_window_for_path, Lane, LaneConfig, LaneConfigError, LaneState,
+    LaneStats, QueuedUnit,
 };
 use crate::runtime::{
-    ClientEndpoint, ClientHandle, ClientLiveDiag, CtxDispatchCounters, CtxDispatchStats,
-    ExpectedSessions, Readiness, RuntimeConfig, RuntimeError, ServerEndpoint, ServerHandle,
+    link_profile_window_bytes, ClientEndpoint, ClientHandle, ClientLiveDiag, CtxDispatchCounters,
+    CtxDispatchStats, ExpectedSessions, Readiness, RuntimeConfig, RuntimeError, ServerEndpoint,
+    ServerHandle,
 };
 use crate::unit_id::{index_of_lane, lane_index_of, lane_seq_of, tagged, LANE_COUNT};
 #[cfg(any(test, feature = "test-util"))]
@@ -1729,15 +1731,22 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     fn pump_session(&mut self, st: &mut LaneState, session: SessionHandle) {
         // [ŞERİT-W] FILE penceresi yolun ölçülen BDP'sinden (`lanes::file_window_for_path`); ölçüm
         // yokken yapılandırma tabanı. Sabit W dosya hızını W·S/RTT'de tavanlıyordu.
+        // [ASİMETRİK-YOL] Yön hızları port göndericisinin ilk penceresini büyüttüyse taban o
+        // pencereyi doldurur (`lanes::file_window_floor`); yön hızı yokken taban yapılandırmadır.
         if let Some(e) = self
             .sessions
             .get(&session)
             .and_then(|s| s.endpoint.as_ref())
         {
             let (btlbw, rtprop_ns) = e.path_estimate();
+            let unit_bytes = u64::from(self.caps.max_plaintext_unit_bytes);
             let w = file_window_for_path(
-                st.configured_file_window(),
-                u64::from(self.caps.max_plaintext_unit_bytes),
+                file_window_floor(
+                    st.configured_file_window(),
+                    unit_bytes,
+                    link_profile_window_bytes(&self.runtime_cfg),
+                ),
+                unit_bytes,
                 btlbw,
                 rtprop_ns,
             );

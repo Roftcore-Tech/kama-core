@@ -351,6 +351,42 @@ pub struct LinkRates {
 /// [ASİMETRİK-YOL] Yol-tabanlı ilk pencerenin üst sınırı (B; SR-AUDIT-001).
 pub const MAX_LINK_INITIAL_WINDOW_BYTES: u64 = 1 << 20;
 
+/// [CC-PORT] Port göndericisinin yön hızı olmadan aldığı ilk pencere (B): `initial_window_bytes`,
+/// taban 4·MTU (BBR min_cwnd).
+fn port_base_initial_window(cfg: &RuntimeConfig) -> u64 {
+    cfg.initial_window_bytes
+        .max(4 * adaptive_transport::rate::DEFAULT_MTU)
+}
+
+/// [ASİMETRİK-YOL] Yön hızlarının port göndericisine verdiği ilk pencere (B), yalnız pencereyi
+/// gerçekten büyüttüğünde. ACK'ler aşağı yönden `receiver::budgeted_ack_interval_ns(aşağı)`
+/// aralıkla gelir; pencere bir aralıkta yukarı yönün taşıyabileceği veridir (tavan
+/// [`MAX_LINK_INITIAL_WINDOW_BYTES`]).
+///
+/// `None`: eski motor, yön hızı yok, aralık sonsuz ya da pencere port tabanını
+/// (`initial_window_bytes`, en az 4·MTU) aşmıyor. Simetrik hızlı yolda aralık ≈ 26 ms, pencere
+/// tabanın altında kalır.
+///
+/// Tek kaynak: gönderici (ilk pencere + profil pacer tavanı) ve şerit katmanı (FILE penceresinin
+/// tabanı, `lanes::file_window_floor`) aynı değeri okur. Şerit katmanı bu pencereyi bilmezse dosya
+/// şeridi motora en çok yapılandırma tabanı kadar (5) teyitsiz birim verir; teyit bir bütçe
+/// aralığında bir geldiğinden dosya `5 · birim / aralık` hızına iner (62 B/s dönüşte ≈ 0,8 kB/s).
+#[must_use]
+pub fn link_profile_window_bytes(cfg: &RuntimeConfig) -> Option<u64> {
+    if cfg.engine != TransportEngine::CcPort {
+        return None;
+    }
+    let l = cfg.link_rates?;
+    let t_ack = adaptive_transport::receiver::budgeted_ack_interval_ns(l.downlink_bps);
+    if t_ack == u64::MAX {
+        return None;
+    }
+    let link_iw = u64::try_from(u128::from(l.uplink_bps) * u128::from(t_ack) / 1_000_000_000)
+        .unwrap_or(u64::MAX)
+        .min(MAX_LINK_INITIAL_WINDOW_BYTES);
+    (link_iw > port_base_initial_window(cfg)).then_some(link_iw)
+}
+
 /// [ASİMETRİK-YOL] UDP/IPv4 zarfı (B). [`LinkRates`] bu zarfı içerir; pacer yalnız UDP gövdesini
 /// sayar.
 const LINK_UDP_IP_OVERHEAD: u64 = 28;
@@ -2487,9 +2523,7 @@ async fn client_task(
     // (12 000 B) yalnız yapılandırmayla (gösterim/VPS hücresi). Gerekçe: 12 kB kör ilk uçuş sığ
     // tamponda düşme, düşük bantta saniyeler; RFC 6928 §4 uyarısı.
     if cfg.engine == TransportEngine::CcPort {
-        let mut iw = cfg
-            .initial_window_bytes
-            .max(4 * adaptive_transport::rate::DEFAULT_MTU);
+        let mut iw = port_base_initial_window(&cfg);
         // [ASİMETRİK-YOL] ACK'ler aşağı yönden bütçeli aralıkla gelir; ilk pencere o aralıkta yukarı
         // yönün taşıyabileceği kadar (aksi hâlde gönderici her adımda saniyelerce ACK bekler ve BBR
         // ACK-saatli döngüde hiç yakınsamaz — ölçüm: tests/shaped_relay.rs asimetrik hücre).
@@ -2499,20 +2533,11 @@ async fn client_task(
         // kuyruğuna bir anda boşaltır (sığ kuyrukta taşma; düşen paketler uçuşun sonu olduğundan
         // yalnız PTO ile sezilir). Tavan yalnız pencere profilden büyüdüğünde kurulur: simetrik
         // hızlı yolda ve profilin pencereyi büyütmediği her durumda gönderici bugünkü gibidir.
-        if let Some(l) = cfg.link_rates {
-            let t_ack = adaptive_transport::receiver::budgeted_ack_interval_ns(l.downlink_bps);
-            if t_ack != u64::MAX {
-                let link_iw =
-                    u64::try_from(u128::from(l.uplink_bps) * u128::from(t_ack) / 1_000_000_000)
-                        .unwrap_or(u64::MAX)
-                        .min(MAX_LINK_INITIAL_WINDOW_BYTES);
-                if link_iw > iw {
-                    iw = link_iw;
-                    session
-                        .sender_mut()
-                        .set_cc_profile_pacing_cap(Some(link_pacing_cap_bps(l.uplink_bps)));
-                }
-            }
+        if let (Some(link_iw), Some(l)) = (link_profile_window_bytes(&cfg), cfg.link_rates) {
+            iw = link_iw;
+            session
+                .sender_mut()
+                .set_cc_profile_pacing_cap(Some(link_pacing_cap_bps(l.uplink_bps)));
         }
         session.sender_mut().set_cc_initial_window(iw);
     }
@@ -6420,5 +6445,63 @@ mod lane_eviction_tests {
         // Eşitlikte düşük öncelikli (büyük indeks) şerit düşer.
         assert_eq!(busiest_lane(&[2, 0, 0, 2]), FILE);
         assert_eq!(busiest_lane(&[3, 0, 0, 2]), PTT);
+    }
+}
+
+#[cfg(test)]
+mod link_profile_window_tests {
+    //! [ASİMETRİK-YOL] Yön hızlarının port göndericisine verdiği ilk pencere: gönderici ve şerit
+    //! katmanı aynı değeri okur (`link_profile_window_bytes`).
+    use super::*;
+
+    fn cfg(engine: TransportEngine, link: Option<(u64, u64)>) -> RuntimeConfig {
+        RuntimeConfig {
+            engine,
+            link_rates: link.map(|(uplink_bps, downlink_bps)| LinkRates {
+                uplink_bps,
+                downlink_bps,
+            }),
+            ..RuntimeConfig::default()
+        }
+    }
+
+    #[test]
+    fn profile_window_only_when_it_enlarges_the_port_window() {
+        // Saha göndericisi: yukarı 12 500, aşağı 62 → ACK aralığı 81 B / 15 B/s = 5,4 s →
+        // 12 500 × 5,4 = 67 500 B.
+        let field = cfg(TransportEngine::CcPort, Some((12_500, 62)));
+        assert_eq!(
+            adaptive_transport::receiver::budgeted_ack_interval_ns(62),
+            5_400_000_000
+        );
+        assert_eq!(link_profile_window_bytes(&field), Some(67_500));
+        // Karşı uç (yukarı 62, aşağı 12 500): aralık ≈ 26 ms → 1 B < 4·MTU → büyütmez.
+        assert_eq!(
+            link_profile_window_bytes(&cfg(TransportEngine::CcPort, Some((62, 12_500)))),
+            None
+        );
+        // Simetrik 12,5 kB/s: 325 B < 4·MTU → büyütmez.
+        assert_eq!(
+            link_profile_window_bytes(&cfg(TransportEngine::CcPort, Some((12_500, 12_500)))),
+            None
+        );
+        // Yön hızı yok ya da eski motor → yok (bugünkü yol).
+        assert_eq!(
+            link_profile_window_bytes(&cfg(TransportEngine::CcPort, None)),
+            None
+        );
+        assert_eq!(
+            link_profile_window_bytes(&cfg(TransportEngine::Legacy, Some((12_500, 62)))),
+            None
+        );
+        // Aşağı yön 0 → aralık sonsuz → yok; tavan 1 MiB.
+        assert_eq!(
+            link_profile_window_bytes(&cfg(TransportEngine::CcPort, Some((12_500, 0)))),
+            None
+        );
+        assert_eq!(
+            link_profile_window_bytes(&cfg(TransportEngine::CcPort, Some((u64::MAX / 8, 62)))),
+            Some(MAX_LINK_INITIAL_WINDOW_BYTES)
+        );
     }
 }
