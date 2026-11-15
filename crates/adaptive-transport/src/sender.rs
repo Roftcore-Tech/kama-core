@@ -2649,15 +2649,38 @@ impl Sender {
             } else {
                 p.rate_bps
             };
-            // [ASİMETRİK-YOL] Profil tavanı yalnız ölçümle desteklenmeyen hız payını keser: ilk
-            // örnekten önce pencere hızı (1,25·pencere/100 ms) ve Startup'ın ilk-pencere/min_rtt
-            // hızı profil penceresinden türer, ölçümden değil. Ölçülen hedef (kazanç × BtlBw)
-            // tavanı aşarsa ölçüm kazanır.
+            // [ASİMETRİK-YOL] Profil tavanı: profil yukarı yönün hattın hızını bildirir; pacer o
+            // hızı aşmaz. İlk örnekten önce pencere hızı (1,25·pencere/100 ms) ve Startup'ın
+            // ilk-pencere/min_rtt hızı profil penceresinden türer, ölçümden değil.
+            //
+            // [PROFİL-TAVANI] Tavan kesindir. Önceki kural `rate.min(cap.max(measured_pacing_target))`
+            // idi; `measured_pacing_target` = pacing_gain × BtlBw ve Startup kazancı 2,885'tir
+            // (cc/bbr.rs `K_DEFAULT_HIGH_GAIN_PM`): BtlBw tavanın %35'ini geçince hedef tavanı
+            // aşıyor, pacer hattın üç katına çıkıyordu (12,5 kB/s profilde 34,9 kB/s; darboğaz kuyruğu
+            // 11 → 34 paket; tests/profile_cap_bottleneck.rs). Ölçülen BtlBw'nin kendisi de tavanı
+            // aşmanın dayanağı olamaz: profil yolunda ACK'ler bütçe aralığıyla (≈ 5,4 s) gelir ve
+            // her biri ≈ 50 datagramı birden teyit eder; teslim hızı örneği bu yığılmayla hattın
+            // üstüne çıkar (aynı testte 13 558 B/s, tavan 12 214 B/s; kuyruk 3 s'de 1 → 7 paket).
+            // Drain / ProbeBW'nin < 1 kazançları tavanın altında kaldığından etkilenmez. Bedel:
+            // profil hattın gerçek hızının altındaysa gönderici profilde kalır (profil bir
+            // yapılandırma beyanıdır; ölçüm onu bu yolda güvenilir biçimde düzeltemez).
             if let Some(cap) = self.cc_profile_pacing_cap {
-                rate = rate.min(cap.max(cc.measured_pacing_target()));
+                rate = rate.min(cap);
             }
             self.pacer.set_rate(rate);
-            self.pacer.set_burst_cap(p.burst_cap);
+            // [PROFİL-TAVANI] Patlama tavanı: quinn formülünün tabanı 10 · MTU'dur (hızlı yolda
+            // zamanlayıcı ayrıntısı). Profil yolunda pacer ACK beklenen saniyelerde (bütçeli
+            // dönüşte ≈ 5,4 s) bu tabana dek kredi biriktirir ve ACK gelince ya da PreConverge
+            // çıkışında (`fill_to_cap`) 12 000 B'ı bir anda bırakır: 12,5 kB/s'de ≈ 1 s'lik kuyruk,
+            // tavan hattın hızında olduğundan boşalmaz. Profil tavanı varken patlama, ödenen hızın
+            // quinn patlama aralığı kadarıdır (`rate · 2 ms`), en az bir tam boy datagram (MTU),
+            // en çok quinn tavanı. Tavan yokken (profil kapalı) bugünkü değer aynen.
+            let burst_cap = if self.cc_profile_pacing_cap.is_some() {
+                profile_burst_cap(rate).min(p.burst_cap)
+            } else {
+                p.burst_cap
+            };
+            self.pacer.set_burst_cap(burst_cap);
             if prev_state == SenderState::PreConverge && self.state != SenderState::PreConverge {
                 self.pacer.fill_to_cap();
             }
@@ -5113,8 +5136,10 @@ impl Sender {
     /// yukarı yön hızıyla serileşir: tavan yokken ilk RTT örneğinden önce pacer
     /// 1,25·pencere/100 ms (67 kB pencerede ≈ 840 kB/s) ile çalışır ve pencerenin tamamı darboğaz
     /// kuyruğuna tek seferde boşalır; sığ kuyrukta kuyruk taşar, düşen paketler uçuşun kuyruğu
-    /// olduğu için yalnız PTO ile sezilir. Ölçülen hedef (BBR kazancı × BtlBw) tavanı aşarsa ölçüm
-    /// kazanır. `None` = tavan yok (bugünkü davranış); `cc` yoksa etkisiz.
+    /// olduğu için yalnız PTO ile sezilir. Tavan kesindir: BBR kazancı (Startup 2,885) ve ACK
+    /// yığılmasıyla şişen teslim hızı örneği onu aşamaz. Tavan varken pacer'ın patlama tavanı da
+    /// `max(hız · 2 ms, MTU)`'dur (quinn tabanı 10 · MTU değil). `None` = tavan yok (bugünkü
+    /// davranış); `cc` yoksa etkisiz.
     pub fn set_cc_profile_pacing_cap(&mut self, cap_bps: Option<u64>) {
         self.cc_profile_pacing_cap = cap_bps.filter(|&c| c > 0);
     }
@@ -7687,6 +7712,19 @@ impl Default for Sender {
 
 fn dur_ns(d: Duration) -> u64 {
     u64::try_from(d.as_nanos()).unwrap_or(u64::MAX)
+}
+
+/// [PROFİL-TAVANI] quinn'in patlama aralığı (`connection/pacing.rs` `BURST_INTERVAL_NANOS`; port
+/// karşılığı `cc::PacerParams::from_window`): pacer kredisi bu kadar sürelik hızla sınırlıdır.
+const PROFILE_BURST_INTERVAL_NS: u128 = 2_000_000;
+
+/// [PROFİL-TAVANI] Profil tavanı varken pacer'ın patlama tavanı (B): `max(rate · 2 ms, MTU)`.
+/// Taban bir tam boy datagramdır: pacer her datagramı çıkarabilir, ama hattın hızında pace edilen
+/// darboğaza art arda iki datagram bırakamaz (fazlası orada boşalmadan kalır). Çağıran quinn
+/// tavanıyla (`PacerParams::burst_cap`) ayrıca sınırlar.
+fn profile_burst_cap(rate_bps: u64) -> u64 {
+    let b = u128::from(rate_bps) * PROFILE_BURST_INTERVAL_NS / 1_000_000_000;
+    u64::try_from(b).unwrap_or(u64::MAX).max(DEFAULT_MTU)
 }
 
 #[cfg(test)]
