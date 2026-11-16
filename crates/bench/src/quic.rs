@@ -832,6 +832,7 @@ mod loopback_tests {
                 spec_l2_permille: None,
                 spec_l1_permille: None,
                 dup_copies: 1,
+                lane: crate::transport::LaneMode::None,
             })
             .await
             .expect("governed run bounded Ok");
@@ -912,6 +913,7 @@ mod loopback_tests {
                 spec_l2_permille: None,
                 spec_l1_permille: None,
                 dup_copies: 1,
+                lane: crate::transport::LaneMode::None,
             })
             .await
             .expect("client run");
@@ -972,6 +974,7 @@ mod loopback_tests {
                 spec_l2_permille: None,
                 spec_l1_permille: None,
                 dup_copies: 1,
+                lane: crate::transport::LaneMode::None,
             })
             .await
             .expect("client run (ALPN/provider/handshake OK)");
@@ -1087,6 +1090,7 @@ mod loopback_tests {
                 spec_l2_permille: None,
                 spec_l1_permille: None,
                 dup_copies: 1,
+                lane: crate::transport::LaneMode::None,
             })
             .await
             .expect("bounded return, HANG değil");

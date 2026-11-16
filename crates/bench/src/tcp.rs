@@ -556,6 +556,7 @@ mod tests {
                 spec_l2_permille: None,
                 spec_l1_permille: None,
                 dup_copies: 1,
+                lane: crate::transport::LaneMode::None,
             })
             .await
             .expect("client");
@@ -645,6 +646,7 @@ mod tests {
                 spec_l2_permille: None,
                 spec_l1_permille: None,
                 dup_copies: 1,
+                lane: crate::transport::LaneMode::None,
             },
             &tu,
         )

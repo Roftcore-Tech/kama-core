@@ -33,19 +33,23 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use std::collections::{BTreeSet, VecDeque};
+
+use client_core::lanes::{file_window_for_path, Lane, LaneConfig};
 use client_core::runtime::{
-    fec_chunk_capacity, ClientEndpoint, ClientSender, EgressPolicy, FecLossRiskConfig,
-    FecRuntimeConfig, FecStructurePolicy, KamaV1Profile, LossConfirmHorizon, PersistMode,
-    RuntimeConfig, RuntimeError, ServerEndpoint,
+    fec_chunk_capacity, ClientEndpoint, ClientHandle, ClientSender, EgressPolicy,
+    FecLossRiskConfig, FecRuntimeConfig, FecStructurePolicy, KamaV1Profile, LossConfirmHorizon,
+    PersistMode, RuntimeConfig, RuntimeError, ServerEndpoint,
 };
 use client_core::seam::IdentitySeam;
+use client_core::unit_id::{index_of_lane, lane_index_of, lane_seq_of, tagged};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::time::interval;
 
 use crate::budget::{BudgetGovernor, BudgetMode, IPV4_UDP_OVERHEAD};
 use crate::error::BenchError;
 use crate::event::{RawEvent, RunMeta, RunOutput, TxComponents};
-use crate::transport::{BenchTransport, ClientCfg, FecArm, ServerCfg};
+use crate::transport::{BenchTransport, ClientCfg, FecArm, LaneMode, ServerCfg};
 
 /// transport-version (RunMeta.quinn_version alanına — alan donmuş, yeniden adlandırma YOK).
 const KAMA_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -55,6 +59,156 @@ const GATE_POLL: Duration = Duration::from_millis(20);
 const OFFER_RETRY: Duration = Duration::from_millis(1);
 /// Warmup faz tavanı (sunum planına EKLENİR) — bounded: ölü sunucuda faz asılı kalmaz.
 const WARMUP_CAP_EXTRA: Duration = Duration::from_secs(30);
+/// [TNET-V2] Şerit pompasının tur aralığı: ürün düğümünün boştaki tur aralığı (`kama-node`
+/// `NODE_TICK` = 20 ms). Ürün yolunda şerit pompası (`ClientTransport::drive` → `pump_lanes`)
+/// düğüm turunda koşar; teyit olayı turu UYANDIRMAZ, sıradaki turda okunur. Bench aynı kadansla
+/// pompalar (ayrıca her sunumdan hemen sonra, ürünün komutla uyanan turu gibi).
+const LANE_PUMP_TICK: Duration = Duration::from_millis(20);
+
+/// [TNET-V2] Ürün şerit pompasının (`client_core::transport::ClientTransport::pump_session` +
+/// `lanes::SessionLanes::pop_next`) TEK ŞERİTLİ eşleniği.
+///
+/// Neden eşlenik (ürün tipinin kendisi değil): `SessionLanes`'e birim koymak `kama_contracts`
+/// tiplerini (`TrafficClass`, `DeliveryPolicy`) adlandırmayı gerektirir; bench bu crate'e bağımlı
+/// değildir ve kampanya kuralı bağımlılık eklemeyi yasaklar. Kararın girdileri ürün kodundan
+/// gelir, bench yalnız sırayı uygular:
+///
+/// * FILE penceresi `W = lanes::file_window_for_path(taban, birim, BtlBw, RTprop)`, taban
+///   `LaneConfig::default().file_window_units` (ürün profili), yol kestirimi
+///   `ClientHandle::path_estimate()` — `pump_session` ile aynı çağrı;
+/// * açıklık `oda = min(teyit_sınırı, verilen) + genişlik − verilen`, teyit sınırı
+///   `ClientHandle::lane_confirm_frontier(şerit)`, genişlik `LaneConfig::default().admit_widths`;
+/// * birim kimliği `unit_id::tagged(şerit, verilen)`; `QueueFull` → birim kuyruğun BAŞINA döner,
+///   tur biter (`pump_lanes_of` ile aynı);
+/// * teyit (uç `acked()` olayı) FILE penceresinden birimi düşürür (`SessionLanes::on_acked`).
+///
+/// Tek şeritte öbür şeritlerin kabul sırası ve şerit tavanları (S1 `Backpressure`) pompanın
+/// verdiği sırayı ve anı DEĞİŞTİRMEZ: tavan yalnız uygulamanın şeride koyabileceği birimi sınırlar,
+/// burada uygulama kuyruğu (`pending`) o birimleri zaten tutar.
+#[derive(Debug)]
+struct LanePump {
+    /// Şerit indeksi (`unit_id::index_of_lane`).
+    lane: usize,
+    /// FILE şeridi mi (pencere uygulanır).
+    file: bool,
+    /// Şeridin kabul genişliği (birim).
+    width: u64,
+    /// Pencere tabanı (`LaneConfig::file_window_units`).
+    floor_w: u32,
+    /// Pencerenin birim boyu (bayt; `RuntimeConfig::max_unit_bytes`).
+    unit_bytes: u64,
+    /// Bu şeritte uca verilen birim sayısı = sıradaki şerit-içi sıra (`ClientTransport` `sent`).
+    next: u64,
+    /// FILE penceresindeki uca verilmiş, teyidi gelmemiş birim kimlikleri.
+    inflight: BTreeSet<u64>,
+    /// Uygulama kuyruğu: henüz uca verilmemiş birimler (FIFO).
+    pending: VecDeque<Vec<u8>>,
+    /// Gözlem: son turun penceresi, en küçük/en büyük pencere, pencere/açıklık nedeniyle bekleme turu.
+    last_w: u32,
+    min_w: u32,
+    max_w: u32,
+    window_stalls: u64,
+    span_stalls: u64,
+    qfull: u64,
+}
+
+impl LanePump {
+    /// `None` kipte pompa yoktur (eski yol).
+    fn new(mode: LaneMode, unit_bytes: u64) -> Option<Self> {
+        let lane = match mode {
+            LaneMode::None => return None,
+            LaneMode::Text => Lane::Text,
+            LaneMode::File => Lane::File,
+        };
+        let cfg = LaneConfig::default();
+        let idx = index_of_lane(lane);
+        Some(Self {
+            lane: idx,
+            file: lane == Lane::File,
+            width: cfg.admit_widths[idx],
+            floor_w: cfg.file_window_units,
+            unit_bytes,
+            next: 0,
+            inflight: BTreeSet::new(),
+            pending: VecDeque::new(),
+            last_w: 0,
+            min_w: u32::MAX,
+            max_w: 0,
+            window_stalls: 0,
+            span_stalls: 0,
+            qfull: 0,
+        })
+    }
+
+    fn enqueue(&mut self, payload: Vec<u8>) {
+        self.pending.push_back(payload);
+    }
+
+    /// Teyit: FILE penceresinden düşür (başka şeridin birimi etkisiz).
+    fn on_acked(&mut self, unit: u64) {
+        if lane_index_of(unit) == self.lane {
+            self.inflight.remove(&unit);
+        }
+    }
+
+    /// Bir pompa turu (bkz. tip belgesi).
+    fn pump(
+        &mut self,
+        cli: &ClientHandle,
+        tx: &ClientSender,
+        deadline_ns: Option<u64>,
+    ) -> Result<(), BenchError> {
+        let w = if self.file {
+            let (btlbw, rtprop_ns) = cli.path_estimate();
+            let w = file_window_for_path(self.floor_w, self.unit_bytes, btlbw, rtprop_ns);
+            self.last_w = w;
+            self.min_w = self.min_w.min(w);
+            self.max_w = self.max_w.max(w);
+            usize::try_from(w).unwrap_or(usize::MAX)
+        } else {
+            usize::MAX
+        };
+        let frontier = cli.lane_confirm_frontier(self.lane).min(self.next);
+        let mut room = frontier
+            .saturating_add(self.width)
+            .saturating_sub(self.next);
+        while !self.pending.is_empty() {
+            if self.inflight.len() >= w {
+                self.window_stalls += 1;
+                break;
+            }
+            if room == 0 {
+                self.span_stalls += 1;
+                break;
+            }
+            let Some(p) = self.pending.pop_front() else {
+                break;
+            };
+            match tx.send_in_lane(p.clone(), deadline_ns, self.lane) {
+                Ok(()) => {
+                    let id = tagged(self.lane, self.next);
+                    self.next += 1;
+                    room -= 1;
+                    if self.file {
+                        self.inflight.insert(id);
+                    }
+                }
+                Err(RuntimeError::QueueFull) => {
+                    self.pending.push_front(p);
+                    self.qfull += 1;
+                    break;
+                }
+                Err(e) => return Err(rt_err("lane offer", e)),
+            }
+        }
+        Ok(())
+    }
+
+    /// Ölçüm birimi `unit` → şerit-içi sıra (`None`: başka şeridin birimi).
+    fn seq_of(&self, unit: u64) -> Option<u64> {
+        (lane_index_of(unit) == self.lane).then(|| lane_seq_of(unit))
+    }
+}
 
 /// Bütçe governor'ünü ürün-runtime'ının egress dikişine takan adaptör.
 ///
@@ -360,12 +514,15 @@ fn print_manifest(role: &str, c: &RuntimeConfig) {
             Some(r) => format!("ON static-r{r} p{:#04x}", f.profile_id),
         },
     );
+    // [TNET-V2] Motor kimliği satırda: `profile_delta` motoru kıyaslamaz (eski motorla koşan kol
+    // `kama-v1-full` etiketini taşıyabilirdi); kampanya yürütücüsü bu alanı doğrular.
     eprintln!(
-        "KP-MANIFEST role={role} profile={profile} commit={} unit={}B msg_cap={:?} \
+        "KP-MANIFEST role={role} profile={profile} engine={} commit={} unit={}B msg_cap={:?} \
          fec={fec} fec_risk={} spec_caps={}/{} rp_suppress={} persist={:?} gate={:?} \
          iw={}B arq=ON(selective+dup) tail=ON(validated_v1) establish_probe=ON \
          bootstrap_ladder={} fusion_policy={} structure_policy={:?} confirm_horizon={:?} \
          features=[diag-sched-telemetry={}]",
+        engine_label(c.engine),
         option_env!("KAMA_GIT_SHA").unwrap_or("unknown"),
         c.max_unit_bytes,
         c.max_message_bytes,
@@ -515,6 +672,14 @@ pub(crate) fn canonical_cfg_for_mixed(
     print_manifest(role, &c);
     let d = profile_delta(&c);
     (c, d)
+}
+
+/// [TNET-V2] Motor etiketi (`KAMA_TRANSPORT_ENGINE` değerleriyle aynı yazım).
+fn engine_label(e: client_core::TransportEngine) -> &'static str {
+    match e {
+        client_core::TransportEngine::CcPort => "cc-port",
+        client_core::TransportEngine::Legacy => "legacy",
+    }
 }
 
 fn rt_err(what: &str, e: RuntimeError) -> BenchError {
@@ -729,6 +894,13 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         rp_suppress: cfg.rp_suppress,
     });
     print_manifest("client", &rt_cfg);
+    // [TNET-V2] Motor ve birim boyu rt_cfg taşınmadan önce: etiket/manifest motoru kuran
+    // yapılandırmadan okur (ortam değişkeninin yeniden çözümü değil); şerit pompası birim boyunu.
+    let engine = rt_cfg.engine;
+    let mut lane_pump = LanePump::new(
+        cfg.lane,
+        u64::try_from(rt_cfg.max_unit_bytes).unwrap_or(u64::MAX),
+    );
     // [FAZ-4 §1.3] PROFİL KİMLİĞİ — koddan türetilir (rt_cfg taşınmadan ÖNCE), operatör
     // disiplinine bırakılmaz. Tek bir alan bile saparsa kimlik `kama-custom` olur.
     let profile_delta_v = profile_delta(&rt_cfg);
@@ -771,7 +943,27 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
     let mut warm_acked: u64 = 0;
     // [İSTEK-D4] Sunum geri basıncı sayaçları; ölçüm-t0'da sıfırlanır (warmup sayılmaz).
     let mut offer_st = OfferStats::default();
-    if cfg.warmup_msgs > 0 {
+    if let (true, Some(lp)) = (cfg.warmup_msgs > 0, lane_pump.as_mut()) {
+        // [TNET-V2] Şerit kipi: ısıtma birimleri aynı şeritten, aynı pompayla (burst sunum).
+        let wdl = tokio::time::sleep(WARMUP_CAP_EXTRA);
+        tokio::pin!(wdl);
+        for _ in 0..cfg.warmup_msgs {
+            lp.enqueue(payload.clone());
+        }
+        lp.pump(&cli, &tx, deadline_ns)?;
+        let mut tick = interval(LANE_PUMP_TICK);
+        while warm_acked < cfg.warmup_msgs {
+            tokio::select! {
+                () = &mut wdl => break,
+                _ = tick.tick() => lp.pump(&cli, &tx, deadline_ns)?,
+                a = cli.acked() => {
+                    let Some(unit) = a else { break }; // endpoint öldü
+                    lp.on_acked(unit);
+                    warm_acked += 1;
+                }
+            }
+        }
+    } else if cfg.warmup_msgs > 0 {
         let cap = Duration::from_nanos(interval_ns.saturating_mul(cfg.warmup_msgs))
             .saturating_add(WARMUP_CAP_EXTRA);
         let wdl = tokio::time::sleep(cap);
@@ -826,7 +1018,16 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
     let mut next_submit: u64 = 0;
     // [KTP2-F0 / C2] Ölçüm mesajı başına AYRI birim sayısı (1 = eski davranış, döngü tek tur).
     let copies = u64::from(cfg.dup_copies.max(1));
-    if interval_ns == 0 {
+    if let Some(lp) = lane_pump.as_mut() {
+        // [TNET-V2] Şerit kipi: tümü t0'da UYGULAMAYA sunulur (sent_ns = sunum anı, burst); uca
+        // veriliş şerit pompasınındır — uygulama kuyruğunda bekleme süresi gecikmeye DAHİL.
+        for slot in &mut sent_ns {
+            *slot = Some(elapsed_ns(start));
+            lp.enqueue(payload.clone());
+        }
+        next_submit = msg_count;
+        lp.pump(&cli, &tx, deadline_ns)?;
+    } else if interval_ns == 0 {
         // burst: tümü t0'da sunulur (mevcut kolların davranışıyla aynı).
         for slot in &mut sent_ns {
             *slot = Some(elapsed_ns(start));
@@ -846,7 +1047,31 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
     ));
     tokio::pin!(deadline);
 
-    while delivered_count < msg_count {
+    if let Some(lp) = lane_pump.as_mut() {
+        let mut tick = interval(LANE_PUMP_TICK);
+        while delivered_count < msg_count {
+            tokio::select! {
+                () = &mut deadline => break,
+                _ = tick.tick() => lp.pump(&cli, &tx, deadline_ns)?,
+                a = cli.acked() => {
+                    let Some(unit) = a else { break }; // endpoint öldü
+                    lp.on_acked(unit);
+                    // Şerit-içi sıra: ısıtma birimleri (sıra < base_id) yapısal olarak düşer.
+                    let Some(idx) = lp.seq_of(unit).and_then(|q| q.checked_sub(base_id)) else {
+                        continue;
+                    };
+                    let Ok(i) = usize::try_from(idx) else { continue };
+                    if let Some(slot) = delivered_ns.get_mut(i) {
+                        if slot.is_none() {
+                            *slot = Some(elapsed_ns(start));
+                            delivered_count += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    while lane_pump.is_none() && delivered_count < msg_count {
         tokio::select! {
             () = &mut deadline => break,
             // [W3] paced sunum: mesaj i, t0 + i×interval'de app-offer edilir.
@@ -880,6 +1105,23 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         }
     }
 
+    // [TNET-V2] Şerit pompasının salt-gözlem sayaçları (ayrı satır; KP-CLIENT biçimi korunur).
+    if let Some(lp) = lane_pump.as_ref() {
+        eprintln!(
+            "KP-LANE lane={} given={} pending={} file_inflight={} w_last={} w_min={} w_max={} \
+             window_stalls={} span_stalls={} qfull={}",
+            lp.lane,
+            lp.next,
+            lp.pending.len(),
+            lp.inflight.len(),
+            lp.last_w,
+            if lp.min_w == u32::MAX { 0 } else { lp.min_w },
+            lp.max_w,
+            lp.window_stalls,
+            lp.span_stalls,
+            lp.qfull,
+        );
+    }
     let stats = cli.shutdown().await;
     let snap = gov.lock().map_or_else(
         |_| BudgetGovernor::new(cfg.budget).snapshot(),
@@ -1046,13 +1288,10 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         // fec-off kollarıyla BYTE-ÖZDEŞ oluyordu ve provenans yalnız DİZİN ADINA dayanıyordu.
         // Dosya kopyalanınca/havuzlanınca kanıt tanımlanamaz hale gelirdi.
         kama_arm: format!(
-            "kama-product-tailv1{}-{}{}{}{}{}{}",
+            "kama-product-tailv1{}-{}{}{}{}{}{}{}",
             // [CC-PORT] motor etiketi: port ⇒ "-cc-port" (provenans; sondaki `-dupN` eki korunur).
-            std::env::var("KAMA_TRANSPORT_ENGINE")
-                .ok()
-                .and_then(|v| client_core::TransportEngine::parse(&v))
-                .unwrap_or_default()
-                .label_suffix(),
+            // [TNET-V2] Motoru kuran yapılandırmadan (aynı ortam değişkeni kuralı, tek kaynak).
+            engine.label_suffix(),
             cfg.fec.label(),
             if cfg.burst_fusion { "-burstfusion" } else { "" },
             if cfg.bootstrap_rtt {
@@ -1076,6 +1315,8 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
             } else {
                 String::new()
             },
+            // [TNET-V2] şerit kipi (`none` = eski etiket aynen).
+            cfg.lane.label_suffix(),
         ),
         submit_interval_ns: interval_ns,
         budget: snap,
@@ -1109,7 +1350,8 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         setup_in_window: false,
         profile_id: profile_id_label.clone(),
         profile_delta: profile_delta_v.clone(),
-        engine: String::new(),
+        // [TNET-V2] Motor kimliği koşu çıktısında (kampanya satırı bunu doğrular).
+        engine: engine_label(engine).to_string(),
     };
     Ok(RunOutput { meta, events })
 }
@@ -1153,6 +1395,7 @@ mod tests {
             spec_l2_permille: None,
             spec_l1_permille: None,
             dup_copies: 1,
+            lane: crate::transport::LaneMode::None,
         }
     }
 

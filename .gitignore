@@ -30,3 +30,6 @@ reports/kapi-eval-v1/out-exploratory/**/cap/
 # cargo-mutants çıktısı — her koşumda binlerce diff üretir, izlenmemeli
 /mutants.out/
 /mutants.out.old/
+
+# kama-target-net-v2: v1 TCP taban kolunun derleme çıktısı
+/baselines/target/
