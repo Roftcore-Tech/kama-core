@@ -1153,6 +1153,19 @@ pub struct ClientLiveDiag {
     pub acks: DiagRing<AckFrameDiag, ACK_LOG_LEN>,
     /// Son [`STATE_LOG_LEN`] motor durum değişikliği (ana döngü turu çözünürlüğünde).
     pub states: DiagRing<StateChangeDiag, STATE_LOG_LEN>,
+    /// [FEC-TEŞHİS] [`ClientStats::fec_blocks_latched`], [`ClientStats::fec_repairs_tx`],
+    /// [`ClientStats::fec_latch_diag`], [`ClientStats::fec_last_suppression`] (salt gözlem).
+    pub fec_blocks_latched: u64,
+    pub fec_repairs_tx: u64,
+    pub fec_latch_diag: (u64, u64, u64, u64, u64),
+    pub fec_last_suppression: Option<&'static str>,
+    /// [FEC-TEŞHİS] [`ClientStats::param_sends`], [`ClientStats::param_confirmed`] ve aynanın
+    /// onayı ilk gördüğü an (ns, ucun saat tabanında; 0 = görmedi).
+    pub param_sends: u64,
+    pub param_confirmed: u64,
+    pub param_confirmed_at_ns: u64,
+    /// [FEC-TEŞHİS] Motorun taban PTO'su (µs; `srtt + 4·rttvar + max_ack_delay`).
+    pub base_pto_us: u64,
 }
 
 /// [K4G-05 / INT-02 TEŞHİS] [`SenderRecoveryDiag`]'ın yenilenme aralığı — gözlem çözünürlüğü,
@@ -1560,6 +1573,36 @@ impl ClientLiveDiag {
         self.tx_datagrams = stats.tx_datagrams;
         self.rx_datagrams = stats.rx_datagrams;
         self.tx_bytes = stats.tx_bytes;
+        self.fec_blocks_latched = stats.fec_blocks_latched;
+        self.fec_repairs_tx = stats.fec_repairs_tx;
+        let fec = sender.diag_fec_actuation();
+        self.fec_latch_diag = (
+            fec.no_eligible_decision_count,
+            fec.decision_event_mismatch_count,
+            fec.no_rule_zero_count,
+            fec.enqueued_r_total,
+            fec.emitted_r_total,
+        );
+        self.fec_last_suppression = fec.last_latch.and_then(|l| l.suppression).map(|r| match r {
+            adaptive_transport::sender::FecSuppressionReason::ManualDisabled => "ManualDisabled",
+            adaptive_transport::sender::FecSuppressionReason::NoEligibleDecision => {
+                "NoEligibleDecision"
+            }
+            adaptive_transport::sender::FecSuppressionReason::DecisionEventMismatch => {
+                "DecisionEventMismatch"
+            }
+            adaptive_transport::sender::FecSuppressionReason::NoRule => "NoRule",
+            other => {
+                let _ = other;
+                "Diger"
+            }
+        });
+        self.param_sends = stats.param_sends;
+        if stats.param_confirmed > 0 && self.param_confirmed == 0 {
+            self.param_confirmed_at_ns = now_ns;
+        }
+        self.param_confirmed = stats.param_confirmed;
+        self.base_pto_us = sender.base_pto_ns() / 1_000;
     }
 
     /// [K4G-05] Kapanan bir ucun SAYAÇLARINI bu toplama ekler (S1 adaptörünün kapanmış oturumlar

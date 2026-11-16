@@ -76,12 +76,15 @@
 //!   serileşmekte olan en çok bir denetim datagramı (en büyük ACK V2 çerçevesi 79 B → 129 B tel,
 //!   2,08 s). Toplam 3,53 s; kalan 0,47 s iki çekirdekli makinede iş parçacığı zamanlaması. Dönüş
 //!   kayıpsızdır; alındının ilk iletimi yine de rölede (kuyruk taşması) düşerse "kayıp-kurtarma".
-//! * PTT ≤ 1 s (her demet, ilki dahil) ve gönderilen her demet teslim edilir. İstisna
-//!   "kayıp-kurtarma": demetin kendi ilk iletimi düştü ya da demet Bob'a vardığında PTT şeridinde
-//!   ondan önceki, ilk iletimi düşmüş bir birim (açılış ya da demet) henüz teslim edilmemişti. PTT
-//!   ürün kararıyla güvenilir ve sıralı bir kliptir (`kama-app` `ptt.rs`, PTT-R0: "ağ takılırsa ses
-//!   bozulmaz, durur"): kendi kaybını bekleyen demet dosyanın bloklaması değildir. Bunlar sayılır
-//!   ve en büyük gecikmeleriyle ayrıca yazılır.
+//! * PTT ≤ 1 s (her demet, ilki dahil) ve gönderilen her demet teslim edilir. Tek istisna
+//!   "kayıp-kurtarma": demetin KENDİ ilk iletimi düştü. [2026-11-16 düzeltmesi: ilk ölçümde
+//!   istisna sayılan "demet Bob'a vardığında PTT şeridinde ilk iletimi düşmüş bir öncülü henüz
+//!   teslim edilmemişti" durumu artık istisna DEĞİLDİR; sınır (1 s) aynı.] PTT ürün kararıyla
+//!   güvenilir ve sıralı bir kliptir (`kama-app` `ptt.rs`, PTT-R0: "ağ takılırsa ses bozulmaz,
+//!   durur"): öncülünü bekleyen demet sınırı aşarsa ölçüt düşer; bu demetler ayrı sütunda
+//!   ("öncül_bekledi") sayılır ve en büyük gecikmeleriyle yazılır, ki düşüşün kaynağı (dosyanın
+//!   bloklaması mı, PTT'nin kendi sıralı kurtarması mı) okunabilsin. PTT'nin dar dönüşte önlemsel
+//!   fazlalık ya da son tarih politikası alması sahibin kararıdır; bu test politikayı değiştirmez.
 //! * DOSYA ≤ 14 s (`send_file` → Bob'da tamamlanma). Bu hücrenin dosya sınırı 40 × 1000 B için
 //!   14 s'dir; sınır yük baytıyla ölçeklenir: 14 s × 40 000 B / 40 000 B = 14 s. Kredi verilmeyen
 //!   iki fark: parça başına AMP + DATA + Noise zarfı teli ≈ %3 büyütür (41 datagram, ≈ 43,4 kB;
@@ -105,9 +108,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use client_core::memory_link::MemoryHub;
+use client_core::runtime::ClientLiveDiag;
 use client_core::runtime::LinkRates;
 use client_core::transport::{ClientTransport, ClientTransportConfig};
-use client_core::wire::decode_data;
+use client_core::wire::{decode_data, FRAME_FEC, FRAME_RECOVERED};
 use kama_app::clock::{MonotonicClock, SystemClock};
 use kama_app::codec::{decode, AmpLimits, AppMessage, PttCodec};
 use kama_app::file_transfer::{FileEvent, FileTransfer};
@@ -228,6 +232,22 @@ struct Ledger {
     unparsed: u64,
     /// Tavan dolduğu için yazılamayan kayıt.
     overflow: u64,
+    /// [FEC-TEŞHİS] Bu ucun mühürlediği / açtığı FEC onarım çerçevesi ve RECOVERED çerçevesi.
+    fec_tx: u64,
+    fec_rx: u64,
+    recovered_tx: u64,
+    recovered_rx: u64,
+}
+
+/// [FEC-TEŞHİS] Çerçeve türü sayacı (DATA dışı).
+fn note_kind(l: &mut Ledger, frame: &[u8], sealed: bool) {
+    match (frame.first().copied(), sealed) {
+        (Some(FRAME_FEC), true) => l.fec_tx += 1,
+        (Some(FRAME_FEC), false) => l.fec_rx += 1,
+        (Some(FRAME_RECOVERED), true) => l.recovered_tx += 1,
+        (Some(FRAME_RECOVERED), false) => l.recovered_rx += 1,
+        _ => {}
+    }
 }
 
 /// Gerçek kriptoyu saran salt-okur sarmalayıcı: DATA çerçevesini çözüp kayda yazar.
@@ -251,6 +271,7 @@ impl Tap {
 impl PacketProtection for Tap {
     fn seal(&mut self, ctx: ProtectionContext, frame: &[u8]) -> Result<SealedUnit, SealError> {
         let sealed = self.inner.seal(ctx, frame)?;
+        note_kind(&mut lock(&self.ledger), frame, true);
         if let Some(c) = self.classify(frame) {
             let now = Instant::now();
             let mut l = lock(&self.ledger);
@@ -269,6 +290,7 @@ impl PacketProtection for Tap {
     }
     fn open(&mut self, wire: &[u8]) -> Option<Opened> {
         let opened = self.inner.open(wire)?;
+        note_kind(&mut lock(&self.ledger), &opened.frame, false);
         if let Some(c) = self.classify(&opened.frame) {
             let now = Instant::now();
             let mut l = lock(&self.ledger);
@@ -585,7 +607,11 @@ fn transport(
     let mut cfg = ClientTransportConfig::product(SocketAddr::from(([127, 0, 0, 1], 0)));
     cfg.runtime.drain_cap = Duration::from_millis(100);
     cfg.runtime.link_rates = link;
-    ClientTransport::new(cfg, tap(me, ledger), Box::new(hub.link(id(me)))).expect("transport")
+    let mut t =
+        ClientTransport::new(cfg, tap(me, ledger), Box::new(hub.link(id(me)))).expect("transport");
+    // [FEC-TEŞHİS] Canlı ayna (salt gözlem): FEC latch, PARAM, PTO ve kopya sayaçları.
+    t.set_live_diag_for_test(true);
+    t
 }
 
 // ── Koşu ─────────────────────────────────────────────────────────────────────────────────────
@@ -622,6 +648,9 @@ struct Run {
     fwd: Shaper,
     rev: Shaper,
     file_backlog_held: u64,
+    /// [FEC-TEŞHİS] Koşu sonunda iki ucun oturum aynası (Alice → Bob, Bob → Alice).
+    alice_live: Option<ClientLiveDiag>,
+    bob_live: Option<ClientLiveDiag>,
 }
 
 fn run(seed: u64, profile: bool) -> Run {
@@ -815,6 +844,13 @@ fn run(seed: u64, profile: bool) -> Run {
         .transport()
         .lane_stats()
         .map_or(0, |s| s.file_backlog_held);
+    let alice_live = alice
+        .m
+        .transport()
+        .session_live_diags()
+        .first()
+        .map(|d| d.1);
+    let bob_live = bob.m.transport().session_live_diags().first().map(|d| d.1);
     drop(alice);
     drop(bob);
     stop.store(true, Ordering::Relaxed);
@@ -839,6 +875,8 @@ fn run(seed: u64, profile: bool) -> Run {
         fwd,
         rev,
         file_backlog_held,
+        alice_live,
+        bob_live,
     }
 }
 
@@ -1038,6 +1076,40 @@ impl Run {
     fn trace_report(&self, tag: &str) {
         let t = |i: Instant| secs(self.since(i, self.t0));
         let ot = |i: Option<Instant>| i.map_or("-".to_string(), t);
+        for (side, live, ledger, peer) in [
+            ("Alice", self.alice_live, &self.alice, &self.bob),
+            ("Bob", self.bob_live, &self.bob, &self.alice),
+        ] {
+            let Some(l) = live else {
+                println!("İZ-FEC {tag} {side}: ayna yok");
+                continue;
+            };
+            println!(
+                "İZ-FEC {tag} {side}→: latch_blok={} onarım_tx={} parite_kararı={} latch(no_eligible,mismatch,no_rule,enq_r,emit_r)={:?} son_bastırma={:?} onarım_tel_tx={} onarım_karşıda_rx={} RECOVERED_karşıdan={} | PARAM gönderim={} onay={} onay_anı={} | srtt={} ms taban_pto={} ms rtt_örnek={} | tail_prob={} retx={} kopya={} durum={:?}",
+                l.fec_blocks_latched,
+                l.fec_repairs_tx,
+                l.parity_emitted,
+                l.fec_latch_diag,
+                l.fec_last_suppression,
+                ledger.fec_tx,
+                peer.fec_rx,
+                ledger.recovered_rx,
+                l.param_sends,
+                l.param_confirmed,
+                if l.param_confirmed > 0 {
+                    format!("{:.2} s", l.param_confirmed_at_ns as f64 / 1e9)
+                } else {
+                    "-".to_string()
+                },
+                l.srtt_us / 1000,
+                l.base_pto_us / 1000,
+                l.rtt_samples,
+                l.tail_probes,
+                l.retransmits,
+                l.dups,
+                l.control.state,
+            );
+        }
         for (i, x) in self.texts.iter().enumerate() {
             println!(
                 "İZ-UYG {tag} metin{} gönderim={} Bob_teslim={} Alice_alındı={}",
@@ -1101,9 +1173,10 @@ impl Run {
         let mut max_delay = Duration::ZERO;
         let mut max_delay_counted = Duration::ZERO;
         let mut max_excused = Duration::ZERO;
-        // Kayıp-kurtarmanın iki kaynağı ayrı: demetin kendi ilk iletimi düştü / yalnız öncülünü bekledi.
-        let (mut own_n, mut held_n) = (0u32, 0u32);
-        let (mut max_own, mut max_held) = (Duration::ZERO, Duration::ZERO);
+        // Sınırı aşıp kalan demetlerden, kaybolmadan PTT şeridinde ilk iletimi düşmüş bir öncülünü
+        // bekleyenler (ayrı sütun; istisna değil).
+        let mut held_n = 0u32;
+        let mut max_held = Duration::ZERO;
         let mut first_missing: Option<u32> = None;
         let mut max_gap = Duration::ZERO;
         let mut max_accept_wait = Duration::ZERO;
@@ -1147,7 +1220,7 @@ impl Run {
             });
             let v = if delay <= PTT_BOUND {
                 Verdict::Pass
-            } else if own || held {
+            } else if own {
                 Verdict::LossRecovery
             } else {
                 Verdict::Fail
@@ -1157,17 +1230,14 @@ impl Run {
                 Verdict::LossRecovery => {
                     excused += 1;
                     max_excused = max_excused.max(delay);
-                    if own {
-                        own_n += 1;
-                        max_own = max_own.max(delay);
-                    } else {
-                        held_n += 1;
-                        max_held = max_held.max(delay);
-                    }
                 }
                 Verdict::Fail => {
                     over += 1;
                     max_delay_counted = max_delay_counted.max(delay);
+                    if held {
+                        held_n += 1;
+                        max_held = max_held.max(delay);
+                    }
                     println!(
                         "ÖLÇÜT {tag} ptt demet {seq}: gecikme={} s ilk_çıkış=+{} s ilk_varış=+{} s iletim={} → KALDI",
                         secs(delay),
@@ -1200,14 +1270,13 @@ impl Run {
             Verdict::Pass
         };
         println!(
-            "ÖLÇÜT {tag} ptt: demet={n} teslim_yok={missing} (ilki {}) açılış→PttStarted={} s ilk_demet={} s ({}) sınır_üstü_sayılan={over} kayıp-kurtarma={excused} (en büyük {} s; kendi_kaybı={own_n} en büyük {} s, yalnız_öncül_bekledi={held_n} en büyük {} s) en_büyük_gecikme_sayılan={} s en_büyük_gecikme_tümü={} s dosya_sürerken_en_büyük_boşluk={} s kabul_beklemesi_en_çok={} s → {}",
+            "ÖLÇÜT {tag} ptt: demet={n} teslim_yok={missing} (ilki {}) açılış→PttStarted={} s ilk_demet={} s ({}) sınır_üstü_kaldı={over} (bunların öncül_bekledi={held_n}, en büyük {} s) kayıp-kurtarma(kendi_kaybı)={excused} (en büyük {} s) en_büyük_gecikme_sayılan={} s en_büyük_gecikme_tümü={} s dosya_sürerken_en_büyük_boşluk={} s kabul_beklemesi_en_çok={} s → {}",
             first_missing.map_or("-".to_string(), |m| m.to_string()),
             opt_secs(start),
             opt_secs(first.map(|f| f.0)),
             first.map_or("YOK", |f| f.1.label()),
-            secs(max_excused),
-            secs(max_own),
             secs(max_held),
+            secs(max_excused),
             secs(max_delay_counted),
             secs(max_delay),
             secs(max_gap),
@@ -1217,7 +1286,7 @@ impl Run {
         (
             verdict,
             format!(
-                "ptt_ilk={}({}) ptt_en_büyük_sayılan={} ptt_en_büyük_tümü={} ptt_boşluk={} ptt_kayıp_kurtarma={excused}/{n}(kendi={own_n},öncül={held_n}) ptt_teslim_yok={missing} ptt={}",
+                "ptt_ilk={}({}) ptt_en_büyük_sayılan={} ptt_en_büyük_tümü={} ptt_boşluk={} ptt_kaldı={over}/{n}(öncül_bekledi={held_n}) ptt_kayıp_kurtarma={excused}/{n} ptt_teslim_yok={missing} ptt={}",
                 opt_secs(first.map(|f| f.0)),
                 first.map_or("YOK", |f| f.1.label()),
                 secs(max_delay_counted),
