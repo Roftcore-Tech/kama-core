@@ -1009,8 +1009,15 @@ mod tests {
     fn feedback_horizon_counts_the_largest_budgeted_ack_and_its_serialization() {
         // 62 B/s: bütçe 15 B/s; en büyük ACK 129 B → 8,6 s aralık + 2,08 s serileşme.
         let h = feedback_horizon_ns(62);
-        assert!((10_600 * MS..=10_700 * MS).contains(&h), "ufuk {} ms", h / MS);
-        assert!(feedback_horizon_ns(12_500) < 60 * MS, "hızlı dönüşte ufuk kısa");
+        assert!(
+            (10_600 * MS..=10_700 * MS).contains(&h),
+            "ufuk {} ms",
+            h / MS
+        );
+        assert!(
+            feedback_horizon_ns(12_500) < 60 * MS,
+            "hızlı dönüşte ufuk kısa"
+        );
         assert_eq!(feedback_horizon_ns(0), u64::MAX);
     }
 

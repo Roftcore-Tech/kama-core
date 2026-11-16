@@ -2820,21 +2820,20 @@ async fn client_task(
     // [GERİ-BİLDİRİM-AÇ · sahip kararı 2026-11-16] Uçuş tavanı ACK saatine bağlanmaz, hız hatta
     // sert bağlanır (INV-RATE-1 profil istisnası; bkz. `FeedbackStarvedRule`).
     if let (true, Some(l)) = (link_feedback_starved(&cfg), cfg.link_rates) {
-        session
-            .sender_mut()
-            .set_cc_feedback_starved(Some(adaptive_transport::sender::FeedbackStarvedRule {
+        session.sender_mut().set_cc_feedback_starved(Some(
+            adaptive_transport::sender::FeedbackStarvedRule {
                 pacing_cap_bps: link_pacing_cap_bps(l.uplink_bps),
                 feedback_ns: adaptive_transport::receiver::feedback_horizon_ns(l.downlink_bps),
                 line: adaptive_transport::pacer::LineModel {
                     rate_bps: l.uplink_bps,
                     datagram_overhead: LINK_UDP_IP_OVERHEAD,
                 },
-            }));
+            },
+        ));
     }
     if cfg.lane_ids && link_feedback_starved(&cfg) {
-        session
-            .sender_mut()
-            .set_forward_copy_rule(Some(adaptive_transport::sender::ForwardCopyRule {
+        session.sender_mut().set_forward_copy_rule(Some(
+            adaptive_transport::sender::ForwardCopyRule {
                 below_id: crate::unit_id::tagged(1, 0),
                 // Şerit sırası PTT > SIG > TEXT > FILE (#199): dosya dışı şeritler yeniden iletim
                 // dalgasının önünde çıkar (metin mesajı bir ACK gelince ≈ 1 s bekliyordu).
@@ -2844,7 +2843,8 @@ async fn client_task(
                 ),
                 copies: PTT_FORWARD_COPIES - 1,
                 spacing_ns: PTT_COPY_SPACING_NS,
-            }));
+            },
+        ));
     }
     // [E1 gösterim, CC §4.1] Beş çalışma-zamanı bayrağı (varsayılan kapalı = sevk davranışı).
     session.sender_mut().set_e1_flags(cfg.e1_flags);
@@ -7070,7 +7070,10 @@ mod uplink_line_tests {
             }),
             ..RuntimeConfig::default()
         };
-        assert!(link_feedback_starved(&starved), "62 B/s dönüş: ACK ≥ 1 s'de bir");
+        assert!(
+            link_feedback_starved(&starved),
+            "62 B/s dönüş: ACK ≥ 1 s'de bir"
+        );
         let fast_return = RuntimeConfig {
             link_rates: Some(LinkRates {
                 uplink_bps: 62,
@@ -7079,7 +7082,10 @@ mod uplink_line_tests {
             ..RuntimeConfig::default()
         };
         assert!(!link_feedback_starved(&fast_return), "hızlı dönüş");
-        assert!(!link_feedback_starved(&RuntimeConfig::default()), "profil yok");
+        assert!(
+            !link_feedback_starved(&RuntimeConfig::default()),
+            "profil yok"
+        );
         assert!(
             !link_feedback_starved(&RuntimeConfig {
                 engine: TransportEngine::Legacy,
@@ -7096,12 +7102,18 @@ mod uplink_line_tests {
             emergency: false,
         };
         let s = with_fec_prior(Some(snap), Some(500)).expect("anlık görüntü korunur");
-        assert_eq!((s.ratio_permille, s.no_rule, s.event_index), (500, false, 3));
+        assert_eq!(
+            (s.ratio_permille, s.no_rule, s.event_index),
+            (500, false, 3)
+        );
         let high = adaptive_transport::sender::ControllerDecisionSnapshot {
             ratio_permille: 750,
             ..snap
         };
-        assert_eq!(with_fec_prior(Some(high), Some(500)).map(|s| s.ratio_permille), Some(750));
+        assert_eq!(
+            with_fec_prior(Some(high), Some(500)).map(|s| s.ratio_permille),
+            Some(750)
+        );
         assert_eq!(with_fec_prior(Some(snap), None), Some(snap), "ön oran yok");
         assert_eq!(with_fec_prior(None, Some(500)), None, "anlık görüntü yok");
     }
@@ -7119,7 +7131,10 @@ mod uplink_line_tests {
         let narrow = UplinkShare::for_config(&cfg(62)).expect("dar hat");
         assert!(!narrow.control_should_yield(), "boş hat");
         narrow.charge(37);
-        assert!(narrow.control_should_yield(), "dar hat dolu → denetim bekler");
+        assert!(
+            narrow.control_should_yield(),
+            "dar hat dolu → denetim bekler"
+        );
         let fast = UplinkShare::for_config(&cfg(12_500)).expect("hızlı hat");
         fast.charge(1_000);
         assert!(!fast.control_should_yield(), "hızlı hatta denetim beklemez");

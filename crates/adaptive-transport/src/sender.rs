@@ -2364,7 +2364,9 @@ impl Sender {
         };
         match self.cc_feedback_starved {
             None => cc.window(),
-            Some(rule) => cc.window_without_recovery().max(self.cc_feedback_floor(rule)),
+            Some(rule) => cc
+                .window_without_recovery()
+                .max(self.cc_feedback_floor(rule)),
         }
     }
 
@@ -2373,8 +2375,7 @@ impl Sender {
     fn cc_feedback_floor(&self, rule: FeedbackStarvedRule) -> u64 {
         let rtt = dur_ns(self.rtt.rtprop().unwrap_or(INITIAL_RTT));
         let horizon = u128::from(rule.feedback_ns.saturating_add(rtt));
-        u64::try_from(u128::from(rule.pacing_cap_bps) * horizon / 1_000_000_000)
-            .unwrap_or(u64::MAX)
+        u64::try_from(u128::from(rule.pacing_cap_bps) * horizon / 1_000_000_000).unwrap_or(u64::MAX)
     }
 
     /// [CC-PORT] `size` baytlık yeni emisyon uçuş penceresine sığar mı (`inflight + size ≤ window`).
@@ -5051,8 +5052,8 @@ impl Sender {
         // [TUR-7 β2] ARQ token-payı: her K_ARQ_SHARE'inci grant'te retx ÖNCE dener (BOŞ-NÖBET
         // biter — retx fiilen wire'a çıkar); diğer grant'ler DATA-önce (ölçülü-karar korunur).
         self.e1_mark_app_limited_round(); // [E1 (d), KK-M2-04] tur mandalı, emisyondan önce
-        // [ÖNLEMSEL-KOPYA · ÖNCELİK] Kopya kuralı kapsamındaki (öncelikli şerit) yeni birimler ve
-        // vadesi gelmiş kopyaları yeniden iletimden de önce çıkar (kural yokken no-op).
+                                          // [ÖNLEMSEL-KOPYA · ÖNCELİK] Kopya kuralı kapsamındaki (öncelikli şerit) yeni birimler ve
+                                          // vadesi gelmiş kopyaları yeniden iletimden de önce çıkar (kural yokken no-op).
         self.drain_forward_copy_priority(&mut out, now_ns);
         self.arq_share_tick = self.arq_share_tick.wrapping_add(1);
         // [E1 retx_first, KK-M2-07] bayrak açıkken her izinde ARQ-önce; durum koşulu (e-dar)'a bağlı.
@@ -5253,12 +5254,10 @@ impl Sender {
     /// [ÖNLEMSEL-KOPYA] Yeni birimlerin ACK beklemeyen ileri kopya kuralı ([`ForwardCopyRule`]).
     /// `None` (varsayılan) ya da `copies == 0` = kural yok. Oturum başında, ilk olaydan önce çağrılır.
     pub fn set_forward_copy_rule(&mut self, rule: Option<ForwardCopyRule>) {
-        self.forward_copy_rule = rule
-            .filter(|r| r.copies > 0)
-            .map(|r| ForwardCopyRule {
-                priority_below_id: r.priority_below_id.max(r.below_id),
-                ..r
-            });
+        self.forward_copy_rule = rule.filter(|r| r.copies > 0).map(|r| ForwardCopyRule {
+            priority_below_id: r.priority_below_id.max(r.below_id),
+            ..r
+        });
     }
 
     /// [ÖNLEMSEL-KOPYA] Teyitsiz bir birimi (uçuşta, teyitsiz kaydı olan) ACK beklemeden `copies`
@@ -14985,8 +14984,14 @@ mod feedback_starved_tests {
         };
         let (fifo5, fifo70) = position(false);
         let (prio5, prio70) = position(true);
-        assert!(fifo5 >= 10 && fifo70 >= 10, "kuralsız: kuyruğun arkasında ({fifo5}, {fifo70})");
-        assert!(prio5 <= 3 && prio70 <= 4, "kuralla: kuyruğun önünde ({prio5}, {prio70})");
+        assert!(
+            fifo5 >= 10 && fifo70 >= 10,
+            "kuralsız: kuyruğun arkasında ({fifo5}, {fifo70})"
+        );
+        assert!(
+            prio5 <= 3 && prio70 <= 4,
+            "kuralla: kuyruğun önünde ({prio5}, {prio70})"
+        );
     }
 
     /// Teyitsiz uçuştaki birime kopya bir kez planlanır; uçuşta olmayan birime ve `copies == 0`'a
@@ -14997,9 +15002,18 @@ mod feedback_starved_tests {
         let out = s.on_event(Event::AppData(OpaqueUnit { id: 7, size: 100 }), 0);
         assert!(out.iter().any(|t| t.unit_id == 7), "birim tele çıktı");
         assert!(s.schedule_forward_copies(7, 2, 40 * MS, MS));
-        assert!(!s.schedule_forward_copies(7, 2, 40 * MS, MS), "planlı kopyası var");
-        assert!(!s.schedule_forward_copies(8, 2, 40 * MS, MS), "uçuşta değil");
-        assert!(!s.schedule_forward_copies(7, 0, 40 * MS, MS), "kopya sayısı 0");
+        assert!(
+            !s.schedule_forward_copies(7, 2, 40 * MS, MS),
+            "planlı kopyası var"
+        );
+        assert!(
+            !s.schedule_forward_copies(8, 2, 40 * MS, MS),
+            "uçuşta değil"
+        );
+        assert!(
+            !s.schedule_forward_copies(7, 0, 40 * MS, MS),
+            "kopya sayısı 0"
+        );
         // PreConverge'in geometrik kaydı (interval > 0) tek atışlık kopyayı engellemez.
         let mut g = Sender::with_cc_port();
         let _ = g.on_event(Event::AppData(OpaqueUnit { id: 9, size: 1000 }), 0);
@@ -15009,7 +15023,10 @@ mod feedback_starved_tests {
             unit: OpaqueUnit { id: 9, size: 1000 },
             interval_ns: 60_000 * MS,
         });
-        assert!(g.schedule_forward_copies(9, 2, 40 * MS, MS), "geometrik kayıt engel değil");
+        assert!(
+            g.schedule_forward_copies(9, 2, 40 * MS, MS),
+            "geometrik kayıt engel değil"
+        );
         let mut out = Vec::new();
         for t in 2..=200u64 {
             out.extend(s.on_event(Event::TimerFired(Timer::Pto), t * MS));
@@ -15048,7 +15065,10 @@ mod feedback_starved_tests {
         let (plain, _) = run(None);
         let (starved, rate) = run(Some(rule));
         // Taban: 12 000 B/s × (10 s + 100 ms başlangıç RTT'si) = 121 200 B.
-        assert!(plain < 30_000, "kuralsız: ilk pencere + PTO probları ({plain} B)");
+        assert!(
+            plain < 30_000,
+            "kuralsız: ilk pencere + PTO probları ({plain} B)"
+        );
         assert!(
             (100_000..=130_000).contains(&starved),
             "kuralla: ACK'siz tabana dek ({starved} B)"
