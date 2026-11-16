@@ -20,6 +20,23 @@
 //!   başları serbest bırakılır: tutulan koşular teslim kutusuna, ardından gelenler teslim kanalına
 //!   dolar. Bu, alıcı tamponunun sınırına yaklaşan en kötü durumdur.
 //!
+//! **Sıra başları küçüktür ([`HEAD_BYTES`]).** Düzenek sıra başlarını kalıcı olarak düşürür;
+//! gerçek ağda birime özgü kalıcı kayıp yoktur (her yeniden iletim taze paket numarası ve taze
+//! şifreli metin taşır). Bu yapay koşulda kara deliğe düşen kopyalar hiç ACK almaz, kayıp da ilan
+//! edilmez (kayıp tespiti sonraki paketlerin ACK'ini ister). Uçuşta yer tutmayı sürdürürler.
+//! Port motorunun tıkanıklık penceresi en az 4 × MTU = 4 800 B'dir
+//! (`adaptive_transport::cc::bbr` `calculate_min_window`). PTO probu pencereden muaftır, kopyası
+//! uçuşta kalır, birim başına 8 kopyaya dek (`sender.rs` `CC_MAX_UNIT_COPIES_IN_FLIGHT`); hedefi en
+//! küçük teyitsiz birim kimliğidir — kara delikteki PTT sıra başı.
+//!
+//! Dört sıra başı 1013 B olunca kopyaları pencereyi tek başına dolduruyordu. Yeni veri çıkamıyor,
+//! ACK gelmiyor, PTO geri çekilmesi 30 s'e çıkıyordu. Gönderim kuyruğunda en sonda kalan TEXT
+//! birimleri hiç gitmiyordu (CI ve yük altında yerel: "pencereler dolmadı", TEXT 0–224 / 255).
+//! Sıra başı 9 B olunca kara delikteki kopyalar en çok 4 × 8 × ~70 B ≈ 2,2 KB tutar. Pencerede
+//! her an en az iki tam birimlik yer kalır: yeni veri akar, ACK'ler kayıp tespitini sürdürür.
+//! Ölçülen tamponlar etkilenmez: sıralayıcıda tutulan birimlerin hepsi 1013 B'dir (sıra başları
+//! tutulmaz, eksiktir); kanal ve kutuya serbest bırakmadan sonra en çok dört küçük sıra başı girer.
+//!
 //! İddialar (iki kol):
 //! 1. Alıcıda tamponlanan birim (teslim kanalı + teslim kutusu + sıralayıcı) her an
 //!    `receiver_buffer_bound_units` toplam sınırının altında; teslim kutusu `MAX_INBOX`'u, kanal
@@ -167,6 +184,10 @@ struct Measured {
     not_admitted_window: u64,
 }
 
+/// Sıra başı düşürülen kolda her şeridin 0. biriminin yük boyu: yalnız şerit ve sıra etiketi
+/// (gerekçe: dosya başı belgesi, "Sıra başları küçüktür").
+const HEAD_BYTES: usize = 9;
+
 fn unit(lane: usize, n: u64, len: usize) -> PreparedUnit {
     let mut bytes = vec![u8::try_from(lane).expect("şerit")];
     bytes.extend_from_slice(&n.to_be_bytes());
@@ -193,12 +214,11 @@ fn run(plan: &Plan) -> Measured {
     let mut bob_cfg = base_cfg(plan.lanes);
     bob_cfg.runtime.delivery_queue = plan.delivery_queue;
     let bound = receiver_buffer_bound_units(&bob_cfg.runtime, bob_cfg.lanes.as_ref(), 1);
-    let mut alice = ClientTransport::new(
-        base_cfg(plan.lanes),
-        crypto(ALICE),
-        Box::new(hub.link(id(ALICE))),
-    )
-    .expect("alice");
+    let diag_on = std::env::var_os("LBP_DIAG").is_some();
+    let mut alice_cfg = base_cfg(plan.lanes);
+    alice_cfg.runtime.live_diag = diag_on;
+    let mut alice = ClientTransport::new(alice_cfg, crypto(ALICE), Box::new(hub.link(id(ALICE))))
+        .expect("alice");
     let heads = if plan.heads_dropped {
         (0..4).map(|l| tagged(l, 0)).collect()
     } else {
@@ -273,7 +293,15 @@ fn run(plan: &Plan) -> Measured {
                 }
                 match alice.send(
                     h,
-                    unit(lane, sent[lane], plan.unit_bytes),
+                    unit(
+                        lane,
+                        sent[lane],
+                        if plan.heads_dropped && sent[lane] == 0 {
+                            HEAD_BYTES
+                        } else {
+                            plan.unit_bytes
+                        },
+                    ),
                     DeliveryPolicy::Reliable,
                     CLASSES[lane],
                 ) {
@@ -330,6 +358,7 @@ fn run(plan: &Plan) -> Measured {
     // başı birlikte yalnız kısa süre kara delikte kalır (sürekli kaybolan dört birim motorun yeni
     // veri hızını düşürür; bu düzeneğin yapay koşuludur, alıcı tamponuyla ilgisi yoktur).
     let mut rt_on = !plan.heads_dropped;
+    let mut next_diag = Duration::ZERO;
     loop {
         step(&mut alice, &mut bob, &mut got, &mut m, true, rt_on);
         let full = if plan.heads_dropped {
@@ -341,6 +370,36 @@ fn run(plan: &Plan) -> Measured {
         };
         if full {
             break;
+        }
+        if diag_on && started.elapsed() >= next_diag {
+            next_diag += Duration::from_secs(1);
+            let st = alice.lane_stats().expect("ş");
+            let d = alice.session_live_diags();
+            let t = d
+                .first()
+                .and_then(|(_, d)| d.recovery.as_ref().map(|r| (r.timers, r.since_last_ack_ns)));
+            let c = d.first().map(|(_, d)| {
+                (
+                    d.control.inflight_bytes,
+                    d.control.state,
+                    d.retransmits,
+                    d.tail_probes,
+                    d.dups,
+                    d.srtt_us,
+                    d.tx_datagrams,
+                    d.rx_datagrams,
+                )
+            });
+            eprintln!(
+                "LBP t={:?} rt_on={rt_on} given={:?} bob={:?} naw={} naf={} ctl={:?} timers={:?}",
+                started.elapsed(),
+                st.given,
+                bob.receiver_buffered_for_test(),
+                bob.data_not_admitted_window(),
+                bob.data_not_admitted_full(),
+                c,
+                t
+            );
         }
         assert!(
             Instant::now() < deadline,
