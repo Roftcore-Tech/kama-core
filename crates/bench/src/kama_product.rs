@@ -29,11 +29,10 @@
 //! **`udp_tx_bytes` = DENEME düzlemi** (governor reddettikleri DAHİL — üç kolda da aynı kural);
 //! gerçek-enjekte düzlem `RunMeta.budget.injected_bytes`.
 
+use std::collections::{BTreeSet, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-
-use std::collections::{BTreeSet, VecDeque};
 
 use client_core::lanes::{file_window_for_path, Lane, LaneConfig};
 use client_core::runtime::{
@@ -1932,6 +1931,141 @@ mod tests {
             "256 B yükte de repair akmalı: {:?}",
             out.meta.tx
         );
+    }
+
+    /// [TNET-V2] Ürün profilinin yapılandırması (bayraksız CLI yolu) — şerit testleri için.
+    fn product_arm(payload_bytes: u64) -> ArmCfg {
+        ArmCfg {
+            payload_bytes,
+            quota_r: 4,
+            fec: FecArm::from_args(
+                KamaV1Profile::FEC_PROFILE_ID,
+                0,
+                crate::transport::FecModeArg::Adaptive,
+                0,
+            ),
+            burst_fusion: false,
+            bootstrap_rtt: false,
+            initial_window_bytes: 0,
+            bootstrap_fast: false,
+            loss_confirm_k: 0,
+            fec_risk: false,
+            ts_sample: false,
+            gate: None,
+            persist_mode: None,
+            persist_alpha: None,
+            persist_rho: None,
+            persist_q: None,
+            rp_suppress: None,
+            spec_l2: None,
+            spec_l1: None,
+        }
+    }
+
+    /// [TNET-V2] Şerit pompası ürün kurallarını uygular: yol kestirimi yokken FILE şeridi uca en
+    /// çok ürün tabanı (`LaneConfig::default().file_window_units`) kadar teyitsiz birim verir, teyit
+    /// pencereden birim düşürür; TEXT şeridi kabul genişliği içinde hepsini verir; kimlikler şerit
+    /// etiketlidir; `None` kipte pompa yoktur.
+    #[tokio::test]
+    async fn lane_pump_applies_product_window_and_span() {
+        assert!(LanePump::new(LaneMode::None, 1013).is_none());
+        let sink = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind");
+        let cli = ClientEndpoint::connect(
+            sink.local_addr().expect("addr"),
+            runtime_cfg(product_arm(995)),
+            Box::new(IdentitySeam::new()),
+        )
+        .await
+        .expect("connect");
+        let tx = cli.sender();
+        let floor = u64::from(LaneConfig::default().file_window_units);
+
+        let mut file = LanePump::new(LaneMode::File, 1013).expect("file pompası");
+        for _ in 0..40 {
+            file.enqueue(vec![0x5A; 995]);
+        }
+        file.pump(&cli, &tx, None).expect("tur");
+        assert_eq!(
+            cli.path_estimate(),
+            (0, 0),
+            "teyitsiz uçta yol kestirimi yok"
+        );
+        assert_eq!(file.next, floor, "FILE: pencere tabanı kadar birim");
+        assert_eq!(file.inflight.len() as u64, floor);
+        assert_eq!(file.pending.len() as u64, 40 - floor);
+        file.pump(&cli, &tx, None).expect("tur");
+        assert_eq!(file.next, floor, "pencere doluyken yeni birim verilmez");
+        assert!(file.window_stalls >= 1);
+        let file_lane = index_of_lane(Lane::File);
+        file.on_acked(tagged(file_lane, 0));
+        file.on_acked(tagged(index_of_lane(Lane::Text), 1)); // başka şerit: etkisiz
+        file.pump(&cli, &tx, None).expect("tur");
+        assert_eq!(file.next, floor + 1, "teyit pencerede bir yer açar");
+        assert_eq!(file.seq_of(tagged(file_lane, 7)), Some(7));
+        assert_eq!(file.seq_of(tagged(index_of_lane(Lane::Text), 7)), None);
+
+        let mut text = LanePump::new(LaneMode::Text, 1013).expect("text pompası");
+        for _ in 0..40 {
+            text.enqueue(vec![0x5A; 101]);
+        }
+        text.pump(&cli, &tx, None).expect("tur");
+        assert_eq!(text.next, 40, "TEXT: kabul genişliği (256) içinde hepsi");
+        assert!(text.pending.is_empty() && text.inflight.is_empty());
+        drop(cli);
+    }
+
+    /// [TNET-V2] Uçtan uca loopback, ürün profili + FILE şeridi: bütün mesajlar teslim edilir,
+    /// ısıtma birimleri ölçüme karışmaz, etiket şerit kipini ve motoru taşır, profil sapması yoktur.
+    #[tokio::test]
+    async fn lane_file_arm_delivers_end_to_end_with_product_profile() {
+        let srv = ServerEndpoint::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            runtime_cfg(product_arm(995)),
+            Box::new(IdentitySeam::new()),
+        )
+        .await
+        .expect("bind");
+        let addr = srv.local_addr();
+        let pump = tokio::spawn(async move {
+            let mut srv = srv;
+            while srv.next_delivery().await.is_some() {}
+        });
+        let mut c = cfg(
+            addr,
+            24,
+            10_000,
+            FecArm::from_args(
+                KamaV1Profile::FEC_PROFILE_ID,
+                0,
+                crate::transport::FecModeArg::Adaptive,
+                0,
+            ),
+        );
+        c.payload_bytes = 995;
+        c.warmup_msgs = 4;
+        c.lane = LaneMode::File;
+        let out = KamaProductTransport.run_client(c).await.expect("koşu");
+        pump.abort();
+        assert_eq!(out.events.len(), 24);
+        assert!(
+            out.events.iter().all(|e| e.delivered_ns.is_some()),
+            "loopback'te bütün mesajlar teslim edilmeli"
+        );
+        assert!(
+            out.meta.kama_arm.ends_with("-lane-file"),
+            "{}",
+            out.meta.kama_arm
+        );
+        assert_eq!(
+            out.meta.engine,
+            engine_label(runtime_cfg(product_arm(995)).engine)
+        );
+        assert!(
+            out.meta.profile_delta.is_empty(),
+            "{:?}",
+            out.meta.profile_delta
+        );
+        assert_eq!(out.meta.profile_id, "kama-v1-full");
     }
 
     /// Uçtan uca loopback: FEC KAPALI kolda ürün-runtime tüm birimleri teslim eder ve

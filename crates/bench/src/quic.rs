@@ -281,8 +281,15 @@ impl BenchTransport for QuinnTransport {
                 "--rival-delivery transport-ack ile --warmup-msgs desteklenmez".into(),
             ));
         }
-        let (mut endpoint, gov) =
-            build_endpoint("[::]:0".parse().expect("valid addr"), None, cfg.budget)?;
+        // [TNET-V2] Yerel soket sunucunun adres ailesinden: IPv4 sunucuya IPv4 soket (telde aynı
+        // IPv4 datagramı; IPv6'sız çekirdekte ve IPv6'sı kapatılmış ad alanında da kurulur), IPv6
+        // sunucuya eskisi gibi `[::]:0`.
+        let local: std::net::SocketAddr = if cfg.server.is_ipv4() {
+            (std::net::Ipv4Addr::UNSPECIFIED, 0).into()
+        } else {
+            (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
+        };
+        let (mut endpoint, gov) = build_endpoint(local, None, cfg.budget)?;
         endpoint.set_default_client_config(client_config(cfg.cc)?);
         // Handshake'i max_deadline ile BOUNDED yap. Severe loss'ta handshake dakikalarca sürebilir;
         // tek sınır max_idle_timeout (300s) olurdu → koşu HANG eder (smoke'ta r1 %80 loss'ta 2m17s

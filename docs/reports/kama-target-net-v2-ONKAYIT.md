@@ -52,6 +52,10 @@ eksenlerini ve FEC'siz ürün kolunu ekler.
 
 Tam komutlar `scripts/tnet/tnet_exec.py` `commands()` içindedir; her satırın koşu dizinine `cmd.json` olarak yazılır.
 
+quinn kollarında tek değişiklik: istemci yerel soketi sunucunun adres ailesinden kurar (IPv4 sunucu → `0.0.0.0:0`;
+eskiden çift yığınlı `[::]:0`). Telde aynı IPv4 datagramı gider; değişikliğin nedeni IPv6'sı olmayan çekirdekte
+`[::]:0`'ın kurulamamasıdır (os error 97). Tıkanıklık denetimi, akış modeli ve TLS değişmez.
+
 ### 3.1 Bench Kama kolu ürün yolunu kullanıyor mu — inceleme ve yapılan değişiklik
 
 `bench --transport kama-product` (`crates/bench/src/kama_product.rs`) ürünün veri yolunu sürer: istemcide
