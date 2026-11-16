@@ -1004,6 +1004,48 @@ mod tests {
         }
     }
 
+    /// [GERİ-BİLDİRİM-UFKU] Ufuk = en büyük bütçeli ACK'in aralığı + dönüş hattında serileşmesi.
+    #[test]
+    fn feedback_horizon_counts_the_largest_budgeted_ack_and_its_serialization() {
+        // 62 B/s: bütçe 15 B/s; en büyük ACK 129 B → 8,6 s aralık + 2,08 s serileşme.
+        let h = feedback_horizon_ns(62);
+        assert!((10_600 * MS..=10_700 * MS).contains(&h), "ufuk {} ms", h / MS);
+        assert!(feedback_horizon_ns(12_500) < 60 * MS, "hızlı dönüşte ufuk kısa");
+        assert_eq!(feedback_horizon_ns(0), u64::MAX);
+    }
+
+    /// [DÖNÜŞ-HATTI · ÖNCELİK] Yol verme açıkken bütçeli alıcı ACK çıkarmaz (jeton harcanmaz);
+    /// kapanınca zamanlayıcı ertelenen bilginin tamamını tek ACK'te çıkarır. Yol vermesiz aynı
+    /// akışta ilk ACK hemen çıkar.
+    #[test]
+    fn uplink_yield_holds_budgeted_acks_until_the_line_is_free() {
+        let mut r = Receiver::with_cc_port();
+        r.set_return_bandwidth(Some(62));
+        r.set_uplink_yield(true);
+        for i in 0..10u64 {
+            assert!(
+                r.on_datagram(data(i, i), i * 100 * MS).ack.is_none(),
+                "hat veriye borçluyken ACK yok ({i})"
+            );
+        }
+        assert!(r.on_ack_timer(2_000 * MS).is_none());
+        assert!(r.diag_ack_yield_deferred() > 0);
+        r.set_uplink_yield(false);
+        let a = r.on_ack_timer(2_020 * MS).expect("hat boşalınca ACK");
+        assert_eq!(a.largest_seq, 9);
+        assert_eq!(a.block0_len, 10, "bekleyen varışların tamamı");
+        let mut q = Receiver::with_cc_port();
+        q.set_return_bandwidth(Some(62));
+        let mut first = None;
+        for i in 0..10u64 {
+            if q.on_datagram(data(i, i), i * 100 * MS).ack.is_some() {
+                first = Some(i);
+                break;
+            }
+        }
+        assert!(first.is_some(), "yol vermesiz bütçeli alıcı ACK'ler");
+    }
+
     /// [DÖNÜŞ-BÜTÇESİ] Bütçeli port alıcısı: ilk ACK muaf (kova dolu başlar), sonrakiler jeton
     /// yetmeyince ertelenir; zamanlayıcı jeton dolunca TEK birleşik ACK çıkarır ve o ACK ertelenen
     /// bütün varışları kapsar. Bütçe yokken aynı akış her iki DATA'da bir ACK'ler.

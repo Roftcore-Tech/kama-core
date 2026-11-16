@@ -1478,6 +1478,9 @@ struct TombstoneRec {
 pub struct ForwardCopyRule {
     /// Bu kimlikten küçük birimler kopyalanır.
     pub below_id: u64,
+    /// Bu kimlikten küçük yeni birimler ve vadesi gelmiş kopyaları yeniden iletimden önce çıkar
+    /// (`below_id`'den küçük olamaz; üst katmanın öncelikli şeritleri, client-core: PTT/SIG/TEXT).
+    pub priority_below_id: u64,
     /// İlk iletime ek kopya sayısı (toplam iletim `copies + 1`).
     pub copies: u8,
     /// Ardışık kopyalar arası aralık (ns).
@@ -5250,14 +5253,22 @@ impl Sender {
     /// [ÖNLEMSEL-KOPYA] Yeni birimlerin ACK beklemeyen ileri kopya kuralı ([`ForwardCopyRule`]).
     /// `None` (varsayılan) ya da `copies == 0` = kural yok. Oturum başında, ilk olaydan önce çağrılır.
     pub fn set_forward_copy_rule(&mut self, rule: Option<ForwardCopyRule>) {
-        self.forward_copy_rule = rule.filter(|r| r.copies > 0);
+        self.forward_copy_rule = rule
+            .filter(|r| r.copies > 0)
+            .map(|r| ForwardCopyRule {
+                priority_below_id: r.priority_below_id.max(r.below_id),
+                ..r
+            });
     }
 
     /// [ÖNLEMSEL-KOPYA] Teyitsiz bir birimi (uçuşta, teyitsiz kaydı olan) ACK beklemeden `copies`
     /// kez daha planlar (`spacing_ns` aralıklı, ilki birimin hattı terk etmesinden sonra; §11
-    /// kopya kaydı, teyitle iptal). Birim uçuşta teyitsiz değilse ya da zaten planlı kopyası varsa
-    /// hiçbir şey yapmaz ve `false` döner. Üst katman kodlanamayan birimler için çağırır
-    /// (client-core: oturum ortasında kapanamayan kısmi FEC bloğu).
+    /// kopya kaydı, teyitle iptal). Birim uçuşta teyitsiz değilse ya da zaten bekleyen tek atışlık
+    /// kopyası varsa hiçbir şey yapmaz ve `false` döner. PreConverge'in §3.3-B geometrik kopyası
+    /// (`interval_ns > 0`; ilk aralığı taban hızdan, 1 kB birimde onlarca saniye) engel sayılmaz:
+    /// ilk teyidin geç geldiği oturumda kuyruk birimlerini korumasız bırakıyordu (ürün testi,
+    /// tohum 3). Üst katman kodlanamayan birimler için çağırır (client-core: oturum ortasında
+    /// kapanamayan kısmi FEC bloğu).
     pub fn schedule_forward_copies(
         &mut self,
         unit_id: u64,
@@ -5265,7 +5276,12 @@ impl Sender {
         spacing_ns: u64,
         now_ns: u64,
     ) -> bool {
-        if copies == 0 || self.dup_queue.iter().any(|d| d.unit.id == unit_id) {
+        if copies == 0
+            || self
+                .dup_queue
+                .iter()
+                .any(|d| d.unit.id == unit_id && d.interval_ns == 0)
+        {
             return false;
         }
         let Some(unit) = self
@@ -7611,7 +7627,7 @@ impl Sender {
         let mut i = 0;
         while i < self.tx_queue.len() {
             let unit = self.tx_queue[i];
-            if unit.id >= rule.below_id {
+            if unit.id >= rule.priority_below_id {
                 i += 1;
                 continue;
             }
@@ -7632,7 +7648,7 @@ impl Sender {
         let mut j = 0;
         while j < self.dup_queue.len() {
             let d = self.dup_queue[j];
-            if d.unit.id >= rule.below_id || d.due_ns > now_ns {
+            if d.unit.id >= rule.priority_below_id || d.due_ns > now_ns {
                 j += 1;
                 continue;
             }
@@ -14874,5 +14890,169 @@ mod fate_key_tests {
         let legacy = window_after(Sender::new, &ids);
         assert_eq!(port, legacy);
         assert_eq!(port.window_ids, (44..300).collect::<Vec<u64>>());
+    }
+}
+
+#[cfg(test)]
+mod feedback_starved_tests {
+    //! [GERİ-BİLDİRİM-AÇ · ÖNLEMSEL-KOPYA] Geri bildirimi aç profilin motor kuralları (sahip kararı
+    //! 2026-11-16): kimlik sınırlı ileri kopya, öncelikli çıkış, teyitsiz birim kopyası ve ACK
+    //! saatine bağlı olmayan uçuş tabanı. Her test kural çıkarılınca kırmızıya döner.
+
+    use super::*;
+
+    const MS: u64 = 1_000_000;
+
+    /// `offers` t = 0'da sunulur; ardından 1 ms'lik tikle `ticks_ms` koşar (ACK yok).
+    fn emitted(s: &mut Sender, offers: &[(u64, u64)], ticks_ms: u64) -> Vec<TransmitDecision> {
+        let mut out = Vec::new();
+        for &(id, size) in offers {
+            out.extend(s.on_event(Event::AppData(OpaqueUnit { id, size }), 0));
+        }
+        for t in 1..=ticks_ms {
+            out.extend(s.on_event(Event::TimerFired(Timer::Pto), t * MS));
+        }
+        out
+    }
+
+    fn dups_of(out: &[TransmitDecision], id: u64) -> usize {
+        out.iter()
+            .filter(|t| t.kind == TransmitKind::Duplicate && t.unit_id == id)
+            .count()
+    }
+
+    /// Kural kapsamındaki (kimliği sınırın altında) birim ilk iletiminden sonra ACK beklemeden
+    /// `copies` kez daha çıkar; kapsam dışı birim ve kuralsız gönderici kopyalamaz.
+    #[test]
+    fn forward_copy_rule_copies_only_units_below_the_bound() {
+        let rule = ForwardCopyRule {
+            below_id: 100,
+            priority_below_id: 100,
+            copies: 4,
+            spacing_ns: 40 * MS,
+        };
+        // Taban: kuralsız göndericinin kendi kopyaları (PreConverge §3.3-B) — kural ona EKLENİR.
+        let mut plain = Sender::with_cc_port();
+        let base = emitted(&mut plain, &[(5, 100), (200, 100)], 500);
+        let mut s = Sender::with_cc_port();
+        s.set_forward_copy_rule(Some(rule));
+        let out = emitted(&mut s, &[(5, 100), (200, 100)], 500);
+        assert_eq!(
+            dups_of(&out, 5) - dups_of(&base, 5),
+            4,
+            "kapsamdaki birim 4 ek kopya"
+        );
+        assert_eq!(
+            dups_of(&out, 200),
+            dups_of(&base, 200),
+            "kapsam dışı birim ek kopya almaz"
+        );
+        // `copies == 0` kural kurmaz.
+        let mut zero = Sender::with_cc_port();
+        zero.set_forward_copy_rule(Some(ForwardCopyRule { copies: 0, ..rule }));
+        assert!(zero.forward_copy_rule().is_none());
+    }
+
+    /// Kural kapsamındaki yeni birim, kuyrukta bekleyen büyük birimlerin önünde çıkar (öncelikli
+    /// şerit); kural yokken kuyruk FIFO boşalır.
+    #[test]
+    fn rule_units_leave_before_queued_bulk() {
+        let rule = ForwardCopyRule {
+            below_id: 50,
+            priority_below_id: 100,
+            copies: 1,
+            spacing_ns: 40 * MS,
+        };
+        let position = |with_rule: bool| {
+            let mut s = Sender::with_cc_port();
+            s.set_cc_profile_pacing_cap(Some(12_000));
+            // ACK yok: pencere bütün kuyruğu taşısın ki sıra yalnız önceliği ölçsün.
+            s.set_cc_initial_window(100_000);
+            if with_rule {
+                s.set_forward_copy_rule(Some(rule));
+            }
+            let mut offers: Vec<(u64, u64)> = (1000..1020).map(|i| (i, 1200)).collect();
+            offers.push((5, 100)); // kopyalanan öncelikli şerit
+            offers.push((70, 100)); // kopyalanmayan öncelikli şerit (kopya kuralı ilk testte)
+            let out = emitted(&mut s, &offers, 3000);
+            let pos = |id| {
+                out.iter()
+                    .filter(|t| t.kind == TransmitKind::Data)
+                    .position(|t| t.unit_id == id)
+                    .expect("öncelikli birim çıktı")
+            };
+            (pos(5), pos(70))
+        };
+        let (fifo5, fifo70) = position(false);
+        let (prio5, prio70) = position(true);
+        assert!(fifo5 >= 10 && fifo70 >= 10, "kuralsız: kuyruğun arkasında ({fifo5}, {fifo70})");
+        assert!(prio5 <= 3 && prio70 <= 4, "kuralla: kuyruğun önünde ({prio5}, {prio70})");
+    }
+
+    /// Teyitsiz uçuştaki birime kopya bir kez planlanır; uçuşta olmayan birime ve `copies == 0`'a
+    /// planlanmaz.
+    #[test]
+    fn copies_are_planned_only_for_unconfirmed_inflight_units() {
+        let mut s = Sender::with_cc_port();
+        let out = s.on_event(Event::AppData(OpaqueUnit { id: 7, size: 100 }), 0);
+        assert!(out.iter().any(|t| t.unit_id == 7), "birim tele çıktı");
+        assert!(s.schedule_forward_copies(7, 2, 40 * MS, MS));
+        assert!(!s.schedule_forward_copies(7, 2, 40 * MS, MS), "planlı kopyası var");
+        assert!(!s.schedule_forward_copies(8, 2, 40 * MS, MS), "uçuşta değil");
+        assert!(!s.schedule_forward_copies(7, 0, 40 * MS, MS), "kopya sayısı 0");
+        // PreConverge'in geometrik kaydı (interval > 0) tek atışlık kopyayı engellemez.
+        let mut g = Sender::with_cc_port();
+        let _ = g.on_event(Event::AppData(OpaqueUnit { id: 9, size: 1000 }), 0);
+        g.dup_queue.retain(|d| d.unit.id != 9);
+        g.dup_queue.push(DupRec {
+            due_ns: 60_000 * MS,
+            unit: OpaqueUnit { id: 9, size: 1000 },
+            interval_ns: 60_000 * MS,
+        });
+        assert!(g.schedule_forward_copies(9, 2, 40 * MS, MS), "geometrik kayıt engel değil");
+        let mut out = Vec::new();
+        for t in 2..=200u64 {
+            out.extend(s.on_event(Event::TimerFired(Timer::Pto), t * MS));
+        }
+        assert_eq!(dups_of(&out, 7), 2, "planlanan iki kopya çıktı");
+    }
+
+    /// Geri bildirimi aç kuralda gönderici ACK olmadan uçuş tabanına
+    /// (`tavan × (geri bildirim ufku + RTT)`) kadar gönderir ve hız tavanı aşılmaz; kuralsız
+    /// gönderici ilk pencerede durur (ACK saati).
+    #[test]
+    fn feedback_starved_rule_sends_up_to_the_floor_without_acks() {
+        let cap = 12_000u64;
+        let rule = FeedbackStarvedRule {
+            pacing_cap_bps: cap,
+            feedback_ns: 10_000 * MS,
+            line: crate::pacer::LineModel {
+                rate_bps: 12_500,
+                datagram_overhead: 28,
+            },
+        };
+        let run = |r: Option<FeedbackStarvedRule>| {
+            let mut s = Sender::with_cc_port();
+            s.set_cc_profile_pacing_cap(Some(cap));
+            s.set_cc_initial_window(15_000);
+            s.set_cc_feedback_starved(r);
+            let offers: Vec<(u64, u64)> = (0..200).map(|i| (1000 + i, 1000)).collect();
+            let out = emitted(&mut s, &offers, 12_000);
+            let bytes: u64 = out
+                .iter()
+                .filter(|t| t.kind == TransmitKind::Data)
+                .map(|t| t.size)
+                .sum();
+            (bytes, s.diag_pacer().0)
+        };
+        let (plain, _) = run(None);
+        let (starved, rate) = run(Some(rule));
+        // Taban: 12 000 B/s × (10 s + 100 ms başlangıç RTT'si) = 121 200 B.
+        assert!(plain < 30_000, "kuralsız: ilk pencere + PTO probları ({plain} B)");
+        assert!(
+            (100_000..=130_000).contains(&starved),
+            "kuralla: ACK'siz tabana dek ({starved} B)"
+        );
+        assert!(rate <= cap, "hız tavanı aşılmaz ({rate} B/s)");
     }
 }

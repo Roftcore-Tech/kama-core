@@ -2836,6 +2836,12 @@ async fn client_task(
             .sender_mut()
             .set_forward_copy_rule(Some(adaptive_transport::sender::ForwardCopyRule {
                 below_id: crate::unit_id::tagged(1, 0),
+                // Şerit sırası PTT > SIG > TEXT > FILE (#199): dosya dışı şeritler yeniden iletim
+                // dalgasının önünde çıkar (metin mesajı bir ACK gelince ≈ 1 s bekliyordu).
+                priority_below_id: crate::unit_id::tagged(
+                    crate::unit_id::index_of_lane(crate::lanes::Lane::File),
+                    0,
+                ),
                 copies: PTT_FORWARD_COPIES - 1,
                 spacing_ns: PTT_COPY_SPACING_NS,
             }));
@@ -7054,6 +7060,71 @@ mod uplink_line_tests {
         assert!(param_retry_due(5_000, 6, 0, Some(gate)));
     }
 
+    /// [GERİ-BİLDİRİM-AÇ] Profil yüklemi ve PTT dışı şeritlerin FEC ön oranı.
+    #[test]
+    fn feedback_starved_profile_and_fec_prior() {
+        let starved = RuntimeConfig {
+            link_rates: Some(LinkRates {
+                uplink_bps: 12_500,
+                downlink_bps: 62,
+            }),
+            ..RuntimeConfig::default()
+        };
+        assert!(link_feedback_starved(&starved), "62 B/s dönüş: ACK ≥ 1 s'de bir");
+        let fast_return = RuntimeConfig {
+            link_rates: Some(LinkRates {
+                uplink_bps: 62,
+                downlink_bps: 12_500,
+            }),
+            ..RuntimeConfig::default()
+        };
+        assert!(!link_feedback_starved(&fast_return), "hızlı dönüş");
+        assert!(!link_feedback_starved(&RuntimeConfig::default()), "profil yok");
+        assert!(
+            !link_feedback_starved(&RuntimeConfig {
+                engine: TransportEngine::Legacy,
+                ..starved.clone()
+            }),
+            "eski motor"
+        );
+        let p = by_id(KamaV1Profile::FEC_PROFILE_ID).expect("ürün profili");
+        assert_eq!(fec_feedback_starved_permille(&p), 500, "0x05: 4 parite / 8");
+        let snap = adaptive_transport::sender::ControllerDecisionSnapshot {
+            ratio_permille: 0,
+            event_index: 3,
+            no_rule: true,
+            emergency: false,
+        };
+        let s = with_fec_prior(Some(snap), Some(500)).expect("anlık görüntü korunur");
+        assert_eq!((s.ratio_permille, s.no_rule, s.event_index), (500, false, 3));
+        let high = adaptive_transport::sender::ControllerDecisionSnapshot {
+            ratio_permille: 750,
+            ..snap
+        };
+        assert_eq!(with_fec_prior(Some(high), Some(500)).map(|s| s.ratio_permille), Some(750));
+        assert_eq!(with_fec_prior(Some(snap), None), Some(snap), "ön oran yok");
+        assert_eq!(with_fec_prior(None, Some(500)), None, "anlık görüntü yok");
+    }
+
+    /// [ÖNCELİK] Dar hatta denetim hat doluyken bekler, hızlı hatta beklemez.
+    #[test]
+    fn narrow_uplink_control_yields_while_the_line_is_busy() {
+        let cfg = |up| RuntimeConfig {
+            link_rates: Some(LinkRates {
+                uplink_bps: up,
+                downlink_bps: 12_500,
+            }),
+            ..RuntimeConfig::default()
+        };
+        let narrow = UplinkShare::for_config(&cfg(62)).expect("dar hat");
+        assert!(!narrow.control_should_yield(), "boş hat");
+        narrow.charge(37);
+        assert!(narrow.control_should_yield(), "dar hat dolu → denetim bekler");
+        let fast = UplinkShare::for_config(&cfg(12_500)).expect("hızlı hat");
+        fast.charge(1_000);
+        assert!(!fast.control_should_yield(), "hızlı hatta denetim beklemez");
+    }
+
     /// Paylaşılan hat her yazılan datagramı (UDP gövdesi + 28 B zarf) hattın hızında serileştirir;
     /// ardışık yazımlar sıraya girer.
     #[test]
@@ -7107,10 +7178,12 @@ mod uplink_line_tests {
         client.shutdown().await.param_sends
     }
 
-    /// [DÖNÜŞ-HATTI] Uçtan uca (gerçek çalışma-zamanı, gerçek zaman): 62 B/s yukarı yönde PARAM
-    /// motorun hat modeline yazılır ve yeniden deneme PARAM hattı terk edip bir PTO dolmadan
-    /// çıkmaz; 2 s'de tek PARAM (kapı 2,37 s). Yön hızı yokken bugünkü geri çekilme: 0 / 0,2 / 0,6 /
-    /// 1,4 s → dört PARAM (sınır üçün üstü: zamanlayıcı payı).
+    /// [DÖNÜŞ-HATTI] Uçtan uca (gerçek çalışma-zamanı, gerçek zaman): 62 B/s yukarı yön profil
+    /// 0x05'in parite sembolünü (1 061 B) zaman kapısında serileştiremez; oturum FEC kurmaz,
+    /// PARAM hiç çıkmaz (eskiden tek PARAM hattı 1,37 s tutuyordu). Hat modeliyle yeniden deneme
+    /// kapısının kendisi `param_retry_waits_for_the_param_to_leave_a_narrow_line_and_one_pto`'da.
+    /// Yön hızı yokken bugünkü geri çekilme: 0 / 0,2 / 0,6 / 1,4 s → dört PARAM (sınır üçün üstü:
+    /// zamanlayıcı payı).
     #[tokio::test(flavor = "multi_thread")]
     async fn narrow_uplink_param_is_not_retried_before_it_leaves_the_line() {
         let narrow = param_sends_in_two_seconds(Some(LinkRates {
@@ -7118,7 +7191,7 @@ mod uplink_line_tests {
             downlink_bps: 12_500,
         }))
         .await;
-        assert_eq!(narrow, 1, "dar hatta 2 s'de tek PARAM");
+        assert_eq!(narrow, 0, "pariteyi taşıyamayan dar hatta PARAM yok");
         let free = param_sends_in_two_seconds(None).await;
         assert!(
             free >= 3,
