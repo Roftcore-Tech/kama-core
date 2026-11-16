@@ -303,7 +303,7 @@ scripts/tnet/tnet_freeze.py --verify` ile doğrulanır).
 
 | nesne | değer |
 |---|---|
-| ölçülen kod (`code_sha`) | `3de926cceaba6cb5f74d77bbe9534b25e80b9ec9` |
+| ölçülen kod (`code_sha`) | `0dc5e862a91226698208ad0e4559630ec002f649` |
 | taban `main` | `3abee42990494cff05abfb553e5a347cfe45d12f` |
 | manifest R1 sha256 | `04ee4c3a4fc4651b6650e129a0d7f472b2bceb9d0fa3a2ecab4db6d11e31e91f` |
 | manifest R2 sha256 | `f93c3de5189f54c29ee752033b901e41fcfc85ec21936d9788b0f3a231179030` |
@@ -325,6 +325,8 @@ hüküm kuralı o durumda da değişmez. İlk kampanya satırından sonra hiçbi
 
 **Uygulanan taşıma (2026-11-16):** #211 (CC-PORT U17, `adaptive-transport` göndericisi) `main`'e birleşti
 (`3abee429`); hiçbir kampanya satırı koşulmamıştı. `origin/main` dala birleştirildi (`f2bf58a8`), ölçülen kod
-`3de926cc`'ye taşındı (ilk donma: kod `36f858cf`, donma commit'i `92cc0b2c`). Manifestler ve analizör değişmedi
-(sha256'ları aynı); yalnız `tnet_freeze.py` taban SHA'sını argümanla alacak biçimde değişti. Yeniden koşulan ucuz
-denetimler: betik birim testleri, loopback 5 kol × 2 iş yükü, `cargo test --release -p bench`.
+`0dc5e862`'ye taşındı (ilk donma: kod `36f858cf`, donma commit'i `92cc0b2c`). Manifestler, yürütücü ve analizör
+değişmedi (sha256'ları aynı). Değişen iki betik: `tnet_freeze.py` taban SHA'sını argümanla alır; `tnet_campaign.py`
+(ve `tnet_env.py`) kod kapısında izlenmeyen dosyaları saymaz — birim testinin bıraktığı `__pycache__` gerçek koşuyu
+"commit'lenmemiş kod" diye durduruyordu (taşıma sırasında bulundu). Yeniden koşulan ucuz denetimler: betik birim
+testleri, loopback 5 kol × 2 iş yükü, `cargo test --release -p bench`, gerçek kipte başlangıç kapıları.
