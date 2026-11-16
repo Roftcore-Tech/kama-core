@@ -8,13 +8,14 @@
 //!
 //! * T-L6 — kapalı yol: `lanes = None` → sayaç yok, teslim `send` çağrı sırasıyla (sınıf okunmaz).
 //! * T-L8 — uçtan uca: 150 dosya birimi + TEXT + PTT; TEXT'in önünde motor kuyruğunda en çok W
-//!   teyitsiz dosya birimi; dosya, TEXT ve PTT tam ve kendi sıralarıyla teslim.
+//!   teyitsiz dosya birimi (W: o birimleri veren pompa turunun penceresi — yolun BDP'sinden,
+//!   sabit değil); dosya, TEXT ve PTT tam ve kendi sıralarıyla teslim.
 //! * T-L10 — şeritte süresi dolan `DeadlineBounded` birim uca verilmez, sayılır.
 
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-use client_core::lanes::{LaneConfig, DEFAULT_ADMIT_WIDTHS, DEFAULT_FILE_WINDOW_UNITS};
+use client_core::lanes::{LaneConfig, DEFAULT_ADMIT_WIDTHS};
 use client_core::memory_link::MemoryHub;
 use client_core::transport::{ClientTransport, ClientTransportConfig};
 use kama_contracts::handles::{PeerRef, SessionHandle};
@@ -97,7 +98,23 @@ fn tag_of(bytes: &[u8]) -> (u8, u16) {
 
 /// Bob'un teslim kuyruğunu boşaltır; Alice'in olay/teyit/pompa yolunu sürer.
 fn spin(alice: &mut Node, bob: &mut Node, got: &mut Vec<(u8, u16)>) {
-    while alice.poll_event().is_some() {}
+    spin_watched(alice, bob, got, |_| {});
+}
+
+/// [`spin`]; Alice'in her `poll_event` çağrısından sonra `after_alice` çalışır.
+fn spin_watched(
+    alice: &mut Node,
+    bob: &mut Node,
+    got: &mut Vec<(u8, u16)>,
+    mut after_alice: impl FnMut(&Node),
+) {
+    loop {
+        let ev = alice.poll_event();
+        after_alice(alice);
+        if ev.is_none() {
+            break;
+        }
+    }
     while let Some(d) = bob.recv() {
         got.push(tag_of(&d.unit));
     }
@@ -107,6 +124,50 @@ fn spin(alice: &mut Node, bob: &mut Node, got: &mut Vec<(u8, u16)>) {
 const T_FILE: u8 = b'F';
 const T_TEXT: u8 = b'T';
 const T_PTT: u8 = b'P';
+
+/// `LaneStats` dizilerinde (`Lane::ALL` sırası) TEXT ve FILE şeritlerinin yeri.
+const TEXT_IDX: usize = 2;
+const FILE_IDX: usize = 3;
+
+/// FILE penceresi gözlemcisi.
+///
+/// Pencere W sabit DEĞİLDİR: Alice'in pompası her turun başında W'yi yolun ölçülen BDP'sinden
+/// yeniden kurar (`lanes::file_window_for_path`; taban `LaneConfig::file_window_units` = 5, tavan
+/// 1024). W tur başında büyüyebilir ya da küçülebilir; küçülme uçtaki birimi geri almaz. Bu yüzden
+/// uçtaki teyitsiz dosya birimi sayısı ne sabit tabanla ne de o anki W ile kıyaslanabilir.
+///
+/// Değişmez: uçtaki teyitsiz dosya birimi sayısı, son dosya biriminin VERİLDİĞİ turdaki pencereyi
+/// aşmaz. Pompa bir dosya birimini yalnız `uçtaki < W` iken verir (`SessionLanes::pop_next`);
+/// sonraki turda dosya birimi verilmedikçe uçtaki sayı yalnız teyitle azalır.
+///
+/// Gözlem Alice'in HER S1 çağrısından (`send`, `poll_event`) hemen sonra yapılır. Tek oturumlu bu
+/// düzenekte her çağrı en çok bir pompa turu çalıştırır ve W turun başında kurulur: çağrıda dosya
+/// birimi verildiyse (`given` arttıysa) çağrıdan sonra okunan W o birimlerin verildiği W'dir.
+#[derive(Default)]
+struct FileWindowWatch {
+    /// Son gözlemde FILE şeridinin uca verdiği birim sayısı.
+    given: u64,
+    /// Son dosya biriminin verildiği turdaki pencere.
+    window_at_give: usize,
+}
+
+impl FileWindowWatch {
+    /// Değişmezi denetler; uçtaki teyitsiz dosya birimi sayısını döner.
+    fn observe(&mut self, alice: &Node, h: SessionHandle) -> usize {
+        let given = alice.lane_stats().expect("şeritler açık").given[FILE_IDX];
+        let (_, inflight) = alice.lane_backlog(h).expect("şeritler açık");
+        if given > self.given {
+            self.given = given;
+            self.window_at_give = alice.file_window_for_test(h).expect("şeritler açık");
+        }
+        assert!(
+            inflight <= self.window_at_give,
+            "FILE: uçtaki teyitsiz birim ({inflight}) verildiği turun penceresini ({}) aşmaz",
+            self.window_at_give
+        );
+        inflight
+    }
+}
 
 /// T-L6 — kapalı yol: sayaç yok; farklı sınıflar karışık gönderilse de teslim `send` çağrı
 /// sırasıyladır (sınıf okunmaz; bugünkü davranış).
@@ -153,8 +214,11 @@ fn t_l6_lanes_off_delivers_in_call_order_and_has_no_lane_state() {
 fn t_l8_text_and_ptt_overtake_file_lane_and_everything_arrives_in_order() {
     const FILE_UNITS: u16 = 150;
     const PTT_UNITS: u16 = 3;
-    let w = DEFAULT_FILE_WINDOW_UNITS as usize;
-    let (mut alice, mut bob, h) = pair(Some(LaneConfig::default()));
+    let cfg = LaneConfig::default();
+    // FILE şeridinin tavanı (2·taban W = 10) yapılandırmadandır; yola göre değişmez.
+    let file_cap = cfg.caps[FILE_IDX];
+    let (mut alice, mut bob, h) = pair(Some(cfg));
+    let mut watch = FileWindowWatch::default();
     let mut got = Vec::new();
     let mut next_file = 0u16;
     let mut text_sent = false;
@@ -165,23 +229,31 @@ fn t_l8_text_and_ptt_overtake_file_lane_and_everything_arrives_in_order() {
     while got.len() < total {
         // Uygulama gibi: dosya birimlerini geri basınca dek ver (pump'ta bekler).
         while next_file < FILE_UNITS {
-            match alice.send(
+            let sent = alice.send(
                 h,
                 unit(T_FILE, next_file, 1000),
                 DeliveryPolicy::Reliable,
                 TrafficClass::Bk,
-            ) {
+            );
+            watch.observe(&alice, h);
+            match sent {
                 Ok(()) => next_file += 1,
                 Err(TransportError::Backpressure) => break,
                 Err(e) => panic!("beklenmeyen hata: {e}"),
             }
         }
-        let (pending, inflight) = alice.lane_backlog(h).expect("şeritler açık");
-        assert!(inflight <= w, "FILE penceresi W'yi aşmaz ({inflight})");
-        assert!(pending <= 2 * w, "FILE şeridi tavanla sınırlı ({pending})");
+        let (pending, _) = alice.lane_backlog(h).expect("şeritler açık");
+        assert!(
+            pending <= file_cap,
+            "FILE şeridi tavanla sınırlı ({pending})"
+        );
         if !text_sent && next_file >= 20 {
             let before = alice.lane_stats().expect("şeritler açık");
-            file_given_before_text = before.given[3];
+            file_given_before_text = before.given[FILE_IDX];
+            // TEXT'in önündeki teyitsiz dosya birimleri: şimdiye dek verilmiş ve teyidi gelmemiş
+            // olanlar (`send` yolu teyit boşaltmaz; pompa TEXT'i aynı turda dosyadan önce verir).
+            let ahead = watch.observe(&alice, h);
+            let window = watch.window_at_give;
             alice
                 .send(
                     h,
@@ -190,16 +262,16 @@ fn t_l8_text_and_ptt_overtake_file_lane_and_everything_arrives_in_order() {
                     TrafficClass::Be,
                 )
                 .expect("TEXT kabul");
+            watch.observe(&alice, h);
             let after = alice.lane_stats().expect("şeritler açık");
             assert_eq!(
-                after.given[2],
-                before.given[2] + 1,
+                after.given[TEXT_IDX],
+                before.given[TEXT_IDX] + 1,
                 "TEXT aynı çağrıda uca verildi"
             );
-            let (_, inflight) = alice.lane_backlog(h).expect("şeritler açık");
             assert!(
-                inflight <= w,
-                "TEXT'in önünde en çok W teyitsiz dosya birimi"
+                ahead <= window,
+                "TEXT'in önünde en çok W teyitsiz dosya birimi ({ahead} > {window})"
             );
             for n in 0..PTT_UNITS {
                 alice
@@ -210,11 +282,14 @@ fn t_l8_text_and_ptt_overtake_file_lane_and_everything_arrives_in_order() {
                         TrafficClass::VoRel,
                     )
                     .expect("PTT kabul");
+                watch.observe(&alice, h);
                 ptt_sent += 1;
             }
             text_sent = true;
         }
-        spin(&mut alice, &mut bob, &mut got);
+        spin_watched(&mut alice, &mut bob, &mut got, |a| {
+            watch.observe(a, h);
+        });
         assert!(
             Instant::now() < deadline,
             "teslim tamamlanmadı: {}",
@@ -260,12 +335,19 @@ fn t_l8_text_and_ptt_overtake_file_lane_and_everything_arrives_in_order() {
         "TEXT şeritte bekleyen dosya birimlerini geçti"
     );
     let stats = alice.lane_stats().expect("şeritler açık");
-    assert_eq!(stats.given[3], u64::from(FILE_UNITS));
+    assert_eq!(stats.given[FILE_IDX], u64::from(FILE_UNITS));
     assert_eq!(
         stats.lane_expired + stats.lane_dropped + stats.give_failed,
         0
     );
-    assert!(stats.file_acked >= u64::from(FILE_UNITS) - w as u64);
+    // Verilen her dosya birimi ya teyitli ya uçta; uçtaki sayı son verildiği turun penceresiyle
+    // sınırlı (`observe`).
+    let inflight = watch.observe(&alice, h);
+    assert_eq!(
+        stats.file_acked + inflight as u64,
+        u64::from(FILE_UNITS),
+        "dosya birimleri: teyitli + uçta = verilen"
+    );
 }
 
 /// T-L10 — şeritte bekleyen `DeadlineBounded` birim süresi dolunca uca verilmez ve sayılır.
@@ -278,6 +360,14 @@ fn t_l10_expired_unit_in_lane_is_dropped_and_counted_endpoint_not_called() {
     };
     let (mut alice, mut bob, h) = pair(Some(cfg));
     // Pencereyi doldur: birinci dosya birimi uca verilir, ikincisi (kısa deadline'lı) şeritte bekler.
+    //
+    // W = 1 yapılandırmanın TABANIDIR; pompa her turda W'yi yolun ölçülen BDP'sinden yeniden kurar
+    // (`lanes::file_window_for_path`). Birinci birimin ACK'i ikinci `send`'den önce uçta işlenirse
+    // ve BDP kestirimi (BtlBw × RTprop) birim tavanının yarısını aşarsa (yüklü makinede RTprop
+    // şişer) W = 2 olur, ikinci birim de verilir. Ön koşulu kuruluşta sağlamak için birinci birimin İLK emisyonu düşürülür: ACK yok →
+    // BtlBw örneği yok → W tabanda kalır (ürün profilinde bu oturumda başka ACK alan çerçeve yok:
+    // FEC ve kuruluş yoklaması kapalı). Birim ARQ ile gelir; aşağıdaki döngüler onu bekler.
+    alice.drop_next_units_for_test(1);
     alice
         .send(
             h,
@@ -295,7 +385,12 @@ fn t_l10_expired_unit_in_lane_is_dropped_and_counted_endpoint_not_called() {
             TrafficClass::Bk,
         )
         .expect("kabul (şeritte bekler)");
-    let given_before = alice.lane_stats().expect("şeritler açık").given[3];
+    let given_before = alice.lane_stats().expect("şeritler açık").given[FILE_IDX];
+    assert_eq!(
+        alice.file_window_for_test(h),
+        Some(1),
+        "ön koşul: yol örneği yok, pencere tabanda"
+    );
     assert_eq!(given_before, 1, "pencere W = 1: ikinci birim şeritte");
     std::thread::sleep(Duration::from_millis(5));
     let mut got = Vec::new();
@@ -304,7 +399,7 @@ fn t_l10_expired_unit_in_lane_is_dropped_and_counted_endpoint_not_called() {
         spin(&mut alice, &mut bob, &mut got);
         let s = alice.lane_stats().expect("şeritler açık");
         if s.lane_expired == 1 {
-            assert_eq!(s.given[3], 1, "süresi dolan birim uca verilmedi");
+            assert_eq!(s.given[FILE_IDX], 1, "süresi dolan birim uca verilmedi");
             break;
         }
         assert!(Instant::now() < deadline, "süresi dolan birim sayılmadı");
