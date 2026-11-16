@@ -93,7 +93,10 @@
 //!
 //! Varsayılan (CI): tohum 1, profil açık; dört ölçütten biri düşerse test düşer. Ölçüm:
 //! `KAMA_ASYM_SEED=<n>` (tohum), `KAMA_ASYM_PROFILE=off` (profil kapalı kol). Her koşu `ÜRÜN-SONUÇ`
-//! ve `ÖLÇÜT` satırlarını basar (`--nocapture`); ölçütler önce basılır, sonra iddia edilir.
+//! ve `ÖLÇÜT` satırlarını basar (`--nocapture`); ölçütler önce basılır, sonra iddia edilir. Düşen
+//! ölçütün mekanizması aynı koşunun izinden okunur: `İZ-UYG` (uygulama olayları), `İZ-PTT` (demet
+//! başına plan, ilk çıkış, iletim sayısı, ilk varış, teslim) ve `İZ-HAT` (rölenin gördüğü her
+//! datagram: yön, yol, an, tel boyu, sonuç, varış ve taşıdığı AMP kaydı).
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::net::{SocketAddr, UdpSocket};
@@ -332,6 +335,19 @@ enum Route {
     BDown,
 }
 
+/// Rölenin gördüğü bir datagram (iz; ölçümden sonra yazılır, sıcak yolda biçimlendirme yok).
+#[derive(Debug, Clone, Copy)]
+struct LineRec {
+    offered: Instant,
+    route: Route,
+    /// Tel boyu (UDP/IP dahil).
+    wire: u64,
+    /// 0 iletildi · 1 kuyruk taştı · 2 rastgele kayıp.
+    fate: u8,
+    arrives: Option<Instant>,
+    fp: u64,
+}
+
 /// Bir yönün hattı: `shaped_relay.rs` `Shaper::offer` kuralı (jitter'sız).
 struct Shaper {
     rate_bps: u64,
@@ -346,6 +362,8 @@ struct Shaper {
     dropped_queue: u64,
     dropped_random: u64,
     dropped_fp: Vec<u64>,
+    /// Her sunulan datagramın izi (sığa [`DROP_CAP`]).
+    trace: Vec<LineRec>,
 }
 
 impl Shaper {
@@ -365,6 +383,7 @@ impl Shaper {
             dropped_queue: 0,
             dropped_random: 0,
             dropped_fp: Vec::new(),
+            trace: Vec::new(),
         }
     }
 
@@ -382,6 +401,27 @@ impl Shaper {
         }
     }
 
+    fn note(
+        &mut self,
+        offered: Instant,
+        route: Route,
+        wire: u64,
+        fate: u8,
+        arrives: Option<Instant>,
+        pkt: &[u8],
+    ) {
+        if self.trace.len() < DROP_CAP {
+            self.trace.push(LineRec {
+                offered,
+                route,
+                wire,
+                fate,
+                arrives,
+                fp: fingerprint(pkt),
+            });
+        }
+    }
+
     fn offer(&mut self, now: Instant, route: Route, pkt: Vec<u8>) {
         while self.busy.front().is_some_and(|&t| t <= now) {
             self.busy.pop_front();
@@ -390,6 +430,7 @@ impl Shaper {
         if self.busy.len() >= self.limit {
             self.dropped_queue += 1;
             self.note_drop(&pkt);
+            self.note(now, route, size, 1, None, &pkt);
             return;
         }
         let start = self.busy.back().copied().unwrap_or(now).max(now);
@@ -400,9 +441,11 @@ impl Shaper {
         if self.loss_permille > 0 && self.rand_permille() < self.loss_permille {
             self.dropped_random += 1;
             self.note_drop(&pkt);
+            self.note(now, route, size, 2, None, &pkt);
             return;
         }
         // Sabit gecikme, FIFO serileştirme: varış anları artandır.
+        self.note(now, route, size, 0, Some(done + self.delay), &pkt);
         self.wire.push_back((done + self.delay, route, pkt));
     }
 
@@ -572,6 +615,8 @@ struct Run {
     file_delivered: Option<Instant>,
     file_ok: bool,
     chunk_count: u64,
+    /// Bob'un uygulama zincirinde görülen her `FILE_CHUNK` kaydının anı.
+    chunk_rx: Vec<Instant>,
     alice: Ledger,
     bob: Ledger,
     fwd: Shaper,
@@ -649,6 +694,7 @@ fn run(seed: u64, profile: bool) -> Run {
     let mut bundles: BTreeMap<u32, Bundle> = BTreeMap::new();
     let mut next_bundle: u32 = 0;
     let mut bob_chunks: u64 = 0;
+    let mut chunk_rx: Vec<Instant> = Vec::new();
     let mut file_received: Option<Instant> = None;
     let mut file_delivered: Option<Instant> = None;
     let mut file_ok = false;
@@ -710,7 +756,10 @@ fn run(seed: u64, profile: bool) -> Run {
         bob.turn(&mut events);
         for (at, ev) in events.drain(..) {
             match ev {
-                Ev::Chunk => bob_chunks += 1,
+                Ev::Chunk => {
+                    bob_chunks += 1;
+                    chunk_rx.push(at);
+                }
                 Ev::Msg(MessengerEvent::TextReceived { msg_id, .. }) => {
                     for t in &mut texts {
                         if t.sent.is_some_and(|(m, _)| m == msg_id) {
@@ -784,6 +833,7 @@ fn run(seed: u64, profile: bool) -> Run {
         file_delivered,
         file_ok,
         chunk_count,
+        chunk_rx,
         alice: alice_ledger,
         bob: bob_ledger,
         fwd,
@@ -893,6 +943,10 @@ impl Run {
                 (Some(r), Some((a, _))) => Some(self.since(*a, r)),
                 _ => None,
             };
+            let r_arrival = match (t.received, self.alice.first_rx.get(&r_item)) {
+                (Some(r), Some(a)) => Some(self.since(*a, r)),
+                _ => None,
+            };
             let rv = match ret {
                 None => Verdict::Fail,
                 Some(d) if d <= RECEIPT_RETURN_BOUND => Verdict::Pass,
@@ -900,11 +954,12 @@ impl Run {
                 Some(_) => Verdict::Fail,
             };
             println!(
-                "ÖLÇÜT {tag} alındı{n}: dönüş={} s (sınır {} s) gidiş_dönüş={} s Bob_ilk_çıkış=+{} s iletim={} ilk_iletim_düştü={r_lost} → {}",
+                "ÖLÇÜT {tag} alındı{n}: dönüş={} s (sınır {} s) gidiş_dönüş={} s Bob_ilk_çıkış=+{} s Alice_ilk_varış=+{} s iletim={} ilk_iletim_düştü={r_lost} → {}",
                 opt_secs(ret),
                 secs(RECEIPT_RETURN_BOUND),
                 opt_secs(rtt),
                 opt_secs(r_first_tx),
+                opt_secs(r_arrival),
                 self.bob.tx_count.get(&r_item).copied().unwrap_or(0),
                 rv.label()
             );
@@ -970,11 +1025,61 @@ impl Run {
             "ÖLÇÜT {tag} bayt: {bytes} çözülemeyen_DATA={}/{} kayıt_taşması={}/{}",
             self.alice.unparsed, self.bob.unparsed, self.alice.overflow, self.bob.overflow
         );
+        self.trace_report(&tag);
         println!(
             "ÜRÜN-SONUÇ {tag} {} {bytes} düşen_ölçüt={failed:?}",
             line.join(" ")
         );
         failed
+    }
+
+    /// Koşu izi: uygulama olayları ve rölenin gördüğü her datagram (an t0'a göre; öğe, mühürleyen
+    /// ucun parmak izi kaydından). ACK ve denetim datagramları DATA değildir: `kontrol` yazılır.
+    fn trace_report(&self, tag: &str) {
+        let t = |i: Instant| secs(self.since(i, self.t0));
+        let ot = |i: Option<Instant>| i.map_or("-".to_string(), t);
+        for (i, x) in self.texts.iter().enumerate() {
+            println!(
+                "İZ-UYG {tag} metin{} gönderim={} Bob_teslim={} Alice_alındı={}",
+                i + 1,
+                ot(x.sent.map(|s| s.1)),
+                ot(x.received),
+                ot(x.delivered)
+            );
+        }
+        let chunks: Vec<String> = self.chunk_rx.iter().map(|&c| t(c)).collect();
+        println!(
+            "İZ-UYG {tag} ptt_açılış={} PttStarted={} dosya_Bob={} dosya_Alice_bildirimi={} Bob_parça_teslimleri=[{}]",
+            ot(self.ptt_open.map(|p| p.1)),
+            ot(self.ptt_started),
+            ot(self.file_received),
+            ot(self.file_delivered),
+            chunks.join(" ")
+        );
+        for (dir, shaper) in [("ileri", &self.fwd), ("dönüş", &self.rev)] {
+            for r in &shaper.trace {
+                let ledger = match r.route {
+                    Route::AUp | Route::BDown => &self.alice,
+                    Route::ADown | Route::BUp => &self.bob,
+                };
+                let item = ledger
+                    .by_fp
+                    .get(&r.fp)
+                    .map_or("kontrol".to_string(), |i| format!("{i:?}"));
+                let fate = match r.fate {
+                    0 => "ok",
+                    1 => "kuyruk_düştü",
+                    _ => "yolda_düştü",
+                };
+                println!(
+                    "İZ-HAT {tag} {dir} {:?} sunum={} tel={} {fate} varış={} {item}",
+                    r.route,
+                    t(r.offered),
+                    r.wire,
+                    ot(r.arrives)
+                );
+            }
+        }
     }
 
     fn ptt_report(
@@ -996,6 +1101,10 @@ impl Run {
         let mut max_delay = Duration::ZERO;
         let mut max_delay_counted = Duration::ZERO;
         let mut max_excused = Duration::ZERO;
+        // Kayıp-kurtarmanın iki kaynağı ayrı: demetin kendi ilk iletimi düştü / yalnız öncülünü bekledi.
+        let (mut own_n, mut held_n) = (0u32, 0u32);
+        let (mut max_own, mut max_held) = (Duration::ZERO, Duration::ZERO);
+        let mut first_missing: Option<u32> = None;
         let mut max_gap = Duration::ZERO;
         let mut max_accept_wait = Duration::ZERO;
         let mut prev_rx: Option<Instant> = None;
@@ -1005,6 +1114,15 @@ impl Run {
             max_accept_wait = max_accept_wait.max(self.since(b.accepted, b.planned));
             let Some(rx) = b.received else {
                 missing += 1;
+                first_missing.get_or_insert(seq);
+                println!(
+                    "İZ-PTT {tag} demet={seq} plan=+{} ilk_çıkış=+{} iletim={} ilk_iletim_düştü={} ilk_varış=+{} teslim=YOK",
+                    secs(self.since(b.planned, self.t0)),
+                    opt_secs(self.alice.first_tx.get(&item).map(|(a, _)| self.since(*a, self.t0))),
+                    self.alice.tx_count.get(&item).copied().unwrap_or(0),
+                    Self::lost_first(&self.alice, fwd_drops, item),
+                    opt_secs(self.bob.first_rx.get(&item).map(|a| self.since(*a, self.t0))),
+                );
                 lane.push((item, None));
                 continue;
             };
@@ -1039,6 +1157,13 @@ impl Run {
                 Verdict::LossRecovery => {
                     excused += 1;
                     max_excused = max_excused.max(delay);
+                    if own {
+                        own_n += 1;
+                        max_own = max_own.max(delay);
+                    } else {
+                        held_n += 1;
+                        max_held = max_held.max(delay);
+                    }
                 }
                 Verdict::Fail => {
                     over += 1;
@@ -1055,6 +1180,16 @@ impl Run {
             if first.is_none() {
                 first = Some((delay, v));
             }
+            println!(
+                "İZ-PTT {tag} demet={seq} plan=+{} ilk_çıkış=+{} iletim={} ilk_iletim_düştü={own} ilk_varış=+{} teslim=+{} gecikme={} öncül_bekledi={held} → {}",
+                secs(self.since(b.planned, self.t0)),
+                opt_secs(self.alice.first_tx.get(&item).map(|(a, _)| self.since(*a, self.t0))),
+                self.alice.tx_count.get(&item).copied().unwrap_or(0),
+                opt_secs(arrival.map(|a| self.since(a, self.t0))),
+                secs(self.since(rx, self.t0)),
+                secs(delay),
+                v.label()
+            );
             lane.push((item, Some(rx)));
         }
         let start = self.ptt_started.map(|s| self.since(s, opened));
@@ -1065,11 +1200,14 @@ impl Run {
             Verdict::Pass
         };
         println!(
-            "ÖLÇÜT {tag} ptt: demet={n} teslim_yok={missing} açılış→PttStarted={} s ilk_demet={} s ({}) sınır_üstü_sayılan={over} kayıp-kurtarma={excused} (en büyük {} s) en_büyük_gecikme_sayılan={} s en_büyük_gecikme_tümü={} s dosya_sürerken_en_büyük_boşluk={} s kabul_beklemesi_en_çok={} s → {}",
+            "ÖLÇÜT {tag} ptt: demet={n} teslim_yok={missing} (ilki {}) açılış→PttStarted={} s ilk_demet={} s ({}) sınır_üstü_sayılan={over} kayıp-kurtarma={excused} (en büyük {} s; kendi_kaybı={own_n} en büyük {} s, yalnız_öncül_bekledi={held_n} en büyük {} s) en_büyük_gecikme_sayılan={} s en_büyük_gecikme_tümü={} s dosya_sürerken_en_büyük_boşluk={} s kabul_beklemesi_en_çok={} s → {}",
+            first_missing.map_or("-".to_string(), |m| m.to_string()),
             opt_secs(start),
             opt_secs(first.map(|f| f.0)),
             first.map_or("YOK", |f| f.1.label()),
             secs(max_excused),
+            secs(max_own),
+            secs(max_held),
             secs(max_delay_counted),
             secs(max_delay),
             secs(max_gap),
@@ -1079,7 +1217,7 @@ impl Run {
         (
             verdict,
             format!(
-                "ptt_ilk={}({}) ptt_en_büyük_sayılan={} ptt_en_büyük_tümü={} ptt_boşluk={} ptt_kayıp_kurtarma={excused}/{n} ptt={}",
+                "ptt_ilk={}({}) ptt_en_büyük_sayılan={} ptt_en_büyük_tümü={} ptt_boşluk={} ptt_kayıp_kurtarma={excused}/{n}(kendi={own_n},öncül={held_n}) ptt_teslim_yok={missing} ptt={}",
                 opt_secs(first.map(|f| f.0)),
                 first.map_or("YOK", |f| f.1.label()),
                 secs(max_delay_counted),
