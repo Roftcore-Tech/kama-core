@@ -86,7 +86,7 @@ def main():
         "rustc": run(["rustc", "--version"]),
         "git_head": run(["git", "-C", REPO, "rev-parse", "HEAD"]),
         "git_branch": run(["git", "-C", REPO, "rev-parse", "--abbrev-ref", "HEAD"]),
-        "git_dirty_code": run(["git", "-C", REPO, "status", "--porcelain", "--", "crates", "baselines",
+        "git_dirty_code": run(["git", "-C", REPO, "status", "--porcelain", "--untracked-files=no", "--", "crates", "baselines",
                                "scripts/tnet", "Cargo.toml", "Cargo.lock"]),
         "bench_path": rel(bench),
         "bench_sha256": sha256(bench),

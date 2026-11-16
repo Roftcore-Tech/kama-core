@@ -132,7 +132,9 @@ def main():
         r = subprocess.run(["git", "-C", REPO, "diff", "--quiet", code_sha, "HEAD", "--"] + CODE_PATHS)
         if r.returncode != 0:
             sys.exit(f"ÖLÇÜLEN KOD DONMUŞ KODDAN FARKLI (code_sha={code_sha}) — DUR")
-        r = subprocess.run(["git", "-C", REPO, "status", "--porcelain", "--"] + CODE_PATHS,
+        # İzlenmeyen dosyalar (ör. birim testinin bıraktığı __pycache__) ölçülen kodu değiştirmez; yalnız
+        # izlenen dosyalardaki commit'lenmemiş değişiklik durdurur.
+        r = subprocess.run(["git", "-C", REPO, "status", "--porcelain", "--untracked-files=no", "--"] + CODE_PATHS,
                            capture_output=True, text=True)
         if r.stdout.strip():
             sys.exit("ÇALIŞMA AĞACINDA commit'lenmemiş kod değişikliği var — DUR:\n" + r.stdout)

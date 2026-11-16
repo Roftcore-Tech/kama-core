@@ -33,3 +33,4 @@ reports/kapi-eval-v1/out-exploratory/**/cap/
 
 # kama-target-net-v2: v1 TCP taban kolunun derleme çıktısı
 /baselines/target/
+/scripts/tnet/__pycache__/
