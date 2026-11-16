@@ -291,9 +291,24 @@ Devam: aynı komut; `results.csv`'deki `run_id`'ler atlanır, üstüne yazılmaz
 
 ## 12. Donmuş kimlikler
 
-`reports/kama-target-net-v2/FREEZE.json` bu belgeyle aynı commit'tedir ve şunları taşır: ölçülen kodun SHA'sı
-(`code_sha`), manifest sha256'ları (R1, R2, P), `scripts/tnet/*.py` ve `tnet_topo.sh` sha256'ları,
-`baselines/src/bin/tcp_adapter.rs` sha256'ı (v1 ile aynı: `abfcb006f02625f3af364d4bf326f8b17cca3c0794bca2ceb3171ab1c2c21f93`).
+Ayrıntılı kayıt `reports/kama-target-net-v2/FREEZE.json` (bu belgeyle aynı commit; `python3
+scripts/tnet/tnet_freeze.py --verify` ile doğrulanır).
+
+| nesne | değer |
+|---|---|
+| ölçülen kod (`code_sha`) | `36f858cfeb1fe07414ae8c88e384d7829f7cb4de` |
+| taban `main` | `b88a047f56d3b2f46855e266da0f9f651aa7c5f4` |
+| manifest R1 sha256 | `04ee4c3a4fc4651b6650e129a0d7f472b2bceb9d0fa3a2ecab4db6d11e31e91f` |
+| manifest R2 sha256 | `f93c3de5189f54c29ee752033b901e41fcfc85ec21936d9788b0f3a231179030` |
+| manifest P (pilot) sha256 | `1906c496b02044f132a79c41799e2fbf9f095e0f72038d6609197a622397f9c5` |
+| `scripts/tnet/tnet_analyze.py` sha256 | `b25bf22d69c8cc204f04c6136f724d4b74e3a954a75fb0f2dfdd89601b3a7ef9` |
+| `scripts/tnet/tnet_exec.py` sha256 | `012817c2a2abb63b43d151491e00884da82dbb798a5e98d5c53ce088c31b25ef` |
+| `baselines/src/bin/tcp_adapter.rs` sha256 (v1 ile aynı) | `abfcb006f02625f3af364d4bf326f8b17cca3c0794bca2ceb3171ab1c2c21f93` |
+
+İkililer donma kaydında yoktur (derleme makinesine bağlıdır): yerel koşu `code_sha` ağacından
+`KAMA_GIT_SHA=<HEAD>` ile derler; her Kama satırı ikilinin commit'ini (`bin_commit`, `KP-MANIFEST`) ve ENV kaydı
+ikililerin sha256'ını taşır. Koordinatör, `crates`, `baselines`, `scripts/tnet`, `Cargo.*` ve
+`scripts/netem/kapi3_harness.sh` `code_sha`'dan farklıysa başlamaz.
 
 ## 13. Bu ön-kaydın değişme kuralı
 
