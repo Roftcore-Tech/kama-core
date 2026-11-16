@@ -120,11 +120,13 @@ use kama_contracts::s3::{
 use kama_noise_wire::protector::NoiseWireProtection;
 
 use crate::lanes::{
-    file_window_for_path, Lane, LaneConfig, LaneConfigError, LaneState, LaneStats, QueuedUnit,
+    file_backlog_bound_units, file_window_floor, file_window_for_path, Lane, LaneConfig,
+    LaneConfigError, LaneState, LaneStats, QueuedUnit,
 };
 use crate::runtime::{
-    ClientEndpoint, ClientHandle, ClientLiveDiag, CtxDispatchCounters, CtxDispatchStats,
-    ExpectedSessions, Readiness, RuntimeConfig, RuntimeError, ServerEndpoint, ServerHandle,
+    link_profile_window_bytes, ClientEndpoint, ClientHandle, ClientLiveDiag, CtxDispatchCounters,
+    CtxDispatchStats, ExpectedSessions, Readiness, RuntimeConfig, RuntimeError, ServerEndpoint,
+    ServerHandle, UplinkShare,
 };
 use crate::unit_id::{index_of_lane, lane_index_of, lane_seq_of, tagged, LANE_COUNT};
 #[cfg(any(test, feature = "test-util"))]
@@ -666,6 +668,9 @@ impl UnitTrace {
 pub struct ClientTransport<C: PacketProtection + SessionControl> {
     caps: TransportCapabilities,
     runtime_cfg: RuntimeConfig,
+    /// [DÖNÜŞ-HATTI] Bu cihazın yukarı yön hattı: veri alıcısı ve her oturum ucu aynı görünümü
+    /// paylaşır (yön hızları verilmiş port motorunda; aksi hâlde `None`).
+    uplink: Option<UplinkShare>,
     peer_addrs: HashMap<PeerRef, SocketAddr>,
     renew_drain_cap: Duration,
     /// Uçlara uygulanan kurtarma anahtarı (ürün: daima açık).
@@ -781,13 +786,20 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             ),
         }
         let ctx_counters = CtxDispatchCounters::new();
-        let server = rt.block_on(ServerEndpoint::bind_expecting(
+        // [DÖNÜŞ-HATTI] Cihaz başına bir yukarı yön hattı; alıcının ACK'leri ve oturum uçlarının
+        // datagramları aynı görünüme yazılır.
+        let uplink = UplinkShare::for_config(&cfg.runtime);
+        // [ÖNLEMSEL-KOPYA] Şeritler açıkken birim kimlikleri şerit etiketlidir (şerit 0 = PTT).
+        let mut cfg = cfg;
+        cfg.runtime.lane_ids = cfg.lanes.is_some();
+        let server = rt.block_on(ServerEndpoint::bind_expecting_shared(
             cfg.data_bind,
             cfg.runtime.clone(),
             Box::new(CryptoSeam(Arc::clone(&crypto))),
             None,
             expected.clone(),
             ctx_counters.clone(),
+            uplink.clone(),
         ))?;
         // K5: kapasite Crypto'nun oturum sınıfı için güvenli minimumundan türer; veri çerçevesinin
         // başlığı düşülür ve veri yolunun birim tavanıyla kırpılır.
@@ -805,6 +817,7 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                 reliable: cfg.recovery,
             },
             runtime_cfg: cfg.runtime,
+            uplink,
             peer_addrs: cfg.peer_addrs,
             renew_drain_cap: cfg.renew_drain_cap,
             recovery_on: cfg.recovery,
@@ -1540,13 +1553,14 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         // [K4G-01 / D1 (v1.1)] Ucun beklediği bağlam `Session(h)`'dir; sayaçlar düğüm geneli.
         let endpoint = self
             .rt
-            .block_on(ClientEndpoint::connect_session_counted(
+            .block_on(ClientEndpoint::connect_session_shared(
                 addr,
                 self.runtime_cfg.clone(),
                 Box::new(seam),
                 None,
                 ProtectionContext::Session(h),
                 self.ctx_counters.clone(),
+                self.uplink.clone(),
             ))
             .ok()?;
         endpoint.set_recovery(self.recovery_on);
@@ -1634,7 +1648,9 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     }
 
     /// Bir oturumun şeritlerinde bekleyen ve FILE penceresindeki birim sayısı (salt gözlem);
-    /// şeritler kapalıysa `None`.
+    /// şeritler kapalıysa `None`. Pencere sayısı uca verilmiş teyitsiz birimlerle [ŞERİT-KUYRUK]
+    /// pencereye alınıp motorun birikimi yüzünden bekletilenlerin toplamıdır
+    /// (`lanes::SessionLanes::file_inflight`).
     #[must_use]
     pub fn lane_backlog(&self, session: SessionHandle) -> Option<(usize, usize)> {
         let st = self.lanes.as_ref()?;
@@ -1729,19 +1745,37 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     fn pump_session(&mut self, st: &mut LaneState, session: SessionHandle) {
         // [ŞERİT-W] FILE penceresi yolun ölçülen BDP'sinden (`lanes::file_window_for_path`); ölçüm
         // yokken yapılandırma tabanı. Sabit W dosya hızını W·S/RTT'de tavanlıyordu.
-        if let Some(e) = self
-            .sessions
-            .get(&session)
-            .and_then(|s| s.endpoint.as_ref())
-        {
-            let (btlbw, rtprop_ns) = e.path_estimate();
-            let w = file_window_for_path(
-                st.configured_file_window(),
-                u64::from(self.caps.max_plaintext_unit_bytes),
-                btlbw,
-                rtprop_ns,
-            );
-            st.set_file_window(session, w);
+        // [ASİMETRİK-YOL] Yön hızları port göndericisinin ilk penceresini büyüttüyse taban o
+        // pencereyi doldurur (`lanes::file_window_floor`); yön hızı yokken taban yapılandırmadır.
+        let profile_window = link_profile_window_bytes(&self.runtime_cfg);
+        if let Some(s) = self.sessions.get(&session) {
+            if let Some(e) = s.endpoint.as_ref() {
+                let (btlbw, rtprop_ns) = e.path_estimate();
+                let unit_bytes = u64::from(self.caps.max_plaintext_unit_bytes);
+                let w = file_window_for_path(
+                    file_window_floor(st.configured_file_window(), unit_bytes, profile_window),
+                    unit_bytes,
+                    btlbw,
+                    rtprop_ns,
+                );
+                st.set_file_window(session, w);
+                // [ŞERİT-KUYRUK] Profil penceresi büyükken dosya birimi motora ancak motorun
+                // gönderilmemiş birikimi (teklif kanalı + gönderim kuyruğu) sınırın altındayken
+                // verilir: motor kuyruğu FIFO boşalır ve şerit sırasını bilmez, sonradan gelen metin
+                // bütün pencerenin arkasında beklerdi. Pencere aynı kalır; fazlası şerit katmanında
+                // pencereye alınmış bekler. Profil pencereyi büyütmüyorsa (yön hızı yok, eski motor,
+                // simetrik yol) `None`: bugünkü yol, bu blok hiçbir şeyi değiştirmez.
+                let room = match (profile_window, self.runtime_cfg.link_rates) {
+                    (Some(_), Some(l)) => {
+                        let bound = file_backlog_bound_units(unit_bytes, l.uplink_bps);
+                        let offered: u64 = s.sent.iter().sum();
+                        let unsent = offered.saturating_sub(e.send_queue_drained());
+                        Some(bound.saturating_sub(unsent))
+                    }
+                    _ => None,
+                };
+                st.set_file_backlog_room(session, room);
+            }
         }
         // [ŞERİT-AÇIKLIK] Hiçbir şerit alıcının kabul penceresini aşmaz: şeridin sıradaki birimi,
         // şeridin teyit sınırından en çok `genişlik − 1` ileride olabilir. Genişlik alıcının

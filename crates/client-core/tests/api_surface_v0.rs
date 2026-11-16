@@ -83,6 +83,7 @@ async fn transport_api_v0_surface_is_frozen() {
         max_message_bytes: _, // v0.2 (S1B fragmenter): minor-EKLEME, kasıtlı pin-güncellemesi
         max_peers: _,
         quota_r: _,
+        link_rates: _, // v0.x (asimetrik yol: yön hızları): minor-EKLEME, kasıtlı pin-güncellemesi
         drain_cap: _,
         idle_hold: _,
         initial_window_bytes: _, // v0.5 (IW): minor-EKLEME, kasıtlı pin-güncellemesi
@@ -109,6 +110,9 @@ async fn transport_api_v0_surface_is_frozen() {
         live_diag: _,
         // v0.16 (E1 gösterim bayrakları, CC §4.1): minor-EKLEME, kasıtlı pin-güncellemesi
         e1_flags: _,
+        // v0.17 (İŞ-26, sahip kararı 2026-11-16): minor-EKLEME, kasıtlı pin-güncellemesi. Şerit
+        // kimlikleri açık mı; default false (ClientTransport şeritleri açınca kurar).
+        lane_ids: _,
     } = cfg.clone();
     let FecRuntimeConfig {
         profile_id: _,
@@ -247,6 +251,9 @@ async fn transport_api_v0_surface_is_frozen() {
         fec_blocks_decoded: _,
         fec_blocks_evicted_with_repairs: _,
         fec_recovered_ctrl_tx: _,
+        // v0.17 (İŞ-26): minor-EKLEME, dar hatta veriye yol veren denetim sayaçları.
+        yielded_ctrl: _,
+        yielded_ctrl_dropped: _,
         seal_failures: _,
         param_bound_peers: _,
         param_rejects: _,

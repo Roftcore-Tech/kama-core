@@ -1467,6 +1467,54 @@ struct TombstoneRec {
     data_ord: u64,
 }
 
+/// [ÖNLEMSEL-KOPYA] Kimliği `below_id`'den küçük her YENİ birim, ilk iletiminden sonra ACK
+/// beklemeden `copies` kez daha gönderilir (kopyalar `spacing_ns` aralıklı, §11 zamanlanmış
+/// forward-recovery kopyasıyla aynı kayıt: `dup_queue`, tek atış, teyit gelince iptal).
+///
+/// Motor birimin ne olduğunu bilmez (INV-ENGINE-SOC): kural yalnız kimlik sırasına bakar (CC-PORT
+/// U17 gibi). Hangi kimlik aralığının kopyalanacağını üst katman (client-core şerit kimlikleri)
+/// seçer. Yeniden iletim, PTO probu ve FEC bu kuraldan etkilenmez.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ForwardCopyRule {
+    /// Bu kimlikten küçük birimler kopyalanır.
+    pub below_id: u64,
+    /// Bu kimlikten küçük yeni birimler ve vadesi gelmiş kopyaları yeniden iletimden önce çıkar
+    /// (`below_id`'den küçük olamaz; üst katmanın öncelikli şeritleri, client-core: PTT/SIG/TEXT).
+    pub priority_below_id: u64,
+    /// İlk iletime ek kopya sayısı (toplam iletim `copies + 1`).
+    pub copies: u8,
+    /// Ardışık kopyalar arası aralık (ns).
+    pub spacing_ns: u64,
+}
+
+/// [GERİ-BİLDİRİM-AÇ · sahip kararı 2026-11-16] Yön hızı profili geri bildirimi aç bıraktığında
+/// (teyit saniyeler sonra gelir) port göndericisinin uçuş ve hız kuralı — INV-RATE-1'in 2026-11-11
+/// metnine profil istisnası:
+///
+/// * uçuş tavanı ACK saatine bağlanmaz: `recovery_window` uygulanmaz
+///   ([`crate::cc::Bbr::window_without_recovery`]) ve tavan en az
+///   `pacing_cap_bps × (feedback_ns + yol RTT'si)` olur — bir birimin teyidi en geç bu kadar sonra
+///   gelir; daha küçük tavan göndericiyi ACK'ler arasında durdurur, ACK gelince biriken iş patlar;
+/// * pacing hızı `pacing_cap_bps`'i aşmaz (ölçüm de aşamaz): hat profilden bilinir, üstündeki hız
+///   yalnız darboğaz kuyruğunu taşırır;
+/// * hat modeli (`line`, datagram başına zarf dahil) hız ne olursa olsun kurulur: pacer UDP
+///   gövdesini sayar, hat zarfla serileşir — küçük datagram akışında (PTT kopyaları, saniyede
+///   ≈ 25 × 114 B) zarf hattın ≈ %6'sıdır ve tavanın altında kalan pacer bile darboğaz kuyruğunu
+///   büyütür (ürün testinde PTT demetleri 1,2–1,4 s kuyrukta bekledi).
+///
+/// Kayıp yine ölçülür, FEC/ARQ kolunu besler ve BBR'ın kendi durumunu (recovery, ölçüm) değiştirir;
+/// yalnız uçuş tavanını ve hızı sınırlamaz.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FeedbackStarvedRule {
+    /// Hat hızı tavanı (B/s, UDP gövdesi).
+    pub pacing_cap_bps: u64,
+    /// En büyük bütçeli ACK'in göndericiye ulaşma ufku (ns;
+    /// [`crate::receiver::feedback_horizon_ns`]).
+    pub feedback_ns: u64,
+    /// Yukarı yön hattı (zarf dahil hız + datagram zarfı); dar olmasa da kurulur.
+    pub line: crate::pacer::LineModel,
+}
+
 /// Zamanlanmış forward-recovery duplication kopyası (§11 spacing — burst-loss dayanıklılığı).
 #[derive(Debug, Clone, Copy)]
 struct DupRec {
@@ -1716,6 +1764,10 @@ pub struct Sender {
     tail_probe_cancelled: u64, // observation-only (§7): due probes cancelled at emission (ACK-race: target no
     // longer outstanding). Distinct from token-starved (kept pending). Only mutated on the ON path.
     dup_queue: Vec<DupRec>, // §11 zamanlanmış forward-recovery kopyaları
+    /// [ÖNLEMSEL-KOPYA] Bkz. [`ForwardCopyRule`]. `None` = kural yok (bugünkü yol).
+    forward_copy_rule: Option<ForwardCopyRule>,
+    /// [GERİ-BİLDİRİM-AÇ] Bkz. [`FeedbackStarvedRule`]. `None` = kural yok (bugünkü yol, bit-eşit).
+    cc_feedback_starved: Option<FeedbackStarvedRule>,
     /// [DR-EST-1] Kuruluş-kolu anahtarı (DEFAULT-ON — ürün-davranışı). Yalnız donmuş-enstrüman
     /// testleri (Gate-5 structural-oracle: probe-vs-DATA çekişme-izolasyonu, DR-EST-1-öncesi
     /// tasarım) kapatır; kolun KENDİ pinleri tests/establish_probe.rs'te default-ON koşar.
@@ -1981,6 +2033,13 @@ pub struct Sender {
     /// parametreleri BBR'dan türetilir. Çalışma zamanı seçimi: cargo özelliği DEĞİL (CI'nın
     /// `--all-features`'ı motoru değiştiremez; iki motor aynı süreçte eşli koşabilir).
     cc: Option<crate::cc::Bbr>,
+    /// [ASİMETRİK-YOL] Dağıtım profilinin yukarı yön hızı (B/s; pacer'ın saydığı tel baytı) —
+    /// [`Sender::set_cc_profile_pacing_cap`]. `None` = tavan yok (bugünkü yol, bit-eşit).
+    cc_profile_pacing_cap: Option<u64>,
+    /// [DÖNÜŞ-HATTI] Hattı paylaşan bütün göndericilerin hatta bekleyen baytı (B, zarf dahil;
+    /// [`Sender::cc_line_observe_backlog`]); bir sonraki olayda pacer dolumundan SONRA hat kuyruğuna
+    /// uygulanır. `None` = gözlem yok (bugünkü yol).
+    cc_line_floor: Option<u64>,
     /// (d) tur mandalı: bu Startup turunda `schedule_transmit` başında `tx_queue` boş ∧ kova dolu
     /// (`pacer.tokens() == pacer.burst_cap()`) görüldü mü. Tur işaretinde (`startup_plateau`) ve
     /// Startup (yeniden) girişinde sıfırlanır. Yalnız `e1.e1_applimited_plateau` açıkken kurulur.
@@ -2059,6 +2118,8 @@ impl Sender {
             diag_cc_pto_new_data: 0,
             tail_probe_cancelled: 0,
             dup_queue: Vec::new(),
+            forward_copy_rule: None,
+            cc_feedback_starved: None,
             establish_probe_enabled: true,
             establish_due_ns: 0,
             establish_interval_ns: 0,
@@ -2236,6 +2297,8 @@ impl Sender {
             last_recovery: RecoveryAction::Arq,
             e1: crate::rate::E1Flags::default(),
             cc: None,
+            cc_profile_pacing_cap: None,
+            cc_line_floor: None,
             e1_round_app_limited: false,
         }
     }
@@ -2296,7 +2359,23 @@ impl Sender {
     /// [CC-PORT] Portun uçuş tavanı (bayt); `cc` yokken `u64::MAX` (kapı yok — bugünkü davranış).
     #[inline]
     fn cc_window(&self) -> u64 {
-        self.cc.as_ref().map_or(u64::MAX, crate::cc::Bbr::window)
+        let Some(cc) = self.cc.as_ref() else {
+            return u64::MAX;
+        };
+        match self.cc_feedback_starved {
+            None => cc.window(),
+            Some(rule) => cc
+                .window_without_recovery()
+                .max(self.cc_feedback_floor(rule)),
+        }
+    }
+
+    /// [GERİ-BİLDİRİM-AÇ] Uçuş tabanı (B): `pacing_cap × (feedback + yol RTT'si)`; RTT ölçülmeden
+    /// başlangıç RTT'si.
+    fn cc_feedback_floor(&self, rule: FeedbackStarvedRule) -> u64 {
+        let rtt = dur_ns(self.rtt.rtprop().unwrap_or(INITIAL_RTT));
+        let horizon = u128::from(rule.feedback_ns.saturating_add(rtt));
+        u64::try_from(u128::from(rule.pacing_cap_bps) * horizon / 1_000_000_000).unwrap_or(u64::MAX)
     }
 
     /// [CC-PORT] `size` baytlık yeni emisyon uçuş penceresine sığar mı (`inflight + size ≤ window`).
@@ -2571,6 +2650,7 @@ impl Sender {
         let dt = Duration::from_nanos(now_ns.saturating_sub(self.last_now_ns));
         self.pacer.refill(dt);
         self.last_now_ns = now_ns;
+        self.apply_cc_line_floor();
         // FS-CAL-2 v3 §3 lifecycle (design: docs/design/ESTIMATOR-LIFECYCLE.md). Finalize
         // guard-elapsed provisional losses at the engine clock, BEFORE this event's evidence is
         // fed: an ACK arriving at now >= expiry is late by the module contract (the fate sealed at
@@ -2648,11 +2728,22 @@ impl Sender {
             // Sebep: quinn pencere pacer'ı BBR'ın Drain/ProbeBW kazançlarını fiilen yok sayar
             // (pacing_rate yalnız metrik; B5 bulgusu) → sığ kuyrukta Drain hiç boşaltmaz (ölçüldü,
             // CC_TRACE: Drain'de kuyruk 6/6 sabit, 60 düşen paket).
-            let rate = if cc.pacing_rate() > 0 {
+            let mut rate = if cc.pacing_rate() > 0 {
                 cc.pacing_rate()
             } else {
                 p.rate_bps
             };
+            // [ASİMETRİK-YOL] Profil tavanı yalnız ölçümle desteklenmeyen hız payını keser: ilk
+            // örnekten önce pencere hızı (1,25·pencere/100 ms) ve Startup'ın ilk-pencere/min_rtt
+            // hızı profil penceresinden türer, ölçümden değil. Ölçülen hedef (kazanç × BtlBw)
+            // tavanı aşarsa ölçüm kazanır.
+            if let Some(cap) = self.cc_profile_pacing_cap {
+                rate = rate.min(cap.max(cc.measured_pacing_target()));
+            }
+            // [GERİ-BİLDİRİM-AÇ] Bilinen hatta hız tavanı ölçümle de aşılmaz.
+            if let Some(rule) = self.cc_feedback_starved {
+                rate = rate.min(rule.pacing_cap_bps);
+            }
             self.pacer.set_rate(rate);
             self.pacer.set_burst_cap(p.burst_cap);
             if prev_state == SenderState::PreConverge && self.state != SenderState::PreConverge {
@@ -2848,6 +2939,7 @@ impl Sender {
             let dt = Duration::from_nanos(now_ns.saturating_sub(self.last_now_ns));
             self.pacer.refill(dt);
             self.last_now_ns = now_ns;
+            self.apply_cc_line_floor();
         }
         // Faz-2: state-resolution / cancellation / disarm (F1: CS-state-yok; F2A/F2B genişletir).
         self.cs_phase2_resolve(now_ns);
@@ -2903,7 +2995,30 @@ impl Sender {
     #[must_use]
     pub fn next_wakeup_ns(&self) -> Option<u64> {
         // Kaynak 1-5 (timer'lar) + kaynak 6 (pacer-token'a bağlı due-now iş).
-        Self::earlier(self.next_timer_deadline_ns(), self.pending_work_ready_ns())
+        let best = Self::earlier(self.next_timer_deadline_ns(), self.pending_work_ready_ns());
+        Self::earlier(best, self.line_probe_ready_ns())
+    }
+
+    /// [HAT-MODELİ] Jeton ya da hat bekleyen kuyruk probunun (`tail_probe_pending`) çıkabileceği an.
+    /// Yalnız hat modeli kuruluyken aday üretir: hat, az önce çıkan bir datagramla meşgulken ateşlenen
+    /// PTO probu başka olay gelmeden de çıkabilsin. Model yoksa `None` → uyanma kümesi bit-aynı.
+    fn line_probe_ready_ns(&self) -> Option<u64> {
+        if !self.pacer.has_line() {
+            return None;
+        }
+        let target = self.tail_probe_pending?;
+        let size = self
+            .inflight
+            .get(&target)
+            .map(|r| r.unit.size)
+            .or_else(|| {
+                self.pending_lost
+                    .iter()
+                    .find(|r| r.seq == target)
+                    .map(|r| r.unit.size)
+            })?;
+        let dt = self.pacer.ns_until_sendable(size)?;
+        Some(self.last_now_ns.saturating_add(dt))
     }
 
     fn earlier(a: Option<u64>, b: Option<u64>) -> Option<u64> {
@@ -2968,7 +3083,15 @@ impl Sender {
             && self.state == SenderState::PreConverge
             && self.establish_due_ns > 0
         {
-            best = earlier(best, Some(self.establish_due_ns));
+            // [HAT-MODELİ] Vadesi geçmiş deneme hat açılınca çıkar (model yoksa ek 0 → bugünkü an).
+            let line = self.pacer.line_ns_until_open();
+            let due = if line > 0 {
+                self.establish_due_ns
+                    .max(self.last_now_ns.saturating_add(line))
+            } else {
+                self.establish_due_ns
+            };
+            best = earlier(best, Some(due));
         }
 
         // 4. DR-CS-3 bootstrap merdiveni (config default OFF ⇒ aday yok).
@@ -4929,6 +5052,9 @@ impl Sender {
         // [TUR-7 β2] ARQ token-payı: her K_ARQ_SHARE'inci grant'te retx ÖNCE dener (BOŞ-NÖBET
         // biter — retx fiilen wire'a çıkar); diğer grant'ler DATA-önce (ölçülü-karar korunur).
         self.e1_mark_app_limited_round(); // [E1 (d), KK-M2-04] tur mandalı, emisyondan önce
+                                          // [ÖNLEMSEL-KOPYA · ÖNCELİK] Kopya kuralı kapsamındaki (öncelikli şerit) yeni birimler ve
+                                          // vadesi gelmiş kopyaları yeniden iletimden de önce çıkar (kural yokken no-op).
+        self.drain_forward_copy_priority(&mut out, now_ns);
         self.arq_share_tick = self.arq_share_tick.wrapping_add(1);
         // [E1 retx_first, KK-M2-07] bayrak açıkken her izinde ARQ-önce; durum koşulu (e-dar)'a bağlı.
         if self.e1_retx_state_ok()
@@ -5102,6 +5228,169 @@ impl Sender {
     pub fn set_cc_initial_window(&mut self, bytes: u64) {
         if self.cc.is_some() {
             self.cc = Some(crate::cc::Bbr::new(DEFAULT_MTU, bytes));
+        }
+    }
+
+    /// [ASİMETRİK-YOL] Port pacer'ının profil tavanı (B/s, pacer'ın saydığı tel baytı cinsinden).
+    /// İlk pencere dağıtım profilinden büyütüldüğünde (`set_cc_initial_window`) o pencere profilin
+    /// yukarı yön hızıyla serileşir: tavan yokken ilk RTT örneğinden önce pacer
+    /// 1,25·pencere/100 ms (67 kB pencerede ≈ 840 kB/s) ile çalışır ve pencerenin tamamı darboğaz
+    /// kuyruğuna tek seferde boşalır; sığ kuyrukta kuyruk taşar, düşen paketler uçuşun kuyruğu
+    /// olduğu için yalnız PTO ile sezilir. Ölçülen hedef (BBR kazancı × BtlBw) tavanı aşarsa ölçüm
+    /// kazanır. `None` = tavan yok (bugünkü davranış); `cc` yoksa etkisiz.
+    pub fn set_cc_profile_pacing_cap(&mut self, cap_bps: Option<u64>) {
+        self.cc_profile_pacing_cap = cap_bps.filter(|&c| c > 0);
+    }
+
+    /// [GERİ-BİLDİRİM-AÇ] Geri bildirimi aç profilin uçuş ve hız kuralı ([`FeedbackStarvedRule`]).
+    /// `None` (varsayılan) = kural yok; `cc` yoksa etkisiz. Oturum başında, ilk olaydan önce çağrılır.
+    pub fn set_cc_feedback_starved(&mut self, rule: Option<FeedbackStarvedRule>) {
+        self.cc_feedback_starved = rule.filter(|r| r.pacing_cap_bps > 0 && r.line.rate_bps > 0);
+        if let (true, Some(r)) = (self.cc.is_some(), self.cc_feedback_starved) {
+            self.pacer.set_line(Some(r.line));
+        }
+    }
+
+    /// [ÖNLEMSEL-KOPYA] Yeni birimlerin ACK beklemeyen ileri kopya kuralı ([`ForwardCopyRule`]).
+    /// `None` (varsayılan) ya da `copies == 0` = kural yok. Oturum başında, ilk olaydan önce çağrılır.
+    pub fn set_forward_copy_rule(&mut self, rule: Option<ForwardCopyRule>) {
+        self.forward_copy_rule = rule.filter(|r| r.copies > 0).map(|r| ForwardCopyRule {
+            priority_below_id: r.priority_below_id.max(r.below_id),
+            ..r
+        });
+    }
+
+    /// [ÖNLEMSEL-KOPYA] Teyitsiz bir birimi (uçuşta, teyitsiz kaydı olan) ACK beklemeden `copies`
+    /// kez daha planlar (`spacing_ns` aralıklı, ilki birimin hattı terk etmesinden sonra; §11
+    /// kopya kaydı, teyitle iptal). Birim uçuşta teyitsiz değilse ya da zaten bekleyen tek atışlık
+    /// kopyası varsa hiçbir şey yapmaz ve `false` döner. PreConverge'in §3.3-B geometrik kopyası
+    /// (`interval_ns > 0`; ilk aralığı taban hızdan, 1 kB birimde onlarca saniye) engel sayılmaz:
+    /// ilk teyidin geç geldiği oturumda kuyruk birimlerini korumasız bırakıyordu (ürün testi,
+    /// tohum 3). Üst katman kodlanamayan birimler için çağırır (client-core: oturum ortasında
+    /// kapanamayan kısmi FEC bloğu).
+    pub fn schedule_forward_copies(
+        &mut self,
+        unit_id: u64,
+        copies: u8,
+        spacing_ns: u64,
+        now_ns: u64,
+    ) -> bool {
+        if copies == 0
+            || self
+                .dup_queue
+                .iter()
+                .any(|d| d.unit.id == unit_id && d.interval_ns == 0)
+        {
+            return false;
+        }
+        let Some(unit) = self
+            .inflight
+            .values()
+            .find(|p| {
+                p.unit.id == unit_id
+                    && p.origin != TransmitKind::FecParity
+                    && p.confirmed_release_ns.is_none()
+            })
+            .map(|p| p.unit)
+        else {
+            return false;
+        };
+        let t0 = now_ns.saturating_add(self.pacer.line_ns_until_drained());
+        for i in 1..=u64::from(copies) {
+            self.dup_queue.push(DupRec {
+                due_ns: t0.saturating_add(i.saturating_mul(spacing_ns)),
+                unit,
+                interval_ns: 0,
+            });
+        }
+        true
+    }
+
+    /// [ÖNLEMSEL-KOPYA] Kurulu ileri kopya kuralı (salt gözlem).
+    #[must_use]
+    pub fn forward_copy_rule(&self) -> Option<ForwardCopyRule> {
+        self.forward_copy_rule
+    }
+
+    /// [HAT-MODELİ] Port pacer'ına dağıtım profilinin yukarı yön hattını kurar
+    /// ([`crate::pacer::TokenBucket::set_line`]): kendi datagramlarımız (gövde + zarf) o hızda
+    /// serileşir, hattaki kendi kuyruğumuz bir burst aralığını aşarken pacer datagram vermez; kuyruk
+    /// darboğazda değil göndericide bekler. PreConverge kopya saatleri (§3.3-B merdiveni, DR-EST-1
+    /// kuruluş denemesi) birimin hattı terk ettiği andan başlar. `None` = model yok (bugünkü yol);
+    /// `cc` yoksa etkisiz (eski motor değişmez). Oturum başında, ilk olaydan önce çağrılır.
+    ///
+    /// Model yalnız **dar hatta** kurulur (`line_is_narrow`): tam boy bir datagramın (MTU + zarf)
+    /// serileşmesi en kısa kopya saatinden (DR-EST-1 ilk aralığı) uzunsa. Orada kopya saatleri tek
+    /// datagramın serileşmesiyle çelişir ve kovanın 10·MTU burst'ü dakikalarca hat süresidir. Daha
+    /// hızlı hatta kopya saatleri serileşmeyle çelişmez, pencere profilden büyüdüğünde profil tavanı
+    /// göndericiyi hatta bağlar; o göndericiler bugünkü gibidir.
+    ///
+    /// Port farkı (beyanlı, yalnız dar hatta): quinn pacer'ı en az 10·MTU burst verir
+    /// (`cc::PacerParams`) ve BBR kazancı (> 1) ölçülen hedefle hattın üstüne çıkabilir; dar hatta
+    /// kendi baytlarımız hattın hızını ve bir burst aralığını aşmaz. Hat hızının altındaki pacing
+    /// (BBR hedefi, profil tavanı) aynen geçerlidir.
+    pub fn set_cc_line(&mut self, line: Option<crate::pacer::LineModel>) {
+        if self.cc.is_some() {
+            self.pacer.set_line(line.filter(Self::line_is_narrow));
+        }
+    }
+
+    /// [HAT-MODELİ] Hat dar mı: tam boy datagram (MTU + zarf) bu hızda `ESTABLISH_PROBE_INITIAL_NS`'den
+    /// uzun sürede serileşiyorsa (zarf 28 B iken ≈ 2,4 kB/s altı).
+    pub fn line_is_narrow(line: &crate::pacer::LineModel) -> bool {
+        let bytes = u128::from(DEFAULT_MTU.saturating_add(line.datagram_overhead));
+        line.rate_bps > 0
+            && bytes * 1_000_000_000
+                > u128::from(ESTABLISH_PROBE_INITIAL_NS) * u128::from(line.rate_bps)
+    }
+
+    /// [HAT-MODELİ] Pacer'da hat modeli kurulu mu (gözlem/test).
+    #[must_use]
+    pub fn cc_line_installed(&self) -> bool {
+        self.pacer.has_line()
+    }
+
+    /// [DÖNÜŞ-HATTI] Kurulu hattın ([`Sender::set_cc_line`]) paylaşılan doluluğu: hattı kullanan
+    /// HER göndericinin (aynı cihazın alıcı ucunun ACK ve PARAM_ACK'leri, başka oturum uçları, bu
+    /// motorun pacer dışından giden kontrol çerçeveleri) baytlarıyla şu an hatta serileşmeyi
+    /// bekleyen bayt (zarf dahil). Bir sonraki olayda pacer dolumundan sonra hat kuyruğu en az bu
+    /// değere çıkar: yeni datagram ve kopya saatleri hattın gerçekten boşalmasını bekler.
+    /// Model yokken etkisiz (eski motor ve yön hızı olmayan yol bit-aynı).
+    ///
+    /// Neden: hat modeli yalnız bu motorun kendi datagramlarını sayıyordu. 62 B/s yukarı yönde aynı
+    /// cihazın ACK'leri ve PARAM'ları hattı saniyelerce tutarken model hattı boş sanıyor, alındıyı ve
+    /// kopyalarını o kuyruğun arkasına bırakıyordu (`kama-integration` `asym_product_outcome`).
+    pub fn cc_line_observe_backlog(&mut self, backlog_bytes: u64) {
+        if self.pacer.has_line() {
+            self.cc_line_floor = Some(self.cc_line_floor.unwrap_or(0).max(backlog_bytes));
+        }
+    }
+
+    /// [DÖNÜŞ-HATTI] Motorun kararı olmadan bu uçtan hatta çıkan bir datagram (`udp_bytes`, UDP
+    /// gövdesi; ör. çalışma-zamanının PARAM'ı) kurulu hatta yazılır. Model yokken etkisiz.
+    pub fn cc_line_charge(&mut self, udp_bytes: u64) {
+        self.pacer.line_charge(udp_bytes);
+    }
+
+    /// [DÖNÜŞ-HATTI] Kurulu hattın kendi baytlarımızı serileştirmeyi bitirmesine kalan süre (ns;
+    /// model yoksa 0).
+    #[must_use]
+    pub fn cc_line_ns_until_drained(&self) -> u64 {
+        self.pacer.line_ns_until_drained()
+    }
+
+    /// RFC 9002 §6.2.1 taban PTO (ns; geri çekilmesiz): `srtt + max(4·rttvar, kG) + max_ack_delay`,
+    /// RTT örneği yokken yapılandırmanın ilk PTO'su.
+    #[must_use]
+    pub fn base_pto_ns(&self) -> u64 {
+        self.tail_recovery
+            .base_pto_ns(self.rtt.srtt().map(dur_ns), dur_ns(self.rtt.rttvar()))
+    }
+
+    /// [DÖNÜŞ-HATTI] Bekleyen paylaşılan hat gözlemi pacer dolumundan sonra hat kuyruğuna.
+    fn apply_cc_line_floor(&mut self) {
+        if let Some(b) = self.cc_line_floor.take() {
+            self.pacer.line_raise_backlog(b);
         }
     }
 
@@ -7212,12 +7501,18 @@ impl Sender {
         if self.dup_queue.is_empty() {
             return; // kaynak yok (ilk DATA henüz kopya planlamadı).
         }
+        // [HAT-MODELİ] Bilinen hatta deneme saati kendi baytlarımızın hattı terk ettiği andan
+        // başlar ve deneme hat açılmadan çıkmaz (jeton muafiyeti 31 B/s tabanına karşıdır, hatta
+        // değil): aksi hâlde kopya, orijinal dar hatta daha serileşmeden kuyruğa girer. Model yoksa
+        // iki ek de etkisizdir.
         if self.establish_due_ns == 0 {
             self.establish_interval_ns = ESTABLISH_PROBE_INITIAL_NS;
-            self.establish_due_ns = now_ns.saturating_add(self.establish_interval_ns);
+            self.establish_due_ns = now_ns
+                .saturating_add(self.pacer.line_ns_until_drained())
+                .saturating_add(self.establish_interval_ns);
             return;
         }
-        if now_ns < self.establish_due_ns {
+        if now_ns < self.establish_due_ns || !self.pacer.line_is_open() {
             return;
         }
         // En-eski vadeli §3.3-B kopyası; drain_due_duplicates gövdesinin try_send'siz tek-elemanlı
@@ -7240,10 +7535,12 @@ impl Sender {
             size: dup.unit.size,
             send_record: None,
         });
+        self.pacer.line_charge(dup.unit.size);
+        let left_line_ns = now_ns.saturating_add(self.pacer.line_ns_until_drained());
         if dup.interval_ns > 0 {
             let next_interval = dup.interval_ns.saturating_mul(PC_COPY_MULTIPLIER);
             self.dup_queue.push(DupRec {
-                due_ns: now_ns.saturating_add(next_interval),
+                due_ns: left_line_ns.saturating_add(next_interval),
                 unit: dup.unit,
                 interval_ns: next_interval,
             });
@@ -7253,7 +7550,7 @@ impl Sender {
             .establish_interval_ns
             .saturating_mul(2)
             .min(ESTABLISH_PROBE_CAP_NS);
-        self.establish_due_ns = now_ns.saturating_add(self.establish_interval_ns);
+        self.establish_due_ns = left_line_ns.saturating_add(self.establish_interval_ns);
     }
 
     /// [DR-EST-1] Kuruluş-kolu anahtarı (test-görünür; default-ON). Bkz. alan-doc'u.
@@ -7306,11 +7603,66 @@ impl Sender {
             if dup.interval_ns > 0 {
                 let next_interval = dup.interval_ns.saturating_mul(PC_COPY_MULTIPLIER);
                 self.dup_queue.push(DupRec {
-                    due_ns: now_ns.saturating_add(next_interval),
+                    // [HAT-MODELİ] Bilinen hatta kopyanın hattı terk ettiği andan (model yoksa 0).
+                    due_ns: now_ns
+                        .saturating_add(self.pacer.line_ns_until_drained())
+                        .saturating_add(next_interval),
                     unit: dup.unit,
                     interval_ns: next_interval,
                 });
             }
+        }
+    }
+
+    /// [ÖNLEMSEL-KOPYA · ÖNCELİK] Kopya kuralı kurulu iken ([`ForwardCopyRule`]) kapsamdaki yeni
+    /// birimleri (gönderim kuyruğundaki sıralarıyla) ve vadesi gelmiş kopyalarını, yeniden iletim
+    /// ve diğer yeni veriden önce emit eder. Kapsam üst katmanın öncelikli şerididir (client-core:
+    /// PTT); dosya parçalarının yeniden iletim dalgası onu bir ACK gelince saniyelerce bekletiyordu.
+    /// Pencere ve pacer kapısı aynıdır (`try_send_pre_parity`); yalnız sıra değişir.
+    fn drain_forward_copy_priority(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+        let Some(rule) = self.forward_copy_rule else {
+            return;
+        };
+        let mut i = 0;
+        while i < self.tx_queue.len() {
+            let unit = self.tx_queue[i];
+            if unit.id >= rule.priority_below_id {
+                i += 1;
+                continue;
+            }
+            if !self.try_send_pre_parity(unit.size, false) {
+                return;
+            }
+            let _ = self.tx_queue.remove(i);
+            let seq = self.track_sent(unit, now_ns, 0, TransmitKind::Data);
+            out.push(TransmitDecision {
+                kind: TransmitKind::Data,
+                seq,
+                unit_id: unit.id,
+                size: unit.size,
+                send_record: None,
+            });
+            self.after_new_data_sent(unit, now_ns);
+        }
+        let mut j = 0;
+        while j < self.dup_queue.len() {
+            let d = self.dup_queue[j];
+            if d.unit.id >= rule.priority_below_id || d.due_ns > now_ns {
+                j += 1;
+                continue;
+            }
+            if !self.try_send_pre_parity(d.unit.size, true) {
+                return;
+            }
+            let dup = self.dup_queue.remove(j);
+            let seq = self.track_sent(dup.unit, now_ns, 0, TransmitKind::Duplicate);
+            out.push(TransmitDecision {
+                kind: TransmitKind::Duplicate,
+                seq,
+                unit_id: dup.unit.id,
+                size: dup.unit.size,
+                send_record: None,
+            });
         }
     }
 
@@ -7352,6 +7704,21 @@ impl Sender {
     /// ([`Self::drain_new_data`]) ve [CC-PORT U17] yeni veri taşıyan PTO probu
     /// ([`Self::emit_new_data_probe`]) aynı kuralı kullanır.
     fn after_new_data_sent(&mut self, front: OpaqueUnit, now_ns: u64) {
+        // [ÖNLEMSEL-KOPYA] Kural kapsamındaki birim RecoverFwd'nin kopyalarını beklemez; iki kural
+        // üst üste binmesin diye RecoverFwd'de bu kopyalar planlanmaz (orada zaten kopyalanır).
+        if let Some(rule) = self.forward_copy_rule {
+            if front.id < rule.below_id && self.state != SenderState::RecoverFwd {
+                // [HAT-MODELİ] Bilinen hatta ilk kopya orijinalin hattı terk ettiği andan sayılır.
+                let t0 = now_ns.saturating_add(self.pacer.line_ns_until_drained());
+                for i in 1..=u64::from(rule.copies) {
+                    self.dup_queue.push(DupRec {
+                        due_ns: t0.saturating_add(i.saturating_mul(rule.spacing_ns)),
+                        unit: front,
+                        interval_ns: 0, // tek atış; teyit gelince on_ack iptal eder
+                    });
+                }
+            }
+        }
         if self.state == SenderState::RecoverFwd {
             let (factor, spacing) = self.dup_params();
             for i in 1..u64::from(factor) {
@@ -7371,8 +7738,13 @@ impl Sender {
                 .checked_div(PRE_CONVERGE_FLOOR_BW)
                 .unwrap_or(0);
             let first_delay = rtt_floor.saturating_mul(PC_KBASE_NUM) / PC_KBASE_DEN;
+            // [HAT-MODELİ] Bilinen hatta t₀ birimin hattı terk ettiği an: port pacer'ı hattan
+            // hızlıdır (31 B/s taban okunmaz), K-D2'nin "pacer serileştirir" öncülü yalnız hat
+            // modeliyle geçerli kalır. Model yoksa ek 0 (bugünkü t₀).
             self.dup_queue.push(DupRec {
-                due_ns: now_ns.saturating_add(first_delay),
+                due_ns: now_ns
+                    .saturating_add(self.pacer.line_ns_until_drained())
+                    .saturating_add(first_delay),
                 unit: front,
                 interval_ns: first_delay, // reschedule aralığı (drain'de ×COPY_MULTIPLIER)
             });
@@ -7559,6 +7931,16 @@ impl Sender {
             .rtprop()
             .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
         (self.btlbw.btlbw(), rtprop_ns)
+    }
+
+    /// [ŞERİT-KUYRUK] Gönderim kuyruğunda (`tx_queue`) bekleyen, henüz hiç tele çıkmamış yeni
+    /// birim sayısı (SALT-OKUMA; davranış DEĞİŞMEZ). Kuyruk FIFO boşalır ve şerit sırasını
+    /// bilmez; üst katman (client-core şeritleri) dosya birimini motora ancak bu birikim küçükken
+    /// verir ki sonradan gelen metin dosyanın arkasında beklemesin. Motor bu değeri hiçbir kararda
+    /// okumaz.
+    #[must_use]
+    pub fn unsent_units(&self) -> usize {
+        self.tx_queue.len()
     }
 
     /// TUR-A teşhis rate-trajektori snapshot'ı (SALT-GÖZLEM; davranış DEĞİŞMEZ):
@@ -14371,6 +14753,71 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod profile_pacing_cap_tests {
+    //! [ASİMETRİK-YOL] Profil pacer tavanı: profilden büyütülen ilk pencere profil hızıyla
+    //! serileşir; tavan yokken (bugünkü yol) pencere ilk RTT örneğinden önce 1,25·pencere/100 ms
+    //! hızla boşalır.
+    use super::*;
+
+    const MS: u64 = 1_000_000;
+    const IW: u64 = 67_500;
+    const CAP: u64 = 12_200;
+
+    /// 40 × 1200 B birim t = 0'da sunulur; 1 ms'lik tik (runtime pompası gibi) 200 ms koşar.
+    /// Dönen: (200 ms içinde tele çıkan DATA sayısı, son pacer hızı).
+    fn first_flight(cap: Option<u64>) -> (usize, u64) {
+        let mut s = Sender::with_cc_port();
+        s.set_cc_profile_pacing_cap(cap);
+        s.set_cc_initial_window(IW);
+        let mut data = 0usize;
+        let count =
+            |out: &[TransmitDecision]| out.iter().filter(|t| t.kind == TransmitKind::Data).count();
+        for i in 0..40u64 {
+            data += count(&s.on_event(Event::AppData(OpaqueUnit { id: i, size: 1200 }), 0));
+        }
+        for t in 1..=200u64 {
+            data += count(&s.on_event(Event::TimerFired(Timer::Pto), t * MS));
+        }
+        (data, s.diag_pacer().0)
+    }
+
+    #[test]
+    fn profile_cap_paces_the_enlarged_initial_window() {
+        let (free, free_rate) = first_flight(None);
+        let (capped, capped_rate) = first_flight(Some(CAP));
+        // Tavansız: 67,5 kB pencere 200 ms'de tamamen (40 birim = 48 kB) tele çıkar.
+        assert_eq!(free, 40, "tavansız ilk uçuş pencerenin tamamı");
+        assert!(
+            free_rate > 500_000,
+            "tavansız pacer 1,25·pencere/100 ms: {free_rate}"
+        );
+        // Tavanlı: başlangıç kovası (2·MTU) + 200 ms × 12,2 kB/s ≈ 4,8 kB → ≈ 4 birim.
+        assert_eq!(capped_rate, CAP, "ölçüm yokken pacer profil tavanında");
+        assert!(
+            (2..=5).contains(&capped),
+            "tavanlı ilk uçuş kova + profil hızı: {capped}"
+        );
+    }
+
+    #[test]
+    fn profile_cap_none_is_the_default_path() {
+        let mut a = Sender::with_cc_port();
+        let mut b = Sender::with_cc_port();
+        b.set_cc_profile_pacing_cap(None);
+        b.set_cc_profile_pacing_cap(Some(0)); // 0 = tavan yok
+        for i in 0..20u64 {
+            let ev = || Event::AppData(OpaqueUnit { id: i, size: 1200 });
+            assert_eq!(
+                a.on_event(ev(), i * MS),
+                b.on_event(ev(), i * MS),
+                "tavansız gönderici bugünkü yolla aynı (birim {i})"
+            );
+        }
+        assert_eq!(a.diag_pacer(), b.diag_pacer());
+    }
+}
+
 /// [CC-PORT · KADER-SIRASI] Kayıp-yapısı kestiricisinin anahtarı: eski motor birim kimliği, port
 /// motoru orijinalin motor-içi gönderim sırası (`Sender::fate_key`).
 #[cfg(test)]
@@ -14442,5 +14889,190 @@ mod fate_key_tests {
         let legacy = window_after(Sender::new, &ids);
         assert_eq!(port, legacy);
         assert_eq!(port.window_ids, (44..300).collect::<Vec<u64>>());
+    }
+}
+
+#[cfg(test)]
+mod feedback_starved_tests {
+    //! [GERİ-BİLDİRİM-AÇ · ÖNLEMSEL-KOPYA] Geri bildirimi aç profilin motor kuralları (sahip kararı
+    //! 2026-11-16): kimlik sınırlı ileri kopya, öncelikli çıkış, teyitsiz birim kopyası ve ACK
+    //! saatine bağlı olmayan uçuş tabanı. Her test kural çıkarılınca kırmızıya döner.
+
+    use super::*;
+
+    const MS: u64 = 1_000_000;
+
+    /// `offers` t = 0'da sunulur; ardından 1 ms'lik tikle `ticks_ms` koşar (ACK yok).
+    fn emitted(s: &mut Sender, offers: &[(u64, u64)], ticks_ms: u64) -> Vec<TransmitDecision> {
+        let mut out = Vec::new();
+        for &(id, size) in offers {
+            out.extend(s.on_event(Event::AppData(OpaqueUnit { id, size }), 0));
+        }
+        for t in 1..=ticks_ms {
+            out.extend(s.on_event(Event::TimerFired(Timer::Pto), t * MS));
+        }
+        out
+    }
+
+    fn dups_of(out: &[TransmitDecision], id: u64) -> usize {
+        out.iter()
+            .filter(|t| t.kind == TransmitKind::Duplicate && t.unit_id == id)
+            .count()
+    }
+
+    /// Kural kapsamındaki (kimliği sınırın altında) birim ilk iletiminden sonra ACK beklemeden
+    /// `copies` kez daha çıkar; kapsam dışı birim ve kuralsız gönderici kopyalamaz.
+    #[test]
+    fn forward_copy_rule_copies_only_units_below_the_bound() {
+        let rule = ForwardCopyRule {
+            below_id: 100,
+            priority_below_id: 100,
+            copies: 4,
+            spacing_ns: 40 * MS,
+        };
+        // Taban: kuralsız göndericinin kendi kopyaları (PreConverge §3.3-B) — kural ona EKLENİR.
+        let mut plain = Sender::with_cc_port();
+        let base = emitted(&mut plain, &[(5, 100), (200, 100)], 500);
+        let mut s = Sender::with_cc_port();
+        s.set_forward_copy_rule(Some(rule));
+        let out = emitted(&mut s, &[(5, 100), (200, 100)], 500);
+        assert_eq!(
+            dups_of(&out, 5) - dups_of(&base, 5),
+            4,
+            "kapsamdaki birim 4 ek kopya"
+        );
+        assert_eq!(
+            dups_of(&out, 200),
+            dups_of(&base, 200),
+            "kapsam dışı birim ek kopya almaz"
+        );
+        // `copies == 0` kural kurmaz.
+        let mut zero = Sender::with_cc_port();
+        zero.set_forward_copy_rule(Some(ForwardCopyRule { copies: 0, ..rule }));
+        assert!(zero.forward_copy_rule().is_none());
+    }
+
+    /// Kural kapsamındaki yeni birim, kuyrukta bekleyen büyük birimlerin önünde çıkar (öncelikli
+    /// şerit); kural yokken kuyruk FIFO boşalır.
+    #[test]
+    fn rule_units_leave_before_queued_bulk() {
+        let rule = ForwardCopyRule {
+            below_id: 50,
+            priority_below_id: 100,
+            copies: 1,
+            spacing_ns: 40 * MS,
+        };
+        let position = |with_rule: bool| {
+            let mut s = Sender::with_cc_port();
+            s.set_cc_profile_pacing_cap(Some(12_000));
+            // ACK yok: pencere bütün kuyruğu taşısın ki sıra yalnız önceliği ölçsün.
+            s.set_cc_initial_window(100_000);
+            if with_rule {
+                s.set_forward_copy_rule(Some(rule));
+            }
+            let mut offers: Vec<(u64, u64)> = (1000..1020).map(|i| (i, 1200)).collect();
+            offers.push((5, 100)); // kopyalanan öncelikli şerit
+            offers.push((70, 100)); // kopyalanmayan öncelikli şerit (kopya kuralı ilk testte)
+            let out = emitted(&mut s, &offers, 3000);
+            let pos = |id| {
+                out.iter()
+                    .filter(|t| t.kind == TransmitKind::Data)
+                    .position(|t| t.unit_id == id)
+                    .expect("öncelikli birim çıktı")
+            };
+            (pos(5), pos(70))
+        };
+        let (fifo5, fifo70) = position(false);
+        let (prio5, prio70) = position(true);
+        assert!(
+            fifo5 >= 10 && fifo70 >= 10,
+            "kuralsız: kuyruğun arkasında ({fifo5}, {fifo70})"
+        );
+        assert!(
+            prio5 <= 3 && prio70 <= 4,
+            "kuralla: kuyruğun önünde ({prio5}, {prio70})"
+        );
+    }
+
+    /// Teyitsiz uçuştaki birime kopya bir kez planlanır; uçuşta olmayan birime ve `copies == 0`'a
+    /// planlanmaz.
+    #[test]
+    fn copies_are_planned_only_for_unconfirmed_inflight_units() {
+        let mut s = Sender::with_cc_port();
+        let out = s.on_event(Event::AppData(OpaqueUnit { id: 7, size: 100 }), 0);
+        assert!(out.iter().any(|t| t.unit_id == 7), "birim tele çıktı");
+        assert!(s.schedule_forward_copies(7, 2, 40 * MS, MS));
+        assert!(
+            !s.schedule_forward_copies(7, 2, 40 * MS, MS),
+            "planlı kopyası var"
+        );
+        assert!(
+            !s.schedule_forward_copies(8, 2, 40 * MS, MS),
+            "uçuşta değil"
+        );
+        assert!(
+            !s.schedule_forward_copies(7, 0, 40 * MS, MS),
+            "kopya sayısı 0"
+        );
+        // PreConverge'in geometrik kaydı (interval > 0) tek atışlık kopyayı engellemez.
+        let mut g = Sender::with_cc_port();
+        let _ = g.on_event(Event::AppData(OpaqueUnit { id: 9, size: 1000 }), 0);
+        g.dup_queue.retain(|d| d.unit.id != 9);
+        g.dup_queue.push(DupRec {
+            due_ns: 60_000 * MS,
+            unit: OpaqueUnit { id: 9, size: 1000 },
+            interval_ns: 60_000 * MS,
+        });
+        assert!(
+            g.schedule_forward_copies(9, 2, 40 * MS, MS),
+            "geometrik kayıt engel değil"
+        );
+        let mut out = Vec::new();
+        for t in 2..=200u64 {
+            out.extend(s.on_event(Event::TimerFired(Timer::Pto), t * MS));
+        }
+        assert_eq!(dups_of(&out, 7), 2, "planlanan iki kopya çıktı");
+    }
+
+    /// Geri bildirimi aç kuralda gönderici ACK olmadan uçuş tabanına
+    /// (`tavan × (geri bildirim ufku + RTT)`) kadar gönderir ve hız tavanı aşılmaz; kuralsız
+    /// gönderici ilk pencerede durur (ACK saati).
+    #[test]
+    fn feedback_starved_rule_sends_up_to_the_floor_without_acks() {
+        let cap = 12_000u64;
+        let rule = FeedbackStarvedRule {
+            pacing_cap_bps: cap,
+            feedback_ns: 10_000 * MS,
+            line: crate::pacer::LineModel {
+                rate_bps: 12_500,
+                datagram_overhead: 28,
+            },
+        };
+        let run = |r: Option<FeedbackStarvedRule>| {
+            let mut s = Sender::with_cc_port();
+            s.set_cc_profile_pacing_cap(Some(cap));
+            s.set_cc_initial_window(15_000);
+            s.set_cc_feedback_starved(r);
+            let offers: Vec<(u64, u64)> = (0..200).map(|i| (1000 + i, 1000)).collect();
+            let out = emitted(&mut s, &offers, 12_000);
+            let bytes: u64 = out
+                .iter()
+                .filter(|t| t.kind == TransmitKind::Data)
+                .map(|t| t.size)
+                .sum();
+            (bytes, s.diag_pacer().0)
+        };
+        let (plain, _) = run(None);
+        let (starved, rate) = run(Some(rule));
+        // Taban: 12 000 B/s × (10 s + 100 ms başlangıç RTT'si) = 121 200 B.
+        assert!(
+            plain < 30_000,
+            "kuralsız: ilk pencere + PTO probları ({plain} B)"
+        );
+        assert!(
+            (100_000..=130_000).contains(&starved),
+            "kuralla: ACK'siz tabana dek ({starved} B)"
+        );
+        assert!(rate <= cap, "hız tavanı aşılmaz ({rate} B/s)");
     }
 }

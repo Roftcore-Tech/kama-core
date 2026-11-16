@@ -44,6 +44,11 @@ INV-RATE-1        [ÜSTÜ ÇİZİLDİ 2026-11-11, CC-PORT — eski metin:] loss 
                   sınırlar (RFC 9002 / BBR referans davranışı; quinn-proto 0.11.18 portu) ve FEC/ARQ
                   kolunu besler. Kayıp filtresi (kuyruk gecikmesi yokken kaybı saymama) DENEYDİR,
                   ürün kuralı değildir. Dayanak: docs/design/CC-PORT-ESLEME.md; Ö-CC CP-1.
+                  [PROFİL İSTİSNASI 2026-11-16, sahip kararı, İŞ-26:] yön hızı profili açık ve geri
+                  bildirim aç iken (bütçeli ACK aralığı ≥ 1 s) recovery_window uçuş tavanını SINIRLAMAZ;
+                  tavan en az hat × (geri bildirim ufku + RTT), pacing profil hattıyla sert sınırlı
+                  (ölçüm aşamaz). Loss yine ölçülür, FEC/ARQ'yu ve BBR durumunu besler. Profil kapalı
+                  yol ve eski motor 2026-11-11 metnindedir. Kod: `sender::FeedbackStarvedRule`.
 INV-FEC-1         CODE-THEN-ENCRYPT-AUTHENTICATE-SHARDS: FEC plaintext block'ta encode → per-shard AEAD →
                   wire'da yalnız ciphertext. Alıcı: AEAD verify SONRA decode (authenticate-before-decode).
                   ASLA "encrypt-then-code / ciphertext üstünde FEC" yazma.
@@ -116,6 +121,7 @@ KARAR-KAYDI-2026-11 §2'deki düzeltilmiş hâli main'deyken).
 ✗ IP-only hub enrollment (pubkey-bound CSR PoP)
 ✗ transport'a AEAD/anahtar koyma (INV-ENGINE-SOC — kripto ayrı katman)
 ✗ loss ile PACING HIZI düşürme (INV-RATE-1, 2026-11-11 metni; uçuş tavanı recovery_window ile sınırlanabilir)
+  [2026-11-16 profil istisnası: geri bildirimi aç profilde uçuş tavanı recovery_window ile sınırlanmaz]
 ✗ client'ı DHT'ye sokma (hub-mesh only)
 ✗ kripto primitifi registry (pki §13) dışından ekleme
 ✗ ölçülmemiş byte tahmini / "QUIC'i yendik" kanıtsız iddia (§4.4 ölç, varsayma)
@@ -140,6 +146,13 @@ BENCH-01   blackout survival İKİLİ metriği (oturum N-sn kesintiyi sağ atlat
 ```
 
 ## YAMA KAYDI
+
+- 2026-11-16 · İŞ-26 profil paketi (sahip, doğrudan karar; #175 yorum 6920942098): §4 INV-RATE-1'e profil istisnası
+  eklendi (2026-11-11 metni silinmedi, değişmedi); §8 ilgili satıra not. Kapsam yalnız `link_rates` verilmiş port
+  motoru + geri bildirim aç (`runtime::link_feedback_starved`); profil kapalı yol, eski motor ve tel düzeni
+  bayt-aynı. Aynı kararın ikinci maddesi (PTT dışı şeritlere profilin en yüksek FEC oranı) ve PTT D× kopya kararı
+  (#175 6919973033) invariant değil, ürün davranışı; kod `runtime::fec_feedback_starved_permille`,
+  `runtime::PTT_FORWARD_COPIES`.
 
 - 2026-11-11 · CC-PORT (sahip, gece yetkisi; PR #170/#175/#176): §4 INV-RATE-1 yeni metin (eski satır üstü çizili,
   silinmedi); §8 ilgili satır. Motor: `crates/adaptive-transport/src/cc/` (quinn-proto 0.11.18 BBR + RFC 9002 portu,

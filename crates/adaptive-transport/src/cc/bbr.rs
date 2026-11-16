@@ -604,10 +604,29 @@ impl Bbr {
         self.cwnd
     }
 
+    /// [GERİ-BİLDİRİM-AÇ · sahip kararı 2026-11-16] Toparlanma (`recovery_window`) uygulanmamış
+    /// uçuş tavanı: ProbeRTT'de ProbeRTT penceresi, aksi hâlde `cwnd`. Yalnız göndericinin geri
+    /// bildirimi aç profil kuralı okur (INV-RATE-1 profil istisnası); BBR'ın kendi kararları okumaz.
+    #[must_use]
+    pub fn window_without_recovery(&self) -> u64 {
+        if self.mode == Mode::ProbeRtt {
+            return self.get_probe_rtt_cwnd();
+        }
+        self.cwnd
+    }
+
     /// BBR pacing hızı (bayt/s) — quinn'de yalnız metrik (q:494-500); pacer pencere tabanlıdır.
     #[must_use]
     pub fn pacing_rate(&self) -> u64 {
         self.pacing_rate
+    }
+
+    /// Ölçümün desteklediği pacing hedefi (bayt/s): `pacing_gain × BtlBw` (draft §4.2); bant örneği
+    /// yoksa 0. `pacing_rate`'ten farkı: Startup'ın ilk-pencere/min_rtt tabanını ve "Startup'ta hız
+    /// düşmez" mandalını içermez. BBR'ın kendi kararları okumaz; göndericinin profil tavanı okur.
+    #[must_use]
+    pub fn measured_pacing_target(&self) -> u64 {
+        apply_pm(self.bw_estimate(), self.pacing_gain_pm)
     }
 
     /// Kip.
