@@ -186,6 +186,8 @@ def main():
                    "--block", b, "--out", out, "--results", results, "--bench", bench, "--tcp", tcp]
             if no_netem:
                 cmd.append("--no-netem")
+            if only:
+                cmd += ["--only", only]
             p = subprocess.Popen(cmd, stdout=open(os.path.join(out, "workers.stdout"), "a"), stderr=subprocess.STDOUT)
             running[p] = b
             log(out, f"BLOCK-START {b} pid={p.pid}")

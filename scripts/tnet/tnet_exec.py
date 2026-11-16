@@ -12,7 +12,7 @@ Satır başına: tc -s sayaçları (iki yön, önce/sonra), va0 bayt sayaçları
 Satır ortak sonuç CSV'sine `flock` altında TEK satır olarak eklenir; sonuçta bulunan run_id atlanır
 (devam-edilebilir; üstüne yazılmaz).
 
-Kullanım: tnet_exec.py --manifest M --block B --out OUT [--bench P] [--tcp P] [--no-netem]
+Kullanım: tnet_exec.py --manifest M --block B --out OUT [--results CSV] [--bench P] [--tcp P] [--no-netem] [--only RE]
   --no-netem: YALNIZ bulut/duman — netem uygulanmaz/doğrulanmaz, satır status=SMOKE-NO-NETEM yazılır
               (analizör bu satırları kampanya satırı saymaz).
 """
@@ -20,6 +20,7 @@ import csv
 import fcntl
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -29,6 +30,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 A_IP, B_IP = "10.10.0.1", "10.10.1.1"
 T = {"MID": None, "CHLB": None}
+CHILDREN = []   # o anki satırın sunucu/istemci süreçleri (sinyalde öksüz kalmasın)
 COLS = ["run_id", "replica", "group", "cell", "loss_pct", "loss_dir", "rtt_class", "owd_ms", "rate_fwd", "rate_rev",
         "workload", "msgs", "payload", "arm", "mode", "rep", "horizon_ms", "deadline_ms", "status", "delivered",
         "complete_horizon", "complete_deadline", "t_complete_ms", "wire_bytes", "wire_tx_bytes", "wire_rx_bytes",
@@ -210,6 +212,7 @@ def run_row(m, d, port, bench, tcp, lg):
     json.dump({"server": srv, "client": cli}, open(os.path.join(d, "cmd.json"), "w"))
     srv_err, cli_err = open(os.path.join(d, "s.err"), "w"), open(os.path.join(d, "c.err"), "w")
     sp = subprocess.Popen(srv, stdout=subprocess.DEVNULL, stderr=srv_err, env=env)
+    CHILDREN.append(sp)
     if ready[0]:
         if not wait_ready(os.path.join(d, "s.err"), ready[0], ready[1]):
             log(lg, f"SERVER-NOT-READY {m['run_id']} (satır yine yazılır; çıktı yoksa ERROR-NO-RESULT)")
@@ -217,9 +220,13 @@ def run_row(m, d, port, bench, tcp, lg):
         time.sleep(ready[1])
     # İstemci tavanı: quinn el sıkışması ≤ H + ısıtma ≤ 10,3 s + pencere H + pay (ONKAYIT §5).
     budget = 2 * int(m["horizon_s"]) + 90
+    cp = subprocess.Popen(cli, stdout=subprocess.DEVNULL, stderr=cli_err, env=env)
+    CHILDREN.append(cp)
     try:
-        rc = subprocess.run(cli, stdout=subprocess.DEVNULL, stderr=cli_err, timeout=budget, env=env).returncode
+        rc = cp.wait(timeout=budget)
     except subprocess.TimeoutExpired:
+        cp.kill()
+        cp.wait()
         rc = 124
     sp.send_signal(signal.SIGTERM)
     try:
@@ -227,6 +234,7 @@ def run_row(m, d, port, bench, tcp, lg):
     except subprocess.TimeoutExpired:
         sp.kill()
         sp.wait()
+    CHILDREN.clear()
     srv_err.close()
     cli_err.close()
     return rc
@@ -355,7 +363,21 @@ def arg(a, k, default=None):
     return a[a.index(k) + 1] if k in a else default
 
 
+def on_signal(signum, _frame):
+    """Koordinatör durdurunca: satırın süreçlerini ve topolojiyi (ad alanı uyku süreçleri) kapat, çık.
+    Yarım satır sonuç CSV'sine YAZILMAZ; yeniden başlatmada o satır baştan koşar."""
+    for p in CHILDREN:
+        try:
+            p.kill()
+        except OSError:
+            pass
+    topo_down()
+    sys.exit(128 + signum)
+
+
 def main():
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGINT, on_signal)
     a = sys.argv[1:]
     manifest, block, outdir = arg(a, "--manifest"), arg(a, "--block"), arg(a, "--out")
     bench = os.path.abspath(arg(a, "--bench", os.path.join(REPO, "target/release/bench")))
@@ -364,7 +386,9 @@ def main():
     results = arg(a, "--results", os.path.join(outdir, "results.csv"))
     os.makedirs(os.path.join(outdir, "logs"), exist_ok=True)
     lg = open(os.path.join(outdir, "logs", block.replace("/", "__") + ".log"), "a")
-    rows = [r for r in csv.DictReader(open(manifest)) if r["block"] == block]
+    only = arg(a, "--only")   # yalnız duman: satır alt kümesi (koordinatör aynı ifadeyi geçirir)
+    rows = [r for r in csv.DictReader(open(manifest))
+            if r["block"] == block and (only is None or re.search(only, r["run_id"]))]
     done = done_ids(results)
     todo = [r for r in rows if r["run_id"] not in done]
     log(lg, f"EXEC-START block={block} rows={len(rows)} todo={len(todo)} kernel={os.uname().release} "
