@@ -98,6 +98,10 @@ fn product_v1_profile_is_pinned() {
     // [K4G-05 / DUR-19] Canlı teşhis aynası ürün yolunda kapalı (salt gözlem; INT-02 düzeneği
     // açar).
     assert!(!c.live_diag, "ürün varsayılanında kapalı");
+    assert!(
+        !c.lane_ids,
+        "şerit kimlikleri varsayılanda kapalı (ClientTransport şeritleri açınca kurar)"
+    );
     // [E1 gösterim bayrakları, CC §4.1] Beşi de ürün varsayılanında kapalı (yalnız gösterim
     // düğümü `transport-v1.x-goster` ve teşhis kolları açar).
     assert_eq!(

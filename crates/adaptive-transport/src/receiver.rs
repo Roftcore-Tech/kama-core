@@ -107,8 +107,9 @@ pub fn budgeted_ack_interval_ns(return_bw_bps: u64) -> u64 {
 
 /// [GERİ-BİLDİRİM-UFKU] Dönüş yolu `return_bw_bps` (B/s) iken bütçeli alıcının en büyük ACK'inin
 /// (MAX_ACK_RANGES aralıklı) göndericiye ulaşma ufku (ns): bütçe aralığı (en büyük ACK / Y·dönüş)
-/// + o ACK'in dönüş hattında serileşmesi. Gönderici, geri bildirimi aç profilde uçuş tabanını bu
-/// ufukla kurar (bir birimin teyidi en geç bu kadar + yol RTT'si sonra gelir). `0` → `u64::MAX`.
+/// ile o ACK'in dönüş hattında serileşmesinin toplamı. Gönderici, geri bildirimi aç profilde uçuş
+/// tabanını bu ufukla kurar: bir birimin teyidi en geç bu ufuk ve yol RTT'si kadar sonra gelir.
+/// `0` → `u64::MAX`.
 #[must_use]
 pub fn feedback_horizon_ns(return_bw_bps: u64) -> u64 {
     let budget = return_bw_bps.saturating_mul(RETURN_BUDGET_PERMIL) / 1000;
