@@ -1984,6 +1984,10 @@ pub struct Sender {
     /// [ASİMETRİK-YOL] Dağıtım profilinin yukarı yön hızı (B/s; pacer'ın saydığı tel baytı) —
     /// [`Sender::set_cc_profile_pacing_cap`]. `None` = tavan yok (bugünkü yol, bit-eşit).
     cc_profile_pacing_cap: Option<u64>,
+    /// [DÖNÜŞ-HATTI] Hattı paylaşan bütün göndericilerin hatta bekleyen baytı (B, zarf dahil;
+    /// [`Sender::cc_line_observe_backlog`]); bir sonraki olayda pacer dolumundan SONRA hat kuyruğuna
+    /// uygulanır. `None` = gözlem yok (bugünkü yol).
+    cc_line_floor: Option<u64>,
     /// (d) tur mandalı: bu Startup turunda `schedule_transmit` başında `tx_queue` boş ∧ kova dolu
     /// (`pacer.tokens() == pacer.burst_cap()`) görüldü mü. Tur işaretinde (`startup_plateau`) ve
     /// Startup (yeniden) girişinde sıfırlanır. Yalnız `e1.e1_applimited_plateau` açıkken kurulur.
@@ -2240,6 +2244,7 @@ impl Sender {
             e1: crate::rate::E1Flags::default(),
             cc: None,
             cc_profile_pacing_cap: None,
+            cc_line_floor: None,
             e1_round_app_limited: false,
         }
     }
@@ -2575,6 +2580,7 @@ impl Sender {
         let dt = Duration::from_nanos(now_ns.saturating_sub(self.last_now_ns));
         self.pacer.refill(dt);
         self.last_now_ns = now_ns;
+        self.apply_cc_line_floor();
         // FS-CAL-2 v3 §3 lifecycle (design: docs/design/ESTIMATOR-LIFECYCLE.md). Finalize
         // guard-elapsed provisional losses at the engine clock, BEFORE this event's evidence is
         // fed: an ACK arriving at now >= expiry is late by the module contract (the fate sealed at
@@ -2859,6 +2865,7 @@ impl Sender {
             let dt = Duration::from_nanos(now_ns.saturating_sub(self.last_now_ns));
             self.pacer.refill(dt);
             self.last_now_ns = now_ns;
+            self.apply_cc_line_floor();
         }
         // Faz-2: state-resolution / cancellation / disarm (F1: CS-state-yok; F2A/F2B genişletir).
         self.cs_phase2_resolve(now_ns);
@@ -5194,6 +5201,50 @@ impl Sender {
     #[must_use]
     pub fn cc_line_installed(&self) -> bool {
         self.pacer.has_line()
+    }
+
+    /// [DÖNÜŞ-HATTI] Kurulu hattın ([`Sender::set_cc_line`]) paylaşılan doluluğu: hattı kullanan
+    /// HER göndericinin (aynı cihazın alıcı ucunun ACK ve PARAM_ACK'leri, başka oturum uçları, bu
+    /// motorun pacer dışından giden kontrol çerçeveleri) baytlarıyla şu an hatta serileşmeyi
+    /// bekleyen bayt (zarf dahil). Bir sonraki olayda pacer dolumundan sonra hat kuyruğu en az bu
+    /// değere çıkar: yeni datagram ve kopya saatleri hattın gerçekten boşalmasını bekler.
+    /// Model yokken etkisiz (eski motor ve yön hızı olmayan yol bit-aynı).
+    ///
+    /// Neden: hat modeli yalnız bu motorun kendi datagramlarını sayıyordu. 62 B/s yukarı yönde aynı
+    /// cihazın ACK'leri ve PARAM'ları hattı saniyelerce tutarken model hattı boş sanıyor, alındıyı ve
+    /// kopyalarını o kuyruğun arkasına bırakıyordu (`kama-integration` `asym_product_outcome`).
+    pub fn cc_line_observe_backlog(&mut self, backlog_bytes: u64) {
+        if self.pacer.has_line() {
+            self.cc_line_floor = Some(self.cc_line_floor.unwrap_or(0).max(backlog_bytes));
+        }
+    }
+
+    /// [DÖNÜŞ-HATTI] Motorun kararı olmadan bu uçtan hatta çıkan bir datagram (`udp_bytes`, UDP
+    /// gövdesi; ör. çalışma-zamanının PARAM'ı) kurulu hatta yazılır. Model yokken etkisiz.
+    pub fn cc_line_charge(&mut self, udp_bytes: u64) {
+        self.pacer.line_charge(udp_bytes);
+    }
+
+    /// [DÖNÜŞ-HATTI] Kurulu hattın kendi baytlarımızı serileştirmeyi bitirmesine kalan süre (ns;
+    /// model yoksa 0).
+    #[must_use]
+    pub fn cc_line_ns_until_drained(&self) -> u64 {
+        self.pacer.line_ns_until_drained()
+    }
+
+    /// RFC 9002 §6.2.1 taban PTO (ns; geri çekilmesiz): `srtt + max(4·rttvar, kG) + max_ack_delay`,
+    /// RTT örneği yokken yapılandırmanın ilk PTO'su.
+    #[must_use]
+    pub fn base_pto_ns(&self) -> u64 {
+        self.tail_recovery
+            .base_pto_ns(self.rtt.srtt().map(dur_ns), dur_ns(self.rtt.rttvar()))
+    }
+
+    /// [DÖNÜŞ-HATTI] Bekleyen paylaşılan hat gözlemi pacer dolumundan sonra hat kuyruğuna.
+    fn apply_cc_line_floor(&mut self) {
+        if let Some(b) = self.cc_line_floor.take() {
+            self.pacer.line_raise_backlog(b);
+        }
     }
 
     /// [CC-PORT] Port motorunun ilk uçuş penceresi (bayt); `cc` yoksa `None`.

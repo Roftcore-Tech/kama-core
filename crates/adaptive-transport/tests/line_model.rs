@@ -291,3 +291,85 @@ fn reverse_session_short_messages_do_not_flood_a_narrow_uplink() {
         );
     }
 }
+
+/// Tek bir birimin (43 B gövde, 71 B tel) dar hatta ilk DATA ve ilk kopya anı (ns); hat t = 0'da
+/// `foreign` B (zarf dahil) başka göndericinin baytını taşıyor (`None` = gözlem yok). Motor 1 ms'de
+/// bir pompalanır; ACK gelmez.
+fn first_emissions(foreign: Option<u64>) -> (Option<u64>, Option<u64>) {
+    let mut s = Sender::with_cc_port();
+    s.set_cc_initial_window(4 * 1200);
+    s.set_cc_line(Some(NARROW));
+    if let Some(b) = foreign {
+        s.cc_line_observe_backlog(b);
+    }
+    let (mut data, mut copy) = (None, None);
+    let mut emitted = s.on_event(Event::AppData(OpaqueUnit { id: 0, size: 43 }), 0);
+    let mut t = 0u64;
+    loop {
+        for d in &emitted {
+            match d.kind {
+                TransmitKind::Data => {
+                    data.get_or_insert(t);
+                }
+                _ => {
+                    copy.get_or_insert(t);
+                }
+            }
+        }
+        if copy.is_some() || t > 60 * SEC {
+            return (data, copy);
+        }
+        t += MS;
+        emitted = s.on_event(Event::TimerFired(Timer::Pto), t);
+    }
+}
+
+/// [DÖNÜŞ-HATTI] Hat modeli hattı paylaşan bütün göndericilerin baytını görür. Kurgu ters oturumun
+/// ilk alındısı: 62 B/s yukarı yönde aynı cihazın PARAM'ı (85 B), alıcı ucun ACK'i (65 B) ve
+/// PARAM_ACK'i (83 B) hattı 3,76 s tutarken alındı (71 B tel) sunulur. Model yalnız kendi baytını
+/// saydığında alındıyı t = 0'da tele bırakıyor (darboğaz kuyruğunda o 233 B'nin arkasına) ve ilk
+/// kopyanın saatini o boş-hat varsayımıyla kuruyordu (ölçülen koşu: alındı Alice'e 7,94 s'de
+/// vardı, kopyalar 2,58 / 4,73 / 7,87 s'de çıktı). Gözlemle alındı hat boşalınca çıkar ve ilk
+/// kopya, alındının kendisi hattı terk etmeden ateşlenmez. Gözlem yokken yol bugünküdür.
+#[test]
+fn shared_line_backlog_holds_new_data_and_its_copy_clock() {
+    let foreign = 85 + 65 + 83;
+    let clear = ser_ns(foreign, 62);
+    let own = ser_ns(43 + 28, 62);
+    let (data, copy) = first_emissions(Some(foreign));
+    let data = data.expect("alındı çıkar");
+    assert!(
+        data >= clear && data <= clear + 2 * MS,
+        "alındı hat boşalınca çıkar: {:.3} s (hat {:.3} s'de boş)",
+        data as f64 / SEC as f64,
+        clear as f64 / SEC as f64
+    );
+    let copy = copy.expect("ACK yokken kopya çıkar");
+    assert!(
+        copy >= data + own,
+        "ilk kopya alındı hattı terk etmeden ateşlenmez: kopya {:.3} s, alındı hattan {:.3} s'de çıkar",
+        copy as f64 / SEC as f64,
+        (data + own) as f64 / SEC as f64
+    );
+    // Gözlemsiz (bugünkü) yol: alındı t = 0'da tele çıkar.
+    let (free_data, _) = first_emissions(None);
+    assert_eq!(free_data, Some(0), "gözlem yokken bugünkü yol");
+    // Model kurulu değilken (hızlı hat) gözlem etkisizdir: kararlar gözlemsizle bit-aynı.
+    let run = |observe: bool| {
+        let mut s = Sender::with_cc_port();
+        s.set_cc_initial_window(67_500);
+        s.set_cc_line(Some(LineModel {
+            rate_bps: 12_500,
+            datagram_overhead: 28,
+        }));
+        let mut out = Vec::new();
+        for i in 0..40u64 {
+            if observe {
+                s.cc_line_observe_backlog(50_000);
+            }
+            out.push(s.on_event(Event::AppData(OpaqueUnit { id: i, size: 1027 }), i * MS));
+        }
+        out
+    };
+    assert_eq!(run(true), run(false), "hızlı hatta gözlem etkisiz");
+}

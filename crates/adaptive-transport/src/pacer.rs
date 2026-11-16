@@ -103,6 +103,19 @@ impl TokenBucket {
         }
     }
 
+    /// [DÖNÜŞ-HATTI] Hattı paylaşan başka bir göndericinin (aynı cihazın alıcı ucu, başka oturum
+    /// uçları) baytlarıyla birlikte hatta şu an serileşmeyi bekleyen bayt (`backlog_bytes`, zarf
+    /// dahil): kuyruk en az bu kadardır. Kendi baytlarımız bu toplamın içindedir, eklenmez;
+    /// büyük olan alınır. Model yoksa etkisiz.
+    pub fn line_raise_backlog(&mut self, backlog_bytes: u64) {
+        if let Some(l) = self.line.as_mut() {
+            if backlog_bytes > l.backlog {
+                l.backlog = backlog_bytes;
+                l.rem = 0;
+            }
+        }
+    }
+
     /// [HAT-MODELİ] Hat modeli kurulu mu.
     #[must_use]
     pub fn has_line(&self) -> bool {

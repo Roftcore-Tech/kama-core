@@ -212,6 +212,10 @@ pub struct Receiver {
     /// [BİLGİSİZ-ACK] Son ACK'in göndericiye en erken varabileceği an (ns): emisyon + tel boyu /
     /// dönüş hızı (yayılım gecikmesi bilinmez, eklenmez; alt sınır). 0 = henüz ACK yok.
     ack_horizon_ns: u64,
+    /// [DÖNÜŞ-HATTI] Dönüş hattında şu an bu alıcının ACK'inin önünde serileşmeyi bekleyen süre
+    /// (ns): aynı cihazın oturum uçlarının verisi, PARAM'ları ve bu alıcının önceki çerçeveleri
+    /// (`set_return_line_ahead_ns`). 0 = bilinmiyor / boş hat (bugünkü varsayım).
+    return_line_ahead_ns: u64,
     /// [BİLGİSİZ-ACK] Son ACK'ten beri bilgi taşıyan bir varış oldu mu (`no_info_copy` olmayan her
     /// varış). Yalnız bütçeli port alıcısında okunur.
     info_since_ack: bool,
@@ -261,6 +265,7 @@ impl Receiver {
             delivered_units: BTreeSet::new(),
             return_bw_bps: None,
             ack_horizon_ns: 0,
+            return_line_ahead_ns: 0,
             info_since_ack: false,
             diag_ack_no_info_deferred: 0,
         }
@@ -576,8 +581,13 @@ impl Receiver {
         self.reserve_path() && now_ns < self.ack_horizon_ns
     }
 
-    /// [BİLGİSİZ-ACK] ACK'in göndericiye en erken varış anı: emisyon + tel boyu / dönüş hızı. Tel boyu
-    /// kovanın kullandığı tahmin (`SACK_WIRE_BYTES` + aralık başına `ACK_WIRE_PER_RANGE`).
+    /// [BİLGİSİZ-ACK] ACK'in göndericiye en erken varış anı: emisyon + hatta önündeki baytların
+    /// serileşmesi ([`Self::set_return_line_ahead_ns`]) + tel boyu / dönüş hızı. Tel boyu kovanın
+    /// kullandığı tahmin (`SACK_WIRE_BYTES` + aralık başına `ACK_WIRE_PER_RANGE`).
+    ///
+    /// [DÖNÜŞ-HATTI] Ufuk eskiden hattın ACK anında boş olduğunu varsayıyordu. Dar dönüşte aynı
+    /// cihazın ters oturumu (PARAM, alındı) ve bu alıcının PARAM_ACK'i ACK'in önünde saniyelerce hat
+    /// tutar (62 B/s: 85 B PARAM 1,37 s); o sürede gelen kopya ACK'e tepki olamaz.
     fn ack_arrival_horizon(&self, now_ns: u64, frame: &AckFrame) -> u64 {
         let Some(bw) = self.return_bw_bps.filter(|&b| b > 0) else {
             return 0;
@@ -585,7 +595,16 @@ impl Receiver {
         let wire = SACK_WIRE_BYTES + ACK_WIRE_PER_RANGE * frame.ranges.len() as u64;
         let ser =
             u64::try_from(u128::from(wire) * 1_000_000_000 / u128::from(bw)).unwrap_or(u64::MAX);
-        now_ns.saturating_add(ser)
+        now_ns
+            .saturating_add(self.return_line_ahead_ns)
+            .saturating_add(ser)
+    }
+
+    /// [DÖNÜŞ-HATTI] Dönüş hattında şu an bu alıcının bir sonraki ACK'inin önünde serileşmeyi
+    /// bekleyen süre (ns). Çalışma-zamanı cihazın yukarı yön hattını tutar ve ACK üretebilecek her
+    /// çağrıdan önce verir; değer yalnız ACK'in varış ufkuna girer (bütçesiz yolda ufuk okunmaz).
+    pub fn set_return_line_ahead_ns(&mut self, ahead_ns: u64) {
+        self.return_line_ahead_ns = ahead_ns;
     }
 
     /// [BİLGİSİZ-ACK] Bilgi taşımadığı için çıkarılmayan ACK denemesi (SALT-GÖZLEM).
@@ -1445,8 +1464,19 @@ mod tests {
 
     /// Olayları `first_ack_after` ile aynı düzende verir; `(from, to]` aralığında çıkan ACK anları.
     fn acks_between(events: &[(u64, TailEv)], from: u64, to: u64) -> Vec<u64> {
+        acks_between_with_line(events, from, to, 0)
+    }
+
+    /// [`acks_between`]; her çağrıdan önce dönüş hattında ACK'in önünde `ahead_ns` serileşme var.
+    fn acks_between_with_line(
+        events: &[(u64, TailEv)],
+        from: u64,
+        to: u64,
+        ahead_ns: u64,
+    ) -> Vec<u64> {
         let mut r = Receiver::with_cc_port();
         r.set_return_bandwidth(Some(62));
+        r.set_return_line_ahead_ns(ahead_ns);
         let mut ev = events.to_vec();
         ev.sort_by_key(|e| e.0);
         let mut next = ev.iter().peekable();
@@ -1576,6 +1606,45 @@ mod tests {
             "ufuktan sonra gelen kopya ACK'lenir: {:?}",
             acks.iter().map(|t| (t - end) / MS).collect::<Vec<_>>()
         );
+    }
+
+    /// [DÖNÜŞ-HATTI] ACK'in varış ufku dönüş hattında önündeki baytları sayar. Aynı cihazın ters
+    /// oturumu (PARAM, alındı) ACK'in önünde hat tutarken gelen teslim edilmiş birim kopyası o ACK'e
+    /// tepki olamaz: gönderici onu ACK'i görmeden yolladı. Kurgu `redundant_copy_after_…`'in karşı
+    /// olgusudur: kopya akış sonu ACK'inden 2,5 s sonra gelir; boş hatta ACK'in en erken varışı
+    /// 1,82 s'dir (113 B / 62 B/s), kopya ACK'lenir. Hatta ACK'in önünde 1,37 s (85 B PARAM)
+    /// varken en erken varış 3,19 s'dir: kopya bilgi taşımaz, kendi ACK'ini çıkarmaz ve sonraki turun
+    /// raporu kopyasız koldaki anda çıkar. Düzeltmeden önce (ufuk hattı boş sayar) kopya ACK'lenir.
+    #[test]
+    fn copy_before_an_ack_queued_behind_the_line_can_arrive_carries_no_information() {
+        let c_after = 4_500 * MS;
+        let ahead = 1_370 * MS;
+        let (probe, end, c_end) = copy_after_eof_events(None, None, c_after);
+        let t_e = first_ack_after(&probe, end);
+        let late = t_e + 2_500 * MS;
+        let c0 = end + c_after;
+        let to = c_end + 20_000 * MS;
+        let (ev, _, _) = copy_after_eof_events(Some((late, 0)), None, c_after);
+        let free = acks_between_with_line(&ev, end, to, 0);
+        assert!(
+            free.iter().any(|&t| t > late && t < c0),
+            "kurgu: boş hatta kopya ACK'lenir: {:?}",
+            free.iter().map(|t| (t - end) / MS).collect::<Vec<_>>()
+        );
+        let busy = acks_between_with_line(&ev, end, to, ahead);
+        assert!(
+            !busy.iter().any(|&t| t > late && t < c0),
+            "hatta 1,37 s önünde bayt varken kopya kendi ACK'ini çıkarmaz: {:?}",
+            busy.iter().map(|t| (t - end) / MS).collect::<Vec<_>>()
+        );
+        let mut base_ev = probe.clone();
+        base_ev.push((late, TailEv::Ctrl(40)));
+        let base_c = *acks_between_with_line(&base_ev, end, to, ahead)
+            .iter()
+            .find(|&&t| t > c0)
+            .expect("kopyasız kolda C turunun ACK'i");
+        let c_ack = *busy.iter().find(|&&t| t > c0).expect("C turunun ACK'i");
+        assert_eq!(c_ack, base_c, "C'nin raporu kopyasız koldaki anda");
     }
 
     /// [DÖNÜŞ-BÜTÇESİ] Eski alıcı bütçeden etkilenmez (kendi cadence tabanı var).
