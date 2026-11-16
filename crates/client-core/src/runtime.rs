@@ -2818,7 +2818,9 @@ async fn client_task(
     // kimlikleri şerit 1'in ilk kimliğinden küçük) ACK'siz kopyalanır: bu hatta ACK'e dayalı
     // kurtarma ≥ 2 s sürer ve sıralı PTT şeridinde kaybın ardındaki demetleri bekletir.
     // [GERİ-BİLDİRİM-AÇ · sahip kararı 2026-11-16] Uçuş tavanı ACK saatine bağlanmaz, hız hatta
-    // sert bağlanır (INV-RATE-1 profil istisnası; bkz. `FeedbackStarvedRule`).
+    // sert bağlanır (INV-RATE-1 profil istisnası; bkz. `FeedbackStarvedRule`). [HAT-KORUMASI]
+    // Profil hattı üst sınırdır: ölçüm gerçek hattı daha yavaş gösterirse hız, uçuş tabanı ve hat
+    // modeli ölçülen hatta iner (`adaptive_transport::line_guard`); ölçüm profili aşamaz.
     if let (true, Some(l)) = (link_feedback_starved(&cfg), cfg.link_rates) {
         session.sender_mut().set_cc_feedback_starved(Some(
             adaptive_transport::sender::FeedbackStarvedRule {
@@ -2826,6 +2828,11 @@ async fn client_task(
                 feedback_ns: adaptive_transport::receiver::feedback_horizon_ns(l.downlink_bps),
                 line: adaptive_transport::pacer::LineModel {
                     rate_bps: l.uplink_bps,
+                    datagram_overhead: LINK_UDP_IP_OVERHEAD,
+                },
+                // [HAT-KORUMASI] ACK'in dönüş serileşmesi ölçümden düşülür.
+                return_line: adaptive_transport::pacer::LineModel {
+                    rate_bps: l.downlink_bps,
                     datagram_overhead: LINK_UDP_IP_OVERHEAD,
                 },
             },

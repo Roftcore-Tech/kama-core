@@ -94,6 +94,14 @@ impl TokenBucket {
         });
     }
 
+    /// [HAT-KORUMASI] Kurulu hattın hızını değiştirir (B/s, zarf dahil); hattaki kuyruk korunur.
+    /// Model yoksa ya da hız 0 ise etkisiz.
+    pub fn set_line_rate(&mut self, rate_bps: u64) {
+        if let (Some(l), true) = (self.line.as_mut(), rate_bps > 0) {
+            l.model.rate_bps = rate_bps;
+        }
+    }
+
     /// [HAT-MODELİ] Kovanın dışında (jetondan muaf) tele çıkan datagramı hat kuyruğuna yazar.
     pub fn line_charge(&mut self, size: u64) {
         if let Some(l) = self.line.as_mut() {

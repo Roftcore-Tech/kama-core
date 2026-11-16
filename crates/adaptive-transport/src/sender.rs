@@ -1504,6 +1504,14 @@ pub struct ForwardCopyRule {
 ///
 /// Kayıp yine ölçülür, FEC/ARQ kolunu besler ve BBR'ın kendi durumunu (recovery, ölçüm) değiştirir;
 /// yalnız uçuş tavanını ve hızı sınırlamaz.
+///
+/// [HAT-KORUMASI] Profil hattı bir üst sınırdır, gerçek hat değil: ölçüm gerçek ileri hattın
+/// profilden yavaş olduğunu gösterdiğinde ([`crate::line_guard`]) hız tavanı, uçuş tabanı ve hat
+/// modeli ölçülen hatta iner ve darboğazda biriken kuyruk hat modeline yazılır. Ölçüm hiçbir
+/// değeri profilin üstüne çıkaramaz. Bu yolda pacing hızı hattın kendisidir (profil hattı ya da
+/// ölçülen daha yavaş hat); BBR'ın `kazanç × BtlBw` hızı okunmaz: BtlBw teslim hızıdır ve seyrek
+/// ACK ile ileri yöndeki rastgele kayıpta hattın yarısının altını okur (uçuş tavanının ACK saatine
+/// bağlanmamasıyla aynı neden).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FeedbackStarvedRule {
     /// Hat hızı tavanı (B/s, UDP gövdesi).
@@ -1513,6 +1521,9 @@ pub struct FeedbackStarvedRule {
     pub feedback_ns: u64,
     /// Yukarı yön hattı (zarf dahil hız + datagram zarfı); dar olmasa da kurulur.
     pub line: crate::pacer::LineModel,
+    /// [HAT-KORUMASI] Dönüş (aşağı yön) hattı: ACK'in dönüşte serileşme süresi varış anından
+    /// düşülür ([`crate::line_guard`]).
+    pub return_line: crate::pacer::LineModel,
 }
 
 /// Zamanlanmış forward-recovery duplication kopyası (§11 spacing — burst-loss dayanıklılığı).
@@ -1768,6 +1779,8 @@ pub struct Sender {
     forward_copy_rule: Option<ForwardCopyRule>,
     /// [GERİ-BİLDİRİM-AÇ] Bkz. [`FeedbackStarvedRule`]. `None` = kural yok (bugünkü yol, bit-eşit).
     cc_feedback_starved: Option<FeedbackStarvedRule>,
+    /// [HAT-KORUMASI] Gerçek ileri hattın tahmincisi; yalnız kural kuruluyken `Some`.
+    cc_line_guard: Option<crate::line_guard::LineGuard>,
     /// [DR-EST-1] Kuruluş-kolu anahtarı (DEFAULT-ON — ürün-davranışı). Yalnız donmuş-enstrüman
     /// testleri (Gate-5 structural-oracle: probe-vs-DATA çekişme-izolasyonu, DR-EST-1-öncesi
     /// tasarım) kapatır; kolun KENDİ pinleri tests/establish_probe.rs'te default-ON koşar.
@@ -2120,6 +2133,7 @@ impl Sender {
             dup_queue: Vec::new(),
             forward_copy_rule: None,
             cc_feedback_starved: None,
+            cc_line_guard: None,
             establish_probe_enabled: true,
             establish_due_ns: 0,
             establish_interval_ns: 0,
@@ -2371,11 +2385,30 @@ impl Sender {
     }
 
     /// [GERİ-BİLDİRİM-AÇ] Uçuş tabanı (B): `pacing_cap × (feedback + yol RTT'si)`; RTT ölçülmeden
-    /// başlangıç RTT'si.
+    /// başlangıç RTT'si. [HAT-KORUMASI] Tavan ölçülen hatta inmişse o tavan.
     fn cc_feedback_floor(&self, rule: FeedbackStarvedRule) -> u64 {
         let rtt = dur_ns(self.rtt.rtprop().unwrap_or(INITIAL_RTT));
         let horizon = u128::from(rule.feedback_ns.saturating_add(rtt));
-        u64::try_from(u128::from(rule.pacing_cap_bps) * horizon / 1_000_000_000).unwrap_or(u64::MAX)
+        u64::try_from(u128::from(self.cc_feedback_cap(rule)) * horizon / 1_000_000_000)
+            .unwrap_or(u64::MAX)
+    }
+
+    /// [HAT-KORUMASI] Kuralın hız tavanı (B/s, UDP gövdesi): profil tavanı, ölçülen hat profil
+    /// hattının altındaysa aynı oranda küçültülmüş hâli. Profil tavanını hiçbir zaman aşmaz.
+    fn cc_feedback_cap(&self, rule: FeedbackStarvedRule) -> u64 {
+        match self
+            .cc_line_guard
+            .as_ref()
+            .and_then(crate::line_guard::LineGuard::rate_bps)
+        {
+            Some(measured) if measured < rule.line.rate_bps => u64::try_from(
+                u128::from(rule.pacing_cap_bps) * u128::from(measured)
+                    / u128::from(rule.line.rate_bps),
+            )
+            .unwrap_or(rule.pacing_cap_bps)
+            .clamp(1, rule.pacing_cap_bps),
+            _ => rule.pacing_cap_bps,
+        }
     }
 
     /// [CC-PORT] `size` baytlık yeni emisyon uçuş penceresine sığar mı (`inflight + size ≤ window`).
@@ -2740,9 +2773,17 @@ impl Sender {
             if let Some(cap) = self.cc_profile_pacing_cap {
                 rate = rate.min(cap.max(cc.measured_pacing_target()));
             }
-            // [GERİ-BİLDİRİM-AÇ] Bilinen hatta hız tavanı ölçümle de aşılmaz.
+            // [GERİ-BİLDİRİM-AÇ] Bilinen hatta hız tavanı ölçümle de aşılmaz. [HAT-KORUMASI] Hız
+            // hattın kendisidir: profil hattı, ölçülen hat profilden yavaşsa ölçülen hat. BBR'ın
+            // hızı (kazanç × BtlBw) bu yolda okunmaz: BtlBw teslim hızıdır ve seyrek ACK + ileri
+            // yönde rastgele kayıpta hattın yarısının altını okur (ürün testi: 12,5 kB/s hatta
+            // 3,9 kB/s, 6,25 kB/s hatta 2,8–2,9 kB/s). BBR Startup'tan çıkınca (kayıpla tam bant
+            // kabulü, ProbeRTT) hız ona iner, gönderim düşünce teslim ve BtlBw daha da düşer
+            // (ölçüldü, hat koruması varken bu satır BBR hızını okurken: 6,25 kB/s hatta hız
+            // 2,8 → 1,5 → 1,1 kB/s, dosya 60 s'de bitmedi). Uçuş tavanı da aynı nedenle ACK
+            // saatinden bağımsızdır (`cc_window`).
             if let Some(rule) = self.cc_feedback_starved {
-                rate = rate.min(rule.pacing_cap_bps);
+                rate = self.cc_feedback_cap(rule);
             }
             self.pacer.set_rate(rate);
             self.pacer.set_burst_cap(p.burst_cap);
@@ -3789,6 +3830,7 @@ impl Sender {
             cc.set_external_bw(Some(btlbw));
             cc.on_end_acks(now_ns, inflight, any_app_limited || idle_now, largest);
         }
+        self.cc_line_guard_on_ack(ack, now_ns);
 
         if self.state != SenderState::PreConverge || self.rtt.srtt().is_some() {
             let before = self.pending_lost.len();
@@ -3805,6 +3847,30 @@ impl Sender {
             if self.inflight.is_empty() {
                 self.tail_recovery.disarm();
             }
+        }
+    }
+
+    /// [HAT-KORUMASI] ACK çerçevesinin cephesiyle gerçek ileri hattı ölçer ([`crate::line_guard`]).
+    /// Ölçülen hat profilden yavaşsa pacer'ın hat modeli o hıza iner ve darboğazda tahmin edilen
+    /// kuyruk hat modeline yazılır: yeni datagram gerçek kuyruk boşalınca çıkar. Hız tavanı ve uçuş
+    /// tabanı aynı ölçümü [`Self::cc_feedback_cap`] ile okur. Kural yokken etkisiz.
+    fn cc_line_guard_on_ack(&mut self, ack: &AckInfo, now_ns: u64) {
+        let Some(g) = self.cc_line_guard.as_mut() else {
+            return;
+        };
+        let Some(largest) = ack
+            .acked_seqs
+            .iter()
+            .copied()
+            .filter(|&s| s < self.next_seq)
+            .max()
+        else {
+            return;
+        };
+        let saturated = ack.ack_delay >= crate::loss::E2A_ACK_DELAY_SATURATED;
+        if let Some(u) = g.on_ack(now_ns, dur_ns(ack.ack_delay), saturated, largest) {
+            self.pacer.set_line_rate(u.rate_bps);
+            self.pacer.line_raise_backlog(u.backlog_bytes);
         }
     }
 
@@ -5246,9 +5312,22 @@ impl Sender {
     /// `None` (varsayılan) = kural yok; `cc` yoksa etkisiz. Oturum başında, ilk olaydan önce çağrılır.
     pub fn set_cc_feedback_starved(&mut self, rule: Option<FeedbackStarvedRule>) {
         self.cc_feedback_starved = rule.filter(|r| r.pacing_cap_bps > 0 && r.line.rate_bps > 0);
+        self.cc_line_guard = None;
         if let (true, Some(r)) = (self.cc.is_some(), self.cc_feedback_starved) {
             self.pacer.set_line(Some(r.line));
+            if r.return_line.rate_bps > 0 {
+                self.cc_line_guard = Some(crate::line_guard::LineGuard::new(r.line, r.return_line));
+            }
         }
+    }
+
+    /// [HAT-KORUMASI] Ölçülen ileri hat (B/s, tel baytı) ve kabul edilen örnek sayısı; kural
+    /// kurulu değilse `None`, kural kurulu ama hat profilin altında ölçülmediyse `(None, 0)`.
+    #[must_use]
+    pub fn diag_line_guard(&self) -> Option<(Option<u64>, u64)> {
+        self.cc_line_guard
+            .as_ref()
+            .map(|g| (g.rate_bps(), g.samples()))
     }
 
     /// [ÖNLEMSEL-KOPYA] Yeni birimlerin ACK beklemeyen ileri kopya kuralı ([`ForwardCopyRule`]).
@@ -5370,6 +5449,9 @@ impl Sender {
     /// gövdesi; ör. çalışma-zamanının PARAM'ı) kurulu hatta yazılır. Model yokken etkisiz.
     pub fn cc_line_charge(&mut self, udp_bytes: u64) {
         self.pacer.line_charge(udp_bytes);
+        if let Some(g) = self.cc_line_guard.as_mut() {
+            g.on_unsequenced(udp_bytes);
+        }
     }
 
     /// [DÖNÜŞ-HATTI] Kurulu hattın kendi baytlarımızı serileştirmeyi bitirmesine kalan süre (ns;
@@ -5742,6 +5824,10 @@ impl Sender {
     /// yalnız `diag_return_path()` çıktısını besler. Ürün runtime'ı `Event::AckReceived`'dan
     /// hemen ÖNCE çağırır; çağrılmaması motoru etkilemez (gözlem boş kalır).
     pub fn observe_ack_feedback(&mut self, obs: crate::return_path::AckObservation, now_ns: u64) {
+        // [HAT-KORUMASI] ACK'in tel boyu: dönüş hattındaki serileşmesi varış anından düşülür.
+        if let Some(g) = self.cc_line_guard.as_mut() {
+            g.note_ack_wire(obs.wire_bytes);
+        }
         self.return_path.on_ack(obs, now_ns);
     }
 
@@ -7831,6 +7917,9 @@ impl Sender {
             cc.on_sent(now_ns, unit.size, seq); // quinn: her iletim tekil paket numarası (= seq)
         }
         self.inflight_bytes += unit.size;
+        if let Some(g) = self.cc_line_guard.as_mut() {
+            g.on_sent(seq, now_ns, unit.size);
+        }
         self.inflight.insert(
             seq,
             InflightPacket {
@@ -15045,6 +15134,10 @@ mod feedback_starved_tests {
             feedback_ns: 10_000 * MS,
             line: crate::pacer::LineModel {
                 rate_bps: 12_500,
+                datagram_overhead: 28,
+            },
+            return_line: crate::pacer::LineModel {
+                rate_bps: 62,
                 datagram_overhead: 28,
             },
         };
