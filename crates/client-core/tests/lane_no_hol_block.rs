@@ -40,7 +40,7 @@ use kama_noise_wire::session_control::EnvelopeKind;
 
 const ALICE: u8 = 0xA1;
 const BOB: u8 = 0xB0;
-/// Dosya birimi sayısı (şerit penceresi W = 5'ten büyük; birkaç tur).
+/// Dosya birimi sayısı (şerit penceresinin tabanı W = 5'ten büyük; birkaç tur).
 const FILE_UNITS: u64 = 40;
 /// Metin ve PTT'nin, dosya sıra başı düşürülürken teslim edilmesi için üst süre.
 const TEXT_WAIT: Duration = Duration::from_secs(10);
@@ -172,7 +172,8 @@ fn text_and_ptt_are_delivered_while_the_file_head_is_missing() {
         std::thread::sleep(Duration::from_millis(2));
     };
 
-    // Faz 1 — dosya birimleri (şeride girer; pompa W = 5 ile uca verir). Dosya 0 Bob'da düşer.
+    // Faz 1 — dosya birimleri (şeride girer; pompa W ile uca verir — taban 5, yolun BDP'sinden
+    // büyüyebilir; bu fazın iddiaları W'ye dayanmaz). Dosya 0 Bob'da düşer.
     let mut next_file: u64 = 0;
     let push_file = |alice: &mut ClientTransport<_>, next_file: &mut u64| {
         while *next_file < FILE_UNITS {

@@ -115,6 +115,28 @@ main + #186 + #181, 10 koşu): öncesi 3/10 kalıcı durma (yeşiller 11–25 s)
 Sim: r25 bayt düzeyinde aynı; kesinti hücresi retx −1…−4, süre ±0,2 s; öbür 6 hücre aynı. Testler:
 `u16_duplicate_copy_does_not_suppress_arq_requeue_on_port`, `u16_pto_probe_targets_smallest_unit_id_not_smallest_seq`.
 
+**U17 (2026-11-15, aday — sahip kararı bekler; `lane_finite_head_loss` bulgusu)** — yalnız `cc_on()`, eski
+motor bit-aynı. PTO probu, hedefi (U16 (b)) hâlâ teyitsizken gönderim kuyruğunda (`tx_queue`) hedefin
+biriminden **daha küçük kimlikli** bir yeni birim varsa o yeni birimi taşır: orijinal DATA olarak,
+pencereden muaf (`emit_new_data_probe`, `diag_cc_pto_new_data`). RFC 9002 §6.2.4 "SHOULD send new data if
+available"; quinn-proto 0.11.18 `connection/spaces.rs` `maybe_queue_probe` (bekleyen veri varsa prob onu
+taşır; yoksa en eski uçuştaki paketin verisi). Kama'da seçim birim kimliğiyle: şerit etiketli kimlikte daha
+küçük kimlik daha öncelikli şerittir (PTT < SIG < TEXT < FILE), aynı şeritte sıra başıdır. Neden: son
+ACK'ten sonra gönderilip hepsi kaybolan büyük birimler (dosyanın sonlu kesintideki ya da boyuta duyarlı
+yoldaki art arda emisyonları; 1 046 B, en küçük pencere 4 800 B) uçuşu doldurunca hiçbir kayıt kayıp ilan
+edilemez (RFC 9002 §6.1), yeni veri pencereye sığmaz, prob yalnız kaybolan birimi kopyalar → ACK yok, PTO
+30 s'e geri çekilir; PTT ve metin kuyrukta bekler. U16 (b) ile ilişkisi: şeritsiz yolda kimlikler gönderim
+sırasıyla artar, kuyruktaki her kimlik uçuştakilerden büyüktür → seçenek hiç seçilmez, U16 (b)'nin
+koruduğu durum (alıcı kabul penceresi dolunca sıra başının ARQ kuyruğunda kilitlenmemesi) aynen kalır. Şerit
+kipinde sıra başı yalnız daha öncelikli şeridin bekleyen birimine yer verir; o birim alıcı penceresi
+içindedir (#199 açıklık sınırı), ACK alır ve ACK ilerlemesi PTO'yu tabana indirir; sonraki PTO bekleyen
+öncelikli birim yoksa sıra başını taşır. Ölçüm (`lane_finite_head_loss`, 5 kol, loopback, boşta 10 + yükte
+10 koşu): main'de 1 013 B'lik dört kolun her biri 0/20 (PTT en büyük gecikme 5 s kesintide 3,2–7,9 s, 15 s
+kesintide 13–29,7 s; dosya açılıştan en çok 15,2 s, sınır 10 s), 64 B kolu 20/20; adayda beş kol
+20/20 (PTT en çok 0,18 s, dosya açılıştan en çok 5,1 s). Sim (`cc_port_sim`, 76 kayıt): sıralanmış kayıtlar
+bayt düzeyinde aynı (iki motor). Testler: `u17_pto_probe_carries_queued_unit_with_smaller_id_than_target`,
+`u17_pto_probe_keeps_u16_target_when_queued_ids_are_larger`.
+
 ## (b) Paket/birim muhasebesi — koddan cevaplar
 
 | olay | cevap (kod) |
