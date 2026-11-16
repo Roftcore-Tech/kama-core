@@ -105,6 +105,21 @@ pub fn budgeted_ack_interval_ns(return_bw_bps: u64) -> u64 {
         .unwrap_or(u64::MAX)
 }
 
+/// [GERİ-BİLDİRİM-UFKU] Dönüş yolu `return_bw_bps` (B/s) iken bütçeli alıcının en büyük ACK'inin
+/// (MAX_ACK_RANGES aralıklı) göndericiye ulaşma ufku (ns): bütçe aralığı (en büyük ACK / Y·dönüş)
+/// + o ACK'in dönüş hattında serileşmesi. Gönderici, geri bildirimi aç profilde uçuş tabanını bu
+/// ufukla kurar (bir birimin teyidi en geç bu kadar + yol RTT'si sonra gelir). `0` → `u64::MAX`.
+#[must_use]
+pub fn feedback_horizon_ns(return_bw_bps: u64) -> u64 {
+    let budget = return_bw_bps.saturating_mul(RETURN_BUDGET_PERMIL) / 1000;
+    if budget == 0 {
+        return u64::MAX;
+    }
+    let largest = u128::from(ACK_BUDGET_RESERVE_BYTES) * 1_000_000_000;
+    let ns = largest / u128::from(budget) + largest / u128::from(return_bw_bps);
+    u64::try_from(ns).unwrap_or(u64::MAX)
+}
+
 /// [DÖNÜŞ-BÜTÇESİ] Jeton kovası tavanı (B): en büyük iki ACK (MAX_ACK_RANGES aralıklı). Kova dolu
 /// başlar → oturumun İLK ACK'i bütçeden muaf (§12 [R1]).
 const ACK_BUDGET_CAP_BYTES: u64 =
@@ -216,6 +231,12 @@ pub struct Receiver {
     /// (ns): aynı cihazın oturum uçlarının verisi, PARAM'ları ve bu alıcının önceki çerçeveleri
     /// (`set_return_line_ahead_ns`). 0 = bilinmiyor / boş hat (bugünkü varsayım).
     return_line_ahead_ns: u64,
+    /// [DÖNÜŞ-HATTI · ÖNCELİK] Cihazın dar yukarı yönünde aynı cihazın verisi (ör. alındı) hattın
+    /// boşalmasını bekliyor (`set_uplink_yield`). Bütçeli ACK bu sürece çıkmaz: verinin önüne en
+    /// çok hattaki o anki datagram girer. `false` = bugünkü yol.
+    uplink_yield: bool,
+    /// [DÖNÜŞ-HATTI · ÖNCELİK] Veriye yol verdiği için o an çıkmayan ACK denemesi (SALT-GÖZLEM).
+    diag_ack_yield_deferred: u64,
     /// [BİLGİSİZ-ACK] Son ACK'ten beri bilgi taşıyan bir varış oldu mu (`no_info_copy` olmayan her
     /// varış). Yalnız bütçeli port alıcısında okunur.
     info_since_ack: bool,
@@ -266,6 +287,8 @@ impl Receiver {
             return_bw_bps: None,
             ack_horizon_ns: 0,
             return_line_ahead_ns: 0,
+            uplink_yield: false,
+            diag_ack_yield_deferred: 0,
             info_since_ack: false,
             diag_ack_no_info_deferred: 0,
         }
@@ -463,6 +486,11 @@ impl Receiver {
         // B/s × ns → milibayt: rate · dt / 1e6.
         let add = u64::try_from(u128::from(rate) * u128::from(dt) / 1_000_000).unwrap_or(u64::MAX);
         self.ack_tokens_mb = self.ack_tokens_mb.saturating_add(add).min(cap);
+        if self.uplink_yield {
+            // Jeton harcanmaz; ACK, hat veriye geçince zamanlayıcıyla çıkar.
+            self.diag_ack_yield_deferred += 1;
+            return false;
+        }
         let cost = (SACK_WIRE_BYTES + ACK_WIRE_PER_RANGE * frame.ranges.len() as u64) * 1000;
         let mut need = cost;
         if self.ack_budget_first_done && !self.arrivals_quiet(now_ns) {
@@ -605,6 +633,19 @@ impl Receiver {
     /// çağrıdan önce verir; değer yalnız ACK'in varış ufkuna girer (bütçesiz yolda ufuk okunmaz).
     pub fn set_return_line_ahead_ns(&mut self, ahead_ns: u64) {
         self.return_line_ahead_ns = ahead_ns;
+    }
+
+    /// [DÖNÜŞ-HATTI · ÖNCELİK] Cihazın dar yukarı yönünde aynı cihazın verisi hattın boşalmasını
+    /// bekliyor mu. Çalışma-zamanı ACK üretebilecek her çağrıdan önce verir; yalnız bütçeli yolda
+    /// okunur (bütçesiz yolda ACK kararı değişmez).
+    pub fn set_uplink_yield(&mut self, yield_to_data: bool) {
+        self.uplink_yield = yield_to_data;
+    }
+
+    /// [DÖNÜŞ-HATTI · ÖNCELİK] Veriye yol verdiği için o an çıkmayan ACK denemesi (SALT-GÖZLEM).
+    #[must_use]
+    pub fn diag_ack_yield_deferred(&self) -> u64 {
+        self.diag_ack_yield_deferred
     }
 
     /// [BİLGİSİZ-ACK] Bilgi taşımadığı için çıkarılmayan ACK denemesi (SALT-GÖZLEM).

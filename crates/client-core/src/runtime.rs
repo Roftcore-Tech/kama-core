@@ -213,6 +213,12 @@ pub struct RuntimeConfig {
     /// (salt gözlem: motor kararları bayraktan bağımsızdır). Açık kolun maliyeti ölçülmedi. Yalnız
     /// client ucu okur; server ucu bu alanı yok sayar.
     pub live_diag: bool,
+    /// [ÖNLEMSEL-KOPYA · sahip kararı 2026-11-16] Şerit kimlikleri açık mı (şerit 0 = PTT).
+    /// `true` iken ve yön hızı profili geri bildirimi aç bırakıyorsa ([`link_feedback_starved`]),
+    /// PTT şeridinin her yeni birimi ACK beklemeden [`PTT_FORWARD_COPIES`] kez daha gönderilir.
+    /// `false` (varsayılan): şerit 0 düz `send`'in de şerididir; kopya kurulmaz, davranış bit-aynı.
+    /// `ClientTransport` şeritleri açınca kurar.
+    pub lane_ids: bool,
     /// [E1 gösterim bayrakları, CC §4.1 / CC-K5] Motorun (c), (d), DrainRtprop, (e-dar) ve
     /// `retx_first` kuralları. **Ürün varsayılanı KAPALI** (beşi `false` = bugünkü davranış
     /// bit-aynı). Çalışma-zamanı bayrağıdır, Cargo feature'ı DEĞİL: teşhis kolları ve gösterim
@@ -335,6 +341,8 @@ impl KamaV1Profile {
             // [K4G-05 / DUR-19] Canlı teşhis aynası ürün yolunda KAPALI: yazıcı çalışmaz, ayna
             // kurulmaz. INT-02 düzeneği açar (`kama-node` `test-util` kurucuları).
             live_diag: false,
+            // [ÖNLEMSEL-KOPYA] Şerit kimlikleri yalnız `ClientTransport` şeritleri açınca.
+            lane_ids: false,
             // [E1 gösterim] Beş bayrak ürün yolunda KAPALI; yalnız gösterim düğümü/teşhis kolları açar.
             e1_flags: adaptive_transport::rate::E1Flags::default(),
         }
@@ -349,6 +357,59 @@ pub struct LinkRates {
     pub uplink_bps: u64,
     /// Bu düğümün aldığı yön: eşin verisi ve kendi verisinin ACK'leri.
     pub downlink_bps: u64,
+}
+
+/// [ÖNLEMSEL-KOPYA] Bütçeli ACK aralığı bundan uzunsa geri bildirim etkileşimli sınırlardan
+/// (ürün testi: metin ve PTT demeti 1 s) geç gelir: ACK'e dayalı kurtarma o sınırlar içinde
+/// imkânsızdır, korumanın ACK'ten bağımsız olması gerekir.
+pub const FEEDBACK_STARVED_ACK_INTERVAL_NS: u64 = 1_000_000_000;
+
+/// [ÖNLEMSEL-KOPYA · sahip kararı 2026-11-16] Geri bildirimi aç profilde PTT demetinin toplam
+/// iletim sayısı (ilk iletim + kopyalar). %20 bağımsız kayıpta demet başına tam kayıp
+/// 0,2⁵ = 3,2·10⁻⁴; 40 B demet (≈ 114 B tel, 200 ms) için ileri hatta ≈ 2,85 kB/s.
+pub const PTT_FORWARD_COPIES: u8 = 5;
+
+/// [ÖNLEMSEL-KOPYA] PTT kopyaları arası aralık (ns): demet aralığı (200 ms, Lyra) / iletim sayısı —
+/// kopyalar bir sonraki demetten önce biter, art arda düşmelere karşı yayılır.
+pub const PTT_COPY_SPACING_NS: u64 = 200_000_000 / PTT_FORWARD_COPIES as u64;
+
+/// [ÖNLEMSEL-KOPYA] Profil geri bildirimi aç bırakıyor mu: port motoru, yön hızları verilmiş ve
+/// bütçeli alıcının ACK aralığı (`receiver::budgeted_ack_interval_ns`, aşağı yönden) en az
+/// [`FEEDBACK_STARVED_ACK_INTERVAL_NS`]. Simetrik hızlı yolda aralık ≈ 25 ms → `false`.
+#[must_use]
+pub fn link_feedback_starved(cfg: &RuntimeConfig) -> bool {
+    cfg.engine == TransportEngine::CcPort
+        && cfg.link_rates.is_some_and(|l| {
+            adaptive_transport::receiver::budgeted_ack_interval_ns(l.downlink_bps)
+                >= FEEDBACK_STARVED_ACK_INTERVAL_NS
+        })
+}
+
+/// [GERİ-BİLDİRİM-AÇ · sahip kararı 2026-11-16] Geri bildirimi aç profilde PTT dışı şeritlerin
+/// FEC oranı (‰): profilin en yüksek kod oranı `r_code_max · 1000 / k_shape` (0x05: 4 / 8 = 500).
+/// Bloklar ilk teyit gelmeden dolar (teyit saniyeler sonra); kontrolcünün kayıp kanıtı yokken
+/// verdiği 0, ACK'siz kurtarmayı kapatıyordu. Kontrolcü daha yüksek isterse o kalır.
+#[must_use]
+pub fn fec_feedback_starved_permille(p: &FecProfile) -> u32 {
+    let k = u32::from(p.k_shape).max(1);
+    (u32::from(p.r_code_max) * 1000).div_ceil(k)
+}
+
+/// [GERİ-BİLDİRİM-AÇ] Kontrolcü anlık görüntüsüne şeridin ön oranını uygular: oran en az `prior`,
+/// "kural yok" bayrağı kalkar (ön oran kuralın kendisidir). `prior` yoksa ya da anlık görüntü
+/// yoksa değişmez.
+fn with_fec_prior(
+    snap: Option<adaptive_transport::sender::ControllerDecisionSnapshot>,
+    prior: Option<u32>,
+) -> Option<adaptive_transport::sender::ControllerDecisionSnapshot> {
+    match (snap, prior) {
+        (Some(mut s), Some(pr)) => {
+            s.ratio_permille = s.ratio_permille.max(pr);
+            s.no_rule = false;
+            Some(s)
+        }
+        (s, _) => s,
+    }
 }
 
 /// [ASİMETRİK-YOL] Yol-tabanlı ilk pencerenin üst sınırı (B; SR-AUDIT-001).
@@ -426,6 +487,8 @@ struct UplinkLine {
     rate_bps: u64,
     /// Hattın bugüne dek sayılan baytları serileştirmeyi bitireceği an (ns, `origin`'den).
     busy_until_ns: AtomicU64,
+    /// [ÖNCELİK] Hat dar mı (`Sender::line_is_narrow`): denetim yalnız dar hatta veriye yol verir.
+    narrow: bool,
 }
 
 impl UplinkShare {
@@ -441,6 +504,12 @@ impl UplinkShare {
                 origin: Instant::now(),
                 rate_bps,
                 busy_until_ns: AtomicU64::new(0),
+                narrow: adaptive_transport::sender::Sender::line_is_narrow(
+                    &adaptive_transport::pacer::LineModel {
+                        rate_bps,
+                        datagram_overhead: LINK_UDP_IP_OVERHEAD,
+                    },
+                ),
             }))
         })
     }
@@ -469,6 +538,19 @@ impl UplinkShare {
             .busy_until_ns
             .load(Ordering::Acquire)
             .saturating_sub(self.now_ns())
+    }
+
+    /// [ÖNCELİK] Alıcı ucun ivedi olmayan denetim datagramı (bütçeli ACK, FEC RECOVERED) şu an
+    /// beklemeli mi: hat dolu. Denetim yalnız hat boşken çıkar, hatta denetim YIĞILMAZ: aynı
+    /// cihazın verisi (alındı, metin) hazır olduğunda önünde en çok hatta o an serileşen tek
+    /// datagram olur (ürün testi alındı sınırı, `kama-integration` `asym_product_outcome`: "önünde
+    /// en çok bir denetim datagramı"). Denetimin toplam akışı değişmez (hat zaten seridir); bekleme
+    /// darboğaz kuyruğundan alıcıya taşınır, ACK çıktığında daha tazedir.
+    /// Hızlı hatta (dar değil) denetim beklemez: datagramı milisaniyeler sürer, bekletmek yalnız
+    /// eşin teyidini geciktirir (ürün testinde hızlı yöndeki ACK'ler beklediği için eş alındıyı
+    /// boşuna yineledi).
+    pub(crate) fn control_should_yield(&self) -> bool {
+        self.0.narrow && self.ns_until_clear() > 0
     }
 
     /// Şu an hatta henüz serileşmemiş baytlarımız (B, zarf dahil).
@@ -1054,6 +1136,10 @@ pub struct ServerStats {
     pub fec_blocks_evicted_with_repairs: u64,
     /// [S1] Wire'a yazılan RECOVERED-control çerçevesi (blok başına bir).
     pub fec_recovered_ctrl_tx: u64,
+    /// [ÖNCELİK] Dar hatta veriye yol verdiği için bekletilen denetim çerçevesi.
+    pub yielded_ctrl: u64,
+    /// [ÖNCELİK] Bekletme kuyruğu taştığı için düşen denetim çerçevesi (gönderici yeniden iletir).
+    pub yielded_ctrl_dropped: u64,
     /// [S1B] Birleştiriciye giren chunk (DATA + FEC-kurtarma; yalnız fragmentasyon açıkken).
     pub frag_chunks_rx: u64,
     /// [S1B] Tam olarak yeniden kurulup app'e teslim edilen mesaj.
@@ -2728,6 +2814,32 @@ async fn client_task(
         }
         session.sender_mut().set_cc_initial_window(iw);
     }
+    // [ÖNLEMSEL-KOPYA · sahip kararı 2026-11-16] Geri bildirimi aç profilde PTT şeridi (şerit 0,
+    // kimlikleri şerit 1'in ilk kimliğinden küçük) ACK'siz kopyalanır: bu hatta ACK'e dayalı
+    // kurtarma ≥ 2 s sürer ve sıralı PTT şeridinde kaybın ardındaki demetleri bekletir.
+    // [GERİ-BİLDİRİM-AÇ · sahip kararı 2026-11-16] Uçuş tavanı ACK saatine bağlanmaz, hız hatta
+    // sert bağlanır (INV-RATE-1 profil istisnası; bkz. `FeedbackStarvedRule`).
+    if let (true, Some(l)) = (link_feedback_starved(&cfg), cfg.link_rates) {
+        session
+            .sender_mut()
+            .set_cc_feedback_starved(Some(adaptive_transport::sender::FeedbackStarvedRule {
+                pacing_cap_bps: link_pacing_cap_bps(l.uplink_bps),
+                feedback_ns: adaptive_transport::receiver::feedback_horizon_ns(l.downlink_bps),
+                line: adaptive_transport::pacer::LineModel {
+                    rate_bps: l.uplink_bps,
+                    datagram_overhead: LINK_UDP_IP_OVERHEAD,
+                },
+            }));
+    }
+    if cfg.lane_ids && link_feedback_starved(&cfg) {
+        session
+            .sender_mut()
+            .set_forward_copy_rule(Some(adaptive_transport::sender::ForwardCopyRule {
+                below_id: crate::unit_id::tagged(1, 0),
+                copies: PTT_FORWARD_COPIES - 1,
+                spacing_ns: PTT_COPY_SPACING_NS,
+            }));
+    }
     // [E1 gösterim, CC §4.1] Beş çalışma-zamanı bayrağı (varsayılan kapalı = sevk davranışı).
     session.sender_mut().set_e1_flags(cfg.e1_flags);
     let mut stats = ClientStats::default();
@@ -2735,7 +2847,25 @@ async fn client_task(
     // [S1] FEC-runtime kuruluşu (cfg.fec varsa): Controller-mode — yapı-gate'in (Q18) kararı
     // latch'e ancak bu modda akar. validate_fec connect'te koştu; profil burada çözülür.
     let fec: Option<FecProfile> = cfg.fec.and_then(|f| by_id(f.profile_id));
+    // [DÖNÜŞ-HATTI] Yön hızı profilinde yukarı yön parite sembolünü zaman kapısı içinde
+    // serileştiremiyorsa (`fec_parity_time_gate_open`; profil 0x05'te 526 B/s altı) bu oturum hiç
+    // parite gönderemez (`fec_payload_r_max` küçük bloklarda 0 verir). FEC kurulmaz: PARAM duyurusu
+    // dar hattı boşuna tutmaz (62 B/s'de 85 B PARAM 1,37 s; alındılar onun arkasında bekliyordu).
+    let fec = fec.filter(|p| {
+        cfg.engine != TransportEngine::CcPort
+            || cfg.link_rates.is_none_or(|l| {
+                let parity_wire = wire_len(seam.as_ref(), client_ctx, HDR_FEC + p.e_usize());
+                fec_parity_time_gate_open(parity_wire, Some(l.uplink_bps))
+            })
+    });
     let fec_manual_r: Option<u16> = cfg.fec.and_then(|f| f.manual_r);
+    // [GERİ-BİLDİRİM-AÇ] PTT dışı şeritlerin ACK'siz FEC oranı (bkz. `fec_feedback_starved_permille`).
+    // Şerit kimlikleri kapalıyken şerit 0 bütün veridir, oran ona da uygulanır.
+    let fec_starved_prior: Option<u32> = fec
+        .as_ref()
+        .filter(|_| link_feedback_starved(&cfg))
+        .map(fec_feedback_starved_permille);
+    let fec_prior_for = |lane: usize| fec_starved_prior.filter(|_| !cfg.lane_ids || lane != 0);
     if fec.is_some() {
         let mode = if fec_manual_r.is_some() {
             FecActuationMode::Manual { enabled: true } // statik-r (STATIC_R kolu)
@@ -2784,6 +2914,10 @@ async fn client_task(
     // [FEC-E-ÖLÇEK] Açık bloktaki kaynak birimlerin tel baytı toplamı (parite tavanı ölçeği),
     // şerit başına (blok şerit başına birikir).
     let mut cur_block_wire: [u64; LANE_COUNT] = [0; LANE_COUNT];
+    // [GERİ-BİLDİRİM-AÇ] Açık bloğun birim kimlikleri ve kuyruğu kopyayla korunan son blok (şerit
+    // başına): oturum ortasında kapanamayan kısmi blok ACK'siz korunur (bkz. kopya noktası).
+    let mut cur_block_ids: [Vec<u64>; LANE_COUNT] = Default::default();
+    let mut tail_copied: [usize; LANE_COUNT] = [0; LANE_COUNT];
     // [FAZ-2 / KALEM-1] blok → (K_actual, repair'ler). K_actual kısmi/son blokta k_shape'ten
     // küçüktür ve TEL BAŞLIĞINDA taşınmak zorundadır (alıcı Model-A zero-enjeksiyonunu ondan türetir).
     let mut repair_store: BTreeMap<u32, (u8, Vec<RepairSymbol>)> = BTreeMap::new();
@@ -3459,6 +3593,7 @@ async fn client_task(
                     debug_assert_eq!(cur_block.len() as u64, lane_seq_of(id) % u64::from(p.k_shape));
                     debug_assert_eq!(*cur_block_id, fec_block_of(id, u64::from(p.k_shape)));
                     cur_block.push(sym);
+                    cur_block_ids[lane].push(id);
                     *cur_block_wire += size;
                     if cur_block.len() == p.k_shape_usize() {
                         let parity_wire = wire_len(seam.as_ref(), client_ctx, HDR_FEC + e);
@@ -3473,7 +3608,10 @@ async fn client_task(
                                 .close_fec_block_manual(auth, *cur_block_id, r, parity_wire)
                                 .unwrap_or(0)
                         } else {
-                            let snap = session.sender().controller_decision_snapshot();
+                            let snap = with_fec_prior(
+                                session.sender().controller_decision_snapshot(),
+                                fec_prior_for(lane),
+                            );
                             let auth = session.sender_mut().open_fec_block_authority();
                             let latch = session.sender_mut().fec_controller_latch(
                                 auth,
@@ -3512,6 +3650,8 @@ async fn client_task(
                             }
                         }
                         cur_block.clear();
+                        cur_block_ids[lane].clear();
+                        tail_copied[lane] = 0;
                         *cur_block_wire = 0;
                         *cur_block_id = next_fec_block(*cur_block_id);
                     }
@@ -3521,6 +3661,32 @@ async fn client_task(
             _ = pace.tick() => {
                 let now = elapsed_ns(start);
                 drive!(Event::TimerFired(Timer::Pto), now); ts_sample!(now);
+                // [GERİ-BİLDİRİM-AÇ · sahip kararı 2026-11-16] Şerit boştayken (sunum kuyruğu ve
+                // motorun gönderim kuyruğu boş) açık kısmi blok oturum ortasında KAPANAMAZ (blok/ESI
+                // şerit sırasından türer; sonraki birim aynı bloğa düşer) ve ACK'siz korumasızdır:
+                // dosyanın son 1–7 parçası ilk iletimde düşerse kurtarma bir ACK aralığı (bu hatta
+                // ≥ 8 s) bekler. Bu birimler öncelikli şerit gibi kopyalanır (blok sonra dolarsa
+                // FEC'ini de alır).
+                if fec_starved_prior.is_some()
+                    && offer_rx.is_empty()
+                    && session.sender().unsent_units() == 0
+                {
+                    for lane in 0..LANE_COUNT {
+                        if fec_prior_for(lane).is_none() {
+                            continue;
+                        }
+                        // Bloğun henüz kopyalanmamış birimleri (her birim bir kez).
+                        for &uid in &cur_block_ids[lane][tail_copied[lane]..] {
+                            session.sender_mut().schedule_forward_copies(
+                                uid,
+                                PTT_FORWARD_COPIES - 1,
+                                PTT_COPY_SPACING_NS,
+                                now,
+                            );
+                        }
+                        tail_copied[lane] = cur_block_ids[lane].len();
+                    }
+                }
             }
             _ = rtprop.tick() => {
                 let now = elapsed_ns(start);
@@ -3595,7 +3761,10 @@ async fn client_task(
                     .close_fec_block_manual(auth, cur_block_id, r, parity_wire)
                     .unwrap_or(0)
             } else {
-                let snap = session.sender().controller_decision_snapshot();
+                let snap = with_fec_prior(
+                    session.sender().controller_decision_snapshot(),
+                    fec_prior_for(lane),
+                );
                 let auth = session.sender_mut().open_fec_block_authority();
                 let latch = session.sender_mut().fec_controller_latch(
                     auth,
@@ -4420,14 +4589,50 @@ struct SrvTx {
     start: Instant,
     /// [DÖNÜŞ-HATTI] Cihazın yukarı yön hattı (bkz. [`UplinkShare`]); `None` = paylaşım yok.
     uplink: Option<UplinkShare>,
+    /// [ÖNCELİK] Veriye yol verdiği için bekletilen FEC RECOVERED çerçeveleri (sınırlı:
+    /// [`MAX_YIELDED_CTRL`]; taşan en eskisi düşer, gönderici yeniden iletir).
+    yielded: VecDeque<(SocketAddr, ProtectionContext, Vec<u8>)>,
 }
 
+/// [ÖNCELİK] Bekletilen denetim çerçevesi tavanı (SR-AUDIT-001): 62 B/s'de ≈ 60 B'lik
+/// RECOVERED ≈ 1 s; 16 tanesi bir bütçe aralığını aşar, daha fazlası zaten bayattır.
+const MAX_YIELDED_CTRL: usize = 16;
+
 impl SrvTx {
+    /// [ÖNCELİK] Alıcının ivedi olmayan denetimi veriye yol vermeli mi (bkz.
+    /// [`UplinkShare::control_should_yield`]; paylaşım yoksa hayır).
+    fn control_should_yield(&self) -> bool {
+        self.uplink
+            .as_ref()
+            .is_some_and(UplinkShare::control_should_yield)
+    }
     /// [DÖNÜŞ-HATTI] Yukarı yön hattında şu an önümüzde serileşmeyi bekleyen süre (ns; paylaşım
     /// yoksa 0). Alıcı bunu bir sonraki ACK'in göndericiye varış ufkuna ekler.
     fn line_ahead_ns(&self) -> u64 {
         self.uplink.as_ref().map_or(0, UplinkShare::ns_until_clear)
     }
+}
+
+/// [ÖNCELİK] FEC RECOVERED gibi ivedi olmayan denetim: hat veriye borçluysa sınırlı kuyrukta
+/// bekler (ACK zamanlayıcısı boşaltır), değilse hemen çıkar.
+async fn srv_send_or_yield(
+    tx: &mut SrvTx,
+    sock: &UdpSocket,
+    stats: &mut ServerStats,
+    peer: SocketAddr,
+    ctx: ProtectionContext,
+    frame: Vec<u8>,
+) {
+    if tx.control_should_yield() {
+        if tx.yielded.len() >= MAX_YIELDED_CTRL {
+            tx.yielded.pop_front();
+            stats.yielded_ctrl_dropped += 1;
+        }
+        tx.yielded.push_back((peer, ctx, frame));
+        stats.yielded_ctrl += 1;
+        return;
+    }
+    srv_seal_send(tx, sock, stats, peer, ctx, frame).await;
 }
 
 /// [v1] Server-yönü tek-nokta seal+send (typed seal-reddi sayılır). Egress kapısı reddederse
@@ -4713,6 +4918,7 @@ async fn server_task(
         egress,
         start,
         uplink,
+        yielded: VecDeque::new(),
     };
     let mut stats = ServerStats::default();
     // [S1B] Fragmentasyon İKİ UÇTA AYNI config'ten türetilir (wire'da bayrak taşınmaz): gönderici
@@ -4756,11 +4962,19 @@ async fn server_task(
                 let now = elapsed_ns(start);
                 // ACK_FREQ_N'e ulaşamayan kuyruğu timer teyit eder (bench birebir).
                 // [DÖNÜŞ-HATTI] ACK'in varış ufku hatta önündeki baytları da sayar.
+                // [ÖNCELİK] Bekletilen RECOVERED'lar hat boşken çıkar; ACK kararı ondan SONRA hattı
+                // okur (yoksa aynı anda iki denetim datagramı üst üste çıkar).
+                while !tx.control_should_yield() {
+                    let Some((peer, sp, f)) = tx.yielded.pop_front() else { break };
+                    srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, f).await;
+                }
                 let ahead = tx.line_ahead_ns();
+                let yield_ctrl = tx.control_should_yield();
                 let acks: Vec<(SocketAddr, ProtectionContext, Vec<u8>)> = peers
                     .iter_mut()
                     .filter_map(|(&(p, _), s)| {
                         s.rx.set_return_line_ahead_ns(ahead);
+                        s.rx.set_uplink_yield(yield_ctrl);
                         s.rx.on_ack_timer(now).map(|a| (p, s.ctx, a.encode()))
                     })
                     .collect();
@@ -4956,6 +5170,7 @@ async fn server_task(
                         };
                         // [DÖNÜŞ-HATTI] ACK'in varış ufku hatta önündeki baytları da sayar.
                         slot.rx.set_return_line_ahead_ns(tx.line_ahead_ns());
+                        slot.rx.set_uplink_yield(tx.control_should_yield());
                         let out = slot.rx.on_datagram(
                             RxDatagram {
                                 seq: pn,
@@ -5039,7 +5254,7 @@ async fn server_task(
                                 stats.fec_recovered_ctrl_tx += 1;
                                 let f = encode_recovered(block_id, &rec);
                                 let sp = slot.ctx;
-                                srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, f).await;
+                                srv_send_or_yield(&mut tx, &sock, &mut stats, peer, sp, f).await;
                             }
                         }
                     }
@@ -5064,6 +5279,7 @@ async fn server_task(
                             // Motor-ACK'i yine verilir (PN işgal edildi; kayıp-sinyali üretme).
                             let is_repair = h.kind == inner_kind::FEC_REPAIR;
                             slot.rx.set_return_line_ahead_ns(tx.line_ahead_ns());
+                        slot.rx.set_uplink_yield(tx.control_should_yield());
                             let out = slot.rx.on_datagram(
                                 RxDatagram {
                                     seq: pn,
@@ -5094,6 +5310,7 @@ async fn server_task(
                         stats.fec_repairs_rx += 1;
                         let is_repair = h.kind == inner_kind::FEC_REPAIR;
                         slot.rx.set_return_line_ahead_ns(tx.line_ahead_ns());
+                        slot.rx.set_uplink_yield(tx.control_should_yield());
                         let out = slot.rx.on_datagram(
                             RxDatagram {
                                 seq: pn,
@@ -5133,7 +5350,7 @@ async fn server_task(
                             stats.fec_recovered_ctrl_tx += 1;
                             let f = encode_recovered(h.block_id, &rec);
                             let sp = slot.ctx;
-                            srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, f).await;
+                            srv_send_or_yield(&mut tx, &sock, &mut stats, peer, sp, f).await;
                         }
                     }
                     RxFrame::CsProbe { subtype, probe_seq } => {
@@ -5214,7 +5431,7 @@ async fn server_task(
                                             stats.fec_recovered_ctrl_tx += 1;
                                             let f2 = encode_recovered(fh.block_id, &rec);
                                             let sp2 = slot.ctx;
-                                            srv_seal_send(
+                                            srv_send_or_yield(
                                                 &mut tx, &sock, &mut stats, peer, sp2, f2,
                                             )
                                             .await;

@@ -789,6 +789,9 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         // [DÖNÜŞ-HATTI] Cihaz başına bir yukarı yön hattı; alıcının ACK'leri ve oturum uçlarının
         // datagramları aynı görünüme yazılır.
         let uplink = UplinkShare::for_config(&cfg.runtime);
+        // [ÖNLEMSEL-KOPYA] Şeritler açıkken birim kimlikleri şerit etiketlidir (şerit 0 = PTT).
+        let mut cfg = cfg;
+        cfg.runtime.lane_ids = cfg.lanes.is_some();
         let server = rt.block_on(ServerEndpoint::bind_expecting_shared(
             cfg.data_bind,
             cfg.runtime.clone(),
