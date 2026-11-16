@@ -126,7 +126,7 @@ use crate::lanes::{
 use crate::runtime::{
     link_profile_window_bytes, ClientEndpoint, ClientHandle, ClientLiveDiag, CtxDispatchCounters,
     CtxDispatchStats, ExpectedSessions, Readiness, RuntimeConfig, RuntimeError, ServerEndpoint,
-    ServerHandle,
+    ServerHandle, UplinkShare,
 };
 use crate::unit_id::{index_of_lane, lane_index_of, lane_seq_of, tagged, LANE_COUNT};
 #[cfg(any(test, feature = "test-util"))]
@@ -668,6 +668,9 @@ impl UnitTrace {
 pub struct ClientTransport<C: PacketProtection + SessionControl> {
     caps: TransportCapabilities,
     runtime_cfg: RuntimeConfig,
+    /// [DÖNÜŞ-HATTI] Bu cihazın yukarı yön hattı: veri alıcısı ve her oturum ucu aynı görünümü
+    /// paylaşır (yön hızları verilmiş port motorunda; aksi hâlde `None`).
+    uplink: Option<UplinkShare>,
     peer_addrs: HashMap<PeerRef, SocketAddr>,
     renew_drain_cap: Duration,
     /// Uçlara uygulanan kurtarma anahtarı (ürün: daima açık).
@@ -783,13 +786,17 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             ),
         }
         let ctx_counters = CtxDispatchCounters::new();
-        let server = rt.block_on(ServerEndpoint::bind_expecting(
+        // [DÖNÜŞ-HATTI] Cihaz başına bir yukarı yön hattı; alıcının ACK'leri ve oturum uçlarının
+        // datagramları aynı görünüme yazılır.
+        let uplink = UplinkShare::for_config(&cfg.runtime);
+        let server = rt.block_on(ServerEndpoint::bind_expecting_shared(
             cfg.data_bind,
             cfg.runtime.clone(),
             Box::new(CryptoSeam(Arc::clone(&crypto))),
             None,
             expected.clone(),
             ctx_counters.clone(),
+            uplink.clone(),
         ))?;
         // K5: kapasite Crypto'nun oturum sınıfı için güvenli minimumundan türer; veri çerçevesinin
         // başlığı düşülür ve veri yolunun birim tavanıyla kırpılır.
@@ -807,6 +814,7 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
                 reliable: cfg.recovery,
             },
             runtime_cfg: cfg.runtime,
+            uplink,
             peer_addrs: cfg.peer_addrs,
             renew_drain_cap: cfg.renew_drain_cap,
             recovery_on: cfg.recovery,
@@ -1542,13 +1550,14 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         // [K4G-01 / D1 (v1.1)] Ucun beklediği bağlam `Session(h)`'dir; sayaçlar düğüm geneli.
         let endpoint = self
             .rt
-            .block_on(ClientEndpoint::connect_session_counted(
+            .block_on(ClientEndpoint::connect_session_shared(
                 addr,
                 self.runtime_cfg.clone(),
                 Box::new(seam),
                 None,
                 ProtectionContext::Session(h),
                 self.ctx_counters.clone(),
+                self.uplink.clone(),
             ))
             .ok()?;
         endpoint.set_recovery(self.recovery_on);

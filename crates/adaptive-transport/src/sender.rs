@@ -1711,6 +1711,8 @@ pub struct Sender {
     diag_cc_lost_copy_in_flight: u64,
     /// [CC-PORT U16 (b)] ARQ kuyruğundaki sıra başının pencereden muaf PTO probu olarak çıkış sayısı.
     diag_cc_pto_from_arq: u64,
+    /// [CC-PORT U17] Gönderim kuyruğundaki yeni birimin PTO probu olarak çıkış sayısı (salt gözlem).
+    diag_cc_pto_new_data: u64,
     tail_probe_cancelled: u64, // observation-only (§7): due probes cancelled at emission (ACK-race: target no
     // longer outstanding). Distinct from token-starved (kept pending). Only mutated on the ON path.
     dup_queue: Vec<DupRec>, // §11 zamanlanmış forward-recovery kopyaları
@@ -1982,6 +1984,10 @@ pub struct Sender {
     /// [ASİMETRİK-YOL] Dağıtım profilinin yukarı yön hızı (B/s; pacer'ın saydığı tel baytı) —
     /// [`Sender::set_cc_profile_pacing_cap`]. `None` = tavan yok (bugünkü yol, bit-eşit).
     cc_profile_pacing_cap: Option<u64>,
+    /// [DÖNÜŞ-HATTI] Hattı paylaşan bütün göndericilerin hatta bekleyen baytı (B, zarf dahil;
+    /// [`Sender::cc_line_observe_backlog`]); bir sonraki olayda pacer dolumundan SONRA hat kuyruğuna
+    /// uygulanır. `None` = gözlem yok (bugünkü yol).
+    cc_line_floor: Option<u64>,
     /// (d) tur mandalı: bu Startup turunda `schedule_transmit` başında `tx_queue` boş ∧ kova dolu
     /// (`pacer.tokens() == pacer.burst_cap()`) görüldü mü. Tur işaretinde (`startup_plateau`) ve
     /// Startup (yeniden) girişinde sıfırlanır. Yalnız `e1.e1_applimited_plateau` açıkken kurulur.
@@ -2057,6 +2063,7 @@ impl Sender {
             e2a_diag: crate::loss::E2aDiag::default(),
             diag_cc_lost_copy_in_flight: 0,
             diag_cc_pto_from_arq: 0,
+            diag_cc_pto_new_data: 0,
             tail_probe_cancelled: 0,
             dup_queue: Vec::new(),
             establish_probe_enabled: true,
@@ -2237,6 +2244,7 @@ impl Sender {
             e1: crate::rate::E1Flags::default(),
             cc: None,
             cc_profile_pacing_cap: None,
+            cc_line_floor: None,
             e1_round_app_limited: false,
         }
     }
@@ -2460,6 +2468,11 @@ impl Sender {
     pub fn diag_cc_pto_from_arq(&self) -> u64 {
         self.diag_cc_pto_from_arq
     }
+    /// [CC-PORT U17] Gönderim kuyruğundaki yeni birimin PTO probu olarak çıkışı.
+    #[must_use]
+    pub fn diag_cc_pto_new_data(&self) -> u64 {
+        self.diag_cc_pto_new_data
+    }
     /// [CC-PORT U13] Taze kopyası uçuşta olduğu için yeniden kuyruklanmayan kayıp sayısı.
     #[must_use]
     pub fn diag_cc_lost_copy_in_flight(&self) -> u64 {
@@ -2567,6 +2580,7 @@ impl Sender {
         let dt = Duration::from_nanos(now_ns.saturating_sub(self.last_now_ns));
         self.pacer.refill(dt);
         self.last_now_ns = now_ns;
+        self.apply_cc_line_floor();
         // FS-CAL-2 v3 §3 lifecycle (design: docs/design/ESTIMATOR-LIFECYCLE.md). Finalize
         // guard-elapsed provisional losses at the engine clock, BEFORE this event's evidence is
         // fed: an ACK arriving at now >= expiry is late by the module contract (the fate sealed at
@@ -2851,6 +2865,7 @@ impl Sender {
             let dt = Duration::from_nanos(now_ns.saturating_sub(self.last_now_ns));
             self.pacer.refill(dt);
             self.last_now_ns = now_ns;
+            self.apply_cc_line_floor();
         }
         // Faz-2: state-resolution / cancellation / disarm (F1: CS-state-yok; F2A/F2B genişletir).
         self.cs_phase2_resolve(now_ns);
@@ -5188,6 +5203,50 @@ impl Sender {
         self.pacer.has_line()
     }
 
+    /// [DÖNÜŞ-HATTI] Kurulu hattın ([`Sender::set_cc_line`]) paylaşılan doluluğu: hattı kullanan
+    /// HER göndericinin (aynı cihazın alıcı ucunun ACK ve PARAM_ACK'leri, başka oturum uçları, bu
+    /// motorun pacer dışından giden kontrol çerçeveleri) baytlarıyla şu an hatta serileşmeyi
+    /// bekleyen bayt (zarf dahil). Bir sonraki olayda pacer dolumundan sonra hat kuyruğu en az bu
+    /// değere çıkar: yeni datagram ve kopya saatleri hattın gerçekten boşalmasını bekler.
+    /// Model yokken etkisiz (eski motor ve yön hızı olmayan yol bit-aynı).
+    ///
+    /// Neden: hat modeli yalnız bu motorun kendi datagramlarını sayıyordu. 62 B/s yukarı yönde aynı
+    /// cihazın ACK'leri ve PARAM'ları hattı saniyelerce tutarken model hattı boş sanıyor, alındıyı ve
+    /// kopyalarını o kuyruğun arkasına bırakıyordu (`kama-integration` `asym_product_outcome`).
+    pub fn cc_line_observe_backlog(&mut self, backlog_bytes: u64) {
+        if self.pacer.has_line() {
+            self.cc_line_floor = Some(self.cc_line_floor.unwrap_or(0).max(backlog_bytes));
+        }
+    }
+
+    /// [DÖNÜŞ-HATTI] Motorun kararı olmadan bu uçtan hatta çıkan bir datagram (`udp_bytes`, UDP
+    /// gövdesi; ör. çalışma-zamanının PARAM'ı) kurulu hatta yazılır. Model yokken etkisiz.
+    pub fn cc_line_charge(&mut self, udp_bytes: u64) {
+        self.pacer.line_charge(udp_bytes);
+    }
+
+    /// [DÖNÜŞ-HATTI] Kurulu hattın kendi baytlarımızı serileştirmeyi bitirmesine kalan süre (ns;
+    /// model yoksa 0).
+    #[must_use]
+    pub fn cc_line_ns_until_drained(&self) -> u64 {
+        self.pacer.line_ns_until_drained()
+    }
+
+    /// RFC 9002 §6.2.1 taban PTO (ns; geri çekilmesiz): `srtt + max(4·rttvar, kG) + max_ack_delay`,
+    /// RTT örneği yokken yapılandırmanın ilk PTO'su.
+    #[must_use]
+    pub fn base_pto_ns(&self) -> u64 {
+        self.tail_recovery
+            .base_pto_ns(self.rtt.srtt().map(dur_ns), dur_ns(self.rtt.rttvar()))
+    }
+
+    /// [DÖNÜŞ-HATTI] Bekleyen paylaşılan hat gözlemi pacer dolumundan sonra hat kuyruğuna.
+    fn apply_cc_line_floor(&mut self) {
+        if let Some(b) = self.cc_line_floor.take() {
+            self.pacer.line_raise_backlog(b);
+        }
+    }
+
     /// [CC-PORT] Port motorunun ilk uçuş penceresi (bayt); `cc` yoksa `None`.
     #[must_use]
     pub fn cc_initial_window(&self) -> Option<u64> {
@@ -6907,6 +6966,11 @@ impl Sender {
             self.e2a_emit_second_probe(out, now_ns);
             return;
         };
+        // [CC-PORT U17] Hedeften daha küçük kimlikli yeni birim gönderim kuyruğundaysa prob onu
+        // taşır (bkz. `emit_new_data_probe`). `cc` yokken yol aynı.
+        if self.cc_on() && self.emit_new_data_probe(target, out, now_ns) {
+            return;
+        }
         // [CC-PORT U16 (b)] Hedef ARQ kuyruğunda (`pending_lost`) bekleyen sıra başıysa prob o
         // kayıttır: pencere kapısı YOK (`try_send_probe`), kayıt `Retransmit` olarak uçuşa döner
         // (kaybolursa yine ARQ'ya düşer). Jeton yoksa kayıt kuyrukta kalır, yuva korunur.
@@ -7010,15 +7074,19 @@ impl Sender {
         });
         self.tail_recovery.on_probe_sent(now_ns); // spend the attempt only on a real emission.
         self.tail_recovery.record_probe(unit.size, false);
-        // [E2a PTO 2] (`pto_probes = 2`, KK-M1-07): bu turun ikinci probu. Hedef = birinci prob
-        // gönderildikten SONRA en eski teyitsiz kaynak (`inflight` en küçük seq); tek birim varsa bu,
-        // az önceki prob kopyasıdır (aynı birim taze seq ile ikinci kez — RFC 9002 §6.2.4 izinli).
-        // Yuva bu turun kimliğiyle (on_probe_sent SONRASI `(armed_at, probe_index)`) kurulur; önceki
-        // turdan kalan yuvanın üzerine yazılır (sonraki turun ilk probu yuvayı boşaltır).
-        // [CC-PORT U12] Port motorunda RTT örneği yokken tur başına TEK prob (RFC 9002 §6.2.4 "MAY
-        // send up to two"; U14 ile portta RTT örneği yokken prob zaten kurulmaz — bu kural ilk
-        // örnekten sonraki örneksiz dönemler içindir): hız/serileştirme bilinmezken ikinci kopya darboğaz
-        // kuyruğunu kendi eliyle doldurur (25 B/s: 130 B kopya ≈ 5,2 s). İlk örnekten sonra iki prob.
+        self.e2a_arm_second_probe(out, now_ns);
+    }
+
+    /// [E2a PTO 2] (`pto_probes = 2`, KK-M1-07): bu turun ikinci probu. Hedef = birinci prob
+    /// gönderildikten SONRA en eski teyitsiz kaynak (`inflight` en küçük seq); tek birim varsa bu,
+    /// az önceki prob kopyasıdır (aynı birim taze seq ile ikinci kez — RFC 9002 §6.2.4 izinli).
+    /// Yuva bu turun kimliğiyle (on_probe_sent SONRASI `(armed_at, probe_index)`) kurulur; önceki
+    /// turdan kalan yuvanın üzerine yazılır (sonraki turun ilk probu yuvayı boşaltır).
+    /// [CC-PORT U12] Port motorunda RTT örneği yokken tur başına TEK prob (RFC 9002 §6.2.4 "MAY
+    /// send up to two"; U14 ile portta RTT örneği yokken prob zaten kurulmaz — bu kural ilk
+    /// örnekten sonraki örneksiz dönemler içindir): hız/serileştirme bilinmezken ikinci kopya darboğaz
+    /// kuyruğunu kendi eliyle doldurur (25 B/s: 130 B kopya ≈ 5,2 s). İlk örnekten sonra iki prob.
+    fn e2a_arm_second_probe(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
         let two_probes = self.e2a.pto_probes() >= 2 && (!self.cc_on() || self.rtt.srtt().is_some());
         if two_probes {
             self.e2a_tail_probe2 = self.oldest_probe_target().map(|seq| {
@@ -7030,6 +7098,78 @@ impl Sender {
             });
             self.e2a_emit_second_probe(out, now_ns);
         }
+    }
+
+    /// [CC-PORT U17] PTO probunun yeni veri seçeneği. Probun hedefi (`target`, U16 (b): uçuştaki ya
+    /// da ARQ kuyruğundaki en küçük birim kimlikli teyitsiz kayıt) hâlâ teyitsizken gönderim
+    /// kuyruğunda (`tx_queue`) ondan DAHA KÜÇÜK kimlikli bir yeni birim bekliyorsa prob o yeni birimi
+    /// taşır: pencereden muaf (`try_send_probe`), orijinal DATA olarak (`track_sent`, köken `Data`;
+    /// RTT örneği verebilir) ve normal yeni veriyle aynı sonraki kayıtlarla (`after_new_data_sent`).
+    /// Kuyruktan çıkan birim en küçük kimliklidir; aynı kimlik uzayında sırası bozulmaz.
+    ///
+    /// Neden: uçuş, son ACK'ten sonra gönderilip hepsi kaybolan büyük birimlerle (ör. sonlu kesintide
+    /// ya da boyuta duyarlı yolda dosyanın art arda emisyonları) dolunca hiçbir kayıt kayıp ilan
+    /// edilemez (RFC 9002 §6.1: daha yeni ACK gerekir) ve yeni veri pencereye sığmaz. Prob yalnız o
+    /// kaybolan birimi kopyalarsa ACK hiç gelmez, PTO 30 s'e geri çekilir; daha küçük kimlikli (şerit
+    /// etiketli kimlikte daha öncelikli şeridin) bekleyen birimi taşıyan prob ACK alır, kayıp tespiti
+    /// ve pencere yeniden işler. RFC 9002 §6.2.4 "SHOULD send new data if available"; quinn-proto
+    /// 0.11.18 `connection/spaces.rs` `maybe_queue_probe`: bekleyen veri varsa prob onu taşır.
+    ///
+    /// Kimlikler gönderim sırasıyla artıyorsa (şeritsiz yol, sim) kuyruktaki her kimlik uçuştaki ve
+    /// ARQ kuyruğundaki her kimlikten büyüktür: bu seçenek hiç seçilmez, davranış bit-aynı.
+    /// Hedef artık teyitsiz değilse `false` (çağıran iptal yolunu izler). Jeton yoksa hedef yuvada
+    /// bekler ve `true` döner (deneme harcanmaz).
+    fn emit_new_data_probe(
+        &mut self,
+        target: u64,
+        out: &mut Vec<TransmitDecision>,
+        now_ns: u64,
+    ) -> bool {
+        let target_unit = self
+            .inflight
+            .get(&target)
+            .filter(|p| p.confirmed_release_ns.is_none())
+            .map(|p| p.unit.id)
+            .or_else(|| {
+                self.pending_lost
+                    .iter()
+                    .find(|r| r.seq == target)
+                    .map(|r| r.unit.id)
+            });
+        let Some(target_unit) = target_unit else {
+            return false;
+        };
+        let Some((pos, unit)) = self
+            .tx_queue
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, u)| u.id)
+            .map(|(i, u)| (i, *u))
+        else {
+            return false;
+        };
+        if unit.id >= target_unit {
+            return false;
+        }
+        if !self.try_send_probe(unit.size) {
+            self.tail_probe_pending = Some(target); // jeton yok → yuvada bekler, deneme harcanmaz
+            return true;
+        }
+        self.tx_queue.remove(pos);
+        let seq = self.track_sent(unit, now_ns, 0, TransmitKind::Data);
+        out.push(TransmitDecision {
+            kind: TransmitKind::Data,
+            seq,
+            unit_id: unit.id,
+            size: unit.size,
+            send_record: None,
+        });
+        self.after_new_data_sent(unit, now_ns);
+        self.tail_recovery.on_probe_sent(now_ns);
+        self.tail_recovery.record_probe(unit.size, false);
+        self.diag_cc_pto_new_data = self.diag_cc_pto_new_data.saturating_add(1);
+        self.e2a_arm_second_probe(out, now_ns);
+        true
     }
 
     /// [K4G-05b-R · inceleme bulgusu] Kuyruk probunun hedefi: en eski (en küçük seq) TEYİTSİZ KAYNAK
@@ -7356,61 +7496,67 @@ impl Sender {
                 size: front.size,
                 send_record: None,
             });
-            if self.state == SenderState::RecoverFwd {
-                let (factor, spacing) = self.dup_params();
-                for i in 1..u64::from(factor) {
-                    self.dup_queue.push(DupRec {
-                        due_ns: now_ns + i.saturating_mul(dur_ns(spacing)),
-                        unit: front,
-                        interval_ns: 0, // emergency: fire-once
-                    });
-                }
-            } else if self.state == SenderState::PreConverge {
-                // §3.3-B geometrik kopya: ilk kopya k_base×RTT_floor sonra; ateşlenince ×COPY_MULTIPLIER.
-                // RTT_floor ≈ (unit+sack)/floor_bw. Temiz kanalda ilk SACK bunu ateşlemeden iptal eder.
-                // [K-D2] t₀ = wire-emit anı = buradaki `now_ns` (birim pacer.try_send'i geçti = WIRE'a çıktı),
-                // sunum/enqueue anı DEĞİL → burst kuyruğunun serialization gecikmesi otomatik hesaba girer.
-                let rtt_floor = (front.size + PC_SACK_WIRE)
-                    .saturating_mul(1_000_000_000)
-                    .checked_div(PRE_CONVERGE_FLOOR_BW)
-                    .unwrap_or(0);
-                let first_delay = rtt_floor.saturating_mul(PC_KBASE_NUM) / PC_KBASE_DEN;
-                // [HAT-MODELİ] Bilinen hatta t₀ birimin hattı terk ettiği an: port pacer'ı hattan
-                // hızlıdır (31 B/s taban okunmaz), K-D2'nin "pacer serileştirir" öncülü yalnız hat
-                // modeliyle geçerli kalır. Model yoksa ek 0 (bugünkü t₀).
+            self.after_new_data_sent(front, now_ns);
+        }
+    }
+
+    /// Yeni birimin (orijinal DATA) gönderim sonrası kayıtları: RecoverFwd'de ileri kopyalar,
+    /// PreConverge'de §3.3-B geometrik kopya ve kuruluş merdivenlerinin kurulması. Normal yol
+    /// ([`Self::drain_new_data`]) ve [CC-PORT U17] yeni veri taşıyan PTO probu
+    /// ([`Self::emit_new_data_probe`]) aynı kuralı kullanır.
+    fn after_new_data_sent(&mut self, front: OpaqueUnit, now_ns: u64) {
+        if self.state == SenderState::RecoverFwd {
+            let (factor, spacing) = self.dup_params();
+            for i in 1..u64::from(factor) {
                 self.dup_queue.push(DupRec {
-                    due_ns: now_ns
-                        .saturating_add(self.pacer.line_ns_until_drained())
-                        .saturating_add(first_delay),
+                    due_ns: now_ns + i.saturating_mul(dur_ns(spacing)),
                     unit: front,
-                    interval_ns: first_delay, // reschedule aralığı (drain'de ×COPY_MULTIPLIER)
+                    interval_ns: 0, // emergency: fire-once
                 });
-                // DR-CS-3 ARM: PreConverge + srtt=None + FIRST DATA wire emission (t₀ = this instant,
-                // i.e. the unit passed try_send and is on the wire). Once per bootstrap epoch.
-                if self.bootstrap_rtt.enabled
-                    && !self.bs_done
-                    && self.bs_armed_ns.is_none()
-                    && self.rtt.srtt().is_none()
-                {
-                    self.bs_armed_ns = Some(now_ns);
-                    self.bs_diag.arm += 1;
-                }
-                // DR-CS-1 M2 ARM (F2A): PreConverge + srtt=None + İLK-DATA-wire-emisyonu (try_send-
-                // geçti = t₀) → CS-probe merdiveni epoch-başına-BİR-kez arm (fire 3/9/21/45s).
-                #[cfg(feature = "experimental-cold-start")]
-                if self.cs_probe_lane_enabled
-                    && !self.cs_probe_armed_once
-                    && self.rtt.srtt().is_none()
-                {
-                    self.cs_probe_armed_once = true;
-                    for (i, off) in CS_PROBE_FIRES_NS.iter().enumerate() {
-                        self.cs_wakeup
-                            .push((now_ns.saturating_add(*off), CsTimerKind::CsProbe(i as u8)));
-                    }
-                    // M5: giveup-deadline (epoch-başına-bir; T_COLD_GIVEUP).
+            }
+        } else if self.state == SenderState::PreConverge {
+            // §3.3-B geometrik kopya: ilk kopya k_base×RTT_floor sonra; ateşlenince ×COPY_MULTIPLIER.
+            // RTT_floor ≈ (unit+sack)/floor_bw. Temiz kanalda ilk SACK bunu ateşlemeden iptal eder.
+            // [K-D2] t₀ = wire-emit anı = buradaki `now_ns` (birim pacer.try_send'i geçti = WIRE'a çıktı),
+            // sunum/enqueue anı DEĞİL → burst kuyruğunun serialization gecikmesi otomatik hesaba girer.
+            let rtt_floor = (front.size + PC_SACK_WIRE)
+                .saturating_mul(1_000_000_000)
+                .checked_div(PRE_CONVERGE_FLOOR_BW)
+                .unwrap_or(0);
+            let first_delay = rtt_floor.saturating_mul(PC_KBASE_NUM) / PC_KBASE_DEN;
+            // [HAT-MODELİ] Bilinen hatta t₀ birimin hattı terk ettiği an: port pacer'ı hattan
+            // hızlıdır (31 B/s taban okunmaz), K-D2'nin "pacer serileştirir" öncülü yalnız hat
+            // modeliyle geçerli kalır. Model yoksa ek 0 (bugünkü t₀).
+            self.dup_queue.push(DupRec {
+                due_ns: now_ns
+                    .saturating_add(self.pacer.line_ns_until_drained())
+                    .saturating_add(first_delay),
+                unit: front,
+                interval_ns: first_delay, // reschedule aralığı (drain'de ×COPY_MULTIPLIER)
+            });
+            // DR-CS-3 ARM: PreConverge + srtt=None + FIRST DATA wire emission (t₀ = this instant,
+            // i.e. the unit passed try_send and is on the wire). Once per bootstrap epoch.
+            if self.bootstrap_rtt.enabled
+                && !self.bs_done
+                && self.bs_armed_ns.is_none()
+                && self.rtt.srtt().is_none()
+            {
+                self.bs_armed_ns = Some(now_ns);
+                self.bs_diag.arm += 1;
+            }
+            // DR-CS-1 M2 ARM (F2A): PreConverge + srtt=None + İLK-DATA-wire-emisyonu (try_send-
+            // geçti = t₀) → CS-probe merdiveni epoch-başına-BİR-kez arm (fire 3/9/21/45s).
+            #[cfg(feature = "experimental-cold-start")]
+            if self.cs_probe_lane_enabled && !self.cs_probe_armed_once && self.rtt.srtt().is_none()
+            {
+                self.cs_probe_armed_once = true;
+                for (i, off) in CS_PROBE_FIRES_NS.iter().enumerate() {
                     self.cs_wakeup
-                        .push((now_ns.saturating_add(CS_GIVEUP_NS), CsTimerKind::CsGiveup));
+                        .push((now_ns.saturating_add(*off), CsTimerKind::CsProbe(i as u8)));
                 }
+                // M5: giveup-deadline (epoch-başına-bir; T_COLD_GIVEUP).
+                self.cs_wakeup
+                    .push((now_ns.saturating_add(CS_GIVEUP_NS), CsTimerKind::CsGiveup));
             }
         }
     }
@@ -12479,6 +12625,104 @@ mod tests {
                 before,
                 r.sent.len()
             );
+        }
+
+        /// [CC-PORT U17] kurulumu: büyük kimlikli (`FILE`) büyük birimler pencereyi doldurur ve hiç
+        /// ACK almaz; PTO probları (pencereden muaf) uçuşu küçük bir birimin de sığmayacağı hâle
+        /// getirir. Sonra `queued` kimlikli küçük birim sunulur; gönderim kuyruğunda bekler. Döner:
+        /// (rig, son an, kuyruğa girdiği andaki en büyük seq).
+        fn u17_setup(queued: u64) -> (Rig, u64, u64) {
+            const FILE: u64 = UID + 10_000;
+            let mut r = Rig::new(Sender::with_cc_port);
+            r.warm(UID);
+            let mut t = 20 * MS;
+            let mut i = 0u64;
+            while r.s.tx_queue.is_empty() {
+                r.ev(Event::AppData(unit(FILE + i)), t);
+                i += 1;
+                t += 20 * MS;
+                assert!(i < 256, "ön koşul: pencere büyük birimlerle dolar");
+            }
+            // Sessizlik: PTO probları uçuşu pencerenin üstüne çıkarır.
+            let filled = r
+                .pump_until(t, t + PUMP_LONG_HORIZON_NS, PUMP_STEP_NS, |r| {
+                    !r.s.cc_fits(small(queued).size)
+                })
+                .expect("ön koşul: uçuş küçük birimin de sığmayacağı kadar dolar");
+            let last_seq = r.sent.keys().next_back().copied().expect("gönderim var");
+            r.ev(Event::AppData(small(queued)), filled);
+            assert!(
+                r.s.tx_queue.iter().any(|u| u.id == queued),
+                "ön koşul: küçük birim gönderim kuyruğunda bekler (pencere dolu)"
+            );
+            assert!(
+                r.sent.keys().next_back() == Some(&last_seq),
+                "ön koşul: tele çıkmadı"
+            );
+            (r, filled, last_seq)
+        }
+
+        /// [CC-PORT U17] Uçuş hiç ACK almayacak büyük birim kopyalarıyla doluyken PTO probu, hedefinden
+        /// (en küçük kimlikli teyitsiz kayıt) daha küçük kimlikli bekleyen yeni birimi taşır: orijinal
+        /// DATA olarak, pencereden muaf. Şerit etiketli kimlikte bu, öncelikli şeridin (PTT) birimidir;
+        /// ACK'i kayıp tespitini ve pencereyi yeniden işletir (`lane_finite_head_loss`).
+        #[test]
+        fn u17_pto_probe_carries_queued_unit_with_smaller_id_than_target() {
+            let queued = UID + 1;
+            let (mut r, t, last_seq) = u17_setup(queued);
+            r.pump_until(t + MS, t + PUMP_LONG_HORIZON_NS, PUMP_STEP_NS, |r| {
+                r.sent.keys().next_back() != Some(&last_seq)
+            })
+            .expect("PTO probu çıkar");
+            let probe = r
+                .sent
+                .values()
+                .find(|d| d.seq > last_seq)
+                .copied()
+                .expect("prob");
+            assert_eq!(
+                (probe.kind, probe.unit_id),
+                (TransmitKind::Data, queued),
+                "prob bekleyen küçük kimlikli yeni birimi taşır"
+            );
+            assert!(
+                !r.s.tx_queue.iter().any(|u| u.id == queued),
+                "birim kuyruktan çıktı"
+            );
+            assert_eq!(r.s.diag_cc_pto_new_data(), 1);
+            // ACK'i birimi teyit eder.
+            r.ev(ack(&[probe.seq]), r.last_now + MS);
+            assert!(r.s.take_confirmed_units().contains(&queued), "teyit");
+        }
+
+        /// [CC-PORT U17] Bekleyen yeni birimin kimliği hedeften büyükse (kimlikler gönderim sırasıyla
+        /// artan yol: şeritsiz, sim) seçenek seçilmez: prob U16 (b) hedefini yeniden iletir.
+        #[test]
+        fn u17_pto_probe_keeps_u16_target_when_queued_ids_are_larger() {
+            let queued = UID + 1_000_000;
+            let (mut r, t, last_seq) = u17_setup(queued);
+            r.pump_until(t + MS, t + PUMP_LONG_HORIZON_NS, PUMP_STEP_NS, |r| {
+                r.sent.keys().next_back() != Some(&last_seq)
+            })
+            .expect("PTO probu çıkar");
+            let probe = r
+                .sent
+                .values()
+                .find(|d| d.seq > last_seq)
+                .copied()
+                .expect("prob");
+            assert_eq!(
+                probe.kind,
+                TransmitKind::Retransmit,
+                "eski hedef: yeniden iletim"
+            );
+            assert_eq!(
+                probe.unit_id,
+                UID + 10_000,
+                "en küçük kimlikli teyitsiz birim"
+            );
+            assert!(r.s.tx_queue.iter().any(|u| u.id == queued));
+            assert_eq!(r.s.diag_cc_pto_new_data(), 0);
         }
 
         /// [K4G-05b-R · HA bulgusu, PR #186] Port motorunda tavan yok: ARQ planlayıcısı 255'te
