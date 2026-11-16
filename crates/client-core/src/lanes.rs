@@ -30,6 +30,15 @@
 //! sıradaki birimi şeridin teyit sınırından en çok `genişlik − 1` ileride verir
 //! ([`SessionLanes::set_span_rooms`]). Sınıra dayanan şerit burada bekler, pompa öbür şeritlere
 //! geçer: bir şeridin eksik sıra başı başka şeridin gönderimini durdurmaz.
+//!
+//! # Motor birikimi (yalnız yön hızları dosya penceresini büyüttüğünde)
+//!
+//! Motorun gönderim kuyruğu FIFO boşalır ve şerit sırasını bilmez; şerit sırası yalnız burada
+//! bekleyen birime uygulanır. Yön hızları dosya penceresini profil penceresine büyüttüğünde
+//! ([`file_window_floor`]) pompa dosya birimini motora ancak motorun gönderilmemiş birikimi
+//! [`file_backlog_bound_units`]'ın altındayken verir; pencereye alınan fazlası burada bekler
+//! ([`SessionLanes::set_file_backlog_room`]). PTT, SIG ve TEXT bu sınırdan etkilenmez, motora
+//! hemen gider. Yön hızı yokken sınır yoktur (bugünkü yol).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Instant;
@@ -49,6 +58,24 @@ pub const FILE_WINDOW_BDP_GAIN: u64 = 2;
 /// [ŞERİT-W] Yol-tabanlı dosya penceresinin üst sınırı (birim; SR-AUDIT-001 — uçuştaki dosya
 /// kimlikleri kümesi sınırlı kalır).
 pub const MAX_FILE_WINDOW_UNITS: u32 = 1024;
+
+/// [ŞERİT-KUYRUK] Motorun gönderilmemiş birikiminin alt sınırı (birim): dosya birimi motora
+/// yalnız birikim bunun altındayken verilir ([`file_backlog_bound_units`]).
+///
+/// Neden 2: motor yeni birimi pacer'ın o birime yetecek kredisi olduğunda tele verir; bu
+/// hızlarda pacing adımı tek datagramdır (12,5 kB/s'de 1 013 B'lik birim ≈ 80 ms, motorun pacing
+/// tiki 1 ms). Biri tele çıkarken biri sırada beklerse motor şerit katmanını hiç beklemez: şerit
+/// katmanı her S1 çağrısında (`drive`) yeniden doldurur. Daha büyük birikim yalnız sonradan gelen
+/// metnin/PTT'nin önündeki dosya verisini uzatır (motor kuyruğu FIFO'dur, şerit sırasını bilmez).
+pub const FILE_BACKLOG_MIN_UNITS: u64 = 2;
+
+/// [ŞERİT-KUYRUK] Motor kuyruğunda tutulan dosya verisinin süre ufku (ns): birikim sınırı en az
+/// yukarı yön hızında bu kadar veridir ([`file_backlog_bound_units`]). 40 ms = ürün düğümünün iki
+/// turu (trafiksiz turu 20 ms; `kama-node` `NODE_TICK`, veri alıcısının ACK zamanlayıcısıyla aynı
+/// mertebe). Hızlı yukarı yönde iki birim iki S1 çağrısı arasında biter; ufuk motorun iki tur
+/// boyunca boş kalmamasını sağlar. Metnin motor kuyruğunda bekleyebileceği süre böylece
+/// `max(2 birim / hız, 40 ms)` ile sınırlıdır — bant genişliğinden bağımsız.
+pub const FILE_BACKLOG_HORIZON_NS: u64 = 40_000_000;
 
 /// [ŞERİT-GENİŞLİK] PTT, SIG ve TEXT şeritlerinin varsayılan kabul genişliği (birim).
 pub const DEFAULT_RT_ADMIT_WIDTH: u64 = 256;
@@ -269,6 +296,31 @@ pub fn file_window_floor(
     configured.max(units)
 }
 
+/// [ŞERİT-KUYRUK] Motorun gönderilmemiş birikim sınırı (birim): `max(FILE_BACKLOG_MIN_UNITS,
+/// ⌈uplink_bps · FILE_BACKLOG_HORIZON_NS / unit_bytes⌉)`, tavanı [`MAX_FILE_WINDOW_UNITS`].
+/// `unit_bytes == 0` → [`FILE_BACKLOG_MIN_UNITS`].
+///
+/// Neden: yön hızları dosya penceresini profil penceresine büyüttüğünde ([`file_window_floor`],
+/// 12,5 kB/s ileri, 62 B/s dönüşte 67 birim) şerit katmanı bütün pencereyi bir anda motora
+/// veriyordu. Motorun gönderim kuyruğu FIFO boşalır ve şerit sırasını bilmez: dosyanın başında
+/// sunulan metin ≈ 40 dosya biriminin arkasına girdi (S1 hücresi, 40 × 900 B: 3,19 / 0,31 /
+/// 2,48 s). Şerit sırası (PTT > SIG > TEXT > FILE) yalnız şerit katmanında bekleyen birime
+/// uygulanır; motora verilmiş birim sırayı geçemez. Sınır motorun kuyruğunu pacer'ı besleyecek
+/// kadar tutar, gerisini dosya penceresinde (kabul edilmiş, motora verilmemiş) bekletir; pencere
+/// boyu değişmez.
+#[must_use]
+pub fn file_backlog_bound_units(unit_bytes: u64, uplink_bps: u64) -> u64 {
+    if unit_bytes == 0 {
+        return FILE_BACKLOG_MIN_UNITS;
+    }
+    let horizon_bytes =
+        u128::from(uplink_bps) * u128::from(FILE_BACKLOG_HORIZON_NS) / 1_000_000_000;
+    let units = u64::try_from(horizon_bytes.div_ceil(u128::from(unit_bytes))).unwrap_or(u64::MAX);
+    units
+        .max(FILE_BACKLOG_MIN_UNITS)
+        .min(u64::from(MAX_FILE_WINDOW_UNITS))
+}
+
 /// KK-T1-09: `W` dosya birimi (her biri en çok `unit_bytes`) motor kuyruğunda en az bir BDP
 /// (`bottleneck_bytes_per_s × rtt_ms / 1000`) tutar mı.
 #[must_use]
@@ -324,6 +376,10 @@ pub struct LaneStats {
     pub span_blocked: [u64; 4],
     /// Teyit kanalından okunan bütün olaylar (her sınıf).
     pub acks_drained: u64,
+    /// [ŞERİT-KUYRUK] Pompa turunda dosya penceresine alınmış birimin, motorun gönderilmemiş
+    /// birikimi sınırda olduğu için motora verilmediği tur sayısı
+    /// ([`SessionLanes::set_file_backlog_room`]).
+    pub file_backlog_held: u64,
 }
 
 /// Bir oturumun şeritleri.
@@ -334,6 +390,15 @@ pub struct SessionLanes {
     window: usize,
     /// FILE şeridinin uca verdiği, teyidi gelmemiş birim kimlikleri (≤ W).
     file_inflight: BTreeSet<u64>,
+    /// [ŞERİT-KUYRUK] Dosya penceresine alınmış (W'ye sayılır) ama motorun gönderilmemiş birikimi
+    /// sınırda olduğu için uca henüz verilmemiş birimler, şerit sırasıyla. Yalnız birikim sınırı
+    /// etkinken dolar; `file_inflight` ile toplamı ≤ W.
+    file_staged: VecDeque<QueuedUnit>,
+    /// [ŞERİT-KUYRUK] Motorun birikim sınırına dek daha kaç birim verilebilir
+    /// ([`Self::set_file_backlog_room`]); `None` = sınır yok (bugünkü yol).
+    backlog_room: Option<u64>,
+    /// Son pompa turunda dosya birimi birikim sınırı yüzünden bekletildi mi (sayaç için).
+    backlog_hit: bool,
     /// [ŞERİT-AÇIKLIK] Alıcının kabul penceresi dolmadan şerit başına daha kaç birim verilebilir
     /// ([`Self::set_span_rooms`]); `u64::MAX` = sınır yok.
     span_room: [u64; 4],
@@ -350,6 +415,9 @@ impl SessionLanes {
             caps: cfg.caps,
             window: usize::try_from(cfg.file_window_units).unwrap_or(usize::MAX),
             file_inflight: BTreeSet::new(),
+            file_staged: VecDeque::new(),
+            backlog_room: None,
+            backlog_hit: false,
             span_room: [u64::MAX; 4],
             span_hit: [false; 4],
         }
@@ -370,8 +438,13 @@ impl SessionLanes {
     }
 
     /// Uç geri bastı: birim şeridinin BAŞINA döner (sıra korunur). Tavan denetimi yoktur: birim
-    /// az önce bu şeritten çıktı.
+    /// az önce bu şeritten çıktı. Birikim sınırı etkinken dosya birimi bekletme kuyruğundan
+    /// çıkmıştır; oraya, başa döner (pencerede ve açıklıkta sayılı kalır).
     pub fn push_front(&mut self, lane: Lane, unit: QueuedUnit) {
+        if lane == Lane::File && self.backlog_room.is_some() {
+            self.file_staged.push_front(unit);
+            return;
+        }
         self.queues[lane.index()].push_front(unit);
     }
 
@@ -379,8 +452,37 @@ impl SessionLanes {
     /// sınırına dayanan HER şerit atlanır ve sıradaki uygun şeride geçilir (bir şeridin sınırı
     /// öbürlerini durdurmaz). Süresi dolmuş `DeadlineBounded` birim çıkarılır ve `expired`'da
     /// sayılır (uca verilmez).
+    ///
+    /// [ŞERİT-KUYRUK] Birikim sınırı etkinken FILE şeridi iki adımdır: (1) pencere ve açıklık
+    /// izin verdikçe birim şerit kuyruğundan dosya penceresine alınır (bekletme kuyruğu; açıklık
+    /// burada düşer), (2) motorun birikimine yer varsa bekletme kuyruğunun başı uca verilir. PTT,
+    /// SIG ve TEXT bu sınırdan etkilenmez.
     pub fn pop_next(&mut self, now: Instant, expired: &mut u64) -> Option<(Lane, QueuedUnit)> {
         for lane in Lane::ALL {
+            if lane == Lane::File {
+                if let Some(room) = self.backlog_room {
+                    self.admit_file(now, expired);
+                    if room == 0 {
+                        self.backlog_hit = !self.file_staged.is_empty();
+                        continue;
+                    }
+                    while let Some(unit) = self.file_staged.pop_front() {
+                        if let DeliveryPolicy::DeadlineBounded { deadline } = unit.policy {
+                            if deadline <= now {
+                                *expired = expired.saturating_add(1);
+                                continue;
+                            }
+                        }
+                        return Some((lane, unit));
+                    }
+                    continue;
+                }
+                // Sınır kalktıysa pencereye alınmış birim önce gider (sınır yapılandırmadan
+                // türer, oturum boyunca değişmez; savunma).
+                if let Some(unit) = self.file_staged.pop_front() {
+                    return Some((lane, unit));
+                }
+            }
             if lane == Lane::File && self.file_inflight.len() >= self.window {
                 continue;
             }
@@ -426,9 +528,57 @@ impl SessionLanes {
     /// bloklamaz" ihlali (ölçüm: `tests/lane_two_heads_lost.rs`, `tests/lane_span_per_lane.rs`).
     /// Açıklık sınırıyla verilen her birim alıcının penceresinin içindedir; sınıra dayanan şeridin
     /// birimleri burada bekler.
+    ///
+    /// [ŞERİT-KUYRUK] Bekletme kuyruğundaki dosya birimleri açıklıktan pencereye alınırken düştü;
+    /// uca henüz verilmedikleri için `rooms` onları saymaz, burada düşülür.
     pub fn set_span_rooms(&mut self, rooms: [u64; 4]) {
         self.span_room = rooms;
+        let file = Lane::File.index();
+        self.span_room[file] = rooms[file].saturating_sub(self.file_staged.len() as u64);
         self.span_hit = [false; 4];
+    }
+
+    /// [ŞERİT-KUYRUK] Motorun gönderilmemiş birikimine (teklif kanalı + motorun gönderim kuyruğu)
+    /// birikim sınırına dek daha kaç birim girebilir (`Some`), ya da sınır yok (`None`, bugünkü
+    /// yol). Pompa her tur başında kurar; verilen her birim (her şerit) bir düşürür. 0 iken dosya
+    /// birimi pencereye alınır ama uca verilmez; PTT, SIG ve TEXT etkilenmez.
+    ///
+    /// Neden: motorun gönderim kuyruğu FIFO boşalır ve şerit sırasını bilmez. Dosya penceresi
+    /// büyükken (yön hızları, [`file_window_floor`]) bütün pencere motora verilirse sonradan gelen
+    /// metin o dosya verisinin arkasında bekler. Bkz. [`file_backlog_bound_units`].
+    pub fn set_file_backlog_room(&mut self, room: Option<u64>) {
+        self.backlog_room = room;
+        self.backlog_hit = false;
+    }
+
+    /// Son pompa turunda pencereye alınmış dosya birimi birikim sınırı yüzünden uca verilmedi mi.
+    #[must_use]
+    pub fn backlog_hit(&self) -> bool {
+        self.backlog_hit
+    }
+
+    /// [ŞERİT-KUYRUK] Pencere ve FILE açıklığı izin verdikçe dosya birimini şerit kuyruğundan
+    /// bekletme kuyruğuna (dosya penceresi) alır; açıklık burada düşer. Süresi dolmuş
+    /// `DeadlineBounded` birim çıkarılır ve sayılır.
+    fn admit_file(&mut self, now: Instant, expired: &mut u64) {
+        let file = Lane::File.index();
+        while self.file_inflight.len() + self.file_staged.len() < self.window {
+            if self.span_room[file] == 0 {
+                self.span_hit[file] = !self.queues[file].is_empty();
+                return;
+            }
+            let Some(unit) = self.queues[file].pop_front() else {
+                return;
+            };
+            if let DeliveryPolicy::DeadlineBounded { deadline } = unit.policy {
+                if deadline <= now {
+                    *expired = expired.saturating_add(1);
+                    continue;
+                }
+            }
+            self.span_room[file] -= 1;
+            self.file_staged.push_back(unit);
+        }
     }
 
     /// Son pompa turunda şerit açıklık sınırına takıldı mı (bekleyen birimi varken).
@@ -438,9 +588,16 @@ impl SessionLanes {
     }
 
     /// Birim uca verildi: şeridin açıklığı bir azalır; FILE ise kimliği pencereye girer.
+    /// [ŞERİT-KUYRUK] Birikim sınırı etkinken motor birikimine yer bir azalır (her şerit); dosya
+    /// biriminin açıklığı pencereye alınırken zaten düşmüştü.
     pub fn on_given(&mut self, lane: Lane, unit_id: u64) {
-        let room = &mut self.span_room[lane.index()];
-        *room = room.saturating_sub(1);
+        if let Some(room) = self.backlog_room.as_mut() {
+            *room = room.saturating_sub(1);
+        }
+        if !(lane == Lane::File && self.backlog_room.is_some()) {
+            let room = &mut self.span_room[lane.index()];
+            *room = room.saturating_sub(1);
+        }
         if lane == Lane::File {
             self.file_inflight.insert(unit_id);
         }
@@ -451,13 +608,14 @@ impl SessionLanes {
         self.file_inflight.remove(&unit_id)
     }
 
-    /// Bekleyen birim yok (pencere sayılmaz: uca verilmiş birim ucundur).
+    /// Uca verilecek birim yok: şerit kuyrukları ve dosya penceresinin bekletme kuyruğu boş
+    /// (uca verilmiş birim ucundur, sayılmaz).
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.queues.iter().all(VecDeque::is_empty)
+        self.queues.iter().all(VecDeque::is_empty) && self.file_staged.is_empty()
     }
 
-    /// Bekleyen birim sayısı.
+    /// Şerit kuyruklarında bekleyen (pencereye alınmamış) birim sayısı.
     #[must_use]
     pub fn len(&self) -> usize {
         self.queues.iter().map(VecDeque::len).sum()
@@ -469,10 +627,17 @@ impl SessionLanes {
         self.queues[lane.index()].len()
     }
 
-    /// FILE penceresindeki (uca verilmiş, teyitsiz) birim sayısı.
+    /// FILE penceresindeki birim sayısı: uca verilmiş teyitsizler ve [ŞERİT-KUYRUK] pencereye
+    /// alınıp motorun birikimi yüzünden bekletilenler ([`Self::file_staged`]).
     #[must_use]
     pub fn file_inflight(&self) -> usize {
-        self.file_inflight.len()
+        self.file_inflight.len() + self.file_staged.len()
+    }
+
+    /// [ŞERİT-KUYRUK] Dosya penceresine alınmış, uca henüz verilmemiş birim sayısı.
+    #[must_use]
+    pub fn file_staged(&self) -> usize {
+        self.file_staged.len()
     }
 }
 
@@ -556,13 +721,24 @@ impl LaneState {
         }
     }
 
-    /// [ŞERİT-AÇIKLIK] Pompa turu bitti: açıklık sınırına takılan şeritler sayılır.
+    /// [ŞERİT-KUYRUK] Oturumun motor birikimi yeri ([`SessionLanes::set_file_backlog_room`]).
+    pub fn set_file_backlog_room(&mut self, session: SessionHandle, room: Option<u64>) {
+        if let Some(lanes) = self.sessions.get_mut(&session) {
+            lanes.set_file_backlog_room(room);
+        }
+    }
+
+    /// [ŞERİT-AÇIKLIK] Pompa turu bitti: açıklık sınırına takılan şeritler ve [ŞERİT-KUYRUK]
+    /// birikim sınırında bekletilen dosya birimi sayılır.
     pub fn note_pump_done(&mut self, session: SessionHandle) {
         if let Some(lanes) = self.sessions.get(&session) {
             for lane in Lane::ALL {
                 if lanes.span_hit(lane) {
                     self.stats.span_blocked[lane.index()] += 1;
                 }
+            }
+            if lanes.backlog_hit() {
+                self.stats.file_backlog_held += 1;
             }
         }
     }
@@ -608,7 +784,8 @@ impl LaneState {
         self.sessions.retain(|&h, lanes| {
             let keep = active(h);
             if !keep {
-                *dropped = dropped.saturating_add(lanes.len() as u64);
+                // [ŞERİT-KUYRUK] Pencereye alınıp uca verilmemiş dosya birimleri de düşer.
+                *dropped = dropped.saturating_add((lanes.len() + lanes.file_staged()) as u64);
             }
             keep
         });
@@ -934,6 +1111,150 @@ mod tests {
             file_window_for_path(floor, UNIT_BYTES, 1_000_000, 100 * MS),
             198
         );
+    }
+
+    /// [ŞERİT-KUYRUK] Birikim sınırı: en az 2 birim; hızlı yukarı yönde 40 ms'lik veri; tavan.
+    #[test]
+    fn backlog_bound_is_two_units_or_forty_ms_of_uplink() {
+        // S1 hücresi (12,5 kB/s): 40 ms = 500 B < 1 birim → 2.
+        assert_eq!(file_backlog_bound_units(UNIT_BYTES, 12_500), 2);
+        assert_eq!(file_backlog_bound_units(UNIT_BYTES, 0), 2);
+        assert_eq!(file_backlog_bound_units(0, 12_500), 2);
+        // 1 MB/s: 40 kB → ⌈40 000/1013⌉ = 40.
+        assert_eq!(file_backlog_bound_units(UNIT_BYTES, 1_000_000), 40);
+        assert_eq!(
+            file_backlog_bound_units(UNIT_BYTES, u64::MAX),
+            u64::from(MAX_FILE_WINDOW_UNITS)
+        );
+    }
+
+    fn file_cfg(window: u32) -> LaneConfig {
+        LaneConfig {
+            file_window_units: window,
+            caps: [64, 64, 256, 64],
+            admit_widths: DEFAULT_ADMIT_WIDTHS,
+        }
+    }
+
+    /// [ŞERİT-KUYRUK] Birikim sınırı dosya birimini pencereye alır ama motora vermez; metin hep
+    /// verilir; pencere boyu (uçuş + bekletilen) değişmez.
+    #[test]
+    fn backlog_room_holds_file_units_in_the_window_but_never_text() {
+        let mut l = SessionLanes::new(&file_cfg(10));
+        for i in 0..6u8 {
+            l.push(unit(TrafficClass::Bk, i)).expect("tavan altı");
+        }
+        l.push(unit(TrafficClass::Be, 0xEE)).expect("tavan altı");
+        l.set_file_backlog_room(Some(2));
+        let mut id = 0;
+        let got = drain(&mut l, Instant::now(), &mut id);
+        assert_eq!(
+            got.iter().map(|g| (g.0, g.1)).collect::<Vec<_>>(),
+            [(Lane::Text, 0xEE), (Lane::File, 0)],
+            "metin önce; yer 2: metin + 1 dosya birimi"
+        );
+        assert!(l.backlog_hit(), "dosya birimi bekletildi");
+        assert_eq!(l.file_staged(), 5, "kalan 5 dosya birimi pencerede bekler");
+        assert_eq!(l.file_inflight(), 6, "pencere: 1 uçta + 5 bekletilen");
+        assert_eq!(l.len(), 0, "şerit kuyruğu boş");
+        assert!(!l.is_empty(), "bekletilen birim iş sayılır");
+        // Yer 0: metin yine verilir, dosya verilmez.
+        l.set_file_backlog_room(Some(0));
+        l.push(unit(TrafficClass::Be, 0xEF)).expect("tavan altı");
+        let got = drain(&mut l, Instant::now(), &mut id);
+        assert_eq!(got.len(), 1);
+        assert_eq!((got[0].0, got[0].1), (Lane::Text, 0xEF));
+        // Yer açılınca sıra korunarak verilir.
+        l.set_file_backlog_room(Some(3));
+        let got = drain(&mut l, Instant::now(), &mut id);
+        assert_eq!(
+            got.iter().map(|g| g.1).collect::<Vec<_>>(),
+            [1, 2, 3],
+            "şerit içi sıra"
+        );
+        assert_eq!(l.file_inflight(), 6);
+        // Sınır kalkınca (yapılandırma; savunma) bekletilenler gider.
+        l.set_file_backlog_room(None);
+        let got = drain(&mut l, Instant::now(), &mut id);
+        assert_eq!(got.iter().map(|g| g.1).collect::<Vec<_>>(), [4, 5]);
+        assert!(l.is_empty());
+    }
+
+    /// [ŞERİT-KUYRUK] Pencereye alım pencere ve FILE açıklığıyla sınırlıdır; bekletilenler
+    /// açıklıktan düşülür; geri basılan dosya birimi bekletme kuyruğunun başına döner.
+    #[test]
+    fn backlog_admission_respects_window_span_and_push_front() {
+        let mut l = SessionLanes::new(&file_cfg(3));
+        for i in 0..6u8 {
+            l.push(unit(TrafficClass::Bk, i)).expect("tavan altı");
+        }
+        l.set_file_backlog_room(Some(0));
+        let mut id = 0;
+        assert!(drain(&mut l, Instant::now(), &mut id).is_empty());
+        assert_eq!((l.file_staged(), l.len()), (3, 3), "pencere 3");
+        // Açıklık: FILE için 4 yer, 3'ü bekletilenlerce kullanılmış.
+        l.set_span_rooms([u64::MAX, u64::MAX, u64::MAX, 4]);
+        l.set_file_window(10);
+        assert!(drain(&mut l, Instant::now(), &mut id).is_empty());
+        assert_eq!(
+            l.file_staged(),
+            4,
+            "açıklık 4: yalnız bir birim daha alındı"
+        );
+        assert!(l.span_hit(Lane::File));
+        // Yer açılır; uç geri basar → birim bekletme kuyruğunun başına döner.
+        l.set_file_backlog_room(Some(1));
+        let mut exp = 0;
+        let (lane, u) = l.pop_next(Instant::now(), &mut exp).expect("dosya");
+        assert_eq!((lane, u.bytes[0]), (Lane::File, 0));
+        l.push_front(lane, u);
+        assert_eq!(l.file_staged(), 4);
+        let got = drain(&mut l, Instant::now(), &mut id);
+        assert_eq!(got.iter().map(|g| g.1).collect::<Vec<_>>(), [0]);
+    }
+
+    /// [ŞERİT-KUYRUK] Bekletilirken süresi dolan birim verilmez, sayılır; oturum düşünce
+    /// bekletilenler de sayılır; sınır yokken bekletme olmaz (bugünkü yol).
+    #[test]
+    fn backlog_staged_units_expire_and_drop_and_none_never_stages() {
+        let t0 = Instant::now();
+        let mut l = SessionLanes::new(&file_cfg(5));
+        let mut u = unit(TrafficClass::Bk, 7);
+        u.policy = DeliveryPolicy::DeadlineBounded {
+            deadline: t0 + Duration::from_millis(10),
+        };
+        l.push(u).expect("tavan altı");
+        l.push(unit(TrafficClass::Bk, 8)).expect("tavan altı");
+        l.set_file_backlog_room(Some(0));
+        let mut exp = 0;
+        assert!(l.pop_next(t0, &mut exp).is_none());
+        assert_eq!(l.file_staged(), 2);
+        l.set_file_backlog_room(Some(2));
+        let got = l.pop_next(t0 + Duration::from_millis(10), &mut exp);
+        assert_eq!(exp, 1, "bekletilirken süresi doldu");
+        assert_eq!(got.map(|(_, u)| u.bytes[0]), Some(8));
+
+        let mut st = LaneState::new(file_cfg(5));
+        let h = SessionHandle::from_raw(3);
+        for i in 0..4 {
+            st.enqueue(h, unit(TrafficClass::Bk, i))
+                .expect("tavan altı");
+        }
+        st.set_file_backlog_room(h, Some(0));
+        assert!(st.pop_next(h, t0).is_none());
+        st.note_pump_done(h);
+        assert_eq!(st.stats().file_backlog_held, 1);
+        assert_eq!(st.session(h).map(SessionLanes::file_staged), Some(4));
+        st.retain_active(|_| false);
+        assert_eq!(st.stats().lane_dropped, 4, "bekletilenler de düşer");
+
+        let mut l = SessionLanes::new(&file_cfg(5));
+        for i in 0..8u8 {
+            l.push(unit(TrafficClass::Bk, i)).expect("tavan altı");
+        }
+        let mut id = 0;
+        assert_eq!(drain(&mut l, t0, &mut id).len(), 5, "sınır yok: W kadar");
+        assert_eq!((l.file_staged(), l.len(), l.file_inflight()), (0, 3, 5));
     }
 
     /// [ŞERİT-W] Pencere ayarı: büyüyünce bekleyen dosya birimleri verilir, daralınca uçtaki birim

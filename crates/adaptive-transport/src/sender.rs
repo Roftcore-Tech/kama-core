@@ -7573,6 +7573,16 @@ impl Sender {
         (self.btlbw.btlbw(), rtprop_ns)
     }
 
+    /// [ŞERİT-KUYRUK] Gönderim kuyruğunda (`tx_queue`) bekleyen, henüz hiç tele çıkmamış yeni
+    /// birim sayısı (SALT-OKUMA; davranış DEĞİŞMEZ). Kuyruk FIFO boşalır ve şerit sırasını
+    /// bilmez; üst katman (client-core şeritleri) dosya birimini motora ancak bu birikim küçükken
+    /// verir ki sonradan gelen metin dosyanın arkasında beklemesin. Motor bu değeri hiçbir kararda
+    /// okumaz.
+    #[must_use]
+    pub fn unsent_units(&self) -> usize {
+        self.tx_queue.len()
+    }
+
     /// TUR-A teşhis rate-trajektori snapshot'ı (SALT-GÖZLEM; davranış DEĞİŞMEZ):
     /// `(state, btlbw_bps, srtt_us, send_rate_bps, inflight_bytes)`. floor→btlbw ramp kilidini ölçmek için.
     #[must_use]
