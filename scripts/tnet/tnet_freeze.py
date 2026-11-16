@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """kama-target-net-v2 — donma kaydını (reports/kama-target-net-v2/FREEZE.json) üretir/doğrular (yalnız stdlib).
 
-  tnet_freeze.py --code-sha SHA [--write]   # SHA = ölçülen kodun commit'i; --write yoksa yalnız yazdırır
+  tnet_freeze.py --code-sha SHA --base-main SHA [--write]   # ölçülen kodun commit'i ve içerdiği main başı
   tnet_freeze.py --verify                   # kayıttaki sha256'lar bugünkü dosyalarla aynı mı (çıkış 0/1)
 """
 import hashlib
@@ -25,7 +25,7 @@ def sha256(path):
         return hashlib.sha256(f.read()).hexdigest()
 
 
-def current(code_sha):
+def current(code_sha, base_main):
     man = {}
     with tempfile.TemporaryDirectory() as d:
         for rep in ("R1", "R2", "P"):
@@ -36,7 +36,7 @@ def current(code_sha):
             subprocess.run(cmd, check=True, capture_output=True)
             man[rep] = sha256(p)
     return {"schema": "tnet-freeze-v1", "campaign": "kama-target-net-v2", "code_sha": code_sha,
-            "base_main_sha": "b88a047f56d3b2f46855e266da0f9f651aa7c5f4",
+            "base_main_sha": base_main,
             "manifest_sha256": man, "files_sha256": {f: sha256(os.path.join(REPO, f)) for f in FILES}}
 
 
@@ -44,12 +44,12 @@ def main():
     a = sys.argv[1:]
     if "--verify" in a:
         frz = json.load(open(OUT))
-        now = current(frz["code_sha"])
+        now = current(frz["code_sha"], frz["base_main_sha"])
         bad = [k for k in ("manifest_sha256", "files_sha256") if now[k] != frz[k]]
         print("FREEZE " + ("UYUŞUYOR" if not bad else f"UYUŞMUYOR: {bad}"))
         sys.exit(1 if bad else 0)
     code_sha = a[a.index("--code-sha") + 1]
-    rec = current(code_sha)
+    rec = current(code_sha, a[a.index("--base-main") + 1])
     txt = json.dumps(rec, indent=2, ensure_ascii=False) + "\n"
     if "--write" in a:
         os.makedirs(os.path.dirname(OUT), exist_ok=True)
