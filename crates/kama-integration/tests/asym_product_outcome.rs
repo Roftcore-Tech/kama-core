@@ -83,7 +83,9 @@
 //!   güvenilir ve sıralı bir kliptir (`kama-app` `ptt.rs`, PTT-R0: "ağ takılırsa ses bozulmaz,
 //!   durur"): öncülünü bekleyen demet sınırı aşarsa ölçüt düşer; bu demetler ayrı sütunda
 //!   ("öncül_bekledi") sayılır ve en büyük gecikmeleriyle yazılır, ki düşüşün kaynağı (dosyanın
-//!   bloklaması mı, PTT'nin kendi sıralı kurtarması mı) okunabilsin. PTT'nin dar dönüşte önlemsel
+//!   bloklaması mı, PTT'nin kendi sıralı kurtarması mı) okunabilsin. [2026-11-16 ürün kabulü:
+//!   profil açıkken "kayıp-kurtarma" istisnası da YOKTUR — bütün demetlerin en büyük gecikmesi
+//!   ≤ 1 s; istisna yalnız profil kapalı teşhis kolunda raporlanır. Sınır (1 s) aynı.] PTT'nin dar dönüşte önlemsel
 //!   fazlalık ya da son tarih politikası alması sahibin kararıdır; bu test politikayı değiştirmez.
 //! * DOSYA ≤ 14 s (`send_file` → Bob'da tamamlanma). Bu hücrenin dosya sınırı 40 × 1000 B için
 //!   14 s'dir; sınır yük baytıyla ölçeklenir: 14 s × 40 000 B / 40 000 B = 14 s. Kredi verilmeyen
@@ -1264,7 +1266,10 @@ impl Run {
         }
         let start = self.ptt_started.map(|s| self.since(s, opened));
         let n = self.bundles.len();
-        let verdict = if missing > 0 || over > 0 || n == 0 {
+        // [ÜRÜN KABULÜ · 2026-11-16] Profil açıkken (ürün kolu) kendi ilk iletimi düşen demet de
+        // sınır içinde olmalı — kullanıcı sesi geç duyar; ürün kabulünde "kayıp-kurtarma" başarı
+        // sayılmaz. İstisna yalnız profil kapalı teşhis kolunda ayrı raporlanır.
+        let verdict = if missing > 0 || over > 0 || n == 0 || (self.profile && excused > 0) {
             Verdict::Fail
         } else {
             Verdict::Pass
