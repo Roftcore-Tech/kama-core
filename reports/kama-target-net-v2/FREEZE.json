@@ -1,8 +1,8 @@
 {
   "schema": "tnet-freeze-v1",
   "campaign": "kama-target-net-v2",
-  "code_sha": "36f858cfeb1fe07414ae8c88e384d7829f7cb4de",
-  "base_main_sha": "b88a047f56d3b2f46855e266da0f9f651aa7c5f4",
+  "code_sha": "3de926cceaba6cb5f74d77bbe9534b25e80b9ec9",
+  "base_main_sha": "3abee42990494cff05abfb553e5a347cfe45d12f",
   "manifest_sha256": {
     "R1": "04ee4c3a4fc4651b6650e129a0d7f472b2bceb9d0fa3a2ecab4db6d11e31e91f",
     "R2": "f93c3de5189f54c29ee752033b901e41fcfc85ec21936d9788b0f3a231179030",

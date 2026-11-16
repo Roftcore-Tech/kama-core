@@ -1,6 +1,7 @@
 # kama-target-net-v2 — ÖN-KAYIT (koşudan ÖNCE donar)
 
-Tarih: 2026-11-16 · Dal: `campaign/kama-target-net-v2` · Taban: `origin/main` `b88a047f56d3b2f46855e266da0f9f651aa7c5f4`
+Tarih: 2026-11-16 · Dal: `campaign/kama-target-net-v2` · Taban: `origin/main` `3abee42990494cff05abfb553e5a347cfe45d12f`
+(#211 dahil; ilk donmada taban `b88a047f` idi, §13 taşıması)
 · Ölçülen kodun SHA'sı ve donmuş kimlikler: §12 (ve `reports/kama-target-net-v2/FREEZE.json`).
 
 Bu belge, ölçüm koşulmadan önce commit'lenir. Hücre, kol, N, horizon, tohum, metrik ve hüküm kuralı sonuç
@@ -26,7 +27,8 @@ QUIC'in zorlandığı koşullar. Her hücre bu hedeflerden en az birini temsil e
 - **Kama ↔ quinn v1** (Temmuz 2026): manşet bulgusu ölçüm artefaktı olarak geri çekildi; eski motor, 5 tekrar.
 
 O tarihten bu yana ürün motoru değişti: CC-PORT (quinn-proto BBR + RFC 9002 portu) varsayılan motor; şerit başına
-sıra ve BDP'den dosya penceresi (#199); düşük bantta FEC parite tavanı düzeltmeleri (#190). Bu kampanya v1'in
+sıra ve BDP'den dosya penceresi (#199); düşük bantta FEC parite tavanı düzeltmeleri (#190); PTO probunun bekleyen
+öncelikli yeni birimi taşıması (#211, CC-PORT U17). Bu kampanya v1'in
 hüküm kuralını ve v1 hücrelerini (süreklilik için) korur, üstüne QUIC kollarını, düşük bant ve asimetrik dönüş
 eksenlerini ve FEC'siz ürün kolunu ekler.
 
@@ -238,7 +240,12 @@ aynı sırada, v2 eksenleri sona eklenir), `TABLES.md`.
 ## 9. Önceden beyan edilen geçerlilik tehditleri
 
 1. **Emülasyon ≠ saha.** Bozulma Linux netem'dir; gerçek radyo/uydu/hücresel değil. Kayıp IID'dir; burst yok (§2).
-2. **Bench Kama kolu ürün için üst sınırdır** (§3.1): 16 B sahte etiket (ürün 22 B), sıralayıcı yok, kama-app yok.
+2. **`kama-port` kolu uygulamanın bütünü DEĞİLDİR.** Kol = CC-PORT motoru, ürün veri yolunun uçları
+   (`client_core::runtime` `ClientEndpoint`/`ServerEndpoint`) ve `crates/bench` içindeki şerit pompası eşleniği.
+   Tam `ClientTransport` (S1 adaptörü) / `kama-node` / `kama-app` yığını YOKTUR; gerçek AEAD (Noise) YOKTUR. Sonuçlar
+   taşıma motorunu ve veri yolunu tarif eder, uygulamanın bütününü değil; bir hücredeki hüküm "Kama uygulaması bu
+   ağda şunu yapar" diye yazılamaz.
+   **Bu kol ürün için üst sınırdır** (§3.1): 16 B sahte etiket (ürün 22 B), sıralayıcı yok, kama-app yok.
    62 B/s dönüşte datagram başına 6 B önemlidir: ACK datagramları ~ 40–60 B olduğundan ürünün dönüş baytı bench'ten
    yaklaşık %10–15 fazla olabilir. Analiz bunu sayıyla düzeltmez; `rev_pkts` sütunu ölçeği verir.
 3. **Teslim tanımı rakipleri zayıf dönüşte zorlar.** v1 tanımıyla TCP ve quinn mesaj başına bir uygulama teyidi
@@ -296,8 +303,8 @@ scripts/tnet/tnet_freeze.py --verify` ile doğrulanır).
 
 | nesne | değer |
 |---|---|
-| ölçülen kod (`code_sha`) | `36f858cfeb1fe07414ae8c88e384d7829f7cb4de` |
-| taban `main` | `b88a047f56d3b2f46855e266da0f9f651aa7c5f4` |
+| ölçülen kod (`code_sha`) | `3de926cceaba6cb5f74d77bbe9534b25e80b9ec9` |
+| taban `main` | `3abee42990494cff05abfb553e5a347cfe45d12f` |
 | manifest R1 sha256 | `04ee4c3a4fc4651b6650e129a0d7f472b2bceb9d0fa3a2ecab4db6d11e31e91f` |
 | manifest R2 sha256 | `f93c3de5189f54c29ee752033b901e41fcfc85ec21936d9788b0f3a231179030` |
 | manifest P (pilot) sha256 | `1906c496b02044f132a79c41799e2fbf9f095e0f72038d6609197a622397f9c5` |
@@ -315,3 +322,9 @@ ikililerin sha256'ını taşır. Koordinatör, `crates`, `baselines`, `scripts/t
 Ölçülen kod SHA'sı yalnız İLK kampanya satırından (R1/R2) ÖNCE ve yalnız daha yeni bir `main`'e (ör. #211
 birleşirse) taşınabilir: yeni bir donma commit'i, gerekçe ve yeni sha256'larla. Hücre, kol, N, horizon, metrik ve
 hüküm kuralı o durumda da değişmez. İlk kampanya satırından sonra hiçbir şey değişmez.
+
+**Uygulanan taşıma (2026-11-16):** #211 (CC-PORT U17, `adaptive-transport` göndericisi) `main`'e birleşti
+(`3abee429`); hiçbir kampanya satırı koşulmamıştı. `origin/main` dala birleştirildi (`f2bf58a8`), ölçülen kod
+`3de926cc`'ye taşındı (ilk donma: kod `36f858cf`, donma commit'i `92cc0b2c`). Manifestler ve analizör değişmedi
+(sha256'ları aynı); yalnız `tnet_freeze.py` taban SHA'sını argümanla alacak biçimde değişti. Yeniden koşulan ucuz
+denetimler: betik birim testleri, loopback 5 kol × 2 iş yükü, `cargo test --release -p bench`.
