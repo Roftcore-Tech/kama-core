@@ -1,0 +1,10 @@
+# ACK birlikte çalışma matrisi beklentisi: <gönderici> <alıcı> <ok|unsupported>
+# "eski" = scripts/ci/ack-interop/PIN'deki SHA. ACK biçimini değiştiren PR bir eşleşmeyi bilerek
+# desteklemiyorsa satırı `unsupported` yapar (PR'da görünür); eş o eşleşmede TANIMLI hatayla
+# (çıkış 4) düşmek zorundadır — süre aşımı ve askıda kalma her zaman kırmızıdır.
+# Bugün eski == yeni: dört eşleşme de `ok`. Bu bir uyum kanıtı DEĞİLDİR; altyapı hazırdır, gerçek
+# dört yönlü uyum kanıtı yeni biçim geldiğinde tamamlanır.
+old old ok
+old new ok
+new old ok
+new new ok

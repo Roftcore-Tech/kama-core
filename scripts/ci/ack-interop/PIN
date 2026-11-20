@@ -1,0 +1,13 @@
+# ACK birlikte çalışma matrisinde "ESKİ" uç = yayımlanmış, SABİT bir durum.
+#
+# engine_sha   : eski motorun (adaptive-transport: Sender, Receiver, ACK codec'i) derlendiği SHA.
+#                Bugün main 05888a3f (#216): ACK biçimi V2 0x14, 16 aralık tavanı.
+# peer_sha256  : eski uca derlenen eş sürücüsünün (peer_pinned.rs) SHA-256'sı. engine_sha'da eş
+#                dosyası henüz yoktu; sürücü bu dizindeki DONMUŞ kopyadır ve engine_sha'nın kamu
+#                API'siyle derlenir. Dosya değişirse kapı kırmızıdır (sessiz değişiklik yok).
+#
+# Yükseltme (sahibin kararı, ör. yeni ACK biçimi yayımlandıktan sonra): engine_sha'yı yayımlanan
+# birleştirme SHA'sına çekin. O SHA'da crates/adaptive-transport/examples/ack_interop_peer.rs
+# varsa derleme onu kullanır ve peer_sha256 o dosyanın özeti olmalıdır.
+engine_sha=05888a3fde0554e93afcc3c3105cf17a3339aa9f
+peer_sha256=ce2b7ce0d40f280adea6fb4d7fa9b9570627b80882dd17a273558436c0e559c4
