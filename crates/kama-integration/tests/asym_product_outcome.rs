@@ -97,7 +97,10 @@
 //! # Koşturma
 //!
 //! Varsayılan (CI): tohum 1, profil açık; dört ölçütten biri düşerse test düşer. Ölçüm:
-//! `KAMA_ASYM_SEED=<n>` (tohum), `KAMA_ASYM_PROFILE=off` (profil kapalı kol). Her koşu `ÜRÜN-SONUÇ`
+//! `KAMA_ASYM_SEED=<n>` (tohum), `KAMA_ASYM_PROFILE=off` (profil kapalı kol),
+//! `KAMA_ASYM_REAL_FWD_BPS=<B/s>` (yanlış profil teşhis kolu: profil ileri hattı yine
+//! [`FWD_BPS`] bildirir, rölenin gerçek ileri hızı bu değer olur; ölçütler raporlanır, kabul
+//! iddiası yalnız ürün kolunda — gerçek = profil — uygulanır). Her koşu `ÜRÜN-SONUÇ`
 //! ve `ÖLÇÜT` satırlarını basar (`--nocapture`); ölçütler önce basılır, sonra iddia edilir. Düşen
 //! ölçütün mekanizması aynı koşunun izinden okunur: `İZ-UYG` (uygulama olayları), `İZ-PTT` (demet
 //! başına plan, ilk çıkış, iletim sayısı, ilk varış, teslim) ve `İZ-HAT` (rölenin gördüğü her
@@ -655,7 +658,7 @@ struct Run {
     bob_live: Option<ClientLiveDiag>,
 }
 
-fn run(seed: u64, profile: bool) -> Run {
+fn run(seed: u64, profile: bool, real_fwd_bps: u64) -> Run {
     let hub = MemoryHub::new();
     let alice_ledger = Arc::new(Mutex::new(Ledger::default()));
     let bob_ledger = Arc::new(Mutex::new(Ledger::default()));
@@ -686,7 +689,7 @@ fn run(seed: u64, profile: bool) -> Run {
     bob_t.add_peer_addr(id(ALICE), sockets.front_b.local_addr().expect("adres"));
     let stop = Arc::new(AtomicBool::new(false));
     let relay_stop = Arc::clone(&stop);
-    let fwd = Shaper::new(FWD_BPS, FWD_LOSS_PERMILLE, seed);
+    let fwd = Shaper::new(real_fwd_bps, FWD_LOSS_PERMILLE, seed);
     let rev = Shaper::new(REV_BPS, 0, seed ^ 0x5A5A);
     let relay_thread = std::thread::spawn(move || relay(sockets, fwd, rev, &relay_stop));
 
@@ -1314,8 +1317,18 @@ fn env_u64(k: &str, d: u64) -> u64 {
 fn text_receipt_ptt_and_file_all_progress_on_the_asymmetric_line() {
     let seed = env_u64("KAMA_ASYM_SEED", 1);
     let profile = std::env::var("KAMA_ASYM_PROFILE").map_or(true, |v| v != "off");
-    let r = run(seed, profile);
+    let real_fwd = env_u64("KAMA_ASYM_REAL_FWD_BPS", FWD_BPS);
+    let r = run(seed, profile, real_fwd);
     let failed = r.report();
+    if real_fwd != FWD_BPS {
+        // Yanlış profil teşhis kolu: profil ileri hattı FWD_BPS bildirir, gerçek hat daha yavaş
+        // (ya da hızlı). Soru "ürün çöküyor mu"; kabul sınırları bu hat için yazılmadı.
+        println!(
+            "TEŞHİS-KOLU yanlış profil: profil ileri {FWD_BPS} B/s, gerçek ileri {real_fwd} B/s \
+             (tohum {seed}) — düşen ölçütler: {failed:?}"
+        );
+        return;
+    }
     assert!(
         failed.is_empty(),
         "asimetrik hatta düşen ürün ölçütleri (tohum {seed}, profil {}): {failed:?}",
