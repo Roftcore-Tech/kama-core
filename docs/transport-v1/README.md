@@ -6,9 +6,9 @@ uyarlanır güvenilir taşıyıcı. Kripto TUTMAZ (INV-ENGINE-SOC); güvenlik ka
 
 | | |
 |---|---|
-| **Durum** | **FROZEN / READY** (Faz-6, 2026-09-11) — `reports/transport-v1/TRANSPORT-V1-CLOSURE.md` |
-| **Kanonik kimlik** | profil `KamaV1Profile` (`crates/client-core/src/runtime.rs`) · benchmark `kama-v1-full` (`client_core::runtime::TRANSPORT_V1_PROFILE_ID`) · mimari `transport-v1` · manifest şeması `kama-bench-manifest/v1` |
-| **Hedef zarf** | [`HOSTILE-ENVELOPE.md`](HOSTILE-ENVELOPE.md) — doğrulanmış çekirdek / uzmanlaşma / kısmen doğrulanmış / dışarıda |
+| **Durum** | **FROZEN / READY** (Faz-6, 2026-09-11) — `reports/transport-v1/TRANSPORT-V1-CLOSURE.md` · *2026-11-11: bu hüküm `kama-v1-full` / `transport-v1` koduna aittir (ölçüm `e3c1e8bb`, dondurma `53e0c5c6`); `transport-v1.1` T0–T7'de ölçülmedi, hücrelerin tamamı v1.1 için geçersiz (EVOLUTION §22 madde 4–5)* |
+| **Kanonik kimlik** | profil `KamaV1Profile` (`crates/client-core/src/runtime.rs`) · benchmark ~~`kama-v1-full`~~ `kama-v1.1-full` (`client_core::runtime::TRANSPORT_V1_PROFILE_ID`) · mimari ~~`transport-v1`~~ `transport-v1.1` · manifest şeması `kama-bench-manifest/v1` — 2026-11-11: EVOLUTION §22 "`transport-v1.1` beyanı" |
+| **Hedef zarf** | [`HOSTILE-ENVELOPE.md`](HOSTILE-ENVELOPE.md) — doğrulanmış çekirdek / uzmanlaşma / kısmen doğrulanmış / dışarıda · *2026-11-11: zarf `kama-v1-full` ölçümüdür, v1.1 ürününe aktarılmaz* |
 
 ## Mimari belgeler (`docs/` = mimari NEDİR)
 

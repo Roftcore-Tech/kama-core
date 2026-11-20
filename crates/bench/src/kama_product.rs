@@ -260,13 +260,26 @@ fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
 // ── [DENETİM] MİMARİ-AKTİF MANİFEST ────────────────────────────────────────────────────────────
 // Her koşu, NE koştuğunu ve NEYİN fiilen ateşlendiğini kendisi beyan eder. Amacı tek bir sınıf
 // hatayı imkânsız kılmak: bir ARQ-only alt-kümesini "Kama tam mimarisi" diye etiketlemek.
-// Kıyas raporları `profile=` alanını AYNEN taşımak zorundadır (`kama-v1-full` dışındaki hiçbir
-// koşu "Kama v1" adıyla raporlanamaz).
+// Kıyas raporları `profile=` alanını AYNEN taşımak zorundadır (`TRANSPORT_V1_PROFILE_ID`
+// dışındaki hiçbir koşu "Kama v1" adıyla raporlanamaz).
 
 /// Yürürlükteki config'in v1 ürün profilinden sapmaları (boş liste = tam v1 profili).
 fn profile_delta(c: &RuntimeConfig) -> Vec<String> {
     let v = KamaV1Profile::runtime_config();
     let mut d = Vec::new();
+    // [2026-11-11 · transport-v1.1] v1.1 kimliğini belirleyen alan motordur (EVOLUTION §22): eski
+    // motorla (`KAMA_TRANSPORT_ENGINE=legacy` ya da boş değer) koşan kol ürün profili DEĞİLDİR ve
+    // `kama-custom` + bu sapmayla kayda geçer. E1/E2a bayrakları da profil alanıdır; açık koşu
+    // (gösterim/teşhis kolları) ürün etiketi alamaz. Önceden bu üç alan kıyaslanmıyordu (INV-009).
+    if c.engine != v.engine {
+        d.push(format!("engine {:?} != {:?}", c.engine, v.engine));
+    }
+    if c.e1_flags != v.e1_flags {
+        d.push(format!("e1_flags {:?} != {:?}", c.e1_flags, v.e1_flags));
+    }
+    if c.e2a_flags != v.e2a_flags {
+        d.push(format!("e2a_flags {:?} != {:?}", c.e2a_flags, v.e2a_flags));
+    }
     if c.max_unit_bytes != v.max_unit_bytes {
         d.push(format!(
             "max_unit_bytes {} != {}",
@@ -361,11 +374,12 @@ fn print_manifest(role: &str, c: &RuntimeConfig) {
         },
     );
     eprintln!(
-        "KP-MANIFEST role={role} profile={profile} commit={} unit={}B msg_cap={:?} \
+        "KP-MANIFEST role={role} profile={profile} engine={:?} commit={} unit={}B msg_cap={:?} \
          fec={fec} fec_risk={} spec_caps={}/{} rp_suppress={} persist={:?} gate={:?} \
          iw={}B arq=ON(selective+dup) tail=ON(validated_v1) establish_probe=ON \
          bootstrap_ladder={} fusion_policy={} structure_policy={:?} confirm_horizon={:?} \
          features=[diag-sched-telemetry={}]",
+        c.engine,
         option_env!("KAMA_GIT_SHA").unwrap_or("unknown"),
         c.max_unit_bytes,
         c.max_message_bytes,
@@ -395,7 +409,8 @@ fn print_manifest(role: &str, c: &RuntimeConfig) {
     }
     if delta.is_empty() {
         eprintln!(
-            "KP-MANIFEST role={role} DELTA-vs-v1: (yok — bu koşu 'Kama v1' adıyla raporlanabilir)"
+            "KP-MANIFEST role={role} DELTA-vs-v1: (yok — bu koşu '{}' adıyla raporlanabilir)",
+            client_core::runtime::TRANSPORT_V1_PROFILE_ID
         );
     }
 }
@@ -1250,6 +1265,37 @@ mod tests {
                 .any(|x| x.contains("structure_gate_level_permille")),
             "{d2:?}"
         );
+    }
+
+    /// [2026-11-11 · transport-v1.1] Motor ve E1/E2a bayrakları profil alanıdır: eski motorla
+    /// (`KAMA_TRANSPORT_ENGINE=legacy`) ya da bayrak açık koşan kol ürün etiketi ALAMAZ, sapma
+    /// listesinde adıyla görünür (INV-009). Ortam değişkeninden bağımsız: config doğrudan kurulur.
+    #[test]
+    fn motor_ve_bayrak_sapmasi_gorunur() {
+        use adaptive_transport::loss::E2aFlags;
+        assert!(
+            profile_delta(&KamaV1Profile::runtime_config()).is_empty(),
+            "ürün profili kendisiyle sapmasız olmalı"
+        );
+
+        let mut eski = KamaV1Profile::runtime_config();
+        eski.engine = client_core::TransportEngine::Legacy;
+        let d = profile_delta(&eski);
+        assert_eq!(d.len(), 1, "yalnız motor sapması beklenirdi: {d:?}");
+        assert!(d[0].starts_with("engine Legacy"), "{d:?}");
+
+        let mut e1 = KamaV1Profile::runtime_config();
+        e1.e1_flags.retx_first = true;
+        let d = profile_delta(&e1);
+        assert_eq!(d.len(), 1, "{d:?}");
+        assert!(d[0].starts_with("e1_flags"), "{d:?}");
+
+        let mut e2a = KamaV1Profile::runtime_config();
+        e2a.e2a_flags =
+            E2aFlags::new(true, 1_000_000, false, false, 1, false).expect("geçerli E2a bayrakları");
+        let d = profile_delta(&e2a);
+        assert_eq!(d.len(), 1, "{d:?}");
+        assert!(d[0].starts_with("e2a_flags"), "{d:?}");
     }
 
     fn srv_cfg(bind: SocketAddr, fec: FecArm) -> ServerCfg {
