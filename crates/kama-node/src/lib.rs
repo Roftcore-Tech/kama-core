@@ -75,6 +75,7 @@ mod event;
 mod files;
 mod handle;
 mod hub_mode;
+mod link_profile;
 mod node;
 mod peers;
 #[cfg(feature = "test-util")]
@@ -303,6 +304,24 @@ impl KamaNode {
                     ))
                 })?;
         }
+        // [TELEFON-PİLOTU] Yön hızı profili dağıtım ayarından (`KAMA_LINK_RATES` ya da
+        // `<data_dir>/link-profile`; `src/link_profile.rs`). Yoksa `None`: bugünkü ürün davranışı.
+        let env_rates = std::env::var(link_profile::ENV_VAR).ok();
+        let (link_rates, link_source) = link_profile::load(data_dir, env_rates.as_deref())
+            .map_err(|e| match e {
+                link_profile::LoadError::Invalid => {
+                    NodeError::Config(kama_provision::format::FormatError::Invalid(
+                        "KAMA_LINK_RATES / link-profile: '<yukarı_B/s>,<aşağı_B/s>' (iki pozitif tamsayı) olmalı",
+                    ))
+                }
+                link_profile::LoadError::Io(io) => NodeError::DataDir(io),
+            })?;
+        transport_config.runtime.link_rates = link_rates;
+        let start_record = link_profile::start_record(
+            &transport_config.runtime,
+            transport_config.lanes.is_some(),
+            link_source,
+        );
         transport_config.peer_addrs = match &hub {
             // Hub kipinde her eşin veri adresi yerel rölenin adresidir (KK-H51).
             Some(side) => peers
@@ -313,6 +332,13 @@ impl KamaNode {
         };
         // (5) Transport: gerçek UDP veri yolu, ürün profili.
         let transport = Transport::new(transport_config, protection, link)?;
+        // Başlangıç kaydı: gerçekten kurulan taşıma yapılandırması (motor, şeritler, yön hızları,
+        // koruma kipi). Saha provasında ilk okunacak dosya; anahtar/kimlik taşımaz.
+        files::write_private(
+            &data_dir.join(link_profile::START_RECORD_FILE),
+            start_record.as_bytes(),
+        )
+        .map_err(NodeError::DataDir)?;
         if let Some(side) = &hub {
             side.set_server_addr(transport.data_addr());
         }

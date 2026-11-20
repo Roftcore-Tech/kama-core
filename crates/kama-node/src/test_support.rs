@@ -75,6 +75,13 @@ pub(crate) struct Phone {
     data: PathBuf,
 }
 
+impl Phone {
+    /// Telefonun veri dizini (düğüm kurulumu yoksa oluşturur).
+    pub(crate) fn data_dir(&self) -> &Path {
+        &self.data
+    }
+}
+
 /// `names` cihazlarını gerçek provisioning yoluyla üretir; her cihaza 127.0.0.1'de boş bir UDP
 /// portu (direct-mode). Soketler birlikte açılıp kapatılır: aynı port iki cihaza verilmez.
 pub(crate) fn provision(root: &Path, names: &[&str]) -> BTreeMap<String, Phone> {
