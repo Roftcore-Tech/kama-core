@@ -84,6 +84,7 @@ use crate::files::{self, ReceivedFiles};
 use crate::handle::{FileHandle, HandleAllocator, Registry, StreamHandle};
 use crate::hub_mode::HubSide;
 use crate::peers::PeerBook;
+use crate::pilot_record::PilotRecorder;
 #[cfg(feature = "test-util")]
 use crate::probe::{NodeProbe, SessionEventCounts, SessionProbe};
 use crate::wiring::Transport;
@@ -249,6 +250,8 @@ pub(crate) struct NodeLoop {
     relinks: RelinkGovernor,
     /// [S2-A5-min] `loss_pct` penceresi (KK-H59).
     a5: A5,
+    /// [İŞ-30] Pilot kaydı (açıkça etkinleştirilir; `None` = kapalı, hiçbir şey yazılmaz).
+    pilot: Option<PilotRecorder>,
     /// [K4G-05] YALNIZ test-util: işlenen S1 oturum olaylarının sayımı (ölçüm sondası).
     #[cfg(feature = "test-util")]
     session_events: SessionEventCounts,
@@ -287,9 +290,80 @@ impl NodeLoop {
             hub,
             relinks: RelinkGovernor::new(crate::wiring::relink_seed()),
             a5: A5::default(),
+            pilot: None,
             #[cfg(feature = "test-util")]
             session_events: SessionEventCounts::default(),
         }
+    }
+
+    /// [İŞ-30] Pilot kaydını bağlar (kurulumda, döngüden önce).
+    pub(crate) fn set_pilot(&mut self, pilot: Option<PilotRecorder>) {
+        self.pilot = pilot;
+    }
+
+    /// [İŞ-30] Pilot özetini süre dolduysa yazıcıya bırakır (bloklamaz; disk yazımı yazıcıda).
+    pub(crate) fn pilot_tick(&mut self, now: Instant) {
+        if let Some(mut p) = self.pilot.take() {
+            let (up, skipped) = (p.uptime(now), p.skipped());
+            p.tick(now, |seq| self.pilot_summary(seq, up, skipped, false));
+            self.pilot = Some(p);
+        }
+    }
+
+    /// [İŞ-30] Kapanış: son pilot özeti bir kez yazılır.
+    pub(crate) fn pilot_finish(&mut self) {
+        if let Some(p) = self.pilot.take() {
+            let now = Instant::now();
+            let (up, skipped) = (p.uptime(now), p.skipped());
+            p.finish(|seq| self.pilot_summary(seq, up, skipped, true));
+        }
+    }
+
+    /// [İŞ-30] Pilot özetinin metni. Kaynak yalnız Transport'un canlı aynasıdır (açık oturumlar +
+    /// kapananların toplamı). Her satır ölçtüğü katmanı yazar; canlı kaynakta olmayan sayaç
+    /// "sayaç yok" der. Kategoriler örtüşebilir (yeniden iletim toplamın alt kümesidir); toplam
+    /// bant diye birleştirilmez. Kimlik, anahtar ve yük YAZILMAZ.
+    fn pilot_summary(&self, seq: u64, uptime: Duration, skipped: u64, last: bool) -> String {
+        let transport = self.messenger.transport();
+        let mut sum = transport.retired_live_diag();
+        let live = transport.session_live_diags();
+        for (_, d) in &live {
+            sum.tx_bytes += d.tx_bytes;
+            sum.tx_datagrams += d.tx_datagrams;
+            sum.rx_datagrams += d.rx_datagrams;
+            sum.tx_retx_bytes += d.tx_retx_bytes;
+            sum.retransmits += d.retransmits;
+            sum.tail_probes += d.tail_probes;
+            sum.dups += d.dups;
+            sum.fec_repairs_tx += d.fec_repairs_tx;
+        }
+        format!(
+            "pilot_özeti sıra={seq} süre_s={:.1} son={last} atlanan_özet={skipped} açık_oturum={}\n\
+             {}\
+             # TX: bu cihazın oturum uçlarının gönderdiği (karşı cihazın TX kaydı öbür yönü verir)\n\
+             tx_toplam_bayt={} [mühürlü UDP gövdesi, UDP/IP zarfı hariç]\n\
+             tx_datagram={} [tele yazılan datagram]\n\
+             tx_yeniden_iletim_bayt={} [mühürlü UDP gövdesi; ARQ + tail-probe; tx_toplam_bayt'ın alt kümesi]\n\
+             tx_yeniden_iletim_karar={} (tail-probe {}) [motor kararı]\n\
+             tx_ileri_kopya_karar={} [motor kararı; bayt sayacı yok]\n\
+             tx_fec_parite_datagram={} [tele yazılan onarım; bayt sayacı yok]\n\
+             tx_asıl_veri_bayt=sayaç yok [canlı aynada yok]\n\
+             tx_ack_kontrol=sayaç yok [alıcı ucun ACK/RECOVERED/PARAM_ACK'i canlı okunmuyor]\n\
+             # RX\n\
+             rx_datagram={} [oturum uçlarının telden okuduğu; sınıf ayrımı yok]\n\
+             rx_bayt=sayaç yok [canlı aynada yok]\n",
+            uptime.as_secs_f64(),
+            live.len(),
+            crate::core_build_line(),
+            sum.tx_bytes,
+            sum.tx_datagrams,
+            sum.tx_retx_bytes,
+            sum.retransmits,
+            sum.tail_probes,
+            sum.dups,
+            sum.fec_repairs_tx,
+            sum.rx_datagrams,
+        )
     }
 
     /// Döngü (bkz. modül belgesi). `Shutdown` komutuna varınca (önündeki komutlar işlenmiş
@@ -298,6 +372,13 @@ impl NodeLoop {
     /// kuyrukta kalan komutlar alıcıyla birlikte olay üretmeden düşer — yanıt bekleyen çağıran
     /// `Stopped` alır.
     pub(crate) fn run(mut self, commands: Receiver<Command>) {
+        self.run_loop(&commands);
+        // [İŞ-30] Döngü hangi yoldan biterse bitsin son özet bir kez yazılır (kapalıyken no-op).
+        self.pilot_finish();
+    }
+
+    /// [`Self::run`]'ın döngüsü.
+    fn run_loop(&mut self, commands: &Receiver<Command>) {
         let mut waiting: Option<Command> = None;
         loop {
             let mut handled = 0;
@@ -322,6 +403,7 @@ impl NodeLoop {
             let drained = self.turn();
             self.drive_hub();
             self.publish_metrics();
+            self.pilot_tick(Instant::now());
             let busy = !drained || handled >= COMMAND_QUEUE_CAP;
             let wait = if busy { Duration::ZERO } else { NODE_TICK };
             match commands.recv_timeout(wait) {
