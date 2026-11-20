@@ -117,7 +117,7 @@ impl ReceivedFiles {
 }
 
 /// `path`'e (varsa keserek) yazar ve eşitler; Unix'te `0600`.
-fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut options = OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
