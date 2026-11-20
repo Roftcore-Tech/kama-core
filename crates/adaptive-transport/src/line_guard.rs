@@ -76,14 +76,14 @@
 //!
 //! # Temkinli başlangıç
 //!
-//! İlk ölçümden önce profil hızı kesin hat sayılmaz: tavan profil hattının dörtte üçünden
-//! ([`START_NUM`]/[`START_DEN`]) başlar ve doğrulamalarla yükselir; hat modeli de bu tavandadır
-//! (pacer'ın burst payı tavanı aşamaz). Gerekçe (ürün testi, gerçek 10 000 B/s): ilk bilgi
-//! taşıyan ACK'e (≈ 6,4 s) dek profil hızında gönderim kuyruğu ≈ 1,6 s büyütüyor, PTT 2,1–2,4 s
-//! gecikiyordu. Seçim ölçümle (tohum 1, ürün testi): yarı tavanda dürüst profilde dosya 15,0 s
-//! (sınır 14 s) — bedel kabul edilemez; dörtte üç tavan profilin %75'ine dek iyimser profilde
-//! kuyruğu büyütmez. Gerçek hat tavanın altındaysa (ör. 6 250 B/s) kuyruk ilk ölçüme dek büyür:
-//! ilk ölçüm ACK aralığına bağlıdır (dönüş bütçesi), gönderici onu öne alamaz.
+//! Mekanizma: ilk tavan profil hattının [`START_NUM`]/[`START_DEN`] katıdır, hat modeli de bu
+//! tavandadır (pacer'ın burst payı tavanı aşamaz) ve tavan doğrulamalarla yükselir. SEÇİLEN
+//! DEĞER 1/1 (profil hattı): ölçüm (ürün testi `asym_product_outcome`, tohum 1, 2026-11-20)
+//! düşük başlangıcın bedelini dürüst profilde dosya sınırının (14 s) üstünde gösterdi — 1/2'de
+//! 15,0 s, 3/4'te 15,8 s ve 23,2 s (önce 8,7 s). Neden: bu hatta ACK'ler ≈ 8,6 s'de bir gelir
+//! (dönüş bütçesi Y = 0,25 × 62 B/s); dosyanın son baytları bir ACK sonrasına kayınca kayıp
+//! raporu bir ACK aralığı daha bekler. Düşük başlangıç yalnız ilk ölçüm (ikinci ACK, 3,3–6,4 s)
+//! erken gelirse ucuzdur; gönderici bunu öne alamaz.
 //!
 //! # Dönüş gecikmesi değişimi
 //!
@@ -137,8 +137,8 @@ const STEP_START_PERMILLE: u64 = 500;
 const STEP_MIN_PERMILLE: u64 = 62;
 const STEP_MAX_PERMILLE: u64 = 1000;
 /// [TEMKİNLİ-BAŞLANGIÇ] İlk tavan = profil hattı × START_NUM / START_DEN.
-pub const START_NUM: u64 = 3;
-pub const START_DEN: u64 = 4;
+pub const START_NUM: u64 = 1;
+pub const START_DEN: u64 = 1;
 /// [DÖNÜŞ-GECİKMESİ] Taban penceresi (ACK noktası).
 const BASE_WINDOW: usize = 4;
 

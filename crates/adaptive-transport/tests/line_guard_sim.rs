@@ -314,9 +314,13 @@ fn optimistic_profile_queue_stays_bounded_and_file_completes() {
         let (rate, samples) = o.guard.expect("kural kurulu");
         let rate = rate.expect("hat profilin altında ölçüldü");
         assert!(samples >= 1);
+        // [YENİDEN-YOKLAMA · 2026-11-20] Koruma artık kalıcı `min` değildir: ölçümden sonra
+        // doğrulanan aralıklar tavanı küçük adımlarla (%6,25'ten başlayıp katlanarak) yoklar, bir
+        // örnek yeniden ölçülen hatta indirir. Koşu sonundaki değer ölçülen hattın %5 altı ile
+        // %25 üstü arasındadır; kuyruk sınırı (aşağıdaki iddia) aynıdır.
         assert!(
-            rate.abs_diff(6_250) * 20 <= 6_250,
-            "tohum {seed}: ölçülen hat {rate} B/s (gerçek 6 250)"
+            rate * 20 >= 6_250 * 19 && rate * 4 <= 6_250 * 5,
+            "tohum {seed}: korunan hat {rate} B/s (gerçek 6 250)"
         );
         assert!(
             o.max_wait_after <= 2 * (MTU + OVH) * SEC / 6_250,

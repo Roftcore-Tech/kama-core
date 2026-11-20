@@ -127,9 +127,6 @@ const ACK_BUDGET_CAP_BYTES: u64 =
     2 * (SACK_WIRE_BYTES + ACK_WIRE_PER_RANGE * crate::ack::MAX_ACK_RANGES as u64);
 /// [AKIŞ-SONU YEDEĞİ] Varışlar sürerken kovada bırakılan yedek (B): en büyük bir ACK (kovanın yarısı).
 const ACK_BUDGET_RESERVE_BYTES: u64 = ACK_BUDGET_CAP_BYTES / 2;
-/// [ERKEN-ÖLÇÜM] İkinci ACK'in ilkinden en erken çıkışı (ns): göndericinin hat ölçümü iki ACK
-/// noktası arasında en az bu kadar gönderim süresi ister (`line_guard`, doğrulama aralığı 1 s).
-const EARLY_ACK_SPAN_NS: u64 = 1_000_000_000;
 /// [K2/R1/R15/§3.3-E/§12] ACK_CADENCE cold-start floor = sack_wire/(Y·return_bw_önsel) ≈ 8.4s.
 /// TIMER-SACK'ları bununla seyrekleşir: kbps'te sabit 20ms tick → SACK-seli/self-congestion (19s-lag);
 /// throttle bunu keser. Frequency-yolu (§2.1, on_datagram) DATA-oranıyla eşleşir → hızlı kanalda responsive
@@ -214,9 +211,8 @@ pub struct Receiver {
     ack_tokens_at_ns: u64,
     /// [AKIŞ-SONU YEDEĞİ] Bütçeli yolda ilk ACK çıktı mı (ilk ACK yedekten muaf).
     ack_budget_first_done: bool,
-    /// [ERKEN-ÖLÇÜM] Bütçeli ilk ACK'in anı ve ikinci (yedekten muaf) ACK çıktı mı.
-    ack_budget_first_ns: u64,
-    ack_budget_early_done: bool,
+    /// [YEDEK-SÜRESİ] Son bütçeli ACK'in anı (ns).
+    ack_budget_last_ns: u64,
     /// [DÖNÜŞ-BÜTÇESİ] Bütçe yetmediği için ertelenen ACK sayısı (SALT-GÖZLEM).
     diag_ack_budget_deferred: u64,
     /// [DÖNÜŞ-BÜTÇESİ] `note_non_eliciting` ile kaydedilen en büyük PN (sıra denetimi; `None` =
@@ -287,8 +283,7 @@ impl Receiver {
             ack_tokens_mb: 0,
             ack_tokens_at_ns: 0,
             ack_budget_first_done: false,
-            ack_budget_first_ns: 0,
-            ack_budget_early_done: false,
+            ack_budget_last_ns: 0,
             diag_ack_budget_deferred: 0,
             non_eliciting_largest: None,
             non_eliciting_at_ns: 0,
@@ -495,44 +490,36 @@ impl Receiver {
         // B/s × ns → milibayt: rate · dt / 1e6.
         let add = u64::try_from(u128::from(rate) * u128::from(dt) / 1_000_000).unwrap_or(u64::MAX);
         self.ack_tokens_mb = self.ack_tokens_mb.saturating_add(add).min(cap);
-        let cost = (SACK_WIRE_BYTES + ACK_WIRE_PER_RANGE * frame.ranges.len() as u64) * 1000;
-        let mut need = cost;
-        let mut early = false;
-        if self.ack_budget_first_done && !self.arrivals_quiet(now_ns) {
-            let gap = self.episode_baseline();
-            let refill_mb =
-                u64::try_from(u128::from(rate) * u128::from(gap) / 1_000_000).unwrap_or(u64::MAX);
-            if refill_mb < ACK_BUDGET_RESERVE_BYTES * 1000 {
-                // [ERKEN-ÖLÇÜM · 2026-11-20] Bütçe bağlayıcıyken oturumun İKİNCİ ACK'i, ilkinden
-                // [`EARLY_ACK_SPAN_NS`] sonra yedekten muaftır (jeton yine
-                // gerekir; kova dolu başlar, Y bütçesi aşılmaz). Gönderici hattı iki ACK noktası
-                // arasındaki kuyruk artışıyla ölçer; yedek kuralıyla ikinci ACK ≈ 5 s'de geliyordu ve
-                // o ana dek iyimser profilde kuyruk saniyelerce büyüyordu (ürün testi, gerçek
-                // 6 250 B/s). Bir kez: sonraki ACK'ler bugünkü kuralda.
-                early = !self.ack_budget_early_done
-                    && now_ns.saturating_sub(self.ack_budget_first_ns) >= EARLY_ACK_SPAN_NS;
-                if !early {
-                    need += ACK_BUDGET_RESERVE_BYTES * 1000;
-                }
-            }
-        }
-        // Yol verme ERKEN ACK'e de uygulanır: göndericinin hat ölçümü ACK'in dönüş hattından boşken
-        // çıktığını varsayar (`line_guard`); alındının arkasında bekleyen ACK ileri kuyruk büyümesi
-        // gibi görünür (ölçüldü: gerçek 10 000 B/s hatta 2 182 B/s'lik yanlış örnek).
-        let _ = early;
         if self.uplink_yield {
             // Jeton harcanmaz; ACK, hat veriye geçince zamanlayıcıyla çıkar.
             self.diag_ack_yield_deferred += 1;
             return false;
         }
+        let cost = (SACK_WIRE_BYTES + ACK_WIRE_PER_RANGE * frame.ranges.len() as u64) * 1000;
+        let mut need = cost;
+        if self.ack_budget_first_done && !self.arrivals_quiet(now_ns) {
+            let gap = self.episode_baseline();
+            let refill_mb =
+                u64::try_from(u128::from(rate) * u128::from(gap) / 1_000_000).unwrap_or(u64::MAX);
+            // [YEDEK-SÜRESİ · 2026-11-20] Yedek, son ACK'ten bu yana bu çerçevenin bütçe süresi
+            // (tel maliyeti / bütçe hızı) geçmediyse istenir. Kova tavanı iki tam ACK'tir: tam boy
+            // (16 aralık, 129 B) bir akış ortası ACK yedekle birlikte BÜTÜN kovayı ister ve boş
+            // kovadan 62 B/s dönüşte 2 × 129 / 15,5 ≈ 16,6 s bekler. Ölçüldü (ürün testi, tohum
+            // 1): iki erken ACK kovayı boşalttıktan sonra 16,5 s ACK boşluğu, dosya kayıp
+            // raporsuz 21 s'de bitti; gerçek 6 250 B/s hücrede 8–10 s boşluklar. Bütçe süresi
+            // dolduktan sonra ACK jetonla çıkar (Y bütçesi aşılmaz: çerçeve kendi jetonunu öder);
+            // daha sık ACK'lerde yedek kuralı bugünkü gibi.
+            let budget_ns = u64::try_from(u128::from(cost) * 1_000_000 / u128::from(rate.max(1)))
+                .unwrap_or(u64::MAX);
+            if refill_mb < ACK_BUDGET_RESERVE_BYTES * 1000
+                && now_ns.saturating_sub(self.ack_budget_last_ns) < budget_ns
+            {
+                need += ACK_BUDGET_RESERVE_BYTES * 1000;
+            }
+        }
         if self.ack_tokens_mb >= need {
             self.ack_tokens_mb -= cost;
-            if !self.ack_budget_first_done {
-                self.ack_budget_first_ns = now_ns;
-            } else {
-                // İkinci ACK (muaf ya da değil) çıktı: muafiyet bir kez.
-                self.ack_budget_early_done = true;
-            }
+            self.ack_budget_last_ns = now_ns;
             self.ack_budget_first_done = true;
             true
         } else {
