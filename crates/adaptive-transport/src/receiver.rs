@@ -495,29 +495,32 @@ impl Receiver {
         // B/s × ns → milibayt: rate · dt / 1e6.
         let add = u64::try_from(u128::from(rate) * u128::from(dt) / 1_000_000).unwrap_or(u64::MAX);
         self.ack_tokens_mb = self.ack_tokens_mb.saturating_add(add).min(cap);
-        if self.uplink_yield {
-            // Jeton harcanmaz; ACK, hat veriye geçince zamanlayıcıyla çıkar.
-            self.diag_ack_yield_deferred += 1;
-            return false;
-        }
         let cost = (SACK_WIRE_BYTES + ACK_WIRE_PER_RANGE * frame.ranges.len() as u64) * 1000;
         let mut need = cost;
+        let mut early = false;
         if self.ack_budget_first_done && !self.arrivals_quiet(now_ns) {
             let gap = self.episode_baseline();
             let refill_mb =
                 u64::try_from(u128::from(rate) * u128::from(gap) / 1_000_000).unwrap_or(u64::MAX);
             if refill_mb < ACK_BUDGET_RESERVE_BYTES * 1000 {
                 // [ERKEN-ÖLÇÜM · 2026-11-20] Bütçe bağlayıcıyken oturumun İKİNCİ ACK'i, ilkinden
-                // [`EARLY_ACK_SPAN_NS`] sonra yedekten muaftır (jeton yine gerekir; kova dolu
-                // başlar, Y bütçesi aşılmaz). Gönderici hattı iki ACK noktası arasındaki kuyruk
-                // artışıyla ölçer; yedek kuralıyla ikinci ACK ≈ 5 s'de geliyordu ve o ana dek
-                // iyimser profilde kuyruk saniyelerce büyüyordu (ürün testi, gerçek 6 250 B/s).
-                let early = !self.ack_budget_early_done
+                // [`EARLY_ACK_SPAN_NS`] sonra yedekten muaftır ve veriye yol vermez (jeton yine
+                // gerekir; kova dolu başlar, Y bütçesi aşılmaz). Gönderici hattı iki ACK noktası
+                // arasındaki kuyruk artışıyla ölçer; yedek kuralıyla ikinci ACK ≈ 5 s'de, bir
+                // alındının arkasında ≈ 6 s'de geliyordu ve o ana dek iyimser profilde kuyruk
+                // saniyelerce büyüyordu (ürün testi, gerçek 6 250 B/s). Bir kez: sonraki ACK'ler
+                // bugünkü kuralda.
+                early = !self.ack_budget_early_done
                     && now_ns.saturating_sub(self.ack_budget_first_ns) >= EARLY_ACK_SPAN_NS;
                 if !early {
                     need += ACK_BUDGET_RESERVE_BYTES * 1000;
                 }
             }
+        }
+        if self.uplink_yield && !early {
+            // Jeton harcanmaz; ACK, hat veriye geçince zamanlayıcıyla çıkar.
+            self.diag_ack_yield_deferred += 1;
+            return false;
         }
         if self.ack_tokens_mb >= need {
             self.ack_tokens_mb -= cost;

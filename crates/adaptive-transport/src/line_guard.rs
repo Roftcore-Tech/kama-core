@@ -67,9 +67,12 @@
 //! sonuna dek kalıyordu. Artış kanıtı kuyruğun BÜYÜMEMESİDİR: iki ACK noktası arasında gönderici
 //! tavana yakın hızda (≥ %90) en az [`VERIFY_MIN_SPAN_NS`] gönderdi ve cephenin kuyruk beklemesi
 //! artmadıysa hat en az o gönderim hızındadır. Bu "doğrulama" tavanı bir adım yükseltir (profil
-//! hattına dek). Adım uyarlanır: başarılı yoklamadan sonra iki katına (en çok %100), bir örnek
-//! hattı tavanın altında gösterdiğinde yarıya iner (en az %6,25): sabit dar hatta yoklamanın
-//! kurduğu kuyruk küçülür, hızlanan hatta toparlanma birkaç ACK aralığına iner.
+//! hattına dek). Doğrulanan aralık bugünkü tavanla gönderilmiş olmalıdır (ACK gönderimden
+//! saniyeler sonra gelir; eski tavanlı aralık yeni bilgi taşımaz). Adım uyarlanır: başarılı
+//! yoklamadan sonra iki katına (en çok %100); bir örnek hattı tavanın altında gösterdiğinde en
+//! küçük adıma (%6,25) döner: sabit dar hatta her yoklamanın kurduğu kuyruk küçük kalır, hızlanan
+//! hatta adım katlanarak toparlanma birkaç ACK aralığına iner. İlk ölçümden önce adım %50'den
+//! başlar (temkinli başlangıçtan profile iki doğrulamada).
 //!
 //! # Temkinli başlangıç
 //!
@@ -152,6 +155,8 @@ struct SentRec {
     send_ns: u64,
     /// Bu iletim dahil hatta verilen kümülatif tel baytı.
     cum: u64,
+    /// İletim anındaki gönderim tavanı (B/s, tel).
+    pace: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -159,6 +164,7 @@ struct Point {
     tau_ns: u64,
     send_ns: u64,
     cum: u64,
+    pace: u64,
 }
 
 /// Geri bildirimi aç profilde gerçek ileri hattın tahmincisi (modül belgesi).
@@ -232,6 +238,7 @@ impl LineGuard {
             seq,
             send_ns: now_ns,
             cum: self.cum,
+            pace: self.pace_bps,
         });
     }
 
@@ -329,7 +336,10 @@ impl LineGuard {
             let bytes = rec.cum.saturating_sub(p.cum);
             if growth <= mtu_ns.max(ds / GROWTH_MIN_DIV) {
                 // [YENİDEN-YOKLAMA] Yalnız en yeni aralık: tavana yakın gönderildi, kuyruk büyümedi.
-                if k == newest && ds >= VERIFY_MIN_SPAN_NS {
+                // Aralık bugünkü tavanla gönderilmiş olmalı: ACK gönderimden saniyeler sonra gelir,
+                // eski (düşük tavanlı) aralığın doğrulaması yeni bilgi taşımaz.
+                let interval_pace = p.pace.min(rec.pace);
+                if k == newest && ds >= VERIFY_MIN_SPAN_NS && interval_pace >= self.pace_bps {
                     let sent_bps =
                         u64::try_from(u128::from(bytes) * 1_000_000_000 / u128::from(ds))
                             .unwrap_or(u64::MAX);
@@ -349,6 +359,7 @@ impl LineGuard {
             tau_ns: tau,
             send_ns: rec.send_ns,
             cum: rec.cum,
+            pace: rec.pace,
         });
         if let Some(est) = best {
             // Örnek tavanı aşamaz: kuyrukta düşen bayt aralığı şişirir, hat tavandan hızlıysa
@@ -357,7 +368,9 @@ impl LineGuard {
             self.rate_bps = Some(est);
             self.pace_bps = est;
             self.samples = self.samples.saturating_add(1);
-            self.step_permille = (self.step_permille / 2).max(STEP_MIN_PERMILLE);
+            // Ölçülmüş hatta yoklama en küçük adımdan yeniden başlar: sabit dar hatta her yoklama
+            // en çok adım × ACK aralığı kadar kuyruk kurar.
+            self.step_permille = STEP_MIN_PERMILLE;
         } else if verified && self.pace_bps < self.line.rate_bps {
             let up = self.pace_bps.saturating_mul(1000 + self.step_permille) / 1000;
             self.pace_bps = up.clamp(self.pace_bps + 1, self.line.rate_bps);

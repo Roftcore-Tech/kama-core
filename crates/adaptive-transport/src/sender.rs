@@ -3950,11 +3950,10 @@ impl Sender {
         };
         let saturated = ack.ack_delay >= crate::loss::E2A_ACK_DELAY_SATURATED;
         let update = g.on_ack(now_ns, dur_ns(ack.ack_delay), saturated, largest);
-        // [YENİDEN-YOKLAMA] Hat modeli ölçülen hattadır; yoklama profil hattına döndüyse profil.
-        let line = g.rate_bps();
-        if let Some(rule) = self.cc_feedback_starved {
-            self.pacer.set_line_rate(line.unwrap_or(rule.line.rate_bps));
-        }
+        // [TEMKİNLİ-BAŞLANGIÇ · YENİDEN-YOKLAMA] Hat modeli korumanın gönderim tavanındadır (ölçülen
+        // hat, doğrulanmamış başlangıçta yarı profil, yoklamada yükseltilmiş tavan): pacer'ın burst
+        // payı (≥ 10 MTU) tavanın üstünde patlama yapamaz.
+        self.pacer.set_line_rate(g.pace_bps());
         if let Some(u) = update {
             self.pacer.line_raise_backlog(u.backlog_bytes);
         }
@@ -5406,11 +5405,15 @@ impl Sender {
         if let (true, Some(r)) = (self.cc.is_some(), self.cc_feedback_starved) {
             self.pacer.set_line(Some(r.line));
             if r.return_line.rate_bps > 0 {
-                self.cc_line_guard = Some(crate::line_guard::LineGuard::new(
+                let g = crate::line_guard::LineGuard::new(
                     r.line,
                     r.return_line,
                     crate::line_guard::LineGuard::conservative_start(r.line),
-                ));
+                );
+                // [TEMKİNLİ-BAŞLANGIÇ] Hat modeli ilk ölçüme dek tavanın hızında (ölçüldü: profil
+                // hızındaki hat modeliyle pacer burst payı ilk 3 s'de tavanın iki katını gönderdi).
+                self.pacer.set_line_rate(g.pace_bps());
+                self.cc_line_guard = Some(g);
             }
         }
     }
