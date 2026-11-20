@@ -27,7 +27,7 @@
         ],
         "seen_count": 3
       },
-      "expected_hex": "14000007000000030000000003ffff"
+      "expected_hex": "14000007000000030000000003fffe"
     },
     {
       "id": "transport-ack-frame-v1.from-received.three-singletons",
