@@ -129,6 +129,8 @@ const ACK_BUDGET_CAP_BYTES: u64 =
 const ACK_BUDGET_RESERVE_BYTES: u64 = ACK_BUDGET_CAP_BYTES / 2;
 /// [YENİDEN-RAPOR] Bu kadar çıkan ACK'te bildirilmiş blok seçimde önceliksizdir.
 const REREPORT_SAFE: u8 = 2;
+/// [YENİDEN-RAPOR] Her çerçevede hiç bildirilmemiş en yeni bu kadar blok (yeni kayıp haberi).
+const REREPORT_NEWEST: usize = 4;
 /// [K2/R1/R15/§3.3-E/§12] ACK_CADENCE cold-start floor = sack_wire/(Y·return_bw_önsel) ≈ 8.4s.
 /// TIMER-SACK'ları bununla seyrekleşir: kbps'te sabit 20ms tick → SACK-seli/self-congestion (19s-lag);
 /// throttle bunu keser. Frequency-yolu (§2.1, on_datagram) DATA-oranıyla eşleşir → hızlı kanalda responsive
@@ -178,6 +180,11 @@ pub struct Receiver {
     /// [YENİDEN-RAPOR] Geri bildirimi aç alıcıda alınan seq'in kaç çıkan ACK'te bildirildiği
     /// (`received` ile aynı kayan pencere; başka yolda boş).
     reported: BTreeMap<u64, u8>,
+    /// [YENİDEN-RAPOR] Geri bildirimi aç alıcıda kaynak iletimin (DATA ya da kaynak FEC parçası)
+    /// seq → birim kimliği; ve en az bir iletimi bildirilmiş birimler (birim → o iletimin seq'i).
+    /// İkisi de `received` penceresiyle budanır.
+    pn_unit: BTreeMap<u64, u64>,
+    unit_reported: BTreeMap<u64, u64>,
     smallest_seq: u64,
     largest_seq: u64,
     have_recv: bool,
@@ -261,6 +268,8 @@ impl Receiver {
             state: RxState::Normal,
             received: BTreeSet::new(),
             reported: BTreeMap::new(),
+            pn_unit: BTreeMap::new(),
+            unit_reported: BTreeMap::new(),
             smallest_seq: 0,
             largest_seq: 0,
             have_recv: false,
@@ -371,6 +380,15 @@ impl Receiver {
             self.cc_port && self.have_recv && d.seq != in_order_after.wrapping_add(1);
 
         self.record_seq(d.seq, now_ns);
+        if self.feedback_starved_rx() {
+            let source = match d.kind {
+                RxKind::Data => true,
+                RxKind::FecShard { is_repair, .. } => !is_repair,
+            };
+            if source {
+                self.pn_unit.insert(d.seq, d.unit_id);
+            }
+        }
 
         let (delivered, is_shard) = match d.kind {
             RxKind::Data => {
@@ -434,6 +452,16 @@ impl Receiver {
         self.ack_tokens_at_ns = 0;
     }
 
+    /// [ACK-PAYI TEŞHİS KOLU · 2026-11-21] Dönüş bütçesi payını (Y, binde) değiştirir ve kovayı
+    /// yeniden doldurur. YALNIZ teşhis: ürün yolu çağırmaz (Y = 250, §16.1); geri bildirim
+    /// kıtlığının payını ölçmek için. `set_return_bandwidth`'ten SONRA çağrılır.
+    pub fn set_return_budget_permille_for_diag(&mut self, permille: u64) {
+        self.ack_budget_bps = self
+            .return_bw_bps
+            .map(|bw| (bw.saturating_mul(permille) / 1000).max(1));
+        self.ack_tokens_mb = ACK_BUDGET_CAP_BYTES * 1000;
+    }
+
     /// [DÖNÜŞ-BÜTÇESİ] Bütçe yetmediği için ertelenen ACK emisyonu (SALT-GÖZLEM).
     #[must_use]
     pub fn diag_ack_budget_deferred(&self) -> u64 {
@@ -473,14 +501,8 @@ impl Receiver {
             self.received.pop_first();
             if let Some(&first) = self.received.first() {
                 self.smallest_seq = first;
-                // [YENİDEN-RAPOR] Pencereden düşen seq'in sayacı da unutulur.
-                while self
-                    .reported
-                    .first_key_value()
-                    .is_some_and(|(&k, _)| k < first)
-                {
-                    self.reported.pop_first();
-                }
+                // [YENİDEN-RAPOR] Pencereden düşen seq'in kayıtları da unutulur.
+                self.prune_rereport(first);
             }
         }
     }
@@ -642,9 +664,11 @@ impl Receiver {
     /// düşüş hücresi tohum 1: PTT demeti 85'in dört iletim turu 33 s teyitsiz; PTT şeridinin teyit
     /// sınırı ilerlemedi, şerit açıklığı (256) dolunca yeni demet motora verilmedi).
     ///
-    /// Kural: en büyük blok (largest, `ack_delay` ve göndericinin cephesi onundur) her zaman; kalan
-    /// yerler önce hiç bildirilmemiş bloklara — yarısı en yeniden (yeni kayıpların haberi), yarısı
-    /// en eskiden (bekleyenin yaşı sınırlı kalsın) —, sonra en az bildirilmiş bloklara, en yeniden.
+    /// Kural: en büyük blok (largest, `ack_delay` ve göndericinin cephesi onundur) her zaman; sonra
+    /// hiç bildirilmemiş en yeni [`REREPORT_NEWEST`] blok (yeni kayıpların haberi); sonra hiçbir
+    /// iletimi bildirilmemiş BİRİMİ taşıyan bloklar, en eskiden (birim kapsamı; ilk deneme seq
+    /// kapsamıydı ve PTT demetleri yine 40 s teyitsiz kaldı, bkz. uzun PTT hücresi); kalan yer hiç
+    /// bildirilmemiş, sonra en az bildirilmiş bloklara.
     /// Bir blok en az [`REREPORT_SAFE`] çıkan ACK'te bildirildiyse önceliksizdir (güvenle unutulur:
     /// dönüş kaybına karşı iki kopya; pencere dışına düşen seq'in sayacı da düşer). Göndericinin
     /// muhasebesi teyitli KÜME üzerindendir (`acked_full`); bildirilmeyen seq "teyitsiz"dir, aradaki
@@ -676,15 +700,43 @@ impl Receiver {
                 m
             }
         };
-        // (öncelik sınıfı, blok indisi): sınıf 0 = hiç bildirilmemiş seq içerir.
         let fresh: Vec<usize> = (0..blocks.len())
             .filter(|&i| count(&blocks[i]) == 0)
             .collect();
         let mut pick: Vec<usize> = Vec::with_capacity(slots);
-        let newest = slots / 2;
-        for &i in fresh.iter().rev().take(newest) {
+        // (1) Yeni kayıpların haberi: hiç bildirilmemiş en yeni bloklar ([`REREPORT_NEWEST`]).
+        for &i in fresh.iter().rev().take(REREPORT_NEWEST) {
             pick.push(i);
         }
+        // (2) Birim kapsamı: hiçbir iletimi bildirilmemiş birimi taşıyan bloklar, en eskiden.
+        // Gönderici birimi herhangi bir iletiminin teyidiyle teyit eder; PTT birimi beş iletimle
+        // gider, yeniden iletimler aynı birimdir. Seq'leri tek tek bildirmeye bant yetmez (≈ 2 blok/s
+        // ↔ ≈ 6 boşluk/s), birimleri bildirmeye yetebilir.
+        let mut covered: BTreeSet<u64> = BTreeSet::new();
+        for &i in &pick {
+            let (lo, hi) = blocks[i];
+            covered.extend(self.pn_unit.range(lo..=hi).map(|(_, &u)| u));
+        }
+        for i in 0..blocks.len() {
+            if pick.len() >= slots {
+                break;
+            }
+            if pick.contains(&i) {
+                continue;
+            }
+            let (lo, hi) = blocks[i];
+            let new: Vec<u64> = self
+                .pn_unit
+                .range(lo..=hi)
+                .map(|(_, &u)| u)
+                .filter(|u| !self.unit_reported.contains_key(u) && !covered.contains(u))
+                .collect();
+            if !new.is_empty() {
+                covered.extend(new);
+                pick.push(i);
+            }
+        }
+        // (3) Kalan yer: hiç bildirilmemiş bloklar, en eskiden; sonra en az bildirilmiş.
         for &i in &fresh {
             if pick.len() >= slots {
                 break;
@@ -712,6 +764,25 @@ impl Receiver {
         out
     }
 
+    /// [YENİDEN-RAPOR] `first` altındaki (pencereden düşen) seq'lerin kayıtlarını unutur.
+    fn prune_rereport(&mut self, first: u64) {
+        while self
+            .reported
+            .first_key_value()
+            .is_some_and(|(&k, _)| k < first)
+        {
+            self.reported.pop_first();
+        }
+        while self
+            .pn_unit
+            .first_key_value()
+            .is_some_and(|(&k, _)| k < first)
+        {
+            self.pn_unit.pop_first();
+        }
+        self.unit_reported.retain(|_, pn| *pn >= first);
+    }
+
     /// [YENİDEN-RAPOR] Çıkan ACK'in bildirdiği seq'lerin sayacını artırır (yalnız geri bildirimi
     /// aç alıcıda).
     fn note_reported(&mut self, frame: &AckFrame) {
@@ -722,6 +793,9 @@ impl Receiver {
             if self.received.contains(&seq) {
                 let c = self.reported.entry(seq).or_insert(0);
                 *c = c.saturating_add(1);
+                if let Some(&u) = self.pn_unit.get(&seq) {
+                    self.unit_reported.insert(u, seq);
+                }
             }
         }
     }
@@ -1000,14 +1074,8 @@ impl Receiver {
             self.received.pop_first();
             if let Some(&first) = self.received.first() {
                 self.smallest_seq = first;
-                // [YENİDEN-RAPOR] Pencereden düşen seq'in sayacı da unutulur.
-                while self
-                    .reported
-                    .first_key_value()
-                    .is_some_and(|(&k, _)| k < first)
-                {
-                    self.reported.pop_first();
-                }
+                // [YENİDEN-RAPOR] Pencereden düşen seq'in kayıtları da unutulur.
+                self.prune_rereport(first);
             }
         }
     }

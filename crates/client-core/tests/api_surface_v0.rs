@@ -116,6 +116,9 @@ async fn transport_api_v0_surface_is_frozen() {
         // v0.18 (İZ-NEDEN, 2026-11-20): minor-EKLEME, kasıtlı pin-güncellemesi. Gönderici
         // emisyon/kayıp ilanı izinin hedefi; default None (ürün), salt gözlem.
         diag_emit_sink: _,
+        // v0.19 (ACK-PAYI teşhis kolu, 2026-11-21): minor-EKLEME, kasıtlı pin-güncellemesi.
+        // Default None (ürün Y = 250); yalnız ölçüm düzeneği.
+        diag_return_budget_permille: _,
     } = cfg.clone();
     let FecRuntimeConfig {
         profile_id: _,

@@ -7874,10 +7874,32 @@ impl Sender {
         // kaybolmuş bir öncül ardındaki her demeti bekletir. Kayıt genel ARQ kuyruğunda dosyanın
         // (çoğu gereksiz: ACK aralık kırpması) yeniden iletimlerinin arkasında bekliyordu (ürün
         // testi, gerçek 6 250 B/s, tohum 1: kuyrukta düşen demet 33'ün yeniden iletimi 11 s sonra).
+        // [PTT-SIRA · 2026-11-21] Öncelik yalnız şeridin BAŞINA (teyitsiz en küçük öncelikli birim):
+        // sıralı şeritte teslimi yalnız baş bekletir. Bütün öncelikli kayıtları öne almak, ACK
+        // kırpmasıyla yanlış kayıp ilan edilmiş (Bob'a varmış) PTT iletimlerini de dosyanın önüne
+        // geçiriyordu (6 250 hücresinde gereksiz yeniden gönderim 72/149/65 → 125/192/86). Öbür
+        // kayıtlar genel ARQ sırasındadır.
+        let head = self
+            .pending_lost
+            .iter()
+            .map(|r| r.unit.id)
+            .chain(
+                self.inflight
+                    .values()
+                    .filter(|p| {
+                        p.origin != TransmitKind::FecParity && p.confirmed_release_ns.is_none()
+                    })
+                    .map(|p| p.unit.id),
+            )
+            .filter(|&id| id < rule.priority_below_id)
+            .min();
         let mut k = 0;
         while k < self.pending_lost.len() {
             let rec = self.pending_lost[k];
-            if rec.unit.id >= rule.priority_below_id || rec.deadline_ns > now_ns {
+            if rec.unit.id >= rule.priority_below_id
+                || Some(rec.unit.id) != head
+                || rec.deadline_ns > now_ns
+            {
                 k += 1;
                 continue;
             }

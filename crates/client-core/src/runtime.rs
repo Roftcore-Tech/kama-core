@@ -220,6 +220,9 @@ pub struct RuntimeConfig {
     /// `None` (ürün varsayılanı) = iz yok. Açıkken görev her turda motorun izini (an, kayıt) olarak
     /// buraya aktarır; hiçbir karar okumaz (salt gözlem). Yalnız client ucu; ölçüm düzenekleri açar.
     pub diag_emit_sink: Option<EmitTraceSink>,
+    /// [ACK-PAYI TEŞHİS KOLU · 2026-11-21] Server ucunun alıcı dönüş bütçesi payı (Y, binde).
+    /// `None` (ürün varsayılanı) = Y = 250 (§16.1). Yalnız teşhis/ölçüm düzeneği verir.
+    pub diag_return_budget_permille: Option<u64>,
     /// [ÖNLEMSEL-KOPYA · sahip kararı 2026-11-16] Şerit kimlikleri açık mı (şerit 0 = PTT).
     /// `true` iken ve yön hızı profili geri bildirimi aç bırakıyorsa ([`link_feedback_starved`]),
     /// PTT şeridinin her yeni birimi ACK beklemeden [`PTT_FORWARD_COPIES`] kez daha gönderilir.
@@ -349,6 +352,7 @@ impl KamaV1Profile {
             // kurulmaz. INT-02 düzeneği açar (`kama-node` `test-util` kurucuları).
             live_diag: false,
             diag_emit_sink: None,
+            diag_return_budget_permille: None,
             // [ÖNLEMSEL-KOPYA] Şerit kimlikleri yalnız `ClientTransport` şeritleri açınca.
             lane_ids: false,
             // [E1 gösterim] Beş bayrak ürün yolunda KAPALI; yalnız gösterim düğümü/teşhis kolları açar.
@@ -5136,13 +5140,17 @@ async fn server_task(
                         stats.dropped_new_peers += 1;
                         continue;
                     }
-                    peers.insert(key, PeerSlot::new(
+                    let mut slot = PeerSlot::new(
                             seam_ctx,
                             cfg.quota_r,
                             now,
                             cfg.engine,
                             cfg.link_rates.map(|l| l.uplink_bps),
-                        ));
+                        );
+                    if let Some(y) = cfg.diag_return_budget_permille {
+                        slot.rx.set_return_budget_permille_for_diag(y);
+                    }
+                    peers.insert(key, slot);
                 }
                 let Some(slot) = peers.get_mut(&key) else { continue };
                 slot.last_seen_ns = now;

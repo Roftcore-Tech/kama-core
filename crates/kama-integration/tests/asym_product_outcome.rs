@@ -752,6 +752,10 @@ fn transport(
     cfg.runtime.drain_cap = Duration::from_millis(100);
     cfg.runtime.link_rates = link;
     cfg.runtime.diag_emit_sink = emit;
+    // [ACK-PAYI TEŞHİS KOLU] `KAMA_ASYM_RETURN_Y_PERMILLE` (yalnız teşhis; varsayılan ürün Y = 250).
+    if let Ok(y) = std::env::var("KAMA_ASYM_RETURN_Y_PERMILLE") {
+        cfg.runtime.diag_return_budget_permille = y.parse().ok();
+    }
     let mut t =
         ClientTransport::new(cfg, tap(me, ledger), Box::new(hub.link(id(me)))).expect("transport");
     // [FEC-TEŞHİS] Canlı ayna (salt gözlem): FEC latch, PARAM, PTO ve kopya sayaçları.
@@ -1458,6 +1462,41 @@ impl Run {
         );
         self.trace_report(&tag);
         self.cause_report(&tag);
+        // [ACK-PAYI] Dönüş hattı bileşimi: Bob'un ACK/denetim datagramları (ADown) ve verisi (BUp)
+        // sınıf başına (datagram, tel baytı).
+        let mut comp: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+        for r in &self.rev.trace {
+            let class = match r.route {
+                Route::ADown => "ACK/denetim(Bob sunucu)".to_string(),
+                Route::BUp => {
+                    self.bob
+                        .by_fp
+                        .get(&r.fp)
+                        .map_or("denetim(Bob istemci)".to_string(), |i| {
+                            format!("{i:?}")
+                                .split('(')
+                                .next()
+                                .unwrap_or("?")
+                                .to_string()
+                        })
+                }
+                _ => "?".to_string(),
+            };
+            let e = comp.entry(class).or_insert((0, 0));
+            e.0 += 1;
+            e.1 += r.wire;
+        }
+        let span = self
+            .rev
+            .trace
+            .last()
+            .map_or(Duration::ZERO, |r| self.since(r.offered, self.t0));
+        println!(
+            "DÖNÜŞ-BİLEŞİM {tag} Y={} süre={} s {:?}",
+            std::env::var("KAMA_ASYM_RETURN_Y_PERMILLE").unwrap_or_else(|_| "250".to_string()),
+            secs(span),
+            comp
+        );
         println!(
             "ÜRÜN-SONUÇ {tag} {} {bytes} düşen_ölçüt={failed:?}",
             line.join(" ")
