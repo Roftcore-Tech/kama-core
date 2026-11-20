@@ -13,7 +13,7 @@
 //! Wire u16 seq → full-counter çözümü ([`crate::seq::resolve_seq`]) codec sınırındadır; `on_datagram`
 //! çözülmüş full-counter seq alır (sender ile simetrik).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ack::AckFrame;
 
@@ -127,6 +127,8 @@ const ACK_BUDGET_CAP_BYTES: u64 =
     2 * (SACK_WIRE_BYTES + ACK_WIRE_PER_RANGE * crate::ack::MAX_ACK_RANGES as u64);
 /// [AKIŞ-SONU YEDEĞİ] Varışlar sürerken kovada bırakılan yedek (B): en büyük bir ACK (kovanın yarısı).
 const ACK_BUDGET_RESERVE_BYTES: u64 = ACK_BUDGET_CAP_BYTES / 2;
+/// [YENİDEN-RAPOR] Bu kadar çıkan ACK'te bildirilmiş blok seçimde önceliksizdir.
+const REREPORT_SAFE: u8 = 2;
 /// [K2/R1/R15/§3.3-E/§12] ACK_CADENCE cold-start floor = sack_wire/(Y·return_bw_önsel) ≈ 8.4s.
 /// TIMER-SACK'ları bununla seyrekleşir: kbps'te sabit 20ms tick → SACK-seli/self-congestion (19s-lag);
 /// throttle bunu keser. Frequency-yolu (§2.1, on_datagram) DATA-oranıyla eşleşir → hızlı kanalda responsive
@@ -173,6 +175,9 @@ pub struct Receiver {
     cc_port: bool,
     state: RxState,
     received: BTreeSet<u64>, // alınan full-counter seq'ler (SACK kaynağı)
+    /// [YENİDEN-RAPOR] Geri bildirimi aç alıcıda alınan seq'in kaç çıkan ACK'te bildirildiği
+    /// (`received` ile aynı kayan pencere; başka yolda boş).
+    reported: BTreeMap<u64, u8>,
     smallest_seq: u64,
     largest_seq: u64,
     have_recv: bool,
@@ -255,6 +260,7 @@ impl Receiver {
             cc_port: false,
             state: RxState::Normal,
             received: BTreeSet::new(),
+            reported: BTreeMap::new(),
             smallest_seq: 0,
             largest_seq: 0,
             have_recv: false,
@@ -467,6 +473,14 @@ impl Receiver {
             self.received.pop_first();
             if let Some(&first) = self.received.first() {
                 self.smallest_seq = first;
+                // [YENİDEN-RAPOR] Pencereden düşen seq'in sayacı da unutulur.
+                while self
+                    .reported
+                    .first_key_value()
+                    .is_some_and(|(&k, _)| k < first)
+                {
+                    self.reported.pop_first();
+                }
             }
         }
     }
@@ -610,6 +624,108 @@ impl Receiver {
         self.cc_port && self.ack_budget_bps.is_some()
     }
 
+    /// [YENİDEN-RAPOR] Geri bildirimi aç alıcı: bütçeli port alıcısı ve tipik ACK'in bütçe aralığı
+    /// en az 1 s (bütçe ≤ tipik ACK tel boyu B/s; `runtime::link_feedback_starved` ile aynı eşik).
+    fn feedback_starved_rx(&self) -> bool {
+        self.cc_port
+            && self
+                .ack_budget_bps
+                .is_some_and(|b| b <= ACK_WIRE_TYPICAL_BYTES)
+    }
+
+    /// [YENİDEN-RAPOR · 2026-11-21] Kırpılacak çerçevede bildirilecek seq'ler. Tel düzeni aynıdır
+    /// (en büyük blok + en çok [`crate::ack::MAX_ACK_RANGES`] azalan aralık); değişen, alt blokların
+    /// SEÇİMİDİR. Bugünkü kural en yeni 16 alt bloğu yazar: 62 B/s dönüşte ACK ≈ 8,6 s'de bir çıkar
+    /// ve ileri yönde aynı sürede 35–75 boşluk oluşur, eski bloklar HİÇ bildirilmez. Gönderici
+    /// bildirilmeyen iletimi paket eşiğiyle kayıp sayar ve yeniden yollar; yeniden iletim ACK'in
+    /// hemen ardından çıktığından bir sonraki ACK'in kapsamının da altında kalır (ürün testi,
+    /// düşüş hücresi tohum 1: PTT demeti 85'in dört iletim turu 33 s teyitsiz; PTT şeridinin teyit
+    /// sınırı ilerlemedi, şerit açıklığı (256) dolunca yeni demet motora verilmedi).
+    ///
+    /// Kural: en büyük blok (largest, `ack_delay` ve göndericinin cephesi onundur) her zaman; kalan
+    /// yerler önce hiç bildirilmemiş bloklara — yarısı en yeniden (yeni kayıpların haberi), yarısı
+    /// en eskiden (bekleyenin yaşı sınırlı kalsın) —, sonra en az bildirilmiş bloklara, en yeniden.
+    /// Bir blok en az [`REREPORT_SAFE`] çıkan ACK'te bildirildiyse önceliksizdir (güvenle unutulur:
+    /// dönüş kaybına karşı iki kopya; pencere dışına düşen seq'in sayacı da düşer). Göndericinin
+    /// muhasebesi teyitli KÜME üzerindendir (`acked_full`); bildirilmeyen seq "teyitsiz"dir, aradaki
+    /// aralık ona kayıp demez. Seçim yalnız blok sayısı tavanı aşınca yapılır; aşmıyorsa çerçeve
+    /// bugünküyle aynıdır.
+    fn rereport_selection(&self) -> Vec<u64> {
+        let all: Vec<u64> = self.received.iter().copied().collect();
+        let mut blocks: Vec<(u64, u64)> = Vec::new();
+        for &x in &all {
+            match blocks.last_mut() {
+                Some(b) if b.1 + 1 == x => b.1 = x,
+                _ => blocks.push((x, x)),
+            }
+        }
+        let slots = crate::ack::MAX_ACK_RANGES;
+        if blocks.len() <= slots + 1 {
+            return all;
+        }
+        let top = blocks.pop().expect("blok var");
+        // Bloğun en az bildirilmiş seq'inin sayacı (sayacı olmayan seq hiç bildirilmemiştir).
+        let count = |b: &(u64, u64)| -> u8 {
+            let (k, m) = self
+                .reported
+                .range(b.0..=b.1)
+                .fold((0u64, u8::MAX), |(k, m), (_, &c)| (k + 1, m.min(c)));
+            if k < b.1 - b.0 + 1 {
+                0
+            } else {
+                m
+            }
+        };
+        // (öncelik sınıfı, blok indisi): sınıf 0 = hiç bildirilmemiş seq içerir.
+        let fresh: Vec<usize> = (0..blocks.len())
+            .filter(|&i| count(&blocks[i]) == 0)
+            .collect();
+        let mut pick: Vec<usize> = Vec::with_capacity(slots);
+        let newest = slots / 2;
+        for &i in fresh.iter().rev().take(newest) {
+            pick.push(i);
+        }
+        for &i in &fresh {
+            if pick.len() >= slots {
+                break;
+            }
+            if !pick.contains(&i) {
+                pick.push(i);
+            }
+        }
+        if pick.len() < slots {
+            let mut rest: Vec<usize> = (0..blocks.len()).filter(|i| !pick.contains(i)).collect();
+            rest.sort_by_key(|&i| (count(&blocks[i]).min(REREPORT_SAFE), std::cmp::Reverse(i)));
+            for i in rest {
+                if pick.len() >= slots {
+                    break;
+                }
+                pick.push(i);
+            }
+        }
+        let mut out: Vec<u64> = Vec::new();
+        for i in pick {
+            let (lo, hi) = blocks[i];
+            out.extend(lo..=hi);
+        }
+        out.extend(top.0..=top.1);
+        out
+    }
+
+    /// [YENİDEN-RAPOR] Çıkan ACK'in bildirdiği seq'lerin sayacını artırır (yalnız geri bildirimi
+    /// aç alıcıda).
+    fn note_reported(&mut self, frame: &AckFrame) {
+        if !self.feedback_starved_rx() {
+            return;
+        }
+        for seq in frame.acked_full(self.largest_seq) {
+            if self.received.contains(&seq) {
+                let c = self.reported.entry(seq).or_insert(0);
+                *c = c.saturating_add(1);
+            }
+        }
+    }
+
     /// [BİLGİSİZ-ACK] Bütçeli port alıcısında, akış sessizken gelen teslim edilmiş birim kopyası
     /// (`redundant_copy_after_flight`) son ACK'in göndericiye en erken varış anından
     /// (`ack_horizon_ns`) ÖNCE geldiyse ACK'i kendi başına gerektirmez. Böyle bir kopya o ACK'e
@@ -704,6 +820,7 @@ impl Receiver {
             }
             self.since_last_ack = 0;
             self.info_since_ack = false;
+            self.note_reported(&frame);
             self.ack_horizon_ns = self.ack_arrival_horizon(now_ns, &frame);
             self.burn_quota();
             self.record_ack_emit(now_ns);
@@ -883,6 +1000,14 @@ impl Receiver {
             self.received.pop_first();
             if let Some(&first) = self.received.first() {
                 self.smallest_seq = first;
+                // [YENİDEN-RAPOR] Pencereden düşen seq'in sayacı da unutulur.
+                while self
+                    .reported
+                    .first_key_value()
+                    .is_some_and(|(&k, _)| k < first)
+                {
+                    self.reported.pop_first();
+                }
             }
         }
     }
@@ -938,7 +1063,11 @@ impl Receiver {
             .checked_div(1000)
             .unwrap_or(0);
         let encoded = (delay_us / crate::ack::ACK_DELAY_UNIT_US).min(ACK_DELAY_ENC_MAX);
-        let received: Vec<u64> = self.received.iter().copied().collect();
+        let received: Vec<u64> = if self.feedback_starved_rx() {
+            self.rereport_selection()
+        } else {
+            self.received.iter().copied().collect()
+        };
         // arrival_rate: receiver bu artımda BOYUT görmüyor (RxDatagram size taşımaz) → ölçüm YOK →
         // sentinel (§2.2 zeyli: 0xFFFF = "ölçüm yok/üst-bantta, ipucu olarak KULLANMA"). K3
         // tüketicisi bağlandığında gerçek pencere-oranı ölçümüyle değiştirilir.
@@ -1041,6 +1170,44 @@ mod tests {
     /// [DÖNÜŞ-HATTI · ÖNCELİK] Yol verme açıkken bütçeli alıcı ACK çıkarmaz (jeton harcanmaz);
     /// kapanınca zamanlayıcı ertelenen bilginin tamamını tek ACK'te çıkarır. Yol vermesiz aynı
     /// akışta ilk ACK hemen çıkar.
+    /// [YENİDEN-RAPOR] Geri bildirimi aç alıcıda blok sayısı tavanı aşınca her alınan blok, art arda
+    /// çıkan ACK'lerde en az bir kez bildirilir; ilk çerçeve en büyük bloğu ve hiç bildirilmemiş eski
+    /// blokları taşır. Tel düzeni aynıdır (en çok 16 alt aralık).
+    #[test]
+    fn starved_receiver_reports_every_block_across_acks() {
+        const SEC: u64 = 1_000_000_000;
+        let mut r = Receiver::with_cc_port();
+        r.set_return_bandwidth(Some(62));
+        // 60 blok: her 3 seq'ten 2'si alınır (seq 3k+2 kayıp).
+        let mut t = 0u64;
+        for k in 0..60u64 {
+            for j in 0..2u64 {
+                let seq = 3 * k + j;
+                let _ = r.on_datagram(data(seq, seq), t);
+                t += 10 * MS;
+            }
+        }
+        let mut covered: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+        let mut frames = 0;
+        let mut now = t;
+        while frames < 8 {
+            now += 20 * SEC;
+            if let Some(a) = r.on_ack_timer(now) {
+                assert!(a.ranges.len() <= crate::ack::MAX_ACK_RANGES);
+                let largest = r.largest_seq().expect("varış var");
+                assert_eq!(u64::from(a.largest_seq), largest, "en büyük her zaman");
+                covered.extend(a.acked_full(largest));
+                frames += 1;
+                // Bilgi yoksa ACK çıkmaz: her çerçeve öncesi yeni bir varış.
+                let s = 3 * 60 + frames;
+                let _ = r.on_datagram(data(s, s), now + MS);
+            }
+        }
+        for k in 0..60u64 {
+            assert!(covered.contains(&(3 * k)), "blok {k} hiç bildirilmedi");
+        }
+    }
+
     #[test]
     fn uplink_yield_holds_budgeted_acks_until_the_line_is_free() {
         let mut r = Receiver::with_cc_port();

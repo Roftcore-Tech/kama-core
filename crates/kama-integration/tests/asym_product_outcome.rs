@@ -143,6 +143,13 @@
 //! edilmemiş (geri basınç), teslim edilmemiş ya da sınırı aşmış demet KALDI. Bu değişiklik eski
 //! KALDI sonuçlarını geriye dönük değiştirmez.
 //!
+//! # Canlılık (2026-11-21; ölçümden önce)
+//!
+//! Her hücrede ek ölçüt CANLILIK: planlanan her PTT demeti (uygulamaca kabul edilmeyenler dahil)
+//! planlandığı andan en çok 15 s içinde Bob'a teslim edilir ([`LIVENESS_HORIZON`] gerekçesi). Ayrı
+//! hücre `gate_ptt_liveness_long_session`: düşüş-toparlanma hattında PTT 0,5–60 s (298 demet, şerit
+//! kabul açıklığı 256'dan uzun), koşu tavanı 80 s; yalnız canlılık iddia edilir.
+//!
 //! Hücreler aynı süreçte sırayla koşar (zamanlama ölçümü). `KAMA_ASYM_SEED` hepsine uygulanır.
 //! `İZ-NEDEN` satırları her yeniden gönderimin tetikleyicisini (ARQ paket/zaman eşiği, PTO probu,
 //! kopya türü) ve gerekliliğini yazar; "gereksiz" = birim o an Bob'a DATA olarak varmıştı. FEC ile
@@ -1035,7 +1042,7 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
             && ptt_closed
             && texts.iter().all(|t| t.delivered.is_some())
             && bundles.values().all(|b| b.received.is_some());
-        if done || t0.elapsed() >= RUN_CAP || file_failures.len() >= 2 {
+        if done || t0.elapsed() >= cell.run_cap || file_failures.len() >= 2 {
             break;
         }
         std::thread::sleep(Duration::from_micros(500));
@@ -1366,6 +1373,29 @@ impl Run {
             }
         }
         line.push(ptt_line);
+        // [CANLILIK · 2026-11-21] Planlanan her demet (kabul edilmeyenler dahil) ufukta teslim.
+        let late: Vec<u32> = self
+            .bundles
+            .iter()
+            .filter(|(_, b)| {
+                b.received
+                    .is_none_or(|r| self.since(r, b.planned) > LIVENESS_HORIZON)
+            })
+            .map(|(&k, _)| k)
+            .collect();
+        let live = late.is_empty() && self.unaccepted.is_empty() && !self.bundles.is_empty();
+        println!(
+            "ÖLÇÜT {tag} canlılık: demet={} ufukta_teslim_edilmeyen={} (ilki {:?}) kabul_edilmeyen={} ufuk={} s → {}",
+            self.bundles.len(),
+            late.len(),
+            late.first(),
+            self.unaccepted.len(),
+            secs(LIVENESS_HORIZON),
+            if live { "GEÇTİ" } else { "KALDI" }
+        );
+        if !live {
+            failed.push("CANLILIK".to_string());
+        }
 
         // (3) Dosya.
         let file_t = self.file_received.map(|r| self.since(r, self.t0));
@@ -1875,6 +1905,10 @@ struct Cell {
     /// [FİKSTÜR · 2026-11-21] PTT'nin kapanış anı (t0'dan); `None` = dosya(lar) Bob'a varınca
     /// (eski kural). Verilirse PTT dosyadan bağımsız bu ana dek konuşur.
     ptt_until: Option<Duration>,
+    /// Koşu tavanı (o ana dek gelmeyen gözlem düşmüş sayılır).
+    run_cap: Duration,
+    /// [CANLILIK] `true` = hücre yalnız canlılık ölçütünü iddia eder (öbürleri raporlanır).
+    liveness_only: bool,
 }
 
 impl Cell {
@@ -1901,6 +1935,8 @@ impl Cell {
             // niyeti yok; metin 10 s'de sürekli evreyi sınar.
             phase_intent: vec![(true, true), (false, true)],
             ptt_until: None,
+            run_cap: RUN_CAP,
+            liveness_only: false,
         }
     }
 
@@ -1928,7 +1964,25 @@ impl Cell {
             ],
             // [FİKSTÜR · 2026-11-21] Üç evrede de PTT ve metin; PTT dosyadan bağımsız 40 s'ye dek.
             phase_intent: vec![(true, true), (true, true), (true, true)],
-            ptt_until: Some(DROP_PTT_UNTIL),
+            // Teşhis: `KAMA_ASYM_PTT_UNTIL_S` kapanışı değiştirir (kapı varsayılanı 40 s).
+            ptt_until: Some(Duration::from_secs(env_u64(
+                "KAMA_ASYM_PTT_UNTIL_S",
+                DROP_PTT_UNTIL.as_secs(),
+            ))),
+            run_cap: RUN_CAP,
+            liveness_only: false,
+        }
+    }
+
+    /// [CANLILIK · 2026-11-21] Düşüş-toparlanma hattında uzun PTT oturumu (0,5–60 s, 298 demet:
+    /// PTT şeridinin kabul açıklığından (256) uzun). Yalnız canlılık iddia edilir.
+    fn ptt_liveness_long_session() -> Self {
+        Self {
+            name: "canlılık-uzun-ptt",
+            ptt_until: Some(LIVENESS_PTT_UNTIL),
+            run_cap: LIVENESS_RUN_CAP,
+            liveness_only: true,
+            ..Self::rate_drop_recovery()
         }
     }
 
@@ -1954,6 +2008,8 @@ impl Cell {
             phases: vec![("başlangıç", Duration::ZERO), ("sürekli", START_PHASE)],
             phase_intent: vec![(true, true), (false, true)],
             ptt_until: None,
+            run_cap: RUN_CAP,
+            liveness_only: false,
         }
     }
 }
@@ -1965,6 +2021,15 @@ const LATE_TEXT_AT: Duration = Duration::from_secs(10);
 const DROP_AT: Duration = Duration::from_secs(8);
 const RECOVER_AT: Duration = Duration::from_secs(20);
 const FILE2_AT: Duration = Duration::from_secs(24);
+/// [CANLILIK · 2026-11-21] Uzun PTT oturumunun kapanışı ve koşu tavanı (tavan − kapanış = ufuk +
+/// 5 s pay).
+const LIVENESS_PTT_UNTIL: Duration = Duration::from_secs(60);
+const LIVENESS_RUN_CAP: Duration = Duration::from_secs(80);
+/// [CANLILIK] Planlanan her PTT demetinin teslim ufku (planlanan an → Bob'da teslim). Gerekçe:
+/// kaybolan demetin kurtarılması bir ACK aralığı (bu hatta ≤ 8,6 s) + yol RTT'si (0,6 s) + yeniden
+/// iletimin hatta çıkışı ister; 15 s bir ACK aralığını kaçırmaya da yer bırakır. Canlılık ölçütüdür,
+/// PTT gecikme sınırı (1 s) değil.
+const LIVENESS_HORIZON: Duration = Duration::from_secs(15);
 /// [FİKSTÜR · 2026-11-21] Düşüş hücresinde PTT'nin kapanışı: toparlanma evresinin ilk 20 s'si.
 const DROP_PTT_UNTIL: Duration = Duration::from_secs(40);
 /// Düşüş hücresinde dosya 1: gerçek hattın t0'dan taşıdığı bayt 14 s × 12 500 B/s'ye ulaştığı an
@@ -1981,8 +2046,15 @@ fn run_cell(cell: Cell, assert_pass: bool) {
     let seed = env_u64("KAMA_ASYM_SEED", 1);
     let profile = std::env::var("KAMA_ASYM_PROFILE").map_or(true, |v| v != "off");
     let name = cell.name;
+    let liveness_only = cell.liveness_only;
     let r = run(seed, profile, cell);
-    let failed = r.report();
+    let mut failed = r.report();
+    if liveness_only {
+        println!(
+            "CANLILIK-HÜCRESİ {name}: yalnız canlılık iddia edilir; bütün düşenler {failed:?}"
+        );
+        failed.retain(|f| f == "CANLILIK");
+    }
     if !assert_pass {
         println!("TEŞHİS-KOLU hücre={name} (tohum {seed}) — düşen ölçütler: {failed:?}");
         return;
@@ -2019,6 +2091,11 @@ fn gate_real_6250_declared_12500() {
 #[test]
 fn gate_rate_drop_then_recovery_in_one_session() {
     run_cell(Cell::rate_drop_recovery(), true);
+}
+
+#[test]
+fn gate_ptt_liveness_long_session() {
+    run_cell(Cell::ptt_liveness_long_session(), true);
 }
 
 #[test]
