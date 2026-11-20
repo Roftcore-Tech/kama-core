@@ -1467,6 +1467,46 @@ struct TombstoneRec {
     data_ord: u64,
 }
 
+/// [İZ-NEDEN] Gönderici emisyon / kayıp ilanı izinin kayıt türü (salt gözlem; yalnız
+/// [`Sender::set_diag_emit_log`] açıkken yazılır, hiçbir karar okumaz).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmitCause {
+    /// Birimin ilk iletimi.
+    Data,
+    /// ARQ yeniden iletimi (`ref_seq` = kayıp ilan edilen iletim).
+    Retransmit,
+    /// PTO / kuyruk probu (`ref_seq` = probun hedef iletimi).
+    PtoProbe,
+    /// Vadesi gelen zamanlanmış kopya (`drain_due_duplicates`).
+    Copy,
+    /// Öncelikli şeridin kopyası ([`ForwardCopyRule`]).
+    CopyPriority,
+    /// Kuruluş merdiveni kopyası.
+    CopyEstablish,
+    /// FEC onarım sembolü (`unit_id` = ESI).
+    FecParity,
+    /// Paket eşiği kayıp ilanı (ACK işlenirken; `ref_seq` = en büyük teyitli iletim).
+    LossPacketThreshold,
+    /// Zaman eşiği kayıp ilanı (PTO zamanlayıcısında; `ref_seq` = en büyük teyitli iletim).
+    LossTimeThreshold,
+    /// ACK çerçevesi işlendi (`seq` = yeni teyitli en büyük iletim ya da 0, `unit_id` = yeni
+    /// teyitli iletim sayısı, `ref_seq` = hat korumasının hızı, B/s; yoksa 0).
+    AckFrame,
+}
+
+/// [İZ-NEDEN] Bir iz kaydı (bkz. [`EmitCause`]); `at_ns` motor saatidir.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmitDiag {
+    pub at_ns: u64,
+    pub seq: u64,
+    pub unit_id: u64,
+    pub cause: EmitCause,
+    pub ref_seq: u64,
+}
+
+/// [İZ-NEDEN] İz tavanı (SR-AUDIT-001); dolunca yeni kayıt yazılmaz.
+const EMIT_LOG_CAP: usize = 65_536;
+
 /// [ÖNLEMSEL-KOPYA] Kimliği `below_id`'den küçük her YENİ birim, ilk iletiminden sonra ACK
 /// beklemeden `copies` kez daha gönderilir (kopyalar `spacing_ns` aralıklı, §11 zamanlanmış
 /// forward-recovery kopyasıyla aynı kayıt: `dup_queue`, tek atış, teyit gelince iptal).
@@ -1781,6 +1821,8 @@ pub struct Sender {
     cc_feedback_starved: Option<FeedbackStarvedRule>,
     /// [HAT-KORUMASI] Gerçek ileri hattın tahmincisi; yalnız kural kuruluyken `Some`.
     cc_line_guard: Option<crate::line_guard::LineGuard>,
+    /// [İZ-NEDEN] Emisyon / kayıp ilanı izi; `None` = kapalı (varsayılan).
+    diag_emit_log: Option<Vec<EmitDiag>>,
     /// [DR-EST-1] Kuruluş-kolu anahtarı (DEFAULT-ON — ürün-davranışı). Yalnız donmuş-enstrüman
     /// testleri (Gate-5 structural-oracle: probe-vs-DATA çekişme-izolasyonu, DR-EST-1-öncesi
     /// tasarım) kapatır; kolun KENDİ pinleri tests/establish_probe.rs'te default-ON koşar.
@@ -2134,6 +2176,7 @@ impl Sender {
             forward_copy_rule: None,
             cc_feedback_starved: None,
             cc_line_guard: None,
+            diag_emit_log: None,
             establish_probe_enabled: true,
             establish_due_ns: 0,
             establish_interval_ns: 0,
@@ -3831,9 +3874,29 @@ impl Sender {
             cc.on_end_acks(now_ns, inflight, any_app_limited || idle_now, largest);
         }
         self.cc_line_guard_on_ack(ack, now_ns);
+        if self.diag_emit_log.is_some() {
+            let top = ack
+                .acked_seqs
+                .iter()
+                .copied()
+                .filter(|&x| x < self.next_seq)
+                .max()
+                .unwrap_or(0);
+            let rate = self
+                .cc_line_guard
+                .as_ref()
+                .and_then(crate::line_guard::LineGuard::rate_bps)
+                .unwrap_or(0);
+            let n = ack.acked_seqs.len() as u64;
+            self.diag_emit(now_ns, top, n, EmitCause::AckFrame, rate);
+        }
 
         if self.state != SenderState::PreConverge || self.rtt.srtt().is_some() {
             let before = self.pending_lost.len();
+            let la = self.loss.largest_acked().unwrap_or(0);
+            for &l in &lost {
+                self.diag_emit(now_ns, l, 0, EmitCause::LossPacketThreshold, la);
+            }
             self.queue_losses(&lost, now_ns);
             // [TUR-A teşhis] loss-atıflama: packet-threshold (§5a) kaynaklı kuyruklanan kayıp sayısı.
             self.diag_loss_pkt += (self.pending_lost.len() - before) as u64;
@@ -3903,6 +3966,10 @@ impl Sender {
                     let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
                     let (tt_rtt, tt_floor) = self.time_loss_inputs(srtt); // [E2a m1] tek yardımcı
                     let lost = self.loss.detect_time_losses(now_ns, tt_rtt, tt_floor);
+                    let la = self.loss.largest_acked().unwrap_or(0);
+                    for &l in &lost {
+                        self.diag_emit(now_ns, l, 0, EmitCause::LossTimeThreshold, la);
+                    }
                     let before = self.pending_lost.len();
                     self.queue_losses(&lost, now_ns);
                     // [TUR-A teşhis] loss-atıflama: time-threshold (§5b) kaynaklı kuyruklanan kayıp.
@@ -5321,6 +5388,34 @@ impl Sender {
         }
     }
 
+    /// [İZ-NEDEN] Emisyon / kayıp ilanı izini açar (boş iz) ya da kapatıp atar. SALT GÖZLEM:
+    /// hiçbir karar izi okumaz; yalnız ölçüm düzenekleri açar.
+    pub fn set_diag_emit_log(&mut self, on: bool) {
+        self.diag_emit_log = on.then(Vec::new);
+    }
+
+    /// [İZ-NEDEN] Biriken iz kayıtlarını alır (iz açık kalır).
+    pub fn take_diag_emit_log(&mut self) -> Vec<EmitDiag> {
+        self.diag_emit_log
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
+    }
+
+    fn diag_emit(&mut self, at_ns: u64, seq: u64, unit_id: u64, cause: EmitCause, ref_seq: u64) {
+        if let Some(log) = self.diag_emit_log.as_mut() {
+            if log.len() < EMIT_LOG_CAP {
+                log.push(EmitDiag {
+                    at_ns,
+                    seq,
+                    unit_id,
+                    cause,
+                    ref_seq,
+                });
+            }
+        }
+    }
+
     /// [HAT-KORUMASI] Ölçülen ileri hat (B/s, tel baytı) ve kabul edilen örnek sayısı; kural
     /// kurulu değilse `None`, kural kurulu ama hat profilin altında ölçülmediyse `(None, 0)`.
     #[must_use]
@@ -6648,6 +6743,7 @@ impl Sender {
             0,
             TransmitKind::FecParity,
         );
+        self.diag_emit(now_ns, seq, u64::from(p.esi), EmitCause::FecParity, 0);
         // DR-S5-3: emit-anında seq→logical kaydı (ACK-teyidinde eşlenecek; SALT-LOGICAL).
         // DR-S5-6: bounded-helper'dan (cap-altında davranış-özdeş).
         self.insert_sent_logical(
@@ -7088,6 +7184,7 @@ impl Sender {
                         rec.retx_count.saturating_add(1),
                         TransmitKind::Retransmit,
                     );
+                    self.diag_emit(now_ns, new_seq, rec.unit.id, EmitCause::Retransmit, rec.seq);
                     out.push(TransmitDecision {
                         kind: TransmitKind::Retransmit,
                         seq: new_seq,
@@ -7226,6 +7323,7 @@ impl Sender {
                     rec.retx_count.saturating_add(1),
                     TransmitKind::Retransmit,
                 );
+                self.diag_emit(now_ns, new_seq, rec.unit.id, EmitCause::PtoProbe, rec.seq);
                 out.push(TransmitDecision {
                     kind: TransmitKind::Retransmit,
                     seq: new_seq,
@@ -7298,6 +7396,7 @@ impl Sender {
             retx_count.saturating_add(1),
             TransmitKind::Retransmit,
         );
+        self.diag_emit(now_ns, new_seq, unit.id, EmitCause::PtoProbe, target);
         out.push(TransmitDecision {
             kind: TransmitKind::Retransmit,
             seq: new_seq,
@@ -7390,6 +7489,7 @@ impl Sender {
         }
         self.tx_queue.remove(pos);
         let seq = self.track_sent(unit, now_ns, 0, TransmitKind::Data);
+        self.diag_emit(now_ns, seq, unit.id, EmitCause::Data, 0);
         out.push(TransmitDecision {
             kind: TransmitKind::Data,
             seq,
@@ -7494,6 +7594,7 @@ impl Sender {
             retx_count.saturating_add(1),
             TransmitKind::Retransmit,
         );
+        self.diag_emit(now_ns, new_seq, unit.id, EmitCause::PtoProbe, target);
         out.push(TransmitDecision {
             kind: TransmitKind::Retransmit,
             seq: new_seq,
@@ -7614,6 +7715,7 @@ impl Sender {
         };
         let dup = self.dup_queue.remove(i);
         let seq = self.track_sent(dup.unit, now_ns, 0, TransmitKind::Duplicate);
+        self.diag_emit(now_ns, seq, dup.unit.id, EmitCause::CopyEstablish, 0);
         out.push(TransmitDecision {
             kind: TransmitKind::Duplicate,
             seq,
@@ -7677,6 +7779,7 @@ impl Sender {
             }
             let dup = self.dup_queue.remove(i);
             let seq = self.track_sent(dup.unit, now_ns, 0, TransmitKind::Duplicate);
+            self.diag_emit(now_ns, seq, dup.unit.id, EmitCause::Copy, 0);
             out.push(TransmitDecision {
                 kind: TransmitKind::Duplicate,
                 seq,
@@ -7721,6 +7824,7 @@ impl Sender {
             }
             let _ = self.tx_queue.remove(i);
             let seq = self.track_sent(unit, now_ns, 0, TransmitKind::Data);
+            self.diag_emit(now_ns, seq, unit.id, EmitCause::Data, 0);
             out.push(TransmitDecision {
                 kind: TransmitKind::Data,
                 seq,
@@ -7742,6 +7846,7 @@ impl Sender {
             }
             let dup = self.dup_queue.remove(j);
             let seq = self.track_sent(dup.unit, now_ns, 0, TransmitKind::Duplicate);
+            self.diag_emit(now_ns, seq, dup.unit.id, EmitCause::CopyPriority, 0);
             out.push(TransmitDecision {
                 kind: TransmitKind::Duplicate,
                 seq,
@@ -7774,6 +7879,7 @@ impl Sender {
             }
             self.tx_queue.pop_front();
             let seq = self.track_sent(front, now_ns, 0, TransmitKind::Data);
+            self.diag_emit(now_ns, seq, front.id, EmitCause::Data, 0);
             out.push(TransmitDecision {
                 kind: TransmitKind::Data,
                 seq,

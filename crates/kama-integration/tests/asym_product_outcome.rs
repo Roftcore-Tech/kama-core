@@ -94,6 +94,48 @@
 //!   %4,6'sı) ile metinler aynı ileri hattı paylaşır.
 //! * Koşu tavanı 60 s; o ana dek gelmeyen her gözlem düşmüş sayılır.
 //!
+//! # Kalıcı kapı hücreleri (2026-11-20; sınırlar ve gerekçeleri ölçümden ÖNCE yazıldı)
+//!
+//! Yön ve trafik her hücrede aynıdır: Alice (baz; beyan yukarı 12 500 / aşağı 62 B/s) dosyayı,
+//! PTT'yi ve metinleri Bob'a (saha; beyan yukarı 62 / aşağı 12 500 B/s) gönderir; Bob alındıları
+//! gönderir. Saha → baz PTT (62 B/s) kapsam dışıdır. Beyan edilen hızlar (profil) her hücrede
+//! aynıdır; hücre yalnız GERÇEK hattı değiştirir. Gerçek dönüş hızı her hücrede 62 B/s'dir.
+//!
+//! | hücre | gerçek ileri | beyan ileri | gerçek dönüş | dosya sınırı |
+//! |---|---|---|---|---|
+//! | `dürüst-12500` | 12 500 | 12 500 | 62, 300 ms | 14 s |
+//! | `gerçek-10000` | 10 000 | 12 500 | 62, 300 ms | 17,5 s |
+//! | `gerçek-6250` | 6 250 | 12 500 | 62, 300 ms | 28 s |
+//! | `düşüş-toparlanma` | 12 500 → (8 s) 6 250 → (20 s) 12 500 | 12 500 | 62, 300 ms | 20 s; dosya 2 (24 s'de) 14 s |
+//! | `dönüş-gecikmesi-değişken` | 12 500 | 12 500 | 62, 300–700 ms | 14 s |
+//!
+//! Sınırlar (hepsi her hücrede, iddia edilir):
+//! * PTT ≤ 1 s her demet, METİN ≤ 1 s her biri, ALINDI dönüşü ≤ 4 s: tanımlar yukarıdaki
+//!   "Eşikler" bölümüyle aynıdır (metnin kendi ilk iletimi düştüyse "kayıp-kurtarma" istisnası aynen;
+//!   PTT'de profil açıkken istisna yok). Gerekçe: ürün hedefi gerçek hat profilden yavaş olsa da
+//!   aynıdır; PTT + metin (≈ 0,6 kB/s) 6 250 B/s hattın %10'undan azdır, sınır fizikle tutulabilir.
+//! * Ölçütler EVRE başına ayrıca raporlanır ve iddia edilir (demet planlandığı, metin gönderildiği
+//!   evreye düşer): `başlangıç` = 0–8 s (ilk bilgi taşıyan ACK ölçümlerde 4,3–7,9 s'de geldi;
+//!   oturum başı yalnız 15 s sonrası değil, bu pencerede de sınırın içinde olmalı), `sürekli` = 8 s
+//!   sonrası. Düşüş hücresinde `başlangıç` 0–8 s, `daralma` 8–20 s, `toparlanma` 20 s sonrası; tek
+//!   oturum, yeniden bağlanma yok. Yalnız dosyanın bitmesi hücreyi geçirmez.
+//! * DOSYA sınırı gerçek hızla ölçeklenir: gerçek hattın t0'dan taşıyabildiği bayt, dürüst hücrenin
+//!   bütçesine (14 s × 12 500 B/s = 175 000 B) ulaştığı an. Sabit hızda 14 s × 12 500 / gerçek;
+//!   düşüş hücresinde 8 × 12 500 + 12 × 6 250 = 175 000 B → 20 s. Düşüş hücresinde dosya 2 hat
+//!   12 500'e döndükten 4 s sonra (24 s) gönderilir ve dürüst sınıra (14 s) tabidir: oturum içinde
+//!   hızlanan hattın yeniden kullanılması ölçütüdür.
+//! * Değişken dönüş gecikmesi hücresinde ALINDI sınırı 4 s + 0,4 s: alındının kendisi bu dönüş
+//!   hattından geçer ve gecikme fazlası en çok 400 ms'dir (fizik gerekçesi aynı, gecikme terimi
+//!   300 ms yerine en çok 700 ms). İleri hat dürüst olduğundan dosya sınırı 14 s: dönüş gecikmesinin
+//!   artışı ileri hattın daralması sayılmamalıdır.
+//! * Metinler: metin 1 (0,3 s), metin 2 (dosya yarısı), sabit hızlı hücrelerde ayrıca 10 s; düşüş
+//!   hücresinde ayrıca 12 s (daralma) ve 26 s (toparlanma). PTT, dosya(lar) Bob'a varana dek sürer.
+//!
+//! Hücreler aynı süreçte sırayla koşar (zamanlama ölçümü). `KAMA_ASYM_SEED` hepsine uygulanır.
+//! `İZ-NEDEN` satırları her yeniden gönderimin tetikleyicisini (ARQ paket/zaman eşiği, PTO probu,
+//! kopya türü) ve gerekliliğini yazar; "gereksiz" = birim o an Bob'a DATA olarak varmıştı. FEC ile
+//! kurtarılan birim DATA varışı sayılmaz (paket numarası alınmadı); RECOVERED çerçeve sayısı ayrı.
+//!
 //! # Koşturma
 //!
 //! Varsayılan (CI): tohum 1, profil açık; dört ölçütten biri düşerse test düşer. Ölçüm:
@@ -112,8 +154,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use adaptive_transport::ack::AckFrame;
+use adaptive_transport::sender::{EmitCause, EmitDiag};
 use client_core::memory_link::MemoryHub;
 use client_core::runtime::ClientLiveDiag;
+use client_core::runtime::EmitTraceSink;
 use client_core::runtime::LinkRates;
 use client_core::transport::{ClientTransport, ClientTransportConfig};
 use client_core::wire::{decode_data, FRAME_FEC, FRAME_RECOVERED};
@@ -242,6 +287,14 @@ struct Ledger {
     fec_rx: u64,
     recovered_tx: u64,
     recovered_rx: u64,
+    /// [İZ-NEDEN] Bu ucun mühürlediği her DATA datagramı: (an, PN, motor iletim sırası u16, birim).
+    seals: Vec<(Instant, u64, u16, u64)>,
+    /// [İZ-NEDEN] Bu uca açılan DATA datagramları: motor iletim sırası (u16) → ilk varış; birim →
+    /// ilk varış (DATA ile; FEC ile kurtarılan birim burada YOKTUR, ayrı sayılır).
+    rx_seq: HashMap<u16, Instant>,
+    rx_unit: HashMap<u64, Instant>,
+    /// [İZ-NEDEN] Bu uca açılan ACK çerçeveleri: (an, teyit edilen PN'ler).
+    acks_rx: Vec<(Instant, Vec<u64>)>,
 }
 
 /// [FEC-TEŞHİS] Çerçeve türü sayacı (DATA dışı).
@@ -277,6 +330,13 @@ impl PacketProtection for Tap {
     fn seal(&mut self, ctx: ProtectionContext, frame: &[u8]) -> Result<SealedUnit, SealError> {
         let sealed = self.inner.seal(ctx, frame)?;
         note_kind(&mut lock(&self.ledger), frame, true);
+        if let Some((wseq, unit, _)) = decode_data(frame) {
+            let mut l = lock(&self.ledger);
+            if l.seals.len() < LEDGER_CAP {
+                l.seals
+                    .push((Instant::now(), sealed.meta.full_wire_pn, wseq, unit));
+            }
+        }
         if let Some(c) = self.classify(frame) {
             let now = Instant::now();
             let mut l = lock(&self.ledger);
@@ -296,6 +356,19 @@ impl PacketProtection for Tap {
     fn open(&mut self, wire: &[u8]) -> Option<Opened> {
         let opened = self.inner.open(wire)?;
         note_kind(&mut lock(&self.ledger), &opened.frame, false);
+        {
+            let now = Instant::now();
+            let mut l = lock(&self.ledger);
+            if let Some((wseq, unit, _)) = decode_data(&opened.frame) {
+                l.rx_seq.entry(wseq).or_insert(now);
+                l.rx_unit.entry(unit).or_insert(now);
+            } else if let Ok(f) = AckFrame::decode(&opened.frame) {
+                if l.acks_rx.len() < LEDGER_CAP {
+                    let pns = f.acked_full(u64::from(f.largest_seq));
+                    l.acks_rx.push((now, pns));
+                }
+            }
+        }
         if let Some(c) = self.classify(&opened.frame) {
             let now = Instant::now();
             let mut l = lock(&self.ledger);
@@ -378,6 +451,15 @@ struct LineRec {
 /// Bir yönün hattı: `shaped_relay.rs` `Shaper::offer` kuralı (jitter'sız).
 struct Shaper {
     rate_bps: u64,
+    /// [KAPI] Hız çizelgesi: (t0'dan bu yana, B/s); boşsa `rate_bps` sabit. Paket serileşmeye
+    /// başladığı andaki hızla serileşir.
+    rate_plan: Vec<(Duration, u64)>,
+    /// [KAPI] Tek yön gecikme çizelgesi: (t0'dan bu yana, gecikme); boşsa `delay` sabit. Varışlar
+    /// FIFO kalır (gecikme azalınca paket öncülünü geçmez).
+    delay_plan: Vec<(Duration, Duration)>,
+    /// [KAPI] Çizelgelerin saat tabanı (t0; ana iş parçacığı yazar). Ayarlanmadan önce ilk değer.
+    t0: Arc<Mutex<Option<Instant>>>,
+    last_arrival: Option<Instant>,
     limit: usize,
     delay: Duration,
     loss_permille: u64,
@@ -397,6 +479,10 @@ impl Shaper {
     fn new(rate_bps: u64, loss_permille: u64, seed: u64) -> Self {
         Self {
             rate_bps,
+            rate_plan: Vec::new(),
+            delay_plan: Vec::new(),
+            t0: Arc::new(Mutex::new(None)),
+            last_arrival: None,
             limit: QUEUE_PKTS,
             delay: ONE_WAY,
             loss_permille,
@@ -412,6 +498,28 @@ impl Shaper {
             dropped_fp: Vec::new(),
             trace: Vec::new(),
         }
+    }
+
+    fn since_t0(&self, at: Instant) -> Option<Duration> {
+        lock(&self.t0).map(|t| at.saturating_duration_since(t))
+    }
+
+    fn rate_at(&self, at: Instant) -> u64 {
+        let el = self.since_t0(at).unwrap_or(Duration::ZERO);
+        self.rate_plan
+            .iter()
+            .rev()
+            .find(|(from, _)| *from <= el)
+            .map_or(self.rate_bps, |p| p.1)
+    }
+
+    fn delay_at(&self, at: Instant) -> Duration {
+        let el = self.since_t0(at).unwrap_or(Duration::ZERO);
+        self.delay_plan
+            .iter()
+            .rev()
+            .find(|(from, _)| *from <= el)
+            .map_or(self.delay, |p| p.1)
     }
 
     fn rand_permille(&mut self) -> u64 {
@@ -461,7 +569,8 @@ impl Shaper {
             return;
         }
         let start = self.busy.back().copied().unwrap_or(now).max(now);
-        let done = start + Duration::from_nanos(size * 1_000_000_000 / self.rate_bps.max(1));
+        let rate = self.rate_at(start);
+        let done = start + Duration::from_nanos(size * 1_000_000_000 / rate.max(1));
         self.busy.push_back(done);
         self.sent += 1;
         self.bytes += size;
@@ -471,9 +580,11 @@ impl Shaper {
             self.note(now, route, size, 2, None, &pkt);
             return;
         }
-        // Sabit gecikme, FIFO serileştirme: varış anları artandır.
-        self.note(now, route, size, 0, Some(done + self.delay), &pkt);
-        self.wire.push_back((done + self.delay, route, pkt));
+        // FIFO serileştirme; gecikme çizelgesi varsa varış öncülün varışından önce olamaz.
+        let arrive = (done + self.delay_at(done)).max(self.last_arrival.unwrap_or(done));
+        self.last_arrival = Some(arrive);
+        self.note(now, route, size, 0, Some(arrive), &pkt);
+        self.wire.push_back((arrive, route, pkt));
     }
 
     fn take_due(&mut self, now: Instant) -> Vec<(Route, Vec<u8>)> {
@@ -608,10 +719,12 @@ fn transport(
     ledger: &Arc<Mutex<Ledger>>,
     hub: &MemoryHub,
     link: Option<LinkRates>,
+    emit: Option<EmitTraceSink>,
 ) -> Transport {
     let mut cfg = ClientTransportConfig::product(SocketAddr::from(([127, 0, 0, 1], 0)));
     cfg.runtime.drain_cap = Duration::from_millis(100);
     cfg.runtime.link_rates = link;
+    cfg.runtime.diag_emit_sink = emit;
     let mut t =
         ClientTransport::new(cfg, tap(me, ledger), Box::new(hub.link(id(me)))).expect("transport");
     // [FEC-TEŞHİS] Canlı ayna (salt gözlem): FEC latch, PARAM, PTO ve kopya sayaçları.
@@ -637,14 +750,17 @@ struct Bundle {
 struct Run {
     seed: u64,
     profile: bool,
+    cell: Cell,
     t0: Instant,
-    texts: [Texts; 2],
+    texts: Vec<Texts>,
     ptt_open: Option<(StreamId, Instant)>,
     ptt_started: Option<Instant>,
     bundles: BTreeMap<u32, Bundle>,
     file_received: Option<Instant>,
     file_delivered: Option<Instant>,
     file_ok: bool,
+    /// [KAPI] İkinci dosya (hücre isterse): gönderim ve Bob'da tamamlanma, bayt doğruluğu.
+    file2: Option<(Instant, Option<Instant>, bool)>,
     chunk_count: u64,
     /// Bob'un uygulama zincirinde görülen her `FILE_CHUNK` kaydının anı.
     chunk_rx: Vec<Instant>,
@@ -656,9 +772,11 @@ struct Run {
     /// [FEC-TEŞHİS] Koşu sonunda iki ucun oturum aynası (Alice → Bob, Bob → Alice).
     alice_live: Option<ClientLiveDiag>,
     bob_live: Option<ClientLiveDiag>,
+    /// [İZ-NEDEN] Alice göndericisinin emisyon / kayıp ilanı izi (an, kayıt).
+    emit: Vec<(Instant, EmitDiag)>,
 }
 
-fn run(seed: u64, profile: bool, real_fwd_bps: u64) -> Run {
+fn run(seed: u64, profile: bool, cell: Cell) -> Run {
     let hub = MemoryHub::new();
     let alice_ledger = Arc::new(Mutex::new(Ledger::default()));
     let bob_ledger = Arc::new(Mutex::new(Ledger::default()));
@@ -668,8 +786,15 @@ fn run(seed: u64, profile: bool, real_fwd_bps: u64) -> Run {
             downlink_bps: down,
         })
     };
-    let mut alice_t = transport(ALICE, &alice_ledger, &hub, link(FWD_BPS, REV_BPS));
-    let mut bob_t = transport(BOB, &bob_ledger, &hub, link(REV_BPS, FWD_BPS));
+    let emit: EmitTraceSink = Arc::new(Mutex::new(Vec::new()));
+    let mut alice_t = transport(
+        ALICE,
+        &alice_ledger,
+        &hub,
+        link(FWD_BPS, REV_BPS),
+        Some(Arc::clone(&emit)),
+    );
+    let mut bob_t = transport(BOB, &bob_ledger, &hub, link(REV_BPS, FWD_BPS), None);
     let bind = || UdpSocket::bind("127.0.0.1:0").expect("röle soketi");
     let sockets = RelaySockets {
         front_a: bind(),
@@ -689,8 +814,13 @@ fn run(seed: u64, profile: bool, real_fwd_bps: u64) -> Run {
     bob_t.add_peer_addr(id(ALICE), sockets.front_b.local_addr().expect("adres"));
     let stop = Arc::new(AtomicBool::new(false));
     let relay_stop = Arc::clone(&stop);
-    let fwd = Shaper::new(real_fwd_bps, FWD_LOSS_PERMILLE, seed);
-    let rev = Shaper::new(REV_BPS, 0, seed ^ 0x5A5A);
+    let shaper_t0: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+    let mut fwd = Shaper::new(cell.fwd_plan[0].1, FWD_LOSS_PERMILLE, seed);
+    fwd.rate_plan = cell.fwd_plan.clone();
+    fwd.t0 = Arc::clone(&shaper_t0);
+    let mut rev = Shaper::new(REV_BPS, 0, seed ^ 0x5A5A);
+    rev.delay_plan = cell.rev_delay_plan.clone();
+    rev.t0 = Arc::clone(&shaper_t0);
     let relay_thread = std::thread::spawn(move || relay(sockets, fwd, rev, &relay_stop));
 
     let clock: Arc<dyn MonotonicClock> = Arc::new(SystemClock::new());
@@ -716,12 +846,17 @@ fn run(seed: u64, profile: bool, real_fwd_bps: u64) -> Run {
     let chunk_len = alice.m.limits().max_file_chunk_bytes() as u64;
     let chunk_count = (FILE_BYTES as u64).div_ceil(chunk_len);
     let t0 = Instant::now();
+    *lock(&shaper_t0) = Some(t0);
     alice
         .files
         .send_file(&alice.m, id(BOB), "olcum.bin", file.clone())
         .expect("dosya kuyruğa alınır");
+    let file2_bytes: Vec<u8> = (0..FILE_BYTES).map(|i| (i % 241) as u8).collect();
+    let mut file2: Option<(Instant, Option<Instant>, bool)> = None;
 
-    let mut texts: [Texts; 2] = Default::default();
+    let mut texts: Vec<Texts> = (0..2 + cell.texts_at.len())
+        .map(|_| Texts::default())
+        .collect();
     let mut ptt_open: Option<(StreamId, Instant)> = None;
     let mut ptt_closed = false;
     let mut ptt_started: Option<Instant> = None;
@@ -745,6 +880,26 @@ fn run(seed: u64, profile: bool, real_fwd_bps: u64) -> Run {
             let msg_id = alice.m.send_text(id(BOB), TEXT2).expect("metin 2");
             texts[1].sent = Some((msg_id, Instant::now()));
         }
+        for (k, at) in cell.texts_at.iter().enumerate() {
+            if texts[2 + k].sent.is_none() && el >= *at {
+                let msg_id = alice
+                    .m
+                    .send_text(id(BOB), "metin: evre denetimi")
+                    .expect("evre metni");
+                texts[2 + k].sent = Some((msg_id, Instant::now()));
+            }
+        }
+        if let (None, Some(at)) = (file2, cell.file2_at) {
+            if el >= at {
+                alice
+                    .files
+                    .send_file(&alice.m, id(BOB), "olcum2.bin", file2_bytes.clone())
+                    .expect("ikinci dosya kuyruğa alınır");
+                file2 = Some((Instant::now(), None, false));
+            }
+        }
+        let files_done = file_received.is_some()
+            && (cell.file2_at.is_none() || file2.is_some_and(|f| f.1.is_some()));
         if ptt_open.is_none() && el >= PTT_AT {
             let stream = alice
                 .ptt
@@ -753,7 +908,7 @@ fn run(seed: u64, profile: bool, real_fwd_bps: u64) -> Run {
             ptt_open = Some((stream, now));
         }
         if let (Some((stream, opened)), false) = (ptt_open, ptt_closed) {
-            if file_received.is_none() {
+            if !files_done {
                 // Konuşan sabit hızda konuşur: demet k, açılıştan k × 200 ms sonra hazırdır.
                 loop {
                     let planned =
@@ -817,6 +972,12 @@ fn run(seed: u64, profile: bool, real_fwd_bps: u64) -> Run {
                         b.received.get_or_insert(at);
                     }
                 }
+                Ev::File(FileEvent::Received { bytes, name, .. }) if name == "olcum2.bin" => {
+                    if let Some(f) = file2.as_mut() {
+                        f.1.get_or_insert(at);
+                        f.2 = bytes == file2_bytes;
+                    }
+                }
                 Ev::File(FileEvent::Received { bytes, .. }) => {
                     file_ok = bytes == file;
                     file_received.get_or_insert(at);
@@ -834,6 +995,7 @@ fn run(seed: u64, profile: bool, real_fwd_bps: u64) -> Run {
             }
         }
         let done = file_received.is_some()
+            && (cell.file2_at.is_none() || file2.is_some_and(|f| f.1.is_some()))
             && file_delivered.is_some()
             && ptt_closed
             && texts.iter().all(|t| t.delivered.is_some())
@@ -862,9 +1024,11 @@ fn run(seed: u64, profile: bool, real_fwd_bps: u64) -> Run {
     let (fwd, rev) = relay_thread.join().expect("röle");
     let alice_ledger = std::mem::take(&mut *lock(&alice_ledger));
     let bob_ledger = std::mem::take(&mut *lock(&bob_ledger));
+    let emit = std::mem::take(&mut *lock(&emit));
     Run {
         seed,
         profile,
+        cell,
         t0,
         texts,
         ptt_open,
@@ -873,6 +1037,7 @@ fn run(seed: u64, profile: bool, real_fwd_bps: u64) -> Run {
         file_received,
         file_delivered,
         file_ok,
+        file2,
         chunk_count,
         chunk_rx,
         alice: alice_ledger,
@@ -882,6 +1047,7 @@ fn run(seed: u64, profile: bool, real_fwd_bps: u64) -> Run {
         file_backlog_held,
         alice_live,
         bob_live,
+        emit,
     }
 }
 
@@ -933,13 +1099,35 @@ impl Run {
         let mut failed: Vec<String> = Vec::new();
         let mut line: Vec<String> = Vec::new();
         let tag = format!(
-            "tohum={} profil={}",
+            "hücre={} tohum={} profil={}",
+            self.cell.name,
             self.seed,
             if self.profile { "açık" } else { "kapalı" }
+        );
+        println!(
+            "HÜCRE {tag} ileri_gerçek={:?} ileri_beyan={} dönüş_gerçek={} dönüş_beyan={} dönüş_gecikme={:?} dosya_sınırı={} s dosya2={:?} alındı_sınırı={} s evreler={:?}",
+            self.cell
+                .fwd_plan
+                .iter()
+                .map(|(t, r)| format!("{}s:{r}", t.as_secs()))
+                .collect::<Vec<_>>(),
+            FWD_BPS,
+            REV_BPS,
+            REV_BPS,
+            self.cell
+                .rev_delay_plan
+                .iter()
+                .map(|(t, d)| format!("{}s:{}ms", t.as_secs(), d.as_millis()))
+                .collect::<Vec<_>>(),
+            secs(self.cell.file_bound),
+            self.cell.file2_at.map(|a| format!("+{} s, sınır {} s", secs(a), secs(FILE_BOUND))),
+            secs(self.cell.receipt_bound),
+            self.cell.phases,
         );
 
         // (1) Metin + alındı.
         let mut text_verdicts = Vec::new();
+        let mut text_phase: BTreeMap<usize, (Duration, Verdict)> = BTreeMap::new();
         let mut receipt_verdicts = Vec::new();
         for (i, t) in self.texts.iter().enumerate() {
             let n = i + 1;
@@ -974,6 +1162,14 @@ impl Run {
                 v.label()
             );
             text_verdicts.push(v);
+            let phase = self.cell.phase_of(self.since(sent, self.t0));
+            let e = text_phase
+                .entry(phase)
+                .or_insert((Duration::ZERO, Verdict::Pass));
+            e.0 = e.0.max(delay.unwrap_or(RUN_CAP));
+            if v == Verdict::Fail {
+                e.1 = Verdict::Fail;
+            }
             // Alındı: Bob'da metnin teslim anı → Alice'te `Delivered`.
             let r_item = Item::Receipt(msg_id);
             let r_lost = Self::lost_first(&self.bob, &rev_drops, r_item);
@@ -992,14 +1188,14 @@ impl Run {
             };
             let rv = match ret {
                 None => Verdict::Fail,
-                Some(d) if d <= RECEIPT_RETURN_BOUND => Verdict::Pass,
+                Some(d) if d <= self.cell.receipt_bound => Verdict::Pass,
                 Some(_) if r_lost => Verdict::LossRecovery,
                 Some(_) => Verdict::Fail,
             };
             println!(
                 "ÖLÇÜT {tag} alındı{n}: dönüş={} s (sınır {} s) gidiş_dönüş={} s Bob_ilk_çıkış=+{} s Alice_ilk_varış=+{} s iletim={} ilk_iletim_düştü={r_lost} → {}",
                 opt_secs(ret),
-                secs(RECEIPT_RETURN_BOUND),
+                secs(self.cell.receipt_bound),
                 opt_secs(rtt),
                 opt_secs(r_first_tx),
                 opt_secs(r_arrival),
@@ -1019,6 +1215,18 @@ impl Run {
         if text_verdicts.contains(&Verdict::Fail) {
             failed.push("METİN".to_string());
         }
+        for (ph, (worst, v)) in &text_phase {
+            let name = self.cell.phases[*ph].0;
+            println!(
+                "ÖLÇÜT {tag} evre={name} metin_en_kötü={} s (sınır {} s) → {}",
+                secs(*worst),
+                secs(TEXT_BOUND),
+                v.label()
+            );
+            if *v == Verdict::Fail {
+                failed.push(format!("METİN/{name}"));
+            }
+        }
         if receipt_verdicts.contains(&Verdict::Fail) {
             failed.push("ALINDI".to_string());
         }
@@ -1029,19 +1237,51 @@ impl Run {
         if ptt_verdict == Verdict::Fail {
             failed.push("PTT".to_string());
         }
+        // [KAPI] Evre başına en kötü PTT gecikmesi (planlanan an → Bob'da teslim; teslim edilmeyen
+        // demet koşu tavanı sayılır). Evre, demetin planlandığı andır.
+        let mut ptt_phase: BTreeMap<usize, (Duration, u32, u32)> = BTreeMap::new();
+        for b in self.bundles.values() {
+            let ph = self.cell.phase_of(self.since(b.planned, self.t0));
+            let e = ptt_phase.entry(ph).or_insert((Duration::ZERO, 0, 0));
+            e.2 += 1;
+            match b.received {
+                Some(r) => e.0 = e.0.max(self.since(r, b.planned)),
+                None => {
+                    e.0 = RUN_CAP;
+                    e.1 += 1;
+                }
+            }
+        }
+        for (i, (name, _)) in self.cell.phases.iter().enumerate() {
+            let (worst, missing, n) = ptt_phase.get(&i).copied().unwrap_or((Duration::ZERO, 0, 0));
+            let v = if n > 0 && missing == 0 && worst <= PTT_BOUND {
+                Verdict::Pass
+            } else {
+                Verdict::Fail
+            };
+            println!(
+                "ÖLÇÜT {tag} evre={name} ptt_en_kötü={} s (sınır {} s) demet={n} teslim_yok={missing} → {}",
+                secs(worst),
+                secs(PTT_BOUND),
+                v.label()
+            );
+            if v == Verdict::Fail {
+                failed.push(format!("PTT/{name}"));
+            }
+        }
         line.push(ptt_line);
 
         // (3) Dosya.
         let file_t = self.file_received.map(|r| self.since(r, self.t0));
         let file_d = self.file_delivered.map(|r| self.since(r, self.t0));
         let fv = match file_t {
-            Some(d) if d <= FILE_BOUND && self.file_ok => Verdict::Pass,
+            Some(d) if d <= self.cell.file_bound && self.file_ok => Verdict::Pass,
             _ => Verdict::Fail,
         };
         println!(
             "ÖLÇÜT {tag} dosya: tamamlanma={} s (sınır {} s) bayt_doğru={} parça={} Alice_teslim_bildirimi={} s dosya_bekletme_turu={} → {}",
             opt_secs(file_t),
-            secs(FILE_BOUND),
+            secs(self.cell.file_bound),
             self.file_ok,
             self.chunk_count,
             opt_secs(file_d),
@@ -1052,6 +1292,27 @@ impl Run {
             failed.push("DOSYA".to_string());
         }
         line.push(format!("dosya={}({})", opt_secs(file_t), fv.label()));
+        if let Some((sent, rx, ok)) = self.file2 {
+            let d = rx.map(|r| self.since(r, sent));
+            let v = match d {
+                Some(d) if d <= FILE_BOUND && ok => Verdict::Pass,
+                _ => Verdict::Fail,
+            };
+            println!(
+                "ÖLÇÜT {tag} dosya2: gönderim=+{} s süre={} s (sınır {} s, gerçek hat 12 500) bayt_doğru={ok} → {}",
+                secs(self.since(sent, self.t0)),
+                opt_secs(d),
+                secs(FILE_BOUND),
+                v.label()
+            );
+            if v == Verdict::Fail {
+                failed.push("DOSYA2".to_string());
+            }
+            line.push(format!("dosya2={}({})", opt_secs(d), v.label()));
+        } else if self.cell.file2_at.is_some() {
+            println!("ÖLÇÜT {tag} dosya2: gönderilmedi → KALDI");
+            failed.push("DOSYA2".to_string());
+        }
 
         // (4) Baytlar.
         let bytes = format!(
@@ -1069,6 +1330,7 @@ impl Run {
             self.alice.unparsed, self.bob.unparsed, self.alice.overflow, self.bob.overflow
         );
         self.trace_report(&tag);
+        self.cause_report(&tag);
         println!(
             "ÜRÜN-SONUÇ {tag} {} {bytes} düşen_ölçüt={failed:?}",
             line.join(" ")
@@ -1154,6 +1416,129 @@ impl Run {
                     t(r.offered),
                     r.wire,
                     ot(r.arrives)
+                );
+            }
+        }
+    }
+
+    /// [İZ-NEDEN] Alice'in her yeniden gönderiminin (ARQ, PTO probu, kopya) tetikleyicisi ve
+    /// gerekliliği. "Gereksiz" = birim o an Bob'a DATA olarak zaten varmıştı (FEC ile kurtarılan
+    /// birim DATA varışı sayılmaz; RECOVERED çerçeve sayısı ayrı yazılır). ARQ ve probun hedef
+    /// iletimi Bob'a varmışsa alt sınıf: hedefin PN'ini kapsayan ACK Alice'e gelmiş mi (teyit-geldi),
+    /// varıştan sonra gelen ACK'ler hedefi kapsamadan daha büyük PN'leri teyit etmiş mi
+    /// (aralık-kırpması: alıcı en çok 16 alt blok yazar), hiç ACK gelmemiş mi (ack-yok).
+    fn cause_report(&self, tag: &str) {
+        let t = |i: Instant| secs(self.since(i, self.t0));
+        let seal_by_seq: HashMap<u16, (Instant, u64, u64)> = self
+            .alice
+            .seals
+            .iter()
+            .map(|&(at, pn, s, u)| (s, (at, pn, u)))
+            .collect();
+        let mut loss_cause: HashMap<u64, EmitCause> = HashMap::new();
+        for (_, e) in &self.emit {
+            if matches!(
+                e.cause,
+                EmitCause::LossPacketThreshold | EmitCause::LossTimeThreshold
+            ) {
+                loss_cause.entry(e.seq).or_insert(e.cause);
+            }
+        }
+        // (tetik, gerekli/gereksiz, alt sınıf) → sayı
+        let mut counts: BTreeMap<(String, &'static str, &'static str), u32> = BTreeMap::new();
+        let mut before15: BTreeMap<(String, &'static str), u32> = BTreeMap::new();
+        let mut unsealed = 0u32;
+        for &(_, e) in &self.emit {
+            let mech = match e.cause {
+                EmitCause::Retransmit => match loss_cause.get(&e.ref_seq) {
+                    Some(EmitCause::LossPacketThreshold) => "ARQ/paket-eşiği".to_string(),
+                    Some(EmitCause::LossTimeThreshold) => "ARQ/zaman-eşiği".to_string(),
+                    _ => "ARQ/ilan-izsiz".to_string(),
+                },
+                EmitCause::PtoProbe => "PTO-probu".to_string(),
+                EmitCause::Copy => "kopya/vadeli".to_string(),
+                EmitCause::CopyPriority => "kopya/PTT-öncelik".to_string(),
+                EmitCause::CopyEstablish => "kopya/kuruluş".to_string(),
+                _ => continue,
+            };
+            let Some(&(at, _, _)) = seal_by_seq.get(&((e.seq & 0xFFFF) as u16)) else {
+                unsealed += 1;
+                continue;
+            };
+            let had = self.bob.rx_unit.get(&e.unit_id).is_some_and(|&r| r <= at);
+            let need = if had { "gereksiz" } else { "gerekli" };
+            let sub: &'static str =
+                if matches!(e.cause, EmitCause::Retransmit | EmitCause::PtoProbe) {
+                    let tgt16 = (e.ref_seq & 0xFFFF) as u16;
+                    match (
+                        self.bob.rx_seq.get(&tgt16),
+                        seal_by_seq.get(&tgt16).map(|x| x.1),
+                    ) {
+                        (None, _) => "hedef-iletim-düştü",
+                        (Some(_), None) => "hedef-mühürsüz",
+                        (Some(&r0), Some(pn0)) => {
+                            let window = self
+                                .alice
+                                .acks_rx
+                                .iter()
+                                .filter(|(a, _)| *a >= r0 && *a <= at);
+                            let mut any = false;
+                            let mut covered = false;
+                            let mut above = false;
+                            for (_, pns) in window {
+                                any = true;
+                                covered |= pns.contains(&pn0);
+                                above |= pns.iter().any(|&p| p > pn0);
+                            }
+                            match (any, covered, above) {
+                                (_, true, _) => "teyit-geldi",
+                                (true, false, true) => "aralık-kırpması",
+                                (true, false, false) => "ack-hedefin-altında",
+                                (false, _, _) => "ack-yok",
+                            }
+                        }
+                    }
+                } else {
+                    "-"
+                };
+            *counts.entry((mech.clone(), need, sub)).or_insert(0) += 1;
+            if self.since(at, self.t0) < Duration::from_secs(15) {
+                *before15.entry((mech, need)).or_insert(0) += 1;
+            }
+        }
+        for ((mech, need, sub), n) in &counts {
+            println!("İZ-NEDEN {tag} {mech} {need} {sub} = {n}");
+        }
+        for ((mech, need), n) in &before15 {
+            println!("İZ-NEDEN {tag} ilk15s {mech} {need} = {n}");
+        }
+        // ACK çerçevelerinin Alice'e varış aralıkları (en büyük üç) ve kırpılmış çerçeveler.
+        let mut gaps: Vec<(Duration, Instant)> = self
+            .alice
+            .acks_rx
+            .windows(2)
+            .map(|w| (w[1].0 - w[0].0, w[0].0))
+            .collect();
+        gaps.sort_by(|a, b| b.0.cmp(&a.0));
+        let first_ack = self.alice.acks_rx.first().map(|a| self.since(a.0, self.t0));
+        println!(
+            "İZ-NEDEN {tag} ack_çerçevesi={} ilk=+{} en_büyük_aralıklar={:?} mühürsüz_emisyon={unsealed} RECOVERED(Bob→Alice)={}",
+            self.alice.acks_rx.len(),
+            opt_secs(first_ack),
+            gaps.iter()
+                .take(4)
+                .map(|(d, a)| format!("{}@{}", secs(*d), t(*a)))
+                .collect::<Vec<_>>(),
+            self.alice.recovered_rx,
+        );
+        for &(at, e) in &self.emit {
+            if e.cause == EmitCause::AckFrame {
+                println!(
+                    "İZ-ACK {tag} an={} yeni_teyit={} en_büyük_seq={} hat_koruması={}",
+                    t(at),
+                    e.unit_id,
+                    e.seq,
+                    e.ref_seq
                 );
             }
         }
@@ -1313,25 +1698,156 @@ fn env_u64(k: &str, d: u64) -> u64 {
         .unwrap_or(d)
 }
 
-#[test]
-fn text_receipt_ptt_and_file_all_progress_on_the_asymmetric_line() {
+/// [KAPI] Bir ölçüm hücresi: gerçek ve beyan edilen hızlar, çizelgeler, sınırlar ve evreler.
+/// Beyan edilen hızlar her hücrede aynıdır (Alice yukarı [`FWD_BPS`] / aşağı [`REV_BPS`], Bob ters
+/// çevrilmiş); hücre yalnız gerçek hattı değiştirir.
+#[derive(Debug, Clone)]
+struct Cell {
+    name: &'static str,
+    /// Gerçek ileri hız çizelgesi (t0'dan, B/s); ilk kayıt 0 s.
+    fwd_plan: Vec<(Duration, u64)>,
+    /// Gerçek dönüş tek yön gecikme çizelgesi; boşsa [`ONE_WAY`] sabit.
+    rev_delay_plan: Vec<(Duration, Duration)>,
+    file_bound: Duration,
+    receipt_bound: Duration,
+    /// Metin 1 ve metin 2'ye ek, sabit anda gönderilen metinler.
+    texts_at: Vec<Duration>,
+    /// İkinci dosyanın gönderim anı (sınır [`FILE_BOUND`], gerçek hat 12 500 B/s iken).
+    file2_at: Option<Duration>,
+    /// Evreler: (ad, başlangıç); ölçütler evre başına ayrıca raporlanır ve iddia edilir.
+    phases: Vec<(&'static str, Duration)>,
+}
+
+impl Cell {
+    fn phase_of(&self, at: Duration) -> usize {
+        self.phases
+            .iter()
+            .rposition(|(_, from)| *from <= at)
+            .unwrap_or(0)
+    }
+
+    fn fixed(name: &'static str, real: u64) -> Self {
+        // Dosya sınırı gerçek hızla ölçeklenir: 14 s × 12 500 / gerçek.
+        let file_bound = Duration::from_nanos(FILE_BOUND.as_nanos() as u64 * FWD_BPS / real.max(1));
+        Self {
+            name,
+            fwd_plan: vec![(Duration::ZERO, real)],
+            rev_delay_plan: Vec::new(),
+            file_bound,
+            receipt_bound: RECEIPT_RETURN_BOUND,
+            texts_at: vec![LATE_TEXT_AT],
+            file2_at: None,
+            phases: vec![("başlangıç", Duration::ZERO), ("sürekli", START_PHASE)],
+        }
+    }
+
+    fn rate_drop_recovery() -> Self {
+        Self {
+            name: "düşüş-toparlanma",
+            fwd_plan: vec![
+                (Duration::ZERO, FWD_BPS),
+                (DROP_AT, FWD_BPS / 2),
+                (RECOVER_AT, FWD_BPS),
+            ],
+            rev_delay_plan: Vec::new(),
+            file_bound: DROP_FILE_BOUND,
+            receipt_bound: RECEIPT_RETURN_BOUND,
+            texts_at: vec![Duration::from_secs(12), Duration::from_secs(26)],
+            file2_at: Some(FILE2_AT),
+            phases: vec![
+                ("başlangıç", Duration::ZERO),
+                ("daralma", DROP_AT),
+                ("toparlanma", RECOVER_AT),
+            ],
+        }
+    }
+
+    fn return_delay_varies() -> Self {
+        let ms = Duration::from_millis;
+        Self {
+            name: "dönüş-gecikmesi-değişken",
+            fwd_plan: vec![(Duration::ZERO, FWD_BPS)],
+            rev_delay_plan: vec![
+                (Duration::ZERO, ms(300)),
+                (Duration::from_secs(3), ms(400)),
+                (Duration::from_secs(6), ms(500)),
+                (Duration::from_secs(9), ms(700)),
+                (Duration::from_secs(12), ms(500)),
+                (Duration::from_secs(15), ms(300)),
+                (Duration::from_secs(18), ms(700)),
+                (Duration::from_secs(21), ms(300)),
+            ],
+            file_bound: FILE_BOUND,
+            receipt_bound: RECEIPT_RETURN_BOUND + REV_DELAY_EXTRA_MAX,
+            texts_at: vec![LATE_TEXT_AT],
+            file2_at: None,
+            phases: vec![("başlangıç", Duration::ZERO), ("sürekli", START_PHASE)],
+        }
+    }
+}
+
+/// Başlangıç evresinin sonu: ilk bilgi taşıyan ACK'in ölçülen en geç varışı (7,9 s) + pay.
+const START_PHASE: Duration = Duration::from_secs(8);
+/// Sürekli evrede gönderilen metin.
+const LATE_TEXT_AT: Duration = Duration::from_secs(10);
+const DROP_AT: Duration = Duration::from_secs(8);
+const RECOVER_AT: Duration = Duration::from_secs(20);
+const FILE2_AT: Duration = Duration::from_secs(24);
+/// Düşüş hücresinde dosya 1: gerçek hattın t0'dan taşıdığı bayt 14 s × 12 500 B/s'ye ulaştığı an
+/// (8 s × 12 500 + 12 s × 6 250 = 175 000 B) → 20 s.
+const DROP_FILE_BOUND: Duration = Duration::from_secs(20);
+/// Değişken dönüş gecikmesinin 300 ms üstündeki en büyük fazlası (alındı yolu buna maruz).
+const REV_DELAY_EXTRA_MAX: Duration = Duration::from_millis(400);
+
+/// Aynı süreçteki hücreler sırayla koşar (zamanlama ölçümü; paralel koşu iki çekirdeği paylaşır).
+static SERIAL: Mutex<()> = Mutex::new(());
+
+fn run_cell(cell: Cell, assert_pass: bool) {
+    let _serial = lock(&SERIAL);
     let seed = env_u64("KAMA_ASYM_SEED", 1);
     let profile = std::env::var("KAMA_ASYM_PROFILE").map_or(true, |v| v != "off");
-    let real_fwd = env_u64("KAMA_ASYM_REAL_FWD_BPS", FWD_BPS);
-    let r = run(seed, profile, real_fwd);
+    let name = cell.name;
+    let r = run(seed, profile, cell);
     let failed = r.report();
-    if real_fwd != FWD_BPS {
-        // Yanlış profil teşhis kolu: profil ileri hattı FWD_BPS bildirir, gerçek hat daha yavaş
-        // (ya da hızlı). Soru "ürün çöküyor mu"; kabul sınırları bu hat için yazılmadı.
-        println!(
-            "TEŞHİS-KOLU yanlış profil: profil ileri {FWD_BPS} B/s, gerçek ileri {real_fwd} B/s \
-             (tohum {seed}) — düşen ölçütler: {failed:?}"
-        );
+    if !assert_pass {
+        println!("TEŞHİS-KOLU hücre={name} (tohum {seed}) — düşen ölçütler: {failed:?}");
         return;
     }
     assert!(
         failed.is_empty(),
-        "asimetrik hatta düşen ürün ölçütleri (tohum {seed}, profil {}): {failed:?}",
+        "asimetrik hatta düşen ürün ölçütleri (hücre {name}, tohum {seed}, profil {}): {failed:?}",
         if profile { "açık" } else { "kapalı" }
     );
+}
+
+#[test]
+fn text_receipt_ptt_and_file_all_progress_on_the_asymmetric_line() {
+    let real_fwd = env_u64("KAMA_ASYM_REAL_FWD_BPS", FWD_BPS);
+    if real_fwd != FWD_BPS {
+        // Yanlış profil teşhis kolu (#216): profil ileri hattı FWD_BPS bildirir, gerçek hat
+        // farklıdır; ölçütler raporlanır, iddia edilmez (kalıcı kapılar aşağıdaki hücrelerdir).
+        run_cell(Cell::fixed("teşhis-gerçek-ileri", real_fwd), false);
+        return;
+    }
+    run_cell(Cell::fixed("dürüst-12500", FWD_BPS), true);
+}
+
+#[test]
+fn gate_real_10000_declared_12500() {
+    run_cell(Cell::fixed("gerçek-10000", 10_000), true);
+}
+
+#[test]
+fn gate_real_6250_declared_12500() {
+    run_cell(Cell::fixed("gerçek-6250", 6_250), true);
+}
+
+#[test]
+fn gate_rate_drop_then_recovery_in_one_session() {
+    run_cell(Cell::rate_drop_recovery(), true);
+}
+
+#[test]
+fn gate_forward_fixed_return_delay_varies() {
+    run_cell(Cell::return_delay_varies(), true);
 }

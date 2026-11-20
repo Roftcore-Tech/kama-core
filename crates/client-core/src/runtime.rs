@@ -81,6 +81,9 @@ const SERVER_RECV_BUF: usize = 65536;
 /// olurdu ve tablo sınırsız büyürdü (SR-AUDIT-001). Kayıp bir paritenin PN'i de burada budanır.
 const PN_SEQ_WINDOW: u64 = 1 << 16;
 
+/// [İZ-NEDEN] Gönderici izinin hedefi: (an, kayıt) çiftleri ([`RuntimeConfig::diag_emit_sink`]).
+pub type EmitTraceSink = Arc<Mutex<Vec<(Instant, adaptive_transport::sender::EmitDiag)>>>;
+
 /// Çalışma-zamanı konfigürasyonu. Tüm sınırlar açık; `Default` üretim-makul değerler.
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
@@ -213,6 +216,10 @@ pub struct RuntimeConfig {
     /// (salt gözlem: motor kararları bayraktan bağımsızdır). Açık kolun maliyeti ölçülmedi. Yalnız
     /// client ucu okur; server ucu bu alanı yok sayar.
     pub live_diag: bool,
+    /// [İZ-NEDEN] Gönderici emisyon / kayıp ilanı izinin hedefi (`Sender::set_diag_emit_log`).
+    /// `None` (ürün varsayılanı) = iz yok. Açıkken görev her turda motorun izini (an, kayıt) olarak
+    /// buraya aktarır; hiçbir karar okumaz (salt gözlem). Yalnız client ucu; ölçüm düzenekleri açar.
+    pub diag_emit_sink: Option<EmitTraceSink>,
     /// [ÖNLEMSEL-KOPYA · sahip kararı 2026-11-16] Şerit kimlikleri açık mı (şerit 0 = PTT).
     /// `true` iken ve yön hızı profili geri bildirimi aç bırakıyorsa ([`link_feedback_starved`]),
     /// PTT şeridinin her yeni birimi ACK beklemeden [`PTT_FORWARD_COPIES`] kez daha gönderilir.
@@ -341,6 +348,7 @@ impl KamaV1Profile {
             // [K4G-05 / DUR-19] Canlı teşhis aynası ürün yolunda KAPALI: yazıcı çalışmaz, ayna
             // kurulmaz. INT-02 düzeneği açar (`kama-node` `test-util` kurucuları).
             live_diag: false,
+            diag_emit_sink: None,
             // [ÖNLEMSEL-KOPYA] Şerit kimlikleri yalnız `ClientTransport` şeritleri açınca.
             lane_ids: false,
             // [E1 gösterim] Beş bayrak ürün yolunda KAPALI; yalnız gösterim düğümü/teşhis kolları açar.
@@ -2814,6 +2822,9 @@ async fn client_task(
         }
         session.sender_mut().set_cc_initial_window(iw);
     }
+    if cfg.diag_emit_sink.is_some() {
+        session.sender_mut().set_diag_emit_log(true);
+    }
     // [ÖNLEMSEL-KOPYA · sahip kararı 2026-11-16] Geri bildirimi aç profilde PTT şeridi (şerit 0,
     // kimlikleri şerit 1'in ilk kimliğinden küçük) ACK'siz kopyalanır: bu hatta ACK'e dayalı
     // kurtarma ≥ 2 s sürer ve sıralı PTT şeridinde kaybın ardındaki demetleri bekletir.
@@ -3460,6 +3471,16 @@ async fn client_task(
         // `ClientHandle::live_diag`). [DUR-19] YALNIZ canlı ayna açıkken
         // (`RuntimeConfig::live_diag`); kapalıyken bu blok hiç çalışmaz — saat, motor okuması,
         // durum karşılaştırması, kurtarma görüntüsü ve kilit YOK; tur, aynasız ana döngüdür.
+        if let Some(sink) = cfg.diag_emit_sink.as_ref() {
+            let log = session.sender_mut().take_diag_emit_log();
+            if !log.is_empty() {
+                let mut v = sink.lock().unwrap_or_else(PoisonError::into_inner);
+                v.extend(
+                    log.into_iter()
+                        .map(|e| (start + Duration::from_nanos(e.at_ns), e)),
+                );
+            }
+        }
         if let Some(live_mirror) = live.as_ref() {
             let mirror_now_ns = elapsed_ns(start);
             let activation = session.sender().diag_activation();
