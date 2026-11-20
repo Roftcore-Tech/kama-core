@@ -22,7 +22,7 @@
 //!
 //! Mobil FFI, cihaz dosyası, `KamaNode::start` imzası ve tel düzeni değişmez.
 
-use std::io;
+use std::io::{self, Read};
 use std::path::Path;
 
 use client_core::runtime::{link_feedback_starved, LinkRates, RuntimeConfig, PTT_FORWARD_COPIES};
@@ -34,6 +34,9 @@ pub(crate) const ENV_VAR: &str = "KAMA_LINK_RATES";
 pub(crate) const PROFILE_FILE: &str = "link-profile";
 /// Veri dizinindeki başlangıç kaydının adı.
 pub(crate) const START_RECORD_FILE: &str = "transport-start.txt";
+/// [SR-AUDIT-001] Profil değerinin (ortam ya da dosya) üst sınırı (B). Biçim `<u64>,<u64>` en çok
+/// 41 B'dir; boşluk ve satır sonu payıyla 64. Dosyadan en çok bu + 1 bayt okunur, fazlası hata.
+pub(crate) const MAX_PROFILE_BYTES: usize = 64;
 
 /// Profilin nereden geldiği.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,17 +85,48 @@ pub(crate) fn load(
     env: Option<&str>,
 ) -> Result<(Option<LinkRates>, Source), LoadError> {
     if let Some(value) = env {
+        // Uzunluk ayrıştırmadan ÖNCE.
+        if value.len() > MAX_PROFILE_BYTES {
+            return Err(LoadError::Invalid);
+        }
         return parse(value)
             .map(|rates| (Some(rates), Source::Env))
             .ok_or(LoadError::Invalid);
     }
-    match std::fs::read_to_string(data_dir.join(PROFILE_FILE)) {
-        Ok(text) => parse(&text)
-            .map(|rates| (Some(rates), Source::File))
-            .ok_or(LoadError::Invalid),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok((None, Source::None)),
-        Err(e) => Err(LoadError::Io(e)),
+    let file = match std::fs::File::open(data_dir.join(PROFILE_FILE)) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok((None, Source::None)),
+        Err(e) => return Err(LoadError::Io(e)),
+    };
+    // Sınır + 1 bayt: dosyanın tamamı okunmaz; fazlası varsa yapılandırma hatası.
+    let mut bytes = Vec::with_capacity(MAX_PROFILE_BYTES + 1);
+    file.take(MAX_PROFILE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(LoadError::Io)?;
+    if bytes.len() > MAX_PROFILE_BYTES {
+        return Err(LoadError::Invalid);
     }
+    let text = std::str::from_utf8(&bytes).map_err(|_| LoadError::Invalid)?;
+    parse(text)
+        .map(|rates| (Some(rates), Source::File))
+        .ok_or(LoadError::Invalid)
+}
+
+/// Yerel yukarı hat dar mı: karşı uç bu cihazın yukarı hattından gelen ACK'lerle geri bildirimi
+/// aç kalır. Aynı kural (`runtime::link_feedback_starved`) yön hızları ters çevrilmiş
+/// yapılandırmaya uygulanır; ayrı bir eşik yoktur.
+fn local_uplink_narrow(runtime: &RuntimeConfig) -> bool {
+    let Some(l) = runtime.link_rates else {
+        return false;
+    };
+    let mirrored = RuntimeConfig {
+        link_rates: Some(LinkRates {
+            uplink_bps: l.downlink_bps,
+            downlink_bps: l.uplink_bps,
+        }),
+        ..runtime.clone()
+    };
+    link_feedback_starved(&mirrored)
 }
 
 /// Başlangıç kaydının metni. `lanes` = şerit katmanı açık mı (`ClientTransportConfig::lanes`).
@@ -110,7 +144,8 @@ pub(crate) fn start_record(runtime: &RuntimeConfig, lanes: bool, source: Source)
     let protection = if link_feedback_starved(runtime) {
         if lanes {
             format!(
-                "geri-bildirim-aç (PTT {PTT_FORWARD_COPIES}× ileri kopya, PTT dışı şeritlerde ACK'siz FEC ön oranı, ACK saatsiz uçuş)"
+                "geri-bildirim-aç (PTT: 1 asıl gönderim + teyitsiz birim için en çok {} planlı ek kopya; PTT dışı şeritlerde ACK'siz FEC ön oranı; ACK saatsiz uçuş)",
+                PTT_FORWARD_COPIES.saturating_sub(1)
             )
         } else {
             "geri-bildirim-aç, şeritsiz (ACK'siz FEC ön oranı, ACK saatsiz uçuş; PTT kopyası YOK)"
@@ -119,8 +154,14 @@ pub(crate) fn start_record(runtime: &RuntimeConfig, lanes: bool, source: Source)
     } else {
         "standart".to_string()
     };
+    // Saha cihazı (yerel yukarı hat dar): karşı ucun korumasını YEREL kayıt hükme bağlamaz.
+    let uplink = if local_uplink_narrow(runtime) {
+        "yerel_yukarı_hat=dar — Yerel yukarı hat dar; karşı uç koruması karşı cihazın başlangıç kaydından doğrulanır.\n"
+    } else {
+        ""
+    };
     format!(
-        "motor={engine}\nşeritler={}\nyön_hızları={rates}\nkaynak={}\nkoruma={protection}\n",
+        "motor={engine}\nşeritler={}\nyön_hızları={rates}\nkaynak={}\nkoruma={protection}\n{uplink}",
         if lanes { "açık" } else { "kapalı" },
         source.label(),
     )
@@ -191,6 +232,13 @@ mod tests {
         let field = start_record(&runtime, true, Source::File);
         assert!(field.contains("kaynak=link-profile\n"), "{field}");
         assert!(field.contains("koruma=standart\n"), "{field}");
+        assert!(
+            field.contains(
+                "yerel_yukarı_hat=dar — Yerel yukarı hat dar; karşı uç koruması karşı cihazın başlangıç kaydından doğrulanır.\n"
+            ),
+            "{field}"
+        );
+        assert!(!plain.contains("yerel_yukarı_hat"), "profilsiz: {plain}");
         // Baz: kendi verisinin ACK'leri 62 B/s'lik yoldan gelir → geri bildirim aç.
         runtime.link_rates = Some(LinkRates {
             uplink_bps: 12_500,
@@ -198,8 +246,14 @@ mod tests {
         });
         let base = start_record(&runtime, true, Source::Env);
         assert!(
-            base.contains("koruma=geri-bildirim-aç (PTT 5× ileri kopya"),
+            base.contains(
+                "koruma=geri-bildirim-aç (PTT: 1 asıl gönderim + teyitsiz birim için en çok 4 planlı ek kopya"
+            ),
             "{base}"
+        );
+        assert!(
+            !base.contains("yerel_yukarı_hat"),
+            "baz: yerel yukarı hat geniş: {base}"
         );
         assert!(base.contains("kaynak=KAMA_LINK_RATES\n"), "{base}");
         let no_lanes = start_record(&runtime, false, Source::Env);
@@ -207,6 +261,34 @@ mod tests {
         runtime.engine = TransportEngine::Legacy;
         let legacy = start_record(&runtime, true, Source::Env);
         assert!(legacy.contains("motor=legacy\n") && legacy.contains("koruma=standart\n"));
+    }
+
+    /// [SR-AUDIT-001] Dosyadan en çok sınır + 1 bayt okunur; sınırı aşan dosya ve ortam değeri
+    /// ayrıştırılmadan hata verir. Sınırdaki değer kabul edilir.
+    #[test]
+    fn profile_input_is_bounded_before_parsing() {
+        let dir = TempDir::new("link-profile-bound");
+        let at_limit = format!("{:<width$}", "62,12500", width = MAX_PROFILE_BYTES);
+        assert_eq!(at_limit.len(), MAX_PROFILE_BYTES);
+        std::fs::write(dir.path().join(PROFILE_FILE), &at_limit).expect("sınırda dosya");
+        assert!(matches!(
+            load(dir.path(), None),
+            Ok((Some(_), Source::File))
+        ));
+        let over = format!("{at_limit} ");
+        std::fs::write(dir.path().join(PROFILE_FILE), &over).expect("sınırı aşan dosya");
+        assert!(matches!(load(dir.path(), None), Err(LoadError::Invalid)));
+        // Büyük dosya: okunan bayt sınır + 1 ile kısıtlı, sonuç yine hata.
+        std::fs::write(dir.path().join(PROFILE_FILE), vec![b' '; 1 << 20]).expect("büyük dosya");
+        assert!(matches!(load(dir.path(), None), Err(LoadError::Invalid)));
+        assert!(matches!(
+            load(dir.path(), Some(&over)),
+            Err(LoadError::Invalid)
+        ));
+        assert!(matches!(
+            load(dir.path(), Some(&at_limit)),
+            Ok((Some(_), Source::Env))
+        ));
     }
 
     /// Uçtan uca: gerçek kurulum gövdesi (`KamaNode::build`) profil dosyasını `RuntimeConfig`'e

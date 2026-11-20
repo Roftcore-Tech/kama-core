@@ -78,6 +78,7 @@ mod hub_mode;
 mod link_profile;
 mod node;
 mod peers;
+mod pilot_record;
 #[cfg(feature = "test-util")]
 mod probe;
 #[cfg(test)]
@@ -202,6 +203,16 @@ impl fmt::Debug for KamaNode {
     }
 }
 
+/// [İŞ-30] Çekirdeğin derleme kimliği (başlangıç kaydı ve pilot özeti): paket sürümü ve derlemede
+/// verilmişse `KAMA_GIT_SHA` (yoksa "bilinmiyor"; uydurulmaz).
+pub(crate) fn core_build_line() -> String {
+    format!(
+        "çekirdek_sürümü={}\nçekirdek_git={}\n",
+        env!("CARGO_PKG_VERSION"),
+        option_env!("KAMA_GIT_SHA").unwrap_or("bilinmiyor (derlemede KAMA_GIT_SHA verilmedi)"),
+    )
+}
+
 impl KamaNode {
     /// Düğümü kurar ve başlatır (bkz. crate belgesi, "Kurulum"). `config_path` cihazın
     /// `device-<ad>.json`'udur; `data_dir` yoksa oluşturulur (Unix'te `0700`).
@@ -317,10 +328,30 @@ impl KamaNode {
                 link_profile::LoadError::Io(io) => NodeError::DataDir(io),
             })?;
         transport_config.runtime.link_rates = link_rates;
-        let start_record = link_profile::start_record(
-            &transport_config.runtime,
-            transport_config.lanes.is_some(),
-            link_source,
+        // [İŞ-30] Pilot kaydı açıkça etkinleştirilir (`src/pilot_record.rs`); açıkken canlı teşhis
+        // aynası açılır (salt gözlem), kapalıyken hiçbir şey yazılmaz.
+        let pilot_env = std::env::var(pilot_record::ENV_VAR).ok();
+        let pilot = pilot_record::enabled(data_dir, pilot_env.as_deref()).map_err(|_| {
+            NodeError::Config(kama_provision::format::FormatError::Invalid(
+                "KAMA_PILOT_RECORD: '1' (açık) ya da '0' (kapalı) olmalı",
+            ))
+        })?;
+        if pilot {
+            transport_config.runtime.live_diag = true;
+        }
+        let start_record = format!(
+            "{}{}pilot_kaydı={}\n",
+            core_build_line(),
+            link_profile::start_record(
+                &transport_config.runtime,
+                transport_config.lanes.is_some(),
+                link_source,
+            ),
+            if pilot {
+                "açık (canlı teşhis aynası açık; özet pilot-summary.txt)"
+            } else {
+                "kapalı"
+            },
         );
         transport_config.peer_addrs = match &hub {
             // Hub kipinde her eşin veri adresi yerel rölenin adresidir (KK-H51).
@@ -353,7 +384,12 @@ impl KamaNode {
             signaling: Signaling::new(app_clock),
         };
         let shared = Arc::new(Shared::new(node::idle_metrics(&peers)));
-        let node = NodeLoop::new(
+        let recorder = if pilot {
+            Some(pilot_record::PilotRecorder::start(data_dir).map_err(NodeError::DataDir)?)
+        } else {
+            None
+        };
+        let mut node = NodeLoop::new(
             engines,
             Arc::clone(&peers),
             listener,
@@ -361,6 +397,7 @@ impl KamaNode {
             received,
             hub,
         );
+        node.set_pilot(recorder);
         Ok(Built {
             node,
             shared,
