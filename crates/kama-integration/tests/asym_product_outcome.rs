@@ -131,6 +131,18 @@
 //! * Metinler: metin 1 (0,3 s), metin 2 (dosya yarısı), sabit hızlı hücrelerde ayrıca 10 s; düşüş
 //!   hücresinde ayrıca 12 s (daralma) ve 26 s (toparlanma). PTT, dosya(lar) Bob'a varana dek sürer.
 //!
+//! # Fikstür düzeltmesi (2026-11-21, sahip koşullu kabulü; sınırlar aynı)
+//!
+//! İlk turda PTT üretimi dosyanın bitmesine bağlıydı (`files_done`): düşüş hücresinde PTT dosya 2
+//! Bob'a varınca kapanıyor, toparlanma evresinin kapsamı dosya 2'nin süresine kalıyordu. Artık
+//! düşüş hücresinde PTT dosyadan bağımsız 0,5–40 s konuşur (üç evrenin üçünde) ve metinler
+//! 0,3 s (başlangıç), 12 s (daralma), 26 s ve 34 s (toparlanma) gönderilir. Sabit hızlı ve dönüş
+//! gecikmesi hücrelerinde PTT eski kuralla dosya bitene dek sürer (sürekli evrede PTT niyeti yok).
+//! Evre sınıflandırması: evrede planlanmış demet/metin yoksa niyetli evrede "fikstür geçersiz"
+//! (kanıt yok; düşmüş sayılır), niyetsiz evrede "gözlem yok"; planlanmış ama uygulamaca kabul
+//! edilmemiş (geri basınç), teslim edilmemiş ya da sınırı aşmış demet KALDI. Bu değişiklik eski
+//! KALDI sonuçlarını geriye dönük değiştirmez.
+//!
 //! Hücreler aynı süreçte sırayla koşar (zamanlama ölçümü). `KAMA_ASYM_SEED` hepsine uygulanır.
 //! `İZ-NEDEN` satırları her yeniden gönderimin tetikleyicisini (ARQ paket/zaman eşiği, PTO probu,
 //! kopya türü) ve gerekliliğini yazar; "gereksiz" = birim o an Bob'a DATA olarak varmıştı. FEC ile
@@ -289,6 +301,8 @@ struct Ledger {
     recovered_rx: u64,
     /// [İZ-NEDEN] Bu ucun mühürlediği her DATA datagramı: (an, PN, motor iletim sırası u16, birim).
     seals: Vec<(Instant, u64, u16, u64)>,
+    /// [CANLILIK-TEŞHİS] Birim kimliği → taşıdığı AMP kaydı (mühürleyen uç).
+    unit_item: HashMap<u64, Item>,
     /// [İZ-NEDEN] Bu uca açılan DATA datagramları: motor iletim sırası (u16) → ilk varış; birim →
     /// ilk varış (DATA ile; FEC ile kurtarılan birim burada YOKTUR, ayrı sayılır).
     rx_seq: HashMap<u16, Instant>,
@@ -331,7 +345,13 @@ impl PacketProtection for Tap {
         let sealed = self.inner.seal(ctx, frame)?;
         note_kind(&mut lock(&self.ledger), frame, true);
         if let Some((wseq, unit, _)) = decode_data(frame) {
+            let item = self.classify(frame).and_then(Result::ok);
             let mut l = lock(&self.ledger);
+            if let Some(item) = item {
+                if l.unit_item.len() < LEDGER_CAP {
+                    l.unit_item.insert(unit, item);
+                }
+            }
             if l.seals.len() < LEDGER_CAP {
                 l.seals
                     .push((Instant::now(), sealed.meta.full_wire_pn, wseq, unit));
@@ -763,6 +783,10 @@ struct Run {
     file2: Option<(Instant, Option<Instant>, bool)>,
     /// [KAPI] Uygulamanın bildirdiği dosya hataları (gönderim / alım).
     file_failures: Vec<String>,
+    /// [FİKSTÜR] Planlanmış ama uygulamaca kabul edilmemiş demetlerin planlanan anları.
+    unaccepted: Vec<Instant>,
+    /// [CANLILIK-TEŞHİS] Şerit açıklık sınırına takılan pompa turları (şerit sırasıyla).
+    lane_span_blocked: [u64; 4],
     chunk_count: u64,
     /// Bob'un uygulama zincirinde görülen her `FILE_CHUNK` kaydının anı.
     chunk_rx: Vec<Instant>,
@@ -861,6 +885,7 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
         .collect();
     let mut ptt_open: Option<(StreamId, Instant)> = None;
     let mut ptt_closed = false;
+    let mut ptt_closed_at: Option<Instant> = None;
     let mut ptt_started: Option<Instant> = None;
     let mut bundles: BTreeMap<u32, Bundle> = BTreeMap::new();
     let mut next_bundle: u32 = 0;
@@ -910,8 +935,12 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
                 .expect("PTT açılır");
             ptt_open = Some((stream, now));
         }
+        let ptt_running = match cell.ptt_until {
+            Some(until) => el < until,
+            None => !files_done,
+        };
         if let (Some((stream, opened)), false) = (ptt_open, ptt_closed) {
-            if !files_done {
+            if ptt_running {
                 // Konuşan sabit hızda konuşur: demet k, açılıştan k × 200 ms sonra hazırdır.
                 loop {
                     let planned =
@@ -941,6 +970,7 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
             } else {
                 alice.ptt.close(&mut alice.m, stream).expect("PTT kapanır");
                 ptt_closed = true;
+                ptt_closed_at = Some(Instant::now());
             }
         }
 
@@ -1011,6 +1041,27 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
         std::thread::sleep(Duration::from_micros(500));
     }
 
+    // [FİKSTÜR] Planlanmış ama uygulamaca kabul edilmemiş demetler (geri basınç; kapanışa ya da
+    // koşu sonuna dek): planlandıkları evrede KALDI sayılır.
+    let mut unaccepted: Vec<Instant> = Vec::new();
+    if let Some((_, opened)) = ptt_open {
+        let end = ptt_closed_at.unwrap_or_else(Instant::now);
+        let period = Duration::from_millis(u64::from(PTT_BUNDLE_MS));
+        let mut k = next_bundle;
+        loop {
+            let planned = opened + period * k;
+            if planned > end {
+                break;
+            }
+            unaccepted.push(planned);
+            k += 1;
+        }
+    }
+    let lane_span_blocked = alice
+        .m
+        .transport()
+        .lane_stats()
+        .map_or([0; 4], |s| s.span_blocked);
     let file_backlog_held = alice
         .m
         .transport()
@@ -1044,6 +1095,8 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
         file_ok,
         file2,
         file_failures,
+        unaccepted,
+        lane_span_blocked,
         chunk_count,
         chunk_rx,
         alice: alice_ledger,
@@ -1221,16 +1274,32 @@ impl Run {
         if text_verdicts.contains(&Verdict::Fail) {
             failed.push("METİN".to_string());
         }
-        for (ph, (worst, v)) in &text_phase {
-            let name = self.cell.phases[*ph].0;
-            println!(
-                "ÖLÇÜT {tag} evre={name} metin_en_kötü={} s (sınır {} s) → {}",
-                secs(*worst),
-                secs(TEXT_BOUND),
-                v.label()
-            );
-            if *v == Verdict::Fail {
-                failed.push(format!("METİN/{name}"));
+        // [FİKSTÜR · 2026-11-21] Evre sınıflandırması: planlanmış metin yoksa niyetli evrede
+        // "fikstür geçersiz" (kanıt yok, düşmüş sayılır), niyetsiz evrede "gözlem yok".
+        for (ph, (name, _)) in self.cell.phases.iter().enumerate() {
+            let intended = self.cell.phase_intent.get(ph).is_some_and(|i| i.1);
+            let (label, fail) = match text_phase.get(&ph) {
+                Some((worst, v)) => {
+                    println!(
+                        "ÖLÇÜT {tag} evre={name} metin_en_kötü={} s (sınır {} s) → {}",
+                        secs(*worst),
+                        secs(TEXT_BOUND),
+                        v.label()
+                    );
+                    (None, *v == Verdict::Fail)
+                }
+                None if intended => (Some("fikstür geçersiz"), true),
+                None => (Some("gözlem yok"), false),
+            };
+            if let Some(l) = label {
+                println!("ÖLÇÜT {tag} evre={name} metin: planlanmış metin yok → {l}");
+            }
+            if fail {
+                failed.push(if label.is_some() {
+                    format!("FİKSTÜR/metin/{name}")
+                } else {
+                    format!("METİN/{name}")
+                });
             }
         }
         if receipt_verdicts.contains(&Verdict::Fail) {
@@ -1258,24 +1327,42 @@ impl Run {
                 }
             }
         }
+        let mut unaccepted_phase: BTreeMap<usize, u32> = BTreeMap::new();
+        for &p in &self.unaccepted {
+            *unaccepted_phase
+                .entry(self.cell.phase_of(self.since(p, self.t0)))
+                .or_insert(0) += 1;
+        }
         for (i, (name, _)) in self.cell.phases.iter().enumerate() {
             let (worst, missing, n) = ptt_phase.get(&i).copied().unwrap_or((Duration::ZERO, 0, 0));
-            // Evrede planlanmış demet yoksa (dosya evre başlamadan bitti, PTT kapandı) evrenin PTT
-            // gözlemi yoktur: ölçüt "gözlem yok" yazılır, düşmüş sayılmaz. [2026-11-20 düzeltmesi:
-            // ilk ölçüm turunda boş evre KALDI sayılıyordu — tanım hatası; sınır (1 s) aynı.]
-            let v = if n == 0 || (missing == 0 && worst <= PTT_BOUND) {
-                Verdict::Pass
+            let unacc = unaccepted_phase.get(&i).copied().unwrap_or(0);
+            let intended = self.cell.phase_intent.get(i).is_some_and(|x| x.0);
+            // [FİKSTÜR · 2026-11-21, sahip koşullu kabulü] Evrede planlanmış demet yoksa: PTT
+            // niyetli evrede "fikstür geçersiz" (kanıt yok, düşmüş sayılır), niyetsiz evrede "gözlem
+            // yok". Planlanmış ama kabul edilmemiş / teslim edilmemiş / sınırı aşmış demet KALDI.
+            // [2026-11-20 tanımı: boş evre "gözlem yok"; bu tur niyetli evre için daraltıldı.]
+            let (label, fail) = if n + unacc == 0 {
+                if intended {
+                    ("fikstür geçersiz", true)
+                } else {
+                    ("gözlem yok", false)
+                }
+            } else if unacc == 0 && missing == 0 && worst <= PTT_BOUND {
+                ("GEÇTİ", false)
             } else {
-                Verdict::Fail
+                ("KALDI", true)
             };
             println!(
-                "ÖLÇÜT {tag} evre={name} ptt_en_kötü={} s (sınır {} s) demet={n} teslim_yok={missing} → {}",
+                "ÖLÇÜT {tag} evre={name} ptt_en_kötü={} s (sınır {} s) demet={n} teslim_yok={missing} kabul_edilmeyen={unacc} → {label}",
                 secs(worst),
                 secs(PTT_BOUND),
-                v.label()
             );
-            if v == Verdict::Fail {
-                failed.push(format!("PTT/{name}"));
+            if fail {
+                failed.push(if n + unacc == 0 {
+                    format!("FİKSTÜR/ptt/{name}")
+                } else {
+                    format!("PTT/{name}")
+                });
             }
         }
         line.push(ptt_line);
@@ -1541,6 +1628,57 @@ impl Run {
                 .collect::<Vec<_>>(),
             self.alice.recovered_rx,
         );
+        // [CANLILIK-TEŞHİS] Geç (> 2 s) ya da hiç teslim edilmeyen ilk beş demetin motor izi:
+        // her iletim (neden), iletimlerin kayıp ilanları, birimin teyidi; şerit açıklık sınırı.
+        println!(
+            "İZ-CANLILIK {tag} şerit_açıklık_sınırı(PTT,SIG,TEXT,FILE)={:?} kabul_edilmeyen_demet={}",
+            self.lane_span_blocked,
+            self.unaccepted.len()
+        );
+        let mut shown = 0;
+        for (&k, b) in &self.bundles {
+            let late = b
+                .received
+                .is_none_or(|r| self.since(r, b.planned) > Duration::from_secs(2));
+            if !late || shown >= 5 {
+                continue;
+            }
+            shown += 1;
+            let units: HashSet<u64> = self
+                .alice
+                .unit_item
+                .iter()
+                .filter(|(_, i)| **i == Item::Bundle(k))
+                .map(|(u, _)| *u)
+                .collect();
+            let seqs: HashSet<u64> = self
+                .emit
+                .iter()
+                .filter(|(_, e)| units.contains(&e.unit_id) && e.cause != EmitCause::Confirmed)
+                .map(|(_, e)| e.seq)
+                .collect();
+            let mut evs: Vec<String> = Vec::new();
+            for &(at, e) in &self.emit {
+                let mine = match e.cause {
+                    EmitCause::LossPacketThreshold | EmitCause::LossTimeThreshold => {
+                        seqs.contains(&e.seq)
+                    }
+                    EmitCause::AckFrame => false,
+                    _ => units.contains(&e.unit_id),
+                };
+                if mine && evs.len() < 40 {
+                    evs.push(format!("{}:{:?}#{}", t(at), e.cause, e.seq));
+                }
+            }
+            println!(
+                "İZ-CANLILIK {tag} demet={k} plan=+{} teslim={} birim={:?} olaylar=[{}]",
+                secs(self.since(b.planned, self.t0)),
+                b.received
+                    .map_or("YOK".to_string(), |r| format!("+{}", t(r))),
+                units,
+                evs.join(" ")
+            );
+        }
         for &(at, e) in &self.emit {
             if e.cause == EmitCause::AckFrame {
                 println!(
@@ -1667,7 +1805,12 @@ impl Run {
         // [ÜRÜN KABULÜ · 2026-11-16] Profil açıkken (ürün kolu) kendi ilk iletimi düşen demet de
         // sınır içinde olmalı — kullanıcı sesi geç duyar; ürün kabulünde "kayıp-kurtarma" başarı
         // sayılmaz. İstisna yalnız profil kapalı teşhis kolunda ayrı raporlanır.
-        let verdict = if missing > 0 || over > 0 || n == 0 || (self.profile && excused > 0) {
+        let verdict = if missing > 0
+            || over > 0
+            || n == 0
+            || !self.unaccepted.is_empty()
+            || (self.profile && excused > 0)
+        {
             Verdict::Fail
         } else {
             Verdict::Pass
@@ -1726,6 +1869,12 @@ struct Cell {
     file2_at: Option<Duration>,
     /// Evreler: (ad, başlangıç); ölçütler evre başına ayrıca raporlanır ve iddia edilir.
     phases: Vec<(&'static str, Duration)>,
+    /// [FİKSTÜR · 2026-11-21] Evre başına niyet: (PTT sınanır, metin sınanır). Niyetli evrede hiç
+    /// planlanmış demet / metin yoksa sonuç "fikstür geçersiz" (kanıt yok, geçti sayılmaz).
+    phase_intent: Vec<(bool, bool)>,
+    /// [FİKSTÜR · 2026-11-21] PTT'nin kapanış anı (t0'dan); `None` = dosya(lar) Bob'a varınca
+    /// (eski kural). Verilirse PTT dosyadan bağımsız bu ana dek konuşur.
+    ptt_until: Option<Duration>,
 }
 
 impl Cell {
@@ -1748,6 +1897,10 @@ impl Cell {
             texts_at: vec![LATE_TEXT_AT],
             file2_at: None,
             phases: vec![("başlangıç", Duration::ZERO), ("sürekli", START_PHASE)],
+            // Sabit hızlı hücrelerde PTT dosya bitene dek sürer (eski senaryo): sürekli evrede PTT
+            // niyeti yok; metin 10 s'de sürekli evreyi sınar.
+            phase_intent: vec![(true, true), (false, true)],
+            ptt_until: None,
         }
     }
 
@@ -1762,13 +1915,20 @@ impl Cell {
             rev_delay_plan: Vec::new(),
             file_bound: DROP_FILE_BOUND,
             receipt_bound: RECEIPT_RETURN_BOUND,
-            texts_at: vec![Duration::from_secs(12), Duration::from_secs(26)],
+            texts_at: vec![
+                Duration::from_secs(12),
+                Duration::from_secs(26),
+                Duration::from_secs(34),
+            ],
             file2_at: Some(FILE2_AT),
             phases: vec![
                 ("başlangıç", Duration::ZERO),
                 ("daralma", DROP_AT),
                 ("toparlanma", RECOVER_AT),
             ],
+            // [FİKSTÜR · 2026-11-21] Üç evrede de PTT ve metin; PTT dosyadan bağımsız 40 s'ye dek.
+            phase_intent: vec![(true, true), (true, true), (true, true)],
+            ptt_until: Some(DROP_PTT_UNTIL),
         }
     }
 
@@ -1792,6 +1952,8 @@ impl Cell {
             texts_at: vec![LATE_TEXT_AT],
             file2_at: None,
             phases: vec![("başlangıç", Duration::ZERO), ("sürekli", START_PHASE)],
+            phase_intent: vec![(true, true), (false, true)],
+            ptt_until: None,
         }
     }
 }
@@ -1803,6 +1965,8 @@ const LATE_TEXT_AT: Duration = Duration::from_secs(10);
 const DROP_AT: Duration = Duration::from_secs(8);
 const RECOVER_AT: Duration = Duration::from_secs(20);
 const FILE2_AT: Duration = Duration::from_secs(24);
+/// [FİKSTÜR · 2026-11-21] Düşüş hücresinde PTT'nin kapanışı: toparlanma evresinin ilk 20 s'si.
+const DROP_PTT_UNTIL: Duration = Duration::from_secs(40);
 /// Düşüş hücresinde dosya 1: gerçek hattın t0'dan taşıdığı bayt 14 s × 12 500 B/s'ye ulaştığı an
 /// (8 s × 12 500 + 12 s × 6 250 = 175 000 B) → 20 s.
 const DROP_FILE_BOUND: Duration = Duration::from_secs(20);

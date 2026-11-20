@@ -1489,6 +1489,8 @@ pub enum EmitCause {
     LossPacketThreshold,
     /// Zaman eşiği kayıp ilanı (PTO zamanlayıcısında; `ref_seq` = en büyük teyitli iletim).
     LossTimeThreshold,
+    /// Birim teyit çıktısına yazıldı (`unit_id`; ACK ya da FEC RECOVERED).
+    Confirmed,
     /// ACK çerçevesi işlendi (`seq` = yeni teyitli en büyük iletim ya da 0, `unit_id` = yeni
     /// teyitli iletim sayısı, `ref_seq` = hat korumasının gönderim tavanı, B/s; yoksa 0).
     AckFrame,
@@ -6611,6 +6613,12 @@ impl Sender {
         }
         ids.sort_unstable();
         ids.dedup();
+        if self.diag_emit_log.is_some() {
+            let now = self.last_now_ns;
+            for &u in &ids {
+                self.diag_emit(now, 0, u, EmitCause::Confirmed, 0);
+            }
+        }
         self.confirmed_units_out.extend(ids);
     }
 
