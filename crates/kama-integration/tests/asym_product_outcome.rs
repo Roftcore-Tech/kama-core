@@ -761,6 +761,8 @@ struct Run {
     file_ok: bool,
     /// [KAPI] İkinci dosya (hücre isterse): gönderim ve Bob'da tamamlanma, bayt doğruluğu.
     file2: Option<(Instant, Option<Instant>, bool)>,
+    /// [KAPI] Uygulamanın bildirdiği dosya hataları (gönderim / alım).
+    file_failures: Vec<String>,
     chunk_count: u64,
     /// Bob'un uygulama zincirinde görülen her `FILE_CHUNK` kaydının anı.
     chunk_rx: Vec<Instant>,
@@ -867,6 +869,7 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
     let mut file_received: Option<Instant> = None;
     let mut file_delivered: Option<Instant> = None;
     let mut file_ok = false;
+    let mut file_failures: Vec<String> = Vec::new();
 
     loop {
         hub.relay();
@@ -985,11 +988,13 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
                 Ev::File(FileEvent::Delivered { .. }) => {
                     file_delivered.get_or_insert(at);
                 }
+                // [KAPI] Uygulama dosyadan vazgeçtiyse koşu sürer ve ölçütler yazılır (dosya
+                // ölçütü düşer); eskiden panik ölçüt satırlarını bastırıyordu.
                 Ev::File(FileEvent::SendFailed { reason, .. }) => {
-                    panic!("dosya gönderimi başarısız: {reason:?}")
+                    file_failures.push(format!("gönderim: {reason:?}"));
                 }
                 Ev::File(FileEvent::Failed { reason, .. }) => {
-                    panic!("dosya alımı başarısız: {reason:?}")
+                    file_failures.push(format!("alım: {reason:?}"));
                 }
                 _ => {}
             }
@@ -1000,7 +1005,7 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
             && ptt_closed
             && texts.iter().all(|t| t.delivered.is_some())
             && bundles.values().all(|b| b.received.is_some());
-        if done || t0.elapsed() >= RUN_CAP {
+        if done || t0.elapsed() >= RUN_CAP || file_failures.len() >= 2 {
             break;
         }
         std::thread::sleep(Duration::from_micros(500));
@@ -1038,6 +1043,7 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
         file_delivered,
         file_ok,
         file2,
+        file_failures,
         chunk_count,
         chunk_rx,
         alice: alice_ledger,
@@ -1282,13 +1288,14 @@ impl Run {
             _ => Verdict::Fail,
         };
         println!(
-            "ÖLÇÜT {tag} dosya: tamamlanma={} s (sınır {} s) bayt_doğru={} parça={} Alice_teslim_bildirimi={} s dosya_bekletme_turu={} → {}",
+            "ÖLÇÜT {tag} dosya: tamamlanma={} s (sınır {} s) bayt_doğru={} parça={} Alice_teslim_bildirimi={} s dosya_bekletme_turu={} uygulama_hataları={:?} → {}",
             opt_secs(file_t),
             secs(self.cell.file_bound),
             self.file_ok,
             self.chunk_count,
             opt_secs(file_d),
             self.file_backlog_held,
+            self.file_failures,
             fv.label()
         );
         if fv == Verdict::Fail {
