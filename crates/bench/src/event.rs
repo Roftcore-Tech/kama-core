@@ -107,8 +107,9 @@ pub struct RunMeta {
     /// Kanonik ürün profilinden sapmalar (boşsa kimlik `kama-v1-full`).
     #[serde(default)]
     pub profile_delta: Vec<String>,
-    /// [Ö-P] Taşıma motoru ("legacy" | "cc-port") — SALT-GÖZLEM. Yalnız bench `kama` kolu
-    /// doldurur ve kurulmuş `Sender`'dan türetir (`Sender::cc_on`; kol bayrağından değil). Boşsa
+    /// [Ö-P] Taşıma motoru ("legacy" | "cc-port") — SALT-GÖZLEM. Bench `kama` kolu kurulmuş
+    /// `Sender`'dan türetir (`Sender::cc_on`; kol bayrağından değil); [TNET-V2] `kama-product`
+    /// kolu uçları kuran `RuntimeConfig::engine`'den. Boşsa
     /// YAZILMAZ → diğer kolların `events.jsonl` çıktısı bayt-bayt aynı kalır; eski JSONL → boş.
     /// Koşu manifesti (`kama-bench-manifest/v1`, EVOLUTION §9.7) bu alanı TAŞIMAZ.
     #[serde(default, skip_serializing_if = "String::is_empty")]

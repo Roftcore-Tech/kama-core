@@ -217,6 +217,40 @@ pub struct ClientCfg {
     /// (gerçek tekrar kolu); teslim = kopyalardan ilkinin teyidi. `1` = eski davranış (kopya yok).
     /// Birim kimliği: `warmup_msgs + msg_id × dup_copies + kopya`.
     pub dup_copies: u32,
+    /// [TNET-V2] Yalnız `kama-product`: birimlerin uca hangi ürün şeridinden verileceği
+    /// (bkz. [`LaneMode`]). `None` = eski davranış (şerit katmanı yok, bit-aynı).
+    pub lane: LaneMode,
+}
+
+/// [TNET-V2] `kama-product` kolunun sunum şeridi.
+///
+/// Ürün yolu (`client_core::transport::ClientTransport`, ürün profilinde şeritler AÇIK) her S1
+/// birimini sınıfının şeridinden uca verir: TEXT şeridinde sıradaki birim şeridin teyit sınırından en
+/// çok `kabul genişliği − 1` ileride olabilir; FILE şeridinde ayrıca teyitsiz birim sayısı yolun
+/// BDP'sinden türeyen `W` ile sınırlıdır. Bench kolu `None` ile bu katmanı atlar (birim doğrudan
+/// uca, şerit 0). `Text`/`File` ile pompa ([`crate::kama_product`]) ürün pompasının tek şeritli
+/// eşleniğini koşar. Diğer kollarda kabul edilmez.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LaneMode {
+    /// Şerit katmanı yok: birim doğrudan uca, şerit 0 — eski davranış, bit-aynı.
+    #[default]
+    None,
+    /// TEXT şeridi (S1 `Be`/`Ctrl` sınıfı): kabul genişliği sınırı, pencere yok.
+    Text,
+    /// FILE şeridi (S1 `Bk` sınıfı): BDP'den dosya penceresi + kabul genişliği sınırı.
+    File,
+}
+
+impl LaneMode {
+    /// Manifest/etiket eki (`None` → boş: eski etiket aynen).
+    #[must_use]
+    pub fn label_suffix(self) -> &'static str {
+        match self {
+            Self::None => "",
+            Self::Text => "-lane-text",
+            Self::File => "-lane-file",
+        }
+    }
 }
 
 /// [KAPI-1 W6] Dosya-tabanlı barrier: `<gate>.ready` yaz → `<gate>.go` bekle (5 ms poll, 120 s

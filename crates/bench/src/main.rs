@@ -25,7 +25,9 @@ use std::time::Duration;
 use client_core::runtime::KamaV1Profile;
 
 use crate::error::BenchError;
-use crate::transport::{BenchTransport, Cc, ClientCfg, FecArm, FecModeArg, KamaArm, ServerCfg};
+use crate::transport::{
+    BenchTransport, Cc, ClientCfg, FecArm, FecModeArg, KamaArm, LaneMode, ServerCfg,
+};
 
 #[derive(Parser)]
 #[command(name = "bench", about = "Kama transport benchmark harness (§4.4)")]
@@ -325,6 +327,12 @@ enum Cmd {
         /// (gerçek tekrar kolu); teslim = ilk kopyanın teyidi. 1 = eski davranış.
         #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=64))]
         dup_copies: u32,
+        /// [TNET-V2] Yalnız `kama-product`: birimler ürün şerit pompasının tek şeritli eşleniğinden
+        /// uca verilir — `text` (kabul genişliği sınırı) | `file` (+ BDP'den dosya penceresi).
+        /// `none` = eski davranış (şerit katmanı yok, bit-aynı). Yalnız burst sunumla
+        /// (`--submit-interval-ms 0`) ve `--dup-copies 1` ile.
+        #[arg(long, value_enum, default_value_t = LaneArg::None)]
+        lane: LaneArg,
         #[arg(long)]
         out: PathBuf,
     },
@@ -377,6 +385,24 @@ impl From<FecModeCli> for FecModeArg {
             FecModeCli::Static => FecModeArg::Static,
             FecModeCli::Adaptive => FecModeArg::Adaptive,
             FecModeCli::Policy => FecModeArg::Policy,
+        }
+    }
+}
+
+/// [TNET-V2] CLI karşılığı — `transport::LaneMode`'a birebir eşlenir.
+#[derive(Copy, Clone, ValueEnum, PartialEq)]
+enum LaneArg {
+    None,
+    Text,
+    File,
+}
+
+impl From<LaneArg> for LaneMode {
+    fn from(l: LaneArg) -> Self {
+        match l {
+            LaneArg::None => Self::None,
+            LaneArg::Text => Self::Text,
+            LaneArg::File => Self::File,
         }
     }
 }
@@ -635,6 +661,7 @@ async fn main() -> Result<(), BenchError> {
             early_exit,
             payload_id,
             dup_copies,
+            lane,
             out,
         } => {
             // [KTP2-F0 / C2] Yalnız ürün kolunda anlamlı; diğer kollarda sessizce yok sayılmaz.
@@ -642,6 +669,20 @@ async fn main() -> Result<(), BenchError> {
                 return Err(BenchError::Other(
                     "--dup-copies yalnız --transport kama-product ile".into(),
                 ));
+            }
+            // [TNET-V2] Şerit kipi yalnız ürün kolunda, burst sunumla ve kopyasız.
+            if lane != LaneArg::None {
+                if transport != TransportArg::KamaProduct {
+                    return Err(BenchError::Other(
+                        "--lane yalnız --transport kama-product ile".into(),
+                    ));
+                }
+                if dup_copies > 1 || submit_interval_ms > 0 {
+                    return Err(BenchError::Other(
+                        "--lane text|file yalnız --dup-copies 1 ve --submit-interval-ms 0 ile"
+                            .into(),
+                    ));
+                }
             }
             // [KTP2-F0 / D] Rakip-kol ayarları (bayraksız = eski davranış; Kama kollarına etkisiz).
             let mut tuning = rival::RivalTuning::from_cli(
@@ -692,6 +733,7 @@ async fn main() -> Result<(), BenchError> {
                 initial_window_bytes,
                 bootstrap_fast,
                 dup_copies,
+                lane: lane.into(),
             };
             let output = run_client(transport, cfg).await?;
             // [FAZ-4] KOŞU MANİFESTİ — ölçümle BİRLİKTE, yapılandırılmış. Kıyas raporları
