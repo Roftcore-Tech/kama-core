@@ -1490,7 +1490,7 @@ pub enum EmitCause {
     /// Zaman eşiği kayıp ilanı (PTO zamanlayıcısında; `ref_seq` = en büyük teyitli iletim).
     LossTimeThreshold,
     /// ACK çerçevesi işlendi (`seq` = yeni teyitli en büyük iletim ya da 0, `unit_id` = yeni
-    /// teyitli iletim sayısı, `ref_seq` = hat korumasının hızı, B/s; yoksa 0).
+    /// teyitli iletim sayısı, `ref_seq` = hat korumasının gönderim tavanı, B/s; yoksa 0).
     AckFrame,
 }
 
@@ -1506,6 +1506,14 @@ pub struct EmitDiag {
 
 /// [İZ-NEDEN] İz tavanı (SR-AUDIT-001); dolunca yeni kayıt yazılmaz.
 const EMIT_LOG_CAP: usize = 65_536;
+
+/// [PTT-KOPYA-BÜTÇESİ] Öncelikli şeridin kopyası, bilinen hat kuyruğu bu süreyi (bir PTT demet
+/// aralığı, 200 ms) aşarken çıkmaz: kopyalar sonraki demetin orijinalini bir demet aralığından
+/// fazla bekletemez.
+const COPY_LINE_BUDGET_NS: u64 = 200_000_000;
+/// [PTT-KOPYA-BÜTÇESİ] Vadesinden bu kadar gecikmiş öncelikli kopya iptal edilir: PTT sınırı (1 s)
+/// geçtikten sonra çıkan kopya demeti sınıra yetiştiremez, yalnız hattı tutar.
+const COPY_STALE_NS: u64 = 1_000_000_000;
 
 /// [ÖNLEMSEL-KOPYA] Kimliği `below_id`'den küçük her YENİ birim, ilk iletiminden sonra ACK
 /// beklemeden `copies` kez daha gönderilir (kopyalar `spacing_ns` aralıklı, §11 zamanlanmış
@@ -1823,6 +1831,11 @@ pub struct Sender {
     cc_line_guard: Option<crate::line_guard::LineGuard>,
     /// [İZ-NEDEN] Emisyon / kayıp ilanı izi; `None` = kapalı (varsayılan).
     diag_emit_log: Option<Vec<EmitDiag>>,
+    /// [PTT-SIRA · PTT-KOPYA-BÜTÇESİ] Gözlem sayaçları: öncelikli şeridin önce çıkan ARQ kaydı,
+    /// bayat diye iptal edilen kopya, hat kuyruğu yüzünden ertelenen kopya denemesi.
+    prio_arq_first: u64,
+    prio_copy_stale: u64,
+    prio_copy_deferred: u64,
     /// [DR-EST-1] Kuruluş-kolu anahtarı (DEFAULT-ON — ürün-davranışı). Yalnız donmuş-enstrüman
     /// testleri (Gate-5 structural-oracle: probe-vs-DATA çekişme-izolasyonu, DR-EST-1-öncesi
     /// tasarım) kapatır; kolun KENDİ pinleri tests/establish_probe.rs'te default-ON koşar.
@@ -2177,6 +2190,9 @@ impl Sender {
             cc_feedback_starved: None,
             cc_line_guard: None,
             diag_emit_log: None,
+            prio_arq_first: 0,
+            prio_copy_stale: 0,
+            prio_copy_deferred: 0,
             establish_probe_enabled: true,
             establish_due_ns: 0,
             establish_interval_ns: 0,
@@ -2439,10 +2455,13 @@ impl Sender {
     /// [HAT-KORUMASI] Kuralın hız tavanı (B/s, UDP gövdesi): profil tavanı, ölçülen hat profil
     /// hattının altındaysa aynı oranda küçültülmüş hâli. Profil tavanını hiçbir zaman aşmaz.
     fn cc_feedback_cap(&self, rule: FeedbackStarvedRule) -> u64 {
+        // [TEMKİNLİ-BAŞLANGIÇ · YENİDEN-YOKLAMA] Tavan korumanın gönderim tavanıdır: ilk
+        // ölçümden önce profil hattının yarısından başlar, doğrulamayla yükselir, ölçülen hatta
+        // iner (`line_guard` modül belgesi).
         match self
             .cc_line_guard
             .as_ref()
-            .and_then(crate::line_guard::LineGuard::rate_bps)
+            .map(crate::line_guard::LineGuard::pace_bps)
         {
             Some(measured) if measured < rule.line.rate_bps => u64::try_from(
                 u128::from(rule.pacing_cap_bps) * u128::from(measured)
@@ -3885,8 +3904,7 @@ impl Sender {
             let rate = self
                 .cc_line_guard
                 .as_ref()
-                .and_then(crate::line_guard::LineGuard::rate_bps)
-                .unwrap_or(0);
+                .map_or(0, crate::line_guard::LineGuard::pace_bps);
             let n = ack.acked_seqs.len() as u64;
             self.diag_emit(now_ns, top, n, EmitCause::AckFrame, rate);
         }
@@ -3931,8 +3949,13 @@ impl Sender {
             return;
         };
         let saturated = ack.ack_delay >= crate::loss::E2A_ACK_DELAY_SATURATED;
-        if let Some(u) = g.on_ack(now_ns, dur_ns(ack.ack_delay), saturated, largest) {
-            self.pacer.set_line_rate(u.rate_bps);
+        let update = g.on_ack(now_ns, dur_ns(ack.ack_delay), saturated, largest);
+        // [YENİDEN-YOKLAMA] Hat modeli ölçülen hattadır; yoklama profil hattına döndüyse profil.
+        let line = g.rate_bps();
+        if let Some(rule) = self.cc_feedback_starved {
+            self.pacer.set_line_rate(line.unwrap_or(rule.line.rate_bps));
+        }
+        if let Some(u) = update {
             self.pacer.line_raise_backlog(u.backlog_bytes);
         }
     }
@@ -5383,7 +5406,11 @@ impl Sender {
         if let (true, Some(r)) = (self.cc.is_some(), self.cc_feedback_starved) {
             self.pacer.set_line(Some(r.line));
             if r.return_line.rate_bps > 0 {
-                self.cc_line_guard = Some(crate::line_guard::LineGuard::new(r.line, r.return_line));
+                self.cc_line_guard = Some(crate::line_guard::LineGuard::new(
+                    r.line,
+                    r.return_line,
+                    crate::line_guard::LineGuard::conservative_start(r.line),
+                ));
             }
         }
     }
@@ -5423,6 +5450,26 @@ impl Sender {
         self.cc_line_guard
             .as_ref()
             .map(|g| (g.rate_bps(), g.samples()))
+    }
+
+    /// [YENİDEN-YOKLAMA] Korumanın gönderim tavanı (B/s, tel) ve doğrulama sayısı; kural kurulu
+    /// değilse `None`.
+    #[must_use]
+    pub fn diag_line_guard_pace(&self) -> Option<(u64, u64)> {
+        self.cc_line_guard
+            .as_ref()
+            .map(|g| (g.pace_bps(), g.raises()))
+    }
+
+    /// [PTT-SIRA · PTT-KOPYA-BÜTÇESİ] `(önce çıkan öncelikli ARQ, bayat iptal edilen kopya,
+    /// hat kuyruğu yüzünden ertelenen kopya denemesi)` (salt gözlem).
+    #[must_use]
+    pub fn diag_priority_lane(&self) -> (u64, u64, u64) {
+        (
+            self.prio_arq_first,
+            self.prio_copy_stale,
+            self.prio_copy_deferred,
+        )
     }
 
     /// [ÖNLEMSEL-KOPYA] Yeni birimlerin ACK beklemeyen ileri kopya kuralı ([`ForwardCopyRule`]).
@@ -7812,6 +7859,38 @@ impl Sender {
         let Some(rule) = self.forward_copy_rule else {
             return;
         };
+        // [PTT-SIRA · 2026-11-20] Öncelikli şeridin ARQ kayıtları önce: şerit sıralı ve güvenilirdir,
+        // kaybolmuş bir öncül ardındaki her demeti bekletir. Kayıt genel ARQ kuyruğunda dosyanın
+        // (çoğu gereksiz: ACK aralık kırpması) yeniden iletimlerinin arkasında bekliyordu (ürün
+        // testi, gerçek 6 250 B/s, tohum 1: kuyrukta düşen demet 33'ün yeniden iletimi 11 s sonra).
+        let mut k = 0;
+        while k < self.pending_lost.len() {
+            let rec = self.pending_lost[k];
+            if rec.unit.id >= rule.priority_below_id || rec.deadline_ns > now_ns {
+                k += 1;
+                continue;
+            }
+            if !self.try_send_pre_parity(rec.unit.size, true) {
+                return;
+            }
+            let _ = self.pending_lost.remove(k);
+            self.mark_tombstone_superseded(rec.seq);
+            let new_seq = self.track_sent(
+                rec.unit,
+                now_ns,
+                rec.retx_count.saturating_add(1),
+                TransmitKind::Retransmit,
+            );
+            self.diag_emit(now_ns, new_seq, rec.unit.id, EmitCause::Retransmit, rec.seq);
+            self.prio_arq_first = self.prio_arq_first.saturating_add(1);
+            out.push(TransmitDecision {
+                kind: TransmitKind::Retransmit,
+                seq: new_seq,
+                unit_id: rec.unit.id,
+                size: rec.unit.size,
+                send_record: None,
+            });
+        }
         let mut i = 0;
         while i < self.tx_queue.len() {
             let unit = self.tx_queue[i];
@@ -7834,14 +7913,41 @@ impl Sender {
             });
             self.after_new_data_sent(unit, now_ns);
         }
-        let mut j = 0;
-        while j < self.dup_queue.len() {
-            let d = self.dup_queue[j];
-            if d.unit.id >= rule.priority_below_id || d.due_ns > now_ns {
+        // [PTT-KOPYA-BÜTÇESİ · 2026-11-20] Kopyalar yalnız bilinen hat kuyruğu bir demet aralığını
+        // ([`COPY_LINE_BUDGET_NS`]) aşmıyorken çıkar ve vadesinden [`COPY_STALE_NS`]'ten fazla
+        // gecikmiş kopya iptal edilir; sıra en eski vade önce. Gerekçe (ürün testi, gerçek 6 250
+        // B/s): hat koruması kuyruğu boşaltırken gönderici bekler, bu sürede vadesi gelen bütün
+        // demetlerin kopyaları birikiyor ve bekleme bitince art arda hatta verilip sonraki
+        // demetlerin orijinallerini darboğazda 1–5 s bekletiyordu. Orijinal ve ARQ'su değişmez: ses
+        // verisi düşmez, teslim anlamı (güvenilir, sıralı) aynı; yalnız fazlalık sınırlanır.
+        let line_ok = self.pacer.line_ns_until_drained() <= COPY_LINE_BUDGET_NS;
+        loop {
+            let mut pick: Option<usize> = None;
+            let mut j = 0;
+            while j < self.dup_queue.len() {
+                let d = self.dup_queue[j];
+                if d.unit.id >= rule.priority_below_id || d.due_ns > now_ns {
+                    j += 1;
+                    continue;
+                }
+                if now_ns.saturating_sub(d.due_ns) > COPY_STALE_NS {
+                    let _ = self.dup_queue.remove(j);
+                    self.prio_copy_stale = self.prio_copy_stale.saturating_add(1);
+                    continue;
+                }
+                if pick.is_none_or(|p| d.due_ns < self.dup_queue[p].due_ns) {
+                    pick = Some(j);
+                }
                 j += 1;
-                continue;
             }
-            if !self.try_send_pre_parity(d.unit.size, true) {
+            let Some(j) = pick else {
+                return;
+            };
+            if !line_ok {
+                self.prio_copy_deferred = self.prio_copy_deferred.saturating_add(1);
+                return;
+            }
+            if !self.try_send_pre_parity(self.dup_queue[j].unit.size, true) {
                 return;
             }
             let dup = self.dup_queue.remove(j);

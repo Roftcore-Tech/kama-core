@@ -1254,7 +1254,10 @@ impl Run {
         }
         for (i, (name, _)) in self.cell.phases.iter().enumerate() {
             let (worst, missing, n) = ptt_phase.get(&i).copied().unwrap_or((Duration::ZERO, 0, 0));
-            let v = if n > 0 && missing == 0 && worst <= PTT_BOUND {
+            // Evrede planlanmış demet yoksa (dosya evre başlamadan bitti, PTT kapandı) evrenin PTT
+            // gözlemi yoktur: ölçüt "gözlem yok" yazılır, düşmüş sayılmaz. [2026-11-20 düzeltmesi:
+            // ilk ölçüm turunda boş evre KALDI sayılıyordu — tanım hatası; sınır (1 s) aynı.]
+            let v = if n == 0 || (missing == 0 && worst <= PTT_BOUND) {
                 Verdict::Pass
             } else {
                 Verdict::Fail
