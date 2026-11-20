@@ -1529,7 +1529,7 @@ impl Run {
             .windows(2)
             .map(|w| (w[1].0 - w[0].0, w[0].0))
             .collect();
-        gaps.sort_by(|a, b| b.0.cmp(&a.0));
+        gaps.sort_by_key(|g| std::cmp::Reverse(g.0));
         let first_ack = self.alice.acks_rx.first().map(|a| self.since(a.0, self.t0));
         println!(
             "İZ-NEDEN {tag} ack_çerçevesi={} ilk=+{} en_büyük_aralıklar={:?} mühürsüz_emisyon={unsealed} RECOVERED(Bob→Alice)={}",
