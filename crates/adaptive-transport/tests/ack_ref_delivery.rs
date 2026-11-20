@@ -570,13 +570,17 @@ fn ack_ref_fec_recovered_unit_is_not_a_received_packet_number() {
             .map(|x| x.1)
             .expect("birim gönderildi");
         assert_eq!(
-            sent.iter().filter(|x| x.2 == LOST_UNIT).count(),
-            1,
+            sent.iter()
+                .filter(|x| x.2 == LOST_UNIT && x.1 != lost_seq)
+                .count(),
+            0,
             "kurtarılan birimin tek iletimi olmalı (yeniden iletim yok)"
         );
         // Alıcıya kayıp paket DIŞINDAKİ ilk iletimler ulaşır; ACK'ler gönderilir.
         let mut acks = Vec::new();
-        for &(_, seq, unit) in sent.iter().filter(|(_, q, _)| *q != lost_seq) {
+        let delivered_tx: Vec<(u64, u64, u64)> =
+            sent.iter().copied().filter(|x| x.1 != lost_seq).collect();
+        for &(_, seq, unit) in &delivered_tx {
             let out = r.on_datagram(
                 RxDatagram {
                     seq,
@@ -592,12 +596,21 @@ fn ack_ref_fec_recovered_unit_is_not_a_received_packet_number() {
         now += 9 * SEC;
         acks.extend(r.on_ack_timer(now));
         assert!(!acks.is_empty());
-        // Önce alıcının FEC kurtarma kanıtı (RECOVERED) gelir — ACK'lerden ÖNCE.
+        // Önce alıcının FEC kurtarma kanıtı (RECOVERED) gelir — ACK'lerden ÖNCE. Göndericinin bu
+        // ana dek vadesi gelen zamanlayıcıları önce işlenir (RECOVERED olayı ölçümü yalın kalsın).
+        now += 50 * MS;
+        let d = s.on_event(Event::TimerFired(Timer::Pto), now);
+        assert!(
+            d.iter()
+                .all(|x| x.unit_id != LOST_UNIT || x.kind == TransmitKind::CsProbe),
+            "[{e:?}] RECOVERED öncesi kayıp birim yeniden gönderilmemeli (ACK yok): {d:?}"
+        );
+        note(d, now, &mut sent);
+        let _ = s.take_confirmed_units();
         let rtt_before = s.diag_rtt_sample_count();
         let fl_before = s.diag_inflight_seqs();
         let bytes_before = s.inflight_bytes();
         assert!(fl_before.iter().any(|e| e.0 == lost_seq));
-        now += 50 * MS;
         let d = s.on_event(
             Event::RecoveredControl(RecoveredInfo {
                 units: vec![RecoveredUnit {
@@ -608,7 +621,22 @@ fn ack_ref_fec_recovered_unit_is_not_a_received_packet_number() {
             }),
             now,
         );
-        assert!(d.is_empty(), "RECOVERED gönderim üretmemeli: {d:?}");
+        assert!(
+            d.iter()
+                .all(|x| x.unit_id != LOST_UNIT || x.kind == TransmitKind::CsProbe),
+            "[{e:?}] RECOVERED kurtarılan birimi göndermemeli: {d:?}"
+        );
+        let new_bytes: u64 = d
+            .iter()
+            .filter(|x| {
+                matches!(
+                    x.kind,
+                    TransmitKind::Data | TransmitKind::Retransmit | TransmitKind::Duplicate
+                )
+            })
+            .map(|x| x.size)
+            .sum();
+        note(d, now, &mut sent);
         assert_eq!(
             s.take_confirmed_units(),
             vec![LOST_UNIT],
@@ -625,8 +653,8 @@ fn ack_ref_fec_recovered_unit_is_not_a_received_packet_number() {
         );
         assert_eq!(
             s.inflight_bytes(),
-            bytes_before,
-            "[{e:?}] RECOVERED uçuş baytını değiştirmemeli"
+            bytes_before + new_bytes,
+            "[{e:?}] RECOVERED uçuş baytını yalnız yeni gönderimler kadar değiştirebilir"
         );
         // Sonra ACK'ler: hiçbiri düşen paketin numarasını taşımaz.
         let expected = sent.iter().map(|x| x.1).max().expect("gönderildi") + 1;
@@ -653,9 +681,9 @@ fn ack_ref_fec_recovered_unit_is_not_a_received_packet_number() {
             "[{e:?}] kurtarılan birim ACK'le yeniden teyit edilmemeli (paketi alınmadı)"
         );
         // ACK'le teyit beklenen: alıcıya bir iletimi ulaşmış her birim, kurtarılan hariç.
-        let expect_others: BTreeSet<u64> = sent
+        let expect_others: BTreeSet<u64> = delivered_tx
             .iter()
-            .filter(|x| x.1 != lost_seq && x.2 != LOST_UNIT && x.1 < expected)
+            .filter(|x| x.2 != LOST_UNIT)
             .map(|x| x.2)
             .collect();
         assert!(expect_others.len() >= 3, "vakum: ACK'lenecek birim az");
