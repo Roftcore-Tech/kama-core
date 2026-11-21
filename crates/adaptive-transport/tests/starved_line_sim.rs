@@ -49,11 +49,15 @@ const VOICE_PERIOD_NS: u64 = 200 * MS;
 const VOICE_START_NS: u64 = 500 * MS;
 /// Ürün kabul ölçütleri (`asym_product_outcome`): PTT demeti ve metin 1 s, dürüst dosya 14 s.
 const PTT_BOUND_NS: u64 = SEC;
+const TEXT_BOUND_NS: u64 = SEC;
+const FILE_BOUND_NS: u64 = 14 * SEC;
 /// Ürünün PTT kuralı (`client_core::runtime::PTT_FORWARD_COPIES` = 7,
 /// `PTT_FORWARD_COPIES_MIN` = 6; aralık 200 ms / 7). 2026-11-16 kuralı: 5 iletim, 40 ms.
 const PRODUCT_COPIES: u8 = 6;
 const PRODUCT_MIN_COPIES: u8 = 5;
 const PRODUCT_SPACING_NS: u64 = 200 * MS / 7;
+const OLD_COPIES: u8 = 4;
+const OLD_SPACING_NS: u64 = 40 * MS;
 
 /// Ürün testinin dönüş-gecikmesi hücresinin çizelgesi (`asym_product_outcome`
 /// `Cell::return_delay_varies`).
@@ -827,4 +831,53 @@ fn d3_reordering_keeps_the_measurement_on_the_safe_side() {
             "tohum {seed}: 6 250'de son tahmin {end}"
         );
     }
+}
+
+/// [Görev 3] Dürüst profil, dosya ve PTT; bir PTT demetinin (demet 40, 8,5 s) ilk beş iletimi hatta
+/// düşer, başka kayıp yok. Ölçütler ürünün kabul ölçütleridir: bütün demetler sıralı teslimde
+/// ≤ 1 s, metin ≤ 1 s, dosya ≤ 14 s.
+///
+/// * Ürün kuralı (beyan hızında 7 iletim): altıncı ve yedinci iletim demeti 1 s içinde taşır.
+/// * Karşı-olgu (2026-11-16 kuralı, 5 iletim): kurtarma ACK turunu bekler; demet ve ardındakiler
+///   1 s'yi aşar.
+///
+/// Bant bedeli raporlanır (ileri hatta PTT tel baytı ve dosya süresi, iki kural).
+#[test]
+fn five_lost_ptt_transmissions_are_covered_within_the_bounds() {
+    let five_lost = |copies, spacing_ns, scale| Scenario {
+        loss_permille: 0,
+        targeted_drop: Some((40, 5)),
+        text_at_ns: Some(8_500 * MS),
+        voice_until_ns: 20 * SEC,
+        copies,
+        spacing_ns,
+        copy_scale_min: scale,
+        ..Scenario::honest(1)
+    };
+    let sc = five_lost(PRODUCT_COPIES, PRODUCT_SPACING_NS, Some(PRODUCT_MIN_COPIES));
+    let o = run(&sc);
+    report("görev3/ürün", &sc, &o);
+    let old = five_lost(OLD_COPIES, OLD_SPACING_NS, None);
+    let oo = run(&old);
+    report("görev3/eski", &old, &oo);
+    let file = o.file_done_ns.expect("dosya bitti");
+    println!(
+        "GÖREV3 bant: PTT tel {} B (eski {} B, +{} B); dosya {} (eski {})",
+        o.ptt_wire_bytes,
+        oo.ptt_wire_bytes,
+        o.ptt_wire_bytes - oo.ptt_wire_bytes,
+        secs(file),
+        oo.file_done_ns.map_or("YOK".to_string(), secs)
+    );
+    assert!(
+        o.voice_max_from(0) <= PTT_BOUND_NS,
+        "PTT {}",
+        secs(o.voice_max_from(0))
+    );
+    assert!(o.text_delay_ns.is_some_and(|d| d <= TEXT_BOUND_NS), "metin");
+    assert!(file <= FILE_BOUND_NS, "dosya {}", secs(file));
+    assert!(
+        oo.voice_max_from(0) > PTT_BOUND_NS,
+        "karşı-olgu: beş iletimle demet sınırda kaldı"
+    );
 }
