@@ -2753,6 +2753,13 @@ impl Sender {
         self.pacer.refill(dt);
         self.last_now_ns = now_ns;
         self.apply_cc_line_floor();
+        // [SÜRELİ-YOKLAMA · İŞ-33 C3] Yoklamanın süresi dolduysa hat modeli hükme dek yoklama
+        // öncesi tavana döner.
+        if let Some(g) = self.cc_line_guard.as_mut() {
+            if g.tick(now_ns) {
+                self.pacer.set_line_rate(g.pace_bps());
+            }
+        }
         // FS-CAL-2 v3 §3 lifecycle (design: docs/design/ESTIMATOR-LIFECYCLE.md). Finalize
         // guard-elapsed provisional losses at the engine clock, BEFORE this event's evidence is
         // fed: an ACK arriving at now >= expiry is late by the module contract (the fate sealed at

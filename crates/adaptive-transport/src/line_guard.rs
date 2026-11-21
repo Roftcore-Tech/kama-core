@@ -122,6 +122,22 @@
 //! andan küçülmemiştir, bu değer gerçek kuyruğun alt sınırıdır. Sınır, kuyruk `L`'den sonra da
 //! büyüdüyse eksik boşaltır; kalan, bir sonraki ölçüm noktasında yine ölçülür ve yazılır.
 //!
+//! # Süreli yoklama (İŞ-33 C3, 2026-11-21)
+//!
+//! Doğrulamadan sonra tavan kalıcı yükseliyordu. Hat değişmediyse yükseltilmiş tavan bir ACK
+//! aralığı boyunca (5–8,6 s) kuyruk kurar; bu artış örnek eşiğinin (`max(MTU, Δs/20)`) altında
+//! kalabildiği için birkaç aralık fark edilmeden birikir. Ölçüldü (kalıcı sim, gerçek 6 250 B/s,
+//! tohum 1): tavan 6 636'ya yükseldi, kuyruk iki aralıkta 0,64 s'ye çıktı ve örnek gelmedi; ürün
+//! testinde aynı hücrede PTT 1,17 s.
+//!
+//! Şimdi doğrulama tavanı yalnız [`VERIFY_MIN_SPAN_NS`] boyunca yükseltir (yoklama), sonra hükme
+//! dek önceki tavana döner ([`LineGuard::tick`]). Hat değişmediyse yoklamanın kurduğu kuyruk
+//! `adım × VERIFY_MIN_SPAN_NS`'tir (%6,2'de ≈ 0,19 s). Hükmü, cephesi yoklama bittikten sonra
+//! gönderilmiş ilk ACK verir: yoklamanın başladığı noktaya göre kuyruk artışı beklenenin (hat
+//! değişmediyse yoklamanın kuracağı kuyruk) yarısından küçükse hat yoklama hızındadır, tavan
+//! kalıcı yükselir ve adım katlanır; değilse tavan önceki değerde kalır ve ölçülen artış hat
+//! modeline yazılır (boşaltma). Örnek eşiğini aşan artış her zamanki gibi örnektir.
+//!
 //! Determinizm: tamsayı aritmetiği, RNG yok, sınırlı bellek (ADR-17 / SR-AUDIT-001).
 
 use std::collections::VecDeque;
@@ -184,6 +200,21 @@ struct Point {
     pace: u64,
 }
 
+/// [SÜRELİ-YOKLAMA] Süren ya da hüküm bekleyen yoklama.
+#[derive(Debug, Clone, Copy)]
+struct Probe {
+    /// Yoklama öncesi tavan (başarısızlıkta dönülen).
+    base_pace: u64,
+    /// Yoklama tavanı (başarıda kalıcı olan).
+    probe_pace: u64,
+    /// Yoklamanın bittiği an (ns): o andan sonra tavan hükme dek `base_pace`.
+    until_ns: u64,
+    /// Hat değişmediyse yoklamanın kuracağı kuyruk (ns).
+    expect_ns: u64,
+    /// Yoklamanın başladığı ACK noktası.
+    reference: Point,
+}
+
 /// Geri bildirimi aç profilde gerçek ileri hattın tahmincisi (modül belgesi).
 #[derive(Debug, Clone)]
 pub struct LineGuard {
@@ -212,6 +243,10 @@ pub struct LineGuard {
     samples: u64,
     /// [YENİDEN-YOKLAMA] Doğrulama (tavan yükseltmesi) sayısı (gözlem).
     raises: u64,
+    /// [SÜRELİ-YOKLAMA] Süren ya da hüküm bekleyen yoklama.
+    probe: Option<Probe>,
+    /// [SÜRELİ-YOKLAMA] Başarısız yoklama sayısı (gözlem).
+    probe_failures: u64,
 }
 
 impl LineGuard {
@@ -234,6 +269,8 @@ impl LineGuard {
             step_permille: STEP_START_PERMILLE,
             samples: 0,
             raises: 0,
+            probe: None,
+            probe_failures: 0,
         }
     }
 
@@ -294,6 +331,24 @@ impl LineGuard {
     #[must_use]
     pub fn raises(&self) -> u64 {
         self.raises
+    }
+
+    /// [SÜRELİ-YOKLAMA] Başarısız yoklama sayısı (gözlem).
+    #[must_use]
+    pub fn probe_failures(&self) -> u64 {
+        self.probe_failures
+    }
+
+    /// [SÜRELİ-YOKLAMA] Yoklamanın süresi dolduysa tavan hükme dek yoklama öncesi değerine döner.
+    /// Tavan değiştiyse `true` (gönderici hat modelini yeni tavana alır).
+    pub fn tick(&mut self, now_ns: u64) -> bool {
+        match self.probe {
+            Some(p) if now_ns >= p.until_ns && self.pace_bps == p.probe_pace => {
+                self.pace_bps = p.base_pace;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Bir ACK çerçevesi işlendi: `largest_seq` çerçevenin en büyük teyitli iletimi, `ack_delay_ns`
@@ -376,13 +431,40 @@ impl LineGuard {
         if self.points.len() >= POINT_CAP {
             self.points.pop_front();
         }
-        self.points.push_back(Point {
+        let point = Point {
             tau_ns: tau,
             send_ns: rec.send_ns,
             cum: rec.cum,
             pace: rec.pace,
-        });
+        };
+        self.points.push_back(point);
+        // [SÜRELİ-YOKLAMA] Hüküm: cephe yoklama bittikten sonra gönderildi.
+        let mut probe_drain_ns = 0u64;
+        if let Some(p) = self.probe.filter(|p| rec.send_ns >= p.until_ns) {
+            self.probe = None;
+            let growth = tau
+                .saturating_sub(p.reference.tau_ns)
+                .saturating_sub(rec.send_ns.saturating_sub(p.reference.send_ns));
+            if best.is_none() {
+                if growth.saturating_mul(2) <= p.expect_ns {
+                    self.pace_bps = p.probe_pace;
+                    self.rate_bps = self
+                        .rate_bps
+                        .filter(|_| self.pace_bps < self.line.rate_bps)
+                        .map(|r| r.max(self.pace_bps));
+                    self.raises = self.raises.saturating_add(1);
+                    self.step_permille = (self.step_permille * 2).min(STEP_MAX_PERMILLE);
+                } else {
+                    self.pace_bps = p.base_pace;
+                    self.probe_failures = self.probe_failures.saturating_add(1);
+                    probe_drain_ns = growth;
+                }
+                // Hüküm aralığı yeni bir doğrulama değildir.
+                verified = false;
+            }
+        }
         if let Some(est) = best {
+            self.probe = None;
             // Örnek tavanı aşamaz: kuyrukta düşen bayt aralığı şişirir, hat tavandan hızlıysa
             // kuyruk büyümezdi.
             let est = est.clamp(1, self.pace_bps.min(self.line.rate_bps));
@@ -392,17 +474,30 @@ impl LineGuard {
             // Ölçülmüş hatta yoklama en küçük adımdan yeniden başlar: sabit dar hatta her yoklama
             // en çok adım × ACK aralığı kadar kuyruk kurar.
             self.step_permille = STEP_MIN_PERMILLE;
-        } else if verified && self.pace_bps < self.line.rate_bps {
-            let up = self.pace_bps.saturating_mul(1000 + self.step_permille) / 1000;
-            self.pace_bps = up.clamp(self.pace_bps + 1, self.line.rate_bps);
-            self.rate_bps = self
-                .rate_bps
-                .filter(|_| self.pace_bps < self.line.rate_bps)
-                .map(|r| r.max(self.pace_bps));
-            self.raises = self.raises.saturating_add(1);
-            self.step_permille = (self.step_permille * 2).min(STEP_MAX_PERMILLE);
+        } else if verified && self.probe.is_none() && self.pace_bps < self.line.rate_bps {
+            // [SÜRELİ-YOKLAMA] Yükseltme yalnız `VERIFY_MIN_SPAN_NS` sürer; kalıcılığı hükme bağlı.
+            let up = (self.pace_bps.saturating_mul(1000 + self.step_permille) / 1000)
+                .clamp(self.pace_bps + 1, self.line.rate_bps);
+            let expect_ns = u64::try_from(
+                u128::from(up - self.pace_bps) * u128::from(VERIFY_MIN_SPAN_NS)
+                    / u128::from(self.pace_bps.max(1)),
+            )
+            .unwrap_or(u64::MAX);
+            self.probe = Some(Probe {
+                base_pace: self.pace_bps,
+                probe_pace: up,
+                until_ns: now_ns.saturating_add(VERIFY_MIN_SPAN_NS),
+                expect_ns,
+                reference: point,
+            });
+            self.pace_bps = up;
         }
         let rate = self.rate_bps?;
+        // [SÜRELİ-YOKLAMA] Yoklama sürerken kuyruk yazılmaz: yoklama hattı sınar, boşaltma onunla
+        // çelişir; gerçek bir kuyruk varsa hüküm ACK'i onu boşaltır.
+        if self.probe.is_some() {
+            return None;
+        }
         // `L` hattı `τ − taban` anında terk etti; o andan bu yana hat `rate × süre` boşalttı.
         let since_ns = now_ns.saturating_sub(tau).saturating_add(base);
         let drained = u64::try_from(u128::from(rate) * u128::from(since_ns) / 1_000_000_000)
@@ -412,9 +507,15 @@ impl LineGuard {
         let queued_ns = lag.saturating_sub(base);
         let by_delay = u64::try_from(u128::from(rate) * u128::from(queued_ns) / 1_000_000_000)
             .unwrap_or(u64::MAX);
+        // [SÜRELİ-YOKLAMA] Başarısız yoklamanın ölçülen artışı boşaltılır; bayt sayımı (gerçek
+        // kuyruğun üst sınırı) onu da sınırlar: dönüş gecikmesi basamağı artış gibi görünür ama
+        // gönderilmiş fazla bayt yoksa kuyruk yazılmaz.
+        let probe_drain =
+            u64::try_from(u128::from(rate) * u128::from(probe_drain_ns) / 1_000_000_000)
+                .unwrap_or(u64::MAX);
         Some(LineGuardUpdate {
             rate_bps: rate,
-            backlog_bytes: by_bytes.min(by_delay),
+            backlog_bytes: by_bytes.min(by_delay.max(probe_drain)),
         })
     }
 }
