@@ -360,8 +360,6 @@ pub struct LineGuard {
     first_window_detail: Option<FirstWindowDetail>,
     /// [ÖLÇÜM-ARALIĞI] Oturumda en az bir ölçüm aralığı geldi (aralık kipi).
     interval_mode: bool,
-    /// [ÖLÇÜM-ARALIĞI · TOPARLANMA] Boşalma ölçüsüyle tavan açma sayısı (gözlem).
-    interval_raises: u64,
     /// [ÇİFT ARALIĞI] Son ACK aşağı yönlü örnek vermedi ve aralık kipindeydi: alıcının kapasite alt
     /// sınırı ([`Self::on_pair_rate`]) tavanı açabilir. Her ACK'in başında düşer.
     pair_allowed: bool,
@@ -457,7 +455,6 @@ impl LineGuard {
             first_window: None,
             first_window_detail: None,
             interval_mode: false,
-            interval_raises: 0,
             pair_allowed: false,
             pair_raises: 0,
             unmeasured_acks: 0,
@@ -785,36 +782,6 @@ impl LineGuard {
         Some(est)
     }
 
-    /// [ÖLÇÜM-ARALIĞI · TOPARLANMA] Aralığın yukarı yönlü kanıtı: alıcı M'yi göndericinin
-    /// gönderdiğinden belirgin hızlı aldıysa (`rx_span` < `send_span`, kuyruk boşalıyor) hat en az
-    /// `(first, last] tel baytı / rx_span` hızındadır: datagramlar darboğazdan hattın hızından hızlı
-    /// çıkamaz. Kuyruk boşalırken gönderim hattın altında kalmıştır; bu ölçü tavanı doğrudan o hıza
-    /// açar (yoklama adımlarını beklemeden). Ürün testi (düşüş-toparlanma, tohum 1, `5088d422`): hat
-    /// 20 s'de 12 500'e döndükten sonra tavan 38 s'de hâlâ 9 361'di (yoklama adımları ACK aralığıyla
-    /// ilerliyor), ikinci dosya 15,78 s (sınır 14 s). Kayıtta olmayan seq ya da kısa aralık: yok.
-    fn interval_drain_rate(&self, iv: ForwardInterval) -> Option<u64> {
-        let rec_of = |seq: u64| {
-            self.sent
-                .binary_search_by_key(&seq, |r| r.seq)
-                .ok()
-                .map(|i| self.sent[i])
-        };
-        let (first, last) = (rec_of(iv.first_seq)?, rec_of(iv.last_seq)?);
-        let send_span = last.send_ns.checked_sub(first.send_ns)?;
-        // En az yarım saniye ve 8 tam datagram: tek patlamanın sıkışması kapasite sayılmasın.
-        let wire = last.cum.saturating_sub(first.cum);
-        if iv.rx_span_ns < 500_000_000
-            || wire < 8 * (crate::rate::DEFAULT_MTU + self.line.datagram_overhead)
-        {
-            return None;
-        }
-        // Boşalma: alıcıdaki süre gönderim süresinin en az %10 altında.
-        if u128::from(iv.rx_span_ns) * 10 > u128::from(send_span) * 9 {
-            return None;
-        }
-        u64::try_from(u128::from(wire) * 1_000_000_000 / u128::from(iv.rx_span_ns)).ok()
-    }
-
     /// [ÖLÇÜM-ARALIĞI] Gözlem: (ölçülen aralık sayısı, aralıktan aşağı yönlü örnek sayısı, son
     /// aralığın kuyruk artışı `g`, ns).
     #[must_use]
@@ -832,8 +799,7 @@ impl LineGuard {
     /// (çiftin ikincisi ≥ [`crate::ack::PAIR_MIN_UDP_BYTES`]; küçük datagramda oran büyür, çeviri
     /// yine alt sınırdır).
     ///
-    /// Neden: tavan hattın altındayken kuyruk yoktur; boşalma ölçüsü ([`Self::interval_drain_rate`])
-    /// sessiz kalır ve yoklama (ACK başına, uygulama sınırlı aralıktan sonra kurulmaz) toparlanan
+    /// Neden: tavan hattın altındayken kuyruk yoktur; kuyruk artışı sessiz kalır ve yoklama (ACK başına, uygulama sınırlı aralıktan sonra kurulmaz) toparlanan
     /// hattı ACK aralığı 8–9 s olan dar dönüşte ancak üç ACK'te (≈ 25 s) bulur. Ürün testi
     /// (düşüş-toparlanma, `482ef1e1`, tohum 1–3): hat 20 s'de 12 500'e döndü, tavan 38–42 s'ye dek
     /// 7 086–8 376'da kaldı, ikinci dosya 17,3–21,9 s (sınır 14 s).
@@ -871,12 +837,6 @@ impl LineGuard {
         self.pair_raises
     }
 
-    /// [ÖLÇÜM-ARALIĞI · TOPARLANMA] Boşalma ölçüsüyle tavan açma sayısı (gözlem).
-    #[must_use]
-    pub fn interval_raises(&self) -> u64 {
-        self.interval_raises
-    }
-
     /// [ÖLÇÜM-ARALIĞI] [`Self::on_ack`] ve çerçevenin ölçüm aralığı (`None` = bu ACK'te ölçüm yok).
     /// Ölçüm varken aşağı yönlü örneği yalnız aralığın kuyruk artışı verir; cephe tahmincisinin
     /// kuralı modül belgesindedir ("Ölçüm aralığı").
@@ -890,7 +850,6 @@ impl LineGuard {
     ) -> Option<LineGuardUpdate> {
         self.pair_allowed = false;
         // Aralık örneği cephe zamanlamasından bağımsızdır; kayıtlar budanmadan önce.
-        let interval_up = interval.and_then(|iv| self.interval_drain_rate(iv));
         let interval_best = match interval {
             Some(iv) => {
                 self.interval_mode = true;
@@ -1153,24 +1112,12 @@ impl LineGuard {
             });
             self.pace_bps = up;
         }
-        // [ÖLÇÜM-ARALIĞI · TOPARLANMA] Aşağı yönlü örnek yokken boşalan kuyruk hattın tavandan
-        // belirgin hızlı olduğunu gösterdiyse tavan ölçülen boşalma hızına açılır (profil hattıyla
-        // sınırlı); süren yoklama düşer. Profil hattına ulaşınca koruma kalkar.
+        // [ÇİFT ARALIĞI] Aşağı yönlü örnek yokken (aralık kipinde) yukarı yönlü kanıt alıcının
+        // kapasite alt sınırıdır ([`Self::on_pair_rate`]). (8abcfbf6'nın boşalma ölçüsü kaldırıldı:
+        // aralığın tel baytı kuyrukta düşen datagramları da sayıyordu; taşan kuyrukta hızı şişirip
+        // yakınsamış tavanı yeniden açıyordu — starved_line_sim b, d2.)
         if best.is_none() && !fronts_decide {
             self.pair_allowed = true;
-            if let Some(up) =
-                interval_up.filter(|&u| u.saturating_mul(100) > self.pace_bps.saturating_mul(105))
-            {
-                let up = up.min(self.line.rate_bps);
-                self.probe = None;
-                self.pace_bps = up;
-                self.rate_bps = self
-                    .rate_bps
-                    .filter(|_| up < self.line.rate_bps)
-                    .map(|_| up);
-                self.raises = self.raises.saturating_add(1);
-                self.interval_raises = self.interval_raises.saturating_add(1);
-            }
         }
         let rate = self.rate_bps?;
         // [SÜRELİ-YOKLAMA] Yoklama sürerken kuyruk yazılmaz: yoklama hattı sınar, boşaltma onunla
@@ -1291,49 +1238,6 @@ mod tests {
         g.on_ack_measured(at, 0, false, seq, iv)
     }
 
-    /// [ÖLÇÜM-ARALIĞI · TOPARLANMA] Gönderici 8 800 B/s'de; hat önce 6 250 (kuyruk büyür, aralık
-    /// daralmayı ölçer), sonra 12 500'e döner (kuyruk boşalır, alıcı M'yi gönderimden hızlı alır).
-    /// Boşalma ölçüsü tavanı yoklama adımlarını beklemeden ≈ 12 500'e açar. Karşı-olgu: hat 6 250'de
-    /// kalırsa (boşalma yok) tavan açılmaz.
-    #[test]
-    fn draining_queue_reopens_the_ceiling_to_the_measured_line() {
-        let run = |recover: bool| {
-            let mut g = guard();
-            let send_rate = 8_800u64;
-            let n = 600u64;
-            let (mut free, mut arr) = (0u64, Vec::new());
-            for k in 0..n {
-                let s = k * 1200 * SEC / send_rate;
-                g.on_sent(k, s, 1172);
-                let real = if recover && k >= 250 { PROFILE } else { 6_250 };
-                let start = free.max(s);
-                free = start + 1200 * SEC / real;
-                arr.push(free + 300 * MS);
-            }
-            // ACK'ler her 40 seq; M iki ACK geriye (taban = iki önceki ACK'in en büyüğü + 1).
-            let acks: Vec<u64> = (40..n).step_by(40).collect();
-            let mut paces = Vec::new();
-            for (k, &seq) in acks.iter().enumerate() {
-                let first = if k >= 2 { Some(acks[k - 2] + 1) } else { None };
-                let _ = ack_m(&mut g, &arr, seq, 0, first);
-                paces.push(g.pace_bps());
-            }
-            (paces, g.interval_raises())
-        };
-        let (paces, raises) = run(true);
-        let low = *paces.iter().min().expect("ACK");
-        assert!(low < 7_000, "daralma ölçülmedi: {paces:?}");
-        assert!(raises >= 1, "boşalma ölçüsü tavanı açmadı: {paces:?}");
-        let last = *paces.last().expect("ACK");
-        assert!(last * 100 >= PROFILE * 94, "tavan hatta dönmedi: {paces:?}");
-        let (paces, raises) = run(false);
-        assert_eq!(
-            raises, 0,
-            "karşı-olgu: hat değişmeden tavan açıldı: {paces:?}"
-        );
-        assert!(*paces.last().expect("ACK") < 7_000, "karşı-olgu: {paces:?}");
-    }
-
     /// [ÇİFT ARALIĞI · #175 7068773849] Hat 6 250'de ölçülür; sonra gönderici tavanın altında
     /// (6 000 B/s) gönderir, yani kuyruk yoktur: boşalma ölçüsü ve kuyruk artışı sessizdir. Her
     /// gönderim yuvasında küçük bir datagramın (PTT gibi, 100 B gövde) 5 ms ardından tam bir datagram
@@ -1401,19 +1305,18 @@ mod tests {
                 }
                 paces.push((a, g.pace_bps()));
             }
-            (paces, g.pair_raises(), g.interval_raises())
+            (paces, g.pair_raises())
         };
-        let (paces, pair, drain) = run(true);
+        let (paces, pair) = run(true);
         assert!(
             paces.iter().any(|&(_, p)| p < 7_000),
             "daralma ölçülmedi: {paces:?}"
         );
-        assert_eq!(drain, 0, "kuyruk yok, boşalma ölçüsü sessiz: {paces:?}");
         assert!(pair >= 1, "alt sınır tavanı açmadı: {paces:?}");
         // Evre 2'nin ilk tam aralığı (ACK 320, M ≥ 241) içinde profile döner.
         let at = paces.iter().find(|&&(_, p)| p == PROFILE).map(|&(a, _)| a);
         assert!(at.is_some_and(|a| a <= 320), "profile dönüş geç: {paces:?}");
-        let (paces, pair, _) = run(false);
+        let (paces, pair) = run(false);
         assert_eq!(
             pair, 0,
             "karşı-olgu: hat değişmeden alt sınır tavanı açtı: {paces:?}"

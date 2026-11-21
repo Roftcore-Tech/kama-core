@@ -133,3 +133,56 @@ fn rx_span_covers_arrivals_from_before_bitmap_was_enabled() {
         "M = [0, {largest}]"
     );
 }
+
+/// [ALARM ACK'İ] Daralma alarmının ACK'i yalnız son çıkan ACK'ten bu yana olanı kapsar (kanıt
+/// aralığının alt ucu = son ACK'in en büyüğü + 1), alarmsız ACK'ler iki ACK geriye uzanır. Alarm
+/// ACK'i bu yüzden daha küçüktür ve daralmadan kısa süre sonra çıkar. Düzenek: 1 000 B gövde, 80 ms
+/// arayla (12 500 B/s), 30 s'de aralık 160 ms'ye çıkar (hat yarıya iner).
+#[test]
+fn alarm_ack_covers_only_the_interval_since_the_last_ack() {
+    let mut r = rx();
+    let drop_at = 30_000 * MS;
+    let mut t = 1_000 * MS;
+    let mut seq = 0u64;
+    let mut frames: Vec<(u64, AckFrame, u64)> = Vec::new();
+    while t < 45_000 * MS {
+        let alarms = r.diag_drop_alarms();
+        r.set_next_datagram_bytes(1_000);
+        for f in arrive(&mut r, seq, t) {
+            frames.push((t, f, alarms));
+        }
+        seq += 1;
+        t += if t < drop_at { 80 * MS } else { 160 * MS };
+    }
+    let bm: Vec<_> = frames
+        .iter()
+        .filter(|(_, f, _)| f.bitmap.is_some())
+        .collect();
+    assert!(r.diag_drop_alarms() >= 1, "daralma alarmı yok");
+    let mut prev: Vec<u64> = Vec::new();
+    let mut alarm_frames = 0;
+    for (at, f, _) in &bm {
+        let largest = u64::from(f.largest_seq);
+        let (lo, _) = f.evidence_span_full(largest + 1).expect("kanıt");
+        let wire = f.encode().len();
+        let after_drop = *at >= drop_at;
+        if prev.len() >= 2 {
+            let one_back = prev[prev.len() - 1] + 1;
+            let two_back = prev[prev.len() - 2] + 1;
+            if lo == one_back && one_back != two_back {
+                alarm_frames += 1;
+                assert!(after_drop, "alarm ACK'i daralmadan önce ({at})");
+                assert!(
+                    *at - drop_at <= 3_000 * MS,
+                    "alarm ACK'i geç: +{} ms",
+                    (*at - drop_at) / MS
+                );
+                assert!(wire < 60, "alarm ACK'i küçük değil: {wire} B");
+            } else {
+                assert_eq!(lo, two_back, "alarmsız ACK iki ACK geriye uzanır ({at})");
+            }
+        }
+        prev.push(largest);
+    }
+    assert!(alarm_frames >= 1, "bir ACK geriye uzanan alarm ACK'i yok");
+}

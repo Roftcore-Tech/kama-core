@@ -444,6 +444,7 @@ impl Receiver {
             {
                 self.drop_alarm = true;
                 self.diag_drop_alarms += 1;
+                self.pair.arm_rise();
             }
         }
 
@@ -1309,9 +1310,20 @@ impl Receiver {
         if self.bitmap_rx() && self.have_recv {
             // [ACK-BITMAP] [taban, largest] aralığında tam bilgi (bkz. `crate::ack` 0x15).
             let largest = self.largest_seq;
-            let base = self
-                .bitmap_base()
-                .max(largest.saturating_sub(crate::ack::ACK_BITMAP_MAX_BITS));
+            // [ALARM ACK'İ] Daralma/yükseliş alarmının ACK'i yalnız son çıkan ACK'ten bu yana olanı
+            // kapsar (taban bir ACK geride): çerçeve küçük kalır, jetonu daha erken birikir ve
+            // 62 B/s dönüşte daha kısa serileşir (129 B ≈ 2,1 s; bir aralıklık bitmap ≈ 1,1–1,3
+            // s). Önceki ACK'in aralığı bu çerçevede tekrar edilmez: önceki ACK yolda kaybolduysa
+            // gönderici o aralığı kapsam boşluğu kuralıyla eşiklere açar (gereksiz yeniden iletim,
+            // tıkanma yok).
+            let base = if self.drop_alarm {
+                self.bitmap_emitted
+                    .back()
+                    .map_or_else(|| self.bitmap_base(), |&l| l + 1)
+            } else {
+                self.bitmap_base()
+            }
+            .max(largest.saturating_sub(crate::ack::ACK_BITMAP_MAX_BITS));
             let (rx_span, span_first) = self.rx_span_field(base, largest);
             let mut frame = AckFrame::bitmap_from_received(
                 self.received.range(base..largest).copied(),
@@ -1456,6 +1468,8 @@ struct PairRate {
     reported: Option<u64>,
     /// Bu ACK aralığında yükseliş alarmı verildi.
     alarmed: bool,
+    /// Yükseliş alarmı kurulu: daralma alarmından sonra, ilk yükselişe dek (bir kez).
+    armed: bool,
 }
 
 /// [ÇİFT ARALIĞI] Çift aralığının alt sınırı (ns): daha kısa aralık zamanlayıcı/teslim titreşimidir.
@@ -1486,18 +1500,29 @@ impl PairRate {
         self.alarmed = false;
     }
 
-    /// [YÜKSELİŞ ALARMI] Bu ACK aralığındaki değer son bildirilenin %25 üstüne çıktı (ACK başına
-    /// bir kez; referans yoksa — oturumun ilk ölçümü — alarm yok). Toparlanan hattı ölçen göndericiye
-    /// bilgiyi bütçe aralığını (62 B/s dönüşte ≈ 8 s) beklemeden taşır; bedeli daralma alarmıyla
-    /// aynıdır (ACK kendi jetonunu öder, akış-sonu yedeğinden).
+    /// [YÜKSELİŞ ALARMI] Daralma alarmı yükseliş alarmını kurar; referans daralmadan sonraki ilk
+    /// bildirilen değerdir (darboğazda kuyruk varken çift değeri hattın kendisidir).
+    fn arm_rise(&mut self) {
+        self.armed = true;
+        self.reported = None;
+    }
+
+    /// [YÜKSELİŞ ALARMI] Yalnız daralma alarmından sonra (kurulu), bir kez: bu ACK aralığındaki
+    /// değer daralmadan sonra bildirilenin %25 üstüne çıktı. Alt sınır göndericinin aralığına da
+    /// bağlıdır (aralıklı gönderimde küçük); hat değişmeden gönderici hızlanınca da yükselir. Bu
+    /// yüzden kanıtlı bir daralma olmadan alarm yoktur (ürün testi, dönüş gecikmesi değişken, tohum
+    /// 3, `b7fcc310`: başlangıçtaki yarı profil gönderimi referans olmuş, sahte alarm akış-sonu
+    /// yedeğini harcamış, sonraki ACK 8,6 s gecikmiş, dosya 19,49 s). Toparlanan hattın bilgisini
+    /// bütçe aralığını (62 B/s dönüşte ≈ 8 s) beklemeden taşır; ACK kendi jetonunu öder.
     fn rise_alarm(&mut self) -> bool {
-        let Some(r) = self.reported else {
+        let Some(r) = self.reported.filter(|_| self.armed) else {
             return false;
         };
         if self.alarmed || u128::from(self.top[1]) * 100 <= u128::from(r) * 125 {
             return false;
         }
         self.alarmed = true;
+        self.armed = false;
         true
     }
 
@@ -1585,8 +1610,19 @@ mod tests {
         assert_eq!(pr.field(), before, "tek sıkışmış çift değeri büyüttü");
         pr.on_ack();
         assert_eq!(pr.field(), crate::ack::PAIR_RATE_NONE, "ACK'te sıfırlanır");
-        // Yükseliş alarmı: referans (son bildirilen, aralıklı gönderim) + hatta yakın çiftler.
-        assert!(!pr.rise_alarm(), "ölçüm yokken alarm");
+        // Yükseliş alarmı: daralma alarmı olmadan yok (referans var ama kurulu değil).
+        let mut unarmed = pr;
+        unarmed.reported = Some(8_000);
+        unarmed.top = [12_000, 12_000];
+        assert!(!unarmed.rise_alarm(), "daralma olmadan alarm");
+        pr.arm_rise();
+        assert!(!pr.rise_alarm(), "referans yokken alarm");
+        // Daralmadan sonraki ilk bildirim referans olur (aralıklı gönderim değeri).
+        for k in 0..20u64 {
+            pr.on_arrival(150 * sec + k * (1046 + OVH) * sec / 8_376, Some(1046));
+        }
+        assert!(!pr.rise_alarm(), "referans bildirilmeden alarm");
+        pr.on_ack();
         let t1 = 200 * sec;
         let period = (86 + 1046 + 2 * OVH) * sec / 8_376;
         let mut free = 0u64;
