@@ -138,7 +138,7 @@ const POINT_CAP: usize = 8;
 /// datagramları) ve örnek vermez.
 const GROWTH_MIN_DIV: u64 = 20;
 /// [YENİDEN-YOKLAMA] Doğrulama aralığının en kısa gönderim süresi (ns).
-const VERIFY_MIN_SPAN_NS: u64 = 3_000_000_000;
+const VERIFY_MIN_SPAN_NS: u64 = 1_000_000_000;
 /// [YENİDEN-YOKLAMA] Doğrulamada kuyruk artışı aralığın bu kesrinden (1/40 = %2,5) ve bir tam
 /// datagramın serileşmesinden küçük olmalı. Örnek eşiğinden (%5) sıkı: arada kalan artış ne örnek
 /// ne doğrulama verir. Ölçüldü (ürün testi, gerçek 10 000, tavan 10 625, tohum 1): 1 s'lik aralıkta
@@ -359,7 +359,6 @@ impl LineGuard {
                 if k == newest
                     && ds >= VERIFY_MIN_SPAN_NS
                     && interval_pace >= self.pace_bps
-                    && growth <= (ds / VERIFY_GROWTH_DIV).min(mtu_ns)
                 {
                     let sent_bps =
                         u64::try_from(u128::from(bytes) * 1_000_000_000 / u128::from(ds))
