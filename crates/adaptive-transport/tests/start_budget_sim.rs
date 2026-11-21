@@ -11,10 +11,11 @@
 //! * göndericiye her ACK'ten önce çerçevenin `arrival_rate` alanı verilir
 //!   (`Sender::note_ack_arrival_rate`; ürün ACK çözme yolu).
 //!
-//! * göndericiye her ACK'ten önce çerçevenin ölçüm aralığı verilir
-//!   (`Sender::note_ack_forward_interval`; sözleşme #175 7067964700 §2–3). Düzenek alıcının yerine
-//!   hesaplar (`tests/starved_line_sim.rs` gibi), tabanı gerçek alıcının `bitmap_base`'i gibi alır:
-//!   M = iki ACK öncesinin en büyük seq'i + 1'den bu ACK'in en büyüğüne dek alınan seq'ler.
+//! * göndericiye her ACK'ten önce çerçevenin çift alt sınırı ve ölçüm aralığı verilir
+//!   (`Sender::note_ack_pair_rate`, `Sender::note_ack_forward_interval`; sözleşme #175 7067964700
+//!   §2–3; ürün çalışma zamanının sırası). Düzenek alıcının yerine hesaplar, alıcının bugünkü
+//!   kuralıyla (`RxMirror`; İŞ-35 gece hizası: aralık bir ACK geriden, `[span_first, largest]`;
+//!   önceki düzenek iki ACK geriden kuruyordu ve `pair_rate` vermiyordu).
 //!
 //! `old_receiver` kolu boy vermez ve ölçüm aralığı taşımaz: eski alıcı gibi alan daima
 //! sentinel'dir (uyum).
@@ -28,6 +29,9 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use adaptive_transport::ack::{
+    ACK_BITMAP_MAX_BITS, ACK_DELAY_UNIT_US, PAIR_MIN_UDP_BYTES, PAIR_RATE_NONE, RX_SPAN_NONE,
+};
 use adaptive_transport::arrival_rate::FIRST_WINDOW_BYTES;
 use adaptive_transport::line_guard::{FirstWindowOutcome, START_BURST_NS};
 use adaptive_transport::pacer::LineModel;
@@ -161,8 +165,90 @@ impl Bottleneck {
     }
 }
 
-/// Ölçüm aralığı (sözleşme #175 7067964700 §2): (m_first, largest, rx_span, M).
-type IntervalMsg = (u64, u64, Option<u64>, Vec<u64>);
+/// Ölçüm aralığı (sözleşme #175 7067964700 §2) ve çift alt sınırı: (m_first, largest, rx_span, M,
+/// pair_rate).
+type IntervalMsg = (u64, u64, Option<u64>, Vec<u64>, u16);
+
+/// [İŞ-35 GECE HİZASI] Alıcının 0x15 alanlarının kuralı (`receiver.rs`, alıcı `482ef1e1` +
+/// `df0630c3`), düzeneğin 0x14 alıcısının yanında aynı varışlarla üretilir:
+/// * ölçüm aralığı `[span_first, largest]` (`Receiver::rx_span_field`): `span_first` = son çıkan
+///   ACK'in en büyüğünden sonraki ilk alınan seq (bir ACK geriye; çıkan ACK yoksa bitmap tabanından,
+///   `bitmap_base`: iki ACK öncesinin largest'ı + 1, `ACK_BITMAP_MAX_BITS` ile kırpılmış);
+///   `rx_span = ilk_varış(largest) − ilk_varış(span_first)`, 256 µs'ye aşağı; `span_first ≥ largest`
+///   ya da 0xFFFE birimi aşan süre → ölçüm yok (span_first = largest). M = alınan seq'lerin bu
+///   aralıktakileri (ürün çalışma zamanı: çerçevenin teyit ettiği PN'ler `[span_first, largest]`);
+/// * çift alt sınırı (`receiver::PairRate`): her varışta (kopya dahil) önceki varışa aralık `g` ve
+///   bu datagramın UDP gövdesi `b`; `b ≥ PAIR_MIN_UDP_BYTES` ve `g ≥ 2 ms` ise `b / g`; alan son
+///   ACK'ten bu yana en büyük İKİNCİ değer (yoksa `PAIR_RATE_NONE`), ACK'te sıfırlanır.
+///
+/// Alıcının 0x15 çerçevesinin kendisi (boyu, daralma alarmının erken ACK'i) bu düzenekte yoktur: ACK
+/// kadansı 0x14 alıcısınındır. (Gerçek alıcı bitmap kipinde bu düzenekte yeniden sıralamada panik
+/// verdi: en büyüğü ilerlemeyen ACK'te `span_first` aralığı `largest + 1 ..= largest`.)
+#[derive(Default)]
+struct RxMirror {
+    first_arrival: HashMap<u64, u64>,
+    received: std::collections::BTreeSet<u64>,
+    /// Son iki çıkan ACK'in largest'ı (alıcının `bitmap_emitted`).
+    emitted: VecDeque<u64>,
+    pair_prev: Option<u64>,
+    pair_top: [u64; 2],
+}
+
+impl RxMirror {
+    fn on_arrival(&mut self, seq: u64, udp: u64, now: u64) {
+        if let Some(p) = self.pair_prev {
+            let g = now.saturating_sub(p);
+            if udp >= PAIR_MIN_UDP_BYTES && g >= 2 * MS {
+                let r = udp * SEC / g;
+                if r > self.pair_top[0] {
+                    self.pair_top = [r, self.pair_top[0]];
+                } else if r > self.pair_top[1] {
+                    self.pair_top[1] = r;
+                }
+            }
+        }
+        self.pair_prev = Some(now);
+        self.first_arrival.entry(seq).or_insert(now);
+        self.received.insert(seq);
+    }
+
+    /// Alıcı `largest` en büyüklü bir ACK çıkardı: (span_first, largest, rx_span, M, pair_rate).
+    fn on_ack(&mut self, largest: u64) -> (u64, u64, Option<u64>, Vec<u64>, u16) {
+        let base = if self.emitted.len() >= 2 {
+            self.emitted.front().map_or(0, |&l| l + 1)
+        } else {
+            0
+        }
+        .max(largest.saturating_sub(ACK_BITMAP_MAX_BITS));
+        let anchor = self.emitted.back().map_or(base, |&l| l + 1).max(base);
+        let first = (anchor <= largest)
+            .then(|| self.received.range(anchor..=largest).next().copied())
+            .flatten()
+            .filter(|&f| f < largest);
+        let span = first.and_then(|f| {
+            let d = self.first_arrival[&largest].saturating_sub(self.first_arrival[&f]);
+            let u = d / (ACK_DELAY_UNIT_US * 1000);
+            (u < u64::from(RX_SPAN_NONE)).then_some(u * ACK_DELAY_UNIT_US * 1000)
+        });
+        let first = if span.is_some() {
+            first.unwrap_or(largest)
+        } else {
+            largest
+        };
+        let m: Vec<u64> = self.received.range(first..=largest).copied().collect();
+        let pair = if self.pair_top[1] == 0 {
+            PAIR_RATE_NONE
+        } else {
+            u16::try_from(self.pair_top[1].min(u64::from(PAIR_RATE_NONE) - 1)).unwrap_or(0)
+        };
+        self.pair_top = [0, 0];
+        if self.emitted.len() >= 2 {
+            self.emitted.pop_front();
+        }
+        self.emitted.push_back(largest);
+        (first, largest, span, m, pair)
+    }
+}
 
 struct ReturnLine {
     free_at: u64,
@@ -334,9 +420,7 @@ fn run_with(
         fwd.drop_plan = DropPlan::WaitOpener;
     }
     let mut rx_perturb = RxPerturb::new(perturb);
-    let mut first_arrival: HashMap<u64, u64> = HashMap::new();
-    let mut received: Vec<u64> = Vec::new();
-    let mut ack_fronts: VecDeque<u64> = VecDeque::new();
+    let mut rx = RxMirror::default();
     let mut rate_trace: Vec<(u64, Option<u64>)> = Vec::new();
     let mut min_pace: Option<u64> = None;
     let mut pace_trace: Vec<(u64, u64)> = Vec::new();
@@ -439,10 +523,7 @@ fn run_with(
             arrived.push((seq, uid, udp));
         }
         for (seq, uid, udp) in rx_perturb.apply(arrived, now) {
-            if let std::collections::hash_map::Entry::Vacant(e) = first_arrival.entry(seq) {
-                e.insert(now);
-                received.push(seq);
-            }
+            rx.on_arrival(seq, udp + rx_perturb.size_skew(), now);
             if new_receiver {
                 r.set_next_datagram_bytes(udp + rx_perturb.size_skew());
             }
@@ -464,37 +545,18 @@ fn run_with(
                     voice_arrived.entry(u).or_insert(now);
                 }
             }
-            acks.extend(out.ack);
+            acks.extend(
+                out.ack
+                    .map(|f| (f, rx.on_ack(r.largest_seq().unwrap_or(0)))),
+            );
         }
-        acks.extend(r.on_ack_timer(now));
-        for frame in acks {
-            let largest = r.largest_seq().unwrap_or(0);
+        acks.extend(
+            r.on_ack_timer(now)
+                .map(|f| (f, rx.on_ack(r.largest_seq().unwrap_or(0)))),
+        );
+        for (frame, (m_first, largest, rx_span, m, pair_rate)) in acks {
             let expected = largest + 1;
             let udp = frame.encode().len() as u64 + ACK_SEAL;
-            // Ölçüm aralığı (sözleşme §2; gerçek alıcının `bitmap_base`'i gibi): M = iki ACK
-            // öncesinin en büyük seq'i + 1'den bu ACK'in en büyüğüne dek alınan seq'ler; `rx_span`
-            // alıcı damgalarıyla (bozulmalar dahil), 256 µs'ye aşağı.
-            let base = if ack_fronts.len() >= 2 {
-                ack_fronts[ack_fronts.len() - 2] + 1
-            } else {
-                0
-            };
-            let mut m: Vec<u64> = received
-                .iter()
-                .copied()
-                .filter(|&q| q >= base && q <= largest)
-                .collect();
-            m.sort_unstable();
-            let m_first = m.first().copied().unwrap_or(largest);
-            let rx_span = (m_first != largest)
-                .then(|| first_arrival[&largest].saturating_sub(first_arrival[&m_first]))
-                .map(|d| d / 256_000)
-                .filter(|&u| u <= 0xFFFE)
-                .map(|u| u * 256_000);
-            if ack_fronts.len() >= 3 {
-                ack_fronts.pop_front();
-            }
-            ack_fronts.push_back(largest);
             ret.send(
                 now,
                 udp,
@@ -503,11 +565,11 @@ fn run_with(
                     acked_seqs: frame.acked_full(expected),
                     ack_delay: frame.ack_delay_duration(),
                 },
-                (m_first, largest, rx_span, m),
+                (m_first, largest, rx_span, m, pair_rate),
             );
         }
         while ret.wire.front().is_some_and(|&(t, _, _, _, _)| t <= now) {
-            let (_, udp, arrival_rate, ack, (first, last, rx_span, m)) =
+            let (_, udp, arrival_rate, ack, (first, last, rx_span, m, pair_rate)) =
                 ret.wire.pop_front().expect("var");
             first_ack_ns.get_or_insert(now);
             s.observe_ack_feedback(
@@ -521,7 +583,9 @@ fn run_with(
             );
             s.note_ack_arrival_rate(arrival_rate);
             // Eski alıcı ölçüm aralığı da taşımaz (V2 çerçevesi).
+            // Ürün çalışma zamanının sırası: `pair_rate`, ölçüm aralığı, sonra ACK.
             if new_receiver {
+                s.note_ack_pair_rate(pair_rate);
                 s.note_ack_forward_interval(first, last, rx_span, &m);
             }
             let decs = s.on_event(Event::AckReceived(ack), now);
