@@ -11,10 +11,13 @@
 //! * Alıcının ACK bütçesi dönüş hızından ayrı verilebilir (`ack_return_bw`): bitmap kolunun sık
 //!   ACK'leri (ürün testi, dönüş-gecikmesi hücresi: ACK aralığı ≈ 1,2–2,5 s).
 //! * Ölçüm aralığı (sözleşme #175 7067964700 §2): bu düzenek alıcının yerine hesaplar, çünkü
-//!   alıcı tarafı (`receiver.rs`) koordinatörün işidir. M = alıcının aldığı seq'ler, iki ACK
-//!   öncesinin en büyük seq'inden bu ACK'in en büyüğüne; `rx_span = ilk_varış(largest) −
+//!   alıcı tarafı (`receiver.rs`) koordinatörün işidir. M = alıcının aldığı seq'ler, gerçek
+//!   alıcının tabanından (`bitmap_base`: iki ACK öncesinin largest'ı + 1; İŞ-35 öncesi düzenek
+//!   largest'ı dahil alıyordu) bu ACK'in en büyüğüne; `rx_span = ilk_varış(largest) −
 //!   ilk_varış(m_first)`, 256 µs'ye aşağı yuvarlanır; m_first = largest ya da 0xFFFE birimi aşan
-//!   süre → ölçüm yok. Gönderici girdisi `Sender::note_ack_forward_interval` (sözleşme §3).
+//!   süre → ölçüm yok. `no_interval` belirli bir zaman aralığında alıcının çıkardığı ACK'lerin
+//!   ölçümünü siler (aralık kipinde ölçümsüz ACK dizisi). Gönderici girdisi
+//!   `Sender::note_ack_forward_interval` (sözleşme §3).
 //!   `interval = false` kolu bu çağrıyı yapmaz: eski cephe tahmincisi (karşı-olgu).
 //!
 //! # Ölçülen
@@ -98,6 +101,9 @@ struct Scenario {
     ack_return_bw: u64,
     /// Ölçüm aralığı göndericiye verilir mi (`false` = karşı-olgu: eski cephe tahmincisi).
     interval: bool,
+    /// Alıcının bu aralıkta (başlangıç, bitiş; ns, alıcıda ACK'in çıkış anı) çıkardığı ACK'ler ölçüm
+    /// taşımaz (`rx_span` = yok): aralık kipinde ölçümsüz ACK dizisi.
+    no_interval: Option<(u64, u64)>,
     seed: u64,
     t_max_ns: u64,
 }
@@ -121,6 +127,7 @@ impl Scenario {
             copy_scale_min: Some(PRODUCT_MIN_COPIES),
             ack_return_bw: PROFILE_DOWN,
             interval: true,
+            no_interval: None,
             seed,
             t_max_ns: 60 * SEC,
         }
@@ -220,6 +227,8 @@ struct Outcome {
     /// (gönderim anı, darboğaz beklemesi).
     waits: Vec<(u64, u64)>,
     drops_queue: usize,
+    /// Kuyrukta düşmelerin anları (göndericinin hatta verdiği an).
+    drop_times: Vec<u64>,
     /// Korumanın hız tahmininin değiştiği anlar: (an, tahmin).
     rate_trace: Vec<(u64, Option<u64>)>,
     guard: Option<(Option<u64>, u64)>,
@@ -228,7 +237,11 @@ struct Outcome {
     text_delay_ns: Option<u64>,
     ptt_wire_bytes: u64,
     acks_at: Vec<u64>,
+    /// `acks_at` ile aynı sırada: ACK ölçüm aralığı taşıyor muydu.
+    ack_measured: Vec<bool>,
     interval: Option<(u64, u64, Option<i64>)>,
+    /// Gönderim tavanının değiştiği anlar: (an, tavan B/s).
+    pace_trace: Vec<(u64, u64)>,
 }
 
 impl Outcome {
@@ -247,6 +260,50 @@ impl Outcome {
             .map(|&(_, d)| d.unwrap_or(u64::MAX))
             .max()
             .unwrap_or(0)
+    }
+
+    /// Gönderim tavanının en küçüğü (ilk ACK'ten sonra; iz boşsa profil hattı).
+    fn min_pace(&self) -> u64 {
+        self.pace_trace
+            .iter()
+            .map(|&(_, p)| p)
+            .min()
+            .unwrap_or(PROFILE_UP)
+    }
+
+    /// Göndericiye üst üste gelen ölçümsüz ACK'lerin en uzun dizisi: (uzunluk, dizinin ikinci
+    /// ACK'inin varışı, diziden sonraki ilk ölçülü ACK'in varışı).
+    fn longest_unmeasured_run(&self) -> (usize, Option<u64>, Option<u64>) {
+        let mut best = (0usize, None, None);
+        let mut i = 0;
+        while i < self.ack_measured.len() {
+            if self.ack_measured[i] {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < self.ack_measured.len() && !self.ack_measured[i] {
+                i += 1;
+            }
+            if i - start > best.0 {
+                best = (
+                    i - start,
+                    self.acks_at
+                        .get(start + 1)
+                        .copied()
+                        .filter(|_| i - start >= 2),
+                    self.acks_at.get(i).copied(),
+                );
+            }
+        }
+        best
+    }
+
+    fn drops_between(&self, from: u64, to: u64) -> usize {
+        self.drop_times
+            .iter()
+            .filter(|&&t| t >= from && t < to)
+            .count()
     }
 
     fn max_wait_between(&self, from: u64, to: u64) -> u64 {
@@ -330,6 +387,8 @@ fn run(sc: &Scenario) -> Outcome {
     let mut tx = TxCount::default();
     let mut rate_trace: Vec<(u64, Option<u64>)> = Vec::new();
     let mut acks_at = Vec::new();
+    let mut pace_trace: Vec<(u64, u64)> = Vec::new();
+    let mut ack_measured = Vec::new();
     let emit = |decs: Vec<TransmitDecision>, now: u64, fwd: &mut Bottleneck, tx: &mut TxCount| {
         for d in decs {
             if d.kind == TransmitKind::CsProbe {
@@ -453,9 +512,10 @@ fn run(sc: &Scenario) -> Outcome {
             let largest = r.largest_seq().unwrap_or(0);
             let expected = largest + 1;
             let udp = frame.encode().len() as u64 + ACK_SEAL;
-            // Ölçüm aralığı (sözleşme §2): iki ACK öncesinin cephesinden bu ACK'in en büyüğüne.
+            // Ölçüm aralığı (sözleşme §2): gerçek alıcı gibi iki ACK öncesinin cephesinin bir
+            // sonrasından (`bitmap_base` = largest(n−2) + 1) bu ACK'in en büyüğüne.
             let base = if ack_fronts.len() >= 2 {
-                ack_fronts[ack_fronts.len() - 2]
+                ack_fronts[ack_fronts.len() - 2] + 1
             } else {
                 0
             };
@@ -470,7 +530,8 @@ fn run(sc: &Scenario) -> Outcome {
                 .then(|| first_arrival[&largest].saturating_sub(first_arrival[&m_first]))
                 .map(|d| d / 256_000)
                 .filter(|&u| u <= 0xFFFE)
-                .map(|u| u * 256_000);
+                .map(|u| u * 256_000)
+                .filter(|_| !sc.no_interval.is_some_and(|(a, b)| now >= a && now < b));
             if ack_fronts.len() >= 3 {
                 ack_fronts.pop_front();
             }
@@ -490,6 +551,7 @@ fn run(sc: &Scenario) -> Outcome {
             let (_, udp, arrival_rate, ack, (first, last, rx_span, m)) =
                 ret.wire.pop_front().expect("var");
             acks_at.push(now);
+            ack_measured.push(rx_span.is_some());
             s.observe_ack_feedback(
                 AckObservation {
                     wire_bytes: udp,
@@ -508,6 +570,10 @@ fn run(sc: &Scenario) -> Outcome {
             let g = s.diag_line_guard().and_then(|g| g.0);
             if rate_trace.last().map(|&(_, r)| r) != Some(g) {
                 rate_trace.push((now, g));
+            }
+            let p = s.diag_line_guard_pace().map_or(0, |p| p.0);
+            if pace_trace.last().map(|&(_, q)| q) != Some(p) {
+                pace_trace.push((now, p));
             }
         }
         let voice_left = (0..voice_offered.len() as u64).any(|v| !voice_arrived.contains_key(&v));
@@ -538,13 +604,16 @@ fn run(sc: &Scenario) -> Outcome {
         file_done_ns,
         waits: fwd.waits.clone(),
         drops_queue: fwd.dropped_queue.len(),
+        drop_times: fwd.dropped_queue.clone(),
         rate_trace,
         guard: s.diag_line_guard(),
         voice,
         text_delay_ns: sc.text_at_ns.zip(text_arrived).map(|(a, b)| b - a),
         ptt_wire_bytes: tx.ptt_wire_bytes,
         acks_at,
+        ack_measured,
         interval: s.diag_line_guard_interval(),
+        pace_trace,
     }
 }
 
@@ -632,6 +701,8 @@ fn converged_at(o: &Outcome, real: u64) -> Option<u64> {
 
 const DROP_AT_NS: u64 = 8 * SEC;
 const DROP_TO: u64 = 6_250;
+/// Düşüşten hemen sonra sunulan metin birimi (b).
+const DROP_TEXT_AT_NS: u64 = 8_400 * MS;
 
 fn drop_scenario(seed: u64, interval: bool) -> Scenario {
     Scenario {
@@ -658,9 +729,33 @@ fn drop_scenario(seed: u64, interval: bool) -> Scenario {
 /// * yakınsamadan 9 s sonra planlanan PTT demetleri sıralı teslimde ≤ 1 s (düşüş anında kuyrukta
 ///   düşen demetlerin ARQ kurtarması iki ACK turu sürer).
 ///
+/// **Daralma anı (İŞ-35 AÇIK 3).** Düşüşten (8 s) itibaren en kötü PTT demeti ve düşüşten hemen
+/// sonra sunulan metin ([`DROP_TEXT_AT_NS`], 8,4 s) kabul sınırlarıyla (1 s, 1 s) iddia edilir.
+/// PTT iddiası bu düzenekte FİZİKSEL OLARAK SAĞLANAMAZ ve test bu yüzden kırmızıdır (gizlenmez).
+/// Alt sınır, hiçbir gönderici politikasına bağlı olmadan:
+/// * Düşüşe dek gönderici `S` = 12 500 B/s'de gönderir (dürüst dosya sınırı 14 s bunu ister: bu
+///   düzenekte dürüst dosya `S` = 12 500'de 12,26–14,74 s sürüyor, (a)'nın aday kolu). Gerçek hat `L` = 6 250: FIFO
+///   kuyruğu göndericinin tepkisine dek `S/L − 1` = 1 s/s büyür.
+/// * Algılama gecikmesi `D` (düşüşten göndericinin ilk karar verebildiği ana): ileri yayılım
+///   0,3 s, çözünürlüğü aşan artış (≥ bir MTU serileşmesi ≈ 0,1 s), ACK kadansı (0…`T_ack`),
+///   ACK'in 62 B/s'de serileşmesi (en küçük çerçeve 37 + 28 B → 1,05 s; burada 65–129 B → 1,5–2,5 s)
+///   ve dönüş yayılımı 0,3 s toplamı. En iyi durumda `D` ≥ 0,3 + 0,1 + 0 + 1,05 + 0,3 = 1,75 s; bu düzenekte
+///   (ACK aralığı ≈ 2,1 s, çerçeve ≈ 2 s) ≈ 3,3–4,1 s (ölçülen ilk örnek 11,25–12,08 s).
+/// * Algılama anında kuyruk ≥ `(S/L − 1)·D` ≥ 1,75 s. FIFO'dur: o anda kuyruğa girmiş bir PTT
+///   demeti, gönderici her şeyi durdursa da, kuyruğun önündeki baytları bekler: gecikme ≥ 1,75 s +
+///   0,3 s yayılım ≥ 2,05 s > 1 s. FIFO 64 paketle dolunca (≈ 2,9 s) kuyrukta düşen PTT kopyaları
+///   ARQ turunu bekler (daha da geç).
+/// * PTT ≤ 1 s için kuyruk ≤ 1 − 0,3 − demetin serileşmesi (≈ 0,01 s) ≈ 0,69 s kalmalıdır; buna
+///   düşüş anında izinli gönderim `S ≤ L·(1 + 0,69/D)`: en iyi `D` = 1,75 s ile 8 714 B/s, bu
+///   düzeneğin `D` ≈ 3,3 s'siyle ≈ 7 560 B/s. İkisi de dürüst dosya sınırının istediği 12 500'ün
+///   altında: iki kabul sınırı (dürüst dosya 14 s ve daralma anında PTT 1 s) bu fizik altında
+///   birlikte sağlanamaz. Sınırlar sonuca göre değiştirilmedi.
+/// * Metin (8,4 s, kopyasız öncelikli birim): kuyruk 8,4 s'de ≈ 0,4 s → ≈ 0,7 s; ilk iletimi
+///   rastgele kayıpta düşerse (%20) kurtarma bir geri bildirim turu (≥ `D`) bekler ve 1 s'yi aşar:
+///   metin iddiası tohuma bağlıdır, fiziksel olarak garanti edilemez.
+///
 /// Düşüşten yakınsamaya dek kuyruk FIFO'yla (64 paket) sınırlıdır; bu aralıkta PTT 1 s'yi aşar.
-/// Bu, kullanılan geri bildirim gecikmesinin (≈ 3–4 s) ve FIFO modelinin sonucudur, bütün
-/// politikalar için imkânsızlık hükmü değildir.
+/// Bu, kullanılan geri bildirim gecikmesinin (≈ 3–4 s) ve FIFO modelinin sonucudur.
 ///
 /// Karşı-olgu: eski cephe tahmincisi aynı koşuda yakınsama sınırını üç tohumda da aşar (tahmin
 /// düşüşten 24–26 s sonra oturur).
@@ -668,8 +763,12 @@ fn drop_scenario(seed: u64, interval: bool) -> Scenario {
 fn b_real_capacity_drop_is_detected_and_the_queue_drains() {
     let t_ret = (129 + OVH) * SEC / PROFILE_DOWN + ONE_WAY_NS;
     let wait_bound = 2 * (MTU + OVH) * SEC / DROP_TO;
+    let mut from_drop = Vec::new();
     for seed in 1..=3u64 {
-        let sc = drop_scenario(seed, true);
+        let sc = Scenario {
+            text_at_ns: Some(DROP_TEXT_AT_NS),
+            ..drop_scenario(seed, true)
+        };
         let o = run(&sc);
         report("b/aday", &sc, &o);
         let t_ack = o
@@ -701,6 +800,17 @@ fn b_real_capacity_drop_is_detected_and_the_queue_drains() {
             "tohum {seed}: yakınsama sonrası PTT {}",
             secs(ptt)
         );
+        let ptt_drop = o.voice_max_from(DROP_AT_NS);
+        let text = o.text_delay_ns.unwrap_or(u64::MAX);
+        println!(
+            "B/daralma-anı tohum {seed}: PTT(≥ 8 s) en kötü {} metin(8,4 s) {} yakınsama {} \
+             düşüşten {}",
+            secs(ptt_drop),
+            secs(text),
+            secs(conv),
+            secs(conv - DROP_AT_NS)
+        );
+        from_drop.push((seed, ptt_drop, text));
         let control = run(&drop_scenario(seed, false));
         report("b/karşı-olgu", &drop_scenario(seed, false), &control);
         let c_conv = converged_at(&control, DROP_TO).unwrap_or(u64::MAX);
@@ -708,6 +818,20 @@ fn b_real_capacity_drop_is_detected_and_the_queue_drains() {
             c_conv > conv_bound,
             "karşı-olgu tohum {seed}: eski tahminci de sınırda yakınsadı ({})",
             secs(c_conv)
+        );
+    }
+    // [İŞ-35 AÇIK 3] Daralma anından itibaren kabul sınırları (belge: fiziksel alt sınır).
+    for &(seed, ptt, text) in &from_drop {
+        assert!(
+            ptt <= PTT_BOUND_NS && text <= TEXT_BOUND_NS,
+            "ÇÖZÜLMEDİ (fiziksel alt sınır, test belgesi) tohum {seed}: düşüşten itibaren \
+             PTT {} metin {}: {:?}",
+            secs(ptt),
+            secs(text),
+            from_drop
+                .iter()
+                .map(|&(s, p, t)| (s, secs(p), secs(t)))
+                .collect::<Vec<_>>()
         );
     }
 }
@@ -829,6 +953,204 @@ fn d3_reordering_keeps_the_measurement_on_the_safe_side() {
         assert!(
             end * 10 <= DROP_TO * 11,
             "tohum {seed}: 6 250'de son tahmin {end}"
+        );
+    }
+}
+
+/// [İŞ-35 AÇIK 1] Aralık kipinde ölçümsüz ACK dizisi + dönüş gecikmesi artışı, ileri hat sabit
+/// (dürüst 12 500): (a)'nın koşusu, alıcı 5–13 s arasında çıkardığı ACK'lerde ölçüm taşımaz
+/// (göndericiye üst üste en az iki ölçümsüz ACK; dizi ürün çizelgesinin 6 s ve 9 s basamaklarını
+/// kapsar). Ölçüm yokluğu cephe tahmininin doğru olduğu anlamına gelmez: hat düşürülmez (korunan
+/// hız ve gönderim tavanı beyanın %95'inin altına inmez).
+///
+/// Karşı-olgu (aynı koşu, ölçüm aralığı hiç verilmeden): cephe tahmincisi en az bir tohumda keser
+/// (senaryo kusuru üretir).
+#[test]
+fn e1_unmeasured_acks_do_not_bring_back_the_return_delay_cut() {
+    let mut control_cut = false;
+    for seed in 1..=3u64 {
+        let sc = Scenario {
+            rev_delay_plan: REV_DELAY_PLAN.to_vec(),
+            voice_until_ns: 25 * SEC,
+            ack_return_bw: 4 * PROFILE_DOWN,
+            no_interval: Some((5 * SEC, 13 * SEC)),
+            ..Scenario::honest(seed)
+        };
+        let o = run(&sc);
+        report("e1/aday", &sc, &o);
+        let (run_len, _, _) = o.longest_unmeasured_run();
+        println!(
+            "E1 tohum {seed}: ölçümsüz dizi {run_len} ACK, tavan izi {:?}",
+            o.pace_trace
+        );
+        assert!(run_len >= 2, "tohum {seed}: düzenek ölçümsüz dizi kurmadı");
+        assert!(
+            never_cut(&o),
+            "tohum {seed}: dürüst hat ölçümsüz dizide düşürüldü: {:?}",
+            o.rate_trace
+        );
+        assert!(
+            o.min_pace() * 20 >= PROFILE_UP * 19,
+            "tohum {seed}: gönderim tavanı düşürüldü: {:?}",
+            o.pace_trace
+        );
+        let control = Scenario {
+            interval: false,
+            ..sc
+        };
+        let oc = run(&control);
+        report("e1/karşı-olgu", &control, &oc);
+        control_cut |= !never_cut(&oc);
+    }
+    assert!(
+        control_cut,
+        "karşı-olgu: cephe tahmincisi bu senaryoda kesmedi"
+    );
+}
+
+/// [İŞ-35 AÇIK 1] Ölçüm uzun süre yokken gerçek daralma: (b)'nin düşüşü (8 s, 12 500 → 6 250),
+/// alıcı 8–19 s arasında çıkardığı ACK'lerde ölçüm taşımaz (göndericiye üst üste en az üç ölçümsüz
+/// ACK). Koruma kuyruğu sınırlı tutar; ölçüm dönünce hat ölçülür.
+///
+/// Sınırlar (varsayımlarla):
+/// * `t_gap` = dizinin ikinci ölçümsüz ACK'inin göndericiye varışı (ölçüm boşluğunun göndericide
+///   ilk kanıtlanabildiği an; tek ölçümsüz ACK alıcının o ACK'te ölçemediği olağan durumdur).
+///   O ana dek kuyruk (b)'deki gibi büyür (algılama yok); `t_gap`'teki kuyruk `Q_gap` ≤ o ana dek
+///   ölçülen en büyük darboğaz beklemesi (FIFO ile sınırlı).
+/// * `t_gap + Q_gap + 1 s`'den ölçümün göndericiye döndüğü ana (`t_back`) dek darboğaz beklemesi
+///   ≤ 1 s − 0,3 s ileri yayılım = 0,7 s (PTT sınırının yapısal payı). Varsayım: gerçek hat gönderim
+///   tavanının yarısından yavaş değil (başlangıç bütçesinin varsayımı; `line_guard` modül belgesi);
+///   kuyruk kipe girişte `Q_gap` ile boşaltılır, 1 s boşaltmanın ve ilk patlamanın payıdır.
+/// * Ölçüm dönünce: yakınsama ≤ `t_back` + 3·T_ack + T_ret ((b)'nin formülü, ölçümün dönüşünden);
+///   yakınsamadan 2 s sonra bekleme ≤ iki tam datagram; yakınsamadan 9 s sonra PTT ≤ 1 s.
+#[test]
+fn e2_a_long_unmeasured_gap_on_a_real_drop_keeps_the_queue_bounded() {
+    let t_ret = (129 + OVH) * SEC / PROFILE_DOWN + ONE_WAY_NS;
+    let wait_bound = 2 * (MTU + OVH) * SEC / DROP_TO;
+    let gap_wait_bound = PTT_BOUND_NS - ONE_WAY_NS;
+    for seed in 1..=3u64 {
+        let sc = Scenario {
+            no_interval: Some((DROP_AT_NS, 19 * SEC)),
+            ..drop_scenario(seed, true)
+        };
+        let o = run(&sc);
+        report("e2/aday", &sc, &o);
+        let (run_len, t_gap, t_back) = o.longest_unmeasured_run();
+        let (t_gap, t_back) = (
+            t_gap.expect("ikinci ölçümsüz ACK"),
+            t_back.expect("ölçüm döndü"),
+        );
+        let q_gap = o.max_wait_between(0, t_gap);
+        let gap_from = t_gap + q_gap + SEC;
+        let w_gap = o.max_wait_between(gap_from, t_back);
+        println!(
+            "E2 tohum {seed}: ölçümsüz dizi {run_len} ACK, t_gap {} Q_gap {} boşluk beklemesi \
+             ({}–{}) {} tavan izi {:?}",
+            secs(t_gap),
+            secs(q_gap),
+            secs(gap_from),
+            secs(t_back),
+            secs(w_gap),
+            o.pace_trace
+        );
+        assert!(
+            run_len >= 3,
+            "tohum {seed}: düzenek uzun ölçümsüz dizi kurmadı"
+        );
+        assert!(
+            w_gap <= gap_wait_bound,
+            "tohum {seed}: ölçüm boşluğunda kuyruk sınırsız: {} (sınır {})",
+            secs(w_gap),
+            secs(gap_wait_bound)
+        );
+        let t_ack = o
+            .acks_at
+            .windows(2)
+            .filter(|w| w[1] <= DROP_AT_NS)
+            .map(|w| w[1] - w[0])
+            .max()
+            .expect("düşüşten önce ACK'ler");
+        let conv_bound = t_back + 3 * t_ack + t_ret;
+        let conv = converged_at(&o, DROP_TO).expect("yakınsadı");
+        assert!(
+            conv <= conv_bound,
+            "tohum {seed}: yakınsama {} (sınır {})",
+            secs(conv),
+            secs(conv_bound)
+        );
+        let w = o.max_wait_between(conv + 2 * SEC, u64::MAX);
+        assert!(
+            w <= wait_bound,
+            "tohum {seed}: yakınsama sonrası bekleme {}",
+            secs(w)
+        );
+        let ptt = o.voice_max_from(conv + 9 * SEC);
+        assert!(
+            ptt <= PTT_BOUND_NS,
+            "tohum {seed}: yakınsama sonrası PTT {}",
+            secs(ptt)
+        );
+    }
+}
+
+/// [İŞ-35 AÇIK 3] Küçük FIFO (8 paket), (b)'nin düşüşü (12 500 → 6 250): kuyruk hemen dolar ve
+/// sabit kalır (`g ≈ 0`), fazlalık kuyrukta düşer. "Kuyruk büyümüyor" tek başına "hat yeterli"
+/// demek değildir. Sınırlar (b)'ninkiler: yakınsama ≤ düşüş + 3·T_ack + T_ret; yakınsamadan 2 s
+/// sonra kuyrukta düşme yok ve bekleme ≤ iki tam datagram; yakınsamadan 9 s sonra PTT ≤ 1 s.
+///
+/// Kanıt girdisi: aralığın teslim kesri, artış örneğinden sonra rastgele kayıp tabanına göre aşırı
+/// ise taşma örneği (`line_guard` modül belgesi, "Taşma"). İŞ-34 kuralıyla tohum 1'de yakınsama
+/// 53,7 s; taşma örneği kapatılınca (karşı-olgu, cephe dönüşü olmadan) hiç yakınsamıyor.
+#[test]
+fn d4_a_full_small_fifo_is_detected_and_stops_overflowing() {
+    let t_ret = (129 + OVH) * SEC / PROFILE_DOWN + ONE_WAY_NS;
+    let wait_bound = 2 * (MTU + OVH) * SEC / DROP_TO;
+    for seed in 1..=3u64 {
+        let sc = Scenario {
+            queue_pkts: 8,
+            ..drop_scenario(seed, true)
+        };
+        let o = run(&sc);
+        report("d4/aday", &sc, &o);
+        let t_ack = o
+            .acks_at
+            .windows(2)
+            .filter(|w| w[1] <= DROP_AT_NS)
+            .map(|w| w[1] - w[0])
+            .max()
+            .expect("düşüşten önce ACK'ler");
+        let conv_bound = DROP_AT_NS + 3 * t_ack + t_ret;
+        let conv = converged_at(&o, DROP_TO);
+        println!(
+            "D4 tohum {seed}: yakınsama {} (sınır {}) kuyrukta düşen {} (yakınsamadan 2 s sonra {})",
+            conv.map_or("YOK".to_string(), secs),
+            secs(conv_bound),
+            o.drops_queue,
+            conv.map_or(0, |c| o.drops_between(c + 2 * SEC, u64::MAX))
+        );
+        let conv = conv.expect("yakınsadı");
+        assert!(
+            conv <= conv_bound,
+            "tohum {seed}: yakınsama {} (sınır {})",
+            secs(conv),
+            secs(conv_bound)
+        );
+        assert_eq!(
+            o.drops_between(conv + 2 * SEC, u64::MAX),
+            0,
+            "tohum {seed}: yakınsamadan sonra taşma sürüyor"
+        );
+        let w = o.max_wait_between(conv + 2 * SEC, u64::MAX);
+        assert!(
+            w <= wait_bound,
+            "tohum {seed}: yakınsama sonrası bekleme {}",
+            secs(w)
+        );
+        let ptt = o.voice_max_from(conv + 9 * SEC);
+        assert!(
+            ptt <= PTT_BOUND_NS,
+            "tohum {seed}: yakınsama sonrası PTT {}",
+            secs(ptt)
         );
     }
 }
