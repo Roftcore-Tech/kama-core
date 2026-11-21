@@ -52,7 +52,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use adaptive_transport::ack::{FRAME_TYPE_ACK, FRAME_TYPE_ACK_V2};
+use adaptive_transport::ack::{FRAME_TYPE_ACK, FRAME_TYPE_ACK_BITMAP, FRAME_TYPE_ACK_V2};
 use kama_contracts::handles::PeerRef;
 use kama_contracts::s3::{HubHandle, ProtectionContext};
 
@@ -60,7 +60,7 @@ use super::link::HubLink;
 use super::shared_crypto::{HubCryptoAccess, StashCounters};
 use crate::transport::{EnvelopeLink, LinkAttempt, LinkError, LinkEvent};
 use crate::wire::{
-    FRAME_CS_ECHO, FRAME_CS_PROBE, FRAME_DATA, FRAME_DATA_FRAG, FRAME_FEC, FRAME_PARAM,
+    FRAME_CAPS, FRAME_CS_ECHO, FRAME_CS_PROBE, FRAME_DATA, FRAME_DATA_FRAG, FRAME_FEC, FRAME_PARAM,
     FRAME_PARAM_ACK, FRAME_RECOVERED,
 };
 
@@ -109,10 +109,13 @@ pub enum Role {
 #[must_use]
 pub fn role_of(frame_type: u8) -> Option<Role> {
     match frame_type {
-        FRAME_RECOVERED | FRAME_PARAM_ACK | FRAME_CS_ECHO | FRAME_TYPE_ACK | FRAME_TYPE_ACK_V2 => {
-            Some(Role::Client)
-        }
-        FRAME_DATA | FRAME_FEC | FRAME_PARAM | FRAME_DATA_FRAG | FRAME_CS_PROBE => {
+        FRAME_RECOVERED
+        | FRAME_PARAM_ACK
+        | FRAME_CS_ECHO
+        | FRAME_TYPE_ACK
+        | FRAME_TYPE_ACK_V2
+        | FRAME_TYPE_ACK_BITMAP => Some(Role::Client),
+        FRAME_DATA | FRAME_FEC | FRAME_PARAM | FRAME_DATA_FRAG | FRAME_CS_PROBE | FRAME_CAPS => {
             Some(Role::Server)
         }
         _ => None,
@@ -1026,11 +1029,11 @@ mod tests {
         }
     }
 
-    /// T3: tablodaki her tip doğru role, diğer 246 tip `None`.
+    /// T3: tablodaki her tip doğru role, diğer 244 tip `None`.
     #[test]
     fn role_table_maps_every_frame_type() {
-        let client = [0x02, 0x04, 0x07, 0x10, 0x14];
-        let server = [0x00, 0x01, 0x03, 0x05, 0x06];
+        let client = [0x02, 0x04, 0x07, 0x10, 0x14, 0x15];
+        let server = [0x00, 0x01, 0x03, 0x05, 0x06, 0x08];
         for t in 0..=u8::MAX {
             let want = if client.contains(&t) {
                 Some(Role::Client)

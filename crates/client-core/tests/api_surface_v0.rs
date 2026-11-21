@@ -193,6 +193,8 @@ async fn transport_api_v0_surface_is_frozen() {
         seal_failures: _,
         param_sends: _,
         param_confirmed: _,
+        caps_sends: _,
+        ack_bitmap_rx: _,
         fec_blocks_latched: _,
         fec_repairs_tx: _,
         fec_repair_missing: _,
@@ -236,6 +238,7 @@ async fn transport_api_v0_surface_is_frozen() {
     } = ClientStats::default();
     let ServerStats {
         delivered: _,
+        caps_rx: _,
         delivery_dropped: _,
         // v0.18 (INV-ACK-DELIVER-1 · F4, sahip kararı 2026-11-11): minor-EKLEME, kasıtlı
         // pin-güncellemesi — dolu teslim kanalında motora verilmeyen DATA ve RECOVERED'a
