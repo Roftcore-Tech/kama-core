@@ -46,6 +46,72 @@ pub fn time_threshold_lost(
     elapsed >= scale_duration(srtt, num, den).max(min_delay)
 }
 
+/// [İŞ-32 · kenar kuralı · sahip kararı 2026-11-21] Bir ACK çerçevesinin teyit ettiği PN'lerden
+/// (`AckFrame::acked_full` çıktısı; sıra önemsiz, tekrar olabilir) bildirilen iki blok arasındaki her
+/// deliğin uç PN'leri: alttaki bloğun bir üstü ve üstteki bloğun bir altı (tek PN'lik delikte ikisi
+/// aynıdır, bir kez yazılır).
+///
+/// Çerçeve kurulduğu anda alıcıda olmadığı kesin olan PN'ler yalnız bunlardır. İki alıcı kuralında da
+/// (en yeni bloklar öncelikli ya da yeniden raporlamalı seçim) alıcı blokları maksimal koşu olarak
+/// bildirir; bildirilen iki blok birleşmez. Tahliye yalnız en küçük PN'leri siler, iç kenara dokunmaz.
+/// Deliğin içi (yeniden raporlamalı seçimde hiç bildirilmemiş bloklar orada olabilir) ve en alttaki
+/// bloğun altı bilinmez; bunlar burada üretilmez.
+///
+/// Liste [`crate::ack::MAX_ACKED_SEQS`] tavanına ulaştıysa en alttaki blok kesilmiş olabilir; o zaman
+/// hiç kenar üretilmez (kanıtsız kalmak güvenli yöndür). Çıktı en çok 2 × (blok sayısı − 1) değerdir
+/// (geçerli çerçevede ≤ 2 × [`crate::ack::MAX_ACK_RANGES`]).
+#[must_use]
+pub fn ack_hole_edges(acked_pns: &[u64]) -> Vec<u64> {
+    if acked_pns.len() >= crate::ack::MAX_ACKED_SEQS {
+        return Vec::new();
+    }
+    let mut pns = acked_pns.to_vec();
+    pns.sort_unstable();
+    pns.dedup();
+    let mut edges = Vec::new();
+    for w in pns.windows(2) {
+        let (lo, hi) = (w[0], w[1]);
+        if hi > lo + 1 {
+            edges.push(lo + 1);
+            if hi - 1 > lo + 1 {
+                edges.push(hi - 1);
+            }
+        }
+    }
+    edges
+}
+
+/// [İŞ-32 · kenar kuralı] Dolu ACK çerçevelerinin kapsam muhasebesi (bkz.
+/// [`ThresholdLossDetector::on_ack_partial`]). Hiç dolu çerçeve işlenmediyse (`seen == false`)
+/// dedektör bugünkü kuralla birebir çalışır.
+#[derive(Debug, Clone, Default)]
+struct EdgeCoverage {
+    /// En az bir dolu çerçeve işlendi.
+    seen: bool,
+    /// Dolu OLMAYAN çerçevelerin en büyük acked seq'i (`have_complete` ile geçerli). Bu çerçeve
+    /// alıcının o ana dek aldığı her şeyi bildirdiği için altındaki bildirilmemiş seq kayıp adayıdır.
+    la_complete: u64,
+    have_complete: bool,
+    /// Kenar kanıtı: seq → onu eksik bildiren en büyük çerçevenin en büyük acked seq'i.
+    /// Anahtarlar dedektörün uçuş haritasının alt kümesidir (seq uçuştan düşünce silinir).
+    edges: BTreeMap<u64, u64>,
+    /// Gözlem: işlenen dolu çerçeve sayısı.
+    partial_frames: u64,
+    /// Gözlem: gönderici bıraktığı için ilan edilmeden unutulan bilinmeyen seq sayısı.
+    forgotten: u64,
+}
+
+/// [İŞ-32] Kapsam muhasebesinin salt gözlem özeti (karar okumaz).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CoverageDiag {
+    /// İşlenen dolu çerçeve sayısı.
+    pub partial_frames: u64,
+    /// Şu an kenar kanıtı taşıyan uçuştaki seq sayısı.
+    pub edge_evidenced: u64,
+    /// Gönderici bıraktığı için ilan edilmeden unutulan bilinmeyen seq sayısı.
+    pub forgotten: u64,
+}
+
 fn scale_duration(d: Duration, num: u64, den: u64) -> Duration {
     let ns = d.as_nanos() * u128::from(num) / u128::from(den);
     Duration::from_nanos(ns as u64)
@@ -245,6 +311,8 @@ pub struct ThresholdLossDetector {
     spurious_units_total: u64,   // audit: toplam geri-alınan birim
     ledger_evicted_total: u64,   // audit: kapasite-eviction (SR-AUDIT-001)
     packet_thresh_dyn: u64,      // 0 = cfg.packet_threshold; sender adaptif k yazar [TUR-2a]
+    // ── [İŞ-32] dolu çerçeve kapsamı (kenar kuralı); hiç dolu çerçeve yoksa etkisiz ──
+    cov: EdgeCoverage,
 }
 
 impl ThresholdLossDetector {
@@ -583,7 +651,8 @@ impl ThresholdLossDetector {
 impl ThresholdLossDetector {
     /// DR-CS-1 (d) [READ-ONLY türetme; eşik/ledger-semantiği DEĞİŞMEZ]: MEVCUT time-threshold
     /// makinesinin bir-SONRAKİ deadline'ı — eligibility `detect_time_losses` ile BİREBİR
-    /// (`have_acked` && `seq < largest_acked`); deadline = send_ns + max(srtt·num/den, floor).
+    /// (`have_acked` && `seq < largest_acked`; [İŞ-32] dolu çerçeve işlendikten sonra yalnız kanıtlı
+    /// seq); deadline = send_ns + max(srtt·num/den, floor).
     /// None = eligible-birim-yok (ör. hiç-ACK-kanıtı-yok veya tail > largest_acked —
     /// F0-tespit-(iii)-caveat'i; o-birimler mevcut-RecoverFwd/geometrik-yola-kalır).
     #[must_use]
@@ -599,33 +668,66 @@ impl ThresholdLossDetector {
         let thresh = scale_duration(srtt, self.cfg.time_num, self.cfg.time_den)
             .max(floor)
             .as_nanos() as u64;
+        let la = self.largest_acked;
         self.inflight
             .iter()
-            .filter(|(&seq, _)| seq < self.largest_acked)
+            .filter(|(&seq, _)| self.time_eligible(seq, la))
             .map(|(_, s)| s.send_ns.saturating_add(thresh))
             .min()
     }
-}
 
-impl LossDetector for ThresholdLossDetector {
-    fn on_sent(&mut self, seq: u64, send_ns: u64, units: u64) {
-        self.inflight.insert(seq, Sent { send_ns, units });
-        self.sent_units += units;
-        // [TUR-2a D-1/5] pencere-paydası (bounded; eviction paydayı küçültür → ppm hafif
-        // yukarı-yanlı olur, SAKLANMAZ — audit sayacıyla görünür).
-        if self.sent_window.len() >= LEDGER_MAX {
-            if let Some(old) = self.sent_window.pop_front() {
-                self.sent_window_units = self.sent_window_units.saturating_sub(old.units);
-                self.ledger_evicted_total += 1;
-            }
+    // ── [İŞ-32 · kenar kuralı · sahip kararı 2026-11-21] dolu çerçeve kapsamı ──────────────────
+    //
+    // Geri bildirimi aç profilde ACK çerçevesi en çok 1 + MAX_ACK_RANGES blok taşır; dolu çerçeve
+    // kırpılmış (en yeni bloklar) ya da seçilmiş (yeniden raporlama) olabilir ve telde ikisini tam
+    // çerçeveden ayıran güvenilir bir işaret yoktur. Dolu çerçevede bir seq'in eksikliğinin kanıtı
+    // yalnız (i) bildirilen iki blok arasındaki deliğin ucu olması ([`ack_hole_edges`]) ya da
+    // (ii) dolu OLMAYAN bir çerçevenin en büyüğünün altında kalmasıdır. Kanıtsız seq "bilinmiyor"dur:
+    // paket eşiği de zaman eşiği de onu kayıp sayamaz. Eşik değerleri (k, 9/8·srtt, taban) ve PTO
+    // değişmez. Hiç dolu çerçeve işlenmediyse her yol bugünkü kodla birebir aynıdır.
+
+    /// Kayıp kanıtı: seq'in eksik olduğunu gösteren en büyük acked seq; `None` = bilinmiyor.
+    /// Dolu çerçeve hiç işlenmediyse bugünkü kural: `seq < largest_acked` ise `largest_acked`.
+    fn evidence(&self, seq: u64) -> Option<u64> {
+        if !self.have_acked {
+            return None;
         }
-        self.sent_window.push_back(Sent { send_ns, units });
-        self.sent_window_units += units;
+        if !self.cov.seen {
+            return (seq < self.largest_acked).then_some(self.largest_acked);
+        }
+        let complete =
+            (self.cov.have_complete && seq < self.cov.la_complete).then_some(self.cov.la_complete);
+        let edge = self.cov.edges.get(&seq).copied();
+        complete.max(edge)
     }
 
-    fn on_ack(&mut self, acked: &[u64], now_ns: u64) -> Vec<u64> {
+    /// Paket eşiği uygunluğu. Dolu çerçeve hiç işlenmediyse bugünkü yüklem birebir
+    /// (`packet_threshold_lost(seq, largest_acked, k)`); sonra yalnız kanıtlı seq, kanıtın en
+    /// büyüğüne göre.
+    fn packet_eligible_lost(&self, seq: u64, la: u64, k: u64) -> bool {
+        if !self.cov.seen {
+            return packet_threshold_lost(seq, la, k);
+        }
+        self.evidence(seq)
+            .is_some_and(|ev| packet_threshold_lost(seq, ev, k))
+    }
+
+    /// Zaman eşiği uygunluğu ("daha yüksek seq ACK'lendi" ön şartı). Dolu çerçeve hiç
+    /// işlenmediyse bugünkü yüklem birebir (`seq < largest_acked`); sonra yalnız kanıtlı seq.
+    fn time_eligible(&self, seq: u64, la: u64) -> bool {
+        if !self.cov.seen {
+            return seq < la;
+        }
+        self.evidence(seq).is_some()
+    }
+
+    /// Ortak ACK girişi: acked seq'leri uçuştan çıkarır, un-loss'u işler, `largest_acked`'i
+    /// ilerletir. Döner: çerçevenin en büyük acked seq'i.
+    fn ingest_acked(&mut self, acked: &[u64], now_ns: u64) -> Option<u64> {
+        let mut frame_max: Option<u64> = None;
         for &seq in acked {
             self.inflight.remove(&seq);
+            self.cov.edges.remove(&seq);
             // [TUR-2a D-1/3] UN-LOSS: kayıp-ilan-edilmiş seq'e ACK geldi → hipotez ÇÜRÜDÜ.
             // Ledger'da Spurious'a çevrilir (Confirmed dahil — kanıt kanıttır; retransmit-sent
             // belirsizliği SENDER kolunda retx_count'la ayrışır, D-1/3 kol-2/TUR-2c).
@@ -648,7 +750,13 @@ impl LossDetector for ThresholdLossDetector {
                 self.largest_acked = seq;
                 self.have_acked = true;
             }
+            frame_max = Some(frame_max.map_or(seq, |m| m.max(seq)));
         }
+        frame_max
+    }
+
+    /// Paket eşiği kayıplarını toplar ve ilan eder (artan seq).
+    fn collect_packet_losses(&mut self, now_ns: u64) -> Vec<u64> {
         if !self.have_acked {
             return Vec::new();
         }
@@ -659,15 +767,102 @@ impl LossDetector for ThresholdLossDetector {
             .inflight
             .keys()
             .copied()
-            .filter(|&seq| packet_threshold_lost(seq, la, k))
+            .filter(|&seq| self.packet_eligible_lost(seq, la, k))
             .collect();
         for seq in &lost {
             if let Some(s) = self.inflight.remove(seq) {
+                self.cov.edges.remove(seq);
                 self.lost_units += s.units;
                 self.declare(*seq, s.units, now_ns); // ledger: Suspected
             }
         }
         lost
+    }
+
+    /// [İŞ-32 · kenar kuralı] DOLU ACK çerçevesi: `acked` çerçevenin teyit ettiği seq'ler (tam küme,
+    /// [`LossDetector::on_ack`] ile aynı), `missing` çerçevenin delik uçlarındaki seq'ler
+    /// ([`ack_hole_edges`]'in seq'e çevrilmiş hâli). `missing`'deki uçuştaki her seq kenar kanıtı
+    /// alır; çerçevedeki diğer bildirilmemiş seq'ler bilinmiyor kalır. `la_complete` İLERLEMEZ.
+    /// Döner: paket eşiği kayıpları (artan seq). Un-loss [`Self::take_unlossed`] ile, aynı.
+    pub fn on_ack_partial(&mut self, acked: &[u64], missing: &[u64], now_ns: u64) -> Vec<u64> {
+        let frame_max = self.ingest_acked(acked, now_ns);
+        self.cov.seen = true;
+        self.cov.partial_frames = self.cov.partial_frames.saturating_add(1);
+        if let Some(m) = frame_max {
+            for &seq in missing {
+                if seq < m && self.inflight.contains_key(&seq) {
+                    let e = self.cov.edges.entry(seq).or_insert(m);
+                    *e = (*e).max(m);
+                }
+            }
+        }
+        self.collect_packet_losses(now_ns)
+    }
+
+    /// [İŞ-32] Gönderici uçuş kaydını kayıp İLAN ETMEDEN bıraktığında (teyitli kopyanın sessiz
+    /// bırakılması, emekliye ayırma) çağrılır: seq bilinmiyorsa dedektörden de düşer (aksi hâlde
+    /// hiçbir çerçeve onu kanıtlamayabilir ve harita büyür — SR-AUDIT-001). Kanıtlı seq'e ve hiç
+    /// dolu çerçeve işlenmemişse hiçbir şeye dokunmaz (bugünkü davranış). Döner: unutuldu mu.
+    pub fn forget_unevidenced(&mut self, seq: u64) -> bool {
+        if !self.cov.seen || self.evidence(seq).is_some() {
+            return false;
+        }
+        let removed = self.inflight.remove(&seq).is_some();
+        if removed {
+            self.cov.forgotten = self.cov.forgotten.saturating_add(1);
+        }
+        removed
+    }
+
+    /// [İŞ-32] Seq kenar kuralı yüzünden bekletiliyor mu: dolu çerçeve işlendi, seq uçuşta ve
+    /// görülen en büyük acked'in altında (bugünkü kural onu ilan edebilirdi), ama kanıtı yok.
+    #[must_use]
+    pub fn is_held_unknown(&self, seq: u64) -> bool {
+        self.cov.seen
+            && self.have_acked
+            && seq < self.largest_acked
+            && self.inflight.contains_key(&seq)
+            && self.evidence(seq).is_none()
+    }
+
+    /// [İŞ-32] Kapsam muhasebesinin salt gözlem özeti.
+    #[must_use]
+    pub fn diag_coverage(&self) -> CoverageDiag {
+        CoverageDiag {
+            partial_frames: self.cov.partial_frames,
+            edge_evidenced: self.cov.edges.len() as u64,
+            forgotten: self.cov.forgotten,
+        }
+    }
+}
+
+impl LossDetector for ThresholdLossDetector {
+    fn on_sent(&mut self, seq: u64, send_ns: u64, units: u64) {
+        self.inflight.insert(seq, Sent { send_ns, units });
+        self.sent_units += units;
+        // [TUR-2a D-1/5] pencere-paydası (bounded; eviction paydayı küçültür → ppm hafif
+        // yukarı-yanlı olur, SAKLANMAZ — audit sayacıyla görünür).
+        if self.sent_window.len() >= LEDGER_MAX {
+            if let Some(old) = self.sent_window.pop_front() {
+                self.sent_window_units = self.sent_window_units.saturating_sub(old.units);
+                self.ledger_evicted_total += 1;
+            }
+        }
+        self.sent_window.push_back(Sent { send_ns, units });
+        self.sent_window_units += units;
+    }
+
+    fn on_ack(&mut self, acked: &[u64], now_ns: u64) -> Vec<u64> {
+        // Dolu OLMAYAN çerçeve (ya da kapsam bilgisi verilmemiş çağrı): alıcının o ana dek aldığı
+        // her şeyi bildirir. [İŞ-32] `la_complete` yalnız burada ilerler; dolu çerçeve hiç
+        // işlenmediyse bu değer `largest_acked`'e eşittir ve yüklemler bugünküyle birebir aynıdır.
+        if let Some(m) = self.ingest_acked(acked, now_ns) {
+            if !self.cov.have_complete || m > self.cov.la_complete {
+                self.cov.la_complete = m;
+                self.cov.have_complete = true;
+            }
+        }
+        self.collect_packet_losses(now_ns)
     }
 
     fn detect_time_losses(
@@ -690,17 +885,20 @@ impl LossDetector for ThresholdLossDetector {
         let cfg = self.cfg;
         let floor = cfg.min_delay.max(cadence_floor);
         let la = self.largest_acked;
+        // [İŞ-32] uygunluk: dolu çerçeve hiç işlenmediyse `seq < la` (birebir); sonra kanıtlı seq.
         let lost: Vec<u64> = self
             .inflight
             .iter()
             .filter(|(&seq, s)| {
                 let elapsed = Duration::from_nanos(now_ns.saturating_sub(s.send_ns));
-                seq < la && time_threshold_lost(elapsed, srtt, floor, cfg.time_num, cfg.time_den)
+                self.time_eligible(seq, la)
+                    && time_threshold_lost(elapsed, srtt, floor, cfg.time_num, cfg.time_den)
             })
             .map(|(&seq, _)| seq)
             .collect();
         for seq in &lost {
             if let Some(s) = self.inflight.remove(seq) {
+                self.cov.edges.remove(seq);
                 self.lost_units += s.units;
                 self.declare(*seq, s.units, now_ns); // ledger: Suspected [TUR-2a]
             }

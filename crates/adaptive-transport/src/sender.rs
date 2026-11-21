@@ -1043,7 +1043,10 @@ pub enum ConfirmSource {
 /// §2 ACK rekonstrüksiyonunun ÇIKTISI (transport-control codec ayrı; burada çözülmüş girdi).
 #[derive(Debug, Clone)]
 pub struct AckInfo {
-    /// Bu ACK ile YENİ acknowledge edilen seq'ler (full-counter).
+    /// Bu ACK çerçevesinin teyit ettiği seq'ler (full-counter). Ürün yolunda çerçevenin TAM kümesidir,
+    /// yalnız yeniler değil (`client-core` runtime `acked_full` çıktısını farksız verir; motor
+    /// idempotent işler). [İŞ-32] Dolu çerçevenin kapsam bilgisi ayrı verilir:
+    /// [`Sender::set_ack_coverage`].
     pub acked_seqs: Vec<u64>,
     /// largest_seq alımı → ACK gönderimi arası (§6 RTT düzeltmesi).
     pub ack_delay: Duration,
@@ -1372,10 +1375,13 @@ pub struct ConfirmedCancelDiag {
     /// kayıp muhasebesi öncekiyle aynı).
     pub inflight_marked: u64,
     /// Kararsız kopyanın kayıp ilanı: kayıp muhasebesi yapıldı, birim YENİDEN KUYRUĞA GİRMEDİ
-    /// (Duplicate kökenlide geometrik kopya yeniden kurulmadı).
+    /// (Duplicate kökenlide geometrik kopya yeniden kurulmadı). [İŞ-32] Kenar kuralı yolunda
+    /// (dolu çerçeve işlendikten sonra) sessiz bırakmaya işaretlenmiş onarım sembolünün sonradan
+    /// kanıtla ilanı da burada sayılır.
     pub lost_not_requeued: u64,
     /// Kararsız kopyanın bırakma anına dek ACK'i ya da kayıp ilanı gelmedi; kayıp ilan edilmeden
-    /// uçuştan düştü (sessiz kanal sınırı).
+    /// uçuştan düştü (sessiz kanal sınırı). [İŞ-32] Kenar kuralı yolunda bilinmeyen onarım
+    /// sembollerinin sessiz bırakılması da burada sayılır (`mark_unknown_parity_release`).
     pub released: u64,
 }
 
@@ -1430,7 +1436,9 @@ struct InflightPacket {
     /// (BW örneği, teslim kredisi, CC `on_ack`) ve kayıp ilanı (CC tıkanıklık olayı, tombstone,
     /// kader kanıtı) öncekiyle aynı işlenir; ama yeniden kuyruğa, kopya kuyruğuna, canlılık
     /// kopyasına ve prob hedefine GİRMEZ. `an` geçtiğinde hâlâ uçuştaysa kayıp ilan edilmeden düşer
-    /// (`release_confirmed_copies`). `None`: birim bu kayıt üzerinden teyitsiz.
+    /// (`release_confirmed_copies`). `None`: birim bu kayıt üzerinden teyitsiz. [İŞ-32] Köken
+    /// `FecParity` kayıtta: kenar kuralı yüzünden bilinmeyen onarım sembolünün sessiz bırakma anı
+    /// (`mark_unknown_parity_release`; onarım sembolü zaten hiçbir karar koluna girmez).
     confirmed_release_ns: Option<u64>,
     /// [CC-PORT · KADER-SIRASI] Köken `Data` ise bu orijinalin motor-içi gönderim sırası
     /// (`Sender::next_data_ord`); başka kökende 0 ve okunmaz. Bkz. [`Sender::fate_key`].
@@ -1831,6 +1839,9 @@ pub struct Sender {
     cc_feedback_starved: Option<FeedbackStarvedRule>,
     /// [HAT-KORUMASI] Gerçek ileri hattın tahmincisi; yalnız kural kuruluyken `Some`.
     cc_line_guard: Option<crate::line_guard::LineGuard>,
+    /// [İŞ-32 · kenar kuralı] Bir sonraki ACK'in kapsam bilgisi (bkz. [`Sender::set_ack_coverage`]);
+    /// `on_ack_received` her çağrıda boşaltır. `None` = bugünkü yol.
+    pending_ack_coverage: Option<Vec<u64>>,
     /// [İZ-NEDEN] Emisyon / kayıp ilanı izi; `None` = kapalı (varsayılan).
     diag_emit_log: Option<Vec<EmitDiag>>,
     /// [PTT-SIRA · PTT-KOPYA-BÜTÇESİ] Gözlem sayaçları: öncelikli şeridin önce çıkan ARQ kaydı,
@@ -2191,6 +2202,7 @@ impl Sender {
             forward_copy_rule: None,
             cc_feedback_starved: None,
             cc_line_guard: None,
+            pending_ack_coverage: None,
             diag_emit_log: None,
             prio_arq_first: 0,
             prio_copy_stale: 0,
@@ -3583,6 +3595,12 @@ impl Sender {
 
     /// §3.2 OnAckReceived: inflight boşalt + RTT/BW/loss güncelle.
     fn on_ack_received(&mut self, ack: &AckInfo, now_ns: u64) {
+        // [İŞ-32] Kapsam bilgisi yalnız bu ACK içindir; boş ACK'te de tüketilir. Kural yalnız
+        // geri bildirimi aç profilde ve port motorunda uygulanır (aksi hâlde bugünkü yol).
+        let partial_missing = self
+            .pending_ack_coverage
+            .take()
+            .filter(|_| self.cc_feedback_starved.is_some() && self.cc_on());
         if ack.acked_seqs.is_empty() {
             return;
         }
@@ -3756,7 +3774,15 @@ impl Sender {
         // [TUR-2a §9.3] adaptif packet-threshold: spurious gördükçe reorder-toleransı yükselir.
         self.loss
             .set_packet_threshold(u64::from(self.reorder.reorder_thresh(&self.retx_cfg)));
-        let lost = self.loss.on_ack(&ack.acked_seqs, now_ns);
+        // [İŞ-32 · kenar kuralı] Dolu çerçevede yalnız kenar kanıtlı seq kayıp sayılabilir.
+        let lost = match &partial_missing {
+            None => self.loss.on_ack(&ack.acked_seqs, now_ns),
+            Some(missing) => {
+                let lost = self.loss.on_ack_partial(&ack.acked_seqs, missing, now_ns);
+                self.mark_unknown_parity_release(now_ns);
+                lost
+            }
+        };
 
         // [TUR-2a D-1/3] UN-LOSS: kayıp-ilan-edilmiş seq'e ACK geldi → hipotez çürüdü.
         // pending-retransmit İPTAL + kopyalar iptal + note_spurious kablosu + kol-1 RTT adayı.
@@ -5399,6 +5425,20 @@ impl Sender {
         self.cc_profile_pacing_cap = cap_bps.filter(|&c| c > 0);
     }
 
+    /// [İŞ-32 · kenar kuralı · sahip kararı 2026-11-21] Bir sonraki [`Event::AckReceived`]'ın DOLU
+    /// çerçeveden geldiğini bildirir. `known_missing`: çerçevenin delik uçlarındaki seq'ler
+    /// ([`crate::loss::ack_hole_edges`]'in PN → seq çevrilmiş hâli); çerçevenin bildirmediği diğer
+    /// seq'ler bilinmiyor sayılır (paket eşiği de zaman eşiği de onları kayıp ilan etmez). Eşik
+    /// değerleri ve PTO değişmez.
+    ///
+    /// Yalnız geri bildirimi aç profil kuralı kuruluyken ve port motorunda etkilidir
+    /// ([`Self::set_cc_feedback_starved`]); aksi hâlde bilgi atılır ve ACK bugünkü gibi işlenir. Bilgi
+    /// yalnız hemen sonraki ACK olayına uygulanır (o olay boş olsa da tüketilir). Çağrılmazsa ACK
+    /// tam çerçeve sayılır (bugünkü yol, bayt-aynı).
+    pub fn set_ack_coverage(&mut self, known_missing: Vec<u64>) {
+        self.pending_ack_coverage = Some(known_missing);
+    }
+
     /// [GERİ-BİLDİRİM-AÇ] Geri bildirimi aç profilin uçuş ve hız kuralı ([`FeedbackStarvedRule`]).
     /// `None` (varsayılan) = kural yok; `cc` yoksa etkisiz. Oturum başında, ilk olaydan önce çağrılır.
     pub fn set_cc_feedback_starved(&mut self, rule: Option<FeedbackStarvedRule>) {
@@ -6549,6 +6589,37 @@ impl Sender {
         d
     }
 
+    /// [İŞ-32 · kenar kuralı] Dolu çerçeveden sonra bilinmeyen kalan onarım sembolleri (köken
+    /// `FecParity`) hiçbir karar koluna girmez ve teyitle de işaretlenmez (`cancel_confirmed_units`);
+    /// bugünkü kural onları kayıp ilanıyla uçuştan düşürürdü. Kenar kuralında sessiz bırakılırlar:
+    /// teyitli kopyalarla aynı saat (`K_CONFIRMED_RELEASE × T_loss`, bu ACK'ten) ve aynı yol
+    /// (`release_confirmed_copies`: uçuş baytı bırakılır; tıkanıklık olayı, kayıp sayacı, tombstone
+    /// yok). Bırakma anına dek bir ACK ya da kanıt gelirse sembol bugünkü gibi işlenir. Yalnız dolu
+    /// çerçeve yolundan çağrılır.
+    fn mark_unknown_parity_release(&mut self, now_ns: u64) {
+        let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
+        let release_ns = now_ns.saturating_add(
+            self.time_loss_threshold_ns(srtt)
+                .saturating_mul(u64::from(K_CONFIRMED_RELEASE)),
+        );
+        let mut marked = false;
+        for (&seq, p) in &mut self.inflight {
+            if p.origin == TransmitKind::FecParity
+                && p.confirmed_release_ns.is_none()
+                && self.loss.is_held_unknown(seq)
+            {
+                p.confirmed_release_ns = Some(release_ns);
+                marked = true;
+            }
+        }
+        if marked {
+            self.confirmed_release_next_ns = Some(
+                self.confirmed_release_next_ns
+                    .map_or(release_ns, |n| n.min(release_ns)),
+            );
+        }
+    }
+
     /// [K4G-05b-R] Kararsız kopyaların sessiz kanal sınırı (Pto zamanlayıcısında, zaman eşiği kayıp
     /// tespiti ve tombstone TTL budamasından SONRA; yeni zamanlayıcı DEĞİL — bırakma anı EK4-A2 uyanma
     /// kümesindedir, `next_timer_deadline_ns` 5c). Bırakma anı geçmiş ve hâlâ uçuşta olan kopya kayıp
@@ -6582,6 +6653,9 @@ impl Sender {
             if let Some(p) = self.inflight.remove(seq) {
                 self.inflight_bytes = self.inflight_bytes.saturating_sub(p.unit.size);
                 self.bw_sampler.forget_in_flight(); // ACK'lenmeyecek (bilinmeyen seq) → uçuş sayısından
+                                                    // [İŞ-32] Kenar kuralının bilinmeyen seq'i dedektörde de kalmaz (dolu çerçeve hiç
+                                                    // işlenmediyse ya da seq kanıtlıysa no-op: bugünkü yol).
+                self.loss.forget_unevidenced(*seq);
             }
         }
         let c = &mut self.confirmed_cancels;
@@ -7283,6 +7357,9 @@ impl Sender {
             return;
         };
         self.inflight_bytes = self.inflight_bytes.saturating_sub(p.unit.size);
+        // [İŞ-32] Emekli edilen bilinmeyen seq dedektörde de kalmaz (kanıtlıysa ya da dolu çerçeve
+        // hiç işlenmediyse no-op: bugünkü yol).
+        self.loss.forget_unevidenced(seq);
         if p.origin == TransmitKind::Duplicate {
             // Dup-origin: no tombstone (matches queue_losses) — drop the in-flight count here.
             self.bw_sampler.forget_in_flight();
@@ -8356,6 +8433,12 @@ impl Sender {
             self.loss.loss_windowed_ppm(),
             self.loss.spurious_units_total(),
         )
+    }
+    /// [İŞ-32 · kenar kuralı] SALT-GÖZLEM: `(kapsam muhasebesi, recent_max_reorder)`. Kural hiç
+    /// uygulanmadıysa kapsam sayaçları sıfırdır.
+    #[must_use]
+    pub fn diag_ack_coverage(&self) -> (crate::loss::CoverageDiag, u32) {
+        (self.loss.diag_coverage(), self.reorder.recent_max_reorder())
     }
     /// [TUR-3a teşhis] sampler uçuş-sayısı (SALT-GÖZLEM — §3.7 sızıntı-borcu ölçümü).
     #[must_use]
