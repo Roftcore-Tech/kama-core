@@ -116,11 +116,14 @@ impl Bottleneck {
     }
 }
 
+/// Dönüş hattında yoldaki ACK: (varış anı, UDP gövdesi, teyit, kanıt aralığı).
+type InFlightAck = (u64, u64, AckInfo, Option<(u64, u64)>);
+
 struct ReturnLine {
     free_at: u64,
     loss: AckLoss,
     lcg: u64,
-    wire: VecDeque<(u64, u64, AckInfo, Option<(u64, u64)>)>,
+    wire: VecDeque<InFlightAck>,
     sent: u64,
     lost: u64,
     wire_bytes: u64,
