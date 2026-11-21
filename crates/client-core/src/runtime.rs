@@ -3492,6 +3492,42 @@ async fn client_task(
                         } else {
                             None
                         };
+                        // [ÖLÇÜM ARALIĞI · #175 7067964700] 0x15: M = [base, largest] içinde alınan
+                        // PN'ler → motor seq; `rx_span` alıcıdaki veri varış süresi. Tabloda olmayan
+                        // PN (motor kararı olmayan çerçeve) M'den çıkar; m_first ya da largest tabloda
+                        // değilse ölçüm yok.
+                        if let (Some(bm), Some((lo_pn, hi_pn))) =
+                            (frame.bitmap.as_ref(), frame.evidence_span_full(expected_pn))
+                        {
+                            let to_seq = |pn: u64| {
+                                pn_seq
+                                    .binary_search_by_key(&pn, |&(p, _)| p)
+                                    .ok()
+                                    .map(|i| pn_seq[i].1)
+                            };
+                            let mut m_pns: Vec<u64> = pns
+                                .iter()
+                                .copied()
+                                .filter(|&p| p >= lo_pn && p <= hi_pn)
+                                .collect();
+                            m_pns.sort_unstable();
+                            let first = m_pns.first().copied().and_then(to_seq);
+                            let last = to_seq(hi_pn);
+                            if let (Some(first), Some(last)) = (first, last) {
+                                let received: Vec<u64> =
+                                    m_pns.iter().copied().filter_map(to_seq).collect();
+                                let span_ns = (bm.rx_span
+                                    != adaptive_transport::ack::RX_SPAN_NONE)
+                                    .then(|| {
+                                    u64::from(bm.rx_span)
+                                        * adaptive_transport::ack::ACK_DELAY_UNIT_US
+                                        * 1000
+                                });
+                                session.sender_mut().note_ack_forward_interval(
+                                    first, last, span_ns, &received,
+                                );
+                            }
+                        }
                         let acked: Vec<u64> = pns
                             .into_iter()
                             .filter_map(|pn| {

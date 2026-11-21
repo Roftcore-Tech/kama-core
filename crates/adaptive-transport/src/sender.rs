@@ -1040,6 +1040,19 @@ pub enum ConfirmSource {
     Recovered,
 }
 
+/// [ÖLÇÜM ARALIĞI · #175 7067964700] ACK çerçevesinin ileri ölçüm aralığı (motor seq uzayında).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForwardInterval {
+    /// M'nin en küçük alınan seq'i (`m_first`).
+    pub first_seq: u64,
+    /// Çerçevenin en büyük teyitli seq'i.
+    pub last_seq: u64,
+    /// Alıcıda `ilk_varış(last) − ilk_varış(first)` (ns); `None` = ölçüm yok.
+    pub rx_span_ns: Option<u64>,
+    /// M'de alınan seq'ler (artan).
+    pub received: Vec<u64>,
+}
+
 /// §2 ACK rekonstrüksiyonunun ÇIKTISI (transport-control codec ayrı; burada çözülmüş girdi).
 #[derive(Debug, Clone)]
 pub struct AckInfo {
@@ -1838,6 +1851,8 @@ pub struct Sender {
     /// [İLK-PENCERE] Bir sonraki `AckReceived` çerçevesinin §2.2 `arrival_rate` alanı
     /// ([`Self::note_ack_arrival_rate`]); ACK işlenince tüketilir.
     pending_arrival_rate: Option<u16>,
+    /// [ÖLÇÜM ARALIĞI · #175 7067964700] Bir sonraki `AckReceived` çerçevesinin ileri ölçüm aralığı.
+    pending_forward_interval: Option<ForwardInterval>,
     /// [GERİ-BİLDİRİM-AÇ] Bkz. [`FeedbackStarvedRule`]. `None` = kural yok (bugünkü yol, bit-eşit).
     cc_feedback_starved: Option<FeedbackStarvedRule>,
     /// [HAT-KORUMASI] Gerçek ileri hattın tahmincisi; yalnız kural kuruluyken `Some`.
@@ -2202,6 +2217,7 @@ impl Sender {
             dup_queue: Vec::new(),
             forward_copy_rule: None,
             pending_arrival_rate: None,
+            pending_forward_interval: None,
             cc_feedback_starved: None,
             cc_line_guard: None,
             diag_emit_log: None,
@@ -3964,6 +3980,9 @@ impl Sender {
     /// tabanı aynı ölçümü [`Self::cc_feedback_cap`] ile okur. Kural yokken etkisiz.
     fn cc_line_guard_on_ack(&mut self, ack: &AckInfo, now_ns: u64) {
         let arrival_rate = self.pending_arrival_rate.take();
+        // [ÖLÇÜM ARALIĞI] Gönderici tarafının tüketimi (hat koruması) yerelin İŞ-34 işidir; bu
+        // gövde yalnız girdiyi taşır ve tüketmeden bırakır (davranış değişmez).
+        let _forward = self.pending_forward_interval.take();
         let Some(g) = self.cc_line_guard.as_mut() else {
             return;
         };
@@ -6037,6 +6056,27 @@ impl Sender {
     /// başka her yolda etkisiz.
     pub fn note_ack_arrival_rate(&mut self, arrival_rate: u16) {
         self.pending_arrival_rate = Some(arrival_rate);
+    }
+
+    /// [ÖLÇÜM ARALIĞI · #175 7067964700] Bir sonraki `Event::AckReceived` çerçevesinin ileri ölçüm
+    /// aralığı (motor seq uzayında): `first_seq` = M'nin en küçük alınan seq'i, `last_seq` =
+    /// çerçevenin en büyük teyitli seq'i, `rx_span_ns` = alıcıda `ilk_varış(last) − ilk_varış(first)`
+    /// (`None` = ölçüm yok ya da V2 çerçevesi), `received` = M'de alınan seq'ler. Çalışma zamanı
+    /// 0x15 çerçevesini çözünce `AckReceived`'dan hemen önce çağırır. Bayt sayısı göndericinin kendi
+    /// kaydındandır; dönüş gecikmesi bu ölçüye girmez.
+    pub fn note_ack_forward_interval(
+        &mut self,
+        first_seq: u64,
+        last_seq: u64,
+        rx_span_ns: Option<u64>,
+        received: &[u64],
+    ) {
+        self.pending_forward_interval = Some(ForwardInterval {
+            first_seq,
+            last_seq,
+            rx_span_ns,
+            received: received.to_vec(),
+        });
     }
 
     /// [İLK-PENCERE] İlk ACK'in varış penceresinin sonucu (salt gözlem; kural ya da pencere yoksa

@@ -191,6 +191,9 @@ pub struct Receiver {
     cc_port: bool,
     state: RxState,
     received: BTreeSet<u64>, // alınan full-counter seq'ler (SACK kaynağı)
+    /// [ACK-BITMAP · ÖLÇÜM ARALIĞI] Bitmap alıcısında seq'lerin ilk varış anı (ns): `rx_span`
+    /// kaynağı. Bitmap penceresiyle (en çok `ACK_BITMAP_MAX_BITS` + pay) sınırlı.
+    arrival_ns: std::collections::BTreeMap<u64, u64>,
     /// [YENİDEN-RAPOR] Geri bildirimi aç alıcıda alınan seq'in kaç çıkan ACK'te bildirildiği
     /// (`received` ile aynı kayan pencere; başka yolda boş).
     reported: BTreeMap<u64, u8>,
@@ -295,6 +298,7 @@ impl Receiver {
             cc_port: false,
             state: RxState::Normal,
             received: BTreeSet::new(),
+            arrival_ns: std::collections::BTreeMap::new(),
             reported: BTreeMap::new(),
             pn_unit: BTreeMap::new(),
             unit_reported: BTreeMap::new(),
@@ -1148,6 +1152,21 @@ impl Receiver {
     /// rx-set + largest/smallest muhasebesi.
     fn record_seq(&mut self, seq: u64, now_ns: u64) {
         self.received.insert(seq);
+        // [ACK-BITMAP · ÖLÇÜM ARALIĞI] İlk varış anı (çift datagram buraya gelmez).
+        if self.bitmap_rx() {
+            self.arrival_ns.entry(seq).or_insert(now_ns);
+            let keep_from = self
+                .largest_seq
+                .max(seq)
+                .saturating_sub(2 * crate::ack::ACK_BITMAP_MAX_BITS);
+            while self
+                .arrival_ns
+                .first_key_value()
+                .is_some_and(|(&k, _)| k < keep_from)
+            {
+                self.arrival_ns.pop_first();
+            }
+        }
         if !self.have_recv {
             self.smallest_seq = seq;
             self.largest_seq = seq;
@@ -1240,6 +1259,7 @@ impl Receiver {
                 self.ack_epoch,
                 encoded as u16,
                 self.arrival_rate_field(now_ns),
+                self.rx_span_field(base, largest),
             );
             return (Some(frame), encoded == ACK_DELAY_ENC_MAX);
         }
@@ -1269,6 +1289,28 @@ impl Receiver {
             return crate::ack::ARRIVAL_RATE_SENTINEL;
         }
         self.first_window.rate_field()
+    }
+
+    /// [ACK-BITMAP · ÖLÇÜM ARALIĞI] `rx_span` (256 µs): M = `[base, largest]` içinde alınan
+    /// seq'ler, `m_first` = M'nin en küçüğü; `ilk_varış(largest) − ilk_varış(m_first)`. Ölçüm yoksa
+    /// [`crate::ack::RX_SPAN_NONE`] (m_first = largest, varış anı bilinmiyor, tavan aşıldı).
+    fn rx_span_field(&self, base: u64, largest: u64) -> u16 {
+        let none = crate::ack::RX_SPAN_NONE;
+        let Some(&m_first) = self.received.range(base..=largest).next() else {
+            return none;
+        };
+        if m_first >= largest {
+            return none;
+        }
+        let (Some(&t0), Some(&t1)) = (self.arrival_ns.get(&m_first), self.arrival_ns.get(&largest))
+        else {
+            return none;
+        };
+        let units = t1.saturating_sub(t0) / (crate::ack::ACK_DELAY_UNIT_US * 1000);
+        u16::try_from(units)
+            .ok()
+            .filter(|&u| u < none)
+            .unwrap_or(none)
     }
 
     /// [VARIŞ-HIZI] İlk varış penceresini ölçen alıcı: port motoru, bütçeli ve bütçe tipik ACK'in
