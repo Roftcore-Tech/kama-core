@@ -25,7 +25,9 @@
 use std::io::{self, Read};
 use std::path::Path;
 
-use client_core::runtime::{link_feedback_starved, LinkRates, RuntimeConfig, PTT_FORWARD_COPIES};
+use client_core::runtime::{
+    link_feedback_starved, LinkRates, RuntimeConfig, PTT_FORWARD_COPIES, PTT_FORWARD_COPIES_MIN,
+};
 use client_core::TransportEngine;
 
 /// Ortam değişkeni adı.
@@ -144,8 +146,9 @@ pub(crate) fn start_record(runtime: &RuntimeConfig, lanes: bool, source: Source)
     let protection = if link_feedback_starved(runtime) {
         if lanes {
             format!(
-                "geri-bildirim-aç (PTT: 1 asıl gönderim + teyitsiz birim için en çok {} planlı ek kopya; PTT dışı şeritlerde ACK'siz FEC ön oranı; ACK saatsiz uçuş)",
-                PTT_FORWARD_COPIES.saturating_sub(1)
+                "geri-bildirim-aç (PTT: 1 asıl gönderim + teyitsiz birim için en çok {} planlı ek kopya, hat beyanın altında ölçülürse orantılı az, en az {}; PTT dışı şeritlerde ACK'siz FEC ön oranı; ACK saatsiz uçuş)",
+                PTT_FORWARD_COPIES.saturating_sub(1),
+                PTT_FORWARD_COPIES_MIN.saturating_sub(1)
             )
         } else {
             "geri-bildirim-aç, şeritsiz (ACK'siz FEC ön oranı, ACK saatsiz uçuş; PTT kopyası YOK)"
@@ -247,7 +250,7 @@ mod tests {
         let base = start_record(&runtime, true, Source::Env);
         assert!(
             base.contains(
-                "koruma=geri-bildirim-aç (PTT: 1 asıl gönderim + teyitsiz birim için en çok 4 planlı ek kopya"
+                "koruma=geri-bildirim-aç (PTT: 1 asıl gönderim + teyitsiz birim için en çok 6 planlı ek kopya, hat beyanın altında ölçülürse orantılı az, en az 5;"
             ),
             "{base}"
         );
