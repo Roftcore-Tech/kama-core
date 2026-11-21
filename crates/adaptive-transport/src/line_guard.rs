@@ -77,13 +77,18 @@
 //! # Temkinli başlangıç
 //!
 //! Mekanizma: ilk tavan profil hattının [`START_NUM`]/[`START_DEN`] katıdır, hat modeli de bu
-//! tavandadır (pacer'ın burst payı tavanı aşamaz) ve tavan doğrulamalarla yükselir. SEÇİLEN
-//! DEĞER 1/1 (profil hattı): ölçüm (ürün testi `asym_product_outcome`, tohum 1, 2026-11-20)
-//! düşük başlangıcın bedelini dürüst profilde dosya sınırının (14 s) üstünde gösterdi — 1/2'de
-//! 15,0 s, 3/4'te 15,8 s ve 23,2 s (önce 8,7 s). Neden: bu hatta ACK'ler ≈ 8,6 s'de bir gelir
-//! (dönüş bütçesi Y = 0,25 × 62 B/s); dosyanın son baytları bir ACK sonrasına kayınca kayıp
-//! raporu bir ACK aralığı daha bekler. Düşük başlangıç yalnız ilk ölçüm (ikinci ACK, 3,3–6,4 s)
-//! erken gelirse ucuzdur; gönderici bunu öne alamaz.
+//! tavandadır (pacer'ın burst payı tavanı aşamaz) ve tavan doğrulamalarla yükselir.
+//!
+//! Seçim ölçümle (ürün testi `asym_product_outcome`, release, sırayla):
+//! * 2026-11-20, tohum 1: 1/2'de dürüst dosya 15,0 s, 3/4'te 15,8 s ve 23,2 s (sınır 14 s;
+//!   önce 8,7 s) → o gün 1/1 seçildi.
+//! * 2026-11-21, tohum 1–3: 17/20'de (0,85) dürüst dosya 9,9–11,0 s; gerçek 10 000 hücresinde
+//!   başlangıç PTT 2,1–2,35 s → 0,84–1,87 s. Kalan düşüş: 1 s'lik aralıkta %6'lık aşırı yük
+//!   doğrulamayı geçti ve tavan profile çıktı; doğrulama sıkılaştırıldı ([`VERIFY_MIN_SPAN_NS`] =
+//!   3 s, [`VERIFY_GROWTH_DIV`]). Sonra: dürüst dosya 10,1–10,3 s, 10 000 başlangıç PTT 0,90–0,97 s.
+//!   Bedel: dürüst profilde dosya +1,2–2,0 s (sınır içinde).
+//! * Gerçek hat tavanın altındaysa (ör. 6 250 B/s) kuyruk ilk ölçüme (ikinci ACK, 3,3–7,9 s) dek
+//!   büyür; gönderici ilk ölçümü öne alamaz.
 //!
 //! # Dönüş gecikmesi değişimi
 //!
@@ -128,7 +133,12 @@ const POINT_CAP: usize = 8;
 /// datagramları) ve örnek vermez.
 const GROWTH_MIN_DIV: u64 = 20;
 /// [YENİDEN-YOKLAMA] Doğrulama aralığının en kısa gönderim süresi (ns).
-const VERIFY_MIN_SPAN_NS: u64 = 1_000_000_000;
+const VERIFY_MIN_SPAN_NS: u64 = 3_000_000_000;
+/// [YENİDEN-YOKLAMA] Doğrulamada kuyruk artışı aralığın bu kesrinden (1/40 = %2,5) ve bir tam
+/// datagramın serileşmesinden küçük olmalı. Örnek eşiğinden (%5) sıkı: arada kalan artış ne örnek
+/// ne doğrulama verir. Ölçüldü (ürün testi, gerçek 10 000, tavan 10 625, tohum 1): 1 s'lik aralıkta
+/// %6'lık aşırı yük çözünürlüğün (1 MTU ≈ 115 ms) altında kaldı, tavan profile çıktı, kuyruk 1,5 s.
+const VERIFY_GROWTH_DIV: u64 = 40;
 /// [YENİDEN-YOKLAMA] Doğrulamada gönderim hızı tavanın en az bu binde biri olmalı (gönderici
 /// uygulama sınırlıyken — ör. yalnız PTT — doğrulama yok).
 const VERIFY_MIN_PERMILLE: u64 = 900;
@@ -137,8 +147,8 @@ const STEP_START_PERMILLE: u64 = 500;
 const STEP_MIN_PERMILLE: u64 = 62;
 const STEP_MAX_PERMILLE: u64 = 1000;
 /// [TEMKİNLİ-BAŞLANGIÇ] İlk tavan = profil hattı × START_NUM / START_DEN.
-pub const START_NUM: u64 = 1;
-pub const START_DEN: u64 = 1;
+pub const START_NUM: u64 = 17;
+pub const START_DEN: u64 = 20;
 /// [DÖNÜŞ-GECİKMESİ] Taban penceresi (ACK noktası).
 const BASE_WINDOW: usize = 4;
 
@@ -341,7 +351,11 @@ impl LineGuard {
                 // Aralık bugünkü tavanla gönderilmiş olmalı: ACK gönderimden saniyeler sonra gelir,
                 // eski (düşük tavanlı) aralığın doğrulaması yeni bilgi taşımaz.
                 let interval_pace = p.pace.min(rec.pace);
-                if k == newest && ds >= VERIFY_MIN_SPAN_NS && interval_pace >= self.pace_bps {
+                if k == newest
+                    && ds >= VERIFY_MIN_SPAN_NS
+                    && interval_pace >= self.pace_bps
+                    && growth <= (ds / VERIFY_GROWTH_DIV).min(mtu_ns)
+                {
                     let sent_bps =
                         u64::try_from(u128::from(bytes) * 1_000_000_000 / u128::from(ds))
                             .unwrap_or(u64::MAX);
