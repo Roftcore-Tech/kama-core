@@ -1877,6 +1877,8 @@ pub struct Sender {
     pending_arrival_rate: Option<u16>,
     /// [ÖLÇÜM-ARALIĞI] Bkz. [`Self::note_ack_forward_interval`]; ACK işlenince tüketilir.
     pending_forward_interval: Option<crate::line_guard::ForwardInterval>,
+    /// [ÇİFT ARALIĞI] Bkz. [`Self::note_ack_pair_rate`]; ACK işlenince tüketilir.
+    pending_pair_rate: Option<u16>,
     /// [GERİ-BİLDİRİM-AÇ] Bkz. [`FeedbackStarvedRule`]. `None` = kural yok (bugünkü yol, bit-eşit).
     cc_feedback_starved: Option<FeedbackStarvedRule>,
     /// [HAT-KORUMASI] Gerçek ileri hattın tahmincisi; yalnız kural kuruluyken `Some`.
@@ -2243,6 +2245,7 @@ impl Sender {
             forward_copy_scale: None,
             pending_arrival_rate: None,
             pending_forward_interval: None,
+            pending_pair_rate: None,
             cc_feedback_starved: None,
             cc_line_guard: None,
             diag_emit_log: None,
@@ -4006,6 +4009,10 @@ impl Sender {
     fn cc_line_guard_on_ack(&mut self, ack: &AckInfo, now_ns: u64) {
         let arrival_rate = self.pending_arrival_rate.take();
         let interval = self.pending_forward_interval.take();
+        let pair_rate = self
+            .pending_pair_rate
+            .take()
+            .filter(|&p| p != crate::ack::PAIR_RATE_NONE);
         let Some(g) = self.cc_line_guard.as_mut() else {
             return;
         };
@@ -4026,6 +4033,10 @@ impl Sender {
         }
         let saturated = ack.ack_delay >= crate::loss::E2A_ACK_DELAY_SATURATED;
         let update = g.on_ack_measured(now_ns, dur_ns(ack.ack_delay), saturated, largest, interval);
+        // [ÇİFT ARALIĞI] Aşağı yönlü örnek yokken alıcının kapasite alt sınırı tavanı açabilir.
+        if let Some(p) = pair_rate {
+            g.on_pair_rate(u64::from(p));
+        }
         // [BAŞLANGIÇ-BÜTÇESİ · İŞ-33 C1] İlk ACK işlendi: bütçe kalkar (ölçüm, doğrulama ya da
         // bilgi yok — üçünde de bundan sonrası bugünkü hat koruması).
         g.end_start_budget();
@@ -6099,6 +6110,13 @@ impl Sender {
     /// başka her yolda etkisiz.
     pub fn note_ack_arrival_rate(&mut self, arrival_rate: u16) {
         self.pending_arrival_rate = Some(arrival_rate);
+    }
+
+    /// [ÇİFT ARALIĞI · #175 7068773849] Bir sonraki `AckReceived` çerçevesinin `pair_rate` alanı
+    /// (0x15; B/s, UDP gövdesi; [`crate::ack::PAIR_RATE_NONE`] = ölçüm yok). ACK işlenince
+    /// tüketilir; hat koruması kurulu değilse etkisiz.
+    pub fn note_ack_pair_rate(&mut self, pair_rate: u16) {
+        self.pending_pair_rate = Some(pair_rate);
     }
 
     /// [ÖLÇÜM-ARALIĞI · İŞ-34 sözleşmesi §3] Bir sonraki `AckReceived` çerçevesinin ölçüm aralığı

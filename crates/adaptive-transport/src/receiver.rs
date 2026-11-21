@@ -294,6 +294,8 @@ pub struct Receiver {
     drop_alarm: bool,
     /// [DARALMA-ALARMI] Alarm sayısı (gözlem).
     diag_drop_alarms: u64,
+    /// [ÇİFT ARALIĞI] Kapasite alt sınırı ölçümü (`crate::ack` 0x15 `pair_rate`).
+    pair: PairRate,
 }
 
 impl Receiver {
@@ -356,6 +358,7 @@ impl Receiver {
             rate_drop: crate::arrival_rate::RateDropDetector::default(),
             drop_alarm: false,
             diag_drop_alarms: 0,
+            pair: PairRate::default(),
         }
     }
 
@@ -363,6 +366,10 @@ impl Receiver {
     pub fn on_datagram(&mut self, d: RxDatagram, now_ns: u64) -> RxOutput {
         // [VARIŞ-HIZI] Boy yalnız bu çağrı içindir (çalışma zamanı her çağrıdan önce verir).
         let udp_bytes = self.next_datagram_bytes.take();
+        // [ÇİFT ARALIĞI] Her datagram (çift, kopya dahil): hepsi ileri hattı işgal eder.
+        if self.bitmap_rx() {
+            self.pair.on_arrival(now_ns, udp_bytes);
+        }
         // [§2.2 V2] seen_count: HER görülen datagram sayılır (dup/shard DAHİL) — sender'ın
         // "seen vs sent" yön-ayrımlı kayıp kıyası için (K3 cold-start).
         self.seen_total = self.seen_total.saturating_add(1);
@@ -572,6 +579,12 @@ impl Receiver {
     #[must_use]
     pub fn diag_drop_alarms(&self) -> u64 {
         self.diag_drop_alarms
+    }
+
+    /// [ÇİFT ARALIĞI] Bir sonraki bitmap ACK'inin `pair_rate` alanı (gözlem/test).
+    #[must_use]
+    pub fn diag_pair_rate_field(&self) -> u16 {
+        self.pair.field()
     }
 
     /// [DÖNÜŞ-BÜTÇESİ] Bütçe yetmediği için ertelenen ACK emisyonu (SALT-GÖZLEM).
@@ -1020,6 +1033,7 @@ impl Receiver {
             self.info_since_ack = false;
             self.drop_alarm = false;
             self.rate_drop.on_ack(now_ns);
+            self.pair.on_ack();
             self.note_reported(&frame);
             self.note_bitmap_emitted(&frame);
             self.ack_horizon_ns = self.ack_arrival_horizon(now_ns, &frame);
@@ -1284,7 +1298,7 @@ impl Receiver {
                 .bitmap_base()
                 .max(largest.saturating_sub(crate::ack::ACK_BITMAP_MAX_BITS));
             let (rx_span, span_first) = self.rx_span_field(base, largest);
-            let frame = AckFrame::bitmap_from_received(
+            let mut frame = AckFrame::bitmap_from_received(
                 self.received.range(base..largest).copied(),
                 largest,
                 base,
@@ -1294,6 +1308,9 @@ impl Receiver {
                 rx_span,
                 span_first,
             );
+            if let Some(bm) = frame.bitmap.as_mut() {
+                bm.pair_rate = self.pair.field();
+            }
             return (Some(frame), encoded == ACK_DELAY_ENC_MAX);
         }
         let received: Vec<u64> = if self.feedback_starved_rx() {
@@ -1405,9 +1422,132 @@ impl Default for Receiver {
     }
 }
 
+/// [ÇİFT ARALIĞI · #175 7068773849] İleri hat kapasitesinin alıcıda ölçülen alt sınırı.
+///
+/// Ardışık iki datagramın varış aralığı `g` ve ikincinin UDP gövdesi `b` için `b / g`. Tek FIFO
+/// darboğazda ikinci datagram darboğazdan en erken birincinin çıkışından kendi serileşme süresi
+/// kadar sonra çıkar, bu yüzden `b / g ≤ hat` (tel baytı UDP gövdesinden büyük olduğu için alt
+/// sınır daha da korunaklıdır); birinci datagram ikincinin gönderiminde hâlâ serileşiyorsa eşitlik
+/// olur. Kayıp (darboğazda yer kaplayıp düşen datagram aralığı uzatır), uygulama sınırlı ve
+/// aralıklı gönderim değeri yalnız küçültür. Varsayım dışı olan darboğazdan sonra sıkışmadır
+/// (alıcıda toplu teslim): bunun için `g` [`PAIR_MIN_GAP_NS`]'ten kısa çiftler atılır ve alan son
+/// ACK'ten bu yana en büyük İKİNCİ değerdir (tek bir sıkışmış çift değeri büyütemez).
+#[derive(Debug, Default, Clone, Copy)]
+struct PairRate {
+    prev_ns: Option<u64>,
+    /// En büyük iki değer (B/s, UDP gövdesi); 0 = yok.
+    top: [u64; 2],
+}
+
+/// [ÇİFT ARALIĞI] Çift aralığının alt sınırı (ns): daha kısa aralık zamanlayıcı/teslim titreşimidir.
+const PAIR_MIN_GAP_NS: u64 = 2_000_000;
+
+impl PairRate {
+    fn on_arrival(&mut self, now_ns: u64, udp_bytes: Option<u64>) {
+        if let (Some(p), Some(b)) = (self.prev_ns, udp_bytes) {
+            let g = now_ns.saturating_sub(p);
+            if b >= crate::ack::PAIR_MIN_UDP_BYTES && g >= PAIR_MIN_GAP_NS {
+                let r = u64::try_from(u128::from(b) * 1_000_000_000 / u128::from(g))
+                    .unwrap_or(u64::MAX);
+                if r > self.top[0] {
+                    self.top = [r, self.top[0]];
+                } else if r > self.top[1] {
+                    self.top[1] = r;
+                }
+            }
+        }
+        self.prev_ns = Some(now_ns);
+    }
+
+    fn on_ack(&mut self) {
+        self.top = [0, 0];
+    }
+
+    fn field(&self) -> u16 {
+        if self.top[1] == 0 {
+            return crate::ack::PAIR_RATE_NONE;
+        }
+        u16::try_from(self.top[1].min(u64::from(crate::ack::PAIR_RATE_NONE) - 1))
+            .unwrap_or(crate::ack::PAIR_RATE_NONE - 1)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [ÇİFT ARALIĞI · #175 7068773849] `PairRate` tek FIFO darboğazda hattın ALT SINIRIDIR:
+    /// rastgele gönderim aralıkları, karışık boylar ve darboğazda yer kaplayıp düşen datagramlarla
+    /// değer hiçbir tohumda hattı aşmaz; küçük bir datagramın hemen ardından giden tam
+    /// datagram varken değer hatta ±%2 yakındır; yalnız aralıklı gönderimde gönderim hızındadır.
+    /// Alıcıda toplu teslim (2 ms'den kısa aralık) ve tek bir sıkışmış çift değeri büyütmez.
+    #[test]
+    fn pair_rate_is_a_lower_bound_on_a_fifo_line() {
+        const LINE: u64 = 12_500;
+        const OVH: u64 = 28;
+        let ms = 1_000_000u64;
+        let sec = 1_000_000_000u64;
+        // Tek FIFO: varış = serileşme bitişi + 300 ms; `lost` datagram hattı kaplar, varmaz.
+        let feed = |sends: &[(u64, u64, bool)]| {
+            let mut pr = PairRate::default();
+            let mut free = 0u64;
+            for &(t, b, lost) in sends {
+                free = free.max(t) + (b + OVH) * sec / LINE;
+                if !lost {
+                    pr.on_arrival(free + 300 * ms, Some(b));
+                }
+            }
+            pr
+        };
+        let bound = LINE * 1046 / (1046 + OVH);
+        let mut lcg = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            lcg = lcg.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            lcg >> 33
+        };
+        for _ in 0..50 {
+            let mut t = 0u64;
+            let sends: Vec<(u64, u64, bool)> = (0..200)
+                .map(|_| {
+                    t += next() % (150 * ms);
+                    let b = if next() % 3 == 0 {
+                        86
+                    } else {
+                        800 + next() % 247
+                    };
+                    (t, b, next() % 5 == 0)
+                })
+                .collect();
+            let f = u64::from(feed(&sends).field());
+            assert!(
+                f == u64::from(crate::ack::PAIR_RATE_NONE) || f <= LINE,
+                "alt sınır aşıldı: {f}"
+            );
+        }
+        // PTT + 10 ms sonra tam datagram, 8 376 B/s tavanında: hatta yakın.
+        let period = (86 + 1046 + 2 * OVH) * sec / 8_376;
+        let sends: Vec<(u64, u64, bool)> = (0..40)
+            .flat_map(|k| [(k * period, 86, false), (k * period + 10 * ms, 1046, false)])
+            .collect();
+        let f = u64::from(feed(&sends).field());
+        assert!(f <= bound && f * 100 >= bound * 98, "{f} ≉ {bound}");
+        // Yalnız aralıklı tam datagram (8 376 B/s): değer gönderim hızında, hattın çok altında.
+        let period = (1046 + OVH) * sec / 8_376;
+        let sends: Vec<(u64, u64, bool)> = (0..40).map(|k| (k * period, 1046, false)).collect();
+        let f = u64::from(feed(&sends).field());
+        assert!(f <= 8_376, "aralıklı gönderim: {f}");
+        // Toplu teslim: 0,5 ms aralık atılır; tek sıkışmış çift (5 ms) en büyük ikinciyi değiştirmez.
+        let mut pr = feed(&sends);
+        let before = pr.field();
+        let t0 = 100 * sec;
+        pr.on_arrival(t0, Some(1046));
+        pr.on_arrival(t0 + ms / 2, Some(1046));
+        assert_eq!(pr.field(), before, "2 ms'den kısa aralık sayıldı");
+        pr.on_arrival(t0 + 5 * ms + ms / 2, Some(1046));
+        assert_eq!(pr.field(), before, "tek sıkışmış çift değeri büyüttü");
+        pr.on_ack();
+        assert_eq!(pr.field(), crate::ack::PAIR_RATE_NONE, "ACK'te sıfırlanır");
+    }
 
     /// [P3 SR-AUDIT-001] Düşman ayrık-seq akışı rx-set'i sınırsız büyütemez: kap sabit.
     #[test]

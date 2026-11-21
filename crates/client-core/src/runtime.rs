@@ -3500,6 +3500,10 @@ async fn client_task(
                         // [İLK-PENCERE · İŞ-33 C4] §2.2 `arrival_rate`: alıcının ilk varış
                         // penceresinin hızı; motor yalnız oturumun ilk ACK'inde okur.
                         session.sender_mut().note_ack_arrival_rate(frame.arrival_rate);
+                        // [ÇİFT ARALIĞI] 0x15 `pair_rate`: alıcıda ölçülen ileri hat alt sınırı.
+                        if let Some(bm) = frame.bitmap.as_ref() {
+                            session.sender_mut().note_ack_pair_rate(bm.pair_rate);
+                        }
                         // [D1a] ACK aralıkları PN uzayında → motor seq'ine çevrilir. Tabloda olmayan
                         // PN (ufuk dışı / motor kararı olmayan çerçeve) motora GİTMEZ.
                         let expected_pn = max_sealed_pn.map_or(0, |m| m + 1);
