@@ -1318,6 +1318,17 @@ impl LineGuard {
         self.pair_raises = self.pair_raises.saturating_add(1);
     }
 
+    /// [ÇİFT-PACING] Gönderici datagramları ikişer mi çıkarsın: aralık kipinde (alıcı çift alt
+    /// sınırını ölçer), başlangıç/boşluk bütçesi kalkmış, süreli yoklama yokken ve tavan profil
+    /// hattının altındayken.
+    #[must_use]
+    pub fn pair_pacing(&self) -> bool {
+        self.interval_mode
+            && self.start.is_none()
+            && self.probe.is_none()
+            && self.pace_bps < self.line.rate_bps
+    }
+
     /// [ÇİFT ARALIĞI] Alt sınırla tavan açma sayısı (gözlem).
     #[must_use]
     pub fn pair_raises(&self) -> u64 {

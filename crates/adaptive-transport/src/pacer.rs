@@ -29,7 +29,19 @@ struct LineState {
     backlog: u64,
     /// Boşaltma artık-kalanı (byte-ns, < 1e9; `refill_rem` ile aynı sabit nokta).
     rem: u64,
+    /// [ÇİFT-PACING] Çift kipi açık ([`TokenBucket::set_line_pairs`]).
+    pairs: bool,
+    /// [ÇİFT-PACING] Çiftin ilki kovadan çıktı: ikincisi hat kuyruğunu beklemeden çıkabilir.
+    pair_open: bool,
+    /// [ÇİFT-PACING] Son çiftten bu yana geçen süre (ns; [`PAIR_PERIOD_NS`]'te doyar).
+    since_pair_ns: u64,
 }
+
+/// [ÇİFT-PACING] İki çift arasındaki en kısa süre (ns). Alıcı son ACK'ten bu yana en büyük İKİNCİ
+/// çift değerini taşır: geri bildirimi aç profilde ACK aralığı ≥ 1 s, yarım saniyede bir çift her
+/// ACK aralığına en az iki çift koyar. Seyrek çift, darboğazdaki tek datagramlık fazla kuyruğu
+/// (öncelikli şeridin beklemesi) zamanın küçük bir kesrine indirir. [CAL]
+pub const PAIR_PERIOD_NS: u64 = 500_000_000;
 
 impl LineState {
     /// Bekletmeden kabul edilen kendi kuyruk payı: quinn pacer'ının burst aralığı
@@ -91,7 +103,27 @@ impl TokenBucket {
             model,
             backlog: 0,
             rem: 0,
+            pairs: false,
+            pair_open: false,
+            since_pair_ns: 0,
         });
+    }
+
+    /// [ÇİFT-PACING · İŞ-35 gece] Hat modelinin çift kipi: açıkken kovanın verdiği datagramlar
+    /// en çok [`PAIR_PERIOD_NS`]'te bir ikişer çıkar. Hat açıkken (kendi kuyruğumuz bir burst
+    /// aralığında) ve son çiftten bu yana [`PAIR_PERIOD_NS`] geçmişken çıkan datagram çiftin
+    /// ilkidir; ikincisi hat kuyruğunu beklemeden hemen çıkabilir, sonra hat ikisi de serileşene dek
+    /// kapanır. Ortalama hız hat modelinin hızıdır; darboğazda kendi kuyruğumuz çift anında en çok
+    /// bir datagram fazladır. Amaç: darboğaz modelin hızından hızlıyken çiftin ikincisi ilkinin
+    /// arkasında serileşir ve alıcının çift aralığı ölçüsü (`receiver` `PairRate`, `crate::ack`
+    /// 0x15 `pair_rate`) hattın kendisini görür; tekli pacing'de varış aralığı gönderim aralığıdır
+    /// ve ölçü yalnız gönderim hızını verir (PTT'siz oturumda alt sınır hiç gelmez). Kapalıyken
+    /// (varsayılan) davranış bugünküyle aynıdır. Model yoksa etkisiz.
+    pub fn set_line_pairs(&mut self, on: bool) {
+        if let Some(l) = self.line.as_mut() {
+            l.pairs = on;
+            l.pair_open &= on;
+        }
     }
 
     /// [HAT-KORUMASI] Kurulu hattın hızını değiştirir (B/s, zarf dahil); hattaki kuyruk korunur.
@@ -120,6 +152,8 @@ impl TokenBucket {
             if backlog_bytes > l.backlog {
                 l.backlog = backlog_bytes;
                 l.rem = 0;
+                // [ÇİFT-PACING] Boşaltma yazıldı: bekleyen çiftin ikincisi de bekler.
+                l.pair_open = false;
             }
         }
     }
@@ -130,6 +164,8 @@ impl TokenBucket {
     pub fn line_add_backlog(&mut self, bytes: u64) {
         if let Some(l) = self.line.as_mut() {
             l.backlog = l.backlog.saturating_add(bytes);
+            // [ÇİFT-PACING] Boşaltma yazıldı: bekleyen çiftin ikincisi de bekler.
+            l.pair_open &= bytes == 0;
         }
     }
 
@@ -142,13 +178,20 @@ impl TokenBucket {
     /// [HAT-MODELİ] Hat yeni datagram alabilir mi (model yoksa daima).
     #[must_use]
     pub fn line_is_open(&self) -> bool {
-        self.line.is_none_or(|l| l.backlog <= l.allowance())
+        self.line
+            .is_none_or(|l| l.pair_open || l.backlog <= l.allowance())
     }
 
     /// [HAT-MODELİ] Hattın yeni datagram alacağı ana kalan süre (ns; model yoksa 0).
     #[must_use]
     pub fn line_ns_until_open(&self) -> u64 {
-        self.line.map_or(0, |l| l.ns_until_backlog(l.allowance()))
+        self.line.map_or(0, |l| {
+            if l.pair_open {
+                0
+            } else {
+                l.ns_until_backlog(l.allowance())
+            }
+        })
     }
 
     /// [HAT-MODELİ] Kendi baytlarımızın hatta serileşmesinin biteceği ana kalan süre (ns; model
@@ -175,6 +218,10 @@ impl TokenBucket {
         self.refill_rem = (numer % 1_000_000_000) as u64;
         self.tokens = self.tokens.saturating_add(add).min(self.burst_cap);
         if let Some(l) = self.line.as_mut() {
+            l.since_pair_ns = l
+                .since_pair_ns
+                .saturating_add(dur_ns(dt))
+                .min(PAIR_PERIOD_NS);
             // Hat kendi hızında boşalır; boş hat kredi biriktirmez (artık sıfırlanır).
             let numer = u128::from(l.model.rate_bps) * u128::from(dur_ns(dt)) + u128::from(l.rem);
             let drained = u64::try_from(numer / 1_000_000_000).unwrap_or(u64::MAX);
@@ -195,6 +242,15 @@ impl TokenBucket {
         }
         if self.tokens >= size {
             self.tokens -= size;
+            // [ÇİFT-PACING] Çiftin ilki hat açıkken çıkar; ikincisi çifti kapatır.
+            if let Some(l) = self.line.as_mut().filter(|l| l.pairs) {
+                let open =
+                    !l.pair_open && l.backlog <= l.allowance() && l.since_pair_ns >= PAIR_PERIOD_NS;
+                if open {
+                    l.since_pair_ns = 0;
+                }
+                l.pair_open = open;
+            }
             self.line_charge(size);
             true
         } else {

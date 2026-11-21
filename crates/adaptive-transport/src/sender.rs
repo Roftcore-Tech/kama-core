@@ -3004,6 +3004,7 @@ impl Sender {
         if let Some(g) = self.cc_line_guard.as_mut() {
             if g.tick(now_ns) {
                 self.pacer.set_line_rate(g.pace_bps());
+                self.pacer.set_line_pairs(g.pair_pacing());
             }
         }
         // FS-CAL-2 v3 §3 lifecycle (design: docs/design/ESTIMATOR-LIFECYCLE.md). Finalize
@@ -4285,6 +4286,10 @@ impl Sender {
         // hat, doğrulanmamış başlangıçta yarı profil, yoklamada yükseltilmiş tavan): pacer'ın burst
         // payı (≥ 10 MTU) tavanın üstünde patlama yapamaz.
         self.pacer.set_line_rate(g.pace_bps());
+        // [ÇİFT-PACING · İŞ-35 gece] Aralık kipinde, bütçe ve yoklama yokken tavan profil hattının
+        // altındaysa datagramlar yarım saniyede bir ikişer çıkar: hat toparlandıysa alıcının çift
+        // aralığı ölçüsü hattı görür (`pacer::set_line_pairs`, `LineGuard::pair_pacing`).
+        self.pacer.set_line_pairs(g.pair_pacing());
         if let Some(u) = update {
             self.pacer.line_raise_backlog(u.backlog_bytes);
             // [SÜRELİ-YOKLAMA] Başarısız yoklamanın fazlası mevcut kuyruğun üstüne.
