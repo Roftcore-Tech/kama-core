@@ -532,6 +532,8 @@ pub struct LineGuard {
     gap_arms: u64,
     /// [ÖLÇÜM-BOŞLUĞU] Öncelikli trafik `R/2`'yi doldurduğu için kurulmayan boşluk bütçesi (gözlem).
     gap_skips: u64,
+    /// [İKİNCİ-ÖLÇÜM] İlk ACK'e dek ilk varış penceresini açabilecek büyük bir datagram gönderildi.
+    bulk_before_first_ack: bool,
     /// [KUYRUK-BOŞALTMA · İŞ-35] Son [`POINT_CAP`] noktanın cephe kuyruk beklemesi (`τ − s − taban`, ns).
     queue_peaks: VecDeque<u64>,
     /// [TAŞMA] Rastgele kayıp tabanı: kuyruk kanıtı olmayan aralıklarda alınan ve gönderilen tel
@@ -695,6 +697,7 @@ impl LineGuard {
             unmeasured_acks: 0,
             gap_arms: 0,
             gap_skips: 0,
+            bulk_before_first_ack: false,
             gap_drain: 0,
             queue_peaks: VecDeque::new(),
             floor_rx: 0,
@@ -745,6 +748,13 @@ impl LineGuard {
             if now_ns >= p.start_ns && now_ns < p.until_ns {
                 p.sent = p.sent.saturating_add(wire);
             }
+        }
+        if self
+            .start
+            .is_some_and(|b| !b.provisional && !b.gap && self.first_window.is_none())
+            && udp_bytes >= crate::arrival_rate::FIRST_WINDOW_BYTES
+        {
+            self.bulk_before_first_ack = true;
         }
         if let Some(mut b) = self.start {
             if b.first_ns.is_none() {
@@ -962,11 +972,15 @@ impl LineGuard {
         (self.line.rate_bps / 2).max(1)
     }
 
-    /// [İKİNCİ-ÖLÇÜM] İlk ACK'in sonucu bütçeyi kaldırır mı: pencere hattı doğruladı ya da alıcı
-    /// ölçmüyor (ne pencere ne ölçüm aralığı: eski alıcı, bugünkü yol).
+    /// [İKİNCİ-ÖLÇÜM] İlk ACK'in sonucu bütçeyi kaldırır mı: pencere hattı doğruladı, alıcı
+    /// ölçmüyor (ne pencere ne ölçüm aralığı: eski alıcı, bugünkü yol) ya da ilk ACK'e dek hiç
+    /// pencere açacak büyük datagram gönderilmedi (uygulama sınırlı başlangıç, ör. önce yalnız PTT):
+    /// ölçüm denenmedi, güvenilmeyecek tek bir ölçüm yok. Bu sonuncusunda hat bugünkü yoldaki gibi
+    /// ölçülmemiştir; sonraki ACK'lerin ölçüm aralığı ölçer. Ölçüldü (`tests/starved_line_sim.rs`,
+    /// seyrek ACK, dosya PTT'den sonra): geçici evrede dosya 22,30 s, bu kuralla 12,19 s.
     fn first_ack_trusted(&self) -> bool {
         self.first_window == Some(FirstWindowOutcome::Verified)
-            || (self.first_window.is_none() && !self.interval_mode)
+            || (self.first_window.is_none() && (!self.interval_mode || !self.bulk_before_first_ack))
     }
 
     /// [İKİNCİ-ÖLÇÜM] İlk ACK işleniyor (bütçe var, geçici evre başlamadı).
