@@ -385,9 +385,6 @@ impl AckFrame {
     pub fn decode(buf: &[u8]) -> Result<Self, TransportError> {
         let mut r = Reader::new(buf);
         let ft = r.u8()?;
-        if ft == FRAME_TYPE_ACK_BITMAP {
-            return Self::decode_bitmap(r);
-        }
         // [TUR-1x] V2 (0x14, 256µs) VE V1 (0x10, µs — uyumluluk) kabul; layout aynı.
         if ft != FRAME_TYPE_ACK && ft != FRAME_TYPE_ACK_V2 {
             return Err(TransportError::UnknownFrameType(ft));
@@ -436,6 +433,21 @@ impl AckFrame {
             arrival_rate,
             bitmap: None,
         })
+    }
+
+    /// [ACK-BITMAP · ölçüm prototipi] [`Self::decode`] + 0x15 bitmap çerçevesi. Yalnız bitmap
+    /// biçimi AÇIKÇA yapılandırılmış uç çağırır; [`Self::decode`] 0x15'i bugünkü gibi
+    /// `UnknownFrameType` ile reddeder (ACK referans vektörleri bunu sabitler).
+    ///
+    /// # Errors
+    /// [`Self::decode`] hataları; 0x15'te ayrıca [`TransportError::InvalidAckBitmap`].
+    pub fn decode_with_bitmap(buf: &[u8]) -> Result<Self, TransportError> {
+        if buf.first() == Some(&FRAME_TYPE_ACK_BITMAP) {
+            let mut r = Reader::new(buf);
+            let _ = r.u8()?;
+            return Self::decode_bitmap(r);
+        }
+        Self::decode(buf)
     }
 
     /// [ACK-BITMAP] 0x15 gövdesini çözer (tür baytı okunmuş). Bounds-before-read; bitmap tavanı,
@@ -662,7 +674,7 @@ mod tests {
             let bytes = f.encode();
             assert_eq!(bytes[0], FRAME_TYPE_ACK_BITMAP);
             assert_eq!(bytes.len(), f.frame_len());
-            let g = AckFrame::decode(&bytes).expect("decode");
+            let g = AckFrame::decode_with_bitmap(&bytes).expect("decode");
             assert_eq!(g, f, "gidiş-dönüş yapısal eşitlik");
             assert_eq!(g.acked_full(largest + 1), model(&recv, base, largest));
             assert_eq!(g.evidence_span_full(largest + 1), Some((base, largest)));
@@ -706,7 +718,7 @@ mod tests {
             .filter(|s| s % 2 == 0 || *s == largest)
             .collect();
         let f = AckFrame::bitmap_from_received(recv.iter().copied(), largest, base, 0, 0);
-        let g = AckFrame::decode(&f.encode()).expect("decode");
+        let g = AckFrame::decode_with_bitmap(&f.encode()).expect("decode");
         assert_eq!(g.largest_seq, 0x0005);
         assert_eq!(g.bitmap.as_ref().map(|b| b.base_seq), Some(0xFFF0));
         assert_eq!(g.acked_full(largest + 1), model(&recv, base, largest));
@@ -719,7 +731,7 @@ mod tests {
         // Kesik: her önek reddedilir.
         for n in 0..good.len() {
             assert!(
-                AckFrame::decode(&good[..n]).is_err(),
+                AckFrame::decode_with_bitmap(&good[..n]).is_err(),
                 "kesik {n} reddedilmeli"
             );
         }
@@ -727,7 +739,7 @@ mod tests {
         let mut long = good.clone();
         long.push(0);
         assert!(matches!(
-            AckFrame::decode(&long),
+            AckFrame::decode_with_bitmap(&long),
             Err(TransportError::TrailingBytes { count: 1 })
         ));
         // bitmap_len tavanı aşıyor.
@@ -735,13 +747,13 @@ mod tests {
         over.push(71);
         over.extend(std::iter::repeat_n(0u8, 71));
         assert!(matches!(
-            AckFrame::decode(&over),
+            AckFrame::decode_with_bitmap(&over),
             Err(TransportError::InvalidAckBitmap(_))
         ));
         // base > largest (sarma yok): açıklık mod 2^16 ≈ 65 k > tavan.
         let mut inv = vec![FRAME_TYPE_ACK_BITMAP, 0, 0x00, 0x10, 0, 0, 0x00, 0x20, 0];
         assert!(matches!(
-            AckFrame::decode(&inv),
+            AckFrame::decode_with_bitmap(&inv),
             Err(TransportError::InvalidAckBitmap(_))
         ));
         // Uzunluk açıklıkla tutarsız (span 9 → 2 B gerekir, 1 B verildi).
@@ -758,7 +770,7 @@ mod tests {
             0xFF,
         ];
         assert!(matches!(
-            AckFrame::decode(&inv),
+            AckFrame::decode_with_bitmap(&inv),
             Err(TransportError::InvalidAckBitmap(_))
         ));
         // Dolgu biti 1 (span 9 → ikinci baytta yalnız MSB anlamlı).
@@ -776,14 +788,28 @@ mod tests {
             0xC0,
         ];
         assert!(matches!(
-            AckFrame::decode(&inv),
+            AckFrame::decode_with_bitmap(&inv),
             Err(TransportError::InvalidAckBitmap(_))
         ));
         inv[10] = 0x80;
         assert!(
-            AckFrame::decode(&inv).is_ok(),
+            AckFrame::decode_with_bitmap(&inv).is_ok(),
             "aynı çerçeve dolgusuz geçerli"
         );
+    }
+
+    #[test]
+    fn plain_decode_still_rejects_0x15() {
+        let b = AckFrame::bitmap_from_received([0u64, 2, 9], 9, 0, 0, 0).encode();
+        assert!(matches!(
+            AckFrame::decode(&b),
+            Err(TransportError::UnknownFrameType(0x15))
+        ));
+        // 0x14 her iki çözücüde aynı sonucu verir.
+        let v = AckFrame::from_received(&[5, 6, 9], 0, 0, 3, ARRIVAL_RATE_SENTINEL)
+            .expect("x")
+            .encode();
+        assert_eq!(AckFrame::decode(&v), AckFrame::decode_with_bitmap(&v));
     }
 
     #[test]

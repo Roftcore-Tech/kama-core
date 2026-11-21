@@ -3398,7 +3398,13 @@ async fn client_task(
                 {
                     stats.unknown_frames += 1;
                 } else {
-                    if let Ok(frame) = AckFrame::decode(&plain) {
+                    // [ACK-BITMAP] 0x15 yalnız bitmap biçimi açıkça yapılandırılmışsa çözülür.
+                    let decoded = if cfg.ack_format == AckFormat::Bitmap {
+                        AckFrame::decode_with_bitmap(&plain)
+                    } else {
+                        AckFrame::decode(&plain)
+                    };
+                    if let Ok(frame) = decoded {
                         // [FAZ-1 DÖNÜŞ-YOLU] Gözlem girdisi: teldeki ACK boyu + alıcının GÖRDÜĞÜ
                         // datagram sayısı (V2 `seen_count`) + göndericinin yolladığı sayı.
                         // Motor davranışını DEĞİŞTİRMEZ; yön-ayrımını (ileri kayıp ↔ dönüş

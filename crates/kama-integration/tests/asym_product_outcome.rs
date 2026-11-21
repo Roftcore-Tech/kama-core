@@ -392,7 +392,7 @@ impl PacketProtection for Tap {
             if let Some((wseq, unit, _)) = decode_data(&opened.frame) {
                 l.rx_seq.entry(wseq).or_insert(now);
                 l.rx_unit.entry(unit).or_insert(now);
-            } else if let Ok(f) = AckFrame::decode(&opened.frame) {
+            } else if let Ok(f) = AckFrame::decode_with_bitmap(&opened.frame) {
                 if l.acks_rx.len() < LEDGER_CAP {
                     let pns = f.acked_full(u64::from(f.largest_seq));
                     l.acks_rx.push((now, pns));

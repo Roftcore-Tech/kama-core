@@ -1390,7 +1390,7 @@ mod tests {
             let bytes = a.encode();
             assert_eq!(bytes[0], crate::ack::FRAME_TYPE_ACK_BITMAP);
             assert!(crate::ack::ACK_DATAGRAM_ENVELOPE_BYTES + bytes.len() <= 129);
-            let d = AckFrame::decode(&bytes).expect("decode");
+            let d = AckFrame::decode_with_bitmap(&bytes).expect("decode");
             assert_eq!(d.acked_full(largest + 1), want, "çerçeve {}", hist.len());
             assert_eq!(d.evidence_span_full(largest + 1), Some((base, largest)));
             for s in base..=largest {
