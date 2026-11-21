@@ -138,6 +138,41 @@
 //! kalıcı yükselir ve adım katlanır; değilse tavan önceki değerde kalır ve ölçülen artış hat
 //! modeline yazılır (boşaltma). Örnek eşiğini aşan artış her zamanki gibi örnektir.
 //!
+//! # Başlangıç bütçesi ve tek ACK'ten ilk ölçüm (İŞ-33, 2026-11-21)
+//!
+//! İlk ACK'ten önce gönderici gerçek hattı bilmez. Profil iyimserse (gerçek hat beyanın yarısı)
+//! profil hızında gönderilen her saniye darboğazda bir saniye kuyruk kurar. Bu yüzden ilk ACK
+//! işlenene dek hatta verilen toplam tel baytı (motorun her iletimi ve motor dışı datagramlar)
+//!
+//! ```text
+//! A(t) = max(P × START_BURST_NS, P/2 × t)        P = profil hattı, t = ilk iletimden beri
+//! ```
+//!
+//! ile sınırlıdır ([`LineGuard::start_budget_admits`]). Gerçek hat `P/2` iken kuyruk en çok
+//! [`START_BURST_NS`] kadar büyür (ilk patlamanın sonunda) ve `2 × START_BURST_NS`'te boşalır;
+//! hat `P/2`'den hızlıysa kuyruk daha küçüktür. Bütçe yalnız öncelikli olmayan iletimleri
+//! (dosya, onarım sembolü) bekletir; PTT, metin ve denetim bütçeye sayılır ama beklemez
+//! (`Sender`'daki çağrı yerleri).
+//!
+//! Bütçe ilk ACK'le kalkar. İlk ACK alıcının ilk varış penceresinin hızını taşır
+//! ([`crate::arrival_rate`]): ilk patlamanın birkaç datagramı. Gönderici pencerenin ilk ve son
+//! seq'ini kendi kaydından bulur, pencere süresini `bayt / hız` olarak geri kurar ve yukarıdaki
+//! iki nokta tahmincisini bu tek ACK'e uygular ([`LineGuard::on_first_window`]):
+//! * kuyruk artışı pencerenin %5'ini aşıyorsa örnek: tavan ölçülen hatta iner (ilk ölçüm ikinci
+//!   ACK'ten ≈ 4,6 s yerine ilk ACK'te ≈ 2 s);
+//! * artış yoksa ve pencere tavanın en az %90'ıyla gönderildiyse hat en az tavan hızındadır
+//!   (doğrulama): tavan profilde kalır;
+//! * alan sentinel ise (eski alıcı, pencere kapanmadı) ya da pencere kurulamazsa bilgi yoktur:
+//!   bütçe yine kalkar, gönderici bugünkü yola döner.
+//!
+//! Patlama pencereyi kapsamalıdır: pencere ilk datagramdan sonra
+//! [`crate::arrival_rate::FIRST_WINDOW_BYTES`] (yarım MTU) alınmış gövde baytıdır;
+//! `P × START_BURST_NS` = 6 250 B (P = 12 500 B/s) ≈ beş dosya parçası, %20 kayıpla en az ikisi
+//! ≈ %99,3 olasılıkla ulaşır.
+//! Pencere patlamadan sonra gönderilen datagramla kapanırsa kuyruk boşalmış olabilir: artış
+//! görünmez, sonuç `NoInfo`'dur (bugünkü yol). Profil hattının patlaması pencereden küçükse (dar
+//! profil) de böyledir.
+//!
 //! Determinizm: tamsayı aritmetiği, RNG yok, sınırlı bellek (ADR-17 / SR-AUDIT-001).
 
 use std::collections::VecDeque;
@@ -172,6 +207,14 @@ pub const START_NUM: u64 = 1;
 pub const START_DEN: u64 = 1;
 /// [DÖNÜŞ-GECİKMESİ] Taban penceresi (ACK noktası).
 const BASE_WINDOW: usize = 4;
+/// [BAŞLANGIÇ-BÜTÇESİ] İlk ACK'ten önce profil hızında patlama süresi (ns): gerçek hat beyanın
+/// yarısıysa kurulan en büyük kuyruk (patlamanın sonunda; `2 × START_BURST_NS`'te boşalır). PTT
+/// açıldığında (ürün 0,5 s) kuyruk en çok bu kadardır ve sonraki demetlerde iner: PTT sınırı (1 s) −
+/// ileri yayılım (ürün testi 0,3 s) − demetin serileşmesi − zamanlama payı. Patlama ilk varış
+/// penceresini (ilk datagram + yarım MTU) %20 kayıpla da kapsamalıdır: 12 500 B/s profilde 6 250 B
+/// ≈ beş dosya parçası; pencere patlama dışına ancak beşten en çok biri ulaşırsa taşar (≈ %0,7).
+/// Dört parçada (0,4 s) bu olasılık ≈ %2,7'dir (simde tohum 1'in kayıp dizisi). [CAL]
+pub const START_BURST_NS: u64 = 500_000_000;
 
 /// Ölçüm sonucu: korunan hat hızı ve darboğazda tahmin edilen kuyruk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,6 +229,8 @@ pub struct LineGuardUpdate {
 struct SentRec {
     seq: u64,
     send_ns: u64,
+    /// İletimin UDP gövde boyu (ilk varış penceresinin bayt kuralı).
+    udp: u64,
     /// Bu iletim dahil hatta verilen kümülatif tel baytı.
     cum: u64,
     /// İletim anındaki gönderim tavanı (B/s, tel).
@@ -198,21 +243,6 @@ struct Point {
     send_ns: u64,
     cum: u64,
     pace: u64,
-}
-
-/// [SÜRELİ-YOKLAMA] Süren ya da hüküm bekleyen yoklama.
-#[derive(Debug, Clone, Copy)]
-struct Probe {
-    /// Yoklama öncesi tavan (başarısızlıkta dönülen).
-    base_pace: u64,
-    /// Yoklama tavanı (başarıda kalıcı olan).
-    probe_pace: u64,
-    /// Yoklamanın bittiği an (ns): o andan sonra tavan hükme dek `base_pace`.
-    until_ns: u64,
-    /// Hat değişmediyse yoklamanın kuracağı kuyruk (ns).
-    expect_ns: u64,
-    /// Yoklamanın başladığı ACK noktası.
-    reference: Point,
 }
 
 /// Geri bildirimi aç profilde gerçek ileri hattın tahmincisi (modül belgesi).
@@ -243,10 +273,54 @@ pub struct LineGuard {
     samples: u64,
     /// [YENİDEN-YOKLAMA] Doğrulama (tavan yükseltmesi) sayısı (gözlem).
     raises: u64,
+    /// [BAŞLANGIÇ-BÜTÇESİ] İlk ACK'e dek bütçe; `Some(None)` = henüz iletim yok, `Some(Some(t))` =
+    /// ilk iletim `t` anında, `None` = bütçe kalktı.
+    start: Option<Option<u64>>,
+    /// [İLK-PENCERE] İlk ACK'in varış penceresinin sonucu (gözlem).
+    first_window: Option<FirstWindowOutcome>,
+    /// [İLK-PENCERE] Pencerenin ayrıntısı (gözlem): ilk ve son seq, gönderim süresi `Δs`, varış
+    /// süresi `Δτ` (ns), aradaki tel baytı.
+    first_window_detail: Option<FirstWindowDetail>,
     /// [SÜRELİ-YOKLAMA] Süren ya da hüküm bekleyen yoklama.
     probe: Option<Probe>,
     /// [SÜRELİ-YOKLAMA] Başarısız yoklama sayısı (gözlem).
     probe_failures: u64,
+}
+
+/// [İLK-PENCERE] Pencerenin ayrıntısı (gözlem).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FirstWindowDetail {
+    pub first_seq: u64,
+    pub last_seq: u64,
+    pub ds_ns: u64,
+    pub dtau_ns: u64,
+    pub wire_bytes: u64,
+}
+
+/// [SÜRELİ-YOKLAMA] Süren ya da hüküm bekleyen yoklama.
+#[derive(Debug, Clone, Copy)]
+struct Probe {
+    /// Yoklama öncesi tavan (başarısızlıkta dönülen).
+    base_pace: u64,
+    /// Yoklama tavanı (başarıda kalıcı olan).
+    probe_pace: u64,
+    /// Yoklamanın bittiği an (ns): o andan sonra tavan hükme dek `base_pace`.
+    until_ns: u64,
+    /// Hat değişmediyse yoklamanın kuracağı kuyruk (ns).
+    expect_ns: u64,
+    /// Yoklamanın başladığı ACK noktası.
+    reference: Point,
+}
+
+/// [İLK-PENCERE] İlk ACK'in varış penceresinden çıkan sonuç (gözlem).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FirstWindowOutcome {
+    /// Kuyruk büyüdü: tavan ölçülen hatta indi (B/s, tel).
+    Sample(u64),
+    /// Kuyruk büyümedi, pencere tavana yakın gönderildi: hat en az tavan hızında.
+    Verified,
+    /// Pencere kuruldu ama karar vermedi (kuyruk büyümedi, gönderim tavanın altında).
+    NoInfo,
 }
 
 impl LineGuard {
@@ -269,6 +343,9 @@ impl LineGuard {
             step_permille: STEP_START_PERMILLE,
             samples: 0,
             raises: 0,
+            start: Some(None),
+            first_window: None,
+            first_window_detail: None,
             probe: None,
             probe_failures: 0,
         }
@@ -285,12 +362,16 @@ impl LineGuard {
         self.cum = self
             .cum
             .saturating_add(udp_bytes.saturating_add(self.line.datagram_overhead));
+        if let Some(first) = self.start.as_mut() {
+            first.get_or_insert(now_ns);
+        }
         if self.sent.len() >= SENT_CAP {
             self.sent.pop_front();
         }
         self.sent.push_back(SentRec {
             seq,
             send_ns: now_ns,
+            udp: udp_bytes,
             cum: self.cum,
             pace: self.pace_bps,
         });
@@ -349,6 +430,123 @@ impl LineGuard {
             }
             _ => false,
         }
+    }
+
+    /// [BAŞLANGIÇ-BÜTÇESİ] Bütçe hâlâ geçerli mi (ilk ACK işlenmedi).
+    #[must_use]
+    pub fn start_budget_active(&self) -> bool {
+        self.start.is_some()
+    }
+
+    /// [BAŞLANGIÇ-BÜTÇESİ] `udp_bytes` gövdeli bir iletim şimdi bütçeye sığar mı (modül belgesi:
+    /// `A(t)`). Bütçe kalktıysa daima `true`.
+    #[must_use]
+    pub fn start_budget_admits(&self, now_ns: u64, udp_bytes: u64) -> bool {
+        let Some(first) = self.start else {
+            return true;
+        };
+        let elapsed = first.map_or(0, |f| now_ns.saturating_sub(f));
+        let p = u128::from(self.line.rate_bps);
+        let burst = p * u128::from(START_BURST_NS) / 1_000_000_000;
+        let half = p * u128::from(elapsed) / 2_000_000_000;
+        let wire = u128::from(udp_bytes.saturating_add(self.line.datagram_overhead));
+        u128::from(self.cum) + wire <= burst.max(half)
+    }
+
+    /// [BAŞLANGIÇ-BÜTÇESİ] Bütçeyi kaldırır (ilk ACK işlendi). İlk ACK kullanılabilir bir pencere
+    /// taşımadıysa (eski alıcı, sentinel, `NoInfo`) o ACK'in noktası aralık başlangıcı olmaktan
+    /// çıkar: cephesi bütçenin yarı hız evresinde gönderilmişti ve darboğaz o evrede boşta
+    /// kalabilir; böyle bir aralığın `bayt / Δτ` tahmini hattı düşük okur (ölçüldü: kalıcı sim,
+    /// gerçek 6 250 B/s, tohum 3, eski alıcı: 5 779 B/s). Taban için gecikme örneği kalır. İlk
+    /// örnek bir ACK sonra, bütçesiz gönderilmiş aralıktan gelir.
+    pub fn end_start_budget(&mut self) {
+        if self.start.take().is_some()
+            && !matches!(
+                self.first_window,
+                Some(FirstWindowOutcome::Sample(_) | FirstWindowOutcome::Verified)
+            )
+        {
+            self.points.clear();
+        }
+    }
+
+    /// [İLK-PENCERE] İlk ACK'in varış penceresinin sonucu (gözlem; `None` = pencere işlenmedi).
+    #[must_use]
+    pub fn first_window(&self) -> Option<FirstWindowOutcome> {
+        self.first_window
+    }
+
+    /// [İLK-PENCERE] Pencerenin ayrıntısı (gözlem).
+    #[must_use]
+    pub fn first_window_detail(&self) -> Option<FirstWindowDetail> {
+        self.first_window_detail
+    }
+
+    /// [İLK-PENCERE] Oturumun ilk ACK'i işlenirken: `acked` çerçevenin teyit ettiği seq'ler,
+    /// `arrival_rate` çerçevenin §2.2 alanı (alıcının ilk varış penceresinin gövde hızı, B/s).
+    /// Pencere göndericinin kaydından kurulur ([`crate::arrival_rate::window_end`]); kuyruk artışı
+    /// pencerenin %5'ini aşarsa tavan ölçülen hatta iner. Bütçe kalktıysa, alan sentinel ise ya da
+    /// pencere kurulamazsa etkisiz (`None`). Yalnız bir kez çalışır.
+    pub fn on_first_window(
+        &mut self,
+        acked: &[u64],
+        arrival_rate: u16,
+    ) -> Option<FirstWindowOutcome> {
+        if self.start.is_none()
+            || self.first_window.is_some()
+            || arrival_rate == crate::ack::ARRIVAL_RATE_SENTINEL
+            || arrival_rate == 0
+        {
+            return None;
+        }
+        let rec_of = |seq: u64| {
+            self.sent
+                .binary_search_by_key(&seq, |r| r.seq)
+                .ok()
+                .map(|i| self.sent[i])
+        };
+        let mut seqs: Vec<u64> = acked.to_vec();
+        seqs.sort_unstable();
+        seqs.dedup();
+        // Alıcının saydığı her seq göndericinin kaydında olmalı; olmayan pencereyi bozar.
+        let mut sized = Vec::with_capacity(seqs.len());
+        for s in seqs {
+            sized.push((s, rec_of(s)?.udp));
+        }
+        let (first, last, rx_bytes) = crate::arrival_rate::window_end(sized)?;
+        let (rf, rl) = (rec_of(first)?, rec_of(last)?);
+        let ds = rl.send_ns.checked_sub(rf.send_ns).filter(|&d| d > 0)?;
+        let dtau =
+            u64::try_from(u128::from(rx_bytes) * 1_000_000_000 / u128::from(arrival_rate)).ok()?;
+        let wire = rl.cum.saturating_sub(rf.cum);
+        self.first_window_detail = Some(FirstWindowDetail {
+            first_seq: first,
+            last_seq: last,
+            ds_ns: ds,
+            dtau_ns: dtau,
+            wire_bytes: wire,
+        });
+        let growth = dtau.saturating_sub(ds);
+        let outcome = if dtau > 0 && growth > ds / GROWTH_MIN_DIV {
+            let est = u64::try_from(u128::from(wire) * 1_000_000_000 / u128::from(dtau))
+                .unwrap_or(u64::MAX)
+                .clamp(1, self.pace_bps.min(self.line.rate_bps));
+            self.rate_bps = Some(est);
+            self.pace_bps = est;
+            self.samples = self.samples.saturating_add(1);
+            self.step_permille = STEP_MIN_PERMILLE;
+            FirstWindowOutcome::Sample(est)
+        } else {
+            let sent_bps = u64::try_from(u128::from(wire) * 1_000_000_000 / u128::from(ds))
+                .unwrap_or(u64::MAX);
+            if sent_bps.saturating_mul(1000) >= self.pace_bps.saturating_mul(VERIFY_MIN_PERMILLE) {
+                FirstWindowOutcome::Verified
+            } else {
+                FirstWindowOutcome::NoInfo
+            }
+        };
+        self.first_window = Some(outcome);
+        Some(outcome)
     }
 
     /// Bir ACK çerçevesi işlendi: `largest_seq` çerçevenin en büyük teyitli iletimi, `ack_delay_ns`
@@ -806,5 +1004,107 @@ mod tests {
             "tavan yükselmedi: {} ≤ {low}",
             g2.pace_bps()
         );
+    }
+
+    /// [BAŞLANGIÇ-BÜTÇESİ] İlk ACK'e dek `A(t) = max(P × START_BURST_NS, P/2 × t)`: patlama
+    /// `P × START_BURST_NS` = 6 250 B tel (beş 1 200 B datagram), sonra yarı profil hızı; bütçe
+    /// kalkınca sınır yok.
+    #[test]
+    fn start_budget_is_a_burst_then_half_the_profile_line() {
+        let mut g = guard();
+        assert!(g.start_budget_active());
+        let mut sent = 0u64;
+        while g.start_budget_admits(0, 1172) {
+            g.on_sent(sent, 0, 1172);
+            sent += 1;
+        }
+        assert_eq!(sent, 5, "patlama 6 250 B'ye beş 1 200 B datagram sığar");
+        // 1 s: P/2 × 1 s = 6 250 B < 6 000 + 1 200 → yok; 1,2 s: 7 500 B → bir datagram daha.
+        assert!(!g.start_budget_admits(SEC, 1172));
+        assert!(g.start_budget_admits(1200 * MS, 1172));
+        g.end_start_budget();
+        assert!(!g.start_budget_active());
+        assert!(g.start_budget_admits(0, 1_000_000));
+    }
+
+    /// Alıcının ilk varış penceresinin gövde hızı (`arrival_rate::FirstArrivalWindow` kuralı):
+    /// `seqs` artan sırada alınan seq'ler, `arrivals` her seq'in varış anı.
+    fn window_field(arrivals: &[u64], seqs: &[u64]) -> u16 {
+        let mut w = crate::arrival_rate::FirstArrivalWindow::default();
+        for &q in seqs {
+            w.on_arrival(q, 1172, arrivals[q as usize]);
+        }
+        w.rate_field()
+    }
+
+    /// [İLK-PENCERE] Profil hızında gönderilen ilk patlama gerçek 6 250 B/s hatta: ilk ACK'in
+    /// penceresi hattı ölçer (pencere ilk datagram + bir datagram; tahmin ±%1), tavan ölçülen hatta
+    /// iner. Aradaki datagram kayıpsa da (seq 1 düştü) tahmin aynı: gönderici düşen datagramın
+    /// baytını kendi kaydından ekler (rastgele kayıp darboğazdan sonra; hattı kullandı).
+    #[test]
+    fn first_window_measures_a_slow_line_in_one_ack() {
+        for acked in [vec![0u64, 1, 2, 3], vec![0, 2, 3]] {
+            let mut g = guard();
+            let arr = send_into(&mut g, 6_250, 6);
+            let field = window_field(&arr, &acked);
+            let outcome = g.on_first_window(&acked, field).expect("pencere kuruldu");
+            let FirstWindowOutcome::Sample(est) = outcome else {
+                panic!("örnek bekleniyordu: {outcome:?} (acked {acked:?})");
+            };
+            assert!(
+                est.abs_diff(6_250) * 100 <= 6_250,
+                "tahmin {est} (acked {acked:?})"
+            );
+            assert_eq!(g.pace_bps(), est);
+            assert_eq!(g.rate_bps(), Some(est));
+            assert_eq!(g.samples(), 1);
+            // Yalnız bir kez: ikinci çağrı etkisiz.
+            assert_eq!(g.on_first_window(&acked, field), None);
+        }
+    }
+
+    /// [İLK-PENCERE] Dürüst hatta pencere kuyruk artışı göstermez ve tavanda gönderilmiştir:
+    /// doğrulama, tavan profilde, koruma devrede değil.
+    #[test]
+    fn first_window_verifies_an_honest_line() {
+        let mut g = guard();
+        let arr = send_into(&mut g, PROFILE, 6);
+        let acked = [0u64, 1, 2];
+        let field = window_field(&arr, &acked);
+        assert_eq!(
+            g.on_first_window(&acked, field),
+            Some(FirstWindowOutcome::Verified)
+        );
+        assert_eq!(g.pace_bps(), PROFILE);
+        assert_eq!(g.rate_bps(), None);
+        assert_eq!(g.samples(), 0);
+    }
+
+    /// [İLK-PENCERE] Ölçüm yoksa (sentinel: eski alıcı, pencere kapanmadı) ya da bütçe kalktıysa
+    /// etkisiz; pencere uygulama sınırlıyken (gönderim tavanın %90'ının altında) karar yok.
+    #[test]
+    fn first_window_without_a_usable_measurement_is_inert() {
+        let mut g = guard();
+        let arr = send_into(&mut g, 6_250, 6);
+        assert_eq!(
+            g.on_first_window(&[0, 1, 2], crate::ack::ARRIVAL_RATE_SENTINEL),
+            None
+        );
+        g.end_start_budget();
+        let field = window_field(&arr, &[0, 1, 2]);
+        assert_eq!(g.on_first_window(&[0, 1, 2], field), None);
+        assert_eq!(g.pace_bps(), PROFILE);
+
+        // Uygulama sınırlı: iki datagram 1 s arayla (dürüst hat, kuyruk yok).
+        let mut g = guard();
+        g.on_sent(0, 0, 1172);
+        g.on_sent(1, SEC, 1172);
+        let arr = [300 * MS + 96 * MS, SEC + 300 * MS + 96 * MS];
+        let field = window_field(&arr, &[0, 1]);
+        assert_eq!(
+            g.on_first_window(&[0, 1], field),
+            Some(FirstWindowOutcome::NoInfo)
+        );
+        assert_eq!(g.pace_bps(), PROFILE);
     }
 }

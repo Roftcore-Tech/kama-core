@@ -1832,6 +1832,9 @@ pub struct Sender {
     dup_queue: Vec<DupRec>, // §11 zamanlanmış forward-recovery kopyaları
     /// [ÖNLEMSEL-KOPYA] Bkz. [`ForwardCopyRule`]. `None` = kural yok (bugünkü yol).
     forward_copy_rule: Option<ForwardCopyRule>,
+    /// [İLK-PENCERE] Bir sonraki `AckReceived` çerçevesinin §2.2 `arrival_rate` alanı
+    /// ([`Self::note_ack_arrival_rate`]); ACK işlenince tüketilir.
+    pending_arrival_rate: Option<u16>,
     /// [GERİ-BİLDİRİM-AÇ] Bkz. [`FeedbackStarvedRule`]. `None` = kural yok (bugünkü yol, bit-eşit).
     cc_feedback_starved: Option<FeedbackStarvedRule>,
     /// [HAT-KORUMASI] Gerçek ileri hattın tahmincisi; yalnız kural kuruluyken `Some`.
@@ -2194,6 +2197,7 @@ impl Sender {
             tail_probe_cancelled: 0,
             dup_queue: Vec::new(),
             forward_copy_rule: None,
+            pending_arrival_rate: None,
             cc_feedback_starved: None,
             cc_line_guard: None,
             diag_emit_log: None,
@@ -3950,6 +3954,7 @@ impl Sender {
     /// kuyruk hat modeline yazılır: yeni datagram gerçek kuyruk boşalınca çıkar. Hız tavanı ve uçuş
     /// tabanı aynı ölçümü [`Self::cc_feedback_cap`] ile okur. Kural yokken etkisiz.
     fn cc_line_guard_on_ack(&mut self, ack: &AckInfo, now_ns: u64) {
+        let arrival_rate = self.pending_arrival_rate.take();
         let Some(g) = self.cc_line_guard.as_mut() else {
             return;
         };
@@ -3962,8 +3967,17 @@ impl Sender {
         else {
             return;
         };
+        // [İLK-PENCERE · İŞ-33 C4] Oturumun ilk ACK'i alıcının ilk varış penceresinin hızını taşır:
+        // gönderici pencereyi kendi kaydından kurar ve ilk ölçümü bu ACK'te yapar (ikinci ACK'i
+        // beklemeden). Kayıtlar `on_ack`'te budandığı için ondan önce.
+        if let Some(rate) = arrival_rate.filter(|_| g.start_budget_active()) {
+            let _ = g.on_first_window(&ack.acked_seqs, rate);
+        }
         let saturated = ack.ack_delay >= crate::loss::E2A_ACK_DELAY_SATURATED;
         let update = g.on_ack(now_ns, dur_ns(ack.ack_delay), saturated, largest);
+        // [BAŞLANGIÇ-BÜTÇESİ · İŞ-33 C1] İlk ACK işlendi: bütçe kalkar (ölçüm, doğrulama ya da
+        // bilgi yok — üçünde de bundan sonrası bugünkü hat koruması).
+        g.end_start_budget();
         // [TEMKİNLİ-BAŞLANGIÇ · YENİDEN-YOKLAMA] Hat modeli korumanın gönderim tavanındadır (ölçülen
         // hat, doğrulanmamış başlangıçta yarı profil, yoklamada yükseltilmiş tavan): pacer'ın burst
         // payı (≥ 10 MTU) tavanın üstünde patlama yapamaz.
@@ -5979,6 +5993,48 @@ impl Sender {
         self.repair_loss_not_arqed
     }
 
+    /// [İLK-PENCERE · İŞ-33 C4] Bir sonraki `Event::AckReceived` çerçevesinin §2.2
+    /// `arrival_rate` alanı (alıcının ilk varış penceresinin gövde hızı, B/s; sentinel = ölçüm
+    /// yok). Çalışma zamanı ACK'i çözünce `AckReceived`'dan hemen önce verir. Yalnız geri bildirimi
+    /// aç kuralın hat koruması ve oturumun ilk ACK'i okur ([`crate::line_guard::LineGuard::on_first_window`]);
+    /// başka her yolda etkisiz.
+    pub fn note_ack_arrival_rate(&mut self, arrival_rate: u16) {
+        self.pending_arrival_rate = Some(arrival_rate);
+    }
+
+    /// [İLK-PENCERE] İlk ACK'in varış penceresinin sonucu (salt gözlem; kural ya da pencere yoksa
+    /// `None`).
+    #[must_use]
+    pub fn diag_line_guard_first_window(&self) -> Option<crate::line_guard::FirstWindowOutcome> {
+        self.cc_line_guard
+            .as_ref()
+            .and_then(crate::line_guard::LineGuard::first_window)
+    }
+
+    /// [İLK-PENCERE] İlk ACK'in varış penceresinin ayrıntısı (salt gözlem).
+    #[must_use]
+    pub fn diag_line_guard_first_window_detail(
+        &self,
+    ) -> Option<crate::line_guard::FirstWindowDetail> {
+        self.cc_line_guard
+            .as_ref()
+            .and_then(crate::line_guard::LineGuard::first_window_detail)
+    }
+
+    /// [BAŞLANGIÇ-BÜTÇESİ · İŞ-33 C1] Öncelikli olmayan bir iletim (dosya, onarım sembolü) ilk
+    /// ACK'e dek bütçeyi aşıyor mu ([`crate::line_guard`] modül belgesi). Öncelikli şerit
+    /// (`unit_id < priority_below_id`: PTT, denetim, metin) beklemez ama bütçeye sayılır. Kural,
+    /// hat koruması ya da şerit kuralı yoksa ya da bütçe kalktıysa `false` (bugünkü yol).
+    fn start_budget_holds(&self, unit_id: Option<u64>, size: u64, now_ns: u64) -> bool {
+        let (Some(g), Some(rule)) = (self.cc_line_guard.as_ref(), self.forward_copy_rule) else {
+            return false;
+        };
+        if !g.start_budget_active() || unit_id.is_some_and(|id| id < rule.priority_below_id) {
+            return false;
+        }
+        !g.start_budget_admits(now_ns, size)
+    }
+
     /// [FAZ-1 DÖNÜŞ-YOLU] Bir ACK datagram'ı gözlendi. **Motor davranışını DEĞİŞTİRMEZ** —
     /// yalnız `diag_return_path()` çıktısını besler. Ürün runtime'ı `Event::AckReceived`'dan
     /// hemen ÖNCE çağırır; çağrılmaması motoru etkilemez (gözlem boş kalır).
@@ -6745,6 +6801,10 @@ impl Sender {
             #[cfg(feature = "experimental-fec-budget")]
             if !self.budget_parity_allows(p.size) {
                 break; // C1-canlı: kernel-limit (Leftover'da-None → hiç-girmez; baseline-özdeş)
+            }
+            // [BAŞLANGIÇ-BÜTÇESİ · İŞ-33 C1] İlk ACK'e dek onarım sembolü de bütçeyle.
+            if self.start_budget_holds(None, p.size, now_ns) {
+                break;
             }
             let balance_before = self.pacer.tokens(); // READ-ONLY (mühürlü-TokenBucket'a-dokunulmaz)
             if !self.cc_fits(p.size) || !self.pacer.try_send(p.size) {
@@ -8048,6 +8108,10 @@ impl Sender {
             #[cfg(feature = "diag-sched-telemetry")]
             {
                 self.sched_diag.data_selected += 1;
+            }
+            // [BAŞLANGIÇ-BÜTÇESİ · İŞ-33 C1] İlk ACK'e dek öncelikli olmayan yeni veri bütçeyle.
+            if self.start_budget_holds(Some(front.id), front.size, now_ns) {
+                break;
             }
             if !self.try_send_pre_parity(front.size, false) {
                 #[cfg(feature = "diag-sched-telemetry")]
