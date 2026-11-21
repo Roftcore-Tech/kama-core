@@ -18,12 +18,14 @@ name: core-ci
 # fs_s6_v2_pins 4.1 dk, fs_arqtail_pins 1.9 dk = test süresinin %65'i). main.yml onları TAM
 # workspace koşumunda çalıştırır; feature-unification sözleşmesi (M1) orada korunur.
 
+# [CI-DOCS-VERDICT] Eskiden burada iş akışı düzeyinde `paths-ignore` (reports/**, docs/**, **/*.md)
+# vardı: yalnız belge değişen PR'da iş akışı HİÇ başlamaz, `ci verdict` hiç rapor vermezdi. main'de
+# `ci verdict` zorunlu kontrol yapılınca bu, belge PR'ını sonsuza dek "bekleniyor"da kilitlerdi.
+# Artık iş akışı her PR'da başlar; `changes` işi PR'ın dosya listesine bakar, yalnız belge ise kod
+# kapıları atlanır ve verdict bunu AÇIKÇA "yalnız belge" diye yeşil yazar. Kod dosyası içeren her
+# PR'da davranış eskisiyle aynıdır (atlanan kapı geçmiş sayılmaz).
 on:
   pull_request:
-    paths-ignore:
-      - 'reports/**'
-      - 'docs/**'
-      - '**/*.md'
   workflow_dispatch:
 
 # Aynı dal için yalnız EN SON koşu yaşar. (Ölçüldü: iptal edilmeyen paralel koşular kotanın
@@ -37,8 +39,54 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  # ── [CI-DOCS-VERDICT] PR yalnız belge mi? (reports/**, docs/**, **/*.md) ──
+  # Ağ çağrısı yalnız GitHub API'si; checkout yok. Yeniden adlandırmada ESKİ yol da sayılır
+  # (kod dosyasını docs/ altına taşımak "yalnız belge" değildir). Liste eksik gelirse (API'nin
+  # 3000 dosya sınırı) ya da PR bağlamı yoksa (workflow_dispatch) sonuç `false`: kapılar koşar.
+  changes:
+    name: changes (yalnız belge mi?)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${PR:-}" ]]; then
+            echo "PR bağlamı yok: kapılar koşar"
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh api --paginate "repos/${REPO}/pulls/${PR}/files?per_page=100" \
+            --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/files.txt"
+          want=$(gh api "repos/${REPO}/pulls/${PR}" --jq '.changed_files')
+          got=$(gh api --paginate "repos/${REPO}/pulls/${PR}/files?per_page=100" --jq '.[].filename' | wc -l)
+          docs_only=true
+          if [[ "$got" -ne "$want" || "$got" -eq 0 ]]; then
+            echo "dosya listesi eksik ya da boş (beklenen $want, gelen $got): kapılar koşar"
+            docs_only=false
+          fi
+          while IFS= read -r f; do
+            case "$f" in
+              reports/*|docs/*|*.md) ;;
+              *) echo "kod/yapılandırma dosyası: $f"; docs_only=false ;;
+            esac
+          done < "$RUNNER_TEMP/files.txt"
+          echo "docs_only=$docs_only"
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+
   # ── Statik kapılar (fmt + iki clippy görünümü) ──
   static:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     name: static (fmt + clippy)
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -74,6 +122,8 @@ jobs:
   # [K4G-05b-R] Gerçek zamanlı runtime sahipliği testleri burada `#[ignore]`'dur; paralel
   # `test-runtime` işi koşar (aşağıda).
   test-fast:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     name: test (all-features, hızlı küme)
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -117,6 +167,8 @@ jobs:
   # fazla, yinelenen ya da yarım kayıt ve taban koşusu hatası KIRMIZI (yutulmaz).
   # Netem hücrelerini, dönüş yolu baytını ya da uygulama teslimini KORUMAZ (sim = motor; netem gece).
   cc-regression:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     name: cc regression gate (sim, taban ↔ aday)
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -167,6 +219,8 @@ jobs:
   # kapsamlı önbellek yoktur: bir PR'ın ilk koşusu soğuk derler, sonraki itmeler o PR'ın önbelleğini
   # okur.
   test-runtime:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     name: test-runtime (gerçek zamanlı runtime sahipliği)
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -190,13 +244,15 @@ jobs:
   # Vektör ya da ilgili kod değiştiğinde kimsenin "koşmayı unutması" mümkün olmasın.
   #
   # NEDEN `paths:` YOK. GitHub Actions'ta `paths` yalnız workflow düzeyinde (`on:`) tanımlanır,
-  # iş düzeyinde YOKTUR; bu dosyada zaten workflow düzeyi `paths-ignore` var ve oraya `paths`
-  # eklemek TÜM job'ları etkilerdi. Ayrıca `paths` ile atlanan bir required check sonsuza kadar
+  # iş düzeyinde YOKTUR; workflow düzeyine `paths` eklemek TÜM job'ları etkilerdi (yalnız belge
+  # PR'ları için tek ayrım `changes` işidir). Ayrıca `paths` ile atlanan bir required check sonsuza kadar
   # "pending" kalıp PR'ı kilitler. Bu yüzden kapı HER ZAMAN koşar; görev metnindeki tetik
   # listesi script içinde yalnız TEŞHİS olarak basılır (gerekçe: scripts/ci/conformance.sh
   # başlığı). Maliyet düşük: tüm workspace değil, yalnız kama-vectors + keşfedilen conformance
   # hedefleri derlenir ve rust-cache test-fast ile paylaşılır.
   conformance:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     name: conformance (vektör ↔ uygulama)
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -218,6 +274,8 @@ jobs:
 
   # ── Ucuz derin kapılar (hepsi < 5 dk; ölçüldü) ──
   miri:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -234,6 +292,8 @@ jobs:
             || { echo "::error title=TEST_FAILURE::miri kapisi 0 test kosuyor (BUL-02 regresyonu)"; exit 1; }
 
   asan:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -254,6 +314,8 @@ jobs:
         run: cargo +nightly test -p kama-fec-codec -Zbuild-std --target x86_64-unknown-linux-gnu
 
   msan:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     name: msan (uninitialized memory, SIMD deps)
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -273,6 +335,8 @@ jobs:
         run: cargo +nightly test -p kama-noise-wire --tests --target x86_64-unknown-linux-gnu -Zbuild-std
 
   security:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -291,6 +355,8 @@ jobs:
         run: cargo deny check
 
   aead-differential:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -308,6 +374,8 @@ jobs:
   # `test-fast` içindeki `cargo test --workspace` ile koşar; ikisinin vaka listesi
   # scripts/vectors/testdata/EXPECTATIONS.json'da TEK yerde durur.
   vectors:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     name: vectors (SCHEMA.json kapısı, python tarafı)
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -352,6 +420,8 @@ jobs:
   # Maliyet: tüm workspace değil, yalnız kama-integration'ın üç seam hedefi ve bağımlılıkları
   # derlenir; rust-cache paylaşılır.
   seam-conformance:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     name: seam conformance (App↔Transport; hedef=mock|real)
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -405,6 +475,8 @@ jobs:
   #       biçim geldiğinde tamamlanır.
   # Vakum bekçileri: koşan test sayısı BİREBİR (0 ya da eksik = kırmızı).
   ack-reference:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     name: ack reference (ACK biçimi güvenlik ağı)
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -453,13 +525,24 @@ jobs:
     name: ci verdict (failure classification)
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [static, test-fast, test-runtime, cc-regression, conformance, seam-conformance, miri, asan, msan, security, aead-differential, vectors, ack-reference]
+    needs: [changes, static, test-fast, test-runtime, cc-regression, conformance, seam-conformance, miri, asan, msan, security, aead-differential, vectors, ack-reference]
     if: always()
     steps:
       - name: classify
         run: |
           R='${{ join(needs.*.result, ',') }}'
           echo "job sonuçları: $R"
+          # [CI-DOCS-VERDICT] Sınıflandırma işi koşmadıysa hiçbir şey bilinmez: kırmızı.
+          if [[ '${{ needs.changes.result }}' != success ]]; then
+            echo "::error title=INFRA_FAILURE::changes işi başarısız (${{ needs.changes.result }}); PR sınıflandırılamadı"
+            exit 1
+          fi
+          # Yalnız belge değişen PR: kod kapıları bilerek atlandı. Bu "kapılar geçti" DEĞİL,
+          # "kod değişmedi" demektir; çıktı bunu açıkça yazar.
+          if [[ '${{ needs.changes.outputs.docs_only }}' == true ]]; then
+            echo "yalnız belge değişikliği (reports/**, docs/**, **/*.md): kod kapıları koşmadı"
+            exit 0
+          fi
           if [[ "$R" == *failure* ]]; then
             echo "::error title=TEST_FAILURE::en az bir korelasyon kapisi kirmizi — transport dogrulugu incelenmeli"
             exit 1
