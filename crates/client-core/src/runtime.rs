@@ -387,6 +387,15 @@ pub const FEEDBACK_STARVED_ACK_INTERVAL_NS: u64 = 1_000_000_000;
 /// 0,2⁵ = 3,2·10⁻⁴; 40 B demet (≈ 114 B tel, 200 ms) için ileri hatta ≈ 2,85 kB/s.
 pub const PTT_FORWARD_COPIES: u8 = 5;
 
+/// [ŞERİT-BOŞTA · 2026-11-21] Şeridin kısmi bloğu bu süre yeni birim almazsa şerit boştadır ve blok
+/// ACK'siz korunur (sahip kararı 2026-11-16, kısmi blok koruması; bkz. `pace.tick`). Bir PTT demet
+/// aralığı: arka arkaya sunulan birimler (dosya parçaları) bloğu doldurur, tek tük birim (metin)
+/// beklemez.
+pub const LANE_IDLE_NS: u64 = 200_000_000;
+
+/// [ŞERİT-BOŞTA] Dosya şeridinin indeksi (`lanes::Lane::File`; şerit sırası PTT, SIG, TEXT, FILE).
+const FILE_LANE_INDEX: usize = 3;
+
 /// [ÖNLEMSEL-KOPYA] PTT kopyaları arası aralık (ns): demet aralığı (200 ms, Lyra) / iletim sayısı —
 /// kopyalar bir sonraki demetten önce biter, art arda düşmelere karşı yayılır.
 pub const PTT_COPY_SPACING_NS: u64 = 200_000_000 / PTT_FORWARD_COPIES as u64;
@@ -2952,6 +2961,9 @@ async fn client_task(
     // başına): oturum ortasında kapanamayan kısmi blok ACK'siz korunur (bkz. kopya noktası).
     let mut cur_block_ids: [Vec<u64>; LANE_COUNT] = Default::default();
     let mut tail_copied: [usize; LANE_COUNT] = [0; LANE_COUNT];
+    // [ŞERİT-BOŞTA · 2026-11-21] Şeride son birimin sunulduğu an (ns): kısmi blok korumasının
+    // şerit başına "boşta" koşulu (aşağı, `pace.tick`).
+    let mut lane_last_offer_ns: [u64; LANE_COUNT] = [0; LANE_COUNT];
     // [FAZ-2 / KALEM-1] blok → (K_actual, repair'ler). K_actual kısmi/son blokta k_shape'ten
     // küçüktür ve TEL BAŞLIĞINDA taşınmak zorundadır (alıcı Model-A zero-enjeksiyonunu ondan türetir).
     let mut repair_store: BTreeMap<u32, (u8, Vec<RepairSymbol>)> = BTreeMap::new();
@@ -3638,6 +3650,7 @@ async fn client_task(
                     debug_assert_eq!(*cur_block_id, fec_block_of(id, u64::from(p.k_shape)));
                     cur_block.push(sym);
                     cur_block_ids[lane].push(id);
+                    lane_last_offer_ns[lane] = now;
                     *cur_block_wire += size;
                     if cur_block.len() == p.k_shape_usize() {
                         let parity_wire = wire_len(seam.as_ref(), client_ctx, HDR_FEC + e);
@@ -3711,12 +3724,27 @@ async fn client_task(
                 // dosyanın son 1–7 parçası ilk iletimde düşerse kurtarma bir ACK aralığı (bu hatta
                 // ≥ 8 s) bekler. Bu birimler öncelikli şerit gibi kopyalanır (blok sonra dolarsa
                 // FEC'ini de alır).
-                if fec_starved_prior.is_some()
-                    && offer_rx.is_empty()
-                    && session.sender().unsent_units() == 0
-                {
+                // [ŞERİT-BOŞTA · 2026-11-21] "Şerit boştayken" ŞERİT başınadır: eskiden koşul bütün
+                // göndericinin boşalmasıydı (sunum kuyruğu ve motor kuyruğu boş); dosya aktarılırken
+                // motor kuyruğu hiç boşalmadığından metin şeridinin tek birimlik kısmi bloğu ne
+                // parite ne kopya alıyordu (ürün testi, dürüst profil, tohum 1: metin 1'in üç
+                // iletimi düştü, sıralı metin şeridinde metin 2 2,37 s bekledi). Şimdi şerit, son
+                // biriminden [`LANE_IDLE_NS`] sonra yeni birim almamışsa ve açık bloğunun birimleri
+                // tele çıkmışsa boştadır; bütün gönderici boşken koşul eskisi gibidir.
+                let all_idle = offer_rx.is_empty() && session.sender().unsent_units() == 0;
+                if fec_starved_prior.is_some() {
                     for lane in 0..LANE_COUNT {
                         if fec_prior_for(lane).is_none() {
+                            continue;
+                        }
+                        // Dosya şeridi aktarım sürerken boşta sayılmaz (parçaları şerit katmanından
+                        // birikim yeri açıldıkça gelir; ara 200 ms'yi aşabilir): eski kural.
+                        let lane_idle = lane != FILE_LANE_INDEX
+                            && now.saturating_sub(lane_last_offer_ns[lane]) >= LANE_IDLE_NS
+                            && cur_block_ids[lane][tail_copied[lane]..]
+                                .iter()
+                                .all(|&u| !session.sender().unit_unsent(u));
+                        if !(all_idle || lane_idle) {
                             continue;
                         }
                         // Bloğun henüz kopyalanmamış birimleri (her birim bir kez).

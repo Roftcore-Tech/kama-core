@@ -8277,6 +8277,12 @@ impl Sender {
         self.tx_queue.len()
     }
 
+    /// [ŞERİT-BOŞTA] Birim motorun gönderim kuyruğunda mı (henüz hiç tele çıkmadı).
+    #[must_use]
+    pub fn unit_unsent(&self, unit_id: u64) -> bool {
+        self.tx_queue.iter().any(|u| u.id == unit_id)
+    }
+
     /// TUR-A teşhis rate-trajektori snapshot'ı (SALT-GÖZLEM; davranış DEĞİŞMEZ):
     /// `(state, btlbw_bps, srtt_us, send_rate_bps, inflight_bytes)`. floor→btlbw ramp kilidini ölçmek için.
     #[must_use]
