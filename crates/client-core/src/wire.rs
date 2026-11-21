@@ -38,6 +38,88 @@ pub fn decode_data(buf: &[u8]) -> Option<(u16, u64, &[u8])> {
     Some((seq, unit_id, &buf[HDR_DATA..]))
 }
 
+// ── [PTT-PAKET-İÇİ YEDEK] Yedekli DATA çerçevesi ────────────────────────────────────────────
+//
+// PTT birimi, aynı şeridin önceki (henüz teyit almamış) birimlerinin gövdelerini de taşır; kayıp
+// bir demet bir sonraki paketten çıkar. Böylece kayba karşı her demet birden çok pakette bulunur,
+// ama her ek bulunuş bütün başlıkları (UDP/IP, zarf, DATA, uygulama) yeniden göndermez.
+//
+//   [0x09][seq u16][unit_id u64][n u8] { [geri u8][len u16][gövde len] } × n [payload]
+//
+// `geri` = bu birimin şerit sırasından önceki birimin şerit sırasına uzaklık (1..=255; aynı şerit).
+// `n` ≤ [`RED_MAX_ENTRIES`]. Gövde, o birimin 0x00 DATA çerçevesindeki payload'ın aynısıdır.
+// Alıcı önceki birimleri "geldi" sayar ve sıralı teslime verir; motora (ACK) vermez.
+// Yalnız 0x09'u çözebildiğini kanıtlamış uca gönderilir (bkz. runtime).
+
+/// [PTT-PAKET-İÇİ YEDEK] Yedekli DATA frame_type.
+pub const FRAME_DATA_RED: u8 = 0x09;
+/// [PTT-PAKET-İÇİ YEDEK] Bir çerçevedeki en çok önceki birim sayısı.
+pub const RED_MAX_ENTRIES: usize = 3;
+/// [PTT-PAKET-İÇİ YEDEK] Önceki birim başına ek başlık: geri u8 + len u16.
+pub const RED_ENTRY_HDR: usize = 3;
+
+/// [PTT-PAKET-İÇİ YEDEK] Yedekli DATA kodlar. `prev`: `(önceki birim kimliği, gövde)`; aynı
+/// şeritte, kimliği `unit_id`'den 1..=255 sıra önce olmayan ya da `RED_MAX_ENTRIES`'i aşan girdi
+/// yazılmaz.
+#[must_use]
+pub fn encode_data_red(seq: u16, unit_id: u64, payload: &[u8], prev: &[(u64, &[u8])]) -> Vec<u8> {
+    use crate::unit_id::{lane_index_of, lane_seq_of};
+    let entries: Vec<(u8, &[u8])> = prev
+        .iter()
+        .filter(|(id, b)| {
+            lane_index_of(*id) == lane_index_of(unit_id) && u16::try_from(b.len()).is_ok()
+        })
+        .filter_map(|&(id, b)| {
+            let back = lane_seq_of(unit_id).checked_sub(lane_seq_of(id))?;
+            u8::try_from(back).ok().filter(|&d| d > 0).map(|d| (d, b))
+        })
+        .take(RED_MAX_ENTRIES)
+        .collect();
+    let extra: usize = entries.iter().map(|(_, b)| RED_ENTRY_HDR + b.len()).sum();
+    let mut out = Vec::with_capacity(HDR_DATA + 1 + extra + payload.len());
+    out.push(FRAME_DATA_RED);
+    out.extend_from_slice(&seq.to_be_bytes());
+    out.extend_from_slice(&unit_id.to_be_bytes());
+    out.push(entries.len() as u8);
+    for (d, b) in &entries {
+        out.push(*d);
+        out.extend_from_slice(&(b.len() as u16).to_be_bytes());
+        out.extend_from_slice(b);
+    }
+    out.extend_from_slice(payload);
+    out
+}
+
+/// [PTT-PAKET-İÇİ YEDEK] Yedekli DATA çözer: `(wire_seq, unit_id, önceki birimler, payload)`.
+/// Bozuk, sınır dışı ya da farklı tip → `None` (fail-closed; uzunluklar okumadan önce denetlenir).
+#[must_use]
+pub fn decode_data_red(buf: &[u8]) -> Option<(u16, u64, Vec<(u64, &[u8])>, &[u8])> {
+    use crate::unit_id::{lane_index_of, lane_seq_of, tagged};
+    if buf.len() < HDR_DATA + 1 || buf[0] != FRAME_DATA_RED {
+        return None;
+    }
+    let seq = u16::from_be_bytes([buf[1], buf[2]]);
+    let unit_id = u64::from_be_bytes(buf[3..11].try_into().ok()?);
+    let n = usize::from(buf[HDR_DATA]);
+    if n > RED_MAX_ENTRIES {
+        return None;
+    }
+    let mut at = HDR_DATA + 1;
+    let mut prev = Vec::with_capacity(n);
+    for _ in 0..n {
+        let hdr = buf.get(at..at + RED_ENTRY_HDR)?;
+        let back = u64::from(hdr[0]);
+        let len = usize::from(u16::from_be_bytes([hdr[1], hdr[2]]));
+        let body = buf.get(at + RED_ENTRY_HDR..at + RED_ENTRY_HDR + len)?;
+        let lane_seq = lane_seq_of(unit_id)
+            .checked_sub(back)
+            .filter(|_| back > 0)?;
+        prev.push((tagged(lane_index_of(unit_id), lane_seq), body));
+        at += RED_ENTRY_HDR + len;
+    }
+    Some((seq, unit_id, prev, &buf[at..]))
+}
+
 // ── [S1B] Fragmentli DATA çerçevesi ──────────────────────────────────────────────────────────
 //
 // Neden ayrı bir codepoint: 0x00 DATA'da chunk metadata'sı YOKTUR, alıcı source-symbol'ün
@@ -368,4 +450,53 @@ pub fn decode_param_ack(buf: &[u8]) -> Option<[u8; 32]> {
     let mut h = [0u8; 32];
     h.copy_from_slice(&buf[1..33]);
     Some(h)
+}
+
+#[cfg(test)]
+mod red_tests {
+    use super::*;
+    use crate::unit_id::tagged;
+
+    #[test]
+    fn data_red_roundtrip_and_hostile_input() {
+        let cur = tagged(0, 10);
+        let p8 = vec![8u8; 53];
+        let p9 = vec![9u8; 53];
+        let f = encode_data_red(7, cur, b"now", &[(tagged(0, 9), &p9), (tagged(0, 8), &p8)]);
+        assert_eq!(f.len(), HDR_DATA + 1 + 2 * (RED_ENTRY_HDR + 53) + 3);
+        let (seq, id, prev, pay) = decode_data_red(&f).expect("çözülür");
+        assert_eq!((seq, id, pay), (7, cur, &b"now"[..]));
+        assert_eq!(prev, vec![(tagged(0, 9), &p9[..]), (tagged(0, 8), &p8[..])]);
+        // Başka şeritten ya da ileriden girdi yazılmaz; tavan RED_MAX_ENTRIES.
+        let many = [
+            (tagged(1, 9), &p9[..]),
+            (tagged(0, 11), &p9[..]),
+            (tagged(0, 1), &p8[..]),
+            (tagged(0, 2), &p8[..]),
+            (tagged(0, 3), &p8[..]),
+            (tagged(0, 4), &p8[..]),
+        ];
+        let enc = encode_data_red(0, cur, b"", &many);
+        let (_, _, prev, _) = decode_data_red(&enc).expect("çözülür");
+        assert_eq!(prev.len(), RED_MAX_ENTRIES);
+        assert!(prev.iter().all(|(id, _)| *id < cur));
+        // Kesik ve bozuk girdiler reddedilir.
+        let good = encode_data_red(1, cur, b"x", &[(tagged(0, 9), &p9)]);
+        for n in 0..HDR_DATA + 1 + RED_ENTRY_HDR + 53 {
+            assert!(decode_data_red(&good[..n]).is_none(), "kesik {n}");
+        }
+        let mut bad = good.clone();
+        bad[HDR_DATA] = (RED_MAX_ENTRIES + 1) as u8;
+        assert!(decode_data_red(&bad).is_none(), "tavan");
+        let mut zero = good.clone();
+        zero[HDR_DATA + 1] = 0;
+        assert!(decode_data_red(&zero).is_none(), "geri = 0");
+        let mut under = good;
+        under[HDR_DATA + 1] = 200;
+        assert!(decode_data_red(&under).is_none(), "sıra altı");
+        assert!(
+            decode_data(&encode_data_red(1, cur, b"x", &[])).is_none(),
+            "0x00 değil"
+        );
+    }
 }

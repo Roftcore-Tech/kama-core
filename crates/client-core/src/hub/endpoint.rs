@@ -60,8 +60,8 @@ use super::link::HubLink;
 use super::shared_crypto::{HubCryptoAccess, StashCounters};
 use crate::transport::{EnvelopeLink, LinkAttempt, LinkError, LinkEvent};
 use crate::wire::{
-    FRAME_CAPS, FRAME_CS_ECHO, FRAME_CS_PROBE, FRAME_DATA, FRAME_DATA_FRAG, FRAME_FEC, FRAME_PARAM,
-    FRAME_PARAM_ACK, FRAME_RECOVERED,
+    FRAME_CAPS, FRAME_CS_ECHO, FRAME_CS_PROBE, FRAME_DATA, FRAME_DATA_FRAG, FRAME_DATA_RED,
+    FRAME_FEC, FRAME_PARAM, FRAME_PARAM_ACK, FRAME_RECOVERED,
 };
 
 /// S4 §6 `MAX_DATAGRAM`: hub'a giden ve hub'dan gelen datagram tavanı.
@@ -115,9 +115,8 @@ pub fn role_of(frame_type: u8) -> Option<Role> {
         | FRAME_TYPE_ACK
         | FRAME_TYPE_ACK_V2
         | FRAME_TYPE_ACK_BITMAP => Some(Role::Client),
-        FRAME_DATA | FRAME_FEC | FRAME_PARAM | FRAME_DATA_FRAG | FRAME_CS_PROBE | FRAME_CAPS => {
-            Some(Role::Server)
-        }
+        FRAME_DATA | FRAME_FEC | FRAME_PARAM | FRAME_DATA_FRAG | FRAME_CS_PROBE | FRAME_CAPS
+        | FRAME_DATA_RED => Some(Role::Server),
         _ => None,
     }
 }

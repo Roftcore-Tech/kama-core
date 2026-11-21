@@ -54,11 +54,12 @@ use crate::unit_id::{
     tagged, unit_of_fec, FEC_BLOCK_LANE_SHIFT, LANE_COUNT,
 };
 use crate::wire::{
-    decode_caps, decode_cs_echo, decode_cs_probe, decode_data, decode_data_frag, decode_fec,
-    decode_param, decode_param_ack, decode_recovered, encode_caps, encode_cs_echo, encode_cs_probe,
-    encode_data, encode_data_frag, encode_fec, encode_param, encode_param_ack, encode_recovered,
-    FecFrameHeader, CAP_ACK_BITMAP, CS_PROBE_SUBTYPE, FRAME_CS_ECHO, FRAME_PARAM_ACK,
-    FRAME_RECOVERED, HDR_DATA, HDR_DATA_FRAG, HDR_FEC, LEN_CS_PROBE,
+    decode_caps, decode_cs_echo, decode_cs_probe, decode_data, decode_data_frag, decode_data_red,
+    decode_fec, decode_param, decode_param_ack, decode_recovered, encode_caps, encode_cs_echo,
+    encode_cs_probe, encode_data, encode_data_frag, encode_data_red, encode_fec, encode_param,
+    encode_param_ack, encode_recovered, FecFrameHeader, CAP_ACK_BITMAP, CS_PROBE_SUBTYPE,
+    FRAME_CS_ECHO, FRAME_PARAM_ACK, FRAME_RECOVERED, HDR_DATA, HDR_DATA_FRAG, HDR_FEC,
+    LEN_CS_PROBE,
 };
 use crate::ClientSession;
 use kama_contracts::handles::SessionHandle;
@@ -439,6 +440,20 @@ const FILE_LANE_INDEX: usize = 3;
 /// [ÖNLEMSEL-KOPYA] PTT kopyaları arası aralık (ns): demet aralığı (200 ms, Lyra) / iletim sayısı —
 /// kopyalar bir sonraki demetten önce biter, art arda düşmelere karşı yayılır.
 pub const PTT_COPY_SPACING_NS: u64 = 200_000_000 / PTT_FORWARD_COPIES as u64;
+
+/// [PTT-PAKET-İÇİ YEDEK] Eş 0x09'u çözünce PTT biriminin ayrı iletim sayısı (ilk + kopya).
+///
+/// Neden: kopya başına 114 B'lik datagramın 74 B'si başlık; 40 B sesi korumak için bütün paketi
+/// tekrar etmek PTT'yi 23–32 kbit/s'ye çıkarıyordu (5–7 iletim × 114 B × 5/s). Şimdi her paket
+/// önceki [`PTT_RED_DEPTH`] demetin gövdesini taşır (girdi başına 3 B + gövde). Bir demet 2 iletim
+/// × (1 + derinlik) = 6 pakette bulunur, sonuncusu demetten ≈ 500 ms sonra çıkar (1 s sınırının
+/// içinde varır); %20 bağımsız kayıpta kaçırma 0,2⁶ (bugünkü 6 iletimle aynı). Tel: 2 × (114 +
+/// 2 × 56) B × 5/s ≈ 18 kbit/s.
+pub const PTT_RED_TRANSMISSIONS: u8 = 2;
+/// [PTT-PAKET-İÇİ YEDEK] Bir PTT paketinin taşıdığı önceki demet sayısı.
+pub const PTT_RED_DEPTH: u64 = 2;
+/// [PTT-PAKET-İÇİ YEDEK] İlk iletim ile kopya arası (demet aralığının yarısı).
+pub const PTT_RED_COPY_SPACING_NS: u64 = 100_000_000;
 
 /// [ÖNLEMSEL-KOPYA] Profil geri bildirimi aç bırakıyor mu: port motoru, yön hızları verilmiş ve
 /// bütçeli alıcının ACK aralığı (`receiver::budgeted_ack_interval_ns`, aşağı yönden) en az
@@ -1182,6 +1197,9 @@ pub struct ServerStats {
     pub delivered: u64,
     /// [ACK-BITMAP · YETENEK] Alınan CAPS çerçevesi.
     pub caps_rx: u64,
+    /// [PTT-PAKET-İÇİ YEDEK] 0x09 çerçevesinin önceki-birim girdisinden ilk kez teslim edilen
+    /// birim (kendi paketi gelmeden).
+    pub ptt_red_recovered: u64,
     /// Teslim kanalı doluyken düşen teslim. [INV-ACK-DELIVER-1 · F4] Teslim artık yalnız ayrılmış
     /// kanal yeriyle yapılır (DATA yolu yeri motordan önce, FEC yolu RECOVERED'dan önce ayırır);
     /// düşme yolu yoktur, bu sayaç 0 kalır. Alan geriye uyum için durur: dolu kanalın görünür
@@ -1837,6 +1855,44 @@ fn unit_frame(
     } else {
         encode_data(wire_seq, unit_id, payload)
     })
+}
+
+/// [PTT-PAKET-İÇİ YEDEK] PTT biriminin 0x09 çerçevesi: kendi gövdesi ve aynı şeritte önceki
+/// [`PTT_RED_DEPTH`] birimden hâlâ teyitsiz (store'da) olanların gövdeleri. Gövde store'da yoksa
+/// `None` (karar atlanır, [`unit_frame`] ile aynı).
+fn unit_frame_red(store: &HashMap<u64, Vec<u8>>, seq: u64, unit_id: u64) -> Option<Vec<u8>> {
+    use crate::unit_id::{lane_index_of, lane_seq_of, tagged};
+    let payload = store.get(&unit_id)?;
+    let (lane, lseq) = (lane_index_of(unit_id), lane_seq_of(unit_id));
+    let prev: Vec<(u64, &[u8])> = (1..=PTT_RED_DEPTH)
+        .filter_map(|back| lseq.checked_sub(back))
+        .map(|q| tagged(lane, q))
+        .filter_map(|id| store.get(&id).map(|b| (id, b.as_slice())))
+        .collect();
+    Some(encode_data_red(
+        (seq & 0xFFFF) as u16,
+        unit_id,
+        payload,
+        &prev,
+    ))
+}
+
+/// [ÖNLEMSEL-KOPYA] PTT şeridinin ACK beklemeyen kopya kuralı (`copies` = ilk iletime ek kopya).
+fn ptt_forward_copy_rule(
+    copies: u8,
+    spacing_ns: u64,
+) -> adaptive_transport::sender::ForwardCopyRule {
+    adaptive_transport::sender::ForwardCopyRule {
+        below_id: crate::unit_id::tagged(1, 0),
+        // Şerit sırası PTT > SIG > TEXT > FILE (#199): dosya dışı şeritler yeniden iletim
+        // dalgasının önünde çıkar (metin mesajı bir ACK gelince ≈ 1 s bekliyordu).
+        priority_below_id: crate::unit_id::tagged(
+            crate::unit_id::index_of_lane(crate::lanes::Lane::File),
+            0,
+        ),
+        copies,
+        spacing_ns,
+    }
 }
 
 /// [K4G-05b-R · sahip kararı 2026-11-11] FEC onarım kararının sembolü (repair-store'dan). Blok
@@ -3020,6 +3076,9 @@ async fn client_task(
     // alındı 0,78 → 3,37 s'de çıktı (sınır 4 s aşıldı). Bob'un ACK'leri geniş hattan gelir.
     let mut caps_confirmed = cfg.ack_format != AckFormat::Bitmap || !link_feedback_starved(&cfg);
     let mut caps_last_ms: u64 = 0;
+    // [PTT-PAKET-İÇİ YEDEK] Veri alıcısı 0x09'u çözebiliyor mu. Kanıt: ondan gelen ilk 0x15 ACK'i
+    // (0x15 yazan sürüm 0x09'u da çözer). O ana dek PTT bugünkü kopya kuralıyla gider.
+    let mut red_peer = false;
     let mut caps_tries: u32 = 0;
     let mut caps_line_gate_ms: Option<u64> = None;
     // [S1B] Fragmenter durumu. `frag_on` = mesaj tavanı birim tavanından BÜYÜK. Kapalıyken bu
@@ -3354,7 +3413,18 @@ async fn client_task(
                 // "Atlama politikası".
                 // Sınama: yardımcı `skip_tests`'te (store-miss → çerçeve yok); bu kol (sayaçlar,
                 // `continue`) testte koşmaz.
-                let Some(frame) = unit_frame(&store, d.seq, d.unit_id, frag_on) else {
+                // [PTT-PAKET-İÇİ YEDEK] PTT birimi, eş 0x09'u çözüyorsa önceki teyitsiz PTT
+                // birimlerinin gövdesini de taşır.
+                let frame = if red_peer
+                    && !frag_on
+                    && crate::unit_id::lane_index_of(d.unit_id)
+                        == crate::unit_id::index_of_lane(crate::lanes::Lane::Ptt)
+                {
+                    unit_frame_red(&store, d.seq, d.unit_id)
+                } else {
+                    unit_frame(&store, d.seq, d.unit_id, frag_on)
+                };
+                let Some(frame) = frame else {
                     stats.stale_decisions += 1;
                     stats.stale_skipped += 1;
                     continue;
@@ -3477,6 +3547,18 @@ async fn client_task(
                     if plain[0] == FRAME_TYPE_ACK_BITMAP {
                         caps_confirmed = true;
                         stats.ack_bitmap_rx += 1;
+                        // [PTT-PAKET-İÇİ YEDEK] Eş 0x09'u çözer: PTT kopyaları paketin içine
+                        // alınır, ayrı iletim sayısı düşer.
+                        if !red_peer && !frag_on && cfg.lane_ids && link_feedback_starved(&cfg) {
+                            red_peer = true;
+                            session
+                                .sender_mut()
+                                .set_forward_copy_rule(Some(ptt_forward_copy_rule(
+                                    PTT_RED_TRANSMISSIONS - 1,
+                                    PTT_RED_COPY_SPACING_NS,
+                                )));
+                            session.sender_mut().set_forward_copy_line_scale(None);
+                        }
                     }
                     let decoded = if cfg.ack_format == AckFormat::Bitmap {
                         AckFrame::decode_with_bitmap(&plain)
@@ -5348,7 +5430,13 @@ async fn server_task(
                     /// [ACK-BITMAP · YETENEK] Karşı ucun çözebildiği isteğe bağlı ACK biçimleri.
                     Caps { caps: u16 },
                 }
+                // [PTT-PAKET-İÇİ YEDEK] 0x09: ana birim 0x00 DATA gibi işlenir; önceki birimler
+                // ana birimden sonra sıralı teslime verilir (motora değil).
+                let mut red_prev: Vec<(u64, &[u8])> = Vec::new();
                 let parsed = if let Some((_seq, unit_id, payload)) = decode_data(&plain) {
+                    RxFrame::Data { unit_id, payload }
+                } else if let Some((_seq, unit_id, prev, payload)) = decode_data_red(&plain) {
+                    red_prev = prev;
                     RxFrame::Data { unit_id, payload }
                 } else if let Some((_seq, unit_id, pfx, body)) = decode_data_frag(&plain) {
                     RxFrame::DataFrag {
@@ -5495,6 +5583,41 @@ async fn server_task(
                         // datagramın FEC kurtarımlarından ÖNCE bırakılır: aksi hâlde kurtarılan
                         // birimler bir kanal yeri eksik görürdü.
                         drop(permit);
+                        // [PTT-PAKET-İÇİ YEDEK] Önceki birimler: kendi paketi kaybolduysa buradan
+                        // teslim edilir. Teslim dedup'ı ve kabul penceresi 0x00 ile aynıdır;
+                        // fragmenter açıkken 0x09 gönderilmez (yine de yok sayılır).
+                        if !frag_on {
+                            for &(rid, rbody) in &red_prev {
+                                if beyond_admit_window(&expected, slot.ctx, rid)
+                                    || slot.delivered_seen.contains(rid)
+                                {
+                                    continue;
+                                }
+                                let rpfx = SourcePrefix {
+                                    message_id: (rid & 0xFFFF_FFFF) as u32,
+                                    chunk_offset: 0,
+                                    actual_payload_len: u16::try_from(rbody.len())
+                                        .unwrap_or(u16::MAX),
+                                    source_flags: 0,
+                                };
+                                if admit_chunk(
+                                    &mut stats,
+                                    &expected,
+                                    &delivery_tx,
+                                    None,
+                                    peer,
+                                    slot,
+                                    false,
+                                    msg_cap,
+                                    rid,
+                                    &rpfx,
+                                    rbody,
+                                    false,
+                                ) {
+                                    stats.ptt_red_recovered += 1;
+                                }
+                            }
+                        }
                         if let Some(ack) = out.ack {
                             let sp = slot.ctx;
                             srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, ack.encode())
@@ -5804,6 +5927,43 @@ mod fec_payload_cap_tests {
         // 1 080 B sembol: 540 B/s → tam 2 s → kapı açık; 500 B/s → 2,16 s → bayt kapısı.
         assert_eq!(fec_payload_r_max(4, 8 * 120, 1080, Some(540)), 4);
         assert_eq!(fec_payload_r_max(4, 8 * 120, 1080, Some(500)), 0);
+    }
+}
+
+#[cfg(test)]
+mod ptt_red_tests {
+    //! [PTT-PAKET-İÇİ YEDEK] PTT biriminin 0x09 çerçevesi önceki teyitsiz PTT birimlerinin
+    //! gövdelerini taşır; teyitli (store'dan çıkmış) birim ve başka şerit taşınmaz; paket boyu
+    //! bugünkü kopya kuralından küçüktür.
+    use super::*;
+    use crate::unit_id::tagged;
+
+    #[test]
+    fn ptt_frame_carries_unconfirmed_previous_bundles_only() {
+        let body = vec![0x5Au8; 53]; // ürün testindeki demet gövdesi (40 B ses + 13 B uygulama)
+        let mut store: HashMap<u64, Vec<u8>> = HashMap::new();
+        for q in 0..=5u64 {
+            store.insert(tagged(0, q), body.clone());
+        }
+        store.remove(&tagged(0, 3)); // teyitli
+        store.insert(tagged(1, 4), body.clone()); // başka şerit
+        let f = unit_frame_red(&store, 9, tagged(0, 5)).expect("gövde var");
+        let (_, id, prev, pay) = decode_data_red(&f).expect("çözülür");
+        assert_eq!(id, tagged(0, 5));
+        assert_eq!(pay, &body[..]);
+        let ids: Vec<u64> = prev.iter().map(|p| p.0).collect();
+        assert_eq!(ids, vec![tagged(0, 4)], "derinlik 2: 4 taşınır, 3 teyitli");
+        // İki önceki demet de teyitsizken paket: 11 + 1 + 2 × (3 + 53) + 53 = 177 B çerçeve.
+        store.insert(tagged(0, 3), body.clone());
+        let f = unit_frame_red(&store, 9, tagged(0, 5)).expect("gövde var");
+        assert_eq!(f.len(), 11 + 1 + 2 * (3 + 53) + 53);
+        // Tel (zarf 22 + UDP/IP 28): demet başına iki iletim, saniyede 5 demet.
+        let wire = (f.len() as u64 + 22 + 28) * u64::from(PTT_RED_TRANSMISSIONS) * 5 * 8;
+        let today = (11 + 53 + 22 + 28) * 5 * 5 * 8; // 5 iletim × 114 B
+        assert!(wire < today, "{wire} bit/s ≥ bugünkü {today}");
+        // Her demet 2 × (1 + derinlik) pakette.
+        assert_eq!(u64::from(PTT_RED_TRANSMISSIONS) * (1 + PTT_RED_DEPTH), 6);
+        assert_eq!(unit_frame_red(&store, 0, tagged(0, 99)), None, "gövde yok");
     }
 }
 
