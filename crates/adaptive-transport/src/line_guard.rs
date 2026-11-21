@@ -308,6 +308,21 @@
 //! Dürüst hatta bedel: boşluk süresince dosya yarı hızda (benzetim: `e1` dosya 16,62 / 12,60 /
 //! 12,71 s, aynı koşu boşluksuz `a` 14,74 / 14,37 / 12,26 s).
 //!
+//! **Kurulma koşulu (birleşimde bulundu, 2026-11-22).** Bütçe öncelikli trafiği de kovadan düşer.
+//! Öncelikli trafik `R/2`'ye yaklaşınca öncelikli olmayan işe kovadan pay kalmaz: ilk pencere
+//! benzetiminde (`tests/start_budget_sim.rs`, seyrek ACK, art arda ölçümsüz ACK) hat 6 250
+//! ölçülmüşken 5 iletimli PTT (2,85 kB/s) bütçeyi doldurdu, dosya 90 s içinde bitmedi, 2 PTT demeti
+//! teslim edilmedi (6 test). O yükte bütçe kuyruğu zaten koruyamaz. Bu yüzden kurulurken son
+//! [`GAP_PRIORITY_WINDOW_NS`] (2 s) içindeki öncelikli tel baytı ölçülür. Öncelikli hız `3R/8`'e
+//! ulaşıyorsa (öncelikli olmayan işe `R/8`'den az kalır) bütçe kurulmaz ([`LineGuard::gap_skips`]).
+//! * Reddedilenler: öncelikli trafiği kovadan hiç düşmemek ve öncelikli olmayan işe her zaman
+//!   `R/8` alt pay vermek. İkisi de `e2`'de (boşlukta gerçek daralma) toplamı gerçek hattın üstüne
+//!   çıkardı: boşluk beklemesi 1,12–1,36 s (sınır 0,70 s).
+//! * Bekletilen öncelikli olmayan yeniden iletim o turun planını keser (`break`, İŞ-35 ilk hali).
+//!   `continue` (öncelikli yeniden iletimler beklemeden çıksın) denendi: `e2` tohum 2'de
+//!   yakınsamadan sonra PTT 5,96 s (sınır 1 s). Boşlukta dolu FIFO'ya erken giren PTT yeniden
+//!   iletimleri düşüyor, kurtarma bir ACK turu daha bekliyor. Bu nedenle `break` kaldı.
+//!
 //! # Taşma (İŞ-35 AÇIK 3, 2026-11-21)
 //!
 //! FIFO küçükse (8 paket) daralmada kuyruk hemen dolar ve sabit kalır (`g ≈ 0`); fazlalık kuyrukta
@@ -430,6 +445,11 @@ const OVERFLOW_FLOOR_CAP_MTUS: u64 = 256;
 /// bütçe. Tek ölçümsüz ACK olağandır (M tek seq, pencere dışı).
 const UNMEASURED_GAP_ACKS: u32 = 2;
 
+/// [ÖLÇÜM-BOŞLUĞU] Boşluk bütçesi kurulurken öncelikli trafiğin (PTT, metin, denetim) son bu kadar
+/// süredeki gönderim hızı ölçülür; `3R/8`'e ulaşıyorsa (öncelikli olmayan işe `R/8`'den az kalır)
+/// bütçe kurulmaz (modül belgesi, "Ölçüm boşluğu"). İki PTT demet aralığının on katı: kopya dalgasını ve yeniden iletimleri ortalar.
+const GAP_PRIORITY_WINDOW_NS: u64 = 2_000_000_000;
+
 /// Ölçüm sonucu: korunan hat hızı ve darboğazda tahmin edilen kuyruk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LineGuardUpdate {
@@ -456,6 +476,8 @@ struct SentRec {
     /// [SÜRELİ-YOKLAMA] İletim anında göndericinin hat modelinde bu iletim dahil kendi baytlarımızın
     /// boşalmasına kalan süre (ns): cephenin kendi geçici kuyruğu (önündeki parça, art arda kopyalar).
     ahead_ns: u64,
+    /// [ÖLÇÜM-BOŞLUĞU] Öncelikli şeridin iletimi (PTT, metin, denetim).
+    pri: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -508,6 +530,8 @@ pub struct LineGuard {
     unmeasured_acks: u32,
     /// [ÖLÇÜM-BOŞLUĞU] Boşluk kuralının kurulma sayısı (gözlem).
     gap_arms: u64,
+    /// [ÖLÇÜM-BOŞLUĞU] Öncelikli trafik `R/2`'yi doldurduğu için kurulmayan boşluk bütçesi (gözlem).
+    gap_skips: u64,
     /// [KUYRUK-BOŞALTMA · İŞ-35] Son [`POINT_CAP`] noktanın cephe kuyruk beklemesi (`τ − s − taban`, ns).
     queue_peaks: VecDeque<u64>,
     /// [TAŞMA] Rastgele kayıp tabanı: kuyruk kanıtı olmayan aralıklarda alınan ve gönderilen tel
@@ -670,6 +694,7 @@ impl LineGuard {
             interval_mode: false,
             unmeasured_acks: 0,
             gap_arms: 0,
+            gap_skips: 0,
             gap_drain: 0,
             queue_peaks: VecDeque::new(),
             floor_rx: 0,
@@ -700,6 +725,20 @@ impl LineGuard {
     /// baytlarımızın modelde boşalmasına kalan süre). Yoklama hükmü cephe gecikmesinden bunu düşer:
     /// hüküm yalnız modelin bilmediği (gerçek hattın yavaşlığından gelen) kuyruğu görür.
     pub fn on_sent_ahead(&mut self, seq: u64, now_ns: u64, udp_bytes: u64, ahead_ns: u64) {
+        self.on_sent_classed(seq, now_ns, udp_bytes, ahead_ns, false);
+    }
+
+    /// [ÖLÇÜM-BOŞLUĞU] [`Self::on_sent_ahead`] ve iletimin öncelikli şeride (PTT, metin, denetim)
+    /// ait olup olmadığı. Bütün iletimler kovadan düşülür (bütün trafik kuyruğu doldurur); öncelikli
+    /// işaret boşluk bütçesinin kurulma koşulunda okunur ([`GAP_PRIORITY_WINDOW_NS`]).
+    pub fn on_sent_classed(
+        &mut self,
+        seq: u64,
+        now_ns: u64,
+        udp_bytes: u64,
+        ahead_ns: u64,
+        priority: bool,
+    ) {
         let wire = udp_bytes.saturating_add(self.line.datagram_overhead);
         self.cum = self.cum.saturating_add(wire);
         if let Some(p) = self.probe.as_mut() {
@@ -727,6 +766,7 @@ impl LineGuard {
             cum: self.cum,
             pace: self.pace_bps,
             ahead_ns,
+            pri: priority,
         });
     }
 
@@ -872,6 +912,12 @@ impl LineGuard {
     #[must_use]
     pub fn gap_arms(&self) -> u64 {
         self.gap_arms
+    }
+
+    /// [ÖLÇÜM-BOŞLUĞU] Öncelikli trafik `R/2`'yi doldurduğu için kurulmayan boşluk bütçesi sayısı.
+    #[must_use]
+    pub fn gap_skips(&self) -> u64 {
+        self.gap_skips
     }
 
     /// [ÖLÇÜM-BOŞLUĞU] Boşluk kuralı kurulurken hat modeline yazılacak tek seferlik boşaltma
@@ -1249,6 +1295,26 @@ impl LineGuard {
             && interval.is_none()
             && self.unmeasured_acks >= UNMEASURED_GAP_ACKS
             && self.start.is_none();
+        // Öncelikli trafik varsayılan hattın (`R/2`) neredeyse tamamını dolduruyorsa bütçe kuyruğu
+        // koruyamaz, yalnız dosyayı ve yeniden iletimi aç bırakır (ör. 6 250 ölçülmüşken 5 iletimli
+        // PTT 2,85 kB/s → dosyaya 275 B/s): öncelikli olmayan işe kovadan en az `R/8` kalmıyorsa
+        // (öncelikli ≥ 3R/8) kurulmaz.
+        let arm_gap = arm_gap && {
+            let since = now_ns.saturating_sub(GAP_PRIORITY_WINDOW_NS);
+            let pri_wire: u64 = self
+                .sent
+                .iter()
+                .filter(|r| r.pri && r.send_ns >= since)
+                .map(|r| r.udp.saturating_add(self.line.datagram_overhead))
+                .sum();
+            // öncelikli < 3R/8: öncelikli olmayan işe kovadan en az R/8 kalır.
+            let feasible = u128::from(pri_wire) * 8 * 1_000_000_000
+                < u128::from(self.pace_bps) * 3 * u128::from(GAP_PRIORITY_WINDOW_NS);
+            if !feasible {
+                self.gap_skips = self.gap_skips.saturating_add(1);
+            }
+            feasible
+        };
         if arm_gap {
             self.start = Some(StartBudget::new(self.pace_bps, true));
             self.gap_arms = self.gap_arms.saturating_add(1);
@@ -1731,6 +1797,64 @@ mod tests {
     /// yerine kapasite iddia etmeyen boşluk bütçesi kurulur, ilk ölçülü ACK'te kalkar. Hız ve tavan
     /// değişmez. Karşı-olgu: ölçüm aralığı hiç gelmeyen koruma (eski alıcı) basamağı keser
     /// (bugünkü davranış, değişmedi).
+    /// [ÖLÇÜM-BOŞLUĞU] Öncelikli trafik (PTT) son iki saniyede tavanın yarısından fazla gönderdiyse
+    /// boşluk bütçesi kurulmaz: o yükte kuyruğu koruyamaz, yalnız öncelikli olmayan işi (dosya,
+    /// yeniden iletim) aç bırakır. Karşı-olgu (iletimler öncelikli diye işaretlenmeden, birleşimdeki
+    /// ilk hesap): bütçe kurulur ve öncelikli trafik kovayı sürekli eksiye çektiği için öncelikli
+    /// olmayan iş 2 s boyunca hiç izin almaz.
+    #[test]
+    fn gap_budget_is_not_armed_when_priority_fills_half_the_line() {
+        let run = |mark: bool| {
+            let mut g = guard();
+            let arr = send_into(&mut g, PROFILE, 100);
+            let _ = ack_m(&mut g, &arr, 10, 0, Some(1));
+            g.end_start_budget();
+            let _ = ack_m(&mut g, &arr, 30, 0, Some(10));
+            // İkinci ölçümsüz ACK'ten (seq 70, ≈ 8,6 s) önceki 2 s: her 16 ms'de 114 B öncelikli
+            // iletim (7 125 B/s > R/2 = 6 250).
+            let t_ack70 = arr[70] + 300 * MS + (55 + OVH) * SEC / RET;
+            let mut seq = 1_000u64;
+            let mut t = t_ack70 - 2 * SEC;
+            while t < t_ack70 {
+                g.on_sent_classed(seq, t, 86, 0, mark);
+                seq += 1;
+                t += 16 * MS;
+            }
+            let _ = ack_m(&mut g, &arr, 50, 0, None);
+            let _ = ack_m(&mut g, &arr, 70, 0, None);
+            // Sonraki 2 s: öncelikli trafik sürer, her 1 ms öncelikli olmayan 1 172 B denemesi.
+            let mut admitted = 0u64;
+            for k in 0..2_000u64 {
+                let now = t_ack70 + k * MS;
+                if k % 16 == 0 {
+                    g.on_sent_classed(seq, now, 86, 0, mark);
+                    seq += 1;
+                }
+                if g.start_budget_admits(now, 1172) {
+                    g.on_sent_classed(seq, now, 1172, 0, false);
+                    seq += 1;
+                    admitted += 1200;
+                }
+            }
+            (g.gap_budget_active(), g.gap_skips(), admitted)
+        };
+        let (armed, skips, admitted) = run(true);
+        assert!(
+            !armed && skips == 1,
+            "kurulmadı: armed={armed} skips={skips}"
+        );
+        assert!(
+            admitted >= 12 * 1200,
+            "öncelikli olmayan iş ilerler: {admitted} B"
+        );
+        let (armed, _, admitted) = run(false);
+        assert!(armed, "karşı-olgu: bütçe kuruldu");
+        assert!(
+            admitted <= 1200,
+            "karşı-olgu: öncelikli olmayan iş aç kalır ({admitted} B)"
+        );
+    }
+
     #[test]
     fn interval_mode_never_takes_a_front_sample_and_arms_the_gap_budget() {
         let mut g = guard();

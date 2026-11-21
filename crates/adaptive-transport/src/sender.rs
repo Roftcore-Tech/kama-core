@@ -8445,8 +8445,12 @@ impl Sender {
         }
         self.inflight_bytes += unit.size;
         let ahead_ns = self.pacer.line_ns_until_drained();
+        // [ÖLÇÜM-BOŞLUĞU] Öncelikli şerit (PTT, metin, denetim) boşluk bütçesinden düşülmez.
+        let priority = self
+            .forward_copy_rule
+            .is_some_and(|r| unit.id < r.priority_below_id);
         if let Some(g) = self.cc_line_guard.as_mut() {
-            g.on_sent_ahead(seq, now_ns, unit.size, ahead_ns);
+            g.on_sent_classed(seq, now_ns, unit.size, ahead_ns, priority);
         }
         self.inflight.insert(
             seq,
