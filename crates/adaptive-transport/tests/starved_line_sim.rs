@@ -56,6 +56,9 @@ const VOICE_UNIT: u64 = 86;
 /// o anki demetle önceki iki demetin sesi (3 × 40 B) + tek başlık takımı (46 B) + demet başına
 /// küçük etiket payı ≈ 172 B UDP gövdesi (≈ 200 B tel, ≈ 8 kbit/s). Hat koruması testleri bu yükle de
 /// sınanır: kopya karışımına bağlı geçiş sağlam sayılmaz.
+// Henüz hiçbir senaryo bu biçimi seçmiyor (yalnız `Scenario::voice_unit` belgesinde); clippy
+// `-D warnings` kapısı için.
+#[allow(dead_code)]
 const PTT_PACKED_UNIT: u64 = 172;
 const VOICE_PERIOD_NS: u64 = 200 * MS;
 const VOICE_START_NS: u64 = 500 * MS;
