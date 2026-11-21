@@ -90,10 +90,13 @@ pub fn encode_data_red(seq: u16, unit_id: u64, payload: &[u8], prev: &[(u64, &[u
     out
 }
 
+/// [PTT-PAKET-İÇİ YEDEK] Çözülmüş 0x09: `(wire_seq, unit_id, önceki birimler, payload)`.
+pub type DataRed<'a> = (u16, u64, Vec<(u64, &'a [u8])>, &'a [u8]);
+
 /// [PTT-PAKET-İÇİ YEDEK] Yedekli DATA çözer: `(wire_seq, unit_id, önceki birimler, payload)`.
 /// Bozuk, sınır dışı ya da farklı tip → `None` (fail-closed; uzunluklar okumadan önce denetlenir).
 #[must_use]
-pub fn decode_data_red(buf: &[u8]) -> Option<(u16, u64, Vec<(u64, &[u8])>, &[u8])> {
+pub fn decode_data_red(buf: &[u8]) -> Option<DataRed<'_>> {
     use crate::unit_id::{lane_index_of, lane_seq_of, tagged};
     if buf.len() < HDR_DATA + 1 || buf[0] != FRAME_DATA_RED {
         return None;

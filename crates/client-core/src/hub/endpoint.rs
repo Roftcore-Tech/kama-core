@@ -1028,11 +1028,11 @@ mod tests {
         }
     }
 
-    /// T3: tablodaki her tip doğru role, diğer 244 tip `None`.
+    /// T3: tablodaki her tip doğru role, diğer 243 tip `None`.
     #[test]
     fn role_table_maps_every_frame_type() {
         let client = [0x02, 0x04, 0x07, 0x10, 0x14, 0x15];
-        let server = [0x00, 0x01, 0x03, 0x05, 0x06, 0x08];
+        let server = [0x00, 0x01, 0x03, 0x05, 0x06, 0x08, 0x09];
         for t in 0..=u8::MAX {
             let want = if client.contains(&t) {
                 Some(Role::Client)
