@@ -61,7 +61,7 @@ use super::shared_crypto::{HubCryptoAccess, StashCounters};
 use crate::transport::{EnvelopeLink, LinkAttempt, LinkError, LinkEvent};
 use crate::wire::{
     FRAME_CAPS, FRAME_CS_ECHO, FRAME_CS_PROBE, FRAME_DATA, FRAME_DATA_FRAG, FRAME_FEC, FRAME_PARAM,
-    FRAME_PARAM_ACK, FRAME_RECOVERED,
+    FRAME_PARAM_ACK, FRAME_PTT, FRAME_RECOVERED,
 };
 
 /// S4 §6 `MAX_DATAGRAM`: hub'a giden ve hub'dan gelen datagram tavanı.
@@ -115,9 +115,8 @@ pub fn role_of(frame_type: u8) -> Option<Role> {
         | FRAME_TYPE_ACK
         | FRAME_TYPE_ACK_V2
         | FRAME_TYPE_ACK_BITMAP => Some(Role::Client),
-        FRAME_DATA | FRAME_FEC | FRAME_PARAM | FRAME_DATA_FRAG | FRAME_CS_PROBE | FRAME_CAPS => {
-            Some(Role::Server)
-        }
+        FRAME_DATA | FRAME_FEC | FRAME_PARAM | FRAME_DATA_FRAG | FRAME_CS_PROBE | FRAME_CAPS
+        | FRAME_PTT => Some(Role::Server),
         _ => None,
     }
 }
@@ -1029,11 +1028,11 @@ mod tests {
         }
     }
 
-    /// T3: tablodaki her tip doğru role, diğer 244 tip `None`.
+    /// T3: tablodaki her tip doğru role, diğer 243 tip `None`.
     #[test]
     fn role_table_maps_every_frame_type() {
         let client = [0x02, 0x04, 0x07, 0x10, 0x14, 0x15];
-        let server = [0x00, 0x01, 0x03, 0x05, 0x06, 0x08];
+        let server = [0x00, 0x01, 0x03, 0x05, 0x06, 0x08, 0x09];
         for t in 0..=u8::MAX {
             let want = if client.contains(&t) {
                 Some(Role::Client)
