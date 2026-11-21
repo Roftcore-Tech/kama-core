@@ -2971,8 +2971,12 @@ async fn client_task(
     let mut param_line_gate_ms: Option<u64> = None;
     // [ACK-BITMAP · YETENEK] Bitmap biçimi açık uç, veri alıcısına CAPS ile 0x15'i çözebildiğini
     // bildirir; ilk 0x15 ACK'i bildirimin ulaştığının kanıtıdır ve yeniden denemeyi durdurur.
-    // Kapalıyken (varsayılan) CAPS hiç çıkmaz: tel ve davranış bugünküyle aynı.
-    let mut caps_confirmed = cfg.ack_format != AckFormat::Bitmap;
+    // Kapalıyken (varsayılan) CAPS hiç çıkmaz: tel ve davranış bugünküyle aynı. CAPS yalnız bu
+    // ucun ACK'leri dar dönüşten geliyorsa (`link_feedback_starved`: bitmap'in fayda verdiği tek
+    // yol; alıcı da yalnız orada yazar) çıkar. Ölçüldü (ürün testi, dürüst hücre, tohum 1): Bob'un
+    // istemci ucu da CAPS gönderiyordu; 4 × 53 B Bob'un 62 B/s yukarı yönünü 3,4 s tuttu ve ilk
+    // alındı 0,78 → 3,37 s'de çıktı (sınır 4 s aşıldı). Bob'un ACK'leri geniş hattan gelir.
+    let mut caps_confirmed = cfg.ack_format != AckFormat::Bitmap || !link_feedback_starved(&cfg);
     let mut caps_last_ms: u64 = 0;
     let mut caps_tries: u32 = 0;
     let mut caps_line_gate_ms: Option<u64> = None;
