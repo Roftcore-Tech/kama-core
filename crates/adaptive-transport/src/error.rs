@@ -48,6 +48,11 @@ pub enum TransportError {
         max: usize,
     },
 
+    /// [ACK-BITMAP · ölçüm prototipi] 0x15 çerçevesi kurallara uymuyor: bitmap tavanı aşılmış,
+    /// `base_seq`–`largest_seq` açıklığı bitmap boyuyla tutarsız ya da dolgu bitleri sıfır değil.
+    #[error("geçersiz ACK bitmap çerçevesi: {0}")]
+    InvalidAckBitmap(&'static str),
+
     /// Bir özellik tanımlı ama henüz uygulanmadı (typed stub, asla panik değil).
     #[error("feature not implemented: {0}")]
     FeatureNotImplemented(&'static str),

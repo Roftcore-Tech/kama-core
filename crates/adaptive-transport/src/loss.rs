@@ -186,6 +186,9 @@ impl Default for LossConfig {
 struct Sent {
     send_ns: u64,
     units: u64,
+    /// [ACK-BITMAP · ölçüm prototipi] Bir ACK'in kanıt aralığı bu seq'i kapsadı ve teyit etmedi
+    /// (negatif kanıt). Yalnız kanıt kipinde okunur.
+    evidenced: bool,
 }
 
 /// [TUR-2a D-1/3] Loss olay-ledger durumu: kayıp bir OLAY değil HİPOTEZ — geç kanıtla çürüyebilir.
@@ -245,6 +248,10 @@ pub struct ThresholdLossDetector {
     spurious_units_total: u64,   // audit: toplam geri-alınan birim
     ledger_evicted_total: u64,   // audit: kapasite-eviction (SR-AUDIT-001)
     packet_thresh_dyn: u64,      // 0 = cfg.packet_threshold; sender adaptif k yazar [TUR-2a]
+    /// [ACK-BITMAP · ölçüm prototipi] Kanıt aralığı taşıyan ilk ACK'ten itibaren açık: paket ve
+    /// zaman eşiği yalnız `Sent::evidenced` seq'lere uygulanır (aralık dışı = bilinmiyor). Kapalıyken
+    /// (her 0x14 oturumu) bugünkü kural bit-aynı.
+    evidence_mode: bool,
 }
 
 impl ThresholdLossDetector {
@@ -601,7 +608,7 @@ impl ThresholdLossDetector {
             .as_nanos() as u64;
         self.inflight
             .iter()
-            .filter(|(&seq, _)| seq < self.largest_acked)
+            .filter(|(&seq, s)| seq < self.largest_acked && self.eligible(s))
             .map(|(_, s)| s.send_ns.saturating_add(thresh))
             .min()
     }
@@ -609,7 +616,14 @@ impl ThresholdLossDetector {
 
 impl LossDetector for ThresholdLossDetector {
     fn on_sent(&mut self, seq: u64, send_ns: u64, units: u64) {
-        self.inflight.insert(seq, Sent { send_ns, units });
+        self.inflight.insert(
+            seq,
+            Sent {
+                send_ns,
+                units,
+                evidenced: false,
+            },
+        );
         self.sent_units += units;
         // [TUR-2a D-1/5] pencere-paydası (bounded; eviction paydayı küçültür → ppm hafif
         // yukarı-yanlı olur, SAKLANMAZ — audit sayacıyla görünür).
@@ -619,11 +633,71 @@ impl LossDetector for ThresholdLossDetector {
                 self.ledger_evicted_total += 1;
             }
         }
-        self.sent_window.push_back(Sent { send_ns, units });
+        self.sent_window.push_back(Sent {
+            send_ns,
+            units,
+            evidenced: false,
+        });
         self.sent_window_units += units;
     }
 
     fn on_ack(&mut self, acked: &[u64], now_ns: u64) -> Vec<u64> {
+        self.on_ack_inner(acked, None, now_ns)
+    }
+
+    fn detect_time_losses(
+        &mut self,
+        now_ns: u64,
+        srtt: Duration,
+        cadence_floor: Duration,
+    ) -> Vec<u64> {
+        self.detect_time_losses_inner(now_ns, srtt, cadence_floor)
+    }
+
+    fn on_unrecovered(&mut self, units: u64) {
+        self.unrecovered_units += units;
+    }
+
+    fn loss_pre_fec_ppm(&self) -> u64 {
+        ratio_ppm(self.lost_units, self.sent_units)
+    }
+
+    fn residual_loss_ppm(&self) -> u64 {
+        ratio_ppm(self.unrecovered_units, self.sent_units)
+    }
+}
+
+impl ThresholdLossDetector {
+    /// [ACK-BITMAP · ölçüm prototipi] Kanıt aralıklı ACK: `evidence = Some((lo, hi))` (motor seq,
+    /// kapsayıcı) — aralıktaki teyitsiz uçuş kaydı negatif kanıt alır; kanıt kipi açılır ve paket /
+    /// zaman eşiği bundan sonra yalnız kanıtlı seq'lere uygulanır. `lo > hi` boş aralıktır (kip yine
+    /// açılır). `None` → [`LossDetector::on_ack`] ile aynı.
+    pub fn on_ack_with_evidence(
+        &mut self,
+        acked: &[u64],
+        evidence: Option<(u64, u64)>,
+        now_ns: u64,
+    ) -> Vec<u64> {
+        self.on_ack_inner(acked, evidence, now_ns)
+    }
+
+    /// [ACK-BITMAP] Kanıt kipi açık mı (salt gözlem).
+    #[must_use]
+    pub fn evidence_mode(&self) -> bool {
+        self.evidence_mode
+    }
+
+    /// [ACK-BITMAP] Eşik kararına uygun mu: kanıt kipi kapalıyken her kayıt (bugünkü kural).
+    fn eligible(&self, s: &Sent) -> bool {
+        !self.evidence_mode || s.evidenced
+    }
+
+    fn on_ack_inner(
+        &mut self,
+        acked: &[u64],
+        evidence: Option<(u64, u64)>,
+        now_ns: u64,
+    ) -> Vec<u64> {
         for &seq in acked {
             self.inflight.remove(&seq);
             // [TUR-2a D-1/3] UN-LOSS: kayıp-ilan-edilmiş seq'e ACK geldi → hipotez ÇÜRÜDÜ.
@@ -649,6 +723,15 @@ impl LossDetector for ThresholdLossDetector {
                 self.have_acked = true;
             }
         }
+        if let Some((lo, hi)) = evidence {
+            // [ACK-BITMAP] Teyitliler yukarıda uçuştan çıktı; aralıkta kalan her kayıt alınmamıştı.
+            self.evidence_mode = true;
+            if lo <= hi {
+                for (_, s) in self.inflight.range_mut(lo..=hi) {
+                    s.evidenced = true;
+                }
+            }
+        }
         if !self.have_acked {
             return Vec::new();
         }
@@ -657,9 +740,9 @@ impl LossDetector for ThresholdLossDetector {
                                                 // Önce kayıp seq'leri topla (immutable borç), sonra kaldır.
         let lost: Vec<u64> = self
             .inflight
-            .keys()
-            .copied()
-            .filter(|&seq| packet_threshold_lost(seq, la, k))
+            .iter()
+            .filter(|(&seq, s)| packet_threshold_lost(seq, la, k) && self.eligible(s))
+            .map(|(&seq, _)| seq)
             .collect();
         for seq in &lost {
             if let Some(s) = self.inflight.remove(seq) {
@@ -670,7 +753,7 @@ impl LossDetector for ThresholdLossDetector {
         lost
     }
 
-    fn detect_time_losses(
+    fn detect_time_losses_inner(
         &mut self,
         now_ns: u64,
         srtt: Duration,
@@ -695,7 +778,9 @@ impl LossDetector for ThresholdLossDetector {
             .iter()
             .filter(|(&seq, s)| {
                 let elapsed = Duration::from_nanos(now_ns.saturating_sub(s.send_ns));
-                seq < la && time_threshold_lost(elapsed, srtt, floor, cfg.time_num, cfg.time_den)
+                seq < la
+                    && self.eligible(s)
+                    && time_threshold_lost(elapsed, srtt, floor, cfg.time_num, cfg.time_den)
             })
             .map(|(&seq, _)| seq)
             .collect();
@@ -706,18 +791,6 @@ impl LossDetector for ThresholdLossDetector {
             }
         }
         lost
-    }
-
-    fn on_unrecovered(&mut self, units: u64) {
-        self.unrecovered_units += units;
-    }
-
-    fn loss_pre_fec_ppm(&self) -> u64 {
-        ratio_ppm(self.lost_units, self.sent_units)
-    }
-
-    fn residual_loss_ppm(&self) -> u64 {
-        ratio_ppm(self.unrecovered_units, self.sent_units)
     }
 }
 
@@ -869,4 +942,84 @@ pub struct E2aDiag {
     pub pto2_emitted: u64,
     /// PTO 2: tur değiştiği ya da hedef artık teyitsiz olmadığı için boşaltılan ikinci prob yuvası.
     pub pto2_cleared: u64,
+}
+
+#[cfg(test)]
+mod evidence_tests {
+    //! [ACK-BITMAP · ölçüm prototipi] Kanıt aralığı: aralık dışı seq bilinmiyor (eşik kararı yok),
+    //! aralık içi gerçek kayıp ilan edilir; kanıtsız yol bugünkü kural.
+    use super::*;
+
+    const MS: u64 = 1_000_000;
+
+    fn sent(d: &mut ThresholdLossDetector, n: u64) {
+        for s in 0..n {
+            d.on_sent(s, s * MS, 1);
+        }
+    }
+
+    #[test]
+    fn packet_threshold_only_inside_the_evidence_span() {
+        let mut d = ThresholdLossDetector::new();
+        sent(&mut d, 20);
+        // ACK kanıt aralığı [10, 19]: 12 ve 15 alınmadı; 0..9 aralık dışı (bilinmiyor).
+        let acked: Vec<u64> = (10..20).filter(|s| *s != 12 && *s != 15).collect();
+        let lost = d.on_ack_with_evidence(&acked, Some((10, 19)), 100 * MS);
+        assert_eq!(lost, vec![12, 15], "yalnız aralık içi gerçek kayıp");
+        assert!(d.evidence_mode());
+        // Aralık dışı 0..9 uçuşta kalır; zaman eşiği de ilan etmez.
+        let t = d.detect_time_losses(10_000 * MS, Duration::from_millis(10), Duration::ZERO);
+        assert!(
+            t.is_empty(),
+            "aralık dışı seq zaman eşiğiyle ilan edilmemeli: {t:?}"
+        );
+        assert_eq!(
+            d.next_time_loss_deadline_ns(Duration::from_millis(10), Duration::ZERO),
+            None
+        );
+        // Sonraki ACK 0..9'u kapsar: 3 alınmadı → şimdi kanıtlı ve ilan edilir.
+        let acked2: Vec<u64> = (0..10).filter(|s| *s != 3).collect();
+        let lost2 = d.on_ack_with_evidence(&acked2, Some((0, 19)), 200 * MS);
+        assert_eq!(lost2, vec![3]);
+    }
+
+    #[test]
+    fn time_threshold_applies_to_evidenced_seq_below_reorder_threshold() {
+        let mut d = ThresholdLossDetector::new();
+        sent(&mut d, 10);
+        // 8 alınmadı ama largest − 8 = 1 < k: paket eşiği bekler; kanıtlı → zaman eşiği ilan eder.
+        let acked: Vec<u64> = (0..10).filter(|s| *s != 8).collect();
+        assert!(d
+            .on_ack_with_evidence(&acked, Some((0, 9)), 20 * MS)
+            .is_empty());
+        let t = d.detect_time_losses(1_000 * MS, Duration::from_millis(10), Duration::ZERO);
+        assert_eq!(t, vec![8]);
+    }
+
+    #[test]
+    fn without_evidence_the_rule_is_unchanged() {
+        let mut a = ThresholdLossDetector::new();
+        let mut b = ThresholdLossDetector::new();
+        sent(&mut a, 20);
+        sent(&mut b, 20);
+        let acked: Vec<u64> = (10..20).filter(|s| *s != 12).collect();
+        let la = a.on_ack(&acked, 100 * MS);
+        let lb = b.on_ack_with_evidence(&acked, None, 100 * MS);
+        assert_eq!(la, lb);
+        assert_eq!(
+            la,
+            (0..10).chain([12]).collect::<Vec<_>>(),
+            "bugünkü kural: 0..9 da"
+        );
+        assert!(!b.evidence_mode());
+    }
+
+    #[test]
+    fn empty_span_turns_evidence_mode_on_without_marking() {
+        let mut d = ThresholdLossDetector::new();
+        sent(&mut d, 10);
+        let lost = d.on_ack_with_evidence(&[9], Some((1, 0)), 10 * MS);
+        assert!(lost.is_empty());
+        assert!(d.evidence_mode());
+    }
 }

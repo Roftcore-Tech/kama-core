@@ -425,3 +425,54 @@ fn rtt_correction_rejection_counter_reflects_the_guard() {
          (öncesi={rejected_before}, küçük={rejected_small}, büyük={rejected_big})"
     );
 }
+
+/// [ACK-BITMAP · ölçüm prototipi] Göndericide kanıt aralığı: aralık DIŞINDAKİ teyitsiz seq paket ve
+/// zaman eşiğiyle kayıp ilan EDİLMEZ (bilinmiyor); aralık İÇİNDEKİ gerçek kayıp ilan edilir.
+#[test]
+fn evidence_span_limits_threshold_losses_to_the_span() {
+    let (mut s, mut now, out) = armed();
+    assert_eq!(s.diag_loss(), (0, 0, 0));
+    // out[0] teyitli (armed). Kanıt aralığı [out[6], son]: out[1..6] aralık dışı, out[8] içinde
+    // alınmadı.
+    let lo = out[6];
+    let hi = *out.last().expect("uçuş");
+    let acked: Vec<u64> = out[6..].iter().copied().filter(|&q| q != out[8]).collect();
+    now += 50 * MS;
+    s.set_next_ack_evidence(Some((lo, hi)));
+    s.on_event(ack(acked), now);
+    assert!(s.diag_ack_evidence_mode());
+    let (loss_pkt, loss_time, _) = s.diag_loss();
+    assert_eq!(
+        loss_pkt, 1,
+        "yalnız aralık içi kayıp (out[8]) ilan edilmeli"
+    );
+    assert_eq!(loss_time, 0);
+    // Zaman eşiği aralık dışı seq'leri uzun sessizlikte de ilan etmez.
+    for _ in 0..20 {
+        now += 500 * MS;
+        s.on_event(Event::TimerFired(Timer::Pto), now);
+    }
+    let (loss_pkt2, loss_time2, _) = s.diag_loss();
+    assert_eq!(
+        (loss_pkt2, loss_time2),
+        (1, 0),
+        "aralık dışı seq'ler eşikle ilan edilmemeli"
+    );
+}
+
+/// [ACK-BITMAP] Kanıt aralığı verilmezse (0x14 yolu) aynı senaryo bugünkü kuraldır: atlanan
+/// seq'lerin hepsi paket eşiğiyle ilan edilir.
+#[test]
+fn without_evidence_span_all_skipped_seqs_are_declared() {
+    let (mut s, mut now, out) = armed();
+    let acked: Vec<u64> = out[6..].iter().copied().filter(|&q| q != out[8]).collect();
+    now += 50 * MS;
+    s.on_event(ack(acked), now);
+    assert!(!s.diag_ack_evidence_mode());
+    // Uçuştaki teyitsiz her seq (en az out[1..6] + out[8]) paket eşiğine düşer.
+    assert!(
+        s.diag_loss().0 >= 6,
+        "out[1..6] + out[8]: {:?}",
+        s.diag_loss()
+    );
+}

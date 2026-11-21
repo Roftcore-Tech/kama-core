@@ -1739,6 +1739,9 @@ pub struct Sender {
 
     // ── ölçüm (§5/§6/§7) ──
     loss: ThresholdLossDetector,
+    /// [ACK-BITMAP · ölçüm prototipi] Bir sonraki `Event::AckReceived`'ın kanıt aralığı (motor seq,
+    /// kapsayıcı; `Sender::set_next_ack_evidence`). O olay işlenirken tüketilir (`take`).
+    next_ack_evidence: Option<(u64, u64)>,
     rtt: RttEstimator,
     bw_sampler: DeliveryRateSampler,
     btlbw: BtlBwFilter,
@@ -2145,6 +2148,7 @@ impl Sender {
         Self {
             state: SenderState::Idle,
             loss: ThresholdLossDetector::new(),
+            next_ack_evidence: None,
             rtt: RttEstimator::new(),
             bw_sampler: DeliveryRateSampler::new(),
             btlbw: BtlBwFilter::new(),
@@ -3583,6 +3587,8 @@ impl Sender {
 
     /// §3.2 OnAckReceived: inflight boşalt + RTT/BW/loss güncelle.
     fn on_ack_received(&mut self, ack: &AckInfo, now_ns: u64) {
+        // [ACK-BITMAP] Kanıt aralığı yalnız bu olaya aittir; boş ACK'te de düşer.
+        let evidence = self.next_ack_evidence.take();
         if ack.acked_seqs.is_empty() {
             return;
         }
@@ -3756,7 +3762,10 @@ impl Sender {
         // [TUR-2a §9.3] adaptif packet-threshold: spurious gördükçe reorder-toleransı yükselir.
         self.loss
             .set_packet_threshold(u64::from(self.reorder.reorder_thresh(&self.retx_cfg)));
-        let lost = self.loss.on_ack(&ack.acked_seqs, now_ns);
+        // [ACK-BITMAP] Kanıt aralığı yoksa (0x14) `on_ack` ile bit-aynı.
+        let lost = self
+            .loss
+            .on_ack_with_evidence(&ack.acked_seqs, evidence, now_ns);
 
         // [TUR-2a D-1/3] UN-LOSS: kayıp-ilan-edilmiş seq'e ACK geldi → hipotez çürüdü.
         // pending-retransmit İPTAL + kopyalar iptal + note_spurious kablosu + kol-1 RTT adayı.
@@ -5965,6 +5974,25 @@ impl Sender {
     #[must_use]
     pub fn diag_repair_loss_not_arqed(&self) -> u64 {
         self.repair_loss_not_arqed
+    }
+
+    /// [ACK-BITMAP · YALNIZ ÖLÇÜM PROTOTİPİ] Bir sonraki `Event::AckReceived`'ın kanıt aralığı
+    /// (motor seq, kapsayıcı): aralıktaki teyitsiz iletim alınmamıştı (negatif kanıt). İlk çağrıdan
+    /// itibaren kayıp dedektörü kanıt kipindedir: paket ve zaman eşiği yalnız bir kanıt aralığının
+    /// kapsadığı seq'lere uygulanır, aralık dışı = bilinmiyor (PTO ve sonraki ACK'ler). `lo > hi`
+    /// boş aralıktır. Çağrılmazsa (0x14 yolu) davranış bit-aynı. Runtime 0x15 çerçevesini çözdükten
+    /// sonra, `Event::AckReceived`'dan hemen ÖNCE çağırır.
+    ///
+    /// Bağımlılık notu: aynı bilgi ileride `AckInfo` alanı olarak taşınabilir (`AckInfo` başka bir
+    /// dalın sahiplik alanında; bu prototip 106 kurulum yerine dokunmamak için ayrı giriş kullanır).
+    pub fn set_next_ack_evidence(&mut self, span: Option<(u64, u64)>) {
+        self.next_ack_evidence = span;
+    }
+
+    /// [ACK-BITMAP] Kayıp dedektörü kanıt kipinde mi (salt gözlem).
+    #[must_use]
+    pub fn diag_ack_evidence_mode(&self) -> bool {
+        self.loss.evidence_mode()
     }
 
     /// [FAZ-1 DÖNÜŞ-YOLU] Bir ACK datagram'ı gözlendi. **Motor davranışını DEĞİŞTİRMEZ** —

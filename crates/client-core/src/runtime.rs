@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use adaptive_transport::ack::{AckFrame, FRAME_TYPE_ACK, FRAME_TYPE_ACK_V2};
+use adaptive_transport::ack::{AckFrame, FRAME_TYPE_ACK, FRAME_TYPE_ACK_BITMAP, FRAME_TYPE_ACK_V2};
 use adaptive_transport::receiver::{Receiver, RxDatagram, RxKind};
 use adaptive_transport::sender::{
     AckInfo, BootstrapRttConfig, Event, FecActuationMode, InitialWindowConfig, OpaqueUnit,
@@ -227,6 +227,13 @@ pub struct RuntimeConfig {
     /// bloklarını sonraki ACK'lerde yeniden raporlar mı (`Receiver::set_ack_rereport`). Varsayılan
     /// `true`; ürün varsayılanı kararı ölçümden sonra (sahip). Profilsiz / eski motor yolunda etkisiz.
     pub ack_rereport: bool,
+    /// [ACK-BITMAP · YALNIZ ÖLÇÜM PROTOTİPİ, biçim onayı yok] ACK tel biçimi. `V2` (varsayılan) =
+    /// bugünkü 0x14 yolu bayt bayt aynı. `Bitmap` İKİ UÇTA DA açıkça verilmelidir (yetenek
+    /// anlaşması YOK): server ucu geri bildirimi aç profilde (port motoru + yön hızı profili +
+    /// bütçeli alıcı) 0x15 yazar; client ucu 0x15'i yalnız `Bitmap` iken kabul eder ve kanıt
+    /// aralığını göndericiye verir (`Sender::set_next_ack_evidence`). Eski motor ve profilsiz yolda
+    /// alıcı 0x14 yazar.
+    pub ack_format: AckFormat,
     /// [ÖNLEMSEL-KOPYA · sahip kararı 2026-11-16] Şerit kimlikleri açık mı (şerit 0 = PTT).
     /// `true` iken ve yön hızı profili geri bildirimi aç bırakıyorsa ([`link_feedback_starved`]),
     /// PTT şeridinin her yeni birimi ACK beklemeden [`PTT_FORWARD_COPIES`] kez daha gönderilir.
@@ -358,6 +365,7 @@ impl KamaV1Profile {
             diag_emit_sink: None,
             diag_return_budget_permille: None,
             ack_rereport: true,
+            ack_format: AckFormat::V2,
             // [ÖNLEMSEL-KOPYA] Şerit kimlikleri yalnız `ClientTransport` şeritleri açınca.
             lane_ids: false,
             // [E1 gösterim] Beş bayrak ürün yolunda KAPALI; yalnız gösterim düğümü/teşhis kolları açar.
@@ -592,6 +600,28 @@ impl std::fmt::Debug for UplinkShare {
 /// göndericinin sınırlı yeniden deneme süresi (≤ 25 deneme, 5 s'de bir) içinde ilk yanıt kaybolursa
 /// yeni yanıt çıkabilsin.
 const MAX_ECHO_SPACING_NS: u64 = 30_000_000_000;
+
+/// [ACK-BITMAP · ölçüm prototipi] ACK tel biçimi (bkz. [`RuntimeConfig::ack_format`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AckFormat {
+    /// 0x14 ACK V2 (bugünkü, ürün varsayılanı).
+    #[default]
+    V2,
+    /// 0x15 ACK bitmap (yalnız ölçüm; iki uç açıkça yapılandırılır).
+    Bitmap,
+}
+
+impl AckFormat {
+    /// `"v2"` / boş → `V2`; `"bitmap"` → `Bitmap`; başka → `None`.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim() {
+            "" | "v2" => Some(Self::V2),
+            "bitmap" => Some(Self::Bitmap),
+            _ => None,
+        }
+    }
+}
 
 /// [CC-PORT] Taşıma motoru (bkz. [`RuntimeConfig::engine`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -3361,7 +3391,10 @@ async fn client_task(
                         _ => stats.unknown_frames += 1,
                     }
                 } else if plain.is_empty()
-                    || (plain[0] != FRAME_TYPE_ACK && plain[0] != FRAME_TYPE_ACK_V2)
+                    || (plain[0] != FRAME_TYPE_ACK
+                        && plain[0] != FRAME_TYPE_ACK_V2
+                        && !(plain[0] == FRAME_TYPE_ACK_BITMAP
+                            && cfg.ack_format == AckFormat::Bitmap))
                 {
                     stats.unknown_frames += 1;
                 } else {
@@ -3381,7 +3414,27 @@ async fn client_task(
                         );
                         // [D1a] ACK aralıkları PN uzayında → motor seq'ine çevrilir. Tabloda olmayan
                         // PN (ufuk dışı / motor kararı olmayan çerçeve) motora GİTMEZ.
-                        let pns = frame.acked_full(max_sealed_pn.map_or(0, |m| m + 1));
+                        let expected_pn = max_sealed_pn.map_or(0, |m| m + 1);
+                        let pns = frame.acked_full(expected_pn);
+                        // [ACK-BITMAP] Kanıt aralığı PN uzayında → motor seq aralığına: tablodaki
+                        // PN'i [base, largest] içinde olan kayıtların en küçük / en büyük seq'i (PN
+                        // ve motor seq aynı sırayla artar: her karar mühürlendiği sırayla PN alır).
+                        // Tabloda hiç kayıt yoksa boş aralık (kanıt kipi yine açılır).
+                        if let Some((lo_pn, hi_pn)) = frame.evidence_span_full(expected_pn) {
+                            let a = pn_seq.partition_point(|&(p, _)| p < lo_pn);
+                            let b = pn_seq.partition_point(|&(p, _)| p <= hi_pn);
+                            let span = if a < b {
+                                let (lo, hi) = pn_seq
+                                    .range(a..b)
+                                    .fold((u64::MAX, 0u64), |(lo, hi), &(_, s)| {
+                                        (lo.min(s), hi.max(s))
+                                    });
+                                (lo, hi)
+                            } else {
+                                (1, 0)
+                            };
+                            session.sender_mut().set_next_ack_evidence(Some(span));
+                        }
                         // [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] Salt gözlem: çerçevenin teyit ettiği PN
                         // sayısı ve en büyüğü (motora giden liste değişmez). [DUR-19] Yalnız canlı
                         // ayna açıkken hesaplanır.
@@ -5156,6 +5209,13 @@ async fn server_task(
                         slot.rx.set_return_budget_permille_for_diag(y);
                     }
                     slot.rx.set_ack_rereport(cfg.ack_rereport);
+                    // [ACK-BITMAP] Yalnız port motoru + yön hızı profili (alıcı ayrıca bütçenin
+                    // geri bildirimi aç olmasını ister); profilsiz ve eski motor yolu 0x14.
+                    slot.rx.set_ack_bitmap(
+                        cfg.ack_format == AckFormat::Bitmap
+                            && cfg.engine == TransportEngine::CcPort
+                            && cfg.link_rates.is_some(),
+                    );
                     peers.insert(key, slot);
                 }
                 let Some(slot) = peers.get_mut(&key) else { continue };

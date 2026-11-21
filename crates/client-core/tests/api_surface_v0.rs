@@ -121,6 +121,9 @@ async fn transport_api_v0_surface_is_frozen() {
         diag_return_budget_permille: _,
         // v0.20 (YENİDEN-RAPOR anahtarı, 2026-11-21): minor-EKLEME, kasıtlı pin-güncellemesi.
         ack_rereport: _,
+        // v0.21 (ACK-BITMAP ölçüm prototipi, 2026-11-21): minor-EKLEME, kasıtlı pin-güncellemesi.
+        // Default V2 (bugünkü 0x14); yalnız ölçüm düzeneği Bitmap verir.
+        ack_format: _,
     } = cfg.clone();
     let FecRuntimeConfig {
         profile_id: _,
