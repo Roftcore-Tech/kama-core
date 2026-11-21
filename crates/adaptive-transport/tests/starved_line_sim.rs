@@ -52,6 +52,11 @@ const FILE_UNIT: u64 = 1000;
 const FILE_BASE_ID: u64 = 1_000_000;
 const TEXT_ID: u64 = 500_000;
 const VOICE_UNIT: u64 = 86;
+/// Koordinatörün yazdığı paket içi yedekli PTT biçimi (#175, sahip 2026-11-22): 200 ms'de tek paket;
+/// o anki demetle önceki iki demetin sesi (3 × 40 B) + tek başlık takımı (46 B) + demet başına
+/// küçük etiket payı ≈ 172 B UDP gövdesi (≈ 200 B tel, ≈ 8 kbit/s). Hat koruması testleri bu yükle de
+/// sınanır: kopya karışımına bağlı geçiş sağlam sayılmaz.
+const PTT_PACKED_UNIT: u64 = 172;
 const VOICE_PERIOD_NS: u64 = 200 * MS;
 const VOICE_START_NS: u64 = 500 * MS;
 /// Ürün kabul ölçütleri (`asym_product_outcome`): PTT demeti ve metin 1 s, dürüst dosya 14 s.
@@ -101,6 +106,9 @@ struct Scenario {
     copies: u8,
     spacing_ns: u64,
     copy_scale_min: Option<u8>,
+    /// PTT biriminin UDP gövde boyu (B). Bugünkü biçim [`VOICE_UNIT`] (40 B ses + 46 B başlık);
+    /// paket içi yedekli biçim [`PTT_PACKED_UNIT`].
+    voice_unit: u64,
     /// Alıcının ACK bütçesinin hesaplandığı dönüş hızı (B/s).
     ack_return_bw: u64,
     /// Ölçüm aralığı göndericiye verilir mi (`false` = karşı-olgu: eski cephe tahmincisi).
@@ -131,6 +139,7 @@ impl Scenario {
             copies: PRODUCT_COPIES,
             spacing_ns: PRODUCT_SPACING_NS,
             copy_scale_min: Some(PRODUCT_MIN_COPIES),
+            voice_unit: VOICE_UNIT,
             ack_return_bw: PROFILE_DOWN,
             interval: true,
             no_interval: None,
@@ -402,10 +411,12 @@ fn sender(sc: &Scenario) -> Sender {
             datagram_overhead: OVH,
         },
     }));
+    // `copies == 0`: kopya yok (paket içi yedekli biçim), öncelikli şerit kalır (`below_id` 0 →
+    // hiçbir birim kopyalanmaz; kural yalnız öncelik için kurulur).
     s.set_forward_copy_rule(Some(ForwardCopyRule {
-        below_id: TEXT_ID,
+        below_id: if sc.copies == 0 { 0 } else { TEXT_ID },
         priority_below_id: FILE_BASE_ID,
-        copies: sc.copies,
+        copies: sc.copies.max(1),
         spacing_ns: sc.spacing_ns,
     }));
     s.set_forward_copy_line_scale(sc.copy_scale_min.map(|m| ForwardCopyLineScale {
@@ -506,7 +517,7 @@ fn run(sc: &Scenario) -> Outcome {
             let decs = s.on_event(
                 Event::AppData(OpaqueUnit {
                     id: next_voice,
-                    size: VOICE_UNIT,
+                    size: sc.voice_unit,
                 }),
                 now,
             );
