@@ -81,6 +81,9 @@ const SERVER_RECV_BUF: usize = 65536;
 /// olurdu ve tablo sınırsız büyürdü (SR-AUDIT-001). Kayıp bir paritenin PN'i de burada budanır.
 const PN_SEQ_WINDOW: u64 = 1 << 16;
 
+/// [İZ-NEDEN] Gönderici izinin hedefi: (an, kayıt) çiftleri ([`RuntimeConfig::diag_emit_sink`]).
+pub type EmitTraceSink = Arc<Mutex<Vec<(Instant, adaptive_transport::sender::EmitDiag)>>>;
+
 /// Çalışma-zamanı konfigürasyonu. Tüm sınırlar açık; `Default` üretim-makul değerler.
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
@@ -213,6 +216,18 @@ pub struct RuntimeConfig {
     /// (salt gözlem: motor kararları bayraktan bağımsızdır). Açık kolun maliyeti ölçülmedi. Yalnız
     /// client ucu okur; server ucu bu alanı yok sayar.
     pub live_diag: bool,
+    /// [İZ-NEDEN] Gönderici emisyon / kayıp ilanı izinin hedefi (`Sender::set_diag_emit_log`).
+    /// `None` (ürün varsayılanı) = iz yok. Açıkken görev her turda motorun izini (an, kayıt) olarak
+    /// buraya aktarır; hiçbir karar okumaz (salt gözlem). Yalnız client ucu; ölçüm düzenekleri açar.
+    pub diag_emit_sink: Option<EmitTraceSink>,
+    /// [ACK-PAYI TEŞHİS KOLU · 2026-11-21] Server ucunun alıcı dönüş bütçesi payı (Y, binde).
+    /// `None` (ürün varsayılanı) = Y = 250 (§16.1). Yalnız teşhis/ölçüm düzeneği verir.
+    pub diag_return_budget_permille: Option<u64>,
+    /// [YENİDEN-RAPOR · 2026-11-21] Server ucunun alıcısı, geri bildirimi aç profilde kırpılan ACK
+    /// bloklarını sonraki ACK'lerde yeniden raporlar mı (`Receiver::set_ack_rereport`). Varsayılan
+    /// `false`: donmuş spec §2.1 "taşarsa en yeni bloklar öncelik". `true` spec sapmasıdır, sahip
+    /// kararına dek yalnız ölçüm kolu. Profilsiz / eski motor yolunda etkisiz.
+    pub ack_rereport: bool,
     /// [ÖNLEMSEL-KOPYA · sahip kararı 2026-11-16] Şerit kimlikleri açık mı (şerit 0 = PTT).
     /// `true` iken ve yön hızı profili geri bildirimi aç bırakıyorsa ([`link_feedback_starved`]),
     /// PTT şeridinin her yeni birimi ACK beklemeden [`PTT_FORWARD_COPIES`] kez daha gönderilir.
@@ -341,6 +356,9 @@ impl KamaV1Profile {
             // [K4G-05 / DUR-19] Canlı teşhis aynası ürün yolunda KAPALI: yazıcı çalışmaz, ayna
             // kurulmaz. INT-02 düzeneği açar (`kama-node` `test-util` kurucuları).
             live_diag: false,
+            diag_emit_sink: None,
+            diag_return_budget_permille: None,
+            ack_rereport: false,
             // [ÖNLEMSEL-KOPYA] Şerit kimlikleri yalnız `ClientTransport` şeritleri açınca.
             lane_ids: false,
             // [E1 gösterim] Beş bayrak ürün yolunda KAPALI; yalnız gösterim düğümü/teşhis kolları açar.
@@ -368,6 +386,15 @@ pub const FEEDBACK_STARVED_ACK_INTERVAL_NS: u64 = 1_000_000_000;
 /// iletim sayısı (ilk iletim + kopyalar). %20 bağımsız kayıpta demet başına tam kayıp
 /// 0,2⁵ = 3,2·10⁻⁴; 40 B demet (≈ 114 B tel, 200 ms) için ileri hatta ≈ 2,85 kB/s.
 pub const PTT_FORWARD_COPIES: u8 = 5;
+
+/// [ŞERİT-BOŞTA · 2026-11-21] Şeridin kısmi bloğu bu süre yeni birim almazsa şerit boştadır ve blok
+/// ACK'siz korunur (sahip kararı 2026-11-16, kısmi blok koruması; bkz. `pace.tick`). Bir PTT demet
+/// aralığı: arka arkaya sunulan birimler (dosya parçaları) bloğu doldurur, tek tük birim (metin)
+/// beklemez.
+pub const LANE_IDLE_NS: u64 = 200_000_000;
+
+/// [ŞERİT-BOŞTA] Dosya şeridinin indeksi (`lanes::Lane::File`; şerit sırası PTT, SIG, TEXT, FILE).
+const FILE_LANE_INDEX: usize = 3;
 
 /// [ÖNLEMSEL-KOPYA] PTT kopyaları arası aralık (ns): demet aralığı (200 ms, Lyra) / iletim sayısı —
 /// kopyalar bir sonraki demetten önce biter, art arda düşmelere karşı yayılır.
@@ -2814,11 +2841,16 @@ async fn client_task(
         }
         session.sender_mut().set_cc_initial_window(iw);
     }
+    if cfg.diag_emit_sink.is_some() {
+        session.sender_mut().set_diag_emit_log(true);
+    }
     // [ÖNLEMSEL-KOPYA · sahip kararı 2026-11-16] Geri bildirimi aç profilde PTT şeridi (şerit 0,
     // kimlikleri şerit 1'in ilk kimliğinden küçük) ACK'siz kopyalanır: bu hatta ACK'e dayalı
     // kurtarma ≥ 2 s sürer ve sıralı PTT şeridinde kaybın ardındaki demetleri bekletir.
     // [GERİ-BİLDİRİM-AÇ · sahip kararı 2026-11-16] Uçuş tavanı ACK saatine bağlanmaz, hız hatta
-    // sert bağlanır (INV-RATE-1 profil istisnası; bkz. `FeedbackStarvedRule`).
+    // sert bağlanır (INV-RATE-1 profil istisnası; bkz. `FeedbackStarvedRule`). [HAT-KORUMASI]
+    // Profil hattı üst sınırdır: ölçüm gerçek hattı daha yavaş gösterirse hız, uçuş tabanı ve hat
+    // modeli ölçülen hatta iner (`adaptive_transport::line_guard`); ölçüm profili aşamaz.
     if let (true, Some(l)) = (link_feedback_starved(&cfg), cfg.link_rates) {
         session.sender_mut().set_cc_feedback_starved(Some(
             adaptive_transport::sender::FeedbackStarvedRule {
@@ -2826,6 +2858,11 @@ async fn client_task(
                 feedback_ns: adaptive_transport::receiver::feedback_horizon_ns(l.downlink_bps),
                 line: adaptive_transport::pacer::LineModel {
                     rate_bps: l.uplink_bps,
+                    datagram_overhead: LINK_UDP_IP_OVERHEAD,
+                },
+                // [HAT-KORUMASI] ACK'in dönüş serileşmesi ölçümden düşülür.
+                return_line: adaptive_transport::pacer::LineModel {
+                    rate_bps: l.downlink_bps,
                     datagram_overhead: LINK_UDP_IP_OVERHEAD,
                 },
             },
@@ -2924,6 +2961,9 @@ async fn client_task(
     // başına): oturum ortasında kapanamayan kısmi blok ACK'siz korunur (bkz. kopya noktası).
     let mut cur_block_ids: [Vec<u64>; LANE_COUNT] = Default::default();
     let mut tail_copied: [usize; LANE_COUNT] = [0; LANE_COUNT];
+    // [ŞERİT-BOŞTA · 2026-11-21] Şeride son birimin sunulduğu an (ns): kısmi blok korumasının
+    // şerit başına "boşta" koşulu (aşağı, `pace.tick`).
+    let mut lane_last_offer_ns: [u64; LANE_COUNT] = [0; LANE_COUNT];
     // [FAZ-2 / KALEM-1] blok → (K_actual, repair'ler). K_actual kısmi/son blokta k_shape'ten
     // küçüktür ve TEL BAŞLIĞINDA taşınmak zorundadır (alıcı Model-A zero-enjeksiyonunu ondan türetir).
     let mut repair_store: BTreeMap<u32, (u8, Vec<RepairSymbol>)> = BTreeMap::new();
@@ -3453,6 +3493,16 @@ async fn client_task(
         // `ClientHandle::live_diag`). [DUR-19] YALNIZ canlı ayna açıkken
         // (`RuntimeConfig::live_diag`); kapalıyken bu blok hiç çalışmaz — saat, motor okuması,
         // durum karşılaştırması, kurtarma görüntüsü ve kilit YOK; tur, aynasız ana döngüdür.
+        if let Some(sink) = cfg.diag_emit_sink.as_ref() {
+            let log = session.sender_mut().take_diag_emit_log();
+            if !log.is_empty() {
+                let mut v = sink.lock().unwrap_or_else(PoisonError::into_inner);
+                v.extend(
+                    log.into_iter()
+                        .map(|e| (start + Duration::from_nanos(e.at_ns), e)),
+                );
+            }
+        }
         if let Some(live_mirror) = live.as_ref() {
             let mirror_now_ns = elapsed_ns(start);
             let activation = session.sender().diag_activation();
@@ -3600,6 +3650,7 @@ async fn client_task(
                     debug_assert_eq!(*cur_block_id, fec_block_of(id, u64::from(p.k_shape)));
                     cur_block.push(sym);
                     cur_block_ids[lane].push(id);
+                    lane_last_offer_ns[lane] = now;
                     *cur_block_wire += size;
                     if cur_block.len() == p.k_shape_usize() {
                         let parity_wire = wire_len(seam.as_ref(), client_ctx, HDR_FEC + e);
@@ -3673,12 +3724,27 @@ async fn client_task(
                 // dosyanın son 1–7 parçası ilk iletimde düşerse kurtarma bir ACK aralığı (bu hatta
                 // ≥ 8 s) bekler. Bu birimler öncelikli şerit gibi kopyalanır (blok sonra dolarsa
                 // FEC'ini de alır).
-                if fec_starved_prior.is_some()
-                    && offer_rx.is_empty()
-                    && session.sender().unsent_units() == 0
-                {
+                // [ŞERİT-BOŞTA · 2026-11-21] "Şerit boştayken" ŞERİT başınadır: eskiden koşul bütün
+                // göndericinin boşalmasıydı (sunum kuyruğu ve motor kuyruğu boş); dosya aktarılırken
+                // motor kuyruğu hiç boşalmadığından metin şeridinin tek birimlik kısmi bloğu ne
+                // parite ne kopya alıyordu (ürün testi, dürüst profil, tohum 1: metin 1'in üç
+                // iletimi düştü, sıralı metin şeridinde metin 2 2,37 s bekledi). Şimdi şerit, son
+                // biriminden [`LANE_IDLE_NS`] sonra yeni birim almamışsa ve açık bloğunun birimleri
+                // tele çıkmışsa boştadır; bütün gönderici boşken koşul eskisi gibidir.
+                let all_idle = offer_rx.is_empty() && session.sender().unsent_units() == 0;
+                if fec_starved_prior.is_some() {
                     for lane in 0..LANE_COUNT {
                         if fec_prior_for(lane).is_none() {
+                            continue;
+                        }
+                        // Dosya şeridi aktarım sürerken boşta sayılmaz (parçaları şerit katmanından
+                        // birikim yeri açıldıkça gelir; ara 200 ms'yi aşabilir): eski kural.
+                        let lane_idle = lane != FILE_LANE_INDEX
+                            && now.saturating_sub(lane_last_offer_ns[lane]) >= LANE_IDLE_NS
+                            && cur_block_ids[lane][tail_copied[lane]..]
+                                .iter()
+                                .all(|&u| !session.sender().unit_unsent(u));
+                        if !(all_idle || lane_idle) {
                             continue;
                         }
                         // Bloğun henüz kopyalanmamış birimleri (her birim bir kez).
@@ -5108,13 +5174,18 @@ async fn server_task(
                         stats.dropped_new_peers += 1;
                         continue;
                     }
-                    peers.insert(key, PeerSlot::new(
+                    let mut slot = PeerSlot::new(
                             seam_ctx,
                             cfg.quota_r,
                             now,
                             cfg.engine,
                             cfg.link_rates.map(|l| l.uplink_bps),
-                        ));
+                        );
+                    if let Some(y) = cfg.diag_return_budget_permille {
+                        slot.rx.set_return_budget_permille_for_diag(y);
+                    }
+                    slot.rx.set_ack_rereport(cfg.ack_rereport);
+                    peers.insert(key, slot);
                 }
                 let Some(slot) = peers.get_mut(&key) else { continue };
                 slot.last_seen_ns = now;

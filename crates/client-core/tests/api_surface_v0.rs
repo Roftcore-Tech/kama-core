@@ -113,6 +113,14 @@ async fn transport_api_v0_surface_is_frozen() {
         // v0.17 (İŞ-26, sahip kararı 2026-11-16): minor-EKLEME, kasıtlı pin-güncellemesi. Şerit
         // kimlikleri açık mı; default false (ClientTransport şeritleri açınca kurar).
         lane_ids: _,
+        // v0.18 (İZ-NEDEN, 2026-11-20): minor-EKLEME, kasıtlı pin-güncellemesi. Gönderici
+        // emisyon/kayıp ilanı izinin hedefi; default None (ürün), salt gözlem.
+        diag_emit_sink: _,
+        // v0.19 (ACK-PAYI teşhis kolu, 2026-11-21): minor-EKLEME, kasıtlı pin-güncellemesi.
+        // Default None (ürün Y = 250); yalnız ölçüm düzeneği.
+        diag_return_budget_permille: _,
+        // v0.20 (YENİDEN-RAPOR anahtarı, 2026-11-21): minor-EKLEME, kasıtlı pin-güncellemesi.
+        ack_rereport: _,
     } = cfg.clone();
     let FecRuntimeConfig {
         profile_id: _,

@@ -1467,6 +1467,56 @@ struct TombstoneRec {
     data_ord: u64,
 }
 
+/// [İZ-NEDEN] Gönderici emisyon / kayıp ilanı izinin kayıt türü (salt gözlem; yalnız
+/// [`Sender::set_diag_emit_log`] açıkken yazılır, hiçbir karar okumaz).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmitCause {
+    /// Birimin ilk iletimi.
+    Data,
+    /// ARQ yeniden iletimi (`ref_seq` = kayıp ilan edilen iletim).
+    Retransmit,
+    /// PTO / kuyruk probu (`ref_seq` = probun hedef iletimi).
+    PtoProbe,
+    /// Vadesi gelen zamanlanmış kopya (`drain_due_duplicates`).
+    Copy,
+    /// Öncelikli şeridin kopyası ([`ForwardCopyRule`]).
+    CopyPriority,
+    /// Kuruluş merdiveni kopyası.
+    CopyEstablish,
+    /// FEC onarım sembolü (`unit_id` = ESI).
+    FecParity,
+    /// Paket eşiği kayıp ilanı (ACK işlenirken; `ref_seq` = en büyük teyitli iletim).
+    LossPacketThreshold,
+    /// Zaman eşiği kayıp ilanı (PTO zamanlayıcısında; `ref_seq` = en büyük teyitli iletim).
+    LossTimeThreshold,
+    /// Birim teyit çıktısına yazıldı (`unit_id`; ACK ya da FEC RECOVERED).
+    Confirmed,
+    /// ACK çerçevesi işlendi (`seq` = yeni teyitli en büyük iletim ya da 0, `unit_id` = yeni
+    /// teyitli iletim sayısı, `ref_seq` = hat korumasının gönderim tavanı, B/s; yoksa 0).
+    AckFrame,
+}
+
+/// [İZ-NEDEN] Bir iz kaydı (bkz. [`EmitCause`]); `at_ns` motor saatidir.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmitDiag {
+    pub at_ns: u64,
+    pub seq: u64,
+    pub unit_id: u64,
+    pub cause: EmitCause,
+    pub ref_seq: u64,
+}
+
+/// [İZ-NEDEN] İz tavanı (SR-AUDIT-001); dolunca yeni kayıt yazılmaz.
+const EMIT_LOG_CAP: usize = 65_536;
+
+/// [PTT-KOPYA-BÜTÇESİ] Öncelikli şeridin kopyası, bilinen hat kuyruğu bu süreyi (bir PTT demet
+/// aralığı, 200 ms) aşarken çıkmaz: kopyalar sonraki demetin orijinalini bir demet aralığından
+/// fazla bekletemez.
+const COPY_LINE_BUDGET_NS: u64 = 200_000_000;
+/// [PTT-KOPYA-BÜTÇESİ] Vadesinden bu kadar gecikmiş öncelikli kopya iptal edilir: PTT sınırı (1 s)
+/// geçtikten sonra çıkan kopya demeti sınıra yetiştiremez, yalnız hattı tutar.
+const COPY_STALE_NS: u64 = 1_000_000_000;
+
 /// [ÖNLEMSEL-KOPYA] Kimliği `below_id`'den küçük her YENİ birim, ilk iletiminden sonra ACK
 /// beklemeden `copies` kez daha gönderilir (kopyalar `spacing_ns` aralıklı, §11 zamanlanmış
 /// forward-recovery kopyasıyla aynı kayıt: `dup_queue`, tek atış, teyit gelince iptal).
@@ -1504,6 +1554,14 @@ pub struct ForwardCopyRule {
 ///
 /// Kayıp yine ölçülür, FEC/ARQ kolunu besler ve BBR'ın kendi durumunu (recovery, ölçüm) değiştirir;
 /// yalnız uçuş tavanını ve hızı sınırlamaz.
+///
+/// [HAT-KORUMASI] Profil hattı bir üst sınırdır, gerçek hat değil: ölçüm gerçek ileri hattın
+/// profilden yavaş olduğunu gösterdiğinde ([`crate::line_guard`]) hız tavanı, uçuş tabanı ve hat
+/// modeli ölçülen hatta iner ve darboğazda biriken kuyruk hat modeline yazılır. Ölçüm hiçbir
+/// değeri profilin üstüne çıkaramaz. Bu yolda pacing hızı hattın kendisidir (profil hattı ya da
+/// ölçülen daha yavaş hat); BBR'ın `kazanç × BtlBw` hızı okunmaz: BtlBw teslim hızıdır ve seyrek
+/// ACK ile ileri yöndeki rastgele kayıpta hattın yarısının altını okur (uçuş tavanının ACK saatine
+/// bağlanmamasıyla aynı neden).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FeedbackStarvedRule {
     /// Hat hızı tavanı (B/s, UDP gövdesi).
@@ -1513,6 +1571,9 @@ pub struct FeedbackStarvedRule {
     pub feedback_ns: u64,
     /// Yukarı yön hattı (zarf dahil hız + datagram zarfı); dar olmasa da kurulur.
     pub line: crate::pacer::LineModel,
+    /// [HAT-KORUMASI] Dönüş (aşağı yön) hattı: ACK'in dönüşte serileşme süresi varış anından
+    /// düşülür ([`crate::line_guard`]).
+    pub return_line: crate::pacer::LineModel,
 }
 
 /// Zamanlanmış forward-recovery duplication kopyası (§11 spacing — burst-loss dayanıklılığı).
@@ -1768,6 +1829,15 @@ pub struct Sender {
     forward_copy_rule: Option<ForwardCopyRule>,
     /// [GERİ-BİLDİRİM-AÇ] Bkz. [`FeedbackStarvedRule`]. `None` = kural yok (bugünkü yol, bit-eşit).
     cc_feedback_starved: Option<FeedbackStarvedRule>,
+    /// [HAT-KORUMASI] Gerçek ileri hattın tahmincisi; yalnız kural kuruluyken `Some`.
+    cc_line_guard: Option<crate::line_guard::LineGuard>,
+    /// [İZ-NEDEN] Emisyon / kayıp ilanı izi; `None` = kapalı (varsayılan).
+    diag_emit_log: Option<Vec<EmitDiag>>,
+    /// [PTT-SIRA · PTT-KOPYA-BÜTÇESİ] Gözlem sayaçları: öncelikli şeridin önce çıkan ARQ kaydı,
+    /// bayat diye iptal edilen kopya, hat kuyruğu yüzünden ertelenen kopya denemesi.
+    prio_arq_first: u64,
+    prio_copy_stale: u64,
+    prio_copy_deferred: u64,
     /// [DR-EST-1] Kuruluş-kolu anahtarı (DEFAULT-ON — ürün-davranışı). Yalnız donmuş-enstrüman
     /// testleri (Gate-5 structural-oracle: probe-vs-DATA çekişme-izolasyonu, DR-EST-1-öncesi
     /// tasarım) kapatır; kolun KENDİ pinleri tests/establish_probe.rs'te default-ON koşar.
@@ -2120,6 +2190,11 @@ impl Sender {
             dup_queue: Vec::new(),
             forward_copy_rule: None,
             cc_feedback_starved: None,
+            cc_line_guard: None,
+            diag_emit_log: None,
+            prio_arq_first: 0,
+            prio_copy_stale: 0,
+            prio_copy_deferred: 0,
             establish_probe_enabled: true,
             establish_due_ns: 0,
             establish_interval_ns: 0,
@@ -2371,11 +2446,33 @@ impl Sender {
     }
 
     /// [GERİ-BİLDİRİM-AÇ] Uçuş tabanı (B): `pacing_cap × (feedback + yol RTT'si)`; RTT ölçülmeden
-    /// başlangıç RTT'si.
+    /// başlangıç RTT'si. [HAT-KORUMASI] Tavan ölçülen hatta inmişse o tavan.
     fn cc_feedback_floor(&self, rule: FeedbackStarvedRule) -> u64 {
         let rtt = dur_ns(self.rtt.rtprop().unwrap_or(INITIAL_RTT));
         let horizon = u128::from(rule.feedback_ns.saturating_add(rtt));
-        u64::try_from(u128::from(rule.pacing_cap_bps) * horizon / 1_000_000_000).unwrap_or(u64::MAX)
+        u64::try_from(u128::from(self.cc_feedback_cap(rule)) * horizon / 1_000_000_000)
+            .unwrap_or(u64::MAX)
+    }
+
+    /// [HAT-KORUMASI] Kuralın hız tavanı (B/s, UDP gövdesi): profil tavanı, ölçülen hat profil
+    /// hattının altındaysa aynı oranda küçültülmüş hâli. Profil tavanını hiçbir zaman aşmaz.
+    fn cc_feedback_cap(&self, rule: FeedbackStarvedRule) -> u64 {
+        // [TEMKİNLİ-BAŞLANGIÇ · YENİDEN-YOKLAMA] Tavan korumanın gönderim tavanıdır: ilk
+        // ölçümden önce profil hattının yarısından başlar, doğrulamayla yükselir, ölçülen hatta
+        // iner (`line_guard` modül belgesi).
+        match self
+            .cc_line_guard
+            .as_ref()
+            .map(crate::line_guard::LineGuard::pace_bps)
+        {
+            Some(measured) if measured < rule.line.rate_bps => u64::try_from(
+                u128::from(rule.pacing_cap_bps) * u128::from(measured)
+                    / u128::from(rule.line.rate_bps),
+            )
+            .unwrap_or(rule.pacing_cap_bps)
+            .clamp(1, rule.pacing_cap_bps),
+            _ => rule.pacing_cap_bps,
+        }
     }
 
     /// [CC-PORT] `size` baytlık yeni emisyon uçuş penceresine sığar mı (`inflight + size ≤ window`).
@@ -2740,9 +2837,17 @@ impl Sender {
             if let Some(cap) = self.cc_profile_pacing_cap {
                 rate = rate.min(cap.max(cc.measured_pacing_target()));
             }
-            // [GERİ-BİLDİRİM-AÇ] Bilinen hatta hız tavanı ölçümle de aşılmaz.
+            // [GERİ-BİLDİRİM-AÇ] Bilinen hatta hız tavanı ölçümle de aşılmaz. [HAT-KORUMASI] Hız
+            // hattın kendisidir: profil hattı, ölçülen hat profilden yavaşsa ölçülen hat. BBR'ın
+            // hızı (kazanç × BtlBw) bu yolda okunmaz: BtlBw teslim hızıdır ve seyrek ACK + ileri
+            // yönde rastgele kayıpta hattın yarısının altını okur (ürün testi: 12,5 kB/s hatta
+            // 3,9 kB/s, 6,25 kB/s hatta 2,8–2,9 kB/s). BBR Startup'tan çıkınca (kayıpla tam bant
+            // kabulü, ProbeRTT) hız ona iner, gönderim düşünce teslim ve BtlBw daha da düşer
+            // (ölçüldü, hat koruması varken bu satır BBR hızını okurken: 6,25 kB/s hatta hız
+            // 2,8 → 1,5 → 1,1 kB/s, dosya 60 s'de bitmedi). Uçuş tavanı da aynı nedenle ACK
+            // saatinden bağımsızdır (`cc_window`).
             if let Some(rule) = self.cc_feedback_starved {
-                rate = rate.min(rule.pacing_cap_bps);
+                rate = self.cc_feedback_cap(rule);
             }
             self.pacer.set_rate(rate);
             self.pacer.set_burst_cap(p.burst_cap);
@@ -3789,9 +3894,29 @@ impl Sender {
             cc.set_external_bw(Some(btlbw));
             cc.on_end_acks(now_ns, inflight, any_app_limited || idle_now, largest);
         }
+        self.cc_line_guard_on_ack(ack, now_ns);
+        if self.diag_emit_log.is_some() {
+            let top = ack
+                .acked_seqs
+                .iter()
+                .copied()
+                .filter(|&x| x < self.next_seq)
+                .max()
+                .unwrap_or(0);
+            let rate = self
+                .cc_line_guard
+                .as_ref()
+                .map_or(0, crate::line_guard::LineGuard::pace_bps);
+            let n = ack.acked_seqs.len() as u64;
+            self.diag_emit(now_ns, top, n, EmitCause::AckFrame, rate);
+        }
 
         if self.state != SenderState::PreConverge || self.rtt.srtt().is_some() {
             let before = self.pending_lost.len();
+            let la = self.loss.largest_acked().unwrap_or(0);
+            for &l in &lost {
+                self.diag_emit(now_ns, l, 0, EmitCause::LossPacketThreshold, la);
+            }
             self.queue_losses(&lost, now_ns);
             // [TUR-A teşhis] loss-atıflama: packet-threshold (§5a) kaynaklı kuyruklanan kayıp sayısı.
             self.diag_loss_pkt += (self.pending_lost.len() - before) as u64;
@@ -3805,6 +3930,34 @@ impl Sender {
             if self.inflight.is_empty() {
                 self.tail_recovery.disarm();
             }
+        }
+    }
+
+    /// [HAT-KORUMASI] ACK çerçevesinin cephesiyle gerçek ileri hattı ölçer ([`crate::line_guard`]).
+    /// Ölçülen hat profilden yavaşsa pacer'ın hat modeli o hıza iner ve darboğazda tahmin edilen
+    /// kuyruk hat modeline yazılır: yeni datagram gerçek kuyruk boşalınca çıkar. Hız tavanı ve uçuş
+    /// tabanı aynı ölçümü [`Self::cc_feedback_cap`] ile okur. Kural yokken etkisiz.
+    fn cc_line_guard_on_ack(&mut self, ack: &AckInfo, now_ns: u64) {
+        let Some(g) = self.cc_line_guard.as_mut() else {
+            return;
+        };
+        let Some(largest) = ack
+            .acked_seqs
+            .iter()
+            .copied()
+            .filter(|&s| s < self.next_seq)
+            .max()
+        else {
+            return;
+        };
+        let saturated = ack.ack_delay >= crate::loss::E2A_ACK_DELAY_SATURATED;
+        let update = g.on_ack(now_ns, dur_ns(ack.ack_delay), saturated, largest);
+        // [TEMKİNLİ-BAŞLANGIÇ · YENİDEN-YOKLAMA] Hat modeli korumanın gönderim tavanındadır (ölçülen
+        // hat, doğrulanmamış başlangıçta yarı profil, yoklamada yükseltilmiş tavan): pacer'ın burst
+        // payı (≥ 10 MTU) tavanın üstünde patlama yapamaz.
+        self.pacer.set_line_rate(g.pace_bps());
+        if let Some(u) = update {
+            self.pacer.line_raise_backlog(u.backlog_bytes);
         }
     }
 
@@ -3837,6 +3990,10 @@ impl Sender {
                     let srtt = self.rtt.srtt().unwrap_or(INITIAL_RTT);
                     let (tt_rtt, tt_floor) = self.time_loss_inputs(srtt); // [E2a m1] tek yardımcı
                     let lost = self.loss.detect_time_losses(now_ns, tt_rtt, tt_floor);
+                    let la = self.loss.largest_acked().unwrap_or(0);
+                    for &l in &lost {
+                        self.diag_emit(now_ns, l, 0, EmitCause::LossTimeThreshold, la);
+                    }
                     let before = self.pending_lost.len();
                     self.queue_losses(&lost, now_ns);
                     // [TUR-A teşhis] loss-atıflama: time-threshold (§5b) kaynaklı kuyruklanan kayıp.
@@ -5246,9 +5403,78 @@ impl Sender {
     /// `None` (varsayılan) = kural yok; `cc` yoksa etkisiz. Oturum başında, ilk olaydan önce çağrılır.
     pub fn set_cc_feedback_starved(&mut self, rule: Option<FeedbackStarvedRule>) {
         self.cc_feedback_starved = rule.filter(|r| r.pacing_cap_bps > 0 && r.line.rate_bps > 0);
+        self.cc_line_guard = None;
         if let (true, Some(r)) = (self.cc.is_some(), self.cc_feedback_starved) {
             self.pacer.set_line(Some(r.line));
+            if r.return_line.rate_bps > 0 {
+                let g = crate::line_guard::LineGuard::new(
+                    r.line,
+                    r.return_line,
+                    crate::line_guard::LineGuard::conservative_start(r.line),
+                );
+                // [TEMKİNLİ-BAŞLANGIÇ] Hat modeli ilk ölçüme dek tavanın hızında (ölçüldü: profil
+                // hızındaki hat modeliyle pacer burst payı ilk 3 s'de tavanın iki katını gönderdi).
+                self.pacer.set_line_rate(g.pace_bps());
+                self.cc_line_guard = Some(g);
+            }
         }
+    }
+
+    /// [İZ-NEDEN] Emisyon / kayıp ilanı izini açar (boş iz) ya da kapatıp atar. SALT GÖZLEM:
+    /// hiçbir karar izi okumaz; yalnız ölçüm düzenekleri açar.
+    pub fn set_diag_emit_log(&mut self, on: bool) {
+        self.diag_emit_log = on.then(Vec::new);
+    }
+
+    /// [İZ-NEDEN] Biriken iz kayıtlarını alır (iz açık kalır).
+    pub fn take_diag_emit_log(&mut self) -> Vec<EmitDiag> {
+        self.diag_emit_log
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
+    }
+
+    fn diag_emit(&mut self, at_ns: u64, seq: u64, unit_id: u64, cause: EmitCause, ref_seq: u64) {
+        if let Some(log) = self.diag_emit_log.as_mut() {
+            if log.len() < EMIT_LOG_CAP {
+                log.push(EmitDiag {
+                    at_ns,
+                    seq,
+                    unit_id,
+                    cause,
+                    ref_seq,
+                });
+            }
+        }
+    }
+
+    /// [HAT-KORUMASI] Ölçülen ileri hat (B/s, tel baytı) ve kabul edilen örnek sayısı; kural
+    /// kurulu değilse `None`, kural kurulu ama hat profilin altında ölçülmediyse `(None, 0)`.
+    #[must_use]
+    pub fn diag_line_guard(&self) -> Option<(Option<u64>, u64)> {
+        self.cc_line_guard
+            .as_ref()
+            .map(|g| (g.rate_bps(), g.samples()))
+    }
+
+    /// [YENİDEN-YOKLAMA] Korumanın gönderim tavanı (B/s, tel) ve doğrulama sayısı; kural kurulu
+    /// değilse `None`.
+    #[must_use]
+    pub fn diag_line_guard_pace(&self) -> Option<(u64, u64)> {
+        self.cc_line_guard
+            .as_ref()
+            .map(|g| (g.pace_bps(), g.raises()))
+    }
+
+    /// [PTT-SIRA · PTT-KOPYA-BÜTÇESİ] `(önce çıkan öncelikli ARQ, bayat iptal edilen kopya,
+    /// hat kuyruğu yüzünden ertelenen kopya denemesi)` (salt gözlem).
+    #[must_use]
+    pub fn diag_priority_lane(&self) -> (u64, u64, u64) {
+        (
+            self.prio_arq_first,
+            self.prio_copy_stale,
+            self.prio_copy_deferred,
+        )
     }
 
     /// [ÖNLEMSEL-KOPYA] Yeni birimlerin ACK beklemeyen ileri kopya kuralı ([`ForwardCopyRule`]).
@@ -5370,6 +5596,9 @@ impl Sender {
     /// gövdesi; ör. çalışma-zamanının PARAM'ı) kurulu hatta yazılır. Model yokken etkisiz.
     pub fn cc_line_charge(&mut self, udp_bytes: u64) {
         self.pacer.line_charge(udp_bytes);
+        if let Some(g) = self.cc_line_guard.as_mut() {
+            g.on_unsequenced(udp_bytes);
+        }
     }
 
     /// [DÖNÜŞ-HATTI] Kurulu hattın kendi baytlarımızı serileştirmeyi bitirmesine kalan süre (ns;
@@ -5742,6 +5971,10 @@ impl Sender {
     /// yalnız `diag_return_path()` çıktısını besler. Ürün runtime'ı `Event::AckReceived`'dan
     /// hemen ÖNCE çağırır; çağrılmaması motoru etkilemez (gözlem boş kalır).
     pub fn observe_ack_feedback(&mut self, obs: crate::return_path::AckObservation, now_ns: u64) {
+        // [HAT-KORUMASI] ACK'in tel boyu: dönüş hattındaki serileşmesi varış anından düşülür.
+        if let Some(g) = self.cc_line_guard.as_mut() {
+            g.note_ack_wire(obs.wire_bytes);
+        }
         self.return_path.on_ack(obs, now_ns);
     }
 
@@ -6380,6 +6613,12 @@ impl Sender {
         }
         ids.sort_unstable();
         ids.dedup();
+        if self.diag_emit_log.is_some() {
+            let now = self.last_now_ns;
+            for &u in &ids {
+                self.diag_emit(now, 0, u, EmitCause::Confirmed, 0);
+            }
+        }
         self.confirmed_units_out.extend(ids);
     }
 
@@ -6562,6 +6801,7 @@ impl Sender {
             0,
             TransmitKind::FecParity,
         );
+        self.diag_emit(now_ns, seq, u64::from(p.esi), EmitCause::FecParity, 0);
         // DR-S5-3: emit-anında seq→logical kaydı (ACK-teyidinde eşlenecek; SALT-LOGICAL).
         // DR-S5-6: bounded-helper'dan (cap-altında davranış-özdeş).
         self.insert_sent_logical(
@@ -7002,6 +7242,7 @@ impl Sender {
                         rec.retx_count.saturating_add(1),
                         TransmitKind::Retransmit,
                     );
+                    self.diag_emit(now_ns, new_seq, rec.unit.id, EmitCause::Retransmit, rec.seq);
                     out.push(TransmitDecision {
                         kind: TransmitKind::Retransmit,
                         seq: new_seq,
@@ -7140,6 +7381,7 @@ impl Sender {
                     rec.retx_count.saturating_add(1),
                     TransmitKind::Retransmit,
                 );
+                self.diag_emit(now_ns, new_seq, rec.unit.id, EmitCause::PtoProbe, rec.seq);
                 out.push(TransmitDecision {
                     kind: TransmitKind::Retransmit,
                     seq: new_seq,
@@ -7212,6 +7454,7 @@ impl Sender {
             retx_count.saturating_add(1),
             TransmitKind::Retransmit,
         );
+        self.diag_emit(now_ns, new_seq, unit.id, EmitCause::PtoProbe, target);
         out.push(TransmitDecision {
             kind: TransmitKind::Retransmit,
             seq: new_seq,
@@ -7304,6 +7547,7 @@ impl Sender {
         }
         self.tx_queue.remove(pos);
         let seq = self.track_sent(unit, now_ns, 0, TransmitKind::Data);
+        self.diag_emit(now_ns, seq, unit.id, EmitCause::Data, 0);
         out.push(TransmitDecision {
             kind: TransmitKind::Data,
             seq,
@@ -7408,6 +7652,7 @@ impl Sender {
             retx_count.saturating_add(1),
             TransmitKind::Retransmit,
         );
+        self.diag_emit(now_ns, new_seq, unit.id, EmitCause::PtoProbe, target);
         out.push(TransmitDecision {
             kind: TransmitKind::Retransmit,
             seq: new_seq,
@@ -7528,6 +7773,7 @@ impl Sender {
         };
         let dup = self.dup_queue.remove(i);
         let seq = self.track_sent(dup.unit, now_ns, 0, TransmitKind::Duplicate);
+        self.diag_emit(now_ns, seq, dup.unit.id, EmitCause::CopyEstablish, 0);
         out.push(TransmitDecision {
             kind: TransmitKind::Duplicate,
             seq,
@@ -7591,6 +7837,7 @@ impl Sender {
             }
             let dup = self.dup_queue.remove(i);
             let seq = self.track_sent(dup.unit, now_ns, 0, TransmitKind::Duplicate);
+            self.diag_emit(now_ns, seq, dup.unit.id, EmitCause::Copy, 0);
             out.push(TransmitDecision {
                 kind: TransmitKind::Duplicate,
                 seq,
@@ -7623,6 +7870,60 @@ impl Sender {
         let Some(rule) = self.forward_copy_rule else {
             return;
         };
+        // [PTT-SIRA · 2026-11-20] Öncelikli şeridin ARQ kayıtları önce: şerit sıralı ve güvenilirdir,
+        // kaybolmuş bir öncül ardındaki her demeti bekletir. Kayıt genel ARQ kuyruğunda dosyanın
+        // (çoğu gereksiz: ACK aralık kırpması) yeniden iletimlerinin arkasında bekliyordu (ürün
+        // testi, gerçek 6 250 B/s, tohum 1: kuyrukta düşen demet 33'ün yeniden iletimi 11 s sonra).
+        // [PTT-SIRA · 2026-11-21] Öncelik yalnız şeridin BAŞINA (teyitsiz en küçük öncelikli birim):
+        // sıralı şeritte teslimi yalnız baş bekletir. Bütün öncelikli kayıtları öne almak, ACK
+        // kırpmasıyla yanlış kayıp ilan edilmiş (Bob'a varmış) PTT iletimlerini de dosyanın önüne
+        // geçiriyordu (6 250 hücresinde gereksiz yeniden gönderim 72/149/65 → 125/192/86). Öbür
+        // kayıtlar genel ARQ sırasındadır.
+        let head = self
+            .pending_lost
+            .iter()
+            .map(|r| r.unit.id)
+            .chain(
+                self.inflight
+                    .values()
+                    .filter(|p| {
+                        p.origin != TransmitKind::FecParity && p.confirmed_release_ns.is_none()
+                    })
+                    .map(|p| p.unit.id),
+            )
+            .filter(|&id| id < rule.priority_below_id)
+            .min();
+        let mut k = 0;
+        while k < self.pending_lost.len() {
+            let rec = self.pending_lost[k];
+            if rec.unit.id >= rule.priority_below_id
+                || Some(rec.unit.id) != head
+                || rec.deadline_ns > now_ns
+            {
+                k += 1;
+                continue;
+            }
+            if !self.try_send_pre_parity(rec.unit.size, true) {
+                return;
+            }
+            let _ = self.pending_lost.remove(k);
+            self.mark_tombstone_superseded(rec.seq);
+            let new_seq = self.track_sent(
+                rec.unit,
+                now_ns,
+                rec.retx_count.saturating_add(1),
+                TransmitKind::Retransmit,
+            );
+            self.diag_emit(now_ns, new_seq, rec.unit.id, EmitCause::Retransmit, rec.seq);
+            self.prio_arq_first = self.prio_arq_first.saturating_add(1);
+            out.push(TransmitDecision {
+                kind: TransmitKind::Retransmit,
+                seq: new_seq,
+                unit_id: rec.unit.id,
+                size: rec.unit.size,
+                send_record: None,
+            });
+        }
         let mut i = 0;
         while i < self.tx_queue.len() {
             let unit = self.tx_queue[i];
@@ -7635,6 +7936,7 @@ impl Sender {
             }
             let _ = self.tx_queue.remove(i);
             let seq = self.track_sent(unit, now_ns, 0, TransmitKind::Data);
+            self.diag_emit(now_ns, seq, unit.id, EmitCause::Data, 0);
             out.push(TransmitDecision {
                 kind: TransmitKind::Data,
                 seq,
@@ -7644,18 +7946,46 @@ impl Sender {
             });
             self.after_new_data_sent(unit, now_ns);
         }
-        let mut j = 0;
-        while j < self.dup_queue.len() {
-            let d = self.dup_queue[j];
-            if d.unit.id >= rule.priority_below_id || d.due_ns > now_ns {
+        // [PTT-KOPYA-BÜTÇESİ · 2026-11-20] Kopyalar yalnız bilinen hat kuyruğu bir demet aralığını
+        // ([`COPY_LINE_BUDGET_NS`]) aşmıyorken çıkar ve vadesinden [`COPY_STALE_NS`]'ten fazla
+        // gecikmiş kopya iptal edilir; sıra en eski vade önce. Gerekçe (ürün testi, gerçek 6 250
+        // B/s): hat koruması kuyruğu boşaltırken gönderici bekler, bu sürede vadesi gelen bütün
+        // demetlerin kopyaları birikiyor ve bekleme bitince art arda hatta verilip sonraki
+        // demetlerin orijinallerini darboğazda 1–5 s bekletiyordu. Orijinal ve ARQ'su değişmez: ses
+        // verisi düşmez, teslim anlamı (güvenilir, sıralı) aynı; yalnız fazlalık sınırlanır.
+        let line_ok = self.pacer.line_ns_until_drained() <= COPY_LINE_BUDGET_NS;
+        loop {
+            let mut pick: Option<usize> = None;
+            let mut j = 0;
+            while j < self.dup_queue.len() {
+                let d = self.dup_queue[j];
+                if d.unit.id >= rule.priority_below_id || d.due_ns > now_ns {
+                    j += 1;
+                    continue;
+                }
+                if now_ns.saturating_sub(d.due_ns) > COPY_STALE_NS {
+                    let _ = self.dup_queue.remove(j);
+                    self.prio_copy_stale = self.prio_copy_stale.saturating_add(1);
+                    continue;
+                }
+                if pick.is_none_or(|p| d.due_ns < self.dup_queue[p].due_ns) {
+                    pick = Some(j);
+                }
                 j += 1;
-                continue;
             }
-            if !self.try_send_pre_parity(d.unit.size, true) {
+            let Some(j) = pick else {
+                return;
+            };
+            if !line_ok {
+                self.prio_copy_deferred = self.prio_copy_deferred.saturating_add(1);
+                return;
+            }
+            if !self.try_send_pre_parity(self.dup_queue[j].unit.size, true) {
                 return;
             }
             let dup = self.dup_queue.remove(j);
             let seq = self.track_sent(dup.unit, now_ns, 0, TransmitKind::Duplicate);
+            self.diag_emit(now_ns, seq, dup.unit.id, EmitCause::CopyPriority, 0);
             out.push(TransmitDecision {
                 kind: TransmitKind::Duplicate,
                 seq,
@@ -7688,6 +8018,7 @@ impl Sender {
             }
             self.tx_queue.pop_front();
             let seq = self.track_sent(front, now_ns, 0, TransmitKind::Data);
+            self.diag_emit(now_ns, seq, front.id, EmitCause::Data, 0);
             out.push(TransmitDecision {
                 kind: TransmitKind::Data,
                 seq,
@@ -7831,6 +8162,9 @@ impl Sender {
             cc.on_sent(now_ns, unit.size, seq); // quinn: her iletim tekil paket numarası (= seq)
         }
         self.inflight_bytes += unit.size;
+        if let Some(g) = self.cc_line_guard.as_mut() {
+            g.on_sent(seq, now_ns, unit.size);
+        }
         self.inflight.insert(
             seq,
             InflightPacket {
@@ -7941,6 +8275,12 @@ impl Sender {
     #[must_use]
     pub fn unsent_units(&self) -> usize {
         self.tx_queue.len()
+    }
+
+    /// [ŞERİT-BOŞTA] Birim motorun gönderim kuyruğunda mı (henüz hiç tele çıkmadı).
+    #[must_use]
+    pub fn unit_unsent(&self, unit_id: u64) -> bool {
+        self.tx_queue.iter().any(|u| u.id == unit_id)
     }
 
     /// TUR-A teşhis rate-trajektori snapshot'ı (SALT-GÖZLEM; davranış DEĞİŞMEZ):
@@ -15045,6 +15385,10 @@ mod feedback_starved_tests {
             feedback_ns: 10_000 * MS,
             line: crate::pacer::LineModel {
                 rate_bps: 12_500,
+                datagram_overhead: 28,
+            },
+            return_line: crate::pacer::LineModel {
+                rate_bps: 62,
                 datagram_overhead: 28,
             },
         };
