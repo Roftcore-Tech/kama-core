@@ -14,6 +14,23 @@
 //! ```
 //! u16 wrap: aritmetik mod 2^16 (wrapping); `ack_epoch` yalnız rekey sınırını
 //! disambiguate eder — u16 sarması epoch değişimi DEĞİLDİR.
+//!
+//! **[ACK-BITMAP — biçim onayı YOK (tel değişikliği, sahip kararı), varsayılan kapalı]** 0x15
+//! (11 B sabit + bitmap; varint yok, ADR-05):
+//! ```text
+//! frame_type u8=0x15 · ack_epoch u8 · largest_seq u16 · ack_delay u16(256µs) ·
+//! arrival_rate u16 · base_seq u16 · bitmap_len u8 · bitmap[bitmap_len]
+//! ```
+//! `bitmap` `[base_seq, largest_seq)` aralığını kapsar: bit i ↔ seq `base_seq + i`; bayt i/8,
+//! bayt içinde MSB önce (bit 7 − i%8); 1 = alındı. `largest_seq` her zaman alınmıştır.
+//! Açıklık `span = largest_seq − base_seq` (mod 2^16) ≤ [`ACK_BITMAP_MAX_BITS`];
+//! `bitmap_len = ⌈span/8⌉` (kanonik) ve dolgu bitleri 0. **Anlam (kanıt aralığı):**
+//! `[base_seq, largest_seq]` içinde bilgi TAMDIR — bit 0 = alıcı bu seq'i ACK anında almamıştı
+//! (negatif kanıt). `base_seq` altı = BİLİNMİYOR (bu çerçeve hakkında hiçbir şey söylemez).
+//! `arrival_rate` V2 (§2.2) ile AYNI alan ve anlamdır: alıcının gözlediği pencere-oranı (B/s),
+//! sentinel [`ARRIVAL_RATE_SENTINEL`] = "ölçüm yok / üst-bantta, ipucu olarak kullanma". Erken
+//! hız bilgisi bitmap biçiminde de taşınır (başlangıç kuyruğu işi bu alanı doldurur). V2'nin
+//! `seen_count`'u taşınmaz: yalnız gözlemdir (`return_path`, karar girdisi değil).
 
 use std::time::Duration;
 
@@ -30,6 +47,32 @@ pub const FRAME_TYPE_ACK: u8 = 0x10;
 pub const FRAME_TYPE_ACK_V2: u8 = 0x14;
 /// V2 `ack_delay` birimi (µs) [STD: Seçenek-A kararı, time-model-v1 D-4/1].
 pub const ACK_DELAY_UNIT_US: u64 = 256;
+
+/// [ACK-BITMAP · ölçüm prototipi] 0x15 frame_type'ı (client-core çerçeve düzlemi; 0x14 V2 ile aynı
+/// ad-uzayı — `kama-transport-schema` inner_kind kayıt defteri AYRI bir ad-uzayıdır).
+pub const FRAME_TYPE_ACK_BITMAP: u8 = 0x15;
+/// [ACK-BITMAP] 0x15 sabit gövde (bitmap hariç): tür + epoch + largest + delay + arrival_rate +
+/// base + len.
+pub const ACK_BITMAP_HEADER_BYTES: usize = 11;
+/// [ACK-BITMAP] ACK datagramının telde tavanı (B): bugünkü en büyük V2 ACK'i (16 aralık; 15 + 64 B
+/// çerçeve + 50 B zarf: UDP/IP 28 + handle 4 + seq 2 + etiket 16). Bitmap çerçevesi bunu AŞMAZ.
+pub const ACK_DATAGRAM_MAX_LINE_BYTES: usize = 129;
+/// [ACK-BITMAP] ACK datagramının çerçeve dışı zarfı (B): UDP/IP 28 + handle 4 + seq 2 + etiket 16.
+pub const ACK_DATAGRAM_ENVELOPE_BYTES: usize = 50;
+/// [ACK-BITMAP] Bitmap bayt tavanı: tel tavanından türetilir (129 − 50 − 11 = 68 B).
+pub const ACK_BITMAP_MAX_BYTES: usize =
+    ACK_DATAGRAM_MAX_LINE_BYTES - ACK_DATAGRAM_ENVELOPE_BYTES - ACK_BITMAP_HEADER_BYTES;
+/// [ACK-BITMAP] Bitmap'in kapsayabildiği en büyük açıklık (seq): 68 × 8 = 544.
+pub const ACK_BITMAP_MAX_BITS: u64 = (ACK_BITMAP_MAX_BYTES * 8) as u64;
+
+/// [ACK-BITMAP] 0x15 gövdesi: `[base_seq, largest_seq)` için alındı bitleri.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AckBitmap {
+    /// Bitmap'in kapsadığı en düşük seq (u16 wire).
+    pub base_seq: u16,
+    /// Bitler (bayt i/8, MSB önce); uzunluk `⌈(largest − base)/8⌉`.
+    pub bits: Vec<u8>,
+}
 
 /// ACK range üst sınırı. `[CAL]` — netem baseline'dan (ADR-18) kalibre edilecek;
 /// magic-number olmasın diye isimlendirildi (engine spec §2.1).
@@ -75,6 +118,10 @@ pub struct AckFrame {
     /// [§2.2 V2 ölçüm eki] Receiver-gözlemli pencere-oranı (B/s). [`ARRIVAL_RATE_SENTINEL`] =
     /// ölçüm YOK ya da üst-bantta — cold-start ipucu olarak KULLANILMAZ. V1 decode'da sentinel.
     pub arrival_rate: u16,
+    /// [ACK-BITMAP · ölçüm prototipi] `Some` → çerçeve 0x15'tir: `block0_len`/`ranges` boş ve
+    /// anlamsız, `v2 = false`, `seen_count = 0`, `arrival_rate = sentinel`. `None` → 0x14/0x10
+    /// (bugünkü yol, bayt bayt aynı).
+    pub bitmap: Option<AckBitmap>,
 }
 
 /// [§2.2] `arrival_rate` sentinel: ölçüm yok / üst-bantta → ipucu olarak kullanma.
@@ -145,14 +192,83 @@ impl AckFrame {
             v2: true, // [TUR-1x] emit daima V2 (0x14, 15B gövde §2.2); V1 yalnız decode-uyumluluk.
             seen_count,
             arrival_rate,
+            bitmap: None,
         })
+    }
+
+    /// [ACK-BITMAP · ölçüm prototipi] Alınan full-counter seq kümesinden 0x15 çerçevesi kurar.
+    ///
+    /// `largest_full` alınmış en büyük seq (çerçevenin `largest_seq`'i); `base_full` bitmap'in alt
+    /// ucudur ve `[largest_full − ACK_BITMAP_MAX_BITS, largest_full]` içine kırpılır. `received`
+    /// alınmış seq'leri artan sırada verir (`BTreeSet::range` gibi); aralık dışındakiler yok sayılır.
+    #[must_use]
+    pub fn bitmap_from_received(
+        received: impl IntoIterator<Item = u64>,
+        largest_full: u64,
+        base_full: u64,
+        ack_epoch: u8,
+        ack_delay: u16,
+        arrival_rate: u16,
+    ) -> Self {
+        let base = base_full
+            .min(largest_full)
+            .max(largest_full.saturating_sub(ACK_BITMAP_MAX_BITS));
+        let span = largest_full - base;
+        let mut bits = vec![0u8; usize::try_from(span.div_ceil(8)).unwrap_or(0)];
+        for s in received {
+            if s < base || s >= largest_full {
+                continue;
+            }
+            let i = usize::try_from(s - base).unwrap_or(0);
+            bits[i / 8] |= 0x80 >> (i % 8);
+        }
+        AckFrame {
+            ack_epoch,
+            largest_seq: (largest_full & 0xFFFF) as u16,
+            ack_delay,
+            block0_len: 0,
+            ranges: Vec::new(),
+            v2: false,
+            seen_count: 0,
+            arrival_rate,
+            bitmap: Some(AckBitmap {
+                base_seq: (base & 0xFFFF) as u16,
+                bits,
+            }),
+        }
+    }
+
+    /// [ACK-BITMAP] Kanıt aralığı (full-counter, kapsayıcı): 0x15 çerçevesinde
+    /// `Some((base, largest))` — bu aralıkta alınmamış her seq için negatif kanıt vardır; aralığın
+    /// altı bilinmez. 0x14/0x10'da `None` (bugünkü anlam; gönderici kuralı değişmez).
+    #[must_use]
+    pub fn evidence_span_full(&self, expected: u64) -> Option<(u64, u64)> {
+        let bm = self.bitmap.as_ref()?;
+        let largest_full = crate::seq::resolve_seq(expected, self.largest_seq);
+        let span = u64::from(self.largest_seq.wrapping_sub(bm.base_seq));
+        Some((largest_full.saturating_sub(span), largest_full))
+    }
+
+    /// Çerçevenin telde (zarf hariç) bayt boyu — `encode().len()` ile aynı, ayırma yapmadan.
+    #[must_use]
+    pub fn frame_len(&self) -> usize {
+        match &self.bitmap {
+            Some(bm) => ACK_BITMAP_HEADER_BYTES + bm.bits.len(),
+            None if self.v2 => 15 + 4 * self.ranges.len(),
+            None => 9 + 4 * self.ranges.len(),
+        }
     }
 
     /// [TUR-1x] `ack_delay` raw wire değerini süreye çözer (V2 → ×256µs, V1 → ×1µs).
     /// Floor-encoding V2'de encode-tarafındadır → decode şişirme yapmaz (delay ≤ gerçek).
     #[must_use]
     pub fn ack_delay_duration(&self) -> Duration {
-        let unit_us = if self.v2 { ACK_DELAY_UNIT_US } else { 1 };
+        // [ACK-BITMAP] 0x15 da 256µs birimlidir.
+        let unit_us = if self.v2 || self.bitmap.is_some() {
+            ACK_DELAY_UNIT_US
+        } else {
+            1
+        };
         Duration::from_micros(u64::from(self.ack_delay) * unit_us)
     }
 
@@ -167,6 +283,24 @@ impl AckFrame {
     #[must_use]
     pub fn acked_full(&self, expected: u64) -> Vec<u64> {
         let mut acked = Vec::new();
+        if let Some(bm) = &self.bitmap {
+            // [ACK-BITMAP] largest + bit=1 olan her seq (artan); çıktı ≤ ACK_BITMAP_MAX_BITS + 1.
+            let largest_full = crate::seq::resolve_seq(expected, self.largest_seq);
+            let span = u64::from(self.largest_seq.wrapping_sub(bm.base_seq));
+            let base = largest_full.saturating_sub(span);
+            for i in 0..span.min(ACK_BITMAP_MAX_BITS) {
+                let k = usize::try_from(i).unwrap_or(0);
+                if bm
+                    .bits
+                    .get(k / 8)
+                    .is_some_and(|b| b & (0x80 >> (k % 8)) != 0)
+                {
+                    acked.push(base + i);
+                }
+            }
+            acked.push(largest_full);
+            return acked;
+        }
         if self.block0_len == 0 {
             return acked;
         }
@@ -202,6 +336,23 @@ impl AckFrame {
     /// V2 (0x14): 15B sabit + 4B×range (§2.2 ölçüm eki dahil); V1 (0x10): 9B + 4B×range.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
+        if let Some(bm) = &self.bitmap {
+            // [ACK-BITMAP] 0x15 (fixed-width; opsiyonel alan yok).
+            debug_assert!(
+                bm.bits.len() <= ACK_BITMAP_MAX_BYTES,
+                "bitmap tavanı aşıldı"
+            );
+            let mut out = Vec::with_capacity(ACK_BITMAP_HEADER_BYTES + bm.bits.len());
+            out.push(FRAME_TYPE_ACK_BITMAP);
+            out.push(self.ack_epoch);
+            out.extend_from_slice(&self.largest_seq.to_be_bytes());
+            out.extend_from_slice(&self.ack_delay.to_be_bytes());
+            out.extend_from_slice(&self.arrival_rate.to_be_bytes());
+            out.extend_from_slice(&bm.base_seq.to_be_bytes());
+            out.push(bm.bits.len() as u8);
+            out.extend_from_slice(&bm.bits);
+            return out;
+        }
         debug_assert!(
             self.ranges.len() <= MAX_ACK_RANGES,
             "range sayısı MAX_ACK_RANGES'i aşıyor"
@@ -285,6 +436,73 @@ impl AckFrame {
             v2,
             seen_count,
             arrival_rate,
+            bitmap: None,
+        })
+    }
+
+    /// [ACK-BITMAP · ölçüm prototipi] [`Self::decode`] + 0x15 bitmap çerçevesi. Yalnız bitmap
+    /// biçimi AÇIKÇA yapılandırılmış uç çağırır; [`Self::decode`] 0x15'i bugünkü gibi
+    /// `UnknownFrameType` ile reddeder (ACK referans vektörleri bunu sabitler).
+    ///
+    /// # Errors
+    /// [`Self::decode`] hataları; 0x15'te ayrıca [`TransportError::InvalidAckBitmap`].
+    pub fn decode_with_bitmap(buf: &[u8]) -> Result<Self, TransportError> {
+        if buf.first() == Some(&FRAME_TYPE_ACK_BITMAP) {
+            let mut r = Reader::new(buf);
+            let _ = r.u8()?;
+            return Self::decode_bitmap(r);
+        }
+        Self::decode(buf)
+    }
+
+    /// [ACK-BITMAP] 0x15 gövdesini çözer (tür baytı okunmuş). Bounds-before-read; bitmap tavanı,
+    /// kanonik uzunluk, dolgu bitleri ve trailing denetlenir (fail-closed).
+    fn decode_bitmap(mut r: Reader<'_>) -> Result<Self, TransportError> {
+        let ack_epoch = r.u8()?;
+        let largest_seq = r.u16_be()?;
+        let ack_delay = r.u16_be()?;
+        let arrival_rate = r.u16_be()?;
+        let base_seq = r.u16_be()?;
+        let len = usize::from(r.u8()?);
+        if len > ACK_BITMAP_MAX_BYTES {
+            return Err(TransportError::InvalidAckBitmap("bitmap_len tavanı aşıyor"));
+        }
+        let span = u64::from(largest_seq.wrapping_sub(base_seq));
+        if span > ACK_BITMAP_MAX_BITS {
+            return Err(TransportError::InvalidAckBitmap(
+                "base_seq–largest_seq açıklığı tavanı aşıyor",
+            ));
+        }
+        if u64::try_from(len).unwrap_or(u64::MAX) != span.div_ceil(8) {
+            return Err(TransportError::InvalidAckBitmap(
+                "bitmap_len açıklıkla tutarsız",
+            ));
+        }
+        let bits = r.take(len)?.to_vec(); // bounds-before-read (len ≤ ACK_BITMAP_MAX_BYTES doğrulandı)
+        let used = span % 8;
+        if used != 0 {
+            let pad_mask = 0xFFu8 >> used; // kullanılmayan alt bitler
+            if bits.last().is_some_and(|b| b & pad_mask != 0) {
+                return Err(TransportError::InvalidAckBitmap(
+                    "dolgu bitleri sıfır değil",
+                ));
+            }
+        }
+        if r.remaining() != 0 {
+            return Err(TransportError::TrailingBytes {
+                count: r.remaining(),
+            });
+        }
+        Ok(AckFrame {
+            ack_epoch,
+            largest_seq,
+            ack_delay,
+            block0_len: 0,
+            ranges: Vec::new(),
+            v2: false,
+            seen_count: 0,
+            arrival_rate,
+            bitmap: Some(AckBitmap { base_seq, bits }),
         })
     }
 }
@@ -356,6 +574,7 @@ mod tests {
             v2: true,
             seen_count: 0,
             arrival_rate: 0,
+            bitmap: None,
         };
         let acked = f.acked_full(u64::MAX / 2); // büyük taban → tüm bloklar dolar
         assert!(
@@ -398,6 +617,7 @@ mod tests {
             v2: true,
             seen_count: 0,
             arrival_rate: ARRIVAL_RATE_SENTINEL,
+            bitmap: None,
         };
         assert!(f.acked_full(1).is_empty(), "block0_len 0 → boş");
     }
@@ -427,5 +647,208 @@ mod tests {
         assert_eq!(f.ack_delay_duration(), Duration::from_micros(40));
         assert_eq!(f.seen_count, 0, "V1'de alan yok → nötr");
         assert_eq!(f.arrival_rate, ARRIVAL_RATE_SENTINEL);
+    }
+
+    // ── [ACK-BITMAP · ölçüm prototipi] ─────────────────────────────────────────────────────
+
+    /// Bağımsız model: [base, largest] içinde alınanlar + largest.
+    fn model(recv: &[u64], base: u64, largest: u64) -> Vec<u64> {
+        let mut v: Vec<u64> = recv
+            .iter()
+            .copied()
+            .filter(|&s| s >= base && s <= largest)
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
+    #[test]
+    fn bitmap_roundtrip_semantic_equality() {
+        for &(base, largest) in &[
+            (0u64, 0u64),
+            (0, 7),
+            (0, 8),
+            (3, 20),
+            (100, 643),
+            (1000, 1001),
+        ] {
+            let recv: Vec<u64> = (base..=largest)
+                .filter(|s| s % 3 != 1 || *s == largest)
+                .collect();
+            let f =
+                AckFrame::bitmap_from_received(recv.iter().copied(), largest, base, 0, 77, 6_250);
+            let bytes = f.encode();
+            assert_eq!(bytes[0], FRAME_TYPE_ACK_BITMAP);
+            assert_eq!(bytes.len(), f.frame_len());
+            let g = AckFrame::decode_with_bitmap(&bytes).expect("decode");
+            assert_eq!(g, f, "gidiş-dönüş yapısal eşitlik");
+            assert_eq!(g.acked_full(largest + 1), model(&recv, base, largest));
+            assert_eq!(g.evidence_span_full(largest + 1), Some((base, largest)));
+            assert_eq!(g.ack_delay_duration(), Duration::from_micros(77 * 256));
+            assert!(!g.v2 && g.ranges.is_empty() && g.block0_len == 0);
+        }
+    }
+
+    #[test]
+    fn bitmap_window_is_clamped_to_the_wire_ceiling() {
+        let largest = 5_000u64;
+        let recv: Vec<u64> = (0..=largest).collect();
+        let f = AckFrame::bitmap_from_received(
+            recv.iter().copied(),
+            largest,
+            0,
+            0,
+            0,
+            ARRIVAL_RATE_SENTINEL,
+        );
+        let bm = f.bitmap.as_ref().expect("bitmap");
+        assert_eq!(bm.bits.len(), ACK_BITMAP_MAX_BYTES);
+        assert_eq!(
+            f.evidence_span_full(largest + 1),
+            Some((largest - ACK_BITMAP_MAX_BITS, largest))
+        );
+        // Tel boyu tavanı: zarf + çerçeve ≤ bugünkü en büyük ACK datagramı (129 B).
+        assert_eq!(
+            ACK_DATAGRAM_ENVELOPE_BYTES + f.encode().len(),
+            ACK_DATAGRAM_MAX_LINE_BYTES
+        );
+        // Bugünkü en büyük V2 (16 aralık) ile aynı tavan.
+        let v2: Vec<u64> = (0..40).map(|i| i * 3).collect();
+        let v2f = AckFrame::from_received(&v2, 0, 0, 0, ARRIVAL_RATE_SENTINEL).expect("nonempty");
+        assert_eq!(v2f.ranges.len(), MAX_ACK_RANGES);
+        assert_eq!(
+            ACK_DATAGRAM_ENVELOPE_BYTES + v2f.encode().len(),
+            ACK_DATAGRAM_MAX_LINE_BYTES
+        );
+        assert_eq!(v2f.frame_len(), v2f.encode().len());
+    }
+
+    #[test]
+    fn bitmap_wraps_across_u16() {
+        let largest = 0x1_0005u64;
+        let base = 0xFFF0u64;
+        let recv: Vec<u64> = (base..=largest)
+            .filter(|s| s % 2 == 0 || *s == largest)
+            .collect();
+        let f = AckFrame::bitmap_from_received(recv.iter().copied(), largest, base, 0, 0, 0);
+        let g = AckFrame::decode_with_bitmap(&f.encode()).expect("decode");
+        assert_eq!(g.largest_seq, 0x0005);
+        assert_eq!(g.bitmap.as_ref().map(|b| b.base_seq), Some(0xFFF0));
+        assert_eq!(g.acked_full(largest + 1), model(&recv, base, largest));
+        assert_eq!(g.evidence_span_full(largest + 1), Some((base, largest)));
+    }
+
+    #[test]
+    fn bitmap_decode_rejects_hostile_input() {
+        let good = AckFrame::bitmap_from_received([0u64, 2, 9], 9, 0, 0, 0, ARRIVAL_RATE_SENTINEL)
+            .encode();
+        // Kesik: her önek reddedilir.
+        for n in 0..good.len() {
+            assert!(
+                AckFrame::decode_with_bitmap(&good[..n]).is_err(),
+                "kesik {n} reddedilmeli"
+            );
+        }
+        // Aşırı uzun (trailing).
+        let mut long = good.clone();
+        long.push(0);
+        assert!(matches!(
+            AckFrame::decode_with_bitmap(&long),
+            Err(TransportError::TrailingBytes { count: 1 })
+        ));
+        // bitmap_len tavanı aşıyor.
+        let mut over = vec![FRAME_TYPE_ACK_BITMAP, 0, 0x02, 0x40, 0, 0, 0xFF, 0xFF, 0, 0];
+        over.push(69);
+        over.extend(std::iter::repeat_n(0u8, 69));
+        assert!(matches!(
+            AckFrame::decode_with_bitmap(&over),
+            Err(TransportError::InvalidAckBitmap(_))
+        ));
+        // base > largest (sarma yok): açıklık mod 2^16 ≈ 65 k > tavan.
+        let mut inv = vec![
+            FRAME_TYPE_ACK_BITMAP,
+            0,
+            0x00,
+            0x10,
+            0,
+            0,
+            0xFF,
+            0xFF,
+            0x00,
+            0x20,
+            0,
+        ];
+        assert!(matches!(
+            AckFrame::decode_with_bitmap(&inv),
+            Err(TransportError::InvalidAckBitmap(_))
+        ));
+        // Uzunluk açıklıkla tutarsız (span 9 → 2 B gerekir, 1 B verildi).
+        inv = vec![
+            FRAME_TYPE_ACK_BITMAP,
+            0,
+            0x00,
+            0x09,
+            0,
+            0,
+            0xFF,
+            0xFF,
+            0x00,
+            0x00,
+            1,
+            0xFF,
+        ];
+        assert!(matches!(
+            AckFrame::decode_with_bitmap(&inv),
+            Err(TransportError::InvalidAckBitmap(_))
+        ));
+        // Dolgu biti 1 (span 9 → ikinci baytta yalnız MSB anlamlı).
+        inv = vec![
+            FRAME_TYPE_ACK_BITMAP,
+            0,
+            0x00,
+            0x09,
+            0,
+            0,
+            0xFF,
+            0xFF,
+            0x00,
+            0x00,
+            2,
+            0xFF,
+            0xC0,
+        ];
+        assert!(matches!(
+            AckFrame::decode_with_bitmap(&inv),
+            Err(TransportError::InvalidAckBitmap(_))
+        ));
+        inv[12] = 0x80;
+        assert!(
+            AckFrame::decode_with_bitmap(&inv).is_ok(),
+            "aynı çerçeve dolgusuz geçerli"
+        );
+    }
+
+    #[test]
+    fn plain_decode_still_rejects_0x15() {
+        let b = AckFrame::bitmap_from_received([0u64, 2, 9], 9, 0, 0, 0, ARRIVAL_RATE_SENTINEL)
+            .encode();
+        assert!(matches!(
+            AckFrame::decode(&b),
+            Err(TransportError::UnknownFrameType(0x15))
+        ));
+        // 0x14 her iki çözücüde aynı sonucu verir.
+        let v = AckFrame::from_received(&[5, 6, 9], 0, 0, 3, ARRIVAL_RATE_SENTINEL)
+            .expect("x")
+            .encode();
+        assert_eq!(AckFrame::decode(&v), AckFrame::decode_with_bitmap(&v));
+    }
+
+    #[test]
+    fn v2_path_has_no_evidence_span() {
+        let f = AckFrame::from_received(&[5, 6, 9], 0, 0, 3, ARRIVAL_RATE_SENTINEL).expect("x");
+        assert_eq!(f.bitmap, None);
+        assert_eq!(f.evidence_span_full(10), None);
+        assert_eq!(f.encode()[0], FRAME_TYPE_ACK_V2);
     }
 }

@@ -195,6 +195,7 @@ fn ack_ref_frame_roundtrip_every_type() {
             } else {
                 ARRIVAL_RATE_SENTINEL
             },
+            bitmap: None,
         };
         let b = f.encode();
         let fixed = if v2 { V2_FIXED } else { V1_FIXED };
@@ -323,6 +324,7 @@ fn ack_ref_hostile_truncation_trailing_unknown() {
                 v2,
                 seen_count: if v2 { 77 } else { 0 },
                 arrival_rate: ARRIVAL_RATE_SENTINEL,
+                bitmap: None,
             };
             frames.push(f.encode());
         }
@@ -397,6 +399,7 @@ fn ack_ref_hostile_len_inflation_bounded() {
             v2: true,
             seen_count: 0,
             arrival_rate: 0,
+            bitmap: None,
         };
         let g = AckFrame::decode(&f.encode()).expect("geçerli");
         let expected = [0u64, 1, 1 << 20, u64::MAX / 2][rng.below(4) as usize];

@@ -178,7 +178,7 @@ use adaptive_transport::sender::{EmitCause, EmitDiag};
 use client_core::memory_link::MemoryHub;
 use client_core::runtime::ClientLiveDiag;
 use client_core::runtime::EmitTraceSink;
-use client_core::runtime::LinkRates;
+use client_core::runtime::{AckFormat, LinkRates};
 use client_core::transport::{ClientTransport, ClientTransportConfig};
 use client_core::wire::{decode_data, FRAME_FEC, FRAME_RECOVERED};
 use kama_app::clock::{MonotonicClock, SystemClock};
@@ -316,6 +316,9 @@ struct Ledger {
     rx_unit: HashMap<u64, Instant>,
     /// [İZ-NEDEN] Bu uca açılan ACK çerçeveleri: (an, teyit edilen PN'ler).
     acks_rx: Vec<(Instant, Vec<u64>)>,
+    /// [İZ-ACK] `acks_rx` ile aynı sırada: ACK datagramının tel boyu (UDP gövdesi + UDP/IP 28 B)
+    /// ve çerçeve türü baytı.
+    ack_wire: Vec<(u64, u8)>,
 }
 
 /// [FEC-TEŞHİS] Çerçeve türü sayacı (DATA dışı).
@@ -389,10 +392,12 @@ impl PacketProtection for Tap {
             if let Some((wseq, unit, _)) = decode_data(&opened.frame) {
                 l.rx_seq.entry(wseq).or_insert(now);
                 l.rx_unit.entry(unit).or_insert(now);
-            } else if let Ok(f) = AckFrame::decode(&opened.frame) {
+            } else if let Ok(f) = AckFrame::decode_with_bitmap(&opened.frame) {
                 if l.acks_rx.len() < LEDGER_CAP {
                     let pns = f.acked_full(u64::from(f.largest_seq));
                     l.acks_rx.push((now, pns));
+                    l.ack_wire
+                        .push((wire.len() as u64 + UDP_IP_OVERHEAD, opened.frame[0]));
                 }
             }
         }
@@ -754,6 +759,11 @@ fn transport(
     cfg.runtime.diag_emit_sink = emit;
     // [YENİDEN-RAPOR] Ürün varsayılanı kapalı (spec §2.1); `KAMA_ASYM_ACK_REREPORT=on` ölçüm kolu.
     cfg.runtime.ack_rereport = std::env::var("KAMA_ASYM_ACK_REREPORT").is_ok_and(|v| v == "on");
+    // [ACK-BITMAP · ölçüm prototipi] `KAMA_ASYM_ACK_FORMAT=bitmap` iki uca da 0x15 biçimini verir
+    // (yetenek anlaşması yok; iki uç açıkça). Varsayılan `v2` (bugünkü 0x14).
+    cfg.runtime.ack_format = std::env::var("KAMA_ASYM_ACK_FORMAT").map_or(AckFormat::V2, |v| {
+        AckFormat::parse(&v).expect("KAMA_ASYM_ACK_FORMAT: v2 | bitmap")
+    });
     // [ACK-PAYI TEŞHİS KOLU] `KAMA_ASYM_RETURN_Y_PERMILLE` (yalnız teşhis; varsayılan ürün Y = 250).
     if let Ok(y) = std::env::var("KAMA_ASYM_RETURN_Y_PERMILLE") {
         cfg.runtime.diag_return_budget_permille = y.parse().ok();
@@ -1699,6 +1709,64 @@ impl Run {
                 .collect::<Vec<_>>(),
             self.alice.recovered_rx,
         );
+        // [İZ-ACK · salt gözlem] Alice'e açılan ACK'ler: sayı, tel boyu, varış aralığı, bildirilen
+        // kapsam (Bob'a varan DATA PN'lerinden — son ACK varışından önce varanlar — en az bir
+        // ACK'te görünenlerin payı) ve dönüş hattındaki ACK bayt payı.
+        {
+            let n = self.alice.ack_wire.len() as u64;
+            let sum: u64 = self.alice.ack_wire.iter().map(|w| w.0).sum();
+            let max = self.alice.ack_wire.iter().map(|w| w.0).max().unwrap_or(0);
+            let types: BTreeMap<u8, u32> =
+                self.alice
+                    .ack_wire
+                    .iter()
+                    .fold(BTreeMap::new(), |mut m, w| {
+                        *m.entry(w.1).or_insert(0) += 1;
+                        m
+                    });
+            let ivals: Vec<Duration> = self
+                .alice
+                .acks_rx
+                .windows(2)
+                .map(|w| w[1].0 - w[0].0)
+                .collect();
+            let ival_mean = if ivals.is_empty() {
+                Duration::ZERO
+            } else {
+                ivals.iter().sum::<Duration>() / ivals.len() as u32
+            };
+            let ival_max = ivals.iter().max().copied().unwrap_or(Duration::ZERO);
+            let reported: HashSet<u64> = self
+                .alice
+                .acks_rx
+                .iter()
+                .flat_map(|(_, p)| p.iter().copied())
+                .collect();
+            let last_ack = self.alice.acks_rx.last().map(|a| a.0);
+            let (mut rx_n, mut cov_n) = (0u64, 0u64);
+            for (wseq, &arr) in &self.bob.rx_seq {
+                if last_ack.is_none_or(|l| arr > l) {
+                    continue;
+                }
+                if let Some(&(_, pn, _)) = seal_by_seq.get(wseq) {
+                    rx_n += 1;
+                    if reported.contains(&pn) {
+                        cov_n += 1;
+                    }
+                }
+            }
+            let rev_bytes = self.rev.bytes.max(1);
+            println!(
+                "İZ-ACK {tag} biçim={} ack={n} tür={types:?} tel_ort={} B tel_max={max} B aralık_ort={} s aralık_max={} s kapsam={cov_n}/{rx_n} ({:.1}%) dönüş_ack_payı={sum}/{} B ({:.1}%)",
+                std::env::var("KAMA_ASYM_ACK_FORMAT").unwrap_or_else(|_| "v2".to_string()),
+                sum.checked_div(n).unwrap_or(0),
+                secs(ival_mean),
+                secs(ival_max),
+                if rx_n == 0 { 0.0 } else { cov_n as f64 * 100.0 / rx_n as f64 },
+                self.rev.bytes,
+                sum as f64 * 100.0 / rev_bytes as f64,
+            );
+        }
         // [CANLILIK-TEŞHİS] Geç (> 2 s) ya da hiç teslim edilmeyen ilk beş demetin motor izi:
         // her iletim (neden), iletimlerin kayıp ilanları, birimin teyidi; şerit açıklık sınırı.
         println!(

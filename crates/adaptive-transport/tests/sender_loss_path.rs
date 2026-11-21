@@ -425,3 +425,78 @@ fn rtt_correction_rejection_counter_reflects_the_guard() {
          (öncesi={rejected_before}, küçük={rejected_small}, büyük={rejected_big})"
     );
 }
+
+/// [ACK-BITMAP] Göndericide kanıt aralığı: aralık İÇİNDEKİ teyitsiz seq negatif kanıttır ve eşikle
+/// ilan edilir; ardışık iki aralık arasında kalan (hiçbir alınan ACK'te görünmeyen) seq'ler kapsam
+/// boşluğu kuralıyla eşiğe açılır; bildirilmemiş (aralığın üstündeki) seq ilan edilmez.
+#[test]
+fn evidence_span_limits_threshold_losses_to_the_span() {
+    let (mut s, mut now, out) = armed();
+    assert!(
+        out.len() >= 12,
+        "fikstür en az 12 iletim üretmeli: {}",
+        out.len()
+    );
+    assert_eq!(s.diag_loss(), (0, 0, 0));
+    // İlk kanıtlı ACK [out[1], out[6]]: out[3] alınmadı (negatif kanıt) → paket eşiği.
+    let acked: Vec<u64> = out[1..=6]
+        .iter()
+        .copied()
+        .filter(|&q| q != out[3])
+        .collect();
+    now += 50 * MS;
+    s.set_next_ack_evidence(Some((out[1], out[6])));
+    s.on_event(ack(acked), now);
+    assert!(s.diag_ack_evidence_mode());
+    let first = s.diag_loss().0;
+    assert!(first >= 1, "aralık içi gerçek kayıp (out[3]) ilan edilmeli");
+    assert_eq!(s.diag_ack_evidence_orphaned(), 0, "boşluk yok");
+    // Kapsam boşluğuna düşecek teyitsiz kayıtlar: (out[6], out[9]) arasındaki her uçuş kaydı.
+    let gap = s
+        .diag_inflight_seqs()
+        .iter()
+        .filter(|&&(q, _, _, _)| q > out[6] && q < out[9])
+        .count() as u64;
+    assert!(gap >= 2, "boşlukta en az out[7], out[8]: {gap}");
+    // Sonraki alınan ACK [out[9], out[11]] (aradaki ACK'ler kayboldu): out[7], out[8] hiçbir
+    // alınan ACK'te görünmedi → kapsam boşluğu → eşiğe açılır.
+    now += 50 * MS;
+    s.set_next_ack_evidence(Some((out[9], out[11])));
+    s.on_event(ack(out[9..=11].to_vec()), now);
+    assert_eq!(
+        s.diag_ack_evidence_orphaned(),
+        gap,
+        "boşluktaki kayıtlar açıldı"
+    );
+    let (pkt, time, _) = s.diag_loss();
+    assert!(pkt + time > first, "boşluktaki kayıtlar eşikle ilan edildi");
+    // out[12..] (varsa) bildirilmedi: uzun sessizlikte de eşikle ilan edilmez.
+    let before = s.diag_loss();
+    for _ in 0..20 {
+        now += 500 * MS;
+        s.on_event(Event::TimerFired(Timer::Pto), now);
+    }
+    let after = s.diag_loss();
+    assert_eq!(
+        (after.0, after.1),
+        (before.0, before.1),
+        "bildirilmemiş seq'ler eşikle ilan edilmemeli"
+    );
+}
+
+/// [ACK-BITMAP] Kanıt aralığı verilmezse (0x14 yolu) aynı senaryo bugünkü kuraldır: atlanan
+/// seq'lerin hepsi paket eşiğiyle ilan edilir.
+#[test]
+fn without_evidence_span_all_skipped_seqs_are_declared() {
+    let (mut s, mut now, out) = armed();
+    let acked: Vec<u64> = out[6..].iter().copied().filter(|&q| q != out[8]).collect();
+    now += 50 * MS;
+    s.on_event(ack(acked), now);
+    assert!(!s.diag_ack_evidence_mode());
+    // Uçuştaki teyitsiz her seq (en az out[1..6] + out[8]) paket eşiğine düşer.
+    assert!(
+        s.diag_loss().0 >= 6,
+        "out[1..6] + out[8]: {:?}",
+        s.diag_loss()
+    );
+}

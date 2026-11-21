@@ -119,6 +119,7 @@ fn run_case(c: &Case) {
                 v2: ft == 0x14,
                 seen_count: take_u64!(m, id, "seen_count") as u32,
                 arrival_rate: take_u64!(m, id, "arrival_rate") as u16,
+                bitmap: None,
             };
             assert!(m.is_empty(), "{id}: tüketilmeyen alan {:?}", m.keys());
             assert!(ft == 0x14 || ft == 0x10, "{}: tür", c.id);

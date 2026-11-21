@@ -279,6 +279,39 @@ pub fn decode_cs_echo(buf: &[u8]) -> Option<(u8, u16, u32, u32)> {
     ))
 }
 
+// ── [ACK-BITMAP] Yetenek bildirimi (CAPS) ─────────────────────────────────────────────────────
+//
+// Veri gönderen uç (ACK'leri ÇÖZEN uç) hangi isteğe bağlı ACK biçimlerini çözebildiğini veri
+// alıcısına bildirir. Alıcı bir biçimi YALNIZ karşı uç onu bildirdiyse ve kendi yapılandırması da
+// izin veriyorsa yazar; bildirim yoksa (eski uç, kayıp CAPS) bugünkü 0x14 yolu sürer. Eski alıcı
+// CAPS'i bilinmeyen çerçeve olarak sayar ve yok sayar (davranış değişmez). Bilinmeyen bitler yok
+// sayılır (ileri uyum). [TEL DEĞİŞİKLİĞİ — sahip onayı gerekir.]
+
+/// CAPS frame_type (client-core çerçeve düzlemi; 0x00–0x07 dolu).
+pub const FRAME_CAPS: u8 = 0x08;
+/// CAPS boyu: type(1) + caps(2, big-endian).
+pub const LEN_CAPS: usize = 3;
+/// CAPS biti: bu uç 0x15 bitmap ACK çerçevesini çözer.
+pub const CAP_ACK_BITMAP: u16 = 0x0001;
+
+/// CAPS çerçevesi kodlar.
+#[must_use]
+pub fn encode_caps(caps: u16) -> Vec<u8> {
+    let mut b = Vec::with_capacity(LEN_CAPS);
+    b.push(FRAME_CAPS);
+    b.extend_from_slice(&caps.to_be_bytes());
+    b
+}
+
+/// CAPS çerçevesi çözer. Boy TAM eşleşmezse `None` (fail-closed).
+#[must_use]
+pub fn decode_caps(buf: &[u8]) -> Option<u16> {
+    if buf.len() != LEN_CAPS || buf[0] != FRAME_CAPS {
+        return None;
+    }
+    Some(u16::from_be_bytes([buf[1], buf[2]]))
+}
+
 // ── [S1→v1] PARAM bootstrap çerçeveleri ──────────────────────────────────────────────────────
 //
 // FEC-profil bağlaması: gönderici PARAM'ı yollar (B2: FEC-emisyonu ACK-BEKLEMEDEN akar), alıcı

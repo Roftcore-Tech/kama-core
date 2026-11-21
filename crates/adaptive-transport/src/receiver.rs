@@ -121,6 +121,16 @@ pub fn feedback_horizon_ns(return_bw_bps: u64) -> u64 {
     u64::try_from(ns).unwrap_or(u64::MAX)
 }
 
+/// [DÖNÜŞ-BÜTÇESİ] ACK'in tel boyu tahmini (B). 0x14: `SACK_WIRE_BYTES` + aralık başına
+/// `ACK_WIRE_PER_RANGE` (bugünkü formül, değişmez). [ACK-BITMAP] 0x15: zarf + çerçeve boyu.
+fn ack_wire_bytes(frame: &AckFrame) -> u64 {
+    if frame.bitmap.is_some() {
+        (crate::ack::ACK_DATAGRAM_ENVELOPE_BYTES + frame.frame_len()) as u64
+    } else {
+        SACK_WIRE_BYTES + ACK_WIRE_PER_RANGE * frame.ranges.len() as u64
+    }
+}
+
 /// [DÖNÜŞ-BÜTÇESİ] Jeton kovası tavanı (B): en büyük iki ACK (MAX_ACK_RANGES aralıklı). Kova dolu
 /// başlar → oturumun İLK ACK'i bütçeden muaf (§12 [R1]).
 const ACK_BUDGET_CAP_BYTES: u64 =
@@ -131,6 +141,10 @@ const ACK_BUDGET_RESERVE_BYTES: u64 = ACK_BUDGET_CAP_BYTES / 2;
 const REREPORT_SAFE: u8 = 2;
 /// [YENİDEN-RAPOR] Her çerçevede hiç bildirilmemiş en yeni bu kadar blok (yeni kayıp haberi).
 const REREPORT_NEWEST: usize = 4;
+/// [ACK-BITMAP · ölçüm prototipi] Her seq ardışık bu kadar çıkan bitmap ACK'inde görünür (dönüş
+/// yolunda tek ACK kaybına dayanıklılık; ACK-of-ACK yankısı YOK). Bitmap tabanı = bu kadar önceki
+/// çıkan ACK'in `largest`'ı + 1, tel tavanı ([`crate::ack::ACK_BITMAP_MAX_BITS`]) içine kırpılır.
+const BITMAP_REPEAT: usize = 2;
 /// [K2/R1/R15/§3.3-E/§12] ACK_CADENCE cold-start floor = sack_wire/(Y·return_bw_önsel) ≈ 8.4s.
 /// TIMER-SACK'ları bununla seyrekleşir: kbps'te sabit 20ms tick → SACK-seli/self-congestion (19s-lag);
 /// throttle bunu keser. Frequency-yolu (§2.1, on_datagram) DATA-oranıyla eşleşir → hızlı kanalda responsive
@@ -189,6 +203,11 @@ pub struct Receiver {
     /// öncelik"; açık kol spec sapmasıdır, sahip kararına dek yalnız ölçüm). Kapalıyken alıcı
     /// bugünkü kuralla (en yeni 16 alt blok) yazar.
     rereport: bool,
+    /// [ACK-BITMAP · ölçüm prototipi] Geri bildirimi aç alıcıda 0x15 bitmap çerçevesi yazılır mı
+    /// (`set_ack_bitmap`; varsayılan kapalı → bugünkü 0x14 yolu bayt bayt aynı).
+    ack_bitmap: bool,
+    /// [ACK-BITMAP] Son çıkan bitmap ACK'lerinin `largest`'ı (en eski önde, en çok `BITMAP_REPEAT`).
+    bitmap_emitted: std::collections::VecDeque<u64>,
     smallest_seq: u64,
     largest_seq: u64,
     have_recv: bool,
@@ -275,6 +294,8 @@ impl Receiver {
             pn_unit: BTreeMap::new(),
             unit_reported: BTreeMap::new(),
             rereport: false,
+            ack_bitmap: false,
+            bitmap_emitted: std::collections::VecDeque::new(),
             smallest_seq: 0,
             largest_seq: 0,
             have_recv: false,
@@ -463,6 +484,44 @@ impl Receiver {
         self.rereport = on;
     }
 
+    /// [ACK-BITMAP · YALNIZ ÖLÇÜM PROTOTİPİ] Geri bildirimi aç alıcıda (bütçeli port alıcısı, tipik
+    /// ACK'in bütçe aralığı ≥ 1 s) ACK'ler 0x15 bitmap çerçevesiyle yazılır. Yetenek anlaşması YOK:
+    /// gönderici ucun da açıkça yapılandırılması gerekir. Diğer yollarda etkisiz.
+    pub fn set_ack_bitmap(&mut self, on: bool) {
+        self.ack_bitmap = on;
+    }
+
+    /// [ACK-BITMAP] Bitmap çerçevesi bu alıcıda yazılıyor mu.
+    fn bitmap_rx(&self) -> bool {
+        self.ack_bitmap
+            && self.cc_port
+            && self
+                .ack_budget_bps
+                .is_some_and(|b| b <= ACK_WIRE_TYPICAL_BYTES)
+    }
+
+    /// [ACK-BITMAP] Bitmap tabanı: `BITMAP_REPEAT` önceki çıkan ACK'in `largest`'ı + 1 (o ACK'ten
+    /// beri gelen her seq, bu ve önceki bitmap'te görünür); geçmiş kısaysa 0 (en eskiden). Tel
+    /// tavanına kırpma çerçeve kurucusundadır.
+    fn bitmap_base(&self) -> u64 {
+        if self.bitmap_emitted.len() >= BITMAP_REPEAT {
+            self.bitmap_emitted.front().map_or(0, |&l| l + 1)
+        } else {
+            0
+        }
+    }
+
+    /// [ACK-BITMAP] Çıkan bitmap ACK'inin `largest`'ını geçmişe yazar.
+    fn note_bitmap_emitted(&mut self, frame: &AckFrame) {
+        if frame.bitmap.is_none() {
+            return;
+        }
+        self.bitmap_emitted.push_back(self.largest_seq);
+        while self.bitmap_emitted.len() > BITMAP_REPEAT {
+            self.bitmap_emitted.pop_front();
+        }
+    }
+
     /// [ACK-PAYI TEŞHİS KOLU · 2026-11-21] Dönüş bütçesi payını (Y, binde) değiştirir ve kovayı
     /// yeniden doldurur. YALNIZ teşhis: ürün yolu çağırmaz (Y = 250, §16.1); geri bildirim
     /// kıtlığının payını ölçmek için. `set_return_bandwidth`'ten SONRA çağrılır.
@@ -542,7 +601,7 @@ impl Receiver {
             self.diag_ack_yield_deferred += 1;
             return false;
         }
-        let cost = (SACK_WIRE_BYTES + ACK_WIRE_PER_RANGE * frame.ranges.len() as u64) * 1000;
+        let cost = ack_wire_bytes(frame) * 1000;
         let mut need = cost;
         if self.ack_budget_first_done && !self.arrivals_quiet(now_ns) {
             let gap = self.episode_baseline();
@@ -842,7 +901,7 @@ impl Receiver {
         let Some(bw) = self.return_bw_bps.filter(|&b| b > 0) else {
             return 0;
         };
-        let wire = SACK_WIRE_BYTES + ACK_WIRE_PER_RANGE * frame.ranges.len() as u64;
+        let wire = ack_wire_bytes(frame);
         let ser =
             u64::try_from(u128::from(wire) * 1_000_000_000 / u128::from(bw)).unwrap_or(u64::MAX);
         now_ns
@@ -910,6 +969,7 @@ impl Receiver {
             self.since_last_ack = 0;
             self.info_since_ack = false;
             self.note_reported(&frame);
+            self.note_bitmap_emitted(&frame);
             self.ack_horizon_ns = self.ack_arrival_horizon(now_ns, &frame);
             self.burn_quota();
             self.record_ack_emit(now_ns);
@@ -1146,22 +1206,44 @@ impl Receiver {
             .checked_div(1000)
             .unwrap_or(0);
         let encoded = (delay_us / crate::ack::ACK_DELAY_UNIT_US).min(ACK_DELAY_ENC_MAX);
+        if self.bitmap_rx() && self.have_recv {
+            // [ACK-BITMAP] [taban, largest] aralığında tam bilgi (bkz. `crate::ack` 0x15).
+            let largest = self.largest_seq;
+            let base = self
+                .bitmap_base()
+                .max(largest.saturating_sub(crate::ack::ACK_BITMAP_MAX_BITS));
+            let frame = AckFrame::bitmap_from_received(
+                self.received.range(base..largest).copied(),
+                largest,
+                base,
+                self.ack_epoch,
+                encoded as u16,
+                self.arrival_rate_field(now_ns),
+            );
+            return (Some(frame), encoded == ACK_DELAY_ENC_MAX);
+        }
         let received: Vec<u64> = if self.feedback_starved_rx() {
             self.rereport_selection()
         } else {
             self.received.iter().copied().collect()
         };
-        // arrival_rate: receiver bu artımda BOYUT görmüyor (RxDatagram size taşımaz) → ölçüm YOK →
-        // sentinel (§2.2 zeyli: 0xFFFF = "ölçüm yok/üst-bantta, ipucu olarak KULLANMA"). K3
-        // tüketicisi bağlandığında gerçek pencere-oranı ölçümüyle değiştirilir.
         let frame = AckFrame::from_received(
             &received,
             self.ack_epoch,
             encoded as u16,
             self.seen_total,
-            crate::ack::ARRIVAL_RATE_SENTINEL,
+            self.arrival_rate_field(now_ns),
         );
         (frame, encoded == ACK_DELAY_ENC_MAX)
+    }
+
+    /// [§2.2 `arrival_rate`] ACK'in varış hızı alanı (B/s; V2 0x14 ve bitmap 0x15 AYNI değeri
+    /// taşır). Bugün daima sentinel: alıcı bu artımda datagram BOYUTU görmüyor (§2.2 zeyli:
+    /// 0xFFFF = "ölçüm yok/üst-bantta, ipucu olarak KULLANMA"). Gerçek pencere-oranı ölçümü
+    /// (başlangıç kuyruğu işi) yalnız bu fonksiyonu doldurur; iki çerçeve biçimi buradan okur.
+    #[allow(clippy::unused_self)]
+    fn arrival_rate_field(&self, _now_ns: u64) -> u16 {
+        crate::ack::ARRIVAL_RATE_SENTINEL
     }
 
     // ── gözlemciler ──
@@ -1290,6 +1372,95 @@ mod tests {
         for k in 0..60u64 {
             assert!(covered.contains(&(3 * k)), "blok {k} hiç bildirilmedi");
         }
+    }
+
+    /// [ACK-BITMAP] Alıcının bitmap üretimi bağımsız modele eşittir: taban = iki önceki çıkan
+    /// ACK'in largest'ı + 1 (geçmiş kısaysa 0), tel tavanına kırpılmış; [taban, largest] içinde
+    /// bit = "alındı". Her seq en az bir, tavan bağlamadıkça iki çıkan ACK'te görünür.
+    #[test]
+    fn bitmap_receiver_matches_independent_model() {
+        const SEC: u64 = 1_000_000_000;
+        let mut r = Receiver::with_cc_port();
+        r.set_return_bandwidth(Some(62));
+        r.set_ack_bitmap(true);
+        let mut rng = 0x1234_5678u64;
+        let mut got: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+        let mut hist: Vec<u64> = Vec::new();
+        let mut seen_in: std::collections::BTreeMap<u64, u32> = std::collections::BTreeMap::new();
+        // Çıkan her çerçeveyi (frekans ya da zamanlayıcı yolu) modelle karşılaştırır.
+        let check = |a: AckFrame,
+                     got: &std::collections::BTreeSet<u64>,
+                     hist: &mut Vec<u64>,
+                     seen_in: &mut std::collections::BTreeMap<u64, u32>| {
+            let largest = *got.last().expect("varış");
+            let base_rep = if hist.len() >= 2 {
+                hist[hist.len() - 2] + 1
+            } else {
+                0
+            };
+            let base = base_rep.max(largest.saturating_sub(crate::ack::ACK_BITMAP_MAX_BITS));
+            let want: Vec<u64> = got.range(base..=largest).copied().collect();
+            let bytes = a.encode();
+            assert_eq!(bytes[0], crate::ack::FRAME_TYPE_ACK_BITMAP);
+            assert!(crate::ack::ACK_DATAGRAM_ENVELOPE_BYTES + bytes.len() <= 129);
+            let d = AckFrame::decode_with_bitmap(&bytes).expect("decode");
+            assert_eq!(d.acked_full(largest + 1), want, "çerçeve {}", hist.len());
+            assert_eq!(d.evidence_span_full(largest + 1), Some((base, largest)));
+            for s in base..=largest {
+                *seen_in.entry(s).or_insert(0) += 1;
+            }
+            hist.push(largest);
+        };
+        let mut t = 0u64;
+        let mut seq = 0u64;
+        while hist.len() < 12 {
+            // Her turda 150–400 seq, %20 kayıp (LCG).
+            rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let n = 150 + (rng >> 33) % 250;
+            for _ in 0..n {
+                rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                if (rng >> 33) % 10 >= 2 {
+                    got.insert(seq);
+                    if let Some(a) = r.on_datagram(data(seq, seq), t).ack {
+                        check(a, &got, &mut hist, &mut seen_in);
+                    }
+                }
+                seq += 1;
+                t += 10 * MS;
+            }
+            t += 20 * SEC;
+            if let Some(a) = r.on_ack_timer(t) {
+                check(a, &got, &mut hist, &mut seen_in);
+            }
+        }
+        // Her seq (son çerçevenin largest'ına dek) en az bir çerçevede göründü; tavan bağlamadıkça
+        // iki ardışık çerçevede.
+        let last = *hist.last().expect("çerçeve");
+        for s in 0..=last {
+            assert!(
+                seen_in.get(&s).copied().unwrap_or(0) >= 1,
+                "seq {s} hiç görünmedi"
+            );
+        }
+    }
+
+    /// [ACK-BITMAP] Anahtar kapalıyken (varsayılan) çerçeve 0x14'tür; bütçesiz/simetrik yolda anahtar
+    /// açık olsa da 0x14 kalır.
+    #[test]
+    fn bitmap_off_or_unbudgeted_keeps_v2() {
+        let mut r = Receiver::with_cc_port();
+        r.set_return_bandwidth(Some(62));
+        let _ = r.on_datagram(data(0, 0), 0);
+        let a = r
+            .on_ack_timer(30 * MS)
+            .or_else(|| r.on_ack_timer(10_000 * MS));
+        assert!(a.is_some_and(|a| a.bitmap.is_none() && a.encode()[0] == 0x14));
+        let mut q = Receiver::with_cc_port();
+        q.set_return_bandwidth(Some(12_500));
+        q.set_ack_bitmap(true);
+        let _ = q.on_datagram(data(0, 0), 0);
+        let a = q.on_ack_timer(30 * MS);
+        assert!(a.is_some_and(|a| a.bitmap.is_none()));
     }
 
     /// [YENİDEN-RAPOR] Anahtar kapalıyken çerçeve bugünkü kuraldır: en yeni 16 alt blok, en eski

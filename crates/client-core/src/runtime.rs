@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use adaptive_transport::ack::{AckFrame, FRAME_TYPE_ACK, FRAME_TYPE_ACK_V2};
+use adaptive_transport::ack::{AckFrame, FRAME_TYPE_ACK, FRAME_TYPE_ACK_BITMAP, FRAME_TYPE_ACK_V2};
 use adaptive_transport::receiver::{Receiver, RxDatagram, RxKind};
 use adaptive_transport::sender::{
     AckInfo, BootstrapRttConfig, Event, FecActuationMode, InitialWindowConfig, OpaqueUnit,
@@ -54,11 +54,11 @@ use crate::unit_id::{
     tagged, unit_of_fec, FEC_BLOCK_LANE_SHIFT, LANE_COUNT,
 };
 use crate::wire::{
-    decode_cs_echo, decode_cs_probe, decode_data, decode_data_frag, decode_fec, decode_param,
-    decode_param_ack, decode_recovered, encode_cs_echo, encode_cs_probe, encode_data,
-    encode_data_frag, encode_fec, encode_param, encode_param_ack, encode_recovered, FecFrameHeader,
-    CS_PROBE_SUBTYPE, FRAME_CS_ECHO, FRAME_PARAM_ACK, FRAME_RECOVERED, HDR_DATA, HDR_DATA_FRAG,
-    HDR_FEC, LEN_CS_PROBE,
+    decode_caps, decode_cs_echo, decode_cs_probe, decode_data, decode_data_frag, decode_fec,
+    decode_param, decode_param_ack, decode_recovered, encode_caps, encode_cs_echo, encode_cs_probe,
+    encode_data, encode_data_frag, encode_fec, encode_param, encode_param_ack, encode_recovered,
+    FecFrameHeader, CAP_ACK_BITMAP, CS_PROBE_SUBTYPE, FRAME_CS_ECHO, FRAME_PARAM_ACK,
+    FRAME_RECOVERED, HDR_DATA, HDR_DATA_FRAG, HDR_FEC, LEN_CS_PROBE,
 };
 use crate::ClientSession;
 use kama_contracts::handles::SessionHandle;
@@ -228,6 +228,13 @@ pub struct RuntimeConfig {
     /// `false`: donmuş spec §2.1 "taşarsa en yeni bloklar öncelik". `true` spec sapmasıdır, sahip
     /// kararına dek yalnız ölçüm kolu. Profilsiz / eski motor yolunda etkisiz.
     pub ack_rereport: bool,
+    /// [ACK-BITMAP · YALNIZ ÖLÇÜM PROTOTİPİ, biçim onayı yok] ACK tel biçimi. `V2` (varsayılan) =
+    /// bugünkü 0x14 yolu bayt bayt aynı. `Bitmap` İKİ UÇTA DA açıkça verilmelidir (yetenek
+    /// anlaşması YOK): server ucu geri bildirimi aç profilde (port motoru + yön hızı profili +
+    /// bütçeli alıcı) 0x15 yazar; client ucu 0x15'i yalnız `Bitmap` iken kabul eder ve kanıt
+    /// aralığını göndericiye verir (`Sender::set_next_ack_evidence`). Eski motor ve profilsiz yolda
+    /// alıcı 0x14 yazar.
+    pub ack_format: AckFormat,
     /// [ÖNLEMSEL-KOPYA · sahip kararı 2026-11-16] Şerit kimlikleri açık mı (şerit 0 = PTT).
     /// `true` iken ve yön hızı profili geri bildirimi aç bırakıyorsa ([`link_feedback_starved`]),
     /// PTT şeridinin her yeni birimi ACK beklemeden [`PTT_FORWARD_COPIES`] kez daha gönderilir.
@@ -359,6 +366,7 @@ impl KamaV1Profile {
             diag_emit_sink: None,
             diag_return_budget_permille: None,
             ack_rereport: false,
+            ack_format: AckFormat::V2,
             // [ÖNLEMSEL-KOPYA] Şerit kimlikleri yalnız `ClientTransport` şeritleri açınca.
             lane_ids: false,
             // [E1 gösterim] Beş bayrak ürün yolunda KAPALI; yalnız gösterim düğümü/teşhis kolları açar.
@@ -602,6 +610,28 @@ impl std::fmt::Debug for UplinkShare {
 /// göndericinin sınırlı yeniden deneme süresi (≤ 25 deneme, 5 s'de bir) içinde ilk yanıt kaybolursa
 /// yeni yanıt çıkabilsin.
 const MAX_ECHO_SPACING_NS: u64 = 30_000_000_000;
+
+/// [ACK-BITMAP · ölçüm prototipi] ACK tel biçimi (bkz. [`RuntimeConfig::ack_format`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AckFormat {
+    /// 0x14 ACK V2 (bugünkü, ürün varsayılanı).
+    #[default]
+    V2,
+    /// 0x15 ACK bitmap (yalnız ölçüm; iki uç açıkça yapılandırılır).
+    Bitmap,
+}
+
+impl AckFormat {
+    /// `"v2"` / boş → `V2`; `"bitmap"` → `Bitmap`; başka → `None`.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim() {
+            "" | "v2" => Some(Self::V2),
+            "bitmap" => Some(Self::Bitmap),
+            _ => None,
+        }
+    }
+}
 
 /// [CC-PORT] Taşıma motoru (bkz. [`RuntimeConfig::engine`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1037,6 +1067,10 @@ pub struct ClientStats {
     pub param_sends: u64,
     /// [v1/PARAM] PARAM_ACK hash-echo doğrulandı (0/1; B2: emisyon zaten akıyordu).
     pub param_confirmed: u64,
+    /// [ACK-BITMAP · YETENEK] Gönderilen CAPS çerçevesi (bitmap biçimi açıkken; bounded retry).
+    pub caps_sends: u64,
+    /// [ACK-BITMAP] Çözülen 0x15 bitmap ACK çerçevesi.
+    pub ack_bitmap_rx: u64,
     /// Wire'a yazılmak üzere ÜRETİLEN mühürlü UDP payload byte'ı — DENEME düzlemi
     /// ([`EgressPolicy`] reddettikleri DAHİL; gerçek-enjekte düzlem politikanın kendi
     /// sayacındadır). Alt-sınıf ayrımı `tx_*_bytes` alanlarında; toplamları bu değere eşittir.
@@ -1114,6 +1148,8 @@ pub struct ClientStats {
 pub struct ServerStats {
     /// App'e teslim edilen birim (ilk-teslim).
     pub delivered: u64,
+    /// [ACK-BITMAP · YETENEK] Alınan CAPS çerçevesi.
+    pub caps_rx: u64,
     /// Teslim kanalı doluyken düşen teslim. [INV-ACK-DELIVER-1 · F4] Teslim artık yalnız ayrılmış
     /// kanal yeriyle yapılır (DATA yolu yeri motordan önce, FEC yolu RECOVERED'dan önce ayırır);
     /// düşme yolu yoktur, bu sayaç 0 kalır. Alan geriye uyum için durur: dolu kanalın görünür
@@ -2933,6 +2969,17 @@ async fn client_task(
     // [DÖNÜŞ-HATTI] Dar hatta son PARAM'ın hattı terk ettiği an + taban PTO (ms); bu andan önce
     // yeniden deneme çıkmaz (`param_retry_due`). Hat modeli kurulu değilken `None`.
     let mut param_line_gate_ms: Option<u64> = None;
+    // [ACK-BITMAP · YETENEK] Bitmap biçimi açık uç, veri alıcısına CAPS ile 0x15'i çözebildiğini
+    // bildirir; ilk 0x15 ACK'i bildirimin ulaştığının kanıtıdır ve yeniden denemeyi durdurur.
+    // Kapalıyken (varsayılan) CAPS hiç çıkmaz: tel ve davranış bugünküyle aynı. CAPS yalnız bu
+    // ucun ACK'leri dar dönüşten geliyorsa (`link_feedback_starved`: bitmap'in fayda verdiği tek
+    // yol; alıcı da yalnız orada yazar) çıkar. Ölçüldü (ürün testi, dürüst hücre, tohum 1): Bob'un
+    // istemci ucu da CAPS gönderiyordu; 4 × 53 B Bob'un 62 B/s yukarı yönünü 3,4 s tuttu ve ilk
+    // alındı 0,78 → 3,37 s'de çıktı (sınır 4 s aşıldı). Bob'un ACK'leri geniş hattan gelir.
+    let mut caps_confirmed = cfg.ack_format != AckFormat::Bitmap || !link_feedback_starved(&cfg);
+    let mut caps_last_ms: u64 = 0;
+    let mut caps_tries: u32 = 0;
+    let mut caps_line_gate_ms: Option<u64> = None;
     // [S1B] Fragmenter durumu. `frag_on` = mesaj tavanı birim tavanından BÜYÜK. Kapalıyken bu
     // haritalar hiç dokunulmaz ve gönderim yolu 0x00 DATA ile birebir aynıdır (bankadaki tüm
     // ölçümler geçerli kalır); açıkken mesaj ardışık chunk-birimlere bölünür ve app'e ACK
@@ -3374,11 +3421,27 @@ async fn client_task(
                         _ => stats.unknown_frames += 1,
                     }
                 } else if plain.is_empty()
-                    || (plain[0] != FRAME_TYPE_ACK && plain[0] != FRAME_TYPE_ACK_V2)
+                    || (plain[0] != FRAME_TYPE_ACK
+                        && plain[0] != FRAME_TYPE_ACK_V2
+                        && !(plain[0] == FRAME_TYPE_ACK_BITMAP
+                            && cfg.ack_format == AckFormat::Bitmap))
                 {
                     stats.unknown_frames += 1;
                 } else {
-                    if let Ok(frame) = AckFrame::decode(&plain) {
+                    // [ACK-BITMAP] 0x15 yalnız bitmap biçimi açıkça yapılandırılmışsa çözülür; ilk
+                    // 0x15 çerçevesi CAPS bildiriminin karşıya ulaştığını gösterir.
+                    // Makro koşu sonu boşaltmasında da açılır; orada değer okunmaz.
+                    #[allow(unused_assignments)]
+                    if plain[0] == FRAME_TYPE_ACK_BITMAP {
+                        caps_confirmed = true;
+                        stats.ack_bitmap_rx += 1;
+                    }
+                    let decoded = if cfg.ack_format == AckFormat::Bitmap {
+                        AckFrame::decode_with_bitmap(&plain)
+                    } else {
+                        AckFrame::decode(&plain)
+                    };
+                    if let Ok(frame) = decoded {
                         // [FAZ-1 DÖNÜŞ-YOLU] Gözlem girdisi: teldeki ACK boyu + alıcının GÖRDÜĞÜ
                         // datagram sayısı (V2 `seen_count`) + göndericinin yolladığı sayı.
                         // Motor davranışını DEĞİŞTİRMEZ; yön-ayrımını (ileri kayıp ↔ dönüş
@@ -3394,7 +3457,27 @@ async fn client_task(
                         );
                         // [D1a] ACK aralıkları PN uzayında → motor seq'ine çevrilir. Tabloda olmayan
                         // PN (ufuk dışı / motor kararı olmayan çerçeve) motora GİTMEZ.
-                        let pns = frame.acked_full(max_sealed_pn.map_or(0, |m| m + 1));
+                        let expected_pn = max_sealed_pn.map_or(0, |m| m + 1);
+                        let pns = frame.acked_full(expected_pn);
+                        // [ACK-BITMAP] Kanıt aralığı PN uzayında → motor seq aralığına: tablodaki
+                        // PN'i [base, largest] içinde olan kayıtların en küçük / en büyük seq'i (PN
+                        // ve motor seq aynı sırayla artar: her karar mühürlendiği sırayla PN alır).
+                        // Tabloda hiç kayıt yoksa boş aralık (kanıt kipi yine açılır).
+                        if let Some((lo_pn, hi_pn)) = frame.evidence_span_full(expected_pn) {
+                            let a = pn_seq.partition_point(|&(p, _)| p < lo_pn);
+                            let b = pn_seq.partition_point(|&(p, _)| p <= hi_pn);
+                            let span = if a < b {
+                                let (lo, hi) = pn_seq
+                                    .range(a..b)
+                                    .fold((u64::MAX, 0u64), |(lo, hi), &(_, s)| {
+                                        (lo.min(s), hi.max(s))
+                                    });
+                                (lo, hi)
+                            } else {
+                                (1, 0)
+                            };
+                            session.sender_mut().set_next_ack_evidence(Some(span));
+                        }
                         // [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] Salt gözlem: çerçevenin teyit ettiği PN
                         // sayısı ve en büyüğü (motora giden liste değişmez). [DUR-19] Yalnız canlı
                         // ayna açıkken hesaplanır.
@@ -3796,6 +3879,30 @@ async fn client_task(
                                     left_ns.saturating_add(session.sender().base_pto_ns()) / 1_000_000,
                                 );
                             }
+                        }
+                    }
+                }
+                // [ACK-BITMAP · YETENEK] CAPS, PARAM ile aynı geri çekilme ve hat kapısıyla
+                // (`param_retry_due`) en çok `CAPS_MAX_TRIES` kez çıkar; ilk 0x15 ACK'i durdurur.
+                // Motor kararı değil: PN tabloya girmez, hat modeline yazılır.
+                if !caps_confirmed && caps_tries < CAPS_MAX_TRIES {
+                    let now_ms = now / 1_000_000;
+                    if param_retry_due(now_ms, caps_tries, caps_last_ms, caps_line_gate_ms) {
+                        let f = encode_caps(CAP_ACK_BITMAP);
+                        let sealed = wire_len(seam.as_ref(), client_ctx, f.len());
+                        let _ = seal_send!(f, TxClass::Ctrl, now);
+                        stats.caps_sends += 1;
+                        caps_tries += 1;
+                        caps_last_ms = now_ms;
+                        if session.sender().cc_line_installed() {
+                            session.sender_mut().cc_line_charge(sealed);
+                            let shared = uplink.as_ref().map_or(0, UplinkShare::ns_until_clear);
+                            let left_ns = now.saturating_add(
+                                session.sender().cc_line_ns_until_drained().max(shared),
+                            );
+                            caps_line_gate_ms = Some(
+                                left_ns.saturating_add(session.sender().base_pto_ns()) / 1_000_000,
+                            );
                         }
                     }
                 }
@@ -4635,6 +4742,9 @@ fn fec_shard_fits(p: &FecProfile, h: &FecFrameHeader, symbol: &[u8]) -> bool {
 /// dar hatta son PARAM'ın hattı terk ettiği an + taban PTO; PARAM_ACK ondan önce gelemez (RFC 9002
 /// §6.2: kayıp yoklaması gönderimden bir PTO sonra — dar hatta "gönderim" son bitin hattan çıkışı).
 /// `None` = hat modeli yok (bugünkü kural, bit-aynı).
+/// [ACK-BITMAP · YETENEK] CAPS deneme tavanı (geri çekilme 200 ms → 5 s; ≈ 25 s'lik pencere).
+const CAPS_MAX_TRIES: u32 = 8;
+
 fn param_retry_due(now_ms: u64, tries: u32, last_ms: u64, line_gate_ms: Option<u64>) -> bool {
     if tries == 0 {
         return true;
@@ -5137,6 +5247,8 @@ async fn server_task(
                     /// [DR-CS-3] Cold-start probe — oturum durumu GEREKTİRMEZ, idempotent
                     /// echo ile cevaplanır (gönderenin RTT örneği buradan doğar).
                     CsProbe { subtype: u8, probe_seq: u16 },
+                    /// [ACK-BITMAP · YETENEK] Karşı ucun çözebildiği isteğe bağlı ACK biçimleri.
+                    Caps { caps: u16 },
                 }
                 let parsed = if let Some((_seq, unit_id, payload)) = decode_data(&plain) {
                     RxFrame::Data { unit_id, payload }
@@ -5156,6 +5268,8 @@ async fn server_task(
                         code_suite_id,
                         param_hash,
                     }
+                } else if let Some(caps) = decode_caps(&plain) {
+                    RxFrame::Caps { caps }
                 } else {
                     stats.unknown_frames += 1; // kontrol-düzlemi dal-noktası (item 6 / B-hattı).
                     continue;
@@ -5185,6 +5299,8 @@ async fn server_task(
                         slot.rx.set_return_budget_permille_for_diag(y);
                     }
                     slot.rx.set_ack_rereport(cfg.ack_rereport);
+                    // [ACK-BITMAP] Bitmap yalnız karşı uç CAPS ile 0x15'i çözebildiğini bildirince
+                    // açılır (aşağıda `RxFrame::Caps`); yuva bugünkü 0x14 yoluyla başlar.
                     peers.insert(key, slot);
                 }
                 let Some(slot) = peers.get_mut(&key) else { continue };
@@ -5445,6 +5561,18 @@ async fn server_task(
                         let sp = slot.ctx;
                         stats.cs_echoes_tx += 1;
                         srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, f).await;
+                    }
+                    RxFrame::Caps { caps } => {
+                        // [ACK-BITMAP · YETENEK] 0x15 yalnız: karşı uç çözebildiğini bildirdi VE bu
+                        // ucun yapılandırması bitmap'e izin veriyor VE port motoru + yön hızı
+                        // profili (alıcı ayrıca bütçenin geri bildirimi aç olmasını ister). Aksi
+                        // hâlde 0x14 sürer. CAPS'in kendisi ACK'lenmez (PN tabloya girmez).
+                        stats.caps_rx += 1;
+                        let on = caps & CAP_ACK_BITMAP != 0
+                            && cfg.ack_format == AckFormat::Bitmap
+                            && cfg.engine == TransportEngine::CcPort
+                            && cfg.link_rates.is_some();
+                        slot.rx.set_ack_bitmap(on);
                     }
                     RxFrame::Param {
                         profile_id,
