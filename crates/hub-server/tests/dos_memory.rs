@@ -15,7 +15,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use harness::{data, test_config, FakeClock, Phone, TestRng, World};
-use hub_server::wire::{envelope, ClientBindRequest, Payload};
+use hub_server::wire::ENVELOPE_SESSION_INIT;
 use hub_server::{Hub, Sink};
 
 static LIVE_BYTES: AtomicUsize = AtomicUsize::new(0);
@@ -107,12 +107,13 @@ fn first_round(
     let from = rng.addr();
     let mut client_nonce = [0u8; 16];
     rng.fill_bytes(&mut client_nonce);
+    // Yük elle dizilir (`mode 0 ‖ cert_ref ‖ presence 0 ‖ client_nonce`): `ClientBindReq::encode`
+    // `Vec` ayırır ve sayaç süreç-genelidir — ölçüm penceresinde sürücü de bellek ayırmamalı.
     payload.clear();
-    ClientBindRequest {
-        cert_ref: phone.cert_ref,
-        client_nonce,
-    }
-    .write(payload);
+    payload.push(0);
+    payload.extend_from_slice(&phone.cert_ref);
+    payload.push(0);
+    payload.extend_from_slice(&client_nonce);
     hub_server::wire::RpcFrame {
         method_id: 0x01,
         flags: 0,
@@ -183,7 +184,7 @@ fn floods_and_steady_relay_allocate_nothing() {
     let (mut a, mut b) = (Phone::alice(), Phone::bob());
     world.bind(&mut a);
     world.bind(&mut b);
-    let h = world.open(&mut a, &b, envelope::SESSION_INIT, b"INIT");
+    let h = world.open(&mut a, &b, ENVELOPE_SESSION_INIT, b"INIT");
     let datagram = data(h, &[0x5a; 1200]);
     let mut sink = CountingSink::default();
     for _ in 0..WARM_UP {

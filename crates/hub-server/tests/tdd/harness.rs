@@ -11,10 +11,11 @@ use std::time::Duration;
 use ed25519_dalek::{Signer, SigningKey};
 use hub_server::config::{self, Config, Limits};
 use hub_server::wire::{
-    bind_ack_tbs, bind_proof_tbs, classify, code, control_datagram, envelope, flags, frame, method,
-    BindProofRequest, BindProofResponse, CertRef, ClientBindRequest, ClientBindResponse, Datagram,
-    Deliver, DestHash, ErrorPayload, Nonce, Payload, RouteMiss, RpcFrame, StoreRequest,
-    StoreResponse, BIND_OK,
+    ack_tbs, bind_tbs, classify, control_datagram, BindProofReq, BindProofResp, CertRef,
+    ClientBindReq, ClientBindResp, Datagram, Deliver, DestHash, ErrorPayload, Nonce, RouteMiss,
+    RpcFrame, StoreMessageReq, StoreMessageResp, BIND_OK, ENVELOPE_SESSION_INIT, FLAG_ERROR,
+    FLAG_RESPONSE, FRAME_HEARTBEAT, FRAME_PLANE1_RPC, METHOD_BIND_PROOF, METHOD_CLIENT_BIND,
+    METHOD_DELIVER, METHOD_ROUTE_MISS, METHOD_STORE_MESSAGE, STATUS_OK,
 };
 use hub_server::{Clock, Hub, Sink};
 use kama_noise_wire::ed25519_strict::verify_strict;
@@ -146,7 +147,7 @@ pub fn rpc(method_id: u8, flags: u8, request_id: u32, payload: &[u8]) -> Vec<u8>
 
 pub fn heartbeat(token: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
-    control_datagram(&mut out, frame::HEARTBEAT, token);
+    control_datagram(&mut out, FRAME_HEARTBEAT, token);
     out
 }
 
@@ -167,7 +168,7 @@ pub struct Reply {
 
 pub fn reply(datagram: &[u8]) -> Reply {
     let Ok(Datagram::Control {
-        frame_type: frame::PLANE1_RPC,
+        frame_type: FRAME_PLANE1_RPC,
         body,
     }) = classify(datagram)
     else {
@@ -187,20 +188,22 @@ pub fn error_code(datagram: &[u8]) -> u16 {
     let r = reply(datagram);
     assert_eq!(
         r.flags,
-        flags::RESPONSE_ERROR,
+        FLAG_RESPONSE | FLAG_ERROR,
         "hata çerçevesi bekleniyordu: {r:?}"
     );
-    ErrorPayload::decode(&r.payload).expect("ErrorPayload").code
+    let error = ErrorPayload::decode(&r.payload).expect("ErrorPayload");
+    assert!(error.detail.is_empty(), "hub `detail`'i boş yollar: {r:?}");
+    error.error_code
 }
 
-pub fn store_response(datagram: &[u8]) -> StoreResponse {
+pub fn store_response(datagram: &[u8]) -> StoreMessageResp {
     let r = reply(datagram);
     assert_eq!(
         (r.method_id, r.flags),
-        (method::STORE_MESSAGE, flags::RESPONSE),
+        (METHOD_STORE_MESSAGE, FLAG_RESPONSE),
         "{r:?}"
     );
-    StoreResponse::decode(&r.payload).expect("StoreResp")
+    StoreMessageResp::decode(&r.payload).expect("StoreResp")
 }
 
 /// DELIVER: (handle, gönderen, tip, zarf).
@@ -208,18 +211,23 @@ pub fn deliver(datagram: &[u8]) -> (u32, DestHash, u8, Vec<u8>) {
     let r = reply(datagram);
     assert_eq!(
         (r.method_id, r.flags, r.request_id),
-        (method::DELIVER, 0, 0),
+        (METHOD_DELIVER, 0, 0),
         "{r:?}"
     );
     let d = Deliver::decode(&r.payload).expect("DELIVER");
-    (d.hub_handle, d.sender, d.envelope_type, d.envelope.to_vec())
+    (
+        d.hub_handle,
+        d.sender_dest_hash,
+        d.envelope_type,
+        d.envelope,
+    )
 }
 
 pub fn route_miss(datagram: &[u8]) -> RouteMiss {
     let r = reply(datagram);
     assert_eq!(
         (r.method_id, r.flags, r.request_id),
-        (method::ROUTE_MISS, 0, 0),
+        (METHOD_ROUTE_MISS, 0, 0),
         "{r:?}"
     );
     RouteMiss::decode(&r.payload).expect("ROUTE_MISS")
@@ -330,12 +338,12 @@ impl Phone {
     }
 
     pub fn bind1(&self, request_id: u32, client_nonce: Nonce) -> Vec<u8> {
-        let body = ClientBindRequest {
-            cert_ref: self.cert_ref,
+        let body = ClientBindReq {
+            device_cert_ref: self.cert_ref,
             client_nonce,
         }
-        .to_vec();
-        rpc(method::CLIENT_BIND, flags::REQUEST, request_id, &body)
+        .encode();
+        rpc(METHOD_CLIENT_BIND, 0, request_id, &body)
     }
 
     pub fn bind2(
@@ -356,15 +364,15 @@ impl Phone {
         client_nonce: Nonce,
         hub_nonce: Nonce,
     ) -> Vec<u8> {
-        let tbs = bind_proof_tbs(hub_pub, &self.cert_ref, &client_nonce, &hub_nonce);
-        let body = BindProofRequest {
-            cert_ref: self.cert_ref,
+        let tbs = bind_tbs(hub_pub, &self.cert_ref, &client_nonce, &hub_nonce);
+        let body = BindProofReq {
+            device_cert_ref: self.cert_ref,
             client_nonce,
             hub_nonce,
-            signature: key.sign(&tbs).to_bytes(),
+            client_signature: key.sign(&tbs).to_bytes(),
         }
-        .to_vec();
-        rpc(method::BIND_PROOF, flags::REQUEST, request_id, &body)
+        .encode();
+        rpc(METHOD_BIND_PROOF, 0, request_id, &body)
     }
 
     pub fn store(
@@ -375,22 +383,20 @@ impl Phone {
         to: &Phone,
         envelope: &[u8],
     ) -> Vec<u8> {
-        let body = StoreRequest {
+        let body = StoreMessageReq {
             hub_handle,
             envelope_type,
-            recipient: to.id,
-            envelope,
+            recipient_dest_hash: to.id,
+            envelope: envelope.to_vec(),
         }
-        .to_vec();
-        rpc(method::STORE_MESSAGE, flags::REQUEST, request_id, &body)
+        .encode()
+        .expect("STORE yükü");
+        rpc(METHOD_STORE_MESSAGE, 0, request_id, &body)
     }
 
     pub fn init(&mut self, to: &Phone, envelope: &[u8]) -> (u32, Vec<u8>) {
         let rid = self.rid();
-        (
-            rid,
-            self.store(rid, 0, envelope::SESSION_INIT, to, envelope),
-        )
+        (rid, self.store(rid, 0, ENVELOPE_SESSION_INIT, to, envelope))
     }
 }
 
@@ -498,9 +504,9 @@ impl World {
         let r = reply(bytes);
         assert_eq!(
             (r.method_id, r.flags, r.request_id),
-            (method::CLIENT_BIND, flags::RESPONSE, rid)
+            (METHOD_CLIENT_BIND, FLAG_RESPONSE, rid)
         );
-        let hn = ClientBindResponse::decode(&r.payload)
+        let hn = ClientBindResp::decode(&r.payload)
             .expect("CHALLENGE")
             .hub_nonce;
         (rid, cn, hn)
@@ -521,11 +527,11 @@ impl World {
         let r = reply(bytes);
         assert_eq!(
             (r.method_id, r.flags, r.request_id),
-            (method::BIND_PROOF, flags::RESPONSE, rid),
+            (METHOD_BIND_PROOF, FLAG_RESPONSE, rid),
             "{r:?}"
         );
-        let ack = BindProofResponse::decode(&r.payload).expect("bind_ok yanıtı");
-        let tbs = bind_ack_tbs(&phone.cert_ref, &cn, &hn, BIND_OK, code::OK);
+        let ack = BindProofResp::decode(&r.payload).expect("bind_ok yanıtı");
+        let tbs = ack_tbs(&phone.cert_ref, &cn, &hn, BIND_OK, STATUS_OK);
         assert_eq!(
             verify_strict(&self.hub_pub, &tbs, &ack.hub_signature),
             Ok(()),
@@ -545,7 +551,7 @@ impl World {
         let out = self.deliver(from.addr, &from.store(rid, 0, envelope_type, to, envelope));
         assert_eq!(out.len(), 2, "yanıt + DELIVER bekleniyordu");
         let response = store_response(sent_to(&out, from.addr));
-        assert_eq!(response.status, code::OK);
+        assert_eq!(response.status, STATUS_OK);
         let (h, sender, kind, env) = deliver(sent_to(&out, to.addr));
         assert_eq!(
             (h, sender, kind, env.as_slice()),

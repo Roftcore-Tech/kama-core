@@ -1,13 +1,16 @@
 //! Bayt düzenleri — S4 §2.3 mesaj tablosunun satır satır karşılığı.
 //!
 //! Her satırın beklenen datagramı burada ALAN ALAN elle dizilir (codec'in kodlayıcısı kullanılmadan) ve
-//! iki yönde sınanır. Bu, A2'nin Python'dan üreteceği altın vektörlerin (`vectors/hub/`) YERİNE
-//! GEÇMEZ: aynı elden çıkar. Vektörler gelene dek tablonun kodla ayrışmasını yakalar. Alan değerleri
-//! ayırt edilebilir seçilmiştir; yer değiştiren iki alan testi düşürür.
+//! iki yönde sınanır: ortak sözleşmenin codec'i (`kama_contracts::s4`, `hub_server::wire` üzerinden) ve
+//! hub'ın kendi sarması (önek ‖ `0x1D` ‖ çerçeve ‖ 16 sıfır). Altın vektörlerin (`vectors/hub/`) YERİNE
+//! GEÇMEZ: aynı elden çıkar. Alan değerleri ayırt edilebilir seçilmiştir; yer değiştiren iki alan testi
+//! düşürür.
 
 use hub_server::wire::{
-    classify, code, BindProofRequest, BindProofResponse, ClientBindRequest, ClientBindResponse,
-    Datagram, Deliver, ErrorPayload, Payload, RouteMiss, RpcFrame, StoreRequest, StoreResponse,
+    classify, BindProofReq, BindProofResp, ClientBindReq, ClientBindResp, Datagram, Deliver,
+    ErrorPayload, RouteMiss, RpcBody, RpcFrame, RpcMessage, StoreMessageReq, StoreMessageResp,
+    ERROR_BAD_COOKIE, ERROR_BAD_REQUEST, ERROR_HUB_CAPACITY, ERROR_POSSESSION_PROOF_FAIL,
+    ERROR_RATE_LIMITED,
 };
 
 const R: [u8; 4] = [0x0a, 0x0b, 0x0c, 0x0d];
@@ -29,12 +32,23 @@ fn datagram(method_id: u8, flags: u8, request_id: [u8; 4], payload: &[&[u8]]) ->
     out
 }
 
-fn check<'a, P: Payload<'a> + PartialEq + std::fmt::Debug>(
-    expected: &'a [u8],
+/// Hata satırı: `detail` boş (hub böyle yollar) → yük `code ‖ 00 00`.
+fn error(method_id: u8, error_code: u16) -> RpcBody {
+    RpcBody::Error {
+        method_id,
+        payload: ErrorPayload {
+            error_code,
+            detail: Vec::new(),
+        },
+    }
+}
+
+fn check(
+    expected: &[u8],
     method_id: u8,
     flags: u8,
     request_id: u32,
-    payload: P,
+    row: RpcBody,
     payload_len: usize,
 ) {
     let Ok(Datagram::Control {
@@ -50,8 +64,12 @@ fn check<'a, P: Payload<'a> + PartialEq + std::fmt::Debug>(
         (method_id, flags, request_id)
     );
     assert_eq!(frame.payload.len(), payload_len, "tablodaki alan boyları");
-    assert_eq!(frame.payload, payload.to_vec().as_slice(), "kodlama");
-    assert_eq!(P::decode(frame.payload), Ok(payload), "çözme");
+    let message = RpcMessage {
+        request_id,
+        body: row,
+    };
+    assert_eq!(message.encode().as_deref(), Ok(body), "kodlama");
+    assert_eq!(RpcMessage::decode(body), Ok(message), "çözme");
     let mut encoded = Vec::new();
     RpcFrame {
         method_id,
@@ -74,10 +92,10 @@ fn bind_rows() {
         0x01,
         0x00,
         rid,
-        ClientBindRequest {
-            cert_ref: CERT_REF,
+        RpcBody::ClientBindReq(ClientBindReq {
+            device_cert_ref: CERT_REF,
             client_nonce: CN,
-        },
+        }),
         50,
     );
     // CLIENT_BIND yanıt: bind_ok 0 · cursor u64 0 · rev u64 0 · 0x0003 · hub_nonce
@@ -92,21 +110,12 @@ fn bind_rows() {
         0x01,
         0x01,
         rid,
-        ClientBindResponse { hub_nonce: HN },
+        RpcBody::ClientBindResp(ClientBindResp { hub_nonce: HN }),
         35,
     );
     // CLIENT_BIND hata
     let d = datagram(0x01, 0x03, R, &[&[0x06, 0x01], &[0, 0]]);
-    check(
-        &d,
-        0x01,
-        0x03,
-        rid,
-        ErrorPayload {
-            code: code::BAD_REQUEST,
-        },
-        4,
-    );
+    check(&d, 0x01, 0x03, rid, error(0x01, ERROR_BAD_REQUEST), 4);
     // BIND_PROOF istek: cert_ref · client_nonce · hub_nonce · imza
     let d = datagram(0x0b, 0x00, R, &[&CERT_REF, &CN, &HN, &SIG]);
     check(
@@ -114,12 +123,12 @@ fn bind_rows() {
         0x0b,
         0x00,
         rid,
-        BindProofRequest {
-            cert_ref: CERT_REF,
+        RpcBody::BindProofReq(BindProofReq {
+            device_cert_ref: CERT_REF,
             client_nonce: CN,
             hub_nonce: HN,
-            signature: SIG,
-        },
+            client_signature: SIG,
+        }),
         128,
     );
     // BIND_PROOF yanıt: bind_ok 1 · 0 · 0 · OK · hub imzası
@@ -129,18 +138,18 @@ fn bind_rows() {
         0x0b,
         0x01,
         rid,
-        BindProofResponse { hub_signature: SIG },
+        RpcBody::BindProofResp(BindProofResp { hub_signature: SIG }),
         83,
     );
     // BIND_PROOF hataları
     for (bytes, value) in [
-        ([0x01, 0x06], code::BAD_COOKIE),
-        ([0x01, 0x05], code::POSSESSION_PROOF_FAIL),
-        ([0x05, 0x02], code::RATE_LIMITED),
-        ([0x05, 0x01], code::HUB_CAPACITY),
+        ([0x01, 0x06], ERROR_BAD_COOKIE),
+        ([0x01, 0x05], ERROR_POSSESSION_PROOF_FAIL),
+        ([0x05, 0x02], ERROR_RATE_LIMITED),
+        ([0x05, 0x01], ERROR_HUB_CAPACITY),
     ] {
         let d = datagram(0x0b, 0x03, R, &[&bytes, &[0, 0]]);
-        check(&d, 0x0b, 0x03, rid, ErrorPayload { code: value }, 4);
+        check(&d, 0x0b, 0x03, rid, error(0x0b, value), 4);
     }
 }
 
@@ -159,12 +168,12 @@ fn store_deliver_and_route_miss_rows() {
         0x05,
         0x00,
         rid,
-        StoreRequest {
+        RpcBody::StoreMessageReq(StoreMessageReq {
             hub_handle: 0,
             envelope_type: 0x01,
-            recipient: BOB,
-            envelope: ZARF,
-        },
+            recipient_dest_hash: BOB,
+            envelope: ZARF.to_vec(),
+        }),
         47,
     );
     let d = datagram(
@@ -184,12 +193,12 @@ fn store_deliver_and_route_miss_rows() {
         0x05,
         0x00,
         rid,
-        StoreRequest {
+        RpcBody::StoreMessageReq(StoreMessageReq {
             hub_handle: 0x1122_3344,
             envelope_type: 0x02,
-            recipient: BOB,
-            envelope: ZARF,
-        },
+            recipient_dest_hash: BOB,
+            envelope: ZARF.to_vec(),
+        }),
         47,
     );
     // STORE_MESSAGE yanıt: status u16 · assigned_handle u32 (OK / PEER_UNBOUND / UNKNOWN_HANDLE)
@@ -199,24 +208,15 @@ fn store_deliver_and_route_miss_rows() {
         ([0x03, 0x02], [0; 4]),
     ] {
         let d = datagram(0x05, 0x01, R, &[&status, &handle]);
-        let expected = StoreResponse {
+        let expected = RpcBody::StoreMessageResp(StoreMessageResp {
             status: u16::from_be_bytes(status),
             assigned_handle: u32::from_be_bytes(handle),
-        };
+        });
         check(&d, 0x05, 0x01, rid, expected, 6);
     }
     // STORE_MESSAGE hata
     let d = datagram(0x05, 0x03, R, &[&[0x06, 0x01], &[0, 0]]);
-    check(
-        &d,
-        0x05,
-        0x03,
-        rid,
-        ErrorPayload {
-            code: code::BAD_REQUEST,
-        },
-        4,
-    );
+    check(&d, 0x05, 0x03, rid, error(0x05, ERROR_BAD_REQUEST), 4);
     // DELIVER: hub_handle · gönderen · tip · envelope_len · zarf (flags 0, request_id 0)
     let sender = [0xa1; 32];
     let d = datagram(
@@ -236,12 +236,12 @@ fn store_deliver_and_route_miss_rows() {
         0x81,
         0x00,
         0,
-        Deliver {
+        RpcBody::Deliver(Deliver {
             hub_handle: 0x1122_3344,
-            sender,
+            sender_dest_hash: sender,
             envelope_type: 0x05,
-            envelope: ZARF,
-        },
+            envelope: ZARF.to_vec(),
+        }),
         47,
     );
     // ROUTE_MISS: hub_handle · reason 0x01
@@ -251,10 +251,10 @@ fn store_deliver_and_route_miss_rows() {
         0x84,
         0x00,
         0,
-        RouteMiss {
+        RpcBody::RouteMiss(RouteMiss {
             hub_handle: 0x1122_3344,
             reason: 0x01,
-        },
+        }),
         5,
     );
 }
@@ -278,4 +278,41 @@ fn heartbeat_and_data_rows() {
     }
     let d = [0x11, 0x22, 0x33, 0x44, 0xde];
     assert!(matches!(classify(&d), Ok(Datagram::Data { handle }) if handle.get() == 0x1122_3344));
+}
+
+/// H-2 U-1…U-4 (`docs/hub/H-2-WIRE-RS-KARSILASTIRMA-2026-11-11.md` (d)): eski `wire.rs` çözücülerinin
+/// kabul ettiği sekiz negatif vektör `hub_server::wire` üzerinden çözülünce vektörün adıyla reddedilir.
+#[test]
+fn h2_u1_to_u4_negative_vectors_are_rejected() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../vectors/hub/s4-apprpc-v1.json"
+    );
+    let suite: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).expect("vektör dosyası"))
+            .expect("JSON");
+    let cases = suite["cases"].as_array().expect("cases");
+    for name in [
+        "store-resp-unknown-status",       // U-1
+        "store-resp-error-code-as-status", // U-1
+        "store-resp-ok-handle-0",          // U-1
+        "error-payload-status-code",       // U-2
+        "deliver-handle-0",                // U-3
+        "deliver-unknown-envelope-type",   // U-3
+        "route-miss-reason",               // U-4
+        "route-miss-handle-0",             // U-4
+    ] {
+        let id = format!("s4-apprpc-v1.neg.{name}");
+        let case = cases
+            .iter()
+            .find(|case| case["id"] == id.as_str())
+            .unwrap_or_else(|| panic!("{id} vektörde yok"));
+        let hex = case["input_hex"].as_str().expect("input_hex");
+        let bytes: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).expect("hex"))
+            .collect();
+        let rejected = RpcMessage::decode(&bytes).expect_err(&id);
+        assert_eq!(rejected.as_str(), case["expected"]["reason"], "{id}");
+    }
 }

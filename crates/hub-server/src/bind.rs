@@ -30,9 +30,10 @@ use crate::config::{HubSecret, Limits};
 use crate::stats::{self, ShortId};
 use crate::table::LastAccepted;
 use crate::wire::{
-    bind_ack_tbs, bind_proof_tbs, code, cookie_input, frame, BindProofRequest, BindProofResponse,
-    CertRef, ClientBindRequest, ClientBindResponse, Nonce, Payload, RpcFrame, Signature,
-    ECHO_TOKEN_LEN, NONCE_LEN, PUBLIC_KEY_LEN, SECRET_LEN,
+    ack_tbs, bind_tbs, client_bind_challenge, cookie_input, BindProofReq, BindProofResp, CertRef,
+    ClientBindReq, Nonce, RpcFrame, Signature, ECHO_TOKEN_LEN, ERROR_BAD_COOKIE,
+    ERROR_POSSESSION_PROOF_FAIL, ERROR_RATE_LIMITED, FRAME_HEARTBEAT_ACK, NONCE_LEN,
+    PUBLIC_KEY_LEN, SECRET_LEN, STATUS_OK,
 };
 use crate::{Clock, EntropyUnavailable, Hub, Sink};
 
@@ -282,12 +283,12 @@ impl HubIdentity {
         client_nonce: &Nonce,
         hub_nonce: &Nonce,
     ) -> Signature {
-        let tbs = bind_ack_tbs(
+        let tbs = ack_tbs(
             cert_ref,
             client_nonce,
             hub_nonce,
             crate::wire::BIND_OK,
-            code::OK,
+            STATUS_OK,
         );
         self.signing.sign(&tbs).to_bytes()
     }
@@ -321,7 +322,7 @@ impl<C: Clock, R: EntropySource> Hub<C, R> {
         if let Some(endpoint) = self.table.endpoint_mut(&me) {
             endpoint.last_activity = now;
         }
-        self.reply_control(sink, src, frame::HEARTBEAT_ACK, body);
+        self.reply_control(sink, src, FRAME_HEARTBEAT_ACK, body);
     }
 
     /// CLIENT_BIND (1. tur): hiçbir şey YAZMAZ.
@@ -332,19 +333,19 @@ impl<C: Clock, R: EntropySource> Hub<C, R> {
         now: Duration,
         sink: &mut dyn Sink,
     ) {
-        let Ok(bind) = ClientBindRequest::decode(request.payload) else {
+        let Ok(bind) = ClientBindReq::decode(request.payload) else {
             stats::bump(&mut self.stats.drop_malformed);
             return;
         };
-        let Some(device) = self.directory.by_cert_ref(&bind.cert_ref) else {
+        let Some(device) = self.directory.by_cert_ref(&bind.device_cert_ref) else {
             stats::bump(&mut self.stats.bind_unknown);
             return;
         };
         let epoch = self.table.bind_epoch(&device.dest_hash);
-        let hub_nonce = self
-            .cookies
-            .issue(src, &bind.cert_ref, &bind.client_nonce, now, epoch);
-        self.reply_rpc(sink, src, request, &ClientBindResponse { hub_nonce });
+        let hub_nonce =
+            self.cookies
+                .issue(src, &bind.device_cert_ref, &bind.client_nonce, now, epoch);
+        self.reply_rpc(sink, src, request, &client_bind_challenge(&hub_nonce));
     }
 
     /// BIND_PROOF (2. tur): S4 §2.4(b) 1–6, bu sırayla.
@@ -355,14 +356,14 @@ impl<C: Clock, R: EntropySource> Hub<C, R> {
         now: Duration,
         sink: &mut dyn Sink,
     ) {
-        let Ok(proof) = BindProofRequest::decode(request.payload) else {
+        let Ok(proof) = BindProofReq::decode(request.payload) else {
             stats::bump(&mut self.stats.drop_malformed);
             return;
         };
         // (1) Dizin kapısı — sessiz.
         let Some((dest_hash, device_pub)) = self
             .directory
-            .by_cert_ref(&proof.cert_ref)
+            .by_cert_ref(&proof.device_cert_ref)
             .map(|device| (device.dest_hash, device.ed25519_pub))
         else {
             stats::bump(&mut self.stats.bind_unknown);
@@ -387,14 +388,14 @@ impl<C: Clock, R: EntropySource> Hub<C, R> {
         let epoch = self.table.bind_epoch(&dest_hash);
         if !self.cookies.check(
             src,
-            &proof.cert_ref,
+            &proof.device_cert_ref,
             &proof.client_nonce,
             &proof.hub_nonce,
             now,
             epoch,
         ) {
             stats::bump(&mut self.stats.bind_bad_cookie);
-            self.reply_error(sink, src, request, code::BAD_COOKIE);
+            self.reply_error(sink, src, request, ERROR_BAD_COOKIE);
             return;
         }
         // (4) Adres kilidi (sessiz) ve küresel doğrulama bütçesi.
@@ -404,37 +405,39 @@ impl<C: Clock, R: EntropySource> Hub<C, R> {
         }
         if !self.verify_budget.take(self.limits.verify_budget, now) {
             stats::bump(&mut self.stats.rate_verify);
-            self.reply_error(sink, src, request, code::RATE_LIMITED);
+            self.reply_error(sink, src, request, ERROR_RATE_LIMITED);
             return;
         }
         // (5) İmza.
         stats::bump(&mut self.stats.verify_calls);
-        let tbs = bind_proof_tbs(
+        let tbs = bind_tbs(
             self.identity.public(),
-            &proof.cert_ref,
+            &proof.device_cert_ref,
             &proof.client_nonce,
             &proof.hub_nonce,
         );
-        if verify_strict(&device_pub, &tbs, &proof.signature).is_err() {
+        if verify_strict(&device_pub, &tbs, &proof.client_signature).is_err() {
             self.bind_fail.hit(src, now, &self.limits);
             stats::bump(&mut self.stats.bind_fail);
-            self.reply_error(sink, src, request, code::POSSESSION_PROOF_FAIL);
+            self.reply_error(sink, src, request, ERROR_POSSESSION_PROOF_FAIL);
             return;
         }
         // (6) Kabul.
-        let hub_signature =
-            self.identity
-                .sign_ack(&proof.cert_ref, &proof.client_nonce, &proof.hub_nonce);
+        let hub_signature = self.identity.sign_ack(
+            &proof.device_cert_ref,
+            &proof.client_nonce,
+            &proof.hub_nonce,
+        );
         let Some(ack) = self.encode_rpc(
             request,
-            crate::wire::flags::RESPONSE,
-            &BindProofResponse { hub_signature },
+            crate::wire::FLAG_RESPONSE,
+            &BindProofResp { hub_signature }.encode(),
         ) else {
             return;
         };
         let change = self.table.accept_bind(
             dest_hash,
-            proof.cert_ref,
+            proof.device_cert_ref,
             src,
             now,
             LastAccepted {
@@ -464,7 +467,7 @@ impl<C: Clock, R: EntropySource> Hub<C, R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wire::BIND_ACK_TBS_LEN;
+    use crate::wire::ACK_TBS_LEN;
     use std::net::{IpAddr, Ipv4Addr};
 
     struct Counter(u8);
@@ -512,15 +515,9 @@ mod tests {
             cookie(&s, v4, &REF, &CN, 3, 1)
         );
         let (input, len) = cookie_input(&s, mapped, &REF, &CN, 3, 1);
-        assert_eq!(
-            (input[32], len),
-            (crate::wire::FAMILY_IPV4, 32 + 1 + 4 + 2 + 32 + 16 + 8)
-        );
+        assert_eq!((input[32], len), (4, 32 + 1 + 4 + 2 + 32 + 16 + 8));
         let (input, len) = cookie_input(&s, v6, &REF, &CN, 3, 1);
-        assert_eq!(
-            (input[32], len),
-            (crate::wire::FAMILY_IPV6, 32 + 1 + 16 + 2 + 32 + 16 + 8)
-        );
+        assert_eq!((input[32], len), (6, 32 + 1 + 16 + 2 + 32 + 16 + 8));
     }
 
     #[test]
@@ -640,7 +637,7 @@ mod tests {
         };
         let hn = [0x22; 16];
         let sig = identity.sign_ack(&REF, &CN, &hn);
-        let tbs: [u8; BIND_ACK_TBS_LEN] = bind_ack_tbs(&REF, &CN, &hn, 1, 0);
+        let tbs: [u8; ACK_TBS_LEN] = ack_tbs(&REF, &CN, &hn, 1, 0);
         assert_eq!(verify_strict(identity.public(), &tbs, &sig), Ok(()));
         assert!(!format!("{identity:?}").contains("Signing"));
     }

@@ -1,6 +1,6 @@
 //! Heartbeat — T-H1 … T-H3 (S4 §2.2, H8).
 
-use hub_server::wire::{classify, frame, Datagram};
+use hub_server::wire::{classify, Datagram, FRAME_HEARTBEAT_ACK};
 
 use crate::harness::{heartbeat, only, Phone, World};
 
@@ -19,7 +19,7 @@ fn t_h1_bound_heartbeat_is_echoed_with_the_same_length() {
         assert_eq!(
             classify(bytes),
             Ok(Datagram::Control {
-                frame_type: frame::HEARTBEAT_ACK,
+                frame_type: FRAME_HEARTBEAT_ACK,
                 body: token
             })
         );
