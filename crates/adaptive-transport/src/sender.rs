@@ -1522,6 +1522,12 @@ const COPY_LINE_BUDGET_NS: u64 = 200_000_000;
 /// ardındaki 80 demet bekledi).
 const COPY_STALE_NS: u64 = 1_000_000_000;
 
+/// [BOŞ-HAT YENİDEN İLETİMİ] Birimin son iletiminden bu yana en az bu süre geçmeli (ns): hâlâ
+/// yolda olan iletim (300 ms yayılım + serileşme) yeniden gönderilmez.
+const IDLE_RETX_MIN_AGE_NS: u64 = 1_000_000_000;
+/// [BOŞ-HAT YENİDEN İLETİMİ] Bir planlama turunda en çok bu kadar kopya (pacer zaten sınırlar).
+const IDLE_RETX_PER_TURN: usize = 4;
+
 /// [ÖNLEMSEL-KOPYA] Kimliği `below_id`'den küçük her YENİ birim, ilk iletiminden sonra ACK
 /// beklemeden `copies` kez daha gönderilir (kopyalar `spacing_ns` aralıklı, §11 zamanlanmış
 /// forward-recovery kopyasıyla aynı kayıt: `dup_queue`, tek atış, teyit gelince iptal).
@@ -1890,6 +1896,11 @@ pub struct Sender {
     prio_arq_first: u64,
     prio_copy_stale: u64,
     prio_copy_deferred: u64,
+    /// [BOŞ-HAT YENİDEN İLETİMİ] Son ACK'ten bu yana boş hatta yeniden iletilen birimler
+    /// (birim başına ACK aralığında bir kez); her ACK'te boşalır.
+    idle_retx_units: std::collections::BTreeSet<u64>,
+    /// [BOŞ-HAT YENİDEN İLETİMİ] Gözlem: boş hatta yeniden iletim sayısı.
+    diag_idle_retx: u64,
     /// [DR-EST-1] Kuruluş-kolu anahtarı (DEFAULT-ON — ürün-davranışı). Yalnız donmuş-enstrüman
     /// testleri (Gate-5 structural-oracle: probe-vs-DATA çekişme-izolasyonu, DR-EST-1-öncesi
     /// tasarım) kapatır; kolun KENDİ pinleri tests/establish_probe.rs'te default-ON koşar.
@@ -2252,6 +2263,8 @@ impl Sender {
             prio_arq_first: 0,
             prio_copy_stale: 0,
             prio_copy_deferred: 0,
+            idle_retx_units: std::collections::BTreeSet::new(),
+            diag_idle_retx: 0,
             establish_probe_enabled: true,
             establish_due_ns: 0,
             establish_interval_ns: 0,
@@ -3652,6 +3665,8 @@ impl Sender {
         if ack.acked_seqs.is_empty() {
             return;
         }
+        // [BOŞ-HAT YENİDEN İLETİMİ] Yeni ACK yeni bilgi: birimler yeniden aday olur.
+        self.idle_retx_units.clear();
         self.last_ack_ns = Some(now_ns);
         // DR-ARQ-PRODUCT-TAIL-1: snapshot inflight to detect REAL progress (new ack-eliciting data acked) vs a
         // duplicate/stale ACK that removes nothing. Only real progress resets the tail timer (§4).
@@ -5336,6 +5351,8 @@ impl Sender {
         // mode-kapısı-YOK (üyelik=izin; girişte-kapılı) — buraya-drain-guard-EKLEME: Commit-K'nın
         // kaldırdığı suppression-bug'ını-geri-getirir.
         self.plan_fec_parity(&mut out, now_ns);
+        // [BOŞ-HAT YENİDEN İLETİMİ] Geri bildirimi aç profilde başka iş yokken (yalnız o zaman).
+        self.drain_idle_retransmit(&mut out, now_ns);
         // Commit-V (U12-adım-8): gerçek-harcama-settle + waste-denetimi (normal-yolda-waste=0).
         #[cfg(feature = "experimental-fec-budget")]
         self.budget_settle();
@@ -8083,6 +8100,75 @@ impl Sender {
                 });
             }
         }
+    }
+
+    /// [BOŞ-HAT YENİDEN İLETİMİ · #175 7069515224] Geri bildirimi aç profilde ([`FeedbackStarvedRule`])
+    /// gönderim kuyruğu, ARQ kuyruğu, parite kuyruğu boşken ve vadesi gelmiş kopya yokken pacer
+    /// jetonu varsa en eski teyitsiz birimin bir kopyası gider. Aday birim: FEC sembolü değil,
+    /// önlemsel kopya kuralının kapsamında değil (üst katmanın PTT şeridi kendi kopyalarını alır),
+    /// hiçbir kaydı teyitli değil (ACK ya da RECOVERED), son iletimi en az [`IDLE_RETX_MIN_AGE_NS`]
+    /// önce ve son ACK'ten bu yana bu yolla gönderilmemiş. Kayıp ilanı yoktur (INV-RATE-1 yolu
+    /// değişmez); kopya pacer ve uçuş kapısından geçer, teyitle kararsız düşer.
+    ///
+    /// Neden: ACK bütçe aralığı (62 B/s dönüşte ≈ 7 s) boyunca FEC'le çözülemeyen bir bloğun
+    /// eksiği bilinmez; hat boşken beklemek bir ACK aralığı kaybettirir. Ürün testi (dürüst-12500,
+    /// tohum 3, `3fe54abf`): gönderici 13,2 s'de bitti, 13,2–16,7 s hat boş (yalnız PTT), ACK
+    /// 16,72 s'de geldi, ARQ üç parçayı ancak o zaman gönderdi, dosya 17,11 s (sınır 14 s).
+    fn drain_idle_retransmit(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+        if self.cc_feedback_starved.is_none()
+            || !self.tx_queue.is_empty()
+            || !self.pending_lost.is_empty()
+            || !self.pending_fec.is_empty()
+            || self.dup_queue.iter().any(|d| d.due_ns <= now_ns)
+        {
+            return;
+        }
+        let copy_below = self.forward_copy_rule.map_or(0, |r| r.below_id);
+        for _ in 0..IDLE_RETX_PER_TURN {
+            // Birim başına: ilk kaydın seq'i, son iletim anı, birim; teyitli ya da FEC → aday değil.
+            let mut units: BTreeMap<u64, (u64, u64, OpaqueUnit, bool)> = BTreeMap::new();
+            for (&seq, p) in &self.inflight {
+                if p.unit.id < copy_below {
+                    continue;
+                }
+                let e = units
+                    .entry(p.unit.id)
+                    .or_insert((seq, p.send_ns, p.unit, false));
+                e.1 = e.1.max(p.send_ns);
+                e.3 |= p.origin == TransmitKind::FecParity || p.confirmed_release_ns.is_some();
+            }
+            let Some(unit) = units
+                .values()
+                .filter(|(_, last, u, bad)| {
+                    !bad && last.saturating_add(IDLE_RETX_MIN_AGE_NS) <= now_ns
+                        && !self.idle_retx_units.contains(&u.id)
+                })
+                .min_by_key(|(first, _, _, _)| *first)
+                .map(|&(_, _, u, _)| u)
+            else {
+                return;
+            };
+            if !self.try_send_pre_parity(unit.size, true) {
+                return;
+            }
+            self.idle_retx_units.insert(unit.id);
+            self.diag_idle_retx = self.diag_idle_retx.saturating_add(1);
+            let seq = self.track_sent(unit, now_ns, 0, TransmitKind::Duplicate);
+            self.diag_emit(now_ns, seq, unit.id, EmitCause::Copy, 0);
+            out.push(TransmitDecision {
+                kind: TransmitKind::Duplicate,
+                seq,
+                unit_id: unit.id,
+                size: unit.size,
+                send_record: None,
+            });
+        }
+    }
+
+    /// [BOŞ-HAT YENİDEN İLETİMİ] Gözlem: boş hatta yeniden iletim sayısı.
+    #[must_use]
+    pub fn diag_idle_retransmits(&self) -> u64 {
+        self.diag_idle_retx
     }
 
     /// [ÖNLEMSEL-KOPYA · ÖNCELİK] Kopya kuralı kurulu iken ([`ForwardCopyRule`]) kapsamdaki yeni
