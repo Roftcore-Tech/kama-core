@@ -1174,6 +1174,82 @@ impl Run {
         at.saturating_duration_since(base)
     }
 
+    /// [İLK-ACK · sahip kararı 2026-11-21 m. 1] İlk ACK'in gecikmesi üç ayrı süre olarak:
+    ///
+    /// * **ölçüm beklemesi:** boyu bilinen ilk varıştan bekletmenin sonuna. Alıcının ilk varış
+    ///   penceresi kuralı (`arrival_rate::FirstArrivalWindow`, alıcının kullandığı kod) Bob'un
+    ///   veri varış izi üzerinde yeniden oynatılır (gövde = tel − UDP/IP). Pencere kapanınca biter,
+    ///   kapanmazsa süre tavanında;
+    /// * **yerel kuyruk:** bekletmenin sonundan ACK'in dönüş hattına sunulmasına (dönüş ACK
+    ///   bütçesi, hattı tutan veriye yol verme, ACK zamanlayıcısı);
+    /// * **hat:** sunumdan Alice'e varışa (serileşme, hat kuyruğu, yayılım).
+    ///
+    /// İlk ACK, Alice'in işlediği ilk ACK çerçevesidir; dönüş izindeki kaydı varış anıyla eşlenir.
+    fn report_first_ack(&self, tag: &str) {
+        use adaptive_transport::arrival_rate::{FirstArrivalWindow, FIRST_ACK_HOLD_MAX_NS};
+        let cap = Duration::from_nanos(FIRST_ACK_HOLD_MAX_NS);
+        let ns = |x: Instant| u64::try_from(self.since(x, self.t0).as_nanos()).unwrap_or(u64::MAX);
+        let mut win = FirstArrivalWindow::default();
+        let mut first_seen: Option<Instant> = None;
+        let mut hold_end: Option<(Instant, &str)> = None;
+        for (seq, r) in self.fwd.trace.iter().enumerate() {
+            let data = matches!(r.route, Route::AUp) && self.alice.by_fp.contains_key(&r.fp);
+            let Some(at) = r.arrives.filter(|_| data && r.fate == 0) else {
+                continue;
+            };
+            if let Some(seen) = first_seen {
+                if at >= seen + cap {
+                    hold_end = Some((seen + cap, "tavan"));
+                    break;
+                }
+            }
+            win.on_arrival(seq as u64, r.wire.saturating_sub(UDP_IP_OVERHEAD), ns(at));
+            first_seen.get_or_insert(at);
+            if !win.holds_first_ack(ns(at)) {
+                let kind = if win.rate_field() == adaptive_transport::ack::ARRIVAL_RATE_SENTINEL {
+                    "geçersiz"
+                } else {
+                    "pencere"
+                };
+                hold_end = Some((at, kind));
+                break;
+            }
+        }
+        if hold_end.is_none() {
+            hold_end = first_seen.map(|s| (s + cap, "tavan"));
+        }
+        let first_ack = self.alice.acks_rx.first().map(|a| a.0);
+        // Dönüş izinde Alice'e varışı ilk ACK'in işlenmesine en yakın (ondan sonra olmayan) kayıt.
+        let line = first_ack.and_then(|fa| {
+            self.rev
+                .trace
+                .iter()
+                .filter(|r| matches!(r.route, Route::ADown))
+                .filter_map(|r| r.arrives.filter(|&a| a <= fa).map(|a| (r.offered, a)))
+                .max_by_key(|&(_, a)| a)
+        });
+        let t = |i: Instant| secs(self.since(i, self.t0));
+        let d = |a: Instant, b: Instant| secs(b.saturating_duration_since(a));
+        match (first_seen, hold_end, line) {
+            (Some(seen), Some((end, kind)), Some((offered, arrived))) => println!(
+                "İZ-İLK-ACK {tag} ilk_boylu_varış=+{} ölçüm_beklemesi={} ({kind}, alan={}) \
+                 yerel_kuyruk={} hat={} Alice_varış=+{}",
+                t(seen),
+                d(seen, end),
+                win.rate_field(),
+                d(end, offered),
+                d(offered, arrived),
+                t(arrived)
+            ),
+            _ => println!(
+                "İZ-İLK-ACK {tag} eksik: ilk_varış={:?} bekletme_sonu={:?} ilk_ACK={:?}",
+                first_seen.map(t),
+                hold_end.map(|(e, k)| (t(e), k)),
+                first_ack.map(t)
+            ),
+        }
+    }
+
     /// Yazdırır ve düşen ölçütlerin adlarını döndürür.
     fn report(&self) -> Vec<String> {
         let fwd_drops: HashSet<u64> = self.fwd.dropped_fp.iter().copied().collect();
@@ -1766,6 +1842,9 @@ impl Run {
                 self.rev.bytes,
                 sum as f64 * 100.0 / rev_bytes as f64,
             );
+        }
+        if self.profile {
+            self.report_first_ack(&tag);
         }
         // [CANLILIK-TEŞHİS] Geç (> 2 s) ya da hiç teslim edilmeyen ilk beş demetin motor izi:
         // her iletim (neden), iletimlerin kayıp ilanları, birimin teyidi; şerit açıklık sınırı.
