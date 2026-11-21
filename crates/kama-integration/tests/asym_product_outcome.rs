@@ -1844,7 +1844,7 @@ impl Run {
             );
         }
         if self.profile {
-            self.report_first_ack(&tag);
+            self.report_first_ack(tag);
         }
         // [CANLILIK-TEŞHİS] Geç (> 2 s) ya da hiç teslim edilmeyen ilk beş demetin motor izi:
         // her iletim (neden), iletimlerin kayıp ilanları, birimin teyidi; şerit açıklık sınırı.
