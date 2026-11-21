@@ -208,6 +208,16 @@
 //! * Pencerede `Δτ`, `Δs`'den çözünürlüğün (`max(Δs/20, FIRST_WINDOW_MIN_WAIT_NS)`) ötesinde kısa
 //!   ise sonuç doğrulama değil "bilgi yok"tur: FIFO'da sabit yayılımla imkânsızdır (açıcının damgası
 //!   geç ya da iki ucun boy sayımı farklı); gerçek bekleme bilinmez.
+//! * [HAT-ÇIKIŞI · İŞ-35, 2026-11-22] Pencerenin `Δs`'si gönderim anlarından değil, göndericinin
+//!   hat modelindeki çıkış anlarından (`send_ns + ahead_ns`) ölçülür; "tavanın %90'ıyla gönderildi"
+//!   koşulu da çıkıştaki doluluktur (`bayt / çıkış süresi`). Açıcı kendi öncelikli kopyalarımızın
+//!   (PTT) arkasında modelin kuyruğunda beklediyse gönderim anı ölçüsü pencereyi sıkışık ve tavanın
+//!   altında gösteriyordu. Ölçüldü (`tests/start_budget_sim.rs`, dürüst 12 500, PTT 0,1 s'den, dosya
+//!   0,4 s'de, ürün kopya kuralı, tohum 2–3): pencere seq 11–25 / 11–20, `Δs` 347 / 228 ms,
+//!   `Δτ` 274 / 155 ms → bilgi yok → `Flat(6250)`, dosyanın son yeni birimi 13,19 / 11,18 s; çıkış
+//!   anlarıyla `Δs` 264,8 / 155,2 ms → doğrulama, 7,27 / 6,94 s (bütçenin her zaman ilk ACK'te
+//!   kalktığı karşı-olguyla aynı). Model boşken (`ahead_ns` iletimin kendi serileşmesi) hüküm
+//!   gönderim anlı kuralla aynıdır.
 //! * Geçici evreyi sonraki bir ACK'in ölçüm aralığı kapatır (ilk ACK'te kayıtlar budanmaz: ikinci
 //!   ACK'in M'si alıcıda baştan, taban 0, başlar):
 //!   - kuyruk artışı → örnek: güvenilir (iki bağımsız ölçüm), `P/2`'nin altına da iner;
@@ -604,6 +614,9 @@ pub struct FirstWindowDetail {
     pub ds_ns: u64,
     pub dtau_ns: u64,
     pub wire_bytes: u64,
+    /// [HAT-ÇIKIŞI · İŞ-35] Pencerenin iki ucunun göndericinin hat modelindeki çıkış anları
+    /// (`send_ns + ahead_ns`) arasındaki süre (ns); hükmün `Δs`'si budur.
+    pub exit_ds_ns: u64,
 }
 
 /// [BAŞLANGIÇ-BÜTÇESİ · ÖLÇÜM-BOŞLUĞU] Kuyruk sınırlı bütçe (modül belgesi): ilk ACK'e dek
@@ -1045,35 +1058,58 @@ impl LineGuard {
         }
         let (first, last, rx_bytes) = crate::arrival_rate::window_end(sized)?;
         let (rf, rl) = (rec_of(first)?, rec_of(last)?);
-        let ds = rl.send_ns.checked_sub(rf.send_ns).filter(|&d| d > 0)?;
+        let ds_send = rl.send_ns.checked_sub(rf.send_ns).filter(|&d| d > 0)?;
+        // [HAT-ÇIKIŞI · İŞ-35] Pencere göndericinin bildiği hat çıkış anlarıyla ölçülür: her
+        // iletimin kaydında, iletim anında hat modelinde bu iletim dahil kendi baytlarımızın
+        // boşalmasına kalan süre var (`ahead_ns`). Açıcı kendi öncelikli kopyalarımızın arkasında
+        // modelin kuyruğunda bekleyebilir (PTT kopyaları dosyadan önce hatta verilir); o bekleme
+        // gönderim anından ölçülürse pencere `Δτ < Δs` (sıkışık) ve tavanın altında gönderilmiş
+        // görünür ve dürüst hat bilgi vermez. Çıkış anı `send + ahead`; model boşken
+        // `ahead = ser_model(udp)` ve hüküm gönderim anlı kuralla aynıdır.
+        let exit = |r: SentRec| r.send_ns.saturating_add(r.ahead_ns);
+        let ds = exit(rl).checked_sub(exit(rf)).filter(|&d| d > 0)?;
         let dtau =
             u64::try_from(u128::from(rx_bytes) * 1_000_000_000 / u128::from(arrival_rate)).ok()?;
         let wire = rl.cum.saturating_sub(rf.cum);
         self.first_window_detail = Some(FirstWindowDetail {
             first_seq: first,
             last_seq: last,
-            ds_ns: ds,
+            ds_ns: ds_send,
             dtau_ns: dtau,
             wire_bytes: wire,
+            exit_ds_ns: ds,
         });
         // Darboğaz pencere boyunca doluysa (son datagram kuyrukta bekledi) hat = tel baytı / Δτ.
-        // Son datagramın beklemesi `Δτ − Δs − (ser(son) − ser(ilk))` (ilk datagram oturumun boş
-        // hattında gitti); serileşme tahminin kendisiyle: iki datagramın boy farkı kuyruk artışı
-        // gibi görünmesin.
+        // Son datagramın beklemesi `Δτ − Δs − (ser(son) − ser(ilk))`, `Δs` çıkış anlarından;
+        // serileşme farkı tahminle modelin farkıdır (çıkış anı modelin serileşmesini içerir): iki
+        // datagramın boy farkı kuyruk artışı gibi görünmesin. Model boşken (`ahead_ns` yalnız
+        // kendi serileşmesi; kayıt `ahead_ns = 0` ise model yok sayılır) eski kuralla aynıdır.
         let est = u64::try_from(u128::from(wire) * 1_000_000_000 / u128::from(dtau.max(1)))
             .unwrap_or(u64::MAX)
             .max(1);
-        let ser = |udp: u64| {
+        let ser = |udp: u64, rate: u64| {
             i128::from(udp.saturating_add(self.line.datagram_overhead)) * 1_000_000_000
-                / i128::from(est)
+                / i128::from(rate.max(1))
         };
-        let wait = i128::from(dtau) - i128::from(ds) - (ser(rl.udp) - ser(rf.udp));
+        let ser_model = |r: SentRec| {
+            if r.ahead_ns == 0 {
+                0
+            } else {
+                let w = u128::from(r.udp.saturating_add(self.line.datagram_overhead));
+                i128::try_from((w * 1_000_000_000).div_ceil(u128::from(r.pace.max(1))))
+                    .unwrap_or(i128::MAX)
+            }
+        };
+        let wait = i128::from(dtau)
+            - i128::from(ds)
+            - ((ser(rl.udp, est) - ser_model(rl)) - (ser(rf.udp, est) - ser_model(rf)));
         let tol = i128::from((ds / GROWTH_MIN_DIV).max(FIRST_WINDOW_MIN_WAIT_NS));
         let busy = wait > tol;
-        // [İKİNCİ-ÖLÇÜM] FIFO'da yayılım sabitken varış süresi gönderim süresinden kısa olamaz
+        // [İKİNCİ-ÖLÇÜM] FIFO'da yayılım sabitken varış süresi hat çıkış süresinden kısa olamaz
         // (`wait ≥ 0`). Çözünürlüğün ötesinde kısa pencere bir damga hatasıdır (ör. açıcının
         // damgası geç): gerçek bekleme bilinmez, doğrulama yok.
         let compressed = wait < -tol;
+        // [HAT-ÇIKIŞI] Hat çıkışındaki doluluk: pencere süresince modelden çıkan bayt / çıkış süresi.
         let sent_bps =
             u64::try_from(u128::from(wire) * 1_000_000_000 / u128::from(ds)).unwrap_or(u64::MAX);
         let at_pace =
