@@ -4026,9 +4026,10 @@ impl Sender {
         }
         let saturated = ack.ack_delay >= crate::loss::E2A_ACK_DELAY_SATURATED;
         let update = g.on_ack_measured(now_ns, dur_ns(ack.ack_delay), saturated, largest, interval);
-        // [BAŞLANGIÇ-BÜTÇESİ · İŞ-33 C1] İlk ACK işlendi: bütçe kalkar (ölçüm, doğrulama ya da
-        // bilgi yok — üçünde de bundan sonrası bugünkü hat koruması).
-        g.end_start_budget();
+        // [BAŞLANGIÇ-BÜTÇESİ · İŞ-33 C1 · İKİNCİ-ÖLÇÜM İŞ-35] Bütçe ilk ACK'te yalnız pencere hattı
+        // doğruladıysa ya da alıcı ölçmüyorsa kalkar; değilse ikinci bağımsız ölçüme (sonraki bir
+        // ACK'in ölçüm aralığı) dek sürer (`line_guard` modül belgesi, "İkinci ölçüm").
+        g.settle_start_budget();
         // [TEMKİNLİ-BAŞLANGIÇ · YENİDEN-YOKLAMA] Hat modeli korumanın gönderim tavanındadır (ölçülen
         // hat, doğrulanmamış başlangıçta yarı profil, yoklamada yükseltilmiş tavan): pacer'ın burst
         // payı (≥ 10 MTU) tavanın üstünde patlama yapamaz.
@@ -6142,6 +6143,15 @@ impl Sender {
         self.cc_line_guard
             .as_ref()
             .and_then(crate::line_guard::LineGuard::first_window)
+    }
+
+    /// [İKİNCİ-ÖLÇÜM · İŞ-35] Başlangıç bütçesini kaldıran kanıt (salt gözlem; bütçe sürüyorsa ya
+    /// da kural yoksa `None`).
+    #[must_use]
+    pub fn diag_line_guard_start_exit(&self) -> Option<crate::line_guard::StartExit> {
+        self.cc_line_guard
+            .as_ref()
+            .and_then(crate::line_guard::LineGuard::start_exit)
     }
 
     /// [İLK-PENCERE] İlk ACK'in varış penceresinin ayrıntısı (salt gözlem).
