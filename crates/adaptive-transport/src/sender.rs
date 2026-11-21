@@ -1327,6 +1327,18 @@ pub enum SrPacketClass {
     Control,
 }
 
+/// [`Sender::try_emit_front_parity`] sonucu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParityTry {
+    Emitted,
+    Empty,
+    /// Jeton / uçuş penceresi / başlangıç bütçesi.
+    Denied,
+    /// Deneysel FEC bütçe çekirdeğinin limiti.
+    #[cfg_attr(not(feature = "experimental-fec-budget"), allow(dead_code))]
+    BudgetHeld,
+}
+
 /// Bekleyen FEC-parity (engine FEC-encode-sonrası enqueue eder; sender pace-eder — DR-S5-1).
 #[derive(Debug, Clone, Copy)]
 struct PendingFecParity {
@@ -1337,6 +1349,11 @@ struct PendingFecParity {
     authority_generation: Option<u64>, // otorite-bağlı-staging: witness-gen; legacy-enqueue: None
     authority_mode: FecActuationMode, // staging-anı-kaynak-otorite (witness / current-mode-snapshot)
     planned_r: Option<u16>,           // otorite-bağlı: bloğun-planned/manual-r; legacy: None
+    /// [ONARIM-SIRASI] Kuyruğa girdiği anda henüz tele çıkmamış son uygulama birimi (bloğun son
+    /// kaynağı): o birim gönderim kuyruğundan ayrılınca sembol sonraki yeni verinin önüne geçer
+    /// (yalnız geri bildirimi aç profilde; bkz. `drain_released_parity`). `None` = kaynaklar zaten
+    /// tele çıkmış.
+    release_after_unit: Option<u64>,
 }
 
 /// confirmed_logical üst-sınırı (DR-S5-3; SR-AUDIT-001 unbounded-alloc-yok). Engine
@@ -1936,6 +1953,9 @@ pub struct Sender {
     last_transition_event_index: u64, // Commit-I
     transition_applied_count: u64, // Commit-I: saturating
     pending_fec: VecDeque<PendingFecParity>, // engine FEC-encode-sonrası enqueue; sender pace-eder
+    /// [ONARIM-SIRASI] Son `Event::AppData` biriminin kimliği (blok kapanışı onun hemen ardından
+    /// gelir; bkz. `PendingFecParity::release_after_unit`).
+    last_app_unit_id: Option<u64>,
     // ── DR-CS-1 M1 (cfg-gated; flag-OFF'ta derlenmez → struct byte-özdeş) ──
     #[cfg(feature = "experimental-cold-start")]
     cs_wakeup: Vec<(u64, CsTimerKind)>, // exposed-timer kümesi (deadline_ns, kind); retire-on-fire
@@ -2295,6 +2315,7 @@ impl Sender {
             last_transition_event_index: 0,
             transition_applied_count: 0,
             pending_fec: VecDeque::new(),
+            last_app_unit_id: None,
             #[cfg(feature = "experimental-cold-start")]
             cs_wakeup: Vec::new(),
             #[cfg(feature = "experimental-cold-start")]
@@ -2846,6 +2867,7 @@ impl Sender {
                     self.first_send_ns = None;
                 }
                 self.tx_queue.push_back(unit);
+                self.last_app_unit_id = Some(unit.id);
                 #[cfg(feature = "diag-sched-telemetry")]
                 {
                     self.sched_diag.data_enqueued += 1;
@@ -6337,6 +6359,7 @@ impl Sender {
         planned_r: Option<u16>,
     ) {
         self.parity_enqueued_total = self.parity_enqueued_total.saturating_add(1);
+        let release_after_unit = self.last_app_unit_id.filter(|&id| self.unit_unsent(id));
         self.pending_fec.push_back(PendingFecParity {
             block_id,
             esi,
@@ -6344,6 +6367,7 @@ impl Sender {
             authority_generation,
             authority_mode,
             planned_r,
+            release_after_unit,
         });
     }
 
@@ -6966,14 +6990,23 @@ impl Sender {
         // Commit-V/F2: FloorCap'te ticket'lı-blokların-İLK-parity'si-önce (parity-İÇİ-seçim; onaylı-scope).
         #[cfg(feature = "experimental-fec-budget")]
         self.budget_service_tickets(out, now_ns);
-        while let Some(&p) = self.pending_fec.front() {
+        while self.try_emit_front_parity(out, now_ns) == ParityTry::Emitted {}
+    }
+
+    /// Kuyruk başındaki parite sembolünü dener (`plan_fec_parity` gövdesi; davranış birebir).
+    fn try_emit_front_parity(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) -> ParityTry {
+        let Some(&p) = self.pending_fec.front() else {
+            return ParityTry::Empty;
+        };
+        {
             #[cfg(feature = "experimental-fec-budget")]
             if !self.budget_parity_allows(p.size) {
-                break; // C1-canlı: kernel-limit (Leftover'da-None → hiç-girmez; baseline-özdeş)
+                // C1-canlı: kernel-limit (Leftover'da-None → hiç-girmez; baseline-özdeş)
+                return ParityTry::BudgetHeld;
             }
             // [BAŞLANGIÇ-BÜTÇESİ · İŞ-33 C1] İlk ACK'e dek onarım sembolü de bütçeyle.
             if self.start_budget_holds(None, p.size, now_ns) {
-                break;
+                return ParityTry::Denied;
             }
             let balance_before = self.pacer.tokens(); // READ-ONLY (mühürlü-TokenBucket'a-dokunulmaz)
             if !self.cc_fits(p.size) || !self.pacer.try_send(p.size) {
@@ -7006,12 +7039,43 @@ impl Sender {
                     planned_r: p.planned_r,
                     emitted_r_total_at_denial: self.parity_emitted_total,
                 });
-                break; // token yok → sonraki tick (data/retx ile aynı pacing-davranışı).
+                return ParityTry::Denied; // token yok → sonraki tick (data/retx ile aynı pacing-davranışı).
             }
             let _sz = self.emit_parity_at(0, out, now_ns);
             #[cfg(feature = "experimental-fec-budget")]
             self.budget_parity_spend(_sz);
+            ParityTry::Emitted
         }
+    }
+
+    /// [ONARIM-SIRASI · geri bildirimi aç profil] Kaynakları tele çıkmış blokların onarım
+    /// sembolleri sonraki yeni verinin ÖNÜNE geçer. `false` = baştaki serbest sembol jeton / uçuş /
+    /// başlangıç bütçesi yüzünden çıkamadı; çağıran yeni veriyi de bekletir (aksi hâlde veri
+    /// sembolü yine geçerdi).
+    ///
+    /// Neden: `schedule_transmit` sırasında `drain_new_data` `plan_fec_parity`'den önce koşar ve
+    /// jetonu gönderim kuyruğu boşalana dek tüketir; dosya aktarılırken kuyruk hiç boşalmadığından
+    /// kapanmış blokların onarımı dosyanın son parçasından sonraya kalıyordu (ürün izi: blok
+    /// kapanışından 4–7 s sonra; ACK aralığı ≈ 7 s olan hatta onarımın asıl işi ACK'ten önce
+    /// kurtarmaktır). Profil kapalıyken ya da port motoru yokken no-op (sıra bugünkü gibi).
+    fn drain_released_parity(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) -> bool {
+        if self.cc_feedback_starved.is_none() || self.cc.is_none() {
+            return true;
+        }
+        while let Some(front) = self.pending_fec.front_mut() {
+            if let Some(gate) = front.release_after_unit {
+                if self.tx_queue.iter().any(|u| u.id == gate) {
+                    return true; // bloğun son kaynağı henüz tele çıkmadı
+                }
+                front.release_after_unit = None;
+            }
+            match self.try_emit_front_parity(out, now_ns) {
+                ParityTry::Emitted => {}
+                ParityTry::Denied => return false,
+                ParityTry::Empty | ParityTry::BudgetHeld => return true,
+            }
+        }
+        true
     }
 
     /// Parity-emisyon-gövdesi (Commit-V-refaktörü; davranış-birebir — try_send-BAŞARISI-sonrası-çağrılır).
@@ -8341,6 +8405,10 @@ impl Sender {
     /// Yeni DATA'yı pace ederek emit et. RECOVER_FWD'de her DATA ayrıca (factor−1) kopya planlar.
     fn drain_new_data(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
         while let Some(front) = self.tx_queue.front().copied() {
+            // [ONARIM-SIRASI] Kapanmış bloğun onarımı sonraki bloğun kaynaklarından önce (profil).
+            if !self.drain_released_parity(out, now_ns) {
+                break;
+            }
             // [R3/ADIM-6] Burst clamp artık pipeline'da kanal-türevli set_burst_cap ile (PreConverge floor
             // rate → burst_cap = 1 birim). Ayrı PreConverge özel-durumu GEREKMEZ (tek kapı, tüm state'ler).
             #[cfg(feature = "diag-sched-telemetry")]
