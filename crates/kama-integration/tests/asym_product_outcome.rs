@@ -821,6 +821,10 @@ struct Run {
     /// [FEC-TEŞHİS] Koşu sonunda iki ucun oturum aynası (Alice → Bob, Bob → Alice).
     alice_live: Option<ClientLiveDiag>,
     bob_live: Option<ClientLiveDiag>,
+    /// [ONARIM-SIRASI · salt gözlem] Ucun alıcısının FEC ile çözdüğü blok (Alice'in, Bob'un).
+    /// Karşıya ulaşan RECOVERED bildirimi bundan ayrıdır (`Ledger::recovered_rx`).
+    alice_decoded: u64,
+    bob_decoded: u64,
     /// [İZ-NEDEN] Alice göndericisinin emisyon / kayıp ilanı izi (an, kayıt).
     emit: Vec<(Instant, EmitDiag)>,
 }
@@ -1097,6 +1101,8 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
         .first()
         .map(|d| d.1);
     let bob_live = bob.m.transport().session_live_diags().first().map(|d| d.1);
+    let alice_decoded = alice.m.transport().fec_blocks_decoded();
+    let bob_decoded = bob.m.transport().fec_blocks_decoded();
     drop(alice);
     drop(bob);
     stop.store(true, Ordering::Relaxed);
@@ -1129,6 +1135,8 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
         file_backlog_held,
         alice_live,
         bob_live,
+        alice_decoded,
+        bob_decoded,
         emit,
     }
 }
@@ -1597,16 +1605,28 @@ impl Run {
     fn trace_report(&self, tag: &str) {
         let t = |i: Instant| secs(self.since(i, self.t0));
         let ot = |i: Option<Instant>| i.map_or("-".to_string(), t);
-        for (side, live, ledger, peer) in [
-            ("Alice", self.alice_live, &self.alice, &self.bob),
-            ("Bob", self.bob_live, &self.bob, &self.alice),
+        for (side, live, ledger, peer, peer_decoded) in [
+            (
+                "Alice",
+                self.alice_live,
+                &self.alice,
+                &self.bob,
+                self.bob_decoded,
+            ),
+            (
+                "Bob",
+                self.bob_live,
+                &self.bob,
+                &self.alice,
+                self.alice_decoded,
+            ),
         ] {
             let Some(l) = live else {
                 println!("İZ-FEC {tag} {side}: ayna yok");
                 continue;
             };
             println!(
-                "İZ-FEC {tag} {side}→: latch_blok={} onarım_tx={} parite_kararı={} latch(no_eligible,mismatch,no_rule,enq_r,emit_r)={:?} son_bastırma={:?} onarım_tel_tx={} onarım_karşıda_rx={} RECOVERED_karşıdan={} | PARAM gönderim={} onay={} onay_anı={} | srtt={} ms taban_pto={} ms rtt_örnek={} | tail_prob={} retx={} kopya={} durum={:?}",
+                "İZ-FEC {tag} {side}→: latch_blok={} onarım_tx={} parite_kararı={} latch(no_eligible,mismatch,no_rule,enq_r,emit_r)={:?} son_bastırma={:?} onarım_tel_tx={} onarım_karşıda_rx={} karşının_çözdüğü_blok={} karşının_RECOVERED_tx={} RECOVERED_buraya_ulaşan={} | PARAM gönderim={} onay={} onay_anı={} | srtt={} ms taban_pto={} ms rtt_örnek={} | tail_prob={} retx={} kopya={} durum={:?}",
                 l.fec_blocks_latched,
                 l.fec_repairs_tx,
                 l.parity_emitted,
@@ -1614,6 +1634,8 @@ impl Run {
                 l.fec_last_suppression,
                 ledger.fec_tx,
                 peer.fec_rx,
+                peer_decoded,
+                peer.recovered_tx,
                 ledger.recovered_rx,
                 l.param_sends,
                 l.param_confirmed,

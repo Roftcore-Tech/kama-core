@@ -4243,6 +4243,9 @@ pub struct ServerHandle {
     data_not_admitted_full: Arc<AtomicU64>,
     /// [F3] [`ServerStats::data_not_admitted_window`]'ın canlı aynası.
     data_not_admitted_window: Arc<AtomicU64>,
+    /// [ONARIM-SIRASI · salt gözlem] [`ServerStats::fec_blocks_decoded`]'ın canlı aynası (bu
+    /// alıcının FEC ile çözdüğü blok; bkz. [`ServerHandle::fec_blocks_decoded`]).
+    fec_blocks_decoded: Arc<AtomicU64>,
 }
 
 impl ServerEndpoint {
@@ -4325,6 +4328,7 @@ impl ServerEndpoint {
         let delivery_dropped = Arc::new(AtomicU64::new(0));
         let data_not_admitted_full = Arc::new(AtomicU64::new(0));
         let data_not_admitted_window = Arc::new(AtomicU64::new(0));
+        let fec_blocks_decoded = Arc::new(AtomicU64::new(0));
         let task = tokio::spawn(server_task(
             sock,
             cfg,
@@ -4338,6 +4342,7 @@ impl ServerEndpoint {
             Arc::clone(&delivery_dropped),
             Arc::clone(&data_not_admitted_full),
             Arc::clone(&data_not_admitted_window),
+            Arc::clone(&fec_blocks_decoded),
             uplink,
         ));
         Ok(ServerHandle {
@@ -4350,6 +4355,7 @@ impl ServerEndpoint {
             delivery_dropped,
             data_not_admitted_full,
             data_not_admitted_window,
+            fec_blocks_decoded,
         })
     }
 }
@@ -4418,6 +4424,15 @@ impl ServerHandle {
     #[must_use]
     pub fn data_not_admitted_window(&self) -> u64 {
         self.data_not_admitted_window.load(Ordering::Relaxed)
+    }
+
+    /// [ONARIM-SIRASI · salt gözlem] [`ServerStats::fec_blocks_decoded`] ile AYNI sayaç, kapanışı
+    /// beklemeden okunur: bu alıcının FEC ile ÇÖZDÜĞÜ blok sayısı. Göndericiye ulaşan RECOVERED
+    /// bildirimi ayrı bir olaydır (dönüş yolunda düşebilir, yalnız teslim kapısına giren birimi
+    /// taşır); bu sayaç onu saymaz.
+    #[must_use]
+    pub fn fec_blocks_decoded(&self) -> u64 {
+        self.fec_blocks_decoded.load(Ordering::Relaxed)
     }
 
     /// Kapanış → istatistik.
@@ -5185,6 +5200,7 @@ async fn server_task(
     delivery_dropped_seen: Arc<AtomicU64>,
     data_not_admitted_full_seen: Arc<AtomicU64>,
     data_not_admitted_window_seen: Arc<AtomicU64>,
+    fec_blocks_decoded_seen: Arc<AtomicU64>,
     uplink: Option<UplinkShare>,
 ) -> ServerStats {
     // [K4G-01 / D1 (v1.1)] HubChannel dağıtıcısı: Session durumunun hiçbirini TUTMAZ (yalnız
@@ -5224,6 +5240,7 @@ async fn server_task(
         delivery_dropped_seen.store(stats.delivery_dropped, Ordering::Relaxed);
         data_not_admitted_full_seen.store(stats.data_not_admitted_full, Ordering::Relaxed);
         data_not_admitted_window_seen.store(stats.data_not_admitted_window, Ordering::Relaxed);
+        fec_blocks_decoded_seen.store(stats.fec_blocks_decoded, Ordering::Relaxed);
         tokio::select! {
             _ = shutdown_rx.changed() => break,
             // Ölçüm-t0 (ServerHandle::mark_t0): wire sayaçları sıfır, ALICI DURUMU KORUNUR.

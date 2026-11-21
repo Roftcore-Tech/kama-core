@@ -896,6 +896,13 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         self.server.data_not_admitted_window()
     }
 
+    /// [ONARIM-SIRASI] Salt-okunur telemetri: bu ucun alıcısının FEC ile çözdüğü blok sayısı
+    /// (`ServerStats::fec_blocks_decoded`). Karşı uca ulaşan RECOVERED bildirimi ayrı sayılır.
+    #[must_use]
+    pub fn fec_blocks_decoded(&self) -> u64 {
+        self.server.fec_blocks_decoded()
+    }
+
     /// [K4G-05] Salt-okunur telemetri: ucu açık her S1 oturumunun motor / ARQ aynası
     /// ([`ClientHandle::live_diag`]), tutamaç sırasıyla. Ucu kurulamamış ya da bırakılmış
     /// oturum listede yoktur (onun sayaçları [`Self::retired_live_diag`]'dadır). Durum değişmez.
