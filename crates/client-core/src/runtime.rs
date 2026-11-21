@@ -3455,6 +3455,9 @@ async fn client_task(
                             },
                             $now,
                         );
+                        // [İLK-PENCERE · İŞ-33 C4] §2.2 `arrival_rate`: alıcının ilk varış
+                        // penceresinin hızı; motor yalnız oturumun ilk ACK'inde okur.
+                        session.sender_mut().note_ack_arrival_rate(frame.arrival_rate);
                         // [D1a] ACK aralıkları PN uzayında → motor seq'ine çevrilir. Tabloda olmayan
                         // PN (ufuk dışı / motor kararı olmayan çerçeve) motora GİTMEZ.
                         let expected_pn = max_sealed_pn.map_or(0, |m| m + 1);
@@ -5364,6 +5367,8 @@ async fn server_task(
                         // [DÖNÜŞ-HATTI] ACK'in varış ufku hatta önündeki baytları da sayar.
                         slot.rx.set_return_line_ahead_ns(tx.line_ahead_ns());
                         slot.rx.set_uplink_yield(tx.control_should_yield());
+                        // [VARIŞ-HIZI] Datagramın mühürlü gövde boyu (ilk varış penceresi).
+                        slot.rx.set_next_datagram_bytes(n as u64);
                         let out = slot.rx.on_datagram(
                             RxDatagram {
                                 seq: pn,
@@ -5473,6 +5478,7 @@ async fn server_task(
                             let is_repair = h.kind == inner_kind::FEC_REPAIR;
                             slot.rx.set_return_line_ahead_ns(tx.line_ahead_ns());
                         slot.rx.set_uplink_yield(tx.control_should_yield());
+                            slot.rx.set_next_datagram_bytes(n as u64);
                             let out = slot.rx.on_datagram(
                                 RxDatagram {
                                     seq: pn,
@@ -5504,6 +5510,7 @@ async fn server_task(
                         let is_repair = h.kind == inner_kind::FEC_REPAIR;
                         slot.rx.set_return_line_ahead_ns(tx.line_ahead_ns());
                         slot.rx.set_uplink_yield(tx.control_should_yield());
+                        slot.rx.set_next_datagram_bytes(n as u64);
                         let out = slot.rx.on_datagram(
                             RxDatagram {
                                 seq: pn,
