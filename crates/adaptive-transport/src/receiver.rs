@@ -185,6 +185,9 @@ pub struct Receiver {
     /// İkisi de `received` penceresiyle budanır.
     pn_unit: BTreeMap<u64, u64>,
     unit_reported: BTreeMap<u64, u64>,
+    /// [YENİDEN-RAPOR] Seçim açık mı (varsayılan açık; `set_ack_rereport`). Kapalıyken alıcı
+    /// bugünkü kuralla (en yeni 16 alt blok) yazar.
+    rereport: bool,
     smallest_seq: u64,
     largest_seq: u64,
     have_recv: bool,
@@ -270,6 +273,7 @@ impl Receiver {
             reported: BTreeMap::new(),
             pn_unit: BTreeMap::new(),
             unit_reported: BTreeMap::new(),
+            rereport: true,
             smallest_seq: 0,
             largest_seq: 0,
             have_recv: false,
@@ -450,6 +454,12 @@ impl Receiver {
             return_bw_bps.map(|bw| (bw.saturating_mul(RETURN_BUDGET_PERMIL) / 1000).max(1));
         self.ack_tokens_mb = ACK_BUDGET_CAP_BYTES * 1000;
         self.ack_tokens_at_ns = 0;
+    }
+
+    /// [YENİDEN-RAPOR] Geri bildirimi aç alıcıda kırpılan blokların yeniden raporlanmasını açar
+    /// (varsayılan) ya da kapatır (bugünkü kural). Oturum başında, ilk varıştan önce çağrılır.
+    pub fn set_ack_rereport(&mut self, on: bool) {
+        self.rereport = on;
     }
 
     /// [ACK-PAYI TEŞHİS KOLU · 2026-11-21] Dönüş bütçesi payını (Y, binde) değiştirir ve kovayı
@@ -649,7 +659,8 @@ impl Receiver {
     /// [YENİDEN-RAPOR] Geri bildirimi aç alıcı: bütçeli port alıcısı ve tipik ACK'in bütçe aralığı
     /// en az 1 s (bütçe ≤ tipik ACK tel boyu B/s; `runtime::link_feedback_starved` ile aynı eşik).
     fn feedback_starved_rx(&self) -> bool {
-        self.cc_port
+        self.rereport
+            && self.cc_port
             && self
                 .ack_budget_bps
                 .is_some_and(|b| b <= ACK_WIRE_TYPICAL_BYTES)
@@ -717,14 +728,13 @@ impl Receiver {
             let (lo, hi) = blocks[i];
             covered.extend(self.pn_unit.range(lo..=hi).map(|(_, &u)| u));
         }
-        for i in 0..blocks.len() {
+        for (i, &(lo, hi)) in blocks.iter().enumerate() {
             if pick.len() >= slots {
                 break;
             }
             if pick.contains(&i) {
                 continue;
             }
-            let (lo, hi) = blocks[i];
             let new: Vec<u64> = self
                 .pn_unit
                 .range(lo..=hi)
@@ -1274,6 +1284,29 @@ mod tests {
         for k in 0..60u64 {
             assert!(covered.contains(&(3 * k)), "blok {k} hiç bildirilmedi");
         }
+    }
+
+    /// [YENİDEN-RAPOR] Anahtar kapalıyken çerçeve bugünkü kuraldır: en yeni 16 alt blok, en eski
+    /// blok hiç bildirilmez.
+    #[test]
+    fn rereport_off_keeps_the_newest_blocks_rule() {
+        const SEC: u64 = 1_000_000_000;
+        let mut r = Receiver::with_cc_port();
+        r.set_return_bandwidth(Some(62));
+        r.set_ack_rereport(false);
+        let mut t = 0u64;
+        for k in 0..60u64 {
+            for j in 0..2u64 {
+                let seq = 3 * k + j;
+                let _ = r.on_datagram(data(seq, seq), t);
+                t += 10 * MS;
+            }
+        }
+        let a = r.on_ack_timer(t + 20 * SEC).expect("ACK");
+        let largest = r.largest_seq().expect("varış var");
+        let acked = a.acked_full(largest);
+        assert!(!acked.contains(&0), "kapalıyken en eski blok yazılmaz");
+        assert_eq!(a.ranges.len(), crate::ack::MAX_ACK_RANGES);
     }
 
     #[test]

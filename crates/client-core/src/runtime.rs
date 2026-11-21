@@ -223,6 +223,10 @@ pub struct RuntimeConfig {
     /// [ACK-PAYI TEŞHİS KOLU · 2026-11-21] Server ucunun alıcı dönüş bütçesi payı (Y, binde).
     /// `None` (ürün varsayılanı) = Y = 250 (§16.1). Yalnız teşhis/ölçüm düzeneği verir.
     pub diag_return_budget_permille: Option<u64>,
+    /// [YENİDEN-RAPOR · 2026-11-21] Server ucunun alıcısı, geri bildirimi aç profilde kırpılan ACK
+    /// bloklarını sonraki ACK'lerde yeniden raporlar mı (`Receiver::set_ack_rereport`). Varsayılan
+    /// `true`; ürün varsayılanı kararı ölçümden sonra (sahip). Profilsiz / eski motor yolunda etkisiz.
+    pub ack_rereport: bool,
     /// [ÖNLEMSEL-KOPYA · sahip kararı 2026-11-16] Şerit kimlikleri açık mı (şerit 0 = PTT).
     /// `true` iken ve yön hızı profili geri bildirimi aç bırakıyorsa ([`link_feedback_starved`]),
     /// PTT şeridinin her yeni birimi ACK beklemeden [`PTT_FORWARD_COPIES`] kez daha gönderilir.
@@ -353,6 +357,7 @@ impl KamaV1Profile {
             live_diag: false,
             diag_emit_sink: None,
             diag_return_budget_permille: None,
+            ack_rereport: true,
             // [ÖNLEMSEL-KOPYA] Şerit kimlikleri yalnız `ClientTransport` şeritleri açınca.
             lane_ids: false,
             // [E1 gösterim] Beş bayrak ürün yolunda KAPALI; yalnız gösterim düğümü/teşhis kolları açar.
@@ -5150,6 +5155,7 @@ async fn server_task(
                     if let Some(y) = cfg.diag_return_budget_permille {
                         slot.rx.set_return_budget_permille_for_diag(y);
                     }
+                    slot.rx.set_ack_rereport(cfg.ack_rereport);
                     peers.insert(key, slot);
                 }
                 let Some(slot) = peers.get_mut(&key) else { continue };

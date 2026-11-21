@@ -119,6 +119,8 @@ async fn transport_api_v0_surface_is_frozen() {
         // v0.19 (ACK-PAYI teşhis kolu, 2026-11-21): minor-EKLEME, kasıtlı pin-güncellemesi.
         // Default None (ürün Y = 250); yalnız ölçüm düzeneği.
         diag_return_budget_permille: _,
+        // v0.20 (YENİDEN-RAPOR anahtarı, 2026-11-21): minor-EKLEME, kasıtlı pin-güncellemesi.
+        ack_rereport: _,
     } = cfg.clone();
     let FecRuntimeConfig {
         profile_id: _,
