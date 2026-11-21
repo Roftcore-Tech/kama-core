@@ -124,6 +124,15 @@ impl TokenBucket {
         }
     }
 
+    /// [SÜRELİ-YOKLAMA] Hat kuyruğuna, modelin bilmediği ve mevcut kuyruğun ÜSTÜNDE bekleyen
+    /// kendi baytlarımızı ekler (`bytes`, zarf dahil; ör. başarısız bir hız yoklamasının fazlası).
+    /// [`Self::line_raise_backlog`]'dan farkı: toplam değil ek miktardır. Model yoksa etkisiz.
+    pub fn line_add_backlog(&mut self, bytes: u64) {
+        if let Some(l) = self.line.as_mut() {
+            l.backlog = l.backlog.saturating_add(bytes);
+        }
+    }
+
     /// [HAT-MODELİ] Hat modeli kurulu mu.
     #[must_use]
     pub fn has_line(&self) -> bool {
