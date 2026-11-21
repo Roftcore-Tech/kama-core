@@ -509,6 +509,10 @@ struct Renewal {
 #[derive(Default)]
 struct Reorder {
     lanes: [LaneOrder; LANE_COUNT],
+    /// [PTT-YALIN] Eş PTT'yi son tarihli gönderiyor ([`ExpectedSessions::mark_ptt_deadline`]):
+    /// PTT şeridinde eksik sıra başı [`PTT_HOLE_SKIP`] sonra atlanır. Kapalıyken (varsayılan)
+    /// hiçbir şeritte atlama yoktur.
+    ptt_skip: bool,
 }
 
 /// Bir şeridin sıralı teslim durumu: `next` şerit-içi sıra, `held` şerit-içi sıra anahtarlı.
@@ -516,7 +520,17 @@ struct Reorder {
 struct LaneOrder {
     next: u64,
     held: BTreeMap<u64, (SessionHandle, Vec<u8>)>,
+    /// [PTT-YALIN] PTT şeridinde sıra başı eksikken arkasında birim beklemeye başladığı an.
+    hole_since: Option<std::time::Instant>,
 }
+
+/// [PTT-YALIN] PTT şeridinde eksik sıra başı bu kadar beklenir, sonra atlanır: gönderici PTT
+/// demetini tek iletimle gönderir ve son tarihte bırakır (`runtime::PTT_DEADLINE_NS`); kaybolan
+/// demet arkasındaki demetleri bloklamaz. Arkadaki demet bu süre kadar gecikir (≤ 1 s sınırının
+/// içinde: 300 ms yayılım + 300 ms bekleme). Diğer şeritler eskisi gibi kayıpsız sıralıdır.
+const PTT_HOLE_SKIP: std::time::Duration = std::time::Duration::from_millis(300);
+/// [PTT-YALIN] PTT şeridinin indeksi.
+const PTT_LANE: usize = 0;
 
 /// [K4G-05 / INT-02 TEŞHİS] Bir oturumun sıralı teslim durumu ([`ClientTransport::reorder_diags`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -570,11 +584,23 @@ impl Reorder {
         let lo = &mut self.lanes[lane];
         while out.len() < cap {
             let Some(entry) = lo.held.first_entry() else {
+                lo.hole_since = None;
                 break;
             };
             if *entry.key() != lo.next {
-                break;
+                // [PTT-YALIN] PTT'de eksik sıra başı süresi dolunca atlanır.
+                if lane != PTT_LANE || !self.ptt_skip {
+                    break;
+                }
+                let since = *lo.hole_since.get_or_insert_with(std::time::Instant::now);
+                if since.elapsed() < PTT_HOLE_SKIP {
+                    break;
+                }
+                lo.next = *entry.key();
+                lo.hole_since = None;
+                continue;
             }
+            lo.hole_since = None;
             let (session, unit) = entry.remove();
             out.push_back(Delivered { session, unit });
             lo.next = lo.next.saturating_add(1);
@@ -1584,6 +1610,7 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         // kutuya birden akıyordu (kutu `MAX_INBOX − 1 + pencere` birime çıkabiliyordu).
         if self.inbox.len() < MAX_INBOX {
             for (&h, r) in &mut self.reorder {
+                r.ptt_skip = self.expected.ptt_deadline(h);
                 for lane in 0..LANE_COUNT {
                     let before = r.head(lane);
                     let next = r.release(lane, &mut self.inbox, MAX_INBOX);
@@ -1625,6 +1652,7 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             // yeni oturum eski oturumun `next`'ine takılmaz; aynı oturumun başka bir yuvadan
             // (adres) gelen kopyası burada tekilleşir.
             let reorder = self.reorder.entry(h).or_default();
+            reorder.ptt_skip = self.expected.ptt_deadline(h);
             let next_before = reorder.head(lane_index_of(d.unit_id));
             let next = reorder.push_bounded(d.unit_id, h, d.payload, &mut self.inbox, MAX_INBOX);
             if next != next_before {
@@ -2252,6 +2280,35 @@ mod tests {
         r.push(1, h, b"tekrar".to_vec(), &mut out);
         let got: Vec<Vec<u8>> = out.into_iter().map(|d| d.unit).collect();
         assert_eq!(got, [b"a".to_vec(), b"b".to_vec()]);
+    }
+
+    /// [PTT-YALIN] Eşi PTT'yi son tarihli gönderen oturumda PTT şeridinin eksik sıra başı
+    /// [`PTT_HOLE_SKIP`] sonra atlanır; öbür şeritler ve kapalı kip hiç atlamaz.
+    #[test]
+    fn ptt_lane_skips_an_expired_hole_only_in_deadline_mode() {
+        let h = SessionHandle::from_raw(9);
+        let ptt = index_of_lane(Lane::Ptt);
+        let file = index_of_lane(Lane::File);
+        let run = |skip: bool| {
+            let mut r = Reorder {
+                ptt_skip: skip,
+                ..Reorder::default()
+            };
+            let mut out = VecDeque::new();
+            r.push(tagged(ptt, 1), h, b"p1".to_vec(), &mut out);
+            r.push(tagged(file, 1), h, b"f1".to_vec(), &mut out);
+            assert!(out.is_empty(), "sıra başları eksik");
+            std::thread::sleep(PTT_HOLE_SKIP + std::time::Duration::from_millis(20));
+            r.release(ptt, &mut out, usize::MAX);
+            r.release(file, &mut out, usize::MAX);
+            out.into_iter().map(|d| d.unit).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            run(true),
+            [b"p1".to_vec()],
+            "PTT atlar, dosya beklemeye devam"
+        );
+        assert!(run(false).is_empty(), "kapalı kipte atlama yok");
     }
 
     /// [F3] Eksik sıra başı hiçbir sayıda tutulan birimde atlanmaz; gelince hepsi sırayla akar.
