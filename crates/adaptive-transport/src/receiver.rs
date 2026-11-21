@@ -296,6 +296,8 @@ pub struct Receiver {
     diag_drop_alarms: u64,
     /// [ÇİFT ARALIĞI] Kapasite alt sınırı ölçümü (`crate::ack` 0x15 `pair_rate`).
     pair: PairRate,
+    /// [ÇİFT ARALIĞI · YÜKSELİŞ ALARMI] Alarm sayısı (gözlem).
+    diag_rise_alarms: u64,
 }
 
 impl Receiver {
@@ -359,6 +361,7 @@ impl Receiver {
             drop_alarm: false,
             diag_drop_alarms: 0,
             pair: PairRate::default(),
+            diag_rise_alarms: 0,
         }
     }
 
@@ -369,6 +372,12 @@ impl Receiver {
         // [ÇİFT ARALIĞI] Her datagram (çift, kopya dahil): hepsi ileri hattı işgal eder.
         if self.bitmap_rx() {
             self.pair.on_arrival(now_ns, udp_bytes);
+            // [ÇİFT ARALIĞI · YÜKSELİŞ ALARMI] Kapasite alt sınırı son bildirilenin belirgin üstüne
+            // çıktı (hat toparlandı): daralma alarmı gibi bir sonraki ACK yedekten hemen çıkar.
+            if self.ack_budget_first_done && self.pair.rise_alarm() {
+                self.drop_alarm = true;
+                self.diag_rise_alarms += 1;
+            }
         }
         // [§2.2 V2] seen_count: HER görülen datagram sayılır (dup/shard DAHİL) — sender'ın
         // "seen vs sent" yön-ayrımlı kayıp kıyası için (K3 cold-start).
@@ -579,6 +588,12 @@ impl Receiver {
     #[must_use]
     pub fn diag_drop_alarms(&self) -> u64 {
         self.diag_drop_alarms
+    }
+
+    /// [ÇİFT ARALIĞI · YÜKSELİŞ ALARMI] Alarm sayısı (gözlem).
+    #[must_use]
+    pub fn diag_rise_alarms(&self) -> u64 {
+        self.diag_rise_alarms
     }
 
     /// [ÇİFT ARALIĞI] Bir sonraki bitmap ACK'inin `pair_rate` alanı (gözlem/test).
@@ -1437,6 +1452,10 @@ struct PairRate {
     prev_ns: Option<u64>,
     /// En büyük iki değer (B/s, UDP gövdesi); 0 = yok.
     top: [u64; 2],
+    /// Son çıkan ACK'lerde bildirilen son değer (yükseliş alarmının referansı).
+    reported: Option<u64>,
+    /// Bu ACK aralığında yükseliş alarmı verildi.
+    alarmed: bool,
 }
 
 /// [ÇİFT ARALIĞI] Çift aralığının alt sınırı (ns): daha kısa aralık zamanlayıcı/teslim titreşimidir.
@@ -1460,7 +1479,26 @@ impl PairRate {
     }
 
     fn on_ack(&mut self) {
+        if self.top[1] > 0 {
+            self.reported = Some(self.top[1]);
+        }
         self.top = [0, 0];
+        self.alarmed = false;
+    }
+
+    /// [YÜKSELİŞ ALARMI] Bu ACK aralığındaki değer son bildirilenin %25 üstüne çıktı (ACK başına
+    /// bir kez; referans yoksa — oturumun ilk ölçümü — alarm yok). Toparlanan hattı ölçen göndericiye
+    /// bilgiyi bütçe aralığını (62 B/s dönüşte ≈ 8 s) beklemeden taşır; bedeli daralma alarmıyla
+    /// aynıdır (ACK kendi jetonunu öder, akış-sonu yedeğinden).
+    fn rise_alarm(&mut self) -> bool {
+        let Some(r) = self.reported else {
+            return false;
+        };
+        if self.alarmed || u128::from(self.top[1]) * 100 <= u128::from(r) * 125 {
+            return false;
+        }
+        self.alarmed = true;
+        true
     }
 
     fn field(&self) -> u16 {
@@ -1547,6 +1585,29 @@ mod tests {
         assert_eq!(pr.field(), before, "tek sıkışmış çift değeri büyüttü");
         pr.on_ack();
         assert_eq!(pr.field(), crate::ack::PAIR_RATE_NONE, "ACK'te sıfırlanır");
+        // Yükseliş alarmı: referans (son bildirilen, aralıklı gönderim) + hatta yakın çiftler.
+        assert!(!pr.rise_alarm(), "ölçüm yokken alarm");
+        let t1 = 200 * sec;
+        let period = (86 + 1046 + 2 * OVH) * sec / 8_376;
+        let mut free = 0u64;
+        let mut fired = 0;
+        for k in 0..20u64 {
+            for (dt, b) in [(0, 86u64), (10 * ms, 1046)] {
+                free = free.max(t1 + k * period + dt) + (b + OVH) * sec / LINE;
+                pr.on_arrival(free + 300 * ms, Some(b));
+                fired += u32::from(pr.rise_alarm());
+            }
+        }
+        assert_eq!(fired, 1, "ACK aralığında bir kez");
+        pr.on_ack();
+        // Aynı değer yeniden: referans güncellendi, alarm yok.
+        for k in 20..40u64 {
+            for (dt, b) in [(0, 86u64), (10 * ms, 1046)] {
+                free = free.max(t1 + k * period + dt) + (b + OVH) * sec / LINE;
+                pr.on_arrival(free + 300 * ms, Some(b));
+                assert!(!pr.rise_alarm(), "değişmeyen hatta alarm");
+            }
+        }
     }
 
     /// [P3 SR-AUDIT-001] Düşman ayrık-seq akışı rx-set'i sınırsız büyütemez: kap sabit.
