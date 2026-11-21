@@ -288,6 +288,12 @@ pub struct Receiver {
     next_datagram_bytes: Option<u64>,
     /// [VARIŞ-HIZI] Oturumun ilk varış penceresi ([`crate::arrival_rate`]).
     first_window: crate::arrival_rate::FirstArrivalWindow,
+    /// [DARALMA-ALARMI] İleri hattın ansızın daralmasını erken görür (`arrival_rate`).
+    rate_drop: crate::arrival_rate::RateDropDetector,
+    /// [DARALMA-ALARMI] Alarm verildi, bir sonraki ACK yedekten hemen çıkar.
+    drop_alarm: bool,
+    /// [DARALMA-ALARMI] Alarm sayısı (gözlem).
+    diag_drop_alarms: u64,
 }
 
 impl Receiver {
@@ -347,6 +353,9 @@ impl Receiver {
             diag_ack_no_info_deferred: 0,
             next_datagram_bytes: None,
             first_window: crate::arrival_rate::FirstArrivalWindow::default(),
+            rate_drop: crate::arrival_rate::RateDropDetector::default(),
+            drop_alarm: false,
+            diag_drop_alarms: 0,
         }
     }
 
@@ -411,6 +420,15 @@ impl Receiver {
         // çift datagram sayılmaz).
         if let Some(b) = udp_bytes.filter(|_| self.first_window_rx()) {
             self.first_window.on_arrival(d.seq, b, now_ns);
+            // [DARALMA-ALARMI] Yalnız bitmap alıcısında (ölçüm aralığı taşıyan ACK) ve ilk ACK'ten
+            // sonra: alarm ACK'i göndericiye daralmanın ölçümünü erken taşır.
+            if self.bitmap_rx()
+                && self.ack_budget_first_done
+                && self.rate_drop.on_arrival(now_ns, b)
+            {
+                self.drop_alarm = true;
+                self.diag_drop_alarms += 1;
+            }
         }
 
         // [CC-PORT] Sırasız varış tespiti kayıttan ÖNCE: beklenen = largest+1 değilse (boşluk açıldı
@@ -458,7 +476,7 @@ impl Receiver {
             RxState::Normal
         };
 
-        let ack = self.tick_ack(now_ns, out_of_order);
+        let ack = self.tick_ack(now_ns, out_of_order || self.drop_alarm);
         RxOutput {
             delivered,
             ack,
@@ -550,6 +568,12 @@ impl Receiver {
         self.ack_tokens_mb = ACK_BUDGET_CAP_BYTES * 1000;
     }
 
+    /// [DARALMA-ALARMI] Verilen alarm sayısı (gözlem).
+    #[must_use]
+    pub fn diag_drop_alarms(&self) -> u64 {
+        self.diag_drop_alarms
+    }
+
     /// [DÖNÜŞ-BÜTÇESİ] Bütçe yetmediği için ertelenen ACK emisyonu (SALT-GÖZLEM).
     #[must_use]
     pub fn diag_ack_budget_deferred(&self) -> u64 {
@@ -621,7 +645,8 @@ impl Receiver {
         }
         let cost = ack_wire_bytes(frame) * 1000;
         let mut need = cost;
-        if self.ack_budget_first_done && !self.arrivals_quiet(now_ns) {
+        // [DARALMA-ALARMI] Alarm ACK'i akış-sonu yedeğini kullanır (yalnız kendi jetonunu öder).
+        if self.ack_budget_first_done && !self.arrivals_quiet(now_ns) && !self.drop_alarm {
             let gap = self.episode_baseline();
             let refill_mb =
                 u64::try_from(u128::from(rate) * u128::from(gap) / 1_000_000).unwrap_or(u64::MAX);
@@ -993,6 +1018,8 @@ impl Receiver {
             }
             self.since_last_ack = 0;
             self.info_since_ack = false;
+            self.drop_alarm = false;
+            self.rate_drop.on_ack(now_ns);
             self.note_reported(&frame);
             self.note_bitmap_emitted(&frame);
             self.ack_horizon_ns = self.ack_arrival_horizon(now_ns, &frame);
@@ -1256,6 +1283,7 @@ impl Receiver {
             let base = self
                 .bitmap_base()
                 .max(largest.saturating_sub(crate::ack::ACK_BITMAP_MAX_BITS));
+            let (rx_span, span_first) = self.rx_span_field(base, largest);
             let frame = AckFrame::bitmap_from_received(
                 self.received.range(base..largest).copied(),
                 largest,
@@ -1263,7 +1291,8 @@ impl Receiver {
                 self.ack_epoch,
                 encoded as u16,
                 self.arrival_rate_field(now_ns),
-                self.rx_span_field(base, largest),
+                rx_span,
+                span_first,
             );
             return (Some(frame), encoded == ACK_DELAY_ENC_MAX);
         }
@@ -1295,26 +1324,38 @@ impl Receiver {
         self.first_window.rate_field()
     }
 
-    /// [ACK-BITMAP · ÖLÇÜM ARALIĞI] `rx_span` (256 µs): M = `[base, largest]` içinde alınan
-    /// seq'ler, `m_first` = M'nin en küçüğü; `ilk_varış(largest) − ilk_varış(m_first)`. Ölçüm yoksa
-    /// [`crate::ack::RX_SPAN_NONE`] (m_first = largest, varış anı bilinmiyor, tavan aşıldı).
-    fn rx_span_field(&self, base: u64, largest: u64) -> u16 {
-        let none = crate::ack::RX_SPAN_NONE;
-        let Some(&m_first) = self.received.range(base..=largest).next() else {
+    /// [ACK-BITMAP · ÖLÇÜM ARALIĞI] `(rx_span, span_first)`: ölçüm aralığı `[span_first, largest]`,
+    /// `span_first` = son çıkan ACK'in en büyüğünden sonraki ilk alınan seq (yoksa tabandan sonraki
+    /// ilk alınan seq). Aralık bir ACK geriye uzanır: iki ACK'lik kanıt aralığı ani bir daralmayı
+    /// daralma öncesiyle seyreltiyordu (ürün testi, düşüş, tohum 2: hat 8 s'de 6 250'ye iniyor,
+    /// 14,1 s'deki aralık hızı 8 898). `rx_span` = `ilk_varış(largest) − ilk_varış(span_first)`
+    /// (256 µs). Ölçüm yoksa [`crate::ack::RX_SPAN_NONE`] (span_first = largest, varış anı
+    /// bilinmiyor, tavan aşıldı); o durumda `span_first` = largest.
+    fn rx_span_field(&self, base: u64, largest: u64) -> (u16, u64) {
+        let none = (crate::ack::RX_SPAN_NONE, largest);
+        let anchor = self
+            .bitmap_emitted
+            .back()
+            .map_or(base, |&l| l.saturating_add(1))
+            .max(base);
+        let Some(&first) = self.received.range(anchor..=largest).next() else {
             return none;
         };
-        if m_first >= largest {
+        if first >= largest {
             return none;
         }
-        let (Some(&t0), Some(&t1)) = (self.arrival_ns.get(&m_first), self.arrival_ns.get(&largest))
+        let (Some(&t0), Some(&t1)) = (self.arrival_ns.get(&first), self.arrival_ns.get(&largest))
         else {
             return none;
         };
         let units = t1.saturating_sub(t0) / (crate::ack::ACK_DELAY_UNIT_US * 1000);
-        u16::try_from(units)
+        match u16::try_from(units)
             .ok()
-            .filter(|&u| u < none)
-            .unwrap_or(none)
+            .filter(|&u| u < crate::ack::RX_SPAN_NONE)
+        {
+            Some(u) => (u, first),
+            None => none,
+        }
     }
 
     /// [VARIŞ-HIZI] İlk varış penceresini ölçen alıcı: port motoru, bütçeli ve bütçe tipik ACK'in

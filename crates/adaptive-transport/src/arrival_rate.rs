@@ -200,6 +200,99 @@ where
     None
 }
 
+/// [DARALMA-ALARMI] Kısa pencere (ns): son bu kadar süredeki varışların hızı.
+pub const DROP_WINDOW_NS: u64 = 500_000_000;
+/// [DARALMA-ALARMI] Pencerede en az bu kadar varış.
+pub const DROP_MIN_ARRIVALS: usize = 4;
+/// [DARALMA-ALARMI] Alarm eşiği: kısa pencere hızı referansın ‰ bu değerinin altında.
+pub const DROP_PERMILLE: u64 = 700;
+/// [DARALMA-ALARMI] Referans bu süre yenilenmezse güncel hıza iner (ns).
+pub const DROP_REF_HOLD_NS: u64 = 8_000_000_000;
+
+/// [DARALMA-ALARMI] Alıcıda ileri hattın ansızın daralmasını erken görmek için: son
+/// [`DROP_WINDOW_NS`] içindeki varışlar sık (aralıklar düzenli: en büyük boşluk ortalamanın 2,5
+/// katını aşmıyor; darboğazdan arka arkaya çıkan datagramlar) ve hızları son
+/// [`DROP_REF_HOLD_NS`]'deki en yüksek sık-pencere hızının %70'inin altındaysa alarm.
+///
+/// Neden: göndericinin daralmayı öğrendiği tek yol ACK'tir ve dar dönüşte ACK bütçe sırasını bekler
+/// (ürün testi, düşüş hücresi: hat 8 s'de yarıya iniyor, ölçüm ancak 12,3 s'de; kuyruk bu sürede
+/// büyüyor, PTT 8 s gecikiyor). Alarm ACK'i bütçenin akış-sonu yedeğinden hemen çıkar; ACK baytı
+/// bütçeyi aşmaz (yedek bütçenin içindedir). Yanlış alarm (gönderici azaldı) bir ACK'in erken
+/// çıkmasıdır: bilgi taşır, bütçe aynı.
+///
+/// Sınır: uygulamanın az göndermesi düzensiz aralıklar üretir (PTT demetleri, metin) ve sık-pencere
+/// sayılmaz. Gönderici kendisi sık ama yavaş gönderirse (tavanı ölçülen hatta indi) alarm çıkar;
+/// bu da bir ACK'in erken çıkmasıdır.
+#[derive(Debug, Clone, Default)]
+pub struct RateDropDetector {
+    ring: std::collections::VecDeque<(u64, u64)>,
+    reference_bps: u64,
+    reference_ns: u64,
+    fired: bool,
+}
+
+impl RateDropDetector {
+    /// Boyu bilinen yeni datagram; alarm durumuna geçtiyse `true` (bir ACK'e bir kez).
+    pub fn on_arrival(&mut self, now_ns: u64, udp_bytes: u64) -> bool {
+        self.ring.push_back((now_ns, udp_bytes));
+        while self
+            .ring
+            .front()
+            .is_some_and(|&(t, _)| t.saturating_add(DROP_WINDOW_NS) < now_ns)
+        {
+            self.ring.pop_front();
+        }
+        if self.ring.len() < DROP_MIN_ARRIVALS {
+            return false;
+        }
+        let first = self.ring.front().map_or(now_ns, |&(t, _)| t);
+        let span = now_ns.saturating_sub(first);
+        if span < DROP_WINDOW_NS / 2 {
+            return false;
+        }
+        let n = self.ring.len() as u64;
+        let mean_gap = span / (n - 1);
+        let max_gap = self
+            .ring
+            .iter()
+            .zip(self.ring.iter().skip(1))
+            .map(|(a, b)| b.0.saturating_sub(a.0))
+            .max()
+            .unwrap_or(0);
+        if max_gap.saturating_mul(2) > mean_gap.saturating_mul(5) {
+            return false;
+        }
+        let bytes: u64 = self.ring.iter().skip(1).map(|&(_, b)| b).sum();
+        let rate = u64::try_from(u128::from(bytes) * 1_000_000_000 / u128::from(span.max(1)))
+            .unwrap_or(u64::MAX);
+        if rate >= self.reference_bps || now_ns.saturating_sub(self.reference_ns) > DROP_REF_HOLD_NS
+        {
+            if rate >= self.reference_bps || !self.fired {
+                self.reference_bps = rate;
+                self.reference_ns = now_ns;
+            }
+            return false;
+        }
+        if !self.fired
+            && rate.saturating_mul(1000) < self.reference_bps.saturating_mul(DROP_PERMILLE)
+        {
+            self.fired = true;
+            return true;
+        }
+        false
+    }
+
+    /// Bir ACK çıktı: sonraki alarm yeniden mümkün; referans alarm hızına iner (aynı daralma için
+    /// ikinci alarm yok).
+    pub fn on_ack(&mut self, now_ns: u64) {
+        if self.fired {
+            self.fired = false;
+            self.reference_bps = 0;
+            self.reference_ns = now_ns;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,5 +402,42 @@ mod tests {
         let small = [(10u64, 1046u64), (11, 80), (12, 80), (14, 1046)];
         assert_eq!(window_end(small), Some((10, 14, 1206)));
         assert_eq!(window_end(std::iter::empty()), None);
+    }
+
+    #[test]
+    fn drop_detector_fires_once_on_a_dense_halving_and_not_on_sparse_traffic() {
+        let mut d = RateDropDetector::default();
+        let mut t = 0u64;
+        let mut fired = Vec::new();
+        // 12 500 B/s'de 1 200 B (96 ms arayla) 3 s, sonra 6 250 B/s (192 ms) 3 s.
+        while t < 3_000_000_000 {
+            if d.on_arrival(t, 1200) {
+                fired.push(t);
+            }
+            t += 96_000_000;
+        }
+        assert!(fired.is_empty(), "dürüst hızda alarm: {fired:?}");
+        while t < 6_000_000_000 {
+            if d.on_arrival(t, 1200) {
+                fired.push(t);
+            }
+            t += 192_000_000;
+        }
+        assert_eq!(fired.len(), 1, "yarıya düşüşte tek alarm: {fired:?}");
+        assert!(
+            fired[0] < 3_000_000_000 + 700_000_000,
+            "alarm geç: {}",
+            fired[0]
+        );
+        // Seyrek, düzensiz trafik (PTT demeti benzeri): alarm yok.
+        let mut d = RateDropDetector::default();
+        let mut t = 0u64;
+        for k in 0..200u64 {
+            assert!(
+                !d.on_arrival(t, if k % 7 == 0 { 1200 } else { 114 }),
+                "seyrekte alarm"
+            );
+            t += if k % 7 == 6 { 160_000_000 } else { 40_000_000 };
+        }
     }
 }

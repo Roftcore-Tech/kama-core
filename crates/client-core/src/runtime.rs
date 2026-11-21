@@ -3547,10 +3547,15 @@ async fn client_task(
                                     .ok()
                                     .map(|i| pn_seq[i].1)
                             };
+                            // Ölçüm aralığı [span_first, largest] (kanıt aralığının içinde).
+                            let from_pn = frame
+                                .span_first_full(expected_pn)
+                                .unwrap_or(lo_pn)
+                                .max(lo_pn);
                             let mut m_pns: Vec<u64> = pns
                                 .iter()
                                 .copied()
-                                .filter(|&p| p >= lo_pn && p <= hi_pn)
+                                .filter(|&p| p >= from_pn && p <= hi_pn)
                                 .collect();
                             m_pns.sort_unstable();
                             let first = m_pns.first().copied().and_then(to_seq);
