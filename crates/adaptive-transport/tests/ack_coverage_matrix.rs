@@ -49,6 +49,9 @@ const VOICE_START_NS: u64 = 500 * MS;
 /// Bu süreden eski onarım sembolü koşu sonunda hâlâ uçuştaysa sızıntıdır (teyitli kopyanın
 /// bırakma saati `K_CONFIRMED_RELEASE × T_loss` bu hatta ≈ 10–20 s).
 const PARITY_STALE_NS: u64 = 40 * SEC;
+/// Teslim edilmemiş sayılmak için kısa birimin koşu sonundan en az bu kadar önce sunulmuş olması
+/// (ileri yol 0,3 s + kuyruk payı).
+const SETTLE_NS: u64 = 3 * SEC;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Engine {
@@ -67,6 +70,9 @@ struct Arm {
     rereport: bool,
     /// Yeni gönderici (dolu çerçevede kapsam bilgisi verilir).
     coverage: bool,
+    /// Kapsam bilgisi dolu olmayan çerçevede de verilir (yalnız kuralın kapalı yolda bilgiyi yok
+    /// saydığını sınayan test; ürün çalışma zamanı bunu yapmaz).
+    coverage_every_ack: bool,
     real_up: u64,
     seed: u64,
     t_max_ns: u64,
@@ -151,6 +157,13 @@ struct Outcome {
     file_done_ns: Option<u64>,
     voice_offered: u64,
     voice_undelivered: usize,
+    /// Koşu sonundan en az [`SETTLE_NS`] önce sunulmuş ama teslim edilmemiş kısa birim (koşu sonu
+    /// kesintisi hariç).
+    voice_undelivered_settled: usize,
+    /// Alıcının ürettiği dolu (`MAX_ACK_RANGES` aralıklı) çerçeve sayısı (kollardan bağımsız).
+    full_frames: usize,
+    /// Göndericiye verilen kapsam bilgisi sayısı (`set_ack_coverage` çağrısı).
+    hints_given: usize,
     /// Dosya birimleri: ilk iletimi düşen birimin (ilk iletim → teslim) süresi.
     file_recovery_ns: Vec<u64>,
     parity_stale: usize,
@@ -269,6 +282,7 @@ fn run(arm: Arm) -> Outcome {
     }
     let mut file_left = FILE_UNITS;
     let mut next_voice = 0u64;
+    let mut voice_offer_at: Vec<u64> = Vec::new();
     let mut now = 0u64;
     while now < arm.t_max_ns {
         let voice_at = VOICE_START_NS + next_voice * VOICE_PERIOD_NS;
@@ -281,6 +295,7 @@ fn run(arm: Arm) -> Outcome {
                 now,
             );
             tk.emit(decs, now, &mut fwd, &mut o);
+            voice_offer_at.push(now);
             next_voice += 1;
         }
         let decs = s.on_event(Event::TimerFired(Timer::Pto), now);
@@ -327,8 +342,10 @@ fn run(arm: Arm) -> Outcome {
             let expected = r.largest_seq().unwrap_or(0) + 1;
             let udp = frame.encode().len() as u64 + ACK_SEAL;
             let pns = frame.acked_full(expected);
+            o.full_frames += usize::from(frame.ranges.len() == MAX_ACK_RANGES);
             // Ürün çalışma zamanının kapısı: yalnız dolu çerçeve (bu düzenekte PN = seq).
-            let coverage = (arm.coverage && frame.ranges.len() == MAX_ACK_RANGES)
+            let coverage = (arm.coverage
+                && (arm.coverage_every_ack || frame.ranges.len() == MAX_ACK_RANGES))
                 .then(|| ack_hole_edges(&pns));
             ret.send(
                 now,
@@ -352,6 +369,7 @@ fn run(arm: Arm) -> Outcome {
                 now,
             );
             if let Some(missing) = coverage {
+                o.hints_given += 1;
                 s.set_ack_coverage(missing);
             }
             let decs = s.on_event(Event::AckReceived(ack), now);
@@ -393,6 +411,11 @@ fn run(arm: Arm) -> Outcome {
     o.voice_offered = next_voice;
     o.voice_undelivered = (0..next_voice)
         .filter(|v| !delivered_at.contains_key(v))
+        .count();
+    o.voice_undelivered_settled = voice_offer_at
+        .iter()
+        .enumerate()
+        .filter(|&(v, &t)| t + SETTLE_NS <= now && !delivered_at.contains_key(&(v as u64)))
         .count();
     for (u, &(t0, lost)) in &tk.file_first {
         if lost {
@@ -436,15 +459,18 @@ fn label(rereport: bool, coverage: bool) -> &'static str {
 
 /// Dört birleşim, iki gerçek hat (dürüst 12 500 ve iyimser profil altında 6 250 B/s), iki tohum.
 ///
+/// * her kolda alıcı dolu çerçeve üretir (düzenek kuralı gerçekten sınar);
 /// * eski gönderici (iki alıcıyla): dolu çerçevenin bildirmediği, alıcının ALMIŞ olduğu seq'leri
-///   kayıp ilan eder (bugünkü davranışın sabitlenmesi; ölçülen sayı yazdırılır);
+///   kayıp ilan eder — yalnız GÖZLEM olarak yazdırılır, iddia edilmez (bugünkü kusur başarı şartı
+///   yapılmaz);
 /// * yeni gönderici (iki alıcıyla): alınmış seq'i hiç ilan etmez, ilan ettiği her seq hatta
 ///   gerçekten düşmüştür; onarım sembolü uçuşta birikmez; dolu çerçeve gerçekten işlenmiştir;
 ///   reorder toleransı şişmez;
 /// * yeni alıcı × yeni gönderici: dosya ve bütün kısa birimler teslim edilir.
 ///
 /// CANLILIK İDDİA EDİLMEYEN birleşim: eski alıcı × yeni gönderici. Ölçüldü (2026-11-21, bu
-/// düzenek, 150 s): iki hatta ve iki tohumda dosya bitmez, 10–42 kısa birim teslim edilmez. Kök:
+/// düzenek, 150 s): iki hatta ve iki tohumda dosya bitmez; koşu sonundan ≥ 3 s önce sunulmuş
+/// 4–33 kısa birim teslim edilmez (koşu sonu kesintisi dahil 10–42). Kök:
 /// §2.1 alıcısı bir çerçeveye sığmayan bloğu bir daha bildirmez; kenar kuralı o seq'leri kayıp
 /// saymaz; teslim edilmiş ama bildirilmemiş birim yalnız PTO probuyla teyit alabilir (ACK aralığında
 /// ≤ 2 prob, en küçük kimlik önce), teyitsiz kayıtlar uçuşu doldurur (6 250, tohum 1, koşu sonu:
@@ -455,7 +481,6 @@ fn label(rereport: bool, coverage: bool) -> &'static str {
 /// Gerçek kayıp kurtarma süresi (dosya birimi, ilk iletimi düşen) her birleşim için yazdırılır.
 #[test]
 fn receiver_sender_matrix_on_the_feedback_starved_line() {
-    let mut old_tx_declared_received = [0usize; 2];
     let mut failures: Vec<String> = Vec::new();
     for real_up in [6_250u64, PROFILE_UP] {
         for rereport in [false, true] {
@@ -466,6 +491,7 @@ fn receiver_sender_matrix_on_the_feedback_starved_line() {
                         engine: Engine::PortProfile,
                         rereport,
                         coverage,
+                        coverage_every_ack: false,
                         real_up,
                         seed,
                         t_max_ns: 150 * SEC,
@@ -474,8 +500,9 @@ fn receiver_sender_matrix_on_the_feedback_starved_line() {
                     println!(
                         "KAPSAM-MATRİS hat={real_up} tohum={seed} [{tag}]: ilan={} (paket {} zaman {}) \
                          alınmışken_ilan={} düşmemişken_ilan={} gereksiz_arq={}/{} gereksiz_pto={}/{} dosya={} \
-                         kısa_birim_teslimsiz={}/{} kurtarma_max={} kurtarma_p50={} n={} \
-                         bayat_parite={} kapsam={:?} reorder={}→{} diag_loss={:?} diag_ledger={:?}",
+                         kısa_birim_teslimsiz={}/{} (koşu sonu kesintisi hariç {}) kurtarma_max={} \
+                         kurtarma_p50={} n={} bayat_parite={} dolu_çerçeve={} kapsam_bilgisi={} \
+                         kapsam={:?} recent_max_reorder={}→{} (k={}→{}) diag_loss={:?} diag_ledger={:?}",
                         o.declared.len(),
                         o.declared_pkt,
                         o.declared_time,
@@ -488,6 +515,7 @@ fn receiver_sender_matrix_on_the_feedback_starved_line() {
                         o.file_done_ns.map_or("YOK".to_string(), secs),
                         o.voice_undelivered,
                         o.voice_offered,
+                        o.voice_undelivered_settled,
                         o.file_recovery_ns.last().copied().map_or("-".into(), secs),
                         o.file_recovery_ns
                             .get(o.file_recovery_ns.len() / 2)
@@ -495,13 +523,23 @@ fn receiver_sender_matrix_on_the_feedback_starved_line() {
                             .map_or("-".into(), secs),
                         o.file_recovery_ns.len(),
                         o.parity_stale,
+                        o.full_frames,
+                        o.hints_given,
                         o.coverage,
                         o.reorder_start,
                         o.reorder_end,
+                        packet_k(o.reorder_start),
+                        packet_k(o.reorder_end),
                         o.diag_loss,
                         o.diag_ledger,
                     );
                     rec.extend(&o.file_recovery_ns);
+                    // Düzenek kuralı gerçekten sınıyor: her kolda alıcı dolu çerçeve üretti.
+                    if o.full_frames == 0 {
+                        failures.push(format!(
+                            "{tag} hat={real_up} tohum={seed}: dolu çerçeve yok"
+                        ));
+                    }
                     if coverage {
                         let ctx = format!("{tag} hat={real_up} tohum={seed}");
                         let checks = [
@@ -525,38 +563,31 @@ fn receiver_sender_matrix_on_the_feedback_starved_line() {
                                 failures.push(format!("{ctx}: {what}"));
                             }
                         }
-                    } else {
-                        old_tx_declared_received[usize::from(rereport)] += o.declared_received;
                     }
                 }
                 rec.sort_unstable();
                 println!(
-                    "KAPSAM-MATRİS-KURTARMA hat={real_up} [{}]: n={} p50={} p90={} max={}",
+                    "KAPSAM-MATRİS-KURTARMA hat={real_up} [{}] (iki tohum birlikte): n={} p50={} max={}",
                     label(rereport, coverage),
                     rec.len(),
                     rec.get(rec.len() / 2).copied().map_or("-".into(), secs),
-                    rec.get(rec.len() * 9 / 10)
-                        .copied()
-                        .map_or("-".into(), secs),
                     rec.last().copied().map_or("-".into(), secs),
                 );
             }
         }
     }
-    assert!(failures.is_empty(), "yeni gönderici: {failures:#?}");
-    // Bugünkü davranışın sabitlenmesi: eski gönderici iki alıcıyla da alınmış seq'i ilan eder.
-    assert!(
-        old_tx_declared_received[0] > 0,
-        "eski alıcı × eski gönderici: alınmışken ilan beklenirdi (düzenek dolu çerçeve üretmiyor mu?)"
-    );
-    assert!(
-        old_tx_declared_received[1] > 0,
-        "yeni alıcı × eski gönderici: alınmışken ilan beklenirdi"
-    );
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Göndericinin paket eşiği `k = max(3, 2 × recent_max_reorder)` (`RetxConfig::fixture`, ürün
+/// göndericisinin yapılandırması).
+fn packet_k(recent_max_reorder: u32) -> u32 {
+    3u32.max(recent_max_reorder.saturating_mul(2))
 }
 
 /// Profil kapalı yol (port motoru, kural yok) ve eski motor kapsam bilgisini YOK SAYAR: aynı
-/// senaryoda `set_ack_coverage` verilse de verilmese de bütün kararlar ve kayıp sayaçları aynıdır.
+/// senaryoda `set_ack_coverage` her ACK'ten önce verilse de hiç verilmese de bütün kararlar, kayıp
+/// ilanları ve kayıp sayaçları aynıdır. (Taban koda karşı bayt-aynılık CC sim kapısındadır.)
 #[test]
 fn profile_off_and_legacy_engines_ignore_coverage() {
     for engine in [Engine::PortNoRule, Engine::Legacy] {
@@ -565,6 +596,9 @@ fn profile_off_and_legacy_engines_ignore_coverage() {
                 engine,
                 rereport,
                 coverage: false,
+                // Bilgi her ACK'te verilir (dolu çerçeve beklenmez): kapalı yol onu her durumda
+                // yok saymalı. Eski motor bu düzenekte dolu çerçeve üretmiyor (ölçüldü).
+                coverage_every_ack: true,
                 real_up: PROFILE_UP,
                 seed: 1,
                 t_max_ns: 40 * SEC,
@@ -575,6 +609,11 @@ fn profile_off_and_legacy_engines_ignore_coverage() {
                 ..base
             });
             assert!(!a.trace.is_empty(), "{engine:?}: karar yok");
+            // Test boş değil: kapsam bilgisi gerçekten verildi.
+            assert!(
+                b.hints_given > 0,
+                "{engine:?} rereport={rereport}: kapsam bilgisi verilmedi"
+            );
             assert_eq!(
                 b.coverage,
                 CoverageDiag::default(),

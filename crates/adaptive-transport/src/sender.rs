@@ -1375,10 +1375,13 @@ pub struct ConfirmedCancelDiag {
     /// kayıp muhasebesi öncekiyle aynı).
     pub inflight_marked: u64,
     /// Kararsız kopyanın kayıp ilanı: kayıp muhasebesi yapıldı, birim YENİDEN KUYRUĞA GİRMEDİ
-    /// (Duplicate kökenlide geometrik kopya yeniden kurulmadı).
+    /// (Duplicate kökenlide geometrik kopya yeniden kurulmadı). [İŞ-32] Kenar kuralı yolunda
+    /// (dolu çerçeve işlendikten sonra) sessiz bırakmaya işaretlenmiş onarım sembolünün sonradan
+    /// kanıtla ilanı da burada sayılır.
     pub lost_not_requeued: u64,
     /// Kararsız kopyanın bırakma anına dek ACK'i ya da kayıp ilanı gelmedi; kayıp ilan edilmeden
-    /// uçuştan düştü (sessiz kanal sınırı).
+    /// uçuştan düştü (sessiz kanal sınırı). [İŞ-32] Kenar kuralı yolunda bilinmeyen onarım
+    /// sembollerinin sessiz bırakılması da burada sayılır (`mark_unknown_parity_release`).
     pub released: u64,
 }
 
