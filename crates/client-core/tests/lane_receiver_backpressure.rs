@@ -9,6 +9,9 @@
 //! * **küçük sınırlar** ([`receiver_buffer_stays_bounded_with_small_limits`]) — teslim kanalı
 //!   [`SMALL_DELIVERY_QUEUE`], dört şeritte genişlik [`SMALL_WIDTH`]: sınırların dolduğu kısa
 //!   sürede görülür. Alice ara ara bir birimin ilk emisyonunu kaybettirir (şeritte boşluk).
+//!   Ayrıca FILE şeridinin bir birimi Bob'da duruşa dek düşer (`Plan::held_gaps`): sıralayıcının
+//!   boşluk arkasında birim tuttuğu ön koşulu böylece zamanlamaya bağlı değildir (önceden yalnız
+//!   rastgele kayba dayanıyordu; yeniden iletim örnekleme anından önce gelirse ön koşul düşüyordu).
 //! * **ürün ayarları** ([`receiver_buffer_stays_bounded_with_product_limits`]) — alıcı ayarları
 //!   ürünün: teslim kanalı 1024, teslim kutusu 1024, genişlikler PTT/SIG/TEXT 256, FILE 4096;
 //!   birim ürünün birim tavanı boyunda (1013 B). Göndericinin dosya penceresi tabanı W = 512
@@ -169,6 +172,11 @@ struct Plan {
     drop_every: u64,
     /// Bob'da serbest bırakılana dek düşen birimler (her şeridin sıra başı ya da hiç).
     heads_dropped: bool,
+    /// Bob'da serbest bırakılana dek (faz 2) düşen ek birimler: `(şerit, sıra)`. Şeridin
+    /// ortasında KESİN bir boşluk açar; ısınma bu şeritlerin sıralayıcısı en az bir birim
+    /// tutana dek sürer. Böylece "sıralayıcı boşluk arkasında birim tuttu" ön koşulu rastgele
+    /// kayıp ile yeniden iletimin örnekleme anına göre yarışmasına bağlı kalmaz.
+    held_gaps: &'static [(usize, u64)],
 }
 
 /// Kolun ölçümü.
@@ -219,11 +227,12 @@ fn run(plan: &Plan) -> Measured {
     alice_cfg.runtime.live_diag = diag_on;
     let mut alice = ClientTransport::new(alice_cfg, crypto(ALICE), Box::new(hub.link(id(ALICE))))
         .expect("alice");
-    let heads = if plan.heads_dropped {
+    let mut heads: Vec<u64> = if plan.heads_dropped {
         (0..4).map(|l| tagged(l, 0)).collect()
     } else {
         Vec::new()
     };
+    heads.extend(plan.held_gaps.iter().map(|&(l, n)| tagged(l, n)));
     let mut bob = ClientTransport::new(
         bob_cfg,
         HeadDrop {
@@ -366,7 +375,9 @@ fn run(plan: &Plan) -> Measured {
             rt_on = rt_on || held[3] as u64 + 1 >= widths[3];
             (0..4).all(|l| held[l] as u64 + 1 >= widths[l])
         } else {
+            let (_, _, held) = bob.receiver_buffered_for_test();
             started.elapsed() >= Duration::from_millis(500)
+                && plan.held_gaps.iter().all(|&(l, _)| held[l] > 0)
         };
         if full {
             break;
@@ -511,10 +522,12 @@ fn receiver_buffer_stays_bounded_with_small_limits() {
         unit_bytes: 64,
         drop_every: 97,
         heads_dropped: false,
+        // FILE şeridinin 200. birimi faz 2'ye dek düşer: arkasındakiler sıralayıcıda bekler.
+        held_gaps: &[(3, 200)],
     });
     assert!(
-        m.max_held.iter().sum::<usize>() > 0,
-        "ön koşul: sıralayıcı boşluk arkasında birim tutmalıydı"
+        m.max_held[3] > 0,
+        "ön koşul: sıralayıcı FILE şeridindeki kesin boşluğun arkasında birim tutmalıydı"
     );
 }
 
@@ -540,6 +553,7 @@ fn receiver_buffer_stays_bounded_with_product_limits() {
         unit_bytes: KamaV1Profile::MAX_UNIT_BYTES,
         drop_every: 0,
         heads_dropped: true,
+        held_gaps: &[],
     });
     for (lane, width) in DEFAULT_ADMIT_WIDTHS.iter().enumerate() {
         assert_eq!(
