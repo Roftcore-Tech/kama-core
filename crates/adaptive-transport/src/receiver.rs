@@ -185,7 +185,8 @@ pub struct Receiver {
     /// İkisi de `received` penceresiyle budanır.
     pn_unit: BTreeMap<u64, u64>,
     unit_reported: BTreeMap<u64, u64>,
-    /// [YENİDEN-RAPOR] Seçim açık mı (varsayılan açık; `set_ack_rereport`). Kapalıyken alıcı
+    /// [YENİDEN-RAPOR] Seçim açık mı (varsayılan KAPALI: donmuş spec §2.1 "taşarsa en yeni bloklar
+    /// öncelik"; açık kol spec sapmasıdır, sahip kararına dek yalnız ölçüm). Kapalıyken alıcı
     /// bugünkü kuralla (en yeni 16 alt blok) yazar.
     rereport: bool,
     smallest_seq: u64,
@@ -273,7 +274,7 @@ impl Receiver {
             reported: BTreeMap::new(),
             pn_unit: BTreeMap::new(),
             unit_reported: BTreeMap::new(),
-            rereport: true,
+            rereport: false,
             smallest_seq: 0,
             largest_seq: 0,
             have_recv: false,
@@ -456,8 +457,8 @@ impl Receiver {
         self.ack_tokens_at_ns = 0;
     }
 
-    /// [YENİDEN-RAPOR] Geri bildirimi aç alıcıda kırpılan blokların yeniden raporlanmasını açar
-    /// (varsayılan) ya da kapatır (bugünkü kural). Oturum başında, ilk varıştan önce çağrılır.
+    /// [YENİDEN-RAPOR] Geri bildirimi aç alıcıda kırpılan blokların yeniden raporlanmasını açar ya
+    /// da kapatır (varsayılan; spec §2.1 kuralı). Oturum başında, ilk varıştan önce çağrılır.
     pub fn set_ack_rereport(&mut self, on: bool) {
         self.rereport = on;
     }
@@ -682,8 +683,12 @@ impl Receiver {
     /// bildirilmemiş, sonra en az bildirilmiş bloklara.
     /// Bir blok en az [`REREPORT_SAFE`] çıkan ACK'te bildirildiyse önceliksizdir (güvenle unutulur:
     /// dönüş kaybına karşı iki kopya; pencere dışına düşen seq'in sayacı da düşer). Göndericinin
-    /// muhasebesi teyitli KÜME üzerindendir (`acked_full`); bildirilmeyen seq "teyitsiz"dir, aradaki
-    /// aralık ona kayıp demez. Seçim yalnız blok sayısı tavanı aşınca yapılır; aşmıyorsa çerçeve
+    /// muhasebesi teyitli KÜME üzerindendir (`acked_full`). DİKKAT: bugünkü gönderici bildirilmeyen
+    /// iletimi kayıp sayabilir — paket eşiği (en büyük teyitliye göre) ve zaman eşiği (taban 1 ms,
+    /// teyitsiz iletim en büyük teyitliden küçükse) — ve yeniden yollar; seçim bu ilanları önlemez,
+    /// yalnız iletimin sonradan bildirilmesini (geç teyit: un-loss / tombstone, birim teyidi)
+    /// sağlar. Göndericinin bildirilmeyen aralığı "bilinmiyor" sayması ayrı iştir (ortak kapsam
+    /// kuralı, #175: 16 aralıklı çerçevede negatif çıkarım yok). Seçim yalnız blok sayısı tavanı aşınca yapılır; aşmıyorsa çerçeve
     /// bugünküyle aynıdır.
     fn rereport_selection(&self) -> Vec<u64> {
         let all: Vec<u64> = self.received.iter().copied().collect();
@@ -1256,6 +1261,7 @@ mod tests {
         const SEC: u64 = 1_000_000_000;
         let mut r = Receiver::with_cc_port();
         r.set_return_bandwidth(Some(62));
+        r.set_ack_rereport(true);
         // 60 blok: her 3 seq'ten 2'si alınır (seq 3k+2 kayıp).
         let mut t = 0u64;
         for k in 0..60u64 {
