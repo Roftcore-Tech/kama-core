@@ -49,6 +49,9 @@ fn sender() -> Sender {
         copies: 4,
         spacing_ns: 40 * MS,
     }));
+    // Kuruluş yoklaması (DR-EST-1, yalnız ilk ACK'e dek) kuyruktaki en erken vadeli kopyayı
+    // vadesinden önce alır; burada kopya kuralını yalıtmak için kapalı.
+    s.set_establish_probe(false);
     s
 }
 
@@ -100,4 +103,50 @@ fn a_short_backlog_keeps_every_copy() {
 #[test]
 fn a_long_backlog_leaves_exactly_one_copy() {
     assert_eq!(transmissions(3 * SEC), (1, 1));
+}
+
+/// İki demetin orijinali çıktıktan sonra hat kuyruğu 3 s dolu kalır: her demet tam bir kopya alır —
+/// kural birim başınadır (tek kopya toplamı ya da en eski kopya değil).
+#[test]
+fn every_bundle_keeps_its_own_last_copy() {
+    let mut s = sender();
+    s.set_diag_emit_log(true);
+    let _ = s.on_event(
+        Event::AppData(OpaqueUnit {
+            id: 0,
+            size: VOICE_UNIT,
+        }),
+        0,
+    );
+    let backlog_ns = 3 * SEC;
+    let mut now = MS;
+    while now < 5 * SEC {
+        if now == 10 * MS {
+            let _ = s.on_event(
+                Event::AppData(OpaqueUnit {
+                    id: 1,
+                    size: VOICE_UNIT,
+                }),
+                now,
+            );
+        }
+        if (20 * MS..backlog_ns).contains(&now) {
+            s.cc_line_observe_backlog(PROFILE_UP * (backlog_ns - now) / SEC);
+        }
+        let _ = s.on_event(Event::TimerFired(Timer::Pto), now);
+        now += MS;
+    }
+    let log = s.take_diag_emit_log();
+    for id in [0u64, 1] {
+        let originals = log
+            .iter()
+            .filter(|e| e.unit_id == id && e.cause == EmitCause::Data && e.at_ns < 20 * MS)
+            .count();
+        assert_eq!(originals, 1, "demet {id}: orijinal kuyruktan önce çıkmadı");
+        let copies = log
+            .iter()
+            .filter(|e| e.unit_id == id && e.cause == EmitCause::CopyPriority)
+            .count();
+        assert_eq!(copies, 1, "demet {id}: {copies} kopya");
+    }
 }

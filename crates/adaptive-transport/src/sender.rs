@@ -3984,6 +3984,8 @@ impl Sender {
         self.pacer.set_line_rate(g.pace_bps());
         if let Some(u) = update {
             self.pacer.line_raise_backlog(u.backlog_bytes);
+            // [SÜRELİ-YOKLAMA] Başarısız yoklamanın fazlası mevcut kuyruğun üstüne.
+            self.pacer.line_add_backlog(u.extra_backlog_bytes);
         }
     }
 
@@ -6025,8 +6027,9 @@ impl Sender {
     /// ACK'e dek bütçeyi aşıyor mu ([`crate::line_guard`] modül belgesi). Öncelikli şerit
     /// (`unit_id < priority_below_id`: PTT, denetim, metin) beklemez ama bütçeye sayılır. Kural,
     /// hat koruması ya da şerit kuralı yoksa ya da bütçe kalktıysa `false` (bugünkü yol).
-    fn start_budget_holds(&self, unit_id: Option<u64>, size: u64, now_ns: u64) -> bool {
-        let (Some(g), Some(rule)) = (self.cc_line_guard.as_ref(), self.forward_copy_rule) else {
+    fn start_budget_holds(&mut self, unit_id: Option<u64>, size: u64, now_ns: u64) -> bool {
+        let rule = self.forward_copy_rule;
+        let (Some(g), Some(rule)) = (self.cc_line_guard.as_mut(), rule) else {
             return false;
         };
         if !g.start_budget_active() || unit_id.is_some_and(|id| id < rule.priority_below_id) {
@@ -8270,8 +8273,9 @@ impl Sender {
             cc.on_sent(now_ns, unit.size, seq); // quinn: her iletim tekil paket numarası (= seq)
         }
         self.inflight_bytes += unit.size;
+        let ahead_ns = self.pacer.line_ns_until_drained();
         if let Some(g) = self.cc_line_guard.as_mut() {
-            g.on_sent(seq, now_ns, unit.size);
+            g.on_sent_ahead(seq, now_ns, unit.size, ahead_ns);
         }
         self.inflight.insert(
             seq,

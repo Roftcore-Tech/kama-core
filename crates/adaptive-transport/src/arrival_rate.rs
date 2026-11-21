@@ -10,8 +10,10 @@
 //!
 //! # Ölçüm
 //!
-//! Alıcı oturumun ilk datagramından sonra gelen datagramların UDP gövde baytını sayar. Sayım
-//! [`FIRST_WINDOW_BYTES`]'a ulaştığı varışta pencere kapanır. Alan değeri
+//! Pencere oturumun gövdesi en az [`FIRST_WINDOW_BYTES`] olan ilk datagramıyla başlar (daha önce
+//! gelen küçük datagramlar — dosya başlığı, metin, PTT — pencereye girmez: iki datagramın kendi
+//! serileşme farkı kuyruk artışı gibi görünürdü). Alıcı bu datagramdan sonra gelenlerin UDP gövde
+//! baytını sayar; sayım [`FIRST_WINDOW_BYTES`]'a ulaştığı varışta pencere kapanır. Alan değeri
 //! `(ilk datagramdan sonraki bayt) / (son varış − ilk varış)` B/s'dir (§2.2 "receiver-gözlemli
 //! pencere-oranı, ilk bw örneği"). Bu değer yalnız oturumun ilk ACK'inde taşınır, sonraki ACK'ler
 //! sentinel taşır ([`crate::ack::ARRIVAL_RATE_SENTINEL`]).
@@ -58,7 +60,11 @@ use crate::rate::DEFAULT_MTU;
 /// * ölçüm çözünürlüğü: yarı hızlı bir hatta (beyanın yarısı) tek parçanın kuyruk artışı bir
 ///   parça serileşmesi kadardır (≈ 86 ms), gerçek 10 000 B/s'de ≈ 21 ms; eşik pencerenin %5'i
 ///   (≈ 4 ms). Aradaki kayıp datagram ölçümü bozmaz: gönderici onun baytını kendi kaydından ekler.
-/// [CAL]
+///
+/// Kısa hâliyle pencere iki datagramdır (ilk + bir parça). Spec §2.2 notu ("pencere-oranı,
+/// packet-pair DEĞİL") alıcının tek aralıktan `boy / aralık` hesaplamasına karşıdır; burada oran
+/// göndericinin gönderim kaydıyla iki nokta tahmincisine çevrilir (aradaki kayıp ve bekleyen
+/// datagramlar dahil). Bu yorum spec etkisidir, sahip kararı gerekir. [CAL]
 pub const FIRST_WINDOW_BYTES: u64 = DEFAULT_MTU / 2;
 
 /// İlk ACK'in pencere için en uzun bekletmesi (ilk varıştan, ns). Beyanın yarısı hızında
@@ -70,7 +76,11 @@ pub const FIRST_ACK_HOLD_MAX_NS: u64 = 700_000_000;
 /// Alıcıda oturumun ilk varış penceresi.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FirstArrivalWindow {
-    /// İlk varış anı (ns); `None` = henüz boyu bilinen varış yok.
+    /// Boyu bilinen ilk varışın anı (her boyda; bekletme ve süre sınırı buradan sayılır).
+    seen_ns: Option<u64>,
+    /// Görülen en büyük seq (sırasız varış denetimi; her boyda).
+    max_seq: Option<u64>,
+    /// Pencerenin ilk datagramının (gövde ≥ [`FIRST_WINDOW_BYTES`]) varış anı (ns).
     first_ns: Option<u64>,
     /// Pencerede görülen en büyük seq (sırasız varış denetimi).
     last_seq: u64,
@@ -80,26 +90,43 @@ pub struct FirstArrivalWindow {
     bytes_after_first: u64,
     /// Pencere [`FIRST_WINDOW_BYTES`]'a ulaştı.
     complete: bool,
-    /// Pencerede sırasız varış görüldü: ölçüm yok.
+    /// Pencerede sırasız varış görüldü ya da pencere [`FIRST_ACK_HOLD_MAX_NS`] içinde kapanmadı:
+    /// ölçüm yok.
     invalid: bool,
 }
 
 impl FirstArrivalWindow {
     /// Boyu bilinen yeni (çift olmayan) bir datagram geldi.
+    ///
+    /// Pencere kapandıktan sonra pencerenin son seq'inden küçük bir seq gelirse (sırasız varış)
+    /// ölçüm geçersizdir: gönderici pencereyi ACK'in teyit ettiği seq'lerden kurar ve o seq'i de
+    /// sayardı. Pencere [`FIRST_ACK_HOLD_MAX_NS`] içinde kapanmadan gelen varış da ölçümü geçersiz
+    /// kılar (pencere ilk patlamanın dışına taşmıştır).
     pub fn on_arrival(&mut self, seq: u64, udp_bytes: u64, now_ns: u64) {
-        if self.complete || self.invalid {
+        if self.invalid {
             return;
         }
-        let Some(first_ns) = self.first_ns else {
-            self.first_ns = Some(now_ns);
-            self.last_seq = seq;
-            self.last_ns = now_ns;
+        let seen_ns = *self.seen_ns.get_or_insert(now_ns);
+        let reordered = self.max_seq.is_some_and(|m| seq < m);
+        self.max_seq = Some(self.max_seq.map_or(seq, |m| m.max(seq)));
+        if self.complete {
+            if seq < self.last_seq {
+                self.invalid = true;
+            }
             return;
-        };
-        if seq <= self.last_seq {
+        }
+        if reordered || now_ns >= seen_ns.saturating_add(FIRST_ACK_HOLD_MAX_NS) {
             self.invalid = true;
             return;
         }
+        let Some(first_ns) = self.first_ns else {
+            if udp_bytes >= FIRST_WINDOW_BYTES {
+                self.first_ns = Some(now_ns);
+                self.last_seq = seq;
+                self.last_ns = now_ns;
+            }
+            return;
+        };
         self.last_seq = seq;
         self.last_ns = now_ns.max(first_ns);
         self.bytes_after_first = self.bytes_after_first.saturating_add(udp_bytes);
@@ -111,16 +138,18 @@ impl FirstArrivalWindow {
     /// Ölçüm başladı mı (boyu bilinen en az bir varış).
     #[must_use]
     pub fn started(&self) -> bool {
-        self.first_ns.is_some()
+        self.seen_ns.is_some()
     }
 
-    /// İlk ACK pencere kapanana dek bekletilmeli mi: ölçüm başladı, kapanmadı, geçersiz değil ve
-    /// en uzun bekletme dolmadı.
+    /// İlk ACK pencere kapanana dek bekletilmeli mi: boyu bilinen bir varış oldu, pencere
+    /// kapanmadı, geçersiz değil ve en uzun bekletme (ilk varıştan) dolmadı. Pencere henüz
+    /// başlamadıysa da (yalnız küçük datagramlar geldi) bekletir: zamanlayıcı ilk ACK'i ilk büyük
+    /// datagramdan önce ölçümsüz çıkarmasın.
     #[must_use]
     pub fn holds_first_ack(&self, now_ns: u64) -> bool {
-        match self.first_ns {
-            Some(first) if !self.complete && !self.invalid => {
-                now_ns < first.saturating_add(FIRST_ACK_HOLD_MAX_NS)
+        match self.seen_ns {
+            Some(seen) if !self.complete && !self.invalid => {
+                now_ns < seen.saturating_add(FIRST_ACK_HOLD_MAX_NS)
             }
             _ => false,
         }
@@ -150,13 +179,16 @@ impl FirstArrivalWindow {
 
 /// Göndericinin pencere kuralı: ACK'in teyit ettiği seq'ler artan sırada ve her birinin gövde
 /// boyu verildiğinde pencerenin ilk ve son seq'i ile ilkinden sonraki gövde baytı. Alıcının
-/// [`FirstArrivalWindow`] kuralıyla aynı: ilk seq hariç bayt toplamı [`FIRST_WINDOW_BYTES`]'a
+/// [`FirstArrivalWindow`] kuralıyla aynı: gövdesi [`FIRST_WINDOW_BYTES`]'tan küçük baştaki seq'ler
+/// atlanır, ilk büyük seq pencereyi açar, ondan sonraki bayt toplamı [`FIRST_WINDOW_BYTES`]'a
 /// ulaştığı seq pencereyi kapatır. Ulaşılmazsa `None`.
 pub fn window_end<I>(acked_ascending: I) -> Option<(u64, u64, u64)>
 where
     I: IntoIterator<Item = (u64, u64)>,
 {
-    let mut it = acked_ascending.into_iter();
+    let mut it = acked_ascending
+        .into_iter()
+        .skip_while(|&(_, udp)| udp < FIRST_WINDOW_BYTES);
     let (first, _) = it.next()?;
     let mut bytes = 0u64;
     for (seq, udp) in it {
@@ -178,20 +210,36 @@ mod tests {
     fn window_closes_at_the_byte_threshold_and_reports_the_rate() {
         let mut w = FirstArrivalWindow::default();
         assert!(!w.started());
-        w.on_arrival(0, 128, 300 * MS);
+        // Küçük ilk datagram (dosya başlığı) pencereyi açmaz ama bekletmeyi başlatır.
+        w.on_arrival(0, 128, 290 * MS);
+        assert!(w.started());
+        assert!(w.holds_first_ack(300 * MS));
+        w.on_arrival(1, 1046, 300 * MS);
         assert!(w.holds_first_ack(300 * MS));
         assert_eq!(w.rate_field(), ARRIVAL_RATE_SENTINEL);
         // Küçük datagram pencereyi kapatmaz (gövde < yarım MTU).
-        w.on_arrival(1, 80, 300 * MS + 30 * MS);
+        w.on_arrival(2, 80, 300 * MS + 30 * MS);
         assert!(w.holds_first_ack(400 * MS));
-        // 1 046 B gövde, 6 250 B/s tel hızında ≈ 172,8 ms; seq 2 düştü → 2 × 172,8 ms.
-        w.on_arrival(3, 1046, 300 * MS + 346 * MS);
+        // 1 046 B gövde, 6 250 B/s tel hızında ≈ 172,8 ms; seq 3 düştü → 2 × 172,8 ms.
+        w.on_arrival(4, 1046, 300 * MS + 346 * MS);
         assert!(!w.holds_first_ack(650 * MS));
         // 1 126 B / 0,346 s = 3 254 B/s.
         assert_eq!(w.rate_field(), 3254);
         // Pencere kapandı: sonraki varış ölçümü değiştirmez.
-        w.on_arrival(4, 1046, 900 * MS);
+        w.on_arrival(5, 1046, 900 * MS);
         assert_eq!(w.rate_field(), 3254);
+    }
+
+    /// Yalnız küçük datagramlar gelirse pencere açılmaz; bekletme ilk varıştan tavana dek sürer.
+    #[test]
+    fn small_datagrams_alone_never_open_the_window() {
+        let mut w = FirstArrivalWindow::default();
+        for k in 0..10u64 {
+            w.on_arrival(k, 86, k * 40 * MS);
+        }
+        assert!(w.holds_first_ack(FIRST_ACK_HOLD_MAX_NS - 1));
+        assert!(!w.holds_first_ack(FIRST_ACK_HOLD_MAX_NS));
+        assert_eq!(w.rate_field(), ARRIVAL_RATE_SENTINEL);
     }
 
     #[test]
@@ -213,6 +261,28 @@ mod tests {
         assert!(!w.holds_first_ack(20 * MS));
         w.on_arrival(6, 4000, 30 * MS);
         assert_eq!(w.rate_field(), ARRIVAL_RATE_SENTINEL);
+
+        // Pencere kapandıktan sonra pencerenin içine düşen sırasız seq de ölçümü geçersiz kılar.
+        let mut w = FirstArrivalWindow::default();
+        w.on_arrival(0, 1046, 0);
+        w.on_arrival(2, 1046, 100 * MS);
+        assert_ne!(w.rate_field(), ARRIVAL_RATE_SENTINEL);
+        w.on_arrival(3, 1046, 200 * MS);
+        assert_ne!(w.rate_field(), ARRIVAL_RATE_SENTINEL, "sıralı varış bozmaz");
+        w.on_arrival(1, 1046, 300 * MS);
+        assert_eq!(w.rate_field(), ARRIVAL_RATE_SENTINEL);
+    }
+
+    /// Bekletme tavanından sonra kapanan pencere ölçüm vermez (ilk ACK tavanda sentinel'le çıkmış
+    /// ya da dönüş hattında beklemiş olabilir; her iki durumda pencere patlamanın dışına taşmıştır).
+    #[test]
+    fn a_window_that_closes_after_the_hold_cap_is_the_sentinel() {
+        let mut w = FirstArrivalWindow::default();
+        w.on_arrival(0, 1046, 0);
+        w.on_arrival(1, 100, 10 * MS);
+        w.on_arrival(2, 1046, FIRST_ACK_HOLD_MAX_NS);
+        assert!(!w.holds_first_ack(FIRST_ACK_HOLD_MAX_NS));
+        assert_eq!(w.rate_field(), ARRIVAL_RATE_SENTINEL);
     }
 
     #[test]
@@ -233,8 +303,9 @@ mod tests {
             (14, 1046),
             (15, 1046),
         ];
-        assert_eq!(window_end(acked), Some((10, 11, 1046)));
-        assert_eq!(window_end(acked[..1].iter().copied()), None);
+        // Baştaki küçük datagram (128 B) atlanır; pencere 11'de açılır, 13'te kapanır.
+        assert_eq!(window_end(acked), Some((11, 13, 1046)));
+        assert_eq!(window_end(acked[..2].iter().copied()), None);
         let small = [(10u64, 1046u64), (11, 80), (12, 80), (14, 1046)];
         assert_eq!(window_end(small), Some((10, 14, 1206)));
         assert_eq!(window_end(std::iter::empty()), None);
