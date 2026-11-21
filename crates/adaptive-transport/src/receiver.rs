@@ -261,6 +261,11 @@ pub struct Receiver {
     info_since_ack: bool,
     /// [BİLGİSİZ-ACK] Bilgi taşımadığı için çıkarılmayan ACK denemesi (SALT-GÖZLEM).
     diag_ack_no_info_deferred: u64,
+    /// [VARIŞ-HIZI] Bir sonraki `on_datagram` çağrısının datagramının UDP gövde boyu
+    /// (`set_next_datagram_bytes`); çağrıda tüketilir. `None` = boy bilinmiyor (ölçüm yok).
+    next_datagram_bytes: Option<u64>,
+    /// [VARIŞ-HIZI] Oturumun ilk varış penceresi ([`crate::arrival_rate`]).
+    first_window: crate::arrival_rate::FirstArrivalWindow,
 }
 
 impl Receiver {
@@ -315,11 +320,15 @@ impl Receiver {
             diag_ack_yield_deferred: 0,
             info_since_ack: false,
             diag_ack_no_info_deferred: 0,
+            next_datagram_bytes: None,
+            first_window: crate::arrival_rate::FirstArrivalWindow::default(),
         }
     }
 
     /// §4 on_datagram: VERIFIED datagram'ı işle → teslim + belki ACK.
     pub fn on_datagram(&mut self, d: RxDatagram, now_ns: u64) -> RxOutput {
+        // [VARIŞ-HIZI] Boy yalnız bu çağrı içindir (çalışma zamanı her çağrıdan önce verir).
+        let udp_bytes = self.next_datagram_bytes.take();
         // [§2.2 V2] seen_count: HER görülen datagram sayılır (dup/shard DAHİL) — sender'ın
         // "seen vs sent" yön-ayrımlı kayıp kıyası için (K3 cold-start).
         self.seen_total = self.seen_total.saturating_add(1);
@@ -372,6 +381,11 @@ impl Receiver {
                 ack,
                 was_duplicate: true,
             };
+        }
+        // [VARIŞ-HIZI] Yeni seq'in boyu ilk varış penceresine (yalnız geri bildirimi aç alıcıda;
+        // çift datagram sayılmaz).
+        if let Some(b) = udp_bytes.filter(|_| self.first_window_rx()) {
+            self.first_window.on_arrival(d.seq, b, now_ns);
         }
 
         // [CC-PORT] Sırasız varış tespiti kayıttan ÖNCE: beklenen = largest+1 değilse (boşluk açıldı
@@ -899,6 +913,13 @@ impl Receiver {
                 self.diag_ack_no_info_deferred += 1;
                 return None;
             }
+            // [VARIŞ-HIZI · §12 [R1] ETKİSİ — sahip kararı gerekir] Oturumun ilk ACK'i ilk varış
+            // penceresi kapanana dek (en çok `FIRST_ACK_HOLD_MAX_NS`) bekler: pencerenin hızı ilk
+            // ACK'le gider ([`Self::arrival_rate_field`]). Pencere ölçülmüyorsa (boy verilmedi,
+            // geri bildirimi aç alıcı değil) bugünkü gibi hemen.
+            if !self.ack_budget_first_done && self.first_window.holds_first_ack(now_ns) {
+                return None;
+            }
             let (frame, saturated) = self.ack_frame(now_ns);
             let frame = frame?;
             if !self.ack_budget_take(now_ns, &frame) {
@@ -1151,17 +1172,44 @@ impl Receiver {
         } else {
             self.received.iter().copied().collect()
         };
-        // arrival_rate: receiver bu artımda BOYUT görmüyor (RxDatagram size taşımaz) → ölçüm YOK →
-        // sentinel (§2.2 zeyli: 0xFFFF = "ölçüm yok/üst-bantta, ipucu olarak KULLANMA"). K3
-        // tüketicisi bağlandığında gerçek pencere-oranı ölçümüyle değiştirilir.
         let frame = AckFrame::from_received(
             &received,
             self.ack_epoch,
             encoded as u16,
             self.seen_total,
-            crate::ack::ARRIVAL_RATE_SENTINEL,
+            self.arrival_rate_field(now_ns),
         );
         (frame, encoded == ACK_DELAY_ENC_MAX)
+    }
+
+    /// [§2.2 `arrival_rate`] ACK'in varış hızı alanı (B/s; V2 0x14 ve bitmap 0x15 AYNI değeri
+    /// taşır). Oturumun ilk ACK'i ilk varış penceresinin hızını taşır ([`crate::arrival_rate`]:
+    /// ilk datagramdan sonraki UDP gövde baytı / varış süresi); pencere ölçülmediyse, kapanmadıysa
+    /// ya da ilk ACK çıktıysa sentinel (§2.2 zeyli: 0xFFFF = "ölçüm yok/üst-bantta, ipucu olarak
+    /// KULLANMA"). Boy yalnız [`Self::set_next_datagram_bytes`] ile gelir; vermeyen yol bugünkü
+    /// gibi daima sentinel yazar.
+    fn arrival_rate_field(&self, _now_ns: u64) -> u16 {
+        if self.ack_budget_first_done {
+            return crate::ack::ARRIVAL_RATE_SENTINEL;
+        }
+        self.first_window.rate_field()
+    }
+
+    /// [VARIŞ-HIZI] İlk varış penceresini ölçen alıcı: port motoru, bütçeli ve bütçe tipik ACK'in
+    /// saniyede tel boyunu aşmıyor (geri bildirimi aç alıcı; ACK aralığı ≥ 1 s).
+    fn first_window_rx(&self) -> bool {
+        self.cc_port
+            && self
+                .ack_budget_bps
+                .is_some_and(|b| b <= ACK_WIRE_TYPICAL_BYTES)
+    }
+
+    /// [VARIŞ-HIZI] Bir sonraki [`Self::on_datagram`] çağrısının datagramının UDP gövde boyu
+    /// (mühürlü datagram; göndericinin birim boyuyla aynı birim). Çalışma zamanı her
+    /// `on_datagram` çağrısından hemen önce verir; çağrı değeri tüketir. Çağrılmazsa ölçüm yoktur
+    /// ve alan sentinel kalır.
+    pub fn set_next_datagram_bytes(&mut self, udp_bytes: u64) {
+        self.next_datagram_bytes = Some(udp_bytes);
     }
 
     // ── gözlemciler ──

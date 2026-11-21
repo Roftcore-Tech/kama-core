@@ -23,6 +23,7 @@
 
 pub mod ack;
 pub mod arq;
+pub mod arrival_rate;
 pub mod budget;
 pub mod budget_kernel;
 pub mod bw;
