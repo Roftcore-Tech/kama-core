@@ -1513,8 +1513,13 @@ const EMIT_LOG_CAP: usize = 65_536;
 /// aralığı, 200 ms) aşarken çıkmaz: kopyalar sonraki demetin orijinalini bir demet aralığından
 /// fazla bekletemez.
 const COPY_LINE_BUDGET_NS: u64 = 200_000_000;
-/// [PTT-KOPYA-BÜTÇESİ] Vadesinden bu kadar gecikmiş öncelikli kopya iptal edilir: PTT sınırı (1 s)
-/// geçtikten sonra çıkan kopya demeti sınıra yetiştiremez, yalnız hattı tutar.
+/// [PTT-KOPYA-BÜTÇESİ] Vadesinden bu kadar gecikmiş öncelikli kopya, aynı birimin vadesi gelmiş
+/// başka bir kopyası varken düşer: PTT sınırı (1 s) geçtikten sonra çıkan kopyalar demeti sınıra
+/// yetiştiremez, yalnız hattı tutar. [İŞ-33 C2 · 2026-11-21] Birimin SON kopyası bu yüzden
+/// düşmez: sıralı şeritte teslim edilmemiş tek demet ardındaki her demeti bekletir (ürün testi,
+/// gerçek 6 250 B/s, tohum 1: demet 20'nin orijinali kuyrukta düştü, dört kopyası hat koruması
+/// kuyruğu boşaltırken bayatlayıp iptal edildi; ikinci iletim 17,3 s sonra ARQ'yla çıktı ve
+/// ardındaki 80 demet bekledi).
 const COPY_STALE_NS: u64 = 1_000_000_000;
 
 /// [ÖNLEMSEL-KOPYA] Kimliği `below_id`'den küçük her YENİ birim, ilk iletiminden sonra ACK
@@ -5466,8 +5471,8 @@ impl Sender {
             .map(|g| (g.pace_bps(), g.raises()))
     }
 
-    /// [PTT-SIRA · PTT-KOPYA-BÜTÇESİ] `(önce çıkan öncelikli ARQ, bayat iptal edilen kopya,
-    /// hat kuyruğu yüzünden ertelenen kopya denemesi)` (salt gözlem).
+    /// [PTT-SIRA · PTT-KOPYA-BÜTÇESİ] `(önce çıkan öncelikli ARQ, bayat diye düşen kopya — birimin
+    /// son kopyası hariç, hat kuyruğu yüzünden ertelenen kopya denemesi)` (salt gözlem).
     #[must_use]
     pub fn diag_priority_lane(&self) -> (u64, u64, u64) {
         (
@@ -7953,25 +7958,20 @@ impl Sender {
         // demetlerin kopyaları birikiyor ve bekleme bitince art arda hatta verilip sonraki
         // demetlerin orijinallerini darboğazda 1–5 s bekletiyordu. Orijinal ve ARQ'su değişmez: ses
         // verisi düşmez, teslim anlamı (güvenilir, sıralı) aynı; yalnız fazlalık sınırlanır.
+        // [İŞ-33 C2 · 2026-11-21] Kuyruk uzun sürünce kopyalar yığılmaz ama demet kopyasız da
+        // kalmaz: bayat kopya ([`COPY_STALE_NS`]) yalnız aynı birimin kuyrukta başka (vadesi daha
+        // geç) bir kopyası varken düşer; birimin son kopyası kalır ve hat açılınca çıkar.
         let line_ok = self.pacer.line_ns_until_drained() <= COPY_LINE_BUDGET_NS;
+        self.drop_stale_priority_copies(rule.priority_below_id, now_ns);
         loop {
             let mut pick: Option<usize> = None;
-            let mut j = 0;
-            while j < self.dup_queue.len() {
-                let d = self.dup_queue[j];
+            for (j, d) in self.dup_queue.iter().enumerate() {
                 if d.unit.id >= rule.priority_below_id || d.due_ns > now_ns {
-                    j += 1;
-                    continue;
-                }
-                if now_ns.saturating_sub(d.due_ns) > COPY_STALE_NS {
-                    let _ = self.dup_queue.remove(j);
-                    self.prio_copy_stale = self.prio_copy_stale.saturating_add(1);
                     continue;
                 }
                 if pick.is_none_or(|p| d.due_ns < self.dup_queue[p].due_ns) {
                     pick = Some(j);
                 }
-                j += 1;
             }
             let Some(j) = pick else {
                 return;
@@ -7994,6 +7994,43 @@ impl Sender {
                 send_record: None,
             });
         }
+    }
+
+    /// [İŞ-33 C2] Öncelikli şeridin bayat kopyalarını düşürür: vadesinden [`COPY_STALE_NS`]'ten
+    /// fazla gecikmiş bir kopya, aynı birimin vadesi gelmiş ve vadesi daha geç (ya da eşit vadede
+    /// daha önce sıraya girmiş) bir kopyası varken düşer. Birimin vadesi gelmiş kopyalarından vadesi
+    /// en geç olanı hiçbir zaman düşmez: kısa kuyrukta kopyalar bugünkü gibi çıkar, uzun kuyrukta her
+    /// demete bir kopya kalır. Vadesi gelmemiş kopyalar (ör. ön-yakınsamanın saniyeler sonraki
+    /// geometrik kopyası) "başka kopya" sayılmaz: demeti sınıra yetiştiremezler. Düşen her kopya
+    /// `prio_copy_stale` sayacına girer.
+    fn drop_stale_priority_copies(&mut self, priority_below_id: u64, now_ns: u64) {
+        // Birim başına vadesi gelmiş kopyaların en geç vadesi (eşitlikte ilk görülen kalır).
+        let mut keep: BTreeMap<u64, (u64, usize)> = BTreeMap::new();
+        for (j, d) in self.dup_queue.iter().enumerate() {
+            if d.unit.id >= priority_below_id || d.due_ns > now_ns {
+                continue;
+            }
+            let e = keep.entry(d.unit.id).or_insert((d.due_ns, j));
+            if d.due_ns > e.0 {
+                *e = (d.due_ns, j);
+            }
+        }
+        let mut j = 0usize;
+        let mut dropped = 0u64;
+        self.dup_queue.retain(|d| {
+            let idx = j;
+            j += 1;
+            if d.unit.id >= priority_below_id
+                || d.due_ns > now_ns
+                || now_ns.saturating_sub(d.due_ns) <= COPY_STALE_NS
+                || keep.get(&d.unit.id).is_some_and(|&(_, k)| k == idx)
+            {
+                return true;
+            }
+            dropped += 1;
+            false
+        });
+        self.prio_copy_stale = self.prio_copy_stale.saturating_add(dropped);
     }
 
     /// Yeni DATA'yı pace ederek emit et. RECOVER_FWD'de her DATA ayrıca (factor−1) kopya planlar.
