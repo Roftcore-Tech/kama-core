@@ -87,6 +87,11 @@
 //!   doğrulamayı geçti ve tavan profile çıktı; doğrulama sıkılaştırıldı ([`VERIFY_MIN_SPAN_NS`] =
 //!   3 s, [`VERIFY_GROWTH_DIV`]). Sonra: dürüst dosya 10,1–10,3 s, 10 000 başlangıç PTT 0,90–0,97 s.
 //!   Bedel: dürüst profilde dosya +1,2–2,0 s (sınır içinde).
+//! * AMA 17/20 kalıcı simülasyon kapısını (`tests/line_guard_sim.rs`) bozdu: gerçek 6 250 B/s'de
+//!   15 s sonrası darboğaz beklemesi 0,41 s (sınır 0,39 s) ve dürüst profilde dosya tohum 1'de
+//!   15,7 → 33,3 s (dosyanın son baytları bir ACK aralığı sonrasına kayıyor). SEÇİLEN DEĞER yine
+//!   1/1; 17/20 ölçülmüş seçenektir, bedeliyle sahibe gider. Sıkı doğrulama kalır (1/1'de sim
+//!   kapısı geçer).
 //! * Gerçek hat tavanın altındaysa (ör. 6 250 B/s) kuyruk ilk ölçüme (ikinci ACK, 3,3–7,9 s) dek
 //!   büyür; gönderici ilk ölçümü öne alamaz.
 //!
@@ -147,8 +152,8 @@ const STEP_START_PERMILLE: u64 = 500;
 const STEP_MIN_PERMILLE: u64 = 62;
 const STEP_MAX_PERMILLE: u64 = 1000;
 /// [TEMKİNLİ-BAŞLANGIÇ] İlk tavan = profil hattı × START_NUM / START_DEN.
-pub const START_NUM: u64 = 17;
-pub const START_DEN: u64 = 20;
+pub const START_NUM: u64 = 1;
+pub const START_DEN: u64 = 1;
 /// [DÖNÜŞ-GECİKMESİ] Taban penceresi (ACK noktası).
 const BASE_WINDOW: usize = 4;
 
