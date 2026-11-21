@@ -391,12 +391,69 @@ jobs:
       - name: S3 hedef = real (gerçek kripto — 0 zorunlu)
         run: scripts/ci/noise-conformance.sh --target real
 
+  # ── ACK referans düzeneği (ACK biçimi değişikliğinin güvenlik ağı) ──
+  # Bugünkü ACK davranışını sabitler; gelecekteki ACK biçimi PR'ı buna karşı yargılanır. Motor ve tel
+  # davranışı DEĞİŞMEZ. Ayaklar:
+  #   (a) codec: anlamsal özdeşlik decode(encode(x)) == x (rastgele + patlamalı kayıp, sarma, düşman
+  #       girdi tipli red) — crates/adaptive-transport/tests/ack_ref_codec.rs; bayt eşitliği YALNIZ
+  #       sabit vektörlerde (vectors/transport/, bağımsız üretici ref/transport/gen_ack_vectors.py).
+  #   (b)(c) gerçek Sender + Receiver: teyitli her seq alınmıştır, hiçbir birim kalıcı unutulmaz;
+  #       FEC'le kurtarılan birim alınmış paket numarası sayılmaz — tests/ack_ref_delivery.rs.
+  #   (e) ACK datagramı tel boyu ≤ 129 B (gerçek ClientTransport + kripto) — kama-integration.
+  #   (d) dört yönlü eski/yeni matris: eski uç scripts/ci/ack-interop/PIN'deki SHA'dan AYRI
+  #       dizinde derlenir. Bugün eski == yeni: altyapı hazır; gerçek dört yönlü uyum kanıtı yeni
+  #       biçim geldiğinde tamamlanır.
+  # Vakum bekçileri: koşan test sayısı BİREBİR (0 ya da eksik = kırmızı).
+  ack-reference:
+    name: ack reference (ACK biçimi güvenlik ağı)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: (a) sabit ACK vektörleri bağımsız referanstan yeniden üretilebiliyor mu
+        run: python3 -I ref/transport/gen_ack_vectors.py --check
+      - name: (a)(b)(c) codec + teslim/ilerleme (adaptive-transport, vakum bekçili)
+        run: |
+          set -o pipefail
+          cargo test -p adaptive-transport --locked --test ack_ref_codec -- --nocapture 2>&1 | tee /tmp/ack_codec.txt
+          grep -Eq "test result: ok\. 6 passed; 0 failed" /tmp/ack_codec.txt \
+            || { echo "::error title=TEST_FAILURE::ack_ref_codec 6 test koşturmalı (vakum bekçisi)"; exit 1; }
+          cargo test -p adaptive-transport --locked --test ack_ref_delivery -- --nocapture 2>&1 | tee /tmp/ack_delivery.txt
+          grep -Eq "test result: ok\. 5 passed; 0 failed" /tmp/ack_delivery.txt \
+            || { echo "::error title=TEST_FAILURE::ack_ref_delivery 5 test koşturmalı (vakum bekçisi)"; exit 1; }
+      - name: (a)(e) vektör tüketicisi + ACK datagram tel boyu (kama-integration, vakum bekçili)
+        run: |
+          set -o pipefail
+          cargo test -p kama-integration --locked --test ack_ref_vectors --test ack_ref_wire_size -- --nocapture --test-threads 1 2>&1 | tee /tmp/ack_int.txt
+          grep -Eq "test result: ok\. 1 passed; 0 failed" /tmp/ack_int.txt \
+            || { echo "::error title=TEST_FAILURE::ack_ref_vectors 1 test koşturmalı"; exit 1; }
+          grep -Eq "test result: ok\. 2 passed; 0 failed" /tmp/ack_int.txt \
+            || { echo "::error title=TEST_FAILURE::ack_ref_wire_size 2 test koşturmalı"; exit 1; }
+      - name: (d) yeni uç (PR başı)
+        run: |
+          cargo build -p adaptive-transport --locked --example ack_interop_peer
+          cp target/debug/examples/ack_interop_peer "$RUNNER_TEMP/ack_peer_new"
+      - name: (d) eski uç (PIN'deki sabit SHA, ayrı dizin, kendi Cargo.lock'u)
+        env:
+          OLD_TARGET: ${{ runner.temp }}/ack-old-target
+        run: scripts/ci/ack_interop_build_old.sh "$RUNNER_TEMP/ack_peer_old"
+      - name: (d) matris öz-testi (desteklenmeyen eşleşme tanımlı hatayla düşer, askıda kalmaz)
+        run: python3 -I scripts/ci/ack_interop.py --selftest --new "$RUNNER_TEMP/ack_peer_new"
+      - name: (d) dört yönlü eski/yeni matris (altyapı; bugün eski == yeni)
+        run: |
+          python3 -I scripts/ci/ack_interop.py --old "$RUNNER_TEMP/ack_peer_old" \
+            --new "$RUNNER_TEMP/ack_peer_new" --expect scripts/ci/ack-interop/expect.txt
+
   # ── Sonuç sınıflandırması: infra/billing hatası ile korelasyon hatası KARIŞMASIN ──
   ci-verdict:
     name: ci verdict (failure classification)
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [static, test-fast, test-runtime, cc-regression, conformance, seam-conformance, miri, asan, msan, security, aead-differential, vectors]
+    needs: [static, test-fast, test-runtime, cc-regression, conformance, seam-conformance, miri, asan, msan, security, aead-differential, vectors, ack-reference]
     if: always()
     steps:
       - name: classify

@@ -757,8 +757,8 @@ fn transport(
     cfg.runtime.drain_cap = Duration::from_millis(100);
     cfg.runtime.link_rates = link;
     cfg.runtime.diag_emit_sink = emit;
-    // [YENİDEN-RAPOR] `KAMA_ASYM_ACK_REREPORT=off` alıcının yeniden raporlamasını kapatır (karşılaştırma).
-    cfg.runtime.ack_rereport = std::env::var("KAMA_ASYM_ACK_REREPORT").map_or(true, |v| v != "off");
+    // [YENİDEN-RAPOR] Ürün varsayılanı kapalı (spec §2.1); `KAMA_ASYM_ACK_REREPORT=on` ölçüm kolu.
+    cfg.runtime.ack_rereport = std::env::var("KAMA_ASYM_ACK_REREPORT").is_ok_and(|v| v == "on");
     // [ACK-BITMAP · ölçüm prototipi] `KAMA_ASYM_ACK_FORMAT=bitmap` iki uca da 0x15 biçimini verir
     // (yetenek anlaşması yok; iki uç açıkça). Varsayılan `v2` (bugünkü 0x14).
     cfg.runtime.ack_format = std::env::var("KAMA_ASYM_ACK_FORMAT").map_or(AckFormat::V2, |v| {
