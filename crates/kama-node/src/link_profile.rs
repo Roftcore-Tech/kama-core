@@ -250,7 +250,7 @@ mod tests {
         let base = start_record(&runtime, true, Source::Env);
         assert!(
             base.contains(
-                "koruma=geri-bildirim-aç (PTT: 1 asıl gönderim + teyitsiz birim için en çok 6 planlı ek kopya, hat beyanın altında ölçülürse orantılı az, en az 4;"
+                "koruma=geri-bildirim-aç (PTT: 1 asıl gönderim + teyitsiz birim için en çok 6 planlı ek kopya, hat beyanın altında ölçülürse orantılı az, en az 5;"
             ),
             "{base}"
         );

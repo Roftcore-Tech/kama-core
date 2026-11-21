@@ -405,13 +405,18 @@ pub const FEEDBACK_STARVED_ACK_INTERVAL_NS: u64 = 1_000_000_000;
 /// 7 iletim: tam kayıp 0,2⁷ = 1,28·10⁻⁵, yani her 78 000 demette bir (≈ 4,3 saat kesintisiz
 /// konuşma). Beyan hızında ileri hat ≈ 7 × 570 = 3,99 kB/s (12 500 B/s hattın %32'si; 5 iletimde
 /// 2,85 kB/s). Hat beyanın altında ölçülürse sayı hatla orantılı küçülür, ama
-/// [`PTT_FORWARD_COPIES_MIN`]'in altına inmez (`ForwardCopyLineScale`). Böylece PTT'nin hattaki payı
-/// sabit kalır ve dosyanın payı daralmaz.
+/// [`PTT_FORWARD_COPIES_MIN`]'in altına inmez (`ForwardCopyLineScale`).
 pub const PTT_FORWARD_COPIES: u8 = 7;
 
-/// [PTT-ARTIK · sahip kararı 2026-11-16] Hat beyanın altında ölçüldüğünde PTT demetinin en az
-/// toplam iletim sayısı (2026-11-16 kararının değeri).
-pub const PTT_FORWARD_COPIES_MIN: u8 = 5;
+/// [PTT-ARTIK · 2026-11-21] Hat beyanın altında ölçüldüğünde PTT demetinin en az toplam iletim
+/// sayısı. 5'te (2026-11-16 değeri) ölçülen yavaş hatta tam kayıp yine 3,2·10⁻⁴ kalıyordu
+/// (ürün testi, birleşik aday + 7 iletim, gerçek 6 250, tohum 3: demet 51'in beş iletimi düştü,
+/// 18 demet sıralı şeritte 5 s bekledi).
+///
+/// 6 iletim: 0,2⁶ = 6,4·10⁻⁵. Bedeli yarım beyan hızında (6 250 B/s) hattın %55'i (3,42 kB/s). 7
+/// iletim orada sığmaz: PTT 3,99 kB/s + dosya (40 kB, %50 FEC, 28 s sınırında ≈ 2,4 kB/s)
+/// 6,25 kB/s'yi aşar. 6 iletimde ≈ %7 pay kalır.
+pub const PTT_FORWARD_COPIES_MIN: u8 = 6;
 
 /// [ŞERİT-BOŞTA · sahip kararı 2026-11-16] Boştaki şeridin kopyalanmayan kısmi bloğunun (metin,
 /// dosyanın son parçaları) birim başına toplam iletim sayısı. 2026-11-16 değeriyle aynıdır; PTT
