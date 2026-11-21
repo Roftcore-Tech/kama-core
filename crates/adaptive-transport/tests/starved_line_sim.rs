@@ -1097,6 +1097,10 @@ fn e2_a_long_unmeasured_gap_on_a_real_drop_keeps_the_queue_bounded() {
 /// sabit kalır (`g ≈ 0`), fazlalık kuyrukta düşer. "Kuyruk büyümüyor" tek başına "hat yeterli"
 /// demek değildir. Sınırlar (b)'ninkiler: yakınsama ≤ düşüş + 3·T_ack + T_ret; yakınsamadan 2 s
 /// sonra kuyrukta düşme yok ve bekleme ≤ iki tam datagram; yakınsamadan 9 s sonra PTT ≤ 1 s.
+///
+/// Kanıt girdisi: aralığın teslim kesri, artış örneğinden sonra rastgele kayıp tabanına göre aşırı
+/// ise taşma örneği (`line_guard` modül belgesi, "Taşma"). İŞ-34 kuralıyla tohum 1'de yakınsama
+/// 53,7 s; taşma örneği kapatılınca (karşı-olgu, cephe dönüşü olmadan) hiç yakınsamıyor.
 #[test]
 fn d4_a_full_small_fifo_is_detected_and_stops_overflowing() {
     let t_ret = (129 + OVH) * SEC / PROFILE_DOWN + ONE_WAY_NS;

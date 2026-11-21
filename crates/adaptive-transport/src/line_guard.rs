@@ -258,9 +258,35 @@
 //! Dürüst hatta bedel: boşluk süresince dosya yarı hızda (benzetim: `e1` dosya 16,62 / 12,60 /
 //! 12,71 s, aynı koşu boşluksuz `a` 14,74 / 14,37 / 12,26 s).
 //!
-//! Sınır (benzetim, `tests/starved_line_sim.rs`): FIFO çok küçükse (8 paket) daralmada kuyruk
-//! hemen dolar. Kuyruk sabit kalır (`g ≈ 0`), fazlalık kuyrukta düşme olarak görünür; iki tahminci
-//! de daralmayı geç ve eksik görür. 64 paketlik FIFO'da kuyruk önce büyür, daralma algılanır.
+//! # Taşma (İŞ-35 AÇIK 3, 2026-11-21)
+//!
+//! FIFO küçükse (8 paket) daralmada kuyruk hemen dolar ve sabit kalır (`g ≈ 0`); fazlalık kuyrukta
+//! düşer. "Kuyruk büyümüyor" tek başına "hat yeterli" demek değildir. Ölçüldü (benzetim `d4`,
+//! 12 500 → 6 250, İŞ-34 kuralı): tohum 1'de yakınsama 53,7 s (sınır 17,1 s); iki tahminci de geç
+//! ve eksik gördü.
+//!
+//! Ek kanıt: aralığın teslim kesri `f = alınan tel baytı / gönderilen tel baytı` (`(first, last]`;
+//! alınanlar M'den, boylar göndericinin kaydından, [`LineGuard::received_wire`]). Rastgele kayıpta
+//! `f ≈ 1 − p`; `S/L` oranında taşmada `f ≈ (L/S)(1 − p)`. Taban `1 − p`, kuyruk kanıtı olmayan ve
+//! kuyruğu değişmeyen aralıklardan birikir (sınırlı toplam, tavanda yarılanır: kalıcı kayıp
+//! değişimini izler). Sözleşme kuralı gereği düşük teslim tek başına kanıt değildir: taşma örneği
+//! yalnız
+//! * son [`OVERFLOW_WINDOW_ACKS`] ölçülü ACK'te bir artış örneği varken (kuyruk büyümesi: kayıptan
+//!   bağımsız kanıt; hattın tavanın altında olduğunu zaten göstermiştir),
+//! * `f` tabanın [`OVERFLOW_EXCESS_NUM`]/[`OVERFLOW_EXCESS_DEN`]'inin altındayken,
+//! * kuyruk boşalmıyorken (`g ≥ −eşik`; boşalan kuyrukta darboğaz aralığın bir kısmında boştur) ve
+//! * gönderici tavanın en az %90'ıyla gönderirken
+//!
+//! alınır; hız = (alınan bayt / taban kesri) / `rx_span` (darboğaz meşgulken hattı geçen bayt).
+//! Artış görünen aralıkta kullanılmaz: tek aralıkta rastgele kayıp gürültüsü büyüktür (≈ 18 dosya
+//! parçası, ≈ ±%12). Ölçüldü (`e2`, tohum 3): artış aralığında taşma tahmini 4 896 verdi, gerçek
+//! 6 250; artış örneği kendisi sonraki aralıklarda iner.
+//! Ölçülen kesirler (benzetim): rastgele kayıpta 0,62–0,92 (taban ≈ 0,73–0,80), 8 paketlik FIFO
+//! taşmasında 0,37–0,49. Kanıt: `d4` yakınsama 15,41–16,24 s (sınır 17,08 s), yakınsamadan 2 s
+//! sonra kuyrukta düşme yok; `d1` (%20 rastgele kayıp) ve `d3` (yeniden sıralama) örnek vermiyor.
+//! Sınırlar: (1) artış hiç görünmezse (FIFO bir ACK aralığındaki artış eşiğinden küçük) taşma
+//! örneği de yoktur; (2) rastgele kayıp oranı tam artış penceresinde yükselirse (ör. karıştırma
+//! başlangıcı) hat fazla kesilir, yoklama geri alır; (3) taşma örneği de tavanın üstüne çıkamaz.
 //!
 //! Determinizm: tamsayı aritmetiği, RNG yok, sınırlı bellek (ADR-17 / SR-AUDIT-001).
 
@@ -327,7 +353,27 @@ pub struct ForwardInterval {
     pub first_seq: u64,
     pub last_seq: u64,
     pub rx_span_ns: u64,
+    /// [TAŞMA · İŞ-35] M'nin `(first_seq, last_seq]` içindeki alınan seq'lerinin tel baytı
+    /// (göndericinin kaydından, [`LineGuard::received_wire`]); `None` = hesaplanamadı.
+    pub rx_wire: Option<u64>,
 }
+
+/// [TAŞMA · İŞ-35] Teslim kesri tabanın bu oranının altındaysa aşırı kayıp (3/4): tek aralıkta
+/// rastgele kaybın (%20) gürültüsü ≈ ±0,09 (≈ 40 datagram); 2:1 taşmada kesir tabanın yarısıdır.
+/// Ölçüldü (benzetim, `tests/starved_line_sim.rs`): rastgele kayıpta kesir/taban ≥ 0,9, 8 paketlik
+/// FIFO'nun taşmasında 0,50–0,67. [CAL]
+const OVERFLOW_EXCESS_NUM: u64 = 3;
+const OVERFLOW_EXCESS_DEN: u64 = 4;
+/// [TAŞMA] Kuyruk kanıtının (artış örneği) geçerli kaldığı ölçülü ACK sayısı: M iki ACK geriye
+/// uzanır; artışın görüldüğü aralıktan sonraki iki aralık geçişi kapsar.
+const OVERFLOW_WINDOW_ACKS: u32 = 3;
+/// [TAŞMA] Kesrin hesaplandığı en küçük aralık (tam datagram sayısı, tel): küçük aralıkta kesir
+/// gürültüdür.
+const OVERFLOW_MIN_MTUS: u64 = 8;
+/// [TAŞMA] Tabanın bilindiği en küçük birikim ve tavanı (tam datagram, tel); tavanda iki toplam
+/// yarılanır (sınırlı, uyarlanır).
+const OVERFLOW_FLOOR_MIN_MTUS: u64 = 16;
+const OVERFLOW_FLOOR_CAP_MTUS: u64 = 256;
 
 /// [ÖLÇÜM-BOŞLUĞU · İŞ-35] Aralık kipindeki oturumda üst üste bu kadar ACK ölçümsüz kalırsa
 /// boşluk kuralı kurulur (modül belgesi, "Ölçüm boşluğu"): cephe örneği DEĞİL, kuyruk sınırlı
@@ -414,6 +460,14 @@ pub struct LineGuard {
     gap_arms: u64,
     /// [KUYRUK-BOŞALTMA · İŞ-35] Son [`POINT_CAP`] noktanın cephe kuyruk beklemesi (`τ − s − taban`, ns).
     queue_peaks: VecDeque<u64>,
+    /// [TAŞMA] Rastgele kayıp tabanı: kuyruk kanıtı olmayan aralıklarda alınan ve gönderilen tel
+    /// baytı toplamı (sınırlı; tavanda yarılanır).
+    floor_rx: u64,
+    floor_sent: u64,
+    /// [TAŞMA] Son artış örneğinden bu yana kalan ölçülü ACK hakkı (kuyruk kanıtı penceresi).
+    growth_recent: u32,
+    /// [TAŞMA] Taşma örneği sayısı (gözlem).
+    overflow_samples: u64,
     /// [ÖLÇÜM-BOŞLUĞU] Kurulurken hat modeline yazılacak tek seferlik boşaltma (bayt, tel;
     /// [`Self::take_gap_drain`]).
     gap_drain: u64,
@@ -529,6 +583,10 @@ impl LineGuard {
             gap_arms: 0,
             gap_drain: 0,
             queue_peaks: VecDeque::new(),
+            floor_rx: 0,
+            floor_sent: 0,
+            growth_recent: 0,
+            overflow_samples: 0,
             recent_fronts: VecDeque::new(),
             interval_diag: (0, 0, None),
             probe: None,
@@ -868,14 +926,95 @@ impl LineGuard {
         let mtu_ns = ser(crate::rate::DEFAULT_MTU);
         let threshold = mtu_ns.max(i128::from(send_span / GROWTH_MIN_DIV));
         let wire = last.cum.saturating_sub(first.cum);
-        if g <= threshold {
+        if g > threshold {
+            // [TAŞMA] Artış örneği kuyruk kanıtıdır: sonraki aralıklarda taşma örneği alınabilir.
+            // Artış görünen aralıkta taşma tahmini kullanılmaz: tek aralıktaki rastgele kayıp
+            // gürültüsünü taşır (≈ ±%12) ve artış sürerken sonraki aralıklar zaten iner.
+            self.growth_recent = OVERFLOW_WINDOW_ACKS;
+            let est =
+                u64::try_from(u128::from(wire) * 1_000_000_000 / u128::from(iv.rx_span_ns.max(1)))
+                    .unwrap_or(u64::MAX);
+            self.interval_diag.1 = self.interval_diag.1.saturating_add(1);
+            return Some(est);
+        }
+        // [TAŞMA] Kuyruk büyümüyor: teslim kesri rastgele kayıp tabanına göre aşırı mı (modül
+        // belgesi, "Taşma"). Taban bu ölçümden önceki değerdir.
+        let overflow = self.overflow_estimate(iv, wire, send_span, g, threshold);
+        self.growth_recent = self.growth_recent.saturating_sub(1);
+        if overflow.is_some() {
+            self.interval_diag.1 = self.interval_diag.1.saturating_add(1);
+        }
+        overflow
+    }
+
+    /// [TAŞMA · İŞ-35] Aralığın teslim kesri `f = alınan tel baytı / gönderilen tel baytı`
+    /// (`(first, last]`). Taban (rastgele kayıp) kuyruk kanıtı olmayan aralıklardan birikir.
+    /// Yalnız artış örneği vermeyen aralıkta çağrılır. Taşma örneği yalnız (1) `f` tabanın
+    /// [`OVERFLOW_EXCESS_NUM`]/[`OVERFLOW_EXCESS_DEN`]'inin altında, (2) kuyruk kanıtı — son
+    /// [`OVERFLOW_WINDOW_ACKS`] ölçülü ACK'te artış örneği —, (3) kuyruk boşalmıyor
+    /// (`g ≥ −eşik`) ve (4) gönderici tavanın en az %90'ıyla gönderdiyse: hız = (alınan bayt / taban kesri) / `rx_span` (hattı geçen baytın tahmini).
+    /// Düşük teslim tek başına kanıt değildir (rastgele kayıp): (2) olmadan örnek yok.
+    fn overflow_estimate(
+        &mut self,
+        iv: ForwardInterval,
+        wire: u64,
+        send_span: u64,
+        g: i128,
+        threshold: i128,
+    ) -> Option<u64> {
+        let rx = iv.rx_wire?;
+        let mtu_wire = crate::rate::DEFAULT_MTU + self.line.datagram_overhead;
+        if wire < OVERFLOW_MIN_MTUS * mtu_wire || rx > wire {
             return None;
         }
-        let est =
-            u64::try_from(u128::from(wire) * 1_000_000_000 / u128::from(iv.rx_span_ns.max(1)))
+        let floor_known =
+            self.floor_sent >= OVERFLOW_FLOOR_MIN_MTUS * mtu_wire && self.floor_rx > 0;
+        // f < taban × NUM/DEN  ⇔  rx × floor_sent × DEN < floor_rx × wire × NUM
+        let excess = floor_known
+            && u128::from(rx) * u128::from(self.floor_sent) * u128::from(OVERFLOW_EXCESS_DEN)
+                < u128::from(self.floor_rx) * u128::from(wire) * u128::from(OVERFLOW_EXCESS_NUM);
+        // Taban: kuyruk kanıtı olmayan, kuyruğu boşalmayan aralık (rastgele kayıp değişirse taban
+        // izler; kanıtlı taşma evresi tabana girmez).
+        let queue_evidence = self.growth_recent > 0;
+        if !queue_evidence && g.abs() <= threshold {
+            self.floor_rx = self.floor_rx.saturating_add(rx);
+            self.floor_sent = self.floor_sent.saturating_add(wire);
+            if self.floor_sent > OVERFLOW_FLOOR_CAP_MTUS * mtu_wire {
+                self.floor_rx /= 2;
+                self.floor_sent /= 2;
+            }
+        }
+        let sent_bps =
+            u64::try_from(u128::from(wire) * 1_000_000_000 / u128::from(send_span.max(1)))
                 .unwrap_or(u64::MAX);
-        self.interval_diag.1 = self.interval_diag.1.saturating_add(1);
+        let at_pace =
+            sent_bps.saturating_mul(1000) >= self.pace_bps.saturating_mul(VERIFY_MIN_PERMILLE);
+        if !(excess && queue_evidence && g >= -threshold && at_pace) {
+            return None;
+        }
+        let passed = u128::from(rx) * u128::from(self.floor_sent) / u128::from(self.floor_rx);
+        let est = u64::try_from(passed * 1_000_000_000 / u128::from(iv.rx_span_ns.max(1)))
+            .unwrap_or(u64::MAX);
+        self.overflow_samples = self.overflow_samples.saturating_add(1);
         Some(est)
+    }
+
+    /// [TAŞMA · İŞ-35] Taşma örneği sayısı (gözlem).
+    #[must_use]
+    pub fn overflow_samples(&self) -> u64 {
+        self.overflow_samples
+    }
+
+    /// [TAŞMA · İŞ-35] M'nin `(first, last]` içinde alınan seq'lerinin tel baytı (göndericinin
+    /// kaydından; zarf dahil). Kayıtta olmayan seq varsa `None`.
+    #[must_use]
+    pub fn received_wire(&self, first: u64, last: u64, received: &[u64]) -> Option<u64> {
+        let mut sum = 0u64;
+        for &q in received.iter().filter(|&&q| q > first && q <= last) {
+            let i = self.sent.binary_search_by_key(&q, |r| r.seq).ok()?;
+            sum = sum.saturating_add(self.sent[i].udp.saturating_add(self.line.datagram_overhead));
+        }
+        Some(sum)
     }
 
     /// [ÖLÇÜM-ARALIĞI] Gözlem: (ölçülen aralık sayısı, aralıktan aşağı yönlü örnek sayısı, son
@@ -1305,6 +1444,7 @@ mod tests {
             first_seq: f,
             last_seq: seq,
             rx_span_ns: arrivals[seq as usize] - arrivals[f as usize],
+            rx_wire: None,
         });
         g.on_ack_measured(at, 0, false, seq, iv)
     }
@@ -1362,6 +1502,84 @@ mod tests {
         let _ = ack_m(&mut old, &arr, 30, 300 * MS, None);
         assert!(old.rate_bps().is_some_and(|r| r < PROFILE * 19 / 20));
         assert!(!old.gap_budget_active(), "eski alıcıda boşluk kuralı yok");
+    }
+
+    /// [TAŞMA] Ölçüm aralığı açıkça verilir: alıcıdaki süre `rx_span_ns`, alınan tel baytı `rx_wire`.
+    fn ack_iv(
+        g: &mut LineGuard,
+        arrivals: &[u64],
+        seq: u64,
+        first: u64,
+        rx_span_ns: u64,
+        rx_wire: u64,
+    ) -> Option<LineGuardUpdate> {
+        let wire = 55;
+        let at = arrivals[seq as usize] + 300 * MS + (wire + OVH) * SEC / RET;
+        g.note_ack_wire(wire);
+        let iv = ForwardInterval {
+            first_seq: first,
+            last_seq: seq,
+            rx_span_ns,
+            rx_wire: Some(rx_wire),
+        };
+        g.on_ack_measured(at, 0, false, seq, Some(iv))
+    }
+
+    /// [TAŞMA] Düşük teslim tek başına örnek vermez; artış örneğinden sonraki aşırı kayıp verir.
+    /// Taban üç temiz aralıkta %80 teslim. Sonra %40 teslimli, kuyruğu değişmeyen aralık: kuyruk
+    /// kanıtı yok → örnek yok (rastgele kayıp artışı olabilir). Artış örneğinden (alıcıdaki süre
+    /// gönderimin 1,5 katı → 8 333) sonra aynı %40'lık aralık taşma örneği verir: hattı geçen bayt
+    /// = alınan / taban kesri.
+    #[test]
+    fn overflow_needs_queue_evidence_and_excess_loss() {
+        let mut g = guard();
+        let arr = send_into(&mut g, PROFILE, 200);
+        let span = |a: u64, b: u64| arr[b as usize] - arr[a as usize];
+        let wire = |a: u64, b: u64| (b - a) * 1200;
+        let _ = ack_iv(&mut g, &arr, 10, 1, span(1, 10), wire(1, 10) * 8 / 10);
+        g.end_start_budget();
+        let _ = ack_iv(&mut g, &arr, 40, 11, span(11, 40), wire(11, 40) * 8 / 10);
+        let _ = ack_iv(&mut g, &arr, 70, 41, span(41, 70), wire(41, 70) * 8 / 10);
+        assert_eq!(g.rate_bps(), None, "temiz aralıklar");
+        let _ = ack_iv(&mut g, &arr, 100, 71, span(71, 100), wire(71, 100) * 4 / 10);
+        assert_eq!(
+            g.rate_bps(),
+            None,
+            "kuyruk kanıtsız düşük teslim örnek değil"
+        );
+        assert_eq!(g.overflow_samples(), 0);
+        let _ = ack_iv(
+            &mut g,
+            &arr,
+            130,
+            101,
+            span(101, 130) * 3 / 2,
+            wire(101, 130) * 8 / 10,
+        );
+        let grown = g.rate_bps().expect("artış örneği");
+        assert!(grown.abs_diff(8_333) <= 100, "artış örneği {grown}");
+        let _ = ack_iv(
+            &mut g,
+            &arr,
+            160,
+            131,
+            span(131, 160),
+            wire(131, 160) * 4 / 10,
+        );
+        let r = g.rate_bps().expect("taşma örneği");
+        assert_eq!(g.overflow_samples(), 1);
+        // Taban kuyruk kanıtsız aralıkların hepsidir (kalıcı kayıp değişimini izler): üç %80'lik
+        // ve bir %40'lık aralık → (0,8 × 67 + 0,4 × 29) / 96 ≈ 0,679 (güvenli yön: tahmin yükselir).
+        let floor_rx = wire(1, 10) * 8 / 10
+            + wire(11, 40) * 8 / 10
+            + wire(41, 70) * 8 / 10
+            + wire(71, 100) * 4 / 10;
+        let floor_sent = wire(1, 10) + wire(11, 40) + wire(41, 70) + wire(71, 100);
+        let expect = wire(131, 160) * 4 / 10 * floor_sent / floor_rx * SEC / span(131, 160);
+        assert!(
+            r.abs_diff(expect) * 100 <= expect,
+            "taşma örneği {r} (beklenen {expect})"
+        );
     }
 
     /// [ÖLÇÜM-ARALIĞI] Gerçek hat yarıya düşük: aralık kuyruk artışını görür ve hattı ±%2 ölçer.

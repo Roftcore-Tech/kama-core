@@ -6121,6 +6121,10 @@ impl Sender {
             && last_seq < self.next_seq
             && received.contains(&first_seq)
             && received.contains(&last_seq);
+        let rx_wire = self
+            .cc_line_guard
+            .as_ref()
+            .and_then(|g| g.received_wire(first_seq, last_seq, received));
         self.pending_forward_interval =
             rx_span_ns
                 .filter(|_| valid)
@@ -6128,6 +6132,7 @@ impl Sender {
                     first_seq,
                     last_seq,
                     rx_span_ns,
+                    rx_wire,
                 });
     }
 
