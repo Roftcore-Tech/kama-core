@@ -1347,7 +1347,17 @@ pub struct ClientLiveDiag {
     pub param_confirmed_at_ns: u64,
     /// [FEC-TEŞHİS] Motorun taban PTO'su (µs; `srtt + 4·rttvar + max_ack_delay`).
     pub base_pto_us: u64,
+    /// [İZ-ARALIK] Gönderen motorun hat koruması ACK kaydı
+    /// (`Sender::diag_line_guard_trace`): son [`LINE_GUARD_LOG_LEN`] kayıt, ana döngü turu
+    /// çözünürlüğünde yalnız yeni kayıtlar aktarılır (kayıt sırası `LineGuardAckTrace::index`
+    /// korunur; boşluk = turlar arasında motor halkasından düşen kayıt). Yalnız geri bildirimi aç
+    /// profilde (hat koruması kuruluyken) dolar.
+    pub line_guard: DiagRing<adaptive_transport::sender::LineGuardAckTrace, LINE_GUARD_LOG_LEN>,
 }
+
+/// [İZ-ARALIK] Canlı aynada tutulan son hat koruması ACK kaydı sayısı ([`ClientLiveDiag::line_guard`]);
+/// motorun halkasıyla aynı (`adaptive_transport::sender::LINE_GUARD_TRACE_CAP`).
+pub const LINE_GUARD_LOG_LEN: usize = adaptive_transport::sender::LINE_GUARD_TRACE_CAP;
 
 /// [K4G-05 / INT-02 TEŞHİS] [`SenderRecoveryDiag`]'ın yenilenme aralığı — gözlem çözünürlüğü,
 /// normatif DEĞİL `[KALİBRASYON]`. Görüntü sınırlı yapıları (teyitsiz birim deposu, motorun uçuş /
@@ -1784,6 +1794,24 @@ impl ClientLiveDiag {
         }
         self.param_confirmed = stats.param_confirmed;
         self.base_pto_us = sender.base_pto_ns() / 1_000;
+        self.mirror_line_guard_trace(sender);
+    }
+
+    /// [İZ-ARALIK] Motorun hat koruması kaydından aynada olmayan (sırası son aktarılandan büyük)
+    /// kayıtları aktarır. Salt okuma; motor halkası sınırlıdır, aynanın halkası da.
+    fn mirror_line_guard_trace(&mut self, sender: &adaptive_transport::sender::Sender) {
+        let total = sender.diag_line_guard_trace_total();
+        let mut last = self.line_guard.recent().last().map_or(0, |t| t.index);
+        if total < last {
+            // Motor kaydı yeniden kuruldu: sıra 1'den başlar.
+            last = 0;
+        }
+        if total == last {
+            return;
+        }
+        for t in sender.diag_line_guard_trace().filter(|t| t.index > last) {
+            self.line_guard.push(*t);
+        }
     }
 
     /// [K4G-05] Kapanan bir ucun SAYAÇLARINI bu toplama ekler (S1 adaptörünün kapanmış oturumlar
@@ -2911,6 +2939,11 @@ async fn client_task(
     }
     if cfg.diag_emit_sink.is_some() {
         session.sender_mut().set_diag_emit_log(true);
+    }
+    // [İZ-ARALIK] Hat koruması ACK kaydı yalnız canlı ayna açıkken ([`ClientLiveDiag::line_guard`];
+    // salt gözlem, motor yalnız hat koruması kuruluyken yazar).
+    if cfg.live_diag {
+        session.sender_mut().set_diag_line_guard_trace(true);
     }
     // [ÖNLEMSEL-KOPYA · sahip kararı 2026-11-16] Geri bildirimi aç profilde PTT şeridi (şerit 0,
     // kimlikleri şerit 1'in ilk kimliğinden küçük) ACK'siz kopyalanır: bu hatta ACK'e dayalı
@@ -6437,6 +6470,80 @@ mod live_diag_mirror_tests {
         }
         assert_eq!(ring.total(), 7);
         assert_eq!(ring.recent().copied().collect::<Vec<_>>(), [5, 6, 7]);
+    }
+
+    /// [İZ-ARALIK] Ayna motorun hat koruması kaydından yalnız yeni kayıtları aktarır (tekrar yok),
+    /// halkası sınırlıdır ve turlar arasında motor halkasından düşen kayıt sıra boşluğu olarak
+    /// görünür. Kural (hat koruması) yoksa kayıt boş kalır.
+    #[test]
+    fn line_guard_trace_mirror_is_incremental_and_bounded() {
+        use adaptive_transport::sender::{AckInfo, Event, FeedbackStarvedRule, OpaqueUnit, Sender};
+        let line = |rate_bps| adaptive_transport::pacer::LineModel {
+            rate_bps,
+            datagram_overhead: LINK_UDP_IP_OVERHEAD,
+        };
+        let mut s = Sender::with_cc_port();
+        s.set_cc_feedback_starved(Some(FeedbackStarvedRule {
+            pacing_cap_bps: 12_000,
+            feedback_ns: adaptive_transport::receiver::feedback_horizon_ns(62),
+            line: line(12_500),
+            return_line: line(62),
+        }));
+        s.set_diag_line_guard_trace(true);
+        let seq = s
+            .on_event(Event::AppData(OpaqueUnit { id: 7, size: 100 }), 0)
+            .first()
+            .map(|d| d.seq)
+            .expect("ilk iletim");
+        // Aynı seq'i teyit eden her ACK korumaya ulaşır: bir kayıt.
+        let ack = |s: &mut Sender, n: u64, at: u64| {
+            for k in 0..n {
+                let _ = s.on_event(
+                    Event::AckReceived(AckInfo {
+                        acked_seqs: vec![seq],
+                        ack_delay: Duration::ZERO,
+                    }),
+                    at + k,
+                );
+            }
+        };
+        let mut live = ClientLiveDiag::default();
+        ack(&mut s, 3, 1_000);
+        live.mirror_line_guard_trace(&s);
+        live.mirror_line_guard_trace(&s);
+        let idx = |l: &ClientLiveDiag| l.line_guard.recent().map(|t| t.index).collect::<Vec<_>>();
+        assert_eq!(idx(&live), [1, 2, 3], "tekrar aktarım yok");
+        ack(&mut s, 2, 2_000);
+        live.mirror_line_guard_trace(&s);
+        assert_eq!(idx(&live), [1, 2, 3, 4, 5]);
+        // Turlar arasında motor halkasından taşan kayıtlar: aynada en yeniler, sıra boşluğu görünür.
+        let n = LINE_GUARD_LOG_LEN as u64 + 10;
+        ack(&mut s, n, 3_000);
+        live.mirror_line_guard_trace(&s);
+        let got = idx(&live);
+        assert_eq!(got.len(), LINE_GUARD_LOG_LEN, "ayna halkası sınırlı");
+        assert_eq!(got.last().copied(), Some(5 + n));
+        assert_eq!(got[0], 5 + n - LINE_GUARD_LOG_LEN as u64 + 1);
+        assert_eq!(live.line_guard.total(), 5 + LINE_GUARD_LOG_LEN as u64);
+        // Kural yoksa kayıt açık olsa da yazılmaz.
+        let mut bare = Sender::with_cc_port();
+        bare.set_diag_line_guard_trace(true);
+        let seq = bare
+            .on_event(Event::AppData(OpaqueUnit { id: 7, size: 100 }), 0)
+            .first()
+            .map(|d| d.seq)
+            .expect("ilk iletim");
+        let _ = bare.on_event(
+            Event::AckReceived(AckInfo {
+                acked_seqs: vec![seq],
+                ack_delay: Duration::ZERO,
+            }),
+            1_000,
+        );
+        let mut live = ClientLiveDiag::default();
+        live.mirror_line_guard_trace(&bare);
+        assert_eq!(live.line_guard.total(), 0);
+        assert_eq!(bare.diag_line_guard_trace_total(), 0);
     }
 
     /// Kurtarma kapalı (yalnız test yapılandırması): retransmit kararı tele çıkmaz. Ayna bastırılan
