@@ -1489,6 +1489,10 @@ pub enum EmitCause {
     LossPacketThreshold,
     /// Zaman eşiği kayıp ilanı (PTO zamanlayıcısında; `ref_seq` = en büyük teyitli iletim).
     LossTimeThreshold,
+    /// [PTT-KURTARMA · İŞ-35] Öncelikli şeridin başının ACK'in gösterdiği deliği: yeniden iletim
+    /// kaydı paket/zaman eşiği beklenmeden kuruldu (`seq` = deliğe düşen iletim, `ref_seq` = en
+    /// büyük teyitli iletim). Kayıp muhasebesi değişmez (ilan yine dedektörün eşiğinde).
+    PriorityHeadHole,
     /// Birim teyit çıktısına yazıldı (`unit_id`; ACK ya da FEC RECOVERED).
     Confirmed,
     /// ACK çerçevesi işlendi (`seq` = yeni teyitli en büyük iletim ya da 0, `unit_id` = yeni
@@ -1888,6 +1892,9 @@ pub struct Sender {
     prio_arq_first: u64,
     prio_copy_stale: u64,
     prio_copy_deferred: u64,
+    /// [PTT-KURTARMA · İŞ-35] Şerit başının ACK deliğiyle eşik beklenmeden kurulan yeniden iletim
+    /// kaydı sayısı (salt gözlem).
+    prio_head_hole: u64,
     /// [DR-EST-1] Kuruluş-kolu anahtarı (DEFAULT-ON — ürün-davranışı). Yalnız donmuş-enstrüman
     /// testleri (Gate-5 structural-oracle: probe-vs-DATA çekişme-izolasyonu, DR-EST-1-öncesi
     /// tasarım) kapatır; kolun KENDİ pinleri tests/establish_probe.rs'te default-ON koşar.
@@ -2249,6 +2256,7 @@ impl Sender {
             prio_arq_first: 0,
             prio_copy_stale: 0,
             prio_copy_deferred: 0,
+            prio_head_hole: 0,
             establish_probe_enabled: true,
             establish_due_ns: 0,
             establish_interval_ns: 0,
@@ -3986,6 +3994,7 @@ impl Sender {
             self.queue_losses(&lost, now_ns);
             // [TUR-A teşhis] loss-atıflama: packet-threshold (§5a) kaynaklı kuyruklanan kayıp sayısı.
             self.diag_loss_pkt += (self.pending_lost.len() - before) as u64;
+            self.queue_priority_head_hole(evidence, now_ns);
         }
         // DR-ARQ-PRODUCT-TAIL-1 (gated): real ACK progress (inflight shrank) resets the tail timer + clears backoff;
         // a drained inflight disarms. Duplicate/stale ACKs that remove nothing do NOT reset (§4).
@@ -5560,6 +5569,13 @@ impl Sender {
             self.prio_copy_stale,
             self.prio_copy_deferred,
         )
+    }
+
+    /// [PTT-KURTARMA · İŞ-35] Öncelikli şeridin başı için ACK deliğiyle, paket/zaman eşiği
+    /// beklenmeden kurulan yeniden iletim kaydı sayısı (salt gözlem).
+    #[must_use]
+    pub fn diag_priority_head_hole(&self) -> u64 {
+        self.prio_head_hole
     }
 
     /// [ÖNLEMSEL-KOPYA] Yeni birimlerin ACK beklemeyen ileri kopya kuralı ([`ForwardCopyRule`]).
@@ -8107,6 +8123,93 @@ impl Sender {
         }
     }
 
+    /// [PTT-SIRA] Öncelikli şeridin başı: teyitsiz en küçük öncelikli birim (kayıp kuyruğu ya da
+    /// uçuştaki, kararsız olmayan ve onarım sembolü olmayan iletim). Sıralı şeritte teslimi yalnız
+    /// baş bekletir.
+    fn priority_lane_head(&self, priority_below_id: u64) -> Option<u64> {
+        self.pending_lost
+            .iter()
+            .map(|r| r.unit.id)
+            .chain(
+                self.inflight
+                    .values()
+                    .filter(|p| {
+                        p.origin != TransmitKind::FecParity && p.confirmed_release_ns.is_none()
+                    })
+                    .map(|p| p.unit.id),
+            )
+            .filter(|&id| id < priority_below_id)
+            .min()
+    }
+
+    /// [PTT-KURTARMA · İŞ-35] Geri bildirimi aç profilde ([`FeedbackStarvedRule`]) öncelikli şeridin
+    /// başının en yeni ARQ iletimi (köken `Data` ya da `Retransmit`) bir ACK'in gösterdiği deliğe
+    /// düştüyse — en büyük teyitli iletim ondan sonra gönderilmiş, kendisi teyitsiz; kanıt kipinde
+    /// (0x15) ayrıca bu ACK'in kanıt aralığında — yeniden iletim kaydı paket/zaman eşiği
+    /// beklenmeden kurulur (vade şimdi; [`Self::drain_forward_copy_priority`] onu ilk jetonla çıkarır).
+    ///
+    /// Gerekçe (tests/starved_line_sim.rs, demetin bütün koruma iletimleri düşer): deliği gösteren
+    /// ilk ACK'in en büyüğü asıl iletimden yalnız 1–2 büyükse (alıcı sırasız varışta hemen ACK'ler)
+    /// paket eşiği (3) tutmaz ve kurtarma zaman eşiğini (9/8·srtt, srtt ≈ 1,5–2 s) bekliyordu:
+    /// ACK gelmiş, hat boş, 129–175 ms. Dönüş 62 B/s iken sonraki ACK ≥ 1 s sonradır. Eşiğin
+    /// amacı yeniden sıralamada gereksiz iletimden kaçınmak; sıralı şeridin başında bekleme bütün
+    /// şeridi bekletir, gereksiz iletimin bedeli bir PTT birimidir.
+    ///
+    /// Kayıp muhasebesi değişmez: iletim uçuşta kalır, dedektör onu kendi eşiğinde ilan eder (CC
+    /// kayıp olayı, tombstone o anda). O ana dek yeniden iletim uçuştaysa U13 kuralı ilanı yeniden
+    /// kuyruğa sokmaz, teyit edildiyse kayıt kararsızdır (çift gönderim yok). Kayıt tekrar
+    /// kurulmaz: bekleyen kaydı olan baş atlanır, yeniden iletim çıkınca en yeni iletim odur ve en
+    /// büyük teyitliden sonradır. Kalan kenar: kayıt jeton/pencere yüzünden dedektörün ilanına dek
+    /// çıkamazsa ilan ikinci bir kayıt kurar (bir fazla PTT birimi). Asıl iletim geç gelirse
+    /// (yeniden sıralama) normal ACK yolu birimi teyit eder ve bekleyen iş iptal olur. Kural yokken
+    /// ya da profil dışında etkisiz.
+    fn queue_priority_head_hole(&mut self, evidence: Option<(u64, u64)>, now_ns: u64) {
+        let Some(rule) = self.forward_copy_rule else {
+            return;
+        };
+        if self.cc_feedback_starved.is_none() || !self.cc_on() {
+            return;
+        }
+        let Some(la) = self.loss.largest_acked() else {
+            return;
+        };
+        let Some(head) = self.priority_lane_head(rule.priority_below_id) else {
+            return;
+        };
+        if self.pending_lost.iter().any(|r| r.unit.id == head) {
+            return;
+        }
+        let Some((&seq, p)) = self
+            .inflight
+            .iter()
+            .filter(|(_, p)| {
+                p.unit.id == head
+                    && matches!(p.origin, TransmitKind::Data | TransmitKind::Retransmit)
+                    && p.confirmed_release_ns.is_none()
+            })
+            .max_by_key(|(&s, _)| s)
+        else {
+            return;
+        };
+        if seq >= la {
+            return;
+        }
+        if self.loss.evidence_mode() && !evidence.is_some_and(|(lo, hi)| lo <= seq && seq <= hi) {
+            return;
+        }
+        let rec = LostRec {
+            seq,
+            unit: p.unit,
+            deadline_ns: now_ns,
+            retx_count: p.retx_count,
+            send_ns: p.send_ns,
+            data_ord: p.data_ord,
+        };
+        self.pending_lost.push_back(rec);
+        self.prio_head_hole = self.prio_head_hole.saturating_add(1);
+        self.diag_emit(now_ns, seq, head, EmitCause::PriorityHeadHole, la);
+    }
+
     /// [ÖNLEMSEL-KOPYA · ÖNCELİK] Kopya kuralı kurulu iken ([`ForwardCopyRule`]) kapsamdaki yeni
     /// birimleri (gönderim kuyruğundaki sıralarıyla) ve vadesi gelmiş kopyalarını, yeniden iletim
     /// ve diğer yeni veriden önce emit eder. Kapsam üst katmanın öncelikli şerididir (client-core:
@@ -8125,20 +8228,7 @@ impl Sender {
         // kırpmasıyla yanlış kayıp ilan edilmiş (Bob'a varmış) PTT iletimlerini de dosyanın önüne
         // geçiriyordu (6 250 hücresinde gereksiz yeniden gönderim 72/149/65 → 125/192/86). Öbür
         // kayıtlar genel ARQ sırasındadır.
-        let head = self
-            .pending_lost
-            .iter()
-            .map(|r| r.unit.id)
-            .chain(
-                self.inflight
-                    .values()
-                    .filter(|p| {
-                        p.origin != TransmitKind::FecParity && p.confirmed_release_ns.is_none()
-                    })
-                    .map(|p| p.unit.id),
-            )
-            .filter(|&id| id < rule.priority_below_id)
-            .min();
+        let head = self.priority_lane_head(rule.priority_below_id);
         let mut k = 0;
         while k < self.pending_lost.len() {
             let rec = self.pending_lost[k];
