@@ -391,19 +391,32 @@ pub struct LinkRates {
 /// imkânsızdır, korumanın ACK'ten bağımsız olması gerekir.
 pub const FEEDBACK_STARVED_ACK_INTERVAL_NS: u64 = 1_000_000_000;
 
-/// [ÖNLEMSEL-KOPYA · sahip kararı 2026-11-16] Geri bildirimi aç profilde PTT demetinin toplam
-/// iletim sayısı (ilk iletim + kopyalar). %20 bağımsız kayıpta demet başına tam kayıp
-/// 0,2⁵ = 3,2·10⁻⁴; 40 B ses (≈ 114 B tel, 200 ms) için ileri hatta ≈ 2,85 kB/s.
+/// [ÖNLEMSEL-KOPYA · sahip kararı 2026-11-16 · PTT-ARTIK 2026-11-21] Geri bildirimi aç profilde PTT
+/// demetinin beyan hızındaki toplam iletim sayısı (ilk iletim + kopyalar).
 ///
-/// [2026-11-22, sahip] 6–7 iletim (2026-11-21 denemesi) çözüm olarak kabul edilmedi: aynı ses
-/// için daha fazla bant yakmak ilerleme sayılmaz. Değer 2026-11-16 kararına döndü. Tam kayıp
-/// demetin 1 s içinde kurtarılmaması bilinen açıktır (`tests/starved_line_sim.rs`).
-pub const PTT_FORWARD_COPIES: u8 = 5;
+/// 2026-11-16 kararında 5'ti: %20 bağımsız kayıpta demet başına tam kayıp 0,2⁵ = 3,2·10⁻⁴. Kabul
+/// protokolünün yaklaşık 4 600 sınırlı demetinde (6 hücre × 9 koşu) bu, beklenen 1,5 tam kayıp
+/// demettir. Tam kayıp demetin kurtarması bir ACK turunu (bu hatta 5–12 s) bekler ve sıralı
+/// şeritte ardındaki demetleri de bekletir (ürün testi, dürüst profil, tohum 3: demet 50, 13,99 s).
+/// 1 s içinde kapatmanın yolu yalnız ileri hatta ek bayttır (sahip kararı 2026-11-21 m. 9). Tel
+/// değişikliği gerektirmeyen yol tekrardır. Demetler arası FEC daha az bayt ister, ama şerit
+/// başına ayrı blok boyu ister (profil 0x05'te k = 8 demet = 1,6 s; tel/profil kararı).
+///
+/// 7 iletim: tam kayıp 0,2⁷ = 1,28·10⁻⁵, yani her 78 000 demette bir (≈ 4,3 saat kesintisiz
+/// konuşma). Beyan hızında ileri hat ≈ 7 × 570 = 3,99 kB/s (12 500 B/s hattın %32'si; 5 iletimde
+/// 2,85 kB/s). Hat beyanın altında ölçülürse sayı hatla orantılı küçülür, ama
+/// [`PTT_FORWARD_COPIES_MIN`]'in altına inmez (`ForwardCopyLineScale`).
+pub const PTT_FORWARD_COPIES: u8 = 7;
 
-/// [ÖNLEMSEL-KOPYA] Hat beyanın altında ölçüldüğünde PTT demetinin en az toplam iletim sayısı.
-/// [`PTT_FORWARD_COPIES`]'e eşit: ölçekleme (`ForwardCopyLineScale`) etkisizdir, kopya sayısı hatla
-/// artmaz ya da azalmaz.
-pub const PTT_FORWARD_COPIES_MIN: u8 = 5;
+/// [PTT-ARTIK · 2026-11-21] Hat beyanın altında ölçüldüğünde PTT demetinin en az toplam iletim
+/// sayısı. 5'te (2026-11-16 değeri) ölçülen yavaş hatta tam kayıp yine 3,2·10⁻⁴ kalıyordu
+/// (ürün testi, birleşik aday + 7 iletim, gerçek 6 250, tohum 3: demet 51'in beş iletimi düştü,
+/// 18 demet sıralı şeritte 5 s bekledi).
+///
+/// 6 iletim: 0,2⁶ = 6,4·10⁻⁵. Bedeli yarım beyan hızında (6 250 B/s) hattın %55'i (3,42 kB/s). 7
+/// iletim orada sığmaz: PTT 3,99 kB/s + dosya (40 kB, %50 FEC, 28 s sınırında ≈ 2,4 kB/s)
+/// 6,25 kB/s'yi aşar. 6 iletimde ≈ %7 pay kalır.
+pub const PTT_FORWARD_COPIES_MIN: u8 = 6;
 
 /// [ŞERİT-BOŞTA · sahip kararı 2026-11-16] Boştaki şeridin kopyalanmayan kısmi bloğunun (metin,
 /// dosyanın son parçaları) birim başına toplam iletim sayısı. 2026-11-16 değeriyle aynıdır; PTT

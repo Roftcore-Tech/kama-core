@@ -58,18 +58,13 @@ const VOICE_START_NS: u64 = 500 * MS;
 const PTT_BOUND_NS: u64 = SEC;
 const TEXT_BOUND_NS: u64 = SEC;
 const FILE_BOUND_NS: u64 = 14 * SEC;
-/// Ürünün PTT kuralı (`client_core::runtime::PTT_FORWARD_COPIES` = 5, sahip kararı 2026-11-16;
-/// aralık 200 ms / 5). 2026-11-21'de denenen 7 iletim (6 kopya, 200/7 ms, yavaş hatta en az 6)
-/// 2026-11-22'de kabul edilmedi (aynı ses için daha fazla bant); yalnız bant bedeli kaydında
-/// (`REJECTED_*`) durur.
-const PRODUCT_COPIES: u8 = 4;
-const PRODUCT_MIN_COPIES: u8 = 4;
-const PRODUCT_SPACING_NS: u64 = 200 * MS / 5;
+/// Ürünün PTT kuralı (`client_core::runtime::PTT_FORWARD_COPIES` = 7,
+/// `PTT_FORWARD_COPIES_MIN` = 6; aralık 200 ms / 7). 2026-11-16 kuralı: 5 iletim, 40 ms.
+const PRODUCT_COPIES: u8 = 6;
+const PRODUCT_MIN_COPIES: u8 = 5;
+const PRODUCT_SPACING_NS: u64 = 200 * MS / 7;
 const OLD_COPIES: u8 = 4;
 const OLD_SPACING_NS: u64 = 40 * MS;
-const REJECTED_COPIES: u8 = 6;
-const REJECTED_MIN_COPIES: u8 = 5;
-const REJECTED_SPACING_NS: u64 = 200 * MS / 7;
 
 /// Ürün testinin dönüş-gecikmesi hücresinin çizelgesi (`asym_product_outcome`
 /// `Cell::return_delay_varies`).
@@ -1257,11 +1252,9 @@ fn d4_a_full_small_fifo_is_detected_and_stops_overflowing() {
 /// düşer, başka kayıp yok. Ölçütler ürünün kabul ölçütleridir: bütün demetler sıralı teslimde
 /// ≤ 1 s, metin ≤ 1 s, dosya ≤ 14 s.
 ///
-/// KIRMIZI (bilinen açık, 2026-11-22): ürün kuralı 5 iletimdir. Beş iletimin beşi düşünce kurtarma
-/// ACK turunu bekler; demet ve ardındakiler 1 s'yi aşar. 7 iletim bu testi yeşile çeviriyordu,
-/// ama aynı ses için %40 daha fazla bant demekti ve kabul edilmedi. Kopya artırmadan kapatmanın
-/// yolları (demetler arası FEC: tel/profil kararı; şeridin sıra/teslim sözleşmesi: sahip kararı)
-/// bu dalın kapsamı dışında.
+/// * Ürün kuralı (beyan hızında 7 iletim): altıncı ve yedinci iletim demeti 1 s içinde taşır.
+/// * Karşı-olgu (2026-11-16 kuralı, 5 iletim): kurtarma ACK turunu bekler; demet ve ardındakiler
+///   1 s'yi aşar.
 ///
 /// Bant bedeli raporlanır (ileri hatta PTT tel baytı ve dosya süresi, iki kural).
 #[test]
@@ -1754,8 +1747,8 @@ fn all_lost_ptt_bundle_within_the_1s_bound() {
     );
 }
 
-/// [İŞ-35 AÇIK 2 · bant bedeli] Reddedilen 7 iletim (6 kopya, 200/7 ms, ölçülen yavaş hatta en az
-/// 6) ve ürün kuralı 5 iletim (2026-11-16: 4 kopya, 40 ms, ölçeksiz): ileri hatta PTT tel baytı ve payı,
+/// [İŞ-35 AÇIK 2 · bant bedeli] 7 iletim (ürün kuralı: 6 kopya, 200/7 ms, ölçülen yavaş hatta en az
+/// 6) ve 5 iletim (2026-11-16 kuralı: 4 kopya, 40 ms, ölçeksiz): ileri hatta PTT tel baytı ve payı,
 /// dürüst dosya süresi (%20 kayıp, 41 kB, sık ACK kolu 4×62; düzenekte FEC yok, kurtarma yalnız
 /// ARQ), daralma senaryosunda (12 500 → 6 250, 8 s) daralma başlangıcından en kötü PTT. Rapor;
 /// sağlama yalnız bayt sırası.
@@ -1763,10 +1756,10 @@ fn all_lost_ptt_bundle_within_the_1s_bound() {
 fn ptt_band_cost_seven_versus_five_transmissions() {
     let arms: [(&str, u8, u64, Option<u8>); 2] = [
         (
-            "7 iletim (reddedildi)",
-            REJECTED_COPIES,
-            REJECTED_SPACING_NS,
-            Some(REJECTED_MIN_COPIES),
+            "7 iletim",
+            PRODUCT_COPIES,
+            PRODUCT_SPACING_NS,
+            Some(PRODUCT_MIN_COPIES),
         ),
         ("5 iletim", OLD_COPIES, OLD_SPACING_NS, None),
     ];
