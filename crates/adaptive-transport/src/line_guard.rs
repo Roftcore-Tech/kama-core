@@ -175,6 +175,46 @@
 //! görünmez, sonuç `NoInfo`'dur (bugünkü yol). Profil hattının patlaması pencereden küçükse (dar
 //! profil) de böyledir.
 //!
+//! # Ölçüm aralığı (İŞ-34, 2026-11-22; sözleşme #175 7067964700)
+//!
+//! Cephe ölçüsü (`τ − s`) dönüş yayılımını içerir. Gönderici bir aralıkta tavanın altında
+//! gönderirken dönüş gecikmesi `Δ` artarsa örnek `gönderim hızı × ds / (ds + Δ)` çıkar ve hat o
+//! hıza iner. Ürün testi, dönüş-gecikmesi hücresi, bitmap kolu, tohum 2: dürüst 12 500 hat 7 793'e
+//! indi. Bitmap'in sık ACK'leri `ds`'yi kısalttı, böylece 100 ms'lik basamak eşiği aştı.
+//!
+//! Ölçüm aralığı bu ölçüyü alıcının veri varış süresiyle değiştirir: M = alıcının aldığı seq'ler
+//! (`m_first … largest`), `rx_span` = alıcıda ikisinin ilk varışları arası. Kuyruk artışı
+//! `g = rx_span − send_span − (ser(last) − ser(first))`; dönüş gecikmesi `g`'ye girmez.
+//! Aşağı yönlü örnek yalnız `g` artış eşiğini (`max(MTU serileşmesi, send_span / 20)`) aşınca
+//! alınır. Hız `(first, last]` aralığında gönderilen tel baytı / `rx_span`'dir.
+//! * Rastgele kayıp alınan baytı düşürür ama `g`'yi büyütmez: örnek yok.
+//! * Gönderici kapasitenin altında gönderiyorsa kuyruk büyümez: `g ≈ 0`, örnek yok.
+//! * Kuyrukta düşen seq hattı kullanmamıştır ama göndericinin baytına girer. Taşmanın olduğu
+//!   aralıkta tahmin gerçek hattın üstünde kalır; sonraki aralıklar düşürür.
+//! * Yeniden sıralamada m_first geç gelirse `rx_span` kısalır; daralma küçük görünür (güvenli
+//!   taraf: yanlış kesinti yok).
+//!
+//! **Cephe tahmincisi ne zaman kalır.** Ölçüm aralığı yalnız alıcısı ölçen oturumda gelir (CAPS ile
+//! 0x15). İlk aralık gelene dek (eski alıcı, V2 çerçevesi, ilk ACK'ler) cephe tahmincisi bugünkü
+//! kuralıyla aşağı yönlü örnek verir: başka ölçü yoktur, gerçek daralmada kuyruğun sınırı odur.
+//! Bir aralık geldiğinde oturum aralık kipine girer. O andan sonra cephe örneği yalnız üst üste
+//! [`UNMEASURED_FALLBACK_ACKS`] (2) ACK ölçümsüz kalırsa alınır.
+//! * Gerekçe: ölçüm tek tek ACK'lerde bulunamayabilir (M tek seq, varış penceresi dışı). Bu
+//!   ACK'lerde cephe örneği almak dönüş gecikmesi basamağını yeniden kuyruk sayar.
+//! * Ama alıcı ölçmeyi sürekli bırakırsa (ör. uzun ACK boşluğu, tek seq'lik M'ler), gerçek
+//!   daralmada kuyruk ölçümsüz büyür. İki ACK, ölçüm aralığının kendi uzunluğudur (M iki ACK geriye
+//!   uzanır); bundan uzun ölçümsüzlükte eski koruma devreye girer.
+//! * Yukarı yönlü doğrulama, süreli yoklamanın hükmü ve kuyruk tahmini (taban gecikme) bu adımda
+//!   cepheden kalır. Dönüş basamağında yoklama hükmü "sonuçsuz" çıkar ve kuyruk yazmaz (güvenli
+//!   taraf).
+//!
+//! Kayıtlar (`sent`) son iki ACK'in cephelerinin eskisine dek tutulur: bir sonraki ACK'in M'si iki
+//! ACK geriye uzanır ([`SENT_CAP`] yine üst sınırdır).
+//!
+//! Sınır (benzetim, `tests/starved_line_sim.rs`): FIFO çok küçükse (8 paket) daralmada kuyruk
+//! hemen dolar. Kuyruk sabit kalır (`g ≈ 0`), fazlalık kuyrukta düşme olarak görünür; iki tahminci
+//! de daralmayı geç ve eksik görür. 64 paketlik FIFO'da kuyruk önce büyür, daralma algılanır.
+//!
 //! Determinizm: tamsayı aritmetiği, RNG yok, sınırlı bellek (ADR-17 / SR-AUDIT-001).
 
 use std::collections::VecDeque;
@@ -231,6 +271,20 @@ pub const FIRST_WINDOW_MIN_WAIT_NS: u64 = 5_000_000;
 /// üstünde. Ölçüldü: 3 s'lik yoklama (≈ 0,19 s kuyruk) ürün testinde gerçek 6 250'nin sürekli
 /// evresinde PTT'yi 0,97–1,25 s'ye itiyordu. [CAL]
 pub const PROBE_QUEUE_NS: u64 = 80_000_000;
+
+/// [ÖLÇÜM-ARALIĞI · İŞ-34 sözleşmesi §2–3] Alıcının ölçtüğü ileri varış aralığı (motor seq
+/// uzayında): M'nin en küçük (`first_seq`) ve en büyük (`last_seq`) seq'i ve alıcıda ikisinin ilk
+/// varışları arasındaki süre (`rx_span_ns`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ForwardInterval {
+    pub first_seq: u64,
+    pub last_seq: u64,
+    pub rx_span_ns: u64,
+}
+
+/// [ÖLÇÜM-ARALIĞI] Aralık kipindeki oturumda üst üste bu kadar ACK ölçümsüz kalırsa cephe
+/// tahmincisi aşağı yönlü örneği yeniden verir (modül belgesi, "Ölçüm aralığı").
+const UNMEASURED_FALLBACK_ACKS: u32 = 2;
 
 /// Ölçüm sonucu: korunan hat hızı ve darboğazda tahmin edilen kuyruk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -304,6 +358,15 @@ pub struct LineGuard {
     /// [İLK-PENCERE] Pencerenin ayrıntısı (gözlem): ilk ve son seq, gönderim süresi `Δs`, varış
     /// süresi `Δτ` (ns), aradaki tel baytı.
     first_window_detail: Option<FirstWindowDetail>,
+    /// [ÖLÇÜM-ARALIĞI] Oturumda en az bir ölçüm aralığı geldi (aralık kipi).
+    interval_mode: bool,
+    /// [ÖLÇÜM-ARALIĞI] Aralık kipinde üst üste ölçümsüz ACK sayısı.
+    unmeasured_acks: u32,
+    /// [ÖLÇÜM-ARALIĞI] Son iki ACK'in cephesi: `sent` kayıtları eskisine dek tutulur (bir sonraki
+    /// ACK'in M'si iki ACK geriye uzanır).
+    recent_fronts: VecDeque<u64>,
+    /// [ÖLÇÜM-ARALIĞI] Gözlem: (ölçülen aralık, aralıktan örnek, son kuyruk artışı g ns).
+    interval_diag: (u64, u64, Option<i64>),
     /// [SÜRELİ-YOKLAMA] Süren ya da hüküm bekleyen yoklama.
     probe: Option<Probe>,
     /// [SÜRELİ-YOKLAMA] Başarısız yoklama sayısı (gözlem).
@@ -386,6 +449,10 @@ impl LineGuard {
             start: Some(StartBudget::default()),
             first_window: None,
             first_window_detail: None,
+            interval_mode: false,
+            unmeasured_acks: 0,
+            recent_fronts: VecDeque::new(),
+            interval_diag: (0, 0, None),
             probe: None,
             probe_failures: 0,
         }
@@ -665,6 +732,83 @@ impl LineGuard {
         saturated: bool,
         largest_seq: u64,
     ) -> Option<LineGuardUpdate> {
+        self.on_ack_measured(now_ns, ack_delay_ns, saturated, largest_seq, None)
+    }
+
+    /// [ÖLÇÜM-ARALIĞI] Aralığın aşağı yönlü örneği: kuyruk artışı
+    /// `g = rx_span − send_span − (ser(last) − ser(first))` artış eşiğini aşarsa hız
+    /// `(first, last] aralığında gönderilen tel baytı / rx_span`. Kayıtta olmayan seq, sıfır gönderim
+    /// süresi ya da artış yoksa örnek yok.
+    fn interval_sample(&mut self, iv: ForwardInterval) -> Option<u64> {
+        let rec_of = |seq: u64| {
+            self.sent
+                .binary_search_by_key(&seq, |r| r.seq)
+                .ok()
+                .map(|i| self.sent[i])
+        };
+        let (Some(first), Some(last)) = (rec_of(iv.first_seq), rec_of(iv.last_seq)) else {
+            return None;
+        };
+        let send_span = last.send_ns.checked_sub(first.send_ns).filter(|&d| d > 0)?;
+        self.interval_diag.0 = self.interval_diag.0.saturating_add(1);
+        // Serileşme farkı güncel hat tahminiyle (yoksa profil hattı): iki ucun boy farkı kuyruk
+        // artışı sayılmasın. Gerçek hat tahminden yavaşsa fark küçük çıkar, `g` büyür (kuyruğu
+        // fark etme yönünde).
+        let rate = self.rate_bps.unwrap_or(self.line.rate_bps).max(1);
+        let ser = |udp: u64| {
+            i128::from(udp.saturating_add(self.line.datagram_overhead)) * 1_000_000_000
+                / i128::from(rate)
+        };
+        let g =
+            i128::from(iv.rx_span_ns) - i128::from(send_span) - (ser(last.udp) - ser(first.udp));
+        self.interval_diag.2 = Some(i64::try_from(g).unwrap_or(i64::MAX));
+        let mtu_ns = ser(crate::rate::DEFAULT_MTU);
+        let threshold = mtu_ns.max(i128::from(send_span / GROWTH_MIN_DIV));
+        if g <= threshold {
+            return None;
+        }
+        let wire = last.cum.saturating_sub(first.cum);
+        let est =
+            u64::try_from(u128::from(wire) * 1_000_000_000 / u128::from(iv.rx_span_ns.max(1)))
+                .unwrap_or(u64::MAX);
+        self.interval_diag.1 = self.interval_diag.1.saturating_add(1);
+        Some(est)
+    }
+
+    /// [ÖLÇÜM-ARALIĞI] Gözlem: (ölçülen aralık sayısı, aralıktan aşağı yönlü örnek sayısı, son
+    /// aralığın kuyruk artışı `g`, ns).
+    #[must_use]
+    pub fn interval_diag(&self) -> (u64, u64, Option<i64>) {
+        self.interval_diag
+    }
+
+    /// [ÖLÇÜM-ARALIĞI] [`Self::on_ack`] ve çerçevenin ölçüm aralığı (`None` = bu ACK'te ölçüm yok).
+    /// Ölçüm varken aşağı yönlü örneği yalnız aralığın kuyruk artışı verir; cephe tahmincisinin
+    /// kuralı modül belgesindedir ("Ölçüm aralığı").
+    pub fn on_ack_measured(
+        &mut self,
+        now_ns: u64,
+        ack_delay_ns: u64,
+        saturated: bool,
+        largest_seq: u64,
+        interval: Option<ForwardInterval>,
+    ) -> Option<LineGuardUpdate> {
+        // Aralık örneği cephe zamanlamasından bağımsızdır; kayıtlar budanmadan önce.
+        let interval_best = match interval {
+            Some(iv) => {
+                self.interval_mode = true;
+                self.unmeasured_acks = 0;
+                self.interval_sample(iv)
+            }
+            None => {
+                if self.interval_mode {
+                    self.unmeasured_acks = self.unmeasured_acks.saturating_add(1);
+                }
+                None
+            }
+        };
+        let fronts_decide = !self.interval_mode
+            || (interval.is_none() && self.unmeasured_acks >= UNMEASURED_FALLBACK_ACKS);
         let wire = self.pending_wire.take()?;
         if saturated || self.frontier.is_some_and(|f| largest_seq <= f) {
             return None;
@@ -706,8 +850,16 @@ impl LineGuard {
             .probe
             .filter(|p| rec.send_ns >= p.until_ns)
             .map(|p| wire_between(p.until_ns, rec.send_ns.saturating_add(1)));
-        // Kayıtlar artık bu cepheden eskiye gerekmez (sonraki ACK'ler daha büyük cephe ister).
-        self.sent.drain(..i);
+        // [ÖLÇÜM-ARALIĞI] Kayıtlar son iki ACK'in cephelerinin eskisine dek tutulur: bir sonraki
+        // ACK'in ölçüm aralığı (M) iki ACK geriye uzanır. Cephe tahmincisi yalnız bu cepheden
+        // sonrasını okur.
+        if self.recent_fronts.len() >= 2 {
+            self.recent_fronts.pop_front();
+        }
+        self.recent_fronts.push_back(largest_seq);
+        let floor = self.recent_fronts.front().copied().unwrap_or(largest_seq);
+        let keep_from = self.sent.partition_point(|r| r.seq < floor).min(i);
+        self.sent.drain(..keep_from);
 
         let current = self.rate_bps.unwrap_or(self.line.rate_bps);
         let mtu_ns = ns_for(
@@ -752,6 +904,9 @@ impl LineGuard {
                 .unwrap_or(u64::MAX);
             best = Some(best.map_or(est, |b| b.max(est)));
         }
+        // [ÖLÇÜM-ARALIĞI] Aralık kipinde aşağı yönlü örneği aralık verir; cephe örneği yalnız
+        // ölçüm yokken ve geri dönüş koşulunda (modül belgesi).
+        let best = if fronts_decide { best } else { interval_best };
         if self.points.len() >= POINT_CAP {
             self.points.pop_front();
         }
@@ -998,6 +1153,75 @@ mod tests {
             assert_eq!(u, None, "dürüst hatta koruma devreye girmez");
         }
         assert_eq!(g.rate_bps(), None);
+    }
+
+    /// [ÖLÇÜM-ARALIĞI] ACK dönüş hattında `extra_ns` geç gelir. `first` verilirse çerçeve ölçüm
+    /// aralığını taşır (alıcıdaki varış süresi `arrivals[seq] − arrivals[first]`).
+    fn ack_m(
+        g: &mut LineGuard,
+        arrivals: &[u64],
+        seq: u64,
+        extra_ns: u64,
+        first: Option<u64>,
+    ) -> Option<LineGuardUpdate> {
+        let wire = 55;
+        let at = arrivals[seq as usize] + 300 * MS + extra_ns + (wire + OVH) * SEC / RET;
+        g.note_ack_wire(wire);
+        let iv = first.map(|f| ForwardInterval {
+            first_seq: f,
+            last_seq: seq,
+            rx_span_ns: arrivals[seq as usize] - arrivals[f as usize],
+        });
+        g.on_ack_measured(at, 0, false, seq, iv)
+    }
+
+    /// [ÖLÇÜM-ARALIĞI] Dürüst hat, dönüş gecikmesi 300 ms artıyor. Ölçüm aralığı varken cephe
+    /// tahmincisi örnek vermez (basamak kuyruk sayılmaz). Aralık kipinde iki ACK ölçümsüz kalınca
+    /// cephe örneği yeniden alınır (kuyruğun ölçümsüz büyümemesi için geri dönüş; basamak bu
+    /// düzenekte o örneği üretir). Karşı-olgu: ölçümsüz koruma basamağı ilk ACK'te keser.
+    #[test]
+    fn interval_mode_ignores_front_steps_until_two_unmeasured_acks() {
+        let mut g = guard();
+        let arr = send_into(&mut g, PROFILE, 80);
+        assert_eq!(ack_m(&mut g, &arr, 10, 0, Some(1)), None);
+        assert_eq!(ack_m(&mut g, &arr, 30, 300 * MS, Some(10)), None, "basamak");
+        assert_eq!(g.rate_bps(), None);
+        let (checks, samples, last_g) = g.interval_diag();
+        assert_eq!((checks, samples), (2, 0));
+        assert!(
+            last_g.is_some_and(|x| x.abs() < 1_000_000),
+            "g ≈ 0: {last_g:?}"
+        );
+        // Aralık kipinde tek ölçümsüz ACK: cephe örneği yok.
+        let _ = ack_m(&mut g, &arr, 50, 600 * MS, None);
+        assert_eq!(g.rate_bps(), None, "tek ölçümsüz ACK");
+        // İkinci ölçümsüz ACK: cephe tahmincisi geri döner.
+        let _ = ack_m(&mut g, &arr, 70, 900 * MS, None);
+        assert!(g.rate_bps().is_some(), "iki ölçümsüz ACK'te cephe örneği");
+        // Karşı-olgu: ölçüm aralığı hiç gelmeyen koruma basamağı ikinci ACK'te keser.
+        let mut old = guard();
+        let arr = send_into(&mut old, PROFILE, 80);
+        let _ = ack_m(&mut old, &arr, 10, 0, None);
+        let _ = ack_m(&mut old, &arr, 30, 300 * MS, None);
+        assert!(old.rate_bps().is_some_and(|r| r < PROFILE * 19 / 20));
+    }
+
+    /// [ÖLÇÜM-ARALIĞI] Gerçek hat yarıya düşük: aralık kuyruk artışını görür ve hattı ±%2 ölçer.
+    /// M iki ACK geriye uzanır: `sent` kayıtları iki cephe geriye dek tutulur (M'nin başı bulunur).
+    #[test]
+    fn interval_measures_a_slow_line_from_records_two_fronts_back() {
+        let mut g = guard();
+        let arr = send_into(&mut g, 6_250, 80);
+        assert!(ack_m(&mut g, &arr, 10, 0, None).is_none());
+        let _ = ack_m(&mut g, &arr, 20, 0, Some(10));
+        let before = g.interval_diag().0;
+        let u = ack_m(&mut g, &arr, 40, 0, Some(10)).expect("örnek");
+        assert_eq!(g.interval_diag().0, before + 1, "M'nin başı (10) kayıtta");
+        assert!(
+            u.rate_bps.abs_diff(6_250) * 50 <= 6_250,
+            "tahmin {}",
+            u.rate_bps
+        );
     }
 
     #[test]

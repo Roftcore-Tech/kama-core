@@ -1875,6 +1875,8 @@ pub struct Sender {
     /// [İLK-PENCERE] Bir sonraki `AckReceived` çerçevesinin §2.2 `arrival_rate` alanı
     /// ([`Self::note_ack_arrival_rate`]); ACK işlenince tüketilir.
     pending_arrival_rate: Option<u16>,
+    /// [ÖLÇÜM-ARALIĞI] Bkz. [`Self::note_ack_forward_interval`]; ACK işlenince tüketilir.
+    pending_forward_interval: Option<crate::line_guard::ForwardInterval>,
     /// [GERİ-BİLDİRİM-AÇ] Bkz. [`FeedbackStarvedRule`]. `None` = kural yok (bugünkü yol, bit-eşit).
     cc_feedback_starved: Option<FeedbackStarvedRule>,
     /// [HAT-KORUMASI] Gerçek ileri hattın tahmincisi; yalnız kural kuruluyken `Some`.
@@ -2240,6 +2242,7 @@ impl Sender {
             forward_copy_rule: None,
             forward_copy_scale: None,
             pending_arrival_rate: None,
+            pending_forward_interval: None,
             cc_feedback_starved: None,
             cc_line_guard: None,
             diag_emit_log: None,
@@ -4002,6 +4005,7 @@ impl Sender {
     /// tabanı aynı ölçümü [`Self::cc_feedback_cap`] ile okur. Kural yokken etkisiz.
     fn cc_line_guard_on_ack(&mut self, ack: &AckInfo, now_ns: u64) {
         let arrival_rate = self.pending_arrival_rate.take();
+        let interval = self.pending_forward_interval.take();
         let Some(g) = self.cc_line_guard.as_mut() else {
             return;
         };
@@ -4021,7 +4025,7 @@ impl Sender {
             let _ = g.on_first_window(&ack.acked_seqs, rate);
         }
         let saturated = ack.ack_delay >= crate::loss::E2A_ACK_DELAY_SATURATED;
-        let update = g.on_ack(now_ns, dur_ns(ack.ack_delay), saturated, largest);
+        let update = g.on_ack_measured(now_ns, dur_ns(ack.ack_delay), saturated, largest, interval);
         // [BAŞLANGIÇ-BÜTÇESİ · İŞ-33 C1] İlk ACK işlendi: bütçe kalkar (ölçüm, doğrulama ya da
         // bilgi yok — üçünde de bundan sonrası bugünkü hat koruması).
         g.end_start_budget();
@@ -6095,6 +6099,40 @@ impl Sender {
     /// başka her yolda etkisiz.
     pub fn note_ack_arrival_rate(&mut self, arrival_rate: u16) {
         self.pending_arrival_rate = Some(arrival_rate);
+    }
+
+    /// [ÖLÇÜM-ARALIĞI · İŞ-34 sözleşmesi §3] Bir sonraki `AckReceived` çerçevesinin ölçüm aralığı
+    /// (motor seq uzayında): M'nin en küçük ve en büyük seq'i, alıcıdaki varış süresi
+    /// (`None` = ölçüm yok ya da V2 çerçevesi) ve M'nin seq'leri. ACK işlenince tüketilir.
+    pub fn note_ack_forward_interval(
+        &mut self,
+        first_seq: u64,
+        last_seq: u64,
+        rx_span_ns: Option<u64>,
+        received: &[u64],
+    ) {
+        // M'nin uçları M'de olmalı ve aralık motorun gönderdiği seq'lerde kalmalı; değilse ölçüm yok.
+        let valid = first_seq < last_seq
+            && last_seq < self.next_seq
+            && received.contains(&first_seq)
+            && received.contains(&last_seq);
+        self.pending_forward_interval =
+            rx_span_ns
+                .filter(|_| valid)
+                .map(|rx_span_ns| crate::line_guard::ForwardInterval {
+                    first_seq,
+                    last_seq,
+                    rx_span_ns,
+                });
+    }
+
+    /// [ÖLÇÜM-ARALIĞI] Hat korumasının aralık gözlemi ([`crate::line_guard::LineGuard::interval_diag`]);
+    /// kural kurulu değilse `None`.
+    #[must_use]
+    pub fn diag_line_guard_interval(&self) -> Option<(u64, u64, Option<i64>)> {
+        self.cc_line_guard
+            .as_ref()
+            .map(crate::line_guard::LineGuard::interval_diag)
     }
 
     /// [İLK-PENCERE] İlk ACK'in varış penceresinin sonucu (salt gözlem; kural ya da pencere yoksa
