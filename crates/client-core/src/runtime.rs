@@ -237,7 +237,8 @@ pub struct RuntimeConfig {
     pub ack_format: AckFormat,
     /// [ÖNLEMSEL-KOPYA · sahip kararı 2026-11-16] Şerit kimlikleri açık mı (şerit 0 = PTT).
     /// `true` iken ve yön hızı profili geri bildirimi aç bırakıyorsa ([`link_feedback_starved`]),
-    /// PTT şeridinin her yeni birimi ACK beklemeden [`PTT_FORWARD_COPIES`] kez daha gönderilir.
+    /// PTT şeridinin her yeni birimi ACK beklemeden toplam [`PTT_FORWARD_COPIES`] iletimle gönderilir
+    /// (hat beyanın altında ölçülürse orantılı az, en az [`PTT_FORWARD_COPIES_MIN`]).
     /// `false` (varsayılan): şerit 0 düz `send`'in de şerididir; kopya kurulmaz, davranış bit-aynı.
     /// `ClientTransport` şeritleri açınca kurar.
     pub lane_ids: bool,
@@ -390,10 +391,36 @@ pub struct LinkRates {
 /// imkânsızdır, korumanın ACK'ten bağımsız olması gerekir.
 pub const FEEDBACK_STARVED_ACK_INTERVAL_NS: u64 = 1_000_000_000;
 
-/// [ÖNLEMSEL-KOPYA · sahip kararı 2026-11-16] Geri bildirimi aç profilde PTT demetinin toplam
-/// iletim sayısı (ilk iletim + kopyalar). %20 bağımsız kayıpta demet başına tam kayıp
-/// 0,2⁵ = 3,2·10⁻⁴; 40 B demet (≈ 114 B tel, 200 ms) için ileri hatta ≈ 2,85 kB/s.
-pub const PTT_FORWARD_COPIES: u8 = 5;
+/// [ÖNLEMSEL-KOPYA · sahip kararı 2026-11-16 · PTT-ARTIK 2026-11-21] Geri bildirimi aç profilde PTT
+/// demetinin beyan hızındaki toplam iletim sayısı (ilk iletim + kopyalar).
+///
+/// 2026-11-16 kararında 5'ti: %20 bağımsız kayıpta demet başına tam kayıp 0,2⁵ = 3,2·10⁻⁴. Kabul
+/// protokolünün yaklaşık 4 600 sınırlı demetinde (6 hücre × 9 koşu) bu, beklenen 1,5 tam kayıp
+/// demettir. Tam kayıp demetin kurtarması bir ACK turunu (bu hatta 5–12 s) bekler ve sıralı
+/// şeritte ardındaki demetleri de bekletir (ürün testi, dürüst profil, tohum 3: demet 50, 13,99 s).
+/// 1 s içinde kapatmanın yolu yalnız ileri hatta ek bayttır (sahip kararı 2026-11-21 m. 9). Tel
+/// değişikliği gerektirmeyen yol tekrardır. Demetler arası FEC daha az bayt ister, ama şerit
+/// başına ayrı blok boyu ister (profil 0x05'te k = 8 demet = 1,6 s; tel/profil kararı).
+///
+/// 7 iletim: tam kayıp 0,2⁷ = 1,28·10⁻⁵, yani her 78 000 demette bir (≈ 4,3 saat kesintisiz
+/// konuşma). Beyan hızında ileri hat ≈ 7 × 570 = 3,99 kB/s (12 500 B/s hattın %32'si; 5 iletimde
+/// 2,85 kB/s). Hat beyanın altında ölçülürse sayı hatla orantılı küçülür, ama
+/// [`PTT_FORWARD_COPIES_MIN`]'in altına inmez (`ForwardCopyLineScale`). Böylece PTT'nin hattaki payı
+/// sabit kalır ve dosyanın payı daralmaz.
+pub const PTT_FORWARD_COPIES: u8 = 7;
+
+/// [PTT-ARTIK · sahip kararı 2026-11-16] Hat beyanın altında ölçüldüğünde PTT demetinin en az
+/// toplam iletim sayısı (2026-11-16 kararının değeri).
+pub const PTT_FORWARD_COPIES_MIN: u8 = 5;
+
+/// [ŞERİT-BOŞTA · sahip kararı 2026-11-16] Boştaki şeridin kopyalanmayan kısmi bloğunun (metin,
+/// dosyanın son parçaları) birim başına toplam iletim sayısı. 2026-11-16 değeriyle aynıdır; PTT
+/// sayısının artışı ([`PTT_FORWARD_COPIES`]) buna yansımaz.
+pub const IDLE_LANE_TRANSMISSIONS: u8 = 5;
+
+/// [ŞERİT-BOŞTA] Boştaki şeridin kopyaları arası aralık (ns): 200 ms / [`IDLE_LANE_TRANSMISSIONS`]
+/// (2026-11-16 değeri).
+pub const IDLE_LANE_COPY_SPACING_NS: u64 = 200_000_000 / IDLE_LANE_TRANSMISSIONS as u64;
 
 /// [ŞERİT-BOŞTA · 2026-11-21] Şeridin kısmi bloğu bu süre yeni birim almazsa şerit boştadır ve blok
 /// ACK'siz korunur (sahip kararı 2026-11-16, kısmi blok koruması; bkz. `pace.tick`). Bir PTT demet
@@ -2918,6 +2945,16 @@ async fn client_task(
                 spacing_ns: PTT_COPY_SPACING_NS,
             },
         ));
+        // [PTT-ARTIK] Hat koruması hattı beyanın altında ölçerse kopya sayısı hatla orantılı
+        // küçülür (en az [`PTT_FORWARD_COPIES_MIN`] iletim).
+        session
+            .sender_mut()
+            .set_forward_copy_line_scale(cfg.link_rates.map(|l| {
+                adaptive_transport::sender::ForwardCopyLineScale {
+                    declared_bps: l.uplink_bps,
+                    min_copies: PTT_FORWARD_COPIES_MIN - 1,
+                }
+            }));
     }
     // [E1 gösterim, CC §4.1] Beş çalışma-zamanı bayrağı (varsayılan kapalı = sevk davranışı).
     session.sender_mut().set_e1_flags(cfg.e1_flags);
@@ -3837,8 +3874,8 @@ async fn client_task(
                         for &uid in &cur_block_ids[lane][tail_copied[lane]..] {
                             session.sender_mut().schedule_forward_copies(
                                 uid,
-                                PTT_FORWARD_COPIES - 1,
-                                PTT_COPY_SPACING_NS,
+                                IDLE_LANE_TRANSMISSIONS - 1,
+                                IDLE_LANE_COPY_SPACING_NS,
                                 now,
                             );
                         }

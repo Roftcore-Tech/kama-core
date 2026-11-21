@@ -1542,6 +1542,41 @@ pub struct ForwardCopyRule {
     pub spacing_ns: u64,
 }
 
+/// [PTT-ARTIK · sahip kararı 2026-11-21 m. 9] [`ForwardCopyRule`] kopyalarının hat tahminiyle
+/// ölçeklenmesi. Kuralın `copies`'i beyan hızındadır. Hat koruması
+/// ([`crate::line_guard::LineGuard::rate_bps`]) hattı beyanın altında ölçerse toplam iletim sayısı
+/// hatla orantılı küçülür, ama `min_copies + 1`'in altına inmez:
+///
+/// `n = clamp(round((copies + 1) × ölçülen / beyan), min_copies + 1, copies + 1)`
+///
+/// Kopyalar hattın sabit bir payını tutar: ölçülen hat yarıya inince PTT'nin hattaki payı ikiye
+/// katlanmaz. Bu, aynı hattı paylaşan öteki şeritlerin (dosya) payını korur. Ölçüm yokken
+/// (başlangıç, hat doğrulandı) `copies` geçer. Kopya sayısı birimin ilk iletimi anında okunur;
+/// planlanmış kopyalar sonradan değişmez.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ForwardCopyLineScale {
+    /// Hattın beyan hızı (B/s, tel; profilin yukarı yönü).
+    pub declared_bps: u64,
+    /// Hat beyanın altında ölçülünce kopya sayısının alt sınırı (toplam iletim `min_copies + 1`).
+    pub min_copies: u8,
+}
+
+impl ForwardCopyLineScale {
+    /// `copies` beyan hızındaki kopya sayısı, `measured_bps` hat tahmini (yoksa `None`): bu
+    /// birimin kopya sayısı.
+    #[must_use]
+    pub fn copies_for(&self, copies: u8, measured_bps: Option<u64>) -> u8 {
+        let Some(m) = measured_bps.filter(|&m| m < self.declared_bps) else {
+            return copies;
+        };
+        let n_max = u128::from(copies) + 1;
+        let d = u128::from(self.declared_bps.max(1));
+        let n = (n_max * u128::from(m) + d / 2) / d;
+        let n = n.clamp(u128::from(self.min_copies.min(copies)) + 1, n_max);
+        u8::try_from(n - 1).unwrap_or(copies)
+    }
+}
+
 /// [GERİ-BİLDİRİM-AÇ · sahip kararı 2026-11-16] Yön hızı profili geri bildirimi aç bıraktığında
 /// (teyit saniyeler sonra gelir) port göndericisinin uçuş ve hız kuralı — INV-RATE-1'in 2026-11-11
 /// metnine profil istisnası:
@@ -1835,6 +1870,8 @@ pub struct Sender {
     dup_queue: Vec<DupRec>, // §11 zamanlanmış forward-recovery kopyaları
     /// [ÖNLEMSEL-KOPYA] Bkz. [`ForwardCopyRule`]. `None` = kural yok (bugünkü yol).
     forward_copy_rule: Option<ForwardCopyRule>,
+    /// [PTT-ARTIK] Bkz. [`ForwardCopyLineScale`]. `None` = kopya sayısı sabit (bugünkü yol).
+    forward_copy_scale: Option<ForwardCopyLineScale>,
     /// [İLK-PENCERE] Bir sonraki `AckReceived` çerçevesinin §2.2 `arrival_rate` alanı
     /// ([`Self::note_ack_arrival_rate`]); ACK işlenince tüketilir.
     pending_arrival_rate: Option<u16>,
@@ -2201,6 +2238,7 @@ impl Sender {
             tail_probe_cancelled: 0,
             dup_queue: Vec::new(),
             forward_copy_rule: None,
+            forward_copy_scale: None,
             pending_arrival_rate: None,
             cc_feedback_starved: None,
             cc_line_guard: None,
@@ -5575,6 +5613,26 @@ impl Sender {
         self.forward_copy_rule
     }
 
+    /// [PTT-ARTIK] İleri kopya sayısının hat tahminiyle ölçeklenmesi ([`ForwardCopyLineScale`]).
+    /// `None` (varsayılan) = kuralın `copies`'i sabit. Oturum başında, ilk olaydan önce çağrılır.
+    pub fn set_forward_copy_line_scale(&mut self, scale: Option<ForwardCopyLineScale>) {
+        self.forward_copy_scale = scale;
+    }
+
+    /// [PTT-ARTIK] Kural kapsamındaki yeni bir birimin şu anki kopya sayısı (kural yoksa 0).
+    #[must_use]
+    pub fn forward_copies_now(&self) -> u8 {
+        let Some(rule) = self.forward_copy_rule else {
+            return 0;
+        };
+        let measured = self
+            .cc_line_guard
+            .as_ref()
+            .and_then(crate::line_guard::LineGuard::rate_bps);
+        self.forward_copy_scale
+            .map_or(rule.copies, |s| s.copies_for(rule.copies, measured))
+    }
+
     /// [HAT-MODELİ] Port pacer'ına dağıtım profilinin yukarı yön hattını kurar
     /// ([`crate::pacer::TokenBucket::set_line`]): kendi datagramlarımız (gövde + zarf) o hızda
     /// serileşir, hattaki kendi kuyruğumuz bir burst aralığını aşarken pacer datagram vermez; kuyruk
@@ -8187,7 +8245,7 @@ impl Sender {
             if front.id < rule.below_id && self.state != SenderState::RecoverFwd {
                 // [HAT-MODELİ] Bilinen hatta ilk kopya orijinalin hattı terk ettiği andan sayılır.
                 let t0 = now_ns.saturating_add(self.pacer.line_ns_until_drained());
-                for i in 1..=u64::from(rule.copies) {
+                for i in 1..=u64::from(self.forward_copies_now()) {
                     self.dup_queue.push(DupRec {
                         due_ns: t0.saturating_add(i.saturating_mul(rule.spacing_ns)),
                         unit: front,
@@ -15405,6 +15463,35 @@ mod feedback_starved_tests {
         out.iter()
             .filter(|t| t.kind == TransmitKind::Duplicate && t.unit_id == id)
             .count()
+    }
+
+    /// [PTT-ARTIK] Kopya sayısı: ölçüm yokken ya da hat beyanda/üstündeyken kuralınki; beyanın
+    /// altında hatla orantılı (en yakın tamsayı), alt sınırın altına inmez.
+    #[test]
+    fn forward_copy_line_scale_keeps_the_line_share() {
+        let sc = ForwardCopyLineScale {
+            declared_bps: 12_500,
+            min_copies: 4,
+        };
+        // 7 iletim beyan hızında.
+        assert_eq!(sc.copies_for(6, None), 6, "ölçüm yok");
+        assert_eq!(sc.copies_for(6, Some(12_500)), 6, "beyanda");
+        assert_eq!(sc.copies_for(6, Some(20_000)), 6, "beyanın üstünde");
+        assert_eq!(sc.copies_for(6, Some(12_000)), 6, "7 × 0,96 = 6,72 → 7");
+        assert_eq!(
+            sc.copies_for(6, Some(10_000)),
+            5,
+            "7 × 0,8 = 5,6 → 6 iletim"
+        );
+        assert_eq!(
+            sc.copies_for(6, Some(8_000)),
+            4,
+            "7 × 0,64 = 4,48 → alt sınır 5"
+        );
+        assert_eq!(sc.copies_for(6, Some(6_250)), 4, "alt sınır");
+        assert_eq!(sc.copies_for(6, Some(1)), 4, "alt sınır");
+        // Alt sınır kuralın sayısını aşamaz.
+        assert_eq!(sc.copies_for(2, Some(6_250)), 2);
     }
 
     /// Kural kapsamındaki (kimliği sınırın altında) birim ilk iletiminden sonra ACK beklemeden
