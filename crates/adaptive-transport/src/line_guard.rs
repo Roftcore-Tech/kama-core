@@ -122,6 +122,13 @@
 //! andan küçülmemiştir, bu değer gerçek kuyruğun alt sınırıdır. Sınır, kuyruk `L`'den sonra da
 //! büyüdüyse eksik boşaltır; kalan, bir sonraki ölçüm noktasında yine ölçülür ve yazılır.
 //!
+//! [İŞ-35] Bekleme sınırı yalnız bu cephenin değil, son [`POINT_CAP`] noktanın en büyük cephe
+//! beklemesidir (yine `bayt` tahminiyle — gönderilen − boşalan — sınırlı: kuyruk boşaldıysa eski
+//! bir tepe boşaltma yazdırmaz). Örnek kuyruğun cepheden sonra da büyüdüğü bir aralıkta tek adımda
+//! gelirse (ölçüm boşluğundan dönüşte gönderici tam tavanda) tek cephenin beklemesi gerçek kuyruğun
+//! çok altında kalıyordu. Ölçüldü (benzetim `e2`, tohum 1): tek cepheyle yakınsamadan 2 s sonra
+//! darboğaz beklemesi 1,73 s; en büyükle iki datagram sınırının içinde.
+//!
 //! # Süreli yoklama (İŞ-33 C3, 2026-11-21)
 //!
 //! Doğrulamadan sonra tavan kalıcı yükseliyordu. Hat değişmediyse yükseltilmiş tavan bir ACK
@@ -197,19 +204,59 @@
 //! **Cephe tahmincisi ne zaman kalır.** Ölçüm aralığı yalnız alıcısı ölçen oturumda gelir (CAPS ile
 //! 0x15). İlk aralık gelene dek (eski alıcı, V2 çerçevesi, ilk ACK'ler) cephe tahmincisi bugünkü
 //! kuralıyla aşağı yönlü örnek verir: başka ölçü yoktur, gerçek daralmada kuyruğun sınırı odur.
-//! Bir aralık geldiğinde oturum aralık kipine girer. O andan sonra cephe örneği yalnız üst üste
-//! [`UNMEASURED_FALLBACK_ACKS`] (2) ACK ölçümsüz kalırsa alınır.
-//! * Gerekçe: ölçüm tek tek ACK'lerde bulunamayabilir (M tek seq, varış penceresi dışı). Bu
-//!   ACK'lerde cephe örneği almak dönüş gecikmesi basamağını yeniden kuyruk sayar.
-//! * Ama alıcı ölçmeyi sürekli bırakırsa (ör. uzun ACK boşluğu, tek seq'lik M'ler), gerçek
-//!   daralmada kuyruk ölçümsüz büyür. İki ACK, ölçüm aralığının kendi uzunluğudur (M iki ACK geriye
-//!   uzanır); bundan uzun ölçümsüzlükte eski koruma devreye girer.
+//! **Eski alıcı / V2 oturumunda (hiç ölçüm gelmeyen) davranış İŞ-35 öncesiyle aynıdır:** aralık
+//! kipine girilmez, boşluk kuralı kurulmaz, cephe örnekleri bugünkü gibi alınır (gerçek eski
+//! ikiliyle uyum; o oturumda dönüş gecikmesi artışının yanlış kesme riski de bugünkü gibi kalır).
+//! Bir aralık geldiğinde oturum aralık kipine girer; o andan sonra cephe tahmincisi hiçbir zaman
+//! aşağı yönlü örnek vermez (aşağıda "Ölçüm boşluğu").
 //! * Yukarı yönlü doğrulama, süreli yoklamanın hükmü ve kuyruk tahmini (taban gecikme) bu adımda
 //!   cepheden kalır. Dönüş basamağında yoklama hükmü "sonuçsuz" çıkar ve kuyruk yazmaz (güvenli
 //!   taraf).
 //!
 //! Kayıtlar (`sent`) son iki ACK'in cephelerinin eskisine dek tutulur: bir sonraki ACK'in M'si iki
 //! ACK geriye uzanır ([`SENT_CAP`] yine üst sınırdır).
+//!
+//! # Ölçüm boşluğu (İŞ-35 AÇIK 1, 2026-11-21)
+//!
+//! İŞ-34 kuralı aralık kipinde üst üste iki ACK ölçümsüz kalınca cephe örneğine dönüyordu. Ölçüm
+//! yokluğu cephe tahmininin doğru olduğu anlamına gelmez: dönüş, dönüş gecikmesini ileri daralma
+//! sanan yöntemin kendisini geri getirir. Ölçüldü (benzetim `e1`: dürüst 12 500, ürün dönüş
+//! çizelgesi, alıcı 5–13 s'de ölçmüyor, göndericiye 3–4 ölçümsüz ACK): hat 11 667 / 10 710 / 9 226'ya
+//! indi (tohum 1–3).
+//!
+//! Değerlendirilen seçenekler:
+//! * (i) Ölçülü aralıkları zincirleyip kuyruk düzeyini izlemek (`Q(n) = Q(n−2) + g(n)`; gerçek
+//!   alıcıda `m_first(n) ≈ largest(n−2) + 1`): boşlukta `g` yoktur, boşluğu kapatmaz. Ayrıca küçük
+//!   FIFO'da düzey gürültülü ölçüldü: 8 paketlik dolu kuyrukta bekleme paket karışımına göre
+//!   (8 × 114 … 8 × 1 228 B) 0,15–1,57 s arasında değişir; zincirlenen düzey sabit kuyrukta ≈ ±0,2 s
+//!   oynadı. Reddedildi.
+//! * (ii) Ölçülü ACK'lerde dönüş gecikmesi değişimini (cephe gecikme değişimi − `g`) ölçüp boşlukta
+//!   cephe kanıtını yalnız gözlenen değişimin ötesinde ve art arda kabul etmek: boşluk içindeki
+//!   dönüş değişimi gözlenemez (önceki ölçüm sonraki değişimi öngörmez) ve ürün çizelgesi (3 s'de
+//!   bir 300 → 400 → 500 → 700 ms) art arda büyüyen cephe gecikmesi üretir — kuyruk büyümesiyle aynı
+//!   imza. Reddedildi (akıl yürütme; benzetimle sınanmadı).
+//! * (iii) SEÇİLDİ: kapasite iddia etmeyen, kuyruğu sınırlayan boşluk bütçesi.
+//!
+//! Kural: aralık kipinde üst üste [`UNMEASURED_GAP_ACKS`] (2) ACK ölçümsüz kalınca (tek ölçümsüz ACK
+//! olağandır: M tek seq, pencere dışı), o anki gönderim tavanı `R` ile:
+//! * öncelikli olmayan iletimler (yeni veri, onarım sembolü ve — yalnız boşlukta — yeniden iletim)
+//!   toplam tel baytı `A(t) = max(1 MTU, R/2 × t)` bütçesiyle bekler (başlangıç bütçesinin kovası,
+//!   ilk patlama yok); PTT, metin ve denetim bütçeye sayılır ama beklemez;
+//! * kurulurken tek seferlik boşaltma: cephenin kuyruk beklemesi (`τ − s − taban`) kadar süre hat
+//!   modeline yazılır (`R ×` bekleme). Dönüş gecikmesi artışı da buna girer: dürüst hatta bedel bir
+//!   kez o kadar bekleme, hız değil;
+//! * `rate_bps` ve gönderim tavanı yazılmaz; ilk ölçülü ACK bütçeyi kaldırır, sonrası olağan aralık
+//!   kipidir (daralma varsa ölçülür).
+//!
+//! Kanıt (benzetim, `tests/starved_line_sim.rs`): `e1` hız ve tavan profilde kaldı; `e2` (8–19 s
+//! ölçüm yok, gerçek 6 250) boşlukta darboğaz beklemesi 1,82 s → 0,36–0,61 s (sınır 0,70 s), ölçüm
+//! dönünce yakınsama sınır içinde. Ara ölçüm: yeniden iletim bütçe dışındayken (kuyrukta düşen her
+//! iletim yeniden iletilir) bekleme 2,60 s kalıyordu.
+//! Varsayım ve sınır: gerçek hat `R/2`'den yavaş değilse kuyruk boşluk süresince büyümez; daha
+//! yavaşsa `(R/2 − L)/L` hızında büyür (bütçesiz `(R − L)/L`). Boşluğun ilk iki ACK'i boyunca
+//! (≈ iki ACK aralığı + dönüş geçişi) koruma yoktur: tek ölçümsüz ACK'in olağan olmasının bedeli.
+//! Dürüst hatta bedel: boşluk süresince dosya yarı hızda (benzetim: `e1` dosya 16,62 / 12,60 /
+//! 12,71 s, aynı koşu boşluksuz `a` 14,74 / 14,37 / 12,26 s).
 //!
 //! Sınır (benzetim, `tests/starved_line_sim.rs`): FIFO çok küçükse (8 paket) daralmada kuyruk
 //! hemen dolar. Kuyruk sabit kalır (`g ≈ 0`), fazlalık kuyrukta düşme olarak görünür; iki tahminci
@@ -282,9 +329,10 @@ pub struct ForwardInterval {
     pub rx_span_ns: u64,
 }
 
-/// [ÖLÇÜM-ARALIĞI] Aralık kipindeki oturumda üst üste bu kadar ACK ölçümsüz kalırsa cephe
-/// tahmincisi aşağı yönlü örneği yeniden verir (modül belgesi, "Ölçüm aralığı").
-const UNMEASURED_FALLBACK_ACKS: u32 = 2;
+/// [ÖLÇÜM-BOŞLUĞU · İŞ-35] Aralık kipindeki oturumda üst üste bu kadar ACK ölçümsüz kalırsa
+/// boşluk kuralı kurulur (modül belgesi, "Ölçüm boşluğu"): cephe örneği DEĞİL, kuyruk sınırlı
+/// bütçe. Tek ölçümsüz ACK olağandır (M tek seq, pencere dışı).
+const UNMEASURED_GAP_ACKS: u32 = 2;
 
 /// Ölçüm sonucu: korunan hat hızı ve darboğazda tahmin edilen kuyruk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -362,6 +410,13 @@ pub struct LineGuard {
     interval_mode: bool,
     /// [ÖLÇÜM-ARALIĞI] Aralık kipinde üst üste ölçümsüz ACK sayısı.
     unmeasured_acks: u32,
+    /// [ÖLÇÜM-BOŞLUĞU] Boşluk kuralının kurulma sayısı (gözlem).
+    gap_arms: u64,
+    /// [KUYRUK-BOŞALTMA · İŞ-35] Son [`POINT_CAP`] noktanın cephe kuyruk beklemesi (`τ − s − taban`, ns).
+    queue_peaks: VecDeque<u64>,
+    /// [ÖLÇÜM-BOŞLUĞU] Kurulurken hat modeline yazılacak tek seferlik boşaltma (bayt, tel;
+    /// [`Self::take_gap_drain`]).
+    gap_drain: u64,
     /// [ÖLÇÜM-ARALIĞI] Son iki ACK'in cephesi: `sent` kayıtları eskisine dek tutulur (bir sonraki
     /// ACK'in M'si iki ACK geriye uzanır).
     recent_fronts: VecDeque<u64>,
@@ -383,9 +438,16 @@ pub struct FirstWindowDetail {
     pub wire_bytes: u64,
 }
 
-/// [BAŞLANGIÇ-BÜTÇESİ] İlk ACK'e dek bütçe (modül belgesi).
-#[derive(Debug, Clone, Copy, Default)]
+/// [BAŞLANGIÇ-BÜTÇESİ · ÖLÇÜM-BOŞLUĞU] Kuyruk sınırlı bütçe (modül belgesi): ilk ACK'e dek
+/// (`gap = false`) ya da aralık kipinde ölçüm boşluğunda (`gap = true`).
+#[derive(Debug, Clone, Copy)]
 struct StartBudget {
+    /// Bütçenin dayandığı hız `R` (B/s, tel): ilk ACK'e dek profil hattı, boşlukta kurulduğu andaki
+    /// gönderim tavanı. Dolum `R/2`.
+    ref_bps: u64,
+    /// [ÖLÇÜM-BOŞLUĞU] Boşluk bütçesi: ilk patlama yok (derinlik bir tam datagram), ilk ölçülü
+    /// ACK'te kalkar.
+    gap: bool,
     /// İlk iletim anı (ns); `None` = henüz iletim yok (kova dolu).
     first_ns: Option<u64>,
     /// Kovadaki tel baytı (öncelikli iletimler borçlandırabilir: negatif olabilir).
@@ -394,6 +456,19 @@ struct StartBudget {
     filled_ns: u64,
     /// Bütçe en az bir kez soruldu: gönderici şerit ayrımıyla uyguladı.
     used: bool,
+}
+
+impl StartBudget {
+    fn new(ref_bps: u64, gap: bool) -> Self {
+        Self {
+            ref_bps,
+            gap,
+            first_ns: None,
+            tokens: 0,
+            filled_ns: 0,
+            used: false,
+        }
+    }
 }
 
 /// [SÜRELİ-YOKLAMA] Süren ya da hüküm bekleyen yoklama.
@@ -446,11 +521,14 @@ impl LineGuard {
             step_permille: STEP_START_PERMILLE,
             samples: 0,
             raises: 0,
-            start: Some(StartBudget::default()),
+            start: Some(StartBudget::new(line.rate_bps, false)),
             first_window: None,
             first_window_detail: None,
             interval_mode: false,
             unmeasured_acks: 0,
+            gap_arms: 0,
+            gap_drain: 0,
+            queue_peaks: VecDeque::new(),
             recent_fronts: VecDeque::new(),
             interval_diag: (0, 0, None),
             probe: None,
@@ -483,7 +561,7 @@ impl LineGuard {
         if let Some(mut b) = self.start {
             if b.first_ns.is_none() {
                 b.first_ns = Some(now_ns);
-                b.tokens = self.start_depth();
+                b.tokens = Self::start_depth(&b, self.line.datagram_overhead);
                 b.filled_ns = now_ns;
             }
             b.tokens = self.start_tokens_at(&b, now_ns) - i128::from(wire);
@@ -568,6 +646,12 @@ impl LineGuard {
         self.start.is_some()
     }
 
+    /// [ÖLÇÜM-BOŞLUĞU] Boşluk bütçesi kurulu mu (modül belgesi, "Ölçüm boşluğu").
+    #[must_use]
+    pub fn gap_budget_active(&self) -> bool {
+        self.start.is_some_and(|b| b.gap)
+    }
+
     /// [BAŞLANGIÇ-BÜTÇESİ] `udp_bytes` gövdeli bir iletim şimdi bütçeye sığar mı (modül belgesi).
     /// Bütçe kalktıysa daima `true`. Sorulması bütçeyi "uygulandı" işaretler.
     pub fn start_budget_admits(&mut self, now_ns: u64, udp_bytes: u64) -> bool {
@@ -579,19 +663,22 @@ impl LineGuard {
         let tokens = if b.first_ns.is_some() {
             self.start_tokens_at(&b, now_ns)
         } else {
-            self.start_depth()
+            Self::start_depth(&b, self.line.datagram_overhead)
         };
         tokens >= i128::from(udp_bytes.saturating_add(self.line.datagram_overhead))
     }
 
-    /// [BAŞLANGIÇ-BÜTÇESİ] Kova derinliği (tel baytı): `P × START_BURST_NS`, en az bir tam datagram
-    /// (dar profilde ilk iletim de sığar; saat ilk iletimle başlar).
-    fn start_depth(&self) -> i128 {
-        let p = i128::from(self.line.rate_bps);
+    /// [BAŞLANGIÇ-BÜTÇESİ] Kova derinliği (tel baytı): `R × START_BURST_NS`, en az bir tam datagram
+    /// (dar profilde ilk iletim de sığar; saat ilk iletimle başlar). [ÖLÇÜM-BOŞLUĞU] Boşluk
+    /// bütçesinde yalnız bir tam datagram (ilk patlama yok).
+    fn start_depth(b: &StartBudget, overhead: u64) -> i128 {
+        let mtu = i128::from(crate::rate::DEFAULT_MTU.saturating_add(overhead));
+        if b.gap {
+            return mtu;
+        }
+        let p = i128::from(b.ref_bps);
         let burst = p * i128::from(START_BURST_NS) / 1_000_000_000;
-        burst.max(i128::from(
-            crate::rate::DEFAULT_MTU.saturating_add(self.line.datagram_overhead),
-        ))
+        burst.max(mtu)
     }
 
     /// [BAŞLANGIÇ-BÜTÇESİ] `now_ns` anındaki kova: P/2 hızında dolum, derinlikte tavan. Dolum ilk
@@ -599,11 +686,11 @@ impl LineGuard {
     /// `max(derinlik, P/2 × t)` olur (patlamanın kuyruğu gerçek hat beyanın yarısıyken o ana dek
     /// boşalır); boşta geçen süre kovayı derinliğin üstüne dolduramaz (boşta birikme patlama olmaz).
     fn start_tokens_at(&self, b: &StartBudget, now_ns: u64) -> i128 {
+        let depth = Self::start_depth(b, self.line.datagram_overhead);
         let Some(first) = b.first_ns else {
-            return self.start_depth();
+            return depth;
         };
-        let depth = self.start_depth();
-        let p = i128::from(self.line.rate_bps).max(1);
+        let p = i128::from(b.ref_bps).max(1);
         let cross_ns = u64::try_from(depth * 2_000_000_000 / p).unwrap_or(u64::MAX);
         let from = b.filled_ns.max(first.saturating_add(cross_ns));
         let refill = if now_ns > from {
@@ -623,9 +710,25 @@ impl LineGuard {
     /// (örnek ya da doğrulama) tavanda kalır; taban için gecikme örneği kalır. Sonraki iki nokta
     /// tahmini bütçesiz gönderilmiş aralıktan gelir.
     pub fn end_start_budget(&mut self) {
+        // [ÖLÇÜM-BOŞLUĞU] Boşluk bütçesi burada kalkmaz (ilk ölçülü ACK'te kalkar).
+        if self.start.is_some_and(|b| b.gap) {
+            return;
+        }
         if self.start.take().is_some_and(|b| b.used) {
             self.points.clear();
         }
+    }
+
+    /// [ÖLÇÜM-BOŞLUĞU] Boşluk kuralının kurulma sayısı (gözlem).
+    #[must_use]
+    pub fn gap_arms(&self) -> u64 {
+        self.gap_arms
+    }
+
+    /// [ÖLÇÜM-BOŞLUĞU] Boşluk kuralı kurulurken hat modeline yazılacak tek seferlik boşaltma
+    /// (bayt, tel; toplam kuyruk olarak — `TokenBucket::line_raise_backlog`). Okununca sıfırlanır.
+    pub fn take_gap_drain(&mut self) -> u64 {
+        std::mem::take(&mut self.gap_drain)
     }
 
     /// [İLK-PENCERE] İlk ACK'in varış penceresinin sonucu (gözlem; `None` = pencere işlenmedi).
@@ -650,7 +753,7 @@ impl LineGuard {
         acked: &[u64],
         arrival_rate: u16,
     ) -> Option<FirstWindowOutcome> {
-        if self.start.is_none()
+        if self.start.is_none_or(|b| b.gap)
             || self.first_window.is_some()
             || arrival_rate == crate::ack::ARRIVAL_RATE_SENTINEL
             || arrival_rate == 0
@@ -764,10 +867,10 @@ impl LineGuard {
         self.interval_diag.2 = Some(i64::try_from(g).unwrap_or(i64::MAX));
         let mtu_ns = ser(crate::rate::DEFAULT_MTU);
         let threshold = mtu_ns.max(i128::from(send_span / GROWTH_MIN_DIV));
+        let wire = last.cum.saturating_sub(first.cum);
         if g <= threshold {
             return None;
         }
-        let wire = last.cum.saturating_sub(first.cum);
         let est =
             u64::try_from(u128::from(wire) * 1_000_000_000 / u128::from(iv.rx_span_ns.max(1)))
                 .unwrap_or(u64::MAX);
@@ -798,6 +901,10 @@ impl LineGuard {
             Some(iv) => {
                 self.interval_mode = true;
                 self.unmeasured_acks = 0;
+                // [ÖLÇÜM-BOŞLUĞU] Ölçüm döndü: boşluk bütçesi kalkar.
+                if self.start.is_some_and(|b| b.gap) {
+                    self.start = None;
+                }
                 self.interval_sample(iv)
             }
             None => {
@@ -807,8 +914,17 @@ impl LineGuard {
                 None
             }
         };
-        let fronts_decide = !self.interval_mode
-            || (interval.is_none() && self.unmeasured_acks >= UNMEASURED_FALLBACK_ACKS);
+        // [ÖLÇÜM-BOŞLUĞU] Aralık kipinde cephe hiçbir zaman aşağı yönlü örnek vermez; uzun ölçüm
+        // boşluğunda kapasite iddia etmeyen boşluk bütçesi kurulur (modül belgesi).
+        let fronts_decide = !self.interval_mode;
+        let arm_gap = self.interval_mode
+            && interval.is_none()
+            && self.unmeasured_acks >= UNMEASURED_GAP_ACKS
+            && self.start.is_none();
+        if arm_gap {
+            self.start = Some(StartBudget::new(self.pace_bps, true));
+            self.gap_arms = self.gap_arms.saturating_add(1);
+        }
         let wire = self.pending_wire.take()?;
         if saturated || self.frontier.is_some_and(|f| largest_seq <= f) {
             return None;
@@ -830,6 +946,18 @@ impl LineGuard {
         }
         self.lags.push_back(lag);
         let base = self.lags.iter().copied().min().unwrap_or(lag);
+        if self.queue_peaks.len() >= POINT_CAP {
+            self.queue_peaks.pop_front();
+        }
+        self.queue_peaks.push_back(lag.saturating_sub(base));
+        // [ÖLÇÜM-BOŞLUĞU] Kurulurken tek seferlik boşaltma: cephenin kuyruk beklemesi kadar süre
+        // (dönüş gecikmesi artışı da buna girer: bedeli bir kez o kadar bekleme, hız değil).
+        if arm_gap {
+            self.gap_drain = u64::try_from(
+                u128::from(self.pace_bps) * u128::from(lag.saturating_sub(base)) / 1_000_000_000,
+            )
+            .unwrap_or(u64::MAX);
+        }
         // [SÜRELİ-YOKLAMA] Hüküm ACK'i: yoklama süresince gönderilen tel baytı (kanıt). Canlı sayaç
         // ve budanmamış kayıtlar; büyüğü (kayıtlar ara ACK'lerle budanmış olabilir, gönderim de
         // yoklamadan önce kaydedilmiş olabilir).
@@ -1068,7 +1196,13 @@ impl LineGuard {
             .unwrap_or(u64::MAX);
         let by_bytes = self.cum.saturating_sub(rec.cum).saturating_sub(drained);
         // `L`'nin kuyrukta beklediği süre kadar hat baytı (gerçek kuyruğun alt sınırı).
-        let queued_ns = lag.saturating_sub(base);
+        let queued_ns = self
+            .queue_peaks
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(0)
+            .max(lag.saturating_sub(base));
         let by_delay = u64::try_from(u128::from(rate) * u128::from(queued_ns) / 1_000_000_000)
             .unwrap_or(u64::MAX);
         // [SÜRELİ-YOKLAMA] Başarısız yoklamanın fazla baytı boşaltılır. Kuyruk tahmini (`by_bytes`,
@@ -1175,15 +1309,19 @@ mod tests {
         g.on_ack_measured(at, 0, false, seq, iv)
     }
 
-    /// [ÖLÇÜM-ARALIĞI] Dürüst hat, dönüş gecikmesi 300 ms artıyor. Ölçüm aralığı varken cephe
-    /// tahmincisi örnek vermez (basamak kuyruk sayılmaz). Aralık kipinde iki ACK ölçümsüz kalınca
-    /// cephe örneği yeniden alınır (kuyruğun ölçümsüz büyümemesi için geri dönüş; basamak bu
-    /// düzenekte o örneği üretir). Karşı-olgu: ölçümsüz koruma basamağı ilk ACK'te keser.
+    /// [ÖLÇÜM-ARALIĞI · ÖLÇÜM-BOŞLUĞU] Dürüst hat, dönüş gecikmesi 300 ms adımlarla artıyor. Ölçüm
+    /// aralığı varken cephe tahmincisi örnek vermez (basamak kuyruk sayılmaz). Aralık kipinde üst
+    /// üste iki ACK ölçümsüz kalınca da cephe örneği alınmaz (İŞ-35 öncesi kural burada keserdi);
+    /// yerine kapasite iddia etmeyen boşluk bütçesi kurulur, ilk ölçülü ACK'te kalkar. Hız ve tavan
+    /// değişmez. Karşı-olgu: ölçüm aralığı hiç gelmeyen koruma (eski alıcı) basamağı keser
+    /// (bugünkü davranış, değişmedi).
     #[test]
-    fn interval_mode_ignores_front_steps_until_two_unmeasured_acks() {
+    fn interval_mode_never_takes_a_front_sample_and_arms_the_gap_budget() {
         let mut g = guard();
-        let arr = send_into(&mut g, PROFILE, 80);
+        let arr = send_into(&mut g, PROFILE, 100);
         assert_eq!(ack_m(&mut g, &arr, 10, 0, Some(1)), None);
+        // Gönderici ilk ACK'ten sonra başlangıç bütçesini kaldırır (`Sender`).
+        g.end_start_budget();
         assert_eq!(ack_m(&mut g, &arr, 30, 300 * MS, Some(10)), None, "basamak");
         assert_eq!(g.rate_bps(), None);
         let (checks, samples, last_g) = g.interval_diag();
@@ -1192,18 +1330,38 @@ mod tests {
             last_g.is_some_and(|x| x.abs() < 1_000_000),
             "g ≈ 0: {last_g:?}"
         );
-        // Aralık kipinde tek ölçümsüz ACK: cephe örneği yok.
+        // Aralık kipinde tek ölçümsüz ACK: cephe örneği yok, bütçe yok.
         let _ = ack_m(&mut g, &arr, 50, 600 * MS, None);
         assert_eq!(g.rate_bps(), None, "tek ölçümsüz ACK");
-        // İkinci ölçümsüz ACK: cephe tahmincisi geri döner.
+        assert!(!g.gap_budget_active());
+        // İkinci ölçümsüz ACK: cephe örneği yine yok; boşluk bütçesi kurulur ve tek seferlik
+        // boşaltma cephenin beklemesi (≈ basamak) kadardır.
         let _ = ack_m(&mut g, &arr, 70, 900 * MS, None);
-        assert!(g.rate_bps().is_some(), "iki ölçümsüz ACK'te cephe örneği");
+        assert_eq!(g.rate_bps(), None, "iki ölçümsüz ACK'te cephe örneği yok");
+        assert_eq!(g.pace_bps(), PROFILE, "tavan değişmez");
+        assert!(g.gap_budget_active(), "boşluk bütçesi kuruldu");
+        assert_eq!(g.gap_arms(), 1);
+        let drain = g.take_gap_drain();
+        assert!(
+            drain > 0 && drain <= PROFILE * 900 / 1000,
+            "boşaltma {drain}"
+        );
+        // Boşluk bütçesi: tavanın yarısı hızında, ilk patlama yok.
+        let t0 = 100 * 1200 * SEC / PROFILE;
+        g.on_sent(100, t0, 1172);
+        assert!(!g.start_budget_admits(t0, 1172), "patlama yok");
+        assert!(g.start_budget_admits(t0 + 2 * 1200 * SEC / PROFILE * 2, 1172));
+        // Ölçüm döner: bütçe kalkar.
+        let _ = ack_m(&mut g, &arr, 90, 900 * MS, Some(71));
+        assert!(!g.gap_budget_active(), "ölçülü ACK bütçeyi kaldırır");
+        assert_eq!(g.rate_bps(), None);
         // Karşı-olgu: ölçüm aralığı hiç gelmeyen koruma basamağı ikinci ACK'te keser.
         let mut old = guard();
         let arr = send_into(&mut old, PROFILE, 80);
         let _ = ack_m(&mut old, &arr, 10, 0, None);
         let _ = ack_m(&mut old, &arr, 30, 300 * MS, None);
         assert!(old.rate_bps().is_some_and(|r| r < PROFILE * 19 / 20));
+        assert!(!old.gap_budget_active(), "eski alıcıda boşluk kuralı yok");
     }
 
     /// [ÖLÇÜM-ARALIĞI] Gerçek hat yarıya düşük: aralık kuyruk artışını görür ve hattı ±%2 ölçer.

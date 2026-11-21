@@ -4038,6 +4038,11 @@ impl Sender {
             // [SÜRELİ-YOKLAMA] Başarısız yoklamanın fazlası mevcut kuyruğun üstüne.
             self.pacer.line_add_backlog(u.extra_backlog_bytes);
         }
+        // [ÖLÇÜM-BOŞLUĞU · İŞ-35] Boşluk kuralı kurulduysa tek seferlik boşaltma.
+        let drain = g.take_gap_drain();
+        if drain > 0 {
+            self.pacer.line_raise_backlog(drain);
+        }
     }
 
     /// §12 timer handler (RTprop probe → DRAIN_RTPROP; PTO → zaman-eşiği loss).
@@ -6169,6 +6174,20 @@ impl Sender {
         !g.start_budget_admits(now_ns, size)
     }
 
+    /// [ÖLÇÜM-BOŞLUĞU · İŞ-35] Aralık kipinde ölçüm boşluğu bütçesi kuruluyken öncelikli olmayan bir
+    /// yeniden iletim bütçeyi aşıyor mu ([`crate::line_guard`] modül belgesi, "Ölçüm boşluğu").
+    /// Boşluk bütçesi yoksa `false` (bugünkü yol).
+    fn gap_budget_holds(&mut self, unit_id: u64, size: u64, now_ns: u64) -> bool {
+        if !self
+            .cc_line_guard
+            .as_ref()
+            .is_some_and(crate::line_guard::LineGuard::gap_budget_active)
+        {
+            return false;
+        }
+        self.start_budget_holds(Some(unit_id), size, now_ns)
+    }
+
     /// [FAZ-1 DÖNÜŞ-YOLU] Bir ACK datagram'ı gözlendi. **Motor davranışını DEĞİŞTİRMEZ** —
     /// yalnız `diag_return_path()` çıktısını besler. Ürün runtime'ı `Event::AckReceived`'dan
     /// hemen ÖNCE çağırır; çağrılmaması motoru etkilemez (gözlem boş kalır).
@@ -7423,6 +7442,12 @@ impl Sender {
                     #[cfg(feature = "diag-sched-telemetry")]
                     {
                         self.sched_diag.arq_retransmit_selected += 1;
+                    }
+                    // [ÖLÇÜM-BOŞLUĞU · İŞ-35] Boşluk bütçesi öncelikli olmayan yeniden iletimi de
+                    // bekletir (kuyrukta düşen her iletim yeniden iletilir; bütçe dışında kalırsa
+                    // bütçe kuyruğu sınırlamaz). İlk ACK'e dek bütçede bu yol yok (kayıp ilanı yok).
+                    if self.gap_budget_holds(rec.unit.id, rec.unit.size, now_ns) {
+                        break;
                     }
                     if !self.try_send_pre_parity(rec.unit.size, true) {
                         #[cfg(feature = "diag-sched-telemetry")]
