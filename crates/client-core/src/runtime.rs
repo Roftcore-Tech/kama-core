@@ -3970,7 +3970,15 @@ async fn client_task(
                     let now_ms = now / 1_000_000;
                     if param_retry_due(now_ms, caps_tries, caps_last_ms, caps_line_gate_ms) {
                         let f = encode_caps(CAP_ACK_BITMAP);
-                        let sealed = wire_len(seam.as_ref(), client_ctx, f.len());
+                        let mut sealed = wire_len(seam.as_ref(), client_ctx, f.len());
+                        // İlk denemede iki kopya: tek CAPS yolda düşerse (ürün testi, %20
+                        // rastgele kayıp) alıcının ilk ACK'leri 0x14 kalır ve ölçüm aralığı
+                        // taşımaz; yeniden deneme hat kapısıyla saniyeler sonra çıkar.
+                        if caps_tries == 0 {
+                            let _ = seal_send!(f.clone(), TxClass::Ctrl, now);
+                            stats.caps_sends += 1;
+                            sealed = sealed.saturating_mul(2);
+                        }
                         let _ = seal_send!(f, TxClass::Ctrl, now);
                         stats.caps_sends += 1;
                         caps_tries += 1;

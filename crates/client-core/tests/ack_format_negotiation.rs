@@ -98,7 +98,8 @@ async fn bitmap_is_used_only_when_both_ends_allow_it() {
         let tag = format!("istemci {c:?} × sunucu {s:?}");
         // CAPS yalnız bitmap'e izin veren istemciden çıkar; bounded retry.
         assert_eq!(cs.caps_sends > 0, c == Bitmap, "{tag}: CAPS");
-        assert!(cs.caps_sends <= 8, "{tag}: CAPS deneme tavanı");
+        // 8 deneme + ilk denemenin ikinci kopyası.
+        assert!(cs.caps_sends <= 9, "{tag}: CAPS deneme tavanı");
         // 0x15 yalnız iki uç da izin verdiğinde.
         assert_eq!(
             cs.ack_bitmap_rx > 0,

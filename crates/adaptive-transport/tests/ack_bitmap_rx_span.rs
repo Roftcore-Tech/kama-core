@@ -83,3 +83,38 @@ fn v2_receiver_has_no_rx_span() {
     assert!(!frames.is_empty());
     assert!(frames.iter().all(|f| f.bitmap.is_none()));
 }
+
+/// Bitmap oturum ortasında (CAPS gelince) açılır: ilk bitmap ACK'lerinin M'si oturum başına uzanır.
+/// Varış anları bitmap'ten önce de tutulduğu için bu ACK'ler ölçüm taşır (karşı-olgu: tutulmasaydı
+/// `RX_SPAN_NONE` dönerdi ve gönderici eski cephe tahmincisinde kalırdı).
+#[test]
+fn rx_span_covers_arrivals_from_before_bitmap_was_enabled() {
+    let mut r = Receiver::with_cc_port();
+    r.set_return_bandwidth(Some(62));
+    let mut t = 0u64;
+    for seq in 0..20u64 {
+        let _ = arrive(&mut r, seq, t);
+        t += 80 * MS;
+    }
+    r.set_ack_bitmap(true);
+    let mut first_bitmap = None;
+    for seq in 20..200u64 {
+        for f in arrive(&mut r, seq, t) {
+            if first_bitmap.is_none() && f.bitmap.is_some() {
+                first_bitmap = Some(f);
+            }
+        }
+        t += 80 * MS;
+    }
+    let f = first_bitmap.expect("bitmap ACK çıkmadı");
+    let largest = u64::from(f.largest_seq);
+    let (lo, _) = f.evidence_span_full(largest + 1).expect("kanıt aralığı");
+    assert_eq!(lo, 0, "ilk bitmap ACK'inin tabanı oturum başı");
+    let span = f.bitmap.as_ref().expect("bitmap").rx_span;
+    assert_ne!(span, RX_SPAN_NONE, "bitmap'ten önceki varışlar ölçümde yok");
+    assert_eq!(
+        u64::from(span),
+        largest * 80 * MS / (ACK_DELAY_UNIT_US * 1000),
+        "M = [0, {largest}]"
+    );
+}

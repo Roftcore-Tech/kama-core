@@ -1152,8 +1152,12 @@ impl Receiver {
     /// rx-set + largest/smallest muhasebesi.
     fn record_seq(&mut self, seq: u64, now_ns: u64) {
         self.received.insert(seq);
-        // [ACK-BITMAP · ÖLÇÜM ARALIĞI] İlk varış anı (çift datagram buraya gelmez).
-        if self.bitmap_rx() {
+        // [ACK-BITMAP · ÖLÇÜM ARALIĞI] İlk varış anı (çift datagram buraya gelmez). Bitmap'in
+        // açılmasını (CAPS) beklemeden her geri bildirimi aç alıcıda tutulur: bitmap CAPS'ten sonra
+        // açıldığında ilk bitmap ACK'lerinin M'si (taban 0) oturum başına uzanır; varış anı yoksa
+        // `rx_span` ölçüm yok döner ve gönderici bu ACK'lerde eski cephe tahmincisiyle kalırdı
+        // (ürün testi, dönüş gecikmesi değişken, tohum 2: ilk iki bitmap ACK'i ölçümsüz).
+        if self.first_window_rx() {
             self.arrival_ns.entry(seq).or_insert(now_ns);
             let keep_from = self
                 .largest_seq
