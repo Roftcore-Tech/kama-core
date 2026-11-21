@@ -318,13 +318,35 @@ fn run(real_up: u64, seed: u64, new_receiver: bool) -> Outcome {
     run_with(real_up, seed, new_receiver, Perturb::None, Copies::Harness)
 }
 
-#[allow(clippy::too_many_lines)]
 fn run_with(
     real_up: u64,
     seed: u64,
     new_receiver: bool,
     perturb: Perturb,
     copy_rule: Copies,
+) -> Outcome {
+    run_timed(
+        real_up,
+        seed,
+        new_receiver,
+        perturb,
+        copy_rule,
+        VOICE_START_NS,
+        0,
+    )
+}
+
+/// [`run_with`] ve uygulamanın başlangıç zamanlaması: ilk PTT demeti `voice_start_ns`'te, dosya
+/// `file_at_ns`'te sunulur (0 = oturum başında, PTT'den önce; [`run_with`]'in düzeni).
+#[allow(clippy::too_many_lines)]
+fn run_timed(
+    real_up: u64,
+    seed: u64,
+    new_receiver: bool,
+    perturb: Perturb,
+    copy_rule: Copies,
+    voice_start_ns: u64,
+    file_at_ns: u64,
 ) -> Outcome {
     let mut s = sender(copy_rule);
     let mut r = Receiver::with_cc_port();
@@ -372,27 +394,31 @@ fn run_with(
             fwd.send(now, d.seq, d.size, d.unit_id);
         }
     };
-    for i in 0..FILE_UNITS {
-        let decs = s.on_event(
-            Event::AppData(OpaqueUnit {
-                id: FILE_BASE_ID + i,
-                size: FILE_UNIT,
-            }),
-            0,
-        );
-        emit(
-            decs,
-            0,
-            &mut fwd,
-            &mut tx_datagrams,
-            &mut file_new_sent,
-            &mut file_last_new_sent_ns,
-        );
-    }
+    let mut file_offered = false;
     let mut now = 0u64;
     while now < T_MAX_NS {
+        if !file_offered && now >= file_at_ns {
+            file_offered = true;
+            for i in 0..FILE_UNITS {
+                let decs = s.on_event(
+                    Event::AppData(OpaqueUnit {
+                        id: FILE_BASE_ID + i,
+                        size: FILE_UNIT,
+                    }),
+                    now,
+                );
+                emit(
+                    decs,
+                    now,
+                    &mut fwd,
+                    &mut tx_datagrams,
+                    &mut file_new_sent,
+                    &mut file_last_new_sent_ns,
+                );
+            }
+        }
         let next_voice = voice_offered.len() as u64;
-        let voice_at = VOICE_START_NS + next_voice * VOICE_PERIOD_NS;
+        let voice_at = voice_start_ns + next_voice * VOICE_PERIOD_NS;
         if file_done_ns.is_none() && now >= voice_at {
             voice_offered.push(voice_at);
             let decs = s.on_event(
@@ -961,4 +987,47 @@ fn honest_profile_under_first_window_perturbations_keeps_ptt_and_queue() {
         }
     }
     assert!(v.is_empty(), "{} ihlal:\n{}", v.len(), v.join("\n"));
+}
+
+/// [İŞ-35 · HAT-ÇIKIŞI] Dürüst profil, ürün benzeri başlangıç (PTT 0,1 s'den, dosya 0,4 s'de, ürün
+/// kopya kuralı), tohum 1–3: ilk varış penceresine PTT kopyaları karışır ve açıcı kendi
+/// kopyalarımızın arkasında hat kuyruğunda bekler. Pencere gönderim anlarıyla ölçülünce tohum 2–3'te
+/// `Δτ < Δs` (sıkışık) ve gönderim hızı tavanın %90'ının altında görünüyordu: bilgi yok, bütçe
+/// (`P/2`) ikinci ölçüme dek sürüyordu. Pencere göndericinin hat çıkış anlarıyla ölçülünce hattı
+/// doğrular: bütçe ilk ACK'te kalkar ve dosyanın son yeni birimi, bütçenin her zaman ilk ACK'te
+/// kalktığı karşı-olgunun en çok 0,5 s gerisindedir.
+///
+/// Karşı-olgu (aynı düzenek; `first_ack_trusted` daima doğru, ilk pencere gönderim anlarıyla):
+/// dosyanın son yeni birimi 6,78 / 7,27 / 6,94 s. Bu kuraldan önce: 6,78 / 13,19 / 11,18 s
+/// (tohum 2–3 `NoInfo` → `Flat(6250)`).
+#[test]
+fn honest_start_with_ptt_ahead_of_the_file_lifts_the_budget_on_the_first_ack() {
+    const COUNTERFACTUAL_LAST_NEW_MS: [u64; 3] = [6_780, 7_270, 6_940];
+    for seed in 1..=3u64 {
+        let o = run_timed(
+            PROFILE_UP,
+            seed,
+            true,
+            Perturb::None,
+            Copies::Product,
+            100 * MS,
+            400 * MS,
+        );
+        report("ptt@0,1/dosya@0,4", PROFILE_UP, seed, &o);
+        assert_eq!(
+            o.start_exit,
+            Some(adaptive_transport::line_guard::StartExit::FirstAck),
+            "tohum {seed}: ilk pencere {:?} {:?}",
+            o.first_window,
+            o.first_window_detail
+        );
+        let bound = (COUNTERFACTUAL_LAST_NEW_MS[seed as usize - 1] + 500) * MS;
+        let last_new = o.file_last_new_sent_ns.expect("dosya gönderildi");
+        assert!(
+            last_new <= bound,
+            "tohum {seed}: dosyanın son yeni birimi {} (sınır {})",
+            secs(last_new),
+            secs(bound)
+        );
+    }
 }
