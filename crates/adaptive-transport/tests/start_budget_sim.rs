@@ -11,7 +11,16 @@
 //! * göndericiye her ACK'ten önce çerçevenin `arrival_rate` alanı verilir
 //!   (`Sender::note_ack_arrival_rate`; ürün ACK çözme yolu).
 //!
-//! `old_receiver` kolu boy vermez: eski alıcı gibi alan daima sentinel'dir (uyum).
+//! * göndericiye her ACK'ten önce çerçevenin ölçüm aralığı verilir
+//!   (`Sender::note_ack_forward_interval`; sözleşme #175 7067964700 §2–3). Düzenek alıcının yerine
+//!   hesaplar (`tests/starved_line_sim.rs` gibi), tabanı gerçek alıcının `bitmap_base`'i gibi alır:
+//!   M = iki ACK öncesinin en büyük seq'i + 1'den bu ACK'in en büyüğüne dek alınan seq'ler.
+//!
+//! `old_receiver` kolu boy vermez ve ölçüm aralığı taşımaz: eski alıcı gibi alan daima
+//! sentinel'dir (uyum).
+//!
+//! [İŞ-35 AÇIK 4] İlk pencerenin bozulmaları (`Perturb`): paket boyu farkı, yeniden sıralama,
+//! alıcı damgası gecikmesi, kuyrukta düşme. Kabul ölçütleri `perturbed_violations`'da.
 //!
 //! Ölçülen: darboğazda her datagramın kuyruk beklemesi, kuyrukta düşmeler, kısa birimlerin
 //! (ürünün PTT demeti) SIRALI teslim gecikmesi (ürün PTT şeridi sıralıdır: demet `k` ancak
@@ -19,13 +28,14 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use adaptive_transport::arrival_rate::FIRST_WINDOW_BYTES;
 use adaptive_transport::line_guard::{FirstWindowOutcome, START_BURST_NS};
 use adaptive_transport::pacer::LineModel;
 use adaptive_transport::receiver::{feedback_horizon_ns, Receiver, RxDatagram, RxKind};
 use adaptive_transport::return_path::AckObservation;
 use adaptive_transport::sender::{
-    AckInfo, Event, FeedbackStarvedRule, ForwardCopyRule, OpaqueUnit, Sender, Timer,
-    TransmitDecision, TransmitKind,
+    AckInfo, Event, FeedbackStarvedRule, ForwardCopyLineScale, ForwardCopyRule, OpaqueUnit, Sender,
+    Timer, TransmitDecision, TransmitKind,
 };
 
 const MS: u64 = 1_000_000;
@@ -50,6 +60,53 @@ const START_PHASE_NS: u64 = 8 * SEC;
 /// Ürün testinin PTT sınırı (`PTT_BOUND`).
 const PTT_BOUND_NS: u64 = SEC;
 
+/// PTT kopya kuralı.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Copies {
+    /// Düzeneğin ilk kuralı (2026-11-16 ürün kuralı): 5 iletim, 40 ms aralık, hatla ölçekleme yok.
+    Harness,
+    /// Ürün kuralı (`client_core::runtime::PTT_FORWARD_COPIES` = 7, `PTT_FORWARD_COPIES_MIN` = 6;
+    /// aralık 200 ms / 7; ölçülen yavaş hatta orantılı, en az 6 iletim).
+    Product,
+}
+
+impl Copies {
+    /// (ilk iletime ek kopya, aralık, ölçeklemenin alt sınırı).
+    fn rule(self) -> (u8, u64, Option<u8>) {
+        match self {
+            Self::Harness => (4, 40 * MS, None),
+            Self::Product => (6, 200 * MS / 7, Some(5)),
+        }
+    }
+}
+
+/// [m. 2 bozulması] İlk varış penceresinin girdisine uygulanan tek bir sapma. Hepsi yalnız ilk
+/// pencereyi etkiler (sonraki ACK'ler alanı taşımaz); hat ve gönderici değişmez.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Perturb {
+    None,
+    /// Alıcıya verilen gövde boyu göndericinin kaydından bu kadar bayt büyük (her datagram): iki
+    /// ucun boy sayımı farklı.
+    SizeSkew(u64),
+    /// Pencereyi açan datagramdan sonraki iki varış yer değiştirir.
+    Reorder,
+    /// Pencereyi açan datagramın alıcı damgası bu kadar geç (ns; alım birleştirme ya da zamanlama
+    /// gecikmesi): o süre içinde gelen varışlar da aynı anda işlenir.
+    LateFirstStamp(u64),
+    /// Pencereyi açacak datagramdan sonra hatta sunulan ilk datagram darboğaz kuyruğunda düşer
+    /// (hattı kullanmaz; gönderici kaydında var).
+    QueueDropAfterOpener,
+}
+
+/// [m. 2] Kuyruk kaybı planı: açıcıyı bekle → sonrakini düşür → bitti.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DropPlan {
+    Off,
+    WaitOpener,
+    DropNext,
+    Done,
+}
+
 struct Bottleneck {
     rate_bps: u64,
     busy: VecDeque<u64>,
@@ -57,6 +114,7 @@ struct Bottleneck {
     lcg: u64,
     dropped_queue: Vec<u64>,
     waits: Vec<(u64, u64)>,
+    drop_plan: DropPlan,
 }
 
 impl Bottleneck {
@@ -70,6 +128,7 @@ impl Bottleneck {
                 .wrapping_add(1_442_695_040_888_963_407),
             dropped_queue: Vec::new(),
             waits: Vec::new(),
+            drop_plan: DropPlan::Off,
         }
     }
 
@@ -77,7 +136,10 @@ impl Bottleneck {
         while self.busy.front().is_some_and(|&t| t <= now) {
             self.busy.pop_front();
         }
-        if self.busy.len() >= QUEUE_PKTS {
+        if self.busy.len() >= QUEUE_PKTS || self.drop_plan == DropPlan::DropNext {
+            if self.drop_plan == DropPlan::DropNext {
+                self.drop_plan = DropPlan::Done;
+            }
             self.dropped_queue.push(now);
             return;
         }
@@ -92,21 +154,97 @@ impl Bottleneck {
         if (self.lcg >> 33) % 1000 < LOSS_PERMILLE {
             return;
         }
+        if self.drop_plan == DropPlan::WaitOpener && udp >= FIRST_WINDOW_BYTES {
+            self.drop_plan = DropPlan::DropNext;
+        }
         self.wire.push_back((done + ONE_WAY_NS, seq, unit_id, udp));
     }
 }
 
+/// Ölçüm aralığı (sözleşme #175 7067964700 §2): (m_first, largest, rx_span, M).
+type IntervalMsg = (u64, u64, Option<u64>, Vec<u64>);
+
 struct ReturnLine {
     free_at: u64,
-    wire: VecDeque<(u64, u64, u16, AckInfo)>,
+    wire: VecDeque<(u64, u64, u16, AckInfo, IntervalMsg)>,
 }
 
 impl ReturnLine {
-    fn send(&mut self, now: u64, udp: u64, arrival_rate: u16, ack: AckInfo) {
+    fn send(&mut self, now: u64, udp: u64, arrival_rate: u16, ack: AckInfo, iv: IntervalMsg) {
         let start = self.free_at.max(now);
         self.free_at = start + (udp + OVH) * SEC / PROFILE_DOWN;
         self.wire
-            .push_back((self.free_at + ONE_WAY_NS, udp, arrival_rate, ack));
+            .push_back((self.free_at + ONE_WAY_NS, udp, arrival_rate, ack, iv));
+    }
+}
+
+/// [m. 2] Alıcı tarafı bozulmalar (varış sırası, alıcı damgası, alıcıya verilen boy).
+struct RxPerturb {
+    kind: Perturb,
+    /// Alıcı pencereyi açan datagramı (gövde ≥ `FIRST_WINDOW_BYTES`) gördü.
+    opened: bool,
+    held: Vec<(u64, u64, u64)>,
+    held_until: u64,
+    done: bool,
+}
+
+impl RxPerturb {
+    fn new(kind: Perturb) -> Self {
+        Self {
+            kind,
+            opened: false,
+            held: Vec::new(),
+            held_until: 0,
+            done: false,
+        }
+    }
+
+    /// Bu adımda alıcıya verilecek varışlar (sırayla).
+    fn apply(&mut self, arrived: Vec<(u64, u64, u64)>, now: u64) -> Vec<(u64, u64, u64)> {
+        let mut out = Vec::new();
+        match self.kind {
+            Perturb::Reorder => {
+                for a in arrived {
+                    if !self.done && self.opened && self.held.is_empty() {
+                        self.held.push(a);
+                        self.held_until = now + 300 * MS;
+                        continue;
+                    }
+                    out.push(a);
+                    if !self.done && !self.held.is_empty() {
+                        out.append(&mut self.held);
+                        self.done = true;
+                    }
+                    self.opened |= a.2 >= FIRST_WINDOW_BYTES;
+                }
+            }
+            Perturb::LateFirstStamp(d) => {
+                for a in arrived {
+                    if !self.done && !self.held.is_empty() {
+                        self.held.push(a);
+                    } else if !self.done && !self.opened && a.2 >= FIRST_WINDOW_BYTES {
+                        self.opened = true;
+                        self.held.push(a);
+                        self.held_until = now + d;
+                    } else {
+                        out.push(a);
+                    }
+                }
+            }
+            Perturb::None | Perturb::SizeSkew(_) | Perturb::QueueDropAfterOpener => out = arrived,
+        }
+        if !self.done && !self.held.is_empty() && now >= self.held_until {
+            out.append(&mut self.held);
+            self.done = true;
+        }
+        out
+    }
+
+    fn size_skew(&self) -> u64 {
+        match self.kind {
+            Perturb::SizeSkew(b) => b,
+            _ => 0,
+        }
     }
 }
 
@@ -132,9 +270,20 @@ struct Outcome {
     first_window: Option<FirstWindowOutcome>,
     first_window_detail: Option<adaptive_transport::line_guard::FirstWindowDetail>,
     guard: Option<(Option<u64>, u64)>,
+    /// Başlangıç bütçesini kaldıran kanıt.
+    start_exit: Option<adaptive_transport::line_guard::StartExit>,
+    /// Ölçüm aralığı gözlemi (ölçülen aralık, aralıktan örnek, son g).
+    interval: Option<(u64, u64, Option<i64>)>,
+    /// Korumanın hız tahmininin değiştiği anlar: (ACK anı, tahmin).
+    rate_trace: Vec<(u64, Option<u64>)>,
+    /// İlk ACK'ten sonra korumanın gönderim tavanının (hat modeli) en küçüğü (B/s, tel).
+    min_pace: Option<u64>,
+    /// Gönderim tavanının değiştiği anlar: (an, tavan) (gözlem).
+    pace_trace: Vec<(u64, u64)>,
 }
 
-fn sender() -> Sender {
+fn sender(copy_rule: Copies) -> Sender {
+    let (copies, spacing_ns, scale_min) = copy_rule.rule();
     let mut s = Sender::with_cc_port();
     let t_ack = adaptive_transport::receiver::budgeted_ack_interval_ns(PROFILE_DOWN);
     s.set_cc_initial_window(PROFILE_UP * t_ack / SEC);
@@ -155,18 +304,42 @@ fn sender() -> Sender {
     s.set_forward_copy_rule(Some(ForwardCopyRule {
         below_id: FILE_BASE_ID,
         priority_below_id: FILE_BASE_ID,
-        copies: 4,
-        spacing_ns: 40 * MS,
+        copies,
+        spacing_ns,
+    }));
+    s.set_forward_copy_line_scale(scale_min.map(|m| ForwardCopyLineScale {
+        declared_bps: PROFILE_UP,
+        min_copies: m,
     }));
     s
 }
 
-#[allow(clippy::too_many_lines)]
 fn run(real_up: u64, seed: u64, new_receiver: bool) -> Outcome {
-    let mut s = sender();
+    run_with(real_up, seed, new_receiver, Perturb::None, Copies::Harness)
+}
+
+#[allow(clippy::too_many_lines)]
+fn run_with(
+    real_up: u64,
+    seed: u64,
+    new_receiver: bool,
+    perturb: Perturb,
+    copy_rule: Copies,
+) -> Outcome {
+    let mut s = sender(copy_rule);
     let mut r = Receiver::with_cc_port();
     r.set_return_bandwidth(Some(PROFILE_DOWN));
     let mut fwd = Bottleneck::new(real_up, seed);
+    if perturb == Perturb::QueueDropAfterOpener {
+        fwd.drop_plan = DropPlan::WaitOpener;
+    }
+    let mut rx_perturb = RxPerturb::new(perturb);
+    let mut first_arrival: HashMap<u64, u64> = HashMap::new();
+    let mut received: Vec<u64> = Vec::new();
+    let mut ack_fronts: VecDeque<u64> = VecDeque::new();
+    let mut rate_trace: Vec<(u64, Option<u64>)> = Vec::new();
+    let mut min_pace: Option<u64> = None;
+    let mut pace_trace: Vec<(u64, u64)> = Vec::new();
     let mut ret = ReturnLine {
         free_at: 0,
         wire: VecDeque::new(),
@@ -260,10 +433,18 @@ fn run(real_up: u64, seed: u64, new_receiver: bool) -> Outcome {
         }
         r.set_uplink_yield(ret.free_at > now);
         let mut acks = Vec::new();
+        let mut arrived = Vec::new();
         while fwd.wire.front().is_some_and(|&(t, _, _, _)| t <= now) {
             let (_, seq, uid, udp) = fwd.wire.pop_front().expect("var");
+            arrived.push((seq, uid, udp));
+        }
+        for (seq, uid, udp) in rx_perturb.apply(arrived, now) {
+            if let std::collections::hash_map::Entry::Vacant(e) = first_arrival.entry(seq) {
+                e.insert(now);
+                received.push(seq);
+            }
             if new_receiver {
-                r.set_next_datagram_bytes(udp);
+                r.set_next_datagram_bytes(udp + rx_perturb.size_skew());
             }
             let out = r.on_datagram(
                 RxDatagram {
@@ -287,8 +468,33 @@ fn run(real_up: u64, seed: u64, new_receiver: bool) -> Outcome {
         }
         acks.extend(r.on_ack_timer(now));
         for frame in acks {
-            let expected = r.largest_seq().unwrap_or(0) + 1;
+            let largest = r.largest_seq().unwrap_or(0);
+            let expected = largest + 1;
             let udp = frame.encode().len() as u64 + ACK_SEAL;
+            // Ölçüm aralığı (sözleşme §2; gerçek alıcının `bitmap_base`'i gibi): M = iki ACK
+            // öncesinin en büyük seq'i + 1'den bu ACK'in en büyüğüne dek alınan seq'ler; `rx_span`
+            // alıcı damgalarıyla (bozulmalar dahil), 256 µs'ye aşağı.
+            let base = if ack_fronts.len() >= 2 {
+                ack_fronts[ack_fronts.len() - 2] + 1
+            } else {
+                0
+            };
+            let mut m: Vec<u64> = received
+                .iter()
+                .copied()
+                .filter(|&q| q >= base && q <= largest)
+                .collect();
+            m.sort_unstable();
+            let m_first = m.first().copied().unwrap_or(largest);
+            let rx_span = (m_first != largest)
+                .then(|| first_arrival[&largest].saturating_sub(first_arrival[&m_first]))
+                .map(|d| d / 256_000)
+                .filter(|&u| u <= 0xFFFE)
+                .map(|u| u * 256_000);
+            if ack_fronts.len() >= 3 {
+                ack_fronts.pop_front();
+            }
+            ack_fronts.push_back(largest);
             ret.send(
                 now,
                 udp,
@@ -297,10 +503,12 @@ fn run(real_up: u64, seed: u64, new_receiver: bool) -> Outcome {
                     acked_seqs: frame.acked_full(expected),
                     ack_delay: frame.ack_delay_duration(),
                 },
+                (m_first, largest, rx_span, m),
             );
         }
-        while ret.wire.front().is_some_and(|&(t, _, _, _)| t <= now) {
-            let (_, udp, arrival_rate, ack) = ret.wire.pop_front().expect("var");
+        while ret.wire.front().is_some_and(|&(t, _, _, _, _)| t <= now) {
+            let (_, udp, arrival_rate, ack, (first, last, rx_span, m)) =
+                ret.wire.pop_front().expect("var");
             first_ack_ns.get_or_insert(now);
             s.observe_ack_feedback(
                 AckObservation {
@@ -312,6 +520,10 @@ fn run(real_up: u64, seed: u64, new_receiver: bool) -> Outcome {
                 now,
             );
             s.note_ack_arrival_rate(arrival_rate);
+            // Eski alıcı ölçüm aralığı da taşımaz (V2 çerçevesi).
+            if new_receiver {
+                s.note_ack_forward_interval(first, last, rx_span, &m);
+            }
             let decs = s.on_event(Event::AckReceived(ack), now);
             emit(
                 decs,
@@ -321,6 +533,18 @@ fn run(real_up: u64, seed: u64, new_receiver: bool) -> Outcome {
                 &mut file_new_sent,
                 &mut file_last_new_sent_ns,
             );
+            let g = s.diag_line_guard().and_then(|g| g.0);
+            if rate_trace.last().map(|&(_, r)| r) != Some(g) {
+                rate_trace.push((now, g));
+            }
+        }
+        if first_ack_ns.is_some() {
+            if let Some((pace, _)) = s.diag_line_guard_pace() {
+                min_pace = Some(min_pace.map_or(pace, |m: u64| m.min(pace)));
+                if pace_trace.last().map(|&(_, p)| p) != Some(pace) {
+                    pace_trace.push((now, pace));
+                }
+            }
         }
         let voice_left = (0..voice_offered.len() as u64).any(|v| !voice_arrived.contains_key(&v));
         if file_done_ns.is_some() && !voice_left {
@@ -376,6 +600,11 @@ fn run(real_up: u64, seed: u64, new_receiver: bool) -> Outcome {
         first_window: s.diag_line_guard_first_window(),
         first_window_detail: s.diag_line_guard_first_window_detail(),
         guard: s.diag_line_guard(),
+        start_exit: s.diag_line_guard_start_exit(),
+        min_pace,
+        pace_trace,
+        interval: s.diag_line_guard_interval(),
+        rate_trace,
     }
 }
 
@@ -390,13 +619,16 @@ fn opt_secs(ns: Option<u64>) -> String {
 fn report(tag: &str, real_up: u64, seed: u64, o: &Outcome) {
     println!(
         "BAŞLANGIÇ-SİM {tag} gerçek {real_up} tohum {seed}: ilk_ACK={} ilk_pencere={:?} {:?} \
-         koruma={:?} bekleme_max(ilk ACK öncesi)={} bekleme_max={} kuyruk_düşen={} \
+         koruma={:?} bütçe_çıkışı={:?} aralık={:?} en_küçük_tavan={:?} bekleme_max(ilk ACK öncesi)={} bekleme_max={} kuyruk_düşen={} \
          ptt_sıralı_max={} ptt_başlangıç_max={} ptt_1s_üstü={} ptt_teslimsiz={} dosya_son_yeni={} \
-         dosya={} geç={}",
+         dosya={} geç={} hız_izi={} tavan_izi={}",
         opt_secs(o.first_ack_ns),
         o.first_window,
         o.first_window_detail,
         o.guard,
+        o.start_exit,
+        o.interval,
+        o.min_pace,
         secs(o.max_wait_before_first_ack),
         secs(o.max_wait),
         o.drops,
@@ -409,6 +641,17 @@ fn report(tag: &str, real_up: u64, seed: u64, o: &Outcome) {
         o.voice_late
             .iter()
             .map(|&(k, p, t, pl)| format!("#{k}@{}→{}/{}", secs(p), secs(t), secs(pl)))
+            .collect::<Vec<_>>()
+            .join(" "),
+        o.rate_trace
+            .iter()
+            .map(|&(t, r)| format!("{}:{r:?}", secs(t)))
+            .collect::<Vec<_>>()
+            .join(" "),
+        o.pace_trace
+            .iter()
+            .take(12)
+            .map(|&(t, p)| format!("{}:{p}", secs(t)))
             .collect::<Vec<_>>()
             .join(" "),
     );
@@ -531,4 +774,191 @@ fn old_receiver_falls_back_to_todays_guard() {
             );
         }
     }
+}
+
+/// [İLK-PENCERE · İŞ-35 AÇIK 4] Bir bozulmalı koşunun kabul ölçütleri (gerçek hat `real_up`,
+/// beyan 12 500). Ölçütler ürün kabulünden ve başlangıç bütçesinin fiziğinden, sonuçtan önce:
+/// * başlangıç evresinde (plan < 8 s) PTT demetleri sıralı teslimde ≤ 1 s;
+/// * yanlış DÜŞÜK örnek öncelikli şeridi aç bırakmaz: ilk ACK'ten sonra korumanın gönderim tavanı
+///   (hat modeli) hiçbir zaman PTT şeridinin kendi tel hızının (iletim sayısı × 114 B × 5/s)
+///   altına inmez;
+/// * bütün oturumda darboğaz beklemesi ≤ `start_queue_bound_ns(real_up)` (başlangıç bütçesinin
+///   gerçek hat beyanın yarısıyken kurduğu en büyük kuyruk);
+/// * kuyrukta düşme yalnız enjekte edilen (`QueueDropAfterOpener`: 1);
+/// * koşu sonunda korumanın tahmini gerçek hattın ±%10 içinde;
+/// * `full` ile: bütün demetler teslim ve dosya [`T_MAX_NS`] içinde biter.
+///
+/// Bütün oturumun PTT'si raporlanır ama ölçüt değildir: bu düzenekte (V2 ACK çerçevesi, %20 kayıp)
+/// ACK aralığı sürekli evrede ≈ 8,6 s'ye çıkar; beş iletimi de düşen bir demetin ARQ kurtarması o
+/// kadar sürer ve sürekli evrenin süreli yoklamaları (+%6,25) demetleri 1 s'nin biraz üstüne
+/// itebilir. Ölçüldü, bozulmasız gerçek 6 250: İŞ-35 kuralıyla tohum 1'de demet 250 (50,5 s)
+/// 9,5 s, tohum 3'te 21,9 s'deki yoklamadan sonra 1,17 s; kuralsız 0,81–0,92 s (zamanlama farkı,
+/// ilk pencereden sonraki evre).
+///
+/// Dönen: ihlallerin metni (boş = geçti).
+fn perturbed_violations(
+    real_up: u64,
+    seed: u64,
+    p: Perturb,
+    copy_rule: Copies,
+    full: bool,
+) -> Vec<String> {
+    let o = run_with(real_up, seed, true, p, copy_rule);
+    report(&format!("{p:?}/{copy_rule:?}"), real_up, seed, &o);
+    let tag = format!("{p:?} {copy_rule:?} gerçek {real_up} tohum {seed}");
+    let mut v = Vec::new();
+    if o.voice_max_start > PTT_BOUND_NS {
+        v.push(format!(
+            "{tag}: başlangıç PTT {} (ilk pencere {:?})",
+            secs(o.voice_max_start),
+            o.first_window
+        ));
+    }
+    let (copies, _, _) = copy_rule.rule();
+    let ptt_wire_bps = (u64::from(copies) + 1) * (VOICE_UNIT + OVH) * SEC / VOICE_PERIOD_NS;
+    if o.min_pace.is_some_and(|m| m < ptt_wire_bps) {
+        v.push(format!(
+            "{tag}: tavan {:?} < PTT şeridi {ptt_wire_bps} (oturum PTT {})",
+            o.min_pace,
+            secs(o.voice_max)
+        ));
+    }
+    if full && o.voice_undelivered > 0 {
+        v.push(format!("{tag}: teslimsiz demet {}", o.voice_undelivered));
+    }
+    let bound = start_queue_bound_ns(real_up);
+    if o.max_wait > bound {
+        v.push(format!(
+            "{tag}: kuyruk {} (sınır {})",
+            secs(o.max_wait),
+            secs(bound)
+        ));
+    }
+    let injected = usize::from(p == Perturb::QueueDropAfterOpener);
+    if o.drops != injected {
+        v.push(format!(
+            "{tag}: kuyrukta düşen {} (enjekte {injected})",
+            o.drops
+        ));
+    }
+    match o.guard.and_then(|g| g.0) {
+        Some(r) if r.abs_diff(real_up) * 10 <= real_up => {}
+        other => v.push(format!("{tag}: son tahmin {other:?}")),
+    }
+    if full && o.file_done_ns.is_none() {
+        v.push(format!("{tag}: dosya bitmedi"));
+    }
+    v
+}
+
+/// Gerçek 6 250 (beyan 12 500), tohum 1–3, iki PTT kuralıyla: düzeneğin kuralında bütün ölçütler,
+/// ürün kuralında teslim ve dosya bitişi dışında hepsi (ürün kuralı bu düzenekte bozulmasız
+/// koşuda da dosyayı 35–86 s'de bitirir: FEC'siz düzenek, ilk pencereden bağımsız).
+fn assert_perturbation_meets_acceptance(p: Perturb) {
+    assert_perturbation_meets_acceptance_for(p, 1..=3);
+}
+
+fn assert_perturbation_meets_acceptance_for(p: Perturb, seeds: std::ops::RangeInclusive<u64>) {
+    let mut v = Vec::new();
+    for seed in seeds {
+        v.extend(perturbed_violations(6_250, seed, p, Copies::Harness, true));
+        v.extend(perturbed_violations(6_250, seed, p, Copies::Product, false));
+    }
+    assert!(v.is_empty(), "{} ihlal:\n{}", v.len(), v.join("\n"));
+}
+
+/// Paket boyu farkı: alıcıya verilen boy her datagramda 100 B büyük (≈ +%10; iki ucun boy sayımı
+/// farklı). İlk pencere hattı ≈ %10 yüksek okur (6 873–6 894).
+#[test]
+fn size_skew_in_the_first_window_meets_the_start_acceptance() {
+    assert_perturbation_meets_acceptance(Perturb::SizeSkew(100));
+}
+
+/// Yeniden sıralama: pencereyi açan datagramdan sonraki iki varış yer değiştirir. Tohum 3'te
+/// pencerenin son datagramı geç işlenir, ilk pencere hattı 2 215 B/s okur (yanlış DÜŞÜK).
+#[test]
+fn reordering_after_the_opener_meets_the_start_acceptance() {
+    assert_perturbation_meets_acceptance(Perturb::Reorder);
+}
+
+/// Zamanlama sapması 40 ms: açıcının alıcı damgası geç; pencere kısa görünür, hat yüksek okunur
+/// (+%14–33).
+#[test]
+fn a_40ms_late_first_stamp_meets_the_start_acceptance() {
+    assert_perturbation_meets_acceptance(Perturb::LateFirstStamp(40 * MS));
+}
+
+/// Zamanlama sapması 200 ms: pencere `Δτ < Δs` (tohum 1, yanlış doğrulama) ya da kapanmaz
+/// (tohum 2–3, sentinel).
+#[test]
+fn a_200ms_late_first_stamp_meets_the_start_acceptance() {
+    assert_perturbation_meets_acceptance(Perturb::LateFirstStamp(200 * MS));
+}
+
+/// Kuyruk kaybı: açıcıdan sonra hatta sunulan ilk datagram darboğaz kuyruğunda düşer (hattı
+/// kullanmaz). Tohum 1'de düşen datagram pencerenin içinde ama artış görünür: pencerenin gönderim
+/// baytı şişer, örnek 9 372 (gerçek 6 250).
+#[test]
+fn a_queue_drop_after_the_opener_meets_the_start_acceptance() {
+    assert_perturbation_meets_acceptance_for(Perturb::QueueDropAfterOpener, 1..=1);
+}
+
+/// [ÇÖZÜLMEDİ · İŞ-35 AÇIK 4] Kuyruk kaybı artışı gizliyor (tohum 2–3): açıcı seq 0, seq 1 kuyrukta
+/// düşer, seq 2 pencereyi kapatır; `Δs` = 163 ms, `Δτ` = 164 ms → pencere hattı DOĞRULAR (yanlış),
+/// gönderici ilk ACK'ten (2,04 s) sonra profil hızında gönderir; kuyruk 2,96–3,68 s, 35–58 düşme,
+/// başlangıç PTT 3,4–19,3 s. Bu test kırmızıdır ve kırmızı kalır (gizlenmez).
+///
+/// Neden kapatılamadı (bu düzenekte ölçülen değerlerle alt sınır):
+/// * Gözlem dürüst profilin tohum 1'iyle aynıdır: orada açıcı seq 2, seq 3 RASTGELE kayıpla düşer
+///   (serileşmeden sonra; hattı kullandı), seq 4 kapatır; `Δs` = 164 ms, `Δτ` = 165 ms. İki
+///   pencerede de bir boşluk ve `Δτ ≈ Δs` var; ilk ACK'in ölçüm aralığı ikisinde de düzdür (cephesi
+///   kuyruksuz). Ne alıcı ne gönderici boşluğun kuyrukta mı yolda mı düştüğünü bilir. İlk ACK'in
+///   bilgisiyle çalışan her kural iki koşuda aynı davranır.
+/// * İkinci ölçüm en erken ikinci ACK'tedir: dürüst tohum 1'de ilk ACK 2,12 s, ikinci 4,56 s
+///   (`t₂ − t₁` = 2,44 s); kuyruk kaybı tohum 2'de 2,04 → 4,17 s.
+/// * Kuyruk kaybı koşusunda kuyruğun başlangıç sınırında (0,70 s) kalması için `[t₁, t₂]`'de hatta
+///   fazladan verilebilecek bayt en çok 0,70 s × 6 250 B/s ≈ 4,4 kB'tır (gönderim ≈ P/2 + 4,4 kB).
+///   Aynı gönderim dürüst tohum 1'de `[t₁, t₂]`'de profil hızına göre en az
+///   6 250 × 2,44 − 4 375 ≈ 10,9 kB eksik gönderir: dosya en az 10,9 kB / 9 650 B/s ≈ 1,13 s geç
+///   biter. Dürüst bütçe bedeli testinin (`honest_profile_is_verified_…`) payı tohum 1'de
+///   6,49 − 5,96 = 0,53 s'dir: iki ölçüt birlikte sağlanamaz.
+///
+/// Kapatmak için gereken: ilk ACK'ten önce ikinci bir bağımsız ölçüm (ör. daha uzun ilk varış
+/// penceresi — alıcı ve donmuş spec §2.2 `FIRST_WINDOW_BYTES`, bu işin dışında) ya da dürüst
+/// profilde bütçe bedeli sınırının gevşetilmesi (sahip kararı).
+#[test]
+fn a_queue_drop_hidden_in_the_first_window_is_not_closed() {
+    assert_perturbation_meets_acceptance_for(Perturb::QueueDropAfterOpener, 2..=3);
+}
+
+/// Dürüst profil (gerçek = beyan) aynı bozulmalarla: PTT ≤ 1 s, kuyruk bir datagramın
+/// serileşmesini aşmaz, kuyrukta düşme yalnız enjekte edilen. Dosyanın son yeni biriminin anı
+/// raporlanır (bozulmanın dürüst hatta bedeli; sınır yok).
+#[test]
+fn honest_profile_under_first_window_perturbations_keeps_ptt_and_queue() {
+    let mut v = Vec::new();
+    for p in [
+        Perturb::SizeSkew(100),
+        Perturb::Reorder,
+        Perturb::LateFirstStamp(40 * MS),
+        Perturb::LateFirstStamp(200 * MS),
+        Perturb::QueueDropAfterOpener,
+    ] {
+        for seed in 1..=3u64 {
+            let o = run_with(PROFILE_UP, seed, true, p, Copies::Harness);
+            report(&format!("dürüst/{p:?}"), PROFILE_UP, seed, &o);
+            let tag = format!("{p:?} tohum {seed}");
+            if o.voice_max > PTT_BOUND_NS || o.voice_undelivered > 0 {
+                v.push(format!("{tag}: PTT {}", secs(o.voice_max)));
+            }
+            if o.max_wait > (MTU + OVH) * SEC / PROFILE_UP {
+                v.push(format!("{tag}: kuyruk {}", secs(o.max_wait)));
+            }
+            let injected = usize::from(p == Perturb::QueueDropAfterOpener);
+            if o.drops != injected {
+                v.push(format!("{tag}: kuyrukta düşen {}", o.drops));
+            }
+        }
+    }
+    assert!(v.is_empty(), "{} ihlal:\n{}", v.len(), v.join("\n"));
 }
