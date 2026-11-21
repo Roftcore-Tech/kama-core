@@ -1218,6 +1218,7 @@ impl Receiver {
                 base,
                 self.ack_epoch,
                 encoded as u16,
+                self.arrival_rate_field(now_ns),
             );
             return (Some(frame), encoded == ACK_DELAY_ENC_MAX);
         }
@@ -1226,17 +1227,23 @@ impl Receiver {
         } else {
             self.received.iter().copied().collect()
         };
-        // arrival_rate: receiver bu artımda BOYUT görmüyor (RxDatagram size taşımaz) → ölçüm YOK →
-        // sentinel (§2.2 zeyli: 0xFFFF = "ölçüm yok/üst-bantta, ipucu olarak KULLANMA"). K3
-        // tüketicisi bağlandığında gerçek pencere-oranı ölçümüyle değiştirilir.
         let frame = AckFrame::from_received(
             &received,
             self.ack_epoch,
             encoded as u16,
             self.seen_total,
-            crate::ack::ARRIVAL_RATE_SENTINEL,
+            self.arrival_rate_field(now_ns),
         );
         (frame, encoded == ACK_DELAY_ENC_MAX)
+    }
+
+    /// [§2.2 `arrival_rate`] ACK'in varış hızı alanı (B/s; V2 0x14 ve bitmap 0x15 AYNI değeri
+    /// taşır). Bugün daima sentinel: alıcı bu artımda datagram BOYUTU görmüyor (§2.2 zeyli:
+    /// 0xFFFF = "ölçüm yok/üst-bantta, ipucu olarak KULLANMA"). Gerçek pencere-oranı ölçümü
+    /// (başlangıç kuyruğu işi) yalnız bu fonksiyonu doldurur; iki çerçeve biçimi buradan okur.
+    #[allow(clippy::unused_self)]
+    fn arrival_rate_field(&self, _now_ns: u64) -> u16 {
+        crate::ack::ARRIVAL_RATE_SENTINEL
     }
 
     // ── gözlemciler ──

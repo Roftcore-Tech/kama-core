@@ -252,6 +252,12 @@ pub struct ThresholdLossDetector {
     /// zaman eşiği yalnız `Sent::evidenced` seq'lere uygulanır (aralık dışı = bilinmiyor). Kapalıyken
     /// (her 0x14 oturumu) bugünkü kural bit-aynı.
     evidence_mode: bool,
+    /// [ACK-BITMAP · KAPSAM-BOŞLUĞU] Alınan kanıt aralıklarının kesintisiz kapsadığı en büyük seq
+    /// (`None` = henüz kanıt yok). Yeni aralığın alt ucu bunun üstündeyse aradaki seq'ler hiçbir
+    /// alınan ACK'te görünmedi ve alıcı onları bir daha bildirmeyecek (taban yalnız ilerler).
+    evidence_covered_hi: Option<u64>,
+    /// [ACK-BITMAP · KAPSAM-BOŞLUĞU] Bu kuralla eşiğe açılan teyitsiz kayıt sayısı (gözlem).
+    evidence_orphaned: u64,
 }
 
 impl ThresholdLossDetector {
@@ -687,6 +693,12 @@ impl ThresholdLossDetector {
         self.evidence_mode
     }
 
+    /// [ACK-BITMAP · KAPSAM-BOŞLUĞU] Kapsam boşluğu kuralıyla eşiğe açılan kayıt sayısı (gözlem).
+    #[must_use]
+    pub fn evidence_orphaned(&self) -> u64 {
+        self.evidence_orphaned
+    }
+
     /// [ACK-BITMAP] Eşik kararına uygun mu: kanıt kipi kapalıyken her kayıt (bugünkü kural).
     fn eligible(&self, s: &Sent) -> bool {
         !self.evidence_mode || s.evidenced
@@ -727,9 +739,27 @@ impl ThresholdLossDetector {
             // [ACK-BITMAP] Teyitliler yukarıda uçuştan çıktı; aralıkta kalan her kayıt alınmamıştı.
             self.evidence_mode = true;
             if lo <= hi {
+                // [KAPSAM-BOŞLUĞU] Alıcının tabanı yalnız ilerler: `[önceki kapsam + 1, lo)`
+                // aralığındaki teyitsiz kayıt hiçbir alınan ACK'te görünmedi ve bir daha
+                // görünmeyecek (onu kapsayan ACK'ler dönüş yolunda kayboldu ya da aralık tel
+                // tavanına kırpıldı). Bilgi kalıcı olarak yok: kayıt bugünkü (0x14) kurala döner —
+                // paket ve zaman eşiğine açılır. Açılmasa teslim edilmiş birim yalnız PTO ile teyit
+                // alabilir ve teyitsiz kayıtlar uçuşu doldurur (İŞ-32 / #225 tıkanması). Bedeli,
+                // boşluktaki alınmış seq'lerin gereksiz yeniden iletimidir; boşluk ancak bir seq'i
+                // kapsayan bütün ACK'ler kaybolunca oluşur.
+                let from = self.evidence_covered_hi.map_or(0, |c| c.saturating_add(1));
+                if lo > from {
+                    for (_, s) in self.inflight.range_mut(from..lo) {
+                        if !s.evidenced {
+                            s.evidenced = true;
+                            self.evidence_orphaned += 1;
+                        }
+                    }
+                }
                 for (_, s) in self.inflight.range_mut(lo..=hi) {
                     s.evidenced = true;
                 }
+                self.evidence_covered_hi = Some(self.evidence_covered_hi.map_or(hi, |c| c.max(hi)));
             }
         }
         if !self.have_acked {
@@ -962,25 +992,45 @@ mod evidence_tests {
     fn packet_threshold_only_inside_the_evidence_span() {
         let mut d = ThresholdLossDetector::new();
         sent(&mut d, 20);
-        // ACK kanıt aralığı [10, 19]: 12 ve 15 alınmadı; 0..9 aralık dışı (bilinmiyor).
-        let acked: Vec<u64> = (10..20).filter(|s| *s != 12 && *s != 15).collect();
-        let lost = d.on_ack_with_evidence(&acked, Some((10, 19)), 100 * MS);
-        assert_eq!(lost, vec![12, 15], "yalnız aralık içi gerçek kayıp");
+        // İlk ACK kanıt aralığı [0, 9]: 3 alınmadı; 10..19 henüz bildirilmedi.
+        let acked: Vec<u64> = (0..10).filter(|s| *s != 3).collect();
+        let lost = d.on_ack_with_evidence(&acked, Some((0, 9)), 100 * MS);
+        assert_eq!(lost, vec![3], "yalnız aralık içi gerçek kayıp");
         assert!(d.evidence_mode());
-        // Aralık dışı 0..9 uçuşta kalır; zaman eşiği de ilan etmez.
-        let t = d.detect_time_losses(10_000 * MS, Duration::from_millis(10), Duration::ZERO);
-        assert!(
-            t.is_empty(),
-            "aralık dışı seq zaman eşiğiyle ilan edilmemeli: {t:?}"
-        );
+        // Sonraki ACK [8, 19] (iki ACK'te görünme kuralı: önceki aralıkla örtüşür): 12, 15
+        // alınmadı. Boşluk yok → kapsam boşluğu kuralı hiçbir şey açmaz.
+        let acked2: Vec<u64> = (10..20).filter(|s| *s != 12 && *s != 15).collect();
+        let lost2 = d.on_ack_with_evidence(&acked2, Some((8, 19)), 200 * MS);
+        assert_eq!(lost2, vec![12, 15]);
+        assert_eq!(d.evidence_orphaned(), 0);
+    }
+
+    /// [KAPSAM-BOŞLUĞU] Kanıt aralığı önceki kapsamın üstünden başlarsa (aradaki seq'leri kapsayan
+    /// ACK'ler dönüş yolunda kayboldu) aradaki teyitsiz kayıtlar eşiğe açılır: bilgi bir daha
+    /// gelmeyecek, kayıt bugünkü (0x14) kurala döner. Aralığın ÜSTÜ (henüz bildirilmemiş) açılmaz.
+    #[test]
+    fn coverage_gap_reverts_unseen_records_to_the_threshold_rule() {
+        let mut d = ThresholdLossDetector::new();
+        sent(&mut d, 30);
+        let lost = d.on_ack_with_evidence(&(0..5).collect::<Vec<_>>(), Some((0, 4)), 100 * MS);
+        assert!(lost.is_empty());
+        // [5, 9]'u kapsayan ACK'ler kayboldu; gelen ACK [10, 19]'u bildiriyor (hepsi alındı).
+        let lost = d.on_ack_with_evidence(&(10..20).collect::<Vec<_>>(), Some((10, 19)), 200 * MS);
         assert_eq!(
-            d.next_time_loss_deadline_ns(Duration::from_millis(10), Duration::ZERO),
-            None
+            lost,
+            vec![5, 6, 7, 8, 9],
+            "boşluktaki kayıtlar paket eşiğine açıldı"
         );
-        // Sonraki ACK 0..9'u kapsar: 3 alınmadı → şimdi kanıtlı ve ilan edilir.
-        let acked2: Vec<u64> = (0..10).filter(|s| *s != 3).collect();
-        let lost2 = d.on_ack_with_evidence(&acked2, Some((0, 19)), 200 * MS);
-        assert_eq!(lost2, vec![3]);
+        assert_eq!(d.evidence_orphaned(), 5);
+        // 20..29 aralığın üstünde: bilinmiyor, ilan yok.
+        let t = d.detect_time_losses(10_000 * MS, Duration::from_millis(10), Duration::ZERO);
+        assert!(t.is_empty(), "bildirilmemiş seq ilan edildi: {t:?}");
+        // İlk kanıtlı ACK'in tabanı 0'ın üstündeyse (ilk ACK'ler kayboldu) aynı kural.
+        let mut e = ThresholdLossDetector::new();
+        sent(&mut e, 10);
+        let lost = e.on_ack_with_evidence(&(6..10).collect::<Vec<_>>(), Some((6, 9)), 50 * MS);
+        assert_eq!(lost, vec![0, 1, 2, 3, 4, 5]);
+        assert_eq!(e.evidence_orphaned(), 6);
     }
 
     #[test]

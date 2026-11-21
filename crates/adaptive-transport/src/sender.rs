@@ -5995,6 +5995,13 @@ impl Sender {
         self.loss.evidence_mode()
     }
 
+    /// [ACK-BITMAP · KAPSAM-BOŞLUĞU] Hiçbir alınan ACK'te görünmeyen ve bu yüzden eşiğe açılan
+    /// teyitsiz kayıt sayısı (salt gözlem; bkz. `loss::ThresholdLossDetector`).
+    #[must_use]
+    pub fn diag_ack_evidence_orphaned(&self) -> u64 {
+        self.loss.evidence_orphaned()
+    }
+
     /// [FAZ-1 DÖNÜŞ-YOLU] Bir ACK datagram'ı gözlendi. **Motor davranışını DEĞİŞTİRMEZ** —
     /// yalnız `diag_return_path()` çıktısını besler. Ürün runtime'ı `Event::AckReceived`'dan
     /// hemen ÖNCE çağırır; çağrılmaması motoru etkilemez (gözlem boş kalır).
