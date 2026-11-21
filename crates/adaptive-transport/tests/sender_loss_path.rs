@@ -426,37 +426,61 @@ fn rtt_correction_rejection_counter_reflects_the_guard() {
     );
 }
 
-/// [ACK-BITMAP · ölçüm prototipi] Göndericide kanıt aralığı: aralık DIŞINDAKİ teyitsiz seq paket ve
-/// zaman eşiğiyle kayıp ilan EDİLMEZ (bilinmiyor); aralık İÇİNDEKİ gerçek kayıp ilan edilir.
+/// [ACK-BITMAP] Göndericide kanıt aralığı: aralık İÇİNDEKİ teyitsiz seq negatif kanıttır ve eşikle
+/// ilan edilir; ardışık iki aralık arasında kalan (hiçbir alınan ACK'te görünmeyen) seq'ler kapsam
+/// boşluğu kuralıyla eşiğe açılır; bildirilmemiş (aralığın üstündeki) seq ilan edilmez.
 #[test]
 fn evidence_span_limits_threshold_losses_to_the_span() {
     let (mut s, mut now, out) = armed();
+    assert!(
+        out.len() >= 12,
+        "fikstür en az 12 iletim üretmeli: {}",
+        out.len()
+    );
     assert_eq!(s.diag_loss(), (0, 0, 0));
-    // out[0] teyitli (armed). Kanıt aralığı [out[6], son]: out[1..6] aralık dışı, out[8] içinde
-    // alınmadı.
-    let lo = out[6];
-    let hi = *out.last().expect("uçuş");
-    let acked: Vec<u64> = out[6..].iter().copied().filter(|&q| q != out[8]).collect();
+    // İlk kanıtlı ACK [out[1], out[6]]: out[3] alınmadı (negatif kanıt) → paket eşiği.
+    let acked: Vec<u64> = out[1..=6]
+        .iter()
+        .copied()
+        .filter(|&q| q != out[3])
+        .collect();
     now += 50 * MS;
-    s.set_next_ack_evidence(Some((lo, hi)));
+    s.set_next_ack_evidence(Some((out[1], out[6])));
     s.on_event(ack(acked), now);
     assert!(s.diag_ack_evidence_mode());
-    let (loss_pkt, loss_time, _) = s.diag_loss();
+    let first = s.diag_loss().0;
+    assert!(first >= 1, "aralık içi gerçek kayıp (out[3]) ilan edilmeli");
+    assert_eq!(s.diag_ack_evidence_orphaned(), 0, "boşluk yok");
+    // Kapsam boşluğuna düşecek teyitsiz kayıtlar: (out[6], out[9]) arasındaki her uçuş kaydı.
+    let gap = s
+        .diag_inflight_seqs()
+        .iter()
+        .filter(|&&(q, _, _, _)| q > out[6] && q < out[9])
+        .count() as u64;
+    assert!(gap >= 2, "boşlukta en az out[7], out[8]: {gap}");
+    // Sonraki alınan ACK [out[9], out[11]] (aradaki ACK'ler kayboldu): out[7], out[8] hiçbir
+    // alınan ACK'te görünmedi → kapsam boşluğu → eşiğe açılır.
+    now += 50 * MS;
+    s.set_next_ack_evidence(Some((out[9], out[11])));
+    s.on_event(ack(out[9..=11].to_vec()), now);
     assert_eq!(
-        loss_pkt, 1,
-        "yalnız aralık içi kayıp (out[8]) ilan edilmeli"
+        s.diag_ack_evidence_orphaned(),
+        gap,
+        "boşluktaki kayıtlar açıldı"
     );
-    assert_eq!(loss_time, 0);
-    // Zaman eşiği aralık dışı seq'leri uzun sessizlikte de ilan etmez.
+    let (pkt, time, _) = s.diag_loss();
+    assert!(pkt + time > first, "boşluktaki kayıtlar eşikle ilan edildi");
+    // out[12..] (varsa) bildirilmedi: uzun sessizlikte de eşikle ilan edilmez.
+    let before = s.diag_loss();
     for _ in 0..20 {
         now += 500 * MS;
         s.on_event(Event::TimerFired(Timer::Pto), now);
     }
-    let (loss_pkt2, loss_time2, _) = s.diag_loss();
+    let after = s.diag_loss();
     assert_eq!(
-        (loss_pkt2, loss_time2),
-        (1, 0),
-        "aralık dışı seq'ler eşikle ilan edilmemeli"
+        (after.0, after.1),
+        (before.0, before.1),
+        "bildirilmemiş seq'ler eşikle ilan edilmemeli"
     );
 }
 
