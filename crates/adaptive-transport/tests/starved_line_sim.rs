@@ -22,6 +22,10 @@
 //! Darboğazda her datagramın kuyruk beklemesi ve kuyrukta düşmeler, korumanın hız tahmininin
 //! zaman izi, PTT demetlerinin SIRALI teslim gecikmesi (ürün PTT şeridi sıralıdır), metnin
 //! gecikmesi, dosyanın bitişi, ileri hatta PTT tel baytı.
+//!
+//! [İŞ-35 AÇIK 2] PTT koruması tükendiğinde kurtarma: her PTT iletiminin darboğaz kaydı (`PttTx`),
+//! her ACK'in yolculuğu (`AckRec`: alıcının verdiği an, dönüş serileşmesinin başı, varış) ve
+//! göndericinin izi (`Scenario::diag`, salt gözlem). Testler dosyanın sonunda.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -29,8 +33,8 @@ use adaptive_transport::pacer::LineModel;
 use adaptive_transport::receiver::{feedback_horizon_ns, Receiver, RxDatagram, RxKind};
 use adaptive_transport::return_path::AckObservation;
 use adaptive_transport::sender::{
-    AckInfo, Event, FeedbackStarvedRule, ForwardCopyLineScale, ForwardCopyRule, OpaqueUnit, Sender,
-    Timer, TransmitDecision, TransmitKind,
+    AckInfo, EmitCause, EmitDiag, Event, FeedbackStarvedRule, ForwardCopyLineScale,
+    ForwardCopyRule, OpaqueUnit, Sender, Timer, TransmitDecision, TransmitKind,
 };
 
 const MS: u64 = 1_000_000;
@@ -98,6 +102,8 @@ struct Scenario {
     ack_return_bw: u64,
     /// Ölçüm aralığı göndericiye verilir mi (`false` = karşı-olgu: eski cephe tahmincisi).
     interval: bool,
+    /// Göndericinin emisyon / kayıp ilanı izi açılır (salt gözlem; karar okumaz).
+    diag: bool,
     seed: u64,
     t_max_ns: u64,
 }
@@ -121,6 +127,7 @@ impl Scenario {
             copy_scale_min: Some(PRODUCT_MIN_COPIES),
             ack_return_bw: PROFILE_DOWN,
             interval: true,
+            diag: false,
             seed,
             t_max_ns: 60 * SEC,
         }
@@ -138,6 +145,21 @@ struct Bottleneck {
     waits: Vec<(u64, u64)>,
     targeted: Option<(u64, u32)>,
     tx_of_unit: HashMap<u64, u32>,
+    /// PTT iletimleri (`unit_id < TEXT_ID`) darboğazda.
+    ptt_log: Vec<PttTx>,
+}
+
+/// Bir PTT iletiminin darboğazdaki kaydı.
+#[derive(Debug, Clone, Copy)]
+struct PttTx {
+    /// Göndericinin iletimi verdiği an.
+    at: u64,
+    seq: u64,
+    unit: u64,
+    /// Serileşmenin bittiği an; kuyrukta düştüyse `None`.
+    done: Option<u64>,
+    /// Hatta düşmedi (alıcıya varır).
+    delivered: bool,
 }
 
 impl Bottleneck {
@@ -163,6 +185,15 @@ impl Bottleneck {
         }
         if self.busy.len() >= self.queue_pkts {
             self.dropped_queue.push(now);
+            if unit_id < TEXT_ID {
+                self.ptt_log.push(PttTx {
+                    at: now,
+                    seq,
+                    unit: unit_id,
+                    done: None,
+                    delivered: false,
+                });
+            }
             return;
         }
         let start = self.busy.back().copied().unwrap_or(now).max(now);
@@ -173,6 +204,15 @@ impl Bottleneck {
         *n += 1;
         let targeted = self.targeted.is_some_and(|(u, k)| u == unit_id && *n <= k);
         let lost = self.rand_permille() < self.loss_permille;
+        if unit_id < TEXT_ID {
+            self.ptt_log.push(PttTx {
+                at: now,
+                seq,
+                unit: unit_id,
+                done: Some(done),
+                delivered: !(lost || targeted),
+            });
+        }
         if lost || targeted {
             return;
         }
@@ -184,6 +224,8 @@ impl Bottleneck {
 struct TxCount {
     datagrams: u64,
     ptt_wire_bytes: u64,
+    /// PTT iletimlerinin türü (seq → tür).
+    ptt_kind: HashMap<u64, TransmitKind>,
 }
 
 struct ReturnLine {
@@ -191,6 +233,8 @@ struct ReturnLine {
     free_at: u64,
     last_arrival: u64,
     wire: VecDeque<(u64, u64, u16, AckInfo, IntervalMsg)>,
+    /// Her ACK: (alıcının verdiği an, serileşmenin başladığı an).
+    log: Vec<(u64, u64)>,
 }
 
 /// Ölçüm aralığı (sözleşme §2): (m_first, largest, rx_span, M).
@@ -207,6 +251,7 @@ impl ReturnLine {
 
     fn send(&mut self, now: u64, udp: u64, arrival_rate: u16, ack: AckInfo, iv: IntervalMsg) {
         let start = self.free_at.max(now);
+        self.log.push((now, start));
         self.free_at = start + (udp + OVH) * SEC / PROFILE_DOWN;
         let arrival = (self.free_at + self.delay_at(self.free_at)).max(self.last_arrival);
         self.last_arrival = arrival;
@@ -229,6 +274,29 @@ struct Outcome {
     ptt_wire_bytes: u64,
     acks_at: Vec<u64>,
     interval: Option<(u64, u64, Option<i64>)>,
+    /// PTT iletimleri (darboğaz kaydı + göndericinin verdiği tür).
+    ptt_tx: Vec<(PttTx, TransmitKind)>,
+    /// ACK'ler varış sırasıyla.
+    acks: Vec<AckRec>,
+    /// Demet başına ilk varış (alıcı); varmayan `None`.
+    voice_first: Vec<Option<u64>>,
+    /// Göndericinin izi (`Scenario::diag`).
+    emit_log: Vec<EmitDiag>,
+}
+
+/// Bir ACK'in yolculuğu.
+#[derive(Debug, Clone, Copy)]
+struct AckRec {
+    /// Alıcının ACK'i verdiği an.
+    sent: u64,
+    /// Dönüş hattında serileşmenin başladığı an.
+    start: u64,
+    /// Göndericiye varış.
+    arrival: u64,
+    /// UDP yükü (B).
+    udp: u64,
+    /// Çerçevenin teyit ettiği en büyük seq.
+    largest: u64,
 }
 
 impl Outcome {
@@ -309,14 +377,18 @@ fn run(sc: &Scenario) -> Outcome {
         waits: Vec::new(),
         targeted: sc.targeted_drop,
         tx_of_unit: HashMap::new(),
+        ptt_log: Vec::new(),
     };
+    s.set_diag_emit_log(sc.diag);
     let mut reorder_lcg = sc.seed ^ 0x5A5A_5A5A;
     let mut ret = ReturnLine {
         plan: sc.rev_delay_plan.clone(),
         free_at: 0,
         last_arrival: 0,
         wire: VecDeque::new(),
+        log: Vec::new(),
     };
+    let mut ack_log: Vec<AckRec> = Vec::new();
     let mut first_arrival: HashMap<u64, u64> = HashMap::new();
     let mut received: Vec<u64> = Vec::new();
     let mut ack_fronts: VecDeque<u64> = VecDeque::new();
@@ -338,6 +410,7 @@ fn run(sc: &Scenario) -> Outcome {
             tx.datagrams += 1;
             if d.unit_id < TEXT_ID {
                 tx.ptt_wire_bytes += d.size + OVH;
+                tx.ptt_kind.insert(d.seq, d.kind);
             }
             fwd.send(now, d.seq, d.size, d.unit_id);
         }
@@ -489,6 +562,14 @@ fn run(sc: &Scenario) -> Outcome {
         while ret.wire.front().is_some_and(|&(t, _, _, _, _)| t <= now) {
             let (_, udp, arrival_rate, ack, (first, last, rx_span, m)) =
                 ret.wire.pop_front().expect("var");
+            let (sent, start) = ret.log[ack_log.len()];
+            ack_log.push(AckRec {
+                sent,
+                start,
+                arrival: now,
+                udp,
+                largest: ack.acked_seqs.iter().copied().max().unwrap_or(0),
+            });
             acks_at.push(now);
             s.observe_ack_feedback(
                 AckObservation {
@@ -534,6 +615,14 @@ fn run(sc: &Scenario) -> Outcome {
             }
         }
     }
+    let ptt_tx = fwd
+        .ptt_log
+        .iter()
+        .map(|&p| (p, tx.ptt_kind[&p.seq]))
+        .collect();
+    let voice_first = (0..voice_offered.len() as u64)
+        .map(|v| voice_arrived.get(&v).copied())
+        .collect();
     Outcome {
         file_done_ns,
         waits: fwd.waits.clone(),
@@ -545,6 +634,10 @@ fn run(sc: &Scenario) -> Outcome {
         ptt_wire_bytes: tx.ptt_wire_bytes,
         acks_at,
         interval: s.diag_line_guard_interval(),
+        ptt_tx,
+        acks: ack_log,
+        voice_first,
+        emit_log: s.take_diag_emit_log(),
     }
 }
 
@@ -880,4 +973,510 @@ fn five_lost_ptt_transmissions_are_covered_within_the_bounds() {
         oo.voice_max_from(0) > PTT_BOUND_NS,
         "karşı-olgu: beş iletimle demet sınırda kaldı"
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// [İŞ-35 AÇIK 2] PTT koruması tükendiğinde kurtarma.
+// ---------------------------------------------------------------------------------------------
+
+/// Bütün koruma iletimleri düşen demet (8,5 s'de planlanır).
+const LOST_BUNDLE: u64 = 40;
+/// Ürün kuralında beyan hızındaki toplam iletim (asıl + 6 kopya).
+const PRODUCT_TX: u32 = PRODUCT_COPIES as u32 + 1;
+
+/// Tam kaybın kurtarma izi.
+#[derive(Debug)]
+struct Recovery {
+    planned: u64,
+    /// Demetin ilk `n` iletimi (hepsi hatta düştü).
+    protect: Vec<(PttTx, TransmitKind)>,
+    /// Alıcının deliği gördüğünü gösteren ilk ACK: en büyüğü asıl iletimin seq'inden büyük.
+    hole_ack: Option<AckRec>,
+    /// Bütün koruma iletimlerinin ardından alınanı gösteren ilk ACK: en büyüğü son koruma
+    /// iletiminin seq'inden büyük.
+    gap_ack: Option<AckRec>,
+    /// Göndericinin asıl iletimi kayıp ilan ettiği an (iz).
+    declared: Option<(u64, EmitCause)>,
+    /// Koruma iletimlerinden sonraki ilk iletim (kurtarma).
+    rtx: Option<(PttTx, TransmitKind)>,
+    /// Demetin alıcıya ilk varışı.
+    arrival: Option<u64>,
+    /// Sıralı teslim gecikmesi.
+    played: Option<u64>,
+}
+
+fn recovery_of(o: &Outcome, bundle: u64, n: usize) -> Recovery {
+    let txs: Vec<(PttTx, TransmitKind)> = o
+        .ptt_tx
+        .iter()
+        .copied()
+        .filter(|(p, _)| p.unit == bundle)
+        .collect();
+    let protect: Vec<_> = txs.iter().copied().take(n).collect();
+    let s0 = protect.first().map_or(u64::MAX, |(p, _)| p.seq);
+    let s_last = protect.last().map_or(u64::MAX, |(p, _)| p.seq);
+    let hole_ack = o.acks.iter().copied().find(|a| a.largest > s0);
+    let gap_ack = o.acks.iter().copied().find(|a| a.largest > s_last);
+    let declared = o
+        .emit_log
+        .iter()
+        .find(|e| {
+            e.seq == s0
+                && matches!(
+                    e.cause,
+                    EmitCause::LossPacketThreshold | EmitCause::LossTimeThreshold
+                )
+        })
+        .map(|e| (e.at_ns, e.cause));
+    let planned = VOICE_START_NS + bundle * VOICE_PERIOD_NS;
+    let k = usize::try_from(bundle).expect("küçük");
+    Recovery {
+        planned,
+        protect,
+        hole_ack,
+        gap_ack,
+        declared,
+        rtx: txs.get(n).copied(),
+        arrival: o.voice_first.get(k).copied().flatten(),
+        played: o.voice.get(k).and_then(|&(_, d)| d),
+    }
+}
+
+fn print_recovery(tag: &str, o: &Outcome, r: &Recovery) {
+    let rel = |t: u64| format!("{:+.3}", (t as f64 - r.planned as f64) / SEC as f64);
+    println!(
+        "KURTARMA {tag}: demet {} planlı {}",
+        (r.planned - VOICE_START_NS) / VOICE_PERIOD_NS,
+        secs(r.planned)
+    );
+    for (p, k) in &r.protect {
+        println!(
+            "  koruma seq {} {:?} ver {} bit {} varır {}",
+            p.seq,
+            k,
+            rel(p.at),
+            p.done.map_or("kuyrukta düştü".to_string(), rel),
+            p.delivered
+        );
+    }
+    let ack = |a: &Option<AckRec>| {
+        a.map_or("YOK".to_string(), |a| {
+            format!(
+                "alıcı verdi {} serileşme {} varış {} udp {} en büyük {}",
+                rel(a.sent),
+                rel(a.start),
+                rel(a.arrival),
+                a.udp,
+                a.largest
+            )
+        })
+    };
+    println!("  delik ACK'i: {}", ack(&r.hole_ack));
+    println!("  boşluk ACK'i: {}", ack(&r.gap_ack));
+    println!("  ilan: {:?}", r.declared.map(|(t, c)| (rel(t), c)));
+    println!(
+        "  kurtarma: {:?}",
+        r.rtx
+            .map(|(p, k)| (p.seq, k, rel(p.at), p.done.map(rel), p.delivered))
+    );
+    println!(
+        "  varış {} sıralı teslim {}",
+        r.arrival.map_or("YOK".to_string(), rel),
+        r.played.map_or("YOK".to_string(), secs)
+    );
+    let behind: Vec<String> = o
+        .voice
+        .iter()
+        .filter(|&&(p, d)| p > r.planned && d.is_none_or(|d| d > PTT_BOUND_NS))
+        .map(|&(p, d)| {
+            format!(
+                "{}:{}",
+                (p - VOICE_START_NS) / VOICE_PERIOD_NS,
+                d.map_or("YOK".to_string(), secs)
+            )
+        })
+        .collect();
+    println!(
+        "  ardındaki 1 s aşan demetler ({}): {:?}",
+        behind.len(),
+        behind
+    );
+    let gaps: Vec<u64> = o
+        .acks
+        .windows(2)
+        .map(|w| w[1].arrival - w[0].arrival)
+        .collect();
+    println!(
+        "  ACK sayısı {} aralık min {} max {}  udp min {} max {}",
+        o.acks.len(),
+        secs(gaps.iter().copied().min().unwrap_or(0)),
+        secs(gaps.iter().copied().max().unwrap_or(0)),
+        o.acks.iter().map(|a| a.udp).min().unwrap_or(0),
+        o.acks.iter().map(|a| a.udp).max().unwrap_or(0),
+    );
+}
+
+fn all_lost(ack_bw: u64, file_at_ns: u64) -> Scenario {
+    Scenario {
+        loss_permille: 0,
+        targeted_drop: Some((LOST_BUNDLE, PRODUCT_TX)),
+        text_at_ns: Some(8_600 * MS),
+        file_at_ns,
+        voice_until_ns: 20 * SEC,
+        ack_return_bw: ack_bw,
+        diag: true,
+        ..Scenario::honest(1)
+    }
+}
+
+/// ACK kadansının iki kolu (alıcının ACK bütçesinin hesaplandığı dönüş hızı) ve dosyanın PTT'yle
+/// eşzamanlı akıp akmadığı: (ad, ACK bütçesi B/s, dosyanın sunum anı).
+const RECOVERY_ARMS: [(&str, u64, u64); 4] = [
+    ("seyrek/boşta", PROFILE_DOWN, 0),
+    ("sık/boşta", 4 * PROFILE_DOWN, 0),
+    ("seyrek/dosya", PROFILE_DOWN, 7 * SEC),
+    ("sık/dosya", 4 * PROFILE_DOWN, 7 * SEC),
+];
+
+/// Göndericide boşluğu gösteren ACK'ten sonra kurtarma iletiminin hattı terk etmesine dek izin
+/// verilen en büyük süre: hatta o an serileşen bir tam datagram (kesilemez) + kurtarma iletiminin
+/// kendi serileşmesi (beyan hızında) + bir benzetim adımı.
+const HOLE_TO_LINE_EXIT_NS: u64 =
+    (MTU + OVH) * SEC / PROFILE_UP + (VOICE_UNIT + OVH) * SEC / PROFILE_UP + MS;
+
+/// [İŞ-35 AÇIK 2 · (1)] Bir PTT demetinin bütün koruma iletimleri (ürün kuralı: 7) düşer. Alıcının
+/// deliği gördüğünü gösteren İLK ACK göndericiye vardıktan sonra kurtarma iletimi gecikmeden ve
+/// öncelikli çıkar: hattı terk etmesi ≤ ACK varışı + [`HOLE_TO_LINE_EXIT_NS`].
+///
+/// Tarama: dört kol × 30 demet (30..60; demetin planlı anı ACK kadansına göre kayar). Bazı demetlerde
+/// deliği gösteren ilk ACK'in en büyük seq'i asıl iletimden yalnız 1–2 büyüktür (alıcının sırasız
+/// varışta verdiği ACK): paket eşiği (3) tutmaz. Düzeltmeden önce bu demetlerin kurtarması zaman
+/// eşiğini (9/8·srtt) bekliyordu (129–175 ms; ACK gelmiş, hat boş). Test o kümenin var olduğunu da
+/// iddia eder (senaryo kusuru sınıyor).
+///
+/// Ayrıca: deliği gösteren ACK'ten sonraki 1 s içinde birim tam bir kez yeniden iletilir (erken
+/// kayıt ve dedektörün sonraki ilanı çift gönderim üretmez).
+///
+/// PTO probu deliği gösteren ACK'ten ÖNCE çıktıysa (seyrek kolda ACK aralığı ≈ 5 s, PTO ≈ 3,4 s) bu
+/// iddia o demet için boştur ve sayılmaz.
+#[test]
+fn all_lost_ptt_recovery_leaves_on_the_first_ack_that_shows_the_hole() {
+    let mut below_threshold = 0usize;
+    let mut checked = 0usize;
+    let mut worst: Vec<String> = Vec::new();
+    let mut unmarked: Vec<String> = Vec::new();
+    let mut doubled: Vec<String> = Vec::new();
+    for (tag, bw, fat) in RECOVERY_ARMS {
+        for b in 30..60u64 {
+            let sc = Scenario {
+                targeted_drop: Some((b, PRODUCT_TX)),
+                ..all_lost(bw, fat)
+            };
+            let o = run(&sc);
+            let r = recovery_of(&o, b, PRODUCT_TX as usize);
+            assert_eq!(
+                r.protect.len(),
+                PRODUCT_TX as usize,
+                "{tag} demet {b}: iletim sayısı"
+            );
+            assert!(
+                r.protect.iter().all(|(p, _)| !p.delivered),
+                "{tag} demet {b}: koruma iletimi vardı"
+            );
+            let hole = r.hole_ack.expect("deliği gösteren ACK");
+            let (rtx, _) = r.rtx.expect("kurtarma iletimi");
+            assert!(rtx.delivered, "{tag} demet {b}: kurtarma iletimi düştü");
+            if rtx.at < hole.arrival {
+                continue;
+            }
+            checked += 1;
+            let s0 = r.protect[0].0.seq;
+            if hole.largest - s0 < adaptive_transport::loss::PACKET_THRESHOLD {
+                below_threshold += 1;
+            }
+            if hole.largest - s0 < adaptive_transport::loss::PACKET_THRESHOLD
+                && !o.emit_log.iter().any(|e| {
+                    e.seq == s0 && e.cause == EmitCause::PriorityHeadHole && e.at_ns == hole.arrival
+                })
+            {
+                unmarked.push(format!("{tag} demet {b}"));
+            }
+            // Erken kayıt ile dedektörün sonraki ilanı birimi iki kez yeniden göndermez: deliği
+            // gösteren ACK'ten sonraki 1 s içinde (sonraki ACK ≥ 1 s sonra) tek yeniden iletim.
+            let retx = o
+                .ptt_tx
+                .iter()
+                .filter(|(p, k)| {
+                    p.unit == b
+                        && *k == TransmitKind::Retransmit
+                        && p.at >= hole.arrival
+                        && p.at < hole.arrival + SEC
+                })
+                .count();
+            if retx != 1 {
+                doubled.push(format!("{tag} demet {b}: {retx}"));
+            }
+            let exit = rtx.done.expect("hatta") - hole.arrival;
+            if hole.largest - s0 < adaptive_transport::loss::PACKET_THRESHOLD {
+                println!(
+                    "İŞ35/1 eşik altı {tag} demet {b}: en büyük−asıl {} ACK varışı {} → hattı terk {} \
+                     (+{} ms)",
+                    hole.largest - s0,
+                    secs(hole.arrival),
+                    secs(rtx.done.unwrap_or(0)),
+                    exit / MS
+                );
+            }
+            if exit > HOLE_TO_LINE_EXIT_NS {
+                worst.push(format!(
+                    "{tag} demet {b}: en büyük−asıl {} ACK varışı {} → hattı terk {} (+{} ms)",
+                    hole.largest - s0,
+                    secs(hole.arrival),
+                    secs(rtx.done.unwrap_or(0)),
+                    exit / MS
+                ));
+            }
+        }
+    }
+    println!("İŞ35/1: sınanan {checked} demet, paket eşiğinin altında delik {below_threshold}");
+    for w in &worst {
+        println!("İŞ35/1 GECİKME {w}");
+    }
+    assert!(
+        below_threshold > 0,
+        "senaryo sınamıyor: deliği gösteren ilk ACK hep paket eşiğinde"
+    );
+    assert!(checked >= 60, "sınanan demet az: {checked}");
+    assert!(
+        worst.is_empty(),
+        "{} demette kurtarma ACK'ten sonra gecikti (sınır {} ms)",
+        worst.len(),
+        HOLE_TO_LINE_EXIT_NS / MS
+    );
+    assert!(
+        unmarked.is_empty(),
+        "şerit başının deliği ACK'te kaydedilmedi: {unmarked:?}"
+    );
+    assert!(
+        doubled.is_empty(),
+        "deliği gösteren ACK'ten sonra 1 s içinde yeniden iletim sayısı 1 değil: {doubled:?}"
+    );
+}
+
+/// Tam kayıptan sonra ACK'li kurtarmanın fiziksel alt sınırı (demetin planlı anına göre değil, asıl
+/// iletimin hattı terk ettiği andan): delik alıcıda en erken asıl iletimin varacağı anda görülür
+/// (`ONE_WAY`), en küçük ACK (`ack_udp` + 28 B zarf) 62 B/s dönüş hattında serileşir ve göndericiye
+/// varır (`ONE_WAY`), kurtarma iletimi (86 + 28 B) beyan hızında serileşir ve alıcıya varır
+/// (`ONE_WAY`). Alıcının ACK bekletmesi, ACK bütçesi ve dönüş hattının kuyruğu SIFIR alınır.
+fn ack_recovery_floor_ns(ack_udp: u64) -> u64 {
+    3 * ONE_WAY_NS + (ack_udp + OVH) * SEC / PROFILE_DOWN + (VOICE_UNIT + OVH) * SEC / PROFILE_UP
+}
+
+/// [İŞ-35 AÇIK 2 · (1)(2)] Ürün kuralı, demet 40'ın yedi iletimi de düşer, başka kayıp yok; ACK
+/// kadansı seyrek (bütçe 62 B/s'den, ACK aralığı ≈ 5 s) ve sık (4×62, ≈ 1,1 s), dosya boşta ve
+/// PTT'yle eşzamanlı. İddialar:
+///
+/// * Demet, deliği gösteren ilk ACK'in göndericiye varışından sonra en geç bir ileri geçişte
+///   (`HOLE_TO_LINE_EXIT_NS` + 300 ms) alıcıdadır (PTO probu daha önce taşıdıysa daha erken).
+/// * Varış fiziksel alt sınırın ([`ack_recovery_floor_ns`], o koşudaki en küçük ACK'le) altında
+///   değildir (düzenek sağlaması).
+/// * Ardındaki demetler yalnız demet 40'ın arkasında bekler: demet k'nin sıralı teslim gecikmesi
+///   ≤ max(demet 40'ın varışı − k'nin planı, 1 s); demet 40 vardıktan sonra planlanan her demet
+///   ≤ 1 s. Metin ≤ 1 s, dosya ≤ 14 s.
+///
+/// Gecikmenin ayrıştırması (alıcının bekletmesi, dönüş kuyruğu, ACK serileşmesi, gönderici, ileri
+/// geçiş) raporlanır.
+#[test]
+fn all_lost_ptt_recovery_follows_the_first_ack_and_only_it_blocks_the_lane() {
+    for (tag, bw, fat) in RECOVERY_ARMS {
+        let sc = all_lost(bw, fat);
+        let o = run(&sc);
+        report(tag, &sc, &o);
+        let r = recovery_of(&o, LOST_BUNDLE, PRODUCT_TX as usize);
+        print_recovery(tag, &o, &r);
+        let (p0, _) = r.protect[0];
+        let p0_done = p0.done.expect("asıl iletim hatta");
+        let hole = r.hole_ack.expect("deliği gösteren ACK");
+        let (rtx, rtx_kind) = r.rtx.expect("kurtarma");
+        let arrival = r.arrival.expect("demet vardı");
+        let ack_min = o.acks.iter().map(|a| a.udp).min().expect("ACK");
+        let floor = p0_done + ack_recovery_floor_ns(ack_min);
+        println!(
+            "İŞ35/2 {tag}: asıl hattı terk {} | delik alıcıda en erken {} | ACK verildi {} \
+             (alıcı bekletmesi {} ms) serileşme {} (dönüş kuyruğu {} ms) varış {} (ACK {} B, \
+             serileşme {} ms) | kurtarma {:?} çıktı {} hattı terk {} | varış {} | alt sınır {} \
+             (en küçük ACK {} B) | sıralı teslim {}",
+            secs(p0_done),
+            secs(p0_done + ONE_WAY_NS),
+            secs(hole.sent),
+            hole.sent.saturating_sub(p0_done + ONE_WAY_NS) / MS,
+            secs(hole.start),
+            (hole.start - hole.sent) / MS,
+            secs(hole.arrival),
+            hole.udp + OVH,
+            (hole.udp + OVH) * 1000 / PROFILE_DOWN,
+            rtx_kind,
+            secs(rtx.at),
+            secs(rtx.done.unwrap_or(0)),
+            secs(arrival),
+            secs(floor),
+            ack_min,
+            r.played.map_or("YOK".to_string(), secs)
+        );
+        assert!(rtx.delivered, "{tag}: kurtarma iletimi düştü");
+        assert!(
+            arrival >= floor,
+            "{tag}: varış fiziksel alt sınırın altında"
+        );
+        assert!(
+            arrival <= hole.arrival + HOLE_TO_LINE_EXIT_NS + ONE_WAY_NS,
+            "{tag}: demet ilk ACK'ten bir ileri geçiş sonra yok ({} > {})",
+            secs(arrival),
+            secs(hole.arrival + HOLE_TO_LINE_EXIT_NS + ONE_WAY_NS)
+        );
+        for &(planned, d) in o.voice.iter().filter(|&&(p, _)| p > r.planned) {
+            let d = d.expect("demet teslim edildi");
+            let behind = arrival.saturating_sub(planned);
+            assert!(
+                d <= behind.max(PTT_BOUND_NS),
+                "{tag}: demet {} ayrıca bekledi ({} > {})",
+                (planned - VOICE_START_NS) / VOICE_PERIOD_NS,
+                secs(d),
+                secs(behind)
+            );
+        }
+        assert!(
+            o.voice_max_from(arrival) <= PTT_BOUND_NS,
+            "{tag}: kurtarmadan sonra PTT {}",
+            secs(o.voice_max_from(arrival))
+        );
+        assert!(
+            o.text_delay_ns.is_some_and(|d| d <= TEXT_BOUND_NS),
+            "{tag}: metin {:?}",
+            o.text_delay_ns
+        );
+        let file = o.file_done_ns.expect("dosya bitti");
+        assert!(file <= FILE_BOUND_NS + fat, "{tag}: dosya {}", secs(file));
+    }
+    // Rapor: aynı tam kayıp, dürüst profilin %20 bağımsız kaybıyla (kurtarma iletimi de düşebilir).
+    for (tag, bw) in [("seyrek", PROFILE_DOWN), ("sık", 4 * PROFILE_DOWN)] {
+        for seed in 1..=3u64 {
+            let sc = Scenario {
+                loss_permille: 200,
+                seed,
+                ..all_lost(bw, 7 * SEC)
+            };
+            let o = run(&sc);
+            let r = recovery_of(&o, LOST_BUNDLE, PRODUCT_TX as usize);
+            println!(
+                "İŞ35/2 %20 kayıp {tag} tohum {seed}: demet 40 sıralı teslim {} (kurtarmaya dek iletim {}) \
+                 PTT max {} dosya {}",
+                r.played.map_or("YOK".to_string(), secs),
+                o.ptt_tx
+                    .iter()
+                    .filter(|(p, _)| p.unit == LOST_BUNDLE && r.arrival.is_none_or(|a| p.at <= a))
+                    .count(),
+                secs(o.voice_max_from(0)),
+                o.file_done_ns.map_or("YOK".to_string(), secs)
+            );
+        }
+    }
+}
+
+/// [İŞ-35 AÇIK 2 · ÇÖZÜLMEDİ] Bütün koruma iletimleri düşen demet PTT sınırında (1 s) teslim
+/// edilmez; bu test o iddiayı yapar ve KIRMIZIDIR (gizlenmez).
+///
+/// Fiziksel alt sınır ([`ack_recovery_floor_ns`]; varsayımlar: tek yön 300 ms üç geçiş — asıl
+/// iletim, ACK, kurtarma —, dönüş 62 B/s, alıcı deliği asıl iletimin varacağı anda görür ve
+/// beklemeden ACK'ler, ACK bütçesi ve dönüş kuyruğu yok, ileri beyan 12 500 B/s):
+///
+/// * yalnız zarflı (28 B, gövdesiz) bir ACK'le: 3 × 300 + 28 / 62 s + 114 / 12 500 s ≈ 1 361 ms;
+/// * bu düzenekte görülen en küçük ACK'le (37 + 28 B): 900 + 1 048 + 9 ≈ 1 957 ms.
+///
+/// İkisi de PTT sınırının (1 s, planlı andan) üstündedir; ACK'li kurtarmayla 1 s bu varsayımlar
+/// altında mümkün değildir. ACK kadansı payı da eklenir: seyrek kolda ACK aralığı ≈ 5 s, sık kolda
+/// ≈ 1,1 s; dönüş hattında önceki ACK'in serileşmesi ≤ 1,3 s. Sınırı tutmanın yolu ACK'siz
+/// korumadır (iletim sayısı, aralığı ya da FEC); bu görevin kapsamı dışında (kopya sayısı
+/// artırılmaz).
+#[test]
+fn all_lost_ptt_bundle_within_the_1s_bound() {
+    let header_only = ack_recovery_floor_ns(0);
+    assert!(
+        header_only > PTT_BOUND_NS,
+        "alt sınır 1 s'nin altında: {}",
+        secs(header_only)
+    );
+    let mut over = Vec::new();
+    for (tag, bw, fat) in RECOVERY_ARMS {
+        let o = run(&all_lost(bw, fat));
+        let r = recovery_of(&o, LOST_BUNDLE, PRODUCT_TX as usize);
+        let d = r.played.unwrap_or(u64::MAX);
+        if d > PTT_BOUND_NS {
+            over.push(format!("{tag}: {}", secs(d)));
+        }
+    }
+    assert!(
+        over.is_empty(),
+        "ÇÖZÜLMEDİ: tam kayıpta demet 1 s'yi aşıyor ({}); ACK'li kurtarmanın alt sınırı {} \
+         (gövdesiz ACK) / {} (37 B ACK)",
+        over.join(", "),
+        secs(header_only),
+        secs(ack_recovery_floor_ns(37))
+    );
+}
+
+/// [İŞ-35 AÇIK 2 · bant bedeli] 7 iletim (ürün kuralı: 6 kopya, 200/7 ms, ölçülen yavaş hatta en az
+/// 6) ve 5 iletim (2026-11-16 kuralı: 4 kopya, 40 ms, ölçeksiz): ileri hatta PTT tel baytı ve payı,
+/// dürüst dosya süresi (%20 kayıp, 41 kB, sık ACK kolu 4×62; düzenekte FEC yok, kurtarma yalnız
+/// ARQ), daralma senaryosunda (12 500 → 6 250, 8 s) daralma başlangıcından en kötü PTT. Rapor;
+/// sağlama yalnız bayt sırası.
+#[test]
+fn ptt_band_cost_seven_versus_five_transmissions() {
+    let arms: [(&str, u8, u64, Option<u8>); 2] = [
+        (
+            "7 iletim",
+            PRODUCT_COPIES,
+            PRODUCT_SPACING_NS,
+            Some(PRODUCT_MIN_COPIES),
+        ),
+        ("5 iletim", OLD_COPIES, OLD_SPACING_NS, None),
+    ];
+    let voice_until = 20 * SEC;
+    let mut bytes = [0u64; 2];
+    for (i, &(tag, copies, spacing_ns, scale)) in arms.iter().enumerate() {
+        for seed in 1..=3u64 {
+            let sc = Scenario {
+                voice_until_ns: voice_until,
+                ack_return_bw: 4 * PROFILE_DOWN,
+                copies,
+                spacing_ns,
+                copy_scale_min: scale,
+                ..Scenario::honest(seed)
+            };
+            let o = run(&sc);
+            bytes[i] += o.ptt_wire_bytes;
+            let voice_s = (voice_until - VOICE_START_NS) as f64 / SEC as f64;
+            let ptt_bps = o.ptt_wire_bytes as f64 / voice_s;
+            let drop = Scenario {
+                copies,
+                spacing_ns,
+                copy_scale_min: scale,
+                ..drop_scenario(seed, true)
+            };
+            let od = run(&drop);
+            println!(
+                "İŞ35/BANT {tag} tohum {seed}: PTT tel {} B ({:.0} B/s, hattın %{:.1}) dosya {} PTT max {} | \
+                 daralma: PTT max (8 s'den) {} dosya {} kuyruk_düşen {}",
+                o.ptt_wire_bytes,
+                ptt_bps,
+                100.0 * ptt_bps / PROFILE_UP as f64,
+                o.file_done_ns.map_or("YOK".to_string(), secs),
+                secs(o.voice_max_from(0)),
+                secs(od.voice_max_from(DROP_AT_NS)),
+                od.file_done_ns.map_or("YOK".to_string(), secs),
+                od.drops_queue
+            );
+        }
+    }
+    assert!(bytes[0] > bytes[1], "7 iletim 5'ten az bayt: {bytes:?}");
 }
