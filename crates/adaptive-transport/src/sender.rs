@@ -1509,6 +1509,175 @@ pub struct EmitDiag {
 /// [İZ-NEDEN] İz tavanı (SR-AUDIT-001); dolunca yeni kayıt yazılmaz.
 const EMIT_LOG_CAP: usize = 65_536;
 
+/// [İZ-ARALIK] Hat korumasının ACK başına karar kaydının tavanı (SR-AUDIT-001): halka; dolunca en
+/// eski kayıt düşer ([`LineGuardAckTrace::index`] boşluğu düşeni gösterir).
+pub const LINE_GUARD_TRACE_CAP: usize = 64;
+
+/// [İZ-ARALIK] Çalışma zamanının bir ACK için verdiği ölçüm aralığı notu:
+/// [`Sender::note_ack_forward_interval`] girdisi, geçerlilik süzgecinden ÖNCE (salt gözlem).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ForwardIntervalNote {
+    pub first_seq: u64,
+    pub last_seq: u64,
+    /// Alıcıdaki varış süresi (ns); `None` = alan yok (0xFFFF).
+    pub rx_span_ns: Option<u64>,
+}
+
+/// [İZ-ARALIK] Hat korumasının bir ACK'teki aşağı yönlü kararı. Korumanın gözlem sayaçlarının
+/// (`samples`, `interval_diag`) ACK'ten önceki ve sonraki farkından türetilir; karar yolu bu
+/// sınıflamayı okumaz.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum LineGuardAckDecision {
+    /// Ölçüm aralığı örnek verdi ve uygulandı: hız `rate_after`'a indi (`min(tavan, örnek)`).
+    IntervalSample,
+    /// Aralık ölçüldü (`g` hesaplandı), kuyruk artışı eşiğin altında: örnek yok.
+    IntervalNoSample,
+    /// Aralık örnek önerdi ama ACK ölçüm noktası üretmedi (ACK tel boyu yok, `ack_delay`
+    /// tavanda ya da cephe ilerlemedi): uygulanmadı.
+    IntervalSampleUnapplied,
+    /// Aralık korumaya geçti ama göndericinin kaydında kurulamadı (uç seq kaydı yok ya da gönderim
+    /// süresi 0): `g` yok.
+    IntervalUnresolved,
+    /// Aşağı yönlü örneği eski cephe tahmincisi verdi.
+    Frontier,
+    /// Bu ACK'te ölçüm aralığı yok (ya da geçersiz) ve cephe örneği yok.
+    #[default]
+    NoMeasurement,
+    /// Çerçevede motorun gönderdiği seq yok: koruma çağrılmadı.
+    NotConsulted,
+}
+
+/// [İZ-ARALIK] Hat korumasının bir ACK kaydı (salt gözlem; [`Sender::diag_line_guard_trace`]).
+/// Yalnız geri bildirimi aç kuralın hat koruması kuruluyken ve kayıt açıkken
+/// ([`Sender::set_diag_line_guard_trace`]) yazılır.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct LineGuardAckTrace {
+    /// Kayıt sırası (1'den; halkadan düşenler dahil sayılır).
+    pub index: u64,
+    /// ACK'in işlendiği an (motor saati, ns).
+    pub at_ns: u64,
+    /// Çerçevenin teyit ettiği, motorun gönderdiği en büyük seq (`NotConsulted`'da 0).
+    pub largest_seq: u64,
+    /// Çalışma zamanının bu ACK için verdiği aralık notu; `None` = not yok (V2 çerçevesi ya da
+    /// çalışma zamanı M'yi motor seq'ine çeviremedi).
+    pub note: Option<ForwardIntervalNote>,
+    /// Not ölçüm olarak korumaya geçti (rx_span var, uçlar M'de, aralık gönderilmiş seq'lerde).
+    pub measured: bool,
+    /// Bu ACK'te hesaplanan kuyruk artışı `g` (ns; `LineGuard::interval_diag`); hesaplanmadıysa
+    /// `None`.
+    pub g_ns: Option<i64>,
+    pub decision: LineGuardAckDecision,
+    /// Korumanın gönderim tavanı (B/s, tel) ACK'ten önce ve sonra.
+    pub pace_before: u64,
+    pub pace_after: u64,
+    /// Korunan hat hızı (B/s, tel) ACK'ten önce ve sonra; `None` = koruma devrede değil.
+    pub rate_before: Option<u64>,
+    pub rate_after: Option<u64>,
+    /// Bu ACK'te işlenen ilk varış penceresinin sonucu (oturumun ilk ACK'i).
+    pub first_window: Option<crate::line_guard::FirstWindowOutcome>,
+    /// Bu ACK'te süreli yoklamanın hükmü: kalıcı yükseltme / başarısızlık.
+    pub raised: bool,
+    pub probe_failed: bool,
+}
+
+/// [İZ-ARALIK] Korumanın gözlem durumu (kaydın önce / sonra farkı için).
+#[derive(Debug, Clone, Copy)]
+struct LineGuardSnap {
+    pace: u64,
+    rate: Option<u64>,
+    samples: u64,
+    interval: (u64, u64, Option<i64>),
+    raises: u64,
+    probe_failures: u64,
+    first_window: Option<crate::line_guard::FirstWindowOutcome>,
+}
+
+impl LineGuardSnap {
+    fn of(g: &crate::line_guard::LineGuard) -> Self {
+        Self {
+            pace: g.pace_bps(),
+            rate: g.rate_bps(),
+            samples: g.samples(),
+            interval: g.interval_diag(),
+            raises: g.raises(),
+            probe_failures: g.probe_failures(),
+            first_window: g.first_window(),
+        }
+    }
+}
+
+/// [İZ-ARALIK] Kayıt halkası ve bir sonraki ACK'in aralık notu.
+#[derive(Debug, Clone, Default)]
+struct LineGuardTraceRing {
+    total: u64,
+    log: VecDeque<LineGuardAckTrace>,
+    note: Option<ForwardIntervalNote>,
+}
+
+impl LineGuardTraceRing {
+    fn push(&mut self, mut rec: LineGuardAckTrace) {
+        self.total = self.total.saturating_add(1);
+        rec.index = self.total;
+        if self.log.len() >= LINE_GUARD_TRACE_CAP {
+            self.log.pop_front();
+        }
+        self.log.push_back(rec);
+    }
+}
+
+/// [İZ-ARALIK] ACK'in kaydı: korumanın önceki ve sonraki gözlem durumundan karar sınıfı.
+/// `measured` = aralık korumaya ölçüm olarak verildi; `largest` = `None` ise koruma çağrılmadı.
+fn line_guard_trace_record(
+    at_ns: u64,
+    largest: Option<u64>,
+    note: Option<ForwardIntervalNote>,
+    measured: bool,
+    before: LineGuardSnap,
+    after: LineGuardSnap,
+) -> LineGuardAckTrace {
+    // İlk varış penceresi bu ACK'te işlendiyse örneği ACK'in kendi örneğinden ayrılır.
+    let first_window = before
+        .first_window
+        .is_none()
+        .then_some(after.first_window)
+        .flatten();
+    let window_sample = u64::from(matches!(
+        first_window,
+        Some(crate::line_guard::FirstWindowOutcome::Sample(_))
+    ));
+    let ack_samples = after
+        .samples
+        .saturating_sub(before.samples)
+        .saturating_sub(window_sample);
+    let checked = after.interval.0 > before.interval.0;
+    let proposed = after.interval.1 > before.interval.1;
+    let decision = match (largest.is_some(), ack_samples > 0, proposed, checked) {
+        (false, ..) => LineGuardAckDecision::NotConsulted,
+        (true, true, true, _) => LineGuardAckDecision::IntervalSample,
+        (true, true, false, _) => LineGuardAckDecision::Frontier,
+        (true, false, true, _) => LineGuardAckDecision::IntervalSampleUnapplied,
+        (true, false, false, true) => LineGuardAckDecision::IntervalNoSample,
+        (true, false, false, false) if measured => LineGuardAckDecision::IntervalUnresolved,
+        (true, false, false, false) => LineGuardAckDecision::NoMeasurement,
+    };
+    LineGuardAckTrace {
+        index: 0,
+        at_ns,
+        largest_seq: largest.unwrap_or(0),
+        note,
+        measured,
+        g_ns: checked.then_some(after.interval.2).flatten(),
+        decision,
+        pace_before: before.pace,
+        pace_after: after.pace,
+        rate_before: before.rate,
+        rate_after: after.rate,
+        first_window,
+        raised: after.raises > before.raises,
+        probe_failed: after.probe_failures > before.probe_failures,
+    }
+}
+
 /// [PTT-KOPYA-BÜTÇESİ] Öncelikli şeridin kopyası, bilinen hat kuyruğu bu süreyi (bir PTT demet
 /// aralığı, 200 ms) aşarken çıkmaz: kopyalar sonraki demetin orijinalini bir demet aralığından
 /// fazla bekletemez.
@@ -1883,6 +2052,9 @@ pub struct Sender {
     cc_line_guard: Option<crate::line_guard::LineGuard>,
     /// [İZ-NEDEN] Emisyon / kayıp ilanı izi; `None` = kapalı (varsayılan).
     diag_emit_log: Option<Vec<EmitDiag>>,
+    /// [İZ-ARALIK] Hat korumasının ACK başına karar kaydı; `None` = kapalı (varsayılan). Açıkken
+    /// de yalnız hat koruması kuruluyken yazılır (halka ilk kayda dek bellek ayırmaz).
+    diag_line_guard_trace: Option<LineGuardTraceRing>,
     /// [PTT-SIRA · PTT-KOPYA-BÜTÇESİ] Gözlem sayaçları: öncelikli şeridin önce çıkan ARQ kaydı,
     /// bayat diye iptal edilen kopya, hat kuyruğu yüzünden ertelenen kopya denemesi.
     prio_arq_first: u64,
@@ -2246,6 +2418,7 @@ impl Sender {
             cc_feedback_starved: None,
             cc_line_guard: None,
             diag_emit_log: None,
+            diag_line_guard_trace: None,
             prio_arq_first: 0,
             prio_copy_stale: 0,
             prio_copy_deferred: 0,
@@ -3960,7 +4133,7 @@ impl Sender {
             cc.set_external_bw(Some(btlbw));
             cc.on_end_acks(now_ns, inflight, any_app_limited || idle_now, largest);
         }
-        self.cc_line_guard_on_ack(ack, now_ns);
+        self.cc_line_guard_on_ack_traced(ack, now_ns);
         if self.diag_emit_log.is_some() {
             let top = ack
                 .acked_seqs
@@ -3997,6 +4170,49 @@ impl Sender {
                 self.tail_recovery.disarm();
             }
         }
+    }
+
+    /// [İZ-ARALIK] [`Self::cc_line_guard_on_ack`] ve ACK başına karar kaydı. SALT GÖZLEM: korumanın
+    /// gözlem durumu çağrıdan önce ve sonra okunur, fark kayda yazılır; çağrının girdisi ve sırası
+    /// kayıt kapalıykenkiyle aynıdır. Kayıt kapalıysa ya da koruma kurulu değilse yalnız çağrı.
+    fn cc_line_guard_on_ack_traced(&mut self, ack: &AckInfo, now_ns: u64) {
+        let pre = match (
+            self.diag_line_guard_trace.as_mut(),
+            self.cc_line_guard.as_ref(),
+        ) {
+            (Some(t), Some(g)) => Some((
+                LineGuardSnap::of(g),
+                t.note.take(),
+                self.pending_forward_interval.is_some(),
+            )),
+            (Some(t), None) => {
+                t.note = None;
+                None
+            }
+            (None, _) => None,
+        };
+        self.cc_line_guard_on_ack(ack, now_ns);
+        let (Some((before, note, measured)), Some(g), Some(t)) = (
+            pre,
+            self.cc_line_guard.as_ref(),
+            self.diag_line_guard_trace.as_mut(),
+        ) else {
+            return;
+        };
+        let largest = ack
+            .acked_seqs
+            .iter()
+            .copied()
+            .filter(|&s| s < self.next_seq)
+            .max();
+        t.push(line_guard_trace_record(
+            now_ns,
+            largest,
+            note,
+            measured,
+            before,
+            LineGuardSnap::of(g),
+        ));
     }
 
     /// [HAT-KORUMASI] ACK çerçevesinin cephesiyle gerçek ileri hattı ölçer ([`crate::line_guard`]).
@@ -6111,6 +6327,14 @@ impl Sender {
         rx_span_ns: Option<u64>,
         received: &[u64],
     ) {
+        // [İZ-ARALIK] Salt gözlem: not süzgeçten önce kayda.
+        if let Some(t) = self.diag_line_guard_trace.as_mut() {
+            t.note = Some(ForwardIntervalNote {
+                first_seq,
+                last_seq,
+                rx_span_ns,
+            });
+        }
         // M'nin uçları M'de olmalı ve aralık motorun gönderdiği seq'lerde kalmalı; değilse ölçüm yok.
         let valid = first_seq < last_seq
             && last_seq < self.next_seq
@@ -6133,6 +6357,26 @@ impl Sender {
         self.cc_line_guard
             .as_ref()
             .map(crate::line_guard::LineGuard::interval_diag)
+    }
+
+    /// [İZ-ARALIK] Hat korumasının ACK başına karar kaydını açar (boş halka) ya da kapatıp atar.
+    /// SALT GÖZLEM: hiçbir karar kaydı okumaz; yalnız ölçüm düzenekleri ve canlı teşhis aynası
+    /// açar. Kayıt yalnız geri bildirimi aç kuralın hat koruması kuruluyken yazılır; halka en çok
+    /// [`LINE_GUARD_TRACE_CAP`] kayıt tutar.
+    pub fn set_diag_line_guard_trace(&mut self, on: bool) {
+        self.diag_line_guard_trace = on.then(LineGuardTraceRing::default);
+    }
+
+    /// [İZ-ARALIK] Halkadaki kayıtlar, eskiden yeniye (en çok [`LINE_GUARD_TRACE_CAP`]); kayıt
+    /// kapalıysa boş.
+    pub fn diag_line_guard_trace(&self) -> impl Iterator<Item = &LineGuardAckTrace> + '_ {
+        self.diag_line_guard_trace.iter().flat_map(|t| t.log.iter())
+    }
+
+    /// [İZ-ARALIK] Şimdiye dek yazılan kayıt sayısı (halkadan düşenler dahil); kayıt kapalıysa 0.
+    #[must_use]
+    pub fn diag_line_guard_trace_total(&self) -> u64 {
+        self.diag_line_guard_trace.as_ref().map_or(0, |t| t.total)
     }
 
     /// [İLK-PENCERE] İlk ACK'in varış penceresinin sonucu (salt gözlem; kural ya da pencere yoksa
