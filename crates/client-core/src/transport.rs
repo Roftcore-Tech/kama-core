@@ -522,7 +522,16 @@ struct LaneOrder {
     held: BTreeMap<u64, (SessionHandle, Vec<u8>)>,
     /// [PTT-YALIN] PTT şeridinde sıra başı eksikken arkasında birim beklemeye başladığı an.
     hole_since: Option<std::time::Instant>,
+    /// [PTT-YALIN · GEÇ-GÜVENİLİR] PTT şeridinde atlanmış (teslim edilmemiş) şerit-içi sıralar.
+    /// Atlanan delik güvenilir kayıtsa (PTT_OPEN / PTT_CLOSE) üç iletimi de düşmüş olabilir; ARQ
+    /// kopyası `next`'in gerisinde gelir. Yalnız bu kümedeki sıra geç teslim edilir, sonra kümeden
+    /// çıkar: teslim edilmiş birimin yinelenen kopyası kümede olmadığından iki kez teslim edilmez.
+    /// En çok [`PTT_SKIPPED_CAP`] sıra; aşılınca en küçüğü düşer. (#175 7081093529)
+    skipped: BTreeSet<u64>,
 }
+
+/// [PTT-YALIN · GEÇ-GÜVENİLİR] PTT şeridinde geç teslim için anımsanan atlanmış sıra sayısı.
+const PTT_SKIPPED_CAP: usize = 256;
 
 /// [PTT-YALIN] PTT şeridinde eksik sıra başı en çok bu kadar beklenir, sonra atlanır: gönderici
 /// PTT demetini tek iletimle gönderir, 1 s içinde yeniden iletmez ve son tarihte bırakır
@@ -557,11 +566,16 @@ impl Reorder {
         payload: Vec<u8>,
         out: &mut VecDeque<Delivered>,
     ) -> u64 {
-        self.push_bounded(unit, session, payload, out, usize::MAX)
+        self.push_bounded(unit, session, payload, out, usize::MAX, false)
     }
 
     /// [`Self::push`]; sırası gelen birimler yalnız `out.len() < cap` iken çıkar, kalanı
     /// [`Self::release`]'i bekler.
+    ///
+    /// [PTT-YALIN · GEÇ-GÜVENİLİR] `data_framed`: birim PTT şeridinden 0x00 DATA çerçevesiyle geldi
+    /// (`runtime::ExpectedSessions::take_ptt_data_framed`). Böyle bir birimin sırası `next`'in
+    /// gerisindeyse ve şerit o sırayı atlamışsa birim sırasız teslim edilir (`next` değişmez);
+    /// kutu doluysa bugünkü gibi düşer. Yalın 0x09 demeti ve öbür şeritler eskisi gibi düşer.
     fn push_bounded(
         &mut self,
         unit: u64,
@@ -569,11 +583,18 @@ impl Reorder {
         payload: Vec<u8>,
         out: &mut VecDeque<Delivered>,
         cap: usize,
+        data_framed: bool,
     ) -> u64 {
         let lane = lane_index_of(unit);
         let seq = lane_seq_of(unit);
         let lo = &mut self.lanes[lane];
         if seq < lo.next {
+            if lane == PTT_LANE && data_framed && out.len() < cap && lo.skipped.remove(&seq) {
+                out.push_back(Delivered {
+                    session,
+                    unit: payload,
+                });
+            }
             return tagged(lane, lo.next); // ilk-teslim penceresinin dışından gelen geç kopya
         }
         lo.held.entry(seq).or_insert((session, payload));
@@ -600,7 +621,14 @@ impl Reorder {
                 if held_n < 2 && since.elapsed() < PTT_HOLE_SKIP {
                     break;
                 }
-                lo.next = *entry.key();
+                // [PTT-YALIN · GEÇ-GÜVENİLİR] Atlanan sıralar geç teslim için anımsanır (sınırlı).
+                let to = *entry.key();
+                let from = lo.next.max(to.saturating_sub(PTT_SKIPPED_CAP as u64));
+                lo.skipped.extend(from..to);
+                while lo.skipped.len() > PTT_SKIPPED_CAP {
+                    lo.skipped.pop_first();
+                }
+                lo.next = to;
                 lo.hole_since = None;
                 continue;
             }
@@ -1665,7 +1693,18 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
             let reorder = self.reorder.entry(h).or_default();
             reorder.ptt_skip = self.expected.ptt_deadline(h);
             let next_before = reorder.head(lane_index_of(d.unit_id));
-            let next = reorder.push_bounded(d.unit_id, h, d.payload, &mut self.inbox, MAX_INBOX);
+            // [PTT-YALIN · GEÇ-GÜVENİLİR] İşaret her PTT birimi için tüketilir (sınırlı kalır).
+            let data_framed = reorder.ptt_skip
+                && lane_index_of(d.unit_id) == PTT_LANE
+                && self.expected.take_ptt_data_framed(h, d.unit_id);
+            let next = reorder.push_bounded(
+                d.unit_id,
+                h,
+                d.payload,
+                &mut self.inbox,
+                MAX_INBOX,
+                data_framed,
+            );
             if next != next_before {
                 // [F3] Sıra başı ilerledi: veri alıcısının kabul penceresi de ilerler.
                 self.expected.advance_head(h, next);
@@ -2335,6 +2374,72 @@ mod tests {
             [b"p1".to_vec(), b"p2".to_vec()],
             "iki demet tutulunca hemen"
         );
+    }
+
+    /// [PTT-YALIN · GEÇ-GÜVENİLİR] (#175 7081093529) Son tarih kipinde atlanan PTT sırası geç
+    /// gelince: DATA-çerçeveli (güvenilir kayıt, ARQ kopyası) birim bir kez, sırasız teslim edilir
+    /// ve `next` değişmez; ikinci geç kopya teslim edilmez. Yalın (0x09) birim bugünkü gibi düşer.
+    /// İşaret veri alıcısı tarafındaki `ExpectedSessions` API'sinden geçer.
+    #[test]
+    fn ptt_late_reliable_record_is_delivered_once_after_skip() {
+        let h = SessionHandle::from_raw(11);
+        let ptt = index_of_lane(Lane::Ptt);
+        let expected = ExpectedSessions::new();
+        expected.insert_ready(h);
+        // Son tarih kipi kapalıyken işaret yazılmaz.
+        expected.mark_ptt_data_framed(h, tagged(ptt, 0));
+        assert!(!expected.take_ptt_data_framed(h, tagged(ptt, 0)));
+        expected.mark_ptt_deadline(h);
+        let run = |data_framed: bool| {
+            let mut r = Reorder {
+                ptt_skip: true,
+                ..Reorder::default()
+            };
+            let mut out = VecDeque::new();
+            // Sıra 0 (güvenilir kayıt) üç iletimde de düştü; 1 ve 2 tutulunca delik atlanır.
+            r.push(tagged(ptt, 1), h, b"d1".to_vec(), &mut out);
+            r.push(tagged(ptt, 2), h, b"d2".to_vec(), &mut out);
+            assert_eq!(r.head(ptt), tagged(ptt, 3), "delik atlandı");
+            let mut late = |out: &mut VecDeque<Delivered>| {
+                if data_framed {
+                    expected.mark_ptt_data_framed(h, tagged(ptt, 0));
+                }
+                let framed = expected.take_ptt_data_framed(h, tagged(ptt, 0));
+                assert_eq!(framed, data_framed);
+                let next =
+                    r.push_bounded(tagged(ptt, 0), h, b"open".to_vec(), out, usize::MAX, framed);
+                assert_eq!(next, tagged(ptt, 3), "geç teslim sıra başını oynatmaz");
+            };
+            late(&mut out); // ARQ kopyası
+            late(&mut out); // ikinci geç kopya
+            out.into_iter().map(|d| d.unit).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            run(true),
+            [b"d1".to_vec(), b"d2".to_vec(), b"open".to_vec()],
+            "DATA-çerçeveli geç kayıt bir kez, sırasız"
+        );
+        assert_eq!(
+            run(false),
+            [b"d1".to_vec(), b"d2".to_vec()],
+            "yalın geç birim düşer"
+        );
+        // Atlanmamış (teslim edilmiş) sıranın DATA-çerçeveli kopyası da teslim edilmez.
+        let mut r = Reorder {
+            ptt_skip: true,
+            ..Reorder::default()
+        };
+        let mut out = VecDeque::new();
+        r.push(tagged(ptt, 0), h, b"open".to_vec(), &mut out);
+        r.push_bounded(
+            tagged(ptt, 0),
+            h,
+            b"open".to_vec(),
+            &mut out,
+            usize::MAX,
+            true,
+        );
+        assert_eq!(out.len(), 1, "teslim edilmiş birim iki kez teslim edilmez");
     }
 
     /// [F3] Eksik sıra başı hiçbir sayıda tutulan birimde atlanmaz; gelince hepsi sırayla akar.
