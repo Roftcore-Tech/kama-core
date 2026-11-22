@@ -186,3 +186,33 @@ fn alarm_ack_covers_only_the_interval_since_the_last_ack() {
     }
     assert!(alarm_frames >= 1, "bir ACK geriye uzanan alarm ACK'i yok");
 }
+
+/// [PANİK] En büyük seq ilerlemeden çıkan bitmap ACK'i (sırasız ya da yinelenen varış) alıcıyı
+/// çökertmez: önce ACK çıkar, sonra yalnız eski seq'ler (sırasız ve yinelenen) gelir ve bir ACK
+/// daha çıkar. Düzeltme öncesi `rx_span_field` `BTreeSet::range(L+1..=L)` ile panikliyordu.
+#[test]
+fn ack_without_a_new_largest_does_not_panic() {
+    let mut r = rx();
+    let mut acks = 0usize;
+    let mut t = 1_000 * MS;
+    for seq in (0..120u64).filter(|s| s % 7 != 3) {
+        acks += arrive(&mut r, seq, t).len();
+        t += 80 * MS;
+    }
+    assert!(acks > 0, "ilk ACK çıktı");
+    // Yeni en büyük yok: eksik eski seq'ler sırasız gelir, biri iki kez; ACK zamanlayıcısı işler.
+    let before = acks;
+    for (k, seq) in (0..120u64).filter(|s| s % 7 == 3).enumerate() {
+        acks += arrive(&mut r, seq, t).len();
+        if k % 3 == 0 {
+            acks += arrive(&mut r, seq, t + MS).len();
+        }
+        t += 200 * MS;
+    }
+    t += 30_000 * MS;
+    acks += r.on_ack_timer(t).into_iter().count();
+    assert!(
+        acks > before,
+        "en büyüğü ilerlemeyen ACK de çıktı (panik olmadan)"
+    );
+}

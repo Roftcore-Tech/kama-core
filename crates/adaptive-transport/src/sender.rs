@@ -5871,9 +5871,9 @@ impl Sender {
         self.forward_copy_rule = rule
             .filter(|r| r.copies > 0 || r.priority_below_id > r.below_id)
             .map(|r| ForwardCopyRule {
-            priority_below_id: r.priority_below_id.max(r.below_id),
-            ..r
-        });
+                priority_below_id: r.priority_below_id.max(r.below_id),
+                ..r
+            });
     }
 
     /// [ÖNLEMSEL-KOPYA] Teyitsiz bir birimi (uçuşta, teyitsiz kaydı olan) ACK beklemeden `copies`

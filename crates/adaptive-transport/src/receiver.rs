@@ -1382,6 +1382,11 @@ impl Receiver {
             .back()
             .map_or(base, |&l| l.saturating_add(1))
             .max(base);
+        // En büyük seq son çıkan ACK'ten bu yana ilerlemediyse (sırasız/yinelenen varışla çıkan
+        // ACK) aralık boştur; `BTreeSet::range` başlangıç > bitiş ile panikler.
+        if anchor > largest {
+            return none;
+        }
         let Some(&first) = self.received.range(anchor..=largest).next() else {
             return none;
         };
