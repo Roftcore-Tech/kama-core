@@ -70,6 +70,9 @@ pub const FRAME_TYPE_ACK_BITMAP: u8 = 0x15;
 /// çerçevesini (client-core 0x09) çözer. Yalnız karşı uç CAPS'te yalın PTT bitini bildirdiyse
 /// yazılır (eski uç 0x16 görmez). Tel maliyeti yok.
 pub const FRAME_TYPE_ACK_BITMAP_PTT: u8 = 0x16;
+/// [PTT-BİRLEŞİK · deney] 0x16 ile bayt-aynı; yazan uç ayrıca birleşik PTT kayıtlarını çözer
+/// (opak uygulama yeteneği). Yalnız karşı uç CAPS'te birleşik PTT bitini bildirdiyse yazılır.
+pub const FRAME_TYPE_ACK_BITMAP_PTT_COALESCE: u8 = 0x17;
 /// [ACK-BITMAP] 0x15 sabit gövde (bitmap hariç): tür + epoch + largest + delay + arrival_rate +
 /// rx_span + span_first + pair_rate + base + len.
 pub const ACK_BITMAP_HEADER_BYTES: usize = 17;
@@ -100,6 +103,8 @@ pub struct AckBitmap {
     pub pair_rate: u16,
     /// [PTT-YALIN · YETENEK] `true` → çerçeve türü 0x16 (yazan uç yalın PTT'yi çözer).
     pub ptt_lean: bool,
+    /// [PTT-BİRLEŞİK · deney] `ptt_lean` ile birlikte `true` → çerçeve türü 0x17.
+    pub ptt_coalesce: bool,
 }
 
 /// [ACK-BITMAP · ÖLÇÜM ARALIĞI] `rx_span` "ölçüm yok" değeri.
@@ -275,6 +280,7 @@ impl AckFrame {
                 span_first: (span_first & 0xFFFF) as u16,
                 pair_rate: PAIR_RATE_NONE,
                 ptt_lean: false,
+                ptt_coalesce: false,
                 base_seq: (base & 0xFFFF) as u16,
                 bits,
             }),
@@ -395,7 +401,9 @@ impl AckFrame {
                 "bitmap tavanı aşıldı"
             );
             let mut out = Vec::with_capacity(ACK_BITMAP_HEADER_BYTES + bm.bits.len());
-            out.push(if bm.ptt_lean {
+            out.push(if bm.ptt_lean && bm.ptt_coalesce {
+                FRAME_TYPE_ACK_BITMAP_PTT_COALESCE
+            } else if bm.ptt_lean {
                 FRAME_TYPE_ACK_BITMAP_PTT
             } else {
                 FRAME_TYPE_ACK_BITMAP
@@ -506,12 +514,19 @@ impl AckFrame {
     /// # Errors
     /// [`Self::decode`] hataları; 0x15'te ayrıca [`TransportError::InvalidAckBitmap`].
     pub fn decode_with_bitmap(buf: &[u8]) -> Result<Self, TransportError> {
-        if let Some(&t @ (FRAME_TYPE_ACK_BITMAP | FRAME_TYPE_ACK_BITMAP_PTT)) = buf.first() {
+        if let Some(
+            &t @ (FRAME_TYPE_ACK_BITMAP
+            | FRAME_TYPE_ACK_BITMAP_PTT
+            | FRAME_TYPE_ACK_BITMAP_PTT_COALESCE),
+        ) = buf.first()
+        {
             let mut r = Reader::new(buf);
             let _ = r.u8()?;
             let mut f = Self::decode_bitmap(r)?;
             if let Some(bm) = f.bitmap.as_mut() {
-                bm.ptt_lean = t == FRAME_TYPE_ACK_BITMAP_PTT;
+                bm.ptt_lean =
+                    t == FRAME_TYPE_ACK_BITMAP_PTT || t == FRAME_TYPE_ACK_BITMAP_PTT_COALESCE;
+                bm.ptt_coalesce = t == FRAME_TYPE_ACK_BITMAP_PTT_COALESCE;
             }
             return Ok(f);
         }
@@ -575,6 +590,7 @@ impl AckFrame {
                 span_first,
                 pair_rate,
                 ptt_lean: false,
+                ptt_coalesce: false,
             }),
         })
     }
@@ -622,6 +638,22 @@ mod tests {
             AckFrame::decode(&tagged).is_err(),
             "düz çözücü 0x16'yı reddeder"
         );
+        // [PTT-BİRLEŞİK · deney] 0x17: gövde aynı, iki bayrak birden; düz çözücü reddeder.
+        let mut both = lean.clone();
+        both.bitmap.as_mut().expect("bitmap").ptt_coalesce = true;
+        let coalesce = both.encode();
+        assert_eq!(coalesce[0], FRAME_TYPE_ACK_BITMAP_PTT_COALESCE);
+        assert_eq!(plain[1..], coalesce[1..], "gövde bayt-aynı");
+        let d = AckFrame::decode_with_bitmap(&coalesce).expect("çözülür");
+        assert!(d
+            .bitmap
+            .as_ref()
+            .is_some_and(|b| b.ptt_lean && b.ptt_coalesce));
+        assert!(AckFrame::decode(&coalesce).is_err());
+        // Yalın bayrak olmadan birleşik bayrak türü değiştirmez (0x15 kalır).
+        let mut only = f.clone();
+        only.bitmap.as_mut().expect("bitmap").ptt_coalesce = true;
+        assert_eq!(only.encode(), plain);
     }
 
     use super::*;

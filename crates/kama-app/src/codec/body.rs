@@ -8,7 +8,7 @@ use super::limits::{
     AmpLimits, FILE_ABORT_BODY_BYTES, FILE_BEGIN_PREFIX_BYTES, FILE_CHUNK_PREFIX_BYTES,
     FILE_END_BODY_BYTES, FILE_NAME_MAX_BYTES, FILE_RECEIPT_BODY_BYTES, MEDIA_BUNDLE_PREFIX_BYTES,
     PTT_CLOSE_BODY_BYTES, PTT_OPEN_BODY_BYTES, RECEIPT_BODY_BYTES, SIGNALING_BLOB_PREFIX_BYTES,
-    TEXT_PREFIX_BYTES, WHOLE_FILE_HASH_BYTES,
+    SPURT_OPEN_HEADER_BYTES, TEXT_PREFIX_BYTES, WHOLE_FILE_HASH_BYTES,
 };
 use super::{
     AppMessage, DecodeError, DropReason, EncodeError, FileAbortReason, FileReceiptStatus, MsgType,
@@ -214,6 +214,11 @@ fn plain_body_len(message: &AppMessage) -> Result<usize, EncodeError> {
         }
         // Kompakt biçimin "gövdesi": `stream_tag u8 ‖ payload` (işaret baytı `encode`'da).
         AppMessage::MediaBundleCompact { payload, .. } => variable(1, payload.len()),
+        // [PTT-BİRLEŞİK · deney] Aynı kural: işaret baytı `encode`'da, "gövde" kalanıdır.
+        AppMessage::MediaBundleOpen { payload, .. } => {
+            variable(SPURT_OPEN_HEADER_BYTES - 1, payload.len())
+        }
+        AppMessage::MediaBundleEnd { payload, .. } => variable(1, payload.len()),
         AppMessage::FileReceipt { .. } => FILE_RECEIPT_BODY_BYTES,
     })
 }
@@ -317,8 +322,24 @@ pub(crate) fn encode_body(
         AppMessage::MediaBundleCompact {
             stream_tag,
             payload,
+        }
+        | AppMessage::MediaBundleEnd {
+            stream_tag,
+            payload,
         } => {
             out.push(*stream_tag);
+            out.extend_from_slice(payload);
+        }
+        AppMessage::MediaBundleOpen {
+            stream_id,
+            codec,
+            bundle_ms,
+            payload,
+            ..
+        } => {
+            out.extend_from_slice(&stream_id.to_be_bytes());
+            out.push(*codec);
+            out.push(*bundle_ms);
             out.extend_from_slice(payload);
         }
         AppMessage::FileReceipt {

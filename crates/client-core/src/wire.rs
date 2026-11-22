@@ -339,6 +339,10 @@ pub const CAP_ACK_BITMAP: u16 = 0x0001;
 /// [PTT-YALIN · YETENEK] Bit 1: bu uç yalın PTT'yi (0x09) gönderir ve 0x16 bitmap ACK'ini çözer.
 /// Karşı uç bunu görürse ve kendisi 0x09'u çözüyorsa bitmap ACK'lerini 0x16 türüyle yazar.
 pub const CAP_PTT_LEAN: u16 = 0x0002;
+/// [PTT-BİRLEŞİK · deney] Bit 2: bu ucun uygulaması birleşik PTT kayıtlarını gönderebilir; karşı
+/// uç da çözüyorsa bitmap ACK'lerini 0x17 türüyle yazar (yalnız bit 1 ile birlikte). Transport
+/// bitin anlamını okumaz (opak uygulama yeteneği).
+pub const CAP_PTT_COALESCE: u16 = 0x0004;
 
 /// CAPS çerçevesi kodlar.
 #[must_use]

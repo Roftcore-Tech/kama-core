@@ -124,6 +124,9 @@ async fn transport_api_v0_surface_is_frozen() {
         // v0.21 (ACK-BITMAP ölçüm prototipi, 2026-11-21): minor-EKLEME, kasıtlı pin-güncellemesi.
         // Default V2 (bugünkü 0x14); yalnız ölçüm düzeneği Bitmap verir.
         ack_format: _,
+        // v0.22 (PTT-BİRLEŞİK deneyi, 2026-11-23; aday dışı): minor-EKLEME, kasıtlı
+        // pin-güncellemesi. Default false (tel ve davranış bayt-aynı).
+        ptt_coalesce: _,
     } = cfg.clone();
     let FecRuntimeConfig {
         profile_id: _,

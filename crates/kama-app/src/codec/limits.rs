@@ -103,6 +103,25 @@ pub const COMPACT_MEDIA_MARKER: u8 = 0x8A;
 /// [PTT-BANT · kol A] Kompakt `MEDIA_BUNDLE` başlığı: işaret 1 + `stream_tag` 1.
 pub const COMPACT_MEDIA_HEADER_BYTES: usize = U8_BYTES + U8_BYTES;
 
+/// [PTT-BİRLEŞİK · deney, sahip onayı 2026-11-23; aday dışı] Açılış bilgisini taşıyan demet:
+/// `0x8B · stream_id u32 · codec u8 · bundle_ms u8 · payload` (7 B başlık). Ayrı `PTT_OPEN`
+/// yerine konuşmanın ilk demetleri bunu taşır; alıcı akışı ilk gelen böyle demetten açar. Kompakt
+/// işaret gibi `msg_version` konumundadır: v1 alıcısı `unknown-msg-version` ile DROP eder, bu
+/// yüzden yalnız yeteneğini bildiren eşe gönderilir.
+pub const SPURT_OPEN_MARKER: u8 = 0x8B;
+
+/// [PTT-BİRLEŞİK · deney] [`SPURT_OPEN_MARKER`] ile aynı yerleşim; demet konuşmanın SON demetidir
+/// (ayrı `PTT_CLOSE` yerine).
+pub const SPURT_OPEN_END_MARKER: u8 = 0x8C;
+
+/// [PTT-BİRLEŞİK · deney] Konuşmanın son demeti, kompakt: `0x8D · stream_tag u8 · payload` (2 B
+/// başlık; kompakt demetle aynı boy).
+pub const SPURT_END_MARKER: u8 = 0x8D;
+
+/// [PTT-BİRLEŞİK · deney] Açılış bilgili demet başlığı: işaret 1 + `stream_id` 4 + `codec` 1 +
+/// `bundle_ms` 1.
+pub const SPURT_OPEN_HEADER_BYTES: usize = U8_BYTES + U32_BYTES + U8_BYTES + U8_BYTES;
+
 /// [PTT-BANT · aday, sahip onayı 2026-11-22 "AMP biçim değişikliği test için"] `bundle_ms u8`
 /// alanının (`PTT_OPEN`, `MEDIA_BUNDLE`) kodlaması: kod ≤ bu değer ise demet süresi kodun kendisidir
 /// (ms; bugünkü bütün değerler, vektörler dahil, bayt-aynı); üstündeki kodlar

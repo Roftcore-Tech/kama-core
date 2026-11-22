@@ -961,6 +961,17 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         self.server.fec_blocks_decoded()
     }
 
+    /// [PTT-BİRLEŞİK · deney] Oturumun eşi birleşik PTT kayıtlarını çözdüğünü bildirdi mi (ilk
+    /// 0x17 ACK'i; [`ClientHandle::peer_ptt_coalesce`]). Ucu olmayan ya da bilinmeyen oturum →
+    /// `false`. Bileşim kökü bunu uygulamanın PTT motoruna verir (`kama-app` `Ptt`).
+    #[must_use]
+    pub fn peer_ptt_coalesce(&self, session: SessionHandle) -> bool {
+        self.sessions
+            .get(&session)
+            .and_then(|s| s.endpoint.as_ref())
+            .is_some_and(ClientHandle::peer_ptt_coalesce)
+    }
+
     /// [K4G-05] Salt-okunur telemetri: ucu açık her S1 oturumunun motor / ARQ aynası
     /// ([`ClientHandle::live_diag`]), tutamaç sırasıyla. Ucu kurulamamış ya da bırakılmış
     /// oturum listede yoktur (onun sayaçları [`Self::retired_live_diag`]'dadır). Durum değişmez.

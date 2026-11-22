@@ -202,7 +202,7 @@ use kama_app::clock::{MonotonicClock, SystemClock};
 use kama_app::codec::{bundle_code_from_ms, decode, AmpLimits, AppMessage, PttCodec};
 use kama_app::file_transfer::{FileEvent, FileTransfer};
 use kama_app::messaging::{Messenger, MessengerEvent, MsgId};
-use kama_app::ptt::{Ptt, PttError, PttEvent, StreamId};
+use kama_app::ptt::{Ptt, PttError, PttEvent, PttStats, StreamId};
 use kama_app::store::MemoryAppStore;
 use kama_contracts::handles::PeerRef;
 use kama_contracts::s1::{ConnectResult, TransportCapabilities, TransportError};
@@ -246,6 +246,24 @@ struct PttShape {
     /// [PTT-BANT · kol A] `KAMA_ASYM_PTT_COMPACT=1`: Alice demetleri kompakt `MEDIA_BUNDLE`
     /// (2 B başlık) ile gönderir.
     compact: bool,
+    /// [PTT-BİRLEŞİK · deney] `KAMA_ASYM_PTT_COALESCE`: açılış/kapanış demetlerin içinde.
+    coalesce: Coalesce,
+    /// [PTT-BİRLEŞİK · deney] `KAMA_ASYM_PTT_OPEN_K` (varsayılan 2): açılış bilgisini taşıyan ilk
+    /// demet sayısı.
+    open_k: u8,
+}
+
+/// [PTT-BİRLEŞİK · deney, aday dışı] Birleşik biçimin kolu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Coalesce {
+    /// `off` (varsayılan): bugünkü ayrı güvenilir `PTT_OPEN` / `PTT_CLOSE`.
+    Off,
+    /// `neg`: iki uçta da açık; Alice birleşik akışı yalnız Bob'un 0x17 ACK'ini gördükten sonra
+    /// açılan basışta kullanır (bant içi yetenek). Öncesinde bugünkü ayrı kayıtlar.
+    Negotiated,
+    /// `known`: iki uçta da açık; Bob'un yeteneği oturum başından biliniyor (bant DIŞI bilgi:
+    /// önceki oturumdan hatırlanan ya da dağıtımla verilen). Transport yine soğuk başlar.
+    Known,
 }
 
 /// Sonuç satırı için PTT biçimi.
@@ -255,7 +273,11 @@ fn ptt_shape_label() -> String {
         "yük={}B/demet={}ms/başlık={}/basış={}",
         s.bytes,
         s.period.as_millis(),
-        if s.compact { "kompakt2B" } else { "tam13B" },
+        match (s.coalesce, s.compact) {
+            (Coalesce::Off, true) => "kompakt2B".to_string(),
+            (Coalesce::Off, false) => "tam13B".to_string(),
+            (c, _) => format!("birleşik-{c:?}-K{}", s.open_k),
+        },
         s.press
             .map_or("hücre".to_string(), |p| format!("{}ms", p.as_millis())),
     )
@@ -275,6 +297,13 @@ fn ptt_shape() -> PttShape {
     PttShape {
         press,
         compact: std::env::var("KAMA_ASYM_PTT_COMPACT").is_ok_and(|v| v == "1"),
+        coalesce: match std::env::var("KAMA_ASYM_PTT_COALESCE").as_deref() {
+            Ok("neg") => Coalesce::Negotiated,
+            Ok("known") => Coalesce::Known,
+            Ok("off") | Err(_) => Coalesce::Off,
+            Ok(v) => panic!("KAMA_ASYM_PTT_COALESCE: off | neg | known (verilen {v})"),
+        },
+        open_k: u8::try_from(env_u64("KAMA_ASYM_PTT_OPEN_K", 2)).expect("KAMA_ASYM_PTT_OPEN_K u8"),
         bytes,
         period: Duration::from_millis(u64::from(ms)),
         code: bundle_code_from_ms(ms)
@@ -424,10 +453,19 @@ fn item_of(message: &AppMessage) -> Item {
         AppMessage::PttClose { stream_id } => Item::PttClose(*stream_id),
         AppMessage::MediaBundle { payload, .. }
         | AppMessage::MediaBundleCompact { payload, .. }
+        | AppMessage::MediaBundleOpen { payload, .. }
+        | AppMessage::MediaBundleEnd { payload, .. }
             if payload.len() >= 4 =>
         {
             Item::Bundle(u32::from_be_bytes(payload[..4].try_into().expect("4 B")))
         }
+        // [PTT-BİRLEŞİK · deney] Yüksüz `END` demeti kapanış kaydının yerine geçer.
+        AppMessage::MediaBundleOpen {
+            stream_id,
+            end: true,
+            ..
+        } => Item::PttClose(*stream_id),
+        AppMessage::MediaBundleEnd { stream_tag, .. } => Item::PttClose(u32::from(*stream_tag)),
         AppMessage::FileBegin { .. } => Item::FileBegin,
         AppMessage::FileChunk { offset, .. } => Item::Chunk(*offset),
         AppMessage::FileEnd { .. } => Item::FileEnd,
@@ -475,6 +513,9 @@ struct Ledger {
     ptt_wire: Vec<PttWire>,
     /// [PTT-BANT] Bu ucun mühürlediği yalın PTT çerçevesi (0x09) sayısı.
     ptt_lean_tx: u64,
+    /// [PTT-BİRLEŞİK · deney] Bu ucun mühürlediği açılış bilgili demet ve `END`'li demet sayısı.
+    spurt_open_tx: u64,
+    spurt_end_tx: u64,
     /// [İZ-BLOK] Bu ucun mühürlediği her DATA datagramı: (an, birim, parmak izi).
     data_log: Vec<(Instant, u64, u64)>,
     /// [İZ-BLOK] Bu ucun mühürlediği her FEC onarım datagramı: (an, blok, ESI, k_actual, parmak izi).
@@ -505,6 +546,15 @@ struct Tap {
 }
 
 impl Tap {
+    /// [PTT-BİRLEŞİK · deney] Çerçevenin taşıdığı AMP kaydı (çözülemezse `None`).
+    fn message(&self, frame: &[u8]) -> Option<AppMessage> {
+        let payload = match decode_data(frame) {
+            Some((_, _, p)) => p,
+            None => decode_ptt(frame)?.1,
+        };
+        decode(payload, &self.limits).ok()
+    }
+
     fn classify(&self, frame: &[u8]) -> Option<Result<Item, ()>> {
         // [PTT-BANT] Yalın PTT çerçevesi (0x09) de AMP kaydı taşır; eskiden yalnız 0x00 çözülüyordu.
         let payload = match decode_data(frame) {
@@ -579,6 +629,14 @@ impl PacketProtection for Tap {
                 }
                 if frame.first() == Some(&FRAME_PTT) {
                     l.ptt_lean_tx += 1;
+                }
+                match self.message(frame) {
+                    Some(AppMessage::MediaBundleOpen { end, .. }) => {
+                        l.spurt_open_tx += 1;
+                        l.spurt_end_tx += u64::from(end);
+                    }
+                    Some(AppMessage::MediaBundleEnd { .. }) => l.spurt_end_tx += 1,
+                    _ => {}
                 }
             }
             match c {
@@ -984,6 +1042,8 @@ fn transport(
     // `bitmap`: birleşik adayın ölçülen yolu (pair_rate, yalın PTT 0x16 / 0x09) yalnız onunla açılır;
     // `v2` kolu bugünkü ürün varsayılanını (0x14) ölçer.
     cfg.runtime.ack_format = fixture_ack_format();
+    // [PTT-BİRLEŞİK · deney] İki uçta da (CAPS biti / 0x17 ACK'i).
+    cfg.runtime.ptt_coalesce = ptt_shape().coalesce != Coalesce::Off;
     // [ACK-PAYI TEŞHİS KOLU] `KAMA_ASYM_RETURN_Y_PERMILLE` (yalnız teşhis; varsayılan ürün Y = 250).
     if let Ok(y) = std::env::var("KAMA_ASYM_RETURN_Y_PERMILLE") {
         cfg.runtime.diag_return_budget_permille = y.parse().ok();
@@ -1023,6 +1083,11 @@ struct Run {
     texts: Vec<Texts>,
     ptt_open: Option<(StreamId, Instant)>,
     ptt_started: Option<Instant>,
+    /// [PTT-BİRLEŞİK · deney] Bob'da ilk `PttEnded`; Bob'un PTT sayaçları; Alice'in Bob'u yetenekli
+    /// bildiği an.
+    ptt_ended: Option<Instant>,
+    bob_ptt: PttStats,
+    alice_peer_capable: Option<Instant>,
     bundles: BTreeMap<u32, Bundle>,
     file_received: Option<Instant>,
     file_delivered: Option<Instant>,
@@ -1156,6 +1221,17 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
         .collect();
     let shape = ptt_shape();
     alice.ptt.set_compact_bundles(shape.compact);
+    // [PTT-BİRLEŞİK · deney] İki uç da birleşik demetleri çözer; Alice yetenekli eşe birleşik açar.
+    let coalesce_on = shape.coalesce != Coalesce::Off;
+    alice.ptt.set_spurt_coalesce(coalesce_on);
+    bob.ptt.set_spurt_coalesce(coalesce_on);
+    alice.ptt.set_spurt_open_repeat(shape.open_k);
+    let mut peer_capable_at: Option<Instant> = None;
+    if shape.coalesce == Coalesce::Known {
+        assert!(alice.ptt.set_peer_spurt_capable(id(BOB), true));
+        peer_capable_at = Some(t0);
+    }
+    let mut ptt_ended: Option<Instant> = None;
     let mut ptt_open: Option<(StreamId, Instant)> = None;
     let mut ptt_closed = false;
     let mut ptt_release: Option<Instant> = None;
@@ -1203,6 +1279,17 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
         }
         let files_done = file_received.is_some()
             && (cell.file2_at.is_none() || file2.is_some_and(|f| f.1.is_some()));
+        // [PTT-BİRLEŞİK · deney · neg] Bob'un 0x17'si (bant içi yetenek) uygulamaya verilir.
+        if shape.coalesce == Coalesce::Negotiated && peer_capable_at.is_none() {
+            let capable = alice
+                .m
+                .session_of(id(BOB))
+                .is_some_and(|h| alice.m.transport().peer_ptt_coalesce(h));
+            if capable {
+                assert!(alice.ptt.set_peer_spurt_capable(id(BOB), true));
+                peer_capable_at = Some(now);
+            }
+        }
         if ptt_open.is_none() && el >= ptt_at() {
             let stream = alice
                 .ptt
@@ -1233,10 +1320,20 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
                 let len = (shape.bytes * frames as usize / fpb as usize).max(4);
                 let mut payload = vec![0x5Au8; len];
                 payload[..4].copy_from_slice(&next_bundle.to_be_bytes());
-                match alice
-                    .ptt
-                    .send_bundle_from(&mut alice.m, stream, &payload, created)
-                {
+                // [PTT-BİRLEŞİK · deney] Bırakışta son demet `END`'i taşır (birleşik akışta; diğer
+                // akışta sıradan demet).
+                let last = release.is_some()
+                    && bundle_slot(opened, shape.period, next_bundle + 1, release).is_none();
+                let sent = if last {
+                    alice
+                        .ptt
+                        .send_last_bundle_from(&mut alice.m, stream, &payload, created)
+                } else {
+                    alice
+                        .ptt
+                        .send_bundle_from(&mut alice.m, stream, &payload, created)
+                };
+                match sent {
                     Ok(()) => {
                         bundles.insert(
                             next_bundle,
@@ -1298,6 +1395,9 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
                 }
                 Ev::Ptt(PttEvent::PttStarted { .. }) => {
                     ptt_started.get_or_insert(at);
+                }
+                Ev::Ptt(PttEvent::PttEnded { .. }) => {
+                    ptt_ended.get_or_insert(at);
                 }
                 Ev::Ptt(PttEvent::PttAudio { payload, .. }) if payload.len() >= 4 => {
                     let seq = u32::from_be_bytes(payload[..4].try_into().expect("4 B"));
@@ -1373,6 +1473,8 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
     let bob_live = bob.m.transport().session_live_diags().first().map(|d| d.1);
     let alice_decoded = alice.m.transport().fec_blocks_decoded();
     let bob_decoded = bob.m.transport().fec_blocks_decoded();
+    let bob_ptt = bob.ptt.stats();
+    let alice_peer_capable = peer_capable_at;
     collect_guard_trace(alice_live, &mut guard_trace);
     drop(alice);
     drop(bob);
@@ -1389,6 +1491,9 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
         texts,
         ptt_open,
         ptt_started,
+        ptt_ended,
+        bob_ptt,
+        alice_peer_capable,
         bundles,
         file_received,
         file_delivered,
@@ -1820,7 +1925,10 @@ impl Run {
                 // 1 + PTT_RELIABLE_COPIES kez tele çıkar (ayırt edici kapı: kapanış hat doluyken
                 // sunulunca kopyaları sessizce planlanmıyordu — üç kolda da tek iletim).
                 let want = 1 + usize::from(PTT_RELIABLE_COPIES);
-                let guarded = !bitmap || (opens >= want && closes >= want);
+                // [PTT-BİRLEŞİK · deney] Birleşik akışta ayrı açılış/kapanış kaydı yoktur; koruma
+                // kayıp ekleme testleriyle (kama-app `tests/ptt.rs`) sınanır, burada sayılmaz.
+                let coalesced_stream = self.alice_peer_capable.is_some_and(|c| c <= opened);
+                let guarded = !bitmap || coalesced_stream || (opens >= want && closes >= want);
                 println!(
                     "ÖLÇÜT {tag} ptt_koruma yön={side} açılış={opens} kapanış={closes} (en az {want}) → {}",
                     if guarded { "GEÇTİ" } else { "KALDI" }
@@ -2784,7 +2892,74 @@ impl Run {
                 opt_secs(first_dgram.map(|d| self.since(d, opened))),
                 opt_secs(first_audio_dgram.map(|d| self.since(d, opened))),
             );
+            self.ptt_byte_split(tag, opened, press);
         }
+    }
+
+    /// [PTT-BİRLEŞİK · deney · bayt dökümü] Alice → Bob PTT tel baytının (IPv4/UDP dahil) dökümü:
+    /// ses (her demetin ilk iletimi), açılış+kapanış (ayrı kaydın ilk iletimi; birleşik akışta
+    /// açılış bilgisinin demetteki 5 B'si ve yüksüz `END`), kopya (açılış/kapanış kaydının sonraki
+    /// iletimleri), yeniden iletim (demetin sonraki iletimleri), 0x16 öncesi (ilk yalın 0x09'dan
+    /// önce veri çerçevesiyle çıkan PTT datagramları; yukarıdakilerin alt kümesi). Bant tavanı
+    /// 1,5 s'lik basışta 937 B'dir. Birleşik akışta kapanışın Bob'daki anı ve sayaçlar.
+    fn ptt_byte_split(&self, tag: &str, opened: Instant, press: Duration) {
+        let mut seen: HashSet<Item> = HashSet::new();
+        let (mut audio, mut ctrl, mut copies, mut retx) = (0u64, 0u64, 0u64, 0u64);
+        let (mut n_audio, mut n_ctrl, mut n_copies, mut n_retx) = (0u32, 0u32, 0u32, 0u32);
+        let first_lean = self.alice.ptt_wire.iter().find(|w| w.2).map(|w| w.0);
+        let (mut pre, mut n_pre) = (0u64, 0u32);
+        for w in &self.alice.ptt_wire {
+            let first = seen.insert(w.3);
+            match (w.3, first) {
+                (Item::Bundle(_), true) => {
+                    audio += w.1;
+                    n_audio += 1;
+                }
+                (Item::Bundle(_), false) => {
+                    retx += w.1;
+                    n_retx += 1;
+                }
+                (_, true) => {
+                    ctrl += w.1;
+                    n_ctrl += 1;
+                }
+                (_, false) => {
+                    copies += w.1;
+                    n_copies += 1;
+                }
+            }
+            if first_lean.is_none_or(|l| w.0 < l) && !w.2 {
+                pre += w.1;
+                n_pre += 1;
+            }
+        }
+        // Birleşik akışta açılış bilgisi demetin içindedir: 5 B/demet (7 B − kompakt 2 B).
+        let spurt_open_bytes = 5 * self.alice.spurt_open_tx;
+        let total = audio + ctrl + copies + retx;
+        let cap = PTT_BAND_MAX_BPS * u64::try_from(press.as_millis()).unwrap_or(0) / 8_000;
+        println!(
+            "ÖLÇÜT {tag} ptt_bayt toplam={total} B (tavan {cap} B) ses={audio} B/{n_audio} dgram (içinde birleşik açılış bilgisi {spurt_open_bytes} B, {} açılışlı demet, {} END'li demet) açılış+kapanış={ctrl} B/{n_ctrl} dgram kopya={copies} B/{n_copies} yeniden_iletim={retx} B/{n_retx} | 0x16_öncesi_veri_çerçeveli={pre} B/{n_pre} dgram → {}",
+            self.alice.spurt_open_tx,
+            self.alice.spurt_end_tx,
+            if total <= cap { "GEÇTİ" } else { "KALDI" },
+        );
+        let release = opened + press;
+        let b = &self.bob_ptt;
+        println!(
+            "ÖLÇÜT {tag} ptt_birleşik kol={:?} yetenek_alice=+{} s (t0'dan) bob_PttStarted=+{} s (basıştan) bob_PttEnded=+{} s (bırakıştan) | bob: açılış_demetiyle={} END_ile={} sessizlik_sonu={} yetim_demet={} END_sonrası={} reddedilen={} PTT-R4={} unknown_close={}",
+            ptt_shape().coalesce,
+            opt_secs(self.alice_peer_capable.map(|c| self.since(c, self.t0))),
+            opt_secs(self.ptt_started.map(|s| self.since(s, opened))),
+            opt_secs(self.ptt_ended.map(|e| self.since(e, release))),
+            b.spurt_opens,
+            b.spurt_ends,
+            b.streams_ended_by_gap,
+            b.ptt_orphan_bundles,
+            b.spurt_after_end,
+            b.spurt_refused,
+            b.streams_ended_by_idle,
+            b.unknown_closes,
+        );
     }
 
     /// [İZ-KOPYA · salt gözlem] Daralma evresinde (düşüşten sonraki 6 s; düşüşsüz hücrede 8–14 s)
