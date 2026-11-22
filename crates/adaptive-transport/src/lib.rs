@@ -45,6 +45,7 @@ pub mod fusion;
 /// FS-FUSION-CAL-1 — versioned calibration + pure fusion policy + independent safety validator
 /// (default OFF; advisory only; every failure mode degrades to ArqOnly).
 pub mod fusion_policy;
+pub mod line_guard;
 pub mod loss;
 pub mod pacer;
 pub mod rate;
