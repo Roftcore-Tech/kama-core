@@ -146,7 +146,11 @@ jobs:
             || { echo "::error title=TEST_FAILURE::H-HANDLE tip kapisi listede yok"; exit 1; }
 
       - name: test (workspace --all-features, kama-integration hariç)
-        run: cargo test --workspace --all-features --exclude kama-integration
+        # [CI-TAM-LİSTE · #175] `--no-fail-fast`: ilk düşen test ikilisinde durmak sonraki
+        # ikilileri (adaptive-transport'un kalan 14'ü, client-core, kama-app, …) hiç koşturmuyordu;
+        # "yeni kırmızı yok" hükmü doğrulanamıyordu. Ölçüt gevşemez: herhangi bir kırmızı yine adımı
+        # düşürür, yalnız bütün kırmızılar ad ad görünür.
+        run: cargo test --workspace --all-features --exclude kama-integration --no-fail-fast
 
       # [DENETİM] Ürün profili ve mekanizma-kablolaması PR'da deterministik olarak pinlenir.
       - name: product-profile invariants + activation smoke
