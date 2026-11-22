@@ -116,10 +116,22 @@ fn idle_line_resends_each_unconfirmed_unit_once_per_ack_interval() {
             "birim {k}: son iletimden 1 s sonra"
         );
         assert!(t[0] >= prev, "en eski teyitsiz önce");
+        // [YARI-HAT] Ardışık kör kopyalar arası en az iki serileşme süresi (hattın yarısı).
+        if k > 0 {
+            let ser = (FILE_UNIT + OVH) * SEC / PROFILE_UP;
+            assert!(
+                t[0] - prev >= 2 * ser,
+                "birim {k}: kopya aralığı {} ns < {} ns",
+                t[0] - prev,
+                2 * ser
+            );
+        }
         prev = t[0];
     }
-    // 6 s'de ACK: ilk altı dosya birimi ve PTT teyitli. Kalan dört birim bir kez daha, teyitliler
-    // hiç gönderilmez.
+    // 6 s'de ACK: ilk altı dosya birimi ve PTT teyitli. Teyitliler hiç gönderilmez. [KANIT-YOK-
+    // TEKRAR-YOK] Kalan dört birimin boş hat kopyası bu ACK'in teyit ettiği en büyük iletimden
+    // yenidir: ACK onların akıbetini göremez, kopya kanıtsız ikinci kez gitmez (eskiden bu ACK
+    // süpürmeyi sıfırlıyor, dört birim yeniden gönderiliyordu).
     let acked: Vec<u64> = std::iter::once(data[&0].0)
         .chain((0..6).map(|k| data[&(FILE_BASE_ID + k)].0))
         .collect();
@@ -130,14 +142,87 @@ fn idle_line_resends_each_unconfirmed_unit_once_per_ack_interval() {
         }),
         6 * SEC,
     );
-    run(&mut s, 6 * SEC + MS, 12 * SEC);
+    run(&mut s, 6 * SEC + MS, 8 * SEC);
     let log = s.take_diag_emit_log();
     let idle = idle_copies(&log, 6 * SEC);
+    assert!(
+        idle.is_empty(),
+        "akıbeti görülmemiş kopya yeniden gitmez: {idle:?}"
+    );
+    assert_eq!(s.diag_idle_retransmits(), N);
+    // Kanıt: 8 s'de yeni bir PTT birimi, 9 s'de ACK'i (boş hat kopyalarından yeni iletim teyitli,
+    // dört birimin kopyası teyitsiz). Dört birim yeniden gönderilir (ARQ ya da boş hat), teyitliler
+    // gönderilmez.
+    let _ = s.on_event(Event::AppData(OpaqueUnit { id: 1, size: 86 }), 8 * SEC);
+    let log = s.take_diag_emit_log();
+    let ptt2 = log
+        .iter()
+        .find(|e| e.cause == EmitCause::Data && e.unit_id == 1)
+        .map(|e| e.seq)
+        .expect("PTT birimi 2 gönderildi");
+    let _ = s.on_event(
+        Event::AckReceived(AckInfo {
+            acked_seqs: vec![ptt2],
+            ack_delay: std::time::Duration::ZERO,
+        }),
+        9 * SEC,
+    );
+    run(&mut s, 9 * SEC + MS, 12 * SEC);
+    let log = s.take_diag_emit_log();
     for k in 0..N {
-        let n = idle.get(&(FILE_BASE_ID + k)).map_or(0, Vec::len);
-        assert_eq!(n, usize::from(k >= 6), "ACK'ten sonra birim {k}: {idle:?}");
+        let n = log
+            .iter()
+            .filter(|e| {
+                e.unit_id == FILE_BASE_ID + k
+                    && matches!(e.cause, EmitCause::Copy | EmitCause::Retransmit)
+            })
+            .count();
+        assert_eq!(n > 0, k >= 6, "kanıttan sonra birim {k}: {n} iletim");
     }
-    assert_eq!(s.diag_idle_retransmits(), N + 4);
+}
+
+/// [KANIT-YOK-TEKRAR-YOK] Kanıt geri bildirim ufkunda gelmezse kural kalkar: ufuktan sonra gelen
+/// ACK yine akıbeti göstermese de (kopyalardan eski iletimi teyit eder) süpürme yeniden açılır.
+#[test]
+fn idle_copy_repeats_once_the_feedback_horizon_has_passed() {
+    let mut s = sender(true);
+    s.set_diag_emit_log(true);
+    let _ = s.on_event(Event::AppData(OpaqueUnit { id: 0, size: 86 }), 0);
+    for k in 0..N {
+        let _ = s.on_event(
+            Event::AppData(OpaqueUnit {
+                id: FILE_BASE_ID + k,
+                size: FILE_UNIT,
+            }),
+            0,
+        );
+    }
+    let horizon = feedback_horizon_ns(PROFILE_DOWN);
+    run(&mut s, MS, horizon + 3 * SEC);
+    assert_eq!(
+        s.diag_idle_retransmits(),
+        N,
+        "ACK yokken birim başına bir kez"
+    );
+    let log = s.take_diag_emit_log();
+    let ptt = log
+        .iter()
+        .find(|e| e.cause == EmitCause::Data && e.unit_id == 0)
+        .map(|e| e.seq)
+        .expect("PTT birimi gönderildi");
+    let _ = s.on_event(
+        Event::AckReceived(AckInfo {
+            acked_seqs: vec![ptt],
+            ack_delay: std::time::Duration::ZERO,
+        }),
+        horizon + 3 * SEC,
+    );
+    run(&mut s, horizon + 3 * SEC + MS, horizon + 9 * SEC);
+    assert!(
+        s.diag_idle_retransmits() > N,
+        "ufuktan sonra yeniden: {}",
+        s.diag_idle_retransmits()
+    );
 }
 
 /// Profil kapalıyken (kural yok) boş hat yeniden iletimi yoktur: bugünkü yol.

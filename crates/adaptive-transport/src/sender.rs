@@ -1494,9 +1494,10 @@ pub enum EmitCause {
     Retransmit,
     /// PTO / kuyruk probu (`ref_seq` = probun hedef iletimi).
     PtoProbe,
-    /// Vadesi gelen zamanlanmış kopya (`drain_due_duplicates`).
+    /// Vadesi gelen zamanlanmış kopya (`drain_due_duplicates`) ya da boş hat yeniden iletimi
+    /// (`ref_seq` = kopya kaynağı kodu, `DUP_SRC_*`; 8 = boş hat).
     Copy,
-    /// Öncelikli şeridin kopyası ([`ForwardCopyRule`]).
+    /// Öncelikli şeridin kopyası ([`ForwardCopyRule`]; `ref_seq` = kopya kaynağı kodu).
     CopyPriority,
     /// Kuruluş merdiveni kopyası.
     CopyEstablish,
@@ -1717,6 +1718,11 @@ const COPY_STALE_NS: u64 = 1_000_000_000;
 const IDLE_RETX_MIN_AGE_NS: u64 = 1_000_000_000;
 /// [BOŞ-HAT YENİDEN İLETİMİ] Bir planlama turunda en çok bu kadar kopya (pacer zaten sınırlar).
 const IDLE_RETX_PER_TURN: usize = 4;
+/// [BOŞ-HAT YENİDEN İLETİMİ · YARI-HAT · 2026-11-22] Kör süpürme hattın en çok 1/N'ini kullanır:
+/// ardışık iki boş hat kopyası arası, kopyanın bilinen hatta serileşme süresinin N katı. Hat
+/// sessizce yarıya inse (profil 12 500, gerçek 6 250 B/s: kalıcı kapı hücreleri) de kör kopyalar
+/// darboğazda kuyruk biriktirmez; ACK'in hattı ölçmesi bu hatta 1,75 s'den önce olamaz.
+const IDLE_RETX_LINE_SHARE_DEN: u64 = 2;
 
 /// [ÖNLEMSEL-KOPYA] Kimliği `below_id`'den küçük her YENİ birim, ilk iletiminden sonra ACK
 /// beklemeden `copies` kez daha gönderilir (kopyalar `spacing_ns` aralıklı, §11 zamanlanmış
@@ -1820,7 +1826,22 @@ struct DupRec {
     /// §3.3-B geometrik kopya reschedule aralığı (ns). 0 = emergency (fire-once, reschedule YOK);
     /// >0 = PRE_CONVERGE geometrik kopya → ateşlenince due += interval, interval ×= COPY_MULTIPLIER.
     interval_ns: u64,
+    /// [İZ-NEDEN] Kopyayı planlayan mekanizma (`DUP_SRC_*`; yalnız iz, karar okumaz).
+    src: u64,
 }
+
+// [İZ-NEDEN] Kopya kaynağı kodları: `EmitCause::Copy` / `CopyPriority` / `CopyEstablish` izinin
+// `ref_seq` alanı (kararlar okumaz). 1 kural (öncelikli şerit kopyası), 2 üst katmanın planladığı
+// (`schedule_forward_copies`), 3 ön-yakınsama geometrik, 4 kaybolan kopyanın yeniden kurulumu,
+// 5 RecoverFwd, 6 ARQ tavanı devri, 7 saf-sessizlik canlılığı, 8 boş hat yeniden iletimi.
+const DUP_SRC_RULE: u64 = 1;
+const DUP_SRC_SCHEDULED: u64 = 2;
+const DUP_SRC_PRECONVERGE: u64 = 3;
+const DUP_SRC_LOST_COPY: u64 = 4;
+const DUP_SRC_RECOVER_FWD: u64 = 5;
+const DUP_SRC_HAND_TO_FWD: u64 = 6;
+const DUP_SRC_TAIL_LIVENESS: u64 = 7;
+const DUP_SRC_IDLE_RETX: u64 = 8;
 
 /// [TUR-3c] ProbeUp başarısız-çıkış türleri (AYRI raporlanır — sözleşme).
 #[derive(Debug, Clone, Copy)]
@@ -2092,6 +2113,8 @@ pub struct Sender {
     /// [BOŞ-HAT YENİDEN İLETİMİ] Son ACK'ten bu yana boş hatta yeniden iletilen birimler
     /// (birim başına ACK aralığında bir kez); her ACK'te boşalır.
     idle_retx_units: std::collections::BTreeSet<u64>,
+    /// [BOŞ-HAT YENİDEN İLETİMİ · YARI-HAT] Sonraki boş hat kopyasının en erken anı (ns).
+    idle_retx_next_ns: u64,
     /// [PTT-YALIN] Gözlem: bırakılan birim sayısı ([`Self::abandon_units`]).
     diag_abandoned_units: u64,
     /// [BOŞ-HAT YENİDEN İLETİMİ] Gözlem: boş hatta yeniden iletim sayısı.
@@ -2466,6 +2489,7 @@ impl Sender {
             prio_copy_stale: 0,
             prio_copy_deferred: 0,
             idle_retx_units: std::collections::BTreeSet::new(),
+            idle_retx_next_ns: 0,
             diag_abandoned_units: 0,
             diag_idle_retx: 0,
             prio_head_hole: 0,
@@ -4664,6 +4688,7 @@ impl Sender {
                             due_ns: now_ns.saturating_add(srtt_ns),
                             unit: p.unit,
                             interval_ns: srtt_ns.max(1), // >0 ⇒ drain_due_duplicates geometrik reschedule
+                            src: DUP_SRC_LOST_COPY,
                         });
                     }
                 }
@@ -5920,6 +5945,7 @@ impl Sender {
                 due_ns: t0.saturating_add(i.saturating_mul(spacing_ns)),
                 unit,
                 interval_ns: 0,
+                src: DUP_SRC_SCHEDULED,
             });
         }
         true
@@ -7919,6 +7945,7 @@ impl Sender {
                                 due_ns: now_ns,
                                 unit: rec.unit,
                                 interval_ns: 0, // emergency: fire-once
+                                src: DUP_SRC_HAND_TO_FWD,
                             });
                         }
                         // ConnectionFail: spine'da düşür; gerçek impl bağlantı-fail sinyali verir.
@@ -8359,6 +8386,7 @@ impl Sender {
                     due_ns: now_ns,
                     unit,
                     interval_ns: srtt_ns.max(1), // geometrik reschedule (drain'de ×COPY_MULTIPLIER)
+                    src: DUP_SRC_TAIL_LIVENESS,
                 });
             }
             return;
@@ -8375,6 +8403,7 @@ impl Sender {
                     due_ns: now_ns + i.saturating_mul(dur_ns(spacing)),
                     unit: rec.unit,
                     interval_ns: 0, // emergency: fire-once, reschedule YOK
+                    src: DUP_SRC_RECOVER_FWD,
                 });
             }
         }
@@ -8429,7 +8458,7 @@ impl Sender {
         };
         let dup = self.dup_queue.remove(i);
         let seq = self.track_sent(dup.unit, now_ns, 0, TransmitKind::Duplicate);
-        self.diag_emit(now_ns, seq, dup.unit.id, EmitCause::CopyEstablish, 0);
+        self.diag_emit(now_ns, seq, dup.unit.id, EmitCause::CopyEstablish, dup.src);
         out.push(TransmitDecision {
             kind: TransmitKind::Duplicate,
             seq,
@@ -8445,6 +8474,7 @@ impl Sender {
                 due_ns: left_line_ns.saturating_add(next_interval),
                 unit: dup.unit,
                 interval_ns: next_interval,
+                src: dup.src,
             });
         }
         self.establish_probe_emitted = self.establish_probe_emitted.saturating_add(1);
@@ -8514,7 +8544,7 @@ impl Sender {
             }
             let dup = self.dup_queue.remove(i);
             let seq = self.track_sent(dup.unit, now_ns, 0, TransmitKind::Duplicate);
-            self.diag_emit(now_ns, seq, dup.unit.id, EmitCause::Copy, 0);
+            self.diag_emit(now_ns, seq, dup.unit.id, EmitCause::Copy, dup.src);
             out.push(TransmitDecision {
                 kind: TransmitKind::Duplicate,
                 seq,
@@ -8533,6 +8563,7 @@ impl Sender {
                         .saturating_add(next_interval),
                     unit: dup.unit,
                     interval_ns: next_interval,
+                    src: dup.src,
                 });
             }
         }
@@ -8550,9 +8581,29 @@ impl Sender {
     /// eksiği bilinmez; hat boşken beklemek bir ACK aralığı kaybettirir. Ürün testi (dürüst-12500,
     /// tohum 3, `3fe54abf`): gönderici 13,2 s'de bitti, 13,2–16,7 s hat boş (yalnız PTT), ACK
     /// 16,72 s'de geldi, ARQ üç parçayı ancak o zaman gönderdi, dosya 17,11 s (sınır 14 s).
+    ///
+    /// [KANIT-YOK-TEKRAR-YOK · 2026-11-22] Birimin uçuşta bir YENİDEN iletimi (ARQ, kopya, prob;
+    /// orijinal değil) varsa ve o iletim en büyük teyitli iletimden yeniyse (hiçbir ACK onun akıbetini
+    /// henüz göremez) birim aday değildir: ilk kör kopya (orijinalin akıbeti bilinmezken) aynen
+    /// gider, ama aynı birim kanıt gelmeden ikinci kez kör gönderilmez. Kanıt gelince (daha yeni bir
+    /// iletim teyitlendi) iletim ya teyitlidir ya kayıp ilan edilir (ARQ) ya da yeniden adaydır.
+    /// Kanıt geri bildirim ufkunda ([`FeedbackStarvedRule::feedback_ns`]) gelmezse kural kalkar
+    /// (canlılık). Gerekçe (ürün testi, düşüş-toparlanma, tohum 2): dosya bittikten sonra hat
+    /// 12 500'den 6 250 B/s'ye düştüğünde süpürme her ACK'te (ACK, 62 B/s dönüşte en az ≈ 1,4 s
+    /// önceki durumu bildirir) ARQ'su ve kopyası henüz yolda olan birimleri yeniden gönderdi;
+    /// darboğaz kuyruğu 2–3 s bu kopyalardan oluştu (birimlerin yarısından çoğu Bob'daydı), metin 3
+    /// 1,8–2,8 s ve daralma evresinde PTT demetlerinin yarısı geç kaldı.
+    ///
+    /// [YARI-HAT · 2026-11-22] Süpürme hattın en çok yarısını kullanır
+    /// ([`IDLE_RETX_LINE_SHARE_DEN`]): aynı hücrede ilk kör süpürme (dosya bittikten ≈ 1 s sonra)
+    /// hattın düştüğü ana denk geldi ve 12 500 B/s'de çıkan kopyalar (çoğu Bob'daydı) 6 250 B/s
+    /// hatta 1,4 s kuyruk yaptı; metin 2 1,09 s bekledi.
     fn drain_idle_retransmit(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
-        if self.cc_feedback_starved.is_none()
-            || !self.tx_queue.is_empty()
+        let Some(rule) = self.cc_feedback_starved else {
+            return;
+        };
+        let horizon_ns = rule.feedback_ns;
+        if !self.tx_queue.is_empty()
             || !self.pending_lost.is_empty()
             || !self.pending_fec.is_empty()
             || self.dup_queue.iter().any(|d| d.due_ns <= now_ns)
@@ -8560,8 +8611,13 @@ impl Sender {
             return;
         }
         let copy_below = self.forward_copy_rule.map_or(0, |r| r.below_id);
+        let largest_acked = self.loss.largest_acked();
         for _ in 0..IDLE_RETX_PER_TURN {
+            if now_ns < self.idle_retx_next_ns {
+                return;
+            }
             // Birim başına: ilk kaydın seq'i, son iletim anı, birim; teyitli ya da FEC → aday değil.
+            // [KANIT-YOK-TEKRAR-YOK] Akıbeti henüz hiçbir ACK'in göremeyeceği yeniden iletim de.
             let mut units: BTreeMap<u64, (u64, u64, OpaqueUnit, bool)> = BTreeMap::new();
             for (&seq, p) in &self.inflight {
                 if p.unit.id < copy_below {
@@ -8572,6 +8628,9 @@ impl Sender {
                     .or_insert((seq, p.send_ns, p.unit, false));
                 e.1 = e.1.max(p.send_ns);
                 e.3 |= p.origin == TransmitKind::FecParity || p.confirmed_release_ns.is_some();
+                e.3 |= matches!(p.origin, TransmitKind::Retransmit | TransmitKind::Duplicate)
+                    && largest_acked.is_none_or(|la| seq > la)
+                    && p.send_ns.saturating_add(horizon_ns) > now_ns;
             }
             let Some(unit) = units
                 .values()
@@ -8594,8 +8653,17 @@ impl Sender {
             }
             self.idle_retx_units.insert(unit.id);
             self.diag_idle_retx = self.diag_idle_retx.saturating_add(1);
+            // [YARI-HAT] Bilinen hat (hat koruması indirdiyse indirilmiş hat; yoksa profil hattı).
+            let line = self.pacer.line_model().unwrap_or(rule.line);
+            let ser_ns = u128::from(unit.size.saturating_add(line.datagram_overhead))
+                * 1_000_000_000
+                / u128::from(line.rate_bps.max(1));
+            self.idle_retx_next_ns = now_ns.saturating_add(
+                u64::try_from(ser_ns.saturating_mul(u128::from(IDLE_RETX_LINE_SHARE_DEN)))
+                    .unwrap_or(u64::MAX),
+            );
             let seq = self.track_sent(unit, now_ns, 0, TransmitKind::Duplicate);
-            self.diag_emit(now_ns, seq, unit.id, EmitCause::Copy, 0);
+            self.diag_emit(now_ns, seq, unit.id, EmitCause::Copy, DUP_SRC_IDLE_RETX);
             out.push(TransmitDecision {
                 kind: TransmitKind::Duplicate,
                 seq,
@@ -8812,7 +8880,7 @@ impl Sender {
             }
             let dup = self.dup_queue.remove(j);
             let seq = self.track_sent(dup.unit, now_ns, 0, TransmitKind::Duplicate);
-            self.diag_emit(now_ns, seq, dup.unit.id, EmitCause::CopyPriority, 0);
+            self.diag_emit(now_ns, seq, dup.unit.id, EmitCause::CopyPriority, dup.src);
             out.push(TransmitDecision {
                 kind: TransmitKind::Duplicate,
                 seq,
@@ -8918,6 +8986,7 @@ impl Sender {
                         due_ns: t0.saturating_add(i.saturating_mul(rule.spacing_ns)),
                         unit: front,
                         interval_ns: 0, // tek atış; teyit gelince on_ack iptal eder
+                        src: DUP_SRC_RULE,
                     });
                 }
             }
@@ -8929,6 +8998,7 @@ impl Sender {
                     due_ns: now_ns + i.saturating_mul(dur_ns(spacing)),
                     unit: front,
                     interval_ns: 0, // emergency: fire-once
+                    src: DUP_SRC_RECOVER_FWD,
                 });
             }
         } else if self.state == SenderState::PreConverge {
@@ -8950,6 +9020,7 @@ impl Sender {
                     .saturating_add(first_delay),
                 unit: front,
                 interval_ns: first_delay, // reschedule aralığı (drain'de ×COPY_MULTIPLIER)
+                src: DUP_SRC_PRECONVERGE,
             });
             // DR-CS-3 ARM: PreConverge + srtt=None + FIRST DATA wire emission (t₀ = this instant,
             // i.e. the unit passed try_send and is on the wire). Once per bootstrap epoch.
@@ -9534,6 +9605,7 @@ mod tests {
             due_ns: 0,
             unit: OpaqueUnit { id: 42, size: 1200 },
             interval_ns: 0,
+            src: 0,
         });
         s.sent_logical.insert(
             5,
@@ -13760,6 +13832,7 @@ mod tests {
                     due_ns: DUP_FAR_NS,
                     unit: small(namesake),
                     interval_ns: 0,
+                    src: 0,
                 });
                 // (1) Uçuştaki parite kaydının ACK'i.
                 r.s.enqueue_fec_parity(7, ESI, 100);
@@ -15174,6 +15247,7 @@ mod tests {
                     due_ns: DUP_FAR_NS,
                     unit: small(UID + 1),
                     interval_ns: 0,
+                    src: 0,
                 });
                 let bytes0 = r.s.inflight_bytes();
                 let pif0 = r.s.diag_pif();
@@ -16273,6 +16347,7 @@ mod feedback_starved_tests {
             due_ns: 60_000 * MS,
             unit: OpaqueUnit { id: 9, size: 1000 },
             interval_ns: 60_000 * MS,
+            src: 0,
         });
         assert!(
             g.schedule_forward_copies(9, 2, 40 * MS, MS),
