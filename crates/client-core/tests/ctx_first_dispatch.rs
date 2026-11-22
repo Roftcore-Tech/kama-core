@@ -284,6 +284,16 @@ struct ClientRig {
 impl ClientRig {
     /// İki birim uçuşta (DATA'ları görüldü), PARAM henüz onaysız (uç PARAM_SET yineliyor).
     async fn new() -> Self {
+        let cfg = RuntimeConfig {
+            drain_cap: Duration::from_millis(100),
+            ..RuntimeConfig::default()
+        };
+        let units = [b"birim-0".to_vec(), b"birim-1".to_vec()];
+        Self::with(cfg, &units).await
+    }
+
+    /// `units` uçuşta (DATA'ları görüldü), PARAM henüz onaysız; uç `cfg` ile kurulur.
+    async fn with(cfg: RuntimeConfig, units: &[Vec<u8>]) -> Self {
         let mut alice = node(ALICE);
         let mut bob = node(BOB);
         let mut carol = node(CAROL);
@@ -293,10 +303,6 @@ impl ClientRig {
         let alice = Arc::new(Mutex::new(alice));
 
         let peer = udp().await;
-        let cfg = RuntimeConfig {
-            drain_cap: Duration::from_millis(100),
-            ..RuntimeConfig::default()
-        };
         let client = ClientEndpoint::connect_session(
             peer.local_addr().expect("eş adresi"),
             cfg,
@@ -309,18 +315,19 @@ impl ClientRig {
         // Kurtarma kapalı (yalnız test yapılandırması): ARQ retransmit / kopya / parity tele
         // çıkmaz → PARAM onaylanınca uç HİÇ mühürlemez; Crypto parmak izi kararlı kalır.
         client.set_recovery(false);
-        client.send(b"birim-0".to_vec()).expect("sun");
-        client.send(b"birim-1".to_vec()).expect("sun");
+        for u in units {
+            client.send(u.clone()).expect("sun");
+        }
 
         let mut pn = BTreeMap::new();
         let mut param_hash = None;
         let mut param_sets = 0;
         let mut to = None;
         let deadline = Instant::now() + WAIT;
-        while pn.len() < 2 || param_hash.is_none() {
+        while pn.len() < units.len() || param_hash.is_none() {
             let (wire, from) = recv_until(&peer, deadline)
                 .await
-                .expect("iki DATA + PARAM_SET gelmeli");
+                .expect("birimlerin DATA'sı + PARAM_SET gelmeli");
             to = Some(from);
             let od = bob.open(&wire).expect("Bob açar");
             if let Some((_, unit, _)) = decode_data(&od.frame) {
@@ -488,6 +495,41 @@ async fn b_hub_channel_recovered_cannot_remove_an_inflight_unit() {
     // Yalnız beklenen bağlamdaki RECOVERED birimi kapattı.
     assert_eq!((cs.fec_recovered_ctrl_units, cs.acked), (1, 0));
     assert_session_clean(&cs);
+}
+
+/// [RECOVERED-BLOK · #175 dış inceleme] Geri bildirimi aç profilde de RECOVERED yalnız LİSTELENEN
+/// birimi teyit eder. Alıcı bloğu çözüp bir birimi teslim kuyruğuna alamadığında (kuyruk dolu ya
+/// da kabul penceresi dışı) o birimi listeye yazmaz; gönderici bloğun geri kalanını teyit ederse
+/// kabul edilmemiş birimin yeniden iletimi durur. Bir ESI listeleyen RECOVERED'dan sonra yalnız o
+/// birim teyitli, kalan yedisi teyitsiz (yeniden iletilebilir) kalır. Karşı-olgu: blok geneline
+/// teyit (993e08be'nin ikinci maddesi) sekizini de teyit ediyordu.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recovered_confirms_only_the_listed_units_on_the_starved_profile() {
+    use client_core::runtime::LinkRates;
+    let cfg = RuntimeConfig {
+        drain_cap: Duration::from_millis(100),
+        link_rates: Some(LinkRates {
+            uplink_bps: 12_500,
+            downlink_bps: 62,
+        }),
+        ..RuntimeConfig::default()
+    };
+    // Profil 0x05'in k = 8 bloğunu dolduran, onarım alacak boyda sekiz birim.
+    let units: Vec<Vec<u8>> = (0..8u8).map(|i| vec![i; 900]).collect();
+    let mut rig = ClientRig::with(cfg, &units).await;
+    rig.confirm_param().await;
+    let recovered = encode_recovered(0, &[0]);
+    let real = rig.bob_wire(&recovered);
+    rig.send(&real).await;
+    assert_eq!(rig.next_ack().await, Some(0), "listelenen birim teyitli");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        rig.client.outstanding(),
+        units.len() - 1,
+        "listelenmeyen birimler teyitsiz kalır"
+    );
+    let (_, cs) = rig.finish().await;
+    assert_eq!(cs.fec_recovered_ctrl_units, 1);
 }
 
 /// Kart 5(b) — CS_ECHO: HubChannel'daki echo RTT/echo yoluna girmez. ESKİ DAVRANIŞ: sayılır ve

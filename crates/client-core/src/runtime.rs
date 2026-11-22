@@ -3182,6 +3182,11 @@ async fn client_task(
     // [DÖNÜŞ-HATTI] Dar hatta son PARAM'ın hattı terk ettiği an + taban PTO (ms); bu andan önce
     // yeniden deneme çıkmaz (`param_retry_due`). Hat modeli kurulu değilken `None`.
     let mut param_line_gate_ms: Option<u64> = None;
+    // [PARAM-İLERİ-KOPYA] İlk PARAM'ın çıkış anı (ms; yalnız `param_forward_copies_on` iken) ve
+    // ardından çıkan ACK'siz kopya sayısı (`param_forward_copy_due`). Kopyalar deneme sayacına ve
+    // geri çekilmeye girmez.
+    let mut param_first_ms: Option<u64> = None;
+    let mut param_copies_sent: usize = 0;
     // [ACK-BITMAP · YETENEK] Bitmap biçimi açık uç, veri alıcısına CAPS ile 0x15'i çözebildiğini
     // bildirir; ilk 0x15 ACK'i bildirimin ulaştığının kanıtıdır ve yeniden denemeyi durdurur.
     // Kapalıyken (varsayılan) CAPS hiç çıkmaz: tel ve davranış bugünküyle aynı. CAPS yalnız bu
@@ -3665,6 +3670,11 @@ async fn client_task(
                                     esi,
                                 });
                             }
+                            // [RECOVERED-BLOK · GERİ ALINDI 2026-11-22, #175 dış inceleme] RECOVERED
+                            // yalnız LİSTELENEN birimleri teyit eder. Alıcı bloğu çözse bile teslim
+                            // kuyruğu doluysa ya da birim kabul penceresinin dışındaysa o birimi
+                            // listeye yazmaz (kısmi liste): bloğun geri kalanını teyit etmek kabul
+                            // edilmemiş birimin yeniden iletimini durdurur (teslim kaybı).
                             drive!(Event::RecoveredControl(RecoveredInfo { units }), $now);
                         }
                         _ => stats.unknown_frames += 1,
@@ -4234,18 +4244,33 @@ async fn client_task(
                 // taban PTO dolmadan çıkmaz (`param_retry_due`). 62 B/s'de 85 B PARAM 1,37 s
                 // serileşir; 200/400/800 ms geri çekilme ilk PARAM hattan çıkmadan üç kopya daha
                 // kuyruğa bırakıyordu (alındı ve ACK'ler onların arkasında 7–8 s bekledi).
+                // [PARAM-İLERİ-KOPYA] Geri bildirimi aç profilde ilk PARAM'dan sonra
+                // `PARAM_FORWARD_COPY_OFFSETS_MS` anlarında PARAM_ACK beklenmeden birer kopya
+                // (`param_forward_copies_on`); PARAM_ACK gelince kalanlar çıkmaz. Kopya yeniden
+                // deneme sayılmaz (deneme sayacı ve geri çekilme bugünkü gibi); hat modeline
+                // yazılır ve hat kapısını son kopyadan kurar. Profil kapalıyken `copy` hep yanlış.
                 if let Some(plan) = param_plan.as_ref() {
                     let now_ms = now / 1_000_000;
                     let due = param_retry_due(now_ms, param_tries, param_last_tick_ms, param_line_gate_ms);
-                    if !param_confirmed && param_tries < 25 && due {
+                    let retry = param_tries < 25 && due;
+                    let copy = param_forward_copy_due(param_first_ms, param_copies_sent, now_ms);
+                    if !param_confirmed && (retry || copy) {
                         if let (Some(p), Control::ParamSet { param_hash, .. }) = (fec.as_ref(), &plan.control) {
                             let f = encode_param(p.profile_id, p.code_suite_id, param_hash);
                             let sealed = wire_len(seam.as_ref(), client_ctx, f.len());
                             // Motor kararı değil: PN tabloya GİRMEZ (alıcı PARAM'ı ACK'lemez).
                             let _ = seal_send!(f, TxClass::Ctrl, now);
                             stats.param_sends += 1;
-                            param_tries += 1;
-                            param_last_tick_ms = now_ms;
+                            if copy {
+                                param_copies_sent += 1;
+                            }
+                            if retry {
+                                if param_tries == 0 && param_forward_copies_on(&cfg, sealed) {
+                                    param_first_ms = Some(now_ms);
+                                }
+                                param_tries += 1;
+                                param_last_tick_ms = now_ms;
+                            }
                             if session.sender().cc_line_installed() {
                                 session.sender_mut().cc_line_charge(sealed);
                                 let shared = uplink.as_ref().map_or(0, UplinkShare::ns_until_clear);
@@ -5180,6 +5205,53 @@ fn param_retry_due(now_ms: u64, tries: u32, last_ms: u64, line_gate_ms: Option<u
     now_ms >= last_ms + backoff_ms && line_gate_ms.is_none_or(|g| now_ms >= g)
 }
 
+/// [PARAM-İLERİ-KOPYA · #175 Y3] Geri bildirimi aç profilde ilk PARAM'dan bu kadar sonra (ms)
+/// PARAM_ACK beklenmeden birer kopya daha çıkar (ilk gönderim + 4 kopya = 5 × 85 B ileri hatta,
+/// oturum başına bir kez). Anlar ilk gönderime göredir ve ikiye katlanır (iş emrindeki çizelge):
+/// art arda düşmelere karşı yayılır, ilk üçü etkileşimli sınırın (1 s) içindedir. Neden: ilk PARAM düşerse yeniden deneme hat
+/// kapısını (PARAM'ın hattı terk etmesi + RTT örneği yokken ilk PTO, 1 s) bekliyordu; Bob PARAM'ı
+/// ilk PARAM'dan 1,20 s sonra bağlıyor ve o ana dek gelen onarımları çözemiyordu (bekletme). Bu
+/// profilde PARAM_ACK dar dönüşten ≥ 1,3 s'de gelir; ondan önce kopya kesmenin yolu yoktur.
+/// Hepsinin düşmesi (%20 kayıpta 0,2⁵ ≈ 3·10⁻⁴) bugünkü yeniden denemeye kalır.
+pub const PARAM_FORWARD_COPY_OFFSETS_MS: [u64; 4] = [200, 400, 800, 1_600];
+
+/// [PARAM-İLERİ-KOPYA] Bu uç PARAM'ı ACK'siz kopyalar mı: geri bildirimi aç profil
+/// ([`link_feedback_starved`]: ACK'ler dar dönüşten gelir) VE bir PARAM'ın (`param_wire`, mühürlü
+/// UDP gövdesi; + IP/UDP zarfı) yukarı yönde serileşmesi ilk kopya aralığından kısa. İkinci koşul
+/// hat kapısının korunduğu durumu dışarıda bırakır: dar yukarı yönde kopyalar birbirinin ve
+/// ACK'lerin önünde kuyruğa girerdi. Profil kapalıyken `false` (davranış bayt-aynı).
+#[must_use]
+pub fn param_forward_copies_on(cfg: &RuntimeConfig, param_wire: u64) -> bool {
+    link_feedback_starved(cfg)
+        && cfg.link_rates.is_some_and(|l| {
+            param_wire
+                .saturating_add(LINK_UDP_IP_OVERHEAD)
+                .saturating_mul(1_000)
+                < PARAM_FORWARD_COPY_OFFSETS_MS[0].saturating_mul(l.uplink_bps)
+        })
+}
+
+/// [PARAM-İLERİ-KOPYA] Kopya anı bu kadar (ms) erken düşen tiki de kabul eder: yarım
+/// [`RTPROP_TICK`]. Kopyalar rtprop tikinde çıkar; tik takvimi zamanlayıcınındır, `first_ms` ise
+/// ilk PARAM'ın gerçek çıkışıdır (o tik birkaç ms geç uyanabilir). Pay olmadan 200 ms sonraki tik
+/// kopya anından 1–2 ms önce düşüp kopyayı bir tik (+200 ms) kaydırıyordu (doğrulamada 7 koşunun
+/// 2'si). Yarım tik payıyla kopya, anına en yakın tikte çıkar; hiçbir kopya bir önceki tike kaymaz.
+const PARAM_FORWARD_COPY_SLACK_MS: u64 = RTPROP_TICK.as_millis() as u64 / 2;
+
+/// [PARAM-İLERİ-KOPYA] Sıradaki ACK'siz PARAM kopyası şimdi mi. `first_ms` = ilk PARAM'ın çıkışı
+/// (`None` = kopya yok: profil kapalı ya da PARAM henüz çıkmadı); `copies_sent` = çıkmış kopya.
+/// Anına [`PARAM_FORWARD_COPY_SLACK_MS`]'den az kalan tikte çıkar. Geç kalan tikte en çok bir kopya
+/// çıkar; sıradaki bir sonraki tikte.
+fn param_forward_copy_due(first_ms: Option<u64>, copies_sent: usize, now_ms: u64) -> bool {
+    first_ms.is_some_and(|f| {
+        PARAM_FORWARD_COPY_OFFSETS_MS
+            .get(copies_sent)
+            .is_some_and(|&o| {
+                now_ms.saturating_add(PARAM_FORWARD_COPY_SLACK_MS) > f.saturating_add(o)
+            })
+    })
+}
+
 /// Mühürlü wire boyu (pacing/FEC bütçe muhasebesi). `sealed_len` yapısal olarak reddederse
 /// (çerçeve bağlamın sınırını aşıyor / oturum yok) düz boy döner: o çerçevenin `seal()`'i de AYNI
 /// nedenle reddedilecek ve emisyon kayıp sayılacaktır (INV-RATE-1) — muhasebe burada uydurulmaz.
@@ -5240,6 +5312,66 @@ async fn srv_send_or_yield(
         return;
     }
     srv_seal_send(tx, sock, stats, peer, ctx, frame).await;
+}
+
+/// [ÖNCELİK] ACK zamanlayıcısının bir turu: her yuvanın zamanlayıcı ACK'i, sonra hat boş kaldıkça
+/// bekletilen denetim çerçeveleri, sonra süresi dolan bekletilen PARAM_ACK'ler.
+async fn srv_ack_tick(
+    tx: &mut SrvTx,
+    sock: &UdpSocket,
+    stats: &mut ServerStats,
+    peers: &mut HashMap<SlotKey, PeerSlot>,
+    now: u64,
+) {
+    // ACK_FREQ_N'e ulaşamayan kuyruğu timer teyit eder (bench birebir).
+    // [DÖNÜŞ-HATTI] ACK'in varış ufku hatta önündeki baytları da sayar.
+    // [ÖNCELİK · ACK ÖNCE · 2026-11-22] ACK kararı bekletilen RECOVERED'lardan ÖNCE
+    // hattı okur; RECOVERED'lar ACK'ten sonra, hat hâlâ boşsa çıkar (iki denetim
+    // datagramı yine üst üste çıkmaz). Eski sıra (önce RECOVERED) hattın her boşalışını
+    // RECOVERED'a veriyordu: ürün testi `asym_product_outcome` düşüş hücresi, tohum 1,
+    // yedi RECOVERED 6,5–17,1 s'de birer birer çıktı, ACK her turda "hat dolu" gördü,
+    // Alice'e 4,3–22,2 s arası ACK varmadı. RECOVERED yalnız kurtarılan birimin
+    // yeniden iletimini önler; ACK göndericinin bütün teyit ve hız ölçümüdür.
+    let ahead = tx.line_ahead_ns();
+    let yield_ctrl = tx.control_should_yield();
+    let acks: Vec<(SocketAddr, ProtectionContext, Vec<u8>)> = peers
+        .iter_mut()
+        .filter_map(|(&(p, _), s)| {
+            s.rx.set_return_line_ahead_ns(ahead);
+            s.rx.set_uplink_yield(yield_ctrl);
+            let a = s.rx.on_ack_timer(now)?;
+            s.acks_out = s.acks_out.saturating_add(1);
+            Some((p, s.ctx, a.encode()))
+        })
+        .collect();
+    for (peer, sp, plain) in acks {
+        srv_seal_send(tx, sock, stats, peer, sp, plain).await;
+    }
+    drain_yielded(tx, sock, stats).await;
+    // [PARAM_ACK-BEKLETME] İkinci ACK çıktıysa ya da süre dolduysa bekletilen PARAM_ACK.
+    let held: Vec<(SocketAddr, ProtectionContext, Vec<u8>)> = peers
+        .iter_mut()
+        .filter(|(_, s)| {
+            s.param_ack_held
+                .as_ref()
+                .is_some_and(|&(_, dl)| s.acks_out >= PARAM_ACK_AFTER_ACKS || now >= dl)
+        })
+        .filter_map(|(&(p, _), s)| s.param_ack_held.take().map(|(f, _)| (p, s.ctx, f)))
+        .collect();
+    for (peer, sp, f) in held {
+        srv_seal_send(tx, sock, stats, peer, sp, f).await;
+    }
+}
+
+/// [ÖNCELİK] Bekletilen denetim çerçevelerini hat boş kaldıkça sırayla çıkarır (ACK
+/// zamanlayıcısı, o turun ACK kararından SONRA çağırır).
+async fn drain_yielded(tx: &mut SrvTx, sock: &UdpSocket, stats: &mut ServerStats) {
+    while !tx.control_should_yield() {
+        let Some((peer, sp, f)) = tx.yielded.pop_front() else {
+            break;
+        };
+        srv_seal_send(tx, sock, stats, peer, sp, f).await;
+    }
 }
 
 /// [v1] Server-yönü tek-nokta seal+send (typed seal-reddi sayılır). Egress kapısı reddederse
@@ -5569,44 +5701,7 @@ async fn server_task(
             }
             _ = ack_timer.tick() => {
                 let now = elapsed_ns(start);
-                // ACK_FREQ_N'e ulaşamayan kuyruğu timer teyit eder (bench birebir).
-                // [DÖNÜŞ-HATTI] ACK'in varış ufku hatta önündeki baytları da sayar.
-                // [ÖNCELİK] Bekletilen RECOVERED'lar hat boşken çıkar; ACK kararı ondan SONRA hattı
-                // okur (yoksa aynı anda iki denetim datagramı üst üste çıkar).
-                while !tx.control_should_yield() {
-                    let Some((peer, sp, f)) = tx.yielded.pop_front() else { break };
-                    srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, f).await;
-                }
-                let ahead = tx.line_ahead_ns();
-                let yield_ctrl = tx.control_should_yield();
-                let acks: Vec<(SocketAddr, ProtectionContext, Vec<u8>)> = peers
-                    .iter_mut()
-                    .filter_map(|(&(p, _), s)| {
-                        s.rx.set_return_line_ahead_ns(ahead);
-                        s.rx.set_uplink_yield(yield_ctrl);
-                        let a = s.rx.on_ack_timer(now)?;
-                        s.acks_out = s.acks_out.saturating_add(1);
-                        Some((p, s.ctx, a.encode()))
-                    })
-                    .collect();
-                for (peer, sp, plain) in acks {
-                    srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, plain).await;
-                }
-                // [PARAM_ACK-BEKLETME] İkinci ACK çıktıysa ya da süre dolduysa bekletilen PARAM_ACK.
-                let held: Vec<(SocketAddr, ProtectionContext, Vec<u8>)> = peers
-                    .iter_mut()
-                    .filter(|(_, s)| {
-                        s.param_ack_held.as_ref().is_some_and(|&(_, dl)| {
-                            s.acks_out >= PARAM_ACK_AFTER_ACKS || now >= dl
-                        })
-                    })
-                    .filter_map(|(&(p, _), s)| {
-                        s.param_ack_held.take().map(|(f, _)| (p, s.ctx, f))
-                    })
-                    .collect();
-                for (peer, sp, f) in held {
-                    srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, f).await;
-                }
+                srv_ack_tick(&mut tx, &sock, &mut stats, &mut peers, now).await;
             }
             _ = patience.tick() => {
                 // Item 3: idle-peer emekliliği — tablo boşalması YALNIZ burada (sessiz-eviction yok;
@@ -8081,5 +8176,362 @@ mod uplink_line_tests {
             free >= 3,
             "yön hızı yokken bugünkü geri çekilme: {free} PARAM"
         );
+    }
+}
+
+#[cfg(test)]
+mod param_forward_copy_tests {
+    //! [PARAM-İLERİ-KOPYA] Geri bildirimi aç profilde ilk PARAM ileri hatta düşerse veri alıcısı
+    //! (Bob'un sunucu ucu) PARAM'ı ne zaman bağlar. Bağlama anı FEC'in "kodlandığı" andır: bağlamada
+    //! bekletilen shard'lar aynı adımda `fec_ingest`'e boşaltılır ve onarım o adımda çözülür
+    //! (boşaltma → çözüm `pre_param_fec_guard_tests`'te); istemcinin parite üretimi PARAM_ACK'e
+    //! bağlı değildir (`param_confirmed` yalnız yeniden denemeyi durdurur).
+    //!
+    //! DÜZENEK: gerçek istemci ve sunucu görevi (UDP loopback, `IdentitySeam`); aralarında aracı
+    //! soket çifti. Aracı ilk PARAM'ı (istemci → sunucu) ve ilk PARAM_ACK'i (sunucu → istemci)
+    //! düşürür, kalanı olduğu gibi aktarır. Bağlama anı = sunucunun ilk PARAM_ACK'inin aracıya
+    //! varışı (sunucu PARAM_ACK'i bağladığı adımda yollar; loopback gecikmesi ihmal edilir).
+    //! Vekil yalnız bütçesiz sunucuda geçerlidir: ilk bağlamada `param_ack_due` (`already_bound`
+    //! yanlış) PARAM_ACK'i aynı adımda çıkarır. Test sunucusu bu yüzden `RuntimeConfig::default()`
+    //! ile kalır (geri bildirimi aç profilde sunucu PARAM_ACK'i bekletebilir); sunucunun
+    //! `param_bound_peers == 1` olduğu ayrıca doğrulanır.
+
+    use super::*;
+    use crate::seam::IdentitySeam;
+
+    /// Aracının en uzun koşusu (bağlama hiç olmazsa).
+    const WAIT: Duration = Duration::from_secs(10);
+    /// PARAM_ACK istemciye ulaştıktan sonra aracının dinlemeyi sürdürdüğü süre: son kopya anı
+    /// (1,6 s) + iki tik; ilk PARAM'dan itibaren tüm çizelgeyi kapsar.
+    const LISTEN_AFTER_ACK: Duration = Duration::from_millis(
+        PARAM_FORWARD_COPY_OFFSETS_MS[PARAM_FORWARD_COPY_OFFSETS_MS.len() - 1]
+            + 2 * RTPROP_TICK.as_millis() as u64,
+    );
+    /// Kabul sınırı: etkileşimli sınır (metin ve PTT demeti 1 s;
+    /// [`FEEDBACK_STARVED_ACK_INTERVAL_NS`]). İş emri (#175 Y3): FEC ≤ 1 s'de kodlanır.
+    const BOUND: Duration = Duration::from_nanos(FEEDBACK_STARVED_ACK_INTERVAL_NS);
+
+    /// Ürünün geri bildirimi aç profili: ileri 12 500 B/s, dönüş 62 B/s.
+    fn starved() -> RuntimeConfig {
+        RuntimeConfig {
+            link_rates: Some(LinkRates {
+                uplink_bps: 12_500,
+                downlink_bps: 62,
+            }),
+            drain_cap: Duration::from_millis(50),
+            ..RuntimeConfig::default()
+        }
+    }
+
+    /// Aracının kaydı: PARAM'ların ve PARAM_ACK'lerin aracıya varış anları (ilk PARAM'dan
+    /// itibaren değil, aracının başlangıcından; ns).
+    struct Log {
+        params_ns: Vec<u64>,
+        param_acks_ns: Vec<u64>,
+        /// İstemciye ulaştırılan ilk PARAM_ACK'in (aracı ikinciyi geçirir) aktarıldığı an.
+        ack_delivered_ns: Option<u64>,
+        client_param_sends: u64,
+        server_bound_peers: u64,
+    }
+
+    impl Log {
+        /// İlk PARAM'ın çıkışından sunucunun bağlamasına (ilk PARAM_ACK) geçen süre.
+        fn bind_after_first_param(&self) -> Option<Duration> {
+            let first = *self.params_ns.first()?;
+            let bind = *self.param_acks_ns.first()?;
+            Some(Duration::from_nanos(bind.saturating_sub(first)))
+        }
+
+        /// PARAM_ACK istemciye ulaştıktan bir tik sonra aracıya varan PARAM'lar (kopya ya da
+        /// yeniden deneme). Bir tik pay: ACK'in işlendiği tikte yoldaki PARAM sayılmaz.
+        fn params_after_ack(&self) -> Vec<u64> {
+            let Some(d) = self.ack_delivered_ns else {
+                return Vec::new();
+            };
+            let tick = u64::try_from(RTPROP_TICK.as_nanos()).unwrap_or(u64::MAX);
+            self.params_ns
+                .iter()
+                .copied()
+                .filter(|&t| t > d.saturating_add(tick))
+                .collect()
+        }
+    }
+
+    /// İstemci `cfg` ile aracıya bağlanır; aracı `drop_first_param` ise ilk PARAM'ı, her durumda
+    /// ilk PARAM_ACK'i düşürür. İkinci PARAM_ACK istemciye ulaştıktan `LISTEN_AFTER_ACK` sonra (ya
+    /// da `WAIT` dolunca) biter.
+    async fn run(cfg: RuntimeConfig, drop_first_param: bool) -> Log {
+        let server = ServerEndpoint::bind(
+            "127.0.0.1:0".parse().expect("adres"),
+            RuntimeConfig::default(),
+            Box::new(IdentitySeam::new()),
+        )
+        .await
+        .expect("server bind");
+        let front = UdpSocket::bind("127.0.0.1:0").await.expect("ön soket");
+        let back = UdpSocket::bind("127.0.0.1:0").await.expect("arka soket");
+        let server_addr = server.local_addr();
+        let t0 = tokio::time::Instant::now();
+        let client = ClientEndpoint::connect(
+            front.local_addr().expect("adres"),
+            cfg,
+            Box::new(IdentitySeam::new()),
+        )
+        .await
+        .expect("client connect");
+        let mut seam = IdentitySeam::new();
+        let mut log = Log {
+            params_ns: Vec::new(),
+            param_acks_ns: Vec::new(),
+            ack_delivered_ns: None,
+            client_param_sends: 0,
+            server_bound_peers: 0,
+        };
+        let mut client_addr: Option<SocketAddr> = None;
+        let mut a = vec![0u8; 2048];
+        let mut b = vec![0u8; 2048];
+        let mut deadline = t0 + WAIT;
+        while tokio::time::Instant::now() < deadline {
+            let now_ns = |t0: tokio::time::Instant| {
+                u64::try_from(t0.elapsed().as_nanos()).unwrap_or(u64::MAX)
+            };
+            tokio::select! {
+                r = front.recv_from(&mut a) => {
+                    let Ok((n, from)) = r else { continue };
+                    client_addr = Some(from);
+                    let is_param = seam
+                        .open(&a[..n])
+                        .is_some_and(|o| decode_param(&o.frame).is_some());
+                    if is_param {
+                        log.params_ns.push(now_ns(t0));
+                        if drop_first_param && log.params_ns.len() == 1 {
+                            continue;
+                        }
+                    }
+                    let _ = back.send_to(&a[..n], server_addr).await;
+                }
+                r = back.recv_from(&mut b) => {
+                    let Ok((n, _)) = r else { continue };
+                    let is_ack = seam
+                        .open(&b[..n])
+                        .is_some_and(|o| decode_param_ack(&o.frame).is_some());
+                    if is_ack {
+                        log.param_acks_ns.push(now_ns(t0));
+                        if log.param_acks_ns.len() == 1 {
+                            continue;
+                        }
+                    }
+                    if let Some(c) = client_addr {
+                        let _ = front.send_to(&b[..n], c).await;
+                        if is_ack && log.ack_delivered_ns.is_none() {
+                            log.ack_delivered_ns = Some(now_ns(t0));
+                            deadline = deadline.min(tokio::time::Instant::now() + LISTEN_AFTER_ACK);
+                        }
+                    }
+                }
+                () = tokio::time::sleep_until(deadline) => {}
+            }
+        }
+        log.client_param_sends = client.shutdown().await.param_sends;
+        log.server_bound_peers = server.shutdown().await.param_bound_peers;
+        log
+    }
+
+    /// [PARAM-İLERİ-KOPYA] Kopya yalnız geri bildirimi aç profilde ve geniş yukarı yönde açılır;
+    /// çizelge ilk gönderime göre, kopya başına bir kez, en çok dört kopya.
+    #[test]
+    fn forward_copies_only_on_the_starved_profile_and_on_schedule() {
+        const PARAM_WIRE: u64 = 57; // PARAM mühürlü UDP gövdesi (`IdentitySeam`); + 28 B zarf = 85 B.
+        assert!(param_forward_copies_on(&starved(), PARAM_WIRE));
+        assert!(
+            !param_forward_copies_on(&RuntimeConfig::default(), PARAM_WIRE),
+            "profil yok"
+        );
+        assert!(
+            !param_forward_copies_on(
+                &RuntimeConfig {
+                    engine: TransportEngine::Legacy,
+                    ..starved()
+                },
+                PARAM_WIRE
+            ),
+            "eski motor"
+        );
+        let fast_return = RuntimeConfig {
+            link_rates: Some(LinkRates {
+                uplink_bps: 62,
+                downlink_bps: 12_500,
+            }),
+            ..RuntimeConfig::default()
+        };
+        assert!(
+            !param_forward_copies_on(&fast_return, PARAM_WIRE),
+            "ACK'leri geniş hattan gelen uç"
+        );
+        let narrow_both = RuntimeConfig {
+            link_rates: Some(LinkRates {
+                uplink_bps: 62,
+                downlink_bps: 62,
+            }),
+            ..RuntimeConfig::default()
+        };
+        assert!(
+            !param_forward_copies_on(&narrow_both, PARAM_WIRE),
+            "dar yukarı yön: 85 B 1,37 s serileşir, hat kapısı korunur"
+        );
+        assert!(!param_forward_copy_due(None, 0, 10_000), "kopya kapalı");
+        let first = 1_000;
+        // Yarım tik payı: anından tam yarım tik önce düşen tik kopyayı çıkarmaz, ondan sonraki
+        // her an çıkarır (en yakın tik). Bir önceki tik (bir tam tik önce) asla çıkarmaz.
+        let tick = u64::try_from(RTPROP_TICK.as_millis()).expect("tik");
+        for (k, &o) in PARAM_FORWARD_COPY_OFFSETS_MS.iter().enumerate() {
+            assert!(!param_forward_copy_due(Some(first), k, first + o - tick));
+            assert!(!param_forward_copy_due(
+                Some(first),
+                k,
+                first + o - PARAM_FORWARD_COPY_SLACK_MS
+            ));
+            assert!(param_forward_copy_due(
+                Some(first),
+                k,
+                first + o - PARAM_FORWARD_COPY_SLACK_MS + 1
+            ));
+            assert!(param_forward_copy_due(Some(first), k, first + o));
+        }
+        assert!(!param_forward_copy_due(
+            Some(first),
+            PARAM_FORWARD_COPY_OFFSETS_MS.len(),
+            u64::MAX
+        ));
+    }
+
+    /// [PARAM-İLERİ-KOPYA] Profil kapalı uçtan uca: yanıtsız eşe ilk 1 s'de çıkan PARAM sayısı
+    /// bugünkü geri çekilmeyle aynı (0 / 0,2 / 0,6 s → 3); kopya yok.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn no_forward_copies_without_the_profile() {
+        let sink = UdpSocket::bind("127.0.0.1:0").await.expect("yutucu");
+        let client = ClientEndpoint::connect(
+            sink.local_addr().expect("adres"),
+            RuntimeConfig {
+                drain_cap: Duration::from_millis(50),
+                ..RuntimeConfig::default()
+            },
+            Box::new(IdentitySeam::new()),
+        )
+        .await
+        .expect("client connect");
+        tokio::time::sleep(Duration::from_millis(900)).await;
+        let sends = client.shutdown().await.param_sends;
+        assert!(
+            (2..=3).contains(&sends),
+            "profil kapalı: geri çekilme 0 / 0,2 / 0,6 s, kopya yok; {sends} PARAM"
+        );
+    }
+
+    /// [PARAM-İLERİ-KOPYA] Kanıt: ilk PARAM ileri hatta ve ilk PARAM_ACK dönüşte düşer; sunucu
+    /// PARAM'ı ilk PARAM'dan en geç 1 s sonra bağlar (bekletilen onarımlar o adımda çözülür).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lost_first_param_and_param_ack_still_bind_within_one_second() {
+        let lost = run(starved(), true).await;
+        let bind = lost.bind_after_first_param();
+        eprintln!(
+            "ilk PARAM kayıplı: bağlama {:?} · PARAM varışları (ms) {:?} · PARAM_ACK (ms) {:?} · istemci PARAM {} · ACK istemciye (ms) {:?} · sunucu bağlama {}",
+            bind,
+            lost.params_ns.iter().map(|t| t / 1_000_000).collect::<Vec<_>>(),
+            lost.param_acks_ns.iter().map(|t| t / 1_000_000).collect::<Vec<_>>(),
+            lost.client_param_sends,
+            lost.ack_delivered_ns.map(|t| t / 1_000_000),
+            lost.server_bound_peers,
+        );
+        let clean = run(starved(), false).await;
+        eprintln!(
+            "ilk PARAM kayıpsız: bağlama {:?} · PARAM varışları (ms) {:?} · PARAM_ACK (ms) {:?} · istemci PARAM {} · ACK istemciye (ms) {:?} · sunucu bağlama {}",
+            clean.bind_after_first_param(),
+            clean.params_ns.iter().map(|t| t / 1_000_000).collect::<Vec<_>>(),
+            clean.param_acks_ns.iter().map(|t| t / 1_000_000).collect::<Vec<_>>(),
+            clean.client_param_sends,
+            clean.ack_delivered_ns.map(|t| t / 1_000_000),
+            clean.server_bound_peers,
+        );
+        assert!(
+            bind.is_some_and(|d| d <= BOUND),
+            "ilk PARAM ve PARAM_ACK kaybında bağlama ≤ 1 s olmalı: {bind:?}"
+        );
+        for (name, log) in [("kayıplı", &lost), ("kayıpsız", &clean)] {
+            assert_eq!(
+                log.server_bound_peers, 1,
+                "{name}: sunucu PARAM'ı bir kez bağlar"
+            );
+            assert!(
+                log.ack_delivered_ns.is_some(),
+                "{name}: PARAM_ACK istemciye ulaşmalı"
+            );
+            assert!(
+                log.params_after_ack().is_empty(),
+                "{name}: PARAM_ACK ulaştıktan sonra kopya/deneme çıkmaz; geç PARAM (ns) {:?}",
+                log.params_after_ack()
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod ack_tick_priority_tests {
+    use super::*;
+    use crate::seam::IdentitySeam;
+
+    /// [ÖNCELİK · ACK ÖNCE] Dar dönüşte (62 B/s) hat boşken ACK zamanlayıcısının turunda hem bekleyen
+    /// bir ACK hem bekletilen bir RECOVERED varsa hatta ÖNCE ACK çıkar; RECOVERED hat dolduğu için
+    /// bekler (iki denetim datagramı üst üste çıkmaz). Karşı-olgu: eski sıra (önce RECOVERED
+    /// boşaltılır) hattı RECOVERED'a verir ve ACK o turda yol verir — ürün testi düşüş hücresinde
+    /// her turda tekrarlanıp Alice'e 4,3–22,2 s ACK ulaştırmadı.
+    #[tokio::test]
+    async fn ack_takes_the_clear_line_before_a_yielded_recovered() {
+        let peer_sock = UdpSocket::bind("127.0.0.1:0").await.expect("eş");
+        let peer = peer_sock.local_addr().expect("adres");
+        let sock = UdpSocket::bind("127.0.0.1:0").await.expect("sunucu");
+        let ctx = ProtectionContext::Session(IdentitySeam::SESSION);
+        let recovered = vec![FRAME_RECOVERED, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0];
+        let mut tx = SrvTx {
+            seam: Box::new(IdentitySeam::new()),
+            egress: None,
+            start: Instant::now(),
+            uplink: Some(UplinkShare(Arc::new(UplinkLine {
+                origin: Instant::now(),
+                rate_bps: 62,
+                busy_until_ns: AtomicU64::new(0),
+                narrow: true,
+            }))),
+            yielded: VecDeque::from([(peer, ctx, recovered)]),
+        };
+        let mut stats = ServerStats::default();
+        let mut slot = PeerSlot::new(ctx, 4, 0, TransportEngine::CcPort, Some(62));
+        let out = slot.rx.on_datagram(
+            RxDatagram {
+                seq: 0,
+                unit_id: 0,
+                kind: RxKind::Data,
+            },
+            0,
+        );
+        assert!(out.ack.is_none(), "ACK zamanlayıcıya kalır");
+        let mut peers: HashMap<SlotKey, PeerSlot> = HashMap::new();
+        peers.insert((peer, IdentitySeam::SESSION), slot);
+
+        srv_ack_tick(&mut tx, &sock, &mut stats, &mut peers, 50_000_000).await;
+
+        let mut buf = [0u8; 2048];
+        let n = peer_sock.recv(&mut buf).await.expect("datagram");
+        assert_ne!(buf[0], FRAME_RECOVERED, "hatta önce RECOVERED çıktı");
+        assert!(
+            adaptive_transport::ack::AckFrame::decode_with_bitmap(
+                &buf[..n - crate::seam::IDENTITY_TAG]
+            )
+            .is_ok(),
+            "ilk datagram ACK değil: {:#04x}",
+            buf[0]
+        );
+        assert_eq!(tx.yielded.len(), 1, "RECOVERED hat dolunca bekler");
+        assert_eq!(stats.tx_datagrams, 1, "turda tek denetim datagramı");
     }
 }
