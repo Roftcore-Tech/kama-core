@@ -5828,9 +5828,15 @@ impl Sender {
     }
 
     /// [ÖNLEMSEL-KOPYA] Yeni birimlerin ACK beklemeyen ileri kopya kuralı ([`ForwardCopyRule`]).
-    /// `None` (varsayılan) ya da `copies == 0` = kural yok. Oturum başında, ilk olaydan önce çağrılır.
+    /// `None` (varsayılan) = kural yok. `copies == 0` ve öncelik kapsamı yoksa
+    /// (`priority_below_id ≤ below_id`) kural yok; `copies == 0` ile öncelik kapsamı varsa kural
+    /// yalnız sıradır (kopya yok, öncelikli şeritler yeniden iletimden önce çıkar). Oturum başında
+    /// kurulur; [PTT-YALIN] eş yeni PTT çerçevesini çözdüğü kanıtlanınca oturum içinde bir kez
+    /// yeniden kurulabilir (planlanmış kopyalar değişmez).
     pub fn set_forward_copy_rule(&mut self, rule: Option<ForwardCopyRule>) {
-        self.forward_copy_rule = rule.filter(|r| r.copies > 0).map(|r| ForwardCopyRule {
+        self.forward_copy_rule = rule
+            .filter(|r| r.copies > 0 || r.priority_below_id > r.below_id)
+            .map(|r| ForwardCopyRule {
             priority_below_id: r.priority_below_id.max(r.below_id),
             ..r
         });
