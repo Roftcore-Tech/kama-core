@@ -4320,11 +4320,8 @@ impl Sender {
             // [SÜRELİ-YOKLAMA] Başarısız yoklamanın fazlası mevcut kuyruğun üstüne.
             self.pacer.line_add_backlog(u.extra_backlog_bytes);
         }
-        // [ÖLÇÜM-BOŞLUĞU · İŞ-35] Boşluk kuralı kurulduysa tek seferlik boşaltma.
-        let drain = g.take_gap_drain();
-        if drain > 0 {
-            self.pacer.line_raise_backlog(drain);
-        }
+        // [ÖLÇÜM-BOŞLUĞU · İŞ-35] Boşluk kuralının kuyruk borcu hat modeline değil boşluk bütçesine
+        // yazılır (`LineGuard::on_ack_measured`): öncelikli trafik beklemez.
     }
 
     /// §12 timer handler (RTprop probe → DRAIN_RTPROP; PTO → zaman-eşiği loss).

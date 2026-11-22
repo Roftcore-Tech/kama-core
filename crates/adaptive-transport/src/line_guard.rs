@@ -302,16 +302,81 @@
 //! * öncelikli olmayan iletimler (yeni veri, onarım sembolü ve — yalnız boşlukta — yeniden iletim)
 //!   toplam tel baytı `A(t) = max(1 MTU, R/2 × t)` bütçesiyle bekler (başlangıç bütçesinin kovası,
 //!   ilk patlama yok); PTT, metin ve denetim bütçeye sayılır ama beklemez;
-//! * kurulurken tek seferlik boşaltma: cephenin kuyruk beklemesi (`τ − s − taban`) kadar süre hat
-//!   modeline yazılır (`R ×` bekleme). Dönüş gecikmesi artışı da buna girer: dürüst hatta bedel bir
-//!   kez o kadar bekleme, hız değil;
+//! * kova kuyruk borcuyla başlar (aşağıda "Kuyruk borcu"): bütçenin kendi varsayımı (gerçek hat
+//!   ≥ `R/2`) altında darboğazda kalan kendi baytlarımız; borç ödenene dek öncelikli olmayan iş
+//!   bekler, öncelikli trafik beklemez ama kovadan düşer;
 //! * `rate_bps` ve gönderim tavanı yazılmaz; ilk ölçülü ACK bütçeyi kaldırır, sonrası olağan aralık
 //!   kipidir (daralma varsa ölçülür).
 //!
 //! Kanıt (benzetim, `tests/starved_line_sim.rs`): `e1` hız ve tavan profilde kaldı; `e2` (8–19 s
 //! ölçüm yok, gerçek 6 250) boşlukta darboğaz beklemesi 1,82 s → 0,36–0,61 s (sınır 0,70 s), ölçüm
 //! dönünce yakınsama sınır içinde. Ara ölçüm: yeniden iletim bütçe dışındayken (kuyrukta düşen her
-//! iletim yeniden iletilir) bekleme 2,60 s kalıyordu.
+//! iletim yeniden iletilir) bekleme 2,60 s kalıyordu. [2026-11-22: bu geçiş yalnız bugünkü 7
+//! iletimli PTT yükünde tutuyordu; aşağıda "Kuyruk borcu".]
+//!
+//! **Kuyruk borcu (İŞ-35 e2, 2026-11-22).** İlk kural kurulurken tek seferlik boşaltma yazıyordu:
+//! cephenin kuyruk beklemesi kadar süre, hat modeline (`R ×` bekleme). `e2` üç PTT yüküyle
+//! koşulunca (A: 7 iletim 86 B, B: 5 iletim 40 ms, C: paket içi yedekli tek paket 172 B) boşluk
+//! beklemesi A 0,61 / 0,36 / 0,43 s, B 1,29 / 1,43 / 1,49 s, C 3,91 / 4,44 / 4,29 s (sınır 0,70 s;
+//! tohum 1–3). Kök iki parçalı (ölçüldü, B tohum 1):
+//! * Cephe kurulma anından ≈ 4,3 s önce gönderilmişti (9,56 → 13,90 s; ACK aralığı, dönüş
+//!   serileşmesi ve cephenin kendi beklemesi). Beklemesi 1,52 s, boşaltma 18 961 B; o anda gerçek
+//!   kuyruk 3,72 s. Cepheden sonra kuyruk büyümeye devam etmişti ve tek cephenin beklemesi bunu
+//!   görmez.
+//! * Bütçe `R/2` = 6 250 = gerçek hat: boşaltmadan artan kuyruk boşluk boyunca hiç boşalmaz (B
+//!   tohum 1'de 17–21 s'de 1,28–1,29 s, C tohum 1'de 14–23 s'de 3,75–3,84 s sabit). Varsayımın sınır
+//!   durumunda bütçenin payı sıfırdır; tahminin her eksiği kalıcı kalır.
+//!
+//! A'nın geçişi kopya karışımına bağlıydı: 64 paketlik FIFO'nun bir kısmı 114 B'lik PTT kopyalarıyla
+//! dolduğu için kuyruk zamanda daha kısa kalıyordu (kurulmaya dek en büyük bekleme A 2,84–2,99 s,
+//! B 3,63–3,72 s, C 4,91–6,30 s).
+//!
+//! Kural: kuyruk tahmini bütçenin varsayımıyla yapılır ve kovaya borç olarak yazılır
+//! (`LineGuard::set_gap_debt`). Cephe `s + w` anında hattı terk etti (`w` cephenin kuyruk
+//! beklemesi); o andan bu yana hat en az `R/2 × (şimdi − s − w)` boşalttı; cepheden sonra gönderilen
+//! tel baytlarının kalanı borçtur. Kova `derinlik − borç` ile başlar ve `R/2` dolar: gerçek hat
+//! `R/2` iken borç ödendiğinde kuyruk da boşalmıştır; hat daha hızlıysa kuyruk daha önce boşalır ve
+//! bedel dosyanın beklemesidir.
+//! * Borç boşluktaki her ölçümsüz ACK'te o ACK'in cephesiyle yeniden kurulur (eskisinin yerine):
+//!   kuyrukta düşen bayt cepheden sonra gönderilenlere girer ve tahmini büyütür; daha yeni cephe
+//!   bunu düzeltir.
+//! * Bekleme boşluğun kurulduğu andaki tabana göre ölçülür: boşluk süren kuyrukta alınan noktalar
+//!   kayan taban penceresine girip tabanı şişirir (ölçüldü, C tohum 2: taban 0,62 → 2,51 s; kayan
+//!   tabanla borç erken sıfırlandı, boşluk beklemesi 1,32 s).
+//! * Kurulurken cephe beklemesi bir tam datagramın serileşmesinden küçükse borç yazılmaz (kuyruk
+//!   kanıtı yok): dürüst hatta kurulma bedeli yalnız yarı hızdır. Sonraki ölçümsüz ACK'ler borcu
+//!   yine kurar.
+//! * Borç hat modeline değil kovaya yazılır: PTT beklemez. Hat modeline `R/2` varsayımlı boşaltma
+//!   yazmak denendi: bekletilen PTT kopyaları boşaltma bitince birikip FIFO'yu doldurdu, A ve B'de
+//!   boşluk beklemesi 1,15 s (64 × 114 B / 6 250 B/s).
+//! * Yalnız kurulurken yazılan borç (yeniden kurma yok) denendi: kuyrukta düşen bayt yüzünden borç
+//!   gerçek kuyruktan büyük kaldı, darboğaz boş kaldı; A ve B'nin altı koşusunun hiçbiri yakınsamadı
+//!   (B tohum 1: tek örnek 4 073 B/s, gerçek 6 250).
+//!
+//! Sonuç (e2, tohum 1–3): boşluk beklemesi A 0,34 / 0,34 / 0,23 s, B 0,33 / 0,61 / 0,61 s,
+//! C 0,23 / 0,30 / 0,17 s; yakınsamadan 2 s sonra bekleme ≤ 0,16 s. Dürüst hatta (`e1`, dönüş
+//! gecikmesi basamakları) eski boşaltma dönüş basamağını kuyruk sayıp hattı bekletiyordu; borç
+//! cepheden sonra gönderilenle sınırlı olduğundan sıfır çıktı: dosya 19,22 / 16,35 / 14,23 →
+//! 16,62 / 14,37 / 13,41 s.
+//!
+//! **Borç evresinin aralığı örnek vermez.** Borç ödenirken gönderici bilinçli olarak hattın altında
+//! gönderir; kuyruk boşalınca darboğaz boş kalır. Ölçüm dönünce bu evreyi kapsayan bir aralıkta
+//! kuyruk sonradan büyürse (boşluk bitti, tavan `R`) artış örneği `bayt / rx_span`'i boşta geçen
+//! süreyle böler ve hattı düşük okur; örnek tavanı indirir, sonraki doğru örnekler onu
+//! yükseltemez. Ölçüldü (B tohum 2–3, borç kuralıyla): aralık 18,90–22,45 s (borç 19,6 s'ye dek)
+//! örnek 5 401 / 5 399 B/s (gerçek 6 250, −%13,6); bir sonraki aralık 6 248. Kural: borç ödenirken
+//! gönderilmiş bir iletim içeren aralık artış örneği vermez (`SentRec::drain`); sonraki aralıklar
+//! ölçer. B'de yakınsama 27,96 / 27,71 s (sınır 30,80 / 30,54 s). Bedel: yakınsama bir ACK aralığı
+//! geç gelebilir (A tohum 1–2: 26,65 / 26,27 → 28,73 / 28,35 s).
+//! Önce denenen daha geniş kural (boşluk bütçesinde gönderilmiş her iletim): A'da yakınsama 30,81 /
+//! 32,51 / 40,38 s (sınır 31,56 / 31,18 / 30,73 s). Reddedildi.
+//!
+//! Sınır (ÇÖZÜLMEDİ, hat korumasının dışı): yakınsamadan 9 s sonra PTT ≤ 1 s `e2`'de 9 koşunun
+//! 7'sinde tutmuyor (1,54–5,15 s). Kuyruk o evrede boştur (≤ 0,16 s); gecikme sıralı teslimin bir
+//! demeti beklemesidir. A/B: yakınsamadaki kuyruk boşaltması (hat modeli) PTT'yi de bekletir,
+//! bekleyen demetler 5–7 yerine 2 iletimle çıkar, ikisi de düşen demet ARQ'yla ilk iletimden 5–8 s
+//! sonra gelir (ölçüldü: B tohum 1 demet 161, A tohum 3 demet 153).
+//! C: bir demeti taşıyan üç paketin üçü de düşer (%20 kayıpta ≈ %0,8), kurtarma ARQ turudur.
 //! Varsayım ve sınır: gerçek hat `R/2`'den yavaş değilse kuyruk boşluk süresince büyümez; daha
 //! yavaşsa `(R/2 − L)/L` hızında büyür (bütçesiz `(R − L)/L`). Boşluğun ilk iki ACK'i boyunca
 //! (≈ iki ACK aralığı + dönüş geçişi) koruma yoktur: tek ölçümsüz ACK'in olağan olmasının bedeli.
@@ -504,6 +569,9 @@ struct SentRec {
     ahead_ns: u64,
     /// [ÖLÇÜM-BOŞLUĞU] Öncelikli şeridin iletimi (PTT, metin, denetim).
     pri: bool,
+    /// [ÖLÇÜM-BOŞLUĞU] İletim boşluk bütçesinin kuyruk borcu ödenirken çıktı: gönderici kuyruğu
+    /// boşaltmak için hattın altında gönderiyordu, darboğaz boş kalmış olabilir.
+    drain: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -578,9 +646,12 @@ pub struct LineGuard {
     /// [TAŞMA · ÇİFT ALT SINIRI] İşlenecek ACK'in taşıdığı kapasite alt sınırı (tel B/s;
     /// [`Self::note_pair_lower_bound`]). Her ölçülü ACK'te tüketilir: bayat kalmaz.
     pair_bound_wire: Option<u64>,
-    /// [ÖLÇÜM-BOŞLUĞU] Kurulurken hat modeline yazılacak tek seferlik boşaltma (bayt, tel;
-    /// [`Self::take_gap_drain`]).
-    gap_drain: u64,
+    /// [ÖLÇÜM-BOŞLUĞU] Boşluk kurulurken geçerli olan taban (`τ − s` en küçüğü, ns). Boşlukta
+    /// cephe beklemesi bu tabana göre ölçülür: boşluk süresince alınan noktalar kuyrukta beklemiş
+    /// olabilir ve kayan taban penceresine ([`BASE_WINDOW`]) girip tabanı şişirir.
+    gap_base_ns: u64,
+    /// [ÖLÇÜM-BOŞLUĞU] Son yazılan kuyruk borcu (bayt, tel; gözlem — [`Self::gap_debt_bytes`]).
+    gap_debt: u64,
     /// [ÖLÇÜM-ARALIĞI] Son iki ACK'in cephesi: `sent` kayıtları eskisine dek tutulur (bir sonraki
     /// ACK'in M'si iki ACK geriye uzanır).
     recent_fronts: VecDeque<u64>,
@@ -664,6 +735,8 @@ struct StartBudget {
     /// [İKİNCİ-ÖLÇÜM · İŞ-35] Oturumun ilk ACK'i işlendi ve bütçe kalmadı: geçici evre (ilk ACK'in
     /// tek ölçümü ikinci bağımsız ölçümü bekliyor; modül belgesi).
     provisional: bool,
+    /// [ÖLÇÜM-BOŞLUĞU] Kuyruk borcu yazıldı ve kova henüz sıfıra dolmadı (boşaltma evresi).
+    owed: bool,
 }
 
 impl StartBudget {
@@ -676,6 +749,7 @@ impl StartBudget {
             filled_ns: 0,
             used: false,
             provisional: false,
+            owed: false,
         }
     }
 }
@@ -743,7 +817,8 @@ impl LineGuard {
             gap_arms: 0,
             gap_skips: 0,
             bulk_before_first_ack: false,
-            gap_drain: 0,
+            gap_base_ns: 0,
+            gap_debt: 0,
             queue_peaks: VecDeque::new(),
             floor_rx: 0,
             floor_sent: 0,
@@ -802,13 +877,17 @@ impl LineGuard {
         {
             self.bulk_before_first_ack = true;
         }
+        let mut drain = false;
         if let Some(mut b) = self.start {
             if b.first_ns.is_none() {
                 b.first_ns = Some(now_ns);
                 b.tokens = Self::start_depth(&b, self.line.datagram_overhead);
                 b.filled_ns = now_ns;
             }
-            b.tokens = self.start_tokens_at(&b, now_ns) - i128::from(wire);
+            let tokens = self.start_tokens_at(&b, now_ns);
+            b.owed &= tokens < 0;
+            drain = b.gap && b.owed;
+            b.tokens = tokens - i128::from(wire);
             b.filled_ns = b.filled_ns.max(now_ns);
             self.start = Some(b);
         }
@@ -823,6 +902,7 @@ impl LineGuard {
             pace: self.pace_bps,
             ahead_ns,
             pri: priority,
+            drain,
         });
     }
 
@@ -976,10 +1056,39 @@ impl LineGuard {
         self.gap_skips
     }
 
-    /// [ÖLÇÜM-BOŞLUĞU] Boşluk kuralı kurulurken hat modeline yazılacak tek seferlik boşaltma
-    /// (bayt, tel; toplam kuyruk olarak — `TokenBucket::line_raise_backlog`). Okununca sıfırlanır.
-    pub fn take_gap_drain(&mut self) -> u64 {
-        std::mem::take(&mut self.gap_drain)
+    /// [ÖLÇÜM-BOŞLUĞU] Boşluk bütçesine son yazılan kuyruk borcu (bayt, tel; gözlem). Borç
+    /// ödenene dek öncelikli olmayan iletimler bekler (modül belgesi, "Ölçüm boşluğu").
+    #[must_use]
+    pub fn gap_debt_bytes(&self) -> u64 {
+        self.gap_debt
+    }
+
+    /// [ÖLÇÜM-BOŞLUĞU] Boşluk bütçesinin kovasını kuyruk tahminine göre kurar (modül belgesi,
+    /// "Ölçüm boşluğu", kuyruk borcu). `front` bu ACK'in cephesi, `wait_ns` cephenin kuyruk
+    /// beklemesi (boşluğun tabanına göre). Bütçenin varsayımı altında (gerçek hat ≥ `R/2`) cephe
+    /// hattı `front.send_ns + wait_ns` anında terk etmiştir; o andan bu yana hat en az `R/2 × süre`
+    /// boşaltmıştır, cepheden sonra gönderilen baytların kalanı kuyruktadır. Kova bu kadar borçla
+    /// başlar: borç `R/2` dolumla ödenene dek öncelikli olmayan iş bekler, öncelikli trafik beklemez
+    /// ama kovadan düşer. Kapasite iddiası yoktur: `rate_bps` ve gönderim tavanı yazılmaz.
+    fn set_gap_debt(&mut self, now_ns: u64, front: SentRec, wait_ns: u64) {
+        let overhead = self.line.datagram_overhead;
+        let Some(mut b) = self.start.filter(|b| b.gap) else {
+            return;
+        };
+        let half = (b.ref_bps / 2).max(1);
+        let since = now_ns.saturating_sub(front.send_ns.saturating_add(wait_ns));
+        let drained =
+            u64::try_from(u128::from(half) * u128::from(since) / 1_000_000_000).unwrap_or(u64::MAX);
+        let debt = self.cum.saturating_sub(front.cum).saturating_sub(drained);
+        let depth = Self::start_depth(&b, overhead);
+        if b.first_ns.is_none() {
+            b.first_ns = Some(now_ns);
+        }
+        b.tokens = depth - i128::from(debt);
+        b.owed = debt > 0;
+        b.filled_ns = b.filled_ns.max(now_ns);
+        self.start = Some(b);
+        self.gap_debt = debt;
     }
 
     /// [İKİNCİ-ÖLÇÜM · İŞ-35] Bir ACK işlendikten sonra (`on_ack_measured`'dan sonra) bütçenin
@@ -1212,6 +1321,19 @@ impl LineGuard {
         let mtu_ns = ser(crate::rate::DEFAULT_MTU);
         let threshold = mtu_ns.max(i128::from(send_span / GROWTH_MIN_DIV));
         let wire = last.cum.saturating_sub(first.cum);
+        // [ÖLÇÜM-BOŞLUĞU] Aralık boşluk bütçesinin borç ödeme evresinde gönderilmiş bir iletim
+        // içeriyorsa artış örneği alınmaz: gönderici kuyruğu boşaltmak için hattın altında
+        // gönderiyordu, darboğaz aralığın bir kısmında boştur ve `bayt / rx_span` hattı düşük okur
+        // (modül belgesi, "Ölçüm boşluğu"). Sonraki aralıklar ölçer.
+        let drained_part = self
+            .sent
+            .iter()
+            .skip_while(|r| r.seq < first.seq)
+            .take_while(|r| r.seq <= last.seq)
+            .any(|r| r.drain);
+        if g > threshold && drained_part {
+            return None;
+        }
         if g > threshold {
             // [TAŞMA] Artış örneği kuyruk kanıtıdır: sonraki aralıklarda taşma örneği alınabilir.
             // Artış görünen aralıkta taşma tahmini kullanılmaz: tek aralıktaki rastgele kayıp
@@ -1509,6 +1631,7 @@ impl LineGuard {
             self.start = Some(StartBudget::new(self.pace_bps, true));
             self.gap_arms = self.gap_arms.saturating_add(1);
         }
+        let gap_unmeasured = interval.is_none() && self.start.is_some_and(|b| b.gap);
         let wire = self.pending_wire.take()?;
         if saturated || self.frontier.is_some_and(|f| largest_seq <= f) {
             return None;
@@ -1534,13 +1657,24 @@ impl LineGuard {
             self.queue_peaks.pop_front();
         }
         self.queue_peaks.push_back(lag.saturating_sub(base));
-        // [ÖLÇÜM-BOŞLUĞU] Kurulurken tek seferlik boşaltma: cephenin kuyruk beklemesi kadar süre
-        // (dönüş gecikmesi artışı da buna girer: bedeli bir kez o kadar bekleme, hız değil).
-        if arm_gap {
-            self.gap_drain = u64::try_from(
-                u128::from(self.pace_bps) * u128::from(lag.saturating_sub(base)) / 1_000_000_000,
+        // [ÖLÇÜM-BOŞLUĞU] Kuyruk borcu: kurulurken ve boşluktaki her ölçümsüz ACK'te bu ACK'in
+        // cephesinden yeniden tahmin edilir (en yeni cephe; eski tahminin yerine). Kurulurken cephe
+        // beklemesi bir tam datagramın serileşmesinden küçükse (çözünürlük; kuyruk kanıtı yok) borç
+        // yazılmaz: dürüst hatta boşluk bedeli yalnız yarı hızdır.
+        if gap_unmeasured {
+            if arm_gap {
+                self.gap_base_ns = base;
+            }
+            let wait = lag.saturating_sub(self.gap_base_ns.min(base));
+            let ref_bps = self.start.map_or(self.pace_bps, |b| b.ref_bps);
+            let mtu_ns = ns_for(
+                crate::rate::DEFAULT_MTU + self.line.datagram_overhead,
+                ref_bps,
             )
-            .unwrap_or(u64::MAX);
+            .unwrap_or(0);
+            if !arm_gap || wait >= mtu_ns {
+                self.set_gap_debt(now_ns, rec, wait);
+            }
         }
         // [SÜRELİ-YOKLAMA] Hüküm ACK'i: yoklama süresince gönderilen tel baytı (kanıt). Canlı sayaç
         // ve budanmamış kayıtlar; büyüğü (kayıtlar ara ACK'lerle budanmış olabilir, gönderim de
@@ -2184,23 +2318,22 @@ mod tests {
         let _ = ack_m(&mut g, &arr, 50, 600 * MS, None);
         assert_eq!(g.rate_bps(), None, "tek ölçümsüz ACK");
         assert!(!g.gap_budget_active());
-        // İkinci ölçümsüz ACK: cephe örneği yine yok; boşluk bütçesi kurulur ve tek seferlik
-        // boşaltma cephenin beklemesi (≈ basamak) kadardır.
+        // İkinci ölçümsüz ACK: cephe örneği yine yok; boşluk bütçesi kurulur. Cephe beklemesi
+        // (≈ basamak) bir datagramın serileşmesinden büyük: kova kuyruk borcuyla başlar.
         let _ = ack_m(&mut g, &arr, 70, 900 * MS, None);
         assert_eq!(g.rate_bps(), None, "iki ölçümsüz ACK'te cephe örneği yok");
         assert_eq!(g.pace_bps(), PROFILE, "tavan değişmez");
         assert!(g.gap_budget_active(), "boşluk bütçesi kuruldu");
         assert_eq!(g.gap_arms(), 1);
-        let drain = g.take_gap_drain();
-        assert!(
-            drain > 0 && drain <= PROFILE * 900 / 1000,
-            "boşaltma {drain}"
-        );
-        // Boşluk bütçesi: tavanın yarısı hızında, ilk patlama yok.
+        // Borç = cepheden sonra gönderilen − cephenin hattı terk ettiği andan bu yana `R/2` hızında
+        // boşalan; bu düzenekte cepheden sonra 29 tam datagram gönderildi.
+        let debt = g.gap_debt_bytes();
+        assert!(debt > 0 && debt <= 29 * 1200, "borç {debt}");
+        // Borç ödenene dek öncelikli olmayan iş bekler; sonra kova `R/2` hızında dolar.
         let t0 = 100 * 1200 * SEC / PROFILE;
-        g.on_sent(100, t0, 1172);
-        assert!(!g.start_budget_admits(t0, 1172), "patlama yok");
-        assert!(g.start_budget_admits(t0 + 2 * 1200 * SEC / PROFILE * 2, 1172));
+        assert!(!g.start_budget_admits(t0, 1172), "borç ödenmedi");
+        let paid = (debt + 2 * 1200) * SEC / (PROFILE / 2) + 2 * 1200 * SEC / PROFILE;
+        assert!(g.start_budget_admits(t0 + paid, 1172), "borç ödendi");
         // Ölçüm döner: bütçe kalkar.
         let _ = ack_m(&mut g, &arr, 90, 900 * MS, Some(71));
         assert!(!g.gap_budget_active(), "ölçülü ACK bütçeyi kaldırır");
