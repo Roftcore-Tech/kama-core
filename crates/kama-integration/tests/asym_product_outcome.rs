@@ -455,8 +455,9 @@ struct Ledger {
     fec_rx: u64,
     recovered_tx: u64,
     recovered_rx: u64,
-    /// [İZ-NEDEN] Bu ucun mühürlediği her DATA datagramı: (an, PN, motor iletim sırası u16, birim).
-    seals: Vec<(Instant, u64, u16, u64)>,
+    /// [İZ-NEDEN] Bu ucun mühürlediği her DATA datagramı: (an, PN, motor iletim sırası u16, birim,
+    /// parmak izi).
+    seals: Vec<(Instant, u64, u16, u64, u64)>,
     /// [CANLILIK-TEŞHİS] Birim kimliği → taşıdığı AMP kaydı (mühürleyen uç).
     unit_item: HashMap<u64, Item>,
     /// [İZ-NEDEN] Bu uca açılan DATA datagramları: motor iletim sırası (u16) → ilk varış; birim →
@@ -545,8 +546,13 @@ impl PacketProtection for Tap {
                 }
             }
             if l.seals.len() < LEDGER_CAP {
-                l.seals
-                    .push((Instant::now(), sealed.meta.full_wire_pn, wseq, unit));
+                l.seals.push((
+                    Instant::now(),
+                    sealed.meta.full_wire_pn,
+                    wseq,
+                    unit,
+                    fingerprint(&sealed.bytes),
+                ));
             }
         }
         if let Some(c) = self.classify(frame) {
@@ -1915,6 +1921,7 @@ impl Run {
         self.trace_report(&tag);
         self.block_report(&tag);
         self.cause_report(&tag);
+        self.copy_report(&tag);
         self.guard_trace_report(&tag);
         // [ACK-PAYI] Dönüş hattı bileşimi: Bob'un ACK/denetim datagramları (ADown) ve verisi (BUp)
         // sınıf başına (datagram, tel baytı).
@@ -2375,7 +2382,7 @@ impl Run {
             .alice
             .seals
             .iter()
-            .map(|&(at, pn, s, u)| (s, (at, pn, u)))
+            .map(|&(at, pn, s, u, _)| (s, (at, pn, u)))
             .collect();
         let mut loss_cause: HashMap<u64, EmitCause> = HashMap::new();
         for (_, e) in &self.emit {
@@ -2759,6 +2766,134 @@ impl Run {
                 opt_secs(first_audio_dgram.map(|d| self.since(d, opened))),
             );
         }
+    }
+
+    /// [İZ-KOPYA · salt gözlem] Daralma evresinde (düşüşten sonraki 6 s; düşüşsüz hücrede 8–14 s)
+    /// ileri darboğaz kuyruğu ve kopyalar. Rölenin izi yeniden oynatılır (FIFO, hız çizelgesi):
+    /// her datagramın kuyrukta önündeki tel baytı ve bekleme süresi. Satırlar: (1) kopya başına
+    /// mekanizma (iz nedeni + kaynak kodu + şerit), sayı, bayt, gereksiz (birim o an Bob'a DATA olarak
+    /// varmıştı); (2) en büyük kuyruk beklemesi, anı ve o an kuyruktaki baytın mekanizma dağılımı.
+    fn copy_report(&self, tag: &str) {
+        let drop_at = self
+            .cell
+            .fwd_plan
+            .get(1)
+            .map_or(Duration::from_secs(8), |p| p.0);
+        let (w0, w1) = (drop_at, drop_at + Duration::from_secs(6));
+        let src_name = |c: u64| match c {
+            1 => "kural",
+            2 => "planlı(kısmi-blok/PTT-güvenilir)",
+            3 => "ön-yakınsama",
+            4 => "kayıp-kopya-yeniden",
+            5 => "RecoverFwd",
+            6 => "ARQ-tavan-devri",
+            7 => "saf-sessizlik",
+            8 => "boş-hat-yeniden-iletim",
+            _ => "?",
+        };
+        let lane = |u: u64| ["PTT", "SIG", "TEXT", "FILE"][client_core::unit_id::lane_index_of(u)];
+        let mech_of = |e: &EmitDiag| -> Option<String> {
+            Some(match e.cause {
+                EmitCause::Data => format!("veri/{}", lane(e.unit_id)),
+                EmitCause::Retransmit => format!("ARQ/{}", lane(e.unit_id)),
+                EmitCause::PtoProbe => format!("PTO/{}", lane(e.unit_id)),
+                EmitCause::Copy | EmitCause::CopyPriority | EmitCause::CopyEstablish => {
+                    format!("kopya:{}/{}", src_name(e.ref_seq), lane(e.unit_id))
+                }
+                _ => return None,
+            })
+        };
+        // Motor iletim sırası (u16) → parmak izi → mekanizma; FEC datagramı ayrı sınıf.
+        let fp_of_seq: HashMap<u16, u64> = self.alice.seals.iter().map(|s| (s.2, s.4)).collect();
+        let mut fp_mech: HashMap<u64, String> = HashMap::new();
+        let mut copies: BTreeMap<String, (u32, u64, u32)> = BTreeMap::new();
+        // Pencere kopyalarının dökümü: an, şerit içi sıra, kaynak, gereksiz mi, birimin önceki
+        // iletiminin nedeni.
+        let mut list: Vec<String> = Vec::new();
+        let mut prev_cause: HashMap<u64, EmitCause> = HashMap::new();
+        for &(at, e) in &self.emit {
+            let Some(m) = mech_of(&e) else { continue };
+            let prev = prev_cause.insert(e.unit_id, e.cause);
+            let Some(&fp) = fp_of_seq.get(&((e.seq & 0xFFFF) as u16)) else {
+                continue;
+            };
+            fp_mech.insert(fp, m.clone());
+            let el = self.since(at, self.t0);
+            if !m.starts_with("kopya") || el < w0 || el >= w1 {
+                continue;
+            }
+            let had = self.bob.rx_unit.get(&e.unit_id).is_some_and(|&r| r <= at);
+            list.push(format!(
+                "{}:{}:{}:{}:{}",
+                secs(el),
+                client_core::unit_id::lane_seq_of(e.unit_id),
+                e.ref_seq,
+                if had { "var" } else { "yok" },
+                prev.map_or("-".to_string(), |c| format!("{c:?}"))
+            ));
+            let wire = self
+                .fwd
+                .trace
+                .iter()
+                .find(|r| r.fp == fp)
+                .map_or(0, |r| r.wire);
+            let c = copies.entry(m).or_insert((0, 0, 0));
+            c.0 += 1;
+            c.1 += wire;
+            c.2 += u32::from(had);
+        }
+        for &(_, _, _, _, fp) in &self.alice.fec_log {
+            fp_mech.insert(fp, "FEC".to_string());
+        }
+        println!(
+            "İZ-KOPYA {tag} daralma döküm(an:sıra:kaynak:Bob'da:önceki)=[{}]",
+            list.join(" ")
+        );
+        for (m, (n, b, un)) in &copies {
+            println!("İZ-KOPYA {tag} daralma {m} sayı={n} bayt={b} gereksiz={un}");
+        }
+        // Rölenin ileri kuyruğunu yeniden oynat: (sunum, bitiş, tel, sınıf).
+        let mut q: Vec<(Duration, Duration, u64, String)> = Vec::new();
+        let mut busy_until = Duration::ZERO;
+        for r in &self.fwd.trace {
+            if r.fate == 1 {
+                continue;
+            }
+            let off = self.since(r.offered, self.t0);
+            let start = busy_until.max(off);
+            let rate = self.fwd.rate_at(self.t0 + start).max(1);
+            let done = start + Duration::from_nanos(r.wire * 1_000_000_000 / rate);
+            busy_until = done;
+            let class = match r.route {
+                Route::AUp => fp_mech
+                    .get(&r.fp)
+                    .cloned()
+                    .unwrap_or_else(|| "denetim".to_string()),
+                _ => "Bob-denetim".to_string(),
+            };
+            q.push((off, done, r.wire, class));
+        }
+        let peak = q
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| x.0 >= w0 && x.0 < w1)
+            .max_by_key(|(_, x)| x.1 - x.0);
+        if let Some((i, p)) = peak {
+            let mut ahead: BTreeMap<String, (u32, u64)> = BTreeMap::new();
+            for x in q[..i].iter().filter(|x| x.1 > p.0) {
+                let e = ahead.entry(x.3.clone()).or_insert((0, 0));
+                e.0 += 1;
+                e.1 += x.2;
+            }
+            println!(
+                "İZ-KOPYA {tag} kuyruk_tepe={} s an=+{} önündeki={ahead:?}",
+                secs(p.1 - p.0),
+                secs(p.0)
+            );
+        }
+        let total: u32 = copies.values().map(|c| c.0).sum();
+        let unneeded: u32 = copies.values().map(|c| c.2).sum();
+        println!("İZ-KOPYA {tag} daralma kopya_toplam={total} gereksiz={unneeded}");
     }
 
     fn ptt_report(

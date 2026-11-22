@@ -175,6 +175,13 @@ impl TokenBucket {
         self.line.is_some()
     }
 
+    /// [HAT-MODELİ] Kurulu hat modeli (hız, hat koruması indirdiyse indirilmiş hız; model yoksa
+    /// `None`).
+    #[must_use]
+    pub fn line_model(&self) -> Option<LineModel> {
+        self.line.map(|l| l.model)
+    }
+
     /// [HAT-MODELİ] Hat yeni datagram alabilir mi (model yoksa daima).
     #[must_use]
     pub fn line_is_open(&self) -> bool {
