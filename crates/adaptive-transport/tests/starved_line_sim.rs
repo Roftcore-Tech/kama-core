@@ -2243,6 +2243,124 @@ fn lean_ptt(o: &Outcome, voice_until_ns: u64) -> LeanPtt {
     }
 }
 
+/// [PTT-ÖLÇÜT · sahip kararı 2026-11-22, #175 7080178069] Kapı yalın sözleşmedir; PTT ölçütü
+/// media'daki gibidir: demet sunumundan sonra ≤ 1 s ([`PTT_BOUND_NS`]) içinde alıcıya İLK kez
+/// varırsa zamanında; geç kalan ya da hiç gelmeyen demet atlanır (kayıp decoder'da örtülür). Kapı:
+/// evre başına zamanında oranı ≥ %75. Bu düzenek ilk varışı ölçer (`Outcome::voice_first`); ürün
+/// alıcısının sıra-başı atlama beklemesi (client-core) burada yoktur, ürün testi onu ayrıca ölçer.
+const PTT_ON_TIME_MIN_PERMILLE: u64 = 750;
+/// Ürün testinin evre sınırı (`asym_product_outcome`): `başlangıç` = 0–8 s, sonrası hız
+/// çizelgesinin değişim anlarıyla `sürekli` / `daralma` / `toparlanma`.
+const START_PHASE_END_NS: u64 = 8 * SEC;
+
+/// Bir evrenin PTT ölçüsü (demet, planlandığı ana göre evreye düşer).
+#[derive(Debug, Clone)]
+struct PhaseOnTime {
+    name: &'static str,
+    from: u64,
+    to: u64,
+    planned: usize,
+    on_time: usize,
+}
+
+impl PhaseOnTime {
+    /// Evrede planlanmış demet yoksa kanıt yoktur: geçmiş sayılmaz.
+    fn passes(&self) -> bool {
+        self.planned > 0
+            && self.on_time as u64 * 1000 >= PTT_ON_TIME_MIN_PERMILLE * self.planned as u64
+    }
+}
+
+/// Evreler: `başlangıç` [0, 8 s); 8 s'den sonra hız çizelgesinin her değişim anında yeni evre —
+/// çizelgenin ilk hızındaysa `sürekli`, önceki hızdan düşükse `daralma`, yüksekse `toparlanma`.
+/// Son evre konuşmanın sonunda (`voice_until_ns`) biter.
+fn ptt_phases(sc: &Scenario, o: &Outcome) -> Vec<PhaseOnTime> {
+    let end = sc.voice_until_ns.max(START_PHASE_END_NS);
+    let mut bounds = vec![(0u64, "başlangıç")];
+    let name_at = |i: usize| -> &'static str {
+        if i == 0 {
+            "sürekli"
+        } else if sc.fwd_plan[i].1 < sc.fwd_plan[i - 1].1 {
+            "daralma"
+        } else {
+            "toparlanma"
+        }
+    };
+    let active = |t: u64| {
+        sc.fwd_plan
+            .iter()
+            .rposition(|&(at, _)| at <= t)
+            .unwrap_or(0)
+    };
+    bounds.push((START_PHASE_END_NS, name_at(active(START_PHASE_END_NS))));
+    for (i, &(at, _)) in sc.fwd_plan.iter().enumerate() {
+        if at > START_PHASE_END_NS && at < end {
+            bounds.push((at, name_at(i)));
+        }
+    }
+    bounds
+        .iter()
+        .enumerate()
+        .map(|(k, &(from, name))| {
+            let to = bounds.get(k + 1).map_or(end, |b| b.0);
+            let mut planned = 0;
+            let mut on_time = 0;
+            for (v, &(plan, _)) in o.voice.iter().enumerate() {
+                if plan >= from && plan < to {
+                    planned += 1;
+                    if o.voice_first
+                        .get(v)
+                        .copied()
+                        .flatten()
+                        .is_some_and(|a| a <= plan + PTT_BOUND_NS)
+                    {
+                        on_time += 1;
+                    }
+                }
+            }
+            PhaseOnTime {
+                name,
+                from,
+                to,
+                planned,
+                on_time,
+            }
+        })
+        .filter(|p| p.from < p.to)
+        .collect()
+}
+
+fn phases_line(ph: &[PhaseOnTime]) -> String {
+    ph.iter()
+        .map(|p| {
+            format!(
+                "{}[{}–{}] {}/{}",
+                p.name,
+                secs(p.from),
+                secs(p.to),
+                p.on_time,
+                p.planned
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Ürünün yalın PTT sözleşmesinin aynası (#175 7080178069; `feat/ptt-lean`): tek iletim
+/// (`copies = 0` + öncelik, `raw_copy_rule`), yalın 0x09 çerçevesi ([`LEAN_PTT_UNIT`] gövde),
+/// sunumdan [`PTT_DEADLINE_NS`] sonra teyitsiz birimin bırakılması. Senaryonun geri kalanı aynen.
+fn lean(sc: Scenario) -> Scenario {
+    Scenario {
+        copies: 0,
+        spacing_ns: 0,
+        copy_scale_min: None,
+        raw_copy_rule: true,
+        voice_unit: LEAN_PTT_UNIT,
+        ptt_deadline_ns: Some(PTT_DEADLINE_NS),
+        ..sc
+    }
+}
+
 /// [PTT-YALIN] Ürün profili (dürüst 12 500, %20 iid kayıp, ACK bütçesi 62 B/s, 300 ms tek yön), dosya
 /// yok; PTT 0,5–15,5 s, 200 ms'de bir 78 B gövde (tel 106 B), kural `copies = 0` + öncelik
 /// (`ptt_forward_copy_rule(0, 0)`, ölçek yok); 5 s'de bir öncelikli metin birimi. Bırakma kolu:
@@ -2264,21 +2382,22 @@ fn lean_ptt(o: &Outcome, voice_until_ns: u64) -> LeanPtt {
 fn lean_ptt_one_transmission_stays_within_budget_and_expired_units_are_not_retransmitted() {
     let voice_until = 15_500 * MS;
     for seed in 1..=3u64 {
-        let sc = Scenario {
+        let sc = lean(Scenario {
             file_units: 0,
             voice_until_ns: voice_until,
             text_at_ns: Some(5 * SEC),
             text_period_ns: 5 * SEC,
-            copies: 0,
-            spacing_ns: 0,
-            copy_scale_min: None,
-            raw_copy_rule: true,
-            voice_unit: LEAN_PTT_UNIT,
-            ptt_deadline_ns: Some(PTT_DEADLINE_NS),
             ..Scenario::honest(seed)
-        };
+        });
         let o = run(&sc);
         let m = lean_ptt(&o, voice_until);
+        // [PTT-ÖLÇÜT] Evre başına zamanında oranı: bu testte yalnız rapor (iddiası yok).
+        let ph = ptt_phases(&sc, &o);
+        println!(
+            "PTT-ÖLÇÜT tohum {seed} (rapor): {} → evrelerin hepsi ≥ %75: {}",
+            phases_line(&ph),
+            ph.iter().all(PhaseOnTime::passes)
+        );
         let control = Scenario {
             ptt_deadline_ns: None,
             ..sc.clone()
