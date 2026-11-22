@@ -26,7 +26,14 @@
 //! Veri yolu kullanıcı-alanı biçimlendirici röleden geçer; hücre `client-core`
 //! `tests/shaped_relay.rs` asimetrik hücresidir ve biçimlendirici onun kuralıyla aynıdır
 //! (serileştirme tel baytıyla — UDP/IP 28 B dahil —, sınırlı FIFO, sabit tek yön gecikme,
-//! ileri yönde her pakette tohumlu rastgele kayıp, aynı LCG; dönüş tohumu `tohum ^ 0x5A5A`):
+//! ileri yönde her pakette tohumlu rastgele kayıp; dönüş tohumu `tohum ^ 0x5A5A`). Kayıp kararı
+//! [ANAHTARLI-KAYIP · 2026-11-23] varsayılan olarak mantıksal pakete bağlıdır:
+//! `splitmix64(tohum, anahtar) % 1000 < 200`, anahtar = (mühürleyen uç, sınıf: veri birimi /
+//! FEC (blok, ESI) / denetim çerçevesi türü, kimlik, o öğenin kaçıncı mühürlenişi) ([`LogicalKey`]).
+//! Bir kod değişikliğinin eklediği ya da çıkardığı tek datagram (ACK, prob, kopya) başka mantıksal
+//! paketlerin kaderini değiştirmez; aynı tohumla önce/sonra kıyası aynı mantıksal paketleri
+//! kaybeder. `KAMA_ASYM_LOSS=lcg` eski kuralı (sunulan her datagram için sıralı LCG,
+//! `shaped_relay.rs` ile aynı) geri getirir. Kip her satırın başında `kayıp=anahtarlı|lcg`:
 //!
 //! * ileri (Alice tarafı → Bob tarafı): 12,5 kB/s, 64 paket kuyruk, 300 ms, %20 kayıp;
 //! * dönüş (Bob tarafı → Alice tarafı): 62 B/s, 64 paket kuyruk, 300 ms, kayıpsız.
@@ -179,7 +186,9 @@
 //! ve `ÖLÇÜT` satırlarını basar (`--nocapture`); ölçütler önce basılır, sonra iddia edilir. Düşen
 //! ölçütün mekanizması aynı koşunun izinden okunur: `İZ-UYG` (uygulama olayları), `İZ-PTT` (demet
 //! başına plan, ilk çıkış, iletim sayısı, ilk varış, teslim) ve `İZ-HAT` (rölenin gördüğü her
-//! datagram: yön, yol, an, tel boyu, sonuç, varış ve taşıdığı AMP kaydı).
+//! datagram: yön, yol, an, tel boyu, sonuç, varış, taşıdığı AMP kaydı ve mantıksal anahtarı
+//! `anahtar=uç/sınıf/kimlik#sıra`). `KAYIP-ANAHTAR` satırı ileri hatta yolda düşen anahtar sayısını
+//! ve sıralı kümenin özetini yazar (iki koşunun düşen kümesi tek satırda kıyaslanır).
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::net::{SocketAddr, UdpSocket};
@@ -196,7 +205,8 @@ use client_core::runtime::{AckFormat, LinkRates, PTT_RELIABLE_COPIES};
 use client_core::transport::{ClientTransport, ClientTransportConfig};
 use client_core::unit_id::fec_block_of;
 use client_core::wire::{
-    decode_data, decode_fec, decode_ptt, decode_recovered, FRAME_FEC, FRAME_PTT, FRAME_RECOVERED,
+    decode_cs_probe, decode_data, decode_data_frag, decode_fec, decode_ptt, decode_recovered,
+    FRAME_CS_PROBE, FRAME_FEC, FRAME_PTT, FRAME_RECOVERED,
 };
 use kama_app::clock::{MonotonicClock, SystemClock};
 use kama_app::codec::{bundle_code_from_ms, decode, AmpLimits, AppMessage, PttCodec};
@@ -441,6 +451,163 @@ fn fingerprint(bytes: &[u8]) -> u64 {
     h
 }
 
+// ── [ANAHTARLI-KAYIP] Mantıksal paket anahtarı ve kayıp kararı ───────────────────────────────
+//
+// Neden: sıralı LCG kipinde (eski kural) ileri hattın kayıp kararı "sunulan kaçıncı datagram"a
+// bağlıdır. Bir kod değişikliği tek bir datagram eklerse ya da çıkarırsa (ACK, prob, kopya) sonraki
+// bütün kararlar kayar; aynı tohumla önce/sonra koşuları FARKLI mantıksal paketleri kaybeder ve
+// ±1'lik farklar düzeltmeye bağlanamaz. Anahtarlı kipte karar mantıksal iletime bağlıdır:
+// `splitmix64(tohum, anahtar) % 1000 < 200`. Anahtar = (mühürleyen uç, sınıf, kimlik, o mantıksal
+// öğenin bu uçta kaçıncı mühürlenişi). Röle yalnız şifreli metin görür; eşlemeyi mühürleyen taraf
+// ([`Tap`]) yayınlar: şifreli datagramın parmak izi → anahtar ([`KeyBook`]).
+
+/// [ANAHTARLI-KAYIP] Sınıf: veri birimi. 0x00 DATA, 0x05 parçalı DATA ve 0x09 yalın PTT aynı
+/// sınıftır (kimlik = birim kimliği; PTT şeridi 0 olduğundan yalın çerçevenin şerit-içi sırası
+/// birim kimliğidir): bir kopyanın çerçeve biçimi değişse de mantıksal iletim aynı kalır.
+const KEY_CLASS_UNIT: u8 = 0x00;
+/// [ANAHTARLI-KAYIP] Sınıf: FEC onarım/kaynak parçası; kimlik = (blok << 16) | ESI.
+const KEY_CLASS_FEC: u8 = FRAME_FEC;
+/// [ANAHTARLI-KAYIP] Röledeki eşlemesi bulunmayan datagram (mühür kaydı yok ya da tavan doldu);
+/// kimlik = yol, sıra = o yolda kaçıncı bilinmeyen datagram.
+const KEY_CLASS_UNKNOWN: u8 = 0xFF;
+/// [ANAHTARLI-KAYIP] Eşleme tavanı (SR-AUDIT-001). Röle sunduğu datagramın girdisini siler; tavan
+/// yalnız röleye hiç ulaşmayan datagramlara karşı savunmadır.
+const KEYBOOK_CAP: usize = 65_536;
+
+/// [ANAHTARLI-KAYIP] Bir mantıksal iletimin anahtarı.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct LogicalKey {
+    /// Mühürleyen uç ([`ALICE`] / [`BOB`]); bilinmeyen datagramda 0.
+    side: u8,
+    /// [`KEY_CLASS_UNIT`], [`KEY_CLASS_FEC`], denetim çerçevesinde çerçeve türü baytı,
+    /// [`KEY_CLASS_UNKNOWN`].
+    class: u8,
+    /// Birim kimliği · (blok << 16 | ESI) · RECOVERED blok · CS prob sırası · diğer denetimde 0.
+    id: u64,
+    /// Aynı (uç, sınıf, kimlik) öğesinin bundan önceki mühürlenme sayısı (0 = ilk iletim).
+    ordinal: u32,
+}
+
+impl std::fmt::Display for LogicalKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:02X}/{:02X}/{:x}#{}",
+            self.side, self.class, self.id, self.ordinal
+        )
+    }
+}
+
+/// splitmix64 sonlandırıcısı (sabit, bağımlılıksız karıştırma).
+fn splitmix64(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^ (x >> 31)
+}
+
+/// [ANAHTARLI-KAYIP] Anahtarın binde değeri (0..1000): tohum ve anahtarın saf işlevi.
+fn keyed_permille(seed: u64, k: &LogicalKey) -> u64 {
+    let mut h = splitmix64(seed);
+    h = splitmix64(h ^ (u64::from(k.side) << 8 | u64::from(k.class)));
+    h = splitmix64(h ^ k.id);
+    h = splitmix64(h ^ u64::from(k.ordinal));
+    h % 1000
+}
+
+/// [ANAHTARLI-KAYIP] İleri hattın kayıp kipi (`KAMA_ASYM_LOSS`: `keyed` varsayılan, `lcg` eski).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LossMode {
+    /// Mantıksal pakete anahtarlı karar ([`keyed_permille`]).
+    Keyed,
+    /// Sunulan her datagram için sıralı LCG (eski kural; `shaped_relay.rs` ile aynı).
+    Lcg,
+}
+
+impl LossMode {
+    fn from_env() -> Self {
+        match std::env::var("KAMA_ASYM_LOSS").as_deref() {
+            Err(_) | Ok("keyed") => Self::Keyed,
+            Ok("lcg") => Self::Lcg,
+            Ok(v) => panic!("KAMA_ASYM_LOSS: keyed | lcg (verilen {v:?})"),
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Self::Keyed => "anahtarlı",
+            Self::Lcg => "lcg",
+        }
+    }
+}
+
+/// [ANAHTARLI-KAYIP] Parmak izi → mantıksal anahtar eşlemesi (mühürleyen yazar, röle okur ve siler)
+/// ve uç başına mantıksal öğe sayaçları.
+#[derive(Default)]
+struct KeyBook {
+    by_fp: HashMap<u64, LogicalKey>,
+    /// (uç, sınıf, kimlik) → bu uçta şimdiye dek mühürlenme sayısı.
+    seals: HashMap<(u8, u8, u64), u32>,
+    /// Tavan yüzünden yayınlanamayan mühür (röle bunları bilinmeyen sayar).
+    overflow: u64,
+}
+
+/// [ANAHTARLI-KAYIP] Düz çerçevenin mantıksal öğesi: (sınıf, kimlik). Çözücüler `client_core::wire`
+/// ve `adaptive_transport::ack`'tir; çözülemeyen çerçeve tür baytıyla denetim sayılır.
+fn logical_item(frame: &[u8]) -> (u8, u64) {
+    if let Some((_, unit, _)) = decode_data(frame) {
+        return (KEY_CLASS_UNIT, unit);
+    }
+    if let Some((_, unit, _, _)) = decode_data_frag(frame) {
+        return (KEY_CLASS_UNIT, unit);
+    }
+    if let Some((lo, _)) = decode_ptt(frame) {
+        return (KEY_CLASS_UNIT, u64::from(lo));
+    }
+    if let Some((h, _)) = decode_fec(frame) {
+        return (
+            KEY_CLASS_FEC,
+            u64::from(h.block_id) << 16 | u64::from(h.esi),
+        );
+    }
+    if let Some((block, _)) = decode_recovered(frame) {
+        return (FRAME_RECOVERED, u64::from(block));
+    }
+    if let Some((_, probe_seq)) = decode_cs_probe(frame) {
+        return (FRAME_CS_PROBE, u64::from(probe_seq));
+    }
+    // ACK (0x10/0x14/0x15/0x16), PARAM (0x03), PARAM_ACK (0x04), CS_ECHO (0x07), CAPS (0x08) ve
+    // diğerleri: içeriği iletimden iletime değişir (ör. teyit edilen PN'ler), kalıcı kimliği yoktur;
+    // öğe = çerçeve türü, sıra = o türün bu uçta kaçıncı çerçevesi. Ek bir denetim çerçevesi yalnız
+    // kendi türünün sonraki sıralarını kaydırır, veri birimlerinin kararlarına dokunmaz.
+    (frame.first().copied().unwrap_or(KEY_CLASS_UNKNOWN), 0)
+}
+
+impl KeyBook {
+    /// Mühürlenen düz çerçeveyi kaydeder ve şifreli datagramın parmak izine anahtarını yayınlar.
+    /// Tavan dolduysa yayınlamaz (röle o datagramı bilinmeyen sayar).
+    fn note_seal(&mut self, side: u8, frame: &[u8], fp: u64) {
+        let (class, id) = logical_item(frame);
+        let item = (side, class, id);
+        if self.seals.len() >= KEYBOOK_CAP && !self.seals.contains_key(&item) {
+            self.overflow += 1;
+            return;
+        }
+        let n = self.seals.entry(item).or_insert(0);
+        let key = LogicalKey {
+            side,
+            class,
+            id,
+            ordinal: *n,
+        };
+        *n = n.saturating_add(1);
+        if self.by_fp.len() < KEYBOOK_CAP {
+            self.by_fp.insert(fp, key);
+        } else {
+            self.overflow += 1;
+        }
+    }
+}
+
 // ── Kayıt: mühürlenen ve açılan DATA birimleri ───────────────────────────────────────────────
 
 /// Bir DATA biriminin taşıdığı AMP kaydı (eşleme anahtarı).
@@ -557,6 +724,9 @@ struct Tap {
     inner: NoiseWireProtection,
     ledger: Arc<Mutex<Ledger>>,
     limits: AmpLimits,
+    /// [ANAHTARLI-KAYIP] Bu uç ([`ALICE`] / [`BOB`]) ve rölenin okuduğu ortak eşleme.
+    side: u8,
+    keys: Arc<Mutex<KeyBook>>,
 }
 
 impl Tap {
@@ -586,6 +756,9 @@ impl Tap {
 impl PacketProtection for Tap {
     fn seal(&mut self, ctx: ProtectionContext, frame: &[u8]) -> Result<SealedUnit, SealError> {
         let sealed = self.inner.seal(ctx, frame)?;
+        // [ANAHTARLI-KAYIP] Eşleme datagram gönderilmeden (mühür dönmeden) yayınlanır: röle
+        // datagramı gördüğünde anahtarı hazırdır.
+        lock(&self.keys).note_seal(self.side, frame, fingerprint(&sealed.bytes));
         note_kind(&mut lock(&self.ledger), frame, true);
         {
             let mut l = lock(&self.ledger);
@@ -725,7 +898,7 @@ impl SessionControl for Tap {
     }
 }
 
-fn tap(me: u8, ledger: &Arc<Mutex<Ledger>>) -> Tap {
+fn tap(me: u8, ledger: &Arc<Mutex<Ledger>>, keys: &Arc<Mutex<KeyBook>>) -> Tap {
     let ids = [ALICE, BOB].map(|n| *id(n).as_bytes());
     let dir = fixture_directory(ids).expect("fikstür dizini");
     // Çözme sınırı geniş tutulur (yalnız okuma): her geçerli kayıt çözülür.
@@ -740,6 +913,8 @@ fn tap(me: u8, ledger: &Arc<Mutex<Ledger>>) -> Tap {
         inner: fixture_protection(*id(me).as_bytes(), dir, EnvelopeKind::Legacy).0,
         ledger: Arc::clone(ledger),
         limits,
+        side: me,
+        keys: Arc::clone(keys),
     }
 }
 
@@ -770,6 +945,9 @@ struct LineRec {
     fate: u8,
     arrives: Option<Instant>,
     fp: u64,
+    /// [ANAHTARLI-KAYIP] Datagramın mantıksal anahtarı (iki kipte de yazılır; karar yalnız
+    /// anahtarlı kipte ona bağlıdır).
+    key: LogicalKey,
 }
 
 /// Bir yönün hattı: `shaped_relay.rs` `Shaper::offer` kuralı (jitter'sız).
@@ -787,6 +965,12 @@ struct Shaper {
     limit: usize,
     delay: Duration,
     loss_permille: u64,
+    /// [ANAHTARLI-KAYIP] Kayıp kipi, tohum, mühürleyenlerin yayınladığı eşleme ve eşlemesi
+    /// bulunmayan datagramların yol başına sayacı.
+    mode: LossMode,
+    seed: u64,
+    keys: Arc<Mutex<KeyBook>>,
+    unknown: [u32; 4],
     lcg: u64,
     busy: VecDeque<Instant>,
     wire: VecDeque<(Instant, Route, Vec<u8>)>,
@@ -810,6 +994,10 @@ impl Shaper {
             limit: QUEUE_PKTS,
             delay: ONE_WAY,
             loss_permille,
+            mode: LossMode::Keyed,
+            seed,
+            keys: Arc::new(Mutex::new(KeyBook::default())),
+            unknown: [0; 4],
             lcg: seed
                 .wrapping_mul(6_364_136_223_846_793_005)
                 .wrapping_add(1_442_695_040_888_963_407),
@@ -860,24 +1048,38 @@ impl Shaper {
         }
     }
 
-    fn note(
-        &mut self,
-        offered: Instant,
-        route: Route,
-        wire: u64,
-        fate: u8,
-        arrives: Option<Instant>,
-        pkt: &[u8],
-    ) {
+    fn note(&mut self, rec: LineRec) {
         if self.trace.len() < DROP_CAP {
-            self.trace.push(LineRec {
-                offered,
-                route,
-                wire,
-                fate,
-                arrives,
-                fp: fingerprint(pkt),
-            });
+            self.trace.push(rec);
+        }
+    }
+
+    /// [ANAHTARLI-KAYIP] Datagramın mantıksal anahtarı: mühürleyenin yayınladığı eşleme (girdi
+    /// silinir; her şifreli datagram bir kez sunulur), yoksa yol başına bilinmeyen sayacı.
+    fn key_of(&mut self, route: Route, fp: u64) -> LogicalKey {
+        if let Some(k) = lock(&self.keys).by_fp.remove(&fp) {
+            return k;
+        }
+        let r = route as usize;
+        let ordinal = self.unknown[r];
+        self.unknown[r] = ordinal.saturating_add(1);
+        LogicalKey {
+            side: 0,
+            class: KEY_CLASS_UNKNOWN,
+            id: r as u64,
+            ordinal,
+        }
+    }
+
+    /// Rastgele kayıp kararı: anahtarlı kipte mantıksal anahtarın, LCG kipinde sunulan datagram
+    /// sırasının işlevi.
+    fn lose(&mut self, key: &LogicalKey) -> bool {
+        if self.loss_permille == 0 {
+            return false;
+        }
+        match self.mode {
+            LossMode::Keyed => keyed_permille(self.seed, key) < self.loss_permille,
+            LossMode::Lcg => self.rand_permille() < self.loss_permille,
         }
     }
 
@@ -886,10 +1088,20 @@ impl Shaper {
             self.busy.pop_front();
         }
         let size = pkt.len() as u64 + UDP_IP_OVERHEAD;
+        let fp = fingerprint(&pkt);
+        let key = self.key_of(route, fp);
         if self.busy.len() >= self.limit {
             self.dropped_queue += 1;
             self.note_drop(&pkt);
-            self.note(now, route, size, 1, None, &pkt);
+            self.note(LineRec {
+                offered: now,
+                route,
+                wire: size,
+                fate: 1,
+                arrives: None,
+                fp,
+                key,
+            });
             return;
         }
         let start = self.busy.back().copied().unwrap_or(now).max(now);
@@ -898,16 +1110,32 @@ impl Shaper {
         self.busy.push_back(done);
         self.sent += 1;
         self.bytes += size;
-        if self.loss_permille > 0 && self.rand_permille() < self.loss_permille {
+        if self.lose(&key) {
             self.dropped_random += 1;
             self.note_drop(&pkt);
-            self.note(now, route, size, 2, None, &pkt);
+            self.note(LineRec {
+                offered: now,
+                route,
+                wire: size,
+                fate: 2,
+                arrives: None,
+                fp,
+                key,
+            });
             return;
         }
         // FIFO serileştirme; gecikme çizelgesi varsa varış öncülün varışından önce olamaz.
         let arrive = (done + self.delay_at(done)).max(self.last_arrival.unwrap_or(done));
         self.last_arrival = Some(arrive);
-        self.note(now, route, size, 0, Some(arrive), &pkt);
+        self.note(LineRec {
+            offered: now,
+            route,
+            wire: size,
+            fate: 0,
+            arrives: Some(arrive),
+            fp,
+            key,
+        });
         self.wire.push_back((arrive, route, pkt));
     }
 
@@ -1041,6 +1269,7 @@ impl Side {
 fn transport(
     me: u8,
     ledger: &Arc<Mutex<Ledger>>,
+    keys: &Arc<Mutex<KeyBook>>,
     hub: &MemoryHub,
     link: Option<LinkRates>,
     emit: Option<EmitTraceSink>,
@@ -1062,8 +1291,8 @@ fn transport(
     if let Ok(y) = std::env::var("KAMA_ASYM_RETURN_Y_PERMILLE") {
         cfg.runtime.diag_return_budget_permille = y.parse().ok();
     }
-    let mut t =
-        ClientTransport::new(cfg, tap(me, ledger), Box::new(hub.link(id(me)))).expect("transport");
+    let mut t = ClientTransport::new(cfg, tap(me, ledger, keys), Box::new(hub.link(id(me))))
+        .expect("transport");
     // [FEC-TEŞHİS] Canlı ayna (salt gözlem): FEC latch, PARAM, PTO ve kopya sayaçları.
     t.set_live_diag_for_test(true);
     t
@@ -1167,14 +1396,17 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
         })
     };
     let emit: EmitTraceSink = Arc::new(Mutex::new(Vec::new()));
+    // [ANAHTARLI-KAYIP] İki ucun mühürleri ve iki hat aynı eşlemeyi paylaşır.
+    let keys = Arc::new(Mutex::new(KeyBook::default()));
     let mut alice_t = transport(
         ALICE,
         &alice_ledger,
+        &keys,
         &hub,
         link(FWD_BPS, REV_BPS),
         Some(Arc::clone(&emit)),
     );
-    let mut bob_t = transport(BOB, &bob_ledger, &hub, link(REV_BPS, FWD_BPS), None);
+    let mut bob_t = transport(BOB, &bob_ledger, &keys, &hub, link(REV_BPS, FWD_BPS), None);
     let bind = || UdpSocket::bind("127.0.0.1:0").expect("röle soketi");
     let sockets = RelaySockets {
         front_a: bind(),
@@ -1198,7 +1430,11 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
     let mut fwd = Shaper::new(cell.fwd_plan[0].1, FWD_LOSS_PERMILLE, seed);
     fwd.rate_plan = cell.fwd_plan.clone();
     fwd.t0 = Arc::clone(&shaper_t0);
+    fwd.mode = LossMode::from_env();
+    fwd.keys = Arc::clone(&keys);
     let mut rev = Shaper::new(REV_BPS, 0, seed ^ 0x5A5A);
+    rev.mode = fwd.mode;
+    rev.keys = Arc::clone(&keys);
     rev.delay_plan = cell.rev_delay_plan.clone();
     rev.t0 = Arc::clone(&shaper_t0);
     let relay_thread = std::thread::spawn(move || relay(sockets, fwd, rev, &relay_stop));
@@ -1697,10 +1933,11 @@ impl Run {
         let mut failed: Vec<String> = Vec::new();
         let mut line: Vec<String> = Vec::new();
         let tag = format!(
-            "hücre={} tohum={} profil={}",
+            "hücre={} tohum={} profil={} kayıp={}",
             self.cell.name,
             self.seed,
-            if self.profile { "açık" } else { "kapalı" }
+            if self.profile { "açık" } else { "kapalı" },
+            self.fwd.mode.label()
         );
         println!(
             "HÜCRE {tag} ileri_gerçek={:?} ileri_beyan={} dönüş_gerçek={} dönüş_beyan={} dönüş_gecikme={:?} dosya_sınırı={} s dosya2={:?} alındı_sınırı={} s evreler={:?}",
@@ -2177,6 +2414,33 @@ impl Run {
             },
             line.join(" ")
         );
+        // [ANAHTARLI-KAYIP] İleri hatta yolda düşen mantıksal anahtarlar (sıralı) ve eşlemesi
+        // bulunmayan datagram sayısı; özet iki koşunun düşen kümesini tek satırda kıyaslar.
+        let mut lost: Vec<LogicalKey> = self
+            .fwd
+            .trace
+            .iter()
+            .filter(|r| r.fate == 2)
+            .map(|r| r.key)
+            .collect();
+        lost.sort_unstable();
+        let digest = lost.iter().fold(0u64, |h, k| {
+            splitmix64(
+                h ^ splitmix64(
+                    u64::from(k.side) << 40 | u64::from(k.class) << 32 | u64::from(k.ordinal),
+                ) ^ k.id,
+            )
+        });
+        let unknown = self
+            .fwd
+            .trace
+            .iter()
+            .filter(|r| r.key.class == KEY_CLASS_UNKNOWN)
+            .count();
+        println!(
+            "KAYIP-ANAHTAR {tag} ileri_yolda_düşen={} eşlemesiz_ileri={unknown} özet={digest:016x}",
+            lost.len()
+        );
         failed
     }
 
@@ -2569,11 +2833,12 @@ impl Run {
                     _ => "yolda_düştü",
                 };
                 println!(
-                    "İZ-HAT {tag} {dir} {:?} sunum={} tel={} {fate} varış={} {item}",
+                    "İZ-HAT {tag} {dir} {:?} sunum={} tel={} {fate} varış={} {item} anahtar={}",
                     r.route,
                     t(r.offered),
                     r.wire,
-                    ot(r.arrives)
+                    ot(r.arrives),
+                    r.key
                 );
             }
         }
@@ -3613,4 +3878,131 @@ fn ptt_band_gate_passes_the_lean_payload_and_fails_the_80_byte_control() {
     let mut late = spurt(53 + 13 + 168, ms(420), 50);
     late.push((t0 + Duration::from_secs(60), 234));
     assert!(ptt_band_bps(&late, ms(420) * 50).expect("bant") > 4_457);
+}
+
+/// [ANAHTARLI-KAYIP] Ağsız kanıt düzeneği: sabit bir mantıksal paket dizisini (dosya birimleri,
+/// FEC onarım parçaları, yalın PTT demetleri, aralarda aynı birimin yeniden iletimi) gerçek
+/// [`KeyBook`] → [`Shaper::offer`] yolundan geçirir ve yolda düşen mantıksal anahtarları döndürür.
+/// `extra` = dizinin başına ve ortasına ilgisiz denetim datagramları (ACK benzeri 0x15) eklenir;
+/// eklenen her datagram sonraki bütün "şifreli" baytları (PN önekiyle) ve DATA `seq`'ini kaydırır,
+/// tıpkı bir kod değişikliğinin araya bir ACK/prob/kopya sokması gibi.
+fn synthetic_drops(mode: LossMode, extra: bool) -> Vec<LogicalKey> {
+    use client_core::unit_id::tagged;
+    use client_core::wire::{encode_data, encode_fec, encode_ptt, FecFrameHeader};
+    let mut shaper = Shaper::new(FWD_BPS, FWD_LOSS_PERMILLE, 1);
+    shaper.mode = mode;
+    let keys = Arc::clone(&shaper.keys);
+    let base = Instant::now();
+    let mut pn: u64 = 0;
+    // `make(seq)` düz çerçeveyi kurar (`seq` = motorun iletim sırası; DATA ve FEC başlığında).
+    let mut send = |shaper: &mut Shaper, make: &dyn Fn(u16) -> Vec<u8>| {
+        let frame = make((pn & 0xFFFF) as u16);
+        // "Şifreli metin": iletim başına tekil (PN önekli); röle yalnız bunu görür.
+        let mut wire = pn.to_be_bytes().to_vec();
+        wire.extend_from_slice(&frame);
+        lock(&keys).note_seal(ALICE, &frame, fingerprint(&wire));
+        // Kuyruk boş kalsın diye datagramlar 100 ms aralıklı (yalnız rastgele kayıp sınanır).
+        let at = base + Duration::from_millis(100) * u32::try_from(pn).expect("küçük");
+        shaper.offer(at, Route::AUp, wire);
+        pn += 1;
+    };
+    let ack_like = |n: u8| move |_: u16| vec![0x15, 0, n, 0, 0, 0, 0, 0];
+    if extra {
+        send(&mut shaper, &ack_like(0));
+    }
+    for i in 0..300u64 {
+        if extra && i == 150 {
+            send(&mut shaper, &ack_like(1));
+            send(&mut shaper, &ack_like(2));
+        }
+        match i % 3 {
+            0 => send(&mut shaper, &|seq| {
+                encode_data(seq, tagged(3, i), &[0xAB; 64])
+            }),
+            1 => send(&mut shaper, &|seq| {
+                encode_fec(
+                    &FecFrameHeader {
+                        kind: 0x02,
+                        profile_id: 1,
+                        block_id: (3 << 30) | (i as u32 / 8),
+                        esi: 8 + (i % 8) as u16,
+                        k_actual: 8,
+                        seq,
+                    },
+                    &[0xCD; 64],
+                )
+            }),
+            _ => send(&mut shaper, &|_| encode_ptt(i, &[0xEF; 80])),
+        }
+        if i % 10 == 9 {
+            // Son dosya biriminin yeniden iletimi: anahtarı (birim, sıra 1).
+            let unit = tagged(3, i - i % 3);
+            send(&mut shaper, &|seq| encode_data(seq, unit, &[0xAB; 64]));
+        }
+    }
+    shaper
+        .trace
+        .iter()
+        .filter(|r| r.fate == 2 && r.key.class != 0x15)
+        .map(|r| r.key)
+        .collect()
+}
+
+/// [ANAHTARLI-KAYIP] Kırmızı → yeşil: araya giren ilgisiz datagram LCG kipinde başka mantıksal
+/// paketleri düşürür (kırmızı: A/B kıyası nedensellik kuramaz); anahtarlı kipte aynı mantıksal
+/// paketler düşer (yeşil).
+#[test]
+fn keyed_loss_drops_the_same_logical_packets_when_an_unrelated_datagram_is_inserted() {
+    let lcg_a = synthetic_drops(LossMode::Lcg, false);
+    let lcg_b = synthetic_drops(LossMode::Lcg, true);
+    assert!(!lcg_a.is_empty());
+    assert_ne!(
+        lcg_a, lcg_b,
+        "LCG kipi: araya giren datagram sonraki kararları kaydırır (eski kusur)"
+    );
+    let keyed_a = synthetic_drops(LossMode::Keyed, false);
+    let keyed_b = synthetic_drops(LossMode::Keyed, true);
+    assert!(!keyed_a.is_empty());
+    assert_eq!(
+        keyed_a, keyed_b,
+        "anahtarlı kip: araya giren datagram başka mantıksal paketin kaderini değiştirmez"
+    );
+    // Yeniden iletim ayrı mantıksal iletimdir (sıra 1); kaderi ilkinden bağımsız çekilir.
+    assert!(keyed_a.iter().all(|k| k.ordinal <= 1 && k.side == ALICE));
+    let lost_share = |v: &[LogicalKey]| v.len() * 1000 / 330;
+    println!(
+        "ANAHTARLI-KANIT lcg: {} / {} düşen ({} binde), fark={}; anahtarlı: {} / {} ({} binde)",
+        lcg_a.len(),
+        lcg_b.len(),
+        lost_share(&lcg_a),
+        lcg_a.iter().filter(|k| !lcg_b.contains(k)).count()
+            + lcg_b.iter().filter(|k| !lcg_a.contains(k)).count(),
+        keyed_a.len(),
+        keyed_b.len(),
+        lost_share(&keyed_a)
+    );
+}
+
+/// [ANAHTARLI-KAYIP] Anahtarlı kipin deneysel kayıp oranı %20 ± 1 (10 000 sentetik anahtar; birkaç
+/// tohum, üç sınıf ve yeniden iletim sırası karışık).
+#[test]
+fn keyed_loss_rate_is_twenty_percent_over_ten_thousand_keys() {
+    for seed in 1..=4u64 {
+        let lost = (0..10_000u64)
+            .filter(|&i| {
+                let key = LogicalKey {
+                    side: if i % 2 == 0 { ALICE } else { BOB },
+                    class: [KEY_CLASS_UNIT, KEY_CLASS_FEC, 0x15][(i % 3) as usize],
+                    id: client_core::unit_id::tagged((i % 4) as usize, i / 4),
+                    ordinal: (i % 5) as u32,
+                };
+                keyed_permille(seed, &key) < FWD_LOSS_PERMILLE
+            })
+            .count();
+        println!("ANAHTARLI-ORAN tohum={seed} düşen={lost} / 10000");
+        assert!(
+            (1_900..=2_100).contains(&lost),
+            "tohum {seed}: {lost} / 10 000 (%20 ± 1 dışında)"
+        );
+    }
 }
