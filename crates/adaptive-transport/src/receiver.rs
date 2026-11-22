@@ -1474,11 +1474,35 @@ impl Default for Receiver {
 /// aralıklı gönderim değeri yalnız küçültür. Varsayım dışı olan darboğazdan sonra sıkışmadır
 /// (alıcıda toplu teslim): bunun için `g` [`PAIR_MIN_GAP_NS`]'ten kısa çiftler atılır ve alan son
 /// ACK'ten bu yana en büyük İKİNCİ değerdir (tek bir sıkışmış çift değeri büyütemez).
+///
+/// [SIKIŞMA · #175] En büyük ikinci tek başına yetmez: darboğazdan sonra 5 ms arayla toplu teslim
+/// edilen üç datagram (ya da aynı ACK aralığında iki ayrı sıkışmış çift) iki şişik değer üretir;
+/// 1 046 B / 5 ms ≈ 209 kB/s, alan doyar (65 534) ve gönderici tavanı yanlış açar (6 250 B/s hatta
+/// doğal değer ≈ 6 087). Tek bir çift fiziksel olarak sıkışmış iki datagramdan ayırt edilemez;
+/// ayırt eden uzun aralıktır: aralıktaki baytlar darboğazdan aralıktan önceki son datagramdan sonra
+/// geçti, bu yüzden `pencere_hızı` = bayt / (önceki son varıştan bu yana süre) de hattın alt
+/// sınırıdır ve sıkışma onu büyütemez (tutulan datagramların bekleme süresi aralığın içindedir;
+/// yalnız aralığın başı bir sıkışma kümesinin içine düşerse o kümenin kısa bölümü kadar kayar).
+/// Kural: en büyük ikinci [`PAIR_WINDOW_RATIO_MAX`] × `pencere_hızı`'nı aşarsa aralığın çift
+/// değerleri geçersizdir, alan [`crate::ack::PAIR_RATE_NONE`] (gönderici tavanı açmaz). Medyan /
+/// "≥ 3 tutarlı örnek" seçilmedi: sıkışmış kümeler kendi içinde tutarlıdır (aynı 5 ms aralık), N
+/// datagramlık küme N − 1 tutarlı şişik değer verir; kısmi bir eşik yalnız küme boyunu yükseltir.
+/// Gerçek çiftte oran `hat / gönderim hızı`'dır (kayıp ve kısa sessizlik `pencere_hızı`'nı
+/// küçültür); oran 4, gönderim hızının iki katı hatta %50 kayba dek değeri geçirir. Bedel: hat
+/// gönderim hızının (kayıpla düzeltilmiş) 4 katını aşınca o aralık değer vermez (yükselişi yoklama
+/// bulur). [`PAIR_IDLE_GAP_NS`]'ten uzun varış aralığı süreye o kadar yazılır: uzun sessizlik
+/// göndericinindir, hattın serileşmesi değil (yoksa dosyalar arası bekleme her aralığı geçersiz
+/// kılardı); kırpma süreyi yalnız kısaltır, yani kural yalnız gevşer.
 #[derive(Debug, Default, Clone, Copy)]
 struct PairRate {
     prev_ns: Option<u64>,
     /// En büyük iki değer (B/s, UDP gövdesi); 0 = yok.
     top: [u64; 2],
+    /// [SIKIŞMA] Bu ACK aralığında varan UDP gövde baytı (önceki varışı olan datagramlar).
+    win_bytes: u64,
+    /// [SIKIŞMA] Aynı datagramların varış aralıkları toplamı (ns; her aralık en çok
+    /// [`PAIR_IDLE_GAP_NS`]).
+    win_ns: u64,
     /// Son çıkan ACK'lerde bildirilen son değer (yükseliş alarmının referansı).
     reported: Option<u64>,
     /// Bu ACK aralığında yükseliş alarmı verildi.
@@ -1490,10 +1514,19 @@ struct PairRate {
 /// [ÇİFT ARALIĞI] Çift aralığının alt sınırı (ns): daha kısa aralık zamanlayıcı/teslim titreşimidir.
 const PAIR_MIN_GAP_NS: u64 = 2_000_000;
 
+/// [SIKIŞMA] Çift değerinin aralığın kendi varış hızına oranının üst sınırı (bkz. [`PairRate`]).
+const PAIR_WINDOW_RATIO_MAX: u64 = 4;
+
+/// [SIKIŞMA] Aralık süresine yazılan tek varış aralığının üst sınırı (ns): tam datagram (1 074 B
+/// tel) ≈ 1,1 kB/s'ten hızlı hatta 1 s içinde serileşir; daha uzun aralık gönderici sessizliğidir.
+const PAIR_IDLE_GAP_NS: u64 = 1_000_000_000;
+
 impl PairRate {
     fn on_arrival(&mut self, now_ns: u64, udp_bytes: Option<u64>) {
         if let (Some(p), Some(b)) = (self.prev_ns, udp_bytes) {
             let g = now_ns.saturating_sub(p);
+            self.win_bytes = self.win_bytes.saturating_add(b);
+            self.win_ns = self.win_ns.saturating_add(g.min(PAIR_IDLE_GAP_NS));
             if b >= crate::ack::PAIR_MIN_UDP_BYTES && g >= PAIR_MIN_GAP_NS {
                 let r = u64::try_from(u128::from(b) * 1_000_000_000 / u128::from(g))
                     .unwrap_or(u64::MAX);
@@ -1508,11 +1541,22 @@ impl PairRate {
     }
 
     fn on_ack(&mut self) {
-        if self.top[1] > 0 {
-            self.reported = Some(self.top[1]);
+        if let Some(v) = self.bound() {
+            self.reported = Some(v);
         }
         self.top = [0, 0];
+        self.win_bytes = 0;
+        self.win_ns = 0;
         self.alarmed = false;
+    }
+
+    /// [SIKIŞMA] Aralığın alt sınırı: en büyük ikinci, aralığın kendi varış hızının
+    /// [`PAIR_WINDOW_RATIO_MAX`] katını aşmıyorsa (bkz. [`PairRate`]); yoksa ya da geçersizse `None`.
+    fn bound(&self) -> Option<u64> {
+        let v = self.top[1];
+        let plausible = u128::from(v) * u128::from(self.win_ns)
+            <= u128::from(PAIR_WINDOW_RATIO_MAX) * u128::from(self.win_bytes) * 1_000_000_000;
+        (v > 0 && plausible).then_some(v)
     }
 
     /// [YÜKSELİŞ ALARMI] Daralma alarmı yükseliş alarmını kurar; referans daralmadan sonraki ilk
@@ -1533,7 +1577,10 @@ impl PairRate {
         let Some(r) = self.reported.filter(|_| self.armed) else {
             return false;
         };
-        if self.alarmed || u128::from(self.top[1]) * 100 <= u128::from(r) * 125 {
+        let Some(v) = self.bound() else {
+            return false;
+        };
+        if self.alarmed || u128::from(v) * 100 <= u128::from(r) * 125 {
             return false;
         }
         self.alarmed = true;
@@ -1542,10 +1589,10 @@ impl PairRate {
     }
 
     fn field(&self) -> u16 {
-        if self.top[1] == 0 {
+        let Some(v) = self.bound() else {
             return crate::ack::PAIR_RATE_NONE;
-        }
-        u16::try_from(self.top[1].min(u64::from(crate::ack::PAIR_RATE_NONE) - 1))
+        };
+        u16::try_from(v.min(u64::from(crate::ack::PAIR_RATE_NONE) - 1))
             .unwrap_or(crate::ack::PAIR_RATE_NONE - 1)
     }
 }
@@ -1659,6 +1706,60 @@ mod tests {
                 assert!(!pr.rise_alarm(), "değişmeyen hatta alarm");
             }
         }
+    }
+
+    /// [SIKIŞMA · #175] İki yönlü: (a) 6 250 B/s hatta darboğazdan sonra 5 ms arayla toplu teslim
+    /// (üç datagram ya da iki ayrı sıkışmış çift) alanı hattın %10 üstüne çıkaramaz (ya da alan
+    /// yoktur); düzeltmeden önce ikisi de 65 534 veriyordu. (b) Hat 12 500'e döndü, gönderici 6 250
+    /// hızında hat çiftleri yolluyor: alan ≈ 12 174 (UDP gövdesi), gönderici tavanı açabilir.
+    #[test]
+    fn compressed_arrivals_do_not_inflate_pair_rate() {
+        let ms = 1_000_000u64;
+        let slot = |line: u64| 1_074 * 1_000_000_000 / line; // tam datagramın serileşmesi (ns)
+        let s = slot(6_250);
+        let feed = |pr: &mut PairRate, t: &mut u64, gaps: &[u64]| {
+            for g in gaps {
+                *t += g;
+                pr.on_arrival(*t, Some(1_046));
+            }
+        };
+        let natural = 6_250 * 1_046 / 1_074;
+        // (a) Kuyruklu hat, sonra üç datagram tutulup 5 ms arayla teslim.
+        let (mut pr, mut t) = (PairRate::default(), 0u64);
+        feed(&mut pr, &mut t, &[s; 12]);
+        let f = u64::from(pr.field());
+        assert!(f * 100 >= natural * 98 && f <= 6_250, "sıkışmadan önce {f}");
+        feed(&mut pr, &mut t, &[3 * s, 5 * ms, 5 * ms]);
+        let f = pr.field();
+        assert!(
+            f == crate::ack::PAIR_RATE_NONE || f <= 6_875,
+            "üçlü küme: {f}"
+        );
+        // (a') Aynı aralıkta iki ayrı sıkışmış çift.
+        let (mut pr, mut t) = (PairRate::default(), 0u64);
+        for _ in 0..2 {
+            feed(&mut pr, &mut t, &[s; 6]);
+            feed(&mut pr, &mut t, &[2 * s, 5 * ms]);
+        }
+        feed(&mut pr, &mut t, &[s; 3]);
+        let f = pr.field();
+        assert!(
+            f == crate::ack::PAIR_RATE_NONE || f <= 6_875,
+            "iki çift: {f}"
+        );
+        // (b) 6 250'de bir aralık, ACK; hat 12 500'e döndü, gönderim 6 250'de çiftli.
+        let (mut pr, mut t) = (PairRate::default(), 0u64);
+        feed(&mut pr, &mut t, &[s; 12]);
+        pr.on_ack();
+        for _ in 0..10 {
+            feed(&mut pr, &mut t, &[2 * s - slot(12_500), slot(12_500)]);
+        }
+        let f = u64::from(pr.field());
+        let line = 12_500 * 1_046 / 1_074;
+        assert!(
+            f * 100 >= line * 98 && f <= 12_500,
+            "toparlanma gizlendi: {f}"
+        );
     }
 
     /// [P3 SR-AUDIT-001] Düşman ayrık-seq akışı rx-set'i sınırsız büyütemez: kap sabit.

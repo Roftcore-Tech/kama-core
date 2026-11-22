@@ -17,7 +17,13 @@
 //!
 //! # Teslim politikası (PTT-R0; plan D7 ek, PoC-KAPSAM-001 §2 PTT satırı + EK-2 madde 1)
 //!
-//! `PTT_OPEN`, `MEDIA_BUNDLE` ve `PTT_CLOSE`'un ÜÇÜ DE `DeliveryPolicy::Reliable` ile gider: PTT
+//! **YAMA KAYDI 2026-11-22 (sahip kararı, "PTT ölçütü media'nınki gibi olsun"; #175):** `MEDIA_BUNDLE`
+//! artık `DeliveryPolicy::DeadlineBounded` (1 s, [`PTT_BUNDLE_DEADLINE`]) ile gider; `PTT_OPEN` ve
+//! `PTT_CLOSE` Reliable kalır. Aşağıdaki "ÜÇÜ DE Reliable" ve "geç gelen ses düşürülmez" cümleleri
+//! demet için geçersizdir (silinmedi). specs/application-message-protocol.md PTT-R0'ın yaması
+//! sahibin tarihli kaydını bekler.
+//!
+//! ~~`PTT_OPEN`, `MEDIA_BUNDLE` ve `PTT_CLOSE`'un ÜÇÜ DE `DeliveryPolicy::Reliable` ile gider~~: PTT
 //! Reliable bir kliptir — ağ takılırsa ses bozulmaz, durur; geç gelen ses düşürülmez. S9'un
 //! "`MEDIA_BUNDLE` `BestEffort`" kararı K4G-08 ile kalktı (kapsam notu üstündür); `BestEffort` /
 //! `DeadlineBounded` yalnız canlı arama medyasınındır (K4G-10). Hiçbir PTT kaydı sıkıştırılmaz
@@ -216,6 +222,11 @@ pub const FIRST_STREAM_ID: StreamId = 0;
 /// yerel olarak kapatır ([`PttEvent::PttEnded`]; `PTT_CLOSE` üretmez). 120 s: PoC-KAPSAM-001 K8'deki
 /// 60 s kesinti senaryosunda akış yaşamalı (plan K4G-08 §2).
 pub const PTT_STREAM_IDLE_TTL: Duration = Duration::from_secs(120);
+
+/// [PTT-YALIN · sahip kararı 2026-11-22] `MEDIA_BUNDLE`'ın son tarihi (sunum anından): ses bu
+/// süreden geç oynatılmaz (media sözleşmesi, zamanında = ≤ 1 s). Transport'un yalın PTT bırakma
+/// süresiyle (`client_core::runtime::PTT_DEADLINE_NS`) aynı değer.
+pub const PTT_BUNDLE_DEADLINE: Duration = Duration::from_secs(1);
 
 /// PTT-R5 (AMP §3, K4G-08): aynı eşten aynı anda en çok bu kadar etkin gelen akış; fazlası
 /// düşürülür.
@@ -653,7 +664,14 @@ impl Ptt {
             bundle_ms: stream.bundle_ms,
             payload: payload.to_vec(),
         };
-        send_record(messenger, handle, &bundle, DeliveryPolicy::Reliable)
+        // [PTT-YALIN · sahip kararı 2026-11-22 "PTT ölçütü media'nınki gibi"] Demet son tarihli
+        // sunulur: dar dönüşlü profilde Transport onu tek iletir ve son tarihte bırakır; açılış ve
+        // kapanış Reliable kalır (aşağıda). Profil kapalıyken Transport son tarihi yalnız sunum
+        // kuyruğunda uygular.
+        let policy = DeliveryPolicy::DeadlineBounded {
+            deadline: std::time::Instant::now() + PTT_BUNDLE_DEADLINE,
+        };
+        send_record(messenger, handle, &bundle, policy)
     }
 
     /// Basış biter: akış kapanır ve `PTT_CLOSE` eşin güncel oturumuna `DeliveryPolicy::Reliable`
