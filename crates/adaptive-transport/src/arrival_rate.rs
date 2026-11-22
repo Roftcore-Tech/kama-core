@@ -211,6 +211,19 @@ pub const DROP_PERMILLE: u64 = 700;
 /// [DARALMA-ALARMI] Referans bu süre yenilenmezse güncel hıza iner (ns).
 pub const DROP_REF_HOLD_NS: u64 = 8_000_000_000;
 
+/// [ALARM ARALIĞI · TUR 3 · #175 7086827627] Alarm ACK'inin ölçüm aralığında daralma başlangıcından
+/// ([`RateDropDetector::onset`]) sonra serileşmiş en az bu kadar datagram (seq farkı; kayıp dahil,
+/// hatta serileşip düşen de aralığı uzatır). Kısaysa alıcı alarm ACK'ini sonraki varışa erteler.
+///
+/// Göndericinin kuralından türetilir (`line_guard::interval_sample`): aralığın kuyruk artışı
+/// `g` serileşen datagram başına `ser_yeni(b) − ser_eski(b)` büyür, örnek eşiği en az
+/// `ser(DEFAULT_MTU)` (güncel hat tahminiyle). Hat 2:1 daraldığında datagram başına katkı
+/// `ser_eski(b) ≤ ser_eski(MTU)`: tek datagram yapısal olarak eşiğin altındadır, iki datagram
+/// `b > MTU/2` iken üstündedir. Ölçüldü (`tests/ack_alarm_interval.rs` (h), tel 1 000 B,
+/// 12 500 → 6 250): tek datagramlı alarm aralığı `g` 80 ms, eşik ≈ 98 ms, örnek yok, tavan
+/// 12 500; iki datagramla `g` 160 ms, tavan 6 250.
+pub const ALARM_SPAN_MIN_SEQS: u64 = 2;
+
 /// [DARALMA-ALARMI] Alıcıda ileri hattın ansızın daralmasını erken görmek için: son
 /// [`DROP_WINDOW_NS`] içindeki varışlar sık (aralıklar düzenli: en büyük boşluk ortalamanın 2,5
 /// katını aşmıyor; darboğazdan arka arkaya çıkan datagramlar) ve hızları son
