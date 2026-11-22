@@ -583,6 +583,11 @@ açıklamasındadır. İlgili donmuş metin (değiştirilmedi, bu PR onu daralt�
 `docs/transport-v1/TRANSPORT-CRYPTO-HANDOFF.md` (teslim olayı ve gönderici onayı satırları). Bu PR'da
 "ilk ACK" = motorun canlı kaydıyla eşleşen ilk ACK ya da RECOVERED.
 
+*(2026-11-11 notu: sahip kararıyla soru kapandı — kimlik `transport-v1.1` / `kama-v1.1-full`
+(`docs/transport-v1/EVOLUTION.md` §22 "`transport-v1.1` beyanı"; #174 davranış listesinde). Yukarıdaki
+"kimlikler DEĞİŞMEZ" varsayılanı bu PR'ın yazıldığı anın kaydıdır. #140'ın önerdiği aynı etiket o
+adayın kodunu gösterir, v1.1 ürününü değil — §22 "Etiket tarihçesi".)*
+
 ## Testler — ölçülmüş sonuçlar
 
 `crates/client-core/tests/k4g05b_runtime_ownership.rs`. Taban kolu: `4a9e97f1` + taban kopyası (yalnız

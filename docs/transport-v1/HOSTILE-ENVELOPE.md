@@ -5,6 +5,11 @@ dışına çıkamaz. Her satır Faz-5'in gerçek hücresine ve hükmüne bağlı
 (`reports/transport-v1/PHASE5-T0-T7-REPORT.md`, N=30, D=20 s, ölçüm SHA `e3c1e8bb`).
 Zarf sessizce GENİŞLETİLMEZ; yeni rejim = yeni ön-kayıtlı hücre.
 
+> *(2026-11-11 notu — `transport-v1.1`: bu zarf `kama-v1-full` / `transport-v1` koduna aittir (ölçüm
+> `e3c1e8bb`, dondurma `53e0c5c6`). Güncel ürün kimliği `kama-v1.1-full` / `transport-v1.1` (motor =
+> CC-PORT portu, #176) T0–T7 sözleşmesiyle ölçülmedi; aşağıdaki hükümler v1.1 ürününe AKTARILMAZ.
+> T0–T7'nin tamamı v1.1 için geçersizdir ve yeniden koşulacaktır — EVOLUTION §22 madde 4–5.)*
+
 ## 1. DOĞRULANMIŞ ÇEKİRDEK (N=30, frozen metodoloji)
 
 | rejim | hücre (profil kaynağı) | Kama | quinn | TCP | hüküm |

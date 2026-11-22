@@ -785,15 +785,20 @@ async fn main() -> Result<(), BenchError> {
             };
             for (p, m) in &loaded {
                 // [FAZ-4 §1.3] Kanonik iddiası ile sapma listesi ÇELİŞEMEZ.
+                // [2026-11-11 · transport-v1.1] Etiket güncel kimlik ya da tarihî manifestteki
+                // önceki kimlik olabilir (`manifest::PRIOR_PROFILE_IDS`); kural ikisinde de aynı.
                 let canon = m.is_canonical_kama();
-                if m.arm == "kama-v1-full" && !canon {
-                    println!("INVALID {}: kama-v1-full etiketi ama sapma var", short(p));
+                if m.claims_product_profile() && !canon {
+                    println!("INVALID {}: {} etiketi ama sapma var", short(p), m.arm);
                     invalid += 1;
                 }
+                // [2026-11-11] Etiket tek başına sürüm söylemez (`manifest::PRIOR_PROFILE_IDS`
+                // notu): aynı `arm` farklı kodları taşıyabildiği için satır `commit`'i de basar.
                 println!(
-                    "{:<28} arm={} canonical_kama={} setup={} delta={}",
+                    "{:<28} arm={} commit={} canonical_kama={} setup={} delta={}",
                     short(p),
                     m.arm,
+                    m.commit,
                     canon,
                     m.setup_class,
                     m.profile_delta.len()
