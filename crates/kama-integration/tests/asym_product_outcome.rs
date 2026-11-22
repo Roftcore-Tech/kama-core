@@ -239,9 +239,10 @@ struct PttShape {
     period: Duration,
     /// `PTT_OPEN.bundle_ms` kodu ([`kama_app::codec::bundle_code_from_ms`]).
     code: u8,
-    /// [PTT-BANT · kıyas] `KAMA_ASYM_PTT_PRESS_MS` verilirse basış tam bu kadar demettir (konuşma
-    /// süresi ÷ demet süresi): kollar aynı konuşma süresiyle kıyaslanır. Yoksa hücrenin kuralı.
-    press_bundles: Option<u32>,
+    /// [PTT-BANT · kıyas · sahip 2026-11-22] `KAMA_ASYM_PTT_PRESS_MS` verilirse basış tam bu kadar
+    /// sürer (demet süresinden bağımsız; son demet kısmidir: bırakışta var olan 20 ms
+    /// çerçeveleri taşır). Kollar aynı basışla kıyaslanır. Yoksa hücrenin kuralı.
+    press: Option<Duration>,
     /// [PTT-BANT · kol A] `KAMA_ASYM_PTT_COMPACT=1`: Alice demetleri kompakt `MEDIA_BUNDLE`
     /// (2 B başlık) ile gönderir.
     compact: bool,
@@ -255,10 +256,8 @@ fn ptt_shape_label() -> String {
         s.bytes,
         s.period.as_millis(),
         if s.compact { "kompakt2B" } else { "tam13B" },
-        s.press_bundles.map_or("hücre".to_string(), |n| format!(
-            "{}ms",
-            (s.period * n).as_millis()
-        )),
+        s.press
+            .map_or("hücre".to_string(), |p| format!("{}ms", p.as_millis())),
     )
 }
 
@@ -270,17 +269,11 @@ fn ptt_shape() -> PttShape {
     let ms = u16::try_from(env_u64("KAMA_ASYM_PTT_MS", 200)).expect("KAMA_ASYM_PTT_MS u16");
     let bytes = usize::try_from(env_u64("KAMA_ASYM_PTT_BYTES", 80)).expect("bayt");
     assert!(bytes >= 4, "KAMA_ASYM_PTT_BYTES ≥ 4 (ilk 4 B demet sırası)");
-    let press_bundles = std::env::var("KAMA_ASYM_PTT_PRESS_MS").ok().map(|v| {
-        let press: u32 = v.parse().expect("KAMA_ASYM_PTT_PRESS_MS sayı");
-        assert_eq!(
-            press % u32::from(ms),
-            0,
-            "basış süresi demet süresinin katı olmalı (ör. 8400 = 200/300/420 ms'nin ortak katı)"
-        );
-        press / u32::from(ms)
-    });
+    let press = std::env::var("KAMA_ASYM_PTT_PRESS_MS")
+        .ok()
+        .map(|v| Duration::from_millis(v.parse().expect("KAMA_ASYM_PTT_PRESS_MS sayı")));
     PttShape {
-        press_bundles,
+        press,
         compact: std::env::var("KAMA_ASYM_PTT_COMPACT").is_ok_and(|v| v == "1"),
         bytes,
         period: Duration::from_millis(u64::from(ms)),
@@ -297,15 +290,42 @@ fn fixture_ack_format() -> AckFormat {
 }
 
 /// [PTT-BANT] Bir yönün PTT bandı (bit/s): mühürlenen bütün PTT datagramlarının (açılış, kapanış,
-/// kopya, konuşmadan sonra çıkan yeniden iletim dahil) tel baytı ÷ konuşma süresi (planlanan demet
-/// × kadans). Payda konuşma süresidir, datagramların yayıldığı süre değil: geç yeniden iletim
-/// ortalamayı seyreltemez. PTT datagramı ya da demet yoksa `None`.
-fn ptt_band_bps(wire: &[(Instant, u64)], planned_bundles: u32, cadence: Duration) -> Option<u64> {
+/// kopya, konuşmadan sonra çıkan yeniden iletim dahil) tel baytı ÷ basış süresi (basış başından
+/// bırakışa; sahip 2026-11-22: bütün kollarda aynı payda). Payda konuşma süresidir, datagramların
+/// yayıldığı süre değil: geç yeniden iletim ortalamayı seyreltemez. PTT datagramı yoksa ya da
+/// süre 0 ise `None`.
+fn ptt_band_bps(wire: &[(Instant, u64)], press: Duration) -> Option<u64> {
     // (kanıt: `ptt_band_gate_passes_the_lean_payload_and_fails_the_80_byte_control`)
-    if wire.is_empty() || planned_bundles == 0 {
+    if wire.is_empty() {
         return None;
     }
-    window_bps(wire.iter().map(|w| w.1).sum(), cadence * planned_bundles)
+    window_bps(wire.iter().map(|w| w.1).sum(), press)
+}
+
+/// [PTT-BANT · gerçek zaman · sahip 2026-11-22] 20 ms çerçeveler basış başından gerçek zamanda
+/// oluşur; `k`. demet `created = basış + k × demet süresi`'nde başlar ve çerçeveleri var olunca
+/// (`created + demet süresi`) sunulur. Bırakış (`release`) demetin ortasındaysa demet kısmidir:
+/// bırakışta var olan çerçeveler (`⌊(release − created) / 20 ms⌋`). Döner: (sunum anı, çerçeve
+/// sayısı); demet hiç çerçeve taşımıyorsa `None`.
+fn bundle_slot(
+    opened: Instant,
+    period: Duration,
+    k: u32,
+    release: Option<Instant>,
+) -> Option<(Instant, u32)> {
+    let fpb = u32::try_from(period.as_nanos() / LYRA_FRAME.as_nanos()).unwrap_or(u32::MAX);
+    let created = opened + period * k;
+    let full = created + period;
+    match release {
+        Some(r) if full > r => {
+            let frames = u32::try_from(
+                r.saturating_duration_since(created).as_nanos() / LYRA_FRAME.as_nanos(),
+            )
+            .unwrap_or(0);
+            (frames > 0).then_some((r, frames.min(fpb)))
+        }
+        _ => Some((full, fpb)),
+    }
 }
 
 /// Bayt ÷ süre → bit/s (süre 0 → `None`).
@@ -970,6 +990,8 @@ struct Bundle {
     /// [PTT-BANT · sahip kararı 2026-11-22] Sesin oluştuğu an: demetin ilk 20 ms çerçevesinin
     /// başı (planlanan an − demet süresi). Gecikme buradan ölçülür.
     created: Instant,
+    /// [PTT-BANT · gerçek zaman] Demetin taşıdığı 20 ms çerçeve sayısı (son demet kısmi olabilir).
+    frames: u32,
     accepted: Instant,
     received: Option<Instant>,
 }
@@ -991,7 +1013,9 @@ struct Run {
     /// [KAPI] Uygulamanın bildirdiği dosya hataları (gönderim / alım).
     file_failures: Vec<String>,
     /// [FİKSTÜR] Planlanmış ama uygulamaca kabul edilmemiş demetlerin planlanan anları.
-    unaccepted: Vec<Instant>,
+    unaccepted: Vec<(Instant, u32)>,
+    /// [PTT-BANT] Basış süresi (basış başından bırakışa; bant paydası).
+    press_len: Option<Duration>,
     /// [CANLILIK-TEŞHİS] Şerit açıklık sınırına takılan pompa turları (şerit sırasıyla).
     lane_span_blocked: [u64; 4],
     chunk_count: u64,
@@ -1115,7 +1139,7 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
     alice.ptt.set_compact_bundles(shape.compact);
     let mut ptt_open: Option<(StreamId, Instant)> = None;
     let mut ptt_closed = false;
-    let mut ptt_closed_at: Option<Instant> = None;
+    let mut ptt_release: Option<Instant> = None;
     let mut ptt_started: Option<Instant> = None;
     let mut bundles: BTreeMap<u32, Bundle> = BTreeMap::new();
     let mut next_bundle: u32 = 0;
@@ -1167,50 +1191,55 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
                 .expect("PTT açılır");
             ptt_open = Some((stream, now));
         }
-        let ptt_running = match (shape.press_bundles, cell.ptt_until) {
-            (Some(n), _) => next_bundle < n,
-            (None, Some(until)) => el < until,
-            (None, None) => !files_done,
-        };
         if let (Some((stream, opened)), false) = (ptt_open, ptt_closed) {
-            if ptt_running {
-                // Konuşan sabit hızda konuşur: demet k, açılıştan k × demet süresi sonra hazırdır;
-                // sesi bir demet süresi önce oluşmaya başladı (son tarih oradan sayılır).
-                loop {
-                    let planned = opened + shape.period * next_bundle;
-                    if planned > Instant::now()
-                        || shape.press_bundles.is_some_and(|n| next_bundle >= n)
-                    {
-                        break;
-                    }
-                    let created = planned.checked_sub(shape.period).unwrap_or(planned);
-                    let mut payload = vec![0x5Au8; shape.bytes];
-                    payload[..4].copy_from_slice(&next_bundle.to_be_bytes());
-                    match alice
-                        .ptt
-                        .send_bundle_from(&mut alice.m, stream, &payload, created)
-                    {
-                        Ok(()) => {
-                            bundles.insert(
-                                next_bundle,
-                                Bundle {
-                                    planned,
-                                    created,
-                                    accepted: Instant::now(),
-                                    received: None,
-                                },
-                            );
-                            next_bundle += 1;
-                        }
-                        // Geri basınç: konuşan bekler, aynı demet sonraki turda yeniden verilir.
-                        Err(PttError::Transport(TransportError::Backpressure)) => break,
-                        Err(e) => panic!("PTT demeti: {e:?}"),
-                    }
+            // [PTT-BANT · gerçek zaman · sahip 2026-11-22] Bırakış anı: verilen basış süresi
+            // (demet süresinden bağımsız) ya da hücrenin kuralı.
+            let release = match (shape.press, cell.ptt_until) {
+                (Some(p), _) => (now >= opened + p).then_some(opened + p),
+                (None, Some(until)) => (el >= until).then_some(t0 + until),
+                (None, None) => files_done.then_some(now),
+            };
+            // Çerçeveler basış başından gerçek zamanda oluşur; demet çerçeveleri var olunca
+            // sunulur (ilk demet basış + demet süresi), bırakışta kısmi son demet.
+            let fpb = u32::try_from(shape.period.as_nanos() / LYRA_FRAME.as_nanos())
+                .unwrap_or(u32::MAX)
+                .max(1);
+            while let Some((planned, frames)) =
+                bundle_slot(opened, shape.period, next_bundle, release)
+            {
+                if planned > Instant::now() {
+                    break;
                 }
-            } else {
+                let created = opened + shape.period * next_bundle;
+                let len = (shape.bytes * frames as usize / fpb as usize).max(4);
+                let mut payload = vec![0x5Au8; len];
+                payload[..4].copy_from_slice(&next_bundle.to_be_bytes());
+                match alice
+                    .ptt
+                    .send_bundle_from(&mut alice.m, stream, &payload, created)
+                {
+                    Ok(()) => {
+                        bundles.insert(
+                            next_bundle,
+                            Bundle {
+                                planned,
+                                created,
+                                frames,
+                                accepted: Instant::now(),
+                                received: None,
+                            },
+                        );
+                        next_bundle += 1;
+                    }
+                    // Geri basınç: konuşan bekler, aynı demet sonraki turda yeniden verilir.
+                    Err(PttError::Transport(TransportError::Backpressure)) => break,
+                    Err(e) => panic!("PTT demeti: {e:?}"),
+                }
+            }
+            if let Some(r) = release {
                 alice.ptt.close(&mut alice.m, stream).expect("PTT kapanır");
                 ptt_closed = true;
-                ptt_closed_at = Some(Instant::now());
+                ptt_release = Some(r);
             }
         }
 
@@ -1295,17 +1324,14 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
 
     // [FİKSTÜR] Planlanmış ama uygulamaca kabul edilmemiş demetler (geri basınç; kapanışa ya da
     // koşu sonuna dek): planlandıkları evrede KALDI sayılır.
-    let mut unaccepted: Vec<Instant> = Vec::new();
+    let mut unaccepted: Vec<(Instant, u32)> = Vec::new();
+    let mut press_len: Option<Duration> = None;
     if let Some((_, opened)) = ptt_open {
-        let end = ptt_closed_at.unwrap_or_else(Instant::now);
-        let period = shape.period;
+        let end = ptt_release.unwrap_or_else(Instant::now);
+        press_len = Some(end.saturating_duration_since(opened));
         let mut k = next_bundle;
-        loop {
-            let planned = opened + period * k;
-            if planned > end || shape.press_bundles.is_some_and(|n| k >= n) {
-                break;
-            }
-            unaccepted.push(planned);
+        while let Some(slot) = bundle_slot(opened, shape.period, k, Some(end)) {
+            unaccepted.push(slot);
             k += 1;
         }
     }
@@ -1351,6 +1377,7 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
         file2,
         file_failures,
         unaccepted,
+        press_len,
         lane_span_blocked,
         chunk_count,
         chunk_rx,
@@ -1668,7 +1695,7 @@ impl Run {
             }
         }
         let mut unaccepted_phase: BTreeMap<usize, u32> = BTreeMap::new();
-        for &p in &self.unaccepted {
+        for &(p, _) in &self.unaccepted {
             *unaccepted_phase
                 .entry(self.cell.phase_of(self.since(p, self.t0)))
                 .or_insert(0) += 1;
@@ -1716,16 +1743,16 @@ impl Run {
         let bitmap = fixture_ack_format() == AckFormat::Bitmap;
         let shape = ptt_shape();
         for (side, ledger) in [("alice", &self.alice), ("bob", &self.bob)] {
-            let planned =
-                u32::try_from(self.bundles.len() + self.unaccepted.len()).unwrap_or(u32::MAX);
+            let press = self.press_len.unwrap_or(Duration::ZERO);
             let wire: Vec<(Instant, u64)> = ledger.ptt_wire.iter().map(|w| (w.0, w.1)).collect();
-            let Some(bps) = ptt_band_bps(&wire, planned, shape.period) else {
+            let Some(bps) = ptt_band_bps(&wire, press) else {
                 continue;
             };
             let lean_ok = !bitmap || ledger.ptt_lean_tx > 0;
             let band_ok = bps <= PTT_BAND_MAX_BPS;
             println!(
-                "ÖLÇÜT {tag} ptt_bant yön={side} bit_s={bps} (en çok {PTT_BAND_MAX_BPS}) datagram={} yalın_0x09={} yük={} B demet={} ms → {}",
+                "ÖLÇÜT {tag} ptt_bant yön={side} bit_s={bps} (en çok {PTT_BAND_MAX_BPS}; payda basış {} s) datagram={} yalın_0x09={} yük={} B demet={} ms → {}",
+                secs(press),
                 ledger.ptt_wire.len(),
                 ledger.ptt_lean_tx,
                 shape.bytes,
@@ -1736,7 +1763,7 @@ impl Run {
             // eş yalın PTT'yi kanıtlamadan önceki veri çerçeveli trafik) ve sürekli (ilk 0x09 →
             // konuşma sonu; konuşmadan sonra çıkan yeniden iletim paya girer). Datagram türleri.
             if let Some((_, opened)) = self.ptt_open {
-                let press_end = opened + shape.period * planned;
+                let press_end = opened + press;
                 let first_lean = ledger.ptt_wire.iter().find(|w| w.2).map(|w| w.0);
                 let split = first_lean.unwrap_or(press_end).min(press_end);
                 let (pre, post): (Vec<_>, Vec<_>) =
@@ -2618,13 +2645,24 @@ impl Run {
         }
     }
 
-    /// [PTT-BANT · kıyas] Bant düşüşü ses azaltarak mı geldi: oluşan / teslim edilen / zamanında
-    /// teslim edilen Lyra çerçevesi ve gönderilen ses yükü baytı (tekil ve telde, yeniden iletim
-    /// dahil). Konuşma süresi = planlanan demet × demet süresi (bant paydası).
+    /// [PTT-BANT · kıyas] Bant düşüşü ses azaltarak mı geldi: 20 ms çerçeve sayıları (basışta
+    /// planlanan, oluşan, uygulamaca kabul edilen, telde, teslim, oluşumdan ≤ 1 s teslim) ve
+    /// gönderilen ses yükü baytı (tekil ve telde). Son demet kısmi olabilir: çerçeveleri sayılır.
+    /// Gerçek zaman (sahip 2026-11-22): ilk ses gecikmesi = Bob'a ilk ses teslimi − basış başı
+    /// (ilk 20 ms çerçevenin oluşumu); ilk PTT datagramının ve ilk ses datagramının tele çıkışı.
     fn ptt_audio_report(&self, tag: &str) {
         let shape = ptt_shape();
-        let fpb = u64::try_from(shape.period.as_nanos() / LYRA_FRAME.as_nanos()).unwrap_or(0);
-        let planned = self.bundles.len() as u64 + self.unaccepted.len() as u64;
+        let fpb = u64::try_from(shape.period.as_nanos() / LYRA_FRAME.as_nanos())
+            .unwrap_or(1)
+            .max(1);
+        let press = self.press_len.unwrap_or(Duration::ZERO);
+        let planned = u64::try_from(press.as_nanos() / LYRA_FRAME.as_nanos()).unwrap_or(0);
+        let created: u64 = self
+            .bundles
+            .values()
+            .map(|b| u64::from(b.frames))
+            .sum::<u64>()
+            + self.unaccepted.iter().map(|u| u64::from(u.1)).sum::<u64>();
         // Demetin ilk tel datagramı yalın 0x09 mu (ilk 0x16'dan sonra mı çıktı).
         let mut first_lean: HashMap<u32, bool> = HashMap::new();
         for w in &self.alice.ptt_wire {
@@ -2632,7 +2670,7 @@ impl Run {
                 first_lean.entry(k).or_insert(w.2);
             }
         }
-        // (planlanan/oluşan, kabul edilen, telde, teslim, zamanında) — demet sayısı.
+        // (kabul edilen, telde, teslim, zamanında) — 20 ms çerçeve sayısı.
         let mut rows: BTreeMap<&str, [u64; 4]> = BTreeMap::new();
         for (&k, b) in &self.bundles {
             let key = match first_lean.get(&k) {
@@ -2640,11 +2678,12 @@ impl Run {
                 Some(false) => "0x16_öncesi",
                 None => "tele_çıkmadı",
             };
+            let f = u64::from(b.frames);
             let r = rows.entry(key).or_insert([0; 4]);
-            r[0] += 1;
-            r[1] += u64::from(first_lean.contains_key(&k));
-            r[2] += u64::from(b.received.is_some());
-            r[3] += u64::from(
+            r[0] += f;
+            r[1] += f * u64::from(first_lean.contains_key(&k));
+            r[2] += f * u64::from(b.received.is_some());
+            r[3] += f * u64::from(
                 b.received
                     .is_some_and(|rx| self.since(rx, b.created) <= PTT_BOUND),
             );
@@ -2655,6 +2694,21 @@ impl Run {
             }
             a
         });
+        let bytes_of = |b: &Bundle| (shape.bytes as u64 * u64::from(b.frames) / fpb).max(4);
+        let unique_bytes: u64 = self.bundles.values().map(bytes_of).sum();
+        let wire_bytes: u64 = self
+            .bundles
+            .iter()
+            .map(|(&k, b)| {
+                u64::from(
+                    self.alice
+                        .tx_count
+                        .get(&Item::Bundle(k))
+                        .copied()
+                        .unwrap_or(0),
+                ) * bytes_of(b)
+            })
+            .sum();
         let wire_tx: u64 = self
             .bundles
             .keys()
@@ -2668,33 +2722,43 @@ impl Run {
                 )
             })
             .sum();
-        let bytes = shape.bytes as u64;
         let split: Vec<String> = rows
             .iter()
             .map(|(k, r)| {
                 format!(
                     "{k}:kabul={} telde={} teslim={} zamanında={}",
-                    r[0] * fpb,
-                    r[1] * fpb,
-                    r[2] * fpb,
-                    r[3] * fpb
+                    r[0], r[1], r[2], r[3]
                 )
             })
             .collect();
         println!(
-            "ÖLÇÜT {tag} ptt_ses konuşma={} s çerçeve(20 ms) planlanan={} oluşan={} kabul={} telde={} teslim={} zamanında(oluşumdan ≤ {} s)={} | {} | ses_yükü_tekil={} B ses_yükü_telde={} B (demet iletimi {wire_tx})",
-            secs(shape.period * u32::try_from(planned).unwrap_or(u32::MAX)),
-            planned * fpb,
-            planned * fpb,
-            total[0] * fpb,
-            total[1] * fpb,
-            total[2] * fpb,
+            "ÖLÇÜT {tag} ptt_ses basış={} s çerçeve(20 ms) planlanan={planned} oluşan={created} kabul={} telde={} teslim={} zamanında(oluşumdan ≤ {} s)={} | {} | ses_yükü_tekil={unique_bytes} B ses_yükü_telde={wire_bytes} B (demet {} , son demet çerçevesi {}, demet iletimi {wire_tx})",
+            secs(press),
+            total[0],
+            total[1],
+            total[2],
             secs(PTT_BOUND),
-            total[3] * fpb,
+            total[3],
             split.join(" "),
-            self.bundles.len() as u64 * bytes,
-            wire_tx * bytes,
+            self.bundles.len(),
+            self.bundles.values().last().map_or(0, |b| b.frames),
         );
+        if let Some((_, opened)) = self.ptt_open {
+            let first_rx = self.bundles.values().filter_map(|b| b.received).min();
+            let first_dgram = self.alice.ptt_wire.first().map(|w| w.0);
+            let first_audio_dgram = self
+                .alice
+                .ptt_wire
+                .iter()
+                .find(|w| matches!(w.3, Item::Bundle(_)))
+                .map(|w| w.0);
+            println!(
+                "ÖLÇÜT {tag} ptt_zaman ilk_ses(ilk çerçeve oluşumundan Bob teslimine)={} s ilk_PTT_datagramı_telde=+{} s ilk_ses_datagramı_telde=+{} s (basış başından)",
+                opt_secs(first_rx.map(|r| self.since(r, opened))),
+                opt_secs(first_dgram.map(|d| self.since(d, opened))),
+                opt_secs(first_audio_dgram.map(|d| self.since(d, opened))),
+            );
+        }
     }
 
     fn ptt_report(
@@ -3105,7 +3169,7 @@ fn gate_forward_fixed_return_delay_varies() {
 /// * 300 ms demet, tam başlık (120 B yük) → 186 B → 4 960 bit/s GEÇER (40 bit/s pay);
 /// * 420 ms demet, tam başlık (168 B yük) → 234 B → 4 457 bit/s GEÇER.
 ///
-/// Payda her kolda konuşma süresidir: planlanan demet × o kolun demet süresi.
+/// Payda basış süresidir (bütün kollarda aynı).
 #[test]
 fn ptt_band_gate_passes_the_lean_payload_and_fails_the_80_byte_control() {
     let t0 = Instant::now();
@@ -3113,23 +3177,23 @@ fn ptt_band_gate_passes_the_lean_payload_and_fails_the_80_byte_control() {
         (0..n).map(|i| (t0 + cadence * i, wire)).collect()
     };
     let ms = Duration::from_millis;
-    let today = ptt_band_bps(&spurt(53 + 13 + 80, ms(200), 50), 50, ms(200)).expect("bant");
+    let today = ptt_band_bps(&spurt(53 + 13 + 80, ms(200), 50), ms(200) * 50).expect("bant");
     assert_eq!(today, 5_840);
     assert!(today > PTT_BAND_MAX_BPS);
     // Kol A: 300 ms, kompakt 2 B başlık (120 B yük) → 175 B → 4 666 bit/s.
-    let compact = ptt_band_bps(&spurt(53 + 2 + 120, ms(300), 50), 50, ms(300)).expect("bant");
+    let compact = ptt_band_bps(&spurt(53 + 2 + 120, ms(300), 50), ms(300) * 50).expect("bant");
     assert_eq!(compact, 4_666);
     assert!(compact <= PTT_BAND_MAX_BPS);
     // 300 ms, tam başlık (120 B yük) → 186 B → 4 960 bit/s: sınırın 40 bit/s altında.
-    let mid = ptt_band_bps(&spurt(53 + 13 + 120, ms(300), 50), 50, ms(300)).expect("bant");
+    let mid = ptt_band_bps(&spurt(53 + 13 + 120, ms(300), 50), ms(300) * 50).expect("bant");
     assert_eq!(mid, 4_960);
     assert!(mid <= PTT_BAND_MAX_BPS);
-    let long = ptt_band_bps(&spurt(53 + 13 + 168, ms(420), 50), 50, ms(420)).expect("bant");
+    let long = ptt_band_bps(&spurt(53 + 13 + 168, ms(420), 50), ms(420) * 50).expect("bant");
     assert_eq!(long, 4_457);
     assert!(long <= PTT_BAND_MAX_BPS);
-    assert_eq!(ptt_band_bps(&[], 50, ms(200)), None);
+    assert_eq!(ptt_band_bps(&[], ms(200) * 50), None);
     // Konuşmadan sonra yayılan yeniden iletim paydayı büyütmez.
     let mut late = spurt(53 + 13 + 168, ms(420), 50);
     late.push((t0 + Duration::from_secs(60), 234));
-    assert!(ptt_band_bps(&late, 50, ms(420)).expect("bant") > 4_457);
+    assert!(ptt_band_bps(&late, ms(420) * 50).expect("bant") > 4_457);
 }
