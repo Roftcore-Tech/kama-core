@@ -194,6 +194,8 @@ async fn transport_api_v0_surface_is_frozen() {
         param_sends: _,
         param_confirmed: _,
         caps_sends: _,
+        ptt_expired: _,
+        ptt_lean_tx: _,
         ack_bitmap_rx: _,
         fec_blocks_latched: _,
         fec_repairs_tx: _,

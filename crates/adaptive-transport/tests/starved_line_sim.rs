@@ -39,7 +39,8 @@ use adaptive_transport::receiver::{feedback_horizon_ns, Receiver, RxDatagram, Rx
 use adaptive_transport::return_path::AckObservation;
 use adaptive_transport::sender::{
     AckInfo, EmitCause, EmitDiag, Event, FeedbackStarvedRule, ForwardCopyLineScale,
-    ForwardCopyRule, OpaqueUnit, Sender, Timer, TransmitDecision, TransmitKind,
+    ForwardCopyRule, OpaqueUnit, RecoveredInfo, RecoveredUnit, Sender, Timer, TransmitDecision,
+    TransmitKind,
 };
 
 const MS: u64 = 1_000_000;
@@ -123,6 +124,17 @@ struct Scenario {
     no_interval: Option<(u64, u64)>,
     /// Göndericinin emisyon / kayıp ilanı izi açılır (salt gözlem; karar okumaz).
     diag: bool,
+    /// [PTT-YALIN] Kopya kuralı `copies`/`spacing_ns` ile OLDUĞU GİBİ kurulur (ürünün
+    /// `ptt_forward_copy_rule(copies, spacing_ns)`: `below_id` = PTT şeridinin üstü, öncelik dosyanın
+    /// altı; `copies == 0` = kopyasız öncelik kuralı). `false`: eski kurulum (`copies == 0` → 1 kopya,
+    /// `below_id` 0).
+    raw_copy_rule: bool,
+    /// [PTT-YALIN] Bırakma: sunumundan bu kadar sonra teyitsiz PTT birimi motora
+    /// `Event::RecoveredControl` (block_id 0, esi 0) ile bildirilir (ürünün son tarih yolu).
+    ptt_deadline_ns: Option<u64>,
+    /// `> 0`: `text_at_ns`'ten sonra bu aralıkla konuşma bitene dek ek metin birimleri
+    /// (`TEXT_ID + k`). 0: tek metin birimi.
+    text_period_ns: u64,
     seed: u64,
     t_max_ns: u64,
 }
@@ -149,6 +161,9 @@ impl Scenario {
             interval: true,
             no_interval: None,
             diag: false,
+            raw_copy_rule: false,
+            ptt_deadline_ns: None,
+            text_period_ns: 0,
             seed,
             t_max_ns: 60 * SEC,
         }
@@ -170,6 +185,8 @@ struct Bottleneck {
     ptt_log: Vec<PttTx>,
     /// Kuyruğa giren her iletimin serileşmesinin başladığı an (seq → ns).
     ser_start: HashMap<u64, u64>,
+    /// Metin iletimleri (`TEXT_ID ≤ unit_id < FILE_BASE_ID`) darboğazda (kuyrukta düşenler dahil).
+    text_log: Vec<PttTx>,
 }
 
 /// Bir PTT iletiminin darboğazdaki kaydı.
@@ -216,6 +233,14 @@ impl Bottleneck {
                     done: None,
                     delivered: false,
                 });
+            } else if unit_id < FILE_BASE_ID {
+                self.text_log.push(PttTx {
+                    at: now,
+                    seq,
+                    unit: unit_id,
+                    done: None,
+                    delivered: false,
+                });
             }
             return;
         }
@@ -228,14 +253,17 @@ impl Bottleneck {
         *n += 1;
         let targeted = self.targeted.is_some_and(|(u, k)| u == unit_id && *n <= k);
         let lost = self.rand_permille() < self.loss_permille;
+        let rec = PttTx {
+            at: now,
+            seq,
+            unit: unit_id,
+            done: Some(done),
+            delivered: !(lost || targeted),
+        };
         if unit_id < TEXT_ID {
-            self.ptt_log.push(PttTx {
-                at: now,
-                seq,
-                unit: unit_id,
-                done: Some(done),
-                delivered: !(lost || targeted),
-            });
+            self.ptt_log.push(rec);
+        } else if unit_id < FILE_BASE_ID {
+            self.text_log.push(rec);
         }
         if lost || targeted {
             return;
@@ -247,6 +275,8 @@ impl Bottleneck {
 #[derive(Default)]
 struct TxCount {
     datagrams: u64,
+    /// Verilen en büyük seq (bırakma anının sınırı).
+    last_seq: u64,
     ptt_wire_bytes: u64,
     /// PTT iletimlerinin türü (seq → tür).
     ptt_kind: HashMap<u64, TransmitKind>,
@@ -396,6 +426,12 @@ struct Outcome {
     /// ACK başına (varış, en büyük teyitli seq'in darboğazda serileşme başlangıcı, korunan hız,
     /// gönderim tavanı), varış sırasıyla.
     per_ack: Vec<(u64, u64, Option<u64>, u64)>,
+    /// [PTT-YALIN] Bırakılan PTT birimleri: (birim, an, bırakmadan önce verilen en büyük seq).
+    ptt_expired: Vec<(u64, u64, u64)>,
+    /// Metin birimleri: (sunum, teslim gecikmesi).
+    text_delays: Vec<(u64, Option<u64>)>,
+    /// Metin iletimleri (darboğaz kaydı).
+    text_tx: Vec<PttTx>,
 }
 
 /// Bir ACK'in yolculuğu.
@@ -505,11 +541,20 @@ fn sender(sc: &Scenario) -> Sender {
     }));
     // `copies == 0`: kopya yok (paket içi yedekli biçim), öncelikli şerit kalır (`below_id` 0 →
     // hiçbir birim kopyalanmaz; kural yalnız öncelik için kurulur).
-    s.set_forward_copy_rule(Some(ForwardCopyRule {
-        below_id: if sc.copies == 0 { 0 } else { TEXT_ID },
-        priority_below_id: FILE_BASE_ID,
-        copies: sc.copies.max(1),
-        spacing_ns: sc.spacing_ns,
+    s.set_forward_copy_rule(Some(if sc.raw_copy_rule {
+        ForwardCopyRule {
+            below_id: TEXT_ID,
+            priority_below_id: FILE_BASE_ID,
+            copies: sc.copies,
+            spacing_ns: sc.spacing_ns,
+        }
+    } else {
+        ForwardCopyRule {
+            below_id: if sc.copies == 0 { 0 } else { TEXT_ID },
+            priority_below_id: FILE_BASE_ID,
+            copies: sc.copies.max(1),
+            spacing_ns: sc.spacing_ns,
+        }
     }));
     s.set_forward_copy_line_scale(sc.copy_scale_min.map(|m| ForwardCopyLineScale {
         declared_bps: PROFILE_UP,
@@ -539,6 +584,7 @@ fn run(sc: &Scenario) -> Outcome {
         tx_of_unit: HashMap::new(),
         ptt_log: Vec::new(),
         ser_start: HashMap::new(),
+        text_log: Vec::new(),
     };
     s.set_diag_emit_log(sc.diag);
     let mut reorder_lcg = sc.seed ^ 0x5A5A_5A5A;
@@ -555,6 +601,10 @@ fn run(sc: &Scenario) -> Outcome {
     let mut voice_offered: Vec<u64> = Vec::new();
     let mut voice_arrived: HashMap<u64, u64> = HashMap::new();
     let mut text_arrived: Option<u64> = None;
+    let mut extra_text_offered: Vec<u64> = Vec::new();
+    let mut extra_text_arrived: HashMap<u64, u64> = HashMap::new();
+    let mut ptt_confirmed: HashSet<u64> = HashSet::new();
+    let mut ptt_expired: Vec<(u64, u64, u64)> = Vec::new();
     let mut file_seen: HashSet<u64> = HashSet::new();
     let mut file_offered = 0u64;
     let mut file_done_ns = None;
@@ -570,6 +620,7 @@ fn run(sc: &Scenario) -> Outcome {
                 continue;
             }
             tx.datagrams += 1;
+            tx.last_seq = tx.last_seq.max(d.seq);
             if d.unit_id < TEXT_ID {
                 tx.ptt_wire_bytes += d.size + OVH;
                 tx.ptt_kind.insert(d.seq, d.kind);
@@ -625,8 +676,56 @@ fn run(sc: &Scenario) -> Outcome {
             );
             emit(decs, now, &mut fwd, &mut tx);
         }
+        if let Some(t0) = sc.text_at_ns.filter(|_| sc.text_period_ns > 0) {
+            let at = t0 + (extra_text_offered.len() as u64 + 1) * sc.text_period_ns;
+            if at < sc.voice_until_ns && now >= at {
+                let id = TEXT_ID + 1 + extra_text_offered.len() as u64;
+                extra_text_offered.push(at);
+                let decs = s.on_event(Event::AppData(OpaqueUnit { id, size: 80 }), now);
+                emit(decs, now, &mut fwd, &mut tx);
+            }
+        }
         let decs = s.on_event(Event::TimerFired(Timer::Pto), now);
         emit(decs, now, &mut fwd, &mut tx);
+        // [PTT-YALIN] Ürünün son tarih yolu (`runtime`, pace tick'te Pto'dan sonra): teyitsiz ve
+        // sunumundan `deadline` geçmiş PTT birimleri motora teyitli bildirilir.
+        if let Some(deadline) = sc.ptt_deadline_ns {
+            ptt_confirmed.extend(
+                s.take_confirmed_units()
+                    .into_iter()
+                    .filter(|&u| u < TEXT_ID),
+            );
+            let due: Vec<u64> = voice_offered
+                .iter()
+                .enumerate()
+                .map(|(k, &at)| (k as u64, at))
+                .filter(|&(k, at)| {
+                    now.saturating_sub(at) >= deadline
+                        && !ptt_confirmed.contains(&k)
+                        && !ptt_expired.iter().any(|&(u, _, _)| u == k)
+                })
+                .map(|(k, _)| k)
+                .collect();
+            if !due.is_empty() {
+                for &u in &due {
+                    ptt_expired.push((u, now, tx.last_seq));
+                }
+                let decs = s.on_event(
+                    Event::RecoveredControl(RecoveredInfo {
+                        units: due
+                            .iter()
+                            .map(|&unit_id| RecoveredUnit {
+                                unit_id,
+                                block_id: 0,
+                                esi: 0,
+                            })
+                            .collect(),
+                    }),
+                    now,
+                );
+                emit(decs, now, &mut fwd, &mut tx);
+            }
+        }
         if now.is_multiple_of(200 * MS) {
             let decs = s.on_event(Event::TimerFired(Timer::RtpropProbe), now);
             emit(decs, now, &mut fwd, &mut tx);
@@ -674,6 +773,8 @@ fn run(sc: &Scenario) -> Outcome {
                     }
                 } else if u == TEXT_ID {
                     text_arrived.get_or_insert(now);
+                } else if u > TEXT_ID {
+                    extra_text_arrived.entry(u).or_insert(now);
                 } else {
                     voice_arrived.entry(u).or_insert(now);
                 }
@@ -746,8 +847,11 @@ fn run(sc: &Scenario) -> Outcome {
             let ser = fwd.ser_start.get(&largest).copied().unwrap_or(0);
             per_ack.push((now, ser, g, p));
         }
-        let voice_left = (0..voice_offered.len() as u64).any(|v| !voice_arrived.contains_key(&v));
-        let text_left = sc.text_at_ns.is_some_and(|t| now >= t) && text_arrived.is_none();
+        let voice_left = (0..voice_offered.len() as u64).any(|v| {
+            !voice_arrived.contains_key(&v) && !ptt_expired.iter().any(|&(u, _, _)| u == v)
+        });
+        let text_left = (sc.text_at_ns.is_some_and(|t| now >= t) && text_arrived.is_none())
+            || extra_text_arrived.len() < extra_text_offered.len();
         let file_left = file_done_ns.is_none() && sc.file_units > 0;
         if now >= sc.voice_until_ns && !voice_left && !text_left && !file_left {
             break;
@@ -797,6 +901,21 @@ fn run(sc: &Scenario) -> Outcome {
         voice_first,
         emit_log: s.take_diag_emit_log(),
         per_ack,
+        ptt_expired,
+        text_tx: fwd.text_log.clone(),
+        text_delays: sc
+            .text_at_ns
+            .map(|t| (t, text_arrived.map(|a| a - t)))
+            .into_iter()
+            .chain(extra_text_offered.iter().enumerate().map(|(k, &at)| {
+                (
+                    at,
+                    extra_text_arrived
+                        .get(&(TEXT_ID + 1 + k as u64))
+                        .map(|&a| a - at),
+                )
+            }))
+            .collect(),
     }
 }
 
@@ -2020,4 +2139,223 @@ fn drop_and_recovery_are_followed_within_two_and_three_acks() {
         }
     }
     assert!(bad.is_empty(), "{bad:?}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// [PTT-YALIN · sahip hedefi 2026-11-22] PTT tek iletim, yalın 0x09 çerçevesi, son tarihte bırakma.
+// ---------------------------------------------------------------------------------------------
+
+/// Yalın PTT biriminin UDP gövdesi: 22 B zarf + 3 B 0x09 başlığı + 53 B (tel 106 B).
+const LEAN_PTT_UNIT: u64 = 78;
+/// Ürünün PTT son tarihi (`client_core::runtime::PTT_DEADLINE_NS`).
+const PTT_DEADLINE_NS: u64 = SEC;
+/// Sahip bütçesi: PTT bir yönde ≤ 4,5 kbit/s (UDP/IP dahil).
+const PTT_BUDGET_BPS: u64 = 4_500;
+
+/// Bir kolun PTT ölçüsü.
+#[derive(Debug)]
+struct LeanPtt {
+    /// PTT iletimleri (bütün kökenler).
+    tx: usize,
+    /// Kökeni `Data` olmayan PTT iletimleri (ARQ yeniden iletimi, kopya, PTO probu).
+    retx: usize,
+    /// Bunlardan kökeni `Retransmit` (ARQ / PTO) ve `Duplicate` (kopya) olanlar.
+    retx_arq: usize,
+    retx_dup: usize,
+    /// Kökeni `Data` olmayan ve alıcıya sunumundan ≤ son tarih içinde varan iletim.
+    retx_in_time: usize,
+    /// Konuşma süresine bölünmüş bütün PTT tel bitleri (bit/s).
+    bps: u64,
+    /// Sunumundan ≥ son tarih sonra verilen PTT iletimi.
+    late_tx: usize,
+    /// Bırakmadan sonra bırakılan birimin iletimi (seq bırakma anındaki en büyük seq'ten büyük).
+    after_expiry_tx: usize,
+    /// Bir `Retransmit` iletiminin sunumdan en erken gecikmesi.
+    first_retx_ns: Option<u64>,
+    /// Alıcıya varan demetler ve en kötü ilk varış gecikmesi.
+    arrived: usize,
+    worst_ns: u64,
+}
+
+fn lean_ptt(o: &Outcome, voice_until_ns: u64) -> LeanPtt {
+    let planned = |u: u64| VOICE_START_NS + u * VOICE_PERIOD_NS;
+    let tx = o.ptt_tx.len();
+    // Ölçü aracının sınaması: her PTT iletimi yalın birimin tel boyunda.
+    assert_eq!(
+        o.ptt_wire_bytes,
+        tx as u64 * (LEAN_PTT_UNIT + OVH),
+        "PTT iletim boyu"
+    );
+    let retx = o
+        .ptt_tx
+        .iter()
+        .filter(|(_, k)| *k != TransmitKind::Data)
+        .count();
+    let late_tx = o
+        .ptt_tx
+        .iter()
+        .filter(|(p, _)| p.at >= planned(p.unit) + PTT_DEADLINE_NS)
+        .count();
+    let after_expiry_tx = o
+        .ptt_tx
+        .iter()
+        .filter(|(p, _)| {
+            o.ptt_expired
+                .iter()
+                .any(|&(u, _, last)| u == p.unit && p.seq > last)
+        })
+        .count();
+    let kind_count = |kind| o.ptt_tx.iter().filter(|(_, k)| *k == kind).count();
+    let retx_in_time = o
+        .ptt_tx
+        .iter()
+        .filter(|(p, k)| {
+            *k != TransmitKind::Data
+                && p.delivered
+                && p.done
+                    .is_some_and(|d| d + ONE_WAY_NS <= planned(p.unit) + PTT_DEADLINE_NS)
+        })
+        .count();
+    let first_retx_ns = o
+        .ptt_tx
+        .iter()
+        .filter(|(_, k)| *k == TransmitKind::Retransmit)
+        .map(|(p, _)| p.at - planned(p.unit))
+        .min();
+    let delays: Vec<u64> = o
+        .voice_first
+        .iter()
+        .enumerate()
+        .filter_map(|(k, a)| a.map(|a| a - planned(k as u64)))
+        .collect();
+    LeanPtt {
+        tx,
+        retx,
+        retx_arq: kind_count(TransmitKind::Retransmit),
+        retx_dup: kind_count(TransmitKind::Duplicate),
+        retx_in_time,
+        bps: o.ptt_wire_bytes * 8 * SEC / (voice_until_ns - VOICE_START_NS),
+        late_tx,
+        after_expiry_tx,
+        first_retx_ns,
+        arrived: delays.len(),
+        worst_ns: delays.iter().copied().max().unwrap_or(0),
+    }
+}
+
+/// [PTT-YALIN] Ürün profili (dürüst 12 500, %20 iid kayıp, ACK bütçesi 62 B/s, 300 ms tek yön), dosya
+/// yok; PTT 0,5–15,5 s, 200 ms'de bir 78 B gövde (tel 106 B), kural `copies = 0` + öncelik
+/// (`ptt_forward_copy_rule(0, 0)`, ölçek yok); 5 s'de bir öncelikli metin birimi. Bırakma kolu:
+/// sunumundan 1 s sonra teyitsiz PTT birimi `RecoveredControl` ile bırakılır. Tohum başına:
+/// (a) PTT tel hızı (bütün iletimler / 15 s) ≤ 4 500 bit/s; (b) bırakılan birim bırakmadan sonra
+/// tele çıkmaz (köken ne olursa olsun); (c) öncelik takılmadı: her metnin ilk iletimi sunumundan en
+/// geç bir tam datagramın beyan hattında serileşmesi kadar sonra tele çıkar ve ilk iletimi hatta
+/// düşmeyen metin sunumundan ≤ 1 s içinde teslim edilir.
+///
+/// (c) "her metin ≤ 1 s" olarak SAĞLANAMAZ ve öyle iddia edilmez: ilk iletimi %20 iid kayıpta düşen
+/// metnin kurtarması ya ACK turunu (geri bildirim ≥ 1 s) ya da göndericinin 1 s sonraki canlılık
+/// kopyasını bekler; ölçüm: tohum 1 bırakma kolunda üç metnin üçünün de ilk iletimi düştü, teslim
+/// 1,31 s (kopya 1,00 s + 0,31 s yayılım/serileşme). Teslim gecikmeleri raporlanır.
+///
+/// Karşı-olgu (aynı tohum, bırakma yok; #175 H1'in ölçümü): PTT tel hızı ve yeniden iletim sayısı
+/// raporlanır, sınırla kıyaslanmaz. Sağlanan yalnız: sunumundan ≥ 1 s sonra tele çıkan PTT iletimi
+/// vardır (bırakılmayan birim yeniden iletilir).
+#[test]
+fn lean_ptt_one_transmission_stays_within_budget_and_expired_units_are_not_retransmitted() {
+    let voice_until = 15_500 * MS;
+    for seed in 1..=3u64 {
+        let sc = Scenario {
+            file_units: 0,
+            voice_until_ns: voice_until,
+            text_at_ns: Some(5 * SEC),
+            text_period_ns: 5 * SEC,
+            copies: 0,
+            spacing_ns: 0,
+            copy_scale_min: None,
+            raw_copy_rule: true,
+            voice_unit: LEAN_PTT_UNIT,
+            ptt_deadline_ns: Some(PTT_DEADLINE_NS),
+            ..Scenario::honest(seed)
+        };
+        let o = run(&sc);
+        let m = lean_ptt(&o, voice_until);
+        let control = Scenario {
+            ptt_deadline_ns: None,
+            ..sc.clone()
+        };
+        let oc = run(&control);
+        let mc = lean_ptt(&oc, voice_until);
+        let texts: Vec<String> = o
+            .text_delays
+            .iter()
+            .map(|&(at, d)| format!("{}:{}", secs(at), d.map_or("YOK".to_string(), secs)))
+            .collect();
+        let texts_c: Vec<String> = oc
+            .text_delays
+            .iter()
+            .map(|&(at, d)| format!("{}:{}", secs(at), d.map_or("YOK".to_string(), secs)))
+            .collect();
+        println!(
+            "PTT-YALIN tohum {seed} bırakma: tel {} bit/s, iletim {}, yeniden {} (ARQ {}, kopya {}, \
+             vaktinde varan {}), bırakılan {}, bırakma sonrası iletim {}, son tarih sonrası iletim \
+             {}, ilk ARQ {}, varan {}/{} (en kötü {}), metin {texts:?} | karşı-olgu: tel {} bit/s, \
+             iletim {}, yeniden {} (ARQ {}, kopya {}, vaktinde varan {}), son tarih sonrası iletim \
+             {}, ilk ARQ {}, varan {}/{} (en kötü {}), metin {texts_c:?}",
+            m.bps,
+            m.tx,
+            m.retx,
+            m.retx_arq,
+            m.retx_dup,
+            m.retx_in_time,
+            o.ptt_expired.len(),
+            m.after_expiry_tx,
+            m.late_tx,
+            m.first_retx_ns.map_or("-".to_string(), secs),
+            m.arrived,
+            o.voice_first.len(),
+            secs(m.worst_ns),
+            mc.bps,
+            mc.tx,
+            mc.retx,
+            mc.retx_arq,
+            mc.retx_dup,
+            mc.retx_in_time,
+            mc.late_tx,
+            mc.first_retx_ns.map_or("-".to_string(), secs),
+            mc.arrived,
+            oc.voice_first.len(),
+            secs(mc.worst_ns),
+        );
+        assert!(
+            m.bps <= PTT_BUDGET_BPS,
+            "tohum {seed}: PTT tel {} bit/s > {PTT_BUDGET_BPS}",
+            m.bps
+        );
+        assert_eq!(
+            m.after_expiry_tx, 0,
+            "tohum {seed}: bırakılan birim yeniden tele çıktı"
+        );
+        assert_eq!(o.text_delays.len(), 3, "tohum {seed}: metin sayısı");
+        for (k, &(at, d)) in o.text_delays.iter().enumerate() {
+            let first = o
+                .text_tx
+                .iter()
+                .filter(|p| p.unit == TEXT_ID + k as u64)
+                .min_by_key(|p| p.seq)
+                .expect("metin tele çıktı");
+            assert!(
+                first.at - at <= (MTU + OVH) * SEC / PROFILE_UP,
+                "tohum {seed}: metin {k} ilk iletimi {} gecikti",
+                secs(first.at - at)
+            );
+            assert!(
+                !first.delivered || d.is_some_and(|d| d <= TEXT_BOUND_NS),
+                "tohum {seed}: ilk iletimi varan metin {k}: {texts:?}"
+            );
+        }
+        assert!(
+            mc.late_tx > 0,
+            "tohum {seed}: karşı-olgu: son tarihten sonra PTT iletimi yok"
+        );
+    }
 }
