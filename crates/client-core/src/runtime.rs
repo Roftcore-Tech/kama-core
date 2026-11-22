@@ -3673,13 +3673,36 @@ async fn client_task(
                     match (fec.as_ref(), decode_recovered(&plain)) {
                         (Some(p), Some((block_id, esis))) => {
                             let mut units = Vec::with_capacity(esis.len());
-                            for esi in esis {
+                            for &esi in &esis {
                                 let unit = unit_of_fec(block_id, esi, u64::from(p.k_shape));
                                 units.push(RecoveredUnit {
                                     unit_id: unit,
                                     block_id,
                                     esi,
                                 });
+                            }
+                            // [RECOVERED-BLOK · geri bildirimi aç profil] Alıcı RECOVERED'ı
+                            // yalnız bloğu çözünce yazar (`fec_ingest`: RS ya hep ya hiç), yani
+                            // bloğun BÜTÜN kaynakları ondadır. Listelenmeyen (doğrudan varmış)
+                            // kaynaklar burada da teyit edilir: dar dönüşte ACK'leri gecikir ya
+                            // da aralık kırpmasıyla hiç gelmez, teyitsiz kaldıkça boş hat
+                            // yeniden iletimi ve ARQ onları yeniden gönderiyordu (ürün testi,
+                            // dürüst hücre, tohum 3: RECOVERED'dan sonra 17 gereksiz iletim).
+                            // Yalnız bu ucun kapattığı (onarımı depoda) blokta ve teyitsiz
+                            // (payload'ı tutulan) birimler; profil kapalıyken eski kural (yalnız
+                            // listelenenler).
+                            let closed = repair_store.get(&block_id).map(|(k, _)| u16::from(*k));
+                            if let (true, Some(k_actual)) = (fec_starved_prior.is_some(), closed) {
+                                for esi in (0..k_actual).filter(|e| !esis.contains(e)) {
+                                    let unit = unit_of_fec(block_id, esi, u64::from(p.k_shape));
+                                    if store.contains_key(&unit) {
+                                        units.push(RecoveredUnit {
+                                            unit_id: unit,
+                                            block_id,
+                                            esi,
+                                        });
+                                    }
+                                }
                             }
                             drive!(Event::RecoveredControl(RecoveredInfo { units }), $now);
                         }
@@ -5342,6 +5365,66 @@ async fn srv_send_or_yield(
     srv_seal_send(tx, sock, stats, peer, ctx, frame).await;
 }
 
+/// [ÖNCELİK] ACK zamanlayıcısının bir turu: her yuvanın zamanlayıcı ACK'i, sonra hat boş kaldıkça
+/// bekletilen denetim çerçeveleri, sonra süresi dolan bekletilen PARAM_ACK'ler.
+async fn srv_ack_tick(
+    tx: &mut SrvTx,
+    sock: &UdpSocket,
+    stats: &mut ServerStats,
+    peers: &mut HashMap<SlotKey, PeerSlot>,
+    now: u64,
+) {
+    // ACK_FREQ_N'e ulaşamayan kuyruğu timer teyit eder (bench birebir).
+    // [DÖNÜŞ-HATTI] ACK'in varış ufku hatta önündeki baytları da sayar.
+    // [ÖNCELİK · ACK ÖNCE · 2026-11-22] ACK kararı bekletilen RECOVERED'lardan ÖNCE
+    // hattı okur; RECOVERED'lar ACK'ten sonra, hat hâlâ boşsa çıkar (iki denetim
+    // datagramı yine üst üste çıkmaz). Eski sıra (önce RECOVERED) hattın her boşalışını
+    // RECOVERED'a veriyordu: ürün testi `asym_product_outcome` düşüş hücresi, tohum 1,
+    // yedi RECOVERED 6,5–17,1 s'de birer birer çıktı, ACK her turda "hat dolu" gördü,
+    // Alice'e 4,3–22,2 s arası ACK varmadı. RECOVERED yalnız kurtarılan birimin
+    // yeniden iletimini önler; ACK göndericinin bütün teyit ve hız ölçümüdür.
+    let ahead = tx.line_ahead_ns();
+    let yield_ctrl = tx.control_should_yield();
+    let acks: Vec<(SocketAddr, ProtectionContext, Vec<u8>)> = peers
+        .iter_mut()
+        .filter_map(|(&(p, _), s)| {
+            s.rx.set_return_line_ahead_ns(ahead);
+            s.rx.set_uplink_yield(yield_ctrl);
+            let a = s.rx.on_ack_timer(now)?;
+            s.acks_out = s.acks_out.saturating_add(1);
+            Some((p, s.ctx, a.encode()))
+        })
+        .collect();
+    for (peer, sp, plain) in acks {
+        srv_seal_send(tx, sock, stats, peer, sp, plain).await;
+    }
+    drain_yielded(tx, sock, stats).await;
+    // [PARAM_ACK-BEKLETME] İkinci ACK çıktıysa ya da süre dolduysa bekletilen PARAM_ACK.
+    let held: Vec<(SocketAddr, ProtectionContext, Vec<u8>)> = peers
+        .iter_mut()
+        .filter(|(_, s)| {
+            s.param_ack_held
+                .as_ref()
+                .is_some_and(|&(_, dl)| s.acks_out >= PARAM_ACK_AFTER_ACKS || now >= dl)
+        })
+        .filter_map(|(&(p, _), s)| s.param_ack_held.take().map(|(f, _)| (p, s.ctx, f)))
+        .collect();
+    for (peer, sp, f) in held {
+        srv_seal_send(tx, sock, stats, peer, sp, f).await;
+    }
+}
+
+/// [ÖNCELİK] Bekletilen denetim çerçevelerini hat boş kaldıkça sırayla çıkarır (ACK
+/// zamanlayıcısı, o turun ACK kararından SONRA çağırır).
+async fn drain_yielded(tx: &mut SrvTx, sock: &UdpSocket, stats: &mut ServerStats) {
+    while !tx.control_should_yield() {
+        let Some((peer, sp, f)) = tx.yielded.pop_front() else {
+            break;
+        };
+        srv_seal_send(tx, sock, stats, peer, sp, f).await;
+    }
+}
+
 /// [v1] Server-yönü tek-nokta seal+send (typed seal-reddi sayılır). Egress kapısı reddederse
 /// datagram enjekte EDİLMEZ (kanal-kaybı eşdeğeri; alıcı durumu geri itilmez).
 async fn srv_seal_send(
@@ -5669,44 +5752,7 @@ async fn server_task(
             }
             _ = ack_timer.tick() => {
                 let now = elapsed_ns(start);
-                // ACK_FREQ_N'e ulaşamayan kuyruğu timer teyit eder (bench birebir).
-                // [DÖNÜŞ-HATTI] ACK'in varış ufku hatta önündeki baytları da sayar.
-                // [ÖNCELİK] Bekletilen RECOVERED'lar hat boşken çıkar; ACK kararı ondan SONRA hattı
-                // okur (yoksa aynı anda iki denetim datagramı üst üste çıkar).
-                while !tx.control_should_yield() {
-                    let Some((peer, sp, f)) = tx.yielded.pop_front() else { break };
-                    srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, f).await;
-                }
-                let ahead = tx.line_ahead_ns();
-                let yield_ctrl = tx.control_should_yield();
-                let acks: Vec<(SocketAddr, ProtectionContext, Vec<u8>)> = peers
-                    .iter_mut()
-                    .filter_map(|(&(p, _), s)| {
-                        s.rx.set_return_line_ahead_ns(ahead);
-                        s.rx.set_uplink_yield(yield_ctrl);
-                        let a = s.rx.on_ack_timer(now)?;
-                        s.acks_out = s.acks_out.saturating_add(1);
-                        Some((p, s.ctx, a.encode()))
-                    })
-                    .collect();
-                for (peer, sp, plain) in acks {
-                    srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, plain).await;
-                }
-                // [PARAM_ACK-BEKLETME] İkinci ACK çıktıysa ya da süre dolduysa bekletilen PARAM_ACK.
-                let held: Vec<(SocketAddr, ProtectionContext, Vec<u8>)> = peers
-                    .iter_mut()
-                    .filter(|(_, s)| {
-                        s.param_ack_held.as_ref().is_some_and(|&(_, dl)| {
-                            s.acks_out >= PARAM_ACK_AFTER_ACKS || now >= dl
-                        })
-                    })
-                    .filter_map(|(&(p, _), s)| {
-                        s.param_ack_held.take().map(|(f, _)| (p, s.ctx, f))
-                    })
-                    .collect();
-                for (peer, sp, f) in held {
-                    srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, f).await;
-                }
+                srv_ack_tick(&mut tx, &sock, &mut stats, &mut peers, now).await;
             }
             _ = patience.tick() => {
                 // Item 3: idle-peer emekliliği — tablo boşalması YALNIZ burada (sessiz-eviction yok;
@@ -8470,5 +8516,66 @@ mod param_forward_copy_tests {
                 log.params_after_ack()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod ack_tick_priority_tests {
+    use super::*;
+    use crate::seam::IdentitySeam;
+
+    /// [ÖNCELİK · ACK ÖNCE] Dar dönüşte (62 B/s) hat boşken ACK zamanlayıcısının turunda hem bekleyen
+    /// bir ACK hem bekletilen bir RECOVERED varsa hatta ÖNCE ACK çıkar; RECOVERED hat dolduğu için
+    /// bekler (iki denetim datagramı üst üste çıkmaz). Karşı-olgu: eski sıra (önce RECOVERED
+    /// boşaltılır) hattı RECOVERED'a verir ve ACK o turda yol verir — ürün testi düşüş hücresinde
+    /// her turda tekrarlanıp Alice'e 4,3–22,2 s ACK ulaştırmadı.
+    #[tokio::test]
+    async fn ack_takes_the_clear_line_before_a_yielded_recovered() {
+        let peer_sock = UdpSocket::bind("127.0.0.1:0").await.expect("eş");
+        let peer = peer_sock.local_addr().expect("adres");
+        let sock = UdpSocket::bind("127.0.0.1:0").await.expect("sunucu");
+        let ctx = ProtectionContext::Session(IdentitySeam::SESSION);
+        let recovered = vec![FRAME_RECOVERED, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0];
+        let mut tx = SrvTx {
+            seam: Box::new(IdentitySeam::new()),
+            egress: None,
+            start: Instant::now(),
+            uplink: Some(UplinkShare(Arc::new(UplinkLine {
+                origin: Instant::now(),
+                rate_bps: 62,
+                busy_until_ns: AtomicU64::new(0),
+                narrow: true,
+            }))),
+            yielded: VecDeque::from([(peer, ctx, recovered)]),
+        };
+        let mut stats = ServerStats::default();
+        let mut slot = PeerSlot::new(ctx, 4, 0, TransportEngine::CcPort, Some(62));
+        let out = slot.rx.on_datagram(
+            RxDatagram {
+                seq: 0,
+                unit_id: 0,
+                kind: RxKind::Data,
+            },
+            0,
+        );
+        assert!(out.ack.is_none(), "ACK zamanlayıcıya kalır");
+        let mut peers: HashMap<SlotKey, PeerSlot> = HashMap::new();
+        peers.insert((peer, IdentitySeam::SESSION), slot);
+
+        srv_ack_tick(&mut tx, &sock, &mut stats, &mut peers, 50_000_000).await;
+
+        let mut buf = [0u8; 2048];
+        let n = peer_sock.recv(&mut buf).await.expect("datagram");
+        assert_ne!(buf[0], FRAME_RECOVERED, "hatta önce RECOVERED çıktı");
+        assert!(
+            adaptive_transport::ack::AckFrame::decode_with_bitmap(
+                &buf[..n - crate::seam::IDENTITY_TAG]
+            )
+            .is_ok(),
+            "ilk datagram ACK değil: {:#04x}",
+            buf[0]
+        );
+        assert_eq!(tx.yielded.len(), 1, "RECOVERED hat dolunca bekler");
+        assert_eq!(stats.tx_datagrams, 1, "turda tek denetim datagramı");
     }
 }
