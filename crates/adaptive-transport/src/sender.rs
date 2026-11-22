@@ -8470,9 +8470,30 @@ impl Sender {
     }
 
     fn drain_due_duplicates(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
+        // [KOPYA-SIRA · geri bildirimi aç profil] Vadesi gelen kopyalar VADE sırasıyla çıkar (eşit
+        // vadede kuyruğa giriş sırası). Kuyruk giriş sırasıyla boşalınca, jeton kopya aralığından
+        // seyrekken (12 500 B/s'de 1 kB ≈ 86 ms, aralık 40 ms) birimin bütün kopyaları art arda
+        // çıkıyor, sonraki birimin ilk kopyası onların arkasında bekliyordu: boştaki şeridin açık
+        // bloğunda (FEC'siz kuyruk bloğu) varmış birimin 4 kopyası kayıp birimin önüne geçti (ürün
+        // testi, gerçek-6250 hücresi, tohum 1: aynı kayıpta dosya 14,39 s; vade sırasıyla 13,75 s).
+        // Vade sırası kopyaları planlandıkları gibi birimler arasında dönüşümlü ve aralıklı yayar.
+        // Profil kapalıyken ya da port motoru yokken sıra bugünkü gibi (kuyruk sırası).
+        let by_due = self.cc_feedback_starved.is_some() && self.cc.is_some();
         let mut i = 0;
-        while i < self.dup_queue.len() {
-            if self.dup_queue[i].due_ns > now_ns {
+        while by_due || i < self.dup_queue.len() {
+            if by_due {
+                let Some(j) = self
+                    .dup_queue
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, d)| d.due_ns <= now_ns)
+                    .min_by_key(|&(j, d)| (d.due_ns, j))
+                    .map(|(j, _)| j)
+                else {
+                    break; // vadesi gelen kopya yok.
+                };
+                i = j;
+            } else if self.dup_queue[i].due_ns > now_ns {
                 i += 1;
                 continue; // henüz vadesi gelmedi.
             }
@@ -16262,6 +16283,57 @@ mod feedback_starved_tests {
             out.extend(s.on_event(Event::TimerFired(Timer::Pto), t * MS));
         }
         assert_eq!(dups_of(&out, 7), 2, "planlanan iki kopya çıktı");
+    }
+
+    /// [KOPYA-SIRA] Geri bildirimi aç profilde jeton kopya aralığından seyrekken planlı kopyalar
+    /// vade sırasıyla, birimler arasında dönüşümlü çıkar (her birimin ilk kopyası ikinci
+    /// kopyalardan önce). Kural yokken sıra bugünkü gibi kuyruk sırasıdır (birimin kopyaları art
+    /// arda).
+    #[test]
+    fn due_copies_alternate_between_units_on_the_starved_profile() {
+        let rule = FeedbackStarvedRule {
+            pacing_cap_bps: 12_000,
+            feedback_ns: 10_000 * MS,
+            line: crate::pacer::LineModel {
+                rate_bps: 12_500,
+                datagram_overhead: 28,
+            },
+            return_line: crate::pacer::LineModel {
+                rate_bps: 62,
+                datagram_overhead: 28,
+            },
+        };
+        let order = |r: Option<FeedbackStarvedRule>| {
+            let mut s = Sender::with_cc_port();
+            s.set_cc_profile_pacing_cap(Some(12_000));
+            s.set_cc_initial_window(15_000);
+            s.set_cc_feedback_starved(r);
+            let ids = [7u64, 8, 9];
+            let mut now = 0;
+            for &id in &ids {
+                let _ = s.on_event(Event::AppData(OpaqueUnit { id, size: 1000 }), now);
+            }
+            // Üç birim tele çıkana dek.
+            while ids.iter().any(|&id| s.unit_unsent(id)) {
+                now += MS;
+                let _ = s.on_event(Event::TimerFired(Timer::Pto), now);
+            }
+            for &id in &ids {
+                assert!(s.schedule_forward_copies(id, 4, 40 * MS, now));
+            }
+            let mut out = Vec::new();
+            for _ in 0..3000 {
+                now += MS;
+                out.extend(s.on_event(Event::TimerFired(Timer::Pto), now));
+            }
+            out.iter()
+                .filter(|t| t.kind == TransmitKind::Duplicate)
+                .map(|t| t.unit_id)
+                .take(6)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(order(Some(rule)), vec![7, 8, 9, 7, 8, 9], "vade sırası");
+        assert_eq!(order(None)[..4], [7, 7, 7, 7], "kuralsız: kuyruk sırası");
     }
 
     /// Geri bildirimi aç kuralda gönderici ACK olmadan uçuş tabanına

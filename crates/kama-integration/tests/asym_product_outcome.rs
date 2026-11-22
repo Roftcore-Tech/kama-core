@@ -191,7 +191,10 @@ use client_core::runtime::ClientLiveDiag;
 use client_core::runtime::EmitTraceSink;
 use client_core::runtime::{AckFormat, LinkRates};
 use client_core::transport::{ClientTransport, ClientTransportConfig};
-use client_core::wire::{decode_data, decode_ptt, FRAME_FEC, FRAME_PTT, FRAME_RECOVERED};
+use client_core::unit_id::fec_block_of;
+use client_core::wire::{
+    decode_data, decode_fec, decode_ptt, decode_recovered, FRAME_FEC, FRAME_PTT, FRAME_RECOVERED,
+};
 use kama_app::clock::{MonotonicClock, SystemClock};
 use kama_app::codec::{decode, AmpLimits, AppMessage, PttCodec};
 use kama_app::file_transfer::{FileEvent, FileTransfer};
@@ -376,6 +379,12 @@ struct Ledger {
     ptt_wire: Vec<(Instant, u64)>,
     /// [PTT-BANT] Bu ucun mühürlediği yalın PTT çerçevesi (0x09) sayısı.
     ptt_lean_tx: u64,
+    /// [İZ-BLOK] Bu ucun mühürlediği her DATA datagramı: (an, birim, parmak izi).
+    data_log: Vec<(Instant, u64, u64)>,
+    /// [İZ-BLOK] Bu ucun mühürlediği her FEC onarım datagramı: (an, blok, ESI, k_actual, parmak izi).
+    fec_log: Vec<(Instant, u32, u16, u8, u64)>,
+    /// [İZ-BLOK] Bu uca açılan RECOVERED çerçeveleri: (an, blok).
+    recovered_log: Vec<(Instant, u32)>,
 }
 
 /// [FEC-TEŞHİS] Çerçeve türü sayacı (DATA dışı).
@@ -415,6 +424,20 @@ impl PacketProtection for Tap {
     fn seal(&mut self, ctx: ProtectionContext, frame: &[u8]) -> Result<SealedUnit, SealError> {
         let sealed = self.inner.seal(ctx, frame)?;
         note_kind(&mut lock(&self.ledger), frame, true);
+        {
+            let mut l = lock(&self.ledger);
+            let fp = fingerprint(&sealed.bytes);
+            if let Some((_, unit, _)) = decode_data(frame) {
+                if l.data_log.len() < LEDGER_CAP {
+                    l.data_log.push((Instant::now(), unit, fp));
+                }
+            } else if let Some((h, _)) = decode_fec(frame) {
+                if l.fec_log.len() < LEDGER_CAP {
+                    l.fec_log
+                        .push((Instant::now(), h.block_id, h.esi, h.k_actual, fp));
+                }
+            }
+        }
         if let Some((wseq, unit, _)) = decode_data(frame) {
             let item = self.classify(frame).and_then(Result::ok);
             let mut l = lock(&self.ledger);
@@ -456,6 +479,12 @@ impl PacketProtection for Tap {
     fn open(&mut self, wire: &[u8]) -> Option<Opened> {
         let opened = self.inner.open(wire)?;
         note_kind(&mut lock(&self.ledger), &opened.frame, false);
+        if let Some((block, _)) = decode_recovered(&opened.frame) {
+            let mut l = lock(&self.ledger);
+            if l.recovered_log.len() < LEDGER_CAP {
+                l.recovered_log.push((Instant::now(), block));
+            }
+        }
         {
             let now = Instant::now();
             let mut l = lock(&self.ledger);
@@ -1706,6 +1735,7 @@ impl Run {
             self.alice.unparsed, self.bob.unparsed, self.alice.overflow, self.bob.overflow
         );
         self.trace_report(&tag);
+        self.block_report(&tag);
         self.cause_report(&tag);
         self.guard_trace_report(&tag);
         // [ACK-PAYI] Dönüş hattı bileşimi: Bob'un ACK/denetim datagramları (ADown) ve verisi (BUp)
@@ -1811,6 +1841,249 @@ impl Run {
 
     /// Koşu izi: uygulama olayları ve rölenin gördüğü her datagram (an t0'a göre; öğe, mühürleyen
     /// ucun parmak izi kaydından). ACK ve denetim datagramları DATA değildir: `kontrol` yazılır.
+    /// [İZ-BLOK] Alice→Bob FEC bloklarının onarım muhasebesi (blok başına bir satır, sonda özet).
+    /// Varış ve kayıp rölenin ileri hat izinden (parmak izi). Blok alıcıda, sahip olduğu farklı
+    /// sembol (kaynak + onarım) sayısı `k_actual`'a ulaştığı ilk anda tamamdır (`çözüm`);
+    /// `kullanılan` onarım = o ana dek varmış onarım sayısı (kaynak kaybını onlar kapattı).
+    /// Varan ama işe yaramayan onarım, bloğun nasıl tamamlandığına göre ayrılır: kayıpsız blok
+    /// (ilk iletimde hiç kaynak düşmedi), ARQ sonrası (blok yeniden iletilen kaynakla tamamlandı),
+    /// fazla (blok onarımla çözüldükten sonra). Gönderici bilgisi: onarımın mühürlendiği anda
+    /// Alice bloğun bütün kaynaklarının ACK'ini / bloğun RECOVERED'ını almış mıydı.
+    fn block_report(&self, tag: &str) {
+        const K: u64 = 8;
+        let t = |i: Instant| self.since(i, self.t0).as_secs_f64();
+        let line: HashMap<u64, (u8, Option<Instant>, u64)> = self
+            .fwd
+            .trace
+            .iter()
+            .filter(|r| r.route == Route::AUp)
+            .map(|r| (r.fp, (r.fate, r.arrives, r.wire)))
+            .collect();
+        let pn_unit: HashMap<u64, u64> = self.alice.seals.iter().map(|s| (s.1, s.3)).collect();
+        let mut acked: HashMap<u64, Instant> = HashMap::new();
+        for (at, pns) in &self.alice.acks_rx {
+            for pn in pns {
+                if let Some(&u) = pn_unit.get(pn) {
+                    acked.entry(u).or_insert(*at);
+                }
+            }
+        }
+        let mut rec: HashMap<u32, Instant> = HashMap::new();
+        for (at, b) in &self.alice.recovered_log {
+            rec.entry(*b).or_insert(*at);
+        }
+        let mut srcs: BTreeMap<u32, BTreeMap<u64, Vec<(Instant, u64)>>> = BTreeMap::new();
+        for &(at, u, fp) in &self.alice.data_log {
+            srcs.entry(fec_block_of(u, K))
+                .or_default()
+                .entry(u)
+                .or_default()
+                .push((at, fp));
+        }
+        let mut pars: BTreeMap<u32, Vec<(Instant, u16, u8, u64)>> = BTreeMap::new();
+        for &(at, b, esi, k, fp) in &self.alice.fec_log {
+            pars.entry(b).or_default().push((at, esi, k, fp));
+        }
+        // Özet sayaçları (yalnız onarım gönderilmiş bloklar).
+        #[derive(Default, Debug)]
+        struct Sum {
+            blocks: u64,
+            src: u64,
+            src_lost_first: u64,
+            par_sent: u64,
+            par_needed: u64,
+            par_lost: u64,
+            par_used: u64,
+            par_after_noloss: u64,
+            par_after_arq: u64,
+            par_after_fec: u64,
+            par_never_done: u64,
+            par_sealed_after_ack: u64,
+            par_sealed_after_rec: u64,
+            par_sealed_after_done: u64,
+            dec_fec: u64,
+            dec_arq: u64,
+            dec_clean: u64,
+            undecoded: u64,
+            par_bytes: u64,
+            retx_after_done: u64,
+            retx_after_done_bytes: u64,
+            retx_after_rec: u64,
+            retx_unit_there_block_open: u64,
+        }
+        let mut sum = Sum::default();
+        let mut no_parity_blocks = 0u64;
+        let mut no_parity_lost = 0u64;
+        let keys: Vec<u32> = srcs
+            .keys()
+            .chain(pars.keys())
+            .copied()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        for b in keys {
+            let units = srcs.get(&b).cloned().unwrap_or_default();
+            let par = pars.get(&b).cloned().unwrap_or_default();
+            let lane = b >> 30;
+            let k = par.first().map_or(units.len() as u64, |p| u64::from(p.2));
+            let mut syms: Vec<(Instant, u8)> = Vec::new(); // 0 kaynak ilk, 1 kaynak retx, 2 onarım
+            let mut lost_first = 0u64;
+            for txs in units.values() {
+                let first_ok = txs
+                    .first()
+                    .and_then(|x| line.get(&x.1))
+                    .is_some_and(|l| l.0 == 0);
+                if !first_ok {
+                    lost_first += 1;
+                }
+                let arr = txs
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, x)| {
+                        line.get(&x.1)
+                            .and_then(|l| l.1)
+                            .map(|a| (a, u8::from(i > 0)))
+                    })
+                    .min_by_key(|x| x.0);
+                if let Some(a) = arr {
+                    syms.push(a);
+                }
+            }
+            for p in &par {
+                if let Some(a) = line.get(&p.3).and_then(|l| l.1) {
+                    syms.push((a, 2));
+                }
+            }
+            syms.sort_by_key(|x| x.0);
+            let done: Option<(Instant, &str, u64)> = (k > 0 && syms.len() as u64 >= k).then(|| {
+                let first_k = &syms[..k as usize];
+                let used = first_k.iter().filter(|x| x.1 == 2).count() as u64;
+                let how = if used > 0 {
+                    "FEC"
+                } else if first_k.iter().any(|x| x.1 == 1) {
+                    "ARQ"
+                } else {
+                    "temiz"
+                };
+                (first_k[k as usize - 1].0, how, used)
+            });
+            let ack_done = (units.len() as u64 >= k && k > 0)
+                .then(|| {
+                    units
+                        .keys()
+                        .map(|u| acked.get(u).copied())
+                        .collect::<Option<Vec<_>>>()
+                })
+                .flatten()
+                .and_then(|v| v.into_iter().max());
+            // Blok tamamlandıktan sonra mühürlenen kaynak yeniden iletimleri (ileri hat israfı).
+            let (mut rx_before, mut rx_after) = (0u64, 0u64);
+            for txs in units.values() {
+                for x in txs.iter().skip(1) {
+                    if rec.get(&b).is_some_and(|r| x.0 >= *r) {
+                        sum.retx_after_rec += 1;
+                    }
+                    if done.is_some_and(|d| x.0 >= d.0) {
+                        rx_after += 1;
+                        sum.retx_after_done += 1;
+                        sum.retx_after_done_bytes += line.get(&x.1).map_or(0, |l| l.2);
+                    } else {
+                        rx_before += 1;
+                        let unit_arr = txs
+                            .iter()
+                            .filter_map(|y| line.get(&y.1).and_then(|l| l.1))
+                            .min();
+                        if unit_arr.is_some_and(|a| x.0 >= a) {
+                            sum.retx_unit_there_block_open += 1;
+                        }
+                    }
+                }
+            }
+            if par.is_empty() {
+                no_parity_blocks += 1;
+                no_parity_lost += lost_first;
+                println!(
+                    "İZ-BLOK {tag} blok={lane}:{} k={k} kaynak_ilk_kayıp={lost_first} onarım=0 çözüm={} yeniden_iletim(çözüm_öncesi,sonrası)=({rx_before},{rx_after})",
+                    b & 0x3FFF_FFFF,
+                    done.map_or("YOK".to_string(), |d| format!("{:.2}({})", t(d.0), d.1))
+                );
+                continue;
+            }
+            sum.blocks += 1;
+            sum.src += k;
+            sum.src_lost_first += lost_first;
+            sum.par_sent += par.len() as u64;
+            sum.par_needed += lost_first.min(par.len() as u64);
+            let (mut lost, mut used, mut a_noloss, mut a_arq, mut a_fec, mut never) =
+                (0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+            let (mut s_ack, mut s_rec, mut s_done) = (0u64, 0u64, 0u64);
+            for p in &par {
+                sum.par_bytes += line.get(&p.3).map_or(0, |l| l.2);
+                if ack_done.is_some_and(|a| p.0 >= a) {
+                    s_ack += 1;
+                }
+                if rec.get(&b).is_some_and(|r| p.0 >= *r) {
+                    s_rec += 1;
+                }
+                if done.is_some_and(|d| p.0 >= d.0) {
+                    s_done += 1;
+                }
+                match (line.get(&p.3).and_then(|l| l.1), done) {
+                    (None, _) => lost += 1,
+                    (Some(_), None) => never += 1,
+                    (Some(a), Some((d, how, _))) => {
+                        if a <= d {
+                            used += 1;
+                        } else if lost_first == 0 {
+                            a_noloss += 1;
+                        } else if how == "FEC" {
+                            a_fec += 1;
+                        } else {
+                            a_arq += 1;
+                        }
+                    }
+                }
+            }
+            match done.map(|d| d.1) {
+                Some("FEC") => sum.dec_fec += 1,
+                Some("ARQ") => sum.dec_arq += 1,
+                Some(_) => sum.dec_clean += 1,
+                None => sum.undecoded += 1,
+            }
+            sum.par_lost += lost;
+            sum.par_used += used;
+            sum.par_after_noloss += a_noloss;
+            sum.par_after_arq += a_arq;
+            sum.par_after_fec += a_fec;
+            sum.par_never_done += never;
+            sum.par_sealed_after_ack += s_ack;
+            sum.par_sealed_after_rec += s_rec;
+            sum.par_sealed_after_done += s_done;
+            let last_src_first = units.values().filter_map(|x| x.first()).map(|x| x.0).max();
+            println!(
+                "İZ-BLOK {tag} blok={lane}:{} k={k} kaynak_ilk_kayıp={lost_first} onarım={} (yolda_düşen={lost} kullanılan={used} kayıpsız_blokta={a_noloss} ARQ_sonrası={a_arq} çözüm_sonrası={a_fec} çözümsüz={never}) son_kaynak={} onarım_mühür=[{}] çözüm={} Alice_ACK_tamam={} RECOVERED_Alice={} mühür_sonra(ACK,REC,çözüm)=({s_ack},{s_rec},{s_done}) yeniden_iletim(çözüm_öncesi,sonrası)=({rx_before},{rx_after})",
+                b & 0x3FFF_FFFF,
+                par.len(),
+                last_src_first.map_or("-".to_string(), |x| format!("{:.2}", t(x))),
+                par.iter().map(|p| format!("{:.2}", t(p.0))).collect::<Vec<_>>().join(" "),
+                done.map_or("YOK".to_string(), |d| format!("{:.2}({},{})", t(d.0), d.1, d.2)),
+                ack_done.map_or("-".to_string(), |x| format!("{:.2}", t(x))),
+                rec.get(&b).map_or("-".to_string(), |x| format!("{:.2}", t(*x))),
+            );
+        }
+        println!(
+            "ÖZET-BLOK {tag} {sum:?} onarımsız_blok={no_parity_blocks} (ilk_kayıp={no_parity_lost}) verim(kullanılan/gönderilen)={:.3} ileri_bayt={} lane_dağılımı={:?}",
+            sum.par_used as f64 / sum.par_sent.max(1) as f64,
+            self.fwd.bytes,
+            pars.keys().fold([0u64; 4], |mut a, b| {
+                a[(b >> 30) as usize] += pars[b].len() as u64;
+                a
+            }),
+        );
+    }
+
     fn trace_report(&self, tag: &str) {
         let t = |i: Instant| secs(self.since(i, self.t0));
         let ot = |i: Option<Instant>| i.map_or("-".to_string(), t);

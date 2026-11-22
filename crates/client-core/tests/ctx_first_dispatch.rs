@@ -284,6 +284,16 @@ struct ClientRig {
 impl ClientRig {
     /// İki birim uçuşta (DATA'ları görüldü), PARAM henüz onaysız (uç PARAM_SET yineliyor).
     async fn new() -> Self {
+        let cfg = RuntimeConfig {
+            drain_cap: Duration::from_millis(100),
+            ..RuntimeConfig::default()
+        };
+        let units = [b"birim-0".to_vec(), b"birim-1".to_vec()];
+        Self::with(cfg, &units).await
+    }
+
+    /// `units` uçuşta (DATA'ları görüldü), PARAM henüz onaysız; uç `cfg` ile kurulur.
+    async fn with(cfg: RuntimeConfig, units: &[Vec<u8>]) -> Self {
         let mut alice = node(ALICE);
         let mut bob = node(BOB);
         let mut carol = node(CAROL);
@@ -293,10 +303,6 @@ impl ClientRig {
         let alice = Arc::new(Mutex::new(alice));
 
         let peer = udp().await;
-        let cfg = RuntimeConfig {
-            drain_cap: Duration::from_millis(100),
-            ..RuntimeConfig::default()
-        };
         let client = ClientEndpoint::connect_session(
             peer.local_addr().expect("eş adresi"),
             cfg,
@@ -309,18 +315,19 @@ impl ClientRig {
         // Kurtarma kapalı (yalnız test yapılandırması): ARQ retransmit / kopya / parity tele
         // çıkmaz → PARAM onaylanınca uç HİÇ mühürlemez; Crypto parmak izi kararlı kalır.
         client.set_recovery(false);
-        client.send(b"birim-0".to_vec()).expect("sun");
-        client.send(b"birim-1".to_vec()).expect("sun");
+        for u in units {
+            client.send(u.clone()).expect("sun");
+        }
 
         let mut pn = BTreeMap::new();
         let mut param_hash = None;
         let mut param_sets = 0;
         let mut to = None;
         let deadline = Instant::now() + WAIT;
-        while pn.len() < 2 || param_hash.is_none() {
+        while pn.len() < units.len() || param_hash.is_none() {
             let (wire, from) = recv_until(&peer, deadline)
                 .await
-                .expect("iki DATA + PARAM_SET gelmeli");
+                .expect("birimlerin DATA'sı + PARAM_SET gelmeli");
             to = Some(from);
             let od = bob.open(&wire).expect("Bob açar");
             if let Some((_, unit, _)) = decode_data(&od.frame) {
@@ -488,6 +495,45 @@ async fn b_hub_channel_recovered_cannot_remove_an_inflight_unit() {
     // Yalnız beklenen bağlamdaki RECOVERED birimi kapattı.
     assert_eq!((cs.fec_recovered_ctrl_units, cs.acked), (1, 0));
     assert_session_clean(&cs);
+}
+
+/// [RECOVERED-BLOK] Geri bildirimi aç profilde (dönüş 62 B/s) bloğun RECOVERED'ı bloğun BÜTÜN
+/// kaynaklarını teyit eder: alıcı RECOVERED'ı yalnız bloğu çözünce yazar (RS ya hep ya hiç).
+/// Bir ESI listeleyen RECOVERED'dan sonra bloğun sekiz birimi de depodan çıkar. ESKİ DAVRANIŞ:
+/// yalnız listelenen birim teyit edilir, doğrudan varmış yedi kardeşi ACK'lerini bekler (dar
+/// dönüşte saniyeler; aralık kırpmasıyla hiç) ve o sürede yeniden gönderilir.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recovered_confirms_the_whole_closed_block_on_the_starved_profile() {
+    use client_core::runtime::LinkRates;
+    let cfg = RuntimeConfig {
+        drain_cap: Duration::from_millis(100),
+        link_rates: Some(LinkRates {
+            uplink_bps: 12_500,
+            downlink_bps: 62,
+        }),
+        ..RuntimeConfig::default()
+    };
+    // Profil 0x05'in k = 8 bloğunu dolduran, onarım alacak boyda sekiz birim.
+    let units: Vec<Vec<u8>> = (0..8u8).map(|i| vec![i; 900]).collect();
+    let mut rig = ClientRig::with(cfg, &units).await;
+    rig.confirm_param().await;
+    let recovered = encode_recovered(0, &[0]);
+    let real = rig.bob_wire(&recovered);
+    rig.send(&real).await;
+    let mut acked = Vec::new();
+    while acked.len() < units.len() {
+        let Some(u) = rig.next_ack().await else { break };
+        acked.push(u);
+    }
+    acked.sort_unstable();
+    assert_eq!(
+        acked,
+        (0..8).collect::<Vec<u64>>(),
+        "bloğun bütün birimleri teyitli"
+    );
+    assert_eq!(rig.client.outstanding(), 0);
+    let (_, cs) = rig.finish().await;
+    assert_eq!((cs.fec_recovered_ctrl_units, cs.acked), (8, 0));
 }
 
 /// Kart 5(b) — CS_ECHO: HubChannel'daki echo RTT/echo yoluna girmez. ESKİ DAVRANIŞ: sayılır ve
