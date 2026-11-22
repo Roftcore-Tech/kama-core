@@ -38,6 +38,49 @@ pub fn decode_data(buf: &[u8]) -> Option<(u16, u64, &[u8])> {
     Some((seq, unit_id, &buf[HDR_DATA..]))
 }
 
+// ── [PTT-YALIN] PTT çerçevesi ─────────────────────────────────────────────────────────────
+//
+//   [0x09][lane_seq u16][payload]                   — 3 B başlık (0x00 DATA'da 11 B)
+//
+// PTT şeridinin birimi için. 0x00 DATA'daki ara `seq u16` (alıcı kullanmaz; ARQ kimliği zarftaki
+// paket numarasıdır) ve 8 B `unit_id` yerine yalnız şerit-içi sıranın alt 16 biti taşınır. Alıcı
+// tam kimliği PTT şeridinin kabul penceresinden geri kurar: pencere (≤ 256 birim) 2¹⁶'dan çok küçük
+// olduğu için pencere içinde tek aday vardır. Pencere bilinmiyorsa çerçeve işlenmez.
+// Yalnız 0x09'u çözdüğü kanıtlanmış uca gönderilir (bkz. runtime).
+
+/// [PTT-YALIN] PTT frame_type.
+pub const FRAME_PTT: u8 = 0x09;
+/// [PTT-YALIN] PTT başlık boyu: type(1) + lane_seq u16(2).
+pub const HDR_PTT: usize = 3;
+
+/// [PTT-YALIN] PTT çerçevesi kodlar: şerit-içi sıranın alt 16 biti ve payload.
+#[must_use]
+pub fn encode_ptt(lane_seq: u64, payload: &[u8]) -> Vec<u8> {
+    let mut b = Vec::with_capacity(HDR_PTT + payload.len());
+    b.push(FRAME_PTT);
+    b.extend_from_slice(&((lane_seq & 0xFFFF) as u16).to_be_bytes());
+    b.extend_from_slice(payload);
+    b
+}
+
+/// [PTT-YALIN] PTT çerçevesi çözer: `(lane_seq_lo16, payload)`. Farklı tip/kısa → `None`.
+#[must_use]
+pub fn decode_ptt(buf: &[u8]) -> Option<(u16, &[u8])> {
+    if buf.len() < HDR_PTT || buf[0] != FRAME_PTT {
+        return None;
+    }
+    Some((u16::from_be_bytes([buf[1], buf[2]]), &buf[HDR_PTT..]))
+}
+
+/// [PTT-YALIN] Alt 16 bitten tam şerit-içi sıra: `limit` (dışlayıcı kabul sınırı) altındaki, alt
+/// 16 biti `lo` olan en büyük sıra. `limit` 2¹⁶'dan küçükse ve aday yoksa `None`.
+#[must_use]
+pub fn unwrap_lane_seq(lo: u16, limit: u64) -> Option<u64> {
+    let top = limit.checked_sub(1)?;
+    let back = (top.wrapping_sub(u64::from(lo))) & 0xFFFF;
+    top.checked_sub(back)
+}
+
 // ── [S1B] Fragmentli DATA çerçevesi ──────────────────────────────────────────────────────────
 //
 // Neden ayrı bir codepoint: 0x00 DATA'da chunk metadata'sı YOKTUR, alıcı source-symbol'ün
@@ -368,4 +411,31 @@ pub fn decode_param_ack(buf: &[u8]) -> Option<[u8; 32]> {
     let mut h = [0u8; 32];
     h.copy_from_slice(&buf[1..33]);
     Some(h)
+}
+
+#[cfg(test)]
+mod ptt_tests {
+    use super::*;
+
+    #[test]
+    fn ptt_frame_roundtrip_and_seq_unwrap() {
+        let f = encode_ptt(0x1_2345, b"ses");
+        assert_eq!(f.len(), HDR_PTT + 3);
+        assert_eq!(decode_ptt(&f), Some((0x2345, &b"ses"[..])));
+        assert_eq!(decode_ptt(&f[..2]), None);
+        assert_eq!(decode_data(&f), None, "0x00 değil");
+        // Pencere [head, head+256): her sıra tek adaya açılır, 2¹⁶ sarmasında da.
+        for head in [0u64, 10, 65_500, 65_536, 1_000_000] {
+            let limit = head + 256;
+            for q in head..limit {
+                assert_eq!(
+                    unwrap_lane_seq((q & 0xFFFF) as u16, limit),
+                    Some(q),
+                    "{head} {q}"
+                );
+            }
+        }
+        assert_eq!(unwrap_lane_seq(5, 0), None);
+        assert_eq!(unwrap_lane_seq(300, 256), None, "sınırın altında aday yok");
+    }
 }

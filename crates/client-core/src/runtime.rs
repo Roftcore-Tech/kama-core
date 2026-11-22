@@ -18,7 +18,7 @@
 //! Boşalma idle-emeklilikle YA DA bağlı oturum oturum tablosundan çıkınca (kapanınca) olur —
 //! böyle bir yuva zaten erişilemezdir (bkz. "BAĞLAM-ÖNCE DAĞITIM"), ikisi de sayılır.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -55,10 +55,11 @@ use crate::unit_id::{
 };
 use crate::wire::{
     decode_caps, decode_cs_echo, decode_cs_probe, decode_data, decode_data_frag, decode_fec,
-    decode_param, decode_param_ack, decode_recovered, encode_caps, encode_cs_echo, encode_cs_probe,
-    encode_data, encode_data_frag, encode_fec, encode_param, encode_param_ack, encode_recovered,
-    FecFrameHeader, CAP_ACK_BITMAP, CS_PROBE_SUBTYPE, FRAME_CS_ECHO, FRAME_PARAM_ACK,
-    FRAME_RECOVERED, HDR_DATA, HDR_DATA_FRAG, HDR_FEC, LEN_CS_PROBE,
+    decode_param, decode_param_ack, decode_ptt, decode_recovered, encode_caps, encode_cs_echo,
+    encode_cs_probe, encode_data, encode_data_frag, encode_fec, encode_param, encode_param_ack,
+    encode_ptt, encode_recovered, unwrap_lane_seq, FecFrameHeader, CAP_ACK_BITMAP,
+    CS_PROBE_SUBTYPE, FRAME_CS_ECHO, FRAME_PARAM_ACK, FRAME_RECOVERED, HDR_DATA, HDR_DATA_FRAG,
+    HDR_FEC, HDR_PTT, LEN_CS_PROBE,
 };
 use crate::ClientSession;
 use kama_contracts::handles::SessionHandle;
@@ -439,6 +440,14 @@ const FILE_LANE_INDEX: usize = 3;
 /// [ÖNLEMSEL-KOPYA] PTT kopyaları arası aralık (ns): demet aralığı (200 ms, Lyra) / iletim sayısı —
 /// kopyalar bir sonraki demetten önce biter, art arda düşmelere karşı yayılır.
 pub const PTT_COPY_SPACING_NS: u64 = 200_000_000 / PTT_FORWARD_COPIES as u64;
+
+/// [PTT-YALIN · sahip hedefi 2026-11-22] PTT bir yönde ≤ 4,5 kbit/s. Eş 0x09'u çözünce PTT demeti
+/// bir kez gider (kopya yok), yalın çerçeveyle (3 B başlık; 0x00 DATA 11 B) ve sunumundan bu
+/// kadar sonra teyitsizse bırakılır: yeniden iletilmez, alıcı şeridi onu beklemeden ilerler.
+/// Bugünkü 5–7 tam-datagram kopyası 1,6 kbit/s ses için 23–32 kbit/s yakıyordu.
+pub const PTT_DEADLINE_NS: u64 = 1_000_000_000;
+/// [PTT-YALIN] PTT şeridinin indeksi (`crate::unit_id::index_of_lane(Lane::Ptt)`).
+const PTT_LANE_INDEX: usize = 0;
 
 /// [ÖNLEMSEL-KOPYA] Profil geri bildirimi aç bırakıyor mu: port motoru, yön hızları verilmiş ve
 /// bütçeli alıcının ACK aralığı (`receiver::budgeted_ack_interval_ns`, aşağı yönden) en az
@@ -1101,6 +1110,11 @@ pub struct ClientStats {
     pub param_confirmed: u64,
     /// [ACK-BITMAP · YETENEK] Gönderilen CAPS çerçevesi (bitmap biçimi açıkken; bounded retry).
     pub caps_sends: u64,
+    /// [PTT-YALIN] Son tarihi (`PTT_DEADLINE_NS`) geçip teyitsiz bırakılan PTT birimi (ARQ'ya
+    /// girmez; alıcı şeridi beklemeden ilerler).
+    pub ptt_expired: u64,
+    /// [PTT-YALIN] 0x09 yalın PTT çerçevesiyle giden iletim.
+    pub ptt_lean_tx: u64,
     /// [ACK-BITMAP] Çözülen 0x15 bitmap ACK çerçevesi.
     pub ack_bitmap_rx: u64,
     /// Wire'a yazılmak üzere ÜRETİLEN mühürlü UDP payload byte'ı — DENEME düzlemi
@@ -1867,6 +1881,25 @@ fn unit_frame(
     })
 }
 
+/// [ÖNLEMSEL-KOPYA] PTT şeridinin ACK beklemeyen kopya kuralı (`copies` = ilk iletime ek kopya;
+/// 0 = kopya yok, yalnız öncelik sırası).
+fn ptt_forward_copy_rule(
+    copies: u8,
+    spacing_ns: u64,
+) -> adaptive_transport::sender::ForwardCopyRule {
+    adaptive_transport::sender::ForwardCopyRule {
+        below_id: crate::unit_id::tagged(1, 0),
+        // Şerit sırası PTT > SIG > TEXT > FILE (#199): dosya dışı şeritler yeniden iletim
+        // dalgasının önünde çıkar.
+        priority_below_id: crate::unit_id::tagged(
+            crate::unit_id::index_of_lane(crate::lanes::Lane::File),
+            0,
+        ),
+        copies,
+        spacing_ns,
+    }
+}
+
 /// [K4G-05b-R · sahip kararı 2026-11-11] FEC onarım kararının sembolü (repair-store'dan). Blok
 /// tahliye edilmiş ya da ESI yoksa `None`: karar ATLANIR, boş sembollü FEC çerçevesi tele çıkmaz.
 fn repair_symbol(
@@ -2046,6 +2079,9 @@ struct AdmitWindow {
     /// [ŞERİT-SIRA] Sıra başı oturum VE şerit başına (`crate::unit_id`): bir şeridin dolu penceresi
     /// öbür şeridin kabulünü kapatmaz. Anahtar `(oturum, şerit)`; değer şerit-içi sıra.
     heads: BTreeMap<(SessionHandle, usize), u64>,
+    /// [PTT-YALIN] Eşi PTT'yi 0x09 yalın çerçeveyle (tek iletim, son tarihte bırakma) gönderen
+    /// oturumlar: sıralayıcı bu oturumların PTT şeridinde eksik sıra başını süre dolunca atlar.
+    ptt_deadline: BTreeSet<SessionHandle>,
     /// [ŞERİT-GENİŞLİK] Veri alıcısının KABUL sınırı: şeritte bu sıranın altındaki her birim teslim
     /// kanalına girdi (boşluksuz). Yalnız `anchor_admitted` iken yazılır
     /// ([`ExpectedSessions::note_admitted`]).
@@ -2155,6 +2191,18 @@ impl ExpectedSessions {
         while contains(tagged(lane, *a)) {
             *a = a.saturating_add(1);
         }
+    }
+
+    /// [PTT-YALIN] Oturumun eşi PTT'yi 0x09 yalın çerçeveyle gönderiyor (veri alıcısı ilk 0x09'da
+    /// yazar): PTT şeridinin kaybı son tarihte bırakılır, sıralayıcı onu beklemez.
+    pub fn mark_ptt_deadline(&self, session: SessionHandle) {
+        self.window_lock().ptt_deadline.insert(session);
+    }
+
+    /// [PTT-YALIN] Bkz. [`Self::mark_ptt_deadline`].
+    #[must_use]
+    pub fn ptt_deadline(&self, session: SessionHandle) -> bool {
+        self.window_lock().ptt_deadline.contains(&session)
     }
 
     /// [F3] Oturumun sıralı teslim sınırı `head`'e ilerledi (bundan küçük kimlikler teslim edildi).
@@ -3053,6 +3101,13 @@ async fn client_task(
     // alındı 0,78 → 3,37 s'de çıktı (sınır 4 s aşıldı). Bob'un ACK'leri geniş hattan gelir.
     let mut caps_confirmed = cfg.ack_format != AckFormat::Bitmap || !link_feedback_starved(&cfg);
     let mut caps_last_ms: u64 = 0;
+    // [PTT-YALIN] Veri alıcısı 0x09'u çözer mi. Kanıt: ondan gelen ilk 0x15 ACK'i (0x15 yazan sürüm
+    // 0x09'u da çözer). O ana dek PTT bugünkü çerçeve ve kopya kuralıyla gider.
+    let mut ptt_lean_peer = false;
+    // [PTT-YALIN] Yalın kipte sunulan PTT birimlerinin sunum anı; son tarihte teyitsizse bırakılır.
+    let mut ptt_offered_at: BTreeMap<u64, u64> = BTreeMap::new();
+    // [PTT-YALIN] Bırakılan PTT birimleri: motor teyit drenajında app olayı üretmez.
+    let mut ptt_expired: HashSet<u64> = HashSet::new();
     let mut caps_tries: u32 = 0;
     let mut caps_line_gate_ms: Option<u64> = None;
     // [S1B] Fragmenter durumu. `frag_on` = mesaj tavanı birim tavanından BÜYÜK. Kapalıyken bu
@@ -3247,10 +3302,17 @@ async fn client_task(
                 if store.remove(&unit).is_none() {
                     continue;
                 }
+                ptt_offered_at.remove(&unit);
+                let expired = ptt_expired.remove(&unit);
                 {
                     let lane = lane_index_of(unit);
                     unconfirmed[lane].remove(&lane_seq_of(unit));
                     publish_frontier(&path, lane, &unconfirmed[lane], next_unit[lane]);
+                }
+                if expired {
+                    // [PTT-YALIN] Bırakma teyit değildir: app olayı ve teyit sayacı yok.
+                    stats.ptt_expired += 1;
+                    continue;
                 }
                 match $via {
                     ConfirmVia::Recovered => stats.fec_recovered_ctrl_units += 1,
@@ -3387,7 +3449,16 @@ async fn client_task(
                 // "Atlama politikası".
                 // Sınama: yardımcı `skip_tests`'te (store-miss → çerçeve yok); bu kol (sayaçlar,
                 // `continue`) testte koşmaz.
-                let Some(frame) = unit_frame(&store, d.seq, d.unit_id, frag_on) else {
+                let ptt_lean = ptt_lean_peer && !frag_on && lane_index_of(d.unit_id) == PTT_LANE_INDEX;
+                let frame = if ptt_lean {
+                    store.get(&d.unit_id).map(|p| encode_ptt(lane_seq_of(d.unit_id), p))
+                } else {
+                    unit_frame(&store, d.seq, d.unit_id, frag_on)
+                };
+                if ptt_lean && frame.is_some() {
+                    stats.ptt_lean_tx += 1;
+                }
+                let Some(frame) = frame else {
                     stats.stale_decisions += 1;
                     stats.stale_skipped += 1;
                     continue;
@@ -3510,6 +3581,16 @@ async fn client_task(
                     if plain[0] == FRAME_TYPE_ACK_BITMAP {
                         caps_confirmed = true;
                         stats.ack_bitmap_rx += 1;
+                        // [PTT-YALIN] Eş 0x09'u çözer: PTT tek iletim (kopya yok; öncelik sırası
+                        // kalır), yalın çerçeve, son tarihte bırakma.
+                        if !ptt_lean_peer && !frag_on && cfg.lane_ids && link_feedback_starved(&cfg)
+                        {
+                            ptt_lean_peer = true;
+                            session
+                                .sender_mut()
+                                .set_forward_copy_rule(Some(ptt_forward_copy_rule(0, 0)));
+                            session.sender_mut().set_forward_copy_line_scale(None);
+                        }
                     }
                     let decoded = if cfg.ack_format == AckFormat::Bitmap {
                         AckFrame::decode_with_bitmap(&plain)
@@ -3828,7 +3909,17 @@ async fn client_task(
                         s[..body.len()].copy_from_slice(&body);
                         Some(s)
                     });
-                    let hdr = if frag_on { HDR_DATA_FRAG } else { HDR_DATA };
+                    let ptt_lean = ptt_lean_peer && !frag_on && lane == PTT_LANE_INDEX;
+                    let hdr = if frag_on {
+                        HDR_DATA_FRAG
+                    } else if ptt_lean {
+                        HDR_PTT
+                    } else {
+                        HDR_DATA
+                    };
+                    if ptt_lean {
+                        ptt_offered_at.insert(id, now);
+                    }
                     let size = wire_len(seam.as_ref(), client_ctx, hdr + chunk.len());
                     // store WIRE GÖVDESİNİ tutar (frag: prefix‖payload, düz: payload).
                     store.insert(id, if frag_on { body } else { chunk.to_vec() });
@@ -3924,6 +4015,28 @@ async fn client_task(
             _ = pace.tick() => {
                 let now = elapsed_ns(start);
                 drive!(Event::TimerFired(Timer::Pto), now); ts_sample!(now);
+                // [PTT-YALIN] Son tarihi geçen teyitsiz PTT birimi bırakılır: motor onu teyitli
+                // sayar (bekleyen kopya/ARQ iptal), app olayı üretilmez (`ptt_expired`).
+                let due: Vec<u64> = ptt_offered_at
+                    .iter()
+                    .filter(|&(_, &t)| now.saturating_sub(t) >= PTT_DEADLINE_NS)
+                    .map(|(&u, _)| u)
+                    .collect();
+                if !due.is_empty() {
+                    for u in &due {
+                        ptt_offered_at.remove(u);
+                        ptt_expired.insert(*u);
+                    }
+                    drive!(
+                        Event::RecoveredControl(RecoveredInfo {
+                            units: due
+                                .iter()
+                                .map(|&unit_id| RecoveredUnit { unit_id, block_id: 0, esi: 0 })
+                                .collect(),
+                        }),
+                        now
+                    );
+                }
                 // [GERİ-BİLDİRİM-AÇ · sahip kararı 2026-11-16] Şerit boştayken (sunum kuyruğu ve
                 // motorun gönderim kuyruğu boş) açık kısmi blok oturum ortasında KAPANAMAZ (blok/ESI
                 // şerit sırasından türer; sonraki birim aynı bloğa düşer) ve ACK'siz korumasızdır:
@@ -5397,9 +5510,13 @@ async fn server_task(
                     CsProbe { subtype: u8, probe_seq: u16 },
                     /// [ACK-BITMAP · YETENEK] Karşı ucun çözebildiği isteğe bağlı ACK biçimleri.
                     Caps { caps: u16 },
+                    /// [PTT-YALIN] 0x09: PTT şeridi birimi, şerit-içi sıranın alt 16 biti.
+                    Ptt { lo: u16, payload: &'a [u8] },
                 }
                 let parsed = if let Some((_seq, unit_id, payload)) = decode_data(&plain) {
                     RxFrame::Data { unit_id, payload }
+                } else if let Some((lo, payload)) = decode_ptt(&plain) {
+                    RxFrame::Ptt { lo, payload }
                 } else if let Some((_seq, unit_id, pfx, body)) = decode_data_frag(&plain) {
                     RxFrame::DataFrag {
                         unit_id,
@@ -5453,6 +5570,30 @@ async fn server_task(
                 }
                 let Some(slot) = peers.get_mut(&key) else { continue };
                 slot.last_seen_ns = now;
+                // [PTT-YALIN] Tam kimlik PTT şeridinin kabul penceresinden: pencere içinde alt 16
+                // biti eşleşen tek sıra. Pencere bilinmiyorsa çerçeve işlenmez.
+                let parsed = match parsed {
+                    RxFrame::Ptt { lo, payload } => {
+                        let limit = match slot.ctx {
+                            ProtectionContext::Session(h) => {
+                                expected.mark_ptt_deadline(h);
+                                expected.admit_limits(h).map(|l| l[PTT_LANE_INDEX])
+                            }
+                            _ => None,
+                        };
+                        match limit.and_then(|l| unwrap_lane_seq(lo, l)) {
+                            Some(q) => RxFrame::Data {
+                                unit_id: crate::unit_id::tagged(PTT_LANE_INDEX, q),
+                                payload,
+                            },
+                            None => {
+                                stats.unknown_frames += 1;
+                                continue;
+                            }
+                        }
+                    }
+                    other => other,
+                };
                 match parsed {
                     // [S1B] İki DATA çerçevesi TEK kolda işlenir. Fark yalnızca chunk
                     // metadata'sının NEREDEN geldiğidir:
@@ -5714,6 +5855,8 @@ async fn server_task(
                         stats.cs_echoes_tx += 1;
                         srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, f).await;
                     }
+                    // [PTT-YALIN] Yukarıda 0x00 DATA'ya çevrildi.
+                    RxFrame::Ptt { .. } => {}
                     RxFrame::Caps { caps } => {
                         // [ACK-BITMAP · YETENEK] 0x15 yalnız: karşı uç çözebildiğini bildirdi VE bu
                         // ucun yapılandırması bitmap'e izin veriyor VE port motoru + yön hızı
