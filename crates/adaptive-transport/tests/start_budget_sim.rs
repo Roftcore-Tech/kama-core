@@ -410,8 +410,12 @@ struct Outcome {
     voice_first: Vec<(u64, Option<u64>)>,
     /// [Y4] PTT iletimlerinin darboğaz kaydı ([`Bottleneck::ptt_log`]).
     ptt_log: Vec<(u64, u64, Option<u64>, bool)>,
-    /// [Y4] Yalın kuralda son tarihte bırakılan demet sayısı.
+    /// [Y4] Yalın kuralda son tarihte bırakılan demet sayısı (teyitsiz; alıcıya varmış olanlar dahil:
+    /// ACK son tarihten önce dönmediyse varmış demet de bırakılır).
     ptt_abandoned: usize,
+    /// [Y4] Bırakılanlardan alıcıya (herhangi bir anda) varmış olanlar: yalnız rapor; zamanında
+    /// sayımı [`ptt_phases`]'ın ilk varış kuralıyla, bundan bağımsız.
+    ptt_abandoned_arrived: usize,
 }
 
 fn sender(copy_rule: Copies) -> Sender {
@@ -780,6 +784,10 @@ fn run_timed(
             .collect(),
         ptt_log: fwd.ptt_log.clone(),
         ptt_abandoned: ptt_abandoned.len(),
+        ptt_abandoned_arrived: ptt_abandoned
+            .iter()
+            .filter(|k| voice_arrived.contains_key(k))
+            .count(),
     }
 }
 
@@ -1344,9 +1352,10 @@ fn phases_line(ph: &[PhaseOnTime]) -> String {
 fn lean_ptt_violations(tag: &str, o: &Outcome) -> Vec<String> {
     let ph = ptt_phases(o);
     println!(
-        "YALIN {tag}: {} | bırakılan {}",
+        "YALIN {tag}: {} | bırakılan {} (alıcıya varmış {})",
         phases_line(&ph),
-        o.ptt_abandoned
+        o.ptt_abandoned,
+        o.ptt_abandoned_arrived
     );
     ph.iter()
         .filter(|p| !p.passes())

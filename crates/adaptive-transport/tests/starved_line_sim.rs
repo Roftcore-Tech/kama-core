@@ -1141,10 +1141,6 @@ fn b_real_capacity_drop_is_detected_and_the_queue_drains() {
 /// PTT), dönüş gecikmesi artıyor: düşük sunum hızı hat kapasitesi sanılmaz.
 ///
 /// Karşı-olgu: eski cephe tahmincisi hattı üç tohumda da sunum hızına indirir.
-///
-/// **GERİLİM / eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** PTT yükü kopyalı
-/// ([`PRODUCT_COPIES`]; ürün bunu yalnız eski uçla kullanır); iddiaları değişmedi. Kapı kolu:
-/// [`lean_c_a_low_offered_rate_is_not_taken_as_capacity`].
 #[test]
 fn c_a_low_offered_rate_is_not_taken_as_capacity() {
     for seed in 1..=3u64 {
@@ -1226,10 +1222,6 @@ fn d2_queue_overflow_still_converges_and_stops_overflowing() {
 /// gecikmesi artarken hat düşürülmez; gerçek 6 250'de koruma yine ölçülen hatta oturur.
 ///
 /// Karşı-olgu (dürüst hat): eski cephe tahmincisi üç tohumda da keser.
-///
-/// **GERİLİM / eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** PTT yükü kopyalı
-/// ([`PRODUCT_COPIES`]; ürün bunu yalnız eski uçla kullanır); iddiaları değişmedi. Kapı kolu:
-/// [`lean_d3_reordering_keeps_the_measurement_on_the_safe_side`].
 #[test]
 fn d3_reordering_keeps_the_measurement_on_the_safe_side() {
     for seed in 1..=3u64 {
@@ -1418,10 +1410,6 @@ fn e2_a_long_unmeasured_gap_on_a_real_drop_keeps_the_queue_bounded() {
 /// Kanıt girdisi: aralığın teslim kesri, artış örneğinden sonra rastgele kayıp tabanına göre aşırı
 /// ise taşma örneği (`line_guard` modül belgesi, "Taşma"). İŞ-34 kuralıyla tohum 1'de yakınsama
 /// 53,7 s; taşma örneği kapatılınca (karşı-olgu, cephe dönüşü olmadan) hiç yakınsamıyor.
-///
-/// **GERİLİM / eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** PTT yükü kopyalı
-/// ([`PRODUCT_COPIES`]; ürün bunu yalnız eski uçla kullanır); iddiaları değişmedi. Kapı kolu:
-/// [`lean_d4_a_full_small_fifo_is_detected_and_stops_overflowing`].
 #[test]
 fn d4_a_full_small_fifo_is_detected_and_stops_overflowing() {
     let t_ret = (129 + OVH) * SEC / PROFILE_DOWN + ONE_WAY_NS;
@@ -2588,6 +2576,10 @@ fn lean_ptt_one_transmission_stays_within_budget_and_expired_units_are_not_retra
 // * Tek iletimde zamanında tavanı 1 − p = %80'dir: 38 demetlik evre kusursuz ulaşımda bile kesin
 //   binomla yalnız ≈ 0,78 olasılıkla ≥ %75 olur. Yalnız `rastgele` ıskalı kırmızı kapı eşiğinin
 //   istatistiğidir (sahip kararı bekliyor, #175 7080413643); ulaşım kaynaklı ıska gerçek kusurdur.
+// * GERİLİM / eski uç kolları (PTT yükü kopyalı, [`PRODUCT_COPIES`]; iddiaları değişmedi): a, c,
+//   d1, d3, e1, d4 ve düşüş-toparlanma testleri; kapı kolları bu bölümde `lean_` önekiyle. c, d3 ve
+//   d4'ün belgesine not eklenmedi: o belgeler (b), (d-2) ve (e-2) testlerinin hemen ardında, Y1/Y2
+//   bölgesi. (b), (d-2), (e-2) ve onların yalın kolları Y1/Y2'nindir.
 // ---------------------------------------------------------------------------------------------
 
 /// Yalın kolun PTT ölçütü: evre başına ≥ %75; kalan evreler ıska ayrıştırmasıyla döner. PTT tel
