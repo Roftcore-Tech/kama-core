@@ -150,6 +150,17 @@
 //! hücre `gate_ptt_liveness_long_session`: düşüş-toparlanma hattında PTT 0,5–60 s (298 demet, şerit
 //! kabul açıklığı 256'dan uzun), koşu tavanı 80 s; yalnız canlılık iddia edilir.
 //!
+//! # PTT teslim sözleşmesi (sahip kararı 2026-11-22; ölçümden önce)
+//!
+//! PTT media'daki gibi: demet sunumundan sonra ≤ 1 s ([`PTT_BOUND`]) içinde Bob'a varırsa
+//! zamanında sayılır; geç kalan ya da hiç gelmeyen demet atlanır ve kaybı kodek örter. PTT ölçütü
+//! (genel ve evre başına): zamanında demet oranı ≥ %75 ([`PTT_TIMELY_MIN_PERMILLE`]; payda
+//! planlanan + uygulamaca kabul edilmeyen demet). Bant ölçütü: PTT bir yönde ≤ 4,5 kbit/s
+//! (media'nın iki yönlü görüşmesinin bir yönü); 5,3 kbit/s'lik yedekli biçim reddedildi.
+//! CANLILIK bu sözleşmede: uygulamaca kabul edilmeyen demet yok ve art arda teslim edilmeyen demet
+//! dizisi [`LIVENESS_HORIZON`]'dan uzun değil (akış ölmez). Önceki "her demet ≤ 1 s / her demet
+//! ufukta" ölçütü kopyalı PTT sözleşmesiydi; eski KALDI sonuçlarını geriye dönük değiştirmez.
+//!
 //! Hücreler aynı süreçte sırayla koşar (zamanlama ölçümü). `KAMA_ASYM_SEED` hepsine uygulanır.
 //! `İZ-NEDEN` satırları her yeniden gönderimin tetikleyicisini (ARQ paket/zaman eşiği, PTO probu,
 //! kopya türü) ve gerekliliğini yazar; "gereksiz" = birim o an Bob'a DATA olarak varmıştı. FEC ile
@@ -222,6 +233,14 @@ const TEXT2: &str = "metin 2: dosyanin ortasinda gonderildi";
 const TEXT_BOUND: Duration = Duration::from_secs(1);
 const RECEIPT_RETURN_BOUND: Duration = Duration::from_secs(4);
 const PTT_BOUND: Duration = Duration::from_secs(1);
+/// [PTT-SÖZLEŞME · sahip kararı 2026-11-22] Zamanında (≤ [`PTT_BOUND`]) varan demetlerin en küçük
+/// oranı (binde); kalan demet atlanır, kaybı kodek örter (media sözleşmesi).
+const PTT_TIMELY_MIN_PERMILLE: u64 = 750;
+
+/// [PTT-SÖZLEŞME] `timely / total ≥ PTT_TIMELY_MIN_PERMILLE` (total = 0 → `false`).
+fn ptt_timely_ok(timely: u64, total: u64) -> bool {
+    total > 0 && timely * 1000 >= total * PTT_TIMELY_MIN_PERMILLE
+}
 const FILE_BOUND: Duration = Duration::from_secs(14);
 const RUN_CAP: Duration = Duration::from_secs(60);
 
@@ -1458,13 +1477,19 @@ impl Run {
         }
         // [KAPI] Evre başına en kötü PTT gecikmesi (planlanan an → Bob'da teslim; teslim edilmeyen
         // demet koşu tavanı sayılır). Evre, demetin planlandığı andır.
-        let mut ptt_phase: BTreeMap<usize, (Duration, u32, u32)> = BTreeMap::new();
+        let mut ptt_phase: BTreeMap<usize, (Duration, u32, u32, u32)> = BTreeMap::new();
         for b in self.bundles.values() {
             let ph = self.cell.phase_of(self.since(b.planned, self.t0));
-            let e = ptt_phase.entry(ph).or_insert((Duration::ZERO, 0, 0));
+            let e = ptt_phase.entry(ph).or_insert((Duration::ZERO, 0, 0, 0));
             e.2 += 1;
             match b.received {
-                Some(r) => e.0 = e.0.max(self.since(r, b.planned)),
+                Some(r) => {
+                    let d = self.since(r, b.planned);
+                    e.0 = e.0.max(d);
+                    if d <= PTT_BOUND {
+                        e.3 += 1;
+                    }
+                }
                 None => {
                     e.0 = RUN_CAP;
                     e.1 += 1;
@@ -1478,7 +1503,11 @@ impl Run {
                 .or_insert(0) += 1;
         }
         for (i, (name, _)) in self.cell.phases.iter().enumerate() {
-            let (worst, missing, n) = ptt_phase.get(&i).copied().unwrap_or((Duration::ZERO, 0, 0));
+            let (worst, missing, n, timely) =
+                ptt_phase
+                    .get(&i)
+                    .copied()
+                    .unwrap_or((Duration::ZERO, 0, 0, 0));
             let unacc = unaccepted_phase.get(&i).copied().unwrap_or(0);
             let intended = self.cell.phase_intent.get(i).is_some_and(|x| x.0);
             // [FİKSTÜR · 2026-11-21, sahip koşullu kabulü] Evrede planlanmış demet yoksa: PTT
@@ -1491,13 +1520,13 @@ impl Run {
                 } else {
                     ("gözlem yok", false)
                 }
-            } else if unacc == 0 && missing == 0 && worst <= PTT_BOUND {
+            } else if ptt_timely_ok(u64::from(timely), u64::from(n + unacc)) {
                 ("GEÇTİ", false)
             } else {
                 ("KALDI", true)
             };
             println!(
-                "ÖLÇÜT {tag} evre={name} ptt_en_kötü={} s (sınır {} s) demet={n} teslim_yok={missing} kabul_edilmeyen={unacc} → {label}",
+                "ÖLÇÜT {tag} evre={name} ptt_en_kötü={} s (sınır {} s) demet={n} zamanında={timely} (en az binde {PTT_TIMELY_MIN_PERMILLE}) teslim_yok={missing} kabul_edilmeyen={unacc} → {label}",
                 secs(worst),
                 secs(PTT_BOUND),
             );
@@ -1511,21 +1540,32 @@ impl Run {
         }
         line.push(ptt_line);
         // [CANLILIK · 2026-11-21] Planlanan her demet (kabul edilmeyenler dahil) ufukta teslim.
-        let late: Vec<u32> = self
-            .bundles
-            .iter()
-            .filter(|(_, b)| {
-                b.received
-                    .is_none_or(|r| self.since(r, b.planned) > LIVENESS_HORIZON)
-            })
-            .map(|(&k, _)| k)
-            .collect();
-        let live = late.is_empty() && self.unaccepted.is_empty() && !self.bundles.is_empty();
+        // [PTT-SÖZLEŞME · 2026-11-22] Akış ölmez: art arda ufukta teslim edilmeyen demetlerin
+        // planlanma aralığı ufku aşmaz (tek tek atlanan demet kodekte örtülür).
+        let mut late: Vec<u32> = Vec::new();
+        let mut run_start: Option<Instant> = None;
+        let mut longest_run = Duration::ZERO;
+        for (&k, b) in &self.bundles {
+            let ok = b
+                .received
+                .is_some_and(|r| self.since(r, b.planned) <= LIVENESS_HORIZON);
+            if ok {
+                run_start = None;
+            } else {
+                late.push(k);
+                let s0 = *run_start.get_or_insert(b.planned);
+                longest_run = longest_run.max(self.since(b.planned, s0));
+            }
+        }
+        let live = longest_run <= LIVENESS_HORIZON
+            && self.unaccepted.is_empty()
+            && !self.bundles.is_empty();
         println!(
-            "ÖLÇÜT {tag} canlılık: demet={} ufukta_teslim_edilmeyen={} (ilki {:?}) kabul_edilmeyen={} ufuk={} s → {}",
+            "ÖLÇÜT {tag} canlılık: demet={} ufukta_teslim_edilmeyen={} (ilki {:?}; en uzun art arda dizi {} s) kabul_edilmeyen={} ufuk={} s → {}",
             self.bundles.len(),
             late.len(),
             late.first(),
+            secs(longest_run),
             self.unaccepted.len(),
             secs(LIVENESS_HORIZON),
             if live { "GEÇTİ" } else { "KALDI" }
@@ -2142,16 +2182,19 @@ impl Run {
         // [ÜRÜN KABULÜ · 2026-11-16] Profil açıkken (ürün kolu) kendi ilk iletimi düşen demet de
         // sınır içinde olmalı — kullanıcı sesi geç duyar; ürün kabulünde "kayıp-kurtarma" başarı
         // sayılmaz. İstisna yalnız profil kapalı teşhis kolunda ayrı raporlanır.
-        let verdict = if missing > 0
-            || over > 0
-            || n == 0
-            || !self.unaccepted.is_empty()
-            || (self.profile && excused > 0)
-        {
-            Verdict::Fail
-        } else {
+        // [PTT-SÖZLEŞME · sahip kararı 2026-11-22] Media sözleşmesi: zamanında (≤ 1 s) oranı.
+        let late_total = u64::from(missing) + u64::from(over) + u64::from(excused);
+        let total = n as u64 + self.unaccepted.len() as u64;
+        let timely = (n as u64).saturating_sub(late_total);
+        let verdict = if ptt_timely_ok(timely, total) {
             Verdict::Pass
+        } else {
+            Verdict::Fail
         };
+        println!(
+            "ÖLÇÜT {tag} ptt-sözleşme: zamanında={timely}/{total} (en az binde {PTT_TIMELY_MIN_PERMILLE}) → {}",
+            verdict.label()
+        );
         println!(
             "ÖLÇÜT {tag} ptt: demet={n} teslim_yok={missing} (ilki {}) açılış→PttStarted={} s ilk_demet={} s ({}) sınır_üstü_kaldı={over} (bunların öncül_bekledi={held_n}, en büyük {} s) kayıp-kurtarma(kendi_kaybı)={excused} (en büyük {} s) en_büyük_gecikme_sayılan={} s en_büyük_gecikme_tümü={} s dosya_sürerken_en_büyük_boşluk={} s kabul_beklemesi_en_çok={} s → {}",
             first_missing.map_or("-".to_string(), |m| m.to_string()),

@@ -209,6 +209,8 @@ pub struct Receiver {
     /// [ACK-BITMAP · ölçüm prototipi] Geri bildirimi aç alıcıda 0x15 bitmap çerçevesi yazılır mı
     /// (`set_ack_bitmap`; varsayılan kapalı → bugünkü 0x14 yolu bayt bayt aynı).
     ack_bitmap: bool,
+    /// [PTT-YALIN · YETENEK] Bkz. [`Receiver::set_ack_bitmap_ptt_lean`].
+    ack_bitmap_ptt: bool,
     /// [ACK-BITMAP] Son çıkan bitmap ACK'lerinin `largest`'ı (en eski önde, en çok `BITMAP_REPEAT`).
     bitmap_emitted: std::collections::VecDeque<u64>,
     smallest_seq: u64,
@@ -314,6 +316,7 @@ impl Receiver {
             unit_reported: BTreeMap::new(),
             rereport: false,
             ack_bitmap: false,
+            ack_bitmap_ptt: false,
             bitmap_emitted: std::collections::VecDeque::new(),
             smallest_seq: 0,
             largest_seq: 0,
@@ -542,6 +545,12 @@ impl Receiver {
     /// gönderici ucun da açıkça yapılandırılması gerekir. Diğer yollarda etkisiz.
     pub fn set_ack_bitmap(&mut self, on: bool) {
         self.ack_bitmap = on;
+    }
+
+    /// [PTT-YALIN · YETENEK] Karşı uç CAPS'te yalın PTT bitini bildirdi: bitmap ACK'leri 0x16
+    /// türüyle yazılır ("bu uç 0x09 yalın PTT'yi çözer"). Bitmap kapalıyken etkisiz.
+    pub fn set_ack_bitmap_ptt_lean(&mut self, on: bool) {
+        self.ack_bitmap_ptt = on;
     }
 
     /// [ACK-BITMAP] Bitmap çerçevesi bu alıcıda yazılıyor mu.
@@ -1337,6 +1346,7 @@ impl Receiver {
             );
             if let Some(bm) = frame.bitmap.as_mut() {
                 bm.pair_rate = self.pair.field();
+                bm.ptt_lean = self.ack_bitmap_ptt;
             }
             return (Some(frame), encoded == ACK_DELAY_ENC_MAX);
         }

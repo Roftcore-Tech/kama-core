@@ -336,6 +336,9 @@ pub const FRAME_CAPS: u8 = 0x08;
 pub const LEN_CAPS: usize = 3;
 /// CAPS biti: bu uç 0x15 bitmap ACK çerçevesini çözer.
 pub const CAP_ACK_BITMAP: u16 = 0x0001;
+/// [PTT-YALIN · YETENEK] Bit 1: bu uç yalın PTT'yi (0x09) gönderir ve 0x16 bitmap ACK'ini çözer.
+/// Karşı uç bunu görürse ve kendisi 0x09'u çözüyorsa bitmap ACK'lerini 0x16 türüyle yazar.
+pub const CAP_PTT_LEAN: u16 = 0x0002;
 
 /// CAPS çerçevesi kodlar.
 #[must_use]

@@ -24,7 +24,9 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use adaptive_transport::ack::{AckFrame, FRAME_TYPE_ACK, FRAME_TYPE_ACK_BITMAP, FRAME_TYPE_ACK_V2};
+use adaptive_transport::ack::{
+    AckFrame, FRAME_TYPE_ACK, FRAME_TYPE_ACK_BITMAP, FRAME_TYPE_ACK_BITMAP_PTT, FRAME_TYPE_ACK_V2,
+};
 use adaptive_transport::receiver::{Receiver, RxDatagram, RxKind};
 use adaptive_transport::sender::{
     AckInfo, BootstrapRttConfig, Event, FecActuationMode, InitialWindowConfig, OpaqueUnit,
@@ -57,7 +59,7 @@ use crate::wire::{
     decode_caps, decode_cs_echo, decode_cs_probe, decode_data, decode_data_frag, decode_fec,
     decode_param, decode_param_ack, decode_ptt, decode_recovered, encode_caps, encode_cs_echo,
     encode_cs_probe, encode_data, encode_data_frag, encode_fec, encode_param, encode_param_ack,
-    encode_ptt, encode_recovered, unwrap_lane_seq, FecFrameHeader, CAP_ACK_BITMAP,
+    encode_ptt, encode_recovered, unwrap_lane_seq, FecFrameHeader, CAP_ACK_BITMAP, CAP_PTT_LEAN,
     CS_PROBE_SUBTYPE, FRAME_CS_ECHO, FRAME_PARAM_ACK, FRAME_RECOVERED, HDR_DATA, HDR_DATA_FRAG,
     HDR_FEC, HDR_PTT, LEN_CS_PROBE,
 };
@@ -2127,6 +2129,8 @@ impl ExpectedSessions {
             w.heads.retain(|(session, _), _| next.contains_key(session));
             w.admitted
                 .retain(|(session, _), _| next.contains_key(session));
+            // [PTT-YALIN] Emekli oturumun işareti de düşer (sınırlı bellek).
+            w.ptt_deadline.retain(|session| next.contains_key(session));
         }
         *self.lock() = next;
     }
@@ -3569,7 +3573,8 @@ async fn client_task(
                 } else if plain.is_empty()
                     || (plain[0] != FRAME_TYPE_ACK
                         && plain[0] != FRAME_TYPE_ACK_V2
-                        && !(plain[0] == FRAME_TYPE_ACK_BITMAP
+                        && !((plain[0] == FRAME_TYPE_ACK_BITMAP
+                            || plain[0] == FRAME_TYPE_ACK_BITMAP_PTT)
                             && cfg.ack_format == AckFormat::Bitmap))
                 {
                     stats.unknown_frames += 1;
@@ -3578,11 +3583,14 @@ async fn client_task(
                     // 0x15 çerçevesi CAPS bildiriminin karşıya ulaştığını gösterir.
                     // Makro koşu sonu boşaltmasında da açılır; orada değer okunmaz.
                     #[allow(unused_assignments)]
-                    if plain[0] == FRAME_TYPE_ACK_BITMAP {
+                    if plain[0] == FRAME_TYPE_ACK_BITMAP || plain[0] == FRAME_TYPE_ACK_BITMAP_PTT {
                         caps_confirmed = true;
                         stats.ack_bitmap_rx += 1;
-                        // [PTT-YALIN] Eş 0x09'u çözer: PTT tek iletim (kopya yok; öncelik sırası
-                        // kalır), yalın çerçeve, son tarihte bırakma.
+                    }
+                    // [PTT-YALIN · YETENEK] Yalnız 0x16: eş 0x09'u çözer (CAPS bit 1'i gördü ve
+                    // kendisi yalın PTT'yi biliyor). PTT tek iletim (kopya yok; öncelik sırası
+                    // kalır), yalın çerçeve, son tarihte bırakma. 0x15 yazan eski eşle bugünkü yol.
+                    if plain[0] == FRAME_TYPE_ACK_BITMAP_PTT {
                         if !ptt_lean_peer && !frag_on && cfg.lane_ids && link_feedback_starved(&cfg)
                         {
                             ptt_lean_peer = true;
@@ -3952,8 +3960,13 @@ async fn client_task(
                     if cur_block.len() == p.k_shape_usize() {
                         let parity_wire = wire_len(seam.as_ref(), client_ctx, HDR_FEC + e);
                         let path_bw = fec_parity_path_bw(session.sender());
-                        let r_max =
-                            fec_payload_r_max(p.r_code_max, *cur_block_wire, parity_wire, path_bw);
+                        // [PTT-YALIN] Yalın PTT şeridine onarım yok: blok 1,6 s'de dolar, onarımı
+                        // 1 s son tarihinden sonra çıkar (yapıyla sıfır, kontrolcü oranına bağlı değil).
+                        let r_max = if ptt_lean_peer && lane == PTT_LANE_INDEX {
+                            0
+                        } else {
+                            fec_payload_r_max(p.r_code_max, *cur_block_wire, parity_wire, path_bw)
+                        };
                         // Statik-r (Manual{true} + manuel-close) YA DA adaptif (Controller + latch).
                         let planned_r: u16 = if let Some(r) = fec_manual_r {
                             let auth = session.sender_mut().open_fec_block_authority();
@@ -4015,8 +4028,8 @@ async fn client_task(
             _ = pace.tick() => {
                 let now = elapsed_ns(start);
                 drive!(Event::TimerFired(Timer::Pto), now); ts_sample!(now);
-                // [PTT-YALIN] Son tarihi geçen teyitsiz PTT birimi bırakılır: motor onu teyitli
-                // sayar (bekleyen kopya/ARQ iptal), app olayı üretilmez (`ptt_expired`).
+                // [PTT-YALIN] Son tarihi geçen teyitsiz PTT birimi bırakılır (`abandon_units`:
+                // bekleyen kopya/ARQ iptal, FEC defterine dokunmaz); app olayı üretilmez.
                 let due: Vec<u64> = ptt_offered_at
                     .iter()
                     .filter(|&(_, &t)| now.saturating_sub(t) >= PTT_DEADLINE_NS)
@@ -4027,15 +4040,8 @@ async fn client_task(
                         ptt_offered_at.remove(u);
                         ptt_expired.insert(*u);
                     }
-                    drive!(
-                        Event::RecoveredControl(RecoveredInfo {
-                            units: due
-                                .iter()
-                                .map(|&unit_id| RecoveredUnit { unit_id, block_id: 0, esi: 0 })
-                                .collect(),
-                        }),
-                        now
-                    );
+                    session.sender_mut().abandon_units(&due);
+                    drain_confirmed!(ConfirmVia::Ack);
                 }
                 // [GERİ-BİLDİRİM-AÇ · sahip kararı 2026-11-16] Şerit boştayken (sunum kuyruğu ve
                 // motorun gönderim kuyruğu boş) açık kısmi blok oturum ortasında KAPANAMAZ (blok/ESI
@@ -4124,7 +4130,12 @@ async fn client_task(
                 if !caps_confirmed && caps_tries < CAPS_MAX_TRIES {
                     let now_ms = now / 1_000_000;
                     if param_retry_due(now_ms, caps_tries, caps_last_ms, caps_line_gate_ms) {
-                        let f = encode_caps(CAP_ACK_BITMAP);
+                        // [PTT-YALIN · YETENEK] Şeritli oturumda yalın PTT de bildirilir.
+                        let f = encode_caps(if cfg.lane_ids {
+                            CAP_ACK_BITMAP | CAP_PTT_LEAN
+                        } else {
+                            CAP_ACK_BITMAP
+                        });
                         let mut sealed = wire_len(seam.as_ref(), client_ctx, f.len());
                         // İlk denemede iki kopya: tek CAPS yolda düşerse (ürün testi, %20
                         // rastgele kayıp) alıcının ilk ACK'leri 0x14 kalır ve ölçüm aralığı
@@ -4176,7 +4187,12 @@ async fn client_task(
             let k_actual = u8::try_from(cur_block.len()).unwrap_or(255);
             let parity_wire = wire_len(seam.as_ref(), client_ctx, HDR_FEC + p.e_usize());
             let path_bw = fec_parity_path_bw(session.sender());
-            let r_max = fec_payload_r_max(p.r_code_max, cur_block_wire, parity_wire, path_bw);
+            // [PTT-YALIN] Yalın PTT şeridine onarım yok (yukarıdaki blok kapanışıyla aynı kural).
+            let r_max = if ptt_lean_peer && lane == PTT_LANE_INDEX {
+                0
+            } else {
+                fec_payload_r_max(p.r_code_max, cur_block_wire, parity_wire, path_bw)
+            };
             let planned_r: u16 = if let Some(r) = fec_manual_r {
                 let auth = session.sender_mut().open_fec_block_authority();
                 session
@@ -5868,6 +5884,9 @@ async fn server_task(
                             && cfg.engine == TransportEngine::CcPort
                             && cfg.link_rates.is_some();
                         slot.rx.set_ack_bitmap(on);
+                        // [PTT-YALIN · YETENEK] Bu uç 0x09'u çözer; karşı uç yalın PTT gönderecekse
+                        // bitmap ACK'leri 0x16 türüyle yazılır.
+                        slot.rx.set_ack_bitmap_ptt_lean(on && caps & CAP_PTT_LEAN != 0);
                     }
                     RxFrame::Param {
                         profile_id,
