@@ -278,6 +278,11 @@ pub struct Receiver {
     /// boşalmasını bekliyor (`set_uplink_yield`). Bütçeli ACK bu sürece çıkmaz: verinin önüne en
     /// çok hattaki o anki datagram girer. `false` = bugünkü yol.
     uplink_yield: bool,
+    /// [ÖNCELİK · ALARM TEK YOL VERİR] Alarm ACK'inin ilk yol verdiği anda hattın boşalacağı an
+    /// (ns; deneme anı + `return_line_ahead_ns`). 0 = alarmdan beri yol vermedi ya da hat önü
+    /// bilinmiyordu. O an geçtikten sonra hat hâlâ doluysa alarm ACK'i bir daha yol vermez (bkz.
+    /// `yield_to_uplink`).
+    alarm_yield_clear_ns: u64,
     /// [DÖNÜŞ-HATTI · ÖNCELİK] Veriye yol verdiği için o an çıkmayan ACK denemesi (SALT-GÖZLEM).
     diag_ack_yield_deferred: u64,
     /// [BİLGİSİZ-ACK] Son ACK'ten beri bilgi taşıyan bir varış oldu mu (`no_info_copy` olmayan her
@@ -355,6 +360,7 @@ impl Receiver {
             ack_horizon_ns: 0,
             return_line_ahead_ns: 0,
             uplink_yield: false,
+            alarm_yield_clear_ns: 0,
             diag_ack_yield_deferred: 0,
             info_since_ack: false,
             diag_ack_no_info_deferred: 0,
@@ -379,6 +385,7 @@ impl Receiver {
             // çıktı (hat toparlandı): daralma alarmı gibi bir sonraki ACK yedekten hemen çıkar.
             if self.ack_budget_first_done && self.pair.rise_alarm() {
                 self.drop_alarm = true;
+                self.alarm_yield_clear_ns = 0;
                 self.diag_rise_alarms += 1;
             }
         }
@@ -446,6 +453,7 @@ impl Receiver {
                 && self.rate_drop.on_arrival(now_ns, b)
             {
                 self.drop_alarm = true;
+                self.alarm_yield_clear_ns = 0;
                 self.diag_drop_alarms += 1;
                 self.pair.arm_rise();
             }
@@ -676,7 +684,7 @@ impl Receiver {
         // B/s × ns → milibayt: rate · dt / 1e6.
         let add = u64::try_from(u128::from(rate) * u128::from(dt) / 1_000_000).unwrap_or(u64::MAX);
         self.ack_tokens_mb = self.ack_tokens_mb.saturating_add(add).min(cap);
-        if self.uplink_yield {
+        if self.yield_to_uplink(now_ns) {
             // Jeton harcanmaz; ACK, hat veriye geçince zamanlayıcıyla çıkar.
             self.diag_ack_yield_deferred += 1;
             return false;
@@ -706,6 +714,7 @@ impl Receiver {
         }
         if self.ack_tokens_mb >= need {
             self.ack_tokens_mb -= cost;
+            self.alarm_yield_clear_ns = 0;
             self.ack_budget_last_ns = now_ns;
             self.ack_budget_first_done = true;
             true
@@ -713,6 +722,40 @@ impl Receiver {
             self.diag_ack_budget_deferred += 1;
             false
         }
+    }
+
+    /// [ÖNCELİK · ALARM TEK YOL VERİR · 2026-11-22] Bütçeli ACK bu denemede hattı veriye bırakır mı.
+    ///
+    /// Bütçeli ACK, cihazın dar yukarı yönü doluyken bugünkü gibi bekler (alındı sınırı: verinin
+    /// önüne en çok bir denetim datagramı). İstisna daralma/yükseliş alarmının ACK'idir
+    /// (`drop_alarm`): hattı en çok BİR kez bırakır. Alarmdan sonraki ilk yol verişte hattın
+    /// boşalacağı an (`now + return_line_ahead_ns`) yazılır; o an geçtiği hâlde hat yine doluysa
+    /// (boşalma anını başka bir datagram aldı) alarm ACK'i beklemez, o datagramın arkasına girer.
+    ///
+    /// Gözlenen (ürün testi `asym_product_outcome`, düşüş hücresi, tohum 3, 62 B/s dönüş): alarm
+    /// 8,70 s'de verildi (hat 8 s'de yarıya indi; ilk kanıt bundan erken olamaz), ACK 9,06–15,22 s
+    /// boyunca her denemede "hat dolu" gördü: hattın her boşalışını oturum ucunun göndericisi
+    /// (alındı, dosya alındısı ve iki yinelenen alındı, arka arkaya) aldı. Alarm ACK'i 16,22 s'de
+    /// çıktı, göndericiye 17,8 s'de vardı; hat 20 s'de zaten toparlanıyordu.
+    ///
+    /// Alarm dışı ACK için aynı kural denendi ve düştü: oturum başında ACK'ler hattı arka arkaya
+    /// doldurdu, oturum ucunun göndericisi (hat boşalmasını bekler) alındıyı 6 s geciktirdi (tohum
+    /// 2: alındı dönüşü 2,2 → 6,9 s). Alarm seyrektir (hız değişimi başına bir).
+    /// Hat önü bilinmiyorsa (0) bugünkü kural (hat boşalana dek bekle).
+    fn yield_to_uplink(&mut self, now_ns: u64) -> bool {
+        if !self.uplink_yield {
+            return false;
+        }
+        if !self.drop_alarm {
+            return true;
+        }
+        if self.alarm_yield_clear_ns == 0 {
+            if self.return_line_ahead_ns > 0 {
+                self.alarm_yield_clear_ns = now_ns.saturating_add(self.return_line_ahead_ns);
+            }
+            return true;
+        }
+        now_ns < self.alarm_yield_clear_ns
     }
 
     /// [AKIŞ-SONU YEDEĞİ] Varışlar durdu mu: son varıştan beri > `K_EPISODE` × varış aralığı tabanı
@@ -1035,7 +1078,10 @@ impl Receiver {
         if self.cc_port && self.ack_budget_bps.is_some() {
             // [BİLGİSİZ-ACK] Son ACK'ten beri yalnız `no_info_copy` kopyalar geldiyse ACK çıkmaz, jeton
             // harcanmaz: kopyaların PN'leri bilgi taşıyan sonraki ACK'e katılır.
-            if !self.info_since_ack {
+            // Alarm ACK'i bilgi taşır (ileri hattın hız değişimi): onu tetikleyen varış bir
+            // `no_info_copy` kopyası olsa da bekletilmez (ürün testi, düşüş, tohum 2: alarm
+            // 8,69 s'de, ACK bu kuralla 0,36 s bekledi).
+            if !self.info_since_ack && !self.drop_alarm {
                 self.diag_ack_no_info_deferred += 1;
                 return None;
             }
