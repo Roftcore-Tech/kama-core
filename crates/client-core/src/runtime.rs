@@ -4907,7 +4907,20 @@ struct PeerSlot {
     echo_spacing_ns: Option<u64>,
     /// [DÖNÜŞ-BÜTÇESİ] Son PARAM_ACK anı (ns).
     param_ack_last_ns: Option<u64>,
+    /// [PARAM_ACK-BEKLETME] Bütçeli yolda bekletilen PARAM_ACK çerçevesi ve en geç gönderim anı.
+    param_ack_held: Option<(Vec<u8>, u64)>,
+    /// [PARAM_ACK-BEKLETME] Bu yuvadan çıkan ACK çerçevesi sayısı.
+    acks_out: u32,
 }
+
+/// [PARAM_ACK-BEKLETME · #175 7080413643] Bütçeli (geri bildirimi aç) yolda PARAM_ACK yuvanın
+/// ikinci ACK'i çıkana ya da en geç bu kadar beklenir. 62 B/s dönüşte 83 B'lık PARAM_ACK 1,34 s
+/// sürer ve ilk ölçülü ACK'i arkasında bekletiyordu (dürüst-12500 tohum 3: ilk ACK yerel kuyrukta
+/// 2,29 s, Alice'e 4,37 s'de vardı). PARAM_ACK yalnız istemcinin PARAM yeniden denemesini durdurur
+/// (FEC kodlaması ve alıcının çözümü ona bağlı değil); gecikmesinin bedeli ileri hatta birkaç PARAM.
+const PARAM_ACK_HOLD_NS: u64 = 5_000_000_000;
+/// [PARAM_ACK-BEKLETME] Bekletilen PARAM_ACK bu kadar ACK çıktıktan sonra gönderilir.
+const PARAM_ACK_AFTER_ACKS: u32 = 2;
 
 impl PeerSlot {
     /// Taze yuva; oturum bağı (`ctx`) burada kurulur ve yuvanın ömrü boyunca değişmez.
@@ -4945,6 +4958,8 @@ impl PeerSlot {
             pre_param_fec: Vec::new(),
             echo_spacing_ns,
             param_ack_last_ns: None,
+            param_ack_held: None,
+            acks_out: 0,
         }
     }
 
@@ -5434,11 +5449,28 @@ async fn server_task(
                     .filter_map(|(&(p, _), s)| {
                         s.rx.set_return_line_ahead_ns(ahead);
                         s.rx.set_uplink_yield(yield_ctrl);
-                        s.rx.on_ack_timer(now).map(|a| (p, s.ctx, a.encode()))
+                        let a = s.rx.on_ack_timer(now)?;
+                        s.acks_out = s.acks_out.saturating_add(1);
+                        Some((p, s.ctx, a.encode()))
                     })
                     .collect();
                 for (peer, sp, plain) in acks {
                     srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, plain).await;
+                }
+                // [PARAM_ACK-BEKLETME] İkinci ACK çıktıysa ya da süre dolduysa bekletilen PARAM_ACK.
+                let held: Vec<(SocketAddr, ProtectionContext, Vec<u8>)> = peers
+                    .iter_mut()
+                    .filter(|(_, s)| {
+                        s.param_ack_held.as_ref().is_some_and(|&(_, dl)| {
+                            s.acks_out >= PARAM_ACK_AFTER_ACKS || now >= dl
+                        })
+                    })
+                    .filter_map(|(&(p, _), s)| {
+                        s.param_ack_held.take().map(|(f, _)| (p, s.ctx, f))
+                    })
+                    .collect();
+                for (peer, sp, f) in held {
+                    srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, f).await;
                 }
             }
             _ = patience.tick() => {
@@ -5703,6 +5735,7 @@ async fn server_task(
                         // birimler bir kanal yeri eksik görürdü.
                         drop(permit);
                         if let Some(ack) = out.ack {
+                            slot.acks_out = slot.acks_out.saturating_add(1);
                             let sp = slot.ctx;
                             srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, ack.encode())
                                 .await;
@@ -5795,6 +5828,7 @@ async fn server_task(
                                 now,
                             );
                             if let Some(ack) = out.ack {
+                                slot.acks_out = slot.acks_out.saturating_add(1);
                                 let sp = slot.ctx;
                                 srv_seal_send(
                                     &mut tx, &sock, &mut stats, peer, sp,
@@ -5827,6 +5861,7 @@ async fn server_task(
                             now,
                         );
                         if let Some(ack) = out.ack {
+                            slot.acks_out = slot.acks_out.saturating_add(1);
                             let sp = slot.ctx;
                             srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, ack.encode())
                                 .await;
@@ -5916,8 +5951,17 @@ async fn server_task(
                                 // [DÖNÜŞ-BÜTÇESİ] Bütçeli yolda yinelenen PARAM_ACK seyreltilir.
                                 if slot.param_ack_due(was, now) {
                                     let f = encode_param_ack(&param_hash);
-                                    let sp = slot.ctx;
-                                    srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, f).await;
+                                    // [PARAM_ACK-BEKLETME] Bütçeli yolda ilk ACK'lerin arkasına.
+                                    if slot.echo_spacing_ns.is_some()
+                                        && slot.acks_out < PARAM_ACK_AFTER_ACKS
+                                    {
+                                        slot.param_ack_held = Some((f, now + PARAM_ACK_HOLD_NS));
+                                    } else {
+                                        slot.param_ack_held = None;
+                                        let sp = slot.ctx;
+                                        srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, f)
+                                            .await;
+                                    }
                                 }
                                 // Bind: bekletilen shard'lar drain → normal ingest (kurtarımlar
                                 // RECOVERED ile bildirilir).
