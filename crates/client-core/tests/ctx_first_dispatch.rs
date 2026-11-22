@@ -497,13 +497,14 @@ async fn b_hub_channel_recovered_cannot_remove_an_inflight_unit() {
     assert_session_clean(&cs);
 }
 
-/// [RECOVERED-BLOK] Geri bildirimi aç profilde (dönüş 62 B/s) bloğun RECOVERED'ı bloğun BÜTÜN
-/// kaynaklarını teyit eder: alıcı RECOVERED'ı yalnız bloğu çözünce yazar (RS ya hep ya hiç).
-/// Bir ESI listeleyen RECOVERED'dan sonra bloğun sekiz birimi de depodan çıkar. ESKİ DAVRANIŞ:
-/// yalnız listelenen birim teyit edilir, doğrudan varmış yedi kardeşi ACK'lerini bekler (dar
-/// dönüşte saniyeler; aralık kırpmasıyla hiç) ve o sürede yeniden gönderilir.
+/// [RECOVERED-BLOK · #175 dış inceleme] Geri bildirimi aç profilde de RECOVERED yalnız LİSTELENEN
+/// birimi teyit eder. Alıcı bloğu çözüp bir birimi teslim kuyruğuna alamadığında (kuyruk dolu ya
+/// da kabul penceresi dışı) o birimi listeye yazmaz; gönderici bloğun geri kalanını teyit ederse
+/// kabul edilmemiş birimin yeniden iletimi durur. Bir ESI listeleyen RECOVERED'dan sonra yalnız o
+/// birim teyitli, kalan yedisi teyitsiz (yeniden iletilebilir) kalır. Karşı-olgu: blok geneline
+/// teyit (993e08be'nin ikinci maddesi) sekizini de teyit ediyordu.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn recovered_confirms_the_whole_closed_block_on_the_starved_profile() {
+async fn recovered_confirms_only_the_listed_units_on_the_starved_profile() {
     use client_core::runtime::LinkRates;
     let cfg = RuntimeConfig {
         drain_cap: Duration::from_millis(100),
@@ -520,20 +521,15 @@ async fn recovered_confirms_the_whole_closed_block_on_the_starved_profile() {
     let recovered = encode_recovered(0, &[0]);
     let real = rig.bob_wire(&recovered);
     rig.send(&real).await;
-    let mut acked = Vec::new();
-    while acked.len() < units.len() {
-        let Some(u) = rig.next_ack().await else { break };
-        acked.push(u);
-    }
-    acked.sort_unstable();
+    assert_eq!(rig.next_ack().await, Some(0), "listelenen birim teyitli");
+    tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(
-        acked,
-        (0..8).collect::<Vec<u64>>(),
-        "bloğun bütün birimleri teyitli"
+        rig.client.outstanding(),
+        units.len() - 1,
+        "listelenmeyen birimler teyitsiz kalır"
     );
-    assert_eq!(rig.client.outstanding(), 0);
     let (_, cs) = rig.finish().await;
-    assert_eq!((cs.fec_recovered_ctrl_units, cs.acked), (8, 0));
+    assert_eq!(cs.fec_recovered_ctrl_units, 1);
 }
 
 /// Kart 5(b) — CS_ECHO: HubChannel'daki echo RTT/echo yoluna girmez. ESKİ DAVRANIŞ: sayılır ve
