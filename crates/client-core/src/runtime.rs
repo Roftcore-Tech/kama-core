@@ -5076,14 +5076,24 @@ pub fn param_forward_copies_on(cfg: &RuntimeConfig, param_wire: u64) -> bool {
         })
 }
 
+/// [PARAM-İLERİ-KOPYA] Kopya anı bu kadar (ms) erken düşen tiki de kabul eder: yarım
+/// [`RTPROP_TICK`]. Kopyalar rtprop tikinde çıkar; tik takvimi zamanlayıcınındır, `first_ms` ise
+/// ilk PARAM'ın gerçek çıkışıdır (o tik birkaç ms geç uyanabilir). Pay olmadan 200 ms sonraki tik
+/// kopya anından 1–2 ms önce düşüp kopyayı bir tik (+200 ms) kaydırıyordu (doğrulamada 7 koşunun
+/// 2'si). Yarım tik payıyla kopya, anına en yakın tikte çıkar; hiçbir kopya bir önceki tike kaymaz.
+const PARAM_FORWARD_COPY_SLACK_MS: u64 = RTPROP_TICK.as_millis() as u64 / 2;
+
 /// [PARAM-İLERİ-KOPYA] Sıradaki ACK'siz PARAM kopyası şimdi mi. `first_ms` = ilk PARAM'ın çıkışı
 /// (`None` = kopya yok: profil kapalı ya da PARAM henüz çıkmadı); `copies_sent` = çıkmış kopya.
-/// Geç kalan tikte en çok bir kopya çıkar; sıradaki bir sonraki tikte.
+/// Anına [`PARAM_FORWARD_COPY_SLACK_MS`]'den az kalan tikte çıkar. Geç kalan tikte en çok bir kopya
+/// çıkar; sıradaki bir sonraki tikte.
 fn param_forward_copy_due(first_ms: Option<u64>, copies_sent: usize, now_ms: u64) -> bool {
     first_ms.is_some_and(|f| {
         PARAM_FORWARD_COPY_OFFSETS_MS
             .get(copies_sent)
-            .is_some_and(|&o| now_ms >= f.saturating_add(o))
+            .is_some_and(|&o| {
+                now_ms.saturating_add(PARAM_FORWARD_COPY_SLACK_MS) > f.saturating_add(o)
+            })
     })
 }
 
@@ -7871,12 +7881,22 @@ mod param_forward_copy_tests {
     //! soket çifti. Aracı ilk PARAM'ı (istemci → sunucu) ve ilk PARAM_ACK'i (sunucu → istemci)
     //! düşürür, kalanı olduğu gibi aktarır. Bağlama anı = sunucunun ilk PARAM_ACK'inin aracıya
     //! varışı (sunucu PARAM_ACK'i bağladığı adımda yollar; loopback gecikmesi ihmal edilir).
+    //! Vekil yalnız bütçesiz sunucuda geçerlidir: ilk bağlamada `param_ack_due` (`already_bound`
+    //! yanlış) PARAM_ACK'i aynı adımda çıkarır. Test sunucusu bu yüzden `RuntimeConfig::default()`
+    //! ile kalır (geri bildirimi aç profilde sunucu PARAM_ACK'i bekletebilir); sunucunun
+    //! `param_bound_peers == 1` olduğu ayrıca doğrulanır.
 
     use super::*;
     use crate::seam::IdentitySeam;
 
     /// Aracının en uzun koşusu (bağlama hiç olmazsa).
     const WAIT: Duration = Duration::from_secs(10);
+    /// PARAM_ACK istemciye ulaştıktan sonra aracının dinlemeyi sürdürdüğü süre: son kopya anı
+    /// (1,6 s) + iki tik; ilk PARAM'dan itibaren tüm çizelgeyi kapsar.
+    const LISTEN_AFTER_ACK: Duration = Duration::from_millis(
+        PARAM_FORWARD_COPY_OFFSETS_MS[PARAM_FORWARD_COPY_OFFSETS_MS.len() - 1]
+            + 2 * RTPROP_TICK.as_millis() as u64,
+    );
     /// Kabul sınırı: etkileşimli sınır (metin ve PTT demeti 1 s;
     /// [`FEEDBACK_STARVED_ACK_INTERVAL_NS`]). İş emri (#175 Y3): FEC ≤ 1 s'de kodlanır.
     const BOUND: Duration = Duration::from_nanos(FEEDBACK_STARVED_ACK_INTERVAL_NS);
@@ -7898,7 +7918,10 @@ mod param_forward_copy_tests {
     struct Log {
         params_ns: Vec<u64>,
         param_acks_ns: Vec<u64>,
+        /// İstemciye ulaştırılan ilk PARAM_ACK'in (aracı ikinciyi geçirir) aktarıldığı an.
+        ack_delivered_ns: Option<u64>,
         client_param_sends: u64,
+        server_bound_peers: u64,
     }
 
     impl Log {
@@ -7908,10 +7931,25 @@ mod param_forward_copy_tests {
             let bind = *self.param_acks_ns.first()?;
             Some(Duration::from_nanos(bind.saturating_sub(first)))
         }
+
+        /// PARAM_ACK istemciye ulaştıktan bir tik sonra aracıya varan PARAM'lar (kopya ya da
+        /// yeniden deneme). Bir tik pay: ACK'in işlendiği tikte yoldaki PARAM sayılmaz.
+        fn params_after_ack(&self) -> Vec<u64> {
+            let Some(d) = self.ack_delivered_ns else {
+                return Vec::new();
+            };
+            let tick = u64::try_from(RTPROP_TICK.as_nanos()).unwrap_or(u64::MAX);
+            self.params_ns
+                .iter()
+                .copied()
+                .filter(|&t| t > d.saturating_add(tick))
+                .collect()
+        }
     }
 
     /// İstemci `cfg` ile aracıya bağlanır; aracı `drop_first_param` ise ilk PARAM'ı, her durumda
-    /// ilk PARAM_ACK'i düşürür. İkinci PARAM_ACK istemciye ulaşınca (ya da `WAIT` dolunca) biter.
+    /// ilk PARAM_ACK'i düşürür. İkinci PARAM_ACK istemciye ulaştıktan `LISTEN_AFTER_ACK` sonra (ya
+    /// da `WAIT` dolunca) biter.
     async fn run(cfg: RuntimeConfig, drop_first_param: bool) -> Log {
         let server = ServerEndpoint::bind(
             "127.0.0.1:0".parse().expect("adres"),
@@ -7935,13 +7973,15 @@ mod param_forward_copy_tests {
         let mut log = Log {
             params_ns: Vec::new(),
             param_acks_ns: Vec::new(),
+            ack_delivered_ns: None,
             client_param_sends: 0,
+            server_bound_peers: 0,
         };
         let mut client_addr: Option<SocketAddr> = None;
         let mut a = vec![0u8; 2048];
         let mut b = vec![0u8; 2048];
-        let deadline = t0 + WAIT;
-        while log.param_acks_ns.len() < 2 && tokio::time::Instant::now() < deadline {
+        let mut deadline = t0 + WAIT;
+        while tokio::time::Instant::now() < deadline {
             let now_ns = |t0: tokio::time::Instant| {
                 u64::try_from(t0.elapsed().as_nanos()).unwrap_or(u64::MAX)
             };
@@ -7973,13 +8013,17 @@ mod param_forward_copy_tests {
                     }
                     if let Some(c) = client_addr {
                         let _ = front.send_to(&b[..n], c).await;
+                        if is_ack && log.ack_delivered_ns.is_none() {
+                            log.ack_delivered_ns = Some(now_ns(t0));
+                            deadline = deadline.min(tokio::time::Instant::now() + LISTEN_AFTER_ACK);
+                        }
                     }
                 }
                 () = tokio::time::sleep_until(deadline) => {}
             }
         }
         log.client_param_sends = client.shutdown().await.param_sends;
-        let _ = server.shutdown().await;
+        log.server_bound_peers = server.shutdown().await.param_bound_peers;
         log
     }
 
@@ -8027,8 +8071,21 @@ mod param_forward_copy_tests {
         );
         assert!(!param_forward_copy_due(None, 0, 10_000), "kopya kapalı");
         let first = 1_000;
+        // Yarım tik payı: anından tam yarım tik önce düşen tik kopyayı çıkarmaz, ondan sonraki
+        // her an çıkarır (en yakın tik). Bir önceki tik (bir tam tik önce) asla çıkarmaz.
+        let tick = u64::try_from(RTPROP_TICK.as_millis()).expect("tik");
         for (k, &o) in PARAM_FORWARD_COPY_OFFSETS_MS.iter().enumerate() {
-            assert!(!param_forward_copy_due(Some(first), k, first + o - 1));
+            assert!(!param_forward_copy_due(Some(first), k, first + o - tick));
+            assert!(!param_forward_copy_due(
+                Some(first),
+                k,
+                first + o - PARAM_FORWARD_COPY_SLACK_MS
+            ));
+            assert!(param_forward_copy_due(
+                Some(first),
+                k,
+                first + o - PARAM_FORWARD_COPY_SLACK_MS + 1
+            ));
             assert!(param_forward_copy_due(Some(first), k, first + o));
         }
         assert!(!param_forward_copy_due(
@@ -8068,23 +8125,42 @@ mod param_forward_copy_tests {
         let lost = run(starved(), true).await;
         let bind = lost.bind_after_first_param();
         eprintln!(
-            "ilk PARAM kayıplı: bağlama {:?} · PARAM varışları (ms) {:?} · PARAM_ACK (ms) {:?} · istemci PARAM {}",
+            "ilk PARAM kayıplı: bağlama {:?} · PARAM varışları (ms) {:?} · PARAM_ACK (ms) {:?} · istemci PARAM {} · ACK istemciye (ms) {:?} · sunucu bağlama {}",
             bind,
             lost.params_ns.iter().map(|t| t / 1_000_000).collect::<Vec<_>>(),
             lost.param_acks_ns.iter().map(|t| t / 1_000_000).collect::<Vec<_>>(),
             lost.client_param_sends,
+            lost.ack_delivered_ns.map(|t| t / 1_000_000),
+            lost.server_bound_peers,
         );
         let clean = run(starved(), false).await;
         eprintln!(
-            "ilk PARAM kayıpsız: bağlama {:?} · PARAM varışları (ms) {:?} · PARAM_ACK (ms) {:?} · istemci PARAM {}",
+            "ilk PARAM kayıpsız: bağlama {:?} · PARAM varışları (ms) {:?} · PARAM_ACK (ms) {:?} · istemci PARAM {} · ACK istemciye (ms) {:?} · sunucu bağlama {}",
             clean.bind_after_first_param(),
             clean.params_ns.iter().map(|t| t / 1_000_000).collect::<Vec<_>>(),
             clean.param_acks_ns.iter().map(|t| t / 1_000_000).collect::<Vec<_>>(),
             clean.client_param_sends,
+            clean.ack_delivered_ns.map(|t| t / 1_000_000),
+            clean.server_bound_peers,
         );
         assert!(
             bind.is_some_and(|d| d <= BOUND),
             "ilk PARAM ve PARAM_ACK kaybında bağlama ≤ 1 s olmalı: {bind:?}"
         );
+        for (name, log) in [("kayıplı", &lost), ("kayıpsız", &clean)] {
+            assert_eq!(
+                log.server_bound_peers, 1,
+                "{name}: sunucu PARAM'ı bir kez bağlar"
+            );
+            assert!(
+                log.ack_delivered_ns.is_some(),
+                "{name}: PARAM_ACK istemciye ulaşmalı"
+            );
+            assert!(
+                log.params_after_ack().is_empty(),
+                "{name}: PARAM_ACK ulaştıktan sonra kopya/deneme çıkmaz; geç PARAM (ns) {:?}",
+                log.params_after_ack()
+            );
+        }
     }
 }
