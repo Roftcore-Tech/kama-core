@@ -227,7 +227,8 @@ pub const DROP_REF_HOLD_NS: u64 = 8_000_000_000;
 /// bu da bir ACK'in erken çıkmasıdır.
 #[derive(Debug, Clone, Default)]
 pub struct RateDropDetector {
-    ring: std::collections::VecDeque<(u64, u64)>,
+    /// `(varış anı, gövde baytı, seq)`; seq yalnız [`Self::on_arrival_seq`] ile gelir.
+    ring: std::collections::VecDeque<(u64, u64, Option<u64>)>,
     reference_bps: u64,
     reference_ns: u64,
     fired: bool,
@@ -236,18 +237,24 @@ pub struct RateDropDetector {
 impl RateDropDetector {
     /// Boyu bilinen yeni datagram; alarm durumuna geçtiyse `true` (bir ACK'e bir kez).
     pub fn on_arrival(&mut self, now_ns: u64, udp_bytes: u64) -> bool {
-        self.ring.push_back((now_ns, udp_bytes));
+        self.on_arrival_seq(now_ns, udp_bytes, None)
+    }
+
+    /// [ALARM ARALIĞI] [`Self::on_arrival`] ile aynı karar; datagramın seq'i halkada tutulur
+    /// ([`Self::onset`] daralma başlangıcının seq'ini ve aradaki kayıpları bilir).
+    pub fn on_arrival_seq(&mut self, now_ns: u64, udp_bytes: u64, seq: Option<u64>) -> bool {
+        self.ring.push_back((now_ns, udp_bytes, seq));
         while self
             .ring
             .front()
-            .is_some_and(|&(t, _)| t.saturating_add(DROP_WINDOW_NS) < now_ns)
+            .is_some_and(|&(t, _, _)| t.saturating_add(DROP_WINDOW_NS) < now_ns)
         {
             self.ring.pop_front();
         }
         if self.ring.len() < DROP_MIN_ARRIVALS {
             return false;
         }
-        let first = self.ring.front().map_or(now_ns, |&(t, _)| t);
+        let first = self.ring.front().map_or(now_ns, |&(t, _, _)| t);
         let span = now_ns.saturating_sub(first);
         if span < DROP_WINDOW_NS / 2 {
             return false;
@@ -264,7 +271,7 @@ impl RateDropDetector {
         if max_gap.saturating_mul(2) > mean_gap.saturating_mul(5) {
             return false;
         }
-        let bytes: u64 = self.ring.iter().skip(1).map(|&(_, b)| b).sum();
+        let bytes: u64 = self.ring.iter().skip(1).map(|&(_, b, _)| b).sum();
         let rate = u64::try_from(u128::from(bytes) * 1_000_000_000 / u128::from(span.max(1)))
             .unwrap_or(u64::MAX);
         if rate >= self.reference_bps || now_ns.saturating_sub(self.reference_ns) > DROP_REF_HOLD_NS
@@ -282,6 +289,49 @@ impl RateDropDetector {
             return true;
         }
         false
+    }
+
+    /// [ALARM ARALIĞI · #175 7084078903] Alarm durumundayken penceredeki daralmanın başladığı
+    /// varış `(an, seq)`: en yeni varıştan geriye, her ardışık çiftin hızı alarm eşiğinin
+    /// (referansın ‰ [`DROP_PERMILLE`]'i) altında kaldıkça uzanan kuyruğun ilk varışı. Ondan sonraki
+    /// her varış eşiğin altındaki hızla geldi.
+    ///
+    /// Çiftin hızı ikincinin gövdesi / aralık; iki seq arasında alınmamış seq varsa her biri
+    /// [`crate::rate::DEFAULT_MTU`] sayılır (üst sınır): hatta serileşip düşen datagram aralığı
+    /// uzatır, daralma öncesi kayıplı bir çift yeni hız gibi görünmesin (12 500'de 1 000 B'lik bir
+    /// kayıp aralığı 160 ms, gövdeyle 6 250, üst sınırla 13 750). Seq bilinmeyen çiftte yalnız gövde.
+    ///
+    /// Pencerenin ilk varışı değil: alarm pencere hızı eşiğin altına iner inmez verilir, o anda
+    /// pencerenin başı hâlâ eski hızla gelmiş varışları taşır (1 000 B gövde, 80 → 160 ms aralık:
+    /// alarm düşüşten 360 ms sonra, pencere hızı 8 333, eşik 8 750; kuyruğun hızı 6 250). Alarm
+    /// durumunda değilse ya da en yeni çift eşiğin altında değilse `None`. Halka sınırlıdır (son
+    /// [`DROP_WINDOW_NS`]).
+    #[must_use]
+    pub fn onset(&self) -> Option<(u64, Option<u64>)> {
+        if !self.fired {
+            return None;
+        }
+        type Arrival = (u64, u64, Option<u64>);
+        let below = |a: &Arrival, b: &Arrival| {
+            let missing = match (a.2, b.2) {
+                (Some(sa), Some(sb)) => sb.saturating_sub(sa).saturating_sub(1),
+                _ => 0,
+            };
+            let bytes =
+                u128::from(b.1) + u128::from(missing) * u128::from(crate::rate::DEFAULT_MTU);
+            bytes * 1_000_000_000 * 1000
+                < u128::from(self.reference_bps)
+                    * u128::from(DROP_PERMILLE)
+                    * u128::from(b.0.saturating_sub(a.0))
+        };
+        self.ring
+            .iter()
+            .rev()
+            .skip(1)
+            .zip(self.ring.iter().rev())
+            .take_while(|(a, b)| below(a, b))
+            .last()
+            .map(|(a, _)| (a.0, a.2))
     }
 
     /// Bir ACK çıktı: sonraki alarm yeniden mümkün; referans alarm hızına iner (aynı daralma için

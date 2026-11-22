@@ -301,6 +301,10 @@ pub struct Receiver {
     drop_alarm: bool,
     /// [DARALMA-ALARMI] Alarm sayısı (gözlem).
     diag_drop_alarms: u64,
+    /// [ALARM ARALIĞI · #175 7084078903] Daralma alarmı anında penceredeki daralma başlangıcının
+    /// seq'i (`RateDropDetector::onset`); alarm ACK'inin ölçüm aralığı oradan
+    /// başlar (`rx_span_field`). Yalnız daralma alarmında yazılır, her çıkan ACK'te silinir.
+    alarm_span_first: Option<u64>,
     /// [ÇİFT ARALIĞI] Kapasite alt sınırı ölçümü (`crate::ack` 0x15 `pair_rate`).
     pair: PairRate,
     /// [ÇİFT ARALIĞI · YÜKSELİŞ ALARMI] Alarm sayısı (gözlem).
@@ -369,6 +373,7 @@ impl Receiver {
             rate_drop: crate::arrival_rate::RateDropDetector::default(),
             drop_alarm: false,
             diag_drop_alarms: 0,
+            alarm_span_first: None,
             pair: PairRate::default(),
             diag_rise_alarms: 0,
         }
@@ -450,12 +455,17 @@ impl Receiver {
             // sonra: alarm ACK'i göndericiye daralmanın ölçümünü erken taşır.
             if self.bitmap_rx()
                 && self.ack_budget_first_done
-                && self.rate_drop.on_arrival(now_ns, b)
+                && self.rate_drop.on_arrival_seq(now_ns, b, Some(d.seq))
             {
                 self.drop_alarm = true;
                 self.alarm_yield_clear_ns = 0;
                 self.diag_drop_alarms += 1;
                 self.pair.arm_rise();
+                // [ALARM ARALIĞI · #175 7084078903] Alarm ACK'inin ölçümü yalnız daralmadan sonra
+                // gelenlerden: aralık daralma başlangıcından, çift değeri alarmdan sonraki
+                // çiftlerden. Başlangıç varışı bu datagramdan öncedir (zaten kayıtlı).
+                self.alarm_span_first = self.rate_drop.onset().and_then(|(_, seq)| seq);
+                self.pair.restart_at_drop_alarm();
             }
         }
 
@@ -1103,6 +1113,7 @@ impl Receiver {
             self.since_last_ack = 0;
             self.info_since_ack = false;
             self.drop_alarm = false;
+            self.alarm_span_first = None;
             self.rate_drop.on_ack(now_ns);
             self.pair.on_ack();
             self.note_reported(&frame);
@@ -1431,6 +1442,14 @@ impl Receiver {
     /// 14,1 s'deki aralık hızı 8 898). `rx_span` = `ilk_varış(largest) − ilk_varış(span_first)`
     /// (256 µs). Ölçüm yoksa [`crate::ack::RX_SPAN_NONE`] (span_first = largest, varış anı
     /// bilinmiyor, tavan aşıldı); o durumda `span_first` = largest.
+    ///
+    /// [ALARM ARALIĞI · #175 7084078903] Daralma alarmının ACK'inde aralık alarm anındaki daralma
+    /// başlangıcından (`alarm_span_first`) başlar; o seq bugünkü başlangıçtan önceyse (son ACK'in en
+    /// büyüğünü geçmiyorsa) ya da `largest`'tan küçük değilse bugünkü kural. Bir ACK geriye uzanan
+    /// aralık düşüşten sonraki ilk ACK'te düşüş öncesi varışları da taşıyordu (ürün testi, düşüş,
+    /// tohum 1: kanıtlı ilk ACK'te tavan 7,2–10,5 k, ≤ 6 875 ancak ≈ 5 s sonraki ACK'te). Alanların
+    /// anlamı aynıdır (verilen seq aralığının alıcıdaki varış süresi); gönderici aralığı verilen
+    /// uçlarla kurar, bitişiklik varsaymaz (`line_guard::interval_sample`).
     fn rx_span_field(&self, base: u64, largest: u64) -> (u16, u64) {
         let none = (crate::ack::RX_SPAN_NONE, largest);
         let anchor = self
@@ -1438,6 +1457,10 @@ impl Receiver {
             .back()
             .map_or(base, |&l| l.saturating_add(1))
             .max(base);
+        let anchor = self
+            .alarm_span_first
+            .filter(|&s| s >= anchor && s < largest)
+            .unwrap_or(anchor);
         // En büyük seq son çıkan ACK'ten bu yana ilerlemediyse (sırasız/yinelenen varışla çıkan
         // ACK) aralık boştur; `BTreeSet::range` başlangıç > bitiş ile panikler.
         if anchor > largest {
@@ -1603,6 +1626,15 @@ impl PairRate {
         let plausible = u128::from(v) * u128::from(self.win_ns)
             <= u128::from(PAIR_WINDOW_RATIO_MAX) * u128::from(self.win_bytes) * 1_000_000_000;
         (v > 0 && plausible).then_some(v)
+    }
+
+    /// [ALARM ARALIĞI · #175 7084078903] Daralma alarmı anında en büyük iki değer silinir: alarm
+    /// ACK'inin değeri yalnız alarmdan sonraki çiftlerden gelir (düşüş öncesi çiftler alanı eski
+    /// hatta tutuyordu; Y2 kahini, düşüş sonrası ilk ACK: 12 479). Alarmdan sonra çift yoksa alan
+    /// [`crate::ack::PAIR_RATE_NONE`]. Aralığın varış penceresi (`win_*`) ve yükseliş alarmının
+    /// durumu değişmez.
+    fn restart_at_drop_alarm(&mut self) {
+        self.top = [0, 0];
     }
 
     /// [YÜKSELİŞ ALARMI] Daralma alarmı yükseliş alarmını kurar; referans daralmadan sonraki ilk
