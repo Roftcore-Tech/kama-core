@@ -555,6 +555,16 @@ impl PacketProtection for Tap {
                 ));
             }
         }
+        // [İZ-PTT-KAYIT · demet] Yalın çerçeve (0x09) birim kimliği taşımaz; PTT şeridi 0
+        // olduğundan kimlik = şerit-içi sıra (fikstürde < 2¹⁶). Yalnız iz eşlemesi.
+        if let Some((lo, _)) = decode_ptt(frame) {
+            if let Some(Ok(item)) = self.classify(frame) {
+                let mut l = lock(&self.ledger);
+                if l.unit_item.len() < LEDGER_CAP {
+                    l.unit_item.insert(u64::from(lo), item);
+                }
+            }
+        }
         if let Some(c) = self.classify(frame) {
             let now = Instant::now();
             let mut l = lock(&self.ledger);
@@ -599,6 +609,9 @@ impl PacketProtection for Tap {
             if let Some((wseq, unit, _)) = decode_data(&opened.frame) {
                 l.rx_seq.entry(wseq).or_insert(now);
                 l.rx_unit.entry(unit).or_insert(now);
+            } else if let Some((lo, _)) = decode_ptt(&opened.frame) {
+                // [İZ-PTT-KAYIT · demet] Yalın demetin varışı (kimlik = şerit-içi sıra, şerit 0).
+                l.rx_unit.entry(u64::from(lo)).or_insert(now);
             } else if let Ok(f) = AckFrame::decode_with_bitmap(&opened.frame) {
                 if l.acks_rx.len() < LEDGER_CAP {
                     let pns = f.acked_full(u64::from(f.largest_seq));
@@ -2467,10 +2480,14 @@ impl Run {
             .filter(|(_, e)| e.cause == EmitCause::PriorityHeadHole)
             .map(|(_, e)| e.seq)
             .collect();
+        let mut first_emit: HashMap<u64, Instant> = HashMap::new();
         for &(at, e) in &self.emit {
             let kind = match self.alice.unit_item.get(&e.unit_id) {
                 Some(Item::PttOpen(_)) => "açılış",
                 Some(Item::PttClose(_)) => "kapanış",
+                // [İZ-PTT-KAYIT · demet] Yalın demetin her iletimi de aynı satırla (fazla iletim
+                // mekanizması: ilk iletimden sonraki her satır).
+                Some(Item::Bundle(_)) => "demet",
                 _ => continue,
             };
             let mech = match e.cause {
@@ -2491,10 +2508,12 @@ impl Run {
                 .get(&((e.seq & 0xFFFF) as u16))
                 .map_or(at, |x| x.0);
             let had = self.bob.rx_unit.get(&e.unit_id).is_some_and(|&r| r <= at);
+            let first = *first_emit.entry(e.unit_id).or_insert(at);
             println!(
-                "İZ-PTT-KAYIT {tag} {kind} birim={} an={} {mech} seq={} hedef={} bob_almıştı={had}",
+                "İZ-PTT-KAYIT {tag} {kind} birim={} an={} ilkten=+{} {mech} seq={} hedef={} bob_almıştı={had}",
                 e.unit_id,
                 t(at),
+                secs(self.since(at, first)),
                 e.seq,
                 e.ref_seq
             );

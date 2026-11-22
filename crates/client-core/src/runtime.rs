@@ -4082,6 +4082,12 @@ async fn client_task(
                         now.saturating_add(deadline_ns.map_or(PTT_DEADLINE_NS, |d| d.min(PTT_DEADLINE_NS)));
                     if ptt_lean {
                         ptt_offered_at.insert(id, ptt_expiry_ns);
+                        // [YALIN-TEK-İLETİM · 2026-11-23] Yalın demet tek iletimlidir: PTO probu,
+                        // kayıp kurtarma ve kopya kuralları onu yeniden göndermez (son tarihte
+                        // bırakılır, alıcı deliği atlar). Güvenilir kayıt (açılış/kapanış) değişmez.
+                        session
+                            .sender_mut()
+                            .mark_single_shot(id, ptt_expiry_ns, now);
                     } else if ptt_lean_offer && ptt_lane && deadline_ns.is_some() {
                         ptt_pre_lean.insert(id, ptt_expiry_ns);
                     }
