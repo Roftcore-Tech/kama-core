@@ -192,7 +192,7 @@ use adaptive_transport::sender::{EmitCause, EmitDiag, LineGuardAckDecision, Line
 use client_core::memory_link::MemoryHub;
 use client_core::runtime::ClientLiveDiag;
 use client_core::runtime::EmitTraceSink;
-use client_core::runtime::{AckFormat, LinkRates};
+use client_core::runtime::{AckFormat, LinkRates, PTT_RELIABLE_COPIES};
 use client_core::transport::{ClientTransport, ClientTransportConfig};
 use client_core::wire::{decode_data, decode_ptt, FRAME_FEC, FRAME_PTT, FRAME_RECOVERED};
 use kama_app::clock::{MonotonicClock, SystemClock};
@@ -317,6 +317,15 @@ fn window_bps(bytes: u64, span: Duration) -> Option<u64> {
 const FILE_BYTES: usize = 40_000;
 const TEXT1_AT: Duration = Duration::from_millis(300);
 const PTT_AT: Duration = Duration::from_millis(500);
+
+/// [PTT-BANT · kıyas] Basışın başlangıcı: `KAMA_ASYM_PTT_AT_MS` (varsayılan [`PTT_AT`]). Geç
+/// başlangıç (ör. 4000) yalın PTT anlaşmasından (ilk 0x16) SONRA başlayan basışı ölçer.
+fn ptt_at() -> Duration {
+    Duration::from_millis(env_u64(
+        "KAMA_ASYM_PTT_AT_MS",
+        u64::try_from(PTT_AT.as_millis()).unwrap_or(500),
+    ))
+}
 const TEXT1: &str = "metin 1: dosyanin basinda gonderildi";
 const TEXT2: &str = "metin 2: dosyanin ortasinda gonderildi";
 
@@ -1122,7 +1131,7 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
         }
         let files_done = file_received.is_some()
             && (cell.file2_at.is_none() || file2.is_some_and(|f| f.1.is_some()));
-        if ptt_open.is_none() && el >= PTT_AT {
+        if ptt_open.is_none() && el >= ptt_at() {
             let stream = alice
                 .ptt
                 .open(&mut alice.m, id(BOB), PttCodec::Lyra, shape.code)
@@ -1732,6 +1741,18 @@ impl Run {
                     unique.len(),
                     bundle_tx.saturating_sub(unique.len()),
                 );
+                // [PTT-YALIN · KORUMA · 2026-11-22] Bitmap kolunda açılış ve kapanış en az
+                // 1 + PTT_RELIABLE_COPIES kez tele çıkar (ayırt edici kapı: kapanış hat doluyken
+                // sunulunca kopyaları sessizce planlanmıyordu — üç kolda da tek iletim).
+                let want = 1 + usize::from(PTT_RELIABLE_COPIES);
+                let guarded = !bitmap || (opens >= want && closes >= want);
+                println!(
+                    "ÖLÇÜT {tag} ptt_koruma yön={side} açılış={opens} kapanış={closes} (en az {want}) → {}",
+                    if guarded { "GEÇTİ" } else { "KALDI" }
+                );
+                if !guarded {
+                    failed.push(format!("PTT/koruma/{side}"));
+                }
             }
             if !band_ok {
                 failed.push(format!("PTT/bant/{side}"));
@@ -2284,19 +2305,36 @@ impl Run {
         let shape = ptt_shape();
         let fpb = u64::try_from(shape.period.as_nanos() / LYRA_FRAME.as_nanos()).unwrap_or(0);
         let planned = self.bundles.len() as u64 + self.unaccepted.len() as u64;
-        let received = self
-            .bundles
-            .values()
-            .filter(|b| b.received.is_some())
-            .count() as u64;
-        let timely = self
-            .bundles
-            .values()
-            .filter(|b| {
+        // Demetin ilk tel datagramı yalın 0x09 mu (ilk 0x16'dan sonra mı çıktı).
+        let mut first_lean: HashMap<u32, bool> = HashMap::new();
+        for w in &self.alice.ptt_wire {
+            if let Item::Bundle(k) = w.3 {
+                first_lean.entry(k).or_insert(w.2);
+            }
+        }
+        // (planlanan/oluşan, kabul edilen, telde, teslim, zamanında) — demet sayısı.
+        let mut rows: BTreeMap<&str, [u64; 4]> = BTreeMap::new();
+        for (&k, b) in &self.bundles {
+            let key = match first_lean.get(&k) {
+                Some(true) => "0x16_sonrası",
+                Some(false) => "0x16_öncesi",
+                None => "tele_çıkmadı",
+            };
+            let r = rows.entry(key).or_insert([0; 4]);
+            r[0] += 1;
+            r[1] += u64::from(first_lean.contains_key(&k));
+            r[2] += u64::from(b.received.is_some());
+            r[3] += u64::from(
                 b.received
-                    .is_some_and(|r| self.since(r, b.created) <= PTT_BOUND)
-            })
-            .count() as u64;
+                    .is_some_and(|rx| self.since(rx, b.created) <= PTT_BOUND),
+            );
+        }
+        let total = rows.values().fold([0u64; 4], |mut a, r| {
+            for (x, y) in a.iter_mut().zip(r) {
+                *x += y;
+            }
+            a
+        });
         let wire_tx: u64 = self
             .bundles
             .keys()
@@ -2311,13 +2349,29 @@ impl Run {
             })
             .sum();
         let bytes = shape.bytes as u64;
+        let split: Vec<String> = rows
+            .iter()
+            .map(|(k, r)| {
+                format!(
+                    "{k}:kabul={} telde={} teslim={} zamanında={}",
+                    r[0] * fpb,
+                    r[1] * fpb,
+                    r[2] * fpb,
+                    r[3] * fpb
+                )
+            })
+            .collect();
         println!(
-            "ÖLÇÜT {tag} ptt_ses konuşma={} s çerçeve_oluşan={} çerçeve_teslim={} çerçeve_zamanında(oluşumdan ≤ {} s)={} ses_yükü_tekil={} B ses_yükü_telde={} B (demet iletimi {wire_tx})",
+            "ÖLÇÜT {tag} ptt_ses konuşma={} s çerçeve(20 ms) planlanan={} oluşan={} kabul={} telde={} teslim={} zamanında(oluşumdan ≤ {} s)={} | {} | ses_yükü_tekil={} B ses_yükü_telde={} B (demet iletimi {wire_tx})",
             secs(shape.period * u32::try_from(planned).unwrap_or(u32::MAX)),
             planned * fpb,
-            received * fpb,
+            planned * fpb,
+            total[0] * fpb,
+            total[1] * fpb,
+            total[2] * fpb,
             secs(PTT_BOUND),
-            timely * fpb,
+            total[3] * fpb,
+            split.join(" "),
             self.bundles.len() as u64 * bytes,
             wire_tx * bytes,
         );

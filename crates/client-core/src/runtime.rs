@@ -454,6 +454,10 @@ pub const PTT_DEADLINE_NS: u64 = 1_000_000_000;
 /// kayıt kaybı 0,8 %; bedel basış başına ≈ 2 × 2 × 70 B (ses demetine kopya yok).
 pub const PTT_RELIABLE_COPIES: u8 = 2;
 
+/// [PTT-YALIN · KORUMA] İleri kopyası tele çıkışını bekleyen güvenilir PTT kaydı tavanı (basış
+/// başına iki kayıt; sınırlı bellek, SR-AUDIT-001).
+const PTT_COPY_PENDING_CAP: usize = 16;
+
 /// [PTT-YALIN · POLİTİKA] Güvenilir PTT kaydı kopyalarının aralığı. İki kopya ilk iletimden
 /// ≤ 40 ms sonra hattı terk eder; alıcının şerit deliğini atlama beklemesi 100 ms
 /// (`transport::PTT_HOLE_SKIP`).
@@ -3208,6 +3212,12 @@ async fn client_task(
     let mut ptt_pre_lean: BTreeMap<u64, u64> = BTreeMap::new();
     // [PTT-YALIN] Bırakılan PTT birimleri: motor teyit drenajında app olayı üretmez.
     let mut ptt_expired: HashSet<u64> = HashSet::new();
+    // [PTT-YALIN · KORUMA · 2026-11-22] İleri kopyası planlanamamış güvenilir PTT kaydı (açılış /
+    // kapanış): birim sunulduğunda henüz tele çıkmamışsa (hat dosyayla doluyken pacer bekletir)
+    // `schedule_forward_copies` onu uçuşta bulamaz ve kopyalar SESSİZCE planlanmazdı — ürün testi:
+    // kapanış üç kolda da tek iletim. Birim tele çıkınca (sonraki tiklerde) planlanır; teyit
+    // edilen birim düşer. Sınır: basış başına iki kayıt; tavan [`PTT_COPY_PENDING_CAP`].
+    let mut ptt_copy_pending: Vec<u64> = Vec::new();
     let mut caps_tries: u32 = 0;
     let mut caps_line_gate_ms: Option<u64> = None;
     // [S1B] Fragmenter durumu. `frag_on` = mesaj tavanı birim tavanından BÜYÜK. Kapalıyken bu
@@ -4076,13 +4086,16 @@ async fn client_task(
                         unit_msg.insert(id, msg_id);
                     }
                     drive!(Event::AppData(OpaqueUnit { id, size }), now);
-                    if ptt_reliable_copy {
-                        session.sender_mut().schedule_forward_copies(
+                    if ptt_reliable_copy
+                        && !session.sender_mut().schedule_forward_copies(
                             id,
                             PTT_RELIABLE_COPIES,
                             PTT_RELIABLE_COPY_SPACING_NS,
                             now,
-                        );
+                        )
+                        && ptt_copy_pending.len() < PTT_COPY_PENDING_CAP
+                    {
+                        ptt_copy_pending.push(id);
                     }
                 // [S1] Blok birikimi + K'de SAME-EVENT latch: drive! az önce on_event koşturdu →
                 // snapshot.event_index taze; arada başka event YOK (tek-task sıralılık) → latch'in
@@ -4175,6 +4188,19 @@ async fn client_task(
             _ = pace.tick() => {
                 let now = elapsed_ns(start);
                 drive!(Event::TimerFired(Timer::Pto), now); ts_sample!(now);
+                // [PTT-YALIN · KORUMA] Tele çıkmış güvenilir PTT kaydının ertelenen ileri kopyaları.
+                if !ptt_copy_pending.is_empty() {
+                    let sender = session.sender_mut();
+                    ptt_copy_pending.retain(|&u| {
+                        store.contains_key(&u)
+                            && !sender.schedule_forward_copies(
+                                u,
+                                PTT_RELIABLE_COPIES,
+                                PTT_RELIABLE_COPY_SPACING_NS,
+                                now,
+                            )
+                    });
+                }
                 // [PTT-YALIN] Son tarihi geçen teyitsiz PTT birimi bırakılır (`abandon_units`:
                 // bekleyen kopya/ARQ iptal, FEC defterine dokunmaz); app olayı üretilmez.
                 let due: Vec<u64> = ptt_offered_at
