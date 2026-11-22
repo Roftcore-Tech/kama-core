@@ -2121,11 +2121,23 @@ struct AdmitWindow {
     /// [PTT-YALIN] Eşi PTT'yi 0x09 yalın çerçeveyle (tek iletim, son tarihte bırakma) gönderen
     /// oturumlar: sıralayıcı bu oturumların PTT şeridinde eksik sıra başını süre dolunca atlar.
     ptt_deadline: BTreeSet<SessionHandle>,
+    /// [PTT-YALIN · GEÇ-GÜVENİLİR] Son tarih kipindeki oturumlarda PTT şeridinden 0x00 DATA
+    /// çerçevesiyle (0x09'dan çevrilmemiş) gelip teslim kanalına giren birimler. Bu çerçeve
+    /// güvenilir kaydı (PTT_OPEN / PTT_CLOSE) taşır; gönderici onu ARQ ile yeniden iletir.
+    /// Sıralayıcı atladığı sırayı yalnız bu işaretle geç kabul eder
+    /// ([`Self::take_ptt_data_framed`]). Oturum başına en çok [`PTT_DATA_FRAMED_CAP`] kimlik;
+    /// doluyken en eskisi düşer.
+    ptt_data_framed: BTreeMap<SessionHandle, VecDeque<u64>>,
     /// [ŞERİT-GENİŞLİK] Veri alıcısının KABUL sınırı: şeritte bu sıranın altındaki her birim teslim
     /// kanalına girdi (boşluksuz). Yalnız `anchor_admitted` iken yazılır
     /// ([`ExpectedSessions::note_admitted`]).
     admitted: BTreeMap<(SessionHandle, usize), u64>,
 }
+
+/// [PTT-YALIN · GEÇ-GÜVENİLİR] Oturum başına tutulan DATA-çerçeveli PTT işareti sayısı. İşaret
+/// normalde aynı birimin sıralayıcıya girişinde hemen tüketilir; kalanlar yalnız teslim kanalına
+/// girmeden düşen (yinelenen) birimlerdir.
+const PTT_DATA_FRAMED_CAP: usize = 64;
 
 /// [F3 · ŞERİT-SIRA] Bir oturumun şerit başına kabul sınırları (dışlayıcı şerit-içi sıra).
 pub type LaneAdmitLimits = [u64; LANE_COUNT];
@@ -2168,6 +2180,8 @@ impl ExpectedSessions {
                 .retain(|(session, _), _| next.contains_key(session));
             // [PTT-YALIN] Emekli oturumun işareti de düşer (sınırlı bellek).
             w.ptt_deadline.retain(|session| next.contains_key(session));
+            w.ptt_data_framed
+                .retain(|session, _| next.contains_key(session));
         }
         *self.lock() = next;
     }
@@ -2244,6 +2258,43 @@ impl ExpectedSessions {
     #[must_use]
     pub fn ptt_deadline(&self, session: SessionHandle) -> bool {
         self.window_lock().ptt_deadline.contains(&session)
+    }
+
+    /// [PTT-YALIN · GEÇ-GÜVENİLİR] Veri alıcısı `unit` PTT birimini 0x00 DATA çerçevesiyle aldı ve
+    /// teslim kanalına koymak üzere (0x09'dan çevrilen birim burada YAZILMAZ). Yalnız oturum son
+    /// tarih kipindeyse ([`Self::ptt_deadline`]) yazılır; aksi hâlde sıralayıcı hiç atlamaz ve
+    /// işarete gerek yoktur. Teslimden ÖNCE çağrılır: sıralayıcı birimi kanaldan çektiğinde
+    /// işaret görünürdür. (#175 7081093529)
+    pub(crate) fn mark_ptt_data_framed(&self, session: SessionHandle, unit: u64) {
+        let mut w = self.window_lock();
+        if !w.ptt_deadline.contains(&session) {
+            return;
+        }
+        let q = w.ptt_data_framed.entry(session).or_default();
+        if q.contains(&unit) {
+            return;
+        }
+        if q.len() >= PTT_DATA_FRAMED_CAP {
+            q.pop_front();
+        }
+        q.push_back(unit);
+    }
+
+    /// [PTT-YALIN · GEÇ-GÜVENİLİR] `unit` için [`Self::mark_ptt_data_framed`] işaretini tüketir;
+    /// işaret varsa `true`.
+    pub(crate) fn take_ptt_data_framed(&self, session: SessionHandle, unit: u64) -> bool {
+        let mut w = self.window_lock();
+        let Some(q) = w.ptt_data_framed.get_mut(&session) else {
+            return false;
+        };
+        let Some(i) = q.iter().position(|&u| u == unit) else {
+            return false;
+        };
+        q.remove(i);
+        if q.is_empty() {
+            w.ptt_data_framed.remove(&session);
+        }
+        true
     }
 
     /// [F3] Oturumun sıralı teslim sınırı `head`'e ilerledi (bundan küçük kimlikler teslim edildi).
@@ -5704,8 +5755,11 @@ async fn server_task(
                 slot.last_seen_ns = now;
                 // [PTT-YALIN] Tam kimlik PTT şeridinin kabul penceresinden: pencere içinde alt 16
                 // biti eşleşen tek sıra. Pencere bilinmiyorsa çerçeve işlenmez.
+                // [PTT-YALIN · GEÇ-GÜVENİLİR] Birim 0x09'dan mı çevrildi (yalın ses demeti)?
+                let mut lean_ptt = false;
                 let parsed = match parsed {
                     RxFrame::Ptt { lo, payload } => {
+                        lean_ptt = true;
                         let limit = match slot.ctx {
                             ProtectionContext::Session(h) => {
                                 expected.mark_ptt_deadline(h);
@@ -5799,6 +5853,19 @@ async fn server_task(
                         // fragmentasyon kapalı→birim-id, açık→mesaj-id).
                         let mut permit = Some(permit);
                         if out.delivered.contains(&unit_id) {
+                            // [PTT-YALIN · GEÇ-GÜVENİLİR] PTT şeridinin 0x00 DATA çerçevesi (güvenilir
+                            // kayıt; ARQ'lı) işaretlenir: sıralayıcı deliğini atladıktan sonra geç
+                            // gelirse sırasız teslim edilir. Yalın 0x09 demeti işaretlenmez.
+                            // (#175 7081093529)
+                            if !lean_ptt
+                                && !frag_on
+                                && lane_index_of(unit_id) == PTT_LANE_INDEX
+                                && !slot.delivered_seen.contains(unit_id)
+                            {
+                                if let ProtectionContext::Session(h) = slot.ctx {
+                                    expected.mark_ptt_data_framed(h, unit_id);
+                                }
+                            }
                             admit_chunk(
                                 &mut stats,
                                 &expected,
