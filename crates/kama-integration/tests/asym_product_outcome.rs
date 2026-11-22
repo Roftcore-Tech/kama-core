@@ -44,7 +44,7 @@
 //!
 //! * t = 0: Alice 40 000 B'lik dosyayı gönderir (`FileTransfer::send_file`; 41 parça × ≤ 990 B).
 //! * t = 0,3 s: metin 1 (dosyanın başı).
-//! * t = 0,5 s: PTT açılır (`Ptt::open`, Lyra, 200 ms demet) ve her 200 ms'de 40 B'lik bir demet
+//! * t = 0,5 s: PTT açılır (`Ptt::open`, Lyra, 200 ms demet) ve her 200 ms'de 80 B'lik (gerçek Lyra 3,2 kbit/s) bir demet
 //!   gider (≈ 1,6 kbit/s; `kama-integration` `examples/f0_flows.rs` varsayılanı). Demetler Bob dosyayı
 //!   alana dek sürer, sonra `Ptt::close`.
 //! * Bob dosyanın yarısını (parça sayısının yarısı) aldığı turda metin 2 (dosyanın ortası).
@@ -220,9 +220,9 @@ const FWD_LOSS_PERMILLE: u64 = 200;
 /// UDP/IP zarfı (serileştirmeye girer; röle yalnız UDP gövdesini görür).
 const UDP_IP_OVERHEAD: u64 = 28;
 
-/// [PTT-BANT · sahip kararı] PTT'nin bir yönde tavanı (bit/s, IPv4/UDP dahil): kama-media'nın
-/// 9 kbit/s'lik iki yönlü görüşmesinin bir yönü.
-const PTT_BAND_MAX_BPS: u64 = 4_500;
+/// [PTT-BANT · sahip kararı 2026-11-22] PTT'nin bir yönde tavanı (bit/s, telde, IPv4/UDP dahil;
+/// açılış, kapanış, kopya, yeniden iletim, kaybolan ve anlaşma öncesi PTT datagramları dahil).
+const PTT_BAND_MAX_BPS: u64 = 5_000;
 
 /// [PTT-BANT] Demet kadansı (fikstürün PTT zamanlaması, modül belgesi).
 const PTT_CADENCE: Duration = Duration::from_millis(200);
@@ -253,7 +253,9 @@ const FILE_BYTES: usize = 40_000;
 const TEXT1_AT: Duration = Duration::from_millis(300);
 const PTT_AT: Duration = Duration::from_millis(500);
 const PTT_BUNDLE_MS: u8 = 200;
-const PTT_PAYLOAD_BYTES: usize = 40;
+/// [PTT-BANT · sahip kararı 2026-11-22] Gerçek ses yükü: Lyra 3,2 kbit/s = 20 ms'de 8 B →
+/// 200 ms demette 80 B (kama-media tel ölçümü, S8 hücresi). Eski 40 B yapay yüktü.
+const PTT_PAYLOAD_BYTES: usize = 80;
 const TEXT1: &str = "metin 1: dosyanin basinda gonderildi";
 const TEXT2: &str = "metin 2: dosyanin ortasinda gonderildi";
 
@@ -2526,8 +2528,8 @@ fn gate_forward_fixed_return_delay_varies() {
 }
 
 /// [PTT-BANT · #175 dış inceleme] Bant ölçütünün iki yönlü kanıtı (ağ koşusu yok): 200 ms
-/// kadansta yalın 0x09 datagramı 66 B sabit pay + yük. 40 B yapay yük → 106 B → 4 240 bit/s GEÇER;
-/// 80 B kontrol yükü → 146 B → 5 840 bit/s KALIR.
+/// kadansta yalın 0x09 datagramı 66 B sabit pay + yük. 40 B yük → 106 B → 4 240 bit/s GEÇER;
+/// gerçek Lyra 80 B yükü bugünkü biçimle → 146 B → 5 840 bit/s KALIR (sınır 5 000).
 #[test]
 fn ptt_band_gate_passes_the_lean_payload_and_fails_the_80_byte_control() {
     let t0 = Instant::now();
