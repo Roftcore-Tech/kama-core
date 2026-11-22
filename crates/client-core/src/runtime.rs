@@ -1131,6 +1131,9 @@ pub struct ClientStats {
     pub ptt_expired: u64,
     /// [PTT-YALIN] 0x09 yalın PTT çerçevesiyle giden iletim.
     pub ptt_lean_tx: u64,
+    /// [PTT-YALIN · KORUMA] İleri kopyası bekleme listesi (tavan 16) dolu olduğu için kopyasız
+    /// (yalnız ARQ ile) kalan güvenilir PTT kaydı (açılış / kapanış). 0 beklenir.
+    pub ptt_copy_unprotected: u64,
     /// [ACK-BITMAP] Çözülen 0x15 bitmap ACK çerçevesi.
     pub ack_bitmap_rx: u64,
     /// Wire'a yazılmak üzere ÜRETİLEN mühürlü UDP payload byte'ı — DENEME düzlemi
@@ -4109,16 +4112,22 @@ async fn client_task(
                         unit_msg.insert(id, msg_id);
                     }
                     drive!(Event::AppData(OpaqueUnit { id, size }), now);
+                    // [KOPYA-KORUMASI · 2026-11-22] Kopyalı kayıt, takvim + bir geri bildirim ufku
+                    // boyunca PTO probu / PreConverge merdiveniyle yeniden gönderilmez (ARQ kalır).
                     if ptt_reliable_copy
-                        && !session.sender_mut().schedule_forward_copies(
+                        && !session.sender_mut().schedule_forward_copies_guarded(
                             id,
                             PTT_RELIABLE_COPIES,
                             PTT_RELIABLE_COPY_SPACING_NS,
                             now,
                         )
-                        && ptt_copy_pending.len() < PTT_COPY_PENDING_CAP
                     {
-                        ptt_copy_pending.push(id);
+                        if ptt_copy_pending.len() < PTT_COPY_PENDING_CAP {
+                            ptt_copy_pending.push(id);
+                        } else {
+                            // Liste dolu: kayıt ileri kopyasız kalır (yalnız ARQ) — görünür sayaç.
+                            stats.ptt_copy_unprotected += 1;
+                        }
                     }
                 // [S1] Blok birikimi + K'de SAME-EVENT latch: drive! az önce on_event koşturdu →
                 // snapshot.event_index taze; arada başka event YOK (tek-task sıralılık) → latch'in
@@ -4216,7 +4225,7 @@ async fn client_task(
                     let sender = session.sender_mut();
                     ptt_copy_pending.retain(|&u| {
                         store.contains_key(&u)
-                            && !sender.schedule_forward_copies(
+                            && !sender.schedule_forward_copies_guarded(
                                 u,
                                 PTT_RELIABLE_COPIES,
                                 PTT_RELIABLE_COPY_SPACING_NS,

@@ -2424,6 +2424,53 @@ impl Run {
         for ((mech, need, sub), n) in &counts {
             println!("İZ-NEDEN {tag} {mech} {need} {sub} = {n}");
         }
+        // [İZ-PTT-KAYIT · 2026-11-22] Güvenilir PTT kaydının (açılış / kapanış) her iletimi:
+        // mekanizma ve o an Bob'un birimi DATA olarak almış olup olmadığı (mekanizma başına sayı).
+        let mut rec_counts: BTreeMap<(&'static str, String, &'static str), u32> = BTreeMap::new();
+        let head_hole: HashSet<u64> = self
+            .emit
+            .iter()
+            .filter(|(_, e)| e.cause == EmitCause::PriorityHeadHole)
+            .map(|(_, e)| e.seq)
+            .collect();
+        for &(at, e) in &self.emit {
+            let kind = match self.alice.unit_item.get(&e.unit_id) {
+                Some(Item::PttOpen(_)) => "açılış",
+                Some(Item::PttClose(_)) => "kapanış",
+                _ => continue,
+            };
+            let mech = match e.cause {
+                EmitCause::Data => "ilk".to_string(),
+                EmitCause::Retransmit => match loss_cause.get(&e.ref_seq) {
+                    Some(EmitCause::LossPacketThreshold) => "ARQ/paket-eşiği".to_string(),
+                    Some(EmitCause::LossTimeThreshold) => "ARQ/zaman-eşiği".to_string(),
+                    _ if head_hole.contains(&e.ref_seq) => "ARQ/baş-deliği".to_string(),
+                    _ => "ARQ/ilan-izsiz".to_string(),
+                },
+                EmitCause::PtoProbe => "PTO-probu".to_string(),
+                EmitCause::Copy => "kopya/vadeli-ya-da-boş-hat".to_string(),
+                EmitCause::CopyPriority => "kopya/PTT-öncelik".to_string(),
+                EmitCause::CopyEstablish => "kopya/kuruluş".to_string(),
+                _ => continue,
+            };
+            let at = seal_by_seq
+                .get(&((e.seq & 0xFFFF) as u16))
+                .map_or(at, |x| x.0);
+            let had = self.bob.rx_unit.get(&e.unit_id).is_some_and(|&r| r <= at);
+            println!(
+                "İZ-PTT-KAYIT {tag} {kind} birim={} an={} {mech} seq={} hedef={} bob_almıştı={had}",
+                e.unit_id,
+                t(at),
+                e.seq,
+                e.ref_seq
+            );
+            *rec_counts
+                .entry((kind, mech, if had { "gereksiz" } else { "gerekli" }))
+                .or_insert(0) += 1;
+        }
+        for ((kind, mech, need), n) in &rec_counts {
+            println!("İZ-PTT-KAYIT {tag} özet {kind} {mech} {need} = {n}");
+        }
         for ((mech, need), n) in &before15 {
             println!("İZ-NEDEN {tag} ilk15s {mech} {need} = {n}");
         }
