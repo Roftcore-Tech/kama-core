@@ -191,7 +191,7 @@ use client_core::runtime::ClientLiveDiag;
 use client_core::runtime::EmitTraceSink;
 use client_core::runtime::{AckFormat, LinkRates};
 use client_core::transport::{ClientTransport, ClientTransportConfig};
-use client_core::wire::{decode_data, FRAME_FEC, FRAME_RECOVERED};
+use client_core::wire::{decode_data, decode_ptt, FRAME_FEC, FRAME_PTT, FRAME_RECOVERED};
 use kama_app::clock::{MonotonicClock, SystemClock};
 use kama_app::codec::{decode, AmpLimits, AppMessage, PttCodec};
 use kama_app::file_transfer::{FileEvent, FileTransfer};
@@ -219,6 +219,34 @@ const ONE_WAY: Duration = Duration::from_millis(300);
 const FWD_LOSS_PERMILLE: u64 = 200;
 /// UDP/IP zarfı (serileştirmeye girer; röle yalnız UDP gövdesini görür).
 const UDP_IP_OVERHEAD: u64 = 28;
+
+/// [PTT-BANT · sahip kararı] PTT'nin bir yönde tavanı (bit/s, IPv4/UDP dahil): kama-media'nın
+/// 9 kbit/s'lik iki yönlü görüşmesinin bir yönü.
+const PTT_BAND_MAX_BPS: u64 = 4_500;
+
+/// [PTT-BANT] Demet kadansı (fikstürün PTT zamanlaması, modül belgesi).
+const PTT_CADENCE: Duration = Duration::from_millis(200);
+
+/// Koşunun ACK biçimi (`KAMA_ASYM_ACK_FORMAT`, varsayılan `bitmap`).
+fn fixture_ack_format() -> AckFormat {
+    std::env::var("KAMA_ASYM_ACK_FORMAT").map_or(AckFormat::Bitmap, |v| {
+        AckFormat::parse(&v).expect("KAMA_ASYM_ACK_FORMAT: v2 | bitmap")
+    })
+}
+
+/// [PTT-BANT] Bir yönün PTT bandı (bit/s): mühürlenen bütün PTT datagramlarının (açılış, kapanış,
+/// kopya, konuşmadan sonra çıkan yeniden iletim dahil) tel baytı ÷ konuşma süresi (planlanan demet
+/// × kadans). Payda konuşma süresidir, datagramların yayıldığı süre değil: geç yeniden iletim
+/// ortalamayı seyreltemez. PTT datagramı ya da demet yoksa `None`.
+fn ptt_band_bps(wire: &[(Instant, u64)], planned_bundles: u32) -> Option<u64> {
+    // (kanıt: `ptt_band_gate_passes_the_lean_payload_and_fails_the_80_byte_control`)
+    if wire.is_empty() || planned_bundles == 0 {
+        return None;
+    }
+    let span = PTT_CADENCE * planned_bundles;
+    let bits: u64 = wire.iter().map(|w| w.1 * 8).sum();
+    u64::try_from(u128::from(bits) * 1_000_000_000 / span.as_nanos().max(1)).ok()
+}
 
 // ── Senaryo ──────────────────────────────────────────────────────────────────────────────────
 const FILE_BYTES: usize = 40_000;
@@ -342,6 +370,12 @@ struct Ledger {
     /// [İZ-ACK] `acks_rx` ile aynı sırada: ACK datagramının tel boyu (UDP gövdesi + UDP/IP 28 B)
     /// ve çerçeve türü baytı.
     ack_wire: Vec<(u64, u8)>,
+    /// [PTT-BANT · #175 dış inceleme] Bu ucun mühürlediği, PTT kaydı taşıyan HER datagram (ilk
+    /// iletim, kopya, yeniden iletim; yolda kaybolanlar dahil): (an, tel boyu = UDP gövdesi +
+    /// UDP/IP 28 B). Yalın 0x09 ve veri çerçevesi (0x00) ikisi de.
+    ptt_wire: Vec<(Instant, u64)>,
+    /// [PTT-BANT] Bu ucun mühürlediği yalın PTT çerçevesi (0x09) sayısı.
+    ptt_lean_tx: u64,
 }
 
 /// [FEC-TEŞHİS] Çerçeve türü sayacı (DATA dışı).
@@ -364,7 +398,11 @@ struct Tap {
 
 impl Tap {
     fn classify(&self, frame: &[u8]) -> Option<Result<Item, ()>> {
-        let (_, _, payload) = decode_data(frame)?;
+        // [PTT-BANT] Yalın PTT çerçevesi (0x09) de AMP kaydı taşır; eskiden yalnız 0x00 çözülüyordu.
+        let payload = match decode_data(frame) {
+            Some((_, _, p)) => p,
+            None => decode_ptt(frame)?.1,
+        };
         Some(
             decode(payload, &self.limits)
                 .map(|m| item_of(&m))
@@ -393,6 +431,15 @@ impl PacketProtection for Tap {
         if let Some(c) = self.classify(frame) {
             let now = Instant::now();
             let mut l = lock(&self.ledger);
+            if let Ok(Item::PttOpen(_) | Item::PttClose(_) | Item::Bundle(_)) = c {
+                if l.ptt_wire.len() < LEDGER_CAP {
+                    l.ptt_wire
+                        .push((now, sealed.bytes.len() as u64 + UDP_IP_OVERHEAD));
+                }
+                if frame.first() == Some(&FRAME_PTT) {
+                    l.ptt_lean_tx += 1;
+                }
+            }
             match c {
                 Ok(item) if l.by_fp.len() < LEDGER_CAP => {
                     let fp = fingerprint(&sealed.bytes);
@@ -783,10 +830,10 @@ fn transport(
     // [YENİDEN-RAPOR] Ürün varsayılanı kapalı (spec §2.1); `KAMA_ASYM_ACK_REREPORT=on` ölçüm kolu.
     cfg.runtime.ack_rereport = std::env::var("KAMA_ASYM_ACK_REREPORT").is_ok_and(|v| v == "on");
     // [ACK-BITMAP · ölçüm prototipi] `KAMA_ASYM_ACK_FORMAT=bitmap` iki uca da 0x15 biçimini verir
-    // (yetenek anlaşması yok; iki uç açıkça). Varsayılan `v2` (bugünkü 0x14).
-    cfg.runtime.ack_format = std::env::var("KAMA_ASYM_ACK_FORMAT").map_or(AckFormat::V2, |v| {
-        AckFormat::parse(&v).expect("KAMA_ASYM_ACK_FORMAT: v2 | bitmap")
-    });
+    // (yetenek anlaşması yok; iki uç açıkça). [PTT-BANT · #175 dış inceleme] Fikstür varsayılanı
+    // `bitmap`: birleşik adayın ölçülen yolu (pair_rate, yalın PTT 0x16 / 0x09) yalnız onunla açılır;
+    // `v2` kolu bugünkü ürün varsayılanını (0x14) ölçer.
+    cfg.runtime.ack_format = fixture_ack_format();
     // [ACK-PAYI TEŞHİS KOLU] `KAMA_ASYM_RETURN_Y_PERMILLE` (yalnız teşhis; varsayılan ürün Y = 250).
     if let Ok(y) = std::env::var("KAMA_ASYM_RETURN_Y_PERMILLE") {
         cfg.runtime.diag_return_budget_permille = y.parse().ok();
@@ -1539,6 +1586,31 @@ impl Run {
             }
         }
         line.push(ptt_line);
+        // [PTT-BANT · sahip kararı, #175 dış inceleme] Yön başına PTT bandı: PTT kaydı taşıyan
+        // mühürlenmiş her datagram (kopya, yeniden iletim, yolda kaybolan dahil), IPv4/UDP dahil.
+        // Bitmap kolunda yalın çerçeve (0x09) tele çıkmış olmalı: çıkmadıysa bant hedefi sınanmadı.
+        let bitmap = fixture_ack_format() == AckFormat::Bitmap;
+        for (side, ledger) in [("alice", &self.alice), ("bob", &self.bob)] {
+            let planned =
+                u32::try_from(self.bundles.len() + self.unaccepted.len()).unwrap_or(u32::MAX);
+            let Some(bps) = ptt_band_bps(&ledger.ptt_wire, planned) else {
+                continue;
+            };
+            let lean_ok = !bitmap || ledger.ptt_lean_tx > 0;
+            let band_ok = bps <= PTT_BAND_MAX_BPS;
+            println!(
+                "ÖLÇÜT {tag} ptt_bant yön={side} bit_s={bps} (en çok {PTT_BAND_MAX_BPS}) datagram={} yalın_0x09={} → {}",
+                ledger.ptt_wire.len(),
+                ledger.ptt_lean_tx,
+                if band_ok && lean_ok { "GEÇTİ" } else { "KALDI" },
+            );
+            if !band_ok {
+                failed.push(format!("PTT/bant/{side}"));
+            }
+            if !lean_ok {
+                failed.push(format!("PTT/yalın-yok/{side}"));
+            }
+        }
         // [CANLILIK · 2026-11-21] Planlanan her demet (kabul edilmeyenler dahil) ufukta teslim.
         // [PTT-SÖZLEŞME · 2026-11-22] Akış ölmez: art arda ufukta teslim edilmeyen demetlerin
         // planlanma aralığı ufku aşmaz (tek tek atlanan demet kodekte örtülür).
@@ -2451,4 +2523,26 @@ fn gate_ptt_liveness_long_session() {
 #[test]
 fn gate_forward_fixed_return_delay_varies() {
     run_cell(Cell::return_delay_varies(), true);
+}
+
+/// [PTT-BANT · #175 dış inceleme] Bant ölçütünün iki yönlü kanıtı (ağ koşusu yok): 200 ms
+/// kadansta yalın 0x09 datagramı 66 B sabit pay + yük. 40 B yapay yük → 106 B → 4 240 bit/s GEÇER;
+/// 80 B kontrol yükü → 146 B → 5 840 bit/s KALIR.
+#[test]
+fn ptt_band_gate_passes_the_lean_payload_and_fails_the_80_byte_control() {
+    let t0 = Instant::now();
+    let spurt = |wire: u64| -> Vec<(Instant, u64)> {
+        (0..50u32).map(|i| (t0 + PTT_CADENCE * i, wire)).collect()
+    };
+    let lean = ptt_band_bps(&spurt(106), 50).expect("bant");
+    assert_eq!(lean, 4_240);
+    assert!(lean <= PTT_BAND_MAX_BPS);
+    let control = ptt_band_bps(&spurt(146), 50).expect("bant");
+    assert_eq!(control, 5_840);
+    assert!(control > PTT_BAND_MAX_BPS);
+    assert_eq!(ptt_band_bps(&[], 50), None);
+    // Konuşmadan sonra yayılan yeniden iletim paydayı büyütmez.
+    let mut late = spurt(106);
+    late.push((t0 + Duration::from_secs(60), 106));
+    assert!(ptt_band_bps(&late, 50).expect("bant") > 4_240);
 }

@@ -3031,7 +3031,21 @@ async fn client_task(
             },
         ));
     }
-    if cfg.lane_ids && link_feedback_starved(&cfg) {
+    // [PTT-YALIN · BAŞLANGIÇ · #175 dış inceleme] Bu uç yalın PTT'yi CAPS ile bildirecekse (şeritli,
+    // bitmap, geri bildirimi aç, parçalama kapalı) PTT demetine başlangıçta da kopya yok: ilk 0x16
+    // gelene dek (dürüst hücre, tohum 1: +1,98 s) 6–7 kopyalı kural PTT bandını 6,4 kbit/s'ye
+    // çıkarıyordu. O arada demet bugünkü veri çerçevesiyle, tek iletim + ARQ ile gider (eski eşle
+    // uyum: bırakılmaz); yeni alıcı CAPS'i görünce PTT deliğini atlar. Güvenilir PTT kaydına
+    // (açılış/kapanış) aşağıdaki ileri kopyalar.
+    let ptt_lean_offer = cfg.lane_ids
+        && link_feedback_starved(&cfg)
+        && cfg.ack_format == AckFormat::Bitmap
+        && cfg.max_message_bytes.is_none();
+    if ptt_lean_offer {
+        session
+            .sender_mut()
+            .set_forward_copy_rule(Some(ptt_forward_copy_rule(0, 0)));
+    } else if cfg.lane_ids && link_feedback_starved(&cfg) {
         session.sender_mut().set_forward_copy_rule(Some(
             adaptive_transport::sender::ForwardCopyRule {
                 below_id: crate::unit_id::tagged(1, 0),
@@ -3942,9 +3956,9 @@ async fn client_task(
                     // basışın bütün demetlerini yetim düşürür ya da PttEnded'i 120 s'ye iter.
                     // Ona ACK beklemeden `PTT_RELIABLE_COPIES` ileri kopya planlanır (aşağıda):
                     // alıcının 100 ms delik atlamasından önce hattı terk eder.
-                    let ptt_lean_unit = ptt_lean_peer && !frag_on && lane == PTT_LANE_INDEX;
-                    let ptt_lean = ptt_lean_unit && deadline_ns.is_some();
-                    let ptt_reliable_copy = ptt_lean_unit && deadline_ns.is_none();
+                    let ptt_lane = !frag_on && lane == PTT_LANE_INDEX;
+                    let ptt_lean = ptt_lean_peer && ptt_lane && deadline_ns.is_some();
+                    let ptt_reliable_copy = ptt_lean_offer && ptt_lane && deadline_ns.is_none();
                     let hdr = if frag_on {
                         HDR_DATA_FRAG
                     } else if ptt_lean {
@@ -5957,6 +5971,13 @@ async fn server_task(
                         // [PTT-YALIN · YETENEK] Bu uç 0x09'u çözer; karşı uç yalın PTT gönderecekse
                         // bitmap ACK'leri 0x16 türüyle yazılır.
                         slot.rx.set_ack_bitmap_ptt_lean(on && caps & CAP_PTT_LEAN != 0);
+                        // [PTT-YALIN · BAŞLANGIÇ] Karşı uç ilk 0x16'ya dek PTT'yi kopyasız veri
+                        // çerçevesiyle gönderir: PTT deliği o andan son tarih kipinde atlanır.
+                        if on && caps & CAP_PTT_LEAN != 0 {
+                            if let ProtectionContext::Session(h) = slot.ctx {
+                                expected.mark_ptt_deadline(h);
+                            }
+                        }
                     }
                     RxFrame::Param {
                         profile_id,
