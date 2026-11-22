@@ -4273,6 +4273,9 @@ impl Sender {
             let _ = g.on_first_window(&ack.acked_seqs, rate);
         }
         let saturated = ack.ack_delay >= crate::loss::E2A_ACK_DELAY_SATURATED;
+        // [TAŞMA · ÇİFT ALT SINIRI] Bu ACK'in alt sınırı taşma örneğinin büyüklüğüdür (yoksa `None`
+        // yazılır: önceki ACK'in değeri kullanılmaz).
+        g.note_pair_lower_bound(pair_rate.map(u64::from));
         let update = g.on_ack_measured(now_ns, dur_ns(ack.ack_delay), saturated, largest, interval);
         // [ÇİFT ARALIĞI] Aşağı yönlü örnek yokken alıcının kapasite alt sınırı tavanı açabilir.
         if let Some(p) = pair_rate {
