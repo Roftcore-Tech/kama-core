@@ -524,11 +524,13 @@ struct LaneOrder {
     hole_since: Option<std::time::Instant>,
 }
 
-/// [PTT-YALIN] PTT şeridinde eksik sıra başı bu kadar beklenir, sonra atlanır: gönderici PTT
-/// demetini tek iletimle gönderir ve son tarihte bırakır (`runtime::PTT_DEADLINE_NS`); kaybolan
-/// demet arkasındaki demetleri bloklamaz. Arkadaki demet bu süre kadar gecikir (≤ 1 s sınırının
-/// içinde: 300 ms yayılım + 300 ms bekleme). Diğer şeritler eskisi gibi kayıpsız sıralıdır.
-const PTT_HOLE_SKIP: std::time::Duration = std::time::Duration::from_millis(300);
+/// [PTT-YALIN] PTT şeridinde eksik sıra başı en çok bu kadar beklenir, sonra atlanır: gönderici
+/// PTT demetini tek iletimle gönderir, 1 s içinde yeniden iletmez ve son tarihte bırakır
+/// (`runtime::PTT_DEADLINE_NS`). Bekleme yalnız ağdaki yeniden sıralamayı karşılar; ardındaki iki
+/// demet gelmişse (sıra başından ≥ 2 ileride birim tutuluyorsa) beklemeden atlanır. Bekleme
+/// ardındaki demetin gecikmesine eklenir, bu yüzden demet aralığının (200 ms) yarısı. Diğer
+/// şeritler eskisi gibi kayıpsız sıralıdır.
+const PTT_HOLE_SKIP: std::time::Duration = std::time::Duration::from_millis(100);
 /// [PTT-YALIN] PTT şeridinin indeksi.
 const PTT_LANE: usize = 0;
 
@@ -583,6 +585,7 @@ impl Reorder {
     fn release(&mut self, lane: usize, out: &mut VecDeque<Delivered>, cap: usize) -> u64 {
         let lo = &mut self.lanes[lane];
         while out.len() < cap {
+            let held_n = lo.held.len();
             let Some(entry) = lo.held.first_entry() else {
                 lo.hole_since = None;
                 break;
@@ -592,8 +595,9 @@ impl Reorder {
                 if lane != PTT_LANE || !self.ptt_skip {
                     break;
                 }
+                // Ardındaki iki demet gelmişse beklemeden atlanır.
                 let since = *lo.hole_since.get_or_insert_with(std::time::Instant::now);
-                if since.elapsed() < PTT_HOLE_SKIP {
+                if held_n < 2 && since.elapsed() < PTT_HOLE_SKIP {
                     break;
                 }
                 lo.next = *entry.key();
@@ -2316,6 +2320,21 @@ mod tests {
             "PTT atlar, dosya beklemeye devam"
         );
         assert!(run(false).is_empty(), "kapalı kipte atlama yok");
+        // Ardındaki iki demet gelmişse beklemeden atlanır.
+        let mut r = Reorder {
+            ptt_skip: true,
+            ..Reorder::default()
+        };
+        let mut out = VecDeque::new();
+        r.push(tagged(ptt, 1), h, b"p1".to_vec(), &mut out);
+        assert!(out.is_empty(), "tek demet tutulurken bekler");
+        r.push(tagged(ptt, 2), h, b"p2".to_vec(), &mut out);
+        let got: Vec<Vec<u8>> = out.into_iter().map(|d| d.unit).collect();
+        assert_eq!(
+            got,
+            [b"p1".to_vec(), b"p2".to_vec()],
+            "iki demet tutulunca hemen"
+        );
     }
 
     /// [F3] Eksik sıra başı hiçbir sayıda tutulan birimde atlanmaz; gelince hepsi sırayla akar.

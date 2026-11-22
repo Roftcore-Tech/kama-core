@@ -2092,6 +2092,8 @@ pub struct Sender {
     /// [BOŞ-HAT YENİDEN İLETİMİ] Son ACK'ten bu yana boş hatta yeniden iletilen birimler
     /// (birim başına ACK aralığında bir kez); her ACK'te boşalır.
     idle_retx_units: std::collections::BTreeSet<u64>,
+    /// [PTT-YALIN] Gözlem: bırakılan birim sayısı ([`Self::abandon_units`]).
+    diag_abandoned_units: u64,
     /// [BOŞ-HAT YENİDEN İLETİMİ] Gözlem: boş hatta yeniden iletim sayısı.
     diag_idle_retx: u64,
     /// [PTT-KURTARMA · İŞ-35] Şerit başının ACK deliğiyle eşik beklenmeden kurulan yeniden iletim
@@ -2464,6 +2466,7 @@ impl Sender {
             prio_copy_stale: 0,
             prio_copy_deferred: 0,
             idle_retx_units: std::collections::BTreeSet::new(),
+            diag_abandoned_units: 0,
             diag_idle_retx: 0,
             prio_head_hole: 0,
             establish_probe_enabled: true,
@@ -7062,6 +7065,31 @@ impl Sender {
         self.emit_unit_confirmations(recovered);
     }
 
+    /// [PTT-YALIN] Son tarihi geçen birimlerin bırakılması (üst katman kararı: PTT demeti 1 s'den
+    /// sonra işe yaramaz). Birim teyitli birim gibi kararsızdır: gönderim kuyruğundan çıkar, bekleyen
+    /// ARQ ve kopyaları iptal edilir, uçuştaki kopyaları kararsız işaretlenir
+    /// ([`Self::cancel_confirmed_units`]) ve teyit çıktısına yazılır (üst katman bunu bırakma olarak
+    /// süzer). `RecoveredControl`'dan farkı: FEC defterine (kurtarım kaydı, parite iptali,
+    /// `diag_recovered_cancels`) ve soğuk başlangıç kanıtına dokunmaz. Bilinmeyen kimlik etkisiz.
+    pub fn abandon_units(&mut self, ids: &[u64]) {
+        let mut ids = ids.to_vec();
+        ids.sort_unstable();
+        ids.dedup();
+        if ids.is_empty() {
+            return;
+        }
+        self.tx_queue.retain(|u| ids.binary_search(&u.id).is_err());
+        let _ = self.cancel_confirmed_units(&ids, self.last_now_ns);
+        self.diag_abandoned_units = self.diag_abandoned_units.saturating_add(ids.len() as u64);
+        self.emit_unit_confirmations(ids);
+    }
+
+    /// [PTT-YALIN] Gözlem: [`Self::abandon_units`] ile bırakılan birim sayısı.
+    #[must_use]
+    pub fn diag_abandoned_units(&self) -> u64 {
+        self.diag_abandoned_units
+    }
+
     /// [K4G-05b-R · sahip kararı 2026-11-11] TEYİTLİ BİRİME KARAR YOK — motor tarafı iptal.
     ///
     /// `ids`: bir olayda teyit edilen birim kimlikleri, ARTAN SIRALI ve TEKİL. Teyit olayları
@@ -8567,6 +8595,13 @@ impl Sender {
     /// uçuştaki, kararsız olmayan ve onarım sembolü olmayan iletim). Sıralı şeritte teslimi yalnız
     /// baş bekletir.
     fn priority_lane_head(&self, priority_below_id: u64) -> Option<u64> {
+        // [PTT-YALIN] Kopyasız kuralda (`copies == 0`) kopya kapsamı (PTT) yeniden iletilmez, son
+        // tarihte bırakılır: baş hesabına girmez. Girseydi konuşma boyunca baş hep 1 s'den genç bir
+        // PTT birimi olur, metnin baş deliği ve ARQ önceliği hiç çalışmazdı.
+        let skip_below = self
+            .forward_copy_rule
+            .filter(|r| r.copies == 0)
+            .map_or(0, |r| r.below_id);
         self.pending_lost
             .iter()
             .map(|r| r.unit.id)
@@ -8578,7 +8613,7 @@ impl Sender {
                     })
                     .map(|p| p.unit.id),
             )
-            .filter(|&id| id < priority_below_id)
+            .filter(|&id| id < priority_below_id && id >= skip_below)
             .min()
     }
 

@@ -52,7 +52,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use adaptive_transport::ack::{FRAME_TYPE_ACK, FRAME_TYPE_ACK_BITMAP, FRAME_TYPE_ACK_V2};
+use adaptive_transport::ack::{
+    FRAME_TYPE_ACK, FRAME_TYPE_ACK_BITMAP, FRAME_TYPE_ACK_BITMAP_PTT, FRAME_TYPE_ACK_V2,
+};
 use kama_contracts::handles::PeerRef;
 use kama_contracts::s3::{HubHandle, ProtectionContext};
 
@@ -114,7 +116,8 @@ pub fn role_of(frame_type: u8) -> Option<Role> {
         | FRAME_CS_ECHO
         | FRAME_TYPE_ACK
         | FRAME_TYPE_ACK_V2
-        | FRAME_TYPE_ACK_BITMAP => Some(Role::Client),
+        | FRAME_TYPE_ACK_BITMAP
+        | FRAME_TYPE_ACK_BITMAP_PTT => Some(Role::Client),
         FRAME_DATA | FRAME_FEC | FRAME_PARAM | FRAME_DATA_FRAG | FRAME_CS_PROBE | FRAME_CAPS
         | FRAME_PTT => Some(Role::Server),
         _ => None,
@@ -1028,10 +1031,10 @@ mod tests {
         }
     }
 
-    /// T3: tablodaki her tip doğru role, diğer 243 tip `None`.
+    /// T3: tablodaki her tip doğru role, diğer 242 tip `None`.
     #[test]
     fn role_table_maps_every_frame_type() {
-        let client = [0x02, 0x04, 0x07, 0x10, 0x14, 0x15];
+        let client = [0x02, 0x04, 0x07, 0x10, 0x14, 0x15, 0x16];
         let server = [0x00, 0x01, 0x03, 0x05, 0x06, 0x08, 0x09];
         for t in 0..=u8::MAX {
             let want = if client.contains(&t) {

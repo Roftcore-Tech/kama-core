@@ -66,6 +66,10 @@ pub const ACK_DELAY_UNIT_US: u64 = 256;
 /// [ACK-BITMAP · ölçüm prototipi] 0x15 frame_type'ı (client-core çerçeve düzlemi; 0x14 V2 ile aynı
 /// ad-uzayı — `kama-transport-schema` inner_kind kayıt defteri AYRI bir ad-uzayıdır).
 pub const FRAME_TYPE_ACK_BITMAP: u8 = 0x15;
+/// [PTT-YALIN · YETENEK] 0x15 ile bayt-aynı bitmap ACK'i; tek farkı türü: yazan uç yalın PTT
+/// çerçevesini (client-core 0x09) çözer. Yalnız karşı uç CAPS'te yalın PTT bitini bildirdiyse
+/// yazılır (eski uç 0x16 görmez). Tel maliyeti yok.
+pub const FRAME_TYPE_ACK_BITMAP_PTT: u8 = 0x16;
 /// [ACK-BITMAP] 0x15 sabit gövde (bitmap hariç): tür + epoch + largest + delay + arrival_rate +
 /// rx_span + span_first + pair_rate + base + len.
 pub const ACK_BITMAP_HEADER_BYTES: usize = 17;
@@ -94,6 +98,8 @@ pub struct AckBitmap {
     /// [ÇİFT ARALIĞI] İleri hat kapasitesinin alt sınırı (B/s, UDP gövdesi; [`PAIR_RATE_NONE`] =
     /// ölçüm yok). Modül belgesi.
     pub pair_rate: u16,
+    /// [PTT-YALIN · YETENEK] `true` → çerçeve türü 0x16 (yazan uç yalın PTT'yi çözer).
+    pub ptt_lean: bool,
 }
 
 /// [ACK-BITMAP · ÖLÇÜM ARALIĞI] `rx_span` "ölçüm yok" değeri.
@@ -268,6 +274,7 @@ impl AckFrame {
                 rx_span,
                 span_first: (span_first & 0xFFFF) as u16,
                 pair_rate: PAIR_RATE_NONE,
+                ptt_lean: false,
                 base_seq: (base & 0xFFFF) as u16,
                 bits,
             }),
@@ -388,7 +395,11 @@ impl AckFrame {
                 "bitmap tavanı aşıldı"
             );
             let mut out = Vec::with_capacity(ACK_BITMAP_HEADER_BYTES + bm.bits.len());
-            out.push(FRAME_TYPE_ACK_BITMAP);
+            out.push(if bm.ptt_lean {
+                FRAME_TYPE_ACK_BITMAP_PTT
+            } else {
+                FRAME_TYPE_ACK_BITMAP
+            });
             out.push(self.ack_epoch);
             out.extend_from_slice(&self.largest_seq.to_be_bytes());
             out.extend_from_slice(&self.ack_delay.to_be_bytes());
@@ -495,10 +506,14 @@ impl AckFrame {
     /// # Errors
     /// [`Self::decode`] hataları; 0x15'te ayrıca [`TransportError::InvalidAckBitmap`].
     pub fn decode_with_bitmap(buf: &[u8]) -> Result<Self, TransportError> {
-        if buf.first() == Some(&FRAME_TYPE_ACK_BITMAP) {
+        if let Some(&t @ (FRAME_TYPE_ACK_BITMAP | FRAME_TYPE_ACK_BITMAP_PTT)) = buf.first() {
             let mut r = Reader::new(buf);
             let _ = r.u8()?;
-            return Self::decode_bitmap(r);
+            let mut f = Self::decode_bitmap(r)?;
+            if let Some(bm) = f.bitmap.as_mut() {
+                bm.ptt_lean = t == FRAME_TYPE_ACK_BITMAP_PTT;
+            }
+            return Ok(f);
         }
         Self::decode(buf)
     }
@@ -559,6 +574,7 @@ impl AckFrame {
                 rx_span,
                 span_first,
                 pair_rate,
+                ptt_lean: false,
             }),
         })
     }
@@ -578,6 +594,36 @@ fn push_inclusive(out: &mut Vec<u64>, low: u64, high: u64) {
 
 #[cfg(test)]
 mod tests {
+    /// [PTT-YALIN · YETENEK] 0x16, 0x15 ile bayt-aynı; yalnız tür baytı ve çözülen bayrak farklı.
+    #[test]
+    fn bitmap_ptt_capability_type_roundtrips() {
+        let f = AckFrame::bitmap_from_received(
+            [3u64, 5, 7],
+            9,
+            0,
+            1,
+            0,
+            ARRIVAL_RATE_SENTINEL,
+            RX_SPAN_NONE,
+            0,
+        );
+        let plain = f.encode();
+        let mut lean = f.clone();
+        lean.bitmap.as_mut().expect("bitmap").ptt_lean = true;
+        let tagged = lean.encode();
+        assert_eq!(plain[0], FRAME_TYPE_ACK_BITMAP);
+        assert_eq!(tagged[0], FRAME_TYPE_ACK_BITMAP_PTT);
+        assert_eq!(plain[1..], tagged[1..], "gövde bayt-aynı");
+        let d = AckFrame::decode_with_bitmap(&tagged).expect("çözülür");
+        assert!(d.bitmap.as_ref().is_some_and(|b| b.ptt_lean));
+        let d = AckFrame::decode_with_bitmap(&plain).expect("çözülür");
+        assert!(d.bitmap.as_ref().is_some_and(|b| !b.ptt_lean));
+        assert!(
+            AckFrame::decode(&tagged).is_err(),
+            "düz çözücü 0x16'yı reddeder"
+        );
+    }
+
     use super::*;
 
     /// [P3 SR-AUDIT-001] Düşman çerçeve: range_count > MAX_ACK_RANGES decode'da typed reddedilir
