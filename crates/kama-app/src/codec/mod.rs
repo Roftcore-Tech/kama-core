@@ -33,7 +33,7 @@ use core::fmt;
 use kama_contracts::s1::{CompressionPolicy, PreparedUnit};
 
 pub use header::MsgType;
-pub use limits::{AmpLimits, LimitsError};
+pub use limits::{bundle_code_from_ms, bundle_ms_from_code, AmpLimits, LimitsError};
 
 use limits::{FLAGS_NONE, FLAG_COMPRESSED, WHOLE_FILE_HASH_BYTES};
 
@@ -229,7 +229,8 @@ pub enum AppMessage {
         stream_id: u32,
         /// Ses kodlayıcısı (talk-spurt boyunca sabit).
         codec: PttCodec,
-        /// Demet süresi (ms; talk-spurt boyunca sabit).
+        /// Demet süresi kodu (talk-spurt boyunca sabit): ≤ 200 → ms aynen; üstü 10 ms adımlı
+        /// ([`bundle_ms_from_code`]).
         bundle_ms: u8,
     },
     /// 0x07 `PTT_CLOSE`.
@@ -255,7 +256,7 @@ pub enum AppMessage {
         stream_id: u32,
         /// Kodlayıcı kodu (opak `u8`; bu belge yalnız kabı verir).
         codec: u8,
-        /// Demet süresi (ms).
+        /// Demet süresi kodu ([`bundle_ms_from_code`]).
         bundle_ms: u8,
         /// Opak medya yükü (`payload_len u16`).
         payload: Vec<u8>,
@@ -819,6 +820,24 @@ mod tests {
         let unit = encode(&AppMessage::Text { msg_id: 1, text }, &limits()).unwrap();
         assert_eq!(unit.compression_policy, CompressionPolicy::Never);
         assert_eq!(unit.bytes[FLAGS_OFFSET] & FLAG_COMPRESSED, 0);
+    }
+
+    /// [PTT-BANT · aday] `bundle_ms` kodu: ≤ 200 ms bayt-aynı (vektörlerin 20'si dahil); 300 ve
+    /// 420 ms tek bayta sığar; 10 ms'nin katı olmayan ya da 750 ms'yi aşan süre kodlanmaz.
+    #[test]
+    fn bundle_ms_code_is_identity_up_to_200_and_coarse_above() {
+        for ms in 0..=200u16 {
+            assert_eq!(bundle_code_from_ms(ms), Some(ms as u8));
+            assert_eq!(bundle_ms_from_code(ms as u8), ms);
+        }
+        assert_eq!(bundle_code_from_ms(300), Some(210));
+        assert_eq!(bundle_code_from_ms(420), Some(222));
+        assert_eq!(bundle_code_from_ms(750), Some(u8::MAX));
+        assert_eq!(bundle_code_from_ms(205), None);
+        assert_eq!(bundle_code_from_ms(760), None);
+        for code in 0..=u8::MAX {
+            assert_eq!(bundle_code_from_ms(bundle_ms_from_code(code)), Some(code));
+        }
     }
 
     #[test]

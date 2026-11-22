@@ -643,6 +643,41 @@ impl Ptt {
         stream_id: StreamId,
         payload: &[u8],
     ) -> Result<(), PttError> {
+        let deadline = std::time::Instant::now() + PTT_BUNDLE_DEADLINE;
+        self.send_bundle_until(messenger, stream_id, payload, deadline)
+    }
+
+    /// [PTT-BANT · sahip kararı 2026-11-22 "gecikme sesin oluştuğu andan ölçülür"]
+    /// [`Self::send_bundle`] gibi; son tarih sunum anından değil demetin ilk ses çerçevesinin
+    /// oluştuğu andan (`audio_start`) [`PTT_BUNDLE_DEADLINE`] sonradır. Uzun demette (300–420 ms)
+    /// sunum anından 1 s'lik son tarih sesi oluşumdan 1,3–1,42 s sonra hâlâ yeniden iletirdi; bu
+    /// yol Transport'un geç demete bant harcamasını keser.
+    ///
+    /// # Errors
+    ///
+    /// [`Self::send_bundle`] ile aynı.
+    pub fn send_bundle_from<T: KamaTransport>(
+        &mut self,
+        messenger: &mut Messenger<T>,
+        stream_id: StreamId,
+        payload: &[u8],
+        audio_start: std::time::Instant,
+    ) -> Result<(), PttError> {
+        self.send_bundle_until(
+            messenger,
+            stream_id,
+            payload,
+            audio_start + PTT_BUNDLE_DEADLINE,
+        )
+    }
+
+    fn send_bundle_until<T: KamaTransport>(
+        &mut self,
+        messenger: &mut Messenger<T>,
+        stream_id: StreamId,
+        payload: &[u8],
+        deadline: std::time::Instant,
+    ) -> Result<(), PttError> {
         let stream = self
             .outgoing
             .get_mut(&stream_id)
@@ -668,9 +703,7 @@ impl Ptt {
         // sunulur: dar dönüşlü profilde Transport onu tek iletir ve son tarihte bırakır; açılış ve
         // kapanış Reliable kalır (aşağıda). Profil kapalıyken Transport son tarihi yalnız sunum
         // kuyruğunda uygular.
-        let policy = DeliveryPolicy::DeadlineBounded {
-            deadline: std::time::Instant::now() + PTT_BUNDLE_DEADLINE,
-        };
+        let policy = DeliveryPolicy::DeadlineBounded { deadline };
         send_record(messenger, handle, &bundle, policy)
     }
 

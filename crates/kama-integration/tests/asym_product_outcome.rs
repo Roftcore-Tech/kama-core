@@ -44,9 +44,10 @@
 //!
 //! * t = 0: Alice 40 000 B'lik dosyayı gönderir (`FileTransfer::send_file`; 41 parça × ≤ 990 B).
 //! * t = 0,3 s: metin 1 (dosyanın başı).
-//! * t = 0,5 s: PTT açılır (`Ptt::open`, Lyra, 200 ms demet) ve her 200 ms'de 80 B'lik (gerçek Lyra 3,2 kbit/s) bir demet
-//!   gider (≈ 1,6 kbit/s; `kama-integration` `examples/f0_flows.rs` varsayılanı). Demetler Bob dosyayı
-//!   alana dek sürer, sonra `Ptt::close`.
+//! * t = 0,5 s: PTT açılır (`Ptt::open`, Lyra, 200 ms demet) ve her 200 ms'de 80 B'lik bir demet
+//!   gider (gerçek Lyra 3,2 kbit/s: 20 ms'de 8 B; [PTT-BANT · 2026-11-22] eskiden 40 B yapay yük).
+//!   Yük ve demet süresi `KAMA_ASYM_PTT_BYTES` / `KAMA_ASYM_PTT_MS` ile değişir ([`ptt_shape`]).
+//!   Demetler Bob dosyayı alana dek sürer, sonra `Ptt::close`.
 //! * Bob dosyanın yarısını (parça sayısının yarısı) aldığı turda metin 2 (dosyanın ortası).
 //!
 //! # Ölçülenler (koşu başına)
@@ -54,7 +55,9 @@
 //! * metin gecikmesi: `send_text` → Bob'da `TextReceived`;
 //! * alındı dönüşü: Bob'da `TextReceived` (alındının sunulduğu an) → Alice'te `Delivered`; ayrıca
 //!   gidiş-dönüş (`send_text` → `Delivered`);
-//! * PTT: ilk demetin gecikmesi, demet başına gecikme (planlanan an → Bob'da `PttAudio`), dosya
+//! * PTT: ilk demetin gecikmesi, demet başına gecikme (sesin oluştuğu an = demetin ilk 20 ms
+//!   çerçevesinin başı, planlanan an − demet süresi → Bob'da `PttAudio`; [PTT-BANT · sahip kararı
+//!   2026-11-22] eskiden planlanan sunum anından), dosya
 //!   sürerken teslimler arası en büyük boşluk;
 //! * dosya: `send_file` → Bob'da `FileEvent::Received` (bayt bayt doğrulanır); Alice'te
 //!   `FileEvent::Delivered` ayrıca;
@@ -152,10 +155,10 @@
 //!
 //! # PTT teslim sözleşmesi (sahip kararı 2026-11-22; ölçümden önce)
 //!
-//! PTT media'daki gibi: demet sunumundan sonra ≤ 1 s ([`PTT_BOUND`]) içinde Bob'a varırsa
+//! PTT media'daki gibi: sesin oluştuğu andan (demet başı; 2026-11-22, önce sunum anı) sonra ≤ 1 s ([`PTT_BOUND`]) içinde Bob'a varırsa
 //! zamanında sayılır; geç kalan ya da hiç gelmeyen demet atlanır ve kaybı kodek örter. PTT ölçütü
 //! (genel ve evre başına): zamanında demet oranı ≥ %75 ([`PTT_TIMELY_MIN_PERMILLE`]; payda
-//! planlanan + uygulamaca kabul edilmeyen demet). Bant ölçütü: PTT bir yönde ≤ 4,5 kbit/s
+//! planlanan + uygulamaca kabul edilmeyen demet). Bant ölçütü: PTT bir yönde ≤ 5 kbit/s (2026-11-22; önce 4,5)
 //! (media'nın iki yönlü görüşmesinin bir yönü); 5,3 kbit/s'lik yedekli biçim reddedildi.
 //! CANLILIK bu sözleşmede: uygulamaca kabul edilmeyen demet yok ve art arda teslim edilmeyen demet
 //! dizisi [`LIVENESS_HORIZON`]'dan uzun değil (akış ölmez). Önceki "her demet ≤ 1 s / her demet
@@ -193,7 +196,7 @@ use client_core::runtime::{AckFormat, LinkRates};
 use client_core::transport::{ClientTransport, ClientTransportConfig};
 use client_core::wire::{decode_data, decode_ptt, FRAME_FEC, FRAME_PTT, FRAME_RECOVERED};
 use kama_app::clock::{MonotonicClock, SystemClock};
-use kama_app::codec::{decode, AmpLimits, AppMessage, PttCodec};
+use kama_app::codec::{bundle_code_from_ms, decode, AmpLimits, AppMessage, PttCodec};
 use kama_app::file_transfer::{FileEvent, FileTransfer};
 use kama_app::messaging::{Messenger, MessengerEvent, MsgId};
 use kama_app::ptt::{Ptt, PttError, PttEvent, StreamId};
@@ -224,8 +227,59 @@ const UDP_IP_OVERHEAD: u64 = 28;
 /// açılış, kapanış, kopya, yeniden iletim, kaybolan ve anlaşma öncesi PTT datagramları dahil).
 const PTT_BAND_MAX_BPS: u64 = 5_000;
 
-/// [PTT-BANT] Demet kadansı (fikstürün PTT zamanlaması, modül belgesi).
-const PTT_CADENCE: Duration = Duration::from_millis(200);
+/// [PTT-BANT] Fikstürün PTT biçimi: demet yükü, demet süresi (= kadans) ve `bundle_ms` kodu.
+#[derive(Debug, Clone, Copy)]
+struct PttShape {
+    /// Demet yükü (bayt). Varsayılan gerçek Lyra 3,2 kbit/s: 200 ms × 8 B / 20 ms = 80 B.
+    bytes: usize,
+    /// Demet süresi ve kadansı.
+    period: Duration,
+    /// `PTT_OPEN.bundle_ms` kodu ([`kama_app::codec::bundle_code_from_ms`]).
+    code: u8,
+    /// [PTT-BANT · kıyas] `KAMA_ASYM_PTT_PRESS_MS` verilirse basış tam bu kadar demettir (konuşma
+    /// süresi ÷ demet süresi): kollar aynı konuşma süresiyle kıyaslanır. Yoksa hücrenin kuralı.
+    press_bundles: Option<u32>,
+}
+
+/// Sonuç satırı için PTT biçimi.
+fn ptt_shape_label() -> String {
+    let s = ptt_shape();
+    format!(
+        "yük={}B/demet={}ms/basış={}",
+        s.bytes,
+        s.period.as_millis(),
+        s.press_bundles.map_or("hücre".to_string(), |n| format!(
+            "{}ms",
+            (s.period * n).as_millis()
+        )),
+    )
+}
+
+/// Lyra çerçeve süresi (oluşum saati ve çerçeve sayımı).
+const LYRA_FRAME: Duration = Duration::from_millis(20);
+
+/// [PTT-BANT] `KAMA_ASYM_PTT_BYTES` (varsayılan 80) ve `KAMA_ASYM_PTT_MS` (varsayılan 200).
+fn ptt_shape() -> PttShape {
+    let ms = u16::try_from(env_u64("KAMA_ASYM_PTT_MS", 200)).expect("KAMA_ASYM_PTT_MS u16");
+    let bytes = usize::try_from(env_u64("KAMA_ASYM_PTT_BYTES", 80)).expect("bayt");
+    assert!(bytes >= 4, "KAMA_ASYM_PTT_BYTES ≥ 4 (ilk 4 B demet sırası)");
+    let press_bundles = std::env::var("KAMA_ASYM_PTT_PRESS_MS").ok().map(|v| {
+        let press: u32 = v.parse().expect("KAMA_ASYM_PTT_PRESS_MS sayı");
+        assert_eq!(
+            press % u32::from(ms),
+            0,
+            "basış süresi demet süresinin katı olmalı (ör. 8400 = 200/300/420 ms'nin ortak katı)"
+        );
+        press / u32::from(ms)
+    });
+    PttShape {
+        press_bundles,
+        bytes,
+        period: Duration::from_millis(u64::from(ms)),
+        code: bundle_code_from_ms(ms)
+            .expect("KAMA_ASYM_PTT_MS kodlanabilir (≤ 200 ya da 10 ms katı ≤ 750)"),
+    }
+}
 
 /// Koşunun ACK biçimi (`KAMA_ASYM_ACK_FORMAT`, varsayılan `bitmap`).
 fn fixture_ack_format() -> AckFormat {
@@ -238,24 +292,26 @@ fn fixture_ack_format() -> AckFormat {
 /// kopya, konuşmadan sonra çıkan yeniden iletim dahil) tel baytı ÷ konuşma süresi (planlanan demet
 /// × kadans). Payda konuşma süresidir, datagramların yayıldığı süre değil: geç yeniden iletim
 /// ortalamayı seyreltemez. PTT datagramı ya da demet yoksa `None`.
-fn ptt_band_bps(wire: &[(Instant, u64)], planned_bundles: u32) -> Option<u64> {
+fn ptt_band_bps(wire: &[(Instant, u64)], planned_bundles: u32, cadence: Duration) -> Option<u64> {
     // (kanıt: `ptt_band_gate_passes_the_lean_payload_and_fails_the_80_byte_control`)
     if wire.is_empty() || planned_bundles == 0 {
         return None;
     }
-    let span = PTT_CADENCE * planned_bundles;
-    let bits: u64 = wire.iter().map(|w| w.1 * 8).sum();
-    u64::try_from(u128::from(bits) * 1_000_000_000 / span.as_nanos().max(1)).ok()
+    window_bps(wire.iter().map(|w| w.1).sum(), cadence * planned_bundles)
+}
+
+/// Bayt ÷ süre → bit/s (süre 0 → `None`).
+fn window_bps(bytes: u64, span: Duration) -> Option<u64> {
+    if span.is_zero() {
+        return None;
+    }
+    u64::try_from(u128::from(bytes * 8) * 1_000_000_000 / span.as_nanos()).ok()
 }
 
 // ── Senaryo ──────────────────────────────────────────────────────────────────────────────────
 const FILE_BYTES: usize = 40_000;
 const TEXT1_AT: Duration = Duration::from_millis(300);
 const PTT_AT: Duration = Duration::from_millis(500);
-const PTT_BUNDLE_MS: u8 = 200;
-/// [PTT-BANT · sahip kararı 2026-11-22] Gerçek ses yükü: Lyra 3,2 kbit/s = 20 ms'de 8 B →
-/// 200 ms demette 80 B (kama-media tel ölçümü, S8 hücresi). Eski 40 B yapay yüktü.
-const PTT_PAYLOAD_BYTES: usize = 80;
 const TEXT1: &str = "metin 1: dosyanin basinda gonderildi";
 const TEXT2: &str = "metin 2: dosyanin ortasinda gonderildi";
 
@@ -374,11 +430,14 @@ struct Ledger {
     ack_wire: Vec<(u64, u8)>,
     /// [PTT-BANT · #175 dış inceleme] Bu ucun mühürlediği, PTT kaydı taşıyan HER datagram (ilk
     /// iletim, kopya, yeniden iletim; yolda kaybolanlar dahil): (an, tel boyu = UDP gövdesi +
-    /// UDP/IP 28 B). Yalın 0x09 ve veri çerçevesi (0x00) ikisi de.
-    ptt_wire: Vec<(Instant, u64)>,
+    /// UDP/IP 28 B, yalın 0x09 mu, taşıdığı kayıt). Yalın 0x09 ve veri çerçevesi (0x00) ikisi de.
+    ptt_wire: Vec<PttWire>,
     /// [PTT-BANT] Bu ucun mühürlediği yalın PTT çerçevesi (0x09) sayısı.
     ptt_lean_tx: u64,
 }
+
+/// [PTT-BANT] Mühürlenen PTT datagramı: (an, tel boyu, yalın 0x09 mu, taşıdığı kayıt).
+type PttWire = (Instant, u64, bool, Item);
 
 /// [FEC-TEŞHİS] Çerçeve türü sayacı (DATA dışı).
 fn note_kind(l: &mut Ledger, frame: &[u8], sealed: bool) {
@@ -433,10 +492,14 @@ impl PacketProtection for Tap {
         if let Some(c) = self.classify(frame) {
             let now = Instant::now();
             let mut l = lock(&self.ledger);
-            if let Ok(Item::PttOpen(_) | Item::PttClose(_) | Item::Bundle(_)) = c {
+            if let Ok(item @ (Item::PttOpen(_) | Item::PttClose(_) | Item::Bundle(_))) = c {
                 if l.ptt_wire.len() < LEDGER_CAP {
-                    l.ptt_wire
-                        .push((now, sealed.bytes.len() as u64 + UDP_IP_OVERHEAD));
+                    l.ptt_wire.push((
+                        now,
+                        sealed.bytes.len() as u64 + UDP_IP_OVERHEAD,
+                        frame.first() == Some(&FRAME_PTT),
+                        item,
+                    ));
                 }
                 if frame.first() == Some(&FRAME_PTT) {
                     l.ptt_lean_tx += 1;
@@ -858,6 +921,9 @@ struct Texts {
 
 struct Bundle {
     planned: Instant,
+    /// [PTT-BANT · sahip kararı 2026-11-22] Sesin oluştuğu an: demetin ilk 20 ms çerçevesinin
+    /// başı (planlanan an − demet süresi). Gecikme buradan ölçülür.
+    created: Instant,
     accepted: Instant,
     received: Option<Instant>,
 }
@@ -999,6 +1065,7 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
     let mut texts: Vec<Texts> = (0..2 + cell.texts_at.len())
         .map(|_| Texts::default())
         .collect();
+    let shape = ptt_shape();
     let mut ptt_open: Option<(StreamId, Instant)> = None;
     let mut ptt_closed = false;
     let mut ptt_closed_at: Option<Instant> = None;
@@ -1049,31 +1116,39 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
         if ptt_open.is_none() && el >= PTT_AT {
             let stream = alice
                 .ptt
-                .open(&mut alice.m, id(BOB), PttCodec::Lyra, PTT_BUNDLE_MS)
+                .open(&mut alice.m, id(BOB), PttCodec::Lyra, shape.code)
                 .expect("PTT açılır");
             ptt_open = Some((stream, now));
         }
-        let ptt_running = match cell.ptt_until {
-            Some(until) => el < until,
-            None => !files_done,
+        let ptt_running = match (shape.press_bundles, cell.ptt_until) {
+            (Some(n), _) => next_bundle < n,
+            (None, Some(until)) => el < until,
+            (None, None) => !files_done,
         };
         if let (Some((stream, opened)), false) = (ptt_open, ptt_closed) {
             if ptt_running {
-                // Konuşan sabit hızda konuşur: demet k, açılıştan k × 200 ms sonra hazırdır.
+                // Konuşan sabit hızda konuşur: demet k, açılıştan k × demet süresi sonra hazırdır;
+                // sesi bir demet süresi önce oluşmaya başladı (son tarih oradan sayılır).
                 loop {
-                    let planned =
-                        opened + Duration::from_millis(u64::from(PTT_BUNDLE_MS)) * next_bundle;
-                    if planned > Instant::now() {
+                    let planned = opened + shape.period * next_bundle;
+                    if planned > Instant::now()
+                        || shape.press_bundles.is_some_and(|n| next_bundle >= n)
+                    {
                         break;
                     }
-                    let mut payload = vec![0x5Au8; PTT_PAYLOAD_BYTES];
+                    let created = planned.checked_sub(shape.period).unwrap_or(planned);
+                    let mut payload = vec![0x5Au8; shape.bytes];
                     payload[..4].copy_from_slice(&next_bundle.to_be_bytes());
-                    match alice.ptt.send_bundle(&mut alice.m, stream, &payload) {
+                    match alice
+                        .ptt
+                        .send_bundle_from(&mut alice.m, stream, &payload, created)
+                    {
                         Ok(()) => {
                             bundles.insert(
                                 next_bundle,
                                 Bundle {
                                     planned,
+                                    created,
                                     accepted: Instant::now(),
                                     received: None,
                                 },
@@ -1176,11 +1251,11 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
     let mut unaccepted: Vec<Instant> = Vec::new();
     if let Some((_, opened)) = ptt_open {
         let end = ptt_closed_at.unwrap_or_else(Instant::now);
-        let period = Duration::from_millis(u64::from(PTT_BUNDLE_MS));
+        let period = shape.period;
         let mut k = next_bundle;
         loop {
             let planned = opened + period * k;
-            if planned > end {
+            if planned > end || shape.press_bundles.is_some_and(|n| k >= n) {
                 break;
             }
             unaccepted.push(planned);
@@ -1533,7 +1608,7 @@ impl Run {
             e.2 += 1;
             match b.received {
                 Some(r) => {
-                    let d = self.since(r, b.planned);
+                    let d = self.since(r, b.created);
                     e.0 = e.0.max(d);
                     if d <= PTT_BOUND {
                         e.3 += 1;
@@ -1592,20 +1667,63 @@ impl Run {
         // mühürlenmiş her datagram (kopya, yeniden iletim, yolda kaybolan dahil), IPv4/UDP dahil.
         // Bitmap kolunda yalın çerçeve (0x09) tele çıkmış olmalı: çıkmadıysa bant hedefi sınanmadı.
         let bitmap = fixture_ack_format() == AckFormat::Bitmap;
+        let shape = ptt_shape();
         for (side, ledger) in [("alice", &self.alice), ("bob", &self.bob)] {
             let planned =
                 u32::try_from(self.bundles.len() + self.unaccepted.len()).unwrap_or(u32::MAX);
-            let Some(bps) = ptt_band_bps(&ledger.ptt_wire, planned) else {
+            let wire: Vec<(Instant, u64)> = ledger.ptt_wire.iter().map(|w| (w.0, w.1)).collect();
+            let Some(bps) = ptt_band_bps(&wire, planned, shape.period) else {
                 continue;
             };
             let lean_ok = !bitmap || ledger.ptt_lean_tx > 0;
             let band_ok = bps <= PTT_BAND_MAX_BPS;
             println!(
-                "ÖLÇÜT {tag} ptt_bant yön={side} bit_s={bps} (en çok {PTT_BAND_MAX_BPS}) datagram={} yalın_0x09={} → {}",
+                "ÖLÇÜT {tag} ptt_bant yön={side} bit_s={bps} (en çok {PTT_BAND_MAX_BPS}) datagram={} yalın_0x09={} yük={} B demet={} ms → {}",
                 ledger.ptt_wire.len(),
                 ledger.ptt_lean_tx,
+                shape.bytes,
+                shape.period.as_millis(),
                 if band_ok && lean_ok { "GEÇTİ" } else { "KALDI" },
             );
+            // [PTT-BANT · 2026-11-22] Bant pencereleri: oturum başı (açılış → ilk yalın 0x09;
+            // eş yalın PTT'yi kanıtlamadan önceki veri çerçeveli trafik) ve sürekli (ilk 0x09 →
+            // konuşma sonu; konuşmadan sonra çıkan yeniden iletim paya girer). Datagram türleri.
+            if let Some((_, opened)) = self.ptt_open {
+                let press_end = opened + shape.period * planned;
+                let first_lean = ledger.ptt_wire.iter().find(|w| w.2).map(|w| w.0);
+                let split = first_lean.unwrap_or(press_end).min(press_end);
+                let (pre, post): (Vec<_>, Vec<_>) =
+                    ledger.ptt_wire.iter().partition(|w| w.0 < split);
+                let bytes = |v: &[&PttWire]| v.iter().map(|w| w.1).sum::<u64>();
+                let start_bps = window_bps(bytes(&pre), self.since(split, opened));
+                let steady_bps = window_bps(bytes(&post), self.since(press_end, split));
+                let count =
+                    |f: &dyn Fn(&PttWire) -> bool| ledger.ptt_wire.iter().filter(|w| f(w)).count();
+                let lean = count(&|w| w.2);
+                let data = count(&|w| !w.2);
+                let opens = count(&|w| matches!(w.3, Item::PttOpen(_)));
+                let closes = count(&|w| matches!(w.3, Item::PttClose(_)));
+                let bundle_tx = count(&|w| matches!(w.3, Item::Bundle(_)));
+                let unique: HashSet<Item> = ledger
+                    .ptt_wire
+                    .iter()
+                    .filter(|w| matches!(w.3, Item::Bundle(_)))
+                    .map(|w| w.3)
+                    .collect();
+                let data_bundles = count(&|w| !w.2 && matches!(w.3, Item::Bundle(_)));
+                println!(
+                    "ÖLÇÜT {tag} ptt_bant_pencere yön={side} başlangıç=[0, +{} s) bit_s={} datagram={} sürekli=[+{} s, +{} s] bit_s={} datagram={} | yalın_0x09={lean} veri_çerçeveli={data} (demet {data_bundles}) açılış_iletimi={opens} kapanış_iletimi={closes} demet_iletimi={bundle_tx} tekil_demet={} demet_fazla_iletim={}",
+                    secs(self.since(split, opened)),
+                    start_bps.map_or("-".to_string(), |b| b.to_string()),
+                    pre.len(),
+                    secs(self.since(split, opened)),
+                    secs(self.since(press_end, opened)),
+                    steady_bps.map_or("-".to_string(), |b| b.to_string()),
+                    post.len(),
+                    unique.len(),
+                    bundle_tx.saturating_sub(unique.len()),
+                );
+            }
             if !band_ok {
                 failed.push(format!("PTT/bant/{side}"));
             }
@@ -1613,6 +1731,7 @@ impl Run {
                 failed.push(format!("PTT/yalın-yok/{side}"));
             }
         }
+        self.ptt_audio_report(&tag);
         // [CANLILIK · 2026-11-21] Planlanan her demet (kabul edilmeyenler dahil) ufukta teslim.
         // [PTT-SÖZLEŞME · 2026-11-22] Akış ölmez: art arda ufukta teslim edilmeyen demetlerin
         // planlanma aralığı ufku aşmaz (tek tek atlanan demet kodekte örtülür).
@@ -1622,7 +1741,7 @@ impl Run {
         for (&k, b) in &self.bundles {
             let ok = b
                 .received
-                .is_some_and(|r| self.since(r, b.planned) <= LIVENESS_HORIZON);
+                .is_some_and(|r| self.since(r, b.created) <= LIVENESS_HORIZON);
             if ok {
                 run_start = None;
             } else {
@@ -1746,7 +1865,13 @@ impl Run {
             comp
         );
         println!(
-            "ÜRÜN-SONUÇ {tag} {} {bytes} düşen_ölçüt={failed:?}",
+            "ÜRÜN-SONUÇ {tag} {} ptt_biçim={} {} {bytes} düşen_ölçüt={failed:?}",
+            if fixture_ack_format() == AckFormat::Bitmap {
+                "yol=bitmap aday (ürün varsayılanı V2)"
+            } else {
+                "yol=v2 (ürün varsayılanı)"
+            },
+            ptt_shape_label(),
             line.join(" ")
         );
         failed
@@ -2090,7 +2215,7 @@ impl Run {
         for (&k, b) in &self.bundles {
             let late = b
                 .received
-                .is_none_or(|r| self.since(r, b.planned) > Duration::from_secs(2));
+                .is_none_or(|r| self.since(r, b.created) > Duration::from_secs(2));
             if !late || shown >= 5 {
                 continue;
             }
@@ -2143,6 +2268,52 @@ impl Run {
         }
     }
 
+    /// [PTT-BANT · kıyas] Bant düşüşü ses azaltarak mı geldi: oluşan / teslim edilen / zamanında
+    /// teslim edilen Lyra çerçevesi ve gönderilen ses yükü baytı (tekil ve telde, yeniden iletim
+    /// dahil). Konuşma süresi = planlanan demet × demet süresi (bant paydası).
+    fn ptt_audio_report(&self, tag: &str) {
+        let shape = ptt_shape();
+        let fpb = u64::try_from(shape.period.as_nanos() / LYRA_FRAME.as_nanos()).unwrap_or(0);
+        let planned = self.bundles.len() as u64 + self.unaccepted.len() as u64;
+        let received = self
+            .bundles
+            .values()
+            .filter(|b| b.received.is_some())
+            .count() as u64;
+        let timely = self
+            .bundles
+            .values()
+            .filter(|b| {
+                b.received
+                    .is_some_and(|r| self.since(r, b.created) <= PTT_BOUND)
+            })
+            .count() as u64;
+        let wire_tx: u64 = self
+            .bundles
+            .keys()
+            .map(|&k| {
+                u64::from(
+                    self.alice
+                        .tx_count
+                        .get(&Item::Bundle(k))
+                        .copied()
+                        .unwrap_or(0),
+                )
+            })
+            .sum();
+        let bytes = shape.bytes as u64;
+        println!(
+            "ÖLÇÜT {tag} ptt_ses konuşma={} s çerçeve_oluşan={} çerçeve_teslim={} çerçeve_zamanında(oluşumdan ≤ {} s)={} ses_yükü_tekil={} B ses_yükü_telde={} B (demet iletimi {wire_tx})",
+            secs(shape.period * u32::try_from(planned).unwrap_or(u32::MAX)),
+            planned * fpb,
+            received * fpb,
+            secs(PTT_BOUND),
+            timely * fpb,
+            self.bundles.len() as u64 * bytes,
+            wire_tx * bytes,
+        );
+    }
+
     fn ptt_report(
         &self,
         tag: &str,
@@ -2188,7 +2359,7 @@ impl Run {
                 lane.push((item, None));
                 continue;
             };
-            let delay = self.since(rx, b.planned);
+            let delay = self.since(rx, b.created);
             max_delay = max_delay.max(delay);
             if file_end.is_none_or(|f| b.planned <= f) {
                 if let Some(p) = prev_rx {
@@ -2230,8 +2401,8 @@ impl Run {
                     println!(
                         "ÖLÇÜT {tag} ptt demet {seq}: gecikme={} s ilk_çıkış=+{} s ilk_varış=+{} s iletim={} → KALDI",
                         secs(delay),
-                        opt_secs(self.alice.first_tx.get(&item).map(|(a, _)| self.since(*a, b.planned))),
-                        opt_secs(arrival.map(|a| self.since(a, b.planned))),
+                        opt_secs(self.alice.first_tx.get(&item).map(|(a, _)| self.since(*a, b.created))),
+                        opt_secs(arrival.map(|a| self.since(a, b.created))),
                         self.alice.tx_count.get(&item).copied().unwrap_or(0),
                     );
                 }
@@ -2265,8 +2436,24 @@ impl Run {
         } else {
             Verdict::Fail
         };
+        // [PTT-BANT · 2026-11-22] Saat değişikliği görünsün: eski saat (sunum = planlanan an) yalnız
+        // raporlanır; ölçüt oluşum saatiyle (demet başı) verilir.
+        let timely_presented = self
+            .bundles
+            .values()
+            .filter(|b| {
+                b.received
+                    .is_some_and(|r| self.since(r, b.planned) <= PTT_BOUND)
+            })
+            .count();
+        let first_presented = self
+            .bundles
+            .values()
+            .find_map(|b| b.received.map(|r| self.since(r, b.planned)));
         println!(
-            "ÖLÇÜT {tag} ptt-sözleşme: zamanında={timely}/{total} (en az binde {PTT_TIMELY_MIN_PERMILLE}) → {}",
+            "ÖLÇÜT {tag} ptt-sözleşme: zamanında(oluşum)={timely}/{total} (en az binde {PTT_TIMELY_MIN_PERMILLE}) zamanında(sunum, eski saat, yalnız rapor)={timely_presented}/{total} ilk_ses(oluşum)={} s ilk_ses(sunum)={} s → {}",
+            opt_secs(first.map(|f| f.0)),
+            opt_secs(first_presented),
             verdict.label()
         );
         println!(
@@ -2527,24 +2714,34 @@ fn gate_forward_fixed_return_delay_varies() {
     run_cell(Cell::return_delay_varies(), true);
 }
 
-/// [PTT-BANT · #175 dış inceleme] Bant ölçütünün iki yönlü kanıtı (ağ koşusu yok): 200 ms
-/// kadansta yalın 0x09 datagramı 66 B sabit pay + yük. 40 B yük → 106 B → 4 240 bit/s GEÇER;
-/// gerçek Lyra 80 B yükü bugünkü biçimle → 146 B → 5 840 bit/s KALIR (sınır 5 000).
+/// [PTT-BANT · 2026-11-22, tavan 5 000 bit/s] Bant ölçütünün iki yönlü kanıtı (ağ koşusu yok).
+/// Yalın 0x09 datagramı: UDP/IP 28 + mühür 22 + çerçeve 3 = 53 B sabit pay + AMP kaydı. Gerçek Lyra
+/// (3,2 kbit/s = 20 ms'de 8 B):
+/// * bugünkü biçim, 200 ms (80 B yük, 13 B tam `MEDIA_BUNDLE` başlığı) → 146 B → 5 840 bit/s KALIR;
+/// * 300 ms demet, tam başlık (120 B yük) → 186 B → 4 960 bit/s GEÇER (40 bit/s pay);
+/// * 420 ms demet, tam başlık (168 B yük) → 234 B → 4 457 bit/s GEÇER.
+///
+/// Payda her kolda konuşma süresidir: planlanan demet × o kolun demet süresi.
 #[test]
 fn ptt_band_gate_passes_the_lean_payload_and_fails_the_80_byte_control() {
     let t0 = Instant::now();
-    let spurt = |wire: u64| -> Vec<(Instant, u64)> {
-        (0..50u32).map(|i| (t0 + PTT_CADENCE * i, wire)).collect()
+    let spurt = |wire: u64, cadence: Duration, n: u32| -> Vec<(Instant, u64)> {
+        (0..n).map(|i| (t0 + cadence * i, wire)).collect()
     };
-    let lean = ptt_band_bps(&spurt(106), 50).expect("bant");
-    assert_eq!(lean, 4_240);
-    assert!(lean <= PTT_BAND_MAX_BPS);
-    let control = ptt_band_bps(&spurt(146), 50).expect("bant");
-    assert_eq!(control, 5_840);
-    assert!(control > PTT_BAND_MAX_BPS);
-    assert_eq!(ptt_band_bps(&[], 50), None);
+    let ms = Duration::from_millis;
+    let today = ptt_band_bps(&spurt(53 + 13 + 80, ms(200), 50), 50, ms(200)).expect("bant");
+    assert_eq!(today, 5_840);
+    assert!(today > PTT_BAND_MAX_BPS);
+    // 300 ms, tam başlık (120 B yük) → 186 B → 4 960 bit/s: sınırın 40 bit/s altında.
+    let mid = ptt_band_bps(&spurt(53 + 13 + 120, ms(300), 50), 50, ms(300)).expect("bant");
+    assert_eq!(mid, 4_960);
+    assert!(mid <= PTT_BAND_MAX_BPS);
+    let long = ptt_band_bps(&spurt(53 + 13 + 168, ms(420), 50), 50, ms(420)).expect("bant");
+    assert_eq!(long, 4_457);
+    assert!(long <= PTT_BAND_MAX_BPS);
+    assert_eq!(ptt_band_bps(&[], 50, ms(200)), None);
     // Konuşmadan sonra yayılan yeniden iletim paydayı büyütmez.
-    let mut late = spurt(106);
-    late.push((t0 + Duration::from_secs(60), 106));
-    assert!(ptt_band_bps(&late, 50).expect("bant") > 4_240);
+    let mut late = spurt(53 + 13 + 168, ms(420), 50);
+    late.push((t0 + Duration::from_secs(60), 234));
+    assert!(ptt_band_bps(&late, 50, ms(420)).expect("bant") > 4_457);
 }

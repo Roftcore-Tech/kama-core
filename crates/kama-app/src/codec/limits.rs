@@ -92,6 +92,48 @@ pub const SIGNALING_BLOB_PREFIX_BYTES: usize = U16_BYTES;
 /// §3 0x0A MEDIA_BUNDLE gövde öneki: `stream_id u32 · codec u8 · bundle_ms u8 · payload_len u16`.
 pub const MEDIA_BUNDLE_PREFIX_BYTES: usize = U32_BYTES + U8_BYTES + U8_BYTES + U16_BYTES;
 
+/// [PTT-BANT · aday, sahip onayı 2026-11-22 "AMP biçim değişikliği test için"] `bundle_ms u8`
+/// alanının (`PTT_OPEN`, `MEDIA_BUNDLE`) kodlaması: kod ≤ bu değer ise demet süresi kodun kendisidir
+/// (ms; bugünkü bütün değerler, vektörler dahil, bayt-aynı); üstündeki kodlar
+/// [`BUNDLE_MS_COARSE_STEP`] adımlıdır. Bkz. [`bundle_ms_from_code`].
+pub const BUNDLE_MS_EXACT_MAX: u8 = 200;
+
+/// [PTT-BANT · aday] [`BUNDLE_MS_EXACT_MAX`]'ın üstündeki kodların adımı (ms): kod `c` →
+/// `200 + (c − 200) × 10` ms; en büyük kod 255 → 750 ms.
+pub const BUNDLE_MS_COARSE_STEP: u16 = 10;
+
+/// [PTT-BANT · aday] `bundle_ms` kodu → demet süresi (ms). Kod ≤ 200 → aynen; üstü 10 ms adımlı
+/// (201 → 210 ms … 222 → 420 ms … 255 → 750 ms). Eski alıcı kodu ms okur: motor yalnız eşitlik
+/// denetler (etkilenmez), oynatma tamponu (varsayılan kapalı) 200 ms üstü demeti kod kadar ms
+/// aralıkla yerleştirir.
+#[must_use]
+pub const fn bundle_ms_from_code(code: u8) -> u16 {
+    if code <= BUNDLE_MS_EXACT_MAX {
+        code as u16
+    } else {
+        BUNDLE_MS_EXACT_MAX as u16 + (code - BUNDLE_MS_EXACT_MAX) as u16 * BUNDLE_MS_COARSE_STEP
+    }
+}
+
+/// [PTT-BANT · aday] Demet süresi (ms) → `bundle_ms` kodu; 200 ms'nin üstünde 10 ms'nin katı
+/// olmayan ya da 750 ms'yi aşan süre → `None`.
+#[must_use]
+pub const fn bundle_code_from_ms(ms: u16) -> Option<u8> {
+    let exact = BUNDLE_MS_EXACT_MAX as u16;
+    if ms <= exact {
+        return Some(ms as u8);
+    }
+    let over = ms - exact;
+    if !over.is_multiple_of(BUNDLE_MS_COARSE_STEP) {
+        return None;
+    }
+    let steps = over / BUNDLE_MS_COARSE_STEP;
+    if steps > (u8::MAX - BUNDLE_MS_EXACT_MAX) as u16 {
+        return None;
+    }
+    Some(BUNDLE_MS_EXACT_MAX + steps as u8)
+}
+
 /// §3 0x0B FILE_RECEIPT gövdesi (K4G-09; §4 A2 `FILE_RECEIPT_BODY_BYTES`): `transfer_id u64`
 /// (`FILE_BEGIN.transfer_id` ile aynı genişlik ve kodlama) `· status u8` — sabit 9 B.
 pub const FILE_RECEIPT_BODY_BYTES: usize = U64_BYTES + U8_BYTES;

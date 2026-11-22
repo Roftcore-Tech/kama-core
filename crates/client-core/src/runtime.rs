@@ -3199,7 +3199,8 @@ async fn client_task(
     // [PTT-YALIN] Veri alıcısı 0x09'u çözer mi. Kanıt: ondan gelen ilk 0x15 ACK'i (0x15 yazan sürüm
     // 0x09'u da çözer). O ana dek PTT bugünkü çerçeve ve kopya kuralıyla gider.
     let mut ptt_lean_peer = false;
-    // [PTT-YALIN] Yalın kipte sunulan PTT birimlerinin sunum anı; son tarihte teyitsizse bırakılır.
+    // [PTT-YALIN] Yalın kipte sunulan PTT birimlerinin bırakma anı (ns; uygulamanın son tarihi, en
+    // çok sunumdan `PTT_DEADLINE_NS`); o anda teyitsizse bırakılır.
     let mut ptt_offered_at: BTreeMap<u64, u64> = BTreeMap::new();
     // [PTT-YALIN · BAŞLANGIÇ] İlk 0x16'dan önce son tarihli sunulan PTT birimi (veri çerçevesiyle
     // gider, bırakılmaz: eşin yalın PTT'yi bildiği henüz kanıtlanmadı). 0x16 gelince
@@ -4055,10 +4056,16 @@ async fn client_task(
                     } else {
                         HDR_DATA
                     };
+                    // [PTT-BANT · sahip kararı 2026-11-22 "gecikme sesin oluştuğu andan"] Bırakma
+                    // anı uygulamanın son tarihidir (kalan süre `deadline_ns`), en çok
+                    // `PTT_DEADLINE_NS`: uzun demette (300–420 ms) son tarih oluşumdan sayılır ve
+                    // sunumdan 1 s'den önce gelir. Eskiden sunumdan sabit 1 s'ydi.
+                    let ptt_expiry_ns =
+                        now.saturating_add(deadline_ns.map_or(PTT_DEADLINE_NS, |d| d.min(PTT_DEADLINE_NS)));
                     if ptt_lean {
-                        ptt_offered_at.insert(id, now);
+                        ptt_offered_at.insert(id, ptt_expiry_ns);
                     } else if ptt_lean_offer && ptt_lane && deadline_ns.is_some() {
-                        ptt_pre_lean.insert(id, now);
+                        ptt_pre_lean.insert(id, ptt_expiry_ns);
                     }
                     let size = wire_len(seam.as_ref(), client_ctx, hdr + chunk.len());
                     // store WIRE GÖVDESİNİ tutar (frag: prefix‖payload, düz: payload).
@@ -4172,7 +4179,7 @@ async fn client_task(
                 // bekleyen kopya/ARQ iptal, FEC defterine dokunmaz); app olayı üretilmez.
                 let due: Vec<u64> = ptt_offered_at
                     .iter()
-                    .filter(|&(_, &t)| now.saturating_sub(t) >= PTT_DEADLINE_NS)
+                    .filter(|&(_, &expiry)| now >= expiry)
                     .map(|(&u, _)| u)
                     .collect();
                 if !due.is_empty() {
