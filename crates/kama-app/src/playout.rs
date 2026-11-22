@@ -299,7 +299,10 @@ impl Playout {
                 self.streams.insert(
                     key,
                     Stream {
-                        bundle_ms: Duration::from_millis(u64::from(bundle_ms)),
+                        // [PTT-BANT · aday] Alan bir koddur (≤ 200 aynen ms; üstü 10 ms adımlı).
+                        bundle_ms: Duration::from_millis(u64::from(
+                            crate::codec::bundle_ms_from_code(bundle_ms),
+                        )),
                         session,
                         queue: VecDeque::new(),
                         next_due: None,

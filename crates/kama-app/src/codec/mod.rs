@@ -33,9 +33,12 @@ use core::fmt;
 use kama_contracts::s1::{CompressionPolicy, PreparedUnit};
 
 pub use header::MsgType;
-pub use limits::{AmpLimits, LimitsError};
+pub use limits::{bundle_code_from_ms, bundle_ms_from_code, AmpLimits, LimitsError};
 
-use limits::{FLAGS_NONE, FLAG_COMPRESSED, WHOLE_FILE_HASH_BYTES};
+use limits::{
+    APP_RECORD_HEADER_BYTES, COMPACT_MEDIA_MARKER, FLAGS_NONE, FLAG_COMPRESSED,
+    WHOLE_FILE_HASH_BYTES,
+};
 
 /// §3 0x05 `FILE_ABORT.reason`. Bilinmeyen değer → DROP (`unknown-enum-value`).
 ///
@@ -229,7 +232,8 @@ pub enum AppMessage {
         stream_id: u32,
         /// Ses kodlayıcısı (talk-spurt boyunca sabit).
         codec: PttCodec,
-        /// Demet süresi (ms; talk-spurt boyunca sabit).
+        /// Demet süresi kodu (talk-spurt boyunca sabit): ≤ 200 → ms aynen; üstü 10 ms adımlı
+        /// ([`bundle_ms_from_code`]).
         bundle_ms: u8,
     },
     /// 0x07 `PTT_CLOSE`.
@@ -255,9 +259,18 @@ pub enum AppMessage {
         stream_id: u32,
         /// Kodlayıcı kodu (opak `u8`; bu belge yalnız kabı verir).
         codec: u8,
-        /// Demet süresi (ms).
+        /// Demet süresi kodu ([`bundle_ms_from_code`]).
         bundle_ms: u8,
         /// Opak medya yükü (`payload_len u16`).
+        payload: Vec<u8>,
+    },
+    /// [PTT-BANT · aday, kol A] Kompakt `MEDIA_BUNDLE` ([`limits::COMPACT_MEDIA_MARKER`]): tipi
+    /// `MEDIA_BUNDLE`'dır; `codec` / `bundle_ms` telde yoktur, alıcı onları `stream_tag`'in tuttuğu
+    /// etkin akıştan alır (`crate::ptt`). v1 alıcısı bu kaydı DROP eder.
+    MediaBundleCompact {
+        /// `stream_id`'nin düşük 8 biti ([`compact_stream_tag`]).
+        stream_tag: u8,
+        /// Opak medya yükü (uzunluk = kayıt uzunluğu − 2).
         payload: Vec<u8>,
     },
     /// 0x0B `FILE_RECEIPT` (K4G-09) — gövde sabit 9 B; yalnız alıcı gönderir.
@@ -283,7 +296,7 @@ impl AppMessage {
             Self::PttClose { .. } => MsgType::PttClose,
             Self::Receipt { .. } => MsgType::Receipt,
             Self::SignalingBlob { .. } => MsgType::SignalingBlob,
-            Self::MediaBundle { .. } => MsgType::MediaBundle,
+            Self::MediaBundle { .. } | Self::MediaBundleCompact { .. } => MsgType::MediaBundle,
             Self::FileReceipt { .. } => MsgType::FileReceipt,
         }
     }
@@ -366,6 +379,14 @@ impl fmt::Debug for AppMessage {
                 .field("stream_id", stream_id)
                 .field("codec", codec)
                 .field("bundle_ms", bundle_ms)
+                .field("payload_len", &payload.len())
+                .finish_non_exhaustive(),
+            Self::MediaBundleCompact {
+                stream_tag,
+                payload,
+            } => f
+                .debug_struct("MediaBundleCompact")
+                .field("stream_tag", stream_tag)
                 .field("payload_len", &payload.len())
                 .finish_non_exhaustive(),
             Self::FileReceipt {
@@ -540,6 +561,17 @@ impl std::error::Error for EncodeError {}
 ///
 /// [`EncodeError`] — gövde `MAX_BODY_BYTES`'ı ya da `FILE_BEGIN.name` 255 baytı aşıyor.
 pub fn encode(message: &AppMessage, limits: &AmpLimits) -> Result<PreparedUnit, EncodeError> {
+    if let AppMessage::MediaBundleCompact { .. } = message {
+        // Gövde = `stream_tag ‖ payload` (sınır `MAX_BODY_BYTES`, tahsisten önce); başlık tek bayt.
+        let body = body::encode_body(message, limits)?;
+        let mut bytes = Vec::with_capacity(1 + body.len());
+        bytes.push(COMPACT_MEDIA_MARKER);
+        bytes.extend_from_slice(&body);
+        return Ok(PreparedUnit {
+            bytes,
+            compression_policy: CompressionPolicy::Never,
+        });
+    }
     let msg_type = message.msg_type();
     let plain = body::encode_body(message, limits)?;
     let (flags, record_body, compression_policy) =
@@ -554,6 +586,12 @@ pub fn encode(message: &AppMessage, limits: &AmpLimits) -> Result<PreparedUnit, 
     })
 }
 
+/// [PTT-BANT · kol A] Kompakt `MEDIA_BUNDLE`'ın akış etiketi: `stream_id`'nin düşük 8 biti.
+#[must_use]
+pub const fn compact_stream_tag(stream_id: u32) -> u8 {
+    stream_id.to_be_bytes()[3]
+}
+
 /// `AppMessageRecord` → mesaj. Denetim sırası: başlık (`header.rs`), sıkıştırma (§5 alıcı
 /// kuralları, `compress.rs`), tip gövdesi (A1, `body.rs`).
 ///
@@ -561,6 +599,19 @@ pub fn encode(message: &AppMessage, limits: &AmpLimits) -> Result<PreparedUnit, 
 ///
 /// [`DecodeError`] — kayıt atılır; gerekçe [`DecodeError::reason`].
 pub fn decode(record: &[u8], limits: &AmpLimits) -> Result<AppMessage, DecodeError> {
+    if let Some((&COMPACT_MEDIA_MARKER, rest)) = record.split_first() {
+        let Some((&stream_tag, payload)) = rest.split_first() else {
+            return Err(DecodeError::Drop(DropReason::RecordTooShort));
+        };
+        // Tam biçimle aynı tavan: kayıt `5 + MAX_BODY_BYTES`'ı aşamaz.
+        if record.len() > APP_RECORD_HEADER_BYTES + limits.max_body_bytes() {
+            return Err(DecodeError::Drop(DropReason::RecordLenMismatch));
+        }
+        return Ok(AppMessage::MediaBundleCompact {
+            stream_tag,
+            payload: payload.to_vec(),
+        });
+    }
     let parsed = header::parse_record(record)?;
     if parsed.compressed {
         let plain = compress::open_compressed(parsed.body, limits)?;
@@ -819,6 +870,65 @@ mod tests {
         let unit = encode(&AppMessage::Text { msg_id: 1, text }, &limits()).unwrap();
         assert_eq!(unit.compression_policy, CompressionPolicy::Never);
         assert_eq!(unit.bytes[FLAGS_OFFSET] & FLAG_COMPRESSED, 0);
+    }
+
+    /// [PTT-BANT · aday] `bundle_ms` kodu: ≤ 200 ms bayt-aynı (vektörlerin 20'si dahil); 300 ve
+    /// 420 ms tek bayta sığar; 10 ms'nin katı olmayan ya da 750 ms'yi aşan süre kodlanmaz.
+    #[test]
+    fn bundle_ms_code_is_identity_up_to_200_and_coarse_above() {
+        for ms in 0..=200u16 {
+            assert_eq!(bundle_code_from_ms(ms), Some(ms as u8));
+            assert_eq!(bundle_ms_from_code(ms as u8), ms);
+        }
+        assert_eq!(bundle_code_from_ms(300), Some(210));
+        assert_eq!(bundle_code_from_ms(420), Some(222));
+        assert_eq!(bundle_code_from_ms(750), Some(u8::MAX));
+        assert_eq!(bundle_code_from_ms(205), None);
+        assert_eq!(bundle_code_from_ms(760), None);
+        for code in 0..=u8::MAX {
+            assert_eq!(bundle_code_from_ms(bundle_ms_from_code(code)), Some(code));
+        }
+    }
+
+    /// [PTT-BANT · kol A] Kompakt `MEDIA_BUNDLE`: 2 B başlık (tam biçim 13 B), gidiş-dönüş,
+    /// kısa kayıt DROP, tavan tam biçimle aynı; v1 başlık ayrıştırıcısı onu `unknown-msg-version`
+    /// ile atar (eski alıcının davranışı).
+    #[test]
+    fn compact_media_bundle_is_two_bytes_and_round_trips() {
+        let l = limits();
+        let payload = vec![7u8; 120];
+        let compact = AppMessage::MediaBundleCompact {
+            stream_tag: compact_stream_tag(0x0102_03FE),
+            payload: payload.clone(),
+        };
+        let unit = encode(&compact, &l).expect("kodlanır");
+        assert_eq!(unit.bytes.len(), 2 + payload.len());
+        assert_eq!(&unit.bytes[..2], &[COMPACT_MEDIA_MARKER, 0xFE]);
+        assert_eq!(decode(&unit.bytes, &l), Ok(compact.clone()));
+        assert_eq!(compact.msg_type(), MsgType::MediaBundle);
+        let full = record(&AppMessage::MediaBundle {
+            stream_id: 0x0102_03FE,
+            codec: PttCodec::Lyra.code(),
+            bundle_ms: 200,
+            payload,
+        });
+        assert_eq!(full.len() - unit.bytes.len(), 11, "13 B → 2 B");
+        assert_eq!(drop_of(&[COMPACT_MEDIA_MARKER]), DropReason::RecordTooShort);
+        assert_eq!(
+            header::parse_record(&unit.bytes).err(),
+            Some(DecodeError::Drop(DropReason::UnknownMsgVersion))
+        );
+        let too_big = AppMessage::MediaBundleCompact {
+            stream_tag: 0,
+            payload: vec![0; l.max_body_bytes()],
+        };
+        assert!(matches!(
+            encode(&too_big, &l),
+            Err(EncodeError::BodyTooLarge { .. })
+        ));
+        let mut over = vec![COMPACT_MEDIA_MARKER, 0];
+        over.resize(APP_RECORD_HEADER_BYTES + l.max_body_bytes() + 1, 0);
+        assert_eq!(drop_of(&over), DropReason::RecordLenMismatch);
     }
 
     #[test]
