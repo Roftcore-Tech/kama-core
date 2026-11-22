@@ -212,6 +212,8 @@ fn plain_body_len(message: &AppMessage) -> Result<usize, EncodeError> {
         AppMessage::MediaBundle { payload, .. } => {
             variable(MEDIA_BUNDLE_PREFIX_BYTES, payload.len())
         }
+        // Kompakt biçimin "gövdesi": `stream_tag u8 ‖ payload` (işaret baytı `encode`'da).
+        AppMessage::MediaBundleCompact { payload, .. } => variable(1, payload.len()),
         AppMessage::FileReceipt { .. } => FILE_RECEIPT_BODY_BYTES,
     })
 }
@@ -310,6 +312,13 @@ pub(crate) fn encode_body(
             out.push(*codec);
             out.push(*bundle_ms);
             out.extend_from_slice(&len_u16(payload.len())?.to_be_bytes());
+            out.extend_from_slice(payload);
+        }
+        AppMessage::MediaBundleCompact {
+            stream_tag,
+            payload,
+        } => {
+            out.push(*stream_tag);
             out.extend_from_slice(payload);
         }
         AppMessage::FileReceipt {

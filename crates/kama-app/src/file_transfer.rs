@@ -995,7 +995,8 @@ impl FileTransfer {
             | AppMessage::PttClose { .. }
             | AppMessage::Receipt { .. }
             | AppMessage::SignalingBlob { .. }
-            | AppMessage::MediaBundle { .. } => None,
+            | AppMessage::MediaBundle { .. }
+            | AppMessage::MediaBundleCompact { .. } => None,
         }
     }
 

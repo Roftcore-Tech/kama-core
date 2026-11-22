@@ -1531,6 +1531,15 @@ pub struct EmitDiag {
 /// [İZ-NEDEN] İz tavanı (SR-AUDIT-001); dolunca yeni kayıt yazılmaz.
 const EMIT_LOG_CAP: usize = 65_536;
 
+/// [KOPYA-KORUMASI] Zaman güdümlü yeniden gönderimden muaf birim tavanı (SR-AUDIT-001); dolunca
+/// yeni birim korunmaz (bugünkü davranış).
+const COPY_GUARD_CAP: usize = 64;
+
+/// [YALIN-TEK-İLETİM] Tek iletimli birim tavanı (SR-AUDIT-001). Birim teyitte ya da bırakmada
+/// çıkar (yalın PTT'de son tarih ≤ 1 s → açık kayıt ≈ 1 s / demet süresi); dolunca son tarihi
+/// geçmiş kayıtlar budanır, yine doluysa yeni birim işaretlenmez (bugünkü davranış).
+const SINGLE_SHOT_CAP: usize = 64;
+
 /// [İZ-ARALIK] Hat korumasının ACK başına karar kaydının tavanı (SR-AUDIT-001): halka; dolunca en
 /// eski kayıt düşer ([`LineGuardAckTrace::index`] boşluğu düşeni gösterir).
 pub const LINE_GUARD_TRACE_CAP: usize = 64;
@@ -2113,6 +2122,19 @@ pub struct Sender {
     /// [BOŞ-HAT YENİDEN İLETİMİ] Son ACK'ten bu yana boş hatta yeniden iletilen birimler
     /// (birim başına ACK aralığında bir kez); her ACK'te boşalır.
     idle_retx_units: std::collections::BTreeSet<u64>,
+    /// [KOPYA-KORUMASI · 2026-11-22] İleri kopyaları planlanmış birim → zaman güdümlü yeniden
+    /// gönderimden (PTO probu hedefi, PreConverge §3.3-B merdiveni) muaf olduğu son an (ns).
+    /// Yalnız [`Self::schedule_forward_copies_guarded`] yazar; boşken her yol bugünkü gibidir.
+    /// Tavan [`COPY_GUARD_CAP`] (SR-AUDIT-001).
+    copy_guard: BTreeMap<u64, u64>,
+    /// [YALIN-TEK-İLETİM · 2026-11-23] Tek iletimli birim → üst katmanın bırakma anı (ns). Yalnız
+    /// [`Self::mark_single_shot`] yazar; teyit ve [`Self::abandon_units`] siler. Boşken her yol
+    /// bugünkü gibidir. Tavan [`SINGLE_SHOT_CAP`].
+    single_shot: BTreeMap<u64, u64>,
+    /// [YALIN-TEK-İLETİM] Gözlem: kaybı ARQ'ya alınmayan / prob ya da kopya hedefi olmayan
+    /// tek iletimli birim kararları; işaretlenemeyen (tavan dolu) birimler.
+    diag_single_shot_skipped: u64,
+    diag_single_shot_unmarked: u64,
     /// [BOŞ-HAT YENİDEN İLETİMİ · YARI-HAT] Sonraki boş hat kopyasının en erken anı (ns).
     idle_retx_next_ns: u64,
     /// [PTT-YALIN] Gözlem: bırakılan birim sayısı ([`Self::abandon_units`]).
@@ -2489,6 +2511,10 @@ impl Sender {
             prio_copy_stale: 0,
             prio_copy_deferred: 0,
             idle_retx_units: std::collections::BTreeSet::new(),
+            copy_guard: BTreeMap::new(),
+            single_shot: BTreeMap::new(),
+            diag_single_shot_skipped: 0,
+            diag_single_shot_unmarked: 0,
             idle_retx_next_ns: 0,
             diag_abandoned_units: 0,
             diag_idle_retx: 0,
@@ -4437,10 +4463,20 @@ impl Sender {
                 // `pending_lost`'ta kilitli kalırdı — pencereden muaf prob onu taşır (§3 entegrasyon
                 // ölçümü: 4096 pencerede kalıcı durma). `cc` yokken eski seçim.
                 let oldest = if self.cc_on() {
-                    self.oldest_probe_target_or_pending()
+                    self.oldest_probe_target_or_pending(now_ns)
                 } else {
-                    self.oldest_probe_target()
+                    self.oldest_probe_target(now_ns)
                 };
+                // [KOPYA-KORUMASI] Teyitsiz kaynak yalnız korunan birimlerse zamanlayıcı söndürülmez
+                // (`on_timer(None)` kurulu pencereyi ve geri çekilmeyi sıfırlardı); koruma bitince
+                // aynı pencereyle devam eder. Koruma yokken (`copy_guard` boş) yol aynı.
+                let guard_hold = oldest.is_none()
+                    && !self.copy_guard.is_empty()
+                    && self.inflight.values().any(|p| {
+                        p.origin != TransmitKind::FecParity
+                            && p.confirmed_release_ns.is_none()
+                            && self.copy_guarded(p.unit.id, now_ns)
+                    });
                 let ladder_serves_oldest = oldest
                     .and_then(|seq| {
                         self.inflight.get(&seq).map(|p| p.unit.id).or_else(|| {
@@ -4456,7 +4492,7 @@ impl Sender {
                             .any(|d| d.unit.id == uid && d.interval_ns > 0)
                     });
                 let u14_hold = self.cc_on() && self.rtt.srtt().is_none() && ladder_serves_oldest;
-                if self.tail_recovery.is_enabled() && !u14_hold {
+                if self.tail_recovery.is_enabled() && !u14_hold && !guard_hold {
                     let srtt = self.rtt.srtt().map(dur_ns);
                     let rttvar = dur_ns(self.rtt.rttvar());
                     if let ProbeDecision::ProbeDue { target_seq, .. } =
@@ -4645,6 +4681,12 @@ impl Sender {
                 if !requeue {
                     let c = &mut self.confirmed_cancels;
                     c.lost_not_requeued = c.lost_not_requeued.saturating_add(1);
+                }
+                // [YALIN-TEK-İLETİM] Tek iletimli birimin kaybı yeniden kuyruk ve geometrik kopya
+                // kurmaz (muhasebe aynı); üst katman onu son tarihte bırakır.
+                if requeue && self.single_shot(p.unit.id) {
+                    requeue = false;
+                    self.diag_single_shot_skipped = self.diag_single_shot_skipped.saturating_add(1);
                 }
                 // [CC-PORT U13] Aynı birimin DAHA SONRA gönderilmiş, henüz kayıp ilan edilmemiş bir
                 // kopyası (PTO probu, U10 ile uçuşta kalan hedefin kopyası) uçuştaysa yeniden kuyruk
@@ -5951,6 +5993,99 @@ impl Sender {
         true
     }
 
+    /// [KOPYA-KORUMASI · 2026-11-22] [`Self::schedule_forward_copies`] ve ek olarak, geri bildirimi
+    /// aç profilde ([`FeedbackStarvedRule`]) birim kopya takvimi bitene ve ardından bir geri
+    /// bildirim ufku ([`FeedbackStarvedRule::feedback_ns`]) + RTT (örnek yoksa başlangıç RTT'si)
+    /// geçene dek zaman güdümlü yeniden gönderilmez: PTO probu onu hedef seçmez ve PreConverge
+    /// §3.3-B merdiven kopyası bu ana ertelenir. Kayıp kanıtına dayalı ARQ (paket/zaman eşiği,
+    /// şerit başı deliği) değişmez; korumanın sonunda birim yeniden PTO hedefi olabilir.
+    ///
+    /// Neden: geri bildirimi aç hatta (ACK ≈ 5–9 s) kopyaları zaten varmış güvenilir PTT kaydı
+    /// (açılış/kapanış) ilk ACK'i beklerken PTO probuyla ya da merdivenle bir kez daha gidiyordu
+    /// (ürün testi, dürüst hücre tohum 1: her basışta açılışa 1 gereksiz iletim, PTT bandına
+    /// sayılır). Profil yoksa yalnız `schedule_forward_copies` (koruma kurulmaz).
+    pub fn schedule_forward_copies_guarded(
+        &mut self,
+        unit_id: u64,
+        copies: u8,
+        spacing_ns: u64,
+        now_ns: u64,
+    ) -> bool {
+        let t0 = now_ns.saturating_add(self.pacer.line_ns_until_drained());
+        if !self.schedule_forward_copies(unit_id, copies, spacing_ns, now_ns) {
+            return false;
+        }
+        let Some(rule) = self.cc_feedback_starved else {
+            return true;
+        };
+        let rtt = self.rtt.srtt().map_or(dur_ns(INITIAL_RTT), dur_ns);
+        let until = t0
+            .saturating_add(u64::from(copies).saturating_mul(spacing_ns))
+            .saturating_add(rule.feedback_ns)
+            .saturating_add(rtt);
+        self.copy_guard.retain(|_, &mut u| u > now_ns);
+        if self.copy_guard.len() < COPY_GUARD_CAP || self.copy_guard.contains_key(&unit_id) {
+            self.copy_guard.insert(unit_id, until);
+            for d in &mut self.dup_queue {
+                if d.unit.id == unit_id && d.interval_ns > 0 {
+                    d.due_ns = d.due_ns.max(until);
+                }
+            }
+        }
+        true
+    }
+
+    /// [KOPYA-KORUMASI] Birim `now_ns`'te zaman güdümlü yeniden gönderimden muaf mı.
+    fn copy_guarded(&self, unit_id: u64, now_ns: u64) -> bool {
+        self.copy_guard.get(&unit_id).is_some_and(|&u| u > now_ns)
+    }
+
+    /// [YALIN-TEK-İLETİM · 2026-11-23] Birim tek iletimlidir: geri bildirimi aç profilde
+    /// ([`FeedbackStarvedRule`]) ilk iletimden sonra hiçbir yolla yeniden gönderilmez — PTO probu
+    /// (birinci ve ikinci) onu hedef seçmez, kayıp ilanı onu ARQ kuyruğuna almaz (CC kayıp olayı,
+    /// tombstone ve kader kanıtı aynen), şerit başı deliği kaydı kurulmaz, boş hat / kuyruk
+    /// canlılığı / kuruluş / ileri kopya kuralı ve PreConverge merdiveni kopya planlamaz. Üst katman
+    /// birimi `until_ns`'te [`Self::abandon_units`] ile bırakır (yalın PTT demeti: son tarih);
+    /// teyit ya da bırakma işareti siler. Diğer birimler için PTO aynen çalışır (hedef sıradaki
+    /// teyitsiz birimdir).
+    ///
+    /// Neden: geri bildirimi aç hatta (ACK ≈ 5–9 s) yalın PTT demeti tek iletim + son tarihte
+    /// bırakma olarak tasarlandı (alıcı deliği atlar), ama PTO probu en küçük kimlikli teyitsiz
+    /// birimi — PTT şeridi en küçük kimliklerdir — hedef seçip zaten varmış demeti bir kez daha
+    /// gönderiyordu (ürün testi, dürüst hücre tohum 1, 8,4 s basış: basış başına 1 fazla demet,
+    /// 420 ms kolunda bant 5 085 bit/s). Profil yoksa ya da tavan doluysa etkisiz (`false`).
+    pub fn mark_single_shot(&mut self, unit_id: u64, until_ns: u64, now_ns: u64) -> bool {
+        if self.cc_feedback_starved.is_none() {
+            return false;
+        }
+        if self.single_shot.len() >= SINGLE_SHOT_CAP && !self.single_shot.contains_key(&unit_id) {
+            self.single_shot.retain(|_, &mut u| u > now_ns);
+        }
+        if self.single_shot.len() >= SINGLE_SHOT_CAP && !self.single_shot.contains_key(&unit_id) {
+            self.diag_single_shot_unmarked = self.diag_single_shot_unmarked.saturating_add(1);
+            return false;
+        }
+        self.single_shot.insert(unit_id, until_ns);
+        true
+    }
+
+    /// [YALIN-TEK-İLETİM] Birim tek iletimli mi ([`Self::mark_single_shot`]).
+    fn single_shot(&self, unit_id: u64) -> bool {
+        !self.single_shot.is_empty() && self.single_shot.contains_key(&unit_id)
+    }
+
+    /// [YALIN-TEK-İLETİM] Gözlem: tek iletim kuralının engellediği yeniden gönderim kararları.
+    #[must_use]
+    pub fn diag_single_shot_skipped(&self) -> u64 {
+        self.diag_single_shot_skipped
+    }
+
+    /// [YALIN-TEK-İLETİM] Gözlem: tavan dolu olduğu için işaretlenemeyen birimler.
+    #[must_use]
+    pub fn diag_single_shot_unmarked(&self) -> u64 {
+        self.diag_single_shot_unmarked
+    }
+
     /// [ÖNLEMSEL-KOPYA] Kurulu ileri kopya kuralı (salt gözlem).
     #[must_use]
     pub fn forward_copy_rule(&self) -> Option<ForwardCopyRule> {
@@ -7106,6 +7241,10 @@ impl Sender {
         }
         self.tx_queue.retain(|u| ids.binary_search(&u.id).is_err());
         let _ = self.cancel_confirmed_units(&ids, self.last_now_ns);
+        if !self.single_shot.is_empty() {
+            self.single_shot
+                .retain(|u, _| ids.binary_search(u).is_err());
+        }
         self.diag_abandoned_units = self.diag_abandoned_units.saturating_add(ids.len() as u64);
         self.emit_unit_confirmations(ids);
     }
@@ -7148,6 +7287,9 @@ impl Sender {
             return d;
         }
         let confirmed = |u: u64| ids.binary_search(&u).is_ok();
+        if !self.single_shot.is_empty() {
+            self.single_shot.retain(|&u, _| !confirmed(u));
+        }
         let before = self.pending_lost.len();
         self.pending_lost.retain(|r| !confirmed(r.unit.id));
         d.pending_lost = (before - self.pending_lost.len()) as u64;
@@ -8162,7 +8304,7 @@ impl Sender {
     fn e2a_arm_second_probe(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
         let two_probes = self.e2a.pto_probes() >= 2 && (!self.cc_on() || self.rtt.srtt().is_some());
         if two_probes {
-            self.e2a_tail_probe2 = self.oldest_probe_target().map(|seq| {
+            self.e2a_tail_probe2 = self.oldest_probe_target(now_ns).map(|seq| {
                 (
                     seq,
                     self.tail_recovery.armed_at_ns(),
@@ -8252,22 +8394,34 @@ impl Sender {
     /// girmez — `queue_losses` REPAIR FATE AYRIMI ile aynı kural). Kararsız kopya (birimi teyitli,
     /// `confirmed_release_ns`) atlanır: teyitli birime karar yok. Uygun kayıt yoksa `None` (kuyruk
     /// kurtarması söner). Erken çıkışlı tarama, uçuş haritası seq sırasındadır.
-    fn oldest_probe_target(&self) -> Option<u64> {
+    /// [KOPYA-KORUMASI] Korunan birimin uçuş kaydı hedef olmaz ([`Self::copy_guarded`]).
+    /// [YALIN-TEK-İLETİM] Tek iletimli birim de ([`Self::mark_single_shot`]).
+    fn oldest_probe_target(&self, now_ns: u64) -> Option<u64> {
         self.inflight
             .iter()
-            .find(|(_, p)| p.origin != TransmitKind::FecParity && p.confirmed_release_ns.is_none())
+            .find(|(_, p)| {
+                p.origin != TransmitKind::FecParity
+                    && p.confirmed_release_ns.is_none()
+                    && !self.copy_guarded(p.unit.id, now_ns)
+                    && !self.single_shot(p.unit.id)
+            })
             .map(|(&seq, _)| seq)
     }
 
     /// [CC-PORT U16 (b)] Uçuştaki en eski teyitsiz kaynak kaydı ile `pending_lost`'taki en eski
     /// kaydın birim kimliği küçük olanının seq'i (eşitlikte uçuş kaydı). Sonuç `pending_lost`'tan
     /// geliyorsa `emit_tail_probe` kaydı oradan alıp pencereden muaf yeniden iletir.
-    fn oldest_probe_target_or_pending(&self) -> Option<u64> {
+    /// [KOPYA-KORUMASI] Korunan birimin uçuş kaydı hedef olmaz; ARQ kuyruğundaki kaydı (kayıp
+    /// kanıtlı) olur.
+    fn oldest_probe_target_or_pending(&self, now_ns: u64) -> Option<u64> {
         let inflight = self
             .inflight
             .iter()
             .filter(|(_, p)| {
-                p.origin != TransmitKind::FecParity && p.confirmed_release_ns.is_none()
+                p.origin != TransmitKind::FecParity
+                    && p.confirmed_release_ns.is_none()
+                    && !self.copy_guarded(p.unit.id, now_ns)
+                    && !self.single_shot(p.unit.id)
             })
             .min_by_key(|(_, p)| p.unit.id)
             .map(|(&seq, p)| (p.unit.id, seq));
@@ -8378,6 +8532,8 @@ impl Sender {
                 .values()
                 // [K4G-05b-R] Kararsız kopya (birimi teyitli) canlılık kopyası doğurmaz.
                 .filter(|p| p.origin == TransmitKind::Data && p.confirmed_release_ns.is_none())
+                // [YALIN-TEK-İLETİM] Tek iletimli birim canlılık kopyası doğurmaz.
+                .filter(|p| !self.single_shot(p.unit.id))
                 .map(|p| p.unit)
                 .filter(|u| !self.dup_queue.iter().any(|d| d.unit.id == u.id))
                 .collect();
@@ -8447,10 +8603,12 @@ impl Sender {
         }
         // En-eski vadeli §3.3-B kopyası; drain_due_duplicates gövdesinin try_send'siz tek-elemanlı
         // ikizi — dup'ın KENDİ geometrik reschedule'ı aynen sürer (kopya-sayısı şişmez).
+        // [KOPYA-KORUMASI] Korunan birimin kaydı kuruluş probuna taşınmaz (`copy_guard` boşken aynı).
         let Some(i) = self
             .dup_queue
             .iter()
             .enumerate()
+            .filter(|(_, d)| !self.copy_guarded(d.unit.id, now_ns) && !self.single_shot(d.unit.id))
             .min_by_key(|(_, d)| d.due_ns)
             .map(|(i, _)| i)
         else {
@@ -8628,6 +8786,8 @@ impl Sender {
                     .or_insert((seq, p.send_ns, p.unit, false));
                 e.1 = e.1.max(p.send_ns);
                 e.3 |= p.origin == TransmitKind::FecParity || p.confirmed_release_ns.is_some();
+                // [YALIN-TEK-İLETİM] Tek iletimli birim boş hatta yeniden iletilmez.
+                e.3 |= self.single_shot(p.unit.id);
                 e.3 |= matches!(p.origin, TransmitKind::Retransmit | TransmitKind::Duplicate)
                     && largest_acked.is_none_or(|la| seq > la)
                     && p.send_ns.saturating_add(horizon_ns) > now_ns;
@@ -8741,6 +8901,10 @@ impl Sender {
             return;
         };
         if self.pending_lost.iter().any(|r| r.unit.id == head) {
+            return;
+        }
+        // [YALIN-TEK-İLETİM] Tek iletimli baş yeniden iletilmez (alıcı deliği atlar).
+        if self.single_shot(head) {
             return;
         }
         let Some((&seq, p)) = self
@@ -8975,10 +9139,13 @@ impl Sender {
     /// ([`Self::drain_new_data`]) ve [CC-PORT U17] yeni veri taşıyan PTO probu
     /// ([`Self::emit_new_data_probe`]) aynı kuralı kullanır.
     fn after_new_data_sent(&mut self, front: OpaqueUnit, now_ns: u64) {
+        // [YALIN-TEK-İLETİM] Tek iletimli birim için kopya planlanmaz (kural, RecoverFwd, merdiven);
+        // kopya dışı kayıtlar (DR-CS-3 / soğuk başlangıç kurulumu) aynen.
+        let single_shot = self.single_shot(front.id);
         // [ÖNLEMSEL-KOPYA] Kural kapsamındaki birim RecoverFwd'nin kopyalarını beklemez; iki kural
         // üst üste binmesin diye RecoverFwd'de bu kopyalar planlanmaz (orada zaten kopyalanır).
         if let Some(rule) = self.forward_copy_rule {
-            if front.id < rule.below_id && self.state != SenderState::RecoverFwd {
+            if front.id < rule.below_id && self.state != SenderState::RecoverFwd && !single_shot {
                 // [HAT-MODELİ] Bilinen hatta ilk kopya orijinalin hattı terk ettiği andan sayılır.
                 let t0 = now_ns.saturating_add(self.pacer.line_ns_until_drained());
                 for i in 1..=u64::from(self.forward_copies_now()) {
@@ -8993,6 +9160,7 @@ impl Sender {
         }
         if self.state == SenderState::RecoverFwd {
             let (factor, spacing) = self.dup_params();
+            let factor = if single_shot { 1 } else { factor };
             for i in 1..u64::from(factor) {
                 self.dup_queue.push(DupRec {
                     due_ns: now_ns + i.saturating_mul(dur_ns(spacing)),
@@ -9014,14 +9182,16 @@ impl Sender {
             // [HAT-MODELİ] Bilinen hatta t₀ birimin hattı terk ettiği an: port pacer'ı hattan
             // hızlıdır (31 B/s taban okunmaz), K-D2'nin "pacer serileştirir" öncülü yalnız hat
             // modeliyle geçerli kalır. Model yoksa ek 0 (bugünkü t₀).
-            self.dup_queue.push(DupRec {
-                due_ns: now_ns
-                    .saturating_add(self.pacer.line_ns_until_drained())
-                    .saturating_add(first_delay),
-                unit: front,
-                interval_ns: first_delay, // reschedule aralığı (drain'de ×COPY_MULTIPLIER)
-                src: DUP_SRC_PRECONVERGE,
-            });
+            if !single_shot {
+                self.dup_queue.push(DupRec {
+                    due_ns: now_ns
+                        .saturating_add(self.pacer.line_ns_until_drained())
+                        .saturating_add(first_delay),
+                    unit: front,
+                    interval_ns: first_delay, // reschedule aralığı (drain'de ×COPY_MULTIPLIER)
+                    src: DUP_SRC_PRECONVERGE,
+                });
+            }
             // DR-CS-3 ARM: PreConverge + srtt=None + FIRST DATA wire emission (t₀ = this instant,
             // i.e. the unit passed try_send and is on the wire). Once per bootstrap epoch.
             if self.bootstrap_rtt.enabled

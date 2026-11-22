@@ -196,6 +196,8 @@ async fn transport_api_v0_surface_is_frozen() {
         caps_sends: _,
         ptt_expired: _,
         ptt_lean_tx: _,
+        // [PTT-YALIN · KORUMA] kopya bekleme listesi dolu → kopyasız kalan güvenilir PTT kaydı.
+        ptt_copy_unprotected: _,
         ack_bitmap_rx: _,
         fec_blocks_latched: _,
         fec_repairs_tx: _,
