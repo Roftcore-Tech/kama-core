@@ -305,6 +305,10 @@ type IntervalMsg = (u64, u64, Option<u64>, Vec<u64>, u16);
 /// * çift alt sınırı (`receiver::PairRate`): her varışta (kopya dahil) önceki varışa aralık `g` ve
 ///   bu datagramın UDP gövdesi `b`; `b ≥ PAIR_MIN_UDP_BYTES` ve `g ≥ 2 ms` ise `b / g`; alan son
 ///   ACK'ten bu yana en büyük İKİNCİ değer (yoksa `PAIR_RATE_NONE`), ACK'te sıfırlanır.
+///   [SIKIŞMA · E · alıcı 4af53e94] Her varışta `g < 0,9 × (b + 28) / beyan_hat` ise çift sıkışmıştır:
+///   o çift ve ARDINDAKİ çift sayılmaz (karar varış başına; `b`/`g` alt sınırlarından önce,
+///   ACK'te sıfırlanmaz; `PairRate::squeezed`, `on_arrival`). Benzetimde beyan hat = [`PROFILE_UP`]
+///   (ürünün sunucu yuvası `set_pair_squeeze_line(downlink_bps)`; düzenekte profil hep açık).
 ///
 /// Alıcının 0x15 çerçevesinin kendisi (boyu, daralma alarmının erken ACK'i) bu düzenekte yoktur: ACK
 /// kadansı 0x14 alıcısınındır. (Gerçek alıcı bitmap kipinde bu düzenekte yeniden sıralamada panik
@@ -317,13 +321,36 @@ struct RxMirror {
     emitted: VecDeque<u64>,
     pair_prev: Option<u64>,
     pair_top: [u64; 2],
+    /// [SIKIŞMA · E] Önceki varışın çifti sıkışmıştı (alıcının `PairRate::after_squeeze`).
+    pair_after_squeeze: bool,
+}
+
+/// [SIKIŞMA · E] Sıkışma sınamasının payı (binde); `receiver.rs` `PAIR_SQUEEZE_PERMILLE` ile aynı
+/// (orada crate içi sabit).
+const PAIR_SQUEEZE_PERMILLE: u64 = 900;
+
+/// [SIKIŞMA · E] Sıkışma sınamasının datagram zarfı (B, IPv4 + UDP); `receiver.rs`
+/// `PAIR_SQUEEZE_OVERHEAD` ile aynı (orada crate içi sabit).
+const PAIR_SQUEEZE_OVERHEAD: u64 = 28;
+
+/// [SIKIŞMA · E] `receiver::PairRate::squeezed`: aralık `g` (ns) beyan hatta (`PROFILE_UP`, tel B/s)
+/// `b + 28` baytın serileşmesinin binde 900'ünden kısa mı.
+fn pair_squeezed(g: u64, b: u64) -> bool {
+    u128::from(g) * 1_000 * u128::from(PROFILE_UP)
+        < u128::from(PAIR_SQUEEZE_PERMILLE)
+            * u128::from(b.saturating_add(PAIR_SQUEEZE_OVERHEAD))
+            * u128::from(SEC)
 }
 
 impl RxMirror {
     fn on_arrival(&mut self, seq: u64, udp: u64, now: u64) {
         if let Some(p) = self.pair_prev {
             let g = now.saturating_sub(p);
-            if udp >= PAIR_MIN_UDP_BYTES && g >= 2 * MS {
+            // [SIKIŞMA · E] Sıkışmış çift ve ardındaki çift sayılmaz.
+            let squeezed = pair_squeezed(g, udp);
+            let skip = squeezed || self.pair_after_squeeze;
+            self.pair_after_squeeze = squeezed;
+            if !skip && udp >= PAIR_MIN_UDP_BYTES && g >= 2 * MS {
                 let r = udp * SEC / g;
                 if r > self.pair_top[0] {
                     self.pair_top = [r, self.pair_top[0]];
