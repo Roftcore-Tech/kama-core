@@ -1302,6 +1302,24 @@ fn e1_unmeasured_acks_do_not_bring_back_the_return_delay_cut() {
 /// alıcı 8–19 s arasında çıkardığı ACK'lerde ölçüm taşımaz (göndericiye üst üste en az üç ölçümsüz
 /// ACK). Koruma kuyruğu sınırlı tutar; ölçüm dönünce hat ölçülür.
 ///
+/// **GERİLİM TESTİ — sahip kararı 2026-11-22 (#175 7080178069): kapı yalın sözleşme.** Bu kol
+/// kopyalı PTT yüküyle (ürünün eski uçla konuştuğu kural) koşar; kapı aynı senaryonun yalın kolu
+/// [`e2_lean_a_long_unmeasured_gap_on_a_real_drop_keeps_the_queue_bounded`]'dır. Hat korumasının
+/// üç iddiası ([`E2Guard::assert_bounds`]) aynı sınırlarla kalır. Eski "yakınsamadan 9 s sonra
+/// PTT ≤ 1 s (sıralı teslim, en kötü demet)" iddiası kopyalı PTT sözleşmesinin kapısıydı (sıralı
+/// şerit, her demet); onun yerine (nedensel kayıt #175 7080561058):
+/// * CANLILIK: her demetin sıralı teslimi planından ≤ [`LIVENESS_HORIZON_NS`] (ürün testinin
+///   `LIVENESS_HORIZON`, 15 s);
+/// * yakınsamadan 9 s sonrasından konuşmanın sonuna dek planlanan her demet İLK kez planından ≤ 1 s
+///   içinde varır: pencere ve sınır eski iddianınki, anlam sahibin media ölçütü (geç demet atlanır,
+///   baş-sıra beklenmez). Yalnız canlılık ölçülenden zayıftı (ölçüm, taban 1482c197: bu pencerede
+///   ilk varış 22/22, 24/24, 26/26; sıralı en kötü 2,10 / 3,89 / 0,49 s).
+///
+/// Sıralı en kötü gecikme ve evre başına zamanında oranı raporlanır (iddia değil). Sıralı
+/// gecikmenin kaynağı borç evresi kuralının ("borç ödeme evresini kapsayan aralık artış örneği
+/// vermez", `line_guard`) yakınsamayı bir ACK aralığı geciktirmesi; karşı-olgu (kural kapalı):
+/// tohum 1/2 yakınsama 26,65 → 24,57 / 26,27 → 24,19 s, sıralı PTT 0,68 / 0,67 s; yalın kol değişmez.
+///
 /// Sınırlar (varsayımlarla):
 /// * `t_gap` = dizinin ikinci ölçümsüz ACK'inin göndericiye varışı (ölçüm boşluğunun göndericide
 ///   ilk kanıtlanabildiği an; tek ölçümsüz ACK alıcının o ACK'te ölçemediği olağan durumdur).
@@ -1312,19 +1330,85 @@ fn e1_unmeasured_acks_do_not_bring_back_the_return_delay_cut() {
 ///   tavanının yarısından yavaş değil (başlangıç bütçesinin varsayımı; `line_guard` modül belgesi);
 ///   kuyruk kipe girişte `Q_gap` ile boşaltılır, 1 s boşaltmanın ve ilk patlamanın payıdır.
 /// * Ölçüm dönünce: yakınsama ≤ `t_back` + 3·T_ack + T_ret ((b)'nin formülü, ölçümün dönüşünden);
-///   yakınsamadan 2 s sonra bekleme ≤ iki tam datagram; yakınsamadan 9 s sonra PTT ≤ 1 s.
+///   yakınsamadan 2 s sonra bekleme ≤ iki tam datagram; yakınsamadan 9 s sonra PTT (yukarıda).
 #[test]
 fn e2_a_long_unmeasured_gap_on_a_real_drop_keeps_the_queue_bounded() {
-    let t_ret = (129 + OVH) * SEC / PROFILE_DOWN + ONE_WAY_NS;
-    let wait_bound = 2 * (MTU + OVH) * SEC / DROP_TO;
-    let gap_wait_bound = PTT_BOUND_NS - ONE_WAY_NS;
     for seed in 1..=3u64 {
-        let sc = Scenario {
-            no_interval: Some((DROP_AT_NS, 19 * SEC)),
-            ..drop_scenario(seed, true)
-        };
+        let sc = e2_scenario(seed);
         let o = run(&sc);
         report("e2/aday", &sc, &o);
+        let g = E2Guard::of(&o);
+        g.print(&format!("E2 tohum {seed}"), &o);
+        g.assert_bounds(seed);
+        let ptt_from = g.conv + 9 * SEC;
+        let inorder_worst = o.voice_max_from(0);
+        let window: Vec<(u64, Option<u64>)> = o
+            .voice
+            .iter()
+            .enumerate()
+            .filter(|&(_, &(plan, _))| plan >= ptt_from)
+            .map(|(v, &(plan, _))| (plan, o.voice_first[v].map(|a| a - plan)))
+            .collect();
+        let window_on_time = window
+            .iter()
+            .filter(|&&(_, d)| d.is_some_and(|d| d <= PTT_BOUND_NS))
+            .count();
+        println!(
+            "E2-GERİLİM tohum {seed}: sıralı en kötü (bütün demetler) {} (canlılık ufku {}), \
+             yakınsamadan 9 s sonra sıralı en kötü {}, aynı pencerede ilk varış ≤ 1 s {}/{} | {}",
+            secs(inorder_worst),
+            secs(LIVENESS_HORIZON_NS),
+            secs(o.voice_max_from(ptt_from)),
+            window_on_time,
+            window.len(),
+            phases_line(&ptt_phases(&sc, &o))
+        );
+        assert!(
+            inorder_worst <= LIVENESS_HORIZON_NS,
+            "tohum {seed}: canlılık: en kötü sıralı teslim {} > {}",
+            secs(inorder_worst),
+            secs(LIVENESS_HORIZON_NS)
+        );
+        assert!(
+            !window.is_empty() && window_on_time == window.len(),
+            "tohum {seed}: yakınsamadan 9 s sonra ilk varışı 1 s'yi aşan demet: {:?}",
+            window
+                .iter()
+                .filter(|&&(_, d)| d.is_none_or(|d| d > PTT_BOUND_NS))
+                .map(|&(p, d)| (secs(p), d.map_or("YOK".to_string(), secs)))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+/// [CANLILIK] Ürün testinin `LIVENESS_HORIZON`'ı (`kama-integration/tests/asym_product_outcome.rs`):
+/// planlanan her PTT demeti planından en çok 15 s içinde teslim edilir.
+const LIVENESS_HORIZON_NS: u64 = 15 * SEC;
+
+/// (e2)'nin senaryosu: (b)'nin düşüşü, alıcı 8–19 s arasında ölçüm taşımaz.
+fn e2_scenario(seed: u64) -> Scenario {
+    Scenario {
+        no_interval: Some((DROP_AT_NS, 19 * SEC)),
+        ..drop_scenario(seed, true)
+    }
+}
+
+/// (e2)'nin hat koruması ölçüsü (sınırların türetimi: e2 belgesi).
+struct E2Guard {
+    run_len: usize,
+    t_gap: u64,
+    q_gap: u64,
+    gap_from: u64,
+    t_back: u64,
+    w_gap: u64,
+    conv: u64,
+    conv_bound: u64,
+    w_after: u64,
+}
+
+impl E2Guard {
+    fn of(o: &Outcome) -> Self {
+        let t_ret = (129 + OVH) * SEC / PROFILE_DOWN + ONE_WAY_NS;
         let (run_len, t_gap, t_back) = o.longest_unmeasured_run();
         let (t_gap, t_back) = (
             t_gap.expect("ikinci ölçümsüz ACK"),
@@ -1332,27 +1416,6 @@ fn e2_a_long_unmeasured_gap_on_a_real_drop_keeps_the_queue_bounded() {
         );
         let q_gap = o.max_wait_between(0, t_gap);
         let gap_from = t_gap + q_gap + SEC;
-        let w_gap = o.max_wait_between(gap_from, t_back);
-        println!(
-            "E2 tohum {seed}: ölçümsüz dizi {run_len} ACK, t_gap {} Q_gap {} boşluk beklemesi \
-             ({}–{}) {} tavan izi {:?}",
-            secs(t_gap),
-            secs(q_gap),
-            secs(gap_from),
-            secs(t_back),
-            secs(w_gap),
-            o.pace_trace
-        );
-        assert!(
-            run_len >= 3,
-            "tohum {seed}: düzenek uzun ölçümsüz dizi kurmadı"
-        );
-        assert!(
-            w_gap <= gap_wait_bound,
-            "tohum {seed}: ölçüm boşluğunda kuyruk sınırsız: {} (sınır {})",
-            secs(w_gap),
-            secs(gap_wait_bound)
-        );
         let t_ack = o
             .acks_at
             .windows(2)
@@ -1360,27 +1423,168 @@ fn e2_a_long_unmeasured_gap_on_a_real_drop_keeps_the_queue_bounded() {
             .map(|w| w[1] - w[0])
             .max()
             .expect("düşüşten önce ACK'ler");
-        let conv_bound = t_back + 3 * t_ack + t_ret;
-        let conv = converged_at(&o, DROP_TO).expect("yakınsadı");
-        assert!(
-            conv <= conv_bound,
-            "tohum {seed}: yakınsama {} (sınır {})",
-            secs(conv),
-            secs(conv_bound)
-        );
-        let w = o.max_wait_between(conv + 2 * SEC, u64::MAX);
-        assert!(
-            w <= wait_bound,
-            "tohum {seed}: yakınsama sonrası bekleme {}",
-            secs(w)
-        );
-        let ptt = o.voice_max_from(conv + 9 * SEC);
-        assert!(
-            ptt <= PTT_BOUND_NS,
-            "tohum {seed}: yakınsama sonrası PTT {}",
-            secs(ptt)
+        let conv = converged_at(o, DROP_TO).expect("yakınsadı");
+        Self {
+            run_len,
+            t_gap,
+            q_gap,
+            gap_from,
+            t_back,
+            w_gap: o.max_wait_between(gap_from, t_back),
+            conv,
+            conv_bound: t_back + 3 * t_ack + t_ret,
+            w_after: o.max_wait_between(conv + 2 * SEC, u64::MAX),
+        }
+    }
+
+    fn print(&self, tag: &str, o: &Outcome) {
+        println!(
+            "{tag}: ölçümsüz dizi {} ACK, t_gap {} Q_gap {} boşluk beklemesi ({}–{}) {} \
+             yakınsama {} (sınır {}) yakınsama sonrası bekleme {} tavan izi {:?}",
+            self.run_len,
+            secs(self.t_gap),
+            secs(self.q_gap),
+            secs(self.gap_from),
+            secs(self.t_back),
+            secs(self.w_gap),
+            secs(self.conv),
+            secs(self.conv_bound),
+            secs(self.w_after),
+            o.pace_trace
         );
     }
+
+    /// Düzenek iddiası (ölçümsüz dizi ≥ 3) + hat korumasının üç iddiası.
+    fn assert_bounds(&self, seed: u64) {
+        let wait_bound = 2 * (MTU + OVH) * SEC / DROP_TO;
+        let gap_wait_bound = PTT_BOUND_NS - ONE_WAY_NS;
+        assert!(
+            self.run_len >= 3,
+            "tohum {seed}: düzenek uzun ölçümsüz dizi kurmadı"
+        );
+        assert!(
+            self.w_gap <= gap_wait_bound,
+            "tohum {seed}: ölçüm boşluğunda kuyruk sınırsız: {} (sınır {})",
+            secs(self.w_gap),
+            secs(gap_wait_bound)
+        );
+        assert!(
+            self.conv <= self.conv_bound,
+            "tohum {seed}: yakınsama {} (sınır {})",
+            secs(self.conv),
+            secs(self.conv_bound)
+        );
+        assert!(
+            self.w_after <= wait_bound,
+            "tohum {seed}: yakınsama sonrası bekleme {}",
+            secs(self.w_after)
+        );
+    }
+
+    /// Zamanında olmayan demetlerin pencerelere göre yeri: düşüş → `t_gap` (koruma yok) →
+    /// `gap_from` (kuyruk boşalıyor) → `t_back` (boşluk korumalı) → yakınsama → konuşma sonu.
+    fn windows_line(&self, sc: &Scenario, o: &Outcome) -> String {
+        let cuts = [
+            ("düşüş→t_gap", DROP_AT_NS, self.t_gap),
+            ("t_gap→boşaltma", self.t_gap, self.gap_from),
+            ("korumalı", self.gap_from, self.t_back),
+            ("dönüş→yakınsama", self.t_back, self.conv),
+            ("yakınsamadan sonra", self.conv, sc.voice_until_ns),
+        ];
+        cuts.iter()
+            .map(|&(name, from, to)| {
+                let mut planned = 0;
+                let mut on_time = 0;
+                let mut m = Misses::default();
+                for (v, &(plan, _)) in o.voice.iter().enumerate() {
+                    if plan >= from && plan < to {
+                        planned += 1;
+                        if o.voice_first[v].is_some_and(|a| a <= plan + PTT_BOUND_NS) {
+                            on_time += 1;
+                        } else {
+                            miss_class(o, v as u64, &mut m);
+                        }
+                    }
+                }
+                format!(
+                    "{name}[{}–{}] {on_time}/{planned} (rastgele {}, kuyruk {}, geç {}, bırakma {})",
+                    secs(from),
+                    secs(to),
+                    m.random,
+                    m.queue,
+                    m.late,
+                    m.abandoned
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// [PTT-YALIN · KAPI] (e2) yalın yükte ([`lean`]: ürünün yalın PTT sözleşmesi; sahip kararı
+/// 2026-11-22, #175 7080178069): hat korumasının üç iddiası (e2) ile AYNI sınırlarla
+/// ([`E2Guard::assert_bounds`]; türetim e2 belgesinde). "e2 yalın 9/9" = bu üç iddia × tohum 1–3;
+/// ölçümsüz dizi ≥ 3 düzenek iddiasıdır, sayılmaz. PTT ölçütü ayrı testte
+/// ([`e2_lean_ptt_on_time_per_phase_with_miss_breakdown`]): biri kırılınca öbürünün sinyali
+/// kaybolmasın.
+///
+/// Kuyruk borcunun kanıtı (karşı-olgu: `line_guard` + `sender` c07b1305 öncesi, tek seferlik
+/// boşaltma hat modeline): bu kolun boşluk beklemesi tohum 1'de 3,84 s (sınır 0,70 s; test ilk
+/// tohumda durur; gece ölçümü 3,84 / 4,69 / 4,33 s, #175 7080391047). Dürüst hatta bedeli (`e1`)
+/// dosya 15,10 / 11,86 / 10,27 → 16,31 / 14,38 / 10,27 s (sınır yok).
+#[test]
+fn e2_lean_a_long_unmeasured_gap_on_a_real_drop_keeps_the_queue_bounded() {
+    for seed in 1..=3u64 {
+        let sc = lean(e2_scenario(seed));
+        let o = run(&sc);
+        report("e2-yalın/aday", &sc, &o);
+        let g = E2Guard::of(&o);
+        g.print(&format!("E2-YALIN tohum {seed}"), &o);
+        g.assert_bounds(seed);
+    }
+}
+
+/// [PTT-YALIN · KAPI · PTT-ÖLÇÜT] (e2) yalın yükte PTT, sahibin ölçütüyle: her evrede (başlangıç
+/// 0–8 s, daralma 8–40 s; [`ptt_phases`]) zamanında oranı ≥ %75 ([`PhaseOnTime::passes`]). Eşik
+/// kararı sahipte (koordinatör #175 7080413643: (a) ulaşım kaynaklı ıska 0, (b) %65); karar gelene
+/// dek ≥ %75 iddia edilir ve her evrenin ıskaları dört sınıfa ([`Misses`]) ve e2'nin pencerelerine
+/// ([`E2Guard::windows_line`]) ayrılarak yazılır.
+///
+/// Ölçüm (taban 1482c197; nedensel kayıt #175 7080561058): KIRMIZI. Daralma evresi 57/160,
+/// 77/160, 79/160; geç varışların hepsi boşluk korumasından önce (düşüş → kuyruk boşalana dek;
+/// ölçüm yokken boşluk kuralı ancak ikinci ölçümsüz ACK'te kurulur, o anda FIFO'da 5–6 s kuyruk)
+/// ve tohum 1'de ölçüm dönüşü → yakınsama arasında; boşluk korumalı pencerede geç varış 0. Bu
+/// düzenekte daralma evresi ≥ %75 ulaşımla sağlanamaz ((b)'nin daralma anı alt sınırının ölçümsüz
+/// hâli). Başlangıç evresi tohum 2'de 28/38, ıskaların hepsi rastgele kayıp. Gizlenmez.
+/// Karşı-olgu (kuyruk borcu yok, yukarıdaki gibi): daralma 19/160, 17/160, 27/160 (geç 72 / 100 /
+/// 91, bırakma 30 / 8 / 6).
+#[test]
+fn e2_lean_ptt_on_time_per_phase_with_miss_breakdown() {
+    let mut rows = Vec::new();
+    for seed in 1..=3u64 {
+        let sc = lean(e2_scenario(seed));
+        let o = run(&sc);
+        let m = lean_ptt(&o, sc.voice_until_ns);
+        let g = E2Guard::of(&o);
+        let ph = ptt_phases(&sc, &o);
+        let row = format!(
+            "tohum {seed}: {} | ulaşım kaynaklı ıska {} | pencereler: {} | PTT tel {} bit/s",
+            phases_line(&ph),
+            ph.iter().map(|p| p.misses.transport()).sum::<usize>(),
+            g.windows_line(&sc, &o),
+            m.bps
+        );
+        println!("E2-YALIN-PTT {row}");
+        rows.push((ph.iter().all(PhaseOnTime::passes), row));
+    }
+    assert!(
+        rows.iter().all(|(ok, _)| *ok),
+        "PTT evre başına zamanında < %75 (sahip ölçütü; eşik kararı açık):\n{}",
+        rows.iter()
+            .map(|(_, r)| r.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
 }
 
 /// [İŞ-35 AÇIK 3] Küçük FIFO (8 paket), (b)'nin düşüşü (12 500 → 6 250): kuyruk hemen dolar ve
