@@ -1895,6 +1895,33 @@ fn unit_frame(
 
 /// [ÖNLEMSEL-KOPYA] PTT şeridinin ACK beklemeyen kopya kuralı (`copies` = ilk iletime ek kopya;
 /// 0 = kopya yok, yalnız öncelik sırası).
+/// [PTT-YALIN · ESKİ EŞ] Yalın PTT bildirildiği hâlde bu kadar ACK 0x16'sız gelirse eski kopyalı
+/// kurala dönülür.
+const PTT_LEAN_FALLBACK_ACKS: u8 = 2;
+
+/// [ÖNLEMSEL-KOPYA · sahip kararı 2026-11-16] Eski kopyalı PTT kuralı: her yeni PTT birimi ACK
+/// beklemeden toplam [`PTT_FORWARD_COPIES`] iletim; hat koruması hattı beyanın altında ölçerse
+/// hatla orantılı az (en az [`PTT_FORWARD_COPIES_MIN`]). Yalın PTT'yi bilmeyen eşle kullanılır.
+fn set_ptt_legacy_copies(sender: &mut adaptive_transport::sender::Sender, cfg: &RuntimeConfig) {
+    sender.set_forward_copy_rule(Some(adaptive_transport::sender::ForwardCopyRule {
+        below_id: crate::unit_id::tagged(1, 0),
+        // Şerit sırası PTT > SIG > TEXT > FILE (#199): dosya dışı şeritler yeniden iletim
+        // dalgasının önünde çıkar (metin mesajı bir ACK gelince ≈ 1 s bekliyordu).
+        priority_below_id: crate::unit_id::tagged(
+            crate::unit_id::index_of_lane(crate::lanes::Lane::File),
+            0,
+        ),
+        copies: PTT_FORWARD_COPIES - 1,
+        spacing_ns: PTT_COPY_SPACING_NS,
+    }));
+    sender.set_forward_copy_line_scale(cfg.link_rates.map(|l| {
+        adaptive_transport::sender::ForwardCopyLineScale {
+            declared_bps: l.uplink_bps,
+            min_copies: PTT_FORWARD_COPIES_MIN - 1,
+        }
+    }));
+}
+
 fn ptt_forward_copy_rule(
     copies: u8,
     spacing_ns: u64,
@@ -3046,30 +3073,14 @@ async fn client_task(
             .sender_mut()
             .set_forward_copy_rule(Some(ptt_forward_copy_rule(0, 0)));
     } else if cfg.lane_ids && link_feedback_starved(&cfg) {
-        session.sender_mut().set_forward_copy_rule(Some(
-            adaptive_transport::sender::ForwardCopyRule {
-                below_id: crate::unit_id::tagged(1, 0),
-                // Şerit sırası PTT > SIG > TEXT > FILE (#199): dosya dışı şeritler yeniden iletim
-                // dalgasının önünde çıkar (metin mesajı bir ACK gelince ≈ 1 s bekliyordu).
-                priority_below_id: crate::unit_id::tagged(
-                    crate::unit_id::index_of_lane(crate::lanes::Lane::File),
-                    0,
-                ),
-                copies: PTT_FORWARD_COPIES - 1,
-                spacing_ns: PTT_COPY_SPACING_NS,
-            },
-        ));
-        // [PTT-ARTIK] Hat koruması hattı beyanın altında ölçerse kopya sayısı hatla orantılı
-        // küçülür (en az [`PTT_FORWARD_COPIES_MIN`] iletim).
-        session
-            .sender_mut()
-            .set_forward_copy_line_scale(cfg.link_rates.map(|l| {
-                adaptive_transport::sender::ForwardCopyLineScale {
-                    declared_bps: l.uplink_bps,
-                    min_copies: PTT_FORWARD_COPIES_MIN - 1,
-                }
-            }));
+        set_ptt_legacy_copies(session.sender_mut(), &cfg);
     }
+    // [PTT-YALIN · ESKİ EŞ · #175 7081093529, sahip: "kopyalı PTT yalnız eski uçla"] Yalın PTT
+    // bildirilip ilk ACK'lerde 0x16 görülmezse (eş CAP_PTT_LEAN'i bilmiyor) eski kopyalı kurala
+    // dönülür. İki ACK beklenir: sunucu CAPS'i işleyene dek 0x14 yazar (CAPS yolda düşebilir).
+    // Sonradan 0x16 gelirse yalın kipe geçilir.
+    let mut non_lean_acks: u8 = 0;
+    let mut ptt_copy_fallback = false;
     // [E1 gösterim, CC §4.1] Beş çalışma-zamanı bayrağı (varsayılan kapalı = sevk davranışı).
     session.sender_mut().set_e1_flags(cfg.e1_flags);
     let mut stats = ClientStats::default();
@@ -3627,6 +3638,17 @@ async fn client_task(
                     // [PTT-YALIN · YETENEK] Yalnız 0x16: eş 0x09'u çözer (CAPS bit 1'i gördü ve
                     // kendisi yalın PTT'yi biliyor). PTT tek iletim (kopya yok; öncelik sırası
                     // kalır), yalın çerçeve, son tarihte bırakma. 0x15 yazan eski eşle bugünkü yol.
+                    if plain[0] != FRAME_TYPE_ACK_BITMAP_PTT
+                        && ptt_lean_offer
+                        && !ptt_lean_peer
+                        && !ptt_copy_fallback
+                    {
+                        non_lean_acks = non_lean_acks.saturating_add(1);
+                        if non_lean_acks >= PTT_LEAN_FALLBACK_ACKS {
+                            ptt_copy_fallback = true;
+                            set_ptt_legacy_copies(session.sender_mut(), &cfg);
+                        }
+                    }
                     if plain[0] == FRAME_TYPE_ACK_BITMAP_PTT {
                         if !ptt_lean_peer && !frag_on && cfg.lane_ids && link_feedback_starved(&cfg)
                         {
@@ -3910,8 +3932,13 @@ async fn client_task(
                 let lane = lane & 0b11;
                 stats.offered += 1;
                 // [DEADLINE-EKSENİ] Politika girdisi; ARQ/pacing/loss durumuna DOKUNMAZ.
+                // [PTT-YALIN · #175 7081093529] PTT şeridinin son tarihi (kama-app MEDIA_BUNDLE) yalın
+                // kipin bırakma politikasıdır; oturum geneli en sıkı son tarihe (spekülatif FEC,
+                // füzyon) girmez: profil kapalı yolda PTT'li oturumun FEC davranışı değişmez.
                 if let Some(d) = deadline_ns {
-                    session.sender_mut().declare_delivery_deadline(d);
+                    if !(cfg.lane_ids && lane == PTT_LANE_INDEX) {
+                        session.sender_mut().declare_delivery_deadline(d);
+                    }
                 }
                 let now = elapsed_ns(start);
                 // [S1B] FRAGMENTER. Mesaj `max_unit_bytes`lik ardışık chunk'lara bölünür; her
