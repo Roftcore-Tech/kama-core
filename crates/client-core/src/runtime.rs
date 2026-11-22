@@ -20,7 +20,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -2485,9 +2485,10 @@ struct PathEstimate {
     /// `Σ next_unit − Sender::unsent_units`. Yalnız artar. Görev her motor olayından sonra YAZAR;
     /// tutamaç OKUR ([`ClientHandle::send_queue_drained`]).
     send_queue_drained: AtomicU64,
-    /// [PTT-BİRLEŞİK · deney] Eşin 0x17 ACK'i görüldü (eş birleşik PTT kayıtlarını çözer). Görev
-    /// YAZAR, tutamaç OKUR ([`ClientHandle::peer_ptt_coalesce`]). Yalnız artar (false → true).
-    ptt_coalesce_peer: AtomicBool,
+    /// [PTT-BİRLEŞİK · deney] Eşin bant içi yeteneği: 0 bilinmiyor, 1 çözer (ilk yalın ACK'i
+    /// 0x17), 2 çözmez (ilk yalın ACK'i 0x16). Görev bir kez YAZAR (0 → 1 ya da 2), tutamaç OKUR
+    /// ([`ClientHandle::peer_ptt_coalesce`]).
+    ptt_coalesce_peer: AtomicU8,
 }
 
 /// Client tutamağı: bounded offer + ACK olay akışı + kontrollü kapanış.
@@ -2854,9 +2855,15 @@ impl ClientHandle {
 
     /// [PTT-BİRLEŞİK · deney] Eş birleşik PTT kayıtlarını çözdüğünü bildirdi mi (ilk 0x17 ACK'i;
     /// yalnız [`RuntimeConfig::ptt_coalesce`] açıkken olabilir). Bileşim kökü uygulamaya verir.
+    /// `None` = henüz bilinmiyor (yalın bitmap ACK'i gelmedi); `Some(false)` = eşin ilk yalın ACK'i
+    /// 0x16 (eş CAPS bit 2'yi gördü ama birleşik kayıtları çözmüyor).
     #[must_use]
-    pub fn peer_ptt_coalesce(&self) -> bool {
-        self.path.ptt_coalesce_peer.load(Ordering::Relaxed)
+    pub fn peer_ptt_coalesce(&self) -> Option<bool> {
+        match self.path.ptt_coalesce_peer.load(Ordering::Relaxed) {
+            1 => Some(true),
+            2 => Some(false),
+            _ => None,
+        }
     }
 
     /// [ŞERİT-W] Motorun son yol kestirimi `(btlbw B/s, rtprop ns)`; örnek yoksa ilgili alan 0.
@@ -3729,8 +3736,15 @@ async fn client_task(
                     // `ptt_coalesce` açıkken kabul edilir). Yalın PTT için 0x16 gibi sayılır.
                     let coalesce_ack = plain[0] == FRAME_TYPE_ACK_BITMAP_PTT_COALESCE;
                     let lean_ack = plain[0] == FRAME_TYPE_ACK_BITMAP_PTT || coalesce_ack;
-                    if coalesce_ack {
-                        path.ptt_coalesce_peer.store(true, Ordering::Relaxed);
+                    // İlk yalın ACK'in türü kesin: eş bit 2'yi CAPS'le birlikte gördü (0x16 ancak
+                    // CAPS'ten sonra yazılır); 0x16 → eş birleşik kaydı çözmüyor.
+                    if lean_ack && cfg.ptt_coalesce {
+                        let _ = path.ptt_coalesce_peer.compare_exchange(
+                            0,
+                            if coalesce_ack { 1 } else { 2 },
+                            Ordering::Relaxed,
+                            Ordering::Relaxed,
+                        );
                     }
                     // [ACK-BITMAP] 0x15 yalnız bitmap biçimi açıkça yapılandırılmışsa çözülür; ilk
                     // 0x15 çerçevesi CAPS bildiriminin karşıya ulaştığını gösterir.

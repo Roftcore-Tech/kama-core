@@ -99,7 +99,7 @@ use kama_app::codec::limits::TEXT_PREFIX_BYTES;
 use kama_app::codec::{AmpLimits, PttCodec};
 use kama_app::file_transfer::FileTransfer;
 use kama_app::messaging::{Messenger, MsgId};
-use kama_app::ptt::{max_bundle_payload_bytes, Ptt};
+use kama_app::ptt::max_bundle_payload_bytes;
 use kama_app::signaling::{max_blob_bytes, Signaling, SignalingId};
 use kama_app::store::AppStore;
 use kama_provision::format::load_device_config;
@@ -377,9 +377,10 @@ impl KamaNode {
         let app_store: Arc<dyn AppStore> = store;
         let messenger = Messenger::with_store(transport, app_store).map_err(NodeError::Limits)?;
         let limits = InputLimits::from_amp(messenger.limits());
+        let ptt = node::ptt_engine(&messenger, Arc::clone(&app_clock));
         let engines = AppEngines {
             messenger,
-            ptt: Ptt::new(Arc::clone(&app_clock)),
+            ptt,
             files: FileTransfer::new(Arc::clone(&app_clock)),
             signaling: Signaling::new(app_clock),
         };

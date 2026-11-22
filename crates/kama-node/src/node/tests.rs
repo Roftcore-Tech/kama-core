@@ -1084,3 +1084,19 @@ fn receipt_completion_is_reported_in_chain_order_within_the_turn() {
         .expect("metin aynı turda");
     assert!(delivered < text, "zincir sırası: {order:?}");
 }
+
+/// [PTT-BİRLEŞİK · deney · #233 inceleme 6] Tek anahtar: düğümün PTT motorunun birleşik biçim
+/// anahtarı Transport'un bayrağından türetilir (`ptt_engine`); ürün yapılandırmasında ikisi de
+/// kapalıdır. Ayrı kurulsalardı uç CAPS bit 2 / 0x17 ile yeteneğini bildirip birleşik demetleri
+/// reddedebilirdi.
+#[test]
+fn ptt_coalesce_switch_is_derived_from_the_transport_flag() {
+    let _serial = support::serial();
+    let root = TempDir::new("ptt-coalesce-switch");
+    let phones = support::provision(root.path(), &[ALICE]);
+    let (alice, _events) = support::manual(&phones[ALICE], support::system_clock());
+    let node = &alice.node;
+    let transport_flag = node.messenger.transport().ptt_coalesce_enabled();
+    assert_eq!(node.ptt.spurt_coalesce(), transport_flag);
+    assert!(!transport_flag, "ürün yapılandırmasında deney kapalı");
+}

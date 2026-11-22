@@ -663,7 +663,8 @@ pub fn decode(record: &[u8], limits: &AmpLimits) -> Result<AppMessage, DecodeErr
         if record.len() < SPURT_OPEN_HEADER_BYTES {
             return Err(DecodeError::Drop(DropReason::RecordTooShort));
         }
-        if record.len() > APP_RECORD_HEADER_BYTES + limits.max_body_bytes() {
+        // Kanonik tavan: kodlayıcının ürettiği en uzun kayıt işaret 1 + `MAX_BODY_BYTES`.
+        if record.len() > 1 + limits.max_body_bytes() {
             return Err(DecodeError::Drop(DropReason::RecordLenMismatch));
         }
         let (id, rest) = rest.split_at(4);
@@ -679,7 +680,7 @@ pub fn decode(record: &[u8], limits: &AmpLimits) -> Result<AppMessage, DecodeErr
         let Some((&stream_tag, payload)) = rest.split_first() else {
             return Err(DecodeError::Drop(DropReason::RecordTooShort));
         };
-        if record.len() > APP_RECORD_HEADER_BYTES + limits.max_body_bytes() {
+        if record.len() > 1 + limits.max_body_bytes() {
             return Err(DecodeError::Drop(DropReason::RecordLenMismatch));
         }
         return Ok(AppMessage::MediaBundleEnd {
@@ -1081,9 +1082,21 @@ mod tests {
             encode(&too_big, &l),
             Err(EncodeError::BodyTooLarge { .. })
         ));
-        for marker in [SPURT_OPEN_MARKER, SPURT_END_MARKER] {
+        // [#233 inceleme · küçük] Kanonik tavan: kodlayıcının en uzun kaydı (işaret 1 + gövde
+        // `MAX_BODY_BYTES`) kabul edilir, bir bayt fazlası düşer (eskiden 4 B fazlası geçiyordu).
+        let longest = AppMessage::MediaBundleOpen {
+            stream_id: 0,
+            codec: 2,
+            bundle_ms: 20,
+            end: false,
+            payload: vec![0; l.max_body_bytes() - 6],
+        };
+        let unit = encode(&longest, &l).expect("en uzun kodlanır");
+        assert_eq!(unit.bytes.len(), 1 + l.max_body_bytes());
+        assert_eq!(decode(&unit.bytes, &l), Ok(longest));
+        for marker in [SPURT_OPEN_MARKER, SPURT_OPEN_END_MARKER, SPURT_END_MARKER] {
             let mut over = vec![marker, 0, 0, 0, 0, 2, 20];
-            over.resize(APP_RECORD_HEADER_BYTES + l.max_body_bytes() + 1, 0);
+            over.resize(1 + l.max_body_bytes() + 1, 0);
             assert_eq!(drop_of(&over), DropReason::RecordLenMismatch);
         }
     }

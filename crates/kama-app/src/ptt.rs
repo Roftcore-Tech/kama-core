@@ -39,27 +39,34 @@
 //!
 //! # [PTT-BİRLEŞİK · deney, sahip onayı 2026-11-23; aday dışı] Açılış ve kapanış demetin içinde
 //!
-//! [`Ptt::set_spurt_coalesce`] açıkken ve eş yeteneğini bildirmişken ([`Ptt::set_peer_spurt_capable`];
-//! bileşim kökü Transport'un 0x17 ACK'inden okur) basış ayrı güvenilir `PTT_OPEN` / `PTT_CLOSE`
-//! göndermez. Oturumdaki ilk [`SPURT_OPEN_REPEAT`] demet açılış bilgisini taşır
-//! (`MediaBundleOpen`, 7 B başlık: `stream_id`, `codec`, `bundle_ms`), sonrakiler kompakt (2 B);
-//! son demet `END` işaretlidir ([`Ptt::send_last_bundle_from`]; verilmediyse `close` yüksüz bir
-//! `END` demeti sunar). Hepsi son tarihli, tek iletim. Alıcıda değişen kurallar (yalnız birleşik
-//! akışlar; ayrı kayıtlı akışların kuralları aynen):
+//! [`Ptt::set_spurt_coalesce`] açıkken ve eş yetenekliyken basış ayrı güvenilir `PTT_OPEN` /
+//! `PTT_CLOSE` göndermez. Eşin yeteneği üç kaynaktan okunur (sahip kararı 2026-11-23): yönetilen
+//! ([`Ptt::set_peer_spurt_provisioned`]), önceki oturumdan öğrenilen (yalnız aynı eş ve aynı
+//! [`SPURT_FORMAT_EPOCH`]; [`Ptt::remember_spurt_capability`]) ve bu oturumdaki bant içi bildirim
+//! ([`Ptt::on_peer_spurt_capability`]; bileşim kökü Transport'un 0x17 / 0x16 ACK'inden okur). Bant
+//! içi bildirim oturuma bağlıdır ve önce gelir. Bilinmeyen eşe bugünkü uyumlu ayrı kayıtlar gider.
+//!
+//! Açılış bilgisi (`MediaBundleOpen`, 7 B başlık: `stream_id`, `codec`, `bundle_ms`) oturumdaki
+//! ilk [`SPURT_OPEN_REPEAT`] demette ve sonra her [`SPURT_OPEN_EVERY`]. demette (varsayılan: her
+//! demette) taşınır; diğerleri kompakt (2 B). Son demet `END` işaretlidir
+//! ([`Ptt::send_last_bundle_from`]; verilmediyse `close` yüksüz bir `END` demeti sunar). Hepsi son
+//! tarihli, tek iletim. Alıcıda değişen kurallar (yalnız birleşik akışlar; ayrı kayıtlı akışların
+//! kuralları aynen):
 //!
 //! * PTT-R3: açılış bilgili demet bilinmeyen akışı AÇAR (`PttStarted`, ardından ses) — `PTT_OPEN`
 //!   kurallarıyla (oturum, PTT-R5, tablo tavanı, kapanmış akış kaydı). Kompakt demet yine yalnız
-//!   etkin akışa bağlanır (ilk K demetin hepsi kaybolursa basışın kalanı yetimdir).
-//! * PTT-R4: birleşik akışın hareketsizlik sonu 120 s değil [`spurt_gap_end`] = 1 s + 2 ×
+//!   etkin akışa bağlanır.
+//! * PTT-R4: birleşik akışın hareketsizlik sonu 120 s değil [`spurt_gap_end`] = 1 s + 100 ms + 2 ×
 //!   `bundle_ms` (son `END`'li demet kaybolsa da akış sınırlı sürede biter; `streams_ended_by_gap`).
 //!   Bu yolla biten akış kapanmış akış kaydına girmez: sonra gelen açılış bilgili demet onu yeniden
 //!   açar (PTT-R4'ün bugünkü kuralıyla aynı).
-//! * PTT-R1 / PTT-R2: `END`'li demet `PTT_CLOSE` gibi akışı bitirir ve kimliği kapanmış akış kaydına
-//!   yazar; `END`'den sonra gelen açılış bilgili demet akışı yeniden açmaz (`spurt_after_end`).
+//! * PTT-R1 / PTT-R2: `END`'li demet `PTT_CLOSE` gibi birleşik akışı bitirir ve kimliği kapanmış
+//!   akış kaydına yazar; `END`'den sonra gelen açılış bilgili demet akışı yeniden açmaz
+//!   (`spurt_after_end`). Ayrı `PTT_OPEN`'la açılmış akışı `END` bitirmez.
 //! * PTT-R0 (2026-11-22 yaması): "`PTT_OPEN` ve `PTT_CLOSE` Reliable" — birleşik akışta ikisi de
-//!   tele çıkmaz; açılışın korunması K kopyalı başlık, kapanışınki sessizlik sonudur.
-//! * D5: oturum değişince ayrı yeniden `PTT_OPEN` yerine yeni oturumdaki ilk K demet yine açılış
-//!   bilgisini taşır.
+//!   tele çıkmaz; açılışın korunması demetlere yayılmış başlık, kapanışınki sessizlik sonudur.
+//! * D5: oturum değişince yetenek yeni oturum için yeniden sınanır; yetenekliyse yeni oturumdaki
+//!   ilk demetler açılış bilgisini taşır, değilse akış ayrı kayıtlara döner (güvenilir `PTT_OPEN`).
 //! * §3 tel biçimi: `0x8B` / `0x8C` / `0x8D` işaretleri (`codec::limits`); v1 alıcısı onları
 //!   `unknown-msg-version` ile atar — bu yüzden yalnız yetenekli eşe.
 //!
@@ -254,23 +261,89 @@ pub const PTT_STREAM_IDLE_TTL: Duration = Duration::from_secs(120);
 /// süresiyle (`client_core::runtime::PTT_DEADLINE_NS`) aynı değer.
 pub const PTT_BUNDLE_DEADLINE: Duration = Duration::from_secs(1);
 
-/// [PTT-BİRLEŞİK · deney] Birleşik biçimde ilk kaç demet açılış bilgisini taşır (varsayılan;
-/// [`Ptt::set_spurt_open_repeat`]). İki: ilk demet kaybolsa da ikincisi akışı açar.
+/// [PTT-BİRLEŞİK · deney] Birleşik biçimde oturumdaki ilk kaç demet açılış bilgisini taşır
+/// ([`Ptt::set_spurt_open_repeat`]). [`SPURT_OPEN_EVERY`] ile birlikte okunur.
 pub const SPURT_OPEN_REPEAT: u8 = 2;
+
+/// [PTT-BİRLEŞİK · deney · #233 inceleme 1] İlk [`SPURT_OPEN_REPEAT`] demetten sonra her kaçıncı
+/// demet de açılış bilgisini taşır (0 = hiçbiri; [`Ptt::set_spurt_open_every`]). Varsayılan 1:
+/// HER demet açılışı taşır (+5 B / demet, kompakt başlığa göre). Böylece basış, demetlerinden
+/// biri bile varırsa uygulamaya ulaşır: ilk iki (ya da daha çok) datagram kaybolsa da sonraki
+/// ilk varan demet akışı açar ve sesi o demetten başlar. Yalnız ilk K demet açılış taşısaydı
+/// (eski kural) ilk K datagramın kaybı basışın tamamını yetim bırakırdı; geç gelen açılışlı demet
+/// de kurtarmazdı (taşıma katmanı atlanmış sıranın yalın demetini düşürür).
+pub const SPURT_OPEN_EVERY: u8 = 1;
+
+/// [PTT-BİRLEŞİK · deney] Alıcı taşıma katmanının PTT şeridinde eksik sıra başını beklediği en
+/// uzun süre (`client_core` `transport::PTT_HOLE_SKIP` ile aynı değer; katman sınırı yüzünden
+/// burada yinelenir). Sessizlik sonu türetmesine girer.
+pub const SPURT_RX_HOLE_WAIT: Duration = Duration::from_millis(100);
 
 /// [PTT-BİRLEŞİK · deney] Birleşik biçimde açılmış akışın sessizlik sonu: son kabul edilen
 /// demetten bu kadar sonra (son demet kaybolup `END` görülmediyse) akış yerel olarak biter.
-/// [`PTT_BUNDLE_DEADLINE`] + `SPURT_GAP_BUNDLES × bundle_ms`. Türetme: k. demetin sesi
-/// `k × B`'de başlar, `k × B + B`'de sunulur, en geç `k × B + 1 s`'de zamanında varır; arada
-/// `n − 1` demet kaybolursa iki kabul arasındaki boşluk en çok `(n − 1) × B + 1 s`'dir. İki:
-/// art arda iki kayıp akışı erken bitirmez.
+/// [`PTT_BUNDLE_DEADLINE`] + [`SPURT_RX_HOLE_WAIT`] + `SPURT_GAP_BUNDLES × bundle_ms`.
+/// Türetme: `j`. demet `j × B`'de oluşur, en erken `(j + 1) × B`'de (çerçeveleri var olunca)
+/// gönderilip kabul edilir; en geç oluşumundan 1 s (son tarih) + 100 ms (alıcının delik
+/// beklemesi) sonra kabul edilir. Arada `n − 1` demet kaybolursa iki kabul arasındaki boşluk en
+/// çok `(n − 1) × B + 1,1 s`'dir (tek yön gecikmesi ≥ 0 olduğundan gecikme değişimi bunun
+/// içinde kalır). İki: art arda iki kayıp akışı erken bitirmez.
 pub const SPURT_GAP_BUNDLES: u32 = 2;
 
 /// [PTT-BİRLEŞİK · deney] Birleşik akışın sessizlik sonu süresi (`bundle_ms` kodundan).
 #[must_use]
 pub fn spurt_gap_end(bundle_ms: u8) -> Duration {
     PTT_BUNDLE_DEADLINE
+        + SPURT_RX_HOLE_WAIT
         + Duration::from_millis(u64::from(bundle_ms_from_code(bundle_ms))) * SPURT_GAP_BUNDLES
+}
+
+/// [PTT-BİRLEŞİK · deney] Birleşik biçimin tel sürümü (yetenek dönemi). Önceki oturumdan
+/// öğrenilmiş yetenek ([`SpurtCapabilityRecord`]) yalnız bu değerle eşleşirse kullanılır; biçim
+/// değişirse değer artar ve eski kayıtlar kendiliğinden geçersiz olur. Bant içi yetenek (CAPS
+/// bit 2 → 0x17) bu dönemi bildirir.
+pub const SPURT_FORMAT_EPOCH: u16 = 1;
+
+/// [PTT-BİRLEŞİK · deney] Önceki bir oturumda bant içi doğrulanmış yetenek: eşin kimliği ve o
+/// zaman konuştuğu biçim dönemi. Bileşim kökü [`Ptt::learned_spurt_capabilities`] ile okuyup
+/// kalıcılaştırır, sonraki açılışta [`Ptt::remember_spurt_capability`] ile geri verir.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpurtCapabilityRecord {
+    /// Eşin kimliği.
+    pub peer: PeerRef,
+    /// Eşin bant içi bildirdiği biçim dönemi.
+    pub epoch: u16,
+}
+
+/// [PTT-BİRLEŞİK · deney] Eşin birleşik biçimi çözüp çözmediği; üç kaynak (sahip kararı
+/// 2026-11-23): yönetilen/dağıtımla verilen bilgi, önceki oturumdan öğrenilen (yalnız aynı eş ve
+/// aynı biçim dönemi) ve bu oturumdaki bant içi bildirim (0x17 / 0x16). Bant içi bildirim
+/// oturuma bağlıdır ve diğer ikisinin önüne geçer: oturumda eş "çözmüyorum" dediyse (yalın ACK
+/// 0x16, 0x17 değil) o oturumda birleşik biçim kullanılmaz ve öğrenilmiş kayıt silinir.
+#[derive(Debug, Default)]
+struct SpurtCaps {
+    provisioned: BTreeSet<PeerRef>,
+    learned: BTreeMap<PeerRef, u16>,
+    in_band: BTreeMap<PeerRef, (SessionHandle, bool)>,
+}
+
+impl SpurtCaps {
+    fn capable(&self, peer: PeerRef, session: SessionHandle) -> bool {
+        if let Some(&(on, capable)) = self.in_band.get(&peer) {
+            if on == session {
+                return capable;
+            }
+        }
+        self.provisioned.contains(&peer) || self.learned.get(&peer) == Some(&SPURT_FORMAT_EPOCH)
+    }
+}
+
+/// Sınırlı küme/eşlem ekleme: tablo [`MAX_PEERS`]'te doluysa yeni anahtar eklenmez.
+fn bounded_insert<V>(map: &mut BTreeMap<PeerRef, V>, peer: PeerRef, value: V) -> bool {
+    if !map.contains_key(&peer) && map.len() >= MAX_PEERS {
+        return false;
+    }
+    map.insert(peer, value);
+    true
 }
 
 /// PTT-R5 (AMP §3, K4G-08): aynı eşten aynı anda en çok bu kadar etkin gelen akış; fazlası
@@ -502,8 +575,9 @@ pub struct PttStats {
     pub streams_ended_by_gap: u64,
     /// [PTT-BİRLEŞİK · deney] `END`'i görülmüş (kapanmış akış kaydındaki) akışın geç demetleri.
     pub spurt_after_end: u64,
-    /// [PTT-BİRLEŞİK · deney] Birleşik biçim kapalıyken gelen birleşik demetler (DROP) ve kayıt
-    /// defterinde olmayan `codec`'li açılış bilgili demetler.
+    /// [PTT-BİRLEŞİK · deney] Birleşik biçim kapalıyken gelen birleşik demetler (DROP), kayıt
+    /// defterinde olmayan `codec`'li açılış bilgili demetler ve birleşik olmayan (ayrı
+    /// `PTT_OPEN`'la açılmış) akışa gelen `END` işareti (işaret yok sayılır, ses teslim edilir).
     pub spurt_refused: u64,
 }
 
@@ -531,11 +605,12 @@ pub struct Ptt {
     /// [PTT-BİRLEŞİK · deney] Birleşik biçim açık mı ([`Self::set_spurt_coalesce`]): alıcı birleşik
     /// demetleri kabul eder, gönderen yeteneğini bildirmiş eşe birleşik akış açar.
     coalesce: bool,
-    /// [PTT-BİRLEŞİK · deney] Birleşik biçimi çözdüğü bilinen eşler (≤ [`MAX_PEERS`];
-    /// [`Self::set_peer_spurt_capable`]).
-    coalesce_peers: BTreeSet<PeerRef>,
+    /// [PTT-BİRLEŞİK · deney] Eşlerin yeteneği (her tablo ≤ [`MAX_PEERS`]).
+    caps: SpurtCaps,
     /// [PTT-BİRLEŞİK · deney] İlk kaç demet açılış bilgisini taşır.
     open_repeat: u8,
+    /// [PTT-BİRLEŞİK · deney] Sonra her kaçıncı demet açılış bilgisini taşır (0 = hiçbiri).
+    open_every: u8,
     /// [PTT-BİRLEŞİK · deney] Tek kayıttan doğan sonraki olaylar (açılış + ses + kapanış; ≤ 2
     /// bekler); [`Self::poll`] önce bunları verir.
     pending: VecDeque<PttEvent>,
@@ -557,6 +632,9 @@ struct Outgoing {
     sent_on_session: u32,
     /// [PTT-BİRLEŞİK · deney] `END` işaretli demet kabul ettirildi.
     end_sent: bool,
+    /// [PTT-BİRLEŞİK · deney · D5] Eş bu oturumda birleşik biçimi çözmediğini bildirdi: akış ayrı
+    /// kayıtlara döndü ve `PTT_OPEN` aynı oturuma da (bir kez) sunulmalı.
+    force_reopen: bool,
 }
 
 /// Etkin gelen akış: ilk `PTT_OPEN`'ın sabitlediği parametreler ve PTT-R4 süresinin başı.
@@ -586,8 +664,9 @@ impl Ptt {
             playout: None,
             compact_bundles: false,
             coalesce: false,
-            coalesce_peers: BTreeSet::new(),
+            caps: SpurtCaps::default(),
             open_repeat: SPURT_OPEN_REPEAT,
+            open_every: SPURT_OPEN_EVERY,
             pending: VecDeque::new(),
         }
     }
@@ -595,34 +674,94 @@ impl Ptt {
     /// [PTT-BİRLEŞİK · deney, sahip onayı 2026-11-23; aday dışı] Açılış ve kapanış ses
     /// demetlerinin içinde taşınır (ayrı güvenilir `PTT_OPEN` / `PTT_CLOSE` yok). Varsayılan
     /// kapalı. Açıkken (1) alıcı birleşik demetleri kabul eder (kapalıyken DROP,
-    /// `spurt_refused`); (2) gönderen yalnız yeteneğini bildirmiş eşe
-    /// ([`Self::set_peer_spurt_capable`]) birleşik akış açar, diğer eşlere bugünkü ayrı kayıtlar
-    /// gider. Değişen kurallar: modül belgesi, "PTT-BİRLEŞİK".
+    /// `spurt_refused`); (2) gönderen yalnız yetenekli eşe birleşik akış açar, diğer eşlere
+    /// bugünkü ayrı kayıtlar gider. Değişen kurallar: modül belgesi, "PTT-BİRLEŞİK". Bileşim kökü
+    /// bu anahtarı Transport'un `RuntimeConfig::ptt_coalesce` bayrağından türetir: biri açık öteki
+    /// kapalıysa eş yeteneği bildirip demetleri reddederdi.
     pub fn set_spurt_coalesce(&mut self, on: bool) {
         self.coalesce = on;
     }
 
-    /// [PTT-BİRLEŞİK · deney] Eşin birleşik biçimi çözdüğü (yetenek bildirimi; bileşim kökü
-    /// Transport'tan okur) ya da artık çözmediği. Karar akışın açılışında okunur; açık akış
-    /// biçimini değiştirmez. Tablo [`MAX_PEERS`] ile sınırlı: doluyken yeni eş eklenmez (`false`).
-    pub fn set_peer_spurt_capable(&mut self, peer: PeerRef, capable: bool) -> bool {
-        if !capable {
-            self.coalesce_peers.remove(&peer);
-            return true;
-        }
-        if self.coalesce_peers.contains(&peer) {
-            return true;
-        }
-        if self.coalesce_peers.len() >= MAX_PEERS {
-            return false;
-        }
-        self.coalesce_peers.insert(peer)
+    /// [PTT-BİRLEŞİK · deney] Birleşik biçim açık mı ([`Self::set_spurt_coalesce`]). Bileşim kökü
+    /// bunu Transport'un bayrağından türetir (tek anahtar; #233 inceleme 6).
+    #[must_use]
+    pub fn spurt_coalesce(&self) -> bool {
+        self.coalesce
     }
 
-    /// [PTT-BİRLEŞİK · deney] İlk kaç demetin açılış bilgisini taşıyacağı (en az 1; varsayılan
-    /// [`SPURT_OPEN_REPEAT`]).
+    /// [PTT-BİRLEŞİK · deney] Yönetilen yetenek: dağıtım/yapılandırma eşin birleşik biçimi
+    /// çözdüğünü önceden bildirir (ilk temasta bant içi bildirim beklenmez). `false` kaydı siler.
+    /// Tablo [`MAX_PEERS`] ile sınırlı: doluyken yeni eş eklenmez (`false` döner).
+    pub fn set_peer_spurt_provisioned(&mut self, peer: PeerRef, capable: bool) -> bool {
+        if !capable {
+            self.caps.provisioned.remove(&peer);
+            return true;
+        }
+        if !self.caps.provisioned.contains(&peer) && self.caps.provisioned.len() >= MAX_PEERS {
+            return false;
+        }
+        self.caps.provisioned.insert(peer);
+        true
+    }
+
+    /// [PTT-BİRLEŞİK · deney] Bant içi yetenek: eş `session` oturumunda birleşik biçimi çözdüğünü
+    /// (`true`, 0x17 ACK'i) ya da çözmediğini (`false`, 0x17'siz yalın ACK 0x16) bildirdi
+    /// (bileşim kökü Transport'tan okur: `ClientTransport::peer_ptt_coalesce`). Yalnız o oturum
+    /// için geçerlidir. `true` öğrenilmiş kayda da yazılır ([`SPURT_FORMAT_EPOCH`] ile); `false`
+    /// öğrenilmiş kaydı siler. Karar akışın açılışında ve oturum değişiminde (D5) okunur.
+    /// Tablo doluysa yeni eş eklenmez (`false` döner).
+    pub fn on_peer_spurt_capability(
+        &mut self,
+        peer: PeerRef,
+        session: SessionHandle,
+        capable: bool,
+    ) -> bool {
+        if capable {
+            let _ = bounded_insert(&mut self.caps.learned, peer, SPURT_FORMAT_EPOCH);
+        } else {
+            self.caps.learned.remove(&peer);
+            // Bu oturumda birleşik açılmış/sürdürülen akış ayrı kayıtlara döner (D5 yeniden sınama
+            // bildirimden önce yapıldıysa da).
+            for stream in self.outgoing.values_mut() {
+                if stream.peer == peer && stream.coalesced && stream.opened_on == session {
+                    stream.coalesced = false;
+                    stream.force_reopen = true;
+                }
+            }
+        }
+        bounded_insert(&mut self.caps.in_band, peer, (session, capable))
+    }
+
+    /// [PTT-BİRLEŞİK · deney] Önceki bir oturumdan öğrenilmiş yeteneği geri verir. Kayıt yalnız
+    /// aynı eş için ve `epoch == SPURT_FORMAT_EPOCH` iken kullanılır; dönemi farklı kayıt tutulmaz
+    /// (`false`). Tablo doluysa da `false`.
+    pub fn remember_spurt_capability(&mut self, record: SpurtCapabilityRecord) -> bool {
+        if record.epoch != SPURT_FORMAT_EPOCH {
+            return false;
+        }
+        bounded_insert(&mut self.caps.learned, record.peer, record.epoch)
+    }
+
+    /// [PTT-BİRLEŞİK · deney] Kalıcılaştırılacak öğrenilmiş yetenekler (eş sırasıyla).
+    #[must_use]
+    pub fn learned_spurt_capabilities(&self) -> Vec<SpurtCapabilityRecord> {
+        self.caps
+            .learned
+            .iter()
+            .map(|(&peer, &epoch)| SpurtCapabilityRecord { peer, epoch })
+            .collect()
+    }
+
+    /// [PTT-BİRLEŞİK · deney] Oturumdaki ilk kaç demetin açılış bilgisini taşıyacağı (en az 1;
+    /// varsayılan [`SPURT_OPEN_REPEAT`]).
     pub fn set_spurt_open_repeat(&mut self, k: u8) {
         self.open_repeat = k.max(1);
+    }
+
+    /// [PTT-BİRLEŞİK · deney] İlk K demetten sonra her kaçıncı demetin açılış bilgisini taşıyacağı
+    /// (0 = hiçbiri; varsayılan [`SPURT_OPEN_EVERY`] = her demet).
+    pub fn set_spurt_open_every(&mut self, n: u8) {
+        self.open_every = n;
     }
 
     /// [PTT-BANT · aday, kol A; sahip onayı 2026-11-22 test için] Giden `MEDIA_BUNDLE`'ları
@@ -713,7 +852,7 @@ impl Ptt {
         let handle = messenger.session_of(peer).ok_or(PttError::NoSession)?;
         let stream_id = self.reserve_stream_id(messenger.store(), peer)?;
         // [PTT-BİRLEŞİK · deney] Yetenekli eşe ayrı `PTT_OPEN` gitmez: ilk demetler açılışı taşır.
-        let coalesced = self.coalesce && self.coalesce_peers.contains(&peer);
+        let coalesced = self.coalesce && self.caps.capable(peer, handle);
         if !coalesced {
             let open = AppMessage::PttOpen {
                 stream_id,
@@ -732,6 +871,7 @@ impl Ptt {
                 coalesced,
                 sent_on_session: 0,
                 end_sent: false,
+                force_reopen: false,
             },
         );
         Ok(stream_id)
@@ -851,7 +991,7 @@ impl Ptt {
         deadline: std::time::Instant,
         last: bool,
     ) -> Result<(), PttError> {
-        let open_repeat = u32::from(self.open_repeat);
+        let open = OpenRule::of(self);
         let stream = self
             .outgoing
             .get_mut(&stream_id)
@@ -869,9 +1009,9 @@ impl Ptt {
         let handle = messenger
             .session_of(stream.peer)
             .ok_or(PttError::NoSession)?;
-        reopen(messenger, stream_id, stream, &mut self.stats)?;
+        reopen(messenger, stream_id, stream, &self.caps, &mut self.stats)?;
         let bundle = if stream.coalesced {
-            spurt_record(stream_id, stream, open_repeat, last, payload.to_vec())
+            spurt_record(stream_id, stream, open, last, payload.to_vec())
         } else if self.compact_bundles {
             AppMessage::MediaBundleCompact {
                 stream_tag: codec::compact_stream_tag(stream_id),
@@ -922,20 +1062,20 @@ impl Ptt {
             .session_of(stream.peer)
             .ok_or(PttError::NoSession)?;
         // Ret `opens_resend_refused`'ta sayıldı; `PTT_CLOSE`'un sunulması ondan bağımsızdır.
-        let _ = reopen(messenger, stream_id, &mut stream, &mut self.stats);
+        let _ = reopen(
+            messenger,
+            stream_id,
+            &mut stream,
+            &self.caps,
+            &mut self.stats,
+        );
         if stream.coalesced {
             // [PTT-BİRLEŞİK · deney] Kapanış son demette gitti; gitmediyse boş `END` demeti
             // (tek iletim, son tarihli). O da kaybolursa alıcı akışı sessizlik sonuyla bitirir.
             if stream.end_sent {
                 return Ok(());
             }
-            let end = spurt_record(
-                stream_id,
-                &stream,
-                u32::from(self.open_repeat),
-                true,
-                Vec::new(),
-            );
+            let end = spurt_record(stream_id, &stream, OpenRule::of(self), true, Vec::new());
             let deadline = std::time::Instant::now() + PTT_BUNDLE_DEADLINE;
             return send_record(
                 messenger,
@@ -988,7 +1128,16 @@ impl Ptt {
         messenger: &mut Messenger<T>,
     ) -> Option<PttEvent> {
         let now = self.clock.now();
-        playout.retain_terminated(|key| self.incoming.contains_key(key));
+        // [#233 inceleme 3] Ptt'nin `pending`'de hâlâ borçlu olduğu `PttEnded` de etkin sayılır:
+        // birleşik `END` akışı `incoming`'den aynı kayıtta siler, `PttEnded` bir sonraki poll'da
+        // çıkar. İşaret o olay `on_ended`'den geçip yutulana dek kalmalı (yoksa iki `PttEnded`).
+        let pending = &self.pending;
+        playout.retain_terminated(|key| {
+            self.incoming.contains_key(key)
+                || pending.iter().any(|e| {
+                    matches!(e, PttEvent::PttEnded { peer, stream_id } if (*peer, *stream_id) == *key)
+                })
+        });
         playout.close_superseded(|peer| messenger.session_of(peer));
         if let Some(event) = playout.next_ready().or_else(|| playout.release_due(now)) {
             return Some(event);
@@ -1054,7 +1203,7 @@ impl Ptt {
         for (&stream_id, stream) in &mut self.outgoing {
             // Ret `opens_resend_refused`'ta sayıldı; tutamaç işaretlenmedi, sonraki denetim yeniden
             // sunar.
-            let _ = reopen(messenger, stream_id, stream, &mut self.stats);
+            let _ = reopen(messenger, stream_id, stream, &self.caps, &mut self.stats);
         }
     }
 
@@ -1383,10 +1532,19 @@ impl Ptt {
                 return self.flush(events);
             }
         }
-        if end && self.incoming.remove(&(peer, stream_id)).is_some() {
-            self.remember_closed(peer, stream_id);
-            self.stats.spurt_ends += 1;
-            events.push(PttEvent::PttEnded { peer, stream_id });
+        if end {
+            match self.incoming.get(&(peer, stream_id)).map(|s| s.coalesced) {
+                Some(true) => {
+                    self.incoming.remove(&(peer, stream_id));
+                    self.remember_closed(peer, stream_id);
+                    self.stats.spurt_ends += 1;
+                    events.push(PttEvent::PttEnded { peer, stream_id });
+                }
+                // [#233 inceleme · küçük] Ayrı `PTT_OPEN`'la açılmış akışı `END` bitirmez: onun
+                // kapanışı `PTT_CLOSE`'tur (biçimler arası kapalı kural).
+                Some(false) => self.stats.spurt_refused += 1,
+                None => {}
+            }
         }
         self.flush(events)
     }
@@ -1439,20 +1597,26 @@ fn reopen<T: KamaTransport>(
     messenger: &mut Messenger<T>,
     stream_id: StreamId,
     stream: &mut Outgoing,
+    caps: &SpurtCaps,
     stats: &mut PttStats,
 ) -> Result<(), PttError> {
     let Some(handle) = messenger.session_of(stream.peer) else {
         return Ok(());
     };
-    if handle == stream.opened_on {
+    if handle == stream.opened_on && !stream.force_reopen {
         return Ok(());
     }
     if stream.coalesced {
-        // [PTT-BİRLEŞİK · deney] Yeni oturumda açılışı yine ilk demetler taşır: sayaç sıfırlanır.
-        stream.opened_on = handle;
-        stream.sent_on_session = 0;
-        stats.opens_resent += 1;
-        return Ok(());
+        // [PTT-BİRLEŞİK · deney · D5] Yeni oturumda yetenek yeniden sınanır: eş yetenekliyse
+        // açılışı yine ilk demetler taşır (sayaç sıfırlanır); değilse akış bu oturumdan itibaren
+        // ayrı kayıtlara döner (aşağıda güvenilir `PTT_OPEN`, kapanışta `PTT_CLOSE`).
+        if caps.capable(stream.peer, handle) {
+            stream.opened_on = handle;
+            stream.sent_on_session = 0;
+            stats.opens_resent += 1;
+            return Ok(());
+        }
+        stream.coalesced = false;
     }
     let open = AppMessage::PttOpen {
         stream_id,
@@ -1462,6 +1626,7 @@ fn reopen<T: KamaTransport>(
     match send_record(messenger, handle, &open, DeliveryPolicy::Reliable) {
         Ok(()) => {
             stream.opened_on = handle;
+            stream.force_reopen = false;
             stats.opens_resent += 1;
             Ok(())
         }
@@ -1472,16 +1637,39 @@ fn reopen<T: KamaTransport>(
     }
 }
 
-/// [PTT-BİRLEŞİK · deney] Birleşik akışın demet kaydı: oturumdaki ilk `open_repeat` demet açılış
-/// bilgisini taşır (7 B başlık), sonrakiler kompakt (2 B); `last` → `END`.
+/// [PTT-BİRLEŞİK · deney] Hangi demet açılış bilgisini taşır: oturumdaki sırası `i` olan demet
+/// `i < repeat` ya da (`every > 0` ve `i % every == 0`) ise.
+#[derive(Debug, Clone, Copy)]
+struct OpenRule {
+    repeat: u32,
+    every: u32,
+}
+
+impl OpenRule {
+    fn of(ptt: &Ptt) -> Self {
+        Self {
+            repeat: u32::from(ptt.open_repeat),
+            every: u32::from(ptt.open_every),
+        }
+    }
+
+    fn carries_open(self, i: u32) -> bool {
+        i < self.repeat || (self.every > 0 && i % self.every == 0)
+    }
+}
+
+/// [PTT-BİRLEŞİK · deney] Birleşik akışın demet kaydı: [`OpenRule`]'un seçtiği demetler açılış
+/// bilgisini taşır (7 B başlık), diğerleri kompakt (2 B); `last` → `END`.
 fn spurt_record(
     stream_id: StreamId,
     stream: &Outgoing,
-    open_repeat: u32,
+    open: OpenRule,
     last: bool,
     payload: Vec<u8>,
 ) -> AppMessage {
-    if stream.sent_on_session < open_repeat {
+    // Yüksüz `END` (bırakışta son demet verilmedi) açılış taşımaz: sessiz bir akışı yalnız
+    // kapatmak için açmanın anlamı yok; 2 B kompakt `END` yeter.
+    if open.carries_open(stream.sent_on_session) && !(last && payload.is_empty()) {
         AppMessage::MediaBundleOpen {
             stream_id,
             codec: stream.codec.code(),

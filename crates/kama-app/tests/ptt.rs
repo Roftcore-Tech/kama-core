@@ -48,8 +48,8 @@ use kama_app::codec::limits::{APP_RECORD_HEADER_BYTES, MEDIA_BUNDLE_PREFIX_BYTES
 use kama_app::codec::{decode, encode, AmpLimits, AppMessage, MsgType, PttCodec};
 use kama_app::messaging::{Messenger, MessengerEvent, MsgId};
 use kama_app::ptt::{
-    max_bundle_payload_bytes, Ptt, PttError, PttEvent, PttStats, StreamId, FIRST_STREAM_ID,
-    PTT_MAX_ACTIVE_STREAMS, PTT_STREAM_IDLE_TTL,
+    max_bundle_payload_bytes, Ptt, PttError, PttEvent, PttStats, SpurtCapabilityRecord, StreamId,
+    FIRST_STREAM_ID, PTT_MAX_ACTIVE_STREAMS, PTT_STREAM_IDLE_TTL, SPURT_FORMAT_EPOCH,
 };
 use kama_app::store::{
     AppStore, AppStoreError, CounterKind, DedupWindow, MemoryAppStore, OutboxUnit,
@@ -3147,7 +3147,7 @@ fn t_p12_same_key_restart_closes_the_previous_lifecycle_first() {
 //
 // Değişen AMP kuralları (yalnız deney açıkken ve yeteneğini bildirmiş eşe; spec metni
 // değişmedi): PTT-R3 — birleşik demet bilmediği akışı AÇAR (yetim sayılmaz); PTT-R4 — birleşik
-// akışın hareketsizlik sonu 120 s değil `spurt_gap_end(bundle_ms)` (1 s + 2 × demet süresi);
+// akışın hareketsizlik sonu 120 s değil `spurt_gap_end(bundle_ms)` (1,1 s + 2 × demet süresi);
 // PTT_OPEN / PTT_CLOSE tele hiç çıkmaz (PTT-R0'ın "açılış ve kapanış Reliable" yaması);
 // PTT-R1'in kapanmış akış kaydına `END`'li demet de yazar. Ayrıntı: `kama-app` `ptt.rs`.
 
@@ -3156,7 +3156,7 @@ fn coalesced_duo() -> Duo {
     let (mut duo, _) = Duo::connected();
     duo.alice.ptt.set_spurt_coalesce(true);
     duo.bob.ptt.set_spurt_coalesce(true);
-    assert!(duo.alice.ptt.set_peer_spurt_capable(BOB, true));
+    assert!(duo.alice.ptt.set_peer_spurt_provisioned(BOB, true));
     duo
 }
 
@@ -3199,15 +3199,15 @@ fn coalesced_spurt(duo: &mut Duo, n: u8, lose: &[u8]) -> (StreamId, Vec<PttEvent
     (stream, events, sizes)
 }
 
-/// Kayıpsız birleşik basış: tele yalnız demetler çıkar (hepsi son tarihli); ilk iki demet açılış
-/// bilgisini taşır (7 B başlık), sonrakiler kompakt (2 B), son demet `END`'li kompakt (2 B). Bob
-/// akışı ilk demetten açar ve `END`'de bitirir; olaylar ayrı kayıtlı yolla aynıdır.
+/// Kayıpsız birleşik basış: tele yalnız demetler çıkar (hepsi son tarihli); varsayılan kuralda
+/// her demet açılış bilgisini taşır (7 B başlık), son demet `END`'li (0x8C). Bob akışı ilk
+/// demetten açar ve `END`'de bitirir; olaylar ayrı kayıtlı yolla aynıdır.
 #[test]
 fn coalesced_spurt_carries_open_and_close_inside_the_bundles() {
     let mut duo = coalesced_duo();
     let (stream, events, sizes) = coalesced_spurt(&mut duo, 4, &[]);
     let body = TEST_FRAME_BYTES;
-    assert_eq!(sizes, vec![7 + body, 7 + body, 2 + body, 2 + body]);
+    assert_eq!(sizes, vec![7 + body; 4]);
     let mut want = vec![started(ALICE, stream, PttCodec::Lyra, TEST_BUNDLE_MS)];
     want.extend((0..4).map(|n| audio(ALICE, stream, &frame(n))));
     want.push(ended(ALICE, stream));
@@ -3252,7 +3252,8 @@ fn coalesced_open_survives_the_loss_of_the_first_datagram() {
 }
 
 /// SON datagram kaybolur: `END` görülmez; Bob akışı son kabul edilen demetten tam
-/// `spurt_gap_end(bundle_ms)` sonra (1 s + 2 × 20 ms) yerel olarak bitirir — bir adım önce değil.
+/// `spurt_gap_end(bundle_ms)` sonra (1 s + 100 ms + 2 × 20 ms) yerel olarak bitirir — bir adım
+/// önce değil.
 #[test]
 fn coalesced_close_survives_the_loss_of_the_last_datagram_in_bounded_time() {
     let mut duo = coalesced_duo();
@@ -3262,7 +3263,7 @@ fn coalesced_close_survives_the_loss_of_the_last_datagram_in_bounded_time() {
     assert_eq!(events, want, "kapanış henüz yok");
     // Son kabul edilen demet (2.) işlendikten sonra saat 2 × 20 ms ilerledi.
     let gap = kama_app::ptt::spurt_gap_end(TEST_BUNDLE_MS);
-    assert_eq!(gap, Duration::from_millis(1_040));
+    assert_eq!(gap, Duration::from_millis(1_140));
     let elapsed = Duration::from_millis(2 * u64::from(TEST_BUNDLE_MS));
     duo.clock.advance(gap - elapsed - Duration::from_nanos(1));
     assert!(duo.bob.drain().is_empty(), "sınırdan bir adım önce bitmez");
@@ -3326,6 +3327,14 @@ fn coalesced_form_is_used_only_toward_a_capable_peer() {
     let (mut duo, _) = Duo::connected();
     duo.alice.ptt.set_spurt_coalesce(true);
     duo.bob.ptt.set_spurt_coalesce(true);
+    // Öğrenilmiş kaydın dönemi farklı: kullanılmaz (tutulmaz bile).
+    assert!(!duo
+        .alice
+        .ptt
+        .remember_spurt_capability(SpurtCapabilityRecord {
+            peer: BOB,
+            epoch: SPURT_FORMAT_EPOCH + 1,
+        }));
     let stream = duo
         .alice
         .open(BOB, PttCodec::Lyra, TEST_BUNDLE_MS)
@@ -3352,4 +3361,238 @@ fn coalesced_form_is_used_only_toward_a_capable_peer() {
     );
     assert!(duo.bob.drain().is_empty());
     assert_eq!(duo.bob.ptt.stats().spurt_refused, 1);
+}
+
+/// [#233 inceleme 1] İLK İKİ datagram kaybolur: varsayılan kuralda her demet açılış bilgisini
+/// taşıdığından üçüncü demet akışı açar; ses o demetten başlar, `END` akışı bitirir. Eski kural
+/// (yalnız ilk K = 2 demet açılış taşır; `set_spurt_open_every(0)`) bu kayıpta basışın tamamını
+/// yetim bırakıyordu: aynı senaryo orada hiç olay vermez (karşılaştırma kolu aşağıda). K = 3
+/// bu senaryoyu kurtarır ama ilk ÜÇ datagramın kaybını kurtarmaz.
+#[test]
+fn coalesced_open_survives_losing_the_first_two_datagrams() {
+    let mut duo = coalesced_duo();
+    let (stream, events, sizes) = coalesced_spurt(&mut duo, 5, &[0, 1]);
+    assert_eq!(sizes, vec![7 + TEST_FRAME_BYTES; 5]);
+    let mut want = vec![started(ALICE, stream, PttCodec::Lyra, TEST_BUNDLE_MS)];
+    want.extend((2..5).map(|n| audio(ALICE, stream, &frame(n))));
+    want.push(ended(ALICE, stream));
+    assert_eq!(events, want);
+    assert_eq!(duo.bob.ptt.stats().ptt_orphan_bundles, 0);
+
+    // Karşılaştırma: yalnız ilk K demet açılış taşır (eski kural). K = 2 → basış kaybolur.
+    for (k, opens) in [(2u8, false), (3u8, true)] {
+        let mut duo = coalesced_duo();
+        duo.alice.ptt.set_spurt_open_every(0);
+        duo.alice.ptt.set_spurt_open_repeat(k);
+        let (_, events, sizes) = coalesced_spurt(&mut duo, 5, &[0, 1]);
+        let open_carrying = sizes.iter().filter(|&&n| n == 7 + TEST_FRAME_BYTES).count();
+        assert_eq!(open_carrying, usize::from(k), "K = {k}");
+        assert_eq!(!events.is_empty(), opens, "K = {k}: {events:?}");
+        if !opens {
+            assert_eq!(duo.bob.ptt.stats().ptt_orphan_bundles, 3);
+        }
+    }
+}
+
+/// [#233 inceleme · küçük] Sessizlik sonu sınırı: araya iki kayıp girdiğinde iki kabul arasındaki
+/// en kötü boşluk `2 × B + 1 s + 100 ms`'dir (önceki demet en erken, sonraki son tarihin ve
+/// alıcının delik beklemesinin sonunda kabul edilir). Bu boşluktan 1 ns kısa bekleyişte akış
+/// bitmez ve gelen demet sesi taşır. Eski türetme (1 s + 2 × B = 1,04 s) burada akışı erken
+/// bitirip kalan demetleri yetim bırakıyordu.
+#[test]
+fn coalesced_stream_survives_the_worst_two_loss_acceptance_gap() {
+    let mut duo = coalesced_duo();
+    let stream = duo
+        .alice
+        .open(BOB, PttCodec::Lyra, TEST_BUNDLE_MS)
+        .expect("açılır");
+    let mut units = Vec::new();
+    for k in 0..4u8 {
+        duo.alice.send_bundle(stream, &frame(k)).expect("demet");
+        units.push(duo.take_inbox(Side::Bob));
+    }
+    duo.deliver_late(Side::Bob, units[0].clone());
+    assert_eq!(
+        duo.bob.drain(),
+        vec![
+            started(ALICE, stream, PttCodec::Lyra, TEST_BUNDLE_MS),
+            audio(ALICE, stream, &frame(0))
+        ]
+    );
+    let worst = Duration::from_millis(2 * u64::from(TEST_BUNDLE_MS) + 1_100);
+    assert_eq!(kama_app::ptt::spurt_gap_end(TEST_BUNDLE_MS), worst);
+    duo.clock.advance(worst - Duration::from_nanos(1));
+    assert!(duo.bob.drain().is_empty(), "sınırdan önce bitmez");
+    duo.deliver_late(Side::Bob, units[3].clone());
+    assert_eq!(duo.bob.drain(), vec![audio(ALICE, stream, &frame(3))]);
+    let stats = duo.bob.ptt.stats();
+    assert_eq!(
+        (stats.streams_ended_by_gap, stats.ptt_orphan_bundles),
+        (0, 0)
+    );
+}
+
+/// [#233 inceleme 3] Oynatma tamponu açıkken `END`'li demetin sesi tamponu 256 demette taşırır:
+/// tampon yaşam döngüsünü yerel sonlandırır (`PttEnded` bir kez) ve Ptt'nin aynı kayıttan
+/// `pending`'e koyduğu `PttEnded` yutulur. Eskiden `retain_terminated` işareti Ptt akışı
+/// `incoming`'den sildiği için temizliyor ve ikinci `PttEnded` uygulamaya çıkıyordu.
+#[test]
+fn coalesced_end_overflowing_the_playout_queue_ends_the_stream_once() {
+    use kama_app::playout::{PlayoutConfig, PLAYOUT_MAX_BUNDLES_PER_STREAM};
+    let (mut duo, _) = Duo::connected();
+    duo.bob.ptt.set_spurt_coalesce(true);
+    duo.bob.ptt.set_playout(Some(PlayoutConfig::default()));
+    let s: StreamId = 40;
+    let lyra = PttCodec::Lyra.code();
+    let mut events = Vec::new();
+    for k in 0..PLAYOUT_MAX_BUNDLES_PER_STREAM {
+        duo.inject(
+            Side::Bob,
+            record(&AppMessage::MediaBundleOpen {
+                stream_id: s,
+                codec: lyra,
+                bundle_ms: TEST_BUNDLE_MS,
+                end: false,
+                payload: frame(u8::try_from(k % 200).expect("u8")),
+            }),
+        );
+        events.extend(duo.bob.drain());
+    }
+    duo.inject(
+        Side::Bob,
+        record(&AppMessage::MediaBundleOpen {
+            stream_id: s,
+            codec: lyra,
+            bundle_ms: TEST_BUNDLE_MS,
+            end: true,
+            payload: frame(1),
+        }),
+    );
+    for _ in 0..4 {
+        events.extend(duo.bob.drain());
+    }
+    let ends = events.iter().filter(|e| **e == ended(ALICE, s)).count();
+    assert_eq!(ends, 1, "tek PttEnded: {:?}", ptt_only(&events).last());
+    assert_lifecycles(&events);
+    let stats = duo.bob.ptt.playout_stats().expect("tampon açık");
+    assert_eq!(stats.playout_overflow, 1);
+}
+
+/// [Sahip kararı 2026-11-23 · ilk temas] Yetenek kaynakları: (1) yönetilen bilgi, (2) önceki
+/// oturumdan öğrenilen — yalnız aynı eş ve aynı biçim dönemi, (3) bu oturumdaki bant içi
+/// bildirim. Bilinmeyen eşe bugünkü uyumlu ayrı kayıtlar gider. Bant içi "çözmüyorum" (0x16)
+/// öğrenilmiş kaydı siler ve o oturumda yönetilen bilgiyi de geçersiz kılar.
+#[test]
+fn spurt_capability_sources_provisioned_learned_and_in_band() {
+    let open_types = |duo: &mut Duo| -> Vec<MsgType> {
+        let before = duo.sent(Side::Alice).len();
+        let stream = duo
+            .alice
+            .open(BOB, PttCodec::Lyra, TEST_BUNDLE_MS)
+            .expect("açılır");
+        duo.alice.send_bundle(stream, &frame(0)).expect("demet");
+        duo.alice.close(stream).expect("kapanır");
+        let _ = duo.bob.drain();
+        duo.sent(Side::Alice)[before..]
+            .iter()
+            .map(|s| s.0)
+            .collect()
+    };
+    let separate = vec![MsgType::PttOpen, MsgType::MediaBundle, MsgType::PttClose];
+    let coalesced = vec![MsgType::MediaBundle, MsgType::MediaBundle];
+    let (mut duo, h) = Duo::connected();
+    duo.alice.ptt.set_spurt_coalesce(true);
+    duo.bob.ptt.set_spurt_coalesce(true);
+    // Bilinmiyor → ayrı kayıtlar.
+    assert_eq!(open_types(&mut duo), separate);
+    // Öğrenilmiş (aynı eş, aynı dönem) → birleşik.
+    assert!(duo
+        .alice
+        .ptt
+        .remember_spurt_capability(SpurtCapabilityRecord {
+            peer: BOB,
+            epoch: SPURT_FORMAT_EPOCH,
+        }));
+    assert_eq!(open_types(&mut duo), coalesced);
+    // Başka eşin öğrenilmiş kaydı BOB için kullanılmaz.
+    let (mut other, _) = Duo::connected();
+    other.alice.ptt.set_spurt_coalesce(true);
+    assert!(other
+        .alice
+        .ptt
+        .remember_spurt_capability(SpurtCapabilityRecord {
+            peer: CAROL,
+            epoch: SPURT_FORMAT_EPOCH,
+        }));
+    assert_eq!(open_types(&mut other), separate);
+    // Bant içi "çözmüyorum" bu oturumda öğrenilmiş ve yönetilen bilgiyi geçersiz kılar.
+    assert!(duo.alice.ptt.set_peer_spurt_provisioned(BOB, true));
+    assert!(duo.alice.ptt.on_peer_spurt_capability(BOB, h, false));
+    assert_eq!(open_types(&mut duo), separate);
+    assert!(duo.alice.ptt.learned_spurt_capabilities().is_empty());
+    // Bant içi "çözerim" öğrenilir (kalıcılaştırılacak kayıt) ve kullanılır.
+    assert!(duo.alice.ptt.set_peer_spurt_provisioned(BOB, false));
+    assert!(duo.alice.ptt.on_peer_spurt_capability(BOB, h, true));
+    assert_eq!(
+        duo.alice.ptt.learned_spurt_capabilities(),
+        vec![SpurtCapabilityRecord {
+            peer: BOB,
+            epoch: SPURT_FORMAT_EPOCH
+        }]
+    );
+    assert_eq!(open_types(&mut duo), coalesced);
+}
+
+/// [#233 inceleme · küçük · D5] Oturum değişince yetenek yeniden sınanır: yeni oturumda eş
+/// "çözmüyorum" dediyse açık birleşik akış o oturumdan itibaren ayrı kayıtlara döner (güvenilir
+/// `PTT_OPEN`, demet, `PTT_CLOSE`); eskiden ilk K demeti yine birleşik gönderiyordu.
+#[test]
+fn coalesced_stream_rechecks_the_capability_after_a_session_change() {
+    let (mut duo, old) = Duo::connected();
+    duo.alice.ptt.set_spurt_coalesce(true);
+    duo.bob.ptt.set_spurt_coalesce(true);
+    assert!(duo.alice.ptt.on_peer_spurt_capability(BOB, old, true));
+    let stream = duo
+        .alice
+        .open(BOB, PttCodec::Lyra, TEST_BUNDLE_MS)
+        .expect("açılır");
+    duo.alice.send_bundle(stream, &frame(0)).expect("demet");
+    assert_eq!(duo.sent_on(Side::Alice, old), vec![MsgType::MediaBundle]);
+    let new = duo.link.borrow_mut().supersede();
+    let _ = duo.alice.drain();
+    assert!(duo.alice.ptt.on_peer_spurt_capability(BOB, new, false));
+    duo.alice.send_bundle(stream, &frame(1)).expect("demet");
+    duo.alice.close(stream).expect("kapanır");
+    assert_eq!(
+        duo.sent_on(Side::Alice, new),
+        vec![MsgType::PttOpen, MsgType::MediaBundle, MsgType::PttClose]
+    );
+}
+
+/// [#233 inceleme · küçük] `END` biçimler arası kapalıdır: ayrı `PTT_OPEN`'la açılmış akışı
+/// `END`'li demet bitirmez (sesi teslim edilir, işaret sayılıp yok sayılır).
+#[test]
+fn end_marker_does_not_close_a_separately_opened_stream() {
+    let (mut duo, _) = Duo::connected();
+    duo.bob.ptt.set_spurt_coalesce(true);
+    let s: StreamId = 7;
+    duo.inject(Side::Bob, open_record(s, PttCodec::Lyra, TEST_BUNDLE_MS));
+    duo.inject(
+        Side::Bob,
+        record(&AppMessage::MediaBundleEnd {
+            stream_tag: kama_app::codec::compact_stream_tag(s),
+            payload: frame(2),
+        }),
+    );
+    assert_eq!(
+        duo.bob.drain(),
+        vec![
+            started(ALICE, s, PttCodec::Lyra, TEST_BUNDLE_MS),
+            audio(ALICE, s, &frame(2))
+        ]
+    );
+    assert_eq!(duo.bob.ptt.incoming_streams(ALICE), vec![s]);
+    assert_eq!(duo.bob.ptt.stats().spurt_refused, 1);
+    duo.inject(Side::Bob, close_record(s));
+    assert_eq!(duo.bob.drain(), vec![ended(ALICE, s)]);
 }

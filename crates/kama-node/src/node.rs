@@ -205,6 +205,19 @@ impl Shared {
 }
 
 /// Zehirlenmeye karşı panik yapmaz: korunan değer her yazımda tümüyle değiştirilir.
+/// [PTT-BİRLEŞİK · deney · #233 inceleme 6] Düğümün PTT motoru. Birleşik PTT'nin TEK anahtarı
+/// Transport'un `RuntimeConfig::ptt_coalesce` bayrağıdır (CAPS bit 2 ve 0x17'yi o yazar);
+/// motorun alıcı/gönderen anahtarı ondan türetilir, ayrıca kurulmaz. Böylece uç yeteneğini
+/// bildirip birleşik demetleri reddedemez. Ürün yapılandırmasında bayrak kapalıdır.
+pub(crate) fn ptt_engine(
+    messenger: &Messenger<Transport>,
+    clock: Arc<dyn kama_app::clock::MonotonicClock>,
+) -> Ptt {
+    let mut ptt = Ptt::new(clock);
+    ptt.set_spurt_coalesce(messenger.transport().ptt_coalesce_enabled());
+    ptt
+}
+
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }

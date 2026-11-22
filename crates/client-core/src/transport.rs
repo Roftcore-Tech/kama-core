@@ -961,15 +961,25 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         self.server.fec_blocks_decoded()
     }
 
-    /// [PTT-BİRLEŞİK · deney] Oturumun eşi birleşik PTT kayıtlarını çözdüğünü bildirdi mi (ilk
-    /// 0x17 ACK'i; [`ClientHandle::peer_ptt_coalesce`]). Ucu olmayan ya da bilinmeyen oturum →
-    /// `false`. Bileşim kökü bunu uygulamanın PTT motoruna verir (`kama-app` `Ptt`).
+    /// [PTT-BİRLEŞİK · deney] Oturumun eşinin bant içi yeteneği ([`ClientHandle::peer_ptt_coalesce`]):
+    /// `Some(true)` ilk yalın ACK'i 0x17, `Some(false)` 0x16, `None` henüz bilinmiyor (ya da ucu
+    /// olmayan / bilinmeyen oturum). Bileşim kökü bunu oturumla birlikte uygulamanın PTT motoruna
+    /// verir (`kama-app` `Ptt::on_peer_spurt_capability`).
     #[must_use]
-    pub fn peer_ptt_coalesce(&self, session: SessionHandle) -> bool {
+    pub fn peer_ptt_coalesce(&self, session: SessionHandle) -> Option<bool> {
         self.sessions
             .get(&session)
             .and_then(|s| s.endpoint.as_ref())
-            .is_some_and(ClientHandle::peer_ptt_coalesce)
+            .and_then(ClientHandle::peer_ptt_coalesce)
+    }
+
+    /// [PTT-BİRLEŞİK · deney · #233 inceleme 6] Bu ucun birleşik PTT bayrağı
+    /// (`RuntimeConfig::ptt_coalesce`): CAPS bit 2'yi ve 0x17 ACK türünü yalnız o yazar. Tek
+    /// anahtardır: bileşim kökü uygulamanın PTT motorunu (`kama-app` `Ptt::set_spurt_coalesce`)
+    /// bundan kurar; aksi hâlde uç yeteneği bildirip birleşik demetleri reddedebilirdi.
+    #[must_use]
+    pub fn ptt_coalesce_enabled(&self) -> bool {
+        self.runtime_cfg.ptt_coalesce
     }
 
     /// [K4G-05] Salt-okunur telemetri: ucu açık her S1 oturumunun motor / ARQ aynası

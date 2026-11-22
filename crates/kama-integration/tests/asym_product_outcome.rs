@@ -249,8 +249,12 @@ struct PttShape {
     /// [PTT-BİRLEŞİK · deney] `KAMA_ASYM_PTT_COALESCE`: açılış/kapanış demetlerin içinde.
     coalesce: Coalesce,
     /// [PTT-BİRLEŞİK · deney] `KAMA_ASYM_PTT_OPEN_K` (varsayılan 2): açılış bilgisini taşıyan ilk
-    /// demet sayısı.
+    /// demet sayısı (motor en az 1 kullanır; etiket uygulanan değeri yazar).
     open_k: u8,
+    /// [PTT-BİRLEŞİK · deney · #233 inceleme 1] `KAMA_ASYM_PTT_OPEN_EVERY` (varsayılan motorunki,
+    /// [`kama_app::ptt::SPURT_OPEN_EVERY`]): ilk K'dan sonra her kaçıncı demet açılış taşır
+    /// (0 = yalnız ilk K).
+    open_every: u8,
 }
 
 /// [PTT-BİRLEŞİK · deney, aday dışı] Birleşik biçimin kolu.
@@ -261,9 +265,13 @@ enum Coalesce {
     /// `neg`: iki uçta da açık; Alice birleşik akışı yalnız Bob'un 0x17 ACK'ini gördükten sonra
     /// açılan basışta kullanır (bant içi yetenek). Öncesinde bugünkü ayrı kayıtlar.
     Negotiated,
-    /// `known`: iki uçta da açık; Bob'un yeteneği oturum başından biliniyor (bant DIŞI bilgi:
-    /// önceki oturumdan hatırlanan ya da dağıtımla verilen). Transport yine soğuk başlar.
+    /// `known`: iki uçta da açık; Bob'un yeteneği oturum başından YÖNETİLEN bilgiyle biliniyor
+    /// (dağıtım; `Ptt::set_peer_spurt_provisioned`). Transport yine soğuk başlar.
     Known,
+    /// `learned`: iki uçta da açık; Bob'un yeteneği önceki bir oturumdan öğrenilmiş kayıtla
+    /// biliniyor (aynı eş + aynı biçim dönemi; `Ptt::remember_spurt_capability` — kalıcı kayıt
+    /// bileşim kökünündür, burada oturum başında geri verilir). Transport yine soğuk başlar.
+    Learned,
 }
 
 /// Sonuç satırı için PTT biçimi.
@@ -276,7 +284,7 @@ fn ptt_shape_label() -> String {
         match (s.coalesce, s.compact) {
             (Coalesce::Off, true) => "kompakt2B".to_string(),
             (Coalesce::Off, false) => "tam13B".to_string(),
-            (c, _) => format!("birleşik-{c:?}-K{}", s.open_k),
+            (c, _) => format!("birleşik-{c:?}-K{}-N{}", s.open_k.max(1), s.open_every),
         },
         s.press
             .map_or("hücre".to_string(), |p| format!("{}ms", p.as_millis())),
@@ -300,10 +308,16 @@ fn ptt_shape() -> PttShape {
         coalesce: match std::env::var("KAMA_ASYM_PTT_COALESCE").as_deref() {
             Ok("neg") => Coalesce::Negotiated,
             Ok("known") => Coalesce::Known,
+            Ok("learned") => Coalesce::Learned,
             Ok("off") | Err(_) => Coalesce::Off,
-            Ok(v) => panic!("KAMA_ASYM_PTT_COALESCE: off | neg | known (verilen {v})"),
+            Ok(v) => panic!("KAMA_ASYM_PTT_COALESCE: off | neg | known | learned (verilen {v})"),
         },
         open_k: u8::try_from(env_u64("KAMA_ASYM_PTT_OPEN_K", 2)).expect("KAMA_ASYM_PTT_OPEN_K u8"),
+        open_every: u8::try_from(env_u64(
+            "KAMA_ASYM_PTT_OPEN_EVERY",
+            u64::from(kama_app::ptt::SPURT_OPEN_EVERY),
+        ))
+        .expect("KAMA_ASYM_PTT_OPEN_EVERY u8"),
         bytes,
         period: Duration::from_millis(u64::from(ms)),
         code: bundle_code_from_ms(ms)
@@ -1088,6 +1102,10 @@ struct Run {
     ptt_ended: Option<Instant>,
     bob_ptt: PttStats,
     alice_peer_capable: Option<Instant>,
+    /// [PTT-BİRLEŞİK · deney] Alice'in gördüğü bant içi yetenek (an, 0x17 mi).
+    alice_in_band: Option<(Instant, bool)>,
+    /// [PTT-BİRLEŞİK · deney] Bob'da `PttStarted` / `PttEnded` sayısı (basış başına birer).
+    ptt_lifecycle: (u32, u32),
     bundles: BTreeMap<u32, Bundle>,
     file_received: Option<Instant>,
     file_delivered: Option<Instant>,
@@ -1221,21 +1239,42 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
         .collect();
     let shape = ptt_shape();
     alice.ptt.set_compact_bundles(shape.compact);
-    // [PTT-BİRLEŞİK · deney] İki uç da birleşik demetleri çözer; Alice yetenekli eşe birleşik açar.
-    let coalesce_on = shape.coalesce != Coalesce::Off;
+    // [PTT-BİRLEŞİK · deney · #233 inceleme 6] Tek anahtar: motorların birleşik anahtarı
+    // Transport'un bayrağından (`RuntimeConfig::ptt_coalesce`) türetilir (kama-node `ptt_engine`
+    // ile aynı kural); Alice yetenekli eşe birleşik açar.
+    let coalesce_on = alice.m.transport().ptt_coalesce_enabled();
+    assert_eq!(coalesce_on, shape.coalesce != Coalesce::Off);
     alice.ptt.set_spurt_coalesce(coalesce_on);
-    bob.ptt.set_spurt_coalesce(coalesce_on);
+    bob.ptt
+        .set_spurt_coalesce(bob.m.transport().ptt_coalesce_enabled());
     alice.ptt.set_spurt_open_repeat(shape.open_k);
+    alice.ptt.set_spurt_open_every(shape.open_every);
+    // Alice'in Bob'u yetenekli bildiği an (yönetilen / öğrenilmiş: oturum başı; bant içi: ilk 0x17)
+    // ve bant içi bildirimin kendisi (an, değer).
     let mut peer_capable_at: Option<Instant> = None;
-    if shape.coalesce == Coalesce::Known {
-        assert!(alice.ptt.set_peer_spurt_capable(id(BOB), true));
-        peer_capable_at = Some(t0);
+    let mut in_band: Option<(Instant, bool)> = None;
+    match shape.coalesce {
+        Coalesce::Known => {
+            assert!(alice.ptt.set_peer_spurt_provisioned(id(BOB), true));
+            peer_capable_at = Some(t0);
+        }
+        Coalesce::Learned => {
+            assert!(alice
+                .ptt
+                .remember_spurt_capability(kama_app::ptt::SpurtCapabilityRecord {
+                    peer: id(BOB),
+                    epoch: kama_app::ptt::SPURT_FORMAT_EPOCH,
+                }));
+            peer_capable_at = Some(t0);
+        }
+        Coalesce::Off | Coalesce::Negotiated => {}
     }
     let mut ptt_ended: Option<Instant> = None;
     let mut ptt_open: Option<(StreamId, Instant)> = None;
     let mut ptt_closed = false;
     let mut ptt_release: Option<Instant> = None;
     let mut ptt_started: Option<Instant> = None;
+    let mut ptt_lifecycle: (u32, u32) = (0, 0);
     let mut bundles: BTreeMap<u32, Bundle> = BTreeMap::new();
     let mut next_bundle: u32 = 0;
     let mut bob_chunks: u64 = 0;
@@ -1279,15 +1318,18 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
         }
         let files_done = file_received.is_some()
             && (cell.file2_at.is_none() || file2.is_some_and(|f| f.1.is_some()));
-        // [PTT-BİRLEŞİK · deney · neg] Bob'un 0x17'si (bant içi yetenek) uygulamaya verilir.
-        if shape.coalesce == Coalesce::Negotiated && peer_capable_at.is_none() {
-            let capable = alice
-                .m
-                .session_of(id(BOB))
-                .is_some_and(|h| alice.m.transport().peer_ptt_coalesce(h));
-            if capable {
-                assert!(alice.ptt.set_peer_spurt_capable(id(BOB), true));
-                peer_capable_at = Some(now);
+        // [PTT-BİRLEŞİK · deney] Bob'un bant içi yeteneği (ilk yalın ACK: 0x17 / 0x16) bileşim
+        // kökünden uygulamaya oturumuyla verilir (her kolda; yönetilen/öğrenilmiş kollarda da
+        // zincirin gerçekten çalıştığı iddia edilir).
+        if coalesce_on && in_band.is_none() {
+            if let Some(h) = alice.m.session_of(id(BOB)) {
+                if let Some(v) = alice.m.transport().peer_ptt_coalesce(h) {
+                    assert!(alice.ptt.on_peer_spurt_capability(id(BOB), h, v));
+                    in_band = Some((now, v));
+                    if v {
+                        peer_capable_at.get_or_insert(now);
+                    }
+                }
             }
         }
         if ptt_open.is_none() && el >= ptt_at() {
@@ -1298,12 +1340,17 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
             ptt_open = Some((stream, now));
         }
         if let (Some((stream, opened)), false) = (ptt_open, ptt_closed) {
+            // [#233 inceleme 5] Bırakış ve demet hazırlığı AYNI anla karar verir (eskiden bırakış
+            // tur başındaki bayat `now` ile, hazırlık taze `Instant::now()` ile: basış demet
+            // süresinin tam katıyken son demet END'siz gidebiliyor, `close` ayrı yüksüz END
+            // gönderiyordu).
+            let tick = Instant::now();
             // [PTT-BANT · gerçek zaman · sahip 2026-11-22] Bırakış anı: verilen basış süresi
             // (demet süresinden bağımsız) ya da hücrenin kuralı.
             let release = match (shape.press, cell.ptt_until) {
-                (Some(p), _) => (now >= opened + p).then_some(opened + p),
-                (None, Some(until)) => (el >= until).then_some(t0 + until),
-                (None, None) => files_done.then_some(now),
+                (Some(p), _) => (tick >= opened + p).then_some(opened + p),
+                (None, Some(until)) => (tick - t0 >= until).then_some(t0 + until),
+                (None, None) => files_done.then_some(tick),
             };
             // Çerçeveler basış başından gerçek zamanda oluşur; demet çerçeveleri var olunca
             // sunulur (ilk demet basış + demet süresi), bırakışta kısmi son demet.
@@ -1313,7 +1360,7 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
             while let Some((planned, frames)) =
                 bundle_slot(opened, shape.period, next_bundle, release)
             {
-                if planned > Instant::now() {
+                if planned > tick {
                     break;
                 }
                 let created = opened + shape.period * next_bundle;
@@ -1395,9 +1442,11 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
                 }
                 Ev::Ptt(PttEvent::PttStarted { .. }) => {
                     ptt_started.get_or_insert(at);
+                    ptt_lifecycle.0 += 1;
                 }
                 Ev::Ptt(PttEvent::PttEnded { .. }) => {
                     ptt_ended.get_or_insert(at);
+                    ptt_lifecycle.1 += 1;
                 }
                 Ev::Ptt(PttEvent::PttAudio { payload, .. }) if payload.len() >= 4 => {
                     let seq = u32::from_be_bytes(payload[..4].try_into().expect("4 B"));
@@ -1433,6 +1482,8 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
             && (cell.file2_at.is_none() || file2.is_some_and(|f| f.1.is_some()))
             && file_delivered.is_some()
             && ptt_closed
+            // [PTT-BİRLEŞİK · deney] Kapanış (END ya da sessizlik sonu) Bob'da görülene dek.
+            && (!coalesce_on || ptt_ended.is_some())
             && texts.iter().all(|t| t.delivered.is_some())
             && bundles.values().all(|b| b.received.is_some());
         if done || t0.elapsed() >= cell.run_cap || file_failures.len() >= 2 {
@@ -1475,6 +1526,7 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
     let bob_decoded = bob.m.transport().fec_blocks_decoded();
     let bob_ptt = bob.ptt.stats();
     let alice_peer_capable = peer_capable_at;
+    let alice_in_band = in_band;
     collect_guard_trace(alice_live, &mut guard_trace);
     drop(alice);
     drop(bob);
@@ -1494,6 +1546,8 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
         ptt_ended,
         bob_ptt,
         alice_peer_capable,
+        alice_in_band,
+        ptt_lifecycle,
         bundles,
         file_received,
         file_delivered,
@@ -1925,10 +1979,37 @@ impl Run {
                 // 1 + PTT_RELIABLE_COPIES kez tele çıkar (ayırt edici kapı: kapanış hat doluyken
                 // sunulunca kopyaları sessizce planlanmıyordu — üç kolda da tek iletim).
                 let want = 1 + usize::from(PTT_RELIABLE_COPIES);
-                // [PTT-BİRLEŞİK · deney] Birleşik akışta ayrı açılış/kapanış kaydı yoktur; koruma
-                // kayıp ekleme testleriyle (kama-app `tests/ptt.rs`) sınanır, burada sayılmaz.
-                let coalesced_stream = self.alice_peer_capable.is_some_and(|c| c <= opened);
-                let guarded = !bitmap || coalesced_stream || (opens >= want && closes >= want);
+                // [PTT-BİRLEŞİK · deney · #233 inceleme 4] Koşulsuz geçiş YOK. Birleşik akış
+                // beklenirken (yetenek açılıştan önce biliniyordu) gerçekten birleşik biçim
+                // kullanılmalı: ayrı açılış/kapanış yok, açılışlı demet ≥ 1, tam bir END, Bob'da
+                // tam bir PttStarted ve bir PttEnded; ayrıca bant içi 0x17 koşu içinde gelmeli
+                // (CAPS bit 2 → 0x17 → peer_ptt_coalesce zinciri). Sessiz geri düşüş KALDI'dır.
+                // Birleşik olmayan akışta bugünkü koruma ölçütü aynen.
+                let expect_coalesced = ptt_shape().coalesce != Coalesce::Off
+                    && self.alice_peer_capable.is_some_and(|c| c <= opened);
+                let coalesced = opens == 0 && closes == 0 && self.alice.spurt_open_tx > 0;
+                let guarded = if expect_coalesced || coalesced {
+                    let chain = self.alice_in_band.is_some_and(|(_, v)| v);
+                    let ok = expect_coalesced
+                        && coalesced
+                        && self.alice.spurt_end_tx == 1
+                        && self.ptt_lifecycle == (1, 1)
+                        && chain;
+                    println!(
+                        "ÖLÇÜT {tag} ptt_koruma_birleşik yön={side} beklenen={expect_coalesced} kullanılan={coalesced} açılışlı_demet={} END={} bob_başla/bit={:?} bant_içi_0x17={} → {}",
+                        self.alice.spurt_open_tx,
+                        self.alice.spurt_end_tx,
+                        self.ptt_lifecycle,
+                        self.alice_in_band.map_or("yok".to_string(), |(at, v)| format!(
+                            "{v}@+{} s",
+                            secs(self.since(at, self.t0))
+                        )),
+                        if ok { "GEÇTİ" } else { "KALDI" }
+                    );
+                    ok
+                } else {
+                    !bitmap || (opens >= want && closes >= want)
+                };
                 println!(
                     "ÖLÇÜT {tag} ptt_koruma yön={side} açılış={opens} kapanış={closes} (en az {want}) → {}",
                     if guarded { "GEÇTİ" } else { "KALDI" }
@@ -2080,13 +2161,20 @@ impl Run {
             comp
         );
         println!(
-            "ÜRÜN-SONUÇ {tag} {} ptt_biçim={} {} {bytes} düşen_ölçüt={failed:?}",
+            "ÜRÜN-SONUÇ {tag} {} ptt_biçim={} kullanılan={} {} {bytes} düşen_ölçüt={failed:?}",
             if fixture_ack_format() == AckFormat::Bitmap {
                 "yol=bitmap aday (ürün varsayılanı V2)"
             } else {
                 "yol=v2 (ürün varsayılanı)"
             },
             ptt_shape_label(),
+            // [#233 inceleme · küçük] Etiket ortam değişkenini değil telde gerçekten kullanılan
+            // biçimi de yazar (ör. ilk temasta birleşik istenip ayrı kayıtlara düşülen kol).
+            if self.alice.spurt_open_tx > 0 {
+                "birleşik"
+            } else {
+                "ayrı-kayıtlar"
+            },
             line.join(" ")
         );
         failed
