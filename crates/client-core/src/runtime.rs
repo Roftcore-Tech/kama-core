@@ -6070,6 +6070,13 @@ async fn server_task(
                             && cfg.engine == TransportEngine::CcPort
                             && cfg.link_rates.is_some();
                         slot.rx.set_ack_bitmap(on);
+                        // [SIKIŞMA · E · #175 7081448733] Çift ölçüsünün sıkışma sınaması: bu
+                        // yuvanın ölçtüğü hat eşin verisinin yönüdür, yani bu ucun aşağı yönü
+                        // (`LinkRates::downlink_bps` = eşin `uplink_bps`'i). Bitmap kapalıyken kural
+                        // da kapalı (alan tele çıkmaz).
+                        slot.rx.set_pair_squeeze_line(
+                            cfg.link_rates.filter(|_| on).map(|l| l.downlink_bps),
+                        );
                         // [PTT-YALIN · YETENEK] Bu uç 0x09'u çözer; karşı uç yalın PTT gönderecekse
                         // bitmap ACK'leri 0x16 türüyle yazılır.
                         slot.rx.set_ack_bitmap_ptt_lean(on && caps & CAP_PTT_LEAN != 0);

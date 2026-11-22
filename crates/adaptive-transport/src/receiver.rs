@@ -553,6 +553,14 @@ impl Receiver {
         self.ack_bitmap_ptt = on;
     }
 
+    /// [SIKIŞMA · E · #175 7081448733] Çift ölçüsünün sıkışma sınaması için bu alıcının ölçtüğü
+    /// ileri yönün BEYAN hattı (tel B/s: UDP gövdesi + UDP/IP; dağıtım profili, eşin yukarı yönü).
+    /// `None` (ya da 0) = beyan yok, kural kapalı: yalnız en büyük ikinci. Bitmap kapalıyken
+    /// `pair_rate` tele çıkmaz, etkisizdir. Kural ve türetme: [`PairRate`].
+    pub fn set_pair_squeeze_line(&mut self, line_bps: Option<u64>) {
+        self.pair.squeeze_line_bps = line_bps.filter(|&l| l > 0);
+    }
+
     /// [ACK-BITMAP] Bitmap çerçevesi bu alıcıda yazılıyor mu.
     fn bitmap_rx(&self) -> bool {
         self.ack_bitmap
@@ -1475,59 +1483,83 @@ impl Default for Receiver {
 /// (alıcıda toplu teslim): bunun için `g` [`PAIR_MIN_GAP_NS`]'ten kısa çiftler atılır ve alan son
 /// ACK'ten bu yana en büyük İKİNCİ değerdir (tek bir sıkışmış çift değeri büyütemez).
 ///
-/// [SIKIŞMA · #175] En büyük ikinci tek başına yetmez: darboğazdan sonra 5 ms arayla toplu teslim
-/// edilen üç datagram (ya da aynı ACK aralığında iki ayrı sıkışmış çift) iki şişik değer üretir;
-/// 1 046 B / 5 ms ≈ 209 kB/s, alan doyar (65 534) ve gönderici tavanı yanlış açar (6 250 B/s hatta
-/// doğal değer ≈ 6 087). Tek bir çift fiziksel olarak sıkışmış iki datagramdan ayırt edilemez;
-/// ayırt eden uzun aralıktır: aralıktaki baytlar darboğazdan aralıktan önceki son datagramdan sonra
-/// geçti, bu yüzden `pencere_hızı` = bayt / (önceki son varıştan bu yana süre) de hattın alt
-/// sınırıdır ve sıkışma onu büyütemez (tutulan datagramların bekleme süresi aralığın içindedir;
-/// yalnız aralığın başı bir sıkışma kümesinin içine düşerse o kümenin kısa bölümü kadar kayar).
-/// Kural: en büyük ikinci [`PAIR_WINDOW_RATIO_MAX`] × `pencere_hızı`'nı aşarsa aralığın çift
-/// değerleri geçersizdir, alan [`crate::ack::PAIR_RATE_NONE`] (gönderici tavanı açmaz). Medyan /
-/// "≥ 3 tutarlı örnek" seçilmedi: sıkışmış kümeler kendi içinde tutarlıdır (aynı 5 ms aralık), N
-/// datagramlık küme N − 1 tutarlı şişik değer verir; kısmi bir eşik yalnız küme boyunu yükseltir.
-/// Gerçek çiftte oran `hat / gönderim hızı`'dır (kayıp ve kısa sessizlik `pencere_hızı`'nı
-/// küçültür); oran 4, gönderim hızının iki katı hatta %50 kayba dek değeri geçirir. Bedel: hat
-/// gönderim hızının (kayıpla düzeltilmiş) 4 katını aşınca o aralık değer vermez (yükselişi yoklama
-/// bulur). [`PAIR_IDLE_GAP_NS`]'ten uzun varış aralığı süreye o kadar yazılır: uzun sessizlik
-/// göndericinindir, hattın serileşmesi değil (yoksa dosyalar arası bekleme her aralığı geçersiz
-/// kılardı); kırpma süreyi yalnız kısaltır, yani kural yalnız gevşer.
+/// [SIKIŞMA · E · #175 7081448733] En büyük ikinci tek başına yetmez: darboğazdan sonra 5 ms arayla
+/// toplu teslim edilen üç datagram (ya da aynı ACK aralığında iki ayrı sıkışmış çift) iki şişik
+/// değer üretir; 1 046 B / 5 ms ≈ 209 kB/s, alan doyar (65 534) ve gönderici tavanı yanlış açar
+/// (6 250 B/s hatta doğal değer ≈ 6 087). Ayırt eden, ileri yönün beyan hattıdır
+/// ([`Receiver::set_pair_squeeze_line`]; dağıtım profili, ileri yönün üst sınırı; gönderici
+/// pacing'i de ona sert sınırlı). Tek FIFO darboğazda ikinci datagram birinciden en erken kendi tel
+/// serileşmesi kadar sonra çıkar: `g ≥ (b + 28) / hat ≥ (b + 28) / beyan_hat`.
+///
+/// Kural: `g < 0,9 × (b + 28) / beyan_hat` ise çift SIKIŞMIŞTIR ve sayılmaz; ARDINDAKİ çift de
+/// sayılmaz. Gerekçeler:
+/// - 0,9 ([`PAIR_SQUEEZE_PERMILLE`]): beyan hattın %90'ından kısa sürede serileşme, hattın beyanın
+///   1 / 0,9 ≈ 1,11 katından hızlı olması demektir; fiziksel değil. %10 pay beyanın doğruluğunu ve
+///   alıcı zaman damgası titreşimini örter (12 500 B/s'te en küçük ölçü datagramı
+///   [`crate::ack::PAIR_MIN_UDP_BYTES`] için ≈ 6,6 ms, [`PAIR_MIN_GAP_NS`]'in üç katı).
+/// - 28 ([`PAIR_SQUEEZE_OVERHEAD`]): IPv4 + UDP başlığı, olası en küçük zarf. En kısa serileşmeyi,
+///   dolayısıyla en az yanlış sıkışmayı verir (IPv6'da gerçek serileşme daha uzun, kural gevşer).
+/// - Ardındaki çift: kümenin son datagramı tutulup geç teslim edildi; ondan sonraki doğal varışa
+///   aralık gerçek aralıktan kısadır ve değer şişer (sınamayı geçecek kadar uzun olsa da).
+///
+/// Karar varış başınadır, ACK aralığının sınırına bağlı değildir: aralığın doğal çiftleri değeri
+/// taşımaya devam eder (sık sıkışmada da gerçek toparlanma görünür), ara ACK kümeyi ayırsa da küme
+/// sayılmaz. Gerçek çift hangi gönderim hızında olursa olsun sınamayı geçer (darboğazda kuyruk
+/// varken aralık tam serileşmedir). Beyan yoksa kural kapalıdır (yalnız en büyük ikinci).
+///
+/// Bilgi sınırı (kör nokta): 60–100 ms'lik yuva tipi kısmi toplu teslim. Birden çok yuvaya yayılan
+/// aralık beyan hatta fizikseldir; orta değer (6 250 B/s hatta 100 ms yuvada 10 460) hiçbir alıcı
+/// kuralıyla gerçek hattan ayrılamaz. Bunu yoklama ve göndericinin kuyruk tahmini üstlenir. Risk:
+/// gerçek hat beyanın 1 / 0,9 katından hızlıysa gerçek çift de sıkışma sayılır; değer yalnız
+/// kaybolur (`PAIR_RATE_NONE`), şişmez.
 #[derive(Debug, Default, Clone, Copy)]
 struct PairRate {
     prev_ns: Option<u64>,
     /// En büyük iki değer (B/s, UDP gövdesi); 0 = yok.
     top: [u64; 2],
-    /// [SIKIŞMA] Bu ACK aralığında varan UDP gövde baytı (önceki varışı olan datagramlar).
-    win_bytes: u64,
-    /// [SIKIŞMA] Aynı datagramların varış aralıkları toplamı (ns; her aralık en çok
-    /// [`PAIR_IDLE_GAP_NS`]).
-    win_ns: u64,
     /// Son çıkan ACK'lerde bildirilen son değer (yükseliş alarmının referansı).
     reported: Option<u64>,
     /// Bu ACK aralığında yükseliş alarmı verildi.
     alarmed: bool,
     /// Yükseliş alarmı kurulu: daralma alarmından sonra, ilk yükselişe dek (bir kez).
     armed: bool,
+    /// [SIKIŞMA · E] İleri yönün beyan hattı (tel B/s); `None` = kural kapalı.
+    squeeze_line_bps: Option<u64>,
+    /// [SIKIŞMA · E] Önceki varışın çifti sıkışmıştı: bu varışın çifti de sayılmaz.
+    after_squeeze: bool,
 }
 
 /// [ÇİFT ARALIĞI] Çift aralığının alt sınırı (ns): daha kısa aralık zamanlayıcı/teslim titreşimidir.
 const PAIR_MIN_GAP_NS: u64 = 2_000_000;
 
-/// [SIKIŞMA] Çift değerinin aralığın kendi varış hızına oranının üst sınırı (bkz. [`PairRate`]).
-const PAIR_WINDOW_RATIO_MAX: u64 = 4;
+/// [SIKIŞMA · E] Sıkışma sınamasının payı (binde): aralık beyan hattaki tel serileşmesinin bu
+/// oranından kısaysa çift sıkışmıştır (türetme: [`PairRate`]).
+const PAIR_SQUEEZE_PERMILLE: u64 = 900;
 
-/// [SIKIŞMA] Aralık süresine yazılan tek varış aralığının üst sınırı (ns): tam datagram (1 074 B
-/// tel) ≈ 1,1 kB/s'ten hızlı hatta 1 s içinde serileşir; daha uzun aralık gönderici sessizliğidir.
-const PAIR_IDLE_GAP_NS: u64 = 1_000_000_000;
+/// [SIKIŞMA · E] Sıkışma sınamasının datagram zarfı (B): IPv4 (20) + UDP (8), olası en küçük zarf
+/// (türetme: [`PairRate`]).
+const PAIR_SQUEEZE_OVERHEAD: u64 = 28;
 
 impl PairRate {
+    /// [SIKIŞMA · E] Aralık `g` (ns), ikinci datagramın UDP gövdesi `b`: beyan hatta tel
+    /// serileşmesinin [`PAIR_SQUEEZE_PERMILLE`] bininden kısa mı. Beyan yoksa hiçbir çift sıkışmış
+    /// sayılmaz.
+    fn squeezed(&self, g: u64, b: u64) -> bool {
+        self.squeeze_line_bps.is_some_and(|line| {
+            u128::from(g) * 1_000 * u128::from(line)
+                < u128::from(PAIR_SQUEEZE_PERMILLE)
+                    * u128::from(b.saturating_add(PAIR_SQUEEZE_OVERHEAD))
+                    * 1_000_000_000
+        })
+    }
+
     fn on_arrival(&mut self, now_ns: u64, udp_bytes: Option<u64>) {
         if let (Some(p), Some(b)) = (self.prev_ns, udp_bytes) {
             let g = now_ns.saturating_sub(p);
-            self.win_bytes = self.win_bytes.saturating_add(b);
-            self.win_ns = self.win_ns.saturating_add(g.min(PAIR_IDLE_GAP_NS));
-            if b >= crate::ack::PAIR_MIN_UDP_BYTES && g >= PAIR_MIN_GAP_NS {
+            let squeezed = self.squeezed(g, b);
+            let skip = squeezed || self.after_squeeze;
+            self.after_squeeze = squeezed;
+            if !skip && b >= crate::ack::PAIR_MIN_UDP_BYTES && g >= PAIR_MIN_GAP_NS {
                 let r = u64::try_from(u128::from(b) * 1_000_000_000 / u128::from(g))
                     .unwrap_or(u64::MAX);
                 if r > self.top[0] {
@@ -1541,22 +1573,11 @@ impl PairRate {
     }
 
     fn on_ack(&mut self) {
-        if let Some(v) = self.bound() {
-            self.reported = Some(v);
+        if self.top[1] > 0 {
+            self.reported = Some(self.top[1]);
         }
         self.top = [0, 0];
-        self.win_bytes = 0;
-        self.win_ns = 0;
         self.alarmed = false;
-    }
-
-    /// [SIKIŞMA] Aralığın alt sınırı: en büyük ikinci, aralığın kendi varış hızının
-    /// [`PAIR_WINDOW_RATIO_MAX`] katını aşmıyorsa (bkz. [`PairRate`]); yoksa ya da geçersizse `None`.
-    fn bound(&self) -> Option<u64> {
-        let v = self.top[1];
-        let plausible = u128::from(v) * u128::from(self.win_ns)
-            <= u128::from(PAIR_WINDOW_RATIO_MAX) * u128::from(self.win_bytes) * 1_000_000_000;
-        (v > 0 && plausible).then_some(v)
     }
 
     /// [YÜKSELİŞ ALARMI] Daralma alarmı yükseliş alarmını kurar; referans daralmadan sonraki ilk
@@ -1577,10 +1598,7 @@ impl PairRate {
         let Some(r) = self.reported.filter(|_| self.armed) else {
             return false;
         };
-        let Some(v) = self.bound() else {
-            return false;
-        };
-        if self.alarmed || u128::from(v) * 100 <= u128::from(r) * 125 {
+        if self.alarmed || u128::from(self.top[1]) * 100 <= u128::from(r) * 125 {
             return false;
         }
         self.alarmed = true;
@@ -1589,10 +1607,10 @@ impl PairRate {
     }
 
     fn field(&self) -> u16 {
-        let Some(v) = self.bound() else {
+        if self.top[1] == 0 {
             return crate::ack::PAIR_RATE_NONE;
-        };
-        u16::try_from(v.min(u64::from(crate::ack::PAIR_RATE_NONE) - 1))
+        }
+        u16::try_from(self.top[1].min(u64::from(crate::ack::PAIR_RATE_NONE) - 1))
             .unwrap_or(crate::ack::PAIR_RATE_NONE - 1)
     }
 }
@@ -1708,10 +1726,15 @@ mod tests {
         }
     }
 
-    /// [SIKIŞMA · #175] İki yönlü: (a) 6 250 B/s hatta darboğazdan sonra 5 ms arayla toplu teslim
-    /// (üç datagram ya da iki ayrı sıkışmış çift) alanı hattın %10 üstüne çıkaramaz (ya da alan
-    /// yoktur); düzeltmeden önce ikisi de 65 534 veriyordu. (b) Hat 12 500'e döndü, gönderici 6 250
-    /// hızında hat çiftleri yolluyor: alan ≈ 12 174 (UDP gövdesi), gönderici tavanı açabilir.
+    /// [SIKIŞMA · E · #175 7081448733] İki yönlü, beyan ileri hat 12 500 B/s (profil): (a) 6 250 B/s
+    /// hatta darboğazdan sonra 5 ms arayla toplu teslim (üç datagram ya da iki ayrı sıkışmış çift)
+    /// alanı hattın %10 üstüne çıkaramaz (ya da alan yoktur); düzeltmeden önce ikisi de 65 534
+    /// veriyordu. (b) Hat 12 500'e döndü, gönderici 6 250 hızında hat çiftleri yolluyor: alan
+    /// ≈ 12 174 (UDP gövdesi), gönderici tavanı açabilir. Y6b'nin (7081405520) iki ayırt edici
+    /// girişi, (a) ve (b) ile aynı sınırlarla: (c) ara ACK kümeyi doğal varışlardan ayırır, aralıkta
+    /// yalnız küme kalır (pencere oranı kuralında 65 534 geçiyordu); (d) gönderici tavanı 2 500
+    /// (≤ hat / 4) iken çiftli gönderim, gerçek çift 12 174 kalır (pencere oranı kuralında YOK).
+    /// (e) Beyan yokken (profil kapalı) kural kapalı: en büyük ikinci, düzeltme öncesi değer.
     #[test]
     fn compressed_arrivals_do_not_inflate_pair_rate() {
         let ms = 1_000_000u64;
@@ -1723,9 +1746,14 @@ mod tests {
                 pr.on_arrival(*t, Some(1_046));
             }
         };
+        let declared = |line: u64| PairRate {
+            squeeze_line_bps: Some(line),
+            ..PairRate::default()
+        };
         let natural = 6_250 * 1_046 / 1_074;
+        let line = 12_500 * 1_046 / 1_074;
         // (a) Kuyruklu hat, sonra üç datagram tutulup 5 ms arayla teslim.
-        let (mut pr, mut t) = (PairRate::default(), 0u64);
+        let (mut pr, mut t) = (declared(12_500), 0u64);
         feed(&mut pr, &mut t, &[s; 12]);
         let f = u64::from(pr.field());
         assert!(f * 100 >= natural * 98 && f <= 6_250, "sıkışmadan önce {f}");
@@ -1736,7 +1764,7 @@ mod tests {
             "üçlü küme: {f}"
         );
         // (a') Aynı aralıkta iki ayrı sıkışmış çift.
-        let (mut pr, mut t) = (PairRate::default(), 0u64);
+        let (mut pr, mut t) = (declared(12_500), 0u64);
         for _ in 0..2 {
             feed(&mut pr, &mut t, &[s; 6]);
             feed(&mut pr, &mut t, &[2 * s, 5 * ms]);
@@ -1748,17 +1776,56 @@ mod tests {
             "iki çift: {f}"
         );
         // (b) 6 250'de bir aralık, ACK; hat 12 500'e döndü, gönderim 6 250'de çiftli.
-        let (mut pr, mut t) = (PairRate::default(), 0u64);
+        let (mut pr, mut t) = (declared(12_500), 0u64);
         feed(&mut pr, &mut t, &[s; 12]);
         pr.on_ack();
         for _ in 0..10 {
             feed(&mut pr, &mut t, &[2 * s - slot(12_500), slot(12_500)]);
         }
         let f = u64::from(pr.field());
-        let line = 12_500 * 1_046 / 1_074;
         assert!(
             f * 100 >= line * 98 && f <= 12_500,
             "toparlanma gizlendi: {f}"
+        );
+        // (c) Ara ACK'le ayrılmış tek üçlü küme: kümenin ilk datagramından sonra ACK çıkar.
+        let (mut pr, mut t) = (declared(12_500), 0u64);
+        feed(&mut pr, &mut t, &[s; 12]);
+        feed(&mut pr, &mut t, &[3 * s]);
+        pr.on_ack();
+        feed(&mut pr, &mut t, &[5 * ms, 5 * ms]);
+        let f = pr.field();
+        assert!(
+            f == crate::ack::PAIR_RATE_NONE || f <= 6_875,
+            "ara ACK'le ayrılmış üçlü küme: {f}"
+        );
+        // (d) Hat 12 500, gönderici tavanı 2 500'de çiftli gönderim (çift hatta arka arkaya).
+        let (mut pr, mut t) = (declared(12_500), 0u64);
+        feed(&mut pr, &mut t, &[s; 12]);
+        pr.on_ack();
+        for _ in 0..10 {
+            feed(
+                &mut pr,
+                &mut t,
+                &[2 * slot(2_500) - slot(12_500), slot(12_500)],
+            );
+        }
+        let f = u64::from(pr.field());
+        assert!(
+            f * 100 >= line * 98 && f <= 12_500,
+            "tavan 2 500'de gerçek çift gizlendi: {f}"
+        );
+        // (e) Beyan yok (profil kapalı; bitmap de kapalı, alan tele çıkmaz): kural kapalı, (a)'nın
+        // girişi en büyük ikinciyi verir.
+        let mut rx = Receiver::new();
+        rx.set_pair_squeeze_line(Some(0));
+        assert_eq!(rx.pair.squeeze_line_bps, None, "0 = beyan yok");
+        let (mut pr, mut t) = (rx.pair, 0u64);
+        feed(&mut pr, &mut t, &[s; 12]);
+        feed(&mut pr, &mut t, &[3 * s, 5 * ms, 5 * ms]);
+        assert_eq!(
+            pr.field(),
+            crate::ack::PAIR_RATE_NONE - 1,
+            "beyan yokken kural kapalı"
         );
     }
 
