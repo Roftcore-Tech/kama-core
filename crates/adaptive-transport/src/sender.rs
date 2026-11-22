@@ -5809,6 +5809,15 @@ impl Sender {
             .map(|g| (g.pace_bps(), g.raises()))
     }
 
+    /// [ÖLÇÜM-BOŞLUĞU] Boşluk bütçesinin `(kurulma, kurulmayıp geçilme)` sayıları (salt gözlem);
+    /// kural kurulu değilse `None`.
+    #[must_use]
+    pub fn diag_line_guard_gap(&self) -> Option<(u64, u64)> {
+        self.cc_line_guard
+            .as_ref()
+            .map(|g| (g.gap_arms(), g.gap_skips()))
+    }
+
     /// [PTT-SIRA · PTT-KOPYA-BÜTÇESİ] `(önce çıkan öncelikli ARQ, bayat diye düşen kopya — birimin
     /// son kopyası hariç, hat kuyruğu yüzünden ertelenen kopya denemesi)` (salt gözlem).
     #[must_use]
@@ -8893,10 +8902,15 @@ impl Sender {
         }
         self.inflight_bytes += unit.size;
         let ahead_ns = self.pacer.line_ns_until_drained();
-        // [ÖLÇÜM-BOŞLUĞU] Öncelikli şerit (PTT, metin, denetim) boşluk bütçesinden düşülmez.
-        let priority = self
-            .forward_copy_rule
-            .is_some_and(|r| unit.id < r.priority_below_id);
+        // [ÖLÇÜM-BOŞLUĞU] Bütün iletimler hat korumasının kovasından düşülür; öncelik işareti yalnız
+        // boşluk bütçesinin kurulma koşulunda okunur (son 2 s'de öncelikli tel ≥ 3R/8 → kurulmaz).
+        // Öncelikli şerit = kimliği sınırın altındaki uygulama birimi (PTT, metin, denetim) ve onun
+        // yeniden iletim/kopyaları. Parite öncelikli değildir: `unit.id` orada ESI'dir (0..r), birim
+        // kimliği değil; başlangıç bütçesinde de öncelikli olmayan diye bekletilir.
+        let priority = origin != TransmitKind::FecParity
+            && self
+                .forward_copy_rule
+                .is_some_and(|r| unit.id < r.priority_below_id);
         if let Some(g) = self.cc_line_guard.as_mut() {
             g.on_sent_classed(seq, now_ns, unit.size, ahead_ns, priority);
         }
@@ -16182,5 +16196,98 @@ mod feedback_starved_tests {
             "kuralla: ACK'siz tabana dek ({starved} B)"
         );
         assert!(rate <= cap, "hız tavanı aşılmaz ({rate} B/s)");
+    }
+
+    /// [ÖLÇÜM-BOŞLUĞU] Parite öncelikli şerit değildir: paritede `unit.id` ESI'dir (0..r) ve öncelik
+    /// sınırının altında kalır. Hat koruması kurulu, aralık kipinde iki ölçümsüz ACK; trafik blok
+    /// başına 4 dosya birimi + 4 parite (parite 6 250 B/s, eşik 3R/8 = 4 688 B/s, R = 12 500).
+    /// Boşluk bütçesi kurulur. Kontrol: aynı yük öncelikli kimlikli veriyle kurulmaz.
+    #[test]
+    fn parity_does_not_count_as_priority_for_the_gap_budget() {
+        let line = crate::pacer::LineModel {
+            rate_bps: 12_500,
+            datagram_overhead: 28,
+        };
+        let rule = FeedbackStarvedRule {
+            pacing_cap_bps: 12_000,
+            feedback_ns: 10_000 * MS,
+            line,
+            return_line: crate::pacer::LineModel {
+                rate_bps: 62,
+                datagram_overhead: 28,
+            },
+        };
+        // `priority_ids`: blokların ikinci yarısı parite yerine öncelikli kimlikli veri (0..4).
+        let run = |priority_ids: bool| {
+            let mut s = Sender::with_cc_port();
+            s.set_cc_profile_pacing_cap(Some(12_000));
+            s.set_cc_feedback_starved(Some(rule));
+            s.set_forward_copy_rule(Some(ForwardCopyRule {
+                below_id: 100,
+                priority_below_id: 100,
+                copies: 1,
+                spacing_ns: 40 * MS,
+            }));
+            let slot = 1200 * 1_000 * MS / line.rate_bps; // 96 ms: hat hızında bir datagram
+            let mut seqs = Vec::new();
+            let mut out = Vec::new();
+            for k in 0..60u64 {
+                let now = k * slot;
+                let pos = k % 8;
+                let seq = if pos < 4 {
+                    s.track_sent(
+                        OpaqueUnit {
+                            id: 1000 + k,
+                            size: 1172,
+                        },
+                        now,
+                        0,
+                        TransmitKind::Data,
+                    )
+                } else if priority_ids {
+                    s.track_sent(
+                        OpaqueUnit {
+                            id: pos - 4,
+                            size: 1172,
+                        },
+                        now,
+                        0,
+                        TransmitKind::Data,
+                    )
+                } else {
+                    let mode = s.fec_mode;
+                    let esi = u16::try_from(pos - 4).expect("esi");
+                    let block = u32::try_from(k / 8).expect("blok");
+                    s.push_parity_authorized(block, esi, 1172, None, mode, None);
+                    let _ = s.emit_parity_at(0, &mut out, now);
+                    out.last().expect("parite çıktı").seq
+                };
+                seqs.push(seq);
+                let iv = |a: usize, b: usize| crate::line_guard::ForwardInterval {
+                    first_seq: seqs[a],
+                    last_seq: seqs[b],
+                    rx_span_ns: (b - a) as u64 * slot,
+                    rx_wire: None,
+                };
+                let g = s.cc_line_guard.as_mut().expect("hat koruması kurulu");
+                match k {
+                    // Ölçülü iki ACK (aralık kipi), sonra iki ölçümsüz ACK.
+                    20 => {
+                        let _ = g.on_ack_measured(now, 0, false, seqs[15], Some(iv(0, 15)));
+                        g.end_start_budget();
+                    }
+                    30 => {
+                        let _ = g.on_ack_measured(now, 0, false, seqs[25], Some(iv(15, 25)));
+                    }
+                    40 | 50 => {
+                        let _ = g.on_ack_measured(now, 0, false, seqs[35], None);
+                    }
+                    _ => {}
+                }
+            }
+            s.diag_line_guard_gap().expect("hat koruması kurulu")
+        };
+        assert_eq!(run(false), (1, 0), "parite: boşluk bütçesi kurulur");
+        assert_eq!(run(true), (0, 1), "öncelikli veri: kurulmaz");
     }
 }
