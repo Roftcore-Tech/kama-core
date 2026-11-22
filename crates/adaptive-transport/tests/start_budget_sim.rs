@@ -78,9 +78,10 @@ enum Copies {
     /// `lean()` aynası): tek iletim (`ptt_forward_copy_rule(0, 0)`: kopya yok, öncelik kalır; kural
     /// PTT şeridinin üstünü [`PTT_LANE_TOP`] ile ayırır), yalın 0x09 birimi ([`LEAN_PTT_UNIT`]
     /// gövde), sunumdan [`PTT_DEADLINE_NS`] sonra teyitsiz birimin `Sender::abandon_units` ile
-    /// bırakılması. [BİRLEŞİM · aday f4cd325c] Bırakma ilk 0x16'ya dek yapılmaz (vekili göndericinin
-    /// aldığı ilk ölçülü ACK, `rx_span` taşıyan); o ACK'te son tarihi geçmiş teyitsiz demetler
-    /// bırakılır (`starved_line_sim.rs` `ptt_deadline_from_first_measured_ack` ile aynı).
+    /// bırakılması. [BİRLEŞİM · aday f4cd325c] Bırakma ilk 0x16'ya dek yapılmaz (vekili yeni alıcının
+    /// göndericiye ulaşan ilk ACK'i; üründe 0x16 ölçümden bağımsız); o ACK'ten sonra son tarihi
+    /// geçmiş teyitsiz demetler bırakılır (`starved_line_sim.rs` `ptt_deadline_from_first_ack` ile
+    /// aynı).
     Lean,
 }
 
@@ -538,9 +539,9 @@ fn run_timed(
     let mut voice_arrived: HashMap<u64, u64> = HashMap::new();
     let mut ptt_confirmed: HashSet<u64> = HashSet::new();
     let mut ptt_abandoned: HashSet<u64> = HashSet::new();
-    // [PTT-YALIN · BAŞLANGIÇ] Gönderici ilk ölçülü ACK'i aldı (ürünün ilk 0x16 vekili; eski alıcı
-    // ölçüm taşımaz, 0x16 da yazmaz).
-    let mut measured_ack_seen = false;
+    // [PTT-YALIN · BAŞLANGIÇ] Göndericiye yeni alıcının ilk ACK'i ulaştı (ürünün ilk 0x16 vekili;
+    // ölçümden bağımsız; eski alıcı 0x16 yazmaz).
+    let mut first_ack_seen = false;
     let mut file_seen: HashSet<u64> = HashSet::new();
     let mut file_done_ns = None;
     let mut file_last_new_sent_ns = None;
@@ -633,7 +634,7 @@ fn run_timed(
                 .enumerate()
                 .map(|(k, &at)| (k as u64, at))
                 .filter(|&(k, at)| {
-                    measured_ack_seen
+                    first_ack_seen
                         && now.saturating_sub(at) >= PTT_DEADLINE_NS
                         && !ptt_confirmed.contains(&k)
                         && !ptt_abandoned.contains(&k)
@@ -726,7 +727,7 @@ fn run_timed(
             // Eski alıcı ölçüm aralığı da taşımaz (V2 çerçevesi).
             // Ürün çalışma zamanının sırası: `pair_rate`, ölçüm aralığı, sonra ACK.
             if new_receiver {
-                measured_ack_seen |= rx_span.is_some();
+                first_ack_seen = true;
                 s.note_ack_pair_rate(pair_rate);
                 s.note_ack_forward_interval(first, last, rx_span, &m);
             }

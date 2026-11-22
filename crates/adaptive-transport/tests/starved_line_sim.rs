@@ -138,11 +138,13 @@ struct Scenario {
     /// [PTT-YALIN] Bırakma: sunumundan bu kadar sonra teyitsiz PTT birimi motora
     /// `Sender::abandon_units` ile bildirilir (ürünün son tarih yolu).
     ptt_deadline_ns: Option<u64>,
-    /// [PTT-YALIN · BAŞLANGIÇ · aday f4cd325c] `true`: bırakma göndericinin aldığı ilk ölçülü ACK'ten
-    /// (`rx_span` taşıyan ilk ACK; benzetimde ürünün ilk 0x16'sının vekili) önce yapılmaz; o ACK'te
-    /// sunumundan beri son tarihi geçmiş teyitsiz demetler bırakılır (ürünün `ptt_pre_lean` →
-    /// `ptt_offered_at` geçişi). `false`: bırakma t = 0'dan (eski ayna).
-    ptt_deadline_from_first_measured_ack: bool,
+    /// [PTT-YALIN · BAŞLANGIÇ · aday f4cd325c] `true`: bırakma göndericiye ulaşan ilk ACK'ten önce
+    /// yapılmaz; o ACK'ten sonra sunumundan beri son tarihi geçmiş teyitsiz demetler bırakılır
+    /// (ürünün `ptt_pre_lean` → `ptt_offered_at` geçişi). Vekil: üründe alıcı CAPS'i görünce bütün
+    /// bitmap ACK'lerini ölçümden bağımsız 0x16 türüyle yazar (`RxFrame::Caps`,
+    /// `set_ack_bitmap_ptt_lean`); bu düzenekte alıcı baştan yeni alıcıdır (CAPS ulaşmış), yani ilk
+    /// ACK'i ilk 0x16'dır, ölçülü olması gerekmez. `false`: bırakma t = 0'dan (eski ayna).
+    ptt_deadline_from_first_ack: bool,
     /// `> 0`: `text_at_ns`'ten sonra bu aralıkla konuşma bitene dek ek metin birimleri
     /// (`TEXT_ID + k`). 0: tek metin birimi.
     text_period_ns: u64,
@@ -174,7 +176,7 @@ impl Scenario {
             diag: false,
             raw_copy_rule: false,
             ptt_deadline_ns: None,
-            ptt_deadline_from_first_measured_ack: false,
+            ptt_deadline_from_first_ack: false,
             text_period_ns: 0,
             seed,
             t_max_ns: 60 * SEC,
@@ -645,8 +647,8 @@ fn run(sc: &Scenario) -> Outcome {
     let mut extra_text_arrived: HashMap<u64, u64> = HashMap::new();
     let mut ptt_confirmed: HashSet<u64> = HashSet::new();
     let mut ptt_expired: Vec<(u64, u64, u64)> = Vec::new();
-    // [PTT-YALIN · BAŞLANGIÇ] Gönderici ilk ölçülü ACK'i aldı (ürünün ilk 0x16 vekili).
-    let mut measured_ack_seen = false;
+    // [PTT-YALIN · BAŞLANGIÇ] Göndericiye ilk ACK ulaştı (ürünün ilk 0x16 vekili; ölçümden bağımsız).
+    let mut first_ack_seen = false;
     let mut file_seen: HashSet<u64> = HashSet::new();
     let mut file_offered = 0u64;
     let mut file_done_ns = None;
@@ -731,15 +733,15 @@ fn run(sc: &Scenario) -> Outcome {
         emit(decs, now, &mut fwd, &mut tx);
         // [PTT-YALIN] Ürünün son tarih yolu (`runtime`, pace tick'te Pto'dan sonra): teyitsiz ve
         // sunumundan `deadline` geçmiş PTT birimleri motora teyitli bildirilir. [BİRLEŞİM]
-        // `ptt_deadline_from_first_measured_ack`: teyit drenajı her tick'te, bırakma yalnız ilk
-        // ölçülü ACK'ten sonra (ürünün ilk 0x16'ya dek `ptt_pre_lean`'i).
+        // `ptt_deadline_from_first_ack`: teyit drenajı her tick'te, bırakma yalnız ilk ACK'ten
+        // sonra (ürünün ilk 0x16'ya dek `ptt_pre_lean`'i).
         if let Some(deadline) = sc.ptt_deadline_ns {
             ptt_confirmed.extend(
                 s.take_confirmed_units()
                     .into_iter()
                     .filter(|&u| u < TEXT_ID),
             );
-            let lean_started = measured_ack_seen || !sc.ptt_deadline_from_first_measured_ack;
+            let lean_started = first_ack_seen || !sc.ptt_deadline_from_first_ack;
             let due: Vec<u64> = voice_offered
                 .iter()
                 .enumerate()
@@ -853,7 +855,7 @@ fn run(sc: &Scenario) -> Outcome {
             });
             acks_at.push(now);
             ack_measured.push(rx_span.is_some());
-            measured_ack_seen |= rx_span.is_some();
+            first_ack_seen = true;
             s.observe_ack_feedback(
                 AckObservation {
                     wire_bytes: udp,
@@ -2679,9 +2681,10 @@ fn phases_line(ph: &[PhaseOnTime]) -> String {
 ///
 /// [BİRLEŞİM · aday b163bd90 + f4cd325c] Kopya kuralı t = 0'dan `copies = 0` + öncelik (ürün yalın
 /// PTT'yi CAPS ile bildirecekse ilk 0x16'dan önce de kopya yok). Bırakma ilk 0x16'ya dek yapılmaz
-/// (benzetimde vekili ilk ölçülü ACK: `ptt_deadline_from_first_measured_ack`); o ACK'te son tarihi
-/// geçmiş teyitsiz demetler bırakılır. Aynalanmayan kalıntı: üründe 0x16'dan önceki demet veri
-/// çerçevesiyle gider (gövde [`VOICE_UNIT`]); burada gövde baştan [`LEAN_PTT_UNIT`].
+/// (benzetimde vekili göndericiye ulaşan ilk ACK: `ptt_deadline_from_first_ack`); o ACK'ten sonra son
+/// tarihi geçmiş teyitsiz demetler bırakılır. Aynalanmayan kalıntılar: üründe 0x16'dan önceki demet
+/// veri çerçevesiyle gider (gövde [`VOICE_UNIT`]); burada gövde baştan [`LEAN_PTT_UNIT`]. Üründe
+/// iki CAPS kopyası da düşerse alıcı 0x15 yazar ve yalın başlangıç geç kalır; burada CAPS yoktur.
 fn lean(sc: Scenario) -> Scenario {
     Scenario {
         copies: 0,
@@ -2690,7 +2693,7 @@ fn lean(sc: Scenario) -> Scenario {
         raw_copy_rule: true,
         voice_unit: LEAN_PTT_UNIT,
         ptt_deadline_ns: Some(PTT_DEADLINE_NS),
-        ptt_deadline_from_first_measured_ack: true,
+        ptt_deadline_from_first_ack: true,
         ..sc
     }
 }
@@ -2698,7 +2701,10 @@ fn lean(sc: Scenario) -> Scenario {
 /// [PTT-YALIN] Ürün profili (dürüst 12 500, %20 iid kayıp, ACK bütçesi 62 B/s, 300 ms tek yön), dosya
 /// yok; PTT 0,5–15,5 s, 200 ms'de bir 78 B gövde (tel 106 B), kural `copies = 0` + öncelik
 /// (`ptt_forward_copy_rule(0, 0)`, ölçek yok); 5 s'de bir öncelikli metin birimi. Bırakma kolu:
-/// sunumundan 1 s sonra teyitsiz PTT birimi `abandon_units` ile bırakılır. Tohum başına:
+/// sunumundan 1 s sonra teyitsiz PTT birimi `abandon_units` ile bırakılır; ancak ürün gibi ilk
+/// 0x16'dan (vekili ilk ACK, [`lean`]) önce bırakma yoktur. O ana dek son tarihi geçen demet PTO ile
+/// yeniden iletilebilir; bu iletimler "son tarih sonrası iletim" satırında sayılır ve (a)'nın tel
+/// hızına girer. Adındaki "bırakılan birim yeniden iletilmez" (b)'dir. Tohum başına:
 /// (a) PTT tel hızı (bütün iletimler / 15 s) ≤ 4 500 bit/s; (b) bırakılan birim bırakmadan sonra
 /// tele çıkmaz (köken ne olursa olsun); (c) öncelik takılmadı: her metnin ilk iletimi sunumundan en
 /// geç bir tam datagramın beyan hattında serileşmesi kadar sonra tele çıkar ve ilk iletimi hatta
