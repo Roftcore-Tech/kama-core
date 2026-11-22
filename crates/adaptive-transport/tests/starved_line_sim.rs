@@ -39,8 +39,7 @@ use adaptive_transport::receiver::{feedback_horizon_ns, Receiver, RxDatagram, Rx
 use adaptive_transport::return_path::AckObservation;
 use adaptive_transport::sender::{
     AckInfo, EmitCause, EmitDiag, Event, FeedbackStarvedRule, ForwardCopyLineScale,
-    ForwardCopyRule, OpaqueUnit, RecoveredInfo, RecoveredUnit, Sender, Timer, TransmitDecision,
-    TransmitKind,
+    ForwardCopyRule, OpaqueUnit, Sender, Timer, TransmitDecision, TransmitKind,
 };
 
 const MS: u64 = 1_000_000;
@@ -130,7 +129,7 @@ struct Scenario {
     /// `below_id` 0).
     raw_copy_rule: bool,
     /// [PTT-YALIN] Bırakma: sunumundan bu kadar sonra teyitsiz PTT birimi motora
-    /// `Event::RecoveredControl` (block_id 0, esi 0) ile bildirilir (ürünün son tarih yolu).
+    /// `Sender::abandon_units` ile bildirilir (ürünün son tarih yolu).
     ptt_deadline_ns: Option<u64>,
     /// `> 0`: `text_at_ns`'ten sonra bu aralıkla konuşma bitene dek ek metin birimleri
     /// (`TEXT_ID + k`). 0: tek metin birimi.
@@ -710,20 +709,9 @@ fn run(sc: &Scenario) -> Outcome {
                 for &u in &due {
                     ptt_expired.push((u, now, tx.last_seq));
                 }
-                let decs = s.on_event(
-                    Event::RecoveredControl(RecoveredInfo {
-                        units: due
-                            .iter()
-                            .map(|&unit_id| RecoveredUnit {
-                                unit_id,
-                                block_id: 0,
-                                esi: 0,
-                            })
-                            .collect(),
-                    }),
-                    now,
-                );
-                emit(decs, now, &mut fwd, &mut tx);
+                // Ürün 8c505346'dan beri `Sender::abandon_units` ile bırakır (FEC defterine
+                // dokunmaz); önceki `RecoveredControl { block_id 0, esi 0 }` yolu emekli.
+                s.abandon_units(&due);
             }
         }
         if now.is_multiple_of(200 * MS) {
@@ -2364,7 +2352,7 @@ fn lean(sc: Scenario) -> Scenario {
 /// [PTT-YALIN] Ürün profili (dürüst 12 500, %20 iid kayıp, ACK bütçesi 62 B/s, 300 ms tek yön), dosya
 /// yok; PTT 0,5–15,5 s, 200 ms'de bir 78 B gövde (tel 106 B), kural `copies = 0` + öncelik
 /// (`ptt_forward_copy_rule(0, 0)`, ölçek yok); 5 s'de bir öncelikli metin birimi. Bırakma kolu:
-/// sunumundan 1 s sonra teyitsiz PTT birimi `RecoveredControl` ile bırakılır. Tohum başına:
+/// sunumundan 1 s sonra teyitsiz PTT birimi `abandon_units` ile bırakılır. Tohum başına:
 /// (a) PTT tel hızı (bütün iletimler / 15 s) ≤ 4 500 bit/s; (b) bırakılan birim bırakmadan sonra
 /// tele çıkmaz (köken ne olursa olsun); (c) öncelik takılmadı: her metnin ilk iletimi sunumundan en
 /// geç bir tam datagramın beyan hattında serileşmesi kadar sonra tele çıkar ve ilk iletimi hatta
