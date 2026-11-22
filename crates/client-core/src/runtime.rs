@@ -448,6 +448,16 @@ pub const PTT_COPY_SPACING_NS: u64 = 200_000_000 / PTT_FORWARD_COPIES as u64;
 /// kadar sonra teyitsizse bırakılır: yeniden iletilmez, alıcı şeridi onu beklemeden ilerler.
 /// Bugünkü 5–7 tam-datagram kopyası 1,6 kbit/s ses için 23–32 kbit/s yakıyordu.
 pub const PTT_DEADLINE_NS: u64 = 1_000_000_000;
+
+/// [PTT-YALIN · POLİTİKA] Yalın kipte PTT şeridinin GÜVENİLİR kaydına (PTT_OPEN / PTT_CLOSE) ACK
+/// beklemeden planlanan ileri kopya sayısı. Basış başına iki kayıt: 3 iletimde %20 iid kayıpta
+/// kayıt kaybı 0,8 %; bedel basış başına ≈ 2 × 2 × 70 B (ses demetine kopya yok).
+pub const PTT_RELIABLE_COPIES: u8 = 2;
+
+/// [PTT-YALIN · POLİTİKA] Güvenilir PTT kaydı kopyalarının aralığı. İki kopya ilk iletimden
+/// ≤ 40 ms sonra hattı terk eder; alıcının şerit deliğini atlama beklemesi 100 ms
+/// (`transport::PTT_HOLE_SKIP`).
+pub const PTT_RELIABLE_COPY_SPACING_NS: u64 = 20_000_000;
 /// [PTT-YALIN] PTT şeridinin indeksi (`crate::unit_id::index_of_lane(Lane::Ptt)`).
 const PTT_LANE_INDEX: usize = 0;
 
@@ -3314,8 +3324,13 @@ async fn client_task(
                     publish_frontier(&path, lane, &unconfirmed[lane], next_unit[lane]);
                 }
                 if expired {
-                    // [PTT-YALIN] Bırakma teyit değildir: app olayı ve teyit sayacı yok.
+                    // [PTT-YALIN] Bırakma teyit değildir: app olayı ve teyit sayacı yok. Teyitsiz
+                    // mesaj sayacı ise kabulde artmıştı ve birim store'dan bu ilk silmede çıktı
+                    // (geç ACK yukarıdaki `is_none` ile döner): sayaç burada bir kez düşer, yoksa
+                    // `outstanding() == 0` bekleyen yenileme boşaltması hiç dolmaz (#175 dış
+                    // inceleme). Yalın kip yalnız `!frag_on` iken açıktır: mesaj eşlemesi yok.
                     stats.ptt_expired += 1;
+                    release_outstanding(&outstanding);
                     continue;
                 }
                 match $via {
@@ -3453,7 +3468,10 @@ async fn client_task(
                 // "Atlama politikası".
                 // Sınama: yardımcı `skip_tests`'te (store-miss → çerçeve yok); bu kol (sayaçlar,
                 // `continue`) testte koşmaz.
-                let ptt_lean = ptt_lean_peer && !frag_on && lane_index_of(d.unit_id) == PTT_LANE_INDEX;
+                // [PTT-YALIN · POLİTİKA] Yalın çerçeve yalnız son tarihli kabul edilmiş birime
+                // (`ptt_offered_at` kaydı); aynı şeritteki güvenilir kayıt (PTT_OPEN/PTT_CLOSE)
+                // bugünkü veri çerçevesiyle gider.
+                let ptt_lean = ptt_offered_at.contains_key(&d.unit_id);
                 let frame = if ptt_lean {
                     store.get(&d.unit_id).map(|p| encode_ptt(lane_seq_of(d.unit_id), p))
                 } else {
@@ -3917,7 +3935,16 @@ async fn client_task(
                         s[..body.len()].copy_from_slice(&body);
                         Some(s)
                     });
-                    let ptt_lean = ptt_lean_peer && !frag_on && lane == PTT_LANE_INDEX;
+                    // [PTT-YALIN · POLİTİKA · #175 dış inceleme] Yalın kural (tek iletim, son
+                    // tarihte bırakma) yalnız uygulamanın son tarihli sunduğu birime uygulanır
+                    // (`DeliveryPolicy::DeadlineBounded` → `deadline_ns`; kama-app: MEDIA_BUNDLE).
+                    // Aynı şeritteki güvenilir kayıt (PTT_OPEN / PTT_CLOSE) bırakılmaz: kaybı
+                    // basışın bütün demetlerini yetim düşürür ya da PttEnded'i 120 s'ye iter.
+                    // Ona ACK beklemeden `PTT_RELIABLE_COPIES` ileri kopya planlanır (aşağıda):
+                    // alıcının 100 ms delik atlamasından önce hattı terk eder.
+                    let ptt_lean_unit = ptt_lean_peer && !frag_on && lane == PTT_LANE_INDEX;
+                    let ptt_lean = ptt_lean_unit && deadline_ns.is_some();
+                    let ptt_reliable_copy = ptt_lean_unit && deadline_ns.is_none();
                     let hdr = if frag_on {
                         HDR_DATA_FRAG
                     } else if ptt_lean {
@@ -3937,6 +3964,14 @@ async fn client_task(
                         unit_msg.insert(id, msg_id);
                     }
                     drive!(Event::AppData(OpaqueUnit { id, size }), now);
+                    if ptt_reliable_copy {
+                        session.sender_mut().schedule_forward_copies(
+                            id,
+                            PTT_RELIABLE_COPIES,
+                            PTT_RELIABLE_COPY_SPACING_NS,
+                            now,
+                        );
+                    }
                 // [S1] Blok birikimi + K'de SAME-EVENT latch: drive! az önce on_event koşturdu →
                 // snapshot.event_index taze; arada başka event YOK (tek-task sıralılık) → latch'in
                 // same-event-causality guard'ı geçer.
@@ -6880,6 +6915,72 @@ mod live_diag_mirror_tests {
                 assert_eq!(live, ClientLiveDiag::default());
             }
         }
+    }
+
+    /// [PTT-YALIN · #175 dış inceleme] Dar dönüşlü profilde (12 500 / 62 B/s) son tarihli PTT birimi
+    /// 1 s'de bırakılır ve teyitsiz mesaj sayacını BİR KEZ düşürür; geç ACK yeniden düşürmez ve app
+    /// teyidi üretmez. Aynı şeritteki son tarihsiz (güvenilir) kayıt bırakılmaz, ACK'le teyit edilir.
+    /// İkisi ilk ACK'in hemen ardından sunulur: dönüş bütçesi harcanmıştır, sonraki ACK ≥ 5 s sonra.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn expired_ptt_unit_releases_outstanding_once_and_reliable_ptt_record_is_kept() {
+        let cfg = RuntimeConfig {
+            link_rates: Some(LinkRates {
+                uplink_bps: 12_500,
+                downlink_bps: 62,
+            }),
+            lane_ids: true,
+            ack_format: AckFormat::Bitmap,
+            ..no_fec(SHORT_DRAIN)
+        };
+        assert!(link_feedback_starved(&cfg));
+        // Sunucu ucu aynı hattın öbür yüzü: yukarı 62 (ACK bütçesi), aşağı 12 500.
+        let server = ServerEndpoint::bind(
+            "127.0.0.1:0".parse().expect("adres"),
+            RuntimeConfig {
+                link_rates: Some(LinkRates {
+                    uplink_bps: 62,
+                    downlink_bps: 12_500,
+                }),
+                ..cfg.clone()
+            },
+            Box::new(IdentitySeam::new()),
+        )
+        .await
+        .expect("server bind");
+        let client = ClientEndpoint::connect_with_policy(
+            server.local_addr(),
+            cfg.clone(),
+            Box::new(IdentitySeam::new()),
+            None,
+        )
+        .await
+        .expect("client connect");
+        // Yalın anlaşma ilk 0x16 ACK'iyle: önce güvenilir bir PTT kaydı teyit edilir.
+        client
+            .send_in_lane(b"ac".to_vec(), None, PTT_LANE_INDEX)
+            .expect("offer");
+        assert!(wait_until(|| client.outstanding() == 0).await, "ilk ACK");
+        client
+            .send_in_lane(b"demet".to_vec(), Some(PTT_DEADLINE_NS), PTT_LANE_INDEX)
+            .expect("offer");
+        client
+            .send_in_lane(b"kapa".to_vec(), None, PTT_LANE_INDEX)
+            .expect("offer");
+        assert!(wait_until(|| client.outstanding() == 2).await);
+        // Bırakma: son tarihli birim düşer, güvenilir kayıt teyitsiz kalır.
+        if !wait_until(|| client.outstanding() == 1).await {
+            let o = client.outstanding();
+            let live = client.live_diag();
+            let stats = client.shutdown().await;
+            panic!("bırakılan birim sayacı düşürür: {o} {stats:?} {live:?}");
+        }
+        // Geç ACK güvenilir kaydı teyit eder; bırakılan birim sayacı ikinci kez düşürmez.
+        assert!(wait_until(|| client.outstanding() == 0).await, "geç ACK");
+        let stats = client.shutdown().await;
+        let _ = server.shutdown().await;
+        assert_eq!(stats.ptt_expired, 1, "{stats:?}");
+        assert_eq!(stats.acked, 2, "bırakma app teyidi değildir: {stats:?}");
+        assert!(stats.ptt_lean_tx >= 1, "yalın çerçeve çıktı: {stats:?}");
     }
 }
 

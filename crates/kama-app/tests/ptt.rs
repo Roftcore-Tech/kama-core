@@ -750,15 +750,26 @@ fn r0_all_ptt_records_are_reliable() {
             .expect("gönderilir");
     }
     duo.alice.close(stream).expect("kapanır");
-    let reliable = |msg_type| (msg_type, DeliveryPolicy::Reliable, CompressionPolicy::Never);
-    let expected: Vec<Sent> = iter::once(reliable(MsgType::PttOpen))
-        .chain(iter::repeat_n(
-            reliable(MsgType::MediaBundle),
-            usize::from(TEST_SPURT_BUNDLES),
-        ))
-        .chain(iter::once(reliable(MsgType::PttClose)))
+    // [YAMA 2026-11-22] Açılış ve kapanış Reliable; demet son tarihli (1 s).
+    let deadline = |p: DeliveryPolicy| matches!(p, DeliveryPolicy::DeadlineBounded { .. });
+    let expected: Vec<(MsgType, bool, CompressionPolicy)> =
+        iter::once((MsgType::PttOpen, false, CompressionPolicy::Never))
+            .chain(iter::repeat_n(
+                (MsgType::MediaBundle, true, CompressionPolicy::Never),
+                usize::from(TEST_SPURT_BUNDLES),
+            ))
+            .chain(iter::once((
+                MsgType::PttClose,
+                false,
+                CompressionPolicy::Never,
+            )))
+            .collect();
+    let sent: Vec<(MsgType, bool, CompressionPolicy)> = duo
+        .sent(Side::Alice)
+        .into_iter()
+        .map(|(t, p, c)| (t, deadline(p), c))
         .collect();
-    assert_eq!(duo.sent(Side::Alice), expected);
+    assert_eq!(sent, expected);
 }
 
 #[test]
@@ -1277,10 +1288,13 @@ fn reopen_after_supersession_is_sent_exactly_once() {
         on_new,
         "PTT_OPEN tam bir kez"
     );
-    assert!(duo
-        .sent(Side::Alice)
-        .iter()
-        .all(|&(_, policy, _)| policy == DeliveryPolicy::Reliable));
+    assert!(duo.sent(Side::Alice).iter().all(|&(msg_type, policy, _)| {
+        if msg_type == MsgType::MediaBundle {
+            matches!(policy, DeliveryPolicy::DeadlineBounded { .. })
+        } else {
+            policy == DeliveryPolicy::Reliable
+        }
+    }));
     let alice_stats = duo.alice.ptt.stats();
     assert_eq!(alice_stats.opens_resent, 1);
     assert_eq!(alice_stats.opens_resend_refused, 0);
