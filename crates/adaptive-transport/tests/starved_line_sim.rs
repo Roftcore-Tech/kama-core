@@ -2241,6 +2241,29 @@ const PTT_ON_TIME_MIN_PERMILLE: u64 = 750;
 /// çizelgesinin değişim anlarıyla `sürekli` / `daralma` / `toparlanma`.
 const START_PHASE_END_NS: u64 = 8 * SEC;
 
+/// Zamanında olmayan demetlerin nedeni (koordinatör #175 7080413643: sahibin eşik kararına dek
+/// her evrede ayrıştırılarak raporlanır). Sınıf demetin İLK iletiminin akıbetinden:
+/// * `random`: ilk iletim hatta serileşti, rastgele kayıpta düştü (LCG; ulaşımın elinde değil);
+/// * `queue`: ilk iletim darboğaz FIFO'sunda düştü;
+/// * `late`: ilk iletim hatta düşmedi ama demet plan + 1 s'den sonra vardı (kuyruk beklemesi ya da
+///   geç gönderim);
+/// * `abandoned`: demet son tarihte hiç iletilmeden bırakıldı.
+///
+/// Ulaşım kaynaklı = `queue` + `late` + `abandoned`.
+#[derive(Debug, Clone, Copy, Default)]
+struct Misses {
+    random: usize,
+    queue: usize,
+    late: usize,
+    abandoned: usize,
+}
+
+impl Misses {
+    fn transport(&self) -> usize {
+        self.queue + self.late + self.abandoned
+    }
+}
+
 /// Bir evrenin PTT ölçüsü (demet, planlandığı ana göre evreye düşer).
 #[derive(Debug, Clone)]
 struct PhaseOnTime {
@@ -2249,6 +2272,7 @@ struct PhaseOnTime {
     to: u64,
     planned: usize,
     on_time: usize,
+    misses: Misses,
 }
 
 impl PhaseOnTime {
@@ -2256,6 +2280,21 @@ impl PhaseOnTime {
     fn passes(&self) -> bool {
         self.planned > 0
             && self.on_time as u64 * 1000 >= PTT_ON_TIME_MIN_PERMILLE * self.planned as u64
+    }
+}
+
+/// `v`. demetin (birim kimliği = demet sırası) zamanında olmayış nedeni.
+fn miss_class(o: &Outcome, v: u64, m: &mut Misses) {
+    let first = o
+        .ptt_tx
+        .iter()
+        .filter(|(p, _)| p.unit == v)
+        .min_by_key(|(p, _)| (p.at, p.seq));
+    match first {
+        None => m.abandoned += 1,
+        Some((p, _)) if p.done.is_none() => m.queue += 1,
+        Some((p, _)) if !p.delivered => m.random += 1,
+        Some(_) => m.late += 1,
     }
 }
 
@@ -2293,6 +2332,7 @@ fn ptt_phases(sc: &Scenario, o: &Outcome) -> Vec<PhaseOnTime> {
             let to = bounds.get(k + 1).map_or(end, |b| b.0);
             let mut planned = 0;
             let mut on_time = 0;
+            let mut misses = Misses::default();
             for (v, &(plan, _)) in o.voice.iter().enumerate() {
                 if plan >= from && plan < to {
                     planned += 1;
@@ -2303,6 +2343,8 @@ fn ptt_phases(sc: &Scenario, o: &Outcome) -> Vec<PhaseOnTime> {
                         .is_some_and(|a| a <= plan + PTT_BOUND_NS)
                     {
                         on_time += 1;
+                    } else {
+                        miss_class(o, v as u64, &mut misses);
                     }
                 }
             }
@@ -2312,6 +2354,7 @@ fn ptt_phases(sc: &Scenario, o: &Outcome) -> Vec<PhaseOnTime> {
                 to,
                 planned,
                 on_time,
+                misses,
             }
         })
         .filter(|p| p.from < p.to)
@@ -2322,12 +2365,16 @@ fn phases_line(ph: &[PhaseOnTime]) -> String {
     ph.iter()
         .map(|p| {
             format!(
-                "{}[{}–{}] {}/{}",
+                "{}[{}–{}] {}/{} (ıska: rastgele {}, kuyruk {}, geç {}, bırakma {})",
                 p.name,
                 secs(p.from),
                 secs(p.to),
                 p.on_time,
-                p.planned
+                p.planned,
+                p.misses.random,
+                p.misses.queue,
+                p.misses.late,
+                p.misses.abandoned
             )
         })
         .collect::<Vec<_>>()
@@ -2382,9 +2429,10 @@ fn lean_ptt_one_transmission_stays_within_budget_and_expired_units_are_not_retra
         // [PTT-ÖLÇÜT] Evre başına zamanında oranı: bu testte yalnız rapor (iddiası yok).
         let ph = ptt_phases(&sc, &o);
         println!(
-            "PTT-ÖLÇÜT tohum {seed} (rapor): {} → evrelerin hepsi ≥ %75: {}",
+            "PTT-ÖLÇÜT tohum {seed} (rapor): {} → evrelerin hepsi ≥ %75: {}, ulaşım kaynaklı ıska {}",
             phases_line(&ph),
-            ph.iter().all(PhaseOnTime::passes)
+            ph.iter().all(PhaseOnTime::passes),
+            ph.iter().map(|p| p.misses.transport()).sum::<usize>()
         );
         let control = Scenario {
             ptt_deadline_ns: None,
