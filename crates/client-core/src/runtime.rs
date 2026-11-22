@@ -3662,7 +3662,7 @@ async fn client_task(
                     match (fec.as_ref(), decode_recovered(&plain)) {
                         (Some(p), Some((block_id, esis))) => {
                             let mut units = Vec::with_capacity(esis.len());
-                            for &esi in &esis {
+                            for esi in esis {
                                 let unit = unit_of_fec(block_id, esi, u64::from(p.k_shape));
                                 units.push(RecoveredUnit {
                                     unit_id: unit,
@@ -3670,29 +3670,11 @@ async fn client_task(
                                     esi,
                                 });
                             }
-                            // [RECOVERED-BLOK · geri bildirimi aç profil] Alıcı RECOVERED'ı
-                            // yalnız bloğu çözünce yazar (`fec_ingest`: RS ya hep ya hiç), yani
-                            // bloğun BÜTÜN kaynakları ondadır. Listelenmeyen (doğrudan varmış)
-                            // kaynaklar burada da teyit edilir: dar dönüşte ACK'leri gecikir ya
-                            // da aralık kırpmasıyla hiç gelmez, teyitsiz kaldıkça boş hat
-                            // yeniden iletimi ve ARQ onları yeniden gönderiyordu (ürün testi,
-                            // dürüst hücre, tohum 3: RECOVERED'dan sonra 17 gereksiz iletim).
-                            // Yalnız bu ucun kapattığı (onarımı depoda) blokta ve teyitsiz
-                            // (payload'ı tutulan) birimler; profil kapalıyken eski kural (yalnız
-                            // listelenenler).
-                            let closed = repair_store.get(&block_id).map(|(k, _)| u16::from(*k));
-                            if let (true, Some(k_actual)) = (fec_starved_prior.is_some(), closed) {
-                                for esi in (0..k_actual).filter(|e| !esis.contains(e)) {
-                                    let unit = unit_of_fec(block_id, esi, u64::from(p.k_shape));
-                                    if store.contains_key(&unit) {
-                                        units.push(RecoveredUnit {
-                                            unit_id: unit,
-                                            block_id,
-                                            esi,
-                                        });
-                                    }
-                                }
-                            }
+                            // [RECOVERED-BLOK · GERİ ALINDI 2026-11-22, #175 dış inceleme] RECOVERED
+                            // yalnız LİSTELENEN birimleri teyit eder. Alıcı bloğu çözse bile teslim
+                            // kuyruğu doluysa ya da birim kabul penceresinin dışındaysa o birimi
+                            // listeye yazmaz (kısmi liste): bloğun geri kalanını teyit etmek kabul
+                            // edilmemiş birimin yeniden iletimini durdurur (teslim kaybı).
                             drive!(Event::RecoveredControl(RecoveredInfo { units }), $now);
                         }
                         _ => stats.unknown_frames += 1,
@@ -6183,6 +6165,13 @@ async fn server_task(
                             && cfg.engine == TransportEngine::CcPort
                             && cfg.link_rates.is_some();
                         slot.rx.set_ack_bitmap(on);
+                        // [SIKIŞMA · E · #175 7081448733] Çift ölçüsünün sıkışma sınaması: bu
+                        // yuvanın ölçtüğü hat eşin verisinin yönüdür, yani bu ucun aşağı yönü
+                        // (`LinkRates::downlink_bps` = eşin `uplink_bps`'i). Bitmap kapalıyken kural
+                        // da kapalı (alan tele çıkmaz).
+                        slot.rx.set_pair_squeeze_line(
+                            cfg.link_rates.filter(|_| on).map(|l| l.downlink_bps),
+                        );
                         // [PTT-YALIN · YETENEK] Bu uç 0x09'u çözer; karşı uç yalın PTT gönderecekse
                         // bitmap ACK'leri 0x16 türüyle yazılır.
                         slot.rx.set_ack_bitmap_ptt_lean(on && caps & CAP_PTT_LEAN != 0);
