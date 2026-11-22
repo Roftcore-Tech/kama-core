@@ -297,6 +297,12 @@ fn secs(ns: u64) -> String {
 /// bir), o ana dek profil hızında biriken kuyruk (≈ 4 s'lik hat süresi) boşaltılır; 15 s'den sonra
 /// gönderilen datagram darboğazda en çok iki tam boy datagramın serileşmesi kadar (2 × 1 228 B /
 /// 6 250 B/s ≈ 0,4 s) bekler ve kuyrukta düşmez. Dosya ≤ 60 s.
+///
+/// **Eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** Yalın kolu yoktur: bu düzenek
+/// göndericiye 0x15 alanlarını (`arrival_rate`, `pair_rate`, ölçüm aralığı) vermez; bu, 0x15
+/// yazmayan eski eşin yoludur. Ürün yalın PTT'yi yalnız 0x16 ACK'te açar (0x16 = 0x15 biçimi +
+/// yetenek), bu yüzden yalın PTT ile bu yol üründe birlikte görünmez. Kopyalı yük bu eşin ürün
+/// davranışıdır; iddialar değişmedi. Yalın kollar: `start_budget_sim.rs`, `starved_line_sim.rs`.
 #[test]
 fn optimistic_profile_queue_stays_bounded_and_file_completes() {
     for seed in 1..=3u64 {
@@ -337,6 +343,12 @@ fn optimistic_profile_queue_stays_bounded_and_file_completes() {
 }
 
 /// Profil dürüstken (gerçek = profil) koruma hiçbir örnek kabul etmez: kural #214'teki gibidir.
+///
+/// **Eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** Yalın kolu yoktur: bu düzenek
+/// göndericiye 0x15 alanlarını (`arrival_rate`, `pair_rate`, ölçüm aralığı) vermez; bu, 0x15
+/// yazmayan eski eşin yoludur. Ürün yalın PTT'yi yalnız 0x16 ACK'te açar (0x16 = 0x15 biçimi +
+/// yetenek), bu yüzden yalın PTT ile bu yol üründe birlikte görünmez. Kopyalı yük bu eşin ürün
+/// davranışıdır; iddialar değişmedi. Yalın kollar: `start_budget_sim.rs`, `starved_line_sim.rs`.
 #[test]
 fn honest_profile_guard_stays_off() {
     for seed in 1..=3u64 {

@@ -4,6 +4,10 @@
 //! Düzenek: ürünün geri bildirimi aç profil kurulumu (12 500 / 62 B/s, `FeedbackStarvedRule`,
 //! önlemsel kopya kuralı PTT kimliklerinde). On dosya birimi ve bir PTT birimi gönderilir; ACK
 //! gelmez (dar dönüşün ≈ 7 s'lik bütçe aralığı). Ölçülen: birim başına boş hat yeniden iletimi.
+//!
+//! **GERİLİM / eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** PTT birimi kopyalı
+//! kuralın kapsamındadır (ürün yalnız eski uçla); yalın sözleşmede PTT birimi son tarihte bırakılır
+//! (`Sender::abandon_units`). İddialar değişmedi.
 
 use std::collections::BTreeMap;
 

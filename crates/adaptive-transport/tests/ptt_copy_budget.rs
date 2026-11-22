@@ -9,6 +9,10 @@
 //! Bugünkü kural (2026-11-20): vadesinden 1 s'ten fazla gecikmiş kopya iptal edilir. Uzun kuyrukta
 //! dört kopyanın dördü de iptal oluyordu (ürün testi, gerçek 6 250 B/s, tohum 1: demet 20, ikinci
 //! iletim 17,3 s sonra ARQ'yla). Yeni kural: birimin vadesi gelmiş son kopyası düşmez.
+//!
+//! **GERİLİM / eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** Konusu kopyalı PTT
+//! kuralıdır; ürün onu yalnız eski uçla (0x15 yazan eş) ve ilk 0x16'ya dek kullanır. Yalın
+//! sözleşmede kopya yoktur. İddialar değişmedi.
 
 use adaptive_transport::pacer::LineModel;
 use adaptive_transport::receiver::feedback_horizon_ns;

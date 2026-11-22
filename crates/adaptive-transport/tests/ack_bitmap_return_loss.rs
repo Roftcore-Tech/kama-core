@@ -445,6 +445,10 @@ fn secs(ns: u64) -> String {
 /// * ACK kaybı yokken kapsam boşluğu oluşmaz (kural hiçbir kaydı açmaz).
 ///
 /// V2 (0x14, spec §2.1 alıcısı) aynı senaryolarda yalnız GÖZLEM olarak yazdırılır.
+///
+/// **GERİLİM / eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** Kısa birim canlılığı
+/// ("her birim teslim") kopyalı PTT'nin ölçütüdür; yalın sözleşmede son tarihte bırakılan birim
+/// teslim edilmez, bu ölçüt orada uygulanamaz. İddialar değişmedi.
 #[test]
 fn bitmap_stays_live_under_return_ack_loss() {
     let mut failures: Vec<String> = Vec::new();

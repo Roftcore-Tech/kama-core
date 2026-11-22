@@ -68,8 +68,15 @@ const VOICE_START_NS: u64 = 500 * MS;
 const PTT_BOUND_NS: u64 = SEC;
 const TEXT_BOUND_NS: u64 = SEC;
 const FILE_BOUND_NS: u64 = 14 * SEC;
-/// Ürünün PTT kuralı (`client_core::runtime::PTT_FORWARD_COPIES` = 7,
+/// Ürünün KOPYALI PTT kuralı (`client_core::runtime::PTT_FORWARD_COPIES` = 7,
 /// `PTT_FORWARD_COPIES_MIN` = 6; aralık 200 ms / 7). 2026-11-16 kuralı: 5 iletim, 40 ms.
+///
+/// [Y4 · sahip kararı 2026-11-22, #175 7080178069] Bu kural artık ürünün KAPI sözleşmesi değildir.
+/// Ürün eşten ilk 0x16 ACK'ini görünce (CAPS bit 1: eş 0x09 yalın PTT'yi çözer) PTT kuralını
+/// `ptt_forward_copy_rule(0, 0)`'a çevirir: tek iletim + öncelik, yalın 0x09 çerçevesi, son tarihte
+/// bırakma (bu düzenekte [`lean`]). Kopyalı kural yalnız eski uçla (0x15 yazan eş) ve ilk 0x16'ya
+/// dek kalır. Sabitlerin değeri değişmez; [`Scenario::honest`]'in varsayılanı olarak kopyalı kolları
+/// (GERİLİM / eski uç kolu) kurar. Kapı kolları dosyanın sonundaki yalın bölümdedir.
 const PRODUCT_COPIES: u8 = 6;
 const PRODUCT_MIN_COPIES: u8 = 5;
 const PRODUCT_SPACING_NS: u64 = 200 * MS / 7;
@@ -950,6 +957,10 @@ fn never_cut(o: &Outcome) -> bool {
 ///
 /// Karşı-olgu (aynı koşu, ölçüm aralığı verilmeden: eski cephe tahmincisi): en az bir tohumda hat
 /// beyanın %5'inden fazla düşürülür. Bu kol senaryonun kusuru gerçekten ürettiğini gösterir.
+///
+/// **GERİLİM / eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** PTT yükü kopyalı
+/// ([`PRODUCT_COPIES`]; ürün bunu yalnız eski uçla kullanır); iddiaları değişmedi. Kapı kolu:
+/// [`lean_a_return_delay_rise_does_not_cut_an_honest_line`].
 #[test]
 fn a_return_delay_rise_does_not_cut_an_honest_line() {
     let mut control_cut = false;
@@ -1130,6 +1141,10 @@ fn b_real_capacity_drop_is_detected_and_the_queue_drains() {
 /// PTT), dönüş gecikmesi artıyor: düşük sunum hızı hat kapasitesi sanılmaz.
 ///
 /// Karşı-olgu: eski cephe tahmincisi hattı üç tohumda da sunum hızına indirir.
+///
+/// **GERİLİM / eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** PTT yükü kopyalı
+/// ([`PRODUCT_COPIES`]; ürün bunu yalnız eski uçla kullanır); iddiaları değişmedi. Kapı kolu:
+/// [`lean_c_a_low_offered_rate_is_not_taken_as_capacity`].
 #[test]
 fn c_a_low_offered_rate_is_not_taken_as_capacity() {
     for seed in 1..=3u64 {
@@ -1160,6 +1175,10 @@ fn c_a_low_offered_rate_is_not_taken_as_capacity() {
 /// (d-1) %20 rastgele kayıp, dürüst hat, gönderici tavanda, dönüş gecikmesi sabit: kayıp alınan
 /// baytı düşürür ama kuyruk artışı üretmez; ölçüm geçerli ve hat düşürülmez. Davranışı gösterir
 /// (eski tahminci de bu koşuda kesmez: gönderimin baytıyla sayar).
+///
+/// **GERİLİM / eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** PTT yükü kopyalı
+/// ([`PRODUCT_COPIES`]; ürün bunu yalnız eski uçla kullanır); iddiaları değişmedi. Kapı kolu:
+/// [`lean_d1_random_loss_is_not_queue_growth`].
 #[test]
 fn d1_random_loss_is_not_queue_growth() {
     for seed in 1..=3u64 {
@@ -1207,6 +1226,10 @@ fn d2_queue_overflow_still_converges_and_stops_overflowing() {
 /// gecikmesi artarken hat düşürülmez; gerçek 6 250'de koruma yine ölçülen hatta oturur.
 ///
 /// Karşı-olgu (dürüst hat): eski cephe tahmincisi üç tohumda da keser.
+///
+/// **GERİLİM / eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** PTT yükü kopyalı
+/// ([`PRODUCT_COPIES`]; ürün bunu yalnız eski uçla kullanır); iddiaları değişmedi. Kapı kolu:
+/// [`lean_d3_reordering_keeps_the_measurement_on_the_safe_side`].
 #[test]
 fn d3_reordering_keeps_the_measurement_on_the_safe_side() {
     for seed in 1..=3u64 {
@@ -1255,6 +1278,10 @@ fn d3_reordering_keeps_the_measurement_on_the_safe_side() {
 ///
 /// Karşı-olgu (aynı koşu, ölçüm aralığı hiç verilmeden): cephe tahmincisi en az bir tohumda keser
 /// (senaryo kusuru üretir).
+///
+/// **GERİLİM / eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** PTT yükü kopyalı
+/// ([`PRODUCT_COPIES`]; ürün bunu yalnız eski uçla kullanır); iddiaları değişmedi. Kapı kolu:
+/// [`lean_e1_unmeasured_acks_do_not_bring_back_the_return_delay_cut`].
 #[test]
 fn e1_unmeasured_acks_do_not_bring_back_the_return_delay_cut() {
     let mut control_cut = false;
@@ -1391,6 +1418,10 @@ fn e2_a_long_unmeasured_gap_on_a_real_drop_keeps_the_queue_bounded() {
 /// Kanıt girdisi: aralığın teslim kesri, artış örneğinden sonra rastgele kayıp tabanına göre aşırı
 /// ise taşma örneği (`line_guard` modül belgesi, "Taşma"). İŞ-34 kuralıyla tohum 1'de yakınsama
 /// 53,7 s; taşma örneği kapatılınca (karşı-olgu, cephe dönüşü olmadan) hiç yakınsamıyor.
+///
+/// **GERİLİM / eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** PTT yükü kopyalı
+/// ([`PRODUCT_COPIES`]; ürün bunu yalnız eski uçla kullanır); iddiaları değişmedi. Kapı kolu:
+/// [`lean_d4_a_full_small_fifo_is_detected_and_stops_overflowing`].
 #[test]
 fn d4_a_full_small_fifo_is_detected_and_stops_overflowing() {
     let t_ret = (129 + OVH) * SEC / PROFILE_DOWN + ONE_WAY_NS;
@@ -1454,6 +1485,11 @@ fn d4_a_full_small_fifo_is_detected_and_stops_overflowing() {
 ///   1 s'yi aşar.
 ///
 /// Bant bedeli raporlanır (ileri hatta PTT tel baytı ve dosya süresi, iki kural).
+///
+/// **GERİLİM / eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** Konusu kopyalı PTT
+/// kuralıdır (ürün yalnız eski uçla); yalın sözleşmede karşılığı yoktur (tek iletim, son tarihte
+/// bırakma: [`lean_ptt_one_transmission_stays_within_budget_and_expired_units_are_not_retransmitted`]).
+/// İddiaları değişmedi.
 #[test]
 fn five_lost_ptt_transmissions_are_covered_within_the_bounds() {
     let five_lost = |copies, spacing_ns, scale| Scenario {
@@ -1678,6 +1714,11 @@ const HOLE_TO_LINE_EXIT_NS: u64 =
 ///
 /// PTO probu deliği gösteren ACK'ten ÖNCE çıktıysa (seyrek kolda ACK aralığı ≈ 5 s, PTO ≈ 3,4 s) bu
 /// iddia o demet için boştur ve sayılmaz.
+///
+/// **GERİLİM / eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** Konusu kopyalı PTT
+/// kuralıdır (ürün yalnız eski uçla); yalın sözleşmede karşılığı yoktur (tek iletim, son tarihte
+/// bırakma: [`lean_ptt_one_transmission_stays_within_budget_and_expired_units_are_not_retransmitted`]).
+/// İddiaları değişmedi.
 #[test]
 fn all_lost_ptt_recovery_leaves_on_the_first_ack_that_shows_the_hole() {
     let mut below_threshold = 0usize;
@@ -1805,6 +1846,11 @@ fn ack_recovery_floor_ns(ack_udp: u64) -> u64 {
 ///
 /// Gecikmenin ayrıştırması (alıcının bekletmesi, dönüş kuyruğu, ACK serileşmesi, gönderici, ileri
 /// geçiş) raporlanır.
+///
+/// **GERİLİM / eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** Konusu kopyalı PTT
+/// kuralıdır (ürün yalnız eski uçla); yalın sözleşmede karşılığı yoktur (tek iletim, son tarihte
+/// bırakma: [`lean_ptt_one_transmission_stays_within_budget_and_expired_units_are_not_retransmitted`]).
+/// İddiaları değişmedi.
 #[test]
 fn all_lost_ptt_recovery_follows_the_first_ack_and_only_it_blocks_the_lane() {
     for (tag, bw, fat) in RECOVERY_ARMS {
@@ -1917,6 +1963,10 @@ fn all_lost_ptt_recovery_follows_the_first_ack_and_only_it_blocks_the_lane() {
 /// ≈ 1,1 s; dönüş hattında önceki ACK'in serileşmesi ≤ 1,3 s. Sınırı tutmanın yolu ACK'siz
 /// korumadır (iletim sayısı, aralığı ya da FEC); bu görevin kapsamı dışında (kopya sayısı
 /// artırılmaz).
+///
+/// **GERİLİM / eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** Kopyalı sözleşmenin kanıt
+/// testi (fiziksel alt sınır; bilinen kırmızı). Yalın sözleşmede bütün iletimleri düşen demet
+/// atlanır ve evre ölçütünde `rastgele` ıska sayılır ([`Misses`]). İddiası değişmedi.
 #[test]
 fn all_lost_ptt_bundle_within_the_1s_bound() {
     let header_only = ack_recovery_floor_ns(0);
@@ -1949,6 +1999,11 @@ fn all_lost_ptt_bundle_within_the_1s_bound() {
 /// dürüst dosya süresi (%20 kayıp, 41 kB, sık ACK kolu 4×62; düzenekte FEC yok, kurtarma yalnız
 /// ARQ), daralma senaryosunda (12 500 → 6 250, 8 s) daralma başlangıcından en kötü PTT. Rapor;
 /// sağlama yalnız bayt sırası.
+///
+/// **GERİLİM / eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** Konusu kopyalı PTT
+/// kuralıdır (ürün yalnız eski uçla); yalın sözleşmede karşılığı yoktur (tek iletim, son tarihte
+/// bırakma: [`lean_ptt_one_transmission_stays_within_budget_and_expired_units_are_not_retransmitted`]).
+/// İddiaları değişmedi.
 #[test]
 fn ptt_band_cost_seven_versus_five_transmissions() {
     let arms: [(&str, u8, u64, Option<u8>); 2] = [
@@ -2059,6 +2114,10 @@ fn drop_recovery(seed: u64, load: PttLoad) -> Scenario {
 ///   sonuna dek her ACK'te) ≥ %95 × 12 500.
 /// * Yükseltmeden sonra darboğaz beklemesi ≤ iki tam datagramın 12 500'de serileşmesi (yanlış
 ///   yükseltme kuyruk kurmaz).
+///
+/// **GERİLİM / eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** PTT yükü kopyalı
+/// ([`PRODUCT_COPIES`]; ürün bunu yalnız eski uçla kullanır); iddiaları değişmedi. Kapı kolu:
+/// [`lean_drop_and_recovery_are_followed_within_two_and_three_acks`].
 #[test]
 fn drop_and_recovery_are_followed_within_two_and_three_acks() {
     let ser2 = 2 * (MTU + OVH) * SEC / PROFILE_UP;
@@ -2513,4 +2572,432 @@ fn lean_ptt_one_transmission_stays_within_budget_and_expired_units_are_not_retra
             "tohum {seed}: karşı-olgu: son tarihten sonra PTT iletimi yok"
         );
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// [Y4 · YALIN KOLLAR · sahip kararı 2026-11-22, #175 7080178069] PTT'yi YÜK olarak kullanan
+// testlerin yalın PTT yüküyle aynası. Kapı yalın sözleşmedir; kopyalı kollar yerinde GERİLİM / eski
+// uç kolu olarak kalır (eski uçla konuşma: 0x16 görülene dek kopyalı PTT).
+// * Senaryo var olan testinkiyle aynı; yalnız PTT yükü [`lean`] (ürünün yalın sözleşmesi: tek
+//   iletim + öncelik, 78 B gövde, sunumdan 1 s sonra `abandon_units` ile bırakma).
+// * Hat koruması iddiaları ve karşı-olgular var olan testteki sınırlarla, değiştirilmeden.
+// * PTT iddiası (her yalın kolda, kopyalı kol PTT iddia etse de etmese de) sahibin ölçütü: her
+//   evrede ([`ptt_phases`]) zamanında oranı ≥ %75 ([`PhaseOnTime::passes`]). Kırmızıda ileti her
+//   kalan evrenin ıskalarını dört sınıfa ayırır ([`Misses`]) ve ulaşım kaynaklı ıska sayısını
+//   yazar; hat ve PTT ihlalleri ayrı listelerde ([`assert_lean`]).
+// * Tek iletimde zamanında tavanı 1 − p = %80'dir: 38 demetlik evre kusursuz ulaşımda bile kesin
+//   binomla yalnız ≈ 0,78 olasılıkla ≥ %75 olur. Yalnız `rastgele` ıskalı kırmızı kapı eşiğinin
+//   istatistiğidir (sahip kararı bekliyor, #175 7080413643); ulaşım kaynaklı ıska gerçek kusurdur.
+// ---------------------------------------------------------------------------------------------
+
+/// Yalın kolun PTT ölçütü: evre başına ≥ %75; kalan evreler ıska ayrıştırmasıyla döner. PTT tel
+/// hızı raporlanır (yalın birim boyu [`lean_ptt`] içinde sınanır).
+fn lean_ptt_violations(tag: &str, sc: &Scenario, o: &Outcome) -> Vec<String> {
+    let ph = ptt_phases(sc, o);
+    let m = lean_ptt(o, sc.voice_until_ns);
+    println!(
+        "YALIN {tag} tohum {}: {} | ulaşım kaynaklı ıska {} | PTT tel {} bit/s",
+        sc.seed,
+        phases_line(&ph),
+        ph.iter().map(|p| p.misses.transport()).sum::<usize>(),
+        m.bps
+    );
+    ph.iter()
+        .filter(|p| !p.passes())
+        .map(|p| {
+            format!(
+                "{tag} tohum {}: PTT {}[{}–{}] {}/{} < %75 (ıska: rastgele {}, kuyruk {}, geç {}, \
+                 bırakma {}; ulaşım kaynaklı {})",
+                sc.seed,
+                p.name,
+                secs(p.from),
+                secs(p.to),
+                p.on_time,
+                p.planned,
+                p.misses.random,
+                p.misses.queue,
+                p.misses.late,
+                p.misses.abandoned,
+                p.misses.transport()
+            )
+        })
+        .collect()
+}
+
+/// [Y4] Raporlama: planı `[from, to)` içindeki demetlerden zamanında olanlar ve kalanların ıska
+/// sınıfları ([`miss_class`]); evre sınırından bağımsız bir pencere (ör. yakınsamadan sonrası)
+/// için. Ölçüt değildir.
+fn window_misses(o: &Outcome, from: u64, to: u64) -> (usize, usize, Misses) {
+    let (mut planned, mut on_time, mut m) = (0, 0, Misses::default());
+    for (v, &(plan, _)) in o.voice.iter().enumerate() {
+        if plan < from || plan >= to {
+            continue;
+        }
+        planned += 1;
+        if o.voice_first
+            .get(v)
+            .copied()
+            .flatten()
+            .is_some_and(|a| a <= plan + PTT_BOUND_NS)
+        {
+            on_time += 1;
+        } else {
+            miss_class(o, v as u64, &mut m);
+        }
+    }
+    (planned, on_time, m)
+}
+
+/// Hat iddiaları ve PTT ölçütü ayrı listelerle: kırmızının hangisinden geldiği iletide görünür.
+fn assert_lean(line: &[String], ptt: &[String]) {
+    assert!(
+        line.is_empty() && ptt.is_empty(),
+        "hat iddiaları ({}): {line:#?}\nPTT ölçütü ({}): {ptt:#?}",
+        line.len(),
+        ptt.len()
+    );
+}
+
+/// [Y4] [`a_return_delay_rise_does_not_cut_an_honest_line`]'ın yalın kolu: aynı senaryo, aynı hat
+/// iddiası (hat beyanın %5'inden fazla düşürülmez) ve aynı karşı-olgu (eski tahminci en az bir
+/// tohumda keser); PTT her evrede ≥ %75.
+#[test]
+fn lean_a_return_delay_rise_does_not_cut_an_honest_line() {
+    let (mut line, mut ptt) = (Vec::new(), Vec::new());
+    let mut control_cut = false;
+    for seed in 1..=3u64 {
+        let sc = lean(Scenario {
+            rev_delay_plan: REV_DELAY_PLAN.to_vec(),
+            voice_until_ns: 25 * SEC,
+            ack_return_bw: 4 * PROFILE_DOWN,
+            ..Scenario::honest(seed)
+        });
+        let o = run(&sc);
+        report("a/yalın", &sc, &o);
+        if !never_cut(&o) {
+            line.push(format!(
+                "tohum {seed}: dürüst hat düşürüldü: {:?}",
+                o.rate_trace
+            ));
+        }
+        ptt.extend(lean_ptt_violations("a", &sc, &o));
+        let control = Scenario {
+            interval: false,
+            ..sc
+        };
+        let oc = run(&control);
+        report("a/yalın/karşı-olgu", &control, &oc);
+        control_cut |= !never_cut(&oc);
+    }
+    if !control_cut {
+        line.push("karşı-olgu: eski tahminci bu senaryoda kesmedi".to_string());
+    }
+    assert_lean(&line, &ptt);
+}
+
+/// [Y4] [`c_a_low_offered_rate_is_not_taken_as_capacity`]'ın yalın kolu: aynı senaryo, hat iddiası
+/// ve karşı-olgu (eski tahminci üç tohumda da keser); PTT her evrede ≥ %75.
+#[test]
+fn lean_c_a_low_offered_rate_is_not_taken_as_capacity() {
+    let (mut line, mut ptt) = (Vec::new(), Vec::new());
+    for seed in 1..=3u64 {
+        let sc = lean(Scenario {
+            rev_delay_plan: REV_DELAY_PLAN.to_vec(),
+            file_units: 30,
+            file_gap_ns: 400 * MS,
+            voice_until_ns: 22 * SEC,
+            ack_return_bw: 4 * PROFILE_DOWN,
+            ..Scenario::honest(seed)
+        });
+        let o = run(&sc);
+        report("c/yalın", &sc, &o);
+        if !never_cut(&o) {
+            line.push(format!("tohum {seed}: {:?}", o.rate_trace));
+        }
+        ptt.extend(lean_ptt_violations("c", &sc, &o));
+        let control = Scenario {
+            interval: false,
+            ..sc
+        };
+        let oc = run(&control);
+        report("c/yalın/karşı-olgu", &control, &oc);
+        if never_cut(&oc) {
+            line.push(format!("karşı-olgu tohum {seed}: eski tahminci kesmedi"));
+        }
+    }
+    assert_lean(&line, &ptt);
+}
+
+/// [Y4] [`d1_random_loss_is_not_queue_growth`]'ın yalın kolu: ölçülen aralık ≥ 5, rastgele kayıp
+/// örnek vermez, hat düşürülmez; PTT her evrede ≥ %75.
+#[test]
+fn lean_d1_random_loss_is_not_queue_growth() {
+    let (mut line, mut ptt) = (Vec::new(), Vec::new());
+    for seed in 1..=3u64 {
+        let sc = lean(Scenario {
+            file_units: 120,
+            voice_until_ns: 15 * SEC,
+            ack_return_bw: 4 * PROFILE_DOWN,
+            ..Scenario::honest(seed)
+        });
+        let o = run(&sc);
+        report("d1/yalın", &sc, &o);
+        let (checks, samples, _) = o.interval.expect("kural kurulu");
+        if checks < 5 {
+            line.push(format!("tohum {seed}: ölçülen aralık {checks}"));
+        }
+        if samples != 0 {
+            line.push(format!(
+                "tohum {seed}: rastgele kayıp örnek verdi ({samples})"
+            ));
+        }
+        if !never_cut(&o) {
+            line.push(format!("tohum {seed}: {:?}", o.rate_trace));
+        }
+        ptt.extend(lean_ptt_violations("d1", &sc, &o));
+    }
+    assert_lean(&line, &ptt);
+}
+
+/// [Y4] [`d3_reordering_keeps_the_measurement_on_the_safe_side`]'ın yalın kolu: dürüst hat
+/// düşürülmez, karşı-olgu üç tohumda keser, gerçek 6 250'de son tahmin ≤ %110 × 6 250; PTT her
+/// evrede ≥ %75 (dürüst ve 6 250 koşusu ayrı ayrı).
+#[test]
+fn lean_d3_reordering_keeps_the_measurement_on_the_safe_side() {
+    let (mut line, mut ptt) = (Vec::new(), Vec::new());
+    for seed in 1..=3u64 {
+        let sc = lean(Scenario {
+            rev_delay_plan: REV_DELAY_PLAN.to_vec(),
+            reorder_permille: 30,
+            voice_until_ns: 25 * SEC,
+            ack_return_bw: 4 * PROFILE_DOWN,
+            ..Scenario::honest(seed)
+        });
+        let o = run(&sc);
+        report("d3/yalın", &sc, &o);
+        if !never_cut(&o) {
+            line.push(format!("tohum {seed}: {:?}", o.rate_trace));
+        }
+        ptt.extend(lean_ptt_violations("d3", &sc, &o));
+        let control = Scenario {
+            interval: false,
+            ..sc.clone()
+        };
+        let oc = run(&control);
+        report("d3/yalın/karşı-olgu", &control, &oc);
+        if never_cut(&oc) {
+            line.push(format!("karşı-olgu tohum {seed}: eski tahminci kesmedi"));
+        }
+        let slow = Scenario {
+            fwd_plan: vec![(0, DROP_TO)],
+            file_units: 80,
+            voice_until_ns: 20 * SEC,
+            rev_delay_plan: vec![(0, ONE_WAY_NS)],
+            ..sc
+        };
+        let os = run(&slow);
+        report("d3/yalın/6250", &slow, &os);
+        match os.rate_at_end() {
+            Some(end) if end * 10 <= DROP_TO * 11 => {}
+            other => line.push(format!("tohum {seed}: 6 250'de son tahmin {other:?}")),
+        }
+        ptt.extend(lean_ptt_violations("d3/6250", &slow, &os));
+    }
+    assert_lean(&line, &ptt);
+}
+
+/// [Y4] [`e1_unmeasured_acks_do_not_bring_back_the_return_delay_cut`]'ın yalın kolu: düzenek ≥ 2
+/// ölçümsüz ACK dizisi kurar, hat ve gönderim tavanı beyanın %95'inin altına inmez, karşı-olgu en
+/// az bir tohumda keser; PTT her evrede ≥ %75.
+#[test]
+fn lean_e1_unmeasured_acks_do_not_bring_back_the_return_delay_cut() {
+    let (mut line, mut ptt) = (Vec::new(), Vec::new());
+    let mut control_cut = false;
+    for seed in 1..=3u64 {
+        let sc = lean(Scenario {
+            rev_delay_plan: REV_DELAY_PLAN.to_vec(),
+            voice_until_ns: 25 * SEC,
+            ack_return_bw: 4 * PROFILE_DOWN,
+            no_interval: Some((5 * SEC, 13 * SEC)),
+            ..Scenario::honest(seed)
+        });
+        let o = run(&sc);
+        report("e1/yalın", &sc, &o);
+        let (run_len, _, _) = o.longest_unmeasured_run();
+        if run_len < 2 {
+            line.push(format!("tohum {seed}: düzenek ölçümsüz dizi kurmadı"));
+        }
+        if !never_cut(&o) {
+            line.push(format!(
+                "tohum {seed}: dürüst hat düşürüldü: {:?}",
+                o.rate_trace
+            ));
+        }
+        if o.min_pace() * 20 < PROFILE_UP * 19 {
+            line.push(format!(
+                "tohum {seed}: gönderim tavanı düşürüldü: {:?}",
+                o.pace_trace
+            ));
+        }
+        ptt.extend(lean_ptt_violations("e1", &sc, &o));
+        let control = Scenario {
+            interval: false,
+            ..sc
+        };
+        let oc = run(&control);
+        report("e1/yalın/karşı-olgu", &control, &oc);
+        control_cut |= !never_cut(&oc);
+    }
+    if !control_cut {
+        line.push("karşı-olgu: cephe tahmincisi bu senaryoda kesmedi".to_string());
+    }
+    assert_lean(&line, &ptt);
+}
+
+/// [Y4] (d-4)'ün yalın kolu. Hat iddiaları [`d4_a_full_small_fifo_is_detected_and_stops_overflowing`]
+/// ile aynı sınırlarla: yakınsama ≤ düşüş + 3·T_ack + T_ret; yakınsamadan 2 s sonra taşma yok ve
+/// bekleme ≤ iki tam datagramın 6 250'de serileşmesi. Kopyalı kolun "yakınsamadan 9 s sonra sıralı
+/// PTT ≤ 1 s" iddiası yerine sahibin ölçütü: her evrede (başlangıç [0, 8 s), daralma [8 s, 40 s))
+/// zamanında oranı ≥ %75. Daralma evresi düşüş geçişini de kapsar; (b)'nin belgelediği fiziksel alt
+/// sınır (algılamaya dek FIFO beklemesi) o geçişteki demetleri geç kılar ve ıska ayrıştırmasında
+/// `kuyruk` / `geç` olarak görünür.
+#[test]
+fn lean_d4_a_full_small_fifo_is_detected_and_stops_overflowing() {
+    let t_ret = (129 + OVH) * SEC / PROFILE_DOWN + ONE_WAY_NS;
+    let wait_bound = 2 * (MTU + OVH) * SEC / DROP_TO;
+    let (mut line, mut ptt) = (Vec::new(), Vec::new());
+    for seed in 1..=3u64 {
+        let sc = lean(Scenario {
+            queue_pkts: 8,
+            ..drop_scenario(seed, true)
+        });
+        let o = run(&sc);
+        report("d4/yalın", &sc, &o);
+        let t_ack = o
+            .acks_at
+            .windows(2)
+            .filter(|w| w[1] <= DROP_AT_NS)
+            .map(|w| w[1] - w[0])
+            .max()
+            .expect("düşüşten önce ACK'ler");
+        let conv_bound = DROP_AT_NS + 3 * t_ack + t_ret;
+        let Some(conv) = converged_at(&o, DROP_TO) else {
+            line.push(format!("tohum {seed}: yakınsamadı"));
+            continue;
+        };
+        if conv > conv_bound {
+            line.push(format!(
+                "tohum {seed}: yakınsama {} (sınır {})",
+                secs(conv),
+                secs(conv_bound)
+            ));
+        }
+        let late_drops = o.drops_between(conv + 2 * SEC, u64::MAX);
+        if late_drops != 0 {
+            line.push(format!(
+                "tohum {seed}: yakınsamadan sonra taşma sürüyor ({late_drops})"
+            ));
+        }
+        let w = o.max_wait_between(conv + 2 * SEC, u64::MAX);
+        if w > wait_bound {
+            line.push(format!(
+                "tohum {seed}: yakınsama sonrası bekleme {}",
+                secs(w)
+            ));
+        }
+        let (n0, t0, m0) = window_misses(&o, DROP_AT_NS, conv + 2 * SEC);
+        let (n1, t1, m1) = window_misses(&o, conv + 2 * SEC, u64::MAX);
+        println!(
+            "D4/yalın tohum {seed}: yakınsama {} (sınır {}), kuyrukta düşen {} | PTT düşüş → \
+             yakınsama + 2 s: {t0}/{n0} {m0:?} (ulaşım {}) | sonrası: {t1}/{n1} {m1:?} (ulaşım {})",
+            secs(conv),
+            secs(conv_bound),
+            o.drops_queue,
+            m0.transport(),
+            m1.transport()
+        );
+        ptt.extend(lean_ptt_violations("d4", &sc, &o));
+    }
+    assert_lean(&line, &ptt);
+}
+
+/// Düşüş-toparlanma iddialarının ihlalleri ([`drop_and_recovery_are_followed_within_two_and_three_acks`]
+/// ile aynı tanım ve sınırlar).
+fn drop_recovery_violations(tag: &str, sc: &Scenario, o: &Outcome) -> Vec<String> {
+    let ser2 = 2 * (MTU + OVH) * SEC / PROFILE_UP;
+    let seed = sc.seed;
+    let after = |from: u64, to: u64| {
+        o.per_ack
+            .iter()
+            .filter(move |a| a.1 >= from && a.1 < to)
+            .copied()
+            .collect::<Vec<_>>()
+    };
+    let down = after(DROP_AT_NS, RECOVER_AT_NS);
+    let up = after(RECOVER_AT_NS, u64::MAX);
+    let down_k = down.iter().position(|a| {
+        a.2.is_some_and(|r| r * 10 <= DROP_TO * 11 && r * 10 >= DROP_TO * 9)
+    });
+    let up_k = (0..up.len()).find(|&k| up[k..].iter().all(|a| a.3 * 100 >= PROFILE_UP * 95));
+    let up_at = up_k.map(|k| up[k].0);
+    let w_up = up_at.map(|t| o.max_wait_between(t, u64::MAX));
+    println!(
+        "DÜŞÜŞ-TOPARLANMA {tag} tohum {seed}: düşüş ACK#{:?} toparlanma ACK#{:?} ({}) sonrası \
+         bekleme {} (sınır {})",
+        down_k.map(|k| k + 1),
+        up_k.map(|k| k + 1),
+        up_at.map_or("YOK".to_string(), secs),
+        w_up.map_or("-".to_string(), secs),
+        secs(ser2)
+    );
+    let mut bad = Vec::new();
+    if down_k.is_none_or(|k| k >= 2) {
+        bad.push(format!(
+            "{tag} tohum {seed}: düşüş ACK#{:?}",
+            down_k.map(|k| k + 1)
+        ));
+    }
+    if up_k.is_none_or(|k| k >= 3) {
+        bad.push(format!(
+            "{tag} tohum {seed}: toparlanma ACK#{:?}",
+            up_k.map(|k| k + 1)
+        ));
+    }
+    if w_up.is_some_and(|w| w > ser2) {
+        bad.push(format!(
+            "{tag} tohum {seed}: yükseltmeden sonra bekleme {}",
+            secs(w_up.unwrap_or(0))
+        ));
+    }
+    bad
+}
+
+/// [Y4] Düşüş-toparlanmanın yalın kolu: [`drop_recovery`] senaryosu (dosya sürekli, tohum 1–3),
+/// PTT yükü [`lean`]. Hat iddiaları kopyalı/tek/PTT'siz kollarla aynı ([`drop_recovery_violations`]:
+/// düşüş en çok ikinci ACK'te, toparlanma en çok üçüncü ACK'ten itibaren kalıcı, yükseltmeden sonra
+/// bekleme ≤ iki tam datagramın 12 500'de serileşmesi). Var olan test PTT iddiası yapmıyordu; yalın
+/// kolda sahibin ölçütü her evrede (başlangıç, daralma [8, 20 s), toparlanma [20, 40 s)) ≥ %75.
+#[test]
+fn lean_drop_and_recovery_are_followed_within_two_and_three_acks() {
+    let (mut line, mut ptt) = (Vec::new(), Vec::new());
+    for seed in 1..=3u64 {
+        let sc = lean(drop_recovery(seed, PttLoad::Copies));
+        let o = run(&sc);
+        report("düşüş-toparlanma/yalın", &sc, &o);
+        line.extend(drop_recovery_violations("yalın", &sc, &o));
+        if let Some(conv) = converged_at(&o, DROP_TO) {
+            let (n0, t0, m0) = window_misses(&o, DROP_AT_NS, conv + 2 * SEC);
+            let (n1, t1, m1) = window_misses(&o, conv + 2 * SEC, RECOVER_AT_NS);
+            println!(
+                "DÜŞÜŞ-TOPARLANMA/yalın tohum {seed}: yakınsama {} | PTT düşüş → yakınsama + 2 s: \
+                 {t0}/{n0} {m0:?} (ulaşım {}) | yakınsama + 2 s → toparlanma: {t1}/{n1} {m1:?} \
+                 (ulaşım {})",
+                secs(conv),
+                m0.transport(),
+                m1.transport()
+            );
+        }
+        ptt.extend(lean_ptt_violations("düşüş-toparlanma", &sc, &o));
+    }
+    assert_lean(&line, &ptt);
 }

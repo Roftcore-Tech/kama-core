@@ -70,8 +70,16 @@ enum Copies {
     /// Düzeneğin ilk kuralı (2026-11-16 ürün kuralı): 5 iletim, 40 ms aralık, hatla ölçekleme yok.
     Harness,
     /// Ürün kuralı (`client_core::runtime::PTT_FORWARD_COPIES` = 7, `PTT_FORWARD_COPIES_MIN` = 6;
-    /// aralık 200 ms / 7; ölçülen yavaş hatta orantılı, en az 6 iletim).
+    /// aralık 200 ms / 7; ölçülen yavaş hatta orantılı, en az 6 iletim). [Y4 · 2026-11-22] Ürün
+    /// bu kuralı artık yalnız eski uçla (0x15 yazan eş) ve ilk 0x16'ya dek kullanır; bu kolla koşan
+    /// testler GERİLİM / eski uç kollarıdır, kapı [`Copies::Lean`]'dir.
     Product,
+    /// [Y4 · PTT-YALIN] Ürünün yalın PTT sözleşmesi (#175 7080178069; `starved_line_sim.rs`
+    /// `lean()` aynası): tek iletim (`ptt_forward_copy_rule(0, 0)`: kopya yok, öncelik kalır; kural
+    /// PTT şeridinin üstünü [`PTT_LANE_TOP`] ile ayırır), yalın 0x09 birimi ([`LEAN_PTT_UNIT`]
+    /// gövde), sunumdan [`PTT_DEADLINE_NS`] sonra teyitsiz birimin `Sender::abandon_units` ile
+    /// bırakılması.
+    Lean,
 }
 
 impl Copies {
@@ -80,9 +88,30 @@ impl Copies {
         match self {
             Self::Harness => (4, 40 * MS, None),
             Self::Product => (6, 200 * MS / 7, Some(5)),
+            Self::Lean => (0, 0, None),
+        }
+    }
+
+    /// PTT biriminin UDP gövdesi.
+    fn voice_unit(self) -> u64 {
+        if self == Self::Lean {
+            LEAN_PTT_UNIT
+        } else {
+            VOICE_UNIT
         }
     }
 }
+
+/// [Y4] Yalın kuralda PTT şeridinin üstü (ürün: `unit_id::tagged(1, 0)`; düzenekte PTT kimlikleri
+/// 0.., dosya [`FILE_BASE_ID`]'den). Kopyalı kurallar bugünkü gibi `FILE_BASE_ID` kullanır.
+const PTT_LANE_TOP: u64 = 500_000;
+/// [Y4] Yalın PTT biriminin UDP gövdesi (`starved_line_sim.rs` `LEAN_PTT_UNIT`; tel 106 B).
+const LEAN_PTT_UNIT: u64 = 78;
+/// [Y4] Ürünün PTT son tarihi (`client_core::runtime::PTT_DEADLINE_NS`).
+const PTT_DEADLINE_NS: u64 = SEC;
+/// [Y4] Sahibin PTT ölçütü (#175 7080178069): evre başına zamanında oranı ≥ %75
+/// (`starved_line_sim.rs` `PTT_ON_TIME_MIN_PERMILLE`).
+const PTT_ON_TIME_MIN_PERMILLE: u64 = 750;
 
 /// [m. 2 bozulması] İlk varış penceresinin girdisine uygulanan tek bir sapma. Hepsi yalnız ilk
 /// pencereyi etkiler (sonraki ACK'ler alanı taşımaz); hat ve gönderici değişmez.
@@ -119,6 +148,9 @@ struct Bottleneck {
     dropped_queue: Vec<u64>,
     waits: Vec<(u64, u64)>,
     drop_plan: DropPlan,
+    /// [Y4] PTT iletimleri (`unit_id < FILE_BASE_ID`): (gönderim anı, birim, serileşme bitişi —
+    /// kuyrukta düştüyse `None`, hatta düşmedi mi).
+    ptt_log: Vec<(u64, u64, Option<u64>, bool)>,
 }
 
 impl Bottleneck {
@@ -133,6 +165,7 @@ impl Bottleneck {
             dropped_queue: Vec::new(),
             waits: Vec::new(),
             drop_plan: DropPlan::Off,
+            ptt_log: Vec::new(),
         }
     }
 
@@ -145,6 +178,9 @@ impl Bottleneck {
                 self.drop_plan = DropPlan::Done;
             }
             self.dropped_queue.push(now);
+            if unit_id < FILE_BASE_ID {
+                self.ptt_log.push((now, unit_id, None, false));
+            }
             return;
         }
         let start = self.busy.back().copied().unwrap_or(now).max(now);
@@ -155,7 +191,11 @@ impl Bottleneck {
             .lcg
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1_442_695_040_888_963_407);
-        if (self.lcg >> 33) % 1000 < LOSS_PERMILLE {
+        let lost = (self.lcg >> 33) % 1000 < LOSS_PERMILLE;
+        if unit_id < FILE_BASE_ID {
+            self.ptt_log.push((now, unit_id, Some(done), !lost));
+        }
+        if lost {
             return;
         }
         if self.drop_plan == DropPlan::WaitOpener && udp >= FIRST_WINDOW_BYTES {
@@ -366,6 +406,12 @@ struct Outcome {
     min_pace: Option<u64>,
     /// Gönderim tavanının değiştiği anlar: (an, tavan) (gözlem).
     pace_trace: Vec<(u64, u64)>,
+    /// [Y4] Demet başına planlı an ve alıcıya ilk varış (varmayan `None`).
+    voice_first: Vec<(u64, Option<u64>)>,
+    /// [Y4] PTT iletimlerinin darboğaz kaydı ([`Bottleneck::ptt_log`]).
+    ptt_log: Vec<(u64, u64, Option<u64>, bool)>,
+    /// [Y4] Yalın kuralda son tarihte bırakılan demet sayısı.
+    ptt_abandoned: usize,
 }
 
 fn sender(copy_rule: Copies) -> Sender {
@@ -388,7 +434,11 @@ fn sender(copy_rule: Copies) -> Sender {
         },
     }));
     s.set_forward_copy_rule(Some(ForwardCopyRule {
-        below_id: FILE_BASE_ID,
+        below_id: if copy_rule == Copies::Lean {
+            PTT_LANE_TOP
+        } else {
+            FILE_BASE_ID
+        },
         priority_below_id: FILE_BASE_ID,
         copies,
         spacing_ns,
@@ -452,6 +502,8 @@ fn run_timed(
     };
     let mut voice_offered: Vec<u64> = Vec::new();
     let mut voice_arrived: HashMap<u64, u64> = HashMap::new();
+    let mut ptt_confirmed: HashSet<u64> = HashSet::new();
+    let mut ptt_abandoned: HashSet<u64> = HashSet::new();
     let mut file_seen: HashSet<u64> = HashSet::new();
     let mut file_done_ns = None;
     let mut file_last_new_sent_ns = None;
@@ -508,7 +560,7 @@ fn run_timed(
             let decs = s.on_event(
                 Event::AppData(OpaqueUnit {
                     id: next_voice,
-                    size: VOICE_UNIT,
+                    size: copy_rule.voice_unit(),
                 }),
                 now,
             );
@@ -530,6 +582,31 @@ fn run_timed(
             &mut file_new_sent,
             &mut file_last_new_sent_ns,
         );
+        // [Y4] Yalın kural: ürünün son tarih yolu (`runtime`, pace tick'te Pto'dan sonra; aynı
+        // sıra `starved_line_sim.rs`'te): teyitsiz ve sunumundan son tarih geçmiş PTT birimi
+        // `abandon_units` ile bırakılır.
+        if copy_rule == Copies::Lean {
+            ptt_confirmed.extend(
+                s.take_confirmed_units()
+                    .into_iter()
+                    .filter(|&u| u < FILE_BASE_ID),
+            );
+            let due: Vec<u64> = voice_offered
+                .iter()
+                .enumerate()
+                .map(|(k, &at)| (k as u64, at))
+                .filter(|&(k, at)| {
+                    now.saturating_sub(at) >= PTT_DEADLINE_NS
+                        && !ptt_confirmed.contains(&k)
+                        && !ptt_abandoned.contains(&k)
+                })
+                .map(|(k, _)| k)
+                .collect();
+            if !due.is_empty() {
+                ptt_abandoned.extend(due.iter().copied());
+                s.abandon_units(&due);
+            }
+        }
         if now.is_multiple_of(200 * MS) {
             let decs = s.on_event(Event::TimerFired(Timer::RtpropProbe), now);
             emit(
@@ -636,7 +713,8 @@ fn run_timed(
                 }
             }
         }
-        let voice_left = (0..voice_offered.len() as u64).any(|v| !voice_arrived.contains_key(&v));
+        let voice_left = (0..voice_offered.len() as u64)
+            .any(|v| !voice_arrived.contains_key(&v) && !ptt_abandoned.contains(&v));
         if file_done_ns.is_some() && !voice_left {
             break;
         }
@@ -695,6 +773,13 @@ fn run_timed(
         pace_trace,
         interval: s.diag_line_guard_interval(),
         rate_trace,
+        voice_first: voice_offered
+            .iter()
+            .enumerate()
+            .map(|(k, &p)| (p, voice_arrived.get(&(k as u64)).copied()))
+            .collect(),
+        ptt_log: fwd.ptt_log.clone(),
+        ptt_abandoned: ptt_abandoned.len(),
     }
 }
 
@@ -761,6 +846,9 @@ fn start_queue_bound_ns(real_up: u64) -> u64 {
 ///
 /// Sınırlar ölçümden önce, fizikten (`start_queue_bound_ns`): 6 250'de 0,5 + 0,2 s, 10 000'de
 /// 0,125 + 0,12 s. Ölçülen (2026-11-21, tohum 1–3): 6 250'de 0,49 s, 10 000'de 0,12 s.
+///
+/// **GERİLİM / eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** PTT yükü kopyalı
+/// ([`Copies::Harness`] / [`Copies::Product`]); iddiaları değişmedi. Kapı kolu: [`lean_optimistic_profile_is_measured_on_the_first_ack_and_the_start_queue_stays_bounded`].
 #[test]
 fn optimistic_profile_is_measured_on_the_first_ack_and_the_start_queue_stays_bounded() {
     for real_up in [6_250u64, 10_000] {
@@ -804,6 +892,9 @@ fn optimistic_profile_is_measured_on_the_first_ack_and_the_start_queue_stays_bou
 /// dosyaya bedeli ilk ACK'in gelişine dek bekleyen gönderimle sınırlıdır: dosyanın son yeni
 /// birimi en geç `ilk ACK + (dosya + PTT tel baytı) / profil` anında çıkar (bütçe ilk ACK'ten önce
 /// hiç gönderim yaptırmasaydı). Ölçülen (2026-11-21, tohum 1–3): 5,35–5,95 s; sınır ≈ 6,2–6,5 s.
+///
+/// **GERİLİM / eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** PTT yükü kopyalı
+/// ([`Copies::Harness`] / [`Copies::Product`]); iddiaları değişmedi. Kapı kolu: [`lean_honest_profile_is_verified_on_the_first_ack_and_the_budget_costs_at_most_the_wait`].
 #[test]
 fn honest_profile_is_verified_on_the_first_ack_and_the_budget_costs_at_most_the_wait() {
     for seed in 1..=3u64 {
@@ -846,6 +937,10 @@ fn honest_profile_is_verified_on_the_first_ack_and_the_budget_costs_at_most_the_
 
 /// Eski alıcı (boy verilmez, alan daima sentinel): ilk pencere yok, bütçe ilk ACK'le kalkar ve
 /// gönderici bugünkü hat korumasına döner; ilk ACK'e dek kuyruk yine başlangıç sınırında.
+///
+/// **Eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** Yalın kolu yoktur: eski alıcı
+/// 0x15 alanlarını taşımaz ve 0x16 yazamaz, ürün bu eşle yalın PTT'yi hiç açmaz (kopyalı kural
+/// bu eşin ürün davranışıdır).
 #[test]
 fn old_receiver_falls_back_to_todays_guard() {
     for real_up in [6_250u64, PROFILE_UP] {
@@ -878,7 +973,11 @@ fn old_receiver_falls_back_to_todays_guard() {
 /// * koşu sonunda korumanın tahmini gerçek hattın ±%10 içinde;
 /// * `full` ile: bütün demetler teslim ve dosya [`T_MAX_NS`] içinde biter.
 ///
-/// Bütün oturumun PTT'si raporlanır ama ölçüt değildir: bu düzenekte (V2 ACK çerçevesi, %20 kayıp)
+/// [Y4] [`Copies::Lean`] kolunda PTT iddiası sahibin ölçütüdür (her evrede zamanında oranı ≥ %75,
+/// [`lean_ptt_violations`]); PTT şeridinin tel hızı yalın birimden (1 × 106 B × 5/s); teslim
+/// ölçütü yoktur (son tarihte bırakma sözleşmedir). Diğer ölçütler aynen.
+///
+/// Bütün oturumun PTT'si raporlanır ama ölçüt değildir (kopyalı kollar): bu düzenekte (V2 ACK çerçevesi, %20 kayıp)
 /// ACK aralığı sürekli evrede ≈ 8,6 s'ye çıkar; beş iletimi de düşen bir demetin ARQ kurtarması o
 /// kadar sürer ve sürekli evrenin süreli yoklamaları (+%6,25) demetleri 1 s'nin biraz üstüne
 /// itebilir. Ölçüldü, bozulmasız gerçek 6 250: İŞ-35 kuralıyla tohum 1'de demet 250 (50,5 s)
@@ -897,7 +996,11 @@ fn perturbed_violations(
     report(&format!("{p:?}/{copy_rule:?}"), real_up, seed, &o);
     let tag = format!("{p:?} {copy_rule:?} gerçek {real_up} tohum {seed}");
     let mut v = Vec::new();
-    if o.voice_max_start > PTT_BOUND_NS {
+    if copy_rule == Copies::Lean {
+        // [Y4] Yalın kol: "başlangıç evresinde sıralı teslim ≤ 1 s" yerine sahibin ölçütü
+        // (her evrede zamanında oranı ≥ %75, ıska ayrıştırmasıyla).
+        v.extend(lean_ptt_violations(&tag, &o));
+    } else if o.voice_max_start > PTT_BOUND_NS {
         v.push(format!(
             "{tag}: başlangıç PTT {} (ilk pencere {:?})",
             secs(o.voice_max_start),
@@ -905,7 +1008,8 @@ fn perturbed_violations(
         ));
     }
     let (copies, _, _) = copy_rule.rule();
-    let ptt_wire_bps = (u64::from(copies) + 1) * (VOICE_UNIT + OVH) * SEC / VOICE_PERIOD_NS;
+    let ptt_wire_bps =
+        (u64::from(copies) + 1) * (copy_rule.voice_unit() + OVH) * SEC / VOICE_PERIOD_NS;
     if o.min_pace.is_some_and(|m| m < ptt_wire_bps) {
         v.push(format!(
             "{tag}: tavan {:?} < PTT şeridi {ptt_wire_bps} (oturum PTT {})",
@@ -913,7 +1017,8 @@ fn perturbed_violations(
             secs(o.voice_max)
         ));
     }
-    if full && o.voice_undelivered > 0 {
+    // Yalın kolda teslim edilmeyen demet sözleşmedir (son tarihte bırakma): teslim ölçütü yok.
+    if full && copy_rule != Copies::Lean && o.voice_undelivered > 0 {
         v.push(format!("{tag}: teslimsiz demet {}", o.voice_undelivered));
     }
     let bound = start_queue_bound_ns(real_up);
@@ -959,6 +1064,9 @@ fn assert_perturbation_meets_acceptance_for(p: Perturb, seeds: std::ops::RangeIn
 
 /// Paket boyu farkı: alıcıya verilen boy her datagramda 100 B büyük (≈ +%10; iki ucun boy sayımı
 /// farklı). İlk pencere hattı ≈ %10 yüksek okur (6 873–6 894).
+///
+/// **GERİLİM / eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** PTT yükü kopyalı
+/// ([`Copies::Harness`] / [`Copies::Product`]); iddiaları değişmedi. Kapı kolu: [`lean_first_window_perturbations_meet_the_start_acceptance`].
 #[test]
 fn size_skew_in_the_first_window_meets_the_start_acceptance() {
     assert_perturbation_meets_acceptance(Perturb::SizeSkew(100));
@@ -966,6 +1074,9 @@ fn size_skew_in_the_first_window_meets_the_start_acceptance() {
 
 /// Yeniden sıralama: pencereyi açan datagramdan sonraki iki varış yer değiştirir. Tohum 3'te
 /// pencerenin son datagramı geç işlenir, ilk pencere hattı 2 215 B/s okur (yanlış DÜŞÜK).
+///
+/// **GERİLİM / eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** PTT yükü kopyalı
+/// ([`Copies::Harness`] / [`Copies::Product`]); iddiaları değişmedi. Kapı kolu: [`lean_first_window_perturbations_meet_the_start_acceptance`].
 #[test]
 fn reordering_after_the_opener_meets_the_start_acceptance() {
     assert_perturbation_meets_acceptance(Perturb::Reorder);
@@ -973,6 +1084,9 @@ fn reordering_after_the_opener_meets_the_start_acceptance() {
 
 /// Zamanlama sapması 40 ms: açıcının alıcı damgası geç; pencere kısa görünür, hat yüksek okunur
 /// (+%14–33).
+///
+/// **GERİLİM / eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** PTT yükü kopyalı
+/// ([`Copies::Harness`] / [`Copies::Product`]); iddiaları değişmedi. Kapı kolu: [`lean_first_window_perturbations_meet_the_start_acceptance`].
 #[test]
 fn a_40ms_late_first_stamp_meets_the_start_acceptance() {
     assert_perturbation_meets_acceptance(Perturb::LateFirstStamp(40 * MS));
@@ -980,6 +1094,9 @@ fn a_40ms_late_first_stamp_meets_the_start_acceptance() {
 
 /// Zamanlama sapması 200 ms: pencere `Δτ < Δs` (tohum 1, yanlış doğrulama) ya da kapanmaz
 /// (tohum 2–3, sentinel).
+///
+/// **GERİLİM / eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** PTT yükü kopyalı
+/// ([`Copies::Harness`] / [`Copies::Product`]); iddiaları değişmedi. Kapı kolu: [`lean_first_window_perturbations_meet_the_start_acceptance`].
 #[test]
 fn a_200ms_late_first_stamp_meets_the_start_acceptance() {
     assert_perturbation_meets_acceptance(Perturb::LateFirstStamp(200 * MS));
@@ -988,6 +1105,9 @@ fn a_200ms_late_first_stamp_meets_the_start_acceptance() {
 /// Kuyruk kaybı: açıcıdan sonra hatta sunulan ilk datagram darboğaz kuyruğunda düşer (hattı
 /// kullanmaz). Tohum 1'de düşen datagram pencerenin içinde ama artış görünür: pencerenin gönderim
 /// baytı şişer, örnek 9 372 (gerçek 6 250).
+///
+/// **GERİLİM / eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** PTT yükü kopyalı
+/// ([`Copies::Harness`] / [`Copies::Product`]); iddiaları değişmedi. Kapı kolu: [`lean_first_window_perturbations_meet_the_start_acceptance`].
 #[test]
 fn a_queue_drop_after_the_opener_meets_the_start_acceptance() {
     assert_perturbation_meets_acceptance_for(Perturb::QueueDropAfterOpener, 1..=1);
@@ -1024,6 +1144,9 @@ fn a_queue_drop_hidden_in_the_first_window_is_not_closed() {
 /// Dürüst profil (gerçek = beyan) aynı bozulmalarla: PTT ≤ 1 s, kuyruk bir datagramın
 /// serileşmesini aşmaz, kuyrukta düşme yalnız enjekte edilen. Dosyanın son yeni biriminin anı
 /// raporlanır (bozulmanın dürüst hatta bedeli; sınır yok).
+///
+/// **GERİLİM / eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** PTT yükü kopyalı
+/// ([`Copies::Harness`] / [`Copies::Product`]); iddiaları değişmedi. Kapı kolu: [`lean_honest_profile_under_first_window_perturbations_keeps_ptt_and_queue`].
 #[test]
 fn honest_profile_under_first_window_perturbations_keeps_ptt_and_queue() {
     let mut v = Vec::new();
@@ -1064,6 +1187,9 @@ fn honest_profile_under_first_window_perturbations_keeps_ptt_and_queue() {
 /// Karşı-olgu (aynı düzenek; `first_ack_trusted` daima doğru, ilk pencere gönderim anlarıyla):
 /// dosyanın son yeni birimi 6,78 / 7,27 / 6,94 s. Bu kuraldan önce: 6,78 / 13,19 / 11,18 s
 /// (tohum 2–3 `NoInfo` → `Flat(6250)`).
+///
+/// **GERİLİM / eski uç kolu (sahip kararı 2026-11-22, #175 7080178069).** PTT yükü kopyalı
+/// ([`Copies::Harness`] / [`Copies::Product`]); iddiaları değişmedi. Kapı kolu: [`lean_honest_start_with_ptt_ahead_of_the_file_lifts_the_budget_on_the_first_ack`].
 #[test]
 fn honest_start_with_ptt_ahead_of_the_file_lifts_the_budget_on_the_first_ack() {
     const COUNTERFACTUAL_LAST_NEW_MS: [u64; 3] = [6_780, 7_270, 6_940];
@@ -1094,4 +1220,316 @@ fn honest_start_with_ptt_ahead_of_the_file_lifts_the_budget_on_the_first_ack() {
             secs(bound)
         );
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// [Y4 · YALIN KOLLAR · sahip kararı 2026-11-22, #175 7080178069] PTT'yi YÜK olarak kullanan
+// başlangıç testlerinin yalın PTT yüküyle aynası ([`Copies::Lean`]). Kapı yalın sözleşmedir;
+// kopyalı kollar yerinde GERİLİM / eski uç kolu olarak kalır.
+// * Hat ve bütçe iddiaları var olan testteki sınırlarla, değiştirilmeden (yalnız PTT şeridinin tel
+//   hızı giren formüller yalın birimden: 1 iletim × 106 B × 5/s).
+// * PTT iddiası (her yalın kolda) sahibin ölçütü: demet sunumundan ≤ 1 s içinde alıcıya İLK kez
+//   varırsa zamanında; her evrede (başlangıç [0, 8 s), sürekli) zamanında oranı ≥ %75. Kırmızıda
+//   ileti ıskaları dört sınıfa ayırır (`starved_line_sim.rs` `Misses` ile aynı tanım) ve ulaşım
+//   kaynaklı ıska sayısını yazar. Yalnız `rastgele` ıskalı kırmızı kapı eşiğinin istatistiğidir
+//   (tek iletimde tavan %80; sahip kararı bekliyor, #175 7080413643).
+// * Yalın kol YOK: `old_receiver_falls_back_to_todays_guard` (eski alıcı 0x15 alanlarını
+//   taşımaz, 0x16 yazamaz; ürün o eşle yalın PTT'yi hiç açmaz) ve
+//   `a_queue_drop_hidden_in_the_first_window_is_not_closed` (kapsam dışı, bilinen kırmızı).
+// ---------------------------------------------------------------------------------------------
+
+/// Zamanında olmayan demetlerin nedeni (`starved_line_sim.rs` `Misses` / `miss_class` aynası; sınıf
+/// demetin İLK iletiminin akıbetinden): rastgele kayıp · kuyrukta düşme · geç varış · bırakma
+/// (hiç iletilmeden). Ulaşım kaynaklı = son üçü.
+#[derive(Debug, Clone, Copy, Default)]
+struct Misses {
+    random: usize,
+    queue: usize,
+    late: usize,
+    abandoned: usize,
+}
+
+impl Misses {
+    fn transport(&self) -> usize {
+        self.queue + self.late + self.abandoned
+    }
+}
+
+/// Bir evrenin PTT ölçüsü (`starved_line_sim.rs` `PhaseOnTime` aynası).
+#[derive(Debug, Clone)]
+struct PhaseOnTime {
+    name: &'static str,
+    from: u64,
+    to: u64,
+    planned: usize,
+    on_time: usize,
+    misses: Misses,
+}
+
+impl PhaseOnTime {
+    fn passes(&self) -> bool {
+        self.planned > 0
+            && self.on_time as u64 * 1000 >= PTT_ON_TIME_MIN_PERMILLE * self.planned as u64
+    }
+
+    fn line(&self) -> String {
+        format!(
+            "{}[{}–{}] {}/{} (ıska: rastgele {}, kuyruk {}, geç {}, bırakma {}; ulaşım kaynaklı {})",
+            self.name,
+            secs(self.from),
+            secs(self.to),
+            self.on_time,
+            self.planned,
+            self.misses.random,
+            self.misses.queue,
+            self.misses.late,
+            self.misses.abandoned,
+            self.misses.transport()
+        )
+    }
+}
+
+/// Evreler: `başlangıç` [0, 8 s) ve `sürekli` [8 s, son demetin planı + 200 ms) (bu düzenekte hat
+/// hızı sabittir; konuşma dosya bitince durur).
+fn ptt_phases(o: &Outcome) -> Vec<PhaseOnTime> {
+    let end = o
+        .voice_first
+        .last()
+        .map_or(0, |&(p, _)| p + VOICE_PERIOD_NS)
+        .max(START_PHASE_NS);
+    [
+        ("başlangıç", 0, START_PHASE_NS),
+        ("sürekli", START_PHASE_NS, end),
+    ]
+    .into_iter()
+    .filter(|&(_, from, to)| from < to)
+    .map(|(name, from, to)| {
+        let mut ph = PhaseOnTime {
+            name,
+            from,
+            to,
+            planned: 0,
+            on_time: 0,
+            misses: Misses::default(),
+        };
+        for (v, &(plan, first)) in o.voice_first.iter().enumerate() {
+            if plan < from || plan >= to {
+                continue;
+            }
+            ph.planned += 1;
+            if first.is_some_and(|a| a <= plan + PTT_BOUND_NS) {
+                ph.on_time += 1;
+                continue;
+            }
+            match o.ptt_log.iter().find(|&&(_, u, _, _)| u == v as u64) {
+                None => ph.misses.abandoned += 1,
+                Some(&(_, _, None, _)) => ph.misses.queue += 1,
+                Some(&(_, _, Some(_), false)) => ph.misses.random += 1,
+                Some(_) => ph.misses.late += 1,
+            }
+        }
+        ph
+    })
+    .collect()
+}
+
+fn phases_line(ph: &[PhaseOnTime]) -> String {
+    ph.iter()
+        .map(PhaseOnTime::line)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Bütün evrelerin ölçütü: kalan evreler ıska ayrıştırmasıyla.
+fn lean_ptt_violations(tag: &str, o: &Outcome) -> Vec<String> {
+    let ph = ptt_phases(o);
+    println!(
+        "YALIN {tag}: {} | bırakılan {}",
+        phases_line(&ph),
+        o.ptt_abandoned
+    );
+    ph.iter()
+        .filter(|p| !p.passes())
+        .map(|p| format!("{tag}: PTT {}", p.line()))
+        .collect()
+}
+
+fn assert_lean(line: &[String], ptt: &[String]) {
+    assert!(
+        line.is_empty() && ptt.is_empty(),
+        "hat iddiaları ({}): {line:#?}\nPTT ölçütü ({}): {ptt:#?}",
+        line.len(),
+        ptt.len()
+    );
+}
+
+/// [Y4] [`optimistic_profile_is_measured_on_the_first_ack_and_the_start_queue_stays_bounded`]'in
+/// yalın kolu: aynı sınırlar (ilk pencere ±%2, kuyruk ≤ `start_queue_bound_ns`, kuyrukta düşme yok,
+/// dosya biter); kopyalı kolun "başlangıç evresinde sıralı PTT ≤ 1 s" iddiası yerine her evrede
+/// zamanında oranı ≥ %75. Teslim ölçütü yok (son tarihte bırakma sözleşmedir).
+#[test]
+fn lean_optimistic_profile_is_measured_on_the_first_ack_and_the_start_queue_stays_bounded() {
+    let (mut line, mut ptt) = (Vec::new(), Vec::new());
+    for real_up in [6_250u64, 10_000] {
+        for seed in 1..=3u64 {
+            let o = run_with(real_up, seed, true, Perturb::None, Copies::Lean);
+            let tag = format!("gerçek {real_up} tohum {seed}");
+            report("yalın", real_up, seed, &o);
+            match o.first_window {
+                Some(FirstWindowOutcome::Sample(est)) if est.abs_diff(real_up) * 50 <= real_up => {}
+                other => line.push(format!("{tag}: ilk pencere {other:?}")),
+            }
+            let bound = start_queue_bound_ns(real_up);
+            if o.max_wait_before_first_ack > bound || o.max_wait > bound {
+                line.push(format!(
+                    "{tag}: kuyruk {} / {} (sınır {})",
+                    secs(o.max_wait_before_first_ack),
+                    secs(o.max_wait),
+                    secs(bound)
+                ));
+            }
+            if o.drops != 0 {
+                line.push(format!("{tag}: kuyrukta düşme {}", o.drops));
+            }
+            if o.file_done_ns.is_none() {
+                line.push(format!("{tag}: dosya bitmedi"));
+            }
+            ptt.extend(lean_ptt_violations(&tag, &o));
+        }
+    }
+    assert_lean(&line, &ptt);
+}
+
+/// [Y4] [`honest_profile_is_verified_on_the_first_ack_and_the_budget_costs_at_most_the_wait`]'in
+/// yalın kolu: aynı iddialar (ilk ACK doğrular, koruma girmez, kuyruk ≤ bir datagramın
+/// serileşmesi, düşme yok); bütçe bedeli sınırı aynı formül `ilk ACK + dosya / (profil − PTT tel
+/// hızı)`, PTT tel hızı yalın kuraldan (1 × 106 B × 5/s = 530 B/s; kopyalı kolda 5 × 114 B × 5/s).
+/// Kopyalı kolun "oturum PTT ≤ 1 s" iddiası yerine her evrede zamanında oranı ≥ %75.
+#[test]
+fn lean_honest_profile_is_verified_on_the_first_ack_and_the_budget_costs_at_most_the_wait() {
+    let (mut line, mut ptt) = (Vec::new(), Vec::new());
+    for seed in 1..=3u64 {
+        let o = run_with(PROFILE_UP, seed, true, Perturb::None, Copies::Lean);
+        report("yalın", PROFILE_UP, seed, &o);
+        let tag = format!("tohum {seed}");
+        if o.first_window != Some(FirstWindowOutcome::Verified) {
+            line.push(format!("{tag}: ilk pencere {:?}", o.first_window));
+        }
+        if o.guard != Some((None, 0)) {
+            line.push(format!("{tag}: koruma devreye girdi {:?}", o.guard));
+        }
+        if o.max_wait > (MTU + OVH) * SEC / PROFILE_UP {
+            line.push(format!("{tag}: kuyruk {}", secs(o.max_wait)));
+        }
+        if o.drops != 0 {
+            line.push(format!("{tag}: kuyrukta düşme {}", o.drops));
+        }
+        let first_ack = o.first_ack_ns.expect("ilk ACK geldi");
+        let file_wire = FILE_UNITS * (FILE_UNIT + OVH);
+        let ptt_wire_bps = (LEAN_PTT_UNIT + OVH) * SEC / VOICE_PERIOD_NS;
+        let bound = first_ack + file_wire * SEC / (PROFILE_UP - ptt_wire_bps);
+        let last_new = o.file_last_new_sent_ns.expect("dosya gönderildi");
+        if last_new > bound {
+            line.push(format!(
+                "{tag}: dosyanın son yeni birimi {} (sınır {})",
+                secs(last_new),
+                secs(bound)
+            ));
+        }
+        ptt.extend(lean_ptt_violations(&tag, &o));
+    }
+    assert_lean(&line, &ptt);
+}
+
+/// [Y4] İlk pencere bozulmalarının yalın kolu: `size_skew_…`, `reordering_…`, `a_40ms_…`,
+/// `a_200ms_…` (tohum 1–3) ve `a_queue_drop_after_the_opener_…` (tohum 1) ile aynı koşular ve
+/// [`perturbed_violations`]'ın aynı ölçütleri (`full` = dosya biter; yalın kolda teslim ölçütü yok,
+/// PTT her evrede ≥ %75). [`a_queue_drop_hidden_in_the_first_window_is_not_closed`]'in tohumları
+/// (2–3) kapsam dışıdır, yalın kolu yoktur.
+#[test]
+fn lean_first_window_perturbations_meet_the_start_acceptance() {
+    let mut v = Vec::new();
+    for (p, seeds) in [
+        (Perturb::SizeSkew(100), 1..=3u64),
+        (Perturb::Reorder, 1..=3),
+        (Perturb::LateFirstStamp(40 * MS), 1..=3),
+        (Perturb::LateFirstStamp(200 * MS), 1..=3),
+        (Perturb::QueueDropAfterOpener, 1..=1),
+    ] {
+        for seed in seeds {
+            v.extend(perturbed_violations(6_250, seed, p, Copies::Lean, true));
+        }
+    }
+    assert!(v.is_empty(), "{} ihlal:\n{}", v.len(), v.join("\n"));
+}
+
+/// [Y4] [`honest_profile_under_first_window_perturbations_keeps_ptt_and_queue`]'in yalın kolu:
+/// aynı bozulmalar ve tohumlar, aynı kuyruk ve düşme sınırları; kopyalı kolun "PTT ≤ 1 s ve
+/// bütün demetler teslim" iddiası yerine her evrede zamanında oranı ≥ %75.
+#[test]
+fn lean_honest_profile_under_first_window_perturbations_keeps_ptt_and_queue() {
+    let (mut line, mut ptt) = (Vec::new(), Vec::new());
+    for p in [
+        Perturb::SizeSkew(100),
+        Perturb::Reorder,
+        Perturb::LateFirstStamp(40 * MS),
+        Perturb::LateFirstStamp(200 * MS),
+        Perturb::QueueDropAfterOpener,
+    ] {
+        for seed in 1..=3u64 {
+            let o = run_with(PROFILE_UP, seed, true, p, Copies::Lean);
+            report(&format!("dürüst/{p:?}/yalın"), PROFILE_UP, seed, &o);
+            let tag = format!("{p:?} tohum {seed}");
+            if o.max_wait > (MTU + OVH) * SEC / PROFILE_UP {
+                line.push(format!("{tag}: kuyruk {}", secs(o.max_wait)));
+            }
+            let injected = usize::from(p == Perturb::QueueDropAfterOpener);
+            if o.drops != injected {
+                line.push(format!("{tag}: kuyrukta düşen {}", o.drops));
+            }
+            ptt.extend(lean_ptt_violations(&tag, &o));
+        }
+    }
+    assert_lean(&line, &ptt);
+}
+
+/// [Y4] [`honest_start_with_ptt_ahead_of_the_file_lifts_the_budget_on_the_first_ack`]'in yalın
+/// kolu: aynı başlangıç (PTT 0,1 s'den, dosya 0,4 s'de), aynı iddialar (bütçe ilk ACK'te kalkar;
+/// dosyanın son yeni birimi kopyalı karşı-olgunun 6,78 / 7,27 / 6,94 s'sinin en çok 0,5 s
+/// gerisinde). Sınır kopyalı koldan aynen alındı. Yalın PTT hattan daha az bayt alır (530 B/s'ye
+/// karşı 7 × 114 B × 5/s ≈ 3 990 B/s); bu yüzden aynı sınır yalın kol için daha GEVŞEKtir (yalın
+/// karşı-olgu ölçülmedi, sınır sıkılaştırılmadı). PTT her evrede ≥ %75.
+#[test]
+fn lean_honest_start_with_ptt_ahead_of_the_file_lifts_the_budget_on_the_first_ack() {
+    const COUNTERFACTUAL_LAST_NEW_MS: [u64; 3] = [6_780, 7_270, 6_940];
+    let (mut line, mut ptt) = (Vec::new(), Vec::new());
+    for seed in 1..=3u64 {
+        let o = run_timed(
+            PROFILE_UP,
+            seed,
+            true,
+            Perturb::None,
+            Copies::Lean,
+            100 * MS,
+            400 * MS,
+        );
+        report("ptt@0,1/dosya@0,4/yalın", PROFILE_UP, seed, &o);
+        if o.start_exit != Some(adaptive_transport::line_guard::StartExit::FirstAck) {
+            line.push(format!(
+                "tohum {seed}: bütçe çıkışı {:?} (ilk pencere {:?} {:?})",
+                o.start_exit, o.first_window, o.first_window_detail
+            ));
+        }
+        let bound = (COUNTERFACTUAL_LAST_NEW_MS[seed as usize - 1] + 500) * MS;
+        let last_new = o.file_last_new_sent_ns.expect("dosya gönderildi");
+        if last_new > bound {
+            line.push(format!(
+                "tohum {seed}: dosyanın son yeni birimi {} (sınır {})",
+                secs(last_new),
+                secs(bound)
+            ));
+        }
+        ptt.extend(lean_ptt_violations(&format!("ptt@0,1 tohum {seed}"), &o));
+    }
+    assert_lean(&line, &ptt);
 }
