@@ -2381,8 +2381,6 @@ mod tests {
         assert_eq!(g.overflow_samples(), 0, "bayat alt sınır kullanılmadı");
     }
 
-    /// [ÖLÇÜM-ARALIĞI] Gerçek hat yarıya düşük: aralık kuyruk artışını görür ve hattı ±%2 ölçer.
-    /// M iki ACK geriye uzanır: `sent` kayıtları iki cephe geriye dek tutulur (M'nin başı bulunur).
     /// [ALARM ARALIĞI · #175 7084078903] Daralma alarmının ACK'i son ACK'in en büyüğüne bitişik
     /// olmayan aralık taşır (alıcı aralığı alarm penceresindeki daralma başlangıcından başlatır).
     /// Gönderici aralığı verilen uçlarla kurar (`interval_sample`: gönderim muhasebesi
@@ -2444,6 +2442,8 @@ mod tests {
         );
     }
 
+    /// [ÖLÇÜM-ARALIĞI] Gerçek hat yarıya düşük: aralık kuyruk artışını görür ve hattı ±%2 ölçer.
+    /// M iki ACK geriye uzanır: `sent` kayıtları iki cephe geriye dek tutulur (M'nin başı bulunur).
     #[test]
     fn interval_measures_a_slow_line_from_records_two_fronts_back() {
         let mut g = guard();

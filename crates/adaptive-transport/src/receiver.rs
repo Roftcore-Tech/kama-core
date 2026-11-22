@@ -1908,6 +1908,61 @@ mod tests {
         );
     }
 
+    /// [ALARM ARALIĞI × SIKIŞMA · #175 7086031917] Daralma alarmındaki sıfırlama (`top`) E'nin
+    /// "ardındaki çifti atla" durumunu (`after_squeeze`) korur. 6 250 B/s hat, beyan 12 500: iki
+    /// datagram tutulup 5 ms arayla teslim (sıkışmış çift), alarm tam o anda; sonraki doğal varış
+    /// kümenin son datagramından yarım yuva − 5 ms sonra (≈ 81 ms, sıkışma eşiği ≈ 77 ms: sınamayı
+    /// geçer, değeri ≈ 12 900 şişik). Kol 1 (kod): o çift sayılmaz, alarmdan sonraki değer yalnız
+    /// doğal çiftlerden, yeni hat ±%2. Kol 2 (sıfırlama durumu da silseydi): şişik çift sayılır,
+    /// en büyük değer ürün ölçütünün (≤ 6 875) üstünde.
+    #[test]
+    fn drop_alarm_restart_keeps_the_squeeze_skip() {
+        let ms = 1_000_000u64;
+        let s = 1_074 * 1_000_000_000 / 6_250u64;
+        let natural = 6_250 * 1_046 / 1_074;
+        let feed = |pr: &mut PairRate, t: &mut u64, gaps: &[u64]| {
+            for g in gaps {
+                *t += g;
+                pr.on_arrival(*t, Some(1_046));
+            }
+        };
+        let arm = |clear_skip: bool| {
+            let (mut pr, mut t) = (
+                PairRate {
+                    squeeze_line_bps: Some(12_500),
+                    ..PairRate::default()
+                },
+                0u64,
+            );
+            feed(&mut pr, &mut t, &[s; 12]);
+            pr.on_ack();
+            feed(&mut pr, &mut t, &[5 * s / 2, 5 * ms]);
+            assert!(pr.after_squeeze, "5 ms çifti sıkışmış sayılmadı");
+            pr.arm_rise();
+            pr.restart_at_drop_alarm();
+            if clear_skip {
+                pr.after_squeeze = false;
+            }
+            feed(&mut pr, &mut t, &[s / 2 - 5 * ms]);
+            let trailing = pr.top[0];
+            feed(&mut pr, &mut t, &[s, s]);
+            (trailing, pr)
+        };
+        let (trailing, pr) = arm(false);
+        assert_eq!(trailing, 0, "sıkışmanın ardındaki çift sayıldı");
+        let f = u64::from(pr.field());
+        assert!(
+            f.abs_diff(natural) * 50 <= natural && pr.top[0] <= 6_875,
+            "alarmdan sonraki değer {f}, en büyük {}",
+            pr.top[0]
+        );
+        let (trailing, pr) = arm(true);
+        assert!(
+            trailing > 6_875 && pr.top[0] > 6_875,
+            "kol 2: ardındaki çift şişmedi ({trailing})"
+        );
+    }
+
     /// [P3 SR-AUDIT-001] Düşman ayrık-seq akışı rx-set'i sınırsız büyütemez: kap sabit.
     #[test]
     fn received_set_is_bounded_under_distinct_seq_flood() {

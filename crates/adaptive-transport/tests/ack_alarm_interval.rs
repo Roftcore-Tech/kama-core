@@ -2,7 +2,10 @@
 //! daralmadan sonra gelenlerden taşır: ölçüm aralığı `[span_first, largest]` alarm penceresindeki
 //! daralma başlangıcından (`RateDropDetector::onset`) başlar, `pair_rate` yalnız alarmdan sonraki
 //! çiftlerdendir. Alarm dışı ACK'ler, yükseliş alarmının ACK'i, V2 (0x14) ve profil kapalı yol
-//! bugünkü gibi.
+//! bugünkü gibi. Yükseliş alarmının referansı böylece düşüş sonrası çift değeridir (`arm_rise`
+//! belgesi; ek koşul #175 7084238356): (f) gerçek toparlanmada tetiklenir, (g) dürüst 6 250 hatta
+//! tetiklenmez. Değişiklik öncesi alıcıda referans düşüş öncesi çiftti (12 500), dolu dönüşte
+//! yükseliş alarmı hiç tetiklenmiyordu ((f)'nin karşı-olgusu).
 //!
 //! Ürün gözlemi (koordinatör, 7084048541; düşüş-toparlanma, tohum 1): kanıtlı ilk ACK +2,2 s'de,
 //! aralığı düşüş öncesi ve sonrası varışları karıştırdığı için tavan 7,2–10,5 k; ≤ 6 875 ancak
@@ -93,9 +96,22 @@ fn span_first(f: &AckFrame) -> u64 {
 /// `gaps`: (bu andan itibaren, varış aralığı). `lost(seq)`: datagram hatta serileşti ama düştü
 /// (süre ilerler, varış yok). `busy_from`: o andan sonra dönüş hattı her denemede dolu.
 fn run(gaps: &[(u64, u64)], until: u64, lost: impl Fn(u64) -> bool, busy_from: Option<u64>) -> Run {
+    run_declared(gaps, until, lost, busy_from, None)
+}
+
+/// [`run`], ileri yönün beyan hattıyla (`Receiver::set_pair_squeeze_line`; ürünün sunucu yuvası
+/// profil hattını verir, `None` = kural kapalı).
+fn run_declared(
+    gaps: &[(u64, u64)],
+    until: u64,
+    lost: impl Fn(u64) -> bool,
+    busy_from: Option<u64>,
+    squeeze_line: Option<u64>,
+) -> Run {
     let mut r = Receiver::with_cc_port();
     r.set_return_bandwidth(Some(62));
     r.set_ack_bitmap(true);
+    r.set_pair_squeeze_line(squeeze_line);
     let mut acks = Vec::new();
     let mut arrival = BTreeMap::new();
     let mut t = SEC;
@@ -310,6 +326,150 @@ fn d_rise_alarm_after_a_drop_is_unchanged() {
     );
 }
 
+/// Kayıp deseni: her yedide biri hatta serileşip düşer.
+fn every_seventh(seq: u64) -> bool {
+    seq % 7 == 3
+}
+
+/// Kayıp deseni: seq → hatta serileşip düştü mü.
+type Loss = fn(u64) -> bool;
+
+/// Yükseliş testlerinin kolları: beyan hat (kural kapalı / profil 12 500) × kayıp deseni. Her
+/// üçte bir kayıp kolu yok: o desende daralma alarmı hiç verilmez (pencerenin en uzun aralığı
+/// ortalamanın 2,5 katını aşar), yükseliş alarmı kurulmaz, test boş geçerdi.
+fn rise_arms() -> Vec<(String, Option<u64>, Loss)> {
+    let losses: [(&str, Loss); 3] = [
+        ("kayıpsız", |_| false),
+        ("her beşte bir kayıp", every_fifth),
+        ("her yedide bir kayıp", every_seventh),
+    ];
+    let mut arms = Vec::new();
+    for squeeze in [None, Some(PROFILE_LINE)] {
+        for (name, lost) in losses {
+            arms.push((format!("{name}, beyan hat {squeeze:?}"), squeeze, lost));
+        }
+    }
+    arms
+}
+
+/// Profilin ileri hattı (B/s): düşüş öncesi hat.
+const PROFILE_LINE: u64 = BODY * SEC / OLD_GAP;
+
+/// (f) [ALARM ARALIĞI EK KOŞUL · #175 7084238356, yön 1] Gerçek 6 250 → 12 500 toparlanması,
+/// dolu dönüş (alarm ACK'i yol verişten sonra, alarmdan sonraki çiftlerle çıkar): yükseliş
+/// alarmının referansı daralmadan sonraki ilk bildirilen değerdir (`arm_rise` belgesi) ve yeni
+/// hattı gösterir (≤ 6 875); toparlanmada yükseliş alarmı tetiklenir, ACK'inin `pair_rate`'i
+/// referansın %25 üstünde, tek alarm. Zaman sınırı (d) ile aynı (toparlanmadan sonra < 3 s).
+/// Toparlanma alarm ACK'inden sonraki bitmap ACK'ine dek beklenir (33 s, 45 s): daha önce
+/// toparlanırsa referans toparlanmış değerle kurulur, alarm yoktur (bilgi sınırı; iki alıcıda
+/// aynı). Karşı-olgu (alarmda çift değeri sıfırlanmazsa, değişiklik öncesi alıcı): alarm ACK'i
+/// düşüş öncesi çifti (12 500) taşır, referans eski hat olur, yükseliş alarmı hiç tetiklenmez.
+#[test]
+fn f_rise_alarm_fires_on_a_real_recovery_with_the_post_drop_reference() {
+    // Önce bütün kollar koşulup yazılır (karşı-olguda her kolun sayısı görünsün), sonra sınanır.
+    let mut runs = Vec::new();
+    for (name, squeeze, lost) in rise_arms() {
+        for recover_at in [33 * SEC, 45 * SEC] {
+            let o = run_declared(
+                &[(0, OLD_GAP), (DROP_AT, NEW_GAP), (recover_at, OLD_GAP)],
+                recover_at + 15 * SEC,
+                lost,
+                Some(DROP_AT - SEC),
+                squeeze,
+            );
+            let name = format!("{name}, toparlanma {} ms", recover_at / MS);
+            {
+                let bm = o.bitmap();
+                let alarm = bm.iter().find(|e| e.drop_alarms >= 1);
+                let reference = bm
+                    .iter()
+                    .skip_while(|e| e.drop_alarms == 0)
+                    .find(|e| e.frame.bitmap.as_ref().expect("bm").pair_rate != PAIR_RATE_NONE);
+                let rise = bm.iter().find(|e| e.rise_alarms >= 1);
+                println!(
+                    "{name}: daralma ACK'i {:?} ms, referans {:?} ({:?} ms), yükseliş ACK'i \
+                     {:?} ms pair {:?}, yükseliş {}",
+                    alarm.map(|e| e.at / MS),
+                    reference.map(|e| e.frame.bitmap.as_ref().expect("bm").pair_rate),
+                    reference.map(|e| e.at / MS),
+                    rise.map(|e| e.at / MS),
+                    rise.map(|e| e.frame.bitmap.as_ref().expect("bm").pair_rate),
+                    bm.last().map_or(0, |e| e.rise_alarms),
+                );
+            }
+            runs.push((name, recover_at, o));
+        }
+    }
+    for (name, recover_at, o) in &runs {
+        let bm = o.bitmap();
+        assert!(
+            bm.iter().any(|e| e.drop_alarms >= 1),
+            "{name}: daralma alarmı yok"
+        );
+        let reference = bm
+            .iter()
+            .skip_while(|e| e.drop_alarms == 0)
+            .find(|e| e.frame.bitmap.as_ref().expect("bm").pair_rate != PAIR_RATE_NONE)
+            .expect("daralmadan sonra bildirilen çift değeri yok");
+        let ref_pair = u64::from(reference.frame.bitmap.as_ref().expect("bm").pair_rate);
+        assert!(
+            reference.at < *recover_at,
+            "{name}: referans toparlanmadan sonra kuruldu"
+        );
+        assert!(
+            ref_pair <= CEILING_MAX,
+            "{name}: referans {ref_pair} düşüş öncesi (yeni hat {NEW_LINE})"
+        );
+        let rise = bm
+            .iter()
+            .find(|e| e.rise_alarms >= 1)
+            .unwrap_or_else(|| panic!("{name}: yükseliş alarmı yok"));
+        assert!(
+            rise.at >= *recover_at && rise.at < recover_at + 3 * SEC,
+            "{name}: yükseliş alarmı {} ms",
+            rise.at / MS
+        );
+        let pair = rise.frame.bitmap.as_ref().expect("bm").pair_rate;
+        assert!(
+            pair != PAIR_RATE_NONE && u64::from(pair) * 100 > ref_pair * 125,
+            "{name}: yükseliş ACK'inin pair_rate'i {pair}, referans {ref_pair}"
+        );
+        assert_eq!(
+            bm.last().map(|e| e.rise_alarms),
+            Some(1),
+            "{name}: tek yükseliş alarmı"
+        );
+    }
+}
+
+/// (g) [ALARM ARALIĞI EK KOŞUL · #175 7084238356, yön 2] Dürüst 6 250 hatta (düşüş, toparlanma
+/// yok, 60 s) yükseliş alarmı tetiklenmez: düşüş sonrası referans hattın kendisidir, aynı hattın
+/// çiftleri onun %25 üstüne çıkmaz. Açık ve dolu dönüş, iki beyan hat, üç belirlenimli kayıp
+/// deseni; her kolda daralma alarmı verilmiş olmalı (yükseliş alarmı kurulu, test boş değil).
+#[test]
+fn g_honest_post_drop_line_raises_no_rise_alarm() {
+    for (name, squeeze, lost) in rise_arms() {
+        for busy_from in [None, Some(DROP_AT - SEC)] {
+            let o = run_declared(&drop_plan(), DROP_AT + 60 * SEC, lost, busy_from, squeeze);
+            let last = o.acks.last().expect("ACK yok");
+            println!(
+                "{name}, dolu dönüş {:?}: daralma alarmı {}, yükseliş alarmı {}",
+                busy_from.map(|b| b / MS),
+                last.drop_alarms,
+                last.rise_alarms
+            );
+            assert!(
+                last.drop_alarms >= 1,
+                "{name}: daralma alarmı yok (boş test)"
+            );
+            assert_eq!(
+                last.rise_alarms, 0,
+                "{name}, dolu dönüş {busy_from:?}: dürüst hatta yükseliş alarmı"
+            );
+        }
+    }
+}
+
 /// FNV-1a 64: çıkan çerçevelerin (an, bayt) dizisinin özeti.
 fn digest(frames: &[(u64, Vec<u8>)]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -323,7 +483,8 @@ fn digest(frames: &[(u64, Vec<u8>)]) -> u64 {
 }
 
 /// (e) Bitmap kapalı (V2 0x14) ve profil kapalı (bütçesiz) alıcıda aynı düşüş akışı bayt-aynı
-/// çerçeveler üretir: özetler değişiklikten önceki alıcıyla (`9e853984`) aynı koşudan alındı.
+/// çerçeveler üretir: özetler değişiklikten önceki alıcıyla (`9e853984`) aynı koşudan alındı;
+/// güncel adayın (`c7c0a120`) alıcısı da aynı özetleri verir.
 /// Bu yollarda daralma alarmı yoktur.
 #[test]
 fn e_v2_and_profile_off_frames_are_byte_identical() {
