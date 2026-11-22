@@ -594,6 +594,11 @@ pub struct LineGuard {
     start_confirmed: bool,
     /// [İKİNCİ-ÖLÇÜM] Geçici evreyi kapatan ölçüm (gözlem).
     start_exit: Option<StartExit>,
+    /// [ÇİFT ARALIĞI · RET] En yeni başarısız yoklamanın tavanı (B/s, tel): hat bu hızın altında
+    /// ölçüldü. Çift alt sınırı tavanı bunun belirgin üstüne çıkmadan açamaz
+    /// ([`Self::on_pair_rate`]); yukarı yönlü kanıtla (başarılı yoklama, ret üstü çift) ya da
+    /// aşağı yönlü örnekle (hat yeniden ölçüldü) düşer.
+    refuted_bps: Option<u64>,
 }
 
 /// [İKİNCİ-ÖLÇÜM] Başlangıç bütçesini kaldıran kanıt (gözlem).
@@ -750,6 +755,7 @@ impl LineGuard {
             probe_failures: 0,
             start_confirmed: false,
             start_exit: None,
+            refuted_bps: None,
         }
     }
 
@@ -1356,6 +1362,11 @@ impl LineGuard {
     /// [ÇİFT ARALIĞI · #175 7068773849] Alıcının ölçtüğü ileri hat kapasitesi alt sınırı
     /// (`pair_rate`, B/s UDP gövdesi; `crate::ack` 0x15). Yalnız az önce işlenen ACK aralık
     /// kipindeyse ve aşağı yönlü örnek vermediyse etkilidir: aşağı yönlü kanıt her zaman önceliklidir.
+    /// Başarısız yoklamanın ret seviyesi de aşağı yönlü kanıttır (göndericinin kendi bayt
+    /// ölçeğiyle: hat o hızın altında): alt sınır tavanı ret seviyesini %5 aşmadan açamaz. Alıcının
+    /// bayt sayımı göndericininkinden büyükse alt sınır oturum boyunca şişer (start_budget_sim
+    /// size_skew: datagram başına +100 B, alt sınır 6 863, gerçek 6 250; başarısız başlangıç
+    /// yoklamasıyla aynı ACK'te tavanı açıyor, kuyruk 0,82–1,34 s).
     ///
     /// Hattın tavandan belirgin (> %5) hızlı olduğunu gösteriyorsa tavan alt sınıra açılır; alt
     /// sınır profil hattının %95'ine ulaştıysa koruma kalkar (UDP gövdesi tel baytından küçük, çift
@@ -1372,9 +1383,14 @@ impl LineGuard {
             return;
         }
         let wire = self.pair_wire_bps(pair_udp_bps);
-        if u128::from(wire) * 100 <= u128::from(self.pace_bps) * 105 {
+        // Başarısız yoklamanın ret seviyesi de aşağı yönlü kanıttır: alt sınır onu da %5 aşmalı.
+        let floor = self
+            .refuted_bps
+            .map_or(self.pace_bps, |r| r.max(self.pace_bps));
+        if u128::from(wire) * 100 <= u128::from(floor) * 105 {
             return;
         }
+        self.refuted_bps = None;
         let up = if u128::from(wire) * 100 >= u128::from(self.line.rate_bps) * 95 {
             self.line.rate_bps
         } else {
@@ -1710,6 +1726,9 @@ impl LineGuard {
                         .map(|r| r.max(self.pace_bps));
                     self.raises = self.raises.saturating_add(1);
                     self.step_permille = (self.step_permille * 2).min(STEP_MAX_PERMILLE);
+                    if self.refuted_bps.is_some_and(|r| self.pace_bps >= r) {
+                        self.refuted_bps = None;
+                    }
                 } else {
                     // Hat yoklama tavanının altında, yoklama öncesi tavan kadar: ölçülen hız o
                     // tavandır (koruma ölçülmemiş başladıysa da), sonraki yoklama en küçük adımla.
@@ -1717,6 +1736,8 @@ impl LineGuard {
                     self.rate_bps = Some(self.rate_bps.map_or(p.base_pace, |r| r.min(p.base_pace)));
                     self.step_permille = STEP_MIN_PERMILLE;
                     self.probe_failures = self.probe_failures.saturating_add(1);
+                    // En yeni ret geçerlidir (eski, yüksek bir ret kilit bırakmaz).
+                    self.refuted_bps = Some(p.probe_pace);
                     // Yoklamanın kuyruğa eklediği: ölçülen artış (referans ile hüküm noktası
                     // arası) ve yoklama öncesi tavanın üstünde gönderilen bayt; büyüğü. Dönüş
                     // gecikmesi basamağı yanlış bir başarısızlık verirse bedel artış kadar tek
@@ -1735,6 +1756,8 @@ impl LineGuard {
         }
         if let Some(est) = best {
             self.probe = None;
+            // Hat yeniden ölçüldü: eski ret bayattır.
+            self.refuted_bps = None;
             // Örnek tavanı aşamaz: kuyrukta düşen bayt aralığı şişirir, hat tavandan hızlıysa
             // kuyruk büyümezdi.
             let cap = self.pace_bps.min(self.line.rate_bps);
@@ -2655,6 +2678,54 @@ mod tests {
         assert_eq!(g.raises(), 0, "kanıtsız yükseltme");
         assert_eq!(g.probe_failures(), 0, "kanıtsız başarısızlık");
         assert!(g.pace_bps() <= PROFILE / 2 * (1000 + STEP_START_PERMILLE) / 1000);
+    }
+
+    /// [ÇİFT ARALIĞI · RET] Sabit dar hatta (6 250) yoklama başarısız olur: ret seviyesi yoklama
+    /// tavanıdır. Çift alt sınırı tavanı ret seviyesini %5 aşmadan açamaz; aşınca açar ve ret
+    /// düşer. Aşağı yönlü örnek de reti düşürür (hat yeniden ölçüldü).
+    #[test]
+    fn a_failed_probe_level_bounds_the_pair_lower_bound() {
+        let mut g = LineGuard::new(
+            LineModel {
+                rate_bps: PROFILE,
+                datagram_overhead: OVH,
+            },
+            LineModel {
+                rate_bps: RET,
+                datagram_overhead: OVH,
+            },
+            6_250,
+        );
+        g.end_start_budget();
+        let (_, _) = drive(&mut g, 6_250, None, 150 * SEC, 5 * SEC);
+        assert!(g.probe_failures() >= 2, "başarısız yoklama yok");
+        let _ = g.tick(u64::MAX);
+        g.probe = None;
+        let pace = g.pace_bps();
+        let refuted = g.refuted_bps.expect("ret seviyesi");
+        assert!(refuted * 100 > pace * 105, "ret {refuted} tavan {pace}");
+        let udp = |wire: u64| wire * 1172 / 1200;
+        // Tavanın %5 üstünde, retin %5 altında: açılmaz.
+        let mid = (pace * 105 / 100 + refuted * 105 / 100) / 2;
+        g.pair_allowed = true;
+        g.on_pair_rate(udp(mid));
+        assert_eq!(g.pace_bps(), pace, "ret altında alt sınır tavanı açtı");
+        assert_eq!(g.pair_raises(), 0);
+        // Retin %6 üstü: açılır, ret düşer.
+        g.pair_allowed = true;
+        g.on_pair_rate(udp(refuted * 106 / 100));
+        assert!(g.pace_bps() * 100 > refuted * 105, "tavan {}", g.pace_bps());
+        assert_eq!(g.pair_raises(), 1);
+        assert_eq!(g.refuted_bps, None);
+
+        // Aşağı yönlü örnek reti düşürür.
+        let mut g = guard();
+        g.refuted_bps = Some(9_000);
+        let arr = send_into(&mut g, 6_250, 60);
+        let _ = ack(&mut g, &arr, 1, 37);
+        let _ = ack(&mut g, &arr, 20, 101);
+        assert!(g.rate_bps().is_some(), "dar hat ölçülmedi");
+        assert_eq!(g.refuted_bps, None, "örnekten sonra ret bayat kaldı");
     }
 
     /// [DÖNÜŞ-GECİKMESİ] Dönüş gecikmesinin tek basamağı (400 ms) yanlış düşük örnek verebilir; sonraki
