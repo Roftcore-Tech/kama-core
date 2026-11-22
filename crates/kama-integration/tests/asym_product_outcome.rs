@@ -239,15 +239,19 @@ struct PttShape {
     /// [PTT-BANT · kıyas] `KAMA_ASYM_PTT_PRESS_MS` verilirse basış tam bu kadar demettir (konuşma
     /// süresi ÷ demet süresi): kollar aynı konuşma süresiyle kıyaslanır. Yoksa hücrenin kuralı.
     press_bundles: Option<u32>,
+    /// [PTT-BANT · kol A] `KAMA_ASYM_PTT_COMPACT=1`: Alice demetleri kompakt `MEDIA_BUNDLE`
+    /// (2 B başlık) ile gönderir.
+    compact: bool,
 }
 
 /// Sonuç satırı için PTT biçimi.
 fn ptt_shape_label() -> String {
     let s = ptt_shape();
     format!(
-        "yük={}B/demet={}ms/basış={}",
+        "yük={}B/demet={}ms/başlık={}/basış={}",
         s.bytes,
         s.period.as_millis(),
+        if s.compact { "kompakt2B" } else { "tam13B" },
         s.press_bundles.map_or("hücre".to_string(), |n| format!(
             "{}ms",
             (s.period * n).as_millis()
@@ -274,6 +278,7 @@ fn ptt_shape() -> PttShape {
     });
     PttShape {
         press_bundles,
+        compact: std::env::var("KAMA_ASYM_PTT_COMPACT").is_ok_and(|v| v == "1"),
         bytes,
         period: Duration::from_millis(u64::from(ms)),
         code: bundle_code_from_ms(ms)
@@ -385,7 +390,10 @@ fn item_of(message: &AppMessage) -> Item {
         AppMessage::Receipt { ref_msg_id, .. } => Item::Receipt(*ref_msg_id),
         AppMessage::PttOpen { stream_id, .. } => Item::PttOpen(*stream_id),
         AppMessage::PttClose { stream_id } => Item::PttClose(*stream_id),
-        AppMessage::MediaBundle { payload, .. } if payload.len() >= 4 => {
+        AppMessage::MediaBundle { payload, .. }
+        | AppMessage::MediaBundleCompact { payload, .. }
+            if payload.len() >= 4 =>
+        {
             Item::Bundle(u32::from_be_bytes(payload[..4].try_into().expect("4 B")))
         }
         AppMessage::FileBegin { .. } => Item::FileBegin,
@@ -1066,6 +1074,7 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
         .map(|_| Texts::default())
         .collect();
     let shape = ptt_shape();
+    alice.ptt.set_compact_bundles(shape.compact);
     let mut ptt_open: Option<(StreamId, Instant)> = None;
     let mut ptt_closed = false;
     let mut ptt_closed_at: Option<Instant> = None;
@@ -2718,6 +2727,7 @@ fn gate_forward_fixed_return_delay_varies() {
 /// Yalın 0x09 datagramı: UDP/IP 28 + mühür 22 + çerçeve 3 = 53 B sabit pay + AMP kaydı. Gerçek Lyra
 /// (3,2 kbit/s = 20 ms'de 8 B):
 /// * bugünkü biçim, 200 ms (80 B yük, 13 B tam `MEDIA_BUNDLE` başlığı) → 146 B → 5 840 bit/s KALIR;
+/// * kol A: 300 ms demet, kompakt 2 B başlık (120 B yük) → 175 B → 4 666 bit/s GEÇER;
 /// * 300 ms demet, tam başlık (120 B yük) → 186 B → 4 960 bit/s GEÇER (40 bit/s pay);
 /// * 420 ms demet, tam başlık (168 B yük) → 234 B → 4 457 bit/s GEÇER.
 ///
@@ -2732,6 +2742,10 @@ fn ptt_band_gate_passes_the_lean_payload_and_fails_the_80_byte_control() {
     let today = ptt_band_bps(&spurt(53 + 13 + 80, ms(200), 50), 50, ms(200)).expect("bant");
     assert_eq!(today, 5_840);
     assert!(today > PTT_BAND_MAX_BPS);
+    // Kol A: 300 ms, kompakt 2 B başlık (120 B yük) → 175 B → 4 666 bit/s.
+    let compact = ptt_band_bps(&spurt(53 + 2 + 120, ms(300), 50), 50, ms(300)).expect("bant");
+    assert_eq!(compact, 4_666);
+    assert!(compact <= PTT_BAND_MAX_BPS);
     // 300 ms, tam başlık (120 B yük) → 186 B → 4 960 bit/s: sınırın 40 bit/s altında.
     let mid = ptt_band_bps(&spurt(53 + 13 + 120, ms(300), 50), 50, ms(300)).expect("bant");
     assert_eq!(mid, 4_960);

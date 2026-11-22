@@ -737,6 +737,42 @@ fn open_bundles_close_round_trip_in_order() {
 /// `Reliable` verilir; hiçbir PTT kaydı sıkıştırılmaz.
 ///
 /// `0904f723`'te KIRMIZI (uyarlansa da): `MEDIA_BUNDLE` `BestEffort` gidiyordu (`ptt.rs:433`).
+/// [PTT-BANT · kol A] Kompakt demetler (2 B başlık) alıcıda akışın `codec` / `bundle_ms`'iyle
+/// açılır: olaylar tam biçimle aynıdır. Akışı olmayan kompakt demet PTT-R3 (yetim) sayılır.
+#[test]
+fn compact_bundles_deliver_like_full_bundles() {
+    let (mut duo, _) = Duo::connected();
+    duo.alice.ptt.set_compact_bundles(true);
+    let stream = duo
+        .alice
+        .open(BOB, PttCodec::Lyra, TEST_BUNDLE_MS)
+        .expect("açılır");
+    for n in 0..TEST_SPURT_BUNDLES {
+        duo.alice
+            .send_bundle(stream, &frame(n))
+            .expect("gönderilir");
+    }
+    duo.alice.close(stream).expect("kapanır");
+    let mut want = vec![started(ALICE, stream, PttCodec::Lyra, TEST_BUNDLE_MS)];
+    want.extend((0..TEST_SPURT_BUNDLES).map(|n| audio(ALICE, stream, &frame(n))));
+    want.push(ended(ALICE, stream));
+    assert_eq!(duo.bob.drain(), want);
+    assert_eq!(duo.bob.ptt.stats(), PttStats::default());
+    // Akış kapandı: aynı etiketli kompakt demet yetimdir.
+    let orphan = encode(
+        &AppMessage::MediaBundleCompact {
+            stream_tag: kama_app::codec::compact_stream_tag(stream),
+            payload: frame(9),
+        },
+        &limits(),
+    )
+    .expect("kodlanır")
+    .bytes;
+    duo.inject(Side::Bob, orphan);
+    assert_eq!(duo.bob.drain(), Vec::new());
+    assert_eq!(duo.bob.ptt.stats().ptt_orphan_bundles, 1);
+}
+
 #[test]
 fn r0_all_ptt_records_are_reliable() {
     let (mut duo, _) = Duo::connected();

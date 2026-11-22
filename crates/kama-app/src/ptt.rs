@@ -445,6 +445,10 @@ pub struct PttStats {
     /// `send_bundle` yolundaki ret sonraki denetimde yeniden sunulur; `close` yolundaki ret yeniden
     /// SUNULMAZ (akış kapandı; `PTT_CLOSE` yine gider).
     pub opens_resend_refused: u64,
+    /// [PTT-BANT · kol A] `stream_tag`'i eşin birden çok etkin akışını tutan kompakt demetler
+    /// (hangi akışa ait olduğu bilinemez; DROP). Etkin akışı hiç tutmayan kompakt demet
+    /// `ptt_orphan_bundles`'ta sayılır.
+    pub compact_ambiguous: u64,
 }
 
 /// B2.4 PTT motoru. Ayrıntı: modül belgesi.
@@ -466,6 +470,8 @@ pub struct Ptt {
     /// [YOL3-T1 KK-T1-11] Oynatma tamponu ([`crate::playout`]); `None` (varsayılan) = demetler
     /// varışta verilir (bugünkü davranış).
     playout: Option<Playout>,
+    /// [PTT-BANT · kol A] Giden demetler kompakt biçimde mi ([`Self::set_compact_bundles`]).
+    compact_bundles: bool,
 }
 
 /// Açık giden akış: talk-spurt'ün sabit parametreleri.
@@ -500,7 +506,17 @@ impl Ptt {
             closed: BTreeMap::new(),
             stats: PttStats::default(),
             playout: None,
+            compact_bundles: false,
         }
+    }
+
+    /// [PTT-BANT · aday, kol A; sahip onayı 2026-11-22 test için] Giden `MEDIA_BUNDLE`'ları
+    /// kompakt biçimde gönderir (2 B başlık; tam biçim 13 B — [`codec::limits::COMPACT_MEDIA_MARKER`]).
+    /// Varsayılan kapalı. Yetenek anlaşması YOKTUR: v1 alıcısı kompakt demeti DROP eder (ses
+    /// sessizce kaybolur, `PTT_OPEN` / `PTT_CLOSE` etkilenmez); yalnız eşin bu sürümü çözdüğü
+    /// biliniyorsa açılır. Alıcı tarafı her zaman iki biçimi de çözer.
+    pub fn set_compact_bundles(&mut self, on: bool) {
+        self.compact_bundles = on;
     }
 
     /// [YOL3-T1 KK-T1-11] Oynatma tamponunu açar (`Some`), T'sini değiştirir ya da kapatır (`None`).
@@ -693,11 +709,18 @@ impl Ptt {
             .session_of(stream.peer)
             .ok_or(PttError::NoSession)?;
         reopen(messenger, stream_id, stream, &mut self.stats)?;
-        let bundle = AppMessage::MediaBundle {
-            stream_id,
-            codec: stream.codec.code(),
-            bundle_ms: stream.bundle_ms,
-            payload: payload.to_vec(),
+        let bundle = if self.compact_bundles {
+            AppMessage::MediaBundleCompact {
+                stream_tag: codec::compact_stream_tag(stream_id),
+                payload: payload.to_vec(),
+            }
+        } else {
+            AppMessage::MediaBundle {
+                stream_id,
+                codec: stream.codec.code(),
+                bundle_ms: stream.bundle_ms,
+                payload: payload.to_vec(),
+            }
         };
         // [PTT-YALIN · sahip kararı 2026-11-22 "PTT ölçütü media'nınki gibi"] Demet son tarihli
         // sunulur: dar dönüşlü profilde Transport onu tek iletir ve son tarihte bırakır; açılış ve
@@ -904,6 +927,10 @@ impl Ptt {
                 bundle_ms,
                 payload,
             } => self.on_bundle(peer, stream_id, codec, bundle_ms, payload),
+            AppMessage::MediaBundleCompact {
+                stream_tag,
+                payload,
+            } => self.on_compact_bundle(peer, stream_tag, payload),
             message => Some(PttEvent::Messenger(MessengerEvent::Other { peer, message })),
         }
     }
@@ -1010,6 +1037,38 @@ impl Ptt {
             self.closed.remove(&key);
         }
         self.closed.insert((peer, stream_id), now);
+    }
+
+    /// [PTT-BANT · kol A] Kompakt `MEDIA_BUNDLE`: `stream_tag` eşin TEK bir etkin akışını tutmalı;
+    /// tutarsa demet o akışın `codec` / `bundle_ms`'iyle tam biçime açılır ve [`Self::on_bundle`]
+    /// yolundan geçer. Hiçbirini tutmazsa PTT-R3 (yetim), birden çoğunu tutarsa DROP
+    /// (`compact_ambiguous`; eş başına ≤ 2 etkin akış, `stream_id`'ler 256 farkla çakışmalı).
+    fn on_compact_bundle(
+        &mut self,
+        peer: PeerRef,
+        stream_tag: u8,
+        payload: Vec<u8>,
+    ) -> Option<PttEvent> {
+        // Eş başına ≤ PTT_MAX_ACTIVE_STREAMS etkin akış: en çok iki eşleşme toplanır (sınırlı).
+        let found: Vec<(StreamId, u8, u8)> = self
+            .streams_of(peer)
+            .filter(|(&(_, id), _)| codec::compact_stream_tag(id) == stream_tag)
+            .map(|(&(_, id), stream)| (id, stream.codec.code(), stream.bundle_ms))
+            .take(2)
+            .collect();
+        match found.as_slice() {
+            [] => {
+                self.stats.ptt_orphan_bundles += 1;
+                None
+            }
+            &[(stream_id, codec, bundle_ms)] => {
+                self.on_bundle(peer, stream_id, codec, bundle_ms, payload)
+            }
+            _ => {
+                self.stats.compact_ambiguous += 1;
+                None
+            }
+        }
     }
 
     /// `MEDIA_BUNDLE`: `stream_id` eşin etkin akışlarından biri olmalı (PTT-R3) ve `codec` /

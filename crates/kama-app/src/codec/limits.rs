@@ -92,6 +92,17 @@ pub const SIGNALING_BLOB_PREFIX_BYTES: usize = U16_BYTES;
 /// §3 0x0A MEDIA_BUNDLE gövde öneki: `stream_id u32 · codec u8 · bundle_ms u8 · payload_len u16`.
 pub const MEDIA_BUNDLE_PREFIX_BYTES: usize = U32_BYTES + U8_BYTES + U8_BYTES + U16_BYTES;
 
+/// [PTT-BANT · aday, kol A; sahip onayı 2026-11-22 "AMP biçim değişikliği test için"] Kompakt
+/// `MEDIA_BUNDLE` kaydının ilk baytı — `msg_version` konumunda, v1 (`0x01`) değil: v1 alıcısı onu
+/// başlığın geri kalanına bakmadan `unknown-msg-version` ile DROP eder (§6 ileri uyum; panik ve
+/// sinyal yok). Kayıt: `0x8A · stream_tag u8 · payload` (2 B başlık; tam biçim 13 B). `codec` ve
+/// `bundle_ms` akışın `PTT_OPEN`'ından, yük uzunluğu birim uzunluğundan gelir; `stream_tag` =
+/// `stream_id`'nin düşük 8 biti.
+pub const COMPACT_MEDIA_MARKER: u8 = 0x8A;
+
+/// [PTT-BANT · kol A] Kompakt `MEDIA_BUNDLE` başlığı: işaret 1 + `stream_tag` 1.
+pub const COMPACT_MEDIA_HEADER_BYTES: usize = U8_BYTES + U8_BYTES;
+
 /// [PTT-BANT · aday, sahip onayı 2026-11-22 "AMP biçim değişikliği test için"] `bundle_ms u8`
 /// alanının (`PTT_OPEN`, `MEDIA_BUNDLE`) kodlaması: kod ≤ bu değer ise demet süresi kodun kendisidir
 /// (ms; bugünkü bütün değerler, vektörler dahil, bayt-aynı); üstündeki kodlar
