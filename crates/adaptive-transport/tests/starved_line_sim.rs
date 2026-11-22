@@ -138,6 +138,11 @@ struct Scenario {
     /// [PTT-YALIN] Bırakma: sunumundan bu kadar sonra teyitsiz PTT birimi motora
     /// `Sender::abandon_units` ile bildirilir (ürünün son tarih yolu).
     ptt_deadline_ns: Option<u64>,
+    /// [PTT-YALIN · BAŞLANGIÇ · aday f4cd325c] `true`: bırakma göndericinin aldığı ilk ölçülü ACK'ten
+    /// (`rx_span` taşıyan ilk ACK; benzetimde ürünün ilk 0x16'sının vekili) önce yapılmaz; o ACK'te
+    /// sunumundan beri son tarihi geçmiş teyitsiz demetler bırakılır (ürünün `ptt_pre_lean` →
+    /// `ptt_offered_at` geçişi). `false`: bırakma t = 0'dan (eski ayna).
+    ptt_deadline_from_first_measured_ack: bool,
     /// `> 0`: `text_at_ns`'ten sonra bu aralıkla konuşma bitene dek ek metin birimleri
     /// (`TEXT_ID + k`). 0: tek metin birimi.
     text_period_ns: u64,
@@ -169,6 +174,7 @@ impl Scenario {
             diag: false,
             raw_copy_rule: false,
             ptt_deadline_ns: None,
+            ptt_deadline_from_first_measured_ack: false,
             text_period_ns: 0,
             seed,
             t_max_ns: 60 * SEC,
@@ -311,6 +317,10 @@ type IntervalMsg = (u64, u64, Option<u64>, Vec<u64>, u16);
 /// * çift alt sınırı (`receiver::PairRate`): her varışta (kopya dahil) önceki varışa aralık `g` ve
 ///   bu datagramın UDP gövdesi `b`; `b ≥ PAIR_MIN_UDP_BYTES` ve `g ≥ 2 ms` ise `b / g`; alan son
 ///   ACK'ten bu yana en büyük İKİNCİ değer (yoksa `PAIR_RATE_NONE`), ACK'te sıfırlanır.
+///   [SIKIŞMA · aday 94c7c6e8] Alıcı aralığın kendi varış hızını da tutar: önceki varışı olan her
+///   datagramın gövdesi `win_bytes`'a, varış aralığı (en çok [`PAIR_IDLE_GAP_NS`]) `win_ns`'e
+///   yazılır; en büyük ikinci [`PAIR_WINDOW_RATIO_MAX`] × `win_bytes / win_ns`'i aşarsa alan
+///   `PAIR_RATE_NONE` (`PairRate::bound`). Aralık ACK'te sıfırlanır.
 ///
 /// Alıcının 0x15 çerçevesinin kendisi (boyu, daralma alarmının erken ACK'i) bu düzenekte yoktur: ACK
 /// kadansı 0x14 alıcısınındır. (Gerçek alıcı bitmap kipinde bu düzenekte yeniden sıralamada panik
@@ -323,12 +333,27 @@ struct RxMirror {
     emitted: VecDeque<u64>,
     pair_prev: Option<u64>,
     pair_top: [u64; 2],
+    /// [SIKIŞMA] Bu ACK aralığında varan UDP gövde baytı (önceki varışı olan datagramlar).
+    pair_win_bytes: u64,
+    /// [SIKIŞMA] Aynı datagramların varış aralıkları toplamı (ns; her aralık en çok
+    /// [`PAIR_IDLE_GAP_NS`]).
+    pair_win_ns: u64,
 }
+
+/// [SIKIŞMA] Çift değerinin aralığın kendi varış hızına oranının üst sınırı; `receiver.rs`
+/// `PAIR_WINDOW_RATIO_MAX` ile aynı (orada crate içi sabit).
+const PAIR_WINDOW_RATIO_MAX: u64 = 4;
+
+/// [SIKIŞMA] Aralık süresine yazılan tek varış aralığının üst sınırı (ns); `receiver.rs`
+/// `PAIR_IDLE_GAP_NS` ile aynı (orada crate içi sabit).
+const PAIR_IDLE_GAP_NS: u64 = SEC;
 
 impl RxMirror {
     fn on_arrival(&mut self, seq: u64, udp: u64, now: u64) {
         if let Some(p) = self.pair_prev {
             let g = now.saturating_sub(p);
+            self.pair_win_bytes = self.pair_win_bytes.saturating_add(udp);
+            self.pair_win_ns = self.pair_win_ns.saturating_add(g.min(PAIR_IDLE_GAP_NS));
             if udp >= PAIR_MIN_UDP_BYTES && g >= 2 * MS {
                 let r = udp * SEC / g;
                 if r > self.pair_top[0] {
@@ -367,12 +392,21 @@ impl RxMirror {
             largest
         };
         let m: Vec<u64> = self.received.range(first..=largest).copied().collect();
-        let pair = if self.pair_top[1] == 0 {
+        // [SIKIŞMA] `PairRate::bound`: en büyük ikinci aralığın varış hızının
+        // `PAIR_WINDOW_RATIO_MAX` katını aşarsa alan yok.
+        let v = self.pair_top[1];
+        let plausible = u128::from(v) * u128::from(self.pair_win_ns)
+            <= u128::from(PAIR_WINDOW_RATIO_MAX)
+                * u128::from(self.pair_win_bytes)
+                * u128::from(SEC);
+        let pair = if v == 0 || !plausible {
             PAIR_RATE_NONE
         } else {
-            u16::try_from(self.pair_top[1].min(u64::from(PAIR_RATE_NONE) - 1)).unwrap_or(0)
+            u16::try_from(v.min(u64::from(PAIR_RATE_NONE) - 1)).unwrap_or(0)
         };
         self.pair_top = [0, 0];
+        self.pair_win_bytes = 0;
+        self.pair_win_ns = 0;
         if self.emitted.len() >= 2 {
             self.emitted.pop_front();
         }
@@ -611,6 +645,8 @@ fn run(sc: &Scenario) -> Outcome {
     let mut extra_text_arrived: HashMap<u64, u64> = HashMap::new();
     let mut ptt_confirmed: HashSet<u64> = HashSet::new();
     let mut ptt_expired: Vec<(u64, u64, u64)> = Vec::new();
+    // [PTT-YALIN · BAŞLANGIÇ] Gönderici ilk ölçülü ACK'i aldı (ürünün ilk 0x16 vekili).
+    let mut measured_ack_seen = false;
     let mut file_seen: HashSet<u64> = HashSet::new();
     let mut file_offered = 0u64;
     let mut file_done_ns = None;
@@ -694,19 +730,23 @@ fn run(sc: &Scenario) -> Outcome {
         let decs = s.on_event(Event::TimerFired(Timer::Pto), now);
         emit(decs, now, &mut fwd, &mut tx);
         // [PTT-YALIN] Ürünün son tarih yolu (`runtime`, pace tick'te Pto'dan sonra): teyitsiz ve
-        // sunumundan `deadline` geçmiş PTT birimleri motora teyitli bildirilir.
+        // sunumundan `deadline` geçmiş PTT birimleri motora teyitli bildirilir. [BİRLEŞİM]
+        // `ptt_deadline_from_first_measured_ack`: teyit drenajı her tick'te, bırakma yalnız ilk
+        // ölçülü ACK'ten sonra (ürünün ilk 0x16'ya dek `ptt_pre_lean`'i).
         if let Some(deadline) = sc.ptt_deadline_ns {
             ptt_confirmed.extend(
                 s.take_confirmed_units()
                     .into_iter()
                     .filter(|&u| u < TEXT_ID),
             );
+            let lean_started = measured_ack_seen || !sc.ptt_deadline_from_first_measured_ack;
             let due: Vec<u64> = voice_offered
                 .iter()
                 .enumerate()
                 .map(|(k, &at)| (k as u64, at))
                 .filter(|&(k, at)| {
-                    now.saturating_sub(at) >= deadline
+                    lean_started
+                        && now.saturating_sub(at) >= deadline
                         && !ptt_confirmed.contains(&k)
                         && !ptt_expired.iter().any(|&(u, _, _)| u == k)
                 })
@@ -813,6 +853,7 @@ fn run(sc: &Scenario) -> Outcome {
             });
             acks_at.push(now);
             ack_measured.push(rx_span.is_some());
+            measured_ack_seen |= rx_span.is_some();
             s.observe_ack_feedback(
                 AckObservation {
                     wire_bytes: udp,
@@ -2635,6 +2676,12 @@ fn phases_line(ph: &[PhaseOnTime]) -> String {
 /// Ürünün yalın PTT sözleşmesinin aynası (#175 7080178069; `feat/ptt-lean`): tek iletim
 /// (`copies = 0` + öncelik, `raw_copy_rule`), yalın 0x09 çerçevesi ([`LEAN_PTT_UNIT`] gövde),
 /// sunumdan [`PTT_DEADLINE_NS`] sonra teyitsiz birimin bırakılması. Senaryonun geri kalanı aynen.
+///
+/// [BİRLEŞİM · aday b163bd90 + f4cd325c] Kopya kuralı t = 0'dan `copies = 0` + öncelik (ürün yalın
+/// PTT'yi CAPS ile bildirecekse ilk 0x16'dan önce de kopya yok). Bırakma ilk 0x16'ya dek yapılmaz
+/// (benzetimde vekili ilk ölçülü ACK: `ptt_deadline_from_first_measured_ack`); o ACK'te son tarihi
+/// geçmiş teyitsiz demetler bırakılır. Aynalanmayan kalıntı: üründe 0x16'dan önceki demet veri
+/// çerçevesiyle gider (gövde [`VOICE_UNIT`]); burada gövde baştan [`LEAN_PTT_UNIT`].
 fn lean(sc: Scenario) -> Scenario {
     Scenario {
         copies: 0,
@@ -2643,6 +2690,7 @@ fn lean(sc: Scenario) -> Scenario {
         raw_copy_rule: true,
         voice_unit: LEAN_PTT_UNIT,
         ptt_deadline_ns: Some(PTT_DEADLINE_NS),
+        ptt_deadline_from_first_measured_ack: true,
         ..sc
     }
 }

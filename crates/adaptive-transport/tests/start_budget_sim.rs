@@ -78,7 +78,9 @@ enum Copies {
     /// `lean()` aynası): tek iletim (`ptt_forward_copy_rule(0, 0)`: kopya yok, öncelik kalır; kural
     /// PTT şeridinin üstünü [`PTT_LANE_TOP`] ile ayırır), yalın 0x09 birimi ([`LEAN_PTT_UNIT`]
     /// gövde), sunumdan [`PTT_DEADLINE_NS`] sonra teyitsiz birimin `Sender::abandon_units` ile
-    /// bırakılması.
+    /// bırakılması. [BİRLEŞİM · aday f4cd325c] Bırakma ilk 0x16'ya dek yapılmaz (vekili göndericinin
+    /// aldığı ilk ölçülü ACK, `rx_span` taşıyan); o ACK'te son tarihi geçmiş teyitsiz demetler
+    /// bırakılır (`starved_line_sim.rs` `ptt_deadline_from_first_measured_ack` ile aynı).
     Lean,
 }
 
@@ -220,6 +222,10 @@ type IntervalMsg = (u64, u64, Option<u64>, Vec<u64>, u16);
 /// * çift alt sınırı (`receiver::PairRate`): her varışta (kopya dahil) önceki varışa aralık `g` ve
 ///   bu datagramın UDP gövdesi `b`; `b ≥ PAIR_MIN_UDP_BYTES` ve `g ≥ 2 ms` ise `b / g`; alan son
 ///   ACK'ten bu yana en büyük İKİNCİ değer (yoksa `PAIR_RATE_NONE`), ACK'te sıfırlanır.
+///   [SIKIŞMA · aday 94c7c6e8] Alıcı aralığın kendi varış hızını da tutar: önceki varışı olan her
+///   datagramın gövdesi `win_bytes`'a, varış aralığı (en çok [`PAIR_IDLE_GAP_NS`]) `win_ns`'e
+///   yazılır; en büyük ikinci [`PAIR_WINDOW_RATIO_MAX`] × `win_bytes / win_ns`'i aşarsa alan
+///   `PAIR_RATE_NONE` (`PairRate::bound`). Aralık ACK'te sıfırlanır.
 ///
 /// Alıcının 0x15 çerçevesinin kendisi (boyu, daralma alarmının erken ACK'i) bu düzenekte yoktur: ACK
 /// kadansı 0x14 alıcısınındır. (Gerçek alıcı bitmap kipinde bu düzenekte yeniden sıralamada panik
@@ -232,12 +238,27 @@ struct RxMirror {
     emitted: VecDeque<u64>,
     pair_prev: Option<u64>,
     pair_top: [u64; 2],
+    /// [SIKIŞMA] Bu ACK aralığında varan UDP gövde baytı (önceki varışı olan datagramlar).
+    pair_win_bytes: u64,
+    /// [SIKIŞMA] Aynı datagramların varış aralıkları toplamı (ns; her aralık en çok
+    /// [`PAIR_IDLE_GAP_NS`]).
+    pair_win_ns: u64,
 }
+
+/// [SIKIŞMA] Çift değerinin aralığın kendi varış hızına oranının üst sınırı; `receiver.rs`
+/// `PAIR_WINDOW_RATIO_MAX` ile aynı (orada crate içi sabit).
+const PAIR_WINDOW_RATIO_MAX: u64 = 4;
+
+/// [SIKIŞMA] Aralık süresine yazılan tek varış aralığının üst sınırı (ns); `receiver.rs`
+/// `PAIR_IDLE_GAP_NS` ile aynı (orada crate içi sabit).
+const PAIR_IDLE_GAP_NS: u64 = SEC;
 
 impl RxMirror {
     fn on_arrival(&mut self, seq: u64, udp: u64, now: u64) {
         if let Some(p) = self.pair_prev {
             let g = now.saturating_sub(p);
+            self.pair_win_bytes = self.pair_win_bytes.saturating_add(udp);
+            self.pair_win_ns = self.pair_win_ns.saturating_add(g.min(PAIR_IDLE_GAP_NS));
             if udp >= PAIR_MIN_UDP_BYTES && g >= 2 * MS {
                 let r = udp * SEC / g;
                 if r > self.pair_top[0] {
@@ -276,12 +297,21 @@ impl RxMirror {
             largest
         };
         let m: Vec<u64> = self.received.range(first..=largest).copied().collect();
-        let pair = if self.pair_top[1] == 0 {
+        // [SIKIŞMA] `PairRate::bound`: en büyük ikinci aralığın varış hızının
+        // `PAIR_WINDOW_RATIO_MAX` katını aşarsa alan yok.
+        let v = self.pair_top[1];
+        let plausible = u128::from(v) * u128::from(self.pair_win_ns)
+            <= u128::from(PAIR_WINDOW_RATIO_MAX)
+                * u128::from(self.pair_win_bytes)
+                * u128::from(SEC);
+        let pair = if v == 0 || !plausible {
             PAIR_RATE_NONE
         } else {
-            u16::try_from(self.pair_top[1].min(u64::from(PAIR_RATE_NONE) - 1)).unwrap_or(0)
+            u16::try_from(v.min(u64::from(PAIR_RATE_NONE) - 1)).unwrap_or(0)
         };
         self.pair_top = [0, 0];
+        self.pair_win_bytes = 0;
+        self.pair_win_ns = 0;
         if self.emitted.len() >= 2 {
             self.emitted.pop_front();
         }
@@ -508,6 +538,9 @@ fn run_timed(
     let mut voice_arrived: HashMap<u64, u64> = HashMap::new();
     let mut ptt_confirmed: HashSet<u64> = HashSet::new();
     let mut ptt_abandoned: HashSet<u64> = HashSet::new();
+    // [PTT-YALIN · BAŞLANGIÇ] Gönderici ilk ölçülü ACK'i aldı (ürünün ilk 0x16 vekili; eski alıcı
+    // ölçüm taşımaz, 0x16 da yazmaz).
+    let mut measured_ack_seen = false;
     let mut file_seen: HashSet<u64> = HashSet::new();
     let mut file_done_ns = None;
     let mut file_last_new_sent_ns = None;
@@ -600,7 +633,8 @@ fn run_timed(
                 .enumerate()
                 .map(|(k, &at)| (k as u64, at))
                 .filter(|&(k, at)| {
-                    now.saturating_sub(at) >= PTT_DEADLINE_NS
+                    measured_ack_seen
+                        && now.saturating_sub(at) >= PTT_DEADLINE_NS
                         && !ptt_confirmed.contains(&k)
                         && !ptt_abandoned.contains(&k)
                 })
@@ -692,6 +726,7 @@ fn run_timed(
             // Eski alıcı ölçüm aralığı da taşımaz (V2 çerçevesi).
             // Ürün çalışma zamanının sırası: `pair_rate`, ölçüm aralığı, sonra ACK.
             if new_receiver {
+                measured_ack_seen |= rx_span.is_some();
                 s.note_ack_pair_rate(pair_rate);
                 s.note_ack_forward_interval(first, last, rx_span, &m);
             }
