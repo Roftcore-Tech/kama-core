@@ -1,5 +1,7 @@
 # Kama — Adaptive Transport Engine Spec (Implementable)
 
+> **YAMA KAYDI — 2026-11-21 [İŞ-33 · sahip kararı 2026-11-21 madde 1–2, koşullu GO]:** §2.2 `arrival_rate` ve §12 [R1]. Kapsam yalnız geri bildirimi aç alıcı (port motoru, dönüş ACK bütçesi tipik bir ACK'ten küçük; ürün: yön hızı profili 12 500 / 62 B/s) ve çalışma zamanının datagram boyunu verdiği yol (`Receiver::set_next_datagram_bytes`). Öteki alıcılarda ve eski alıcıda iki madde aynen geçerlidir (alan daima sentinel, ilk SACK hemen). Tel biçimi (0x14 düzeni, alan, sentinel 0xFFFF) DEĞİŞMEDİ. **(1) §2.2:** alan oturumun ilk varış penceresinin oranını taşır. Pencere, gövdesi ≥ MTU/2 olan ilk datagramla açılır; sonraki gövde baytı MTU/2'ye ulaşınca kapanır (kısa pencere, tipik iki datagram). Değer `(ilk datagramdan sonraki gövde baytı) / (son varış − ilk varış)` B/s'dir ve yalnız oturumun ilk ACK'inde taşınır; sonraki ACK'ler sentinel taşır. Pencerede sırasız varış, süre içinde kapanmayan pencere ya da sıfır aralık → sentinel. "Packet-pair DEĞİL" notu üstü çizildi. Gönderici değeri kapasite olarak kullanmaz: pencere süresini `bayt / alan` olarak geri kurar ve kendi gönderim kaydıyla iki nokta tahmincisine verir; aradaki kayıp ve bekleyen datagramlar göndericinin baytıyla sayılır. Sonuç tek örnektir, kesin kapasite değildir: sonraki ACK'lerin ölçüm aralığı (0x15, `rx_span`) ya da iki nokta tahmini düşürür, süreli yoklama yükseltir. Hatalı yüksek ve düşük tahminin davranışı (boy farkı, yeniden sıralama, zamanlama sapması, kuyruk kaybı) belirlenimli testtedir (`crates/adaptive-transport/tests/start_budget_sim.rs`). **(2) §12 [R1]:** aynı alıcıda oturumun ilk SACK'i ilk DATA'da değil, ilk varış penceresi kapanınca çıkar. Bekletme boyu bilinen ilk varıştan en çok 0,7 s sürer; pencere kapanmazsa süre sonunda sentinel'le çıkar. Bekletmeden sonrası (dönüş bütçesi, dönüş hattında veriye yol verme) değişmedi. Kararın koşulu: ölçüm beklemesi, yerel kuyruk beklemesi ve karşı uca varış ayrı raporlanır (ürün testi iz satırı `İZ-İLK-ACK`). Kabul, birleşik adayın protokol ölçümüne bağlıdır. Üstü çizili metin silinmedi.
+
 > **YAMA KAYDI — 2026-10-04b [K3 — D2 / Tema E KAPANDI, Abkarada kararı]:** §2'ye not: **ürün ACK'i = engine `ACK_FRAME_V2` (0x14)**; WS-D1'de `meta.full_wire_pn`'e anahtarlanır (her yeniden gönderim yeni PN; tablo PN → mantıksal birim). noise-wire `Control::Ack/Sack` (0x10/0x11) ailesi SİLİNDİ (noise-wire §2.56/§2.57). Bu belgedeki çerçeve yerleşimi DEĞİŞMEDİ. SPEC-ONLY.
 
 > **YAMA KAYDI — 2026-10-04 [DR-CONNECT-1 H4 — sahip kararı]:** §1.1 transport-control `frame_type` registry'sine iki codepoint açıldı: **`0x1B HEARTBEAT`**, **`0x1C HEARTBEAT_ACK`** (hop heartbeat; HubChannel ctx; otoriter çerçeve + kurallar transport-layer-tdd §10 [AMENDMENT-10]). Çakışma tarandı: §1.1'de boştu; noise-wire §2.56 E2E registry'sinde reserved(reject) kalır. Mevcut codepoint'lerin anlamı/yerleşimi DEĞİŞMEDİ. SPEC-ONLY.
@@ -230,11 +232,17 @@ ACK_FRAME_V2 {
                            #   seen≪sent = forward-loss; seen≈sent ama SACK gelmiyor = return-loss (p5 ayrımı)
   arrival_rate  : u16_be   # receiver-gözlemli pencere-oranı B/s (ilk bw örneği). Sentinel 0xFFFF =
                            #   "ölçüm YOK ya da üst-bantta — cold-start ipucu olarak KULLANMA".
-                           #   [TUR-1x zeyli] Mevcut artımda receiver datagram BOYUTU görmez → daima
-                           #   sentinel emit edilir; gerçek pencere-oranı K3 tüketicisiyle bağlanır.
+                           #   ~~[TUR-1x zeyli] Mevcut artımda receiver datagram BOYUTU görmez → daima
+                           #   sentinel emit edilir; gerçek pencere-oranı K3 tüketicisiyle bağlanır.~~
+                           #   [YAMA 2026-11-21] Geri bildirimi aç alıcıda ve boy verildiğinde ilk ACK
+                           #   ilk varış penceresinin oranını taşır (başlıktaki YAMA KAYDI); öteki
+                           #   durumlarda ve sonraki ACK'lerde sentinel.
 }
 # 15B sabit + 4B×range_count. Noise üstü, authenticated (§0.2 outer-AEAD güvenlik katmanı).
-# arrival_rate pencere-oranı (packet-pair DEĞİL — cold-start'ta gürültüye dayanıklı yeterli).
+# ~~arrival_rate pencere-oranı (packet-pair DEĞİL — cold-start'ta gürültüye dayanıklı yeterli).~~
+# [YAMA 2026-11-21] Kısa pencere (tipik iki datagram) alıcıda oran olarak ölçülür. Gönderici onu
+#   kapasite saymaz; kendi gönderim kaydıyla iki nokta tahmincisine çevirir (tek örnek; sonraki
+#   ACK'ler düşürür, süreli yoklama yükseltir). Başlıktaki YAMA KAYDI 2026-11-21.
 ```
 
 ---
@@ -943,6 +951,9 @@ ACK_DELAY_TIMER (receiver):
     × return_bw) — dönüş kıt iken SACK seyrekleşir (kbps'te 20ms sabit → SACK-seli/self-congestion; §16).
   [R1] Akışın İLK SACK'i cadence-exempt: ilk DATA gelişinde ACK_CADENCE'i ATLAR, HEMEN emit edilir
     (yalnız sonraki SACK'ler rate-limitli) → PRE_CONVERGE geometrik ilk-kopya iptali (§3.3-B).
+    [YAMA 2026-11-21 · istisna] Geri bildirimi aç alıcıda ve datagram boyu verildiğinde ilk SACK
+    ilk varış penceresi kapanınca çıkar (bekletme ilk varıştan en çok 0,7 s; kapanmazsa süre
+    sonunda sentinel'le). Başlıktaki YAMA KAYDI 2026-11-21; öteki alıcılarda [R1] aynen.
 
 PTO (Probe Timeout — retransmit/probe tetik; RFC 9002-türevi ama loss≠congestion):
   PTO = srtt + max(RTTVAR_MULT × rttvar, min_pto) + max_ack_delay    RTTVAR_MULT=[STD:4]; min_pto=[CAL]

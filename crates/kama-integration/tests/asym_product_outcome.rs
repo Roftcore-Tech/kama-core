@@ -174,7 +174,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use adaptive_transport::ack::AckFrame;
-use adaptive_transport::sender::{EmitCause, EmitDiag};
+use adaptive_transport::sender::{EmitCause, EmitDiag, LineGuardAckDecision, LineGuardAckTrace};
 use client_core::memory_link::MemoryHub;
 use client_core::runtime::ClientLiveDiag;
 use client_core::runtime::EmitTraceSink;
@@ -230,6 +230,10 @@ const LEDGER_CAP: usize = 16_384;
 const DROP_CAP: usize = 16_384;
 /// Düğüm turundaki olay bütçesi (`kama-node` `MAX_EVENTS_PER_TURN` ile aynı rol).
 const EVENTS_PER_TURN: usize = 256;
+/// [İZ-ARALIK] Hat koruması ACK kaydının toplanan en çok kaydı ve aynanın yoklama aralığı (ayna
+/// halkası 64 kayıt; bu hatta ACK'ler ≥ 0,5 s aralıklı).
+const GUARD_TRACE_CAP: usize = 4_096;
+const GUARD_TRACE_POLL: Duration = Duration::from_millis(200);
 
 fn id(n: u8) -> PeerRef {
     let mut dest_hash = [0u8; 32];
@@ -827,6 +831,23 @@ struct Run {
     bob_decoded: u64,
     /// [İZ-NEDEN] Alice göndericisinin emisyon / kayıp ilanı izi (an, kayıt).
     emit: Vec<(Instant, EmitDiag)>,
+    /// [İZ-ARALIK] Alice göndericisinin hat koruması ACK kaydı (an, kayıt; canlı aynadan).
+    guard_trace: Vec<(Instant, LineGuardAckTrace)>,
+}
+
+/// [İZ-ARALIK] Canlı aynadan yeni (sırası son toplanandan büyük) hat koruması kayıtlarını toplar;
+/// an = ucun saat tabanı + motor anı. Salt gözlem.
+fn collect_guard_trace(live: Option<ClientLiveDiag>, out: &mut Vec<(Instant, LineGuardAckTrace)>) {
+    let Some((live, origin)) = live.and_then(|l| l.clock_origin.map(|o| (l, o))) else {
+        return;
+    };
+    let last = out.last().map_or(0, |(_, t)| t.index);
+    for t in live.line_guard.recent().filter(|t| t.index > last) {
+        if out.len() >= GUARD_TRACE_CAP {
+            break;
+        }
+        out.push((origin + Duration::from_nanos(t.at_ns), *t));
+    }
 }
 
 fn run(seed: u64, profile: bool, cell: Cell) -> Run {
@@ -922,6 +943,8 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
     let mut file_delivered: Option<Instant> = None;
     let mut file_ok = false;
     let mut file_failures: Vec<String> = Vec::new();
+    let mut guard_trace: Vec<(Instant, LineGuardAckTrace)> = Vec::new();
+    let mut guard_trace_poll = Instant::now();
 
     loop {
         hub.relay();
@@ -1003,6 +1026,18 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
 
         alice.turn(&mut events);
         bob.turn(&mut events);
+        if Instant::now() >= guard_trace_poll {
+            guard_trace_poll = Instant::now() + GUARD_TRACE_POLL;
+            collect_guard_trace(
+                alice
+                    .m
+                    .transport()
+                    .session_live_diags()
+                    .first()
+                    .map(|d| d.1),
+                &mut guard_trace,
+            );
+        }
         for (at, ev) in events.drain(..) {
             match ev {
                 Ev::Chunk => {
@@ -1103,6 +1138,7 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
     let bob_live = bob.m.transport().session_live_diags().first().map(|d| d.1);
     let alice_decoded = alice.m.transport().fec_blocks_decoded();
     let bob_decoded = bob.m.transport().fec_blocks_decoded();
+    collect_guard_trace(alice_live, &mut guard_trace);
     drop(alice);
     drop(bob);
     stop.store(true, Ordering::Relaxed);
@@ -1138,6 +1174,7 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
         alice_decoded,
         bob_decoded,
         emit,
+        guard_trace,
     }
 }
 
@@ -1558,6 +1595,7 @@ impl Run {
         );
         self.trace_report(&tag);
         self.cause_report(&tag);
+        self.guard_trace_report(&tag);
         // [ACK-PAYI] Dönüş hattı bileşimi: Bob'un ACK/denetim datagramları (ADown) ve verisi (BUp)
         // sınıf başına (datagram, tel baytı).
         let mut comp: BTreeMap<String, (u64, u64)> = BTreeMap::new();
@@ -1598,6 +1636,65 @@ impl Run {
             line.join(" ")
         );
         failed
+    }
+
+    /// [İZ-ARALIK] Alice göndericisinin hat koruması kararları, ACK başına bir satır: ölçüm aralığı
+    /// notu (çalışma zamanının 0x15 çerçevesinden çevirdiği M'nin ilk / son seq'i ve alıcının
+    /// `rx_span`'i), korumaya ölçüm olarak geçip geçmediği, kuyruk artışı `g`, karar ve korumanın
+    /// gönderim tavanı / korunan hızı (önce→sonra). Kayıt yalnız profil açıkken (hat koruması)
+    /// dolar; `sıra` boşluğu aynanın yoklamaları arasında halkadan düşen kayıttır.
+    fn guard_trace_report(&self, tag: &str) {
+        let t = |i: Instant| secs(self.since(i, self.t0));
+        let opt = |v: Option<u64>| v.map_or("-".to_string(), |v| v.to_string());
+        let label = |d: LineGuardAckDecision| match d {
+            LineGuardAckDecision::IntervalSample => "aralık-örneği",
+            LineGuardAckDecision::IntervalNoSample => "aralık-örnek-yok",
+            LineGuardAckDecision::IntervalSampleUnapplied => "aralık-örneği-uygulanmadı",
+            LineGuardAckDecision::IntervalUnresolved => "aralık-kurulamadı",
+            LineGuardAckDecision::Frontier => "cephe-örneği",
+            LineGuardAckDecision::NoMeasurement => "ölçüm-yok",
+            LineGuardAckDecision::NotConsulted => "korumaya-ulaşmadı",
+        };
+        let mut by: BTreeMap<&str, u64> = BTreeMap::new();
+        let mut gaps = 0u64;
+        let mut prev = 0u64;
+        for &(at, g) in &self.guard_trace {
+            gaps += g.index.saturating_sub(prev + 1);
+            prev = g.index;
+            *by.entry(label(g.decision)).or_insert(0) += 1;
+            let (first, last, span) =
+                g.note
+                    .map_or(("-".to_string(), "-".to_string(), "-".to_string()), |n| {
+                        (
+                            n.first_seq.to_string(),
+                            n.last_seq.to_string(),
+                            n.rx_span_ns
+                                .map_or("yok".to_string(), |s| format!("{:.4}", s as f64 / 1e9)),
+                        )
+                    });
+            println!(
+                "İZ-ARALIK {tag} an=+{} sıra={} en_büyük={} first={first} last={last} rx_span={span} ölçüm={} g={} karar={} tavan={}→{} hız={}→{}{}{}{}",
+                t(at),
+                g.index,
+                g.largest_seq,
+                if g.measured { "evet" } else { "hayır" },
+                g.g_ns
+                    .map_or("-".to_string(), |v| format!("{:.4}", v as f64 / 1e9)),
+                label(g.decision),
+                g.pace_before,
+                g.pace_after,
+                opt(g.rate_before),
+                opt(g.rate_after),
+                g.first_window
+                    .map_or(String::new(), |w| format!(" ilk_pencere={w:?}")),
+                if g.raised { " yoklama=yükseltti" } else { "" },
+                if g.probe_failed { " yoklama=başarısız" } else { "" },
+            );
+        }
+        println!(
+            "İZ-ARALIK-ÖZET {tag} kayıt={} sıra_boşluğu={gaps} kararlar={by:?}",
+            self.guard_trace.len()
+        );
     }
 
     /// Koşu izi: uygulama olayları ve rölenin gördüğü her datagram (an t0'a göre; öğe, mühürleyen

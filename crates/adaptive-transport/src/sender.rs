@@ -1506,6 +1506,10 @@ pub enum EmitCause {
     LossPacketThreshold,
     /// Zaman eşiği kayıp ilanı (PTO zamanlayıcısında; `ref_seq` = en büyük teyitli iletim).
     LossTimeThreshold,
+    /// [PTT-KURTARMA · İŞ-35] Öncelikli şeridin başının ACK'in gösterdiği deliği: yeniden iletim
+    /// kaydı paket/zaman eşiği beklenmeden kuruldu (`seq` = deliğe düşen iletim, `ref_seq` = en
+    /// büyük teyitli iletim). Kayıp muhasebesi değişmez (ilan yine dedektörün eşiğinde).
+    PriorityHeadHole,
     /// Birim teyit çıktısına yazıldı (`unit_id`; ACK ya da FEC RECOVERED).
     Confirmed,
     /// ACK çerçevesi işlendi (`seq` = yeni teyitli en büyük iletim ya da 0, `unit_id` = yeni
@@ -1525,6 +1529,175 @@ pub struct EmitDiag {
 
 /// [İZ-NEDEN] İz tavanı (SR-AUDIT-001); dolunca yeni kayıt yazılmaz.
 const EMIT_LOG_CAP: usize = 65_536;
+
+/// [İZ-ARALIK] Hat korumasının ACK başına karar kaydının tavanı (SR-AUDIT-001): halka; dolunca en
+/// eski kayıt düşer ([`LineGuardAckTrace::index`] boşluğu düşeni gösterir).
+pub const LINE_GUARD_TRACE_CAP: usize = 64;
+
+/// [İZ-ARALIK] Çalışma zamanının bir ACK için verdiği ölçüm aralığı notu:
+/// [`Sender::note_ack_forward_interval`] girdisi, geçerlilik süzgecinden ÖNCE (salt gözlem).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ForwardIntervalNote {
+    pub first_seq: u64,
+    pub last_seq: u64,
+    /// Alıcıdaki varış süresi (ns); `None` = alan yok (0xFFFF).
+    pub rx_span_ns: Option<u64>,
+}
+
+/// [İZ-ARALIK] Hat korumasının bir ACK'teki aşağı yönlü kararı. Korumanın gözlem sayaçlarının
+/// (`samples`, `interval_diag`) ACK'ten önceki ve sonraki farkından türetilir; karar yolu bu
+/// sınıflamayı okumaz.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum LineGuardAckDecision {
+    /// Ölçüm aralığı örnek verdi ve uygulandı: hız `rate_after`'a indi (`min(tavan, örnek)`).
+    IntervalSample,
+    /// Aralık ölçüldü (`g` hesaplandı), kuyruk artışı eşiğin altında: örnek yok.
+    IntervalNoSample,
+    /// Aralık örnek önerdi ama ACK ölçüm noktası üretmedi (ACK tel boyu yok, `ack_delay`
+    /// tavanda ya da cephe ilerlemedi): uygulanmadı.
+    IntervalSampleUnapplied,
+    /// Aralık korumaya geçti ama göndericinin kaydında kurulamadı (uç seq kaydı yok ya da gönderim
+    /// süresi 0): `g` yok.
+    IntervalUnresolved,
+    /// Aşağı yönlü örneği eski cephe tahmincisi verdi.
+    Frontier,
+    /// Bu ACK'te ölçüm aralığı yok (ya da geçersiz) ve cephe örneği yok.
+    #[default]
+    NoMeasurement,
+    /// Çerçevede motorun gönderdiği seq yok: koruma çağrılmadı.
+    NotConsulted,
+}
+
+/// [İZ-ARALIK] Hat korumasının bir ACK kaydı (salt gözlem; [`Sender::diag_line_guard_trace`]).
+/// Yalnız geri bildirimi aç kuralın hat koruması kuruluyken ve kayıt açıkken
+/// ([`Sender::set_diag_line_guard_trace`]) yazılır.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct LineGuardAckTrace {
+    /// Kayıt sırası (1'den; halkadan düşenler dahil sayılır).
+    pub index: u64,
+    /// ACK'in işlendiği an (motor saati, ns).
+    pub at_ns: u64,
+    /// Çerçevenin teyit ettiği, motorun gönderdiği en büyük seq (`NotConsulted`'da 0).
+    pub largest_seq: u64,
+    /// Çalışma zamanının bu ACK için verdiği aralık notu; `None` = not yok (V2 çerçevesi ya da
+    /// çalışma zamanı M'yi motor seq'ine çeviremedi).
+    pub note: Option<ForwardIntervalNote>,
+    /// Not ölçüm olarak korumaya geçti (rx_span var, uçlar M'de, aralık gönderilmiş seq'lerde).
+    pub measured: bool,
+    /// Bu ACK'te hesaplanan kuyruk artışı `g` (ns; `LineGuard::interval_diag`); hesaplanmadıysa
+    /// `None`.
+    pub g_ns: Option<i64>,
+    pub decision: LineGuardAckDecision,
+    /// Korumanın gönderim tavanı (B/s, tel) ACK'ten önce ve sonra.
+    pub pace_before: u64,
+    pub pace_after: u64,
+    /// Korunan hat hızı (B/s, tel) ACK'ten önce ve sonra; `None` = koruma devrede değil.
+    pub rate_before: Option<u64>,
+    pub rate_after: Option<u64>,
+    /// Bu ACK'te işlenen ilk varış penceresinin sonucu (oturumun ilk ACK'i).
+    pub first_window: Option<crate::line_guard::FirstWindowOutcome>,
+    /// Bu ACK'te süreli yoklamanın hükmü: kalıcı yükseltme / başarısızlık.
+    pub raised: bool,
+    pub probe_failed: bool,
+}
+
+/// [İZ-ARALIK] Korumanın gözlem durumu (kaydın önce / sonra farkı için).
+#[derive(Debug, Clone, Copy)]
+struct LineGuardSnap {
+    pace: u64,
+    rate: Option<u64>,
+    samples: u64,
+    interval: (u64, u64, Option<i64>),
+    raises: u64,
+    probe_failures: u64,
+    first_window: Option<crate::line_guard::FirstWindowOutcome>,
+}
+
+impl LineGuardSnap {
+    fn of(g: &crate::line_guard::LineGuard) -> Self {
+        Self {
+            pace: g.pace_bps(),
+            rate: g.rate_bps(),
+            samples: g.samples(),
+            interval: g.interval_diag(),
+            raises: g.raises(),
+            probe_failures: g.probe_failures(),
+            first_window: g.first_window(),
+        }
+    }
+}
+
+/// [İZ-ARALIK] Kayıt halkası ve bir sonraki ACK'in aralık notu.
+#[derive(Debug, Clone, Default)]
+struct LineGuardTraceRing {
+    total: u64,
+    log: VecDeque<LineGuardAckTrace>,
+    note: Option<ForwardIntervalNote>,
+}
+
+impl LineGuardTraceRing {
+    fn push(&mut self, mut rec: LineGuardAckTrace) {
+        self.total = self.total.saturating_add(1);
+        rec.index = self.total;
+        if self.log.len() >= LINE_GUARD_TRACE_CAP {
+            self.log.pop_front();
+        }
+        self.log.push_back(rec);
+    }
+}
+
+/// [İZ-ARALIK] ACK'in kaydı: korumanın önceki ve sonraki gözlem durumundan karar sınıfı.
+/// `measured` = aralık korumaya ölçüm olarak verildi; `largest` = `None` ise koruma çağrılmadı.
+fn line_guard_trace_record(
+    at_ns: u64,
+    largest: Option<u64>,
+    note: Option<ForwardIntervalNote>,
+    measured: bool,
+    before: LineGuardSnap,
+    after: LineGuardSnap,
+) -> LineGuardAckTrace {
+    // İlk varış penceresi bu ACK'te işlendiyse örneği ACK'in kendi örneğinden ayrılır.
+    let first_window = before
+        .first_window
+        .is_none()
+        .then_some(after.first_window)
+        .flatten();
+    let window_sample = u64::from(matches!(
+        first_window,
+        Some(crate::line_guard::FirstWindowOutcome::Sample(_))
+    ));
+    let ack_samples = after
+        .samples
+        .saturating_sub(before.samples)
+        .saturating_sub(window_sample);
+    let checked = after.interval.0 > before.interval.0;
+    let proposed = after.interval.1 > before.interval.1;
+    let decision = match (largest.is_some(), ack_samples > 0, proposed, checked) {
+        (false, ..) => LineGuardAckDecision::NotConsulted,
+        (true, true, true, _) => LineGuardAckDecision::IntervalSample,
+        (true, true, false, _) => LineGuardAckDecision::Frontier,
+        (true, false, true, _) => LineGuardAckDecision::IntervalSampleUnapplied,
+        (true, false, false, true) => LineGuardAckDecision::IntervalNoSample,
+        (true, false, false, false) if measured => LineGuardAckDecision::IntervalUnresolved,
+        (true, false, false, false) => LineGuardAckDecision::NoMeasurement,
+    };
+    LineGuardAckTrace {
+        index: 0,
+        at_ns,
+        largest_seq: largest.unwrap_or(0),
+        note,
+        measured,
+        g_ns: checked.then_some(after.interval.2).flatten(),
+        decision,
+        pace_before: before.pace,
+        pace_after: after.pace,
+        rate_before: before.rate,
+        rate_after: after.rate,
+        first_window,
+        raised: after.raises > before.raises,
+        probe_failed: after.probe_failures > before.probe_failures,
+    }
+}
 
 /// [PTT-KOPYA-BÜTÇESİ] Öncelikli şeridin kopyası, bilinen hat kuyruğu bu süreyi (bir PTT demet
 /// aralığı, 200 ms) aşarken çıkmaz: kopyalar sonraki demetin orijinalini bir demet aralığından
@@ -1908,6 +2081,9 @@ pub struct Sender {
     cc_line_guard: Option<crate::line_guard::LineGuard>,
     /// [İZ-NEDEN] Emisyon / kayıp ilanı izi; `None` = kapalı (varsayılan).
     diag_emit_log: Option<Vec<EmitDiag>>,
+    /// [İZ-ARALIK] Hat korumasının ACK başına karar kaydı; `None` = kapalı (varsayılan). Açıkken
+    /// de yalnız hat koruması kuruluyken yazılır (halka ilk kayda dek bellek ayırmaz).
+    diag_line_guard_trace: Option<LineGuardTraceRing>,
     /// [PTT-SIRA · PTT-KOPYA-BÜTÇESİ] Gözlem sayaçları: öncelikli şeridin önce çıkan ARQ kaydı,
     /// bayat diye iptal edilen kopya, hat kuyruğu yüzünden ertelenen kopya denemesi.
     prio_arq_first: u64,
@@ -1918,6 +2094,9 @@ pub struct Sender {
     idle_retx_units: std::collections::BTreeSet<u64>,
     /// [BOŞ-HAT YENİDEN İLETİMİ] Gözlem: boş hatta yeniden iletim sayısı.
     diag_idle_retx: u64,
+    /// [PTT-KURTARMA · İŞ-35] Şerit başının ACK deliğiyle eşik beklenmeden kurulan yeniden iletim
+    /// kaydı sayısı (salt gözlem).
+    prio_head_hole: u64,
     /// [DR-EST-1] Kuruluş-kolu anahtarı (DEFAULT-ON — ürün-davranışı). Yalnız donmuş-enstrüman
     /// testleri (Gate-5 structural-oracle: probe-vs-DATA çekişme-izolasyonu, DR-EST-1-öncesi
     /// tasarım) kapatır; kolun KENDİ pinleri tests/establish_probe.rs'te default-ON koşar.
@@ -2280,11 +2459,13 @@ impl Sender {
             cc_feedback_starved: None,
             cc_line_guard: None,
             diag_emit_log: None,
+            diag_line_guard_trace: None,
             prio_arq_first: 0,
             prio_copy_stale: 0,
             prio_copy_deferred: 0,
             idle_retx_units: std::collections::BTreeSet::new(),
             diag_idle_retx: 0,
+            prio_head_hole: 0,
             establish_probe_enabled: true,
             establish_due_ns: 0,
             establish_interval_ns: 0,
@@ -2844,6 +3025,7 @@ impl Sender {
         if let Some(g) = self.cc_line_guard.as_mut() {
             if g.tick(now_ns) {
                 self.pacer.set_line_rate(g.pace_bps());
+                self.pacer.set_line_pairs(g.pair_pacing());
             }
         }
         // FS-CAL-2 v3 §3 lifecycle (design: docs/design/ESTIMATOR-LIFECYCLE.md). Finalize
@@ -4000,7 +4182,7 @@ impl Sender {
             cc.set_external_bw(Some(btlbw));
             cc.on_end_acks(now_ns, inflight, any_app_limited || idle_now, largest);
         }
-        self.cc_line_guard_on_ack(ack, now_ns);
+        self.cc_line_guard_on_ack_traced(ack, now_ns);
         if self.diag_emit_log.is_some() {
             let top = ack
                 .acked_seqs
@@ -4026,6 +4208,7 @@ impl Sender {
             self.queue_losses(&lost, now_ns);
             // [TUR-A teşhis] loss-atıflama: packet-threshold (§5a) kaynaklı kuyruklanan kayıp sayısı.
             self.diag_loss_pkt += (self.pending_lost.len() - before) as u64;
+            self.queue_priority_head_hole(evidence, now_ns);
         }
         // DR-ARQ-PRODUCT-TAIL-1 (gated): real ACK progress (inflight shrank) resets the tail timer + clears backoff;
         // a drained inflight disarms. Duplicate/stale ACKs that remove nothing do NOT reset (§4).
@@ -4037,6 +4220,49 @@ impl Sender {
                 self.tail_recovery.disarm();
             }
         }
+    }
+
+    /// [İZ-ARALIK] [`Self::cc_line_guard_on_ack`] ve ACK başına karar kaydı. SALT GÖZLEM: korumanın
+    /// gözlem durumu çağrıdan önce ve sonra okunur, fark kayda yazılır; çağrının girdisi ve sırası
+    /// kayıt kapalıykenkiyle aynıdır. Kayıt kapalıysa ya da koruma kurulu değilse yalnız çağrı.
+    fn cc_line_guard_on_ack_traced(&mut self, ack: &AckInfo, now_ns: u64) {
+        let pre = match (
+            self.diag_line_guard_trace.as_mut(),
+            self.cc_line_guard.as_ref(),
+        ) {
+            (Some(t), Some(g)) => Some((
+                LineGuardSnap::of(g),
+                t.note.take(),
+                self.pending_forward_interval.is_some(),
+            )),
+            (Some(t), None) => {
+                t.note = None;
+                None
+            }
+            (None, _) => None,
+        };
+        self.cc_line_guard_on_ack(ack, now_ns);
+        let (Some((before, note, measured)), Some(g), Some(t)) = (
+            pre,
+            self.cc_line_guard.as_ref(),
+            self.diag_line_guard_trace.as_mut(),
+        ) else {
+            return;
+        };
+        let largest = ack
+            .acked_seqs
+            .iter()
+            .copied()
+            .filter(|&s| s < self.next_seq)
+            .max();
+        t.push(line_guard_trace_record(
+            now_ns,
+            largest,
+            note,
+            measured,
+            before,
+            LineGuardSnap::of(g),
+        ));
     }
 
     /// [HAT-KORUMASI] ACK çerçevesinin cephesiyle gerçek ileri hattı ölçer ([`crate::line_guard`]).
@@ -4069,22 +4295,35 @@ impl Sender {
             let _ = g.on_first_window(&ack.acked_seqs, rate);
         }
         let saturated = ack.ack_delay >= crate::loss::E2A_ACK_DELAY_SATURATED;
+        // [TAŞMA · ÇİFT ALT SINIRI] Bu ACK'in alt sınırı taşma örneğinin büyüklüğüdür (yoksa `None`
+        // yazılır: önceki ACK'in değeri kullanılmaz).
+        g.note_pair_lower_bound(pair_rate.map(u64::from));
         let update = g.on_ack_measured(now_ns, dur_ns(ack.ack_delay), saturated, largest, interval);
         // [ÇİFT ARALIĞI] Aşağı yönlü örnek yokken alıcının kapasite alt sınırı tavanı açabilir.
         if let Some(p) = pair_rate {
             g.on_pair_rate(u64::from(p));
         }
-        // [BAŞLANGIÇ-BÜTÇESİ · İŞ-33 C1] İlk ACK işlendi: bütçe kalkar (ölçüm, doğrulama ya da
-        // bilgi yok — üçünde de bundan sonrası bugünkü hat koruması).
-        g.end_start_budget();
+        // [BAŞLANGIÇ-BÜTÇESİ · İŞ-33 C1 · İKİNCİ-ÖLÇÜM İŞ-35] Bütçe ilk ACK'te yalnız pencere hattı
+        // doğruladıysa ya da alıcı ölçmüyorsa kalkar; değilse ikinci bağımsız ölçüme (sonraki bir
+        // ACK'in ölçüm aralığı) dek sürer (`line_guard` modül belgesi, "İkinci ölçüm").
+        g.settle_start_budget();
         // [TEMKİNLİ-BAŞLANGIÇ · YENİDEN-YOKLAMA] Hat modeli korumanın gönderim tavanındadır (ölçülen
         // hat, doğrulanmamış başlangıçta yarı profil, yoklamada yükseltilmiş tavan): pacer'ın burst
         // payı (≥ 10 MTU) tavanın üstünde patlama yapamaz.
         self.pacer.set_line_rate(g.pace_bps());
+        // [ÇİFT-PACING · İŞ-35 gece] Aralık kipinde, bütçe ve yoklama yokken tavan profil hattının
+        // altındaysa datagramlar yarım saniyede bir ikişer çıkar: hat toparlandıysa alıcının çift
+        // aralığı ölçüsü hattı görür (`pacer::set_line_pairs`, `LineGuard::pair_pacing`).
+        self.pacer.set_line_pairs(g.pair_pacing());
         if let Some(u) = update {
             self.pacer.line_raise_backlog(u.backlog_bytes);
             // [SÜRELİ-YOKLAMA] Başarısız yoklamanın fazlası mevcut kuyruğun üstüne.
             self.pacer.line_add_backlog(u.extra_backlog_bytes);
+        }
+        // [ÖLÇÜM-BOŞLUĞU · İŞ-35] Boşluk kuralı kurulduysa tek seferlik boşaltma.
+        let drain = g.take_gap_drain();
+        if drain > 0 {
+            self.pacer.line_raise_backlog(drain);
         }
     }
 
@@ -5595,6 +5834,15 @@ impl Sender {
             .map(|g| (g.pace_bps(), g.raises()))
     }
 
+    /// [ÖLÇÜM-BOŞLUĞU] Boşluk bütçesinin `(kurulma, kurulmayıp geçilme)` sayıları (salt gözlem);
+    /// kural kurulu değilse `None`.
+    #[must_use]
+    pub fn diag_line_guard_gap(&self) -> Option<(u64, u64)> {
+        self.cc_line_guard
+            .as_ref()
+            .map(|g| (g.gap_arms(), g.gap_skips()))
+    }
+
     /// [PTT-SIRA · PTT-KOPYA-BÜTÇESİ] `(önce çıkan öncelikli ARQ, bayat diye düşen kopya — birimin
     /// son kopyası hariç, hat kuyruğu yüzünden ertelenen kopya denemesi)` (salt gözlem).
     #[must_use]
@@ -5604,6 +5852,13 @@ impl Sender {
             self.prio_copy_stale,
             self.prio_copy_deferred,
         )
+    }
+
+    /// [PTT-KURTARMA · İŞ-35] Öncelikli şeridin başı için ACK deliğiyle, paket/zaman eşiği
+    /// beklenmeden kurulan yeniden iletim kaydı sayısı (salt gözlem).
+    #[must_use]
+    pub fn diag_priority_head_hole(&self) -> u64 {
+        self.prio_head_hole
     }
 
     /// [ÖNLEMSEL-KOPYA] Yeni birimlerin ACK beklemeyen ileri kopya kuralı ([`ForwardCopyRule`]).
@@ -6168,11 +6423,23 @@ impl Sender {
         rx_span_ns: Option<u64>,
         received: &[u64],
     ) {
+        // [İZ-ARALIK] Salt gözlem: not süzgeçten önce kayda.
+        if let Some(t) = self.diag_line_guard_trace.as_mut() {
+            t.note = Some(ForwardIntervalNote {
+                first_seq,
+                last_seq,
+                rx_span_ns,
+            });
+        }
         // M'nin uçları M'de olmalı ve aralık motorun gönderdiği seq'lerde kalmalı; değilse ölçüm yok.
         let valid = first_seq < last_seq
             && last_seq < self.next_seq
             && received.contains(&first_seq)
             && received.contains(&last_seq);
+        let rx_wire = self
+            .cc_line_guard
+            .as_ref()
+            .and_then(|g| g.received_wire(first_seq, last_seq, received));
         self.pending_forward_interval =
             rx_span_ns
                 .filter(|_| valid)
@@ -6180,6 +6447,7 @@ impl Sender {
                     first_seq,
                     last_seq,
                     rx_span_ns,
+                    rx_wire,
                 });
     }
 
@@ -6192,6 +6460,26 @@ impl Sender {
             .map(crate::line_guard::LineGuard::interval_diag)
     }
 
+    /// [İZ-ARALIK] Hat korumasının ACK başına karar kaydını açar (boş halka) ya da kapatıp atar.
+    /// SALT GÖZLEM: hiçbir karar kaydı okumaz; yalnız ölçüm düzenekleri ve canlı teşhis aynası
+    /// açar. Kayıt yalnız geri bildirimi aç kuralın hat koruması kuruluyken yazılır; halka en çok
+    /// [`LINE_GUARD_TRACE_CAP`] kayıt tutar.
+    pub fn set_diag_line_guard_trace(&mut self, on: bool) {
+        self.diag_line_guard_trace = on.then(LineGuardTraceRing::default);
+    }
+
+    /// [İZ-ARALIK] Halkadaki kayıtlar, eskiden yeniye (en çok [`LINE_GUARD_TRACE_CAP`]); kayıt
+    /// kapalıysa boş.
+    pub fn diag_line_guard_trace(&self) -> impl Iterator<Item = &LineGuardAckTrace> + '_ {
+        self.diag_line_guard_trace.iter().flat_map(|t| t.log.iter())
+    }
+
+    /// [İZ-ARALIK] Şimdiye dek yazılan kayıt sayısı (halkadan düşenler dahil); kayıt kapalıysa 0.
+    #[must_use]
+    pub fn diag_line_guard_trace_total(&self) -> u64 {
+        self.diag_line_guard_trace.as_ref().map_or(0, |t| t.total)
+    }
+
     /// [İLK-PENCERE] İlk ACK'in varış penceresinin sonucu (salt gözlem; kural ya da pencere yoksa
     /// `None`).
     #[must_use]
@@ -6199,6 +6487,15 @@ impl Sender {
         self.cc_line_guard
             .as_ref()
             .and_then(crate::line_guard::LineGuard::first_window)
+    }
+
+    /// [İKİNCİ-ÖLÇÜM · İŞ-35] Başlangıç bütçesini kaldıran kanıt (salt gözlem; bütçe sürüyorsa ya
+    /// da kural yoksa `None`).
+    #[must_use]
+    pub fn diag_line_guard_start_exit(&self) -> Option<crate::line_guard::StartExit> {
+        self.cc_line_guard
+            .as_ref()
+            .and_then(crate::line_guard::LineGuard::start_exit)
     }
 
     /// [İLK-PENCERE] İlk ACK'in varış penceresinin ayrıntısı (salt gözlem).
@@ -6224,6 +6521,20 @@ impl Sender {
             return false;
         }
         !g.start_budget_admits(now_ns, size)
+    }
+
+    /// [ÖLÇÜM-BOŞLUĞU · İŞ-35] Aralık kipinde ölçüm boşluğu bütçesi kuruluyken öncelikli olmayan bir
+    /// yeniden iletim bütçeyi aşıyor mu ([`crate::line_guard`] modül belgesi, "Ölçüm boşluğu").
+    /// Boşluk bütçesi yoksa `false` (bugünkü yol).
+    fn gap_budget_holds(&mut self, unit_id: u64, size: u64, now_ns: u64) -> bool {
+        if !self
+            .cc_line_guard
+            .as_ref()
+            .is_some_and(crate::line_guard::LineGuard::gap_budget_active)
+        {
+            return false;
+        }
+        self.start_budget_holds(Some(unit_id), size, now_ns)
     }
 
     /// [FAZ-1 DÖNÜŞ-YOLU] Bir ACK datagram'ı gözlendi. **Motor davranışını DEĞİŞTİRMEZ** —
@@ -7523,6 +7834,12 @@ impl Sender {
                     {
                         self.sched_diag.arq_retransmit_selected += 1;
                     }
+                    // [ÖLÇÜM-BOŞLUĞU · İŞ-35] Boşluk bütçesi öncelikli olmayan yeniden iletimi de
+                    // bekletir (kuyrukta düşen her iletim yeniden iletilir; bütçe dışında kalırsa
+                    // bütçe kuyruğu sınırlamaz). İlk ACK'e dek bütçede bu yol yok (kayıp ilanı yok).
+                    if self.gap_budget_holds(rec.unit.id, rec.unit.size, now_ns) {
+                        break;
+                    }
                     if !self.try_send_pre_parity(rec.unit.size, true) {
                         #[cfg(feature = "diag-sched-telemetry")]
                         {
@@ -8212,6 +8529,11 @@ impl Sender {
             else {
                 return;
             };
+            // [BAŞLANGIÇ-BÜTÇESİ · ÖLÇÜM-BOŞLUĞU] Öncelikli olmayan birimin kopyası bütçeye uyar
+            // (birleşim: başlangıç ve boşluk bütçesi kuruluyken kopya da kovadan geçer).
+            if self.start_budget_holds(Some(unit.id), unit.size, now_ns) {
+                return;
+            }
             if !self.try_send_pre_parity(unit.size, true) {
                 return;
             }
@@ -8235,6 +8557,93 @@ impl Sender {
         self.diag_idle_retx
     }
 
+    /// [PTT-SIRA] Öncelikli şeridin başı: teyitsiz en küçük öncelikli birim (kayıp kuyruğu ya da
+    /// uçuştaki, kararsız olmayan ve onarım sembolü olmayan iletim). Sıralı şeritte teslimi yalnız
+    /// baş bekletir.
+    fn priority_lane_head(&self, priority_below_id: u64) -> Option<u64> {
+        self.pending_lost
+            .iter()
+            .map(|r| r.unit.id)
+            .chain(
+                self.inflight
+                    .values()
+                    .filter(|p| {
+                        p.origin != TransmitKind::FecParity && p.confirmed_release_ns.is_none()
+                    })
+                    .map(|p| p.unit.id),
+            )
+            .filter(|&id| id < priority_below_id)
+            .min()
+    }
+
+    /// [PTT-KURTARMA · İŞ-35] Geri bildirimi aç profilde ([`FeedbackStarvedRule`]) öncelikli şeridin
+    /// başının en yeni ARQ iletimi (köken `Data` ya da `Retransmit`) bir ACK'in gösterdiği deliğe
+    /// düştüyse — en büyük teyitli iletim ondan sonra gönderilmiş, kendisi teyitsiz; kanıt kipinde
+    /// (0x15) ayrıca bu ACK'in kanıt aralığında — yeniden iletim kaydı paket/zaman eşiği
+    /// beklenmeden kurulur (vade şimdi; [`Self::drain_forward_copy_priority`] onu ilk jetonla çıkarır).
+    ///
+    /// Gerekçe (tests/starved_line_sim.rs, demetin bütün koruma iletimleri düşer): deliği gösteren
+    /// ilk ACK'in en büyüğü asıl iletimden yalnız 1–2 büyükse (alıcı sırasız varışta hemen ACK'ler)
+    /// paket eşiği (3) tutmaz ve kurtarma zaman eşiğini (9/8·srtt, srtt ≈ 1,5–2 s) bekliyordu:
+    /// ACK gelmiş, hat boş, 129–175 ms. Dönüş 62 B/s iken sonraki ACK ≥ 1 s sonradır. Eşiğin
+    /// amacı yeniden sıralamada gereksiz iletimden kaçınmak; sıralı şeridin başında bekleme bütün
+    /// şeridi bekletir, gereksiz iletimin bedeli bir PTT birimidir.
+    ///
+    /// Kayıp muhasebesi değişmez: iletim uçuşta kalır, dedektör onu kendi eşiğinde ilan eder (CC
+    /// kayıp olayı, tombstone o anda). O ana dek yeniden iletim uçuştaysa U13 kuralı ilanı yeniden
+    /// kuyruğa sokmaz, teyit edildiyse kayıt kararsızdır (çift gönderim yok). Kayıt tekrar
+    /// kurulmaz: bekleyen kaydı olan baş atlanır, yeniden iletim çıkınca en yeni iletim odur ve en
+    /// büyük teyitliden sonradır. Kalan kenar: kayıt jeton/pencere yüzünden dedektörün ilanına dek
+    /// çıkamazsa ilan ikinci bir kayıt kurar (bir fazla PTT birimi). Asıl iletim geç gelirse
+    /// (yeniden sıralama) normal ACK yolu birimi teyit eder ve bekleyen iş iptal olur. Kural yokken
+    /// ya da profil dışında etkisiz.
+    fn queue_priority_head_hole(&mut self, evidence: Option<(u64, u64)>, now_ns: u64) {
+        let Some(rule) = self.forward_copy_rule else {
+            return;
+        };
+        if self.cc_feedback_starved.is_none() || !self.cc_on() {
+            return;
+        }
+        let Some(la) = self.loss.largest_acked() else {
+            return;
+        };
+        let Some(head) = self.priority_lane_head(rule.priority_below_id) else {
+            return;
+        };
+        if self.pending_lost.iter().any(|r| r.unit.id == head) {
+            return;
+        }
+        let Some((&seq, p)) = self
+            .inflight
+            .iter()
+            .filter(|(_, p)| {
+                p.unit.id == head
+                    && matches!(p.origin, TransmitKind::Data | TransmitKind::Retransmit)
+                    && p.confirmed_release_ns.is_none()
+            })
+            .max_by_key(|(&s, _)| s)
+        else {
+            return;
+        };
+        if seq >= la {
+            return;
+        }
+        if self.loss.evidence_mode() && !evidence.is_some_and(|(lo, hi)| lo <= seq && seq <= hi) {
+            return;
+        }
+        let rec = LostRec {
+            seq,
+            unit: p.unit,
+            deadline_ns: now_ns,
+            retx_count: p.retx_count,
+            send_ns: p.send_ns,
+            data_ord: p.data_ord,
+        };
+        self.pending_lost.push_back(rec);
+        self.prio_head_hole = self.prio_head_hole.saturating_add(1);
+        self.diag_emit(now_ns, seq, head, EmitCause::PriorityHeadHole, la);
+    }
+
     /// [ÖNLEMSEL-KOPYA · ÖNCELİK] Kopya kuralı kurulu iken ([`ForwardCopyRule`]) kapsamdaki yeni
     /// birimleri (gönderim kuyruğundaki sıralarıyla) ve vadesi gelmiş kopyalarını, yeniden iletim
     /// ve diğer yeni veriden önce emit eder. Kapsam üst katmanın öncelikli şerididir (client-core:
@@ -8253,20 +8662,7 @@ impl Sender {
         // kırpmasıyla yanlış kayıp ilan edilmiş (Bob'a varmış) PTT iletimlerini de dosyanın önüne
         // geçiriyordu (6 250 hücresinde gereksiz yeniden gönderim 72/149/65 → 125/192/86). Öbür
         // kayıtlar genel ARQ sırasındadır.
-        let head = self
-            .pending_lost
-            .iter()
-            .map(|r| r.unit.id)
-            .chain(
-                self.inflight
-                    .values()
-                    .filter(|p| {
-                        p.origin != TransmitKind::FecParity && p.confirmed_release_ns.is_none()
-                    })
-                    .map(|p| p.unit.id),
-            )
-            .filter(|&id| id < rule.priority_below_id)
-            .min();
+        let head = self.priority_lane_head(rule.priority_below_id);
         let mut k = 0;
         while k < self.pending_lost.len() {
             let rec = self.pending_lost[k];
@@ -8577,8 +8973,17 @@ impl Sender {
         }
         self.inflight_bytes += unit.size;
         let ahead_ns = self.pacer.line_ns_until_drained();
+        // [ÖLÇÜM-BOŞLUĞU] Bütün iletimler hat korumasının kovasından düşülür; öncelik işareti yalnız
+        // boşluk bütçesinin kurulma koşulunda okunur (son 2 s'de öncelikli tel ≥ 3R/8 → kurulmaz).
+        // Öncelikli şerit = kimliği sınırın altındaki uygulama birimi (PTT, metin, denetim) ve onun
+        // yeniden iletim/kopyaları. Parite öncelikli değildir: `unit.id` orada ESI'dir (0..r), birim
+        // kimliği değil; başlangıç bütçesinde de öncelikli olmayan diye bekletilir.
+        let priority = origin != TransmitKind::FecParity
+            && self
+                .forward_copy_rule
+                .is_some_and(|r| unit.id < r.priority_below_id);
         if let Some(g) = self.cc_line_guard.as_mut() {
-            g.on_sent_ahead(seq, now_ns, unit.size, ahead_ns);
+            g.on_sent_classed(seq, now_ns, unit.size, ahead_ns, priority);
         }
         self.inflight.insert(
             seq,
@@ -15862,5 +16267,98 @@ mod feedback_starved_tests {
             "kuralla: ACK'siz tabana dek ({starved} B)"
         );
         assert!(rate <= cap, "hız tavanı aşılmaz ({rate} B/s)");
+    }
+
+    /// [ÖLÇÜM-BOŞLUĞU] Parite öncelikli şerit değildir: paritede `unit.id` ESI'dir (0..r) ve öncelik
+    /// sınırının altında kalır. Hat koruması kurulu, aralık kipinde iki ölçümsüz ACK; trafik blok
+    /// başına 4 dosya birimi + 4 parite (parite 6 250 B/s, eşik 3R/8 = 4 688 B/s, R = 12 500).
+    /// Boşluk bütçesi kurulur. Kontrol: aynı yük öncelikli kimlikli veriyle kurulmaz.
+    #[test]
+    fn parity_does_not_count_as_priority_for_the_gap_budget() {
+        let line = crate::pacer::LineModel {
+            rate_bps: 12_500,
+            datagram_overhead: 28,
+        };
+        let rule = FeedbackStarvedRule {
+            pacing_cap_bps: 12_000,
+            feedback_ns: 10_000 * MS,
+            line,
+            return_line: crate::pacer::LineModel {
+                rate_bps: 62,
+                datagram_overhead: 28,
+            },
+        };
+        // `priority_ids`: blokların ikinci yarısı parite yerine öncelikli kimlikli veri (0..4).
+        let run = |priority_ids: bool| {
+            let mut s = Sender::with_cc_port();
+            s.set_cc_profile_pacing_cap(Some(12_000));
+            s.set_cc_feedback_starved(Some(rule));
+            s.set_forward_copy_rule(Some(ForwardCopyRule {
+                below_id: 100,
+                priority_below_id: 100,
+                copies: 1,
+                spacing_ns: 40 * MS,
+            }));
+            let slot = 1200 * 1_000 * MS / line.rate_bps; // 96 ms: hat hızında bir datagram
+            let mut seqs = Vec::new();
+            let mut out = Vec::new();
+            for k in 0..60u64 {
+                let now = k * slot;
+                let pos = k % 8;
+                let seq = if pos < 4 {
+                    s.track_sent(
+                        OpaqueUnit {
+                            id: 1000 + k,
+                            size: 1172,
+                        },
+                        now,
+                        0,
+                        TransmitKind::Data,
+                    )
+                } else if priority_ids {
+                    s.track_sent(
+                        OpaqueUnit {
+                            id: pos - 4,
+                            size: 1172,
+                        },
+                        now,
+                        0,
+                        TransmitKind::Data,
+                    )
+                } else {
+                    let mode = s.fec_mode;
+                    let esi = u16::try_from(pos - 4).expect("esi");
+                    let block = u32::try_from(k / 8).expect("blok");
+                    s.push_parity_authorized(block, esi, 1172, None, mode, None);
+                    let _ = s.emit_parity_at(0, &mut out, now);
+                    out.last().expect("parite çıktı").seq
+                };
+                seqs.push(seq);
+                let iv = |a: usize, b: usize| crate::line_guard::ForwardInterval {
+                    first_seq: seqs[a],
+                    last_seq: seqs[b],
+                    rx_span_ns: (b - a) as u64 * slot,
+                    rx_wire: None,
+                };
+                let g = s.cc_line_guard.as_mut().expect("hat koruması kurulu");
+                match k {
+                    // Ölçülü iki ACK (aralık kipi), sonra iki ölçümsüz ACK.
+                    20 => {
+                        let _ = g.on_ack_measured(now, 0, false, seqs[15], Some(iv(0, 15)));
+                        g.end_start_budget();
+                    }
+                    30 => {
+                        let _ = g.on_ack_measured(now, 0, false, seqs[25], Some(iv(15, 25)));
+                    }
+                    40 | 50 => {
+                        let _ = g.on_ack_measured(now, 0, false, seqs[35], None);
+                    }
+                    _ => {}
+                }
+            }
+            s.diag_line_guard_gap().expect("hat koruması kurulu")
+        };
+        assert_eq!(run(false), (1, 0), "parite: boşluk bütçesi kurulur");
+        assert_eq!(run(true), (0, 1), "öncelikli veri: kurulmaz");
     }
 }

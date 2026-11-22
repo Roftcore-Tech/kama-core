@@ -2,8 +2,9 @@
 //! API): yalnız geri bildirimi aç alıcı ve yalnız datagram boyu verildiğinde ölçer; ölçüm yoksa
 //! ilk ACK bugünkü gibi hemen çıkar.
 //!
-//! Spec etkisi (§12 [R1], sahip kararı gerekir): bekletme sırasında ilk ACK ilk varışlarda hemen
-//! çıkmaz; pencere kapanınca ya da en çok `FIRST_ACK_HOLD_MAX_NS` sonra çıkar.
+//! Spec etkisi (§12 [R1]; sahip kararı 2026-11-21 madde 1, koşullu GO; spec YAMA KAYDI
+//! 2026-11-21): bekletme sırasında ilk ACK ilk varışlarda hemen çıkmaz; pencere kapanınca ya da en
+//! çok `FIRST_ACK_HOLD_MAX_NS` sonra çıkar.
 
 use adaptive_transport::ack::{AckFrame, ARRIVAL_RATE_SENTINEL};
 use adaptive_transport::arrival_rate::FIRST_ACK_HOLD_MAX_NS;

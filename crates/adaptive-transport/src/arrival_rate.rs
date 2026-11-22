@@ -64,13 +64,15 @@ use crate::rate::DEFAULT_MTU;
 /// Kısa hâliyle pencere iki datagramdır (ilk + bir parça). Spec §2.2 notu ("pencere-oranı,
 /// packet-pair DEĞİL") alıcının tek aralıktan `boy / aralık` hesaplamasına karşıdır; burada oran
 /// göndericinin gönderim kaydıyla iki nokta tahmincisine çevrilir (aradaki kayıp ve bekleyen
-/// datagramlar dahil). Bu yorum spec etkisidir, sahip kararı gerekir. [CAL]
+/// datagramlar dahil). Bu yorum sahip kararı 2026-11-21 madde 2 (koşullu GO) ile spec'e yazıldı
+/// (YAMA KAYDI 2026-11-21, §2.2). [CAL]
 pub const FIRST_WINDOW_BYTES: u64 = DEFAULT_MTU / 2;
 
 /// İlk ACK'in pencere için en uzun bekletmesi (ilk varıştan, ns). Beyanın yarısı hızında
 /// (6 250 B/s) bir parça ve üç kayıp ≈ 0,7 s sürer; daha yavaş hat ölçüm vermez, ilk ACK bu süre
 /// dolunca sentinel'le çıkar. [CAL] — spec §12 [R1] etkisi: ilk ACK bugün ilk varışlarda
-/// hemen çıkıyordu; bekletme sahip kararı gerektirir.
+/// hemen çıkıyordu; bekletme sahip kararı 2026-11-21 madde 1 (koşullu GO) ile spec'e yazıldı
+/// (YAMA KAYDI 2026-11-21, §12 [R1] istisnası).
 pub const FIRST_ACK_HOLD_MAX_NS: u64 = 700_000_000;
 
 /// Alıcıda oturumun ilk varış penceresi.
