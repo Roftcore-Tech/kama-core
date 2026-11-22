@@ -3134,6 +3134,10 @@ async fn client_task(
     let mut ptt_lean_peer = false;
     // [PTT-YALIN] Yalın kipte sunulan PTT birimlerinin sunum anı; son tarihte teyitsizse bırakılır.
     let mut ptt_offered_at: BTreeMap<u64, u64> = BTreeMap::new();
+    // [PTT-YALIN · BAŞLANGIÇ] İlk 0x16'dan önce son tarihli sunulan PTT birimi (veri çerçevesiyle
+    // gider, bırakılmaz: eşin yalın PTT'yi bildiği henüz kanıtlanmadı). 0x16 gelince
+    // `ptt_offered_at`'e geçer: son tarihi geçmiş olan bırakılır, geç ARQ'su tele çıkmaz.
+    let mut ptt_pre_lean: BTreeMap<u64, u64> = BTreeMap::new();
     // [PTT-YALIN] Bırakılan PTT birimleri: motor teyit drenajında app olayı üretmez.
     let mut ptt_expired: HashSet<u64> = HashSet::new();
     let mut caps_tries: u32 = 0;
@@ -3331,6 +3335,7 @@ async fn client_task(
                     continue;
                 }
                 ptt_offered_at.remove(&unit);
+                ptt_pre_lean.remove(&unit);
                 let expired = ptt_expired.remove(&unit);
                 {
                     let lane = lane_index_of(unit);
@@ -3626,6 +3631,7 @@ async fn client_task(
                         if !ptt_lean_peer && !frag_on && cfg.lane_ids && link_feedback_starved(&cfg)
                         {
                             ptt_lean_peer = true;
+                            ptt_offered_at.append(&mut ptt_pre_lean);
                             session
                                 .sender_mut()
                                 .set_forward_copy_rule(Some(ptt_forward_copy_rule(0, 0)));
@@ -3968,6 +3974,8 @@ async fn client_task(
                     };
                     if ptt_lean {
                         ptt_offered_at.insert(id, now);
+                    } else if ptt_lean_offer && ptt_lane && deadline_ns.is_some() {
+                        ptt_pre_lean.insert(id, now);
                     }
                     let size = wire_len(seam.as_ref(), client_ctx, hdr + chunk.len());
                     // store WIRE GÖVDESİNİ tutar (frag: prefix‖payload, düz: payload).
@@ -6011,7 +6019,14 @@ async fn server_task(
                                     if slot.echo_spacing_ns.is_some()
                                         && slot.acks_out < PARAM_ACK_AFTER_ACKS
                                     {
-                                        slot.param_ack_held = Some((f, now + PARAM_ACK_HOLD_NS));
+                                        // İlk bekletmenin süresi korunur: yinelenen PARAM süreyi
+                                        // öne kaydırmaz (veri yokken PARAM_ACK'i yalnız süre
+                                        // çıkarır; #175 7080641829).
+                                        let due = slot
+                                            .param_ack_held
+                                            .as_ref()
+                                            .map_or(now + PARAM_ACK_HOLD_NS, |h| h.1);
+                                        slot.param_ack_held = Some((f, due));
                                     } else {
                                         slot.param_ack_held = None;
                                         let sp = slot.ctx;
