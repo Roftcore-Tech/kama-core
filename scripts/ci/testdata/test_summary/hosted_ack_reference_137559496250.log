@@ -1,0 +1,30 @@
+2026-11-23T08:01:00.5136994Z [1m[92m    Finished[0m `test` profile [unoptimized + debuginfo] target(s) in 21.99s
+2026-11-23T08:01:00.5196848Z [1m[92m     Running[0m tests/ack_ref_vectors.rs (target/debug/deps/ack_ref_vectors-795cc76ee783dfd5)
+2026-11-23T08:01:00.5207873Z 
+2026-11-23T08:01:00.5208081Z running 1 test
+2026-11-23T08:01:00.5229538Z test ack_ref_fixed_vectors ... ACK-REF vektör: 22 vaka koştu
+2026-11-23T08:01:00.5230873Z ok
+2026-11-23T08:01:00.5231228Z 
+2026-11-23T08:01:00.5231884Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-11-23T08:01:00.5232674Z 
+2026-11-23T08:01:00.5233501Z [1m[92m     Running[0m tests/ack_ref_wire_size.rs (target/debug/deps/ack_ref_wire_size-1b8a1248ef8dad81)
+2026-11-23T08:01:00.5245543Z 
+2026-11-23T08:01:00.5245724Z running 2 tests
+2026-11-23T08:01:07.3638227Z test ack_ref_wire_size_link_profile ... ACK-REF tel-boyu [yön-profili] metin=30/30 ack_mühürlenen=0 ack_telde=0 tavanda(16 aralık)=0 en_büyük_çerçeve=0B en_büyük_udp=0B en_büyük_tel=28B
+2026-11-23T08:01:07.3640352Z 
+2026-11-23T08:01:07.3641394Z thread 'ack_ref_wire_size_link_profile' (4002) panicked at crates/kama-integration/tests/ack_ref_wire_size.rs:310:5:
+2026-11-23T08:01:07.3642363Z [yön-profili] vakum: ACK mühürlenmedi
+2026-11-23T08:01:07.3642837Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+2026-11-23T08:01:07.3644622Z FAILED
+2026-11-23T08:01:10.2518046Z test ack_ref_wire_size_product_default ... ACK-REF tel-boyu [ürün-varsayılanı] metin=400/400 ack_mühürlenen=341 ack_telde=341 tavanda(16 aralık)=317 en_büyük_çerçeve=79B en_büyük_udp=101B en_büyük_tel=129B
+2026-11-23T08:01:10.2527053Z ok
+2026-11-23T08:01:10.2527247Z 
+2026-11-23T08:01:10.2527380Z failures:
+2026-11-23T08:01:10.2527553Z 
+2026-11-23T08:01:10.2528041Z failures:
+2026-11-23T08:01:10.2528364Z     ack_ref_wire_size_link_profile
+2026-11-23T08:01:10.2528655Z 
+2026-11-23T08:01:10.2529083Z test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.73s
+2026-11-23T08:01:10.2529697Z 
+2026-11-23T08:01:10.2546699Z [1m[91merror[0m: test failed, to rerun pass `-p kama-integration --test ack_ref_wire_size`
+2026-11-23T08:01:10.2614195Z ##[error]Process completed with exit code 101.
