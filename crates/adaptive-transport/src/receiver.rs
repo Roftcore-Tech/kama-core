@@ -301,6 +301,23 @@ pub struct Receiver {
     drop_alarm: bool,
     /// [DARALMA-ALARMI] Alarm sayısı (gözlem).
     diag_drop_alarms: u64,
+    /// [KUYRUK İZİ · #175 7089430406] Daralma dedektörünün varış görmeye başladığı an: oturumun ilk
+    /// bütçe ACK'inin göndericiye en erken varışı (`ack_horizon_ns`, ilk ACK'te). `None` = ilk ACK
+    /// henüz çıkmadı.
+    ///
+    /// Neden ilk ACK'in çıkışı değil: o ufka dek gönderici hiç geri bildirim almamıştır. Gönderimi
+    /// başlangıç penceresiyle sınırlıdır; pencere bitince durması hattın değil, göndericinin
+    /// sınırıdır. İlk ACK'ten hemen sonra dedektörün referansı başlangıç penceresinin varışlarından
+    /// kuruluyordu. Gönderici durunca gelen seyrek akış (PTT) da bu referansla karşılaştırılıyor ve
+    /// dürüst hatta alarm çıkıyordu. Gözlenen (benzetim, ürün alıcısı, anahtarlı kayıp, aday
+    /// `86c5602c`): beş kolun 30 koşusunun 30'unda alarm 0,99–1,08 s'de (kopyalı PTT) ya da 1,009 s'de
+    /// (yalın PTT). Bırakıldığı 19 koşuda (yalın 15, kopyalı 4) bırakma 1,21–1,41 s'de, alarm
+    /// ACK'i 1,562 s'de. Koordinatörün ürün izinde de alarm 1,0–1,8 s'de çıkıyor ve PARAM_ACK'in
+    /// önüne geçiyordu.
+    drop_watch_from_ns: Option<u64>,
+    /// [KUYRUK İZİ] Dedektörün alarm verdiği varış sayısı (gözlem; bırakılan alarmlar
+    /// `diag_drop_alarms`'ta).
+    diag_drop_detections: u64,
     /// [ALARM ARALIĞI · #175 7084078903 · TUR 4] Kanıtlı alarm ACK'inin ölçüm aralığının ilk seq'i:
     /// daralma başlangıcından (`RateDropDetector::onset`) kurulan kanıtın ilk seq'i
     /// (`rx_span_field`). Yalnız kanıtlı bırakmada yazılır, her çıkan ACK'te silinir.
@@ -401,6 +418,8 @@ impl Receiver {
             rate_drop: crate::arrival_rate::RateDropDetector::default(),
             drop_alarm: false,
             diag_drop_alarms: 0,
+            drop_watch_from_ns: None,
+            diag_drop_detections: 0,
             alarm_span_first: None,
             drop_alarm_wait: false,
             alarm_evidence: None,
@@ -486,14 +505,43 @@ impl Receiver {
             self.first_window.on_arrival(d.seq, b, now_ns);
             // [DARALMA-ALARMI] Yalnız bitmap alıcısında (ölçüm aralığı taşıyan ACK) ve ilk ACK'ten
             // sonra: alarm ACK'i göndericiye daralmanın ölçümünü erken taşır.
-            if self.bitmap_rx() && self.ack_budget_first_done {
+            // [KUYRUK İZİ] Dedektör ilk ACK'in göndericiye en erken varışından sonra başlar
+            // (`drop_watch_from_ns`).
+            if self.bitmap_rx()
+                && self.ack_budget_first_done
+                && self.drop_watch_from_ns.is_some_and(|h| now_ns >= h)
+            {
                 if self.rate_drop.on_arrival_seq(now_ns, b, Some(d.seq)) {
+                    self.diag_drop_detections += 1;
                     self.pair.arm_rise();
-                    // [ALARM ARALIĞI · TUR 4] Çift değerleri saklanır ve sıfırlanır: kanıtlı alarm
-                    // ACK'i yalnız alarmdan sonraki çiftleri taşır, planlı ACK saklananı geri alır.
-                    self.alarm_pair_saved = self.pair.restart_at_drop_alarm();
-                    self.drop_alarm_wait = true;
-                    self.alarm_evidence = None;
+                    let min_seq = self
+                        .bitmap_emitted
+                        .back()
+                        .map_or(0, |&l| l.saturating_add(1));
+                    if self.rate_drop.alarm_evidence(min_seq).is_some() {
+                        // [ALARM ARALIĞI · TUR 4] Çift değerleri saklanır ve sıfırlanır: kanıtlı
+                        // alarm ACK'i yalnız alarmdan sonraki çiftleri taşır, planlı ACK saklananı
+                        // geri alır.
+                        self.alarm_pair_saved = self.pair.restart_at_drop_alarm();
+                        self.drop_alarm_wait = true;
+                        self.alarm_evidence = None;
+                    } else {
+                        // [KANITSIZ ALARM · #175 7089430406 · SAHİP KARARI GEREKİR] Alarm anında
+                        // daralma başlangıcı bulunamadı (`RateDropDetector::onset` `None`): kanıt
+                        // bu anda kurulamıyor. Alarm ACK'i adayın kuralıyla hemen çıkar: aralık
+                        // bir ACK geriye, çift alanı son ACK'ten bu yana bütün çiftlerden.
+                        //
+                        // Sahibin kuralından ("yeterli kanıt ya da planlı ACK, hangisi önceyse")
+                        // sapmadır. Gözlenen (benzetim, kopyalı PTT, aday `86c5602c`):
+                        // düşüş-toparlanma tohum 1'de gerçek düşüşün alarmı 31,358 s'de geldi.
+                        // En yeni çiftte bir alınmamış seq vardı; `DEFAULT_MTU` üst sınırıyla
+                        // (1 000 + 1 200) B / 183 ms = 12 022, eşiğin üstünde, başlangıç `None`.
+                        // Kanıt hiç kurulmadı, ilk indirim planlı ACK'e dek 3 063 ms gecikti
+                        // (doğrulayıcı, 7089241851). Başlangıç bulunursa bekleme aynen kalır.
+                        self.drop_alarm = true;
+                        self.alarm_yield_clear_ns = 0;
+                        self.diag_drop_alarms += 1;
+                    }
                 }
                 in_detector = true;
             }
@@ -696,6 +744,13 @@ impl Receiver {
     #[must_use]
     pub fn diag_drop_alarms(&self) -> u64 {
         self.diag_drop_alarms
+    }
+
+    /// [KUYRUK İZİ] Daralma dedektörünün alarm verdiği varış sayısı (gözlem). Kanıt bekleyen ya da
+    /// planlı ACK'e kalan alarmlar da sayılır; bırakılanlar [`Self::diag_drop_alarms`].
+    #[must_use]
+    pub fn diag_drop_detections(&self) -> u64 {
+        self.diag_drop_detections
     }
 
     /// [ÇİFT ARALIĞI · YÜKSELİŞ ALARMI] Alarm sayısı (gözlem).
@@ -1205,6 +1260,9 @@ impl Receiver {
             self.note_reported(&frame);
             self.note_bitmap_emitted(&frame);
             self.ack_horizon_ns = self.ack_arrival_horizon(now_ns, &frame);
+            if self.drop_watch_from_ns.is_none() {
+                self.drop_watch_from_ns = Some(self.ack_horizon_ns);
+            }
             self.burn_quota();
             self.record_ack_emit(now_ns);
             return Some(frame);

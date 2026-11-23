@@ -92,6 +92,8 @@ const ONE_WAY_NS: u64 = 300 * MS;
 const FILE_UNIT: u64 = 1000;
 const FILE_BASE_ID: u64 = 1_000_000;
 const TEXT_ID: u64 = 500_000;
+/// [AGB] İkinci dosyanın ilk birim kimliği (`Scenario::file2`).
+const FILE2_BASE_ID: u64 = FILE_BASE_ID + 500_000;
 const VOICE_UNIT: u64 = 86;
 /// Koordinatörün yazdığı paket içi yedekli PTT biçimi (#175, sahip 2026-11-22): 200 ms'de tek paket;
 /// o anki demetle önceki iki demetin sesi (3 × 40 B) + tek başlık takımı (46 B) + demet başına
@@ -179,6 +181,9 @@ struct Scenario {
     loss: LossModel,
     /// [BUA] Darboğaz defteri ve sağlaması (modül belgesi).
     ledger: bool,
+    /// [AGB] İkinci dosya: (sunum anı, birim sayısı); birimler o anda hepsi birden sunulur,
+    /// kimlikler [`FILE2_BASE_ID`]'den. `None` (varsayılan): yok.
+    file2: Option<(u64, u64)>,
     seed: u64,
     t_max_ns: u64,
 }
@@ -385,6 +390,7 @@ impl Scenario {
             rx: RxModel::Mirror,
             loss: LossModel::Lcg,
             ledger: false,
+            file2: None,
             seed,
             t_max_ns: 60 * SEC,
         }
@@ -873,6 +879,22 @@ struct Outcome {
     /// [BUA] Dönüş hattı: çerçeve türü → sayı, toplam tel baytı.
     ack_types: BTreeMap<u8, u64>,
     ack_wire_bytes: u64,
+    /// [AGB] İkinci dosyanın bitişi (`Scenario::file2`).
+    file2_done_ns: Option<u64>,
+    /// [AGB] Alarm gözlemi (salt gözlem; yalnız [`RxModel::Product`]).
+    alarm: AlarmObs,
+}
+
+/// [AGB] Alarm gözlemi (salt gözlem): alıcının sayaçlarından (`diag_drop_alarms`,
+/// `diag_rise_alarms`), her `on_datagram` / `on_ack_timer` çağrısından sonra okunur.
+#[derive(Debug, Clone, Default)]
+struct AlarmObs {
+    /// Alıcının daralma alarmı sayacının arttığı anlar (aday: algılama; #237: kanıtlı bırakma).
+    releases: Vec<u64>,
+    /// Yükseliş alarmı sayacının arttığı anlar.
+    rises: Vec<u64>,
+    /// Çıkan ACK'ler: (an, daralma alarmı ACK'i mi, yükseliş alarmı ACK'i mi).
+    acks: Vec<(u64, bool, bool)>,
 }
 
 /// [BUA · ÜRÜN ALICISI] `client_core::runtime` ACK kolunun göndericiye giden çağrıları, aynı
@@ -1155,6 +1177,13 @@ fn run(sc: &Scenario) -> Outcome {
     let mut file_seen: HashSet<u64> = HashSet::new();
     let mut file_offered = 0u64;
     let mut file_done_ns = None;
+    let mut file2_seen: HashSet<u64> = HashSet::new();
+    let mut file2_offered = false;
+    let mut file2_done_ns = None;
+    // [AGB] Alarm gözlemi (salt gözlem).
+    let mut alarm = AlarmObs::default();
+    let (mut seen_drop, mut seen_rise) = (0u64, 0u64);
+    let (mut ack_drop, mut ack_rise) = (0u64, 0u64);
     let mut tx = TxCount {
         ledger: sc.ledger,
         track_sent: product_rx,
@@ -1222,6 +1251,19 @@ fn run(sc: &Scenario) -> Outcome {
             );
             file_offered += 1;
             emit(decs, now, &mut fwd, &mut tx, &mut s);
+        }
+        if let Some((_, units)) = sc.file2.filter(|&(at, _)| !file2_offered && now >= at) {
+            file2_offered = true;
+            for k in 0..units {
+                let decs = s.on_event(
+                    Event::AppData(OpaqueUnit {
+                        id: FILE2_BASE_ID + k,
+                        size: FILE_UNIT,
+                    }),
+                    now,
+                );
+                emit(decs, now, &mut fwd, &mut tx, &mut s);
+            }
         }
         let next_voice = voice_offered.len() as u64;
         let voice_at = VOICE_START_NS + next_voice * VOICE_PERIOD_NS;
@@ -1347,8 +1389,31 @@ fn run(sc: &Scenario) -> Outcome {
                 },
                 now,
             );
+            if product_rx {
+                if r.diag_drop_alarms() > seen_drop {
+                    seen_drop = r.diag_drop_alarms();
+                    alarm.releases.push(now);
+                }
+                if r.diag_rise_alarms() > seen_rise {
+                    seen_rise = r.diag_rise_alarms();
+                    alarm.rises.push(now);
+                }
+                if out.ack.is_some() {
+                    alarm
+                        .acks
+                        .push((now, seen_drop > ack_drop, seen_rise > ack_rise));
+                    (ack_drop, ack_rise) = (seen_drop, seen_rise);
+                }
+            }
             for u in out.delivered {
-                if u >= FILE_BASE_ID {
+                if u >= FILE2_BASE_ID {
+                    file2_seen.insert(u);
+                    if sc.file2.is_some_and(|(_, n)| file2_seen.len() as u64 == n)
+                        && file2_done_ns.is_none()
+                    {
+                        file2_done_ns = Some(now);
+                    }
+                } else if u >= FILE_BASE_ID {
                     file_seen.insert(u);
                     if file_seen.len() as u64 == sc.file_units && file_done_ns.is_none() {
                         file_done_ns = Some(now);
@@ -1376,6 +1441,14 @@ fn run(sc: &Scenario) -> Outcome {
             r.set_return_line_ahead_ns(ret.free_at.saturating_sub(now));
             r.set_uplink_yield(ret.free_at > now);
             if let Some(f) = r.on_ack_timer(now) {
+                if r.diag_drop_alarms() > seen_drop {
+                    seen_drop = r.diag_drop_alarms();
+                    alarm.releases.push(now);
+                }
+                alarm
+                    .acks
+                    .push((now, seen_drop > ack_drop, seen_rise > ack_rise));
+                (ack_drop, ack_rise) = (seen_drop, seen_rise);
                 ret.send_product(now, &f, measured_now);
             }
         } else {
@@ -1484,7 +1557,8 @@ fn run(sc: &Scenario) -> Outcome {
         });
         let text_left = (sc.text_at_ns.is_some_and(|t| now >= t) && text_arrived.is_none())
             || extra_text_arrived.len() < extra_text_offered.len();
-        let file_left = file_done_ns.is_none() && sc.file_units > 0;
+        let file_left = (file_done_ns.is_none() && sc.file_units > 0)
+            || (sc.file2.is_some() && file2_done_ns.is_none());
         if now >= sc.voice_until_ns && !voice_left && !text_left && !file_left {
             break;
         }
@@ -1563,6 +1637,8 @@ fn run(sc: &Scenario) -> Outcome {
         backlog,
         ack_types: ret.types.clone(),
         ack_wire_bytes: ret.bytes,
+        file2_done_ns,
+        alarm,
     }
 }
 
@@ -3399,6 +3475,189 @@ fn bua_product_receiver_report() {
                 f(|x| x.ptt.clone()),
                 f(|x| x.file.clone()),
             );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// [AGB] Alarm geri bildirimi kapalı döngü raporu (#175 7089430406; yalnız sayı basar).
+// ---------------------------------------------------------------------------------------------
+
+/// [AGB] Dosya ortasında düşüş kolunun çizelgesi (ürün fikstürü `asym_product_outcome`
+/// `Cell::rate_drop_during_file`, #239): düşüş 3 s, toparlanma 15 s, ikinci dosya 17 s, PTT 30 s'ye
+/// dek. Ürün hücresinin dosyası 40 000 B (40 birim), metinleri 5 / 9 / 18 s; düzenekte tek metin
+/// (5 s).
+const AGB_MID_DROP_NS: u64 = 3 * SEC;
+const AGB_MID_RECOVER_NS: u64 = 15 * SEC;
+
+/// [AGB] Rapor kolları: (ad, düşüş anı, toparlanma anı, senaryo). Düşüşsüz kolda düşüş anı `None`.
+type AgbArm = (&'static str, Option<u64>, Option<u64>, fn(u64) -> Scenario);
+
+fn agb_arms() -> [AgbArm; 5] {
+    let [dt, flat, b, d2] = bua_arms();
+    [
+        (dt.0, Some(BUA_DROP_AT_NS), Some(BUA_RECOVER_AT_NS), dt.1),
+        (flat.0, None, None, flat.1),
+        (b.0, Some(DROP_AT_NS), None, b.1),
+        (d2.0, Some(DROP_AT_NS), None, d2.1),
+        (
+            "dosya-ortasi",
+            Some(AGB_MID_DROP_NS),
+            Some(AGB_MID_RECOVER_NS),
+            |seed| Scenario {
+                fwd_plan: vec![
+                    (0, PROFILE_UP),
+                    (AGB_MID_DROP_NS, DROP_TO),
+                    (AGB_MID_RECOVER_NS, PROFILE_UP),
+                ],
+                file_units: 40,
+                file2: Some((17 * SEC, 40)),
+                voice_until_ns: 30 * SEC,
+                text_at_ns: Some(5 * SEC),
+                t_max_ns: 60 * SEC,
+                ..drop_scenario(seed, true)
+            },
+        ),
+    ]
+}
+
+/// [AGB] Yalın PTT yükü (ürünün 0x16 kipinin aynası: kopyasız öncelik, 78 B, 1 s'de bırakma).
+fn agb_lean(sc: Scenario) -> Scenario {
+    Scenario {
+        copies: 0,
+        spacing_ns: 0,
+        copy_scale_min: None,
+        raw_copy_rule: true,
+        voice_unit: LEAN_PTT_UNIT,
+        ptt_deadline_ns: Some(PTT_DEADLINE_NS),
+        rx: RxModel::Product {
+            ptt_lean: true,
+            return_bw: PROFILE_DOWN,
+        },
+        ..sc
+    }
+}
+
+/// [AGB] Kapalı döngü raporu: beş kol (düşüş-toparlanma, dürüst sabit 6 250, (b), (d-2), dosya
+/// ortasında düşüş) × tohum 1–3 × yük (kopyalı / yalın), ürün alıcısı, anahtarlı kayıp, defter açık.
+/// Satır `AGB <kol> <yük> tohum=<n> ...`, alanlar:
+/// * `alarm_ack` alarm ACK'leri (daralma alarmı sayacını artıran ACK'ten sonraki ilk ACK, an ms);
+///   `once` düşüşten önce olanların sayısı (sahte), `yukselis` yükseliş alarmı ACK'leri;
+/// * `ilk_indirim` düşüşten sonra tavanın ilk inişi (göndericide an ms : değer);
+/// * `oturma` düşüşten sonra tavanın ≤ 6 875'e ilk inişi (toparlanmaya dek; yoksa `ulasmadi`);
+/// * `yakinsama` hat korumasının tahmini 6 250 ± %10'a ilk girişi (düşüşten sonra, toparlanmaya
+///   dek);
+/// * `ptt` evre başına zamanında/sunulan ([`bua_ptt_phases`]);
+/// * `kuyrukta_dusen_B`, `bekleme_max_ms`, `tel_<sınıf>` (darboğaz defteri, tel baytı);
+/// * `acilis` dürüst 6 250 kolunda 5 s'den sonra en yüksek tavan; düşüşlü kollarda oturmadan sonra
+///   toparlanmaya dek ≤ 6 875'in üstüne çıkış sayısı (sahte açılış).
+#[test]
+fn agb_alarm_feedback_closed_loop_report() {
+    println!();
+    for (arm, drop_at, recover_at, make) in agb_arms() {
+        for lean in [false, true] {
+            for seed in 1..=3u64 {
+                let base = Scenario {
+                    rx: RxModel::PRODUCT,
+                    loss: LossModel::Keyed,
+                    ledger: true,
+                    ..make(seed)
+                };
+                let sc = if lean { agb_lean(base) } else { base };
+                let o = run(&sc);
+                let load = if lean { "yalin" } else { "kopyali" };
+                let ack_ms = |f: fn(&(u64, bool, bool)) -> bool| {
+                    o.alarm
+                        .acks
+                        .iter()
+                        .filter(|x| f(x))
+                        .map(|x| (x.0 / MS).to_string())
+                        .collect::<Vec<_>>()
+                };
+                let drop_acks = ack_ms(|x| x.1);
+                let before = o
+                    .alarm
+                    .acks
+                    .iter()
+                    .filter(|x| x.1 && drop_at.is_none_or(|d| x.0 < d))
+                    .count();
+                let phase_end = recover_at.unwrap_or(u64::MAX);
+                let ceil = &o.ceil_trace;
+                let (first_cut, settle, opens) = drop_at.map_or((None, None, 0), |d| {
+                    let mut prev = ceil
+                        .iter()
+                        .take_while(|c| c.0 < d)
+                        .last()
+                        .map_or(0, |c| c.1);
+                    let mut first = None;
+                    for c in ceil.iter().filter(|c| c.0 >= d && c.0 < phase_end) {
+                        if c.1 < prev && first.is_none() {
+                            first = Some((c.0, c.1));
+                        }
+                        prev = c.1;
+                    }
+                    let settle = ceil
+                        .iter()
+                        .find(|c| c.0 >= d && c.0 < phase_end && c.1 <= 6_875)
+                        .map(|c| c.0);
+                    let opens = settle.map_or(0, |s| {
+                        ceil.iter()
+                            .filter(|c| c.0 > s && c.0 < phase_end && c.1 > 6_875)
+                            .count()
+                    });
+                    (first, settle, opens)
+                });
+                let flat_max = ceil
+                    .iter()
+                    .filter(|c| c.0 >= 5 * SEC)
+                    .map(|c| c.1)
+                    .max()
+                    .unwrap_or(0);
+                let conv = drop_at.and_then(|d| {
+                    o.rate_trace
+                        .iter()
+                        .filter(|&&(t, _)| t >= d && t < phase_end)
+                        .find(|&&(_, r)| {
+                            r.is_some_and(|r| r * 10 <= DROP_TO * 11 && r * 10 >= DROP_TO * 9)
+                        })
+                        .map(|&(t, _)| t)
+                });
+                let mut by_class: BTreeMap<String, u64> = BTreeMap::new();
+                for ((class, _), b) in &o.book {
+                    let l = class.label();
+                    let key = l.split('/').next().unwrap_or("?").to_string();
+                    *by_class.entry(key).or_default() += b.bytes;
+                }
+                let classes = by_class
+                    .iter()
+                    .map(|(k, v)| format!("tel_{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                println!(
+                    "AGB {arm} {load} tohum={seed} alarm_ack={} once={before} yukselis={} \
+                     ilk_indirim={} oturma={} yakinsama={} acilis={} ptt={} kuyrukta_dusen_B={} \
+                     bekleme_max_ms={} dosya_s={} dosya2_s={} {classes}",
+                    if drop_acks.is_empty() {
+                        "-".to_string()
+                    } else {
+                        drop_acks.join(",")
+                    },
+                    ack_ms(|x| x.2).len(),
+                    first_cut.map_or("-".to_string(), |(t, p)| format!("{}:{p}", t / MS)),
+                    settle.map_or("ulasmadi".to_string(), |t| (t / MS).to_string()),
+                    conv.map_or("YOK".to_string(), |t| (t / MS).to_string()),
+                    if drop_at.is_none() {
+                        flat_max.to_string()
+                    } else {
+                        opens.to_string()
+                    },
+                    bua_ptt_phases(&sc, &o),
+                    o.line.queue_drop_bytes,
+                    o.line.max_wait_ns / MS,
+                    bua_s(o.file_done_ns),
+                    bua_s(o.file2_done_ns),
+                );
+            }
         }
     }
 }

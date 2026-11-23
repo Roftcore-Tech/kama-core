@@ -35,7 +35,6 @@
 use std::collections::BTreeMap;
 
 use adaptive_transport::ack::{AckFrame, ACK_DELAY_UNIT_US, PAIR_RATE_NONE, RX_SPAN_NONE};
-use adaptive_transport::arrival_rate::RateDropDetector;
 use adaptive_transport::line_guard::{ForwardInterval, LineGuard};
 use adaptive_transport::loss::E2A_ACK_DELAY_SATURATED;
 use adaptive_transport::pacer::LineModel;
@@ -65,9 +64,12 @@ struct Run {
     acks: Vec<Emitted>,
     /// Alınan seq → ilk varış anı.
     arrival: BTreeMap<u64, u64>,
-    /// Daralma alarmlarının verildiği anlar: alıcının kendi dedektörüyle aynı girdiyi alan
-    /// bağımsız bir [`RateDropDetector`] (ilk ACK'ten sonraki her varış, her çıkan ACK'te
-    /// `on_ack`). İlk tetiklenmeye dek iki alıcının ACK akışı aynıdır; an iki alıcıda aynıdır.
+    /// Daralma alarmlarının verildiği anlar: alıcının dedektör sayacı
+    /// (`Receiver::diag_drop_detections`) arttığı varış. [KUYRUK İZİ · #175 7089430406] Önceki
+    /// araç alıcının dedektörüyle aynı girdiyi alan bağımsız bir `RateDropDetector`'dı (ilk
+    /// ACK'ten sonraki her varış, seq'siz). Alıcı artık dedektöre seq verir ve dedektörü ilk ACK'in
+    /// göndericiye en erken varışından başlatır. Bağımsız kopya aynı girdiyi almadığı için alıcının
+    /// kendi sayacı okunur; tetiklenme anı tanımı aynıdır (alarmı veren varışın anı).
     alarms: Vec<u64>,
 }
 
@@ -136,7 +138,6 @@ fn run_declared(
     r.set_pair_squeeze_line(squeeze_line);
     let mut acks = Vec::new();
     let mut arrival = BTreeMap::new();
-    let mut det = RateDropDetector::default();
     let mut alarms = Vec::new();
     let mut t = SEC;
     let mut seq = 0u64;
@@ -144,9 +145,6 @@ fn run_declared(
         let busy = busy_from.is_some_and(|b| t >= b);
         if !lost(seq) {
             arrival.insert(seq, t);
-            if !acks.is_empty() && det.on_arrival(t, BODY) {
-                alarms.push(t);
-            }
             let (ahead, yield_) = if busy { (AHEAD, true) } else { (0, false) };
             r.set_return_line_ahead_ns(ahead);
             r.set_uplink_yield(yield_);
@@ -164,12 +162,14 @@ fn run_declared(
                 .into_iter()
                 .map(|f| (t, f))
                 .collect();
+            if r.diag_drop_detections() > alarms.len() as u64 {
+                alarms.push(t);
+            }
             let timer_at = if busy { t + 30 * MS } else { t };
             r.set_return_line_ahead_ns(ahead);
             r.set_uplink_yield(yield_);
             out.extend(r.on_ack_timer(timer_at).map(|f| (timer_at, f)));
             for (at, frame) in out {
-                det.on_ack(at);
                 acks.push(Emitted {
                     at,
                     frame,
@@ -690,15 +690,13 @@ fn drive(
     arrivals.sort_unstable();
     let mut acks = Vec::new();
     let mut arrival = BTreeMap::new();
-    let mut det = RateDropDetector::default();
     let mut alarms = Vec::new();
     let set_busy = |r: &mut Receiver, t: u64| {
         let b = busy_at(busy, t);
         r.set_return_line_ahead_ns(if b { AHEAD } else { 0 });
         r.set_uplink_yield(b);
     };
-    let push = |acks: &mut Vec<Emitted>, r: &Receiver, det: &mut RateDropDetector, at, frame| {
-        det.on_ack(at);
+    let push = |acks: &mut Vec<Emitted>, r: &Receiver, at, frame| {
         acks.push(Emitted {
             at,
             frame,
@@ -711,15 +709,12 @@ fn drive(
         while next_poll < at {
             set_busy(&mut r, next_poll);
             if let Some(f) = r.on_ack_timer(next_poll) {
-                push(&mut acks, &r, &mut det, next_poll, f);
+                push(&mut acks, &r, next_poll, f);
             }
             next_poll += POLL;
         }
         arrival.insert(seq, at);
         let sz = sized(seq);
-        if sz && !acks.is_empty() && det.on_arrival(at, udp) {
-            alarms.push(at);
-        }
         set_busy(&mut r, at);
         if sz {
             r.set_next_datagram_bytes(udp);
@@ -732,18 +727,21 @@ fn drive(
             },
             at,
         );
+        if r.diag_drop_detections() > alarms.len() as u64 {
+            alarms.push(at);
+        }
         if let Some(f) = out.ack {
-            push(&mut acks, &r, &mut det, at, f);
+            push(&mut acks, &r, at, f);
         }
         if let Some(f) = r.on_ack_timer(at) {
-            push(&mut acks, &r, &mut det, at, f);
+            push(&mut acks, &r, at, f);
         }
         next_poll = at + POLL;
     }
     while next_poll < until {
         set_busy(&mut r, next_poll);
         if let Some(f) = r.on_ack_timer(next_poll) {
-            push(&mut acks, &r, &mut det, next_poll, f);
+            push(&mut acks, &r, next_poll, f);
         }
         next_poll += POLL;
     }

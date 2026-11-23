@@ -233,11 +233,22 @@ pub const ALARM_EVIDENCE_OVERHEAD: u64 = 28;
 /// Sınır: uygulamanın az göndermesi düzensiz aralıklar üretir (PTT demetleri, metin) ve sık-pencere
 /// sayılmaz. Gönderici kendisi sık ama yavaş gönderirse (tavanı ölçülen hatta indi) alarm çıkar;
 /// bu da bir ACK'in erken çıkmasıdır.
+///
+/// [KUYRUK İZİ · #175 7089430406] Pencere hızının eşiğin altına inmesi alarm için yetmez; penceredeki
+/// varışlar dolu bir darboğazın izini de taşımalıdır ([`Self::queue_trace`]). Gözlenen (benzetim,
+/// ürün alıcısı, anahtarlı kayıp, aday `86c5602c`): yukarıdaki düzenlilik denetimi kopyalı PTT'de
+/// tutmuyor. Kopya kuralı kopyaları 200/7 ms'ye yayıyor; gönderici boştayken yalnız 86 B'lik
+/// kopyalarla gelen akış düzenli görünüyor (1,048 s: ortalama 33,6 ms, en büyük 82 ms) ve dürüst
+/// hatta alarm veriyor. Dürüst sabit 6 250 hatta, %20 kayıpla, pencere hızı yalnız alınan baytla
+/// hesaplandığı için hatta düşen datagramın aralığı sayılıp baytı sayılmıyor: 60 s'de 4 / 4 / 4
+/// sahte alarm (tohum 1–3).
 #[derive(Debug, Clone, Default)]
 pub struct RateDropDetector {
     /// `(varış anı, gövde baytı, seq)`; seq yalnız [`Self::on_arrival_seq`] ile gelir.
     ring: std::collections::VecDeque<(u64, u64, Option<u64>)>,
     reference_bps: u64,
+    /// [KUYRUK İZİ] Referansı kuran pencerenin tel hızı (gövde + [`ALARM_EVIDENCE_OVERHEAD`], B/s).
+    reference_wire_bps: u64,
     reference_ns: u64,
     fired: bool,
 }
@@ -287,16 +298,76 @@ impl RateDropDetector {
             if rate >= self.reference_bps || !self.fired {
                 self.reference_bps = rate;
                 self.reference_ns = now_ns;
+                let wire = bytes.saturating_add((n - 1).saturating_mul(ALARM_EVIDENCE_OVERHEAD));
+                self.reference_wire_bps =
+                    u64::try_from(u128::from(wire) * 1_000_000_000 / u128::from(span.max(1)))
+                        .unwrap_or(u64::MAX);
             }
             return false;
         }
         if !self.fired
             && rate.saturating_mul(1000) < self.reference_bps.saturating_mul(DROP_PERMILLE)
+            && self.queue_trace()
         {
             self.fired = true;
             return true;
         }
         false
+    }
+
+    /// [KUYRUK İZİ · #175 7089430406] Penceredeki varışlar dolu bir darboğazın izini taşıyor mu.
+    /// Dolu darboğaz her datagramı aynı tel hızıyla, arka arkaya serileştirir: ardışık iki varışın
+    /// aralığı ikincinin tel baytı / hat hızıdır. İz, en yeni varıştan geriye, **ardışık seq'li**
+    /// çiftlerin (arada alınmamış seq yok) tel hızı referansın tel hızının ‰ [`DROP_PERMILLE`]'inin
+    /// altında kaldıkça uzanır. İki koşul:
+    /// - **İz boş değil.** En yeni ardışık çift eşiğin altında. Arada alınmamış seq olan çift
+    ///   atlanır: hatta düşen datagram aralığı uzatır ama baytı bilinmez. Çift ne hız kanıtı ne
+    ///   karşı kanıt sayılır; sıra farkı hız ölçüsü olarak kullanılmaz. Dürüst hatta rastgele
+    ///   kayıp pencere hızını düşürür ama ardışık çiftler hattın hızını gösterir (dürüst 6 250,
+    ///   tohum 1, 17,029 s: pencere 2 900, ardışık çiftler 6 000–6 268 tel B/s; ref × 0,7'nin
+    ///   üstünde).
+    /// - **İz tek hızlı.** İzde daha eski bir çift, kendisinden yeni çiftlerin en hızlısının
+    ///   ‰ [`DROP_PERMILLE`]'inden yavaş değil. Kuyruk boşalırken hat hızı sabittir; daralmadan
+    ///   hemen önceki ya da sırasında serileşen çift daha hızlı olabilir (izin eski ucunda), daha
+    ///   yavaş olamaz. Eski çiftin yeniden bu kadar yavaş olması, hızın alarm çözünürlüğünde
+    ///   yükseldiği anlamına gelir. Bu dolu darboğaz değil, göndericinin boşluklarıdır (kopyalı PTT,
+    ///   gönderici boşta, 1,048 s: tel hızları 3 000–7 125). Oran dedektörün kendi eşiğidir; yeni
+    ///   sabit yoktur.
+    ///
+    /// Tel baytı = gövde + [`ALARM_EVIDENCE_OVERHEAD`] (kanıtla aynı zarf). Dar hatta küçük datagramın
+    /// gövde hızı zarf yüzünden düşük okunur (86 B gövde 114 B tel); tel hızı boydan bağımsızdır.
+    /// Seq bilinmeyen çift ardışık sayılır ([`Self::on_arrival`]).
+    fn queue_trace(&self) -> bool {
+        type Arrival = (u64, u64, Option<u64>);
+        let adjacent = |a: &Arrival, b: &Arrival| match (a.2, b.2) {
+            (Some(sa), Some(sb)) => sa.checked_add(1) == Some(sb),
+            _ => true,
+        };
+        let reference = u128::from(self.reference_wire_bps) * u128::from(DROP_PERMILLE);
+        let mut fastest: Option<(u128, u128)> = None;
+        let mut pairs = 0usize;
+        for (a, b) in self.ring.iter().rev().skip(1).zip(self.ring.iter().rev()) {
+            if !adjacent(a, b) {
+                continue;
+            }
+            let gap = u128::from(b.0.saturating_sub(a.0));
+            let wire = u128::from(b.1.saturating_add(ALARM_EVIDENCE_OVERHEAD));
+            if wire * 1_000_000_000 * 1000 >= reference * gap {
+                break;
+            }
+            if let Some((fw, fg)) = fastest {
+                if wire * fg * 1000 < fw * gap * u128::from(DROP_PERMILLE) {
+                    return false;
+                }
+                if wire * fg > fw * gap {
+                    fastest = Some((wire, gap));
+                }
+            } else {
+                fastest = Some((wire, gap));
+            }
+            pairs += 1;
+        }
+        pairs > 0
     }
 
     /// [ALARM ARALIĞI · #175 7084078903] Alarm durumundayken penceredeki daralmanın başladığı
@@ -384,6 +455,7 @@ impl RateDropDetector {
         if self.fired {
             self.fired = false;
             self.reference_bps = 0;
+            self.reference_wire_bps = 0;
             self.reference_ns = now_ns;
         }
     }
