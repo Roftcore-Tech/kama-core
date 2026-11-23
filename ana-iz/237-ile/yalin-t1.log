@@ -1,0 +1,872 @@
+
+running 1 test
+test measure_rate_drop_during_file_transfer has been running for over 60 seconds
+HÜCRE hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri_gerçek=["0s:12500", "3s:6250", "15s:12500"] ileri_beyan=12500 dönüş_gerçek=62 dönüş_beyan=62 dönüş_gecikme=[] dosya_sınırı=20.00 s dosya2=Some("+17.00 s, sınır 14.00 s") alındı_sınırı=4.00 s evreler=[("başlangıç", 0ns), ("daralma", 3s), ("toparlanma", 15s)]
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı metin1: gecikme=0.39 s (sınır 1.00 s) ilk_çıkış=+0.07 s ilk_varış=+0.38 s iletim=6 ilk_iletim_düştü=false → GEÇTİ
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı alındı1: dönüş=2.36 s (sınır 4.00 s) gidiş_dönüş=2.74 s Bob_ilk_çıkış=+0.89 s Alice_ilk_varış=+2.35 s iletim=2 ilk_iletim_düştü=false → GEÇTİ
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı metin2: gecikme=2.86 s (sınır 1.00 s) ilk_çıkış=+0.02 s ilk_varış=+2.86 s iletim=5 ilk_iletim_düştü=false → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı alındı2: dönüş=1.76 s (sınır 4.00 s) gidiş_dönüş=4.62 s Bob_ilk_çıkış=+0.30 s Alice_ilk_varış=+1.76 s iletim=1 ilk_iletim_düştü=false → GEÇTİ
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı metin3: gecikme=2.37 s (sınır 1.00 s) ilk_çıkış=+0.03 s ilk_varış=+2.37 s iletim=6 ilk_iletim_düştü=false → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı alındı3: dönüş=1.62 s (sınır 4.00 s) gidiş_dönüş=3.99 s Bob_ilk_çıkış=+0.17 s Alice_ilk_varış=+1.62 s iletim=2 ilk_iletim_düştü=false → GEÇTİ
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı metin4: gecikme=4.11 s (sınır 1.00 s) ilk_çıkış=+0.90 s ilk_varış=+4.11 s iletim=5 ilk_iletim_düştü=true → kayıp-kurtarma
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı alındı4: dönüş=1.81 s (sınır 4.00 s) gidiş_dönüş=5.91 s Bob_ilk_çıkış=+0.35 s Alice_ilk_varış=+1.80 s iletim=1 ilk_iletim_düştü=false → GEÇTİ
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı metin5: gecikme=0.48 s (sınır 1.00 s) ilk_çıkış=+0.17 s ilk_varış=+0.48 s iletim=5 ilk_iletim_düştü=false → GEÇTİ
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı alındı5: dönüş=2.08 s (sınır 4.00 s) gidiş_dönüş=2.56 s Bob_ilk_çıkış=+0.62 s Alice_ilk_varış=+2.08 s iletim=1 ilk_iletim_düştü=false → GEÇTİ
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı evre=başlangıç metin_en_kötü=0.39 s (sınır 1.00 s) → GEÇTİ
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı evre=daralma metin_en_kötü=4.11 s (sınır 1.00 s) → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı evre=toparlanma metin_en_kötü=0.48 s (sınır 1.00 s) → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=0 plan=+0.70 ilk_çıkış=+0.70 iletim=1 ilk_iletim_düştü=false ilk_varış=+1.01 teslim=+1.01 gecikme=0.51 öncül_bekledi=false → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=1 plan=+0.90 ilk_çıkış=+0.90 iletim=1 ilk_iletim_düştü=false ilk_varış=+1.21 teslim=+1.21 gecikme=0.51 öncül_bekledi=false → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=2 plan=+1.10 ilk_çıkış=+1.10 iletim=1 ilk_iletim_düştü=false ilk_varış=+1.41 teslim=+1.41 gecikme=0.51 öncül_bekledi=false → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=3 plan=+1.30 ilk_çıkış=+1.30 iletim=1 ilk_iletim_düştü=false ilk_varış=+1.61 teslim=+1.61 gecikme=0.51 öncül_bekledi=false → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=4 plan=+1.50 ilk_çıkış=+1.50 iletim=1 ilk_iletim_düştü=false ilk_varış=+1.81 teslim=+1.81 gecikme=0.51 öncül_bekledi=false → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=5 plan=+1.70 ilk_çıkış=+1.70 iletim=1 ilk_iletim_düştü=false ilk_varış=+2.01 teslim=+2.01 gecikme=0.51 öncül_bekledi=false → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=6 plan=+1.90 ilk_çıkış=+1.98 iletim=1 ilk_iletim_düştü=false ilk_varış=+2.29 teslim=+2.29 gecikme=0.59 öncül_bekledi=false → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=7 plan=+2.10 ilk_çıkış=+2.18 iletim=1 ilk_iletim_düştü=false ilk_varış=+2.49 teslim=+2.49 gecikme=0.59 öncül_bekledi=false → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=8 plan=+2.30 ilk_çıkış=+2.36 iletim=1 ilk_iletim_düştü=false ilk_varış=+2.67 teslim=+2.67 gecikme=0.57 öncül_bekledi=false → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=9 plan=+2.50 ilk_çıkış=+2.54 iletim=1 ilk_iletim_düştü=false ilk_varış=+2.86 teslim=+2.86 gecikme=0.56 öncül_bekledi=false → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=10 plan=+2.70 ilk_çıkış=+2.73 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=11 plan=+2.90 ilk_çıkış=+2.92 iletim=1 ilk_iletim_düştü=false ilk_varış=+3.23 teslim=+3.33 gecikme=0.63 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=12 plan=+3.10 ilk_çıkış=+3.11 iletim=1 ilk_iletim_düştü=false ilk_varış=+3.52 teslim=+3.53 gecikme=0.63 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=13 plan=+3.30 ilk_çıkış=+3.38 iletim=1 ilk_iletim_düştü=false ilk_varış=+4.07 teslim=+4.07 gecikme=0.97 öncül_bekledi=true → GEÇTİ
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 14: gecikme=1.14 s ilk_çıkış=+0.26 s ilk_varış=+1.13 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=14 plan=+3.50 ilk_çıkış=+3.56 iletim=1 ilk_iletim_düştü=false ilk_varış=+4.43 teslim=+4.44 gecikme=1.14 öncül_bekledi=true → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 15: gecikme=1.30 s ilk_çıkış=+0.25 s ilk_varış=+1.30 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=15 plan=+3.70 ilk_çıkış=+3.75 iletim=1 ilk_iletim_düştü=false ilk_varış=+4.80 teslim=+4.80 gecikme=1.30 öncül_bekledi=true → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 16: gecikme=1.47 s ilk_çıkış=+0.23 s ilk_varış=+1.47 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=16 plan=+3.90 ilk_çıkış=+3.93 iletim=1 ilk_iletim_düştü=false ilk_varış=+5.17 teslim=+5.17 gecikme=1.47 öncül_bekledi=true → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 17: gecikme=1.64 s ilk_çıkış=+0.21 s ilk_varış=+1.64 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=17 plan=+4.10 ilk_çıkış=+4.11 iletim=1 ilk_iletim_düştü=false ilk_varış=+5.54 teslim=+5.54 gecikme=1.64 öncül_bekledi=true → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 18: gecikme=1.98 s ilk_çıkış=+0.29 s ilk_varış=+1.98 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=18 plan=+4.30 ilk_çıkış=+4.39 iletim=1 ilk_iletim_düştü=false ilk_varış=+6.08 teslim=+6.08 gecikme=1.98 öncül_bekledi=true → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 19: gecikme=2.15 s ilk_çıkış=+0.27 s ilk_varış=+2.15 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=19 plan=+4.50 ilk_çıkış=+4.57 iletim=1 ilk_iletim_düştü=false ilk_varış=+6.45 teslim=+6.45 gecikme=2.15 öncül_bekledi=true → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 20: gecikme=2.32 s ilk_çıkış=+0.25 s ilk_varış=+2.32 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=20 plan=+4.70 ilk_çıkış=+4.75 iletim=1 ilk_iletim_düştü=false ilk_varış=+6.82 teslim=+6.82 gecikme=2.32 öncül_bekledi=true → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 21: gecikme=2.48 s ilk_çıkış=+0.24 s ilk_varış=+2.48 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=21 plan=+4.90 ilk_çıkış=+4.94 iletim=1 ilk_iletim_düştü=false ilk_varış=+7.18 teslim=+7.18 gecikme=2.48 öncül_bekledi=true → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=22 plan=+5.10 ilk_çıkış=+5.13 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 23: gecikme=2.93 s ilk_çıkış=+0.21 s ilk_varış=+2.83 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=23 plan=+5.30 ilk_çıkış=+5.31 iletim=1 ilk_iletim_düştü=false ilk_varış=+7.93 teslim=+8.03 gecikme=2.93 öncül_bekledi=true → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 24: gecikme=3.06 s ilk_çıkış=+0.23 s ilk_varış=+3.06 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=24 plan=+5.50 ilk_çıkış=+5.53 iletim=1 ilk_iletim_düştü=false ilk_varış=+8.36 teslim=+8.36 gecikme=3.06 öncül_bekledi=true → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 25: gecikme=3.25 s ilk_çıkış=+0.22 s ilk_varış=+3.25 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=25 plan=+5.70 ilk_çıkış=+5.72 iletim=1 ilk_iletim_düştü=false ilk_varış=+8.75 teslim=+8.75 gecikme=3.25 öncül_bekledi=true → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=26 plan=+5.90 ilk_çıkış=+5.92 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 27: gecikme=3.76 s ilk_çıkış=+0.22 s ilk_varış=+3.66 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=27 plan=+6.10 ilk_çıkış=+6.12 iletim=1 ilk_iletim_düştü=false ilk_varış=+9.56 teslim=+9.66 gecikme=3.76 öncül_bekledi=true → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=28 plan=+6.30 ilk_çıkış=+6.31 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=29 plan=+6.50 ilk_çıkış=+6.58 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 30: gecikme=4.44 s ilk_çıkış=+0.27 s ilk_varış=+4.34 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=30 plan=+6.70 ilk_çıkış=+6.77 iletim=1 ilk_iletim_düştü=false ilk_varış=+10.84 teslim=+10.94 gecikme=4.44 öncül_bekledi=true → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 31: gecikme=4.51 s ilk_çıkış=+0.25 s ilk_varış=+4.51 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=31 plan=+6.90 ilk_çıkış=+6.95 iletim=1 ilk_iletim_düştü=false ilk_varış=+11.21 teslim=+11.21 gecikme=4.51 öncül_bekledi=true → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 32: gecikme=4.61 s ilk_çıkış=+0.20 s ilk_varış=+4.61 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=32 plan=+7.10 ilk_çıkış=+7.10 iletim=1 ilk_iletim_düştü=false ilk_varış=+11.51 teslim=+11.51 gecikme=4.61 öncül_bekledi=true → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=33 plan=+7.30 ilk_çıkış=+7.32 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 34: gecikme=5.23 s ilk_çıkış=+0.26 s ilk_varış=+5.13 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=34 plan=+7.50 ilk_çıkış=+7.56 iletim=1 ilk_iletim_düştü=false ilk_varış=+12.43 teslim=+12.53 gecikme=5.23 öncül_bekledi=true → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 35: gecikme=5.29 s ilk_çıkış=+0.24 s ilk_varış=+5.29 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=35 plan=+7.70 ilk_çıkış=+7.74 iletim=1 ilk_iletim_düştü=false ilk_varış=+12.79 teslim=+12.79 gecikme=5.29 öncül_bekledi=true → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=36 plan=+7.90 ilk_çıkış=+YOK iletim=0 ilk_iletim_düştü=false ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=37 plan=+8.10 ilk_çıkış=+YOK iletim=0 ilk_iletim_düştü=false ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=38 plan=+8.30 ilk_çıkış=+YOK iletim=0 ilk_iletim_düştü=false ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=39 plan=+8.50 ilk_çıkış=+YOK iletim=0 ilk_iletim_düştü=false ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=40 plan=+8.70 ilk_çıkış=+YOK iletim=0 ilk_iletim_düştü=false ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=41 plan=+8.90 ilk_çıkış=+YOK iletim=0 ilk_iletim_düştü=false ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=42 plan=+9.10 ilk_çıkış=+YOK iletim=0 ilk_iletim_düştü=false ilk_varış=+YOK teslim=YOK
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 43: gecikme=3.97 s ilk_çıkış=+0.80 s ilk_varış=+3.92 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=43 plan=+9.30 ilk_çıkış=+9.90 iletim=1 ilk_iletim_düştü=false ilk_varış=+13.02 teslim=+13.07 gecikme=3.97 öncül_bekledi=true → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=44 plan=+9.50 ilk_çıkış=+9.94 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 45: gecikme=3.67 s ilk_çıkış=+0.46 s ilk_varış=+3.57 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=45 plan=+9.70 ilk_çıkış=+9.96 iletim=1 ilk_iletim_düştü=false ilk_varış=+13.07 teslim=+13.17 gecikme=3.67 öncül_bekledi=true → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=46 plan=+9.90 ilk_çıkış=+9.99 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=47 plan=+10.10 ilk_çıkış=+10.21 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 48: gecikme=3.48 s ilk_çıkış=+0.34 s ilk_varış=+3.45 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=48 plan=+10.30 ilk_çıkış=+10.44 iletim=1 ilk_iletim_düştü=false ilk_varış=+13.55 teslim=+13.58 gecikme=3.48 öncül_bekledi=true → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 49: gecikme=3.28 s ilk_çıkış=+0.20 s ilk_varış=+3.28 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=49 plan=+10.50 ilk_çıkış=+10.50 iletim=1 ilk_iletim_düştü=false ilk_varış=+13.58 teslim=+13.58 gecikme=3.28 öncül_bekledi=true → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 50: gecikme=3.27 s ilk_çıkış=+0.28 s ilk_varış=+3.27 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=50 plan=+10.70 ilk_çıkış=+10.78 iletim=1 ilk_iletim_düştü=false ilk_varış=+13.77 teslim=+13.77 gecikme=3.27 öncül_bekledi=true → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 51: gecikme=3.09 s ilk_çıkış=+0.20 s ilk_varış=+3.09 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=51 plan=+10.90 ilk_çıkış=+10.90 iletim=1 ilk_iletim_düştü=false ilk_varış=+13.79 teslim=+13.79 gecikme=3.09 öncül_bekledi=true → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 52: gecikme=3.09 s ilk_çıkış=+0.20 s ilk_varış=+3.09 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=52 plan=+11.10 ilk_çıkış=+11.10 iletim=1 ilk_iletim_düştü=false ilk_varış=+13.99 teslim=+13.99 gecikme=3.09 öncül_bekledi=true → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 53: gecikme=2.92 s ilk_çıkış=+0.21 s ilk_varış=+2.92 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=53 plan=+11.30 ilk_çıkış=+11.31 iletim=1 ilk_iletim_düştü=false ilk_varış=+14.02 teslim=+14.02 gecikme=2.92 öncül_bekledi=true → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 54: gecikme=2.92 s ilk_çıkış=+0.20 s ilk_varış=+2.92 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=54 plan=+11.50 ilk_çıkış=+11.50 iletim=1 ilk_iletim_düştü=false ilk_varış=+14.22 teslim=+14.22 gecikme=2.92 öncül_bekledi=true → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 55: gecikme=2.91 s ilk_çıkış=+0.35 s ilk_varış=+2.91 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=55 plan=+11.70 ilk_çıkış=+11.85 iletim=1 ilk_iletim_düştü=false ilk_varış=+14.41 teslim=+14.41 gecikme=2.91 öncül_bekledi=true → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 56: gecikme=2.74 s ilk_çıkış=+0.20 s ilk_varış=+2.74 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=56 plan=+11.90 ilk_çıkış=+11.90 iletim=1 ilk_iletim_düştü=false ilk_varış=+14.44 teslim=+14.44 gecikme=2.74 öncül_bekledi=true → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 57: gecikme=2.73 s ilk_çıkış=+0.20 s ilk_varış=+2.73 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=57 plan=+12.10 ilk_çıkış=+12.10 iletim=1 ilk_iletim_düştü=false ilk_varış=+14.63 teslim=+14.63 gecikme=2.73 öncül_bekledi=true → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 58: gecikme=2.56 s ilk_çıkış=+0.20 s ilk_varış=+2.56 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=58 plan=+12.30 ilk_çıkış=+12.30 iletim=1 ilk_iletim_düştü=false ilk_varış=+14.66 teslim=+14.66 gecikme=2.56 öncül_bekledi=true → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 59: gecikme=2.55 s ilk_çıkış=+0.24 s ilk_varış=+2.55 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=59 plan=+12.50 ilk_çıkış=+12.54 iletim=1 ilk_iletim_düştü=false ilk_varış=+14.85 teslim=+14.85 gecikme=2.55 öncül_bekledi=true → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=60 plan=+12.70 ilk_çıkış=+YOK iletim=0 ilk_iletim_düştü=false ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=61 plan=+12.90 ilk_çıkış=+YOK iletim=0 ilk_iletim_düştü=false ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=62 plan=+13.10 ilk_çıkış=+YOK iletim=0 ilk_iletim_düştü=false ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=63 plan=+13.30 ilk_çıkış=+YOK iletim=0 ilk_iletim_düştü=false ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=64 plan=+13.50 ilk_çıkış=+YOK iletim=0 ilk_iletim_düştü=false ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=65 plan=+13.70 ilk_çıkış=+YOK iletim=0 ilk_iletim_düştü=false ilk_varış=+YOK teslim=YOK
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 66: gecikme=1.21 s ilk_çıkış=+0.81 s ilk_varış=+1.19 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=66 plan=+13.90 ilk_çıkış=+14.51 iletim=1 ilk_iletim_düştü=false ilk_varış=+14.89 teslim=+14.91 gecikme=1.21 öncül_bekledi=true → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt demet 67: gecikme=1.01 s ilk_çıkış=+0.61 s ilk_varış=+1.01 s iletim=1 → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=67 plan=+14.10 ilk_çıkış=+14.51 iletim=1 ilk_iletim_düştü=false ilk_varış=+14.91 teslim=+14.91 gecikme=1.01 öncül_bekledi=true → KALDI
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=68 plan=+14.30 ilk_çıkış=+14.56 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=69 plan=+14.50 ilk_çıkış=+14.58 iletim=1 ilk_iletim_düştü=false ilk_varış=+14.96 teslim=+15.06 gecikme=0.76 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=70 plan=+14.70 ilk_çıkış=+14.78 iletim=1 ilk_iletim_düştü=false ilk_varış=+15.15 teslim=+15.15 gecikme=0.65 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=71 plan=+14.90 ilk_çıkış=+14.90 iletim=1 ilk_iletim_düştü=false ilk_varış=+15.22 teslim=+15.22 gecikme=0.52 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=72 plan=+15.10 ilk_çıkış=+15.10 iletim=1 ilk_iletim_düştü=false ilk_varış=+15.41 teslim=+15.41 gecikme=0.51 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=73 plan=+15.30 ilk_çıkış=+15.30 iletim=1 ilk_iletim_düştü=false ilk_varış=+15.61 teslim=+15.61 gecikme=0.51 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=74 plan=+15.50 ilk_çıkış=+15.50 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=75 plan=+15.70 ilk_çıkış=+15.70 iletim=1 ilk_iletim_düştü=false ilk_varış=+16.01 teslim=+16.11 gecikme=0.61 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=76 plan=+15.90 ilk_çıkış=+15.90 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=77 plan=+16.10 ilk_çıkış=+16.10 iletim=1 ilk_iletim_düştü=false ilk_varış=+16.41 teslim=+16.51 gecikme=0.61 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=78 plan=+16.30 ilk_çıkış=+16.30 iletim=1 ilk_iletim_düştü=false ilk_varış=+16.62 teslim=+16.62 gecikme=0.52 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=79 plan=+16.50 ilk_çıkış=+16.50 iletim=1 ilk_iletim_düştü=false ilk_varış=+16.81 teslim=+16.81 gecikme=0.51 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=80 plan=+16.70 ilk_çıkış=+16.70 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=81 plan=+16.90 ilk_çıkış=+16.90 iletim=1 ilk_iletim_düştü=false ilk_varış=+17.21 teslim=+17.31 gecikme=0.61 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=82 plan=+17.10 ilk_çıkış=+17.19 iletim=1 ilk_iletim_düştü=false ilk_varış=+17.50 teslim=+17.50 gecikme=0.60 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=83 plan=+17.30 ilk_çıkış=+17.39 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=84 plan=+17.50 ilk_çıkış=+17.76 iletim=1 ilk_iletim_düştü=false ilk_varış=+18.07 teslim=+18.09 gecikme=0.79 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=85 plan=+17.70 ilk_çıkış=+17.78 iletim=1 ilk_iletim_düştü=false ilk_varış=+18.09 teslim=+18.09 gecikme=0.59 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=86 plan=+17.90 ilk_çıkış=+17.98 iletim=1 ilk_iletim_düştü=false ilk_varış=+18.29 teslim=+18.29 gecikme=0.59 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=87 plan=+18.10 ilk_çıkış=+18.19 iletim=1 ilk_iletim_düştü=false ilk_varış=+18.50 teslim=+18.50 gecikme=0.60 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=88 plan=+18.30 ilk_çıkış=+18.39 iletim=1 ilk_iletim_düştü=false ilk_varış=+18.70 teslim=+18.70 gecikme=0.60 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=89 plan=+18.50 ilk_çıkış=+18.64 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=90 plan=+18.70 ilk_çıkış=+18.84 iletim=1 ilk_iletim_düştü=false ilk_varış=+19.15 teslim=+19.25 gecikme=0.75 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=91 plan=+18.90 ilk_çıkış=+19.03 iletim=1 ilk_iletim_düştü=false ilk_varış=+19.35 teslim=+19.35 gecikme=0.65 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=92 plan=+19.10 ilk_çıkış=+19.23 iletim=1 ilk_iletim_düştü=false ilk_varış=+19.54 teslim=+19.54 gecikme=0.64 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=93 plan=+19.30 ilk_çıkış=+19.43 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=94 plan=+19.50 ilk_çıkış=+19.62 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=95 plan=+19.70 ilk_çıkış=+19.82 iletim=1 ilk_iletim_düştü=false ilk_varış=+20.13 teslim=+20.23 gecikme=0.73 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=96 plan=+19.90 ilk_çıkış=+20.01 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=97 plan=+20.10 ilk_çıkış=+20.21 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=98 plan=+20.30 ilk_çıkış=+20.40 iletim=1 ilk_iletim_düştü=false ilk_varış=+20.72 teslim=+20.82 gecikme=0.72 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=99 plan=+20.50 ilk_çıkış=+20.60 iletim=1 ilk_iletim_düştü=false ilk_varış=+20.91 teslim=+20.91 gecikme=0.61 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=100 plan=+20.70 ilk_çıkış=+20.80 iletim=1 ilk_iletim_düştü=false ilk_varış=+21.11 teslim=+21.11 gecikme=0.61 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=101 plan=+20.90 ilk_çıkış=+21.00 iletim=1 ilk_iletim_düştü=false ilk_varış=+21.31 teslim=+21.31 gecikme=0.61 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=102 plan=+21.10 ilk_çıkış=+21.19 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=103 plan=+21.30 ilk_çıkış=+21.39 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=104 plan=+21.50 ilk_çıkış=+21.58 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=105 plan=+21.70 ilk_çıkış=+21.78 iletim=1 ilk_iletim_düştü=false ilk_varış=+22.09 teslim=+22.19 gecikme=0.69 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=106 plan=+21.90 ilk_çıkış=+21.98 iletim=1 ilk_iletim_düştü=false ilk_varış=+22.29 teslim=+22.29 gecikme=0.59 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=107 plan=+22.10 ilk_çıkış=+22.17 iletim=1 ilk_iletim_düştü=false ilk_varış=+22.48 teslim=+22.48 gecikme=0.58 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=108 plan=+22.30 ilk_çıkış=+22.37 iletim=1 ilk_iletim_düştü=false ilk_varış=+22.68 teslim=+22.68 gecikme=0.58 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=109 plan=+22.50 ilk_çıkış=+22.56 iletim=1 ilk_iletim_düştü=false ilk_varış=+22.87 teslim=+22.87 gecikme=0.57 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=110 plan=+22.70 ilk_çıkış=+22.75 iletim=1 ilk_iletim_düştü=false ilk_varış=+23.06 teslim=+23.06 gecikme=0.56 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=111 plan=+22.90 ilk_çıkış=+22.93 iletim=1 ilk_iletim_düştü=false ilk_varış=+23.25 teslim=+23.25 gecikme=0.55 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=112 plan=+23.10 ilk_çıkış=+23.12 iletim=1 ilk_iletim_düştü=false ilk_varış=+23.43 teslim=+23.43 gecikme=0.53 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=113 plan=+23.30 ilk_çıkış=+23.30 iletim=1 ilk_iletim_düştü=false ilk_varış=+23.61 teslim=+23.61 gecikme=0.51 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=114 plan=+23.50 ilk_çıkış=+23.57 iletim=1 ilk_iletim_düştü=false ilk_varış=+23.89 teslim=+23.89 gecikme=0.59 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=115 plan=+23.70 ilk_çıkış=+23.76 iletim=1 ilk_iletim_düştü=false ilk_varış=+24.07 teslim=+24.07 gecikme=0.57 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=116 plan=+23.90 ilk_çıkış=+23.94 iletim=1 ilk_iletim_düştü=false ilk_varış=+24.25 teslim=+24.25 gecikme=0.55 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=117 plan=+24.10 ilk_çıkış=+24.12 iletim=1 ilk_iletim_düştü=false ilk_varış=+24.44 teslim=+24.44 gecikme=0.54 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=118 plan=+24.30 ilk_çıkış=+24.31 iletim=1 ilk_iletim_düştü=false ilk_varış=+24.62 teslim=+24.62 gecikme=0.52 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=119 plan=+24.50 ilk_çıkış=+24.58 iletim=1 ilk_iletim_düştü=false ilk_varış=+24.89 teslim=+24.89 gecikme=0.59 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=120 plan=+24.70 ilk_çıkış=+24.76 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=121 plan=+24.90 ilk_çıkış=+24.95 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=122 plan=+25.10 ilk_çıkış=+25.13 iletim=1 ilk_iletim_düştü=false ilk_varış=+25.44 teslim=+25.55 gecikme=0.65 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=123 plan=+25.30 ilk_çıkış=+25.32 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=124 plan=+25.50 ilk_çıkış=+25.59 iletim=1 ilk_iletim_düştü=false ilk_varış=+25.90 teslim=+26.00 gecikme=0.70 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=125 plan=+25.70 ilk_çıkış=+25.77 iletim=1 ilk_iletim_düştü=false ilk_varış=+26.09 teslim=+26.09 gecikme=0.59 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=126 plan=+25.90 ilk_çıkış=+25.96 iletim=1 ilk_iletim_düştü=false ilk_varış=+26.27 teslim=+26.27 gecikme=0.57 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=127 plan=+26.10 ilk_çıkış=+26.14 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=128 plan=+26.30 ilk_çıkış=+26.37 iletim=1 ilk_iletim_düştü=false ilk_varış=+26.68 teslim=+26.78 gecikme=0.68 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=129 plan=+26.50 ilk_çıkış=+26.55 iletim=1 ilk_iletim_düştü=false ilk_varış=+26.86 teslim=+26.86 gecikme=0.56 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=130 plan=+26.70 ilk_çıkış=+26.78 iletim=1 ilk_iletim_düştü=false ilk_varış=+27.09 teslim=+27.09 gecikme=0.59 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=131 plan=+26.90 ilk_çıkış=+26.96 iletim=1 ilk_iletim_düştü=false ilk_varış=+27.28 teslim=+27.28 gecikme=0.58 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=132 plan=+27.10 ilk_çıkış=+27.11 iletim=1 ilk_iletim_düştü=false ilk_varış=+27.42 teslim=+27.42 gecikme=0.52 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=133 plan=+27.30 ilk_çıkış=+27.38 iletim=1 ilk_iletim_düştü=false ilk_varış=+27.69 teslim=+27.69 gecikme=0.59 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=134 plan=+27.50 ilk_çıkış=+27.51 iletim=1 ilk_iletim_düştü=false ilk_varış=+27.82 teslim=+27.82 gecikme=0.52 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=135 plan=+27.70 ilk_çıkış=+27.70 iletim=1 ilk_iletim_düştü=false ilk_varış=+28.01 teslim=+28.01 gecikme=0.51 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=136 plan=+27.90 ilk_çıkış=+27.92 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=137 plan=+28.10 ilk_çıkış=+28.10 iletim=1 ilk_iletim_düştü=false ilk_varış=+28.41 teslim=+28.51 gecikme=0.61 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=138 plan=+28.30 ilk_çıkış=+28.37 iletim=1 ilk_iletim_düştü=false ilk_varış=+28.68 teslim=+28.68 gecikme=0.58 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=139 plan=+28.50 ilk_çıkış=+28.54 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=140 plan=+28.70 ilk_çıkış=+28.71 iletim=1 ilk_iletim_düştü=false ilk_varış=+29.03 teslim=+29.13 gecikme=0.63 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=141 plan=+28.90 ilk_çıkış=+28.90 iletim=1 ilk_iletim_düştü=false ilk_varış=+29.21 teslim=+29.21 gecikme=0.51 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=142 plan=+29.10 ilk_çıkış=+29.10 iletim=1 ilk_iletim_düştü=false ilk_varış=+29.41 teslim=+29.41 gecikme=0.51 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=143 plan=+29.30 ilk_çıkış=+29.30 iletim=1 ilk_iletim_düştü=false ilk_varış=+29.61 teslim=+29.61 gecikme=0.51 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=144 plan=+29.50 ilk_çıkış=+29.58 iletim=1 ilk_iletim_düştü=false ilk_varış=+29.89 teslim=+29.89 gecikme=0.59 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=145 plan=+29.70 ilk_çıkış=+29.75 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=146 plan=+29.90 ilk_çıkış=+29.92 iletim=1 ilk_iletim_düştü=false ilk_varış=+30.24 teslim=+30.31 gecikme=0.61 öncül_bekledi=true → GEÇTİ
+İZ-PTT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=147 plan=+30.00 ilk_çıkış=+30.00 iletim=1 ilk_iletim_düştü=true ilk_varış=+YOK teslim=YOK
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt-sözleşme: zamanında(oluşum)=72/148 (en az binde 750) zamanında(sunum, eski saat, yalnız rapor)=74/148 ilk_ses(oluşum)=0.51 s ilk_ses(sunum)=0.31 s → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt: demet=148 teslim_yok=43 (ilki 10) açılış→PttStarted=0.34 s ilk_demet=0.51 s (GEÇTİ) sınır_üstü_kaldı=33 (bunların öncül_bekledi=33, en büyük 5.29 s) kayıp-kurtarma(kendi_kaybı)=0 (en büyük 0.00 s) en_büyük_gecikme_sayılan=5.29 s en_büyük_gecikme_tümü=5.29 s dosya_sürerken_en_büyük_boşluk=1.29 s kabul_beklemesi_en_çok=0.00 s → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı evre=başlangıç ptt_en_kötü=60.00 s (sınır 1.00 s) demet=12 zamanında=11 (en az binde 750) teslim_yok=1 kabul_edilmeyen=0 → GEÇTİ
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı evre=daralma ptt_en_kötü=60.00 s (sınır 1.00 s) demet=60 zamanında=5 (en az binde 750) teslim_yok=22 kabul_edilmeyen=0 → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı evre=toparlanma ptt_en_kötü=60.00 s (sınır 1.00 s) demet=76 zamanında=56 (en az binde 750) teslim_yok=20 kabul_edilmeyen=0 → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt_bant yön=alice bit_s=5460 (en çok 5000; payda basış 29.50 s) datagram=141 yalın_0x09=129 yük=80 B demet=200 ms → KALDI
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt_bant_pencere yön=alice başlangıç=[0, +1.48 s) bit_s=6158 datagram=9 sürekli=[+1.48 s, +29.50 s] bit_s=5423 datagram=132 | yalın_0x09=129 veri_çerçeveli=12 (demet 6) açılış_iletimi=3 kapanış_iletimi=3 demet_iletimi=135 tekil_demet=135 demet_fazla_iletim=0
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt_koruma yön=alice açılış=3 kapanış=3 (en az 3) → GEÇTİ
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt_ses basış=29.50 s çerçeve(20 ms) planlanan=1474 oluşan=1474 kabul=1474 telde=1344 teslim=1050 zamanında(oluşumdan ≤ 1.00 s)=720 | 0x16_sonrası:kabul=1284 telde=1284 teslim=990 zamanında=660 0x16_öncesi:kabul=60 telde=60 teslim=60 zamanında=60 tele_çıkmadı:kabul=130 telde=0 teslim=0 zamanında=0 | ses_yükü_tekil=11792 B ses_yükü_telde=10752 B (demet 148 , son demet çerçevesi 4, demet iletimi 135)
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt_zaman ilk_ses(ilk çerçeve oluşumundan Bob teslimine)=0.51 s ilk_PTT_datagramı_telde=+0.00 s ilk_ses_datagramı_telde=+0.20 s (basış başından)
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı canlılık: demet=148 ufukta_teslim_edilmeyen=43 (ilki Some(10); en uzun art arda dizi 1.20 s) kabul_edilmeyen=0 ufuk=15.00 s → GEÇTİ
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dosya: tamamlanma=11.97 s (sınır 20.00 s) bayt_doğru=true parça=41 Alice_teslim_bildirimi=13.77 s dosya_bekletme_turu=54056 uygulama_hataları=[] → GEÇTİ
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dosya2: gönderim=+17.00 s süre=9.50 s (sınır 14.00 s, gerçek hat 12 500) bayt_doğru=true → GEÇTİ
+ÖLÇÜT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı bayt: ileri=387 pkt/221765 B (kuyruk_düşen=0 rastgele_düşen=87) dönüş=29 pkt/2028 B (kuyruk_düşen=0) çözülemeyen_DATA=0/0 kayıt_taşması=0/0
+İZ-FEC hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı Alice→: latch_blok=10 onarım_tx=40 parite_kararı=40 latch(no_eligible,mismatch,no_rule,enq_r,emit_r)=(0, 0, 0, 40, 40) son_bastırma=None onarım_tel_tx=40 onarım_karşıda_rx=32 karşının_çözdüğü_blok=9 karşının_RECOVERED_tx=9 RECOVERED_buraya_ulaşan=9 | PARAM gönderim=6 onay=1 onay_anı=5.56 s | srtt=2083 ms taban_pto=2634 ms rtt_örnek=8 | tail_prob=2 retx=17 kopya=84 durum=Some(Idle)
+İZ-FEC hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı Bob→: latch_blok=0 onarım_tx=0 parite_kararı=0 latch(no_eligible,mismatch,no_rule,enq_r,emit_r)=(0, 0, 0, 0, 0) son_bastırma=None onarım_tel_tx=0 onarım_karşıda_rx=0 karşının_çözdüğü_blok=0 karşının_RECOVERED_tx=0 RECOVERED_buraya_ulaşan=0 | PARAM gönderim=0 onay=0 onay_anı=- | srtt=1929 ms taban_pto=2204 ms rtt_örnek=3 | tail_prob=0 retx=0 kopya=2 durum=Some(Idle)
+İZ-UYG hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı metin1 gönderim=0.30 Bob_teslim=0.69 Alice_alındı=3.04
+İZ-UYG hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı metin2 gönderim=5.52 Bob_teslim=8.38 Alice_alındı=10.14
+İZ-UYG hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı metin3 gönderim=5.00 Bob_teslim=7.37 Alice_alındı=8.99
+İZ-UYG hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı metin4 gönderim=9.00 Bob_teslim=13.11 Alice_alındı=14.91
+İZ-UYG hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı metin5 gönderim=18.00 Bob_teslim=18.48 Alice_alındı=20.56
+İZ-UYG hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ptt_açılış=0.50 PttStarted=0.84 dosya_Bob=11.97 dosya_Alice_bildirimi=13.77 Bob_parça_teslimleri=[2.39 2.39 2.39 2.39 2.48 2.48 2.48 2.58 2.66 3.32 3.32 3.32 3.32 3.32 3.32 4.04 4.24 4.41 4.61 4.78 5.51 5.51 5.51 6.79 6.99 7.16 7.36 7.54 7.74 7.91 8.14 10.64 10.64 10.64 10.64 10.64 10.64 10.64 10.64 11.86 11.94 18.38 18.38 18.38 18.38 19.04 23.33 23.33 23.33 23.33 23.33 23.33 23.33 23.33 23.33 23.70 23.70 23.70 23.70 23.70 23.70 23.97 24.98 24.98 24.98 24.98 24.98 24.98 24.98 25.07 25.16 25.25 25.35 25.43 25.53 25.62 25.71 26.17 26.26 26.35 26.44 26.49]
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=0.00 tel=85 ok varış=0.31 kontrol anahtar=A1/03/0#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=0.00 tel=53 ok varış=0.31 kontrol anahtar=A1/08/0#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=0.00 tel=53 ok varış=0.32 kontrol anahtar=A1/08/0#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=0.01 tel=128 yolda_düştü varış=- FileBegin anahtar=A1/00/c000000000000000#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=0.02 tel=1074 ok varış=0.41 Chunk(0) anahtar=A1/00/c000000000000001#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=0.11 tel=1074 ok varış=0.50 Chunk(990) anahtar=A1/00/c000000000000002#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=0.20 tel=1074 ok varış=0.58 Chunk(1980) anahtar=A1/00/c000000000000003#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=0.20 tel=85 yolda_düştü varış=- kontrol anahtar=A1/03/0#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=0.29 tel=1074 ok varış=0.68 Chunk(2970) anahtar=A1/00/c000000000000004#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=0.37 tel=108 ok varış=0.68 Text(0) anahtar=A1/00/8000000000000000#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=0.38 tel=1074 yolda_düştü varış=- Chunk(3960) anahtar=A1/00/c000000000000005#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=0.40 tel=85 yolda_düştü varış=- kontrol anahtar=A1/03/0#2
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=0.50 tel=72 yolda_düştü varış=- PttOpen(0) anahtar=A1/00/0#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=0.53 tel=108 ok varış=0.83 Text(0) anahtar=A1/00/8000000000000000#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=0.53 tel=72 ok varış=0.84 PttOpen(0) anahtar=A1/00/0#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=0.55 tel=72 ok varış=0.85 PttOpen(0) anahtar=A1/00/0#2
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=0.59 tel=108 ok varış=0.90 Text(0) anahtar=A1/00/8000000000000000#2
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=0.63 tel=108 ok varış=0.94 Text(0) anahtar=A1/00/8000000000000000#3
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=0.67 tel=108 ok varış=0.97 Text(0) anahtar=A1/00/8000000000000000#4
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=0.70 tel=154 ok varış=1.01 Bundle(0) anahtar=A1/00/1#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=0.80 tel=85 ok varış=1.11 kontrol anahtar=A1/03/0#3
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=0.90 tel=154 ok varış=1.21 Bundle(1) anahtar=A1/00/2#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=1.10 tel=154 ok varış=1.41 Bundle(2) anahtar=A1/00/3#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=1.20 tel=53 ok varış=1.50 kontrol anahtar=A1/08/0#2
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=1.30 tel=154 ok varış=1.61 Bundle(3) anahtar=A1/00/4#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=1.33 tel=1074 yolda_düştü varış=- Chunk(4950) anahtar=A1/00/c000000000000006#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=1.50 tel=154 ok varış=1.81 Bundle(4) anahtar=A1/00/5#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=1.53 tel=1074 yolda_düştü varış=- Chunk(5940) anahtar=A1/00/c000000000000007#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=1.60 tel=85 yolda_düştü varış=- kontrol anahtar=A1/03/0#4
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=1.62 tel=108 ok varış=1.93 Text(0) anahtar=A1/00/8000000000000000#5
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=1.70 tel=154 ok varış=2.01 Bundle(5) anahtar=A1/00/6#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=1.76 tel=1086 yolda_düştü varış=- kontrol anahtar=A1/01/c00000000000#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=1.90 tel=1086 ok varış=2.28 kontrol anahtar=A1/01/c00000000001#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=1.98 tel=146 ok varış=2.29 Bundle(6) anahtar=A1/00/7#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=1.99 tel=1086 ok varış=2.38 kontrol anahtar=A1/01/c00000000002#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=2.08 tel=128 ok varış=2.39 FileBegin anahtar=A1/00/c000000000000000#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=2.09 tel=1086 ok varış=2.48 kontrol anahtar=A1/01/c00000000003#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=2.18 tel=146 ok varış=2.49 Bundle(7) anahtar=A1/00/8#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=2.19 tel=1074 ok varış=2.58 Chunk(6930) anahtar=A1/00/c000000000000008#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=2.27 tel=1074 ok varış=2.66 Chunk(7920) anahtar=A1/00/c000000000000009#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=2.36 tel=146 ok varış=2.67 Bundle(8) anahtar=A1/00/9#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=2.37 tel=1074 yolda_düştü varış=- Chunk(8910) anahtar=A1/00/c00000000000000a#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=2.46 tel=1074 ok varış=2.84 Chunk(9900) anahtar=A1/00/c00000000000000b#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=2.54 tel=146 ok varış=2.86 Bundle(9) anahtar=A1/00/a#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=2.55 tel=1074 ok varış=2.94 Chunk(10890) anahtar=A1/00/c00000000000000c#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=2.64 tel=1074 ok varış=3.03 Chunk(11880) anahtar=A1/00/c00000000000000d#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=2.73 tel=146 yolda_düştü varış=- Bundle(10) anahtar=A1/00/b#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=2.74 tel=1074 ok varış=3.13 Chunk(12870) anahtar=A1/00/c00000000000000e#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=2.80 tel=85 ok varış=3.13 kontrol anahtar=A1/03/0#5
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=2.83 tel=1074 ok varış=3.22 Chunk(13860) anahtar=A1/00/c00000000000000f#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=2.92 tel=146 ok varış=3.23 Bundle(11) anahtar=A1/00/c#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=2.93 tel=1086 ok varış=3.32 kontrol anahtar=A1/01/c00000010000#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=3.02 tel=1086 ok varış=3.49 kontrol anahtar=A1/01/c00000010001#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri BDown sunum=3.06 tel=65 yolda_düştü varış=- kontrol anahtar=A1/14/0#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=3.11 tel=146 ok varış=3.52 Bundle(12) anahtar=A1/00/d#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=3.12 tel=1086 ok varış=3.70 kontrol anahtar=A1/01/c00000010002#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=3.21 tel=1086 ok varış=3.87 kontrol anahtar=A1/01/c00000010003#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=3.29 tel=1074 ok varış=4.04 Chunk(14850) anahtar=A1/00/c000000000000010#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=3.38 tel=146 ok varış=4.07 Bundle(13) anahtar=A1/00/e#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=3.39 tel=1074 ok varış=4.24 Chunk(15840) anahtar=A1/00/c000000000000011#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=3.48 tel=1074 ok varış=4.41 Chunk(16830) anahtar=A1/00/c000000000000012#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=3.56 tel=146 ok varış=4.43 Bundle(14) anahtar=A1/00/f#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=3.57 tel=1074 ok varış=4.61 Chunk(17820) anahtar=A1/00/c000000000000013#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=3.66 tel=1074 ok varış=4.78 Chunk(18810) anahtar=A1/00/c000000000000014#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=3.75 tel=146 ok varış=4.80 Bundle(15) anahtar=A1/00/10#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=3.76 tel=1074 yolda_düştü varış=- Chunk(19800) anahtar=A1/00/c000000000000015#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=3.84 tel=1074 ok varış=5.15 Chunk(20790) anahtar=A1/00/c000000000000016#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=3.93 tel=146 ok varış=5.17 Bundle(16) anahtar=A1/00/11#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=3.94 tel=1074 ok varış=5.34 Chunk(21780) anahtar=A1/00/c000000000000017#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=4.03 tel=1086 ok varış=5.51 kontrol anahtar=A1/01/c00000020000#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=4.11 tel=146 ok varış=5.54 Bundle(17) anahtar=A1/00/12#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=4.13 tel=1086 ok varış=5.71 kontrol anahtar=A1/01/c00000020001#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=4.21 tel=1086 ok varış=5.89 kontrol anahtar=A1/01/c00000020002#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=4.30 tel=1074 ok varış=6.06 Chunk(3960) anahtar=A1/00/c000000000000005#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=4.39 tel=146 ok varış=6.08 Bundle(18) anahtar=A1/00/13#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=4.40 tel=1074 ok varış=6.25 Chunk(4950) anahtar=A1/00/c000000000000006#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=4.48 tel=1074 ok varış=6.42 Chunk(5940) anahtar=A1/00/c000000000000007#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=4.57 tel=146 ok varış=6.45 Bundle(19) anahtar=A1/00/14#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=4.58 tel=1086 ok varış=6.62 kontrol anahtar=A1/01/c00000020003#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=4.67 tel=1074 ok varış=6.79 Chunk(22770) anahtar=A1/00/c000000000000018#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=4.75 tel=146 ok varış=6.82 Bundle(20) anahtar=A1/00/15#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=4.77 tel=1074 ok varış=6.99 Chunk(23760) anahtar=A1/00/c000000000000019#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=4.85 tel=1074 ok varış=7.16 Chunk(24750) anahtar=A1/00/c00000000000001a#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=4.94 tel=146 ok varış=7.18 Bundle(21) anahtar=A1/00/16#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=4.95 tel=1074 ok varış=7.36 Chunk(25740) anahtar=A1/00/c00000000000001b#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=5.03 tel=92 ok varış=7.37 Text(1) anahtar=A1/00/8000000000000001#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=5.04 tel=1074 ok varış=7.54 Chunk(26730) anahtar=A1/00/c00000000000001c#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=5.13 tel=146 yolda_düştü varış=- Bundle(22) anahtar=A1/00/17#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=5.14 tel=1074 ok varış=7.74 Chunk(27720) anahtar=A1/00/c00000000000001d#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=5.23 tel=1074 ok varış=7.91 Chunk(28710) anahtar=A1/00/c00000000000001e#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=5.31 tel=146 ok varış=7.93 Bundle(23) anahtar=A1/00/18#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=5.32 tel=92 ok varış=7.95 Text(1) anahtar=A1/00/8000000000000001#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=5.33 tel=92 ok varış=7.96 Text(1) anahtar=A1/00/8000000000000001#2
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=5.34 tel=1074 ok varış=8.13 Chunk(29700) anahtar=A1/00/c00000000000001f#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=5.42 tel=92 ok varış=8.15 Text(1) anahtar=A1/00/8000000000000001#3
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=5.43 tel=92 ok varış=8.16 Text(1) anahtar=A1/00/8000000000000001#4
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=5.44 tel=1086 yolda_düştü varış=- kontrol anahtar=A1/01/c00000030000#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=5.53 tel=146 ok varış=8.36 Bundle(24) anahtar=A1/00/19#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=5.54 tel=110 ok varış=8.38 Text(2) anahtar=A1/00/8000000000000002#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=5.55 tel=1086 ok varış=8.55 kontrol anahtar=A1/01/c00000030001#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=5.63 tel=1086 yolda_düştü varış=- kontrol anahtar=A1/01/c00000030002#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=5.72 tel=146 ok varış=8.75 Bundle(25) anahtar=A1/00/1a#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=5.73 tel=1086 ok varış=8.92 kontrol anahtar=A1/01/c00000030003#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=5.82 tel=110 yolda_düştü varış=- Text(2) anahtar=A1/00/8000000000000002#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=5.83 tel=110 ok varış=8.96 Text(2) anahtar=A1/00/8000000000000002#2
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=5.84 tel=1074 yolda_düştü varış=- Chunk(30690) anahtar=A1/00/c000000000000020#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=5.92 tel=146 yolda_düştü varış=- Bundle(26) anahtar=A1/00/1b#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=5.93 tel=110 ok varış=9.17 Text(2) anahtar=A1/00/8000000000000002#3
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=5.94 tel=110 ok varış=9.19 Text(2) anahtar=A1/00/8000000000000002#4
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=5.95 tel=1074 ok varış=9.36 Chunk(31680) anahtar=A1/00/c000000000000021#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=6.04 tel=1074 ok varış=9.53 Chunk(32670) anahtar=A1/00/c000000000000022#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=6.12 tel=146 ok varış=9.55 Bundle(27) anahtar=A1/00/1c#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=6.13 tel=1074 ok varış=9.73 Chunk(33660) anahtar=A1/00/c000000000000023#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=6.22 tel=1074 ok varış=9.90 Chunk(34650) anahtar=A1/00/c000000000000024#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=6.31 tel=146 yolda_düştü varış=- Bundle(28) anahtar=A1/00/1d#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=6.32 tel=1074 ok varış=10.09 Chunk(35640) anahtar=A1/00/c000000000000025#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=6.40 tel=1074 ok varış=10.27 Chunk(36630) anahtar=A1/00/c000000000000026#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=6.49 tel=1074 ok varış=10.44 Chunk(37620) anahtar=A1/00/c000000000000027#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=6.58 tel=146 yolda_düştü varış=- Bundle(29) anahtar=A1/00/1e#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=6.59 tel=1086 ok varış=10.63 kontrol anahtar=A1/01/c00000040000#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=6.67 tel=1086 ok varış=10.81 kontrol anahtar=A1/01/c00000040001#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri BDown sunum=6.70 tel=69 yolda_düştü varış=- kontrol anahtar=A1/14/0#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=6.77 tel=146 ok varış=10.84 Bundle(30) anahtar=A1/00/1f#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=6.78 tel=1086 ok varış=11.02 kontrol anahtar=A1/01/c00000040002#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=6.87 tel=1086 ok varış=11.19 kontrol anahtar=A1/01/c00000040003#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=6.95 tel=146 ok varış=11.21 Bundle(31) anahtar=A1/00/20#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=6.96 tel=1074 yolda_düştü varış=- Chunk(38610) anahtar=A1/00/c000000000000028#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=7.05 tel=484 yolda_düştü varış=- Chunk(39600) anahtar=A1/00/c000000000000029#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=7.09 tel=74 yolda_düştü varış=- FileEnd anahtar=A1/00/c00000000000002a#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=7.09 tel=92 ok varış=11.49 Text(1) anahtar=A1/00/8000000000000001#5
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=7.10 tel=146 ok varış=11.51 Bundle(32) anahtar=A1/00/21#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=7.11 tel=1074 yolda_düştü varış=- Chunk(8910) anahtar=A1/00/c00000000000000a#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=7.20 tel=1074 ok varış=11.86 Chunk(38610) anahtar=A1/00/c000000000000028#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=7.28 tel=484 ok varış=11.93 Chunk(39600) anahtar=A1/00/c000000000000029#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=7.32 tel=146 yolda_düştü varış=- Bundle(33) anahtar=A1/00/22#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=7.34 tel=74 ok varış=11.97 FileEnd anahtar=A1/00/c00000000000002a#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=7.34 tel=1074 ok varış=12.14 Chunk(38610) anahtar=A1/00/c000000000000028#2
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=7.43 tel=484 ok varış=12.22 Chunk(39600) anahtar=A1/00/c000000000000029#2
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=7.47 tel=74 ok varış=12.23 FileEnd anahtar=A1/00/c00000000000002a#2
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=7.47 tel=1074 yolda_düştü varış=- Chunk(38610) anahtar=A1/00/c000000000000028#3
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=7.56 tel=146 ok varış=12.43 Bundle(34) anahtar=A1/00/23#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=7.57 tel=484 yolda_düştü varış=- Chunk(39600) anahtar=A1/00/c000000000000029#3
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=7.61 tel=74 yolda_düştü varış=- FileEnd anahtar=A1/00/c00000000000002a#3
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=7.61 tel=1074 ok varış=12.69 Chunk(38610) anahtar=A1/00/c000000000000028#4
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=7.70 tel=484 yolda_düştü varış=- Chunk(39600) anahtar=A1/00/c000000000000029#4
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=7.74 tel=146 ok varış=12.79 Bundle(35) anahtar=A1/00/24#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=7.75 tel=74 ok varış=12.80 FileEnd anahtar=A1/00/c00000000000002a#4
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=7.76 tel=1074 yolda_düştü varış=- Chunk(9900) anahtar=A1/00/c00000000000000b#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri BDown sunum=8.99 tel=73 yolda_düştü varış=- kontrol anahtar=A1/14/0#2
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=9.90 tel=92 yolda_düştü varış=- Text(3) anahtar=A1/00/8000000000000003#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=9.90 tel=146 ok varış=13.02 Bundle(43) anahtar=A1/00/2c#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=9.94 tel=146 yolda_düştü varış=- Bundle(44) anahtar=A1/00/2d#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=9.96 tel=146 ok varış=13.07 Bundle(45) anahtar=A1/00/2e#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=9.99 tel=146 yolda_düştü varış=- Bundle(46) anahtar=A1/00/2f#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=10.01 tel=92 ok varış=13.11 Text(3) anahtar=A1/00/8000000000000003#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=10.02 tel=92 ok varış=13.12 Text(3) anahtar=A1/00/8000000000000003#2
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=10.04 tel=1074 ok varış=13.29 Chunk(19800) anahtar=A1/00/c000000000000015#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri BDown sunum=10.16 tel=73 yolda_düştü varış=- kontrol anahtar=A1/14/0#3
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=10.21 tel=146 yolda_düştü varış=- Bundle(47) anahtar=A1/00/30#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=10.23 tel=92 ok varış=13.34 Text(3) anahtar=A1/00/8000000000000003#3
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=10.25 tel=92 ok varış=13.36 Text(3) anahtar=A1/00/8000000000000003#4
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=10.26 tel=1074 yolda_düştü varış=- Chunk(21780) anahtar=A1/00/c000000000000017#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=10.44 tel=146 ok varış=13.55 Bundle(48) anahtar=A1/00/31#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=10.50 tel=146 ok varış=13.58 Bundle(49) anahtar=A1/00/32#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=10.61 tel=1074 ok varış=13.75 Chunk(22770) anahtar=A1/00/c000000000000018#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=10.78 tel=146 ok varış=13.77 Bundle(50) anahtar=A1/00/33#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=10.90 tel=146 ok varış=13.79 Bundle(51) anahtar=A1/00/34#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=10.95 tel=1074 ok varış=13.97 Chunk(23760) anahtar=A1/00/c000000000000019#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=11.10 tel=146 ok varış=13.99 Bundle(52) anahtar=A1/00/35#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri BDown sunum=11.30 tel=73 ok varış=14.00 kontrol anahtar=A1/14/0#4
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=11.31 tel=146 ok varış=14.02 Bundle(53) anahtar=A1/00/36#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=11.33 tel=1074 ok varış=14.20 Chunk(24750) anahtar=A1/00/c00000000000001a#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=11.50 tel=146 ok varış=14.22 Bundle(54) anahtar=A1/00/37#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=11.68 tel=1074 ok varış=14.39 Chunk(25740) anahtar=A1/00/c00000000000001b#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=11.85 tel=146 ok varış=14.41 Bundle(55) anahtar=A1/00/38#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=11.90 tel=146 ok varış=14.44 Bundle(56) anahtar=A1/00/39#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=12.02 tel=1074 ok varış=14.61 Chunk(26730) anahtar=A1/00/c00000000000001c#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=12.10 tel=146 ok varış=14.63 Bundle(57) anahtar=A1/00/3a#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=12.30 tel=146 ok varış=14.66 Bundle(58) anahtar=A1/00/3b#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=12.37 tel=1074 ok varış=14.83 Chunk(27720) anahtar=A1/00/c00000000000001d#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=12.54 tel=146 ok varış=14.85 Bundle(59) anahtar=A1/00/3c#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri BDown sunum=13.77 tel=77 yolda_düştü varış=- kontrol anahtar=A1/14/0#5
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=14.51 tel=146 ok varış=14.89 Bundle(66) anahtar=A1/00/43#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=14.51 tel=146 ok varış=14.91 Bundle(67) anahtar=A1/00/44#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=14.56 tel=146 yolda_düştü varış=- Bundle(68) anahtar=A1/00/45#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=14.58 tel=146 ok varış=14.96 Bundle(69) anahtar=A1/00/46#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=14.60 tel=1074 ok varış=15.13 Chunk(30690) anahtar=A1/00/c000000000000020#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=14.78 tel=146 ok varış=15.15 Bundle(70) anahtar=A1/00/47#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=14.90 tel=146 ok varış=15.22 Bundle(71) anahtar=A1/00/48#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri BDown sunum=14.92 tel=77 ok varış=15.24 kontrol anahtar=A1/14/0#6
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=15.10 tel=146 ok varış=15.41 Bundle(72) anahtar=A1/00/49#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=15.30 tel=146 ok varış=15.61 Bundle(73) anahtar=A1/00/4a#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=15.50 tel=146 yolda_düştü varış=- Bundle(74) anahtar=A1/00/4b#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=15.70 tel=146 ok varış=16.01 Bundle(75) anahtar=A1/00/4c#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=15.90 tel=146 yolda_düştü varış=- Bundle(76) anahtar=A1/00/4d#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=16.10 tel=146 ok varış=16.41 Bundle(77) anahtar=A1/00/4e#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=16.22 tel=1074 yolda_düştü varış=- Chunk(8910) anahtar=A1/00/c00000000000000a#2
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=16.30 tel=146 ok varış=16.62 Bundle(78) anahtar=A1/00/4f#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=16.50 tel=146 ok varış=16.81 Bundle(79) anahtar=A1/00/50#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=16.70 tel=146 yolda_düştü varış=- Bundle(80) anahtar=A1/00/51#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=16.90 tel=146 ok varış=17.21 Bundle(81) anahtar=A1/00/52#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=17.00 tel=129 ok varış=17.31 FileBegin anahtar=A1/00/c00000000000002b#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=17.02 tel=1074 yolda_düştü varış=- Chunk(0) anahtar=A1/00/c00000000000002c#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=17.19 tel=146 ok varış=17.50 Bundle(82) anahtar=A1/00/53#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=17.22 tel=1074 ok varış=17.60 Chunk(990) anahtar=A1/00/c00000000000002d#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=17.39 tel=146 yolda_düştü varış=- Bundle(83) anahtar=A1/00/54#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=17.41 tel=1074 ok varış=17.80 Chunk(1980) anahtar=A1/00/c00000000000002e#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=17.41 tel=1074 yolda_düştü varış=- Chunk(2970) anahtar=A1/00/c00000000000002f#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=17.76 tel=146 ok varış=18.07 Bundle(84) anahtar=A1/00/55#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=17.78 tel=146 ok varış=18.09 Bundle(85) anahtar=A1/00/56#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=17.80 tel=1086 ok varış=18.19 kontrol anahtar=A1/01/c00000050000#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=17.98 tel=146 ok varış=18.29 Bundle(86) anahtar=A1/00/57#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=17.98 tel=1086 ok varış=18.38 kontrol anahtar=A1/01/c00000050001#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=18.17 tel=92 ok varış=18.48 Text(4) anahtar=A1/00/8000000000000004#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=18.19 tel=146 ok varış=18.50 Bundle(87) anahtar=A1/00/58#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=18.21 tel=1086 ok varış=18.60 kontrol anahtar=A1/01/c00000050002#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=18.39 tel=146 ok varış=18.70 Bundle(88) anahtar=A1/00/59#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=18.41 tel=92 ok varış=18.72 Text(4) anahtar=A1/00/8000000000000004#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=18.42 tel=92 yolda_düştü varış=- Text(4) anahtar=A1/00/8000000000000004#2
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=18.44 tel=92 ok varış=18.75 Text(4) anahtar=A1/00/8000000000000004#3
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=18.45 tel=92 ok varış=18.76 Text(4) anahtar=A1/00/8000000000000004#4
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=18.47 tel=1086 ok varış=18.86 kontrol anahtar=A1/01/c00000050003#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=18.64 tel=146 yolda_düştü varış=- Bundle(89) anahtar=A1/00/5a#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=18.64 tel=1074 ok varış=19.04 Chunk(3960) anahtar=A1/00/c000000000000030#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=18.84 tel=146 ok varış=19.15 Bundle(90) anahtar=A1/00/5b#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=18.86 tel=1074 yolda_düştü varış=- Chunk(4950) anahtar=A1/00/c000000000000031#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=19.03 tel=146 ok varış=19.35 Bundle(91) anahtar=A1/00/5c#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=19.06 tel=1074 yolda_düştü varış=- Chunk(5940) anahtar=A1/00/c000000000000032#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=19.23 tel=146 ok varış=19.54 Bundle(92) anahtar=A1/00/5d#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=19.23 tel=1074 ok varış=19.63 Chunk(6930) anahtar=A1/00/c000000000000033#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=19.43 tel=146 yolda_düştü varış=- Bundle(93) anahtar=A1/00/5e#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=19.45 tel=1074 yolda_düştü varış=- Chunk(7920) anahtar=A1/00/c000000000000034#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=19.62 tel=146 yolda_düştü varış=- Bundle(94) anahtar=A1/00/5f#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=19.64 tel=1074 ok varış=20.03 Chunk(8910) anahtar=A1/00/c000000000000035#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=19.82 tel=146 ok varış=20.13 Bundle(95) anahtar=A1/00/60#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=19.82 tel=1074 yolda_düştü varış=- Chunk(9900) anahtar=A1/00/c000000000000036#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=20.01 tel=146 yolda_düştü varış=- Bundle(96) anahtar=A1/00/61#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=20.04 tel=1074 ok varış=20.42 Chunk(10890) anahtar=A1/00/c000000000000037#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=20.21 tel=146 yolda_düştü varış=- Bundle(97) anahtar=A1/00/62#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=20.23 tel=1086 ok varış=20.62 kontrol anahtar=A1/01/c00000060000#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=20.41 tel=146 ok varış=20.72 Bundle(98) anahtar=A1/00/63#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=20.41 tel=1086 yolda_düştü varış=- kontrol anahtar=A1/01/c00000060001#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri BDown sunum=20.56 tel=81 yolda_düştü varış=- kontrol anahtar=A1/14/0#7
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=20.60 tel=146 ok varış=20.91 Bundle(99) anahtar=A1/00/64#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=20.63 tel=1086 ok varış=21.01 kontrol anahtar=A1/01/c00000060002#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=20.80 tel=146 ok varış=21.11 Bundle(100) anahtar=A1/00/65#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=20.82 tel=1086 ok varış=21.21 kontrol anahtar=A1/01/c00000060003#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=21.00 tel=146 ok varış=21.31 Bundle(101) anahtar=A1/00/66#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=21.00 tel=1074 ok varış=21.40 Chunk(11880) anahtar=A1/00/c000000000000038#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=21.19 tel=146 yolda_düştü varış=- Bundle(102) anahtar=A1/00/67#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=21.22 tel=1074 ok varış=21.60 Chunk(12870) anahtar=A1/00/c000000000000039#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=21.39 tel=146 yolda_düştü varış=- Bundle(103) anahtar=A1/00/68#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=21.41 tel=1074 yolda_düştü varış=- Chunk(13860) anahtar=A1/00/c00000000000003a#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=21.58 tel=146 yolda_düştü varış=- Bundle(104) anahtar=A1/00/69#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=21.58 tel=1074 ok varış=21.98 Chunk(14850) anahtar=A1/00/c00000000000003b#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=21.78 tel=146 ok varış=22.09 Bundle(105) anahtar=A1/00/6a#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=21.80 tel=1074 ok varış=22.19 Chunk(15840) anahtar=A1/00/c00000000000003c#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=21.98 tel=146 ok varış=22.29 Bundle(106) anahtar=A1/00/6b#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=22.00 tel=1074 ok varış=22.39 Chunk(16830) anahtar=A1/00/c00000000000003d#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=22.17 tel=146 ok varış=22.48 Bundle(107) anahtar=A1/00/6c#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=22.17 tel=1074 ok varış=22.57 Chunk(17820) anahtar=A1/00/c00000000000003e#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=22.37 tel=146 ok varış=22.68 Bundle(108) anahtar=A1/00/6d#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=22.39 tel=1074 ok varış=22.78 Chunk(18810) anahtar=A1/00/c00000000000003f#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=22.56 tel=146 ok varış=22.87 Bundle(109) anahtar=A1/00/6e#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=22.59 tel=1086 yolda_düştü varış=- kontrol anahtar=A1/01/c00000070000#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=22.75 tel=146 ok varış=23.06 Bundle(110) anahtar=A1/00/6f#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=22.76 tel=1074 ok varış=23.15 Chunk(0) anahtar=A1/00/c00000000000002c#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=22.85 tel=1074 yolda_düştü varış=- Chunk(2970) anahtar=A1/00/c00000000000002f#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=22.93 tel=146 ok varış=23.25 Bundle(111) anahtar=A1/00/70#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=22.95 tel=1074 ok varış=23.33 Chunk(4950) anahtar=A1/00/c000000000000031#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=23.03 tel=1074 ok varış=23.42 Chunk(5940) anahtar=A1/00/c000000000000032#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=23.12 tel=146 ok varış=23.43 Bundle(112) anahtar=A1/00/71#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=23.13 tel=1074 ok varış=23.52 Chunk(7920) anahtar=A1/00/c000000000000034#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=23.22 tel=1074 ok varış=23.60 Chunk(9900) anahtar=A1/00/c000000000000036#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=23.30 tel=146 ok varış=23.61 Bundle(113) anahtar=A1/00/72#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=23.31 tel=1086 ok varış=23.70 kontrol anahtar=A1/01/c00000070001#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=23.40 tel=1086 yolda_düştü varış=- kontrol anahtar=A1/01/c00000070002#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=23.49 tel=1086 ok varış=23.87 kontrol anahtar=A1/01/c00000070003#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=23.57 tel=146 ok varış=23.89 Bundle(114) anahtar=A1/00/73#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=23.59 tel=1074 ok varış=23.97 Chunk(19800) anahtar=A1/00/c000000000000040#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=23.67 tel=1074 yolda_düştü varış=- Chunk(20790) anahtar=A1/00/c000000000000041#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=23.76 tel=146 ok varış=24.07 Bundle(115) anahtar=A1/00/74#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=23.77 tel=1074 ok varış=24.16 Chunk(21780) anahtar=A1/00/c000000000000042#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=23.86 tel=1074 yolda_düştü varış=- Chunk(22770) anahtar=A1/00/c000000000000043#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=23.94 tel=146 ok varış=24.25 Bundle(116) anahtar=A1/00/75#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=23.95 tel=1074 ok varış=24.34 Chunk(23760) anahtar=A1/00/c000000000000044#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=24.04 tel=1074 ok varış=24.43 Chunk(24750) anahtar=A1/00/c000000000000045#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=24.12 tel=146 ok varış=24.44 Bundle(117) anahtar=A1/00/76#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=24.14 tel=1074 ok varış=24.52 Chunk(25740) anahtar=A1/00/c000000000000046#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=24.22 tel=1074 ok varış=24.61 Chunk(26730) anahtar=A1/00/c000000000000047#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=24.31 tel=146 ok varış=24.62 Bundle(118) anahtar=A1/00/77#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=24.32 tel=1086 yolda_düştü varış=- kontrol anahtar=A1/01/c00000080000#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=24.41 tel=1086 yolda_düştü varış=- kontrol anahtar=A1/01/c00000080001#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=24.49 tel=1086 ok varış=24.88 kontrol anahtar=A1/01/c00000080002#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=24.58 tel=146 ok varış=24.89 Bundle(119) anahtar=A1/00/78#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=24.59 tel=1086 ok varış=24.98 kontrol anahtar=A1/01/c00000080003#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=24.68 tel=1074 ok varış=25.07 Chunk(27720) anahtar=A1/00/c000000000000048#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=24.76 tel=146 yolda_düştü varış=- Bundle(120) anahtar=A1/00/79#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=24.78 tel=1074 ok varış=25.16 Chunk(28710) anahtar=A1/00/c000000000000049#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=24.86 tel=1074 ok varış=25.25 Chunk(29700) anahtar=A1/00/c00000000000004a#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=24.95 tel=146 yolda_düştü varış=- Bundle(121) anahtar=A1/00/7a#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=24.96 tel=1074 ok varış=25.35 Chunk(30690) anahtar=A1/00/c00000000000004b#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=25.05 tel=1074 ok varış=25.43 Chunk(31680) anahtar=A1/00/c00000000000004c#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=25.13 tel=146 ok varış=25.44 Bundle(122) anahtar=A1/00/7b#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=25.14 tel=1074 ok varış=25.53 Chunk(32670) anahtar=A1/00/c00000000000004d#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=25.23 tel=1074 ok varış=25.62 Chunk(33660) anahtar=A1/00/c00000000000004e#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=25.32 tel=146 yolda_düştü varış=- Bundle(123) anahtar=A1/00/7c#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=25.33 tel=1074 ok varış=25.71 Chunk(34650) anahtar=A1/00/c00000000000004f#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=25.41 tel=1086 ok varış=25.80 kontrol anahtar=A1/01/c00000090000#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=25.50 tel=1086 ok varış=25.89 kontrol anahtar=A1/01/c00000090001#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=25.59 tel=146 ok varış=25.90 Bundle(124) anahtar=A1/00/7d#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=25.60 tel=1086 ok varış=25.99 kontrol anahtar=A1/01/c00000090002#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=25.69 tel=1086 ok varış=26.07 kontrol anahtar=A1/01/c00000090003#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=25.77 tel=146 ok varış=26.09 Bundle(125) anahtar=A1/00/7e#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=25.78 tel=1074 ok varış=26.17 Chunk(35640) anahtar=A1/00/c000000000000050#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=25.87 tel=1074 ok varış=26.26 Chunk(36630) anahtar=A1/00/c000000000000051#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=25.96 tel=146 ok varış=26.27 Bundle(126) anahtar=A1/00/7f#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=25.97 tel=1074 ok varış=26.35 Chunk(37620) anahtar=A1/00/c000000000000052#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=26.05 tel=1074 ok varış=26.44 Chunk(38610) anahtar=A1/00/c000000000000053#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=26.14 tel=146 yolda_düştü varış=- Bundle(127) anahtar=A1/00/80#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=26.15 tel=484 ok varış=26.49 Chunk(39600) anahtar=A1/00/c000000000000054#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=26.19 tel=74 ok varış=26.50 FileEnd anahtar=A1/00/c000000000000055#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=26.20 tel=1074 ok varış=26.58 Chunk(11880) anahtar=A1/00/c000000000000038#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=26.28 tel=1074 yolda_düştü varış=- Chunk(35640) anahtar=A1/00/c000000000000050#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=26.37 tel=146 ok varış=26.68 Bundle(128) anahtar=A1/00/81#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=26.38 tel=1074 ok varış=26.77 Chunk(36630) anahtar=A1/00/c000000000000051#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=26.47 tel=1074 ok varış=26.85 Chunk(37620) anahtar=A1/00/c000000000000052#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=26.55 tel=146 ok varış=26.86 Bundle(129) anahtar=A1/00/82#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=26.56 tel=1074 ok varış=26.95 Chunk(38610) anahtar=A1/00/c000000000000053#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=26.65 tel=484 ok varış=26.99 Chunk(39600) anahtar=A1/00/c000000000000054#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=26.69 tel=74 ok varış=26.99 FileEnd anahtar=A1/00/c000000000000055#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=26.69 tel=1074 ok varış=27.08 Chunk(35640) anahtar=A1/00/c000000000000050#2
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=26.78 tel=146 ok varış=27.09 Bundle(130) anahtar=A1/00/83#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=26.79 tel=1074 ok varış=27.18 Chunk(36630) anahtar=A1/00/c000000000000051#2
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=26.88 tel=1074 ok varış=27.26 Chunk(37620) anahtar=A1/00/c000000000000052#2
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=26.96 tel=146 ok varış=27.28 Bundle(131) anahtar=A1/00/84#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=26.98 tel=1074 yolda_düştü varış=- Chunk(38610) anahtar=A1/00/c000000000000053#2
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=27.06 tel=484 yolda_düştü varış=- Chunk(39600) anahtar=A1/00/c000000000000054#2
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=27.10 tel=74 ok varış=27.41 FileEnd anahtar=A1/00/c000000000000055#2
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=27.11 tel=146 ok varış=27.42 Bundle(132) anahtar=A1/00/85#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=27.12 tel=1074 ok varış=27.50 Chunk(35640) anahtar=A1/00/c000000000000050#3
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=27.20 tel=1074 ok varış=27.59 Chunk(36630) anahtar=A1/00/c000000000000051#3
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=27.29 tel=1074 ok varış=27.68 Chunk(37620) anahtar=A1/00/c000000000000052#3
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=27.38 tel=146 ok varış=27.69 Bundle(133) anahtar=A1/00/86#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=27.39 tel=1074 ok varış=27.77 Chunk(38610) anahtar=A1/00/c000000000000053#3
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=27.47 tel=484 ok varış=27.81 Chunk(39600) anahtar=A1/00/c000000000000054#3
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=27.51 tel=146 ok varış=27.82 Bundle(134) anahtar=A1/00/87#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=27.52 tel=74 yolda_düştü varış=- FileEnd anahtar=A1/00/c000000000000055#3
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=27.53 tel=1074 ok varış=27.92 Chunk(35640) anahtar=A1/00/c000000000000050#4
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=27.61 tel=1074 ok varış=28.00 Chunk(36630) anahtar=A1/00/c000000000000051#4
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=27.70 tel=146 ok varış=28.01 Bundle(135) anahtar=A1/00/88#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=27.71 tel=1074 ok varış=28.10 Chunk(37620) anahtar=A1/00/c000000000000052#4
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=27.80 tel=1074 ok varış=28.19 Chunk(38610) anahtar=A1/00/c000000000000053#4
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=27.88 tel=484 yolda_düştü varış=- Chunk(39600) anahtar=A1/00/c000000000000054#4
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=27.92 tel=146 yolda_düştü varış=- Bundle(136) anahtar=A1/00/89#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=27.94 tel=74 ok varış=28.24 FileEnd anahtar=A1/00/c000000000000055#4
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=27.94 tel=1074 ok varış=28.33 Chunk(12870) anahtar=A1/00/c000000000000039#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=28.10 tel=146 ok varış=28.41 Bundle(137) anahtar=A1/00/8a#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=28.11 tel=1074 ok varış=28.50 Chunk(14850) anahtar=A1/00/c00000000000003b#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=28.29 tel=1074 ok varış=28.67 Chunk(15840) anahtar=A1/00/c00000000000003c#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=28.37 tel=146 ok varış=28.68 Bundle(138) anahtar=A1/00/8b#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=28.46 tel=1074 yolda_düştü varış=- Chunk(16830) anahtar=A1/00/c00000000000003d#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=28.54 tel=146 yolda_düştü varış=- Bundle(139) anahtar=A1/00/8c#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=28.63 tel=1074 yolda_düştü varış=- Chunk(17820) anahtar=A1/00/c00000000000003e#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=28.71 tel=146 ok varış=29.03 Bundle(140) anahtar=A1/00/8d#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=28.80 tel=1074 ok varış=29.19 Chunk(18810) anahtar=A1/00/c00000000000003f#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri BDown sunum=28.82 tel=85 ok varış=29.20 kontrol anahtar=A1/14/0#8
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=28.90 tel=146 ok varış=29.21 Bundle(141) anahtar=A1/00/8e#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=28.98 tel=1074 ok varış=29.36 Chunk(19800) anahtar=A1/00/c000000000000040#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=29.10 tel=146 ok varış=29.41 Bundle(142) anahtar=A1/00/8f#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=29.15 tel=1074 ok varış=29.53 Chunk(20790) anahtar=A1/00/c000000000000041#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=29.30 tel=146 ok varış=29.61 Bundle(143) anahtar=A1/00/90#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=29.32 tel=1074 ok varış=29.71 Chunk(21780) anahtar=A1/00/c000000000000042#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=29.49 tel=1074 ok varış=29.88 Chunk(22770) anahtar=A1/00/c000000000000043#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=29.58 tel=146 ok varış=29.89 Bundle(144) anahtar=A1/00/91#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=29.66 tel=1074 ok varış=30.05 Chunk(23760) anahtar=A1/00/c000000000000044#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=29.75 tel=146 yolda_düştü varış=- Bundle(145) anahtar=A1/00/92#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=29.84 tel=1074 ok varış=30.22 Chunk(24750) anahtar=A1/00/c000000000000045#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=29.92 tel=146 ok varış=30.24 Bundle(146) anahtar=A1/00/93#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=30.00 tel=98 yolda_düştü varış=- Bundle(147) anahtar=A1/00/94#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=30.01 tel=70 ok varış=30.31 PttClose(0) anahtar=A1/00/95#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=30.01 tel=1074 ok varış=30.40 Chunk(25740) anahtar=A1/00/c000000000000046#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=30.10 tel=70 ok varış=30.41 PttClose(0) anahtar=A1/00/95#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=30.10 tel=70 ok varış=30.41 PttClose(0) anahtar=A1/00/95#2
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=30.18 tel=1074 ok varış=30.57 Chunk(26730) anahtar=A1/00/c000000000000047#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=30.27 tel=1074 ok varış=30.66 Chunk(20790) anahtar=A1/00/c000000000000041#2
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri AUp sunum=30.35 tel=1074 yolda_düştü varış=- Chunk(22770) anahtar=A1/00/c000000000000043#2
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş ADown sunum=0.50 tel=68 ok varış=1.89 kontrol anahtar=B0/16/0#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş BUp sunum=1.58 tel=71 ok varış=3.04 Receipt(0) anahtar=B0/00/8000000000000000#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş ADown sunum=2.76 tel=72 ok varış=4.22 kontrol anahtar=B0/16/0#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş ADown sunum=2.76 tel=83 ok varış=5.56 kontrol anahtar=B0/04/0#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş BUp sunum=5.24 tel=71 ok varış=6.70 Receipt(0) anahtar=B0/00/8000000000000000#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş ADown sunum=5.28 tel=71 ok varış=7.85 kontrol anahtar=B0/16/0#2
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş BUp sunum=7.54 tel=71 ok varış=8.99 Receipt(1) anahtar=B0/00/8000000000000001#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş BUp sunum=8.68 tel=71 ok varış=10.14 Receipt(2) anahtar=B0/00/8000000000000002#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş BUp sunum=9.83 tel=71 ok varış=11.28 Receipt(1) anahtar=B0/00/8000000000000001#1
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş ADown sunum=11.00 tel=78 ok varış=12.56 kontrol anahtar=B0/16/0#3
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş BUp sunum=12.24 tel=75 ok varış=13.77 FileReceipt anahtar=B0/00/8000000000000003#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş BUp sunum=13.45 tel=71 ok varış=14.91 Receipt(3) anahtar=B0/00/8000000000000004#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş ADown sunum=14.62 tel=81 ok varış=16.22 kontrol anahtar=B0/16/0#4
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş ADown sunum=15.94 tel=76 ok varış=17.46 kontrol anahtar=B0/16/0#5
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş ADown sunum=17.18 tel=62 ok varış=18.48 kontrol anahtar=B0/02/c0000000#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş ADown sunum=18.18 tel=58 ok varış=19.41 kontrol anahtar=B0/02/c0000001#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş BUp sunum=19.10 tel=71 ok varış=20.56 Receipt(4) anahtar=B0/00/8000000000000005#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş ADown sunum=20.28 tel=58 ok varış=21.51 kontrol anahtar=B0/02/c0000002#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş ADown sunum=21.22 tel=76 ok varış=22.74 kontrol anahtar=B0/16/0#6
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş ADown sunum=22.46 tel=58 ok varış=23.69 kontrol anahtar=B0/02/c0000004#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş ADown sunum=23.40 tel=60 ok varış=24.67 kontrol anahtar=B0/02/c0000003#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş ADown sunum=24.38 tel=60 ok varış=25.65 kontrol anahtar=B0/02/c0000005#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş ADown sunum=25.36 tel=62 ok varış=26.66 kontrol anahtar=B0/02/c0000006#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş ADown sunum=26.38 tel=58 ok varış=27.61 kontrol anahtar=B0/02/c0000007#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş BUp sunum=27.30 tel=75 ok varış=28.82 FileReceipt anahtar=B0/00/8000000000000006#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş ADown sunum=28.54 tel=88 ok varış=30.26 kontrol anahtar=B0/16/0#7
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş ADown sunum=29.96 tel=83 ok varış=31.60 kontrol anahtar=B0/16/0#8
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş ADown sunum=31.30 tel=60 ok varış=32.57 kontrol anahtar=B0/02/c0000008#0
+İZ-HAT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı dönüş ADown sunum=34.18 tel=69 ok varış=35.59 kontrol anahtar=B0/16/0#9
+İZ-BLOK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı blok=0:0 k=7 kaynak_ilk_kayıp=1 onarım=0 çözüm=2.01(ARQ) yeniden_iletim(çözüm_öncesi,sonrası)=(2,0)
+İZ-BLOK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı blok=0:18 k=1 kaynak_ilk_kayıp=0 onarım=0 çözüm=30.31(temiz) yeniden_iletim(çözüm_öncesi,sonrası)=(2,0)
+İZ-BLOK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı blok=2:0 k=5 kaynak_ilk_kayıp=1 onarım=0 çözüm=18.48(ARQ) yeniden_iletim(çözüm_öncesi,sonrası)=(22,0)
+İZ-BLOK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı blok=3:0 k=8 kaynak_ilk_kayıp=4 onarım=4 (yolda_düşen=1 kullanılan=3 kayıpsız_blokta=0 ARQ_sonrası=0 çözüm_sonrası=0 çözümsüz=0) son_kaynak=1.53 onarım_mühür=[1.76 1.90 1.99 2.09] çözüm=2.48(FEC,3) Alice_ACK_tamam=12.56 RECOVERED_Alice=18.48 mühür_sonra(ACK,REC,çözüm)=(0,0,0) yeniden_iletim(çözüm_öncesi,sonrası)=(1,3)
+İZ-BLOK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı blok=3:1 k=8 kaynak_ilk_kayıp=1 onarım=4 (yolda_düşen=0 kullanılan=1 kayıpsız_blokta=0 ARQ_sonrası=0 çözüm_sonrası=3 çözümsüz=0) son_kaynak=2.83 onarım_mühür=[2.93 3.02 3.12 3.21] çözüm=3.32(FEC,1) Alice_ACK_tamam=- RECOVERED_Alice=19.41 mühür_sonra(ACK,REC,çözüm)=(0,0,0) yeniden_iletim(çözüm_öncesi,sonrası)=(0,3)
+İZ-BLOK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı blok=3:2 k=8 kaynak_ilk_kayıp=1 onarım=4 (yolda_düşen=0 kullanılan=1 kayıpsız_blokta=0 ARQ_sonrası=0 çözüm_sonrası=3 çözümsüz=0) son_kaynak=3.94 onarım_mühür=[4.03 4.13 4.21 4.58] çözüm=5.51(FEC,1) Alice_ACK_tamam=16.22 RECOVERED_Alice=21.51 mühür_sonra(ACK,REC,çözüm)=(0,0,0) yeniden_iletim(çözüm_öncesi,sonrası)=(0,2)
+İZ-BLOK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı blok=3:3 k=8 kaynak_ilk_kayıp=0 onarım=4 (yolda_düşen=2 kullanılan=0 kayıpsız_blokta=2 ARQ_sonrası=0 çözüm_sonrası=0 çözümsüz=0) son_kaynak=5.34 onarım_mühür=[5.44 5.55 5.63 5.73] çözüm=8.13(temiz,0) Alice_ACK_tamam=12.56 RECOVERED_Alice=24.67 mühür_sonra(ACK,REC,çözüm)=(0,0,0) yeniden_iletim(çözüm_öncesi,sonrası)=(0,6)
+İZ-BLOK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı blok=3:4 k=8 kaynak_ilk_kayıp=1 onarım=4 (yolda_düşen=0 kullanılan=1 kayıpsız_blokta=0 ARQ_sonrası=0 çözüm_sonrası=3 çözümsüz=0) son_kaynak=6.49 onarım_mühür=[6.59 6.67 6.78 6.87] çözüm=10.63(FEC,1) Alice_ACK_tamam=17.46 RECOVERED_Alice=23.69 mühür_sonra(ACK,REC,çözüm)=(0,0,0) yeniden_iletim(çözüm_öncesi,sonrası)=(0,1)
+İZ-BLOK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı blok=3:5 k=8 kaynak_ilk_kayıp=5 onarım=4 (yolda_düşen=0 kullanılan=2 kayıpsız_blokta=0 ARQ_sonrası=0 çözüm_sonrası=2 çözümsüz=0) son_kaynak=17.41 onarım_mühür=[17.80 17.98 18.21 18.47] çözüm=18.38(FEC,2) Alice_ACK_tamam=- RECOVERED_Alice=25.65 mühür_sonra(ACK,REC,çözüm)=(0,0,1) yeniden_iletim(çözüm_öncesi,sonrası)=(12,2)
+İZ-BLOK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı blok=3:6 k=8 kaynak_ilk_kayıp=4 onarım=4 (yolda_düşen=1 kullanılan=3 kayıpsız_blokta=0 ARQ_sonrası=0 çözüm_sonrası=0 çözümsüz=0) son_kaynak=20.04 onarım_mühür=[20.23 20.40 20.63 20.82] çözüm=23.33(FEC,3) Alice_ACK_tamam=30.26 RECOVERED_Alice=26.66 mühür_sonra(ACK,REC,çözüm)=(0,0,0) yeniden_iletim(çözüm_öncesi,sonrası)=(4,0)
+İZ-BLOK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı blok=3:7 k=8 kaynak_ilk_kayıp=1 onarım=4 (yolda_düşen=2 kullanılan=1 kayıpsız_blokta=0 ARQ_sonrası=0 çözüm_sonrası=1 çözümsüz=0) son_kaynak=22.39 onarım_mühür=[22.59 23.31 23.40 23.49] çözüm=23.70(FEC,1) Alice_ACK_tamam=- RECOVERED_Alice=27.61 mühür_sonra(ACK,REC,çözüm)=(0,0,0) yeniden_iletim(çözüm_öncesi,sonrası)=(0,7)
+İZ-BLOK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı blok=3:8 k=8 kaynak_ilk_kayıp=2 onarım=4 (yolda_düşen=2 kullanılan=2 kayıpsız_blokta=0 ARQ_sonrası=0 çözüm_sonrası=0 çözümsüz=0) son_kaynak=24.22 onarım_mühür=[24.32 24.41 24.49 24.59] çözüm=24.98(FEC,2) Alice_ACK_tamam=31.60 RECOVERED_Alice=32.57 mühür_sonra(ACK,REC,çözüm)=(0,0,0) yeniden_iletim(çözüm_öncesi,sonrası)=(0,10)
+İZ-BLOK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı blok=3:9 k=8 kaynak_ilk_kayıp=0 onarım=4 (yolda_düşen=0 kullanılan=0 kayıpsız_blokta=4 ARQ_sonrası=0 çözüm_sonrası=0 çözümsüz=0) son_kaynak=25.33 onarım_mühür=[25.41 25.50 25.60 25.69] çözüm=25.71(temiz,0) Alice_ACK_tamam=30.26 RECOVERED_Alice=- mühür_sonra(ACK,REC,çözüm)=(0,0,0) yeniden_iletim(çözüm_öncesi,sonrası)=(0,0)
+İZ-BLOK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı blok=3:10 k=6 kaynak_ilk_kayıp=0 onarım=0 çözüm=26.50(temiz) yeniden_iletim(çözüm_öncesi,sonrası)=(3,21)
+ÖZET-BLOK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı Sum { blocks: 10, src: 80, src_lost_first: 19, par_sent: 40, par_needed: 18, par_lost: 8, par_used: 14, par_after_noloss: 6, par_after_arq: 0, par_after_fec: 12, par_never_done: 0, par_sealed_after_ack: 0, par_sealed_after_rec: 0, par_sealed_after_done: 1, dec_fec: 8, dec_arq: 0, dec_clean: 2, undecoded: 0, par_bytes: 43440, retx_after_done: 55, retx_after_done_bytes: 52710, retx_after_rec: 6, retx_unit_there_block_open: 4 } onarımsız_blok=4 (ilk_kayıp=2) verim(kullanılan/gönderilen)=0.350 ileri_bayt=221765 lane_dağılımı=[0, 0, 0, 40]
+İZ-NEDEN hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ARQ/paket-eşiği gerekli hedef-iletim-düştü = 11
+İZ-NEDEN hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ARQ/paket-eşiği gereksiz hedef-iletim-düştü = 2
+İZ-NEDEN hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ARQ/zaman-eşiği gerekli hedef-iletim-düştü = 2
+İZ-NEDEN hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı PTO-probu gerekli ack-yok = 1
+İZ-NEDEN hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı PTO-probu gerekli hedef-iletim-düştü = 1
+İZ-NEDEN hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı kopya/PTT-öncelik gerekli - = 23
+İZ-NEDEN hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı kopya/kuruluş gerekli - = 1
+İZ-NEDEN hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı kopya/kuruluş gereksiz - = 1
+İZ-NEDEN hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı kopya/vadeli gerekli - = 14
+İZ-NEDEN hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı kopya/vadeli gereksiz - = 45
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı açılış birim=0 an=0.50 ilkten=+0.00 ilk seq=7 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı açılış birim=0 an=0.53 ilkten=+0.03 kopya/PTT-öncelik seq=9 hedef=2 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı açılış birim=0 an=0.55 ilkten=+0.05 kopya/PTT-öncelik seq=10 hedef=2 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=1 an=0.70 ilkten=+0.00 ilk seq=14 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=2 an=0.90 ilkten=+0.00 ilk seq=15 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=3 an=1.10 ilkten=+0.00 ilk seq=16 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=4 an=1.30 ilkten=+0.00 ilk seq=17 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=5 an=1.50 ilkten=+0.00 ilk seq=19 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=6 an=1.70 ilkten=+0.00 ilk seq=22 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=7 an=1.98 ilkten=+0.00 ilk seq=25 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=8 an=2.18 ilkten=+0.00 ilk seq=29 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=9 an=2.36 ilkten=+0.00 ilk seq=32 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=10 an=2.54 ilkten=+0.00 ilk seq=35 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=11 an=2.73 ilkten=+0.00 ilk seq=38 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=12 an=2.92 ilkten=+0.00 ilk seq=41 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=13 an=3.11 ilkten=+0.00 ilk seq=44 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=14 an=3.38 ilkten=+0.00 ilk seq=48 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=15 an=3.56 ilkten=+0.00 ilk seq=51 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=16 an=3.75 ilkten=+0.00 ilk seq=54 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=17 an=3.93 ilkten=+0.00 ilk seq=57 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=18 an=4.11 ilkten=+0.00 ilk seq=60 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=19 an=4.39 ilkten=+0.00 ilk seq=64 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=20 an=4.57 ilkten=+0.00 ilk seq=67 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=21 an=4.75 ilkten=+0.00 ilk seq=70 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=22 an=4.94 ilkten=+0.00 ilk seq=73 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=23 an=5.13 ilkten=+0.00 ilk seq=77 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=24 an=5.31 ilkten=+0.00 ilk seq=80 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=25 an=5.53 ilkten=+0.00 ilk seq=87 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=26 an=5.72 ilkten=+0.00 ilk seq=91 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=27 an=5.92 ilkten=+0.00 ilk seq=96 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=28 an=6.12 ilkten=+0.00 ilk seq=101 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=29 an=6.31 ilkten=+0.00 ilk seq=104 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=30 an=6.58 ilkten=+0.00 ilk seq=108 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=31 an=6.77 ilkten=+0.00 ilk seq=111 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=32 an=6.95 ilkten=+0.00 ilk seq=114 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=33 an=7.10 ilkten=+0.00 ilk seq=119 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=34 an=7.32 ilkten=+0.00 ilk seq=123 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=35 an=7.56 ilkten=+0.00 ilk seq=129 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=36 an=7.74 ilkten=+0.00 ilk seq=134 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=44 an=9.90 ilkten=+0.00 ilk seq=138 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=45 an=9.94 ilkten=+0.00 ilk seq=139 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=46 an=9.96 ilkten=+0.00 ilk seq=140 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=47 an=9.99 ilkten=+0.00 ilk seq=141 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=48 an=10.21 ilkten=+0.00 ilk seq=145 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=49 an=10.44 ilkten=+0.00 ilk seq=149 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=50 an=10.50 ilkten=+0.00 ilk seq=150 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=51 an=10.78 ilkten=+0.00 ilk seq=152 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=52 an=10.90 ilkten=+0.00 ilk seq=153 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=53 an=11.10 ilkten=+0.00 ilk seq=155 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=54 an=11.31 ilkten=+0.00 ilk seq=156 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=55 an=11.50 ilkten=+0.00 ilk seq=158 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=56 an=11.85 ilkten=+0.00 ilk seq=160 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=57 an=11.90 ilkten=+0.00 ilk seq=161 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=58 an=12.10 ilkten=+0.00 ilk seq=163 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=59 an=12.30 ilkten=+0.00 ilk seq=164 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=60 an=12.54 ilkten=+0.00 ilk seq=166 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=67 an=14.51 ilkten=+0.00 ilk seq=167 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=68 an=14.51 ilkten=+0.00 ilk seq=168 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=69 an=14.56 ilkten=+0.00 ilk seq=169 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=70 an=14.58 ilkten=+0.00 ilk seq=170 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=71 an=14.78 ilkten=+0.00 ilk seq=172 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=72 an=14.90 ilkten=+0.00 ilk seq=173 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=73 an=15.10 ilkten=+0.00 ilk seq=174 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=74 an=15.30 ilkten=+0.00 ilk seq=175 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=75 an=15.50 ilkten=+0.00 ilk seq=176 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=76 an=15.70 ilkten=+0.00 ilk seq=177 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=77 an=15.90 ilkten=+0.00 ilk seq=178 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=78 an=16.10 ilkten=+0.00 ilk seq=179 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=79 an=16.30 ilkten=+0.00 ilk seq=181 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=80 an=16.50 ilkten=+0.00 ilk seq=182 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=81 an=16.70 ilkten=+0.00 ilk seq=183 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=82 an=16.90 ilkten=+0.00 ilk seq=184 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=83 an=17.19 ilkten=+0.00 ilk seq=187 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=84 an=17.39 ilkten=+0.00 ilk seq=189 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=85 an=17.76 ilkten=+0.00 ilk seq=192 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=86 an=17.78 ilkten=+0.00 ilk seq=193 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=87 an=17.98 ilkten=+0.00 ilk seq=195 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=88 an=18.19 ilkten=+0.00 ilk seq=198 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=89 an=18.39 ilkten=+0.00 ilk seq=200 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=90 an=18.64 ilkten=+0.00 ilk seq=206 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=91 an=18.84 ilkten=+0.00 ilk seq=208 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=92 an=19.03 ilkten=+0.00 ilk seq=210 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=93 an=19.23 ilkten=+0.00 ilk seq=212 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=94 an=19.43 ilkten=+0.00 ilk seq=214 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=95 an=19.62 ilkten=+0.00 ilk seq=216 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=96 an=19.82 ilkten=+0.00 ilk seq=218 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=97 an=20.01 ilkten=+0.00 ilk seq=220 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=98 an=20.21 ilkten=+0.00 ilk seq=222 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=99 an=20.40 ilkten=+0.00 ilk seq=224 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=100 an=20.60 ilkten=+0.00 ilk seq=226 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=101 an=20.80 ilkten=+0.00 ilk seq=228 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=102 an=21.00 ilkten=+0.00 ilk seq=230 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=103 an=21.19 ilkten=+0.00 ilk seq=232 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=104 an=21.39 ilkten=+0.00 ilk seq=234 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=105 an=21.58 ilkten=+0.00 ilk seq=236 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=106 an=21.78 ilkten=+0.00 ilk seq=238 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=107 an=21.98 ilkten=+0.00 ilk seq=240 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=108 an=22.17 ilkten=+0.00 ilk seq=242 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=109 an=22.37 ilkten=+0.00 ilk seq=244 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=110 an=22.56 ilkten=+0.00 ilk seq=246 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=111 an=22.75 ilkten=+0.00 ilk seq=248 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=112 an=22.93 ilkten=+0.00 ilk seq=251 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=113 an=23.12 ilkten=+0.00 ilk seq=254 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=114 an=23.30 ilkten=+0.00 ilk seq=257 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=115 an=23.57 ilkten=+0.00 ilk seq=261 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=116 an=23.76 ilkten=+0.00 ilk seq=264 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=117 an=23.94 ilkten=+0.00 ilk seq=267 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=118 an=24.12 ilkten=+0.00 ilk seq=270 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=119 an=24.31 ilkten=+0.00 ilk seq=273 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=120 an=24.58 ilkten=+0.00 ilk seq=277 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=121 an=24.76 ilkten=+0.00 ilk seq=280 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=122 an=24.95 ilkten=+0.00 ilk seq=283 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=123 an=25.13 ilkten=+0.00 ilk seq=286 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=124 an=25.32 ilkten=+0.00 ilk seq=289 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=125 an=25.59 ilkten=+0.00 ilk seq=293 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=126 an=25.77 ilkten=+0.00 ilk seq=296 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=127 an=25.96 ilkten=+0.00 ilk seq=299 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=128 an=26.14 ilkten=+0.00 ilk seq=302 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=129 an=26.37 ilkten=+0.00 ilk seq=307 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=130 an=26.55 ilkten=+0.00 ilk seq=310 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=131 an=26.78 ilkten=+0.00 ilk seq=315 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=132 an=26.96 ilkten=+0.00 ilk seq=318 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=133 an=27.11 ilkten=+0.00 ilk seq=322 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=134 an=27.38 ilkten=+0.00 ilk seq=326 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=135 an=27.51 ilkten=+0.00 ilk seq=329 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=136 an=27.70 ilkten=+0.00 ilk seq=333 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=137 an=27.92 ilkten=+0.00 ilk seq=337 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=138 an=28.10 ilkten=+0.00 ilk seq=340 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=139 an=28.37 ilkten=+0.00 ilk seq=343 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=140 an=28.54 ilkten=+0.00 ilk seq=345 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=141 an=28.71 ilkten=+0.00 ilk seq=347 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=142 an=28.90 ilkten=+0.00 ilk seq=349 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=143 an=29.10 ilkten=+0.00 ilk seq=351 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=144 an=29.30 ilkten=+0.00 ilk seq=353 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=145 an=29.58 ilkten=+0.00 ilk seq=356 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=146 an=29.75 ilkten=+0.00 ilk seq=358 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=147 an=29.92 ilkten=+0.00 ilk seq=360 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet birim=148 an=30.00 ilkten=+0.00 ilk seq=361 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı kapanış birim=149 an=30.01 ilkten=+0.00 ilk seq=362 hedef=0 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı kapanış birim=149 an=30.10 ilkten=+0.09 kopya/PTT-öncelik seq=364 hedef=2 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı kapanış birim=149 an=30.10 ilkten=+0.10 kopya/PTT-öncelik seq=365 hedef=2 bob_almıştı=false
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı özet açılış ilk gerekli = 1
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı özet açılış kopya/PTT-öncelik gerekli = 2
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı özet demet ilk gerekli = 135
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı özet kapanış ilk gerekli = 1
+İZ-PTT-KAYIT hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı özet kapanış kopya/PTT-öncelik gerekli = 2
+İZ-NEDEN hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ilk15s ARQ/paket-eşiği gerekli = 4
+İZ-NEDEN hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ilk15s ARQ/zaman-eşiği gerekli = 2
+İZ-NEDEN hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ilk15s PTO-probu gerekli = 2
+İZ-NEDEN hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ilk15s kopya/PTT-öncelik gerekli = 17
+İZ-NEDEN hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ilk15s kopya/kuruluş gerekli = 1
+İZ-NEDEN hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ilk15s kopya/kuruluş gereksiz = 1
+İZ-NEDEN hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ilk15s kopya/vadeli gerekli = 12
+İZ-NEDEN hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ilk15s kopya/vadeli gereksiz = 8
+İZ-NEDEN hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ack_çerçevesi=10 ilk=+1.90 en_büyük_aralıklar=["7.51@22.74", "5.28@17.46", "4.71@7.85", "3.99@31.60"] mühürsüz_emisyon=0 RECOVERED(Bob→Alice)=9
+İZ-ACK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı biçim=v2 ack=10 tür={22: 10} tel_ort=76 B tel_max=88 B aralık_ort=3.74 s aralık_max=7.51 s kapsam=160/160 (100.0%) dönüş_ack_payı=762/2028 B (37.6%)
+İZ-İLK-ACK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ilk_boylu_varış=+0.41 ölçüm_beklemesi=0.09 (pencere, alan=12174) yerel_kuyruk=0.00 hat=1.40 Alice_varış=+1.89
+İZ-CANLILIK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı şerit_açıklık_sınırı(PTT,SIG,TEXT,FILE)=[0, 0, 0, 0] kabul_edilmeyen_demet=0
+İZ-CANLILIK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=10 plan=+2.70 teslim=YOK birim={11} olaylar=[2.73:Data#38 3.50:Confirmed#0 7.85:LossPacketThreshold#38]
+İZ-CANLILIK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=19 plan=+4.50 teslim=+6.45 birim={20} olaylar=[4.57:Data#67 5.30:Confirmed#0 12.56:Confirmed#0]
+İZ-CANLILIK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=20 plan=+4.70 teslim=+6.82 birim={21} olaylar=[4.75:Data#70 5.50:Confirmed#0 12.56:Confirmed#0]
+İZ-CANLILIK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=21 plan=+4.90 teslim=+7.18 birim={22} olaylar=[4.94:Data#73 5.70:Confirmed#0 12.56:Confirmed#0]
+İZ-CANLILIK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı demet=22 plan=+5.10 teslim=YOK birim={23} olaylar=[5.13:Data#77 5.90:Confirmed#0 12.56:LossPacketThreshold#77]
+İZ-ACK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı an=1.90 yeni_teyit=2 en_büyük_seq=2 hat_koruması=12500
+İZ-ACK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı an=4.22 yeni_teyit=27 en_büyük_seq=32 hat_koruması=12500
+İZ-ACK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı an=7.85 yeni_teyit=22 en_büyük_seq=57 hat_koruması=6246
+İZ-ACK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı an=12.56 yeni_teyit=68 en_büyük_seq=111 hat_koruması=6237
+İZ-ACK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı an=16.22 yeni_teyit=82 en_büyük_seq=162 hat_koruması=6237
+İZ-ACK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı an=17.46 yeni_teyit=48 en_büyük_seq=175 hat_koruması=6237
+İZ-ACK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı an=22.74 yeni_teyit=48 en_büyük_seq=229 hat_koruması=12500
+İZ-ACK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı an=30.26 yeni_teyit=127 en_büyük_seq=341 hat_koruması=12500
+İZ-ACK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı an=31.60 yeni_teyit=103 en_büyük_seq=356 hat_koruması=12500
+İZ-ACK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı an=35.59 yeni_teyit=9 en_büyük_seq=367 hat_koruması=12500
+İZ-KOPYA hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı daralma döküm(an:sıra:kaynak:Bob'da:önceki)=[5.32:1:2:yok:Data 5.33:1:2:yok:CopyPriority 5.42:1:2:yok:CopyPriority 5.43:1:2:yok:CopyPriority 5.82:2:2:yok:Data 5.83:2:2:yok:CopyPriority 5.93:2:2:yok:CopyPriority 5.94:2:2:yok:CopyPriority 7.20:40:2:yok:Data 7.28:41:2:yok:Data 7.34:42:2:yok:Data 7.34:40:2:yok:Copy 7.43:41:2:yok:Copy 7.47:42:2:yok:Copy 7.47:40:2:yok:Copy 7.57:41:2:yok:Copy 7.61:42:2:yok:Copy 7.61:40:2:yok:Copy 7.70:41:2:yok:Copy 7.75:42:2:yok:Copy 7.76:11:8:var:Data]
+İZ-KOPYA hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı daralma kopya:boş-hat-yeniden-iletim/FILE sayı=1 bayt=1074 gereksiz=1
+İZ-KOPYA hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı daralma kopya:planlı(kısmi-blok/PTT-güvenilir)/FILE sayı=12 bayt=6528 gereksiz=0
+İZ-KOPYA hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı daralma kopya:planlı(kısmi-blok/PTT-güvenilir)/TEXT sayı=8 bayt=808 gereksiz=0
+İZ-KOPYA hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı kuyruk_tepe=4.91 s an=+7.76 önündeki={"Bob-denetim": (1, 69), "FEC": (8, 8688), "PTO/FILE": (1, 1074), "PTO/TEXT": (1, 92), "denetim": (12, 1752), "kopya:planlı(kısmi-blok/PTT-güvenilir)/FILE": (12, 6528), "kopya:planlı(kısmi-blok/PTT-güvenilir)/TEXT": (6, 624), "veri/FILE": (12, 11298), "veri/TEXT": (1, 110)}
+İZ-KOPYA hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı daralma kopya_toplam=21 gereksiz=1
+İZ-ARALIK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı an=+1.90 sıra=1 en_büyük=2 first=2 last=2 rx_span=yok ölçüm=hayır g=- karar=ölçüm-yok tavan=12500→12500 hız=-→- ilk_pencere=Verified
+İZ-ARALIK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı an=+4.22 sıra=2 en_büyük=32 first=3 last=32 rx_span=2.0895 ölçüm=evet g=-0.0006 karar=aralık-örnek-yok tavan=12500→12500 hız=-→-
+İZ-ARALIK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı an=+7.85 sıra=3 en_büyük=57 first=44 last=57 rx_span=1.6448 ölçüm=evet g=0.8232 karar=aralık-örneği tavan=12500→6246 hız=-→6246
+İZ-ARALIK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı an=+12.56 sıra=4 en_büyük=111 first=58 last=111 rx_span=5.5020 ölçüm=evet g=2.8248 karar=aralık-örneği tavan=6246→6237 hız=6246→6237
+İZ-ARALIK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı an=+16.22 sıra=5 en_büyük=162 first=112 last=162 rx_span=3.5930 ölçüm=evet g=-1.6472 karar=aralık-örnek-yok tavan=6237→6237 hız=6237→6237
+İZ-ARALIK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı an=+17.46 sıra=6 en_büyük=175 first=163 last=175 rx_span=0.9792 ölçüm=evet g=-2.2210 karar=aralık-örnek-yok tavan=6237→6237 hız=6237→6237
+İZ-ARALIK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı an=+22.74 sıra=7 en_büyük=229 first=177 last=229 rx_span=5.1986 ölçüm=evet g=-0.0753 karar=aralık-örnek-yok tavan=6237→12500 hız=6237→- yoklama=yükseltti
+İZ-ARALIK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı an=+30.26 sıra=8 en_büyük=341 first=230 last=341 rx_span=7.1898 ölçüm=evet g=-0.0005 karar=aralık-örnek-yok tavan=12500→12500 hız=-→-
+İZ-ARALIK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı an=+31.60 sıra=9 en_büyük=356 first=342 last=356 rx_span=1.2180 ölçüm=evet g=0.0014 karar=aralık-örnek-yok tavan=12500→12500 hız=-→-
+İZ-ARALIK hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı an=+35.59 sıra=10 en_büyük=367 first=357 last=367 rx_span=0.6052 ölçüm=evet g=0.0010 karar=aralık-örnek-yok tavan=12500→12500 hız=-→-
+İZ-ARALIK-ÖZET hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı kayıt=10 sıra_boşluğu=0 kararlar={"aralık-örnek-yok": 7, "aralık-örneği": 2, "ölçüm-yok": 1}
+DÖNÜŞ-BİLEŞİM hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı Y=250 süre=34.18 s {"ACK/denetim(Bob sunucu)": (20, 1381), "FileReceipt": (2, 150), "Receipt": (7, 497)}
+ÜRÜN-SONUÇ hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı yol=bitmap aday (ürün varsayılanı V2) ptt_biçim=yük=80B/demet=200ms/başlık=tam13B/basış=hücre metin1=0.39(GEÇTİ) alındı1_dönüş=2.36(GEÇTİ) alındı1_gd=2.74 metin2=2.86(KALDI) alındı2_dönüş=1.76(GEÇTİ) alındı2_gd=4.62 metin3=2.37(KALDI) alındı3_dönüş=1.62(GEÇTİ) alındı3_gd=3.99 metin4=4.11(kayıp-kurtarma) alındı4_dönüş=1.81(GEÇTİ) alındı4_gd=5.91 metin5=0.48(GEÇTİ) alındı5_dönüş=2.08(GEÇTİ) alındı5_gd=2.56 ptt_ilk=0.51(GEÇTİ) ptt_en_büyük_sayılan=5.29 ptt_en_büyük_tümü=5.29 ptt_boşluk=1.29 ptt_kaldı=33/148(öncül_bekledi=33) ptt_kayıp_kurtarma=0/148 ptt_teslim_yok=43 ptt=KALDI dosya=11.97(GEÇTİ) dosya2=9.50(GEÇTİ) ileri=387 pkt/221765 B (kuyruk_düşen=0 rastgele_düşen=87) dönüş=29 pkt/2028 B (kuyruk_düşen=0) düşen_ölçüt=["METİN", "METİN/daralma", "PTT", "PTT/daralma", "PTT/toparlanma", "PTT/bant/alice"]
+KAYIP-ANAHTAR hücre=düşüş-dosya-sırasında tohum=1 profil=açık kayıp=anahtarlı ileri_yolda_düşen=87 eşlemesiz_ileri=0 özet=575add902434606b
+
+thread 'measure_rate_drop_during_file_transfer' (3107) panicked at crates/kama-integration/tests/asym_product_outcome.rs:3605:5:
+asimetrik hatta düşen ürün ölçütleri (hücre düşüş-dosya-sırasında, tohum 1, profil açık): ["METİN", "METİN/daralma", "PTT", "PTT/daralma", "PTT/toparlanma", "PTT/bant/alice"]
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: asym_product_outcome::run_cell
+   3: <asym_product_outcome::measure_rate_drop_during_file_transfer::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+test measure_rate_drop_during_file_transfer ... FAILED
+
+failures:
+
+failures:
+    measure_rate_drop_during_file_transfer
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 60.19s
+
