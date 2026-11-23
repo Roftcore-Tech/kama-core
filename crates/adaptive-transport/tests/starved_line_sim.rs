@@ -695,7 +695,7 @@ type IntervalMsg = (u64, u64, Option<u64>, Vec<u64>, u16);
 /// * çift alt sınırı (`receiver::PairRate`): her varışta (kopya dahil) önceki varışa aralık `g` ve
 ///   bu datagramın UDP gövdesi `b`; `b ≥ PAIR_MIN_UDP_BYTES` ve `g ≥ 2 ms` ise `b / g`; alan son
 ///   ACK'ten bu yana en büyük İKİNCİ değer (yoksa `PAIR_RATE_NONE`), ACK'te sıfırlanır.
-///   [SIKIŞMA · E · alıcı 4af53e94] Her varışta `g < 0,9 × (b + 28) / beyan_hat` ise çift sıkışmıştır:
+///   [SIKIŞMA · E · alıcı 4af53e94] Her varışta `g < 0,85 × (b + 28) / beyan_hat` ise çift sıkışmıştır:
 ///   o çift ve ARDINDAKİ çift sayılmaz (karar varış başına; `b`/`g` alt sınırlarından önce,
 ///   ACK'te sıfırlanmaz; `PairRate::squeezed`, `on_arrival`). Benzetimde beyan hat = [`PROFILE_UP`]
 ///   (ürünün sunucu yuvası `set_pair_squeeze_line(downlink_bps)`; düzenekte profil hep açık).
@@ -719,14 +719,14 @@ struct RxMirror {
 
 /// [SIKIŞMA · E] Sıkışma sınamasının payı (binde); `receiver.rs` `PAIR_SQUEEZE_PERMILLE` ile aynı
 /// (orada crate içi sabit).
-const PAIR_SQUEEZE_PERMILLE: u64 = 900;
+const PAIR_SQUEEZE_PERMILLE: u64 = 850;
 
 /// [SIKIŞMA · E] Sıkışma sınamasının datagram zarfı (B, IPv4 + UDP); `receiver.rs`
 /// `PAIR_SQUEEZE_OVERHEAD` ile aynı (orada crate içi sabit).
 const PAIR_SQUEEZE_OVERHEAD: u64 = 28;
 
 /// [SIKIŞMA · E] `receiver::PairRate::squeezed`: aralık `g` (ns) beyan hatta (`PROFILE_UP`, tel B/s)
-/// `b + 28` baytın serileşmesinin binde 900'ünden kısa mı.
+/// `b + 28` baytın serileşmesinin binde 850'sinden kısa mı.
 fn pair_squeezed(g: u64, b: u64) -> bool {
     u128::from(g) * 1_000 * u128::from(PROFILE_UP)
         < u128::from(PAIR_SQUEEZE_PERMILLE)

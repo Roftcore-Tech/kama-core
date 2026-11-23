@@ -1652,11 +1652,15 @@ impl Default for Receiver {
 /// pacing'i de ona sert sınırlı). Tek FIFO darboğazda ikinci datagram birinciden en erken kendi tel
 /// serileşmesi kadar sonra çıkar: `g ≥ (b + 28) / hat ≥ (b + 28) / beyan_hat`.
 ///
-/// Kural: `g < 0,9 × (b + 28) / beyan_hat` ise çift SIKIŞMIŞTIR ve sayılmaz; ARDINDAKİ çift de
+/// Kural: `g < 0,85 × (b + 28) / beyan_hat` ise çift SIKIŞMIŞTIR ve sayılmaz; ARDINDAKİ çift de
 /// sayılmaz. Gerekçeler:
-/// - 0,9 ([`PAIR_SQUEEZE_PERMILLE`]): beyan hattın %90'ından kısa sürede serileşme, hattın beyanın
-///   1 / 0,9 ≈ 1,11 katından hızlı olması demektir; fiziksel değil. %10 pay beyanın doğruluğunu ve
-///   alıcı zaman damgası titreşimini örter (12 500 B/s'te en küçük ölçü datagramı
+/// - 0,85 ([`PAIR_SQUEEZE_PERMILLE`]; ilk değer 0,9): jeton kovalı darboğaz (tbf) hat göndericiden
+///   hızlıyken boşta dolar; birinci datagram kovada `burst − a` bayt bırakır ve ikincisi tam
+///   serileşmesinden önce çıkar. Ölçüldü (#175 7100234177, `844fb172` `cap/MID_ifb0`, tbf
+///   `burst 1200b`, 1 074 B datagram, 12 500 B/s): toparlanmadaki 18 çiftin hepsi 0,881–0,897;
+///   0,9 bunların hepsini sıkışma sayıyor, alan hiç değer taşımıyor ve tavan yalnız en küçük
+///   adımlı yoklamayla açılıyordu. 0,85 ölçülen en küçüğün (0,878) %3 altı; 5 ms toplu teslim
+///   (≈ 0,06) yine sıkışmadır. Pay ayrıca beyanın doğruluğunu ve alıcı zaman damgası titreşimini örter (12 500 B/s'te en küçük ölçü datagramı
 ///   [`crate::ack::PAIR_MIN_UDP_BYTES`] için ≈ 6,6 ms, [`PAIR_MIN_GAP_NS`]'in üç katı).
 /// - 28 ([`PAIR_SQUEEZE_OVERHEAD`]): IPv4 + UDP başlığı, olası en küçük zarf. En kısa serileşmeyi,
 ///   dolayısıyla en az yanlış sıkışmayı verir (IPv6'da gerçek serileşme daha uzun, kural gevşer).
@@ -1695,7 +1699,7 @@ const PAIR_MIN_GAP_NS: u64 = 2_000_000;
 
 /// [SIKIŞMA · E] Sıkışma sınamasının payı (binde): aralık beyan hattaki tel serileşmesinin bu
 /// oranından kısaysa çift sıkışmıştır (türetme: [`PairRate`]).
-const PAIR_SQUEEZE_PERMILLE: u64 = 900;
+const PAIR_SQUEEZE_PERMILLE: u64 = 850;
 
 /// [SIKIŞMA · E] Sıkışma sınamasının datagram zarfı (B): IPv4 (20) + UDP (8), olası en küçük zarf
 /// (türetme: [`PairRate`]).
@@ -2023,6 +2027,65 @@ mod tests {
             pr.field(),
             crate::ack::PAIR_RATE_NONE - 1,
             "beyan yokken kural kapalı"
+        );
+    }
+
+    /// [SIKIŞMA · E · jeton kovası · #175 7100234177] Toparlanmış 12 500 B/s hat (beyan 12 500),
+    /// gönderici 6 223'te çiftli: tbf kovası boşta dolar, çiftin ikincisi tam serileşmenin
+    /// ≈ 0,883'ünde çıkar (`844fb172` `cap/MID_ifb0`: 18 çiftin hepsi 0,881–0,897). Eski pay
+    /// (0,9) hepsini sıkışma sayıyordu: alan NONE, tavan açılmıyordu. Karşı örnekler aynı testte:
+    /// dürüst 6 250 hatta duran kuyruk (değer hattı aşmaz), 0,84 ve 5 ms toplu teslim sıkışmadır.
+    #[test]
+    fn token_bucket_pairs_after_recovery_are_not_squeezed() {
+        let ms = 1_000_000u64;
+        let b = 1_046u64;
+        let ser = |rate: u64| (b + 28) * 1_000_000_000 / rate;
+        let declared = PairRate {
+            squeeze_line_bps: Some(12_500),
+            ..PairRate::default()
+        };
+        let feed = |pr: &mut PairRate, t: &mut u64, gaps: &[u64]| {
+            for g in gaps {
+                *t += g;
+                pr.on_arrival(*t, Some(b));
+            }
+        };
+        let period = 2 * (b + 28) * 1_000_000_000 / 6_223;
+        let pairs = |ratio_permille: u64| {
+            let (mut pr, mut t) = (declared, 0u64);
+            feed(&mut pr, &mut t, &[ser(6_250); 4]);
+            pr.on_ack();
+            let inner = ser(12_500) * ratio_permille / 1_000;
+            for _ in 0..4 {
+                feed(&mut pr, &mut t, &[period - inner, inner]);
+            }
+            pr.field()
+        };
+        let line = 12_500 * b / (b + 28);
+        // Ölçülen kova oranı: değer hattın en az %98'i (gönderici tavanı hatta açar).
+        for r in [881, 883, 889, 897] {
+            let f = pairs(r);
+            assert!(
+                f != crate::ack::PAIR_RATE_NONE && u64::from(f) * 100 >= line * 98,
+                "kova oranı {r}‰: alan {f}"
+            );
+        }
+        // Karşı örnek: 0,84 sıkışmadır (değer taşınmaz).
+        assert_eq!(pairs(840), crate::ack::PAIR_RATE_NONE, "0,84 sayıldı");
+        // Karşı örnek: dürüst 6 250 hatta duran kuyruk; değer hattı aşmaz.
+        let (mut pr, mut t) = (declared, 0u64);
+        feed(&mut pr, &mut t, &[ser(6_250); 12]);
+        let f = u64::from(pr.field());
+        assert!(f <= 6_250 * b / (b + 28) + 1, "dürüst 6 250: {f}");
+        // Karşı örnek: 5 ms toplu teslim sıkışmadır.
+        let (mut pr, mut t) = (declared, 0u64);
+        feed(&mut pr, &mut t, &[ser(6_250); 12]);
+        pr.on_ack();
+        feed(&mut pr, &mut t, &[3 * ser(6_250), 5 * ms, 5 * ms]);
+        let f = pr.field();
+        assert!(
+            f == crate::ack::PAIR_RATE_NONE || f <= 6_875,
+            "5 ms küme: {f}"
         );
     }
 
