@@ -1712,7 +1712,8 @@ pub struct RxAckTotals {
     pub drop_alarms: u64,
     /// Yükseliş alarmı (`Receiver::diag_rise_alarms`).
     pub rise_alarms: u64,
-    /// Kanıt beklemesi açıkken çıkan planlı ACK (`Receiver::diag_alarm_wait_planned`).
+    /// Kanıt beklemesi açıkken çıkan ACK: planlı ACK ya da bekleme sürerken verilen yükseliş
+    /// alarmının ACK'i (`Receiver::diag_alarm_wait_planned`).
     pub wait_planned: u64,
     /// Ertelenen ACK denemeleri: bütçe / dolu dönüş hattına yol verme / bilgisiz
     /// (`Receiver::diag_ack_budget_deferred`, `diag_ack_yield_deferred`,
@@ -1738,7 +1739,9 @@ pub struct RxAckDiag {
     pub timer: bool,
     /// Çerçevenin `largest_seq` tel alanı (en büyük PN'in alt 16 biti) ve alıcı motorun o andaki
     /// en büyük PN'i (`Receiver::largest_seq`). Göndericinin [`AckFrameDiag::largest_pn`]
-    /// kaydıyla eşleme anahtarı (gözlem; dönüş yolunda kaybolan ACK eşlenmez).
+    /// kaydıyla eşleme bu değer + sıra iledir: değer tekil değildir (yeni en büyük PN gelmeden
+    /// çıkan ardışık ACK'ler aynısını taşır), aynı değerli kayıtlar çıkış / varış sırasıyla
+    /// eşlenir (gözlem; dönüş yolunda kaybolan ACK eşlenmez).
     pub largest_lo: u16,
     pub rx_largest_pn: Option<u64>,
     /// Motora verilen saat (ns; sunucu görevinin saat tabanı, [`ServerLiveDiag::clock_origin`]):

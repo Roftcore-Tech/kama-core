@@ -71,11 +71,19 @@
 //!   - `t_evidence` — kanıtın yeterli olduğu an: alarm ACK'inin kanıtla bırakıldığı varış
 //!     (`AlarmEvidence::sufficient`). ACK kanıtla bırakılmadıysa `null` (planlı ACK, yükseliş
 //!     alarmının ACK'i, alarm yok); neden tahmin edilmez, şu olgular yazılır: `alarm`, `rise`,
-//!     `detects` / `t_detect` (bu ACK aralığındaki daralma algılaması), `wait_open` (algılama
-//!     oldu, kanıt yetmeden planlı ACK çıktı).
+//!     `detects` / `t_detect` (bu ACK aralığındaki daralma algılaması), `wait_open` (bu ACK
+//!     çıkarken kanıt beklemesi açıktı: algılama oldu, kanıt yetmedi). `wait_open` planlı ACK'e
+//!     özgü değildir: bekleme sürerken verilen yükseliş alarmının ACK'inde de `true` olur.
+//!     İkisi `alarm` / `rise` alanlarıyla ayrılır (planlı ACK: `alarm:false`; yükseliş alarmının
+//!     ACK'i: `alarm:true`, `rise:true`). Bayrak çıkış anındaki bekleme durumudur, ACK'in türü
+//!     değildir.
 //!   - `t_ready` — ACK'in hazır olduğu an: alarm ACK'inde alarm kuralının kurulduğu an
-//!     (`t_alarm`; daralmada `t_evidence` ile aynı), öbürlerinde önceki ACK'ten sonraki ilk
-//!     gönderim denemesi (`t_first_try`). `t − t_ready` ertelenme süresidir.
+//!     (`t_alarm`; daralmada, aynı aralıkta daha önce yükseliş alarmı kurulmadıysa, `t_evidence`
+//!     ile aynı), öbürlerinde önceki ACK'ten sonraki ilk gönderim denemesi (`t_first_try`).
+//!     `t − t_ready`: alarm ACK'inde yalnız alarm kuralı kurulduktan SONRAKİ ertelenme süresidir
+//!     (eşleşen sayaç `defer_alarm`); alarmdan önceki denemeler (`t_first_try` → `t_alarm`,
+//!     sayaç `defer` − `defer_alarm`) bu sürede yoktur. Aralığın bütün ertelenme süresi
+//!     `t − t_first_try`'dır (eşleşen sayaç `defer`). Alarm olmayan ACK'te ikisi aynıdır.
 //!   - `defer` — önceki ACK'ten bu ACK'e dek ertelenen deneme sayısı, nedene göre: `budget`
 //!     (bütçe jetonu yetmedi), `yield` (dolu dönüş hattında veriye yol verdi), `no_info`
 //!     (bilgi taşımayan kopya), `first_window` (ilk ACK ilk varış penceresini bekledi);
@@ -85,10 +93,15 @@
 //!     `"sent"` ise (`egress_refused`, `seal_failed`) `null`.
 //!   - `type` — çerçeve türü (`0x10` / `0x14` / `0x15` / `0x16` / `0x17`), `timer` — zamanlayıcı
 //!     yolundan mı, `cum` — yuvadaki motorun kümülatif sayaçları (algılama, kanıtlı bırakma,
-//!     yükseliş, kanıtsız biten bekleme, ertelenmeler).
+//!     yükseliş, `wait_planned` = kanıt beklemesi açıkken çıkan ACK — planlı ACK ya da yükseliş
+//!     alarmının ACK'i; satırdaki `wait_open:true` sayısı —, ertelenmeler).
 //!   - `largest_lo16` — çerçevenin `largest_seq` tel alanı (en büyük PN'in alt 16 biti),
 //!     `largest_pn` — alıcı motorun o andaki en büyük PN'i. Karşı ucun `ack_rx` satırıyla eşleme
-//!     anahtarı.
+//!     `largest_pn` + SIRA iledir. `largest_pn` tekil değildir: yeni en büyük PN gelmeden çıkan
+//!     ardışık ACK'ler aynı değeri taşır. Aynı değerli satırlar iki uçta aynı `sess` içinde
+//!     çıkış / varış sırasıyla (`index`) eşlenir. Dönüş yolunda kaybolan ACK eşlenmez; aynı
+//!     değerli grupta iki ucun satır sayısı farklıysa ya da dönüş yolu sırayı bozduysa grubun
+//!     içindeki eşleme belirsizdir (tahmin edilmez).
 //!   - `motor:false` — motor kayıt tutmadı (bütçesiz yol / eski motor): `t` motora verilen
 //!     saattir, motor alanları `null`.
 //!   - `sampled:false` — bütün anlar motorun ve gönderim yolunun kendi saatinden, ACK başına
@@ -98,7 +111,8 @@
 //!   motora verilirken yazılır). `t` = çerçevenin gönderen motorda işlendiği an (soketten
 //!   okunduktan ve açıldıktan sonra; çekirdeğe varış anı ayrıca tutulmaz), `largest_pn` =
 //!   çerçevenin teyit ettiği en büyük tel PN'i (karşı ucun `ack` satırındaki `largest_pn` /
-//!   `largest_lo16` ile eşlenir), `ack_delay_us`, `acked_pns`, `mapped_seqs`, `new_units`. Aynı
+//!   `largest_lo16` ile, aynı değerli satırlarda sırayla eşlenir — değer tekil değildir, bkz.
+//!   `ack`), `ack_delay_us`, `acked_pns`, `mapped_seqs`, `new_units`. Aynı
 //!   ACK'in hat koruması kararı `lg` satırındadır (aynı uç, aynı saat tabanı; `at_ns` ile
 //!   eşlenir). Halkadan (32 kayıt) taşanlar `ack_rx_gap` satırıyla sayılır.
 //! * Özet: `ack_frames` (canlı aynanın ACK çerçevesi sayaçları; ACK türleri `wire.ack_rx`'te),

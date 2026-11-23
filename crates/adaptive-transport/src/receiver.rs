@@ -232,7 +232,9 @@ pub struct AckEmitObs {
     /// yol verme. Alarm ACK'i bilgisiz kuralıyla ve ilk pencereyle ertelenmez.
     pub alarm_defer_budget: u32,
     pub alarm_defer_yield: u32,
-    /// Bu ACK çıktığında kanıt beklemesi açıktı: algılama oldu, kanıt yetmeden planlı ACK çıktı.
+    /// Bu ACK çıktığında kanıt beklemesi açıktı (`drop_alarm_wait`): algılama oldu, kanıt yetmedi.
+    /// Planlı ACK'e özgü değildir: bekleme sürerken verilen yükseliş alarmının ACK'inde de `true`
+    /// olur. İkisi `alarm` / `rise` alanlarıyla ayrılır (planlı ACK: `alarm` yok).
     pub wait_open: bool,
 }
 
@@ -416,7 +418,8 @@ pub struct Receiver {
     /// `diag_drop_alarms` kanıtla BIRAKILAN alarm ACK'ini sayar; ikisinin farkı kanıtı yetmeyen
     /// algılamalardır.
     diag_drop_detects: u64,
-    /// [ACK-GÖZLEM · salt gözlem] Kanıt beklemesi açıkken çıkan planlı ACK sayısı.
+    /// [ACK-GÖZLEM · salt gözlem] Kanıt beklemesi açıkken çıkan ACK sayısı: planlı ACK ya da
+    /// bekleme sürerken verilen yükseliş alarmının ACK'i (ayrım `AckEmitObs::alarm` / `rise`).
     diag_alarm_wait_planned: u64,
     /// [ACK-GÖZLEM · salt gözlem] Son çıkan ACK'in anları ve sıradaki ACK için biriken gözlem.
     obs_last: AckEmitObs,
@@ -813,8 +816,9 @@ impl Receiver {
         self.diag_drop_detects
     }
 
-    /// [ACK-GÖZLEM · salt gözlem] Kanıt beklemesi açıkken çıkan planlı ACK sayısı (kanıt
-    /// yetmeden biten bekleme).
+    /// [ACK-GÖZLEM · salt gözlem] Kanıt beklemesi açıkken çıkan ACK sayısı (kanıt yetmeden biten
+    /// bekleme). Yalnız planlı ACK'i saymaz: bekleme sürerken verilen yükseliş alarmının ACK'i
+    /// de sayılır ([`AckEmitObs::wait_open`]; ayrım `alarm` / `rise` alanlarıyla).
     #[must_use]
     pub fn diag_alarm_wait_planned(&self) -> u64 {
         self.diag_alarm_wait_planned
