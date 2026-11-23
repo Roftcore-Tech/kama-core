@@ -25,6 +25,17 @@ Okunan dosyalar (koşu dizinine göre):
 * `realized_post.json`: `mid_qdisc` (kuyruk düşmesi darboğaz arayüzündeki tbf/fifo sayacından).
 * `t_start` (unix s): zaman çizelgesinin varsayılan sıfırı (`--t0` ile değişir).
 * İsteğe bağlı `qdisc_series.jsonl` (bkz. EKSİK ALAN 2).
+* `cap/B_vb0.jsonl` `dir == "out"` ve `cap/A_va0.jsonl` `dir == "in"`: Bob'un bağlı portundan
+  alice'in geçici portuna giden datagramlar (alice verisinin ACK'i ve denetim; `hdr` adresleri).
+  Dönüş hattı kayıpsız ve FIFO olduğundan k. çıkış = k. varış.
+
+GECİKME AYRIŞTIRMASI (sahip 7097044569; hüküm değil, sütun): kesme ACK'i = 20 s'den sonra tavanı
+≤ 6 875'e indiren ilk `lg` satırı.
+  1. düşüş → kesme ACK'inin Bob'dan çıkışı (alıcıda kanıt + ACK bütçesi/yol verme; ikisini ayırmak
+     için alıcının kanıt anı gerekir — EKSİK ALAN 5);
+  2. Bob'dan çıkış → alice'e varış (dönüş hattı: serileşme + kuyruk + 300 ms) → `lg` işlenişi;
+  3. kesme → darboğaz kuyruğunun ≤ 0,7 s olup 60 s'ye dek öyle kaldığı ilk an (`qdisc_series`).
+EKSİK ALAN 5 — alıcının ilk geçerli kanıt anı (aralık/alarm), ACK başına.
 
 EKSİK ALAN 1 — `lg` satırı (bugün `f0_flows` yazmıyor): göndericinin ACK başına hat koruması
 kararı, `Sender::diag_line_guard_trace` (`LineGuardAckTrace`) kaynağından, alice.jsonl içinde:
@@ -468,6 +479,61 @@ def crit_text_receipt(run):
     return combine(parts), notes
 
 
+QUEUE_OK_S = 0.7
+
+
+def rev_acks(run, cap_name, direction):
+    """Bob bağlı portu → alice geçici portu datagramlarının anları (s, t0'a göre)."""
+    hdr = next((r for r in run.alice if r.get("k") == "hdr"), None)
+    if not hdr:
+        return None
+    try:
+        a_port = int(str(hdr["alice_addr"]).rsplit(":", 1)[1])
+        b_port = int(str(hdr["bob_addr"]).rsplit(":", 1)[1])
+    except (KeyError, ValueError, IndexError):
+        return None
+    pk = read_jsonl(run.d / "cap" / cap_name)
+    return sorted(run.rel_ns(p["t_unix_ns"]) for p in pk
+                  if p.get("dir") == direction and p.get("sport") == b_port
+                  and p.get("dport") not in (None, a_port) and "t_unix_ns" in p)
+
+
+def delay_breakdown(run, plan):
+    notes = []
+    lg = run.lg()
+    cut = next(((t, r) for t, r in lg if t >= T_D and r["pace_after"] <= CC_HI), None)
+    if cut is None:
+        return ["eksik: lg (kesme ACK'i bulunamadı)" if not lg else "20 s'den sonra kesme ACK'i yok"]
+    t_cut = cut[0]
+    notes.append(f"kesme ACK'i işlendi +{t_cut - T_D:.2f} s (an {t_cut:.2f} s, tavan {cut[1]['pace_after']})")
+    arr = rev_acks(run, "A_va0.jsonl", "in")
+    out = rev_acks(run, "B_vb0.jsonl", "out")
+    if not arr or not out:
+        notes.append("parça 1–2: eksik: cap/A_va0.jsonl, cap/B_vb0.jsonl ya da hdr adresleri")
+    else:
+        k = max((i for i, t in enumerate(arr) if t <= t_cut + 0.05), default=None)
+        if k is None or k >= len(out) or len(out) != len(arr):
+            notes.append(f"parça 1–2: dönüş datagramları eşleşmiyor (çıkış {len(out)}, varış {len(arr)})")
+        else:
+            notes.append(f"parça 1 düşüş → Bob'dan çıkış: {out[k] - T_D:.2f} s (alıcı kanıtı ile ACK "
+                         "bekleme ayrılamıyor; eksik: alıcının kanıt anı, EKSİK ALAN 5)")
+            notes.append(f"parça 2 Bob'dan çıkış → alice varışı: {arr[k] - out[k]:.2f} s; varış → işleniş "
+                         f"{t_cut - arr[k]:.2f} s")
+    series = sorted((run.rel_ns(q["t_unix_ns"]), q["backlog_bytes"] / rate_at(plan, run.rel_ns(q["t_unix_ns"])))
+                    for q in run.qdisc if q.get("dev") == run.dev and "backlog_bytes" in q)
+    if not series:
+        notes.append("parça 3: eksik: qdisc_series.jsonl")
+        return notes
+    q_cut = min(series, key=lambda x: abs(x[0] - t_cut))[1]
+    win = [(t, q) for t, q in series if t_cut <= t < T_R]
+    drain = next((t for i, (t, q) in enumerate(win) if all(qq <= QUEUE_OK_S for _, qq in win[i:])), None)
+    notes.append(f"parça 3 kesme → kuyruk ≤ {QUEUE_OK_S} s (60 s'ye dek): "
+                 + (f"{drain - t_cut:.2f} s" if drain is not None else "toparlanmaya dek yok")
+                 + f"; kesmede kuyruk {q_cut:.2f} s (bilgi: fikstür sınırı kesme + kuyruk = "
+                   f"+{t_cut + q_cut - T_D:.2f} s)")
+    return notes
+
+
 def evaluate(d, plan, t0=None, baseline_dir=None, dev=None):
     run = Run(d, t0, dev)
     if run.t0 is None:
@@ -487,6 +553,7 @@ def evaluate(d, plan, t0=None, baseline_dir=None, dev=None):
             n = n + [f"kip önkoşulu {mode_v}: hüküm SINANMADI'ya çekildi (ölçü {v})"]
             v = SINANMADI
         rows.append((name, v, n))
+    rows.append(("gecikme ayrıştırması", "—", delay_breakdown(run, plan)))
     return run, rows
 
 

@@ -64,7 +64,18 @@ def build(d, *, lg=True, cc2=6250, up2=12500, text_lat=400.0, ack_format="bitmap
     for f in (fb, fm):
         if f:
             f.close()
-    alice, bob = [], []
+    alice, bob = [{"k": "hdr", "alice_addr": "10.10.0.1:24645", "bob_addr": "10.10.1.1:24645"}], []
+    # Dönüş: her lg ACK'i Bob'un bağlı portundan alice'in geçici portuna; çıkış lg − 1,6 s, varış
+    # lg − 0,01 s (kayıpsız FIFO). Bob'un verisi (alındı) ayrı portlardan: süzgeç onu almamalı.
+    with (d / "cap" / "B_vb0.jsonl").open("w") as fb, (d / "cap" / "A_va0.jsonl").open("w") as fa:
+        for k in range(1, 25):
+            t = 4.0 * k - 2.0
+            fb.write(json.dumps({"t_unix_ns": int((T0 + t - 1.6) * 1e9), "dir": "out", "ip_len": 90,
+                                 "sport": 24645, "dport": 50599}) + "\n")
+            fa.write(json.dumps({"t_unix_ns": int((T0 + t - 0.01) * 1e9), "dir": "in", "ip_len": 90,
+                                 "sport": 24645, "dport": 50599}) + "\n")
+            fb.write(json.dumps({"t_unix_ns": int((T0 + t - 1.0) * 1e9), "dir": "out", "ip_len": 70,
+                                 "sport": 35602, "dport": 24645}) + "\n")
     if lg:
         for k in range(1, 25):
             t = 4.0 * k - 2.0
@@ -103,8 +114,10 @@ def build(d, *, lg=True, cc2=6250, up2=12500, text_lat=400.0, ack_format="bitmap
     (d / "realized_post.json").write_text(json.dumps({"tag": "eski", "mid_qdisc": []}) + "\n"
                                           + json.dumps({"tag": "post", "mid_qdisc": q}) + "\n")
     if qdisc:
+        # Kuyruk: 20–29 s'de 15 000 B (6 250'de 2,4 s), sonra 1 228 B.
         (d / "qdisc_series.jsonl").write_text("".join(
-            json.dumps({"t_unix_ns": int((T0 + t) * 1e9), "dev": dev, "backlog_bytes": 1228}) + "\n"
+            json.dumps({"t_unix_ns": int((T0 + t) * 1e9), "dev": dev,
+                        "backlog_bytes": 15000 if 20 <= t < 29 else 1228}) + "\n"
             for t in range(0, 100)))
 
 
@@ -155,6 +168,15 @@ def main():
                     if n in bad:
                         for x in notes:
                             print(f"       {n}: {x}")
+        # Gecikme ayrıştırması (taban): kesme ACK'i 26 s; çıkış 24,4 → parça 1 4,40 s; parça 2 1,59 s;
+        # kuyruk 29 s'de ≤ 0,7 s → parça 3 3,00 s.
+        _, rows = verdicts(tmp / "v0", True, tmp / "kesmesiz")
+        notes = " | ".join(next(n for name, _, n in rows if name == "gecikme ayrıştırması"))
+        want = ["parça 1 düşüş → Bob'dan çıkış: 4.40 s", "parça 2 Bob'dan çıkış → alice varışı: 1.59 s",
+                "parça 3 kesme → kuyruk ≤ 0.7 s (60 s'ye dek): 3.00 s"]
+        miss = [w for w in want if w not in notes]
+        print(f"{'OK  ' if not miss else 'HATA'} gecikme ayrıştırması: {notes}")
+        fails += bool(miss)
     print("SONUÇ:", "GEÇTİ" if fails == 0 else f"{fails} vaka KALDI")
     return 1 if fails else 0
 
