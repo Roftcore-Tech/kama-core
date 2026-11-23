@@ -1,0 +1,53 @@
+# Seri A (6 koşu). Ölçüm yamasının ilk iki adımı (olcum-yamasi.diff'in 60 s bekleme bloğu YOK).
+# Komut stderr'i dosyaya değil terminale yazdı (`2>&1 > dosya` sırası); PROBE satırları terminal
+# çıktısından AYNEN aktarıldı. bob_log = Bob'un ACK kaydı (testin saydığı); diğer adres Alice'in.
+koşu 1:
+PROBE session_up bob_log=0x7fe464000d40 t=0.000
+PROBE ack_seal log=0x7fe464000cf0 len=15 t=0.528
+PROBE ack_seal log=0x7fe464000cf0 len=15 t=1.668
+PROBE ack_seal log=0x7fe464000cf0 len=15 t=2.828
+PROBE ack_seal log=0x7fe464000cf0 len=15 t=3.968
+PROBE texts_done t=6.227 received=30
+PROBE ack_seal log=0x7fe464000cf0 len=19 t=6.426
+thread 'ack_ref_wire_size_link_profile' panicked at crates/kama-integration/tests/ack_ref_wire_size.rs:315:5:
+[yön-profili] vakum: ACK mühürlenmedi
+koşu 2:
+PROBE session_up bob_log=0x7fd7d8000d40 t=0.000
+PROBE ack_seal log=0x7fd7d8000cf0 len=15 t=0.018
+PROBE ack_seal log=0x7fd7d8000d40 len=79 t=1.147
+PROBE ack_seal log=0x7fd7d8000cf0 len=19 t=3.214
+PROBE ack_seal log=0x7fd7d8000cf0 len=19 t=4.379
+PROBE texts_done t=6.232 received=30
+ack_mühürlenen=1
+koşu 3:
+PROBE session_up bob_log=0x7fac00000d40 t=0.000
+PROBE ack_seal log=0x7fac00000cf0 len=15 t=0.010
+PROBE ack_seal log=0x7fac00000d40 len=79 t=1.150
+PROBE ack_seal log=0x7fac00000cf0 len=19 t=3.216
+PROBE ack_seal log=0x7fac00000cf0 len=19 t=4.370
+PROBE texts_done t=6.232 received=30
+ack_mühürlenen=1
+koşu 4:
+PROBE session_up bob_log=0x7f9774000d40 t=0.000
+PROBE ack_seal log=0x7f9774000cf0 len=15 t=0.015
+PROBE ack_seal log=0x7f9774000d40 len=79 t=1.160
+PROBE ack_seal log=0x7f9774000cf0 len=19 t=3.227
+PROBE ack_seal log=0x7f9774000cf0 len=19 t=4.375
+PROBE texts_done t=6.210 received=30
+ack_mühürlenen=1
+koşu 5:
+PROBE session_up bob_log=0x7fb918000d40 t=0.000
+PROBE ack_seal log=0x7fb918000cf0 len=15 t=0.021
+PROBE ack_seal log=0x7fb918000d40 len=79 t=1.148
+PROBE ack_seal log=0x7fb918000cf0 len=19 t=3.214
+PROBE ack_seal log=0x7fb918000cf0 len=19 t=4.361
+PROBE texts_done t=6.242 received=30
+ack_mühürlenen=1
+koşu 6:
+PROBE session_up bob_log=0x7fcda0000d40 t=0.000
+PROBE ack_seal log=0x7fcda0000cf0 len=15 t=0.021
+PROBE ack_seal log=0x7fcda0000d40 len=79 t=1.147
+PROBE ack_seal log=0x7fcda0000cf0 len=19 t=3.214
+PROBE ack_seal log=0x7fcda0000cf0 len=19 t=4.362
+PROBE texts_done t=6.232 received=30
+ack_mühürlenen=1
