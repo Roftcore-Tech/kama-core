@@ -129,6 +129,25 @@
 //! çok altında kalıyordu. Ölçüldü (benzetim `e2`, tohum 1): tek cepheyle yakınsamadan 2 s sonra
 //! darboğaz beklemesi 1,73 s; en büyükle iki datagram sınırının içinde.
 //!
+//! [Hedef 3, 2026-11-23] Bekleme sınırı `L`'nin kuyruğa GİRDİĞİ andaki kuyruktur; `L` hattı
+//! terk ettikten (`τ − taban`) ACK'in gelişine dek (dönüş yayılımı + ACK serileşmesi, bu profilde
+//! ≈ 2–2,4 s) gönderici tavanda göndermeyi sürdürür ve hattın boşalttığını aşan kısım kuyruğa
+//! eklenir. Yakınsama ACK'inde (tavanın gerçek hatta ilk indiği) gönderici bu sürede profil
+//! hızındadır: yazılan kuyruk gerçeğin çok altında kalıyordu (benzetim (b)/(d-2), ayna alıcısı,
+//! tohum 1–3: yazılan 1 241–1 716 ms; kuyrukta düşmesiz FIFO'da gerçek 3 835–4 554 ms, 64 paketlik
+//! FIFO'da 1 625–2 472 ms; iki dünyada gönderici aynı, eksik bilgi değil kural). Bu yüzden ikinci
+//! bir alt sınır alınır, ikisinin büyüğü yazılır (yine `bayt` ile sınırlı):
+//! `büyüme = (oran × (τ − s − taban) + (cum − cum(τ − taban)) − boşalan)⁺`. İlk terim `L` hattı
+//! terk ettiğinde arkasındaki kuyruğun alt sınırıdır (gönderici `L`'den bu yana en az hat hızında
+//! gönderdi varsayımı; bekleme sınırıyla aynı varsayım); ikinci terim o andan sonra hatta verilen
+//! bayttır (göndericinin kendi kaydı), üçüncüsü `bayt`'taki boşalmayla aynıdır. `L`'nin gönderimi
+//! ile hattı terk etmesi arasında kuyrukta düşen bayt bu terime girmez (taşma koruması yerinde);
+//! `L` hattı terk ettikten sonra kuyrukta düşen bayt girer ve `bayt` sınırı gibi kuyruğu büyük
+//! gösterir: bu, kuyrukta düşen baytın ACK anında görünmemesidir (bilgi sınırı; sonraki ACK'te
+//! aynı sınıf). Bekleme sınırı (son [`POINT_CAP`] noktanın en büyüğü) yerinde kalır: büyüme
+//! yalnız ondan büyükse yazılanı değiştirir (yazılan kuyruk hiçbir ACK'te bugünkünden küçük
+//! değildir). Ayrıntı ve ölçüm: #175 hedef 3 nedensel kaydı.
+//!
 //! # Süreli yoklama (İŞ-33 C3, 2026-11-21)
 //!
 //! Doğrulamadan sonra tavan kalıcı yükseliyordu. Hat değişmediyse yükseltilmiş tavan bir ACK
@@ -1836,18 +1855,56 @@ impl LineGuard {
             .max(lag.saturating_sub(base));
         let by_delay = u64::try_from(u128::from(rate) * u128::from(queued_ns) / 1_000_000_000)
             .unwrap_or(u64::MAX);
+        // [KUYRUK-TAHMİNİ · hedef 3] `L` hattı terk ettiğinde arkasında en az `L`'nin beklediği
+        // kadar hat baytı vardı (aynı varsayım); o andan sonra gönderilen eklenir, boşalan düşülür
+        // (modül belgesi, "Kuyruk boşaltma").
+        let by_growth = self.backlog_growth_floor(
+            rec,
+            rate,
+            lag.saturating_sub(base),
+            tau.saturating_sub(base),
+            drained,
+        );
         // [SÜRELİ-YOKLAMA] Başarısız yoklamanın fazla baytı boşaltılır. Kuyruk tahmini (`by_bytes`,
         // `by_delay`) bunu göremeyebilir: taban son noktaların en küçük gecikmesidir ve birkaç ACK
         // süren bir kuyruğu dönüş gecikmesi artışı sayar.
         Some(LineGuardUpdate {
             rate_bps: rate,
-            backlog_bytes: by_bytes.min(by_delay),
+            backlog_bytes: by_bytes.min(by_delay.max(by_growth)),
             extra_backlog_bytes: probe_drain_bytes,
         })
     }
 }
 
 impl LineGuard {
+    /// [KUYRUK-TAHMİNİ · hedef 3] Cephe `rec` (`L`) hattı `left_ns` anında terk etti ve kuyrukta
+    /// `wait_ns` bekledi. Dönen alt sınır (tel baytı): `hız × wait_ns` (`L` hattı terk ettiğinde
+    /// arkasındaki kuyruk; gönderici `L`'den bu yana en az hat hızında gönderdi varsayımı) + `L`
+    /// hattı terk ettikten sonra hatta verilen bayt − o andan bu yana boşalan (`drained`), sıfırda
+    /// kırpılır. Yalnız göndericinin kendi kaydı: `left_ns`'e dek verilenin kümülatifi, o ana dek
+    /// verilen son kaydın `cum`'u (kayıtlar `L`'den itibaren tutulur; `L` daima `left_ns`'ten önce).
+    /// Kayıtlar arasında verilen motor dışı datagram sonraya sayılır (yukarı yönde; çağıran bayt
+    /// sınırıyla `min` alır).
+    fn backlog_growth_floor(
+        &self,
+        rec: SentRec,
+        rate: u64,
+        wait_ns: u64,
+        left_ns: u64,
+        drained: u64,
+    ) -> u64 {
+        let upto = self.sent.partition_point(|r| r.send_ns <= left_ns);
+        let cum_left = upto
+            .checked_sub(1)
+            .and_then(|k| self.sent.get(k))
+            .map_or(rec.cum, |r| r.cum.max(rec.cum));
+        let behind = u64::try_from(u128::from(rate) * u128::from(wait_ns) / 1_000_000_000)
+            .unwrap_or(u64::MAX);
+        behind
+            .saturating_add(self.cum.saturating_sub(cum_left))
+            .saturating_sub(drained)
+    }
+
     /// [SÜRELİ-YOKLAMA] Tavanı adım kadar (`step_permille`) yükselten yoklamayı başlatır. Yükseltme,
     /// hat değişmediyse [`PROBE_QUEUE_NS`] kadar kuyruk kuracak süre (en çok
     /// [`VERIFY_MIN_SPAN_NS`]) sürer; kalıcılığı hükme bağlı. `point` yoklamanın başladığı ACK
