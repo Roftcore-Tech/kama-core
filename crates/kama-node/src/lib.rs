@@ -203,6 +203,17 @@ impl fmt::Debug for KamaNode {
     }
 }
 
+/// [ACK-BİÇİMİ · PoC 2026-11-23] ACK biçimi dağıtım anahtarı (bkz. `Node::start`).
+pub const ACK_FORMAT_ENV_VAR: &str = "KAMA_ACK_FORMAT";
+
+/// `KAMA_ACK_FORMAT` değerini çözer: boş/`v2` → V2 (ürün varsayılanı), `bitmap` → bitmap pilotu;
+/// başka değer yapılandırma hatası.
+fn parse_ack_format(v: &str) -> Result<client_core::runtime::AckFormat, NodeError> {
+    client_core::runtime::AckFormat::parse(v).ok_or(NodeError::Config(
+        kama_provision::format::FormatError::Invalid("KAMA_ACK_FORMAT: 'v2' ya da 'bitmap' olmalı"),
+    ))
+}
+
 /// [İŞ-30] Çekirdeğin derleme kimliği (başlangıç kaydı ve pilot özeti): paket sürümü ve derlemede
 /// verilmişse `KAMA_GIT_SHA` (yoksa "bilinmiyor"; uydurulmaz).
 pub(crate) fn core_build_line() -> String {
@@ -314,6 +325,14 @@ impl KamaNode {
                         "KAMA_TRANSPORT_ENGINE: 'legacy' ya da 'cc-port' olmalı",
                     ))
                 })?;
+        }
+        // [ACK-BİÇİMİ · PoC 2026-11-23] `KAMA_ACK_FORMAT=bitmap` ⇒ bitmap ACK pilotu
+        // (`RuntimeConfig::ack_format`; 0x15, eş yalın PTT'yi biliyorsa 0x16). Boş/`v2` = ürün
+        // varsayılanı V2 (bit-eşit). Yalnız dağıtım ayarıdır, iki uçta AYNI olmalıdır; tanınmayan
+        // değer yapılandırma hatasıdır (sessizce V2'ye düşmez). Bu anahtar olmadan gerçek istemci
+        // bitmap yolunu (ve ona bağlı yalın PTT'yi) hiç seçemiyordu.
+        if let Ok(v) = std::env::var(ACK_FORMAT_ENV_VAR) {
+            transport_config.runtime.ack_format = parse_ack_format(&v)?;
         }
         // [TELEFON-PİLOTU] Yön hızı profili dağıtım ayarından (`KAMA_LINK_RATES` ya da
         // `<data_dir>/link-profile`; `src/link_profile.rs`). Yoksa `None`: bugünkü ürün davranışı.
@@ -813,5 +832,24 @@ impl Drop for KamaNode {
     fn drop(&mut self) {
         // Drop'ta panik YOK: kapanış hatası (iş parçacığı paniği) burada raporlanacak yer bulamaz.
         let _ = self.stop();
+    }
+}
+
+#[cfg(test)]
+mod ack_format_switch_tests {
+    //! [ACK-BİÇİMİ · PoC 2026-11-23] `KAMA_ACK_FORMAT` çözümü: gerçek istemci bitmap pilotunu yalnız
+    //! açık ayarla seçer; varsayılan V2'dir; tanınmayan değer sessizce V2'ye düşmez.
+    use super::parse_ack_format;
+    use client_core::runtime::AckFormat;
+
+    #[test]
+    fn switch_selects_bitmap_only_when_asked_and_rejects_unknown_values() {
+        assert_eq!(parse_ack_format("bitmap").ok(), Some(AckFormat::Bitmap));
+        assert_eq!(parse_ack_format("v2").ok(), Some(AckFormat::V2));
+        assert_eq!(parse_ack_format("").ok(), Some(AckFormat::V2));
+        assert!(
+            parse_ack_format("bitmap2").is_err(),
+            "tanınmayan değer hata olmalı"
+        );
     }
 }

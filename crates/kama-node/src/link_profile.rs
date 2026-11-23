@@ -163,8 +163,13 @@ pub(crate) fn start_record(runtime: &RuntimeConfig, lanes: bool, source: Source)
     } else {
         ""
     };
+    // [ACK-BİÇİMİ] Kabul kipi başlangıç kaydından okunur (V2 = ürün varsayılanı; bitmap = pilot).
+    let ack = match runtime.ack_format {
+        client_core::runtime::AckFormat::V2 => "v2",
+        client_core::runtime::AckFormat::Bitmap => "bitmap",
+    };
     format!(
-        "motor={engine}\nşeritler={}\nyön_hızları={rates}\nkaynak={}\nkoruma={protection}\n{uplink}",
+        "motor={engine}\nack_biçimi={ack}\nşeritler={}\nyön_hızları={rates}\nkaynak={}\nkoruma={protection}\n{uplink}",
         if lanes { "açık" } else { "kapalı" },
         source.label(),
     )
@@ -224,6 +229,19 @@ mod tests {
         let mut runtime = RuntimeConfig::default();
         let plain = start_record(&runtime, true, Source::None);
         assert!(plain.contains("motor=cc-port\n"), "{plain}");
+        assert!(
+            plain.contains("ack_biçimi=v2\n"),
+            "ürün varsayılanı V2: {plain}"
+        );
+        let bitmap = start_record(
+            &RuntimeConfig {
+                ack_format: client_core::runtime::AckFormat::Bitmap,
+                ..RuntimeConfig::default()
+            },
+            true,
+            Source::None,
+        );
+        assert!(bitmap.contains("ack_biçimi=bitmap\n"), "{bitmap}");
         assert!(plain.contains("yön_hızları=yok\n"), "{plain}");
         assert!(plain.contains("koruma=standart\n"), "{plain}");
         // Saha cihazı: aşağı yön (ACK'lerin geldiği yön) geniş, yukarı dar → kendi verisinin
