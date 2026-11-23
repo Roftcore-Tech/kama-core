@@ -1736,6 +1736,11 @@ pub struct RxAckDiag {
     pub frame_bytes: u32,
     /// Zamanlayıcı yolundan mı çıktı (`on_ack_timer`); değilse bir datagramın varışında.
     pub timer: bool,
+    /// Çerçevenin `largest_seq` tel alanı (en büyük PN'in alt 16 biti) ve alıcı motorun o andaki
+    /// en büyük PN'i (`Receiver::largest_seq`). Göndericinin [`AckFrameDiag::largest_pn`]
+    /// kaydıyla eşleme anahtarı (gözlem; dönüş yolunda kaybolan ACK eşlenmez).
+    pub largest_lo: u16,
+    pub rx_largest_pn: Option<u64>,
     /// Motora verilen saat (ns; sunucu görevinin saat tabanı, [`ServerLiveDiag::clock_origin`]):
     /// ACK'i üreten `on_datagram` / `on_ack_timer` çağrısının `now`'ı.
     pub motor_ns: u64,
@@ -1777,6 +1782,8 @@ struct RxAckNote {
     frame_type: u8,
     frame_bytes: u32,
     timer: bool,
+    largest_lo: u16,
+    rx_largest_pn: Option<u64>,
     motor_ns: u64,
     motor: Option<adaptive_transport::receiver::AckEmitObs>,
     totals: RxAckTotals,
@@ -1788,6 +1795,7 @@ impl RxAckNote {
         live: Option<&Mutex<ServerLiveDiag>>,
         rx: &Receiver,
         ctx: ProtectionContext,
+        frame: &AckFrame,
         plain: &[u8],
         now: u64,
         timer: bool,
@@ -1802,6 +1810,8 @@ impl RxAckNote {
             frame_type: plain.first().copied().unwrap_or(0),
             frame_bytes: u32::try_from(plain.len()).unwrap_or(u32::MAX),
             timer,
+            largest_lo: frame.largest_seq,
+            rx_largest_pn: rx.largest_seq(),
             motor_ns: now,
             // Motor kaydı bu çağrıda yazıldıysa (bütçeli port yolu) alınır.
             motor: (obs.index > 0 && obs.emit_ns == now).then_some(obs),
@@ -5682,7 +5692,7 @@ async fn srv_ack_tick(
             s.acks_out = s.acks_out.saturating_add(1);
             let plain = a.encode();
             // [ACK-GÖZLEM · salt gözlem] Motorun kaydı, sıradaki yuvanın çağrısından önce.
-            let note = RxAckNote::of(live, &s.rx, s.ctx, &plain, now, true);
+            let note = RxAckNote::of(live, &s.rx, s.ctx, &a, &plain, now, true);
             Some((p, s.ctx, plain, note))
         })
         .collect();
@@ -5742,6 +5752,8 @@ async fn srv_send_ack(
         frame_type: note.frame_type,
         frame_bytes: note.frame_bytes,
         timer: note.timer,
+        largest_lo: note.largest_lo,
+        rx_largest_pn: note.rx_largest_pn,
         motor_ns: note.motor_ns,
         motor: note.motor,
         wire_ns,
@@ -6372,8 +6384,9 @@ async fn server_task(
                             slot.acks_out = slot.acks_out.saturating_add(1);
                             let sp = slot.ctx;
                             let plain = ack.encode();
-                            let note =
-                                RxAckNote::of(live.get(), &slot.rx, sp, &plain, now, false);
+                            let note = RxAckNote::of(
+                                live.get(), &slot.rx, sp, &ack, &plain, now, false,
+                            );
                             srv_send_ack(
                                 &mut tx, &sock, &mut stats, peer, sp, plain, note,
                                 live.get(),
@@ -6472,7 +6485,7 @@ async fn server_task(
                                 let sp = slot.ctx;
                                 let plain = ack.encode();
                                 let note = RxAckNote::of(
-                                    live.get(), &slot.rx, sp, &plain, now, false,
+                                    live.get(), &slot.rx, sp, &ack, &plain, now, false,
                                 );
                                 srv_send_ack(
                                     &mut tx, &sock, &mut stats, peer, sp, plain, note,
@@ -6508,8 +6521,9 @@ async fn server_task(
                             slot.acks_out = slot.acks_out.saturating_add(1);
                             let sp = slot.ctx;
                             let plain = ack.encode();
-                            let note =
-                                RxAckNote::of(live.get(), &slot.rx, sp, &plain, now, false);
+                            let note = RxAckNote::of(
+                                live.get(), &slot.rx, sp, &ack, &plain, now, false,
+                            );
                             srv_send_ack(
                                 &mut tx, &sock, &mut stats, peer, sp, plain, note,
                                 live.get(),
