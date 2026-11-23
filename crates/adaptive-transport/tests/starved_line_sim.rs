@@ -856,6 +856,20 @@ struct Outcome {
     /// ACK başına (varış, en büyük teyitli seq'in darboğazda serileşme başlangıcı, korunan hız,
     /// gönderim tavanı), varış sırasıyla.
     per_ack: Vec<(u64, u64, Option<u64>, u64)>,
+    /// [KUYRUK-TAHMİNİ] ACK başına (varış, göndericinin hat modelinin ACK işlendikten sonraki boşalma
+    /// süresi = yazılan kuyruk, darboğaz FIFO'sunun o anki boşalma süresi = gerçek kuyruk), ns; salt
+    /// gözlem.
+    ack_queue: Vec<(u64, u64, u64)>,
+    /// [KUYRUK-TAHMİNİ] ACK başına alıcının çift alt sınırı (UDP B/s; ayna alıcısında, yoksa
+    /// [`PAIR_RATE_NONE`]); salt gözlem.
+    ack_pair: Vec<u16>,
+    /// [KUYRUK-TAHMİNİ] Alıcıya önceki varıştan en çok bir tam datagramın profil hattında
+    /// serileşmesi ([`PROFILE_UP`]) kadar sonra varan büyük datagramların (≥ `PAIR_MIN_UDP_BYTES`)
+    /// varış anları: hattın kendi hızında art arda çıkan çiftler (salt gözlem, defter açıkken).
+    close_arrivals: Vec<u64>,
+    /// [KUYRUK-TAHMİNİ] Darboğaz boşken (serileşen yok) göndericide gönderilmemiş birim bulunan
+    /// 1 ms adımların anları (ns); salt gözlem, defter açıkken.
+    idle_with_work: Vec<u64>,
     /// [PTT-YALIN] Bırakılan PTT birimleri: (birim, an, bırakmadan önce verilen en büyük seq).
     ptt_expired: Vec<(u64, u64, u64)>,
     /// Metin birimleri: (sunum, teslim gecikmesi).
@@ -1170,6 +1184,11 @@ fn run(sc: &Scenario) -> Outcome {
     let mut pace_trace: Vec<(u64, u64)> = Vec::new();
     let mut ack_measured = Vec::new();
     let mut per_ack = Vec::new();
+    let mut ack_queue: Vec<(u64, u64, u64)> = Vec::new();
+    let mut ack_pair: Vec<u16> = Vec::new();
+    let mut close_arrivals: Vec<u64> = Vec::new();
+    let mut last_rx: Option<u64> = None;
+    let mut idle_with_work: Vec<u64> = Vec::new();
     let emit = |decs: Vec<TransmitDecision>,
                 now: u64,
                 fwd: &mut Bottleneck,
@@ -1330,6 +1349,13 @@ fn run(sc: &Scenario) -> Outcome {
         let mut acks = Vec::new();
         for (seq, uid, udp) in deliver {
             rx_bytes += udp + OVH;
+            if sc.ledger
+                && udp >= PAIR_MIN_UDP_BYTES
+                && last_rx.is_some_and(|p| now - p <= (MTU + OVH) * SEC / PROFILE_UP)
+            {
+                close_arrivals.push(now);
+            }
+            last_rx = Some(now);
             if product_rx {
                 // [BUA · ÜRÜN ALICISI] Çalışma zamanı her `on_datagram`'dan önce yukarı yön
                 // hattının durumunu verir.
@@ -1422,6 +1448,7 @@ fn run(sc: &Scenario) -> Outcome {
                     });
                     acks_at.push(now);
                     ack_measured.push(rx_span.is_some());
+                    ack_pair.push(pair_rate);
                     s.observe_ack_feedback(
                         AckObservation {
                             wire_bytes: udp,
@@ -1458,6 +1485,7 @@ fn run(sc: &Scenario) -> Outcome {
                     });
                     acks_at.push(now);
                     ack_measured.push(has_span);
+                    ack_pair.push(PAIR_RATE_NONE);
                     ack
                 }
             };
@@ -1475,9 +1503,14 @@ fn run(sc: &Scenario) -> Outcome {
             let largest = ack_log.last().map_or(0, |a| a.largest);
             let ser = fwd.ser_start.get(&largest).copied().unwrap_or(0);
             per_ack.push((now, ser, g, p));
+            let real = fwd.busy.back().map_or(0, |&d| d.saturating_sub(now));
+            ack_queue.push((now, s.cc_line_ns_until_drained(), real));
         }
         if sc.ledger && now.is_multiple_of(SEC) {
             backlog.push((now, s.unsent_units(), s.inflight_bytes()));
+        }
+        if sc.ledger && fwd.busy.back().is_none_or(|&d| d <= now) && s.unsent_units() > 0 {
+            idle_with_work.push(now);
         }
         let voice_left = (0..voice_offered.len() as u64).any(|v| {
             !voice_arrived.contains_key(&v) && !ptt_expired.iter().any(|&(u, _, _)| u == v)
@@ -1542,6 +1575,10 @@ fn run(sc: &Scenario) -> Outcome {
         voice_first,
         emit_log,
         per_ack,
+        ack_queue,
+        ack_pair,
+        close_arrivals,
+        idle_with_work,
         ptt_expired,
         text_tx: fwd.text_log.clone(),
         text_delays: sc
@@ -3143,6 +3180,49 @@ fn bua_ptt_phases(sc: &Scenario, o: &Outcome) -> String {
         .join(",")
 }
 
+/// [KUYRUK-TAHMİNİ] `[from, to)` aralığında darboğaz boşken göndericide iş bekleyen süre (ms).
+fn idle_ms(o: &Outcome, from: u64, to: u64) -> usize {
+    o.idle_with_work
+        .iter()
+        .filter(|&&t| t >= from && t < to)
+        .count()
+}
+
+/// [KUYRUK-TAHMİNİ] Evre başına (ileri hat çizelgesinin basamakları) darboğaz boşken iş bekleyen
+/// süre: `ad:ms`.
+fn bua_idle_phases(sc: &Scenario, o: &Outcome) -> String {
+    let mut edges: Vec<u64> = sc.fwd_plan.iter().map(|&(t, _)| t).collect();
+    edges.push(u64::MAX);
+    edges
+        .windows(2)
+        .map(|w| format!("{}s:{}", w[0] / SEC, idle_ms(o, w[0], w[1])))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// [KUYRUK-TAHMİNİ] `from`'dan sonra tavanın ilk kez [`DROP_TO`]'nun %10 içine indiği ACK
+/// (yakınsama ACK'i) ve sonraki ACK: yazılan kuyruk (göndericinin hat modeli, ACK işlendikten
+/// sonra) ve gerçek kuyruk (darboğaz FIFO'sunun boşalma süresi), ms.
+fn queue_at_convergence(o: &Outcome, from: u64) -> String {
+    let k = o
+        .per_ack
+        .iter()
+        .position(|&(t, _, _, p)| t >= from && p * 10 <= DROP_TO * 11);
+    let cell = |i: usize| {
+        o.ack_queue.get(i).map_or("-".to_string(), |&(t, w, r)| {
+            format!("{:.2}:{}:{}", t as f64 / SEC as f64, w / MS, r / MS)
+        })
+    };
+    match k {
+        Some(k) => format!(
+            "kuyruk_yakinsama_ack(an:yazilan_ms:gercek_ms)={} kuyruk_sonraki_ack={}",
+            cell(k),
+            cell(k + 1)
+        ),
+        None => "kuyruk_yakinsama_ack=- kuyruk_sonraki_ack=-".to_string(),
+    }
+}
+
 /// [BUA] Kolun özet ölçüleri (FARK satırı için).
 #[derive(Debug, Clone)]
 struct BuaSummary {
@@ -3199,7 +3279,7 @@ fn bua_print(arm: &str, sc: &Scenario, o: &Outcome) -> BuaSummary {
         "BUA {arm} {rx} tohum={seed} kayip=anahtarli ack={} ack_olculu={} ack_aralik_ort_ms={} \
          ack_aralik_max_ms={} ack_tel_B={} ack_tur={types} koruma_son={} koruma_min={} \
          tavan_min={} kuyruk_max_ms={} kuyruk_dusen={} fifo_max_pkt={} fifo_max_B={} dosya_s={} \
-         ptt_tel_B={} ptt_zamaninda={} ptt_max_s={}",
+         ptt_tel_B={} ptt_zamaninda={} ptt_max_s={} hat_bos_is_bekliyor_ms={}",
         sum.acks,
         o.ack_measured.iter().filter(|&&m| m).count(),
         sum.ack_gap_mean_ms,
@@ -3216,6 +3296,7 @@ fn bua_print(arm: &str, sc: &Scenario, o: &Outcome) -> BuaSummary {
         o.ptt_wire_bytes,
         sum.ptt,
         bua_s(Some(o.voice_max_from(0)).filter(|&v| v != u64::MAX)),
+        bua_idle_phases(sc, o),
     );
     let l = o.line;
     println!(
@@ -3278,7 +3359,8 @@ fn bua_print(arm: &str, sc: &Scenario, o: &Outcome) -> BuaSummary {
             println!(
                 "BUA-B {arm} {rx} tohum={seed} yakinsama_s={} yakinsama_siniri_s={} \
                  koruma_son={} bekleme_yakinsama+2s_ms={} bekleme_siniri_ms={} \
-                 ptt_yakinsama+9s_s={} ptt_dususten_s={} metin_s={}",
+                 ptt_yakinsama+9s_s={} ptt_dususten_s={} metin_s={} \
+                 hat_bos_is_bekliyor_yakinsama_sonrasi_ms={} {}",
                 bua_s(conv),
                 bua_s(t_ack.map(|t| DROP_AT_NS + 3 * t + t_ret)),
                 bua_opt(o.rate_at_end()),
@@ -3288,17 +3370,22 @@ fn bua_print(arm: &str, sc: &Scenario, o: &Outcome) -> BuaSummary {
                 bua_s(after(9 * SEC).map(|t| o.voice_max_from(t))),
                 bua_s(Some(o.voice_max_from(DROP_AT_NS))),
                 bua_s(o.text_delay_ns),
+                conv.map_or("-".to_string(), |c| idle_ms(o, c, u64::MAX).to_string()),
+                queue_at_convergence(o, DROP_AT_NS),
             );
         } else {
             let fifo_ns = 64 * (VOICE_UNIT + OVH) * SEC / DROP_TO;
             println!(
                 "BUA-D2 {arm} {rx} tohum={seed} kuyruk_dusen={} yakinsama_s={} \
-                 bekleme_yakinsama+2s_ms={} fifo_siniri_ms={}",
+                 bekleme_yakinsama+2s_ms={} fifo_siniri_ms={} \
+                 hat_bos_is_bekliyor_yakinsama_sonrasi_ms={} {}",
                 o.drops_queue,
                 bua_s(conv),
                 after(2 * SEC).map_or("-".to_string(), |t| (o.max_wait_between(t, u64::MAX) / MS)
                     .to_string()),
-                fifo_ns / MS
+                fifo_ns / MS,
+                conv.map_or("-".to_string(), |c| idle_ms(o, c, u64::MAX).to_string()),
+                queue_at_convergence(o, DROP_AT_NS),
             );
         }
     }
@@ -3383,4 +3470,311 @@ fn bua_product_receiver_report() {
             );
         }
     }
+}
+
+/// [KUYRUK-TAHMİNİ · iki dünya] (b)/(d-2) düşüşü, aynı tohum ve gönderici; darboğaz FIFO'su 64 paket
+/// (A: kuyrukta düşme var) ile 1 024 paket (B: düşme yok). Yakınsama ACK'inde (tavanın ilk kez
+/// [`DROP_TO`]'nun %10 içine indiği ACK) ve sonrakinde yazılan kuyruk (göndericinin hat modeli) ile
+/// iki dünyanın gerçek kuyruğu (FIFO boşalma süresi) yan yana basılır. Yazılan kuyruk iki dünyanın
+/// gerçek kuyruğunun da altındaysa eksik, göndericinin bilmediği bilgi (kuyrukta düşen bayt) değil,
+/// tahminin kuralıdır. Sınanan yalnız öncül, ayna alıcısıyla: yakınsama ACK'ine dek iki dünyada
+/// göndericiye aynı ACK dizisi (varış, en büyük teyitli, boy) gelir ve koruma aynı hız/tavanı yazar
+/// (göndericinin girdisi aynı → kararları aynı). Ürün alıcısı satırı yalnız rapordur (yakınsama
+/// orada düşmelerden sonradır; iki dünya ayrışabilir, `ayni` alanı gösterir).
+#[test]
+fn queue_estimate_two_worlds_at_the_convergence_ack() {
+    println!();
+    for rx in [RxModel::Mirror, RxModel::PRODUCT] {
+        for seed in 1..=3u64 {
+            let a = Scenario {
+                rx,
+                loss: if rx == RxModel::Mirror {
+                    LossModel::Lcg
+                } else {
+                    LossModel::Keyed
+                },
+                ..drop_scenario(seed, true)
+            };
+            let b = Scenario {
+                queue_pkts: 1024,
+                ..a.clone()
+            };
+            let oa = run(&a);
+            let ob = run(&b);
+            let Some(k) = oa
+                .per_ack
+                .iter()
+                .position(|&(t, _, _, p)| t >= DROP_AT_NS && p * 10 <= DROP_TO * 11)
+            else {
+                println!("KUYRUK-IKI-DUNYA {} tohum={seed} yakinsama=yok", rx.label());
+                continue;
+            };
+            for (name, i) in [("yakinsama", k), ("sonraki", k + 1)] {
+                let Some(&(t, wa, ra)) = oa.ack_queue.get(i) else {
+                    continue;
+                };
+                let upto = |o: &Outcome| -> Vec<(u64, u64, u64, Option<u64>, u64)> {
+                    o.acks
+                        .iter()
+                        .zip(&o.per_ack)
+                        .filter(|(x, _)| x.arrival <= t)
+                        .map(|(x, g)| (x.arrival, x.largest, x.udp, g.2, g.3))
+                        .collect()
+                };
+                let same = upto(&oa) == upto(&ob);
+                // Ayrışan dünyada B'nin satırı kendi yakınsama ACK'inden (ve sonrakinden).
+                let kb = ob
+                    .per_ack
+                    .iter()
+                    .position(|&(t, _, _, p)| t >= DROP_AT_NS && p * 10 <= DROP_TO * 11);
+                let qb = if same {
+                    ob.ack_queue.iter().find(|q| q.0 == t).copied()
+                } else {
+                    kb.and_then(|kb| ob.ack_queue.get(kb + i - k).copied())
+                };
+                println!(
+                    "KUYRUK-IKI-DUNYA {} tohum={seed} {name} an_s={:.2} ayni={same} \
+                     yazilan_A_ms={} gercek_A_ms={} B_an_s={} yazilan_B_ms={} gercek_B_ms={} \
+                     kuyrukta_dusen_A={} kuyrukta_dusen_B={}",
+                    rx.label(),
+                    t as f64 / SEC as f64,
+                    wa / MS,
+                    ra / MS,
+                    qb.map_or("-".to_string(), |q| format!(
+                        "{:.2}",
+                        q.0 as f64 / SEC as f64
+                    )),
+                    bua_opt(qb.map(|q| q.1 / MS)),
+                    bua_opt(qb.map(|q| q.2 / MS)),
+                    oa.drop_times.iter().filter(|&&d| d <= t).count(),
+                    ob.drop_times
+                        .iter()
+                        .filter(|&&d| d <= qb.map_or(t, |q| q.0))
+                        .count(),
+                );
+                if rx == RxModel::Mirror && name == "yakinsama" {
+                    assert!(
+                        same,
+                        "tohum {seed}: iki dünya yakınsama ACK'inden önce ayrıştı"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// [KUYRUK-TAHMİNİ] `from`'dan sonraki her ACK: varış, ölçülü mü, cephenin darboğazda serileşme
+/// başlangıcı, korunan hız, tavan, yazılan ve gerçek kuyruk (ms), önceki ACK'ten bu yana darboğaz
+/// boşken iş bekleyen süre (ms; defter açıksa).
+fn print_ack_queue_trace(tag: &str, o: &Outcome, from: u64) {
+    let mut prev = 0u64;
+    for (i, (&(t, w, r), &(_, ser, g, p))) in o.ack_queue.iter().zip(&o.per_ack).enumerate() {
+        let idle = idle_ms(o, prev, t);
+        // Göndericinin art arda (≤ 5 ms arayla) hatta verdiği iletim çiftleri (çift pacing izi).
+        let pairs = o
+            .waits
+            .windows(2)
+            .filter(|w| w[1].0 > prev && w[1].0 <= t && w[1].0 - w[0].0 <= 5 * MS)
+            .count();
+        // Alıcının bu ACK'ten önceki aralığında hat hızında art arda varan çiftler.
+        let rx_from = i
+            .checked_sub(1)
+            .and_then(|j| o.acks.get(j))
+            .map_or(0, |a| a.sent);
+        let rx_to = o.acks.get(i).map_or(t, |a| a.sent);
+        let close = o
+            .close_arrivals
+            .iter()
+            .filter(|&&a| a > rx_from && a <= rx_to)
+            .count();
+        prev = t;
+        if t < from {
+            continue;
+        }
+        println!(
+            "{tag} ack#{i} an_s={:.2} olculu={} cift={} cephe_ser_s={:.2} koruma={} tavan={p} \
+             yazilan_ms={} gercek_ms={} bos_is_ms={idle} art_arda={pairs} hat_hizinda_varan={close}",
+            t as f64 / SEC as f64,
+            o.ack_measured.get(i).copied().unwrap_or(false),
+            o.ack_pair
+                .get(i)
+                .filter(|&&c| c != PAIR_RATE_NONE)
+                .map_or("-".to_string(), |c| c.to_string()),
+            ser as f64 / SEC as f64,
+            bua_opt(g),
+            w / MS,
+            r / MS
+        );
+    }
+}
+
+/// [KUYRUK-TAHMİNİ · toparlanma izi] (4)'ün düzeneği, PTT'siz yük, tohum 1: düşüşten sonraki her
+/// ACK ([`print_ack_queue_trace`]). Yalnız rapor (iddia yok).
+#[test]
+fn drop_recovery_seed1_queue_trace_report() {
+    println!();
+    let sc = Scenario {
+        ledger: true,
+        ..drop_recovery(1, PttLoad::None)
+    };
+    let o = run(&sc);
+    print_ack_queue_trace("TOPARLANMA-IZ", &o, DROP_AT_NS);
+    let lost_after = o
+        .waits
+        .iter()
+        .filter(|w| w.0 >= RECOVER_AT_NS && w.0 < 31 * SEC)
+        .count() as u64;
+    println!(
+        "TOPARLANMA-IZ 20-31s kuyrukta_dusen={} serilesen_iletim={lost_after}",
+        o.drops_between(RECOVER_AT_NS, 31 * SEC)
+    );
+    // Aynı hücre anahtarlı kayıpla (aynı mantıksal iletim aynı kaderi alır; iletim sırası kayınca
+    // bütün kayıp çekilişleri kaymaz), dokuz hücre: (4)'ün sayımıyla toparlanma ACK'i.
+    for (load, seed) in [PttLoad::Copies, PttLoad::Single, PttLoad::None]
+        .into_iter()
+        .flat_map(|l| (1..=3u64).map(move |s| (l, s)))
+    {
+        let sc = Scenario {
+            loss: LossModel::Keyed,
+            ..drop_recovery(seed, load)
+        };
+        let o = run(&sc);
+        let up: Vec<_> = o
+            .per_ack
+            .iter()
+            .filter(|a| a.1 >= RECOVER_AT_NS)
+            .copied()
+            .collect();
+        let up_k = (0..up.len()).find(|&k| up[k..].iter().all(|a| a.3 * 100 >= PROFILE_UP * 95));
+        let down: Vec<_> = o
+            .per_ack
+            .iter()
+            .filter(|a| a.1 >= DROP_AT_NS && a.1 < RECOVER_AT_NS)
+            .copied()
+            .collect();
+        let down_k = down.iter().position(|a| {
+            a.2.is_some_and(|r| r * 10 <= DROP_TO * 11 && r * 10 >= DROP_TO * 9)
+        });
+        println!(
+            "TOPARLANMA-ANAHTARLI {load:?} tohum={seed} dusus_ack={:?} toparlanma_ack={:?}",
+            down_k.map(|k| k + 1),
+            up_k.map(|k| k + 1)
+        );
+    }
+}
+
+/// [KUYRUK-TAHMİNİ · e2 izi] e2'nin düzeneği, tohum 1: düşüşten sonraki her ACK'te (varış, ölçülü
+/// mü, korunan hız, tavan, yazılan kuyruk, gerçek kuyruk) ve yakınsamadan 9 s sonra en kötü PTT
+/// demetleri. Yalnız rapor (iddia yok).
+#[test]
+fn e2_seed1_queue_trace_report() {
+    println!();
+    let sc = Scenario {
+        no_interval: Some((DROP_AT_NS, 19 * SEC)),
+        diag: true,
+        ..drop_scenario(1, true)
+    };
+    let o = run(&sc);
+    print_ack_queue_trace("E2-IZ", &o, DROP_AT_NS);
+    let conv = converged_at(&o, DROP_TO).expect("yakınsadı");
+    let late: Vec<String> = o
+        .voice
+        .iter()
+        .filter(|&&(p, d)| p >= conv + 9 * SEC && d.is_none_or(|d| d > PTT_BOUND_NS))
+        .map(|&(p, d)| format!("{:.2}:{}", p as f64 / SEC as f64, bua_s(d)))
+        .collect();
+    // Sıralı teslimde yakınsamadan 9 s sonraki demetlerin gecikmesini, yakınsamadan önce planlanıp
+    // en geç ilk kez varan demet belirleyebilir (düşüşte kuyrukta düşen demetin ARQ kurtarması):
+    // o demet, kurtarmanın anı ve iletimleri (verildiği an, seq, tür, serileşme sonu ya da kuyrukta
+    // düştü, hatta düştü mü).
+    let first_late = o
+        .voice
+        .iter()
+        .position(|&(p, _)| p >= conv + 9 * SEC)
+        .expect("yakınsamadan 9 s sonra demet var");
+    let played = o.voice.get(first_late).and_then(|&(p, d)| d.map(|d| p + d));
+    let culprit = (0..o.voice.len())
+        .filter(|&k| VOICE_START_NS + k as u64 * VOICE_PERIOD_NS < conv)
+        .max_by_key(|&k| (o.voice_first[k].unwrap_or(u64::MAX), k))
+        .expect("yakınsamadan önce demet var") as u64;
+    println!(
+        "E2-IZ yakinsama+9s_ilk_demet={first_late} sirali_calinma_s={} \
+         yakinsamadan_once_en_gec_varan_demet={culprit} plan_s={:.2} ilk_varis_s={}",
+        bua_s(played),
+        (VOICE_START_NS + culprit * VOICE_PERIOD_NS) as f64 / SEC as f64,
+        bua_s(o.voice_first[culprit as usize])
+    );
+    for (t, kind) in o.ptt_tx.iter().filter(|(t, _)| t.unit == culprit) {
+        println!(
+            "E2-IZ demet={culprit} iletim an_s={:.3} seq={} tur={kind:?} bitis={} varir={}",
+            t.at as f64 / SEC as f64,
+            t.seq,
+            t.done.map_or("kuyrukta_dustu".to_string(), |d| format!(
+                "{:.3}",
+                d as f64 / SEC as f64
+            )),
+            t.delivered
+        );
+    }
+    let seqs: Vec<u64> = o
+        .ptt_tx
+        .iter()
+        .filter(|(t, _)| t.unit == culprit)
+        .map(|(t, _)| t.seq)
+        .collect();
+    for e in o
+        .emit_log
+        .iter()
+        .filter(|e| (e.unit_id == culprit || seqs.contains(&e.seq)) && e.at_ns > conv)
+    {
+        println!(
+            "E2-IZ demet={culprit} iz an_s={:.3} seq={} neden={:?} ref={}",
+            e.at_ns as f64 / SEC as f64,
+            e.seq,
+            e.cause,
+            e.ref_seq
+        );
+    }
+    // Kayıp ilanından demetin ilk yeniden iletimine dek göndericinin iletimleri (neden başına).
+    let declared = o
+        .emit_log
+        .iter()
+        .find(|e| {
+            seqs.contains(&e.seq) && e.cause == EmitCause::LossPacketThreshold && e.at_ns > conv
+        })
+        .map(|e| e.at_ns);
+    let retx = o
+        .emit_log
+        .iter()
+        .find(|e| e.unit_id == culprit && e.cause == EmitCause::Retransmit && e.at_ns > conv)
+        .map(|e| e.at_ns);
+    if let (Some(a), Some(b)) = (declared, retx) {
+        let mut by: BTreeMap<String, (u64, Vec<u64>)> = BTreeMap::new();
+        for e in o.emit_log.iter().filter(|e| e.at_ns >= a && e.at_ns < b) {
+            if is_emission(e.cause) {
+                let x = by.entry(format!("{:?}", e.cause)).or_default();
+                x.0 += 1;
+                if e.cause == EmitCause::Retransmit && x.1.len() < 40 {
+                    x.1.push(e.ref_seq);
+                }
+            }
+        }
+        let losses = o
+            .emit_log
+            .iter()
+            .filter(|e| e.cause == EmitCause::LossPacketThreshold && e.at_ns == a)
+            .count();
+        println!(
+            "E2-IZ ilan_s={:.3} ilk_yeniden_s={:.3} ayni_anda_ilan={losses} arada_iletim={:?}",
+            a as f64 / SEC as f64,
+            b as f64 / SEC as f64,
+            by
+        );
+    }
+    println!(
+        "E2-IZ yakinsama_s={:.2} ptt_yakinsama+9s_max_s={} gec_demetler={}",
+        conv as f64 / SEC as f64,
+        bua_s(Some(o.voice_max_from(conv + 9 * SEC))),
+        late.join(",")
+    );
 }
