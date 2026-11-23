@@ -1,0 +1,40 @@
+
+running 1 test
+PROBE session_up bob_log=0x7f01a0000d40 t=0.000
+PROBE ack_seal log=0x7f01a0000cf0 len=15 t=0.535
+PROBE ack_seal log=0x7f01a0000cf0 len=15 t=1.675
+PROBE ack_seal log=0x7f01a0000cf0 len=15 t=2.815
+PROBE ack_seal log=0x7f01a0000cf0 len=15 t=3.974
+PROBE texts_done t=6.228 received=30
+PROBE ack_seal log=0x7f01a0000cf0 len=19 t=6.430
+PROBE ack_seal log=0x7f01a0000cf0 len=19 t=7.574
+PROBE ack_seal log=0x7f01a0000cf0 len=19 t=8.735
+PROBE ack_seal log=0x7f01a0000cf0 len=19 t=9.875
+PROBE ack_seal log=0x7f01a0000cf0 len=19 t=11.015
+PROBE ack_seal log=0x7f01a0000cf0 len=19 t=12.175
+PROBE ack_seal log=0x7f01a0000cf0 len=19 t=13.315
+PROBE ack_seal log=0x7f01a0000cf0 len=19 t=14.455
+PROBE ack_seal log=0x7f01a0000cf0 len=19 t=15.614
+PROBE ack_seal log=0x7f01a0000cf0 len=19 t=16.755
+PROBE ack_seal log=0x7f01a0000cf0 len=19 t=17.895
+PROBE ack_seal log=0x7f01a0000cf0 len=19 t=19.034
+PROBE ack_seal log=0x7f01a0000cf0 len=19 t=20.194
+PROBE ack_seal log=0x7f01a0000cf0 len=19 t=21.334
+PROBE ack_seal log=0x7f01a0000cf0 len=19 t=22.474
+PROBE ack_seal log=0x7f01a0000cf0 len=19 t=23.635
+PROBE ack_seal log=0x7f01a0000cf0 len=19 t=24.775
+PROBE ack_seal log=0x7f01a0000cf0 len=19 t=25.915
+PROBE ack_seal log=0x7f01a0000cf0 len=19 t=27.054
+PROBE ack_seal log=0x7f01a0000cf0 len=19 t=28.214
+PROBE ack_seal log=0x7f01a0000cf0 len=19 t=29.355
+PROBE ack_seal log=0x7f01a0000cf0 len=19 t=30.495
+PROBE ack_seal log=0x7f01a0000cf0 len=19 t=31.655
+PROBE ack_seal log=0x7f01a0000cf0 len=19 t=32.795
+PROBE ack_seal log=0x7f01a0000d40 len=79 t=33.925
+PROBE first_bob_ack_after_texts=27.698 s empty=false
+PROBE ack_seal log=0x7f01a0000cf0 len=19 t=33.934
+ACK-REF tel-boyu [yön-profili] metin=30/30 ack_mühürlenen=1 ack_telde=1 tavanda(16 aralık)=1 en_büyük_çerçeve=79B en_büyük_udp=101B en_büyük_tel=129B
+test ack_ref_wire_size_link_profile ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 34.53s
+
