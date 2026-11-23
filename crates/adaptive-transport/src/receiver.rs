@@ -305,6 +305,10 @@ pub struct Receiver {
     /// daralma başlangıcından (`RateDropDetector::onset`) kurulan kanıtın ilk seq'i
     /// (`rx_span_field`). Yalnız kanıtlı bırakmada yazılır, her çıkan ACK'te silinir.
     alarm_span_first: Option<u64>,
+    /// [YÜKSELİŞ ARALIĞI · HEDEF 4 · #175 7088768366] Yükseliş alarmının ACK'inin ölçüm aralığının
+    /// ilk seq'i: alarm anındaki yükseliş başlangıcı (`PairRate::rise_onset`; `rx_span_field`).
+    /// Yükseliş alarmında yazılır, her çıkan ACK'te silinir.
+    rise_span_first: Option<u64>,
     /// [ALARM ARALIĞI · TUR 4 · #175 7087793188] Daralma alarmı verildi, alarm ACK'i kanıtı bekliyor.
     /// Çıkan her ACK'te silinir; bekleme en çok bir ACK sürer.
     ///
@@ -402,6 +406,7 @@ impl Receiver {
             drop_alarm: false,
             diag_drop_alarms: 0,
             alarm_span_first: None,
+            rise_span_first: None,
             drop_alarm_wait: false,
             alarm_evidence: None,
             alarm_pair_saved: [0, 0],
@@ -416,13 +421,16 @@ impl Receiver {
         let udp_bytes = self.next_datagram_bytes.take();
         // [ÇİFT ARALIĞI] Her datagram (çift, kopya dahil): hepsi ileri hattı işgal eder.
         if self.bitmap_rx() {
-            self.pair.on_arrival(now_ns, udp_bytes);
+            self.pair.on_arrival_seq(now_ns, udp_bytes, d.seq);
             // [ÇİFT ARALIĞI · YÜKSELİŞ ALARMI] Kapasite alt sınırı son bildirilenin belirgin üstüne
             // çıktı (hat toparlandı): daralma alarmı gibi bir sonraki ACK yedekten hemen çıkar.
             if self.ack_budget_first_done && self.pair.rise_alarm() {
                 self.drop_alarm = true;
                 self.alarm_yield_clear_ns = 0;
                 self.diag_rise_alarms += 1;
+                // [YÜKSELİŞ ARALIĞI · HEDEF 4] ACK'in ölçüm aralığı yükselişin başlangıcından
+                // (`rise_span_first`).
+                self.rise_span_first = self.pair.rise_onset();
             }
         }
         // [§2.2 V2] seen_count: HER görülen datagram sayılır (dup/shard DAHİL) — sender'ın
@@ -1194,6 +1202,7 @@ impl Receiver {
             self.info_since_ack = false;
             self.drop_alarm = false;
             self.alarm_span_first = None;
+            self.rise_span_first = None;
             self.drop_alarm_wait = false;
             self.alarm_evidence = None;
             // [ALARM ARALIĞI · TUR 4] Planlı ACK beklemeyi bitirdiyse bildirilen değer (yükseliş
@@ -1540,6 +1549,16 @@ impl Receiver {
     /// uçlarla kurar, bitişiklik varsaymaz (`line_guard::interval_sample`). `alarm_span_first` yalnız
     /// kanıtlı bırakmada kurulur: aralık, göndericinin örnek koşulunu alıcıda sağlayan kanıtın
     /// uçlarıdır (`drop_alarm_wait`, [`crate::arrival_rate::AlarmEvidence`]; #175 7087793188).
+    ///
+    /// [YÜKSELİŞ ARALIĞI · HEDEF 4 · #175 7088768366] Yükseliş alarmının ACK'inde aralık alarm
+    /// anındaki yükseliş başlangıcından (`rise_span_first`, `PairRate::rise_onset`) başlar; sınırlar
+    /// aynı (bugünkü başlangıçtan önceyse ya da `largest`'tan küçük değilse bugünkü kural), yani
+    /// aralık hiçbir zaman bugünkünden uzun olmaz. Bir ACK geriye uzanan aralık toparlanma öncesi
+    /// kuyruk artışını da taşıyordu; gönderici o aşağı yönlü örneği öncelikli tutar ve çift alt
+    /// sınırını kullanmaz (`line_guard`, değişmedi). Açık döngü (k), dolu dönüş, 12 500 → 6 250 →
+    /// 12 500 (33 s): aralık (372, 396] iken `g` 800 ms, örnek 8 823, tavan koşu boyunca 6 250;
+    /// başlangıçtan (382, 396] iken `g` 0, örnek yok, tavan bu ACK'te 12 500. İkisi birlikte
+    /// verilmişse daralmanın başlangıcı önceliklidir.
     fn rx_span_field(&self, base: u64, largest: u64) -> (u16, u64) {
         let none = (crate::ack::RX_SPAN_NONE, largest);
         let anchor = self
@@ -1547,9 +1566,11 @@ impl Receiver {
             .back()
             .map_or(base, |&l| l.saturating_add(1))
             .max(base);
+        let inside = |s: &u64| *s >= anchor && *s < largest;
         let anchor = self
             .alarm_span_first
-            .filter(|&s| s >= anchor && s < largest)
+            .filter(inside)
+            .or_else(|| self.rise_span_first.filter(inside))
             .unwrap_or(anchor);
         // En büyük seq son çıkan ACK'ten bu yana ilerlemediyse (sırasız/yinelenen varışla çıkan
         // ACK) aralık boştur; `BTreeSet::range` başlangıç > bitiş ile panikler.
@@ -1678,6 +1699,12 @@ struct PairRate {
     squeeze_line_bps: Option<u64>,
     /// [SIKIŞMA · E] Önceki varışın çifti sıkışmıştı: bu varışın çifti de sayılmaz.
     after_squeeze: bool,
+    /// [YÜKSELİŞ ARALIĞI · HEDEF 4] Önceki varışın seq'i.
+    prev_seq: Option<u64>,
+    /// [YÜKSELİŞ ARALIĞI · HEDEF 4] En yeni varışta biten, her çifti yükseliş eşiğinin üstünde olan
+    /// ardışık varış kuyruğunun ilk seq'i ([`Self::rise_onset`]); `None` = en yeni çift eşiğin
+    /// üstünde değil, ölçülemedi ya da referans yok.
+    run_first: Option<u64>,
 }
 
 /// [ÇİFT ARALIĞI] Çift aralığının alt sınırı (ns): daha kısa aralık zamanlayıcı/teslim titreşimidir.
@@ -1704,7 +1731,16 @@ impl PairRate {
         })
     }
 
+    /// Birim testleri: seq'siz varış (yükseliş kuyruğu seq 0 ile; testler başlangıcı okumaz).
+    #[cfg(test)]
     fn on_arrival(&mut self, now_ns: u64, udp_bytes: Option<u64>) {
+        self.on_arrival_seq(now_ns, udp_bytes, 0);
+    }
+
+    fn on_arrival_seq(&mut self, now_ns: u64, udp_bytes: Option<u64>, seq: u64) {
+        // [YÜKSELİŞ ARALIĞI] Bu varışın çifti sayılan bir değer verip yükseliş eşiğini geçmedikçe
+        // kuyruk kopar ([`Self::rise_onset`]).
+        let mut fast = false;
         if let (Some(p), Some(b)) = (self.prev_ns, udp_bytes) {
             let g = now_ns.saturating_sub(p);
             let squeezed = self.squeezed(g, b);
@@ -1718,9 +1754,33 @@ impl PairRate {
                 } else if r > self.top[1] {
                     self.top[1] = r;
                 }
+                fast = self
+                    .reported
+                    .is_some_and(|rep| u128::from(r) * 100 > u128::from(rep) * 125);
             }
         }
+        self.run_first = if fast {
+            self.run_first.or(self.prev_seq)
+        } else {
+            None
+        };
         self.prev_ns = Some(now_ns);
+        self.prev_seq = Some(seq);
+    }
+
+    /// [YÜKSELİŞ ARALIĞI · HEDEF 4 · #175 7088768366] Yükselişin başladığı varışın seq'i: en yeni
+    /// varıştan geriye, her ardışık çiftin değeri yükseliş eşiğinin (bildirilen değerin %125'i;
+    /// [`Self::rise_alarm`] ile aynı sınama) üstünde kaldıkça uzanan kuyruğun ilk varışı. Daralma
+    /// alarmındaki başlangıcın ([`crate::arrival_rate::RateDropDetector::onset`]) simetriğidir.
+    ///
+    /// Kuyruk yalnız sayılan çiftlerden geçer: küçük datagram ([`crate::ack::PAIR_MIN_UDP_BYTES`]),
+    /// [`PAIR_MIN_GAP_NS`]'ten kısa aralık, sıkışmış çift ve ardındaki çift kuyruğu koparır. İki
+    /// varış arasındaki kayıp aralığı uzatır, değeri düşürür ve kuyruğu koparır (alınmayan seq hız
+    /// kanıtına eklenmez). Yükseliş alarmının verildiği varışta en yeni çift eşiğin üstündedir
+    /// (alarmı o çift verdi), bu yüzden alarm anında değer vardır. Her ACK'te ve daralma alarmında
+    /// (eşik değişir) kuyruk silinir.
+    fn rise_onset(&self) -> Option<u64> {
+        self.run_first
     }
 
     fn on_ack(&mut self) {
@@ -1729,6 +1789,7 @@ impl PairRate {
         }
         self.top = [0, 0];
         self.alarmed = false;
+        self.run_first = None;
     }
 
     /// [ALARM ARALIĞI · #175 7084078903 · TUR 4] Daralma alarmı anında en büyük iki değer silinir
@@ -1772,6 +1833,7 @@ impl PairRate {
     fn arm_rise(&mut self) {
         self.armed = true;
         self.reported = None;
+        self.run_first = None;
     }
 
     /// [YÜKSELİŞ ALARMI] Yalnız daralma alarmından sonra (kurulu), bir kez: bu ACK aralığındaki
@@ -2110,6 +2172,54 @@ mod tests {
         assert_eq!(pr.field(), before, "geri birleşen alan");
         pr.restore([0, 0]);
         assert_eq!(pr.field(), before, "boş birleştirme etkisiz");
+    }
+
+    /// [YÜKSELİŞ ARALIĞI · HEDEF 4 · #175 7088768366] Yükseliş başlangıcı: referans 6 250 (eşik
+    /// 7 812), 1 000 B gövde. 160 ms aralıklı varışlar kuyruk kurmaz; 80 ms'lik ilk çift kuyruğu
+    /// kendinden önceki varıştan başlatır ve kuyruk hızlı çiftlerle sürer. Aradaki kayıp (160 ms) ve
+    /// küçük datagram kuyruğu koparır; sonraki hızlı çift yeni kuyruğu başlatır. ACK ve daralma
+    /// alarmı kuyruğu siler.
+    #[test]
+    fn rise_onset_is_the_start_of_the_fast_pair_run() {
+        let ms = 1_000_000u64;
+        let mut pr = PairRate {
+            reported: Some(6_250),
+            ..PairRate::default()
+        };
+        let mut t = 0u64;
+        let mut feed = |pr: &mut PairRate, seq: u64, gap: u64, udp: u64| {
+            t += gap;
+            pr.on_arrival_seq(t, Some(udp), seq);
+        };
+        for seq in 0..4 {
+            feed(&mut pr, seq, 160 * ms, 1_000);
+            assert_eq!(pr.rise_onset(), None, "yavaş çiftte kuyruk");
+        }
+        for seq in 4..7 {
+            feed(&mut pr, seq, 80 * ms, 1_000);
+            assert_eq!(
+                pr.rise_onset(),
+                Some(3),
+                "kuyruk ilk hızlı çiftin ilk varışından"
+            );
+        }
+        // seq 7 kayıp: 6 → 8 aralığı 160 ms, kuyruk kopar; 8 → 9 yeni kuyruk.
+        feed(&mut pr, 8, 160 * ms, 1_000);
+        assert_eq!(pr.rise_onset(), None, "kayıplı çift kuyruğu koparmadı");
+        feed(&mut pr, 9, 80 * ms, 1_000);
+        assert_eq!(pr.rise_onset(), Some(8));
+        // Küçük datagram ölçülemez: kuyruk kopar.
+        feed(&mut pr, 10, 10 * ms, 60);
+        assert_eq!(pr.rise_onset(), None, "küçük datagram kuyruğu koparmadı");
+        feed(&mut pr, 11, 80 * ms, 1_000);
+        assert_eq!(pr.rise_onset(), Some(10));
+        let mut acked = pr;
+        acked.on_ack();
+        assert_eq!(acked.rise_onset(), None, "ACK kuyruğu silmedi");
+        pr.arm_rise();
+        assert_eq!(pr.rise_onset(), None, "daralma alarmı kuyruğu silmedi");
+        pr.on_arrival_seq(t + 80 * ms, Some(1_000), 12);
+        assert_eq!(pr.rise_onset(), None, "referans yokken kuyruk");
     }
 
     /// [P3 SR-AUDIT-001] Düşman ayrık-seq akışı rx-set'i sınırsız büyütemez: kap sabit.

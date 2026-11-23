@@ -315,8 +315,16 @@ fn c_non_alarm_acks_keep_the_one_ack_back_interval() {
 }
 
 /// (d) Yükseliş alarmı (daralma alarmından sonra kurulur): hat 45 s'de 12 500'e döner; yükseliş
-/// alarmı verilir, ACK'inin aralığı bugünkü kural (bir ACK geriye) ve `pair_rate`'i toparlanan
-/// hattı gösterir (referansın %25 üstü). Bu değişiklik yükseliş ACK'ine dokunmaz.
+/// alarmı verilir ve `pair_rate`'i toparlanan hattı gösterir (referansın %25 üstü), toparlanmadan
+/// sonra < 3 s, tek alarm.
+///
+/// [HEDEF 4 · #175 7088768366] Aralık iddiası değişti. Önceki iddia "aralık bugünkü kural (bir ACK
+/// geriye)" idi; bu kolda o aralık [429, 459], toparlanma öncesi 456'ya dek varışları da taşıyordu.
+/// Açık döngü (k), dolu dönüşte bu kural yükseliş ACK'inde toparlanma öncesi kuyruk artışını
+/// göndericiye aşağı yönlü örnek olarak veriyor, tavan açılmıyordu (Hedef 4 kusuru). Şimdi: aralık
+/// yükselişin başlangıcından, yani toparlanmadan sonraki ilk varıştan (bu düzenekte o varıştan
+/// sonraki çift yeni hızla gelir) başlar ve bir ACK geriye kuralının başlangıcından önce değildir
+/// (aralık hiçbir zaman uzamaz). Diğer üç iddia aynen.
 #[test]
 fn d_rise_alarm_after_a_drop_is_unchanged() {
     let recover_at = 45 * SEC;
@@ -341,10 +349,22 @@ fn d_rise_alarm_after_a_drop_is_unchanged() {
     );
     assert!(rise.at >= recover_at, "yükseliş alarmı toparlanmadan önce");
     assert!(rise.at < recover_at + 3 * SEC, "yükseliş alarmı geç");
+    let one_back = o.first_received_after(largest(&bm[i - 1].frame));
+    let onset = *o
+        .arrival
+        .iter()
+        .find(|&(_, &t)| t >= recover_at)
+        .expect("toparlanmadan sonra varış")
+        .0;
+    println!("bir ACK geriye kuralının başlangıcı {one_back}, yükseliş başlangıcı {onset}");
     assert_eq!(
         span_first(&rise.frame),
-        o.first_received_after(largest(&bm[i - 1].frame)),
-        "yükseliş ACK'i bir ACK geriye uzanır"
+        onset,
+        "yükseliş ACK'inin aralığı yükselişin başlangıcından"
+    );
+    assert!(
+        span_first(&rise.frame) >= one_back,
+        "yükseliş ACK'inin aralığı bir ACK geriyi aşmaz"
     );
     let pair = rise.frame.bitmap.as_ref().expect("bm").pair_rate;
     assert!(
@@ -1713,10 +1733,17 @@ fn z_false_alarm_planned_ack_is_the_candidate_frame() {
 /// (gönderici tavanla yavaşlamaz): ürün hücresinin işi.
 ///
 /// Sınırlar (f) ile aynı (dolu dönüş): referans toparlanmadan önce ve ≤ 6 875, yükseliş alarmı
-/// toparlanmadan sonra < 3 s. Göndericide tavanın açılışı ölçülür, sınanmaz: dolu dönüşte yükseliş
-/// ACK'inin aralığı (bir ACK geriye, (d)) toparlanma öncesi kuyruk artışını da kapsar, gönderici
-/// aşağı yönlü örneği öncelikli tutar ve çift alt sınırını kullanmaz (`line_guard`, kapsam dışı);
-/// sonra ACK çıkmaz. Bulgu PR gövdesinde.
+/// toparlanmadan sonra < 3 s.
+///
+/// [HEDEF 4 · #175 7088768366] Göndericide açılış da sınanır:
+/// - dolu dönüş: tavan yükseliş ACK'inde (ilk yükseliş alarmını taşıyan ACK) profil hattına
+///   (12 500) açılır. PR #237 ucu (`d328cf3e`) ve aday alıcısında yükseliş ACK'inin aralığı bir
+///   ACK geriye uzanıyor, toparlanma öncesi kuyruk artışını taşıyordu (33 s kolları (372, 396] /
+///   (374, 397], `g` 800 / 640 ms, örnek 8 823 / 9 274; 45 s kolları `g` 6 640–6 800 ms);
+///   gönderici aşağı yönlü örneği öncelikli tuttu, tavan koşu boyunca açılmadı.
+/// - açık dönüş: açılış PR #237 ucunun açılış anından geç değil ([`PR237_OPEN_MS`], aynı test
+///   gövdesi o uçta koşuldu). Bu kollarda yükseliş ACK'inden önceki ACK toparlanmadan sonra
+///   çıkıyor (45 s) ya da yükseliş alarmı yok (33 s, referans toparlanmadan sonra kuruluyor).
 #[test]
 fn k_recovery_rise_reference_and_first_rise_at_the_sender() {
     let losses: [(&str, Loss); 3] = [
@@ -1726,6 +1753,7 @@ fn k_recovery_rise_reference_and_first_rise_at_the_sender() {
     ];
     let mut rows = Vec::new();
     let mut checks = Vec::new();
+    let mut opens = Vec::new();
     for (ret, busy) in [
         ("açık dönüş", None),
         ("dolu dönüş", Some((DROP_AT - SEC, u64::MAX))),
@@ -1812,6 +1840,14 @@ fn k_recovery_rise_reference_and_first_rise_at_the_sender() {
                         .collect::<Vec<_>>()
                         .join("; ")
                 ));
+                opens.push((
+                    name.clone(),
+                    busy.is_some(),
+                    lname,
+                    recover_at,
+                    rise.map(|s| s.n),
+                    open.map(|s| (s.n, s.proc, s.after)),
+                ));
                 if busy.is_some() {
                     checks.push((
                         name,
@@ -1846,18 +1882,69 @@ fn k_recovery_rise_reference_and_first_rise_at_the_sender() {
             secs(k)
         );
     }
+    for (name, busy, lname, recover_at, rise, open) in opens {
+        if busy {
+            let (n, at, after) = open.unwrap_or_else(|| panic!("{name}: tavan açılmadı"));
+            assert_eq!(
+                Some(n),
+                rise,
+                "{name}: tavan yükseliş ACK'inde açılmalı (açılış #{n})"
+            );
+            assert_eq!(
+                after,
+                PROFILE_LINE,
+                "{name}: açılış {} s'de {after}",
+                secs(at)
+            );
+        } else {
+            let bound = PR237_OPEN_MS
+                .iter()
+                .find(|&&(l, r, _)| l == lname && r * SEC == recover_at)
+                .map(|&(_, _, ms)| ms)
+                .expect("PR #237 açılış anı");
+            let (_, at, _) = open.unwrap_or_else(|| panic!("{name}: tavan açılmadı"));
+            assert!(
+                at / MS <= bound,
+                "{name}: açılış {} s, PR #237 ucunda {bound} ms",
+                secs(at)
+            );
+        }
+    }
 }
+
+/// (k) açık dönüş kollarında PR #237 ucunun (`d328cf3e`) göndericide tavan açılış anı (ms; aynı
+/// test gövdesi o uçta koşuldu): (kayıp deseni, toparlanma s, an). Açılış bundan geç olmamalı.
+const PR237_OPEN_MS: [(&str, u64, u64); 6] = [
+    ("kayıpsız", 33, 41_946),
+    ("kayıpsız", 45, 47_124),
+    ("her beşte bir kayıp", 33, 42_255),
+    ("her beşte bir kayıp", 45, 47_284),
+    ("her yedide bir kayıp", 33, 41_946),
+    ("her yedide bir kayıp", 45, 47_124),
+];
+
+/// Kayıp deseni (yakalayan kapanış): seq → hatta serileşip düştü mü.
+type BoxedLoss = Box<dyn Fn(u64) -> bool>;
 
 /// (k2) Karşı test: dürüst sabit 6 250 hatta sahte yükseliş yok. Hat oturum başından 6 250 ya da
 /// 30 s'de 6 250'ye düşer ve toparlanmaz; üç belirlenimli kayıp deseni × açık / dolu dönüş.
 /// Yükseliş alarmı yok ve göndericide tavan ilk indirimden sonra hiçbir ACK'te artmaz.
+///
+/// [HEDEF 4 · #175 7088768366] Ek kol: oturum başından tohumlu %20 rastgele kayıp (tohum 1–16,
+/// `random_lost`, (h) yoklamasıyla aynı desen), aynı iki hat × iki dönüş, aynı iki iddia.
 #[test]
 fn k2_honest_6250_line_never_opens_the_ceiling() {
-    let losses: [(&str, Loss); 3] = [
-        ("kayıpsız", |_| false),
-        ("her beşte bir kayıp", every_fifth),
-        ("her yedide bir kayıp", every_seventh),
+    let mut losses: Vec<(String, BoxedLoss)> = vec![
+        ("kayıpsız".to_string(), Box::new(|_| false)),
+        ("her beşte bir kayıp".to_string(), Box::new(every_fifth)),
+        ("her yedide bir kayıp".to_string(), Box::new(every_seventh)),
     ];
+    for seed in 1..=16u64 {
+        losses.push((
+            format!("oturum başından %20 rastgele kayıp, tohum {seed}"),
+            Box::new(move |s| random_lost(seed, s)),
+        ));
+    }
     let lines: [(&str, Vec<(u64, u64)>); 2] = [
         ("oturum başından 6 250", vec![(0, NEW_LINE)]),
         ("30 s'de 6 250", drop_line()),
@@ -1867,7 +1954,7 @@ fn k2_honest_6250_line_never_opens_the_ceiling() {
             ("açık dönüş", None),
             ("dolu dönüş", Some((DROP_AT - SEC, u64::MAX))),
         ] {
-            for (pname, lost) in losses {
+            for (pname, lost) in &losses {
                 let name = format!("{lname}, {pname}, {ret}");
                 let (_, _, steps) = measure_flow(
                     |_| SENDER_UDP,
