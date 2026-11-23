@@ -697,6 +697,11 @@ struct Probe {
     start_ns: u64,
     /// Yoklama süresince gönderilen tel baytı (kanıt; `on_sent` biriktirir).
     sent: u64,
+    /// [SÜRELİ-YOKLAMA · HÜKÜM] Hat yoklama öncesi tavan (`base_pace`) hızında olsaydı yoklama
+    /// süresince gönderilenlerin onu boşaltacağı an (ns; hat modeli çıkış anlarıyla, `on_sent`
+    /// biriktirir). Hükümde cephenin bu sanal hatta bekleyeceği süre, yoklamanın hattı zorlayıp
+    /// zorlamadığıdır.
+    virt_free_ns: u64,
     /// [İKİNCİ-ÖLÇÜM] Başlangıç yoklaması: hüküm ölçüm aralığıyla (varsa).
     by_interval: bool,
 }
@@ -793,6 +798,8 @@ impl LineGuard {
         if let Some(p) = self.probe.as_mut() {
             if now_ns >= p.start_ns && now_ns < p.until_ns {
                 p.sent = p.sent.saturating_add(wire);
+                p.virt_free_ns =
+                    virt_line_after(p.virt_free_ns, now_ns, ahead_ns, wire, p.base_pace);
             }
         }
         if self
@@ -1562,6 +1569,29 @@ impl LineGuard {
             .probe
             .filter(|p| rec.send_ns >= p.until_ns)
             .map(|p| wire_between(p.until_ns, rec.send_ns.saturating_add(1)));
+        // [SÜRELİ-YOKLAMA · HÜKÜM] Hat yoklama öncesi tavan hızında olsaydı hüküm cephesinin
+        // önündeki kuyruk (ns): yoklama süresinin sanal hattı (`virt_free_ns`) yoklama bitişinden
+        // cepheye dek gönderilen kayıtlarla sürdürülür (bu kayıtlar budanmamıştır: önceki ACK'lerin
+        // cepheleri yoklama bitmeden gönderildi). Yoklamanın kurduğu kuyruk gönderici yoklamadan
+        // sonra tabanın altında kalarak cepheden önce boşaldıysa bu kuyruk yoktur ve "geçti"
+        // hükmü bilgi taşımaz (hüküm aşağıda).
+        let probe_load_ns = self.probe.filter(|p| rec.send_ns >= p.until_ns).map(|p| {
+            let free = self
+                .sent
+                .iter()
+                .take(i)
+                .filter(|r| r.send_ns >= p.until_ns)
+                .fold(p.virt_free_ns, |free, r| {
+                    virt_line_after(
+                        free,
+                        r.send_ns,
+                        r.ahead_ns,
+                        r.udp.saturating_add(self.line.datagram_overhead),
+                        p.base_pace,
+                    )
+                });
+            free.saturating_sub(rec.send_ns.saturating_add(rec.ahead_ns))
+        });
         // [ÖLÇÜM-ARALIĞI] Kayıtlar son iki ACK'in cephelerinin eskisine dek tutulur: bir sonraki
         // ACK'in ölçüm aralığı (M) iki ACK geriye uzanır. Cephe tahmincisi yalnız bu cepheden
         // sonrasını okur.
@@ -1708,10 +1738,21 @@ impl LineGuard {
                     let g = u64::try_from(r.growth_ns().max(0)).unwrap_or(u64::MAX);
                     (g <= half, g > half)
                 }
-                None => (
-                    abs_q <= half && growth <= half,
-                    abs_q > half && growth > half,
-                ),
+                // [SÜRELİ-YOKLAMA · HÜKÜM] Yoklama hattı zorladıysa (hat taban tavan hızında olsaydı
+                // yoklama bitişinde `half`'tan uzun kuyruk) ama gönderici yoklamadan sonra tabanın
+                // altında kalıp bu kuyruğu hüküm cephesinden önce boşalttıysa (cephe sanal hatta
+                // `half`'tan kısa bekler), kuyruğun büyümemesi hattın yoklama hızını taşıdığını
+                // göstermez: hüküm sonuçsuzdur (tavan geri döner). Sonrası kanıtı (%90) bunu
+                // ayıramaz: en küçük adımda (%6,2) yoklamanın izi 1,48 s × 387 B/s = 573 B; 4,4 s
+                // boyunca %10 açık 2 750 B (ölçüldü: line_guard_sim optimistic, aday tohum 2).
+                None => {
+                    let built = p.virt_free_ns.saturating_sub(p.until_ns);
+                    let drained = built > half && probe_load_ns.is_some_and(|q| q <= half);
+                    (
+                        abs_q <= half && growth <= half && !drained,
+                        abs_q > half && growth > half,
+                    )
+                }
             };
             if best.is_none() && (!evidence || !(passed || failed)) {
                 self.pace_bps = p.base_pace;
@@ -1895,10 +1936,20 @@ impl LineGuard {
             reference: point,
             start_ns: now_ns,
             sent: 0,
+            virt_free_ns: 0,
             by_interval: false,
         });
         self.pace_bps = up;
     }
+}
+
+/// [SÜRELİ-YOKLAMA · HÜKÜM] `rate_bps` hızında sanal FIFO hattı: önceki boşalma anı `free_ns`,
+/// iletim hat modelinden `send_ns + ahead_ns`'te çıkar (göndericinin kendi geçici kuyruğu hükümde
+/// de düşülür), `wire` tel baytı sanal hattı o kadar meşgul eder. Dönen: yeni boşalma anı (ns).
+fn virt_line_after(free_ns: u64, send_ns: u64, ahead_ns: u64, wire: u64, rate_bps: u64) -> u64 {
+    free_ns
+        .max(send_ns.saturating_add(ahead_ns))
+        .saturating_add(ns_for(wire, rate_bps).unwrap_or(0))
 }
 
 /// `bytes` baytın `rate_bps` hızında serileşmesi (ns); hız 0 ise `None`.
@@ -2603,6 +2654,19 @@ mod tests {
         t_end: u64,
         ack_every: u64,
     ) -> (Vec<(u64, u64, Option<LineGuardUpdate>)>, Vec<(u64, u64)>) {
+        drive_with(g, &|_| real, &|_, _| app_cap, t_end, ack_every)
+    }
+
+    /// [`drive`] ve zamanla değişen gerçek hat (`real(an)`) ile korumanın durumuna bağlı
+    /// uygulama tavanı (`app_cap(an, koruma)`).
+    #[allow(clippy::type_complexity)]
+    fn drive_with(
+        g: &mut LineGuard,
+        real: &dyn Fn(u64) -> u64,
+        app_cap: &dyn Fn(u64, &LineGuard) -> Option<u64>,
+        t_end: u64,
+        ack_every: u64,
+    ) -> (Vec<(u64, u64, Option<LineGuardUpdate>)>, Vec<(u64, u64)>) {
         let mut acks_out = Vec::new();
         let mut waits = Vec::new();
         let (mut free, mut next_send, mut seq, mut now) = (0u64, 0u64, 0u64, 0u64);
@@ -2616,10 +2680,12 @@ mod tests {
                 g.on_sent(seq, now, 1172);
                 let start = free.max(now);
                 waits.push((now, start - now));
-                free = start + 1200 * SEC / real;
+                free = start + 1200 * SEC / real(now);
                 in_flight.push_back((free + 300 * MS, seq));
                 seq += 1;
-                let rate = app_cap.map_or(g.pace_bps(), |c| c.min(g.pace_bps())).max(1);
+                let rate = app_cap(now, g)
+                    .map_or(g.pace_bps(), |c| c.min(g.pace_bps()))
+                    .max(1);
                 next_send = now + 1200 * SEC / rate;
             }
             while in_flight.front().is_some_and(|&(t, _)| t <= now) {
@@ -2739,6 +2805,105 @@ mod tests {
         assert_eq!(g.raises(), 0, "kanıtsız yükseltme");
         assert_eq!(g.probe_failures(), 0, "kanıtsız başarısızlık");
         assert!(g.pace_bps() <= PROFILE / 2 * (1000 + STEP_START_PERMILLE) / 1000);
+    }
+
+    /// [SÜRELİ-YOKLAMA · HÜKÜM] Dürüst dar hatta (gerçek 6 250 B/s, ölçülmüş) yoklama hattı
+    /// zorlar (dolu gönderici yoklama hızında), sonra gönderici hüküm cephesine dek taban tavanın
+    /// ‰908'inde gönderir (`line_guard_sim` optimistic, aday tohum 2'de ölçülen oran: yoklama
+    /// sonrası 4,42 s'de 25 092 B). Bu, sonrası kanıtının eşiğini (`VERIFY_MIN_PERMILLE`) geçer;
+    /// ama 4 s'lik açık (≈ 2 300 B ≈ 370 ms) yoklamanın kurduğu kuyruğu (≈ 92 ms) cepheden önce
+    /// boşaltır ve hüküm "geçti" der. Hüküm bu aralıkta geçmez: tavan hattın ölçüm belirsizliğinin
+    /// üstüne kalıcı çıkmaz. Belirsizlik bandı: cephe örneği yalnız kuyruk artışı aralığın
+    /// `1/GROWTH_MIN_DIV`'inden büyükse alınır; tavan `hat × (1 + 1/GROWTH_MIN_DIV)`'i (6 562)
+    /// aşarsa koruma bunu ölçemeden kuyruk kurar. En küçük adımın yoklaması (6 637) bandın
+    /// üstündedir: kalıcı yükseltme sayısı (`raises`) 0 olmalı.
+    #[test]
+    fn a_probe_whose_queue_drains_before_the_verdict_does_not_raise_the_ceiling() {
+        let mut g = LineGuard::new(
+            LineModel {
+                rate_bps: PROFILE,
+                datagram_overhead: OVH,
+            },
+            LineModel {
+                rate_bps: RET,
+                datagram_overhead: OVH,
+            },
+            6_250,
+        );
+        g.end_start_budget();
+        // 0–60 s dolu gönderici: hat ölçülür, yoklamalar başarısız (adım en küçüğe iner). 60 s'den
+        // sonra yoklama süresinde dolu, yoklama bitince hükme dek taban tavanın ‰908'i.
+        let (acks, _) = drive_with(
+            &mut g,
+            &|_| 6_250,
+            &|t, g| {
+                g.probe
+                    .filter(|p| t >= 60 * SEC && t >= p.until_ns)
+                    .map(|p| p.base_pace * 908 / 1000)
+            },
+            200 * SEC,
+            5 * SEC,
+        );
+        let band = 6_250 * (GROWTH_MIN_DIV + 1) / GROWTH_MIN_DIV;
+        for &(at, pace, _) in acks.iter().filter(|&&(at, _, _)| at >= 55 * SEC) {
+            println!("hüküm sınaması: an {} ms tavan {pace}", at / MS);
+        }
+        // Süren yoklamanın kendi tavanı (en küçük adımda 6 637, ≈ 1,5 s) geçicidir; kalıcı tavan
+        // yalnız "geçti" hükmüyle yükselir.
+        let worst = acks.iter().map(|&(_, pace, _)| pace).max().unwrap_or(0);
+        assert_eq!(
+            g.raises(),
+            0,
+            "dürüst 6 250 hatta hüküm geçti: en yüksek tavan {worst} B/s (bant {band} B/s)"
+        );
+        assert!(
+            g.rate_bps().is_some_and(|r| r <= band),
+            "ölçülen hat {:?} (bant {band})",
+            g.rate_bps()
+        );
+    }
+
+    /// [SÜRELİ-YOKLAMA · HÜKÜM] Yoklamanın meşru işi: ölçülmüş dar hat (6 250) gerçekten
+    /// yükselince (60 s'de 12 500) dolu göndericinin yoklaması hattı sınar ve geçer; tavan bandın
+    /// (`6 250 × (1 + 1/GROWTH_MIN_DIV)`) üstüne çıkar.
+    #[test]
+    fn a_loaded_probe_passes_when_the_narrow_line_really_speeds_up() {
+        let mut g = LineGuard::new(
+            LineModel {
+                rate_bps: PROFILE,
+                datagram_overhead: OVH,
+            },
+            LineModel {
+                rate_bps: RET,
+                datagram_overhead: OVH,
+            },
+            6_250,
+        );
+        g.end_start_budget();
+        let (acks, _) = drive_with(
+            &mut g,
+            &|t| if t < 60 * SEC { 6_250 } else { PROFILE },
+            &|_, _| None,
+            150 * SEC,
+            5 * SEC,
+        );
+        let at_rise = acks
+            .iter()
+            .filter(|&&(at, _, _)| at < 60 * SEC)
+            .map(|&(_, pace, _)| pace)
+            .next_back()
+            .expect("ACK");
+        let band = 6_250 * (GROWTH_MIN_DIV + 1) / GROWTH_MIN_DIV;
+        for &(at, pace, _) in acks.iter().filter(|&&(at, _, _)| at >= 55 * SEC) {
+            println!("yükseliş: an {} ms tavan {pace}", at / MS);
+        }
+        assert!(at_rise <= band, "yükselişten önce tavan {at_rise}");
+        assert!(g.raises() >= 1, "yükselişte yoklama geçmedi");
+        assert!(
+            g.pace_bps() > band,
+            "hat 12 500'e çıktı, tavan {} B/s (bant {band})",
+            g.pace_bps()
+        );
     }
 
     /// [ÇİFT ARALIĞI · RET] Sabit dar hatta (6 250) yoklama başarısız olur: ret seviyesi yoklama
