@@ -1,0 +1,47 @@
+diff --git a/crates/kama-integration/tests/ack_ref_wire_size.rs b/crates/kama-integration/tests/ack_ref_wire_size.rs
+index c01c62de..b084e2bd 100644
+--- a/crates/kama-integration/tests/ack_ref_wire_size.rs
++++ b/crates/kama-integration/tests/ack_ref_wire_size.rs
+@@ -75,6 +75,8 @@ fn id(n: u8) -> PeerRef {
+     PeerRef::from_dest_hash(dest_hash)
+ }
+ 
++static T0: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
++
+ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+     m.lock().unwrap_or_else(PoisonError::into_inner)
+ }
+@@ -100,6 +102,7 @@ impl PacketProtection for Tap {
+     fn seal(&mut self, ctx: ProtectionContext, frame: &[u8]) -> Result<SealedUnit, SealError> {
+         let sealed = self.inner.seal(ctx, frame)?;
+         if matches!(frame.first(), Some(&FRAME_TYPE_ACK | &FRAME_TYPE_ACK_V2)) {
++            eprintln!("PROBE ack_seal log={:p} len={} t={:.3}", Arc::as_ptr(&self.acks), frame.len(), T0.get_or_init(Instant::now).elapsed().as_secs_f64());
+             lock(&self.acks).insert(
+                 fingerprint(&sealed.bytes),
+                 (frame.len(), sealed.bytes.len()),
+@@ -242,6 +245,7 @@ fn arm(name: &str, profile: bool) {
+         assert!(Instant::now() < deadline, "[{name}] oturum kurulmadı");
+         std::thread::sleep(Duration::from_millis(1));
+     }
++    eprintln!("PROBE session_up bob_log={:p} t={:.3}", Arc::as_ptr(&bob_log), T0.get_or_init(Instant::now).elapsed().as_secs_f64());
+     let (mut sent, mut received) = (0usize, 0usize);
+     let mut next_send = Instant::now();
+     while received < texts && Instant::now() < deadline {
+@@ -263,6 +267,17 @@ fn arm(name: &str, profile: bool) {
+         }
+         std::thread::sleep(Duration::from_millis(1));
+     }
++    eprintln!("PROBE texts_done t={:.3} received={received}", T0.get_or_init(Instant::now).elapsed().as_secs_f64());
++    {
++        let w0 = Instant::now();
++        while lock(&bob_log).is_empty() && w0.elapsed() < Duration::from_secs(60) {
++            hub.relay();
++            while alice.poll().is_some() {}
++            while bob.poll().is_some() {}
++            std::thread::sleep(Duration::from_millis(1));
++        }
++        eprintln!("PROBE first_bob_ack_after_texts={:.3} s empty={}", w0.elapsed().as_secs_f64(), lock(&bob_log).is_empty());
++    }
+     // ACK'lerin tele çıkması için kısa boşaltma.
+     let settle = Instant::now() + Duration::from_millis(500);
+     while Instant::now() < settle {
