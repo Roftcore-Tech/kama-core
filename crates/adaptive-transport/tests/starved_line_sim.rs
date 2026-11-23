@@ -181,6 +181,42 @@ struct Scenario {
     ledger: bool,
     seed: u64,
     t_max_ns: u64,
+    /// [BULUT-A · KONTROLLÜ-TAVAN] `Some(plan)`: hat koruması kurulmaz (`return_line` 0); pacer
+    /// tavanı (hat modeli + kova hızı) planın basamaklarında ürünün profil aritmetiğiyle
+    /// (`link_pacing_cap_bps`) doğrudan verilir. Tahminci devre dışı: yalnız pacer ölçülür.
+    ceiling_plan: Option<Vec<(u64, u64)>>,
+    /// [BULUT-A · İZ] Milisaniye örnekli pacer / darboğaz izi (salt gözlem).
+    probe: bool,
+}
+
+/// [BULUT-A · İZ] Darboğaz defteri (sınıf × yük).
+type Book = BTreeMap<(TxClass, Payload), ClassBytes>;
+
+/// [BULUT-A · İZ] Bir milisaniyenin sonundaki gönderici ve darboğaz durumu (salt gözlem).
+#[derive(Debug, Clone, Copy, Default)]
+struct ProbeMs {
+    t: u64,
+    /// Gönderilmemiş yeni birim, ARQ bekleyen, vadeli kopya kaydı.
+    tx_queue: u32,
+    pending_lost: u32,
+    dup_queue: u32,
+    inflight: u64,
+    window: u64,
+    tokens: u64,
+    bucket_rate: u64,
+    /// Hat modelinin kendi baytlarımızı boşaltmasına kalan süre (ns).
+    line_drain_ns: u64,
+    /// Hat modelinin hızı (tavan, B/s tel).
+    ceiling: u64,
+    /// Bu milisaniyede darboğaza sunulan bayt (tel).
+    offered_bytes: u64,
+    /// Kümülatif: serileşen, kuyrukta düşen bayt.
+    serialized_cum: u64,
+    qdrop_cum: u64,
+    /// Darboğazda bekleyen + serileşen bayt; hat bu milisaniyenin sonunda meşgul mü.
+    queue_bytes: u64,
+    busy: bool,
+    cap: u64,
 }
 
 /// [BUA] Alıcı modeli.
@@ -387,6 +423,8 @@ impl Scenario {
             ledger: false,
             seed,
             t_max_ns: 60 * SEC,
+            ceiling_plan: None,
+            probe: false,
         }
     }
 }
@@ -873,6 +911,13 @@ struct Outcome {
     /// [BUA] Dönüş hattı: çerçeve türü → sayı, toplam tel baytı.
     ack_types: BTreeMap<u8, u64>,
     ack_wire_bytes: u64,
+    /// [BULUT-A · İZ] Milisaniye izi (`Scenario::probe`) ve kontrollü tavan geçişlerinde hat
+    /// modelinin sıfırladığı kendi kuyruk süresi (an, ns).
+    probe: Vec<ProbeMs>,
+    ceiling_resets: Vec<(u64, u64)>,
+    /// [BULUT-A · İZ] Saniye başlarında sınıf × yük defterinin anlık kopyası (`probe` ve defter
+    /// açıkken).
+    book_at: Vec<(u64, Book)>,
 }
 
 /// [BUA · ÜRÜN ALICISI] `client_core::runtime` ACK kolunun göndericiye giden çağrıları, aynı
@@ -1082,9 +1127,44 @@ fn sender(sc: &Scenario) -> Sender {
     s
 }
 
+/// [BULUT-A · KONTROLLÜ-TAVAN] `rate` (B/s, tel) tavanının kuralı: ürünün profil kuralıyla aynı
+/// aritmetik (`client_core::runtime` `link_pacing_cap_bps`, `FeedbackStarvedRule`), dönüş hattı 0
+/// (hat koruması kurulmaz).
+fn controlled_rule(rate: u64) -> FeedbackStarvedRule {
+    FeedbackStarvedRule {
+        pacing_cap_bps: rate * MTU / (MTU + OVH),
+        feedback_ns: feedback_horizon_ns(PROFILE_DOWN),
+        line: LineModel {
+            rate_bps: rate,
+            datagram_overhead: OVH,
+        },
+        return_line: LineModel {
+            rate_bps: 0,
+            datagram_overhead: OVH,
+        },
+    }
+}
+
+/// [BULUT-A · KONTROLLÜ-TAVAN] Planın `t` anındaki tavanı.
+fn controlled_ceiling(sc: &Scenario, t: u64) -> u64 {
+    sc.ceiling_plan
+        .as_ref()
+        .and_then(|p| {
+            p.iter()
+                .rev()
+                .find(|&&(from, _)| from <= t)
+                .map(|&(_, r)| r)
+        })
+        .unwrap_or(0)
+}
+
 #[allow(clippy::too_many_lines)]
 fn run(sc: &Scenario) -> Outcome {
     let mut s = sender(sc);
+    let mut probe: Vec<ProbeMs> = Vec::new();
+    let mut ceiling_resets: Vec<(u64, u64)> = Vec::new();
+    let mut ceiling_next = 0usize;
+    let mut book_at: Vec<(u64, Book)> = Vec::new();
     let mut r = Receiver::with_cc_port();
     match sc.rx {
         RxModel::Mirror => r.set_return_bandwidth(Some(sc.ack_return_bw)),
@@ -1200,6 +1280,21 @@ fn run(sc: &Scenario) -> Outcome {
     };
     let mut now = 0u64;
     while now < sc.t_max_ns {
+        // [BULUT-A · KONTROLLÜ-TAVAN] Basamak anında kural yeniden kurulur (koruma yok).
+        if let Some(plan) = sc.ceiling_plan.as_ref() {
+            while ceiling_next < plan.len() && plan[ceiling_next].0 <= now {
+                let rate = plan[ceiling_next].1;
+                if ceiling_next > 0 {
+                    ceiling_resets.push((now, s.cc_line_ns_until_drained()));
+                }
+                s.set_cc_feedback_starved(Some(controlled_rule(rate)));
+                ceiling_next += 1;
+            }
+        }
+        if sc.probe && sc.ledger && now.is_multiple_of(SEC) {
+            book_at.push((now, fwd.book.clone()));
+        }
+        let probe_bytes0 = fwd.line.offered_bytes;
         // Uygulama.
         let file_due = if sc.file_gap_ns == 0 {
             if now >= sc.file_at_ns {
@@ -1479,6 +1574,65 @@ fn run(sc: &Scenario) -> Outcome {
         if sc.ledger && now.is_multiple_of(SEC) {
             backlog.push((now, s.unsent_units(), s.inflight_bytes()));
         }
+        if sc.probe {
+            let rt = s.diag_recovery_timers();
+            let (bucket_rate, tokens, _) = s.diag_pacer();
+            let live: Vec<(u64, u64)> = fwd
+                .busy
+                .iter()
+                .zip(fwd.busy_bytes.iter())
+                .filter(|&(&d, _)| d > now)
+                .map(|(&d, &b)| (d, b))
+                .collect();
+            probe.push(ProbeMs {
+                t: now,
+                tx_queue: rt.tx_queue_len,
+                pending_lost: rt.pending_lost_len,
+                dup_queue: rt.dup_queue_len,
+                inflight: s.inflight_bytes(),
+                // Göndericinin uçuş kapısı (`Sender::cc_window`, geri bildirimi aç kural):
+                // max(BBR `window_without_recovery`, kova hızı × (geri bildirim ufku + rtprop)).
+                // ProbeRtt'te BBR payı 0 sayılır (taban yine geçerli).
+                window: {
+                    let bbr = s.diag_cc().map_or(0, |c| {
+                        if c.0 == adaptive_transport::cc::Mode::ProbeRtt {
+                            0
+                        } else {
+                            c.7
+                        }
+                    });
+                    let rtprop = match s.path_estimate().1 {
+                        0 => 100 * MS,
+                        r => r,
+                    };
+                    let floor = u64::try_from(
+                        u128::from(bucket_rate)
+                            * u128::from(feedback_horizon_ns(PROFILE_DOWN) + rtprop)
+                            / u128::from(SEC),
+                    )
+                    .unwrap_or(u64::MAX);
+                    bbr.max(floor)
+                },
+                tokens,
+                bucket_rate,
+                line_drain_ns: s.cc_line_ns_until_drained(),
+                ceiling: s
+                    .diag_line_guard_pace()
+                    .map(|p| p.0)
+                    .or_else(|| {
+                        sc.ceiling_plan
+                            .as_ref()
+                            .map(|_| controlled_ceiling(sc, now))
+                    })
+                    .unwrap_or(0),
+                offered_bytes: fwd.line.offered_bytes - probe_bytes0,
+                serialized_cum: fwd.line.serialized_bytes,
+                qdrop_cum: fwd.line.queue_drop_bytes,
+                queue_bytes: live.iter().map(|&(_, b)| b).sum(),
+                busy: !live.is_empty(),
+                cap: fwd.rate_at(now),
+            });
+        }
         let voice_left = (0..voice_offered.len() as u64).any(|v| {
             !voice_arrived.contains_key(&v) && !ptt_expired.iter().any(|&(u, _, _)| u == v)
         });
@@ -1563,6 +1717,9 @@ fn run(sc: &Scenario) -> Outcome {
         backlog,
         ack_types: ret.types.clone(),
         ack_wire_bytes: ret.bytes,
+        probe,
+        ceiling_resets,
+        book_at,
     }
 }
 
@@ -3400,5 +3557,321 @@ fn bua_product_receiver_report() {
                 f(|x| x.file.clone()),
             );
         }
+    }
+}
+
+/// [BULUT-A · KONTROLLÜ-TAVAN] Çizelgenin kolu: (ad, ileri hat = tavan planı, son).
+type CeilArm = (&'static str, Vec<(u64, u64)>, u64);
+
+fn ceil_arms() -> Vec<CeilArm> {
+    vec![
+        (
+            "ana",
+            vec![(0, PROFILE_UP), (20 * SEC, DROP_TO), (50 * SEC, PROFILE_UP)],
+            80 * SEC,
+        ),
+        (
+            "kisa500",
+            vec![
+                (0, PROFILE_UP),
+                (20 * SEC, DROP_TO),
+                (20_500 * MS, PROFILE_UP),
+            ],
+            40 * SEC,
+        ),
+        ("durust6250", vec![(0, DROP_TO)], 40 * SEC),
+    ]
+}
+
+/// [BULUT-A] Pencere ölçüleri: `[a, b)` (ns), hat planının tek basamağı içinde.
+#[derive(Debug, Default)]
+struct WinStat {
+    ms: u64,
+    cap: u64,
+    serialized: u64,
+    util_permille: u64,
+    qdrop: u64,
+    q_max_ms: u64,
+    ready_idle: u64,
+    idle_line_model: u64,
+    idle_tokens: u64,
+    idle_window: u64,
+    idle_other: u64,
+    app_idle: u64,
+    ready_ms: u64,
+    classes: BTreeMap<String, u64>,
+}
+
+fn win_stat(o: &Outcome, a: u64, b: u64) -> WinStat {
+    let rows: Vec<&ProbeMs> = o.probe.iter().filter(|r| r.t >= a && r.t < b).collect();
+    let mut w = WinStat::default();
+    let (Some(first), Some(last)) = (rows.first(), rows.last()) else {
+        return w;
+    };
+    let before = o
+        .probe
+        .iter()
+        .rfind(|r| r.t < a)
+        .copied()
+        .unwrap_or_default();
+    w.ms = rows.len() as u64;
+    w.cap = first.cap;
+    // Pencerede serileşen tel baytı: kabul edilen + baştaki kuyruk − sondaki kuyruk.
+    w.serialized = (last.serialized_cum - before.serialized_cum + before.queue_bytes)
+        .saturating_sub(last.queue_bytes);
+    w.util_permille = w.serialized * 1000 * SEC / (w.cap * w.ms * MS);
+    w.qdrop = last.qdrop_cum - before.qdrop_cum;
+    for r in &rows {
+        w.q_max_ms = w.q_max_ms.max(r.queue_bytes * 1000 / r.cap.max(1));
+        let ready = r.tx_queue + r.pending_lost > 0;
+        w.ready_ms += u64::from(ready);
+        if r.busy {
+            continue;
+        }
+        if !ready {
+            w.app_idle += 1;
+            continue;
+        }
+        w.ready_idle += 1;
+        if r.line_drain_ns > 2 * MS {
+            w.idle_line_model += 1;
+        } else if r.tokens < FILE_UNIT {
+            w.idle_tokens += 1;
+        } else if r.inflight + FILE_UNIT + OVH > r.window {
+            w.idle_window += 1;
+        } else {
+            w.idle_other += 1;
+        }
+    }
+    let snap = |t: u64| {
+        o.book_at
+            .iter()
+            .rfind(|(at, _)| *at <= t)
+            .map(|(_, b)| b.clone())
+            .unwrap_or_default()
+    };
+    let (ba, bb) = (snap(a), snap(b));
+    for (k, v) in &bb {
+        let prev = ba.get(k).map_or(0, |c| c.bytes);
+        let d = v.bytes - prev;
+        if d > 0 {
+            let key = format!("{}/{}", k.0.label(), format!("{:?}", k.1).to_lowercase());
+            *w.classes.entry(key).or_default() += d;
+        }
+    }
+    w
+}
+
+/// [BULUT-A · KONTROLLÜ-TAVAN] Tahminci devre dışı (hat koruması yok), tavan = gerçek ileri hat
+/// (12 500 → 20 s'de 6 250 → 50 s'de 12 500; 500 ms kısa daralma; dürüst 6 250). Soru: veri hazırken
+/// pacer verilen tavanı tele uyguluyor mu, boş hat anlarında neden ne, toplam tel hattı aşıyor mu.
+/// Kararlı pencere: her basamağın [başlangıç + 1 s, bitiş − 1 s); yoklama yok (koruma kurulu
+/// değil). Yalnız rapor; gözlemin davranışı değiştirmediği iddia edilir (iz kapalı koşuyla aynı).
+#[test]
+fn bulut_a_controlled_ceiling_report() {
+    println!();
+    for (arm, plan, t_end) in ceil_arms() {
+        for (rx_label, rx, ret_bw) in [
+            ("V2-ayna-0x14", RxModel::Mirror, PROFILE_DOWN),
+            ("bitmap-pilot-0x15", RxModel::PRODUCT, PROFILE_DOWN),
+        ] {
+            for seed in 1..=3u64 {
+                let sc = Scenario {
+                    fwd_plan: plan.clone(),
+                    ceiling_plan: Some(plan.clone()),
+                    file_units: 2000,
+                    voice_until_ns: t_end,
+                    t_max_ns: t_end,
+                    ack_return_bw: ret_bw,
+                    rx,
+                    loss: LossModel::Keyed,
+                    ledger: true,
+                    probe: true,
+                    ..Scenario::honest(seed)
+                };
+                let o = run(&sc);
+                let bare = run(&Scenario {
+                    probe: false,
+                    ledger: false,
+                    ..sc.clone()
+                });
+                assert!(
+                    o.acks_at == bare.acks_at
+                        && o.waits == bare.waits
+                        && o.drop_times == bare.drop_times
+                        && o.voice_first == bare.voice_first
+                        && o.line.offered_bytes == bare.line.offered_bytes
+                        && o.line.lost_bytes == bare.line.lost_bytes,
+                    "{arm} {rx_label} tohum {seed}: iz davranışı değiştirdi"
+                );
+                let mut edges: Vec<u64> = plan.iter().map(|&(t, _)| t).collect();
+                edges.push(t_end);
+                for wnd in edges.windows(2) {
+                    let (a, b) = (wnd[0] + SEC, wnd[1].saturating_sub(SEC));
+                    if b <= a {
+                        continue;
+                    }
+                    let w = win_stat(&o, a, b);
+                    println!(
+                        "BA-PENCERE {arm} {rx_label} tohum={seed} pencere=[{:.1},{:.1}) hat={} \
+                         serilesen_B={} kullanim_permille={} kuyrukta_dusen_B={} kuyruk_max_ms={} \
+                         hazir_ms={} bos_hat_hazir_ms={} (hat_modeli={} jeton={} pencere={} diger={}) \
+                         bos_hat_uygulama_ms={} siniflar={:?}",
+                        a as f64 / SEC as f64,
+                        b as f64 / SEC as f64,
+                        w.cap,
+                        w.serialized,
+                        w.util_permille,
+                        w.qdrop,
+                        w.q_max_ms,
+                        w.ready_ms,
+                        w.ready_idle,
+                        w.idle_line_model,
+                        w.idle_tokens,
+                        w.idle_window,
+                        w.idle_other,
+                        w.app_idle,
+                        w.classes
+                    );
+                }
+                // Geçiş evreleri (kararlı pencere dışı): basamaktan sonraki ilk 1 s.
+                for &(t, _) in plan.iter().skip(1) {
+                    let w = win_stat(&o, t, t + SEC);
+                    println!(
+                        "BA-GECIS {arm} {rx_label} tohum={seed} an={:.1} hat={} kullanim_permille={} \
+                         kuyrukta_dusen_B={} kuyruk_max_ms={} bos_hat_hazir_ms={} (hat_modeli={} \
+                         jeton={} pencere={} diger={})",
+                        t as f64 / SEC as f64,
+                        w.cap,
+                        w.util_permille,
+                        w.qdrop,
+                        w.q_max_ms,
+                        w.ready_idle,
+                        w.idle_line_model,
+                        w.idle_tokens,
+                        w.idle_window,
+                        w.idle_other
+                    );
+                }
+                println!(
+                    "BA-OZET {arm} {rx_label} tohum={seed} sunulan_B={} serilesen_B={} \
+                     kuyrukta_dusen_B={} hatta_dusen_B={} kuyruk_max_ms={} sifirlanan_kuyruk_ns={:?} \
+                     ack={} ack_turleri={:?}",
+                    o.line.offered_bytes,
+                    o.line.serialized_bytes,
+                    o.line.queue_drop_bytes,
+                    o.line.lost_bytes,
+                    o.line.max_wait_ns / MS,
+                    o.ceiling_resets,
+                    o.acks_at.len(),
+                    o.ack_types
+                );
+                if seed == 1 && arm == "ana" && rx == RxModel::Mirror {
+                    for sec in 0..t_end / SEC {
+                        let w = win_stat(&o, sec * SEC, (sec + 1) * SEC);
+                        let r = o
+                            .probe
+                            .iter()
+                            .find(|r| r.t == sec * SEC)
+                            .copied()
+                            .unwrap_or_default();
+                        println!(
+                            "BA-IZ {arm} {rx_label} tohum={seed} s={sec} hat={} tavan={} kova={} \
+                             serilesen_B={} kuyruk_max_ms={} dusen_B={} yeni={} arq={} kopya_kaydi={} \
+                             ucus={} pencere={} bos_hazir_ms={} (hat_modeli={} jeton={} pencere={} \
+                             diger={}) bos_uyg_ms={}",
+                            w.cap,
+                            r.ceiling,
+                            r.bucket_rate,
+                            w.serialized,
+                            w.q_max_ms,
+                            w.qdrop,
+                            r.tx_queue,
+                            r.pending_lost,
+                            r.dup_queue,
+                            r.inflight,
+                            r.window,
+                            w.ready_idle,
+                            w.idle_line_model,
+                            w.idle_tokens,
+                            w.idle_window,
+                            w.idle_other,
+                            w.app_idle
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// [BULUT-A] Adayın tahmin süren yolu: #242 ham çıktısındaki (b) kolu, ürün alıcısı (bitmap pilot
+/// 0x15), anahtarlı kayıp, tohum 1 — aynı deterministik koşu, ms izi açık. Kimlik: tavan izi #242
+/// ham `BUA-TAVAN b urun tohum=1` satırıyla aynı olmalı. Soru: pacer tele tavanından fazlasını mı
+/// veriyor (pacer kusuru) yoksa tavan hattın üstünde mi (tahmin)?
+#[test]
+fn bulut_a_candidate_b_offered_vs_ceiling() {
+    println!();
+    let sc = Scenario {
+        text_at_ns: Some(DROP_TEXT_AT_NS),
+        rx: RxModel::PRODUCT,
+        loss: LossModel::Keyed,
+        ledger: true,
+        probe: true,
+        ..drop_scenario(1, true)
+    };
+    let o = run(&sc);
+    let iz = o
+        .ceil_trace
+        .iter()
+        .map(|&(t, p, k)| format!("{}:{p}:{k}", t / MS))
+        .collect::<Vec<_>>()
+        .join(",");
+    assert_eq!(
+        iz, "1862:12500:1,11751:11014:5,17567:8540:6,26697:9069:7,35313:8170:8",
+        "#242 ham iziyle aynı koşu değil"
+    );
+    // Tavanın sabit kaldığı her kesitte (ilk 1 s hariç): sunulan tel hızı / tavan / hat.
+    let mut cuts: Vec<(u64, u64)> = o.ceil_trace.iter().map(|&(t, p, _)| (t, p)).collect();
+    cuts.push((o.probe.last().map_or(0, |r| r.t), 0));
+    for w in cuts.windows(2) {
+        let (a, b, ceil) = (w[0].0 + SEC, w[1].0, w[0].1);
+        if b <= a {
+            continue;
+        }
+        let rows: Vec<&ProbeMs> = o.probe.iter().filter(|r| r.t >= a && r.t < b).collect();
+        let offered: u64 = rows.iter().map(|r| r.offered_bytes).sum();
+        let dur_ms = rows.len() as u64;
+        let ready_idle_model = rows
+            .iter()
+            .filter(|r| r.tx_queue + r.pending_lost > 0 && r.line_drain_ns > 2 * MS)
+            .count();
+        let ready_idle_window = rows
+            .iter()
+            .filter(|r| {
+                r.tx_queue + r.pending_lost > 0
+                    && r.line_drain_ns <= 2 * MS
+                    && r.inflight + FILE_UNIT + OVH > r.window
+            })
+            .count();
+        let w = win_stat(&o, a, b);
+        println!(
+            "BA-ADAY b bitmap-pilot-0x15 tohum=1 kesit=[{:.2},{:.2}) tavan={ceil} hat={} \
+             sunulan_B_s={} sunulan/tavan_permille={} serilesen_kullanim_permille={} \
+             kuyrukta_dusen_B={} kuyruk_max_ms={} hazir_ve_hat_modeli_kapali_ms={} \
+             hazir_ve_ucus_kapisi_ms={} bos_hat_hazir_ms={} siniflar={:?}",
+            a as f64 / SEC as f64,
+            b as f64 / SEC as f64,
+            w.cap,
+            offered * 1000 / dur_ms,
+            offered * 1000 * 1000 / dur_ms / ceil,
+            w.util_permille,
+            w.qdrop,
+            w.q_max_ms,
+            ready_idle_model,
+            ready_idle_window,
+            w.ready_idle,
+            w.classes
+        );
     }
 }
