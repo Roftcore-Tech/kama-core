@@ -16,9 +16,13 @@ Okunan dosyalar (koşu dizinine göre):
 * `alice.json`, `bob.json`: `wire` (`ack_rx` tür sayaçları, 0x17), `ptt_presses`.
 * `node-alice/transport-start.txt`, `node-bob/transport-start.txt`: `motor=`, `ack_biçimi=`,
   `ack_gönderici_etkin=`, `ack_alıcı_etkin=`.
-* `cap/MID_mb0.jsonl` (`pkt_capture.py`): `dir == "out"` = darboğazdan çıkan ileri tel (IP boyu,
-  UDP/IP 28 B dahil; hız birimiyle aynı). `cap/A_va0.jsonl` `dir == "in"`: alice'e varan dönüş.
-* `realized_post.json`: `mid_qdisc` (kuyruk düşmesi yalnız ayrı bir FIFO/TBF kuyruğu varsa ayrılır).
+* Darboğaz arayüzü (`--bottleneck-dev`; varsayılan: `realized_post.json` `mid_qdisc`'te tbf/fifo
+  kuyruğu olan arayüz, ör. Yerel'in düzeneğinde `ifb0`; yoksa `mb0`).
+* `cap/MID_<darboğaz>.jsonl` `dir == "out"` = darboğazdan çıkan ileri tel (IP boyu, UDP/IP 28 B
+  dahil; hız birimiyle aynı). Bu dosya yoksa ve darboğaz `mb0` değilse `cap/MID_mb0.jsonl` çıkışı
+  kullanılır: kayıp darboğazdan SONRA uygulanıyorsa yolda düşenleri görmez, değer ALT SINIRDIR
+  (alt sınır ≥ %90 ise GEÇTİ; değilse SINANMADI).
+* `realized_post.json`: `mid_qdisc` (kuyruk düşmesi darboğaz arayüzündeki tbf/fifo sayacından).
 * `t_start` (unix s): zaman çizelgesinin varsayılan sıfırı (`--t0` ile değişir).
 * İsteğe bağlı `qdisc_series.jsonl` (bkz. EKSİK ALAN 2).
 
@@ -127,16 +131,21 @@ def capacity(plan, lo, hi):
 
 
 class Run:
-    def __init__(self, d, t0=None):
+    def __init__(self, d, t0=None, dev=None):
         self.d = d
         self.alice = read_jsonl(d / "alice.jsonl")
         self.bob = read_jsonl(d / "bob.jsonl")
         self.alice_sum = read_json(d / "alice.json") or {}
         self.bob_sum = read_json(d / "bob.json") or {}
         self.start = {r: read_kv(d / f"node-{r}" / "transport-start.txt") for r in ("alice", "bob")}
-        self.mb0 = [p for p in read_jsonl(d / "cap" / "MID_mb0.jsonl") if p.get("dir") == "out"
-                    and "t_unix_ns" in p]
         self.realized_post = read_json(d / "realized_post.json")
+        self.dev = dev or bottleneck_dev(self.realized_post) or "mb0"
+        cap = d / "cap" / f"MID_{self.dev}.jsonl"
+        # Darboğaz çıkışı yakalanmadıysa mb0 çıkışı: kayıp darboğazdan sonraysa alt sınır.
+        self.wire_lower_bound = not cap.is_file() and self.dev != "mb0"
+        if self.wire_lower_bound:
+            cap = d / "cap" / "MID_mb0.jsonl"
+        self.mb0 = [p for p in read_jsonl(cap) if p.get("dir") == "out" and "t_unix_ns" in p]
         self.qdisc = read_jsonl(d / "qdisc_series.jsonl")
         if t0 is None:
             ts = d / "t_start"
@@ -213,6 +222,8 @@ def crit_cc(run, plan):
     parts, notes = [], []
     share, n = ready_share(run, T_D - 1.0, T_D)
     util = run.wire_in(T_D - 1.0, T_D) / max(1, capacity(plan, T_D - 1.0, T_D))
+    if run.wire_lower_bound and util < 0.90:
+        return SINANMADI, [f"önkoşul: düşüşten önceki 1 s'de tel ALT SINIR {util:.1%} (eksik: cap/MID_{run.dev}.jsonl)"]
     notes.append(f"önkoşul: düşüşten önceki 1 s'de tel {util:.1%}, hazır veri örneği {share} (n={n})")
     if share is None or share < READY_SHARE or util < 0.90:
         return SINANMADI, notes + ["düşüş anında hat doymuş ve veri hazır değil"]
@@ -254,14 +265,18 @@ def crit_rate_limit(run, plan, baseline):
     notes.append(f"[{lo:.0f}, {hi:.0f}) s: tel {wire} B / {cap:.0f} B = {util:.1%}; hazır veri örneği "
                  f"{share if share is None else f'{share:.0%}'} (n={n})")
     if not run.mb0:
-        parts.append((SINANMADI, None)); notes.append("eksik: cap/MID_mb0.jsonl")
+        parts.append((SINANMADI, None)); notes.append(f"eksik: cap/MID_{run.dev}.jsonl")
     elif share is None or share < READY_SHARE:
         parts.append((SINANMADI, None)); notes.append("pencerede veri hazır değil")
+    elif run.wire_lower_bound:
+        v = GECTI if 0.90 <= util else SINANMADI
+        parts.append((v, None))
+        notes.append(f"tel ALT SINIR (mb0 çıkışı; eksik: cap/MID_{run.dev}.jsonl) %90 → {v}; üst sınır sınanmadı")
     else:
         v = GECTI if 0.90 <= util <= 1.0 + MTU_WIRE / cap else KALDI
         parts.append((v, None)); notes.append(f"tel %90–100 → {v}")
     # Darboğaz beklemesi.
-    series = [q for q in run.qdisc if q.get("dev") == "mb0" and "backlog_bytes" in q]
+    series = [q for q in run.qdisc if q.get("dev") == run.dev and "backlog_bytes" in q]
     if not series:
         parts.append((SINANMADI, None))
         notes.append("eksik: qdisc_series.jsonl (darboğaz beklemesi ≤ 393 ms; EKSİK ALAN 2)")
@@ -272,10 +287,10 @@ def crit_rate_limit(run, plan, baseline):
         v = SINANMADI if mx is None else (GECTI if mx <= WAIT_MAX_MS else KALDI)
         parts.append((v, None)); notes.append(f"darboğaz beklemesi en çok {mx} ms (≤ {WAIT_MAX_MS}) → {v}")
     # Kuyrukta kayıp.
-    qd = queue_drops(run.realized_post)
+    qd = queue_drops(run.realized_post, run.dev)
     if qd is None:
         parts.append((SINANMADI, None))
-        notes.append("kuyrukta kayıp ayrılamıyor: mb0'da ayrı FIFO/TBF kuyruğu yok (netem kaybıyla tek sayaç)")
+        notes.append(f"kuyrukta kayıp ayrılamıyor: {run.dev}'da ayrı FIFO/TBF kuyruğu yok (netem kaybıyla tek sayaç)")
     else:
         v = GECTI if qd == 0 else KALDI
         parts.append((v, None)); notes.append(f"kuyrukta düşen {qd} (koşu boyu) → {v}")
@@ -294,7 +309,10 @@ def crit_rate_limit(run, plan, baseline):
     slo, shi = SHORT_WIN
     idle = gaps_idle_ms(run, slo, shi)
     sshare, _ = ready_share(run, slo, shi)
-    if baseline is None:
+    if run.wire_lower_bound or (baseline is not None and baseline.wire_lower_bound):
+        notes.append(f"eksik: cap/MID_{run.dev}.jsonl — boş hat süresi eksik yakalamadan ölçülemez")
+        parts.append((SINANMADI, None))
+    elif baseline is None:
         notes.append(f"bilgi: [{slo}, {shi}) s hat boş {idle:.0f} ms, hazır veri {sshare}")
         notes.append("eksik: --baseline (kesmesiz koşu) → kısa daralma alt ölçütü sınanmadı")
         parts.append((SINANMADI, None))
@@ -306,12 +324,25 @@ def crit_rate_limit(run, plan, baseline):
     return combine(parts), notes
 
 
-def queue_drops(realized):
+QUEUE_KINDS = ("tbf", "bfifo", "pfifo", "pfifo_fast")
+
+
+def bottleneck_dev(realized):
+    """tbf/fifo kuyruğu olan orta ad alanı arayüzü (darboğaz); `ifb*` öncelikli. Yoksa `None`."""
+    if not isinstance(realized, dict):
+        return None
+    devs = sorted({q.get("dev") for q in realized.get("mid_qdisc") or []
+                   if q.get("kind") in QUEUE_KINDS and q.get("dev")},
+                  key=lambda d: (not d.startswith("ifb"), d))
+    return devs[0] if devs else None
+
+
+def queue_drops(realized, dev="mb0"):
     if not isinstance(realized, dict):
         return None
     total, seen = 0, False
     for q in realized.get("mid_qdisc") or []:
-        if q.get("dev") == "mb0" and q.get("kind") in ("tbf", "bfifo", "pfifo", "pfifo_fast"):
+        if q.get("dev") == dev and q.get("kind") in QUEUE_KINDS:
             seen = True
             total += int(q.get("drops", 0))
     return total if seen else None
@@ -347,6 +378,9 @@ def crit_speedup(run, plan):
             sh, n2 = ready_share(run, lo, hi)
             if sh is None or sh < READY_SHARE:
                 parts.append((SINANMADI, None)); notes.append(f"[{lo:.1f}, {hi:.0f}) s veri hazır değil ({sh})")
+            elif run.wire_lower_bound and util < 0.90:
+                parts.append((SINANMADI, None))
+                notes.append(f"[{lo:.1f}, {hi:.0f}) s tel ALT SINIR {util:.1%} < %90 (eksik: cap/MID_{run.dev}.jsonl)")
             else:
                 v2 = GECTI if util >= 0.90 else KALDI
                 parts.append((v2, None)); notes.append(f"[{lo:.1f}, {hi:.0f}) s tel {util:.1%} (≥ %90) → {v2}")
@@ -434,12 +468,14 @@ def crit_text_receipt(run):
     return combine(parts), notes
 
 
-def evaluate(d, plan, t0=None, baseline_dir=None):
-    run = Run(d, t0)
+def evaluate(d, plan, t0=None, baseline_dir=None, dev=None):
+    run = Run(d, t0, dev)
     if run.t0 is None:
         raise SystemExit("t_start yok: --t0 verin")
-    baseline = Run(baseline_dir, None) if baseline_dir else None
+    baseline = Run(baseline_dir, None, dev) if baseline_dir else None
     mode_v, mode_n = mode_evidence(run)
+    mode_n = mode_n + [f"darboğaz arayüzü {run.dev}; tel kaynağı "
+                       + ("cap/MID_mb0.jsonl (ALT SINIR)" if run.wire_lower_bound else f"cap/MID_{run.dev}.jsonl")]
     rows = [("kip (önkoşul)", mode_v, mode_n)]
     for name, fn in (("1 CC", lambda: crit_cc(run, plan)),
                      ("3 hız sınırlama", lambda: crit_rate_limit(run, plan, baseline)),
@@ -460,10 +496,11 @@ def main(argv=None):
     ap.add_argument("--plan", help="an:B/s,… (varsayılan senaryo v1)")
     ap.add_argument("--t0", type=float, help="zaman çizelgesinin sıfırı (unix s); varsayılan t_start")
     ap.add_argument("--baseline", type=pathlib.Path, help="kesmesiz koşu dizini (kısa daralma)")
+    ap.add_argument("--bottleneck-dev", help="darboğaz arayüzü (varsayılan: realized_post'tan; yoksa mb0)")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
     plan = parse_plan(a.plan) if a.plan else PLAN_V1
-    run, rows = evaluate(a.run_dir, plan, a.t0, a.baseline)
+    run, rows = evaluate(a.run_dir, plan, a.t0, a.baseline, a.bottleneck_dev)
     if a.json:
         print(json.dumps({"run_dir": str(a.run_dir), "t0": run.t0, "plan": plan,
                           "rows": [{"olcut": n, "hukum": v, "neden": notes} for n, v, notes in rows]},

@@ -37,7 +37,7 @@ def ms(t):
 
 
 def build(d, *, lg=True, cc2=6250, up2=12500, text_lat=400.0, ack_format="bitmap",
-          tbf=True, qdisc=True, starve_after=None, ptt_on_time=None):
+          tbf=True, qdisc=True, starve_after=None, ptt_on_time=None, ifb=False, ifb_cap=True):
     d.mkdir(parents=True)
     (d / "t_start").write_text(f"{T0}\n")
     for who in ("alice", "bob"):
@@ -46,12 +46,24 @@ def build(d, *, lg=True, cc2=6250, up2=12500, text_lat=400.0, ack_format="bitmap
             f"motor=cc-port\nack_biçimi={ack_format}\nack_gönderici_etkin=evet\nack_alıcı_etkin=evet\n"
             "şeritler=açık\n")
     (d / "cap").mkdir()
-    with (d / "cap" / "MID_mb0.jsonl").open("w") as f:
-        t = 0.0
-        while t < D.END_V1:
-            if starve_after is None or t < starve_after:
-                f.write(json.dumps({"t_unix_ns": int((T0 + t) * 1e9), "dir": "out", "ip_len": 1228}) + "\n")
-            t += 1228 / D.rate_at(D.PLAN_V1, t)
+    # ifb kolu (Yerel'in düzeneği): darboğaz ifb0 (tbf + pfifo), kayıp SONRA (mb0 netem %20):
+    # mb0 çıkışı her beşinci datagramı görmez.
+    dev = "ifb0" if ifb else "mb0"
+    fb = (d / "cap" / f"MID_{dev}.jsonl").open("w") if (not ifb or ifb_cap) else None
+    fm = (d / "cap" / "MID_mb0.jsonl").open("w") if ifb else None
+    t, n = 0.0, 0
+    while t < D.END_V1:
+        if starve_after is None or t < starve_after:
+            rec = json.dumps({"t_unix_ns": int((T0 + t) * 1e9), "dir": "out", "ip_len": 1228}) + "\n"
+            if fb:
+                fb.write(rec)
+            if fm and n % 5 != 4:
+                fm.write(rec)
+            n += 1
+        t += 1228 / D.rate_at(D.PLAN_V1, t)
+    for f in (fb, fm):
+        if f:
+            f.close()
     alice, bob = [], []
     if lg:
         for k in range(1, 25):
@@ -86,13 +98,13 @@ def build(d, *, lg=True, cc2=6250, up2=12500, text_lat=400.0, ack_format="bitmap
     (d / "bob.json").write_text(json.dumps({"wire": {}, "ptt_presses": presses}))
     q = [{"kind": "netem", "dev": "mb0", "drops": 40}]
     if tbf:
-        q.append({"kind": "tbf", "dev": "mb0", "drops": 0})
+        q.append({"kind": "tbf", "dev": dev, "drops": 0})
     # `>>` ile art arda eklenmiş iki nesne (kapi3_realized deseni): sonuncusu okunur.
     (d / "realized_post.json").write_text(json.dumps({"tag": "eski", "mid_qdisc": []}) + "\n"
                                           + json.dumps({"tag": "post", "mid_qdisc": q}) + "\n")
     if qdisc:
         (d / "qdisc_series.jsonl").write_text("".join(
-            json.dumps({"t_unix_ns": int((T0 + t) * 1e9), "dev": "mb0", "backlog_bytes": 1228}) + "\n"
+            json.dumps({"t_unix_ns": int((T0 + t) * 1e9), "dev": dev, "backlog_bytes": 1228}) + "\n"
             for t in range(0, 100)))
 
 
@@ -115,6 +127,10 @@ VAKALAR = [
     ("kuyruk serisi yok", {"qdisc": False}, True, {"3 hız sınırlama": S}),
     ("taban kopyası yok", {}, False, {"3 hız sınırlama": S}),
     ("40 s'den sonra tel yok", {"starve_after": 40.0}, True, {"3 hız sınırlama": K}),
+    # Darboğaz ifb0, kayıp sonra: ifb0 yakalaması varsa taban gibi; yoksa mb0 alt sınırı (%80) → SINANMADI.
+    ("ifb0 darboğaz, yakalama var", {"ifb": True}, True, {"1 CC": G, "3 hız sınırlama": G, "4 hızlanma": G}),
+    ("ifb0 darboğaz, yakalama yok", {"ifb": True, "ifb_cap": False}, True,
+     {"1 CC": S, "3 hız sınırlama": S, "4 hızlanma": S}),
     # PTT: bant sayacı yok → en iyi hâlde SINANMADI; zamanında < %75 → KALDI.
     ("PTT zamanında 400/420", {"ptt_on_time": 400}, True, {"2 PTT": S}),
     ("PTT zamanında 252/420", {"ptt_on_time": 252}, True, {"2 PTT": K}),
