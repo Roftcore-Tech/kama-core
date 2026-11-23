@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""[PoC SON KABUL · Bulut-B] degerlendir.py'nin elle kurulmuş sentetik koşuyla denetimi (koşu YOK).
+
+Taban koşu (senaryo v1 çizelgesi; t0 = 1 800 000 000 s):
+* Darboğaz (`cap/MID_mb0.jsonl` out) her an hat hızında dolu: 1 228 B datagramlar, aralık
+  1 228 / hız(an). 85,0–85,5 s kısa daralma dahil.
+* `lg` ACK'leri 4 s'de bir: 20 s'ye dek tavan 12 500; 22 s'de 8 000, 26 s'de 6 250 (2. ACK, bant
+  içi), sonra 6 250; 62 s'de 6 250, 66 s'de 12 500 (2. ACK), sonra 12 500.
+* `ts` 200 ms'de bir, yeni veri kuyruğu 5 (veri hazır).
+* Metin 2 s'de bir, gecikme 400 ms; alındı Bob teslimden 1,5 s sonra.
+* Başlangıç kaydı iki uçta cc-port + bitmap; alice `ack_rx` 0x15 = 12; PTT yok.
+* `realized_post.json`: mb0'da netem + tbf (drops 0); `qdisc_series.jsonl` backlog 1 228 B.
+Beklenen: kip, CC, hız sınırlama (taban kopyası ile), hızlanma, metin/alındı GEÇTİ; PTT SINANMADI
+(basış yok; basışlı kolda da bant sayacı olmadığı için en iyi hâlde SINANMADI).
+Bozulmuş kollar her biri tek ölçütü değiştirir (aşağıdaki VAKALAR).
+
+Kullanım: python3 -I sentetik_test.py
+"""
+import importlib.util
+import json
+import pathlib
+import shutil
+import sys
+import tempfile
+
+HERE = pathlib.Path(__file__).resolve().parent
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("degerlendir", HERE / "degerlendir.py")
+D = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(D)
+
+T0 = 1_800_000_000.0
+
+
+def ms(t):
+    return (T0 + t) * 1000.0
+
+
+def build(d, *, lg=True, cc2=6250, up2=12500, text_lat=400.0, ack_format="bitmap",
+          tbf=True, qdisc=True, starve_after=None, ptt_on_time=None):
+    d.mkdir(parents=True)
+    (d / "t_start").write_text(f"{T0}\n")
+    for who in ("alice", "bob"):
+        (d / f"node-{who}").mkdir()
+        (d / f"node-{who}" / "transport-start.txt").write_text(
+            f"motor=cc-port\nack_biçimi={ack_format}\nack_gönderici_etkin=evet\nack_alıcı_etkin=evet\n"
+            "şeritler=açık\n")
+    (d / "cap").mkdir()
+    with (d / "cap" / "MID_mb0.jsonl").open("w") as f:
+        t = 0.0
+        while t < D.END_V1:
+            if starve_after is None or t < starve_after:
+                f.write(json.dumps({"t_unix_ns": int((T0 + t) * 1e9), "dir": "out", "ip_len": 1228}) + "\n")
+            t += 1228 / D.rate_at(D.PLAN_V1, t)
+    alice, bob = [], []
+    if lg:
+        for k in range(1, 25):
+            t = 4.0 * k - 2.0
+            if t < 20:
+                p = 12500
+            elif t < 60:
+                p = {22.0: 8000, 26.0: cc2}.get(t, 6250)
+            else:
+                p = {62.0: 6250, 66.0: up2}.get(t, up2 if t > 66 else 6250)
+            alice.append({"k": "lg", "t": ms(t), "pace_before": p, "pace_after": p, "rate_after": None,
+                          "raised": False, "probe_failed": False})
+    t = 0.0
+    while t < D.END_V1:
+        alice.append({"k": "ts", "t": ms(t), "s": [{"rec": {"txq": 5}, "pr": 12500}]})
+        t += 0.2
+    for i in range(50):
+        t = 2.0 * i
+        lat = text_lat if 30 <= t < 40 else 400.0
+        alice.append({"k": "send", "c": "T", "i": i, "t": ms(t)})
+        bob.append({"k": "rx", "c": "T", "i": i, "t": ms(t) + lat, "first": True})
+        alice.append({"k": "rcpt", "c": "T", "i": i, "t": ms(t) + lat + 1500.0, "first": True})
+    for name, rows in (("alice.jsonl", alice), ("bob.jsonl", bob)):
+        (d / name).write_text("".join(json.dumps(r) + "\n" for r in rows))
+    presses = [] if ptt_on_time is None else [{
+        "stream": 1, "bundle_ms": 300, "ptt_started": 1, "ptt_ended": 1, "bundles_planned": 28,
+        "bundles_delivered": 25, "frames_planned": 420, "frames_on_time": ptt_on_time,
+        "first_audio_ms": 640.0, "creation_to_delivery_ms": {"min": 610.0, "median": 650.0, "max": 800.0}}]
+    (d / "alice.json").write_text(json.dumps({"wire": {"ack_rx": {"0x14": 0, "0x15": 12, "0x16": 0,
+                                                                  "0x17": 0 if ptt_on_time is None else 4}},
+                                              "ptt_presses": []}))
+    (d / "bob.json").write_text(json.dumps({"wire": {}, "ptt_presses": presses}))
+    q = [{"kind": "netem", "dev": "mb0", "drops": 40}]
+    if tbf:
+        q.append({"kind": "tbf", "dev": "mb0", "drops": 0})
+    # `>>` ile art arda eklenmiş iki nesne (kapi3_realized deseni): sonuncusu okunur.
+    (d / "realized_post.json").write_text(json.dumps({"tag": "eski", "mid_qdisc": []}) + "\n"
+                                          + json.dumps({"tag": "post", "mid_qdisc": q}) + "\n")
+    if qdisc:
+        (d / "qdisc_series.jsonl").write_text("".join(
+            json.dumps({"t_unix_ns": int((T0 + t) * 1e9), "dev": "mb0", "backlog_bytes": 1228}) + "\n"
+            for t in range(0, 100)))
+
+
+def verdicts(d, baseline=True, base_dir=None):
+    _, rows = D.evaluate(d, D.PLAN_V1, None, base_dir if baseline else None)
+    return {n: v for n, v, _ in rows}, rows
+
+
+G, K, S = D.GECTI, D.KALDI, D.SINANMADI
+VAKALAR = [
+    # (ad, build argümanları, taban kopyası verilsin mi, beklenen {ölçüt: hüküm})
+    ("taban", {}, True, {"kip (önkoşul)": G, "1 CC": G, "3 hız sınırlama": G, "4 hızlanma": G,
+                         "2 PTT": S, "5 metin/alındı": G}),
+    ("lg yok", {"lg": False}, True, {"1 CC": S, "4 hızlanma": S, "3 hız sınırlama": G}),
+    ("CC 2. ACK bant dışı", {"cc2": 8000}, True, {"1 CC": K}),
+    ("hızlanma 2.–3. ACK 9 000", {"up2": 9000}, True, {"4 hızlanma": K}),
+    ("daralmada metin 1,5 s", {"text_lat": 1500.0}, True, {"3 hız sınırlama": K, "5 metin/alındı": K}),
+    ("ack V2", {"ack_format": "v2"}, True, {"kip (önkoşul)": K, "1 CC": S, "3 hız sınırlama": S}),
+    ("ayrı kuyruk yok", {"tbf": False}, True, {"3 hız sınırlama": S}),
+    ("kuyruk serisi yok", {"qdisc": False}, True, {"3 hız sınırlama": S}),
+    ("taban kopyası yok", {}, False, {"3 hız sınırlama": S}),
+    ("40 s'den sonra tel yok", {"starve_after": 40.0}, True, {"3 hız sınırlama": K}),
+    # PTT: bant sayacı yok → en iyi hâlde SINANMADI; zamanında < %75 → KALDI.
+    ("PTT zamanında 400/420", {"ptt_on_time": 400}, True, {"2 PTT": S}),
+    ("PTT zamanında 252/420", {"ptt_on_time": 252}, True, {"2 PTT": K}),
+]
+
+
+def main():
+    fails = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = pathlib.Path(tmp)
+        build(tmp / "kesmesiz")
+        for i, (name, kw, base, want) in enumerate(VAKALAR):
+            d = tmp / f"v{i}"
+            build(d, **kw)
+            got, rows = verdicts(d, base, tmp / "kesmesiz")
+            bad = {k: (got.get(k), v) for k, v in want.items() if got.get(k) != v}
+            print(f"{'OK  ' if not bad else 'HATA'} {name}: {got}")
+            if bad:
+                fails += 1
+                print(f"     beklenen≠bulunan: {bad}")
+                for n, v, notes in rows:
+                    if n in bad:
+                        for x in notes:
+                            print(f"       {n}: {x}")
+    print("SONUÇ:", "GEÇTİ" if fails == 0 else f"{fails} vaka KALDI")
+    return 1 if fails else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
