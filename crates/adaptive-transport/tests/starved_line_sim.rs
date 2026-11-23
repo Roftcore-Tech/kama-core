@@ -28,19 +28,57 @@
 //! [İŞ-35 AÇIK 2] PTT koruması tükendiğinde kurtarma: her PTT iletiminin darboğaz kaydı (`PttTx`),
 //! her ACK'in yolculuğu (`AckRec`: alıcının verdiği an, dönüş serileşmesinin başı, varış) ve
 //! göndericinin izi (`Scenario::diag`, salt gözlem). Testler dosyanın sonunda.
+//!
+//! # [BUA] Ürün alıcısı, anahtarlı kayıp, darboğaz defteri (ölçüm aracı)
+//!
+//! Üç senaryo seçeneği; varsayılanları var olan bütün testleri bayt-aynı bırakır:
+//!
+//! * `Scenario::rx` — [`RxModel::Mirror`] (varsayılan): 0x14 alıcısının ACK kadansı + ölçüm aralığı
+//!   ve `pair_rate` [`RxMirror`] kopyasından (melez; ACK bütçesi `ack_return_bw`'den).
+//!   [`RxModel::Product`]: gerçek `Receiver` ürünün sunucu yuvası gibi kurulur (bütçe = dönüş
+//!   hattı [`PROFILE_DOWN`], CAPS kolu: `set_ack_bitmap(true)`, `set_pair_squeeze_line(beyan ileri
+//!   hat)`, `set_ack_bitmap_ptt_lean(ptt_lean)`); her ACK üretildiği anda kodlanır, mühürlü boyla
+//!   ([`ACK_SEAL`]) dönüş hattında serileşir, varışta `AckFrame::decode_with_bitmap` ile çözülür ve
+//!   göndericiye `client_core::runtime` ACK kolunun sırasıyla verilir: `observe_ack_feedback`
+//!   (çerçevenin `seen_count`/`v2`'si), `note_ack_arrival_rate`, `note_ack_pair_rate`,
+//!   `set_next_ack_evidence` (kanıt aralığı), `note_ack_forward_interval` (`span_first_full`,
+//!   `rx_span` × 256 µs, M = teyitli ∩ [span_first, largest]), `Event::AckReceived`. Alıcıya her
+//!   `on_datagram` / `on_ack_timer` çağrısından önce dönüş hattının o anki durumu verilir
+//!   (`set_return_line_ahead_ns`, `set_uplink_yield`).
+//! * `Scenario::loss` — [`LossModel::Lcg`] (varsayılan): sunulan datagram sırasına bağlı tek LCG.
+//!   [`LossModel::Keyed`]: karar = `splitmix64(tohum, sınıf, kimlik, o öğenin kaçıncı iletimi)`
+//!   binde değeri < `loss_permille` (ürün fikstürü `asym_product_outcome` anahtarlı kipiyle aynı
+//!   karma; sınıf: veri birimi, kimlik birim; FEC paritesi, kimlik `blok << 16 | ESI`). Sıra
+//!   göndericinin iletim kararında sayılır (kuyrukta düşen iletim de sayılır): iki kol farklı
+//!   davransa da aynı mantıksal iletim aynı kaderi alır.
+//! * `Scenario::ledger` — darboğaz defteri (salt gözlem): darboğaza giren tel baytı sınıf
+//!   (emisyon nedeni: yeni DATA, ARQ, PTO probu, kopya [kaynağıyla], FEC paritesi) × yük (PTT,
+//!   metin, dosya, FEC) başına, kuyrukta ve hatta düşen bayt, FIFO en büyük bekleme ve doluluk,
+//!   gönderim tavanının izi (an, değer, ACK no), göndericide bekleyen veri (saniyede bir). Defter
+//!   koşu sonunda hat modelinin sayaçlarıyla birebir sağlanır (`assert`; ölçüm aracının
+//!   doğrulaması, kabul kapısı değil). Açıkken göndericinin emisyon izi her olaydan sonra
+//!   boşaltılır (sınıf kaynağı).
+//!
+//! Rapor kolları: `bua_product_receiver_report` (yalnız sayı basar; aracın sağlaması dışında iddia
+//! yok). Koşu: `cargo test --release -p adaptive-transport --test starved_line_sim
+//! bua_product_receiver_report -- --nocapture`. Çıktı satırları makine okunurdur, alanlar
+//! `anahtar=değer`: `BUA <kol> <alıcı> tohum=<n> ...` (özet), `BUA-B` / `BUA-D2` (var olan (b) ve
+//! (d-2) testlerinin ölçüleri ve sınırları), `BUA-DEFTER` (sınıf × yük), `BUA-HAT` (sayaçlar),
+//! `BUA-TAVAN` (tavan izi), `BUA-BİRİKİM` (gönderici). Alıcı adı `urun` | `ayna`.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use adaptive_transport::ack::{
-    ACK_BITMAP_MAX_BITS, ACK_DELAY_UNIT_US, PAIR_MIN_UDP_BYTES, PAIR_RATE_NONE, RX_SPAN_NONE,
+    AckFrame, ACK_BITMAP_MAX_BITS, ACK_DELAY_UNIT_US, PAIR_MIN_UDP_BYTES, PAIR_RATE_NONE,
+    RX_SPAN_NONE,
 };
 use adaptive_transport::pacer::LineModel;
 use adaptive_transport::receiver::{feedback_horizon_ns, Receiver, RxDatagram, RxKind};
 use adaptive_transport::return_path::AckObservation;
 use adaptive_transport::sender::{
     AckInfo, EmitCause, EmitDiag, Event, FeedbackStarvedRule, ForwardCopyLineScale,
-    ForwardCopyRule, OpaqueUnit, RecoveredInfo, RecoveredUnit, Sender, Timer, TransmitDecision,
-    TransmitKind,
+    ForwardCopyRule, OpaqueUnit, RecoveredInfo, RecoveredUnit, Sender, SrLogicalRef, Timer,
+    TransmitDecision, TransmitKind,
 };
 
 const MS: u64 = 1_000_000;
@@ -135,8 +173,188 @@ struct Scenario {
     /// `> 0`: `text_at_ns`'ten sonra bu aralıkla konuşma bitene dek ek metin birimleri
     /// (`TEXT_ID + k`). 0: tek metin birimi.
     text_period_ns: u64,
+    /// [BUA] Alıcı modeli (modül belgesi).
+    rx: RxModel,
+    /// [BUA] İleri hattın rastgele kayıp kipi (modül belgesi).
+    loss: LossModel,
+    /// [BUA] Darboğaz defteri ve sağlaması (modül belgesi).
+    ledger: bool,
     seed: u64,
     t_max_ns: u64,
+}
+
+/// [BUA] Alıcı modeli.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RxModel {
+    /// 0x14 alıcısı + [`RxMirror`] ölçüm kopyası (var olan testlerin düzeneği).
+    Mirror,
+    /// Ürünün bitmap alıcısı (0x15; `ptt_lean` = CAPS'te yalın PTT biti → 0x16). `return_bw` =
+    /// alıcının ACK bütçesinin hesaplandığı dönüş hızı (B/s); ürün çalışma zamanında bu ucun
+    /// yukarı yönü, yani [`PROFILE_DOWN`] ([`RxModel::PRODUCT`]). Başka değer yalnız ayrıştırma
+    /// kolu içindir (aynanın bütçesiyle ürün alıcısı).
+    Product { ptt_lean: bool, return_bw: u64 },
+}
+
+impl RxModel {
+    /// Ürün çalışma zamanının kurulumu (0x15, bütçe dönüş hattından).
+    const PRODUCT: Self = Self::Product {
+        ptt_lean: false,
+        return_bw: PROFILE_DOWN,
+    };
+
+    fn label(self) -> String {
+        match self {
+            Self::Mirror => "ayna".to_string(),
+            Self::Product {
+                ptt_lean,
+                return_bw,
+            } => {
+                let mut l = "urun".to_string();
+                if ptt_lean {
+                    l.push_str("-yalin");
+                }
+                if return_bw != PROFILE_DOWN {
+                    l.push_str(&format!("-bw{return_bw}"));
+                }
+                l
+            }
+        }
+    }
+}
+
+/// [BUA] İleri hattın rastgele kayıp kipi.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LossModel {
+    /// Sunulan (serileşen) datagram sırasına bağlı tek LCG.
+    Lcg,
+    /// Mantıksal iletime anahtarlı karar ([`keyed_permille`]).
+    Keyed,
+}
+
+/// [BUA · ANAHTARLI-KAYIP] Sınıf: veri birimi (kimlik = birim kimliği). Ürün fikstürü
+/// `asym_product_outcome` `KEY_CLASS_UNIT` ile aynı.
+const KEY_CLASS_UNIT: u8 = 0x00;
+/// [BUA · ANAHTARLI-KAYIP] Sınıf: FEC paritesi (kimlik = `blok << 16 | ESI`); ürün fikstürünün
+/// `KEY_CLASS_FEC` değeri (`client_core::wire::FRAME_FEC` = 0x01).
+const KEY_CLASS_FEC: u8 = 0x01;
+/// [BUA · ANAHTARLI-KAYIP] Mühürleyen uç: düzenekte tek gönderici (ürün fikstüründe `ALICE` = 1).
+const KEY_SIDE: u8 = 1;
+
+/// splitmix64 sonlandırıcısı (ürün fikstürüyle aynı sabitler).
+fn splitmix64(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^ (x >> 31)
+}
+
+/// [BUA · ANAHTARLI-KAYIP] Anahtarın binde değeri (0..1000): tohum ve (uç, sınıf, kimlik, sıra)
+/// anahtarının saf işlevi (ürün fikstürü `keyed_permille` ile aynı karma).
+fn keyed_permille(seed: u64, class: u8, id: u64, ordinal: u32) -> u64 {
+    let mut h = splitmix64(seed);
+    h = splitmix64(h ^ (u64::from(KEY_SIDE) << 8 | u64::from(class)));
+    h = splitmix64(h ^ id);
+    h = splitmix64(h ^ u64::from(ordinal));
+    h % 1000
+}
+
+/// [BUA · DEFTER] Darboğaza giren iletimin sınıfı (göndericinin emisyon nedeni).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum TxClass {
+    /// Birimin ilk iletimi.
+    NewData,
+    /// ARQ yeniden iletimi.
+    Arq,
+    /// PTO / kuyruk probu.
+    PtoProbe,
+    /// Zamanlanmış kopya ya da boş hat yeniden iletimi (kaynak kodu `DUP_SRC_*`).
+    Copy(u64),
+    /// Öncelikli şeridin kopyası (kaynak kodu).
+    CopyPriority(u64),
+    /// Kuruluş merdiveni kopyası (kaynak kodu).
+    CopyEstablish(u64),
+    /// FEC onarım sembolü.
+    FecParity,
+    /// İzde nedeni bulunmayan iletim (defter açıkken olmamalı; sağlama bunu da sınar).
+    Unknown(&'static str),
+}
+
+impl TxClass {
+    fn label(self) -> String {
+        // Kaynak kodları `sender.rs` `DUP_SRC_*` (crate içi sabitler).
+        let src = |c: u64| match c {
+            1 => "kural",
+            2 => "zamanlanmis",
+            3 => "yakinsama-oncesi",
+            4 => "kayip-kopya",
+            5 => "ileri-kurtarma",
+            6 => "ileriye-devir",
+            7 => "kuyruk-canlilik",
+            8 => "bos-hat",
+            _ => "?",
+        };
+        match self {
+            Self::NewData => "yeni".to_string(),
+            Self::Arq => "arq".to_string(),
+            Self::PtoProbe => "pto".to_string(),
+            Self::Copy(c) => format!("kopya/{}", src(c)),
+            Self::CopyPriority(c) => format!("kopya-oncelik/{}", src(c)),
+            Self::CopyEstablish(c) => format!("kopya-kurulus/{}", src(c)),
+            Self::FecParity => "fec".to_string(),
+            Self::Unknown(k) => format!("bilinmiyor/{k}"),
+        }
+    }
+}
+
+/// [BUA · DEFTER] İletimin yükü.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Payload {
+    Ptt,
+    Text,
+    File,
+    Fec,
+}
+
+/// [BUA · DEFTER] Bir (sınıf, yük) hücresinin darboğaz sayaçları (tel baytı = UDP + 28).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ClassBytes {
+    pkts: u64,
+    bytes: u64,
+    queue_drop_pkts: u64,
+    queue_drop_bytes: u64,
+    lost_pkts: u64,
+    lost_bytes: u64,
+}
+
+/// [BUA] Bir iletimin darboğaza verilen meta verisi.
+#[derive(Debug, Clone, Copy)]
+struct TxMeta {
+    key_class: u8,
+    key_id: u64,
+    class: TxClass,
+    payload: Payload,
+}
+
+/// [BUA · DEFTER] Hat modelinin sayaçları (tel baytı).
+#[derive(Debug, Clone, Copy, Default)]
+struct LineCounters {
+    /// Darboğaza sunulan.
+    offered_bytes: u64,
+    offered_pkts: u64,
+    /// Kuyruk dolu: düştü.
+    queue_drop_bytes: u64,
+    /// Serileşti.
+    serialized_bytes: u64,
+    serialized_pkts: u64,
+    /// Serileşti, hatta düştü (rastgele ya da hedefli kayıp).
+    lost_bytes: u64,
+    /// Serileşti ve yayılıma girdi.
+    delivered_bytes: u64,
+    /// FIFO en büyük doluluk (serileşen dahil; paket, bayt).
+    max_occ_pkts: u64,
+    max_occ_bytes: u64,
+    /// En büyük kuyruk beklemesi (serileşme başlangıcı − sunum).
+    max_wait_ns: u64,
 }
 
 impl Scenario {
@@ -164,6 +382,9 @@ impl Scenario {
             raw_copy_rule: false,
             ptt_deadline_ns: None,
             text_period_ns: 0,
+            rx: RxModel::Mirror,
+            loss: LossModel::Lcg,
+            ledger: false,
             seed,
             t_max_ns: 60 * SEC,
         }
@@ -187,6 +408,16 @@ struct Bottleneck {
     ser_start: HashMap<u64, u64>,
     /// Metin iletimleri (`TEXT_ID ≤ unit_id < FILE_BASE_ID`) darboğazda (kuyrukta düşenler dahil).
     text_log: Vec<PttTx>,
+    /// [BUA] Kayıp kipi ve anahtarlı kipte (sınıf, kimlik) başına iletim sırası.
+    mode: LossModel,
+    seed: u64,
+    ordinal: HashMap<(u8, u64), u32>,
+    /// [BUA · DEFTER] `busy` ile aynı sırada: kuyruktaki iletimlerin tel baytı ve toplamı.
+    busy_bytes: VecDeque<u64>,
+    busy_bytes_sum: u64,
+    /// [BUA · DEFTER] Sınıf × yük sayaçları ve hat sayaçları.
+    book: BTreeMap<(TxClass, Payload), ClassBytes>,
+    line: LineCounters,
 }
 
 /// Bir PTT iletiminin darboğazdaki kaydı.
@@ -219,11 +450,43 @@ impl Bottleneck {
         (self.lcg >> 33) % 1000
     }
 
-    fn send(&mut self, now: u64, seq: u64, udp: u64, unit_id: u64) {
+    fn book(&mut self, meta: TxMeta) -> &mut ClassBytes {
+        self.book.entry((meta.class, meta.payload)).or_default()
+    }
+
+    fn send(&mut self, now: u64, seq: u64, udp: u64, unit_id: u64, meta: TxMeta) {
+        let wire = udp + OVH;
+        self.line.offered_bytes += wire;
+        self.line.offered_pkts += 1;
+        {
+            let b = self.book(meta);
+            b.pkts += 1;
+            b.bytes += wire;
+        }
+        // [BUA · ANAHTARLI-KAYIP] Sıra iletim kararında sayılır (kuyrukta düşen de).
+        let ordinal = match self.mode {
+            LossModel::Lcg => 0,
+            LossModel::Keyed => {
+                let n = self
+                    .ordinal
+                    .entry((meta.key_class, meta.key_id))
+                    .or_insert(0);
+                let o = *n;
+                *n += 1;
+                o
+            }
+        };
         while self.busy.front().is_some_and(|&t| t <= now) {
             self.busy.pop_front();
+            self.busy_bytes_sum -= self.busy_bytes.pop_front().unwrap_or(0);
         }
         if self.busy.len() >= self.queue_pkts {
+            self.line.queue_drop_bytes += wire;
+            {
+                let b = self.book(meta);
+                b.queue_drop_pkts += 1;
+                b.queue_drop_bytes += wire;
+            }
             self.dropped_queue.push(now);
             if unit_id < TEXT_ID {
                 self.ptt_log.push(PttTx {
@@ -248,11 +511,25 @@ impl Bottleneck {
         let done = start + (udp + OVH) * SEC / self.rate_at(start);
         self.ser_start.insert(seq, start);
         self.busy.push_back(done);
+        self.busy_bytes.push_back(wire);
+        self.busy_bytes_sum += wire;
+        self.line.max_occ_pkts = self.line.max_occ_pkts.max(self.busy.len() as u64);
+        self.line.max_occ_bytes = self.line.max_occ_bytes.max(self.busy_bytes_sum);
+        self.line.max_wait_ns = self.line.max_wait_ns.max(start - now);
+        self.line.serialized_bytes += wire;
+        self.line.serialized_pkts += 1;
         self.waits.push((now, start - now));
         let n = self.tx_of_unit.entry(unit_id).or_insert(0);
         *n += 1;
         let targeted = self.targeted.is_some_and(|(u, k)| u == unit_id && *n <= k);
-        let lost = self.rand_permille() < self.loss_permille;
+        let lost = match self.mode {
+            LossModel::Lcg => self.rand_permille() < self.loss_permille,
+            LossModel::Keyed => {
+                self.loss_permille > 0
+                    && keyed_permille(self.seed, meta.key_class, meta.key_id, ordinal)
+                        < self.loss_permille
+            }
+        };
         let rec = PttTx {
             at: now,
             seq,
@@ -266,8 +543,13 @@ impl Bottleneck {
             self.text_log.push(rec);
         }
         if lost || targeted {
+            self.line.lost_bytes += wire;
+            let b = self.book(meta);
+            b.lost_pkts += 1;
+            b.lost_bytes += wire;
             return;
         }
+        self.line.delivered_bytes += wire;
         self.wire.push_back((done + ONE_WAY_NS, seq, unit_id, udp));
     }
 }
@@ -280,15 +562,123 @@ struct TxCount {
     ptt_wire_bytes: u64,
     /// PTT iletimlerinin türü (seq → tür).
     ptt_kind: HashMap<u64, TransmitKind>,
+    /// [BUA · DEFTER] Defter açık: göndericinin emisyon izi her olaydan sonra boşaltılır.
+    ledger: bool,
+    /// [BUA · DEFTER] Emisyon nedeni (seq → (neden, ref_seq)) ve izin tamamı (sırayla).
+    causes: HashMap<u64, (EmitCause, u64)>,
+    emit_all: Vec<EmitDiag>,
+    /// [BUA · DEFTER] Darboğaza verilen bütün iletimlerin tel baytı (bağımsız sayaç) ve bunların
+    /// `unit_id < TEXT_ID` olan FEC paritesi payı (`ptt_wire_bytes` onu da sayar).
+    wire_bytes: u64,
+    fec_low_bytes: u64,
+    /// [BUA · ÜRÜN ALICISI] Verilen seq'ler (ürün çalışma zamanının PN → motor seq tablosu;
+    /// düzenekte PN = seq).
+    track_sent: bool,
+    sent: BTreeSet<u64>,
+    any_sent: bool,
+}
+
+/// Emisyon nedeni olan iz kayıtları (kayıp ilanı, teyit, ACK çerçevesi değil).
+fn is_emission(c: EmitCause) -> bool {
+    matches!(
+        c,
+        EmitCause::Data
+            | EmitCause::Retransmit
+            | EmitCause::PtoProbe
+            | EmitCause::Copy
+            | EmitCause::CopyPriority
+            | EmitCause::CopyEstablish
+            | EmitCause::FecParity
+    )
+}
+
+impl TxCount {
+    /// [BUA · DEFTER] Göndericinin izini boşaltır (defter kapalıyken hiçbir şey yapmaz).
+    fn drain(&mut self, s: &mut Sender) {
+        if !self.ledger {
+            return;
+        }
+        for e in s.take_diag_emit_log() {
+            if is_emission(e.cause) {
+                self.causes.insert(e.seq, (e.cause, e.ref_seq));
+            }
+            self.emit_all.push(e);
+        }
+    }
+
+    /// [BUA] İletimin anahtarı, sınıfı ve yükü.
+    fn meta(&self, d: &TransmitDecision) -> TxMeta {
+        let payload = if d.kind == TransmitKind::FecParity {
+            Payload::Fec
+        } else if d.unit_id < TEXT_ID {
+            Payload::Ptt
+        } else if d.unit_id < FILE_BASE_ID {
+            Payload::Text
+        } else {
+            Payload::File
+        };
+        let (key_class, key_id) = match d.send_record.map(|r| r.logical_ref) {
+            Some(SrLogicalRef::Fec { block_id, esi }) if d.kind == TransmitKind::FecParity => {
+                (KEY_CLASS_FEC, u64::from(block_id) << 16 | u64::from(esi))
+            }
+            _ => (KEY_CLASS_UNIT, d.unit_id),
+        };
+        let by_kind = |k: TransmitKind| match k {
+            TransmitKind::Data => "data",
+            TransmitKind::Retransmit => "retx",
+            TransmitKind::Duplicate => "kopya",
+            TransmitKind::FecParity => "fec",
+            TransmitKind::CsProbe => "cs",
+        };
+        let class = match self.causes.get(&d.seq) {
+            Some(&(EmitCause::Data, _)) => TxClass::NewData,
+            Some(&(EmitCause::Retransmit, _)) => TxClass::Arq,
+            Some(&(EmitCause::PtoProbe, _)) => TxClass::PtoProbe,
+            Some(&(EmitCause::Copy, r)) => TxClass::Copy(r),
+            Some(&(EmitCause::CopyPriority, r)) => TxClass::CopyPriority(r),
+            Some(&(EmitCause::CopyEstablish, r)) => TxClass::CopyEstablish(r),
+            Some(&(EmitCause::FecParity, _)) => TxClass::FecParity,
+            _ if self.ledger => TxClass::Unknown(by_kind(d.kind)),
+            _ => match d.kind {
+                TransmitKind::Data => TxClass::NewData,
+                TransmitKind::Retransmit => TxClass::Arq,
+                TransmitKind::FecParity => TxClass::FecParity,
+                _ => TxClass::Copy(0),
+            },
+        };
+        TxMeta {
+            key_class,
+            key_id,
+            class,
+            payload,
+        }
+    }
 }
 
 struct ReturnLine {
     plan: Vec<(u64, u64)>,
     free_at: u64,
     last_arrival: u64,
-    wire: VecDeque<(u64, u64, u16, AckInfo, IntervalMsg)>,
+    /// (varış, UDP yükü, ileti).
+    wire: VecDeque<(u64, u64, RetMsg)>,
     /// Her ACK: (alıcının verdiği an, serileşmenin başladığı an).
     log: Vec<(u64, u64)>,
+    /// [BUA] Çerçeve türü baytı → sayı; dönüş hattına verilen toplam tel baytı (UDP + 28).
+    types: BTreeMap<u8, u64>,
+    bytes: u64,
+}
+
+/// Dönüş hattında taşınan ACK.
+enum RetMsg {
+    /// [`RxModel::Mirror`]: 0x14 çerçevesinin çözülmüş hâli + `RxMirror` ölçümü.
+    Mirror {
+        arrival_rate: u16,
+        ack: AckInfo,
+        iv: IntervalMsg,
+    },
+    /// [`RxModel::Product`]: kodlanmış çerçeve; `measured = false` → `no_interval` aralığında
+    /// çıktı (ölçüm göndericiye verilmez).
+    Product { bytes: Vec<u8>, measured: bool },
 }
 
 /// Ölçüm aralığı (sözleşme §2) ve çift alt sınırı: (m_first, largest, rx_span, M, pair_rate).
@@ -310,9 +700,11 @@ type IntervalMsg = (u64, u64, Option<u64>, Vec<u64>, u16);
 ///   ACK'te sıfırlanmaz; `PairRate::squeezed`, `on_arrival`). Benzetimde beyan hat = [`PROFILE_UP`]
 ///   (ürünün sunucu yuvası `set_pair_squeeze_line(downlink_bps)`; düzenekte profil hep açık).
 ///
-/// Alıcının 0x15 çerçevesinin kendisi (boyu, daralma alarmının erken ACK'i) bu düzenekte yoktur: ACK
-/// kadansı 0x14 alıcısınındır. (Gerçek alıcı bitmap kipinde bu düzenekte yeniden sıralamada panik
-/// verdi: en büyüğü ilerlemeyen ACK'te `span_first` aralığı `largest + 1 ..= largest`.)
+/// Alıcının 0x15 çerçevesinin kendisi (boyu, daralma alarmının erken ACK'i) bu kipte yoktur: ACK
+/// kadansı 0x14 alıcısınındır (MELEZ). Gerçek 0x15 alıcısı [`RxModel::Product`] seçeneğindedir
+/// (modül belgesi, [BUA]). (Gerçek alıcı bitmap kipinde bu düzenekte bir ara yeniden sıralamada
+/// panik veriyordu: en büyüğü ilerlemeyen ACK'te `span_first` aralığı `largest + 1 ..= largest`;
+/// `Receiver::rx_span_field` bugün o durumda ölçümsüz döner.)
 #[derive(Default)]
 struct RxMirror {
     first_arrival: HashMap<u64, u64>,
@@ -411,13 +803,24 @@ impl ReturnLine {
             .map_or(self.plan[0].1, |&(_, d)| d)
     }
 
-    fn send(&mut self, now: u64, udp: u64, arrival_rate: u16, ack: AckInfo, iv: IntervalMsg) {
+    fn send(&mut self, now: u64, udp: u64, frame_type: u8, msg: RetMsg) {
         let start = self.free_at.max(now);
         self.log.push((now, start));
         self.free_at = start + (udp + OVH) * SEC / PROFILE_DOWN;
         let arrival = (self.free_at + self.delay_at(self.free_at)).max(self.last_arrival);
         self.last_arrival = arrival;
-        self.wire.push_back((arrival, udp, arrival_rate, ack, iv));
+        *self.types.entry(frame_type).or_insert(0) += 1;
+        self.bytes += udp + OVH;
+        self.wire.push_back((arrival, udp, msg));
+    }
+
+    /// [BUA · ÜRÜN ALICISI] Alıcının ürettiği çerçeve o anda kodlanır ve mühürlü boyla hatta
+    /// verilir (ürün çalışma zamanı ACK'i üretildiği yerde mühürleyip gönderir).
+    fn send_product(&mut self, now: u64, frame: &AckFrame, measured: bool) {
+        let bytes = frame.encode();
+        let udp = bytes.len() as u64 + ACK_SEAL;
+        let t = bytes.first().copied().unwrap_or(0);
+        self.send(now, udp, t, RetMsg::Product { bytes, measured });
     }
 }
 
@@ -459,6 +862,95 @@ struct Outcome {
     text_delays: Vec<(u64, Option<u64>)>,
     /// Metin iletimleri (darboğaz kaydı).
     text_tx: Vec<PttTx>,
+    /// [BUA · DEFTER] Sınıf × yük sayaçları, hat sayaçları (defter kapalıyken de sayılır; sınıf
+    /// yalnız defter açıkken emisyon nedenidir).
+    book: BTreeMap<(TxClass, Payload), ClassBytes>,
+    line: LineCounters,
+    /// [BUA · DEFTER] Gönderim tavanının izi: (an, tavan B/s, göndericiye varan kaçıncı ACK).
+    ceil_trace: Vec<(u64, u64, usize)>,
+    /// [BUA · DEFTER] (an, gönderilmemiş birim, uçuştaki bayt), saniyede bir (defter açıkken).
+    backlog: Vec<(u64, usize, u64)>,
+    /// [BUA] Dönüş hattı: çerçeve türü → sayı, toplam tel baytı.
+    ack_types: BTreeMap<u8, u64>,
+    ack_wire_bytes: u64,
+}
+
+/// [BUA · ÜRÜN ALICISI] `client_core::runtime` ACK kolunun göndericiye giden çağrıları, aynı
+/// sırayla: `observe_ack_feedback` → `note_ack_arrival_rate` → (`note_ack_pair_rate`) →
+/// `set_next_ack_evidence` → (`note_ack_forward_interval`) → [çağıran: `Event::AckReceived`].
+/// Düzenekte PN = motor seq; çalışma zamanının PN → seq tablosu = verilen seq'ler (`tx.sent`).
+/// `interval = false` karşı-olgu kolunun anahtarıdır (ürün çalışma zamanında yok): parantezli iki
+/// çağrı yapılmaz. Döner: (ACK, en büyük teyitli seq, ACK ölçüm aralığı taşıyor mu).
+fn product_ack_into_sender(
+    s: &mut Sender,
+    tx: &TxCount,
+    interval: bool,
+    bytes: &[u8],
+    udp: u64,
+    measured: bool,
+    now: u64,
+) -> (AckInfo, u64, bool) {
+    let frame = AckFrame::decode_with_bitmap(bytes).expect("ürün ACK'i çözülür");
+    s.observe_ack_feedback(
+        AckObservation {
+            wire_bytes: udp,
+            seen_count: frame.seen_count,
+            v2: frame.v2,
+            sent_datagrams: tx.datagrams,
+        },
+        now,
+    );
+    s.note_ack_arrival_rate(frame.arrival_rate);
+    if interval {
+        if let Some(bm) = frame.bitmap.as_ref() {
+            s.note_ack_pair_rate(bm.pair_rate);
+        }
+    }
+    let expected = if tx.any_sent { tx.last_seq + 1 } else { 0 };
+    let pns = frame.acked_full(expected);
+    let in_table = |p: u64| tx.sent.contains(&p);
+    let evidence = frame.evidence_span_full(expected);
+    if let Some((lo, hi)) = evidence {
+        let span = match (
+            tx.sent.range(lo..=hi).next().copied(),
+            tx.sent.range(lo..=hi).next_back().copied(),
+        ) {
+            (Some(a), Some(b)) => (a, b),
+            _ => (1, 0),
+        };
+        s.set_next_ack_evidence(Some(span));
+    }
+    let mut has_span = false;
+    if let (Some(bm), Some((lo, hi))) = (frame.bitmap.as_ref(), evidence) {
+        let from = frame.span_first_full(expected).unwrap_or(lo).max(lo);
+        let mut m: Vec<u64> = pns
+            .iter()
+            .copied()
+            .filter(|&p| p >= from && p <= hi)
+            .collect();
+        m.sort_unstable();
+        let first = m.first().copied().filter(|&p| in_table(p));
+        let last = Some(hi).filter(|&p| in_table(p));
+        if let (Some(first), Some(last)) = (first, last) {
+            let received: Vec<u64> = m.iter().copied().filter(|&p| in_table(p)).collect();
+            let span_ns = (bm.rx_span != RX_SPAN_NONE && measured)
+                .then(|| u64::from(bm.rx_span) * ACK_DELAY_UNIT_US * 1000);
+            has_span = span_ns.is_some();
+            if interval {
+                s.note_ack_forward_interval(first, last, span_ns, &received);
+            }
+        }
+    }
+    let largest = pns.iter().copied().max().unwrap_or(0);
+    let acked_seqs = pns.into_iter().filter(|&p| in_table(p)).collect();
+    (
+        AckInfo {
+            acked_seqs,
+            ack_delay: frame.ack_delay_duration(),
+        },
+        largest,
+        has_span,
+    )
 }
 
 /// Bir ACK'in yolculuğu.
@@ -594,7 +1086,26 @@ fn sender(sc: &Scenario) -> Sender {
 fn run(sc: &Scenario) -> Outcome {
     let mut s = sender(sc);
     let mut r = Receiver::with_cc_port();
-    r.set_return_bandwidth(Some(sc.ack_return_bw));
+    match sc.rx {
+        RxModel::Mirror => r.set_return_bandwidth(Some(sc.ack_return_bw)),
+        // [BUA · ÜRÜN ALICISI] `client_core::runtime` sunucu yuvası: `PeerSlot::new` (kota R =
+        // `RuntimeConfig::quota_r` varsayılanı 4, bütçe = bu ucun yukarı yönü = dönüş hattı),
+        // `set_ack_rereport(cfg.ack_rereport)` (varsayılan kapalı), CAPS kolu (bitmap açık, sıkışma
+        // sınaması eşin yukarı yönünün beyanıyla, yalın PTT biti). CAPS düzenekte ilk varıştan
+        // önce işlenmiş sayılır.
+        RxModel::Product {
+            ptt_lean,
+            return_bw,
+        } => {
+            r.set_quota_r(4);
+            r.set_return_bandwidth(Some(return_bw));
+            r.set_ack_rereport(false);
+            r.set_ack_bitmap(true);
+            r.set_pair_squeeze_line(Some(PROFILE_UP));
+            r.set_ack_bitmap_ptt_lean(ptt_lean);
+        }
+    }
+    let product_rx = matches!(sc.rx, RxModel::Product { .. });
     let mut fwd = Bottleneck {
         plan: sc.fwd_plan.clone(),
         queue_pkts: sc.queue_pkts,
@@ -612,8 +1123,15 @@ fn run(sc: &Scenario) -> Outcome {
         ptt_log: Vec::new(),
         ser_start: HashMap::new(),
         text_log: Vec::new(),
+        mode: sc.loss,
+        seed: sc.seed,
+        ordinal: HashMap::new(),
+        busy_bytes: VecDeque::new(),
+        busy_bytes_sum: 0,
+        book: BTreeMap::new(),
+        line: LineCounters::default(),
     };
-    s.set_diag_emit_log(sc.diag);
+    s.set_diag_emit_log(sc.diag || sc.ledger);
     let mut reorder_lcg = sc.seed ^ 0x5A5A_5A5A;
     let mut ret = ReturnLine {
         plan: sc.rev_delay_plan.clone(),
@@ -621,6 +1139,8 @@ fn run(sc: &Scenario) -> Outcome {
         last_arrival: 0,
         wire: VecDeque::new(),
         log: Vec::new(),
+        types: BTreeMap::new(),
+        bytes: 0,
     };
     let mut ack_log: Vec<AckRec> = Vec::new();
     let mut rx = RxMirror::default();
@@ -635,13 +1155,27 @@ fn run(sc: &Scenario) -> Outcome {
     let mut file_seen: HashSet<u64> = HashSet::new();
     let mut file_offered = 0u64;
     let mut file_done_ns = None;
-    let mut tx = TxCount::default();
+    let mut tx = TxCount {
+        ledger: sc.ledger,
+        track_sent: product_rx,
+        ..TxCount::default()
+    };
+    // [BUA · DEFTER] Tavan izi ACK numarasıyla (an, tavan, göndericiye varan kaçıncı ACK) ve
+    // göndericide bekleyen veri (an, gönderilmemiş birim, uçuştaki bayt; saniyede bir).
+    let mut ceil_trace: Vec<(u64, u64, usize)> = Vec::new();
+    let mut backlog: Vec<(u64, usize, u64)> = Vec::new();
+    let mut rx_bytes = 0u64;
     let mut rate_trace: Vec<(u64, Option<u64>)> = Vec::new();
     let mut acks_at = Vec::new();
     let mut pace_trace: Vec<(u64, u64)> = Vec::new();
     let mut ack_measured = Vec::new();
     let mut per_ack = Vec::new();
-    let emit = |decs: Vec<TransmitDecision>, now: u64, fwd: &mut Bottleneck, tx: &mut TxCount| {
+    let emit = |decs: Vec<TransmitDecision>,
+                now: u64,
+                fwd: &mut Bottleneck,
+                tx: &mut TxCount,
+                s: &mut Sender| {
+        tx.drain(s);
         for d in decs {
             if d.kind == TransmitKind::CsProbe {
                 continue;
@@ -651,8 +1185,17 @@ fn run(sc: &Scenario) -> Outcome {
             if d.unit_id < TEXT_ID {
                 tx.ptt_wire_bytes += d.size + OVH;
                 tx.ptt_kind.insert(d.seq, d.kind);
+                if d.kind == TransmitKind::FecParity {
+                    tx.fec_low_bytes += d.size + OVH;
+                }
             }
-            fwd.send(now, d.seq, d.size, d.unit_id);
+            if tx.track_sent {
+                tx.sent.insert(d.seq);
+            }
+            tx.any_sent = true;
+            tx.wire_bytes += d.size + OVH;
+            let meta = tx.meta(&d);
+            fwd.send(now, d.seq, d.size, d.unit_id, meta);
         }
     };
     let mut now = 0u64;
@@ -678,7 +1221,7 @@ fn run(sc: &Scenario) -> Outcome {
                 now,
             );
             file_offered += 1;
-            emit(decs, now, &mut fwd, &mut tx);
+            emit(decs, now, &mut fwd, &mut tx, &mut s);
         }
         let next_voice = voice_offered.len() as u64;
         let voice_at = VOICE_START_NS + next_voice * VOICE_PERIOD_NS;
@@ -691,7 +1234,7 @@ fn run(sc: &Scenario) -> Outcome {
                 }),
                 now,
             );
-            emit(decs, now, &mut fwd, &mut tx);
+            emit(decs, now, &mut fwd, &mut tx, &mut s);
         }
         if sc.text_at_ns == Some(now) {
             let decs = s.on_event(
@@ -701,7 +1244,7 @@ fn run(sc: &Scenario) -> Outcome {
                 }),
                 now,
             );
-            emit(decs, now, &mut fwd, &mut tx);
+            emit(decs, now, &mut fwd, &mut tx, &mut s);
         }
         if let Some(t0) = sc.text_at_ns.filter(|_| sc.text_period_ns > 0) {
             let at = t0 + (extra_text_offered.len() as u64 + 1) * sc.text_period_ns;
@@ -709,11 +1252,11 @@ fn run(sc: &Scenario) -> Outcome {
                 let id = TEXT_ID + 1 + extra_text_offered.len() as u64;
                 extra_text_offered.push(at);
                 let decs = s.on_event(Event::AppData(OpaqueUnit { id, size: 80 }), now);
-                emit(decs, now, &mut fwd, &mut tx);
+                emit(decs, now, &mut fwd, &mut tx, &mut s);
             }
         }
         let decs = s.on_event(Event::TimerFired(Timer::Pto), now);
-        emit(decs, now, &mut fwd, &mut tx);
+        emit(decs, now, &mut fwd, &mut tx, &mut s);
         // [PTT-YALIN] Ürünün son tarih yolu (`runtime`, pace tick'te Pto'dan sonra): teyitsiz ve
         // sunumundan `deadline` geçmiş PTT birimleri motora teyitli bildirilir.
         if let Some(deadline) = sc.ptt_deadline_ns {
@@ -750,15 +1293,17 @@ fn run(sc: &Scenario) -> Outcome {
                     }),
                     now,
                 );
-                emit(decs, now, &mut fwd, &mut tx);
+                emit(decs, now, &mut fwd, &mut tx, &mut s);
             }
         }
         if now.is_multiple_of(200 * MS) {
             let decs = s.on_event(Event::TimerFired(Timer::RtpropProbe), now);
-            emit(decs, now, &mut fwd, &mut tx);
+            emit(decs, now, &mut fwd, &mut tx, &mut s);
         }
         // Alıcı.
-        r.set_uplink_yield(ret.free_at > now);
+        if !product_rx {
+            r.set_uplink_yield(ret.free_at > now);
+        }
         let mut arrived = Vec::new();
         while fwd.wire.front().is_some_and(|&(t, _, _, _)| t <= now) {
             let (_, seq, uid, udp) = fwd.wire.pop_front().expect("var");
@@ -780,9 +1325,19 @@ fn run(sc: &Scenario) -> Outcome {
                 deliver.push(a);
             }
         }
+        // [BUA] `no_interval` aralığında çıkan ACK'in ölçümü göndericiye verilmez.
+        let measured_now = !sc.no_interval.is_some_and(|(a, b)| now >= a && now < b);
         let mut acks = Vec::new();
         for (seq, uid, udp) in deliver {
-            rx.on_arrival(seq, udp, now);
+            rx_bytes += udp + OVH;
+            if product_rx {
+                // [BUA · ÜRÜN ALICISI] Çalışma zamanı her `on_datagram`'dan önce yukarı yön
+                // hattının durumunu verir.
+                r.set_return_line_ahead_ns(ret.free_at.saturating_sub(now));
+                r.set_uplink_yield(ret.free_at > now);
+            } else {
+                rx.on_arrival(seq, udp, now);
+            }
             r.set_next_datagram_bytes(udp);
             let out = r.on_datagram(
                 RxDatagram {
@@ -806,62 +1361,108 @@ fn run(sc: &Scenario) -> Outcome {
                     voice_arrived.entry(u).or_insert(now);
                 }
             }
+            if product_rx {
+                if let Some(f) = out.ack {
+                    ret.send_product(now, &f, measured_now);
+                }
+            } else {
+                acks.extend(
+                    out.ack
+                        .map(|f| (f, rx.on_ack(r.largest_seq().unwrap_or(0)))),
+                );
+            }
+        }
+        if product_rx {
+            r.set_return_line_ahead_ns(ret.free_at.saturating_sub(now));
+            r.set_uplink_yield(ret.free_at > now);
+            if let Some(f) = r.on_ack_timer(now) {
+                ret.send_product(now, &f, measured_now);
+            }
+        } else {
             acks.extend(
-                out.ack
+                r.on_ack_timer(now)
                     .map(|f| (f, rx.on_ack(r.largest_seq().unwrap_or(0)))),
             );
         }
-        acks.extend(
-            r.on_ack_timer(now)
-                .map(|f| (f, rx.on_ack(r.largest_seq().unwrap_or(0)))),
-        );
         for (frame, (m_first, largest, rx_span, m, pair_rate)) in acks {
             let expected = largest + 1;
-            let udp = frame.encode().len() as u64 + ACK_SEAL;
+            let bytes = frame.encode();
+            let udp = bytes.len() as u64 + ACK_SEAL;
             // Ölçüm aralığı ve çift alt sınırı alıcının kuralıyla (`RxMirror`).
-            let rx_span =
-                rx_span.filter(|_| !sc.no_interval.is_some_and(|(a, b)| now >= a && now < b));
+            let rx_span = rx_span.filter(|_| measured_now);
             ret.send(
                 now,
                 udp,
-                frame.arrival_rate,
-                AckInfo {
-                    acked_seqs: frame.acked_full(expected),
-                    ack_delay: frame.ack_delay_duration(),
+                bytes.first().copied().unwrap_or(0),
+                RetMsg::Mirror {
+                    arrival_rate: frame.arrival_rate,
+                    ack: AckInfo {
+                        acked_seqs: frame.acked_full(expected),
+                        ack_delay: frame.ack_delay_duration(),
+                    },
+                    iv: (m_first, largest, rx_span, m, pair_rate),
                 },
-                (m_first, largest, rx_span, m, pair_rate),
             );
         }
-        while ret.wire.front().is_some_and(|&(t, _, _, _, _)| t <= now) {
-            let (_, udp, arrival_rate, ack, (first, last, rx_span, m, pair_rate)) =
-                ret.wire.pop_front().expect("var");
+        while ret.wire.front().is_some_and(|&(t, _, _)| t <= now) {
+            let (_, udp, msg) = ret.wire.pop_front().expect("var");
             let (sent, start) = ret.log[ack_log.len()];
-            ack_log.push(AckRec {
-                sent,
-                start,
-                arrival: now,
-                udp,
-                largest: ack.acked_seqs.iter().copied().max().unwrap_or(0),
-            });
-            acks_at.push(now);
-            ack_measured.push(rx_span.is_some());
-            s.observe_ack_feedback(
-                AckObservation {
-                    wire_bytes: udp,
-                    seen_count: 0,
-                    v2: true,
-                    sent_datagrams: tx.datagrams,
-                },
-                now,
-            );
-            s.note_ack_arrival_rate(arrival_rate);
-            // Ürün çalışma zamanının sırası: `pair_rate`, ölçüm aralığı, sonra ACK.
-            if sc.interval {
-                s.note_ack_pair_rate(pair_rate);
-                s.note_ack_forward_interval(first, last, rx_span, &m);
-            }
+            let ack = match msg {
+                RetMsg::Mirror {
+                    arrival_rate,
+                    ack,
+                    iv: (first, last, rx_span, m, pair_rate),
+                } => {
+                    ack_log.push(AckRec {
+                        sent,
+                        start,
+                        arrival: now,
+                        udp,
+                        largest: ack.acked_seqs.iter().copied().max().unwrap_or(0),
+                    });
+                    acks_at.push(now);
+                    ack_measured.push(rx_span.is_some());
+                    s.observe_ack_feedback(
+                        AckObservation {
+                            wire_bytes: udp,
+                            seen_count: 0,
+                            v2: true,
+                            sent_datagrams: tx.datagrams,
+                        },
+                        now,
+                    );
+                    s.note_ack_arrival_rate(arrival_rate);
+                    // Ürün çalışma zamanının sırası: `pair_rate`, ölçüm aralığı, sonra ACK.
+                    if sc.interval {
+                        s.note_ack_pair_rate(pair_rate);
+                        s.note_ack_forward_interval(first, last, rx_span, &m);
+                    }
+                    ack
+                }
+                RetMsg::Product { bytes, measured } => {
+                    let (ack, largest, has_span) = product_ack_into_sender(
+                        &mut s,
+                        &tx,
+                        sc.interval,
+                        &bytes,
+                        udp,
+                        measured,
+                        now,
+                    );
+                    ack_log.push(AckRec {
+                        sent,
+                        start,
+                        arrival: now,
+                        udp,
+                        largest,
+                    });
+                    acks_at.push(now);
+                    ack_measured.push(has_span);
+                    ack
+                }
+            };
             let decs = s.on_event(Event::AckReceived(ack), now);
-            emit(decs, now, &mut fwd, &mut tx);
+            emit(decs, now, &mut fwd, &mut tx, &mut s);
             let g = s.diag_line_guard().and_then(|g| g.0);
             if rate_trace.last().map(|&(_, r)| r) != Some(g) {
                 rate_trace.push((now, g));
@@ -869,10 +1470,14 @@ fn run(sc: &Scenario) -> Outcome {
             let p = s.diag_line_guard_pace().map_or(0, |p| p.0);
             if pace_trace.last().map(|&(_, q)| q) != Some(p) {
                 pace_trace.push((now, p));
+                ceil_trace.push((now, p, acks_at.len()));
             }
             let largest = ack_log.last().map_or(0, |a| a.largest);
             let ser = fwd.ser_start.get(&largest).copied().unwrap_or(0);
             per_ack.push((now, ser, g, p));
+        }
+        if sc.ledger && now.is_multiple_of(SEC) {
+            backlog.push((now, s.unsent_units(), s.inflight_bytes()));
         }
         let voice_left = (0..voice_offered.len() as u64).any(|v| {
             !voice_arrived.contains_key(&v) && !ptt_expired.iter().any(|&(u, _, _)| u == v)
@@ -909,6 +1514,15 @@ fn run(sc: &Scenario) -> Outcome {
     let voice_first = (0..voice_offered.len() as u64)
         .map(|v| voice_arrived.get(&v).copied())
         .collect();
+    let emit_log = if sc.ledger {
+        tx.drain(&mut s);
+        std::mem::take(&mut tx.emit_all)
+    } else {
+        s.take_diag_emit_log()
+    };
+    if sc.ledger {
+        ledger_check(&fwd, &tx, rx_bytes, held.map_or(0, |h| h.2 + OVH));
+    }
     Outcome {
         file_done_ns,
         waits: fwd.waits.clone(),
@@ -926,7 +1540,7 @@ fn run(sc: &Scenario) -> Outcome {
         ptt_tx,
         acks: ack_log,
         voice_first,
-        emit_log: s.take_diag_emit_log(),
+        emit_log,
         per_ack,
         ptt_expired,
         text_tx: fwd.text_log.clone(),
@@ -943,7 +1557,86 @@ fn run(sc: &Scenario) -> Outcome {
                 )
             }))
             .collect(),
+        book: fwd.book.clone(),
+        line: fwd.line,
+        ceil_trace,
+        backlog,
+        ack_types: ret.types.clone(),
+        ack_wire_bytes: ret.bytes,
     }
+}
+
+/// [BUA · DEFTER] Defterin hat modeliyle sağlaması (ölçüm aracının doğrulaması, kabul kapısı
+/// değil): sınıf toplamları hat sayaçlarına, hat sayaçları birbirine ve alıcıya varan bayta eşit;
+/// her iletimin nedeni izde bulundu.
+fn ledger_check(fwd: &Bottleneck, tx: &TxCount, rx_bytes: u64, held_bytes: u64) {
+    let sum = |f: fn(&ClassBytes) -> u64| fwd.book.values().map(f).sum::<u64>();
+    let l = fwd.line;
+    assert_eq!(sum(|b| b.bytes), l.offered_bytes, "defter: giren bayt");
+    assert_eq!(sum(|b| b.pkts), l.offered_pkts, "defter: giren paket");
+    assert_eq!(
+        l.offered_bytes, tx.wire_bytes,
+        "defter: gönderici ↔ darboğaz"
+    );
+    assert_eq!(l.offered_pkts, tx.datagrams, "defter: gönderici paket");
+    assert_eq!(
+        sum(|b| b.queue_drop_bytes),
+        l.queue_drop_bytes,
+        "defter: kuyrukta düşen"
+    );
+    assert_eq!(
+        sum(|b| b.queue_drop_pkts),
+        fwd.dropped_queue.len() as u64,
+        "defter: kuyrukta düşen paket"
+    );
+    assert_eq!(sum(|b| b.lost_bytes), l.lost_bytes, "defter: hatta düşen");
+    assert_eq!(
+        l.offered_bytes,
+        l.serialized_bytes + l.queue_drop_bytes,
+        "hat: sunulan = serileşen + kuyrukta düşen"
+    );
+    assert_eq!(
+        l.serialized_pkts,
+        fwd.waits.len() as u64,
+        "hat: serileşen paket"
+    );
+    assert_eq!(
+        l.serialized_bytes,
+        l.lost_bytes + l.delivered_bytes,
+        "hat: serileşen = düşen + yayılan"
+    );
+    let on_wire: u64 = fwd.wire.iter().map(|w| w.3 + OVH).sum();
+    assert_eq!(
+        l.delivered_bytes,
+        rx_bytes + on_wire + held_bytes,
+        "hat: yayılan = alıcıya varan + yolda + sıra bekleyen"
+    );
+    let ptt: u64 = fwd
+        .book
+        .iter()
+        .filter(|((_, p), _)| *p == Payload::Ptt)
+        .map(|(_, b)| b.bytes)
+        .sum();
+    assert_eq!(
+        ptt + tx.fec_low_bytes,
+        tx.ptt_wire_bytes,
+        "defter: PTT baytı"
+    );
+    let max_wait = fwd.waits.iter().map(|&(_, w)| w).max().unwrap_or(0);
+    assert_eq!(l.max_wait_ns, max_wait, "hat: en büyük bekleme");
+    assert!(
+        l.max_occ_pkts <= fwd.queue_pkts as u64,
+        "hat: doluluk FIFO tavanını aştı"
+    );
+    let unknown: Vec<_> = fwd
+        .book
+        .keys()
+        .filter(|(c, _)| matches!(c, TxClass::Unknown(_)))
+        .collect();
+    assert!(
+        unknown.is_empty(),
+        "defter: nedeni izde olmayan iletim {unknown:?}"
+    );
 }
 
 fn secs(ns: u64) -> String {
@@ -2384,5 +3077,290 @@ fn lean_ptt_one_transmission_stays_within_budget_and_expired_units_are_not_retra
             mc.late_tx > 0,
             "tohum {seed}: karşı-olgu: son tarihten sonra PTT iletimi yok"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// [BUA] Ürün alıcısı + anahtarlı kayıp + darboğaz defteri: rapor kolları (yalnız sayı basar).
+// ---------------------------------------------------------------------------------------------
+
+/// [BUA] Düşüş-toparlanma kolunun düşüş ve toparlanma anları.
+const BUA_DROP_AT_NS: u64 = 30 * SEC;
+const BUA_RECOVER_AT_NS: u64 = 45 * SEC;
+const BUA_T_MAX_NS: u64 = 60 * SEC;
+
+/// [BUA] Rapor kolu: (ad, tohumdan senaryo).
+type BuaArm = (&'static str, fn(u64) -> Scenario);
+
+/// [BUA] Rapor kolları. Yük bugünkü ürün kopya kuralıdır (yalın PTT değil).
+fn bua_arms() -> [BuaArm; 4] {
+    [
+        // (a) 12 500 → 30 s'de 6 250 → 45 s'de 12 500; dosya koşu boyunca tavanda.
+        ("dusus-toparlanma", |seed| Scenario {
+            fwd_plan: vec![
+                (0, PROFILE_UP),
+                (BUA_DROP_AT_NS, DROP_TO),
+                (BUA_RECOVER_AT_NS, PROFILE_UP),
+            ],
+            file_units: 900,
+            voice_until_ns: BUA_T_MAX_NS,
+            t_max_ns: BUA_T_MAX_NS,
+            ..drop_scenario(seed, true)
+        }),
+        // (b) Dürüst sabit 6 250 (beyan 12 500).
+        ("sabit-6250", |seed| Scenario {
+            fwd_plan: vec![(0, DROP_TO)],
+            ..drop_scenario(seed, true)
+        }),
+        // (c) Var olan (b) ve (d-2) testlerinin senaryoları.
+        ("b", |seed| Scenario {
+            text_at_ns: Some(DROP_TEXT_AT_NS),
+            ..drop_scenario(seed, true)
+        }),
+        ("d2", |seed| drop_scenario(seed, true)),
+    ]
+}
+
+/// [BUA] PTT evreleri (ileri hat çizelgesinin basamakları): `ad:zamanında/sunulan` (zamanında =
+/// ilk varış ≤ plan + 1 s).
+fn bua_ptt_phases(sc: &Scenario, o: &Outcome) -> String {
+    let mut edges: Vec<u64> = sc.fwd_plan.iter().map(|&(t, _)| t).collect();
+    edges.push(u64::MAX);
+    edges
+        .windows(2)
+        .map(|w| {
+            let (mut n, mut ok) = (0, 0);
+            for (k, a) in o.voice_first.iter().enumerate() {
+                let plan = VOICE_START_NS + k as u64 * VOICE_PERIOD_NS;
+                if plan >= w[0] && plan < w[1] {
+                    n += 1;
+                    ok += u32::from(a.is_some_and(|a| a <= plan + PTT_BOUND_NS));
+                }
+            }
+            format!("{}s:{ok}/{n}", w[0] / SEC)
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// [BUA] Kolun özet ölçüleri (FARK satırı için).
+#[derive(Debug, Clone)]
+struct BuaSummary {
+    acks: usize,
+    ack_gap_mean_ms: u64,
+    ack_wire: u64,
+    guard_end: Option<u64>,
+    pace_min: u64,
+    drops: usize,
+    wait_max_ms: u64,
+    ptt: String,
+    file: String,
+}
+
+fn bua_opt(v: Option<u64>) -> String {
+    v.map_or("-".to_string(), |v| v.to_string())
+}
+
+fn bua_s(v: Option<u64>) -> String {
+    v.map_or("YOK".to_string(), |v| {
+        format!("{:.2}", v as f64 / SEC as f64)
+    })
+}
+
+/// [BUA] Bir koşunun bütün satırları; özet döner.
+#[allow(clippy::too_many_lines)]
+fn bua_print(arm: &str, sc: &Scenario, o: &Outcome) -> BuaSummary {
+    let rx = sc.rx.label();
+    let seed = sc.seed;
+    let gaps: Vec<u64> = o.acks_at.windows(2).map(|w| w[1] - w[0]).collect();
+    let gap_mean = if gaps.is_empty() {
+        0
+    } else {
+        gaps.iter().sum::<u64>() / gaps.len() as u64
+    };
+    let types = o
+        .ack_types
+        .iter()
+        .map(|(t, n)| format!("{t:02x}:{n}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let sum = BuaSummary {
+        acks: o.acks_at.len(),
+        ack_gap_mean_ms: gap_mean / MS,
+        ack_wire: o.ack_wire_bytes,
+        guard_end: o.rate_at_end(),
+        pace_min: o.min_pace(),
+        drops: o.drops_queue,
+        wait_max_ms: o.line.max_wait_ns / MS,
+        ptt: bua_ptt_phases(sc, o),
+        file: bua_s(o.file_done_ns),
+    };
+    println!(
+        "BUA {arm} {rx} tohum={seed} kayip=anahtarli ack={} ack_olculu={} ack_aralik_ort_ms={} \
+         ack_aralik_max_ms={} ack_tel_B={} ack_tur={types} koruma_son={} koruma_min={} \
+         tavan_min={} kuyruk_max_ms={} kuyruk_dusen={} fifo_max_pkt={} fifo_max_B={} dosya_s={} \
+         ptt_tel_B={} ptt_zamaninda={} ptt_max_s={}",
+        sum.acks,
+        o.ack_measured.iter().filter(|&&m| m).count(),
+        sum.ack_gap_mean_ms,
+        gaps.iter().copied().max().unwrap_or(0) / MS,
+        sum.ack_wire,
+        bua_opt(sum.guard_end),
+        bua_opt(o.min_rate()),
+        sum.pace_min,
+        sum.wait_max_ms,
+        sum.drops,
+        o.line.max_occ_pkts,
+        o.line.max_occ_bytes,
+        sum.file,
+        o.ptt_wire_bytes,
+        sum.ptt,
+        bua_s(Some(o.voice_max_from(0)).filter(|&v| v != u64::MAX)),
+    );
+    let l = o.line;
+    println!(
+        "BUA-HAT {arm} {rx} tohum={seed} sunulan_B={} sunulan_pkt={} serilesen_B={} \
+         kuyrukta_dusen_B={} hatta_dusen_B={} yayilan_B={} fifo_max_pkt={} fifo_max_B={} \
+         bekleme_max_ms={}",
+        l.offered_bytes,
+        l.offered_pkts,
+        l.serialized_bytes,
+        l.queue_drop_bytes,
+        l.lost_bytes,
+        l.delivered_bytes,
+        l.max_occ_pkts,
+        l.max_occ_bytes,
+        l.max_wait_ns / MS
+    );
+    for ((class, payload), b) in &o.book {
+        println!(
+            "BUA-DEFTER {arm} {rx} tohum={seed} sinif={} yuk={} paket={} bayt={} \
+             kuyrukta_dusen_pkt={} kuyrukta_dusen_B={} hatta_dusen_pkt={} hatta_dusen_B={}",
+            class.label(),
+            format!("{payload:?}").to_lowercase(),
+            b.pkts,
+            b.bytes,
+            b.queue_drop_pkts,
+            b.queue_drop_bytes,
+            b.lost_pkts,
+            b.lost_bytes
+        );
+    }
+    println!(
+        "BUA-TAVAN {arm} {rx} tohum={seed} iz={}",
+        o.ceil_trace
+            .iter()
+            .map(|&(t, p, k)| format!("{}:{p}:{k}", t / MS))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    println!(
+        "BUA-BIRIKIM {arm} {rx} tohum={seed} iz={}",
+        o.backlog
+            .iter()
+            .map(|&(t, u, b)| format!("{}:{u}:{b}", t / SEC))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    // Var olan (b) ve (d-2) testlerinin ölçüleri, kendi sınırlarıyla yan yana (karar yok).
+    if arm == "b" || arm == "d2" {
+        let t_ret = (129 + OVH) * SEC / PROFILE_DOWN + ONE_WAY_NS;
+        let wait_bound = 2 * (MTU + OVH) * SEC / DROP_TO;
+        let t_ack = o
+            .acks_at
+            .windows(2)
+            .filter(|w| w[1] <= DROP_AT_NS)
+            .map(|w| w[1] - w[0])
+            .max();
+        let conv = converged_at(o, DROP_TO);
+        let after = |d: u64| conv.map(|c| c + d);
+        if arm == "b" {
+            println!(
+                "BUA-B {arm} {rx} tohum={seed} yakinsama_s={} yakinsama_siniri_s={} \
+                 koruma_son={} bekleme_yakinsama+2s_ms={} bekleme_siniri_ms={} \
+                 ptt_yakinsama+9s_s={} ptt_dususten_s={} metin_s={}",
+                bua_s(conv),
+                bua_s(t_ack.map(|t| DROP_AT_NS + 3 * t + t_ret)),
+                bua_opt(o.rate_at_end()),
+                after(2 * SEC).map_or("-".to_string(), |t| (o.max_wait_between(t, u64::MAX) / MS)
+                    .to_string()),
+                wait_bound / MS,
+                bua_s(after(9 * SEC).map(|t| o.voice_max_from(t))),
+                bua_s(Some(o.voice_max_from(DROP_AT_NS))),
+                bua_s(o.text_delay_ns),
+            );
+        } else {
+            let fifo_ns = 64 * (VOICE_UNIT + OVH) * SEC / DROP_TO;
+            println!(
+                "BUA-D2 {arm} {rx} tohum={seed} kuyruk_dusen={} yakinsama_s={} \
+                 bekleme_yakinsama+2s_ms={} fifo_siniri_ms={}",
+                o.drops_queue,
+                bua_s(conv),
+                after(2 * SEC).map_or("-".to_string(), |t| (o.max_wait_between(t, u64::MAX) / MS)
+                    .to_string()),
+                fifo_ns / MS
+            );
+        }
+    }
+    sum
+}
+
+/// [BUA] Rapor kolları: dört kol (düşüş-toparlanma 12 500 → 6 250 [30 s] → 12 500 [45 s]; dürüst
+/// sabit 6 250; (b) ve (d-2) testlerinin senaryoları) × tohum 1–3 × alıcı, hepsi ANAHTARLI kayıpla
+/// ve defter açık. Alıcılar: `urun` (ürün çalışma zamanının kurulumu, bütçe 62 B/s), `ayna` (var
+/// olan testlerin melez alıcısı, bütçe senaryonun `ack_return_bw`'si: bu kollarda 4 × 62 B/s, sık
+/// ACK'in yerine geçen kurulum) ve ayrıştırma kolu `urun-bw248` (ürün alıcısı, aynanın bütçesiyle:
+/// farkın ne kadarı ACK bütçesinden, ne kadarı alıcı kuralından). Yalnız rapor basar (biçim: modül
+/// belgesi); kabul iddiası yok. Sağlanan yalnız ölçüm aracı: defter hat sayaçlarıyla birebir
+/// (`ledger_check`, her koşuda), ürün alıcısı yalnız 0x15, ayna yalnız 0x14 yazdı. Fark satırı
+/// (`BUA-FARK`): `urun/urun-bw248/ayna`.
+#[test]
+fn bua_product_receiver_report() {
+    // Satırlar sütun 0'dan başlasın (`--nocapture`'da test adı satırının ardına yazılmasın).
+    println!();
+    for (arm, make) in bua_arms() {
+        for seed in 1..=3u64 {
+            let mut sums = Vec::new();
+            let mirror_bw = make(seed).ack_return_bw;
+            for rx in [
+                RxModel::PRODUCT,
+                RxModel::Product {
+                    ptt_lean: false,
+                    return_bw: mirror_bw,
+                },
+                RxModel::Mirror,
+            ] {
+                let sc = Scenario {
+                    rx,
+                    loss: LossModel::Keyed,
+                    ledger: true,
+                    ..make(seed)
+                };
+                let o = run(&sc);
+                let want = if rx == RxModel::Mirror { 0x14 } else { 0x15 };
+                assert!(
+                    o.ack_types.keys().all(|&t| t == want) && !o.ack_types.is_empty(),
+                    "{arm} {} tohum {seed}: ACK türleri {:?}",
+                    rx.label(),
+                    o.ack_types
+                );
+                sums.push(bua_print(arm, &sc, &o));
+            }
+            let f = |g: fn(&BuaSummary) -> String| sums.iter().map(g).collect::<Vec<_>>().join("/");
+            println!(
+                "BUA-FARK {arm} tohum={seed} alicilar=urun/urun-bw{mirror_bw}/ayna ack={} \
+                 ack_aralik_ort_ms={} ack_tel_B={} koruma_son={} tavan_min={} kuyruk_dusen={} \
+                 kuyruk_max_ms={} ptt_zamaninda={} dosya_s={}",
+                f(|x| x.acks.to_string()),
+                f(|x| x.ack_gap_mean_ms.to_string()),
+                f(|x| x.ack_wire.to_string()),
+                f(|x| bua_opt(x.guard_end)),
+                f(|x| x.pace_min.to_string()),
+                f(|x| x.drops.to_string()),
+                f(|x| x.wait_max_ms.to_string()),
+                f(|x| x.ptt.clone()),
+                f(|x| x.file.clone()),
+            );
+        }
     }
 }
