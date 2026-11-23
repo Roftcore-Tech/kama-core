@@ -599,8 +599,10 @@ impl NodeLoop {
             self.ptt
                 .open_press(&mut self.messenger, peer, codec, bundle_ms)
         } else {
+            // [#233 inceleme 7097041152] Eski API (`ptt_open`) pilot ayarı açık ve eş doğrulanmış
+            // olsa da birleşik AÇMAZ: bugünkü uyumlu ayrı kayıtlar, çağıranın süresi.
             self.ptt
-                .open(&mut self.messenger, peer, codec, bundle_ms)
+                .open_compatible(&mut self.messenger, peer, codec, bundle_ms)
                 .map(|stream_id| (stream_id, bundle_ms))
         }
         .map_err(NodeError::Ptt)?;

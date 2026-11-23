@@ -602,6 +602,9 @@ impl KamaNode {
     }
 
     /// Basış başlar: `PTT_OPEN` (Reliable) eşin güncel oturumuna; DÜĞÜM TUTAMACINI döner.
+    /// [#233] Pilot ayarı (`KAMA_PTT_PILOT`) açık ve eş doğrulanmış olsa da bu çağrı HER ZAMAN
+    /// bugünkü uyumlu ayrı kayıtları ve çağıranın süresini kullanır; birleşik 300 ms biçimini
+    /// yalnız [`Self::ptt_open_press`] seçer.
     /// `codec` ve `bundle_ms` medya motorunundur (AMP §3 0x06; akış boyunca sabit, düğüm
     /// yorumlamaz) — plan imzasına (`ptt_open(peer_id)`) beyanlı ek: değer uydurulmaz.
     ///
@@ -674,8 +677,9 @@ impl KamaNode {
     }
 
     /// [PTT-BİRLEŞİK · pilot · #233] Ses demeti, sesin oluşum anıyla: `audio_age` = demetin İLK
-    /// 20 ms çerçevesinin oluşumundan bu çağrıya dek geçen süre (son tarih oluşumdan 1 s sonradır;
-    /// [`Self::ptt_push`]'ta sunumdan 1 s). `last` = basışın SON demeti: birleşik akışta `END`
+    /// 20 ms çerçevesinin oluşumundan bu çağrıya dek geçen süre. SON TARİH FARKI: burada son
+    /// tarih çerçevenin OLUŞUMUNDAN 1 s sonradır; [`Self::ptt_push`]'ta SUNUM anından 1 s sonra
+    /// (demet süresi kadar daha geç: 300 ms demette oluşumdan 1,3 s). `last` = basışın SON demeti: birleşik akışta `END`
     /// işaretini taşır ve ardından gelen [`Self::ptt_close`] tele hiçbir şey çıkarmaz (`last`
     /// verilmezse `ptt_close` ayrı bir yüksüz `END` datagramı gönderir: +55 B tel). Birleşik
     /// olmayan akışta sıradan demettir.

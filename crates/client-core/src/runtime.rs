@@ -1669,7 +1669,19 @@ pub struct WireEvidence {
     pub caps_sends: u64,
     /// 0x09 yalın PTT çerçevesiyle giden iletim ([`ClientStats::ptt_lean_tx`]).
     pub ptt_lean_tx: u64,
+    /// [PTT-BANT · tel baytı] PTT şeridi birimi taşıyan mühürlenmiş HER datagramın tel baytı:
+    /// mühürlü UDP gövdesi + IPv4/UDP 28 B ([`PTT_WIRE_UDP_IP_BYTES`]). Yalın 0x09 demetleri,
+    /// birleşik demetler, ayrı `PTT_OPEN` / `PTT_CLOSE` kayıtları, kopyaları ve yeniden
+    /// iletimleri; egress kapısının reddettiği ve yolda kaybolanlar dahil (mühürlendiği anda
+    /// sayılır). FEC onarımı ve denetim çerçeveleri (CAPS / PARAM / ACK) girmez. Şerit kimliği
+    /// kapalıyken (`lane_ids = false`) 0'dır. Ürün fikstürünün `ptt_wire` defteriyle aynı tanım.
+    pub ptt_wire_bytes: u64,
+    /// [PTT-BANT · tel baytı] [`Self::ptt_wire_bytes`]'ın datagram sayısı.
+    pub ptt_wire_datagrams: u64,
 }
+
+/// [PTT-BANT · tel baytı] Datagram başına IPv4 (20 B) + UDP (8 B) zarfı.
+pub const PTT_WIRE_UDP_IP_BYTES: u64 = 28;
 
 impl WireEvidence {
     /// İki oturumun sayaçlarını toplar (doygun).
@@ -1680,6 +1692,10 @@ impl WireEvidence {
         }
         self.caps_sends = self.caps_sends.saturating_add(other.caps_sends);
         self.ptt_lean_tx = self.ptt_lean_tx.saturating_add(other.ptt_lean_tx);
+        self.ptt_wire_bytes = self.ptt_wire_bytes.saturating_add(other.ptt_wire_bytes);
+        self.ptt_wire_datagrams = self
+            .ptt_wire_datagrams
+            .saturating_add(other.ptt_wire_datagrams);
         self
     }
 }
@@ -3345,6 +3361,9 @@ async fn client_task(
     // [TEL-KANITI · salt gözlem] Gelen ACK çerçeveleri türe göre ([`WireEvidence::ack_rx_types`]);
     // yalnız canlı aynaya yazılır, `ClientStats` yüzeyi değişmez.
     let mut ack_rx_types = [0u64; 5];
+    // [PTT-BANT · tel baytı · salt gözlem] PTT şeridi datagramlarının tel baytı ve sayısı
+    // ([`WireEvidence::ptt_wire_bytes`]); yalnız canlı aynaya yazılır.
+    let mut ptt_wire: (u64, u64) = (0, 0);
     // [ŞERİT-SIRA] Şerit başına boşluksuz sıra; kimlik = etiket + sıra (`crate::unit_id::tagged`).
     let mut next_unit: [u64; LANE_COUNT] = [0; LANE_COUNT];
     // [ŞERİT-AÇIKLIK] Store'daki (teyitsiz) birimlerin şerit-içi sıraları; store ile aynı yerde
@@ -3652,7 +3671,15 @@ async fn client_task(
                     TransmitKind::Duplicate => TxClass::Dup,
                     _ => TxClass::Data,
                 };
+                let sealed_before = (stats.tx_bytes, stats.tx_datagrams);
                 let pn = seal_send!(frame, class, $now);
+                // [PTT-BANT · tel baytı · salt gözlem] Mühürlenen PTT şeridi datagramı (mühür
+                // reddinde sayaçlar değişmez → eklenen 0).
+                if cfg.lane_ids && lane_index_of(d.unit_id) == PTT_LANE_INDEX {
+                    let n = stats.tx_datagrams - sealed_before.1;
+                    ptt_wire.0 += (stats.tx_bytes - sealed_before.0) + n * PTT_WIRE_UDP_IP_BYTES;
+                    ptt_wire.1 += n;
+                }
                 map_pn!(pn, d.seq);
             }
             confirmed_now
@@ -4063,6 +4090,8 @@ async fn client_task(
                 start,
                 mirror_now_ns,
             );
+            mirror.wire.ptt_wire_bytes = ptt_wire.0;
+            mirror.wire.ptt_wire_datagrams = ptt_wire.1;
             mirror.recovery = recovery;
             if let Some(change) = state_change {
                 mirror.states.push(change);
@@ -4581,6 +4610,13 @@ async fn client_task(
         }
     }
     stats.undelivered = store.len() as u64;
+    // [PTT-BANT · tel baytı · salt gözlem] Kapanış boşaltmasında mühürlenen PTT datagramları da
+    // aynaya yazılır (son değer).
+    if let Some(live_mirror) = live.as_ref() {
+        let mut mirror = live_mirror.lock().unwrap_or_else(PoisonError::into_inner);
+        mirror.wire.ptt_wire_bytes = ptt_wire.0;
+        mirror.wire.ptt_wire_datagrams = ptt_wire.1;
+    }
     // [TEŞHİS] Yapı-gate'in karar tabanını kapanışta fotoğrafla (gözlem-amaçlı; motor durumunu
     // DEĞİŞTİRMEZ). Bunlar görünmeden "gate neden açmadı" sorusu cevaplanamıyordu.
     let f = session.sender().diag_loss_structure();

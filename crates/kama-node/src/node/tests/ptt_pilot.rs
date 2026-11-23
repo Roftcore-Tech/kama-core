@@ -278,3 +278,46 @@ fn unknown_provisioned_name_is_a_configuration_error() {
         "kurulum reddedilmeli"
     );
 }
+
+/// [#233 inceleme 7097041152] Pilot ayarı açık ve eş YÖNETİLEN olsa da ESKİ düğüm API'si
+/// (`KamaNode::ptt_open`; kama-mobile ve `--ptt-pilot off` düzeneği) birleşik akış AÇMAZ: bugünkü
+/// uyumlu ayrı kayıtlar, çağıranın süresiyle. Birleşik biçimi yalnız `ptt_open_press` seçer ve
+/// o zaman hep 300 ms'dir. Kayıt dizisi pilot ayarı olmayan düğümünkiyle aynıdır.
+#[test]
+fn old_ptt_open_api_stays_on_separate_records_even_toward_a_provisioned_peer() {
+    let _serial = support::serial();
+    let mut sequences: Vec<Vec<u32>> = Vec::new();
+    for (arm, alice_pilot, bob_pilot) in [
+        ("pilot ayarı yok", None, None),
+        ("pilot açık, eş yönetilen", Some("1:bob"), Some("1")),
+    ] {
+        let root = TempDir::new("ptt-pilot-old-api");
+        let phones = support::provision(root.path(), &[ALICE, BOB]);
+        let (mut alice, mut alice_events) = node(&phones[ALICE], alice_pilot, BASE_RATES);
+        let (mut bob, mut bob_events) = node(&phones[BOB], bob_pilot, FIELD_RATES);
+        connect_manuals(
+            &mut alice.node,
+            &mut alice_events,
+            ALICE,
+            &mut bob.node,
+            &mut bob_events,
+            BOB,
+        );
+        let p = press(&mut alice, &mut bob, &mut bob_events, false, false);
+        assert_eq!(p.code, CALLER_MS, "{arm}: çağıranın süresi");
+        assert!(!p.coalesced, "{arm}: eski API birleşik açmaz");
+        assert_eq!(
+            p.sent.len(),
+            BUNDLES + 2,
+            "{arm}: PTT_OPEN · demetler · PTT_CLOSE: {:?}",
+            p.sent
+        );
+        assert_eq!(p.bob_bundle_ms, CALLER_MS, "{arm}");
+        assert_eq!(p.bob_spurt, (0, 0), "{arm}: ayrı kayıtlar");
+        sequences.push(p.sent);
+    }
+    assert_eq!(
+        sequences[1], sequences[0],
+        "pilot açıkken eski API'nin teli aynı"
+    );
+}

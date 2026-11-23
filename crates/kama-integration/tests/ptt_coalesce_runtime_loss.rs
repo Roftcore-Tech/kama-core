@@ -47,9 +47,9 @@ use std::time::{Duration, Instant};
 use client_core::memory_link::MemoryHub;
 use client_core::runtime::{AckFormat, LinkRates};
 use client_core::transport::{ClientTransport, ClientTransportConfig};
-use client_core::wire::decode_ptt;
+use client_core::wire::{decode_data, decode_ptt};
 use kama_app::clock::{MonotonicClock, SystemClock};
-use kama_app::codec::{bundle_code_from_ms, PttCodec};
+use kama_app::codec::{bundle_code_from_ms, decode, AmpLimits, AppMessage, PttCodec};
 use kama_app::messaging::Messenger;
 use kama_app::ptt::{spurt_gap_end, Ptt, PttEvent, SPURT_PILOT_BUNDLE_MS};
 use kama_app::store::MemoryAppStore;
@@ -78,6 +78,8 @@ const FRAME: Duration = Duration::from_millis(20);
 const START_BOUND: Duration = Duration::from_secs(1);
 /// Loopback tek yön + iş parçacığı zamanlaması payı (beyanlı; hat gecikmesi yok).
 const ONE_WAY_ALLOWANCE: Duration = Duration::from_millis(150);
+/// [PTT-BANT · tel baytı] Tap'in AMP çözücüsüne verilen geniş birim tavanı (fikstürünkiyle aynı).
+const TAP_MAX_UNIT_BYTES: u32 = 65_540;
 /// Kurulum ve yetenek zinciri için üst süre.
 const SETUP_WAIT: Duration = Duration::from_secs(30);
 /// [PTT-BİRLEŞİK · pilot] Pilot kolunda çağıranın (media) verdiği süre: bugünkü fikstür
@@ -158,6 +160,67 @@ impl SessionControl for PttDrop {
     }
 }
 
+/// [PTT-BANT · tel baytı] Alice'in kriptosunu saran salt-okur sayaç: ürün fikstürünün `ptt_wire`
+/// defteriyle AYNI tanım (`asym_product_outcome.rs` `Tap::seal` / `ptt_band_bps`) — mühürlenen,
+/// PTT kaydı (`PTT_OPEN`, `PTT_CLOSE`, her biçimde `MEDIA_BUNDLE`) taşıyan her datagram (yalın
+/// 0x09 ya da veri çerçevesi; ilk iletim, kopya, yeniden iletim): mühürlü bayt + UDP/IP 28 B.
+struct PttTap {
+    inner: NoiseWireProtection,
+    limits: AmpLimits,
+    /// (tel baytı, datagram).
+    wire: Arc<Mutex<(u64, u64)>>,
+}
+
+impl PacketProtection for PttTap {
+    fn seal(&mut self, ctx: ProtectionContext, frame: &[u8]) -> Result<SealedUnit, SealError> {
+        let sealed = self.inner.seal(ctx, frame)?;
+        let payload = match decode_data(frame) {
+            Some((_, _, p)) => Some(p),
+            None => decode_ptt(frame).map(|f| f.1),
+        };
+        let ptt = payload
+            .and_then(|p| decode(p, &self.limits).ok())
+            .is_some_and(|m| {
+                matches!(
+                    m,
+                    AppMessage::PttOpen { .. }
+                        | AppMessage::PttClose { .. }
+                        | AppMessage::MediaBundle { .. }
+                        | AppMessage::MediaBundleCompact { .. }
+                        | AppMessage::MediaBundleOpen { .. }
+                        | AppMessage::MediaBundleEnd { .. }
+                )
+            });
+        if ptt {
+            let mut w = self.wire.lock().expect("kilit");
+            w.0 += sealed.bytes.len() as u64 + client_core::runtime::PTT_WIRE_UDP_IP_BYTES;
+            w.1 += 1;
+        }
+        Ok(sealed)
+    }
+    fn open(&mut self, wire: &[u8]) -> Option<Opened> {
+        self.inner.open(wire)
+    }
+    fn sealed_len(&self, ctx: ProtectionContext, n: usize) -> Result<usize, SealError> {
+        self.inner.sealed_len(ctx, n)
+    }
+    fn conservative_limits(&self, class: ProtectionClass) -> ProtectionLimits {
+        self.inner.conservative_limits(class)
+    }
+    fn limits(&self, ctx: ProtectionContext) -> ProtectionLimits {
+        self.inner.limits(ctx)
+    }
+}
+
+impl SessionControl for PttTap {
+    fn command(&mut self, cmd: SessionCommand) -> SessionResult {
+        self.inner.command(cmd)
+    }
+    fn poll_event(&mut self) -> Option<CryptoEvent> {
+        self.inner.poll_event()
+    }
+}
+
 fn crypto(me: u8) -> NoiseWireProtection {
     let ids = [ALICE, BOB].map(|n| *id(n).as_bytes());
     let dir = fixture_directory(ids).expect("fikstür dizini");
@@ -205,6 +268,10 @@ impl<C: PacketProtection + SessionControl + Send + 'static> Side<C> {
 #[derive(Debug)]
 struct Outcome {
     capability: Option<bool>,
+    /// [PTT-BANT · tel baytı] Alice'in PTT datagramları: (tel baytı, datagram) — tap'in saydığı
+    /// (fikstür defterinin tanımı) ve Transport canlı aynasının bildirdiği.
+    tap_ptt_wire: (u64, u64),
+    mirror_ptt_wire: (u64, u64),
     /// Akışın gerçek demet süresi (ms; pilot kolunda motorun seçtiği).
     bundle_ms: u16,
     lean_seen: u64,
@@ -235,12 +302,26 @@ fn run(open: Open, press_len: Duration, drop_idx: &[u64], bob_coalesce: bool) ->
     let hub = MemoryHub::new();
     let seen = Arc::new(AtomicU64::new(0));
     let dropped = Arc::new(Mutex::new(Vec::new()));
-    let alice_t = ClientTransport::new(
+    let tap_wire = Arc::new(Mutex::new((0u64, 0u64)));
+    let mut alice_t = ClientTransport::new(
         cfg(12_500, 62, true),
-        crypto(ALICE),
+        PttTap {
+            inner: crypto(ALICE),
+            // Çözme sınırı geniş tutulur (yalnız okuma; fikstürün tap'iyle aynı).
+            limits: AmpLimits::from_capabilities(&kama_contracts::s1::TransportCapabilities {
+                max_plaintext_unit_bytes: TAP_MAX_UNIT_BYTES,
+                preferred_plaintext_unit_bytes: TAP_MAX_UNIT_BYTES,
+                max_early_unit_bytes: TAP_MAX_UNIT_BYTES,
+                reliable: true,
+            })
+            .expect("AMP limitleri"),
+            wire: Arc::clone(&tap_wire),
+        },
         Box::new(hub.link(id(ALICE))),
     )
     .expect("alice");
+    // [PTT-BANT · tel baytı] Canlı ayna (salt gözlem): sayaç oradan okunur.
+    alice_t.set_live_diag_for_test(true);
     let bob_t = ClientTransport::new(
         cfg(62, 12_500, bob_coalesce),
         PttDrop {
@@ -414,10 +495,40 @@ fn run(open: Open, press_len: Duration, drop_idx: &[u64], bob_coalesce: bool) ->
         .filter(|(&k, &at)| at.saturating_duration_since(press + period * k) > START_BOUND)
         .map(|(&k, _)| frames_of(k))
         .sum();
+    // [PTT-BANT · tel baytı] Ayna periyodik tazelenir ve geç bir yeniden iletim iki okuma arasına
+    // düşebilir: tap ile ayna eşitlenene dek (en çok 3 s) yoklanır; eşitlenmezse son değerler
+    // döner ve çağıran iddiada düşer.
+    let mirror_of = |alice: &Side<PttTap>| {
+        alice
+            .m
+            .transport()
+            .session_live_diags()
+            .iter()
+            .fold((0u64, 0u64), |acc, (_, d)| {
+                (
+                    acc.0 + d.wire.ptt_wire_bytes,
+                    acc.1 + d.wire.ptt_wire_datagrams,
+                )
+            })
+    };
+    let settle = Instant::now() + Duration::from_secs(3);
+    let (tap_ptt_wire, mirror_ptt_wire) = loop {
+        hub.relay();
+        alice.turn(&mut events);
+        events.clear();
+        let tap = *tap_wire.lock().expect("kilit");
+        let mirror = mirror_of(&alice);
+        if tap == mirror || Instant::now() >= settle {
+            break (tap, mirror);
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
     let bob_stats = bob.ptt.stats();
     let dropped = dropped.lock().expect("kilit").clone();
     Outcome {
         capability,
+        tap_ptt_wire,
+        mirror_ptt_wire,
         bundle_ms,
         lean_seen: seen.load(Ordering::SeqCst),
         dropped,
@@ -668,4 +779,36 @@ fn pilot_outage_longer_than_the_tolerance_is_reported_open() {
         (0..7).all(|k| o.delivered.contains(&k)),
         "kesinti öncesi ses"
     );
+}
+
+/// [PTT-BANT · tel baytı] Canlı aynanın PTT tel baytı sayacı (`WireEvidence::ptt_wire_bytes` /
+/// `ptt_wire_datagrams`; gerçek istemci koşusunda bant kapısının girdisi) ürün fikstürünün
+/// `ptt_wire` defteriyle aynı tanımı sayar: tap'in mühürde saydığı toplamla (PTT kaydı taşıyan
+/// her datagram, mühürlü bayt + 28 B) BAYTI BAYTINA eşittir. İki basış: birleşik pilot (yalnız
+/// yalın 0x09 demetleri) ve eski eşe ayrı kayıtlar (`PTT_OPEN` / `PTT_CLOSE` + kopyaları +
+/// demetler). Yetenek için gönderilen metin PTT şeridinde değildir ve sayılmaz.
+#[test]
+fn live_mirror_ptt_wire_bytes_equal_the_tap_ledger_for_coalesced_and_separate_presses() {
+    let press = Duration::from_millis(1_500);
+    let coalesced = run(Open::Pilot, press, &[], true);
+    println!(
+        "PTT-TEL-BAYTI birleşik pilot 1,5 s: tap={:?} ayna={:?} (bayt, datagram)",
+        coalesced.tap_ptt_wire, coalesced.mirror_ptt_wire
+    );
+    assert_eq!(coalesced.bob_spurt_opens, 1, "birleşik basış");
+    assert_eq!(coalesced.tap_ptt_wire.1, 5, "beş demet, tek iletim");
+    assert_eq!(coalesced.mirror_ptt_wire, coalesced.tap_ptt_wire);
+
+    let separate = run(Open::Pilot, press, &[], false);
+    println!(
+        "PTT-TEL-BAYTI ayrı kayıtlar 1,5 s: tap={:?} ayna={:?} (bayt, datagram)",
+        separate.tap_ptt_wire, separate.mirror_ptt_wire
+    );
+    assert_eq!(separate.bob_spurt_opens, 0, "ayrı kayıtlar");
+    assert!(
+        separate.tap_ptt_wire.1 > separate.delivered.len() as u64 + 2,
+        "açılış / kapanış kopyaları da sayılır: {:?}",
+        separate.tap_ptt_wire
+    );
+    assert_eq!(separate.mirror_ptt_wire, separate.tap_ptt_wire);
 }
