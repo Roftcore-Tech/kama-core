@@ -211,6 +211,14 @@ pub const DROP_PERMILLE: u64 = 700;
 /// [DARALMA-ALARMI] Referans bu süre yenilenmezse güncel hıza iner (ns).
 pub const DROP_REF_HOLD_NS: u64 = 8_000_000_000;
 
+/// [ALARM ARALIĞI · TUR 4 · #175 7087793188] Alarm kanıtının datagram zarfı (B): IPv4 (20) + UDP (8).
+/// Alıcı zarfı bilmez; ürün teli IPv4'tür (çalışma zamanının hat modeli aynı zarfı kullanır). Kanıt
+/// göndericinin birimiyle, tel baytıyla hesaplanır ([`AlarmEvidence`]). Gövde baytıyla hesaplansaydı
+/// referanstan küçük datagramlarda göndericinin gönderim süresi eksik sayılırdı; o durumda
+/// `g`'nin alıcıdaki karşılığı göndericininkini aşabilir. Sınır: gerçek zarf bundan büyükse (IPv6,
+/// 48 B) türetmenin "erken bırakmaz" sonucu küçük datagramda tutmayabilir.
+pub const ALARM_EVIDENCE_OVERHEAD: u64 = 28;
+
 /// [DARALMA-ALARMI] Alıcıda ileri hattın ansızın daralmasını erken görmek için: son
 /// [`DROP_WINDOW_NS`] içindeki varışlar sık (aralıklar düzenli: en büyük boşluk ortalamanın 2,5
 /// katını aşmıyor; darboğazdan arka arkaya çıkan datagramlar) ve hızları son
@@ -227,7 +235,8 @@ pub const DROP_REF_HOLD_NS: u64 = 8_000_000_000;
 /// bu da bir ACK'in erken çıkmasıdır.
 #[derive(Debug, Clone, Default)]
 pub struct RateDropDetector {
-    ring: std::collections::VecDeque<(u64, u64)>,
+    /// `(varış anı, gövde baytı, seq)`; seq yalnız [`Self::on_arrival_seq`] ile gelir.
+    ring: std::collections::VecDeque<(u64, u64, Option<u64>)>,
     reference_bps: u64,
     reference_ns: u64,
     fired: bool,
@@ -236,18 +245,24 @@ pub struct RateDropDetector {
 impl RateDropDetector {
     /// Boyu bilinen yeni datagram; alarm durumuna geçtiyse `true` (bir ACK'e bir kez).
     pub fn on_arrival(&mut self, now_ns: u64, udp_bytes: u64) -> bool {
-        self.ring.push_back((now_ns, udp_bytes));
+        self.on_arrival_seq(now_ns, udp_bytes, None)
+    }
+
+    /// [ALARM ARALIĞI] [`Self::on_arrival`] ile aynı karar; datagramın seq'i halkada tutulur
+    /// ([`Self::onset`] daralma başlangıcının seq'ini ve aradaki kayıpları bilir).
+    pub fn on_arrival_seq(&mut self, now_ns: u64, udp_bytes: u64, seq: Option<u64>) -> bool {
+        self.ring.push_back((now_ns, udp_bytes, seq));
         while self
             .ring
             .front()
-            .is_some_and(|&(t, _)| t.saturating_add(DROP_WINDOW_NS) < now_ns)
+            .is_some_and(|&(t, _, _)| t.saturating_add(DROP_WINDOW_NS) < now_ns)
         {
             self.ring.pop_front();
         }
         if self.ring.len() < DROP_MIN_ARRIVALS {
             return false;
         }
-        let first = self.ring.front().map_or(now_ns, |&(t, _)| t);
+        let first = self.ring.front().map_or(now_ns, |&(t, _, _)| t);
         let span = now_ns.saturating_sub(first);
         if span < DROP_WINDOW_NS / 2 {
             return false;
@@ -264,7 +279,7 @@ impl RateDropDetector {
         if max_gap.saturating_mul(2) > mean_gap.saturating_mul(5) {
             return false;
         }
-        let bytes: u64 = self.ring.iter().skip(1).map(|&(_, b)| b).sum();
+        let bytes: u64 = self.ring.iter().skip(1).map(|&(_, b, _)| b).sum();
         let rate = u64::try_from(u128::from(bytes) * 1_000_000_000 / u128::from(span.max(1)))
             .unwrap_or(u64::MAX);
         if rate >= self.reference_bps || now_ns.saturating_sub(self.reference_ns) > DROP_REF_HOLD_NS
@@ -284,6 +299,85 @@ impl RateDropDetector {
         false
     }
 
+    /// [ALARM ARALIĞI · #175 7084078903] Alarm durumundayken penceredeki daralmanın başladığı
+    /// varış `(an, seq)`: en yeni varıştan geriye, her ardışık çiftin hızı alarm eşiğinin
+    /// (referansın ‰ [`DROP_PERMILLE`]'i) altında kaldıkça uzanan kuyruğun ilk varışı. Ondan sonraki
+    /// her varış eşiğin altındaki hızla geldi.
+    ///
+    /// Çiftin hızı ikincinin gövdesi / aralık; iki seq arasında alınmamış seq varsa her biri
+    /// [`crate::rate::DEFAULT_MTU`] sayılır (üst sınır): hatta serileşip düşen datagram aralığı
+    /// uzatır, daralma öncesi kayıplı bir çift yeni hız gibi görünmesin (12 500'de 1 000 B'lik bir
+    /// kayıp aralığı 160 ms, gövdeyle 6 250, üst sınırla 13 750). Seq bilinmeyen çiftte yalnız gövde.
+    ///
+    /// Pencerenin ilk varışı değil: alarm pencere hızı eşiğin altına iner inmez verilir, o anda
+    /// pencerenin başı hâlâ eski hızla gelmiş varışları taşır (1 000 B gövde, 80 → 160 ms aralık:
+    /// alarm düşüşten 360 ms sonra, pencere hızı 8 333, eşik 8 750; kuyruğun hızı 6 250). Alarm
+    /// durumunda değilse ya da en yeni çift eşiğin altında değilse `None`. Halka sınırlıdır (son
+    /// [`DROP_WINDOW_NS`]).
+    #[must_use]
+    pub fn onset(&self) -> Option<(u64, Option<u64>)> {
+        if !self.fired {
+            return None;
+        }
+        type Arrival = (u64, u64, Option<u64>);
+        let below = |a: &Arrival, b: &Arrival| {
+            let missing = match (a.2, b.2) {
+                (Some(sa), Some(sb)) => sb.saturating_sub(sa).saturating_sub(1),
+                _ => 0,
+            };
+            let bytes =
+                u128::from(b.1) + u128::from(missing) * u128::from(crate::rate::DEFAULT_MTU);
+            bytes * 1_000_000_000 * 1000
+                < u128::from(self.reference_bps)
+                    * u128::from(DROP_PERMILLE)
+                    * u128::from(b.0.saturating_sub(a.0))
+        };
+        self.ring
+            .iter()
+            .rev()
+            .skip(1)
+            .zip(self.ring.iter().rev())
+            .take_while(|(a, b)| below(a, b))
+            .last()
+            .map(|(a, _)| (a.0, a.2))
+    }
+
+    /// [ALARM ARALIĞI · TUR 4 · #175 7087793188] Alarm durumunda penceredeki daralma başlangıcından
+    /// ([`Self::onset`]) kurulan kanıt. Aralığın ilk seq'i, halkadaki seq'lerden başlangıç seq'i ile
+    /// `min_seq`'in büyüğüne eşit ya da ondan büyük en küçüğüdür. `min_seq`, alıcının aralık
+    /// tabanıdır: son çıkan ACK'in en büyüğünün bir fazlası. Halkadaki sonraki varışlar kanıta girer.
+    /// Başlangıç yoksa ya da seq'i bilinmiyorsa `None`. Halkayı değiştirmez.
+    #[must_use]
+    pub fn alarm_evidence(&self, min_seq: u64) -> Option<AlarmEvidence> {
+        let (_, Some(onset_seq)) = self.onset()? else {
+            return None;
+        };
+        let bound = onset_seq.max(min_seq);
+        let &(first_ns, first_udp, first_seq) = self
+            .ring
+            .iter()
+            .filter(|&&(_, _, s)| s.is_some_and(|s| s >= bound))
+            .min_by_key(|&&(_, _, s)| s)?;
+        let first_seq = first_seq?;
+        let mut ev = AlarmEvidence {
+            first_seq,
+            first_ns,
+            first_wire: first_udp.saturating_add(ALARM_EVIDENCE_OVERHEAD),
+            last_seq: first_seq,
+            last_ns: first_ns,
+            last_wire: None,
+            received_wire: 0,
+            received: 0,
+            reference_bps: self.reference_bps,
+        };
+        for &(t, b, s) in &self.ring {
+            if let Some(s) = s {
+                ev.on_arrival(t, Some(b), s);
+            }
+        }
+        Some(ev)
+    }
+
     /// Bir ACK çıktı: sonraki alarm yeniden mümkün; referans alarm hızına iner (aynı daralma için
     /// ikinci alarm yok).
     pub fn on_ack(&mut self, now_ns: u64) {
@@ -292,6 +386,150 @@ impl RateDropDetector {
             self.reference_bps = 0;
             self.reference_ns = now_ns;
         }
+    }
+}
+
+/// [ALARM ARALIĞI · TUR 4 · #175 7087793188] Alarm ACK'inin bırakma kanıtı. Alıcı burada
+/// göndericinin aşağı yönlü örnek koşulunu (`line_guard::interval_sample`) kendi bildikleriyle
+/// kurar. Sıra farkı da datagram sayısı da tek başına kanıt sayılmaz (sahip, 2026-11-23).
+///
+/// **Göndericinin koşulu.** Aralık `(f, l]` için kuyruk artışı
+/// `g = rx_span − send_span − (ser(l) − ser(f))`, örnek koşulu
+/// `g > max(ser(DEFAULT_MTU), send_span / 20)`. `ser(x)` = tel baytı (gövde + zarf) / `G`; `G`
+/// göndericinin hat tahminidir (yoksa profil hattı). `rx_span`, ACK'in alanıdır: alıcıda `f` ile
+/// `l`'nin ilk varışları arası, 256 µs'ye aşağı yuvarlanmış. `send_span`, `f` ile `l`'nin gönderim
+/// anları arasıdır; içinde gönderilmiş ama alınmamış seq'ler de vardır (hatta serileşip düşen ya
+/// da darboğazdan önce düşen).
+///
+/// **Alıcının aynası.** `ref` = daralma dedektörünün düşüş öncesi referansı (UDP gövdesi B/s). `M`
+/// = [`DEFAULT_MTU`] + [`ALARM_EVIDENCE_OVERHEAD`].
+/// - `V` = `(f, l]`'de alınan datagramların tel baytı + alınmayan her seq için `M` (üst sınır) +
+///   `|tel(f) − tel(l)|` (boyu bilinmeyen uç için `M`).
+/// - `g_a = rx_span − V / ref`, `eşik_a = max(M / ref, V / ref / 20)`.
+/// - Bırakma: `g_a − 1 ns > eşik_a`. 1 ns, göndericinin tamsayı bölmelerinin payıdır.
+///
+/// **Bırakma erken olmaz (türetme).** Ön koşul: gönderici aralık boyunca en az referansın varış
+/// hızıyla göndermiştir (`p`, tel B/s). Daralmanın haberini ancak bu ACK getireceği için gönderici
+/// hızını henüz değiştirmemiştir. Referans, aynı göndericinin daha önceki varışlarının hızıdır;
+/// varış hızı gönderim hızını aşamaz ve gövde baytı tel baytından küçüktür. Buradan:
+/// - `ref ≤ p ≤ G`.
+/// - Pacer ardışık iki iletimi birinin tel süresi kadar aralar: `send_span ≤ Σ[f,l) tel / ref` ya da
+///   `Σ(f,l] tel / ref`. Seri farkı `≤ (tel(l) − tel(f))⁺ / ref` (`G ≥ ref`). Toplamda
+///   `send_span + (ser(l) − ser(f)) ≤ (Σ(f,l] tel + |tel(f) − tel(l)|) / ref ≤ V / ref`; alınmayan
+///   seq'in teli ≤ `M`. Yani `g ≥ g_a`.
+/// - `ser(DEFAULT_MTU) = M / G ≤ M / ref` ve `send_span ≤ V / ref`, yani eşik ≤ `eşik_a`.
+/// - Alıcı bıraktıysa `g > eşik`: gönderici örnek alır.
+///
+/// Sınır (ön koşul tutmazsa): gönderici aralıkta referanstan yavaş gönderdiyse (önceki bir ACK'le
+/// tavanı inmiş, referans [`DROP_REF_HOLD_NS`] tutmada eski), alıcı bırakabilir ama gönderici örnek
+/// almaz. O aralıkta darboğaz kuyruğu büyümez. ACK, adayın alarm anındaki ACK'inden erken değildir.
+///
+/// Biriktiriciler sabit boydadır (SR-AUDIT-001), toplamlar doygun, karşılaştırma u128.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AlarmEvidence {
+    first_seq: u64,
+    first_ns: u64,
+    first_wire: u64,
+    last_seq: u64,
+    last_ns: u64,
+    /// `None`: en büyük seq'in boyu bilinmiyor (ya da henüz `first`'ten sonra varış yok).
+    last_wire: Option<u64>,
+    /// `(first, last]`'te alınan seq'lerin tel baytı (doygun).
+    received_wire: u64,
+    /// `(first, last]`'te alınan seq sayısı.
+    received: u64,
+    reference_bps: u64,
+}
+
+impl AlarmEvidence {
+    /// Yeni (yinelenmeyen) bir seq alındı. `udp_bytes` = UDP gövdesi; `None` ise seq alınmamış
+    /// sayılır (üst sınır `M`). Aralığın ilk seq'inden küçük ya da ona eşit seq etkisizdir.
+    pub fn on_arrival(&mut self, now_ns: u64, udp_bytes: Option<u64>, seq: u64) {
+        if seq <= self.first_seq {
+            return;
+        }
+        let wire = udp_bytes.map(|b| b.saturating_add(ALARM_EVIDENCE_OVERHEAD));
+        if let Some(w) = wire {
+            self.received_wire = self.received_wire.saturating_add(w);
+            self.received = self.received.saturating_add(1);
+        }
+        if seq > self.last_seq {
+            self.last_seq = seq;
+            self.last_ns = now_ns;
+            self.last_wire = wire;
+        }
+    }
+
+    /// Aralığın ilk seq'i (alarm ACK'inin `span_first`'i).
+    #[must_use]
+    pub fn first_seq(&self) -> u64 {
+        self.first_seq
+    }
+
+    /// Aralığın en büyük seq'i.
+    #[must_use]
+    pub fn last_seq(&self) -> u64 {
+        self.last_seq
+    }
+
+    /// `V` (tel baytı; türetme: tip belgesi).
+    fn upper_wire(&self) -> u128 {
+        let mtu = u128::from(DEFAULT_MTU + ALARM_EVIDENCE_OVERHEAD);
+        let span = u128::from(self.last_seq - self.first_seq);
+        let missing = span.saturating_sub(u128::from(self.received));
+        let ends = self
+            .last_wire
+            .map_or(mtu, |l| u128::from(l.abs_diff(self.first_wire)));
+        u128::from(self.received_wire) + missing * mtu + ends
+    }
+
+    /// ACK'in taşıyacağı `rx_span` (ns, 256 µs'ye aşağı yuvarlanmış); alan kodlanamıyorsa `None`.
+    fn rx_span_ns(&self) -> Option<u64> {
+        let unit = crate::ack::ACK_DELAY_UNIT_US * 1000;
+        let units = self.last_ns.saturating_sub(self.first_ns) / unit;
+        (units < u64::from(crate::ack::RX_SPAN_NONE)).then_some(units * unit)
+    }
+
+    /// Kanıt yeterli mi: `g_a − 1 ns > eşik_a`, 20 ile çarpılmış tamsayı biçimiyle:
+    /// `(rx_span − 1) · ref · 20 > 20 · V · 10⁹ + max(20 · M · 10⁹, V · 10⁹)`. Aralık bitmap'in
+    /// kapsamını ([`crate::ack::ACK_BITMAP_MAX_BITS`]) aşarsa ACK aralığı kısaltır, kanıt sayılmaz.
+    #[must_use]
+    pub fn sufficient(&self) -> bool {
+        let Some(rx) = self.rx_span_ns() else {
+            return false;
+        };
+        if self.reference_bps == 0
+            || self.last_seq == self.first_seq
+            || self.last_seq - self.first_seq > crate::ack::ACK_BITMAP_MAX_BITS
+            || rx == 0
+        {
+            return false;
+        }
+        let v = self.upper_wire().saturating_mul(1_000_000_000);
+        let mtu = u128::from(DEFAULT_MTU + ALARM_EVIDENCE_OVERHEAD) * 1_000_000_000;
+        let lhs = u128::from(rx - 1) * u128::from(self.reference_bps) * 20;
+        let rhs = v
+            .saturating_mul(20)
+            .saturating_add(mtu.saturating_mul(20).max(v));
+        lhs > rhs
+    }
+
+    /// Gözlem: `(g_a, eşik_a)` ns, aşağı yuvarlanmış (tip belgesi); referans yoksa `None`.
+    #[must_use]
+    pub fn margin_ns(&self) -> Option<(i64, i64)> {
+        let rx = self.rx_span_ns()?;
+        let r = u128::from(self.reference_bps);
+        if r == 0 {
+            return None;
+        }
+        let v_ns = self.upper_wire().saturating_mul(1_000_000_000) / r;
+        let mtu_ns = u128::from(DEFAULT_MTU + ALARM_EVIDENCE_OVERHEAD) * 1_000_000_000 / r;
+        let g = i128::from(rx) - i128::try_from(v_ns).unwrap_or(i128::MAX);
+        let thr = mtu_ns.max(v_ns / 20);
+        Some((
+            i64::try_from(g).unwrap_or(i64::MIN),
+            i64::try_from(thr).unwrap_or(i64::MAX),
+        ))
     }
 }
 
@@ -441,5 +679,54 @@ mod tests {
             );
             t += if k % 7 == 6 { 160_000_000 } else { 40_000_000 };
         }
+    }
+
+    /// [ALARM ARALIĞI · TUR 4] Kanıtın aritmetiği, 2:1 düşüşte (referans 12 150 B/s gövde = 972 B
+    /// gövde / 80 ms; yeni hat 160 ms). Başlangıçtan sonra tek datagram: `g_a` = 160 − 1 000/12 150 s
+    /// ≈ 77,7 ms < eşik 1 228/12 150 s ≈ 101,1 ms; iki datagram: 320 − 164,6 ≈ 155,4 ms, yeterli.
+    /// Aradaki seq alınmadıysa (darboğazdan önce düştü, süre ilerlemedi) `DEFAULT_MTU` üst sınırıyla
+    /// sayılır ve yetmez. Boyu bilinmeyen varış da alınmamış sayılır.
+    #[test]
+    fn alarm_evidence_mirrors_the_sender_growth_rule() {
+        let ev0 = AlarmEvidence {
+            first_seq: 10,
+            first_ns: 0,
+            first_wire: 1_000,
+            last_seq: 10,
+            last_ns: 0,
+            last_wire: None,
+            received_wire: 0,
+            received: 0,
+            reference_bps: 12_150,
+        };
+        let mut ev = ev0;
+        ev.on_arrival(160 * MS, Some(972), 11);
+        let (g, thr) = ev.margin_ns().expect("ölçüm");
+        assert!(!ev.sufficient(), "tek datagram: g {g}, eşik {thr}");
+        assert_eq!((g / 100_000, thr / 100_000), (776, 1010));
+        ev.on_arrival(320 * MS, Some(972), 12);
+        let (g, thr) = ev.margin_ns().expect("ölçüm");
+        assert!(ev.sufficient(), "iki datagram: g {g}, eşik {thr}");
+        assert_eq!(g / 100_000, 1553);
+        // 11 darboğazdan önce düştü: 12, 160 ms sonra.
+        let mut lost = ev0;
+        lost.on_arrival(160 * MS, Some(972), 12);
+        assert!(
+            !lost.sufficient(),
+            "kayıp seq kanıt sayıldı: {:?}",
+            lost.margin_ns()
+        );
+        // Boyu bilinmeyen varış: alınmamış sayılır (üst sınır).
+        let mut no_size = ev0;
+        no_size.on_arrival(160 * MS, None, 11);
+        no_size.on_arrival(320 * MS, Some(972), 12);
+        assert!(
+            no_size.margin_ns().expect("ölçüm").0 < ev.margin_ns().expect("ölçüm").0,
+            "boyu bilinmeyen varış gövdesiyle sayıldı"
+        );
+        // Başlangıçtan küçük ya da ona eşit seq etkisiz.
+        let mut early = ev;
+        early.on_arrival(400 * MS, Some(972), 9);
+        assert_eq!(early, ev);
     }
 }

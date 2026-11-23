@@ -2438,6 +2438,67 @@ mod tests {
         assert_eq!(g.overflow_samples(), 0, "bayat alt sınır kullanılmadı");
     }
 
+    /// [ALARM ARALIĞI · #175 7084078903] Daralma alarmının ACK'i son ACK'in en büyüğüne bitişik
+    /// olmayan aralık taşır (alıcı aralığı alarm penceresindeki daralma başlangıcından başlatır).
+    /// Gönderici aralığı verilen uçlarla kurar (`interval_sample`: gönderim muhasebesi
+    /// `(first, last]`, bitişiklik varsayımı yok). Hat seq 40'tan itibaren 12 500 → 6 250: aralık
+    /// yalnız düşüş sonrasını kapsıyorsa (başı 39, son ACK'in en büyüğü 35) örnek yeni hat ±%2
+    /// (ürün ölçütü ≤ 6 875). Karşı-olgu (bir ACK geriye, başı 36): karışık aralık ölçütün üstünde.
+    /// Dürüst hatta gönderici yavaşlayınca (sahte alarm) aynı bitişik olmayan aralık kesmez.
+    #[test]
+    fn non_adjacent_alarm_interval_measures_only_the_new_line() {
+        const NEW: u64 = 6_250;
+        const DROP_SEQ: u64 = 40;
+        // Gönderici profil hızında; ileri hat `DROP_SEQ`'ten itibaren `real_after`. Gönderim hızı
+        // `DROP_SEQ`'ten itibaren `send_after`.
+        let history = |real_after: u64, send_after: u64| {
+            let mut g = guard();
+            let mut free = 0u64;
+            let mut s = 0u64;
+            let mut arr = Vec::new();
+            for k in 0..80u64 {
+                g.on_sent(k, s, 1172);
+                let real = if k < DROP_SEQ { PROFILE } else { real_after };
+                let done = free.max(s) + 1200 * SEC / real;
+                free = done;
+                arr.push(done + 300 * MS);
+                s += 1200 * SEC
+                    / if k + 1 < DROP_SEQ {
+                        PROFILE
+                    } else {
+                        send_after
+                    };
+            }
+            assert!(ack_m(&mut g, &arr, 10, 0, None).is_none());
+            let _ = ack_m(&mut g, &arr, 20, 0, Some(11));
+            let _ = ack_m(&mut g, &arr, 35, 0, Some(21));
+            (g, arr)
+        };
+        let (mut g, arr) = history(NEW, PROFILE);
+        let u = ack_m(&mut g, &arr, 46, 0, Some(DROP_SEQ - 1)).expect("alarm aralığından örnek");
+        assert!(
+            u.rate_bps.abs_diff(NEW) * 50 <= NEW,
+            "alarm aralığı (başı {}) tahmini {}",
+            DROP_SEQ - 1,
+            u.rate_bps
+        );
+        let (mut gc, arr) = history(NEW, PROFILE);
+        let uc = ack_m(&mut gc, &arr, 46, 0, Some(36)).expect("karışık aralıktan örnek");
+        assert!(
+            uc.rate_bps * 10 > NEW * 11,
+            "karşı-olgu: bir ACK geriye uzanan aralık {} ölçütün altında",
+            uc.rate_bps
+        );
+        // Dürüst hat, gönderici 6 000 B/s'e yavaşlar: kuyruk büyümez, örnek yok.
+        let (mut gh, arr) = history(PROFILE, 6_000);
+        let _ = ack_m(&mut gh, &arr, 46, 0, Some(DROP_SEQ - 1));
+        assert_eq!(
+            gh.rate_bps(),
+            None,
+            "dürüst hat bitişik olmayan aralıkla kesildi"
+        );
+    }
+
     /// [ÖLÇÜM-ARALIĞI] Gerçek hat yarıya düşük: aralık kuyruk artışını görür ve hattı ±%2 ölçer.
     /// M iki ACK geriye uzanır: `sent` kayıtları iki cephe geriye dek tutulur (M'nin başı bulunur).
     #[test]
