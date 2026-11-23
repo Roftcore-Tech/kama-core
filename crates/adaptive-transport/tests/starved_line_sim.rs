@@ -3312,7 +3312,8 @@ fn bua_print(arm: &str, sc: &Scenario, o: &Outcome) -> BuaSummary {
 /// ACK'in yerine geçen kurulum) ve ayrıştırma kolu `urun-bw248` (ürün alıcısı, aynanın bütçesiyle:
 /// farkın ne kadarı ACK bütçesinden, ne kadarı alıcı kuralından). Yalnız rapor basar (biçim: modül
 /// belgesi); kabul iddiası yok. Sağlanan yalnız ölçüm aracı: defter hat sayaçlarıyla birebir
-/// (`ledger_check`, her koşuda), ürün alıcısı yalnız 0x15, ayna yalnız 0x14 yazdı. Fark satırı
+/// (`ledger_check`, her koşuda), defter kapalı aynı koşu aynı ACK/kuyruk/tavan/PTT/dosya izini
+/// verir (defter davranışı değiştirmez), ürün alıcısı yalnız 0x15, ayna yalnız 0x14 yazdı. Fark satırı
 /// (`BUA-FARK`): `urun/urun-bw248/ayna`.
 #[test]
 fn bua_product_receiver_report() {
@@ -3337,6 +3338,25 @@ fn bua_product_receiver_report() {
                     ..make(seed)
                 };
                 let o = run(&sc);
+                // Aracın sağlaması: defter (emisyon izinin boşaltılması) göndericinin ve hattın
+                // davranışını değiştirmez.
+                let bare = run(&Scenario {
+                    ledger: false,
+                    ..sc.clone()
+                });
+                assert!(
+                    o.acks_at == bare.acks_at
+                        && o.waits == bare.waits
+                        && o.drop_times == bare.drop_times
+                        && o.pace_trace == bare.pace_trace
+                        && o.voice_first == bare.voice_first
+                        && o.file_done_ns == bare.file_done_ns
+                        && o.ptt_wire_bytes == bare.ptt_wire_bytes
+                        && o.line.offered_bytes == bare.line.offered_bytes
+                        && o.line.lost_bytes == bare.line.lost_bytes,
+                    "{arm} {} tohum {seed}: defter davranışı değiştirdi",
+                    rx.label()
+                );
                 let want = if rx == RxModel::Mirror { 0x14 } else { 0x15 };
                 assert!(
                     o.ack_types.keys().all(|&t| t == want) && !o.ack_types.is_empty(),
