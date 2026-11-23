@@ -5016,3 +5016,35 @@ fn kb_drop_recovery_poc_report() {
         );
     }
 }
+
+/// [KB · İZ] Ölçüm aracının sağlaması: iz ([`Scenario::iz`]) salt gözlemdir. Kalıcı kesme ve kısa
+/// daralmada (tohum 1–3) iz açık ve kapalı koşunun ACK başına görünümü (varış, cephe, korunan hız,
+/// tavan, yazılan / gerçek kuyruk), darboğaz kuyruğunun izi, kuyrukta düşen, PTT ilk varışları
+/// ve dosya bitişleri aynıdır.
+#[test]
+fn kb_trace_is_observation_only() {
+    for seed in 1..=3u64 {
+        for dip in [false, true] {
+            let on = run(&kb_iz_scenario(seed, dip));
+            let off = run(&Scenario {
+                iz: false,
+                ..kb_iz_scenario(seed, dip)
+            });
+            let tag = format!("tohum {seed} kisa={dip}");
+            assert!(!on.ack_iz.is_empty() && off.ack_iz.is_empty(), "{tag}: iz");
+            assert_eq!(on.per_ack, off.per_ack, "{tag}: ACK görünümü");
+            assert_eq!(
+                on.ack_queue, off.ack_queue,
+                "{tag}: yazılan / gerçek kuyruk"
+            );
+            assert_eq!(on.queue_trace, off.queue_trace, "{tag}: kuyruk izi");
+            assert_eq!(on.drops_queue, off.drops_queue, "{tag}: kuyrukta düşen");
+            assert_eq!(on.voice_first, off.voice_first, "{tag}: PTT varışları");
+            assert_eq!(
+                (on.file_done_ns, on.file2_done_ns),
+                (off.file_done_ns, off.file2_done_ns),
+                "{tag}: dosya"
+            );
+        }
+    }
+}
