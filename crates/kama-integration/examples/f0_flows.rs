@@ -225,10 +225,12 @@ struct Config {
     ptt_bundle_ms: u8,
     ptt_bytes: usize,
     /// [PTT-BİRLEŞİK · pilot · #233] `--ptt-pilot on`: basış `KamaNode::ptt_open_press` ile açılır
-    /// (çağıranın süresi `--ptt-bundle-ms`), demetler düğümün DÖNDÜRDÜĞÜ sürenin pilot süresi
-    /// (300 ms) olması şartıyla 300 ms aralıkla ve `ptt_push_timed` ile (sonuncusu `last`) verilir.
-    /// Düğüm pilot süresini dönmezse (eş doğrulanmamış / pilot kapalı) koşu HATAYLA biter: sessiz
-    /// geri düşüş yok. Düğümün pilot ayarı ortamdan gelir (`KAMA_PTT_PILOT`, `KAMA_LINK_RATES`).
+    /// (çağıranın süresi `--ptt-bundle-ms`). Düğüm SEÇTİĞİ süreyi ve birleşik biçimin kullanılıp
+    /// kullanılmadığını döner; bu basışın kalan demetleri o süreyle yeniden zamanlanır ve yük aynı
+    /// ses hızıyla ölçeklenir (`--ptt-bytes` × seçilen / çağıranın süresi); demetler
+    /// `ptt_push_timed` ile (sonuncusu `last`) verilir. Seçim `send` kaydına yazılır
+    /// (`bundle_ms`, `coalesced`). Düğümün pilot ayarı ortamdan gelir (`KAMA_PTT_PILOT`,
+    /// `KAMA_LINK_RATES`); ayar kapalıysa ya da eş doğrulanmamışsa düğüm çağıranın süresini döner.
     ptt_pilot: bool,
     stall_at: Duration,
     stall: Duration,
@@ -894,6 +896,149 @@ fn parse_bundle(bytes: &[u8]) -> Option<(u32, u32)> {
     Some((u32::from(spurt), u32::from(idx)))
 }
 
+/// [PTT-BİRLEŞİK · pilot · ölçüm] Pilot basışının demet yükündeki zaman alanları (4. bayttan):
+/// basış başı (Unix µs, u64) · demetin ilk çerçevesinin oluşumu (Unix µs, u64) · demet süresi
+/// (ms, u16) · basıştaki demet sayısı (u16). İki süreç aynı makinede, ortak gerçek saat.
+const PRESS_TIMING_BYTES: usize = 4 + 8 + 8 + 2 + 2;
+
+/// Pilot basışının demet yükü: [`bundle_body`] + zaman alanları (yük yeterince uzunsa).
+fn press_body(spurt: u32, idx: u32, len: usize, press_us: u64, step_ms: u16, n: u32) -> Vec<u8> {
+    let mut b = bundle_body(spurt, idx, len);
+    if b.len() >= PRESS_TIMING_BYTES {
+        let created_us = press_us + u64::from(step_ms) * 1_000 * u64::from(idx);
+        b[4..12].copy_from_slice(&press_us.to_be_bytes());
+        b[12..20].copy_from_slice(&created_us.to_be_bytes());
+        b[20..22].copy_from_slice(&step_ms.to_be_bytes());
+        b[22..24].copy_from_slice(&u16::try_from(n).unwrap_or(u16::MAX).to_be_bytes());
+    }
+    b
+}
+
+/// [`press_body`] zaman alanları: (basış başı ms, oluşum ms, demet süresi ms, demet sayısı).
+/// Alanlar dolu değilse (pilot dışı yük: 0xA5 dolgusu) `None`.
+fn parse_press_timing(bytes: &[u8]) -> Option<(f64, f64, u32, u32)> {
+    if bytes.len() < PRESS_TIMING_BYTES {
+        return None;
+    }
+    let press_us = u64::from_be_bytes(bytes[4..12].try_into().ok()?);
+    let created_us = u64::from_be_bytes(bytes[12..20].try_into().ok()?);
+    let step_ms = u16::from_be_bytes(bytes[20..22].try_into().ok()?);
+    let n = u16::from_be_bytes(bytes[22..24].try_into().ok()?);
+    if step_ms == 0xA5A5 || step_ms == 0 || created_us < press_us {
+        return None;
+    }
+    Some((
+        press_us as f64 / 1e3,
+        created_us as f64 / 1e3,
+        u32::from(step_ms),
+        u32::from(n),
+    ))
+}
+
+/// [TEL-KANITI · #233] Koşunun kabul kipini KENDİ kaydından kanıtlayan alanlar (düğüm sondasından;
+/// canlı ayna kapalıysa ACK / CAPS / 0x09 sayaçları 0'dır ve `live_diag` bunu söyler): gelen ACK
+/// çerçeveleri türe göre, gönderilen CAPS, yalın 0x09 iletimi, gönderilen birleşik demetler
+/// (açılışlı / kompakt / END) ve alıcı PTT sayaçları.
+fn wire_json(node: &KamaNode, live_diag: bool) -> String {
+    let Ok(probe) = node.probe_for_test() else {
+        return "null".to_owned();
+    };
+    let wire = probe
+        .sessions
+        .iter()
+        .fold(probe.retired.wire, |acc, s| acc.plus(s.diag.wire));
+    let a = wire.ack_rx_types;
+    let p = probe.ptt;
+    format!(
+        "{{\"live_diag\":{live_diag},\"ack_rx\":{{\"0x10\":{},\"0x14\":{},\"0x15\":{},\"0x16\":{},\"0x17\":{}}},\
+         \"caps_sends\":{},\"ptt_lean_0x09_tx\":{},\"spurt_tx\":{{\"open\":{},\"compact\":{},\"end\":{}}},\
+         \"ptt_rx\":{{\"spurt_opens\":{},\"spurt_ends\":{},\"ended_by_gap\":{},\"orphan_bundles\":{},\
+         \"spurt_refused\":{}}}}}",
+        a[0],
+        a[1],
+        a[2],
+        a[3],
+        a[4],
+        wire.caps_sends,
+        wire.ptt_lean_tx,
+        p.spurt_open_tx,
+        p.spurt_compact_tx,
+        p.spurt_end_tx,
+        p.spurt_opens,
+        p.spurt_ends,
+        p.streams_ended_by_gap,
+        p.ptt_orphan_bundles,
+        p.spurt_refused,
+    )
+}
+
+/// Özet nesnesinin sonuna alan ekler (`{…}` → `{…,<extra>}`).
+fn with_extra(summary: String, extra: &str) -> String {
+    match summary.strip_suffix('}') {
+        Some(head) => format!("{head},{extra}}}"),
+        None => summary,
+    }
+}
+
+/// [PTT-BİRLEŞİK · pilot · ölçüm] Bob'un bir akış (basış) için gözlemi.
+#[derive(Default)]
+struct PressRx {
+    bundle_ms: u16,
+    started: u32,
+    ended: u32,
+    ended_at: Option<f64>,
+    /// Basış başı (ms), demet süresi (ms), basıştaki demet sayısı — ilk zaman alanlı demetten.
+    press: Option<(f64, u32, u32)>,
+    /// Demet sırası → (oluşum ms, teslim ms); ilk teslim.
+    bundles: BTreeMap<u32, (f64, f64)>,
+}
+
+impl PressRx {
+    fn json(&self, stream: u32) -> String {
+        let mut lat: Vec<f64> = self.bundles.values().map(|(c, r)| r - c).collect();
+        lat.sort_by(f64::total_cmp);
+        let pick = |i: usize| {
+            lat.get(i)
+                .map_or_else(|| "null".to_owned(), |v| format!("{v:.1}"))
+        };
+        let (press_ms, step, n) = self.press.unwrap_or((0.0, 0, 0));
+        let frames_per = u64::from(step / 20);
+        let on_time = self
+            .bundles
+            .values()
+            .filter(|(c, r)| r - c <= 1_000.0)
+            .count() as u64
+            * frames_per;
+        let first_audio = self
+            .bundles
+            .values()
+            .map(|(_, r)| *r)
+            .min_by(f64::total_cmp)
+            .filter(|_| self.press.is_some())
+            .map_or_else(|| "null".to_owned(), |r| format!("{:.1}", r - press_ms));
+        let release = press_ms + f64::from(step) * f64::from(n);
+        let release_to_ended = match (self.ended_at, self.press) {
+            (Some(e), Some(_)) => format!("{:.1}", e - release),
+            _ => "null".to_owned(),
+        };
+        format!(
+            "{{\"stream\":{stream},\"bundle_ms\":{},\"ptt_started\":{},\"ptt_ended\":{},\
+             \"bundles_planned\":{n},\"bundles_delivered\":{},\"frames_planned\":{},\
+             \"frames_on_time\":{on_time},\"first_audio_ms\":{first_audio},\
+             \"creation_to_delivery_ms\":{{\"min\":{},\"median\":{},\"max\":{}}},\
+             \"release_to_ended_ms\":{release_to_ended}}}",
+            self.bundle_ms,
+            self.started,
+            self.ended,
+            self.bundles.len(),
+            u64::from(n) * frames_per,
+            pick(0),
+            pick(lat.len() / 2),
+            pick(lat.len().saturating_sub(1)),
+        )
+    }
+}
+
 fn file_byte(i: usize) -> u8 {
     u8::try_from(i % FILE_PATTERN).unwrap_or(0)
 }
@@ -1238,13 +1383,10 @@ struct Action {
     act: Act,
 }
 
-/// Demet aralığı: pilot kolunda pilot süresi (300 ms), diğerlerinde `--ptt-bundle-ms`.
+/// Planın demet aralığı: çağıranın süresi (`--ptt-bundle-ms`). Pilot kolunda basış açılınca
+/// düğümün seçtiği süreyle yeniden zamanlanır ([`Alice::adopt_press`]).
 fn spurt_step(cfg: &Config) -> Duration {
-    if cfg.ptt_pilot {
-        Duration::from_millis(u64::from(kama_app::ptt::SPURT_PILOT_BUNDLE_MS))
-    } else {
-        Duration::from_millis(u64::from(cfg.ptt_bundle_ms))
-    }
+    Duration::from_millis(u64::from(cfg.ptt_bundle_ms))
 }
 
 fn push_spurt(plan: &mut Vec<Action>, cfg: &Config, spurt: u32, start: Duration, bundles: u32) {
@@ -1325,6 +1467,11 @@ struct Alice {
     tries: u32,
     retries: u64,
     streams: BTreeMap<u32, StreamHandle>,
+    /// [PTT-BİRLEŞİK · pilot] Pilot API'siyle açılan basışlar: düğümün seçtiği demet süresi ve
+    /// o süreye ölçeklenmiş demet yükü (≤ basış sayısı).
+    pressed: BTreeMap<u32, (Duration, usize, u64)>,
+    /// [PTT-BİRLEŞİK · pilot] Basış başına düğümün seçimi (özet kaydı için).
+    chosen: Vec<String>,
     file: FileLog,
     sent: BTreeMap<char, u32>,
     msg_items: BTreeMap<u32, (char, u32)>,
@@ -1353,6 +1500,45 @@ impl Alice {
 
     fn bump(&mut self, class: char) {
         *self.sent.entry(class).or_insert(0) += 1;
+    }
+
+    /// [PTT-BİRLEŞİK · pilot] Düğümün basış için seçtiği biçimi benimser: bu basışın henüz
+    /// işlenmemiş demet ve kapanış eylemleri seçilen süreyle yeniden zamanlanır, yük aynı ses
+    /// hızıyla ölçeklenir. Döner: `send` kaydına eklenecek alanlar.
+    fn adopt_press(&mut self, open: Action, spurt: u32, press: kama_node::PttPress) -> String {
+        let ms = kama_app::codec::bundle_ms_from_code(press.bundle_ms);
+        let step = Duration::from_millis(u64::from(ms));
+        let caller = usize::from(self.cfg.ptt_bundle_ms).max(1);
+        let bytes = (self.cfg.ptt_bytes * usize::from(ms) / caller).max(4);
+        // Basış başı: açılış eyleminin vadesi (ilk 20 ms çerçevenin oluşumu), Unix µs.
+        let press_us = self.clock.unix_ns(self.t0() + open.due) / 1_000;
+        self.pressed.insert(spurt, (step, bytes, press_us));
+        self.chosen.push(format!(
+            "{{\"sp\":{spurt},\"bundle_ms\":{ms},\"coalesced\":{},\"caller_ms\":{}}}",
+            press.coalesced, self.cfg.ptt_bundle_ms
+        ));
+        let bundles = if spurt == KARSI_SPURT {
+            self.cfg.karsi_bundles
+        } else {
+            self.cfg.ptt_bundles
+        };
+        let from = (self.next + 1).min(self.plan.len());
+        for action in &mut self.plan[from..] {
+            match action.act {
+                Act::PttPush { spurt: s, idx } if s == spurt => {
+                    action.due = open.due + step.saturating_mul(idx + 1);
+                }
+                Act::PttClose { spurt: s } if s == spurt => {
+                    action.due = open.due + step.saturating_mul(bundles + 1);
+                }
+                _ => {}
+            }
+        }
+        self.plan[from..].sort_by_key(|a| a.due);
+        format!(
+            ",\"bundle_ms\":{ms},\"bundle_code\":{},\"coalesced\":{},\"caller_ms\":{},\"bundle_bytes\":{bytes}",
+            press.bundle_ms, press.coalesced, self.cfg.ptt_bundle_ms
+        )
     }
 
     fn send_line(&mut self, a: Action, t_call: Instant, extra: &str) {
@@ -1417,21 +1603,15 @@ impl Alice {
                 }
             }
             Act::PttOpen { spurt } => {
+                let mut chosen = String::new();
                 let result = if self.cfg.ptt_pilot {
                     let opened =
                         self.node()?
                             .ptt_open_press(BOB, PttCodec::Lyra, self.cfg.ptt_bundle_ms);
-                    match opened {
-                        Ok((stream, code)) if code == kama_app::ptt::SPURT_PILOT_BUNDLE_CODE => {
-                            Ok(stream)
-                        }
-                        Ok((_, code)) => {
-                            return Err(format!(
-                                "ptt_open_press {spurt}: düğüm pilot süresini seçmedi (kod {code}); eş doğrulanmamış ya da KAMA_PTT_PILOT kapalı"
-                            ))
-                        }
-                        Err(e) => Err(e),
-                    }
+                    opened.map(|press| {
+                        chosen = self.adopt_press(a, spurt, press);
+                        press.stream
+                    })
                 } else {
                     self.node()?
                         .ptt_open(BOB, PttCodec::Lyra, self.cfg.ptt_bundle_ms)
@@ -1440,7 +1620,7 @@ impl Alice {
                     Ok(stream) => {
                         self.streams.insert(spurt, stream);
                         self.bump('O');
-                        self.send_line(a, t_call, "");
+                        self.send_line(a, t_call, &chosen);
                         Ok(true)
                     }
                     Err(e) if is_ptt_backpressure(&e) => Ok(false),
@@ -1452,23 +1632,37 @@ impl Alice {
                     .streams
                     .get(&spurt)
                     .ok_or_else(|| format!("ptt_push {spurt}/{idx}: akış açık değil"))?;
-                let body = bundle_body(spurt, idx, self.cfg.ptt_bytes);
-                let result = if self.cfg.ptt_pilot {
-                    // Demet çerçeveleri var olunca verilir: ilk çerçeve bir demet süresi önce
-                    // oluştu. Basışın son demeti `END`'i taşır.
-                    self.node()?.ptt_push_timed(
-                        stream,
-                        body,
-                        spurt_step(&self.cfg),
-                        idx + 1
+                let result = match self.pressed.get(&spurt).copied() {
+                    Some((step, bytes, press_us)) => {
+                        // Demet çerçeveleri var olunca verilir: ilk çerçeve bir demet süresi
+                        // önce oluştu. Basışın son demeti `END`'i taşır.
+                        let last = idx + 1
                             == if spurt == KARSI_SPURT {
                                 self.cfg.karsi_bundles
                             } else {
                                 self.cfg.ptt_bundles
-                            },
-                    )
-                } else {
-                    self.node()?.ptt_push(stream, body)
+                            };
+                        self.node()?.ptt_push_timed(
+                            stream,
+                            press_body(
+                                spurt,
+                                idx,
+                                bytes,
+                                press_us,
+                                u16::try_from(step.as_millis()).unwrap_or(u16::MAX),
+                                if spurt == KARSI_SPURT {
+                                    self.cfg.karsi_bundles
+                                } else {
+                                    self.cfg.ptt_bundles
+                                },
+                            ),
+                            step,
+                            last,
+                        )
+                    }
+                    None => self
+                        .node()?
+                        .ptt_push(stream, bundle_body(spurt, idx, self.cfg.ptt_bytes)),
                 };
                 match result {
                     Ok(()) => {
@@ -1867,6 +2061,10 @@ impl Alice {
             Ok(false) => ("incomplete", "null".to_owned(), true),
             Err(e) => ("error", js(e), false),
         };
+        let wire = self
+            .node
+            .as_ref()
+            .map_or_else(|| "null".to_owned(), |n| wire_json(n, self.cfg.live_diag));
         let mut shutdown_note = "null".to_owned();
         if let Some(node) = self.node.take() {
             if let Err(e) = node.shutdown() {
@@ -1920,6 +2118,13 @@ impl Alice {
             self.out.errors,
             notes.join(",")
         );
+        let summary = with_extra(
+            summary,
+            &format!(
+                "\"wire\":{wire},\"ptt_presses\":[{}]",
+                self.chosen.join(",")
+            ),
+        );
         self.out.flush();
         (summary, ok)
     }
@@ -1970,6 +2175,8 @@ fn run_alice(cfg: Config) -> (String, bool) {
         tries: 0,
         retries: 0,
         streams: BTreeMap::new(),
+        pressed: BTreeMap::new(),
+        chosen: Vec::new(),
         file: FileLog::default(),
         sent: BTreeMap::new(),
         msg_items: BTreeMap::new(),
@@ -2027,6 +2234,8 @@ struct Bob {
     next_probe: Instant,
     probes: u64,
     probe_errors: u64,
+    /// [PTT-BİRLEŞİK · pilot · ölçüm] Akış başına gözlem (≤ basış sayısı).
+    presses: BTreeMap<u32, PressRx>,
 }
 
 impl Bob {
@@ -2076,17 +2285,30 @@ impl Bob {
                 }
                 None => self.unparsed += 1,
             },
-            NodeEvent::PttOpened { stream_id, .. } => {
+            NodeEvent::PttOpened {
+                stream_id,
+                bundle_ms,
+                ..
+            } => {
                 let first = self.count('O', stream_id, 0);
+                let press = self.presses.entry(stream_id).or_default();
+                press.started += 1;
+                press.bundle_ms = kama_app::codec::bundle_ms_from_code(bundle_ms);
                 self.out.line(&format!(
                     "{{\"k\":\"rx\",\"t\":{t:.3},\"c\":\"O\",\"stream\":{stream_id},\
-                     \"first\":{first}}}"
+                     \"first\":{first},\"bundle_ms\":{}}}",
+                    kama_app::codec::bundle_ms_from_code(bundle_ms)
                 ));
             }
             NodeEvent::PttBundle {
                 stream_id, payload, ..
             } => match parse_bundle(&payload) {
                 Some((spurt, idx)) => {
+                    if let Some((press_ms, created_ms, step, n)) = parse_press_timing(&payload) {
+                        let press = self.presses.entry(stream_id).or_default();
+                        press.press.get_or_insert((press_ms, step, n));
+                        press.bundles.entry(idx).or_insert((created_ms, t));
+                    }
                     let first = self.count('P', spurt, idx);
                     self.out.line(&format!(
                         "{{\"k\":\"rx\",\"t\":{t:.3},\"c\":\"P\",\"sp\":{spurt},\"i\":{idx},\
@@ -2097,6 +2319,9 @@ impl Bob {
             },
             NodeEvent::PttClosed { stream_id, .. } => {
                 let first = self.count('C', stream_id, 0);
+                let press = self.presses.entry(stream_id).or_default();
+                press.ended += 1;
+                press.ended_at.get_or_insert(t);
                 self.out.line(&format!(
                     "{{\"k\":\"rx\",\"t\":{t:.3},\"c\":\"C\",\"stream\":{stream_id},\
                      \"first\":{first}}}"
@@ -2302,6 +2527,10 @@ impl Bob {
                 s.ended_ns.load(Ordering::Acquire),
             )
         });
+        let wire = self
+            .node
+            .as_ref()
+            .map_or_else(|| "null".to_owned(), |n| wire_json(n, self.cfg.live_diag));
         let mut shutdown_note = "null".to_owned();
         if let Some(node) = self.node.take() {
             if let Err(e) = node.shutdown() {
@@ -2340,6 +2569,15 @@ impl Bob {
             shutdown_note,
             self.out.lines,
             self.out.errors
+        );
+        let presses: Vec<String> = self
+            .presses
+            .iter()
+            .map(|(stream, press)| press.json(*stream))
+            .collect();
+        let summary = with_extra(
+            summary,
+            &format!("\"wire\":{wire},\"ptt_presses\":[{}]", presses.join(",")),
         );
         self.out.flush();
         let _ = write_marker(MARK_BOB_EXIT, "exit");
@@ -2403,6 +2641,7 @@ fn run_bob(cfg: Config) -> (String, bool) {
         next_probe: Instant::now(),
         probes: 0,
         probe_errors: 0,
+        presses: BTreeMap::new(),
     };
     let tap = Tap { tx, dropped, stall };
     let result = match start_bob_node(&cfg, tap, link_counters) {

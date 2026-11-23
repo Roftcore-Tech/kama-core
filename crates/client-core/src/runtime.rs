@@ -1146,6 +1146,9 @@ pub struct ClientStats {
     pub ptt_copy_unprotected: u64,
     /// [ACK-BITMAP] Çözülen 0x15 bitmap ACK çerçevesi.
     pub ack_bitmap_rx: u64,
+    /// [TEL-KANITI · salt gözlem] Kabul edilip çözülmeye verilen ACK çerçeveleri, türe göre:
+    /// `[0x10, 0x14, 0x15, 0x16, 0x17]` ([`WireEvidence::ack_rx_types`]).
+    pub ack_rx_types: [u64; 5],
     /// Wire'a yazılmak üzere ÜRETİLEN mühürlü UDP payload byte'ı — DENEME düzlemi
     /// ([`EgressPolicy`] reddettikleri DAHİL; gerçek-enjekte düzlem politikanın kendi
     /// sayacındadır). Alt-sınıf ayrımı `tx_*_bytes` alanlarında; toplamları bu değere eşittir.
@@ -1373,6 +1376,8 @@ pub struct ClientLiveDiag {
     pub tx_bytes: u64,
     /// ACK çerçevesi sayaçları (çerçeve işlendiği anda yazılır).
     pub ack: AckFrameCounts,
+    /// [TEL-KANITI · salt gözlem] ACK türü sayıları, CAPS ve yalın PTT gönderimleri.
+    pub wire: WireEvidence,
     /// Son [`ACK_LOG_LEN`] ACK çerçevesinin kaydı (çerçeve işlendiği anda yazılır).
     pub acks: DiagRing<AckFrameDiag, ACK_LOG_LEN>,
     /// Son [`STATE_LOG_LEN`] motor durum değişikliği (ana döngü turu çözünürlüğünde).
@@ -1656,6 +1661,32 @@ fn saturating_us(d: Duration) -> u64 {
     u64::try_from(d.as_micros()).unwrap_or(u64::MAX)
 }
 
+/// [TEL-KANITI · salt gözlem · #233] Koşunun kabul kipini kendi kaydından kanıtlayan sayaçlar
+/// ([`ClientLiveDiag::wire`]; [`ClientStats`]'tan kopyalanır, hiçbir karar okumaz).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct WireEvidence {
+    /// Bu uca gelen ACK çerçeveleri, türe göre: `[0x10, 0x14 (V2), 0x15 (bitmap), 0x16 (bitmap +
+    /// yalın PTT), 0x17 (bitmap + yalın + birleşik PTT)]`.
+    pub ack_rx_types: [u64; 5],
+    /// Gönderilen CAPS çerçevesi ([`ClientStats::caps_sends`]).
+    pub caps_sends: u64,
+    /// 0x09 yalın PTT çerçevesiyle giden iletim ([`ClientStats::ptt_lean_tx`]).
+    pub ptt_lean_tx: u64,
+}
+
+impl WireEvidence {
+    /// İki oturumun sayaçlarını toplar (doygun).
+    #[must_use]
+    pub fn plus(mut self, other: Self) -> Self {
+        for (a, b) in self.ack_rx_types.iter_mut().zip(other.ack_rx_types) {
+            *a = a.saturating_add(b);
+        }
+        self.caps_sends = self.caps_sends.saturating_add(other.caps_sends);
+        self.ptt_lean_tx = self.ptt_lean_tx.saturating_add(other.ptt_lean_tx);
+        self
+    }
+}
+
 /// [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] ACK çerçevesi sayaçları ([`ClientLiveDiag::ack`]).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct AckFrameCounts {
@@ -1807,6 +1838,11 @@ impl ClientLiveDiag {
         self.tx_datagrams = stats.tx_datagrams;
         self.rx_datagrams = stats.rx_datagrams;
         self.tx_bytes = stats.tx_bytes;
+        self.wire = WireEvidence {
+            ack_rx_types: stats.ack_rx_types,
+            caps_sends: stats.caps_sends,
+            ptt_lean_tx: stats.ptt_lean_tx,
+        };
         self.fec_blocks_latched = stats.fec_blocks_latched;
         self.fec_repairs_tx = stats.fec_repairs_tx;
         let fec = sender.diag_fec_actuation();
@@ -3734,6 +3770,15 @@ async fn client_task(
                     // [PTT-BİRLEŞİK · deney] 0x17 = 0x16 + "eşin uygulaması birleşik PTT'yi çözer"
                     // (yalnız bu uç CAPS'te biti bildirdiyse yazılır; yukarıda yalnız
                     // `ptt_coalesce` açıkken kabul edilir). Yalın PTT için 0x16 gibi sayılır.
+                    // [TEL-KANITI · salt gözlem] Gelen ACK'in türü sayılır (karar okumaz).
+                    let ack_slot = match plain[0] {
+                        FRAME_TYPE_ACK_V2 => 1,
+                        FRAME_TYPE_ACK_BITMAP => 2,
+                        FRAME_TYPE_ACK_BITMAP_PTT => 3,
+                        FRAME_TYPE_ACK_BITMAP_PTT_COALESCE => 4,
+                        _ => 0,
+                    };
+                    stats.ack_rx_types[ack_slot] = stats.ack_rx_types[ack_slot].saturating_add(1);
                     let coalesce_ack = plain[0] == FRAME_TYPE_ACK_BITMAP_PTT_COALESCE;
                     let lean_ack = plain[0] == FRAME_TYPE_ACK_BITMAP_PTT || coalesce_ack;
                     // İlk yalın ACK'in türü kesin: eş bit 2'yi CAPS'le birlikte gördü (0x16 ancak

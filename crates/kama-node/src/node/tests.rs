@@ -958,7 +958,7 @@ fn input_limits_are_the_engines_own_limits() {
         reply,
     })
     .expect("ptt_open")
-    .0;
+    .stream;
     let over = call(node, |reply| Command::PttPush {
         stream,
         payload: vec![BUNDLE_BYTE; limits.max_bundle_bytes + 1],

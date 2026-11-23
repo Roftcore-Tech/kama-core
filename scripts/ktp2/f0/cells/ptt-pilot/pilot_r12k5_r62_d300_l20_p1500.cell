@@ -1,0 +1,18 @@
+# [PTT-BİRLEŞİK · pilot · #233] Gerçek istemci (iki süreç, ürün düğümü) pilot koşusu — YEREL netem
+# kabulü içindir; bulutta yalnız netem'siz bağlantı sınaması yapıldı. Elle yazıldı.
+# Hat: ileri (alice → bob) 12 500 B/s, 300 ms, %20 kayıp; dönüş (bob → alice) 62 B/s, 300 ms.
+# Basış: 5 × 300 ms (düğüm doğrulanmış eşe 300 ms seçer; çağıranın süresi 200 ms / 80 B).
+# İkili: BIN_F0 = <dal ağacı>/target/release/examples/f0_flows (cargo build --release -p
+# kama-integration --example f0_flows). Tohum = tekrar (REPS=3; netem kaybı rastgeledir, anahtarlı
+# değildir). CAPTURE=1: cap/A_va0.jsonl alice'in tele çıkan her datagramını yazar.
+CELL=pilot_r12k5_r62_d300_l20_p1500
+FWD="delay 300ms loss 20% rate 100kbit limit 64"
+REV="delay 300ms rate 496bit limit 64"
+REPS=3
+ARMS="pilot"
+BUDGET_S=120
+CAPTURE=1
+SETTLE_S=1
+F0_ARGS='--dir @D@ --alice-addr @CLI_IP@:@PORT@ --bob-addr @SRV_IP@:@PORT@ --scenario dosyasiz --profile pilot_r12k5_r62_d300_l20 --rep @REP@ --window-s 40 --warmup-texts 1 --warmup-every-ms 500 --texts 0 --sigs 0 --karsi off --ptt-pilot on --ptt-bundles 5 --ptt-bundle-ms 200 --ptt-bytes 80 --ptt-at-ms 8000 --connect-timeout-s 30 --probe-ms 200 --live-diag on --receipt-grace-s 20'
+ARM_pilot_SRV="env KAMA_LINK_RATES=62,12500 KAMA_ACK_FORMAT=bitmap KAMA_PTT_PILOT=1 @BIN_F0@ --role bob $F0_ARGS"
+ARM_pilot_CLI="env KAMA_LINK_RATES=12500,62 KAMA_ACK_FORMAT=bitmap KAMA_PTT_PILOT=1:bob @BIN_F0@ --role alice $F0_ARGS"

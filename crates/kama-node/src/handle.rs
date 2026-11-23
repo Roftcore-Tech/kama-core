@@ -263,3 +263,17 @@ mod tests {
         assert_eq!(FileHandle::from_raw(9).raw(), 9);
     }
 }
+
+/// [PTT-BİRLEŞİK · pilot · #233] `KamaNode::ptt_open_press` sonucu: düğümün basış için SEÇTİĞİ
+/// biçim. Medya/yakalama tarafı çerçeveleri `bundle_ms` süresiyle demetler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PttPress {
+    /// Düğüm tutamacı (`ptt_push` / `ptt_push_timed` / `ptt_close`).
+    pub stream: StreamHandle,
+    /// Akışın `bundle_ms` KODU (`kama_app::codec::bundle_ms_from_code` ile ms): pilot seçildiyse
+    /// 300 ms'nin kodu, değilse çağıranın verdiği değer.
+    pub bundle_ms: u8,
+    /// Basış birleşik biçimde mi açıldı (eşin desteği basıştan önce doğrulanmıştı). `false` =
+    /// bugünkü uyumlu ayrı kayıtlar.
+    pub coalesced: bool,
+}

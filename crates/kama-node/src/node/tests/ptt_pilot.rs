@@ -53,8 +53,9 @@ fn node(phone: &Phone, pilot: Option<&str>, rates: &str) -> (Built, Events) {
 
 /// Bir basışın gözlemi.
 struct Press {
-    /// Düğümün döndürdüğü `bundle_ms` kodu.
+    /// Düğümün döndürdüğü `bundle_ms` kodu ve birleşik biçim bildirimi.
     code: u8,
+    coalesced: bool,
     /// Alice'in `send`'e kabul ettirdiği kayıtların boyları, sırasıyla.
     sent: Vec<u32>,
     /// Bob'un `PttOpened.bundle_ms`'i ve aldığı demet sayısı.
@@ -80,7 +81,7 @@ fn press(
         .take_unit_trace_for_test();
     let before: PttStats = bob.node.ptt.stats();
     let to_bob = peer_of(&alice.node, BOB);
-    let (stream, code) = call(&mut alice.node, |reply| Command::PttOpen {
+    let opened = call(&mut alice.node, |reply| Command::PttOpen {
         peer: to_bob,
         codec: PttCodec::Lyra,
         bundle_ms: CALLER_MS,
@@ -88,6 +89,7 @@ fn press(
         reply,
     })
     .expect("ptt_open");
+    let (stream, code) = (opened.stream, opened.bundle_ms);
     for k in 0..BUNDLES {
         let timed = timed.then(|| (Instant::now(), k + 1 == BUNDLES));
         call(&mut alice.node, |reply| Command::PttPush {
@@ -128,6 +130,7 @@ fn press(
     let after = bob.node.ptt.stats();
     Press {
         code,
+        coalesced: opened.coalesced,
         sent,
         bob_bundle_ms: bob_bundle_ms.expect("bob: PttOpened"),
         bob_bundles,
@@ -160,6 +163,10 @@ fn assert_coalesced_300(p: &Press, what: &str) {
     assert_eq!(p.bob_bundle_ms, SPURT_PILOT_BUNDLE_CODE, "{what}");
     assert_eq!(p.bob_bundles, BUNDLES, "{what}");
     assert_eq!(p.bob_spurt, (1, 1), "{what}: birleşik açılış ve END");
+    assert!(
+        p.coalesced,
+        "{what}: düğüm birleşik biçimi çağırana bildirir"
+    );
 }
 
 /// Bayrak açık + YÖNETİLEN eş: ilk basış (bant içi bildirim beklenmeden) birleşik biçimde ve
@@ -232,6 +239,7 @@ fn unknown_peer_stays_compatible_and_a_later_press_uses_the_in_band_verified_pil
         assert_eq!(p.bob_bundle_ms, CALLER_MS, "{arm}");
         assert_eq!(p.bob_bundles, BUNDLES, "{arm}");
         assert_eq!(p.bob_spurt, (0, 0), "{arm}: ayrı kayıtlar");
+        assert!(!p.coalesced, "{arm}: düğüm uyumlu biçimi bildirir");
         sequences.push(p.sent);
         if pilot_setting.is_some() {
             // Bant içi 0x17 (ilk basışın verisine gelen ACK) düğümce kaydedilir.

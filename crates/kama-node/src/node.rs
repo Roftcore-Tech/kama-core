@@ -81,7 +81,7 @@ use crate::event::{
     PeerConnectState,
 };
 use crate::files::{self, ReceivedFiles};
-use crate::handle::{FileHandle, HandleAllocator, Registry, StreamHandle};
+use crate::handle::{FileHandle, HandleAllocator, PttPress, Registry, StreamHandle};
 use crate::hub_mode::HubSide;
 use crate::peers::PeerBook;
 use crate::pilot_record::PilotRecorder;
@@ -143,8 +143,7 @@ pub(crate) enum Command {
         bundle_ms: u8,
         /// [PTT-BİRLEŞİK · pilot] `true` → `Ptt::open_press` (süreyi pilot kuralı seçer).
         pilot: bool,
-        /// (tutamaç, akışın `bundle_ms` kodu).
-        reply: Reply<(StreamHandle, u8)>,
+        reply: Reply<PttPress>,
     },
     PttPush {
         stream: StreamHandle,
@@ -590,7 +589,7 @@ impl NodeLoop {
         codec: PttCodec,
         bundle_ms: u8,
         pilot: bool,
-    ) -> Result<(StreamHandle, u8), NodeError> {
+    ) -> Result<PttPress, NodeError> {
         // Tutamaç ÖNCE: sayaç tükenmişse akış açılmaz.
         let stream = StreamHandle::from_raw(self.shared.handles.issue()?);
         // [PTT-BİRLEŞİK · pilot] Yetenek açılıştan ÖNCE güncellenir: bu basışın biçimi o ana dek
@@ -606,7 +605,11 @@ impl NodeLoop {
         }
         .map_err(NodeError::Ptt)?;
         self.streams.insert(stream.raw(), (peer, stream_id));
-        Ok((stream, bundle_ms))
+        Ok(PttPress {
+            stream,
+            bundle_ms,
+            coalesced: self.ptt.outgoing_is_coalesced(stream_id).unwrap_or(false),
+        })
     }
 
     fn ptt_push(
@@ -1089,6 +1092,7 @@ impl NodeLoop {
         reorder.retain(|(handle, _)| !sessions.iter().any(|s| s.session == *handle));
         NodeProbe {
             sessions,
+            ptt: self.ptt.stats(),
             retired: transport.retired_live_diag(),
             reorder_other: reorder.into_iter().map(|(_, diag)| diag).collect(),
             not_ready_drops: ctx.not_ready_drops,

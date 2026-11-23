@@ -112,7 +112,7 @@ pub use event::{
     PeerConnectState,
 };
 pub use files::RECEIVED_FILES_DIR;
-pub use handle::{FileHandle, StreamHandle};
+pub use handle::{FileHandle, PttPress, StreamHandle};
 #[cfg(feature = "test-util")]
 pub use probe::{EnvelopeCounts, NodeProbe, PeerSessionProbe, SessionEventCounts, SessionProbe};
 
@@ -622,13 +622,13 @@ impl KamaNode {
             pilot: false,
             reply,
         })
-        .map(|(stream, _)| stream)
+        .map(|press| press.stream)
     }
 
     /// [PTT-BİRLEŞİK · pilot · #233] Basış başlar ve demet süresini pilot kuralı seçer
-    /// (`kama_app::ptt::Ptt::open_press`); döner: (düğüm tutamacı, akışın `bundle_ms` KODU —
-    /// `kama_app::codec::bundle_ms_from_code` ile ms). Medya/yakalama tarafı çerçeveleri DÖNEN
-    /// süreyle demetler. Pilot açık ve eşin desteği basıştan ÖNCE doğrulanmışsa (yönetilen ya da
+    /// (`kama_app::ptt::Ptt::open_press`); döner: [`PttPress`] — düğüm tutamacı, akışın SEÇİLEN
+    /// `bundle_ms` kodu ve birleşik biçimin kullanılıp kullanılmadığı. Medya/yakalama tarafı
+    /// çerçeveleri DÖNEN süreyle demetler. Pilot açık ve eşin desteği basıştan ÖNCE doğrulanmışsa (yönetilen ya da
     /// daha önce bant içi 0x17) 300 ms'nin kodu; aksi hâlde `fallback_bundle_ms` aynen ve tel
     /// [`Self::ptt_open`] ile bayt-aynı. Basışın biçimi basış boyunca değişmez.
     ///
@@ -639,7 +639,7 @@ impl KamaNode {
         peer_id: &str,
         codec: PttCodec,
         fallback_bundle_ms: u8,
-    ) -> Result<(StreamHandle, u8), NodeError> {
+    ) -> Result<PttPress, NodeError> {
         let peer = self.peers.resolve(peer_id)?;
         self.request(|reply| Command::PttOpen {
             peer,

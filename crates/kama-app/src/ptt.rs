@@ -391,6 +391,23 @@ fn bounded_insert<V>(map: &mut BTreeMap<PeerRef, V>, peer: PeerRef, value: V) ->
     true
 }
 
+impl PttStats {
+    /// [TEL-KANITI · salt gözlem] Kabul ettirilen birleşik demeti sayar: `(açılışlı mı, END mi)`.
+    fn note_spurt_tx(&mut self, kind: Option<(bool, bool)>) {
+        let Some((open, end)) = kind else {
+            return;
+        };
+        if open {
+            self.spurt_open_tx = self.spurt_open_tx.saturating_add(1);
+        } else if !end {
+            self.spurt_compact_tx = self.spurt_compact_tx.saturating_add(1);
+        }
+        if end {
+            self.spurt_end_tx = self.spurt_end_tx.saturating_add(1);
+        }
+    }
+}
+
 /// PTT-R5 (AMP §3, K4G-08): aynı eşten aynı anda en çok bu kadar etkin gelen akış; fazlası
 /// düşürülür.
 pub const PTT_MAX_ACTIVE_STREAMS: usize = 2;
@@ -624,6 +641,14 @@ pub struct PttStats {
     /// defterinde olmayan `codec`'li açılış bilgili demetler ve birleşik olmayan (ayrı
     /// `PTT_OPEN`'la açılmış) akışa gelen `END` işareti (işaret yok sayılır, ses teslim edilir).
     pub spurt_refused: u64,
+    /// [TEL-KANITI · salt gözlem · gönderen] Transport'a kabul ettirilen birleşik demetler:
+    /// açılış bilgili (0x8B / 0x8C), kompakt açılışsız (0x8A; yalnız birleşik akışta sayılır) ve
+    /// `END` işaretli (0x8C / 0x8D; yüksüz `END` dahil).
+    pub spurt_open_tx: u64,
+    /// Bkz. [`Self::spurt_open_tx`].
+    pub spurt_compact_tx: u64,
+    /// Bkz. [`Self::spurt_open_tx`].
+    pub spurt_end_tx: u64,
 }
 
 /// B2.4 PTT motoru. Ayrıntı: modül belgesi.
@@ -844,6 +869,14 @@ impl Ptt {
     #[must_use]
     pub fn stats(&self) -> PttStats {
         self.stats
+    }
+
+    /// [PTT-BİRLEŞİK · pilot] Açık giden akış birleşik biçimde mi (açılışta seçildi; eş oturum
+    /// içinde "çözmüyorum" derse ya da oturum değişip yetenek düşerse `false`'a döner). Açık akış
+    /// değilse `None`.
+    #[must_use]
+    pub fn outgoing_is_coalesced(&self, stream_id: StreamId) -> Option<bool> {
+        self.outgoing.get(&stream_id).map(|stream| stream.coalesced)
     }
 
     /// Bu eşe açık giden akış; yoksa `None`.
@@ -1116,7 +1149,14 @@ impl Ptt {
         // kapanış Reliable kalır (aşağıda). Profil kapalıyken Transport son tarihi yalnız sunum
         // kuyruğunda uygular.
         let policy = DeliveryPolicy::DeadlineBounded { deadline };
+        let sent_kind = match &bundle {
+            AppMessage::MediaBundleOpen { end, .. } => Some((true, *end)),
+            AppMessage::MediaBundleEnd { .. } => Some((false, true)),
+            AppMessage::MediaBundleCompact { .. } if stream.coalesced => Some((false, false)),
+            _ => None,
+        };
         send_record(messenger, handle, &bundle, policy)?;
+        self.stats.note_spurt_tx(sent_kind);
         if stream.coalesced {
             stream.sent_on_session = stream.sent_on_session.saturating_add(1);
             stream.end_sent = last;
@@ -1163,12 +1203,14 @@ impl Ptt {
             }
             let end = spurt_record(stream_id, &stream, OpenRule::of(self), true, Vec::new());
             let deadline = std::time::Instant::now() + PTT_BUNDLE_DEADLINE;
-            return send_record(
+            send_record(
                 messenger,
                 handle,
                 &end,
                 DeliveryPolicy::DeadlineBounded { deadline },
-            );
+            )?;
+            self.stats.note_spurt_tx(Some((false, true)));
+            return Ok(());
         }
         let close = AppMessage::PttClose { stream_id };
         send_record(messenger, handle, &close, DeliveryPolicy::Reliable)
