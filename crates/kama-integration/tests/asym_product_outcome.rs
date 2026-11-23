@@ -3451,6 +3451,39 @@ impl Cell {
         }
     }
 
+    /// [ÖLÇÜM · hedef 1/3/4 · 2026-11-23] Dosya aktarılırken düşüş. `rate_drop_recovery`'de düşüş
+    /// (8 s) birinci dosya bittikten sonra geliyor ve ikinci dosya (24 s) toparlanmadan sonra
+    /// başlıyor: daralma boyunca ileri hatta yalnız PTT, metin ve artıklar var (6 250 B/s'nin
+    /// çok altında), hat dolmuyor ve hat koruması hiç örnek almıyor (anahtarlı kayıp, tohum 1:
+    /// bütün ACK'ler "aralık-örnek-yok", tavan 12 500 sabit). Bu hücre CC'yi gerçekten zorlar:
+    /// düşüş birinci dosya ortasında (3 s), toparlanma 15 s, ikinci dosya toparlanmadan 2 s sonra
+    /// (17 s) — düşüş algılama, daralmada hız sınırı ve toparlanmada hızlanma aynı oturumda.
+    /// Kapı değil, ölçüm hücresi: ölçütler aynı kuralla raporlanır; altı hücrelik kabul kümesine
+    /// girmesi sahip kararıdır.
+    fn rate_drop_during_file() -> Self {
+        Self {
+            name: "düşüş-dosya-sırasında",
+            fwd_plan: vec![
+                (Duration::ZERO, FWD_BPS),
+                (DURING_DROP_AT, FWD_BPS / 2),
+                (DURING_RECOVER_AT, FWD_BPS),
+            ],
+            texts_at: vec![
+                Duration::from_secs(5),
+                Duration::from_secs(9),
+                Duration::from_secs(18),
+            ],
+            file2_at: Some(DURING_FILE2_AT),
+            phases: vec![
+                ("başlangıç", Duration::ZERO),
+                ("daralma", DURING_DROP_AT),
+                ("toparlanma", DURING_RECOVER_AT),
+            ],
+            ptt_until: Some(DURING_PTT_UNTIL),
+            ..Self::rate_drop_recovery()
+        }
+    }
+
     /// [CANLILIK · 2026-11-21] Düşüş-toparlanma hattında uzun PTT oturumu (0,5–60 s, 298 demet:
     /// PTT şeridinin kabul açıklığından (256) uzun). Yalnız canlılık iddia edilir.
     fn ptt_liveness_long_session() -> Self {
@@ -3497,6 +3530,12 @@ const START_PHASE: Duration = Duration::from_secs(8);
 const LATE_TEXT_AT: Duration = Duration::from_secs(10);
 const DROP_AT: Duration = Duration::from_secs(8);
 const RECOVER_AT: Duration = Duration::from_secs(20);
+/// [ÖLÇÜM] `rate_drop_during_file` çizelgesi: düşüş birinci dosya ortasında, ikinci dosya
+/// toparlanmadan sonra (hızlanmayı ölçer).
+const DURING_DROP_AT: Duration = Duration::from_secs(3);
+const DURING_RECOVER_AT: Duration = Duration::from_secs(15);
+const DURING_FILE2_AT: Duration = Duration::from_secs(17);
+const DURING_PTT_UNTIL: Duration = Duration::from_secs(30);
 const FILE2_AT: Duration = Duration::from_secs(24);
 /// [CANLILIK · 2026-11-21] Uzun PTT oturumunun kapanışı ve koşu tavanı (tavan − kapanış = ufuk +
 /// 5 s pay).
@@ -3568,6 +3607,13 @@ fn gate_real_6250_declared_12500() {
 #[test]
 fn gate_rate_drop_then_recovery_in_one_session() {
     run_cell(Cell::rate_drop_recovery(), true);
+}
+
+/// [ÖLÇÜM · hedef 1/3/4] Dosya aktarılırken düşüş ve toparlanmadan sonra ikinci dosya; kapı
+/// değil (altı hücrelik kabul kümesinin dışında), sonuç aynı ölçütlerle raporlanır.
+#[test]
+fn measure_rate_drop_during_file_transfer() {
+    run_cell(Cell::rate_drop_during_file(), true);
 }
 
 #[test]
