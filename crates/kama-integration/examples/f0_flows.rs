@@ -42,8 +42,8 @@
 //! # Çıktı (koşu dizinine; hüküm YOK — analiz `scripts/ktp2/f0/a/f0a_analyze.py`)
 //!
 //! `alice.jsonl` / `bob.jsonl` (satır başına bir kayıt: `hdr`, `send`, `rx`, `rcpt`, `ev`, `ts`,
-//! `tr`, `mark`, `lg`, `lg_gap`, `rcpt_tx`, `rcpt_wire`) ve `alice.json` / `bob.json` (tek satır özet). stdout'a
-//! da özet basılır.
+//! `tr`, `mark`, `lg`, `lg_gap`, `rcpt_tx`, `rcpt_wire`, `ack`, `ack_gap`) ve `alice.json` /
+//! `bob.json` (tek satır özet). stdout'a da özet basılır.
 //!
 //! # Ölçüm kancaları (salt gözlem; #252 madde 1 ve 4)
 //!
@@ -62,8 +62,38 @@
 //!   kaydının gönderim anı; birim canlı aynanın kurtarma görüntüsünde en eski teyitsiz birim olarak
 //!   ilk görüldüğünde (`SenderRecoveryDiag::oldest_unacked`, ≈ 200 ms). `exact:true` = tek emisyon
 //!   kararı (orijinal iletim); değilse üst sınır. `rcpt_tx` ile `unit` (+ `sess`) üzerinden eşlenir.
+//! * `ack` — bu ucun alıcı motorundan ÇIKAN her ACK çerçevesi (bob'da dosya / metin / PTT yönünün
+//!   ACK'leri; alice'te alındı yönününkiler). Kaynak sunucu ucunun canlı aynasıdır
+//!   (`ServerLiveDiag::rx_acks`; kayıt ACK gönderildiği anda, motorun kendi saatinden yazılır).
+//!   Yalnız `--live-diag on` iken çıkar. Alanlar (anlar Unix ms; eksik alan `null`):
+//!   - `t` — ACK'in motordan çıktığı an (çerçeve kuruldu, bütçe jetonu alındı; mühür aynı turda
+//!     hemen ardından). `at_ns` aynı anın ucun saat tabanındaki ham değeri.
+//!   - `t_evidence` — kanıtın yeterli olduğu an: alarm ACK'inin kanıtla bırakıldığı varış
+//!     (`AlarmEvidence::sufficient`). ACK kanıtla bırakılmadıysa `null` (planlı ACK, yükseliş
+//!     alarmının ACK'i, alarm yok); neden tahmin edilmez, şu olgular yazılır: `alarm`, `rise`,
+//!     `detects` / `t_detect` (bu ACK aralığındaki daralma algılaması), `wait_open` (algılama
+//!     oldu, kanıt yetmeden planlı ACK çıktı).
+//!   - `t_ready` — ACK'in hazır olduğu an: alarm ACK'inde alarm kuralının kurulduğu an
+//!     (`t_alarm`; daralmada `t_evidence` ile aynı), öbürlerinde önceki ACK'ten sonraki ilk
+//!     gönderim denemesi (`t_first_try`). `t − t_ready` ertelenme süresidir.
+//!   - `defer` — önceki ACK'ten bu ACK'e dek ertelenen deneme sayısı, nedene göre: `budget`
+//!     (bütçe jetonu yetmedi), `yield` (dolu dönüş hattında veriye yol verdi), `no_info`
+//!     (bilgi taşımayan kopya), `first_window` (ilk ACK ilk varış penceresini bekledi);
+//!     `t_first_defer` ilkinin anı. `defer_alarm` — alarm kuralı kurulduktan sonrakiler.
+//!   - `t_wire` — mühür + egress kapısı + `send_to` döndükten sonraki an (çerçeve çekirdeğe
+//!     verildi). Arayüz kuyruğundaki (qdisc / netem) bekleme bu saatte görünmez. `wire` ≠
+//!     `"sent"` ise (`egress_refused`, `seal_failed`) `null`.
+//!   - `type` — çerçeve türü (`0x10` / `0x14` / `0x15` / `0x16` / `0x17`), `timer` — zamanlayıcı
+//!     yolundan mı, `cum` — yuvadaki motorun kümülatif sayaçları (algılama, kanıtlı bırakma,
+//!     yükseliş, kanıtsız biten bekleme, ertelenmeler).
+//!   - `motor:false` — motor kayıt tutmadı (bütçesiz yol / eski motor): `t` motora verilen
+//!     saattir, motor alanları `null`.
+//!   - `sampled:false` — bütün anlar motorun ve gönderim yolunun kendi saatinden, ACK başına
+//!     kesindir; sonda aralığı (`--probe-ms`) yalnız satırın dosyaya yazılma gecikmesidir. Sonda
+//!     aralığında aynanın halkasından (64 kayıt) taşan ACK'ler `ack_gap` satırıyla sayılır.
 //! * Özet: `ack_frames` (canlı aynanın ACK çerçevesi sayaçları; ACK türleri `wire.ack_rx`'te),
-//!   `lg` (yazılan satır / boşluk sayıları), bob'da `rcpt_tx` (eşleme sayıları).
+//!   `lg` (yazılan satır / boşluk sayıları), `ack_tx` (yazılan `ack` satırları: tür, alarm, kanıt
+//!   anı dolu, tele çıkan sayıları), bob'da `rcpt_tx` (eşleme sayıları).
 
 #![forbid(unsafe_code)]
 
@@ -83,6 +113,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use adaptive_transport::line_guard::FirstWindowOutcome;
 use adaptive_transport::sender::LineGuardAckTrace;
+use client_core::runtime::{RxAckDiag, RxAckWire, ServerLiveDiag};
 use client_core::transport::{
     EnvelopeLink, LinkAttempt, LinkError, LinkEvent, UnitTraceKind, UnitTraceRecord,
 };
@@ -1246,7 +1277,7 @@ const RCPT_QUEUE_CAP: usize = 4 * MAX_ITEMS as usize;
 const RECEIPT_UNIT_BYTES: usize = APP_RECORD_HEADER_BYTES + RECEIPT_BODY_BYTES;
 
 /// Düğüm ya da sonda yokken özetin kanca alanları.
-const HOOKS_NULL: &str = "\"ack_frames\":null,\"lg\":null";
+const HOOKS_NULL: &str = "\"ack_frames\":null,\"lg\":null,\"ack_tx\":null";
 
 fn opt_i(v: Option<i64>) -> String {
     v.map_or_else(|| "null".to_owned(), |v| v.to_string())
@@ -1311,10 +1342,13 @@ struct LgTap {
     skipped: u64,
     /// Kayıt sırasının geri sardığı (motor kaydının yeniden kurulduğu) durum sayısı.
     resets: u64,
+    /// [ÖLÇÜM-KANCASI] Giden ACK kaydı dökümü (`ack` satırları); aynı sondadan, aynı çağrıda.
+    ack_tx: AckTxTap,
 }
 
 impl LgTap {
     fn drain(&mut self, clock: &Clock, at: Instant, probe: &NodeProbe, out: &mut Out) {
+        self.ack_tx.drain(clock, at, &probe.rx, out);
         let keys: Vec<String> = probe
             .sessions
             .iter()
@@ -1357,11 +1391,193 @@ impl LgTap {
     }
 }
 
+/// Motor saatindeki an (`origin` + `ns`) → Unix ms; taban ya da an yoksa `null`.
+fn at_ms(clock: &Clock, origin: Option<Instant>, ns: Option<u64>) -> String {
+    opt_ms(
+        clock,
+        origin
+            .zip(ns)
+            .and_then(|(o, ns)| o.checked_add(Duration::from_nanos(ns))),
+    )
+}
+
+/// ACK çerçevesi türünün özet sırası: `0x10`, `0x14`, `0x15`, `0x16`, `0x17`, öbürü.
+const ACK_TYPES: [u8; 5] = [0x10, 0x14, 0x15, 0x16, 0x17];
+
+/// [ÖLÇÜM-KANCASI] Bir giden ACK kaydı → `ack` satırı (alan tanımları modül belgesinde). Anlar
+/// sunucu ucunun saat tabanından (`origin`) Unix ms'ye çevrilir; hiçbir alan türetilmiş tahmin
+/// değildir, motorun yazmadığı alan `null`dır.
+fn ack_line(clock: &Clock, origin: Option<Instant>, r: &RxAckDiag) -> String {
+    let ms = |ns: Option<u64>| at_ms(clock, origin, ns);
+    let sess = r
+        .session
+        .map_or_else(|| "null".to_owned(), |h| js(&format!("{h:?}")));
+    let wire = match r.wire {
+        RxAckWire::Sent => "sent",
+        RxAckWire::EgressRefused => "egress_refused",
+        RxAckWire::SealFailed => "seal_failed",
+    };
+    let t_wire = ms((r.wire == RxAckWire::Sent).then_some(r.wire_ns));
+    let c = r.totals;
+    let cum = format!(
+        "{{\"drop_detects\":{},\"drop_alarms\":{},\"rise_alarms\":{},\"wait_planned\":{},\
+         \"budget\":{},\"yield\":{},\"no_info\":{}}}",
+        c.drop_detects,
+        c.drop_alarms,
+        c.rise_alarms,
+        c.wait_planned,
+        c.budget_deferred,
+        c.yield_deferred,
+        c.no_info_deferred
+    );
+    let motor = match r.motor {
+        Some(m) => {
+            let ready = if m.alarm {
+                m.alarm_ns
+            } else {
+                Some(m.first_try_ns)
+            };
+            format!(
+                "\"t\":{},\"motor\":true,\"motor_ack\":{},\"t_evidence\":{},\"t_ready\":{},\
+                 \"t_wire\":{t_wire},\"t_detect\":{},\"t_alarm\":{},\"t_first_try\":{},\
+                 \"t_first_defer\":{},\"alarm\":{},\"rise\":{},\"wait_open\":{},\"detects\":{},\
+                 \"defer\":{{\"budget\":{},\"yield\":{},\"no_info\":{},\"first_window\":{}}},\
+                 \"defer_alarm\":{{\"budget\":{},\"yield\":{}}}",
+                ms(Some(m.emit_ns)),
+                m.index,
+                ms(m.evidence_ns),
+                ms(ready),
+                ms(m.detect_ns),
+                ms(m.alarm_ns),
+                ms(Some(m.first_try_ns)),
+                ms(m.first_defer_ns),
+                m.alarm,
+                m.rise,
+                m.wait_open,
+                m.detects,
+                m.defer_budget,
+                m.defer_yield,
+                m.defer_no_info,
+                m.defer_first_window,
+                m.alarm_defer_budget,
+                m.alarm_defer_yield
+            )
+        }
+        None => format!(
+            "\"t\":{},\"motor\":false,\"motor_ack\":null,\"t_evidence\":null,\"t_ready\":null,\
+             \"t_wire\":{t_wire},\"t_detect\":null,\"t_alarm\":null,\"t_first_try\":null,\
+             \"t_first_defer\":null,\"alarm\":null,\"rise\":null,\"wait_open\":null,\
+             \"detects\":null,\"defer\":null,\"defer_alarm\":null",
+            ms(Some(r.motor_ns))
+        ),
+    };
+    format!(
+        "{{\"k\":\"ack\",{motor},\"sess\":{sess},\"index\":{},\"type\":\"0x{:02x}\",\"bytes\":{},\
+         \"timer\":{},\"wire\":{},\"at_ns\":{},\"wire_ns\":{},\"cum\":{cum},\"sampled\":false}}",
+        r.index,
+        r.frame_type,
+        r.frame_bytes,
+        r.timer,
+        js(wire),
+        r.motor_ns,
+        r.wire_ns
+    )
+}
+
+/// [ÖLÇÜM-KANCASI] Sunucu ucunun canlı aynasındaki giden ACK halkasından YENİ kayıtları `ack`
+/// satırına döker ([`LgTap`] ile aynı yöntem: halka sayacı yeni kayıt sayısını, kayıt sırası
+/// boşluğu verir). Halkadan taşan kayıtlar `ack_gap` satırıyla sayılır. Canlı ayna kapalıyken
+/// halka boştur: satır çıkmaz.
+#[derive(Default)]
+struct AckTxTap {
+    /// Görülen halka sayacı ve yazılan son kayıt sırası.
+    seen_total: u64,
+    last: u64,
+    lines: u64,
+    gap_lines: u64,
+    skipped: u64,
+    /// Yazılan satırlar: türe göre ([`ACK_TYPES`] sırası + öbürü), motor kaydı olan, alarm
+    /// kuralıyla çıkan, kanıt anı dolu, tele çıkan (`wire: sent`).
+    types: [u64; 6],
+    motor: u64,
+    alarm: u64,
+    evidence: u64,
+    wire_sent: u64,
+}
+
+impl AckTxTap {
+    fn drain(&mut self, clock: &Clock, at: Instant, rx: &ServerLiveDiag, out: &mut Out) {
+        let ring = &rx.rx_acks;
+        let total = ring.total();
+        if total == self.seen_total {
+            return;
+        }
+        let fresh = total.checked_sub(self.seen_total).unwrap_or(total);
+        let held = ring.recent().count();
+        let take = usize::try_from(fresh).unwrap_or(usize::MAX).min(held);
+        for rec in ring.recent().skip(held - take) {
+            let skipped = rec.index.saturating_sub(self.last).saturating_sub(1);
+            if skipped > 0 {
+                out.line(&format!(
+                    "{{\"k\":\"ack_gap\",\"t\":{:.3},\"after_index\":{},\"next_index\":{},\
+                     \"skipped\":{skipped}}}",
+                    clock.ms(at),
+                    self.last,
+                    rec.index
+                ));
+                self.gap_lines += 1;
+                self.skipped = self.skipped.saturating_add(skipped);
+            }
+            out.line(&ack_line(clock, rx.clock_origin, rec));
+            self.lines += 1;
+            let slot = ACK_TYPES
+                .iter()
+                .position(|&t| t == rec.frame_type)
+                .unwrap_or(ACK_TYPES.len());
+            self.types[slot] += 1;
+            if let Some(m) = rec.motor {
+                self.motor += 1;
+                self.alarm += u64::from(m.alarm);
+                self.evidence += u64::from(m.evidence_ns.is_some());
+            }
+            self.wire_sent += u64::from(rec.wire == RxAckWire::Sent);
+            self.last = rec.index;
+        }
+        self.seen_total = total;
+    }
+
+    /// Özetin `ack_tx` alanı. `ring_total` = aynanın halkasına giren kayıt sayısı (`lines +
+    /// skipped` ile karşılaştırılır).
+    fn json(&self) -> String {
+        let t = self.types;
+        format!(
+            "{{\"lines\":{},\"gap_lines\":{},\"skipped\":{},\"ring_total\":{},\"types\":{{\
+             \"0x10\":{},\"0x14\":{},\"0x15\":{},\"0x16\":{},\"0x17\":{},\"other\":{}}},\
+             \"motor\":{},\"alarm\":{},\"t_evidence_set\":{},\"wire_sent\":{}}}",
+            self.lines,
+            self.gap_lines,
+            self.skipped,
+            self.seen_total,
+            t[0],
+            t[1],
+            t[2],
+            t[3],
+            t[4],
+            t[5],
+            self.motor,
+            self.alarm,
+            self.evidence,
+            self.wire_sent
+        )
+    }
+}
+
 /// [ÖLÇÜM-KANCASI] Özet alanları: canlı aynanın ACK çerçevesi sayaçları (`ClientLiveDiag::ack`;
 /// açık oturumlar + kapanmış oturumlar toplamı) ve `lg` satırı sayıları. ACK TÜRLERİ burada
 /// yinelenmez: `wire.ack_rx` ([`wire_json`]). `lg.ring_total` = açık oturumların ayna halkasına
 /// giren kayıt sayısı (`lines + skipped` ile karşılaştırılır). Canlı ayna kapalıyken hepsi 0.
-/// Özetin sondası son `lg` kayıtlarını da döker (son örneklemeden sonra işlenen ACK'ler).
+/// Özetin sondası son `lg` ve `ack` kayıtlarını da döker (son örneklemeden sonra işlenen /
+/// çıkan ACK'ler). `ack_tx` = yazılan `ack` satırlarının sayıları ([`AckTxTap::json`]).
 fn hooks_json(node: &KamaNode, clock: &Clock, lg: &mut LgTap, out: &mut Out) -> String {
     let Ok(probe) = node.probe_for_test() else {
         return HOOKS_NULL.to_owned();
@@ -1386,8 +1602,18 @@ fn hooks_json(node: &KamaNode, clock: &Clock, lg: &mut LgTap, out: &mut Out) -> 
     }
     format!(
         "\"ack_frames\":{{\"frames\":{},\"mapped\":{},\"new_units\":{},\"inflight_shrunk\":{}}},\
-         \"lg\":{{\"lines\":{},\"gap_lines\":{},\"skipped\":{},\"resets\":{},\"ring_total\":{}}}",
-        ack[0], ack[1], ack[2], ack[3], lg.lines, lg.gap_lines, lg.skipped, lg.resets, ring_total
+         \"lg\":{{\"lines\":{},\"gap_lines\":{},\"skipped\":{},\"resets\":{},\"ring_total\":{}}},\
+         \"ack_tx\":{}",
+        ack[0],
+        ack[1],
+        ack[2],
+        ack[3],
+        lg.lines,
+        lg.gap_lines,
+        lg.skipped,
+        lg.resets,
+        ring_total,
+        lg.ack_tx.json()
     )
 }
 
