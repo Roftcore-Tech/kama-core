@@ -325,8 +325,14 @@ fn c_non_alarm_acks_keep_the_one_ack_back_interval() {
 /// yükselişin başlangıcından, yani toparlanmadan sonraki ilk varıştan (bu düzenekte o varıştan
 /// sonraki çift yeni hızla gelir) başlar ve bir ACK geriye kuralının başlangıcından önce değildir
 /// (aralık hiçbir zaman uzamaz). Diğer üç iddia aynen.
+///
+/// [HEDEF 4 · TUR 2 · #175 7090004658] Ad değişti (`d_rise_alarm_after_a_drop_is_unchanged`): aralık
+/// iddiası tur 1'den beri bugünkü kural değildir. Başlangıçtan kurulan aralık, son ACK'ten bu yana
+/// varış duraklaması yoksa geçerlidir (`PairRate::paused_since_ack`; duraklama varsa bir ACK geriye
+/// kuralı, (k3)). Bu kolda hat toparlanmaya dek meşgul (80 → 160 ms aralıklar, kayıpsız), duraklama
+/// yok; iddialar tur 1'deki gibi.
 #[test]
-fn d_rise_alarm_after_a_drop_is_unchanged() {
+fn d_rise_alarm_after_a_drop_on_a_busy_line_measures_from_the_rise_onset() {
     let recover_at = 45 * SEC;
     let o = run(
         &[(0, OLD_GAP), (DROP_AT, NEW_GAP), (recover_at, OLD_GAP)],
@@ -1995,3 +2001,312 @@ fn k2_honest_6250_line_never_opens_the_ceiling() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// (k3) [HEDEF 4 · TUR 2] Karşı örnek: dürüst 6 250 darboğaz + aşağı akış durması sonrası boşalma.
+// ---------------------------------------------------------------------------------------------
+
+/// Darboğazdan sonra bir aşağı akış durması: `[t0, t1)` içinde varacak datagramlar `t1`'e dek
+/// bekler, sonra `drain_gap` arayla (aşağı akışın hızı) boşalır; kuyruk bitince varışlar
+/// darboğazınkine döner. Darboğaz kapasitesi değişmez (sınayıcının karşı örneği, #175 7090004658).
+fn downstream_stall(txs: &mut [Tx], t0: u64, t1: u64, drain_gap: u64) {
+    let mut idx: Vec<usize> = (0..txs.len())
+        .filter(|&i| txs[i].arrival.is_some())
+        .collect();
+    idx.sort_by_key(|&i| txs[i].arrival);
+    let mut prev: Option<u64> = None;
+    for i in idx {
+        let a = txs[i].arrival.expect("varış");
+        let mut a2 = if a >= t0 && a < t1 { t1 } else { a };
+        if let Some(p) = prev.filter(|_| a >= t0) {
+            a2 = a2.max(p + drain_gap);
+        }
+        txs[i].arrival = Some(a2);
+        prev = Some(a2);
+    }
+}
+
+/// (k3) kolları: (durmanın başladığı s, durma ms) × boşalma hızı (B/s) × kayıp deseni.
+fn stall_arms() -> Vec<(String, u64, u64, u64, Loss)> {
+    let losses: [(&str, Loss); 2] = [
+        ("kayıpsız", |_| false),
+        ("her beşte bir kayıp", every_fifth),
+    ];
+    let mut arms = Vec::new();
+    for (t0, dur) in [(40, 1_000), (40, 2_000), (52, 1_000)] {
+        for drain in [PROFILE_LINE, 11_000] {
+            for (lname, lost) in losses {
+                arms.push((
+                    format!("durma {t0} s/{dur} ms, boşalma {drain}, {lname}"),
+                    t0 * SEC,
+                    dur * MS,
+                    BODY * SEC / drain,
+                    lost,
+                ));
+            }
+        }
+    }
+    arms
+}
+
+/// (k3) Karşı test: darboğaz 30 s'den sonra dürüst 6 250, kapasite artmaz; darboğazdan sonra 1–2 s
+/// aşağı akış durması, ardından 12 500 / 11 000 B/s'de boşalma (kuyruk boşalırken çift değeri
+/// geçici olarak yükselir, yükseliş alarmı iki alıcıda da verilir). 12 kol × açık / dolu dönüş.
+///
+/// İddialar (kol başına, PR #237 alıcısının (`d328cf3e`) aynı test gövdesiyle ölçümüne,
+/// [`PR237_STALL`]'a karşı):
+/// - yükseliş alarmının ACK'inin `span_first`'i PR #237 alıcısınınkiyle aynıdır (bir ACK geriye
+///   kuralı): yükseliş başlangıcından önce, son ACK'ten bu yana bir varış duraklaması vardır
+///   (`PairRate::paused_since_ack`), o dilim boşalmanın geri ödediği teslim açığını taşır ve
+///   aralıktan çıkarılmaz;
+/// - ilk indirimden sonra tavan açılışı sayısı PR #237 alıcısınınkini aşmaz: yeni sahte açılış yok.
+///
+/// Tur 1 alıcısında (`1f36c510`, aralık her zaman yükseliş başlangıcından) birinci iddia dolu
+/// dönüşte 10 kolda, ikincisi 7 kolda kırmızıdır (#175 7090004658). PR #237 alıcısının kendi
+/// açılışları (açık dönüş 8, dolu dönüş 3 kol) bu değişiklikten önce de vardır; kapsam dışıdır.
+#[test]
+fn k3_downstream_stall_flush_opens_no_new_ceiling() {
+    let mut table = Vec::new();
+    let mut fails = Vec::new();
+    for (ret, busy) in [
+        ("açık dönüş", None),
+        ("dolu dönüş", Some((DROP_AT - SEC, u64::MAX))),
+    ] {
+        for (aname, t0, dur, drain_gap, lost) in stall_arms() {
+            let name = format!("{aname}, {ret}");
+            let mut txs = fifo(
+                TIMELINE_UNTIL,
+                |_| SENDER_UDP,
+                |s| {
+                    if lost(s) {
+                        Fate::LostOnLine
+                    } else {
+                        Fate::Delivered
+                    }
+                },
+                &drop_line(),
+            );
+            downstream_stall(&mut txs, t0, t0 + dur, drain_gap);
+            let o = drive(&txs, TIMELINE_UNTIL, busy, Some(PROFILE_LINE), |_| true);
+            let steps = replay(&o, &txs, None, busy);
+            let bm = o.bitmap();
+            let rise = bm.iter().position(|e| e.rise_alarms >= 1).map(|i| {
+                let one_back = o.first_received_after(largest(&bm[i - 1].frame));
+                (bm[i].at, span_first(&bm[i].frame), one_back)
+            });
+            let rise_step = steps.iter().find(|s| s.rise_alarms >= 1);
+            let down = steps.iter().position(|s| s.after < s.before);
+            let opens: Vec<&Step> = down
+                .map(|d| steps[d..].iter().filter(|s| s.after > s.before).collect())
+                .unwrap_or_default();
+            let max_open = opens.iter().map(|s| s.after).max();
+            // İlk indirimden sonra tavanın 6 875'in üstünde kaldığı süre (göndericide).
+            let ch = changes(&steps);
+            let over_ms = down.map_or(0, |d| {
+                let t_down = steps[d].proc;
+                let mut cur = steps[d].after;
+                let mut last = t_down;
+                let mut over = 0u64;
+                for &(t, p) in ch.iter().filter(|&&(t, _)| t > t_down) {
+                    if cur > CEILING_MAX {
+                        over += t - last;
+                    }
+                    cur = p;
+                    last = t;
+                }
+                if cur > CEILING_MAX {
+                    over += TIMELINE_UNTIL.saturating_sub(last);
+                }
+                over / MS
+            });
+            println!(
+                "AÇILIŞ|{name}|{}|{}|{}",
+                rise.map_or_else(|| "-".to_string(), |(_, sf, _)| sf.to_string()),
+                opens.len(),
+                ch.iter()
+                    .map(|&(t, p)| format!("{}: {p}", secs(t)))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            );
+            if let Some(s) = rise_step {
+                println!("   {name}: yükseliş ACK'i {}", step_line(s));
+            }
+            table.push(format!(
+                "| {name} | {} | {} | {} | {} ms |",
+                rise.map_or_else(
+                    || "yok".to_string(),
+                    |(at, sf, ob)| format!(
+                        "{} s, aralık başı {sf} (bir ACK geriye {ob})",
+                        secs(at)
+                    )
+                ),
+                rise_step.map_or_else(
+                    || "yok".to_string(),
+                    |s| format!(
+                        "{:?}, g {:?} ms, örnek {:?}",
+                        s.interval,
+                        s.g_ns.map(|g| g / MS as i64),
+                        s.sample
+                    )
+                ),
+                max_open.map_or_else(|| "yok".to_string(), |p| format!("{} → {p}", opens.len())),
+                over_ms
+            ));
+            let Some(&(_, pr237_first, pr237_opens)) = PR237_STALL.iter().find(|r| r.0 == name)
+            else {
+                fails.push(format!("{name}: PR #237 satırı yok"));
+                continue;
+            };
+            let first = rise.map(|(_, sf, _)| sf);
+            if first != pr237_first {
+                fails.push(format!(
+                    "{name}: yükseliş ACK'inin aralığı {first:?}'den, PR #237 alıcısında \
+                     {pr237_first:?}'den (bir ACK geriye kuralı)"
+                ));
+            }
+            if opens.len() > pr237_opens {
+                fails.push(format!(
+                    "{name}: yeni sahte açılış ({} > PR #237 alıcısında {pr237_opens}): {:?}",
+                    opens.len(),
+                    opens.iter().map(|s| step_line(s)).collect::<Vec<_>>()
+                ));
+            }
+        }
+    }
+    println!(
+        "| kol | yükseliş alarmının ACK'i (çıkış, aralık başı) | göndericide aralık, g, örnek | \
+         ilk indirimden sonra açılış (sayı → en yüksek tavan) | tavan > 6 875 süresi |"
+    );
+    println!("|---|---|---|---|---|");
+    for r in &table {
+        println!("{r}");
+    }
+    assert!(fails.is_empty(), "{fails:#?}");
+}
+
+/// (k3) PR #237 alıcısının (`d328cf3e`) aynı test gövdesiyle ölçümü (`AÇILIŞ|` satırları): (kol,
+/// yükseliş ACK'inin `span_first`'i — bir ACK geriye kuralı, bitmap tabanıyla sınırlı —, ilk
+/// indirimden sonra tavan açılışı sayısı). Bu açılışlar değişiklikten önce de vardır ve kapsamı
+/// dışındadır (#175 7090004658 madde 3–4); yeni açılış yasaktır.
+const PR237_STALL: &[(&str, Option<u64>, usize)] = &[
+    (
+        "durma 40 s/1000 ms, boşalma 12500, kayıpsız, açık dönüş",
+        Some(426),
+        1,
+    ),
+    (
+        "durma 40 s/1000 ms, boşalma 12500, her beşte bir kayıp, açık dönüş",
+        Some(426),
+        1,
+    ),
+    (
+        "durma 40 s/1000 ms, boşalma 11000, kayıpsız, açık dönüş",
+        Some(426),
+        1,
+    ),
+    (
+        "durma 40 s/1000 ms, boşalma 11000, her beşte bir kayıp, açık dönüş",
+        Some(426),
+        1,
+    ),
+    (
+        "durma 40 s/2000 ms, boşalma 12500, kayıpsız, açık dönüş",
+        Some(426),
+        1,
+    ),
+    (
+        "durma 40 s/2000 ms, boşalma 12500, her beşte bir kayıp, açık dönüş",
+        Some(426),
+        1,
+    ),
+    (
+        "durma 40 s/2000 ms, boşalma 11000, kayıpsız, açık dönüş",
+        Some(426),
+        1,
+    ),
+    (
+        "durma 40 s/2000 ms, boşalma 11000, her beşte bir kayıp, açık dönüş",
+        Some(426),
+        1,
+    ),
+    (
+        "durma 52 s/1000 ms, boşalma 12500, kayıpsız, açık dönüş",
+        Some(512),
+        0,
+    ),
+    (
+        "durma 52 s/1000 ms, boşalma 12500, her beşte bir kayıp, açık dönüş",
+        Some(510),
+        0,
+    ),
+    (
+        "durma 52 s/1000 ms, boşalma 11000, kayıpsız, açık dönüş",
+        Some(514),
+        0,
+    ),
+    (
+        "durma 52 s/1000 ms, boşalma 11000, her beşte bir kayıp, açık dönüş",
+        Some(501),
+        0,
+    ),
+    (
+        "durma 40 s/1000 ms, boşalma 12500, kayıpsız, dolu dönüş",
+        Some(372),
+        0,
+    ),
+    (
+        "durma 40 s/1000 ms, boşalma 12500, her beşte bir kayıp, dolu dönüş",
+        Some(435),
+        0,
+    ),
+    (
+        "durma 40 s/1000 ms, boşalma 11000, kayıpsız, dolu dönüş",
+        Some(372),
+        0,
+    ),
+    (
+        "durma 40 s/1000 ms, boşalma 11000, her beşte bir kayıp, dolu dönüş",
+        Some(374),
+        0,
+    ),
+    (
+        "durma 40 s/2000 ms, boşalma 12500, kayıpsız, dolu dönüş",
+        Some(372),
+        0,
+    ),
+    (
+        "durma 40 s/2000 ms, boşalma 12500, her beşte bir kayıp, dolu dönüş",
+        Some(374),
+        0,
+    ),
+    (
+        "durma 40 s/2000 ms, boşalma 11000, kayıpsız, dolu dönüş",
+        Some(372),
+        0,
+    ),
+    (
+        "durma 40 s/2000 ms, boşalma 11000, her beşte bir kayıp, dolu dönüş",
+        Some(374),
+        0,
+    ),
+    (
+        "durma 52 s/1000 ms, boşalma 12500, kayıpsız, dolu dönüş",
+        Some(513),
+        1,
+    ),
+    (
+        "durma 52 s/1000 ms, boşalma 12500, her beşte bir kayıp, dolu dönüş",
+        Some(510),
+        0,
+    ),
+    (
+        "durma 52 s/1000 ms, boşalma 11000, kayıpsız, dolu dönüş",
+        Some(513),
+        1,
+    ),
+    (
+        "durma 52 s/1000 ms, boşalma 11000, her beşte bir kayıp, dolu dönüş",
+        Some(512),
+        1,
+    ),
+];
