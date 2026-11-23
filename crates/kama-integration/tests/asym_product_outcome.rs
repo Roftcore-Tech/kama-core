@@ -180,6 +180,7 @@
 //!
 //! Varsayılan (CI): tohum 1, profil açık; dört ölçütten biri düşerse test düşer. Ölçüm:
 //! `KAMA_ASYM_SEED=<n>` (tohum), `KAMA_ASYM_PROFILE=off` (profil kapalı kol),
+//! `KAMA_ASYM_PTT_LEAN=off` (eş yalın PTT'yi bilmiyor: kopyalı PTT, bitmap 0x15; [`fixture_ptt_lean`]),
 //! `KAMA_ASYM_REAL_FWD_BPS=<B/s>` (yanlış profil teşhis kolu: profil ileri hattı yine
 //! [`FWD_BPS`] bildirir, rölenin gerçek ileri hızı bu değer olur; ölçütler raporlanır, kabul
 //! iddiası yalnız ürün kolunda — gerçek = profil — uygulanır). Her koşu `ÜRÜN-SONUÇ`
@@ -205,8 +206,9 @@ use client_core::runtime::{AckFormat, LinkRates, PTT_RELIABLE_COPIES};
 use client_core::transport::{ClientTransport, ClientTransportConfig};
 use client_core::unit_id::fec_block_of;
 use client_core::wire::{
-    decode_cs_probe, decode_data, decode_data_frag, decode_fec, decode_ptt, decode_recovered,
-    FRAME_CS_PROBE, FRAME_FEC, FRAME_PTT, FRAME_RECOVERED,
+    decode_caps, decode_cs_probe, decode_data, decode_data_frag, decode_fec, decode_ptt,
+    decode_recovered, encode_caps, CAP_PTT_LEAN, FRAME_CS_PROBE, FRAME_FEC, FRAME_PTT,
+    FRAME_RECOVERED,
 };
 use kama_app::clock::{MonotonicClock, SystemClock};
 use kama_app::codec::{bundle_code_from_ms, decode, AmpLimits, AppMessage, PttCodec};
@@ -293,6 +295,18 @@ fn ptt_shape() -> PttShape {
 }
 
 /// Koşunun ACK biçimi (`KAMA_ASYM_ACK_FORMAT`, varsayılan `bitmap`).
+/// [ESKİ-EŞ · yalın PTT yok] `KAMA_ASYM_PTT_LEAN=off`: Alice'in CAPS çerçevesinden yalın PTT biti
+/// (`CAP_PTT_LEAN`) mühürden önce silinir. Bob'un sunucusu biti bilmeyen eski eş gibi bitmap ACK'ini
+/// 0x15 türüyle yazar; Alice iki 0x15 ACK'ten sonra kopyalı PTT kuralına döner
+/// (`runtime::PTT_LEAN_FALLBACK_ACKS`). Ürünün yeteneksiz eşe karşı bitmap yolunu ölçer. Varsayılan:
+/// açık (iki uç yalın PTT'yi bilir); başka değer yok.
+fn fixture_ptt_lean() -> bool {
+    std::env::var("KAMA_ASYM_PTT_LEAN").map_or(true, |v| {
+        assert!(v == "off" || v == "on", "KAMA_ASYM_PTT_LEAN: on | off");
+        v == "on"
+    })
+}
+
 fn fixture_ack_format() -> AckFormat {
     std::env::var("KAMA_ASYM_ACK_FORMAT").map_or(AckFormat::Bitmap, |v| {
         AckFormat::parse(&v).expect("KAMA_ASYM_ACK_FORMAT: v2 | bitmap")
@@ -691,6 +705,15 @@ impl Tap {
 
 impl PacketProtection for Tap {
     fn seal(&mut self, ctx: ProtectionContext, frame: &[u8]) -> Result<SealedUnit, SealError> {
+        // [ESKİ-EŞ] Yalın PTT kapalı kolda Alice'in CAPS'i yalın PTT bitini taşımaz.
+        let stripped;
+        let frame = match decode_caps(frame) {
+            Some(caps) if self.side == ALICE && !fixture_ptt_lean() => {
+                stripped = encode_caps(caps & !CAP_PTT_LEAN);
+                &stripped[..]
+            }
+            _ => frame,
+        };
         let sealed = self.inner.seal(ctx, frame)?;
         // [ANAHTARLI-KAYIP] Eşleme datagram gönderilmeden (mühür dönmeden) yayınlanır: röle
         // datagramı gördüğünde anahtarı hazırdır.
@@ -2210,10 +2233,14 @@ impl Run {
         );
         println!(
             "ÜRÜN-SONUÇ {tag} {} ptt_biçim={} {} {bytes} düşen_ölçüt={failed:?}",
-            if fixture_ack_format() == AckFormat::Bitmap {
-                "yol=bitmap aday (ürün varsayılanı V2)"
-            } else {
-                "yol=v2 (ürün varsayılanı)"
+            match (
+                fixture_ack_format() == AckFormat::Bitmap,
+                fixture_ptt_lean()
+            ) {
+                (true, true) => "yol=bitmap aday (ürün varsayılanı V2)",
+                (true, false) =>
+                    "yol=bitmap aday, eş yalın PTT'siz (kopyalı PTT; ürün varsayılanı V2)",
+                (false, _) => "yol=v2 (ürün varsayılanı)",
             },
             ptt_shape_label(),
             line.join(" ")
