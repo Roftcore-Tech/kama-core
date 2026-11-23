@@ -3859,3 +3859,47 @@ fn pilot_stream_silence_end_is_four_bundles_and_other_durations_keep_two() {
     assert!(duo.bob.drain().is_empty(), "tek kapanış");
     assert_eq!(duo.bob.ptt.stats().streams_ended_by_gap, 1);
 }
+
+/// [#233 inceleme 7097041152] `open_compatible`: birleşik bayrak açık ve eş YÖNETİLEN olsa da
+/// basış bugünkü ayrı kayıtlarla gider; tel birimleri bayrak kapalı `open` basışınınkiyle
+/// bayt-aynıdır. Aynı kurulumda `open` birleşik açar (test kolu) — fark kiptedir.
+#[test]
+fn open_compatible_never_coalesces_even_toward_a_provisioned_peer() {
+    let press = |duo: &mut Duo, compatible: bool| -> Vec<Vec<u8>> {
+        let stream = if compatible {
+            duo.alice.ptt.open_compatible(
+                &mut duo.alice.messenger,
+                BOB,
+                PttCodec::Lyra,
+                TEST_BUNDLE_MS,
+            )
+        } else {
+            duo.alice.open(BOB, PttCodec::Lyra, TEST_BUNDLE_MS)
+        }
+        .expect("açılır");
+        for k in 0..3 {
+            duo.alice.send_bundle(stream, &frame(k)).expect("demet");
+        }
+        duo.alice.close(stream).expect("kapanır");
+        duo.take_inbox(Side::Bob)
+            .into_iter()
+            .map(|d| d.unit)
+            .collect()
+    };
+    let reference = {
+        let (mut duo, _) = Duo::connected();
+        press(&mut duo, false)
+    };
+    assert_eq!(
+        reference[0],
+        open_record(FIRST_STREAM_ID, PttCodec::Lyra, TEST_BUNDLE_MS)
+    );
+    let mut duo = coalesced_duo();
+    assert_eq!(press(&mut duo, true), reference, "uyumlu açılış bayt-aynı");
+    assert_eq!(duo.alice.ptt.stats().spurt_open_tx, 0);
+    // Aynı kurulumda `open` birleşik açar: ayrı PTT_OPEN yok.
+    let mut duo = coalesced_duo();
+    let coalesced = press(&mut duo, false);
+    assert_ne!(coalesced, reference);
+    assert!(duo.alice.ptt.stats().spurt_open_tx > 0);
+}

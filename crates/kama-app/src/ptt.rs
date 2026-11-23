@@ -342,6 +342,16 @@ pub const SPURT_FORMAT_EPOCH: u16 = 1;
 /// 420 ms yalnız test koludur ([`Ptt::open`]'a açık süreyle), pilot ayarı değildir.
 pub const SPURT_PILOT_BUNDLE_MS: u16 = 300;
 
+///
+/// Pilotun yan etkileri (inceleme 7097041152 · 2a / 2b; bileşim kökü `kama-node`):
+/// * Son tarih: pilot yolunda demet `send_bundle_from` / `send_last_bundle_from` ile sunulur ve
+///   son tarihi demetin İLK çerçevesinin oluşumundan 1 s sonradır (`kama-node`
+///   `ptt_push_timed`); eski `ptt_push` yolu `send_bundle` kullanır ve son tarih SUNUM anından
+///   1 s sonradır (300 ms demette oluşumdan 1,3 s).
+/// * Pilot ayarı Transport'ta bitmap ACK'i seçer ve CAPS'e bit 2'yi (`CAP_PTT_COALESCE`) ekler:
+///   pilot açık düğümün CAPS / ACK teli, eşin yeteneğinden bağımsız olarak pilot kapalı düğümden
+///   farklıdır (PTT kayıtları değil; denetim çerçeveleri).
+///
 /// [PTT-BİRLEŞİK · pilot] [`SPURT_PILOT_BUNDLE_MS`]'ın `bundle_ms` kodu (300 ms → 210).
 pub const SPURT_PILOT_BUNDLE_CODE: u8 = match codec::bundle_code_from_ms(SPURT_PILOT_BUNDLE_MS) {
     Some(code) => code,
@@ -406,6 +416,17 @@ impl PttStats {
             self.spurt_end_tx = self.spurt_end_tx.saturating_add(1);
         }
     }
+}
+
+/// Basışın açılış kipi ([`Ptt::open_with`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenMode {
+    /// [`Ptt::open`]: çağıranın süresi; yetenekli eşe birleşik (test kolları, ör. 420 ms).
+    Explicit,
+    /// [`Ptt::open_press`]: yetenekli eşe birleşik ve pilot süresi; değilse çağıranın süresi.
+    Pilot,
+    /// [`Ptt::open_compatible`]: her durumda ayrı kayıtlar, çağıranın süresi.
+    Compatible,
 }
 
 /// PTT-R5 (AMP §3, K4G-08): aynı eşten aynı anda en çok bu kadar etkin gelen akış; fazlası
@@ -921,7 +942,27 @@ impl Ptt {
         codec: PttCodec,
         bundle_ms: u8,
     ) -> Result<StreamId, PttError> {
-        self.open_with(messenger, peer, codec, bundle_ms, false)
+        self.open_with(messenger, peer, codec, bundle_ms, OpenMode::Explicit)
+            .map(|(stream_id, _)| stream_id)
+    }
+
+    /// [PTT-BİRLEŞİK · pilot · #233 inceleme 7097041152] Basış HER DURUMDA bugünkü uyumlu ayrı
+    /// kayıtlarla açılır (güvenilir `PTT_OPEN`, çağıranın süresi) — birleşik bayrak açık ve eş
+    /// yetenekli olsa da. Bileşim kökünün pilot DIŞI yolu budur (`kama-node` `ptt_open`):
+    /// birleşik biçimi yalnız [`Self::open_press`] seçer ve o zaman hep 300 ms'dir. Bayrak
+    /// kapalıyken [`Self::open`] ile bayt-aynıdır.
+    ///
+    /// # Errors
+    ///
+    /// [`Self::open`] ile aynı.
+    pub fn open_compatible<T: KamaTransport>(
+        &mut self,
+        messenger: &mut Messenger<T>,
+        peer: PeerRef,
+        codec: PttCodec,
+        bundle_ms: u8,
+    ) -> Result<StreamId, PttError> {
+        self.open_with(messenger, peer, codec, bundle_ms, OpenMode::Compatible)
             .map(|(stream_id, _)| stream_id)
     }
 
@@ -943,18 +984,18 @@ impl Ptt {
         codec: PttCodec,
         fallback_bundle_ms: u8,
     ) -> Result<(StreamId, u8), PttError> {
-        self.open_with(messenger, peer, codec, fallback_bundle_ms, true)
+        self.open_with(messenger, peer, codec, fallback_bundle_ms, OpenMode::Pilot)
     }
 
-    /// [`Self::open`] / [`Self::open_press`] ortak yolu; `pilot` yalnız birleşik akışın süresini
-    /// [`SPURT_PILOT_BUNDLE_CODE`]'a çevirir.
+    /// [`Self::open`] / [`Self::open_press`] / [`Self::open_compatible`] ortak yolu
+    /// ([`OpenMode`]).
     fn open_with<T: KamaTransport>(
         &mut self,
         messenger: &mut Messenger<T>,
         peer: PeerRef,
         codec: PttCodec,
         bundle_ms: u8,
-        pilot: bool,
+        mode: OpenMode,
     ) -> Result<(StreamId, u8), PttError> {
         if let Some(stream_id) = self.outgoing_stream(peer) {
             return Err(PttError::StreamActive { stream_id });
@@ -965,9 +1006,10 @@ impl Ptt {
         let handle = messenger.session_of(peer).ok_or(PttError::NoSession)?;
         let stream_id = self.reserve_stream_id(messenger.store(), peer)?;
         // [PTT-BİRLEŞİK · deney] Yetenekli eşe ayrı `PTT_OPEN` gitmez: ilk demetler açılışı taşır.
-        let coalesced = self.coalesce && self.caps.capable(peer, handle);
+        let coalesced =
+            mode != OpenMode::Compatible && self.coalesce && self.caps.capable(peer, handle);
         // [PTT-BİRLEŞİK · pilot] Süre yalnız birleşik akışta pilotunkine çevrilir.
-        let bundle_ms = if pilot && coalesced {
+        let bundle_ms = if mode == OpenMode::Pilot && coalesced {
             SPURT_PILOT_BUNDLE_CODE
         } else {
             bundle_ms
