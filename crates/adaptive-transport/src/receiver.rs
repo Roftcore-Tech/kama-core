@@ -301,29 +301,38 @@ pub struct Receiver {
     drop_alarm: bool,
     /// [DARALMA-ALARMI] Alarm sayısı (gözlem).
     diag_drop_alarms: u64,
-    /// [ALARM ARALIĞI · #175 7084078903] Daralma alarmı anında penceredeki daralma başlangıcının
-    /// seq'i (`RateDropDetector::onset`); alarm ACK'inin ölçüm aralığı oradan
-    /// başlar (`rx_span_field`). Yalnız daralma alarmında yazılır, her çıkan ACK'te silinir.
+    /// [ALARM ARALIĞI · #175 7084078903 · TUR 4] Kanıtlı alarm ACK'inin ölçüm aralığının ilk seq'i:
+    /// daralma başlangıcından (`RateDropDetector::onset`) kurulan kanıtın ilk seq'i
+    /// (`rx_span_field`). Yalnız kanıtlı bırakmada yazılır, her çıkan ACK'te silinir.
     alarm_span_first: Option<u64>,
-    /// [ALARM ARALIĞI · TUR 3 · #175 7086827627] Daralma alarmı verildi ama daralma başlangıcından
-    /// sonra [`crate::arrival_rate::ALARM_SPAN_MIN_SEQS`]'ten az datagram serileşti: alarm ACK'i
-    /// sonraki varışa ertelendi. Çıkan her ACK'te silinir (bekleme en çok bir ACK).
+    /// [ALARM ARALIĞI · TUR 4 · #175 7087793188] Daralma alarmı verildi, alarm ACK'i kanıtı bekliyor.
+    /// Çıkan her ACK'te silinir; bekleme en çok bir ACK sürer.
     ///
     /// Sahibin kuralı (2026-11-23): "Alarm ACK'i, yeterli kanıt geldiğinde veya mevcut planlı
     /// ACK'in son gönderim zamanı geldiğinde, hangisi önceyse çıksın. Yeni datagram gelmezse
     /// planlı ACK zamanında ve mevcut adayın kuralıyla gönderilsin." Koddaki karşılığı:
-    /// - yeterli kanıt: başlangıçtan sonra en az `ALARM_SPAN_MIN_SEQS` datagram serileşen varış
-    ///   (`on_datagram`); o varışta `drop_alarm` kurulur, ACK alarm kuralıyla hemen çıkar;
-    /// - planlı ACK: bekleme sürerken `drop_alarm` kurulu değildir, bekleme hiçbir ACK yolunu
-    ///   kapatmaz (`emit_ack`, `on_ack_timer`): bütçe ACK'i jeton, yedek ve sessizlik kuralıyla
-    ///   kendi zamanında, aralığı bir ACK geriye ve tabanı bugünkü kuralla çıkar (adayın alarm
-    ///   dışı ACK'i); `emit_ack` beklemeyi siler, sonraki varış alarm ACK'i doğurmaz;
-    /// - hangisi önceyse: ikisi de aynı `emit_ack` yolundan çıkar, ilk çıkan beklemeyi bitirir.
+    /// - **Yeterli kanıt:** göndericinin örnek koşulunun alıcıdaki aynası
+    ///   ([`crate::arrival_rate::AlarmEvidence::sufficient`]). Yalnız sıra farkı ya da yalnız
+    ///   datagram sayısı kanıt değildir. Kanıtın geldiği varışta `drop_alarm` kurulur, ACK alarm
+    ///   kuralıyla hemen çıkar. Aralık kanıtın ilk seq'inden başlar, çift alanı yalnız alarmdan
+    ///   sonraki çiftlerdendir.
+    /// - **Planlı ACK:** bekleme sürerken `drop_alarm` kurulu değildir ve bekleme hiçbir ACK yolunu
+    ///   kapatmaz (`emit_ack`, `on_ack_timer`). Bütçe ACK'i jeton, yedek ve sessizlik kuralıyla
+    ///   kendi zamanında çıkar. Aralığı bir ACK geriye, tabanı bugünkü kural, çift alanı
+    ///   [`Self::alarm_pair_saved`] ile birleşmiş değerdir; yani adayın alarm dışı ACK'idir. Sonraki
+    ///   varış alarm ACK'i doğurmaz.
+    /// - **Hangisi önceyse:** ikisi de aynı `emit_ack` yolundan çıkar; ilk çıkan beklemeyi bitirir.
     ///
-    /// Sabit bir bekleme süresi yoktur. Ölçüldü (`tests/ack_alarm_planned.rs`, her beşte bir
-    /// kayıp): kanıt alarmdan 160 ms sonra (sonraki varış), datagram gelmeyince planlı ACK
-    /// +641 ms'de ikiz alıcıyla aynı anda ve aynı çerçeveyle.
+    /// Sabit bir bekleme süresi yoktur.
     drop_alarm_wait: bool,
+    /// [ALARM ARALIĞI · TUR 4] Bekleme sürerken biriken kanıt. Başlangıç bulunana dek `None`
+    /// (algılamada ya da sonraki varışta kurulur).
+    alarm_evidence: Option<crate::arrival_rate::AlarmEvidence>,
+    /// [ALARM ARALIĞI · TUR 4] Algılama anında çift ölçümünün en büyük iki değeri. Kanıtlı bırakmada
+    /// atılır: alarm ACK'i yalnız alarmdan sonraki çiftleri taşır. Bekleme sırasında planlı ACK
+    /// çıkarsa geri birleştirilir; adayın kuralı son ACK'ten bu yana bütün çiftlerin en büyük
+    /// ikincisidir. Bekleme yokken `[0, 0]`.
+    alarm_pair_saved: [u64; 2],
     /// [ÇİFT ARALIĞI] Kapasite alt sınırı ölçümü (`crate::ack` 0x15 `pair_rate`).
     pair: PairRate,
     /// [ÇİFT ARALIĞI · YÜKSELİŞ ALARMI] Alarm sayısı (gözlem).
@@ -394,6 +403,8 @@ impl Receiver {
             diag_drop_alarms: 0,
             alarm_span_first: None,
             drop_alarm_wait: false,
+            alarm_evidence: None,
+            alarm_pair_saved: [0, 0],
             pair: PairRate::default(),
             diag_rise_alarms: 0,
         }
@@ -469,6 +480,8 @@ impl Receiver {
         }
         // [VARIŞ-HIZI] Yeni seq'in boyu ilk varış penceresine (yalnız geri bildirimi aç alıcıda;
         // çift datagram sayılmaz).
+        // [ALARM ARALIĞI · TUR 4] Bu varış daralma dedektörünün halkasına girdi mi.
+        let mut in_detector = false;
         if let Some(b) = udp_bytes.filter(|_| self.first_window_rx()) {
             self.first_window.on_arrival(d.seq, b, now_ns);
             // [DARALMA-ALARMI] Yalnız bitmap alıcısında (ölçüm aralığı taşıyan ACK) ve ilk ACK'ten
@@ -476,29 +489,54 @@ impl Receiver {
             if self.bitmap_rx() && self.ack_budget_first_done {
                 if self.rate_drop.on_arrival_seq(now_ns, b, Some(d.seq)) {
                     self.pair.arm_rise();
-                    // [ALARM ARALIĞI · #175 7084078903] Alarm ACK'inin çift değeri alarmdan sonraki
-                    // çiftlerden.
-                    self.pair.restart_at_drop_alarm();
+                    // [ALARM ARALIĞI · TUR 4] Çift değerleri saklanır ve sıfırlanır: kanıtlı alarm
+                    // ACK'i yalnız alarmdan sonraki çiftleri taşır, planlı ACK saklananı geri alır.
+                    self.alarm_pair_saved = self.pair.restart_at_drop_alarm();
                     self.drop_alarm_wait = true;
+                    self.alarm_evidence = None;
                 }
-                // [ALARM ARALIĞI · TUR 3 · #175 7086827627] Alarm ACK'inin ölçüm aralığı daralma
-                // başlangıcından; başlangıçtan sonra en az `ALARM_SPAN_MIN_SEQS` datagram
-                // serileşmediyse (göndericide yapısal olarak örnek yok) ACK sonraki varışa kalır.
-                // Başlangıç bilinmiyorsa (en yeni çift eşiğin üstünde, seq yok) bugünkü kural.
-                // Kanıttan önce planlı ACK çıkarsa bekleme orada düşer (`drop_alarm_wait` belgesi:
-                // sahibin kuralı, hangisi önceyse).
-                if self.drop_alarm_wait {
-                    let onset = self.rate_drop.onset().and_then(|(_, seq)| seq);
-                    let short = onset.is_some_and(|s| {
-                        d.seq.saturating_sub(s) < crate::arrival_rate::ALARM_SPAN_MIN_SEQS
-                    });
-                    if !short {
-                        self.drop_alarm_wait = false;
-                        self.drop_alarm = true;
-                        self.alarm_yield_clear_ns = 0;
-                        self.diag_drop_alarms += 1;
-                        self.alarm_span_first = onset;
+                in_detector = true;
+            }
+        }
+        // [ALARM ARALIĞI · TUR 4 · #175 7087793188] Bekleme sürerken her yeni seq kanıta girer (boyu
+        // bilinmeyen alınmamış sayılır). Kanıt göndericinin örnek koşulunu sağladığı varışta alarm
+        // ACK'i istenir (`drop_alarm_wait` belgesi). Başlangıç bilinmiyorsa kanıt sonraki varışta
+        // yeniden aranır; o sürede planlı ACK adayın kuralıyla çıkar.
+        if self.drop_alarm_wait {
+            match self.alarm_evidence.as_mut() {
+                Some(ev) => ev.on_arrival(now_ns, udp_bytes.filter(|_| in_detector), d.seq),
+                None => {
+                    let min_seq = self
+                        .bitmap_emitted
+                        .back()
+                        .map_or(0, |&l| l.saturating_add(1));
+                    let mut ev = self.rate_drop.alarm_evidence(min_seq);
+                    // Halka yalnız dedektörün gördüğü varışları taşır; bu varış görülmediyse ekle.
+                    if !in_detector {
+                        if let Some(ev) = ev.as_mut() {
+                            ev.on_arrival(now_ns, None, d.seq);
+                        }
                     }
+                    self.alarm_evidence = ev;
+                }
+            }
+            if let Some(ev) = self.alarm_evidence.filter(|ev| ev.sufficient()) {
+                // ACK'in aralığı `[ev.first_seq, largest]` (`rx_span_field`); kanıtın en büyük seq'i
+                // ACK'inkiyle aynı olmalı (kanıta girmemiş daha büyük bir seq varsa uçlar ayrışır,
+                // kanıt sayılmaz).
+                let largest = if self.have_recv {
+                    self.largest_seq.max(d.seq)
+                } else {
+                    d.seq
+                };
+                if largest == ev.last_seq() {
+                    self.drop_alarm_wait = false;
+                    self.alarm_evidence = None;
+                    self.alarm_pair_saved = [0, 0];
+                    self.drop_alarm = true;
+                    self.alarm_yield_clear_ns = 0;
+                    self.diag_drop_alarms += 1;
+                    self.alarm_span_first = Some(ev.first_seq());
                 }
             }
         }
@@ -1157,6 +1195,11 @@ impl Receiver {
             self.drop_alarm = false;
             self.alarm_span_first = None;
             self.drop_alarm_wait = false;
+            self.alarm_evidence = None;
+            // [ALARM ARALIĞI · TUR 4] Planlı ACK beklemeyi bitirdiyse bildirilen değer (yükseliş
+            // referansı) adayınki gibi bütün çiftlerden: saklanan değerler geri birleşir.
+            self.pair
+                .restore(std::mem::take(&mut self.alarm_pair_saved));
             self.rate_drop.on_ack(now_ns);
             self.pair.on_ack();
             self.note_reported(&frame);
@@ -1445,7 +1488,9 @@ impl Receiver {
                 span_first,
             );
             if let Some(bm) = frame.bitmap.as_mut() {
-                bm.pair_rate = self.pair.field();
+                // [ALARM ARALIĞI · TUR 4] Bekleme sürerken çıkan (planlı) ACK adayın kuralıyla:
+                // algılamada saklanan değerler birleşir (bekleme yokken `[0, 0]`, alan bugünkü).
+                bm.pair_rate = self.pair.field_with(self.alarm_pair_saved);
                 bm.ptt_lean = self.ack_bitmap_ptt;
             }
             return (Some(frame), encoded == ACK_DELAY_ENC_MAX);
@@ -1492,9 +1537,9 @@ impl Receiver {
     /// aralık düşüşten sonraki ilk ACK'te düşüş öncesi varışları da taşıyordu (ürün testi, düşüş,
     /// tohum 1: kanıtlı ilk ACK'te tavan 7,2–10,5 k, ≤ 6 875 ancak ≈ 5 s sonraki ACK'te). Alanların
     /// anlamı aynıdır (verilen seq aralığının alıcıdaki varış süresi); gönderici aralığı verilen
-    /// uçlarla kurar, bitişiklik varsaymaz (`line_guard::interval_sample`). Başlangıçtan sonra en az
-    /// [`crate::arrival_rate::ALARM_SPAN_MIN_SEQS`] datagram serileşmeden alarm ACK'i istenmez
-    /// (`drop_alarm_wait`, #175 7086827627).
+    /// uçlarla kurar, bitişiklik varsaymaz (`line_guard::interval_sample`). `alarm_span_first` yalnız
+    /// kanıtlı bırakmada kurulur: aralık, göndericinin örnek koşulunu alıcıda sağlayan kanıtın
+    /// uçlarıdır (`drop_alarm_wait`, [`crate::arrival_rate::AlarmEvidence`]; #175 7087793188).
     fn rx_span_field(&self, base: u64, largest: u64) -> (u16, u64) {
         let none = (crate::ack::RX_SPAN_NONE, largest);
         let anchor = self
@@ -1686,14 +1731,40 @@ impl PairRate {
         self.alarmed = false;
     }
 
-    /// [ALARM ARALIĞI · #175 7084078903] Daralma alarmı anında en büyük iki değer silinir: alarm
-    /// ACK'inin değeri yalnız alarmdan sonraki çiftlerden gelir (düşüş öncesi çiftler alanı eski
-    /// hatta tutuyordu; Y2 kahini, düşüş sonrası ilk ACK: 12 479). Alarmdan sonra çift yoksa alan
-    /// [`crate::ack::PAIR_RATE_NONE`]. Sıkışma durumu (`prev_ns`, `after_squeeze`) ve yükseliş
-    /// alarmının durumu değişmez; yükseliş referansı böylece daralmadan sonraki ilk bildirilen değer
-    /// olur ([`Self::arm_rise`]).
-    fn restart_at_drop_alarm(&mut self) {
-        self.top = [0, 0];
+    /// [ALARM ARALIĞI · #175 7084078903 · TUR 4] Daralma alarmı anında en büyük iki değer silinir
+    /// ve döner (alıcı saklar). Kanıtlı alarm ACK'inin değeri yalnız alarmdan sonraki çiftlerden
+    /// gelir; düşüş öncesi çiftler alanı eski hatta tutuyordu (Y2 kahini, düşüş sonrası ilk ACK:
+    /// 12 479). Alarmdan sonra çift yoksa alan [`crate::ack::PAIR_RATE_NONE`]. Planlı ACK saklanan
+    /// değerleri geri alır ([`Self::field_with`], [`Self::restore`]). Sıkışma durumu (`prev_ns`,
+    /// `after_squeeze`) ve yükseliş alarmının durumu değişmez.
+    ///
+    /// Yükseliş referansı (`arm_rise`), daralmadan sonraki ilk ACK'in bildirdiği değerdir:
+    /// - gerçek düşüşte kanıtlı alarm ACK'i saklananı atar; referans düşüş sonrası çiftlerdendir;
+    /// - sahte alarmda (kanıt gelmez) planlı ACK saklananı birleştirir; referans adayınki gibi son
+    ///   ACK'ten bu yana bütün çiftlerin en büyük ikincisidir.
+    fn restart_at_drop_alarm(&mut self) -> [u64; 2] {
+        std::mem::take(&mut self.top)
+    }
+
+    /// En büyük iki değer ile `saved`'in birleşiminin en büyük ikisi.
+    fn merged(&self, saved: [u64; 2]) -> [u64; 2] {
+        let mut all = [self.top[0], self.top[1], saved[0], saved[1]];
+        all.sort_unstable_by(|a, b| b.cmp(a));
+        [all[0], all[1]]
+    }
+
+    /// [ALARM ARALIĞI · TUR 4] `saved` geri birleşir (`[0, 0]` etkisiz).
+    fn restore(&mut self, saved: [u64; 2]) {
+        self.top = self.merged(saved);
+    }
+
+    /// [ALARM ARALIĞI · TUR 4] [`Self::field`], `saved` birleşmiş gibi (durum değişmez).
+    fn field_with(&self, saved: [u64; 2]) -> u16 {
+        PairRate {
+            top: self.merged(saved),
+            ..*self
+        }
+        .field()
     }
 
     /// [YÜKSELİŞ ALARMI] Daralma alarmı yükseliş alarmını kurar; referans daralmadan sonraki ilk
@@ -1998,6 +2069,47 @@ mod tests {
             trailing > 6_875 && pr.top[0] > 6_875,
             "kol 2: ardındaki çift şişmedi ({trailing})"
         );
+    }
+
+    /// [ALARM ARALIĞI · TUR 4] Algılamada saklanan çift değerleri planlı ACK'te geri birleşir:
+    /// alan son ACK'ten bu yana bütün çiftlerin en büyük ikincisidir (adayın kuralı). Saklanan
+    /// atılırsa (kanıtlı alarm ACK'i) alan yalnız alarmdan sonraki çiftlerdendir.
+    #[test]
+    fn planned_ack_merges_the_saved_pair_values() {
+        let ms = 1_000_000u64;
+        let mut pr = PairRate::default();
+        let mut t = 0u64;
+        for g in [80 * ms, 80 * ms, 90 * ms] {
+            t += g;
+            pr.on_arrival(t, Some(1_000));
+        }
+        let before = pr.field();
+        let saved = pr.restart_at_drop_alarm();
+        assert_eq!(
+            pr.field(),
+            crate::ack::PAIR_RATE_NONE,
+            "alarmdan sonra çift yok"
+        );
+        assert_eq!(
+            pr.field_with(saved),
+            before,
+            "birleşmiş alan adayınki değil"
+        );
+        t += 160 * ms;
+        pr.on_arrival(t, Some(1_000));
+        assert_eq!(
+            pr.field(),
+            crate::ack::PAIR_RATE_NONE,
+            "tek çift: en büyük ikinci yok"
+        );
+        assert_eq!(pr.field_with(saved), before);
+        t += 160 * ms;
+        pr.on_arrival(t, Some(1_000));
+        assert_eq!(pr.field(), 6_250, "alarmdan sonraki çiftler");
+        pr.restore(saved);
+        assert_eq!(pr.field(), before, "geri birleşen alan");
+        pr.restore([0, 0]);
+        assert_eq!(pr.field(), before, "boş birleştirme etkisiz");
     }
 
     /// [P3 SR-AUDIT-001] Düşman ayrık-seq akışı rx-set'i sınırsız büyütemez: kap sabit.

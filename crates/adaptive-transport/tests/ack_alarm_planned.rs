@@ -1,4 +1,4 @@
-//! [ALARM ARALIĞI · TUR 3 · sahip kuralı 2026-11-23] Alarm ACK'i, yeterli kanıt geldiğinde ya da
+//! [ALARM ARALIĞI · TUR 3–4 · sahip kuralı 2026-11-23] Alarm ACK'i, yeterli kanıt geldiğinde ya da
 //! planlı (bütçe) ACK'in gönderim zamanı geldiğinde, hangisi önceyse çıkar. Yeni datagram gelmezse
 //! planlı ACK kendi zamanında ve adayın kuralıyla (aralık bir ACK geriye) çıkar; bekleme düşer.
 //!
@@ -13,7 +13,7 @@
 //! ACK'i, alarm olmasaydı çıkacak planlı ACK'tir. Zamanlayıcı her 1 ms'de çağrılır.
 
 use adaptive_transport::ack::{AckFrame, PAIR_RATE_NONE};
-use adaptive_transport::arrival_rate::{RateDropDetector, ALARM_SPAN_MIN_SEQS};
+use adaptive_transport::arrival_rate::RateDropDetector;
 use adaptive_transport::receiver::{Receiver, RxDatagram, RxKind};
 
 const MS: u64 = 1_000_000;
@@ -63,24 +63,33 @@ fn feed(r: &mut Receiver, seq: u64, t: u64, sized: bool) -> Vec<(u64, AckFrame)>
 }
 
 /// Akış alarmı tetikleyen datagrama dek (dahil). Dönüş: alıcı, çıkan ACK'ler, alarm datagramı
-/// `(seq, an)`. Alarm datagramı bağımsız dedektörle bulunur (alıcının dedektörüyle aynı girdi);
-/// başlangıçtan sonra `ALARM_SPAN_MIN_SEQS`'ten az datagram serileşmiş olmalı (kısa alarm).
-/// `twin`: alarm datagramının boyu verilmez.
-fn until_alarm(twin: bool) -> (Receiver, Vec<(u64, AckFrame)>, (u64, u64)) {
+/// `(seq, an)` ve kanıtın ilk seq'i (daralma başlangıcı). Alarm datagramı bağımsız dedektörle
+/// bulunur (alıcının dedektörüyle aynı girdi); alarm anında kanıt yetersiz olmalı (kısa alarm:
+/// `AlarmEvidence::sufficient`, tur 4). `twin`: alarm datagramının boyu verilmez.
+/// [`until_alarm`] dönüşü: alıcı, çıkan ACK'ler, alarm datagramı `(seq, an)`, kanıtın ilk seq'i.
+type UntilAlarm = (Receiver, Vec<(u64, AckFrame)>, (u64, u64), u64);
+
+fn until_alarm(twin: bool) -> UntilAlarm {
     let mut r = receiver();
     let mut det = RateDropDetector::default();
-    let mut acks = Vec::new();
+    let mut acks: Vec<(u64, AckFrame)> = Vec::new();
     let mut t = SEC;
     let mut seq = 0u64;
     loop {
         if !every_fifth(seq) {
             let fired = !acks.is_empty() && det.on_arrival_seq(t, BODY, Some(seq));
+            let mut first = 0;
             if fired {
-                let onset = det.onset().and_then(|(_, s)| s).expect("başlangıç");
+                let prev = &acks.last().expect("ACK").1;
+                let ev = det
+                    .alarm_evidence(u64::from(prev.largest_seq) + 1)
+                    .expect("başlangıç");
                 assert!(
-                    seq - onset < ALARM_SPAN_MIN_SEQS,
-                    "alarm kısa değil (seq {seq}, başlangıç {onset})"
+                    !ev.sufficient(),
+                    "alarm kısa değil (seq {seq}, kanıt {:?})",
+                    ev.margin_ns()
                 );
+                first = ev.first_seq();
             }
             let out = feed(&mut r, seq, t, !(twin && fired));
             for &(at, _) in &out {
@@ -92,7 +101,7 @@ fn until_alarm(twin: bool) -> (Receiver, Vec<(u64, AckFrame)>, (u64, u64)) {
             );
             acks.extend(out);
             if fired {
-                return (r, acks, (seq, t));
+                return (r, acks, (seq, t), first);
             }
         }
         seq += 1;
@@ -134,8 +143,8 @@ fn first_received_after(largest: u64) -> u64 {
 /// adayın kuralıyla (alarm ACK'i değil; aralık bir ACK geriye, çerçeve ikizinkiyle aynı) çıkar.
 #[test]
 fn a_no_more_datagrams_the_planned_ack_leaves_on_time_with_the_candidate_rule() {
-    let (mut r, acks, (seq, t_alarm)) = until_alarm(false);
-    let (mut twin, twin_acks, _) = until_alarm(true);
+    let (mut r, acks, (seq, t_alarm), _) = until_alarm(false);
+    let (mut twin, twin_acks, _, _) = until_alarm(true);
     assert_eq!(acks.len(), twin_acks.len(), "alarmdan önceki ACK'ler");
     let prev = &acks.last().expect("alarmdan önce ACK").1;
     let planned = poll_first(&mut twin, t_alarm, t_alarm + WATCH).expect("ikizde planlı ACK yok");
@@ -166,8 +175,8 @@ fn a_no_more_datagrams_the_planned_ack_leaves_on_time_with_the_candidate_rule() 
 /// bekleme düşer; sonra gelen (yeterli kanıtlı) varış alarm ACK'i doğurmaz.
 #[test]
 fn b_planned_time_before_the_evidence_drops_the_wait() {
-    let (mut r, _, (seq, t_alarm)) = until_alarm(false);
-    let (mut twin, _, _) = until_alarm(true);
+    let (mut r, _, (seq, t_alarm), _) = until_alarm(false);
+    let (mut twin, _, _, _) = until_alarm(true);
     let planned = poll_first(&mut twin, t_alarm, t_alarm + WATCH).expect("ikizde planlı ACK yok");
     // Sonraki datagram planlı ACK'ten sonra, yeni hattın aralığıyla.
     let t_next = planned.0 + NEW_GAP;
@@ -197,11 +206,11 @@ fn b_planned_time_before_the_evidence_drops_the_wait() {
 }
 
 /// (c) Kanıtlı varış planlı zamandan önce gelir (akış sürer): alarm ACK'i o varışta çıkar, planlı
-/// zamandan önce; aralığı daralma başlangıcından (`ALARM_SPAN_MIN_SEQS` datagram).
+/// zamandan önce; aralığı daralma başlangıcından (kanıtın ilk seq'i).
 #[test]
 fn c_evidence_before_the_planned_time_sends_the_alarm_ack_at_the_evidence() {
-    let (mut r, _, (seq, t_alarm)) = until_alarm(false);
-    let (mut twin, _, _) = until_alarm(true);
+    let (mut r, _, (seq, t_alarm), onset) = until_alarm(false);
+    let (mut twin, _, _, _) = until_alarm(true);
     let planned = poll_first(&mut twin, t_alarm, t_alarm + WATCH).expect("ikizde planlı ACK yok");
     let next = seq + 1;
     let t_next = t_alarm + NEW_GAP;
@@ -229,5 +238,6 @@ fn c_evidence_before_the_planned_time_sends_the_alarm_ack_at_the_evidence() {
     let sf = f
         .span_first_full(u64::from(f.largest_seq) + 1)
         .expect("aralık");
-    assert_eq!(next - sf, ALARM_SPAN_MIN_SEQS, "aralık başlangıçtan değil");
+    assert_eq!(sf, onset, "aralık başlangıçtan değil");
+    assert_eq!(next - sf, 2, "aralık başlangıçtan değil");
 }
