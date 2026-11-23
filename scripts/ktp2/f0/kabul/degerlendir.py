@@ -293,17 +293,22 @@ def mode_evidence(run):
         notes.append(f"{who}: motor={kv.get('motor')} ack_biçimi={kv.get('ack_biçimi')} "
                      f"gönderici={kv.get('ack_gönderici_etkin')} alıcı={kv.get('ack_alıcı_etkin')}")
         ok &= kv.get("motor") == "cc-port" and bool(fmt) and fmt[0] == "bitmap"
-    rx = (run.alice_sum.get("wire") or {}).get("ack_rx") or {}
-    bitmap_acks = rx.get("0x15", 0) + rx.get("0x16", 0)
-    notes.append(f"alice ack_rx={rx}")
+    w = run.alice_sum.get("wire")
+    rx = (w.get("ack_rx") if isinstance(w, dict) else None) or {}
+    # Bitmap kanıtı: 0x15 + 0x16 + 0x17 (pilot açıkken alıcı yalın bitmap ACK'lerini 0x17 yazar;
+    # Bulut-D 7097599958 madde 2).
+    bitmap_acks = sum(int(rx.get(k) or 0) for k in ("0x15", "0x16", "0x17"))
+    notes.append(f"alice wire.live_diag={w.get('live_diag') if isinstance(w, dict) else None} ack_rx={rx}")
     if not ok:
         return KALDI, notes + ["kip kabul kipi değil (başlangıç kaydı cc-port + bitmap değil)"]
+    if not isinstance(w, dict):
+        return SINANMADI, notes + ["eksik: koşu sonu tel kanıtı (alice.json wire yok ya da null)"]
+    if w.get("live_diag") is not True:
+        return SINANMADI, notes + ["canlı sayaç kapalı ya da bilinmiyor (wire.live_diag ≠ true): sayaç ölçü değil"]
     if not rx:
-        return SINANMADI, notes + ["eksik: koşu sonu tel kanıtı (alice.json wire.ack_rx, ACK tür sayacı)"]
-    if (run.alice_sum.get("wire") or {}).get("live_diag") is False:
-        return SINANMADI, notes + ["canlı sayaç kapalı (wire.live_diag = false): ACK tür sayaçları 0"]
-    if not ok or bitmap_acks == 0:
-        return KALDI, notes + ["kip kabul kipi değil (cc-port + bitmap, telde 0x15/0x16 > 0)"]
+        return SINANMADI, notes + ["eksik: ACK tür sayacı (alice.json wire.ack_rx)"]
+    if bitmap_acks == 0:
+        return KALDI, notes + ["canlı sayaç açık ama telde bitmap ACK yok (0x15 + 0x16 + 0x17 = 0)"]
     return GECTI, notes
 
 
@@ -312,8 +317,8 @@ def ack_type_missing(run):
     w = run.alice_sum.get("wire") or {}
     if not w.get("ack_rx"):
         return "eksik: ACK tür sayacı (alice.json wire.ack_rx)"
-    if w.get("live_diag") is False:
-        return "ACK tür sayacı canlı sayaç kapalıyken 0 (wire.live_diag = false)"
+    if w.get("live_diag") is not True:
+        return "ACK tür sayacı ölçü değil: canlı sayaç kapalı ya da bilinmiyor (wire.live_diag ≠ true)"
     return None
 
 
@@ -638,6 +643,39 @@ def queue_series_s(run, plan):
                   for q in run.qdisc if q.get("dev") == run.dev and "backlog_bytes" in q)
 
 
+# Bob'un ACK başına an kaydı (Yerel `yerel/f0-olcum-kancalari`; ad kesinleşince eşlenir).
+BOB_ACK_KINDS = ("ack", "ackx", "ack_an")
+BOB_KEYS = {"kanit": ("t_kanit", "kanit", "t_evidence", "evidence_t"),
+            "hazir": ("t_hazir", "hazir", "t_ready", "ready_t"),
+            "cikis": ("t_cikis", "cikis", "t_wire", "wire_t")}
+
+
+def bob_ack_moments(run, t_out):
+    """Telde çıkışı `t_out` olan ACK'in Bob kaydındaki anları (s, t0'a göre); kayıt yoksa boş."""
+    rows = [r for r in run.bob if r.get("k") in BOB_ACK_KINDS]
+    if not rows:
+        return {}
+
+    def get(r, name):
+        for key in BOB_KEYS[name]:
+            if r.get(key) is not None:
+                return run.rel_ms(r[key])
+        return None
+
+    cand = []
+    for r in rows:
+        c = get(r, "cikis")
+        h = get(r, "hazir")
+        ref = c if c is not None else h
+        if ref is None or (t_out is not None and ref > t_out + 0.02):
+            continue
+        cand.append((abs((t_out or ref) - ref), r))
+    if not cand:
+        return {}
+    r = min(cand, key=lambda x: x[0])[1]
+    return {n: get(r, n) for n in BOB_KEYS}
+
+
 def delay_breakdown(run, plan):
     notes = []
     lg = run.lg()
@@ -660,17 +698,38 @@ def delay_breakdown(run, plan):
     notes.append(f"kesme ACK'i işlendi +{t_cut - T_D:.2f} s (an {t_cut:.2f} s, tavan {cut[1]['pace_after']})")
     arr = rev_acks(run, "A_va0.jsonl", "in")
     out = rev_acks(run, "B_vb0.jsonl", "out")
+    k = None
     if not arr or not out:
-        notes.append("parça 1–2: eksik: cap/A_va0.jsonl, cap/B_vb0.jsonl ya da hdr adresleri")
+        notes.append("telde çıkış/varış: eksik: cap/A_va0.jsonl, cap/B_vb0.jsonl ya da hdr adresleri")
     else:
         k = max((i for i, t in enumerate(arr) if t <= t_cut + 0.05), default=None)
         if k is None or k >= len(out) or len(out) != len(arr):
-            notes.append(f"parça 1–2: dönüş datagramları eşleşmiyor (çıkış {len(out)}, varış {len(arr)})")
+            notes.append(f"telde çıkış/varış: dönüş datagramları eşleşmiyor (çıkış {len(out)}, varış {len(arr)})")
+            k = None
+    t_out = out[k] if k is not None else None
+    t_arr = arr[k] if k is not None else None
+    # Beş an (sahip 7097781875): Bob'da ilk geçerli kanıt → ACK hazır → telde çıkış → Alice varışı
+    # → LineGuard kesmesi. Bob'daki iki an yalnız kayıttan (`bob_ack_moments`); yoksa EKSİK.
+    bm = bob_ack_moments(run, t_out)
+    moments = [("düşüş", T_D), ("Bob ilk geçerli kanıt", bm.get("kanit")), ("Bob ACK hazır", bm.get("hazir")),
+               ("telde çıkış", t_out if t_out is not None else bm.get("cikis")), ("Alice varışı", t_arr),
+               ("LineGuard kesmesi", t_cut)]
+    notes.append("an (t0'a göre, s): " + "; ".join(
+        f"{n} {'EKSİK' if t is None else f'{t:.3f}'}" for n, t in moments))
+    for (n1, a), (n2, b) in zip(moments, moments[1:]):
+        if a is None or b is None:
+            notes.append(f"aralık {n1} → {n2}: ayrıştırılamadı (eksik an)")
         else:
-            notes.append(f"parça 1 düşüş → Bob'dan çıkış: {out[k] - T_D:.2f} s (tek parça; iç bölünmez, "
-                         "nedene atfedilmez — eksik: alıcının ilk geçerli kanıt anı, EKSİK ALAN 5)")
-            notes.append(f"parça 2 Bob'dan çıkış → alice varışı: {arr[k] - out[k]:.2f} s; varış → işleniş "
-                         f"{t_cut - arr[k]:.2f} s")
+            notes.append(f"aralık {n1} → {n2}: {b - a:.3f} s")
+    if bm.get("kanit") is None:
+        missing = [n for n, t in moments if t is None]
+        # Kanıt anı yoksa düşüş → çıkış tek parça; nedene atfedilmez.
+        if t_out is not None:
+            notes.append(f"parça 1 düşüş → Bob'dan çıkış: {t_out - T_D:.2f} s (tek parça; iç bölünmez, "
+                         "nedene atfedilmez — eksik: " + ", ".join(missing) + ")")
+    if t_out is not None and t_arr is not None:
+        notes.append(f"parça 2 Bob'dan çıkış → alice varışı: {t_arr - t_out:.2f} s; varış → işleniş "
+                     f"{t_cut - t_arr:.2f} s")
     series = queue_series_s(run, plan)
     if not series:
         notes.append("parça 3: eksik: qdisc_series.jsonl")
@@ -709,7 +768,8 @@ def evaluate(d, plan, t0=None, baseline_dir=None, dev=None):
                      ("2 PTT", lambda: crit_ptt(run)),
                      ("5 metin/alındı", lambda: crit_text_receipt(run))):
         v, n = fn()
-        if mode_v != GECTI and name != "5 metin/alındı" and v != SINANMADI:
+        # Kip önkoşulu BÜTÜN ölçütlere uygulanır (5. dahil; Bulut-D 7097599958 madde 1).
+        if mode_v != GECTI and v != SINANMADI:
             n = n + [f"kip önkoşulu {mode_v}: hüküm SINANMADI'ya çekildi (ölçü {v})"]
             v = SINANMADI
         rows.append((name, v, n))

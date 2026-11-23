@@ -39,7 +39,8 @@ def ms(t):
 
 def build(d, *, lg=True, cc2=6250, up2=12500, text_lat=400.0, ack_format="bitmap",
           tbf=True, qdisc=True, starve_after=None, ptt_on_time=None, ifb=False, ifb_cap=True, live_diag=True,
-          ptt_bytes=4977, ptt_dgrams=34, coalesced=True, x17=4, ack_rx=True):
+          ptt_bytes=4977, ptt_dgrams=34, coalesced=True, x17=4, ack_rx=True,
+          wire_null=False, x15=12, no_alice_json=False, bob_moments=False):
     d.mkdir(parents=True)
     (d / "t_start").write_text(f"{T0}\n")
     for who in ("alice", "bob"):
@@ -99,6 +100,12 @@ def build(d, *, lg=True, cc2=6250, up2=12500, text_lat=400.0, ack_format="bitmap
         alice.append({"k": "send", "c": "T", "i": i, "t": ms(t)})
         bob.append({"k": "rx", "c": "T", "i": i, "t": ms(t) + lat, "first": True})
         alice.append({"k": "rcpt", "c": "T", "i": i, "t": ms(t) + lat + 1500.0, "first": True})
+    if bob_moments:
+        # Bob'un ACK başına anları (kesme ACK'i 26 s'de işlenir, telde çıkış 24,4 s):
+        # kanıt 22,0 s, hazır 23,1 s, çıkış 24,4 s.
+        for k in range(1, 25):
+            t = 4.0 * k - 2.0
+            bob.append({"k": "ack", "t_kanit": ms(t - 4.0), "t_hazir": ms(t - 2.9), "t_cikis": ms(t - 1.6)})
     for name, rows in (("alice.jsonl", alice), ("bob.jsonl", bob)):
         (d / name).write_text("".join(json.dumps(r) + "\n" for r in rows))
     presses = [] if ptt_on_time is None else [{
@@ -108,10 +115,13 @@ def build(d, *, lg=True, cc2=6250, up2=12500, text_lat=400.0, ack_format="bitmap
     wire = {"live_diag": live_diag, "ptt_wire_bytes": ptt_bytes if ptt_on_time is not None else 0,
             "ptt_wire_datagrams": ptt_dgrams if ptt_on_time is not None else 0}
     if ack_rx:
-        wire["ack_rx"] = {"0x14": 0, "0x15": 12, "0x16": 0, "0x17": 0 if ptt_on_time is None else x17}
+        wire["ack_rx"] = {"0x14": 0, "0x15": x15, "0x16": 0, "0x17": 0 if ptt_on_time is None else x17}
+    if live_diag is None:
+        del wire["live_diag"]
     chosen = [] if ptt_on_time is None else [{"sp": 1, "bundle_ms": 300, "coalesced": coalesced,
                                                "caller_ms": 200}]
-    (d / "alice.json").write_text(json.dumps({"wire": wire, "ptt_presses": chosen}))
+    if not no_alice_json:
+        (d / "alice.json").write_text(json.dumps({"wire": None if wire_null else wire, "ptt_presses": chosen}))
     (d / "bob.json").write_text(json.dumps({"wire": {}, "ptt_presses": presses}))
     q = [{"kind": "netem", "dev": "mb0", "drops": 40}]
     if tbf:
@@ -159,6 +169,18 @@ VAKALAR = [
     ("PTT datagram 0", {"ptt_on_time": 400, "ptt_dgrams": 0}, True, {"2 PTT": S}),
     ("PTT birleşik değil", {"ptt_on_time": 400, "coalesced": False}, True, {"2 PTT": S}),
     ("PTT 0x17 yok", {"ptt_on_time": 400, "x17": 0}, True, {"2 PTT": S}),
+    # Bulut-D 7097599958: yanlış kip / kayıp sayaç hiçbir ölçütte GEÇTİ vermez; pilot kipi (yalnız
+    # 0x17) kip GEÇTİ alır; kapalı/bilinmeyen ayna KALDI değil SINANMADI.
+    ("wire null", {"wire_null": True}, True,
+     {"kip (önkoşul)": S, "1 CC": S, "3 hız sınırlama": S, "4 hızlanma": S, "2 PTT": S, "5 metin/alındı": S}),
+    ("alice.json yok", {"no_alice_json": True}, True, {"kip (önkoşul)": S, "5 metin/alındı": S}),
+    ("V2 kipi, metin", {"ack_format": "v2"}, True, {"kip (önkoşul)": K, "5 metin/alındı": S}),
+    ("pilot: yalnız 0x17", {"ptt_on_time": 400, "x15": 0, "x17": 12}, True,
+     {"kip (önkoşul)": G, "1 CC": G, "2 PTT": G, "5 metin/alındı": G}),
+    ("ayna bilinmiyor (live_diag yok)", {"live_diag": None}, True,
+     {"kip (önkoşul)": S, "1 CC": S, "5 metin/alındı": S}),
+    ("canlı ayna kapalı, sayaç 0", {"live_diag": False, "x15": 0}, True,
+     {"kip (önkoşul)": S, "5 metin/alındı": S}),
     # ACK tür sayacı yoksa CC/hızlanma SINANMADI (lg olsa da).
     ("ACK tür sayacı yok", {"ack_rx": False}, True, {"1 CC": S, "4 hızlanma": S, "kip (önkoşul)": S}),
 ]
@@ -194,6 +216,23 @@ def main():
             miss.append("parça 1 etiketi")
         print(f"{'OK  ' if not miss else 'HATA'} gecikme ayrıştırması: {notes}")
         fails += bool(miss)
+        # Beş an (Bob kaydı var): kanıt 22,0 → hazır 23,1 → çıkış 24,4 → varış 25,99 → kesme 26,0.
+        d = tmp / "bes_an"
+        build(d, bob_moments=True)
+        _, rows = verdicts(d, True, tmp / "kesmesiz")
+        notes = " | ".join(next(n for name, _, n in rows if name == "gecikme ayrıştırması"))
+        want = ["aralık düşüş → Bob ilk geçerli kanıt: 2.000 s", "aralık Bob ilk geçerli kanıt → Bob ACK hazır: 1.100 s",
+                "aralık Bob ACK hazır → telde çıkış: 1.300 s", "aralık telde çıkış → Alice varışı: 1.590 s",
+                "aralık Alice varışı → LineGuard kesmesi: 0.010 s"]
+        miss = [w for w in want if w not in notes]
+        print(f"{'OK  ' if not miss else 'HATA'} beş an: {notes}")
+        fails += bool(miss)
+        # Bob kaydı yokken iki an EKSİK, aralıklar "ayrıştırılamadı".
+        _, rows = verdicts(tmp / "v0", True, tmp / "kesmesiz")
+        notes = " | ".join(next(n for name, _, n in rows if name == "gecikme ayrıştırması"))
+        ok = "Bob ilk geçerli kanıt EKSİK" in notes and "ayrıştırılamadı" in notes
+        print(f"{'OK  ' if ok else 'HATA'} beş an, Bob kaydı yok")
+        fails += not ok
     print("SONUÇ:", "GEÇTİ" if fails == 0 else f"{fails} vaka KALDI")
     return 1 if fails else 0
 
