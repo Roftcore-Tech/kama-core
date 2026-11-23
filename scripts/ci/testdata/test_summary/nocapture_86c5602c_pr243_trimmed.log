@@ -1,0 +1,34 @@
+    Finished `release` profile [optimized] target(s) in 0.08s
+     Running tests/asym_product_outcome.rs (/home/user/tgt/d243/release/deps/asym_product_outcome-84478f80417cfc63)
+
+running 4 tests
+test keyed_loss_drops_the_same_logical_packets_when_an_unrelated_datagram_is_inserted ... ANAHTARLI-KANIT lcg: 77 / 75 düşen (233 binde), fark=122; anahtarlı: 68 / 68 (206 binde)
+ok
+test keyed_loss_rate_is_twenty_percent_over_ten_thousand_keys ... ANAHTARLI-ORAN tohum=1 düşen=2084 / 10000
+ANAHTARLI-ORAN tohum=2 düşen=2066 / 10000
+ANAHTARLI-ORAN tohum=3 düşen=1962 / 10000
+ANAHTARLI-ORAN tohum=4 düşen=2029 / 10000
+ok
+test ptt_band_gate_passes_the_lean_payload_and_fails_the_80_byte_control ... ok
+test text_receipt_ptt_and_file_all_progress_on_the_asymmetric_line ... HÜCRE hücre=dürüst-12500 tohum=1 profil=açık kayıp=anahtarlı  …
+[… 352 satır hücre izi (HÜCRE / İZ-* / ÖLÇÜT) fikstürde kısaltıldı …]
+ÜRÜN-SONUÇ hücre=dürüst-12500 tohum=1 profil=açık kayıp=anahtarlı yol=bitmap aday (ürün varsayılanı V2) ptt_biçim=yük=80B/demet=200ms/başlık=tam13B/basış=hücre metin1=0.39(GEÇTİ) alındı1_dönüş=2.35(GEÇTİ) alındı1_gd=2.74 metin2=0.38(GEÇTİ) alındı2_dönüş=1.91(GEÇTİ) alındı2_gd=2.29 metin3=0.31(GEÇTİ) alındı3_dönüş=2.37(GEÇTİ) alındı3_gd=2.68 ptt_ilk=0.51(GEÇTİ) ptt_en_büyük_sayılan=0.69 ptt_en_büyük_tümü=0.69 ptt_boşluk=0.56 ptt_kaldı=0/36(öncül_bekledi=0) ptt_kayıp_kurtarma=0/36 ptt_teslim_yok=6 ptt=GEÇTİ dosya=7.69(GEÇTİ) ileri=172 pkt/99665 B (kuyruk_düşen=0 rastgele_düşen=42) dönüş=17 pkt/1196 B (kuyruk_düşen=0) düşen_ölçüt=["PTT/bant/alice"]
+
+thread 'text_receipt_ptt_and_file_all_progress_on_the_asymmetric_line' (9012) panicked at crates/kama-integration/tests/asym_product_outcome.rs:3605:5:
+asimetrik hatta düşen ürün ölçütleri (hücre dürüst-12500, tohum 1, profil açık): ["PTT/bant/alice"]
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: asym_product_outcome::run_cell
+   3: core::ops::function::FnOnce::call_once
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+FAILED
+
+failures:
+
+failures:
+    text_receipt_ptt_and_file_all_progress_on_the_asymmetric_line
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 60.09s
+
+error: test failed, to rerun pass `-p kama-integration --test asym_product_outcome`
