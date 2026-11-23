@@ -2956,6 +2956,23 @@ mod tests {
         t_end: u64,
         ack_every: u64,
     ) -> (Vec<(u64, u64)>, Vec<(u64, u64)>, Vec<(u64, u64)>) {
+        drive_iv(g, real, app_cap, t_end, ack_every, false)
+    }
+
+    /// [`drive_with`]; `intervals` = her ACK alıcının ölçüm aralığını da taşır (bitmap/aralık kipi:
+    /// M = (önceki ACK'in cephesi, bu ACK'in cephesi], `rx_span` = iki ucun alıcıya varış farkı,
+    /// sürücüde kayıp yok: `rx_wire` aralığın tel baytı). İlk ACK aralık taşımaz.
+    #[allow(clippy::type_complexity)]
+    fn drive_iv(
+        g: &mut LineGuard,
+        real: &dyn Fn(u64) -> u64,
+        app_cap: &dyn Fn(u64, &LineGuard) -> Option<u64>,
+        t_end: u64,
+        ack_every: u64,
+        intervals: bool,
+    ) -> (Vec<(u64, u64)>, Vec<(u64, u64)>, Vec<(u64, u64)>) {
+        let mut arrived_at: Vec<u64> = Vec::new();
+        let mut prev_front: Option<u64> = None;
         let mut acks_out = Vec::new();
         let mut pace_ms = Vec::new();
         let mut waits = Vec::new();
@@ -2972,6 +2989,7 @@ mod tests {
                 waits.push((now, start - now));
                 free = start + 1200 * SEC / real(start);
                 in_flight.push_back((free + 300 * MS, seq));
+                arrived_at.push(free + 300 * MS);
                 seq += 1;
                 let rate = app_cap(now, g)
                     .map_or(g.pace_bps(), |c| c.min(g.pace_bps()))
@@ -2991,7 +3009,16 @@ mod tests {
             while acks.front().is_some_and(|&(at, _, _)| at <= now) {
                 let (_, delay, q) = acks.pop_front().expect("var");
                 g.note_ack_wire(37);
-                let u = g.on_ack(now, delay, false, q);
+                let iv = prev_front
+                    .filter(|&f| intervals && f < q)
+                    .map(|f| ForwardInterval {
+                        first_seq: f,
+                        last_seq: q,
+                        rx_span_ns: arrived_at[q as usize] - arrived_at[f as usize],
+                        rx_wire: Some((q - f) * 1200),
+                    });
+                prev_front = Some(q);
+                let u = g.on_ack_measured(now, delay, false, q, iv);
                 if let Some(u) = u {
                     let rate = g.pace_bps().max(1);
                     next_send = next_send.max(now + u.backlog_bytes * SEC / rate)
@@ -3147,6 +3174,10 @@ mod tests {
     /// [ÇİFT ARALIĞI · RET] Sabit dar hatta (6 250) yoklama başarısız olur: ret seviyesi yoklama
     /// tavanıdır. Çift alt sınırı tavanı ret seviyesini %5 aşmadan açamaz; aşınca açar ve ret
     /// düşer. Aşağı yönlü örnek de reti düşürür (hat yeniden ölçüldü).
+    ///
+    /// [#245, sahip onayı] Kurulum `on_pair_rate`'in gerçekten geldiği aralık kipinde (bitmap yolu):
+    /// her ACK alıcının ölçüm aralığını taşır ([`drive_iv`]). Önceki kurulum V2 sürücüsüyle (aralık
+    /// yok) ret seviyesi üretip yalnız bitmap yolunda gelen çift alt sınırını sınıyordu.
     #[test]
     fn a_failed_probe_level_bounds_the_pair_lower_bound() {
         let mut g = LineGuard::new(
@@ -3161,7 +3192,8 @@ mod tests {
             6_250,
         );
         g.end_start_budget();
-        let (_, _) = drive(&mut g, 6_250, None, 150 * SEC, 5 * SEC);
+        let _ = drive_iv(&mut g, &|_| 6_250, &|_, _| None, 150 * SEC, 5 * SEC, true);
+        assert!(g.interval_mode, "aralık kipi kurulmadı");
         assert!(g.probe_failures() >= 2, "başarısız yoklama yok");
         let _ = g.tick(u64::MAX);
         g.probe = None;
@@ -3217,39 +3249,89 @@ mod tests {
         assert_eq!(backlog_late, 0, "kalıcı yanlış kuyruk");
     }
 
-    /// [YENİDEN-YOKLAMA] Ölçülen dar hat oturum içinde hızlanınca tavan yeniden yükselir.
+    /// [YENİDEN-YOKLAMA] Ölçülen dar hat oturum içinde hızlanınca tavan yeniden yükselir; hat
+    /// sabitken uygulama az veri verirse tavan kalıcı yükselmez.
+    ///
+    /// [#245, sahip onayı] Nedensel sürücü ([`drive_with`]): gönderici her an korumanın tavanında
+    /// gönderir — yoklama sürerken yoklama hızında. Kanıt göndericinin gerçekten yaptığı yoklamadan
+    /// gelir. Önceki kurulum bütün iletimleri ACK'lerden önce taban tavanda kaydediyordu: gönderici
+    /// tabanı hiç aşmadığı hâlde yükseliş bekliyordu; bu girdi "dürüst 6 250 + tabanda gönderen
+    /// gönderici" ile aynıdır ve o testi geçiren kural dürüst hatta uygulama sınırlı göndericiyi de
+    /// açar.
+    /// * (a) hat 60 s'de 6 250 → 12 500: dar hat önce ölçülür (±%2), sonra tavan ölçülen hattın
+    ///   üstüne çıkar (en az bir kalıcı yükseltme);
+    /// * (b) hat sabit 6 250, 60 s'den sonra uygulama 5 900 B/s verir: 60 s'den sonra kalıcı
+    ///   yükseltme yok ve son tavan ölçüm belirsizliği bandında (`hat × (1 + 1/GROWTH_MIN_DIV)`).
     #[test]
     fn measured_narrow_line_recovers_when_the_line_speeds_up() {
-        let mut g = guard();
-        let arr = send_into(&mut g, 6_250, 60);
-        let _ = ack(&mut g, &arr, 1, 37);
-        let _ = ack(&mut g, &arr, 20, 101);
-        let low = g.rate_bps().expect("dar hat ölçüldü");
-        assert!(low.abs_diff(6_250) * 100 <= 6_250 * 2);
-        // Hat hızlandı: gönderici tavanda (≈ 6 250) gönderir, kuyruk büyümez.
-        let mut g2 = g.clone();
-        let base = arr[59] + SEC;
-        let mut free = 0u64;
-        let mut arr2 = Vec::new();
-        for k in 0..600u64 {
-            let s = base + k * 1200 * SEC / g2.pace_bps().max(1);
-            g2.on_sent(1000 + k, s, 1172);
-            let done = free.max(s) + 1200 * SEC / PROFILE;
-            free = done;
-            arr2.push(done + 300 * MS);
-        }
-        for k in [0u64, 100, 200, 300, 400, 500, 599] {
-            let at = arr2[k as usize] + 300 * MS + (101 + OVH) * SEC / RET;
-            g2.note_ack_wire(101);
-            let _ = g2.on_ack(at, 0, false, 1000 + k);
-        }
+        const WIDEN: u64 = 60 * SEC;
+        let fresh = || {
+            let mut g = LineGuard::new(
+                LineModel {
+                    rate_bps: PROFILE,
+                    datagram_overhead: OVH,
+                },
+                LineModel {
+                    rate_bps: RET,
+                    datagram_overhead: OVH,
+                },
+                PROFILE,
+            );
+            g.end_start_budget();
+            g
+        };
+        // (a) gerçekten genişleyen hat.
+        // Genişlemeden önceki durum: aynı belirlenimli yol 60 s'ye dek (iki kolda da aynı).
+        let mut g_before = fresh();
+        let _ = drive_with(&mut g_before, &|_| 6_250, &|_, _| None, WIDEN, 5 * SEC);
+        let low = g_before.rate_bps().expect("dar hat ölçüldü");
+        let mut g = fresh();
+        let (acks, _, _) = drive_with(
+            &mut g,
+            &|t| if t < WIDEN { 6_250 } else { PROFILE },
+            &|_, _| None,
+            WIDEN + 60 * SEC,
+            5 * SEC,
+        );
+        assert!(low.abs_diff(6_250) * 100 <= 6_250 * 2, "ölçülen {low}");
+        let raises_before = g_before.raises();
         assert!(
-            g2.pace_bps() > low,
-            "tavan yükselmedi: {} ≤ {low}",
-            g2.pace_bps()
+            g.raises() > raises_before,
+            "genişleyen hatta kalıcı yükseltme yok (önce {raises_before}, sonra {})",
+            g.raises()
+        );
+        assert!(
+            g.pace_bps() > low,
+            "tavan yükselmedi: {} ≤ {low} (ACK'ler {acks:?})",
+            g.pace_bps()
+        );
+        // (b) sabit 6 250, uygulama az veri.
+        let mut g = fresh();
+        let (_, pace_ms, _) = drive_with(
+            &mut g,
+            &|_| 6_250,
+            &|t, _| (t >= WIDEN).then_some(5_900),
+            WIDEN + 140 * SEC,
+            5 * SEC,
+        );
+        let at_widen = pace_ms
+            .iter()
+            .filter(|&&(t, _)| t < WIDEN)
+            .map(|&(_, p)| p)
+            .next_back()
+            .expect("örnek");
+        assert_eq!(
+            g.raises(),
+            raises_before,
+            "sabit hatta uygulama sınırlıyken kalıcı yükseltme (60 s'de tavan {at_widen})"
+        );
+        let band = 6_250 * (GROWTH_MIN_DIV + 1) / GROWTH_MIN_DIV;
+        assert!(
+            g.pace_bps() <= band,
+            "son tavan {} (bant {band})",
+            g.pace_bps()
         );
     }
-
     /// [BAŞLANGIÇ-BÜTÇESİ] İlk ACK'e dek meşgul gönderimde toplam sınır
     /// `max(P × START_BURST_NS, P/2 × t)`: patlama 6 250 B tel (beş 1 200 B datagram), dolum
     /// `2 × START_BURST_NS`'te başlar; bütçe kalkınca sınır yok.
