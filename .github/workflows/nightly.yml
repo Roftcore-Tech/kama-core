@@ -118,6 +118,52 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p adaptive-transport --test desen1_sim -- --ignored --nocapture
 
+  # ── [#175 hedef 5 · 2026-11-23] Asimetrik hattın ürün kabul hücreleri ──
+  # Ölçülen boşluk: kabul ölçütü olan hücreler (`kama-integration/tests/asym_product_outcome.rs`:
+  # metin, alındı, PTT, dosya; ileri 12 500 B/s, dönüş 62 B/s, 300 ms, %20 anahtarlı kayıp) PR'da ve
+  # aday dallarında hiç koşmuyordu (ci.yml `--exclude kama-integration`); yalnız main'e push sonrası
+  # core-main'in tam workspace adımında, tek tohumla (1) ve opt-level 1 debug derlemede koşar.
+  # Hücreler gerçek zamanlıdır, sevk edilen derleme release'dir; netem `asymmetric-path` shard'ı
+  # ise yalnız harness'ın ve profilin canlı olduğunu kanıtlar. Bu iş release'de üç tohumla koşar ve
+  # aday dalında `workflow_dispatch` ile çağrılabilir. Eşik, senaryo, süre değişmez; hücreler kendi
+  # `assert!`'leriyle koşar (ölçüm kolu `measure_*` iddia etmez, yalnız raporlar).
+  # Gerçek zamanlıdır (hücre başına ~60–80 s) ve aynı süreçte sırayla koşar (`SERIAL`); tohum
+  # başına ayrı job, biri kırmızıysa diğerleri yine koşar.
+  product-cells:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: derle (release)
+        run: cargo test -p kama-integration --release --locked --test asym_product_outcome --no-run
+      - name: ürün hücreleri (tohum ${{ matrix.seed }})
+        env:
+          KAMA_ASYM_SEED: ${{ matrix.seed }}
+        run: |
+          set -o pipefail
+          cargo test -p kama-integration --release --locked --test asym_product_outcome \
+            -- --test-threads=1 --nocapture 2>&1 | tee "$RUNNER_TEMP/cells.txt"
+      - name: özet
+        if: always()
+        run: |
+          { echo "### ürün hücreleri, tohum ${{ matrix.seed }}"; echo '```';
+            grep -E 'ÜRÜN-SONUÇ|TEŞHİS-KOLU|^test .* (ok|FAILED)$' "$RUNNER_TEMP/cells.txt" || true;
+            echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: günlük
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: product-cells-seed-${{ matrix.seed }}
+          path: ${{ runner.temp }}/cells.txt
+
   # ── [F0.6 2026-10-06] S1 sözleşme satırlarının MUTASYON turu — sahteye karşı, ağaç dışı ──
   # PR başına KOŞMAZ (ci.yml'deki ci-verdict `skipped`'i kırmızı sayar; koşullu job oraya konamaz).
   # ~49 küçük-workspace derlemesi (48 mutasyon + 1 taban; koşum başına RUN_TIMEOUT_S = 900 s tavan);
@@ -224,7 +270,7 @@ jobs:
   nightly-verdict:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [changes, fuzz, sim-nightly, seam-mutation, amp-vectors-check, hostile]
+    needs: [changes, fuzz, sim-nightly, product-cells, seam-mutation, amp-vectors-check, hostile]
     if: always()
     steps:
       - run: |
