@@ -14,8 +14,17 @@ Okunan dosyalar (koşu dizinine göre):
 * `alice.jsonl`, `bob.jsonl` (`f0_flows`, şema `f0a-flows-v1`): `send`, `rx`, `rcpt`, `ts`; ayrıca
   `k == "lg"` satırları (bkz. EKSİK ALAN 1).
 * `alice.json`, `bob.json`: `wire` (`ack_rx` tür sayaçları, 0x17), `ptt_presses`.
-* `node-alice/transport-start.txt`, `node-bob/transport-start.txt`: `motor=`, `ack_biçimi=`,
-  `ack_gönderici_etkin=`, `ack_alıcı_etkin=`.
+* Başlangıç kaydı: `node-<rol>/transport-start.txt` ya da `kayit/node-<rol>-transport-start.txt`
+  (Yerel'in düzeneği): `motor=`, `ack_biçimi=<biçim> [etkin=…]`, varsa `ack_gönderici_etkin=`,
+  `ack_alıcı_etkin=`.
+* Zaman sıfırı ve hız çizelgesi (öncelik): `--t0` / `--plan` > `basamak.jsonl` (`k=t0`
+  `t0_unix_ns`; her `k=basamak` satırının UYGULANAN anı `komut_once_unix_ns` ve `hiz`; ilk hız
+  `kuyruk.jsonl` ilk örneğindeki darboğaz tbf `options.rate`) > `sync/t0` > `t_start`; çizelge yoksa
+  senaryo v1.
+* Darboğaz beklemesi (birincil): paket kimliği (`pid`) taşıyan yakalamalarda paket başına
+  `MID_<darboğaz> out` − `MID_ma0 in` − kendi serileşmesi (ölçülen giriş ve çıkış). Yoksa kuyruk
+  serisi: `qdisc_series.jsonl` ya da `kuyruk.jsonl` (`tc -s -j` örnekleri; darboğaz arayüzündeki
+  tbf'nin `backlog`'u / o anki hız).
 * Darboğaz arayüzü (`--bottleneck-dev`; varsayılan: `realized_post.json` `mid_qdisc`'te tbf/fifo
   kuyruğu olan arayüz, ör. Yerel'in düzeneğinde `ifb0`; yoksa `mb0`).
 * `cap/MID_<darboğaz>.jsonl` `dir == "out"` = ÖLÇÜLEN darboğaz çıkışı (IP boyu, UDP/IP 28 B
@@ -124,6 +133,15 @@ def read_kv(path):
     return kv
 
 
+def parse_rate(text):
+    """`100kbit` / `50kbit` / `496bit` → B/s."""
+    m = str(text).strip().lower()
+    for suf, mul in (("mbit", 1_000_000), ("kbit", 1_000), ("bit", 1)):
+        if m.endswith(suf):
+            return int(float(m[: -len(suf)]) * mul / 8)
+    raise ValueError(text)
+
+
 def parse_plan(text):
     plan = []
     for part in text.split(","):
@@ -153,17 +171,73 @@ class Run:
         self.bob = read_jsonl(d / "bob.jsonl")
         self.alice_sum = read_json(d / "alice.json") or {}
         self.bob_sum = read_json(d / "bob.json") or {}
-        self.start = {r: read_kv(d / f"node-{r}" / "transport-start.txt") for r in ("alice", "bob")}
+        self.start = {r: read_kv(d / f"node-{r}" / "transport-start.txt")
+                      or read_kv(d / "kayit" / f"node-{r}-transport-start.txt") for r in ("alice", "bob")}
         self.realized_post = read_json(d / "realized_post.json")
         self.dev = dev or bottleneck_dev(self.realized_post) or "mb0"
         cap = d / "cap" / f"MID_{self.dev}.jsonl"
         self.bottleneck_capture = cap.is_file()
         self.mb0 = [p for p in read_jsonl(cap) if p.get("dir") == "out" and "t_unix_ns" in p]
         self.qdisc = read_jsonl(d / "qdisc_series.jsonl")
+        self.kuyruk = read_jsonl(d / "kuyruk.jsonl")
+        if not self.qdisc and self.kuyruk:
+            for smp in self.kuyruk:
+                for q in smp.get("q") or []:
+                    if q.get("dev") == self.dev and q.get("kind") == "tbf" and "t_unix_ns" in smp:
+                        self.qdisc.append({"t_unix_ns": smp["t_unix_ns"], "dev": self.dev,
+                                           "backlog_bytes": q.get("backlog", 0)})
+        self.basamak = read_jsonl(d / "basamak.jsonl")
+        self.t0_source = "--t0"
         if t0 is None:
+            b0 = next((r for r in self.basamak if r.get("k") == "t0" and "t0_unix_ns" in r), None)
+            st = d / "sync" / "t0"
             ts = d / "t_start"
-            t0 = float(ts.read_text().strip()) if ts.is_file() else None
+            if b0:
+                t0, self.t0_source = b0["t0_unix_ns"] / 1e9, "basamak.jsonl t0"
+            elif st.is_file():
+                t0, self.t0_source = int(st.read_text().strip()) / 1e9, "sync/t0"
+            elif ts.is_file():
+                t0, self.t0_source = float(ts.read_text().strip()), "t_start"
+            else:
+                t0 = None
         self.t0 = t0  # unix s
+
+    def packet_waits(self):
+        """[(darboğaza giriş anı s, bekleme ms (serileşme hariç), giriş→çıkış ms)] — `pid` eşleşmesiyle
+        (darboğaza giriş `MID_ma0 in`, çıkış `MID_<darboğaz> out`); yoksa `None`."""
+        ins = {}
+        for p in read_jsonl(self.d / "cap" / "MID_ma0.jsonl"):
+            if p.get("dir") == "in" and p.get("pid") and "t_unix_ns" in p:
+                ins.setdefault(p["pid"], p["t_unix_ns"])
+        if not ins or not self.mb0 or not all("pid" in p for p in self.mb0[:50]):
+            return None
+        out = []
+        for p in self.mb0:
+            t_in = ins.get(p.get("pid"))
+            if t_in is None:
+                continue
+            t_out = self.rel_ns(p["t_unix_ns"])
+            ser = p["ip_len"] / rate_at(self.plan, t_out)
+            raw = t_out - self.rel_ns(t_in)
+            out.append((self.rel_ns(t_in), max(0.0, raw - ser) * 1000.0, raw * 1000.0))
+        return out or None
+
+    def realized_plan(self):
+        """`basamak.jsonl`'deki uygulanan basamaklar; ilk hız kuyruk örneğindeki tbf hızı."""
+        steps = [r for r in self.basamak if r.get("k") == "basamak" and r.get("rc", 0) == 0]
+        if not steps or self.t0 is None:
+            return None
+        first = None
+        for smp in self.kuyruk[:1]:
+            for q in smp.get("q") or []:
+                if q.get("dev") == self.dev and q.get("kind") == "tbf":
+                    first = (q.get("options") or {}).get("rate")
+        if first is None:
+            return None
+        plan = [(0.0, int(first))]
+        for r in steps:
+            plan.append((r["komut_once_unix_ns"] / 1e9 - self.t0, parse_rate(r["hiz"])))
+        return sorted(plan)
 
     def rel_ms(self, unix_ms):
         return unix_ms / 1000.0 - self.t0
@@ -215,14 +289,17 @@ def mode_evidence(run):
     for who, kv in (("alice", a), ("bob", b)):
         if not kv:
             return SINANMADI, [f"eksik: node-{who}/transport-start.txt"]
+        fmt = (kv.get("ack_biçimi") or "").split()
         notes.append(f"{who}: motor={kv.get('motor')} ack_biçimi={kv.get('ack_biçimi')} "
                      f"gönderici={kv.get('ack_gönderici_etkin')} alıcı={kv.get('ack_alıcı_etkin')}")
-        ok &= kv.get("motor") == "cc-port" and kv.get("ack_biçimi") == "bitmap"
+        ok &= kv.get("motor") == "cc-port" and bool(fmt) and fmt[0] == "bitmap"
     rx = (run.alice_sum.get("wire") or {}).get("ack_rx") or {}
     bitmap_acks = rx.get("0x15", 0) + rx.get("0x16", 0)
     notes.append(f"alice ack_rx={rx}")
+    if not ok:
+        return KALDI, notes + ["kip kabul kipi değil (başlangıç kaydı cc-port + bitmap değil)"]
     if not rx:
-        return SINANMADI, notes + ["eksik: alice.json wire.ack_rx"]
+        return SINANMADI, notes + ["eksik: koşu sonu tel kanıtı (alice.json wire.ack_rx, ACK tür sayacı)"]
     if (run.alice_sum.get("wire") or {}).get("live_diag") is False:
         return SINANMADI, notes + ["canlı sayaç kapalı (wire.live_diag = false): ACK tür sayaçları 0"]
     if not ok or bitmap_acks == 0:
@@ -273,13 +350,17 @@ def crit_cc(run, plan):
 
 
 def gaps_idle_ms(run, lo, hi):
-    """`[lo, hi)` içinde darboğazın boş kaldığı süre (ms): ardışık çıkışlar arası boşluk − serileşme."""
-    pts = sorted(run.rel_ns(p["t_unix_ns"]) for p in run.mb0 if lo <= run.rel_ns(p["t_unix_ns"]) < hi)
-    sizes = {run.rel_ns(p["t_unix_ns"]): p["ip_len"] for p in run.mb0}
+    """`[lo, hi)` içinde veri hazırken (boşluğun başındaki en yakın `ts` örneği hazır) darboğazın boş
+    kaldığı süre (ms): ölçülen darboğaz çıkışında ardışık iki çıkış arası − ikincinin serileşmesi."""
+    pkts = sorted((run.rel_ns(p["t_unix_ns"]), p["ip_len"]) for p in run.mb0)
+    pts = [(t, n) for t, n in pkts if lo <= t < hi]
+    ready = run.ts_ready()
     idle = 0.0
-    for a, b in zip(pts, pts[1:]):
-        ser = sizes[b] / 12500.0
-        idle += max(0.0, (b - a) - ser)
+    for (a, _), (b, n) in zip(pts, pts[1:]):
+        prior = [ok for t, ok in ready if t <= a]
+        if prior and not prior[-1]:
+            continue
+        idle += max(0.0, (b - a) - n / rate_at(run.plan, b))
     return idle * 1000.0
 
 
@@ -299,9 +380,25 @@ def crit_rate_limit(run, plan, baseline):
     else:
         v = GECTI if 0.90 <= util <= 1.0 + MTU_WIRE / cap else KALDI
         parts.append((v, None)); notes.append(f"tel %90–100 → {v}")
-    # Darboğaz beklemesi.
+    # Darboğaz beklemesi: paket başına (pid) ölçülen; yoksa kuyruk serisi.
     series = [q for q in run.qdisc if q.get("dev") == run.dev and "backlog_bytes" in q]
-    if not series:
+    pw = run.packet_waits()
+    if pw:
+        w = sorted(x for t, x, _ in pw if lo <= t < hi)
+        raw = max((r for t, _, r in pw if lo <= t < hi), default=None)
+        mx = w[-1] if w else None
+        v = SINANMADI if mx is None else (GECTI if mx <= WAIT_MAX_MS else KALDI)
+        parts.append((v, None))
+        notes.append(f"darboğaz beklemesi (paket başına pid eşleşmesi, pencerede darboğaza giren {len(w)} "
+                     f"paket; serileşme hariç) en çok {mx:.1f} ms, medyan {w[len(w) // 2]:.0f} ms "
+                     f"(≤ {WAIT_MAX_MS:.0f}) → {v}; bilgi: giriş→çıkış (serileşme dahil) en çok {raw:.0f} ms"
+                     if w else "darboğaz beklemesi: pencerede paket yok")
+        if series:
+            ws = [q["backlog_bytes"] / rate_at(plan, run.rel_ns(q["t_unix_ns"])) * 1000.0
+                  for q in series if lo <= run.rel_ns(q["t_unix_ns"]) < hi]
+            notes.append(f"bilgi: kuyruk örneklerinden (backlog/hız) en çok {max(ws):.0f} ms" if ws else
+                         "bilgi: kuyruk örneği yok")
+    elif not series:
         parts.append((SINANMADI, None))
         notes.append("eksik: qdisc_series.jsonl (darboğaz beklemesi ≤ 393 ms; EKSİK ALAN 2)")
     else:
@@ -309,7 +406,7 @@ def crit_rate_limit(run, plan, baseline):
              for q in series if lo <= run.rel_ns(q["t_unix_ns"]) < hi]
         mx = max(w) if w else None
         v = SINANMADI if mx is None else (GECTI if mx <= WAIT_MAX_MS else KALDI)
-        parts.append((v, None)); notes.append(f"darboğaz beklemesi en çok {mx} ms (≤ {WAIT_MAX_MS}) → {v}")
+        parts.append((v, None)); notes.append(f"darboğaz beklemesi en çok {mx if mx is None else round(mx, 1)} ms (≤ {WAIT_MAX_MS}) → {v}")
     # Kuyrukta kayıp.
     qd = queue_drops(run.realized_post, run.dev)
     if qd is None:
@@ -473,7 +570,7 @@ def text_latencies(run):
     out = []
     for key, t in sorted(sends.items(), key=lambda x: x[1]):
         lat = rx[key] - t if key in rx else None
-        out.append((key, run.rel_ms(t), lat))
+        out.append((key, round(run.rel_ms(t), 2), None if lat is None else round(lat, 1)))
     return out
 
 
@@ -535,12 +632,30 @@ def rev_acks(run, cap_name, direction):
                   and p.get("dport") not in (None, a_port) and "t_unix_ns" in p)
 
 
+def queue_series_s(run, plan):
+    """(an s, darboğaz kuyruğu s) — ölçülen backlog / o anki hız."""
+    return sorted((run.rel_ns(q["t_unix_ns"]), q["backlog_bytes"] / rate_at(plan, run.rel_ns(q["t_unix_ns"])))
+                  for q in run.qdisc if q.get("dev") == run.dev and "backlog_bytes" in q)
+
+
 def delay_breakdown(run, plan):
     notes = []
     lg = run.lg()
     cut = next(((t, r) for t, r in lg if t >= T_D and r["pace_after"] <= CC_HI), None)
     if cut is None:
-        return ["eksik: lg (kesme ACK'i bulunamadı)" if not lg else "20 s'den sonra kesme ACK'i yok"]
+        notes.append("eksik: lg (kesme ACK'i bulunamadı); parça 1–3 kesmeye göre ayrılamadı"
+                     if not lg else "20 s'den sonra kesme ACK'i yok")
+        series = queue_series_s(run, plan)
+        if series:
+            win = [(t, q) for t, q in series if T_D <= t < T_R]
+            drain = next((t for i, (t, q) in enumerate(win)
+                          if all(qq <= QUEUE_OK_S for _, qq in win[i:])), None)
+            peak = max(win, key=lambda x: x[1]) if win else None
+            notes.append("bilgi (ölçülen kuyruk, kesme anından bağımsız): düşüş → kuyruk ≤ "
+                         f"{QUEUE_OK_S} s (60 s'ye dek) "
+                         + (f"+{drain - T_D:.2f} s" if drain is not None else "toparlanmaya dek yok")
+                         + (f"; [20, 60) s kuyruk tepesi {peak[1]:.2f} s @ {peak[0]:.2f} s" if peak else ""))
+        return notes
     t_cut = cut[0]
     notes.append(f"kesme ACK'i işlendi +{t_cut - T_D:.2f} s (an {t_cut:.2f} s, tavan {cut[1]['pace_after']})")
     arr = rev_acks(run, "A_va0.jsonl", "in")
@@ -556,8 +671,7 @@ def delay_breakdown(run, plan):
                          "nedene atfedilmez — eksik: alıcının ilk geçerli kanıt anı, EKSİK ALAN 5)")
             notes.append(f"parça 2 Bob'dan çıkış → alice varışı: {arr[k] - out[k]:.2f} s; varış → işleniş "
                          f"{t_cut - arr[k]:.2f} s")
-    series = sorted((run.rel_ns(q["t_unix_ns"]), q["backlog_bytes"] / rate_at(plan, run.rel_ns(q["t_unix_ns"])))
-                    for q in run.qdisc if q.get("dev") == run.dev and "backlog_bytes" in q)
+    series = queue_series_s(run, plan)
     if not series:
         notes.append("parça 3: eksik: qdisc_series.jsonl")
         return notes
@@ -574,9 +688,18 @@ def delay_breakdown(run, plan):
 def evaluate(d, plan, t0=None, baseline_dir=None, dev=None):
     run = Run(d, t0, dev)
     if run.t0 is None:
-        raise SystemExit("t_start yok: --t0 verin")
+        raise SystemExit("zaman sıfırı yok (basamak.jsonl / sync/t0 / t_start): --t0 verin")
+    plan_source = "--plan / senaryo v1"
+    if plan is None:
+        rp = run.realized_plan()
+        plan, plan_source = (rp, "basamak.jsonl (uygulanan)") if rp else (PLAN_V1, "senaryo v1")
+    run.plan = plan
     baseline = Run(baseline_dir, None, dev) if baseline_dir else None
+    if baseline is not None:
+        baseline.plan = baseline.realized_plan() or [(0.0, plan[0][1])]
     mode_v, mode_n = mode_evidence(run)
+    mode_n = [f"zaman sıfırı {run.t0_source}; çizelge {plan_source}: "
+              + ", ".join(f"{a:.3f} s→{b}" for a, b in plan)] + mode_n
     mode_n = mode_n + [f"darboğaz arayüzü {run.dev}; tel kaynağı cap/MID_{run.dev}.jsonl "
                        + ("(var)" if run.bottleneck_capture else "(YOK)")]
     rows = [("kip (önkoşul)", mode_v, mode_n)]
@@ -603,14 +726,14 @@ def main(argv=None):
     ap.add_argument("--bottleneck-dev", help="darboğaz arayüzü (varsayılan: realized_post'tan; yoksa mb0)")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
-    plan = parse_plan(a.plan) if a.plan else PLAN_V1
+    plan = parse_plan(a.plan) if a.plan else None
     run, rows = evaluate(a.run_dir, plan, a.t0, a.baseline, a.bottleneck_dev)
     if a.json:
-        print(json.dumps({"run_dir": str(a.run_dir), "t0": run.t0, "plan": plan,
+        print(json.dumps({"run_dir": str(a.run_dir), "t0": run.t0, "plan": run.plan,
                           "rows": [{"olcut": n, "hukum": v, "neden": notes} for n, v, notes in rows]},
                          ensure_ascii=False, indent=1))
     else:
-        print(f"KOŞU {a.run_dir}  t0={run.t0}  plan={plan}")
+        print(f"KOŞU {a.run_dir}  t0={run.t0}")
         for n, v, notes in rows:
             print(f"{n:<18} {v}")
             for x in notes:
