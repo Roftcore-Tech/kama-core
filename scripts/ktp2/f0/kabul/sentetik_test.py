@@ -233,6 +233,19 @@ def main():
         ok = "Bob ilk geçerli kanıt EKSİK" in notes and "ayrıştırılamadı" in notes
         print(f"{'OK  ' if ok else 'HATA'} beş an, Bob kaydı yok")
         fails += not ok
+        # Alan denetimi: tam kayıtta transport + PTT HAZIR; Bob kaydı ve lg yokken HAZIR DEĞİL.
+        import contextlib
+        import io
+        d = tmp / "alan_tam"
+        build(d, bob_moments=True, ptt_on_time=400)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            D.field_check(d)
+            D.field_check(tmp / "v1")  # lg yok, Bob kaydı yok
+        txt = buf.getvalue().split("ALAN DENETİMİ")
+        ok = "transport: HAZIR\n" in txt[1] and "ptt: HAZIR\n" in txt[1] and "transport: HAZIR DEĞİL" in txt[2]
+        print(f"{'OK  ' if ok else 'HATA'} alan denetimi")
+        fails += not ok
     print("SONUÇ:", "GEÇTİ" if fails == 0 else f"{fails} vaka KALDI")
     return 1 if fails else 0
 

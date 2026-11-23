@@ -777,6 +777,52 @@ def evaluate(d, plan, t0=None, baseline_dir=None, dev=None):
     return run, rows
 
 
+def field_check(d, dev=None):
+    """Pahalı koşudan önce: hükmü bağlayan alanlar bu kayıtta okunabiliyor mu (değer değil, varlık)."""
+    run = Run(d, None, dev)
+    w = run.alice_sum.get("wire") if isinstance(run.alice_sum.get("wire"), dict) else None
+    rx = (w or {}).get("ack_rx") or {}
+    bob_ack = [r for r in run.bob if r.get("k") in BOB_ACK_KINDS]
+    has = lambda name: any(any(r.get(k) is not None for k in BOB_KEYS[name]) for r in bob_ack)
+    out_b = rev_acks(run, "B_vb0.jsonl", "out")
+    in_a = rev_acks(run, "A_va0.jsonl", "in")
+    chosen = run.alice_sum.get("ptt_presses") or []
+    rows = [
+        ("transport", "başlangıç kaydı (motor, ack_biçimi) iki uçta", bool(run.start["alice"] and run.start["bob"]),
+         f"alice={run.start['alice'].get('ack_biçimi')} bob={run.start['bob'].get('ack_biçimi')}"),
+        ("transport", "canlı ayna açık (alice.json wire.live_diag == true)", bool(w) and w.get("live_diag") is True,
+         f"wire={'yok' if w is None else 'var'} live_diag={(w or {}).get('live_diag')}"),
+        ("transport", "ACK tür sayacı (wire.ack_rx)", bool(rx), str(rx)),
+        ("transport", "ACK başına LineGuard tavanı (alice.jsonl k=lg)", bool(run.lg()), f"{len(run.lg())} satır"),
+        ("transport", "Bob'da ilk geçerli kanıt anı (bob.jsonl ACK kaydı)", has("kanit"), f"{len(bob_ack)} ACK kaydı"),
+        ("transport", "Bob'da ACK hazır anı", has("hazir"), ""),
+        ("transport", "ACK telde çıkış (cap/B_vb0 out, Bob bağlı portu → Alice geçici portu)", bool(out_b),
+         f"{len(out_b or [])} datagram"),
+        ("transport", "Alice'e varış (cap/A_va0 in)", bool(in_a), f"{len(in_a or [])} datagram"),
+        ("transport", f"ölçülen darboğaz çıkışı (cap/MID_{run.dev}.jsonl out)", run.bottleneck_capture,
+         f"{len(run.mb0)} paket"),
+        ("transport", f"darboğaz kuyruk serisi ({run.dev})", bool(run.qdisc), f"{len(run.qdisc)} örnek"),
+        ("transport", "zaman sıfırı (basamak.jsonl / sync/t0 / t_start)", run.t0 is not None, run.t0_source),
+        ("ptt", "PTT tel baytı ve datagramı (wire.ptt_wire_bytes / ptt_wire_datagrams > 0)",
+         bool(w) and "ptt_wire_bytes" in w and (w.get("ptt_wire_datagrams") or 0) > 0,
+         f"bayt={(w or {}).get('ptt_wire_bytes')} datagram={(w or {}).get('ptt_wire_datagrams')}"),
+        ("ptt", "basışta birleşik 300 ms (alice.json ptt_presses)",
+         bool(chosen) and all(c.get("bundle_ms") == 300 and c.get("coalesced") is True for c in chosen),
+         str(chosen)[:120]),
+        ("ptt", "telde 0x17 (wire.ack_rx.0x17 > 0)", (rx.get("0x17") or 0) > 0, f"0x17={rx.get('0x17')}"),
+        ("ptt", "alıcıda basış kaydı (bob.json ptt_presses)", bool(run.bob_sum.get("ptt_presses")), ""),
+    ]
+    print(f"ALAN DENETİMİ {d}")
+    for grp, name, ok, info in rows:
+        print(f"  [{grp}] {'OKUNDU' if ok else 'EKSİK '}  {name}" + (f"  ({info})" if info else ""))
+    for grp in ("transport", "ptt"):
+        miss = [n for g, n, ok, _ in rows if g == grp and not ok]
+        print(f"  {grp}: " + ("HAZIR" if not miss else f"HAZIR DEĞİL — eksik {len(miss)}: " + "; ".join(miss)))
+    print("  not: alındının Bob'dan çıkış anı okuyucuda yok (alan adı gelince eklenir); yokken alındı "
+          "dönüşü üst sınırla, > 4 s ise SINANMADI.")
+    return rows
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("run_dir", type=pathlib.Path)
@@ -785,7 +831,12 @@ def main(argv=None):
     ap.add_argument("--baseline", type=pathlib.Path, help="kesmesiz koşu dizini (kısa daralma)")
     ap.add_argument("--bottleneck-dev", help="darboğaz arayüzü (varsayılan: realized_post'tan; yoksa mb0)")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--alan-denetimi", action="store_true",
+                    help="yalnız hükmü bağlayan alanların varlığını denetle (pahalı koşudan önce)")
     a = ap.parse_args(argv)
+    if a.alan_denetimi:
+        field_check(a.run_dir, a.bottleneck_dev)
+        return 0
     plan = parse_plan(a.plan) if a.plan else None
     run, rows = evaluate(a.run_dir, plan, a.t0, a.baseline, a.bottleneck_dev)
     if a.json:
