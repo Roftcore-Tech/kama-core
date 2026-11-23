@@ -42,7 +42,28 @@
 //! # Çıktı (koşu dizinine; hüküm YOK — analiz `scripts/ktp2/f0/a/f0a_analyze.py`)
 //!
 //! `alice.jsonl` / `bob.jsonl` (satır başına bir kayıt: `hdr`, `send`, `rx`, `rcpt`, `ev`, `ts`,
-//! `tr`, `mark`) ve `alice.json` / `bob.json` (tek satır özet). stdout'a da özet basılır.
+//! `tr`, `mark`, `lg`, `lg_gap`, `rcpt_tx`, `rcpt_wire`) ve `alice.json` / `bob.json` (tek satır özet). stdout'a
+//! da özet basılır.
+//!
+//! # Ölçüm kancaları (salt gözlem; #252 madde 1 ve 4)
+//!
+//! * `lg` — ACK başına hat koruması kaydı (`ClientLiveDiag::line_guard`, kaynak
+//!   `Sender::diag_line_guard_trace`): korumanın gönderim tavanı (`pace_*`) ve korunan hat hızı
+//!   (`rate_*`) ACK'ten önce / sonra, karar sınıfı, yoklama hükmü. `ts.s[].pr` pacer kovasının
+//!   hızıdır, hat tavanı DEĞİL; CC ve hızlanma ölçütleri bu satırdan okunur. Yalnız `--live-diag on`
+//!   ve hat koruması kuruluyken (geri bildirimi aç yön hızı profili) çıkar. `t` = ACK'in motorda
+//!   işlendiği an (ucun saat tabanı + `at_ns`, Unix ms). Sonda aralığında (`--probe-ms`) aynanın
+//!   halkasından (64 kayıt) taşan ya da motor halkasından düşen kayıtlar `lg_gap` satırıyla sayılır.
+//! * `rcpt_tx` (bob) — TEXT alındısının (RECEIPT) Transport'a kabul ettirildiği an (birim izi `S`;
+//!   `Messenger` alındıyı TEXT'i işlerken verir). alice'in `rcpt` satırıyla `mid` üzerinden eşlenir.
+//!   Bu an birimin TELE ÇIKIŞ anı değildir (motor kuyruğu / hız sınırı beklemesi dahil değil;
+//!   birim başına ilk tel iletim anı üründe açık değildir).
+//! * `rcpt_wire` (bob, en iyi çaba, yalnız `--live-diag on`) — alındı biriminin motordaki en eski
+//!   kaydının gönderim anı; birim canlı aynanın kurtarma görüntüsünde en eski teyitsiz birim olarak
+//!   ilk görüldüğünde (`SenderRecoveryDiag::oldest_unacked`, ≈ 200 ms). `exact:true` = tek emisyon
+//!   kararı (orijinal iletim); değilse üst sınır. `rcpt_tx` ile `unit` (+ `sess`) üzerinden eşlenir.
+//! * Özet: `ack_frames` (canlı aynanın ACK çerçevesi sayaçları; ACK türleri `wire.ack_rx`'te),
+//!   `lg` (yazılan satır / boşluk sayıları), bob'da `rcpt_tx` (eşleme sayıları).
 
 #![forbid(unsafe_code)]
 
@@ -60,9 +81,12 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use adaptive_transport::line_guard::FirstWindowOutcome;
+use adaptive_transport::sender::LineGuardAckTrace;
 use client_core::transport::{
     EnvelopeLink, LinkAttempt, LinkError, LinkEvent, UnitTraceKind, UnitTraceRecord,
 };
+use kama_app::codec::limits::{APP_RECORD_HEADER_BYTES, RECEIPT_BODY_BYTES};
 use kama_app::codec::PttCodec;
 use kama_app::messaging::MessengerError;
 use kama_app::ptt::PttError;
@@ -1202,6 +1226,398 @@ fn mark_line(clock: &Clock, at: Instant, what: &str, extra: &str) -> String {
     )
 }
 
+// ── Ölçüm kancaları: hat koruması ACK kaydı, ACK çerçevesi sayaçları, alındı gönderim anı ─────
+//
+// SALT GÖZLEM: hepsi sondanın (`KamaNode::probe_for_test`) ve birim izinin
+// (`KamaNode::take_unit_trace_for_test`) düzeneğin zaten aldığı kopyalarını okur; düğüme yeni komut
+// eklemez (tek istisna: bob'un koşu sonundaki son iz okuması), motoru sürmez, hiçbir karar bu
+// kayıtları okumaz.
+
+/// Bob'un eşleme kuyruklarının tavanı (SR-AUDIT-001): TEXT sayısı ≤ 3 × `MAX_ITEMS` (ısınma + plan
+/// + karşı örnek); taşan kayıt sayılır, eşlenmez.
+const RCPT_QUEUE_CAP: usize = 4 * MAX_ITEMS as usize;
+
+/// TEXT alındısının (`RECEIPT`) Transport birimi boyu: kayıt başlığı + gövde (`kama-app` codec).
+/// Bob'un gönderdiği birimler arasında bu boydaki tek kayıt türüdür (`FILE_RECEIPT` gövdesi 9 B).
+const RECEIPT_UNIT_BYTES: usize = APP_RECORD_HEADER_BYTES + RECEIPT_BODY_BYTES;
+
+/// Düğüm ya da sonda yokken özetin kanca alanları.
+const HOOKS_NULL: &str = "\"ack_frames\":null,\"lg\":null";
+
+fn opt_i(v: Option<i64>) -> String {
+    v.map_or_else(|| "null".to_owned(), |v| v.to_string())
+}
+
+/// [ÖLÇÜM-KANCASI · #252 madde 1] Bir hat koruması ACK kaydı → `lg` satırı. `t` = ACK'in motorda
+/// işlendiği an (ucun saat tabanı `origin` + `at_ns`; taban yoksa `null`, `at_ns` yine yazılır).
+fn lg_line(clock: &Clock, sess: &str, origin: Option<Instant>, r: &LineGuardAckTrace) -> String {
+    let at = origin.and_then(|o| o.checked_add(Duration::from_nanos(r.at_ns)));
+    let note = r.note.map_or_else(
+        || "null".to_owned(),
+        |n| {
+            format!(
+                "{{\"first_seq\":{},\"last_seq\":{},\"rx_span_ns\":{}}}",
+                n.first_seq,
+                n.last_seq,
+                opt_u(n.rx_span_ns)
+            )
+        },
+    );
+    let (first_window, first_window_bps) = match r.first_window {
+        None => ("null".to_owned(), None),
+        Some(FirstWindowOutcome::Sample(bps)) => (js("Sample"), Some(bps)),
+        Some(FirstWindowOutcome::Verified) => (js("Verified"), None),
+        Some(FirstWindowOutcome::NoInfo) => (js("NoInfo"), None),
+    };
+    format!(
+        "{{\"k\":\"lg\",\"t\":{},\"sess\":{},\"index\":{},\"at_ns\":{},\"largest_seq\":{},\
+         \"decision\":{},\"measured\":{},\"g_ns\":{},\"note\":{note},\"pace_before\":{},\
+         \"pace_after\":{},\"rate_before\":{},\"rate_after\":{},\"first_window\":{first_window},\
+         \"first_window_bps\":{},\"raised\":{},\"probe_failed\":{}}}",
+        opt_ms(clock, at),
+        js(sess),
+        r.index,
+        r.at_ns,
+        r.largest_seq,
+        js(&format!("{:?}", r.decision)),
+        r.measured,
+        opt_i(r.g_ns),
+        r.pace_before,
+        r.pace_after,
+        opt_u(r.rate_before),
+        opt_u(r.rate_after),
+        opt_u(first_window_bps),
+        r.raised,
+        r.probe_failed
+    )
+}
+
+/// [ÖLÇÜM-KANCASI · #252 madde 1] Canlı aynanın hat koruması halkasından YENİ kayıtları `lg`
+/// satırına döker. Oturum başına iki sayı tutar: aynanın halka sayacı (`DiagRing::total`; yeni
+/// kayıt sayısını verir, motor kaydı yeniden kurulsa da şaşmaz) ve yazılan son kayıt sırası
+/// (`LineGuardAckTrace::index`; her kayıt bir kez yazılır, sıradaki boşluk `lg_gap` satırıdır).
+/// Canlı ayna kapalıyken halka boştur: satır çıkmaz.
+#[derive(Default)]
+struct LgTap {
+    /// Oturum → (görülen halka sayacı, yazılan son kayıt sırası). Yalnız sondadaki oturumlar tutulur.
+    seen: BTreeMap<String, (u64, u64)>,
+    lines: u64,
+    gap_lines: u64,
+    /// `lg_gap` satırlarındaki atlanan kayıt toplamı.
+    skipped: u64,
+    /// Kayıt sırasının geri sardığı (motor kaydının yeniden kurulduğu) durum sayısı.
+    resets: u64,
+}
+
+impl LgTap {
+    fn drain(&mut self, clock: &Clock, at: Instant, probe: &NodeProbe, out: &mut Out) {
+        let keys: Vec<String> = probe
+            .sessions
+            .iter()
+            .map(|sp| format!("{:?}", sp.session))
+            .collect();
+        self.seen.retain(|k, _| keys.contains(k));
+        for (sp, key) in probe.sessions.iter().zip(keys) {
+            let ring = &sp.diag.line_guard;
+            let total = ring.total();
+            let (seen_total, mut last) = self.seen.get(&key).copied().unwrap_or((0, 0));
+            if total == seen_total {
+                continue;
+            }
+            // Sayaç tek bir uçta azalmaz; azalmış görünürse halkadaki her kayıt yeni sayılır.
+            let fresh = total.checked_sub(seen_total).unwrap_or(total);
+            let held = ring.recent().count();
+            let take = usize::try_from(fresh).unwrap_or(usize::MAX).min(held);
+            for rec in ring.recent().skip(held - take) {
+                let reset = rec.index <= last;
+                let base = if reset { 0 } else { last };
+                let skipped = rec.index.saturating_sub(base).saturating_sub(1);
+                if reset || skipped > 0 {
+                    out.line(&format!(
+                        "{{\"k\":\"lg_gap\",\"t\":{:.3},\"sess\":{},\"after_index\":{base},\
+                         \"next_index\":{},\"skipped\":{skipped},\"reset\":{reset}}}",
+                        clock.ms(at),
+                        js(&key),
+                        rec.index
+                    ));
+                    self.gap_lines += 1;
+                    self.skipped = self.skipped.saturating_add(skipped);
+                    self.resets += u64::from(reset);
+                }
+                out.line(&lg_line(clock, &key, sp.diag.clock_origin, rec));
+                self.lines += 1;
+                last = rec.index;
+            }
+            self.seen.insert(key, (total, last));
+        }
+    }
+}
+
+/// [ÖLÇÜM-KANCASI] Özet alanları: canlı aynanın ACK çerçevesi sayaçları (`ClientLiveDiag::ack`;
+/// açık oturumlar + kapanmış oturumlar toplamı) ve `lg` satırı sayıları. ACK TÜRLERİ burada
+/// yinelenmez: `wire.ack_rx` ([`wire_json`]). `lg.ring_total` = açık oturumların ayna halkasına
+/// giren kayıt sayısı (`lines + skipped` ile karşılaştırılır). Canlı ayna kapalıyken hepsi 0.
+/// Özetin sondası son `lg` kayıtlarını da döker (son örneklemeden sonra işlenen ACK'ler).
+fn hooks_json(node: &KamaNode, clock: &Clock, lg: &mut LgTap, out: &mut Out) -> String {
+    let Ok(probe) = node.probe_for_test() else {
+        return HOOKS_NULL.to_owned();
+    };
+    lg.drain(clock, Instant::now(), &probe, out);
+    let mut ack = [
+        probe.retired.ack.frames,
+        probe.retired.ack.mapped,
+        probe.retired.ack.new_units,
+        probe.retired.ack.inflight_shrunk,
+    ];
+    let mut ring_total = 0u64;
+    for sp in &probe.sessions {
+        let a = sp.diag.ack;
+        for (sum, v) in ack
+            .iter_mut()
+            .zip([a.frames, a.mapped, a.new_units, a.inflight_shrunk])
+        {
+            *sum = sum.saturating_add(v);
+        }
+        ring_total = ring_total.saturating_add(sp.diag.line_guard.total());
+    }
+    format!(
+        "\"ack_frames\":{{\"frames\":{},\"mapped\":{},\"new_units\":{},\"inflight_shrunk\":{}}},\
+         \"lg\":{{\"lines\":{},\"gap_lines\":{},\"skipped\":{},\"resets\":{},\"ring_total\":{}}}",
+        ack[0], ack[1], ack[2], ack[3], lg.lines, lg.gap_lines, lg.skipped, lg.resets, ring_total
+    )
+}
+
+/// [ÖLÇÜM-KANCASI · #252 madde 4] Bob'un TEXT alındılarının (RECEIPT) Transport'a kabul anı.
+///
+/// Kaynak birim izidir (`UnitTraceKind::Sent`, kaydın anı `Instant`): `Messenger` alındıyı TEXT'i
+/// işlerken, `TextReceived` olayını üretmeden ÖNCE Transport'a verir (`kama-app` `messaging.rs`
+/// `on_text` → `send_receipt`); düğüm olayı aynı turda dinleyiciye iletir. İz kaydı `msg_id`
+/// taşımaz; eşleme sıra ve zamanladır: bir TEXT olayının alındısı, önceki TEXT olayından sonra ve
+/// bu olayın dinleyici anından önce kabul edilen SON alındı boyundaki `S` kaydıdır. Aynı aralıktaki
+/// daha eski kayıtlar olay üretmeyen (tekrar / pencere altı) TEXT'lerin alındılarıdır: `mid`'leri
+/// düzenekten bilinemez (`mid:null`). Olayı olup `S` kaydı olmayan TEXT'in alındısı Transport'a
+/// verilememiştir (`t:null`; `MessengerStats::receipts_unsent`).
+///
+/// TELE ÇIKIŞ (`rcpt_wire`, en iyi çaba): kabul anı tele çıkış anı değildir (birim motor kuyruğunda
+/// ve hız sınırında bekler). Birim başına ilk iletim anını veren bir ürün erişicisi yoktur; var olan
+/// tek kaynak canlı aynanın kurtarma görüntüsüdür (`SenderRecoveryDiag::oldest_unacked`, ≈ 200 ms'de
+/// bir, yalnız EN ESKİ teyitsiz birim): motorun o birim için tuttuğu en eski kaydın gönderim anı.
+/// Alındı birimi bu görüntüde ilk görüldüğünde bir `rcpt_wire` satırı yazılır; `exact` = o anda
+/// tek emisyon kararı vardı (kayıt orijinal iletimdir). Birden çok kararda değer üst sınırdır
+/// (orijinalin kaydı düşmüş olabilir). Görüntüye hiç girmeden teyit edilen alındı için satır yoktur.
+#[derive(Default)]
+struct RcptTap {
+    /// TEXT olayları, dinleyici anı sırasıyla: (`msg_id`, sınıf, sıra, an).
+    texts: VecDeque<(u32, char, u32, Instant)>,
+    /// Alındı boyundaki `S` kayıtları, kabul anı sırasıyla.
+    sends: VecDeque<UnitTraceRecord>,
+    matched: u64,
+    /// Olayı olan ama alındı gönderim kaydı bulunmayan TEXT.
+    no_send: u64,
+    /// TEXT olayına bağlanamayan alındı gönderimi.
+    unattributed: u64,
+    /// Birim izinin tavan dolu olduğu için düşürdüğü kayıt (eşleme eksik kalabilir).
+    trace_dropped: u64,
+    /// Kuyruk tavanı yüzünden eşlemeye girmeyen kayıt.
+    overflow: u64,
+    /// Tele çıkışı henüz görülmemiş alındı gönderimleri (kabul sırasıyla) ve biliniyorsa `msg_id`.
+    unwired: VecDeque<(UnitTraceRecord, Option<u32>)>,
+    /// `rcpt_wire` satırı yazılan / görüntüye girmeden geçilen alındı.
+    wire_seen: u64,
+    wire_unseen: u64,
+}
+
+/// [ÖLÇÜM-KANCASI] Sondadaki oturumların en eski teyitsiz biriminin motor kaydı: (oturum sırası,
+/// birim, emisyon kararı sayısı, en eski kaydın gönderim anı, görüntünün anı).
+type OldestEmission = (usize, u64, u32, Instant, Instant);
+
+fn oldest_emissions(probe: &NodeProbe) -> Vec<OldestEmission> {
+    probe
+        .sessions
+        .iter()
+        .enumerate()
+        .filter_map(|(i, sp)| {
+            let rec = sp.diag.recovery?;
+            let oldest = rec.oldest_unacked?;
+            let since = Duration::from_nanos(oldest.since_earliest_record_ns?);
+            let first = rec.taken_at.checked_sub(since)?;
+            Some((
+                i,
+                oldest.unit_id,
+                oldest.emission_decisions,
+                first,
+                rec.taken_at,
+            ))
+        })
+        .collect()
+}
+
+impl RcptTap {
+    /// Sondanın en eski teyitsiz birim gözlemlerinden alındı birimlerinin `rcpt_wire` satırları.
+    fn note_oldest(
+        &mut self,
+        clock: &Clock,
+        probe: &NodeProbe,
+        seen: &[OldestEmission],
+        out: &mut Out,
+    ) {
+        for &(i, unit, emissions, first, taken_at) in seen {
+            let Some(sp) = probe.sessions.get(i) else {
+                continue;
+            };
+            let Some(pos) = self
+                .unwired
+                .iter()
+                .position(|(s, _)| s.session == sp.session && s.unit == unit)
+            else {
+                continue;
+            };
+            let Some((send, mid)) = self.unwired.remove(pos) else {
+                continue;
+            };
+            // Bu oturumun daha eski alındıları görüntüye girmeden teyit edildi.
+            let mut k = 0;
+            let mut older = 0u64;
+            self.unwired.retain(|(s, _)| {
+                let passed = k < pos && s.session == sp.session;
+                k += 1;
+                older += u64::from(passed);
+                !passed
+            });
+            self.wire_unseen = self.wire_unseen.saturating_add(older);
+            out.line(&format!(
+                "{{\"k\":\"rcpt_wire\",\"t\":{:.3},\"mid\":{},\"unit\":{unit},\"sess\":{},\
+                 \"emissions\":{emissions},\"exact\":{},\"accept_t\":{:.3},\"seen_t\":{:.3}}}",
+                clock.ms(first),
+                opt_u(mid.map(u64::from)),
+                js(&format!("{:?}", send.session)),
+                emissions == 1,
+                clock.ms(send.at),
+                clock.ms(taken_at)
+            ));
+            self.wire_seen += 1;
+        }
+    }
+
+    fn note_text(&mut self, msg_id: u32, class: char, idx: u32, at: Instant) {
+        if self.texts.len() >= RCPT_QUEUE_CAP {
+            self.overflow += 1;
+            return;
+        }
+        self.texts.push_back((msg_id, class, idx, at));
+    }
+
+    fn note_trace(&mut self, records: &[UnitTraceRecord], dropped: u64) {
+        self.trace_dropped = self.trace_dropped.saturating_add(dropped);
+        for r in records {
+            let receipt = r.kind == UnitTraceKind::Sent
+                && usize::try_from(r.len).is_ok_and(|len| len == RECEIPT_UNIT_BYTES);
+            if !receipt {
+                continue;
+            }
+            if self.sends.len() >= RCPT_QUEUE_CAP || self.unwired.len() >= RCPT_QUEUE_CAP {
+                self.overflow += 1;
+                continue;
+            }
+            self.sends.push_back(*r);
+            self.unwired.push_back((*r, None));
+        }
+    }
+
+    fn line(
+        clock: &Clock,
+        text: Option<(u32, char, u32, Instant)>,
+        send: Option<&UnitTraceRecord>,
+    ) -> String {
+        let (mid, class, idx, rx_t) = match text {
+            Some((mid, class, idx, at)) => (
+                mid.to_string(),
+                js(&class.to_string()),
+                idx.to_string(),
+                Some(at),
+            ),
+            None => (
+                "null".to_owned(),
+                "null".to_owned(),
+                "null".to_owned(),
+                None,
+            ),
+        };
+        let lag_us = match (rx_t, send) {
+            (Some(rx), Some(s)) => {
+                opt_u(u64::try_from(rx.saturating_duration_since(s.at).as_micros()).ok())
+            }
+            _ => "null".to_owned(),
+        };
+        format!(
+            "{{\"k\":\"rcpt_tx\",\"t\":{},\"mid\":{mid},\"c\":{class},\"i\":{idx},\"rx_t\":{},\
+             \"lag_us\":{lag_us},\"unit\":{},\"len\":{},\"sess\":{}}}",
+            opt_ms(clock, send.map(|s| s.at)),
+            opt_ms(clock, rx_t),
+            opt_u(send.map(|s| s.unit)),
+            opt_u(send.map(|s| u64::from(s.len))),
+            send.map_or_else(|| "null".to_owned(), |s| js(&format!("{:?}", s.session)))
+        )
+    }
+
+    /// Eşler ve yazar. `cut` = son iz okumasından hemen önceki an: dinleyici anı bundan sonra olan
+    /// TEXT'in alındı kaydı henüz okunmamış olabilir, sonraki tura kalır. `None` = koşu sonu:
+    /// kalan her kayıt yazılır.
+    fn resolve(&mut self, clock: &Clock, cut: Option<Instant>, out: &mut Out) {
+        while let Some(&text) = self.texts.front() {
+            let rx_at = text.3;
+            if cut.is_some_and(|c| rx_at > c) {
+                break;
+            }
+            self.texts.pop_front();
+            let mut own: Option<UnitTraceRecord> = None;
+            while self.sends.front().is_some_and(|s| s.at <= rx_at) {
+                if let Some(older) = own.take() {
+                    out.line(&Self::line(clock, None, Some(&older)));
+                    self.unattributed += 1;
+                }
+                own = self.sends.pop_front();
+            }
+            if let Some(own) = own.as_ref() {
+                self.matched += 1;
+                if let Some(entry) = self
+                    .unwired
+                    .iter_mut()
+                    .find(|(s, _)| s.session == own.session && s.unit == own.unit)
+                {
+                    entry.1 = Some(text.0);
+                }
+            } else {
+                self.no_send += 1;
+            }
+            out.line(&Self::line(clock, Some(text), own.as_ref()));
+        }
+        if cut.is_none() {
+            while let Some(send) = self.sends.pop_front() {
+                out.line(&Self::line(clock, None, Some(&send)));
+                self.unattributed += 1;
+            }
+            let left = u64::try_from(self.unwired.len()).unwrap_or(u64::MAX);
+            self.wire_unseen = self.wire_unseen.saturating_add(left);
+            self.unwired.clear();
+        }
+    }
+
+    fn json(&self) -> String {
+        format!(
+            "\"rcpt_tx\":{{\"matched\":{},\"no_send\":{},\"unattributed\":{},\"trace_dropped\":{},\
+             \"overflow\":{},\"wire_seen\":{},\"wire_unseen\":{}}}",
+            self.matched,
+            self.no_send,
+            self.unattributed,
+            self.trace_dropped,
+            self.overflow,
+            self.wire_seen,
+            self.wire_unseen
+        )
+    }
+}
+
 // ── Ortak ────────────────────────────────────────────────────────────────────────────────────
 
 fn device_path(name: &str) -> Result<PathBuf, String> {
@@ -1485,6 +1901,8 @@ struct Alice {
     probe_errors: u64,
     last_probe: Option<NodeProbe>,
     notes: Vec<String>,
+    /// [ÖLÇÜM-KANCASI] Hat koruması ACK kaydı dökümü (`lg` satırları).
+    lg: LgTap,
 }
 
 impl Alice {
@@ -1805,6 +2223,7 @@ impl Alice {
         match probe {
             Ok(p) => {
                 self.out.line(&ts_line(&self.clock, at, &p));
+                self.lg.drain(&self.clock, at, &p, &mut self.out);
                 self.last_probe = Some(p);
                 self.probes += 1;
             }
@@ -2065,6 +2484,10 @@ impl Alice {
             .node
             .as_ref()
             .map_or_else(|| "null".to_owned(), |n| wire_json(n, self.cfg.live_diag));
+        let hooks = match self.node.as_ref() {
+            Some(n) => hooks_json(n, &self.clock, &mut self.lg, &mut self.out),
+            None => HOOKS_NULL.to_owned(),
+        };
         let mut shutdown_note = "null".to_owned();
         if let Some(node) = self.node.take() {
             if let Err(e) = node.shutdown() {
@@ -2125,6 +2548,7 @@ impl Alice {
                 self.chosen.join(",")
             ),
         );
+        let summary = with_extra(summary, &hooks);
         self.out.flush();
         (summary, ok)
     }
@@ -2190,6 +2614,7 @@ fn run_alice(cfg: Config) -> (String, bool) {
         probe_errors: 0,
         last_probe: None,
         notes: Vec::new(),
+        lg: LgTap::default(),
     };
     let tap = Tap {
         tx,
@@ -2236,6 +2661,10 @@ struct Bob {
     probe_errors: u64,
     /// [PTT-BİRLEŞİK · pilot · ölçüm] Akış başına gözlem (≤ basış sayısı).
     presses: BTreeMap<u32, PressRx>,
+    /// [ÖLÇÜM-KANCASI] Hat koruması ACK kaydı dökümü (`lg` satırları).
+    lg: LgTap,
+    /// [ÖLÇÜM-KANCASI] Alındı gönderim anı eşlemesi (`rcpt_tx` satırları).
+    rcpt: RcptTap,
 }
 
 impl Bob {
@@ -2264,6 +2693,7 @@ impl Bob {
         match event {
             NodeEvent::TextReceived { msg_id, text, .. } => match parse_text(&text) {
                 Some((class, idx)) => {
+                    self.rcpt.note_text(msg_id, class, idx, at);
                     let first = self.count(class, 0, idx);
                     self.out.line(&format!(
                         "{{\"k\":\"rx\",\"t\":{t:.3},\"c\":{},\"i\":{idx},\"mid\":{msg_id},\
@@ -2272,7 +2702,10 @@ impl Bob {
                         text.len()
                     ));
                 }
-                None => self.unparsed += 1,
+                None => {
+                    self.rcpt.note_text(msg_id, '?', 0, at);
+                    self.unparsed += 1;
+                }
             },
             NodeEvent::SignalingReceived { bytes, .. } => match parse_sig(&bytes) {
                 Some(idx) => {
@@ -2424,10 +2857,13 @@ impl Bob {
         let probe = node.probe_for_test();
         let at = Instant::now();
         let trace = node.take_unit_trace_for_test();
+        let mut oldest = None;
         match probe {
             Ok(p) => {
                 self.out.line(&ts_line(&self.clock, at, &p));
+                self.lg.drain(&self.clock, at, &p, &mut self.out);
                 self.probes += 1;
+                oldest = Some((oldest_emissions(&p), p));
             }
             Err(_) => self.probe_errors += 1,
         }
@@ -2437,9 +2873,35 @@ impl Bob {
                     self.out
                         .line(&trace_line(&self.clock, Instant::now(), &records, dropped));
                 }
+                // `at` iz okumasından önce alındı: o ana dek dinleyiciye verilmiş her TEXT'in
+                // alındı kaydı bu okumada ya da öncekilerdedir.
+                self.rcpt.note_trace(&records, dropped);
+                self.rcpt.resolve(&self.clock, Some(at), &mut self.out);
             }
             Err(_) => self.probe_errors += 1,
         }
+        // İz bu sondadan SONRA okundu: sondadaki en eski teyitsiz birim izdeki kayıtlardandır.
+        if let Some((seen, p)) = oldest {
+            self.rcpt.note_oldest(&self.clock, &p, &seen, &mut self.out);
+        }
+    }
+
+    /// [ÖLÇÜM-KANCASI] Koşu sonu: son sondadan sonra işlenen TEXT'lerin alındı kayıtları için izi
+    /// bir kez daha okur (salt okuma), kalan bütün eşlemeleri yazar.
+    fn finish_receipts(&mut self) {
+        if let Some(node) = self.node.as_ref() {
+            match node.take_unit_trace_for_test() {
+                Ok((records, dropped)) => {
+                    if !records.is_empty() || dropped > 0 {
+                        self.out
+                            .line(&trace_line(&self.clock, Instant::now(), &records, dropped));
+                    }
+                    self.rcpt.note_trace(&records, dropped);
+                }
+                Err(_) => self.probe_errors += 1,
+            }
+        }
+        self.rcpt.resolve(&self.clock, None, &mut self.out);
     }
 
     fn arm_from_t0(&mut self) {
@@ -2514,6 +2976,7 @@ impl Bob {
         self.log_stall();
         self.sample();
         self.pump_events();
+        self.finish_receipts();
         self.state_dirty = true;
         self.write_state();
         let (outcome, error, ok) = match &result {
@@ -2531,6 +2994,10 @@ impl Bob {
             .node
             .as_ref()
             .map_or_else(|| "null".to_owned(), |n| wire_json(n, self.cfg.live_diag));
+        let hooks = match self.node.as_ref() {
+            Some(n) => hooks_json(n, &self.clock, &mut self.lg, &mut self.out),
+            None => HOOKS_NULL.to_owned(),
+        };
         let mut shutdown_note = "null".to_owned();
         if let Some(node) = self.node.take() {
             if let Err(e) = node.shutdown() {
@@ -2579,6 +3046,7 @@ impl Bob {
             summary,
             &format!("\"wire\":{wire},\"ptt_presses\":[{}]", presses.join(",")),
         );
+        let summary = with_extra(summary, &format!("{hooks},{}", self.rcpt.json()));
         self.out.flush();
         let _ = write_marker(MARK_BOB_EXIT, "exit");
         (summary, ok)
@@ -2642,6 +3110,8 @@ fn run_bob(cfg: Config) -> (String, bool) {
         probes: 0,
         probe_errors: 0,
         presses: BTreeMap::new(),
+        lg: LgTap::default(),
+        rcpt: RcptTap::default(),
     };
     let tap = Tap { tx, dropped, stall };
     let result = match start_bob_node(&cfg, tap, link_counters) {
