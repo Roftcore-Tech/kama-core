@@ -936,6 +936,14 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         self.server.delivery_dropped()
     }
 
+    /// [ACK-GÖZLEM · salt gözlem] Veri alıcısının canlı aynası: giden ACK çerçevelerinin kaydı
+    /// ([`crate::runtime::ServerLiveDiag`], [`ServerHandle::live_diag`]). Canlı ayna kapalıyken
+    /// (`RuntimeConfig::live_diag`, ürün varsayılanı) varsayılan değer döner. Durum değişmez.
+    #[must_use]
+    pub fn server_live_diag(&self) -> crate::runtime::ServerLiveDiag {
+        self.server.live_diag()
+    }
+
     /// [F4] Salt-okunur telemetri: teslim kanalı doluyken motora verilmeyen (ACK'lenmeyen) DATA
     /// datagramı sayısı (`ServerStats::data_not_admitted_full`). Uygulama `recv`'i sürdükçe sıfır
     /// kalır; sıfırdan büyükse uygulama drenajı gecikmiştir — birim kaybolmaz, gönderici yeniden
@@ -1941,9 +1949,16 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     /// (INT-02; `kama-node` `test-util` kurucuları). Sonradan açılan uçlara uygulanır; açık uçlar
     /// değişmez (ayna uç kurulurken kurulur ya da kurulmaz). Ürün yolu bu kancayı çağırmaz:
     /// [`ClientTransportConfig::product`] kapalı kurar.
+    ///
+    /// [ACK-GÖZLEM] Veri alıcısı (sunucu ucu) Transport kurulurken bağlanır; `on` iken onun
+    /// aynası da açılır ([`ServerHandle::enable_live_diag_for_test`], bundan sonra çıkan ACK'ler
+    /// kaydedilir). Sunucu aynası bir kez açılır; `false` onu kapatmaz.
     #[cfg(any(test, feature = "test-util"))]
     pub fn set_live_diag_for_test(&mut self, on: bool) {
         self.runtime_cfg.live_diag = on;
+        if on {
+            self.server.enable_live_diag_for_test();
+        }
     }
 
     /// [KTP2-F0 · A] Birim izini açar (`true`: boş iz) ya da kapatıp atar (`false`). Kapalıyken

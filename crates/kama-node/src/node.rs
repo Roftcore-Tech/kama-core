@@ -1096,6 +1096,7 @@ impl NodeLoop {
             sessions,
             ptt: self.ptt.stats(),
             retired: transport.retired_live_diag(),
+            rx: transport.server_live_diag(),
             reorder_other: reorder.into_iter().map(|(_, diag)| diag).collect(),
             not_ready_drops: ctx.not_ready_drops,
             ctx_mismatch_drops: ctx.ctx_mismatch_drops,

@@ -50,6 +50,9 @@ pub struct NodeProbe {
     /// Ucu bırakılan (kapanan) oturumların ARQ / kurtarma sayaçlarının toplamı (RTT alanları 0;
     /// ucun kapanış boşaltmasındaki kararlar girmez — alt sınır).
     pub retired: ClientLiveDiag,
+    /// [ACK-GÖZLEM · salt gözlem] Veri alıcısının (sunucu ucu) canlı aynası: giden ACK
+    /// çerçevelerinin kaydı (`ClientTransport::server_live_diag`). Canlı ayna kapalıyken boş.
+    pub rx: client_core::runtime::ServerLiveDiag,
     /// [K4G-05 TEŞHİS] Sıralı teslim durumu tutulan ama ucu açık bir oturuma eşlenemeyen oturumlar
     /// (ör. supersede edilip `Closed`'u okunmamış oturum).
     pub reorder_other: Vec<ReorderDiag>,

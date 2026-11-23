@@ -39,7 +39,7 @@ use adaptive_transport::arrival_rate::RateDropDetector;
 use adaptive_transport::line_guard::{ForwardInterval, LineGuard};
 use adaptive_transport::loss::E2A_ACK_DELAY_SATURATED;
 use adaptive_transport::pacer::LineModel;
-use adaptive_transport::receiver::{Receiver, RxDatagram, RxKind};
+use adaptive_transport::receiver::{AckEmitObs, Receiver, RxDatagram, RxKind};
 
 const MS: u64 = 1_000_000;
 const SEC: u64 = 1_000_000_000;
@@ -59,6 +59,22 @@ struct Emitted {
     frame: AckFrame,
     drop_alarms: u64,
     rise_alarms: u64,
+    /// [ACK-GÖZLEM] Alıcının bu ACK için kaydı ve o andaki ertelenme sayaçları
+    /// (`[bütçe, yol verme, bilgisiz]`); ACK çıktığı anda okunur. Yalnız (o) okur.
+    obs: AckEmitObs,
+    deferred: [u64; 3],
+}
+
+/// [ACK-GÖZLEM] Alıcının son ACK kaydı ve ertelenme sayaçları (salt okuma).
+fn observed(r: &Receiver) -> (AckEmitObs, [u64; 3]) {
+    (
+        r.diag_ack_obs(),
+        [
+            r.diag_ack_budget_deferred(),
+            r.diag_ack_yield_deferred(),
+            r.diag_ack_no_info_deferred(),
+        ],
+    )
 }
 
 struct Run {
@@ -164,17 +180,23 @@ fn run_declared(
                 .into_iter()
                 .map(|f| (t, f))
                 .collect();
+            let mut seen: Vec<(AckEmitObs, [u64; 3])> = out.iter().map(|_| observed(&r)).collect();
             let timer_at = if busy { t + 30 * MS } else { t };
             r.set_return_line_ahead_ns(ahead);
             r.set_uplink_yield(yield_);
             out.extend(r.on_ack_timer(timer_at).map(|f| (timer_at, f)));
-            for (at, frame) in out {
+            if out.len() > seen.len() {
+                seen.push(observed(&r));
+            }
+            for ((at, frame), (obs, deferred)) in out.into_iter().zip(seen) {
                 det.on_ack(at);
                 acks.push(Emitted {
                     at,
                     frame,
                     drop_alarms: r.diag_drop_alarms(),
                     rise_alarms: r.diag_rise_alarms(),
+                    obs,
+                    deferred,
                 });
             }
         }
@@ -699,11 +721,14 @@ fn drive(
     };
     let push = |acks: &mut Vec<Emitted>, r: &Receiver, det: &mut RateDropDetector, at, frame| {
         det.on_ack(at);
+        let (obs, deferred) = observed(r);
         acks.push(Emitted {
             at,
             frame,
             drop_alarms: r.diag_drop_alarms(),
             rise_alarms: r.diag_rise_alarms(),
+            obs,
+            deferred,
         });
     };
     let mut next_poll = arrivals.first().map_or(until, |a| a.0);
@@ -1905,6 +1930,104 @@ fn k2_honest_6250_line_never_opens_the_ceiling() {
                     rises.iter().map(|s| step_line(s)).collect::<Vec<_>>()
                 );
             }
+        }
+    }
+}
+
+/// (o) [ACK-GÖZLEM · salt gözlem] Alıcının ACK kaydı (`Receiver::diag_ack_obs`) kanıt, hazır olma
+/// ve çıkış anlarını yazar. Düzenek (a) ve (b)'ninkidir (30 s'de hat yarıya; açık / dolu dönüş);
+/// sınır eklenmez, var olan mekanizmalardan okunur:
+/// * her ACK'te sıra bir artar, `emit_ns` ACK'in çıktığı andır, ertelenme sayıları alıcının
+///   kümülatif sayaçlarıyla (`diag_ack_*_deferred`) ACK ACK aynı toplamı verir;
+/// * `evidence_ns` yalnız kanıtla bırakılan ACK'te doludur (`diag_drop_alarms` o ACK'te arttı);
+/// * alarm ACK'inde algılama ≤ kanıt ≤ çıkış ve kanıt düşüşten sonradır; açık dönüşte ACK kanıtın
+///   geldiği varışta çıkar, dolu dönüşte bir yol verişten sonra (`AHEAD`) ve bekleme nedeni
+///   "yol verme" olarak sayılır.
+#[test]
+fn o_ack_observation_records_evidence_ready_and_emit_moments() {
+    for (name, busy_from) in [("açık dönüş", None), ("dolu dönüş", Some(DROP_AT - SEC))] {
+        let o = run(&drop_plan(), 40 * SEC, |_| false, busy_from);
+        let mut prev_alarms = 0u64;
+        let mut sums = [0u64; 3];
+        for (i, e) in o.acks.iter().enumerate() {
+            let ob = e.obs;
+            assert_eq!(ob.index, i as u64 + 1, "{name}: ACK sırası");
+            assert_eq!(ob.emit_ns, e.at, "{name}: çıkış anı");
+            assert!(ob.first_try_ns <= ob.emit_ns, "{name}: ilk deneme");
+            assert_eq!(
+                ob.evidence_ns.is_some(),
+                e.drop_alarms > prev_alarms,
+                "{name}: ACK {} kanıt anı ↔ kanıtlı bırakma sayacı",
+                ob.index
+            );
+            prev_alarms = e.drop_alarms;
+            for (sum, d) in sums
+                .iter_mut()
+                .zip([ob.defer_budget, ob.defer_yield, ob.defer_no_info])
+            {
+                *sum += u64::from(d);
+            }
+            assert_eq!(
+                sums, e.deferred,
+                "{name}: ACK {} ertelenme toplamı",
+                ob.index
+            );
+            assert_eq!(
+                ob.first_defer_ns.is_some(),
+                ob.defer_budget + ob.defer_yield + ob.defer_no_info + ob.defer_first_window > 0,
+                "{name}: ilk ertelenme anı"
+            );
+        }
+        let (alarm, _) = o.alarm_ack();
+        let ob = alarm.obs;
+        let (detect, evidence) = (
+            ob.detect_ns.expect("algılama anı"),
+            ob.evidence_ns.expect("kanıt anı"),
+        );
+        println!(
+            "{name}: alarm ACK no {} algılama {} ms, kanıt {} ms, çıkış {} ms; alarm sonrası \
+             ertelenme bütçe {} / yol verme {}",
+            ob.index,
+            detect / MS,
+            evidence / MS,
+            ob.emit_ns / MS,
+            ob.alarm_defer_budget,
+            ob.alarm_defer_yield
+        );
+        assert!(ob.alarm && !ob.rise && !ob.wait_open, "{name}: alarm ACK'i");
+        assert_eq!(ob.alarm_ns, Some(evidence), "{name}: alarm kuralı kanıtla");
+        assert!(
+            DROP_AT <= detect && detect <= evidence && evidence <= ob.emit_ns,
+            "{name}: sıra düşüş ≤ algılama ≤ kanıt ≤ çıkış"
+        );
+        if ob.detects == 1 {
+            assert_eq!(Some(&detect), o.alarms.first(), "{name}: algılama anı");
+        }
+        // Alarm ACK'inden önceki ACK'lerin kanıt anı yok.
+        assert!(
+            o.acks
+                .iter()
+                .take_while(|e| e.obs.index < ob.index)
+                .all(|e| e.obs.evidence_ns.is_none() && !e.obs.alarm),
+            "{name}: alarmdan önce kanıt anı"
+        );
+        if busy_from.is_some() {
+            assert!(ob.alarm_defer_yield >= 1, "{name}: yol verme sayılmadı");
+            assert!(
+                ob.emit_ns >= evidence + AHEAD,
+                "{name}: alarm ACK'i yol verişten önce çıktı"
+            );
+            assert!(ob.first_defer_ns.is_some(), "{name}: ilk ertelenme anı");
+        } else {
+            assert_eq!(
+                ob.emit_ns, evidence,
+                "{name}: kanıtın geldiği varışta çıkış"
+            );
+            assert_eq!(
+                (ob.alarm_defer_budget, ob.alarm_defer_yield),
+                (0, 0),
+                "{name}: alarm sonrası ertelenme"
+            );
         }
     }
 }

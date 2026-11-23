@@ -185,6 +185,81 @@ const K_ARR: u64 = 2;
 /// SACK kaybı telafi eder (pencere-dışı çok-geç dup teorik — E2E envelope §4 + client-core dedup nihai).
 const RX_DEDUP_WINDOW: usize = 4096;
 
+/// [ACK-GÖZLEM · salt gözlem] Bütçeli port alıcısından çıkan SON ACK'in alıcıdaki anları
+/// ([`Receiver::diag_ack_obs`]). Hepsi motor saatindedir (`on_datagram` / `on_ack_timer`'a verilen
+/// `now_ns`). Yalnız yazılır: hiçbir karar, bütçe, eşik ya da tel alanı bu kaydı okumaz.
+///
+/// Zincir: daralma algılaması (`detect_ns`) → kanıtın yetmesi (`evidence_ns`; alarm ACK'inin
+/// bırakıldığı varış) → alarm kuralının kurulması (`alarm_ns`) → ertelenmeler (`defer_*`) → çıkış
+/// (`emit_ns`). Kanıt anı yalnız kanıtla bırakılan ACK'te vardır; planlı ACK'te ve yükseliş
+/// alarmının ACK'inde `None`'dır (tahmin edilmez).
+///
+/// Kapsam: yalnız bütçeli port yolu (`emit_ack`'in bütçeli kolu). Bütçesiz yol ve eski motor bu
+/// kaydı yazmaz (`index` 0 kalır).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct AckEmitObs {
+    /// Bütçeli yoldan çıkan ACK'in sırası (1'den). 0 = henüz ACK çıkmadı.
+    pub index: u64,
+    /// ACK'in çıktığı an (ns): çerçeve kuruldu, bütçe jetonu alındı, çağırana verildi.
+    pub emit_ns: u64,
+    /// Önceki ACK'ten sonra bu ACK için ilk `emit_ack` denemesinin anı (ns). Ertelenmediyse
+    /// `emit_ns` ile aynıdır.
+    pub first_try_ns: u64,
+    /// İlk ertelenmenin anı (ns); hiç ertelenmediyse `None`.
+    pub first_defer_ns: Option<u64>,
+    /// Önceki ACK'ten bu ACK'e dek ertelenen deneme sayısı, nedene göre: bütçe (jeton yetmedi),
+    /// yol verme (dönüş hattı dolu, veriye bırakıldı), bilgisiz (yalnız bilgi taşımayan kopya
+    /// geldi), ilk pencere (oturumun ilk ACK'i ilk varış penceresini bekledi).
+    pub defer_budget: u32,
+    pub defer_yield: u32,
+    pub defer_no_info: u32,
+    pub defer_first_window: u32,
+    /// ACK alarm kuralıyla çıktı (çıkış anında `drop_alarm` kuruluydu).
+    pub alarm: bool,
+    /// Alarm kuralının bu ACK için ilk kurulduğu an (ns): daralma kanıtının yettiği ya da
+    /// yükseliş alarmının verildiği varış. Alarm yoksa `None`.
+    pub alarm_ns: Option<u64>,
+    /// Bu ACK aralığında yükseliş alarmı verildi.
+    pub rise: bool,
+    /// Bu ACK aralığındaki daralma algılaması sayısı ve sonuncusunun anı (ns): alarm ACK'i
+    /// kanıtı beklemeye başladı (`drop_alarm_wait`). Algılama yoksa 0 / `None`.
+    pub detects: u32,
+    pub detect_ns: Option<u64>,
+    /// Kanıtın yeterli olduğu an (ns): alarm ACK'inin kanıtla bırakıldığı varış
+    /// (`AlarmEvidence::sufficient` ve uçların eşleşmesi). Bu ACK kanıtla bırakılmadıysa `None`.
+    pub evidence_ns: Option<u64>,
+    /// Alarm kuralı kurulduktan sonra ertelenen deneme sayısı (alarm ACK'i hazırken): bütçe /
+    /// yol verme. Alarm ACK'i bilgisiz kuralıyla ve ilk pencereyle ertelenmez.
+    pub alarm_defer_budget: u32,
+    pub alarm_defer_yield: u32,
+    /// Bu ACK çıktığında kanıt beklemesi açıktı (`drop_alarm_wait`): algılama oldu, kanıt yetmedi.
+    /// Planlı ACK'e özgü değildir: bekleme sürerken verilen yükseliş alarmının ACK'inde de `true`
+    /// olur. İkisi `alarm` / `rise` alanlarıyla ayrılır (planlı ACK: `alarm` yok).
+    pub wait_open: bool,
+}
+
+/// [ACK-GÖZLEM · salt gözlem] İki ACK arasında biriken gözlem ([`AckEmitObs`]'un kaynağı).
+#[derive(Debug, Default, Clone, Copy)]
+struct AckPendObs {
+    first_try_ns: Option<u64>,
+    first_defer_ns: Option<u64>,
+    /// `[bütçe, yol verme, bilgisiz, ilk pencere]`.
+    defer: [u32; 4],
+    alarm_ns: Option<u64>,
+    rise: bool,
+    detects: u32,
+    detect_ns: Option<u64>,
+    evidence_ns: Option<u64>,
+    /// `[bütçe, yol verme]` (alarm kuralı kurulduktan sonra).
+    alarm_defer: [u32; 2],
+}
+
+/// [ACK-GÖZLEM] Ertelenme nedeni ([`AckPendObs::defer`] sırası).
+const OBS_DEFER_BUDGET: usize = 0;
+const OBS_DEFER_YIELD: usize = 1;
+const OBS_DEFER_NO_INFO: usize = 2;
+const OBS_DEFER_FIRST_WINDOW: usize = 3;
+
 /// Receiver state machine (§4). rx-set + SACK üretimi; `on_datagram` / `on_ack_timer` ile sürülür.
 pub struct Receiver {
     /// [CC-PORT] quinn ACK kuralları (bkz. [`Receiver::with_cc_port`]). `false` = bugünkü alıcı.
@@ -339,6 +414,16 @@ pub struct Receiver {
     pair: PairRate,
     /// [ÇİFT ARALIĞI · YÜKSELİŞ ALARMI] Alarm sayısı (gözlem).
     diag_rise_alarms: u64,
+    /// [ACK-GÖZLEM · salt gözlem] Daralma algılaması sayısı (kanıt beklemesinin başladığı varış).
+    /// `diag_drop_alarms` kanıtla BIRAKILAN alarm ACK'ini sayar; ikisinin farkı kanıtı yetmeyen
+    /// algılamalardır.
+    diag_drop_detects: u64,
+    /// [ACK-GÖZLEM · salt gözlem] Kanıt beklemesi açıkken çıkan ACK sayısı: planlı ACK ya da
+    /// bekleme sürerken verilen yükseliş alarmının ACK'i (ayrım `AckEmitObs::alarm` / `rise`).
+    diag_alarm_wait_planned: u64,
+    /// [ACK-GÖZLEM · salt gözlem] Son çıkan ACK'in anları ve sıradaki ACK için biriken gözlem.
+    obs_last: AckEmitObs,
+    obs_pend: AckPendObs,
 }
 
 impl Receiver {
@@ -410,6 +495,10 @@ impl Receiver {
             alarm_pair_saved: [0, 0],
             pair: PairRate::default(),
             diag_rise_alarms: 0,
+            diag_drop_detects: 0,
+            diag_alarm_wait_planned: 0,
+            obs_last: AckEmitObs::default(),
+            obs_pend: AckPendObs::default(),
         }
     }
 
@@ -426,6 +515,8 @@ impl Receiver {
                 self.drop_alarm = true;
                 self.alarm_yield_clear_ns = 0;
                 self.diag_rise_alarms += 1;
+                self.obs_pend.rise = true;
+                self.obs_pend.alarm_ns.get_or_insert(now_ns);
             }
         }
         // [§2.2 V2] seen_count: HER görülen datagram sayılır (dup/shard DAHİL) — sender'ın
@@ -497,6 +588,9 @@ impl Receiver {
                     self.alarm_pair_saved = self.pair.restart_at_drop_alarm();
                     self.drop_alarm_wait = true;
                     self.alarm_evidence = None;
+                    self.diag_drop_detects += 1;
+                    self.obs_pend.detects = self.obs_pend.detects.saturating_add(1);
+                    self.obs_pend.detect_ns = Some(now_ns);
                 }
                 in_detector = true;
             }
@@ -540,6 +634,8 @@ impl Receiver {
                     self.alarm_yield_clear_ns = 0;
                     self.diag_drop_alarms += 1;
                     self.alarm_span_first = Some(ev.first_seq());
+                    self.obs_pend.evidence_ns = Some(now_ns);
+                    self.obs_pend.alarm_ns.get_or_insert(now_ns);
                 }
             }
         }
@@ -713,6 +809,67 @@ impl Receiver {
         self.diag_rise_alarms
     }
 
+    /// [ACK-GÖZLEM · salt gözlem] Daralma algılaması sayısı (kanıt beklemesinin başladığı varış).
+    /// Kanıtla bırakılan alarm ACK'i [`Self::diag_drop_alarms`]'tadır.
+    #[must_use]
+    pub fn diag_drop_detects(&self) -> u64 {
+        self.diag_drop_detects
+    }
+
+    /// [ACK-GÖZLEM · salt gözlem] Kanıt beklemesi açıkken çıkan ACK sayısı (kanıt yetmeden biten
+    /// bekleme). Yalnız planlı ACK'i saymaz: bekleme sürerken verilen yükseliş alarmının ACK'i
+    /// de sayılır ([`AckEmitObs::wait_open`]; ayrım `alarm` / `rise` alanlarıyla).
+    #[must_use]
+    pub fn diag_alarm_wait_planned(&self) -> u64 {
+        self.diag_alarm_wait_planned
+    }
+
+    /// [ACK-GÖZLEM · salt gözlem] Bütçeli yoldan çıkan son ACK'in alıcıdaki anları
+    /// ([`AckEmitObs`]). Henüz ACK çıkmadıysa `index` 0'dır.
+    #[must_use]
+    pub fn diag_ack_obs(&self) -> AckEmitObs {
+        self.obs_last
+    }
+
+    /// [ACK-GÖZLEM · salt gözlem] Ertelenen ACK denemesini biriken gözleme yazar. Yalnız gözlem
+    /// alanlarını okur ve yazar.
+    fn obs_defer(&mut self, now_ns: u64, reason: usize) {
+        let p = &mut self.obs_pend;
+        p.first_defer_ns.get_or_insert(now_ns);
+        p.defer[reason] = p.defer[reason].saturating_add(1);
+        if p.alarm_ns.is_some() && reason < p.alarm_defer.len() {
+            p.alarm_defer[reason] = p.alarm_defer[reason].saturating_add(1);
+        }
+    }
+
+    /// [ACK-GÖZLEM · salt gözlem] Çıkan ACK'in kaydını kurar (`emit_ack`, alarm bayrakları
+    /// silinmeden ÖNCE çağrılır). `drop_alarm` ve `drop_alarm_wait` yalnız okunur.
+    fn obs_emit(&mut self, now_ns: u64) {
+        let p = std::mem::take(&mut self.obs_pend);
+        if self.drop_alarm_wait {
+            self.diag_alarm_wait_planned += 1;
+        }
+        self.obs_last = AckEmitObs {
+            index: self.obs_last.index.saturating_add(1),
+            emit_ns: now_ns,
+            first_try_ns: p.first_try_ns.unwrap_or(now_ns),
+            first_defer_ns: p.first_defer_ns,
+            defer_budget: p.defer[OBS_DEFER_BUDGET],
+            defer_yield: p.defer[OBS_DEFER_YIELD],
+            defer_no_info: p.defer[OBS_DEFER_NO_INFO],
+            defer_first_window: p.defer[OBS_DEFER_FIRST_WINDOW],
+            alarm: self.drop_alarm,
+            alarm_ns: p.alarm_ns,
+            rise: p.rise,
+            detects: p.detects,
+            detect_ns: p.detect_ns,
+            evidence_ns: p.evidence_ns,
+            alarm_defer_budget: p.alarm_defer[OBS_DEFER_BUDGET],
+            alarm_defer_yield: p.alarm_defer[OBS_DEFER_YIELD],
+            wait_open: self.drop_alarm_wait,
+        };
+    }
+
     /// [ÇİFT ARALIĞI] Bir sonraki bitmap ACK'inin `pair_rate` alanı (gözlem/test).
     #[must_use]
     pub fn diag_pair_rate_field(&self) -> u16 {
@@ -786,6 +943,7 @@ impl Receiver {
         if self.yield_to_uplink(now_ns) {
             // Jeton harcanmaz; ACK, hat veriye geçince zamanlayıcıyla çıkar.
             self.diag_ack_yield_deferred += 1;
+            self.obs_defer(now_ns, OBS_DEFER_YIELD);
             return false;
         }
         let cost = ack_wire_bytes(frame) * 1000;
@@ -819,6 +977,7 @@ impl Receiver {
             true
         } else {
             self.diag_ack_budget_deferred += 1;
+            self.obs_defer(now_ns, OBS_DEFER_BUDGET);
             false
         }
     }
@@ -1175,6 +1334,8 @@ impl Receiver {
     /// zamanlayıcıyla yeniden denenir. Bütçe yokken bugünkü sıra aynen (sayaç → kota → saat → kur).
     fn emit_ack(&mut self, now_ns: u64) -> Option<AckFrame> {
         if self.cc_port && self.ack_budget_bps.is_some() {
+            // [ACK-GÖZLEM · salt gözlem] Bu ACK için ilk deneme anı.
+            self.obs_pend.first_try_ns.get_or_insert(now_ns);
             // [BİLGİSİZ-ACK] Son ACK'ten beri yalnız `no_info_copy` kopyalar geldiyse ACK çıkmaz, jeton
             // harcanmaz: kopyaların PN'leri bilgi taşıyan sonraki ACK'e katılır.
             // Alarm ACK'i bilgi taşır (ileri hattın hız değişimi): onu tetikleyen varış bir
@@ -1182,6 +1343,7 @@ impl Receiver {
             // 8,69 s'de, ACK bu kuralla 0,36 s bekledi).
             if !self.info_since_ack && !self.drop_alarm {
                 self.diag_ack_no_info_deferred += 1;
+                self.obs_defer(now_ns, OBS_DEFER_NO_INFO);
                 return None;
             }
             // [VARIŞ-HIZI · §12 [R1] ETKİSİ — sahip kararı gerekir] Oturumun ilk ACK'i ilk varış
@@ -1189,6 +1351,7 @@ impl Receiver {
             // ACK'le gider ([`Self::arrival_rate_field`]). Pencere ölçülmüyorsa (boy verilmedi,
             // geri bildirimi aç alıcı değil) bugünkü gibi hemen.
             if !self.ack_budget_first_done && self.first_window.holds_first_ack(now_ns) {
+                self.obs_defer(now_ns, OBS_DEFER_FIRST_WINDOW);
                 return None;
             }
             let (frame, saturated) = self.ack_frame(now_ns);
@@ -1199,6 +1362,7 @@ impl Receiver {
             if saturated {
                 self.ack_delay_saturated += 1;
             }
+            self.obs_emit(now_ns);
             self.since_last_ack = 0;
             self.info_since_ack = false;
             self.drop_alarm = false;
