@@ -3194,6 +3194,11 @@ async fn client_task(
     // geri çekilmeye girmez.
     let mut param_first_ms: Option<u64> = None;
     let mut param_copies_sent: usize = 0;
+    // [ÖRTÜK-PARAM_ACK · DENEY · #175 7089214253] Geri bildirimi aç bitmap yolunda PARAM onayı
+    // PARAM'ın kendi PN'inin bitmap ACK'inde teyit edilmesidir (ayrı PARAM_ACK dar dönüşü 1,3 s
+    // tutuyordu). Gönderilen PARAM'ların PN'leri (sınırlı: ≤ 25 deneme + 4 kopya). Kapalıyken boş.
+    let implicit_param_ack = cfg.ack_format == AckFormat::Bitmap && link_feedback_starved(&cfg);
+    let mut param_pns: Vec<u64> = Vec::new();
     // [ACK-BITMAP · YETENEK] Bitmap biçimi açık uç, veri alıcısına CAPS ile 0x15'i çözebildiğini
     // bildirir; ilk 0x15 ACK'i bildirimin ulaştığının kanıtıdır ve yeniden denemeyi durdurur.
     // Kapalıyken (varsayılan) CAPS hiç çıkmaz: tel ve davranış bugünküyle aynı. CAPS yalnız bu
@@ -3765,6 +3770,20 @@ async fn client_task(
                         // PN (ufuk dışı / motor kararı olmayan çerçeve) motora GİTMEZ.
                         let expected_pn = max_sealed_pn.map_or(0, |m| m + 1);
                         let pns = frame.acked_full(expected_pn);
+                        // [ÖRTÜK-PARAM_ACK · DENEY] Bitmap ACK'i bu ucun bir PARAM PN'ini teyit
+                        // ediyorsa sunucu o PARAM'ı doğrulayıp bağlamıştır: bu yolda sunucu PARAM'ın
+                        // PN'ini alıcı kümesine YALNIZ bağlamadan sonra yazar (`PeerSlot::
+                        // implicit_param_ack`). Veri ACK'i kanıt DEĞİLDİR: veri PARAM bağlanmadan
+                        // kabul edilir ve ACK'lenir (bkz. sunucunun DATA kolu).
+                        #[allow(unused_assignments)]
+                        if implicit_param_ack
+                            && !param_confirmed
+                            && frame.bitmap.is_some()
+                            && pns.iter().any(|pn| param_pns.contains(pn))
+                        {
+                            param_confirmed = true;
+                            stats.param_confirmed = 1;
+                        }
                         // [ACK-BITMAP] Kanıt aralığı PN uzayında → motor seq aralığına: tablodaki
                         // PN'i [base, largest] içinde olan kayıtların en küçük / en büyük seq'i (PN
                         // ve motor seq aynı sırayla artar: her karar mühürlendiği sırayla PN alır).
@@ -4307,7 +4326,12 @@ async fn client_task(
                             let f = encode_param(p.profile_id, p.code_suite_id, param_hash);
                             let sealed = wire_len(seam.as_ref(), client_ctx, f.len());
                             // Motor kararı değil: PN tabloya GİRMEZ (alıcı PARAM'ı ACK'lemez).
-                            let _ = seal_send!(f, TxClass::Ctrl, now);
+                            let pn = seal_send!(f, TxClass::Ctrl, now);
+                            if let Some(pn) = pn.filter(|_| implicit_param_ack) {
+                                if param_pns.len() < PARAM_PN_CAP {
+                                    param_pns.push(pn);
+                                }
+                            }
                             stats.param_sends += 1;
                             if copy {
                                 param_copies_sent += 1;
@@ -5119,7 +5143,21 @@ struct PeerSlot {
     param_ack_held: Option<(Vec<u8>, u64)>,
     /// [PARAM_ACK-BEKLETME] Bu yuvadan çıkan ACK çerçevesi sayısı.
     acks_out: u32,
+    /// [ÖRTÜK-PARAM_ACK · DENEY] Bütçeli yuva + bu uçta bitmap biçimi yapılandırılmış. Açıkken
+    /// PARAM'ın PN'i alıcı kümesine YALNIZ doğrulanıp bağlandıktan sonra yazılır (bitmap ACK'inde
+    /// PARAM PN'inin teyidi = "PARAM bağlandı"); bekletilen PARAM_ACK, PN'i teyit eden bitmap ACK'i
+    /// çıkınca düşer, yalnız süre dolunca (ACK akmadıysa) gönderilir. Kapalıyken bugünkü yol.
+    implicit_param_ack: bool,
+    /// [ÖRTÜK-PARAM_ACK] Karşı uç CAPS ile bitmap'i açtı (ACK'leri 0x15/0x16).
+    bitmap_peer: bool,
+    /// [ÖRTÜK-PARAM_ACK] Doğrulanıp bağlanan PARAM'ların PN'leri (sınırlı, en yenileri).
+    bound_param_pns: Vec<u64>,
 }
+
+/// [ÖRTÜK-PARAM_ACK · DENEY] İstemcinin izlediği PARAM PN'i tavanı (≤ 25 deneme + 4 kopya).
+const PARAM_PN_CAP: usize = 32;
+/// [ÖRTÜK-PARAM_ACK · DENEY] Sunucunun tuttuğu bağlanan PARAM PN'i tavanı (en yenileri kalır).
+const BOUND_PARAM_PN_CAP: usize = 8;
 
 /// [PARAM_ACK-BEKLETME · #175 7080413643] Bütçeli (geri bildirimi aç) yolda PARAM_ACK yuvanın
 /// ikinci ACK'i çıkana ya da en geç bu kadar beklenir. 62 B/s dönüşte 83 B'lık PARAM_ACK 1,34 s
@@ -5168,6 +5206,84 @@ impl PeerSlot {
             param_ack_last_ns: None,
             param_ack_held: None,
             acks_out: 0,
+            implicit_param_ack: false,
+            bitmap_peer: false,
+            bound_param_pns: Vec::new(),
+        }
+    }
+
+    /// [ÖRTÜK-PARAM_ACK · DENEY] Yuvayı örtük kipe alır: yalnız bütçeli (port + yön hızı profili)
+    /// yuvada ve bu uçta bitmap biçimi yapılandırılmışken. Profil kapalı yol / eski motor: kapalı.
+    fn set_implicit_param_ack(&mut self, ack_format: AckFormat) {
+        self.implicit_param_ack = self.echo_spacing_ns.is_some() && ack_format == AckFormat::Bitmap;
+    }
+
+    /// [ÖRTÜK-PARAM_ACK] PARAM'ın PN'i ne zaman alıcı kümesine girer. Bugünkü yol doğrulamadan önce
+    /// yazar (reddedilen PARAM da teyit edilir); örtük kipte yalnız `bound` (doğrulandı) iken: aksi
+    /// hâlde teyit "bağlandı" anlamını taşımazdı.
+    fn note_param_pn(&mut self, pn: u64, now: u64, before_verify: bool, bound: bool) {
+        if self.implicit_param_ack {
+            if !before_verify && bound {
+                self.rx.note_non_eliciting(pn, now);
+                if self.bound_param_pns.len() >= BOUND_PARAM_PN_CAP {
+                    self.bound_param_pns.remove(0);
+                }
+                self.bound_param_pns.push(pn);
+            }
+        } else if before_verify {
+            self.note_non_eliciting(pn, now);
+        }
+    }
+
+    /// [PARAM_ACK-BEKLETME] Bağlamada PARAM_ACK'in hemen mi çıkacağı (dönen çerçeve) yoksa
+    /// bekletileceği. Örtük kipte hep bekletilir (karar `take_due_param_ack` / `note_ack_out`'ta).
+    fn param_ack_on_bind(&mut self, f: Vec<u8>, now: u64) -> Option<Vec<u8>> {
+        if self.implicit_param_ack
+            || (self.echo_spacing_ns.is_some() && self.acks_out < PARAM_ACK_AFTER_ACKS)
+        {
+            // İlk bekletmenin süresi korunur: yinelenen PARAM süreyi öne kaydırmaz (veri yokken
+            // PARAM_ACK'i yalnız süre çıkarır; #175 7080641829).
+            let due = self
+                .param_ack_held
+                .as_ref()
+                .map_or(now + PARAM_ACK_HOLD_NS, |h| h.1);
+            self.param_ack_held = Some((f, due));
+            None
+        } else {
+            self.param_ack_held = None;
+            Some(f)
+        }
+    }
+
+    /// [PARAM_ACK-BEKLETME] Bu yuvadan bir ACK çıktı. [ÖRTÜK-PARAM_ACK] Bitmap ACK'i bağlanan bir
+    /// PARAM PN'ini teyit ediyorsa bekletilen PARAM_ACK düşer: onay o ACK'tedir. ACK yolda düşerse
+    /// istemci PARAM'ı yeniden dener; yeni PN bağlanır, bekletme yeniden kurulur, sonraki ACK
+    /// onu teyit eder.
+    fn note_ack_out(&mut self, ack: &AckFrame) {
+        self.acks_out = self.acks_out.saturating_add(1);
+        if !self.implicit_param_ack || self.param_ack_held.is_none() || ack.bitmap.is_none() {
+            return;
+        }
+        let Some(&top) = self.bound_param_pns.iter().max() else {
+            return;
+        };
+        let acked = ack.acked_full(top.saturating_add(1));
+        if acked.iter().any(|pn| self.bound_param_pns.contains(pn)) {
+            self.param_ack_held = None;
+        }
+    }
+
+    /// [PARAM_ACK-BEKLETME] Bekletilen PARAM_ACK şimdi çıkmalı mı. Bugünkü kural: ikinci ACK çıktı
+    /// ya da süre doldu. [ÖRTÜK-PARAM_ACK] Karşı uç bitmap'teyken yalnız süre (bu sürede PN'i teyit
+    /// eden ACK çıkmadı); bitmap açılmadıysa istemci örtük onayı okuyamaz → bugünkü kural.
+    fn take_due_param_ack(&mut self, now: u64) -> Option<Vec<u8>> {
+        let &(_, dl) = self.param_ack_held.as_ref()?;
+        let by_acks =
+            !(self.implicit_param_ack && self.bitmap_peer) && self.acks_out >= PARAM_ACK_AFTER_ACKS;
+        if by_acks || now >= dl {
+            self.param_ack_held.take().map(|(f, _)| f)
+        } else {
+            None
         }
     }
 
@@ -5388,7 +5504,7 @@ async fn srv_ack_tick(
             s.rx.set_return_line_ahead_ns(ahead);
             s.rx.set_uplink_yield(yield_ctrl);
             let a = s.rx.on_ack_timer(now)?;
-            s.acks_out = s.acks_out.saturating_add(1);
+            s.note_ack_out(&a);
             Some((p, s.ctx, a.encode()))
         })
         .collect();
@@ -5399,12 +5515,7 @@ async fn srv_ack_tick(
     // [PARAM_ACK-BEKLETME] İkinci ACK çıktıysa ya da süre dolduysa bekletilen PARAM_ACK.
     let held: Vec<(SocketAddr, ProtectionContext, Vec<u8>)> = peers
         .iter_mut()
-        .filter(|(_, s)| {
-            s.param_ack_held
-                .as_ref()
-                .is_some_and(|&(_, dl)| s.acks_out >= PARAM_ACK_AFTER_ACKS || now >= dl)
-        })
-        .filter_map(|(&(p, _), s)| s.param_ack_held.take().map(|(f, _)| (p, s.ctx, f)))
+        .filter_map(|(&(p, _), s)| s.take_due_param_ack(now).map(|f| (p, s.ctx, f)))
         .collect();
     for (peer, sp, f) in held {
         srv_seal_send(tx, sock, stats, peer, sp, f).await;
@@ -5890,6 +6001,7 @@ async fn server_task(
                         slot.rx.set_return_budget_permille_for_diag(y);
                     }
                     slot.rx.set_ack_rereport(cfg.ack_rereport);
+                    slot.set_implicit_param_ack(cfg.ack_format);
                     // [ACK-BITMAP] Bitmap yalnız karşı uç CAPS ile 0x15'i çözebildiğini bildirince
                     // açılır (aşağıda `RxFrame::Caps`); yuva bugünkü 0x14 yoluyla başlar.
                     peers.insert(key, slot);
@@ -6029,7 +6141,7 @@ async fn server_task(
                         // birimler bir kanal yeri eksik görürdü.
                         drop(permit);
                         if let Some(ack) = out.ack {
-                            slot.acks_out = slot.acks_out.saturating_add(1);
+                            slot.note_ack_out(&ack);
                             let sp = slot.ctx;
                             srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, ack.encode())
                                 .await;
@@ -6122,7 +6234,7 @@ async fn server_task(
                                 now,
                             );
                             if let Some(ack) = out.ack {
-                                slot.acks_out = slot.acks_out.saturating_add(1);
+                                slot.note_ack_out(&ack);
                                 let sp = slot.ctx;
                                 srv_seal_send(
                                     &mut tx, &sock, &mut stats, peer, sp,
@@ -6155,7 +6267,7 @@ async fn server_task(
                             now,
                         );
                         if let Some(ack) = out.ack {
-                            slot.acks_out = slot.acks_out.saturating_add(1);
+                            slot.note_ack_out(&ack);
                             let sp = slot.ctx;
                             srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, ack.encode())
                                 .await;
@@ -6213,6 +6325,7 @@ async fn server_task(
                             && cfg.engine == TransportEngine::CcPort
                             && cfg.link_rates.is_some();
                         slot.rx.set_ack_bitmap(on);
+                        slot.bitmap_peer = on;
                         // [SIKIŞMA · E · #175 7081448733] Çift ölçüsünün sıkışma sınaması: bu
                         // yuvanın ölçtüğü hat eşin verisinin yönüdür, yani bu ucun aşağı yönü
                         // (`LinkRates::downlink_bps` = eşin `uplink_bps`'i). Bitmap kapalıyken kural
@@ -6237,7 +6350,8 @@ async fn server_task(
                         param_hash,
                     } => {
                         // [DÖNÜŞ-BÜTÇESİ] PARAM'ın PN'i alıcı kümesine (ACK istemeyen).
-                        slot.note_non_eliciting(pn, now);
+                        // [ÖRTÜK-PARAM_ACK] Örtük kipte yalnız bağlamadan sonra (aşağıda).
+                        slot.note_param_pn(pn, now, true, false);
                         // [v1/PARAM] §8 fail-closed doğrulama: yerel-beklenen alanlarla hash-verify
                         // → bind (admission açılır); mismatch → red-sayaç, ACK YOK.
                         let Some(exp) = param_expected.as_ref() else {
@@ -6256,23 +6370,13 @@ async fn server_task(
                                 if !was {
                                     stats.param_bound_peers += 1;
                                 }
+                                // [ÖRTÜK-PARAM_ACK] Bağlandı: PN'i şimdi teyit edilebilir.
+                                slot.note_param_pn(pn, now, false, true);
                                 // [DÖNÜŞ-BÜTÇESİ] Bütçeli yolda yinelenen PARAM_ACK seyreltilir.
                                 if slot.param_ack_due(was, now) {
                                     let f = encode_param_ack(&param_hash);
                                     // [PARAM_ACK-BEKLETME] Bütçeli yolda ilk ACK'lerin arkasına.
-                                    if slot.echo_spacing_ns.is_some()
-                                        && slot.acks_out < PARAM_ACK_AFTER_ACKS
-                                    {
-                                        // İlk bekletmenin süresi korunur: yinelenen PARAM süreyi
-                                        // öne kaydırmaz (veri yokken PARAM_ACK'i yalnız süre
-                                        // çıkarır; #175 7080641829).
-                                        let due = slot
-                                            .param_ack_held
-                                            .as_ref()
-                                            .map_or(now + PARAM_ACK_HOLD_NS, |h| h.1);
-                                        slot.param_ack_held = Some((f, due));
-                                    } else {
-                                        slot.param_ack_held = None;
+                                    if let Some(f) = slot.param_ack_on_bind(f, now) {
                                         let sp = slot.ctx;
                                         srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, f)
                                             .await;
@@ -8581,5 +8685,392 @@ mod ack_tick_priority_tests {
         );
         assert_eq!(tx.yielded.len(), 1, "RECOVERED hat dolunca bekler");
         assert_eq!(stats.tx_datagrams, 1, "turda tek denetim datagramı");
+    }
+}
+
+#[cfg(test)]
+mod implicit_param_ack_tests {
+    //! [ÖRTÜK-PARAM_ACK · DENEY · #175 7089214253] Geri bildirimi aç bitmap yolunda PARAM onayı
+    //! ayrı PARAM_ACK yerine PARAM'ın kendi PN'inin bitmap ACK'inde teyididir.
+    //!
+    //! Geçerlilik: veri PARAM bağlanmadan kabul edilir ve ACK'lenir (sunucunun DATA kolunda PARAM
+    //! kapısı yok; bind-öncesi FEC shard'ı bekletilir ve yine ACK'lenir — bkz.
+    //! `pre_param_fec_guard_tests`, ACK bariyeri PARAM'dan önce). "Veri ACK'lendi ⇒ PARAM
+    //! bağlandı" çıkarımı bu yüzden YANLIŞTIR; kanıt yalnız PARAM PN'inin teyidi olabilir ve
+    //! sunucu bu yolda o PN'i yalnız doğrulayıp bağladıktan sonra alıcı kümesine yazar.
+    //!
+    //! İlk iki test yalnız adayda da var olan yüzeyi kullanır (aday üzerinde kırmızı):
+    //! (1) sahte sunucu: PARAM düşer, veri ACK'lenir → istemci yeniden denemeyi sürdürür; PARAM
+    //!     PN'ini teyit eden ilk ACK'ten sonra durur ve onayı kaydeder;
+    //! (2) gerçek istemci + sunucu, aracı: bütçeli bitmap yolunda dönüşe ayrı PARAM_ACK çıkmaz,
+    //!     istemci onaylar ve PARAM PN'ini teyit eden ACK'ten sonra PARAM göndermez.
+    //! (3) yuva düzeyi: reddedilen PARAM teyit edilmez; ACK akmazsa PARAM_ACK süre dolunca çıkar;
+    //!     profil kapalı / V2 yuvası bugünkü kuralda.
+
+    use super::*;
+    use crate::seam::IdentitySeam;
+    use adaptive_transport::ack::{ARRIVAL_RATE_SENTINEL, RX_SPAN_NONE};
+    use std::collections::BTreeSet;
+
+    const S: ProtectionContext = ProtectionContext::Session(IdentitySeam::SESSION);
+    const MS: u64 = 1_000_000;
+    /// Bir PARAM tiki pay: ACK'in işlendiği tikte yoldaki PARAM sayılmaz.
+    const TICK_NS: u64 = 200 * MS;
+
+    /// İstemci: ileri 12 500 B/s, dönüş 62 B/s (geri bildirimi aç), bitmap biçimi.
+    fn client_cfg() -> RuntimeConfig {
+        RuntimeConfig {
+            link_rates: Some(LinkRates {
+                uplink_bps: 12_500,
+                downlink_bps: 62,
+            }),
+            ack_format: AckFormat::Bitmap,
+            drain_cap: Duration::from_millis(50),
+            ..RuntimeConfig::default()
+        }
+    }
+
+    /// Veri alıcısı (sunucu): yukarı yönü (ACK dönüşü) 62 B/s, bitmap biçimi.
+    fn server_cfg() -> RuntimeConfig {
+        RuntimeConfig {
+            link_rates: Some(LinkRates {
+                uplink_bps: 62,
+                downlink_bps: 12_500,
+            }),
+            ack_format: AckFormat::Bitmap,
+            ..RuntimeConfig::default()
+        }
+    }
+
+    fn elapsed(t0: tokio::time::Instant) -> u64 {
+        u64::try_from(t0.elapsed().as_nanos()).unwrap_or(u64::MAX)
+    }
+
+    fn is_bitmap_ack(frame: &[u8]) -> bool {
+        matches!(
+            frame.first(),
+            Some(&FRAME_TYPE_ACK_BITMAP | &FRAME_TYPE_ACK_BITMAP_PTT)
+        )
+    }
+
+    /// (1) PARAM'ın ilk 4 s'si sahte sunucuda "kaybolur" (PN'i ACK'e girmez), veri her 100 ms
+    /// ACK'lenir. 4 s'den sonra gelen PARAM "bağlanır": PN'i sonraki ACK'lere girer.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lost_param_with_acked_data_keeps_retrying_until_its_pn_is_acked() {
+        const PHASE_A_NS: u64 = 4_000 * MS;
+        const HARD_NS: u64 = 15_000 * MS;
+        const AFTER_CONFIRM_NS: u64 = 2_500 * MS;
+        let sock = UdpSocket::bind("127.0.0.1:0").await.expect("sahte sunucu");
+        let client = ClientEndpoint::connect(
+            sock.local_addr().expect("adres"),
+            client_cfg(),
+            Box::new(IdentitySeam::new()),
+        )
+        .await
+        .expect("client connect");
+        let mut seam = IdentitySeam::new();
+        let t0 = tokio::time::Instant::now();
+        let mut data_pns: BTreeSet<u64> = BTreeSet::new();
+        let mut bound_pns: BTreeSet<u64> = BTreeSet::new();
+        // PARAM varışları: (an, PN).
+        let mut params: Vec<(u64, u64)> = Vec::new();
+        // Veri PN'i teyit eden ilk ACK (PARAM'dan sonra gönderilen veriyi kapsar).
+        let mut first_data_ack_ns: Option<u64> = None;
+        let mut confirm_ack_ns: Option<u64> = None;
+        let mut client_addr: Option<SocketAddr> = None;
+        let mut tick = tokio::time::interval(Duration::from_millis(100));
+        let mut buf = vec![0u8; 4096];
+        loop {
+            let now = elapsed(t0);
+            if now > HARD_NS || confirm_ack_ns.is_some_and(|c| now > c + AFTER_CONFIRM_NS) {
+                break;
+            }
+            tokio::select! {
+                r = sock.recv_from(&mut buf) => {
+                    let Ok((n, from)) = r else { continue };
+                    client_addr = Some(from);
+                    let Some(od) = seam.open(&buf[..n]) else { continue };
+                    let pn = od.meta.full_wire_pn;
+                    if decode_param(&od.frame).is_some() {
+                        params.push((now, pn));
+                        if now >= PHASE_A_NS {
+                            bound_pns.insert(pn);
+                        }
+                    } else {
+                        // Veri, FEC, CAPS: PARAM dışındaki her datagram alınmış sayılır.
+                        data_pns.insert(pn);
+                    }
+                }
+                _ = tick.tick() => {
+                    let _ = client.send(vec![0x42; 40]);
+                    let (Some(c), Some(&largest)) = (client_addr, data_pns.last()) else {
+                        continue;
+                    };
+                    let received: Vec<u64> = data_pns
+                        .iter()
+                        .chain(bound_pns.iter())
+                        .copied()
+                        .filter(|&p| p < largest)
+                        .collect();
+                    let covers_param = received.iter().any(|p| bound_pns.contains(p));
+                    let ack = AckFrame::bitmap_from_received(
+                        received,
+                        largest,
+                        0,
+                        0,
+                        0,
+                        ARRIVAL_RATE_SENTINEL,
+                        RX_SPAN_NONE,
+                        largest,
+                    );
+                    let sealed = seam.seal(S, &ack.encode()).expect("seal");
+                    let _ = sock.send_to(&sealed.bytes, c).await;
+                    let after_param = params.first().is_some_and(|&(_, p)| largest > p);
+                    if after_param && first_data_ack_ns.is_none() {
+                        first_data_ack_ns = Some(now);
+                    }
+                    if covers_param && confirm_ack_ns.is_none() {
+                        confirm_ack_ns = Some(now);
+                    }
+                }
+            }
+        }
+        let stats = client.shutdown().await;
+        let ms = |v: &[(u64, u64)]| v.iter().map(|&(t, _)| t / MS).collect::<Vec<_>>();
+        let first_param = params.first().expect("PARAM gelmeli").0;
+        let first_ack = first_data_ack_ns.expect("veri ACK'lenmeli");
+        // Kopya çizelgesinin (1,6 s) ötesindeki, veri ACK'inden sonra çıkan PARAM: yeniden deneme.
+        let copy_end = first_param
+            + (PARAM_FORWARD_COPY_OFFSETS_MS[PARAM_FORWARD_COPY_OFFSETS_MS.len() - 1] * MS)
+            + TICK_NS;
+        let retried = params
+            .iter()
+            .any(|&(t, _)| t > copy_end && t > first_ack + TICK_NS && t < PHASE_A_NS);
+        assert!(
+            retried,
+            "veri ACK'i PARAM onayı değildir: PARAM kayıpken yeniden deneme sürmeli; PARAM (ms) {:?} · ilk veri ACK'i {} ms",
+            ms(&params),
+            first_ack / MS
+        );
+        let confirm = confirm_ack_ns.expect("4 s sonrası PARAM gelmeli ve PN'i ACK'lenmeli");
+        let late: Vec<u64> = params
+            .iter()
+            .filter(|&&(t, _)| t > confirm + TICK_NS)
+            .map(|&(t, _)| t / MS)
+            .collect();
+        assert!(
+            late.is_empty(),
+            "PARAM PN'i teyit edildikten sonra PARAM çıkmamalı; onay ACK'i {} ms · geç PARAM (ms) {late:?}",
+            confirm / MS
+        );
+        assert_eq!(stats.param_confirmed, 1, "örtük onay kaydedilmeli");
+    }
+
+    /// (2) Normal yol: gerçek istemci ve sunucu (ikisi de bütçeli bitmap), aracı her şeyi geçirir.
+    /// 7 s (bekletme süresi 5 s'yi aşar): dönüşe hiç PARAM_ACK çıkmaz, istemci onaylar, PARAM
+    /// PN'ini teyit eden ACK istemciye ulaştıktan sonra PARAM çıkmaz.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn budgeted_bitmap_path_sends_no_param_ack_and_param_stops_on_its_pn_ack() {
+        const RUN_NS: u64 = 7_000 * MS;
+        let server = ServerEndpoint::bind(
+            "127.0.0.1:0".parse().expect("adres"),
+            server_cfg(),
+            Box::new(IdentitySeam::new()),
+        )
+        .await
+        .expect("server bind");
+        let server_addr = server.local_addr();
+        let front = UdpSocket::bind("127.0.0.1:0").await.expect("ön soket");
+        let back = UdpSocket::bind("127.0.0.1:0").await.expect("arka soket");
+        let client = ClientEndpoint::connect(
+            front.local_addr().expect("adres"),
+            client_cfg(),
+            Box::new(IdentitySeam::new()),
+        )
+        .await
+        .expect("client connect");
+        let mut seam = IdentitySeam::new();
+        let t0 = tokio::time::Instant::now();
+        let mut params: Vec<(u64, u64)> = Vec::new();
+        let mut max_client_pn: u64 = 0;
+        let mut param_acks: Vec<u64> = Vec::new();
+        let mut cover_ns: Option<u64> = None;
+        let mut client_addr: Option<SocketAddr> = None;
+        let mut tick = tokio::time::interval(Duration::from_millis(100));
+        let (mut a, mut b) = (vec![0u8; 4096], vec![0u8; 4096]);
+        while elapsed(t0) < RUN_NS {
+            let now = elapsed(t0);
+            tokio::select! {
+                r = front.recv_from(&mut a) => {
+                    let Ok((n, from)) = r else { continue };
+                    client_addr = Some(from);
+                    if let Some(od) = seam.open(&a[..n]) {
+                        max_client_pn = max_client_pn.max(od.meta.full_wire_pn);
+                        if decode_param(&od.frame).is_some() {
+                            params.push((now, od.meta.full_wire_pn));
+                        }
+                    }
+                    let _ = back.send_to(&a[..n], server_addr).await;
+                }
+                r = back.recv_from(&mut b) => {
+                    let Ok((n, _)) = r else { continue };
+                    if let Some(od) = seam.open(&b[..n]) {
+                        if decode_param_ack(&od.frame).is_some() {
+                            param_acks.push(now);
+                        } else if is_bitmap_ack(&od.frame) && cover_ns.is_none() {
+                            if let Ok(f) = AckFrame::decode_with_bitmap(&od.frame) {
+                                let acked = f.acked_full(max_client_pn + 1);
+                                if params.iter().any(|(_, p)| acked.contains(p)) {
+                                    cover_ns = Some(now);
+                                }
+                            }
+                        }
+                    }
+                    if let Some(c) = client_addr {
+                        let _ = front.send_to(&b[..n], c).await;
+                    }
+                }
+                _ = tick.tick() => {
+                    let _ = client.send(vec![0x42; 40]);
+                }
+            }
+        }
+        let cstats = client.shutdown().await;
+        let sstats = server.shutdown().await;
+        let ms = |v: &[(u64, u64)]| v.iter().map(|&(t, _)| t / MS).collect::<Vec<_>>();
+        assert_eq!(sstats.param_bound_peers, 1, "{sstats:?}");
+        assert!(
+            param_acks.is_empty(),
+            "bütçeli bitmap yolunda ayrı PARAM_ACK çıkmamalı: PARAM_ACK (ms) {:?} · PARAM (ms) {:?}",
+            param_acks.iter().map(|t| t / MS).collect::<Vec<_>>(),
+            ms(&params)
+        );
+        let cover = cover_ns.expect("bir bitmap ACK'i PARAM PN'ini teyit etmeli");
+        let late: Vec<u64> = params
+            .iter()
+            .filter(|&&(t, _)| t > cover + TICK_NS)
+            .map(|&(t, _)| t / MS)
+            .collect();
+        assert!(
+            late.is_empty(),
+            "PARAM PN'inin teyidinden sonra PARAM çıkmamalı; teyit {} ms · geç PARAM (ms) {late:?}",
+            cover / MS
+        );
+        assert_eq!(cstats.param_confirmed, 1, "istemci örtük onaylamalı");
+    }
+
+    /// Yuvanın sıradaki ACK'i: zamanlayıcı 20 ms adımla `from`'dan en çok 60 s ilerletilir.
+    fn next_ack(s: &mut PeerSlot, from: u64) -> (AckFrame, u64) {
+        let mut t = from;
+        while t < from + 60_000 * MS {
+            if let Some(a) = s.rx.on_ack_timer(t) {
+                return (a, t);
+            }
+            t += 20 * MS;
+        }
+        panic!("ACK çıkmadı");
+    }
+
+    /// Veri datagramı; anında ACK çıktıysa onu, yoksa zamanlayıcının sıradakini döner.
+    fn data_then_ack(s: &mut PeerSlot, pn: u64, now: u64) -> (AckFrame, u64) {
+        let out = s.rx.on_datagram(
+            RxDatagram {
+                seq: pn,
+                unit_id: pn,
+                kind: RxKind::Data,
+            },
+            now,
+        );
+        match out.ack {
+            Some(a) => (a, now),
+            None => next_ack(s, now + MS),
+        }
+    }
+
+    fn implicit_slot() -> PeerSlot {
+        let mut s = PeerSlot::new(S, 4, 0, TransportEngine::CcPort, Some(62));
+        s.set_implicit_param_ack(AckFormat::Bitmap);
+        s.rx.set_ack_bitmap(true);
+        s.bitmap_peer = true;
+        s
+    }
+
+    /// (3a) Örtük yuva: reddedilen PARAM'ın PN'i teyit edilmez; bağlanan PARAM'ın PN'i teyit
+    /// edilir ve o ACK bekletilen PARAM_ACK'i düşürür; ACK akmazsa PARAM_ACK süre dolunca çıkar.
+    #[test]
+    fn implicit_slot_acks_only_bound_param_pns_and_falls_back_on_the_deadline() {
+        let mut s = implicit_slot();
+        assert!(s.implicit_param_ack);
+        // PN 0: reddedilen PARAM (doğrulama öncesi çağrı; bağlanmadı).
+        s.note_param_pn(0, 0, true, false);
+        let (a, t) = data_then_ack(&mut s, 1, MS);
+        s.note_ack_out(&a);
+        assert!(a.bitmap.is_some(), "bütçeli bitmap yuvası 0x15 yazar");
+        let acked = a.acked_full(2);
+        assert!(
+            !acked.contains(&0),
+            "reddedilen PARAM teyit edilmemeli: {acked:?}"
+        );
+        // PN 2: bağlanan PARAM → PARAM_ACK bekletilir (ACK sayısı ≥ 2 olsa da).
+        s.note_param_pn(2, t, true, false);
+        s.note_param_pn(2, t, false, true);
+        s.acks_out = s.acks_out.max(PARAM_ACK_AFTER_ACKS);
+        assert!(s.param_ack_on_bind(vec![FRAME_PARAM_ACK], t).is_none());
+        assert!(
+            s.take_due_param_ack(t + MS).is_none(),
+            "ACK sayısı örtük kipte çıkarmaz"
+        );
+        let (a, t) = data_then_ack(&mut s, 3, t + MS);
+        assert!(
+            a.acked_full(4).contains(&2),
+            "bağlanan PARAM PN'i teyit edilmeli"
+        );
+        s.note_ack_out(&a);
+        assert!(
+            s.param_ack_held.is_none(),
+            "PN'i teyit eden ACK bekletmeyi düşürür"
+        );
+        // Yinelenen PARAM (PN 4), ardından ACK yok: süre dolunca PARAM_ACK çıkar.
+        s.note_param_pn(4, t, false, true);
+        assert!(s.param_ack_on_bind(vec![FRAME_PARAM_ACK], t).is_none());
+        assert!(s.take_due_param_ack(t + PARAM_ACK_HOLD_NS - 1).is_none());
+        assert_eq!(
+            s.take_due_param_ack(t + PARAM_ACK_HOLD_NS),
+            Some(vec![FRAME_PARAM_ACK]),
+            "ACK akmadıysa yedek PARAM_ACK"
+        );
+    }
+
+    /// (3b) Örtük kip yalnız bütçeli + bitmap yapılandırılmış yuvada; karşı uç bitmap'i
+    /// açmadıysa (CAPS yok) bekletme bugünkü kuralla (ikinci ACK) çıkar. Profil kapalı ve V2
+    /// yuvası: PN doğrulamadan önce yazılır, PARAM_ACK bugünkü gibi.
+    #[test]
+    fn implicit_mode_is_confined_to_the_budgeted_bitmap_slot() {
+        let mut off = PeerSlot::new(S, 4, 0, TransportEngine::CcPort, None);
+        off.set_implicit_param_ack(AckFormat::Bitmap);
+        assert!(!off.implicit_param_ack, "profil kapalı");
+        assert_eq!(
+            off.param_ack_on_bind(vec![FRAME_PARAM_ACK], 0),
+            Some(vec![FRAME_PARAM_ACK]),
+            "bütçesiz yol hemen yanıtlar"
+        );
+        let mut legacy = PeerSlot::new(S, 4, 0, TransportEngine::Legacy, Some(62));
+        legacy.set_implicit_param_ack(AckFormat::Bitmap);
+        assert!(!legacy.implicit_param_ack, "eski motor");
+        let mut v2 = PeerSlot::new(S, 4, 0, TransportEngine::CcPort, Some(62));
+        v2.set_implicit_param_ack(AckFormat::V2);
+        assert!(!v2.implicit_param_ack, "V2 biçimi");
+        // V2 bütçeli: bugünkü bekletme (iki ACK ya da süre).
+        assert!(v2.param_ack_on_bind(vec![FRAME_PARAM_ACK], 0).is_none());
+        v2.acks_out = PARAM_ACK_AFTER_ACKS;
+        assert_eq!(v2.take_due_param_ack(MS), Some(vec![FRAME_PARAM_ACK]));
+        // Örtük yuva, karşı uç bitmap'i açmadı: bugünkü kural.
+        let mut no_caps = PeerSlot::new(S, 4, 0, TransportEngine::CcPort, Some(62));
+        no_caps.set_implicit_param_ack(AckFormat::Bitmap);
+        assert!(no_caps
+            .param_ack_on_bind(vec![FRAME_PARAM_ACK], 0)
+            .is_none());
+        no_caps.acks_out = PARAM_ACK_AFTER_ACKS;
+        assert_eq!(no_caps.take_due_param_ack(MS), Some(vec![FRAME_PARAM_ACK]));
     }
 }
