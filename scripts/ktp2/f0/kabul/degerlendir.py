@@ -676,6 +676,50 @@ def bob_ack_moments(run, t_out):
     return {n: get(r, n) for n in BOB_KEYS}
 
 
+
+def ack_identity(run, lg_row):
+    """Kesme ACK'inin Bob kaydı ve tel anları, kimlikle (index → largest_pn → pid). Yoksa ({}, None, None, None)."""
+    rx = next((r for r in run.alice if r.get("k") == "ack_rx" and r.get("index") == lg_row.get("index")
+               and r.get("sess") == lg_row.get("sess")), None)
+    if rx is None or rx.get("largest_pn") is None:
+        return {}, None, None, None
+    rows = [r for r in run.bob if r.get("k") in BOB_ACK_KINDS and r.get("largest_pn") == rx["largest_pn"]]
+    if len(rows) != 1:
+        return {}, None, None, (f"kimlik eşlemesi: largest_pn {rx['largest_pn']} için Bob ACK kaydı "
+                                f"{len(rows)} adet (1 beklenir); sırayla eşlemeye düşüldü")
+    r = rows[0]
+
+    def get(name):
+        for key in BOB_KEYS[name]:
+            if r.get(key) is not None:
+                return run.rel_ms(r[key])
+        return None
+    bm = {n: get(n) for n in BOB_KEYS}
+    t_out = t_arr = None
+    hdr = next((h for h in run.alice if h.get("k") == "hdr"), None)
+    try:
+        b_port = int(str(hdr["bob_addr"]).rsplit(":", 1)[1])
+    except (TypeError, KeyError, ValueError, IndexError):
+        b_port = None
+    pid_note = ""
+    if b_port is not None and bm.get("cikis") is not None:
+        outs = [p for p in read_jsonl(run.d / "cap" / "B_vb0.jsonl")
+                if p.get("dir") == "out" and p.get("sport") == b_port and "t_unix_ns" in p]
+        near = [p for p in outs if abs(run.rel_ns(p["t_unix_ns"]) - bm["cikis"]) <= 0.02]
+        if len(near) == 1:
+            t_out = run.rel_ns(near[0]["t_unix_ns"])
+            ins = [p for p in read_jsonl(run.d / "cap" / "A_va0.jsonl")
+                   if p.get("dir") == "in" and p.get("pid") == near[0].get("pid") and "t_unix_ns" in p]
+            if len(ins) == 1:
+                t_arr = run.rel_ns(ins[0]["t_unix_ns"])
+            else:
+                pid_note = f"; Alice varışı: pid {near[0].get('pid')} cap/A_va0 in'de {len(ins)} adet (1 beklenir)"
+        else:
+            pid_note = f"; telde çıkış: Bob t_wire ±20 ms içinde cap/B_vb0 out {len(near)} datagram (1 beklenir)"
+    return bm, t_out, t_arr, (f"kimlik eşlemesi: lg index {lg_row.get('index')} → ack_rx largest_pn "
+                              f"{rx['largest_pn']} → Bob ACK index {r.get('index')} ({r.get('type')}, "
+                              f"{r.get('bytes')} B, ertelemeler {r.get('defer')}){pid_note}")
+
 def delay_breakdown(run, plan):
     notes = []
     lg = run.lg()
@@ -696,21 +740,27 @@ def delay_breakdown(run, plan):
         return notes
     t_cut = cut[0]
     notes.append(f"kesme ACK'i işlendi +{t_cut - T_D:.2f} s (an {t_cut:.2f} s, tavan {cut[1]['pace_after']})")
-    arr = rev_acks(run, "A_va0.jsonl", "in")
-    out = rev_acks(run, "B_vb0.jsonl", "out")
-    k = None
-    if not arr or not out:
-        notes.append("telde çıkış/varış: eksik: cap/A_va0.jsonl, cap/B_vb0.jsonl ya da hdr adresleri")
-    else:
-        k = max((i for i, t in enumerate(arr) if t <= t_cut + 0.05), default=None)
-        if k is None or k >= len(out) or len(out) != len(arr):
-            notes.append(f"telde çıkış/varış: dönüş datagramları eşleşmiyor (çıkış {len(out)}, varış {len(arr)})")
-            k = None
-    t_out = out[k] if k is not None else None
-    t_arr = arr[k] if k is not None else None
+    # Kimlikle eşleme: lg.index → ack_rx.index → largest_pn → Bob ACK kaydı; Bob t_wire → cap/B_vb0 out
+    # → pid → cap/A_va0 in. Sırayla eşleme (eski yol) yalnız kimlik yoksa.
+    bm, t_out, t_arr, how = ack_identity(run, cut[1])
+    if how:
+        notes.append(how)
+    if not bm:
+        arr = rev_acks(run, "A_va0.jsonl", "in")
+        out = rev_acks(run, "B_vb0.jsonl", "out")
+        k = None
+        if not arr or not out:
+            notes.append("telde çıkış/varış: eksik: cap/A_va0.jsonl, cap/B_vb0.jsonl ya da hdr adresleri")
+        else:
+            k = max((i for i, t in enumerate(arr) if t <= t_cut + 0.05), default=None)
+            if k is None or k >= len(out) or len(out) != len(arr):
+                notes.append(f"telde çıkış/varış: dönüş datagramları eşleşmiyor (çıkış {len(out)}, varış {len(arr)})")
+                k = None
+        t_out = out[k] if k is not None else None
+        t_arr = arr[k] if k is not None else None
+        bm = bob_ack_moments(run, t_out) if t_out is not None else {}
     # Beş an (sahip 7097781875): Bob'da ilk geçerli kanıt → ACK hazır → telde çıkış → Alice varışı
     # → LineGuard kesmesi. Bob'daki iki an yalnız kayıttan (`bob_ack_moments`); yoksa EKSİK.
-    bm = bob_ack_moments(run, t_out)
     moments = [("düşüş", T_D), ("Bob ilk geçerli kanıt", bm.get("kanit")), ("Bob ACK hazır", bm.get("hazir")),
                ("telde çıkış", t_out if t_out is not None else bm.get("cikis")), ("Alice varışı", t_arr),
                ("LineGuard kesmesi", t_cut)]
