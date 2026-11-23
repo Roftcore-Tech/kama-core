@@ -18,10 +18,10 @@ Okunan dosyalar (koşu dizinine göre):
   `ack_gönderici_etkin=`, `ack_alıcı_etkin=`.
 * Darboğaz arayüzü (`--bottleneck-dev`; varsayılan: `realized_post.json` `mid_qdisc`'te tbf/fifo
   kuyruğu olan arayüz, ör. Yerel'in düzeneğinde `ifb0`; yoksa `mb0`).
-* `cap/MID_<darboğaz>.jsonl` `dir == "out"` = darboğazdan çıkan ileri tel (IP boyu, UDP/IP 28 B
-  dahil; hız birimiyle aynı). Bu dosya yoksa ve darboğaz `mb0` değilse `cap/MID_mb0.jsonl` çıkışı
-  kullanılır: kayıp darboğazdan SONRA uygulanıyorsa yolda düşenleri görmez, değer ALT SINIRDIR
-  (alt sınır ≥ %90 ise GEÇTİ; değilse SINANMADI).
+* `cap/MID_<darboğaz>.jsonl` `dir == "out"` = ÖLÇÜLEN darboğaz çıkışı (IP boyu, UDP/IP 28 B
+  dahil; hız birimiyle aynı). Tel ve boş hat hesabının TEK kaynağı; yoksa ilgili alt ölçüt
+  SINANMADI (başka düzlemden türetilmez: kayıp darboğazdan sonra uygulanıyorsa `mb0` çıkışı yolda
+  düşenleri görmez).
 * `realized_post.json`: `mid_qdisc` (kuyruk düşmesi darboğaz arayüzündeki tbf/fifo sayacından).
 * `t_start` (unix s): zaman çizelgesinin varsayılan sıfırı (`--t0` ile değişir).
 * İsteğe bağlı `qdisc_series.jsonl` (bkz. EKSİK ALAN 2).
@@ -31,8 +31,8 @@ Okunan dosyalar (koşu dizinine göre):
 
 GECİKME AYRIŞTIRMASI (sahip 7097044569; hüküm değil, sütun): kesme ACK'i = 20 s'den sonra tavanı
 ≤ 6 875'e indiren ilk `lg` satırı.
-  1. düşüş → kesme ACK'inin Bob'dan çıkışı (alıcıda kanıt + ACK bütçesi/yol verme; ikisini ayırmak
-     için alıcının kanıt anı gerekir — EKSİK ALAN 5);
+  1. düşüş → kesme ACK'inin Bob'dan çıkışı (tek parça; alıcının ilk geçerli kanıt anı yoksa iç
+     bölünmez ve hiçbir nedene — ör. bütçe, yol verme — atfedilmez; EKSİK ALAN 5);
   2. Bob'dan çıkış → alice'e varış (dönüş hattı: serileşme + kuyruk + 300 ms) → `lg` işlenişi;
   3. kesme → darboğaz kuyruğunun ≤ 0,7 s olup 60 s'ye dek öyle kaldığı ilk an (`qdisc_series`).
 EKSİK ALAN 5 — alıcının ilk geçerli kanıt anı (aralık/alarm), ACK başına.
@@ -49,7 +49,12 @@ EKSİK ALAN 2 — `qdisc_series.jsonl`: darboğaz kuyruğunun dönemsel örneği
 Darboğaz beklemesi ≤ 393 ms ölçütü bununla; yoksa SINANMADI.
 EKSİK ALAN 3 — alındının Bob'dan ilk çıkış anı yok: "dönüş" süresi için üst sınır
 `alice rcpt − bob rx` kullanılır (gerçek dönüş ≤ bu); üst sınır > 4 s ise SINANMADI.
-EKSİK ALAN 4 — PTT şeridine özel tel baytı yok: PTT bant ölçütü SINANMADI.
+PTT BANT (#233): `alice.json` `wire.ptt_wire_bytes` ≤ 625 B/s × basış süresi (5 000 bit/s;
+1,5 s → 937 B, 8,4 s → 5 250 B). GEÇTİ ancak şu dördü birlikte doğrulanınca: canlı sayaç açık
+(`wire.live_diag`), `wire.ptt_wire_datagrams` > 0, her basışta birleşik 300 ms (`ptt_presses[]`
+`bundle_ms == 300`, `coalesced == true`), telde 0x17 (`wire.ack_rx.0x17` > 0). Biri eksikse bant
+SINANMADI (GEÇTİ olamaz); dördü tamam ve bayt sınırı aşılırsa KALDI.
+CC ve HIZLANMA: `lg` satırı YA DA ACK tür sayacı (`wire.ack_rx`, canlı sayaç açık) yoksa SINANMADI.
 """
 
 import argparse
@@ -152,10 +157,7 @@ class Run:
         self.realized_post = read_json(d / "realized_post.json")
         self.dev = dev or bottleneck_dev(self.realized_post) or "mb0"
         cap = d / "cap" / f"MID_{self.dev}.jsonl"
-        # Darboğaz çıkışı yakalanmadıysa mb0 çıkışı: kayıp darboğazdan sonraysa alt sınır.
-        self.wire_lower_bound = not cap.is_file() and self.dev != "mb0"
-        if self.wire_lower_bound:
-            cap = d / "cap" / "MID_mb0.jsonl"
+        self.bottleneck_capture = cap.is_file()
         self.mb0 = [p for p in read_jsonl(cap) if p.get("dir") == "out" and "t_unix_ns" in p]
         self.qdisc = read_jsonl(d / "qdisc_series.jsonl")
         if t0 is None:
@@ -221,20 +223,35 @@ def mode_evidence(run):
     notes.append(f"alice ack_rx={rx}")
     if not rx:
         return SINANMADI, notes + ["eksik: alice.json wire.ack_rx"]
+    if (run.alice_sum.get("wire") or {}).get("live_diag") is False:
+        return SINANMADI, notes + ["canlı sayaç kapalı (wire.live_diag = false): ACK tür sayaçları 0"]
     if not ok or bitmap_acks == 0:
         return KALDI, notes + ["kip kabul kipi değil (cc-port + bitmap, telde 0x15/0x16 > 0)"]
     return GECTI, notes
+
+
+def ack_type_missing(run):
+    """ACK tür sayacı yoksa (ya da canlı sayaç kapalıysa) neden; varsa `None`."""
+    w = run.alice_sum.get("wire") or {}
+    if not w.get("ack_rx"):
+        return "eksik: ACK tür sayacı (alice.json wire.ack_rx)"
+    if w.get("live_diag") is False:
+        return "ACK tür sayacı canlı sayaç kapalıyken 0 (wire.live_diag = false)"
+    return None
 
 
 def crit_cc(run, plan):
     lg = run.lg()
     if not lg:
         return SINANMADI, ["eksik: lg (ACK başına LineGuard tavanı; EKSİK ALAN 1)"]
+    miss = ack_type_missing(run)
+    if miss:
+        return SINANMADI, [miss]
     parts, notes = [], []
     share, n = ready_share(run, T_D - 1.0, T_D)
     util = run.wire_in(T_D - 1.0, T_D) / max(1, capacity(plan, T_D - 1.0, T_D))
-    if run.wire_lower_bound and util < 0.90:
-        return SINANMADI, [f"önkoşul: düşüşten önceki 1 s'de tel ALT SINIR {util:.1%} (eksik: cap/MID_{run.dev}.jsonl)"]
+    if not run.bottleneck_capture:
+        return SINANMADI, [f"önkoşul ölçülemedi: eksik: cap/MID_{run.dev}.jsonl (ölçülen darboğaz çıkışı)"]
     notes.append(f"önkoşul: düşüşten önceki 1 s'de tel {util:.1%}, hazır veri örneği {share} (n={n})")
     if share is None or share < READY_SHARE or util < 0.90:
         return SINANMADI, notes + ["düşüş anında hat doymuş ve veri hazır değil"]
@@ -279,10 +296,6 @@ def crit_rate_limit(run, plan, baseline):
         parts.append((SINANMADI, None)); notes.append(f"eksik: cap/MID_{run.dev}.jsonl")
     elif share is None or share < READY_SHARE:
         parts.append((SINANMADI, None)); notes.append("pencerede veri hazır değil")
-    elif run.wire_lower_bound:
-        v = GECTI if 0.90 <= util else SINANMADI
-        parts.append((v, None))
-        notes.append(f"tel ALT SINIR (mb0 çıkışı; eksik: cap/MID_{run.dev}.jsonl) %90 → {v}; üst sınır sınanmadı")
     else:
         v = GECTI if 0.90 <= util <= 1.0 + MTU_WIRE / cap else KALDI
         parts.append((v, None)); notes.append(f"tel %90–100 → {v}")
@@ -320,7 +333,7 @@ def crit_rate_limit(run, plan, baseline):
     slo, shi = SHORT_WIN
     idle = gaps_idle_ms(run, slo, shi)
     sshare, _ = ready_share(run, slo, shi)
-    if run.wire_lower_bound or (baseline is not None and baseline.wire_lower_bound):
+    if (not run.bottleneck_capture) or (baseline is not None and (not baseline.bottleneck_capture)):
         notes.append(f"eksik: cap/MID_{run.dev}.jsonl — boş hat süresi eksik yakalamadan ölçülemez")
         parts.append((SINANMADI, None))
     elif baseline is None:
@@ -363,6 +376,9 @@ def crit_speedup(run, plan):
     lg = run.lg()
     if not lg:
         return SINANMADI, ["eksik: lg (ACK başına LineGuard tavanı; EKSİK ALAN 1)"]
+    miss = ack_type_missing(run)
+    if miss:
+        return SINANMADI, [miss]
     parts, notes = [], []
     before = [r["pace_after"] for t, r in lg if t < T_R - 2.0]
     if not before or abs(before[-1] - 6250) > 625:
@@ -389,13 +405,16 @@ def crit_speedup(run, plan):
             sh, n2 = ready_share(run, lo, hi)
             if sh is None or sh < READY_SHARE:
                 parts.append((SINANMADI, None)); notes.append(f"[{lo:.1f}, {hi:.0f}) s veri hazır değil ({sh})")
-            elif run.wire_lower_bound and util < 0.90:
+            elif not run.bottleneck_capture:
                 parts.append((SINANMADI, None))
-                notes.append(f"[{lo:.1f}, {hi:.0f}) s tel ALT SINIR {util:.1%} < %90 (eksik: cap/MID_{run.dev}.jsonl)")
+                notes.append(f"[{lo:.1f}, {hi:.0f}) s tel: eksik: cap/MID_{run.dev}.jsonl (ölçülen darboğaz çıkışı)")
             else:
                 v2 = GECTI if util >= 0.90 else KALDI
                 parts.append((v2, None)); notes.append(f"[{lo:.1f}, {hi:.0f}) s tel {util:.1%} (≥ %90) → {v2}")
     return combine(parts), notes
+
+
+PTT_BAND_BPS = 625  # 5 000 bit/s
 
 
 def crit_ptt(run):
@@ -403,23 +422,41 @@ def crit_ptt(run):
     if not presses:
         return SINANMADI, ["basış yok (bob.json ptt_presses boş)"]
     parts, notes = [], []
-    rx = (run.alice_sum.get("wire") or {}).get("ack_rx") or {}
-    v0 = GECTI if rx.get("0x17", 0) > 0 else KALDI
-    parts.append((v0, None)); notes.append(f"telde 0x17 = {rx.get('0x17', 0)} → {v0}")
     for p in presses:
         planned, ontime = p.get("frames_planned", 0), p.get("frames_on_time", 0)
         share = ontime / planned if planned else None
         v1 = SINANMADI if share is None else (GECTI if share >= PTT_ON_TIME else KALDI)
         one = p.get("ptt_started") == 1 and p.get("ptt_ended") == 1
         v2 = GECTI if one else KALDI
-        v3 = GECTI if p.get("bundle_ms") == 300 else KALDI
-        parts += [(v1, None), (v2, None), (v3, None)]
-        notes.append(f"akış {p.get('stream')}: demet {p.get('bundle_ms')} ms → {v3}; zamanında "
+        parts += [(v1, None), (v2, None)]
+        notes.append(f"akış {p.get('stream')}: alıcıda demet {p.get('bundle_ms')} ms; zamanında "
                      f"{ontime}/{planned} → {v1}; açılış/kapanış {p.get('ptt_started')}/{p.get('ptt_ended')} "
                      f"→ {v2}; ilk ses {p.get('first_audio_ms')} ms; oluşum→teslim "
                      f"{p.get('creation_to_delivery_ms')}")
-    parts.append((SINANMADI, None))
-    notes.append("eksik: PTT şeridine özel tel baytı (bant 1,5 s ≤ 937 B, 8,4 s ≤ 5 250 B; EKSİK ALAN 4)")
+    # Bant: dört kapı doğrulanmadan GEÇTİ olamaz.
+    w = run.alice_sum.get("wire") or {}
+    chosen = run.alice_sum.get("ptt_presses") or []
+    gates = [
+        ("canlı sayaç açık (wire.live_diag)", w.get("live_diag") is True),
+        ("PTT datagramı > 0 (wire.ptt_wire_datagrams)", (w.get("ptt_wire_datagrams") or 0) > 0),
+        ("her basışta birleşik 300 ms (alice ptt_presses bundle_ms=300, coalesced=true)",
+         bool(chosen) and all(c.get("bundle_ms") == 300 and c.get("coalesced") is True for c in chosen)),
+        ("telde 0x17 (wire.ack_rx.0x17 > 0)", ((w.get("ack_rx") or {}).get("0x17") or 0) > 0),
+    ]
+    failed = [g for g, ok in gates if not ok]
+    secs = sum((p.get("bundles_planned") or 0) * (p.get("bundle_ms") or 0) for p in presses) / 1000.0
+    if failed:
+        parts.append((SINANMADI, None))
+        notes.append("bant SINANMADI (GEÇTİ olamaz); doğrulanmayan: " + "; ".join(failed))
+    elif "ptt_wire_bytes" not in w or secs <= 0:
+        parts.append((SINANMADI, None))
+        notes.append("bant SINANMADI: eksik: wire.ptt_wire_bytes ya da basış süresi (bundles_planned × bundle_ms)")
+    else:
+        limit = PTT_BAND_BPS * secs
+        v = GECTI if w["ptt_wire_bytes"] <= limit else KALDI
+        parts.append((v, None))
+        notes.append(f"bant: PTT tel {w['ptt_wire_bytes']} B / {w['ptt_wire_datagrams']} datagram, basış "
+                     f"{secs:.1f} s, sınır {limit:.0f} B → {v}")
     return combine(parts), notes
 
 
@@ -515,8 +552,8 @@ def delay_breakdown(run, plan):
         if k is None or k >= len(out) or len(out) != len(arr):
             notes.append(f"parça 1–2: dönüş datagramları eşleşmiyor (çıkış {len(out)}, varış {len(arr)})")
         else:
-            notes.append(f"parça 1 düşüş → Bob'dan çıkış: {out[k] - T_D:.2f} s (alıcı kanıtı ile ACK "
-                         "bekleme ayrılamıyor; eksik: alıcının kanıt anı, EKSİK ALAN 5)")
+            notes.append(f"parça 1 düşüş → Bob'dan çıkış: {out[k] - T_D:.2f} s (tek parça; iç bölünmez, "
+                         "nedene atfedilmez — eksik: alıcının ilk geçerli kanıt anı, EKSİK ALAN 5)")
             notes.append(f"parça 2 Bob'dan çıkış → alice varışı: {arr[k] - out[k]:.2f} s; varış → işleniş "
                          f"{t_cut - arr[k]:.2f} s")
     series = sorted((run.rel_ns(q["t_unix_ns"]), q["backlog_bytes"] / rate_at(plan, run.rel_ns(q["t_unix_ns"])))
@@ -540,8 +577,8 @@ def evaluate(d, plan, t0=None, baseline_dir=None, dev=None):
         raise SystemExit("t_start yok: --t0 verin")
     baseline = Run(baseline_dir, None, dev) if baseline_dir else None
     mode_v, mode_n = mode_evidence(run)
-    mode_n = mode_n + [f"darboğaz arayüzü {run.dev}; tel kaynağı "
-                       + ("cap/MID_mb0.jsonl (ALT SINIR)" if run.wire_lower_bound else f"cap/MID_{run.dev}.jsonl")]
+    mode_n = mode_n + [f"darboğaz arayüzü {run.dev}; tel kaynağı cap/MID_{run.dev}.jsonl "
+                       + ("(var)" if run.bottleneck_capture else "(YOK)")]
     rows = [("kip (önkoşul)", mode_v, mode_n)]
     for name, fn in (("1 CC", lambda: crit_cc(run, plan)),
                      ("3 hız sınırlama", lambda: crit_rate_limit(run, plan, baseline)),

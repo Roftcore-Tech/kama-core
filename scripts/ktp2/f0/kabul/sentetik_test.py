@@ -11,7 +11,8 @@ Taban koşu (senaryo v1 çizelgesi; t0 = 1 800 000 000 s):
 * Başlangıç kaydı iki uçta cc-port + bitmap; alice `ack_rx` 0x15 = 12; PTT yok.
 * `realized_post.json`: mb0'da netem + tbf (drops 0); `qdisc_series.jsonl` backlog 1 228 B.
 Beklenen: kip, CC, hız sınırlama (taban kopyası ile), hızlanma, metin/alındı GEÇTİ; PTT SINANMADI
-(basış yok; basışlı kolda da bant sayacı olmadığı için en iyi hâlde SINANMADI).
+(basış yok). Basışlı kollarda bant yalnız dört kapı (canlı sayaç, PTT datagramı > 0, birleşik
+300 ms, 0x17) doğrulanınca GEÇTİ olabilir.
 Bozulmuş kollar her biri tek ölçütü değiştirir (aşağıdaki VAKALAR).
 
 Kullanım: python3 -I sentetik_test.py
@@ -37,7 +38,8 @@ def ms(t):
 
 
 def build(d, *, lg=True, cc2=6250, up2=12500, text_lat=400.0, ack_format="bitmap",
-          tbf=True, qdisc=True, starve_after=None, ptt_on_time=None, ifb=False, ifb_cap=True):
+          tbf=True, qdisc=True, starve_after=None, ptt_on_time=None, ifb=False, ifb_cap=True, live_diag=True,
+          ptt_bytes=4977, ptt_dgrams=34, coalesced=True, x17=4, ack_rx=True):
     d.mkdir(parents=True)
     (d / "t_start").write_text(f"{T0}\n")
     for who in ("alice", "bob"):
@@ -47,7 +49,7 @@ def build(d, *, lg=True, cc2=6250, up2=12500, text_lat=400.0, ack_format="bitmap
             "şeritler=açık\n")
     (d / "cap").mkdir()
     # ifb kolu (Yerel'in düzeneği): darboğaz ifb0 (tbf + pfifo), kayıp SONRA (mb0 netem %20):
-    # mb0 çıkışı her beşinci datagramı görmez.
+    # mb0 çıkışı her beşinci datagramı görmez; değerlendirici mb0'dan TÜRETMEMELİ.
     dev = "ifb0" if ifb else "mb0"
     fb = (d / "cap" / f"MID_{dev}.jsonl").open("w") if (not ifb or ifb_cap) else None
     fm = (d / "cap" / "MID_mb0.jsonl").open("w") if ifb else None
@@ -103,9 +105,13 @@ def build(d, *, lg=True, cc2=6250, up2=12500, text_lat=400.0, ack_format="bitmap
         "stream": 1, "bundle_ms": 300, "ptt_started": 1, "ptt_ended": 1, "bundles_planned": 28,
         "bundles_delivered": 25, "frames_planned": 420, "frames_on_time": ptt_on_time,
         "first_audio_ms": 640.0, "creation_to_delivery_ms": {"min": 610.0, "median": 650.0, "max": 800.0}}]
-    (d / "alice.json").write_text(json.dumps({"wire": {"ack_rx": {"0x14": 0, "0x15": 12, "0x16": 0,
-                                                                  "0x17": 0 if ptt_on_time is None else 4}},
-                                              "ptt_presses": []}))
+    wire = {"live_diag": live_diag, "ptt_wire_bytes": ptt_bytes if ptt_on_time is not None else 0,
+            "ptt_wire_datagrams": ptt_dgrams if ptt_on_time is not None else 0}
+    if ack_rx:
+        wire["ack_rx"] = {"0x14": 0, "0x15": 12, "0x16": 0, "0x17": 0 if ptt_on_time is None else x17}
+    chosen = [] if ptt_on_time is None else [{"sp": 1, "bundle_ms": 300, "coalesced": coalesced,
+                                               "caller_ms": 200}]
+    (d / "alice.json").write_text(json.dumps({"wire": wire, "ptt_presses": chosen}))
     (d / "bob.json").write_text(json.dumps({"wire": {}, "ptt_presses": presses}))
     q = [{"kind": "netem", "dev": "mb0", "drops": 40}]
     if tbf:
@@ -144,9 +150,17 @@ VAKALAR = [
     ("ifb0 darboğaz, yakalama var", {"ifb": True}, True, {"1 CC": G, "3 hız sınırlama": G, "4 hızlanma": G}),
     ("ifb0 darboğaz, yakalama yok", {"ifb": True, "ifb_cap": False}, True,
      {"1 CC": S, "3 hız sınırlama": S, "4 hızlanma": S}),
-    # PTT: bant sayacı yok → en iyi hâlde SINANMADI; zamanında < %75 → KALDI.
-    ("PTT zamanında 400/420", {"ptt_on_time": 400}, True, {"2 PTT": S}),
+    # PTT (8,4 s basış, 28 × 300 ms; bant sınırı 5 250 B): dört kapı + bayt.
+    ("PTT tam, 4 977 B", {"ptt_on_time": 400}, True, {"2 PTT": G}),
     ("PTT zamanında 252/420", {"ptt_on_time": 252}, True, {"2 PTT": K}),
+    ("PTT bant 5 400 B", {"ptt_on_time": 400, "ptt_bytes": 5400}, True, {"2 PTT": K}),
+    ("PTT canlı sayaç kapalı", {"ptt_on_time": 400, "live_diag": False}, True,
+     {"2 PTT": S, "kip (önkoşul)": S, "1 CC": S, "4 hızlanma": S}),
+    ("PTT datagram 0", {"ptt_on_time": 400, "ptt_dgrams": 0}, True, {"2 PTT": S}),
+    ("PTT birleşik değil", {"ptt_on_time": 400, "coalesced": False}, True, {"2 PTT": S}),
+    ("PTT 0x17 yok", {"ptt_on_time": 400, "x17": 0}, True, {"2 PTT": S}),
+    # ACK tür sayacı yoksa CC/hızlanma SINANMADI (lg olsa da).
+    ("ACK tür sayacı yok", {"ack_rx": False}, True, {"1 CC": S, "4 hızlanma": S, "kip (önkoşul)": S}),
 ]
 
 
@@ -172,9 +186,12 @@ def main():
         # kuyruk 29 s'de ≤ 0,7 s → parça 3 3,00 s.
         _, rows = verdicts(tmp / "v0", True, tmp / "kesmesiz")
         notes = " | ".join(next(n for name, _, n in rows if name == "gecikme ayrıştırması"))
-        want = ["parça 1 düşüş → Bob'dan çıkış: 4.40 s", "parça 2 Bob'dan çıkış → alice varışı: 1.59 s",
+        want = ["parça 1 düşüş → Bob'dan çıkış: 4.40 s (tek parça", "parça 2 Bob'dan çıkış → alice varışı: 1.59 s",
                 "parça 3 kesme → kuyruk ≤ 0.7 s (60 s'ye dek): 3.00 s"]
         miss = [w for w in want if w not in notes]
+        # Kanıt anı yokken parça 1 bütçe/yol verme diye etiketlenmez.
+        if "bütçe" in notes or "yol ver" in notes:
+            miss.append("parça 1 etiketi")
         print(f"{'OK  ' if not miss else 'HATA'} gecikme ayrıştırması: {notes}")
         fails += bool(miss)
     print("SONUÇ:", "GEÇTİ" if fails == 0 else f"{fails} vaka KALDI")
