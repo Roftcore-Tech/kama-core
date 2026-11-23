@@ -1146,9 +1146,6 @@ pub struct ClientStats {
     pub ptt_copy_unprotected: u64,
     /// [ACK-BITMAP] Çözülen 0x15 bitmap ACK çerçevesi.
     pub ack_bitmap_rx: u64,
-    /// [TEL-KANITI · salt gözlem] Kabul edilip çözülmeye verilen ACK çerçeveleri, türe göre:
-    /// `[0x10, 0x14, 0x15, 0x16, 0x17]` ([`WireEvidence::ack_rx_types`]).
-    pub ack_rx_types: [u64; 5],
     /// Wire'a yazılmak üzere ÜRETİLEN mühürlü UDP payload byte'ı — DENEME düzlemi
     /// ([`EgressPolicy`] reddettikleri DAHİL; gerçek-enjekte düzlem politikanın kendi
     /// sayacındadır). Alt-sınıf ayrımı `tx_*_bytes` alanlarında; toplamları bu değere eşittir.
@@ -1662,7 +1659,7 @@ fn saturating_us(d: Duration) -> u64 {
 }
 
 /// [TEL-KANITI · salt gözlem · #233] Koşunun kabul kipini kendi kaydından kanıtlayan sayaçlar
-/// ([`ClientLiveDiag::wire`]; [`ClientStats`]'tan kopyalanır, hiçbir karar okumaz).
+/// ([`ClientLiveDiag::wire`]; yalnız canlı ayna açıkken dolar, hiçbir karar okumaz).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct WireEvidence {
     /// Bu uca gelen ACK çerçeveleri, türe göre: `[0x10, 0x14 (V2), 0x15 (bitmap), 0x16 (bitmap +
@@ -1838,11 +1835,9 @@ impl ClientLiveDiag {
         self.tx_datagrams = stats.tx_datagrams;
         self.rx_datagrams = stats.rx_datagrams;
         self.tx_bytes = stats.tx_bytes;
-        self.wire = WireEvidence {
-            ack_rx_types: stats.ack_rx_types,
-            caps_sends: stats.caps_sends,
-            ptt_lean_tx: stats.ptt_lean_tx,
-        };
+        // `wire.ack_rx_types` çerçeve işlendiği anda yazılır (aşağıda değişmez).
+        self.wire.caps_sends = stats.caps_sends;
+        self.wire.ptt_lean_tx = stats.ptt_lean_tx;
         self.fec_blocks_latched = stats.fec_blocks_latched;
         self.fec_repairs_tx = stats.fec_repairs_tx;
         let fec = sender.diag_fec_actuation();
@@ -3347,6 +3342,9 @@ async fn client_task(
     // [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] ACK çerçevesi sayaçları (yalnız aynaya yazılır; görev
     // okumaz).
     let mut ack_counts = AckFrameCounts::default();
+    // [TEL-KANITI · salt gözlem] Gelen ACK çerçeveleri türe göre ([`WireEvidence::ack_rx_types`]);
+    // yalnız canlı aynaya yazılır, `ClientStats` yüzeyi değişmez.
+    let mut ack_rx_types = [0u64; 5];
     // [ŞERİT-SIRA] Şerit başına boşluksuz sıra; kimlik = etiket + sıra (`crate::unit_id::tagged`).
     let mut next_unit: [u64; LANE_COUNT] = [0; LANE_COUNT];
     // [ŞERİT-AÇIKLIK] Store'daki (teyitsiz) birimlerin şerit-içi sıraları; store ile aynı yerde
@@ -3778,7 +3776,7 @@ async fn client_task(
                         FRAME_TYPE_ACK_BITMAP_PTT_COALESCE => 4,
                         _ => 0,
                     };
-                    stats.ack_rx_types[ack_slot] = stats.ack_rx_types[ack_slot].saturating_add(1);
+                    ack_rx_types[ack_slot] = ack_rx_types[ack_slot].saturating_add(1);
                     let coalesce_ack = plain[0] == FRAME_TYPE_ACK_BITMAP_PTT_COALESCE;
                     let lean_ack = plain[0] == FRAME_TYPE_ACK_BITMAP_PTT || coalesce_ack;
                     // İlk yalın ACK'in türü kesin: eş bit 2'yi CAPS'le birlikte gördü (0x16 ancak
@@ -3987,6 +3985,7 @@ async fn client_task(
                             let mut mirror =
                                 live_mirror.lock().unwrap_or_else(PoisonError::into_inner);
                             mirror.ack = ack_counts;
+                            mirror.wire.ack_rx_types = ack_rx_types;
                             mirror.acks.push(record);
                         }
                     }
