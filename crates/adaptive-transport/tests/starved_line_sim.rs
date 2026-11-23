@@ -1781,6 +1781,14 @@ fn drop_scenario(seed: u64, interval: bool) -> Scenario {
 ///
 /// Karşı-olgu: eski cephe tahmincisi aynı koşuda yakınsama sınırını üç tohumda da aşar (tahmin
 /// düşüşten 24–26 s sonra oturur).
+///
+/// **Alıcı: ürün alıcısı ([`RxModel::PRODUCT`]; koordinatör kararı #175/#236 7088316519).** Bu
+/// test ve (d-2) aday ve karşı-olgu kollarında ürün çalışma zamanının 0x15 alıcısıyla ölçer
+/// (bütçe dönüş hattı 62 B/s). Neden: [`RxModel::Mirror`] ACK bütçesini senaryonun
+/// `ack_return_bw`'sinden (4 × 62 B/s) alır ve ACK aralığı ortalaması ≈ 2,0–2,1 s verir; ürün
+/// alıcısı aynı koşuda ≈ 4,9–5,3 s verir (#236 bulgusu: ayna ürünün geri bildirimini iyimser
+/// ölçüyordu). Senaryo, tohum, kayıp modeli (LCG), kopyalı PTT yükü, sınırların formülleri ve
+/// iddia metinleri değişmedi; yukarıdaki "≈ 2,1 s" gibi kadans değerleri aynanın ölçümüdür.
 #[test]
 fn b_real_capacity_drop_is_detected_and_the_queue_drains() {
     let t_ret = (129 + OVH) * SEC / PROFILE_DOWN + ONE_WAY_NS;
@@ -1789,6 +1797,7 @@ fn b_real_capacity_drop_is_detected_and_the_queue_drains() {
     for seed in 1..=3u64 {
         let sc = Scenario {
             text_at_ns: Some(DROP_TEXT_AT_NS),
+            rx: RxModel::PRODUCT,
             ..drop_scenario(seed, true)
         };
         let o = run(&sc);
@@ -1833,8 +1842,12 @@ fn b_real_capacity_drop_is_detected_and_the_queue_drains() {
             secs(conv - DROP_AT_NS)
         );
         from_drop.push((seed, ptt_drop, text));
-        let control = run(&drop_scenario(seed, false));
-        report("b/karşı-olgu", &drop_scenario(seed, false), &control);
+        let control_sc = Scenario {
+            rx: RxModel::PRODUCT,
+            ..drop_scenario(seed, false)
+        };
+        let control = run(&control_sc);
+        report("b/karşı-olgu", &control_sc, &control);
         let c_conv = converged_at(&control, DROP_TO).unwrap_or(u64::MAX);
         assert!(
             c_conv > conv_bound,
@@ -1914,10 +1927,15 @@ fn d1_random_loss_is_not_queue_growth() {
 /// kuyrukta düşen seq'ler varış süresine girmez, tahmin göndericinin baytıyla yapılır (taşmanın
 /// olduğu aralıkta tahmin gerçek hattın üstünde kalır). Davranış: taşma olur, yine de tahmin
 /// gerçek hatta oturur ve bir daha taşma olmaz.
+///
+/// Alıcı: ürün alıcısı ([`RxModel::PRODUCT`]); neden ve karar (b)'nin belgesinde.
 #[test]
 fn d2_queue_overflow_still_converges_and_stops_overflowing() {
     for seed in 1..=3u64 {
-        let sc = drop_scenario(seed, true);
+        let sc = Scenario {
+            rx: RxModel::PRODUCT,
+            ..drop_scenario(seed, true)
+        };
         let o = run(&sc);
         assert!(
             o.drops_queue > 0,
