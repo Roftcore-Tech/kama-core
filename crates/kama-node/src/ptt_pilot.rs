@@ -15,9 +15,12 @@
 //!
 //! Açıkken düğüm (`KamaNode::build`):
 //! * Transport'ta `RuntimeConfig::ptt_coalesce` bayrağını açar (CAPS bit 2, ACK türü 0x17) ve ACK
-//!   biçimini bitmap yapar — pilotun ölçülen yolu budur ("bitmap pilot yolu": yalın PTT çerçevesi
-//!   0x09 ve 0x17 yalnız bitmap ACK ile vardır; yetenek anlaşması olmadığından İKİ uç da pilotla
-//!   başlatılmalıdır). V2 ürün yolu pilot kapalıyken aynen kalır;
+//!   biçimini bitmap yapar — pilotun kabul kipi cc-port + bitmap + doğrulanmış 300 ms PTT'dir
+//!   (yalın PTT çerçevesi 0x09 ve 0x17 yalnız bitmap ACK ile vardır; yetenek anlaşması
+//!   olmadığından İKİ uç da pilotla başlatılmalıdır). `KAMA_ACK_FORMAT=bitmap` ayrıca verilebilir;
+//!   açıkça `v2` verilmesi pilotla çelişir ve yapılandırma hatasıdır. CAPS / 0x17 yalnız geri
+//!   bildirimi aç yön hızı profilinde çıkar (`KAMA_LINK_RATES`; `runtime::link_feedback_starved`):
+//!   profil yokken yalnız yönetilen yetenek işler. V2 ürün yolu pilot kapalıyken aynen kalır;
 //! * PTT motoruna yönetilen eşleri verir (`Ptt::set_peer_spurt_provisioned`);
 //! * her turda Transport'un bant içi bildirimini (`ClientTransport::peer_ptt_coalesce`) oturumuyla
 //!   motora iletir (`Ptt::on_peer_spurt_capability`): 0x17 SONRAKİ basışlar için kaydedilir.
