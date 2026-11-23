@@ -429,12 +429,12 @@ impl Receiver {
                 self.alarm_yield_clear_ns = 0;
                 self.diag_rise_alarms += 1;
                 // [YÜKSELİŞ ARALIĞI · HEDEF 4] ACK'in ölçüm aralığı yükselişin başlangıcından
-                // (`rise_span_first`); son ACK'ten bu yana varış duraklaması varsa bir ACK geriye
-                // kuralı (`PairRate::paused_since_ack`, #175 7090004658).
+                // (`rise_span_first`); bir varış duraklamasının teslim açığı henüz geri
+                // ödenmediyse bir ACK geriye kuralı (`PairRate::owes_delivery`, #175 7091092423).
                 self.rise_span_first = self
                     .pair
                     .rise_onset()
-                    .filter(|_| !self.pair.paused_since_ack());
+                    .filter(|_| !self.pair.owes_delivery());
             }
         }
         // [§2.2 V2] seen_count: HER görülen datagram sayılır (dup/shard DAHİL) — sender'ın
@@ -1566,12 +1566,20 @@ impl Receiver {
     ///
     /// [YÜKSELİŞ ARALIĞI · TUR 2 · #175 7090004658] Aralığın dışarıda bıraktığı dilim (son ACK'ten
     /// sonraki ilk varıştan yükseliş başlangıcına) ancak o dilimde hat meşgulse dışarıda kalabilir.
-    /// Son ACK'ten bu yana bir varış duraklaması varsa (`PairRate::paused_since_ack`) yükseliş
-    /// alarmı başlangıcı vermez, aralık bir ACK geriye kuralıdır: dilim, darboğazdan sonraki bir
-    /// durmanın ardından gelen boşalmanın geri ödediği teslim açığını taşır. Açık döngü (k3),
+    /// Son ACK'ten bu yana bir varış duraklaması varsa (tur 2 bayrağı; tur 3'te
+    /// `PairRate::owes_delivery`) yükseliş alarmı başlangıcı vermez, aralık bir ACK geriye
+    /// kuralıdır: dilim, darboğazdan sonraki bir durmanın ardından gelen boşalmanın geri ödediği
+    /// teslim açığını taşır. Açık döngü (k3),
     /// dürüst 6 250 darboğaz + 40 s'de 1 s aşağı akış durması + 12 500'de boşalma, dolu dönüş:
     /// başlangıçtan (426, 438] iken `g` 80 ms, örnek yok, çift alt sınırı tavanı 12 500'e açıyordu
     /// (sahte); bir ACK geriye (372, 438] iken `g` 5 280 ms, örnek 6 250, tavan 6 250.
+    ///
+    /// [YÜKSELİŞ ARALIĞI · TUR 3 · #175 7091092423] Duraklama kanıtı ACK'e bağlı değildir: ölçüt
+    /// duraklamanın teslim açığının geri ödenip ödenmediğidir (`PairRate::owes_delivery`). Açık
+    /// döngü (k4), dürüst 6 250 darboğaz + 40 s'de 3 s durma + 4 s 7 000 B/s boşalma + 11 000
+    /// B/s, açık dönüş: tur 2'de ACK #11 yavaş boşalmada çıkıp bayrağı siliyordu, yükseliş ACK'inin
+    /// aralığı (455, 457], `g` 21,76 ms, örnek yok, tavan 10 941'e açılıyordu (sahte); açık
+    /// sürerken bir ACK geriye (441, 457], `g` 901,6 ms, örnek 7 333, tavan 6 250.
     fn rx_span_field(&self, base: u64, largest: u64) -> (u16, u64) {
         let none = (crate::ack::RX_SPAN_NONE, largest);
         let anchor = self
@@ -1718,9 +1726,14 @@ struct PairRate {
     /// ardışık varış kuyruğunun ilk seq'i ([`Self::rise_onset`]); `None` = en yeni çift eşiğin
     /// üstünde değil, ölçülemedi ya da referans yok.
     run_first: Option<u64>,
-    /// [YÜKSELİŞ ARALIĞI · TUR 2 · #175 7090004658] Son ACK'ten bu yana bir varış duraklaması
-    /// oldu ([`Self::paused_since_ack`]); her ACK'te silinir.
-    paused: bool,
+    /// [YÜKSELİŞ ARALIĞI · TUR 3 · #175 7091092423] Teslim açığı (UDP gövdesi B × 10⁹, ns × B/s
+    /// biriminde): varış duraklamalarında referans hızın teslim edeceği ama varmayan bayt, henüz
+    /// geri ödenmemiş kısmı ([`Self::account_delivery`], [`Self::owes_delivery`]); ACK silmez.
+    owed: u128,
+    /// [YÜKSELİŞ ARALIĞI · TUR 3] Açığın referansı (B/s, UDP gövdesi): açık başladığında son
+    /// bildirilen değer; açık sürerken sabittir (boşalmanın çiftleri bildirilen değeri büyütse de
+    /// açık darboğazın hızına göre ödenir).
+    owed_ref: u64,
 }
 
 /// [ÇİFT ARALIĞI] Çift aralığının alt sınırı (ns): daha kısa aralık zamanlayıcı/teslim titreşimidir.
@@ -1757,12 +1770,14 @@ impl PairRate {
         // [YÜKSELİŞ ARALIĞI] Bu varışın çifti sayılan bir değer verip yükseliş eşiğini geçmedikçe
         // kuyruk kopar ([`Self::rise_onset`]).
         let mut fast = false;
+        let mut counted = false;
         if let (Some(p), Some(b)) = (self.prev_ns, udp_bytes) {
             let g = now_ns.saturating_sub(p);
             let squeezed = self.squeezed(g, b);
             let skip = squeezed || self.after_squeeze;
             self.after_squeeze = squeezed;
             if !skip && b >= crate::ack::PAIR_MIN_UDP_BYTES && g >= PAIR_MIN_GAP_NS {
+                counted = true;
                 let r = u64::try_from(u128::from(b) * 1_000_000_000 / u128::from(g))
                     .unwrap_or(u64::MAX);
                 if r > self.top[0] {
@@ -1780,9 +1795,7 @@ impl PairRate {
         } else {
             None
         };
-        if self.pause_before(now_ns, udp_bytes, seq) {
-            self.paused = true;
-        }
+        self.account_delivery(now_ns, udp_bytes, seq, counted);
         self.prev_ns = Some(now_ns);
         self.prev_seq = Some(seq);
     }
@@ -1804,7 +1817,8 @@ impl PairRate {
 
     /// [YÜKSELİŞ ARALIĞI · TUR 2 · #175 7090004658] Önceki varıştan bu varışa aralık `g`, meşgul
     /// bir hattın verebileceği her aralıktan uzun mu (varış duraklaması). Referans `R` = son
-    /// bildirilen değer (UDP gövdesi B/s); referans yoksa ya da önceki varış yoksa `false`.
+    /// bildirilen değer (UDP gövdesi B/s), teslim açığı sürerken açığın referansı
+    /// ([`Self::delivery_ref`]); referans yoksa ya da önceki varış yoksa `false`.
     ///
     /// Koşul: `g · R > (b + m · MTU + MTU) · 10⁹`. `b` bu datagramın gövdesi (bilinmiyorsa
     /// [`crate::rate::DEFAULT_MTU`]), `m` aradaki alınmamış seq sayısı:
@@ -1820,31 +1834,96 @@ impl PairRate {
     /// referans 6 075, 972 B gövde: meşgul aralık 160 ms (bir kayıpla 320 ms), sınır 357 ms (bir
     /// kayıpla 555 ms); aşağı akış durması ≥ 1 s.
     fn pause_before(&self, now_ns: u64, udp_bytes: Option<u64>, seq: u64) -> bool {
-        let (Some(p), Some(r)) = (self.prev_ns, self.reported) else {
+        let (Some(p), Some(r)) = (self.prev_ns, self.delivery_ref()) else {
             return false;
         };
+        let mtu = u128::from(crate::rate::DEFAULT_MTU);
+        let busy = (self.arrived_upper(udp_bytes, seq) + mtu) * 1_000_000_000;
+        u128::from(now_ns.saturating_sub(p)) * u128::from(r) > busy
+    }
+
+    /// [YÜKSELİŞ ARALIĞI · TUR 2] Önceki varıştan bu varışa hatta geçen gövdenin üst sınırı (B):
+    /// `b + m · MTU` ([`Self::pause_before`] ile aynı terimler; `b` bilinmiyorsa MTU).
+    fn arrived_upper(&self, udp_bytes: Option<u64>, seq: u64) -> u128 {
         let mtu = u128::from(crate::rate::DEFAULT_MTU);
         let missing = self
             .prev_seq
             .map_or(0, |ps| seq.saturating_sub(ps).saturating_sub(1));
-        let b = udp_bytes.map_or(mtu, u128::from);
-        let busy = (b + u128::from(missing) * mtu + mtu) * 1_000_000_000;
-        u128::from(now_ns.saturating_sub(p)) * u128::from(r) > busy
+        udp_bytes.map_or(mtu, u128::from) + u128::from(missing) * mtu
     }
 
-    /// [YÜKSELİŞ ARALIĞI · TUR 2 · #175 7090004658] Son ACK'ten bu yana bir varış duraklaması oldu
-    /// ([`Self::pause_before`]; ACK'i aşan ilk aralık dahil). Yükseliş kuyruğu duraklamayla kopar
-    /// (duraklayan çift eşiğin altındadır), yani duraklama yükseliş başlangıcından öncedir.
+    /// [YÜKSELİŞ ARALIĞI · TUR 3] Açığın ölçüldüğü hız: açık sürerken açığın referansı, yoksa son
+    /// bildirilen değer.
+    fn delivery_ref(&self) -> Option<u64> {
+        if self.owed > 0 {
+            Some(self.owed_ref)
+        } else {
+            self.reported
+        }
+    }
+
+    /// [YÜKSELİŞ ARALIĞI · TUR 3 · #175 7091092423] Teslim açığının muhasebesi, varış başına.
+    /// Önceki varıştan bu varışa aralık `g`, referans `R` ([`Self::delivery_ref`]), hatta geçen
+    /// gövdenin üst sınırı `a = b + m · MTU` ([`Self::arrived_upper`]), varan gövde `b`
+    /// (bilinmiyorsa 0); referans hızda meşgul bir hat `g · R` teslim ederdi:
+    /// - varış duraklaması ([`Self::pause_before`]): açık `g · R − a` kadar artar (açığın alt
+    ///   sınırı); açık yokken başlıyorsa referansı `R` olur ve açık sürerken değişmez;
+    /// - sayılan bir çift (yükseliş sınamasının çiftleri) `a ≤ g · R` ise açık sıfırlanır: üst
+    ///   sınırla bile varış referansta ya da altında, hat referansla meşgul (darboğazda kuyruk) ya
+    ///   da gönderici hızında; geri ödenen bir açık yoktur;
+    /// - diğer varışlar açığı `b − g · R` kadar öder (referansı aşan teslim; aşağı akışta bekleyen
+    ///   kuyruğun boşalması). Ödeme yalnız varan gövdeyle (alt sınır): alınmayan seq'in aşağı akış
+    ///   boşalmasında yer kapladığı bilinmez (darboğazda kaplayıp aşağı akışa hiç ulaşmamış
+    ///   olabilir). Tur 3 ilk denemesinde ödeme `a` ile idi; (k4) 2 s durma + 3 s 7 500 B/s
+    ///   boşalma, beşte bir kayıp, açık dönüş: her kayıp 1 200 B saydırıp açığı boşalma bitmeden
+    ///   kapattı, yükseliş ACK'i (455, 457], `g` 0, tavan 12 500 (sahte; #237 ve tur 2'de yok).
+    ///
+    /// Terimler duraklama sınırıyla aynıdır, yeni eşik yoktur. Her kol sahte açılışa karşı
+    /// korunaklı yöndedir (ödeme ve sıfırlama zor, açık geç kapanır, erken kapanmaz); yalnız
+    /// artış alt sınırdır (duraklamayı kayıptan ayıran terimlerle aynı). Toplama doygundur
+    /// (u128). Daralma alarmı açığı sıfırlar ([`Self::arm_rise`]): açık düşüş sonrası referansa
+    /// göredir.
+    ///
+    /// Neden ACK'e bağlı değil: darboğazdan sonraki bir durmanın açığı, yükseliş eşiğinin altında
+    /// bir boşalmada (k4: 3 s durma, 7 000 B/s tel) birden çok ACK aralığı boyunca ödenir; ACK'te
+    /// silinen bayrak (tur 2) bu ACK'lerden sonra gelen hızlı boşalmayı gerçek toparlanma
+    /// sayıyordu.
+    fn account_delivery(&mut self, now_ns: u64, udp_bytes: Option<u64>, seq: u64, counted: bool) {
+        let (Some(p), Some(r)) = (self.prev_ns, self.delivery_ref()) else {
+            return;
+        };
+        let line = u128::from(now_ns.saturating_sub(p)) * u128::from(r);
+        let upper = self.arrived_upper(udp_bytes, seq) * 1_000_000_000;
+        let body = u128::from(udp_bytes.unwrap_or(0)) * 1_000_000_000;
+        if self.pause_before(now_ns, udp_bytes, seq) {
+            if self.owed == 0 {
+                self.owed_ref = r;
+            }
+            self.owed = self.owed.saturating_add(line.saturating_sub(upper));
+        } else if counted && upper <= line {
+            self.owed = 0;
+        } else {
+            self.owed = self.owed.saturating_sub(body.saturating_sub(line));
+        }
+    }
+
+    /// [YÜKSELİŞ ARALIĞI · TUR 3 · #175 7091092423] Bir varış duraklamasının teslim açığı henüz
+    /// geri ödenmedi ([`Self::account_delivery`]; tur 2'de "son ACK'ten bu yana duraklama" idi).
+    /// Yükseliş kuyruğu duraklamayla kopar (duraklayan çift eşiğin altındadır), yani duraklama
+    /// yükseliş başlangıcından öncedir.
     ///
     /// Neden: gerçek toparlanmada yükseliş kuyruğu darboğazda bekleyen kuyruğun hızlanan hatta
     /// boşalmasıdır; kuyruk varken hat meşguldür, başlangıçtan önce duraklama yoktur. Darboğazdan
     /// sonraki bir durmanın ardından boşalmada (kapasite artmadan çift değeri geçici yükselir)
     /// başlangıçtan önce durma süresi kadar bir duraklama vardır; o dilim boşalmanın geri ödediği
     /// teslim açığını taşır ve yükseliş ACK'inin aralığından çıkarılmaz
-    /// ([`Receiver::rx_span_field`]). Kör nokta: duraklama son ACK'ten önce bitmişse (ACK durma
-    /// sırasında çıktıysa) bu bilgi yoktur; aralık bir ACK geriye kuralıyla aynı kalır.
-    fn paused_since_ack(&self) -> bool {
-        self.paused
+    /// ([`Receiver::rx_span_field`]). Açık ödenene dek (boşalma referansı aşarak açığı kapatana
+    /// dek) aralık bir ACK geriye kuralıdır; arada ACK çıkması açığı silmez.
+    ///
+    /// Kör nokta: referansın altında boşalma (aşağı akış geçici olarak darboğazdan dar) açığı
+    /// sıfırlar; varışlar gönderici hızındaki varıştan ayırt edilemez.
+    fn owes_delivery(&self) -> bool {
+        self.owed > 0
     }
 
     fn on_ack(&mut self) {
@@ -1854,7 +1933,6 @@ impl PairRate {
         self.top = [0, 0];
         self.alarmed = false;
         self.run_first = None;
-        self.paused = false;
     }
 
     /// [ALARM ARALIĞI · #175 7084078903 · TUR 4] Daralma alarmı anında en büyük iki değer silinir
@@ -1899,6 +1977,7 @@ impl PairRate {
         self.armed = true;
         self.reported = None;
         self.run_first = None;
+        self.owed = 0;
     }
 
     /// [YÜKSELİŞ ALARMI] Yalnız daralma alarmından sonra (kurulu), bir kez: bu ACK aralığındaki
@@ -2291,7 +2370,7 @@ mod tests {
     /// 160 ms), 972 B gövde. Sınır `(972 + m · 1 200 + 1 200) / 6 075` s: `m = 0` için 357,5 ms,
     /// `m = 1` için 555 ms. Meşgul hattın aralığı (160 ms; bir kayıpla 320 ms) ve sınırın kendisi
     /// duraklama değildir; sınırın 1 ns üstü ve 1 s'lik durma duraklamadır. Boyu bilinmeyen
-    /// datagramda gövde MTU sayılır. Referans yokken duraklama yoktur. ACK bayrağı siler.
+    /// datagramda gövde MTU sayılır. Referans yokken duraklama yoktur.
     #[test]
     fn pause_is_a_gap_no_busy_line_can_produce() {
         let ms = 1_000_000u64;
@@ -2330,13 +2409,64 @@ mod tests {
             !no_ref.pause_before(1_000 * ms, Some(972), 11),
             "referans yokken"
         );
-        let mut pr = base;
+    }
+
+    /// [YÜKSELİŞ ARALIĞI · TUR 3 · #175 7091092423] Teslim açığı: referans 6 075, 972 B gövde.
+    /// 1 s durma açığı `1 s · 6 075 − 972 = 5 103` B yapar; ACK silmez; referansı aşan varış
+    /// (80 ms arayla, 12 150 B/s) `972 − 486 = 486` B öder; arada alınmayan seq ödemeye girmez
+    /// (yalnız varan gövde); açık sürerken bildirilen değer büyüse
+    /// de (boşalmanın çiftleri) açık başladığı referansa göre ödenir; referansta sayılan çift
+    /// (160 ms) açığı sıfırlar; daralma alarmı açığı sıfırlar. Açıksız kopya: referansın altında
+    /// varış açık doğurmaz.
+    #[test]
+    fn delivery_deficit_spans_acks_and_is_repaid_only_above_the_reference() {
+        let ms = 1_000_000u64;
+        let e9 = 1_000_000_000u128;
+        let mut pr = PairRate {
+            reported: Some(6_075),
+            prev_ns: Some(0),
+            prev_seq: Some(10),
+            ..PairRate::default()
+        };
         pr.on_arrival_seq(1_000 * ms, Some(972), 11);
-        assert!(pr.paused_since_ack(), "duraklama kaydedilmedi");
-        pr.on_arrival_seq(1_160 * ms, Some(972), 12);
-        assert!(pr.paused_since_ack(), "bayrak ACK'e dek kalır");
+        assert_eq!(pr.owed, 5_103 * e9, "durma açığı");
+        assert!(pr.owes_delivery());
         pr.on_ack();
-        assert!(!pr.paused_since_ack(), "ACK bayrağı silmedi");
+        pr.reported = Some(6_804);
+        assert!(pr.owes_delivery(), "ACK açığı sildi");
+        pr.on_arrival_seq(1_080 * ms, Some(972), 12);
+        assert_eq!(pr.owed, (5_103 - 486) * e9, "referansı aşan varış öder");
+        assert_eq!(pr.owed_ref, 6_075, "açığın referansı sabit");
+        pr.on_arrival_seq(1_160 * ms, Some(972), 14);
+        assert_eq!(
+            pr.owed,
+            (5_103 - 2 * 486) * e9,
+            "alınmayan seq ödemeye girdi"
+        );
+        // Yükseliş eşiğinin altında boşalma (143 ms, 6 797 B/s) açığı sıfırlamaz, öder.
+        pr.on_arrival_seq(1_303 * ms, Some(972), 15);
+        assert_eq!(
+            pr.owed,
+            (5_103 - 2 * 486) * e9 - (972 * e9 - 143 * u128::from(ms) * 6_075),
+            "yavaş boşalma öder"
+        );
+        pr.on_arrival_seq(1_463 * ms, Some(972), 16);
+        assert!(!pr.owes_delivery(), "referansta çift açığı sıfırlamadı");
+        pr.on_arrival_seq(2_463 * ms, Some(972), 17);
+        assert!(pr.owes_delivery());
+        pr.arm_rise();
+        assert!(!pr.owes_delivery(), "daralma alarmı açığı sıfırlamadı");
+        let mut slow = PairRate {
+            reported: Some(6_075),
+            prev_ns: Some(0),
+            prev_seq: Some(10),
+            ..PairRate::default()
+        };
+        slow.on_arrival_seq(170 * ms, Some(972), 11);
+        assert!(
+            !slow.owes_delivery(),
+            "gönderici hızında varış açık doğurdu"
+        );
     }
 
     /// [P3 SR-AUDIT-001] Düşman ayrık-seq akışı rx-set'i sınırsız büyütemez: kap sabit.
