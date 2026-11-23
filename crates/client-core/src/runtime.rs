@@ -5319,7 +5319,40 @@ struct SrvTx {
     /// [ÖNCELİK] Veriye yol verdiği için bekletilen FEC RECOVERED çerçeveleri (sınırlı:
     /// [`MAX_YIELDED_CTRL`]; taşan en eskisi düşer, gönderici yeniden iletir).
     yielded: VecDeque<(SocketAddr, ProtectionContext, Vec<u8>)>,
+    /// [ACK-KOPYA] Sunucu ACK'ine ikinci kopya gönderilir mi ([`server_ack_copy_on`]).
+    ack_copy: bool,
+    /// [ACK-KOPYA] Bekleyen ACK kopyaları `(an_ns, eş, bağlam, çerçeve)`; yuva başına en çok bir
+    /// (yeni ACK eskisinin kopyasının yerine geçer; ACK birikimlidir). Tavan [`MAX_ACK_COPIES`].
+    ack_copies: VecDeque<(u64, SocketAddr, ProtectionContext, Vec<u8>)>,
 }
+
+/// [ACK-KOPYA] Bekleyen ACK kopyası tavanı (SR-AUDIT-001): yuva başına bir; `max_peers` ötesi
+/// yuva yoktur, yine de sabit üst sınır.
+const MAX_ACK_COPIES: usize = 64;
+
+/// [ACK-KOPYA · #175 2026-11-23] Sunucu ACK kopyasının ilk ACK'ten gecikmesi: güvenilir PTT kaydı
+/// kopyalarıyla aynı aralık ([`PTT_RELIABLE_COPY_SPACING_NS`]); ACK tiki (20 ms) onu çıkarır.
+pub const SERVER_ACK_COPY_DELAY_NS: u64 = PTT_RELIABLE_COPY_SPACING_NS;
+
+/// [ACK-KOPYA · #175 2026-11-23] Sunucu ACK'ine ikinci kopya: düğümün aşağı yönü geri bildirimi aç
+/// ([`link_feedback_starved`]: eşin verisi bu dar yönden gelir, yeniden iletimi pahalıdır) ve bir
+/// ACK datagramı (≤ [`ACK_COPY_WIRE_MAX`] B + IP/UDP) yukarı yönde kopya aralığından kısa sürede
+/// serileşir (kopya hızlı yönde ucuzdur). Tek kopyalı ACK kaybolunca onarım ancak eşin sonraki
+/// datagramıyla gelir; eş birimi dar hattan yeniden yollar (ürün testi: 71 B'lık alındı 62 B/s
+/// hattın 1,15 s'si). Dar yukarı yönde (ikinci koşul) kopya ACK'lerin önünde kuyruğa girerdi →
+/// kapalı. Profil yoksa ya da eski motorda `false` (davranış bayt-aynı).
+#[must_use]
+pub fn server_ack_copy_on(cfg: &RuntimeConfig) -> bool {
+    link_feedback_starved(cfg)
+        && cfg.link_rates.is_some_and(|l| {
+            (ACK_COPY_WIRE_MAX + LINK_UDP_IP_OVERHEAD).saturating_mul(1_000_000_000)
+                < SERVER_ACK_COPY_DELAY_NS.saturating_mul(l.uplink_bps)
+        })
+}
+
+/// [ACK-KOPYA] [`server_ack_copy_on`]'un serileşme koşulundaki ACK datagramı boyu (B): mühürlü
+/// bitmap ACK'inin ürün testindeki en büyüğü 93 B (IP/UDP dahil); pay ile 160 B.
+const ACK_COPY_WIRE_MAX: u64 = 160;
 
 /// [ÖNCELİK] Bekletilen denetim çerçevesi tavanı (SR-AUDIT-001): 62 B/s'de ≈ 60 B'lik
 /// RECOVERED ≈ 1 s; 16 tanesi bir bütçe aralığını aşar, daha fazlası zaten bayattır.
@@ -5337,6 +5370,48 @@ impl SrvTx {
     /// yoksa 0). Alıcı bunu bir sonraki ACK'in göndericiye varış ufkuna ekler.
     fn line_ahead_ns(&self) -> u64 {
         self.uplink.as_ref().map_or(0, UplinkShare::ns_until_clear)
+    }
+    /// [ACK-KOPYA] Gönderilen ACK'in kopyasını [`SERVER_ACK_COPY_DELAY_NS`] sonrasına yazar
+    /// (kapalıysa hiçbir şey). Aynı yuvanın bekleyen kopyası yenisiyle değişir.
+    fn queue_ack_copy(&mut self, now: u64, peer: SocketAddr, ctx: ProtectionContext, f: &[u8]) {
+        if !self.ack_copy {
+            return;
+        }
+        self.ack_copies
+            .retain(|&(_, p, c, _)| (p, c) != (peer, ctx));
+        if self.ack_copies.len() >= MAX_ACK_COPIES {
+            self.ack_copies.pop_front();
+        }
+        self.ack_copies.push_back((
+            now.saturating_add(SERVER_ACK_COPY_DELAY_NS),
+            peer,
+            ctx,
+            f.to_vec(),
+        ));
+    }
+}
+
+/// [ACK-KOPYA] Sunucu ACK'i: mühürleyip gönderir ve (açıksa) kopyasını sıraya yazar.
+async fn srv_send_ack(
+    tx: &mut SrvTx,
+    sock: &UdpSocket,
+    stats: &mut ServerStats,
+    peer: SocketAddr,
+    ctx: ProtectionContext,
+    frame: Vec<u8>,
+    now: u64,
+) {
+    tx.queue_ack_copy(now, peer, ctx, &frame);
+    srv_seal_send(tx, sock, stats, peer, ctx, frame).await;
+}
+
+/// [ACK-KOPYA] Vakti gelen ACK kopyalarını gönderir (ACK tiki).
+async fn drain_ack_copies(tx: &mut SrvTx, sock: &UdpSocket, stats: &mut ServerStats, now: u64) {
+    while tx.ack_copies.front().is_some_and(|&(due, ..)| due <= now) {
+        let Some((_, peer, ctx, f)) = tx.ack_copies.pop_front() else {
+            break;
+        };
+        srv_seal_send(tx, sock, stats, peer, ctx, f).await;
     }
 }
 
@@ -5393,8 +5468,9 @@ async fn srv_ack_tick(
         })
         .collect();
     for (peer, sp, plain) in acks {
-        srv_seal_send(tx, sock, stats, peer, sp, plain).await;
+        srv_send_ack(tx, sock, stats, peer, sp, plain, now).await;
     }
+    drain_ack_copies(tx, sock, stats, now).await;
     drain_yielded(tx, sock, stats).await;
     // [PARAM_ACK-BEKLETME] İkinci ACK çıktıysa ya da süre dolduysa bekletilen PARAM_ACK.
     let held: Vec<(SocketAddr, ProtectionContext, Vec<u8>)> = peers
@@ -5707,6 +5783,8 @@ async fn server_task(
         start,
         uplink,
         yielded: VecDeque::new(),
+        ack_copy: server_ack_copy_on(&cfg),
+        ack_copies: VecDeque::new(),
     };
     let mut stats = ServerStats::default();
     // [S1B] Fragmentasyon İKİ UÇTA AYNI config'ten türetilir (wire'da bayrak taşınmaz): gönderici
@@ -6031,7 +6109,7 @@ async fn server_task(
                         if let Some(ack) = out.ack {
                             slot.acks_out = slot.acks_out.saturating_add(1);
                             let sp = slot.ctx;
-                            srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, ack.encode())
+                            srv_send_ack(&mut tx, &sock, &mut stats, peer, sp, ack.encode(), now)
                                 .await;
                         }
                         // [S1] Source-symbol → blok-birleştirici. 0x00'da symbol TÜRETİLİR (TX ile
@@ -6124,9 +6202,9 @@ async fn server_task(
                             if let Some(ack) = out.ack {
                                 slot.acks_out = slot.acks_out.saturating_add(1);
                                 let sp = slot.ctx;
-                                srv_seal_send(
+                                srv_send_ack(
                                     &mut tx, &sock, &mut stats, peer, sp,
-                                    ack.encode(),
+                                    ack.encode(), now,
                                 )
                                 .await;
                             }
@@ -6157,7 +6235,7 @@ async fn server_task(
                         if let Some(ack) = out.ack {
                             slot.acks_out = slot.acks_out.saturating_add(1);
                             let sp = slot.ctx;
-                            srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, ack.encode())
+                            srv_send_ack(&mut tx, &sock, &mut stats, peer, sp, ack.encode(), now)
                                 .await;
                         }
                         let admit_limit = session_admit_limit(&expected, slot.ctx);
@@ -8551,6 +8629,8 @@ mod ack_tick_priority_tests {
                 narrow: true,
             }))),
             yielded: VecDeque::from([(peer, ctx, recovered)]),
+            ack_copy: false,
+            ack_copies: VecDeque::new(),
         };
         let mut stats = ServerStats::default();
         let mut slot = PeerSlot::new(ctx, 4, 0, TransportEngine::CcPort, Some(62));
@@ -8581,5 +8661,119 @@ mod ack_tick_priority_tests {
         );
         assert_eq!(tx.yielded.len(), 1, "RECOVERED hat dolunca bekler");
         assert_eq!(stats.tx_datagrams, 1, "turda tek denetim datagramı");
+    }
+}
+
+#[cfg(test)]
+mod server_ack_copy_tests {
+    //! [ACK-KOPYA · #175 2026-11-23] İnce aşağı yönlü düğümün sunucu ACK'i hızlı yukarı yönden
+    //! iki kez çıkar. Ürün izi (`asym_product_outcome`, `measure_rate_drop_during_file_transfer`,
+    //! tohum 1): Alice'in sunucusu Bob'un alındılarına tek ACK yolluyordu; 12 ACK'in 7'si kayıp,
+    //! Bob 12 alındı datagramının 6'sını yineledi (her biri 62 B/s hattın 1,15 s'si) ve düşüşün
+    //! kanıt ACK'i bu yinelemelerin arkasında bekledi.
+    //!
+    //! DÜZENEK: gerçek sunucu görevi (UDP loopback, `IdentitySeam`); karşı uç ham eştir, tek DATA
+    //! yollar ve gelen ACK datagramlarını sayar. Kayıp yok; "ilk ACK kayboldu" durumu, ilk ACK
+    //! datagramı yok sayılınca birimi yine teyit eden ikinci datagramın varlığıdır.
+
+    use super::*;
+    use crate::seam::IdentitySeam;
+
+    const S: ProtectionContext = ProtectionContext::Session(IdentitySeam::SESSION);
+    /// Kopyanın gelmesi için beklenen üst sınır (kopya 20 ms + bir ACK tiki sonra çıkar).
+    const LISTEN: Duration = Duration::from_millis(400);
+
+    fn link(uplink_bps: u64, downlink_bps: u64) -> RuntimeConfig {
+        RuntimeConfig {
+            link_rates: Some(LinkRates {
+                uplink_bps,
+                downlink_bps,
+            }),
+            ..RuntimeConfig::default()
+        }
+    }
+
+    /// Tek DATA yollar; `LISTEN` boyunca o PN'i teyit eden ACK datagramlarını sayar.
+    async fn acks_for_one_data(cfg: RuntimeConfig) -> usize {
+        let server = ServerEndpoint::bind(
+            "127.0.0.1:0".parse().expect("adres"),
+            cfg,
+            Box::new(IdentitySeam::new()),
+        )
+        .await
+        .expect("server bind");
+        let sock = UdpSocket::bind("127.0.0.1:0").await.expect("UDP soketi");
+        let mut seam = IdentitySeam::new();
+        let sealed = seam.seal(S, &encode_data(0, 0, b"alindi")).expect("seal");
+        let pn = sealed.meta.full_wire_pn;
+        sock.send_to(&sealed.bytes, server.local_addr())
+            .await
+            .expect("send");
+        let deadline = tokio::time::Instant::now() + LISTEN;
+        let mut covering = 0usize;
+        let mut buf = vec![0u8; 2048];
+        loop {
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            let Ok(Ok((n, _))) = tokio::time::timeout(left, sock.recv_from(&mut buf)).await else {
+                continue;
+            };
+            let Some(od) = seam.open(&buf[..n]) else {
+                continue;
+            };
+            if let Ok(ack) = AckFrame::decode(&od.frame) {
+                if ack.acked_full(pn + 1).contains(&pn) {
+                    covering += 1;
+                }
+            }
+        }
+        let _ = server.shutdown().await;
+        covering
+    }
+
+    #[test]
+    fn copy_is_on_only_where_the_data_arrives_on_a_starved_line_and_acks_leave_on_a_fast_one() {
+        assert!(
+            server_ack_copy_on(&link(12_500, 62)),
+            "Alice düğümü: aşağı 62, yukarı 12 500"
+        );
+        assert!(
+            !server_ack_copy_on(&link(62, 12_500)),
+            "Bob düğümü: ACK'ler dar yönden çıkar"
+        );
+        assert!(
+            !server_ack_copy_on(&link(62, 62)),
+            "iki yön dar: kopya ACK'lerin önüne girer"
+        );
+        assert!(
+            !server_ack_copy_on(&link(12_500, 12_500)),
+            "geri bildirim aç değil"
+        );
+        assert!(!server_ack_copy_on(&RuntimeConfig::default()), "profil yok");
+        assert!(
+            !server_ack_copy_on(&RuntimeConfig {
+                engine: TransportEngine::Legacy,
+                ..link(12_500, 62)
+            }),
+            "eski motor"
+        );
+    }
+
+    #[tokio::test]
+    async fn starved_downlink_node_acks_each_datagram_twice_so_one_lost_ack_does_not_force_a_resend(
+    ) {
+        let covering = acks_for_one_data(link(12_500, 62)).await;
+        assert!(
+            covering >= 2,
+            "ilk ACK kaybolsa da birimi teyit eden ikinci datagram olmalı: {covering} ACK datagramı"
+        );
+    }
+
+    #[tokio::test]
+    async fn without_the_profile_each_datagram_is_acked_once() {
+        let covering = acks_for_one_data(RuntimeConfig::default()).await;
+        assert_eq!(covering, 1, "profil kapalı yol bugünkü gibi tek ACK");
     }
 }
