@@ -1,0 +1,6 @@
+ÖN KAYIT — kancalı koşu, koşudan ÖNCE yazıldı: 2026-11-23T11:13:24Z
+İkili: f0_flows (dal yerel/f0-olcum-kancalari @ e1012cf2048c1f8c485a16429fb5edfa64cf94c1; ağaç temiz) sha256=adf8f5add5f4eae5ea9d3b2c5c2ab1b959b79f1fd037d3f0add32be0b0e64a03
+İkilide 'derlemede KAMA_GIT_SHA verilmedi' dizgisi: 1 ; e1012cf2 dizgisi: 0
+Hücre: v1/arac/v1_taban.cell (DEĞİŞMEDEN; sha256=2a90bbbad4359b335c606558f8fd7832f565f719b75ac6383234a88c773bb04c); tohum 1; --live-diag on taban hücresinde zaten var → tek fark ikili.
+Kirli ölçütü: v1/kirli-olcut.txt K1–K11 aynen (sha256=e5f7a9ac96daad68521e89dbf52c8820977e7810329ca9f9405cd246a0cca3d8). Kirliyse en çok BİR yineleme.
+Konak (ön): load=1.01 1.28 2.21 1/1349 1005762 cargo/rustc=0

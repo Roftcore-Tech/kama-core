@@ -1,0 +1,16 @@
+=== çekim 1 t=2026-11-23T11:13:30.743086218Z
+    PID    PPID ELAPSED STAT COMMAND
+1006154 1006153       0 Sl   <scratch>/olcum/kancali/arac/f0_flows.e1012c
+1006098 1005902       1 Sl   <scratch>/olcum/kancali/arac/f0_flows.e1012c
+alice pid=1006154 net=net:[4026533040]
+bob pid=1006098 net=net:[4026533146]
+orta pid=1005947 net=net:[4026533094]
+kabuk net=net:[4026533040]
+=== çekim 2 t=2026-11-23T11:13:31.361240105Z
+    PID    PPID ELAPSED STAT COMMAND
+1006154 1006153       0 Sl   <scratch>/olcum/kancali/arac/f0_flows.e1012c
+1006098 1005902       1 Sl   <scratch>/olcum/kancali/arac/f0_flows.e1012c
+alice pid=1006154 net=net:[4026533040]
+bob pid=1006098 net=net:[4026533146]
+orta pid=1005947 net=net:[4026533094]
+kabuk net=net:[4026533040]
