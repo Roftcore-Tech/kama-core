@@ -4288,8 +4288,12 @@ const DIP_CANDIDATE: [(u64, usize); 3] = [(330, 655), (240, 709), (330, 655)];
 /// taşıdığı bilgi ≈ 1,75 s eski). İki dünyada kesme ACK'ine dek her ACK'in varışı, korunan hızı,
 /// tavanı ve yazılan kuyruğu aynıdır: kesme ACK'inde yazılan kuyruk, bu ACK'in bilgisinin hangi
 /// işlevi olursa olsun, iki dünyada aynıdır. Kesme dünyasında boşaltma ölçütü (iniş ≤ kesme +
-/// kuyruk/hat) bu ACK'te yazılan kuyruğa dayanır (sonraki ACK ölçütün sınırından sonra gelir);
-/// kısa daralma dünyasında aynı yazım hat toparlandıktan sonra bekletir.
+/// kuyruk/hat) bu ACK'te yazılan kuyruğa dayanır; kısa daralma dünyasında aynı yazım hat
+/// toparlandıktan sonra bekletir. Kesme dünyasında sonraki ACK tohum 1 ve 3'te ölçütün
+/// sınırından sonra, tohum 2'de önce (6,28 s; sınır 6,81 s) gelir. Bağımsız sınamada aday
+/// düzeyindeki kesme yazımıyla (330/240/330 ms) sonraki ACK'lerde ne yazılırsa yazılsın ölçüt üç
+/// tohumda kaldı. Sınır bugünkü alıcı ACK çizelgesinindir, fiziksel değildir: 62 B/s dönüşte
+/// sonraki ACK kesme ACK'inden en erken ≈ 1,15 s sonra varabilir (üç tohumda da sınırdan önce).
 #[test]
 fn short_dip_and_cut_are_indistinguishable_at_the_cut_ack() {
     println!();
