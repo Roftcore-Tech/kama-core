@@ -267,8 +267,9 @@ struct PttShape {
     compact: bool,
     /// [PTT-BİRLEŞİK · deney] `KAMA_ASYM_PTT_COALESCE`: açılış/kapanış demetlerin içinde.
     coalesce: Coalesce,
-    /// [PTT-BİRLEŞİK · deney] `KAMA_ASYM_PTT_OPEN_K` (varsayılan 2): açılış bilgisini taşıyan ilk
-    /// demet sayısı (motor en az 1 kullanır; etiket uygulanan değeri yazar).
+    /// [PTT-BİRLEŞİK · deney] `KAMA_ASYM_PTT_OPEN_K` (varsayılan motorunki,
+    /// [`kama_app::ptt::SPURT_OPEN_REPEAT`]): açılış bilgisini taşıyan ilk demet sayısı (motor en
+    /// az 1 kullanır; etiket uygulanan değeri yazar).
     open_k: u8,
     /// [PTT-BİRLEŞİK · deney · #233 inceleme 1] `KAMA_ASYM_PTT_OPEN_EVERY` (varsayılan motorunki,
     /// [`kama_app::ptt::SPURT_OPEN_EVERY`]): ilk K'dan sonra her kaçıncı demet açılış taşır
@@ -331,7 +332,11 @@ fn ptt_shape() -> PttShape {
             Ok("off") | Err(_) => Coalesce::Off,
             Ok(v) => panic!("KAMA_ASYM_PTT_COALESCE: off | neg | known | learned (verilen {v})"),
         },
-        open_k: u8::try_from(env_u64("KAMA_ASYM_PTT_OPEN_K", 2)).expect("KAMA_ASYM_PTT_OPEN_K u8"),
+        open_k: u8::try_from(env_u64(
+            "KAMA_ASYM_PTT_OPEN_K",
+            u64::from(kama_app::ptt::SPURT_OPEN_REPEAT),
+        ))
+        .expect("KAMA_ASYM_PTT_OPEN_K u8"),
         open_every: u8::try_from(env_u64(
             "KAMA_ASYM_PTT_OPEN_EVERY",
             u64::from(kama_app::ptt::SPURT_OPEN_EVERY),

@@ -1085,18 +1085,26 @@ fn receipt_completion_is_reported_in_chain_order_within_the_turn() {
     assert!(delivered < text, "zincir sırası: {order:?}");
 }
 
-/// [PTT-BİRLEŞİK · deney · #233 inceleme 6] Tek anahtar: düğümün PTT motorunun birleşik biçim
-/// anahtarı Transport'un bayrağından türetilir (`ptt_engine`); ürün yapılandırmasında ikisi de
-/// kapalıdır. Ayrı kurulsalardı uç CAPS bit 2 / 0x17 ile yeteneğini bildirip birleşik demetleri
-/// reddedebilirdi.
+/// [PTT-BİRLEŞİK · deney · #233 inceleme 6, tur 2] Tek anahtar: düğümün PTT motorunun birleşik
+/// biçim anahtarı Transport'un bayrağından türetilir (`ptt_engine`). Ayırt edici: bayrak AÇIK
+/// kurulan düğümde motorun anahtarı da açıktır (türetme olmasaydı `Ptt::new`'in varsayılanı
+/// kapalı kalırdı: kırmızı); ürün yapılandırmasında ikisi de kapalıdır.
 #[test]
 fn ptt_coalesce_switch_is_derived_from_the_transport_flag() {
     let _serial = support::serial();
     let root = TempDir::new("ptt-coalesce-switch");
     let phones = support::provision(root.path(), &[ALICE, BOB]);
-    let (alice, _events) = support::manual(&phones[ALICE], support::system_clock());
-    let node = &alice.node;
-    let transport_flag = node.messenger.transport().ptt_coalesce_enabled();
-    assert_eq!(node.ptt.spurt_coalesce(), transport_flag);
-    assert!(!transport_flag, "ürün yapılandırmasında deney kapalı");
+    for on in [true, false] {
+        crate::PTT_COALESCE_FOR_TEST.with(|f| f.set(on));
+        let (built, _events) = support::manual(&phones[ALICE], support::system_clock());
+        crate::PTT_COALESCE_FOR_TEST.with(|f| f.set(false));
+        let node = &built.node;
+        assert_eq!(node.messenger.transport().ptt_coalesce_enabled(), on);
+        assert_eq!(
+            node.ptt.spurt_coalesce(),
+            on,
+            "motorun anahtarı bayrağı izler"
+        );
+        drop(built);
+    }
 }

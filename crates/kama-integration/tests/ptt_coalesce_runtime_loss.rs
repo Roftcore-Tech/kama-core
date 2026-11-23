@@ -24,10 +24,11 @@
 //!
 //! # Senaryolar ve iddialar (sınırlar ölçümden ÖNCE)
 //!
-//! Basış: [`BUNDLES`] × [`BUNDLE_MS`] demet, son demet `END`'li. Kayıp: yok · ilk · son · ilk+son ·
-//! ilk iki. Her senaryoda:
+//! Basış: [`BUNDLES`] × [`BUNDLE_MS`] demet ve ürün kolları (300 ms, 420 ms demet, 1,5 s basış; son
+//! demet kısmi), son demet `END`'li. Kayıp: yok · ilk · son · ilk+son · ilk iki. Zamanında
+//! (varış − oluşum ≤ 1 s) 20 ms çerçeve oranı yalnız raporlanır. Her senaryoda:
 //! * tam BİR `PttStarted` ve BİR `PttEnded`;
-//! * `PttStarted` ≤ basış + 1 s;
+//! * `PttStarted` ≤ ilk atılmayan demetin oluşumu + 1 s + alıcının delik beklemesi (100 ms);
 //! * `PttEnded` ≤ bırakış + `spurt_gap_end(bundle_ms)` + [`ONE_WAY_ALLOWANCE`];
 //! * ses: teslim edilen demetler tam olarak atılmayanlardır (kurtarılmış açılış, kaybolan sesin
 //!   kurtarıldığı anlamına gelmez; kaybolan 20 ms çerçeveler ayrıca sayılıp yazılır).
@@ -178,6 +179,10 @@ struct Outcome {
     release_to_end: Option<Duration>,
     delivered: BTreeSet<u32>,
     frames_lost: u64,
+    /// Planlanan 20 ms çerçeve sayısı (basış / 20 ms).
+    frames_planned: u64,
+    /// Zamanında (Bob'a varış − demet oluşumu ≤ 1 s) teslim edilen 20 ms çerçeve sayısı.
+    frames_timely: u64,
     /// Bob'un birleşik açılışla açtığı akış sayısı (0 = ayrı `PTT_OPEN`).
     bob_spurt_opens: u64,
     /// Bob'un `END` ile bitirdiği akış sayısı.
@@ -189,7 +194,9 @@ struct Outcome {
 }
 
 #[allow(clippy::too_many_lines)]
-fn run(n: u32, drop_idx: &[u64], bob_coalesce: bool) -> Outcome {
+fn run(bundle_ms: u16, press_len: Duration, drop_idx: &[u64], bob_coalesce: bool) -> Outcome {
+    let period = Duration::from_millis(u64::from(bundle_ms));
+    let n = u32::try_from(press_len.as_nanos().div_ceil(period.as_nanos())).expect("demet sayısı");
     let hub = MemoryHub::new();
     let seen = Arc::new(AtomicU64::new(0));
     let dropped = Arc::new(Mutex::new(Vec::new()));
@@ -255,14 +262,15 @@ fn run(n: u32, drop_idx: &[u64], bob_coalesce: bool) -> Outcome {
     );
     assert!(bob.m.session_of(id(ALICE)).is_some());
 
-    let period = Duration::from_millis(u64::from(BUNDLE_MS));
-    let code = bundle_code_from_ms(BUNDLE_MS).expect("kod");
+    let code = bundle_code_from_ms(bundle_ms).expect("kod");
     let press = Instant::now();
     let stream = alice
         .ptt
         .open(&mut alice.m, id(BOB), PttCodec::Lyra, code)
         .expect("PTT açılır");
-    let release = press + period * n;
+    let release = press + press_len;
+    // Demetin çerçeveleri var olunca (ya da bırakışta, kısmi son demet) gönderilir.
+    let ready = |k: u32| (press + period * (k + 1)).min(release);
     let mut next = 0u32;
     let mut closed = false;
     let mut bob_events: Vec<(Instant, PttEvent)> = Vec::new();
@@ -270,7 +278,7 @@ fn run(n: u32, drop_idx: &[u64], bob_coalesce: bool) -> Outcome {
     let hard_stop = end_bound + Duration::from_secs(2);
     loop {
         let tick = Instant::now();
-        while next < n && press + period * (next + 1) <= tick {
+        while next < n && ready(next) <= tick {
             let created = press + period * next;
             let mut payload = vec![0x5A; PAYLOAD];
             payload[..4].copy_from_slice(&next.to_be_bytes());
@@ -314,6 +322,7 @@ fn run(n: u32, drop_idx: &[u64], bob_coalesce: bool) -> Outcome {
     let mut ended = Vec::new();
     let mut release_to_end = None;
     let mut delivered = BTreeSet::new();
+    let mut arrival: std::collections::BTreeMap<u32, Instant> = std::collections::BTreeMap::new();
     for (at, e) in &bob_events {
         match e {
             PttEvent::PttStarted { .. } => started.push(at.duration_since(press)),
@@ -322,13 +331,30 @@ fn run(n: u32, drop_idx: &[u64], bob_coalesce: bool) -> Outcome {
                 release_to_end.get_or_insert(at.saturating_duration_since(release));
             }
             PttEvent::PttAudio { payload, .. } if payload.len() >= 4 => {
-                delivered.insert(u32::from_be_bytes(payload[..4].try_into().expect("4 B")));
+                let k = u32::from_be_bytes(payload[..4].try_into().expect("4 B"));
+                delivered.insert(k);
+                arrival.entry(k).or_insert(*at);
             }
             _ => {}
         }
     }
-    let frames_per_bundle = u64::from(BUNDLE_MS) / u64::try_from(FRAME.as_millis()).unwrap_or(20);
-    let frames_lost = (u64::from(n) - delivered.len() as u64) * frames_per_bundle;
+    // k. demetin çerçeveleri: tam demette B / 20 ms, son demette bırakışta var olanlar.
+    let frames_of = |k: u32| -> u64 {
+        let span = release
+            .saturating_duration_since(press + period * k)
+            .min(period);
+        u64::try_from(span.as_nanos() / FRAME.as_nanos()).unwrap_or(0)
+    };
+    let frames_planned: u64 = (0..n).map(frames_of).sum();
+    let frames_lost: u64 = (0..n)
+        .filter(|k| !delivered.contains(k))
+        .map(frames_of)
+        .sum();
+    let frames_timely: u64 = arrival
+        .iter()
+        .filter(|(&k, &at)| at.saturating_duration_since(press + period * k) <= START_BOUND)
+        .map(|(&k, _)| frames_of(k))
+        .sum();
     let bob_stats = bob.ptt.stats();
     let dropped = dropped.lock().expect("kilit").clone();
     Outcome {
@@ -340,6 +366,8 @@ fn run(n: u32, drop_idx: &[u64], bob_coalesce: bool) -> Outcome {
         release_to_end,
         delivered,
         frames_lost,
+        frames_planned,
+        frames_timely,
         bob_spurt_opens: bob_stats.spurt_opens,
         bob_spurt_ends: bob_stats.spurt_ends,
         bob_gap_ends: bob_stats.streams_ended_by_gap,
@@ -347,44 +375,59 @@ fn run(n: u32, drop_idx: &[u64], bob_coalesce: bool) -> Outcome {
     }
 }
 
-fn check(name: &str, drop_idx: &[u64]) {
-    let o = run(BUNDLES, drop_idx, true);
-    let code = bundle_code_from_ms(BUNDLE_MS).expect("kod");
+/// Kayıp senaryosu: basıştaki demet sıraları; `LAST` = son demet.
+const LAST: u64 = u64::MAX;
+
+fn check(name: &str, bundle_ms: u16, press_len: Duration, scenario: &[u64]) {
+    let period = Duration::from_millis(u64::from(bundle_ms));
+    let n = u64::try_from(press_len.as_nanos().div_ceil(period.as_nanos())).expect("n");
+    let drop_idx: Vec<u64> = scenario
+        .iter()
+        .map(|&k| if k == LAST { n - 1 } else { k })
+        .collect();
+    let o = run(bundle_ms, press_len, &drop_idx, true);
+    let code = bundle_code_from_ms(bundle_ms).expect("kod");
+    let end_limit = spurt_gap_end(code) + ONE_WAY_ALLOWANCE;
     println!(
-        "PTT-BİRLEŞİK-ÇALIŞMA {name}: kayıp={drop_idx:?} 0x09_görülen={} atılan={:?} başladı={} bitti={} tek_kapanış={} PttStarted=+{:?} (basıştan) PttEnded=+{:?} (bırakıştan; sınır {:?}) teslim_demet={:?} kaybolan_20ms_çerçeve={}",
+        "PTT-BİRLEŞİK-ÇALIŞMA {name} demet={bundle_ms}ms basış={:?}: kayıp={drop_idx:?} 0x09_görülen={} başladı={} bitti={} tek_başla/tek_bitir={}/{} PttStarted=+{:?} (basıştan) PttEnded=+{:?} (bırakıştan; sınır {end_limit:?}) teslim_demet={:?} kaybolan_20ms_çerçeve={} zamanında={}/{} ({} %)",
+        press_len,
         o.lean_seen,
-        o.dropped,
         !o.started.is_empty(),
         !o.ended.is_empty(),
+        o.started.len() == 1,
         o.ended.len() == 1,
         o.started.first(),
         o.release_to_end,
-        spurt_gap_end(code) + ONE_WAY_ALLOWANCE,
         o.delivered,
         o.frames_lost,
+        o.frames_timely,
+        o.frames_planned,
+        o.frames_timely * 100 / o.frames_planned.max(1),
     );
+    // Yalnız açılış/kapanış güvenilirliği ve teslim kümesi iddia edilir; zamanında oranı
+    // (≥ %75 kapısı rastgele kayıp içindir) burada yalnız raporlanır.
     assert_eq!(o.capability, Some(true));
     assert_eq!(o.bob_spurt_opens, 1, "akış birleşik açılışla açıldı");
     assert_eq!(
         o.bob_spurt_ends,
-        u64::from(!drop_idx.contains(&(u64::from(BUNDLES) - 1))),
+        u64::from(!drop_idx.contains(&(n - 1))),
         "END yalnız son demet vardıysa"
     );
-    assert_eq!(
-        o.lean_seen,
-        u64::from(BUNDLES),
-        "her demet tek 0x09 datagramı"
-    );
-    assert_eq!(o.dropped, drop_idx.to_vec(), "seçilen datagramlar atıldı");
+    assert_eq!(o.lean_seen, n, "her demet tek 0x09 datagramı");
+    assert_eq!(o.dropped, drop_idx, "seçilen datagramlar atıldı");
     assert_eq!(o.started.len(), 1, "tam bir PttStarted");
     assert_eq!(o.ended.len(), 1, "tam bir PttEnded");
-    assert!(o.started[0] <= START_BOUND, "PttStarted {:?}", o.started[0]);
+    // PttStarted: ilk atılmayan demetin oluşumundan ≤ 1 s + alıcının delik beklemesi.
+    let first = (0..n)
+        .find(|k| !drop_idx.contains(k))
+        .expect("en az bir demet");
+    let start_limit = period * u32::try_from(first).expect("u32")
+        + START_BOUND
+        + kama_app::ptt::SPURT_RX_HOLE_WAIT;
+    assert!(o.started[0] <= start_limit, "PttStarted {:?}", o.started[0]);
     let end = o.release_to_end.expect("bitti");
-    assert!(
-        end <= spurt_gap_end(code) + ONE_WAY_ALLOWANCE,
-        "PttEnded bırakıştan {end:?}"
-    );
-    let want: BTreeSet<u32> = (0..BUNDLES)
+    assert!(end <= end_limit, "PttEnded bırakıştan {end:?}");
+    let want: BTreeSet<u32> = (0..u32::try_from(n).expect("u32"))
         .filter(|k| !drop_idx.contains(&u64::from(*k)))
         .collect();
     assert_eq!(
@@ -393,36 +436,58 @@ fn check(name: &str, drop_idx: &[u64]) {
     );
 }
 
+fn short_press() -> Duration {
+    Duration::from_millis(u64::from(BUNDLE_MS)) * BUNDLES
+}
+
 #[test]
 fn coalesced_press_without_loss_on_the_real_runtime() {
-    check("kayıpsız", &[]);
+    check("kayıpsız", BUNDLE_MS, short_press(), &[]);
 }
 
 #[test]
 fn coalesced_press_survives_losing_the_first_datagram_on_the_real_runtime() {
-    check("ilk", &[0]);
+    check("ilk", BUNDLE_MS, short_press(), &[0]);
 }
 
 #[test]
 fn coalesced_press_survives_losing_the_last_datagram_on_the_real_runtime() {
-    check("son", &[u64::from(BUNDLES) - 1]);
+    check("son", BUNDLE_MS, short_press(), &[LAST]);
 }
 
 #[test]
 fn coalesced_press_survives_losing_the_first_and_last_datagrams_on_the_real_runtime() {
-    check("ilk+son", &[0, u64::from(BUNDLES) - 1]);
+    check("ilk+son", BUNDLE_MS, short_press(), &[0, LAST]);
 }
 
 #[test]
 fn coalesced_press_survives_losing_the_first_two_datagrams_on_the_real_runtime() {
-    check("ilk-iki", &[0, 1]);
+    check("ilk-iki", BUNDLE_MS, short_press(), &[0, 1]);
+}
+
+/// [#233 tur 2 · 2] Ürün kollarının demet tanesi (300 ms ve 420 ms), 1,5 s basış: aynı dört kayıp.
+/// Açılış/kapanış güvenilirliği iddia edilir; zamanında / 75 oranı yalnız raporlanır (belirlenimli
+/// kayıpta kaybolan demetin çerçeveleri zamanında olamaz).
+#[test]
+fn product_bundle_lengths_keep_open_and_close_reliable_on_the_real_runtime() {
+    let press = Duration::from_millis(1_500);
+    for ms in [300u16, 420] {
+        for (name, scenario) in [
+            ("ilk", &[0][..]),
+            ("son", &[LAST][..]),
+            ("ilk+son", &[0, LAST][..]),
+            ("ilk-iki", &[0, 1][..]),
+        ] {
+            check(name, ms, press, scenario);
+        }
+    }
 }
 
 /// Eski eş: Bob'un bayrağı kapalı → ilk yalın ACK 0x16 → Alice bugünkü ayrı güvenilir kayıtlara
 /// döner; basış uçtan uca çalışır (tam bir başla/bitir, bütün ses).
 #[test]
 fn old_peer_gets_the_compatible_separate_records_on_the_real_runtime() {
-    let o = run(BUNDLES, &[], false);
+    let o = run(BUNDLE_MS, short_press(), &[], false);
     println!("PTT-BİRLEŞİK-ÇALIŞMA eski-eş: {o:?}");
     assert_eq!(o.capability, Some(false));
     assert_eq!(
@@ -435,17 +500,17 @@ fn old_peer_gets_the_compatible_separate_records_on_the_real_runtime() {
     assert_eq!(o.delivered, (0..BUNDLES).collect::<BTreeSet<u32>>());
 }
 
-/// [#233 inceleme 7087771388 · 1] Basış ortasında `spurt_gap_end`'den uzun kesinti (100 ms demette
-/// 14 demet = 1,4 s > 1,3 s): sessizlik kuralı akışı bitirir (`PttEnded`), ama kesintiden sonraki
-/// demetler de açılış bilgisini taşıdığından akış yeniden açılır ve sesin kalanı çalınır (yetim
-/// yok). Bedel: basış iki yaşam döngüsü olur (iki `PttStarted` / `PttEnded`); tek yaşam döngüsü
-/// için kesintiyi sessizlik sonundan ayırt edecek bir kapanış sinyali gerekir (açık karar).
-/// Eski kural (yalnız ilk K demet açılış taşır) burada kesintiden sonraki bütün demetleri
-/// yetim bırakırdı.
+/// [#233 inceleme 7087771388 · 1, tur 2] Basış ortasında `spurt_gap_end`'den uzun kesinti (100 ms
+/// demette 14 demet = 1,4 s > 1,3 s): sessizlik kuralı akışı bitirir (`PttEnded`); kesintiden
+/// sonraki ilk açılışlı demet (her 4. demet: 16.) akışı yeniden açar ve sesin kalanı çalınır
+/// (yetim yok; kesinti 16. demette bittiği için). Bedel: basış iki yaşam döngüsü olur; tek
+/// yaşam döngüsü için kesintiyi sessizlik sonundan ayırt edecek bir kapanış sinyali gerekir
+/// (açık karar). Yalnız ilk K demet açılış taşısaydı kesintiden sonraki bütün demetler yetim
+/// kalırdı.
 #[test]
 fn coalesced_press_resumes_after_an_outage_longer_than_the_silence_end_on_the_real_runtime() {
     let drop: Vec<u64> = (2..=15).collect();
-    let o = run(24, &drop, true);
+    let o = run(BUNDLE_MS, short_press() * 3, &drop, true);
     println!(
         "PTT-BİRLEŞİK-ÇALIŞMA kesinti: kayıp=2..=15 başla={:?} bitir={:?} teslim_demet={:?} kaybolan_20ms_çerçeve={} sessizlik_sonu={} yetim={}",
         o.started, o.ended, o.delivered, o.frames_lost, o.bob_gap_ends, o.bob_orphans

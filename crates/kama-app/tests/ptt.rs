@@ -3200,14 +3200,14 @@ fn coalesced_spurt(duo: &mut Duo, n: u8, lose: &[u8]) -> (StreamId, Vec<PttEvent
 }
 
 /// Kayıpsız birleşik basış: tele yalnız demetler çıkar (hepsi son tarihli); varsayılan kuralda
-/// her demet açılış bilgisini taşır (7 B başlık), son demet `END`'li (0x8C). Bob akışı ilk
-/// demetten açar ve `END`'de bitirir; olaylar ayrı kayıtlı yolla aynıdır.
+/// ilk üç demet açılış bilgisini taşır (7 B başlık), dördüncü kompakt `END`'li (0x8D, 2 B). Bob
+/// akışı ilk demetten açar ve `END`'de bitirir; olaylar ayrı kayıtlı yolla aynıdır.
 #[test]
 fn coalesced_spurt_carries_open_and_close_inside_the_bundles() {
     let mut duo = coalesced_duo();
     let (stream, events, sizes) = coalesced_spurt(&mut duo, 4, &[]);
     let body = TEST_FRAME_BYTES;
-    assert_eq!(sizes, vec![7 + body; 4]);
+    assert_eq!(sizes, vec![7 + body, 7 + body, 7 + body, 2 + body]);
     let mut want = vec![started(ALICE, stream, PttCodec::Lyra, TEST_BUNDLE_MS)];
     want.extend((0..4).map(|n| audio(ALICE, stream, &frame(n))));
     want.push(ended(ALICE, stream));
@@ -3363,16 +3363,21 @@ fn coalesced_form_is_used_only_toward_a_capable_peer() {
     assert_eq!(duo.bob.ptt.stats().spurt_refused, 1);
 }
 
-/// [#233 inceleme 1] İLK İKİ datagram kaybolur: varsayılan kuralda her demet açılış bilgisini
-/// taşıdığından üçüncü demet akışı açar; ses o demetten başlar, `END` akışı bitirir. Eski kural
-/// (yalnız ilk K = 2 demet açılış taşır; `set_spurt_open_every(0)`) bu kayıpta basışın tamamını
-/// yetim bırakıyordu: aynı senaryo orada hiç olay vermez (karşılaştırma kolu aşağıda). K = 3
-/// bu senaryoyu kurtarır ama ilk ÜÇ datagramın kaybını kurtarmaz.
+/// [#233 inceleme 1, tur 2] İLK İKİ datagram kaybolur: varsayılan kuralda (K = 3, her 4. demet)
+/// üçüncü demet de açılış bilgisini taşıdığından akışı açar; ses o demetten başlar, `END` akışı
+/// bitirir. Yalnız ilk K = 2 demet açılış taşısaydı (`set_spurt_open_every(0)`) bu kayıp basışın
+/// tamamını yetim bırakırdı: aynı senaryo orada hiç olay vermez (karşılaştırma kolu aşağıda);
+/// K = 3 kurtarır.
 #[test]
 fn coalesced_open_survives_losing_the_first_two_datagrams() {
     let mut duo = coalesced_duo();
     let (stream, events, sizes) = coalesced_spurt(&mut duo, 5, &[0, 1]);
-    assert_eq!(sizes, vec![7 + TEST_FRAME_BYTES; 5]);
+    let (open, compact) = (7 + TEST_FRAME_BYTES, 2 + TEST_FRAME_BYTES);
+    assert_eq!(
+        sizes,
+        vec![open, open, open, compact, open],
+        "0, 1, 2 ve 4. demet"
+    );
     let mut want = vec![started(ALICE, stream, PttCodec::Lyra, TEST_BUNDLE_MS)];
     want.extend((2..5).map(|n| audio(ALICE, stream, &frame(n))));
     want.push(ended(ALICE, stream));
@@ -3597,11 +3602,12 @@ fn end_marker_does_not_close_a_separately_opened_stream() {
     assert_eq!(duo.bob.drain(), vec![ended(ALICE, s)]);
 }
 
-/// [#233 inceleme 7087771388 · 1] Basış ortasında `spurt_gap_end`'den uzun kesinti (20 ms demette
-/// 60 demet = 1,2 s > 1,14 s): akış sessizlik sonuyla biter; kesintiden sonraki demetler açılış
-/// bilgisini taşıdığından akış yeniden açılır ve sesin kalanı teslim edilir, yetim demet yok.
-/// Eski kural (yalnız ilk K = 2 demet açılış taşır) aynı senaryoda kesinti sonrası bütün demetleri
-/// yetim bırakır (karşılaştırma kolu). Bedel: kesintili basış iki yaşam döngüsüdür.
+/// [#233 inceleme 7087771388 · 1, tur 2] Basış ortasında `spurt_gap_end`'den uzun kesinti (20 ms
+/// demette 60 demet = 1,2 s > 1,14 s): akış sessizlik sonuyla biter; kesintiden sonra ilk
+/// açılışlı demet (her 4. demet: 64.) akışı yeniden açar ve sesin kalanı teslim edilir; aradaki
+/// kompakt demet (63.) yetimdir — en çok üç demet. Yalnız ilk K demet açılış taşısaydı
+/// (`set_spurt_open_every(0)`) kesinti sonrası bütün demetler yetim kalırdı (karşılaştırma kolu).
+/// Bedel: kesintili basış iki yaşam döngüsüdür.
 #[test]
 fn coalesced_stream_resumes_after_an_outage_longer_than_the_silence_end() {
     let lost: Vec<u8> = (3..=62).collect();
@@ -3611,11 +3617,11 @@ fn coalesced_stream_resumes_after_an_outage_longer_than_the_silence_end() {
     want.extend((0..3).map(|n| audio(ALICE, stream, &frame(n))));
     want.push(ended(ALICE, stream));
     want.push(started(ALICE, stream, PttCodec::Lyra, TEST_BUNDLE_MS));
-    want.extend((63..70).map(|n| audio(ALICE, stream, &frame(n))));
+    want.extend((64..70).map(|n| audio(ALICE, stream, &frame(n))));
     want.push(ended(ALICE, stream));
     assert_eq!(events, want);
     let stats = duo.bob.ptt.stats();
-    assert_eq!(stats.ptt_orphan_bundles, 0);
+    assert_eq!(stats.ptt_orphan_bundles, 1, "yalnız 63. demet");
     assert_eq!((stats.streams_ended_by_gap, stats.spurt_ends), (1, 1));
 
     let mut duo = coalesced_duo();

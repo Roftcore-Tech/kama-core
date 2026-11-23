@@ -47,8 +47,8 @@
 //! içi bildirim oturuma bağlıdır ve önce gelir. Bilinmeyen eşe bugünkü uyumlu ayrı kayıtlar gider.
 //!
 //! Açılış bilgisi (`MediaBundleOpen`, 7 B başlık: `stream_id`, `codec`, `bundle_ms`) oturumdaki
-//! ilk [`SPURT_OPEN_REPEAT`] demette ve sonra her [`SPURT_OPEN_EVERY`]. demette (varsayılan: her
-//! demette) taşınır; diğerleri kompakt (2 B). Son demet `END` işaretlidir
+//! ilk [`SPURT_OPEN_REPEAT`] (3) demette ve sonra her [`SPURT_OPEN_EVERY`]. (4.) demette taşınır;
+//! diğerleri kompakt (2 B). Son demet `END` işaretlidir
 //! ([`Ptt::send_last_bundle_from`]; verilmediyse `close` yüksüz bir `END` demeti sunar). Hepsi son
 //! tarihli, tek iletim. Alıcıda değişen kurallar (yalnız birleşik akışlar; ayrı kayıtlı akışların
 //! kuralları aynen):
@@ -261,18 +261,23 @@ pub const PTT_STREAM_IDLE_TTL: Duration = Duration::from_secs(120);
 /// süresiyle (`client_core::runtime::PTT_DEADLINE_NS`) aynı değer.
 pub const PTT_BUNDLE_DEADLINE: Duration = Duration::from_secs(1);
 
-/// [PTT-BİRLEŞİK · deney] Birleşik biçimde oturumdaki ilk kaç demet açılış bilgisini taşır
-/// ([`Ptt::set_spurt_open_repeat`]). [`SPURT_OPEN_EVERY`] ile birlikte okunur.
-pub const SPURT_OPEN_REPEAT: u8 = 2;
+/// [PTT-BİRLEŞİK · deney · #233 tur 2; sahip onayı bekliyor] Birleşik biçimde oturumdaki ilk kaç
+/// demet açılış bilgisini taşır ([`Ptt::set_spurt_open_repeat`]). [`SPURT_OPEN_EVERY`] ile
+/// birlikte okunur. Üç: sahip kararı "K = 2 ile başla, ilk iki kayıp basışı öldürüyorsa K = 3";
+/// K = 2'de ilk iki datagramın kaybı basışın tamamını yetim bırakır (test
+/// `coalesced_open_survives_losing_the_first_two_datagrams`), K = 3 kurtarır (+5 B / basış).
+pub const SPURT_OPEN_REPEAT: u8 = 3;
 
-/// [PTT-BİRLEŞİK · deney · #233 inceleme 1] İlk [`SPURT_OPEN_REPEAT`] demetten sonra her kaçıncı
-/// demet de açılış bilgisini taşır (0 = hiçbiri; [`Ptt::set_spurt_open_every`]). Varsayılan 1:
-/// HER demet açılışı taşır (+5 B / demet, kompakt başlığa göre). Böylece basış, demetlerinden
-/// biri bile varırsa uygulamaya ulaşır: ilk iki (ya da daha çok) datagram kaybolsa da sonraki
-/// ilk varan demet akışı açar ve sesi o demetten başlar. Yalnız ilk K demet açılış taşısaydı
-/// (eski kural) ilk K datagramın kaybı basışın tamamını yetim bırakırdı; geç gelen açılışlı demet
-/// de kurtarmazdı (taşıma katmanı atlanmış sıranın yalın demetini düşürür).
-pub const SPURT_OPEN_EVERY: u8 = 1;
+/// [PTT-BİRLEŞİK · deney · #233 tur 2; sahip onayı bekliyor] Oturumdaki sırası `i` olan demet
+/// ilk [`SPURT_OPEN_REPEAT`] demetten sonra da `i % SPURT_OPEN_EVERY == 0` ise açılış bilgisini
+/// taşır (0 = hiçbiri; [`Ptt::set_spurt_open_every`]). Dört: seyrek yeniden taşıma, yalnız
+/// kesinti için. Basış ortasında sessizlik sonundan ([`spurt_gap_end`]) uzun bir kesintide akış
+/// biter; kesintiden sonra kompakt demetler yetim kalır, ilk açılışlı demet akışı yeniden açar —
+/// en çok üç demet (300 ms'de 0,9 s) ses kaybolur, kalanı çalınır. 0 olsaydı kesinti sonrası
+/// bütün basış yetim kalırdı; 1 (her demet) kesinti sonrası hiç demet kaybetmez ama +5 B / demet
+/// ister ve 300 ms / 1,5 s bant payını 5 B'ye indirir (bir datagram daha 0x16 öncesine kayarsa
+/// kapı çevrilir). Bedel (kompakt başlığa göre): ilk K'ya ek her dördüncü demette +5 B.
+pub const SPURT_OPEN_EVERY: u8 = 4;
 
 /// [PTT-BİRLEŞİK · deney] Alıcı taşıma katmanının PTT şeridinde eksik sıra başını beklediği en
 /// uzun süre (`client_core` `transport::PTT_HOLE_SKIP` ile aynı değer; katman sınırı yüzünden
@@ -299,8 +304,12 @@ pub fn spurt_gap_end(bundle_ms: u8) -> Duration {
 
 /// [PTT-BİRLEŞİK · deney] Birleşik biçimin tel sürümü (yetenek dönemi). Önceki oturumdan
 /// öğrenilmiş yetenek ([`SpurtCapabilityRecord`]) yalnız bu değerle eşleşirse kullanılır; biçim
-/// değişirse değer artar ve eski kayıtlar kendiliğinden geçersiz olur. Bant içi yetenek (CAPS
-/// bit 2 → 0x17) bu dönemi bildirir.
+/// değişirse değer artar ve eski kayıtlar kendiliğinden geçersiz olur.
+///
+/// BİLİNEN SINIR: dönem eşten ÖĞRENİLMEZ — telde dönem alanı yoktur. Bant içi bildirim (CAPS
+/// bit 2 → 0x17) yalnız "eş bu ucun konuştuğu biçimi çözer" der; [`Ptt::on_peer_spurt_capability`]
+/// öğrenilmiş kayda eşin değil bu ucun dönemini yazar. Bugün tek dönem olduğundan etkisizdir;
+/// ikinci bir biçim gelirse dönem telde (yeni CAPS biti / ACK türü) taşınmalıdır.
 pub const SPURT_FORMAT_EPOCH: u16 = 1;
 
 /// [PTT-BİRLEŞİK · deney] Önceki bir oturumda bant içi doğrulanmış yetenek: eşin kimliği ve o

@@ -138,6 +138,13 @@ pub const METRICS_TICK: Duration = Duration::from_secs(1);
 /// Düğüm iş parçacığının adı (Linux'ta 15 bayta sığar).
 const NODE_THREAD_NAME: &str = "kama-node";
 
+#[cfg(test)]
+thread_local! {
+    /// [PTT-BİRLEŞİK · deney] Yalnız birim testi: `true` iken bu iş parçacığında kurulan düğümün
+    /// `RuntimeConfig::ptt_coalesce` bayrağı açılır (anahtarın türetildiğini sınamak için).
+    pub(crate) static PTT_COALESCE_FOR_TEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Düğüm olaylarının dinleyicisi. DÜĞÜM İŞ PARÇACIĞINDA çağrılır: hızlı dönmelidir (dönene dek
 /// düğüm turu durur). İçinden yanıt bekleyen düğüm çağrısı [`NodeError::ReentrantCall`] alır.
 pub trait NodeListener: Send {
@@ -328,6 +335,12 @@ impl KamaNode {
                 link_profile::LoadError::Io(io) => NodeError::DataDir(io),
             })?;
         transport_config.runtime.link_rates = link_rates;
+        // [PTT-BİRLEŞİK · deney] Yalnız birim testi: bu iş parçacığında kurulan düğümün Transport
+        // bayrağı açılır (ürün yolunda bayrak kapalı; yapılandırma yüzeyi yok).
+        #[cfg(test)]
+        if PTT_COALESCE_FOR_TEST.with(std::cell::Cell::get) {
+            transport_config.runtime.ptt_coalesce = true;
+        }
         // [İŞ-30] Pilot kaydı açıkça etkinleştirilir (`src/pilot_record.rs`); açıkken canlı teşhis
         // aynası açılır (salt gözlem), kapalıyken hiçbir şey yazılmaz.
         let pilot_env = std::env::var(pilot_record::ENV_VAR).ok();
