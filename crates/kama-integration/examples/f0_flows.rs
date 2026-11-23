@@ -42,8 +42,8 @@
 //! # Çıktı (koşu dizinine; hüküm YOK — analiz `scripts/ktp2/f0/a/f0a_analyze.py`)
 //!
 //! `alice.jsonl` / `bob.jsonl` (satır başına bir kayıt: `hdr`, `send`, `rx`, `rcpt`, `ev`, `ts`,
-//! `tr`, `mark`, `lg`, `lg_gap`, `rcpt_tx`, `rcpt_wire`, `ack`, `ack_gap`) ve `alice.json` /
-//! `bob.json` (tek satır özet). stdout'a da özet basılır.
+//! `tr`, `mark`, `lg`, `lg_gap`, `rcpt_tx`, `rcpt_wire`, `ack`, `ack_gap`, `ack_rx`, `ack_rx_gap`)
+//! ve `alice.json` / `bob.json` (tek satır özet). stdout'a da özet basılır.
 //!
 //! # Ölçüm kancaları (salt gözlem; #252 madde 1 ve 4)
 //!
@@ -86,13 +86,24 @@
 //!   - `type` — çerçeve türü (`0x10` / `0x14` / `0x15` / `0x16` / `0x17`), `timer` — zamanlayıcı
 //!     yolundan mı, `cum` — yuvadaki motorun kümülatif sayaçları (algılama, kanıtlı bırakma,
 //!     yükseliş, kanıtsız biten bekleme, ertelenmeler).
+//!   - `largest_lo16` — çerçevenin `largest_seq` tel alanı (en büyük PN'in alt 16 biti),
+//!     `largest_pn` — alıcı motorun o andaki en büyük PN'i. Karşı ucun `ack_rx` satırıyla eşleme
+//!     anahtarı.
 //!   - `motor:false` — motor kayıt tutmadı (bütçesiz yol / eski motor): `t` motora verilen
 //!     saattir, motor alanları `null`.
 //!   - `sampled:false` — bütün anlar motorun ve gönderim yolunun kendi saatinden, ACK başına
 //!     kesindir; sonda aralığı (`--probe-ms`) yalnız satırın dosyaya yazılma gecikmesidir. Sonda
 //!     aralığında aynanın halkasından (64 kayıt) taşan ACK'ler `ack_gap` satırıyla sayılır.
+//! * `ack_rx` — bu uca VARAN ve çözülen her ACK çerçevesi (`ClientLiveDiag::acks`; kayıt çerçeve
+//!   motora verilirken yazılır). `t` = çerçevenin gönderen motorda işlendiği an (soketten
+//!   okunduktan ve açıldıktan sonra; çekirdeğe varış anı ayrıca tutulmaz), `largest_pn` =
+//!   çerçevenin teyit ettiği en büyük tel PN'i (karşı ucun `ack` satırındaki `largest_pn` /
+//!   `largest_lo16` ile eşlenir), `ack_delay_us`, `acked_pns`, `mapped_seqs`, `new_units`. Aynı
+//!   ACK'in hat koruması kararı `lg` satırındadır (aynı uç, aynı saat tabanı; `at_ns` ile
+//!   eşlenir). Halkadan (32 kayıt) taşanlar `ack_rx_gap` satırıyla sayılır.
 //! * Özet: `ack_frames` (canlı aynanın ACK çerçevesi sayaçları; ACK türleri `wire.ack_rx`'te),
-//!   `lg` (yazılan satır / boşluk sayıları), `ack_tx` (yazılan `ack` satırları: tür, alarm, kanıt
+//!   `lg` (yazılan satır / boşluk sayıları), `ack_rx_lines` (yazılan `ack_rx` satırı / boşluk /
+//!   atlanan kayıt), `ack_tx` (yazılan `ack` satırları: tür, alarm, kanıt
 //!   anı dolu, tele çıkan sayıları), bob'da `rcpt_tx` (eşleme sayıları).
 
 #![forbid(unsafe_code)]
@@ -113,7 +124,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use adaptive_transport::line_guard::FirstWindowOutcome;
 use adaptive_transport::sender::LineGuardAckTrace;
-use client_core::runtime::{RxAckDiag, RxAckWire, ServerLiveDiag};
+use client_core::runtime::{AckFrameDiag, RxAckDiag, RxAckWire, ServerLiveDiag};
 use client_core::transport::{
     EnvelopeLink, LinkAttempt, LinkError, LinkEvent, UnitTraceKind, UnitTraceRecord,
 };
@@ -1277,7 +1288,7 @@ const RCPT_QUEUE_CAP: usize = 4 * MAX_ITEMS as usize;
 const RECEIPT_UNIT_BYTES: usize = APP_RECORD_HEADER_BYTES + RECEIPT_BODY_BYTES;
 
 /// Düğüm ya da sonda yokken özetin kanca alanları.
-const HOOKS_NULL: &str = "\"ack_frames\":null,\"lg\":null,\"ack_tx\":null";
+const HOOKS_NULL: &str = "\"ack_frames\":null,\"lg\":null,\"ack_rx_lines\":null,\"ack_tx\":null";
 
 fn opt_i(v: Option<i64>) -> String {
     v.map_or_else(|| "null".to_owned(), |v| v.to_string())
@@ -1344,6 +1355,29 @@ struct LgTap {
     resets: u64,
     /// [ÖLÇÜM-KANCASI] Giden ACK kaydı dökümü (`ack` satırları); aynı sondadan, aynı çağrıda.
     ack_tx: AckTxTap,
+    /// [ÖLÇÜM-KANCASI] Varan ACK kaydı dökümü (`ack_rx` satırları): oturum → (görülen halka
+    /// sayacı, yazılan son kayıt sırası); yazılan satır, boşluk satırı ve atlanan kayıt sayısı.
+    ack_rx_seen: BTreeMap<String, (u64, u64)>,
+    ack_rx: [u64; 3],
+}
+
+/// [ÖLÇÜM-KANCASI] Varan bir ACK çerçevesinin kaydı → `ack_rx` satırı (`t` = gönderen motorda
+/// işlendiği an).
+fn ack_rx_line(clock: &Clock, sess: &str, origin: Option<Instant>, r: &AckFrameDiag) -> String {
+    format!(
+        "{{\"k\":\"ack_rx\",\"t\":{},\"sess\":{},\"index\":{},\"at_ns\":{},\"largest_pn\":{},\
+         \"v2\":{},\"ack_delay_us\":{},\"acked_pns\":{},\"mapped_seqs\":{},\"new_units\":{}}}",
+        at_ms(clock, origin, Some(r.at_ns)),
+        js(sess),
+        r.index,
+        r.at_ns,
+        opt_u(r.largest_pn),
+        r.v2,
+        r.ack_delay_us,
+        r.acked_pns,
+        r.mapped_seqs,
+        r.new_units
+    )
 }
 
 impl LgTap {
@@ -1355,6 +1389,36 @@ impl LgTap {
             .map(|sp| format!("{:?}", sp.session))
             .collect();
         self.seen.retain(|k, _| keys.contains(k));
+        self.ack_rx_seen.retain(|k, _| keys.contains(k));
+        for (sp, key) in probe.sessions.iter().zip(&keys) {
+            let ring = &sp.diag.acks;
+            let total = ring.total();
+            let (seen_total, mut last) = self.ack_rx_seen.get(key).copied().unwrap_or((0, 0));
+            if total == seen_total {
+                continue;
+            }
+            let fresh = total.checked_sub(seen_total).unwrap_or(total);
+            let held = ring.recent().count();
+            let take = usize::try_from(fresh).unwrap_or(usize::MAX).min(held);
+            for rec in ring.recent().skip(held - take) {
+                let skipped = rec.index.saturating_sub(last).saturating_sub(1);
+                if skipped > 0 {
+                    out.line(&format!(
+                        "{{\"k\":\"ack_rx_gap\",\"t\":{:.3},\"sess\":{},\"after_index\":{last},\
+                         \"next_index\":{},\"skipped\":{skipped}}}",
+                        clock.ms(at),
+                        js(key),
+                        rec.index
+                    ));
+                    self.ack_rx[1] += 1;
+                    self.ack_rx[2] = self.ack_rx[2].saturating_add(skipped);
+                }
+                out.line(&ack_rx_line(clock, key, sp.diag.clock_origin, rec));
+                self.ack_rx[0] += 1;
+                last = rec.index;
+            }
+            self.ack_rx_seen.insert(key.clone(), (total, last));
+        }
         for (sp, key) in probe.sessions.iter().zip(keys) {
             let ring = &sp.diag.line_guard;
             let total = ring.total();
@@ -1473,12 +1537,15 @@ fn ack_line(clock: &Clock, origin: Option<Instant>, r: &RxAckDiag) -> String {
     };
     format!(
         "{{\"k\":\"ack\",{motor},\"sess\":{sess},\"index\":{},\"type\":\"0x{:02x}\",\"bytes\":{},\
-         \"timer\":{},\"wire\":{},\"at_ns\":{},\"wire_ns\":{},\"cum\":{cum},\"sampled\":false}}",
+         \"timer\":{},\"wire\":{},\"largest_pn\":{},\"largest_lo16\":{},\"at_ns\":{},\
+         \"wire_ns\":{},\"cum\":{cum},\"sampled\":false}}",
         r.index,
         r.frame_type,
         r.frame_bytes,
         r.timer,
         js(wire),
+        opt_u(r.rx_largest_pn),
+        r.largest_lo,
         r.motor_ns,
         r.wire_ns
     )
@@ -1603,7 +1670,7 @@ fn hooks_json(node: &KamaNode, clock: &Clock, lg: &mut LgTap, out: &mut Out) -> 
     format!(
         "\"ack_frames\":{{\"frames\":{},\"mapped\":{},\"new_units\":{},\"inflight_shrunk\":{}}},\
          \"lg\":{{\"lines\":{},\"gap_lines\":{},\"skipped\":{},\"resets\":{},\"ring_total\":{}}},\
-         \"ack_tx\":{}",
+         \"ack_rx_lines\":{{\"lines\":{},\"gap_lines\":{},\"skipped\":{}}},\"ack_tx\":{}",
         ack[0],
         ack[1],
         ack[2],
@@ -1613,6 +1680,9 @@ fn hooks_json(node: &KamaNode, clock: &Clock, lg: &mut LgTap, out: &mut Out) -> 
         lg.skipped,
         lg.resets,
         ring_total,
+        lg.ack_rx[0],
+        lg.ack_rx[1],
+        lg.ack_rx[2],
         lg.ack_tx.json()
     )
 }
