@@ -91,6 +91,8 @@ const ACK_SEAL: u64 = 22;
 const ONE_WAY_NS: u64 = 300 * MS;
 const FILE_UNIT: u64 = 1000;
 const FILE_BASE_ID: u64 = 1_000_000;
+/// [KESME-BOŞALTMA] İkinci dosyanın ilk birim kimliği (birinci dosyanın kimlik aralığının dışında).
+const FILE2_BASE_ID: u64 = 2_000_000;
 const TEXT_ID: u64 = 500_000;
 const VOICE_UNIT: u64 = 86;
 /// Koordinatörün yazdığı paket içi yedekli PTT biçimi (#175, sahip 2026-11-22): 200 ms'de tek paket;
@@ -173,6 +175,12 @@ struct Scenario {
     /// `> 0`: `text_at_ns`'ten sonra bu aralıkla konuşma bitene dek ek metin birimleri
     /// (`TEXT_ID + k`). 0: tek metin birimi.
     text_period_ns: u64,
+    /// [KESME-BOŞALTMA] `text_period_ns == 0` iken bu anlarda sunulan ek metin birimleri
+    /// (`TEXT_ID + 1 + k`, sırayla). Boş = yok (var olan senaryolar).
+    texts_at: Vec<u64>,
+    /// [KESME-BOŞALTMA] İkinci dosya: (ilk sunum anı, birim sayısı); kimlikler
+    /// [`FILE2_BASE_ID`]`+ k`, hepsi birden sunulur. `None` = yok (var olan senaryolar).
+    file2: Option<(u64, u64)>,
     /// [BUA] Alıcı modeli (modül belgesi).
     rx: RxModel,
     /// [BUA] İleri hattın rastgele kayıp kipi (modül belgesi).
@@ -382,6 +390,8 @@ impl Scenario {
             raw_copy_rule: false,
             ptt_deadline_ns: None,
             text_period_ns: 0,
+            texts_at: Vec::new(),
+            file2: None,
             rx: RxModel::Mirror,
             loss: LossModel::Lcg,
             ledger: false,
@@ -887,6 +897,11 @@ struct Outcome {
     /// [BUA] Dönüş hattı: çerçeve türü → sayı, toplam tel baytı.
     ack_types: BTreeMap<u8, u64>,
     ack_wire_bytes: u64,
+    /// [KESME-BOŞALTMA] İkinci dosyanın alıcıda tamamlandığı an.
+    file2_done_ns: Option<u64>,
+    /// [KESME-BOŞALTMA] Darboğaz FIFO'sunun boşalma süresi (ns), 1 ms adım başına (indeks = ms;
+    /// defter açıkken).
+    queue_trace: Vec<u64>,
 }
 
 /// [BUA · ÜRÜN ALICISI] `client_core::runtime` ACK kolunun göndericiye giden çağrıları, aynı
@@ -1169,6 +1184,10 @@ fn run(sc: &Scenario) -> Outcome {
     let mut file_seen: HashSet<u64> = HashSet::new();
     let mut file_offered = 0u64;
     let mut file_done_ns = None;
+    let mut file2_offered = false;
+    let mut file2_seen: HashSet<u64> = HashSet::new();
+    let mut file2_done_ns = None;
+    let mut queue_trace: Vec<u64> = Vec::new();
     let mut tx = TxCount {
         ledger: sc.ledger,
         track_sent: product_rx,
@@ -1242,6 +1261,22 @@ fn run(sc: &Scenario) -> Outcome {
             file_offered += 1;
             emit(decs, now, &mut fwd, &mut tx, &mut s);
         }
+        // [KESME-BOŞALTMA] İkinci dosya, hepsi birden.
+        if let Some((at, units)) = sc.file2.filter(|_| !file2_offered) {
+            if now >= at {
+                file2_offered = true;
+                for k in 0..units {
+                    let decs = s.on_event(
+                        Event::AppData(OpaqueUnit {
+                            id: FILE2_BASE_ID + k,
+                            size: FILE_UNIT,
+                        }),
+                        now,
+                    );
+                    emit(decs, now, &mut fwd, &mut tx, &mut s);
+                }
+            }
+        }
         let next_voice = voice_offered.len() as u64;
         let voice_at = VOICE_START_NS + next_voice * VOICE_PERIOD_NS;
         if voice_at < sc.voice_until_ns && now >= voice_at {
@@ -1272,6 +1307,17 @@ fn run(sc: &Scenario) -> Outcome {
                 extra_text_offered.push(at);
                 let decs = s.on_event(Event::AppData(OpaqueUnit { id, size: 80 }), now);
                 emit(decs, now, &mut fwd, &mut tx, &mut s);
+            }
+        }
+        // [KESME-BOŞALTMA] Listeli ek metinler (yalnız periyodik ek metin yokken).
+        if sc.text_period_ns == 0 {
+            if let Some(&at) = sc.texts_at.get(extra_text_offered.len()) {
+                if now >= at {
+                    let id = TEXT_ID + 1 + extra_text_offered.len() as u64;
+                    extra_text_offered.push(at);
+                    let decs = s.on_event(Event::AppData(OpaqueUnit { id, size: 80 }), now);
+                    emit(decs, now, &mut fwd, &mut tx, &mut s);
+                }
             }
         }
         let decs = s.on_event(Event::TimerFired(Timer::Pto), now);
@@ -1374,7 +1420,14 @@ fn run(sc: &Scenario) -> Outcome {
                 now,
             );
             for u in out.delivered {
-                if u >= FILE_BASE_ID {
+                if u >= FILE2_BASE_ID {
+                    file2_seen.insert(u);
+                    if sc.file2.is_some_and(|(_, n)| file2_seen.len() as u64 == n)
+                        && file2_done_ns.is_none()
+                    {
+                        file2_done_ns = Some(now);
+                    }
+                } else if u >= FILE_BASE_ID {
                     file_seen.insert(u);
                     if file_seen.len() as u64 == sc.file_units && file_done_ns.is_none() {
                         file_done_ns = Some(now);
@@ -1512,12 +1565,18 @@ fn run(sc: &Scenario) -> Outcome {
         if sc.ledger && fwd.busy.back().is_none_or(|&d| d <= now) && s.unsent_units() > 0 {
             idle_with_work.push(now);
         }
+        // [KESME-BOŞALTMA] Darboğaz FIFO'sunun her 1 ms adımdaki boşalma süresi (salt gözlem, defter
+        // açıkken; koşu tavanıyla sınırlı).
+        if sc.ledger {
+            queue_trace.push(fwd.busy.back().map_or(0, |&d| d.saturating_sub(now)));
+        }
         let voice_left = (0..voice_offered.len() as u64).any(|v| {
             !voice_arrived.contains_key(&v) && !ptt_expired.iter().any(|&(u, _, _)| u == v)
         });
         let text_left = (sc.text_at_ns.is_some_and(|t| now >= t) && text_arrived.is_none())
             || extra_text_arrived.len() < extra_text_offered.len();
-        let file_left = file_done_ns.is_none() && sc.file_units > 0;
+        let file_left = (file_done_ns.is_none() && sc.file_units > 0)
+            || (sc.file2.is_some() && file2_done_ns.is_none());
         if now >= sc.voice_until_ns && !voice_left && !text_left && !file_left {
             break;
         }
@@ -1600,6 +1659,8 @@ fn run(sc: &Scenario) -> Outcome {
         backlog,
         ack_types: ret.types.clone(),
         ack_wire_bytes: ret.bytes,
+        file2_done_ns,
+        queue_trace,
     }
 }
 
@@ -3900,5 +3961,240 @@ fn queue_gate_values_report() {
             wait_bound / MS,
             bua_s(conv.map(|c| o.voice_max_from(c + 9 * SEC))),
         );
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// [KESME-BOŞALTMA · hedef 1/3] Dosya aktarılırken düşüş: kesmeden sonra darboğaz kuyruğu boşalır mı.
+// ---------------------------------------------------------------------------------------------
+
+/// Ürün ölçüm hücresi `measure_rate_drop_during_file_transfer`'ın çizelgesi (kama-integration
+/// `asym_product_outcome`, `Cell::rate_drop_during_file`): 12 500 → 3 s'de 6 250 → 15 s'de 12 500.
+const CUT_DROP_AT_NS: u64 = 3 * SEC;
+const CUT_RECOVER_AT_NS: u64 = 15 * SEC;
+/// İkinci dosya toparlanmadan 2 s sonra (ürün hücresi `DURING_FILE2_AT`).
+const CUT_FILE2_AT_NS: u64 = 17 * SEC;
+/// PTT'nin kapanışı (ürün hücresi `DURING_PTT_UNTIL`).
+const CUT_PTT_UNTIL_NS: u64 = 30 * SEC;
+/// Dosya boyu: ürün hücresinin 40 000 B'lık dosyası [`FILE_UNIT`] birimlerinde.
+const CUT_FILE_UNITS: u64 = 40;
+/// Metinler (ürün hücresi `texts_at`: 5, 9, 18 s).
+const CUT_TEXTS_AT_NS: [u64; 3] = [5 * SEC, 9 * SEC, 18 * SEC];
+/// Hedef kuyruk: PTT demetinin 1 s bütçesinden tek yön yayılım düşülür (demet kuyruğun arkasında
+/// beklese de bütçe içinde varır). Sınır var olan sınırlardan türetilir ([`PTT_BOUND_NS`],
+/// [`ONE_WAY_NS`]); (b)'nin belgesindeki "kuyruk ≤ ≈ 0,69 s" ile aynı hesap.
+const CUT_QUEUE_TARGET_NS: u64 = PTT_BOUND_NS - ONE_WAY_NS;
+/// Daralma evresinin ayrı satırda raporlanan ilk kısmı (sahip kararı: 2·D_min − 0,69 s, D_min =
+/// 1,75 s → 2,8 s).
+const CUT_EARLY_NS: u64 = 2_800 * MS;
+
+/// Ürün hücresinin düzenekteki karşılığı: ürün alıcısı (bitmap, yalın PTT biti), anahtarlı kayıp,
+/// defter açık; yalın PTT (tek iletim, 78 B gövde, 1 s'de bırakma), öncelikli metin, iki dosya.
+fn cut_scenario(seed: u64) -> Scenario {
+    Scenario {
+        fwd_plan: vec![
+            (0, PROFILE_UP),
+            (CUT_DROP_AT_NS, DROP_TO),
+            (CUT_RECOVER_AT_NS, PROFILE_UP),
+        ],
+        file_units: CUT_FILE_UNITS,
+        file2: Some((CUT_FILE2_AT_NS, CUT_FILE_UNITS)),
+        voice_until_ns: CUT_PTT_UNTIL_NS,
+        texts_at: CUT_TEXTS_AT_NS.to_vec(),
+        copies: 0,
+        spacing_ns: 0,
+        copy_scale_min: None,
+        raw_copy_rule: true,
+        voice_unit: LEAN_PTT_UNIT,
+        ptt_deadline_ns: Some(PTT_DEADLINE_NS),
+        rx: RxModel::Product {
+            ptt_lean: true,
+            return_bw: PROFILE_DOWN,
+        },
+        loss: LossModel::Keyed,
+        ledger: true,
+        t_max_ns: 50 * SEC,
+        ..Scenario::honest(seed)
+    }
+}
+
+/// Kesme ölçüsü.
+#[derive(Debug, Clone, Copy)]
+struct CutDrain {
+    /// Kesme anı: düşüşten itibaren gönderim tavanının ilk kez `DROP_TO`'nun %10 üstüne ya da
+    /// altına indiği an (tavan izi; düşüş anında tavan zaten oradaysa düşüş anı).
+    cut_ns: Option<u64>,
+    /// Kesme anındaki darboğaz kuyruğu (FIFO boşalma süresi).
+    q_cut_ns: u64,
+    /// Kesmeden sonra kuyruğun ilk kez [`CUT_QUEUE_TARGET_NS`]'e indiği an.
+    drain_ns: Option<u64>,
+}
+
+impl CutDrain {
+    /// Ölçüt (koordinatör): iniş ≤ kesme + kuyruk/hat (kuyruk süre olarak zaten kuyruk/hattır).
+    fn bound_ns(&self) -> Option<u64> {
+        self.cut_ns.map(|c| c + self.q_cut_ns)
+    }
+
+    fn passes(&self) -> bool {
+        match (self.drain_ns, self.bound_ns()) {
+            (Some(d), Some(b)) => d <= b,
+            _ => false,
+        }
+    }
+}
+
+fn ceiling_at(o: &Outcome, t: u64) -> u64 {
+    o.pace_trace
+        .iter()
+        .take_while(|&&(at, _)| at <= t)
+        .last()
+        .map_or(PROFILE_UP, |&(_, p)| p)
+}
+
+fn cut_drain(o: &Outcome, drop_at: u64) -> CutDrain {
+    let cut = std::iter::once(drop_at)
+        .chain(
+            o.pace_trace
+                .iter()
+                .map(|&(t, _)| t)
+                .filter(|&t| t >= drop_at),
+        )
+        .find(|&t| ceiling_at(o, t) * 10 <= DROP_TO * 11);
+    let q = |t: u64| {
+        o.queue_trace
+            .get(usize::try_from(t / MS).unwrap_or(usize::MAX))
+            .copied()
+            .unwrap_or(0)
+    };
+    let drain = cut.and_then(|c| {
+        (c / MS..o.queue_trace.len() as u64)
+            .find(|&ms| q(ms * MS) <= CUT_QUEUE_TARGET_NS)
+            .map(|ms| ms * MS)
+    });
+    CutDrain {
+        cut_ns: cut,
+        q_cut_ns: cut.map_or(0, q),
+        drain_ns: drain,
+    }
+}
+
+/// `[from, to)` evresinde planlanan PTT demetleri: (zamanında, geç varan, varmayan, planlanan).
+fn cut_ptt_phase(o: &Outcome, from: u64, to: u64) -> (usize, usize, usize, usize) {
+    let mut r = (0, 0, 0, 0);
+    for (k, a) in o.voice_first.iter().enumerate() {
+        let plan = VOICE_START_NS + k as u64 * VOICE_PERIOD_NS;
+        if plan < from || plan >= to {
+            continue;
+        }
+        r.3 += 1;
+        match *a {
+            Some(a) if a <= plan + PTT_BOUND_NS => r.0 += 1,
+            Some(_) => r.1 += 1,
+            None => r.2 += 1,
+        }
+    }
+    r
+}
+
+fn cut_print(tag: &str, sc: &Scenario, o: &Outcome, m: &CutDrain) {
+    let q = |t: u64| {
+        o.queue_trace
+            .get(usize::try_from(t / MS).unwrap_or(usize::MAX))
+            .copied()
+            .unwrap_or(0)
+    };
+    let ph = |from: u64, to: u64| {
+        let (ok, late, none, n) = cut_ptt_phase(o, from, to);
+        format!("{ok}/{n}(gec={late},yok={none})")
+    };
+    let texts = o
+        .text_delays
+        .iter()
+        .map(|&(at, d)| format!("{}:{}", secs(at), d.map_or("YOK".to_string(), secs)))
+        .collect::<Vec<_>>()
+        .join(",");
+    let worst_text = o
+        .text_delays
+        .iter()
+        .map(|&(_, d)| d.unwrap_or(u64::MAX))
+        .max()
+        .unwrap_or(0);
+    let drop_at = sc.fwd_plan.get(1).map_or(0, |&(t, _)| t);
+    let recover_at = sc.fwd_plan.get(2).map_or(u64::MAX, |&(t, _)| t);
+    println!(
+        "KESME {tag} tohum={} kesme_s={} kuyruk_kesmede_s={} inis_s={} sinir_s={} olcut={} \
+         ptt_baslangic={} ptt_daralma={} ptt_daralma_ilk2.8s={} ptt_toparlanma={} metin_en_kotu_s={} \
+         metin={texts} dosya1_s={} dosya2_s={} kuyruk_dusen={} hat_bos_is_bekliyor_ms={} \
+         kuyruk_iz_s={}",
+        sc.seed,
+        bua_s(m.cut_ns),
+        bua_s(m.cut_ns.map(|_| m.q_cut_ns)),
+        bua_s(m.drain_ns),
+        bua_s(m.bound_ns()),
+        if m.passes() { "GECTI" } else { "KALDI" },
+        ph(0, drop_at),
+        ph(drop_at, recover_at),
+        ph(drop_at, drop_at + CUT_EARLY_NS),
+        ph(recover_at, u64::MAX),
+        if worst_text == u64::MAX {
+            "YOK".to_string()
+        } else {
+            secs(worst_text)
+        },
+        bua_s(o.file_done_ns),
+        bua_s(o.file2_done_ns),
+        o.drops_queue,
+        bua_idle_phases(sc, o),
+        (2..=20u64)
+            .map(|s| format!("{s}:{:.2}", q(s * SEC) as f64 / SEC as f64))
+            .collect::<Vec<_>>()
+            .join(","),
+    );
+}
+
+/// [KESME-BOŞALTMA] Ayırt edici kısa test (koordinatör #175 7089872605 ölçütü): ürün hücresinin
+/// çizelgesi (dosya ortasında 3 s'de 12 500 → 6 250, 15 s'de 12 500, ikinci dosya 17 s, yalın PTT
+/// 0,5–30 s, metin 5/9/18 s), ürün alıcısı, anahtarlı kayıp, tohum 1–3. Kesme anı (tavanın
+/// `DROP_TO`'nun %10 içine indiği an) ve o andaki darboğaz kuyruğu `q` ölçülür; kuyruğun
+/// [`CUT_QUEUE_TARGET_NS`]'e indiği an ≤ kesme + `q` olmalıdır (gönderici kesmede kuyruğun yerini
+/// biliyorsa, o kuyruk yeni hatta en geç `q` sürede boşalır; ek ACK aralığı payı YOK). Daralma PTT
+/// zamanında oranı, ilk 2,8 s ayrı, metnin en kötüsü ve hat boşken iş bekleyen süre raporlanır
+/// (iddia yalnız kuyruk ölçütü).
+#[test]
+fn cut_drains_the_bottleneck_queue_within_queue_over_line() {
+    println!();
+    let mut bad = Vec::new();
+    for seed in 1..=3u64 {
+        let sc = cut_scenario(seed);
+        let o = run(&sc);
+        let m = cut_drain(&o, CUT_DROP_AT_NS);
+        cut_print("dosya-sirasinda", &sc, &o, &m);
+        if !m.passes() {
+            bad.push(format!(
+                "tohum {seed}: kesme {} kuyruk {} iniş {} sınır {}",
+                bua_s(m.cut_ns),
+                bua_s(Some(m.q_cut_ns)),
+                bua_s(m.drain_ns),
+                bua_s(m.bound_ns())
+            ));
+        }
+    }
+    assert!(bad.is_empty(), "{bad:?}");
+}
+
+/// [KESME-BOŞALTMA] Dürüst sabit 6 250 (beyan 12 500, gerçek hat baştan 6 250), aynı yük: yalnız
+/// rapor (sahte bekletme/boşaltma var mı: hat boşken iş bekleyen süre, PTT, dosya).
+#[test]
+fn cut_fixed_6250_report() {
+    println!();
+    for seed in 1..=3u64 {
+        let sc = Scenario {
+            fwd_plan: vec![(0, DROP_TO)],
+            ..cut_scenario(seed)
+        };
+        let o = run(&sc);
+        let m = cut_drain(&o, 0);
+        cut_print("sabit-6250", &sc, &o, &m);
     }
 }
