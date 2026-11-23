@@ -1,8 +1,17 @@
 # PTT gerçek ilk temas — bant kararı (Bulut-C, 2026-11-23)
 
-> Tek karar kaydı. Yeni koşu yok; kod değişikliği yok. Sayılar Web'in mevcut izinden
+> Tek karar kaydı. Yeni koşu yok; kod değişikliği yok. Bayt sayıları Web'in mevcut izinden
 > (#233 gövdesi) ve koddan türetilmiştir; her satırda kaynağı yazılıdır.
-> Karar sahibin: bu kayıt bir ürün varsayılanı değişikliği önerir.
+> Etiketler: **ölçülmüş** (Web'in ürün fikstürü izi), **hesap** (koddaki birim boylardan),
+> **tahmin** (hesap + ölçülmemiş zamanlama varsayımı), **mekanizma kanıtı** (kontrollü girdi, ürün koşusu değil).
+
+## SAHİP KARARI (2026-11-23)
+
+- Desteği bilinmeyen eşe birleşik biçimle başlama önerisi **REDDEDİLDİ** (öneri Ek A'da, UYGULANMAZ).
+- Bilinmeyen eş **mevcut uyumlu biçimde** kalır (ayrı güvenilir PTT_OPEN / PTT_CLOSE, tam MEDIA_BUNDLE).
+- Birleşik 300 ms biçimi bu PoC'de **yalnız desteği önceden doğrulanmış eşlerde** kullanılır (#233 pilotu, Web).
+- **Gerçek ilk temas açık kalır:** 1 388 / 937 B ve 5 666 / 5 250 B, KALDI.
+- Bu öneri için kod yazılmaz; Yerel'in netem kuyruğuna koşu eklenmez (Ek A'daki koşu talebi geri çekildi).
 
 ## 0. Kapsam ve etiketler
 
@@ -14,7 +23,7 @@
 - **ACK yolu: bitmap pilot.** #233'ün bütün satırları bitmap ACK yolundandır (0x15/0x16/0x17). **V2 ürün
   varsayılanında** yalın PTT (0x16) ve 0x17 yoktur (`AckFormat::V2`, `client-core/src/runtime.rs:673`);
   orada PTT kopyalı kuralla gider ve V2 izi yoktur (#175 7095127744). Aşağıdaki hesap V2 için geçerli değildir;
-  V2'de 1,5 s basışta yalnız ses en az 5 × 194 = 970 B'dir (kopyasız alt sınır, hesap) > 937 B.
+  V2'de 1,5 s basışta yalnız ses en az 5 × 194 = **970 B (hesap**, kopyasız alt sınır; V2 izi yok) > 937 B.
 - Motor iki uçta cc-port. ACK bütçesi %25. Bant (5 000 bit/s) ve %75 eşiği değişmez.
 
 ## 1. Bayt bayt döküm (gerçek ilk temas, basış 0,5 s, yetenek bilinmiyor → bugünkü ayrı kayıtlar)
@@ -63,28 +72,27 @@ Datagram boyları: ses demeti 53 + 5 + 8 + 120 = **186 B** (0x16 öncesi **194 B
 | kopyalar | 284 | 284 |
 | **toplam** | | **5 666** |
 
-## 2. Mevcut tel biçimi + eski eş uyumu + açılış/kapanış güvenilirliği ile tasarruf
+## 2. Mevcut tel biçimiyle ne kazanılabilir (eski eş uyumu korunarak) — hesap
 
-Eski eş (birleşik biçimi bilmeyen v1 alıcısı) yalnız şunu çözer: tam MEDIA_BUNDLE (13 B) ve ayrı
-PTT_OPEN/PTT_CLOSE. 0x8A/0x8B/0x8C/0x8D'yi `unknown-msg-version` / `spurt_refused` ile DROP eder; açılışsız
-demet PTT-R3 ile yetimdir. Güvenilirlik kuralı 3 iletimdir (`PTT_RELIABLE_COPIES`); ACK aralığı bu hücrede
-≈ 5 s olduğundan ARQ bir basış içinde kaydı kurtaramaz.
+Eski eş (birleşik biçimi bilmeyen v1 alıcısı) yalnız tam MEDIA_BUNDLE (13 B) ve ayrı PTT_OPEN/PTT_CLOSE çözer;
+0x8A/0x8B/0x8C/0x8D'yi `unknown-msg-version` / `spurt_refused` ile DROP eder; açılışsız demet PTT-R3 ile yetimdir.
+Güvenilirlik kuralı 3 iletimdir (`PTT_RELIABLE_COPIES = 2`, %20 iid kayıpta kayıt kaybı %0,8); ACK aralığı bu
+hücrede ≈ 5 s olduğundan ARQ bir basış içinde kaydı kurtaramaz.
 
-| kalem | kaldırılabilir mi (uyum + güvenilirlik korunarak) | tasarruf |
+| kalem | maliyet (1,5 s / 8,4 s) | eski eş uyumuyla kaldırılabilir mi |
 |---|---|---|
-| ses yükü 600 / 3 360 | hayır (Lyra 3,2 kbit/s) | 0 |
-| datagram sabiti 53 B | hayır (oturum/AEAD/çerçeve) | 0 |
-| AMP tam başlık 13 B → kompakt 2 B | hayır: eski eş DROP eder | 0 |
-| 0x16 öncesi +8 B (4 dgram) | hayır: eşin yalın çerçeveyi çözdüğü 0x16'dan önce bilinmez | 0 |
-| ayrı PTT_OPEN / PTT_CLOSE (142 B) | hayır: eski eşte akışı açıp kapatan tek kayıt | 0 |
-| kopyalar (284 B) | hayır: kaldırılırsa kayıt kaybı %0,8 → %20 (açılış kaybı = eski eşte bütün basış yetim) | 0 |
-| **toplam tasarruf** | | **0 B** |
+| ses yükü | 600 / 3 360 | hayır (Lyra 3,2 kbit/s) |
+| datagram sabiti 53 B | 265 / 1 484 | hayır (oturum/AEAD/çerçeve) |
+| AMP tam başlık 13 B (kompakt 2 B olurdu) | 65 / 364 | hayır: eski eş kompaktı DROP eder |
+| 0x16 öncesi DATA +8 B (4 dgram) | 32 / 32 | hayır: yalın çerçeve desteği 0x16'dan önce bilinmez |
+| ayrı açılış + kapanış, ilk iletim | 142 / 142 | hayır: eski eşte akışı açan/kapatan tek kayıt |
+| kopyalar | **284 / 284** | teknik olarak evet, ama açılış/kapanış güvenilirliği düşer (kayıt kaybı %0,8 → %20; açılış kaybı = eski eşte bütün basış yetim) |
 
-**Tavan analizi (uyumu korumanın en iyi durumu):** yalnız ses datagramları 962 B / 937 B (**−25 B**) ve
-5 240 B / 5 250 B (+10 B). Eski eşte en ucuz açılış kaydı 72 B'dir. Güvenilirlik tamamen bırakılsa bile
-(kopya yok): 1 104 / 937 B (+167) ve 5 382 / 5 250 B (+132). Kapanış da bırakılsa: 1 034 / 937 ve
-5 312 / 5 250. **Mevcut biçimle eski eş uyumlu ilk temas iki satırda da bant içine sığmaz; açılış/kapanış
-ve kopya seçiminden bağımsızdır.**
+**Daraltılmış hüküm:** güvenilirliği koruyan tasarruf yoktur. Kopyaların maliyeti **284 B**'dir, fakat tamamı
+çıkarılsa bile mevcut biçim 1,5 s'de **1 104 B** ile 937 B sınırını aşar (+167 B); 8,4 s'de 5 382 / 5 250 B (+132 B).
+Kısa basışta **yalnız ses datagramları bile 962 B**'dir (937 B'nin 25 B üstü); 8,4 s'de 5 240 / 5 250 B ve eski
+eşte en ucuz açılış kaydı 72 B olduğundan pay yetmez. Kapanış da bırakılsa: 1 034 / 937 ve 5 312 / 5 250 B.
+Mevcut biçimle eski eş uyumlu ilk temas iki satırda da bant içine sığmaz.
 
 ### CAPS cevabını beklemek — elendi
 
@@ -94,9 +102,23 @@ oluşur: beklenirse tek yön gecikmesi sıfır sayılsa bile gönderim anında y
 zamanında (< %75). Karma yol (ilk demetler eski biçim, sonra birleşik) eski açılışı zaten öder:
 4 × 194 + 3 × 72 = 992 B > 937 B. İkisi de elendi.
 
-## 3. Karar: zorunlu tek ürün kararı ve bedeli
+## 3. Sonuç ve devir
 
-**Öneri (sahip kararı): yeteneği bilinmeyen eşe birleşik biçimle başla ("iyimser" varsayılan); eş
+- Mevcut biçimle mümkün değil (§2). Bant engelini kaldırabilecek tek ürün kararı (Ek A) sahip tarafından
+  reddedildi. Gerçek ilk temas **açık**; hedef 2'nin bu kısmı kırmızı kalır.
+- **Web'e devir (#233 pilotu):** ilk ses iki ayrı süreyle raporlanır, biri ötekinin yerine kullanılmaz.
+  Doğrulanmış eş, soğuk satır (300 ms / 1,5 s, tohum 1), #233'ün kendi sütun adlarıyla, ölçülmüş:
+  (a) **basış başından** ilk sese **1,02 s**; (b) **ilk teslim edilen demetin oluşumundan** teslimine **0,72 s**.
+  Aradaki 0,30 s bir demet süresine eşittir (hesap). Web #233'te (b)'nin ve ≤ 1 s zamanında kapısının hangi
+  oluşum anını (demetin oluşumu mu, ilk 20 ms çerçevenin oluşumu mu) kullandığını açıkça yazmalıdır; fikstürde
+  iki ifade birlikte geçiyor (`asym_product_outcome.rs:3274` "ilk çerçeve oluşumundan", `:3600` "demet başı").
+- Gerçek istemcide doğrulanmış eş pilotunun kabulünü Yerel koşar. Bulut-C bu iş için kapandı.
+
+## Ek A — REDDEDİLEN öneri (sahip, 2026-11-23) — UYGULANMAZ / MUST NOT IMPLEMENT
+
+> Tarihçe için korunur. Bu bölümdeki kural yazılmaz, koşusu kuyruğa eklenmez.
+
+**Öneri (reddedildi): yeteneği bilinmeyen eşe birleşik biçimle başla ("iyimser" varsayılan); eş
 0x17'siz 0x16 ile "çözmüyorum" derse süren akış bugünkü ayrı kayıtlara döner ve olumsuz bilgi eş başına
 saklanır.**
 
@@ -118,12 +140,12 @@ fark yalnız Alice'in iç kararının kaynağıdır.
 Tek açılış/kapanış (Bob'da 1/1 başla/bitir) #233 çalışma zamanı kayıp testinde doğrulanmış. 1,5 s satırında
 pay 2–10 B'dir; K = 3 (seyrek tekrarsız) en kötü durumda 930 B verir. K seçimi Web'in pilotundadır.
 
-### Eski eşte bedel — hesap, ölçülmedi
+### Eski eşte bedel — tahmin (ölçülmedi)
 
 - Olumsuz bildirim (0x17'siz 0x16) olumlu bildirimle aynı ACK'tir (yalnız tür baytı farklı), beklenen varış
   ≈ +1,9 s. Ondan önce gönderilen birleşik demetler eski eşte DROP olur (panik ve oturum hatası yok, §6 ileri uyum).
 - 0,5 s'deki basışta demet 0–3 (60 çerçeve) kaybolur; demet 4'ten (2,0 s) itibaren PTT_OPEN (3 iletim) + tam demet.
-  - 1,5 s basış: 15 / 75 = **%20** teslim (< %75), ilk ses basıştan ≈ 1,5 s + aktarım. Tel: 3 × 188 + 183 + 3 × 72 +
+  - 1,5 s basış: 15 / 75 = **%20** teslim (**tahmin**, eski eş) (< %75), ilk ses basıştan ≈ 1,5 s + aktarım. Tel: 3 × 188 + 183 + 3 × 72 +
     186 + 3 × 70 = 1 359 B (bugün 1 388 B; eski eş bugün de bant dışıdır).
   - 8,4 s basış: 24 / 28 demet, rastgele kayıptan önce en çok 360 / 420 = %85,7.
 - Bedel oturum başına yalnız olumsuz bildirime dek süren ilk basıştır, **olumsuz bilgi saklanırsa**. Bugün `false`
@@ -135,7 +157,7 @@ pay 2–10 B'dir; K = 3 (seyrek tekrarsız) en kötü durumda 930 B verir. K se�
 Gerçek ilk temas bugünkü gibi kalır: 1 388 / 937 ve 5 666 / 5 250 B, **KALDI**; hedef açık kalır. Kalan tek
 yol bandın ilk temasta uygulanmamasıdır; bu bant kararıdır ve bu işin kapsamı dışındadır.
 
-## 4. Ret koşulları (önceden yazılı)
+### A.1 Ret koşulları (önceden yazılmıştı)
 
 1. Yetenekli eşle iyimser kuralın herhangi bir satırı #233'ün yönetilen satırından bayt olarak ayrılırsa
    (tel aynı değilse) ya da 937 / 5 250 B veya %75'i aşarsa: ret.
@@ -144,20 +166,20 @@ yol bandın ilk temasta uygulanmamasıdır; bu bant kararıdır ve bu işin kaps
 3. Olumsuz bildirim +1,9 s'den belirgin geç gelir ve 8,4 s basışta eski eşte teslim < %75'e düşerse: bedel
    yeniden hesaplanır, karar sahibe geri döner.
 
-## 5. Kararı değiştirebilecek tek eksik ölçü
+### A.2 Eksik ölçü (artık gerekmez)
 
 Eski eş + iyimser kural satırı (Bob `ptt_coalesce = false`, Alice bilinmeyeni yetenekli sayar): olumsuz
 bildirimin varış anı ve geri dönüşten sonra teslim edilen çerçeve. Bu ölçü yalnız eski eşin bedelini
 değiştirir; yetenekli eşin bayt hesabı (§3 tablo) değişmez. Fikstürde bu kol yoktur (`KAMA_ASYM_PTT_COALESCE`:
 `off | neg | known | learned`); koşmak için önce iyimser kural yazılmalıdır. Şimdi koşulmadı.
 
-## 6. Dar mekanizma kanıtı (kontrollü girdi, kazı testi — ürün koşusu değil)
+### A.3 Mekanizma kanıtı (kontrollü girdi, kazı testi — ürün koşusu DEĞİL)
 
 Soru: iyimser kuralda eski eşe giden süren basış, olumsuz bildirimden sonra aynı basış içinde kurtarılıyor mu?
 
 - Ağaç: #233 dal ucu `3a8e09a514fac897f24a8a3bca7123118ea8e769`, ayrı worktree, ayrı `CARGO_TARGET_DIR`.
   #233 dosyalarına yazılmadı; `crates/kama-app/tests/ptt.rs`'nin kopyasına (`bulutc_scratch_iyimser.rs`, izlenmeyen,
-  itilmedi) aşağıdaki test eklendi. Test metni Ek A'da.
+  itilmedi) aşağıdaki test eklendi. Test metni Ek B'de.
 - Komut: `cargo test --locked -p kama-app --test bulutc_scratch_iyimser bulutc_optimistic -- --nocapture`
 - Kurulum: Alice `set_spurt_coalesce(true)` + `set_peer_spurt_provisioned(BOB, true)` (iyimser kuralın tel
   karşılığı); Bob `set_spurt_coalesce(false)` (birleşik biçimi bilmeyen alıcı). Bellek içi bağ, kayıp yok, elle saat.
@@ -173,11 +195,11 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 57 filtered out; fin
 - Okuma: bildirimden önceki 4 demet Bob'da olay üretmez: 3'ü açılışlı 0x8B (`spurt_refused`), 4.'sü kompakt 0x8A
   (akış yok → PTT-R3 yetim; gerçek v1 alıcısı onu `unknown-msg-version` ile düşürür). `on_peer_spurt_capability(false)`
   sonrası aynı akış güvenilir PTT_OPEN + tam demet + PTT_CLOSE ile sürer; Bob tek PttStarted / iki ses / tek PttEnded
-  alır; geri dönüşten sonra yeni düşüş yok. Ret koşulu 2'nin mekanizma kısmı bu düzenekte tutmadı (yani kural geçti).
+  alır; geri dönüşten sonra yeni düşüş yok. Ret koşulu A.1/2'nin mekanizma kısmı bu düzenekte tetiklenmedi. Yalnız mekanizma kanıtıdır; ürün davranışı iddiası değildir.
 - Sınanmayan: olumsuz bildirimin gerçek varış anı, kopyaların ve son tarihlerin gerçek hücredeki etkisi, oturumlar
   arası olumsuz kayıt (bugün yok; §3).
 
-## 7. Gerçek ürün koşusu talebi (Web → Yerel ölçüm kuyruğu)
+### A.4 Ürün koşusu talebi — GERİ ÇEKİLDİ (sahip kararı; kuyruğa eklenmez)
 
 Yetenekli eş için koşu **gerekmez**: tel #233 yönetilen satırıyla aynıdır (§3). Eski eş bedeli için tek koşu:
 
@@ -189,9 +211,9 @@ Yetenekli eş için koşu **gerekmez**: tel #233 yönetilen satırıyla aynıdı
 - **Beklenen fark (bugünkü gerçek ilk temas satırına göre):** 0x17'siz 0x16 ≈ +1,9 s; Bob'da tek PttStarted /
   tek PttEnded; teslim 15 / 75 (bugün 75 / 75); PTT tel baytı ≈ 1 359 B (bugün 1 388 B); ilk ses basıştan ≈ 1,5 s
   + aktarım (bugün 0,62 s).
-- **Ret:** §4 madde 2 ya da 3.
+- **Ret:** A.1 madde 2 ya da 3.
 
-## Ek A — kazı testi metni
+## Ek B — kazı testi metni (Ek A.3; #233 3a8e09a5 üstünde, itilmedi)
 
 ```rust
 /// [Bulut-C · kazı testi, itilmez] İyimser kuralın eski eşte geri dönüşü (dar mekanizma kanıtı).
