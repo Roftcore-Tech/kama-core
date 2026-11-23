@@ -198,6 +198,15 @@
 //! taşındığını seçer. `KAMA_ASYM_WIRE_DUMP=<önek>` mühürlenen her çerçevenin türünü ve boyunu
 //! (CAPS'te bit alanı) sırayla `<önek>.<uç>` dosyasına yazar (salt gözlem; kapalı kolun bayt
 //! kıyası için).
+//!
+//! [PTT-BİRLEŞİK · pilot · #233] Bayrak açık kollarda basış `Ptt::open_press` ile açılır: çağıranın
+//! süresi `KAMA_ASYM_PTT_MS` (bugünkü varsayılan 200 ms); doğrulanmış eşte motor 300 ms'yi
+//! (`kama_app::ptt::SPURT_PILOT_BUNDLE_MS`) seçer, demetler o süreyle ve aynı Lyra hızıyla (20 ms'de
+//! `KAMA_ASYM_PTT_BYTES` ÷ çerçeve sayısı) paketlenir; birleşik akış beklenen satırda süre 300 ms
+//! değilse KALDI. Doğrulanmamış eşte (gerçek ilk temas) çağıranın süresi ve bugünkü ayrı kayıtlar.
+//! `KAMA_ASYM_PTT_OPEN=explicit` TEST KOLUDUR (pilot değil): `Ptt::open` `KAMA_ASYM_PTT_MS` ile
+//! (ör. 420 ms). Her satırda bütün PTT datagramlarının tel baytı (IPv4/UDP dahil) toplamı
+//! `5000 bit/s × basış ÷ 8` B ile ayrıca iddia edilir (`ptt_tel_baytı`).
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::net::{SocketAddr, UdpSocket};
@@ -218,7 +227,9 @@ use client_core::wire::{
     FRAME_CS_PROBE, FRAME_FEC, FRAME_PTT, FRAME_RECOVERED,
 };
 use kama_app::clock::{MonotonicClock, SystemClock};
-use kama_app::codec::{bundle_code_from_ms, decode, AmpLimits, AppMessage, PttCodec};
+use kama_app::codec::{
+    bundle_code_from_ms, bundle_ms_from_code, decode, AmpLimits, AppMessage, PttCodec,
+};
 use kama_app::file_transfer::{FileEvent, FileTransfer};
 use kama_app::messaging::{Messenger, MessengerEvent, MsgId};
 use kama_app::ptt::{Ptt, PttError, PttEvent, PttStats, StreamId};
@@ -277,6 +288,31 @@ struct PttShape {
     open_every: u8,
 }
 
+impl PttShape {
+    /// [PTT-BİRLEŞİK · pilot] Motorun seçtiği koda göre biçim: süre ve kadans koddan, yük aynı
+    /// Lyra hızıyla (20 ms çerçeve başına bayt korunur). Kod aynıysa biçim aynen.
+    fn with_code(self, code: u8) -> Self {
+        if code == self.code {
+            return self;
+        }
+        let frames = |p: Duration| (p.as_nanos() / LYRA_FRAME.as_nanos()).max(1) as usize;
+        let per_frame = self.bytes / frames(self.period);
+        let period = Duration::from_millis(u64::from(bundle_ms_from_code(code)));
+        Self {
+            code,
+            period,
+            bytes: (per_frame * frames(period)).max(4),
+            ..self
+        }
+    }
+}
+
+/// [PTT-BİRLEŞİK · pilot] `KAMA_ASYM_PTT_OPEN=explicit`: bayrak açık kolda basış `Ptt::open` ile
+/// `KAMA_ASYM_PTT_MS` süresiyle açılır (test kolu; ör. 420 ms). Yoksa `Ptt::open_press` (pilot).
+fn ptt_open_explicit() -> bool {
+    std::env::var("KAMA_ASYM_PTT_OPEN").is_ok_and(|v| v == "explicit")
+}
+
 /// [PTT-BİRLEŞİK · deney, aday dışı] Birleşik biçimin kolu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Coalesce {
@@ -294,13 +330,20 @@ enum Coalesce {
     Learned,
 }
 
-/// Sonuç satırı için PTT biçimi.
-fn ptt_shape_label() -> String {
+/// Sonuç satırı için PTT biçimi: akışın gerçek yükü ve süresi (pilotta motorun seçtiği), istenen
+/// süre ve açılış yolu.
+fn ptt_shape_label(used: PttShape) -> String {
     let s = ptt_shape();
     format!(
-        "yük={}B/demet={}ms/başlık={}/basış={}",
-        s.bytes,
+        "yük={}B/demet={}ms(istenen {}ms, {})/başlık={}/basış={}",
+        used.bytes,
+        used.period.as_millis(),
         s.period.as_millis(),
+        match (s.coalesce, ptt_open_explicit()) {
+            (Coalesce::Off, _) => "open",
+            (_, true) => "open-test-kolu",
+            (_, false) => "open_press-pilot",
+        },
         match (s.coalesce, s.compact) {
             (Coalesce::Off, true) => "kompakt2B".to_string(),
             (Coalesce::Off, false) => "tam13B".to_string(),
@@ -711,6 +754,12 @@ struct Ledger {
     /// [PTT-BİRLEŞİK · deney] Bu ucun mühürlediği açılış bilgili demet ve `END`'li demet sayısı.
     spurt_open_tx: u64,
     spurt_end_tx: u64,
+    /// [PTT-BİRLEŞİK · pilot · tel kanıtı] Bu ucun mühürlediği kompakt açılışsız demet (0x8A) ve
+    /// kompakt `END`'li demet (0x8D) sayısı (tap'in çözdüğü AMP kaydından; yapılandırmadan değil).
+    spurt_compact_tx: u64,
+    spurt_compact_end_tx: u64,
+    /// [PTT-BİRLEŞİK · pilot · tel kanıtı] Bu uca açılan 0x17 türlü ACK sayısı (tap'ten).
+    ack_0x17_rx: u64,
     /// [İZ-BLOK] Bu ucun mühürlediği her DATA datagramı: (an, birim, parmak izi).
     data_log: Vec<(Instant, u64, u64)>,
     /// [İZ-BLOK] Bu ucun mühürlediği her FEC onarım datagramı: (an, blok, ESI, k_actual, parmak izi).
@@ -853,7 +902,11 @@ impl PacketProtection for Tap {
                         l.spurt_open_tx += 1;
                         l.spurt_end_tx += u64::from(end);
                     }
-                    Some(AppMessage::MediaBundleEnd { .. }) => l.spurt_end_tx += 1,
+                    Some(AppMessage::MediaBundleEnd { .. }) => {
+                        l.spurt_end_tx += 1;
+                        l.spurt_compact_end_tx += 1;
+                    }
+                    Some(AppMessage::MediaBundleCompact { .. }) => l.spurt_compact_tx += 1,
                     _ => {}
                 }
             }
@@ -889,6 +942,9 @@ impl PacketProtection for Tap {
                 // [İZ-PTT-KAYIT · demet] Yalın demetin varışı (kimlik = şerit-içi sıra, şerit 0).
                 l.rx_unit.entry(u64::from(lo)).or_insert(now);
             } else if let Ok(f) = AckFrame::decode_with_bitmap(&opened.frame) {
+                if opened.frame[0] == adaptive_transport::ack::FRAME_TYPE_ACK_BITMAP_PTT_COALESCE {
+                    l.ack_0x17_rx += 1;
+                }
                 if l.acks_rx.len() < LEDGER_CAP {
                     let pns = f.acked_full(u64::from(f.largest_seq));
                     l.acks_rx.push((now, pns));
@@ -1311,6 +1367,8 @@ fn transport(
     cfg.runtime.diag_emit_sink = emit;
     // [YENİDEN-RAPOR] Ürün varsayılanı kapalı (spec §2.1); `KAMA_ASYM_ACK_REREPORT=on` ölçüm kolu.
     cfg.runtime.ack_rereport = std::env::var("KAMA_ASYM_ACK_REREPORT").is_ok_and(|v| v == "on");
+    // [PTT-BİRLEŞİK · pilot · tel kanıtı] Uçların motoru yapılandırmadan yazılır (etiket değil).
+    println!("MOTOR uç={me:#04x} motor={:?}", cfg.runtime.engine);
     // [ACK-BITMAP · ölçüm prototipi] `KAMA_ASYM_ACK_FORMAT=bitmap` iki uca da 0x15 biçimini verir
     // (yetenek anlaşması yok; iki uç açıkça). [PTT-BANT · #175 dış inceleme] Fikstür varsayılanı
     // `bitmap`: birleşik adayın ölçülen yolu (pair_rate, yalın PTT 0x16 / 0x09) yalnız onunla açılır;
@@ -1378,6 +1436,8 @@ struct Run {
     unaccepted: Vec<(Instant, u32)>,
     /// [PTT-BANT] Basış süresi (basış başından bırakışa; bant paydası).
     press_len: Option<Duration>,
+    /// [PTT-BİRLEŞİK · pilot] Akışın gerçek biçimi (pilotta motorun seçtiği süre ve yük).
+    ptt_used: PttShape,
     /// [CANLILIK-TEŞHİS] Şerit açıklık sınırına takılan pompa turları (şerit sırasıyla).
     lane_span_blocked: [u64; 4],
     chunk_count: u64,
@@ -1505,6 +1565,8 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
         .map(|_| Texts::default())
         .collect();
     let shape = ptt_shape();
+    // [PTT-BİRLEŞİK · pilot] Akışın gerçek biçimi; açılışta motorun seçtiği koda göre güncellenir.
+    let mut used = shape;
     alice.ptt.set_compact_bundles(shape.compact);
     // [PTT-BİRLEŞİK · deney · #233 inceleme 6] Tek anahtar: motorların birleşik anahtarı
     // Transport'un bayrağından (`RuntimeConfig::ptt_coalesce`) türetilir (kama-node `ptt_engine`
@@ -1600,10 +1662,21 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
             }
         }
         if ptt_open.is_none() && el >= ptt_at() {
-            let stream = alice
-                .ptt
-                .open(&mut alice.m, id(BOB), PttCodec::Lyra, shape.code)
-                .expect("PTT açılır");
+            // [PTT-BİRLEŞİK · pilot] Bayrak açık kolda süreyi motor seçer (doğrulanmış eşte
+            // 300 ms); bayrak kapalı ve test kolunda bugünkü `open`.
+            let (stream, code) = if coalesce_on && !ptt_open_explicit() {
+                alice
+                    .ptt
+                    .open_press(&mut alice.m, id(BOB), PttCodec::Lyra, shape.code)
+                    .expect("PTT açılır")
+            } else {
+                let stream = alice
+                    .ptt
+                    .open(&mut alice.m, id(BOB), PttCodec::Lyra, shape.code)
+                    .expect("PTT açılır");
+                (stream, shape.code)
+            };
+            used = shape.with_code(code);
             ptt_open = Some((stream, now));
         }
         if let (Some((stream, opened)), false) = (ptt_open, ptt_closed) {
@@ -1621,23 +1694,23 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
             };
             // Çerçeveler basış başından gerçek zamanda oluşur; demet çerçeveleri var olunca
             // sunulur (ilk demet basış + demet süresi), bırakışta kısmi son demet.
-            let fpb = u32::try_from(shape.period.as_nanos() / LYRA_FRAME.as_nanos())
+            let fpb = u32::try_from(used.period.as_nanos() / LYRA_FRAME.as_nanos())
                 .unwrap_or(u32::MAX)
                 .max(1);
             while let Some((planned, frames)) =
-                bundle_slot(opened, shape.period, next_bundle, release)
+                bundle_slot(opened, used.period, next_bundle, release)
             {
                 if planned > tick {
                     break;
                 }
-                let created = opened + shape.period * next_bundle;
-                let len = (shape.bytes * frames as usize / fpb as usize).max(4);
+                let created = opened + used.period * next_bundle;
+                let len = (used.bytes * frames as usize / fpb as usize).max(4);
                 let mut payload = vec![0x5Au8; len];
                 payload[..4].copy_from_slice(&next_bundle.to_be_bytes());
                 // [PTT-BİRLEŞİK · deney] Bırakışta son demet `END`'i taşır (birleşik akışta; diğer
                 // akışta sıradan demet).
                 let last = release.is_some()
-                    && bundle_slot(opened, shape.period, next_bundle + 1, release).is_none();
+                    && bundle_slot(opened, used.period, next_bundle + 1, release).is_none();
                 let sent = if last {
                     alice
                         .ptt
@@ -1767,7 +1840,7 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
         let end = ptt_release.unwrap_or_else(Instant::now);
         press_len = Some(end.saturating_duration_since(opened));
         let mut k = next_bundle;
-        while let Some(slot) = bundle_slot(opened, shape.period, k, Some(end)) {
+        while let Some(slot) = bundle_slot(opened, used.period, k, Some(end)) {
             unaccepted.push(slot);
             k += 1;
         }
@@ -1823,6 +1896,7 @@ fn run(seed: u64, profile: bool, cell: Cell) -> Run {
         file_failures,
         unaccepted,
         press_len,
+        ptt_used: used,
         lane_span_blocked,
         chunk_count,
         chunk_rx,
@@ -2187,7 +2261,7 @@ impl Run {
         // mühürlenmiş her datagram (kopya, yeniden iletim, yolda kaybolan dahil), IPv4/UDP dahil.
         // Bitmap kolunda yalın çerçeve (0x09) tele çıkmış olmalı: çıkmadıysa bant hedefi sınanmadı.
         let bitmap = fixture_ack_format() == AckFormat::Bitmap;
-        let shape = ptt_shape();
+        let shape = self.ptt_used;
         for (side, ledger) in [("alice", &self.alice), ("bob", &self.bob)] {
             let press = self.press_len.unwrap_or(Duration::ZERO);
             let wire: Vec<(Instant, u64)> = ledger.ptt_wire.iter().map(|w| (w.0, w.1)).collect();
@@ -2196,6 +2270,22 @@ impl Run {
             };
             let lean_ok = !bitmap || ledger.ptt_lean_tx > 0;
             let band_ok = bps <= PTT_BAND_MAX_BPS;
+            // [PTT-BİRLEŞİK · pilot · #233] Aynı tavan bayt olarak: bütün PTT datagramlarının
+            // (açılış, kapanış, kopya, yeniden iletim, demet) tel baytı, IPv4/UDP dahil, ≤
+            // 5000 bit/s × basış ÷ 8 (1,5 s: 937 B; 8,4 s: 5250 B).
+            let wire_bytes: u64 = ledger.ptt_wire.iter().map(|w| w.1).sum();
+            let cap_bytes =
+                u64::try_from(u128::from(PTT_BAND_MAX_BPS) * press.as_nanos() / 8_000_000_000)
+                    .unwrap_or(u64::MAX);
+            let bytes_ok = wire_bytes <= cap_bytes;
+            println!(
+                "ÖLÇÜT {tag} ptt_tel_baytı yön={side} toplam={wire_bytes} B (en çok {cap_bytes} B; IPv4/UDP dahil, bütün PTT datagramları {}) → {}",
+                ledger.ptt_wire.len(),
+                if bytes_ok { "GEÇTİ" } else { "KALDI" },
+            );
+            if !bytes_ok {
+                failed.push(format!("PTT/bant-bayt/{side}"));
+            }
             println!(
                 "ÖLÇÜT {tag} ptt_bant yön={side} bit_s={bps} (en çok {PTT_BAND_MAX_BPS}; payda basış {} s) datagram={} yalın_0x09={} yük={} B demet={} ms → {}",
                 secs(press),
@@ -2258,13 +2348,42 @@ impl Run {
                 let coalesced = opens == 0 && closes == 0 && self.alice.spurt_open_tx > 0;
                 let guarded = if expect_coalesced || coalesced {
                     let chain = self.alice_in_band.is_some_and(|(_, v)| v);
+                    // [PTT-BİRLEŞİK · pilot] Pilot yolunda birleşik akış 300 ms'yle açılmış olmalı.
+                    let pilot_ms = ptt_open_explicit()
+                        || self.ptt_used.period
+                            == Duration::from_millis(u64::from(
+                                kama_app::ptt::SPURT_PILOT_BUNDLE_MS,
+                            ));
+                    // [PTT-BİRLEŞİK · pilot · tel kanıtı] Telde birleşik biçim: ayrı açılış /
+                    // kapanış kaydı 0, her demet açılışlı (0x8B/0x8C), kompakt (0x8A) ya da
+                    // kompakt END (0x8D), tam bir END, Alice'e en az bir 0x17 ACK açıldı.
+                    let marked = self.alice.spurt_open_tx
+                        + self.alice.spurt_compact_tx
+                        + self.alice.spurt_compact_end_tx;
+                    let wire_ok = opens == 0
+                        && closes == 0
+                        && marked == unique.len() as u64
+                        && self.alice.ack_0x17_rx > 0;
+                    println!(
+                        "ÖLÇÜT {tag} ptt_tel_biçimi yön={side} kaynak=tap ayrı_PTT_OPEN={opens} ayrı_PTT_CLOSE={closes} tekil_demet={} açılışlı_0x8B/0x8C={} kompakt_0x8A={} kompakt_END_0x8D={} END_toplam={} alice'e_açılan_0x17_ACK={} → {}",
+                        unique.len(),
+                        self.alice.spurt_open_tx,
+                        self.alice.spurt_compact_tx,
+                        self.alice.spurt_compact_end_tx,
+                        self.alice.spurt_end_tx,
+                        self.alice.ack_0x17_rx,
+                        if wire_ok { "GEÇTİ" } else { "KALDI" },
+                    );
                     let ok = expect_coalesced
                         && coalesced
+                        && wire_ok
+                        && pilot_ms
                         && self.alice.spurt_end_tx == 1
                         && self.ptt_lifecycle == (1, 1)
                         && chain;
                     println!(
-                        "ÖLÇÜT {tag} ptt_koruma_birleşik yön={side} beklenen={expect_coalesced} kullanılan={coalesced} açılışlı_demet={} END={} bob_başla/bit={:?} bant_içi_0x17={} → {}",
+                        "ÖLÇÜT {tag} ptt_koruma_birleşik yön={side} beklenen={expect_coalesced} kullanılan={coalesced} pilot_süresi={pilot_ms} ({} ms) açılışlı_demet={} END={} bob_başla/bit={:?} bant_içi_0x17={} → {}",
+                        self.ptt_used.period.as_millis(),
                         self.alice.spurt_open_tx,
                         self.alice.spurt_end_tx,
                         self.ptt_lifecycle,
@@ -2435,7 +2554,7 @@ impl Run {
             } else {
                 "yol=v2 (ürün varsayılanı)"
             },
-            ptt_shape_label(),
+            ptt_shape_label(self.ptt_used),
             // [#233 inceleme · küçük] Etiket ortam değişkenini değil telde gerçekten kullanılan
             // biçimi de yazar (ör. ilk temasta birleşik istenip ayrı kayıtlara düşülen kol).
             if self.alice.spurt_open_tx > 0 {
@@ -3169,7 +3288,7 @@ impl Run {
     /// Gerçek zaman (sahip 2026-11-22): ilk ses gecikmesi = Bob'a ilk ses teslimi − basış başı
     /// (ilk 20 ms çerçevenin oluşumu); ilk PTT datagramının ve ilk ses datagramının tele çıkışı.
     fn ptt_audio_report(&self, tag: &str) {
-        let shape = ptt_shape();
+        let shape = self.ptt_used;
         let fpb = u64::try_from(shape.period.as_nanos() / LYRA_FRAME.as_nanos())
             .unwrap_or(1)
             .max(1);

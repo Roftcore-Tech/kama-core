@@ -45,11 +45,14 @@ use std::time::Duration;
 use common::mock_transport::MockTransport;
 use kama_app::clock::MonotonicClock;
 use kama_app::codec::limits::{APP_RECORD_HEADER_BYTES, MEDIA_BUNDLE_PREFIX_BYTES};
-use kama_app::codec::{decode, encode, AmpLimits, AppMessage, MsgType, PttCodec};
+use kama_app::codec::{
+    bundle_ms_from_code, decode, encode, AmpLimits, AppMessage, MsgType, PttCodec,
+};
 use kama_app::messaging::{Messenger, MessengerEvent, MsgId};
 use kama_app::ptt::{
     max_bundle_payload_bytes, Ptt, PttError, PttEvent, PttStats, SpurtCapabilityRecord, StreamId,
     FIRST_STREAM_ID, PTT_MAX_ACTIVE_STREAMS, PTT_STREAM_IDLE_TTL, SPURT_FORMAT_EPOCH,
+    SPURT_PILOT_BUNDLE_CODE, SPURT_PILOT_BUNDLE_MS,
 };
 use kama_app::store::{
     AppStore, AppStoreError, CounterKind, DedupWindow, MemoryAppStore, OutboxUnit,
@@ -3634,4 +3637,182 @@ fn coalesced_stream_resumes_after_an_outage_longer_than_the_silence_end() {
         "eski kural: kesinti sonrası ses yetim"
     );
     assert_eq!(duo.bob.ptt.stats().ptt_orphan_bundles, 7);
+}
+
+// ── [PTT-BİRLEŞİK · pilot · #233] 300 ms, doğrulanmış eş ─────────────────────────────────────
+
+/// Bob'a giden birimler: (bayt, teslim politikası), gönderim sırasıyla.
+type Wire = Vec<(Vec<u8>, DeliveryPolicy)>;
+
+/// Pilot basışı: `n` demet (sonuncusu `send_last_bundle_from`), sonra `close`. `via_open` →
+/// bugünkü [`Ptt::open`] çağıranın süresiyle; değilse [`Ptt::open_press`] (çağıranın süresi
+/// [`TEST_BUNDLE_MS`]). Demetlerin ses başlangıcı `audio_start` sabittir: son tarihler koşular
+/// arasında eşit olur, politika da bayt bayt kıyaslanır. Döner: `stream_id`, akışın kodu, tel.
+fn pilot_press(
+    duo: &mut Duo,
+    n: u8,
+    audio_start: std::time::Instant,
+    via_open: bool,
+) -> (StreamId, u8, Wire) {
+    let (stream, code) = if via_open {
+        let stream = duo
+            .alice
+            .open(BOB, PttCodec::Lyra, TEST_BUNDLE_MS)
+            .expect("açılır");
+        (stream, TEST_BUNDLE_MS)
+    } else {
+        duo.alice
+            .ptt
+            .open_press(
+                &mut duo.alice.messenger,
+                BOB,
+                PttCodec::Lyra,
+                TEST_BUNDLE_MS,
+            )
+            .expect("açılır")
+    };
+    for k in 0..n {
+        let ptt = &mut duo.alice.ptt;
+        let messenger = &mut duo.alice.messenger;
+        if k + 1 == n {
+            ptt.send_last_bundle_from(messenger, stream, &frame(k), audio_start)
+        } else {
+            ptt.send_bundle_from(messenger, stream, &frame(k), audio_start)
+        }
+        .expect("demet");
+    }
+    duo.alice.close(stream).expect("kapanır");
+    let units: Vec<Vec<u8>> = duo
+        .take_inbox(Side::Bob)
+        .into_iter()
+        .map(|d| d.unit)
+        .collect();
+    let policies: Vec<DeliveryPolicy> = duo.sent(Side::Alice).iter().map(|s| s.1).collect();
+    assert_eq!(units.len(), policies.len());
+    (stream, code, units.into_iter().zip(policies).collect())
+}
+
+/// [PTT-BİRLEŞİK · pilot] Bayrak açık ve eşin yeteneği DOĞRULANMIŞ (yönetilen, aynı dönemle
+/// öğrenilmiş ya da bu oturumda bant içi 0x17) → `open_press` çağıranın süresini (20 ms) değil
+/// pilotun 300 ms'sini seçer; tele ayrı `PTT_OPEN` / `PTT_CLOSE` çıkmaz, açılışsız demetler kompakt
+/// (2 B) ve Bob akışı 300 ms koduyla açar. Doğrulanmamış eşte (yetenek bilinmiyor, bant içi 0x16)
+/// çağıranın süresi ve ayrı güvenilir `PTT_OPEN`.
+#[test]
+fn pilot_opens_a_verified_peer_at_300_ms_with_the_compact_header() {
+    assert_eq!(SPURT_PILOT_BUNDLE_MS, 300);
+    assert_eq!(bundle_ms_from_code(SPURT_PILOT_BUNDLE_CODE), 300);
+    for source in ["yönetilen", "öğrenilmiş", "bant içi 0x17"] {
+        let (mut duo, handle) = Duo::connected();
+        duo.alice.ptt.set_spurt_coalesce(true);
+        duo.bob.ptt.set_spurt_coalesce(true);
+        match source {
+            "yönetilen" => assert!(duo.alice.ptt.set_peer_spurt_provisioned(BOB, true)),
+            "öğrenilmiş" => {
+                assert!(duo
+                    .alice
+                    .ptt
+                    .remember_spurt_capability(SpurtCapabilityRecord {
+                        peer: BOB,
+                        epoch: SPURT_FORMAT_EPOCH,
+                    }))
+            }
+            _ => assert!(duo.alice.ptt.on_peer_spurt_capability(BOB, handle, true)),
+        }
+        let (stream, code, wire) = pilot_press(&mut duo, 4, std::time::Instant::now(), false);
+        assert_eq!(code, SPURT_PILOT_BUNDLE_CODE, "{source}: pilot süresi");
+        let msgs: Vec<AppMessage> = wire
+            .iter()
+            .map(|(u, _)| decode(u, &limits()).expect("çözülür"))
+            .collect();
+        assert_eq!(msgs.len(), 4, "{source}: yalnız dört demet");
+        for m in &msgs[..3] {
+            assert!(
+                matches!(m, AppMessage::MediaBundleOpen { bundle_ms, .. } if *bundle_ms == SPURT_PILOT_BUNDLE_CODE),
+                "{source}: ilk üç demet açılışı 300 ms koduyla taşır: {m:?}"
+            );
+        }
+        assert!(
+            matches!(msgs[3], AppMessage::MediaBundleEnd { .. }),
+            "{source}: son demet kompakt END"
+        );
+        assert_eq!(
+            wire[3].0.len(),
+            wire[2].0.len() - 5,
+            "{source}: kompakt başlık 2 B"
+        );
+        for (unit, _) in wire {
+            duo.inject(Side::Bob, unit);
+        }
+        let events = duo.bob.drain();
+        assert_eq!(
+            events.first(),
+            Some(&started(
+                ALICE,
+                stream,
+                PttCodec::Lyra,
+                SPURT_PILOT_BUNDLE_CODE
+            )),
+            "{source}"
+        );
+        assert_eq!(events.last(), Some(&ended(ALICE, stream)), "{source}");
+    }
+    for source in ["yetenek bilinmiyor", "bant içi 0x16"] {
+        let (mut duo, handle) = Duo::connected();
+        duo.alice.ptt.set_spurt_coalesce(true);
+        duo.bob.ptt.set_spurt_coalesce(true);
+        if source == "bant içi 0x16" {
+            assert!(duo.alice.ptt.on_peer_spurt_capability(BOB, handle, false));
+        }
+        let (stream, code, wire) = pilot_press(&mut duo, 4, std::time::Instant::now(), false);
+        assert_eq!(code, TEST_BUNDLE_MS, "{source}: çağıranın süresi");
+        assert_eq!(
+            wire[0].0,
+            open_record(stream, PttCodec::Lyra, TEST_BUNDLE_MS),
+            "{source}: ayrı PTT_OPEN"
+        );
+    }
+}
+
+/// [PTT-BİRLEŞİK · pilot · ret koşulu] Doğrulanmamış eş ve bayrak kapalı yol bugünküyle BAYT-AYNI:
+/// bugünkü `open` (bayrak kapalı) basışının tel birimleri ve teslim politikaları; `open_press` ile
+/// (a) bayrak kapalı, (b) bayrak açık ve yetenek bilinmiyor, (c) bayrak açık ve eş bant içinde
+/// çözmediğini bildirmiş (0x16) kollarında birebir aynıdır. Taşıma katmanının CAPS çerçevesi
+/// (bit 2) bu kıyasın dışındadır: o PTT datagramı değildir.
+#[test]
+fn pilot_toward_an_unknown_or_refusing_peer_is_byte_identical_to_the_flag_off_path() {
+    let audio_start = std::time::Instant::now();
+    let reference = {
+        let (mut duo, _) = Duo::connected();
+        pilot_press(&mut duo, 4, audio_start, true)
+    };
+    let types: Vec<MsgType> = reference
+        .2
+        .iter()
+        .map(|(u, _)| decode(u, &limits()).expect("çözülür").msg_type())
+        .collect();
+    assert_eq!(
+        types,
+        vec![
+            MsgType::PttOpen,
+            MsgType::MediaBundle,
+            MsgType::MediaBundle,
+            MsgType::MediaBundle,
+            MsgType::MediaBundle,
+            MsgType::PttClose
+        ]
+    );
+    for (arm, flag, in_band) in [
+        ("bayrak kapalı, open_press", false, None),
+        ("bayrak açık, yetenek bilinmiyor", true, None),
+        ("bayrak açık, bant içi 0x16", true, Some(false)),
+    ] {
+        let (mut duo, handle) = Duo::connected();
+        duo.alice.ptt.set_spurt_coalesce(flag);
+        duo.bob.ptt.set_spurt_coalesce(flag);
+        if let Some(v) = in_band {
+            assert!(duo.alice.ptt.on_peer_spurt_capability(BOB, handle, v));
+        }
+        let got = pilot_press(&mut duo, 4, audio_start, false);
+        assert_eq!(got, reference, "{arm}: tel bayt-aynı olmalı");
+    }
 }

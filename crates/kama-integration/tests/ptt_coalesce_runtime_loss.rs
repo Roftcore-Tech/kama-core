@@ -32,6 +32,11 @@
 //! * `PttEnded` ≤ bırakış + `spurt_gap_end(bundle_ms)` + [`ONE_WAY_ALLOWANCE`];
 //! * ses: teslim edilen demetler tam olarak atılmayanlardır (kurtarılmış açılış, kaybolan sesin
 //!   kurtarıldığı anlamına gelmez; kaybolan 20 ms çerçeveler ayrıca sayılıp yazılır).
+//!
+//! [PTT-BİRLEŞİK · pilot · #233] Pilot kolu: basış `Ptt::open_press` ile açılır (çağıranın süresi
+//! [`PILOT_FALLBACK_MS`]); doğrulanmış eşte motor 300 ms'yi seçer ve bu İDDİA edilir. 1,5 s ve
+//! 8,4 s basış, aynı dört kayıp. Kaybolan (hiç gelmeyen) ve geç (gelen ama oluşumundan > 1 s)
+//! 20 ms çerçeveler ayrı sayılır.
 
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
@@ -46,7 +51,7 @@ use client_core::wire::decode_ptt;
 use kama_app::clock::{MonotonicClock, SystemClock};
 use kama_app::codec::{bundle_code_from_ms, PttCodec};
 use kama_app::messaging::Messenger;
-use kama_app::ptt::{spurt_gap_end, Ptt, PttEvent};
+use kama_app::ptt::{spurt_gap_end, Ptt, PttEvent, SPURT_PILOT_BUNDLE_MS};
 use kama_app::store::MemoryAppStore;
 use kama_contracts::handles::PeerRef;
 use kama_contracts::s1::ConnectResult;
@@ -64,8 +69,9 @@ const BOB: u8 = 0xB0;
 const BUNDLE_MS: u16 = 100;
 /// Basıştaki demet sayısı (basış 0,8 s).
 const BUNDLES: u32 = 8;
-/// Demet yükü (ilk 4 B demet sırası).
-const PAYLOAD: usize = 40;
+/// Lyra 3,2 kbit/s: 20 ms çerçevede 8 B. Demet yükü = çerçeve sayısı × bu (ilk 4 B demet sırası;
+/// 100 ms demette 40 B, pilotun 300 ms'sinde 120 B).
+const LYRA_FRAME_BYTES: usize = 8;
 /// Lyra çerçevesi.
 const FRAME: Duration = Duration::from_millis(20);
 /// İlk sesin / açılışın üst sınırı (basıştan).
@@ -74,6 +80,28 @@ const START_BOUND: Duration = Duration::from_secs(1);
 const ONE_WAY_ALLOWANCE: Duration = Duration::from_millis(150);
 /// Kurulum ve yetenek zinciri için üst süre.
 const SETUP_WAIT: Duration = Duration::from_secs(30);
+/// [PTT-BİRLEŞİK · pilot] Pilot kolunda çağıranın (media) verdiği süre: bugünkü fikstür
+/// varsayılanı 200 ms. Doğrulanmış eşte motor bunu değil [`SPURT_PILOT_BUNDLE_MS`]'yi seçmeli.
+const PILOT_FALLBACK_MS: u16 = 200;
+
+/// Basışın nasıl açıldığı.
+#[derive(Debug, Clone, Copy)]
+enum Open {
+    /// `Ptt::open`, açık süreyle (100 ms senaryoları ve 420 ms test kolu).
+    Explicit(u16),
+    /// `Ptt::open_press`, çağıranın süresi [`PILOT_FALLBACK_MS`]; motorun seçtiği süre kullanılır.
+    Pilot,
+}
+
+impl Open {
+    /// Beklenen demet süresi (ms).
+    fn expected_ms(self) -> u16 {
+        match self {
+            Self::Explicit(ms) => ms,
+            Self::Pilot => SPURT_PILOT_BUNDLE_MS,
+        }
+    }
+}
 
 fn id(n: u8) -> PeerRef {
     let mut dest_hash = [0u8; 32];
@@ -172,6 +200,8 @@ impl<C: PacketProtection + SessionControl + Send + 'static> Side<C> {
 #[derive(Debug)]
 struct Outcome {
     capability: Option<bool>,
+    /// Akışın gerçek demet süresi (ms; pilot kolunda motorun seçtiği).
+    bundle_ms: u16,
     lean_seen: u64,
     dropped: Vec<u64>,
     started: Vec<Duration>,
@@ -183,6 +213,8 @@ struct Outcome {
     frames_planned: u64,
     /// Zamanında (Bob'a varış − demet oluşumu ≤ 1 s) teslim edilen 20 ms çerçeve sayısı.
     frames_timely: u64,
+    /// Teslim edilen ama geç (varış − oluşum > 1 s) 20 ms çerçeve sayısı (kaybolanlardan ayrı).
+    frames_late: u64,
     /// Bob'un birleşik açılışla açtığı akış sayısı (0 = ayrı `PTT_OPEN`).
     bob_spurt_opens: u64,
     /// Bob'un `END` ile bitirdiği akış sayısı.
@@ -194,9 +226,7 @@ struct Outcome {
 }
 
 #[allow(clippy::too_many_lines)]
-fn run(bundle_ms: u16, press_len: Duration, drop_idx: &[u64], bob_coalesce: bool) -> Outcome {
-    let period = Duration::from_millis(u64::from(bundle_ms));
-    let n = u32::try_from(press_len.as_nanos().div_ceil(period.as_nanos())).expect("demet sayısı");
+fn run(open: Open, press_len: Duration, drop_idx: &[u64], bob_coalesce: bool) -> Outcome {
     let hub = MemoryHub::new();
     let seen = Arc::new(AtomicU64::new(0));
     let dropped = Arc::new(Mutex::new(Vec::new()));
@@ -262,12 +292,31 @@ fn run(bundle_ms: u16, press_len: Duration, drop_idx: &[u64], bob_coalesce: bool
     );
     assert!(bob.m.session_of(id(ALICE)).is_some());
 
-    let code = bundle_code_from_ms(bundle_ms).expect("kod");
     let press = Instant::now();
-    let stream = alice
-        .ptt
-        .open(&mut alice.m, id(BOB), PttCodec::Lyra, code)
-        .expect("PTT açılır");
+    let (stream, code) = match open {
+        Open::Explicit(ms) => {
+            let code = bundle_code_from_ms(ms).expect("kod");
+            let stream = alice
+                .ptt
+                .open(&mut alice.m, id(BOB), PttCodec::Lyra, code)
+                .expect("PTT açılır");
+            (stream, code)
+        }
+        Open::Pilot => alice
+            .ptt
+            .open_press(
+                &mut alice.m,
+                id(BOB),
+                PttCodec::Lyra,
+                bundle_code_from_ms(PILOT_FALLBACK_MS).expect("kod"),
+            )
+            .expect("PTT açılır"),
+    };
+    // Demetler akışın GERÇEK süresiyle paketlenir (pilot kolunda motorun seçtiği).
+    let bundle_ms = kama_app::codec::bundle_ms_from_code(code);
+    let period = Duration::from_millis(u64::from(bundle_ms));
+    let n = u32::try_from(press_len.as_nanos().div_ceil(period.as_nanos())).expect("demet sayısı");
+    let payload_len = usize::from(bundle_ms) / 20 * LYRA_FRAME_BYTES;
     let release = press + press_len;
     // Demetin çerçeveleri var olunca (ya da bırakışta, kısmi son demet) gönderilir.
     let ready = |k: u32| (press + period * (k + 1)).min(release);
@@ -280,7 +329,7 @@ fn run(bundle_ms: u16, press_len: Duration, drop_idx: &[u64], bob_coalesce: bool
         let tick = Instant::now();
         while next < n && ready(next) <= tick {
             let created = press + period * next;
-            let mut payload = vec![0x5A; PAYLOAD];
+            let mut payload = vec![0x5A; payload_len];
             payload[..4].copy_from_slice(&next.to_be_bytes());
             let r = if next + 1 == n {
                 alice
@@ -355,10 +404,16 @@ fn run(bundle_ms: u16, press_len: Duration, drop_idx: &[u64], bob_coalesce: bool
         .filter(|(&k, &at)| at.saturating_duration_since(press + period * k) <= START_BOUND)
         .map(|(&k, _)| frames_of(k))
         .sum();
+    let frames_late: u64 = arrival
+        .iter()
+        .filter(|(&k, &at)| at.saturating_duration_since(press + period * k) > START_BOUND)
+        .map(|(&k, _)| frames_of(k))
+        .sum();
     let bob_stats = bob.ptt.stats();
     let dropped = dropped.lock().expect("kilit").clone();
     Outcome {
         capability,
+        bundle_ms,
         lean_seen: seen.load(Ordering::SeqCst),
         dropped,
         started,
@@ -368,6 +423,7 @@ fn run(bundle_ms: u16, press_len: Duration, drop_idx: &[u64], bob_coalesce: bool
         frames_lost,
         frames_planned,
         frames_timely,
+        frames_late,
         bob_spurt_opens: bob_stats.spurt_opens,
         bob_spurt_ends: bob_stats.spurt_ends,
         bob_gap_ends: bob_stats.streams_ended_by_gap,
@@ -378,18 +434,20 @@ fn run(bundle_ms: u16, press_len: Duration, drop_idx: &[u64], bob_coalesce: bool
 /// Kayıp senaryosu: basıştaki demet sıraları; `LAST` = son demet.
 const LAST: u64 = u64::MAX;
 
-fn check(name: &str, bundle_ms: u16, press_len: Duration, scenario: &[u64]) {
+fn check(name: &str, open: Open, press_len: Duration, scenario: &[u64]) {
+    let bundle_ms = open.expected_ms();
     let period = Duration::from_millis(u64::from(bundle_ms));
     let n = u64::try_from(press_len.as_nanos().div_ceil(period.as_nanos())).expect("n");
     let drop_idx: Vec<u64> = scenario
         .iter()
         .map(|&k| if k == LAST { n - 1 } else { k })
         .collect();
-    let o = run(bundle_ms, press_len, &drop_idx, true);
+    let o = run(open, press_len, &drop_idx, true);
+    assert_eq!(o.bundle_ms, bundle_ms, "{open:?}: akışın demet süresi");
     let code = bundle_code_from_ms(bundle_ms).expect("kod");
     let end_limit = spurt_gap_end(code) + ONE_WAY_ALLOWANCE;
     println!(
-        "PTT-BİRLEŞİK-ÇALIŞMA {name} demet={bundle_ms}ms basış={:?}: kayıp={drop_idx:?} 0x09_görülen={} başladı={} bitti={} tek_başla/tek_bitir={}/{} PttStarted=+{:?} (basıştan) PttEnded=+{:?} (bırakıştan; sınır {end_limit:?}) teslim_demet={:?} kaybolan_20ms_çerçeve={} zamanında={}/{} ({} %)",
+        "PTT-BİRLEŞİK-ÇALIŞMA {name} demet={bundle_ms}ms basış={:?}: kayıp={drop_idx:?} 0x09_görülen={} başladı={} bitti={} tek_başla/tek_bitir={}/{} PttStarted=+{:?} (basıştan) PttEnded=+{:?} (bırakıştan; sınır {end_limit:?}) teslim_demet={:?} kaybolan_20ms_çerçeve={} geç_20ms_çerçeve={} zamanında={}/{} ({} %)",
         press_len,
         o.lean_seen,
         !o.started.is_empty(),
@@ -400,6 +458,7 @@ fn check(name: &str, bundle_ms: u16, press_len: Duration, scenario: &[u64]) {
         o.release_to_end,
         o.delivered,
         o.frames_lost,
+        o.frames_late,
         o.frames_timely,
         o.frames_planned,
         o.frames_timely * 100 / o.frames_planned.max(1),
@@ -442,43 +501,61 @@ fn short_press() -> Duration {
 
 #[test]
 fn coalesced_press_without_loss_on_the_real_runtime() {
-    check("kayıpsız", BUNDLE_MS, short_press(), &[]);
+    check("kayıpsız", Open::Explicit(BUNDLE_MS), short_press(), &[]);
 }
 
 #[test]
 fn coalesced_press_survives_losing_the_first_datagram_on_the_real_runtime() {
-    check("ilk", BUNDLE_MS, short_press(), &[0]);
+    check("ilk", Open::Explicit(BUNDLE_MS), short_press(), &[0]);
 }
 
 #[test]
 fn coalesced_press_survives_losing_the_last_datagram_on_the_real_runtime() {
-    check("son", BUNDLE_MS, short_press(), &[LAST]);
+    check("son", Open::Explicit(BUNDLE_MS), short_press(), &[LAST]);
 }
 
 #[test]
 fn coalesced_press_survives_losing_the_first_and_last_datagrams_on_the_real_runtime() {
-    check("ilk+son", BUNDLE_MS, short_press(), &[0, LAST]);
+    check(
+        "ilk+son",
+        Open::Explicit(BUNDLE_MS),
+        short_press(),
+        &[0, LAST],
+    );
 }
 
 #[test]
 fn coalesced_press_survives_losing_the_first_two_datagrams_on_the_real_runtime() {
-    check("ilk-iki", BUNDLE_MS, short_press(), &[0, 1]);
+    check("ilk-iki", Open::Explicit(BUNDLE_MS), short_press(), &[0, 1]);
 }
 
-/// [#233 tur 2 · 2] Ürün kollarının demet tanesi (300 ms ve 420 ms), 1,5 s basış: aynı dört kayıp.
-/// Açılış/kapanış güvenilirliği iddia edilir; zamanında / 75 oranı yalnız raporlanır (belirlenimli
-/// kayıpta kaybolan demetin çerçeveleri zamanında olamaz).
+/// Dört belirlenimli kayıp senaryosu.
+const LOSS_SCENARIOS: [(&str, &[u64]); 4] = [
+    ("ilk", &[0]),
+    ("son", &[LAST]),
+    ("ilk+son", &[0, LAST]),
+    ("ilk-iki", &[0, 1]),
+];
+
+/// [#233 tur 2 · 2] 420 ms TEST KOLU (pilot ayarı değil; `Ptt::open` açık süreyle), 1,5 s basış:
+/// aynı dört kayıp. Açılış/kapanış güvenilirliği iddia edilir; zamanında oranı yalnız raporlanır
+/// (belirlenimli kayıpta kaybolan demetin çerçeveleri zamanında olamaz).
 #[test]
-fn product_bundle_lengths_keep_open_and_close_reliable_on_the_real_runtime() {
+fn test_arm_420_ms_keeps_open_and_close_reliable_on_the_real_runtime() {
     let press = Duration::from_millis(1_500);
-    for ms in [300u16, 420] {
-        for (name, scenario) in [
-            ("ilk", &[0][..]),
-            ("son", &[LAST][..]),
-            ("ilk+son", &[0, LAST][..]),
-            ("ilk-iki", &[0, 1][..]),
-        ] {
-            check(name, ms, press, scenario);
+    for (name, scenario) in LOSS_SCENARIOS {
+        check(name, Open::Explicit(420), press, scenario);
+    }
+}
+
+/// [PTT-BİRLEŞİK · pilot · #233] Pilot (doğrulanmış eş, `open_press`): motor 300 ms seçer
+/// (iddia); 1,5 s ve 8,4 s basışta ilk / son / ilk+son / ilk iki datagram kaybında tam bir
+/// `PttStarted` ve bir `PttEnded`, sınırlı sürede; kaybolan ve geç çerçeveler ayrı yazılır.
+#[test]
+fn pilot_300_ms_keeps_one_open_and_one_close_under_loss_on_the_real_runtime() {
+    for press_ms in [1_500u64, 8_400] {
+        for (name, scenario) in LOSS_SCENARIOS {
+            check(name, Open::Pilot, Duration::from_millis(press_ms), scenario);
         }
     }
 }
@@ -487,7 +564,7 @@ fn product_bundle_lengths_keep_open_and_close_reliable_on_the_real_runtime() {
 /// döner; basış uçtan uca çalışır (tam bir başla/bitir, bütün ses).
 #[test]
 fn old_peer_gets_the_compatible_separate_records_on_the_real_runtime() {
-    let o = run(BUNDLE_MS, short_press(), &[], false);
+    let o = run(Open::Explicit(BUNDLE_MS), short_press(), &[], false);
     println!("PTT-BİRLEŞİK-ÇALIŞMA eski-eş: {o:?}");
     assert_eq!(o.capability, Some(false));
     assert_eq!(
@@ -510,7 +587,7 @@ fn old_peer_gets_the_compatible_separate_records_on_the_real_runtime() {
 #[test]
 fn coalesced_press_resumes_after_an_outage_longer_than_the_silence_end_on_the_real_runtime() {
     let drop: Vec<u64> = (2..=15).collect();
-    let o = run(BUNDLE_MS, short_press() * 3, &drop, true);
+    let o = run(Open::Explicit(BUNDLE_MS), short_press() * 3, &drop, true);
     println!(
         "PTT-BİRLEŞİK-ÇALIŞMA kesinti: kayıp=2..=15 başla={:?} bitir={:?} teslim_demet={:?} kaybolan_20ms_çerçeve={} sessizlik_sonu={} yetim={}",
         o.started, o.ended, o.delivered, o.frames_lost, o.bob_gap_ends, o.bob_orphans

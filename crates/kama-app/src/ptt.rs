@@ -46,6 +46,11 @@
 //! ([`Ptt::on_peer_spurt_capability`]; bileşim kökü Transport'un 0x17 / 0x16 ACK'inden okur). Bant
 //! içi bildirim oturuma bağlıdır ve önce gelir. Bilinmeyen eşe bugünkü uyumlu ayrı kayıtlar gider.
 //!
+//! **Pilot (#233, sahip kararı 2026-11-23; isteğe bağlı, ürün varsayılanı değil):** demet süresini
+//! çağıran seçer; pilotun seçimi [`Ptt::open_press`]'tedir — birleşik akış açılırsa süre
+//! [`SPURT_PILOT_BUNDLE_MS`] (300 ms), değilse çağıranın süresi ve [`Ptt::open`] ile bayt-aynı tel.
+//! Bayrak (`RuntimeConfig::ptt_coalesce`) varsayılan kapalıdır.
+//!
 //! Açılış bilgisi (`MediaBundleOpen`, 7 B başlık: `stream_id`, `codec`, `bundle_ms`) oturumdaki
 //! ilk [`SPURT_OPEN_REPEAT`] (3) demette ve sonra her [`SPURT_OPEN_EVERY`]. (4.) demette taşınır;
 //! diğerleri kompakt (2 B). Son demet `END` işaretlidir
@@ -311,6 +316,21 @@ pub fn spurt_gap_end(bundle_ms: u8) -> Duration {
 /// öğrenilmiş kayda eşin değil bu ucun dönemini yazar. Bugün tek dönem olduğundan etkisizdir;
 /// ikinci bir biçim gelirse dönem telde (yeni CAPS biti / ACK türü) taşınmalıdır.
 pub const SPURT_FORMAT_EPOCH: u16 = 1;
+
+/// [PTT-BİRLEŞİK · pilot · #233, sahip kararı 2026-11-23 "300 ms, desteği doğrulanmış eş"]
+/// Pilotun demet süresi (ms). Demet süresini bu motor değil çağıran (media / bileşim kökü)
+/// seçer; pilotun seçimi YALNIZ burada ve [`Ptt::open_press`]'te yapılır: birleşik akış (bayrak
+/// açık VE eşin yeteneği yönetilen, aynı dönemle öğrenilmiş ya da bu oturumda bant içi 0x17 ile
+/// doğrulanmış) bu süreyle ve kompakt başlıkla (açılışsız demetler 2 B) açılır. Yeteneği
+/// bilinmeyen ya da çözmediğini bildirmiş eşe çağıranın süresi ve bugünkü ayrı kayıtlar gider.
+/// 420 ms yalnız test koludur ([`Ptt::open`]'a açık süreyle), pilot ayarı değildir.
+pub const SPURT_PILOT_BUNDLE_MS: u16 = 300;
+
+/// [PTT-BİRLEŞİK · pilot] [`SPURT_PILOT_BUNDLE_MS`]'ın `bundle_ms` kodu (300 ms → 210).
+pub const SPURT_PILOT_BUNDLE_CODE: u8 = match codec::bundle_code_from_ms(SPURT_PILOT_BUNDLE_MS) {
+    Some(code) => code,
+    None => panic!("pilot demet süresi kodlanabilir olmalı"),
+};
 
 /// [PTT-BİRLEŞİK · deney] Önceki bir oturumda bant içi doğrulanmış yetenek: eşin kimliği ve o
 /// zaman konuştuğu biçim dönemi. Bileşim kökü [`Ptt::learned_spurt_capabilities`] ile okuyup
@@ -852,6 +872,41 @@ impl Ptt {
         codec: PttCodec,
         bundle_ms: u8,
     ) -> Result<StreamId, PttError> {
+        self.open_with(messenger, peer, codec, bundle_ms, false)
+            .map(|(stream_id, _)| stream_id)
+    }
+
+    /// [PTT-BİRLEŞİK · pilot · #233] Basış başlar ve demet süresini pilot kuralıyla seçer; döner:
+    /// (`stream_id`, akışın `bundle_ms` kodu). Çağıran demetleri DÖNEN süreyle paketler.
+    ///
+    /// * Birleşik akış açılırsa (bayrak açık ve eşin yeteneği yönetilen / aynı dönemle öğrenilmiş
+    ///   / bu oturumda bant içi doğrulanmış): [`SPURT_PILOT_BUNDLE_CODE`] (300 ms).
+    /// * Aksi hâlde (bayrak kapalı, yetenek bilinmiyor ya da `false`): `fallback_bundle_ms` aynen
+    ///   ve [`Self::open`] ile bayt-aynı tel (bugünkü ayrı güvenilir `PTT_OPEN`).
+    ///
+    /// # Errors
+    ///
+    /// [`Self::open`] ile aynı.
+    pub fn open_press<T: KamaTransport>(
+        &mut self,
+        messenger: &mut Messenger<T>,
+        peer: PeerRef,
+        codec: PttCodec,
+        fallback_bundle_ms: u8,
+    ) -> Result<(StreamId, u8), PttError> {
+        self.open_with(messenger, peer, codec, fallback_bundle_ms, true)
+    }
+
+    /// [`Self::open`] / [`Self::open_press`] ortak yolu; `pilot` yalnız birleşik akışın süresini
+    /// [`SPURT_PILOT_BUNDLE_CODE`]'a çevirir.
+    fn open_with<T: KamaTransport>(
+        &mut self,
+        messenger: &mut Messenger<T>,
+        peer: PeerRef,
+        codec: PttCodec,
+        bundle_ms: u8,
+        pilot: bool,
+    ) -> Result<(StreamId, u8), PttError> {
         if let Some(stream_id) = self.outgoing_stream(peer) {
             return Err(PttError::StreamActive { stream_id });
         }
@@ -862,6 +917,12 @@ impl Ptt {
         let stream_id = self.reserve_stream_id(messenger.store(), peer)?;
         // [PTT-BİRLEŞİK · deney] Yetenekli eşe ayrı `PTT_OPEN` gitmez: ilk demetler açılışı taşır.
         let coalesced = self.coalesce && self.caps.capable(peer, handle);
+        // [PTT-BİRLEŞİK · pilot] Süre yalnız birleşik akışta pilotunkine çevrilir.
+        let bundle_ms = if pilot && coalesced {
+            SPURT_PILOT_BUNDLE_CODE
+        } else {
+            bundle_ms
+        };
         if !coalesced {
             let open = AppMessage::PttOpen {
                 stream_id,
@@ -883,7 +944,7 @@ impl Ptt {
                 force_reopen: false,
             },
         );
-        Ok(stream_id)
+        Ok((stream_id, bundle_ms))
     }
 
     /// Depodan eşin sıradaki `stream_id`'si; açık bir giden akışın değeriyse atlanır ve yenisi
