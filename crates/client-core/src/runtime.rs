@@ -21,7 +21,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use adaptive_transport::ack::{
@@ -1682,6 +1682,141 @@ pub struct WireEvidence {
 
 /// [PTT-BANT · tel baytı] Datagram başına IPv4 (20 B) + UDP (8 B) zarfı.
 pub const PTT_WIRE_UDP_IP_BYTES: u64 = 28;
+
+/// [ACK-GÖZLEM · salt gözlem] Sunucu ucunun canlı aynasında tutulan son giden ACK kaydı sayısı
+/// ([`ServerLiveDiag::rx_acks`]); gözlem çözünürlüğü, normatif DEĞİL `[KALİBRASYON]`. Halka sabit
+/// boyutludur (SR-AUDIT-001); iki okuma arasında bundan fazla ACK çıkarsa eskileri düşer ve
+/// okuyucu bunu kayıt sırasındaki ([`RxAckDiag::index`]) boşluktan görür.
+pub const RX_ACK_LOG_LEN: usize = 64;
+
+/// [ACK-GÖZLEM · salt gözlem] Giden ACK çerçevesinin mühür ve soket sonucu.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum RxAckWire {
+    /// Mühürlendi, egress kapısı izin verdi, UDP soketine yazıldı (`send_to` döndü; yazım hatası
+    /// ayrıca tutulmaz, ürün yolunda kayıp sayılır).
+    #[default]
+    Sent,
+    /// Mühürlendi ama egress kapısı reddetti (tele çıkmadı).
+    EgressRefused,
+    /// Mühür reddedildi (tele çıkmadı).
+    SealFailed,
+}
+
+/// [ACK-GÖZLEM · salt gözlem] Çıkan ACK'in yuvasındaki alıcı motorun kümülatif sayaçları (ACK
+/// çıktığı anda okunur).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct RxAckTotals {
+    /// Daralma algılaması (`Receiver::diag_drop_detects`).
+    pub drop_detects: u64,
+    /// Kanıtla bırakılan alarm ACK'i (`Receiver::diag_drop_alarms`).
+    pub drop_alarms: u64,
+    /// Yükseliş alarmı (`Receiver::diag_rise_alarms`).
+    pub rise_alarms: u64,
+    /// Kanıt beklemesi açıkken çıkan planlı ACK (`Receiver::diag_alarm_wait_planned`).
+    pub wait_planned: u64,
+    /// Ertelenen ACK denemeleri: bütçe / dolu dönüş hattına yol verme / bilgisiz
+    /// (`Receiver::diag_ack_budget_deferred`, `diag_ack_yield_deferred`,
+    /// `diag_ack_no_info_deferred`).
+    pub budget_deferred: u64,
+    pub yield_deferred: u64,
+    pub no_info_deferred: u64,
+}
+
+/// [ACK-GÖZLEM · salt gözlem] Sunucu ucundan (alıcı motordan) çıkan bir ACK çerçevesinin kaydı:
+/// motorun kanıt / hazır olma / çıkış anları ve çerçevenin sokete yazıldığı an. Çerçeve
+/// gönderildiği anda yazılır; hiçbir karar bu kaydı okumaz.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct RxAckDiag {
+    /// Sunucu ucundan çıkan ACK çerçevesi sırası (1'den; bütün yuvalar).
+    pub index: u64,
+    /// Yuvanın oturumu (`Session(h)`; başka bağlamda `None`).
+    pub session: Option<SessionHandle>,
+    /// Çerçeve türü (ilk bayt: 0x10 / 0x14 / 0x15 / 0x16 / 0x17) ve mühürsüz boyu.
+    pub frame_type: u8,
+    pub frame_bytes: u32,
+    /// Zamanlayıcı yolundan mı çıktı (`on_ack_timer`); değilse bir datagramın varışında.
+    pub timer: bool,
+    /// Motora verilen saat (ns; sunucu görevinin saat tabanı, [`ServerLiveDiag::clock_origin`]):
+    /// ACK'i üreten `on_datagram` / `on_ack_timer` çağrısının `now`'ı.
+    pub motor_ns: u64,
+    /// Motorun bu ACK için kaydı (`Receiver::diag_ack_obs`; anlar `motor_ns` ile aynı saatte).
+    /// Bütçesiz yol ve eski motor kayıt tutmaz: `None`.
+    pub motor: Option<adaptive_transport::receiver::AckEmitObs>,
+    /// Mühür + egress kapısı + `send_to` döndükten sonraki an (ns; aynı saat tabanı). Çerçevenin
+    /// çekirdeğe verildiği andır; arayüz kuyruğundaki (qdisc / netem) bekleme bu saatte görünmez.
+    pub wire_ns: u64,
+    /// Mühür ve soket sonucu.
+    pub wire: RxAckWire,
+    /// Yuvadaki motorun kümülatif sayaçları.
+    pub totals: RxAckTotals,
+}
+
+/// [ACK-GÖZLEM · salt gözlem] Sunucu ucunun (eş başına alıcı motorlar) canlı aynası
+/// ([`ServerHandle::live_diag`]). [DUR-19] Yalnız [`RuntimeConfig::live_diag`] açıkken ya da
+/// ölçüm düzeneği sonradan açtıysa vardır (ürün varsayılanı KAPALI); kapalıyken görev yazmaz ve
+/// okuyucu [`ServerLiveDiag::default`] görür. [`ServerStats`] yüzeyi değişmez.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ServerLiveDiag {
+    /// Sunucu görevinin saat tabanının sıfırı: `*_ns` anları bu ana göredir. İlk kayıtla
+    /// birlikte yazılır; ondan önce `None`.
+    pub clock_origin: Option<Instant>,
+    /// Son [`RX_ACK_LOG_LEN`] giden ACK çerçevesinin kaydı.
+    pub rx_acks: DiagRing<RxAckDiag, RX_ACK_LOG_LEN>,
+}
+
+/// [ACK-GÖZLEM · salt gözlem] Sunucu aynasının hücresi: boşken ayna yoktur (Mutex kurulmaz, görev
+/// yazmaz). Kurulum: uç bağlanırken [`RuntimeConfig::live_diag`] açıksa ya da ölçüm düzeneği
+/// sonradan açarsa (`ServerHandle::enable_live_diag_for_test`); bir kez kurulur, kaldırılmaz.
+type SrvLive = Arc<OnceLock<Mutex<ServerLiveDiag>>>;
+
+/// [ACK-GÖZLEM · salt gözlem] Bir ACK çerçevesinin gönderimden ÖNCE okunan yarısı (motor az önce
+/// üretti). Yalnız canlı ayna açıkken kurulur; görev okumaz, kayda aktarır.
+#[derive(Debug, Clone, Copy)]
+struct RxAckNote {
+    session: Option<SessionHandle>,
+    frame_type: u8,
+    frame_bytes: u32,
+    timer: bool,
+    motor_ns: u64,
+    motor: Option<adaptive_transport::receiver::AckEmitObs>,
+    totals: RxAckTotals,
+}
+
+impl RxAckNote {
+    /// `live` kapalıyken `None` (motor okunmaz). `now` = ACK'i üreten motor çağrısının saati.
+    fn of(
+        live: Option<&Mutex<ServerLiveDiag>>,
+        rx: &Receiver,
+        ctx: ProtectionContext,
+        plain: &[u8],
+        now: u64,
+        timer: bool,
+    ) -> Option<Self> {
+        live?;
+        let obs = rx.diag_ack_obs();
+        Some(Self {
+            session: match ctx {
+                ProtectionContext::Session(h) => Some(h),
+                ProtectionContext::HubChannel => None,
+            },
+            frame_type: plain.first().copied().unwrap_or(0),
+            frame_bytes: u32::try_from(plain.len()).unwrap_or(u32::MAX),
+            timer,
+            motor_ns: now,
+            // Motor kaydı bu çağrıda yazıldıysa (bütçeli port yolu) alınır.
+            motor: (obs.index > 0 && obs.emit_ns == now).then_some(obs),
+            totals: RxAckTotals {
+                drop_detects: rx.diag_drop_detects(),
+                drop_alarms: rx.diag_drop_alarms(),
+                rise_alarms: rx.diag_rise_alarms(),
+                wait_planned: rx.diag_alarm_wait_planned(),
+                budget_deferred: rx.diag_ack_budget_deferred(),
+                yield_deferred: rx.diag_ack_yield_deferred(),
+                no_info_deferred: rx.diag_ack_no_info_deferred(),
+            },
+        })
+    }
+}
 
 impl WireEvidence {
     /// İki oturumun sayaçlarını toplar (doygun).
@@ -4741,6 +4876,9 @@ pub struct ServerHandle {
     /// [ONARIM-SIRASI · salt gözlem] [`ServerStats::fec_blocks_decoded`]'ın canlı aynası (bu
     /// alıcının FEC ile çözdüğü blok; bkz. [`ServerHandle::fec_blocks_decoded`]).
     fec_blocks_decoded: Arc<AtomicU64>,
+    /// [ACK-GÖZLEM · salt gözlem] Canlı ayna hücresi ([`ServerHandle::live_diag`]). [DUR-19]
+    /// [`RuntimeConfig::live_diag`] kapalıyken boştur (Mutex yok).
+    live: SrvLive,
 }
 
 impl ServerEndpoint {
@@ -4824,6 +4962,10 @@ impl ServerEndpoint {
         let data_not_admitted_full = Arc::new(AtomicU64::new(0));
         let data_not_admitted_window = Arc::new(AtomicU64::new(0));
         let fec_blocks_decoded = Arc::new(AtomicU64::new(0));
+        let live: SrvLive = Arc::new(OnceLock::new());
+        if cfg.live_diag {
+            let _ = live.set(Mutex::new(ServerLiveDiag::default()));
+        }
         let task = tokio::spawn(server_task(
             sock,
             cfg,
@@ -4839,6 +4981,7 @@ impl ServerEndpoint {
             Arc::clone(&data_not_admitted_window),
             Arc::clone(&fec_blocks_decoded),
             uplink,
+            Arc::clone(&live),
         ));
         Ok(ServerHandle {
             delivery_rx,
@@ -4851,6 +4994,7 @@ impl ServerEndpoint {
             data_not_admitted_full,
             data_not_admitted_window,
             fec_blocks_decoded,
+            live,
         })
     }
 }
@@ -4928,6 +5072,27 @@ impl ServerHandle {
     #[must_use]
     pub fn fec_blocks_decoded(&self) -> u64 {
         self.fec_blocks_decoded.load(Ordering::Relaxed)
+    }
+
+    /// [ACK-GÖZLEM · salt gözlem] Sunucu ucunun canlı aynası: giden ACK çerçevelerinin kaydı
+    /// ([`ServerLiveDiag`]). [DUR-19] Ayna yalnız [`RuntimeConfig::live_diag`] açıkken (ya da
+    /// ölçüm düzeneği açtıysa) vardır; kapalıyken (ürün varsayılanı) görev yazmaz ve bu çağrı
+    /// kilit almadan [`ServerLiveDiag::default`] döner.
+    #[must_use]
+    pub fn live_diag(&self) -> ServerLiveDiag {
+        match self.live.get() {
+            Some(live) => *live.lock().unwrap_or_else(PoisonError::into_inner),
+            None => ServerLiveDiag::default(),
+        }
+    }
+
+    /// [ACK-GÖZLEM · DUR-19] Canlı aynayı uç bağlandıktan sonra açar; YALNIZ ölçüm düzeneği
+    /// (`ClientTransport::set_live_diag_for_test`; sunucu ucu Transport kurulurken, bayraktan
+    /// önce bağlanır). Bundan sonra çıkan ACK'ler kaydedilir; bir kez açılır, kapatılmaz. Ürün
+    /// yolu çağırmaz.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn enable_live_diag_for_test(&self) {
+        let _ = self.live.set(Mutex::new(ServerLiveDiag::default()));
     }
 
     /// Kapanış → istatistik.
@@ -5495,6 +5660,7 @@ async fn srv_ack_tick(
     stats: &mut ServerStats,
     peers: &mut HashMap<SlotKey, PeerSlot>,
     now: u64,
+    live: Option<&Mutex<ServerLiveDiag>>,
 ) {
     // ACK_FREQ_N'e ulaşamayan kuyruğu timer teyit eder (bench birebir).
     // [DÖNÜŞ-HATTI] ACK'in varış ufku hatta önündeki baytları da sayar.
@@ -5507,18 +5673,21 @@ async fn srv_ack_tick(
     // yeniden iletimini önler; ACK göndericinin bütün teyit ve hız ölçümüdür.
     let ahead = tx.line_ahead_ns();
     let yield_ctrl = tx.control_should_yield();
-    let acks: Vec<(SocketAddr, ProtectionContext, Vec<u8>)> = peers
+    let acks: Vec<(SocketAddr, ProtectionContext, Vec<u8>, Option<RxAckNote>)> = peers
         .iter_mut()
         .filter_map(|(&(p, _), s)| {
             s.rx.set_return_line_ahead_ns(ahead);
             s.rx.set_uplink_yield(yield_ctrl);
             let a = s.rx.on_ack_timer(now)?;
             s.acks_out = s.acks_out.saturating_add(1);
-            Some((p, s.ctx, a.encode()))
+            let plain = a.encode();
+            // [ACK-GÖZLEM · salt gözlem] Motorun kaydı, sıradaki yuvanın çağrısından önce.
+            let note = RxAckNote::of(live, &s.rx, s.ctx, &plain, now, true);
+            Some((p, s.ctx, plain, note))
         })
         .collect();
-    for (peer, sp, plain) in acks {
-        srv_seal_send(tx, sock, stats, peer, sp, plain).await;
+    for (peer, sp, plain, note) in acks {
+        srv_send_ack(tx, sock, stats, peer, sp, plain, note, live).await;
     }
     drain_yielded(tx, sock, stats).await;
     // [PARAM_ACK-BEKLETME] İkinci ACK çıktıysa ya da süre dolduysa bekletilen PARAM_ACK.
@@ -5534,6 +5703,51 @@ async fn srv_ack_tick(
     for (peer, sp, f) in held {
         srv_seal_send(tx, sock, stats, peer, sp, f).await;
     }
+}
+
+/// [ACK-GÖZLEM · salt gözlem] ACK çerçevesini [`srv_seal_send`] ile gönderir; canlı ayna açıksa
+/// (`note` kurulmuş) gönderimden sonra kaydı yazar ([`RxAckDiag`]). Ayna kapalıyken
+/// `srv_seal_send` çağrısının aynısıdır. Mühür / egress sonucu `stats` sayaçlarının bu çağrıdaki
+/// artışından okunur; sayaçlar değişmez.
+#[allow(clippy::too_many_arguments)]
+async fn srv_send_ack(
+    tx: &mut SrvTx,
+    sock: &UdpSocket,
+    stats: &mut ServerStats,
+    peer: SocketAddr,
+    ctx: ProtectionContext,
+    plain: Vec<u8>,
+    note: Option<RxAckNote>,
+    live: Option<&Mutex<ServerLiveDiag>>,
+) {
+    let (seal_failures, refused) = (stats.seal_failures, stats.egress_refused_pkts);
+    srv_seal_send(tx, sock, stats, peer, ctx, plain).await;
+    let (Some(live), Some(note)) = (live, note) else {
+        return;
+    };
+    let wire = if stats.seal_failures != seal_failures {
+        RxAckWire::SealFailed
+    } else if stats.egress_refused_pkts != refused {
+        RxAckWire::EgressRefused
+    } else {
+        RxAckWire::Sent
+    };
+    let wire_ns = elapsed_ns(tx.start);
+    let mut mirror = live.lock().unwrap_or_else(PoisonError::into_inner);
+    mirror.clock_origin.get_or_insert(tx.start);
+    let index = mirror.rx_acks.total().saturating_add(1);
+    mirror.rx_acks.push(RxAckDiag {
+        index,
+        session: note.session,
+        frame_type: note.frame_type,
+        frame_bytes: note.frame_bytes,
+        timer: note.timer,
+        motor_ns: note.motor_ns,
+        motor: note.motor,
+        wire_ns,
+        wire,
+        totals: note.totals,
+    });
 }
 
 /// [ÖNCELİK] Bekletilen denetim çerçevelerini hat boş kaldıkça sırayla çıkarır (ACK
@@ -5819,6 +6033,7 @@ async fn server_task(
     data_not_admitted_window_seen: Arc<AtomicU64>,
     fec_blocks_decoded_seen: Arc<AtomicU64>,
     uplink: Option<UplinkShare>,
+    live: SrvLive,
 ) -> ServerStats {
     // [K4G-01 / D1 (v1.1)] HubChannel dağıtıcısı: Session durumunun hiçbirini TUTMAZ (yalnız
     // sayaç).
@@ -5874,7 +6089,7 @@ async fn server_task(
             }
             _ = ack_timer.tick() => {
                 let now = elapsed_ns(start);
-                srv_ack_tick(&mut tx, &sock, &mut stats, &mut peers, now).await;
+                srv_ack_tick(&mut tx, &sock, &mut stats, &mut peers, now, live.get()).await;
             }
             _ = patience.tick() => {
                 // Item 3: idle-peer emekliliği — tablo boşalması YALNIZ burada (sessiz-eviction yok;
@@ -6156,8 +6371,14 @@ async fn server_task(
                         if let Some(ack) = out.ack {
                             slot.acks_out = slot.acks_out.saturating_add(1);
                             let sp = slot.ctx;
-                            srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, ack.encode())
-                                .await;
+                            let plain = ack.encode();
+                            let note =
+                                RxAckNote::of(live.get(), &slot.rx, sp, &plain, now, false);
+                            srv_send_ack(
+                                &mut tx, &sock, &mut stats, peer, sp, plain, note,
+                                live.get(),
+                            )
+                            .await;
                         }
                         // [S1] Source-symbol → blok-birleştirici. 0x00'da symbol TÜRETİLİR (TX ile
                         // aynı deterministik prefix); 0x05'te wire gövdesi ZATEN canonical symbol'ün
@@ -6249,9 +6470,13 @@ async fn server_task(
                             if let Some(ack) = out.ack {
                                 slot.acks_out = slot.acks_out.saturating_add(1);
                                 let sp = slot.ctx;
-                                srv_seal_send(
-                                    &mut tx, &sock, &mut stats, peer, sp,
-                                    ack.encode(),
+                                let plain = ack.encode();
+                                let note = RxAckNote::of(
+                                    live.get(), &slot.rx, sp, &plain, now, false,
+                                );
+                                srv_send_ack(
+                                    &mut tx, &sock, &mut stats, peer, sp, plain, note,
+                                    live.get(),
                                 )
                                 .await;
                             }
@@ -6282,8 +6507,14 @@ async fn server_task(
                         if let Some(ack) = out.ack {
                             slot.acks_out = slot.acks_out.saturating_add(1);
                             let sp = slot.ctx;
-                            srv_seal_send(&mut tx, &sock, &mut stats, peer, sp, ack.encode())
-                                .await;
+                            let plain = ack.encode();
+                            let note =
+                                RxAckNote::of(live.get(), &slot.rx, sp, &plain, now, false);
+                            srv_send_ack(
+                                &mut tx, &sock, &mut stats, peer, sp, plain, note,
+                                live.get(),
+                            )
+                            .await;
                         }
                         let admit_limit = session_admit_limit(&expected, slot.ctx);
                         let rec = fec_ingest(
@@ -7310,7 +7541,33 @@ mod live_diag_mirror_tests {
             );
             let live = client.live_diag();
             let stats = client.shutdown().await;
+            // [ACK-GÖZLEM] Sunucu ucunun aynası aynı bayrağa bağlıdır: kapalıyken varsayılan,
+            // açıkken giden her ACK çerçevesi kayıtlıdır (istemcinin işlediğinden az olamaz).
+            // Bu düzenek bütçesizdir: motor kendi kaydını tutmaz (`motor` yok), çerçevenin
+            // türü, motor saati ve soket anı yine yazılır.
+            let srv_live = server.live_diag();
             let _ = server.shutdown().await;
+            if on {
+                assert!(srv_live.clock_origin.is_some(), "{srv_live:?}");
+                assert!(
+                    srv_live.rx_acks.total() >= live.ack.frames,
+                    "sunucu {} ACK kaydetti, istemci {} işledi",
+                    srv_live.rx_acks.total(),
+                    live.ack.frames
+                );
+                let first = srv_live.rx_acks.total() + 1
+                    - u64::try_from(srv_live.rx_acks.recent().count()).expect("sayı");
+                for (r, expect) in srv_live.rx_acks.recent().zip(first..) {
+                    assert_eq!(r.index, expect, "kayıt sırası boşluksuz");
+                    assert_eq!(r.wire, RxAckWire::Sent, "{r:?}");
+                    assert!(r.wire_ns >= r.motor_ns, "{r:?}");
+                    assert_eq!(r.frame_type, FRAME_TYPE_ACK_V2, "{r:?}");
+                    assert!(r.motor.is_none(), "bütçesiz yolda motor kaydı: {r:?}");
+                    assert_eq!(r.totals, RxAckTotals::default(), "{r:?}");
+                }
+            } else {
+                assert_eq!(srv_live, ServerLiveDiag::default(), "kapalı: sunucu aynası");
+            }
             assert_eq!(stats.acked, UNITS, "bayrak {on}: {stats:?}");
             assert!(
                 stats.fate.activation.retransmits >= 1 && stats.tx_retx_bytes > 0,
@@ -8698,7 +8955,7 @@ mod ack_tick_priority_tests {
         let mut peers: HashMap<SlotKey, PeerSlot> = HashMap::new();
         peers.insert((peer, IdentitySeam::SESSION), slot);
 
-        srv_ack_tick(&mut tx, &sock, &mut stats, &mut peers, 50_000_000).await;
+        srv_ack_tick(&mut tx, &sock, &mut stats, &mut peers, 50_000_000, None).await;
 
         let mut buf = [0u8; 2048];
         let n = peer_sock.recv(&mut buf).await.expect("datagram");
