@@ -164,9 +164,15 @@ pub(crate) fn start_record(runtime: &RuntimeConfig, lanes: bool, source: Source)
         ""
     };
     // [ACK-BİÇİMİ] Kabul kipi başlangıç kaydından okunur (V2 = ürün varsayılanı; bitmap = pilot).
-    let ack = match runtime.ack_format {
-        client_core::runtime::AckFormat::V2 => "v2",
-        client_core::runtime::AckFormat::Bitmap => "bitmap",
+    // Bitmap yalnız geri bildirimi aç profilde etkindir (`runtime.rs`: CAPS ancak
+    // `link_feedback_starved` iken çıkar): ayarlanan ile etkin olan ayrı yazılır. Telde gerçekten
+    // koştuğunun kanıtı koşu sonundaki sayaçtır (`ClientStats::ack_bitmap_rx`), bu kayıt değil.
+    let ack = match (runtime.ack_format, link_feedback_starved(runtime)) {
+        (client_core::runtime::AckFormat::V2, _) => "v2",
+        (client_core::runtime::AckFormat::Bitmap, true) => "bitmap etkin=evet",
+        (client_core::runtime::AckFormat::Bitmap, false) => {
+            "bitmap etkin=hayır (geri bildirim aç profil yok: telde v2)"
+        }
     };
     format!(
         "motor={engine}\nack_biçimi={ack}\nşeritler={}\nyön_hızları={rates}\nkaynak={}\nkoruma={protection}\n{uplink}",
@@ -241,7 +247,26 @@ mod tests {
             true,
             Source::None,
         );
-        assert!(bitmap.contains("ack_biçimi=bitmap\n"), "{bitmap}");
+        assert!(
+            bitmap.contains("ack_biçimi=bitmap etkin=hayır"),
+            "yön hızı yokken bitmap ayarlı ama etkin değil: {bitmap}"
+        );
+        let active = start_record(
+            &RuntimeConfig {
+                ack_format: client_core::runtime::AckFormat::Bitmap,
+                link_rates: Some(LinkRates {
+                    uplink_bps: 12_500,
+                    downlink_bps: 62,
+                }),
+                ..RuntimeConfig::default()
+            },
+            true,
+            Source::Env,
+        );
+        assert!(
+            active.contains("ack_biçimi=bitmap etkin=evet\n"),
+            "{active}"
+        );
         assert!(plain.contains("yön_hızları=yok\n"), "{plain}");
         assert!(plain.contains("koruma=standart\n"), "{plain}");
         // Saha cihazı: aşağı yön (ACK'lerin geldiği yön) geniş, yukarı dar → kendi verisinin
