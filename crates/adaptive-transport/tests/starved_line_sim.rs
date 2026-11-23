@@ -3838,6 +3838,28 @@ fn zc_o(v: Option<u64>) -> String {
     v.map_or("-".to_string(), |v| v.to_string())
 }
 
+/// Gereksiz ARQ (salt test, gerçeklik bilgisiyle): aynı birimin DAHA ÖNCE darboğaza verilmiş bir
+/// iletimi kuyrukta ya da hatta düşmeden alıcıya ulaştıysa sonraki ARQ iletimi gereksizdir
+/// (gönderici bunu V2 ACK'inin 16 aralığından göremeyebilir). Döner: gereksiz ARQ seq'leri.
+fn zc_spurious(o: &Outcome) -> HashSet<u64> {
+    let t = o.timeline.as_deref().expect("iz");
+    let unit: HashMap<u64, u64> = o.emit_log.iter().map(|e| (e.seq, e.unit_id)).collect();
+    let mut recs: Vec<&SerRec> = t.ser.iter().collect();
+    recs.sort_by_key(|r| (r.at, r.seq));
+    let mut delivered: HashSet<u64> = HashSet::new();
+    let mut out = HashSet::new();
+    for r in recs {
+        let Some(&u) = unit.get(&r.seq) else { continue };
+        if r.class == TxClass::Arq && delivered.contains(&u) {
+            out.insert(r.seq);
+        }
+        if r.ser.is_some() && !r.lost {
+            delivered.insert(u);
+        }
+    }
+    out
+}
+
 /// Penceredeki tel kullanımı (yoklama dışı) ve kuyruk ölçüleri; satırı basar, (oran‰, kuyruk
 /// en çok pkt, düşen, bekleme en çok) döner.
 #[allow(clippy::too_many_arguments)]
@@ -3848,6 +3870,7 @@ fn zc_window(
     probes: &[(u64, u64, u64, u64)],
     drops: &[u64],
     waits: &[(u64, u64)],
+    spur: &HashSet<u64>,
     a: u64,
     b: u64,
 ) -> Option<(u64, u64, usize, u64)> {
@@ -3883,7 +3906,22 @@ fn zc_window(
     let mut wire = [0u64; 6];
     let mut cap = 0u64;
     let mut dur = 0u64;
+    let spur_recs: Vec<SerRec> = t
+        .ser
+        .iter()
+        .filter(|r| spur.contains(&r.seq))
+        .copied()
+        .collect();
+    let arq_recs: Vec<SerRec> = t
+        .ser
+        .iter()
+        .filter(|r| r.class == TxClass::Arq)
+        .copied()
+        .collect();
+    let (mut spur_bytes, mut arq_bytes) = (0u64, 0u64);
     for &(s0, s1) in &segs {
+        spur_bytes += zc_wire(&spur_recs, s0, s1).iter().sum::<u64>();
+        arq_bytes += zc_wire(&arq_recs, s0, s1).iter().sum::<u64>();
         let w = zc_wire(&t.ser, s0, s1);
         for (k, x) in w.iter().enumerate() {
             wire[k] += x;
@@ -3937,7 +3975,7 @@ fn zc_window(
         .collect();
     println!(
         "ZC-PENCERE {arm} {name} [{}..{}) yoklama_disi_s={} kapasite_B={cap} tel_B={total} \
-         kullanim_permil={permille} {} kuyruk_max_pkt={q_max} kuyruk_max_ms={} kuyrukta_dusen={nd} \
+         kullanim_permil={permille} {} ARQ_tum_yuk={arq_bytes} ARQ_tum_yuk_gereksiz={spur_bytes} kuyruk_max_pkt={q_max} kuyruk_max_ms={} kuyrukta_dusen={nd} \
          bekleme_max_ms={} hazir_birim_min={unsent_min} yoklamalar=[{}]",
         zc_f(a),
         zc_f(b),
@@ -4176,7 +4214,7 @@ fn zc_print(arm: &str, sc: &Scenario, o: &Outcome) {
     println!(
         "ZC-OZET {arm} tohum={} ack={} ack_tur={:?} dosya_bitti={} kuyrukta_dusen={} \
          fifo_max_pkt={} bekleme_max_ms={} ptt_tel_B={} ptt_zamaninda={} baslangic_cikis={} \
-         ilk_pencere={}",
+         ilk_pencere={} arq_pkt={} arq_pkt_gereksiz={} dosya_birim_teslim={}",
         sc.seed,
         t.acks.len(),
         o.ack_types,
@@ -4188,6 +4226,17 @@ fn zc_print(arm: &str, sc: &Scenario, o: &Outcome) {
         bua_ptt_phases(sc, o),
         t.acks.last().map_or("-", |a| a.start_exit.as_str()),
         t.acks.last().map_or("-", |a| a.first_window.as_str()),
+        t.ser.iter().filter(|r| r.class == TxClass::Arq).count(),
+        zc_spurious(o).len(),
+        {
+            let unit: HashMap<u64, u64> = o.emit_log.iter().map(|e| (e.seq, e.unit_id)).collect();
+            t.ser
+                .iter()
+                .filter(|r| r.payload == Payload::File && r.ser.is_some() && !r.lost)
+                .filter_map(|r| unit.get(&r.seq))
+                .collect::<HashSet<_>>()
+                .len()
+        },
     );
 }
 
@@ -4208,6 +4257,7 @@ fn zc_verdicts(runs: &[(&str, Scenario, Outcome)]) {
     };
     let m = get("ana");
     let mo = outcome("ana");
+    let spur = zc_spurious(mo);
     let probes = zc_probe_windows(m);
     let after = |t: &Timeline, x: u64| -> Vec<AckRow> {
         t.acks
@@ -4315,6 +4365,7 @@ fn zc_verdicts(runs: &[(&str, Scenario, Outcome)]) {
                 &probes,
                 &mo.drop_times,
                 &mo.waits,
+                &spur,
                 t0 + SEC,
                 ZC_T_D - SEC,
             );
@@ -4332,6 +4383,7 @@ fn zc_verdicts(runs: &[(&str, Scenario, Outcome)]) {
             &probes,
             &mo.drop_times,
             &mo.waits,
+            &spur,
             5 * SEC,
             ZC_T_D - SEC,
         );
@@ -4346,6 +4398,7 @@ fn zc_verdicts(runs: &[(&str, Scenario, Outcome)]) {
                 &probes,
                 &mo.drop_times,
                 &mo.waits,
+                &spur,
                 td + SEC,
                 ZC_T_R - SEC,
             );
@@ -4359,6 +4412,7 @@ fn zc_verdicts(runs: &[(&str, Scenario, Outcome)]) {
                 &probes,
                 &mo.drop_times,
                 &mo.waits,
+                &spur,
                 ZC_T_D + SEC,
                 ZC_T_R - SEC,
             );
@@ -4370,6 +4424,7 @@ fn zc_verdicts(runs: &[(&str, Scenario, Outcome)]) {
                     &probes,
                     &mo.drop_times,
                     &mo.waits,
+                    &spur,
                     a.rec.arrival + SEC,
                     ZC_T_R - SEC,
                 );
@@ -4413,6 +4468,7 @@ fn zc_verdicts(runs: &[(&str, Scenario, Outcome)]) {
                 &probes,
                 &mo.drop_times,
                 &mo.waits,
+                &spur,
                 tr + SEC,
                 ZC_T_E - SEC,
             );
@@ -4426,6 +4482,7 @@ fn zc_verdicts(runs: &[(&str, Scenario, Outcome)]) {
                 &probes,
                 &mo.drop_times,
                 &mo.waits,
+                &spur,
                 ZC_T_R + SEC,
                 ZC_T_E - SEC,
             );
