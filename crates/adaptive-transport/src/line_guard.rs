@@ -147,6 +147,31 @@
 //! kalıcı yükselir ve adım katlanır; değilse tavan önceki değerde kalır ve ölçülen artış hat
 //! modeline yazılır (boşaltma). Örnek eşiğini aşan artış her zamanki gibi örnektir.
 //!
+//! # Tam yoklama: V2 yolunda ölçülmüş tabandan (Bulut-B, 2026-11-23; #245)
+//!
+//! V2 (0x14) ACK'i ACK başına tek bir (cephe, varış) noktası taşır; ACK aralığı 62 B/s dönüşte
+//! ≈ 8,6 s (benzetim `tests/hizlanma_v2_sim.rs`). Gönderici ölçülmüş tabanda ve kuyruksuzken hat
+//! tabanda mı yoksa toparlandı mı ayırt edilemez: kapasite yalnız göndericinin tabanı aşmasıyla
+//! (yoklama) görünür. En küçük adımdan katlanan yoklamada her adım iki ACK (yoklama, hüküm; sonra
+//! doğrulamasız ACK) sürüyordu ve 6 250 → 11 875 dört "geçti" istiyordu (ölçüldü: 40 s'de 7 457).
+//!
+//! Aralık kipi dışında (V2; bitmap yolu değişmez) ve hat ölçülmüşken (`rate_bps` var) yoklama
+//! profil hattına çıkar (`begin_full_probe`); süre, hat değişmediyse yoklamanın ardından gelen
+//! iletimin iki tam datagramın taban hızındaki serileşmesi kadar beklemesidir (dürüst hatta
+//! yoklamanın bedeli; 6 250'de ≈ 393 ms bekleme, yoklama ≈ 295 ms).
+//! * **Zamanlama:** yoklama, sonraki ACK cephesinin tahmini gönderim anından (son iki cephe
+//!   aralığı ve aralığın değişimi) yoklama süresi, değişim ve bir datagramlık taban serileşmesi
+//!   kadar önce, o anda ya da sonra gelen ilk iletimle başlar. Hüküm cephesi böylece dürüst hatta
+//!   yoklamanın kuyruğu hâlâ dururken gönderilir.
+//! * **Hüküm:** var olan iki ölçünün yanında "geçti" ayrıca, hat taban hızında olsaydı hüküm
+//!   cephesinin göndericinin kendi kayıtlarından kurulan sanal hatta `half`'tan uzun bekleyecek
+//!   olmasını ister. Gönderici yoklamadan sonra tabanın altında kalıp kuyruğu cepheden önce
+//!   boşaltabildiyse (‰908 karşı örneği) ya da hiç tabanı aşmadıysa (uygulama sınırlı) kuyruğun
+//!   büyümemesi bilgi değildir: hüküm yok.
+//! * Hüküm ACK'inde cephe örneği tabanın ölçüm çözünürlüğü (`1/GROWTH_MIN_DIV`) içindeyse artışı
+//!   yoklamanın bilinen fazlası açıklar: başarısızlıktır (fazlası boşaltılır), yeni ölçüm değil.
+//!   Başarısız tam yoklama çift alt sınırının ret seviyesini değiştirmez.
+//!
 //! # Başlangıç bütçesi ve tek ACK'ten ilk ölçüm (İŞ-33, 2026-11-21)
 //!
 //! İlk ACK'ten önce gönderici gerçek hattı bilmez. Profil iyimserse (gerçek hat beyanın yarısı)
@@ -588,6 +613,11 @@ pub struct LineGuard {
     interval_diag: (u64, u64, Option<i64>),
     /// [SÜRELİ-YOKLAMA] Süren ya da hüküm bekleyen yoklama.
     probe: Option<Probe>,
+    /// [TAM-YOKLAMA] Zamanlanmış tam yoklama: vakti gelince ilk iletimde başlar
+    /// ([`Self::on_sent_classed`]); başlamadan ACK gelirse ACK anında.
+    probe_at: Option<PendingProbe>,
+    /// [TAM-YOKLAMA] Tavan bir iletimde değişti; [`Self::tick`] göndericiye bildirir.
+    pace_dirty: bool,
     /// [SÜRELİ-YOKLAMA] Başarısız yoklama sayısı (gözlem).
     probe_failures: u64,
     /// [İKİNCİ-ÖLÇÜM] Son işlenen ACK geçici evreyi kapattı (`settle_start_budget` bütçeyi kaldırır).
@@ -699,6 +729,17 @@ struct Probe {
     sent: u64,
     /// [İKİNCİ-ÖLÇÜM] Başlangıç yoklaması: hüküm ölçüm aralığıyla (varsa).
     by_interval: bool,
+    /// [TAM-YOKLAMA] Ölçülmüş tabandan profil hattına kısa yoklama (V2 yolu; modül belgesi).
+    full: bool,
+}
+
+/// [TAM-YOKLAMA] Zamanlanmış (henüz başlamamış) tam yoklama.
+#[derive(Debug, Clone, Copy)]
+struct PendingProbe {
+    /// Yoklamanın başlayacağı an (ns).
+    start_ns: u64,
+    /// Yoklamanın başlatıldığı ACK noktası (hükmün referansı).
+    point: Point,
 }
 
 /// [İLK-PENCERE] İlk ACK'in varış penceresinden çıkan sonuç (gözlem).
@@ -752,6 +793,8 @@ impl LineGuard {
             recent_fronts: VecDeque::new(),
             interval_diag: (0, 0, None),
             probe: None,
+            probe_at: None,
+            pace_dirty: false,
             probe_failures: 0,
             start_confirmed: false,
             start_exit: None,
@@ -790,6 +833,16 @@ impl LineGuard {
     ) {
         let wire = udp_bytes.saturating_add(self.line.datagram_overhead);
         self.cum = self.cum.saturating_add(wire);
+        // [TAM-YOKLAMA] Vakti gelen yoklama bu iletimle başlar: yoklamanın ilk datagramı budur
+        // (göndericinin taban hızında planlanmış bir sonraki iletimini beklemez; kanıt yoklama
+        // süresinin tamamında sayılır).
+        if let Some(pp) = self.probe_at.filter(|pp| now_ns >= pp.start_ns) {
+            self.probe_at = None;
+            if self.probe.is_none() && self.pace_bps < self.line.rate_bps {
+                self.begin_full_probe(now_ns, pp.point);
+                self.pace_dirty = true;
+            }
+        }
         if let Some(p) = self.probe.as_mut() {
             if now_ns >= p.start_ns && now_ns < p.until_ns {
                 p.sent = p.sent.saturating_add(wire);
@@ -876,6 +929,10 @@ impl LineGuard {
     /// [SÜRELİ-YOKLAMA] Yoklamanın süresi dolduysa tavan hükme dek yoklama öncesi değerine döner.
     /// Tavan değiştiyse `true` (gönderici hat modelini yeni tavana alır).
     pub fn tick(&mut self, now_ns: u64) -> bool {
+        // [TAM-YOKLAMA] Zamanlanmış yoklama bir iletimde başladı: tavan profil hattında.
+        if std::mem::take(&mut self.pace_dirty) {
+            return true;
+        }
         match self.probe {
             Some(p) if now_ns >= p.until_ns && self.pace_bps == p.probe_pace => {
                 self.pace_bps = p.base_pace;
@@ -1397,6 +1454,7 @@ impl LineGuard {
             wire
         };
         self.probe = None;
+        self.probe_at = None;
         self.pace_bps = up;
         self.rate_bps = self
             .rate_bps
@@ -1454,6 +1512,19 @@ impl LineGuard {
         interval: Option<ForwardInterval>,
     ) -> Option<LineGuardUpdate> {
         self.pair_allowed = false;
+        // [TAM-YOKLAMA] Bu ACK'e dek başlamamış zamanlanmış yoklama: tahmin tutmadı, bu ACK'ten
+        // yeniden kurulur. Vakti geçti ama arada iletim olmadıysa (gönderici boş) yoklama vaktinde
+        // başlamış sayılır; kanıt kayıtlardan sayılır (uygulama sınırlıysa hüküm yok).
+        match self.probe_at.take() {
+            Some(pp)
+                if pp.start_ns <= now_ns
+                    && self.probe.is_none()
+                    && self.pace_bps < self.line.rate_bps =>
+            {
+                self.begin_full_probe(pp.start_ns, pp.point);
+            }
+            _ => {}
+        }
         // [TAŞMA · ÇİFT ALT SINIRI] Yalnız bu ACK'in alt sınırı (bayat değer kullanılmaz).
         let pair_bound = self.pair_bound_wire.take();
         // Aralık örneği cephe zamanlamasından bağımsızdır; kayıtlar budanmadan önce.
@@ -1562,6 +1633,30 @@ impl LineGuard {
             .probe
             .filter(|p| rec.send_ns >= p.until_ns)
             .map(|p| wire_between(p.until_ns, rec.send_ns.saturating_add(1)));
+        // [TAM-YOKLAMA] Hat yoklama öncesi tavan (`base_pace`) hızında olsaydı hüküm cephesinin bu
+        // sanal hatta bekleyeceği süre (ns): yoklama başından cepheye dek göndericinin kendi
+        // kayıtları (cephe hariç), hat modeli çıkış anlarıyla (`send + ahead`). Bu süre `half`'tan
+        // kısaysa (gönderici yoklamadan sonra tabanın altında kalıp yoklamanın kuyruğunu cepheden
+        // önce boşalttıysa) kuyruğun büyümemesi hattın yoklama hızını taşıdığını göstermez.
+        let probe_virtual_wait = self
+            .probe
+            .filter(|p| p.full && rec.send_ns >= p.until_ns)
+            .map(|p| {
+                let rate = p.base_pace.max(1);
+                let free = self
+                    .sent
+                    .iter()
+                    .take(i)
+                    .filter(|r| r.send_ns >= p.start_ns)
+                    .fold(0u64, |free, r| {
+                        free.max(r.send_ns.saturating_add(r.ahead_ns))
+                            .saturating_add(
+                                ns_for(r.udp.saturating_add(self.line.datagram_overhead), rate)
+                                    .unwrap_or(0),
+                            )
+                    });
+                free.saturating_sub(rec.send_ns.saturating_add(rec.ahead_ns))
+            });
         // [ÖLÇÜM-ARALIĞI] Kayıtlar son iki ACK'in cephelerinin eskisine dek tutulur: bir sonraki
         // ACK'in ölçüm aralığı (M) iki ACK geriye uzanır. Cephe tahmincisi yalnız bu cepheden
         // sonrasını okur.
@@ -1592,6 +1687,11 @@ impl LineGuard {
         let mut best: Option<u64> = None;
         let mut verified = false;
         let newest = self.points.len().saturating_sub(1);
+        // [TAM-YOKLAMA] Son iki cephe gönderim anı (sonraki cephenin gönderim anı tahmini).
+        let prev_fronts: (Option<u64>, Option<u64>) = (
+            self.points.back().map(|p| p.send_ns),
+            self.points.iter().rev().nth(1).map(|p| p.send_ns),
+        );
         for (k, p) in self.points.iter().enumerate() {
             let (Some(ds), Some(dtau)) = (
                 rec.send_ns.checked_sub(p.send_ns),
@@ -1629,6 +1729,18 @@ impl LineGuard {
         // [ÖLÇÜM-ARALIĞI] Aralık kipinde aşağı yönlü örneği aralık verir; cephe örneği yalnız
         // ölçüm yokken ve geri dönüş koşulunda (modül belgesi).
         let best = if fronts_decide { best } else { interval_best };
+        // [TAM-YOKLAMA] Tam yoklamanın hüküm ACK'inde cephe örneği tabanın ölçüm çözünürlüğü
+        // (`1/GROWTH_MIN_DIV`) içindeyse kuyruk artışını yoklamanın bilinen fazlası açıklar: yeni
+        // bir hat ölçümü değil, yoklamanın başarısızlığıdır (hüküm aşağıda; fazlası boşaltılır).
+        // Tabanın belirgin altındaki örnek (hat yoklama sırasında daraldı) örnek olarak kalır.
+        let best = best.filter(|&est| {
+            !self.probe.is_some_and(|p| {
+                p.full
+                    && rec.send_ns >= p.until_ns
+                    && u128::from(est) * u128::from(GROWTH_MIN_DIV)
+                        >= u128::from(p.base_pace) * u128::from(GROWTH_MIN_DIV - 1)
+            })
+        });
         if self.points.len() >= POINT_CAP {
             self.points.pop_front();
         }
@@ -1709,7 +1821,7 @@ impl LineGuard {
                     (g <= half, g > half)
                 }
                 None => (
-                    abs_q <= half && growth <= half,
+                    abs_q <= half && growth <= half && probe_virtual_wait.is_none_or(|q| q > half),
                     abs_q > half && growth > half,
                 ),
             };
@@ -1737,7 +1849,11 @@ impl LineGuard {
                     self.step_permille = STEP_MIN_PERMILLE;
                     self.probe_failures = self.probe_failures.saturating_add(1);
                     // En yeni ret geçerlidir (eski, yüksek bir ret kilit bırakmaz).
-                    self.refuted_bps = Some(p.probe_pace);
+                    // [TAM-YOKLAMA] Tam yoklama yalnız profil düzeyini çürütür; ret seviyesi
+                    // (çift alt sınırının açılma tabanı) daha bilgili önceki değerinde kalır.
+                    if !p.full {
+                        self.refuted_bps = Some(p.probe_pace);
+                    }
                     // Yoklamanın kuyruğa eklediği: ölçülen artış (referans ile hüküm noktası
                     // arası) ve yoklama öncesi tavanın üstünde gönderilen bayt; büyüğü. Dönüş
                     // gecikmesi basamağı yanlış bir başarısızlık verirse bedel artış kadar tek
@@ -1756,6 +1872,7 @@ impl LineGuard {
         }
         if let Some(est) = best {
             self.probe = None;
+            self.probe_at = None;
             // Hat yeniden ölçüldü: eski ret bayattır.
             self.refuted_bps = None;
             // Örnek tavanı aşamaz: kuyrukta düşen bayt aralığı şişirir, hat tavandan hızlıysa
@@ -1776,8 +1893,16 @@ impl LineGuard {
             // Ölçülmüş hatta yoklama en küçük adımdan yeniden başlar: sabit dar hatta her yoklama
             // en çok adım × ACK aralığı kadar kuyruk kurar.
             self.step_permille = STEP_MIN_PERMILLE;
-        } else if verified && self.probe.is_none() && self.pace_bps < self.line.rate_bps {
-            self.begin_probe(now_ns, point);
+        } else if verified
+            && self.probe.is_none()
+            && self.probe_at.is_none()
+            && self.pace_bps < self.line.rate_bps
+        {
+            if !self.interval_mode && self.rate_bps.is_some() {
+                self.schedule_full_probe(now_ns, point, rec.send_ns, prev_fronts);
+            } else {
+                self.begin_probe(now_ns, point);
+            }
         }
         // [İKİNCİ-ÖLÇÜM] Geçici evrede örnek yoksa: ölçüm aralığı bütçenin hızında (en az %90)
         // gönderilmiş ve kuyruk büyümemişse hat en az o hızdadır. Tek ölçümün (ilk pencere ya da
@@ -1818,7 +1943,8 @@ impl LineGuard {
         let rate = self.rate_bps?;
         // [SÜRELİ-YOKLAMA] Yoklama sürerken kuyruk yazılmaz: yoklama hattı sınar, boşaltma onunla
         // çelişir; gerçek bir kuyruk varsa hüküm ACK'i onu boşaltır.
-        if self.probe.is_some() || inconclusive {
+        // [TAM-YOKLAMA] Zamanlanmış yoklama da (bu ACK yoklamayı kurdu) kuyruk yazmaz.
+        if self.probe.is_some() || self.probe_at.is_some() || inconclusive {
             return None;
         }
         // `L` hattı `τ − taban` anında terk etti; o andan bu yana hat `rate × süre` boşalttı.
@@ -1896,6 +2022,84 @@ impl LineGuard {
             start_ns: now_ns,
             sent: 0,
             by_interval: false,
+            full: false,
+        });
+        self.pace_bps = up;
+    }
+
+    /// [TAM-YOKLAMA] Ölçülmüş tabandan (V2 yolu: aralık kipi dışı, `rate_bps` var) yoklama profil
+    /// hattına çıkar; süre, hat değişmediyse taban üstüne iki tam datagram koyacak kadardır
+    /// (kanıtın bir datagramlık payını aşan en küçük iz; dürüst hatta kuyruk iki datagramın taban
+    /// hızındaki serileşmesi). Başlangıç, sonraki ACK cephesinin tahmini gönderim anından yoklama
+    /// süresi ve cephe tahmininin belirsizliği kadar öncedir: hüküm cephesi yoklama kuyruğunun
+    /// (dürüst hatta) hâlâ durduğu pencerede gönderilir. Tahmin yoksa hemen başlar.
+    fn schedule_full_probe(
+        &mut self,
+        now_ns: u64,
+        point: Point,
+        front_ns: u64,
+        prev_fronts: (Option<u64>, Option<u64>),
+    ) {
+        let base = self.pace_bps.max(1);
+        let span = self.full_probe_span_ns();
+        let mtu_base =
+            ns_for(crate::rate::DEFAULT_MTU + self.line.datagram_overhead, base).unwrap_or(0);
+        let start_ns = match prev_fronts {
+            (Some(prev), older) if front_ns > prev => {
+                let period = front_ns - prev;
+                let jitter = older
+                    .filter(|&o| prev > o)
+                    .map_or(0, |o| period.abs_diff(prev - o));
+                front_ns
+                    .saturating_add(period)
+                    .saturating_sub(span)
+                    .saturating_sub(jitter)
+                    .saturating_sub(mtu_base)
+                    .max(now_ns)
+            }
+            _ => now_ns,
+        };
+        if start_ns <= now_ns {
+            self.begin_full_probe(now_ns, point);
+        } else {
+            self.probe_at = Some(PendingProbe { start_ns, point });
+        }
+    }
+
+    /// [TAM-YOKLAMA] Tam yoklamanın süresi (ns): hat değişmediyse yoklamanın son datagramının
+    /// ardından (yoklama aralığıyla) gelen iletim iki tam datagramın taban hızındaki serileşmesi
+    /// kadar bekler: `2·W/(up − taban) − W/up` (W = tam datagramın tel boyu). Uygulama sınırlı
+    /// gönderimi kanıt payı değil hükmün sanal hat koşulu ayırır (taban hızında gönderen
+    /// göndericide sanal kuyruk yoktur).
+    fn full_probe_span_ns(&self) -> u64 {
+        let up = self.line.rate_bps.max(1);
+        let excess = up.saturating_sub(self.pace_bps).max(1);
+        let w =
+            (crate::rate::DEFAULT_MTU + self.line.datagram_overhead).saturating_mul(1_000_000_000);
+        (2 * w / excess)
+            .saturating_sub(w / up)
+            .clamp(1, VERIFY_MIN_SPAN_NS)
+    }
+
+    /// [TAM-YOKLAMA] Tam yoklamayı şimdi başlatır (`point` hükmün referansı).
+    fn begin_full_probe(&mut self, now_ns: u64, point: Point) {
+        let base = self.pace_bps.max(1);
+        let up = self.line.rate_bps;
+        let span_ns = self.full_probe_span_ns();
+        let expect_ns = u64::try_from(
+            u128::from(up.saturating_sub(self.pace_bps)) * u128::from(span_ns) / u128::from(base),
+        )
+        .unwrap_or(u64::MAX);
+        self.probe = Some(Probe {
+            base_pace: self.pace_bps,
+            probe_pace: up,
+            until_ns: now_ns.saturating_add(span_ns),
+            expect_ns,
+            reference: point,
+            start_ns: now_ns,
+            sent: 0,
+            by_interval: false,
+            full: true,
         });
         self.pace_bps = up;
     }
@@ -2741,9 +2945,239 @@ mod tests {
         assert!(g.pace_bps() <= PROFILE / 2 * (1000 + STEP_START_PERMILLE) / 1000);
     }
 
+    /// [TAM-YOKLAMA] [`drive`]in zamanla değişen gerçek hatlı (`real(an)`) ve korumanın durumuna
+    /// bağlı uygulama tavanlı (`app_cap(an, koruma)`) biçimi; ACK aralığı `ack_every`. Dönen:
+    /// ACK'ler (an, tavan) ve ms örnekli tavan.
+    #[allow(clippy::type_complexity)]
+    fn drive_with(
+        g: &mut LineGuard,
+        real: &dyn Fn(u64) -> u64,
+        app_cap: &dyn Fn(u64, &LineGuard) -> Option<u64>,
+        t_end: u64,
+        ack_every: u64,
+    ) -> (Vec<(u64, u64)>, Vec<(u64, u64)>, Vec<(u64, u64)>) {
+        drive_iv(g, real, app_cap, t_end, ack_every, false)
+    }
+
+    /// [`drive_with`]; `intervals` = her ACK alıcının ölçüm aralığını da taşır (bitmap/aralık kipi:
+    /// M = (önceki ACK'in cephesi, bu ACK'in cephesi], `rx_span` = iki ucun alıcıya varış farkı,
+    /// sürücüde kayıp yok: `rx_wire` aralığın tel baytı). İlk ACK aralık taşımaz.
+    #[allow(clippy::type_complexity)]
+    fn drive_iv(
+        g: &mut LineGuard,
+        real: &dyn Fn(u64) -> u64,
+        app_cap: &dyn Fn(u64, &LineGuard) -> Option<u64>,
+        t_end: u64,
+        ack_every: u64,
+        intervals: bool,
+    ) -> (Vec<(u64, u64)>, Vec<(u64, u64)>, Vec<(u64, u64)>) {
+        let mut arrived_at: Vec<u64> = Vec::new();
+        let mut prev_front: Option<u64> = None;
+        let mut acks_out = Vec::new();
+        let mut pace_ms = Vec::new();
+        let mut waits = Vec::new();
+        let (mut free, mut next_send, mut seq, mut now) = (0u64, 0u64, 0u64, 0u64);
+        let mut in_flight: VecDeque<(u64, u64)> = VecDeque::new();
+        let mut last_arrived: Option<(u64, u64)> = None;
+        let mut acks: VecDeque<(u64, u64, u64)> = VecDeque::new();
+        let mut next_ack = ack_every;
+        while now < t_end {
+            g.tick(now);
+            if now >= next_send {
+                g.on_sent(seq, now, 1172);
+                let start = free.max(now);
+                waits.push((now, start - now));
+                free = start + 1200 * SEC / real(start);
+                in_flight.push_back((free + 300 * MS, seq));
+                arrived_at.push(free + 300 * MS);
+                seq += 1;
+                let rate = app_cap(now, g)
+                    .map_or(g.pace_bps(), |c| c.min(g.pace_bps()))
+                    .max(1);
+                next_send = now + 1200 * SEC / rate;
+            }
+            while in_flight.front().is_some_and(|&(t, _)| t <= now) {
+                let (t, q) = in_flight.pop_front().expect("var");
+                last_arrived = Some((t, q));
+            }
+            if now >= next_ack {
+                if let Some((t, q)) = last_arrived {
+                    acks.push_back((now + 300 * MS + (37 + OVH) * SEC / RET, now - t, q));
+                }
+                next_ack += ack_every;
+            }
+            while acks.front().is_some_and(|&(at, _, _)| at <= now) {
+                let (_, delay, q) = acks.pop_front().expect("var");
+                g.note_ack_wire(37);
+                let iv = prev_front
+                    .filter(|&f| intervals && f < q)
+                    .map(|f| ForwardInterval {
+                        first_seq: f,
+                        last_seq: q,
+                        rx_span_ns: arrived_at[q as usize] - arrived_at[f as usize],
+                        rx_wire: Some((q - f) * 1200),
+                    });
+                prev_front = Some(q);
+                let u = g.on_ack_measured(now, delay, false, q, iv);
+                if let Some(u) = u {
+                    let rate = g.pace_bps().max(1);
+                    next_send = next_send.max(now + u.backlog_bytes * SEC / rate)
+                        + u.extra_backlog_bytes * SEC / rate;
+                }
+                acks_out.push((now, g.pace_bps()));
+            }
+            pace_ms.push((now, g.pace_bps()));
+            now += MS;
+        }
+        (acks_out, pace_ms, waits)
+    }
+
+    /// Ölçülmüş 6 250'ye yerleşmiş koruma (aralık kipi dışı: V2 yolu).
+    fn settled_6250() -> LineGuard {
+        let mut g = LineGuard::new(
+            LineModel {
+                rate_bps: PROFILE,
+                datagram_overhead: OVH,
+            },
+            LineModel {
+                rate_bps: RET,
+                datagram_overhead: OVH,
+            },
+            6_250,
+        );
+        g.end_start_budget();
+        g.rate_bps = Some(6_250);
+        g.step_permille = STEP_MIN_PERMILLE;
+        g
+    }
+
+    /// `t_rec`'ten sonraki `k`. ACK'teki tavan ve ms örnekli tavanın `RAISED` altına son indiği an.
+    fn after_rec(
+        acks: &[(u64, u64)],
+        pace_ms: &[(u64, u64)],
+        t_rec: u64,
+        k: usize,
+    ) -> (Option<u64>, Option<u64>) {
+        let at_k = acks
+            .iter()
+            .filter(|&&(at, _)| at >= t_rec)
+            .nth(k - 1)
+            .map(|&(_, p)| p);
+        let last_below = pace_ms
+            .iter()
+            .filter(|&&(t, p)| t >= t_rec && p < 11_875)
+            .map(|&(t, _)| t)
+            .next_back();
+        (at_k, last_below)
+    }
+
+    /// [TAM-YOKLAMA] V2 ACK kadansı (8,6 s; `hizlanma_v2_sim`'de ölçülen) ve 6 250'ye yerleşmiş
+    /// koruma: hat 40 s'de 12 500'e dönünce toparlanmadan sonraki üçüncü ACK'e dek tavan ≥ 11 875
+    /// ve kalıcı; dürüst sabit 6 250'de tavan 6 875'in üstünde kalıcı değil ve kuyruk iki tam
+    /// datagramın serileşmesi + bir yoklama izi içinde.
+    #[test]
+    fn full_probe_raises_by_the_third_ack_and_not_on_an_honest_line() {
+        const ACK: u64 = 8_600 * MS;
+        const T_REC: u64 = 40 * SEC;
+        for phase in [0u64, 2, 4, 6, 8] {
+            let mut g = settled_6250();
+            let (acks, pace_ms, _) = drive_with(
+                &mut g,
+                &|t| {
+                    if t < T_REC + phase * SEC {
+                        6_250
+                    } else {
+                        PROFILE
+                    }
+                },
+                &|_, _| None,
+                T_REC + phase * SEC + 60 * SEC,
+                ACK,
+            );
+            let (at3, last_below) = after_rec(&acks, &pace_ms, T_REC + phase * SEC, 3);
+            let first3: Vec<u64> = acks
+                .iter()
+                .filter(|&&(at, _)| at >= T_REC + phase * SEC)
+                .take(3)
+                .map(|&(at, _)| at)
+                .collect();
+            assert!(
+                at3.is_some_and(|p| p >= 11_875),
+                "evre {phase} s: 3. ACK'te tavan {at3:?}"
+            );
+            assert!(
+                last_below.is_none_or(|t| t < first3[2]),
+                "evre {phase} s: tavan 3. ACK'ten sonra {last_below:?}'de 11 875 altına indi"
+            );
+        }
+        let mut g = settled_6250();
+        let (_, pace_ms, waits) = drive_with(&mut g, &|_| 6_250, &|_, _| None, 200 * SEC, ACK);
+        assert_eq!(g.raises(), 0, "dürüst 6 250 hatta kalıcı yükseltme");
+        assert!(g.probe_failures() >= 2, "dürüst hatta yoklama yok");
+        let above = pace_ms.iter().filter(|&&(_, p)| p > 6_875).count() as u64;
+        assert!(
+            above * MS <= 200 * SEC / 20,
+            "tavan 6 875 üstünde {above} ms"
+        );
+        let bound = PROBE_QUEUE_NS + 2 * 1200 * SEC / 6_250 + 2 * 1200 * SEC / 6_250;
+        let max_wait = waits.iter().map(|&(_, w)| w).max().unwrap_or(0);
+        assert!(max_wait <= bound, "kuyruk {max_wait} ns (sınır {bound} ns)");
+    }
+
+    /// [TAM-YOKLAMA] ‰908 çifti (#175 7092827737 B): gönderici yoklama bitip hüküm beklerken
+    /// tabanın ‰908'inde gönderir. Gerçek yükselişte (40 s'de 12 500) tavan kalıcı açılır; dürüst
+    /// 6 250'de kalıcı "geçti" yok.
+    #[test]
+    fn the_908_pair_rises_on_a_real_recovery_and_not_on_an_honest_line() {
+        const ACK: u64 = 8_600 * MS;
+        let cap = |_t: u64, g: &LineGuard| {
+            g.probe
+                .filter(|p| _t >= p.until_ns)
+                .map(|p| p.base_pace * 908 / 1000)
+        };
+        let mut g = settled_6250();
+        let (acks, _, _) = drive_with(
+            &mut g,
+            &|t| if t < 40 * SEC { 6_250 } else { PROFILE },
+            &cap,
+            140 * SEC,
+            ACK,
+        );
+        assert!(g.raises() >= 1, "gerçek yükseliş + ‰908: geçti yok");
+        assert_eq!(g.pace_bps(), PROFILE, "son tavan {}", g.pace_bps());
+        let first = acks
+            .iter()
+            .find(|&&(at, p)| at >= 40 * SEC && p >= 11_875)
+            .map(|&(at, _)| at);
+        println!("‰908 gerçek: 11 875 ilk ACK {first:?}");
+        let mut g = settled_6250();
+        let _ = drive_with(&mut g, &|_| 6_250, &cap, 200 * SEC, ACK);
+        assert_eq!(g.raises(), 0, "dürüst 6 250 + ‰908: kalıcı geçti");
+        assert!(g.pace_bps() <= 6_875, "son tavan {}", g.pace_bps());
+    }
+
+    /// [TAM-YOKLAMA] Uygulama sınırlı dürüst gönderici (5 900 B/s, hat 6 250): kalıcı açılma yok.
+    #[test]
+    fn an_app_limited_sender_on_an_honest_line_is_not_raised_by_the_full_probe() {
+        let mut g = settled_6250();
+        let _ = drive_with(
+            &mut g,
+            &|_| 6_250,
+            &|_, _| Some(5_900),
+            200 * SEC,
+            8_600 * MS,
+        );
+        assert_eq!(g.raises(), 0, "uygulama sınırlı dürüst gönderici açıldı");
+        assert!(g.pace_bps() <= 6_875);
+    }
+
     /// [ÇİFT ARALIĞI · RET] Sabit dar hatta (6 250) yoklama başarısız olur: ret seviyesi yoklama
     /// tavanıdır. Çift alt sınırı tavanı ret seviyesini %5 aşmadan açamaz; aşınca açar ve ret
     /// düşer. Aşağı yönlü örnek de reti düşürür (hat yeniden ölçüldü).
+    ///
+    /// [#245, sahip onayı] Kurulum `on_pair_rate`'in gerçekten geldiği aralık kipinde (bitmap yolu):
+    /// her ACK alıcının ölçüm aralığını taşır ([`drive_iv`]). Önceki kurulum V2 sürücüsüyle (aralık
+    /// yok) ret seviyesi üretip yalnız bitmap yolunda gelen çift alt sınırını sınıyordu.
     #[test]
     fn a_failed_probe_level_bounds_the_pair_lower_bound() {
         let mut g = LineGuard::new(
@@ -2758,7 +3192,8 @@ mod tests {
             6_250,
         );
         g.end_start_budget();
-        let (_, _) = drive(&mut g, 6_250, None, 150 * SEC, 5 * SEC);
+        let _ = drive_iv(&mut g, &|_| 6_250, &|_, _| None, 150 * SEC, 5 * SEC, true);
+        assert!(g.interval_mode, "aralık kipi kurulmadı");
         assert!(g.probe_failures() >= 2, "başarısız yoklama yok");
         let _ = g.tick(u64::MAX);
         g.probe = None;
@@ -2814,39 +3249,89 @@ mod tests {
         assert_eq!(backlog_late, 0, "kalıcı yanlış kuyruk");
     }
 
-    /// [YENİDEN-YOKLAMA] Ölçülen dar hat oturum içinde hızlanınca tavan yeniden yükselir.
+    /// [YENİDEN-YOKLAMA] Ölçülen dar hat oturum içinde hızlanınca tavan yeniden yükselir; hat
+    /// sabitken uygulama az veri verirse tavan kalıcı yükselmez.
+    ///
+    /// [#245, sahip onayı] Nedensel sürücü ([`drive_with`]): gönderici her an korumanın tavanında
+    /// gönderir — yoklama sürerken yoklama hızında. Kanıt göndericinin gerçekten yaptığı yoklamadan
+    /// gelir. Önceki kurulum bütün iletimleri ACK'lerden önce taban tavanda kaydediyordu: gönderici
+    /// tabanı hiç aşmadığı hâlde yükseliş bekliyordu; bu girdi "dürüst 6 250 + tabanda gönderen
+    /// gönderici" ile aynıdır ve o testi geçiren kural dürüst hatta uygulama sınırlı göndericiyi de
+    /// açar.
+    /// * (a) hat 60 s'de 6 250 → 12 500: dar hat önce ölçülür (±%2), sonra tavan ölçülen hattın
+    ///   üstüne çıkar (en az bir kalıcı yükseltme);
+    /// * (b) hat sabit 6 250, 60 s'den sonra uygulama 5 900 B/s verir: 60 s'den sonra kalıcı
+    ///   yükseltme yok ve son tavan ölçüm belirsizliği bandında (`hat × (1 + 1/GROWTH_MIN_DIV)`).
     #[test]
     fn measured_narrow_line_recovers_when_the_line_speeds_up() {
-        let mut g = guard();
-        let arr = send_into(&mut g, 6_250, 60);
-        let _ = ack(&mut g, &arr, 1, 37);
-        let _ = ack(&mut g, &arr, 20, 101);
-        let low = g.rate_bps().expect("dar hat ölçüldü");
-        assert!(low.abs_diff(6_250) * 100 <= 6_250 * 2);
-        // Hat hızlandı: gönderici tavanda (≈ 6 250) gönderir, kuyruk büyümez.
-        let mut g2 = g.clone();
-        let base = arr[59] + SEC;
-        let mut free = 0u64;
-        let mut arr2 = Vec::new();
-        for k in 0..600u64 {
-            let s = base + k * 1200 * SEC / g2.pace_bps().max(1);
-            g2.on_sent(1000 + k, s, 1172);
-            let done = free.max(s) + 1200 * SEC / PROFILE;
-            free = done;
-            arr2.push(done + 300 * MS);
-        }
-        for k in [0u64, 100, 200, 300, 400, 500, 599] {
-            let at = arr2[k as usize] + 300 * MS + (101 + OVH) * SEC / RET;
-            g2.note_ack_wire(101);
-            let _ = g2.on_ack(at, 0, false, 1000 + k);
-        }
+        const WIDEN: u64 = 60 * SEC;
+        let fresh = || {
+            let mut g = LineGuard::new(
+                LineModel {
+                    rate_bps: PROFILE,
+                    datagram_overhead: OVH,
+                },
+                LineModel {
+                    rate_bps: RET,
+                    datagram_overhead: OVH,
+                },
+                PROFILE,
+            );
+            g.end_start_budget();
+            g
+        };
+        // (a) gerçekten genişleyen hat.
+        // Genişlemeden önceki durum: aynı belirlenimli yol 60 s'ye dek (iki kolda da aynı).
+        let mut g_before = fresh();
+        let _ = drive_with(&mut g_before, &|_| 6_250, &|_, _| None, WIDEN, 5 * SEC);
+        let low = g_before.rate_bps().expect("dar hat ölçüldü");
+        let mut g = fresh();
+        let (acks, _, _) = drive_with(
+            &mut g,
+            &|t| if t < WIDEN { 6_250 } else { PROFILE },
+            &|_, _| None,
+            WIDEN + 60 * SEC,
+            5 * SEC,
+        );
+        assert!(low.abs_diff(6_250) * 100 <= 6_250 * 2, "ölçülen {low}");
+        let raises_before = g_before.raises();
         assert!(
-            g2.pace_bps() > low,
-            "tavan yükselmedi: {} ≤ {low}",
-            g2.pace_bps()
+            g.raises() > raises_before,
+            "genişleyen hatta kalıcı yükseltme yok (önce {raises_before}, sonra {})",
+            g.raises()
+        );
+        assert!(
+            g.pace_bps() > low,
+            "tavan yükselmedi: {} ≤ {low} (ACK'ler {acks:?})",
+            g.pace_bps()
+        );
+        // (b) sabit 6 250, uygulama az veri.
+        let mut g = fresh();
+        let (_, pace_ms, _) = drive_with(
+            &mut g,
+            &|_| 6_250,
+            &|t, _| (t >= WIDEN).then_some(5_900),
+            WIDEN + 140 * SEC,
+            5 * SEC,
+        );
+        let at_widen = pace_ms
+            .iter()
+            .filter(|&&(t, _)| t < WIDEN)
+            .map(|&(_, p)| p)
+            .next_back()
+            .expect("örnek");
+        assert_eq!(
+            g.raises(),
+            raises_before,
+            "sabit hatta uygulama sınırlıyken kalıcı yükseltme (60 s'de tavan {at_widen})"
+        );
+        let band = 6_250 * (GROWTH_MIN_DIV + 1) / GROWTH_MIN_DIV;
+        assert!(
+            g.pace_bps() <= band,
+            "son tavan {} (bant {band})",
+            g.pace_bps()
         );
     }
-
     /// [BAŞLANGIÇ-BÜTÇESİ] İlk ACK'e dek meşgul gönderimde toplam sınır
     /// `max(P × START_BURST_NS, P/2 × t)`: patlama 6 250 B tel (beş 1 200 B datagram), dolum
     /// `2 × START_BURST_NS`'te başlar; bütçe kalkınca sınır yok.
