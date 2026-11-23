@@ -938,7 +938,9 @@ fn parse_press_timing(bytes: &[u8]) -> Option<(f64, f64, u32, u32)> {
 /// [TEL-KANITI · #233] Koşunun kabul kipini KENDİ kaydından kanıtlayan alanlar (düğüm sondasından;
 /// canlı ayna kapalıysa ACK / CAPS / 0x09 sayaçları 0'dır ve `live_diag` bunu söyler): gelen ACK
 /// çerçeveleri türe göre, gönderilen CAPS, yalın 0x09 iletimi, gönderilen birleşik demetler
-/// (açılışlı / kompakt / END) ve alıcı PTT sayaçları.
+/// (açılışlı / kompakt / END) ve alıcı PTT sayaçları. `ptt_wire_bytes` / `ptt_wire_datagrams`: bu
+/// ucun mühürlediği bütün PTT şeridi datagramlarının tel baytı (IPv4/UDP 28 B dahil; koşunun
+/// bütün basışları) — bant kapısının (5000 bit/s × basış ÷ 8) girdisi.
 fn wire_json(node: &KamaNode, live_diag: bool) -> String {
     let Ok(probe) = node.probe_for_test() else {
         return "null".to_owned();
@@ -951,7 +953,7 @@ fn wire_json(node: &KamaNode, live_diag: bool) -> String {
     let p = probe.ptt;
     format!(
         "{{\"live_diag\":{live_diag},\"ack_rx\":{{\"0x10\":{},\"0x14\":{},\"0x15\":{},\"0x16\":{},\"0x17\":{}}},\
-         \"caps_sends\":{},\"ptt_lean_0x09_tx\":{},\"spurt_tx\":{{\"open\":{},\"compact\":{},\"end\":{}}},\
+         \"caps_sends\":{},\"ptt_lean_0x09_tx\":{},\"ptt_wire_bytes\":{},\"ptt_wire_datagrams\":{},\"spurt_tx\":{{\"open\":{},\"compact\":{},\"end\":{}}},\
          \"ptt_rx\":{{\"spurt_opens\":{},\"spurt_ends\":{},\"ended_by_gap\":{},\"orphan_bundles\":{},\
          \"spurt_refused\":{}}}}}",
         a[0],
@@ -961,6 +963,8 @@ fn wire_json(node: &KamaNode, live_diag: bool) -> String {
         a[4],
         wire.caps_sends,
         wire.ptt_lean_tx,
+        wire.ptt_wire_bytes,
+        wire.ptt_wire_datagrams,
         p.spurt_open_tx,
         p.spurt_compact_tx,
         p.spurt_end_tx,
