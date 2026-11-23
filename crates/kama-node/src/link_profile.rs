@@ -164,15 +164,20 @@ pub(crate) fn start_record(runtime: &RuntimeConfig, lanes: bool, source: Source)
         ""
     };
     // [ACK-BİÇİMİ] Kabul kipi başlangıç kaydından okunur (V2 = ürün varsayılanı; bitmap = pilot).
-    // Bitmap yalnız geri bildirimi aç profilde etkindir (`runtime.rs`: CAPS ancak
-    // `link_feedback_starved` iken çıkar): ayarlanan ile etkin olan ayrı yazılır. Telde gerçekten
-    // koştuğunun kanıtı koşu sonundaki sayaçtır (`ClientStats::ack_bitmap_rx`), bu kayıt değil.
-    let ack = match (runtime.ack_format, link_feedback_starved(runtime)) {
-        (client_core::runtime::AckFormat::V2, _) => "v2",
-        (client_core::runtime::AckFormat::Bitmap, true) => "bitmap etkin=evet",
-        (client_core::runtime::AckFormat::Bitmap, false) => {
-            "bitmap etkin=hayır (geri bildirim aç profil yok: telde v2)"
-        }
+    // [ACK-BİÇİMİ] Ayarlanan ile etkin olan, yöne göre ayrı yazılır (koşuldan önceki yapılandırma
+    // kanıtı; telde koştuğunun kanıtı koşu sonundaki sayaçtır):
+    // - gönderici yönü: bu uç CAPS yollar ve 0x15/0x16 çözer ⇔ bitmap ∧ geri bildirim aç
+    //   (`runtime.rs`: CAPS ancak `link_feedback_starved` iken çıkar);
+    // - alıcı yönü: eşten CAPS gelirse bu uç 0x15/0x16 yazar ⇔ bitmap ∧ cc-port ∧ yön hızı var
+    //   (`runtime.rs` CAPS kolu; geri bildirim açlığı istemez).
+    let on = |b: bool| if b { "evet" } else { "hayır" };
+    let ack = match runtime.ack_format {
+        client_core::runtime::AckFormat::V2 => "v2".to_string(),
+        client_core::runtime::AckFormat::Bitmap => format!(
+            "bitmap\nack_gönderici_etkin={}\nack_alıcı_etkin={}",
+            on(link_feedback_starved(runtime)),
+            on(runtime.engine == TransportEngine::CcPort && runtime.link_rates.is_some()),
+        ),
     };
     format!(
         "motor={engine}\nack_biçimi={ack}\nşeritler={}\nyön_hızları={rates}\nkaynak={}\nkoruma={protection}\n{uplink}",
@@ -248,24 +253,35 @@ mod tests {
             Source::None,
         );
         assert!(
-            bitmap.contains("ack_biçimi=bitmap etkin=hayır"),
-            "yön hızı yokken bitmap ayarlı ama etkin değil: {bitmap}"
+            bitmap
+                .contains("ack_biçimi=bitmap\nack_gönderici_etkin=hayır\nack_alıcı_etkin=hayır\n"),
+            "yön hızı yokken bitmap ayarlı ama iki yönde de etkin değil: {bitmap}"
         );
-        let active = start_record(
-            &RuntimeConfig {
-                ack_format: client_core::runtime::AckFormat::Bitmap,
-                link_rates: Some(LinkRates {
-                    uplink_bps: 12_500,
-                    downlink_bps: 62,
-                }),
-                ..RuntimeConfig::default()
-            },
-            true,
-            Source::Env,
-        );
+        let rec = |up: u64, down: u64| {
+            start_record(
+                &RuntimeConfig {
+                    ack_format: client_core::runtime::AckFormat::Bitmap,
+                    link_rates: Some(LinkRates {
+                        uplink_bps: up,
+                        downlink_bps: down,
+                    }),
+                    ..RuntimeConfig::default()
+                },
+                true,
+                Source::Env,
+            )
+        };
+        // Veri gönderen uç (ACK'ler dar yönden gelir): iki yön de etkin.
+        let sender = rec(12_500, 62);
         assert!(
-            active.contains("ack_biçimi=bitmap etkin=evet\n"),
-            "{active}"
+            sender.contains("ack_gönderici_etkin=evet\nack_alıcı_etkin=evet\n"),
+            "{sender}"
+        );
+        // Karşı uç (aynalı profil): CAPS yollamaz ama eşin CAPS'ine bitmap yazar.
+        let peer = rec(62, 12_500);
+        assert!(
+            peer.contains("ack_gönderici_etkin=hayır\nack_alıcı_etkin=evet\n"),
+            "{peer}"
         );
         assert!(plain.contains("yön_hızları=yok\n"), "{plain}");
         assert!(plain.contains("koruma=standart\n"), "{plain}");
