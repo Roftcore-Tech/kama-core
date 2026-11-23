@@ -34,7 +34,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use adaptive_transport::ack::{
-    FRAME_TYPE_ACK, FRAME_TYPE_ACK_BITMAP, FRAME_TYPE_ACK_BITMAP_PTT, FRAME_TYPE_ACK_V2,
+    FRAME_TYPE_ACK, FRAME_TYPE_ACK_BITMAP, FRAME_TYPE_ACK_BITMAP_PTT,
+    FRAME_TYPE_ACK_BITMAP_PTT_COALESCE, FRAME_TYPE_ACK_V2,
 };
 use client_core::runtime::{
     ClientEndpoint, ClientHandle, LinkRates, RuntimeConfig, ServerEndpoint, ServerHandle,
@@ -145,7 +146,8 @@ impl PacketProtection for ClientSeam {
                 FRAME_TYPE_ACK
                 | FRAME_TYPE_ACK_V2
                 | FRAME_TYPE_ACK_BITMAP
-                | FRAME_TYPE_ACK_BITMAP_PTT,
+                | FRAME_TYPE_ACK_BITMAP_PTT
+                | FRAME_TYPE_ACK_BITMAP_PTT_COALESCE,
             ) if self.mute.load(Ordering::SeqCst) => {
                 obs.acks_dropped += 1;
                 return None;

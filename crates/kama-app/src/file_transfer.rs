@@ -996,7 +996,9 @@ impl FileTransfer {
             | AppMessage::Receipt { .. }
             | AppMessage::SignalingBlob { .. }
             | AppMessage::MediaBundle { .. }
-            | AppMessage::MediaBundleCompact { .. } => None,
+            | AppMessage::MediaBundleCompact { .. }
+            | AppMessage::MediaBundleOpen { .. }
+            | AppMessage::MediaBundleEnd { .. } => None,
         }
     }
 

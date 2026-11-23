@@ -20,12 +20,13 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use adaptive_transport::ack::{
-    AckFrame, FRAME_TYPE_ACK, FRAME_TYPE_ACK_BITMAP, FRAME_TYPE_ACK_BITMAP_PTT, FRAME_TYPE_ACK_V2,
+    AckFrame, FRAME_TYPE_ACK, FRAME_TYPE_ACK_BITMAP, FRAME_TYPE_ACK_BITMAP_PTT,
+    FRAME_TYPE_ACK_BITMAP_PTT_COALESCE, FRAME_TYPE_ACK_V2,
 };
 use adaptive_transport::receiver::{Receiver, RxDatagram, RxKind};
 use adaptive_transport::sender::{
@@ -59,9 +60,9 @@ use crate::wire::{
     decode_caps, decode_cs_echo, decode_cs_probe, decode_data, decode_data_frag, decode_fec,
     decode_param, decode_param_ack, decode_ptt, decode_recovered, encode_caps, encode_cs_echo,
     encode_cs_probe, encode_data, encode_data_frag, encode_fec, encode_param, encode_param_ack,
-    encode_ptt, encode_recovered, unwrap_lane_seq, FecFrameHeader, CAP_ACK_BITMAP, CAP_PTT_LEAN,
-    CS_PROBE_SUBTYPE, FRAME_CS_ECHO, FRAME_PARAM_ACK, FRAME_RECOVERED, HDR_DATA, HDR_DATA_FRAG,
-    HDR_FEC, HDR_PTT, LEN_CS_PROBE,
+    encode_ptt, encode_recovered, unwrap_lane_seq, FecFrameHeader, CAP_ACK_BITMAP,
+    CAP_PTT_COALESCE, CAP_PTT_LEAN, CS_PROBE_SUBTYPE, FRAME_CS_ECHO, FRAME_PARAM_ACK,
+    FRAME_RECOVERED, HDR_DATA, HDR_DATA_FRAG, HDR_FEC, HDR_PTT, LEN_CS_PROBE,
 };
 use crate::ClientSession;
 use kama_contracts::handles::SessionHandle;
@@ -251,6 +252,13 @@ pub struct RuntimeConfig {
     /// düğümü (`transport-v1.x-goster`) aynı ikilide açar. Alanlar `pub`: çağıran tipi adlandırmadan
     /// `cfg.e1_flags.retx_first = true` yazabilir. Yalnız client ucu (gönderen) okur.
     pub e1_flags: adaptive_transport::rate::E1Flags,
+    /// [PTT-BİRLEŞİK · deney, sahip onayı 2026-11-23; aday dışı] Bu ucun uygulaması birleşik PTT
+    /// kayıtlarını (açılış/kapanış ses demetinin içinde) çözer ve gönderebilir. `false`
+    /// (varsayılan): tel ve davranış bugünküyle bayt-aynı. `true` iken client ucu CAPS'e
+    /// [`CAP_PTT_COALESCE`]'ı ekler; server ucu bu biti (yalın PTT bitiyle birlikte) görürse bitmap
+    /// ACK'lerini 0x17 türüyle yazar; client ucu 0x17'yi görünce eşin yeteneğini
+    /// [`ClientHandle::peer_ptt_coalesce`] ile yayımlar. Transport AMP okumaz: bit opaktır.
+    pub ptt_coalesce: bool,
 }
 
 /// [HANDOFF ENSTRÜMANI] Zaman-serisi örnek tavanı (50 ms periyotta ≈ 205 s).
@@ -375,6 +383,8 @@ impl KamaV1Profile {
             lane_ids: false,
             // [E1 gösterim] Beş bayrak ürün yolunda KAPALI; yalnız gösterim düğümü/teşhis kolları açar.
             e1_flags: adaptive_transport::rate::E1Flags::default(),
+            // [PTT-BİRLEŞİK · deney] Kapalı: CAPS ve ACK türleri bugünkü gibi.
+            ptt_coalesce: false,
         }
     }
 }
@@ -1363,6 +1373,8 @@ pub struct ClientLiveDiag {
     pub tx_bytes: u64,
     /// ACK çerçevesi sayaçları (çerçeve işlendiği anda yazılır).
     pub ack: AckFrameCounts,
+    /// [TEL-KANITI · salt gözlem] ACK türü sayıları, CAPS ve yalın PTT gönderimleri.
+    pub wire: WireEvidence,
     /// Son [`ACK_LOG_LEN`] ACK çerçevesinin kaydı (çerçeve işlendiği anda yazılır).
     pub acks: DiagRing<AckFrameDiag, ACK_LOG_LEN>,
     /// Son [`STATE_LOG_LEN`] motor durum değişikliği (ana döngü turu çözünürlüğünde).
@@ -1646,6 +1658,48 @@ fn saturating_us(d: Duration) -> u64 {
     u64::try_from(d.as_micros()).unwrap_or(u64::MAX)
 }
 
+/// [TEL-KANITI · salt gözlem · #233] Koşunun kabul kipini kendi kaydından kanıtlayan sayaçlar
+/// ([`ClientLiveDiag::wire`]; yalnız canlı ayna açıkken dolar, hiçbir karar okumaz).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct WireEvidence {
+    /// Bu uca gelen ACK çerçeveleri, türe göre: `[0x10, 0x14 (V2), 0x15 (bitmap), 0x16 (bitmap +
+    /// yalın PTT), 0x17 (bitmap + yalın + birleşik PTT)]`.
+    pub ack_rx_types: [u64; 5],
+    /// Gönderilen CAPS çerçevesi ([`ClientStats::caps_sends`]).
+    pub caps_sends: u64,
+    /// 0x09 yalın PTT çerçevesiyle giden iletim ([`ClientStats::ptt_lean_tx`]).
+    pub ptt_lean_tx: u64,
+    /// [PTT-BANT · tel baytı] PTT şeridi birimi taşıyan mühürlenmiş HER datagramın tel baytı:
+    /// mühürlü UDP gövdesi + IPv4/UDP 28 B ([`PTT_WIRE_UDP_IP_BYTES`]). Yalın 0x09 demetleri,
+    /// birleşik demetler, ayrı `PTT_OPEN` / `PTT_CLOSE` kayıtları, kopyaları ve yeniden
+    /// iletimleri; egress kapısının reddettiği ve yolda kaybolanlar dahil (mühürlendiği anda
+    /// sayılır). FEC onarımı ve denetim çerçeveleri (CAPS / PARAM / ACK) girmez. Şerit kimliği
+    /// kapalıyken (`lane_ids = false`) 0'dır. Ürün fikstürünün `ptt_wire` defteriyle aynı tanım.
+    pub ptt_wire_bytes: u64,
+    /// [PTT-BANT · tel baytı] [`Self::ptt_wire_bytes`]'ın datagram sayısı.
+    pub ptt_wire_datagrams: u64,
+}
+
+/// [PTT-BANT · tel baytı] Datagram başına IPv4 (20 B) + UDP (8 B) zarfı.
+pub const PTT_WIRE_UDP_IP_BYTES: u64 = 28;
+
+impl WireEvidence {
+    /// İki oturumun sayaçlarını toplar (doygun).
+    #[must_use]
+    pub fn plus(mut self, other: Self) -> Self {
+        for (a, b) in self.ack_rx_types.iter_mut().zip(other.ack_rx_types) {
+            *a = a.saturating_add(b);
+        }
+        self.caps_sends = self.caps_sends.saturating_add(other.caps_sends);
+        self.ptt_lean_tx = self.ptt_lean_tx.saturating_add(other.ptt_lean_tx);
+        self.ptt_wire_bytes = self.ptt_wire_bytes.saturating_add(other.ptt_wire_bytes);
+        self.ptt_wire_datagrams = self
+            .ptt_wire_datagrams
+            .saturating_add(other.ptt_wire_datagrams);
+        self
+    }
+}
+
 /// [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] ACK çerçevesi sayaçları ([`ClientLiveDiag::ack`]).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct AckFrameCounts {
@@ -1797,6 +1851,9 @@ impl ClientLiveDiag {
         self.tx_datagrams = stats.tx_datagrams;
         self.rx_datagrams = stats.rx_datagrams;
         self.tx_bytes = stats.tx_bytes;
+        // `wire.ack_rx_types` çerçeve işlendiği anda yazılır (aşağıda değişmez).
+        self.wire.caps_sends = stats.caps_sends;
+        self.wire.ptt_lean_tx = stats.ptt_lean_tx;
         self.fec_blocks_latched = stats.fec_blocks_latched;
         self.fec_repairs_tx = stats.fec_repairs_tx;
         let fec = sender.diag_fec_actuation();
@@ -2475,6 +2532,10 @@ struct PathEstimate {
     /// `Σ next_unit − Sender::unsent_units`. Yalnız artar. Görev her motor olayından sonra YAZAR;
     /// tutamaç OKUR ([`ClientHandle::send_queue_drained`]).
     send_queue_drained: AtomicU64,
+    /// [PTT-BİRLEŞİK · deney] Eşin bant içi yeteneği: 0 bilinmiyor, 1 çözer (ilk yalın ACK'i
+    /// 0x17), 2 çözmez (ilk yalın ACK'i 0x16). Görev bir kez YAZAR (0 → 1 ya da 2), tutamaç OKUR
+    /// ([`ClientHandle::peer_ptt_coalesce`]).
+    ptt_coalesce_peer: AtomicU8,
 }
 
 /// Client tutamağı: bounded offer + ACK olay akışı + kontrollü kapanış.
@@ -2837,6 +2898,19 @@ impl ClientHandle {
     #[must_use]
     pub fn lane_confirm_frontier(&self, lane: usize) -> u64 {
         self.path.lane_frontier[lane & 0b11].load(Ordering::Relaxed)
+    }
+
+    /// [PTT-BİRLEŞİK · deney] Eş birleşik PTT kayıtlarını çözdüğünü bildirdi mi (ilk 0x17 ACK'i;
+    /// yalnız [`RuntimeConfig::ptt_coalesce`] açıkken olabilir). Bileşim kökü uygulamaya verir.
+    /// `None` = henüz bilinmiyor (yalın bitmap ACK'i gelmedi); `Some(false)` = eşin ilk yalın ACK'i
+    /// 0x16 (eş CAPS bit 2'yi gördü ama birleşik kayıtları çözmüyor).
+    #[must_use]
+    pub fn peer_ptt_coalesce(&self) -> Option<bool> {
+        match self.path.ptt_coalesce_peer.load(Ordering::Relaxed) {
+            1 => Some(true),
+            2 => Some(false),
+            _ => None,
+        }
     }
 
     /// [ŞERİT-W] Motorun son yol kestirimi `(btlbw B/s, rtprop ns)`; örnek yoksa ilgili alan 0.
@@ -3284,6 +3358,12 @@ async fn client_task(
     // [K4G-05 / CEVAP PAKETİ 6 TEŞHİS] ACK çerçevesi sayaçları (yalnız aynaya yazılır; görev
     // okumaz).
     let mut ack_counts = AckFrameCounts::default();
+    // [TEL-KANITI · salt gözlem] Gelen ACK çerçeveleri türe göre ([`WireEvidence::ack_rx_types`]);
+    // yalnız canlı aynaya yazılır, `ClientStats` yüzeyi değişmez.
+    let mut ack_rx_types = [0u64; 5];
+    // [PTT-BANT · tel baytı · salt gözlem] PTT şeridi datagramlarının tel baytı ve sayısı
+    // ([`WireEvidence::ptt_wire_bytes`]); yalnız canlı aynaya yazılır.
+    let mut ptt_wire: (u64, u64) = (0, 0);
     // [ŞERİT-SIRA] Şerit başına boşluksuz sıra; kimlik = etiket + sıra (`crate::unit_id::tagged`).
     let mut next_unit: [u64; LANE_COUNT] = [0; LANE_COUNT];
     // [ŞERİT-AÇIKLIK] Store'daki (teyitsiz) birimlerin şerit-içi sıraları; store ile aynı yerde
@@ -3591,7 +3671,15 @@ async fn client_task(
                     TransmitKind::Duplicate => TxClass::Dup,
                     _ => TxClass::Data,
                 };
+                let sealed_before = (stats.tx_bytes, stats.tx_datagrams);
                 let pn = seal_send!(frame, class, $now);
+                // [PTT-BANT · tel baytı · salt gözlem] Mühürlenen PTT şeridi datagramı (mühür
+                // reddinde sayaçlar değişmez → eklenen 0).
+                if cfg.lane_ids && lane_index_of(d.unit_id) == PTT_LANE_INDEX {
+                    let n = stats.tx_datagrams - sealed_before.1;
+                    ptt_wire.0 += (stats.tx_bytes - sealed_before.0) + n * PTT_WIRE_UDP_IP_BYTES;
+                    ptt_wire.1 += n;
+                }
                 map_pn!(pn, d.seq);
             }
             confirmed_now
@@ -3697,23 +3785,49 @@ async fn client_task(
                     || (plain[0] != FRAME_TYPE_ACK
                         && plain[0] != FRAME_TYPE_ACK_V2
                         && !((plain[0] == FRAME_TYPE_ACK_BITMAP
-                            || plain[0] == FRAME_TYPE_ACK_BITMAP_PTT)
+                            || plain[0] == FRAME_TYPE_ACK_BITMAP_PTT
+                            || (cfg.ptt_coalesce
+                                && plain[0] == FRAME_TYPE_ACK_BITMAP_PTT_COALESCE))
                             && cfg.ack_format == AckFormat::Bitmap))
                 {
                     stats.unknown_frames += 1;
                 } else {
+                    // [PTT-BİRLEŞİK · deney] 0x17 = 0x16 + "eşin uygulaması birleşik PTT'yi çözer"
+                    // (yalnız bu uç CAPS'te biti bildirdiyse yazılır; yukarıda yalnız
+                    // `ptt_coalesce` açıkken kabul edilir). Yalın PTT için 0x16 gibi sayılır.
+                    // [TEL-KANITI · salt gözlem] Gelen ACK'in türü sayılır (karar okumaz).
+                    let ack_slot = match plain[0] {
+                        FRAME_TYPE_ACK_V2 => 1,
+                        FRAME_TYPE_ACK_BITMAP => 2,
+                        FRAME_TYPE_ACK_BITMAP_PTT => 3,
+                        FRAME_TYPE_ACK_BITMAP_PTT_COALESCE => 4,
+                        _ => 0,
+                    };
+                    ack_rx_types[ack_slot] = ack_rx_types[ack_slot].saturating_add(1);
+                    let coalesce_ack = plain[0] == FRAME_TYPE_ACK_BITMAP_PTT_COALESCE;
+                    let lean_ack = plain[0] == FRAME_TYPE_ACK_BITMAP_PTT || coalesce_ack;
+                    // İlk yalın ACK'in türü kesin: eş bit 2'yi CAPS'le birlikte gördü (0x16 ancak
+                    // CAPS'ten sonra yazılır); 0x16 → eş birleşik kaydı çözmüyor.
+                    if lean_ack && cfg.ptt_coalesce {
+                        let _ = path.ptt_coalesce_peer.compare_exchange(
+                            0,
+                            if coalesce_ack { 1 } else { 2 },
+                            Ordering::Relaxed,
+                            Ordering::Relaxed,
+                        );
+                    }
                     // [ACK-BITMAP] 0x15 yalnız bitmap biçimi açıkça yapılandırılmışsa çözülür; ilk
                     // 0x15 çerçevesi CAPS bildiriminin karşıya ulaştığını gösterir.
                     // Makro koşu sonu boşaltmasında da açılır; orada değer okunmaz.
                     #[allow(unused_assignments)]
-                    if plain[0] == FRAME_TYPE_ACK_BITMAP || plain[0] == FRAME_TYPE_ACK_BITMAP_PTT {
+                    if plain[0] == FRAME_TYPE_ACK_BITMAP || lean_ack {
                         caps_confirmed = true;
                         stats.ack_bitmap_rx += 1;
                     }
                     // [PTT-YALIN · YETENEK] Yalnız 0x16: eş 0x09'u çözer (CAPS bit 1'i gördü ve
                     // kendisi yalın PTT'yi biliyor). PTT tek iletim (kopya yok; öncelik sırası
                     // kalır), yalın çerçeve, son tarihte bırakma. 0x15 yazan eski eşle bugünkü yol.
-                    if plain[0] != FRAME_TYPE_ACK_BITMAP_PTT
+                    if !lean_ack
                         && ptt_lean_offer
                         && !ptt_lean_peer
                         && !ptt_copy_fallback
@@ -3724,7 +3838,7 @@ async fn client_task(
                             set_ptt_legacy_copies(session.sender_mut(), &cfg);
                         }
                     }
-                    if plain[0] == FRAME_TYPE_ACK_BITMAP_PTT {
+                    if lean_ack {
                         if !ptt_lean_peer && !frag_on && cfg.lane_ids && link_feedback_starved(&cfg)
                         {
                             ptt_lean_peer = true;
@@ -3898,6 +4012,7 @@ async fn client_task(
                             let mut mirror =
                                 live_mirror.lock().unwrap_or_else(PoisonError::into_inner);
                             mirror.ack = ack_counts;
+                            mirror.wire.ack_rx_types = ack_rx_types;
                             mirror.acks.push(record);
                         }
                     }
@@ -3975,6 +4090,8 @@ async fn client_task(
                 start,
                 mirror_now_ns,
             );
+            mirror.wire.ptt_wire_bytes = ptt_wire.0;
+            mirror.wire.ptt_wire_datagrams = ptt_wire.1;
             mirror.recovery = recovery;
             if let Some(change) = state_change {
                 mirror.states.push(change);
@@ -4339,10 +4456,11 @@ async fn client_task(
                     let now_ms = now / 1_000_000;
                     if param_retry_due(now_ms, caps_tries, caps_last_ms, caps_line_gate_ms) {
                         // [PTT-YALIN · YETENEK] Şeritli oturumda yalın PTT de bildirilir.
-                        let f = encode_caps(if cfg.lane_ids {
-                            CAP_ACK_BITMAP | CAP_PTT_LEAN
-                        } else {
-                            CAP_ACK_BITMAP
+                        let f = encode_caps(match (cfg.lane_ids, cfg.ptt_coalesce) {
+                            // [PTT-BİRLEŞİK · deney] Bit yalnız deney açıkken (kapalıyken bayt-aynı).
+                            (true, true) => CAP_ACK_BITMAP | CAP_PTT_LEAN | CAP_PTT_COALESCE,
+                            (true, false) => CAP_ACK_BITMAP | CAP_PTT_LEAN,
+                            (false, _) => CAP_ACK_BITMAP,
                         });
                         let mut sealed = wire_len(seam.as_ref(), client_ctx, f.len());
                         // İlk denemede iki kopya: tek CAPS yolda düşerse (ürün testi, %20
@@ -4492,6 +4610,13 @@ async fn client_task(
         }
     }
     stats.undelivered = store.len() as u64;
+    // [PTT-BANT · tel baytı · salt gözlem] Kapanış boşaltmasında mühürlenen PTT datagramları da
+    // aynaya yazılır (son değer).
+    if let Some(live_mirror) = live.as_ref() {
+        let mut mirror = live_mirror.lock().unwrap_or_else(PoisonError::into_inner);
+        mirror.wire.ptt_wire_bytes = ptt_wire.0;
+        mirror.wire.ptt_wire_datagrams = ptt_wire.1;
+    }
     // [TEŞHİS] Yapı-gate'in karar tabanını kapanışta fotoğrafla (gözlem-amaçlı; motor durumunu
     // DEĞİŞTİRMEZ). Bunlar görünmeden "gate neden açmadı" sorusu cevaplanamıyordu.
     let f = session.sender().diag_loss_structure();
@@ -6223,6 +6348,13 @@ async fn server_task(
                         // [PTT-YALIN · YETENEK] Bu uç 0x09'u çözer; karşı uç yalın PTT gönderecekse
                         // bitmap ACK'leri 0x16 türüyle yazılır.
                         slot.rx.set_ack_bitmap_ptt_lean(on && caps & CAP_PTT_LEAN != 0);
+                        // [PTT-BİRLEŞİK · deney] Bu ucun uygulaması birleşik PTT'yi çözer ve karşı
+                        // uç soruyor: bitmap ACK'leri 0x17 türüyle yazılır.
+                        slot.rx.set_ack_bitmap_ptt_coalesce(
+                            on && cfg.ptt_coalesce
+                                && caps & CAP_PTT_LEAN != 0
+                                && caps & CAP_PTT_COALESCE != 0,
+                        );
                         // [PTT-YALIN · BAŞLANGIÇ] Karşı uç ilk 0x16'ya dek PTT'yi kopyasız veri
                         // çerçevesiyle gönderir: PTT deliği o andan son tarih kipinde atlanır.
                         if on && caps & CAP_PTT_LEAN != 0 {

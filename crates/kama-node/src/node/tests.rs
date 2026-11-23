@@ -36,6 +36,8 @@ mod glare;
 mod hub_relink;
 /// [T3-GLARE] Niyetin terk edilen INIT'inin taşıyıcı tekrarı durur (`tests/intent_t3.rs`).
 mod intent_t3;
+/// [PTT-BİRLEŞİK · pilot · #233] Düğümün pilot bağlantısı.
+mod ptt_pilot;
 
 const ALICE: &str = "alice";
 const BOB: &str = "bob";
@@ -952,12 +954,15 @@ fn input_limits_are_the_engines_own_limits() {
         peer: to_bob,
         codec: PttCodec::Lyra,
         bundle_ms: BUNDLE_MS,
+        pilot: false,
         reply,
     })
-    .expect("ptt_open");
+    .expect("ptt_open")
+    .stream;
     let over = call(node, |reply| Command::PttPush {
         stream,
         payload: vec![BUNDLE_BYTE; limits.max_bundle_bytes + 1],
+        timed: None,
         reply,
     });
     assert!(
@@ -972,6 +977,7 @@ fn input_limits_are_the_engines_own_limits() {
     call(node, |reply| Command::PttPush {
         stream,
         payload: vec![BUNDLE_BYTE; limits.max_bundle_bytes],
+        timed: None,
         reply,
     })
     .expect("limit boyundaki demeti motor kabul eder");
@@ -1083,4 +1089,28 @@ fn receipt_completion_is_reported_in_chain_order_within_the_turn() {
         })
         .expect("metin aynı turda");
     assert!(delivered < text, "zincir sırası: {order:?}");
+}
+
+/// [PTT-BİRLEŞİK · deney · #233 inceleme 6, tur 2] Tek anahtar: düğümün PTT motorunun birleşik
+/// biçim anahtarı Transport'un bayrağından türetilir (`ptt_engine`). Ayırt edici: bayrak AÇIK
+/// kurulan düğümde motorun anahtarı da açıktır (türetme olmasaydı `Ptt::new`'in varsayılanı
+/// kapalı kalırdı: kırmızı); ürün yapılandırmasında ikisi de kapalıdır.
+#[test]
+fn ptt_coalesce_switch_is_derived_from_the_transport_flag() {
+    let _serial = support::serial();
+    let root = TempDir::new("ptt-coalesce-switch");
+    let phones = support::provision(root.path(), &[ALICE, BOB]);
+    for on in [true, false] {
+        crate::PTT_COALESCE_FOR_TEST.with(|f| f.set(on));
+        let (built, _events) = support::manual(&phones[ALICE], support::system_clock());
+        crate::PTT_COALESCE_FOR_TEST.with(|f| f.set(false));
+        let node = &built.node;
+        assert_eq!(node.messenger.transport().ptt_coalesce_enabled(), on);
+        assert_eq!(
+            node.ptt.spurt_coalesce(),
+            on,
+            "motorun anahtarı bayrağı izler"
+        );
+        drop(built);
+    }
 }

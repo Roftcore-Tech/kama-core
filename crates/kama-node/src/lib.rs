@@ -81,6 +81,7 @@ mod peers;
 mod pilot_record;
 #[cfg(feature = "test-util")]
 mod probe;
+mod ptt_pilot;
 #[cfg(test)]
 mod test_support;
 mod wiring;
@@ -99,7 +100,7 @@ use kama_app::codec::limits::TEXT_PREFIX_BYTES;
 use kama_app::codec::{AmpLimits, PttCodec};
 use kama_app::file_transfer::FileTransfer;
 use kama_app::messaging::{Messenger, MsgId};
-use kama_app::ptt::{max_bundle_payload_bytes, Ptt};
+use kama_app::ptt::max_bundle_payload_bytes;
 use kama_app::signaling::{max_blob_bytes, Signaling, SignalingId};
 use kama_app::store::AppStore;
 use kama_provision::format::load_device_config;
@@ -111,7 +112,7 @@ pub use event::{
     PeerConnectState,
 };
 pub use files::RECEIVED_FILES_DIR;
-pub use handle::{FileHandle, StreamHandle};
+pub use handle::{FileHandle, PttPress, StreamHandle};
 #[cfg(feature = "test-util")]
 pub use probe::{EnvelopeCounts, NodeProbe, PeerSessionProbe, SessionEventCounts, SessionProbe};
 
@@ -137,6 +138,17 @@ pub const METRICS_TICK: Duration = Duration::from_secs(1);
 
 /// Düğüm iş parçacığının adı (Linux'ta 15 bayta sığar).
 const NODE_THREAD_NAME: &str = "kama-node";
+
+#[cfg(test)]
+thread_local! {
+    /// [PTT-BİRLEŞİK · deney] Yalnız birim testi: `true` iken bu iş parçacığında kurulan düğümün
+    /// `RuntimeConfig::ptt_coalesce` bayrağı açılır (anahtarın türetildiğini sınamak için).
+    pub(crate) static PTT_COALESCE_FOR_TEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// [PTT-BİRLEŞİK · pilot] Yalnız birim testi: `Some` iken bu iş parçacığında kurulan düğüm
+    /// `KAMA_PTT_PILOT` yerine bu değeri okur (süreç ortamı paylaşıldığından ortam değişkeni
+    /// testte kurulmaz).
+    pub(crate) static PTT_PILOT_FOR_TEST: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
 
 /// Düğüm olaylarının dinleyicisi. DÜĞÜM İŞ PARÇACIĞINDA çağrılır: hızlı dönmelidir (dönene dek
 /// düğüm turu durur). İçinden yanıt bekleyen düğüm çağrısı [`NodeError::ReentrantCall`] alır.
@@ -201,6 +213,17 @@ impl fmt::Debug for KamaNode {
         // Kimlik, anahtar ve eş özetleri Debug'a GİRMEZ.
         f.debug_struct("KamaNode").finish_non_exhaustive()
     }
+}
+
+/// [ACK-BİÇİMİ · PoC 2026-11-23] ACK biçimi dağıtım anahtarı (bkz. `Node::start`).
+pub const ACK_FORMAT_ENV_VAR: &str = "KAMA_ACK_FORMAT";
+
+/// `KAMA_ACK_FORMAT` değerini çözer: boş/`v2` → V2 (ürün varsayılanı), `bitmap` → bitmap pilotu;
+/// başka değer yapılandırma hatası.
+fn parse_ack_format(v: &str) -> Result<client_core::runtime::AckFormat, NodeError> {
+    client_core::runtime::AckFormat::parse(v).ok_or(NodeError::Config(
+        kama_provision::format::FormatError::Invalid("KAMA_ACK_FORMAT: 'v2' ya da 'bitmap' olmalı"),
+    ))
 }
 
 /// [İŞ-30] Çekirdeğin derleme kimliği (başlangıç kaydı ve pilot özeti): paket sürümü ve derlemede
@@ -315,6 +338,17 @@ impl KamaNode {
                     ))
                 })?;
         }
+        // [ACK-BİÇİMİ · PoC 2026-11-23] `KAMA_ACK_FORMAT=bitmap` ⇒ bitmap ACK pilotu
+        // (`RuntimeConfig::ack_format`; 0x15, eş yalın PTT'yi biliyorsa 0x16). Boş/`v2` = ürün
+        // varsayılanı V2 (bit-eşit). Yalnız dağıtım ayarıdır, iki uçta AYNI olmalıdır; tanınmayan
+        // değer yapılandırma hatasıdır (sessizce V2'ye düşmez). Bu anahtar olmadan gerçek istemci
+        // bitmap yolunu (ve ona bağlı yalın PTT'yi) hiç seçemiyordu.
+        let ack_format_explicit = if let Ok(v) = std::env::var(ACK_FORMAT_ENV_VAR) {
+            transport_config.runtime.ack_format = parse_ack_format(&v)?;
+            true
+        } else {
+            false
+        };
         // [TELEFON-PİLOTU] Yön hızı profili dağıtım ayarından (`KAMA_LINK_RATES` ya da
         // `<data_dir>/link-profile`; `src/link_profile.rs`). Yoksa `None`: bugünkü ürün davranışı.
         let env_rates = std::env::var(link_profile::ENV_VAR).ok();
@@ -328,6 +362,55 @@ impl KamaNode {
                 link_profile::LoadError::Io(io) => NodeError::DataDir(io),
             })?;
         transport_config.runtime.link_rates = link_rates;
+        // [PTT-BİRLEŞİK · deney] Yalnız birim testi: bu iş parçacığında kurulan düğümün Transport
+        // bayrağı açılır (ürün yolunda bayrak kapalı).
+        #[cfg(test)]
+        if PTT_COALESCE_FOR_TEST.with(std::cell::Cell::get) {
+            transport_config.runtime.ptt_coalesce = true;
+        }
+        // [PTT-BİRLEŞİK · pilot · #233] Dağıtım ayarı (`KAMA_PTT_PILOT` ya da
+        // `<data_dir>/ptt-pilot`; `src/ptt_pilot.rs`). Yoksa kapalı: bugünkü ürün davranışı
+        // (ACK V2, ayrı PTT_OPEN / PTT_CLOSE). Açıkken bitmap pilot yolu: birleşik PTT bayrağı
+        // ve bitmap ACK (0x17 ve yalın 0x09 yalnız onunla vardır; iki uç da pilotla başlar).
+        let ptt_pilot_env = std::env::var(ptt_pilot::ENV_VAR).ok();
+        #[cfg(test)]
+        let ptt_pilot_env = PTT_PILOT_FOR_TEST
+            .with(|v| v.borrow().clone())
+            .or(ptt_pilot_env);
+        let ptt_pilot =
+            ptt_pilot::load(data_dir, ptt_pilot_env.as_deref()).map_err(|e| match e {
+                ptt_pilot::LoadError::Invalid => {
+                    NodeError::Config(kama_provision::format::FormatError::Invalid(
+                        "KAMA_PTT_PILOT / ptt-pilot: '0', '1' ya da '1:<eş>[,<eş>…]' olmalı",
+                    ))
+                }
+                ptt_pilot::LoadError::Io(io) => NodeError::DataDir(io),
+            })?;
+        // Yönetilen eş adları dizinde olmalı (sessizce yok sayılmaz).
+        let mut ptt_provisioned = Vec::with_capacity(ptt_pilot.provisioned.len());
+        for name in &ptt_pilot.provisioned {
+            ptt_provisioned.push(peers.resolve(name).map_err(|_| {
+                NodeError::Config(kama_provision::format::FormatError::Invalid(
+                    "KAMA_PTT_PILOT / ptt-pilot: yönetilen eş cihaz dosyasında yok",
+                ))
+            })?);
+        }
+        if ptt_pilot.enabled {
+            // Pilotun kabul kipi cc-port + bitmap + doğrulanmış 300 ms PTT'dir. `KAMA_ACK_FORMAT`
+            // verilmediyse bitmap seçilir; açıkça `v2` verildiyse çelişki yapılandırma hatasıdır
+            // (pilot sessizce 0x17'siz / yalın PTT'siz başlamaz).
+            if ack_format_explicit
+                && transport_config.runtime.ack_format != client_core::runtime::AckFormat::Bitmap
+            {
+                return Err(NodeError::Config(
+                    kama_provision::format::FormatError::Invalid(
+                        "KAMA_PTT_PILOT açıkken KAMA_ACK_FORMAT 'bitmap' olmalı (ya da verilmemeli)",
+                    ),
+                ));
+            }
+            transport_config.runtime.ptt_coalesce = true;
+            transport_config.runtime.ack_format = client_core::runtime::AckFormat::Bitmap;
+        }
         // [İŞ-30] Pilot kaydı açıkça etkinleştirilir (`src/pilot_record.rs`); açıkken canlı teşhis
         // aynası açılır (salt gözlem), kapalıyken hiçbir şey yazılmaz.
         let pilot_env = std::env::var(pilot_record::ENV_VAR).ok();
@@ -340,8 +423,9 @@ impl KamaNode {
             transport_config.runtime.live_diag = true;
         }
         let start_record = format!(
-            "{}{}pilot_kaydı={}\n",
+            "{}{}{}pilot_kaydı={}\n",
             core_build_line(),
+            ptt_pilot::start_line(&ptt_pilot),
             link_profile::start_record(
                 &transport_config.runtime,
                 transport_config.lanes.is_some(),
@@ -377,9 +461,12 @@ impl KamaNode {
         let app_store: Arc<dyn AppStore> = store;
         let messenger = Messenger::with_store(transport, app_store).map_err(NodeError::Limits)?;
         let limits = InputLimits::from_amp(messenger.limits());
+        let mut ptt = node::ptt_engine(&messenger, Arc::clone(&app_clock));
+        // [PTT-BİRLEŞİK · pilot] Yönetilen yetenek: dağıtımın doğruladığı eşler.
+        node::provision_ptt_pilot(&mut ptt, &ptt_provisioned)?;
         let engines = AppEngines {
             messenger,
-            ptt: Ptt::new(Arc::clone(&app_clock)),
+            ptt,
             files: FileTransfer::new(Arc::clone(&app_clock)),
             signaling: Signaling::new(app_clock),
         };
@@ -515,6 +602,9 @@ impl KamaNode {
     }
 
     /// Basış başlar: `PTT_OPEN` (Reliable) eşin güncel oturumuna; DÜĞÜM TUTAMACINI döner.
+    /// [#233] Pilot ayarı (`KAMA_PTT_PILOT`) açık ve eş doğrulanmış olsa da bu çağrı HER ZAMAN
+    /// bugünkü uyumlu ayrı kayıtları ve çağıranın süresini kullanır; birleşik 300 ms biçimini
+    /// yalnız [`Self::ptt_open_press`] seçer.
     /// `codec` ve `bundle_ms` medya motorunundur (AMP §3 0x06; akış boyunca sabit, düğüm
     /// yorumlamaz) — plan imzasına (`ptt_open(peer_id)`) beyanlı ek: değer uydurulmaz.
     ///
@@ -532,6 +622,33 @@ impl KamaNode {
             peer,
             codec,
             bundle_ms,
+            pilot: false,
+            reply,
+        })
+        .map(|press| press.stream)
+    }
+
+    /// [PTT-BİRLEŞİK · pilot · #233] Basış başlar ve demet süresini pilot kuralı seçer
+    /// (`kama_app::ptt::Ptt::open_press`); döner: [`PttPress`] — düğüm tutamacı, akışın SEÇİLEN
+    /// `bundle_ms` kodu ve birleşik biçimin kullanılıp kullanılmadığı. Medya/yakalama tarafı
+    /// çerçeveleri DÖNEN süreyle demetler. Pilot açık ve eşin desteği basıştan ÖNCE doğrulanmışsa (yönetilen ya da
+    /// daha önce bant içi 0x17) 300 ms'nin kodu; aksi hâlde `fallback_bundle_ms` aynen ve tel
+    /// [`Self::ptt_open`] ile bayt-aynı. Basışın biçimi basış boyunca değişmez.
+    ///
+    /// # Errors
+    /// [`Self::ptt_open`] ile aynı.
+    pub fn ptt_open_press(
+        &self,
+        peer_id: &str,
+        codec: PttCodec,
+        fallback_bundle_ms: u8,
+    ) -> Result<PttPress, NodeError> {
+        let peer = self.peers.resolve(peer_id)?;
+        self.request(|reply| Command::PttOpen {
+            peer,
+            codec,
+            bundle_ms: fallback_bundle_ms,
+            pilot: true,
             reply,
         })
     }
@@ -554,6 +671,42 @@ impl KamaNode {
         self.request(|reply| Command::PttPush {
             stream,
             payload,
+            timed: None,
+            reply,
+        })
+    }
+
+    /// [PTT-BİRLEŞİK · pilot · #233] Ses demeti, sesin oluşum anıyla: `audio_age` = demetin İLK
+    /// 20 ms çerçevesinin oluşumundan bu çağrıya dek geçen süre. SON TARİH FARKI: burada son
+    /// tarih çerçevenin OLUŞUMUNDAN 1 s sonradır; [`Self::ptt_push`]'ta SUNUM anından 1 s sonra
+    /// (demet süresi kadar daha geç: 300 ms demette oluşumdan 1,3 s). `last` = basışın SON demeti: birleşik akışta `END`
+    /// işaretini taşır ve ardından gelen [`Self::ptt_close`] tele hiçbir şey çıkarmaz (`last`
+    /// verilmezse `ptt_close` ayrı bir yüksüz `END` datagramı gönderir: +55 B tel). Birleşik
+    /// olmayan akışta sıradan demettir.
+    ///
+    /// # Errors
+    /// [`Self::ptt_push`] ile aynı.
+    pub fn ptt_push_timed(
+        &self,
+        stream: StreamHandle,
+        payload: Vec<u8>,
+        audio_age: Duration,
+        last: bool,
+    ) -> Result<(), NodeError> {
+        let max = self.limits.max_bundle_bytes;
+        if payload.len() > max {
+            return Err(NodeError::TooLarge {
+                what: "ptt payload",
+                len: payload.len(),
+                max,
+            });
+        }
+        let now = std::time::Instant::now();
+        let audio_start = now.checked_sub(audio_age).unwrap_or(now);
+        self.request(|reply| Command::PttPush {
+            stream,
+            payload,
+            timed: Some((audio_start, last)),
             reply,
         })
     }
@@ -813,5 +966,24 @@ impl Drop for KamaNode {
     fn drop(&mut self) {
         // Drop'ta panik YOK: kapanış hatası (iş parçacığı paniği) burada raporlanacak yer bulamaz.
         let _ = self.stop();
+    }
+}
+
+#[cfg(test)]
+mod ack_format_switch_tests {
+    //! [ACK-BİÇİMİ · PoC 2026-11-23] `KAMA_ACK_FORMAT` çözümü: gerçek istemci bitmap pilotunu yalnız
+    //! açık ayarla seçer; varsayılan V2'dir; tanınmayan değer sessizce V2'ye düşmez.
+    use super::parse_ack_format;
+    use client_core::runtime::AckFormat;
+
+    #[test]
+    fn switch_selects_bitmap_only_when_asked_and_rejects_unknown_values() {
+        assert_eq!(parse_ack_format("bitmap").ok(), Some(AckFormat::Bitmap));
+        assert_eq!(parse_ack_format("v2").ok(), Some(AckFormat::V2));
+        assert_eq!(parse_ack_format("").ok(), Some(AckFormat::V2));
+        assert!(
+            parse_ack_format("bitmap2").is_err(),
+            "tanınmayan değer hata olmalı"
+        );
     }
 }

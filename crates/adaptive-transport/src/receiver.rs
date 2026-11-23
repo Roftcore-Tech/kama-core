@@ -211,6 +211,8 @@ pub struct Receiver {
     ack_bitmap: bool,
     /// [PTT-YALIN · YETENEK] Bkz. [`Receiver::set_ack_bitmap_ptt_lean`].
     ack_bitmap_ptt: bool,
+    /// [PTT-BİRLEŞİK · deney] Bkz. [`Receiver::set_ack_bitmap_ptt_coalesce`].
+    ack_bitmap_ptt_coalesce: bool,
     /// [ACK-BITMAP] Son çıkan bitmap ACK'lerinin `largest`'ı (en eski önde, en çok `BITMAP_REPEAT`).
     bitmap_emitted: std::collections::VecDeque<u64>,
     smallest_seq: u64,
@@ -354,6 +356,7 @@ impl Receiver {
             rereport: false,
             ack_bitmap: false,
             ack_bitmap_ptt: false,
+            ack_bitmap_ptt_coalesce: false,
             bitmap_emitted: std::collections::VecDeque::new(),
             smallest_seq: 0,
             largest_seq: 0,
@@ -641,6 +644,12 @@ impl Receiver {
     /// türüyle yazılır ("bu uç 0x09 yalın PTT'yi çözer"). Bitmap kapalıyken etkisiz.
     pub fn set_ack_bitmap_ptt_lean(&mut self, on: bool) {
         self.ack_bitmap_ptt = on;
+    }
+
+    /// [PTT-BİRLEŞİK · deney] Karşı uç CAPS'te birleşik PTT bitini bildirdi ve bu ucun uygulaması
+    /// çözüyor: yalın bitmap ACK'leri 0x17 türüyle yazılır. Yalın kapalıyken etkisiz.
+    pub fn set_ack_bitmap_ptt_coalesce(&mut self, on: bool) {
+        self.ack_bitmap_ptt_coalesce = on;
     }
 
     /// [SIKIŞMA · E · #175 7081448733] Çift ölçüsünün sıkışma sınaması için bu alıcının ölçtüğü
@@ -1492,6 +1501,7 @@ impl Receiver {
                 // algılamada saklanan değerler birleşir (bekleme yokken `[0, 0]`, alan bugünkü).
                 bm.pair_rate = self.pair.field_with(self.alarm_pair_saved);
                 bm.ptt_lean = self.ack_bitmap_ptt;
+                bm.ptt_coalesce = self.ack_bitmap_ptt_coalesce;
             }
             return (Some(frame), encoded == ACK_DELAY_ENC_MAX);
         }

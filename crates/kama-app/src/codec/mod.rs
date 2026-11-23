@@ -36,8 +36,8 @@ pub use header::MsgType;
 pub use limits::{bundle_code_from_ms, bundle_ms_from_code, AmpLimits, LimitsError};
 
 use limits::{
-    APP_RECORD_HEADER_BYTES, COMPACT_MEDIA_MARKER, FLAGS_NONE, FLAG_COMPRESSED,
-    WHOLE_FILE_HASH_BYTES,
+    APP_RECORD_HEADER_BYTES, COMPACT_MEDIA_MARKER, FLAGS_NONE, FLAG_COMPRESSED, SPURT_END_MARKER,
+    SPURT_OPEN_END_MARKER, SPURT_OPEN_HEADER_BYTES, SPURT_OPEN_MARKER, WHOLE_FILE_HASH_BYTES,
 };
 
 /// §3 0x05 `FILE_ABORT.reason`. Bilinmeyen değer → DROP (`unknown-enum-value`).
@@ -273,6 +273,30 @@ pub enum AppMessage {
         /// Opak medya yükü (uzunluk = kayıt uzunluğu − 2).
         payload: Vec<u8>,
     },
+    /// [PTT-BİRLEŞİK · deney] Açılış bilgisini taşıyan demet ([`limits::SPURT_OPEN_MARKER`] /
+    /// [`limits::SPURT_OPEN_END_MARKER`]): tipi `MEDIA_BUNDLE`'dır; alıcı bilmediği akışı bundan
+    /// açar (`PTT_OPEN` yerine). `end` → konuşmanın son demeti (`PTT_CLOSE` yerine). v1 alıcısı
+    /// DROP eder.
+    MediaBundleOpen {
+        /// Konuşma akışı kimliği.
+        stream_id: u32,
+        /// Kodlayıcı kodu (`PTT_OPEN.codec` ile aynı kayıt defteri).
+        codec: u8,
+        /// Demet süresi kodu ([`bundle_ms_from_code`]).
+        bundle_ms: u8,
+        /// Konuşmanın son demeti mi.
+        end: bool,
+        /// Opak medya yükü (uzunluk = kayıt uzunluğu − 7; boş olabilir).
+        payload: Vec<u8>,
+    },
+    /// [PTT-BİRLEŞİK · deney] Konuşmanın son demeti, kompakt ([`limits::SPURT_END_MARKER`]):
+    /// akış `stream_tag`'in tuttuğu etkin akıştır. v1 alıcısı DROP eder.
+    MediaBundleEnd {
+        /// `stream_id`'nin düşük 8 biti ([`compact_stream_tag`]).
+        stream_tag: u8,
+        /// Opak medya yükü (uzunluk = kayıt uzunluğu − 2; boş olabilir).
+        payload: Vec<u8>,
+    },
     /// 0x0B `FILE_RECEIPT` (K4G-09) — gövde sabit 9 B; yalnız alıcı gönderir.
     FileReceipt {
         /// Alındının ait olduğu aktarım: gönderenin `FILE_BEGIN.transfer_id`'si.
@@ -296,7 +320,10 @@ impl AppMessage {
             Self::PttClose { .. } => MsgType::PttClose,
             Self::Receipt { .. } => MsgType::Receipt,
             Self::SignalingBlob { .. } => MsgType::SignalingBlob,
-            Self::MediaBundle { .. } | Self::MediaBundleCompact { .. } => MsgType::MediaBundle,
+            Self::MediaBundle { .. }
+            | Self::MediaBundleCompact { .. }
+            | Self::MediaBundleOpen { .. }
+            | Self::MediaBundleEnd { .. } => MsgType::MediaBundle,
             Self::FileReceipt { .. } => MsgType::FileReceipt,
         }
     }
@@ -386,6 +413,28 @@ impl fmt::Debug for AppMessage {
                 payload,
             } => f
                 .debug_struct("MediaBundleCompact")
+                .field("stream_tag", stream_tag)
+                .field("payload_len", &payload.len())
+                .finish_non_exhaustive(),
+            Self::MediaBundleOpen {
+                stream_id,
+                codec,
+                bundle_ms,
+                end,
+                payload,
+            } => f
+                .debug_struct("MediaBundleOpen")
+                .field("stream_id", stream_id)
+                .field("codec", codec)
+                .field("bundle_ms", bundle_ms)
+                .field("end", end)
+                .field("payload_len", &payload.len())
+                .finish_non_exhaustive(),
+            Self::MediaBundleEnd {
+                stream_tag,
+                payload,
+            } => f
+                .debug_struct("MediaBundleEnd")
                 .field("stream_tag", stream_tag)
                 .field("payload_len", &payload.len())
                 .finish_non_exhaustive(),
@@ -561,11 +610,19 @@ impl std::error::Error for EncodeError {}
 ///
 /// [`EncodeError`] — gövde `MAX_BODY_BYTES`'ı ya da `FILE_BEGIN.name` 255 baytı aşıyor.
 pub fn encode(message: &AppMessage, limits: &AmpLimits) -> Result<PreparedUnit, EncodeError> {
-    if let AppMessage::MediaBundleCompact { .. } = message {
-        // Gövde = `stream_tag ‖ payload` (sınır `MAX_BODY_BYTES`, tahsisten önce); başlık tek bayt.
+    // [PTT-BANT · kol A / PTT-BİRLEŞİK · deney] İşaretli biçimler: başlık tek işaret baytı.
+    let marker = match message {
+        AppMessage::MediaBundleCompact { .. } => Some(COMPACT_MEDIA_MARKER),
+        AppMessage::MediaBundleOpen { end: false, .. } => Some(SPURT_OPEN_MARKER),
+        AppMessage::MediaBundleOpen { end: true, .. } => Some(SPURT_OPEN_END_MARKER),
+        AppMessage::MediaBundleEnd { .. } => Some(SPURT_END_MARKER),
+        _ => None,
+    };
+    if let Some(marker) = marker {
+        // Gövde = işaretten sonraki baytlar (sınır `MAX_BODY_BYTES`, tahsisten önce).
         let body = body::encode_body(message, limits)?;
         let mut bytes = Vec::with_capacity(1 + body.len());
-        bytes.push(COMPACT_MEDIA_MARKER);
+        bytes.push(marker);
         bytes.extend_from_slice(&body);
         return Ok(PreparedUnit {
             bytes,
@@ -599,6 +656,38 @@ pub const fn compact_stream_tag(stream_id: u32) -> u8 {
 ///
 /// [`DecodeError`] — kayıt atılır; gerekçe [`DecodeError::reason`].
 pub fn decode(record: &[u8], limits: &AmpLimits) -> Result<AppMessage, DecodeError> {
+    if let Some((&marker @ (SPURT_OPEN_MARKER | SPURT_OPEN_END_MARKER), rest)) =
+        record.split_first()
+    {
+        // [PTT-BİRLEŞİK · deney] `stream_id u32 · codec u8 · bundle_ms u8 · payload`.
+        if record.len() < SPURT_OPEN_HEADER_BYTES {
+            return Err(DecodeError::Drop(DropReason::RecordTooShort));
+        }
+        // Kanonik tavan: kodlayıcının ürettiği en uzun kayıt işaret 1 + `MAX_BODY_BYTES`.
+        if record.len() > 1 + limits.max_body_bytes() {
+            return Err(DecodeError::Drop(DropReason::RecordLenMismatch));
+        }
+        let (id, rest) = rest.split_at(4);
+        return Ok(AppMessage::MediaBundleOpen {
+            stream_id: u32::from_be_bytes([id[0], id[1], id[2], id[3]]),
+            codec: rest[0],
+            bundle_ms: rest[1],
+            end: marker == SPURT_OPEN_END_MARKER,
+            payload: rest[2..].to_vec(),
+        });
+    }
+    if let Some((&SPURT_END_MARKER, rest)) = record.split_first() {
+        let Some((&stream_tag, payload)) = rest.split_first() else {
+            return Err(DecodeError::Drop(DropReason::RecordTooShort));
+        };
+        if record.len() > 1 + limits.max_body_bytes() {
+            return Err(DecodeError::Drop(DropReason::RecordLenMismatch));
+        }
+        return Ok(AppMessage::MediaBundleEnd {
+            stream_tag,
+            payload: payload.to_vec(),
+        });
+    }
     if let Some((&COMPACT_MEDIA_MARKER, rest)) = record.split_first() {
         let Some((&stream_tag, payload)) = rest.split_first() else {
             return Err(DecodeError::Drop(DropReason::RecordTooShort));
@@ -929,6 +1018,87 @@ mod tests {
         let mut over = vec![COMPACT_MEDIA_MARKER, 0];
         over.resize(APP_RECORD_HEADER_BYTES + l.max_body_bytes() + 1, 0);
         assert_eq!(drop_of(&over), DropReason::RecordLenMismatch);
+    }
+
+    /// [PTT-BİRLEŞİK · deney] Açılış bilgili demet 7 B, kompakt son demet 2 B başlık; gidiş-dönüş,
+    /// boş yük (yalnız kapanış), kısa kayıt DROP, tavan tam biçimle aynı; v1 başlık ayrıştırıcısı
+    /// üçünü de `unknown-msg-version` ile atar (eski alıcının davranışı).
+    #[test]
+    fn spurt_bundles_carry_open_and_end_and_round_trip() {
+        let l = limits();
+        for end in [false, true] {
+            let open = AppMessage::MediaBundleOpen {
+                stream_id: 0x0102_03FE,
+                codec: PttCodec::Lyra.code(),
+                bundle_ms: 222,
+                end,
+                payload: vec![7u8; 168],
+            };
+            let unit = encode(&open, &l).expect("kodlanır");
+            assert_eq!(unit.bytes.len(), SPURT_OPEN_HEADER_BYTES + 168);
+            assert_eq!(
+                unit.bytes[..7],
+                [
+                    if end {
+                        SPURT_OPEN_END_MARKER
+                    } else {
+                        SPURT_OPEN_MARKER
+                    },
+                    0x01,
+                    0x02,
+                    0x03,
+                    0xFE,
+                    PttCodec::Lyra.code(),
+                    222
+                ]
+            );
+            assert_eq!(decode(&unit.bytes, &l), Ok(open.clone()));
+            assert_eq!(open.msg_type(), MsgType::MediaBundle);
+            assert_eq!(
+                header::parse_record(&unit.bytes).err(),
+                Some(DecodeError::Drop(DropReason::UnknownMsgVersion))
+            );
+        }
+        let end = AppMessage::MediaBundleEnd {
+            stream_tag: 0xFE,
+            payload: Vec::new(),
+        };
+        let unit = encode(&end, &l).expect("kodlanır");
+        assert_eq!(unit.bytes, vec![SPURT_END_MARKER, 0xFE]);
+        assert_eq!(decode(&unit.bytes, &l), Ok(end));
+        assert_eq!(drop_of(&[SPURT_END_MARKER]), DropReason::RecordTooShort);
+        assert_eq!(
+            drop_of(&[SPURT_OPEN_MARKER, 0, 0, 0, 1, 2]),
+            DropReason::RecordTooShort
+        );
+        let too_big = AppMessage::MediaBundleOpen {
+            stream_id: 0,
+            codec: 2,
+            bundle_ms: 20,
+            end: false,
+            payload: vec![0; l.max_body_bytes() - 5],
+        };
+        assert!(matches!(
+            encode(&too_big, &l),
+            Err(EncodeError::BodyTooLarge { .. })
+        ));
+        // [#233 inceleme · küçük] Kanonik tavan: kodlayıcının en uzun kaydı (işaret 1 + gövde
+        // `MAX_BODY_BYTES`) kabul edilir, bir bayt fazlası düşer (eskiden 4 B fazlası geçiyordu).
+        let longest = AppMessage::MediaBundleOpen {
+            stream_id: 0,
+            codec: 2,
+            bundle_ms: 20,
+            end: false,
+            payload: vec![0; l.max_body_bytes() - 6],
+        };
+        let unit = encode(&longest, &l).expect("en uzun kodlanır");
+        assert_eq!(unit.bytes.len(), 1 + l.max_body_bytes());
+        assert_eq!(decode(&unit.bytes, &l), Ok(longest));
+        for marker in [SPURT_OPEN_MARKER, SPURT_OPEN_END_MARKER, SPURT_END_MARKER] {
+            let mut over = vec![marker, 0, 0, 0, 0, 2, 20];
+            over.resize(1 + l.max_body_bytes() + 1, 0);
+            assert_eq!(drop_of(&over), DropReason::RecordLenMismatch);
+        }
     }
 
     #[test]

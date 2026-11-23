@@ -44,6 +44,9 @@ const RECENT_ENVELOPES: usize = 16;
 pub struct NodeProbe {
     /// Ucu açık S1 oturumları, tutamaç sırasıyla.
     pub sessions: Vec<SessionProbe>,
+    /// [TEL-KANITI · #233] PTT motorunun sayaçları (gönderilen birleşik demetler, birleşik
+    /// açılış / `END` / sessizlik sonu ile biten akışlar).
+    pub ptt: kama_app::ptt::PttStats,
     /// Ucu bırakılan (kapanan) oturumların ARQ / kurtarma sayaçlarının toplamı (RTT alanları 0;
     /// ucun kapanış boşaltmasındaki kararlar girmez — alt sınır).
     pub retired: ClientLiveDiag,

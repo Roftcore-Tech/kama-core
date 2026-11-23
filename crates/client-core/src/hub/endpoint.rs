@@ -23,8 +23,10 @@
 //!
 //! # Rol tablosu (T3; bağlam AEAD'den sonra `Session(h)` doğrulandıktan sonra)
 //!
-//! İstemci ucu: `0x02 RECOVERED`, `0x04 PARAM_ACK`, `0x07 CS_ECHO`, `0x10`/`0x14 ACK`.
-//! Veri alıcısı: `0x00 DATA`, `0x01 FEC`, `0x03 PARAM`, `0x05 DATA_FRAG`, `0x06 CS_PROBE`.
+//! İstemci ucu: `0x02 RECOVERED`, `0x04 PARAM_ACK`, `0x07 CS_ECHO`, `0x10`/`0x14 ACK`,
+//! `0x15`/`0x16`/`0x17` bitmap ACK (0x17: PTT-BİRLEŞİK deneyi; gövde 0x16 ile aynı).
+//! Veri alıcısı: `0x00 DATA`, `0x01 FEC`, `0x03 PARAM`, `0x05 DATA_FRAG`, `0x06 CS_PROBE`,
+//! `0x08 CAPS`, `0x09` yalın PTT.
 //! Bilinmeyen tip → düşer + `hub_role_unknown`. Görevin kendi bağlam kapısı yine çalışır.
 //!
 //! # HB1 sınırı
@@ -53,7 +55,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use adaptive_transport::ack::{
-    FRAME_TYPE_ACK, FRAME_TYPE_ACK_BITMAP, FRAME_TYPE_ACK_BITMAP_PTT, FRAME_TYPE_ACK_V2,
+    FRAME_TYPE_ACK, FRAME_TYPE_ACK_BITMAP, FRAME_TYPE_ACK_BITMAP_PTT,
+    FRAME_TYPE_ACK_BITMAP_PTT_COALESCE, FRAME_TYPE_ACK_V2,
 };
 use kama_contracts::handles::PeerRef;
 use kama_contracts::s3::{HubHandle, ProtectionContext};
@@ -117,7 +120,8 @@ pub fn role_of(frame_type: u8) -> Option<Role> {
         | FRAME_TYPE_ACK
         | FRAME_TYPE_ACK_V2
         | FRAME_TYPE_ACK_BITMAP
-        | FRAME_TYPE_ACK_BITMAP_PTT => Some(Role::Client),
+        | FRAME_TYPE_ACK_BITMAP_PTT
+        | FRAME_TYPE_ACK_BITMAP_PTT_COALESCE => Some(Role::Client),
         FRAME_DATA | FRAME_FEC | FRAME_PARAM | FRAME_DATA_FRAG | FRAME_CS_PROBE | FRAME_CAPS
         | FRAME_PTT => Some(Role::Server),
         _ => None,
@@ -1034,7 +1038,7 @@ mod tests {
     /// T3: tablodaki her tip doğru role, diğer 242 tip `None`.
     #[test]
     fn role_table_maps_every_frame_type() {
-        let client = [0x02, 0x04, 0x07, 0x10, 0x14, 0x15, 0x16];
+        let client = [0x02, 0x04, 0x07, 0x10, 0x14, 0x15, 0x16, 0x17];
         let server = [0x00, 0x01, 0x03, 0x05, 0x06, 0x08, 0x09];
         for t in 0..=u8::MAX {
             let want = if client.contains(&t) {
@@ -1159,6 +1163,28 @@ mod tests {
             .traffic
             .iter()
             .any(|(h, out)| h.raw() == H1 && !*out));
+    }
+
+    /// [PTT-BİRLEŞİK · #233 inceleme 2] Hub kipinde 0x17 bitmap ACK'i istemci ucuna ulaşır
+    /// (eskiden `role_of` onu tanımıyordu: düşüyor ve `hub_role_unknown` sayılıyordu; CAPS'ten
+    /// sonra yazılan bütün ACK'ler kayboluyordu).
+    #[test]
+    fn coalesce_bitmap_ack_reaches_the_client_end_through_the_hub() {
+        let r = rig();
+        let c1 = r.client();
+        c1.send(&session_dgram(H1, FRAME_DATA, b"hi"))
+            .expect("gönder");
+        let _ = recv(&r.hub).expect("hub aldı");
+        let ack = session_dgram(H1, FRAME_TYPE_ACK_BITMAP_PTT_COALESCE, b"bitmap");
+        r.hub_send(&ack);
+        let (b, _) = recv(&c1).expect("istemci ucu 0x17'yi aldı");
+        assert_eq!(b, ack);
+        assert_eq!(
+            lock(r.crypto.stash()).take(&ack).expect("kabul").frame[0],
+            FRAME_TYPE_ACK_BITMAP_PTT_COALESCE
+        );
+        assert_eq!(r.ep.counters().hub_role_unknown, 0);
+        assert!(quiet(&r.server), "veri alıcısına gitmez");
     }
 
     /// Tüketilmeyen kaydın zili yeniden çalınır; ikinci zil kriptoyu çağırmaz.
