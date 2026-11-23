@@ -418,7 +418,13 @@ struct Bottleneck {
     /// [BUA · DEFTER] Sınıf × yük sayaçları ve hat sayaçları.
     book: BTreeMap<(TxClass, Payload), ClassBytes>,
     line: LineCounters,
+    /// [BUA · DEFTER] Serileşmenin bittiği saniye → o saniyede serileşmesi biten tel baytı (gerçek
+    /// tel hızı; `serialized_bytes`'ın saniyelik dökümü). En çok [`SER_SECS_CAP`] saniye.
+    ser_per_sec: Vec<u64>,
 }
+
+/// [BUA · DEFTER] Saniyelik serileşme dökümünün tavanı (s; sınırlı bellek).
+const SER_SECS_CAP: usize = 3_600;
 
 /// Bir PTT iletiminin darboğazdaki kaydı.
 #[derive(Debug, Clone, Copy)]
@@ -518,6 +524,13 @@ impl Bottleneck {
         self.line.max_wait_ns = self.line.max_wait_ns.max(start - now);
         self.line.serialized_bytes += wire;
         self.line.serialized_pkts += 1;
+        let sec = usize::try_from(done / SEC)
+            .unwrap_or(usize::MAX)
+            .min(SER_SECS_CAP - 1);
+        if self.ser_per_sec.len() <= sec {
+            self.ser_per_sec.resize(sec + 1, 0);
+        }
+        self.ser_per_sec[sec] += wire;
         self.waits.push((now, start - now));
         let n = self.tx_of_unit.entry(unit_id).or_insert(0);
         *n += 1;
@@ -873,6 +886,14 @@ struct Outcome {
     /// [BUA] Dönüş hattı: çerçeve türü → sayı, toplam tel baytı.
     ack_types: BTreeMap<u8, u64>,
     ack_wire_bytes: u64,
+    /// [BUA · DEFTER] Saniyelik serileşen tel baytı (`Bottleneck::ser_per_sec`).
+    ser_per_sec: Vec<u64>,
+    /// [BUA · ÜRÜN ALICISI] Alıcının her ACK'i verdiği anda (verilme sırasıyla): (an, daralma alarmı
+    /// sayısı, yükseliş alarmı sayısı). Ayna alıcıda boş.
+    rx_alarms: Vec<(u64, u64, u64)>,
+    /// [BUA · ÜRÜN ALICISI] `acks` ile aynı sırada: çerçevenin (largest − span_first, rx_span,
+    /// pair_rate) alanları; bitmap çerçevesi değilse `None`. Ayna alıcıda boş.
+    ack_frames: Vec<Option<(u64, u16, u16)>>,
 }
 
 /// [BUA · ÜRÜN ALICISI] `client_core::runtime` ACK kolunun göndericiye giden çağrıları, aynı
@@ -1130,6 +1151,7 @@ fn run(sc: &Scenario) -> Outcome {
         busy_bytes_sum: 0,
         book: BTreeMap::new(),
         line: LineCounters::default(),
+        ser_per_sec: Vec::new(),
     };
     s.set_diag_emit_log(sc.diag || sc.ledger);
     let mut reorder_lcg = sc.seed ^ 0x5A5A_5A5A;
@@ -1143,6 +1165,8 @@ fn run(sc: &Scenario) -> Outcome {
         bytes: 0,
     };
     let mut ack_log: Vec<AckRec> = Vec::new();
+    let mut rx_alarms: Vec<(u64, u64, u64)> = Vec::new();
+    let mut ack_frames: Vec<Option<(u64, u16, u16)>> = Vec::new();
     let mut rx = RxMirror::default();
     let mut held: Option<(u64, u64, u64)> = None;
     let mut voice_offered: Vec<u64> = Vec::new();
@@ -1364,6 +1388,7 @@ fn run(sc: &Scenario) -> Outcome {
             if product_rx {
                 if let Some(f) = out.ack {
                     ret.send_product(now, &f, measured_now);
+                    rx_alarms.push((now, r.diag_drop_alarms(), r.diag_rise_alarms()));
                 }
             } else {
                 acks.extend(
@@ -1377,6 +1402,7 @@ fn run(sc: &Scenario) -> Outcome {
             r.set_uplink_yield(ret.free_at > now);
             if let Some(f) = r.on_ack_timer(now) {
                 ret.send_product(now, &f, measured_now);
+                rx_alarms.push((now, r.diag_drop_alarms(), r.diag_rise_alarms()));
             }
         } else {
             acks.extend(
@@ -1440,6 +1466,15 @@ fn run(sc: &Scenario) -> Outcome {
                     ack
                 }
                 RetMsg::Product { bytes, measured } => {
+                    ack_frames.push(AckFrame::decode_with_bitmap(&bytes).ok().and_then(|f| {
+                        f.bitmap.map(|b| {
+                            (
+                                u64::from(f.largest_seq.wrapping_sub(b.span_first)),
+                                b.rx_span,
+                                b.pair_rate,
+                            )
+                        })
+                    }));
                     let (ack, largest, has_span) = product_ack_into_sender(
                         &mut s,
                         &tx,
@@ -1563,6 +1598,9 @@ fn run(sc: &Scenario) -> Outcome {
         backlog,
         ack_types: ret.types.clone(),
         ack_wire_bytes: ret.bytes,
+        ser_per_sec: fwd.ser_per_sec.clone(),
+        rx_alarms,
+        ack_frames,
     }
 }
 
@@ -1604,6 +1642,11 @@ fn ledger_check(fwd: &Bottleneck, tx: &TxCount, rx_bytes: u64, held_bytes: u64) 
         l.serialized_bytes,
         l.lost_bytes + l.delivered_bytes,
         "hat: serileşen = düşen + yayılan"
+    );
+    assert_eq!(
+        fwd.ser_per_sec.iter().sum::<u64>(),
+        l.serialized_bytes,
+        "hat: saniyelik döküm = serileşen"
     );
     let on_wire: u64 = fwd.wire.iter().map(|w| w.3 + OVH).sum();
     assert_eq!(
@@ -3254,6 +3297,46 @@ fn bua_print(arm: &str, sc: &Scenario, o: &Outcome) -> BuaSummary {
             .collect::<Vec<_>>()
             .join(",")
     );
+    // [BUA · DEFTER] Gerçek tel hızı: darboğazda serileşmesi o saniyede biten tel baytı
+    // (`saniye:bayt`; kuyrukta düşen dahil değil, hatta düşen dahil).
+    println!(
+        "BUA-TEL {arm} {rx} tohum={seed} iz={}",
+        o.ser_per_sec
+            .iter()
+            .enumerate()
+            .map(|(t, b)| format!("{t}:{b}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    // [BUA · ÜRÜN ALICISI] ACK başına: no, alıcıdan çıkış (ms), göndericiye varış (ms), ölçüm
+    // aralığı `[span_first, largest]`, `rx_span` (256 µs birimi), `pair_rate`, alıcının daralma /
+    // yükseliş alarmı sayısı, varıştan sonraki gönderim tavanı.
+    for (k, a) in o.acks.iter().enumerate() {
+        let al = o.rx_alarms.get(k).copied();
+        let bm = o.ack_frames.get(k).and_then(|f| f.as_ref());
+        let pace = o
+            .ceil_trace
+            .iter()
+            .take_while(|&&(_, _, n)| n <= k + 1)
+            .last()
+            .map_or(0, |&(_, p, _)| p);
+        println!(
+            "BUA-ACK {arm} {rx} tohum={seed} no={} cikis_ms={} varis_ms={} aralik={} rx_span={} \
+             pair={} dusus_alarm={} yukselis_alarm={} tavan={pace}",
+            k + 1,
+            a.sent / MS,
+            a.arrival / MS,
+            bm.map_or("-".to_string(), |b| format!(
+                "[{},{}]",
+                a.largest.saturating_sub(b.0),
+                a.largest
+            )),
+            bm.map_or("-".to_string(), |b| b.1.to_string()),
+            bm.map_or("-".to_string(), |b| b.2.to_string()),
+            al.map_or("-".to_string(), |x| x.1.to_string()),
+            al.map_or("-".to_string(), |x| x.2.to_string()),
+        );
+    }
     println!(
         "BUA-BIRIKIM {arm} {rx} tohum={seed} iz={}",
         o.backlog
