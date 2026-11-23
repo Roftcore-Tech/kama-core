@@ -3778,3 +3778,109 @@ fn e2_seed1_queue_trace_report() {
         late.join(",")
     );
 }
+
+/// [KUYRUK-TAHMİNİ · kapsam] Hat koruması (ve kuyruk tahmini, `LineGuard` tek kurulum yeri
+/// `Sender::set_cc_feedback_starved`) yalnız port motorunda ve geri bildirimi aç profil kuralı
+/// verilince kurulur: eski motorda, kuralsız port motorunda ve kural kaldırılınca yoktur; bu
+/// yollarda yazılan kuyruğun değişmesi bayt düzeyinde etkisizdir.
+#[test]
+fn queue_estimate_exists_only_with_the_profile_rule_on_the_port_engine() {
+    let rule = FeedbackStarvedRule {
+        pacing_cap_bps: PROFILE_UP,
+        feedback_ns: feedback_horizon_ns(PROFILE_DOWN),
+        line: LineModel {
+            rate_bps: PROFILE_UP,
+            datagram_overhead: OVH,
+        },
+        return_line: LineModel {
+            rate_bps: PROFILE_DOWN,
+            datagram_overhead: OVH,
+        },
+    };
+    let mut legacy = Sender::new();
+    legacy.set_cc_feedback_starved(Some(rule));
+    assert!(legacy.diag_line_guard().is_none(), "eski motor");
+    assert!(
+        Sender::with_cc_port().diag_line_guard().is_none(),
+        "kuralsız port motoru"
+    );
+    let mut port = Sender::with_cc_port();
+    port.set_cc_feedback_starved(Some(rule));
+    assert!(port.diag_line_guard().is_some(), "kurallı port motoru");
+    port.set_cc_feedback_starved(None);
+    assert!(port.diag_line_guard().is_none(), "kural kaldırıldı");
+}
+
+/// [KUYRUK-TAHMİNİ · kapı değerleri] (b), (d-2) ve (e-2) testlerinin tohum başına ölçüleri, kendi
+/// sınırlarıyla yan yana (aynı senaryo, aynı hesap; karar yok, yalnız rapor): kırmızının hangi
+/// tohumda ve ne kadar olduğu tek koşuda görünsün.
+#[test]
+fn queue_gate_values_report() {
+    println!();
+    let t_ret = (129 + OVH) * SEC / PROFILE_DOWN + ONE_WAY_NS;
+    let wait_bound = 2 * (MTU + OVH) * SEC / DROP_TO;
+    let fifo_ns = 64 * (VOICE_UNIT + OVH) * SEC / DROP_TO;
+    let t_ack_of = |o: &Outcome| {
+        o.acks_at
+            .windows(2)
+            .filter(|w| w[1] <= DROP_AT_NS)
+            .map(|w| w[1] - w[0])
+            .max()
+            .unwrap_or(0)
+    };
+    for seed in 1..=3u64 {
+        let sc = Scenario {
+            text_at_ns: Some(DROP_TEXT_AT_NS),
+            ..drop_scenario(seed, true)
+        };
+        let o = run(&sc);
+        let conv = converged_at(&o, DROP_TO);
+        println!(
+            "KAPI b tohum={seed} yakinsama_s={} sinir_s={} bekleme_yak+2s_ms={} sinir_ms={} \
+             ptt_yak+9s_s={} sinir_s=1.00 ptt_dususten_s={} metin_s={}",
+            bua_s(conv),
+            bua_s(Some(DROP_AT_NS + 3 * t_ack_of(&o) + t_ret)),
+            conv.map_or("-".to_string(), |c| (o
+                .max_wait_between(c + 2 * SEC, u64::MAX)
+                / MS)
+                .to_string()),
+            wait_bound / MS,
+            bua_s(conv.map(|c| o.voice_max_from(c + 9 * SEC))),
+            bua_s(Some(o.voice_max_from(DROP_AT_NS))),
+            bua_s(o.text_delay_ns),
+        );
+        let o = run(&drop_scenario(seed, true));
+        let conv = converged_at(&o, DROP_TO);
+        println!(
+            "KAPI d2 tohum={seed} kuyruk_dusen={} yakinsama_s={} bekleme_yak+2s_ms={} sinir_ms={}",
+            o.drops_queue,
+            bua_s(conv),
+            conv.map_or("-".to_string(), |c| (o
+                .max_wait_between(c + 2 * SEC, u64::MAX)
+                / MS)
+                .to_string()),
+            fifo_ns / MS
+        );
+        let sc = Scenario {
+            no_interval: Some((DROP_AT_NS, 19 * SEC)),
+            ..drop_scenario(seed, true)
+        };
+        let o = run(&sc);
+        let (run_len, t_gap, t_back) = o.longest_unmeasured_run();
+        let (t_gap, t_back) = (t_gap.unwrap_or(0), t_back.unwrap_or(0));
+        let q_gap = o.max_wait_between(0, t_gap);
+        let conv = converged_at(&o, DROP_TO);
+        println!(
+            "KAPI e2 tohum={seed} olcumsuz_dizi={run_len} bosluk_beklemesi_ms={} sinir_ms={} \
+             yakinsama_s={} sinir_s={} bekleme_yak+2s_ms={} sinir_ms={} ptt_yak+9s_s={} sinir_s=1.00",
+            o.max_wait_between(t_gap + q_gap + SEC, t_back) / MS,
+            (PTT_BOUND_NS - ONE_WAY_NS) / MS,
+            bua_s(conv),
+            bua_s(Some(t_back + 3 * t_ack_of(&o) + t_ret)),
+            conv.map_or("-".to_string(), |c| (o.max_wait_between(c + 2 * SEC, u64::MAX) / MS)
+                .to_string()),
+            wait_bound / MS,
+            bua_s(conv.map(|c| o.voice_max_from(c + 9 * SEC))),
+        );
+    }
+}
