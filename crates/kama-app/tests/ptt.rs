@@ -3816,3 +3816,46 @@ fn pilot_toward_an_unknown_or_refusing_peer_is_byte_identical_to_the_flag_off_pa
         assert_eq!(got, reference, "{arm}: tel bayt-aynı olmalı");
     }
 }
+
+/// [PTT-BİRLEŞİK · pilot · sahip kararı 2026-11-23] Pilot akışının (birleşik, 300 ms) sessizlik
+/// sonu 1 s + 100 ms + 4 × 300 ms = 2,3 s'dir; pilot dışı sürelerde kural 2 × demet kalır
+/// (420 ms test kolu: 1,94 s; 20 ms: 1,14 s). Belirlenimli saatle: pilot akışı son demetten
+/// 2,3 s − 1 ns sonra hâlâ açıktır (eski 1,7 s'de biterdi), 2,3 s'de tam bir kez biter.
+#[test]
+fn pilot_stream_silence_end_is_four_bundles_and_other_durations_keep_two() {
+    let ms = Duration::from_millis;
+    assert_eq!(
+        kama_app::ptt::spurt_gap_end(SPURT_PILOT_BUNDLE_CODE),
+        ms(2_300)
+    );
+    let arm_420 = kama_app::codec::bundle_code_from_ms(420).expect("kod");
+    assert_eq!(kama_app::ptt::spurt_gap_end(arm_420), ms(1_940));
+    assert_eq!(kama_app::ptt::spurt_gap_end(TEST_BUNDLE_MS), ms(1_140));
+
+    let mut duo = coalesced_duo();
+    let (stream, _) = duo
+        .alice
+        .ptt
+        .open_press(
+            &mut duo.alice.messenger,
+            BOB,
+            PttCodec::Lyra,
+            TEST_BUNDLE_MS,
+        )
+        .expect("açılır");
+    duo.alice.send_bundle(stream, &frame(0)).expect("demet");
+    let first = duo.bob.drain();
+    assert_eq!(
+        first,
+        vec![
+            started(ALICE, stream, PttCodec::Lyra, SPURT_PILOT_BUNDLE_CODE),
+            audio(ALICE, stream, &frame(0))
+        ]
+    );
+    duo.clock.advance(ms(2_300) - Duration::from_nanos(1));
+    assert!(duo.bob.drain().is_empty(), "pay dolmadan akış bitmez");
+    duo.clock.advance(Duration::from_nanos(1));
+    assert_eq!(duo.bob.drain(), vec![ended(ALICE, stream)]);
+    assert!(duo.bob.drain().is_empty(), "tek kapanış");
+    assert_eq!(duo.bob.ptt.stats().streams_ended_by_gap, 1);
+}

@@ -224,6 +224,12 @@ struct Config {
     ptt_bundles: u32,
     ptt_bundle_ms: u8,
     ptt_bytes: usize,
+    /// [PTT-BİRLEŞİK · pilot · #233] `--ptt-pilot on`: basış `KamaNode::ptt_open_press` ile açılır
+    /// (çağıranın süresi `--ptt-bundle-ms`), demetler düğümün DÖNDÜRDÜĞÜ sürenin pilot süresi
+    /// (300 ms) olması şartıyla 300 ms aralıkla ve `ptt_push_timed` ile (sonuncusu `last`) verilir.
+    /// Düğüm pilot süresini dönmezse (eş doğrulanmamış / pilot kapalı) koşu HATAYLA biter: sessiz
+    /// geri düşüş yok. Düğümün pilot ayarı ortamdan gelir (`KAMA_PTT_PILOT`, `KAMA_LINK_RATES`).
+    ptt_pilot: bool,
     stall_at: Duration,
     stall: Duration,
     karsi: bool,
@@ -240,7 +246,7 @@ struct Config {
     receipt_grace: Duration,
 }
 
-const KNOWN_FLAGS: [&str; 38] = [
+const KNOWN_FLAGS: [&str; 39] = [
     "--role",
     "--dir",
     "--alice-addr",
@@ -264,6 +270,7 @@ const KNOWN_FLAGS: [&str; 38] = [
     "--ptt-bundles",
     "--ptt-bundle-ms",
     "--ptt-bytes",
+    "--ptt-pilot",
     "--stall-at-ms",
     "--stall-ms",
     "--karsi",
@@ -349,6 +356,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         ptt_bundle_ms: u8::try_from(bundle_ms)
             .map_err(|_| "--ptt-bundle-ms ≤ 255 olmalı".to_owned())?,
         ptt_bytes: number_usize(v, "--ptt-bytes", 40)?,
+        ptt_pilot: on_off(v, "--ptt-pilot", false)?,
         stall_at: millis(v, "--stall-at-ms", 20_000)?,
         stall: millis(v, "--stall-ms", 30_000)?,
         karsi: on_off(v, "--karsi", true)?,
@@ -458,7 +466,7 @@ fn validate(cfg: &Config) -> Result<(), String> {
 
 /// Bir basışın süresi: açılış · `n` demet (`ptt_bundle_ms` aralıklı) · kapanış.
 fn spurt_len(cfg: &Config, bundles: u32) -> Duration {
-    Duration::from_millis(u64::from(cfg.ptt_bundle_ms)).saturating_mul(bundles.saturating_add(1))
+    spurt_step(cfg).saturating_mul(bundles.saturating_add(1))
 }
 
 // ── Saat ─────────────────────────────────────────────────────────────────────────────────────
@@ -1230,8 +1238,17 @@ struct Action {
     act: Act,
 }
 
+/// Demet aralığı: pilot kolunda pilot süresi (300 ms), diğerlerinde `--ptt-bundle-ms`.
+fn spurt_step(cfg: &Config) -> Duration {
+    if cfg.ptt_pilot {
+        Duration::from_millis(u64::from(kama_app::ptt::SPURT_PILOT_BUNDLE_MS))
+    } else {
+        Duration::from_millis(u64::from(cfg.ptt_bundle_ms))
+    }
+}
+
 fn push_spurt(plan: &mut Vec<Action>, cfg: &Config, spurt: u32, start: Duration, bundles: u32) {
-    let step = Duration::from_millis(u64::from(cfg.ptt_bundle_ms));
+    let step = spurt_step(cfg);
     plan.push(Action {
         due: start,
         act: Act::PttOpen { spurt },
@@ -1400,9 +1417,25 @@ impl Alice {
                 }
             }
             Act::PttOpen { spurt } => {
-                let result = self
-                    .node()?
-                    .ptt_open(BOB, PttCodec::Lyra, self.cfg.ptt_bundle_ms);
+                let result = if self.cfg.ptt_pilot {
+                    let opened =
+                        self.node()?
+                            .ptt_open_press(BOB, PttCodec::Lyra, self.cfg.ptt_bundle_ms);
+                    match opened {
+                        Ok((stream, code)) if code == kama_app::ptt::SPURT_PILOT_BUNDLE_CODE => {
+                            Ok(stream)
+                        }
+                        Ok((_, code)) => {
+                            return Err(format!(
+                                "ptt_open_press {spurt}: düğüm pilot süresini seçmedi (kod {code}); eş doğrulanmamış ya da KAMA_PTT_PILOT kapalı"
+                            ))
+                        }
+                        Err(e) => Err(e),
+                    }
+                } else {
+                    self.node()?
+                        .ptt_open(BOB, PttCodec::Lyra, self.cfg.ptt_bundle_ms)
+                };
                 match result {
                     Ok(stream) => {
                         self.streams.insert(spurt, stream);
@@ -1420,7 +1453,23 @@ impl Alice {
                     .get(&spurt)
                     .ok_or_else(|| format!("ptt_push {spurt}/{idx}: akış açık değil"))?;
                 let body = bundle_body(spurt, idx, self.cfg.ptt_bytes);
-                let result = self.node()?.ptt_push(stream, body);
+                let result = if self.cfg.ptt_pilot {
+                    // Demet çerçeveleri var olunca verilir: ilk çerçeve bir demet süresi önce
+                    // oluştu. Basışın son demeti `END`'i taşır.
+                    self.node()?.ptt_push_timed(
+                        stream,
+                        body,
+                        spurt_step(&self.cfg),
+                        idx + 1
+                            == if spurt == KARSI_SPURT {
+                                self.cfg.karsi_bundles
+                            } else {
+                                self.cfg.ptt_bundles
+                            },
+                    )
+                } else {
+                    self.node()?.ptt_push(stream, body)
+                };
                 match result {
                     Ok(()) => {
                         self.bump('P');

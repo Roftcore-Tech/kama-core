@@ -251,10 +251,16 @@ fn listener() -> (Box<dyn NodeListener>, Events) {
 /// Elle sürülen düğüm: `KamaNode::start` ile AYNI kurulum gövdesi (`build`; süreç-içi röle kaydı
 /// dahil), iş parçacığı yok; Application saati `app_clock`. Döngü `Built::node`'dur.
 pub(crate) fn manual(phone: &Phone, app_clock: Arc<dyn MonotonicClock>) -> (Built, Events) {
+    try_manual(phone, app_clock).expect("düğüm kurulmalı")
+}
+
+/// [`manual`]; kurulum hatası çağırana döner (yapılandırma hatası testleri).
+pub(crate) fn try_manual(
+    phone: &Phone,
+    app_clock: Arc<dyn MonotonicClock>,
+) -> Result<(Built, Events), crate::NodeError> {
     let (listener, events) = listener();
-    let built =
-        KamaNode::build(&phone.config, &phone.data, listener, app_clock).expect("düğüm kurulmalı");
-    (built, events)
+    KamaNode::build(&phone.config, &phone.data, listener, app_clock).map(|built| (built, events))
 }
 
 /// [T3-GLARE] [`manual`], dışarıdan verilen zarf taşıyıcısıyla (`KamaNode::build_with_link`; ölçüm

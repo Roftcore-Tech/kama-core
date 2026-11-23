@@ -81,6 +81,7 @@ mod peers;
 mod pilot_record;
 #[cfg(feature = "test-util")]
 mod probe;
+mod ptt_pilot;
 #[cfg(test)]
 mod test_support;
 mod wiring;
@@ -143,6 +144,10 @@ thread_local! {
     /// [PTT-BİRLEŞİK · deney] Yalnız birim testi: `true` iken bu iş parçacığında kurulan düğümün
     /// `RuntimeConfig::ptt_coalesce` bayrağı açılır (anahtarın türetildiğini sınamak için).
     pub(crate) static PTT_COALESCE_FOR_TEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// [PTT-BİRLEŞİK · pilot] Yalnız birim testi: `Some` iken bu iş parçacığında kurulan düğüm
+    /// `KAMA_PTT_PILOT` yerine bu değeri okur (süreç ortamı paylaşıldığından ortam değişkeni
+    /// testte kurulmaz).
+    pub(crate) static PTT_PILOT_FOR_TEST: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Düğüm olaylarının dinleyicisi. DÜĞÜM İŞ PARÇACIĞINDA çağrılır: hızlı dönmelidir (dönene dek
@@ -336,10 +341,41 @@ impl KamaNode {
             })?;
         transport_config.runtime.link_rates = link_rates;
         // [PTT-BİRLEŞİK · deney] Yalnız birim testi: bu iş parçacığında kurulan düğümün Transport
-        // bayrağı açılır (ürün yolunda bayrak kapalı; yapılandırma yüzeyi yok).
+        // bayrağı açılır (ürün yolunda bayrak kapalı).
         #[cfg(test)]
         if PTT_COALESCE_FOR_TEST.with(std::cell::Cell::get) {
             transport_config.runtime.ptt_coalesce = true;
+        }
+        // [PTT-BİRLEŞİK · pilot · #233] Dağıtım ayarı (`KAMA_PTT_PILOT` ya da
+        // `<data_dir>/ptt-pilot`; `src/ptt_pilot.rs`). Yoksa kapalı: bugünkü ürün davranışı
+        // (ACK V2, ayrı PTT_OPEN / PTT_CLOSE). Açıkken bitmap pilot yolu: birleşik PTT bayrağı
+        // ve bitmap ACK (0x17 ve yalın 0x09 yalnız onunla vardır; iki uç da pilotla başlar).
+        let ptt_pilot_env = std::env::var(ptt_pilot::ENV_VAR).ok();
+        #[cfg(test)]
+        let ptt_pilot_env = PTT_PILOT_FOR_TEST
+            .with(|v| v.borrow().clone())
+            .or(ptt_pilot_env);
+        let ptt_pilot =
+            ptt_pilot::load(data_dir, ptt_pilot_env.as_deref()).map_err(|e| match e {
+                ptt_pilot::LoadError::Invalid => {
+                    NodeError::Config(kama_provision::format::FormatError::Invalid(
+                        "KAMA_PTT_PILOT / ptt-pilot: '0', '1' ya da '1:<eş>[,<eş>…]' olmalı",
+                    ))
+                }
+                ptt_pilot::LoadError::Io(io) => NodeError::DataDir(io),
+            })?;
+        // Yönetilen eş adları dizinde olmalı (sessizce yok sayılmaz).
+        let mut ptt_provisioned = Vec::with_capacity(ptt_pilot.provisioned.len());
+        for name in &ptt_pilot.provisioned {
+            ptt_provisioned.push(peers.resolve(name).map_err(|_| {
+                NodeError::Config(kama_provision::format::FormatError::Invalid(
+                    "KAMA_PTT_PILOT / ptt-pilot: yönetilen eş cihaz dosyasında yok",
+                ))
+            })?);
+        }
+        if ptt_pilot.enabled {
+            transport_config.runtime.ptt_coalesce = true;
+            transport_config.runtime.ack_format = client_core::runtime::AckFormat::Bitmap;
         }
         // [İŞ-30] Pilot kaydı açıkça etkinleştirilir (`src/pilot_record.rs`); açıkken canlı teşhis
         // aynası açılır (salt gözlem), kapalıyken hiçbir şey yazılmaz.
@@ -353,8 +389,9 @@ impl KamaNode {
             transport_config.runtime.live_diag = true;
         }
         let start_record = format!(
-            "{}{}pilot_kaydı={}\n",
+            "{}{}{}pilot_kaydı={}\n",
             core_build_line(),
+            ptt_pilot::start_line(&ptt_pilot),
             link_profile::start_record(
                 &transport_config.runtime,
                 transport_config.lanes.is_some(),
@@ -390,7 +427,9 @@ impl KamaNode {
         let app_store: Arc<dyn AppStore> = store;
         let messenger = Messenger::with_store(transport, app_store).map_err(NodeError::Limits)?;
         let limits = InputLimits::from_amp(messenger.limits());
-        let ptt = node::ptt_engine(&messenger, Arc::clone(&app_clock));
+        let mut ptt = node::ptt_engine(&messenger, Arc::clone(&app_clock));
+        // [PTT-BİRLEŞİK · pilot] Yönetilen yetenek: dağıtımın doğruladığı eşler.
+        node::provision_ptt_pilot(&mut ptt, &ptt_provisioned)?;
         let engines = AppEngines {
             messenger,
             ptt,
@@ -546,6 +585,33 @@ impl KamaNode {
             peer,
             codec,
             bundle_ms,
+            pilot: false,
+            reply,
+        })
+        .map(|(stream, _)| stream)
+    }
+
+    /// [PTT-BİRLEŞİK · pilot · #233] Basış başlar ve demet süresini pilot kuralı seçer
+    /// (`kama_app::ptt::Ptt::open_press`); döner: (düğüm tutamacı, akışın `bundle_ms` KODU —
+    /// `kama_app::codec::bundle_ms_from_code` ile ms). Medya/yakalama tarafı çerçeveleri DÖNEN
+    /// süreyle demetler. Pilot açık ve eşin desteği basıştan ÖNCE doğrulanmışsa (yönetilen ya da
+    /// daha önce bant içi 0x17) 300 ms'nin kodu; aksi hâlde `fallback_bundle_ms` aynen ve tel
+    /// [`Self::ptt_open`] ile bayt-aynı. Basışın biçimi basış boyunca değişmez.
+    ///
+    /// # Errors
+    /// [`Self::ptt_open`] ile aynı.
+    pub fn ptt_open_press(
+        &self,
+        peer_id: &str,
+        codec: PttCodec,
+        fallback_bundle_ms: u8,
+    ) -> Result<(StreamHandle, u8), NodeError> {
+        let peer = self.peers.resolve(peer_id)?;
+        self.request(|reply| Command::PttOpen {
+            peer,
+            codec,
+            bundle_ms: fallback_bundle_ms,
+            pilot: true,
             reply,
         })
     }
@@ -568,6 +634,41 @@ impl KamaNode {
         self.request(|reply| Command::PttPush {
             stream,
             payload,
+            timed: None,
+            reply,
+        })
+    }
+
+    /// [PTT-BİRLEŞİK · pilot · #233] Ses demeti, sesin oluşum anıyla: `audio_age` = demetin İLK
+    /// 20 ms çerçevesinin oluşumundan bu çağrıya dek geçen süre (son tarih oluşumdan 1 s sonradır;
+    /// [`Self::ptt_push`]'ta sunumdan 1 s). `last` = basışın SON demeti: birleşik akışta `END`
+    /// işaretini taşır ve ardından gelen [`Self::ptt_close`] tele hiçbir şey çıkarmaz (`last`
+    /// verilmezse `ptt_close` ayrı bir yüksüz `END` datagramı gönderir: +55 B tel). Birleşik
+    /// olmayan akışta sıradan demettir.
+    ///
+    /// # Errors
+    /// [`Self::ptt_push`] ile aynı.
+    pub fn ptt_push_timed(
+        &self,
+        stream: StreamHandle,
+        payload: Vec<u8>,
+        audio_age: Duration,
+        last: bool,
+    ) -> Result<(), NodeError> {
+        let max = self.limits.max_bundle_bytes;
+        if payload.len() > max {
+            return Err(NodeError::TooLarge {
+                what: "ptt payload",
+                len: payload.len(),
+                max,
+            });
+        }
+        let now = std::time::Instant::now();
+        let audio_start = now.checked_sub(audio_age).unwrap_or(now);
+        self.request(|reply| Command::PttPush {
+            stream,
+            payload,
+            timed: Some((audio_start, last)),
             reply,
         })
     }

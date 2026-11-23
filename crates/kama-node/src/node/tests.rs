@@ -36,6 +36,8 @@ mod glare;
 mod hub_relink;
 /// [T3-GLARE] Niyetin terk edilen INIT'inin taşıyıcı tekrarı durur (`tests/intent_t3.rs`).
 mod intent_t3;
+/// [PTT-BİRLEŞİK · pilot · #233] Düğümün pilot bağlantısı.
+mod ptt_pilot;
 
 const ALICE: &str = "alice";
 const BOB: &str = "bob";
@@ -952,12 +954,15 @@ fn input_limits_are_the_engines_own_limits() {
         peer: to_bob,
         codec: PttCodec::Lyra,
         bundle_ms: BUNDLE_MS,
+        pilot: false,
         reply,
     })
-    .expect("ptt_open");
+    .expect("ptt_open")
+    .0;
     let over = call(node, |reply| Command::PttPush {
         stream,
         payload: vec![BUNDLE_BYTE; limits.max_bundle_bytes + 1],
+        timed: None,
         reply,
     });
     assert!(
@@ -972,6 +977,7 @@ fn input_limits_are_the_engines_own_limits() {
     call(node, |reply| Command::PttPush {
         stream,
         payload: vec![BUNDLE_BYTE; limits.max_bundle_bytes],
+        timed: None,
         reply,
     })
     .expect("limit boyundaki demeti motor kabul eder");

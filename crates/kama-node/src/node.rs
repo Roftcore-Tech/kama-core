@@ -141,11 +141,16 @@ pub(crate) enum Command {
         peer: PeerRef,
         codec: PttCodec,
         bundle_ms: u8,
-        reply: Reply<StreamHandle>,
+        /// [PTT-BİRLEŞİK · pilot] `true` → `Ptt::open_press` (süreyi pilot kuralı seçer).
+        pilot: bool,
+        /// (tutamaç, akışın `bundle_ms` kodu).
+        reply: Reply<(StreamHandle, u8)>,
     },
     PttPush {
         stream: StreamHandle,
         payload: Vec<u8>,
+        /// [PTT-BİRLEŞİK · pilot] `Some((sesin oluşum anı, son demet mi))`.
+        timed: Option<(Instant, bool)>,
         reply: Reply<()>,
     },
     PttClose {
@@ -217,6 +222,25 @@ pub(crate) fn ptt_engine(
     ptt
 }
 
+/// [PTT-BİRLEŞİK · pilot · #233] Yönetilen yetenek: dağıtım ayarında (`ptt_pilot`) sayılan eşler
+/// motora "desteği doğrulanmış" olarak verilir. Pilot kapalıyken liste boştur.
+///
+/// # Errors
+/// Motorun yetenek tablosu doluysa yapılandırma hatası (eş dizini tavanı tablo tavanından küçük
+/// olduğundan beklenmez).
+pub(crate) fn provision_ptt_pilot(ptt: &mut Ptt, peers: &[PeerRef]) -> Result<(), NodeError> {
+    for &peer in peers {
+        if !ptt.set_peer_spurt_provisioned(peer, true) {
+            return Err(NodeError::Config(
+                kama_provision::format::FormatError::Invalid(
+                    "KAMA_PTT_PILOT / ptt-pilot: yönetilen eş tablosu dolu",
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Zehirlenmeye karşı panik yapmaz: korunan değer her yazımda tümüyle değiştirilir.
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -255,6 +279,9 @@ pub(crate) struct NodeLoop {
     tickets: BTreeMap<ConnectTicket, PeerRef>,
     /// Güncel oturumu olan eşler (`Connected` / `Closed` geçişleri için; ≤ eş sayısı).
     up: BTreeSet<PeerRef>,
+    /// [PTT-BİRLEŞİK · pilot] PTT motoruna en son iletilen bant içi yetenek: eş → (oturum, değer)
+    /// (≤ eş sayısı; dizin büyümez).
+    ptt_caps_fed: BTreeMap<PeerRef, (SessionHandle, bool)>,
     /// Sıradaki `Metrics` olayının zamanı.
     metrics_due: Instant,
     /// [S2-A3-2] Hub kipi tarafı (`HubEndpoint` + `HubLink`); doğrudan kipte `None`.
@@ -298,6 +325,7 @@ impl NodeLoop {
             outgoing: Registry::new(),
             outgoing_by_wire: BTreeMap::new(),
             tickets: BTreeMap::new(),
+            ptt_caps_fed: BTreeMap::new(),
             up: BTreeSet::new(),
             metrics_due: Instant::now(),
             hub,
@@ -445,13 +473,15 @@ impl NodeLoop {
                 peer,
                 codec,
                 bundle_ms,
+                pilot,
                 reply,
-            } => answer(&reply, self.ptt_open(peer, codec, bundle_ms)),
+            } => answer(&reply, self.ptt_open(peer, codec, bundle_ms, pilot)),
             Command::PttPush {
                 stream,
                 payload,
+                timed,
                 reply,
-            } => answer(&reply, self.ptt_push(stream, &payload)),
+            } => answer(&reply, self.ptt_push(stream, &payload, timed)),
             Command::PttClose { stream, reply } => answer(&reply, self.ptt_close(stream)),
             Command::SendSignaling { peer, bytes, reply } => {
                 let sent = self.signaling.send(&mut self.messenger, peer, &bytes);
@@ -559,22 +589,71 @@ impl NodeLoop {
         peer: PeerRef,
         codec: PttCodec,
         bundle_ms: u8,
-    ) -> Result<StreamHandle, NodeError> {
+        pilot: bool,
+    ) -> Result<(StreamHandle, u8), NodeError> {
         // Tutamaç ÖNCE: sayaç tükenmişse akış açılmaz.
         let stream = StreamHandle::from_raw(self.shared.handles.issue()?);
-        let stream_id = self
-            .ptt
-            .open(&mut self.messenger, peer, codec, bundle_ms)
-            .map_err(NodeError::Ptt)?;
+        // [PTT-BİRLEŞİK · pilot] Yetenek açılıştan ÖNCE güncellenir: bu basışın biçimi o ana dek
+        // doğrulanmış bilgiyle seçilir.
+        self.feed_ptt_capability();
+        let (stream_id, bundle_ms) = if pilot {
+            self.ptt
+                .open_press(&mut self.messenger, peer, codec, bundle_ms)
+        } else {
+            self.ptt
+                .open(&mut self.messenger, peer, codec, bundle_ms)
+                .map(|stream_id| (stream_id, bundle_ms))
+        }
+        .map_err(NodeError::Ptt)?;
         self.streams.insert(stream.raw(), (peer, stream_id));
-        Ok(stream)
+        Ok((stream, bundle_ms))
     }
 
-    fn ptt_push(&mut self, stream: StreamHandle, payload: &[u8]) -> Result<(), NodeError> {
+    fn ptt_push(
+        &mut self,
+        stream: StreamHandle,
+        payload: &[u8],
+        timed: Option<(Instant, bool)>,
+    ) -> Result<(), NodeError> {
         let &(_, stream_id) = self.streams.get(stream.raw(), &self.shared.handles)?;
-        self.ptt
-            .send_bundle(&mut self.messenger, stream_id, payload)
-            .map_err(NodeError::Ptt)
+        match timed {
+            None => self
+                .ptt
+                .send_bundle(&mut self.messenger, stream_id, payload),
+            Some((audio_start, false)) => {
+                self.ptt
+                    .send_bundle_from(&mut self.messenger, stream_id, payload, audio_start)
+            }
+            Some((audio_start, true)) => {
+                self.ptt
+                    .send_last_bundle_from(&mut self.messenger, stream_id, payload, audio_start)
+            }
+        }
+        .map_err(NodeError::Ptt)
+    }
+
+    /// [PTT-BİRLEŞİK · pilot · #233] Transport'un bant içi yetenek bildirimini (ilk yalın ACK:
+    /// 0x17 → `true`, 0x16 → `false`) oturumuyla PTT motoruna iletir; (eş, oturum, değer) başına
+    /// bir kez. Pilot kapalıyken hiçbir şey yapmaz. `true` yalnız SONRAKİ açılışları etkiler
+    /// (basışın biçimi açılışta sabitlenir).
+    fn feed_ptt_capability(&mut self) {
+        if !self.ptt.spurt_coalesce() {
+            return;
+        }
+        for &peer in &self.up {
+            let Some(handle) = self.messenger.session_of(peer) else {
+                continue;
+            };
+            let Some(capable) = self.messenger.transport().peer_ptt_coalesce(handle) else {
+                continue;
+            };
+            if self.ptt_caps_fed.get(&peer) == Some(&(handle, capable)) {
+                continue;
+            }
+            if self.ptt.on_peer_spurt_capability(peer, handle, capable) {
+                self.ptt_caps_fed.insert(peer, (handle, capable));
+            }
+        }
     }
 
     /// Tutamaç HER DURUMDA kapanır (`Ptt::close` akışı her durumda kapatır; hata yalnız
@@ -602,6 +681,7 @@ impl NodeLoop {
             };
             self.on_ptt_event(event);
         };
+        self.feed_ptt_capability();
         if drained {
             self.files.pump(&mut self.messenger);
             // AYNI koşul (K4G-14b): yeniden sunum ve ömür budaması buna bağlıdır. Dosya motoruna ve

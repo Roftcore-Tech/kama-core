@@ -84,6 +84,11 @@ const SETUP_WAIT: Duration = Duration::from_secs(30);
 /// varsayılanı 200 ms. Doğrulanmış eşte motor bunu değil [`SPURT_PILOT_BUNDLE_MS`]'yi seçmeli.
 const PILOT_FALLBACK_MS: u16 = 200;
 
+/// [PTT-BİRLEŞİK · pilot · sahip kararı 2026-11-23] Pilot akışının taahhüt edilen sessizlik sonu:
+/// 1 s + 100 ms + 4 × 300 ms. Bilerek sabit yazılır (motorun işlevinden türetilmez): kural
+/// değişirse test kırmızı olur. Bırakıştan `PttEnded`'e sınır bu + [`ONE_WAY_ALLOWANCE`] = 2,45 s.
+const PILOT_GAP_END: Duration = Duration::from_millis(2_300);
+
 /// Basışın nasıl açıldığı.
 #[derive(Debug, Clone, Copy)]
 enum Open {
@@ -486,6 +491,26 @@ fn check(name: &str, open: Open, press_len: Duration, scenario: &[u64]) {
     assert!(o.started[0] <= start_limit, "PttStarted {:?}", o.started[0]);
     let end = o.release_to_end.expect("bitti");
     assert!(end <= end_limit, "PttEnded bırakıştan {end:?}");
+    if drop_idx.contains(&(n - 1)) {
+        // Son demet kayıp: akış sessizlik sonuyla biter. Pilot kolunda taahhüt edilen pay
+        // koddan BAĞIMSIZ yazılır ([`PILOT_GAP_END`]; sahip kararı 2026-11-23): son kabul edilen
+        // demet en erken bırakıştan bir demet süresi önce gönderildiğinden akış paydan önce
+        // bitmemeli (50 ms zamanlama payı). Kural kısalırsa burası kırmızıdır.
+        let committed = match open {
+            Open::Pilot => PILOT_GAP_END,
+            Open::Explicit(_) => spurt_gap_end(code),
+        };
+        let earliest = (committed - period).saturating_sub(Duration::from_millis(50));
+        println!(
+            "PTT-BİRLEŞİK-ÇALIŞMA {name} son-demet-kayıp: bırakış→PttEnded ölçülen={end:?} (en erken {earliest:?}, sınır {:?})",
+            committed + ONE_WAY_ALLOWANCE
+        );
+        assert!(
+            end >= earliest,
+            "PttEnded bırakıştan {end:?}: sessizlik sonu payından ({earliest:?}) erken"
+        );
+        assert!(end <= committed + ONE_WAY_ALLOWANCE);
+    }
     let want: BTreeSet<u32> = (0..u32::try_from(n).expect("u32"))
         .filter(|k| !drop_idx.contains(&u64::from(*k)))
         .collect();
@@ -599,4 +624,48 @@ fn coalesced_press_resumes_after_an_outage_longer_than_the_silence_end_on_the_re
     assert_eq!(o.bob_orphans, 0);
     assert_eq!((o.started.len(), o.ended.len()), (2, 2));
     assert_eq!((o.bob_gap_ends, o.bob_spurt_ends), (1, 1));
+}
+
+/// [PTT-BİRLEŞİK · pilot · sahip kararı 2026-11-23, durum A] Taahhüt edilen pay İÇİNDE kesinti:
+/// 8,4 s pilot basışında art arda beş demet (7–11; 1,5 s ses — ürün fikstüründe tohum 3'ün
+/// düşürdüğü dizi) kaybolur. Sessizlik sonu 1 s + 100 ms + 4 × 300 ms = 2,3 s olduğundan iki kabul
+/// arasındaki ≈ 1,9 s'lik boşluk akışı bitirmez: AYNI basış tam bir `PttStarted` ve bir `PttEnded`
+/// verir. Eski kuralda (2 × demet = 1,7 s) basış ikiye bölünürdü.
+#[test]
+fn pilot_press_survives_five_consecutive_lost_bundles_as_one_lifecycle() {
+    check(
+        "beş-ardışık (pay içinde)",
+        Open::Pilot,
+        Duration::from_millis(8_400),
+        &[7, 8, 9, 10, 11],
+    );
+}
+
+/// [PTT-BİRLEŞİK · pilot · sahip kararı 2026-11-23, AÇIK satır] Paydan UZUN kesinti: art arda
+/// sekiz demet (7–14; 2,4 s ses) kaybolur. Dört demetlik pay bunu örtmez: beklenen sonuç iki
+/// yaşam döngüsüdür. Sonuç ölçülür ve yazılır; yaşam döngüsü sayısı İDDİA EDİLMEZ (gizlenmez,
+/// özel durum yapılmaz). Yalnız atılan küme ve kesinti öncesi sesin teslimi iddia edilir.
+#[test]
+fn pilot_outage_longer_than_the_tolerance_is_reported_open() {
+    let drop: Vec<u64> = (7..=14).collect();
+    let o = run(Open::Pilot, Duration::from_millis(8_400), &drop, true);
+    println!(
+        "PTT-BİRLEŞİK-ÇALIŞMA AÇIK sekiz-ardışık (paydan uzun) demet={}ms: kayıp=7..=14 PttStarted_sayısı={} PttEnded_sayısı={} başla={:?} bitir={:?} teslim_demet={:?} kaybolan_20ms_çerçeve={} sessizlik_sonu={} yetim={} → {}",
+        o.bundle_ms,
+        o.started.len(),
+        o.ended.len(),
+        o.started,
+        o.ended,
+        o.delivered,
+        o.frames_lost,
+        o.bob_gap_ends,
+        o.bob_orphans,
+        if (o.started.len(), o.ended.len()) == (1, 1) { "tek yaşam döngüsü" } else { "AÇIK: basış bölündü" },
+    );
+    assert_eq!(o.bundle_ms, SPURT_PILOT_BUNDLE_MS);
+    assert_eq!(o.dropped, drop);
+    assert!(
+        (0..7).all(|k| o.delivered.contains(&k)),
+        "kesinti öncesi ses"
+    );
 }

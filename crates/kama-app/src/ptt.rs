@@ -299,12 +299,28 @@ pub const SPURT_RX_HOLE_WAIT: Duration = Duration::from_millis(100);
 /// içinde kalır). İki: art arda iki kayıp akışı erken bitirmez.
 pub const SPURT_GAP_BUNDLES: u32 = 2;
 
-/// [PTT-BİRLEŞİK · deney] Birleşik akışın sessizlik sonu süresi (`bundle_ms` kodundan).
+/// [PTT-BİRLEŞİK · pilot · SAHİP KARARI 2026-11-23] Pilot akışında (birleşik, demet süresi
+/// [`SPURT_PILOT_BUNDLE_MS`]) sessizlik sonuna giren demet sayısı: dört (300 ms'de 1 s + 100 ms +
+/// 1,2 s = 2,3 s). Gerekçe: %20 kayıplı hatta art arda beş demetin (1,5 s ses) kaybı aynı basışı
+/// iki yaşam döngüsüne bölüyordu (iki kabul arası 1,84 s > 1,7 s). Kabul edilen bedel: son
+/// (`END`'li) demet kaybolursa `PttEnded` bırakıştan en çok 2,3 s + tek yön sonra gelir. Dört
+/// demetlik pay her kesinti uzunluğunu örtmez: daha uzun kesinti basışı yine böler (AÇIK). Pilot
+/// dışı birleşik akışlar (ör. 420 ms test kolu) ve ayrı kayıtlı akışlar bugünkü kuralda kalır;
+/// tel düzeni değişmez (alıcı pilot akışını `bundle_ms` kodundan tanır).
+pub const SPURT_PILOT_GAP_BUNDLES: u32 = 4;
+
+/// [PTT-BİRLEŞİK · deney] Birleşik akışın sessizlik sonu süresi (`bundle_ms` kodundan): pilot
+/// süresinde [`SPURT_PILOT_GAP_BUNDLES`], diğer sürelerde [`SPURT_GAP_BUNDLES`] demet.
 #[must_use]
 pub fn spurt_gap_end(bundle_ms: u8) -> Duration {
+    let bundles = if bundle_ms == SPURT_PILOT_BUNDLE_CODE {
+        SPURT_PILOT_GAP_BUNDLES
+    } else {
+        SPURT_GAP_BUNDLES
+    };
     PTT_BUNDLE_DEADLINE
         + SPURT_RX_HOLE_WAIT
-        + Duration::from_millis(u64::from(bundle_ms_from_code(bundle_ms))) * SPURT_GAP_BUNDLES
+        + Duration::from_millis(u64::from(bundle_ms_from_code(bundle_ms))) * bundles
 }
 
 /// [PTT-BİRLEŞİK · deney] Birleşik biçimin tel sürümü (yetenek dönemi). Önceki oturumdan
