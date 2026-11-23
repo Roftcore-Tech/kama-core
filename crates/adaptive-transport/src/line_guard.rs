@@ -129,6 +129,25 @@
 //! çok altında kalıyordu. Ölçüldü (benzetim `e2`, tohum 1): tek cepheyle yakınsamadan 2 s sonra
 //! darboğaz beklemesi 1,73 s; en büyükle iki datagram sınırının içinde.
 //!
+//! [Hedef 3, 2026-11-23] Bekleme sınırı `L`'nin kuyruğa GİRDİĞİ andaki kuyruktur; `L` hattı
+//! terk ettikten (`τ − taban`) ACK'in gelişine dek (dönüş yayılımı + ACK serileşmesi, bu profilde
+//! ≈ 2–2,4 s) gönderici tavanda göndermeyi sürdürür ve hattın boşalttığını aşan kısım kuyruğa
+//! eklenir. Yakınsama ACK'inde (tavanın gerçek hatta ilk indiği) gönderici bu sürede profil
+//! hızındadır: yazılan kuyruk gerçeğin çok altında kalıyordu (benzetim (b)/(d-2), ayna alıcısı,
+//! tohum 1–3: yazılan 1 241–1 716 ms; kuyrukta düşmesiz FIFO'da gerçek 3 835–4 554 ms, 64 paketlik
+//! FIFO'da 1 625–2 472 ms; iki dünyada gönderici aynı, eksik bilgi değil kural). Bu yüzden ikinci
+//! bir alt sınır alınır, ikisinin büyüğü yazılır (yine `bayt` ile sınırlı):
+//! `büyüme = (oran × (τ − s − taban) + (cum − cum(τ − taban)) − boşalan)⁺`. İlk terim `L` hattı
+//! terk ettiğinde arkasındaki kuyruğun alt sınırıdır (gönderici `L`'den bu yana en az hat hızında
+//! gönderdi varsayımı; bekleme sınırıyla aynı varsayım); ikinci terim o andan sonra hatta verilen
+//! bayttır (göndericinin kendi kaydı), üçüncüsü `bayt`'taki boşalmayla aynıdır. `L`'nin gönderimi
+//! ile hattı terk etmesi arasında kuyrukta düşen bayt bu terime girmez (taşma koruması yerinde);
+//! `L` hattı terk ettikten sonra kuyrukta düşen bayt girer ve `bayt` sınırı gibi kuyruğu büyük
+//! gösterir: bu, kuyrukta düşen baytın ACK anında görünmemesidir (bilgi sınırı; sonraki ACK'te
+//! aynı sınıf). Bekleme sınırı (son [`POINT_CAP`] noktanın en büyüğü) yerinde kalır: büyüme
+//! yalnız ondan büyükse yazılanı değiştirir (yazılan kuyruk hiçbir ACK'te bugünkünden küçük
+//! değildir). Ayrıntı ve ölçüm: #175 hedef 3 nedensel kaydı.
+//!
 //! # Süreli yoklama (İŞ-33 C3, 2026-11-21)
 //!
 //! Doğrulamadan sonra tavan kalıcı yükseliyordu. Hat değişmediyse yükseltilmiş tavan bir ACK
@@ -1836,18 +1855,56 @@ impl LineGuard {
             .max(lag.saturating_sub(base));
         let by_delay = u64::try_from(u128::from(rate) * u128::from(queued_ns) / 1_000_000_000)
             .unwrap_or(u64::MAX);
+        // [KUYRUK-TAHMİNİ · hedef 3] `L` hattı terk ettiğinde arkasında en az `L`'nin beklediği
+        // kadar hat baytı vardı (aynı varsayım); o andan sonra gönderilen eklenir, boşalan düşülür
+        // (modül belgesi, "Kuyruk boşaltma").
+        let by_growth = self.backlog_growth_floor(
+            rec,
+            rate,
+            lag.saturating_sub(base),
+            tau.saturating_sub(base),
+            drained,
+        );
         // [SÜRELİ-YOKLAMA] Başarısız yoklamanın fazla baytı boşaltılır. Kuyruk tahmini (`by_bytes`,
         // `by_delay`) bunu göremeyebilir: taban son noktaların en küçük gecikmesidir ve birkaç ACK
         // süren bir kuyruğu dönüş gecikmesi artışı sayar.
         Some(LineGuardUpdate {
             rate_bps: rate,
-            backlog_bytes: by_bytes.min(by_delay),
+            backlog_bytes: by_bytes.min(by_delay.max(by_growth)),
             extra_backlog_bytes: probe_drain_bytes,
         })
     }
 }
 
 impl LineGuard {
+    /// [KUYRUK-TAHMİNİ · hedef 3] Cephe `rec` (`L`) hattı `left_ns` anında terk etti ve kuyrukta
+    /// `wait_ns` bekledi. Dönen alt sınır (tel baytı): `hız × wait_ns` (`L` hattı terk ettiğinde
+    /// arkasındaki kuyruk; gönderici `L`'den bu yana en az hat hızında gönderdi varsayımı) + `L`
+    /// hattı terk ettikten sonra hatta verilen bayt − o andan bu yana boşalan (`drained`), sıfırda
+    /// kırpılır. Yalnız göndericinin kendi kaydı: `left_ns`'e dek verilenin kümülatifi, o ana dek
+    /// verilen son kaydın `cum`'u (kayıtlar `L`'den itibaren tutulur; `L` daima `left_ns`'ten önce).
+    /// Kayıtlar arasında verilen motor dışı datagram sonraya sayılır (yukarı yönde; çağıran bayt
+    /// sınırıyla `min` alır).
+    fn backlog_growth_floor(
+        &self,
+        rec: SentRec,
+        rate: u64,
+        wait_ns: u64,
+        left_ns: u64,
+        drained: u64,
+    ) -> u64 {
+        let upto = self.sent.partition_point(|r| r.send_ns <= left_ns);
+        let cum_left = upto
+            .checked_sub(1)
+            .and_then(|k| self.sent.get(k))
+            .map_or(rec.cum, |r| r.cum.max(rec.cum));
+        let behind = u64::try_from(u128::from(rate) * u128::from(wait_ns) / 1_000_000_000)
+            .unwrap_or(u64::MAX);
+        behind
+            .saturating_add(self.cum.saturating_sub(cum_left))
+            .saturating_sub(drained)
+    }
+
     /// [SÜRELİ-YOKLAMA] Tavanı adım kadar (`step_permille`) yükselten yoklamayı başlatır. Yükseltme,
     /// hat değişmediyse [`PROBE_QUEUE_NS`] kadar kuyruk kuracak süre (en çok
     /// [`VERIFY_MIN_SPAN_NS`]) sürer; kalıcılığı hükme bağlı. `point` yoklamanın başladığı ACK
@@ -2510,6 +2567,64 @@ mod tests {
             assert!(
                 u.backlog_bytes <= queue && u.backlog_bytes + 1200 >= floor,
                 "düşen {dropped} B: kuyruk {queue} B, cephenin kuyruğu {floor} B, yazılan {} B",
+                u.backlog_bytes
+            );
+        }
+    }
+
+    /// [KUYRUK-TAHMİNİ · hedef 3] Yakınsama ACK'i: gönderici cephe (`L`) hattı terk ettikten sonra da
+    /// ACK gelene dek profil hızında gönderir; o baytlardan hattın boşalttığını aşan kısım kuyruktadır
+    /// ve yazılan kuyruğa girer. Yazılan kuyruk `L`'nin kendi beklediği kuyruk + `L` hattı terk
+    /// ettikten sonra gönderilip boşalmayan bayttan (bir datagram payı) az değildir ve gerçek kuyruğu
+    /// aşmaz; `L`'den önce gönderilip kuyrukta düşen bayt (motor dışı 20 000 B, hattı kullanmadı)
+    /// yazılanı büyütmez. Düzeltmesiz (yalnız `L`'nin beklemesi) kırmızı: yazılan 12 000 B, alt sınır
+    /// ≈ 28 800 B.
+    #[test]
+    fn backlog_counts_bytes_sent_after_the_front_left_the_line() {
+        for dropped in [0u64, 20_000] {
+            let real = 6_250u64;
+            let ack_wire = 101u64;
+            let mut g = guard();
+            let send_ns = |k: u64| k * 1200 * SEC / PROFILE;
+            let done_ns = |k: u64| (k + 1) * 1200 * SEC / real;
+            let arr = |k: u64| done_ns(k) + 300 * MS;
+            // `L` = 20; ACK'i alıcıdan hemen çıkar, 300 ms + serileşmeyle gelir.
+            let at = arr(20) + 300 * MS + (ack_wire + OVH) * SEC / RET;
+            let arrivals: Vec<u64> = (0..=20).map(arr).collect();
+            // Gönderici ACK'in geldiği ana dek profil hızında gönderir.
+            let mut k = 0u64;
+            while send_ns(k) <= at {
+                if k == 25 {
+                    g.on_unsequenced(dropped);
+                }
+                g.on_sent(k, send_ns(k), 1172);
+                k += 1;
+            }
+            let sent_by = k;
+            let _ = ack(&mut g, &arrivals, 0, 37);
+            let (at2, u) = ack(&mut g, &arrivals, 20, ack_wire);
+            assert_eq!(at2, at);
+            let u = u.expect("ölçüm");
+            assert!(
+                u.rate_bps.abs_diff(real) * 100 <= real,
+                "hız {}",
+                u.rate_bps
+            );
+            // Gerçek kuyruk `at` anında (FIFO; motor dışı bayt kuyrukta düştü).
+            let left_by = (0..sent_by).filter(|&k| done_ns(k) <= at).count() as u64;
+            let queue = (sent_by - left_by) * 1200;
+            // `L`'nin hattı terk etmeye başladığı an ve kendi beklediği kuyruk.
+            let t_l = done_ns(20) - 1200 * SEC / real;
+            let own_wait = t_l - send_ns(20);
+            let floor = real * own_wait / SEC;
+            // `L` hattı terk ettikten sonra gönderilip boşalmayan bayt.
+            let after = (0..sent_by).filter(|&k| send_ns(k) > t_l).count() as u64 * 1200;
+            let growth = after.saturating_sub(real * (at - t_l) / SEC);
+            assert!(
+                u.backlog_bytes <= queue && u.backlog_bytes + 1200 >= floor + growth,
+                "düşen {dropped} B: kuyruk {queue} B, alt sınır {} B (cephe {floor} + L sonrası \
+                 {growth}), yazılan {} B",
+                floor + growth,
                 u.backlog_bytes
             );
         }
