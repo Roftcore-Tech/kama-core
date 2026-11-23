@@ -1654,7 +1654,7 @@ impl OpenRule {
     }
 
     fn carries_open(self, i: u32) -> bool {
-        i < self.repeat || (self.every > 0 && i % self.every == 0)
+        i < self.repeat || (self.every > 0 && i.is_multiple_of(self.every))
     }
 }
 

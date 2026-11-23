@@ -189,6 +189,15 @@
 //! datagram: yön, yol, an, tel boyu, sonuç, varış, taşıdığı AMP kaydı ve mantıksal anahtarı
 //! `anahtar=uç/sınıf/kimlik#sıra`). `KAYIP-ANAHTAR` satırı ileri hatta yolda düşen anahtar sayısını
 //! ve sıralı kümenin özetini yazar (iki koşunun düşen kümesi tek satırda kıyaslanır).
+//!
+//! [PTT-BİRLEŞİK · deney, aday dışı] `KAMA_ASYM_PTT_COALESCE=off|neg|known|learned` (iki uçta
+//! `RuntimeConfig::ptt_coalesce`; motorların anahtarı ondan türetilir): `known` yönetilen yetenek,
+//! `learned` önceki oturumdan öğrenilmiş kayıt (aynı eş + aynı biçim dönemi), `neg` yalnız bant
+//! içi bildirim (basış 0,5 s'de ise gerçek ilk temas: yetenek bilinmez, uyumlu ayrı kayıtlar).
+//! `KAMA_ASYM_PTT_OPEN_K` / `KAMA_ASYM_PTT_OPEN_EVERY` açılış bilgisinin hangi demetlerde
+//! taşındığını seçer. `KAMA_ASYM_WIRE_DUMP=<önek>` mühürlenen her çerçevenin türünü ve boyunu
+//! (CAPS'te bit alanı) sırayla `<önek>.<uç>` dosyasına yazar (salt gözlem; kapalı kolun bayt
+//! kıyası için).
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::net::{SocketAddr, UdpSocket};
@@ -756,6 +765,23 @@ impl Tap {
 impl PacketProtection for Tap {
     fn seal(&mut self, ctx: ProtectionContext, frame: &[u8]) -> Result<SealedUnit, SealError> {
         let sealed = self.inner.seal(ctx, frame)?;
+        // [TEL-DÖKÜMÜ · salt gözlem] `KAMA_ASYM_WIRE_DUMP=<önek>`: mühürlenen her çerçevenin türü ve
+        // boyu (CAPS'te bit alanı) sırayla `<önek>.<uç>` dosyasına; zamandan bağımsız kıyas için.
+        if let Ok(prefix) = std::env::var("KAMA_ASYM_WIRE_DUMP") {
+            use std::io::Write as _;
+            let caps = if frame.first() == Some(&0x08) && frame.len() >= 3 {
+                format!(" caps={:#06x}", u16::from_be_bytes([frame[1], frame[2]]))
+            } else {
+                String::new()
+            };
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(format!("{prefix}.{:02x}", self.side))
+            {
+                let _ = writeln!(f, "{:#04x} {}{caps}", frame[0], frame.len());
+            }
+        }
         // [ANAHTARLI-KAYIP] Eşleme datagram gönderilmeden (mühür dönmeden) yayınlanır: röle
         // datagramı gördüğünde anahtarı hazırdır.
         lock(&self.keys).note_seal(self.side, frame, fingerprint(&sealed.bytes));

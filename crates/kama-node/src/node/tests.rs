@@ -1093,7 +1093,7 @@ fn receipt_completion_is_reported_in_chain_order_within_the_turn() {
 fn ptt_coalesce_switch_is_derived_from_the_transport_flag() {
     let _serial = support::serial();
     let root = TempDir::new("ptt-coalesce-switch");
-    let phones = support::provision(root.path(), &[ALICE]);
+    let phones = support::provision(root.path(), &[ALICE, BOB]);
     let (alice, _events) = support::manual(&phones[ALICE], support::system_clock());
     let node = &alice.node;
     let transport_flag = node.messenger.transport().ptt_coalesce_enabled();

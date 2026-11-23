@@ -182,10 +182,14 @@ struct Outcome {
     bob_spurt_opens: u64,
     /// Bob'un `END` ile bitirdiği akış sayısı.
     bob_spurt_ends: u64,
+    /// Bob'un sessizlik sonuyla bitirdiği akış sayısı.
+    bob_gap_ends: u64,
+    /// Bob'da yetim (akışı bulunamayan) demet.
+    bob_orphans: u64,
 }
 
 #[allow(clippy::too_many_lines)]
-fn run(drop_idx: &[u64], bob_coalesce: bool) -> Outcome {
+fn run(n: u32, drop_idx: &[u64], bob_coalesce: bool) -> Outcome {
     let hub = MemoryHub::new();
     let seen = Arc::new(AtomicU64::new(0));
     let dropped = Arc::new(Mutex::new(Vec::new()));
@@ -258,7 +262,7 @@ fn run(drop_idx: &[u64], bob_coalesce: bool) -> Outcome {
         .ptt
         .open(&mut alice.m, id(BOB), PttCodec::Lyra, code)
         .expect("PTT açılır");
-    let release = press + period * BUNDLES;
+    let release = press + period * n;
     let mut next = 0u32;
     let mut closed = false;
     let mut bob_events: Vec<(Instant, PttEvent)> = Vec::new();
@@ -266,11 +270,11 @@ fn run(drop_idx: &[u64], bob_coalesce: bool) -> Outcome {
     let hard_stop = end_bound + Duration::from_secs(2);
     loop {
         let tick = Instant::now();
-        while next < BUNDLES && press + period * (next + 1) <= tick {
+        while next < n && press + period * (next + 1) <= tick {
             let created = press + period * next;
             let mut payload = vec![0x5A; PAYLOAD];
             payload[..4].copy_from_slice(&next.to_be_bytes());
-            let r = if next + 1 == BUNDLES {
+            let r = if next + 1 == n {
                 alice
                     .ptt
                     .send_last_bundle_from(&mut alice.m, stream, &payload, created)
@@ -282,7 +286,7 @@ fn run(drop_idx: &[u64], bob_coalesce: bool) -> Outcome {
             r.expect("demet kabul edilir");
             next += 1;
         }
-        if next == BUNDLES && !closed {
+        if next == n && !closed {
             alice.ptt.close(&mut alice.m, stream).expect("kapanır");
             closed = true;
         }
@@ -324,7 +328,7 @@ fn run(drop_idx: &[u64], bob_coalesce: bool) -> Outcome {
         }
     }
     let frames_per_bundle = u64::from(BUNDLE_MS) / u64::try_from(FRAME.as_millis()).unwrap_or(20);
-    let frames_lost = (u64::from(BUNDLES) - delivered.len() as u64) * frames_per_bundle;
+    let frames_lost = (u64::from(n) - delivered.len() as u64) * frames_per_bundle;
     let bob_stats = bob.ptt.stats();
     let dropped = dropped.lock().expect("kilit").clone();
     Outcome {
@@ -338,11 +342,13 @@ fn run(drop_idx: &[u64], bob_coalesce: bool) -> Outcome {
         frames_lost,
         bob_spurt_opens: bob_stats.spurt_opens,
         bob_spurt_ends: bob_stats.spurt_ends,
+        bob_gap_ends: bob_stats.streams_ended_by_gap,
+        bob_orphans: bob_stats.ptt_orphan_bundles,
     }
 }
 
 fn check(name: &str, drop_idx: &[u64]) {
-    let o = run(drop_idx, true);
+    let o = run(BUNDLES, drop_idx, true);
     let code = bundle_code_from_ms(BUNDLE_MS).expect("kod");
     println!(
         "PTT-BİRLEŞİK-ÇALIŞMA {name}: kayıp={drop_idx:?} 0x09_görülen={} atılan={:?} başladı={} bitti={} tek_kapanış={} PttStarted=+{:?} (basıştan) PttEnded=+{:?} (bırakıştan; sınır {:?}) teslim_demet={:?} kaybolan_20ms_çerçeve={}",
@@ -416,7 +422,7 @@ fn coalesced_press_survives_losing_the_first_two_datagrams_on_the_real_runtime()
 /// döner; basış uçtan uca çalışır (tam bir başla/bitir, bütün ses).
 #[test]
 fn old_peer_gets_the_compatible_separate_records_on_the_real_runtime() {
-    let o = run(&[], false);
+    let o = run(BUNDLES, &[], false);
     println!("PTT-BİRLEŞİK-ÇALIŞMA eski-eş: {o:?}");
     assert_eq!(o.capability, Some(false));
     assert_eq!(
@@ -427,4 +433,28 @@ fn old_peer_gets_the_compatible_separate_records_on_the_real_runtime() {
     assert_eq!((o.started.len(), o.ended.len()), (1, 1));
     assert!(o.started[0] <= START_BOUND);
     assert_eq!(o.delivered, (0..BUNDLES).collect::<BTreeSet<u32>>());
+}
+
+/// [#233 inceleme 7087771388 · 1] Basış ortasında `spurt_gap_end`'den uzun kesinti (100 ms demette
+/// 14 demet = 1,4 s > 1,3 s): sessizlik kuralı akışı bitirir (`PttEnded`), ama kesintiden sonraki
+/// demetler de açılış bilgisini taşıdığından akış yeniden açılır ve sesin kalanı çalınır (yetim
+/// yok). Bedel: basış iki yaşam döngüsü olur (iki `PttStarted` / `PttEnded`); tek yaşam döngüsü
+/// için kesintiyi sessizlik sonundan ayırt edecek bir kapanış sinyali gerekir (açık karar).
+/// Eski kural (yalnız ilk K demet açılış taşır) burada kesintiden sonraki bütün demetleri
+/// yetim bırakırdı.
+#[test]
+fn coalesced_press_resumes_after_an_outage_longer_than_the_silence_end_on_the_real_runtime() {
+    let drop: Vec<u64> = (2..=15).collect();
+    let o = run(24, &drop, true);
+    println!(
+        "PTT-BİRLEŞİK-ÇALIŞMA kesinti: kayıp=2..=15 başla={:?} bitir={:?} teslim_demet={:?} kaybolan_20ms_çerçeve={} sessizlik_sonu={} yetim={}",
+        o.started, o.ended, o.delivered, o.frames_lost, o.bob_gap_ends, o.bob_orphans
+    );
+    assert_eq!(o.capability, Some(true));
+    assert_eq!(o.dropped, drop);
+    let want: BTreeSet<u32> = (0..24).filter(|k| !drop.contains(&u64::from(*k))).collect();
+    assert_eq!(o.delivered, want, "kesintiden sonraki ses çalınır");
+    assert_eq!(o.bob_orphans, 0);
+    assert_eq!((o.started.len(), o.ended.len()), (2, 2));
+    assert_eq!((o.bob_gap_ends, o.bob_spurt_ends), (1, 1));
 }

@@ -3596,3 +3596,36 @@ fn end_marker_does_not_close_a_separately_opened_stream() {
     duo.inject(Side::Bob, close_record(s));
     assert_eq!(duo.bob.drain(), vec![ended(ALICE, s)]);
 }
+
+/// [#233 inceleme 7087771388 · 1] Basış ortasında `spurt_gap_end`'den uzun kesinti (20 ms demette
+/// 60 demet = 1,2 s > 1,14 s): akış sessizlik sonuyla biter; kesintiden sonraki demetler açılış
+/// bilgisini taşıdığından akış yeniden açılır ve sesin kalanı teslim edilir, yetim demet yok.
+/// Eski kural (yalnız ilk K = 2 demet açılış taşır) aynı senaryoda kesinti sonrası bütün demetleri
+/// yetim bırakır (karşılaştırma kolu). Bedel: kesintili basış iki yaşam döngüsüdür.
+#[test]
+fn coalesced_stream_resumes_after_an_outage_longer_than_the_silence_end() {
+    let lost: Vec<u8> = (3..=62).collect();
+    let mut duo = coalesced_duo();
+    let (stream, events, _) = coalesced_spurt(&mut duo, 70, &lost);
+    let mut want = vec![started(ALICE, stream, PttCodec::Lyra, TEST_BUNDLE_MS)];
+    want.extend((0..3).map(|n| audio(ALICE, stream, &frame(n))));
+    want.push(ended(ALICE, stream));
+    want.push(started(ALICE, stream, PttCodec::Lyra, TEST_BUNDLE_MS));
+    want.extend((63..70).map(|n| audio(ALICE, stream, &frame(n))));
+    want.push(ended(ALICE, stream));
+    assert_eq!(events, want);
+    let stats = duo.bob.ptt.stats();
+    assert_eq!(stats.ptt_orphan_bundles, 0);
+    assert_eq!((stats.streams_ended_by_gap, stats.spurt_ends), (1, 1));
+
+    let mut duo = coalesced_duo();
+    duo.alice.ptt.set_spurt_open_every(0);
+    let (_, events, _) = coalesced_spurt(&mut duo, 70, &lost);
+    assert!(
+        !events
+            .iter()
+            .any(|e| *e == audio(ALICE, stream, &frame(63))),
+        "eski kural: kesinti sonrası ses yetim"
+    );
+    assert_eq!(duo.bob.ptt.stats().ptt_orphan_bundles, 7);
+}
