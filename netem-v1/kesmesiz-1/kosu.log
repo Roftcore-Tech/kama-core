@@ -1,0 +1,6 @@
+kilit alındı 2026-11-23T09:51:58.109407142Z load=4.47 3.44 3.01
+başlangıç 2026-11-23T09:53:38.422471012Z load=2.48 3.01 2.89 7/1443 769673 cargo_rustc=0 coredump_son=Thu 2026-09-03 00:00:43 +03 537502 1000 
+== HÜCRE v1_kesmesiz_t1  fwd='v1 100kbit'  rev='delay 300ms rate 496bit -14 limit 64'  kollar=[aday]  reps=1  bütçe=200s ==
+. bitti
+rc=0
+bitiş 2026-11-23T09:55:21.925394280Z load=3.99 3.36 3.03 1/1430 779039 cargo_rustc=0 coredump_son=Thu 2026-09-03 00:00:43 +03 537502 1000 

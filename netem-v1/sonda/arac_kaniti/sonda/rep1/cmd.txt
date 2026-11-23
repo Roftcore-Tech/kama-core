@@ -1,0 +1,2 @@
+SRV: python3 -I <scratch>/olcum/v1/arac/sonda2.py b 10.10.0.1 10.10.1.1 31112 <scratch>/olcum/v1/sonda/arac_kaniti/sonda/rep1
+CLI: python3 -I <scratch>/olcum/v1/arac/sonda2.py a 10.10.0.1 10.10.1.1 31112 <scratch>/olcum/v1/sonda/arac_kaniti/sonda/rep1

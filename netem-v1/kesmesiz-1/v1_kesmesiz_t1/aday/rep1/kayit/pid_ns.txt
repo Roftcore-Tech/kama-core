@@ -1,0 +1,16 @@
+=== çekim 1 t=2026-11-23T09:53:40.941728397Z
+    PID    PPID ELAPSED STAT COMMAND
+ 769968  769967       0 Sl   <scratch>/olcum/v1/arac/f0_flows.73715edb --
+ 769893  769679       1 Sl   <scratch>/olcum/v1/arac/f0_flows.73715edb --
+alice pid=769968 net=net:[4026533043]
+bob pid=769893 net=net:[4026533101]
+orta pid=769697 net=net:[4026533097]
+kabuk net=net:[4026533043]
+=== çekim 2 t=2026-11-23T09:53:41.608179549Z
+    PID    PPID ELAPSED STAT COMMAND
+ 769968  769967       0 Sl   <scratch>/olcum/v1/arac/f0_flows.73715edb --
+ 769893  769679       1 Sl   <scratch>/olcum/v1/arac/f0_flows.73715edb --
+alice pid=769968 net=net:[4026533043]
+bob pid=769893 net=net:[4026533101]
+orta pid=769697 net=net:[4026533097]
+kabuk net=net:[4026533043]

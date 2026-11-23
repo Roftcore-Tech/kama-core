@@ -1,0 +1,15 @@
+pilot_özeti sıra=21 süre_s=100.2 son=false atlanan_özet=0 açık_oturum=1
+çekirdek_sürümü=0.1.0
+çekirdek_git=73715edbede79bd17b5cc11408947b65f6b7b1fd
+# TX: bu cihazın oturum uçlarının gönderdiği (karşı cihazın TX kaydı öbür yönü verir)
+tx_toplam_bayt=2322 [mühürlü UDP gövdesi, UDP/IP zarfı hariç]
+tx_datagram=54 [tele yazılan datagram]
+tx_yeniden_iletim_bayt=172 [mühürlü UDP gövdesi; ARQ + tail-probe; tx_toplam_bayt'ın alt kümesi]
+tx_yeniden_iletim_karar=4 (tail-probe 4) [motor kararı]
+tx_ileri_kopya_karar=1 [motor kararı; bayt sayacı yok]
+tx_fec_parite_datagram=0 [tele yazılan onarım; bayt sayacı yok]
+tx_asıl_veri_bayt=sayaç yok [canlı aynada yok]
+tx_ack_kontrol=sayaç yok [alıcı ucun ACK/RECOVERED/PARAM_ACK'i canlı okunmuyor]
+# RX
+rx_datagram=37 [oturum uçlarının telden okuduğu; sınıf ayrımı yok]
+rx_bayt=sayaç yok [canlı aynada yok]

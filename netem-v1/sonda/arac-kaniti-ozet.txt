@@ -1,0 +1,86 @@
+
+===== rep1 =====
+qdisc noqueue 0: dev lo root refcnt 2 
+qdisc netem 8008: dev ma0 root refcnt 13 limit 64 delay 300ms rate 496bit packetoverhead -14 seed 15905914021246086606
+qdisc ingress ffff: dev ma0 parent ffff:fff1 ---------------- 
+qdisc netem 20: dev mb0 root refcnt 13 limit 10000 delay 300ms loss 20% seed 1
+qdisc tbf 1: dev ifb0 root refcnt 2 rate 100Kbit burst 1200b/1 mpu 0b limit 64b linklayer ethernet 
+ linklayer ethernet overhead -14 
+qdisc pfifo 10: dev ifb0 parent 1:1 limit 64p
+filter protocol ip pref 49152 matchall chain 0 
+filter protocol ip pref 49152 matchall chain 0 handle 0x1 
+  not_in_hw
+	action order 1: mirred (Egress Redirect to device ifb0) stolen
+	index 1 ref 1 bind 1
+yakalama kaybı: {'A_va0': 0, 'MID_ma0': 0, 'MID_ifb0': 0, 'MID_mb0': 0, 'B_vb0': 0}
+ileri 1000 B paket: A çıkış 160 · ma0 giriş kaydı 160 (ifb dönüşü ikinci kez görünür) · ifb0 çıkış 145 · mb0 çıkış 114 · B giriş 114 · B uygulama 114
+
+BASAMAKLAR (aynı kuyruk: ifb0 tbf 1: / pfifo 10:)
+ t0+1.65 s → 50kbit: rc=0 komut öncesi t0+1650.012 ms, sonrası t0+1654.229 ms (hedeften sapma +0.012 ms, komut süresi 4.217 ms)
+   ÖNCE  (komuttan 8.00 ms önce): tbf 1: hız=12500 B/s backlog=41000 B/41 p drops=0 sent=19 p | pfifo 10: limit=64 backlog=41000 B/41 p drops=0
+   SONRA (komuttan 3.15 ms sonra): tbf 1: hız=6250 B/s backlog=40000 B/40 p drops=0 sent=20 p | pfifo 10: limit=64 backlog=40000 B/40 p drops=0
+   iki kayıt arasında ifb0'dan çıkan paket: 1; backlog farkı (önce − sonra) = 1 p; sent farkı = 1 p; drop farkı = 0
+ t0+4.15 s → 100kbit: rc=0 komut öncesi t0+4150.008 ms, sonrası t0+4153.855 ms (hedeften sapma +0.008 ms, komut süresi 3.848 ms)
+   ÖNCE  (komuttan 8.00 ms önce): tbf 1: hız=6250 B/s backlog=45000 B/45 p drops=0 sent=35 p | pfifo 10: limit=64 backlog=45000 B/45 p drops=0
+   SONRA (komuttan 2.71 ms sonra): tbf 1: hız=12500 B/s backlog=45000 B/45 p drops=0 sent=35 p | pfifo 10: limit=64 backlog=45000 B/45 p drops=0
+   iki kayıt arasında ifb0'dan çıkan paket: 0; backlog farkı (önce − sonra) = 0 p; sent farkı = 0 p; drop farkı = 0
+ darboğaz çıkış aralığı · basamak 1 öncesi (12 500): n=18 medyan=79.987 ms min=63.964 max=80.083  → 12502.0 B/s
+ darboğaz çıkış aralığı · basamaklar arası (6 250): n=15 medyan=160.004 ms min=128.174 max=160.139  → 6249.8 B/s
+ darboğaz çıkış aralığı · basamak 2 sonrası (12 500): n=44 medyan=79.985 ms min=64.079 max=80.254  → 12502.3 B/s
+ basamak 1 geçiş aralığı (basamağı içeren): [80.06] ms; basamaktan sonraki ilk üç aralık: [128.17, 159.96, 159.95] ms; basamaktan sonraki ilk çıkış +4.57 ms
+ basamak 2 geçiş aralığı (basamağı içeren): [159.95] ms; basamaktan sonraki ilk üç aralık: [64.08, 79.97, 80.02] ms; basamaktan sonraki ilk çıkış +32.72 ms
+
+örnekleyici: 374 örnek, aralık medyan 50.0 ms en büyük 50.5 ms; en yüksek load1 0.58; görülen darboğaz qdisc kümeleri: {(('pfifo', '10:', '1:1', '64'), ('tbf', '1:', 'kök', ''))}
+ilk örnek sayaçları: tbf sent=0 drops=0 | netem 20: sent=0 drops=0
+son örnek: tbf 1: sent=145 p / 145000 B drops=15 | netem 20: sent=114 drops=31 | en büyük backlog 64 p
+FAZ S (basamak): sunulan 80 · darboğazdan çıkan 80 · kuyrukta düşen 0 · hatta (netem) düşen 18 · teslim 62 → basamak yüzünden kaybolan = 0
+FAZ F (FIFO 64): sunulan 80 · darboğazdan çıkan 65 (beklenen 1 + 64) · kuyrukta düşen 15 · teslim 52; kuyrukta düşen kimlikler [165, 166, 167]…
+kayıp (hat): darboğazdan çıkan 145, teslim 114, düşen 31 = %21.4; netem 20: drops sayacı 31
+hat gecikmesi (darboğaz çıkışı → B girişi): medyan 300.132 ms min 299.941 max 300.456; ilk paket gönderim → B: nan ms
+kayıp ↔ darboğaz sırası: B'de ardışık kimlikli varış aralığı medyan 79.97 ms (n=31); kayıp atlayan aralık / atlanan kimlik farkı medyan 80.02 ms (n=6) → düşen paket hat süresi harcadı = kayıp darboğazdan SONRA
+dönüş: 8 × 48 B → 8 vardı; aralık medyan 774.193 ms → 62.00 B/s; ilk varış gönderimden 1074.4 ms sonra
+kol başı sayaçlar (realized_pre): [('netem', '8008:', 0, 0, 0), ('netem', '20:', 0, 0, 0), ('tbf', '1:', 0, 0, 0), ('pfifo', '10:', 0, 0, 0)] ipv6: off
+
+===== rep2 =====
+qdisc noqueue 0: dev lo root refcnt 2 
+qdisc netem 8009: dev ma0 root refcnt 13 limit 64 delay 300ms rate 496bit packetoverhead -14 seed 1319959524465103853
+qdisc ingress ffff: dev ma0 parent ffff:fff1 ---------------- 
+qdisc netem 20: dev mb0 root refcnt 13 limit 10000 delay 300ms loss 20% seed 1
+qdisc tbf 1: dev ifb0 root refcnt 2 rate 100Kbit burst 1200b/1 mpu 0b limit 64b linklayer ethernet 
+ linklayer ethernet overhead -14 
+qdisc pfifo 10: dev ifb0 parent 1:1 limit 64p
+filter protocol ip pref 49152 matchall chain 0 
+filter protocol ip pref 49152 matchall chain 0 handle 0x1 
+  not_in_hw
+	action order 1: mirred (Egress Redirect to device ifb0) stolen
+	index 1 ref 1 bind 1
+yakalama kaybı: {'A_va0': 0, 'MID_ma0': 0, 'MID_ifb0': 0, 'MID_mb0': 0, 'B_vb0': 0}
+ileri 1000 B paket: A çıkış 160 · ma0 giriş kaydı 160 (ifb dönüşü ikinci kez görünür) · ifb0 çıkış 145 · mb0 çıkış 114 · B giriş 114 · B uygulama 114
+
+BASAMAKLAR (aynı kuyruk: ifb0 tbf 1: / pfifo 10:)
+ t0+1.65 s → 50kbit: rc=0 komut öncesi t0+1650.011 ms, sonrası t0+1654.099 ms (hedeften sapma +0.011 ms, komut süresi 4.088 ms)
+   ÖNCE  (komuttan 8.01 ms önce): tbf 1: hız=12500 B/s backlog=41000 B/41 p drops=0 sent=19 p | pfifo 10: limit=64 backlog=41000 B/41 p drops=0
+   SONRA (komuttan 2.87 ms sonra): tbf 1: hız=6250 B/s backlog=40000 B/40 p drops=0 sent=20 p | pfifo 10: limit=64 backlog=40000 B/40 p drops=0
+   iki kayıt arasında ifb0'dan çıkan paket: 1; backlog farkı (önce − sonra) = 1 p; sent farkı = 1 p; drop farkı = 0
+ t0+4.15 s → 100kbit: rc=0 komut öncesi t0+4150.008 ms, sonrası t0+4153.523 ms (hedeften sapma +0.008 ms, komut süresi 3.516 ms)
+   ÖNCE  (komuttan 8.00 ms önce): tbf 1: hız=6250 B/s backlog=45000 B/45 p drops=0 sent=35 p | pfifo 10: limit=64 backlog=45000 B/45 p drops=0
+   SONRA (komuttan 2.78 ms sonra): tbf 1: hız=12500 B/s backlog=45000 B/45 p drops=0 sent=35 p | pfifo 10: limit=64 backlog=45000 B/45 p drops=0
+   iki kayıt arasında ifb0'dan çıkan paket: 0; backlog farkı (önce − sonra) = 0 p; sent farkı = 0 p; drop farkı = 0
+ darboğaz çıkış aralığı · basamak 1 öncesi (12 500): n=18 medyan=79.986 ms min=63.976 max=80.099  → 12502.2 B/s
+ darboğaz çıkış aralığı · basamaklar arası (6 250): n=15 medyan=159.999 ms min=128.138 max=160.107  → 6250.1 B/s
+ darboğaz çıkış aralığı · basamak 2 sonrası (12 500): n=44 medyan=79.992 ms min=63.955 max=80.202  → 12501.2 B/s
+ basamak 1 geçiş aralığı (basamağı içeren): [79.97] ms; basamaktan sonraki ilk üç aralık: [128.14, 159.97, 160.04] ms; basamaktan sonraki ilk çıkış +4.68 ms
+ basamak 2 geçiş aralığı (basamağı içeren): [159.93] ms; basamaktan sonraki ilk üç aralık: [63.96, 79.97, 80.04] ms; basamaktan sonraki ilk çıkış +32.78 ms
+
+örnekleyici: 373 örnek, aralık medyan 50.0 ms en büyük 50.2 ms; en yüksek load1 0.57; görülen darboğaz qdisc kümeleri: {(('pfifo', '10:', '1:1', '64'), ('tbf', '1:', 'kök', ''))}
+ilk örnek sayaçları: tbf sent=0 drops=0 | netem 20: sent=0 drops=0
+son örnek: tbf 1: sent=145 p / 145000 B drops=15 | netem 20: sent=114 drops=31 | en büyük backlog 64 p
+FAZ S (basamak): sunulan 80 · darboğazdan çıkan 80 · kuyrukta düşen 0 · hatta (netem) düşen 18 · teslim 62 → basamak yüzünden kaybolan = 0
+FAZ F (FIFO 64): sunulan 80 · darboğazdan çıkan 65 (beklenen 1 + 64) · kuyrukta düşen 15 · teslim 52; kuyrukta düşen kimlikler [165, 166, 167]…
+kayıp (hat): darboğazdan çıkan 145, teslim 114, düşen 31 = %21.4; netem 20: drops sayacı 31
+hat gecikmesi (darboğaz çıkışı → B girişi): medyan 300.147 ms min 299.924 max 300.346; ilk paket gönderim → B: nan ms
+kayıp ↔ darboğaz sırası: B'de ardışık kimlikli varış aralığı medyan 79.99 ms (n=31); kayıp atlayan aralık / atlanan kimlik farkı medyan 79.99 ms (n=6) → düşen paket hat süresi harcadı = kayıp darboğazdan SONRA
+dönüş: 8 × 48 B → 8 vardı; aralık medyan 774.154 ms → 62.00 B/s; ilk varış gönderimden 1074.3 ms sonra
+kol başı sayaçlar (realized_pre): [('netem', '8009:', 0, 0, 0), ('netem', '20:', 0, 0, 0), ('tbf', '1:', 0, 0, 0), ('pfifo', '10:', 0, 0, 0)] ipv6: off
+
+tohum belirlenimi: rep1 ve rep2 teslim kümeleri aynı mı: True (114 / 114 teslim)

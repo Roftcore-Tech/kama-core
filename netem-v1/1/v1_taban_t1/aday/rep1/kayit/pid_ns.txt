@@ -1,0 +1,7 @@
+=== konaktan çekim t=2026-11-23T09:32:47.382746316Z
+pid=699637 ppid=699459 rol=--role bob net=net:[4026533126] user=user:[4026533030]
+pid=699748 ppid=699459 rol=--role alice net=net:[4026533040] user=user:[4026533030]
+pid=699749 ppid=699748 rol=--role alice net=net:[4026533040] user=user:[4026533030]
+pid=706390 ppid=1758262 rol=--role  net=net:[4026531833] user=user:[4026531837]
+pid=706391 ppid=706390 rol=--role  net=net:[4026531833] user=user:[4026531837]
+konak net=net:[4026531833]

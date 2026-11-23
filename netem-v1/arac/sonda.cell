@@ -1,0 +1,14 @@
+# [ARAÇ KANITI · SENARYO v1] yalnız sonda trafiği; ürün koşusu değil. Depo dışı hücre (scratch).
+CELL=arac_kaniti
+V1_SEED=1
+V1_LINE="delay 300ms loss 20% seed $V1_SEED limit 10000"
+V1_PLAN="1.65:50kbit 4.15:100kbit"
+FWD="v1 100kbit"
+REV="delay 300ms rate 496bit -14 limit 64"
+REPS=2
+ARMS="sonda"
+BUDGET_S=40
+CAPTURE=1
+SETTLE_S=1
+ARM_sonda_SRV="python3 -I <scratch>/olcum/v1/arac/sonda2.py b @CLI_IP@ @SRV_IP@ @PORT@ @D@"
+ARM_sonda_CLI="python3 -I <scratch>/olcum/v1/arac/sonda2.py a @CLI_IP@ @SRV_IP@ @PORT@ @D@"

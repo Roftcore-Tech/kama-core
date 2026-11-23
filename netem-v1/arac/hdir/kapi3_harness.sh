@@ -1,0 +1,286 @@
+#!/usr/bin/env bash
+# [KAPI-1 W5+W7] ÜÇ-NAMESPACE faithful netem harness (rootless; KAPI-1 §4.1 topolojisi).
+#
+#   ns-A (parent) ── va0 ↔ ma0 ── ns-MID ── mb0 ↔ vb0 ── ns-B
+#        10.10.0.1      10.10.0.2   (netem)   10.10.1.2      10.10.1.1
+#
+# NEDEN ÜÇ NS: Linux packet-tap'leri egress'te qdisc-SONRASI ateşler → iki-ns'te endpoint-egress
+# pcap'i netem-sonrası (post-impairment) olurdu. netem'i ORTA ns'e taşımak endpoint-egress
+# capture'ını YAPISAL pre-impairment yapar (r5 H "capture qdisc-ÖNCESİ" şartının rootless yolu).
+#
+# Düzlemler (kapi3_capture_start): A/va0 out = injected_fwd · MID/mb0 out = bottleneck_admitted_fwd ·
+# B/vb0 in = receiver_observed_fwd (reverse simetrik: B/vb0 out · MID/ma0 out · A/va0 in).
+# Capture: pkt_capture.py (AF_PACKET, bağımlılıksız) + tcpdump VARSA yanına pcap (dış-denetim).
+# OTORİTER enjeksiyon sayacı BudgetGovernor'dadır (bench RunMeta.budget); bu katman çapraz-teyit.
+#
+# pin_neigh: statik ARP dört arayüzde de (r5 J ön-koşulu; ARP-katmanı drop'u ayrıca doğrulanır).
+# IPv6 KAPALI (dört veth ucu, arayüzler kalkmadan ÖNCE): açıkken çekirdek her arayüz kalkınca kendi
+# IPv6 denetim trafiğini yollar (DAD NS, MLDv2 raporları, RS; RS geri çekilmeyle dakikalarca sürer).
+# Orta ad alanının ma0/mb0'dan yolladıkları netem kuyruğuna girer; düşük hızda (r25: 200 bit/s) yön
+# başına ~10 çerçeve hücrenin İLK koşusunda onlarca saniye hat süresi yer. KAPI3_IPV6=1 → eski davranış
+# (IPv6 açık). Uygulanan durum KAPI3_IPV6_STATE'te ve realized_*.json "ipv6" alanında: off | on |
+# off-FAILED:<arayüzler> (kapatılamadı: arayüzde inet6 adresi var).
+# Offload: ethtool VARSA gro/gso/tso/lro kapatılır; yoksa uyarı loglanır (küçük-UDP + GSO-wrapper
+# kapalıyken etki düşük; evaluation-preflight strict modda ethtool+tcpdump ZORUNLU).
+#
+# Kullanım: `unshare -rnm` İÇİNDE source edilir:
+#   kapi3_setup            → topoloji + pin + offload (MID/B pid'leri: $MID, $CHLB)
+#   kapi3_netem FWD REV    → netem YALNIZ orta-ns egress'lerinde
+#   kapi3_trace FILE       → [W7] zaman-pencere planı uygulayıcı (arka plan; kapi3_trace_stop)
+#   kapi3_capture_start DIR / kapi3_capture_stop
+#   kapi3_realized DIR TAG → tc -s -j + neigh durumu (realized-channel log şeması, r5 J)
+#   kapi3_a CMD… / kapi3_mid CMD… / kapi3_b CMD…   (ns'te koştur; A = mevcut kabuk)
+#   kapi3_teardown
+
+KAPI3_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+KAPI3_A_IP=10.10.0.1
+KAPI3_MIDA_IP=10.10.0.2
+KAPI3_MIDB_IP=10.10.1.2
+KAPI3_B_IP=10.10.1.1
+
+# 0 = betik konağın İLK ağ ad alanında (/proc/1 ile aynı). unshare -rnm içinde /proc/1'in ad alanı
+# okunamaz (kullanıcı ad alanı) ya da farklıdır → 1. kapi3_setup bunu varsayılan sysctl'i yazmadan önce
+# sorar: betik yanlışlıkla konakta root olarak kaynak alınırsa konağın IPv6 varsayılanı değişmez.
+kapi3_ilk_netns() {
+  local s i
+  s=$(stat -L -c %d:%i /proc/self/ns/net 2>/dev/null) || return 1
+  i=$(stat -L -c %d:%i /proc/1/ns/net 2>/dev/null) || return 1
+  [ "$s" = "$i" ]
+}
+
+kapi3_setup() { # yalnız unshare -rnm İÇİNDE
+  ip link set lo up
+  # İki child-netns: PID-referanslı (mount gerektirmez; faithful_harness deseninin genişletilmişi).
+  unshare -n sleep 100000 & MID=$!
+  unshare -n sleep 100000 & CHLB=$!
+  for _ in $(seq 1 50); do [ -e "/proc/$MID/ns/net" ] && [ -e "/proc/$CHLB/ns/net" ] && break; sleep 0.05; done
+
+  # IPv6 kapalı: yeni arayüzler (ve ad alanı değiştiren arayüz yeni ad alanında yeniden kaydolurken)
+  # varsayılandan doğar → önce üç ad alanında default, arayüzler taşındıktan sonra ayrıca arayüz başına.
+  # Betiğin kendi ad alanında default yalnız ilk ad alanı DEĞİLSE yazılır (kapi3_ilk_netns); va0'ın
+  # arayüz başına ayarı her durumda aşağıda, arayüz kalkmadan önce yazılır.
+  if [ "${KAPI3_IPV6:-0}" != 1 ]; then
+    if kapi3_ilk_netns; then
+      echo "KAPI3 UYARI: konağın ilk ağ ad alanı — net.ipv6.conf.default'a dokunulmadı (unshare -rnm içinde kaynak alın)" >&2
+    else
+      sysctl -qw net.ipv6.conf.default.disable_ipv6=1
+    fi
+    nsenter -t "$MID" -n sysctl -qw net.ipv6.conf.default.disable_ipv6=1
+    nsenter -t "$CHLB" -n sysctl -qw net.ipv6.conf.default.disable_ipv6=1
+  fi
+
+  ip link add va0 type veth peer name ma0
+  ip link add vb0 type veth peer name mb0
+  ip link set ma0 netns "$MID"
+  ip link set mb0 netns "$MID"
+  ip link set vb0 netns "$CHLB"
+  if [ "${KAPI3_IPV6:-0}" != 1 ]; then
+    sysctl -qw net.ipv6.conf.va0.disable_ipv6=1
+    nsenter -t "$MID" -n sysctl -qw net.ipv6.conf.ma0.disable_ipv6=1 net.ipv6.conf.mb0.disable_ipv6=1
+    nsenter -t "$CHLB" -n sysctl -qw net.ipv6.conf.vb0.disable_ipv6=1
+  fi
+
+  ip addr add "$KAPI3_A_IP/24" dev va0; ip link set va0 up
+  nsenter -t "$MID" -n ip link set lo up
+  nsenter -t "$MID" -n ip addr add "$KAPI3_MIDA_IP/24" dev ma0
+  nsenter -t "$MID" -n ip addr add "$KAPI3_MIDB_IP/24" dev mb0
+  nsenter -t "$MID" -n ip link set ma0 up
+  nsenter -t "$MID" -n ip link set mb0 up
+  nsenter -t "$CHLB" -n ip link set lo up
+  nsenter -t "$CHLB" -n ip addr add "$KAPI3_B_IP/24" dev vb0
+  nsenter -t "$CHLB" -n ip link set vb0 up
+  # Denetim: kalkmış arayüzde inet6 adresi kalmamalı (kalırsa IPv6 trafiği netem kuyruğuna girer).
+  if [ "${KAPI3_IPV6:-0}" = 1 ]; then
+    KAPI3_IPV6_STATE=on
+  else
+    local v6bad=""
+    [ -n "$(ip -6 addr show dev va0 2>/dev/null)" ] && v6bad="${v6bad}va0,"
+    [ -n "$(nsenter -t "$MID" -n ip -6 addr show dev ma0 2>/dev/null)" ] && v6bad="${v6bad}ma0,"
+    [ -n "$(nsenter -t "$MID" -n ip -6 addr show dev mb0 2>/dev/null)" ] && v6bad="${v6bad}mb0,"
+    [ -n "$(nsenter -t "$CHLB" -n ip -6 addr show dev vb0 2>/dev/null)" ] && v6bad="${v6bad}vb0,"
+    KAPI3_IPV6_STATE=off
+    if [ -n "$v6bad" ]; then
+      KAPI3_IPV6_STATE="off-FAILED:${v6bad%,}"
+      echo "KAPI3 UYARI: IPv6 kapatılamadı (${v6bad%,}) — denetim trafiği netem kuyruğuna girebilir" >&2
+    fi
+  fi
+
+  # Orta-ns forward + rp_filter kapalı (asimetrik profillerde ters-yol filtresi paket yemesin).
+  nsenter -t "$MID" -n sysctl -qw net.ipv4.ip_forward=1
+  nsenter -t "$MID" -n sysctl -qw net.ipv4.conf.all.rp_filter=0
+  nsenter -t "$MID" -n sysctl -qw net.ipv4.conf.ma0.rp_filter=0
+  nsenter -t "$MID" -n sysctl -qw net.ipv4.conf.mb0.rp_filter=0
+
+  ip route add 10.10.1.0/24 via "$KAPI3_MIDA_IP" dev va0
+  nsenter -t "$CHLB" -n ip route add 10.10.0.0/24 via "$KAPI3_MIDB_IP" dev vb0
+
+  # pin_neigh: DÖRT arayüzde statik ARP (r5 J; sub-kbps'te ARP netem kuyruğunda sessiz ölür).
+  local m_va0 m_ma0 m_mb0 m_vb0
+  m_va0=$(ip link show va0 | awk '/link\/ether/{print $2}')
+  m_ma0=$(nsenter -t "$MID" -n ip link show ma0 | awk '/link\/ether/{print $2}')
+  m_mb0=$(nsenter -t "$MID" -n ip link show mb0 | awk '/link\/ether/{print $2}')
+  m_vb0=$(nsenter -t "$CHLB" -n ip link show vb0 | awk '/link\/ether/{print $2}')
+  ip neigh replace "$KAPI3_MIDA_IP" lladdr "$m_ma0" dev va0 nud permanent
+  nsenter -t "$MID" -n ip neigh replace "$KAPI3_A_IP" lladdr "$m_va0" dev ma0 nud permanent
+  nsenter -t "$MID" -n ip neigh replace "$KAPI3_B_IP" lladdr "$m_vb0" dev mb0 nud permanent
+  nsenter -t "$CHLB" -n ip neigh replace "$KAPI3_MIDB_IP" lladdr "$m_mb0" dev vb0 nud permanent
+
+  # Offload (r5 H): ethtool varsa kapat; yoksa kaydet (evaluation-preflight strict'te ZORUNLU).
+  if command -v ethtool >/dev/null 2>&1; then
+    ethtool -K va0 gro off gso off tso off lro off >/dev/null 2>&1 || true
+    nsenter -t "$MID" -n ethtool -K ma0 gro off gso off tso off lro off >/dev/null 2>&1 || true
+    nsenter -t "$MID" -n ethtool -K mb0 gro off gso off tso off lro off >/dev/null 2>&1 || true
+    nsenter -t "$CHLB" -n ethtool -K vb0 gro off gso off tso off lro off >/dev/null 2>&1 || true
+    KAPI3_OFFLOAD="ethtool-off"
+  else
+    KAPI3_OFFLOAD="ethtool-missing"
+  fi
+  # GSO/TSO segment tavanı (KTP2-F0 D-13): ethtool yokken veth TSO açık kalır; tcp çift-segment skb
+  # yollar ve netem kaybı skb başına çekildiği için kayıplar ikişerli korelasyonlu olur.
+  # KAPI3_GSO_MAX_SEGS verilirse dört veth ucunda gso_max_segs uygulanır; boş = bugünkü davranış.
+  if [ -n "${KAPI3_GSO_MAX_SEGS:-}" ]; then
+    ip link set dev va0 gso_max_segs "$KAPI3_GSO_MAX_SEGS"
+    nsenter -t "$MID" -n ip link set dev ma0 gso_max_segs "$KAPI3_GSO_MAX_SEGS"
+    nsenter -t "$MID" -n ip link set dev mb0 gso_max_segs "$KAPI3_GSO_MAX_SEGS"
+    nsenter -t "$CHLB" -n ip link set dev vb0 gso_max_segs "$KAPI3_GSO_MAX_SEGS"
+  fi
+  export MID CHLB KAPI3_OFFLOAD KAPI3_IPV6_STATE
+}
+
+kapi3_a()   { "$@"; }
+kapi3_mid() { nsenter -t "$MID" -n "$@"; }
+kapi3_b()   { nsenter -t "$CHLB" -n "$@"; }
+
+# netem YALNIZ orta-ns'te: forward = mb0-egress (B'ye doğru), reverse = ma0-egress (A'ya doğru).
+kapi3_netem() { # $1=fwd-spec $2=rev-spec ("none" = kaldır)
+  if [ "$1" = "none" ]; then nsenter -t "$MID" -n tc qdisc del dev mb0 root 2>/dev/null || true
+  else nsenter -t "$MID" -n tc qdisc replace dev mb0 root netem $1; fi
+  if [ "$2" = "none" ]; then nsenter -t "$MID" -n tc qdisc del dev ma0 root 2>/dev/null || true
+  else nsenter -t "$MID" -n tc qdisc replace dev ma0 root netem $2; fi
+}
+
+# [W7] Zaman-pencere trace uygulayıcı. Dosya satırları (commit'li plan; AYNI plan iki transporta):
+#   <offset_s> <fwd-spec…>|<rev-spec…>
+# Uygulayıcı monotonic t0'dan ofsetlere uyur (sleep-to-offset; pencere granülü ≥1s, sapma ~ms).
+kapi3_trace() { # $1=plan-dosyası (log: $plan.log — boru-mirası hijyeni)
+  local plan="$1"
+  (
+    t0=$(date +%s.%N)
+    while IFS= read -r line; do
+      case "$line" in ''|'#'*) continue;; esac
+      off="${line%% *}"; rest="${line#* }"
+      fwd="${rest%%|*}"; rev="${rest#*|}"
+      now=$(date +%s.%N)
+      sl=$(python3 -c "print(max(0.0, $t0 + $off - $now))")
+      sleep "$sl"
+      kapi3_netem "$fwd" "$rev"
+      echo "TRACE t=$off fwd='$fwd' rev='$rev'"
+    done < "$plan"
+  ) > "$plan.log" 2>&1 < /dev/null & KAPI3_TRACE_PID=$!
+  export KAPI3_TRACE_PID
+}
+kapi3_trace_stop() { [ -n "${KAPI3_TRACE_PID:-}" ] && kill "$KAPI3_TRACE_PID" 2>/dev/null || true; }
+
+# Üç-düzlem capture: A/va0 · MID/ma0 · MID/mb0 · B/vb0 (yön etiketiyle 6 düzlem türer).
+kapi3_capture_start() { # $1=çıktı-dizini
+  local d="$1"; mkdir -p "$d"
+  # ÖNEMLİ fd-hijyeni: arka-plan süreçleri çağıranın stdout/stderr borusunu MİRAS ALMAMALI —
+  # aksi hâlde script bitse bile boru EOF görmez, dıştaki tail/grep sonsuza dek bekler (yaşandı).
+  # DİKKAT: fonksiyon-sarmalıyı arka-plana ALMA (alt-kabuk fork → $! ≠ python; TERM ulaşmaz).
+  python3 "$KAPI3_DIR/pkt_capture.py" va0 "$d/A_va0.jsonl"  > "$d/A_va0.ready"  2> "$d/A_va0.err"  < /dev/null & KAPI3_CAP1=$!
+  nsenter -t "$MID" -n python3 "$KAPI3_DIR/pkt_capture.py" ma0 "$d/MID_ma0.jsonl" > "$d/MID_ma0.ready" 2> "$d/MID_ma0.err" < /dev/null & KAPI3_CAP2=$!
+  nsenter -t "$MID" -n python3 "$KAPI3_DIR/pkt_capture.py" mb0 "$d/MID_mb0.jsonl" > "$d/MID_mb0.ready" 2> "$d/MID_mb0.err" < /dev/null & KAPI3_CAP3=$!
+  nsenter -t "$CHLB" -n python3 "$KAPI3_DIR/pkt_capture.py" vb0 "$d/B_vb0.jsonl"  > "$d/B_vb0.ready"  2> "$d/B_vb0.err"  < /dev/null & KAPI3_CAP4=$!
+  # READY bekle (yarışsız başlangıç).
+  for f in A_va0 MID_ma0 MID_mb0 B_vb0; do
+    for _ in $(seq 1 40); do grep -q READY "$d/$f.ready" 2>/dev/null && break; sleep 0.05; done
+  done
+  # tcpdump varsa pcap YANINA (dış-denetim katmanı).
+  if command -v tcpdump >/dev/null 2>&1; then
+    tcpdump -i va0 -w "$d/A_va0.pcap"  -U udp >/dev/null 2>&1 </dev/null & KAPI3_CAP5=$!
+    nsenter -t "$CHLB" -n tcpdump -i vb0 -w "$d/B_vb0.pcap"  -U udp >/dev/null 2>&1 </dev/null & KAPI3_CAP6=$!
+  fi
+  export KAPI3_CAP1 KAPI3_CAP2 KAPI3_CAP3 KAPI3_CAP4
+}
+kapi3_capture_stop() {
+  for p in "${KAPI3_CAP1:-}" "${KAPI3_CAP2:-}" "${KAPI3_CAP3:-}" "${KAPI3_CAP4:-}" "${KAPI3_CAP5:-}" "${KAPI3_CAP6:-}"; do
+    [ -n "$p" ] && kill "$p" 2>/dev/null || true
+  done
+  sleep 0.3
+}
+
+# Realized-channel log (r5 J şeması): configured tc durumu + kuyruğun drop/sent sayaçları + ARP
+# durumu + offload kaydı. Analiz katmanı configured-vs-realized kıyasını pcap'ten tamamlar.
+kapi3_realized() { # $1=dizin $2=etiket
+  local d="$1" tag="$2"
+  {
+    echo "{\"tag\":\"$tag\",\"t_ns\":$(date +%s%N),\"offload\":\"$KAPI3_OFFLOAD\",\"ipv6\":\"${KAPI3_IPV6_STATE:-}\","
+    # D-13 bayrağı verildiyse uygulanan değer dört uçtan geri okunur (boşken çıktı değişmez).
+    [ -n "${KAPI3_GSO_MAX_SEGS:-}" ] && echo "\"gso_max_segs\":\"va0=$(ip -d link show va0 | grep -oE 'gso_max_segs [0-9]+' | cut -d' ' -f2);ma0=$(nsenter -t "$MID" -n ip -d link show ma0 | grep -oE 'gso_max_segs [0-9]+' | cut -d' ' -f2);mb0=$(nsenter -t "$MID" -n ip -d link show mb0 | grep -oE 'gso_max_segs [0-9]+' | cut -d' ' -f2);vb0=$(nsenter -t "$CHLB" -n ip -d link show vb0 | grep -oE 'gso_max_segs [0-9]+' | cut -d' ' -f2)\","
+    echo "\"mid_qdisc\":$(nsenter -t "$MID" -n tc -s -j qdisc show 2>/dev/null || echo '[]'),"
+    echo "\"neigh_a\":\"$(ip neigh show dev va0 | tr '\n' ';')\","
+    echo "\"neigh_b\":\"$(nsenter -t "$CHLB" -n ip neigh show dev vb0 | tr '\n' ';')\"}"
+  } >> "$d/realized_$tag.json"
+}
+
+kapi3_teardown() {
+  kapi3_trace_stop
+  kapi3_capture_stop
+  [ -n "${MID:-}" ] && kill "$MID" 2>/dev/null || true
+  [ -n "${CHLB:-}" ] && kill "$CHLB" 2>/dev/null || true
+  ip link del va0 2>/dev/null || true
+  ip link del vb0 2>/dev/null || true
+}
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# [SENARYO v1 · SCRATCH EKİ — depoda YOK] Bu satırın üstü depo dosyasıyla bayt-aynıdır.
+# Ekler: (1) kapi3_netem "v1 <hız>" ileri yönü iki kademe kurar: ma0 girişi → ifb0 [TBF + pfifo 64]
+#        (darboğaz) → mb0 çıkışı netem [gecikme + kayıp] (hat). Kayıp darboğazdan SONRA.
+#        Hız basamağı `tc qdisc change … tbf` ile: kuyruk (pfifo 10:) yerinde kalır.
+#        (2) kapi3_capture_start: + ifb0 yakalaması (darboğaz çıkışı), kuyruk örnekleyicisi,
+#        t0'a bağlı hız basamağı uygulayıcısı, düğüm kaydı kopyacısı.
+V1_ARAC="$(cd "$KAPI3_DIR/.." && pwd)"
+V1_BURST="${V1_BURST:-1200}"
+v1_tbf() { # $1=add|change $2=hız
+  nsenter -t "$MID" -n tc qdisc "$1" dev ifb0 root handle 1: stab overhead -14 linklayer ethernet \
+    tbf rate "$2" burst "$V1_BURST" limit 64
+}
+kapi3_netem() { # $1=fwd-spec $2=rev-spec ("none" = kaldır; "v1 <hız>" = iki kademe, hat dizesi $V1_LINE)
+  if [ "$1" = "none" ]; then
+    nsenter -t "$MID" -n tc qdisc del dev mb0 root 2>/dev/null || true
+    nsenter -t "$MID" -n tc qdisc del dev ma0 ingress 2>/dev/null || true
+    nsenter -t "$MID" -n ip link del ifb0 2>/dev/null || true
+  elif [ "${1%% *}" = "v1" ]; then
+    nsenter -t "$MID" -n ip link add ifb0 type ifb
+    nsenter -t "$MID" -n ip link set ifb0 up
+    v1_tbf add "${1#v1 }"
+    nsenter -t "$MID" -n tc qdisc add dev ifb0 parent 1:1 handle 10: pfifo limit 64
+    nsenter -t "$MID" -n tc qdisc add dev ma0 handle ffff: ingress
+    nsenter -t "$MID" -n tc filter add dev ma0 parent ffff: protocol ip matchall action mirred egress redirect dev ifb0
+    # shellcheck disable=SC2086
+    nsenter -t "$MID" -n tc qdisc replace dev mb0 root handle 20: netem ${V1_LINE:?V1_LINE yok}
+  else nsenter -t "$MID" -n tc qdisc replace dev mb0 root netem $1; fi
+  if [ "$2" = "none" ]; then nsenter -t "$MID" -n tc qdisc del dev ma0 root 2>/dev/null || true
+  else nsenter -t "$MID" -n tc qdisc replace dev ma0 root netem $2; fi
+}
+eval "$(declare -f kapi3_capture_start | sed '1s/kapi3_capture_start/kapi3_capture_start_depo/')"
+eval "$(declare -f kapi3_capture_stop | sed '1s/kapi3_capture_stop/kapi3_capture_stop_depo/')"
+kapi3_capture_start() { # $1=çıktı-dizini (koşu dizini = üstü)
+  local d="$1" rd; rd="$(dirname "$1")"
+  kapi3_capture_start_depo "$d"
+  nsenter -t "$MID" -n tc -d qdisc show > "$rd/tc-d-qdisc-show.txt" 2>&1
+  nsenter -t "$MID" -n tc -d filter show dev ma0 parent ffff: >> "$rd/tc-d-qdisc-show.txt" 2>&1
+  nsenter -t "$MID" -n python3 "$KAPI3_DIR/pkt_capture.py" ifb0 "$d/MID_ifb0.jsonl" > "$d/MID_ifb0.ready" 2> "$d/MID_ifb0.err" < /dev/null & V1_P1=$!
+  for _ in $(seq 1 40); do grep -q READY "$d/MID_ifb0.ready" 2>/dev/null && break; sleep 0.05; done
+  nsenter -t "$MID" -n python3 -I "$V1_ARAC/ornekleyici.py" "$rd/kuyruk.jsonl" "${V1_SAMPLE_MS:-50}" > /dev/null 2> "$rd/ornekleyici.err" < /dev/null & V1_P2=$!
+  V1_P3=""
+  if [ -n "${V1_PLAN:-}" ]; then
+    nsenter -t "$MID" -n python3 -I "$V1_ARAC/basamak.py" "$rd" "$V1_PLAN" "$V1_BURST" > /dev/null 2> "$rd/basamak.err" < /dev/null & V1_P3=$!
+  fi
+  bash "$V1_ARAC/kopyaci.sh" "$rd" > /dev/null 2> "$rd/kopyaci.err" < /dev/null & V1_P4=$!
+  export V1_P1 V1_P2 V1_P3 V1_P4
+}
+kapi3_capture_stop() {
+  for p in "${V1_P2:-}" "${V1_P3:-}" "${V1_P4:-}" "${V1_P1:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null || true; done
+  kapi3_capture_stop_depo
+}

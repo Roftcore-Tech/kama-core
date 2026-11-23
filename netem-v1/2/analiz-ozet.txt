@@ -1,0 +1,74 @@
+koşu: t0=1795426542687214730 bitiş τ=100.004 s; alice sonuç=incomplete metin 49 gönderildi, bob 49 aldı, alındı 49; dosya bob=none (bitmemesi bekleniyordu)
+listener_drops alice/bob=0/0 jsonl_errors=0/0 probe_errors=0/0
+yakalama kaybı: {'A_va0': 0, 'MID_ma0': 0, 'MID_ifb0': 0, 'MID_mb0': 0, 'B_vb0': 0}; UDP dışı IPv4 paket: 4; yinelenen paket kimliği: 0
+akışlar (orta ad alanı): {'MID_ifb0 out 39990→58132': 55, 'MID_ifb0 out 57001→39990': 890, 'MID_ma0 in 39990→58132': 55, 'MID_ma0 in 57001→39990': 890, 'MID_ma0 out 39990→57001': 31, 'MID_ma0 out 58132→39990': 55, 'MID_mb0 in 39990→57001': 32, 'MID_mb0 in 58132→39990': 55, 'MID_mb0 out 39990→58132': 43, 'MID_mb0 out 57001→39990': 698}
+ileri paket: A çıkış 945 (736437 B; veri akışı 890 p 730626 B, Alice'in ACK akışı 55 p 5811 B) · darboğaza varan 945 · darboğazdan çıkan 945 (736437 B) · hat sonrası (mb0 çıkış) 741 · B giriş 741
+KUYRUKTA düşen 0 p (tbf 1: drops sayacı 0) · HATTA (rastgele kayıp) düşen 204 p = darboğazdan çıkanın %21.59'i (netem 20: drops sayacı 204); koşu sonunda kuyrukta/hatta kalan 0 / 0 p
+qdisc sayaçları (son örnek τ=100.52): tbf 1: sent 945 p / 736437 B, drops 0, overlimits 542, backlog 0 p; netem 20: sent 741 p, drops 204
+örnekleyici: 2031 örnek, aralık medyan 50.0 ms, en büyük 58.9 ms; load1 en yüksek 1.35; görülen qdisc kümeleri: 1 → [(('ingress', 'ffff:'), ('netem', '20:'), ('netem', '800d:'), ('pfifo', '10:'), ('tbf', '1:'))]
+dönüş: ACK/denetim akışı (B:39990→A) A'ya varan 31 p 2206 B, boy dağılımı {58: 5, 60: 4, 62: 1, 69: 2, 70: 3, 71: 2, 73: 1, 74: 2, 76: 2, 78: 2, 79: 1, 80: 1, 83: 1, 86: 2, 89: 1, 92: 1}; Bob veri akışı (alındılar) 55 p 3905 B boy {71: 55}
+ACK akışında V2 (0x14) ACK boyuyla (65 + 4k B) bağdaşan 4 p, bağdaşmayan 27 p (bitmap 0x15/0x16 boyu 67 + bitmap; 83 B = PARAM_ACK adayı)
+KİP · dolaylı tel kanıtı: tavanı güncelleyen (varıştan ≤ 160 ms sonra tavan değişti) ACK datagramları (tavan τ, varış τ, IP B): [(27.92, 27.82, 78), (31.21, 31.2, 76), (57.48, 57.41, 89), (62.01, 61.93, 78), (65.42, 65.35, 70), (79.21, 79.19, 80), (81.48, 81.47, 70), (89.51, 89.43, 79), (97.55, 97.52, 86)]; bunlardan 0x14 boyuyla (65 + 4k) BAĞDAŞMAYAN 8/9: [78, 76, 78, 70, 80, 70, 79, 86] (RECOVERED 56 + 2n ve PARAM_ACK 83 B tavanı güncellemez; 0x15/0x16 = 67 + bitmap)
+
+HIZ BASAMAKLARI (aynı kuyruk ifb0 tbf 1: / pfifo 10:)
+ τ=20.0 s → 50kbit (6250 B/s): rc=0 komut τ=20.000009 → 20.004637 s (hedeften +0.009 ms)
+   ÖNCE  (8.0 ms önce): tbf hız 12500 backlog 0 p / 0 B, drops 0, sent 268 | pfifo 10: limit 64 backlog 0 p drops 0
+   SONRA (4.1 ms sonra): tbf hız 6250 backlog 0 p / 0 B, drops 0, sent 268 | pfifo 10: limit 64 backlog 0 p drops 0
+   iki kayıt arasında: darboğaza varan 0 p, çıkan 0 p; backlog farkı +0 p; drops farkı +0; basamaktan sonraki ilk çıkış aralıkları [10.8, 166.6, 172.0, 171.7, 21.6] ms (paket boyları [136, 1086, 1086, 1074, 1074, 136] B)
+ τ=60.0 s → 100kbit (12500 B/s): rc=0 komut τ=60.000011 → 60.004922 s (hedeften +0.011 ms)
+   ÖNCE  (8.0 ms önce): tbf hız 6250 backlog 2 p / 2148 B, drops 0, sent 584 | pfifo 10: limit 64 backlog 2 p drops 0
+   SONRA (4.7 ms sonra): tbf hız 12500 backlog 2 p / 2148 B, drops 0, sent 584 | pfifo 10: limit 64 backlog 2 p drops 0
+   iki kayıt arasında: darboğaza varan 0 p, çıkan 0 p; backlog farkı +0 p; drops farkı +0; basamaktan sonraki ilk çıkış aralıkları [75.9, 10.9, 85.9, 85.9, 86.0] ms (paket boyları [1074, 1074, 136, 1074, 1074, 1074] B)
+ τ=85.0 s → 50kbit (6250 B/s): rc=0 komut τ=85.000012 → 85.004675 s (hedeften +0.012 ms)
+   ÖNCE  (8.0 ms önce): tbf hız 12500 backlog 1 p / 1074 B, drops 0, sent 804 | pfifo 10: limit 64 backlog 1 p drops 0
+   SONRA (3.3 ms sonra): tbf hız 6250 backlog 1 p / 1074 B, drops 0, sent 804 | pfifo 10: limit 64 backlog 1 p drops 0
+   iki kayıt arasında: darboğaza varan 0 p, çıkan 0 p; backlog farkı +0 p; drops farkı +0; basamaktan sonraki ilk çıkış aralıkları [214.2, 151.7, 138.3, 75.9, 214.3] ms (paket boyları [1074, 1074, 1074, 1074, 1074, 1086] B)
+ τ=85.5 s → 100kbit (12500 B/s): rc=0 komut τ=85.500006 → 85.504902 s (hedeften +0.006 ms)
+   ÖNCE  (8.0 ms önce): tbf hız 6250 backlog 0 p / 0 B, drops 0, sent 807 | pfifo 10: limit 64 backlog 0 p drops 0
+   SONRA (4.0 ms sonra): tbf hız 12500 backlog 0 p / 0 B, drops 0, sent 807 | pfifo 10: limit 64 backlog 0 p drops 0
+   iki kayıt arasında: darboğaza varan 0 p, çıkan 0 p; backlog farkı +0 p; drops farkı +0; basamaktan sonraki ilk çıkış aralıkları [75.9, 214.3, 146.9, 147.9, 1.9] ms (paket boyları [1074, 1074, 1086, 1086, 136, 1086] B)
+
+HIZ TELDE (darboğaz çıkışı, kuyruk dolu dönemlerde ardışık çıkış aralığından): dilim · çıkan B / kapasite B · bekleme>0 paketlerde (boy/aralık) medyan B/s
+ [0, 20.0) s: çıkan 223519 / kapasite 250000 B (%89.4); sunulan 223519 B (%89.4); ardışık çıkış hızı medyan nan B/s (n=0)
+ [20, 60.0) s: çıkan 229524 / kapasite 250000 B (%91.8); sunulan 231672 B (%92.7); ardışık çıkış hızı medyan 6250 B/s (n=169)
+ [60, 85.0) s: çıkan 169159 / kapasite 312500 B (%54.1); sunulan 168085 B (%53.8); ardışık çıkış hızı medyan 14129 B/s (n=31)
+ [85.0, 85.5) s: çıkan 3222 / kapasite 3125 B (%103.1); sunulan 2148 B (%68.7); ardışık çıkış hızı medyan nan B/s (n=0)
+ [85.5, 100.0) s: çıkan 111013 / kapasite 181300 B (%61.2); sunulan 111013 B (%61.2); ardışık çıkış hızı medyan 14155 B/s (n=10)
+
+PACER TAVANI (alice sondası pr = pacer hızı, UDP gövdesi B/s; geri bildirimi aç kuralda pr = cc_feedback_cap; hat-eşdeğeri = pr × 12500 / 12214); örnek aralığı 100 ms
+ değişimler (τ s: önce → sonra [hat-eşdeğeri]): 27.92: 12214→6091 [6234]; 31.21: 6091→6052 [6194]; 57.48: 6052→6873 [7034]; 62.01: 6873→6070 [6212]; 65.42: 6070→6857 [7018]; 79.21: 6857→7282 [7453]; 80.55: 7282→6857 [7018]; 81.48: 6857→7228 [7397]; 89.51: 7228→7676 [7856]; 90.75: 7676→7228 [7397]; 97.55: 7228→7676 [7856]
+ ACK/denetim varışları (τ s:IP B): 2.09:69 3.23:70 4.56:83 8.05:74 11.29:58 17.36:92 19.62:69 21.97:74 27.82:78 28.82:62 31.20:76 32.36:71 33.35:60 35.64:71 36.62:60 39.89:60 50.44:86 51.39:58 57.41:89 59.51:58 61.93:78 65.35:70 67.68:73 70.91:58 73.30:76 79.19:80 81.47:70 85.85:58 89.43:79 91.55:60 97.52:86
+
+HÜKÜM GİRDİLERİ (ACK adayı = ACK/denetim akışında IP boyu ≥ 65 B datagram; daha kısası ACK olamaz)
+ KUYRUK (daralma 20 s): bekleme tepe 7745 ms (çıkış τ=35.52); tepeden sonra ≤ 393 ms'ye ilk iniş τ=36.135271329 (basamaktan 16.14 s sonra); [20,60) içinde > 393 ms beklemenin son görüldüğü çıkış τ=36.113514477; > 393 ms bekleyen paket 118/316
+ CC: basamak τ=20.000; sonraki 1. ACK τ=21.970705252, 2. ACK τ=27.815480881; 2. ACK'ten 150 ms sonra tavan pr=6091 → hat-eşdeğeri 6233.625347961356; tavanın 5 625–6 875 aralığına ilk girdiği an τ=27.917563136 (basamaktan 7.92 s sonra)
+     20 s öncesi (τ 2–20) tavan en düşük pr=12214 → hat-eşdeğeri 12500.0; τ<20 tavan izi: 
+ HIZ SINIRLAMA [35, 58): sunulan/kapasite %80.8 (116132/143750 B), çıkan/kapasite %85.6; kuyrukta düşen 0 p; darboğaz beklemesi medyan 50 ms, p95 4794 ms, en çok 7745 ms (eşik ≈ 393 ms); kuyruk en çok 17 p
+     daralmada (τ 20–60) metin teslim süresi ms: 873 2254 4172 6274 7869 5889 7191 5191 3191 1191 820 471 511 364 2756 984 838 487 715 780 → ≤ 1 s olan 10/20, en çok 7869 ms
+     kısa daralma sonrası [86,5, 98): sunulan/kapasite %60.3, çıkan/kapasite %60.3, bekleme medyan 0 ms en çok 78 ms, kuyrukta düşen 0, tavan (hat-eşd.) en az 7397 en çok 7856  [karşılaştırma: kesmesiz koşu YOK → sınanmadı]
+     başvuru (kesme öncesi [70, 84)): sunulan/kapasite %57.8, çıkan/kapasite %57.8, bekleme medyan 0 ms en çok 78 ms
+ HIZLANMA: önkoşul τ=58 tavan pr=6873 → hat-eşdeğeri 7033.93646635009 (≈ 6 250 bekleniyor); basamak τ=60.000; sonraki 1./3. ACK τ=61.931454414/67.67500777; tavanın ≥ 11 875 olduğu ilk an τ=None; [o an, 84) boyunca kalıcı mı: None; 3. ACK'te (+150 ms) tavan 7017.561814311446
+     kararlı pencere: YOK (tavan 84 s'den önce ≥ 11 875 olmadı)
+
+METİN: 49 gönderildi, 49 teslim; teslim süresi medyan 487 ms, en çok 7869 ms, ≤ 1 s 39/49
+ALINDI: 49 geldi; dönüş bacağı (bob uygulama teslimi → alice alındı) medyan 2195 ms, en çok 5280 ms, ≤ 4 s 45/49; gidiş-dönüş medyan 2821 ms, en çok 9780 ms, > 4 s 12
+DOSYA: bob motor kabulü 343407 B / 1200000 B (τ=100 s); 20/60/85/bitiş: 102313/207665/290731/343407 B
+ALICE son sonda: txb=705706 rtxb=85369 txd=890 rxd=31 parite=196 kopya=202 yeniden_iletim=87 srtt=1976.753
+
+GENEL: kuyruk en çok 57 p / 49039 B (τ=27.82); darboğaz beklemesi en çok 7745 ms (çıkış τ=35.52); evre başına bekleme medyan/en çok ms: [0,20) 0/0; [20,35) 3692/7397; [35,58) 50/7745; [58,60) 140/391; [60,64) 0/458; [64,84) 0/78; [84,86.5) 0/76; [86.5,98) 0/78
+       gönderimin durduğu en uzun aralık (A çıkış, veri akışı): 4951 ms (τ=31.16→36.11)
+
+KİRLİ DENETİMİ: TEMİZ
+ tuttu · K1 yük < 6,0 · en yüksek 1.35
+ tuttu · K2 cargo/rustc yok · kosu.log'da cargo_rustc=0 sayısı 2
+ tuttu · K3 yeni çekirdek dökümü yok · ['Thu 2026-09-03 00:00:43 +03 537502 1000', 'Thu 2026-09-03 00:00:43 +03 537502 1000']
+ tuttu · K4 ipv6 off, BARRIER-FAIL yok · off/off
+ tuttu · K5 kol başı sayaçlar 0 
+ tuttu · K6 aynı qdisc (tbf 1: + pfifo 10: 64p) · 1 küme
+ tuttu · K7 yakalama kaybı 0 
+ tuttu · K8 hat dışı trafik yok · darboğazda UDP dışı 0; UDP akışı 4; tbf sent 945 = yakalanan 945; UDP dışı (dönüş/bitiş sonrası) [(100.2, 1), (100.27, 1), (100.2, 1), (100.27, 1)]
+ tuttu · K9 iki süreç, ayrı ad alanı, rc, kayıp yok · pid_ns: alice pid=714341 net=net:[4026533040] | bob pid=714242 net=net:[4026533116] | alice pid=714341 net=net:[4026533040] | bob pid=714242 net=net:[4026533116]
+ tuttu · K10 basamak rc=0, |sapma| ≤ 20 ms · [0.009, 0.011, 0.012, 0.006] ms
+ tuttu · K11 örnek aralığı ≤ 300 ms · en büyük 58.9 ms
+node-alice-transport-start.txt: çekirdek_git=73715edbede79bd17b5cc11408947b65f6b7b1fd | motor=cc-port | ack_biçimi=bitmap etkin=evet
+node-bob-transport-start.txt: çekirdek_git=73715edbede79bd17b5cc11408947b65f6b7b1fd | motor=cc-port | ack_biçimi=bitmap etkin=hayır (geri bildirim aç profil yok: telde v2)

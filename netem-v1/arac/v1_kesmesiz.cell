@@ -1,0 +1,16 @@
+# [SENARYO v1 · KARŞILAŞTIRMA KOLU: kesmesiz (85,0–85,5 s daralması YOK)] entegrasyon dalı 73715edb, #250 YOK. Depo dışı hücre (scratch).
+# Tohum ortamdan (V1_SEED). f0_cell.sh DEĞİŞMEDEN; HDIR = scratch düzenek kopyası (iki kademeli ileri hat).
+: "${V1_SEED:?V1_SEED yok}"
+CELL=v1_kesmesiz_t${V1_SEED}
+V1_LINE="delay 300ms loss 20% seed $V1_SEED limit 10000"
+V1_PLAN="20:50kbit 60:100kbit"
+FWD="v1 100kbit"
+REV="delay 300ms rate 496bit -14 limit 64"
+REPS=1
+ARMS="aday"
+BUDGET_S=200
+CAPTURE=1
+SETTLE_S=1
+F0A_ARGS='--dir @D@ --alice-addr @CLI_IP@:@PORT@ --bob-addr @SRV_IP@:@PORT@ --scenario dosyali --profile v1_12500_62_d300_l20 --rep @REP@ --file-bytes 1200000 --file-at-ms 0 --warmup-texts 0 --texts 49 --text-at-ms 2000 --text-every-ms 2000 --text-bytes 64 --sigs 0 --ptt-at-ms none --karsi off --window-s 2 --receipt-grace-s 30 --connect-timeout-s 30 --probe-ms 100 --live-diag on'
+ARM_aday_SRV="env KAMA_TRANSPORT_ENGINE=cc-port KAMA_ACK_FORMAT=bitmap KAMA_LINK_RATES=62,12500 KAMA_PILOT_RECORD=1 @BIN_F0A_ADAY@ --role bob $F0A_ARGS"
+ARM_aday_CLI="env KAMA_TRANSPORT_ENGINE=cc-port KAMA_ACK_FORMAT=bitmap KAMA_LINK_RATES=12500,62 KAMA_PILOT_RECORD=1 @BIN_F0A_ADAY@ --role alice $F0A_ARGS"

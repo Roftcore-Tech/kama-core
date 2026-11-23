@@ -1,0 +1,25 @@
+KİRLİ KOŞU ÖLÇÜTÜ — koşulardan ÖNCE yazıldı: 2026-11-23T09:29:27Z
+Kapsam: araç kanıtı (sonda) ve senaryo v1 taban koşuları (tohum 1–3). Biri tutmazsa koşu KİRLİ; aynı kimlikle bir kez yeniden.
+ K1 konak yükü: örnekleyicinin her örneğindeki loadavg(1 dk) < 6,0 (12 çekirdek); en yüksek değer raporlanır.
+ K2 koşu başında ve sonunda konakta cargo/rustc süreci yok (koşu tek kilit altında).
+ K3 koşu penceresinde yeni çekirdek dökümü (coredumpctl) yok.
+ K4 realized_pre/post "ipv6" = off; BARRIER-FAIL dosyası yok.
+ K5 kol başında orta ad alanı qdisc sayaçları 0 (ifb0 tbf 1:, pfifo 10:, mb0 netem 20:, ma0 netem).
+ K6 koşu boyunca darboğaz kuyruğu AYNI qdisc (ifb0 tbf handle 1: + pfifo handle 10:, limit 64p) — örnekleyicinin her örneğinde; hız seçeneği yalnız plan anlarında değişti.
+ K7 yakalama kaybı 0 (beş düzlem: A_va0, MID_ma0, MID_ifb0, MID_mb0, B_vb0).
+ K8 hat dışı trafik yok: koşunun dört UDP akışı dışında IPv4 paketi darboğazdan geçmedi; ifb0 qdisc 'sent packets' = ifb0 yakalanan paket.
+ K9 (ürün) iki f0_flows süreci aynı anda canlı ve ayrı ağ ad alanında gözlendi; rc yazıldı; listener_drops = 0, jsonl_errors = 0 (iki uç).
+ K10 hız basamakları: her tc change rc=0 ve komut başlangıcı hedef anından |sapma| ≤ 20 ms.
+ K11 örnekleyici: ardışık örnek aralığı ≤ 300 ms (kuyruk çizelgesinde delik yok).
+Araç kanıtı geçme koşulu (önceden): her basamakta (a) qdisc handle değişmedi, (b) backlog sıfırlanmadı: |önce − sonra| ≤ o arada serileşen paket (≤ 2),
+ (c) drop sayacı artmadı, (d) kuyruktaki paketler yeni hızla çıktı (80 → 160 → 80 ms ± 2 ms), (e) basamak yüzünden kaybolan = sunulan − teslim − kuyrukta düşen − hatta düşen = 0.
+ Sağlanmazsa ürün koşuları "TEŞHİS — hız kademesi kuyruğu korumuyor; kuyruk boşaltma kabulünde kullanılmaz" etiketlenir.
+Ürün koşusu geçerlilik koşulu: kip kanıtı var, kirli değil, dört hız basamağı telde görüldü.
+Konak (ön): load=0.54 1.29 2.45 1/1364 693931 çekirdek=7.2.8-9-omarchy cargo/rustc=0
+
+EK — KARŞILAŞTIRMA KOLU (kesmesiz) kuralları; kol sonuçları görülmeden yazıldı: 2026-11-23T09:41:54Z
+ Kol: aynı ikili, aynı tohum, aynı iş yükü; hız planı yalnız 20:6 250 ve 60:12 500 (85,0–85,5 s daralması yok). Amaç: senaryonun "kısa daralmadan sonra [86,5, 98) s'de hat boşken iş bekleme, kesmesiz koşudan fazla değil" ölçütü.
+ Önkoşul (iki kolda): τ=84'te tavan ≥ 11 875 (değilse o tohumda SINANMADI — kısa daralma dolu hatta uygulanmadı).
+ Ölçü: [86,5, 98) darboğaz beklemesi medyanı ve [86,5, 98) sunulan/kapasite. GEÇTİ: taban medyan ≤ kesmesiz medyan + 86 ms (bir tam boy paketin 12 500 B/s'de serileşmesi); değilse KALDI.
+ Kirli ölçütü aynı (K1–K11; K10'da beklenen basamak sayısı 2). K2 notu: kosu.log "başlangıç" satırı kilit BEKLENMEDEN önce yazılır; kilidi tutan derleme bitmeden koşu başlamaz.
+ Tohum 3 taban notu (görüldü): koşunun τ≈60–100 aralığında konak yükü 1,8 → 5,66 (eşik 6,0 altında; kaynak bu görevin dışında).
