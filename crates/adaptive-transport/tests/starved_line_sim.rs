@@ -77,8 +77,8 @@ use adaptive_transport::receiver::{feedback_horizon_ns, Receiver, RxDatagram, Rx
 use adaptive_transport::return_path::AckObservation;
 use adaptive_transport::sender::{
     AckInfo, EmitCause, EmitDiag, Event, FeedbackStarvedRule, ForwardCopyLineScale,
-    ForwardCopyRule, OpaqueUnit, RecoveredInfo, RecoveredUnit, Sender, SrLogicalRef, Timer,
-    TransmitDecision, TransmitKind,
+    ForwardCopyRule, LineGuardAckDecision, LineGuardAckTrace, OpaqueUnit, RecoveredInfo,
+    RecoveredUnit, Sender, SrLogicalRef, Timer, TransmitDecision, TransmitKind,
 };
 
 const MS: u64 = 1_000_000;
@@ -179,6 +179,9 @@ struct Scenario {
     loss: LossModel,
     /// [BUA] Darboğaz defteri ve sağlaması (modül belgesi).
     ledger: bool,
+    /// [ZAMAN-ÇİZELGESİ] ms örnekli durum, darboğaz serileşme kaydı ve ACK başına karar kaydı
+    /// toplanır (salt gözlem; [`Timeline`]). Kapalıyken bugünkü yol bayt-aynı.
+    timeline: bool,
     seed: u64,
     t_max_ns: u64,
 }
@@ -193,6 +196,13 @@ enum RxModel {
     /// yukarı yönü, yani [`PROFILE_DOWN`] ([`RxModel::PRODUCT`]). Başka değer yalnız ayrıştırma
     /// kolu içindir (aynanın bütçesiyle ürün alıcısı).
     Product { ptt_lean: bool, return_bw: u64 },
+    /// [ZAMAN-ÇİZELGESİ] Ürünün V2 (0x14) alıcısı: PoC'nin bugünkü yolu (`RuntimeConfig::ack_format`
+    /// = V2, CAPS çıkmaz, sunucu yuvası bitmap'i hiç açmaz). Kurulum `PeerSlot::new` gibi: kota R 4,
+    /// bütçe dönüş hattı ([`PROFILE_DOWN`]), `set_ack_rereport(false)`; bitmap, sıkışma ve yalın PTT
+    /// biti YOK. ACK [`RxModel::Product`] gibi üretildiği anda kodlanır, mühürlü boyla serileşir ve
+    /// göndericiye çalışma zamanının sırasıyla verilir (0x14'te `pair_rate`, kanıt aralığı ve ölçüm
+    /// aralığı çağrıları çerçevede alan olmadığı için yapılmaz).
+    V2,
 }
 
 impl RxModel {
@@ -205,6 +215,7 @@ impl RxModel {
     fn label(self) -> String {
         match self {
             Self::Mirror => "ayna".to_string(),
+            Self::V2 => "urun-v2".to_string(),
             Self::Product {
                 ptt_lean,
                 return_bw,
@@ -385,6 +396,7 @@ impl Scenario {
             rx: RxModel::Mirror,
             loss: LossModel::Lcg,
             ledger: false,
+            timeline: false,
             seed,
             t_max_ns: 60 * SEC,
         }
@@ -418,6 +430,21 @@ struct Bottleneck {
     /// [BUA · DEFTER] Sınıf × yük sayaçları ve hat sayaçları.
     book: BTreeMap<(TxClass, Payload), ClassBytes>,
     line: LineCounters,
+    /// [ZAMAN-ÇİZELGESİ] Serileşen ve kuyrukta düşen her iletimin kaydı (yalnız `Scenario::timeline`).
+    ser_log: Option<Vec<SerRec>>,
+}
+
+/// [ZAMAN-ÇİZELGESİ] Darboğaza giren bir iletim: sunum anı, serileşme başı / sonu (kuyrukta düştüyse
+/// `None`), tel baytı, sınıf, yük, hatta düştü mü.
+#[derive(Debug, Clone, Copy)]
+struct SerRec {
+    seq: u64,
+    at: u64,
+    ser: Option<(u64, u64)>,
+    wire: u64,
+    class: TxClass,
+    payload: Payload,
+    lost: bool,
 }
 
 /// Bir PTT iletiminin darboğazdaki kaydı.
@@ -488,6 +515,17 @@ impl Bottleneck {
                 b.queue_drop_bytes += wire;
             }
             self.dropped_queue.push(now);
+            if let Some(log) = self.ser_log.as_mut() {
+                log.push(SerRec {
+                    seq,
+                    at: now,
+                    ser: None,
+                    wire,
+                    class: meta.class,
+                    payload: meta.payload,
+                    lost: false,
+                });
+            }
             if unit_id < TEXT_ID {
                 self.ptt_log.push(PttTx {
                     at: now,
@@ -530,6 +568,17 @@ impl Bottleneck {
                         < self.loss_permille
             }
         };
+        if let Some(log) = self.ser_log.as_mut() {
+            log.push(SerRec {
+                seq,
+                at: now,
+                ser: Some((start, done)),
+                wire,
+                class: meta.class,
+                payload: meta.payload,
+                lost: lost || targeted,
+            });
+        }
         let rec = PttTx {
             at: now,
             seq,
@@ -873,6 +922,64 @@ struct Outcome {
     /// [BUA] Dönüş hattı: çerçeve türü → sayı, toplam tel baytı.
     ack_types: BTreeMap<u8, u64>,
     ack_wire_bytes: u64,
+    /// [ZAMAN-ÇİZELGESİ] `Scenario::timeline` açıkken toplanan iz.
+    timeline: Option<Box<Timeline>>,
+}
+
+/// [ZAMAN-ÇİZELGESİ] ms örnekli durum (her ms adımının sonunda; ACK işlendikten sonra).
+#[derive(Debug, Clone, Copy)]
+struct MsRow {
+    t: u64,
+    /// Gerçek ileri hat kapasitesi (plan; B/s tel).
+    cap: u64,
+    /// Darboğaz FIFO'su: serileşmesi bitmemiş paket, bayt ve son paketin bitişine kalan süre.
+    q_pkts: u64,
+    q_bytes: u64,
+    q_ns: u64,
+    /// Göndericide hazır veri: gönderilmemiş birim, uçuştaki bayt.
+    unsent: usize,
+    inflight: u64,
+    /// LineGuard: ölçülen hız (yoksa `None`), örnek sayısı, uygulanan tavan (tel), yükseltme sayısı.
+    g_rate: Option<u64>,
+    g_samples: u64,
+    g_pace: u64,
+    g_raises: u64,
+    /// Pacer kovasının hızı (UDP gövdesi B/s; `diag_pacer().0`), hat modelinin boşalma süresi.
+    bucket: u64,
+    line_drain_ns: u64,
+    /// BBR teslim hızı tahmini (`diag_cc().2`, BtlBw).
+    bbr: u64,
+    /// Alıcının ACK erteleme sayaçları: bütçe, dönüş hattına yol verme, bilgisiz.
+    rx_budget_def: u64,
+    rx_yield_def: u64,
+    rx_noinfo_def: u64,
+}
+
+/// [ZAMAN-ÇİZELGESİ] Göndericiye varan bir ACK (varış sırasıyla).
+#[derive(Debug, Clone)]
+struct AckRow {
+    rec: AckRec,
+    /// Çerçeve: tür baytı, `ack_delay` (ns), aralık sayısı, `seen_count`, `arrival_rate`.
+    frame_type: u8,
+    ack_delay_ns: u64,
+    ranges: usize,
+    seen_count: u32,
+    arrival_rate: u16,
+    /// LineGuard'ın bu ACK kaydı (salt gözlem halkası; ACK işlendikten hemen sonra okunur).
+    trace: Option<LineGuardAckTrace>,
+    /// ACK işlendikten sonra: BBR tahmini, kova hızı, başlangıç bütçesi çıkışı, ilk pencere.
+    bbr: u64,
+    bucket: u64,
+    start_exit: String,
+    first_window: String,
+}
+
+/// [ZAMAN-ÇİZELGESİ] Koşunun izi.
+#[derive(Debug, Clone, Default)]
+struct Timeline {
+    ms: Vec<MsRow>,
+    ser: Vec<SerRec>,
+    acks: Vec<AckRow>,
 }
 
 /// [BUA · ÜRÜN ALICISI] `client_core::runtime` ACK kolunun göndericiye giden çağrıları, aynı
@@ -1104,8 +1211,17 @@ fn run(sc: &Scenario) -> Outcome {
             r.set_pair_squeeze_line(Some(PROFILE_UP));
             r.set_ack_bitmap_ptt_lean(ptt_lean);
         }
+        RxModel::V2 => {
+            r.set_quota_r(4);
+            r.set_return_bandwidth(Some(PROFILE_DOWN));
+            r.set_ack_rereport(false);
+        }
     }
-    let product_rx = matches!(sc.rx, RxModel::Product { .. });
+    let product_rx = matches!(sc.rx, RxModel::Product { .. } | RxModel::V2);
+    let mut tl: Option<Box<Timeline>> = sc.timeline.then(Box::default);
+    if sc.timeline {
+        s.set_diag_line_guard_trace(true);
+    }
     let mut fwd = Bottleneck {
         plan: sc.fwd_plan.clone(),
         queue_pkts: sc.queue_pkts,
@@ -1130,6 +1246,7 @@ fn run(sc: &Scenario) -> Outcome {
         busy_bytes_sum: 0,
         book: BTreeMap::new(),
         line: LineCounters::default(),
+        ser_log: sc.timeline.then(Vec::new),
     };
     s.set_diag_emit_log(sc.diag || sc.ledger);
     let mut reorder_lcg = sc.seed ^ 0x5A5A_5A5A;
@@ -1440,6 +1557,29 @@ fn run(sc: &Scenario) -> Outcome {
                     ack
                 }
                 RetMsg::Product { bytes, measured } => {
+                    if let Some(t) = tl.as_mut() {
+                        let f = AckFrame::decode_with_bitmap(&bytes).expect("ürün ACK'i çözülür");
+                        t.acks.push(AckRow {
+                            rec: AckRec {
+                                sent,
+                                start,
+                                arrival: now,
+                                udp,
+                                largest: 0,
+                            },
+                            frame_type: bytes.first().copied().unwrap_or(0),
+                            ack_delay_ns: u64::try_from(f.ack_delay_duration().as_nanos())
+                                .unwrap_or(u64::MAX),
+                            ranges: f.ranges.len(),
+                            seen_count: f.seen_count,
+                            arrival_rate: f.arrival_rate,
+                            trace: None,
+                            bbr: 0,
+                            bucket: 0,
+                            start_exit: String::new(),
+                            first_window: String::new(),
+                        });
+                    }
                     let (ack, largest, has_span) = product_ack_into_sender(
                         &mut s,
                         &tx,
@@ -1463,6 +1603,26 @@ fn run(sc: &Scenario) -> Outcome {
             };
             let decs = s.on_event(Event::AckReceived(ack), now);
             emit(decs, now, &mut fwd, &mut tx, &mut s);
+            if let Some(t) = tl.as_mut() {
+                let total = s.diag_line_guard_trace_total();
+                let trace = s
+                    .diag_line_guard_trace()
+                    .last()
+                    .copied()
+                    .filter(|r| r.index == total);
+                let bbr = s.diag_cc().map_or(0, |c| c.2);
+                let bucket = s.diag_pacer().0;
+                let start_exit = format!("{:?}", s.diag_line_guard_start_exit());
+                let first_window = format!("{:?}", s.diag_line_guard_first_window());
+                if let Some(row) = t.acks.last_mut() {
+                    row.rec.largest = ack_log.last().map_or(0, |a| a.largest);
+                    row.trace = trace;
+                    row.bbr = bbr;
+                    row.bucket = bucket;
+                    row.start_exit = start_exit;
+                    row.first_window = first_window;
+                }
+            }
             let g = s.diag_line_guard().and_then(|g| g.0);
             if rate_trace.last().map(|&(_, r)| r) != Some(g) {
                 rate_trace.push((now, g));
@@ -1478,6 +1638,36 @@ fn run(sc: &Scenario) -> Outcome {
         }
         if sc.ledger && now.is_multiple_of(SEC) {
             backlog.push((now, s.unsent_units(), s.inflight_bytes()));
+        }
+        if let Some(t) = tl.as_mut() {
+            let (mut q_pkts, mut q_bytes) = (0u64, 0u64);
+            for (&done, &b) in fwd.busy.iter().zip(fwd.busy_bytes.iter()) {
+                if done > now {
+                    q_pkts += 1;
+                    q_bytes += b;
+                }
+            }
+            let (g_rate, g_samples) = s.diag_line_guard().unwrap_or((None, 0));
+            let (g_pace, g_raises) = s.diag_line_guard_pace().unwrap_or((0, 0));
+            t.ms.push(MsRow {
+                t: now,
+                cap: fwd.rate_at(now),
+                q_pkts,
+                q_bytes,
+                q_ns: fwd.busy.back().map_or(0, |&d| d.saturating_sub(now)),
+                unsent: s.unsent_units(),
+                inflight: s.inflight_bytes(),
+                g_rate,
+                g_samples,
+                g_pace,
+                g_raises,
+                bucket: s.diag_pacer().0,
+                line_drain_ns: s.cc_line_ns_until_drained(),
+                bbr: s.diag_cc().map_or(0, |c| c.2),
+                rx_budget_def: r.diag_ack_budget_deferred(),
+                rx_yield_def: r.diag_ack_yield_deferred(),
+                rx_noinfo_def: r.diag_ack_no_info_deferred(),
+            });
         }
         let voice_left = (0..voice_offered.len() as u64).any(|v| {
             !voice_arrived.contains_key(&v) && !ptt_expired.iter().any(|&(u, _, _)| u == v)
@@ -1523,6 +1713,9 @@ fn run(sc: &Scenario) -> Outcome {
     if sc.ledger {
         ledger_check(&fwd, &tx, rx_bytes, held.map_or(0, |h| h.2 + OVH));
     }
+    if let Some(t) = tl.as_mut() {
+        t.ser = fwd.ser_log.take().unwrap_or_default();
+    }
     Outcome {
         file_done_ns,
         waits: fwd.waits.clone(),
@@ -1563,6 +1756,7 @@ fn run(sc: &Scenario) -> Outcome {
         backlog,
         ack_types: ret.types.clone(),
         ack_wire_bytes: ret.bytes,
+        timeline: tl,
     }
 }
 
@@ -3401,4 +3595,1058 @@ fn bua_product_receiver_report() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// [ZAMAN-ÇİZELGESİ] PoC ürün yolu (cc-port, V2 0x14, ACK bütçesi %25, 12 500 / 62 B/s) için tek
+// zaman çizelgesi ve ön kayıtlı karşı örnekler (#242 ön kaydı). YALNIZ RAPOR BASAR: hüküm satırları
+// (`ZC-HUKUM`) sayıdır, test kabul kapısı değildir. Sağlanan yalnız ölçüm aracı: iz açık / kapalı
+// aynı koşu aynı ACK / kuyruk / tavan / PTT / dosya izini verir ve alıcı yalnız 0x14 yazar.
+// Koşu: `cargo test --release -p adaptive-transport --test starved_line_sim zc_ -- --nocapture`.
+// ---------------------------------------------------------------------------------------------
+
+/// [ZAMAN-ÇİZELGESİ] Ön kayıt: düşüş `T_d`, toparlanma `T_r`, son `T_e`.
+const ZC_T_D: u64 = 20 * SEC;
+const ZC_T_R: u64 = 50 * SEC;
+const ZC_T_E: u64 = 80 * SEC;
+/// Dosya koşu boyunca bitmesin: 80 s × 12 500 B/s ≈ 1 MB tel ≈ 973 tam birim; iki katı.
+const ZC_FILE_UNITS: u64 = 2_000;
+/// Ön kayıt sınırları (B/s, tel).
+const ZC_CC_LO: u64 = 5_625;
+const ZC_CC_HI: u64 = 6_875;
+const ZC_UP_MIN: u64 = 11_875;
+const ZC_RET_FALSE_CUT: u64 = 11_250;
+/// (b) testinin yakınsama sonrası bekleme sınırı: iki tam datagramın 6 250 B/s'de serileşmesi.
+const ZC_WAIT_BOUND_NS: u64 = 2 * (MTU + OVH) * SEC / DROP_TO;
+
+/// Ana çizelge: 12 500 → `T_d` 6 250 → `T_r` 12 500, 80 s; anahtarlı %20, tohum `seed`, FIFO 64,
+/// tek yön 300 ms, dosya koşu boyunca, ürün varsayılanı PTT (V2 kopya kuralı 6 + 1), V2 alıcısı.
+fn zc_main(seed: u64) -> Scenario {
+    Scenario {
+        fwd_plan: vec![(0, PROFILE_UP), (ZC_T_D, DROP_TO), (ZC_T_R, PROFILE_UP)],
+        file_units: ZC_FILE_UNITS,
+        voice_until_ns: ZC_T_E,
+        t_max_ns: ZC_T_E,
+        interval: false,
+        rx: RxModel::V2,
+        loss: LossModel::Keyed,
+        ledger: true,
+        timeline: true,
+        ..Scenario::honest(seed)
+    }
+}
+
+/// Kolun ön kayıtlı karşı örnekleri (hepsi ana çizelgenin kurulumuyla, tek değişkenle).
+fn zc_arms() -> Vec<(&'static str, Scenario)> {
+    let m = zc_main(1);
+    vec![
+        ("ana", m.clone()),
+        (
+            "donus+300ms",
+            Scenario {
+                fwd_plan: vec![(0, PROFILE_UP)],
+                rev_delay_plan: vec![(0, ONE_WAY_NS), (ZC_T_D, 2 * ONE_WAY_NS)],
+                ..m.clone()
+            },
+        ),
+        (
+            "uygulama-3000",
+            Scenario {
+                fwd_plan: vec![(0, PROFILE_UP)],
+                file_units: 250,
+                file_gap_ns: FILE_UNIT * SEC / 3_000,
+                ..m.clone()
+            },
+        ),
+        (
+            "kisa-daralma-500ms",
+            Scenario {
+                fwd_plan: vec![
+                    (0, PROFILE_UP),
+                    (ZC_T_D, DROP_TO),
+                    (ZC_T_D + 500 * MS, PROFILE_UP),
+                ],
+                ..m.clone()
+            },
+        ),
+        (
+            "sabit-6250",
+            Scenario {
+                fwd_plan: vec![(0, DROP_TO)],
+                ..m.clone()
+            },
+        ),
+        (
+            "kuyruk-bosalmasi",
+            Scenario {
+                fwd_plan: vec![(0, PROFILE_UP), (ZC_T_D, DROP_TO)],
+                ..m
+            },
+        ),
+    ]
+}
+
+/// Tel baytının sütun grubu: DATA (dosya / metin ilk iletim), PTT (her sınıf), ARQ, FEC, PROB
+/// (PTO probu), KOPYA (PTT dışı kopya). Kontrol datagramı benzetimde yok.
+fn zc_group(r: &SerRec) -> usize {
+    match (r.payload, r.class) {
+        (Payload::Ptt, _) => 1,
+        (_, TxClass::FecParity) | (Payload::Fec, _) => 3,
+        (_, TxClass::NewData) => 0,
+        (_, TxClass::Arq) => 2,
+        (_, TxClass::PtoProbe) => 4,
+        _ => 5,
+    }
+}
+const ZC_GROUPS: [&str; 6] = ["DATA", "PTT", "ARQ", "FEC", "PROB", "KOPYA"];
+
+/// `[a, b)` içinde serileşen tel baytı (serileşme süresiyle orantılı pay), grup başına.
+fn zc_wire(ser: &[SerRec], a: u64, b: u64) -> [u64; 6] {
+    let mut out = [0u64; 6];
+    for r in ser {
+        let Some((s0, d0)) = r.ser else { continue };
+        let lo = s0.max(a);
+        let hi = d0.min(b);
+        if hi <= lo {
+            continue;
+        }
+        let part = u128::from(r.wire) * u128::from(hi - lo) / u128::from((d0 - s0).max(1));
+        out[zc_group(r)] += u64::try_from(part).unwrap_or(u64::MAX);
+    }
+    out
+}
+
+/// `[a, b)` içinde gerçek kapasitenin integrali (B).
+fn zc_cap_bytes(ms: &[MsRow], a: u64, b: u64) -> u64 {
+    ms.iter()
+        .filter(|r| r.t >= a && r.t < b)
+        .map(|r| r.cap)
+        .sum::<u64>()
+        / 1000
+}
+
+/// LineGuard yoklama pencereleri: tavanın bir ACK'te `raised` olmadan yükseldiği andan tavanın
+/// (ACK dışında `tick` ile ya da hüküm ACK'inde) o değerden ayrıldığı ana dek. (başlangıç, bitiş,
+/// yoklama tavanı, önceki tavan).
+fn zc_probe_windows(t: &Timeline) -> Vec<(u64, u64, u64, u64)> {
+    let mut out = Vec::new();
+    for a in &t.acks {
+        let Some(tr) = a.trace else { continue };
+        if tr.pace_after > tr.pace_before && !tr.raised {
+            let start = a.rec.arrival;
+            let end =
+                t.ms.iter()
+                    .find(|r| r.t > start && r.g_pace != tr.pace_after)
+                    .map_or(ZC_T_E, |r| r.t);
+            out.push((start, end, tr.pace_after, tr.pace_before));
+        }
+    }
+    out
+}
+
+fn zc_in_probe(p: &[(u64, u64, u64, u64)], t: u64) -> bool {
+    p.iter().any(|&(a, b, _, _)| t >= a && t < b)
+}
+
+/// Bir ACK'in "geçerli ölçümü" (seçim, ön kayıtta tanımsız ayrıntı; gerekçe raporda): bu ACK'te
+/// LineGuard'ın kabul ettiği aşağı yönlü örnek (`ack_samples > 0`: karar `Frontier` ya da
+/// `IntervalSample`; değer uygulanan `rate_after`) ya da ilk pencerenin örneği. Yukarı yönlü kanıt
+/// (doğrulama / yoklama başarısı) ayrı: `zc_up_evidence`.
+fn zc_sample(a: &AckRow) -> Option<u64> {
+    let tr = a.trace?;
+    let first = matches!(
+        tr.first_window,
+        Some(adaptive_transport::line_guard::FirstWindowOutcome::Sample(
+            _
+        ))
+    );
+    (matches!(
+        tr.decision,
+        LineGuardAckDecision::Frontier | LineGuardAckDecision::IntervalSample
+    ) || first)
+        .then_some(tr.rate_after)
+        .flatten()
+}
+
+/// Yukarı yönlü kanıt: ilk pencere doğruladı ya da yoklama başarılı (değer: uygulanan tavan).
+fn zc_up_evidence(a: &AckRow) -> Option<u64> {
+    let tr = a.trace?;
+    let verified = matches!(
+        tr.first_window,
+        Some(adaptive_transport::line_guard::FirstWindowOutcome::Verified)
+    );
+    (tr.raised || verified).then_some(tr.pace_after)
+}
+
+/// ACK'in LineGuard sonucu ve (örnek yoksa) nedeni. İç neden (cephe artışı eşik altı / kayıt
+/// budanmış / saat taşması) korumanın dışından ayrılamaz: tek sınıfta yazılır.
+fn zc_reason(a: &AckRow, prev_largest: u64) -> String {
+    let Some(tr) = a.trace else {
+        return "iz-yok".to_string();
+    };
+    if let Some(s) = zc_sample(a) {
+        return format!("ORNEK:{s}");
+    }
+    if tr.decision == LineGuardAckDecision::NotConsulted {
+        return "cagrilmadi(teyitli-seq-yok)".to_string();
+    }
+    if tr.raised {
+        return format!("yoklama-basarili:{}", tr.pace_after);
+    }
+    if tr.probe_failed {
+        return format!("yoklama-basarisiz:{}", tr.pace_after);
+    }
+    if a.rec.largest <= prev_largest {
+        return "red:cephe-ilerlemedi".to_string();
+    }
+    if tr.pace_after > tr.pace_before {
+        return format!("dogrulama->yoklama:{}", tr.pace_after);
+    }
+    if tr.pace_after < tr.pace_before {
+        return format!("yoklama-sonucsuz/tavan-geri:{}", tr.pace_after);
+    }
+    "red:ornek-yok(artis-esik-alti|kayit|saat)".to_string()
+}
+
+/// ACK `k`'nin alıcıda "hazır" anı (seçim): önceki ACK'in çıkışından sonra alıcının BİLGİ TAŞIYAN
+/// bir ACK'i bütçe ya da dönüş hattı yüzünden ilk ertelediği ms; erteleme yoksa çıkış anı. Neden
+/// sayaçları: (bütçe, dönüş-hattı, bilgisiz) bu aralıkta.
+fn zc_ready(ms: &[MsRow], prev_emit: Option<u64>, emit: u64) -> (u64, u64, u64, u64) {
+    let from = prev_emit.map_or(0, |p| p / MS + 1) as usize;
+    let to = (emit / MS) as usize;
+    let mut ready = emit;
+    let (mut b, mut y, mut n) = (0, 0, 0);
+    for i in from.max(1)..=to.min(ms.len().saturating_sub(1)) {
+        let (p, c) = (ms[i - 1], ms[i]);
+        let db = c.rx_budget_def - p.rx_budget_def;
+        let dy = c.rx_yield_def - p.rx_yield_def;
+        n += c.rx_noinfo_def - p.rx_noinfo_def;
+        if (db > 0 || dy > 0) && b == 0 && y == 0 {
+            ready = c.t;
+        }
+        b += db;
+        y += dy;
+    }
+    (ready, b, y, n)
+}
+
+fn zc_f(ns: u64) -> String {
+    format!("{:.3}", ns as f64 / SEC as f64)
+}
+
+fn zc_o(v: Option<u64>) -> String {
+    v.map_or("-".to_string(), |v| v.to_string())
+}
+
+/// Gereksiz ARQ (salt test, gerçeklik bilgisiyle): aynı birimin DAHA ÖNCE darboğaza verilmiş bir
+/// iletimi kuyrukta ya da hatta düşmeden alıcıya ulaştıysa sonraki ARQ iletimi gereksizdir
+/// (gönderici bunu V2 ACK'inin 16 aralığından göremeyebilir). Döner: gereksiz ARQ seq'leri.
+fn zc_spurious(o: &Outcome) -> HashSet<u64> {
+    let t = o.timeline.as_deref().expect("iz");
+    let unit: HashMap<u64, u64> = o.emit_log.iter().map(|e| (e.seq, e.unit_id)).collect();
+    let mut recs: Vec<&SerRec> = t.ser.iter().collect();
+    recs.sort_by_key(|r| (r.at, r.seq));
+    let mut delivered: HashSet<u64> = HashSet::new();
+    let mut out = HashSet::new();
+    for r in recs {
+        let Some(&u) = unit.get(&r.seq) else { continue };
+        if r.class == TxClass::Arq && delivered.contains(&u) {
+            out.insert(r.seq);
+        }
+        if r.ser.is_some() && !r.lost {
+            delivered.insert(u);
+        }
+    }
+    out
+}
+
+/// Penceredeki tel kullanımı (yoklama dışı) ve kuyruk ölçüleri; satırı basar, (oran‰, kuyruk
+/// en çok pkt, düşen, bekleme en çok) döner.
+#[allow(clippy::too_many_arguments)]
+fn zc_window(
+    arm: &str,
+    name: &str,
+    t: &Timeline,
+    probes: &[(u64, u64, u64, u64)],
+    drops: &[u64],
+    waits: &[(u64, u64)],
+    spur: &HashSet<u64>,
+    a: u64,
+    b: u64,
+) -> Option<(u64, u64, usize, u64)> {
+    if b <= a {
+        println!(
+            "ZC-PENCERE {arm} {name} SINANMADI (pencere bos: {}..{})",
+            zc_f(a),
+            zc_f(b)
+        );
+        return None;
+    }
+    // Yoklama dışı alt aralıklar.
+    let mut segs = vec![(a, b)];
+    for &(pa, pb, _, _) in probes {
+        segs = segs
+            .into_iter()
+            .flat_map(|(s0, s1)| {
+                if pb <= s0 || pa >= s1 {
+                    vec![(s0, s1)]
+                } else {
+                    let mut v = Vec::new();
+                    if pa > s0 {
+                        v.push((s0, pa));
+                    }
+                    if pb < s1 {
+                        v.push((pb, s1));
+                    }
+                    v
+                }
+            })
+            .collect();
+    }
+    let mut wire = [0u64; 6];
+    let mut cap = 0u64;
+    let mut dur = 0u64;
+    let spur_recs: Vec<SerRec> = t
+        .ser
+        .iter()
+        .filter(|r| spur.contains(&r.seq))
+        .copied()
+        .collect();
+    let arq_recs: Vec<SerRec> = t
+        .ser
+        .iter()
+        .filter(|r| r.class == TxClass::Arq)
+        .copied()
+        .collect();
+    let (mut spur_bytes, mut arq_bytes) = (0u64, 0u64);
+    for &(s0, s1) in &segs {
+        spur_bytes += zc_wire(&spur_recs, s0, s1).iter().sum::<u64>();
+        arq_bytes += zc_wire(&arq_recs, s0, s1).iter().sum::<u64>();
+        let w = zc_wire(&t.ser, s0, s1);
+        for (k, x) in w.iter().enumerate() {
+            wire[k] += x;
+        }
+        cap += zc_cap_bytes(&t.ms, s0, s1);
+        dur += s1 - s0;
+    }
+    let total: u64 = wire.iter().sum();
+    let permille = (total * 1000).checked_div(cap).unwrap_or(0);
+    let in_win = |x: u64| x >= a && x < b && !zc_in_probe(probes, x);
+    let q_max =
+        t.ms.iter()
+            .filter(|r| in_win(r.t))
+            .map(|r| r.q_pkts)
+            .max()
+            .unwrap_or(0);
+    let q_ms_max =
+        t.ms.iter()
+            .filter(|r| in_win(r.t))
+            .map(|r| r.q_ns)
+            .max()
+            .unwrap_or(0);
+    let nd = drops.iter().filter(|&&x| in_win(x)).count();
+    let w_max = waits
+        .iter()
+        .filter(|&&(x, _)| in_win(x))
+        .map(|&(_, w)| w)
+        .max()
+        .unwrap_or(0);
+    let unsent_min =
+        t.ms.iter()
+            .filter(|r| in_win(r.t))
+            .map(|r| r.unsent)
+            .min()
+            .unwrap_or(0);
+    let probe_in: Vec<String> = probes
+        .iter()
+        .filter(|&&(pa, pb, _, _)| pb > a && pa < b)
+        .map(|&(pa, pb, up, base)| {
+            let w: u64 = zc_wire(&t.ser, pa, pb).iter().sum();
+            let c = zc_cap_bytes(&t.ms, pa, pb);
+            format!(
+                "{}-{}:{}->{}:tel{}‰",
+                zc_f(pa),
+                zc_f(pb),
+                base,
+                up,
+                (w * 1000).checked_div(c).unwrap_or(0)
+            )
+        })
+        .collect();
+    println!(
+        "ZC-PENCERE {arm} {name} [{}..{}) yoklama_disi_s={} kapasite_B={cap} tel_B={total} \
+         kullanim_permil={permille} {} ARQ_tum_yuk={arq_bytes} ARQ_tum_yuk_gereksiz={spur_bytes} kuyruk_max_pkt={q_max} kuyruk_max_ms={} kuyrukta_dusen={nd} \
+         bekleme_max_ms={} hazir_birim_min={unsent_min} yoklamalar=[{}]",
+        zc_f(a),
+        zc_f(b),
+        zc_f(dur),
+        ZC_GROUPS
+            .iter()
+            .zip(wire.iter())
+            .map(|(g, x)| format!("{g}={x}"))
+            .collect::<Vec<_>>()
+            .join(" "),
+        q_ms_max / MS,
+        w_max / MS,
+        probe_in.join(",")
+    );
+    Some((permille, q_max, nd, w_max))
+}
+
+/// [AYRIŞTIRMA] Cephe tahmincisinin DIŞTAN yeniden hesabı (salt test; korumanın iç kaydı değil):
+/// ACK `k`'nin cephesi ile önceki en çok [`ZC_POINTS`] ACK'in cephesi arasındaki her nokta için
+/// `ds` (gönderim aralığı), `growth = dtau − ds`, `est = bayt / dtau`. τ = varış − `ack_delay` −
+/// ACK'in dönüş serileşmesi (korumanın formülü, `line_guard.rs` cephe kolu). Bayt iki türlü:
+/// darboğaza verilen bütün tel baytı (korumanın `cum`'unun karşılığı; düzenekte CsProbe kararları
+/// darboğaza verilmez) ve kuyrukta düşenler hariç (ayrıştırma). Eşik: `growth > max(mtu_ns, ds/20)`.
+const ZC_POINTS: usize = 8;
+
+fn zc_decompose(arm: &str, t: &Timeline) {
+    let mut cum_all: HashMap<u64, u64> = HashMap::new();
+    let mut cum_q: HashMap<u64, u64> = HashMap::new();
+    let (mut a, mut q) = (0u64, 0u64);
+    let mut by_seq: Vec<&SerRec> = t.ser.iter().collect();
+    by_seq.sort_by_key(|r| r.seq);
+    let mut send_at: HashMap<u64, u64> = HashMap::new();
+    for r in by_seq {
+        a += r.wire;
+        if r.ser.is_some() {
+            q += r.wire;
+        }
+        cum_all.insert(r.seq, a);
+        cum_q.insert(r.seq, q);
+        send_at.insert(r.seq, r.at);
+    }
+    // (tau, send, cum_all, cum_q) cephe ilerleyen ACK'ler için.
+    let mut pts: Vec<(u64, u64, u64, u64)> = Vec::new();
+    let mut front = 0u64;
+    for (k, ack) in t.acks.iter().enumerate() {
+        let l = ack.rec.largest;
+        let (Some(&send), Some(&ca), Some(&cq)) = (send_at.get(&l), cum_all.get(&l), cum_q.get(&l))
+        else {
+            continue;
+        };
+        if l <= front {
+            continue;
+        }
+        front = l;
+        let ser = (ack.rec.udp + OVH) * SEC / PROFILE_DOWN;
+        let tau = ack
+            .rec
+            .arrival
+            .saturating_sub(ack.ack_delay_ns)
+            .saturating_sub(ser);
+        let current = ack.trace.and_then(|x| x.rate_before).unwrap_or(PROFILE_UP);
+        let mtu_ns = (MTU + OVH) * SEC / current;
+        let cells: Vec<String> = pts
+            .iter()
+            .rev()
+            .take(ZC_POINTS)
+            .map(|&(pt, ps, pa, pq)| {
+                let ds = send - ps;
+                let dtau = tau.saturating_sub(pt);
+                let growth = dtau.saturating_sub(ds);
+                let thr = mtu_ns.max(ds / 20);
+                let est =
+                    |b: u64| (u128::from(b) * u128::from(SEC) / u128::from(dtau.max(1))) as u64;
+                format!(
+                    "{}s:ds={}:art_ms={}{}:tum={}:kuyruk_haric={}",
+                    zc_f(ps),
+                    zc_f(ds),
+                    growth / MS,
+                    if growth > thr { "" } else { "(esik-alti)" },
+                    est(ca - pa),
+                    est(cq - pq)
+                )
+            })
+            .collect();
+        if ack.rec.arrival > 5 * SEC {
+            println!(
+                "ZC-AYRISMA {arm} k={} varis_s={} cephe_gonderim_s={} uygulanan={} noktalar(yeniden-eskiye)=[{}]",
+                k + 1,
+                zc_f(ack.rec.arrival),
+                zc_f(send),
+                zc_o(ack.trace.and_then(|x| x.rate_after)),
+                cells.join(" ")
+            );
+        }
+        pts.push((tau, send, ca, cq));
+    }
+}
+
+/// Bir kolun bütün satırları ve hüküm girdileri.
+#[allow(clippy::too_many_lines)]
+fn zc_print(arm: &str, sc: &Scenario, o: &Outcome) {
+    let t = o.timeline.as_deref().expect("iz açık");
+    let probes = zc_probe_windows(t);
+    zc_decompose(arm, t);
+    // Olay satırları: her ACK.
+    let mut prev_emit = None;
+    let mut prev_largest = 0u64;
+    let by_seq: HashMap<u64, &SerRec> = t.ser.iter().map(|r| (r.seq, r)).collect();
+    for (k, a) in t.acks.iter().enumerate() {
+        let (ready, nb, ny, nn) = zc_ready(&t.ms, prev_emit, a.rec.sent);
+        prev_emit = Some(a.rec.sent);
+        let ser_ns = (a.rec.udp + OVH) * SEC / PROFILE_DOWN;
+        let front = by_seq.get(&a.rec.largest);
+        let tr = a.trace;
+        println!(
+            "ZC-ACK {arm} k={} hazir_s={} ertele[butce={nb} donus={ny} bilgisiz={nn}] cikis_s={} \
+             donus_seri_bas_s={} donus_seri_ms={} varis_s={} gecikme_hazir->varis_ms={} tur=0x{:02x} \
+             udp={} largest={} ack_delay_ms={} aralik={} seen={} arrival_rate={} \
+             cephe_gonderim_s={} cephe_kuyruk_ms={} cephe_hat={} karar={:?} hiz={}->{} \
+             tavan={}->{} sonuc={} bbr={} kova={} ilk_pencere={} baslangic_cikis={}",
+            k + 1,
+            zc_f(ready),
+            zc_f(a.rec.sent),
+            zc_f(a.rec.start),
+            ser_ns / MS,
+            zc_f(a.rec.arrival),
+            (a.rec.arrival - ready) / MS,
+            a.frame_type,
+            a.rec.udp,
+            a.rec.largest,
+            a.ack_delay_ns / MS,
+            a.ranges,
+            a.seen_count,
+            a.arrival_rate,
+            front.map_or("-".to_string(), |r| zc_f(r.at)),
+            front
+                .and_then(|r| r.ser)
+                .zip(front)
+                .map_or("-".to_string(), |((s0, _), r)| ((s0 - r.at) / MS).to_string()),
+            front
+                .and_then(|r| r.ser)
+                .map_or("-".to_string(), |(s0, _)| {
+                    let mut c = sc.fwd_plan[0].1;
+                    for &(f, v) in &sc.fwd_plan {
+                        if f <= s0 {
+                            c = v;
+                        }
+                    }
+                    c.to_string()
+                }),
+            tr.map(|x| x.decision),
+            zc_o(tr.and_then(|x| x.rate_before)),
+            zc_o(tr.and_then(|x| x.rate_after)),
+            zc_o(tr.map(|x| x.pace_before)),
+            zc_o(tr.map(|x| x.pace_after)),
+            zc_reason(a, prev_largest),
+            a.bbr,
+            a.bucket,
+            a.first_window,
+            a.start_exit,
+        );
+        prev_largest = prev_largest.max(a.rec.largest);
+    }
+    // 1 s bölmeler.
+    let end = t.ms.last().map_or(0, |r| r.t + MS);
+    let mut b0 = 0;
+    while b0 < end {
+        let b1 = (b0 + SEC).min(end);
+        let w = zc_wire(&t.ser, b0, b1);
+        let cap = zc_cap_bytes(&t.ms, b0, b1);
+        let rows: Vec<&MsRow> = t.ms.iter().filter(|r| r.t >= b0 && r.t < b1).collect();
+        let last = rows.last().copied();
+        let drops = o.drop_times.iter().filter(|&&x| x >= b0 && x < b1).count();
+        let total: u64 = w.iter().sum();
+        let idle_work = rows
+            .iter()
+            .filter(|r| r.q_pkts == 0 && r.unsent > 0)
+            .count();
+        println!(
+            "ZC-SN {arm} t={} kapasite_B={cap} tel_B={total} kullanim_permil={} {} \
+             kuyruk_max_pkt={} kuyruk_max_B={} kuyruk_max_ms={} kuyrukta_dusen={drops} \
+             hazir_birim={} ucusta_B={} hat_bos_is_var_ms={idle_work} koruma_hiz={} tavan_min={} \
+             tavan_max={} kova={} bbr={} yoklamada_ms={} koruma_ornek={} yukseltme={} \
+             hat_modeli_bosalma_max_ms={} hatta_dusen_B={}",
+            b0 / SEC,
+            (total * 1000).checked_div(cap).unwrap_or(0),
+            ZC_GROUPS
+                .iter()
+                .zip(w.iter())
+                .map(|(g, x)| format!("{g}={x}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+            rows.iter().map(|r| r.q_pkts).max().unwrap_or(0),
+            rows.iter().map(|r| r.q_bytes).max().unwrap_or(0),
+            rows.iter().map(|r| r.q_ns).max().unwrap_or(0) / MS,
+            last.map_or(0, |r| r.unsent),
+            last.map_or(0, |r| r.inflight),
+            zc_o(last.and_then(|r| r.g_rate)),
+            rows.iter().map(|r| r.g_pace).min().unwrap_or(0),
+            rows.iter().map(|r| r.g_pace).max().unwrap_or(0),
+            last.map_or(0, |r| r.bucket),
+            last.map_or(0, |r| r.bbr),
+            rows.iter().filter(|r| zc_in_probe(&probes, r.t)).count(),
+            last.map_or(0, |r| r.g_samples),
+            last.map_or(0, |r| r.g_raises),
+            rows.iter().map(|r| r.line_drain_ns).max().unwrap_or(0) / MS,
+            t.ser
+                .iter()
+                .filter(|r| r.lost && r.ser.is_some_and(|(s0, _)| s0 >= b0 && s0 < b1))
+                .map(|r| r.wire)
+                .sum::<u64>(),
+        );
+        b0 = b1;
+    }
+    for &(a, b, up, base) in &probes {
+        println!(
+            "ZC-YOKLAMA {arm} bas_s={} bit_s={} tavan={base}->{up}",
+            zc_f(a),
+            zc_f(b)
+        );
+    }
+    let at = |x: u64| t.ms.iter().find(|r| r.t >= x).copied();
+    for (name, x) in [("T_d", ZC_T_D), ("T_r", ZC_T_R)] {
+        if let Some(r) = at(x) {
+            println!(
+                "ZC-HAZIR {arm} {name}={} hazir_birim={} ucusta_B={} kuyruk_pkt={} tavan={} kova={}",
+                zc_f(r.t),
+                r.unsent,
+                r.inflight,
+                r.q_pkts,
+                r.g_pace,
+                r.bucket
+            );
+        }
+    }
+    println!(
+        "ZC-OZET {arm} tohum={} ack={} ack_tur={:?} dosya_bitti={} kuyrukta_dusen={} \
+         fifo_max_pkt={} bekleme_max_ms={} ptt_tel_B={} ptt_zamaninda={} baslangic_cikis={} \
+         ilk_pencere={} arq_pkt={} arq_pkt_gereksiz={} dosya_birim_teslim={}",
+        sc.seed,
+        t.acks.len(),
+        o.ack_types,
+        o.file_done_ns.map_or("YOK".to_string(), zc_f),
+        o.drops_queue,
+        o.line.max_occ_pkts,
+        o.line.max_wait_ns / MS,
+        o.ptt_wire_bytes,
+        bua_ptt_phases(sc, o),
+        t.acks.last().map_or("-", |a| a.start_exit.as_str()),
+        t.acks.last().map_or("-", |a| a.first_window.as_str()),
+        t.ser.iter().filter(|r| r.class == TxClass::Arq).count(),
+        zc_spurious(o).len(),
+        {
+            let unit: HashMap<u64, u64> = o.emit_log.iter().map(|e| (e.seq, e.unit_id)).collect();
+            t.ser
+                .iter()
+                .filter(|r| r.payload == Payload::File && r.ser.is_some() && !r.lost)
+                .filter_map(|r| unit.get(&r.seq))
+                .collect::<HashSet<_>>()
+                .len()
+        },
+    );
+}
+
+/// Ön kayıtlı hükümler (sayılar ham izden).
+#[allow(clippy::too_many_lines)]
+fn zc_verdicts(runs: &[(&str, Scenario, Outcome)]) {
+    let get = |n: &str| {
+        runs.iter()
+            .find(|(a, _, _)| *a == n)
+            .map(|(_, _, o)| o.timeline.as_deref().expect("iz"))
+            .expect("kol")
+    };
+    let outcome = |n: &str| {
+        runs.iter()
+            .find(|(a, _, _)| *a == n)
+            .map(|(_, _, o)| o)
+            .expect("kol")
+    };
+    let m = get("ana");
+    let mo = outcome("ana");
+    let spur = zc_spurious(mo);
+    let probes = zc_probe_windows(m);
+    let after = |t: &Timeline, x: u64| -> Vec<AckRow> {
+        t.acks
+            .iter()
+            .filter(|a| a.rec.arrival > x)
+            .cloned()
+            .collect()
+    };
+    // ---- CC ----
+    let ad = after(m, ZC_T_D);
+    let cc_hit = ad
+        .iter()
+        .take(2)
+        .enumerate()
+        .find(|(_, a)| zc_sample(a).is_some_and(|s| (ZC_CC_LO..=ZC_CC_HI).contains(&s)));
+    for (i, a) in ad.iter().take(2).enumerate() {
+        println!(
+            "ZC-HUKUM CC T_d+ACK{}: varis_s={} T_d'den_s={} gecerli_olcum={} karar={:?}",
+            i + 1,
+            zc_f(a.rec.arrival),
+            zc_f(a.rec.arrival - ZC_T_D),
+            zc_o(zc_sample(a)),
+            a.trace.map(|x| x.decision)
+        );
+    }
+    let first_in = ad
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| a.rec.arrival < ZC_T_R)
+        .find(|(_, a)| zc_sample(a).is_some_and(|s| (ZC_CC_LO..=ZC_CC_HI).contains(&s)));
+    let first_any = ad
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| a.rec.arrival < ZC_T_R)
+        .find(|(_, a)| zc_sample(a).is_some());
+    println!(
+        "ZC-HUKUM CC aralikta_ilk_olcum={} ilk_herhangi_ornek={}",
+        first_in.map_or("YOK(T_r'ye dek)".to_string(), |(i, a)| format!(
+            "ACK{}@{}s(T_d+{}s)={}",
+            i + 1,
+            zc_f(a.rec.arrival),
+            zc_f(a.rec.arrival - ZC_T_D),
+            zc_o(zc_sample(a))
+        )),
+        first_any.map_or("YOK".to_string(), |(i, a)| format!(
+            "ACK{}@{}s={}",
+            i + 1,
+            zc_f(a.rec.arrival),
+            zc_o(zc_sample(a))
+        )),
+    );
+    // Karşı örnekler: dönüş gecikmesi, az uygulama verisi.
+    for n in ["donus+300ms", "uygulama-3000"] {
+        let t = get(n);
+        let from = if n == "donus+300ms" { ZC_T_D } else { 0 };
+        let low: Vec<(u64, u64)> = t
+            .acks
+            .iter()
+            .filter(|a| a.rec.arrival > from)
+            .filter_map(|a| zc_sample(a).map(|s| (a.rec.arrival, s)))
+            .filter(|&(_, s)| s < ZC_RET_FALSE_CUT)
+            .collect();
+        let pr = zc_probe_windows(t);
+        let base =
+            t.ms.iter()
+                .filter(|r| r.t + SEC >= from && r.t <= from && !zc_in_probe(&pr, r.t))
+                .map(|r| r.g_pace)
+                .min()
+                .unwrap_or(0);
+        let min_pace =
+            t.ms.iter()
+                .filter(|r| r.t >= from && !zc_in_probe(&pr, r.t))
+                .map(|r| r.g_pace)
+                .min()
+                .unwrap_or(0);
+        println!(
+            "ZC-HUKUM CC-KARSI {n}: {}s'den sonra 11250 alti ornek={low:?} tavan_oncesi={base} \
+             tavan_min(yoklama disi)={min_pace} -> {}",
+            from / SEC,
+            if low.is_empty() && min_pace >= base {
+                "SAHTE-DUSUS-YOK"
+            } else {
+                "SAHTE-DUSUS"
+            }
+        );
+    }
+    // ---- Rate limiting ----
+    let t0 = m
+        .acks
+        .iter()
+        .filter(|a| a.rec.arrival < ZC_T_D)
+        .find(|a| {
+            zc_sample(a)
+                .or_else(|| zc_up_evidence(a))
+                .is_some_and(|v| v * 10 >= PROFILE_UP * 9 && v * 10 <= PROFILE_UP * 11)
+        })
+        .map(|a| a.rec.arrival);
+    println!("ZC-HUKUM RL t0={}", zc_o(t0.map(|x| x / MS)));
+    match t0 {
+        Some(t0) => {
+            zc_window(
+                "ana",
+                "RL-12500",
+                m,
+                &probes,
+                &mo.drop_times,
+                &mo.waits,
+                &spur,
+                t0 + SEC,
+                ZC_T_D - SEC,
+            );
+        }
+        None => println!(
+            "ZC-PENCERE ana RL-12500 SINANMADI (T_d'ye dek 12 500 ±%10 icinde gecerli olcum yok); \
+             bilgi icin [5 s, T_d-1 s): "
+        ),
+    }
+    if t0.is_none() {
+        zc_window(
+            "ana",
+            "BILGI-12500[5s..T_d-1s)",
+            m,
+            &probes,
+            &mo.drop_times,
+            &mo.waits,
+            &spur,
+            5 * SEC,
+            ZC_T_D - SEC,
+        );
+    }
+    let t_d = cc_hit.map(|(_, a)| a.rec.arrival);
+    match t_d {
+        Some(td) => {
+            zc_window(
+                "ana",
+                "RL-daralma",
+                m,
+                &probes,
+                &mo.drop_times,
+                &mo.waits,
+                &spur,
+                td + SEC,
+                ZC_T_R - SEC,
+            );
+        }
+        None => {
+            println!("ZC-PENCERE ana RL-daralma SINANMADI (t_d yok: CC olcutunu saglayan ACK yok)");
+            zc_window(
+                "ana",
+                "BILGI-daralma[T_d+1s..T_r-1s)",
+                m,
+                &probes,
+                &mo.drop_times,
+                &mo.waits,
+                &spur,
+                ZC_T_D + SEC,
+                ZC_T_R - SEC,
+            );
+            if let Some((_, a)) = first_in {
+                zc_window(
+                    "ana",
+                    "BILGI-daralma[aralikta-ilk-olcum+1s..T_r-1s)",
+                    m,
+                    &probes,
+                    &mo.drop_times,
+                    &mo.waits,
+                    &spur,
+                    a.rec.arrival + SEC,
+                    ZC_T_R - SEC,
+                );
+            }
+        }
+    }
+    // (b) tanımıyla yakınsama (rate_trace %10) + 2 s'den T_r'ye bekleme.
+    let conv = mo
+        .rate_trace
+        .iter()
+        .find(|&&(t, r)| {
+            t > ZC_T_D && r.is_some_and(|r| r * 10 <= DROP_TO * 11 && r * 10 >= DROP_TO * 9)
+        })
+        .map(|&(t, _)| t);
+    println!(
+        "ZC-HUKUM RL b-tanimi yakinsama_s={} bekleme_max(yakinsama+2s..T_r)_ms={} sinir_ms={}",
+        zc_o(conv.map(|c| c / MS)),
+        conv.map_or("-".to_string(), |c| {
+            let w = mo
+                .waits
+                .iter()
+                .filter(|&&(x, _)| x >= c + 2 * SEC && x < ZC_T_R)
+                .map(|&(_, w)| w)
+                .max()
+                .unwrap_or(0);
+            (w / MS).to_string()
+        }),
+        ZC_WAIT_BOUND_NS / MS
+    );
+    let ar = after(m, ZC_T_R);
+    let t_r = ar
+        .iter()
+        .find(|a| a.trace.is_some_and(|x| x.pace_after >= ZC_UP_MIN))
+        .map(|a| a.rec.arrival);
+    match t_r {
+        Some(tr) => {
+            zc_window(
+                "ana",
+                "RL-toparlanma",
+                m,
+                &probes,
+                &mo.drop_times,
+                &mo.waits,
+                &spur,
+                tr + SEC,
+                ZC_T_E - SEC,
+            );
+        }
+        None => {
+            println!("ZC-PENCERE ana RL-toparlanma SINANMADI (t_r yok: T_r'den sonra tavan >= 11875 olan ACK yok)");
+            zc_window(
+                "ana",
+                "BILGI-toparlanma[T_r+1s..T_e-1s)",
+                m,
+                &probes,
+                &mo.drop_times,
+                &mo.waits,
+                &spur,
+                ZC_T_R + SEC,
+                ZC_T_E - SEC,
+            );
+        }
+    }
+    // 500 ms kısa daralma: hat toparlanıp kuyruk boşaldıktan sonra bayat tavanla boş hat.
+    {
+        let t = get("kisa-daralma-500ms");
+        let rec_at = ZC_T_D + 500 * MS;
+        let drained =
+            t.ms.iter()
+                .find(|r| r.t >= rec_at && r.q_pkts <= 1)
+                .map(|r| r.t);
+        let pr = zc_probe_windows(t);
+        let (mut stale_idle, mut idle_work, mut n) = (0u64, 0u64, 0u64);
+        let mut cut: Vec<(u64, u64)> = Vec::new();
+        if let Some(d) = drained {
+            for r in t.ms.iter().filter(|r| r.t >= d && r.t < ZC_T_E - SEC) {
+                n += 1;
+                let idle = r.q_pkts == 0 && r.unsent > 0;
+                idle_work += u64::from(idle);
+                stale_idle += u64::from(idle && r.g_pace < ZC_UP_MIN && !zc_in_probe(&pr, r.t));
+            }
+            cut = t
+                .acks
+                .iter()
+                .filter(|a| a.rec.arrival > ZC_T_D)
+                .filter_map(|a| zc_sample(a).map(|s| (a.rec.arrival / MS, s)))
+                .collect();
+        }
+        let base_idle =
+            m.ms.iter()
+                .filter(|r| r.t >= 5 * SEC && r.t < ZC_T_D - SEC)
+                .filter(|r| r.q_pkts == 0 && r.unsent > 0)
+                .count();
+        println!(
+            "ZC-HUKUM RL-KARSI kisa-daralma-500ms: bosalma(kuyruk<=1pkt)_ms={} pencere_ms={n} hat_bos_is_var_ms={idle_work} \
+             bayat_tavanla(<11875)_bos_hat_ms={stale_idle} ornekler(ms,deger)={cut:?} \
+             ana_12500[5s..19s)_hat_bos_is_var_ms={base_idle}",
+            zc_o(drained.map(|d| d / MS)),
+        );
+    }
+    // ---- Hızlanma ----
+    let third = ar.get(2);
+    let hold = third.map(|a| {
+        let from = a.rec.arrival;
+        let low: Vec<u64> =
+            m.ms.iter()
+                .filter(|r| r.t >= from && r.t < ZC_T_E - SEC && r.g_pace < ZC_UP_MIN)
+                .map(|r| r.t)
+                .collect();
+        (
+            from,
+            a.trace.map(|x| x.pace_after),
+            low.len(),
+            low.first().copied(),
+        )
+    });
+    for (i, a) in ar.iter().take(3).enumerate() {
+        println!(
+            "ZC-HUKUM HIZ T_r+ACK{}: varis_s={} tavan={} karar={} ",
+            i + 1,
+            zc_f(a.rec.arrival),
+            zc_o(a.trace.map(|x| x.pace_after)),
+            zc_reason(a, 0)
+        );
+    }
+    println!(
+        "ZC-HUKUM HIZ ucuncu_ack={} sonra_11875_alti_ms={} ilk_alti_s={} ilk_11875_ustu_ack_varis_s={}",
+        hold.map_or("YOK".to_string(), |h| format!("{}s:tavan={}", zc_f(h.0), zc_o(h.1))),
+        hold.map_or("-".to_string(), |h| h.2.to_string()),
+        hold.and_then(|h| h.3).map_or("-".to_string(), zc_f),
+        zc_o(t_r.map(|x| x / MS))
+    );
+    for n in ["sabit-6250", "kuyruk-bosalmasi"] {
+        let t = get(n);
+        let pr = zc_probe_windows(t);
+        let from = if n == "sabit-6250" { 0 } else { ZC_T_D };
+        let first = t
+            .acks
+            .iter()
+            .filter(|a| a.rec.arrival > from)
+            .find(|a| zc_sample(a).is_some_and(|s| s <= ZC_CC_HI))
+            .map(|a| a.rec.arrival);
+        let (mut over, mut run, mut best) = (0u64, 0u64, 0u64);
+        if let Some(f) = first {
+            for r in t.ms.iter().filter(|r| r.t >= f + SEC && r.t < ZC_T_E - SEC) {
+                if r.g_pace > ZC_CC_HI && !zc_in_probe(&pr, r.t) {
+                    over += 1;
+                    run += 1;
+                    best = best.max(run);
+                } else {
+                    run = 0;
+                }
+            }
+        }
+        let end_pace = t.ms.last().map_or(0, |r| r.g_pace);
+        let raises: Vec<String> = t
+            .acks
+            .iter()
+            .filter(|a| a.trace.is_some_and(|x| x.raised))
+            .map(|a| {
+                format!(
+                    "{}s:{}",
+                    zc_f(a.rec.arrival),
+                    zc_o(a.trace.map(|x| x.pace_after))
+                )
+            })
+            .collect();
+        let over_after_drop =
+            t.ms.iter()
+                .filter(|r| r.t >= from + SEC && r.t < ZC_T_E - SEC)
+                .filter(|r| r.g_pace > ZC_CC_HI && !zc_in_probe(&pr, r.t))
+                .count();
+        println!(
+            "ZC-HUKUM HIZ-KARSI {n}: kalici_yukseltmeler(raised)=[{}] [{}s+1s..T_e-1s)_yoklama_disi_6875_ustu_ms={over_after_drop}",
+            raises.join(","),
+            from / SEC
+        );
+        println!(
+            "ZC-HUKUM HIZ-KARSI {n}: ilk_6875_alti_olcum_s={} yoklama_disi_6875_ustu_ms={over} \
+             en_uzun_ms={best} son_tavan={end_pace} yoklama_sayisi={}",
+            zc_o(first.map(|f| f / MS)),
+            pr.len()
+        );
+    }
+}
+
+/// [ZAMAN-ÇİZELGESİ] Ana çizelge ve ön kayıtlı karşı örnekler (yalnız rapor; modül bölümü belgesi).
+#[test]
+fn zc_poc_v2_timeline_report() {
+    println!();
+    let mut runs = Vec::new();
+    for (arm, sc) in zc_arms() {
+        let o = run(&sc);
+        // Aracın sağlaması 1: iz (ms örnekleri + LineGuard ACK halkası + serileşme kaydı)
+        // göndericinin ve hattın davranışını değiştirmez.
+        let bare = run(&Scenario {
+            timeline: false,
+            ..sc.clone()
+        });
+        assert!(
+            o.acks_at == bare.acks_at
+                && o.waits == bare.waits
+                && o.drop_times == bare.drop_times
+                && o.pace_trace == bare.pace_trace
+                && o.rate_trace == bare.rate_trace
+                && o.voice_first == bare.voice_first
+                && o.file_done_ns == bare.file_done_ns
+                && o.ptt_wire_bytes == bare.ptt_wire_bytes
+                && o.line.offered_bytes == bare.line.offered_bytes
+                && o.line.lost_bytes == bare.line.lost_bytes
+                && o.ack_wire_bytes == bare.ack_wire_bytes,
+            "{arm}: iz davranışı değiştirdi"
+        );
+        // Aracın sağlaması 2: alıcı yalnız 0x14 yazdı (PoC yolu).
+        assert!(
+            o.ack_types.keys().all(|&t| t == 0x14) && !o.ack_types.is_empty(),
+            "{arm}: ACK türleri {:?}",
+            o.ack_types
+        );
+        println!("ZC-SAGLAMA {arm} iz_acik=iz_kapali ack_tur=0x14");
+        zc_print(arm, &sc, &o);
+        runs.push((arm, sc, o));
+    }
+    zc_verdicts(&runs);
 }
