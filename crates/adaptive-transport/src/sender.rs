@@ -1544,6 +1544,27 @@ const SINGLE_SHOT_CAP: usize = 64;
 /// eski kayıt düşer ([`LineGuardAckTrace::index`] boşluğu düşeni gösterir).
 pub const LINE_GUARD_TRACE_CAP: usize = 64;
 
+/// [GÖZLEM] Uçuş penceresi kapısının o anki girdileri ([`Sender::diag_flight_gate`]). Karar yolu
+/// okumaz: kapı (`cc_fits`) `inflight + boy ≤ effective_window` ifadesini kendi alanlarından kurar;
+/// bu yapı aynı alanların salt okunur kopyasıdır. Birimler kapının birimidir: bayt, UDP gövdesi
+/// (motorun `unit.size` değeri; zarf yok).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct FlightGateDiag {
+    /// Uçuştaki bayt (`inflight_bytes`).
+    pub inflight: u64,
+    /// BBR penceresi, toparlanma (`recovery_window`) uygulanmadan
+    /// ([`crate::cc::Bbr::window_without_recovery`]).
+    pub bbr_window: u64,
+    /// BBR penceresi, toparlanma uygulanmış ([`crate::cc::Bbr::window`]).
+    pub bbr_window_recovery: u64,
+    /// Geri bildirimi aç kuralın uçuş tabanı (`cc_feedback_floor`); kural yoksa `None`.
+    pub line_floor: Option<u64>,
+    /// Kapının kullandığı pencere (`cc_window()`; yeniden türetilmez, aynı çağrı).
+    pub effective_window: u64,
+    /// Hat korumasının gönderim tavanı (B/s, tel; `LineGuard::pace_bps`); koruma yoksa `None`.
+    pub pace_bps: Option<u64>,
+}
+
 /// [İZ-ARALIK] Çalışma zamanının bir ACK için verdiği ölçüm aralığı notu:
 /// [`Sender::note_ack_forward_interval`] girdisi, geçerlilik süzgecinden ÖNCE (salt gözlem).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -2119,6 +2140,11 @@ pub struct Sender {
     cc_feedback_starved: Option<FeedbackStarvedRule>,
     /// [HAT-KORUMASI] Gerçek ileri hattın tahmincisi; yalnız kural kuruluyken `Some`.
     cc_line_guard: Option<crate::line_guard::LineGuard>,
+    /// [GÖZLEM] karar yolu okumaz. Uçuş penceresi kapısının bir gönderim denemesini reddetme sayısı
+    /// ve son reddin girdileri `(boy, uçuştaki bayt, etkin pencere)`; bkz.
+    /// [`Self::diag_gate_refusals`].
+    cc_gate_refused: u64,
+    cc_gate_last: Option<(u64, u64, u64)>,
     /// [İZ-NEDEN] Emisyon / kayıp ilanı izi; `None` = kapalı (varsayılan).
     diag_emit_log: Option<Vec<EmitDiag>>,
     /// [İZ-ARALIK] Hat korumasının ACK başına karar kaydı; `None` = kapalı (varsayılan). Açıkken
@@ -2515,6 +2541,8 @@ impl Sender {
             pending_pair_rate: None,
             cc_feedback_starved: None,
             cc_line_guard: None,
+            cc_gate_refused: 0,
+            cc_gate_last: None,
             diag_emit_log: None,
             diag_line_guard_trace: None,
             prio_arq_first: 0,
@@ -2847,6 +2875,57 @@ impl Sender {
             cw,
             rw,
         ))
+    }
+
+    /// [GÖZLEM] karar yolu okumaz. Uçuş penceresi kapısının (`cc_fits`: `inflight + boy ≤
+    /// cc_window()`) o anki girdileri: uçuştaki bayt, BBR penceresi (toparlanmasız ve toparlanmalı),
+    /// geri bildirimi aç kuralın uçuş tabanı, kapının kullandığı pencere (`cc_window()` çağrısının
+    /// kendisi) ve hat korumasının gönderim tavanı. `cc` yoksa `None` (kapı yok). Hiçbir alanı
+    /// değiştirmez; yalnız ölçüm düzenekleri çağırır.
+    #[must_use]
+    pub fn diag_flight_gate(&self) -> Option<FlightGateDiag> {
+        let cc = self.cc.as_ref()?;
+        Some(FlightGateDiag {
+            inflight: self.inflight_bytes,
+            bbr_window: cc.window_without_recovery(),
+            bbr_window_recovery: cc.window(),
+            line_floor: self
+                .cc_feedback_starved
+                .map(|rule| self.cc_feedback_floor(rule)),
+            effective_window: self.cc_window(),
+            pace_bps: self
+                .cc_line_guard
+                .as_ref()
+                .map(crate::line_guard::LineGuard::pace_bps),
+        })
+    }
+
+    /// [GÖZLEM] karar yolu okumaz. Uçuş penceresi kapısının (`cc_fits`) bekleyen bir birimin
+    /// GÖNDERİM DENEMESİNİ reddetme sayısı ve son reddin girdileri `(boy, uçuştaki bayt, etkin
+    /// pencere)`; ret koşulu `uçuştaki + boy > etkin pencere`. Birim: bayt, UDP gövdesi (kapının
+    /// birimi). Sayılan yer `try_send_pre_parity`'nin kapı dalıdır; onu çağıranların hepsi bekleyen
+    /// bir birimin gönderim denemesidir: yeni veri (iki sıra), ARQ yeniden iletimi (iki sıra),
+    /// zamanlanmış / öncelikli kopya (iki sıra) ve boş hat yeniden iletimi. `cc_fits`'in öteki
+    /// çağrıları SAYILMAZ:
+    /// * `try_emit_front_parity`: kuyruk başındaki FEC onarım sembolünün gönderim denemesi (o da
+    ///   kapıya tabidir; reddi pacer reddiyle aynı sayaçta, `act_parity_token_denied`);
+    /// * birim testleri (kapının durumunu sorgular, gönderim denemesi değil).
+    ///
+    /// PTO / kuyruk probu yolu (`try_send_probe`) kapıya hiç sormaz. Sayaç deneme başınadır (aynı
+    /// bekleyen birim her olayda yeniden denenir): büyüklüğü paket sayısı değil, deneme sayısıdır.
+    /// `cc` yokken kapı yoktur, sayaç 0 kalır.
+    #[must_use]
+    pub fn diag_gate_refusals(&self) -> (u64, Option<(u64, u64, u64)>) {
+        (self.cc_gate_refused, self.cc_gate_last)
+    }
+
+    /// [GÖZLEM] karar yolu okumaz. Hat korumasının başlattığı çift yoklaması sayısı
+    /// (`LineGuard::pair_probes`); koruma yoksa `None`.
+    #[must_use]
+    pub fn diag_pair_probes(&self) -> Option<u64> {
+        self.cc_line_guard
+            .as_ref()
+            .map(crate::line_guard::LineGuard::pair_probes)
     }
 
     /// DR-CS-2 / DR-RATE-RAMP-1 (feature-gated): observation-only scheduler telemetry snapshot.
@@ -8035,6 +8114,9 @@ impl Sender {
         // [CC-PORT] Uçuş penceresi kapısı (quinn: `bytes_in_flight + size > window` → gönderme).
         // `cc` yokken `cc_fits` daima true.
         if !self.cc_fits(size) {
+            // [GÖZLEM] karar yolu okumaz: bekleyen birimin gönderim denemesi kapıda reddedildi.
+            self.cc_gate_refused = self.cc_gate_refused.saturating_add(1);
+            self.cc_gate_last = Some((size, self.inflight_bytes, self.cc_window()));
             return false;
         }
         self.pacer.try_send(size)
