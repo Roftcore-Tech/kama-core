@@ -178,6 +178,14 @@
 //!
 //! # Koşturma
 //!
+//! [POC-KİPİ · sahip kararı 9, 2026-11-25] Varsayılan kol PoC kipidir: doğrulanmış eş (yönetilen
+//! yetenek, `KAMA_ASYM_PTT_COALESCE` verilmezse `known`) ve 300 ms birleşik pilot. PTT bant kapısı
+//! (≤ 5 000 bit/s/yön, `ptt_bant` ve `ptt_tel_baytı`) yalnız bu pilot yolunda iddia edilir.
+//! Bilinmeyen eşin 200 ms uyumluluk yolu (`off`) ve gerçek ilk temas (`neg`, basış 0,5 s) aynı
+//! satırlarla `UYUMLULUK-YOLU (kapı dışı)` etiketiyle ayrı raporlanır; `ptt_ilk_temas` satırı
+//! yetenek kaynağını, ilk 0x17'yi ve kullanılan yolu yazar. Öbür ölçütler (metin, PTT zamanında
+//! oranı, alındı, canlılık) her kolda aynen iddia edilir.
+//!
 //! Varsayılan (CI): tohum 1, profil açık; dört ölçütten biri düşerse test düşer. Ölçüm:
 //! `KAMA_ASYM_SEED=<n>` (tohum), `KAMA_ASYM_PROFILE=off` (profil kapalı kol),
 //! `KAMA_ASYM_PTT_LEAN=off` (eş yalın PTT'yi bilmiyor: kopyalı PTT, bitmap 0x15; [`fixture_ptt_lean`]),
@@ -318,12 +326,14 @@ fn ptt_open_explicit() -> bool {
 /// [PTT-BİRLEŞİK · deney, aday dışı] Birleşik biçimin kolu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Coalesce {
-    /// `off` (varsayılan): bugünkü ayrı güvenilir `PTT_OPEN` / `PTT_CLOSE`.
+    /// `off`: bugünkü ayrı güvenilir `PTT_OPEN` / `PTT_CLOSE` (bilinmeyen eşin 200 ms uyumluluk
+    /// yolu; bant kapısı dışı, ayrı raporlanır).
     Off,
     /// `neg`: iki uçta da açık; Alice birleşik akışı yalnız Bob'un 0x17 ACK'ini gördükten sonra
     /// açılan basışta kullanır (bant içi yetenek). Öncesinde bugünkü ayrı kayıtlar.
     Negotiated,
-    /// `known`: iki uçta da açık; Bob'un yeteneği oturum başından YÖNETİLEN bilgiyle biliniyor
+    /// `known` (varsayılan, PoC kipi · sahip kararı 9): iki uçta da açık; Bob'un yeteneği oturum
+    /// başından YÖNETİLEN bilgiyle biliniyor
     /// (dağıtım; `Ptt::set_peer_spurt_provisioned`). Transport yine soğuk başlar.
     Known,
     /// `learned`: iki uçta da açık; Bob'un yeteneği önceki bir oturumdan öğrenilmiş kayıtla
@@ -374,7 +384,10 @@ fn ptt_shape() -> PttShape {
             Ok("neg") => Coalesce::Negotiated,
             Ok("known") => Coalesce::Known,
             Ok("learned") => Coalesce::Learned,
-            Ok("off") | Err(_) => Coalesce::Off,
+            Ok("off") => Coalesce::Off,
+            // [POC-KİPİ · sahip kararı 9, 2026-11-25] Ortam verilmezse PoC kipi: doğrulanmış eş
+            // (yönetilen yetenek) ve 300 ms birleşik pilot açıkça seçilir.
+            Err(_) => Coalesce::Known,
             Ok(v) => panic!("KAMA_ASYM_PTT_COALESCE: off | neg | known | learned (verilen {v})"),
         },
         open_k: u8::try_from(env_u64(
@@ -2285,6 +2298,38 @@ impl Run {
         // Bitmap kolunda yalın çerçeve (0x09) tele çıkmış olmalı: çıkmadıysa bant hedefi sınanmadı.
         let bitmap = fixture_ack_format() == AckFormat::Bitmap;
         let shape = self.ptt_used;
+        // [POC-KİPİ · sahip kararı 9] ≤ 5 000 bit/s kapısı yalnız doğrulanmış eşteki 300 ms pilota
+        // uygulanır: birleşik akış basıştan önce bekleniyordu ve kullanılan demet süresi pilotunki.
+        // Öbür yol (bilinmeyen eşin 200 ms ayrı kayıtlı uyumluluk yolu, bant içi yetenekten önce
+        // açılan gerçek ilk temas) aynı satırlarla raporlanır, iddia edilmez.
+        let pilot_period = Duration::from_millis(u64::from(kama_app::ptt::SPURT_PILOT_BUNDLE_MS));
+        let on_pilot = ptt_shape().coalesce != Coalesce::Off
+            && self
+                .ptt_open
+                .is_some_and(|(_, o)| self.alice_peer_capable.is_some_and(|c| c <= o))
+            && shape.period == pilot_period;
+        let gate_label = |ok: bool| match (on_pilot, ok) {
+            (false, _) => "UYUMLULUK-YOLU (kapı dışı)",
+            (true, true) => "GEÇTİ",
+            (true, false) => "KALDI",
+        };
+        if let Some((_, opened)) = self.ptt_open {
+            println!(
+                "ÖLÇÜT {tag} ptt_ilk_temas yetenek_kaynağı={} 0x17_ilk={} basış=+{} s yol={}",
+                match ptt_shape().coalesce {
+                    Coalesce::Known => "known",
+                    Coalesce::Learned => "learned",
+                    Coalesce::Negotiated => "bant-içi",
+                    Coalesce::Off => "yok",
+                },
+                self.alice_in_band.filter(|(_, v)| *v).map_or(
+                    "yok".to_string(),
+                    |(at, _)| format!("+{} s", secs(self.since(at, self.t0)))
+                ),
+                secs(self.since(opened, self.t0)),
+                if on_pilot { "pilot" } else { "uyumluluk" },
+            );
+        }
         for (side, ledger) in [("alice", &self.alice), ("bob", &self.bob)] {
             let press = self.press_len.unwrap_or(Duration::ZERO);
             let wire: Vec<(Instant, u64)> = ledger.ptt_wire.iter().map(|w| (w.0, w.1)).collect();
@@ -2304,9 +2349,9 @@ impl Run {
             println!(
                 "ÖLÇÜT {tag} ptt_tel_baytı yön={side} toplam={wire_bytes} B (en çok {cap_bytes} B; IPv4/UDP dahil, bütün PTT datagramları {}) → {}",
                 ledger.ptt_wire.len(),
-                if bytes_ok { "GEÇTİ" } else { "KALDI" },
+                gate_label(bytes_ok),
             );
-            if !bytes_ok {
+            if on_pilot && !bytes_ok {
                 failed.push(format!("PTT/bant-bayt/{side}"));
             }
             println!(
@@ -2316,7 +2361,7 @@ impl Run {
                 ledger.ptt_lean_tx,
                 shape.bytes,
                 shape.period.as_millis(),
-                if band_ok && lean_ok { "GEÇTİ" } else { "KALDI" },
+                gate_label(band_ok && lean_ok),
             );
             // [PTT-BANT · 2026-11-22] Bant pencereleri: oturum başı (açılış → ilk yalın 0x09;
             // eş yalın PTT'yi kanıtlamadan önceki veri çerçeveli trafik) ve sürekli (ilk 0x09 →
@@ -2428,7 +2473,7 @@ impl Run {
                     failed.push(format!("PTT/koruma/{side}"));
                 }
             }
-            if !band_ok {
+            if on_pilot && !band_ok {
                 failed.push(format!("PTT/bant/{side}"));
             }
             if !lean_ok {
