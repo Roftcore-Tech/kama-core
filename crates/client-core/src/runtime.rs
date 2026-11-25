@@ -8771,3 +8771,264 @@ mod ack_tick_priority_tests {
         assert_eq!(stats.tx_datagrams, 1, "turda tek denetim datagramı");
     }
 }
+
+/// [ÖNCELİK · SAHİP KARARI 7 · ÖLÇÜM · kart 7175344699] Bob'un yukarı yönünde (62 B/s) ACK ile
+/// metin alındısının sırası: iki kol aynı alıcı ve gönderici koduyla, yalnız ayırmanın yukarı yön
+/// görünümüne yazılıp yazılmadığı farklı. (A) öncelik yok: `125b9afa` davranışı (ayırma okunmaz).
+/// (B) koşulsuz öncelik: `76335086` (`srv_ack_tick` ayırmayı `reserve_acks` ile yazar).
+///
+/// Düzenek (benzetim, kabul değil):
+/// - Gerçek `Receiver` (Alice'in ana akışının alıcısı; bitmap, dönüş 62 B/s) ve gerçek ters oturum
+///   `Sender`'ı (alındıları taşır; port motoru, yön hızı kuralı 62 B/s yukarı).
+/// - Yukarı yön görünümü `VirtLine`: `UplinkShare`'in `charge` / `ns_until_clear` /
+///   `backlog_bytes` / `control_should_yield` (dar hat) / `reserve_acks` formüllerinin sanal
+///   saatli ikizi. `UplinkShare` duvar saatini (`Instant`) okuduğu için sanal zamanda doğrudan
+///   koşturulamaz.
+/// - ACK turu 20 ms (`srv_ack_tick`); gönderici her turda `cc_line_observe_backlog` ile görünümü
+///   okur (`drive!`), sonra `TimerFired(Pto)`.
+/// - İleri yön: 6 250 B/s hatta 1 046 B gövde, 172 ms arayla, her beşte bir kayıp; metin 2 s'de bir
+///   (alındı Bob'da metnin varış anında kabul edilir). Dönüş yayılımı 300 ms.
+#[cfg(test)]
+mod ack_priority_measure {
+    use adaptive_transport::pacer::LineModel;
+    use adaptive_transport::receiver::{feedback_horizon_ns, Receiver, RxDatagram, RxKind};
+    use adaptive_transport::sender::{
+        Event, FeedbackStarvedRule, OpaqueUnit, Sender, Timer, TransmitKind,
+    };
+
+    const MS: u64 = 1_000_000;
+    const SEC: u64 = 1_000_000_000;
+    const OVH: u64 = 28;
+    const UP: u64 = 62;
+    const DOWN: u64 = 12_500;
+    const ONE_WAY: u64 = 300 * MS;
+    /// Alındının UDP gövdesi (B): izde ≈ 71 B tel (Bulut-A TESLİM 1).
+    const RCPT_UDP: u64 = 43;
+
+    /// `UplinkShare`'in sanal saatli ikizi (formüller aynı).
+    #[derive(Default)]
+    struct VirtLine {
+        busy_until: u64,
+        reserved: u64,
+    }
+    impl VirtLine {
+        fn charge(&mut self, now: u64, udp: u64) -> u64 {
+            let ser = (udp + OVH) * SEC / UP;
+            self.busy_until = self.busy_until.max(now) + ser;
+            self.busy_until
+        }
+        fn ns_until_clear(&self, now: u64) -> u64 {
+            self.busy_until.saturating_sub(now)
+        }
+        fn backlog_bytes(&self, now: u64) -> u64 {
+            self.ns_until_clear(now) * UP / SEC + self.reserved
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct Out {
+        /// ACK'in bütçesi hazır (yol verirken ayrılabilir) olduğu ilk an → tele çıkış (ms).
+        ack_fresh: Vec<u64>,
+        /// Alındı: kabul → tele çıkış (ms).
+        rcpt_wait: Vec<u64>,
+        /// Alındı dönüşü üst sınırı, sıkı saat (Bob metni aldı → Alice'e varış; ms).
+        strict: Vec<u64>,
+        /// Gevşek saat (Bob tele verdi → Alice'e varış; ms).
+        loose: Vec<u64>,
+    }
+
+    fn sender() -> Sender {
+        let mut s = Sender::with_cc_port();
+        s.set_cc_initial_window(64_000);
+        let cap = UP * 1_200 / (1_200 + OVH);
+        s.set_cc_profile_pacing_cap(Some(cap));
+        s.set_cc_feedback_starved(Some(FeedbackStarvedRule {
+            pacing_cap_bps: cap,
+            feedback_ns: feedback_horizon_ns(DOWN),
+            line: LineModel {
+                rate_bps: UP,
+                datagram_overhead: OVH,
+            },
+            return_line: LineModel {
+                rate_bps: DOWN,
+                datagram_overhead: OVH,
+            },
+        }));
+        s
+    }
+
+    /// `texts`: Bob'da metin varış anları (alındı kabulü). `busy`: (an, UDP gövdesi) hatta önceden
+    /// yazılmış datagramlar (en kötü dizi için dolu hat). `priority`: (B) kolu.
+    fn run(texts: &[u64], busy: &[(u64, u64)], until: u64, priority: bool) -> Out {
+        let mut rx = Receiver::with_cc_port();
+        rx.set_return_bandwidth(Some(UP));
+        rx.set_ack_bitmap(true);
+        let mut tx = sender();
+        let mut line = VirtLine::default();
+        let mut out = Out::default();
+        let mut submitted: std::collections::HashMap<u64, u64> = Default::default();
+        let (mut next_data, mut seq) = (SEC, 0u64);
+        let (mut ti, mut bi) = (0usize, 0usize);
+        let mut ready_since: Option<u64> = None;
+        let mut now = 0u64;
+        while now < until {
+            while bi < busy.len() && busy[bi].0 <= now {
+                line.charge(now, busy[bi].1);
+                bi += 1;
+            }
+            // İleri yön varışları (ACK'in bilgisi).
+            while next_data <= now {
+                if seq % 5 != 3 {
+                    rx.set_return_line_ahead_ns(line.ns_until_clear(now));
+                    rx.set_uplink_yield(line.ns_until_clear(now) > 0);
+                    rx.set_next_datagram_bytes(1_046);
+                    let o = rx.on_datagram(
+                        RxDatagram {
+                            seq,
+                            unit_id: seq,
+                            kind: RxKind::Data,
+                        },
+                        next_data,
+                    );
+                    if let Some(f) = o.ack {
+                        line.charge(now, f.encode().len() as u64);
+                        if let Some(t0) = ready_since.take() {
+                            out.ack_fresh.push((now - t0) / MS);
+                        }
+                    }
+                }
+                seq += 1;
+                next_data += (1_046 + OVH) * SEC / 6_250;
+            }
+            // Metin geldi: alındı ters oturuma kabul edilir.
+            while ti < texts.len() && texts[ti] <= now {
+                let id = 1_000 + ti as u64;
+                submitted.insert(id, texts[ti]);
+                tx.cc_line_observe_backlog(line.backlog_bytes(now));
+                for d in tx.on_event(Event::AppData(OpaqueUnit { id, size: RCPT_UDP }), now) {
+                    emit(
+                        &mut line,
+                        &mut out,
+                        &mut submitted,
+                        now,
+                        d.kind,
+                        d.unit_id,
+                        d.size,
+                    );
+                }
+                ti += 1;
+            }
+            // ACK turu (`srv_ack_tick`).
+            rx.set_return_line_ahead_ns(line.ns_until_clear(now));
+            rx.set_uplink_yield(line.ns_until_clear(now) > 0);
+            if let Some(f) = rx.on_ack_timer(now) {
+                line.charge(now, f.encode().len() as u64);
+                if let Some(t0) = ready_since.take() {
+                    out.ack_fresh.push((now - t0) / MS);
+                }
+            }
+            if rx.ack_preempt_wire_bytes().is_some() && ready_since.is_none() {
+                ready_since = Some(now);
+            }
+            line.reserved = if priority {
+                rx.ack_preempt_wire_bytes().unwrap_or(0)
+            } else {
+                0
+            };
+            // Ters oturum göndericisi (`drive!`).
+            tx.cc_line_observe_backlog(line.backlog_bytes(now));
+            for d in tx.on_event(Event::TimerFired(Timer::Pto), now) {
+                emit(
+                    &mut line,
+                    &mut out,
+                    &mut submitted,
+                    now,
+                    d.kind,
+                    d.unit_id,
+                    d.size,
+                );
+            }
+            now += 20 * MS;
+        }
+        out
+    }
+
+    fn emit(
+        line: &mut VirtLine,
+        out: &mut Out,
+        submitted: &mut std::collections::HashMap<u64, u64>,
+        now: u64,
+        kind: TransmitKind,
+        unit: u64,
+        size: u64,
+    ) {
+        let done = line.charge(now, size);
+        if kind == TransmitKind::CsProbe {
+            return;
+        }
+        if let Some(t_in) = submitted.remove(&unit) {
+            out.rcpt_wait.push((now - t_in) / MS);
+            out.strict.push((done + ONE_WAY - t_in) / MS);
+            out.loose.push((done + ONE_WAY - now) / MS);
+        }
+    }
+
+    fn stats(v: &[u64]) -> (u64, u64) {
+        let mut s = v.to_vec();
+        s.sort_unstable();
+        (
+            s.get(s.len() / 2).copied().unwrap_or(0),
+            s.last().copied().unwrap_or(0),
+        )
+    }
+
+    fn report(name: &str, a: &Out, b: &Out) {
+        for (label, f) in [
+            (
+                "ACK tazeliği",
+                (|o: &Out| o.ack_fresh.clone()) as fn(&Out) -> Vec<u64>,
+            ),
+            ("alındı gönderici içi", |o: &Out| o.rcpt_wait.clone()),
+            ("alındı dönüşü (sıkı)", |o: &Out| o.strict.clone()),
+            ("alındı dönüşü (gevşek)", |o: &Out| o.loose.clone()),
+        ] {
+            let (am, ax) = stats(&f(a));
+            let (bm, bx) = stats(&f(b));
+            println!(
+                "{name} | {label}: A ortanca {am} en çok {ax} (n={}) | B ortanca {bm} en çok {bx} (n={})",
+                f(a).len(),
+                f(b).len()
+            );
+        }
+    }
+
+    /// Olağan dizi: 60 s, metin 2 s'de bir.
+    #[test]
+    fn usual_sequence_two_arms() {
+        let texts: Vec<u64> = (2..60).step_by(2).map(|k| k * SEC).collect();
+        let a = run(&texts, &[], 62 * SEC, false);
+        let b = run(&texts, &[], 62 * SEC, true);
+        report("olağan", &a, &b);
+        assert!(
+            !a.rcpt_wait.is_empty() && !b.rcpt_wait.is_empty(),
+            "alındı çıkmadı"
+        );
+    }
+
+    /// En kötü dizi (Bulut-D #263 7175204930 madde 1): ACK'in bütçesi hazır, hat dolu (önde bir tam
+    /// boy, 129 B tel datagram: öncelik yokken sıkı dönüş ≈ 3,6 s, izdeki en kötü 3 594 ms ile aynı
+    /// düzey), alındı ayırmanın yazıldığı turda kabul.
+    #[test]
+    fn worst_sequence_two_arms() {
+        // 12 s'den sonra kova dolu; 20 s'de hat 129 B tel ile dolar.
+        let busy = [(20 * SEC, 101)];
+        let texts = [20 * SEC + 40 * MS];
+        let a = run(&texts, &busy, 30 * SEC, false);
+        let b = run(&texts, &busy, 30 * SEC, true);
+        report("en kötü", &a, &b);
+        assert!(
+            !a.strict.is_empty() && !b.strict.is_empty(),
+            "alındı çıkmadı"
+        );
+    }
+}
