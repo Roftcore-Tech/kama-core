@@ -25,7 +25,9 @@
 //! # Kayıt
 //!
 //! `K2ROW` / `K2OZET`: #175 7175574778 + EK 7175586319 ORTAK KAYIT BİÇİMİ. Ek alanlar (biçimin
-//! dışında, yalnız teşhis): `cikan_bagimsiz` (yoklama penceresinde düzeneğin kendi saydığı
+//! dışında, yalnız teşhis): `kapi_reddi` = `Sender::diag_gate_refusals` sayacının bir önceki
+//! satırdan beri artışı (deneme sayısı), `etkin_pencere` = `diag_flight_gate().effective_window`,
+//! `cift_yoklama_sayisi` = `diag_pair_probes`; `cikan_bagimsiz` (yoklama penceresinde düzeneğin kendi saydığı
 //! datagram / tel baytı), `yoklama.kaynak` (`cift` | `olagan`), `olagan_hukum`, `kova_asan`.
 //!
 //! Koşu: `cargo test --release -p adaptive-transport --test k2_kovali_e2e -- --ignored
@@ -562,6 +564,8 @@ struct Row {
     kalici: u64,
     inflight: u64,
     pencere: Option<u64>,
+    /// Bir önceki satırdan beri uçuş kapısının reddettiği gönderim denemesi (`diag_gate_refusals`).
+    kapi_reddi: u64,
     pair_probes: u64,
     kuyruk_tepe_ns: u64,
     sayilan: u64,
@@ -606,7 +610,7 @@ fn row_json(c: &Cell, r: &Row) -> String {
         .filter(|v| !v.from_pair)
         .map_or("null".to_string(), |v| format!("\"{:?}\"", v.outcome));
     format!(
-        "K2ROW {{\"kol\":\"{}\",\"deney\":\"{}\",\"hat\":\"{}\",\"kayip_permil\":{},\"tohum\":{},\"ack_sira\":{},\"t_ms\":{},\"olculu\":{},\"cephe_ilerledi\":{},\"cift_tel\":{},\"yoklama\":{},\"kapsadi\":{},\"hukum\":{hukum},\"olagan_hukum\":{olagan},\"yoklama_hizi\":{},\"kalici_tavan\":{},\"inflight\":{},\"etkin_pencere\":{},\"kapi_reddi\":null,\"cift_yoklama_sayisi\":{},\"kuyruk_tepe_ms\":{:.1},\"karar\":\"{}\",\"cift_alici\":{{\"sayilan\":{},\"sikismis\":{},\"sifirlama\":{},\"kanitli_birakma\":{},\"ayna_alan\":{}}}}}",
+        "K2ROW {{\"kol\":\"{}\",\"deney\":\"{}\",\"hat\":\"{}\",\"kayip_permil\":{},\"tohum\":{},\"ack_sira\":{},\"t_ms\":{},\"olculu\":{},\"cephe_ilerledi\":{},\"cift_tel\":{},\"yoklama\":{},\"kapsadi\":{},\"hukum\":{hukum},\"olagan_hukum\":{olagan},\"yoklama_hizi\":{},\"kalici_tavan\":{},\"inflight\":{},\"etkin_pencere\":{},\"kapi_reddi\":{},\"cift_yoklama_sayisi\":{},\"kuyruk_tepe_ms\":{:.1},\"karar\":\"{}\",\"cift_alici\":{{\"sayilan\":{},\"sikismis\":{},\"sifirlama\":{},\"kanitli_birakma\":{},\"ayna_alan\":{}}}}}",
         c.kol.label(),
         if c.deney { "acik" } else { "kapali" },
         c.hat.label(),
@@ -628,6 +632,7 @@ fn row_json(c: &Cell, r: &Row) -> String {
         r.kalici,
         r.inflight,
         r.pencere.map_or("null".to_string(), |w| w.to_string()),
+        r.kapi_reddi,
         r.pair_probes,
         r.kuyruk_tepe_ns as f64 / 1e6,
         r.karar,
@@ -669,7 +674,7 @@ fn run(c: Cell) -> Run {
     let mut detects = r.diag_drop_detects();
     let mut alarms = r.diag_drop_alarms();
     let mut file_offered = false;
-    let mut pair_starts: BTreeSet<u64> = BTreeSet::new();
+    let mut gate_seen = s.diag_gate_refusals().0;
     let mut texts = 0u64;
     let mut now = 0u64;
 
@@ -853,6 +858,7 @@ fn run(c: Cell) -> Run {
                 }
             }
             if now < c.kol.t0() {
+                gate_seen = s.diag_gate_refusals().0;
                 waits_seen = fwd.waits.len();
                 detects = d_now;
                 alarms = a_now;
@@ -889,16 +895,16 @@ fn run(c: Cell) -> Run {
                 pace,
                 kalici,
                 inflight: s.inflight_bytes(),
-                pencere: s.diag_cc().map(|d| d.1),
-                pair_probes: {
-                    if let Some(v) = verdict.filter(|v| v.from_pair) {
-                        pair_starts.insert(v.probe_start_ns);
-                    }
-                    let open = probes
-                        .iter()
-                        .any(|p| p.from_pair && !p.closed && p.verdict_at.is_none());
-                    pair_starts.len() as u64 + u64::from(open)
+                // Kapının kullandığı pencere (`cc_window()`: BBR penceresi ve uçuş tabanı birlikte).
+                pencere: s.diag_flight_gate().map(|g| g.effective_window),
+                kapi_reddi: {
+                    let now_ref = s.diag_gate_refusals().0;
+                    let d = now_ref - gate_seen;
+                    gate_seen = now_ref;
+                    d
                 },
+                // Göndericinin kendi sayacı (`LineGuard::pair_probes`).
+                pair_probes: s.diag_pair_probes().unwrap_or(0),
                 kuyruk_tepe_ns: tepe,
                 sayilan,
                 sikismis,
@@ -996,7 +1002,9 @@ fn summary(c: &Cell, run: &Run) -> String {
                 "yanlis_hukum"
             } else {
                 let probe = first3.iter().find_map(|r| r.yoklama);
+                let refused = first3.iter().any(|r| r.kapi_reddi > 0);
                 match probe {
+                    None | Some(ProbeSeen { dgrams: 0, .. }) if refused => "gonderim_engellendi",
                     None => "yoklama_cikmadi",
                     Some(p) if p.dgrams == 0 => "yoklama_cikmadi",
                     Some(_) => {
