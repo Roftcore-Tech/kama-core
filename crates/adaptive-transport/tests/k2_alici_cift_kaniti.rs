@@ -242,3 +242,196 @@ fn d5_text_cluster_inside_recovered_pairs() {
     // Bugünkü davranış sabitlenir (sayı raporda); yalnız dizinin işlendiğini doğrular.
     assert!(!o.fields.is_empty(), "ACK yok");
 }
+
+// ---------------------------------------------------------------------------------------------
+// Kart 7175690797: gerçek izin yeniden oynatılması (`f955a7a0`, dört kayıt).
+//
+// Girdi `data/k2_alici_cift_kaniti_f955a7a0.rs`: `cap/B_vb0` ana akış varışları 0–70 s (alıcının
+// durumu, yani ilk ACK, daralma alarmının kurduğu yükseliş referansı ve bütçe kovası, 55 s'den önce
+// kurulur; yalnız 55–70 s penceresi gömülseydi ACK'ler ve alarmlar o durum olmadan çıkardı). seq =
+// Alice çıkış sırası (`cap/A_va0` pid eşlemesi), gövde = IP boyu − 28. ACK'ler yalnız Bob'un
+// kayıttaki tel çıkış anlarında bırakılır (`set_uplink_yield(true)` arada; yol vermenin sınırı:
+// gerçek koşuda ACK'in çıkışı dönüş hattına bağlıydı). Kayıttaki alan `lg.pair_bound_wire`
+// (`lg.index` → `ack_rx.largest_pn` → Bob `ack.t_wire`).
+// ---------------------------------------------------------------------------------------------
+
+include!("data/k2_alici_cift_kaniti_f955a7a0.rs");
+
+#[derive(Debug, Default)]
+struct Replay {
+    /// (an ns, alan, bırakma anında mı).
+    acks: Vec<(u64, u16, bool)>,
+    /// (an ns, olay): "algı" (daralma algısı → çift kaydı sıfırlanır), "kanıtlı bırakma",
+    /// "yükseliş alarmı".
+    events: Vec<(u64, &'static str)>,
+    counted: u32,
+    squeezed: u32,
+}
+
+fn replay(arr: &[(u64, u64, u64)], wire: &[u64], from: u64) -> Replay {
+    let mut r = product_rx();
+    let mut o = Replay::default();
+    let mut w = 0usize;
+    let mut prev: Option<u64> = None;
+    let mut after = false;
+    let (mut det, mut ala, mut rise) = (0u64, 0u64, 0u64);
+    let mut release = |r: &mut Receiver, upto: u64, o: &mut Replay, w: &mut usize| {
+        while *w < wire.len() && wire[*w] <= upto {
+            let at = wire[*w];
+            r.set_uplink_yield(false);
+            if let Some(f) = r.on_ack_timer(at) {
+                o.acks.push((
+                    at,
+                    f.bitmap.as_ref().map_or(PAIR_RATE_NONE, |b| b.pair_rate),
+                    true,
+                ));
+            }
+            r.set_uplink_yield(true);
+            *w += 1;
+        }
+    };
+    for &(t, seq, b) in arr {
+        release(&mut r, t, &mut o, &mut w);
+        if t >= from {
+            if let Some(pt) = prev {
+                let g = t - pt;
+                let sq = u128::from(g) * 1_000 * u128::from(DECLARED)
+                    < 900 * u128::from(b + OVH) * u128::from(SEC);
+                if !(sq || after) && b >= 800 && g >= 2 * MS {
+                    o.counted += 1;
+                }
+                if sq {
+                    o.squeezed += 1;
+                }
+                after = sq;
+            }
+        }
+        prev = Some(t);
+        r.set_uplink_yield(true);
+        r.set_next_datagram_bytes(b);
+        let out = r.on_datagram(
+            RxDatagram {
+                seq,
+                unit_id: seq,
+                kind: RxKind::Data,
+            },
+            t,
+        );
+        if let Some(f) = out.ack {
+            o.acks.push((
+                t,
+                f.bitmap.as_ref().map_or(PAIR_RATE_NONE, |b| b.pair_rate),
+                false,
+            ));
+        }
+        for (now, label, slot) in [
+            (r.diag_drop_detects(), "algı", &mut det),
+            (r.diag_drop_alarms(), "kanıtlı bırakma", &mut ala),
+            (r.diag_rise_alarms(), "yükseliş alarmı", &mut rise),
+        ] {
+            if now > *slot {
+                *slot = now;
+                if t >= from {
+                    o.events.push((t, label));
+                }
+            }
+        }
+    }
+    release(&mut r, u64::MAX, &mut o, &mut w);
+    o
+}
+
+fn tel(f: u16) -> String {
+    if f == PAIR_RATE_NONE {
+        "YOK".into()
+    } else {
+        format!("{}", u64::from(f) * 1_228 / 1_200)
+    }
+}
+
+/// Tek kayıt: 55–70 s penceresindeki ACK'ler kayıttaki alanla yan yana; SAPMA sayısı döner.
+/// `rec_has_field`: kayıtta `pair_bound_wire` alanı var mı (kancalı-1'de yok).
+fn compare(
+    name: &str,
+    arr: &[(u64, u64, u64)],
+    wire: &[u64],
+    rec: &[(u64, i64)],
+    rec_has_field: bool,
+) -> (Replay, u32) {
+    let from = 55 * SEC;
+    let o = replay(arr, wire, from);
+    let mut sapma = 0u32;
+    println!(
+        "== {name}: 55–70 s sayılan {} sıkışmış {}",
+        o.counted, o.squeezed
+    );
+    for (t, e) in &o.events {
+        println!("   olay {:.3} s: {e}", *t as f64 / 1e9);
+    }
+    for &(t, f, released) in o.acks.iter().filter(|(t, ..)| *t >= from && *t < 70 * SEC) {
+        let recd = rec.iter().find(|(tw, _)| *tw == t).map(|&(_, v)| v);
+        let mine = tel(f);
+        let (kayit, durum) = match (rec_has_field, recd) {
+            (false, _) => ("kayıtta alan yok".to_string(), "SINANMADI"),
+            (true, None) => ("kayıtta eş ACK yok".to_string(), "SAPMA"),
+            (true, Some(v)) => {
+                let k = if v < 0 {
+                    "YOK".to_string()
+                } else {
+                    v.to_string()
+                };
+                let ok = match (v < 0, f == PAIR_RATE_NONE) {
+                    (true, true) => true,
+                    (false, false) => (u64::from(f) * 1_228 / 1_200).abs_diff(v as u64) <= 21,
+                    _ => false,
+                };
+                (k, if ok { "tuttu" } else { "SAPMA" })
+            }
+        };
+        if durum == "SAPMA" {
+            sapma += 1;
+        }
+        println!(
+            "   ACK {:.3} s{}: kayıt {kayit} ↔ oynatma {mine} → {durum}",
+            t as f64 / 1e9,
+            if released {
+                ""
+            } else {
+                " (varışta çıktı)"
+            }
+        );
+    }
+    (o, sapma)
+}
+
+#[test]
+fn trace_replay_four_records_55_70s() {
+    let (_, s1) = compare(
+        "kancalı-1/1",
+        ARR_KANCALI_1,
+        WIRE_KANCALI_1,
+        REC_KANCALI_1,
+        false,
+    );
+    let (_, s2) = compare("k258-1/1", ARR_K258_1, WIRE_K258_1, REC_K258_1, true);
+    let (_, s3) = compare(
+        "k258-1/1-yineleme",
+        ARR_K258_1_YIN,
+        WIRE_K258_1_YIN,
+        REC_K258_1_YIN,
+        true,
+    );
+    let (o4, s4) = compare("k258-2/1", ARR_K258_2, WIRE_K258_2, REC_K258_2, true);
+    println!("SAPMA toplam: {}", s1 + s2 + s3 + s4);
+    // k258-2/1 ACK 15 (63,154 s): kayıtta YOK; oynatmada da YOK mu (bugünkü davranış).
+    let a15 = o4
+        .acks
+        .iter()
+        .find(|(t, ..)| *t == 63_154_166_156)
+        .map(|&(_, f, _)| f);
+    println!("k258-2/1 63,154 s ACK alanı: {:?}", a15.map(tel));
+    // Bugünkü davranış sabitlenir: 63,154 s'deki YOK gerçek kodla üretiliyor; tek SAPMA k258-2/1
+    // 69,994 s (kayıt 7 042, oynatma 6 930).
+    assert_eq!(a15, Some(PAIR_RATE_NONE), "k258-2/1 ACK 15 YOK üretilmedi");
+    assert_eq!(s1 + s2 + s3 + s4, 1, "SAPMA sayısı değişti");
+}
