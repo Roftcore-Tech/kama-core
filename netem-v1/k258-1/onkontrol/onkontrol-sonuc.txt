@@ -1,0 +1,17 @@
+alice wire.ack_rx: {'0x10': 0, '0x14': 0, '0x15': 0, '0x16': 6, '0x17': 0}  bob wire.ack_rx: {'0x10': 0, '0x14': 6, '0x15': 0, '0x16': 0, '0x17': 0}
+alice ack_tx.types: {'0x10': 0, '0x14': 6, '0x15': 0, '0x16': 0, '0x17': 0, 'other': 0}  bob ack_tx.types: {'0x10': 0, '0x14': 0, '0x15': 0, '0x16': 6, '0x17': 0, 'other': 0}
+alice lg satırı: 6
+ lg 1 eksik üst alan: [] verdict: null {'front_wait_ns': None, 'by_bytes': None, 'by_delay': None, 'backlog_bytes': None, 'extra_backlog_bytes': None, 'pair_bound_wire': None, 'verdict': None}
+ lg 2 eksik üst alan: [] verdict: null {'front_wait_ns': None, 'by_bytes': None, 'by_delay': None, 'backlog_bytes': None, 'extra_backlog_bytes': None, 'pair_bound_wire': 12538, 'verdict': None}
+ lg 3 eksik üst alan: [] verdict: null {'front_wait_ns': None, 'by_bytes': None, 'by_delay': None, 'backlog_bytes': None, 'extra_backlog_bytes': None, 'pair_bound_wire': 12633, 'verdict': None}
+ lg 4 eksik üst alan: [] verdict: null {'front_wait_ns': None, 'by_bytes': None, 'by_delay': None, 'backlog_bytes': None, 'extra_backlog_bytes': None, 'pair_bound_wire': 12647, 'verdict': None}
+ lg 5 eksik üst alan: [] verdict: null {'front_wait_ns': None, 'by_bytes': None, 'by_delay': None, 'backlog_bytes': None, 'extra_backlog_bytes': None, 'pair_bound_wire': 12553, 'verdict': None}
+ lg 6 eksik üst alan: [] verdict: null {'front_wait_ns': None, 'by_bytes': None, 'by_delay': None, 'backlog_bytes': None, 'extra_backlog_bytes': None, 'pair_bound_wire': 12572, 'verdict': None}
+bob ack satırı: 6 Counter({'0x16': 6})
+ ack 1 {'t_evidence': True, 't_ready': True, 't_wire': True, 'largest_pn': True} 0x16 sent
+ ack 2 {'t_evidence': True, 't_ready': True, 't_wire': True, 'largest_pn': True} 0x16 sent
+ ack 3 {'t_evidence': True, 't_ready': True, 't_wire': True, 'largest_pn': True} 0x16 sent
+ ack 4 {'t_evidence': True, 't_ready': True, 't_wire': True, 'largest_pn': True} 0x16 sent
+ ack 5 {'t_evidence': True, 't_ready': True, 't_wire': True, 'largest_pn': True} 0x16 sent
+ ack 6 {'t_evidence': True, 't_ready': True, 't_wire': True, 'largest_pn': True} 0x16 sent
+lg anahtarları: ['at_ns', 'backlog_bytes', 'by_bytes', 'by_delay', 'decision', 'extra_backlog_bytes', 'first_window', 'first_window_bps', 'front_wait_ns', 'g_ns', 'index', 'k', 'largest_seq', 'measured', 'note', 'pace_after', 'pace_before', 'pair_bound_wire', 'probe_failed', 'raised', 'rate_after', 'rate_before', 'sess', 't', 'verdict']

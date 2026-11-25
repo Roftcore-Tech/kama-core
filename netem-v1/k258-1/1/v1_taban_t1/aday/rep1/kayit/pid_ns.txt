@@ -1,0 +1,16 @@
+=== çekim 1 t=2026-11-25T19:08:45.661791593Z
+    PID    PPID ELAPSED STAT COMMAND
+4055897 4055896       0 Sl   <wt>/f0k-ikili/f0_flows-911f2c6dd1cc1bfcebb30e655f2e3c13760ff41a --role alice --dir <scratch-kesik>
+4055834 4055615       1 Sl   <wt>/f0k-ikili/f0_flows-911f2c6dd1cc1bfcebb30e655f2e3c13760ff41a --role bob --dir <scratch-kesik>
+alice pid=4055897 net=net:[4026533029]
+bob pid=4055834 net=net:[4026533111]
+orta pid=4055633 net=net:[4026533088]
+kabuk net=net:[4026533029]
+=== çekim 2 t=2026-11-25T19:08:46.252509448Z
+    PID    PPID ELAPSED STAT COMMAND
+4055897 4055896       0 Sl   <wt>/f0k-ikili/f0_flows-911f2c6dd1cc1bfcebb30e655f2e3c13760ff41a --role alice --dir <scratch-kesik>
+4055834 4055615       1 Sl   <wt>/f0k-ikili/f0_flows-911f2c6dd1cc1bfcebb30e655f2e3c13760ff41a --role bob --dir <scratch-kesik>
+alice pid=4055897 net=net:[4026533029]
+bob pid=4055834 net=net:[4026533111]
+orta pid=4055633 net=net:[4026533088]
+kabuk net=net:[4026533029]

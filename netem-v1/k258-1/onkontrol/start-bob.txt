@@ -1,0 +1,13 @@
+çekirdek_sürümü=0.1.0
+çekirdek_git=911f2c6dd1cc1bfcebb30e655f2e3c13760ff41a
+ptt_pilotu=kapalı
+motor=cc-port
+ack_biçimi=bitmap
+ack_gönderici_etkin=hayır
+ack_alıcı_etkin=evet
+şeritler=açık
+yön_hızları=yukarı 62 B/s, aşağı 12500 B/s
+kaynak=KAMA_LINK_RATES
+koruma=standart
+yerel_yukarı_hat=dar — Yerel yukarı hat dar; karşı uç koruması karşı cihazın başlangıç kaydından doğrulanır.
+pilot_kaydı=açık (canlı teşhis aynası açık; özet pilot-summary.txt)

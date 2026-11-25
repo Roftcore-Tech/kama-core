@@ -1,0 +1,35 @@
+ÖN KAYIT — #258 sonra koşusu (k258), koşudan ÖNCE yazıldı: 2026-11-25T19:08:38Z
+Yama: PR #258, dal yerel/gonderici-dongu @ 911f2c6dd1cc1bfcebb30e655f2e3c13760ff41a.
+İkili: f0_flows sha256=6d6a10c739ccf29a35daa1eeea0ef90879804bd20cc712fd558f611ae204ce41 (derlenmedi; hazır ikili). İkilide 911f2c6dd1cc1bfcebb30e655f2e3c13760ff41a dizgisi: 1
+Hücre: v1/arac/v1_taban.cell (DEĞİŞMEDEN; sha256=2a90bbbad4359b335c606558f8fd7832f565f719b75ac6383234a88c773bb04c); tohum 1; PTT yok; metin 2 s'de bir.
+Koşucu f0_cell.sh sha256=14cffdadd31c161753194c77fdbb8f1b79362bbc2c684bb4e6609474ee4dcdb7; düzenek kapi3_harness.sh sha256=59fc4a0d4d7ab8c0709a3bc909f66c15c836a458f2254f908378d4b036d7f401; basamak.py sha256=fb0800491eb880a9f7b1843e6adfc6cc208d3745e0448de957e83b7c7f09059a; ornekleyici.py sha256=9c89038ab0be346cc1d14fd3cd3d49ae18e486ab5e39b6b763222d138becf041 (önce koşusunun cell.env değerleriyle aynı: runner 14cffdad…, harness 59fc4a0d…).
+Önce (yeniden koşulmaz): yerel/ham-izler-netem-v1 @ 844fb172, netem-v1/kancali-1/1/ ; o koşunun ikilisi e1012cf2 (sha256 adf8f5ad…). e1012cf2 → cd15a3ae farkı: receiver.rs, runtime.rs, f0_flows.rs'te yalnız belge yorumu satırları (git diff ile okundu). Tek fark ikili (ve --dir yolu).
+Kirli ölçütü: v1/kirli-olcut.txt K1–K11 aynen (sha256=e5f7a9ac96daad68521e89dbf52c8820977e7810329ca9f9405cd246a0cca3d8). Kirliyse en çok BİR yineleme.
+Ön kontrol (loopback, netem yok; onkontrol/): iki uçta çekirdek_git=911f2c6dd1cc1bfcebb30e655f2e3c13760ff41a; Alice'e varan tel türü 0x16 × 6 (0x14/0x10 = 0); lg satırında front_wait_ns, by_bytes, by_delay, backlog_bytes, extra_backlog_bytes, pair_bound_wire, verdict anahtarları 6/6 satırda var; loopback'te verdict 6/6 null (yoklama hükmü oluşmadı) → verdict alt alanları (outcome, expect_ns, abs_q_ns, growth_ns, interval_g_ns) kayıttan değil 911f2c6d f0_flows.rs lg_line biçim dizgisinden okundu; bob ack satırında t_evidence, t_ready, t_wire, largest_pn 6/6.
+
+BEKLENEN SAYILAR (PR #258 gövdesi, "Beklenen sayılar"; aynen):
+ B1  verdict.outcome = Failed iken interval_g_ns ≤ expect_ns/2 olan satır: önce 1 (19. ACK; önce kaydında verdict alanı yok, karşılığı probe_failed=true + g_ns = 24 181 ns) → sonra 0.
+ B2  alarm ACK'i dönüşte sırada + aralık artışı ≈ 0 olayında: hüküm Inconclusive; backlog_bytes ve extra_backlog_bytes yazılmaz; ret seviyesi ve adım sıfırlanmaz.
+     Okunacak: verdict.outcome, backlog_bytes/extra_backlog_bytes = null, probe_failed = false, rate_before = rate_after. Olay bu koşuda oluşmazsa B2 = SINANMADI.
+     (ret seviyesi ve adım lg satırında alan olarak yok; dolaylı okuma: probe_failed=false ve sonraki yoklamanın pace artışı.)
+ B3  DÜZELTMEDİĞİ: yoklamasız ACK'te dönüş beklemesinin kuyruk sayılması (≈ 1,13 s tutma) KALIR; hızlanma ölçütü KALIR.
+
+ÇÖZÜMLEME TANIMLARI (koşudan önce donduruldu; araç arac/k258_ek.py sha256=d879d41a918f5bb64fcfba311955164a01f8e30f246227c82de55210a8c59920, önce koşusunda denendi: once/k258-ek.txt):
+ dönüş sıra beklemesi = (A_va0 in − B_vb0 out) − IP boyu / 62 B/s − 300 ms.
+ gerçek darboğaz kuyruğu(T) = MID_ma0 in ≤ T < MID_ifb0 olan ileri paketlerin IP boyu toplamı; yanında kuyruk.jsonl önceki/sonraki örnek.
+ sahte tutma = (backlog_bytes + extra_backlog_bytes) > gerçek(T) + 1 228 B; sınıf: verdict dolu → yoklama hükmünden; verdict null → yoklamasız kuyruk tahmininden.
+ önce kaydında backlog alanı yok → türetme: lg anından sonraki ilk Alice veri datagramına dek süre ≥ 0,5 s ise türetilmiş yazılan = süre × rate; aynı türetme sonra koşusunda da hesaplanır (kayıtla yan yana).
+ gönderici susması = Alice veri akışı çıkışında ardışık datagram arası ≥ 0,5 s (τ ≥ 2 s); boş hat süresi = susmanın gerçek kuyruğun 0 paket olduğu kısmı; sayım: boş hat süresi ≥ 0,5 s olanlar.
+ Önce koşusunda bu tanımla: türetilmiş sahte tutma 2 satır (19: 2,163 s, hüküm satırı; 21: 1,054 s, yoklamasız); boş hat susması 2 adet, süre 3,463 s, boş hat 3,387 s.
+ Beş hedef dayanakları: (1) 20 s'den sonraki 2. ACK'te lg pace_after ∈ [5 625, 6 875]; (2) PTT yok → SINANMADI; (3) [35, 58) sunulan/kapasite %90–100, kuyrukta düşen 0, darboğaz beklemesi en çok ≤ 393 ms, [20, 60) metin 20/20 ≤ 1 s (kör pencere [20, 24) ayrı satır), dipte sunulan 0 B ise dip SINANMADI; (4) önkoşul τ=58 tavan ∈ [5 625, 6 875], 60 s'den sonraki 3. ACK'e dek pace_after ≥ 11 875 ve 84 s'ye dek kalıcı; (5) bu koşu test koşmaz → SINANMADI.
+Konak (ön): load=1.07 2.02 2.31 2/1216 4055464 cargo/rustc=0
+
+EK — YİNELEME KARARI (yineleme koşusundan ÖNCE yazıldı: 2026-11-25T19:12:16Z)
+ Koşu 1 (k258/1) rc=0; kirli denetimi K2 ve K8 TUTMADI, öbür dokuzu tuttu (yük en çok 1,64).
+  K2: kosu.log "bitiş" satırında cargo_rustc=1. Sayılan süreç başka bir işin 'cargo test … line_guard::' komutu; sarmalayıcısı aynı kilidi (kama-cargo-run.lock) bekler; rustc süreci başlangıcı 19:10:26Z = koşunun kilidi bıraktığı an (bitiş satırı 19:10:26,745Z). Koşunun ölçüm penceresi t_end=19:10:25,565Z'de kapanmıştı.
+  K8: darboğazda UDP dışı 1 paket (ICMP, 99 B; A_va0 çıkış τ=100,092, ifb0 çıkış τ=100,200); koşu bitişi τ=100,005.
+ Ön kayıtlı kural: "Biri tutmazsa koşu KİRLİ; aynı kimlikle bir kez yeniden." → TEK yineleme: aynı hücre, aynı tohum (1), aynı ikili, aynı düzenek; çıktı k258/1-yineleme.
+ Yineleme temizse (a)–(d) başlığı yinelemeden yazılır; koşu 1'in aynı sayıları yanında KİRLİ etiketiyle verilir. Yineleme de kirliyse başka koşu yok; ikisi de etiketleriyle verilir.
+ Koşu 1'in sonuçları bu satır yazılmadan önce görüldü (1/k258-ek.txt); yineleme kararı sonuçlara değil yukarıdaki iki ölçüte dayanır.
+ Not (2026-11-25T19:15:32Z, yinelemeden önce): başka işin 'cargo test' koşusu sürüyor (yük ≈ 6); yineleme cargo/rustc bitince ve 1 dk yük < 3,0 olunca başlatılır (arac/bekle_kos.sh). Ölçüt (K1 < 6,0) değişmedi.
+ Not (2026-11-25T19:16:42Z, yinelemeden önce): başka iş derleme/test döngüsünü sürdürüyor; başlatma eşiği 1 dk yük < 4,0'a çekildi (önce koşusunda görülen en yüksek yük 4,43; K1 eşiği 6,0 değişmedi). Başka işin cargo'su kilidi beklerken koşu biterse "bitiş" satırında yine cargo_rustc ≥ 1 görülebilir (koşu 1'deki K2 biçimi).

@@ -47,3 +47,33 @@ Yalnız ölçüm çıktısı; birleştirilmez. Ürün kodu: `yerel/f0-olcum-kanc
 - Alice'in kendi `ack` satırları (52 adet, 0x14; alındı yönünün ACK'leri) tabloda yok.
 
 Makine yolları `<scratch>`, `<wt>`, `<home>` ile değiştirildi.
+
+## #258 hedefli önce/sonra — `netem-v1/k258-1` (2026-11-25, tohum 1; koşu 1 + bir yineleme)
+
+Yalnız ölçüm çıktısı; birleştirilmez. Yama: PR #258, `yerel/gonderici-dongu` @ `911f2c6dd1cc1bfcebb30e655f2e3c13760ff41a` (ölçüm kancaları `cd15a3ae` + yoklama hükmü kuralı + ACK başına gözlem alanları). Önce = `netem-v1/kancali-1/1/` (yeniden koşulmadı; ikilisi `e1012cf2`; `e1012cf2` → `cd15a3ae` farkı yalnız belge yorumu satırları).
+
+- İkili: hazır `f0_flows`, sha256 `6d6a10c739ccf29a35daa1eeea0ef90879804bd20cc712fd558f611ae204ce41`; derlenmedi. İki ucun başlangıç kaydında `çekirdek_git=911f2c6dd1cc1bfcebb30e655f2e3c13760ff41a` (`kayit/node-*-transport-start.txt`).
+- Düzenek önce koşusuyla aynı: aynı hücre dosyası (`netem-v1/arac/v1_taban.cell`, sha256 `2a90bbba…`), aynı `hdir/`, aynı koşucu (cell.env: runner `14cffdad…`, harness `59fc4a0d…`), tohum 1, PTT yok. Tek fark ikili (ve çıktı kökü).
+- Ön kontrol (`onkontrol/`, netem'siz loopback): başlangıç kaydı SHA'sı, Alice'e varan tel türü 0x16, `lg` satırında yeni anahtarlar (`front_wait_ns`, `by_bytes`, `by_delay`, `backlog_bytes`, `extra_backlog_bytes`, `pair_bound_wire`, `verdict`). Loopback'te `verdict` 6/6 `null` idi; alt alanları netem koşularının `lg` satırlarında görüldü.
+- Ön kayıt: `on-kayit.txt` (beklenen sayılar PR gövdesinden; çözümleme tanımları; koşu 1'den önce). Yineleme kararı aynı dosyanın ekinde, yinelemeden önce.
+
+### Kirli denetimi (K1–K11, `netem-v1/kirli-olcut.txt`)
+- `1/` (koşu 1) ve `1-yineleme/` (koşu 2): ikisinde de K2 ve K8 TUTMADI, öbür dokuz ölçüt tuttu. Ön kayıtlı kural gereği tek yineleme yapıldı; yineleme de aynı iki ölçütte kaldı; başka koşu yok.
+- K2: `kosu.log` "bitiş" satırında `cargo_rustc=1`. Sayılan süreç aynı kilidi bekleyen başka bir işin derlemesi; `rustc` başlangıcı kilidin bırakıldığı saniye (19:10:26Z / 19:20:08Z), ölçüm penceresinin kapanışı (`t_end`) 19:10:25,564Z / 19:20:07,635Z.
+- K8: darboğazdan geçen UDP dışı 1 paket (ICMP, 99 B), τ = 100,09 → 100,20 s / τ = 100,07 s; koşu bitişi τ = 100,005 s.
+- Yük (1 dk ortalaması, örnekleyici): koşu 1 1,13–1,64; koşu 2 3,48–5,38 (eşik 6,0).
+
+### Dosyalar
+- `1/`, `1-yineleme/`: `kancali-1/1/` ile aynı düzen (`v1_taban_t1/aday/rep1/` ham kayıtlar, `cap/`, `kuyruk.jsonl`, `basamak.jsonl`, `kayit/`; `ack-tablo.*`, `ozet.txt`, `analiz-*`). Ek: `k258-ek.txt/json` (`arac/k258_ek.py`): hüküm ACK'leri, `lg` satırı başına yazılan kuyruk ↔ gerçek darboğaz kuyruğu ↔ dönüş sıra beklemesi, gönderici susmaları, önce/sonra girdileri.
+- `once/k258-ek.txt/json`: aynı aracın önce koşusunun ham dosyalarındaki çıktısı (önce kaydında `backlog_bytes` / `verdict` alanı yok; tutma, gönderim boşluğundan türetildi).
+- `tablolar.md`: üç koşunun yan yana tabloları (`arac/yorum_tablo.py`). `sha-ham.txt`: ham dosyaların sha256'ları.
+- `arac/`: `kos.sh`, `kos_yineleme.sh`, `bekle_kos.sh`, `onkontrol.sh`, `k258_ek.py`, `yorum_tablo.py`, `yayin_hazirla.sh`.
+- Tablolar Yerel ölçüm adımının çıktısıdır; **bağımsız doğrulanmadı**. Neden ataması ve öneri içermez.
+
+### Sınırlar
+- Tek tohum; iki koşu da kirli ölçütünün iki maddesinde kaldı (yukarıda).
+- Aynı tohum koşuları paket düzeyinde aynı yapmıyor: Alice arayüz çıkışı dizisi (boy + an ± 50 ms) önce ↔ koşu 1'de 146., önce ↔ koşu 2'de 423., koşu 1 ↔ koşu 2'de 146. pakette ayrışıyor.
+- `tablolar.md`'deki "yalnız cephe ölçüsüyle sonuç" sütunu kayıttaki girdilerden hesaptır, ikinci bir koşu değildir.
+- Kesmesiz karşılaştırma kolu ve PTT yok.
+
+Makine yolları `<scratch>`, `<wt>`, `<home>`, `<scratch-kesik>` ile değiştirildi.

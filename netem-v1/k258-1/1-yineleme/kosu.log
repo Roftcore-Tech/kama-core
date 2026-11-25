@@ -1,0 +1,5 @@
+başlangıç 2026-11-25T19:18:25.757811022Z load=3.99 4.26 3.30 3/1255 4088858 cargo_rustc=0 coredump_son=Thu 2026-09-03 00:00:43 +03 537502 1000 
+== HÜCRE v1_taban_t1  fwd='v1 100kbit'  rev='delay 300ms rate 496bit -14 limit 64'  kollar=[aday]  reps=1  bütçe=200s ==
+. bitti
+rc=0
+bitiş 2026-11-25T19:20:08.790908173Z load=4.62 4.39 3.45 2/1256 4097790 cargo_rustc=1 coredump_son=Thu 2026-09-03 00:00:43 +03 537502 1000 

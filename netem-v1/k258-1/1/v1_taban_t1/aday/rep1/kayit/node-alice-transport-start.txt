@@ -1,0 +1,12 @@
+çekirdek_sürümü=0.1.0
+çekirdek_git=911f2c6dd1cc1bfcebb30e655f2e3c13760ff41a
+ptt_pilotu=kapalı
+motor=cc-port
+ack_biçimi=bitmap
+ack_gönderici_etkin=evet
+ack_alıcı_etkin=evet
+şeritler=açık
+yön_hızları=yukarı 12500 B/s, aşağı 62 B/s
+kaynak=KAMA_LINK_RATES
+koruma=geri-bildirim-aç (PTT: 1 asıl gönderim + teyitsiz birim için en çok 6 planlı ek kopya, hat beyanın altında ölçülürse orantılı az, en az 5; PTT dışı şeritlerde ACK'siz FEC ön oranı; ACK saatsiz uçuş)
+pilot_kaydı=açık (canlı teşhis aynası açık; özet pilot-summary.txt)

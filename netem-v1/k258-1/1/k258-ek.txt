@@ -1,0 +1,66 @@
+(a) HÜKÜM ACK'LERİ — lg.verdict dolu satırlar (kayıtta verdict alanı yoksa: raised / probe_failed satırları ve g_ns)
+| sıra | pn | an τ s | outcome | expect/2 ms | abs_q ms | growth ms | interval_g ms | dönüş sıra beklemesi ms | alarm ACK'i | pace önce→sonra | rate önce→sonra | yazılan backlog+ek B | raised/probe_failed |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 12 | 494 | 47.204 | Inconclusive | 45.97 | 0.00 | 131.73 | 25.511 | 0.1 | H | 6224→6224 | 6224→6224 | yazılmadı | False/False |
+| 14 | 593 | 59.573 | Inconclusive | 45.97 | 5.29 | 112.97 | 114.503 | 0.2 | H | 6224→6224 | 6224→6224 | yazılmadı | False/False |
+hüküm satırı 2; outcome dağılımı {'Inconclusive': 2}
+B1 · outcome=Failed VE interval_g_ns ≤ expect_ns/2 olan satır: 0 (sıralar [])
+B2 · outcome=Inconclusive satırları: 2; sıra 12: dönüş beklemesi 0.1 ms, interval_g 25.511 ms, abs_q 0.00 / growth 131.73 / yarı 45.97 ms, yazılan yazılmadı, pace 6224→6224, rate 6224→6224, probe_failed False; sıra 14: dönüş beklemesi 0.2 ms, interval_g 114.503 ms, abs_q 5.29 / growth 112.97 / yarı 45.97 ms, yazılan yazılmadı, pace 6224→6224, rate 6224→6224, probe_failed False
+
+(b) lg SATIRI BAŞINA: yazılan kuyruk ↔ gerçek darboğaz kuyruğu ↔ dönüş sıra beklemesi
+| sıra | an τ s | karar | hüküm | front_wait ms | by_bytes | by_delay | yazılan (backlog+ek) B | gerçek kuyruk B / p (yakalama) | örnekleyici önce / sonra B | dönüş sıra beklemesi ms | ack_delay ms | sonraki veri datagramına dek s | türetilmiş yazılan B | sahte (kayıt) | sahte (türetilmiş) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 1.809 | IntervalNoSample | – | 0.0 | – | – | yazılmadı | 0 / 0 | 0 / 0 | 0.1 | 0.0 | 0.000 | – | – | – |
+| 2 | 2.951 | IntervalNoSample | – | 0.0 | – | – | yazılmadı | 0 / 0 | 0 / 0 | 0.0 | 463.9 | 0.049 | – | – | – |
+| 3 | 11.361 | NoMeasurement | – | 0.2 | – | – | yazılmadı | 0 / 0 | 0 / 0 | 0.0 | 27.4 | 0.084 | – | – | – |
+| 4 | 13.909 | IntervalNoSample | – | 0.2 | – | – | yazılmadı | 0 / 0 | 0 / 0 | 0.4 | 48.4 | 0.008 | – | – | – |
+| 5 | 17.461 | IntervalNoSample | – | 0.2 | – | – | yazılmadı | 0 / 0 | 0 / 0 | 0.0 | 74.2 | 0.070 | – | – | – |
+| 6 | 19.881 | IntervalNoSample | – | 0.4 | – | – | yazılmadı | 0 / 0 | 0 / 0 | 0.2 | 60.7 | 0.036 | – | – | – |
+| 7 | 22.188 | IntervalSample | – | 151.8 | 12125 | 1007 | 1007 (1007+0) | 13072 / 13 | 13072 / 13072 | 0.2 | 103.9 | 0.151 | – | hayır | – |
+| 8 | 25.515 | IntervalSample | – | 1756.6 | 13990 | 10933 | 10933 (10933+0) | 14690 / 18 | 14690 / 14690 | -0.0 | 174.8 | 1.756 | 10929 | hayır | hayır |
+| 9 | 32.301 | IntervalNoSample | – | 679.6 | 5289 | 10933 | 5289 (5289+0) | 5530 / 6 | 3358 / 5530 | 0.1 | 194.6 | 0.848 | 5279 | hayır | hayır |
+| 10 | 38.009 | IntervalNoSample | – | 48.7 | – | – | yazılmadı | 1074 / 1 | 1074 / 1074 | 0.1 | 204.3 | 0.045 | – | – | – |
+| 11 | 41.544 | IntervalNoSample | – | 97.1 | – | – | yazılmadı | 2148 / 2 | 2148 / 2148 | 0.0 | 108.5 | 0.098 | – | – | – |
+| 12 | 47.204 | IntervalNoSample | Inconclusive | 134.1 | – | – | yazılmadı | 2172 / 2 | 2172 / 2172 | 0.1 | 39.7 | 0.146 | – | – | – |
+| 13 | 53.856 | IntervalNoSample | – | 163.8 | – | – | yazılmadı | 3234 / 3 | 2148 / 3234 | 0.3 | 498.2 | 0.311 | – | – | – |
+| 14 | 59.573 | IntervalNoSample | Inconclusive | 178.9 | – | – | yazılmadı | 3234 / 3 | 3234 / 2160 | 0.2 | 125.2 | 0.042 | – | – | – |
+| 15 | 63.949 | IntervalNoSample | – | 883.4 | 3582 | 10933 | 3582 (3582+0) | 0 / 0 | 0 / 0 | 1141.1 | 225.8 | 0.285 | – | EVET | – |
+| 16 | 67.384 | IntervalNoSample | – | 672.3 | – | – | yazılmadı | 0 / 0 | 0 / 0 | 1036.7 | 11.0 | 0.039 | – | – | – |
+| 17 | 71.952 | IntervalNoSample | – | 0.0 | – | – | yazılmadı | 0 / 0 | 0 / 0 | 0.0 | 73.2 | 0.084 | – | – | – |
+| 18 | 77.640 | IntervalNoSample | – | 0.0 | – | – | yazılmadı | 0 / 0 | 0 / 0 | 0.0 | 80.9 | 0.022 | – | – | – |
+| 19 | 85.830 | IntervalNoSample | – | 0.0 | – | – | yazılmadı | 2148 / 2 | 3222 / 3222 | 0.1 | 76.5 | 0.000 | – | – | – |
+| 20 | 94.090 | IntervalNoSample | – | 226.5 | – | – | yazılmadı | 2296 / 3 | 2296 / 2284 | 0.2 | 78.8 | 0.000 | – | – | – |
+| 21 | 97.802 | IntervalNoSample | – | 187.1 | – | – | yazılmadı | 2148 / 2 | 3222 / 2148 | 0.3 | 248.1 | 0.069 | – | – | – |
+SAHTE TUTMA (kayıttan; yazılan > gerçek + 1228 B): 1 satır; yoklama hükmünden 0 (sıralar []), yoklamasız kuyruk tahmininden 1 (sıralar [15]); yazılan − gerçek toplamı 3582 B; (yazılan − gerçek) ÷ rate toplamı 0.287 s
+ kuyruk yazılan satır 4 / 21; yazılmayan 17
+SAHTE TUTMA (türetilmiş; lg anından sonraki veri datagramına dek ≥ 0,5 s VE süre × rate > gerçek + 1228 B): 0 satır (sıralar []); hüküm / probe_failed / raised taşıyan satır 0 (sıralar []), taşımayan 0 (sıralar []); süre toplamı 0.000 s
+
+GÖNDERİCİ SUSMALARI — Alice veri akışı çıkışında ≥ 0,5 s boşluk (τ ≥ 2 s; dosya koşu sonunda teslim edilmemiş: alice.json file.delivered = None, bob.json file.status = none)
+| başlangıç τ s | bitiş τ s | süre s | başta gerçek kuyruk B / p | boş hat süresi s | boşluk içindeki lg satırları (sıra) | boşluğun içindeki metin gönderimleri (τ) |
+|---|---|---|---|---|---|---|
+| 25.462 | 27.271 | 1.809 | 13616 / 17 | 0.000 | [8] | [26.0] |
+| 32.295 | 33.149 | 0.854 | 5530 / 6 | 0.000 | [9] | [] |
+susma (≥ 0,5 s) 2 adet, toplam 2.662 s; boş hat süresi ≥ 0,5 s olan 0 adet, bunların süre toplamı 0.000 s, boş hat süresi toplamı 0.000 s
+  başlangıcı [2, 20) s: 0 adet, süre 0.000 s, boş hat 0.000 s
+  başlangıcı [20, 60) s: 0 adet, süre 0.000 s, boş hat 0.000 s
+  başlangıcı [60, 85) s: 0 adet, süre 0.000 s, boş hat 0.000 s
+  başlangıcı [85, 100) s: 0 adet, süre 0.000 s, boş hat 0.000 s
+
+(c) ÖNCE ↔ SONRA GİRDİLERİ (bu koşu)
+ düşüş → ilk kesme: 2187.6 ms (20 s basamağı komut başlangıcı τ=20.000012 → lg sıra 7 τ=22.188; IntervalSample, pace 12500→6638)
+ 20 s'den sonraki ilk üç ACK (sıra, varış τ, pace önce→sonra): 7: τ=22.188 12500→6638; 8: τ=25.515 6638→6224; 9: τ=32.301 6224→6224 → 2. ACK'te tavan 6224 B/s (bant 5 625–6 875); analiz.py (sonda, 2. ACK adayı + 150 ms, hat-eşdeğeri) 6223.3911904372035
+ 20 s'den önce lg pace_after en düşük 12500; sonda (τ 2–20) hat-eşdeğeri en düşük 12500.0
+ 60 s'den sonraki ilk üç ACK (sıra, varış τ, pace önce→sonra): 15: τ=63.949 6224→12500; 16: τ=67.384 12500→12500; 17: τ=71.952 12500→12500
+ 60 s'den sonra lg pace_after dizisi [12500, 12500, 12500, 12500, 12500, 12500, 12500]; en büyük 12500; sonda en büyük tavan (hat-eşdeğeri, τ ≥ 60) 12500; τ=58 tavan (sonda, hat-eşd.) 6223.3911904372035; τ=84 tavan 12500; ≥ 11 875 ilk an 64.036249856; kalıcı True
+ τ=58'de geçerli lg pace_after (58 s'den önceki son ACK): 6609
+ [60, 85) s: sunulan 284512 B = 11380 B/s; kapasite 312500 B; sunulan/kapasite %91.0; darboğazdan çıkan 287734 B = 11509 B/s (%92.1); kuyrukta düşen 0
+ [35, 58) s darboğaz beklemesi (çıkış anına göre, 188 paket): medyan 324 ms, p95 510 ms, en çok 536 ms; > 393 ms 29 paket; sunulan/kapasite %100.9, çıkan/kapasite %100.2, kuyrukta düşen 0
+ metin kör pencere [20, 24): 2 gönderim, teslimsiz 0; > 1 s 1 → (metin, gönderim τ, ms) [(10, 22.0, 2227)]; en çok 2227 ms; hepsi ms: 841 2227
+ metin [24, 60): 18 gönderim, teslimsiz 0; > 1 s 5 → (metin, gönderim τ, ms) [(11, 24.0, 2435), (12, 26.0, 2108), (13, 28.0, 1076), (24, 50.0, 1045), (28, 58.0, 1160)]; en çok 2435 ms; hepsi ms: 2435 2108 1076 934 962 366 576 415 623 645 484 527 716 1045 677 701 722 1160
+ metin [20, 60) (tümü): 20 gönderim, teslimsiz 0; > 1 s 6 → (metin, gönderim τ, ms) [(10, 22.0, 2227), (11, 24.0, 2435), (12, 26.0, 2108), (13, 28.0, 1076), (24, 50.0, 1045), (28, 58.0, 1160)]; en çok 2435 ms; hepsi ms: 841 2227 2435 2108 1076 934 962 366 576 415 623 645 484 527 716 1045 677 701 722 1160
+ metin [0, 20): 9 gönderim, teslimsiz 0; > 1 s 0 → (metin, gönderim τ, ms) []; en çok 663 ms; hepsi ms: 388 349 663 350 408 359 313 358 362
+ metin [60, 85): 13 gönderim, teslimsiz 0; > 1 s 1 → (metin, gönderim τ, ms) [(30, 62.0, 1003)]; en çok 1003 ms; hepsi ms: 586 1003 543 386 337 391 609 392 358 323 367 374 340
+ metin [85, bitiş): 7 gönderim, teslimsiz 0; > 1 s 0 → (metin, gönderim τ, ms) []; en çok 853 ms; hepsi ms: 451 498 853 798 509 456 459
+ dip [85,0, 85,5) s (basamak komut başlangıçları τ=85.000007 → 85.500007): darboğaza sunulan 6444 B / 6 p; dip başında kuyruk 0 B / 0 p; dipte darboğazdan çıkan 3222 B / 3 p; Alice veri akışında dipten önceki son / sonraki ilk datagram τ=84.968 / 85.053
+ Bob ACK 21 (Alice ack_rx 21, lg 21); alarm ACK'i 4 (yükseliş alarmı 1, daralma alarmı 3); daralma algısı: satırlardaki detects toplamı 14, son ACK satırı cum {'drop_detects': 14, 'drop_alarms': 3, 'rise_alarms': 1, 'wait_planned': 11, 'budget': 20, 'yield': 5482, 'no_info': 13}; Alice'e varan tel türleri {'0x10': 0, '0x14': 0, '0x15': 0, '0x16': 21, '0x17': 0}
+ ACK başına dönüş sıra beklemesi ms (sıra:ms): 1:0 2:0 3:0 4:0 5:0 6:0 7:0 8:-0 9:0 10:0 11:0 12:0 13:0 14:0 15:1141 16:1037 17:0 18:0 19:0 20:0 21:0

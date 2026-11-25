@@ -1,0 +1,13 @@
+qdisc noqueue 0: dev lo root refcnt 2 
+qdisc netem 8056: dev ma0 root refcnt 13 limit 64 delay 300ms rate 496bit packetoverhead -14 seed 12828772291482705281
+qdisc ingress ffff: dev ma0 parent ffff:fff1 ---------------- 
+qdisc netem 20: dev mb0 root refcnt 13 limit 10000 delay 300ms loss 20% seed 1
+qdisc tbf 1: dev ifb0 root refcnt 2 rate 100Kbit burst 1200b/1 mpu 0b limit 64b linklayer ethernet 
+ linklayer ethernet overhead -14 
+qdisc pfifo 10: dev ifb0 parent 1:1 limit 64p
+filter protocol ip pref 49152 matchall chain 0 
+filter protocol ip pref 49152 matchall chain 0 handle 0x1 
+  not_in_hw
+	action order 1: mirred (Egress Redirect to device ifb0) stolen
+	index 1 ref 1 bind 1
+

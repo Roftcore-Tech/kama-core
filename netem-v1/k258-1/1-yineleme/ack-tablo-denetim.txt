@@ -1,0 +1,3 @@
+ACK satırı (bob) 21; ack_rx (alice) 21; lg 21; eşlenen 21; alice satırı olmayan bob ACK sıraları []; aynı largest_pn tekrarları {}
+yakalama eşlemesi: tek aday 21/21; aday sayıları [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+saat çapraz denetimi: (Bob arayüz yakalaması − t_wire) ms en az/medyan/en çok = 0.028/0.090/0.335; (ack_rx.t − Alice arayüz yakalaması) ms en az/medyan/en çok = -0.138/-0.012/0.122
