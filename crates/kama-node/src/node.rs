@@ -109,6 +109,17 @@ const HUB_NOTICES_PER_TURN: usize = 16;
 /// Tek yanıtlık kanal: her komut tam bir yanıt alır, gönderim bloklamaz.
 pub(crate) const REPLY_CAPACITY: usize = 1;
 
+/// Trafiksiz turun en kısa beklemesi: vadesi gelmiş bir zamanlayıcı için tur hemen dönse de döngü
+/// beklemesiz dönmez (ayar değeri değil, döngü koruması).
+const IDLE_WAIT_FLOOR: Duration = Duration::from_millis(1);
+
+/// Trafiksiz turun beklemesi: [`NODE_TICK`]; gelen bir PTT akışının hareketsizlik sonu
+/// (`Ptt::next_idle_end_in`) daha yakınsa ona dek. Böylece kapanış, vadesinden bir tur aralığı
+/// (20 ms) yerine en çok [`IDLE_WAIT_FLOOR`] ve turun işlem süresi kadar geç bildirilir.
+fn idle_wait(next_ptt_idle_end: Option<Duration>) -> Duration {
+    next_ptt_idle_end.map_or(NODE_TICK, |left| left.clamp(IDLE_WAIT_FLOOR, NODE_TICK))
+}
+
 /// Yanıt kanalı.
 pub(crate) type Reply<T> = SyncSender<Result<T, NodeError>>;
 
@@ -445,7 +456,11 @@ impl NodeLoop {
             self.publish_metrics();
             self.pilot_tick(Instant::now());
             let busy = !drained || handled >= COMMAND_QUEUE_CAP;
-            let wait = if busy { Duration::ZERO } else { NODE_TICK };
+            let wait = if busy {
+                Duration::ZERO
+            } else {
+                idle_wait(self.ptt.next_idle_end_in())
+            };
             match commands.recv_timeout(wait) {
                 Ok(command) => waiting = Some(command),
                 Err(RecvTimeoutError::Timeout) => {}
