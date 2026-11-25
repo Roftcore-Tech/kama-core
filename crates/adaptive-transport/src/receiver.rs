@@ -1217,6 +1217,9 @@ impl Receiver {
             if !self.ack_budget_take(now_ns, &frame) {
                 return None;
             }
+            // [YÜKSELİŞ KANITI · K1] Birleşecek saklanan, alanı kuran durumla (bayraklar
+            // sıfırlanmadan önce): alan ile yükseliş referansı aynı değeri taşır.
+            let carry = self.alarm_pair_carry();
             if saturated {
                 self.ack_delay_saturated += 1;
             }
@@ -1228,7 +1231,6 @@ impl Receiver {
             self.alarm_evidence = None;
             // [ALARM ARALIĞI · TUR 4] Planlı ACK beklemeyi bitirdiyse bildirilen değer (yükseliş
             // referansı) adayınki gibi bütün çiftlerden: saklanan değerler geri birleşir.
-            let carry = self.alarm_pair_carry();
             self.alarm_pair_saved = [0, 0];
             self.pair.restore(carry);
             self.rate_drop.on_ack(now_ns);
@@ -2054,6 +2056,38 @@ mod tests {
             pr.field(),
             crate::ack::PAIR_RATE_NONE - 1,
             "beyan yokken kural kapalı"
+        );
+    }
+
+    /// [YÜKSELİŞ KANITI · K1 · #256 Bulut-D Bulgu 2] Bekleme sürerken çıkan planlı ACK: alan ve
+    /// yükseliş referansı (`reported`) aynı birleşik değeri taşır (tabanın `restore(take(saved))`
+    /// davranışı). Saklanan [12 000, 11 500], alarm sonrası [6 000, 5 900] → ikisi de 11 500.
+    #[test]
+    fn planned_ack_during_wait_merges_saved_into_field_and_reference() {
+        let mut r = Receiver::with_cc_port();
+        r.set_return_bandwidth(Some(62));
+        r.set_ack_bitmap(true);
+        for seq in 0..4u64 {
+            r.set_next_datagram_bytes(1_000);
+            let _ = r.on_datagram(
+                RxDatagram {
+                    seq,
+                    unit_id: seq,
+                    kind: RxKind::Data,
+                },
+                seq * 80_000_000,
+            );
+        }
+        r.drop_alarm_wait = true;
+        r.alarm_pair_saved = [12_000, 11_500];
+        r.pair.top = [6_000, 5_900];
+        let f = r.emit_ack(20_000_000_000).expect("planlı ACK çıkmadı");
+        let field = f.bitmap.as_ref().expect("bitmap").pair_rate;
+        assert_eq!(field, 11_500, "alan");
+        assert_eq!(
+            r.pair.reported,
+            Some(11_500),
+            "yükseliş referansı alandan ayrıştı"
         );
     }
 
