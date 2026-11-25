@@ -14,6 +14,7 @@ use adaptive_transport::ack::{AckFrame, PAIR_RATE_NONE};
 use adaptive_transport::receiver::{Receiver, RxDatagram, RxKind};
 
 include!("data/rise_alarm_pair_carry_844fb172.rs");
+include!("data/rise_alarm_pair_carry_f955a7a0_k258.rs");
 
 const SEC: u64 = 1_000_000_000;
 
@@ -308,4 +309,29 @@ fn bucket_credit_small_then_full_does_not_carry_the_rise_value() {
         p == PAIR_RATE_NONE || p <= 6_875,
         "kova kredisi eski yükseliş değerini taşıdı: {p}"
     );
+}
+
+/// Kart 7173766414: gerçek 6 250 hat (#258 hedefli koşusu, `f955a7a0` `k258-2`, `cap/B_vb0`
+/// 0–46,5 s). Sayılan çiftler 136 B'lik küçük datagramdan ≈ 85 ms sonra gelen tam datagramdı
+/// (kova kredisi; 6 250'de tam boyun serileşmesi 173,8 ms) ve 12 229–12 375 okudu. 40 s'den sonraki
+/// ACK'lerde alan hattı aşmamalı (≤ 6 875 ya da NONE) ve yükseliş alarmı olmamalı.
+#[test]
+fn k258_real_6250_small_then_full_pairs_do_not_read_the_profile() {
+    let o = replay(K258_ARRIVALS, K258_BOB_ACK_WIRE);
+    for (t, n, f) in &o.rise {
+        println!("yükseliş alarmı #{n} @ {:.3} s alan {f}", *t as f64 / 1e9);
+    }
+    for (t, f) in o.acks.iter().filter(|(t, _)| *t >= 30 * SEC) {
+        println!("ACK @ {:.3} s pair_rate {}", *t as f64 / 1e9, pair(f));
+    }
+    let rises: Vec<_> = o.rise.iter().filter(|(t, ..)| *t >= 40 * SEC).collect();
+    assert!(rises.is_empty(), "6 250 hatta yükseliş alarmı: {rises:?}");
+    for (t, f) in o.acks.iter().filter(|(t, _)| *t >= 40 * SEC) {
+        let p = pair(f);
+        assert!(
+            p == PAIR_RATE_NONE || p <= 6_875,
+            "{:.3} s alan {p} (hat 6 250)",
+            *t as f64 / 1e9
+        );
+    }
 }

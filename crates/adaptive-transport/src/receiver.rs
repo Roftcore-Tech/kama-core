@@ -1763,7 +1763,13 @@ impl PairRate {
             }
             let skip = squeezed || self.after_squeeze;
             self.after_squeeze = squeezed;
-            if !skip && b >= crate::ack::PAIR_MIN_UDP_BYTES && g >= PAIR_MIN_GAP_NS {
+            // [ÇİFT ARALIĞI · kart 7173766414] Yalnız tam boy → tam boy: küçük datagramdan sonra
+            // aralık tam boyun serileşmesini ölçmez (kovalı hatta kredi; gerçek 6 250 hatta 136 B
+            // → 1 074 B 85,5 ms, tam boyun serileşmesi 173,8 ms → 12 229 okunuyordu).
+            let prev_full = self
+                .prev_bytes
+                .is_some_and(|pb| pb >= crate::ack::PAIR_MIN_UDP_BYTES);
+            if !skip && prev_full && b >= crate::ack::PAIR_MIN_UDP_BYTES && g >= PAIR_MIN_GAP_NS {
                 let r = u64::try_from(u128::from(b) * 1_000_000_000 / u128::from(g))
                     .unwrap_or(u64::MAX);
                 if r > self.top[0] {
