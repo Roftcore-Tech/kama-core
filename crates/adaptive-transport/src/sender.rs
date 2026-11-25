@@ -5876,7 +5876,7 @@ impl Sender {
                     std::env::var("KAMA_PAIR_PROBE_DATAGRAMS")
                         .ok()
                         .and_then(|v| v.trim().parse::<u64>().ok())
-                        .filter(|n| (1..=16).contains(n)),
+                        .filter(|n| (1..=crate::line_guard::PAIR_PROBE_MAX_DATAGRAMS).contains(n)),
                 );
                 // [TEMKİNLİ-BAŞLANGIÇ] Hat modeli ilk ölçüme dek tavanın hızında (ölçüldü: profil
                 // hızındaki hat modeliyle pacer burst payı ilk 3 s'de tavanın iki katını gönderdi).

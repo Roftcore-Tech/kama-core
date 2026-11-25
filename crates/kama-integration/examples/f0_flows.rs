@@ -1335,7 +1335,7 @@ fn lg_line(clock: &Clock, sess: &str, origin: Option<Instant>, r: &LineGuardAckT
         |v| {
             format!(
                 "{{\"outcome\":{},\"expect_ns\":{},\"abs_q_ns\":{},\"growth_ns\":{},\
-                 \"interval_g_ns\":{},\"from_pair\":{},\"probe_sent_wire\":{},\
+                 \"interval_g_ns\":{},\"from_pair\":{},\"probe_sent_wire\":{},\"probe_sent_datagrams\":{},\
                  \"base_pace\":{},\"probe_pace\":{}}}",
                 js(&format!("{:?}", v.outcome)),
                 v.expect_ns,
@@ -1344,6 +1344,7 @@ fn lg_line(clock: &Clock, sess: &str, origin: Option<Instant>, r: &LineGuardAckT
                 opt_u(v.interval_g_ns),
                 v.from_pair,
                 v.probe_sent_wire,
+                v.probe_sent_datagrams,
                 v.base_pace,
                 v.probe_pace
             )
