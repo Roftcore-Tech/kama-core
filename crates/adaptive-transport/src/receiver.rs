@@ -490,7 +490,19 @@ impl Receiver {
             // [DARALMA-ALARMI] Yalnız bitmap alıcısında (ölçüm aralığı taşıyan ACK) ve ilk ACK'ten
             // sonra: alarm ACK'i göndericiye daralmanın ölçümünü erken taşır.
             if self.bitmap_rx() && self.ack_budget_first_done {
-                if self.rate_drop.on_arrival_seq(now_ns, b, Some(d.seq)) {
+                // [YÜKSELİŞ ALARMI KORUNUR] Bu ACK aralığında yükseliş alarmı verildiyse daralma
+                // algısı çift değerlerini silmez, kanıt beklemesi de kurmaz. Dedektörün referansı
+                // varış hızıdır; hat açılınca boşalan kuyruk gönderim hızından hızlı varır ve
+                // referansı şişirir, varışlar göndericinin aralığına dönünce dedektör tetiklenir.
+                // `AlarmEvidence`'in ön koşulu (gönderici en az referans hızıyla gönderdi) o durumda
+                // tutmaz; kanıt yeterli sayılır ve alarmı tetikleyen değerler atılırdı (gerçek hat
+                // kaydı: `tests/rise_alarm_survives_false_drop.rs`). Dedektör yine tüketilir; ACK
+                // çıkınca yeniden kurulur. Sınır: hat aynı ACK aralığında yükselip gerçekten
+                // düşerse o düşüş alarmsız kalır, gönderici onu sonraki ACK'in ölçüm aralığından
+                // öğrenir.
+                if self.rate_drop.on_arrival_seq(now_ns, b, Some(d.seq))
+                    && !self.pair.rise_alarm_pending()
+                {
                     self.pair.arm_rise();
                     // [ALARM ARALIĞI · TUR 4] Çift değerleri saklanır ve sıfırlanır: kanıtlı alarm
                     // ACK'i yalnız alarmdan sonraki çiftleri taşır, planlı ACK saklananı geri alır.
@@ -1801,6 +1813,11 @@ impl PairRate {
         self.alarmed = true;
         self.armed = false;
         true
+    }
+
+    /// [YÜKSELİŞ ALARMI KORUNUR] Bu ACK aralığında yükseliş alarmı verildi ve ACK'i henüz çıkmadı.
+    fn rise_alarm_pending(&self) -> bool {
+        self.alarmed
     }
 
     fn field(&self) -> u16 {
