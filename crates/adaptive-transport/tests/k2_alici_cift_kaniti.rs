@@ -246,7 +246,7 @@ fn d5_text_cluster_inside_recovered_pairs() {
 // ---------------------------------------------------------------------------------------------
 // Kart 7175690797: gerçek izin yeniden oynatılması (`f955a7a0`, dört kayıt).
 //
-// Girdi `data/k2_alici_cift_kaniti_f955a7a0.rs`: `cap/B_vb0` ana akış varışları 0–70 s (alıcının
+// Girdi `data/k2_alici_cift_kaniti_f955a7a0.rs`: `cap/B_vb0` ana akış varışları 0–80 s (alıcının
 // durumu, yani ilk ACK, daralma alarmının kurduğu yükseliş referansı ve bütçe kovası, 55 s'den önce
 // kurulur; yalnız 55–70 s penceresi gömülseydi ACK'ler ve alarmlar o durum olmadan çıkardı). seq =
 // Alice çıkış sırası (`cap/A_va0` pid eşlemesi), gövde = IP boyu − 28. ACK'ler yalnız Bob'un
@@ -292,7 +292,8 @@ fn replay(arr: &[(u64, u64, u64)], wire: &[u64], from: u64) -> Replay {
     };
     for &(t, seq, b) in arr {
         release(&mut r, t, &mut o, &mut w);
-        if t >= from {
+        // Sayım yalnız 55–70 s penceresinde (kart 7175690797; veri 80 s'ye dek gömülü).
+        if t >= from && t < 70 * SEC {
             if let Some(pt) = prev {
                 let g = t - pt;
                 let sq = u128::from(g) * 1_000 * u128::from(DECLARED)
@@ -365,7 +366,7 @@ fn compare(
         "== {name}: 55–70 s sayılan {} sıkışmış {}",
         o.counted, o.squeezed
     );
-    for (t, e) in &o.events {
+    for (t, e) in o.events.iter().filter(|(t, _)| *t < 70 * SEC) {
         println!("   olay {:.3} s: {e}", *t as f64 / 1e9);
     }
     for &(t, f, released) in o.acks.iter().filter(|(t, ..)| *t >= from && *t < 70 * SEC) {
@@ -434,4 +435,125 @@ fn trace_replay_four_records_55_70s() {
     // 69,994 s (kayıt 7 042, oynatma 6 930).
     assert_eq!(a15, Some(PAIR_RATE_NONE), "k258-2/1 ACK 15 YOK üretilmedi");
     assert_eq!(s1 + s2 + s3 + s4, 1, "SAPMA sayısı değişti");
+}
+
+/// Kart 7175789957 · 2: toparlanmadan (60 s) sonra Alice'in işlediği ilk üç ACK'in her biri için o
+/// ACK aralığında (önceki bırakılan ACK → bu ACK): sayılan çiftler (en büyük iki değer, tel),
+/// sıkışmış çiftler, çift kaydını sıfırlayan olaylar, ACK alanı ve sonuç sınıfı. Sayım
+/// `PairRate::on_arrival` kurallarının aynası (sıfırlamalardan bağımsız: bir çiftin sayılıp
+/// sayılmadığı yalnız aralığa ve boya bağlıdır); alan gerçek `Receiver`'dan.
+fn first_three_after_recovery(
+    name: &str,
+    arr: &[(u64, u64, u64)],
+    wire: &[u64],
+    rec: &[(u64, i64)],
+    q60: u32,
+) {
+    let o = replay(arr, wire, 0);
+    let profile_95 = 12_500 * 95 / 100;
+    let targets: Vec<u64> = rec
+        .iter()
+        .map(|&(t, _)| t)
+        .filter(|&t| t >= 60 * SEC)
+        .take(3)
+        .collect();
+    // Çift aynası: (an, tel değer, sayıldı mı, sıkışma mı).
+    let mut pairs = Vec::new();
+    let (mut prev, mut after) = (None::<u64>, false);
+    for &(t, _, b) in arr {
+        if let Some(pt) = prev {
+            let g = t - pt;
+            let sq = u128::from(g) * 1_000 * u128::from(DECLARED)
+                < 900 * u128::from(b + OVH) * u128::from(SEC);
+            let counted = !(sq || after) && b >= 800 && g >= 2 * MS;
+            let tel_v = b * SEC / g.max(1) * 1_228 / 1_200;
+            pairs.push((t, tel_v, counted, sq));
+            after = sq;
+        }
+        prev = Some(t);
+    }
+    println!("== {name} · 60,0 s darboğazda duran datagram (Web 7175264356): {q60}");
+    for (k, &t_ack) in targets.iter().enumerate() {
+        let start = o
+            .acks
+            .iter()
+            .map(|&(t, ..)| t)
+            .filter(|&t| t < t_ack)
+            .max()
+            .unwrap_or(0);
+        let inside: Vec<_> = pairs
+            .iter()
+            .filter(|p| p.0 > start && p.0 <= t_ack)
+            .collect();
+        let mut vals: Vec<u64> = inside.iter().filter(|p| p.2).map(|p| p.1).collect();
+        vals.sort_unstable_by(|a, b| b.cmp(a));
+        let sq = inside.iter().filter(|p| p.3).count();
+        let ev: Vec<String> = o
+            .events
+            .iter()
+            .filter(|(t, _)| *t > start && *t <= t_ack)
+            .map(|(t, e)| format!("{e} {:.3}", *t as f64 / 1e9))
+            .collect();
+        let field = o
+            .acks
+            .iter()
+            .find(|(t, ..)| *t == t_ack)
+            .map_or(PAIR_RATE_NONE, |&(_, f, _)| f);
+        let field_tel = (field != PAIR_RATE_NONE).then(|| u64::from(field) * 1_228 / 1_200);
+        let born: Vec<&(u64, u64, bool, bool)> = inside
+            .iter()
+            .copied()
+            .filter(|p| p.2 && p.1 >= profile_95)
+            .collect();
+        let class = if field_tel.is_some_and(|f| f >= profile_95) {
+            "kanıt taşındı".to_string()
+        } else if born.is_empty() {
+            "çift kanıtı doğmadı".to_string()
+        } else {
+            let last_born = born.iter().map(|p| p.0).max().unwrap_or(0);
+            let killer = o
+                .events
+                .iter()
+                .filter(|(t, e)| *t >= born[0].0 && *t <= t_ack && *e != "yükseliş alarmı")
+                .map(|(t, e)| format!("{e} {:.3}", *t as f64 / 1e9))
+                .collect::<Vec<_>>();
+            format!(
+                "doğdu ama silindi (doğan {} çift, sonuncusu {:.3} s; sonraki olaylar: [{}])",
+                born.len(),
+                last_born as f64 / 1e9,
+                killer.join(", ")
+            )
+        };
+        println!(
+            "   ACK {} @ {:.3} s · aralık {:.3}→ · sayılan {} (en büyük iki tel: {:?}) · sıkışmış {} · olaylar [{}] · alan {} → {class}",
+            k + 1,
+            t_ack as f64 / 1e9,
+            start as f64 / 1e9,
+            vals.len(),
+            &vals[..vals.len().min(2)],
+            sq,
+            ev.join(", "),
+            field_tel.map_or("YOK".to_string(), |f| f.to_string()),
+        );
+    }
+}
+
+#[test]
+fn trace_first_three_acks_after_recovery() {
+    first_three_after_recovery(
+        "kancalı-1/1",
+        ARR_KANCALI_1,
+        WIRE_KANCALI_1,
+        REC_KANCALI_1,
+        3,
+    );
+    first_three_after_recovery("k258-1/1", ARR_K258_1, WIRE_K258_1, REC_K258_1, 3);
+    first_three_after_recovery(
+        "k258-1/1-yineleme",
+        ARR_K258_1_YIN,
+        WIRE_K258_1_YIN,
+        REC_K258_1_YIN,
+        3,
+    );
+    first_three_after_recovery("k258-2/1", ARR_K258_2, WIRE_K258_2, REC_K258_2, 0);
 }
