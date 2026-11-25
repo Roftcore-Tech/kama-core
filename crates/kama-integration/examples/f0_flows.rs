@@ -1329,11 +1329,28 @@ fn lg_line(clock: &Clock, sess: &str, origin: Option<Instant>, r: &LineGuardAckT
         Some(FirstWindowOutcome::Verified) => (js("Verified"), None),
         Some(FirstWindowOutcome::NoInfo) => (js("NoInfo"), None),
     };
+    // Yoklama hükmünün girdileri (bu ACK hüküm değilse `null`).
+    let verdict = r.diag.verdict.map_or_else(
+        || "null".to_owned(),
+        |v| {
+            format!(
+                "{{\"outcome\":{},\"expect_ns\":{},\"abs_q_ns\":{},\"growth_ns\":{},\
+                 \"interval_g_ns\":{}}}",
+                js(&format!("{:?}", v.outcome)),
+                v.expect_ns,
+                v.abs_q_ns,
+                v.growth_ns,
+                opt_u(v.interval_g_ns)
+            )
+        },
+    );
     format!(
         "{{\"k\":\"lg\",\"t\":{},\"sess\":{},\"index\":{},\"at_ns\":{},\"largest_seq\":{},\
          \"decision\":{},\"measured\":{},\"g_ns\":{},\"note\":{note},\"pace_before\":{},\
          \"pace_after\":{},\"rate_before\":{},\"rate_after\":{},\"first_window\":{first_window},\
-         \"first_window_bps\":{},\"raised\":{},\"probe_failed\":{}}}",
+         \"first_window_bps\":{},\"raised\":{},\"probe_failed\":{},\"front_wait_ns\":{},\
+         \"by_bytes\":{},\"by_delay\":{},\"backlog_bytes\":{},\"extra_backlog_bytes\":{},\
+         \"pair_bound_wire\":{},\"verdict\":{verdict}}}",
         opt_ms(clock, at),
         js(sess),
         r.index,
@@ -1348,7 +1365,13 @@ fn lg_line(clock: &Clock, sess: &str, origin: Option<Instant>, r: &LineGuardAckT
         opt_u(r.rate_after),
         opt_u(first_window_bps),
         r.raised,
-        r.probe_failed
+        r.probe_failed,
+        opt_u(r.diag.front_wait_ns),
+        opt_u(r.diag.by_bytes),
+        opt_u(r.diag.by_delay),
+        opt_u(r.diag.backlog_bytes),
+        opt_u(r.diag.extra_backlog_bytes),
+        opt_u(r.diag.pair_bound_wire)
     )
 }
 
