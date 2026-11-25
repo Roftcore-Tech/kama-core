@@ -355,6 +355,27 @@ Y1–Y4 ile bu izde **değişmeyen** (karar bekleyen) sayılar: ilk kesme +2 186
 | SK-8 | Ölçüt pencereleri: geçiş penceresi; PTT'nin %20 kayıpta 5 puanlık payı | 2, 3 |
 | SK-9 | Kabul testlerinin kipi: varsayılan PTT biçimi, beyanlı kırmızılar, hedef 1/4 kapısının alıcısı, PoC kipinin birleşim öncesi kapısı | 5 |
 
+### 11.1 Sahip karar kaydı (2026-11-25; #175 yorum 7171705736)
+
+Yukarıdaki başlıklar karara bağlandı. Kaynak metin #175'teki karar kaydıdır; bu tablo onun haritaya
+işlenmiş özetidir, çelişkide kayıt geçerlidir.
+
+| Karar | İçerik | Yanıtladığı başlık | Haritadaki sonucu |
+|---|---|---|---|
+| 1 | Kör pencere kabulün içinde. Düşüşten sonraki ilk saniyelerin metin ve PTT sonucu ayrıca raporlanır ve hesaba girer. Metin ≤ 1 s, zamanında PTT ≥ %75 ve kullanım hedefi geçerli | SK-8 | K9 ölçütün içinde kalır; D4'ün kör pencere kolu (bölüm 14.1) kodla kapanmadığı için bu satırın sonucu yama kümesinden bağımsızdır |
+| 2 | `ack_delay` anlamı korunur; tahmini dönüş kuyruğu bu alana eklenmez. Yoklama hükmü kendi dar kapsamında düzeltilir (#258). Yoklamasız ACK'lerdeki sahte tutma ayrı açık kalır | SK-6 (ölçü kısmı) | Y1 ve K8'in `ack_delay` kolu yazılmaz. D1'in yoklamasız ACK kolu açık |
+| 3 | PTT ve metin davranışı dondurulur: paketleme, tekrar, zaman aşımı, metin gönderim politikası değişmez. Boşaltma beklemesinden muafiyet ertelenir. Önce ve sonra aynı PTT biçimi ve metin yüküyle ölçülür | SK-5 | K7 ertelendi; D10 (bağ E22) bugünkü hâliyle ölçülür |
+| 4 | Tam kuyruk boşaltma açılmaz; reddedilen kuyruk tahmini yolu geri gelmez. Önce #258'in sahte tutmaya etkisi ayrılır; kalan gerçek kuyruk ve 500 ms kısa dip için sonraki karar ondan sonra | SK-2, SK-3 | K6 yazılmaz; D4'ün "kesmede eksik boşaltma" kolu açık kalır. SK-3 karara bağlanmadı |
+| 5 | Paket çifti yoklama hedefini seçer. Kovalı hatta kalıcı tavan artışı, süre ve bayt bütçesi sınırlı bir yoklamanın doğrulamasını ister. #256'nın görevi yükseliş kanıtını doğru ACK'e taşımak ve gerçek ikinci daralmayı korumak. Doğrudan tavan açma yalnız karşılaştırma içindir. Üçüncü ACK'e dek kalıcı ≥ 11 875 B/s ve ardından ≥ %90 tel kullanımı kapısı geçerli; hat 6 250'de kalırsa sahte artış olmaz | SK-4 | K2'nin yerine K2′ (gönderici kodu): `on_pair_rate` tavanı açmaz, yoklamayı hedefler. K3 (merdiven) hedef 4 için devre dışı kalır; D8 değişir |
+| 6 | Kovalı hat kabul düzeneği olarak kalır; tam serileştiren hat yalnız teşhis koludur. Ürün müşteri hattının kova boyunu bilmez. Sıkışma eşiğini 0,85'e çeken deneme (#253) parkta | SK-1 | K5 açık kalır: darboğaz boşken göndericinin kendi çiftleri atılır (D2) |
+| 7 | Sınırlı ACK önceliği ayrı taşıma denemesi olarak onaylı: bütçesi hazır ACK, henüz gönderime verilmemiş metin alındısının önüne geçebilir. %25 ACK bütçesi ve alındı ≤ 4 s kapısı geçerli. #256 ve #258'in önce-sonra kıyasına karışmaz | SK-6 (öncelik kısmı) | Yeni iş K10 (alıcı kodu + `runtime.rs` `UplinkShare`); D5'i kısaltır, bağ E22'ye dokunmaz |
+| 8 | Sabit %3 hız payı eklenmez. Önce bütün tel baytlarının hat hesabına girdiği doğrulanır; pay hâlâ gerekirse kuyruk bütçesinden türetilip bedeliyle getirilir | SK-7 | KN-11 için pay yok. Sayılmayan akış (bağ E24, ≈ 55 B/s) önce hesaba girer |
+| 9 | PoC testi 300 ms pilotu açıkça seçer; ≤ 5 000 bit/s/yön kapısı doğrulanmış eşteki pilota uygulanır. Bilinmeyen eşin 200 ms yolu ve gerçek ilk temas ayrı kaydedilir. V2 genel varsayılan kalır | SK-9 | Yalnız test dosyaları; döngüye dokunmaz |
+
+Uygulama sırası (karar kaydından): #256 ve #258 paralel → her yama aynı senaryo ve tohumla hedefli
+önce-sonra → tek SHA'da birleşik kabul (iki cc-port uç, bitmap, doğrulanmış 300 ms PTT, dosya yükü).
+PTT ya da metin davranışına ilişkin yeni karar, bu sabit yükte taşıma etkisi görüldükten sonra.
+
 ---
 
 ## 12. Bu haritanın sınırları
@@ -375,14 +396,16 @@ Y1–Y4 ile bu izde **değişmeyen** (karar bekleyen) sayılar: ilk kesme +2 186
 |---|---|---|---|---|---|
 | K1 | Yükseliş alarmının taşıdığı çift ölçüsü sahte daralma algısıyla siliniyor | KN-03 | D3 | Y3 | #256 (yazıcı: alıcı kodunun tek yazıcısı) |
 | K2 | Yoklama sürerken çift gönderimi kapalı | — (E16) | D8 | — | yok; gerekçesi commit geçmişinde yazılı değil (`565fe6f7`) |
-| K3 | Yoklama merdiveni hızlanma ölçütünü yapısal olarak karşılayamaz | KN-10 | — | — | kod işi değil; karar SK-4 |
-| K4 | Yoklama hükmü dönüş hattındaki beklemeyi ileri kuyruk sayıyor | KN-01 | D1 | Y1 (alıcıda; henüz PR yok) | #258 (göndericide: hüküm, ACK aralık taşıyorsa cephe ve aralık ölçüsünün anlaşmasını ister) |
+| K3 | Yoklama merdiveni hızlanma ölçütünü yapısal olarak karşılayamaz | KN-10 | — | — | kod işi değil; karar 5 ile hedef 4 çift ölçüsünün seçtiği yoklamaya bağlandı (K2′) |
+| K4 | Yoklama hükmü dönüş hattındaki beklemeyi ileri kuyruk sayıyor | KN-01 | D1 | Y1 (alıcıda; yazılmaz, karar 2) | #258 (göndericide: hüküm, ACK aralık taşıyorsa cephe ve aralık ölçüsünün anlaşmasını ister) |
 | K4b | Aynı gecikme fazlası pacer'a iki kez yazılıyor | KN-02 | D1 | Y2 | geri çekildi (aşağıda 15.4) |
-| K5 | Kovalı darboğazda gerçek çiftler "sıkışmış" sayılıyor | KN-04 | D2 | — | #253 (karar SK-1'i bekliyor) |
-| K6 | Kesmedeki boşaltma kuyruğun ACK'ten sonra büyüyen kısmını kırpıyor | KN-05 | D4 | — | karar SK-2 |
-| K7 | Koruma tutması öncelikli şeridi (metin, PTT) de durduruyor | KN-06 | D10 (bağ E22) | — | karar SK-5 |
-| K8 | Alarm ACK'i dolu dönüş hattına çıkıyor; bekleme `ack_delay`'de yok | KN-01, KN-08 | D1, D5 | Y1 (henüz PR yok) | öncelik kısmı karar SK-6 |
-| K9 | Kör pencerede gönderilen metin fiziksel olarak 1 s'yi aşar | KN-07 | D4 | — | karar SK-8 |
+| K5 | Kovalı darboğazda gerçek çiftler "sıkışmış" sayılıyor | KN-04 | D2 | — | #253 parkta (karar 6); kusur açık |
+| K6 | Kesmedeki boşaltma kuyruğun ACK'ten sonra büyüyen kısmını kırpıyor | KN-05 | D4 | — | yazılmaz (karar 4); kusur açık |
+| K7 | Koruma tutması öncelikli şeridi (metin, PTT) de durduruyor | KN-06 | D10 (bağ E22) | — | ertelendi (karar 3) |
+| K8 | Alarm ACK'i dolu dönüş hattına çıkıyor; bekleme `ack_delay`'de yok | KN-01, KN-08 | D1, D5 | Y1 yazılmaz (karar 2) | `ack_delay` kolu kapandı (karar 2); öncelik kısmı K10 (karar 7) |
+| K9 | Kör pencerede gönderilen metin fiziksel olarak 1 s'yi aşar | KN-07 | D4 | — | ölçütün içinde (karar 1); kodla kapanmaz |
+| K2′ | Çift ölçüsü tavanı doğrudan açmaz; süre ve bayt bütçesi sınırlı yoklamanın hedefi olur | — (E16) | D8 | — | gönderici kodunun yazıcısında (karar 5) |
+| K10 | Bütçesi hazır ACK, gönderime verilmemiş metin alındısının arkasında bekliyor | KN-08 | D5 | — | alıcı kodunun yazıcısında, ayrı PR (karar 7) |
 
 Not: bu belgenin önceki sürümünde K7 "kör pencere" anlamındaydı; ortak adlandırmada o kusur K9'dur.
 
@@ -447,11 +470,21 @@ Kalan bedel: beş sahte alarm ACK'i ≈ 355 B, 100 s'lik dönüş kapasitesinin 
 evredeki kalıcı kuyruğu (D7) da erittiğini gösterdi; tek sayım hedef 3'ü kötüleştirebilir. Y2 yama
 kümesinden çıkarıldı.
 
-**15.5 Kararlı evre (D7, KN-11) için ek gözlemler.** 35–58 s penceresinde bekleme saniye başına en
-çok 197–438 ms; 188 paketin 15'i 393 ms'yi aştı (14'ü en çok 45 ms ile, biri 559 ms).
+**15.5 Kararlı evre (D7, KN-11) için ek gözlemler.**
+
+*Düzeltme (2026-11-25).* Bu bölümün ilk sürümü beklemeyi darboğaza girişten çıkışa, paketin kendi
+serileşmesi dahil ölçmüştü (188 paketin 15'i 393 ms'nin üstünde, en çok 559 ms). Sınır öyle
+tanımlı değil: 393 ms, 6 250 B/s'de önde duran iki tam datagramın serileşmesidir ve benzetimde
+serileşmenin başlamasına dek geçen süreyle karşılaştırılır (`starved_line_sim.rs`, hat modelinde
+`start - now`). Kabul değerlendiricisi (#252, `packet_waits`) de kendi serileşmeyi çıkarır. Bu
+tanımla aynı kayıtta 35–58 s penceresinde 188 paketin **hiçbiri** 393 ms'yi aşmıyor: en çok
+386,7 ms (57,5 s'de bir tam datagram), medyan 116 ms. Pay 6 ms'dir; kararlı evre bu kayıtta sınırın
+içinde, ama sınıra dayalı. Darboğazın taşıdığı 144 019 B, pencere kapasitesinin %100,19'u
+(değerlendiricinin bir datagramlık payı içinde).
 - Darboğaza sunulan toplam 6 261 B/s: ana akış 6 206 + ters oturumun ACK akışı 55 B/s. Hattın
   %100,2'si (E24 ile aynı).
-- Çiftin ikinci datagramı tasarım gereği iki serileşme bekler (344 ms): 393 ms sınırının %88'i.
+- Çiftin ikinci datagramı tasarım gereği birincinin serileşmesini bekler (172 ms; kendi serileşmesiyle
+  girişten çıkışa 344 ms): sınırın %44'ü.
 - 49,36 s'deki yoklama, aynı ACK'in ölçüm aralığı kuyruğun 212 ms büyüdüğünü gösterirken başladı
   (`lg` kaydı `g_ns`). Doğrulama cephe ölçüsüne bakar (LG:1605-1622); aralık ölçüsü örnek eşiğinin
   altında kaldığı için yok sayılır. Aynı ACK'te iki ölçü çelişir ve yukarı yön zayıf olanı dinler.
