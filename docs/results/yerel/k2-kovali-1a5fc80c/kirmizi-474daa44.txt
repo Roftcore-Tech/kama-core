@@ -1,0 +1,344 @@
+
+running 67 tests
+test line_guard::tests::a_failed_probe_level_bounds_the_pair_lower_bound ... ok
+test line_guard::tests::a_late_partial_verdict_ack_is_inconclusive_not_failed ... ok
+test line_guard::tests::a_late_verdict_ack_on_the_return_line_is_not_a_failed_probe ... ok
+test line_guard::tests::a_real_failed_probe_is_still_failed_in_interval_mode ... ok
+test line_guard::tests::a_real_failed_probe_with_a_partial_interval_is_failed_and_drained ... ok
+test line_guard::tests::a_real_narrowing_with_partial_verdict_intervals_is_still_measured ... ok
+test line_guard::tests::a_small_return_wait_with_a_partial_interval_reads_as_a_failed_probe_with_a_bounded_hold ... ok
+test line_guard::tests::an_app_limited_probe_is_inconclusive ... ok
+test line_guard::tests::backlog_estimate_never_exceeds_the_bottleneck_queue ... ok
+test line_guard::tests::ek6_no_permanent_raise_on_an_unchanged_line_for_any_mix ... ignored, EK 6: sahip kararı bekliyor — bugün kırmızı
+test line_guard::tests::ek6_report_small_datagram_probe_on_an_unchanged_line ... ok
+test line_guard::tests::ek7_d1_a_saturated_delay_ack_keeps_its_place_in_the_ack_count ... FAILED
+test line_guard::tests::ek7_d1_a_stale_frontier_ack_keeps_its_place_in_the_ack_count ... FAILED
+test line_guard::tests::ek7_d1_an_ack_arriving_before_its_frontier_was_sent_keeps_its_place_in_the_ack_count ... FAILED
+test line_guard::tests::ek7_d1_an_ack_on_a_zero_rate_return_line_keeps_its_place_in_the_ack_count ... FAILED
+test line_guard::tests::ek7_d1_an_ack_with_a_delay_beyond_now_keeps_its_place_in_the_ack_count ... FAILED
+test line_guard::tests::ek7_d1_an_ack_without_a_front_point_as_the_third_ack_closes_the_probe_like_a_measured_one ... FAILED
+test line_guard::tests::ek7_d1_an_ack_without_a_frontier_record_keeps_its_place_in_the_ack_count ... FAILED
+test line_guard::tests::ek7_d1_an_ack_without_its_wire_size_keeps_its_place_in_the_ack_count ... FAILED
+test line_guard::tests::ek7_d4_a_failed_pair_probe_keeps_its_window_for_the_next_sample ... FAILED
+test line_guard::tests::ek7_d4_control_a_sample_after_the_probe_renews_the_single_shot ... ok
+test line_guard::tests::ek7_d4_the_probes_own_queue_does_not_renew_the_single_shot ... FAILED
+test line_guard::tests::ek8_a_pair_probe_closed_without_evidence_keeps_its_window ... FAILED
+test line_guard::tests::ek8_a_sample_that_closes_a_registered_pair_probe_keeps_its_window ... FAILED
+test line_guard::tests::ek8_an_ack_without_a_front_point_gives_no_coverage_evidence ... FAILED
+test line_guard::tests::ek8_an_inconclusive_pair_probe_keeps_its_window_past_the_first_sample ... FAILED
+test line_guard::tests::ek8_control_a_sample_past_the_window_renews_after_an_own_queue_sample ... ok
+test line_guard::tests::ek8_the_provisional_flat_interval_does_not_erase_a_registered_pair_probe ... FAILED
+test line_guard::tests::failed_probes_on_a_steady_narrow_line_keep_the_queue_bounded ... ok
+test line_guard::tests::first_window_after_a_small_text_then_a_chunk_gives_no_info ... ok
+test line_guard::tests::first_window_measures_a_slow_line_in_one_ack ... ok
+test line_guard::tests::first_window_skips_a_small_leading_datagram_on_an_honest_line ... ok
+test line_guard::tests::first_window_verifies_an_honest_line ... ok
+test line_guard::tests::first_window_without_a_usable_measurement_is_inert ... ok
+test line_guard::tests::gap_budget_is_not_armed_when_priority_fills_half_the_line ... ok
+test line_guard::tests::honest_line_gives_no_sample_even_with_unequal_ack_sizes ... ok
+test line_guard::tests::inflated_span_cannot_raise_the_guard ... ok
+test line_guard::tests::interval_and_front_agree_on_a_recovered_line_and_the_probe_passes ... ok
+test line_guard::tests::interval_measures_a_slow_line_from_records_two_fronts_back ... ok
+test line_guard::tests::interval_mode_never_takes_a_front_sample_and_arms_the_gap_budget ... ok
+test line_guard::tests::measured_narrow_line_recovers_when_the_line_speeds_up ... ok
+test line_guard::tests::non_adjacent_alarm_interval_measures_only_the_new_line ... ok
+test line_guard::tests::overflow_is_sized_by_the_pair_lower_bound_when_the_mix_shortens_the_interval ... ok
+test line_guard::tests::overflow_needs_queue_evidence_and_excess_loss ... ok
+test line_guard::tests::pair_lower_bound_is_consumed_by_one_ack ... ok
+test line_guard::tests::pair_lower_bound_reopens_a_recovered_line_without_a_standing_queue ... ok
+test line_guard::tests::pair_probe_budget_is_six_datagrams_and_7368_wire_bytes_whichever_first ... ok
+test line_guard::tests::pair_probe_defers_once_then_is_inconclusive_when_the_next_interval_starts_later ... ok
+test line_guard::tests::pair_probe_expires_inconclusive_at_the_third_ack_and_later_acks_cannot_decide ... ok
+test line_guard::tests::pair_probe_on_an_unchanged_narrow_line_fails_once_and_drains ... ok
+test line_guard::tests::pair_probe_raises_a_recovered_line_at_the_second_ack ... ok
+test line_guard::tests::pair_probe_second_ack_before_probe_end_is_counted_and_third_ack_decides ... ok
+test line_guard::tests::pair_probe_setting_above_the_approved_cap_is_rejected ... ok
+test line_guard::tests::pair_probe_window_starts_after_the_hold_and_default_is_the_direct_path ... ok
+test line_guard::tests::pair_probe_without_a_covering_interval_is_inconclusive_and_single_shot ... ok
+test line_guard::tests::return_delay_step_does_not_lock_a_low_rate ... ok
+test line_guard::tests::slow_line_is_measured_within_one_percent_and_never_above_profile ... ok
+test line_guard::tests::stale_or_saturated_acks_give_no_point ... ok
+test line_guard::tests::start_budget_clock_starts_at_the_first_send_and_idle_time_does_not_accumulate ... ok
+test line_guard::tests::start_budget_is_a_burst_then_half_the_profile_line ... ok
+test line_guard::tests::start_budget_never_deadlocks_a_narrow_profile ... ok
+test line_guard::tests::successive_inconclusive_probes_on_a_narrow_line_keep_the_queue_bounded ... ok
+test line_guard::tests::verified_interval_raises_the_ceiling_up_to_the_profile ... ok
+test sender::pair_probe_unmeasured_ack_tests::ek8_an_unmeasured_third_ack_closes_the_probe_and_the_excess_reaches_the_pacer ... FAILED
+test sender::pair_probe_unmeasured_ack_tests::ek8_s1_an_ack_without_mapped_seqs_keeps_its_place_in_the_ack_count ... FAILED
+test sender::pair_probe_unmeasured_ack_tests::ek8_s3_an_ack_without_a_sent_seq_keeps_its_place_in_the_ack_count ... FAILED
+test sender::pair_probe_unmeasured_ack_tests::ek8_unmeasured_acks_change_nothing_while_the_experiment_is_off ... ok
+
+failures:
+
+---- line_guard::tests::ek7_d1_a_saturated_delay_ack_keeps_its_place_in_the_ack_count stdout ----
+EK7-D1 SaturatedDelay
+EK7-D1 SaturatedDelay | ACK | outcome | pace | çift yoklaması kayıtlı | samples | pair_probes | pair_probe_spent | refuted_bps | pair_raises
+EK7-D1 SaturatedDelay | ACK1 (yoklamayı başlatır) | None | 6250 | true | 0 | 1 | true | None | 0
+EK7-D1 SaturatedDelay | ACK2 (ack_delay doymuş) | None | 6250 | true | 0 | 1 | true | None | 0
+EK7-D1 SaturatedDelay | ACK3 (ölçülü, kapsamıyor) | Some(Deferred) | 6250 | true | 0 | 1 | true | None | 0
+EK7-D1 SaturatedDelay | ACK4 (kapsıyor, g küçük) | Some(Passed) | 12500 | false | 0 | 1 | true | None | 1
+
+thread 'line_guard::tests::ek7_d1_a_saturated_delay_ack_keeps_its_place_in_the_ack_count' (356229) panicked at crates/adaptive-transport/src/line_guard.rs:5068:9:
+EK7-D1 SaturatedDelay: [
+    "ACK3 hükmü Some(Deferred) (istenen Inconclusive)",
+    "ACK3'ten sonra çift yoklaması kaydı açık (istenen kapalı)",
+    "ACK4'ten sonra tavan 12500 (istenen 6250)",
+    "ACK4 kalıcı artış yazdı (pair_raises 1)",
+]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- line_guard::tests::ek7_d1_a_stale_frontier_ack_keeps_its_place_in_the_ack_count stdout ----
+EK7-D1 StaleFrontier
+EK7-D1 StaleFrontier | ACK | outcome | pace | çift yoklaması kayıtlı | samples | pair_probes | pair_probe_spent | refuted_bps | pair_raises
+EK7-D1 StaleFrontier | ACK1 (yoklamayı başlatır) | None | 6250 | true | 0 | 1 | true | None | 0
+EK7-D1 StaleFrontier | ACK2 (cephe ilerlemiyor) | None | 6250 | true | 0 | 1 | true | None | 0
+EK7-D1 StaleFrontier | ACK3 (ölçülü, kapsamıyor) | Some(Deferred) | 6250 | true | 0 | 1 | true | None | 0
+EK7-D1 StaleFrontier | ACK4 (kapsıyor, g küçük) | Some(Passed) | 12500 | false | 0 | 1 | true | None | 1
+
+thread 'line_guard::tests::ek7_d1_a_stale_frontier_ack_keeps_its_place_in_the_ack_count' (356230) panicked at crates/adaptive-transport/src/line_guard.rs:5068:9:
+EK7-D1 StaleFrontier: [
+    "ACK3 hükmü Some(Deferred) (istenen Inconclusive)",
+    "ACK3'ten sonra çift yoklaması kaydı açık (istenen kapalı)",
+    "ACK4'ten sonra tavan 12500 (istenen 6250)",
+    "ACK4 kalıcı artış yazdı (pair_raises 1)",
+]
+
+---- line_guard::tests::ek7_d1_an_ack_arriving_before_its_frontier_was_sent_keeps_its_place_in_the_ack_count stdout ----
+EK7-D1 TauBeforeSend
+EK7-D1 TauBeforeSend | ACK | outcome | pace | çift yoklaması kayıtlı | samples | pair_probes | pair_probe_spent | refuted_bps | pair_raises
+EK7-D1 TauBeforeSend | ACK1 (yoklamayı başlatır) | None | 6250 | true | 0 | 1 | true | None | 0
+EK7-D1 TauBeforeSend | ACK2 (τ gönderimden önce) | None | 6250 | true | 0 | 1 | true | None | 0
+EK7-D1 TauBeforeSend | ACK3 (ölçülü, kapsamıyor) | Some(Deferred) | 6250 | true | 0 | 1 | true | None | 0
+EK7-D1 TauBeforeSend | ACK4 (kapsıyor, g küçük) | Some(Passed) | 12500 | false | 0 | 1 | true | None | 1
+
+thread 'line_guard::tests::ek7_d1_an_ack_arriving_before_its_frontier_was_sent_keeps_its_place_in_the_ack_count' (356231) panicked at crates/adaptive-transport/src/line_guard.rs:5068:9:
+EK7-D1 TauBeforeSend: [
+    "ACK3 hükmü Some(Deferred) (istenen Inconclusive)",
+    "ACK3'ten sonra çift yoklaması kaydı açık (istenen kapalı)",
+    "ACK4'ten sonra tavan 12500 (istenen 6250)",
+    "ACK4 kalıcı artış yazdı (pair_raises 1)",
+]
+
+---- line_guard::tests::ek7_d1_an_ack_on_a_zero_rate_return_line_keeps_its_place_in_the_ack_count stdout ----
+EK7-D1 ReturnRateZero
+EK7-D1 ReturnRateZero | ACK | outcome | pace | çift yoklaması kayıtlı | samples | pair_probes | pair_probe_spent | refuted_bps | pair_raises
+EK7-D1 ReturnRateZero | ACK1 (yoklamayı başlatır) | None | 6250 | true | 0 | 1 | true | None | 0
+EK7-D1 ReturnRateZero | ACK2 (dönüş hattı hızı 0) | None | 6250 | true | 0 | 1 | true | None | 0
+EK7-D1 ReturnRateZero | ACK3 (ölçülü, kapsamıyor) | Some(Deferred) | 6250 | true | 0 | 1 | true | None | 0
+EK7-D1 ReturnRateZero | ACK4 (kapsıyor, g küçük) | Some(Passed) | 12500 | false | 0 | 1 | true | None | 1
+
+thread 'line_guard::tests::ek7_d1_an_ack_on_a_zero_rate_return_line_keeps_its_place_in_the_ack_count' (356232) panicked at crates/adaptive-transport/src/line_guard.rs:5068:9:
+EK7-D1 ReturnRateZero: [
+    "ACK3 hükmü Some(Deferred) (istenen Inconclusive)",
+    "ACK3'ten sonra çift yoklaması kaydı açık (istenen kapalı)",
+    "ACK4'ten sonra tavan 12500 (istenen 6250)",
+    "ACK4 kalıcı artış yazdı (pair_raises 1)",
+]
+
+---- line_guard::tests::ek7_d1_an_ack_with_a_delay_beyond_now_keeps_its_place_in_the_ack_count stdout ----
+EK7-D1 AckDelayBeyondNow
+EK7-D1 AckDelayBeyondNow | ACK | outcome | pace | çift yoklaması kayıtlı | samples | pair_probes | pair_probe_spent | refuted_bps | pair_raises
+EK7-D1 AckDelayBeyondNow | ACK1 (yoklamayı başlatır) | None | 6250 | true | 0 | 1 | true | None | 0
+EK7-D1 AckDelayBeyondNow | ACK2 (ack_delay > ACK anı) | None | 6250 | true | 0 | 1 | true | None | 0
+EK7-D1 AckDelayBeyondNow | ACK3 (ölçülü, kapsamıyor) | Some(Deferred) | 6250 | true | 0 | 1 | true | None | 0
+EK7-D1 AckDelayBeyondNow | ACK4 (kapsıyor, g küçük) | Some(Passed) | 12500 | false | 0 | 1 | true | None | 1
+
+thread 'line_guard::tests::ek7_d1_an_ack_with_a_delay_beyond_now_keeps_its_place_in_the_ack_count' (356233) panicked at crates/adaptive-transport/src/line_guard.rs:5068:9:
+EK7-D1 AckDelayBeyondNow: [
+    "ACK3 hükmü Some(Deferred) (istenen Inconclusive)",
+    "ACK3'ten sonra çift yoklaması kaydı açık (istenen kapalı)",
+    "ACK4'ten sonra tavan 12500 (istenen 6250)",
+    "ACK4 kalıcı artış yazdı (pair_raises 1)",
+]
+
+---- line_guard::tests::ek7_d1_an_ack_without_a_front_point_as_the_third_ack_closes_the_probe_like_a_measured_one stdout ----
+
+thread 'line_guard::tests::ek7_d1_an_ack_without_a_front_point_as_the_third_ack_closes_the_probe_like_a_measured_one' (356234) panicked at crates/adaptive-transport/src/line_guard.rs:5133:42:
+ACK3 hüküm kaydı
+
+---- line_guard::tests::ek7_d1_an_ack_without_a_frontier_record_keeps_its_place_in_the_ack_count stdout ----
+EK7-D1 FrontierRecordGone
+EK7-D1 FrontierRecordGone | ACK | outcome | pace | çift yoklaması kayıtlı | samples | pair_probes | pair_probe_spent | refuted_bps | pair_raises
+EK7-D1 FrontierRecordGone | ACK1 (yoklamayı başlatır) | None | 6250 | true | 0 | 1 | true | None | 0
+EK7-D1 FrontierRecordGone | ACK2 (cephe kaydı yok) | None | 6250 | true | 0 | 1 | true | None | 0
+EK7-D1 FrontierRecordGone | ACK3 (ölçülü, kapsamıyor) | Some(Deferred) | 6250 | true | 0 | 1 | true | None | 0
+EK7-D1 FrontierRecordGone | ACK4 (kapsıyor, g küçük) | Some(Passed) | 12500 | false | 0 | 1 | true | None | 1
+
+thread 'line_guard::tests::ek7_d1_an_ack_without_a_frontier_record_keeps_its_place_in_the_ack_count' (356235) panicked at crates/adaptive-transport/src/line_guard.rs:5068:9:
+EK7-D1 FrontierRecordGone: [
+    "ACK3 hükmü Some(Deferred) (istenen Inconclusive)",
+    "ACK3'ten sonra çift yoklaması kaydı açık (istenen kapalı)",
+    "ACK4'ten sonra tavan 12500 (istenen 6250)",
+    "ACK4 kalıcı artış yazdı (pair_raises 1)",
+]
+
+---- line_guard::tests::ek7_d1_an_ack_without_its_wire_size_keeps_its_place_in_the_ack_count stdout ----
+EK7-D1 NoAckWire
+EK7-D1 NoAckWire | ACK | outcome | pace | çift yoklaması kayıtlı | samples | pair_probes | pair_probe_spent | refuted_bps | pair_raises
+EK7-D1 NoAckWire | ACK1 (yoklamayı başlatır) | None | 6250 | true | 0 | 1 | true | None | 0
+EK7-D1 NoAckWire | ACK2 (ACK tel boyu yok) | None | 6250 | true | 0 | 1 | true | None | 0
+EK7-D1 NoAckWire | ACK3 (ölçülü, kapsamıyor) | Some(Deferred) | 6250 | true | 0 | 1 | true | None | 0
+EK7-D1 NoAckWire | ACK4 (kapsıyor, g küçük) | Some(Passed) | 12500 | false | 0 | 1 | true | None | 1
+
+thread 'line_guard::tests::ek7_d1_an_ack_without_its_wire_size_keeps_its_place_in_the_ack_count' (356236) panicked at crates/adaptive-transport/src/line_guard.rs:5068:9:
+EK7-D1 NoAckWire: [
+    "ACK3 hükmü Some(Deferred) (istenen Inconclusive)",
+    "ACK3'ten sonra çift yoklaması kaydı açık (istenen kapalı)",
+    "ACK4'ten sonra tavan 12500 (istenen 6250)",
+    "ACK4 kalıcı artış yazdı (pair_raises 1)",
+]
+
+---- line_guard::tests::ek7_d4_a_failed_pair_probe_keeps_its_window_for_the_next_sample stdout ----
+EK7-D4-KALDI
+EK7-D4-KALDI | ACK | outcome | pace | çift yoklaması kayıtlı | samples | pair_probes | pair_probe_spent | refuted_bps | pair_raises
+EK7-D4-KALDI | örnek (aralık pencereye uzanır) | None | 6250 | false | 1 | 1 | false | None | 0
+EK7-D4-KALDI | aynı çift ölçüsü | None | 6250 | true | 1 | 2 | true | None | 0
+
+thread 'line_guard::tests::ek7_d4_a_failed_pair_probe_keeps_its_window_for_the_next_sample' (356237) panicked at crates/adaptive-transport/src/line_guard.rs:5334:9:
+assertion `left == right` failed
+  left: (None, false)
+ right: (Some(12500), true)
+
+---- line_guard::tests::ek7_d4_the_probes_own_queue_does_not_renew_the_single_shot stdout ----
+EK7-D4
+EK7-D4 | ACK | outcome | pace | çift yoklaması kayıtlı | samples | pair_probes | pair_probe_spent | refuted_bps | pair_raises
+EK7-D4 | ACK1 (yoklamayı başlatır) | None | 6250 | true | 0 | 1 | true | None | 0
+EK7-D4 | ACK2 (kapsamıyor) | Some(Deferred) | 6250 | true | 0 | 1 | true | None | 0
+EK7-D4 | ACK3 (kapsamıyor) | Some(Inconclusive) | 6250 | false | 0 | 1 | true | None | 0
+EK7-D4 | ACK4 (örnek; aralık yoklama dönemine uzanır) | None | 6250 | false | 1 | 1 | false | None | 0
+EK7-D4 | ACK5 (aynı çift ölçüsü) | None | 6250 | true | 1 | 2 | true | None | 0
+
+thread 'line_guard::tests::ek7_d4_the_probes_own_queue_does_not_renew_the_single_shot' (356239) panicked at crates/adaptive-transport/src/line_guard.rs:5291:9:
+EK7-D4: [
+    "ACK4'ten sonra refuted_bps None (istenen Some(12500))",
+    "pair_probes 2 (istenen 1)",
+    "ACK5'te çift yoklaması kayıtlı (istenen yok)",
+    "ACK5'ten sonra refuted_bps None (istenen Some(12500))",
+]
+
+---- line_guard::tests::ek8_a_pair_probe_closed_without_evidence_keeps_its_window stdout ----
+EK8-KANIT-YOK
+EK8-KANIT-YOK | ACK | outcome | pace | çift yoklaması kayıtlı | samples | pair_probes | pair_probe_spent | refuted_bps | pair_raises
+EK8-KANIT-YOK | ACK2 (kapsıyor, kanıt yok) | Some(NoEvidence) | 6250 | false | 0 | 1 | true | None | 0
+EK8-KANIT-YOK | ACK3 (örnek; aralık pencereye uzanır) | None | 3442 | false | 1 | 1 | false | None | 0
+EK8-KANIT-YOK | ACK4 (aynı çift ölçüsü) | None | 3442 | true | 1 | 2 | true | None | 0
+
+thread 'line_guard::tests::ek8_a_pair_probe_closed_without_evidence_keeps_its_window' (356240) panicked at crates/adaptive-transport/src/line_guard.rs:5389:9:
+EK8-KANIT-YOK: [
+    "ACK3 (örnek; aralık pencereye uzanır): refuted_bps None, pair_probe_spent false (istenen Some(12500), true)",
+    "ACK4 (aynı çift ölçüsü): pair_probes 2 (istenen 1)",
+    "ACK4 (aynı çift ölçüsü): çift yoklaması kayıtlı (istenen yok)",
+]
+
+---- line_guard::tests::ek8_a_sample_that_closes_a_registered_pair_probe_keeps_its_window stdout ----
+EK8-KAYITLIYKEN-ÖRNEK
+EK8-KAYITLIYKEN-ÖRNEK | ACK | outcome | pace | çift yoklaması kayıtlı | samples | pair_probes | pair_probe_spent | refuted_bps | pair_raises
+EK8-KAYITLIYKEN-ÖRNEK | ACK2 (örnek; yoklama kayıtlıyken) | None | 6250 | false | 1 | 1 | true | Some(12500) | 0
+EK8-KAYITLIYKEN-ÖRNEK | ACK3 (örnek; aralık pencereye uzanır) | None | 6250 | false | 2 | 1 | false | None | 0
+EK8-KAYITLIYKEN-ÖRNEK | ACK4 (aynı çift ölçüsü) | None | 6250 | true | 2 | 2 | true | None | 0
+
+thread 'line_guard::tests::ek8_a_sample_that_closes_a_registered_pair_probe_keeps_its_window' (356241) panicked at crates/adaptive-transport/src/line_guard.rs:5389:9:
+EK8-KAYITLIYKEN-ÖRNEK: [
+    "ACK3 (örnek; aralık pencereye uzanır): refuted_bps None, pair_probe_spent false (istenen Some(12500), true)",
+    "ACK4 (aynı çift ölçüsü): pair_probes 2 (istenen 1)",
+    "ACK4 (aynı çift ölçüsü): çift yoklaması kayıtlı (istenen yok)",
+]
+
+---- line_guard::tests::ek8_an_ack_without_a_front_point_gives_no_coverage_evidence stdout ----
+EK8-KAPSAMA
+EK8-KAPSAMA | ACK | outcome | pace | çift yoklaması kayıtlı | samples | pair_probes | pair_probe_spent | refuted_bps | pair_raises
+EK8-KAPSAMA | ACK2 (ack_delay doymuş; aralığı kapsıyor) | None | 6250 | true | 0 | 1 | true | None | 0
+EK8-KAPSAMA | ACK3 (ölçülü, kapsamıyor) | Some(Deferred) | 6250 | true | 0 | 1 | true | None | 0
+EK8-KAPSAMA | ACK4 (kapsıyor, g küçük) | Some(Passed) | 12500 | false | 0 | 1 | true | None | 1
+
+thread 'line_guard::tests::ek8_an_ack_without_a_front_point_gives_no_coverage_evidence' (356242) panicked at crates/adaptive-transport/src/line_guard.rs:5633:9:
+EK8-KAPSAMA: [
+    "ACK2 hükmü None, kayıt açık true (istenen Deferred, açık)",
+    "ACK3 hükmü Some(Deferred), kayıt açık true (istenen Inconclusive, kapalı)",
+    "ACK4 kalıcı artış yazdı (tavan 12500, pair_raises 1)",
+]
+
+---- line_guard::tests::ek8_an_inconclusive_pair_probe_keeps_its_window_past_the_first_sample stdout ----
+EK8-SONUÇSUZ
+EK8-SONUÇSUZ | ACK | outcome | pace | çift yoklaması kayıtlı | samples | pair_probes | pair_probe_spent | refuted_bps | pair_raises
+EK8-SONUÇSUZ | ACK3 (kapsamıyor → SONUÇSUZ) | Some(Inconclusive) | 6250 | false | 0 | 1 | true | None | 0
+EK8-SONUÇSUZ | ACK4 (örnek; aralık pencereye uzanır) | None | 6250 | false | 1 | 1 | false | None | 0
+EK8-SONUÇSUZ | ACK5 (örnek; aralık pencereye uzanır) | None | 6250 | false | 2 | 1 | false | None | 0
+EK8-SONUÇSUZ | ACK6 (aynı çift ölçüsü) | None | 6250 | true | 2 | 2 | true | None | 0
+
+thread 'line_guard::tests::ek8_an_inconclusive_pair_probe_keeps_its_window_past_the_first_sample' (356243) panicked at crates/adaptive-transport/src/line_guard.rs:5389:9:
+EK8-SONUÇSUZ: [
+    "ACK4 (örnek; aralık pencereye uzanır): refuted_bps None, pair_probe_spent false (istenen Some(12500), true)",
+    "ACK5 (örnek; aralık pencereye uzanır): refuted_bps None, pair_probe_spent false (istenen Some(12500), true)",
+    "ACK6 (aynı çift ölçüsü): pair_probes 2 (istenen 1)",
+    "ACK6 (aynı çift ölçüsü): çift yoklaması kayıtlı (istenen yok)",
+]
+
+---- line_guard::tests::ek8_the_provisional_flat_interval_does_not_erase_a_registered_pair_probe stdout ----
+EK8-GEÇİCİ: geçici evre true + kayıtlı çift yoklaması (taban 6250, hedef 12500, pencere 5180629677..5770069677 ns)
+EK8-GEÇİCİ
+EK8-GEÇİCİ | ACK | outcome | pace | çift yoklaması kayıtlı | samples | pair_probes | pair_probe_spent | refuted_bps | pair_raises
+EK8-GEÇİCİ | ACK-3 (kapsamıyor; bütçe hızında düz aralık) | Some(Deferred) | 6250 | false | 1 | 1 | true | None | 0
+EK8-GEÇİCİ | ACK-4 (kapsamıyor) | None | 6250 | false | 1 | 1 | true | None | 0
+EK8-GEÇİCİ: ACK-3'ten sonra geçici evre false; ACK-4'ten sonra bütçe false çıkış Some(Flat(6250))
+
+thread 'line_guard::tests::ek8_the_provisional_flat_interval_does_not_erase_a_registered_pair_probe' (356245) panicked at crates/adaptive-transport/src/line_guard.rs:5735:9:
+EK8-GEÇİCİ: [
+    "ACK-3'ten sonra çift yoklaması kaydı yok (istenen kayıtlı)",
+    "ACK-4 hükmü None (istenen Inconclusive)",
+]
+
+---- sender::pair_probe_unmeasured_ack_tests::ek8_an_unmeasured_third_ack_closes_the_probe_and_the_excess_reaches_the_pacer stdout ----
+EK8-GÖNDERİCİ ACK2 MeasuredNotCovering: hüküm Some((Deferred, 1)), tavan 6250
+EK8-GÖNDERİCİ ACK3 Empty: hüküm Some((Deferred, 1)), tavan 6250, hat modeli tutması 0 ns, iz None
+EK8-GÖNDERİCİ ACK4 (kapsıyor): hüküm Some((Passed, 2)), tavan 12500, pair_raises 1, pair_probes 1
+
+thread 'sender::pair_probe_unmeasured_ack_tests::ek8_an_unmeasured_third_ack_closes_the_probe_and_the_excess_reaches_the_pacer' (356281) panicked at crates/adaptive-transport/src/sender.rs:17202:13:
+assertion `left == right` failed: Empty: ACK3 hükmü (istenen: SONUÇSUZ, yoklamadan sonraki 2. ACK)
+  left: Some((Deferred, 1))
+ right: Some((Inconclusive, 2))
+
+---- sender::pair_probe_unmeasured_ack_tests::ek8_s1_an_ack_without_mapped_seqs_keeps_its_place_in_the_ack_count stdout ----
+EK8-GÖNDERİCİ ACK2 Empty: hüküm None, tavan 6250
+EK8-GÖNDERİCİ ACK3 MeasuredNotCovering: hüküm Some((Deferred, 1)), tavan 6250, hat modeli tutması 0 ns, iz Some((IntervalNoSample, Some(Deferred)))
+EK8-GÖNDERİCİ ACK4 (kapsıyor): hüküm Some((Passed, 2)), tavan 12500, pair_raises 1, pair_probes 1
+
+thread 'sender::pair_probe_unmeasured_ack_tests::ek8_s1_an_ack_without_mapped_seqs_keeps_its_place_in_the_ack_count' (356282) panicked at crates/adaptive-transport/src/sender.rs:17165:9:
+assertion `left == right` failed: ACK3 hükmü (istenen: SONUÇSUZ, yoklamadan sonraki 2. ACK)
+  left: Some((Deferred, 1))
+ right: Some((Inconclusive, 2))
+
+---- sender::pair_probe_unmeasured_ack_tests::ek8_s3_an_ack_without_a_sent_seq_keeps_its_place_in_the_ack_count stdout ----
+EK8-GÖNDERİCİ ACK2 Foreign: hüküm None, tavan 6250
+EK8-GÖNDERİCİ ACK3 MeasuredNotCovering: hüküm Some((Deferred, 1)), tavan 6250, hat modeli tutması 0 ns, iz Some((IntervalNoSample, Some(Deferred)))
+EK8-GÖNDERİCİ ACK4 (kapsıyor): hüküm Some((Passed, 2)), tavan 12500, pair_raises 1, pair_probes 1
+
+thread 'sender::pair_probe_unmeasured_ack_tests::ek8_s3_an_ack_without_a_sent_seq_keeps_its_place_in_the_ack_count' (356283) panicked at crates/adaptive-transport/src/sender.rs:17181:9:
+assertion `left == right` failed: ACK3 hükmü (istenen: SONUÇSUZ, yoklamadan sonraki 2. ACK)
+  left: Some((Deferred, 1))
+ right: Some((Inconclusive, 2))
+
+
+failures:
+    line_guard::tests::ek7_d1_a_saturated_delay_ack_keeps_its_place_in_the_ack_count
+    line_guard::tests::ek7_d1_a_stale_frontier_ack_keeps_its_place_in_the_ack_count
+    line_guard::tests::ek7_d1_an_ack_arriving_before_its_frontier_was_sent_keeps_its_place_in_the_ack_count
+    line_guard::tests::ek7_d1_an_ack_on_a_zero_rate_return_line_keeps_its_place_in_the_ack_count
+    line_guard::tests::ek7_d1_an_ack_with_a_delay_beyond_now_keeps_its_place_in_the_ack_count
+    line_guard::tests::ek7_d1_an_ack_without_a_front_point_as_the_third_ack_closes_the_probe_like_a_measured_one
+    line_guard::tests::ek7_d1_an_ack_without_a_frontier_record_keeps_its_place_in_the_ack_count
+    line_guard::tests::ek7_d1_an_ack_without_its_wire_size_keeps_its_place_in_the_ack_count
+    line_guard::tests::ek7_d4_a_failed_pair_probe_keeps_its_window_for_the_next_sample
+    line_guard::tests::ek7_d4_the_probes_own_queue_does_not_renew_the_single_shot
+    line_guard::tests::ek8_a_pair_probe_closed_without_evidence_keeps_its_window
+    line_guard::tests::ek8_a_sample_that_closes_a_registered_pair_probe_keeps_its_window
+    line_guard::tests::ek8_an_ack_without_a_front_point_gives_no_coverage_evidence
+    line_guard::tests::ek8_an_inconclusive_pair_probe_keeps_its_window_past_the_first_sample
+    line_guard::tests::ek8_the_provisional_flat_interval_does_not_erase_a_registered_pair_probe
+    sender::pair_probe_unmeasured_ack_tests::ek8_an_unmeasured_third_ack_closes_the_probe_and_the_excess_reaches_the_pacer
+    sender::pair_probe_unmeasured_ack_tests::ek8_s1_an_ack_without_mapped_seqs_keeps_its_place_in_the_ack_count
+    sender::pair_probe_unmeasured_ack_tests::ek8_s3_an_ack_without_a_sent_seq_keeps_its_place_in_the_ack_count
+
+test result: FAILED. 48 passed; 18 failed; 1 ignored; 0 measured; 281 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `-p adaptive-transport --lib`
