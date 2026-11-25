@@ -36,7 +36,7 @@ fn replay(arrivals: &[(u64, u64, u64)], wire: &[u64]) -> Replay {
     let mut out = Replay::default();
     let mut w = 0usize;
     let (mut rises, mut drops) = (0u64, 0u64);
-    let mut release = |r: &mut Receiver, upto: u64, out: &mut Replay, w: &mut usize| {
+    let release = |r: &mut Receiver, upto: u64, out: &mut Replay, w: &mut usize| {
         while *w < wire.len() && wire[*w] <= upto {
             let at = wire[*w];
             r.set_uplink_yield(false);
@@ -123,4 +123,88 @@ fn trace_rise_alarm_value_reaches_the_alarm_ack() {
         "alarm ACK'i alarmın değerini taşımıyor: alarm {at_alarm}, ACK {}",
         pair(ack)
     );
+}
+
+/// Duran kuyruklu tek FIFO darboğaz: her varış bir öncekinden kendi tel serileşmesi kadar sonra
+/// (`(b + 28) / hat`). `plan`: (bu andan itibaren, hat B/s). 1 046 B gövde, kayıpsız.
+fn standing_queue(plan: &[(u64, u64)], until: u64) -> Vec<(u64, u64, u64)> {
+    let b = 1_046u64;
+    let (mut t, mut seq, mut v) = (SEC, 0u64, Vec::new());
+    while t < until {
+        v.push((t, seq, b));
+        let line = plan
+            .iter()
+            .rev()
+            .find(|&&(from, _)| t >= from)
+            .map_or(12_500, |&(_, l)| l);
+        t += (b + 28) * SEC / line;
+        seq += 1;
+    }
+    v
+}
+
+fn every(from: u64, step: u64, until: u64) -> Vec<u64> {
+    (0..)
+        .map(|i| from + i * step)
+        .take_while(|&t| t < until)
+        .collect()
+}
+
+/// Karşı örnek: yükselişten hemen sonra GERÇEK ikinci düşüş. Alarm ACK'i düşüş sonrası çiftleri
+/// taşır; yükseliş değeri sızmaz (alan ≤ 6 875).
+#[test]
+fn real_second_drop_after_rise_does_not_carry_the_rise_value() {
+    let plan = [
+        (0, 12_500),
+        (20 * SEC, 6_250),
+        (40 * SEC, 12_500),
+        (40 * SEC + 400_000_000, 6_250),
+    ];
+    let mut wire = every(2 * SEC, 4 * SEC, 40 * SEC);
+    wire.push(43 * SEC);
+    let o = replay(&standing_queue(&plan, 44 * SEC), &wire);
+    let &(t_rise, ..) = o
+        .rise
+        .iter()
+        .find(|(t, ..)| *t >= 40 * SEC)
+        .expect("40 s'de yükseliş alarmı yok");
+    let drop_after = o.drop.iter().find(|(t, _)| *t > t_rise);
+    println!(
+        "yükseliş {:.3} s, sonraki daralma {drop_after:?}",
+        t_rise as f64 / 1e9
+    );
+    let (t_ack, ack) = o.acks.iter().find(|(t, _)| *t > t_rise).expect("ACK yok");
+    println!("ACK {:.3} s alan {}", *t_ack as f64 / 1e9, pair(ack));
+    assert!(
+        drop_after.is_some_and(|(t, _)| t < t_ack),
+        "ikinci düşüşün kanıtı ACK'ten önce gelmedi"
+    );
+    assert!(
+        pair(ack) <= 6_875,
+        "yükseliş değeri gerçek ikinci düşüşün ACK'ine sızdı: {}",
+        pair(ack)
+    );
+}
+
+/// Karşı örnek: hat düşüşten sonra 6 250'de kalır. Yükseliş alarmı yok, alan hattı aşmaz.
+#[test]
+fn honest_6250_line_shows_no_rise() {
+    let plan = [(0, 12_500), (20 * SEC, 6_250)];
+    let o = replay(
+        &standing_queue(&plan, 60 * SEC),
+        &every(2 * SEC, 4 * SEC, 60 * SEC),
+    );
+    assert!(
+        o.rise.is_empty(),
+        "dürüst 6 250 hatta yükseliş alarmı: {:?}",
+        o.rise
+    );
+    for (t, f) in o.acks.iter().filter(|(t, _)| *t > 24 * SEC) {
+        let p = pair(f);
+        assert!(
+            p == PAIR_RATE_NONE || u64::from(p) <= 6_250 * 1_046 / 1_074 + 1,
+            "{:.3} s alan {p}",
+            *t as f64 / 1e9
+        );
+    }
 }
