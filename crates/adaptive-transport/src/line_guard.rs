@@ -436,6 +436,10 @@ pub const FIRST_WINDOW_MIN_WAIT_NS: u64 = 5_000_000;
 /// evresinde PTT'yi 0,97–1,25 s'ye itiyordu. [CAL]
 pub const PROBE_QUEUE_NS: u64 = 80_000_000;
 
+/// [ÇİFT YOKLAMASI · DENEY · sahip kararı 2026-11-25] Deneyin onaylı üst sınırı: tek yoklamanın
+/// toplam bütçesi en çok bu kadar tam datagramdır. Daha büyük ayar reddedilir (deney kapalı kalır).
+pub const PAIR_PROBE_MAX_DATAGRAMS: u64 = 6;
+
 /// [ÖLÇÜM-ARALIĞI · İŞ-34 sözleşmesi §2–3] Alıcının ölçtüğü ileri varış aralığı (motor seq
 /// uzayında): M'nin en küçük (`first_seq`) ve en büyük (`last_seq`) seq'i ve alıcıda ikisinin ilk
 /// varışları arasındaki süre (`rx_span_ns`).
@@ -645,8 +649,9 @@ pub struct ProbeVerdictDiag {
     pub outcome: ProbeOutcome,
     /// [ÇİFT YOKLAMASI · DENEY] Hedefi alıcının çift ölçüsünden seçilmiş yoklama.
     pub from_pair: bool,
-    /// Yoklama penceresinde fiilen gönderilen tel baytı.
+    /// Yoklama penceresinde fiilen gönderilen tel baytı ve datagram sayısı.
     pub probe_sent_wire: u64,
+    pub probe_sent_datagrams: u64,
     /// Yoklama öncesi ve yoklama tavanı (B/s, tel).
     pub base_pace: u64,
     pub probe_pace: u64,
@@ -774,6 +779,13 @@ struct Probe {
     from_pair: bool,
     /// [ÇİFT YOKLAMASI · DENEY] Hüküm bir kez ertelendi (ilk ACK'in aralığı yoklamayı kapsamadı).
     deferred: bool,
+    /// [ÇİFT YOKLAMASI · DENEY] Yoklama tavanı devrede ([`LineGuard::tick`] pencere başında açar).
+    started: bool,
+    /// [ÇİFT YOKLAMASI · DENEY] Toplam bütçe (tel baytı; 0 = bütçesiz, olağan yoklama). Pencerede
+    /// gönderilen bayt, bir tam datagram daha sığmayacak düzeye gelince yoklama biter.
+    budget_wire: u64,
+    /// Pencerede fiilen gönderilen datagram sayısı (gözlem; `sent` tel baytıdır).
+    sent_datagrams: u64,
 }
 
 /// [İLK-PENCERE] İlk ACK'in varış penceresinden çıkan sonuç (gözlem).
@@ -873,6 +885,7 @@ impl LineGuard {
         if let Some(p) = self.probe.as_mut() {
             if now_ns >= p.start_ns && now_ns < p.until_ns {
                 p.sent = p.sent.saturating_add(wire);
+                p.sent_datagrams = p.sent_datagrams.saturating_add(1);
             }
         }
         if self
@@ -957,6 +970,39 @@ impl LineGuard {
     /// Tavan değiştiyse `true` (gönderici hat modelini yeni tavana alır).
     pub fn tick(&mut self, now_ns: u64) -> bool {
         match self.probe {
+            // [ÇİFT YOKLAMASI · DENEY] Pencere başında yoklama tavanı açılır; süre dolunca YA DA
+            // bütçeye bir tam datagram daha sığmayınca yoklama biter: fiilen gönderilen tel baytı
+            // bütçeyi aşamaz. Erken bitişte pencere ve beklenen iz fiilî süreye çekilir.
+            Some(p) if p.from_pair => {
+                if !p.started {
+                    if now_ns >= p.start_ns && now_ns < p.until_ns {
+                        if let Some(q) = self.probe.as_mut() {
+                            q.started = true;
+                        }
+                        self.pace_bps = p.probe_pace;
+                        return true;
+                    }
+                    return false;
+                }
+                let mtu_wire = crate::rate::DEFAULT_MTU + self.line.datagram_overhead;
+                let spent = p.sent.saturating_add(mtu_wire) > p.budget_wire;
+                if self.pace_bps == p.probe_pace && (now_ns >= p.until_ns || spent) {
+                    if now_ns < p.until_ns {
+                        let span = now_ns.saturating_sub(p.start_ns);
+                        if let Some(q) = self.probe.as_mut() {
+                            q.until_ns = now_ns;
+                            q.expect_ns = u64::try_from(
+                                u128::from(p.probe_pace - p.base_pace) * u128::from(span)
+                                    / u128::from(p.base_pace.max(1)),
+                            )
+                            .unwrap_or(u64::MAX);
+                        }
+                    }
+                    self.pace_bps = p.base_pace;
+                    return true;
+                }
+                false
+            }
             Some(p) if now_ns >= p.until_ns && self.pace_bps == p.probe_pace => {
                 self.pace_bps = p.base_pace;
                 true
@@ -1494,7 +1540,8 @@ impl LineGuard {
     /// tavanı doğrudan açmaz, bütçesi `n` tam datagram olan tek yoklamanın hedefini seçer. `None`
     /// (varsayılan) bugünkü doğrudan yoldur. Ürün varsayılanı değildir.
     pub fn set_pair_probe(&mut self, datagrams: Option<u64>) {
-        self.pair_probe = datagrams.filter(|&n| n > 0);
+        // Onaylı üst sınırın üstündeki ayar reddedilir: deney açılmaz (bugünkü yol).
+        self.pair_probe = datagrams.filter(|n| (1..=PAIR_PROBE_MAX_DATAGRAMS).contains(n));
     }
 
     /// [ÇİFT YOKLAMASI · DENEY] Çift ölçüsü yoklama hedefini seçer (kovalı darboğazda boşken
@@ -1528,15 +1575,18 @@ impl LineGuard {
         let Some(point) = self.points.back().copied() else {
             return;
         };
-        // Bu ACK'in hat modeline yazdırdığı tutma: yoklama o bittikten sonra başlar.
+        // Bu ACK'in hat modeline yazdırdığı tutma: yoklama o bittikten sonra başlar. Tavan pencere
+        // başına dek TABANDA kalır (tutma taban hızında erir); yoklama tavanını pencere başında
+        // `tick` açar. Böylece yoklama hızındaki her gönderim pencerenin içindedir ve sayılır.
         let held = self
             .ack_diag
             .backlog_bytes
             .unwrap_or(0)
             .saturating_add(self.ack_diag.extra_backlog_bytes.unwrap_or(0));
-        let hold_ns = ns_for(held, up).unwrap_or(0);
+        let hold_ns = ns_for(held, base).unwrap_or(0);
         let mtu_wire = crate::rate::DEFAULT_MTU + self.line.datagram_overhead;
-        let span_ns = ns_for(datagrams.saturating_mul(mtu_wire), up).unwrap_or(0);
+        let budget_wire = datagrams.saturating_mul(mtu_wire);
+        let span_ns = ns_for(budget_wire, up).unwrap_or(0);
         let start_ns = self.ack_now_ns.saturating_add(hold_ns);
         let expect_ns =
             u64::try_from(u128::from(up - base) * u128::from(span_ns) / u128::from(base.max(1)))
@@ -1552,8 +1602,11 @@ impl LineGuard {
             by_interval: false,
             from_pair: true,
             deferred: false,
+            started: false,
+            budget_wire,
+            sent_datagrams: 0,
         });
-        self.pace_bps = up;
+        self.pace_bps = base;
         self.pair_probe_spent = true;
         self.pair_probes = self.pair_probes.saturating_add(1);
     }
@@ -1857,6 +1910,7 @@ impl LineGuard {
                 outcome: ProbeOutcome::Deferred,
                 from_pair: true,
                 probe_sent_wire: probe_sent.unwrap_or(0),
+                probe_sent_datagrams: p.sent_datagrams,
                 base_pace: p.base_pace,
                 probe_pace: p.probe_pace,
             });
@@ -1978,6 +2032,7 @@ impl LineGuard {
                 outcome,
                 from_pair: p.from_pair,
                 probe_sent_wire: probe_sent.unwrap_or(0),
+                probe_sent_datagrams: p.sent_datagrams,
                 base_pace: p.base_pace,
                 probe_pace: p.probe_pace,
             });
@@ -2000,6 +2055,16 @@ impl LineGuard {
                         u128::from(p.base_pace) * u128::from(p.expect_ns) / 1_000_000_000,
                     )
                     .unwrap_or(u64::MAX);
+                    // [ÇİFT YOKLAMASI · DENEY] Bütçeli yoklamada fazla, fiilen gönderilen bayttan
+                    // sayılır (pencere bütçeyle erken bitebilir; tasarım değeri üst sınırdır).
+                    if p.from_pair {
+                        let base_bytes = u64::try_from(
+                            u128::from(p.base_pace) * u128::from(span) / 1_000_000_000,
+                        )
+                        .unwrap_or(u64::MAX);
+                        inconclusive_drain = inconclusive_drain
+                            .min(probe_sent.unwrap_or(0).saturating_sub(base_bytes));
+                    }
                 }
             } else if best.is_none() {
                 if passed {
@@ -2210,6 +2275,9 @@ impl LineGuard {
             by_interval: false,
             from_pair: false,
             deferred: false,
+            started: true,
+            budget_wire: 0,
+            sent_datagrams: 0,
         });
         self.pace_bps = up;
     }
@@ -3394,23 +3462,64 @@ mod tests {
     /// tavan 2. ACK'te kalıcı profil hattında.
     #[test]
     fn pair_probe_raises_a_recovered_line_at_the_second_ack() {
+        // Hüküm ACK'inin hemen ardında dur: hüküm kaydı okunabilsin.
         let mut g = pair_probe_guard();
         let (acks, _) = drive_core(
             &mut g,
             PROFILE,
             None,
-            30 * SEC,
+            12 * SEC,
             5 * SEC,
             0,
             0,
             Some(PAIR_AT_PROFILE),
         );
-        assert_eq!(acks[0].1, PROFILE, "1. ACK: yoklama tavanı");
+        assert_eq!(acks.len(), 2, "iki ACK beklenir: {acks:?}");
+        assert_eq!(
+            acks[0].1, 6_250,
+            "1. ACK'te tavan kalıcı açılmaz (pencere sonra başlar)"
+        );
+        assert_eq!(g.pair_probes(), 1);
+        let v = g.ack_diag().verdict.expect("2. ACK hüküm ACK'i");
+        println!(
+            "çift yoklaması: {} datagram, {} B tel (bütçe {} datagram / {} B), sonuç {:?}, \
+             aralık artışı {:?} ns, beklenen iz {} ns",
+            v.probe_sent_datagrams,
+            v.probe_sent_wire,
+            PAIR_PROBE_MAX_DATAGRAMS,
+            PAIR_PROBE_MAX_DATAGRAMS * 1228,
+            v.outcome,
+            v.interval_g_ns,
+            v.expect_ns
+        );
+        assert!(v.from_pair);
+        assert_eq!(v.outcome, ProbeOutcome::Passed);
+        assert!(
+            (1..=6).contains(&v.probe_sent_datagrams),
+            "fiilen gönderilen datagram: {}",
+            v.probe_sent_datagrams
+        );
+        assert!(
+            v.probe_sent_wire <= PAIR_PROBE_MAX_DATAGRAMS * 1228,
+            "bütçe aşıldı: {} B",
+            v.probe_sent_wire
+        );
         assert_eq!(g.pair_raises(), 1, "çift yoklaması geçmedi");
         assert_eq!(acks[1].1, PROFILE, "2. ACK'te kalıcı değil: {acks:?}");
-        assert_eq!(g.pace_bps(), PROFILE);
         assert_eq!(g.rate_bps(), None, "koruma kalkmadı");
         assert_eq!(g.probe_failures(), 0);
+    }
+
+    /// [ÇİFT YOKLAMASI · DENEY] Onaylı üst sınırın (6) üstündeki ayar reddedilir: deney açılmaz.
+    #[test]
+    fn pair_probe_setting_above_the_approved_cap_is_rejected() {
+        let mut g = measured_narrow_guard();
+        g.set_pair_probe(Some(PAIR_PROBE_MAX_DATAGRAMS + 1));
+        assert!(g.pair_probe.is_none(), "6 üstü ayar kabul edildi");
+        g.set_pair_probe(Some(0));
+        assert!(g.pair_probe.is_none());
+        g.set_pair_probe(Some(PAIR_PROBE_MAX_DATAGRAMS));
+        assert_eq!(g.pair_probe, Some(6));
     }
 
     /// [ÇİFT YOKLAMASI · DENEY] Yoklamadan sonraki ilk ACK'in aralığı yoklamayı kapsamıyor (yalnız
@@ -3419,31 +3528,42 @@ mod tests {
     /// SONUÇSUZ, kalıcı artış yok. (Kapsama gönderim anlarından okunur, ACK türünden değil.)
     #[test]
     fn pair_probe_defers_once_then_is_inconclusive_when_the_next_interval_starts_later() {
+        // 3. ACK'in hemen ardında dur: SONUÇSUZ hükmün kaydı ve o andaki ret seviyesi okunur.
         let mut g = pair_probe_guard();
         let (acks, _) = drive_core(
             &mut g,
             PROFILE,
             None,
-            30 * SEC,
+            17 * SEC,
             5 * SEC,
             0,
             1,
             Some(PAIR_AT_PROFILE),
         );
+        assert_eq!(acks.len(), 3, "üç ACK beklenir: {acks:?}");
         assert_eq!(
             acks[1].1, 6_250,
             "ertelenen hükümde tavan tabanda: {acks:?}"
         );
+        let v = g.ack_diag().verdict.expect("3. ACK hüküm ACK'i");
+        println!(
+            "kapsamayan aralık: sonuç {:?}, {} datagram / {} B gönderildi, yazılan fazla {:?} B",
+            v.outcome,
+            v.probe_sent_datagrams,
+            v.probe_sent_wire,
+            g.ack_diag().extra_backlog_bytes
+        );
+        assert_eq!(v.outcome, ProbeOutcome::Inconclusive, "SONUÇSUZ beklenir");
+        assert!(v.probe_sent_datagrams <= 6);
+        assert_eq!(g.refuted_bps, None, "SONUÇSUZ hükümde ret seviyesi yazıldı");
         assert_eq!(
             g.pair_raises(),
             0,
             "kapsamayan aralıkla kalıcı artış: {acks:?}"
         );
+        assert_eq!(acks[2].1, 6_250, "tavan kalıcı açıldı: {acks:?}");
         assert_eq!(g.pair_probes(), 1, "ikinci çift yoklaması başladı");
-        assert!(
-            acks.iter().skip(1).all(|&(_, pace, _)| pace < PROFILE),
-            "kalıcı artış ya da ikinci yoklama: {acks:?}"
-        );
+        assert!(g.pair_probe_spent);
     }
 
     /// [ÇİFT YOKLAMASI · DENEY] İki ACK de yoklamayı kapsamıyor: SONUÇSUZ. Tavan kalıcı açılmaz ve
@@ -3542,13 +3662,37 @@ mod tests {
         assert_eq!(p.probe_pace, PROFILE);
         assert_eq!(
             p.start_ns,
-            now + 5_000 * SEC / PROFILE,
-            "pencere tutmadan sonra başlamalı"
+            now + 5_000 * SEC / base,
+            "pencere tutmadan sonra başlamalı (tutma taban hızında erir)"
         );
         assert_eq!(
             p.until_ns - p.start_ns,
             6 * 1228 * SEC / PROFILE,
             "bütçe 6 datagram"
+        );
+        assert_eq!(p.budget_wire, 6 * 1228);
+        assert_eq!(g.pace_bps(), base, "tavan pencere başına dek tabanda");
+        assert!(!g.tick(p.start_ns - 1), "pencereden önce tavan açılmaz");
+        assert!(g.tick(p.start_ns), "pencere başında tavan açılır");
+        assert_eq!(g.pace_bps(), PROFILE);
+        // Bütçe: pencere içinde 6 × 1 200 B gönderilince yedinci sığmaz; tavan tabana döner.
+        for k in 0..6u64 {
+            assert_eq!(g.pace_bps(), PROFILE, "{k}. datagramdan önce yoklama bitti");
+            g.on_sent(10_000 + k, p.start_ns + k * MS, 1172);
+            let _ = g.tick(p.start_ns + k * MS);
+        }
+        assert_eq!(
+            g.pace_bps(),
+            base,
+            "bütçe dolduğu hâlde yoklama tavanı açık"
+        );
+        let q = g.probe.expect("yoklama kaydı hükme dek durur");
+        assert_eq!(q.sent_datagrams, 6);
+        assert!(
+            q.sent <= q.budget_wire,
+            "bütçe aşıldı: {} > {}",
+            q.sent,
+            q.budget_wire
         );
         assert_eq!(g.pair_raises(), 0, "deneyde çift tavanı doğrudan açmaz");
 
