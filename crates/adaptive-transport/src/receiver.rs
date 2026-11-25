@@ -535,7 +535,12 @@ impl Receiver {
                 if largest == ev.last_seq() {
                     self.drop_alarm_wait = false;
                     self.alarm_evidence = None;
-                    self.alarm_pair_saved = [0, 0];
+                    // [YÜKSELİŞ KANITI · K1] Bu ACK aralığında yükseliş alarmı verildiyse saklanan
+                    // değerler alarmı tetikleyen ölçüdür: atılmaz. Alarm ACK'i yine önce alarmdan
+                    // sonraki çiftleri taşır; yoksa saklananı (`alarm_pair_carry`).
+                    if !self.pair.alarmed {
+                        self.alarm_pair_saved = [0, 0];
+                    }
                     self.drop_alarm = true;
                     self.alarm_yield_clear_ns = 0;
                     self.diag_drop_alarms += 1;
@@ -841,6 +846,19 @@ impl Receiver {
     /// doldurdu, oturum ucunun göndericisi (hat boşalmasını bekler) alındıyı 6 s geciktirdi (tohum
     /// 2: alındı dönüşü 2,2 → 6,9 s). Alarm seyrektir (hız değişimi başına bir).
     /// Hat önü bilinmiyorsa (0) bugünkü kural (hat boşalana dek bekle).
+    /// [ALARM ARALIĞI · TUR 4 · YÜKSELİŞ KANITI · K1] Çıkan ACK'in çift alanına birleşecek saklanan
+    /// değerler. Bekleme sürerken (planlı ACK) saklananın hepsi (adayın kuralı). Kanıtlı bırakmadan
+    /// sonra saklanan yalnız aynı aralıkta yükseliş alarmı verildiyse durur (`on_datagram`) ve
+    /// yalnız alarmdan sonra çift ölçülmediyse birleşir: düşüş sonrası çift varsa o kazanır,
+    /// yükseliş değeri gerçek ikinci düşüşün ACK'ine sızmaz.
+    fn alarm_pair_carry(&self) -> [u64; 2] {
+        if self.drop_alarm_wait || self.pair.top[1] == 0 {
+            self.alarm_pair_saved
+        } else {
+            [0, 0]
+        }
+    }
+
     fn yield_to_uplink(&mut self, now_ns: u64) -> bool {
         if !self.uplink_yield {
             return false;
@@ -1207,8 +1225,9 @@ impl Receiver {
             self.alarm_evidence = None;
             // [ALARM ARALIĞI · TUR 4] Planlı ACK beklemeyi bitirdiyse bildirilen değer (yükseliş
             // referansı) adayınki gibi bütün çiftlerden: saklanan değerler geri birleşir.
-            self.pair
-                .restore(std::mem::take(&mut self.alarm_pair_saved));
+            let carry = self.alarm_pair_carry();
+            self.alarm_pair_saved = [0, 0];
+            self.pair.restore(carry);
             self.rate_drop.on_ack(now_ns);
             self.pair.on_ack();
             self.note_reported(&frame);
@@ -1499,7 +1518,7 @@ impl Receiver {
             if let Some(bm) = frame.bitmap.as_mut() {
                 // [ALARM ARALIĞI · TUR 4] Bekleme sürerken çıkan (planlı) ACK adayın kuralıyla:
                 // algılamada saklanan değerler birleşir (bekleme yokken `[0, 0]`, alan bugünkü).
-                bm.pair_rate = self.pair.field_with(self.alarm_pair_saved);
+                bm.pair_rate = self.pair.field_with(self.alarm_pair_carry());
                 bm.ptt_lean = self.ack_bitmap_ptt;
                 bm.ptt_coalesce = self.ack_bitmap_ptt_coalesce;
             }
