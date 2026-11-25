@@ -1609,6 +1609,9 @@ pub struct LineGuardAckTrace {
     /// Bu ACK'te süreli yoklamanın hükmü: kalıcı yükseltme / başarısızlık.
     pub raised: bool,
     pub probe_failed: bool,
+    /// Bu ACK'in kuyruk tahmini ve hüküm girdileri ([`crate::line_guard::AckDiag`]; salt gözlem).
+    /// Koruma bu ACK'e danışmadıysa (`NotConsulted`) boştur.
+    pub diag: crate::line_guard::AckDiag,
 }
 
 /// [İZ-ARALIK] Korumanın gözlem durumu (kaydın önce / sonra farkı için).
@@ -1621,6 +1624,7 @@ struct LineGuardSnap {
     raises: u64,
     probe_failures: u64,
     first_window: Option<crate::line_guard::FirstWindowOutcome>,
+    diag: crate::line_guard::AckDiag,
 }
 
 impl LineGuardSnap {
@@ -1633,6 +1637,7 @@ impl LineGuardSnap {
             raises: g.raises(),
             probe_failures: g.probe_failures(),
             first_window: g.first_window(),
+            diag: g.ack_diag(),
         }
     }
 }
@@ -1706,6 +1711,11 @@ fn line_guard_trace_record(
         first_window,
         raised: after.raises > before.raises,
         probe_failed: after.probe_failures > before.probe_failures,
+        diag: if largest.is_some() {
+            after.diag
+        } else {
+            crate::line_guard::AckDiag::default()
+        },
     }
 }
 

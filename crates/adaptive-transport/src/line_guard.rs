@@ -599,6 +599,56 @@ pub struct LineGuard {
     /// ([`Self::on_pair_rate`]); yukarı yönlü kanıtla (başarılı yoklama, ret üstü çift) ya da
     /// aşağı yönlü örnekle (hat yeniden ölçüldü) düşer.
     refuted_bps: Option<u64>,
+    /// [GÖZLEM] Son işlenen ACK'in kuyruk tahmini ve hüküm girdileri ([`Self::ack_diag`]).
+    ack_diag: AckDiag,
+}
+
+/// [GÖZLEM] Süreli yoklamanın hüküm ACK'indeki sonucu (salt gözlem).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeOutcome {
+    /// Hat yoklama hızında: tavan kalıcı yükseldi.
+    Passed,
+    /// Hat yoklama öncesi tavanda: ret seviyesi yazıldı, fazlası boşaltıldı.
+    Failed,
+    /// İki ölçü ayrıştı (ya da artış belirsiz): tavan yoklama öncesine döndü, kuyruk yazılmadı.
+    Inconclusive,
+    /// Gönderici yoklamayı sınamadı (uygulama sınırlı): hüküm yok.
+    NoEvidence,
+    /// Aynı ACK aşağı yönlü örnek verdi: yoklama hükümsüz düştü.
+    Superseded,
+}
+
+/// [GÖZLEM] Hüküm ACK'inin girdileri (salt gözlem).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProbeVerdictDiag {
+    /// Hat değişmediyse yoklamanın kuracağı kuyruk (ns); eşik bunun yarısı.
+    pub expect_ns: u64,
+    /// Cephe ölçüsü: hüküm cephesinin kuyruğu (gecikme − taban, ns).
+    pub abs_q_ns: u64,
+    /// Cephe ölçüsü: hüküm cephesi − yoklamanın başladığı nokta (ns).
+    pub growth_ns: u64,
+    /// Alıcının ölçüm aralığındaki kuyruk artışı (ns); `None` = bu ACK'te aralık yok.
+    pub interval_g_ns: Option<u64>,
+    pub outcome: ProbeOutcome,
+}
+
+/// [GÖZLEM] Son işlenen ACK'in kuyruk tahmini ve hüküm girdileri (salt gözlem: hiçbir karar bu
+/// yapıyı okumaz). Cephesi ilerlemeyen ya da kaydı düşmüş ACK'te alanlar boştur.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AckDiag {
+    /// Cephenin kuyruk beklemesi (`τ − s − taban`, ns).
+    pub front_wait_ns: Option<u64>,
+    /// Gönderilen − boşalan bayt tahmini.
+    pub by_bytes: Option<u64>,
+    /// Cephe beklemesi × hız tahmini (son noktaların en büyüğüyle).
+    pub by_delay: Option<u64>,
+    /// Hat modeline yazılan kuyruk ve ek (yazılmadıysa `None`).
+    pub backlog_bytes: Option<u64>,
+    pub extra_backlog_bytes: Option<u64>,
+    /// Bu ACK bir yoklamanın hükmüyse girdileri.
+    pub verdict: Option<ProbeVerdictDiag>,
+    /// ACK'in taşıdığı kapasite alt sınırı (tel B/s).
+    pub pair_bound_wire: Option<u64>,
 }
 
 /// [İKİNCİ-ÖLÇÜM] Başlangıç bütçesini kaldıran kanıt (gözlem).
@@ -756,6 +806,7 @@ impl LineGuard {
             start_confirmed: false,
             start_exit: None,
             refuted_bps: None,
+            ack_diag: AckDiag::default(),
         }
     }
 
@@ -1442,6 +1493,12 @@ impl LineGuard {
         self.pair_raises
     }
 
+    /// [GÖZLEM] Son işlenen ACK'in kuyruk tahmini ve hüküm girdileri (salt gözlem).
+    #[must_use]
+    pub fn ack_diag(&self) -> AckDiag {
+        self.ack_diag
+    }
+
     /// [ÖLÇÜM-ARALIĞI] [`Self::on_ack`] ve çerçevenin ölçüm aralığı (`None` = bu ACK'te ölçüm yok).
     /// Ölçüm varken aşağı yönlü örneği yalnız aralığın kuyruk artışı verir; cephe tahmincisinin
     /// kuralı modül belgesindedir ("Ölçüm aralığı").
@@ -1456,6 +1513,18 @@ impl LineGuard {
         self.pair_allowed = false;
         // [TAŞMA · ÇİFT ALT SINIRI] Yalnız bu ACK'in alt sınırı (bayat değer kullanılmaz).
         let pair_bound = self.pair_bound_wire.take();
+        self.ack_diag = AckDiag {
+            pair_bound_wire: pair_bound,
+            ..AckDiag::default()
+        };
+        // [HÜKÜM · ARALIK] Aralığın ilk ucunun gönderim anı: aralık yoklamanın başından öncesini
+        // kapsıyor mu (kayıtlar budanmadan önce okunur).
+        let iv_first_send = interval.and_then(|iv| {
+            self.sent
+                .binary_search_by_key(&iv.first_seq, |r| r.seq)
+                .ok()
+                .map(|i| self.sent[i].send_ns)
+        });
         // Aralık örneği cephe zamanlamasından bağımsızdır; kayıtlar budanmadan önce.
         let interval_result = match interval {
             Some(iv) => {
@@ -1534,6 +1603,7 @@ impl LineGuard {
             self.queue_peaks.pop_front();
         }
         self.queue_peaks.push_back(lag.saturating_sub(base));
+        self.ack_diag.front_wait_ns = Some(lag.saturating_sub(base));
         // [ÖLÇÜM-BOŞLUĞU] Kurulurken tek seferlik boşaltma: cephenin kuyruk beklemesi kadar süre
         // (dönüş gecikmesi artışı da buna girer: bedeli bir kez o kadar bekleme, hız değil).
         if arm_gap {
@@ -1645,6 +1715,8 @@ impl LineGuard {
         // Sonuçsuz hüküm: bu ACK kuyruk yazmaz (iki ölçü ayrıştı; biri dönüş gecikmesi basamağı
         // olabilir).
         let mut inconclusive = false;
+        // [HÜKÜM · ARALIK] Sonuçsuz hükümde boşaltılacak, yoklamanın KENDİ fazlası (bayt, tel).
+        let mut inconclusive_drain = 0u64;
         if let Some(p) = self.probe.filter(|p| rec.send_ns >= p.until_ns) {
             self.probe = None;
             // Hüküm iki ölçüyle (göndericinin kendi geçici kuyruğu — hat modelinde cephenin önünde
@@ -1703,20 +1775,75 @@ impl LineGuard {
             // (ilk pencere bilgi vermediyse) yapılır; cephe ölçüsü orada dönüş gecikmesi
             // basamağını kuyruk sayıp hattı yanlış keserdi (ölçüldü: starved_line_sim c ve d3,
             // dönüş gecikmesi 300 → 700 ms).
-            let (passed, failed) = match interval_result.filter(|_| p.by_interval) {
-                Some(r) => {
-                    let g = u64::try_from(r.growth_ns().max(0)).unwrap_or(u64::MAX);
-                    (g <= half, g > half)
-                }
-                None => (
-                    abs_q <= half && growth <= half,
-                    abs_q > half && growth > half,
+            // [HÜKÜM · ARALIK] Olağan yoklamada cephe ölçüsü dönüş hattındaki sıra beklemesini de
+            // taşır: alarm ACK'i dolu dönüş hattına çıkınca (alıcı bir kez yol verir, sonra çıkar)
+            // bekleme `ack_delay`'de yoktur ve `τ` o kadar geç kurulur. Ölçüldü (gerçek hat kaydı,
+            // 19. ACK): dönüş beklemesi +1 129 ms, aralığın artışı 0,02 ms, hat 12 500 iken yoklama
+            // başarısız sayıldı; tavan geri alındı, adım en küçüğe döndü, boş hatta ≈ 2,2 s tutma.
+            // ACK ölçüm aralığı taşıyorsa:
+            // * geçti = cephe "geçti" VE aralığın artışı eşiğin altında (iki ölçü anlaşır);
+            // * aralık yoklamanın başından öncesini kapsıyorsa (planlı ACK: M iki ACK geriye uzanır)
+            //   alıcının ölçüsü yetkilidir: artış eşiği aştıysa kaldı; aşmadıysa cephe "kaldı" dese
+            //   de sonuç yok (dönüş beklemesi);
+            // * aralık yoklamayı kapsamıyorsa (alarm ACK'inin kısa aralığı) artış yoklamayı görmez,
+            //   cepheyi veto edemez. Ayrım yoklamanın kendi fiziğinden: hat değişmediyse yoklama en
+            //   çok `expect_ns` kuyruk kurar (çözünürlük bir tam datagram). Cephe artışı bu sınırın
+            //   içindeyse yoklamanın izidir → kaldı (fazlası boşaltılır; yoksa dar hatta her tur
+            //   boşaltılmayan bir yoklama kuyruğu bırakır). Sınırı aşan artış yoklamadan gelemez ve
+            //   aralık da artış göstermiyorsa dönüş beklemesidir → sonuç yok.
+            // Başlangıç yoklaması (`by_interval`) bugünkü gibi yalnız aralıkla hükmedilir.
+            let iv_g =
+                interval_result.map(|r| u64::try_from(r.growth_ns().max(0)).unwrap_or(u64::MAX));
+            let front_pass = abs_q <= half && growth <= half;
+            let front_fail = abs_q > half && growth > half;
+            let covers = iv_first_send.is_some_and(|s| s <= p.start_ns);
+            let probe_sized = growth <= p.expect_ns.saturating_add(mtu_ns);
+            let (passed, failed) = match iv_g {
+                Some(g) if p.by_interval => (g <= half, g > half),
+                Some(g) => (
+                    front_pass && g <= half,
+                    (g > half && (covers || front_fail)) || (!covers && front_fail && probe_sized),
                 ),
+                None => (front_pass, front_fail),
             };
+            let outcome = if best.is_some() {
+                ProbeOutcome::Superseded
+            } else if !evidence {
+                ProbeOutcome::NoEvidence
+            } else if passed {
+                ProbeOutcome::Passed
+            } else if failed {
+                ProbeOutcome::Failed
+            } else {
+                ProbeOutcome::Inconclusive
+            };
+            self.ack_diag.verdict = Some(ProbeVerdictDiag {
+                expect_ns: p.expect_ns,
+                abs_q_ns: abs_q,
+                growth_ns: growth,
+                interval_g_ns: iv_g,
+                outcome,
+            });
             if best.is_none() && (!evidence || !(passed || failed)) {
                 self.pace_bps = p.base_pace;
                 verified = false;
                 inconclusive = evidence;
+                // [HÜKÜM · ARALIK] Aralık taşıyan ACK'te sonuçsuz hüküm: yoklamanın izi ile dönüş
+                // beklemesi ayırt edilemedi. Yoklamanın kendi fazlası (yoklama süresince
+                // tavanın üstünde gönderilen) yoklamanın tasarımından bilinen bir bayt sayısıdır,
+                // cephe gecikmesinden türemez: boşaltılır. Boşaltılmazsa dar hatta art arda
+                // sonuçsuz yoklamalar her tur bir yoklama kuyruğu bırakır (dar test: kuyruk
+                // beklemesi 1,24 s). Hat gerçekten hızlıysa bedel o fazlanın serileşmesi kadar
+                // tek tutmadır (en küçük adımda ≈ 90 ms).
+                if evidence && iv_g.is_some() && !p.by_interval {
+                    // Fazla = (yoklama tavanı − taban tavan) × yoklama süresi = taban × expect_ns.
+                    // Penceredeki datagram sayımı bir tam datagram oynar (sayım değil, tasarım
+                    // değeri kullanılır; kanıt koşulu gönderimin bu hıza ulaştığını doğruladı).
+                    inconclusive_drain = u64::try_from(
+                        u128::from(p.base_pace) * u128::from(p.expect_ns) / 1_000_000_000,
+                    )
+                    .unwrap_or(u64::MAX);
+                }
             } else if best.is_none() {
                 if passed {
                     self.pace_bps = p.probe_pace;
@@ -1815,6 +1942,17 @@ impl LineGuard {
         if best.is_none() && !fronts_decide {
             self.pair_allowed = true;
         }
+        // [HÜKÜM · ARALIK] Sonuçsuz hükümde yalnız yoklamanın kendi fazlası yazılır (kuyruk tahmini
+        // yazılmaz: iki ölçü ayrıştı). Yeni bir yoklama başladıysa hiçbir şey yazılmaz.
+        if inconclusive && inconclusive_drain > 0 && self.probe.is_none() {
+            self.ack_diag.backlog_bytes = Some(0);
+            self.ack_diag.extra_backlog_bytes = Some(inconclusive_drain);
+            return Some(LineGuardUpdate {
+                rate_bps: self.rate_bps.unwrap_or(self.pace_bps),
+                backlog_bytes: 0,
+                extra_backlog_bytes: inconclusive_drain,
+            });
+        }
         let rate = self.rate_bps?;
         // [SÜRELİ-YOKLAMA] Yoklama sürerken kuyruk yazılmaz: yoklama hattı sınar, boşaltma onunla
         // çelişir; gerçek bir kuyruk varsa hüküm ACK'i onu boşaltır.
@@ -1836,13 +1974,19 @@ impl LineGuard {
             .max(lag.saturating_sub(base));
         let by_delay = u64::try_from(u128::from(rate) * u128::from(queued_ns) / 1_000_000_000)
             .unwrap_or(u64::MAX);
+        let backlog_bytes = by_bytes.min(by_delay);
         // [SÜRELİ-YOKLAMA] Başarısız yoklamanın fazla baytı boşaltılır. Kuyruk tahmini (`by_bytes`,
         // `by_delay`) bunu göremeyebilir: taban son noktaların en küçük gecikmesidir ve birkaç ACK
         // süren bir kuyruğu dönüş gecikmesi artışı sayar.
+        let extra_backlog_bytes = probe_drain_bytes;
+        self.ack_diag.by_bytes = Some(by_bytes);
+        self.ack_diag.by_delay = Some(by_delay);
+        self.ack_diag.backlog_bytes = Some(backlog_bytes);
+        self.ack_diag.extra_backlog_bytes = Some(extra_backlog_bytes);
         Some(LineGuardUpdate {
             rate_bps: rate,
-            backlog_bytes: by_bytes.min(by_delay),
-            extra_backlog_bytes: probe_drain_bytes,
+            backlog_bytes,
+            extra_backlog_bytes,
         })
     }
 }
@@ -2739,6 +2883,295 @@ mod tests {
         assert_eq!(g.raises(), 0, "kanıtsız yükseltme");
         assert_eq!(g.probe_failures(), 0, "kanıtsız başarısızlık");
         assert!(g.pace_bps() <= PROFILE / 2 * (1000 + STEP_START_PERMILLE) / 1000);
+    }
+
+    /// [`drive`]'ın aralık kipi: her ACK alıcının ölçüm aralığını da taşır (M = önceki ACK'in
+    /// cephesinden sonraki ilk seq … en büyük seq; `rx_span` ikisinin varışları arası). Hüküm
+    /// bekleyen bir yoklama varken çıkan ACK, dönüş hattında `late_verdict_ns` kadar fazla bekler
+    /// ve bu bekleme `ack_delay`'e YAZILMAZ (alarm ACK'inin dolu dönüş hattına çıkması);
+    /// `partial_verdict_iv` ise o ACK'in aralığı yalnız son üç varışı kapsar (alarm ACK'i). Dönen:
+    /// her ACK'ten sonra `(an, tavan, güncelleme)` ve her iletimin `(an, kuyruk beklemesi)`.
+    #[allow(clippy::type_complexity)]
+    fn drive_iv(
+        g: &mut LineGuard,
+        real: u64,
+        t_end: u64,
+        ack_every: u64,
+        late_verdict_ns: u64,
+        partial_verdict_iv: bool,
+    ) -> (Vec<(u64, u64, Option<LineGuardUpdate>)>, Vec<(u64, u64)>) {
+        drive_iv_step(
+            g,
+            real,
+            None,
+            t_end,
+            ack_every,
+            late_verdict_ns,
+            partial_verdict_iv,
+        )
+    }
+
+    /// [`drive_iv`] ve ileri hattın `step = (an, yeni hız)` ile bir kez değişmesi.
+    #[allow(clippy::type_complexity)]
+    fn drive_iv_step(
+        g: &mut LineGuard,
+        real: u64,
+        step: Option<(u64, u64)>,
+        t_end: u64,
+        ack_every: u64,
+        late_verdict_ns: u64,
+        partial_verdict_iv: bool,
+    ) -> (Vec<(u64, u64, Option<LineGuardUpdate>)>, Vec<(u64, u64)>) {
+        let mut acks_out = Vec::new();
+        let mut waits = Vec::new();
+        let (mut free, mut next_send, mut seq, mut now) = (0u64, 0u64, 0u64, 0u64);
+        let mut in_flight: VecDeque<(u64, u64)> = VecDeque::new();
+        let mut arrival: Vec<u64> = Vec::new();
+        let mut last_arrived: Option<(u64, u64)> = None;
+        let mut prev_largest: Option<u64> = None;
+        // (göndericiye varış, ack_delay, en büyük seq, aralığın ilk seq'i, aralık taşıyor mu)
+        let mut acks: VecDeque<(u64, u64, u64, u64, bool)> = VecDeque::new();
+        let mut next_ack = ack_every;
+        while now < t_end {
+            g.tick(now);
+            if now >= next_send {
+                g.on_sent(seq, now, 1172);
+                let start = free.max(now);
+                waits.push((now, start - now));
+                let line = step.filter(|&(at, _)| start >= at).map_or(real, |(_, r)| r);
+                free = start + 1200 * SEC / line;
+                arrival.push(free + 300 * MS);
+                in_flight.push_back((free + 300 * MS, seq));
+                seq += 1;
+                next_send = now + 1200 * SEC / g.pace_bps().max(1);
+            }
+            while in_flight.front().is_some_and(|&(t, _)| t <= now) {
+                let (t, q) = in_flight.pop_front().expect("var");
+                last_arrived = Some((t, q));
+            }
+            if now >= next_ack {
+                if let Some((t, q)) = last_arrived.filter(|&(_, q)| prev_largest != Some(q)) {
+                    let pending = g.probe.is_some();
+                    let late = if pending { late_verdict_ns } else { 0 };
+                    // Alarm ACK'i: aralık yalnız son birkaç varışı kapsar (yoklamadan sonra başlar).
+                    let first = if pending && partial_verdict_iv {
+                        q.saturating_sub(2)
+                    } else {
+                        prev_largest.map_or(0, |p| p + 1)
+                    };
+                    acks.push_back((
+                        now + 300 * MS + (37 + OVH) * SEC / RET + late,
+                        now - t,
+                        q,
+                        first,
+                        true,
+                    ));
+                    prev_largest = Some(q);
+                }
+                next_ack += ack_every;
+            }
+            while acks.front().is_some_and(|&(at, ..)| at <= now) {
+                let (_, delay, q, first, with_iv) = acks.pop_front().expect("var");
+                g.note_ack_wire(37);
+                let iv = (with_iv && first < q).then(|| ForwardInterval {
+                    first_seq: first,
+                    last_seq: q,
+                    rx_span_ns: arrival[q as usize] - arrival[first as usize],
+                    rx_wire: None,
+                });
+                let u = g.on_ack_measured(now, delay, false, q, iv);
+                if let Some(u) = u {
+                    let rate = g.pace_bps().max(1);
+                    next_send = next_send.max(now + u.backlog_bytes * SEC / rate)
+                        + u.extra_backlog_bytes * SEC / rate;
+                }
+                acks_out.push((now, g.pace_bps(), u));
+            }
+            now += MS;
+        }
+        (acks_out, waits)
+    }
+
+    /// Dar hatta ölçülmüş (6 250), aralık kipinde, bütçesi kalkmış koruma.
+    fn measured_narrow_guard() -> LineGuard {
+        let mut g = guard();
+        g.end_start_budget();
+        g.interval_mode = true;
+        g.rate_bps = Some(6_250);
+        g.pace_bps = 6_250;
+        g.step_permille = STEP_MIN_PERMILLE;
+        g
+    }
+
+    /// [HÜKÜM · ARALIK] Hat 12 500'e dönmüş, koruma 6 250'de ölçülü. Hüküm ACK'i dönüş hattında
+    /// 1,13 s fazla bekler ve bu bekleme `ack_delay`'de yoktur (gerçek hat kaydı, 19. ACK). Cephe
+    /// ölçüsü bunu ileri kuyruk sayar; alıcının ölçüm aralığı artış göstermez. İki ölçü ayrışır:
+    /// yoklama başarısız SAYILMAZ, ret seviyesi yazılmaz, hat modeline tutma yazılmaz.
+    #[test]
+    fn a_late_verdict_ack_on_the_return_line_is_not_a_failed_probe() {
+        let mut g = measured_narrow_guard();
+        let (acks, _) = drive_iv(&mut g, PROFILE, 90 * SEC, 5 * SEC, 1_130 * MS, false);
+        assert!(
+            acks.iter().any(|&(_, pace, _)| pace > 6_250),
+            "yoklama hiç başlamadı"
+        );
+        assert_eq!(
+            g.probe_failures(),
+            0,
+            "dönüş beklemesi başarısız yoklama sayıldı"
+        );
+        assert_eq!(g.refuted_bps, None, "ret seviyesi yazıldı");
+        assert!(g.pace_bps() >= 6_250, "tavan düştü: {}", g.pace_bps());
+        // Boş (12 500) hatta gönderici 6 250'de: yazılan tutma bir tam datagramı aşmaz.
+        let held = acks
+            .iter()
+            .filter_map(|&(_, _, u)| u)
+            .map(|u| u.backlog_bytes + u.extra_backlog_bytes)
+            .max()
+            .unwrap_or(0);
+        assert!(held <= 1200, "boş hatta {held} B tutma yazıldı");
+    }
+
+    /// [HÜKÜM · ARALIK] Aynı düzenek, dönüş beklemesi yok: iki ölçü anlaşır, yoklamalar geçer ve
+    /// tavan adım adım yükselir (anlaşma kuralı olağan başarıyı engellemez).
+    #[test]
+    fn interval_and_front_agree_on_a_recovered_line_and_the_probe_passes() {
+        let mut g = measured_narrow_guard();
+        let (_, _) = drive_iv(&mut g, PROFILE, 120 * SEC, 5 * SEC, 0, false);
+        assert_eq!(g.probe_failures(), 0, "hızlanan hatta yoklama başarısız");
+        assert!(g.raises() >= 2, "doğrulama sayısı {}", g.raises());
+        assert!(g.pace_bps() > 6_250 * 110 / 100, "tavan {}", g.pace_bps());
+    }
+
+    /// [HÜKÜM · ARALIK] Sabit dar hat (gerçek 6 250), aralık kipi: yoklamanın kuyruğu iki ölçüde
+    /// de görünür, yoklama başarısız sayılır, tavan ölçülen hatta kalır ve kuyruk bir yoklamanın
+    /// izini aşmaz.
+    #[test]
+    fn a_real_failed_probe_is_still_failed_in_interval_mode() {
+        let mut g = measured_narrow_guard();
+        let (_, waits) = drive_iv(&mut g, 6_250, 150 * SEC, 5 * SEC, 0, false);
+        assert!(g.probe_failures() >= 2, "yoklama yok ya da hep başarılı");
+        assert_eq!(g.raises(), 0, "dar hatta kalıcı yükseltme");
+        assert_eq!(g.rate_bps(), Some(6_250), "ölçülen hat");
+        let max_wait = waits
+            .iter()
+            .filter(|&&(t, _)| t >= 20 * SEC)
+            .map(|&(_, w)| w)
+            .max()
+            .unwrap_or(0);
+        let bound = PROBE_QUEUE_NS + 2 * 1200 * SEC / 6_250;
+        assert!(max_wait <= bound, "kuyruk {max_wait} ns (sınır {bound} ns)");
+    }
+
+    /// [HÜKÜM · ARALIK · KARŞI ÖRNEK] Sabit dar hat (gerçek 6 250) ve hüküm ACK'leri alarm ACK'i
+    /// gibi KISMİ aralık taşıyor (yalnız son üç varış; yoklamadan sonra başlar). Aralık yoklamanın
+    /// kuyruğunu göremez; cephe artışı yoklamanın kurabileceği kuyruğun içindedir → yoklama
+    /// BAŞARISIZ sayılmalı ve fazlası boşaltılmalı. "İki ölçü ayrışırsa sonuç yok" kuralı bu kolda
+    /// her yoklamayı sonuçsuz bırakıyordu: ret yazılmıyor, boşaltılmıyor, art arda yoklamalar her
+    /// tur bir yoklama kuyruğu bırakıyordu (bağımsız inceleme: tur başına ≈ 573 B ≈ 92 ms).
+    #[test]
+    fn a_real_failed_probe_with_a_partial_interval_is_failed_and_drained() {
+        let mut g = measured_narrow_guard();
+        let (_, waits) = drive_iv(&mut g, 6_250, 150 * SEC, 5 * SEC, 0, true);
+        assert!(
+            g.probe_failures() >= 2,
+            "kısmi aralıkta yoklama sonuçsuz kaldı"
+        );
+        assert_eq!(g.raises(), 0, "dar hatta kalıcı yükseltme");
+        assert_eq!(g.rate_bps(), Some(6_250), "ölçülen hat");
+        let max_wait = waits
+            .iter()
+            .filter(|&&(t, _)| t >= 20 * SEC)
+            .map(|&(_, w)| w)
+            .max()
+            .unwrap_or(0);
+        let bound = PROBE_QUEUE_NS + 2 * 1200 * SEC / 6_250;
+        assert!(max_wait <= bound, "kuyruk {max_wait} ns (sınır {bound} ns)");
+    }
+
+    /// [HÜKÜM · ARALIK] Hat 12 500'e dönmüş; hüküm ACK'i kısmi aralık taşıyor VE dönüş hattında
+    /// 1,13 s fazla bekliyor (gerçek hat kaydındaki 19. ACK'in tam biçimi). Cephe artışı yoklamanın
+    /// kurabileceği kuyruğu aşar ve aralık artış göstermez → sonuç yok; başarısız sayılmaz.
+    #[test]
+    fn a_late_partial_verdict_ack_is_inconclusive_not_failed() {
+        let mut g = measured_narrow_guard();
+        let (acks, _) = drive_iv(&mut g, PROFILE, 90 * SEC, 5 * SEC, 1_130 * MS, true);
+        assert!(
+            acks.iter().any(|&(_, pace, _)| pace > 6_250),
+            "yoklama hiç başlamadı"
+        );
+        assert_eq!(
+            g.probe_failures(),
+            0,
+            "dönüş beklemesi başarısız yoklama sayıldı"
+        );
+        assert_eq!(g.refuted_bps, None, "ret seviyesi yazıldı");
+    }
+
+    /// [HÜKÜM · ARALIK · KARŞI ÖRNEK A1] Kısmi aralıklı hüküm ACK'leri + GERÇEK ileri daralma
+    /// (hat 30 s'de 6 250 → 3 125). Cephe artışı yoklamanın kurabileceği kuyruğu aşar; bu artış
+    /// dönüş beklemesi sayılıp gerçek daralma gizlenmemeli: tavan ölçülen yeni hatta inmeli.
+    #[test]
+    fn a_real_narrowing_with_partial_verdict_intervals_is_still_measured() {
+        let mut g = measured_narrow_guard();
+        let (_, _) = drive_iv_step(
+            &mut g,
+            6_250,
+            Some((30 * SEC, 3_125)),
+            90 * SEC,
+            5 * SEC,
+            0,
+            true,
+        );
+        let rate = g.rate_bps().expect("ölçülen hat");
+        assert!(
+            rate.abs_diff(3_125) * 100 <= 3_125 * 10,
+            "gerçek daralma ölçülmedi: {rate}"
+        );
+        assert!(g.pace_bps() <= 3_125 * 110 / 100, "tavan {}", g.pace_bps());
+    }
+
+    /// [HÜKÜM · ARALIK · KARŞI ÖRNEK A2] Sabit dar hat (gerçek 6 250); her hüküm ACK'i kısmi
+    /// aralık taşıyor VE dönüşte 1,13 s bekliyor. Cephe artışı = yoklamanın izi + dönüş beklemesi:
+    /// sınırı aşar, aralık artış göstermez → hüküm "sonuç yok". Bu kolda yoklamanın kendi izi ile
+    /// dönüş beklemesi AYIRT EDİLEMEZ. Art arda sonuçsuz yoklamalar kuyruğu büyütmemeli.
+    #[test]
+    fn successive_inconclusive_probes_on_a_narrow_line_keep_the_queue_bounded() {
+        let mut g = measured_narrow_guard();
+        let (_, waits) = drive_iv(&mut g, 6_250, 150 * SEC, 5 * SEC, 1_130 * MS, true);
+        assert_eq!(g.raises(), 0, "dar hatta kalıcı yükseltme");
+        let max_wait = waits
+            .iter()
+            .filter(|&&(t, _)| t >= 20 * SEC)
+            .map(|&(_, w)| w)
+            .max()
+            .unwrap_or(0);
+        let bound = PROBE_QUEUE_NS + 2 * 1200 * SEC / 6_250;
+        assert!(max_wait <= bound, "kuyruk {max_wait} ns (sınır {bound} ns)");
+    }
+
+    /// [HÜKÜM · ARALIK · KARŞI ÖRNEK B] İleri hat sabit ve HIZLI (12 500); hüküm ACK'i kısmi
+    /// aralık taşıyor ve dönüşte yalnız 200 ms bekliyor (yoklamanın kurabileceği kuyruğun içinde).
+    /// Bu gözlem gerçek başarısız yoklamayla AYNIDIR (A2'nin tersi): kural "kaldı" der. Kayıtlı
+    /// sınır: yanlış ret; bedeli tek ACK'te en çok iki kez (kuyruk tahmini + ek) sınır kadar tutma.
+    #[test]
+    fn a_small_return_wait_with_a_partial_interval_reads_as_a_failed_probe_with_a_bounded_hold() {
+        let mut g = measured_narrow_guard();
+        let (acks, _) = drive_iv(&mut g, PROFILE, 60 * SEC, 5 * SEC, 200 * MS, true);
+        assert!(
+            g.probe_failures() >= 1,
+            "beklenen (kayıtlı) yanlış ret oluşmadı: kural değişti mi?"
+        );
+        // Sınır: expect_ns + bir tam datagram; en küçük adımda expect ≈ 90 ms, datagram 196 ms.
+        let bound_ns = 90 * MS + 1228 * SEC / 6_250;
+        let cap = 2 * 6_250 * bound_ns / SEC;
+        let worst = acks
+            .iter()
+            .filter_map(|&(_, _, u)| u)
+            .map(|u| u.backlog_bytes + u.extra_backlog_bytes)
+            .max()
+            .unwrap_or(0);
+        assert!(worst <= cap, "tek ACK'te {worst} B tutma (sınır {cap} B)");
     }
 
     /// [ÇİFT ARALIĞI · RET] Sabit dar hatta (6 250) yoklama başarısız olur: ret seviyesi yoklama
