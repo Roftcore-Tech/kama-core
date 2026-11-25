@@ -1114,3 +1114,23 @@ fn ptt_coalesce_switch_is_derived_from_the_transport_flag() {
         drop(built);
     }
 }
+
+/// Trafiksiz turun beklemesi: gelen PTT akışı yokken tur aralığı; vade yakınsa vadeye dek; vadesi
+/// gelmişse döngü koruması kadar (beklemesiz dönmez).
+#[test]
+fn idle_wait_follows_the_next_ptt_idle_end() {
+    assert_eq!(super::idle_wait(None), crate::NODE_TICK);
+    assert_eq!(
+        super::idle_wait(Some(Duration::from_secs(2))),
+        crate::NODE_TICK,
+        "uzak vade tur aralığını uzatmaz"
+    );
+    assert_eq!(
+        super::idle_wait(Some(Duration::from_millis(7))),
+        Duration::from_millis(7)
+    );
+    assert_eq!(
+        super::idle_wait(Some(Duration::ZERO)),
+        super::IDLE_WAIT_FLOOR
+    );
+}

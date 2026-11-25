@@ -1389,6 +1389,23 @@ impl Ptt {
         Some(PttEvent::PttEnded { peer, stream_id })
     }
 
+    /// Gelen akışların en yakın hareketsizlik sonuna kalan süre ([`Self::end_idle`]'ın koşulu:
+    /// son demet + `idle_ttl`); vadesi geçmişse sıfır, gelen akış yoksa `None`.
+    ///
+    /// Hareketsizlik sonu yalnız [`Self::poll`] çağrıldığında denetlenir. Çağıran döngü sabit
+    /// aralıkla dönüyorsa kapanış vadeden bir aralığa kadar geç bildirilir. Gerçek hat ölçümü
+    /// (300 ms birleşik demet, son demet kayıp; düğüm turu 20 ms): kapanış son teslimden 2 301,0 ve
+    /// 2 313,6 ms sonra bildirildi (kural 2 300 ms; ürün sınırı 2 450 ms'ye pay 19,7 ms kaldı).
+    /// Döngü beklemesini bu süreyle sınırlarsa gecikme bir turun işlem süresine iner.
+    #[must_use]
+    pub fn next_idle_end_in(&self) -> Option<Duration> {
+        let now = self.clock.now();
+        self.incoming
+            .values()
+            .map(|stream| (stream.last_bundle_at + stream.idle_ttl()).saturating_sub(now))
+            .min()
+    }
+
     /// PTT-R4: [`PTT_STREAM_IDLE_TTL`] boyunca demet almamış ilk gelen akışı yerel olarak bitirir;
     /// eşe hiçbir şey gönderilmez.
     fn end_idle(&mut self) -> Option<PttEvent> {

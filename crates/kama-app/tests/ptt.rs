@@ -3277,6 +3277,41 @@ fn coalesced_close_survives_the_loss_of_the_last_datagram_in_bounded_time() {
     assert_eq!(stats.streams_ended_by_idle, 0, "PTT-R4 (120 s) değil");
 }
 
+/// Hareketsizlik sonuna kalan süre okunabilir: çağıran döngü kapanışı vadesinde bildirmek için
+/// beklemesini bununla sınırlar. Son datagram kayıp; vade son kabul edilen demetten
+/// `spurt_gap_end` sonradır.
+#[test]
+fn next_idle_end_tracks_the_gap_deadline_of_a_coalesced_stream() {
+    let mut duo = coalesced_duo();
+    assert_eq!(
+        duo.bob.ptt.next_idle_end_in(),
+        None,
+        "gelen akış yokken vade yok"
+    );
+    let (stream, _, _) = coalesced_spurt(&mut duo, 4, &[3]);
+    let gap = kama_app::ptt::spurt_gap_end(TEST_BUNDLE_MS);
+    // Son kabul edilen demet (2.) işlendikten sonra saat 2 × demet süresi ilerledi.
+    let elapsed = Duration::from_millis(2 * u64::from(TEST_BUNDLE_MS));
+    assert_eq!(duo.bob.ptt.next_idle_end_in(), Some(gap - elapsed));
+    duo.clock.advance(gap - elapsed - Duration::from_nanos(1));
+    assert_eq!(
+        duo.bob.ptt.next_idle_end_in(),
+        Some(Duration::from_nanos(1))
+    );
+    duo.clock.advance(Duration::from_millis(5));
+    assert_eq!(
+        duo.bob.ptt.next_idle_end_in(),
+        Some(Duration::ZERO),
+        "vadesi geçmiş akış sıfır verir"
+    );
+    assert_eq!(duo.bob.drain(), vec![ended(ALICE, stream)]);
+    assert_eq!(
+        duo.bob.ptt.next_idle_end_in(),
+        None,
+        "akış bitince vade yok"
+    );
+}
+
 /// İLK ve SON datagram birlikte kaybolur: akış ikinci demetten açılır, sessizlik sonuyla biter.
 #[test]
 fn coalesced_open_and_close_survive_losing_both_the_first_and_the_last_datagram() {
