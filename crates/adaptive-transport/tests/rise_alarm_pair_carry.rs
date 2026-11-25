@@ -264,3 +264,48 @@ fn real_second_drop_without_new_pairs_does_not_carry_the_rise_value() {
         "yükseliş değeri yeni çiftsiz gerçek düşüşe taşındı: {p}"
     );
 }
+
+/// Kart 7172726183 (Bulut-D #256 7172610936): kova kredisi. Yükselişten sonra GERÇEK 6 250
+/// daralma, gönderici uygulama sınırlı: darboğaz kısa boş kalır, kova dolar; her 250 ms'de küçük
+/// bir datagram (150 B) anında, ardındaki tam boy (1 046 B) 3,8 ms sonra geçer (1 200 B kovada
+/// 24 B açık / 6 250). Bu çift "sıkışma"dır ama hat daralmıştır: eski yükseliş değeri ACK'e
+/// taşınmamalı (alan NONE ya da ≤ 6 875).
+#[test]
+fn bucket_credit_small_then_full_does_not_carry_the_rise_value() {
+    let ms = 1_000_000u64;
+    let plan = [(0, 12_500), (20 * SEC, 6_250), (40 * SEC, 12_500)];
+    let mut v: Vec<(u64, u64, u64)> = standing_queue(&plan, 40 * SEC + 400 * ms);
+    let mut seq = v.last().map_or(0, |x| x.1 + 1);
+    let mut t = 40 * SEC + 400 * ms;
+    while t < 44 * SEC {
+        v.push((t, seq, 150));
+        v.push((t + 3_800_000, seq + 1, 1_046));
+        seq += 2;
+        t += 250 * ms;
+    }
+    let mut wire = every(2 * SEC, 4 * SEC, 40 * SEC);
+    wire.push(43 * SEC);
+    let o = replay(&v, &wire);
+    let &(t_rise, _, at_rise) = o
+        .rise
+        .iter()
+        .find(|(t, ..)| *t >= 40 * SEC)
+        .expect("40 s'de yükseliş alarmı yok");
+    let drop_after = o.drop.iter().find(|(t, _)| *t > t_rise);
+    let (t_ack, ack) = o.acks.iter().find(|(t, _)| *t > t_rise).expect("ACK yok");
+    println!(
+        "yükseliş {:.3} s (alan {at_rise}), sonraki daralma {drop_after:?}, ACK {:.3} s alan {}",
+        t_rise as f64 / 1e9,
+        *t_ack as f64 / 1e9,
+        pair(ack)
+    );
+    assert!(
+        drop_after.is_some_and(|(t, _)| t < t_ack),
+        "daralmanın kanıtı ACK'ten önce gelmedi"
+    );
+    let p = pair(ack);
+    assert!(
+        p == PAIR_RATE_NONE || p <= 6_875,
+        "kova kredisi eski yükseliş değerini taşıdı: {p}"
+    );
+}

@@ -1716,6 +1716,8 @@ struct PairRate {
     /// (`≥ PAIR_MIN_UDP_BYTES`) bir çift sıkışma sınamasına takıldı: darboğaz o iki datagramı beyan
     /// hattın serileşmesinden kısa aralıkla çıkardı (hat daralmamış). `Receiver::alarm_pair_carry`.
     squeezed_since_restart: bool,
+    /// [YÜKSELİŞ KANITI · K1] Önceki varışın UDP gövdesi (`None` = yok ya da bilinmiyor).
+    prev_bytes: Option<u64>,
 }
 
 /// [ÇİFT ARALIĞI] Çift aralığının alt sınırı (ns): daha kısa aralık zamanlayıcı/teslim titreşimidir.
@@ -1746,7 +1748,17 @@ impl PairRate {
         if let (Some(p), Some(b)) = (self.prev_ns, udp_bytes) {
             let g = now_ns.saturating_sub(p);
             let squeezed = self.squeezed(g, b);
-            if squeezed && b >= crate::ack::PAIR_MIN_UDP_BYTES {
+            // [YÜKSELİŞ KANITI · K1 · kart 7172726183] Yalnız tam boy + tam boy çift ve atlanmayan
+            // varış: kova kredisi (≤ burst − önceki boy) küçük datagramdan sonra tam boyu
+            // hemen geçirir (6 250 hatta ≈ 3,8 ms); iki tam boyda kalan kredi ≤ burst − tam boy
+            // ve aralık daralmış hatta eşiğin üstündedir.
+            if squeezed
+                && !self.after_squeeze
+                && b >= crate::ack::PAIR_MIN_UDP_BYTES
+                && self
+                    .prev_bytes
+                    .is_some_and(|pb| pb >= crate::ack::PAIR_MIN_UDP_BYTES)
+            {
                 self.squeezed_since_restart = true;
             }
             let skip = squeezed || self.after_squeeze;
@@ -1762,6 +1774,7 @@ impl PairRate {
             }
         }
         self.prev_ns = Some(now_ns);
+        self.prev_bytes = udp_bytes;
     }
 
     fn on_ack(&mut self) {
