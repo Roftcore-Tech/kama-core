@@ -1335,12 +1335,17 @@ fn lg_line(clock: &Clock, sess: &str, origin: Option<Instant>, r: &LineGuardAckT
         |v| {
             format!(
                 "{{\"outcome\":{},\"expect_ns\":{},\"abs_q_ns\":{},\"growth_ns\":{},\
-                 \"interval_g_ns\":{}}}",
+                 \"interval_g_ns\":{},\"from_pair\":{},\"probe_sent_wire\":{},\
+                 \"base_pace\":{},\"probe_pace\":{}}}",
                 js(&format!("{:?}", v.outcome)),
                 v.expect_ns,
                 v.abs_q_ns,
                 v.growth_ns,
-                opt_u(v.interval_g_ns)
+                opt_u(v.interval_g_ns),
+                v.from_pair,
+                v.probe_sent_wire,
+                v.base_pace,
+                v.probe_pace
             )
         },
     );

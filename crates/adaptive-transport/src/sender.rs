@@ -5847,6 +5847,15 @@ impl Sender {
         self.cc_profile_pacing_cap = cap_bps.filter(|&c| c > 0);
     }
 
+    /// [ÇİFT YOKLAMASI · DENEY · sahip kararı 2026-11-25] Deney anahtarını kurulu hat korumasına
+    /// yazar (`LineGuard::set_pair_probe`); koruma yoksa etkisiz. Ürün yolu bunu çağırmaz: anahtar
+    /// yalnız `KAMA_PAIR_PROBE_DATAGRAMS` ortam değişkeninden okunur. Testler ve benzetim için.
+    pub fn set_pair_probe_datagrams(&mut self, datagrams: Option<u64>) {
+        if let Some(g) = self.cc_line_guard.as_mut() {
+            g.set_pair_probe(datagrams);
+        }
+    }
+
     /// [GERİ-BİLDİRİM-AÇ] Geri bildirimi aç profilin uçuş ve hız kuralı ([`FeedbackStarvedRule`]).
     /// `None` (varsayılan) = kural yok; `cc` yoksa etkisiz. Oturum başında, ilk olaydan önce çağrılır.
     pub fn set_cc_feedback_starved(&mut self, rule: Option<FeedbackStarvedRule>) {
@@ -5855,10 +5864,19 @@ impl Sender {
         if let (true, Some(r)) = (self.cc.is_some(), self.cc_feedback_starved) {
             self.pacer.set_line(Some(r.line));
             if r.return_line.rate_bps > 0 {
-                let g = crate::line_guard::LineGuard::new(
+                let mut g = crate::line_guard::LineGuard::new(
                     r.line,
                     r.return_line,
                     crate::line_guard::LineGuard::conservative_start(r.line),
+                );
+                // [ÇİFT YOKLAMASI · DENEY · sahip kararı 2026-11-25] Ürün varsayılanı DEĞİL: anahtar
+                // verilmedikçe çift ölçüsü bugünkü doğrudan yoldadır. Değer deneyin datagram
+                // bütçesidir (`LineGuard::set_pair_probe`).
+                g.set_pair_probe(
+                    std::env::var("KAMA_PAIR_PROBE_DATAGRAMS")
+                        .ok()
+                        .and_then(|v| v.trim().parse::<u64>().ok())
+                        .filter(|n| (1..=16).contains(n)),
                 );
                 // [TEMKİNLİ-BAŞLANGIÇ] Hat modeli ilk ölçüme dek tavanın hızında (ölçüldü: profil
                 // hızındaki hat modeliyle pacer burst payı ilk 3 s'de tavanın iki katını gönderdi).
