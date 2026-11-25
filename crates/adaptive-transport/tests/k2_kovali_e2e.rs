@@ -1113,6 +1113,8 @@ fn kova_iki_tam_datagram_araligi() {
 #[test]
 #[ignore = "rapor: cargo test --release -p adaptive-transport --test k2_kovali_e2e -- --ignored --nocapture --test-threads=1"]
 fn k2_kovali_e2e_rapor() {
+    // Test çalıştırıcısı "test … ..." satırını satır sonu olmadan basar: ilk kayıt satırı başa gelsin.
+    println!();
     let only = std::env::var("K2_ONLY").ok();
     for kol in [Kol::Toparlanma, Kol::Sahte] {
         for hat in [Hat::Kova, Hat::Fifo] {
