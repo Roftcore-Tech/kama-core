@@ -1,0 +1,43 @@
+# [SENARYO v1 · BİRLEŞİK KABUL] dosya + 2 s'de bir metin + doğrulanmış eşte 300 ms birleşik PTT pilotu,
+# tek koşuda. Düzenek, hat, hız planı, dosya ve metin yükü v1_taban.cell ile AYNI (KOVALI ileri hat:
+# ifb0 tbf, kova 1 200 B, sıra 64 paket; kayıp darboğazdan sonra; "-14" paket boyu düzeltmesi).
+# PTT biçimi cells/ptt-pilot/ hücrelerindeki pilot ayarıyla AYNI: --ptt-pilot on, çağıranın süresi
+#   200 ms / 80 B (düğüm doğrulanmış eşe 300 ms seçer), KAMA_PTT_PILOT=1 (bob) / 1:bob (alice).
+#   Bu hücre yeni PTT ya da metin davranışı tanımlamaz.
+# Basış çizelgesi ORTAMDAN (hücrede varsayılan YOK; senaryo yorumu 7096381261 yalnız "300 ms basışlar"
+#   der, basış anı ve demet sayısı vermez — çizelge koordinatör kararıdır):
+#     V1_PTT_AT_MS    basış başlangıçları, t0'a göre ms, virgülle (ör. biçim: "A,B,C"); en çok 8 basış.
+#     V1_PTT_BUNDLES  basış başına demet sayısı. Pilot basışı (demet + 1) × 300 ms sürer; ardışık
+#                     basışlar arasında en az 200 ms boşluk gerekir (aşağıdaki ön denetim).
+#   Metin planı 98 s'de biter; daha geç biten basış koşuyu uzatır. Seçilen çizelge cmd.txt'ye yazılır.
+# Tohum ortamdan: V1_SEED=1|2|3. İkili: BIN_F0A_ADAY = f0_flows. CAPTURE=1 zorunlu.
+: "${V1_SEED:?V1_SEED yok}"
+: "${V1_PTT_AT_MS:?V1_PTT_AT_MS yok (basış başlangıçları: t0 anına göre ms, virgülle)}"
+: "${V1_PTT_BUNDLES:?V1_PTT_BUNDLES yok (basış başına demet sayısı)}"
+# Ön denetim: f0_flows çakışmayı çağıranın 200 ms adımıyla sınar; pilot basışı 300 ms adımla sürer.
+case "$V1_PTT_BUNDLES" in ''|*[!0-9]*|0*) echo "v1_birlesik: V1_PTT_BUNDLES pozitif tam sayı değil: $V1_PTT_BUNDLES" >&2; exit 2;; esac
+_v1_onceki=""; _v1_n=0
+for _v1_a in ${V1_PTT_AT_MS//,/ }; do
+  case "$_v1_a" in ''|*[!0-9]*) echo "v1_birlesik: V1_PTT_AT_MS değeri sayı değil: $_v1_a" >&2; exit 2;; esac
+  _v1_a=$((10#$_v1_a))
+  if [ -n "$_v1_onceki" ] && [ "$_v1_a" -lt $(( _v1_onceki + (V1_PTT_BUNDLES + 1) * 300 + 200 )) ]; then
+    echo "v1_birlesik: basışlar çakışıyor ($_v1_onceki → $_v1_a ms; basış $(( (V1_PTT_BUNDLES + 1) * 300 )) ms + 200 ms boşluk)" >&2; exit 2
+  fi
+  _v1_onceki="$_v1_a"; _v1_n=$((_v1_n + 1))
+done
+if [ "$_v1_n" -lt 1 ] || [ "$_v1_n" -gt 8 ]; then echo "v1_birlesik: 1–8 basış olmalı: $_v1_n" >&2; exit 2; fi
+CELL=v1_birlesik_t${V1_SEED}
+V1_KADEME=tbf
+V1_BURST=1200
+V1_LINE="delay 300ms loss 20% seed $V1_SEED limit 10000"
+V1_PLAN="20:50kbit 60:100kbit 85.0:50kbit 85.5:100kbit"
+FWD="v1 100kbit"
+REV="delay 300ms rate 496bit -14 limit 64"
+REPS=1
+ARMS="aday"
+BUDGET_S=200
+CAPTURE=1
+SETTLE_S=1
+F0A_ARGS="--dir @D@ --alice-addr @CLI_IP@:@PORT@ --bob-addr @SRV_IP@:@PORT@ --scenario dosyali --profile v1_12500_62_d300_l20 --rep @REP@ --file-bytes 1200000 --file-at-ms 0 --warmup-texts 0 --texts 49 --text-at-ms 2000 --text-every-ms 2000 --text-bytes 64 --sigs 0 --karsi off --ptt-pilot on --ptt-bundles $V1_PTT_BUNDLES --ptt-bundle-ms 200 --ptt-bytes 80 --ptt-at-ms $V1_PTT_AT_MS --window-s 2 --receipt-grace-s 30 --connect-timeout-s 30 --probe-ms 100 --live-diag on"
+ARM_aday_SRV="env KAMA_TRANSPORT_ENGINE=cc-port KAMA_ACK_FORMAT=bitmap KAMA_LINK_RATES=62,12500 KAMA_PILOT_RECORD=1 KAMA_PTT_PILOT=1 @BIN_F0A_ADAY@ --role bob $F0A_ARGS"
+ARM_aday_CLI="env KAMA_TRANSPORT_ENGINE=cc-port KAMA_ACK_FORMAT=bitmap KAMA_LINK_RATES=12500,62 KAMA_PILOT_RECORD=1 KAMA_PTT_PILOT=1:bob @BIN_F0A_ADAY@ --role alice $F0A_ARGS"

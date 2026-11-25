@@ -12,6 +12,9 @@
 #     REPS=<N>  ARMS="<kol1> <kol2> …"  BUDGET_S=<koşu başına üst sınır s>  CAPTURE=0|1
 #     ARM_<kol>_SRV='<sunucu komutu>'  ARM_<kol>_CLI='<istemci komutu>'
 #     (isteğe bağlı) SETTLE_S=<sunucu açılış beklemesi, varsayılan 1>
+#     (isteğe bağlı) FWD="v1 <hız>" + V1_LINE [+ V1_KADEME, V1_BURST, V1_PLAN, V1_SAMPLE_MS] = iki
+#       aşamalı ileri hat; KES_PLAN + KES_TMPL = zamanlı tam kesinti (kapi3_harness.sh [DÜZENEK v1];
+#       yan süreçler CAPTURE=1 ister). Verilmezse davranış değişmez.
 #   Yer tutucular (komut dizelerinde): @SRV@ = sunucu ip:port · @SRV_IP@ · @PORT@ · @CLI_IP@ ·
 #     @D@ = koşu dizini · @REP@ = tekrar numarası · @BIN_<AD>@ = ortam değişkeni BIN_<AD>
 #     (ör. @BIN_TABAN@ → $BIN_TABAN). Sunucu ns-B'de (10.10.1.1), istemci ns-A'da (10.10.0.1).
@@ -53,6 +56,13 @@ if [ -z "$TRACE" ]; then
   done
   nsenter -t "$MID" -n tc qdisc show dev mb0 > "$OUT/realized_fwd.txt"
   nsenter -t "$MID" -n tc qdisc show dev ma0 > "$OUT/realized_rev.txt"
+  # [DÜZENEK v1] İki aşamalı ileri hat seçiliyse (FWD="v1 <hız>") darboğaz kademesi de kurulmuş
+  # olmalı; kurulmamışsa koşu başlamaz. Öbür FWD dizelerinde bu blok atlanır.
+  if [ "${FWD%% *}" = "v1" ]; then
+    kapi3_v1_denetle || {
+      echo "BARRIER-FAIL: ileri yön darboğaz kademesi kurulmamış (ifb0)" | tee "$OUT/BARRIER-FAIL.txt"; exit 4; }
+    nsenter -t "$MID" -n tc qdisc show dev ifb0 >> "$OUT/realized_fwd.txt"
+  fi
 fi
 {
   echo "spec=$SPEC"
