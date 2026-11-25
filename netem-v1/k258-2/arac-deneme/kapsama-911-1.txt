@@ -1,0 +1,20 @@
+Alice veri akışı (A_va0 out, kaynak kapı 41184 → 31405): 1101 datagram; Bob'a varan 893 (pid eşlemesi); aynı pid tekrarı (A) 0
+T1 · motor seq'i taşımaz sayılan (IP boyu 53 / 85 B): 9 datagram ({85: 6, 53: 3}); motor datagramı 1092; boy dağılımı {1074: 604, 1086: 256, 136: 225, 131: 7, 85: 6, 53: 3}
+T1 · D1: s0 = 0; 21/21 ACK aynı s0'ı verdi (dağılım {0: 21})
+  ACK başına (sıra: s0, son motor varışından ACK `t` anına ms): 1:0,0.1 2:0,463.9 3:0,27.6 4:0,48.4 5:0,74.4 6:0,61.0 7:0,104.3 8:0,175.0 9:0,194.7 10:0,204.4 11:0,108.7 12:0,39.7 13:0,498.4 14:0,125.3 15:0,225.9 16:0,11.3 17:0,73.3 18:0,81.1 19:0,76.7 20:0,79.1 21:0,248.1
+T1 · D2: rx_span taşıyan 20 ACK'te (varış farkı − rx_span) ms: 1:-0.050 2:+0.257 4:+0.281 5:+0.097 6:-0.073 7:-0.098 8:+0.163 9:+0.192 10:+0.154 11:+0.218 12:+0.029 13:-0.030 14:-0.014 15:+0.029 16:+0.024 17:+0.260 18:+0.070 19:+0.010 20:+0.089 21:+0.252; |fark| > 2 ms ya da uç Bob'a varmamış: 0 (sıralar [])
+T1 · eşleme GEÇERLİ (D1 ve D2 tuttu)
+
+HÜKÜM SATIRLARI — aralığın uçları ↔ yoklama penceresi (τ s; farklar ms)
+| ACK sıra | hüküm an τ | outcome | first_seq–last_seq | ilk uç gönderim τ (k, IP boyu; D2 farkı ms) | son uç gönderim τ (k, IP boyu) | yoklama başlangıç τ (ACK sıra) | yoklama bitiş τ (süre ms) | ilk uç − başlangıç ms | son uç − bitiş ms | kapsıyor (ürün ölçütü: ilk ≤ başlangıç) | tamamını kapsıyor (ilk ≤ başlangıç VE son ≥ bitiş) | expect denetimi (hesap − kayıt ns) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 12 | 47.204 | Inconclusive | 418–463 | 39.458 (k 427, 1086 B; D2 farkı +0.029) | 44.987 (k 472, 1086 B; ACK'in largest_pn'i 494) | 38.009 (10) | 39.496 (1486.5) | +1448.6 | +5491.4 | HAYIR | HAYIR | +0 (taban 6224, tavan 6609; kayıtta pace_after 6609) |
+| 14 | 59.573 | Inconclusive | 511–556 | 51.637 (k 520, 1074 B; D2 farkı -0.014) | 57.080 (k 565, 1074 B; ACK'in largest_pn'i 593) | 53.856 (13) | 55.343 (1486.5) | -2219.6 | +1737.7 | EVET | EVET | +0 (taban 6224, tavan 6609; kayıtta pace_after 6609) |
+
+HÜKÜM SATIRLARI — kuralın girdileri (kayıt) ve türetilen kapsama ile kural hesabı (ms)
+| ACK sıra | outcome (kayıt) | expect | expect/2 | abs_q | growth | interval_g | mtu_ns (hesap) | expect + mtu | cephe geçti / kaldı | growth ≤ expect + mtu | kapsıyor (türetme) | kural hesabı (b0659064) | kayıtla aynı | yazılan backlog + ek B | taban × expect B (hesap) | pace önce→sonra | rate önce→sonra | probe_failed / raised |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 12 | Inconclusive | 91.95 | 45.97 | 0.00 | 131.73 | 25.51 | 197.30 | 289.25 | HAYIR / HAYIR | EVET | HAYIR | Inconclusive | evet | yazılmadı | 572 | 6224→6224 | 6224→6224 | False / False |
+| 14 | Inconclusive | 91.95 | 45.97 | 5.29 | 112.97 | 114.50 | 197.30 | 289.25 | HAYIR / HAYIR | EVET | EVET | Failed | HAYIR | yazılmadı | 572 | 6224→6224 | 6224→6224 | False / False |
+
+YOKLAMA BAŞLANGIÇ SATIRLARI (pace_after > pace_before VE raised = false): sıra 10 τ=38.009 6224→6609; sıra 13 τ=53.856 6224→6609

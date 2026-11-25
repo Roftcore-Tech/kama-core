@@ -1,0 +1,43 @@
+ÖN KAYIT — #258 GÜNCEL BAŞ hedefli koşusu (k258b), koşudan ÖNCE yazıldı: 2026-11-25T20:11:49Z
+Yama: PR #258, dal yerel/gonderici-dongu @ b0659064c31dd0074372536c7bfb1f6935506032 (gh pr view 258: headRefOid aynı; taslak, açık).
+İkili: f0_flows sha256=e56a2a1919815992e37d99958965c439edb1e6213a7ef876d2c7b75c4f63d87c (derlenmedi; hazır ikili). İkilide b0659064c31dd0074372536c7bfb1f6935506032 dizgisi: 1; 911f2c6d… dizgisi: 0
+Hücre: v1/arac/v1_taban.cell (DEĞİŞMEDEN; sha256=2a90bbbad4359b335c606558f8fd7832f565f719b75ac6383234a88c773bb04c); tohum 1; PTT yok; metin 2 s'de bir.
+Koşucu f0_cell.sh sha256=14cffdadd31c161753194c77fdbb8f1b79362bbc2c684bb4e6609474ee4dcdb7 (salt okur ağaç olcum-233b @ b0659064c31dd0074372536c7bfb1f6935506032; önceki koşuların koşucusuyla aynı özet); düzenek kapi3_harness.sh sha256=59fc4a0d4d7ab8c0709a3bc909f66c15c836a458f2254f908378d4b036d7f401; basamak.py sha256=fb0800491eb880a9f7b1843e6adfc6cc208d3745e0448de957e83b7c7f09059a; ornekleyici.py sha256=9c89038ab0be346cc1d14fd3cd3d49ae18e486ab5e39b6b763222d138becf041.
+Önceki koşularla fark: ikili ve çıktı kökü; ayrıca kos.sh'e konak gözlemcisi eklendi (0,5 s'de bir pgrep ile cargo/rustc sayımı → k2-ornek.txt; koşuya dokunmaz).
+Karşılaştırma sütunları (yeniden koşulmaz): önce = yerel/ham-izler-netem-v1 netem-v1/kancali-1/1 (ikili e1012cf2); 911f2c6d koşu 1 ve koşu 2 = netem-v1/k258-1/{1,1-yineleme}.
+
+KİRLİ ÖLÇÜTÜ: v1/kirli-olcut.txt K1–K11 (sha256=e5f7a9ac96daad68521e89dbf52c8820977e7810329ca9f9405cd246a0cca3d8), DÜZELTMEYLE:
+ K2 ve K8 YALNIZ ölçüm penceresi [t_start, t_end] İÇİNDE değerlendirilir (önceki iki koşu pencere dışındaki olay yüzünden biçimsel kirli sayılmıştı):
+  K2p = k2-ornek.txt'te anı [t_start, t_end] içinde olan bütün örneklerde cargo/rustc süreç sayısı 0 VE pencere içinde ≥ 150 örnek.
+  K8p = MID_ma0 ve MID_ifb0 yakalamalarında anı [t_start, t_end] içinde olan UDP dışı IPv4 paketi 0 VE UDP akışı 4 VE tbf sent = ifb0 yakalanan.
+  Araç arac/kirli_pencere.py sha256=cdd5a90aaca8715097e5e585c81f8c7deaf6ea02935d5868c7c6c0e625c7b52c (911f2c6d koşularının ham dosyalarında denendi: K8p iki koşuda tuttu, pencere dışı ICMP 2 kayıt; K2p o koşularda örnek dosyası olmadığından değerlendirilemedi).
+ Öbür dokuz ölçüt (K1, K3–K7, K9–K11) analiz.py'nin denetimiyle aynen. analiz.py'nin K2 ve K8 satırları (eski tanım) çıktıda kalır; hüküm K2p ve K8p'dendir.
+ Kirli = K1, K2p, K3–K7, K8p, K9–K11'den biri tutmadı. Kirliyse en çok BİR yineleme (aynı hücre, tohum, ikili, düzenek; çıktı k258b/1-yineleme); yineleme de kirliyse başka koşu yok.
+
+ÖN KONTROL (loopback, netem yok; onkontrol/, 2026-11-25T20:10:00Z): iki uçta çekirdek_git=b0659064c31dd0074372536c7bfb1f6935506032; Alice'e varan tel türü 0x16 × 6 (0x10/0x14/0x15/0x17 = 0); lg satırında front_wait_ns, by_bytes, by_delay, backlog_bytes, extra_backlog_bytes, pair_bound_wire, verdict anahtarları 6/6 satırda; loopback'te verdict 6/6 null → verdict alt alanları (outcome, expect_ns, abs_q_ns, growth_ns, interval_g_ns) kayıttan değil b0659064 ağacındaki f0_flows.rs lg_line biçim dizgisinden okundu; from_pair / probe_sent_wire / base_pace / probe_pace bu ikilinin kaydında YOK (alice.jsonl'de 0 eşleşme); bob ack satırında t_ready, t_wire, largest_pn 6/6 (t_evidence 1/6: yalnız kanıtlı ACK'te dolu).
+
+ÖNCEDEN YAZILAN BEKLENTİLER (PR #258 gövdesi "GÜNCEL BAŞ" + #258 yorum 7172568356):
+ B1  hüküm satırları: aralık yoklamanın başından öncesini kapsıyor ve interval_g > expect/2 ise Failed (911f2c6d koşularında τ≈59,5 s satırı: aralık 105–115 ms > 46 ms → bu başta Failed + boşaltma beklenir);
+     kapsamıyor / artış küçük ve cephe ayrışık ise Inconclusive + extra_backlog_bytes = taban × expect_ns (τ≈47,2 s satırı: bu başta ≈ 560 B yazılması beklenir).
+ B2  [35, 58) s darboğaz beklemesi 911f2c6d koşularındaki en çok 536 / 527 ms'den kötü olmamalı.
+ B3  dönüşte sırada bekleyen hüküm ACK'i oluşursa (dönüş sıra beklemesi ≥ 100 ms) Failed OLMAMALI (cephe artışı > expect + mtu ise Inconclusive); oluşmazsa SINANMADI.
+ Koşular aynı tohumda birbirini tekrarlamıyor (7172568356): dört koşu arasındaki fark yamaya ATFEDİLMEZ; yalnız olay satırları ve hükümleri yazılır. Beklenen τ değerleri önceki koşulardandır; bu koşuda hüküm satırları başka anlarda, başka sayıda oluşabilir.
+
+ÇÖZÜMLEME TANIMLARI (koşudan önce donduruldu):
+ k258 ön kaydındaki tanımlar aynen (dönüş sıra beklemesi, gerçek darboğaz kuyruğu, sahte tutma = yazılan > gerçek + 1 228 B ve sınıfı, türetilmiş yazılan, gönderici susması, beş hedef dayanakları); araç arac/k258_ek.py sha256=d879d41a918f5bb64fcfba311955164a01f8e30f246227c82de55210a8c59920 (k258'dekiyle aynı dosya).
+ EK — kapsama gösterimi (sahip, 2026-11-25: "Dar testte ACK türünden kapsama sonucu çıkarma. Ürün alıcısının ürettiği aralığın ilk ve son paketlerinin gönderim zamanıyla yoklamanın tamamını kapsadığını göster."): her hüküm satırı için
+  aralığın ilk ucu (lg.note.first_seq) ve son ucunun (last_seq) Alice arayüzünden çıkış anı ↔ yoklamanın başlangıç ve bitiş anı. Kapsama ACK türünden (alarm / planlı) ÇIKARILMAZ; gönderim anlarından gösterilir.
+  Bu ikilinin kaydında yoklamanın başlangıç/bitiş anı ve seq başına gönderim anı YOK → türetme (araç arac/kapsama.py sha256=423be5e6ad4dce9a8b625b9619a9852a339abc348ec676bf6350141f6c737249; tam tanım dosya başında):
+   T1 seq ↔ yakalama: Alice veri akışında IP boyu 53 / 85 B olanlar motor seq'i taşımaz sayılır; kalanlar gönderim sırasıyla seq = sıra + s0. Denetim D1: her Bob ACK'inin `t` anından önce B_vb0'a varmış son motor datagramı ↔ lg.largest_seq, bütün ACK'lerde aynı s0. Denetim D2: (varış(last_seq) − varış(first_seq)) − rx_span_ns, |fark| ≤ 2 ms, rx_span taşıyan bütün ACK'lerde. Biri tutmazsa eşleme GEÇERSİZ yazılır, kapsama sütunları boş kalır.
+   T4 yoklama penceresi: başlangıç = hüküm satırından önceki, pace_after > pace_before VE raised = false olan son lg satırının anı (yoklama yalnız ACK işlenirken başlar: line_guard.rs begin_probe ← on_ack_measured); süre = clamp(80 ms × taban / (tavan − taban), min(8 × 1 228 B / tavan, 3 s), 3 s); denetim: (tavan − taban) × süre / taban ↔ kayıttaki expect_ns.
+   kapsıyor (ürün ölçütü; line_guard.rs `covers`) = ilk ucun gönderimi ≤ yoklama başlangıcı. tamamını kapsıyor = ilk ucun gönderimi ≤ başlangıç VE son ucun gönderimi ≥ bitiş. İkisi ayrı sütun.
+   kural hesabı = b0659064 kuralının kayıttaki girdiler (abs_q, growth, interval_g, expect) + türetilen kapsama + mtu_ns = 1 228 B / rate_before ile vereceği sonuç; kayıttaki outcome ile yan yana (hesap; kayıt değil).
+  Araç 911f2c6d koşu 1 ve 2'nin ham dosyalarında denendi (arac-deneme/): D1 21/21 ve 21/21; D2 20/20 ve 20/20 (|fark| en çok 0,28 / 0,45 ms); expect denetimi farkı 0 ns (5/5 hüküm satırı). O koşularda τ≈47,2 satırı: ilk uç yoklama başlangıcından 1 449 / 1 454 ms SONRA gönderilmiş (kapsamıyor); τ≈59,5 satırı: ilk uç başlangıçtan 2 220 / 2 185 ms ÖNCE, son uç bitişten 1 738 / 1 781 ms sonra (tamamını kapsıyor); koşu 2 τ≈95,6 satırı: tamamını kapsıyor.
+ Hedef 3'ün 393 ms kapısı: [35, 58) darboğaz beklemesi en çok ≤ 393 ms (k258 ile aynı). Hedef 4: önkoşul τ=58 tavan ∈ [5 625, 6 875]; 60 s'den sonraki 3. ACK'e dek pace_after ≥ 11 875 ve 84 s'ye dek kalıcı (k258 ile aynı).
+Konak (ön): load=0.96 1.43 2.52 1/1238 31749 cargo/rustc=0
+
+EK — KOŞU SONRASI KAYIT (koşudan SONRA yazıldı: 2026-11-25T20:19:20Z)
+ Koşu (k258b/1): rc=0; ölçüm penceresi t_start=2026-11-25T20:11:58,020Z, t_end=2026-11-25T20:13:38,087Z (τ −0,035 … 100,031 s).
+ Kirli denetimi (ön kayıttaki düzeltilmiş ölçüt): K1 tuttu (yük en yüksek 1,35), K2p tuttu (pencere içi 182 örnek, hepsi 0), K3–K7 tuttu, K8p tuttu (pencere içinde UDP dışı paket 0; pencere dışında 2 kayıt: ICMP 99 B, τ=100,346), K9–K11 tuttu → TEMİZ; yineleme YAPILMADI.
+ analiz.py'nin eski tanımlı satırları (çıktıda duruyor): K2 TUTMADI (kosu.log bitiş satırı 20:13:39,233Z'de cargo_rustc=1; t_end'den 1,147 s sonra), K8 TUTMADI (aynı ICMP paketi, t_end'den 0,315 s sonra).
+ Koşudan sonra eklenen araçlar (ön kayıtta YOK; sonuçlar görüldükten sonra yazıldı): arac/yukselis.py (lg.raised satırlarında alıcının çift aralığı dökümü), arac/eski_kural.py (hüküm satırlarının kayıttaki girdileriyle yalnız cephe / 911f2c6d / b0659064 kurallarının hesabı). Ön kayıtlı araçlar (k258_ek.py, kapsama.py, kirli_pencere.py) koşudan sonra değişmedi (özetler yukarıdakiyle aynı).

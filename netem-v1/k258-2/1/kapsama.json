@@ -1,0 +1,250 @@
+{
+ "esleme": {
+  "s0": 0,
+  "d1_uyan": 21,
+  "d1_toplam": 21,
+  "d2": [
+   [
+    1,
+    0.060173
+   ],
+   [
+    2,
+    0.103028
+   ],
+   [
+    4,
+    0.077485
+   ],
+   [
+    5,
+    0.00367
+   ],
+   [
+    6,
+    0.269303
+   ],
+   [
+    7,
+    0.042308
+   ],
+   [
+    8,
+    -0.158494
+   ],
+   [
+    9,
+    -0.061026
+   ],
+   [
+    10,
+    0.137188
+   ],
+   [
+    11,
+    0.155953
+   ],
+   [
+    12,
+    0.239629
+   ],
+   [
+    13,
+    0.233554
+   ],
+   [
+    14,
+    0.072181
+   ],
+   [
+    15,
+    0.134921
+   ],
+   [
+    16,
+    0.236814
+   ],
+   [
+    17,
+    0.036106
+   ],
+   [
+    18,
+    0.123201
+   ],
+   [
+    19,
+    0.157844
+   ],
+   [
+    20,
+    -0.00018
+   ],
+   [
+    21,
+    -0.18373
+   ]
+  ],
+  "d2_tutmayan": [],
+  "gecerli": true,
+  "motor_disi": 9
+ },
+ "hukum": [
+  {
+   "sira": 8,
+   "tau": 39.284735884,
+   "outcome": "Failed",
+   "expect_ns": 92207025,
+   "abs_q_ns": 0,
+   "growth_ns": 0,
+   "interval_g_ns": 121939053,
+   "pace": [
+    6215,
+    6215
+   ],
+   "rate": [
+    6215,
+    6215
+   ],
+   "backlog": 0,
+   "ek": 1680,
+   "probe_failed": true,
+   "raised": false,
+   "yoklama": {
+    "bas_sira": 7,
+    "bas_tau": 32.256035261,
+    "bit_tau": 33.744520109,
+    "start": 1795637550311188273,
+    "end": 1795637551799673121,
+    "span_ns": 1488484848,
+    "taban": 6215,
+    "tavan": 6600,
+    "tavan_kayit": 6600,
+    "expect_hesap": 92207025,
+    "expect_kayit": 92207025,
+    "expect_fark_ns": 0
+   },
+   "first_seq": 340,
+   "last_seq": 397,
+   "rx_span_ns": 6892800000,
+   "ilk_k": 349,
+   "son_k": 406,
+   "son_pn": 427,
+   "ilk_tau": 30.415632322,
+   "son_tau": 37.03363925,
+   "ilk_ip": 136,
+   "son_ip": 1086,
+   "ilk_bob_varis_tau": 30.765339276,
+   "son_bob_varis_tau": 37.657980782,
+   "d2_fark_ms": -0.158494,
+   "ilk_eksi_bas_ms": -1840.402939,
+   "ilk_eksi_bit_ms": -3328.887787,
+   "son_eksi_bit_ms": 3289.119141,
+   "kapsiyor_urun": true,
+   "tamamini": true,
+   "mtu_ns": 197586484,
+   "yari_ns": 46103512,
+   "cephe_gecti": true,
+   "cephe_kaldi": false,
+   "yoklama_boyu": true,
+   "sinir_ns": 289793509,
+   "kural_hesap": "Failed",
+   "beklenen_fazla_B": 573
+  },
+  {
+   "sira": 18,
+   "tau": 89.83347598,
+   "outcome": "Inconclusive",
+   "expect_ns": 81334132,
+   "abs_q_ns": 970917563,
+   "growth_ns": 1124287975,
+   "interval_g_ns": 0,
+   "pace": [
+    7050,
+    7050
+   ],
+   "rate": [
+    7050,
+    7050
+   ],
+   "backlog": 0,
+   "ek": 573,
+   "probe_failed": false,
+   "raised": false,
+   "yoklama": {
+    "bas_sira": 17,
+    "bas_tau": 83.218514046,
+    "bit_tau": 84.53065509,
+    "start": 1795637601273667058,
+    "end": 1795637602585808102,
+    "span_ns": 1312141044,
+    "taban": 7050,
+    "tavan": 7487,
+    "tavan_kayit": 7487,
+    "expect_hesap": 81334132,
+    "expect_kayit": 81334132,
+    "expect_fark_ns": 0
+   },
+   "first_seq": 759,
+   "last_seq": 784,
+   "rx_span_ns": 2597120000,
+   "ilk_k": 768,
+   "son_k": 793,
+   "son_pn": 845,
+   "ilk_tau": 84.187595439,
+   "son_tau": 86.784833943,
+   "ilk_ip": 1074,
+   "son_ip": 1074,
+   "ilk_bob_varis_tau": 84.487667358,
+   "son_bob_varis_tau": 87.084910559,
+   "d2_fark_ms": 0.123201,
+   "ilk_eksi_bas_ms": 969.081393,
+   "ilk_eksi_bit_ms": -343.059651,
+   "son_eksi_bit_ms": 2254.178853,
+   "kapsiyor_urun": false,
+   "tamamini": false,
+   "mtu_ns": 174184397,
+   "yari_ns": 40667066,
+   "cephe_gecti": false,
+   "cephe_kaldi": true,
+   "yoklama_boyu": false,
+   "sinir_ns": 255518529,
+   "kural_hesap": "Inconclusive",
+   "beklenen_fazla_B": 573
+  }
+ ],
+ "yoklama_baslangic": [
+  {
+   "sira": 7,
+   "tau": 32.25603598,
+   "pace": [
+    6215,
+    6600
+   ]
+  },
+  {
+   "sira": 17,
+   "tau": 83.21851406,
+   "pace": [
+    7050,
+    7487
+   ]
+  },
+  {
+   "sira": 19,
+   "tau": 93.40913294,
+   "pace": [
+    7050,
+    7487
+   ]
+  },
+  {
+   "sira": 21,
+   "tau": 99.200422028,
+   "pace": [
+    7465,
+    7927
+   ]
+  }
+ ]
+}

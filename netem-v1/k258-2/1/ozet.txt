@@ -1,0 +1,24 @@
+İLK TAVAN KESMESİ: bob ACK sıra 5 (largest_pn 294, IP 73 B) ↔ alice ack_rx sıra 5; lg IntervalSample pace 12500→6296, rate None→6296
+ başvuru: 20 s basamağı komut başlangıcı τ=20.000007 s; komut dönüşü +4.254 ms
+ düşüş → kesme (lg satırı anı): 4236.332 ms
+  parça 1 hat değişimi → Bob t_evidence: 665.216 ms
+  parça 2 t_evidence → t_ready: 0.000 ms
+  parça 3 t_ready → t_wire: 949.095 ms
+  parça 4 t_wire → Alice arayüz girişi (yakalama): 2622.050 ms
+  parça 5 Alice arayüz girişi → lg kararı (ack_rx.t): -0.029 ms
+  parçalar toplamı 4236.332 ms; düşüş → kesme 4236.332 ms; kapanmayan fark 0.000 ms
+  parça 3 alt döküm: t_ready → t (motor çıkışı) 948.992 ms; t → t_wire 0.103 ms
+  parça 4 alt döküm (yakalama): t_wire → Bob arayüz çıkışı 0.103 ms; Bob arayüz çıkışı → orta düğüm girişi (mb0) 0.000 ms; mb0 girişi → dönüş hattı çıkışı (ma0, netem sonrası) 2621.937 ms; dönüş hattı çıkışı → Alice arayüz girişi 0.009 ms
+  aynı ACK'in öbür Bob anları (20 s basamağına göre ms): t_detect 233.099, t_first_try -2146.012, t_first_defer -2146.012, t_alarm 665.216; erteleme {'budget': 0, 'yield': 222, 'no_info': 0, 'first_window': 0}, alarm sonrası {'budget': 0, 'yield': 55}; detects=1
+KUYRUK · kesmeden önceki son örnek: τ=24.221 s (-15.3 ms); ifb0 tbf 1: backlog 26629 B / 30 p, drops 0; pfifo 10: backlog 26629 B / 30 p, drops 0; backlog ÷ 6 250 B/s = 4.261 s
+KUYRUK · kesmeden sonraki ilk örnek: τ=24.271 s (+34.6 ms); ifb0 tbf 1: backlog 26629 B / 30 p, drops 0; pfifo 10: backlog 26629 B / 30 p, drops 0; backlog ÷ 6 250 B/s = 4.261 s
+KUYRUK · kesmeden önceki son darboğaz çıkışı τ=24.123 s: bekleme 2042 ms (1074 B); sonraki ilk çıkış τ=24.294 s: bekleme 2128 ms (1074 B)
+KUYRUK · kesme anında darboğazda bekleyen (yakalamadan: ma0'a girmiş, ifb0'dan çıkmamış) 30 p / 26629 B; bunların sonuncusunun çıkışı kesmeden 4.147 s sonra
+KUYRUK · [20, 60) s en büyük bekleme 4172 ms (çıkış τ=28.383 s)
+[35, 58) s darboğaz beklemesi (çıkış anına göre, 186 paket): medyan 156 ms, p95 1953 ms, en çok 2816 ms, en az -0 ms; > 393 ms bekleyen 36
+[35, 58) s ifb0 örnekleyici (460 örnek): backlog medyan 1086 B, en çok 18447 B / 18 p; drops (pencere başı→sonu) 0→0
+METİN · daralmada (gönderim τ ∈ [20, 60), 20 metin; teslimsiz 0): en kötü gönderim→Bob uygulama teslimi 4184 ms (metin 11, gönderim τ=24.000 s); ≤ 1 s 13/20; hepsi ms: 861 2267 4184 2927 2766 787 380 489 535 559 333 522 365 944 581 1825 3419 1459 490 393
+BASAMAK 20 s → 50kbit: rc=0; komut τ=20.000007 → 20.004260 s; ÖNCE (8.0 ms önce) tbf 1: backlog 0 B / 0 p drops 0 sent 283, pfifo 10: backlog 0 p drops 0; SONRA (3.4 ms sonra) tbf 1: backlog 0 B / 0 p drops 0 sent 283, pfifo 10: backlog 0 p drops 0
+BASAMAK 60 s → 100kbit: rc=0; komut τ=60.000012 → 60.004197 s; ÖNCE (8.0 ms önce) tbf 1: backlog 0 B / 0 p drops 0 sent 610, pfifo 10: backlog 0 p drops 0; SONRA (3.4 ms sonra) tbf 1: backlog 1086 B / 1 p drops 0 sent 611, pfifo 10: backlog 1 p drops 0
+BASAMAK 85 s → 50kbit: rc=0; komut τ=85.000009 → 85.004587 s; ÖNCE (8.0 ms önce) tbf 1: backlog 0 B / 0 p drops 0 sent 827, pfifo 10: backlog 0 p drops 0; SONRA (3.5 ms sonra) tbf 1: backlog 0 B / 0 p drops 0 sent 828, pfifo 10: backlog 0 p drops 0
+BASAMAK 85.5 s → 100kbit: rc=0; komut τ=85.500007 → 85.503938 s; ÖNCE (8.0 ms önce) tbf 1: backlog 1086 B / 1 p drops 0 sent 831, pfifo 10: backlog 1 p drops 0; SONRA (3.0 ms sonra) tbf 1: backlog 1086 B / 1 p drops 0 sent 831, pfifo 10: backlog 1 p drops 0

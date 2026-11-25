@@ -1,0 +1,3 @@
+ölçüm penceresi: t_start τ=-0.034 s, t_end τ=100.034 s (süre 100.068 s)
+K2p DEĞERLENDİRİLEMEDİ · k2-ornek.txt yok
+K8p tuttu · darboğazda (MID_ma0 + MID_ifb0) UDP dışı paket: pencere içinde 0, pencere dışında 2 (MID_ma0 τ=100.092 proto 1 99 B in; MID_ifb0 τ=100.200 proto 1 99 B out); UDP akışı 4; tbf sent 1153 = ifb0 yakalanan 1153

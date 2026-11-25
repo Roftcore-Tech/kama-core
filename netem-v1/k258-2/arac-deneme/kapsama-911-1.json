@@ -1,0 +1,234 @@
+{
+ "esleme": {
+  "s0": 0,
+  "d1_uyan": 21,
+  "d1_toplam": 21,
+  "d2": [
+   [
+    1,
+    -0.04996
+   ],
+   [
+    2,
+    0.256661
+   ],
+   [
+    4,
+    0.281151
+   ],
+   [
+    5,
+    0.097048
+   ],
+   [
+    6,
+    -0.073323
+   ],
+   [
+    7,
+    -0.098282
+   ],
+   [
+    8,
+    0.163147
+   ],
+   [
+    9,
+    0.192085
+   ],
+   [
+    10,
+    0.154392
+   ],
+   [
+    11,
+    0.21823
+   ],
+   [
+    12,
+    0.029125
+   ],
+   [
+    13,
+    -0.030488
+   ],
+   [
+    14,
+    -0.013812
+   ],
+   [
+    15,
+    0.028874
+   ],
+   [
+    16,
+    0.023828
+   ],
+   [
+    17,
+    0.259978
+   ],
+   [
+    18,
+    0.070448
+   ],
+   [
+    19,
+    0.009516
+   ],
+   [
+    20,
+    0.089486
+   ],
+   [
+    21,
+    0.252323
+   ]
+  ],
+  "d2_tutmayan": [],
+  "gecerli": true,
+  "motor_disi": 9
+ },
+ "hukum": [
+  {
+   "sira": 12,
+   "tau": 47.203790859,
+   "outcome": "Inconclusive",
+   "expect_ns": 91948309,
+   "abs_q_ns": 0,
+   "growth_ns": 131725463,
+   "interval_g_ns": 25511220,
+   "pace": [
+    6224,
+    6224
+   ],
+   "rate": [
+    6224,
+    6224
+   ],
+   "backlog": null,
+   "ek": null,
+   "probe_failed": false,
+   "raised": false,
+   "yoklama": {
+    "bas_sira": 10,
+    "bas_tau": 38.009174244,
+    "bit_tau": 39.495632104,
+    "start": 1795633763539956441,
+    "end": 1795633765026414301,
+    "span_ns": 1486457860,
+    "taban": 6224,
+    "tavan": 6609,
+    "tavan_kayit": 6609,
+    "expect_hesap": 91948309,
+    "expect_kayit": 91948309,
+    "expect_fark_ns": 0
+   },
+   "first_seq": 418,
+   "last_seq": 463,
+   "rx_span_ns": 5554944000,
+   "ilk_k": 427,
+   "son_k": 472,
+   "son_pn": 494,
+   "ilk_tau": 39.457726889,
+   "son_tau": 44.987062555,
+   "ilk_ip": 1086,
+   "son_ip": 1086,
+   "ilk_bob_varis_tau": 40.066832721,
+   "son_bob_varis_tau": 45.621805846,
+   "d2_fark_ms": 0.029125,
+   "ilk_eksi_bas_ms": 1448.552645,
+   "ilk_eksi_bit_ms": -37.905215,
+   "son_eksi_bit_ms": 5491.430451,
+   "kapsiyor_urun": false,
+   "tamamini": false,
+   "mtu_ns": 197300771,
+   "yari_ns": 45974154,
+   "cephe_gecti": false,
+   "cephe_kaldi": false,
+   "yoklama_boyu": true,
+   "sinir_ns": 289249080,
+   "kural_hesap": "Inconclusive",
+   "beklenen_fazla_B": 572
+  },
+  {
+   "sira": 14,
+   "tau": 59.572894731,
+   "outcome": "Inconclusive",
+   "expect_ns": 91948309,
+   "abs_q_ns": 5291708,
+   "growth_ns": 112970353,
+   "interval_g_ns": 114502790,
+   "pace": [
+    6224,
+    6224
+   ],
+   "rate": [
+    6224,
+    6224
+   ],
+   "backlog": null,
+   "ek": null,
+   "probe_failed": false,
+   "raised": false,
+   "yoklama": {
+    "bas_sira": 13,
+    "bas_tau": 53.856123162,
+    "bit_tau": 55.342581022,
+    "start": 1795633779386905359,
+    "end": 1795633780873363219,
+    "span_ns": 1486457860,
+    "taban": 6224,
+    "tavan": 6609,
+    "tavan_kayit": 6609,
+    "expect_hesap": 91948309,
+    "expect_kayit": 91948309,
+    "expect_fark_ns": 0
+   },
+   "first_seq": 511,
+   "last_seq": 556,
+   "rx_span_ns": 5558272000,
+   "ilk_k": 520,
+   "son_k": 565,
+   "son_pn": 593,
+   "ilk_tau": 51.63654677,
+   "son_tau": 57.080275207,
+   "ilk_ip": 1074,
+   "son_ip": 1074,
+   "ilk_bob_varis_tau": 52.29861601,
+   "son_bob_varis_tau": 57.856874198,
+   "d2_fark_ms": -0.013812,
+   "ilk_eksi_bas_ms": -2219.576392,
+   "ilk_eksi_bit_ms": -3706.034252,
+   "son_eksi_bit_ms": 1737.694185,
+   "kapsiyor_urun": true,
+   "tamamini": true,
+   "mtu_ns": 197300771,
+   "yari_ns": 45974154,
+   "cephe_gecti": false,
+   "cephe_kaldi": false,
+   "yoklama_boyu": true,
+   "sinir_ns": 289249080,
+   "kural_hesap": "Failed",
+   "beklenen_fazla_B": 572
+  }
+ ],
+ "yoklama_baslangic": [
+  {
+   "sira": 10,
+   "tau": 38.009173771,
+   "pace": [
+    6224,
+    6609
+   ]
+  },
+  {
+   "sira": 13,
+   "tau": 53.856123915,
+   "pace": [
+    6224,
+    6609
+   ]
+  }
+ ]
+}

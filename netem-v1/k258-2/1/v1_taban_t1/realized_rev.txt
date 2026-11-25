@@ -1,0 +1,2 @@
+qdisc netem 8059: root refcnt 13 limit 64 delay 300ms rate 496bit packetoverhead -14 seed 16389486224718297528
+qdisc ingress ffff: parent ffff:fff1 ---------------- 

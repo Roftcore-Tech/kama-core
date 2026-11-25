@@ -1,0 +1,37 @@
+basamak kayıtları: τ=20.000: ofset_s=20.0, hiz=50kbit, rc=0; τ=60.000: ofset_s=60.0, hiz=100kbit, rc=0; τ=85.000: ofset_s=85.0, hiz=50kbit, rc=0; τ=85.500: ofset_s=85.5, hiz=100kbit, rc=0
+
+ACK 11 · Alice lg τ=48.559: pace 6215→12500, rate 6215→None, raised True, verdict null, decision IntervalNoSample, g_ns 177023097, pair_bound_wire 12502, note {'first_seq': 445, 'last_seq': 461, 'rx_span_ns': 2022144000}
+  Bob ack satırı: t τ=45.994, t_wire τ=45.995, alarm True, rise True, wait_open False, t_alarm τ=44.876, t_evidence τ=–, t_detect τ=–, detects 0; önceki Bob ACK'i t τ=43.694
+  pencere (önceki ACK t, bu ACK t] içinde varan 16 datagram; sıkışmış sayılan çift 0; sayılan çift 11; sayılanlardan b / g en büyük 5:
+  | ikincinin varışı τ | IP boyu ilk → ikinci B | g ms (Bob varışı) | b / g B/s | aynı çiftin darboğaz çıkış aralığı ms | ilkin darboğaz beklemesi ms | ikincinin darboğaz beklemesi ms |
+  |---|---|---|---|---|---|---|
+  | 44.876 | 136 → 1086 | 85.49 | 12375 | 85.39 | -0.0 | 63.2 |
+  | 44.442 | 136 → 1074 | 85.53 | 12229 | 85.53 | 0.0 | 85.4 |
+  | 44.061 | 1074 → 1074 | 171.53 | 6098 | 171.73 | 51.6 | 223.1 |
+  | 43.717 | 1074 → 1074 | 171.70 | 6092 | 171.82 | 226.4 | 52.3 |
+  | 44.615 | 1074 → 1086 | 173.79 | 6088 | 173.81 | 85.4 | 64.5 |
+  sayılanların en büyük ikinci b / g = 12229 B/s (UDP gövdesi); × 1 228 / 1 200 = 12515 B/s (tel); kayıttaki pair_bound_wire 12502
+
+ACK 14 · Alice lg τ=63.449: pace 5432→7050, rate 5432→7050, raised True, verdict null, decision IntervalNoSample, g_ns -1069569220, pair_bound_wire 7050, note {'first_seq': 502, 'last_seq': 578, 'rx_span_ns': 9730560000}
+  Bob ack satırı: t τ=61.875, t_wire τ=61.875, alarm False, rise False, wait_open True, t_alarm τ=–, t_evidence τ=–, t_detect τ=55.475, detects 1; önceki Bob ACK'i t τ=51.714
+  pencere (önceki ACK t, bu ACK t] içinde varan 62 datagram; sıkışmış sayılan çift 8; sayılan çift 29; sayılanlardan b / g en büyük 5:
+  | ikincinin varışı τ | IP boyu ilk → ikinci B | g ms (Bob varışı) | b / g B/s | aynı çiftin darboğaz çıkış aralığı ms | ilkin darboğaz beklemesi ms | ikincinin darboğaz beklemesi ms |
+  |---|---|---|---|---|---|---|
+  | 58.763 | 1074 → 1074 | 151.66 | 6897 | 151.79 | -0.0 | 151.6 |
+  | 56.231 | 1074 → 1074 | 151.86 | 6888 | 151.74 | 0.0 | 151.7 |
+  | 56.849 | 1074 → 1074 | 151.87 | 6887 | 151.77 | 0.0 | 151.5 |
+  | 59.863 | 1074 → 1086 | 153.84 | 6877 | 153.83 | -0.0 | 153.6 |
+  | 57.547 | 1086 → 1086 | 155.80 | 6791 | 155.75 | -0.0 | 155.5 |
+  sayılanların en büyük ikinci b / g = 6888 B/s (UDP gövdesi); × 1 228 / 1 200 = 7049 B/s (tel); kayıttaki pair_bound_wire 7050
+
+ACK 20 · Alice lg τ=95.764: pace 7050→7465, rate 7050→7465, raised True, verdict null, decision IntervalNoSample, g_ns 1497236, pair_bound_wire 7465, note {'first_seq': 824, 'last_seq': 843, 'rx_span_ns': 2213888000}
+  Bob ack satırı: t τ=94.254, t_wire τ=94.255, alarm False, rise False, wait_open True, t_alarm τ=–, t_evidence τ=–, t_detect τ=92.406, detects 1; önceki Bob ACK'i t τ=91.835
+  pencere (önceki ACK t, bu ACK t] içinde varan 17 datagram; sıkışmış sayılan çift 4; sayılan çift 8; sayılanlardan b / g en büyük 5:
+  | ikincinin varışı τ | IP boyu ilk → ikinci B | g ms (Bob varışı) | b / g B/s | aynı çiftin darboğaz çıkış aralığı ms | ilkin darboğaz beklemesi ms | ikincinin darboğaz beklemesi ms |
+  |---|---|---|---|---|---|---|
+  | 94.157 | 1074 → 1074 | 143.02 | 7313 | 143.02 | 0.0 | 0.0 |
+  | 93.870 | 1074 → 1074 | 143.40 | 7294 | 143.52 | 0.0 | -0.0 |
+  | 94.014 | 1074 → 1074 | 144.18 | 7255 | 144.16 | -0.0 | 0.0 |
+  | 91.943 | 1074 → 1086 | 152.18 | 6952 | 152.12 | 0.0 | 0.0 |
+  | 92.097 | 1086 → 1086 | 153.73 | 6882 | 153.94 | 0.0 | 0.0 |
+  sayılanların en büyük ikinci b / g = 7294 B/s (UDP gövdesi); × 1 228 / 1 200 = 7464 B/s (tel); kayıttaki pair_bound_wire 7465

@@ -1,0 +1,4 @@
+| ACK sıra | kayıttaki outcome (b0659064 ikilisi) | yalnız cephe (hesap) | 911f2c6d kuralı (hesap) | b0659064 kuralı (hesap) |
+|---|---|---|---|---|
+| 8 | Failed | Passed | Inconclusive | Failed |
+| 18 | Inconclusive | Failed | Inconclusive | Inconclusive |
