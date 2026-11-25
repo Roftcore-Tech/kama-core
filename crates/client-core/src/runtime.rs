@@ -591,6 +591,11 @@ struct UplinkLine {
     busy_until_ns: AtomicU64,
     /// [ÖNCELİK] Hat dar mı (`Sender::line_is_narrow`): denetim yalnız dar hatta veriye yol verir.
     narrow: bool,
+    /// [ÖNCELİK · SAHİP KARARI 7] Alıcının bütçesi hazır, yol veren ACK'leri için ayrılan bayt (UDP
+    /// gövdesi + zarf). Yalnız oturum ucunun göndericisinin okuduğu [`UplinkShare::backlog_bytes`]
+    /// görür: henüz gönderime verilmemiş alındı bu ACK'lerin arkasına girer. ACK'in kendi kararı
+    /// ([`UplinkShare::control_should_yield`]) yalnız hatta yazılmış baytı bekler.
+    reserved_bytes: AtomicU64,
 }
 
 impl UplinkShare {
@@ -606,6 +611,7 @@ impl UplinkShare {
                 origin: Instant::now(),
                 rate_bps,
                 busy_until_ns: AtomicU64::new(0),
+                reserved_bytes: AtomicU64::new(0),
                 narrow: adaptive_transport::sender::Sender::line_is_narrow(
                     &adaptive_transport::pacer::LineModel {
                         rate_bps,
@@ -655,12 +661,20 @@ impl UplinkShare {
         self.0.narrow && self.ns_until_clear() > 0
     }
 
-    /// Şu an hatta henüz serileşmemiş baytlarımız (B, zarf dahil).
+    /// Şu an hatta henüz serileşmemiş baytlarımız (B, zarf dahil) ve öncelikli ACK'ler için
+    /// ayrılan bayt ([`Self::reserve_acks`]). Oturum ucunun göndericisi hattı bununla görür.
     pub(crate) fn backlog_bytes(&self) -> u64 {
         u64::try_from(
             u128::from(self.ns_until_clear()) * u128::from(self.0.rate_bps) / 1_000_000_000,
         )
         .unwrap_or(u64::MAX)
+        .saturating_add(self.0.reserved_bytes.load(Ordering::Acquire))
+    }
+
+    /// [ÖNCELİK · SAHİP KARARI 7] Alıcının bütçesi hazır, yol veren ACK'lerinin toplam tel boyu (B,
+    /// zarf dahil; her ACK turunda üzerine yazılır, birikmez). 0 = ayırma yok.
+    pub(crate) fn reserve_acks(&self, wire_bytes: u64) {
+        self.0.reserved_bytes.store(wire_bytes, Ordering::Release);
     }
 }
 
@@ -5520,6 +5534,15 @@ async fn srv_ack_tick(
     for (peer, sp, plain) in acks {
         srv_seal_send(tx, sock, stats, peer, sp, plain).await;
     }
+    // [ÖNCELİK · SAHİP KARARI 7] Bütçesi hazır, yol veren ACK'ler yukarı yön görünümünde ayrılır
+    // (`Receiver::ack_preempt_wire_bytes`): henüz gönderime verilmemiş alındı arkalarına girer.
+    if let Some(u) = tx.uplink.as_ref() {
+        let reserved: u64 = peers
+            .values()
+            .filter_map(|s| s.rx.ack_preempt_wire_bytes())
+            .sum();
+        u.reserve_acks(reserved);
+    }
     drain_yielded(tx, sock, stats).await;
     // [PARAM_ACK-BEKLETME] İkinci ACK çıktıysa ya da süre dolduysa bekletilen PARAM_ACK.
     let held: Vec<(SocketAddr, ProtectionContext, Vec<u8>)> = peers
@@ -8284,6 +8307,38 @@ mod uplink_line_tests {
         assert!(!fast.control_should_yield(), "hızlı hatta denetim beklemez");
     }
 
+    /// [ÖNCELİK · SAHİP KARARI 7] (a) Ayrılan ACK baytı oturum ucunun göndericisinin gördüğü hatta
+    /// (`backlog_bytes`) eklenir: henüz gönderime verilmemiş alındı ACK'in arkasına girer.
+    /// (b) Hatta yazılmış bayt geri alınmaz: ACK'in kendi kararı (`ns_until_clear`,
+    /// `control_should_yield`) ayırmadan etkilenmez, yazılmış alındı bitene dek ACK bekler.
+    #[test]
+    fn uplink_share_reserves_budget_ready_acks_for_the_session_sender_only() {
+        let cfg = RuntimeConfig {
+            link_rates: Some(LinkRates {
+                uplink_bps: 62,
+                downlink_bps: 12_500,
+            }),
+            ..RuntimeConfig::default()
+        };
+        let u = UplinkShare::for_config(&cfg).expect("port motoru + yön hızı");
+        // (a) Boş hat, ACK ayrıldı (75 B tel): gönderici 75 B dolu görür, ACK boş görür.
+        u.reserve_acks(75);
+        assert_eq!(u.backlog_bytes(), 75, "(a) ayırma göndericiye görünmüyor");
+        assert_eq!(u.ns_until_clear(), 0, "(a) ACK kendi ayırmasını bekliyor");
+        assert!(!u.control_should_yield(), "(a) ACK boş hatta yol veriyor");
+        // (b) Hatta yazılmış alındı (71 B gövde → 99 B tel): ACK onu bekler.
+        u.charge(71);
+        assert!(
+            u.control_should_yield(),
+            "(b) yazılmış alındının önüne geçildi"
+        );
+        let b = u.backlog_bytes();
+        assert!((160..=174).contains(&b), "(b) göndericinin gördüğü {b} B");
+        // ACK çıktı, ayırma kalktı.
+        u.reserve_acks(0);
+        assert!(u.backlog_bytes() <= 99, "ayırma birikti");
+    }
+
     /// Paylaşılan hat her yazılan datagramı (UDP gövdesi + 28 B zarf) hattın hızında serileştirir;
     /// ardışık yazımlar sıraya girer.
     #[test]
@@ -8680,6 +8735,7 @@ mod ack_tick_priority_tests {
                 origin: Instant::now(),
                 rate_bps: 62,
                 busy_until_ns: AtomicU64::new(0),
+                reserved_bytes: AtomicU64::new(0),
                 narrow: true,
             }))),
             yielded: VecDeque::from([(peer, ctx, recovered)]),

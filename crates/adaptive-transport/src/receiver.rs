@@ -280,6 +280,8 @@ pub struct Receiver {
     /// boşalmasını bekliyor (`set_uplink_yield`). Bütçeli ACK bu sürece çıkmaz: verinin önüne en
     /// çok hattaki o anki datagram girer. `false` = bugünkü yol.
     uplink_yield: bool,
+    /// [ÖNCELİK · SAHİP KARARI 7] Yol verirken bütçesi hazır olan ACK'in tel boyu (B); `None` = yok.
+    ack_preempt_wire: Option<u64>,
     /// [ÖNCELİK · ALARM TEK YOL VERİR] Alarm ACK'inin ilk yol verdiği anda hattın boşalacağı an
     /// (ns; deneme anı + `return_line_ahead_ns`). 0 = alarmdan beri yol vermedi ya da hat önü
     /// bilinmiyordu. O an geçtikten sonra hat hâlâ doluysa alarm ACK'i bir daha yol vermez (bkz.
@@ -395,6 +397,7 @@ impl Receiver {
             ack_horizon_ns: 0,
             return_line_ahead_ns: 0,
             uplink_yield: false,
+            ack_preempt_wire: None,
             alarm_yield_clear_ns: 0,
             diag_ack_yield_deferred: 0,
             info_since_ack: false,
@@ -783,12 +786,10 @@ impl Receiver {
         // B/s × ns → milibayt: rate · dt / 1e6.
         let add = u64::try_from(u128::from(rate) * u128::from(dt) / 1_000_000).unwrap_or(u64::MAX);
         self.ack_tokens_mb = self.ack_tokens_mb.saturating_add(add).min(cap);
-        if self.yield_to_uplink(now_ns) {
-            // Jeton harcanmaz; ACK, hat veriye geçince zamanlayıcıyla çıkar.
-            self.diag_ack_yield_deferred += 1;
-            return false;
-        }
         let cost = ack_wire_bytes(frame) * 1000;
+        // Bu çerçevenin bütçe süresi (tel maliyeti / bütçe hızı).
+        let budget_ns = u64::try_from(u128::from(cost) * 1_000_000 / u128::from(rate.max(1)))
+            .unwrap_or(u64::MAX);
         let mut need = cost;
         // [DARALMA-ALARMI] Alarm ACK'i akış-sonu yedeğini kullanır (yalnız kendi jetonunu öder).
         if self.ack_budget_first_done && !self.arrivals_quiet(now_ns) && !self.drop_alarm {
@@ -803,14 +804,26 @@ impl Receiver {
             // raporsuz 21 s'de bitti; gerçek 6 250 B/s hücrede 8–10 s boşluklar. Bütçe süresi
             // dolduktan sonra ACK jetonla çıkar (Y bütçesi aşılmaz: çerçeve kendi jetonunu öder);
             // daha sık ACK'lerde yedek kuralı bugünkü gibi.
-            let budget_ns = u64::try_from(u128::from(cost) * 1_000_000 / u128::from(rate.max(1)))
-                .unwrap_or(u64::MAX);
             if refill_mb < ACK_BUDGET_RESERVE_BYTES * 1000
                 && now_ns.saturating_sub(self.ack_budget_last_ns) < budget_ns
             {
                 need += ACK_BUDGET_RESERVE_BYTES * 1000;
             }
         }
+        if self.yield_to_uplink(now_ns) {
+            // Jeton harcanmaz; ACK, hat veriye geçince zamanlayıcıyla çıkar.
+            // [ÖNCELİK · SAHİP KARARI 7] Bütçesi hazırsa (bugünkü jeton kuralı) ve son ACK'ten bu
+            // yana bu çerçevenin bütçe süresi geçtiyse ayrılır: çalışma zamanı tel boyunu yukarı yön
+            // görünümüne yazar, henüz gönderime verilmemiş alındı bu ACK'in arkasına girer. Hatta
+            // yazılmış bayt beklenir (`yield_to_uplink` değişmez). Aralık bütçe süresi olduğundan
+            // öncelikli ACK'ler hattın en çok bütçe payını alır ve bir alındı en çok bir ACK bekler.
+            let spaced = !self.ack_budget_first_done
+                || now_ns.saturating_sub(self.ack_budget_last_ns) >= budget_ns;
+            self.ack_preempt_wire = (self.ack_tokens_mb >= need && spaced).then_some(cost / 1000);
+            self.diag_ack_yield_deferred += 1;
+            return false;
+        }
+        self.ack_preempt_wire = None;
         if self.ack_tokens_mb >= need {
             self.ack_tokens_mb -= cost;
             self.alarm_yield_clear_ns = 0;
@@ -1147,7 +1160,7 @@ impl Receiver {
     /// bu ACK'in arkasına girer. `None` = ayrılacak ACK yok.
     #[must_use]
     pub fn ack_preempt_wire_bytes(&self) -> Option<u64> {
-        None
+        self.ack_preempt_wire
     }
 
     pub fn set_uplink_yield(&mut self, yield_to_data: bool) {
