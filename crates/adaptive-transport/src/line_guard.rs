@@ -4273,4 +4273,1465 @@ mod tests {
         );
         assert_eq!(g.pace_bps(), PROFILE);
     }
+
+    // =========================================================================================
+    // [ÇİFT YOKLAMASI · DENEY · EK 6 / EK 7] Karşı örnek düzeneği. Yalnız test: karar kodu yok.
+    // =========================================================================================
+
+    /// Tam datagramın gövdesi (1 200 B; 1 228 B tel).
+    const FULL_UDP: u64 = crate::rate::DEFAULT_MTU;
+    /// Küçük datagramlar: PTT demeti 152 B gövde (180 B tel), metin 108 B gövde (136 B tel).
+    const PTT_UDP: u64 = 152;
+    const TEXT_UDP: u64 = 108;
+    /// Değişmemiş dar hat (B/s, tel).
+    const NARROW: u64 = 6_250;
+    /// İleri ve dönüş yayılımı; ACK çerçevesinin gövdesi (`ack_m` ile aynı).
+    const PROP_NS: u64 = 300 * MS;
+    const ACK_UDP: u64 = 55;
+    /// Kovalı hattın kredisi (tbf burst, B).
+    const TBF_BURST: u64 = 1200;
+
+    /// Darboğaz modeli (yalnız test): akışkan jeton kovası. Kredi hat hızında dolar, `burst`'te
+    /// doyar; kredi varken gelen baytlar beklemeden geçer, kalanı hat hızında serileşir.
+    /// `burst = 0` serileştiren FIFO'dur. `v` hattın sanal boşalma anıdır:
+    /// `v = max(v, s − burst/hız) + tel/hız`; datagramın son baytının çıkışı `max(v, s)`.
+    /// Sınır: gerçek tbf paket taneciklidir (paket, jeton kendi boyuna ulaşınca bütün geçer) ve
+    /// burst'ü bağlantı katmanı boyuyla sayar. `tel ≤ burst` iken iki model aynı çıkış anını verir;
+    /// `tel > burst` iken (1 228 B > 1 200 B) burada son bayt kredinin bittiği yerden hat hızında
+    /// bekler (gerçek tbf o paketi hiç geçirmez).
+    #[derive(Debug, Clone, Copy)]
+    struct Bottleneck {
+        rate: u64,
+        burst: u64,
+        v: i128,
+    }
+
+    impl Bottleneck {
+        fn fifo(rate: u64) -> Self {
+            Self {
+                rate,
+                burst: 0,
+                v: 0,
+            }
+        }
+
+        /// `t = 0`'da `credit0` B kredili kova.
+        fn bucket(rate: u64, burst: u64, credit0: u64) -> Self {
+            Self {
+                rate,
+                burst,
+                v: -i128::from(credit0.min(burst) * SEC / rate),
+            }
+        }
+
+        fn ns(&self, bytes: u64) -> i128 {
+            i128::from(bytes * SEC / self.rate)
+        }
+
+        /// `at` anında kovadaki kredi (B).
+        fn credit(&self, at: u64) -> u64 {
+            let idle = (i128::from(at) - self.v).max(0);
+            u64::try_from(idle * i128::from(self.rate) / i128::from(SEC))
+                .unwrap_or(u64::MAX)
+                .min(self.burst)
+        }
+
+        /// `wire` B'lik datagram `s` anında hatta girer; son baytının hattan çıkış anı.
+        fn pass(&mut self, s: u64, wire: u64) -> u64 {
+            let s = i128::from(s);
+            self.v = self.v.max(s - self.ns(self.burst)) + self.ns(wire);
+            u64::try_from(self.v.max(s)).expect("çıkış anı negatif olamaz")
+        }
+    }
+
+    /// Bir iletim: gönderim anı, alıcıya varış anı, hatta girerken kovadaki kredi.
+    #[derive(Debug, Clone, Copy)]
+    struct Tx {
+        send_ns: u64,
+        arrive_ns: u64,
+        credit: u64,
+    }
+
+    /// Olay sıralı düzenek (yalnız test). Gönderici ürün pacer'ının hat modeliyle
+    /// (`pacer::LineState`) sürülür: her iletim kendi tel baytını modele yazar, model korumanın o
+    /// anki tavanında erir, sıradaki datagram model boşalınca çıkar (2 ms'lik burst payı ve
+    /// çalışma zamanının 1 ms'lik döngü taneciği modellenmez). Her gönderimden önce ve hemen sonra
+    /// `tick` sorulur. Yoklama tavanı açıkken datagramlar `window` sırasından, diğer her an tam
+    /// datagram olarak çıkar. seq = `log` dizini.
+    #[derive(Debug, Clone)]
+    struct Rig {
+        g: LineGuard,
+        line: Bottleneck,
+        /// `(an, hız)`: bu andan sonra hatta giren datagramlar yeni hızda serileşir.
+        line_step: Option<(u64, u64)>,
+        /// Göndericinin hat modelinde eriyen kendi baytları (bayt·ns).
+        owed: u128,
+        now: u64,
+        window: VecDeque<u64>,
+        /// Uygulama sınırlı pencere: `window` datagramları arasındaki en kısa süre (0 = yok).
+        app_gap_ns: u64,
+        not_before: u64,
+        log: Vec<Tx>,
+    }
+
+    impl Rig {
+        fn new(g: LineGuard, line: Bottleneck) -> Self {
+            Self {
+                g,
+                line,
+                line_step: None,
+                owed: 0,
+                now: 0,
+                window: VecDeque::new(),
+                app_gap_ns: 0,
+                not_before: 0,
+                log: Vec::new(),
+            }
+        }
+
+        fn sent(&self) -> u64 {
+            self.log.len() as u64
+        }
+
+        fn tx(&self, seq: u64) -> Tx {
+            self.log[seq as usize]
+        }
+
+        fn send_next(&mut self) {
+            let in_window = self.g.pace_bps() == PROFILE;
+            let udp = if in_window {
+                self.window.pop_front().unwrap_or(FULL_UDP)
+            } else {
+                FULL_UDP
+            };
+            let s = self.now;
+            self.g.on_sent(self.sent(), s, udp);
+            if let Some((_, rate)) = self.line_step.filter(|&(at, _)| s >= at) {
+                self.line.rate = rate;
+            }
+            let credit = self.line.credit(s);
+            let arrive_ns = self.line.pass(s, udp + OVH) + PROP_NS;
+            self.log.push(Tx {
+                send_ns: s,
+                arrive_ns,
+                credit,
+            });
+            self.owed += u128::from(udp + OVH) * u128::from(SEC);
+            if in_window && !self.window.is_empty() {
+                self.not_before = s + self.app_gap_ns;
+            }
+            let _ = self.g.tick(s);
+        }
+
+        fn advance(&mut self, to: u64) {
+            let drained = u128::from(self.g.pace_bps()) * u128::from(to - self.now);
+            self.owed = self.owed.saturating_sub(drained);
+            self.now = to;
+        }
+
+        /// Göndericiyi `until` anına (o an hariç) ya da toplam `sent` iletime dek sürer.
+        fn run(&mut self, until: u64, sent: u64) {
+            while self.sent() < sent && self.now < until {
+                let _ = self.g.tick(self.now);
+                if self.owed == 0 && self.now >= self.not_before {
+                    self.send_next();
+                    continue;
+                }
+                let pace = u128::from(self.g.pace_bps().max(1));
+                let open = self
+                    .now
+                    .saturating_add(u64::try_from(self.owed.div_ceil(pace)).unwrap_or(u64::MAX))
+                    .max(self.not_before);
+                // Yoklama penceresinin kenarları: tavan orada değişir.
+                let edge = self
+                    .g
+                    .probe
+                    .into_iter()
+                    .flat_map(|p| [p.start_ns, p.until_ns])
+                    .filter(|&t| t > self.now)
+                    .min();
+                self.advance(edge.map_or(open, |e| e.min(open)).min(until));
+            }
+        }
+
+        /// Alıcı `largest`'ı alır almaz ACK çıkarırsa ACK'in göndericiye varış anı.
+        fn ack_time(&self, largest: u64) -> u64 {
+            self.tx(largest).arrive_ns + PROP_NS + (ACK_UDP + OVH) * SEC / RET
+        }
+
+        /// Cephesi `largest` olan ACK göndericiye `at` anında varır. Gönderici o ana dek sürülür,
+        /// sonra ACK ürün sırasıyla işlenir (ölçüm → çift ölçüsü → hat modeline tutma). `first`:
+        /// ölçüm aralığının ilk seq'i (`None` = ölçümsüz ACK).
+        fn ack_at(
+            &mut self,
+            at: u64,
+            largest: u64,
+            first: Option<u64>,
+            ack_delay_ns: u64,
+            saturated: bool,
+            pair: Option<u64>,
+        ) -> Option<LineGuardUpdate> {
+            assert!(at >= self.now, "kurulum: ACK'ler zaman sırasında işlenir");
+            self.run(at, u64::MAX);
+            self.g.note_ack_wire(ACK_UDP);
+            let iv = first.map(|f| ForwardInterval {
+                first_seq: f,
+                last_seq: largest,
+                rx_span_ns: self.tx(largest).arrive_ns - self.tx(f).arrive_ns,
+                rx_wire: None,
+            });
+            let u = self
+                .g
+                .on_ack_measured(at, ack_delay_ns, saturated, largest, iv);
+            if let Some(p) = pair {
+                self.g.on_pair_rate(p);
+            }
+            if let Some(u) = u {
+                // `TokenBucket::line_raise_backlog` + `line_add_backlog`.
+                let sec = u128::from(SEC);
+                self.owed = self.owed.max(u128::from(u.backlog_bytes) * sec)
+                    + u128::from(u.extra_backlog_bytes) * sec;
+            }
+            u
+        }
+
+        /// Doğal ACK: alıcı `largest`'ı aldıktan `hold_ns` sonra çıkarır (`ack_delay`'e yazılı).
+        fn ack(
+            &mut self,
+            largest: u64,
+            first: Option<u64>,
+            hold_ns: u64,
+            pair: Option<u64>,
+        ) -> Option<LineGuardUpdate> {
+            let at = self.ack_time(largest) + hold_ns;
+            self.ack_at(at, largest, first, hold_ns, false, pair)
+        }
+    }
+
+    /// Ön evre ve yoklamayı başlatan ACK (ACK1). Gönderici taban tavanında (6 250) sürekli tam
+    /// datagram gönderir; cephesi 10 olan ölçümsüz ACK'ten sonra cephesi 30, ölçüm aralığı 11..30
+    /// olan ACK çift ölçüsünü (profil düzeyinde) taşır ve çift yoklamasını kaydeder. Alıcı ACK1'i,
+    /// göndericinin hat modelinin boşaldığı ana `phase_ns` kala/geçe denk gelecek kadar tutar
+    /// (tutma `ack_delay`'e yazılı): `phase_ns = 0` iken pencerenin ilk datagramı pencere başında
+    /// çıkar; `phase_ns > 0` iken ACK bir taban datagramının serileşmesinin ortasına düşer ve o
+    /// datagramın kalanı yoklama tavanında erir (ön pay). Dönen: pencerenin ilk datagramının seq'i.
+    fn open_window(r: &mut Rig, phase_ns: u64) -> u64 {
+        r.run(u64::MAX, 11);
+        let _ = r.ack(10, None, 0, None);
+        r.run(u64::MAX, 31);
+        let nominal = r.ack_time(30);
+        let mut dry = r.clone();
+        dry.run(nominal, u64::MAX);
+        let pace = u128::from(dry.g.pace_bps().max(1));
+        let slot = dry.now + u64::try_from(dry.owed.div_ceil(pace)).expect("kurulum: yuva");
+        let _ = r.ack(
+            30,
+            Some(11),
+            slot - nominal + phase_ns,
+            Some(PAIR_AT_PROFILE),
+        );
+        let p = r.g.probe.expect("kurulum: çift yoklaması başlamadı");
+        assert!(p.from_pair, "kurulum: kayıtlı yoklama çift yoklaması değil");
+        assert_eq!(r.g.pair_probes(), 1, "kurulum: tek çift yoklaması");
+        assert_eq!(
+            (p.base_pace, p.probe_pace, p.start_ns),
+            (NARROW, PROFILE, r.now),
+            "kurulum: taban 6 250, hedef profil, pencere ACK anında (tutma yok)"
+        );
+        r.sent()
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Model {
+        Fifo,
+        Bucket { burst: u64, credit0: u64 },
+    }
+
+    impl Model {
+        fn line(self) -> Bottleneck {
+            match self {
+                Self::Fifo => Bottleneck::fifo(NARROW),
+                Self::Bucket { burst, credit0 } => Bottleneck::bucket(NARROW, burst, credit0),
+            }
+        }
+    }
+
+    /// EK 6 hücresinin okunan değerleri (hüküm ACK'i işlendikten sonra).
+    #[derive(Debug, Clone, Copy)]
+    struct Ek6Cell {
+        /// Pencerenin ilk datagramı hatta girerken kovadaki kredi (modelden).
+        credit: u64,
+        /// Pencere başından ilk pencere datagramına dek süre (ön pay).
+        lead_ns: u64,
+        datagrams: u64,
+        sent_wire: u64,
+        window_ns: u64,
+        expect_ns: u64,
+        outcome: Option<ProbeOutcome>,
+        /// Hüküm ACK'i aşağı yönlü örnek verdi (hüküm kaydı yok; hedef reddedilir).
+        sampled: bool,
+        g_ns: Option<i64>,
+        pace_after: u64,
+        refuted: Option<u64>,
+    }
+
+    impl Ek6Cell {
+        /// E = S − taban × W (B).
+        fn excess(&self) -> i64 {
+            let base = u128::from(NARROW) * u128::from(self.window_ns) / u128::from(SEC);
+            i64::try_from(self.sent_wire).expect("B") - i64::try_from(base).expect("B")
+        }
+
+        /// Karar kodunun kanıt hızı: (S + bir tam datagram) / W.
+        fn evidence_bps(&self) -> u64 {
+            u64::try_from(
+                u128::from(self.sent_wire + FULL_UDP + OVH) * u128::from(SEC)
+                    / u128::from(self.window_ns.max(1)),
+            )
+            .unwrap_or(u64::MAX)
+        }
+
+        fn evidence(&self) -> bool {
+            self.evidence_bps().saturating_mul(1000) >= PROFILE * VERIFY_MIN_PERMILLE
+        }
+
+        /// Kalıcı tavan tabanın üstüne yazıldı.
+        fn raised(&self) -> bool {
+            self.pace_after > NARROW
+        }
+
+        fn verdict(&self) -> String {
+            match (self.outcome, self.sampled) {
+                (Some(o), _) => format!("{o:?}"),
+                (None, true) => "Örnek (ret)".to_string(),
+                (None, false) => "hüküm yok".to_string(),
+            }
+        }
+
+        fn letter(&self) -> char {
+            match (self.outcome, self.sampled) {
+                (Some(ProbeOutcome::Passed), _) => 'P',
+                (Some(ProbeOutcome::Failed), _) => 'F',
+                (Some(ProbeOutcome::Inconclusive), _) => 'S',
+                (Some(ProbeOutcome::NoEvidence), _) => 'K',
+                (Some(ProbeOutcome::Superseded), _) => 'U',
+                (Some(ProbeOutcome::Deferred), _) => 'E',
+                (None, true) => 'O',
+                (None, false) => '-',
+            }
+        }
+    }
+
+    /// EK 6 hücresi: değişmemiş 6 250 hat (`model`), şişik çift ölçüsü; pencerede `sizes` sırasıyla
+    /// çıkar (yoklama tavanında, hat modeli pacing'i; `app_gap_ns > 0` ise uygulama sınırlı), bütçe
+    /// dolunca gönderici taban tavanında tam datagramla sürer. Hüküm ACK'inin ölçüm aralığı
+    /// yoklamanın tamamını kapsar: ilk uç (seq 31) yoklamadan önce, son uç ve cephe pencereden
+    /// sonraki 12. datagram.
+    fn ek6_cell(model: Model, sizes: &[u64], phase_ns: u64, app_gap_ns: u64) -> Ek6Cell {
+        let mut r = Rig::new(pair_probe_guard(), model.line());
+        r.window = sizes.iter().copied().collect();
+        r.app_gap_ns = app_gap_ns;
+        let n1 = open_window(&mut r, phase_ns);
+        r.run(u64::MAX, n1 + 18);
+        let pw = r.g.probe.expect("kurulum: yoklama kaydı hükme dek durur");
+        assert!(
+            pw.from_pair && r.g.pace_bps() == NARROW,
+            "kurulum: pencere kapanmadı"
+        );
+        let samples = r.g.samples();
+        let _ = r.ack(n1 + 17, Some(31), 0, Some(PAIR_AT_PROFILE));
+        Ek6Cell {
+            credit: r.tx(n1).credit,
+            lead_ns: r.tx(n1).send_ns - pw.start_ns,
+            datagrams: pw.sent_datagrams,
+            sent_wire: pw.sent,
+            window_ns: pw.until_ns - pw.start_ns,
+            expect_ns: pw.expect_ns,
+            outcome: r.g.ack_diag().verdict.map(|v| v.outcome),
+            sampled: r.g.samples() > samples,
+            g_ns: r.g.interval_diag().2,
+            pace_after: r.g.pace_bps(),
+            refuted: r.g.refuted_bps,
+        }
+    }
+
+    /// Beş karışım × sıra: (karışım, sıra, pencere sırasıyla gövde boyları).
+    fn ek6_mixes(small: u64) -> Vec<(&'static str, &'static str, Vec<u64>)> {
+        let (t, k) = (FULL_UDP, small);
+        vec![
+            ("6 tam", "-", vec![t; 6]),
+            ("5 tam + 1 küçük", "küçük önce", vec![k, t, t, t, t, t]),
+            ("5 tam + 1 küçük", "serpiştirilmiş", vec![t, t, k, t, t, t]),
+            ("5 tam + 1 küçük", "küçük sonda", vec![t, t, t, t, t, k]),
+            ("4 tam + 2 küçük", "küçükler önce", vec![k, k, t, t, t, t]),
+            ("4 tam + 2 küçük", "serpiştirilmiş", vec![t, k, t, t, k, t]),
+            ("4 tam + 2 küçük", "küçükler sonda", vec![t, t, t, t, k, k]),
+            ("3 tam + 3 küçük", "küçükler önce", vec![k, k, k, t, t, t]),
+            ("3 tam + 3 küçük", "serpiştirilmiş", vec![t, k, t, k, t, k]),
+            ("3 tam + 3 küçük", "küçükler sonda", vec![t, t, t, k, k, k]),
+            ("0 tam + 6 küçük", "-", vec![k; 6]),
+        ]
+    }
+
+    /// Hat modelleri. İlk üçü ön kayıttaki iki model (kova iki uç krediyle); dördüncüsü ön kaydın
+    /// «E − 1 200 B» aritmetiğini veren kova: tam datagram beklemeden geçer ve üstüne 1 200 B
+    /// yedek kredi vardır (burst = 1 228 + 1 200 B, dolu).
+    fn ek6_models() -> [(&'static str, Model); 4] {
+        let spare = FULL_UDP + OVH + TBF_BURST;
+        [
+            ("FIFO", Model::Fifo),
+            (
+                "kova 1200 / kredi 0",
+                Model::Bucket {
+                    burst: TBF_BURST,
+                    credit0: 0,
+                },
+            ),
+            (
+                "kova 1200 / kredi 1200",
+                Model::Bucket {
+                    burst: TBF_BURST,
+                    credit0: TBF_BURST,
+                },
+            ),
+            (
+                "kova 1228+1200 / dolu",
+                Model::Bucket {
+                    burst: spare,
+                    credit0: spare,
+                },
+            ),
+        ]
+    }
+
+    /// ACK1'in düştüğü faz: 0 (ön pay yok) ve bir taban datagramının serileşmesinin 1/4, 1/2, 3/4'ü
+    /// (ön pay 73,68 / 49,12 / 24,56 ms).
+    fn ek6_phases() -> [u64; 4] {
+        let gap = (FULL_UDP + OVH) * SEC / NARROW;
+        [0, gap / 4, gap / 2, gap * 3 / 4]
+    }
+
+    /// {0 tam + 6 küçük} için küçükler arası süre taraması: yoklama hızı (hat modeli pacing'i ile
+    /// aynı), taban hızı (uygulama sınırlı: gönderici tabanı hiç aşmaz) ve 40 ms (PTT şeridinin
+    /// modül belgesindeki tel hızı: saniyede 5 demet × 5 iletim = 25 datagram).
+    fn ek6_small_gaps(small: u64) -> [(&'static str, u64); 3] {
+        let wire = small + OVH;
+        [
+            ("yoklama hızı", wire * SEC / PROFILE),
+            ("taban hızı", wire * SEC / NARROW),
+            ("40 ms (PTT 25/s)", 40 * MS),
+        ]
+    }
+
+    fn ms(ns: u64) -> f64 {
+        ns as f64 / 1e6
+    }
+
+    fn ek6_row(c: &Ek6Cell) -> String {
+        format!(
+            "{} | {} | {} | {:.2} | {} | {} {} | {} | {:.2} | {} | {} | {}",
+            c.credit,
+            c.datagrams,
+            c.sent_wire,
+            ms(c.window_ns),
+            c.excess(),
+            c.evidence_bps(),
+            if c.evidence() { "var" } else { "YOK" },
+            c.g_ns
+                .map_or("-".to_string(), |g| format!("{:.2}", g as f64 / 1e6)),
+            ms(c.expect_ns / 2),
+            c.verdict(),
+            c.pace_after,
+            c.refuted.map_or("-".to_string(), |r| r.to_string()),
+        )
+    }
+
+    /// Kovanın, tam datagramları `pace` B/s ile sürekli gönderen göndericide, kredi 0'dan
+    /// başlayıp `secs` saniye sonra bir datagramın girişinde gördüğü kredi (B).
+    fn credit_after(burst: u64, pace: u64, secs: u64) -> u64 {
+        let mut line = Bottleneck::bucket(NARROW, burst, 0);
+        let gap = (FULL_UDP + OVH) * SEC / pace;
+        let mut s = 0u64;
+        while s < secs * SEC {
+            let _ = line.pass(s, FULL_UDP + OVH);
+            s += gap;
+        }
+        line.credit(s)
+    }
+
+    /// [EK 6 · RAPOR] Küçük datagramla dolan yoklama, değişmemiş 6 250 hatta. Salt rapor: hücre
+    /// başına bugünkü davranışı sabitleyen beklenti yoktur (şart `ek6_no_permanent_raise_…`).
+    #[test]
+    fn ek6_report_small_datagram_probe_on_an_unchanged_line() {
+        println!("EK6 kredi türetimi (kova, kredi 0'dan; tam datagram, sürekli gönderim):");
+        for (name, burst) in [
+            ("kova 1200", TBF_BURST),
+            ("kova 1228+1200", FULL_UDP + OVH + TBF_BURST),
+        ] {
+            for (label, pace) in [
+                ("taban = hat (6250)", NARROW),
+                ("taban = hattın %99,6'sı (6225)", NARROW * 996 / 1000),
+            ] {
+                println!(
+                    "EK6 kredi | {name} | {label} | 10 s: {} B | 30 s: {} B | 60 s: {} B | 300 s: {} B",
+                    credit_after(burst, pace, 10),
+                    credit_after(burst, pace, 30),
+                    credit_after(burst, pace, 60),
+                    credit_after(burst, pace, 300),
+                );
+            }
+        }
+        for (small_name, small) in [
+            ("PTT demeti 152 B gövde / 180 B tel", PTT_UDP),
+            ("metin 108 B gövde / 136 B tel", TEXT_UDP),
+        ] {
+            println!();
+            println!("EK6 tablo — küçük datagram: {small_name}; hat 6250 (değişmedi), çift ölçüsü profil; hat modeli pacing'i");
+            println!(
+                "EK6 | karışım | sıra | hat modeli | kredi B | datagram | S B | W ms | E B | \
+                 kanıt B/s (eşik {}) | g ms | expect/2 ms | hüküm | kalıcı tavan | ret | \
+                 faz taraması (ön pay 0 / 73,68 / 49,12 / 24,56 ms)",
+                PROFILE * VERIFY_MIN_PERMILLE / 1000
+            );
+            for (mix, order, sizes) in ek6_mixes(small) {
+                for (model_name, model) in ek6_models() {
+                    let c = ek6_cell(model, &sizes, 0, 0);
+                    let sweep: String = ek6_phases()
+                        .iter()
+                        .map(|&ph| ek6_cell(model, &sizes, ph, 0).letter())
+                        .collect();
+                    println!(
+                        "EK6 | {mix} | {order} | {model_name} | {} | {sweep}",
+                        ek6_row(&c)
+                    );
+                }
+            }
+            println!();
+            println!("EK6 ek tablo — 0 tam + 6 küçük ({small_name}), küçükler arası süre taraması");
+            println!(
+                "EK6-ARALIK | küçükler arası | hat modeli | kredi B | datagram | S B | W ms | E B | \
+                 kanıt B/s | g ms | expect/2 ms | hüküm | kalıcı tavan | ret"
+            );
+            for (gap_name, gap) in ek6_small_gaps(small) {
+                for (model_name, model) in ek6_models() {
+                    let c = ek6_cell(model, &[small; 6], 0, gap);
+                    println!(
+                        "EK6-ARALIK | {gap_name} ({:.2} ms) | {model_name} | {}",
+                        ms(gap),
+                        ek6_row(&c)
+                    );
+                }
+            }
+        }
+        println!();
+        println!(
+            "EK6 harfler: P = Passed, F = Failed, O = aşağı yönlü örnek (hedef reddedilir), \
+             S = Inconclusive, K = NoEvidence, E = Deferred, U = Superseded, - = hüküm yok"
+        );
+    }
+
+    /// [EK 6 · ŞART] Değişmemiş 6 250 hatta hiçbir karışım kalıcı artış yazmaz (sahip: «hat
+    /// 6 250'de kalırsa sahte artış olmamalı»). Bütün hücreler: beş karışım × sıra × hat modeli ×
+    /// ACK fazı × iki küçük boy ve {0 + 6} küçükler arası süre taraması.
+    #[test]
+    #[ignore = "EK 6: sahip kararı bekliyor — bugün kırmızı"]
+    fn ek6_no_permanent_raise_on_an_unchanged_line_for_any_mix() {
+        let mut raised = Vec::new();
+        let mut cells = 0u32;
+        for (small_name, small) in [("180 B", PTT_UDP), ("136 B", TEXT_UDP)] {
+            for (mix, order, sizes) in ek6_mixes(small) {
+                for (model_name, model) in ek6_models() {
+                    for ph in ek6_phases() {
+                        cells += 1;
+                        let c = ek6_cell(model, &sizes, ph, 0);
+                        if c.raised() {
+                            raised.push(format!(
+                                "{mix} ({order}; küçük {small_name}) · {model_name} · ön pay {:.2} ms: \
+                                 {} → tavan {} (S {} B, W {:.2} ms, E {} B, g {:?} ns, expect/2 {} ns)",
+                                ms(c.lead_ns),
+                                c.verdict(),
+                                c.pace_after,
+                                c.sent_wire,
+                                ms(c.window_ns),
+                                c.excess(),
+                                c.g_ns,
+                                c.expect_ns / 2
+                            ));
+                        }
+                    }
+                }
+            }
+            for (gap_name, gap) in ek6_small_gaps(small) {
+                for (model_name, model) in ek6_models() {
+                    cells += 1;
+                    let c = ek6_cell(model, &[small; 6], 0, gap);
+                    if c.raised() {
+                        raised.push(format!(
+                            "0 tam + 6 küçük ({small_name}), küçükler arası {gap_name} · {model_name}: \
+                             {} → tavan {} (S {} B, W {:.2} ms, E {} B, g {:?} ns, expect/2 {} ns)",
+                            c.verdict(),
+                            c.pace_after,
+                            c.sent_wire,
+                            ms(c.window_ns),
+                            c.excess(),
+                            c.g_ns,
+                            c.expect_ns / 2
+                        ));
+                    }
+                }
+            }
+        }
+        println!(
+            "EK6 şart: {cells} hücre, kalıcı artış yazan {}",
+            raised.len()
+        );
+        assert!(
+            raised.is_empty(),
+            "değişmemiş 6 250 hatta kalıcı artış yazan {} / {cells} hücre:\n{}",
+            raised.len(),
+            raised.join("\n")
+        );
+    }
+
+    /// Bir ACK işlendikten sonraki durum (rapor satırı).
+    #[derive(Debug, Clone, Copy)]
+    struct AckRow {
+        name: &'static str,
+        outcome: Option<ProbeOutcome>,
+        pace: u64,
+        pair_probe_open: bool,
+        samples: u64,
+        pair_probes: u64,
+        spent: bool,
+        refuted: Option<u64>,
+        pair_raises: u64,
+    }
+
+    fn ack_row(name: &'static str, g: &LineGuard) -> AckRow {
+        AckRow {
+            name,
+            outcome: g.ack_diag().verdict.map(|v| v.outcome),
+            pace: g.pace_bps(),
+            pair_probe_open: g.probe.is_some_and(|p| p.from_pair),
+            samples: g.samples(),
+            pair_probes: g.pair_probes(),
+            spent: g.pair_probe_spent,
+            refuted: g.refuted_bps,
+            pair_raises: g.pair_raises(),
+        }
+    }
+
+    fn print_rows(title: &str, rows: &[AckRow]) {
+        println!("{title}");
+        println!(
+            "{title} | ACK | outcome | pace | çift yoklaması kayıtlı | samples | pair_probes | \
+             pair_probe_spent | refuted_bps | pair_raises"
+        );
+        for r in rows {
+            println!(
+                "{title} | {} | {:?} | {} | {} | {} | {} | {} | {:?} | {}",
+                r.name,
+                r.outcome,
+                r.pace,
+                r.pair_probe_open,
+                r.samples,
+                r.pair_probes,
+                r.spent,
+                r.refuted,
+                r.pair_raises
+            );
+        }
+    }
+
+    /// `on_ack_measured`'ın cephe noktası kuramadan döndüğü yollar (`ack_front` `None`). İlk üçü
+    /// ön kayıttaki (EK 7) yollar; son dördü aynı çıkışın kalan koşulları.
+    #[derive(Debug, Clone, Copy)]
+    enum EarlyReturn {
+        /// Cephe ilerlemiyor (`largest ≤ frontier`).
+        StaleFrontier,
+        /// `ack_delay` kodlama tavanında (`saturated`).
+        SaturatedDelay,
+        /// Cephenin gönderim kaydı yok (budanmış / [`SENT_CAP`] ile düşmüş).
+        FrontierRecordGone,
+        /// ACK'in tel boyu bildirilmemiş (`note_ack_wire` çağrılmadı).
+        NoAckWire,
+        /// Dönüş hattı hızı 0 (ACK serileşmesi hesaplanamıyor).
+        ReturnRateZero,
+        /// `ack_delay` ACK anından büyük (`τ` hesaplanamıyor).
+        AckDelayBeyondNow,
+        /// `τ` cephenin gönderim anından önce.
+        TauBeforeSend,
+    }
+
+    /// [EK 7 · D1] Hat gerçekten 12 500'e dönmüş. ACK1 yoklamayı başlatır (pencerede 6 tam
+    /// datagram) · ACK2 `kind` yolundan erken döner · ACK3 ölçülü ama kapsamıyor (aralığı
+    /// pencereden sonra başlar) · ACK4 yoklamanın tamamını kapsıyor (ilk uç seq 31), g küçük.
+    fn d1_run(kind: EarlyReturn) -> Vec<AckRow> {
+        let pair = Some(PAIR_AT_PROFILE);
+        let mut r = Rig::new(pair_probe_guard(), Bottleneck::fifo(PROFILE));
+        let n1 = open_window(&mut r, 0);
+        let mut rows = vec![ack_row("ACK1 (yoklamayı başlatır)", &r.g)];
+        r.run(u64::MAX, n1 + 6);
+        let pw = r.g.probe.expect("kurulum: yoklama kaydı");
+        assert_eq!(
+            (pw.sent_datagrams, pw.sent),
+            (6, 6 * (FULL_UDP + OVH)),
+            "kurulum: pencerede 6 tam datagram"
+        );
+        let frontier = r.g.frontier;
+        let at = r.ack_time(n1 - 1);
+        let name = match kind {
+            EarlyReturn::StaleFrontier => {
+                let _ = r.ack_at(at, 30, None, 0, false, pair);
+                "ACK2 (cephe ilerlemiyor)"
+            }
+            EarlyReturn::SaturatedDelay => {
+                let _ = r.ack_at(at, n1 - 1, None, 0, true, pair);
+                "ACK2 (ack_delay doymuş)"
+            }
+            EarlyReturn::FrontierRecordGone => {
+                r.run(at, u64::MAX);
+                r.g.sent.retain(|x| x.seq != n1 - 1);
+                let _ = r.ack_at(at, n1 - 1, None, 0, false, pair);
+                "ACK2 (cephe kaydı yok)"
+            }
+            EarlyReturn::NoAckWire => {
+                r.run(at, u64::MAX);
+                assert!(r.g.pending_wire.is_none(), "kurulum: tel boyu bekliyor");
+                let u = r.g.on_ack_measured(at, 0, false, n1 - 1, None);
+                assert!(u.is_none(), "kurulum: ilk sayılan ACK güncelleme döndürmez");
+                r.g.on_pair_rate(PAIR_AT_PROFILE);
+                "ACK2 (ACK tel boyu yok)"
+            }
+            EarlyReturn::ReturnRateZero => {
+                let rate = std::mem::take(&mut r.g.return_line.rate_bps);
+                let _ = r.ack_at(at, n1 - 1, None, 0, false, pair);
+                r.g.return_line.rate_bps = rate;
+                "ACK2 (dönüş hattı hızı 0)"
+            }
+            EarlyReturn::AckDelayBeyondNow => {
+                let _ = r.ack_at(at, n1 - 1, None, at + 1, false, pair);
+                "ACK2 (ack_delay > ACK anı)"
+            }
+            EarlyReturn::TauBeforeSend => {
+                let delay = at - r.tx(n1 - 1).send_ns;
+                let _ = r.ack_at(at, n1 - 1, None, delay, false, pair);
+                "ACK2 (τ gönderimden önce)"
+            }
+        };
+        assert_eq!(r.g.frontier, frontier, "kurulum: ACK2 erken dönmedi");
+        rows.push(ack_row(name, &r.g));
+        r.run(u64::MAX, n1 + 9);
+        let _ = r.ack(n1 + 8, Some(n1 + 6), 0, pair);
+        rows.push(ack_row("ACK3 (ölçülü, kapsamıyor)", &r.g));
+        r.run(u64::MAX, n1 + 17);
+        let _ = r.ack(n1 + 16, Some(31), 0, pair);
+        rows.push(ack_row("ACK4 (kapsıyor, g küçük)", &r.g));
+        rows
+    }
+
+    /// İSTENEN (sahip: «toparlanmadan sonra sayılan her ACK yerini korur; 3. ACK'e kadar kalıcı
+    /// artış yoksa KALDI; 4.+ ACK hükmü değiştirmez»): erken dönen ACK2 de sayılır; ACK3'te yoklama
+    /// SONUÇSUZ kapanır (kayıt yok, tavan taban); ACK4 kalıcı artış yazmaz.
+    fn d1_check(kind: EarlyReturn) {
+        let rows = d1_run(kind);
+        print_rows(&format!("EK7-D1 {kind:?}"), &rows);
+        let (a3, a4) = (rows[2], rows[3]);
+        let mut miss = Vec::new();
+        if a3.outcome != Some(ProbeOutcome::Inconclusive) {
+            miss.push(format!(
+                "ACK3 hükmü {:?} (istenen Inconclusive)",
+                a3.outcome
+            ));
+        }
+        if a3.pair_probe_open {
+            miss.push("ACK3'ten sonra çift yoklaması kaydı açık (istenen kapalı)".to_string());
+        }
+        if a3.pace != NARROW {
+            miss.push(format!(
+                "ACK3'ten sonra tavan {} (istenen {NARROW})",
+                a3.pace
+            ));
+        }
+        if a4.pace != NARROW {
+            miss.push(format!(
+                "ACK4'ten sonra tavan {} (istenen {NARROW})",
+                a4.pace
+            ));
+        }
+        if a4.pair_raises != 0 {
+            miss.push(format!(
+                "ACK4 kalıcı artış yazdı (pair_raises {})",
+                a4.pair_raises
+            ));
+        }
+        assert!(miss.is_empty(), "EK7-D1 {kind:?}: {miss:#?}");
+    }
+
+    /// [EK 7 · D1] Cephesi ilerlemeyen ACK (erken dönüş: `largest_seq <= frontier`).
+    #[test]
+    fn ek7_d1_a_stale_frontier_ack_keeps_its_place_in_the_ack_count() {
+        d1_check(EarlyReturn::StaleFrontier);
+    }
+
+    /// [EK 7 · D1] `ack_delay`'i doymuş ACK (erken dönüş: `saturated`).
+    #[test]
+    fn ek7_d1_a_saturated_delay_ack_keeps_its_place_in_the_ack_count() {
+        d1_check(EarlyReturn::SaturatedDelay);
+    }
+
+    /// [EK 7 · D1] Cephesinin gönderim kaydı olmayan ACK (erken dönüş: kayıt araması boş).
+    #[test]
+    fn ek7_d1_an_ack_without_a_frontier_record_keeps_its_place_in_the_ack_count() {
+        d1_check(EarlyReturn::FrontierRecordGone);
+    }
+
+    /// [EK 7 · D1] ACK'in tel boyu bildirilmemiş (`note_ack_wire` çağrılmadı): aynı çıkış, aynı sayım.
+    #[test]
+    fn ek7_d1_an_ack_without_its_wire_size_keeps_its_place_in_the_ack_count() {
+        d1_check(EarlyReturn::NoAckWire);
+    }
+
+    /// [EK 7 · D1] Dönüş hattı hızı 0 (ACK serileşmesi hesaplanamıyor): aynı çıkış, aynı sayım.
+    #[test]
+    fn ek7_d1_an_ack_on_a_zero_rate_return_line_keeps_its_place_in_the_ack_count() {
+        d1_check(EarlyReturn::ReturnRateZero);
+    }
+
+    /// [EK 7 · D1] `ack_delay` ACK anından büyük (`τ` hesaplanamıyor): aynı çıkış, aynı sayım.
+    #[test]
+    fn ek7_d1_an_ack_with_a_delay_beyond_now_keeps_its_place_in_the_ack_count() {
+        d1_check(EarlyReturn::AckDelayBeyondNow);
+    }
+
+    /// [EK 7 · D1] `τ` cephenin gönderim anından önce: aynı çıkış, aynı sayım.
+    #[test]
+    fn ek7_d1_an_ack_arriving_before_its_frontier_was_sent_keeps_its_place_in_the_ack_count() {
+        d1_check(EarlyReturn::TauBeforeSend);
+    }
+
+    /// [EK 7 · D1] Cephe noktası kuramayan ACK yoklamadan sonraki 2. ACK ise (toparlanmadan sonraki
+    /// 3. ACK) yoklama o ACK'te SONUÇSUZ kapanır ve kapanış, aynı anda ölçülü ama kapsamayan bir
+    /// ACK'in kapanışıyla AYNIDIR: tavan taban, fiilen çıkan fazla boşaltılır, ret yok, tek atış
+    /// işareti durur. Anahtar kapalıyken aynı ACK hiçbir şey değiştirmez.
+    #[test]
+    fn ek7_d1_an_ack_without_a_front_point_as_the_third_ack_closes_the_probe_like_a_measured_one() {
+        let pair = Some(PAIR_AT_PROFILE);
+        let mut r = Rig::new(pair_probe_guard(), Bottleneck::fifo(NARROW));
+        let n1 = open_window(&mut r, 0);
+        r.run(u64::MAX, n1 + 6);
+        let pw = r.g.probe.expect("kurulum: yoklama kaydı");
+        assert_eq!((pw.sent_datagrams, pw.sent), (6, 6 * (FULL_UDP + OVH)));
+        let _ = r.ack(n1 - 1, Some(31), 0, pair);
+        assert_eq!(
+            r.g.ack_diag().verdict.map(|v| v.outcome),
+            Some(ProbeOutcome::Deferred),
+            "kurulum: ACK2 ertelenir"
+        );
+        let at = r.ack_time(n1 + 1);
+        let state = |g: &LineGuard, u: Option<LineGuardUpdate>| {
+            let v = g.ack_diag().verdict.expect("ACK3 hüküm kaydı");
+            (
+                (v.outcome, v.acks_after_start, v.probe_sent_wire),
+                (g.pace_bps(), g.probe.is_none(), g.refuted_bps),
+                (g.pair_probe_spent, g.pair_probes()),
+                u,
+            )
+        };
+        // Ölçülü, kapsamayan ACK3 (bugünkü kapanış).
+        let mut measured = r.clone();
+        let u = measured.ack_at(at, n1 + 1, Some(n1), 0, false, pair);
+        let want = state(&measured.g, u);
+        // Aynı anda cephesi ilerlemeyen ACK3.
+        let frontier = r.g.frontier;
+        let u = r.ack_at(at, n1 - 1, None, 0, false, pair);
+        assert_eq!(r.g.frontier, frontier, "kurulum: ACK3 erken dönmedi");
+        let got = state(&r.g, u);
+        println!("EK7-D1 3. ACK cephesiz: {got:?}");
+        assert_eq!(
+            got, want,
+            "cephesiz 3. ACK'in kapanışı ölçülü kapanıştan farklı"
+        );
+        let excess = 6 * (FULL_UDP + OVH) - NARROW * (pw.until_ns - pw.start_ns) / SEC;
+        assert_eq!(
+            got,
+            (
+                (ProbeOutcome::Inconclusive, 2, 6 * (FULL_UDP + OVH)),
+                (NARROW, true, None),
+                (true, 1),
+                Some(LineGuardUpdate {
+                    rate_bps: NARROW,
+                    backlog_bytes: 0,
+                    extra_backlog_bytes: excess,
+                }),
+            )
+        );
+
+        // Anahtar kapalı (çift yoklaması yok): cephesi ilerlemeyen ACK durumu değiştirmez.
+        let mut d = measured_narrow_guard();
+        let arr = send_into(&mut d, 6_250, 40);
+        let _ = ack_m(&mut d, &arr, 10, 0, None);
+        let _ = ack_m(&mut d, &arr, 30, 0, Some(11));
+        let before = (d.pace_bps(), d.rate_bps(), d.refuted_bps, d.frontier);
+        let probe = d.probe.map(|p| (p.acks_seen, p.deferred, p.until_ns));
+        d.note_ack_wire(ACK_UDP);
+        assert_eq!(
+            d.on_ack_measured(d.ack_now_ns + SEC, 0, false, 30, None),
+            None
+        );
+        assert_eq!(
+            (d.pace_bps(), d.rate_bps(), d.refuted_bps, d.frontier),
+            before
+        );
+        assert_eq!(
+            d.probe.map(|p| (p.acks_seen, p.deferred, p.until_ns)),
+            probe,
+            "olağan yoklamanın kaydı değişti"
+        );
+        assert_eq!(d.ack_diag().verdict, None);
+        assert_eq!(d.pair_probes(), 0);
+    }
+
+    /// [EK 7 · D4] Şişik çift ölçüsü, FIFO hat 6 250. ACK1 yoklamayı başlatır (6 tam datagram) ·
+    /// ACK2 (cephesi pencereden önce gönderilmiş) ve ACK3 (cephesi pencerenin 2. datagramı)
+    /// kapsamıyor → SONUÇSUZ · ACK4 aşağı yönlü örnek · ACK5 aynı çift ölçüsü.
+    /// `second_narrowing = false`: hat değişmez; ACK4'ün aralığı yoklama dönemine uzanır (ilk ucu
+    /// pencerenin 3. datagramı), örnek yoklamanın KENDİ kuyruğudur.
+    /// `second_narrowing = true`: hat yoklama bittikten sonra 3 125'e iner; ACK4'ün aralığı
+    /// tamamen yoklamadan sonra başlar (ilk ucu pencereden sonraki ilk datagram): yeni daralma.
+    fn d4_run(second_narrowing: bool) -> Vec<AckRow> {
+        let pair = Some(PAIR_AT_PROFILE);
+        let mut r = Rig::new(pair_probe_guard(), Bottleneck::fifo(NARROW));
+        let n1 = open_window(&mut r, 0);
+        let mut rows = vec![ack_row("ACK1 (yoklamayı başlatır)", &r.g)];
+        r.run(u64::MAX, n1 + 6);
+        let pw = r.g.probe.expect("kurulum: yoklama kaydı");
+        assert_eq!(
+            (pw.sent_datagrams, pw.sent),
+            (6, 6 * (FULL_UDP + OVH)),
+            "kurulum: pencerede 6 tam datagram"
+        );
+        if second_narrowing {
+            r.line_step = Some((pw.until_ns + 1, NARROW / 2));
+        }
+        let _ = r.ack(n1 - 1, Some(31), 0, pair);
+        rows.push(ack_row("ACK2 (kapsamıyor)", &r.g));
+        let _ = r.ack(n1 + 1, Some(n1), 0, pair);
+        rows.push(ack_row("ACK3 (kapsamıyor)", &r.g));
+        let (first, last) = if second_narrowing {
+            (n1 + 6, n1 + 9)
+        } else {
+            (n1 + 2, n1 + 8)
+        };
+        assert_eq!(
+            r.tx(first).send_ns <= pw.until_ns,
+            !second_narrowing,
+            "kurulum: ACK4 aralığının ilk ucu (yoklama bitişine göre)"
+        );
+        let samples = r.g.samples();
+        let _ = r.ack(last, Some(first), 0, pair);
+        assert_eq!(
+            r.g.samples(),
+            samples + 1,
+            "kurulum: ACK4 aşağı yönlü örnek vermedi"
+        );
+        rows.push(ack_row(
+            if second_narrowing {
+                "ACK4 (örnek; aralık yoklamadan sonra)"
+            } else {
+                "ACK4 (örnek; aralık yoklama dönemine uzanır)"
+            },
+            &r.g,
+        ));
+        let _ = r.ack(last + 2, Some(last + 1), 0, pair);
+        assert_eq!(
+            r.g.samples(),
+            samples + 1,
+            "kurulum: ACK5 örnek vermemeli (çift ölçüsü geçerli)"
+        );
+        rows.push(ack_row("ACK5 (aynı çift ölçüsü)", &r.g));
+        assert_eq!(
+            (rows[1].outcome, rows[2].outcome),
+            (
+                Some(ProbeOutcome::Deferred),
+                Some(ProbeOutcome::Inconclusive)
+            ),
+            "kurulum: ACK2 ertelenir, ACK3 sonuçsuz kapanır"
+        );
+        rows
+    }
+
+    /// [EK 7 · D4] İSTENEN (sahip: «ikinci yoklama yok»): sonuçsuz kapanan yoklamanın kendi kuyruğu
+    /// örnek olarak görünürse o, hedefin reddidir: ret seviyesi hedef, tek atış hakkı yenilenmez,
+    /// aynı şişik çift ACK5'te ikinci yoklamayı başlatmaz.
+    #[test]
+    fn ek7_d4_the_probes_own_queue_does_not_renew_the_single_shot() {
+        let rows = d4_run(false);
+        print_rows("EK7-D4", &rows);
+        let (a4, a5) = (rows[3], rows[4]);
+        let mut miss = Vec::new();
+        if a4.refuted != Some(PROFILE) {
+            miss.push(format!(
+                "ACK4'ten sonra refuted_bps {:?} (istenen Some({PROFILE}))",
+                a4.refuted
+            ));
+        }
+        if a5.pair_probes != 1 {
+            miss.push(format!("pair_probes {} (istenen 1)", a5.pair_probes));
+        }
+        if a5.pair_probe_open {
+            miss.push("ACK5'te çift yoklaması kayıtlı (istenen yok)".to_string());
+        }
+        if a5.refuted != Some(PROFILE) {
+            miss.push(format!(
+                "ACK5'ten sonra refuted_bps {:?} (istenen Some({PROFILE}))",
+                a5.refuted
+            ));
+        }
+        assert!(miss.is_empty(), "EK7-D4: {miss:#?}");
+    }
+
+    /// [EK 7 · D4] «Kaldı» ile kapanan çift yoklaması da penceresini saklar. Yedek kredili kova
+    /// (1 228 + 1 200 B, dolu), hat 6 250, pencerede 1 küçük + 5 tam: kapsayan ACK `Failed` verir
+    /// (ret seviyesi hedef). Sonraki ACK'in aralığı pencerenin 2. datagramından başlar ve duran
+    /// kuyruğu aşağı yönlü örnek olarak görür: yoklamanın kendi kuyruğudur, ret seviyesi ve tek
+    /// atış işareti durur; aynı şişik çift ikinci yoklamayı başlatmaz.
+    #[test]
+    fn ek7_d4_a_failed_pair_probe_keeps_its_window_for_the_next_sample() {
+        let pair = Some(PAIR_AT_PROFILE);
+        let spare = FULL_UDP + OVH + TBF_BURST;
+        let mut r = Rig::new(pair_probe_guard(), Bottleneck::bucket(NARROW, spare, spare));
+        r.window = [PTT_UDP, FULL_UDP, FULL_UDP, FULL_UDP, FULL_UDP, FULL_UDP].into();
+        let n1 = open_window(&mut r, 0);
+        r.run(u64::MAX, n1 + 18);
+        let pw = r.g.probe.expect("kurulum: yoklama kaydı");
+        let _ = r.ack(n1 + 17, Some(31), 0, pair);
+        assert_eq!(
+            r.g.ack_diag().verdict.map(|v| v.outcome),
+            Some(ProbeOutcome::Failed),
+            "kurulum: kapsayan ACK kaldı vermedi"
+        );
+        assert_eq!(
+            (r.g.refuted_bps, r.g.pair_probe_spent),
+            (Some(PROFILE), true)
+        );
+        assert!(
+            r.tx(n1 + 1).send_ns <= pw.until_ns,
+            "kurulum: sonraki aralığın ilk ucu pencerede değil"
+        );
+        let samples = r.g.samples();
+        let _ = r.ack(n1 + 18, Some(n1 + 1), 0, pair);
+        assert_eq!(
+            r.g.samples(),
+            samples + 1,
+            "kurulum: sonraki ACK aşağı yönlü örnek vermedi (g {:?} ns)",
+            r.g.interval_diag().2
+        );
+        let after_sample = ack_row("örnek (aralık pencereye uzanır)", &r.g);
+        let _ = r.ack(n1 + 20, Some(n1 + 19), 0, pair);
+        let after_pair = ack_row("aynı çift ölçüsü", &r.g);
+        print_rows("EK7-D4-KALDI", &[after_sample, after_pair]);
+        assert_eq!(
+            (after_sample.refuted, after_sample.spent),
+            (Some(PROFILE), true)
+        );
+        assert_eq!(after_pair.pair_probes, 1, "ikinci çift yoklaması başladı");
+        assert!(!after_pair.pair_probe_open);
+    }
+
+    /// [EK 7 · D4 · KONTROL] Aynı dizi, ama ACK4'ün aralığı tamamen yoklamadan SONRA başlıyor
+    /// (yoklama bittikten sonra gerçek ikinci daralma): örnek yeni bir ölçüm dönemidir, hak
+    /// yenilenir ve ACK5'in çift ölçüsü yeni yoklamayı açar. Bugün yeşil; düzeltmeden sonra da
+    /// yeşil kalmalı.
+    #[test]
+    fn ek7_d4_control_a_sample_after_the_probe_renews_the_single_shot() {
+        let rows = d4_run(true);
+        print_rows("EK7-D4-KONTROL", &rows);
+        let a5 = rows[4];
+        assert_eq!(a5.pair_probes, 2, "hak yenilenmedi: {rows:#?}");
+        assert!(a5.pair_probe_open, "ACK5 yeni çift yoklamasını açmadı");
+    }
+
+    // =========================================================================================
+    // [ÇİFT YOKLAMASI · DENEY · EK 8] «Aynı kanıtla ikinci yoklama yok», kapanış türü başına; geçici
+    // evrenin düz aralık dalı. Testler yalnız davranışı okur: çift yoklaması sayısı, yoklama kaydı
+    // var/yok, ret seviyesi, tek atış işareti, tavan.
+    // =========================================================================================
+
+    /// İSTENEN (sahip: «aynı kanıtla ikinci yoklama başlatamasın»): `rejects` satırlarının her biri
+    /// (ölçüm aralığı yoklama penceresine uzanan aşağı yönlü örnek) hedefin reddidir (ret seviyesi
+    /// hedef, tek atış işareti durur) ve son satırda (aynı çift ölçüsü) ikinci çift yoklaması yoktur.
+    fn ek8_check_no_second_probe(title: &str, rows: &[AckRow], rejects: &[usize]) {
+        print_rows(title, rows);
+        let mut miss = Vec::new();
+        for &i in rejects {
+            let r = rows[i];
+            if r.refuted != Some(PROFILE) || !r.spent {
+                miss.push(format!(
+                    "{}: refuted_bps {:?}, pair_probe_spent {} (istenen Some({PROFILE}), true)",
+                    r.name, r.refuted, r.spent
+                ));
+            }
+        }
+        let last = rows[rows.len() - 1];
+        if last.pair_probes != 1 {
+            miss.push(format!(
+                "{}: pair_probes {} (istenen 1)",
+                last.name, last.pair_probes
+            ));
+        }
+        if last.pair_probe_open {
+            miss.push(format!(
+                "{}: çift yoklaması kayıtlı (istenen yok)",
+                last.name
+            ));
+        }
+        assert!(miss.is_empty(), "{title}: {miss:#?}");
+    }
+
+    /// [EK 8 · KANIT YOK] Pencerede yalnız altı küçük datagram çıkar (uygulama sınırlı, 100 ms
+    /// arayla): kapsayan ACK `NoEvidence` verir, kalıcı artış yok. Hat o ACK'in cephesinden sonra
+    /// daralır (3 125); sonraki ACK'in ölçüm aralığı pencerenin 2. datagramından başlar ve aşağı
+    /// yönlü örnek verir. Aralık yoklama penceresine uzanıyor: örnek hedefin reddidir, aynı çift
+    /// ölçüsü ikinci yoklamayı başlatmaz.
+    #[test]
+    fn ek8_a_pair_probe_closed_without_evidence_keeps_its_window() {
+        let pair = Some(PAIR_AT_PROFILE);
+        let mut r = Rig::new(pair_probe_guard(), Bottleneck::fifo(NARROW));
+        r.window = [PTT_UDP; 6].into();
+        r.app_gap_ns = 100 * MS;
+        let n1 = open_window(&mut r, 0);
+        r.run(u64::MAX, n1 + 9);
+        let pw = r.g.probe.expect("kurulum: yoklama kaydı");
+        assert_eq!(
+            (pw.sent_datagrams, pw.sent),
+            (6, 6 * (PTT_UDP + OVH)),
+            "kurulum: pencerede 6 küçük datagram"
+        );
+        r.line_step = Some((r.tx(n1 + 8).send_ns + 1, NARROW / 2));
+        let _ = r.ack(n1 + 8, Some(31), 0, pair);
+        assert_eq!(
+            r.g.ack_diag().verdict.map(|v| v.outcome),
+            Some(ProbeOutcome::NoEvidence),
+            "kurulum: kapsayan ACK kanıt yok vermedi"
+        );
+        let mut rows = vec![ack_row("ACK2 (kapsıyor, kanıt yok)", &r.g)];
+        assert!(
+            r.tx(n1 + 1).send_ns <= pw.until_ns,
+            "kurulum: sonraki aralığın ilk ucu pencerede değil"
+        );
+        let samples = r.g.samples();
+        let _ = r.ack(n1 + 16, Some(n1 + 1), 0, pair);
+        assert_eq!(
+            r.g.samples(),
+            samples + 1,
+            "kurulum: ACK3 aşağı yönlü örnek vermedi (g {:?} ns)",
+            r.g.interval_diag().2
+        );
+        rows.push(ack_row("ACK3 (örnek; aralık pencereye uzanır)", &r.g));
+        let _ = r.ack(n1 + 18, Some(n1 + 17), 0, pair);
+        assert_eq!(
+            r.g.samples(),
+            samples + 1,
+            "kurulum: ACK4 örnek vermemeli (g {:?} ns)",
+            r.g.interval_diag().2
+        );
+        rows.push(ack_row("ACK4 (aynı çift ölçüsü)", &r.g));
+        ek8_check_no_second_probe("EK8-KANIT-YOK", &rows, &[1]);
+    }
+
+    /// [EK 8 · KAYITLIYKEN ÖRNEK] Şişik çift ölçüsü, FIFO hat 6 250, pencerede 6 tam datagram.
+    /// Yoklamadan sonraki ilk ACK'in aralığı (pencereden önceki son datagram .. pencerenin 4.
+    /// datagramı) yoklamanın kurduğu kuyruğu aşağı yönlü örnek olarak görür: yoklama kayıtlıyken
+    /// gelen örnek hedefin reddidir ve yoklamayı kapatır. Sonraki ACK'in aralığı pencerenin 2.
+    /// datagramından başlar ve yine örnek verir: aynı kuyruk, ret durur; aynı çift ölçüsü ikinci
+    /// yoklamayı başlatmaz.
+    #[test]
+    fn ek8_a_sample_that_closes_a_registered_pair_probe_keeps_its_window() {
+        let pair = Some(PAIR_AT_PROFILE);
+        let mut r = Rig::new(pair_probe_guard(), Bottleneck::fifo(NARROW));
+        let n1 = open_window(&mut r, 0);
+        r.run(u64::MAX, n1 + 6);
+        let pw = r.g.probe.expect("kurulum: yoklama kaydı");
+        assert_eq!(
+            (pw.sent_datagrams, pw.sent),
+            (6, 6 * (FULL_UDP + OVH)),
+            "kurulum: pencerede 6 tam datagram"
+        );
+        let samples = r.g.samples();
+        let _ = r.ack(n1 + 3, Some(n1 - 1), 0, pair);
+        assert_eq!(
+            r.g.samples(),
+            samples + 1,
+            "kurulum: ACK2 yoklama kayıtlıyken örnek vermedi (g {:?} ns)",
+            r.g.interval_diag().2
+        );
+        assert!(
+            r.g.probe.is_none(),
+            "kurulum: örnek yoklama kaydını kapatmadı"
+        );
+        let mut rows = vec![ack_row("ACK2 (örnek; yoklama kayıtlıyken)", &r.g)];
+        assert!(
+            r.tx(n1 + 1).send_ns <= pw.until_ns,
+            "kurulum: sonraki aralığın ilk ucu pencerede değil"
+        );
+        let _ = r.ack(n1 + 7, Some(n1 + 1), 0, pair);
+        assert_eq!(
+            r.g.samples(),
+            samples + 2,
+            "kurulum: ACK3 aşağı yönlü örnek vermedi (g {:?} ns)",
+            r.g.interval_diag().2
+        );
+        rows.push(ack_row("ACK3 (örnek; aralık pencereye uzanır)", &r.g));
+        let _ = r.ack(n1 + 9, Some(n1 + 8), 0, pair);
+        assert_eq!(
+            r.g.samples(),
+            samples + 2,
+            "kurulum: ACK4 örnek vermemeli (g {:?} ns)",
+            r.g.interval_diag().2
+        );
+        rows.push(ack_row("ACK4 (aynı çift ölçüsü)", &r.g));
+        ek8_check_no_second_probe("EK8-KAYITLIYKEN-ÖRNEK", &rows, &[0, 1]);
+    }
+
+    /// [EK 8 · SONUÇSUZ] EK 7 D4 dizisi (ACK2, ACK3 kapsamıyor → SONUÇSUZ), ardından ölçüm aralığı
+    /// yoklama penceresine uzanan İKİ örnek (ACK4: pencerenin 3. datagramından; ACK5: 2.
+    /// datagramından) ve aynı çift ölçüsü (ACK6). `second_narrowing`: hat ACK4'ün cephesinden sonra
+    /// 3 125'e iner ve ACK5'in aralığı tamamen pencereden SONRA başlar (yeni daralma).
+    fn ek8_inconclusive_run(second_narrowing: bool) -> Vec<AckRow> {
+        let pair = Some(PAIR_AT_PROFILE);
+        let mut r = Rig::new(pair_probe_guard(), Bottleneck::fifo(NARROW));
+        let n1 = open_window(&mut r, 0);
+        r.run(u64::MAX, n1 + 9);
+        let pw = r.g.probe.expect("kurulum: yoklama kaydı");
+        assert_eq!(
+            (pw.sent_datagrams, pw.sent),
+            (6, 6 * (FULL_UDP + OVH)),
+            "kurulum: pencerede 6 tam datagram"
+        );
+        if second_narrowing {
+            r.line_step = Some((r.tx(n1 + 8).send_ns + 1, NARROW / 2));
+        }
+        let _ = r.ack(n1 - 1, Some(31), 0, pair);
+        let _ = r.ack(n1 + 1, Some(n1), 0, pair);
+        assert_eq!(
+            r.g.ack_diag().verdict.map(|v| v.outcome),
+            Some(ProbeOutcome::Inconclusive),
+            "kurulum: ACK3 sonuçsuz kapanmadı"
+        );
+        let mut rows = vec![ack_row("ACK3 (kapsamıyor → SONUÇSUZ)", &r.g)];
+        let samples = r.g.samples();
+        let _ = r.ack(n1 + 8, Some(n1 + 2), 0, pair);
+        rows.push(ack_row("ACK4 (örnek; aralık pencereye uzanır)", &r.g));
+        let (first, last, name) = if second_narrowing {
+            (n1 + 9, n1 + 12, "ACK5 (örnek; aralık pencereden sonra)")
+        } else {
+            (n1 + 1, n1 + 10, "ACK5 (örnek; aralık pencereye uzanır)")
+        };
+        assert_eq!(
+            r.tx(first).send_ns <= pw.until_ns,
+            !second_narrowing,
+            "kurulum: ACK5 aralığının ilk ucu (yoklama bitişine göre)"
+        );
+        let _ = r.ack(last, Some(first), 0, pair);
+        assert_eq!(
+            r.g.samples(),
+            samples + 2,
+            "kurulum: ACK4 ve ACK5 aşağı yönlü örnek vermedi (g {:?} ns)",
+            r.g.interval_diag().2
+        );
+        rows.push(ack_row(name, &r.g));
+        let _ = r.ack(last + 2, Some(last + 1), 0, pair);
+        assert_eq!(
+            r.g.samples(),
+            samples + 2,
+            "kurulum: ACK6 örnek vermemeli (g {:?} ns)",
+            r.g.interval_diag().2
+        );
+        rows.push(ack_row("ACK6 (aynı çift ölçüsü)", &r.g));
+        rows
+    }
+
+    /// [EK 8 · SONUÇSUZ] Sonuçsuz kapanan yoklamanın kuyruğu art arda iki ACK'te örnek olarak
+    /// görünür (ikisinin de aralığı pencereye uzanır): ikisi de rettir, hak ikincisinde de
+    /// yenilenmez; aynı çift ölçüsü ikinci yoklamayı başlatmaz.
+    #[test]
+    fn ek8_an_inconclusive_pair_probe_keeps_its_window_past_the_first_sample() {
+        let rows = ek8_inconclusive_run(false);
+        ek8_check_no_second_probe("EK8-SONUÇSUZ", &rows, &[1, 2]);
+    }
+
+    /// [EK 8 · KONTROL] Aynı dizi, ama ACK5'in aralığı tamamen pencereden SONRA başlıyor (gerçek
+    /// ikinci daralma): pencereye uzanan örnekten (ACK4) sonra da hak yenilenir, saklanan pencere
+    /// kilit bırakmaz; ACK6'nın çift ölçüsü yeni yoklamayı açar.
+    #[test]
+    fn ek8_control_a_sample_past_the_window_renews_after_an_own_queue_sample() {
+        let rows = ek8_inconclusive_run(true);
+        print_rows("EK8-KONTROL", &rows);
+        let a6 = rows[3];
+        assert_eq!(a6.pair_probes, 2, "hak yenilenmedi: {rows:#?}");
+        assert!(a6.pair_probe_open, "ACK6 yeni çift yoklamasını açmadı");
+    }
+
+    /// [EK 8 · KAPSAMA KANITI] Cephe noktası kuramayan ACK, ölçüm aralığı yoklamanın tamamını
+    /// kapsasa da kapsama kanıtı vermez (sahip: «ölçüm taşımayan veya cephesi ilerlemeyen ACK de
+    /// sayılır, fakat kapsama kanıtı vermez»). Hat gerçekten 12 500'e dönmüş. ACK2'nin `ack_delay`'i
+    /// doymuş, aralığı yoklamadan önceki bir datagramdan pencereden sonraki 3. datagrama uzanıyor:
+    /// sayılır, hüküm ertelenir, kalıcı artış yok. ACK3 (ölçülü, kapsamıyor) 3. ACK'tir: SONUÇSUZ.
+    /// ACK4 kapsasa da kalıcı artış yazmaz.
+    #[test]
+    fn ek8_an_ack_without_a_front_point_gives_no_coverage_evidence() {
+        let pair = Some(PAIR_AT_PROFILE);
+        let mut r = Rig::new(pair_probe_guard(), Bottleneck::fifo(PROFILE));
+        let n1 = open_window(&mut r, 0);
+        r.run(u64::MAX, n1 + 9);
+        let pw = r.g.probe.expect("kurulum: yoklama kaydı");
+        assert_eq!(
+            (pw.sent_datagrams, pw.sent),
+            (6, 6 * (FULL_UDP + OVH)),
+            "kurulum: pencerede 6 tam datagram"
+        );
+        assert!(
+            r.tx(31).send_ns <= pw.start_ns && r.tx(n1 + 8).send_ns >= pw.until_ns,
+            "kurulum: ACK2 aralığı yoklamanın tamamını kapsamıyor"
+        );
+        let frontier = r.g.frontier;
+        let at = r.ack_time(n1 + 8);
+        let _ = r.ack_at(at, n1 + 8, Some(31), 0, true, pair);
+        assert_eq!(r.g.frontier, frontier, "kurulum: ACK2 erken dönmedi");
+        let a2 = ack_row("ACK2 (ack_delay doymuş; aralığı kapsıyor)", &r.g);
+        let _ = r.ack(n1 + 11, Some(n1 + 9), 0, pair);
+        let a3 = ack_row("ACK3 (ölçülü, kapsamıyor)", &r.g);
+        let _ = r.ack(n1 + 16, Some(31), 0, pair);
+        let a4 = ack_row("ACK4 (kapsıyor, g küçük)", &r.g);
+        print_rows("EK8-KAPSAMA", &[a2, a3, a4]);
+        let mut miss = Vec::new();
+        if a2.outcome != Some(ProbeOutcome::Deferred) || !a2.pair_probe_open {
+            miss.push(format!(
+                "ACK2 hükmü {:?}, kayıt açık {} (istenen Deferred, açık)",
+                a2.outcome, a2.pair_probe_open
+            ));
+        }
+        if a2.pace != NARROW || a2.pair_raises != 0 {
+            miss.push(format!(
+                "ACK2 kalıcı artış yazdı (tavan {}, pair_raises {})",
+                a2.pace, a2.pair_raises
+            ));
+        }
+        if a3.outcome != Some(ProbeOutcome::Inconclusive) || a3.pair_probe_open {
+            miss.push(format!(
+                "ACK3 hükmü {:?}, kayıt açık {} (istenen Inconclusive, kapalı)",
+                a3.outcome, a3.pair_probe_open
+            ));
+        }
+        if a4.pace != NARROW || a4.pair_raises != 0 {
+            miss.push(format!(
+                "ACK4 kalıcı artış yazdı (tavan {}, pair_raises {})",
+                a4.pace, a4.pair_raises
+            ));
+        }
+        assert!(miss.is_empty(), "EK8-KAPSAMA: {miss:#?}");
+    }
+
+    /// [EK 8 · GEÇİCİ EVRE] Geçici evre (ilk ACK'in tek ölçümü ikinci ölçümü bekliyor) ve kayıtlı
+    /// çift yoklaması aynı anda: çağrılar ürün sırasıyla (`on_ack_measured` → `on_pair_rate` →
+    /// `settle_start_budget`).
+    /// * ACK-1 (oturumun ilk ACK'i): 12 500 ile gönderilen aralık 6 250 hatta kuyruk büyütür →
+    ///   örnek, tavan 6 250; ilk ölçüme güvenilmez → geçici evre.
+    /// * ACK-2: kısa aralık (örnek yok, düz aralık kanıtı da yok) + çift ölçüsü → çift yoklaması
+    ///   kaydedilir; evre sürer.
+    /// * Hat 12 500'e döner; pencerede 6 tam datagram.
+    /// * ACK-3 (yoklamadan sonraki 1. ACK): aralığı pencerenin 2. datagramından başlar (kapsamıyor)
+    ///   ve bütçe hızında düz. İSTENEN: geçici evrenin düz aralık dalı çift yoklamasını silmez;
+    ///   hüküm ertelenir, kayıt durur.
+    /// * ACK-4 (2. ACK): kapsamıyor → yoklama kendi kuralıyla SONUÇSUZ kapanır; evre o ACK'in düz
+    ///   aralığıyla biter.
+    #[test]
+    fn ek8_the_provisional_flat_interval_does_not_erase_a_registered_pair_probe() {
+        let pair = Some(PAIR_AT_PROFILE);
+        let mut g = guard();
+        g.set_pair_probe(Some(6));
+        let mut r = Rig::new(g, Bottleneck::fifo(NARROW));
+        r.run(u64::MAX, 6);
+        let _ = r.ack(5, Some(1), 0, None);
+        r.g.settle_start_budget();
+        assert_eq!(
+            (r.g.samples(), r.g.pace_bps(), r.g.in_provisional()),
+            (1, NARROW, true),
+            "kurulum: ilk ACK örnek vermedi ya da geçici evre başlamadı"
+        );
+        // Hat toparlanır: bu andan sonra hatta giren datagramlar 12 500'de serileşir.
+        r.line_step = Some((r.now, PROFILE));
+        let _ = r.ack(12, Some(11), 0, pair);
+        r.g.settle_start_budget();
+        let p =
+            r.g.probe
+                .expect("kurulum: ACK-2 çift yoklamasını kaydetmedi");
+        assert!(
+            p.from_pair && r.g.in_provisional(),
+            "kurulum: geçici evre + kayıtlı çift yoklaması birlikte oluşmadı"
+        );
+        println!(
+            "EK8-GEÇİCİ: geçici evre {} + kayıtlı çift yoklaması (taban {}, hedef {}, pencere {}..{} ns)",
+            r.g.in_provisional(),
+            p.base_pace,
+            p.probe_pace,
+            p.start_ns,
+            p.until_ns
+        );
+        r.run(p.start_ns, u64::MAX);
+        let n1 = r.sent();
+        r.run(u64::MAX, n1 + 9);
+        let pw = r.g.probe.expect("kurulum: yoklama kaydı");
+        assert_eq!(
+            (pw.sent_datagrams, pw.sent),
+            (6, 6 * (FULL_UDP + OVH)),
+            "kurulum: pencerede 6 tam datagram"
+        );
+        assert!(
+            r.tx(n1 + 1).send_ns > pw.start_ns && r.tx(n1 + 8).send_ns >= pw.until_ns,
+            "kurulum: ACK-3 aralığı (ilk ucu pencerede, cephesi pencereden sonra)"
+        );
+        let samples = r.g.samples();
+        let _ = r.ack(n1 + 8, Some(n1 + 1), 0, pair);
+        r.g.settle_start_budget();
+        let a3 = ack_row("ACK-3 (kapsamıyor; bütçe hızında düz aralık)", &r.g);
+        let a3_provisional = r.g.in_provisional();
+        let _ = r.ack(n1 + 12, Some(n1 + 9), 0, pair);
+        r.g.settle_start_budget();
+        let a4 = ack_row("ACK-4 (kapsamıyor)", &r.g);
+        print_rows("EK8-GEÇİCİ", &[a3, a4]);
+        println!(
+            "EK8-GEÇİCİ: ACK-3'ten sonra geçici evre {a3_provisional}; ACK-4'ten sonra bütçe {} \
+             çıkış {:?}",
+            r.g.start_budget_active(),
+            r.g.start_exit()
+        );
+        assert_eq!(
+            r.g.samples(),
+            samples,
+            "kurulum: ACK-3/ACK-4 örnek vermemeli"
+        );
+        let mut miss = Vec::new();
+        if a3.outcome != Some(ProbeOutcome::Deferred) {
+            miss.push(format!("ACK-3 hükmü {:?} (istenen Deferred)", a3.outcome));
+        }
+        if !a3.pair_probe_open {
+            miss.push("ACK-3'ten sonra çift yoklaması kaydı yok (istenen kayıtlı)".to_string());
+        }
+        if a4.outcome != Some(ProbeOutcome::Inconclusive) {
+            miss.push(format!(
+                "ACK-4 hükmü {:?} (istenen Inconclusive)",
+                a4.outcome
+            ));
+        }
+        if a4.pair_probe_open || a4.pace != NARROW || a4.pair_raises != 0 || a4.pair_probes != 1 {
+            miss.push(format!(
+                "ACK-4'ten sonra kayıt açık {}, tavan {}, pair_raises {}, pair_probes {} \
+                 (istenen kapalı, {NARROW}, 0, 1)",
+                a4.pair_probe_open, a4.pace, a4.pair_raises, a4.pair_probes
+            ));
+        }
+        assert!(miss.is_empty(), "EK8-GEÇİCİ: {miss:#?}");
+    }
 }
