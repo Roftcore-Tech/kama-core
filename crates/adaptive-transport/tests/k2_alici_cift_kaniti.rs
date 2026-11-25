@@ -275,7 +275,7 @@ fn replay(arr: &[(u64, u64, u64)], wire: &[u64], from: u64) -> Replay {
     let mut prev: Option<u64> = None;
     let mut after = false;
     let (mut det, mut ala, mut rise) = (0u64, 0u64, 0u64);
-    let mut release = |r: &mut Receiver, upto: u64, o: &mut Replay, w: &mut usize| {
+    let release = |r: &mut Receiver, upto: u64, o: &mut Replay, w: &mut usize| {
         while *w < wire.len() && wire[*w] <= upto {
             let at = wire[*w];
             r.set_uplink_yield(false);
