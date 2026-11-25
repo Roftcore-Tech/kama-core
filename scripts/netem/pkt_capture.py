@@ -4,6 +4,10 @@
 tcpdump bu makinede yok; bu araç AF_PACKET/SOCK_RAW ile arayüzdeki HER IPv4 paketini
 yön bilgisiyle (sll_pkttype: PACKET_OUTGOING=4 → "out", diğerleri → "in") JSONL'e yazar:
   {"t_ns": <CLOCK_MONOTONIC ns>, "dir": "out|in", "ip_len": N, "proto": P, "sport": S, "dport": D}
+Ek alanlar (eski alanlar aynen; eski okuyucular bu alanları yok sayar):
+  "ipid" = IPv4 kimlik alanı (her IPv4 paketinde) · "pid" = UDP gövdesinin SHA-1 özetinin ilk 14 hex
+  hanesi (yalnız UDP). "pid" aynı datagramı düzlemler arasında (va0 / ma0 / ifb0 / mb0 / vb0) eşlemek
+  içindir; gövdesi bayt-aynı iki datagram aynı "pid"i alır (o durumda eşleme tek değildir).
 
 Saat: time.monotonic_ns() — aynı host'taki tüm netns'lerde AYNI kernel saati (KAPI-1 §7).
 Kapsam: yalnız gördüğünü kaydeder; OTORİTER enjeksiyon sayacı BudgetGovernor'dadır (W2),
@@ -12,6 +16,7 @@ bu katman bağımsız çapraz-teyittir. tcpdump kurulursa pcap YANINA eklenir (k
 Kullanım: pkt_capture.py <iface> <out.jsonl>   (SIGTERM ile temiz kapanır; line-buffered)
 """
 
+import hashlib
 import json
 import signal
 import socket
@@ -69,6 +74,9 @@ def main() -> int:
             if len(ip) >= ihl + 4:
                 rec["sport"] = (ip[ihl] << 8) | ip[ihl + 1]
                 rec["dport"] = (ip[ihl + 2] << 8) | ip[ihl + 3]
+                # Paket kimliği: UDP gövdesinin özeti (düzlemler arası eşleme).
+                rec["pid"] = hashlib.sha1(bytes(ip[ihl + 8:rec["ip_len"]])).hexdigest()[:14]
+        rec["ipid"] = (ip[4] << 8) | ip[5]
         f.write(json.dumps(rec) + "\n")
 
 

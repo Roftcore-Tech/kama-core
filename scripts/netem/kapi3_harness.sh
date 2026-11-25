@@ -26,6 +26,7 @@
 # Kullanım: `unshare -rnm` İÇİNDE source edilir:
 #   kapi3_setup            → topoloji + pin + offload (MID/B pid'leri: $MID, $CHLB)
 #   kapi3_netem FWD REV    → netem YALNIZ orta-ns egress'lerinde
+#                            (FWD="v1 <hız>" → iki aşamalı ileri hat; dosya sonundaki [DÜZENEK v1])
 #   kapi3_trace FILE       → [W7] zaman-pencere planı uygulayıcı (arka plan; kapi3_trace_stop)
 #   kapi3_capture_start DIR / kapi3_capture_stop
 #   kapi3_realized DIR TAG → tc -s -j + neigh durumu (realized-channel log şeması, r5 J)
@@ -152,8 +153,13 @@ kapi3_mid() { nsenter -t "$MID" -n "$@"; }
 kapi3_b()   { nsenter -t "$CHLB" -n "$@"; }
 
 # netem YALNIZ orta-ns'te: forward = mb0-egress (B'ye doğru), reverse = ma0-egress (A'ya doğru).
+# [DÜZENEK v1] fwd-spec'in İLK sözcüğü "v1" ise ("v1 <hız>") ileri yön iki aşamalı kurulur
+# (kapi3_v1_kur; dosya sonu). "v1" netem anahtar sözcüğü değildir: bugüne dek geçerli hiçbir dize bu
+# dala girmez; öbür dizelerin komut satırı değişmez.
 kapi3_netem() { # $1=fwd-spec $2=rev-spec ("none" = kaldır)
   if [ "$1" = "none" ]; then nsenter -t "$MID" -n tc qdisc del dev mb0 root 2>/dev/null || true
+    if [ -n "${KAPI3_V1_KURULU:-}" ]; then kapi3_v1_sok; fi
+  elif [ "${1%% *}" = "v1" ]; then kapi3_v1_kur "${1#v1}"
   else nsenter -t "$MID" -n tc qdisc replace dev mb0 root netem $1; fi
   if [ "$2" = "none" ]; then nsenter -t "$MID" -n tc qdisc del dev ma0 root 2>/dev/null || true
   else nsenter -t "$MID" -n tc qdisc replace dev ma0 root netem $2; fi
@@ -201,8 +207,16 @@ kapi3_capture_start() { # $1=çıktı-dizini
     nsenter -t "$CHLB" -n tcpdump -i vb0 -w "$d/B_vb0.pcap"  -U udp >/dev/null 2>&1 </dev/null & KAPI3_CAP6=$!
   fi
   export KAPI3_CAP1 KAPI3_CAP2 KAPI3_CAP3 KAPI3_CAP4
+  # [DÜZENEK v1] Seçenek açıksa (iki aşamalı ileri hat kurulu ya da KES_PLAN dolu) yan süreçler;
+  # ikisi de yokken hiçbir komut koşmaz.
+  if [ -n "${KAPI3_V1_KURULU:-}" ] || [ -n "${KES_PLAN:-}" ]; then kapi3_yan_baslat "$d"; fi
 }
 kapi3_capture_stop() {
+  # [DÜZENEK v1] Yan süreçler yakalamadan ÖNCE durur (seçenek yokken değişkenler boş: döngü boş geçer).
+  for p in "${KAPI3_YAN2:-}" "${KAPI3_YAN3:-}" "${KAPI3_YAN4:-}" "${KAPI3_YAN5:-}" "${KAPI3_YAN1:-}"; do
+    [ -n "$p" ] && kill "$p" 2>/dev/null || true
+  done
+  KAPI3_YAN1=""; KAPI3_YAN2=""; KAPI3_YAN3=""; KAPI3_YAN4=""; KAPI3_YAN5=""
   for p in "${KAPI3_CAP1:-}" "${KAPI3_CAP2:-}" "${KAPI3_CAP3:-}" "${KAPI3_CAP4:-}" "${KAPI3_CAP5:-}" "${KAPI3_CAP6:-}"; do
     [ -n "$p" ] && kill "$p" 2>/dev/null || true
   done
@@ -230,4 +244,106 @@ kapi3_teardown() {
   [ -n "${CHLB:-}" ] && kill "$CHLB" 2>/dev/null || true
   ip link del va0 2>/dev/null || true
   ip link del vb0 2>/dev/null || true
+}
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# [DÜZENEK v1] İki aşamalı ileri hat + yan süreçler (ürün kodu değil). Hepsi SEÇENEKTİR: hücre
+# değişkeni vermeyen çağrıda bu bölümün hiçbir komutu koşmaz.
+#
+#   FWD="v1 <hız>"  (ör. "v1 100kbit")  ileri yön iki aşamalı:
+#       ma0 girişi → ifb0 [darboğaz: hız + 64 paketlik sıra] → mb0 çıkışı netem [$V1_LINE: gecikme + kayıp]
+#     Rastgele kayıp darboğazdan SONRA. Dönüş yönü (REV) tek aşamalı netem olarak kalır.
+#   V1_LINE    (zorunlu) mb0 netem dizesi, ör. "delay 300ms loss 20% seed 1 limit 10000".
+#   V1_KADEME  darboğaz türü (varsayılan tbf):
+#       tbf    KOVALI hat — kabul düzeneği. `stab overhead -14 linklayer ethernet tbf rate <hız>
+#              burst $V1_BURST limit 64` + alt `pfifo limit 64`. Boş hattan sonraki ilk V1_BURST bayt
+#              serileşme beklemez. Hız basamağı `tc qdisc change … tbf`: sıra (pfifo 10:) yerinde
+#              kalır, yeni hız sıradaki paketlere de uygulanır.
+#       netem  TAM SERİLEŞTİREN hat — yalnız TEŞHİS kolu. `netem rate <hız> -14 limit 64`: her paket
+#              boy/hız kadar bekler. KISIT: netem çıkış anını sıraya girişte hesaplar; hız basamağı
+#              (`tc qdisc change … netem rate`) o anda sırada bekleyen paketlere UYGULANMAZ.
+#   V1_BURST   tbf kovası, bayt (varsayılan 1200).
+#   V1_PLAN    (isteğe bağlı) hız basamakları "<ofset_s>:<hız> …", koşunun t0'ına bağlı
+#              (kapi3_basamak.py; t0 = koşu dizinindeki sync/t0 — f0_flows alice yazar).
+#   V1_SAMPLE_MS  kuyruk örnekleyici aralığı, ms (varsayılan 50).
+#   KES_PLAN / KES_TMPL  (isteğe bağlı; tek aşamalı hatta da geçerli) t0'a bağlı zamanlı tam kesinti:
+#              KES_PLAN="<ofset_ms>:<kayıp %> …", KES_TMPL=mb0 netem şablonu, @L@ = kayıp
+#              (kapi3_kesinti.py: `tc qdisc change dev mb0 root netem <şablon>`).
+#
+#   "-14": veth'te qdisc paket boyu L2 başlığını (14 B) sayar; hız IP boyu üstünden istenir. tbf'de
+#   `stab overhead -14`, netem'de `rate <hız> -14` (packetoverhead) ile düzeltilir.
+#
+#   SINIR: "v1 <hız>" kapi3_trace planında DESTEKLENMEZ (plan alt kabukta uygulanır; kurulum durumu
+#   çağıran kabuğa dönmez). Hız değişimi için V1_PLAN kullanılır.
+#
+# Yan süreçler YALNIZ kapi3_capture_start içinde başlar (f0_cell.sh'ta CAPTURE=1 gerekir):
+#   cap/MID_ifb0.jsonl (darboğaz çıkışı) · kuyruk.jsonl (tc -s örnekleri) · basamak.jsonl ·
+#   kesinti.jsonl · kayit/ (düğüm başlangıç kaydı, pilot özeti, PID + ad alanı çekimi) ·
+#   tc-d-qdisc-show.txt · duzenek.sha256 (yardımcı betiklerin özeti).
+kapi3_v1_darbogaz() { # $1=add|change $2=hız — ifb0 kökü (handle 1:)
+  case "${V1_KADEME:-tbf}" in
+    tbf)
+      nsenter -t "$MID" -n tc qdisc "$1" dev ifb0 root handle 1: stab overhead -14 linklayer ethernet \
+        tbf rate "$2" burst "${V1_BURST:-1200}" limit 64 ;;
+    netem)
+      nsenter -t "$MID" -n tc qdisc "$1" dev ifb0 root handle 1: netem rate "$2" -14 limit 64 ;;
+    *)
+      echo "KAPI3 HATA: V1_KADEME tbf|netem olmalı: '${V1_KADEME:-}'" >&2; return 2 ;;
+  esac
+}
+kapi3_v1_kur() { # $1=hız (ör. 100kbit); hat dizesi $V1_LINE
+  local hiz="${1# }"
+  if [ -z "$hiz" ] || [ -z "${V1_LINE:-}" ]; then
+    echo "KAPI3 HATA: iki aşamalı ileri hat için FWD=\"v1 <hız>\" ve V1_LINE gerekir" >&2; return 2
+  fi
+  nsenter -t "$MID" -n ip link add ifb0 type ifb || return 2
+  KAPI3_V1_KURULU=1; export KAPI3_V1_KURULU
+  nsenter -t "$MID" -n ip link set ifb0 up
+  kapi3_v1_darbogaz add "$hiz" || return 2
+  if [ "${V1_KADEME:-tbf}" = tbf ]; then
+    nsenter -t "$MID" -n tc qdisc add dev ifb0 parent 1:1 handle 10: pfifo limit 64
+  fi
+  nsenter -t "$MID" -n tc qdisc add dev ma0 handle ffff: ingress
+  nsenter -t "$MID" -n tc filter add dev ma0 parent ffff: protocol ip matchall action mirred egress redirect dev ifb0
+  # shellcheck disable=SC2086
+  nsenter -t "$MID" -n tc qdisc replace dev mb0 root handle 20: netem $V1_LINE
+}
+kapi3_v1_sok() {
+  nsenter -t "$MID" -n tc qdisc del dev ma0 ingress 2>/dev/null || true
+  nsenter -t "$MID" -n ip link del ifb0 2>/dev/null || true
+  KAPI3_V1_KURULU=""
+}
+# Denetim (f0_cell.sh bariyeri): darboğaz kökü, kovalı kipte alt sıra, ma0 giriş yönlendirmesi kurulu mu.
+kapi3_v1_denetle() {
+  local q
+  q="$(nsenter -t "$MID" -n tc qdisc show dev ifb0 2>/dev/null)" || return 1
+  case "${V1_KADEME:-tbf}" in
+    tbf)   printf '%s\n' "$q" | grep -q '^qdisc tbf 1: ' || return 1
+           printf '%s\n' "$q" | grep -q '^qdisc pfifo 10: ' || return 1 ;;
+    netem) printf '%s\n' "$q" | grep -q '^qdisc netem 1: ' || return 1 ;;
+    *)     return 1 ;;
+  esac
+  nsenter -t "$MID" -n tc qdisc show dev ma0 | grep -q '^qdisc ingress ffff: ' || return 1
+  nsenter -t "$MID" -n tc -d filter show dev ma0 parent ffff: | grep -q 'mirred' || return 1
+}
+kapi3_yan_baslat() { # $1=yakalama dizini (koşu dizini = üstü). Arka plana ALINMAZ ($! = süreç olsun).
+  local d="$1" rd; rd="$(dirname "$1")"
+  KAPI3_YAN1=""; KAPI3_YAN2=""; KAPI3_YAN3=""; KAPI3_YAN4=""; KAPI3_YAN5=""
+  nsenter -t "$MID" -n tc -d qdisc show > "$rd/tc-d-qdisc-show.txt" 2>&1
+  ( cd "$KAPI3_DIR" && sha256sum kapi3_harness.sh pkt_capture.py kapi3_ornekleyici.py kapi3_basamak.py \
+      kapi3_kesinti.py kapi3_kopyaci.sh ) > "$rd/duzenek.sha256" 2>&1 || true
+  if [ -n "${KAPI3_V1_KURULU:-}" ]; then
+    nsenter -t "$MID" -n tc -d filter show dev ma0 parent ffff: >> "$rd/tc-d-qdisc-show.txt" 2>&1
+    nsenter -t "$MID" -n python3 "$KAPI3_DIR/pkt_capture.py" ifb0 "$d/MID_ifb0.jsonl" > "$d/MID_ifb0.ready" 2> "$d/MID_ifb0.err" < /dev/null & KAPI3_YAN1=$!
+    for _ in $(seq 1 40); do grep -q READY "$d/MID_ifb0.ready" 2>/dev/null && break; sleep 0.05; done
+    nsenter -t "$MID" -n python3 -I "$KAPI3_DIR/kapi3_ornekleyici.py" "$rd/kuyruk.jsonl" "${V1_SAMPLE_MS:-50}" > /dev/null 2> "$rd/ornekleyici.err" < /dev/null & KAPI3_YAN2=$!
+    if [ -n "${V1_PLAN:-}" ]; then
+      nsenter -t "$MID" -n python3 -I "$KAPI3_DIR/kapi3_basamak.py" "$rd" "$V1_PLAN" "${V1_BURST:-1200}" "${V1_KADEME:-tbf}" > /dev/null 2> "$rd/basamak.err" < /dev/null & KAPI3_YAN3=$!
+    fi
+    bash "$KAPI3_DIR/kapi3_kopyaci.sh" "$rd" > /dev/null 2> "$rd/kopyaci.err" < /dev/null & KAPI3_YAN4=$!
+  fi
+  if [ -n "${KES_PLAN:-}" ]; then
+    nsenter -t "$MID" -n python3 -I "$KAPI3_DIR/kapi3_kesinti.py" "$rd" "$KES_PLAN" "${KES_TMPL:?KES_TMPL yok}" > /dev/null 2> "$rd/kesinti.err" < /dev/null & KAPI3_YAN5=$!
+  fi
+  export KAPI3_YAN1 KAPI3_YAN2 KAPI3_YAN3 KAPI3_YAN4 KAPI3_YAN5
 }

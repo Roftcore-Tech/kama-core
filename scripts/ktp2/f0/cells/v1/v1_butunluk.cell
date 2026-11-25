@@ -1,0 +1,29 @@
+# [SENARYO v1 · AYRI KAYIT: dosya bütünlüğü] BİRLEŞİK KABUL KOŞUSU DEĞİLDİR; onun hükmüne girmez.
+# Neden var: v1_birlesik.cell'in 1 200 000 B'lık dosyası 100 s'de bitmez (yayımlanmış kayıtlarda Bob'da
+#   `rx c:"F"` yok); birleşik koşuda "dosya bütünlüğü" SINANMADI kalır. Bu hücre aynı hat ve aynı motor
+#   ayarlarıyla, koşu içinde biten daha küçük bir dosya gönderir; bütünlük bu AYRI kayıttan okunur:
+#   bob.json `file.status` / `file.size` / `file.match` ve bob.jsonl `rx c:"F"` satırı (`match`).
+# Bu hücre v1_birlesik.cell'i source eder (elle kopya değil): hat, hız planı (kısa dip dahil), tohum
+#   düzeni, metin yükü, sabit PTT basış çizelgesi, motor ayarları ve ikili oradan gelir. Bu dosyanın
+#   değiştirdiği İKİ şey:
+#     --file-bytes  1200000 → 165000 (iki uçta);
+#     CELL          çıktı dizininin adı.
+# Dosya boyunun türetilmesi (ayrıntı ve tablo: scripts/ktp2/f0/v1/README.md): yayımlanmış sekiz PTT'siz
+#   senaryo v1 kaydında 100 s'de Bob'a teslim edilen dosya yükü 335 610–466 290 B (339–471 parça ×
+#   990 B); en küçüğünün yarısı 167 805 B, aşağı yuvarlanmış 165 000 B (167 parça). Aynı kayıtlarda ilk
+#   167 parçanın tamamı Bob'a τ = 33,1–41,6 s'de varmıştı. PTT'li yükte bu an ÖLÇÜLMEDİ.
+# SINIR: dosya koşu ortasında biter; ondan sonra hat dosya yüküyle dolu değildir. Bu kayıttan hız
+#   sınırlama, hızlanma ya da kısa dip satırı OKUNMAZ.
+# Tohum ortamdan: V1_SEED=1|2|3. İkili: BIN_F0A_ADAY = f0_flows. CAPTURE=1 zorunlu.
+SPEC_TABAN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/v1_birlesik.cell"
+# shellcheck disable=SC1090
+source "$SPEC_TABAN"
+CELL=v1_butunluk_t${V1_SEED}
+_v1_dosya=165000
+for _v1_kol in ARM_aday_SRV ARM_aday_CLI; do
+  _v1_yeni="${!_v1_kol/--file-bytes 1200000 /--file-bytes $_v1_dosya }"
+  if [ "$_v1_yeni" = "${!_v1_kol}" ]; then
+    echo "v1_butunluk: $_v1_kol içinde '--file-bytes 1200000' bulunamadı; dosya boyu değiştirilemedi" >&2; exit 2
+  fi
+  printf -v "$_v1_kol" '%s' "$_v1_yeni"
+done
