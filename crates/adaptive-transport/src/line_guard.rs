@@ -614,6 +614,13 @@ pub struct LineGuard {
     pair_probe_spent: bool,
     /// [ÇİFT YOKLAMASI · DENEY] Başlatılan çift yoklaması sayısı (gözlem).
     pair_probes: u64,
+    /// [ÇİFT YOKLAMASI · DENEY · EK 7 D4 · EK 8] Kalıcı artış yazmadan kapanan (SONUÇSUZ, kaldı,
+    /// kanıt yok ya da kayıtlıyken gelen aşağı yönlü örnek) son çift yoklamasının pencere bitişi
+    /// (motor saati, ns) ve hedefi (B/s, tel). Ölçüm aralığı bu pencereye uzanan (ilk ucu pencere
+    /// bitmeden gönderilmiş) her aşağı yönlü örnek o hedefin reddidir ve kayıt durur; aralığı
+    /// tamamen pencereden sonra başlayan ilk örnek kaydı siler ([`Self::on_ack_measured`]). Yeni
+    /// bir çift yoklaması kaydedilince silinir. Anahtar kapalıyken hep `None`.
+    closed_pair: Option<(u64, u64)>,
     /// Son işlenen ACK'in anı (ns; [`Self::on_pair_rate`] yoklama penceresini buna göre kurar).
     ack_now_ns: u64,
 }
@@ -685,6 +692,12 @@ pub struct AckDiag {
     pub verdict: Option<ProbeVerdictDiag>,
     /// ACK'in taşıdığı kapasite alt sınırı (tel B/s).
     pub pair_bound_wire: Option<u64>,
+    /// [ÇİFT YOKLAMASI · DENEY · GÖZLEM] Başlatılan çift yoklaması sayısı (birikimli), tek atış
+    /// işareti ve ret seviyesi (B/s, tel). Okuma anındaki değerlerdir ([`LineGuard::ack_diag`]
+    /// doldurur): gönderici kaydı ACK'in tamamı işlendikten (çift ölçüsü dahil) sonra okur.
+    pub pair_probes: u64,
+    pub pair_probe_spent: bool,
+    pub refuted_bps: Option<u64>,
 }
 
 /// [İKİNCİ-ÖLÇÜM] Başlangıç bütçesini kaldıran kanıt (gözlem).
@@ -863,6 +876,7 @@ impl LineGuard {
             pair_probe: None,
             pair_probe_spent: false,
             pair_probes: 0,
+            closed_pair: None,
             ack_now_ns: 0,
         }
     }
@@ -1631,6 +1645,8 @@ impl LineGuard {
         self.pace_bps = base;
         self.pair_probe_spent = true;
         self.pair_probes = self.pair_probes.saturating_add(1);
+        // [EK 8] Saklanan pencere artık bu yoklamanınkidir: kapanışında yazılır.
+        self.closed_pair = None;
     }
 
     /// [ÇİFT YOKLAMASI · DENEY] Başlatılan çift yoklaması sayısı (gözlem).
@@ -1678,7 +1694,12 @@ impl LineGuard {
     /// [GÖZLEM] Son işlenen ACK'in kuyruk tahmini ve hüküm girdileri (salt gözlem).
     #[must_use]
     pub fn ack_diag(&self) -> AckDiag {
-        self.ack_diag
+        AckDiag {
+            pair_probes: self.pair_probes,
+            pair_probe_spent: self.pair_probe_spent,
+            refuted_bps: self.refuted_bps,
+            ..self.ack_diag
+        }
     }
 
     /// [ÖLÇÜM-ARALIĞI] [`Self::on_ack`] ve çerçevenin ölçüm aralığı (`None` = bu ACK'te ölçüm yok).
@@ -1764,21 +1785,16 @@ impl LineGuard {
             self.start = Some(StartBudget::new(self.pace_bps, true));
             self.gap_arms = self.gap_arms.saturating_add(1);
         }
-        let wire = self.pending_wire.take()?;
-        if saturated || self.frontier.is_some_and(|f| largest_seq <= f) {
-            return None;
-        }
-        let i = self
-            .sent
-            .binary_search_by_key(&largest_seq, |r| r.seq)
-            .ok()?;
-        let rec = self.sent[i];
-        let ser_ns = ns_for(
-            wire.saturating_add(self.return_line.datagram_overhead),
-            self.return_line.rate_bps,
-        )?;
-        let tau = now_ns.checked_sub(ack_delay_ns)?.checked_sub(ser_ns)?;
-        let lag = tau.checked_sub(rec.send_ns)?;
+        // Aralığın kuyruk artışı (gözlem ve hüküm girdisi; ns).
+        let iv_g = interval_result.map(|r| u64::try_from(r.growth_ns().max(0)).unwrap_or(u64::MAX));
+        let wire = self.pending_wire.take();
+        let front =
+            wire.and_then(|w| self.ack_front(w, now_ns, ack_delay_ns, saturated, largest_seq));
+        let Some((i, rec, tau, lag)) = front else {
+            // Cephe noktası kurulamadı: bugünkü gibi ölçüm yok. Kayıtlı çift yoklaması varsa bu
+            // ACK de sayılır (EK 7 D1); yoksa hiçbir şey değişmez ve `None` döner.
+            return self.pair_probe_ack_without_front(iv_g, iv_first_send, iv_last_send);
+        };
         self.frontier = Some(largest_seq);
         if self.lags.len() >= BASE_WINDOW {
             self.lags.pop_front();
@@ -1907,8 +1923,12 @@ impl LineGuard {
         // ister. Yoklamadan sonraki ilk ACK kapsamıyorsa (alarm ACK'inin kısa aralığı ya da
         // aralıksız ACK) hüküm BİR KEZ ertelenir: yoklama kaydı durur, tavan tabandadır ve bu
         // sırada hat modeline kuyruk yazılmaz. Aynı ACK aşağı yönlü örnek verdiyse ertelenmez.
-        // [ÇİFT YOKLAMASI · DENEY] Bu ACK işlenirken kayıtlı çift yoklamasının hedefi (varsa).
-        let pair_probe_target = self.probe.filter(|p| p.from_pair).map(|p| p.probe_pace);
+        // [ÇİFT YOKLAMASI · DENEY] Bu ACK işlenirken kayıtlı çift yoklamasının pencere bitişi ve
+        // hedefi (varsa).
+        let pair_probe_open = self
+            .probe
+            .filter(|p| p.from_pair)
+            .map(|p| (p.until_ns, p.probe_pace));
         // [ÇİFT YOKLAMASI · DENEY · sahip kararı] ACK sayımı: yoklama başladıktan sonra işlenen her
         // ölçülü ACK yerini korur (cephesi yoklama bitmeden gönderilmiş olsa da). Kalıcı artış
         // yoklamanın TAMAMINI kapsayan ölçüm aralığı ister (ilk ucu yoklama başlamadan, son ucu
@@ -1940,56 +1960,20 @@ impl LineGuard {
                 q.deferred = true;
             }
             verified = false;
-            self.ack_diag.verdict = Some(ProbeVerdictDiag {
-                expect_ns: p.expect_ns,
-                abs_q_ns: 0,
-                growth_ns: 0,
-                interval_g_ns: None,
-                outcome: ProbeOutcome::Deferred,
-                from_pair: true,
-                probe_sent_wire: p.sent,
-                probe_sent_datagrams: p.sent_datagrams,
-                base_pace: p.base_pace,
-                probe_pace: p.probe_pace,
-                probe_start_ns: p.start_ns,
-                probe_until_ns: p.until_ns,
-                iv_first_send_ns: iv_first_send,
-                iv_last_send_ns: iv_last_send,
-                covered: false,
-                acks_after_start: pair_acks,
-            });
+            self.ack_diag.verdict = Some(Self::pair_probe_open_verdict(
+                p,
+                ProbeOutcome::Deferred,
+                pair_acks,
+                None,
+                iv_first_send,
+                iv_last_send,
+            ));
         }
         if let Some(p) = pair_expired {
-            // SONUÇSUZ: yoklama kapanır. Fazla, fiilen gönderilen bayttan (pencere süresince taban
-            // tavanın göndereceği düşülür).
-            self.probe = None;
-            self.pace_bps = p.base_pace;
             verified = false;
             inconclusive = true;
-            let span = p.until_ns.saturating_sub(p.start_ns);
-            let base_bytes =
-                u64::try_from(u128::from(p.base_pace) * u128::from(span) / 1_000_000_000)
-                    .unwrap_or(u64::MAX);
-            inconclusive_drain = p.sent.saturating_sub(base_bytes);
-            self.ack_diag.verdict = Some(ProbeVerdictDiag {
-                expect_ns: p.expect_ns,
-                abs_q_ns: 0,
-                growth_ns: 0,
-                interval_g_ns: interval_result
-                    .map(|r| u64::try_from(r.growth_ns().max(0)).unwrap_or(u64::MAX)),
-                outcome: ProbeOutcome::Inconclusive,
-                from_pair: true,
-                probe_sent_wire: p.sent,
-                probe_sent_datagrams: p.sent_datagrams,
-                base_pace: p.base_pace,
-                probe_pace: p.probe_pace,
-                probe_start_ns: p.start_ns,
-                probe_until_ns: p.until_ns,
-                iv_first_send_ns: iv_first_send,
-                iv_last_send_ns: iv_last_send,
-                covered: false,
-                acks_after_start: pair_acks,
-            });
+            inconclusive_drain =
+                self.expire_pair_probe(p, pair_acks, iv_g, iv_first_send, iv_last_send);
         }
         if let Some(p) = due.filter(|_| !defer) {
             self.probe = None;
@@ -2066,8 +2050,6 @@ impl LineGuard {
             //   boşaltılmayan bir yoklama kuyruğu bırakır). Sınırı aşan artış yoklamadan gelemez ve
             //   aralık da artış göstermiyorsa dönüş beklemesidir → sonuç yok.
             // Başlangıç yoklaması (`by_interval`) bugünkü gibi yalnız aralıkla hükmedilir.
-            let iv_g =
-                interval_result.map(|r| u64::try_from(r.growth_ns().max(0)).unwrap_or(u64::MAX));
             let front_pass = abs_q <= half && growth <= half;
             let front_fail = abs_q > half && growth > half;
             let covers = iv_first_send.is_some_and(|s| s <= p.start_ns);
@@ -2121,6 +2103,10 @@ impl LineGuard {
             if best.is_none() && (!evidence || !(passed || failed)) {
                 self.pace_bps = p.base_pace;
                 verified = false;
+                // [EK 8] Kanıt yok / sonuçsuz kapanan çift yoklaması da penceresini saklar.
+                if p.from_pair {
+                    self.closed_pair = Some((p.until_ns, p.probe_pace));
+                }
                 // [ÇİFT YOKLAMASI · DENEY] Çift yoklamasında kanıt yetmese de fiilen gönderilen fazla
                 // yazılır (yoklama gönderildiyse kuyruğa girmiş olabilir).
                 inconclusive = evidence || p.from_pair;
@@ -2174,6 +2160,11 @@ impl LineGuard {
                     self.probe_failures = self.probe_failures.saturating_add(1);
                     // En yeni ret geçerlidir (eski, yüksek bir ret kilit bırakmaz).
                     self.refuted_bps = Some(p.probe_pace);
+                    // [EK 7 D4] Kalan çift yoklamasının penceresi ve hedefi: sonraki ilk örnek
+                    // yoklamanın kendi kuyruğu mu diye buna bakar.
+                    if p.from_pair {
+                        self.closed_pair = Some((p.until_ns, p.probe_pace));
+                    }
                     // Yoklamanın kuyruğa eklediği: ölçülen artış (referans ile hüküm noktası
                     // arası) ve yoklama öncesi tavanın üstünde gönderilen bayt; büyüğü. Dönüş
                     // gecikmesi basamağı yanlış bir başarısızlık verirse bedel artış kadar tek
@@ -2198,8 +2189,33 @@ impl LineGuard {
             // bir çift yoklaması varken geldiyse (yoklamanın kurduğu kuyruk örnek eşiğini aştı)
             // bu o hedefin REDDİDİR: ret seviyesi hedeftir ve hak yenilenmez; yoksa aynı (yanlış)
             // çift ölçüsü her örnekten sonra yeniden yoklama başlatırdı.
-            self.pair_probe_spent = pair_probe_target.is_some();
-            if let Some(target) = pair_probe_target {
+            // [EK 7 D4 · EK 8 · sahip kararı: «aynı kanıtla ikinci yoklama yok»] Kalıcı artış
+            // yazmadan kapanmış çift yoklamasının penceresi saklıdır (`closed_pair`; kayıtlıyken
+            // gelen örnek yoklamayı burada kapatır ve penceresini yazar). Ölçüm aralığının ilk ucu
+            // o pencere bitmeden gönderilmişse aralık yoklama dönemine uzanır ve ölçülen kuyruk
+            // yoklamanın KENDİ kuyruğudur: o hedefin reddidir (ret seviyesi hedef, hak
+            // yenilenmez) ve kayıt DURUR (aynı kuyruğu gören sonraki örnek de rettir). Aralık
+            // tamamen pencereden sonra başlıyorsa yeni bir daralmadır: hak yenilenir (yukarıdaki
+            // kural) ve kayıt silinir. Ayrım yalnız gönderim anlarındandır. İlk ucun gönderim anı
+            // bilinmiyorsa kol RETtir; bu kola kayıt varken ulaşılmaz (kayıt yalnız aralık kipinde
+            // yazılır, aralık kipi kalıcıdır ve aralık örneği iki ucun gönderim kaydını ister).
+            if pair_probe_open.is_some() {
+                self.closed_pair = pair_probe_open;
+            }
+            let rejected_target = match self.closed_pair {
+                Some((until_ns, target))
+                    if pair_probe_open.is_some() || iv_first_send.is_none_or(|s| s <= until_ns) =>
+                {
+                    Some(target)
+                }
+                Some(_) => {
+                    self.closed_pair = None;
+                    None
+                }
+                None => None,
+            };
+            self.pair_probe_spent = rejected_target.is_some();
+            if let Some(target) = rejected_target {
                 self.refuted_bps = Some(target);
             }
             // Örnek tavanı aşamaz: kuyrukta düşen bayt aralığı şişirir, hat tavandan hızlıysa
@@ -2228,7 +2244,11 @@ impl LineGuard {
         // ilk ACK'in aralığı) gösterdiği daha yüksek hız doğrulanmamıştır: tavan bütçenin hızına
         // iner, yukarısı tek bir başlangıç yoklamasıyla sınanır. Gönderici bütçenin altında
         // kaldıysa (uygulama sınırlı) karar yok, evre sürer.
-        if best.is_none() && self.in_provisional() {
+        // [ÇİFT YOKLAMASI · DENEY · EK 8] Hükmü bekleyen kayıtlı çift yoklaması varken (bu ACK onu
+        // erteledi) dal işlemez: yoklama kendi kuralıyla kapanır (en geç bir sonraki ACK'te), evre
+        // o zamana dek sürer. Anahtar kapalıyken çift yoklaması olmaz, koşul hep doğrudur.
+        let pair_probe_pending = self.probe.is_some_and(|p| p.from_pair);
+        if best.is_none() && self.in_provisional() && !pair_probe_pending {
             let floor = self.start_floor_bps();
             if let Some(IntervalResult::Flat(sent, _)) = interval_result {
                 if sent.saturating_mul(1000) >= floor.saturating_mul(VERIFY_MIN_PERMILLE) {
@@ -2262,13 +2282,7 @@ impl LineGuard {
         // [HÜKÜM · ARALIK] Sonuçsuz hükümde yalnız yoklamanın kendi fazlası yazılır (kuyruk tahmini
         // yazılmaz: iki ölçü ayrıştı). Yeni bir yoklama başladıysa hiçbir şey yazılmaz.
         if inconclusive && inconclusive_drain > 0 && self.probe.is_none() {
-            self.ack_diag.backlog_bytes = Some(0);
-            self.ack_diag.extra_backlog_bytes = Some(inconclusive_drain);
-            return Some(LineGuardUpdate {
-                rate_bps: self.rate_bps.unwrap_or(self.pace_bps),
-                backlog_bytes: 0,
-                extra_backlog_bytes: inconclusive_drain,
-            });
+            return Some(self.probe_excess_update(inconclusive_drain));
         }
         let rate = self.rate_bps?;
         // [SÜRELİ-YOKLAMA] Yoklama sürerken kuyruk yazılmaz: yoklama hattı sınar, boşaltma onunla
@@ -2309,6 +2323,164 @@ impl LineGuard {
 }
 
 impl LineGuard {
+    /// [ÇİFT YOKLAMASI · DENEY · EK 8 · sahip kararı: «göndericinin işlediği her ACK kabul sırasını
+    /// korusun; ölçüm taşımayan ACK de sayılır, fakat kapsama kanıtı vermez»] Gönderici bir ACK
+    /// çerçevesi işledi ama korumaya ölçüm veremedi: çerçevede motorun gönderdiği seq yok (hiçbir
+    /// PN eşlenmedi ya da boş çerçeve) — [`Self::on_ack_measured`] çağrılamaz. Kayıtlı çift
+    /// yoklaması varsa ACK onun sayımına girer ([`Self::pair_probe_ack_without_front`]: 1. ACK
+    /// hükmü erteler, 2. ACK yoklamayı SONUÇSUZ kapatır) ve bu ACK'in gözlem kaydı o hükümdür.
+    ///
+    /// Kayıtlı çift yoklaması YOKKEN (anahtar kapalı yol dahil) hiçbir alan yazılmaz ve `None`
+    /// döner. Dönüş sözleşmesi [`Self::on_ack_measured`] ile aynı: tavan [`Self::pace_bps`]'ten
+    /// okunur, boşaltılacak fazla `Some(LineGuardUpdate)` ile döner.
+    pub fn on_ack_without_measurement(&mut self) -> Option<LineGuardUpdate> {
+        if !self.probe.is_some_and(|p| p.from_pair) {
+            return None;
+        }
+        self.ack_diag = AckDiag::default();
+        self.pair_probe_ack_without_front(None, None, None)
+    }
+
+    /// ACK'in cephe noktası: cephenin kayıt dizini ve kaydı, cephenin alıcıya varış anı `τ` (ns) ve
+    /// gecikmesi `τ − s` (ns). `None` = bu ACK nokta üretmez: `ack_delay` kodlama tavanında, cephe
+    /// ilerlemiyor, cephenin gönderim kaydı yok (budanmış ya da hiç kaydedilmemiş), dönüş hattı
+    /// hızı 0 ya da zamanlar tutarsız (`τ` hesaplanamıyor / gönderimden önce). Durum değiştirmez.
+    fn ack_front(
+        &self,
+        ack_wire: u64,
+        now_ns: u64,
+        ack_delay_ns: u64,
+        saturated: bool,
+        largest_seq: u64,
+    ) -> Option<(usize, SentRec, u64, u64)> {
+        if saturated || self.frontier.is_some_and(|f| largest_seq <= f) {
+            return None;
+        }
+        let i = self
+            .sent
+            .binary_search_by_key(&largest_seq, |r| r.seq)
+            .ok()?;
+        let rec = self.sent[i];
+        let ser_ns = ns_for(
+            ack_wire.saturating_add(self.return_line.datagram_overhead),
+            self.return_line.rate_bps,
+        )?;
+        let tau = now_ns.checked_sub(ack_delay_ns)?.checked_sub(ser_ns)?;
+        let lag = tau.checked_sub(rec.send_ns)?;
+        Some((i, rec, tau, lag))
+    }
+
+    /// [ÇİFT YOKLAMASI · DENEY · EK 7 D1 · sahip kararı: «toparlanmadan sonra sayılan her ACK
+    /// yerini korur»] Cephe noktası kurulamayan ACK ([`Self::ack_front`] `None`) de çift
+    /// yoklamasının ACK sayımına girer. Böyle bir ACK'in cephe kaydı yoktur, kapsama kanıtı
+    /// taşıyamaz: yoklamadan sonraki 1. ACK ise hüküm ertelenir (yoklama kayıtlı kalır), 2. ACK ise
+    /// yoklama ölçülü ACK'teki gibi SONUÇSUZ kapanır ([`Self::expire_pair_probe`]).
+    ///
+    /// Kayıtlı çift yoklaması YOKKEN hiçbir şey yapmaz ve `None` döner (anahtar kapalı yol ve
+    /// olağan yoklama bugünkü gibi).
+    ///
+    /// Dönüş sözleşmesi: tavanın tabana dönüşü alan yazımıdır ([`Self::pace_bps`]; çağıran hat
+    /// modeline dönüşten bağımsız yazar); boşaltılacak fazla yalnız `Some(LineGuardUpdate)` ile
+    /// (`extra_backlog_bytes`) döner.
+    fn pair_probe_ack_without_front(
+        &mut self,
+        interval_g_ns: Option<u64>,
+        iv_first_send: Option<u64>,
+        iv_last_send: Option<u64>,
+    ) -> Option<LineGuardUpdate> {
+        let q = self.probe.as_mut().filter(|q| q.from_pair)?;
+        q.acks_seen = q.acks_seen.saturating_add(1);
+        let acks = q.acks_seen;
+        if acks < 2 {
+            q.deferred = true;
+            let p = *q;
+            self.ack_diag.verdict = Some(Self::pair_probe_open_verdict(
+                p,
+                ProbeOutcome::Deferred,
+                acks,
+                None,
+                iv_first_send,
+                iv_last_send,
+            ));
+            return None;
+        }
+        let p = *q;
+        let drain = self.expire_pair_probe(p, acks, interval_g_ns, iv_first_send, iv_last_send);
+        (drain > 0).then(|| self.probe_excess_update(drain))
+    }
+
+    /// [ÇİFT YOKLAMASI · DENEY] Kapsayan ölçüm aralığı gelmeden yoklamadan sonraki 2. ACK'e
+    /// ulaşıldı: yoklama SONUÇSUZ kapanır. Tavan tabana döner, ret yazılmaz, tek atış işareti
+    /// durur (ikinci yoklama yok); penceresi ve hedefi sonraki ilk örnek için saklanır (EK 7 D4).
+    /// Dönen: boşaltılacak fazla = fiilen gönderilen bayt − pencere süresince taban tavanın
+    /// göndereceği (bayt, tel).
+    fn expire_pair_probe(
+        &mut self,
+        p: Probe,
+        acks: u8,
+        interval_g_ns: Option<u64>,
+        iv_first_send: Option<u64>,
+        iv_last_send: Option<u64>,
+    ) -> u64 {
+        self.probe = None;
+        self.pace_bps = p.base_pace;
+        self.closed_pair = Some((p.until_ns, p.probe_pace));
+        self.ack_diag.verdict = Some(Self::pair_probe_open_verdict(
+            p,
+            ProbeOutcome::Inconclusive,
+            acks,
+            interval_g_ns,
+            iv_first_send,
+            iv_last_send,
+        ));
+        let span = p.until_ns.saturating_sub(p.start_ns);
+        let base_bytes = u64::try_from(u128::from(p.base_pace) * u128::from(span) / 1_000_000_000)
+            .unwrap_or(u64::MAX);
+        p.sent.saturating_sub(base_bytes)
+    }
+
+    /// [ÇİFT YOKLAMASI · DENEY · GÖZLEM] Kapsayan aralık gelmemiş çift yoklamasının hüküm kaydı
+    /// (ertelendi ya da sonuçsuz): cephe ölçüleri yok, gönderim sayaçları yoklama kaydından.
+    fn pair_probe_open_verdict(
+        p: Probe,
+        outcome: ProbeOutcome,
+        acks: u8,
+        interval_g_ns: Option<u64>,
+        iv_first_send: Option<u64>,
+        iv_last_send: Option<u64>,
+    ) -> ProbeVerdictDiag {
+        ProbeVerdictDiag {
+            expect_ns: p.expect_ns,
+            abs_q_ns: 0,
+            growth_ns: 0,
+            interval_g_ns,
+            outcome,
+            from_pair: true,
+            probe_sent_wire: p.sent,
+            probe_sent_datagrams: p.sent_datagrams,
+            base_pace: p.base_pace,
+            probe_pace: p.probe_pace,
+            probe_start_ns: p.start_ns,
+            probe_until_ns: p.until_ns,
+            iv_first_send_ns: iv_first_send,
+            iv_last_send_ns: iv_last_send,
+            covered: false,
+            acks_after_start: acks,
+        }
+    }
+
+    /// [HÜKÜM · ARALIK] Sonuçsuz hükmün güncellemesi: yalnız yoklamanın kendi fazlası yazılır
+    /// (kuyruk tahmini yazılmaz).
+    fn probe_excess_update(&mut self, drain_bytes: u64) -> LineGuardUpdate {
+        self.ack_diag.backlog_bytes = Some(0);
+        self.ack_diag.extra_backlog_bytes = Some(drain_bytes);
+        LineGuardUpdate {
+            rate_bps: self.rate_bps.unwrap_or(self.pace_bps),
+            backlog_bytes: 0,
+            extra_backlog_bytes: drain_bytes,
+        }
+    }
+
     /// [SÜRELİ-YOKLAMA] Tavanı adım kadar (`step_permille`) yükselten yoklamayı başlatır. Yükseltme,
     /// hat değişmediyse [`PROBE_QUEUE_NS`] kadar kuyruk kuracak süre (en çok
     /// [`VERIFY_MIN_SPAN_NS`]) sürer; kalıcılığı hükme bağlı. `point` yoklamanın başladığı ACK
@@ -5734,4 +5906,89 @@ mod tests {
         }
         assert!(miss.is_empty(), "EK8-GEÇİCİ: {miss:#?}");
     }
+
+    // [KIRMIZI-DIŞI · BAŞ] Aşağıdaki test `on_ack_without_measurement` yöntemini doğrudan çağırır;
+    // yöntem eski başta (ee168d3d) yoktur, test orada derlenmez. Eski baş + yalnız testler ağacına
+    // ALINMAZ (eski baştaki kırmızı kanıt gönderici düzeyindedir: `sender::
+    // pair_probe_unmeasured_ack_tests`).
+
+    /// [EK 8 · ÖLÇÜMSÜZ ACK] `on_ack_without_measurement`: kayıtlı çift yoklaması yokken korumanın
+    /// hiçbir alanını değiştirmez ve `None` döner (anahtar kapalı — olağan yoklama kayıtlı olsa da —
+    /// ve anahtar açık ama yoklama yok). Kayıtlıyken ACK sayılır: 1. çağrı hükmü erteler, 2. çağrı
+    /// yoklamayı SONUÇSUZ kapatır (tavan taban, fiilî fazla döner, ret yok, tek atış işareti durur).
+    #[test]
+    fn ek8_on_ack_without_measurement_counts_only_for_a_registered_pair_probe() {
+        // Anahtar kapalı.
+        let mut d = measured_narrow_guard();
+        let arr = send_into(&mut d, 6_250, 40);
+        let _ = ack_m(&mut d, &arr, 10, 0, None);
+        let _ = ack_m(&mut d, &arr, 30, 0, Some(11));
+        let before = format!("{d:?}");
+        assert_eq!(d.on_ack_without_measurement(), None);
+        assert_eq!(format!("{d:?}"), before, "anahtar kapalı: durum değişti");
+        // Anahtar kapalı, olağan (süreli) yoklama kayıtlı.
+        let point = d.points.back().copied().expect("kurulum: ACK noktası");
+        d.begin_probe(d.ack_now_ns, point);
+        assert!(
+            d.probe.is_some_and(|p| !p.from_pair),
+            "kurulum: olağan yoklama"
+        );
+        let before = format!("{d:?}");
+        assert_eq!(d.on_ack_without_measurement(), None);
+        assert_eq!(format!("{d:?}"), before, "olağan yoklama: durum değişti");
+        // Anahtar açık, kayıtlı çift yoklaması yok.
+        let mut g = pair_probe_guard();
+        let arr = send_into(&mut g, 6_250, 40);
+        let _ = ack_m(&mut g, &arr, 10, 0, None);
+        let _ = ack_m(&mut g, &arr, 30, 0, Some(11));
+        g.probe = None;
+        let before = format!("{g:?}");
+        assert_eq!(g.on_ack_without_measurement(), None);
+        assert_eq!(format!("{g:?}"), before, "yoklama yok: durum değişti");
+
+        // Kayıtlı çift yoklaması: pencerede 6 tam datagram.
+        let mut r = Rig::new(pair_probe_guard(), Bottleneck::fifo(NARROW));
+        let n1 = open_window(&mut r, 0);
+        r.run(u64::MAX, n1 + 6);
+        let pw = r.g.probe.expect("kurulum: yoklama kaydı");
+        assert_eq!((pw.sent_datagrams, pw.sent), (6, 6 * (FULL_UDP + OVH)));
+        assert_eq!(r.g.on_ack_without_measurement(), None);
+        let v = r.g.ack_diag().verdict.expect("1. ölçümsüz ACK hüküm kaydı");
+        assert_eq!(
+            (v.outcome, v.acks_after_start, v.covered),
+            (ProbeOutcome::Deferred, 1, false)
+        );
+        assert!(r.g.probe.is_some_and(|p| p.from_pair) && r.g.pace_bps() == NARROW);
+        let excess = 6 * (FULL_UDP + OVH) - NARROW * (pw.until_ns - pw.start_ns) / SEC;
+        assert_eq!(
+            r.g.on_ack_without_measurement(),
+            Some(LineGuardUpdate {
+                rate_bps: NARROW,
+                backlog_bytes: 0,
+                extra_backlog_bytes: excess,
+            })
+        );
+        let v = r.g.ack_diag().verdict.expect("2. ölçümsüz ACK hüküm kaydı");
+        assert_eq!(
+            (v.outcome, v.acks_after_start, v.covered),
+            (ProbeOutcome::Inconclusive, 2, false)
+        );
+        assert_eq!(
+            (r.g.probe.is_none(), r.g.pace_bps(), r.g.refuted_bps),
+            (true, NARROW, None)
+        );
+        assert_eq!(
+            (r.g.pair_probe_spent, r.g.pair_probes(), r.g.pair_raises()),
+            (true, 1, 0)
+        );
+        // Kapandıktan sonra: yine etkisiz.
+        let before = format!("{:?}", r.g);
+        assert_eq!(r.g.on_ack_without_measurement(), None);
+        assert_eq!(
+            format!("{:?}", r.g),
+            before,
+            "kapanıştan sonra durum değişti"
+        );
+    }
+    // [KIRMIZI-DIŞI · SON]
 }

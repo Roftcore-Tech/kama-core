@@ -1364,7 +1364,8 @@ fn lg_line(clock: &Clock, sess: &str, origin: Option<Instant>, r: &LineGuardAckT
          \"pace_after\":{},\"rate_before\":{},\"rate_after\":{},\"first_window\":{first_window},\
          \"first_window_bps\":{},\"raised\":{},\"probe_failed\":{},\"front_wait_ns\":{},\
          \"by_bytes\":{},\"by_delay\":{},\"backlog_bytes\":{},\"extra_backlog_bytes\":{},\
-         \"pair_bound_wire\":{},\"verdict\":{verdict}}}",
+         \"pair_bound_wire\":{},\"pair_probes\":{},\"pair_probe_spent\":{},\
+         \"refuted_bps\":{},\"verdict\":{verdict}}}",
         opt_ms(clock, at),
         js(sess),
         r.index,
@@ -1385,7 +1386,10 @@ fn lg_line(clock: &Clock, sess: &str, origin: Option<Instant>, r: &LineGuardAckT
         opt_u(r.diag.by_delay),
         opt_u(r.diag.backlog_bytes),
         opt_u(r.diag.extra_backlog_bytes),
-        opt_u(r.diag.pair_bound_wire)
+        opt_u(r.diag.pair_bound_wire),
+        r.diag.pair_probes,
+        r.diag.pair_probe_spent,
+        opt_u(r.diag.refuted_bps)
     )
 }
 
