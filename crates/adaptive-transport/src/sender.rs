@@ -9315,6 +9315,14 @@ impl Sender {
                 .is_some_and(|r| unit.id < r.priority_below_id);
         if let Some(g) = self.cc_line_guard.as_mut() {
             g.on_sent_classed(seq, now_ns, unit.size, ahead_ns, priority);
+            // [ÇİFT YOKLAMASI · DENEY] Bütçe (en çok 6 fiilî datagram ve 7 368 tel baytı) bu
+            // gönderimle dolduysa yükseltilmiş tavan HEMEN biter: bir sonraki datagram yoklama
+            // hızında çıkamaz. Deney kapalıyken ve yoklama yokken `tick` burada bir şey değiştirmez
+            // (olağan yoklamanın süre sonu zaten olay başında işlenir; aynı an ikinci kez sorulur).
+            if g.tick(now_ns) {
+                self.pacer.set_line_rate(g.pace_bps());
+                self.pacer.set_line_pairs(g.pair_pacing());
+            }
         }
         self.inflight.insert(
             seq,
