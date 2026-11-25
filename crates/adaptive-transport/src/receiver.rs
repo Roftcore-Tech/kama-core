@@ -848,11 +848,14 @@ impl Receiver {
     /// Hat önü bilinmiyorsa (0) bugünkü kural (hat boşalana dek bekle).
     /// [ALARM ARALIĞI · TUR 4 · YÜKSELİŞ KANITI · K1] Çıkan ACK'in çift alanına birleşecek saklanan
     /// değerler. Bekleme sürerken (planlı ACK) saklananın hepsi (adayın kuralı). Kanıtlı bırakmadan
-    /// sonra saklanan yalnız aynı aralıkta yükseliş alarmı verildiyse durur (`on_datagram`) ve
-    /// yalnız alarmdan sonra çift ölçülmediyse birleşir: düşüş sonrası çift varsa o kazanır,
-    /// yükseliş değeri gerçek ikinci düşüşün ACK'ine sızmaz.
+    /// sonra saklanan yalnız aynı aralıkta yükseliş alarmı verildiyse durur (`on_datagram`) ve yalnız
+    /// alarmdan sonra sayılan çift yokken ve en az bir tam boy çift sıkışma sınamasına takıldıysa
+    /// birleşir (ölçüler hattın daralmadığını gösterip sıkışma diye atıldı). Düşüş sonrası çift
+    /// varsa o kazanır; alarmdan sonra hiç ölçü yoksa saklanan silinir: yükseliş değeri gerçek ikinci
+    /// düşüşün ACK'ine sızmaz (#256 açık 1).
     fn alarm_pair_carry(&self) -> [u64; 2] {
-        if self.drop_alarm_wait || self.pair.top[1] == 0 {
+        // Bekleme sürerken hepsi; kanıtlı bırakmadan sonra yalnız sayılan çift yok ve sıkışma görüldüyse.
+        if self.drop_alarm_wait || (self.pair.top[1] == 0 && self.pair.squeezed_since_restart) {
             self.alarm_pair_saved
         } else {
             [0, 0]
@@ -1707,6 +1710,10 @@ struct PairRate {
     squeeze_line_bps: Option<u64>,
     /// [SIKIŞMA · E] Önceki varışın çifti sıkışmıştı: bu varışın çifti de sayılmaz.
     after_squeeze: bool,
+    /// [YÜKSELİŞ KANITI · K1] Son daralma alarmı sıfırlamasından (ya da son ACK'ten) bu yana tam boy
+    /// (`≥ PAIR_MIN_UDP_BYTES`) bir çift sıkışma sınamasına takıldı: darboğaz o iki datagramı beyan
+    /// hattın serileşmesinden kısa aralıkla çıkardı (hat daralmamış). `Receiver::alarm_pair_carry`.
+    squeezed_since_restart: bool,
 }
 
 /// [ÇİFT ARALIĞI] Çift aralığının alt sınırı (ns): daha kısa aralık zamanlayıcı/teslim titreşimidir.
@@ -1737,6 +1744,9 @@ impl PairRate {
         if let (Some(p), Some(b)) = (self.prev_ns, udp_bytes) {
             let g = now_ns.saturating_sub(p);
             let squeezed = self.squeezed(g, b);
+            if squeezed && b >= crate::ack::PAIR_MIN_UDP_BYTES {
+                self.squeezed_since_restart = true;
+            }
             let skip = squeezed || self.after_squeeze;
             self.after_squeeze = squeezed;
             if !skip && b >= crate::ack::PAIR_MIN_UDP_BYTES && g >= PAIR_MIN_GAP_NS {
@@ -1758,6 +1768,7 @@ impl PairRate {
         }
         self.top = [0, 0];
         self.alarmed = false;
+        self.squeezed_since_restart = false;
     }
 
     /// [ALARM ARALIĞI · #175 7084078903 · TUR 4] Daralma alarmı anında en büyük iki değer silinir
@@ -1772,6 +1783,7 @@ impl PairRate {
     /// - sahte alarmda (kanıt gelmez) planlı ACK saklananı birleştirir; referans adayınki gibi son
     ///   ACK'ten bu yana bütün çiftlerin en büyük ikincisidir.
     fn restart_at_drop_alarm(&mut self) -> [u64; 2] {
+        self.squeezed_since_restart = false;
         std::mem::take(&mut self.top)
     }
 

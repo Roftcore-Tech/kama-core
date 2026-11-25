@@ -208,3 +208,59 @@ fn honest_6250_line_shows_no_rise() {
         );
     }
 }
+
+/// #256 açık 1: yükselişten sonra GERÇEK ikinci düşüş ve alarmdan sonra yeni çift ölçülmez (düşüş
+/// sonrası datagramlar `PAIR_MIN_UDP_BYTES`'tan küçük: çift değeri üretmez, sıkışma da değildir).
+/// Eski yükseliş değeri ACK'e taşınmamalı: alan NONE ya da ≤ 6 875.
+#[test]
+fn real_second_drop_without_new_pairs_does_not_carry_the_rise_value() {
+    let b_small = 500u64;
+    let plan = [
+        (0, 12_500),
+        (20 * SEC, 6_250),
+        (40 * SEC, 12_500),
+        (40 * SEC + 400_000_000, 6_250),
+    ];
+    let mut v = Vec::new();
+    let (mut t, mut seq) = (SEC, 0u64);
+    while t < 44 * SEC {
+        let b = if t >= 40 * SEC + 400_000_000 {
+            b_small
+        } else {
+            1_046
+        };
+        v.push((t, seq, b));
+        let line = plan
+            .iter()
+            .rev()
+            .find(|&&(from, _)| t >= from)
+            .map_or(12_500, |&(_, l)| l);
+        t += (b + 28) * SEC / line;
+        seq += 1;
+    }
+    let mut wire = every(2 * SEC, 4 * SEC, 40 * SEC);
+    wire.push(43 * SEC);
+    let o = replay(&v, &wire);
+    let &(t_rise, _, at_rise) = o
+        .rise
+        .iter()
+        .find(|(t, ..)| *t >= 40 * SEC)
+        .expect("40 s'de yükseliş alarmı yok");
+    let drop_after = o.drop.iter().find(|(t, _)| *t > t_rise);
+    let (t_ack, ack) = o.acks.iter().find(|(t, _)| *t > t_rise).expect("ACK yok");
+    println!(
+        "yükseliş {:.3} s (alan {at_rise}), sonraki daralma {drop_after:?}, ACK {:.3} s alan {}",
+        t_rise as f64 / 1e9,
+        *t_ack as f64 / 1e9,
+        pair(ack)
+    );
+    assert!(
+        drop_after.is_some_and(|(t, _)| t < t_ack),
+        "ikinci düşüşün kanıtı ACK'ten önce gelmedi"
+    );
+    let p = pair(ack);
+    assert!(
+        p == PAIR_RATE_NONE || p <= 6_875,
+        "yükseliş değeri yeni çiftsiz gerçek düşüşe taşındı: {p}"
+    );
+}
