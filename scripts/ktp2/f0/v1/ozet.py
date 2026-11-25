@@ -7,10 +7,22 @@ kullanım: ozet.py <koşu dizini> <ack-tablo.json> <çıktı.txt>
 Yazdıkları: 20 s basamağından sonraki ilk tavan kesmesinin parça dökümü (hat değişimi → Bob kanıtı →
     ACK hazır → tel → Alice girişi → lg kararı), kesme anında darboğaz kuyruğu, [35, 58) s darboğaz
     beklemesi, daralmadaki ([20, 60) s) metin teslim süreleri, basamak anlarında kuyruk.
+Darboğaz beklemesinin TANIMI (kabul değerlendiricisi #252 `degerlendir.py` `packet_waits` ile aynı;
+    sınır `wait_bound = 2 × (MTU + 28) ÷ 6 250` paketin ÖNÜNDEKİ bekleme içindir):
+    * giriş = cap/MID_ma0 `in` (paket kimliği `pid`; aynı kimlikten ilk kayıt), çıkış = cap/MID_ifb0 `out`;
+    * bekleme = (çıkış − giriş) − paketin KENDİ serileşmesi; serileşme = IP boyu ÷ çıkış anındaki hat
+      hızı; alt sınır 0;
+    * hat hızı UYGULANAN çizelgeden: basamak.jsonl (`komut_once_unix_ns`, `hiz`; yalnız rc = 0), ilk hız
+      kuyruk.jsonl ilk örneğindeki ifb0 tbf `options.rate`. İkisinden biri okunamazsa betik durur
+      (değerlendirici o durumda senaryo v1 çizelgesine düşer; bu betik çizelge varsaymaz);
+    * pencereye paket darboğaza GİRİŞ anıyla girer;
+    * 393 ms kıyası YALNIZ bu tanımla yapılır. "giriş→çıkış (serileşme DAHİL)" sütunları bilgidir
+      (bu betiğin önceki tanımı; pencereyi ÇIKIŞ anıyla alan eski satır ayrıca, adıyla yazılır).
 Varsayımlar (senaryo v1'e ÖZGÜ sabitler; başka planda sayılar anlamını yitirir):
     * KOVALI darboğaz: kuyruk.jsonl ve basamak.jsonl içinde ifb0 `tbf 1:` + `pfifo 10:` aranır
       (V1_KADEME=netem teşhis kolunda çalışmaz);
-    * daralmış hız 6 250 B/s (backlog ÷ 6 250), bekleme eşiği 393 ms, pencereler [20, 60) ve [35, 58) s;
+    * daralmış hız 6 250 B/s (yalnız örnekleyici satırında: backlog ÷ 6 250), bekleme eşiği 393 ms,
+      pencereler [20, 60) ve [35, 58) s;
     * 20 s basamağından sonra tavanı düşüren (pace_after < pace_before) en az bir ACK satırı var
       (yoksa betik IndexError ile durur)."""
 import json, sys, statistics as st
@@ -59,18 +71,52 @@ prev = [s for s in kq if s["t_unix_ns_son"] <= cut_ns][-1]; nxt = [s for s in kq
 for lab, s in (("kesmeden önceki son örnek", prev), ("kesmeden sonraki ilk örnek", nxt)):
     tb, pf = q(s, "tbf", "1:"), q(s, "pfifo", "10:")
     W(f"KUYRUK · {lab}: τ={tau(s['t_unix_ns']):.3f} s ({(s['t_unix_ns'] - cut_ns) / 1e6:+.1f} ms); ifb0 tbf 1: backlog {tb['backlog']} B / {tb['qlen']} p, drops {tb['drops']}; pfifo 10: backlog {pf['backlog']} B / {pf['qlen']} p, drops {pf['drops']}; backlog ÷ 6 250 B/s = {tb['backlog'] / 6250:.3f} s")
-# kesme anına en yakın darboğaz çıkışının ölçülen beklemesi (ma0 girişi → ifb0 çıkışı, paket kimliğiyle)
-ma = {x["pid"]: x for x in jl(f"{d}/cap/MID_ma0.jsonl") if x.get("dir") == "in" and x.get("proto") == 17}
-ifb = [x for x in jl(f"{d}/cap/MID_ifb0.jsonl") if x.get("proto") == 17 and x.get("pid") in ma]
-soj = [(x["t_unix_ns"], (x["t_unix_ns"] - ma[x["pid"]]["t_unix_ns"]) / 1e6, x["ip_len"]) for x in ifb]
+# ── darboğaz geçişi, paket kimliğiyle (ma0 girişi → ifb0 çıkışı); tanım belge dizgisinde
+bas = jl(f"{d}/basamak.jsonl")
+def _bps(h):  # "50kbit" → B/s
+    h = str(h).strip().lower()
+    for ek, kat in (("mbit", 1_000_000), ("kbit", 1_000), ("bit", 1)):
+        if h.endswith(ek): return int(float(h[:-len(ek)]) * kat / 8)
+    raise ValueError(h)
+_ilk = None
+for x in (kq[0]["q"] if kq and isinstance(kq[0].get("q"), list) else []):
+    if x.get("dev") == "ifb0" and x.get("kind") == "tbf": _ilk = (x.get("options") or {}).get("rate")
+_adim = [x for x in bas if x.get("k") == "basamak" and x.get("rc", 0) == 0]
+if _ilk is None or not _adim:
+    sys.exit("ozet.py: uygulanan hız çizelgesi okunamadı (kuyruk.jsonl ilk örneğinde ifb0 tbf options.rate ve basamak.jsonl rc=0 basamakları gerekir); serileşme hesaplanamaz")
+cizelge = sorted([(0.0, int(_ilk))] + [(tau(x["komut_once_unix_ns"]), _bps(x["hiz"])) for x in _adim])
+def hiz_an(t):  # τ anında geçerli hat hızı, B/s
+    r = cizelge[0][1]
+    for a_, b_ in cizelge:
+        if a_ <= t: r = b_
+    return r
+ma = {}
+for x in jl(f"{d}/cap/MID_ma0.jsonl"):
+    if x.get("dir") == "in" and x.get("pid") and "t_unix_ns" in x: ma.setdefault(x["pid"], x["t_unix_ns"])
+ifb = [x for x in jl(f"{d}/cap/MID_ifb0.jsonl") if x.get("dir") == "out" and "t_unix_ns" in x and x.get("pid") in ma]
+def _gecis(x):  # (çıkış ns, giriş ns, giriş→çıkış ms [serileşme DAHİL], bekleme ms [serileşme HARİÇ], IP boyu)
+    gir = ma[x["pid"]]; ham = (x["t_unix_ns"] - gir) / 1e6
+    return (x["t_unix_ns"], gir, ham, max(0.0, ham - x["ip_len"] / hiz_an(tau(x["t_unix_ns"])) * 1e3), x["ip_len"])
+soj = [_gecis(x) for x in ifb]
+W("HAT HIZI (serileşme için; uygulanan çizelge): " + ", ".join(f"{a_:.3f} s → {b_} B/s" for a_, b_ in cizelge))
 bef = [s for s in soj if s[0] <= cut_ns][-1]; aft = [s for s in soj if s[0] > cut_ns][0]
-W(f"KUYRUK · kesmeden önceki son darboğaz çıkışı τ={tau(bef[0]):.3f} s: bekleme {bef[1]:.0f} ms ({bef[2]} B); sonraki ilk çıkış τ={tau(aft[0]):.3f} s: bekleme {aft[1]:.0f} ms ({aft[2]} B)")
-inq = [(a_, x) for a_, x in ((ma[x["pid"]]["t_unix_ns"], x) for x in ifb) if a_ <= cut_ns < x["t_unix_ns"]]
+W(f"KUYRUK · kesmeden önceki son darboğaz çıkışı τ={tau(bef[0]):.3f} s: bekleme {bef[3]:.0f} ms (serileşme hariç; giriş→çıkış {bef[2]:.0f} ms, {bef[4]} B); sonraki ilk çıkış τ={tau(aft[0]):.3f} s: bekleme {aft[3]:.0f} ms (serileşme hariç; giriş→çıkış {aft[2]:.0f} ms, {aft[4]} B)")
+inq = [(a_, x) for a_, x in ((ma[x["pid"]], x) for x in ifb) if a_ <= cut_ns < x["t_unix_ns"]]
 W(f"KUYRUK · kesme anında darboğazda bekleyen (yakalamadan: ma0'a girmiş, ifb0'dan çıkmamış) {len(inq)} p / {sum(x['ip_len'] for _, x in inq)} B; bunların sonuncusunun çıkışı kesmeden {((max(x['t_unix_ns'] for _, x in inq) - cut_ns) / 1e9) if inq else 0:.3f} s sonra")
-pk = max(soj, key=lambda s: s[1] if 20 <= tau(s[0]) < 60 else -1)
-W(f"KUYRUK · [20, 60) s en büyük bekleme {pk[1]:.0f} ms (çıkış τ={tau(pk[0]):.3f} s)")
-w = sorted(s[1] for s in soj if 35 <= tau(s[0]) < 58)
-W(f"[35, 58) s darboğaz beklemesi (çıkış anına göre, {len(w)} paket): medyan {st.median(w):.0f} ms, p95 {w[int(0.95 * (len(w) - 1))]:.0f} ms, en çok {max(w):.0f} ms, en az {min(w):.0f} ms; > 393 ms bekleyen {sum(1 for v in w if v > 393)}")
+def _dagilim(v):  # medyan / p95 / en çok / en az, ms
+    v = sorted(v)
+    return f"medyan {st.median(v):.0f} ms, p95 {v[int(0.95 * (len(v) - 1))]:.0f} ms, en çok {v[-1]:.1f} ms, en az {v[0]:.1f} ms" if v else "paket yok"
+g2060 = [s for s in soj if 20 <= tau(s[1]) < 60]
+if g2060:
+    pk = max(g2060, key=lambda s: s[3]); pkh = max(g2060, key=lambda s: s[2])
+    W(f"KUYRUK · [20, 60) s (darboğaza giriş anına göre, {len(g2060)} paket) en büyük bekleme {pk[3]:.1f} ms (serileşme hariç; giriş τ={tau(pk[1]):.3f} s, çıkış τ={tau(pk[0]):.3f} s); bilgi: en büyük giriş→çıkış (serileşme DAHİL) {pkh[2]:.0f} ms (çıkış τ={tau(pkh[0]):.3f} s)")
+else:
+    W("KUYRUK · [20, 60) s: darboğaza giren paket yok")
+g = [s for s in soj if 35 <= tau(s[1]) < 58]
+W(f"[35, 58) s darboğaz beklemesi — paketin ÖNÜNDEKİ bekleme, kendi serileşmesi HARİÇ (değerlendirici #252 `packet_waits` tanımı; darboğaza giriş anına göre, {len(g)} paket): {_dagilim(s[3] for s in g)}; > 393 ms bekleyen {sum(1 for s in g if s[3] > 393)}/{len(g)}")
+W(f"[35, 58) s giriş→çıkış, serileşme DAHİL (bilgi; 393 ms ile KIYASLANMAZ; aynı {len(g)} paket): {_dagilim(s[2] for s in g)}")
+c = [s for s in soj if 35 <= tau(s[0]) < 58]
+W(f"[35, 58) s giriş→çıkış, serileşme DAHİL, pencere ÇIKIŞ anına göre (bilgi; bu betiğin ÖNCEKİ tanımı — eski özetlerle karşılaştırma için; 393 ms ile KIYASLANMAZ; {len(c)} paket): {_dagilim(s[2] for s in c)}")
 qs = [(tau(s["t_unix_ns"]), q(s, "tbf", "1:")) for s in kq if isinstance(s["q"], list) and q(s, "tbf", "1:")]
 w2 = [x[1] for x in qs if 35 <= x[0] < 58]
 W(f"[35, 58) s ifb0 örnekleyici ({len(w2)} örnek): backlog medyan {st.median(x['backlog'] for x in w2):.0f} B, en çok {max(x['backlog'] for x in w2)} B / {max(x['qlen'] for x in w2)} p; drops (pencere başı→sonu) {w2[0]['drops']}→{w2[-1]['drops']}")
@@ -83,7 +129,7 @@ dar = [x for x in tx if 20 <= x[1] < 60]
 wk = max((x for x in dar if x[2] is not None), key=lambda x: x[2])
 W(f"METİN · daralmada (gönderim τ ∈ [20, 60), {len(dar)} metin; teslimsiz {sum(1 for x in dar if x[2] is None)}): en kötü gönderim→Bob uygulama teslimi {wk[2]:.0f} ms (metin {wk[0]}, gönderim τ={wk[1]:.3f} s); ≤ 1 s {sum(1 for x in dar if x[2] is not None and x[2] <= 1000)}/{len(dar)}; hepsi ms: {' '.join(f'{x[2]:.0f}' for x in dar)}")
 # ── basamaklarda kuyruk
-for x in [x for x in jl(f"{d}/basamak.jsonl") if x["k"] == "basamak"]:
+for x in [x for x in bas if x["k"] == "basamak"]:
     g = lambda s, k: [y for y in s["q"] if y["kind"] == k][0]
     pt, pf, at, af = g(x["once"], "tbf"), g(x["once"], "pfifo"), g(x["sonra"], "tbf"), g(x["sonra"], "pfifo")
     W(f"BASAMAK {x['ofset_s']:g} s → {x['hiz']}: rc={x['rc']}; komut τ={tau(x['komut_once_unix_ns']):.6f} → {tau(x['komut_sonra_unix_ns']):.6f} s; ÖNCE ({(x['komut_once_unix_ns'] - x['once']['t_once_ns']) / 1e6:.1f} ms önce) tbf {pt['handle']} backlog {pt['backlog']} B / {pt['qlen']} p drops {pt['drops']} sent {pt['packets']}, pfifo {pf['handle']} backlog {pf['qlen']} p drops {pf['drops']}; SONRA ({(x['sonra']['t_sonra_ns'] - x['komut_sonra_unix_ns']) / 1e6:.1f} ms sonra) tbf {at['handle']} backlog {at['backlog']} B / {at['qlen']} p drops {at['drops']} sent {at['packets']}, pfifo {af['handle']} backlog {af['qlen']} p drops {af['drops']}")

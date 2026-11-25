@@ -67,6 +67,12 @@ fi
 {
   echo "spec=$SPEC"
   echo "spec_sha256=$(sha256sum "$SPEC" | cut -d' ' -f1)"
+  # [DÜZENEK v1] Hücre başka bir hücre dosyasını source ediyorsa (SPEC_TABAN; ör. cells/v1/
+  # v1_birlesik_dipsiz.cell) onun özeti de yazılır. Değişkeni vermeyen hücrede bu satırlar yazılmaz.
+  if [ -n "${SPEC_TABAN:-}" ]; then
+    echo "spec_taban=$SPEC_TABAN"
+    echo "spec_taban_sha256=$(sha256sum "$SPEC_TABAN" | cut -d' ' -f1)"
+  fi
   echo "runner_sha256=$(sha256sum "$SELF" | cut -d' ' -f1)"
   echo "harness_sha256=$(sha256sum "$HDIR/kapi3_harness.sh" | cut -d' ' -f1)"
   echo "kernel=$(uname -r)"

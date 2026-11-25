@@ -1,0 +1,17 @@
+# [SENARYO v1 · KARŞILAŞTIRMA KOLU: birleşik yük, kısa dip YOK] v1_birlesik.cell'in dipsiz karşılığı.
+# Kısa dip satırının (3c: "[86,5, 98) s boş hat süresi, dipsiz koldan en çok bir datagram fazla")
+# karşılaştırma koludur. v1_kesmesiz.cell PTT'siz olduğu için birleşik koşunun kolu DEĞİLDİR.
+# Bu hücre v1_birlesik.cell'i source eder (elle kopya değil): yük (dosya + metin + 300 ms birleşik PTT
+#   pilotu), sabit basış çizelgesi, tohum düzeni (V1_SEED → netem `seed`), ileri ve dönüş hattı, motor
+#   ayarları ve ikili oradan gelir. Bu dosyanın değiştirdiği İKİ satır:
+#     V1_PLAN  85,0 → 50 kbit ve 85,5 → 100 kbit basamakları YOK (yalnız 20 → 50 kbit, 60 → 100 kbit);
+#     CELL     çıktı dizininin adı.
+# Karşılaştırma ancak birleşik koşuyla AYNI ikili (aynı SHA) ve AYNI tohumla koşulduğunda geçerlidir.
+# cell.env: spec_sha256 bu dosyanın, spec_taban_sha256 source edilen v1_birlesik.cell'in özetidir.
+# scripts/ktp2/f0/v1/ack_tablo.py bu kolda durabilir (85,0 s basamağı planda yok; betiğin kendi notu).
+# Tohum ortamdan: V1_SEED=1|2|3. İkili: BIN_F0A_ADAY = f0_flows. CAPTURE=1 zorunlu.
+SPEC_TABAN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/v1_birlesik.cell"
+# shellcheck disable=SC1090
+source "$SPEC_TABAN"
+CELL=v1_birlesik_dipsiz_t${V1_SEED}
+V1_PLAN="20:50kbit 60:100kbit"

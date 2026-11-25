@@ -4,16 +4,25 @@
 # PTT biçimi cells/ptt-pilot/ hücrelerindeki pilot ayarıyla AYNI: --ptt-pilot on, çağıranın süresi
 #   200 ms / 80 B (düğüm doğrulanmış eşe 300 ms seçer), KAMA_PTT_PILOT=1 (bob) / 1:bob (alice).
 #   Bu hücre yeni PTT ya da metin davranışı tanımlamaz.
-# Basış çizelgesi ORTAMDAN (hücrede varsayılan YOK; senaryo yorumu 7096381261 yalnız "300 ms basışlar"
-#   der, basış anı ve demet sayısı vermez — çizelge koordinatör kararıdır):
-#     V1_PTT_AT_MS    basış başlangıçları, t0'a göre ms, virgülle (ör. biçim: "A,B,C"); en çok 8 basış.
-#     V1_PTT_BUNDLES  basış başına demet sayısı. Pilot basışı (demet + 1) × 300 ms sürer; ardışık
-#                     basışlar arasında en az 200 ms boşluk gerekir (aşağıdaki ön denetim).
-#   Metin planı 98 s'de biter; daha geç biten basış koşuyu uzatır. Seçilen çizelge cmd.txt'ye yazılır.
+# Basış çizelgesi SABİT, hücrede yazılı (koordinatör, #175 yorum 7172332337; senaryo yorumu 7096381261
+#   çizelge tanımlamaz): altı basış × 8,4 s (28 demet × 300 ms), başlangıç 5 / 16 / 40 / 56 / 72 / 82 s:
+#     V1_PTT_AT_MS=5000,16000,40000,56000,72000,82000   (basış başlangıçları, t0'a göre ms)
+#     V1_PTT_BUNDLES=28                                 (basış başına demet sayısı)
+#   Ortamda bu adlarla BAŞKA bir değer varsa hücre koşmaz (kabul çizelgesi tektir; sessiz geçersiz
+#   kılma yok). Aynı değerle ya da değişkensiz çağrı aynı koşuyu kurar.
+#   Pilot basışı açılıştan kapanışa (demet + 1) × 300 ms = 8,7 s sürer; ardışık basışlar arasında en az
+#   200 ms boşluk gerekir (aşağıdaki ön denetim; en dar aralık 72 → 82 s). Son basış 90,7 s'de biter;
+#   metin planı 98 s'de bittiği için koşuyu uzatmaz. Çizelge cmd.txt'ye de yazılır (--ptt-at-ms,
+#   --ptt-bundles).
 # Tohum ortamdan: V1_SEED=1|2|3. İkili: BIN_F0A_ADAY = f0_flows. CAPTURE=1 zorunlu.
 : "${V1_SEED:?V1_SEED yok}"
-: "${V1_PTT_AT_MS:?V1_PTT_AT_MS yok (basış başlangıçları: t0 anına göre ms, virgülle)}"
-: "${V1_PTT_BUNDLES:?V1_PTT_BUNDLES yok (basış başına demet sayısı)}"
+_v1_at_kabul=5000,16000,40000,56000,72000,82000
+_v1_demet_kabul=28
+if [ "${V1_PTT_AT_MS:-$_v1_at_kabul}" != "$_v1_at_kabul" ] || [ "${V1_PTT_BUNDLES:-$_v1_demet_kabul}" != "$_v1_demet_kabul" ]; then
+  echo "v1_birlesik: kabul çizelgesi sabit (V1_PTT_AT_MS=$_v1_at_kabul V1_PTT_BUNDLES=$_v1_demet_kabul); ortamdaki değer farklı (V1_PTT_AT_MS='${V1_PTT_AT_MS:-}' V1_PTT_BUNDLES='${V1_PTT_BUNDLES:-}')" >&2; exit 2
+fi
+V1_PTT_AT_MS="$_v1_at_kabul"
+V1_PTT_BUNDLES="$_v1_demet_kabul"
 # Ön denetim: f0_flows çakışmayı çağıranın 200 ms adımıyla sınar; pilot basışı 300 ms adımla sürer.
 case "$V1_PTT_BUNDLES" in ''|*[!0-9]*|0*) echo "v1_birlesik: V1_PTT_BUNDLES pozitif tam sayı değil: $V1_PTT_BUNDLES" >&2; exit 2;; esac
 _v1_onceki=""; _v1_n=0
