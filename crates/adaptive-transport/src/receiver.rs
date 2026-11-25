@@ -1142,6 +1142,14 @@ impl Receiver {
     /// [DÖNÜŞ-HATTI · ÖNCELİK] Cihazın dar yukarı yönünde aynı cihazın verisi hattın boşalmasını
     /// bekliyor mu. Çalışma-zamanı ACK üretebilecek her çağrıdan önce verir; yalnız bütçeli yolda
     /// okunur (bütçesiz yolda ACK kararı değişmez).
+    /// [ÖNCELİK · SAHİP KARARI 7] Yol verirken bütçesi hazır olan ACK'in tel boyu (B, zarf dahil):
+    /// çalışma zamanı bunu cihazın yukarı yön görünümünde ayırır, henüz gönderime verilmemiş alındı
+    /// bu ACK'in arkasına girer. `None` = ayrılacak ACK yok.
+    #[must_use]
+    pub fn ack_preempt_wire_bytes(&self) -> Option<u64> {
+        None
+    }
+
     pub fn set_uplink_yield(&mut self, yield_to_data: bool) {
         self.uplink_yield = yield_to_data;
     }
@@ -2355,6 +2363,56 @@ mod tests {
             }
         }
         assert!(first.is_some(), "yol vermesiz bütçeli alıcı ACK'ler");
+    }
+
+    /// [ÖNCELİK · SAHİP KARARI 7] (a) Bütçesi hazır ACK yol verirken ayrılır (tel boyu bildirilir);
+    /// (d) jetonu yetmeyen ACK ayrılmaz; (c) öncelikli ACK'ten sonra bir sonraki ayırma en erken o
+    /// ACK'in bütçe süresi (tel boyu / bütçe hızı) sonra: art arda iki ACK alındının önüne geçmez.
+    #[test]
+    fn budget_ready_ack_is_reserved_while_yielding_and_spaced_by_its_budget_time() {
+        let mut r = Receiver::with_cc_port();
+        r.set_return_bandwidth(Some(62));
+        // İlk ACK (muaf) çıksın.
+        let _ = r.on_datagram(data(0, 0), 0);
+        let _ = r.on_ack_timer(30 * MS);
+        r.set_uplink_yield(true);
+        for i in 1..20u64 {
+            let _ = r.on_datagram(data(i, i), i * 100 * MS);
+        }
+        // Kova (iki tam ACK) dolana dek bekle: hat dolu, ACK yol verir ama bütçesi hazır.
+        let t = 20_000 * MS;
+        assert!(r.on_ack_timer(t).is_none(), "hat doluyken ACK çıkmaz");
+        let w = r
+            .ack_preempt_wire_bytes()
+            .expect("(a) bütçesi hazır ACK ayrılmadı");
+        assert!((40..=160).contains(&w), "tel boyu {w}");
+        // Hat boşalınca ayrılan ACK çıkar, ayırma kalkar.
+        r.set_uplink_yield(false);
+        let _ = r.on_ack_timer(t + 20 * MS).expect("hat boşalınca ACK");
+        assert_eq!(
+            r.ack_preempt_wire_bytes(),
+            None,
+            "çıkan ACK'in ayırması kalkmadı"
+        );
+        // (c) Hemen ardından yeni varış + dolu hat: bütçe süresi dolmadan ayırma yok.
+        r.set_uplink_yield(true);
+        let _ = r.on_datagram(data(20, 20), t + 40 * MS);
+        let _ = r.on_ack_timer(t + 60 * MS);
+        assert_eq!(
+            r.ack_preempt_wire_bytes(),
+            None,
+            "(c) art arda ikinci ayırma"
+        );
+        // (d) Jeton yetmeyen ACK: yeni alıcı, kova boşaltıldı.
+        let mut q = Receiver::with_cc_port();
+        q.set_return_bandwidth(Some(62));
+        let _ = q.on_datagram(data(0, 0), 0);
+        let _ = q.on_ack_timer(30 * MS);
+        q.ack_tokens_mb = 0;
+        q.set_uplink_yield(true);
+        let _ = q.on_datagram(data(1, 1), 100 * MS);
+        let _ = q.on_ack_timer(200 * MS);
+        assert_eq!(q.ack_preempt_wire_bytes(), None, "(d) bütçesiz ACK ayrıldı");
     }
 
     /// [DÖNÜŞ-BÜTÇESİ] Bütçeli port alıcısı: ilk ACK muaf (kova dolu başlar), sonrakiler jeton
