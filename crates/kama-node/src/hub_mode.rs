@@ -306,24 +306,23 @@ mod tests {
         node.shutdown().expect("kapanış");
     }
 
-    /// KK-H63: hub kipinde `direct_addrs` gerekmez — `NoDirectAddress` yolu atlanır. (HB1'in
-    /// `HubLink::new` gövdesi gelene dek kurulum `NodeError::Transport` ile tipli biter; gövde
-    /// geldiğinde düğüm kurulur. İki durumda da `NoDirectAddress` DEĞİL ve panik yok.)
+    /// KK-H63: hub kipinde `direct_addrs` gerekmez — `NoDirectAddress` yolu atlanır ve düğüm
+    /// hub kipinde KURULUR (hub tarafı var, zarf sayaçları sıfır). Hub'ın yanıt vermesi gerekmez:
+    /// kurulum hub'a ulaşmayı beklemez.
+    ///
+    /// ESKİ BEKLENTİ: `HubLink::new` gövdesi yokken yazılmıştı; `Err(NodeError::Transport(_))`'ı da
+    /// kabul ediyor, yani hub kipinin kurulduğunu sabitlemiyordu (S-77 / N-15).
     #[test]
     fn hub_mode_does_not_need_a_direct_address() {
         let _serial = crate::test_support::serial();
         let root = TempDir::new("hub-no-direct");
         let (path, data) = devices(&root, Some("127.0.0.1:47000"), false);
         let (tx, _events) = event_channel();
-        match KamaNode::start(&path, &data, Box::new(Quiet(tx))) {
-            Ok(node) => {
-                let probe = node.probe_for_test().expect("sonda");
-                assert!(probe.hub.is_some(), "hub tarafı kuruldu");
-                assert_eq!(probe.envelopes, crate::probe::EnvelopeCounts::default());
-                node.shutdown().expect("kapanış");
-            }
-            Err(NodeError::Transport(_)) => {}
-            Err(other) => panic!("beklenmeyen hata: {other}"),
-        }
+        let node = KamaNode::start(&path, &data, Box::new(Quiet(tx)))
+            .unwrap_or_else(|e| panic!("hub kipi doğrudan adressiz kurulmalı: {e}"));
+        let probe = node.probe_for_test().expect("sonda");
+        assert!(probe.hub.is_some(), "hub tarafı kuruldu");
+        assert_eq!(probe.envelopes, crate::probe::EnvelopeCounts::default());
+        node.shutdown().expect("kapanış");
     }
 }
