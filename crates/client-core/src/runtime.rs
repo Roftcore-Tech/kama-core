@@ -964,7 +964,8 @@ enum TxClass {
     Dup,
     /// FEC repair-shard.
     Fec,
-    /// Kontrol düzlemi (PARAM_SET / PARAM_ACK / RECOVERED / ACK).
+    /// Kontrol düzlemi: istemcinin PARAM_SET, CAPS ve CS-probe çerçeveleri (ACK, PARAM_ACK ve
+    /// RECOVERED sunucu ucundan çıkar, bu sınıflandırmaya girmez).
     Ctrl,
 }
 
@@ -1188,7 +1189,8 @@ pub struct ClientStats {
     pub tx_dup_bytes: u64,
     /// FEC repair-shard byte'ı.
     pub tx_fec_bytes: u64,
-    /// Kontrol-düzlemi byte'ı (PARAM_SET).
+    /// Kontrol-düzlemi byte'ı (`TxClass::Ctrl`: istemcinin PARAM_SET, CAPS ve CS-probe
+    /// çerçeveleri).
     pub tx_ctrl_bytes: u64,
     /// [`EgressPolicy`] reddi: hiç enjekte edilmeyen datagram/byte (kanal-kaybı eşdeğeri).
     pub egress_refused_pkts: u64,
@@ -3025,8 +3027,6 @@ impl ClientHandle {
     }
 }
 
-/// Client görevi: bench `client_loop` şekli, ölçüm makinesi çıkarılmış, sınırlar eklenmiş hâli.
-#[allow(clippy::too_many_arguments)]
 /// Client görevinin kanal uçları + oturum bağlamı (argüman listesi sınırlı kalsın diye bir arada).
 struct ClientTaskLinks {
     offer_rx: mpsc::Receiver<(Vec<u8>, Option<u64>, usize)>,
@@ -3071,6 +3071,7 @@ impl ConfirmVia {
     }
 }
 
+/// Client görevi: bench `client_loop` şekli, ölçüm makinesi çıkarılmış, sınırlar eklenmiş hâli.
 async fn client_task(
     sock: UdpSocket,
     cfg: RuntimeConfig,
@@ -3098,7 +3099,8 @@ async fn client_task(
     };
     let start = Instant::now();
     // G2 sevk default'ları TEK kaynaktan: ClientSession (tail-ON validated_v1, startup-pacing motor
-    // default'u ON, bootstrap OFF, FEC Manual-off). Burada default'a dokunulmaz.
+    // default'u ON, bootstrap OFF). Burada default'a dokunulmaz. FEC kipi aşağıda `cfg.fec`'ten
+    // kurulur (ürün profili: `manual_r: None` → `FecActuationMode::Controller`).
     // [CC-PORT] Motor seçimi: `Legacy` = bugünkü yol, bit-eşit; `CcPort` = port kurucusu (PTO,
     // retx tavanı ve E2a kuralları kurucuda; aşağıdaki `set_e2a_flags` bu durumda ATLANIR, aksi
     // hâlde ürün profilinin kapalı E2a bayrakları portun RFC 9002 kurallarını geri alırdı).
@@ -3330,7 +3332,8 @@ async fn client_task(
     let mut ptt_copy_pending: Vec<u64> = Vec::new();
     let mut caps_tries: u32 = 0;
     let mut caps_line_gate_ms: Option<u64> = None;
-    // [S1B] Fragmenter durumu. `frag_on` = mesaj tavanı birim tavanından BÜYÜK. Kapalıyken bu
+    // [S1B] Fragmenter durumu. `frag_on` = `max_message_bytes` kurulu (açık opt-in; `validate_fec`
+    // tavanın birim tavanından küçük olmadığını garanti eder, eşit de olabilir). Kapalıyken bu
     // haritalar hiç dokunulmaz ve gönderim yolu 0x00 DATA ile birebir aynıdır (bankadaki tüm
     // ölçümler geçerli kalır); açıkken mesaj ardışık chunk-birimlere bölünür ve app'e ACK
     // MESAJ tamamlanınca verilir.
