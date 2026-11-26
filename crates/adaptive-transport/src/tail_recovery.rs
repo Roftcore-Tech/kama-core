@@ -1,9 +1,14 @@
-//! DR-ARQ-PRODUCT-TAIL-1 — bounded tail-loss recovery state machine (product transport core).
+//! DR-ARQ-PRODUCT-TAIL-1 — PTO-driven tail-loss recovery state machine (product transport core).
 //!
 //! Pure, deterministic (RNG-free), overflow-safe. Implements the frozen INV-CS-4 supersession TDD
-//! (docs/design/DR-ARQ-PRODUCT-TAIL-1-TDD.md §4): a PTO-driven bounded probe that retransmits the OLDEST
-//! outstanding ack-eliciting source when no ACK progress has occurred for a PTO interval. **Default OFF** — when
-//! `enabled == false` the machine never fires, so the sender path and emitted wire are byte-identical to pre-decision.
+//! (docs/design/DR-ARQ-PRODUCT-TAIL-1-TDD.md §4): a PTO-driven probe that retransmits the OLDEST
+//! outstanding ack-eliciting source when no ACK progress has occurred for a PTO interval.
+//! [`TailRecoveryConfig::default`] is OFF — when `enabled == false` the machine never fires, so the sender path and
+//! emitted wire are byte-identical to pre-decision. The PRODUCT paths enable it: the legacy engine's product session
+//! (`client-core` `ClientSession::new`) installs [`TailRecoveryConfig::validated_v1`] (cap 3 probes), and the port
+//! engine (`Sender::with_cc_port`) installs [`TailRecoveryConfig::rfc9002_cc_port`], which has NO probe-count cap
+//! (`max_tail_probes = u32::MAX`; the exponential backoff, capped at `max_backoff_pto_ns`, is the only limiter —
+//! CLAUDE.md YAMA KAYDI 2026-11-11 CC-PORT, `docs/design/CC-PORT-ESLEME.md`).
 //!
 //! Not a product-deployment or RFC 9002 compliance claim. All arithmetic is checked/saturating; no wire/protocol
 //! format change (reuses the existing ARQ retransmission path). FEC-independent: the machine reads no FEC state and
@@ -28,7 +33,8 @@ pub struct TailRecoveryConfig {
     pub max_backoff_pto_ns: u64,
     /// Receiver max ACK delay budget added to the base PTO (ns).
     pub max_ack_delay_ns: u64,
-    /// Hard cap on probe rounds per idle window (never unbounded).
+    /// Cap on probe rounds per idle window (`validated_v1`: 3; `rfc9002_cc_port`: `u32::MAX`, i.e. no cap —
+    /// backoff is the limiter).
     pub max_tail_probes: u32,
 }
 
@@ -240,7 +246,7 @@ impl TailRecovery {
             .get_or_insert(now_ns.max(self.last_progress_ns));
         if self.probe_index >= self.cfg.max_tail_probes {
             self.was_due = false; // edge-detect: leaving the due state
-            return ProbeDecision::Idle; // bounded — never unbounded retransmission.
+            return ProbeDecision::Idle; // cap reached (`max_tail_probes`; u32::MAX on the port config).
         }
         let pto = self.current_pto_ns(srtt_ns, rttvar_ns);
         // reordering / delayed-ACK guard: never probe within one PTO of the most recent ACK progress.
