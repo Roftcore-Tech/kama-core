@@ -5,6 +5,8 @@
 //!
 //! Ölçüm modeli: her mesaj = bi-stream; client payload yazar + `finish`, server 1-byte ack
 //! döner; client ack'i deadline ile bekler → delivered latency (tek clock, container-sync yok).
+//! `--rival-delivery transport-ack`: mesaj başına uni-stream, uygulama yanıtı yok; teslim = eşin
+//! taşıma ACK'i (`stopped()`).
 
 use std::io;
 use std::net::SocketAddr;

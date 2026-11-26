@@ -1,5 +1,7 @@
-//! Transport soyutlaması (SoC seam): quinn baseline ([`crate::quic`]) + kama stub. Kama
-//! ileride adaptive-transport engine loop'una bağlanacak (ADIM 3+); şimdi typed-error stub.
+//! Transport soyutlaması (SoC seam): rakip kollar (quinn akış [`crate::quic`], quinn DATAGRAM +
+//! uygulama-ARQ [`crate::qdgram`], TCP [`crate::tcp`]) ve Kama kolları (motoru doğrudan süren
+//! security-stub [`crate::kama`], ürün runtime'ı [`crate::kama_product`]) aynı [`BenchTransport`]
+//! sözleşmesiyle koşar.
 
 use crate::error::BenchError;
 use crate::event::RunOutput;
@@ -35,7 +37,8 @@ impl Cc {
 /// sabit, post-hoc tuning yok). quinn kollarında yok sayılır.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum KamaArm {
-    /// Ürün defaults'ları (tail recovery OFF).
+    /// Eski motorun varsayılanları (`Sender::new()`, tail recovery OFF). Ürün profili DEĞİLDİR:
+    /// ürün port motoru + tail ON koşar (`kama-product` kolu).
     #[default]
     Arq,
     /// Bounded tail recovery, doğrulanmış v1 konfigürasyonuyla ON.
@@ -63,10 +66,12 @@ impl KamaArm {
 /// PARAM_SET hash'iyle fail-closed doğrular — uyumsuz kurulum shard'ların düşürülmesine yol açar
 /// (sessiz bozulma değil, sayaçlı ret).
 /// [KAMPANYA-KRİTİK] FEC aktüasyon modu — `r`'den ORTOGONAL seçici. Bkz. [`FecArm::from_args`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+///
+/// `Default` türetilmez: tek varsayılan CLI'dadır (`--fec-mode adaptive`); kodda ayrı bir
+/// varsayılan (eskiden `Static`) CLI ile çelişiyordu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FecModeArg {
     /// Statik-r (`r` kadar repair; **r=0 geçerli ve tek-eksenli kontrol koludur**).
-    #[default]
     Static,
     /// Controller/adaptif (yapı-gate + fuzzy; `r` yok sayılır).
     Adaptive,
@@ -77,17 +82,20 @@ pub enum FecModeArg {
     Policy,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// `Default` türetilmez: bayraksız CLI değeri ürün profilinin FEC'idir
+/// (`KamaV1Profile::FEC_PROFILE_ID`, adaptif); `Off` açıkça seçilen bir koldur.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FecArm {
-    /// FEC KAPALI. Ürün sevk default'u: kol yalnız ARQ + tail-recovery + fuzzy pacing koşar.
-    #[default]
+    /// FEC KAPALI (`--fec-profile 0`): kol yalnız ARQ + tail-recovery + pacing koşar. Ürün
+    /// profili DEĞİLDİR — ürün FEC'i adaptif açar (profil 0x05, Controller).
     Off,
     /// Statik-r: her blokta sabit `r` repair (`FecActuationMode::Manual` + manuel-close).
     /// Operatör-forced FEC / kampanyaların STATIC_R kolu.
     StaticR {
         /// `kama_fec_codec::by_id` profil kimliği (ör. 0x03 = K8/R4/E64).
         profile_id: u8,
-        /// Blok başına repair sayısı (1..=`r_code_max`).
+        /// Blok başına repair sayısı (0..=`r_code_max`; r=0 parity'siz tek-eksenli kontrol kolu,
+        /// bkz. [`FecArm::from_args`]).
         r: u16,
     },
     /// Adaptif: `FecActuationMode::Controller` — yapı-gate (Q18-fix) kararı latch'e akar.

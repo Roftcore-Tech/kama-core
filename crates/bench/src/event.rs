@@ -44,7 +44,8 @@ pub struct RunMeta {
     /// Congestion control: quinn kolları "cubic" | "bbr"; tcp kolu "tcp-kernel"; Kama kolları
     /// motor etiketi "legacy" | "cc-port" (quinn `--cc` bayrağı bu kollarda etkisizdir).
     pub cc: String,
-    /// Transport ("quinn" | "kama").
+    /// Transport ("quinn" | "quinn-tack" | "qdgram" | "tcp-default" | "tcp-tack" | "kama" |
+    /// "kama-product").
     pub transport: String,
     /// quinn sürümü (rapor/reproducibility, §4.4.9). Rakip kollarda Cargo.lock'tan türetilir;
     /// Kama kollarında taşıma sürümü (alan donmuş, yeniden adlandırma YOK).

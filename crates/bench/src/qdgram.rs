@@ -723,12 +723,12 @@ mod tests {
         assert!(out.events.iter().all(|e| e.delivered_ns.is_none()));
     }
 
-    /// ARQ gerçekten kurtarıyor pini: İLK gönderimleri düşüren kayıplı bir "kanal" yerine, ACK'siz
-    /// pencere → PTO → retransmit yolunu server'ı GEÇ başlatarak zorla: client konuşmaya başlar,
-    /// server datagramları ancak bağlantı kurulduktan sonra okur — quinn DATAGRAM'ları
-    /// retransmit ETMEZ (frame kaybolur), bizim app-ARQ etmeli.
+    /// ACK timer aynası pini: tek mesaj `ACK_FREQ_N = 2` birikimine ulaşmadan 20 ms timer'ıyla
+    /// teyit edilir. Bu test retransmit yolunu SINAMAZ (loopback'te kayıp yok; retx-altı-kayıp
+    /// senaryosu netem duman testine bırakılır — gövde yorumu). [S-78 / B-24] Eski ad
+    /// (`app_arq_retransmits_and_recovers`) sınanmayan bir davranışı vaat ediyordu.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn app_arq_retransmits_and_recovers() {
+    async fn single_message_delivered_by_ack_timer() {
         // Kanal-içi kayıp benzetimi yerine deterministik bir yapı: normal loopback ama mesajların
         // İLK kopyasının ACK'i ACK_FREQ_N birikimine takılabilir; 20ms timer + kümülatif ACK her
         // durumda kapsar. Bu test retx sayacının varlığını değil, retx YOLUNUN çalıştığını arar:

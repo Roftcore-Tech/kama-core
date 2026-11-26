@@ -348,11 +348,13 @@ enum Cmd {
         /// İKİ GÖRÜNÜM KARIŞTIRILMAZ — her çıktı hangisinde olduğunu yazar.
         #[arg(long, value_enum, default_value_t = SetupViewArg::SteadyState)]
         setup_view: SetupViewArg,
-        /// [FAZ-4 §8] Blackout tarama penceresi (ms).
-        #[arg(long, default_value_t = 1000)]
+        /// [FAZ-4 §8] Blackout tarama penceresi (ms). Varsayılan `outcome::DEFAULT_BLACKOUT_WINDOW`
+        /// (tek kaynak; CLI değeri o sabitten okunur).
+        #[arg(long, default_value_t = outcome::DEFAULT_BLACKOUT_WINDOW.as_millis() as u64)]
         blackout_window_ms: u64,
-        /// [FAZ-4 §8] Pencerenin kullanılabilir sayılması için asgari teslim.
-        #[arg(long, default_value_t = 1)]
+        /// [FAZ-4 §8] Pencerenin kullanılabilir sayılması için asgari teslim. Varsayılan
+        /// `outcome::DEFAULT_MIN_DELIVERIES_PER_WINDOW`.
+        #[arg(long, default_value_t = outcome::DEFAULT_MIN_DELIVERIES_PER_WINDOW)]
         blackout_min_deliveries: u64,
         /// [FAZ-4 §12.3] Güven düzeyi (‰).
         #[arg(long, default_value_t = outcome::DEFAULT_CI_PERMILLE)]
