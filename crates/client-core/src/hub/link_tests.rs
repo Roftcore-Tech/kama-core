@@ -683,6 +683,35 @@ fn c3_peer_unbound_backs_off_at_least_five_seconds() {
     assert_eq!(t.link.counters().store_backoffs, 3);
 }
 
+/// S-80 (C5-B9; S4 C3 geri çekilmeyi yalnız `PEER_UNBOUND` / `RATE_LIMITED` / `HUB_CAPACITY` için
+/// tanımlar; C8 "hata çerçeveleri yalnız yeniden deneme ipucudur … yeniden deneme T3 kadansıyla"):
+/// öteki hata kodları (`BAD_REQUEST`, …) T3 vadesini ERTELEMEZ; `store_error_hints` sayılır,
+/// `store_backoffs` sayılmaz, başarı sayılmaz.
+///
+/// ESKİ DAVRANIŞ: bu kol da ≥ 5 s geri çekiliyor ve `store_backoffs`'ta sayılıyordu.
+#[test]
+fn s80_unsigned_store_hints_keep_the_t3_cadence() {
+    let mut t = bound();
+    let t0 = t.t0;
+    t.link.send_init(t0, peer(0xB0), 1, vec![1]).unwrap();
+    let f = init_out(&mut t, t0).remove(0);
+    t.link.on_control(
+        t0 + ms(100),
+        &err(method::STORE_MESSAGE, f.rid, code::BAD_REQUEST),
+    );
+    assert!(init_out(&mut t, t0 + ms(999)).is_empty());
+    assert_eq!(init_out(&mut t, t0 + s(1)), vec![f.clone()], "T3: 1 s");
+    t.link.on_control(
+        t0 + ms(1100),
+        &err(method::STORE_MESSAGE, f.rid, code::POSSESSION_PROOF_FAIL),
+    );
+    assert!(init_out(&mut t, t0 + ms(2999)).is_empty());
+    assert_eq!(init_out(&mut t, t0 + s(3)), vec![f.clone()], "T3: 3 s");
+    assert!(events(&mut t.link).is_empty(), "başarı sayılmaz");
+    let c = t.link.counters();
+    assert_eq!((c.store_error_hints, c.store_backoffs), (2, 0));
+}
+
 #[test]
 fn c3_unknown_handle_ends_attempt_and_notices() {
     let mut t = bound();

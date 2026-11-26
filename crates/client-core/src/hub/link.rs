@@ -410,10 +410,10 @@ impl HubLink {
                 bump(&mut self.counters.store_backoffs);
             }
             _ => {
-                // BAD_REQUEST ya da beklenmeyen durum: imzasız, yalnız ipucu; T3 kendi kadansıyla.
-                bump(&mut self.counters.store_backoffs);
-                let a = &mut self.attempts[i];
-                a.next_send = a.next_send.max(now + BACKOFF_MIN);
+                // BAD_REQUEST ya da öteki hata kodu: imzasız, yalnız ipucu (S4 C8); geri çekilme
+                // yalnız yukarıdaki üç kod içindir (S4 C3). T3 kendi kadansıyla. (`OK` + `h = 0` ve
+                // bilinmeyen durum codec'te reddedilir: `rx_malformed`.)
+                bump(&mut self.counters.store_error_hints);
             }
         }
     }

@@ -143,6 +143,9 @@ pub struct HubCounters {
     pub store_ok_duplicate: u64,
     /// `PEER_UNBOUND` / `RATE_LIMITED` / `HUB_CAPACITY` → ≥ 5 s geri çekilme.
     pub store_backoffs: u64,
+    /// Geri çekilmesi tanımlı olmayan STORE hata yanıtı (`BAD_REQUEST`, öteki kodlar): yalnız
+    /// ipucu, T3 kadansı değişmez (S4 C8).
+    pub store_error_hints: u64,
     /// `attempt_handle_conflict` (C3): aynı denemede farklı `h`.
     pub attempt_handle_conflict: u64,
     /// `{UNKNOWN_HANDLE, 0}` ile biten deneme.
