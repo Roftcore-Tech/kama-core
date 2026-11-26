@@ -43,6 +43,10 @@ pub enum EngineError {
     /// Beklenen control-tipi değil (PARAM_SET/PARAM_ACK bekleniyordu).
     #[error("unexpected control kind")]
     UnexpectedControl,
+    /// RECOVERED esi aralığı ters (esi_start > esi_end): noise-wire §2.57 «invalid-range →
+    /// FAIL-CLOSED»; aralık düzeltilmez.
+    #[error("invalid esi range: {lo}..={hi}")]
+    InvalidEsiRange { lo: u16, hi: u16 },
     /// A2-fazı henüz uygulanmadı (typed-stub; reachable todo!() YASAK — CLAUDE.md §6).
     #[cfg(feature = "experimental-cold-start")]
     #[error("feature not implemented: {0}")]

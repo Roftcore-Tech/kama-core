@@ -59,7 +59,9 @@ impl RecoveredMap {
     /// sender'da zaten NO-OP). Range-taraması BTreeMap::range ile (present-key sayısında; DoS-güvenli).
     ///
     /// # Errors
-    /// [`EngineError::UnexpectedControl`] — Control::Recovered değilse.
+    /// [`EngineError::UnexpectedControl`] — Control::Recovered değilse · [`EngineError::InvalidEsiRange`]
+    /// — bir aralık ters ise (esi_start > esi_end; noise-wire §2.57 invalid-range → FAIL-CLOSED,
+    /// hiçbir eşleme döndürülmez).
     pub fn resolve(&self, ctl: &Control) -> Result<(Vec<ResolvedRecovered>, usize), EngineError> {
         let Control::Recovered {
             block_id,
@@ -72,7 +74,9 @@ impl RecoveredMap {
         let mut resolved = Vec::new();
         let mut requested: usize = 0;
         for &(lo, hi) in esi_ranges {
-            let (lo, hi) = (lo.min(hi), lo.max(hi));
+            if lo > hi {
+                return Err(EngineError::InvalidEsiRange { lo, hi });
+            }
             requested += usize::from(hi - lo) + 1;
             for (&(_, esi), &unit_id) in self.map.range((*block_id, lo)..=(*block_id, hi)) {
                 resolved.push(ResolvedRecovered {
@@ -169,6 +173,24 @@ mod tests {
             final_source_count: 3,
         };
         assert_eq!(m.resolve(&other), Err(EngineError::UnexpectedControl));
+    }
+
+    /// S-84/M2-15 (noise-wire §2.57 invalid-range → FAIL-CLOSED): ters aralık düzeltilmez, reddedilir.
+    #[test]
+    fn inverted_range_fail_closed() {
+        let mut m = RecoveredMap::new();
+        m.register(7, 1, 101);
+        m.register(7, 2, 102);
+        let ctl = Control::Recovered {
+            id: 1,
+            block_id: 7,
+            esi_ranges: vec![(1, 1), (2, 1)],
+        };
+        assert_eq!(
+            m.resolve(&ctl),
+            Err(EngineError::InvalidEsiRange { lo: 2, hi: 1 }),
+            "ters aralık (2,1) min/max ile çevrilmez"
+        );
     }
 
     #[test]
