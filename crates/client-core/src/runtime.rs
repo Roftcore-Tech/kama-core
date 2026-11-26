@@ -1122,8 +1122,9 @@ pub struct ClientStats {
     pub rx_datagrams: u64,
     /// `seam.open` reddi (doğrulanamayan gelen datagram — sessiz düşürüldü).
     pub open_failures: u64,
-    /// Açıldı ama tanınmayan çerçeve tipi (ne DATA ne ACK) — kontrol-düzlemi dal-noktası
-    /// (item 6, workstream B'de kama-noise-wire formatıyla bağlanır); sessiz yutulmaz, sayılır.
+    /// Açıldı ama tanınmayan çerçeve tipi (ne DATA ne ACK) ya da türü tanınıp gövdesi çözülemeyen
+    /// çerçeve (CS_ECHO, PARAM_ACK, RECOVERED, ACK) — kontrol-düzlemi dal-noktası (item 6,
+    /// workstream B'de kama-noise-wire formatıyla bağlanır); sessiz yutulmaz, sayılır.
     pub unknown_frames: u64,
     /// Gövdesi olmadığı için tele ÇIKARILMAYAN (atlanan) motor kararı — neden sayacı; toplam
     /// [`Self::stale_skipped`]'tedir.
@@ -4051,6 +4052,10 @@ async fn client_task(
                             mirror.wire.ack_rx_types = ack_rx_types;
                             mirror.acks.push(record);
                         }
+                    } else {
+                        // [S-75] Çözülemeyen ACK (tür tanındı, gövde bozuk) sessiz yutulmaz:
+                        // CS_ECHO / PARAM_ACK / RECOVERED kollarındaki gibi sayılır.
+                        stats.unknown_frames += 1;
                     }
                 }
             }
