@@ -2350,6 +2350,9 @@ pub struct Sender {
     diag_t_first_l2_ns: u64,
     diag_preconverge_parity_blocked: u64, // [KURULUŞ-GUARD] arbiter çıkışı PreConverge'de sıfırlandı
     repair_loss_not_arqed: u64, // [FAZ-2/3] ARQ'ya SOKULMAYAN kayıp repair sayısı (salt gözlem)
+    /// §9.1 `CapExceedPolicy::ConnectionFail`: tavanı aşıp yeniden iletim kuyruğundan düşürülen
+    /// kayıt sayısı (salt gözlem; bağlantı kapatma sinyali yok).
+    retx_cap_connection_fail_drops: u64,
     // [FAZ-3 TELEMETRİ] Ürün derlemesinde HER ZAMAN açık aktivasyon sayaçları. Bunlar eskiden
     // yalnız `diag-sched-telemetry` feature'ı altında vardı → sevk edilen ikili dosyada
     // "mekanizma ateşledi mi?" sorusu CEVAPSIZDI (denetim tema C).
@@ -2664,6 +2667,7 @@ impl Sender {
             diag_t_first_l2_ns: 0,
             diag_preconverge_parity_blocked: 0,
             repair_loss_not_arqed: 0,
+            retx_cap_connection_fail_drops: 0,
             act_tail_probe_emitted: 0,
             act_tail_probe_first_ns: 0,
             act_parity_emitted: 0,
@@ -6558,6 +6562,15 @@ impl Sender {
         self.repair_loss_not_arqed
     }
 
+    /// §9.1 `ARQ_RETX_CAP` aşımında `CapExceedPolicy::ConnectionFail` politikasıyla yeniden
+    /// iletim kuyruğundan düşürülen kayıt sayısı (salt gözlem). Ürün yapılandırması bu politikayı
+    /// seçmez (`HandToForward` ya da port motorunda tavansız); `> 0` = birim ileri kopyaya
+    /// devredilmeden düştü.
+    #[must_use]
+    pub fn diag_retx_cap_connection_fail_drops(&self) -> u64 {
+        self.retx_cap_connection_fail_drops
+    }
+
     /// [ACK-BITMAP · YALNIZ ÖLÇÜM PROTOTİPİ] Bir sonraki `Event::AckReceived`'ın kanıt aralığı
     /// (motor seq, kapsayıcı): aralıktaki teyitsiz iletim alınmamıştı (negatif kanıt). İlk çağrıdan
     /// itibaren kayıp dedektörü kanıt kipindedir: paket ve zaman eşiği yalnız bir kanıt aralığının
@@ -8111,7 +8124,11 @@ impl Sender {
                                 src: DUP_SRC_HAND_TO_FWD,
                             });
                         }
-                        // ConnectionFail: spine'da düşür; gerçek impl bağlantı-fail sinyali verir.
+                        // ConnectionFail: kayıt düşer ve sayılır; bağlantı-fail sinyali motorda yok.
+                        if policy == CapExceedPolicy::ConnectionFail {
+                            self.retx_cap_connection_fail_drops =
+                                self.retx_cap_connection_fail_drops.saturating_add(1);
+                        }
                     }
                 }
             }
@@ -9632,6 +9649,36 @@ mod tests {
             acked_seqs: seqs.to_vec(),
             ack_delay: Duration::ZERO,
         })
+    }
+
+    /// §9.1 tavan aşımında `ConnectionFail` politikası kaydı sessiz düşürmez: düşüş sayılır.
+    #[test]
+    fn retx_cap_connection_fail_drop_is_counted() {
+        let mut s = Sender::new();
+        s.set_startup_pacing_init(StartupPacingConfig { enabled: false });
+        s.arq = DeadlineArqScheduler::new(RetxConfig {
+            arq_retx_cap: 0,
+            cap_exceed: CapExceedPolicy::ConnectionFail,
+            ..RetxConfig::fixture()
+        });
+        s.on_event(Event::AppData(unit(200)), 0);
+        s.on_event(ack(&[0]), 500 * MS);
+        for i in 1..=8u64 {
+            s.on_event(Event::AppData(unit(i)), (500 + i) * MS);
+        }
+        for t in [700u64, 900, 1_100] {
+            s.on_event(Event::TimerFired(Timer::Pto), t * MS);
+        }
+        assert_eq!(s.diag_retx_cap_connection_fail_drops(), 0);
+        // seq 1 atlanır, üç üst ACK → paket eşiği → tavan 0 → ConnectionFail.
+        s.on_event(ack(&[2, 3, 4]), 1_200 * MS);
+        s.on_event(Event::TimerFired(Timer::Pto), 1_201 * MS);
+        assert!(s.diag_loss().0 >= 1, "kayıp ilan edildi");
+        assert_eq!(s.diag_retx_cap_connection_fail_drops(), 1);
+        assert!(
+            s.pending_lost.iter().all(|r| r.seq != 1),
+            "kayıt yeniden iletim kuyruğundan düştü"
+        );
     }
 
     /// Boş ACK çerçevesinin notları (`arrival_rate`, `pair_rate`, ölçüm aralığı) o çerçeveyle
