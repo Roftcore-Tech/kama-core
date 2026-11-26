@@ -111,8 +111,11 @@ pub struct HubCounters {
     pub tx_frames: u64,
     /// Çözülemeyen çerçeve (kısa, uzun, yanlış önek, katı codec hatası).
     pub rx_malformed: u64,
-    /// Bilinmeyen `frame_type` / `method_id` (C9 `hub_frames_dropped`).
+    /// Bilinmeyen `frame_type` (C9 `hub_frames_dropped`: "yalnız bilinmeyen tip için").
     pub hub_frames_dropped: u64,
+    /// Çözülen ama istemcinin işlemediği çerçeve: hub'dan gelen tel → hub `HEARTBEAT`'i, bilinmeyen
+    /// `method_id`, hub'dan gelen istek satırı, tanınmayan zarf tipi (C8 "başka → sayaç").
+    pub rx_unexpected: u64,
     /// Kabul edilen bind (hub imzası doğrulanmış).
     pub binds_accepted: u64,
     /// Hub imzası `verify_strict`'ten geçmeyen bind yanıtı (bind "tamam" sayılmaz).

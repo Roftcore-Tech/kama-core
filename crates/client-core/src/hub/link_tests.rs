@@ -1427,7 +1427,13 @@ fn c8_unknown_frames_counted_c9_rx_age() {
     t.link.on_control(t0 + s(1), &[0, 0, 0, 0, 0x42, 1, 2]);
     t.link.on_control(t0 + s(1), &[0, 0, 0, 1, 0x1D]);
     t.link.on_control(t0 + s(1), &rpc(0x99, 0, 0, &[]));
-    assert_eq!(t.link.counters().hub_frames_dropped, 2);
+    let mut hb = hb_ack(7);
+    hb[4] = frame::HEARTBEAT;
+    t.link.on_control(t0 + s(1), &hb);
+    // S4 C9: `hub_frames_dropped` yalnız bilinmeyen tip (0x42); bilinmeyen `method_id` ve
+    // hub'dan gelen tel → hub HEARTBEAT'i ayrı sayaçta (C8 "başka → sayaç").
+    assert_eq!(t.link.counters().hub_frames_dropped, 1);
+    assert_eq!(t.link.counters().rx_unexpected, 2);
     assert_eq!(t.link.counters().rx_malformed, 1);
     assert_eq!(t.link.last_rx_age(t0 + s(4)), Some(s(3)));
     t.link.on_control(

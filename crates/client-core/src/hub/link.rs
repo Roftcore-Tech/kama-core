@@ -262,9 +262,10 @@ impl HubLink {
         bump(&mut self.counters.rx_frames);
         self.last_rx = Some(now);
         match HubFrame::decode(opened_frame) {
-            Err(S4Error::UnknownFrameType) | Ok(HubFrame::Heartbeat(_)) => {
-                bump(&mut self.counters.hub_frames_dropped);
-            }
+            // C9: `hub_frames_dropped` yalnız bilinmeyen tip için.
+            Err(S4Error::UnknownFrameType) => bump(&mut self.counters.hub_frames_dropped),
+            // Tel → hub yönünün çerçevesi hub'dan gelmez.
+            Ok(HubFrame::Heartbeat(_)) => bump(&mut self.counters.rx_unexpected),
             Err(_) => bump(&mut self.counters.rx_malformed),
             Ok(HubFrame::HeartbeatAck(ack)) => {
                 if self.bind.is_bound() && ack.token.is_some_and(|t| self.hb.on_ack(t)) {
@@ -275,7 +276,7 @@ impl HubLink {
             }
             Ok(HubFrame::Plane1Rpc(body)) => match RpcMessage::decode(body) {
                 Ok(msg) => self.on_rpc(now, msg),
-                Err(S4Error::UnknownMethod) => bump(&mut self.counters.hub_frames_dropped),
+                Err(S4Error::UnknownMethod) => bump(&mut self.counters.rx_unexpected),
                 Err(_) => bump(&mut self.counters.rx_malformed),
             },
         }
@@ -321,7 +322,7 @@ impl HubLink {
                 }
             }
             // İstek satırları (tel → hub) hub'dan gelmez.
-            _ => bump(&mut self.counters.hub_frames_dropped),
+            _ => bump(&mut self.counters.rx_unexpected),
         }
     }
 
@@ -443,7 +444,7 @@ impl HubLink {
                 self.on_deliver_response(now, h, sender, d.envelope_type, &d.envelope);
             }
             ENVELOPE_RELAY_OPEN => bump(&mut self.counters.deliver_relay_open),
-            _ => bump(&mut self.counters.hub_frames_dropped),
+            _ => bump(&mut self.counters.rx_unexpected),
         }
     }
 
