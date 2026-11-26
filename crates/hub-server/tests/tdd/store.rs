@@ -40,7 +40,7 @@ fn t_s1_store_init_allocates_and_delivers() {
         .net
         .logs
         .iter()
-        .any(|l| *l == format!("link open h={h:08x} a=a1b2c3d4 b=c3d4e5f6 type=01")));
+        .any(|l| *l == format!("link open h={h:08x} type=01")));
     assert_indexes(&world);
 }
 

@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 use blake2::{Blake2s256, Digest};
 use kama_noise_wire::entropy::EntropySource;
 
-use crate::stats::{self, ShortId};
+use crate::stats;
 use crate::table::KeyState;
 use crate::wire::{
     code, envelope, method, AllocationKey, Deliver, DestHash, Payload, RouteMiss, RpcFrame,
@@ -155,13 +155,7 @@ impl<C: Clock, R: EntropySource> Hub<C, R> {
             stats::log_link_retire(sink, *retired);
         }
         stats::bump(&mut self.stats.store_ok);
-        stats::log_link_open(
-            sink,
-            handle,
-            ShortId::of(&me),
-            ShortId::of(&store.recipient),
-            store.envelope_type,
-        );
+        stats::log_link_open(sink, handle, store.envelope_type);
         self.reply_store(sink, src, request, code::OK, handle);
         self.deliver(sink, to, handle, me, store);
     }

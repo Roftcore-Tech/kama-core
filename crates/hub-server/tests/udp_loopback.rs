@@ -226,9 +226,7 @@ fn bind_store_deliver_and_data_over_real_udp() {
     }
     assert!(seen.contains("bind ok dh=a1b2c3d4 epoch=1"), "{seen}");
     assert!(
-        seen.contains(&format!(
-            "link open h={h:08x} a=a1b2c3d4 b=c3d4e5f6 type=01"
-        )),
+        seen.contains(&format!("link open h={h:08x} type=01")),
         "{seen}"
     );
     assert!(!seen.contains(&hex(&HUB_SEED)));

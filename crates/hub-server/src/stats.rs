@@ -15,10 +15,12 @@
 //! `rate_verify` doğrulama bütçesinin tükenmesini görünür kılar). Önceki alanların sırası değişmez.
 //! ```text
 //! bind ok dh=<8 hex> epoch=<n>
-//! link open h=<8 hex> a=<8 hex> b=<8 hex> type=<2 hex>
+//! link open h=<8 hex> type=<2 hex>
 //! link retire h=<8 hex>
 //! cookie rotate
 //! ```
+//! `link open` uçları adlandırmaz: hat başına iki ucun kimlik öneki kim-kimle kaydı olurdu (identity
+//! E-7: "Hub'lar kim-kimle metadata DEFAULT tutmaz (minimize)"; TDD §3 `log("link open h=…")`).
 //! `t` = açılıştan beri saniye. Sayaçlar birikimli ve `u64`'te SARAR (Counter64 gibi); okuyan farkı
 //! `wrapping_sub` ile alır. `relay_pps` / `relay_bps` son aralığın ortalaması, sarma anında da doğru.
 //!
@@ -288,9 +290,10 @@ pub fn log_bind_ok(sink: &mut dyn Sink, id: ShortId, epoch: u32) {
     sink.log(format_args!("bind ok dh={id} epoch={epoch}"));
 }
 
-pub fn log_link_open(sink: &mut dyn Sink, handle: u32, a: ShortId, b: ShortId, envelope_type: u8) {
+/// Uç kimliği (önek dahil) taşımaz; bkz. modül belgesi (identity E-7).
+pub fn log_link_open(sink: &mut dyn Sink, handle: u32, envelope_type: u8) {
     sink.log(format_args!(
-        "link open h={handle:08x} a={a} b={b} type={envelope_type:02x}"
+        "link open h={handle:08x} type={envelope_type:02x}"
     ));
 }
 
@@ -509,14 +512,14 @@ mod tests {
         let mut lines = Lines::default();
         let a = ShortId([0xa1, 0xb2, 0xc3, 0xd4]);
         log_bind_ok(&mut lines, a, 3);
-        log_link_open(&mut lines, 0x10, a, ShortId([0xc3, 0xd4, 0xe5, 0xf6]), 5);
+        log_link_open(&mut lines, 0x10, 5);
         log_link_retire(&mut lines, 0x10);
         log_cookie_rotate(&mut lines);
         assert_eq!(
             lines.0,
             [
                 "bind ok dh=a1b2c3d4 epoch=3",
-                "link open h=00000010 a=a1b2c3d4 b=c3d4e5f6 type=05",
+                "link open h=00000010 type=05",
                 "link retire h=00000010",
                 "cookie rotate",
             ]
