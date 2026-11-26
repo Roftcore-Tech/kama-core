@@ -16284,6 +16284,109 @@ mod profile_pacing_cap_tests {
     }
 }
 
+/// [CC-PORT · INV-RATE-1] Port motorunda (ürün varsayılanı, profil kuralı ve profil tavanı yokken)
+/// kayıp pacing hızını düşürmez: pacer hızı BBR'ın `pacing_rate`'idir, kayıp ilanından önce ve
+/// sonra. Kayıp yalnız BBR'ın tıkanıklık olayını ve `recovery_window` uçuş tavanını besler
+/// (CLAUDE.md §4 INV-RATE-1, 2026-11-11 metni).
+#[cfg(test)]
+mod inv_rate_1_port_tests {
+    use super::*;
+
+    const MS: u64 = 1_000_000;
+
+    fn data_seqs(out: &[TransmitDecision]) -> Vec<u64> {
+        out.iter()
+            .filter(|t| t.kind == TransmitKind::Data)
+            .map(|t| t.seq)
+            .collect()
+    }
+
+    fn ack_at(s: &mut Sender, seqs: &[u64], now_ns: u64) -> Vec<TransmitDecision> {
+        s.on_event(
+            Event::AckReceived(AckInfo {
+                acked_seqs: seqs.to_vec(),
+                ack_delay: Duration::ZERO,
+            }),
+            now_ns,
+        )
+    }
+
+    #[test]
+    fn port_loss_declaration_does_not_reduce_pacing_rate() {
+        let mut s = Sender::with_cc_port();
+        assert!(
+            s.cc_feedback_starved.is_none() && s.cc_profile_pacing_cap.is_none(),
+            "kurulum: profil kuralı ve profil tavanı yok"
+        );
+        let mut out = Vec::new();
+        for i in 0..8u64 {
+            out.extend(s.on_event(Event::AppData(OpaqueUnit { id: i, size: 1200 }), 0));
+        }
+        for t in 1..=90u64 {
+            out.extend(s.on_event(Event::TimerFired(Timer::Pto), t * MS));
+        }
+        let first = data_seqs(&out);
+        assert_eq!(first.len(), 8, "ilk pencere 8 birimi taşır: {first:?}");
+
+        // İlk dört orijinal teyit edilir: bant örneği ve RTT → BBR hızı kurulur.
+        let _ = ack_at(&mut s, &first[..4], 150 * MS);
+        let cc_rate_before = s.cc.as_ref().map_or(0, crate::cc::Bbr::pacing_rate);
+        assert!(cc_rate_before > 0, "kurulum: BBR pacing hızı var");
+        let rate_before = s.diag_pacer().0;
+        assert_eq!(rate_before, cc_rate_before, "kayıp öncesi: pace = BBR hızı");
+        let (_, ce_before, ..) = s.cc.as_ref().map(crate::cc::Bbr::diag).unwrap_or_default();
+
+        // Kayıp ilanı: `first[4]` atlanır, üstündeki üç orijinal teyit edilir (paket eşiği 3).
+        let mut retx = ack_at(&mut s, &first[5..8], 160 * MS);
+        let (pkt_lost, time_lost, _) = s.diag_loss();
+        assert!(pkt_lost + time_lost >= 1, "kayıp ilan edildi");
+        let cc = s.cc.as_ref().expect("port motoru");
+        assert!(
+            cc.diag().1 > ce_before,
+            "kayıp BBR'a tıkanıklık olayı olarak verildi"
+        );
+        let rate_after = s.diag_pacer().0;
+        assert_eq!(
+            rate_after,
+            cc.pacing_rate(),
+            "kayıp sonrası: pace = BBR hızı"
+        );
+        assert!(
+            rate_after >= rate_before,
+            "kayıp pacing hızını düşürmez: {rate_before} → {rate_after}"
+        );
+
+        // Sonraki ACK turu kaybı BBR modeline işler (`on_end_acks`): recovery_window uçuşu
+        // sınırlar, pace yine BBR hızıdır ve düşmez.
+        for t in 161..=200u64 {
+            retx.extend(s.on_event(Event::TimerFired(Timer::Pto), t * MS));
+        }
+        let resent: Vec<u64> = retx
+            .iter()
+            .filter(|t| t.kind == TransmitKind::Retransmit)
+            .map(|t| t.seq)
+            .collect();
+        assert!(!resent.is_empty(), "kayıp birim yeniden iletildi");
+        let _ = ack_at(&mut s, &resent, 260 * MS);
+        let cc = s.cc.as_ref().expect("port motoru");
+        assert!(cc.in_recovery(), "kayıp recovery_window'u açar");
+        assert!(
+            cc.window() <= cc.window_without_recovery(),
+            "kayıp yalnız uçuş tavanını sınırlar"
+        );
+        let rate_recovery = s.diag_pacer().0;
+        assert_eq!(
+            rate_recovery,
+            cc.pacing_rate(),
+            "recovery'de: pace = BBR hızı"
+        );
+        assert!(
+            rate_recovery >= rate_before,
+            "recovery pacing hızını düşürmez: {rate_before} → {rate_recovery}"
+        );
+    }
+}
+
 /// [CC-PORT · KADER-SIRASI] Kayıp-yapısı kestiricisinin anahtarı: eski motor birim kimliği, port
 /// motoru orijinalin motor-içi gönderim sırası (`Sender::fate_key`).
 #[cfg(test)]
