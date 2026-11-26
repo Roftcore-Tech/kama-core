@@ -67,7 +67,7 @@ pub struct RivalTuning {
     /// Koşu sonunda `QUINN-STATS` satırı (salt-gözlem; tele etkisi yok).
     pub stats: bool,
     /// [İSTEK-D1] tcp `app-reply` kolu: bütün uygulama ACK'leri gelince ya da pencere dolunca
-    /// biter (eski: her koşuda sabit `min(max_deadline, 60 s)` bekler). Teslim olayları AYNIDIR —
+    /// biter (eski: her koşuda son yazımdan sonra sabit `max_deadline` bekler). Teslim olayları AYNIDIR —
     /// damgaları okuyucu görev koyar; erken bitiş yalnız boş beklemeyi keser.
     pub early_exit: bool,
     /// [İSTEK-D2] quinn: mesaj kimliği yükün ilk 8 baytına (BE) yazılır (alıcının `--rx-log`

@@ -314,7 +314,7 @@ enum Cmd {
         #[arg(long, default_value_t = false)]
         rival_stats: bool,
         /// [KTP2-F0 / D1] tcp (`app-reply`): bütün ACK'ler gelince ya da pencere dolunca bitir
-        /// (eski: sabit `min(max_deadline, 60 s)` bekleme). Teslim olayları değişmez.
+        /// (eski: son yazımdan sonra sabit `max_deadline` bekleme). Teslim olayları değişmez.
         #[arg(long, default_value_t = false)]
         early_exit: bool,
         /// [KTP2-F0 / D2] quinn: mesaj kimliği yükün ilk 8 baytına (BE) yazılır — sunucunun

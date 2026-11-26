@@ -186,7 +186,11 @@ impl BenchTransport for TcpTransport {
                 }
             }
             // Deadline penceresi dolana dek ACK'leri bekle, sonra bağlantıyı kapat.
-            let wait = cfg.max_deadline.min(Duration::from_secs(60));
+            // [S-60 / B-08] Gözlem penceresi = son sunum + `max_deadline` (öteki kollar ve
+            // `tcp-tack` ile aynı; transport-tdd §4.4.1 "aynı ölçüm penceresi"). Eski türetilmemiş
+            // `min(max_deadline, 60 s)` kesmesi `max_deadline` > 60 s iken 60 s'den geç teslimleri
+            // kaydetmiyordu → completion(D) TCP için eksik ölçülüyordu.
+            let wait = cfg.max_deadline;
             if tu.early_exit {
                 // [İSTEK-D1] Aynı pencere; bütün ACK'ler geldiyse erken çık. Damgalar okuyucu
                 // görevde konduğundan teslim olayları sabit beklemeyle birebir aynıdır.
@@ -348,7 +352,7 @@ fn read_tx_queue(local_port: u16, peer_port: u16) -> Option<u64> {
 ///   (`W` = soketin kabul ettiği bayt, yazma bittikten SONRA artırılır → `A` hiçbir zaman gerçek
 ///   `snd_una`'nın önüne geçmez; erken teslim yazılamaz).
 /// * Gözlem penceresi mesaj başına `max_deadline` (son plan + `max_deadline`'a dek); hepsi teslim
-///   edilince erken biter. Eski kolun `min(max_deadline, 60 s)` kesmesi burada YOK.
+///   edilince erken biter (`app-reply` kolu da aynı pencereyi kullanır, S-60 / B-08).
 async fn run_client_tack(
     cfg: ClientCfg,
     tu: &crate::rival::RivalTuning,
