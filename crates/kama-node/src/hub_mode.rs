@@ -28,6 +28,7 @@ use client_core::hub::endpoint::{
 use client_core::hub::{HubConfig, HubEnvelopeLink, HubLink, HubNotice};
 use client_core::transport::{EnvelopeLink, TransportBuildError};
 use kama_contracts::handles::PeerRef;
+use kama_contracts::s3::HubHandle;
 use kama_provision::format::{DeviceConfig, FormatError};
 
 use crate::error::NodeError;
@@ -121,15 +122,11 @@ pub(crate) fn start(inner: Inner, inputs: HubInputs) -> Result<HubStart, NodeErr
         known.clone(),
     )
     .map_err(transport_io)?;
-    let envelope = RecordingLink::new(HubEnvelopeLink::new(Arc::clone(&link)), known.clone());
+    let envelope = RecordingLink::new(HubEnvelopeLink::new(Arc::clone(&link)), known);
     Ok(HubStart {
         crypto,
         link: Box::new(envelope),
-        side: HubSide {
-            endpoint,
-            link,
-            known,
-        },
+        side: HubSide { endpoint, link },
     })
 }
 
@@ -143,7 +140,6 @@ pub(crate) const DATA_BIND: SocketAddr = SocketAddr::V4(std::net::SocketAddrV4::
 pub(crate) struct HubSide {
     endpoint: HubEndpoint,
     link: Arc<Mutex<HubLink>>,
-    known: KnownHandles,
 }
 
 impl HubSide {
@@ -157,12 +153,12 @@ impl HubSide {
         self.endpoint.set_server_addr(addr);
     }
 
-    /// KK-H58: S1 `Ready` → `HubLink::peer_ready(peer, h)` (T3 durur). `h` taşıyıcının o eşe
-    /// bağladığı son handle'dır; bilinmiyorsa çağrı yapılmaz (T3 yedeği `on_session_traffic`).
-    pub(crate) fn peer_ready(&self, peer: PeerRef) {
-        if let Some(h) = self.known.handle_of(peer) {
-            lock(&self.link).peer_ready(peer, h);
-        }
+    /// KK-H58: S1 `Ready` → `HubLink::peer_ready(peer, h)`. KK-H36: `h` Ready'yi veren oturumun
+    /// hattıdır (çağıran eşin etkin oturumunun hattını verir, `ActiveLink::On`); yalnız o hattın
+    /// denemesinin T3'ü durur. Hat bilinmiyorsa çağıran çağırmaz; T3'ü durduran başka yedek yok
+    /// (`on_session_traffic` yalnız sessizlik ölçümüdür).
+    pub(crate) fn peer_ready(&self, peer: PeerRef, h: HubHandle) {
+        lock(&self.link).peer_ready(peer, h);
     }
 
     /// Bekleyen hub bildirimleri (sınırlı: bir turda en çok `cap`).

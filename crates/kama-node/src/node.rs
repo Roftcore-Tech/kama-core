@@ -804,9 +804,16 @@ impl NodeLoop {
             return;
         }
         self.tickets.retain(|_, waiting| *waiting != peer);
-        // [S2-A3-2] KK-H58: hub kipinde T3 (INIT tekrarı) durur.
+        // [S2-A3-2] KK-H58: hub kipinde T3 (INIT tekrarı) durur. KK-H36: yalnız Ready'yi veren
+        // oturum neslinin denemesi — `peer_ready(peer, session_handle)`: eşin ETKİN oturumunun
+        // hattı (`ActiveLink::On`; oturum o hattaki doğrulanmış RESPONSE'la kuruldu). Eşe en son
+        // bağlanan handle değil: o, bekleyen yenilemenin/relink'in henüz doğrulanmamış denemesi
+        // olabilir ve eski oturumun Ready'si (ör. `connect` → `ConnectResult::Ready`) onu
+        // kapatırdı. Hat bilinmiyorsa çağrı yok.
         if let Some(hub) = &self.hub {
-            hub.peer_ready(peer);
+            if let ActiveLink::On(h) = self.messenger.transport().active_link(peer) {
+                hub.peer_ready(peer, h);
+            }
         }
         if self.up.insert(peer) {
             self.emit_for(peer, |peer_id| NodeEvent::Connected { peer_id });

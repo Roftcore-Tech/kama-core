@@ -183,8 +183,11 @@ pub const KNOWN_HANDLE_CAP: usize = 1024;
 struct HandleSet {
     set: HashSet<u32>,
     order: VecDeque<u32>,
-    /// Eş → taşıyıcının o eşin son denemesine/yanıtına bağladığı handle (KK-H58 `peer_ready`).
-    /// Boyu eş sayısıyla sınırlı değildir; `KNOWN_HANDLE_CAP` ile sınırlanır.
+    /// Eş → taşıyıcının o eşin son denemesine/yanıtına bağladığı handle (gözlem). `peer_ready`'nin
+    /// kaynağı DEĞİLDİR: KK-H36 Ready'yi veren oturumun hattını ister; son bağlanan handle
+    /// bekleyen yenilemenin doğrulanmamış denemesi olabilir (bileşim kökü
+    /// `ClientTransport::active_link`'i kullanır). Boyu eş sayısıyla sınırlı değildir;
+    /// `KNOWN_HANDLE_CAP` ile sınırlanır.
     by_peer: HashMap<PeerRef, HubHandle>,
 }
 
@@ -244,7 +247,7 @@ impl KnownHandles {
         s.by_peer.insert(peer, h);
     }
 
-    /// `peer`'e en son bağlanan handle.
+    /// `peer`'e en son bağlanan handle (oturumun hattı olmayabilir; `HandleSet::by_peer`).
     #[must_use]
     pub fn handle_of(&self, peer: PeerRef) -> Option<HubHandle> {
         lock(&self.0).by_peer.get(&peer).copied()

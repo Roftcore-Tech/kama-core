@@ -1733,8 +1733,8 @@ fn init_offsets(stores: &[(Instant, Out)], p: u8, t0: Instant) -> Vec<u64> {
 
 /// [T3-GLARE] Glare'i KAYBEDEN ucun `HubLink` dizisi (S3 K10; transport'un çağrı sırası): kendi
 /// INIT'i gitti ve `StoreResp{OK, h1}` aldı; eşin INIT'i başka bir handle'la (`h2`) geldi ve
-/// yanıtlandı; S1 `Ready` eşin hattıyla geldi (`peer_ready(eş, h2)`; bileşim kökü
-/// `KnownHandles::handle_of`'u kullanır, son bağ yanıtın hattıdır). Bu `Ready` kendi denemesiyle
+/// yanıtlandı; S1 `Ready` eşin hattıyla geldi (`peer_ready(eş, h2)`; bileşim kökü etkin oturumun
+/// hattını verir, yanıtlayan rolde kurulan oturumun hattı eşin INIT'ininkidir). Bu `Ready` kendi denemesiyle
 /// EŞLEŞMEZ: T3 sürer — durduracak olan transport'un terkidir (`cancel_attempt`; glare kaybı
 /// S4 C3 / KR-18 durma listesinde adıyla yok, identity §16 glare kuralından türetilir).
 /// Terkten sonra `ATTEMPT_MAX_AGE`'e dek tele INIT çıkmaz ve bildirim yok. Yanıtlayan yolu

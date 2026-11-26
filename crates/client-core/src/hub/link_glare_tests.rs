@@ -5,8 +5,9 @@
 //! DÜZENEK — iki gerçek `ClientTransport` (gerçek `NoiseWireProtection`, TEST anahtarları
 //! `kama_noise_wire::seam_mock::fixture_*`, GİZLİ DEĞİL; veri yolu UDP loopback, direct-mode). Zarf
 //! taşıyıcısı ürünün hub kipi bileşimidir (`kama-node` `hub_mode.rs`): `RecordingLink(
-//! HubEnvelopeLink(HubLink))` + `KnownHandles`; S1 `Ready` → `HubLink::peer_ready(peer,
-//! known.handle_of(peer))` (`HubSide::peer_ready`, KK-H58). Hub, testin içindeki küçük bir röledir:
+//! HubEnvelopeLink(HubLink))` + `KnownHandles`; S1 `Ready` → `HubLink::peer_ready(peer, h)`, `h` =
+//! eşin etkin oturumunun hattı (`ClientTransport::active_link`; `HubSide::peer_ready`, KK-H36 /
+//! KK-H58; bkz. [`note_up`]). Hub, testin içindeki küçük bir röledir:
 //! `STORE{0, INIT}` → `{OK, h}` + `DELIVER`; aynı `(gönderen, request_id)` → aynı `h` + yeniden
 //! `DELIVER` (`hub-server` `relay.rs` idempotent tahsis); `STORE{h, RESPONSE}` → `{OK, h}` +
 //! `DELIVER`; heartbeat → ACK. `HubLink`'in saati sahtedir (`FakeClock`): T3, heartbeat ve deneme
@@ -88,6 +89,15 @@ fn side(me: u8, link: HubLink, clock: &Arc<FakeClock>) -> Side {
         known,
         me: id(me),
         seen: Vec::new(),
+    }
+}
+
+/// Bileşim kökünün `note_up`'ı (`kama-node` `node.rs`; `HubSide::peer_ready`): S1 `Ready` ve
+/// `connect`'in `ConnectResult::Ready`'si → eşin ETKİN oturumunun hattıyla
+/// `HubLink::peer_ready` (KK-H36 `peer_ready(peer, session_handle)`); hat bilinmiyorsa çağrı yok.
+fn note_up(s: &Side, peer: PeerRef) {
+    if let ActiveLink::On(h) = s.t.active_link(peer) {
+        guard(&s.link).peer_ready(peer, h);
     }
 }
 
@@ -230,9 +240,7 @@ impl Net {
         for s in &mut self.sides {
             while let Some(ev) = s.t.poll_event() {
                 if let SessionEvent::Ready(_, peer) = ev {
-                    if let Some(h) = s.known.handle_of(peer) {
-                        guard(&s.link).peer_ready(peer, h);
-                    }
+                    note_up(s, peer);
                 }
                 s.seen.push(ev);
             }
@@ -353,7 +361,8 @@ impl Net {
 ///
 /// İki sıra: hub önce gönderene yanıt verir (`StoreResp` Bob'a, Alice'in INIT'inden önce: Bob'un
 /// son bağladığı hat Alice'in INIT'inin hattıdır) ya da önce teslim eder (Bob'un son bağladığı hat
-/// kendi denemesininkidir).
+/// kendi denemesininkidir). Bileşim kökü iki sırada da `peer_ready`'ye Bob'un etkin oturumunun
+/// hattını, yani Alice'in INIT'inin hattını verir ([`note_up`]).
 ///
 /// ESKİ DAVRANIŞ: `on_crypto_ready` (c) niyeti çözüyor ama denemeyi terk etmiyordu. Yanıt-önce
 /// sırada Bob'un `Ready`'si Alice'in INIT'inin hattıyla geldiği için `peer_ready` onu durdurmuyordu
@@ -519,4 +528,78 @@ fn t3g_glare_resolved_session_is_renewed_when_its_line_is_lost() {
         (1, 1),
         "glare'deki terk + yenilemenin eşleşen Ready'si"
     );
+}
+
+/// S-39 (KK-H36, SAHIP-KARARI v4 EK-A §10: "T3 yalnız o denemeye/oturum nesline ait doğrulanmış
+/// RESPONSE kabulüyle durur: `peer_ready(peer, session_handle)` kama-node `note_up`'tan; eski
+/// oturumun Ready'si yeni denemeyi kapatmaz"): kurulu oturumun hattı kaybolur (ROUTE_MISS →
+/// `HandleLost`), yenilemenin INIT'i `StoreResp{OK, h2}` alır ama eşe ulaşmaz. Bu sırada bileşim
+/// kökü eski oturum için `note_up` yapar (UI `connect` → `ConnectResult::Ready`). Yenilemenin T3'ü
+/// SÜRER; kayıp bitince eşe ulaşır, yenileme kendi oturumunun `Ready`'siyle durur.
+///
+/// ESKİ DAVRANIŞ: `note_up` eşe EN SON bağlanan handle'ı (`KnownHandles::handle_of` = h2)
+/// veriyordu; eski oturumun `Ready`'si yenilemenin denemesini doğrulanmış RESPONSE olmadan
+/// "tamamladı", T3 durdu, INIT eşe hiç ulaşmadı.
+#[test]
+fn s39_old_sessions_ready_does_not_stop_the_renewals_t3() {
+    let mut n = net();
+    let (a, b) = (n.me(A), n.me(B));
+    let Ok(ConnectResult::Pending(_)) = n.sides[A].t.connect(b, None) else {
+        panic!("beklemede başlamalı");
+    };
+    let b1 = n.wait_ready(B, a);
+    let a1 = n.wait_ready(A, b);
+    n.both_ways(a1, b1, "ilk oturum");
+    assert_eq!(n.counters(A).attempt_completed, 1, "ilk niyetin denemesi");
+
+    let ActiveLink::On(h1) = n.sides[A].t.active_link(b) else {
+        panic!("Alice'in etkin oturumunun hattı bilinmeli");
+    };
+    let now = n.now();
+    guard(&n.sides[A].link).on_control(now, &route_miss(h1.raw()));
+    assert_eq!(
+        guard(&n.sides[A].link).take_notice(),
+        Some(HubNotice::HandleLost { peer: b, h: h1 })
+    );
+    n.drop_deliver[B] = true;
+    assert_eq!(n.sides[A].t.relink_line(b, h1), RelinkOutcome::Started);
+    n.hub();
+    n.pump();
+    let h2 = n.sides[A].known.handle_of(b).expect("yenilemenin hattı");
+    assert_ne!(h2, h1, "eşe son bağlanan hat yenilemeninki");
+
+    // Eski oturum hâlâ etkin: UI `connect` → `Ready(a1)` → bileşim kökü `note_up`.
+    let Ok(ConnectResult::Ready(h)) = n.sides[A].t.connect(b, None) else {
+        panic!("eski oturum hazır olmalı");
+    };
+    assert_eq!(h, a1);
+    note_up(&n.sides[A], b);
+    assert_eq!(
+        n.counters(A).attempt_completed,
+        1,
+        "eski oturumun Ready'si yenilemenin denemesini kapatmaz"
+    );
+    let start = n.start;
+    assert_eq!(
+        n.advance_until(start + s(4)),
+        [2, 0],
+        "yenileme INIT'inin T3'ü sürer (1, 3 s)"
+    );
+    n.drop_deliver[B] = false;
+    assert_eq!(n.advance_until(start + s(8)), [1, 0], "7 s tekrarı eşe");
+
+    let a2 = n.wait_ready(A, b);
+    assert_ne!(a2, a1);
+    n.send(A, a2, b"yeni hat: a->b");
+    let b2 = n.wait_ready(B, a);
+    assert_ne!(b2, b1);
+    n.expect_delivery(B, b2, b"yeni hat: a->b");
+    n.send(B, b2, b"yeni hat: b->a");
+    n.expect_delivery(A, a2, b"yeni hat: b->a");
+    assert_eq!(
+        n.advance_until(start + ATTEMPT_MAX_AGE),
+        [0, 0],
+        "yenileme kendi oturumunun Ready'siyle durdu"
+    );
+    assert_eq!(n.counters(A).attempt_completed, 2);
 }
