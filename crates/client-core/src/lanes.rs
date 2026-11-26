@@ -10,8 +10,10 @@
 //! INV-ENGINE-SOC, EK-1 D-04 notu). Şerit içi FIFO'dur. Pompa ([`SessionLanes::pop_next`])
 //! şeritleri kabul sırasıyla (PTT > SIG > TEXT > FILE) boşaltır; FILE şeridi ayrıca pencerelidir:
 //! uca verilmiş ve teyidi gelmemiş en çok `W` dosya birimi ([`LaneConfig::file_window_units`],
-//! varsayılan [`DEFAULT_FILE_WINDOW_UNITS`]). Teyit, veri yolunun birim başına ilk-ACK olayıdır
-//! (`ClientHandle::try_acked`); kimlik veri yolunun sıralı birim kimliğidir.
+//! varsayılan [`DEFAULT_FILE_WINDOW_UNITS`]). Teyit, veri yolunun birim başına ilk-ACK olayı
+//! (`ClientHandle::try_acked`) ve FILE şeridinin teyit sınırıdır
+//! (`ClientHandle::lane_confirm_frontier`; olay kanalı taşınca olay düşer, sınır düşmez —
+//! [`SessionLanes::on_confirm_frontier`]); kimlik veri yolunun sıralı birim kimliğidir.
 //!
 //! Motora (`adaptive-transport`) hiçbir şey eklenmez; tel, altın vektör ve ürün profili
 //! değişmez. Kayıp gönderim hızını DÜŞÜRMEZ (INV-RATE-1 motor kuralıdır; burada hız yoktur):
@@ -368,7 +370,7 @@ pub struct LaneStats {
     pub lane_dropped: u64,
     /// Uç, şeritten verilen birimi `Backpressure` dışı bir hatayla reddetti (savunma; beklenmez).
     pub give_failed: u64,
-    /// FILE penceresinden teyitle düşen birimler.
+    /// FILE penceresinden teyitle (olay ya da teyit sınırı) düşen birimler.
     pub file_acked: u64,
     /// [ŞERİT-AÇIKLIK] Pompa turunda şeridin, sıradaki birimi alıcının kabul penceresinin dışına
     /// düşeceği için atlandığı tur sayısı ([`SessionLanes::set_span_rooms`]), [`Lane::ALL`]
@@ -608,6 +610,18 @@ impl SessionLanes {
         self.file_inflight.remove(&unit_id)
     }
 
+    /// FILE şeridinin teyit sınırı (şerit etiketli kimlik; `runtime::ClientHandle::
+    /// lane_confirm_frontier`'ın sırası, FILE etiketiyle): altındaki her dosya birimi teyitlidir
+    /// ve pencereden düşer. Döner: düşen birim sayısı.
+    ///
+    /// Neden: teyit olay kanalı (`ClientHandle::try_acked`) taşınca olay düşer; düşen teyit birimi
+    /// pencerede kalıcı tutardı. Sınırın kaynağı veri yolunun birim deposudur, düşmez. Sınırın
+    /// üstündeki teyitler (sıra başı eksikken) yalnız kanaldan gelir; kanal hızlandırıcı kalır.
+    pub fn on_confirm_frontier(&mut self, frontier_id: u64) -> usize {
+        let unconfirmed = self.file_inflight.split_off(&frontier_id);
+        std::mem::replace(&mut self.file_inflight, unconfirmed).len()
+    }
+
     /// Uca verilecek birim yok: şerit kuyrukları ve dosya penceresinin bekletme kuyruğu boş
     /// (uca verilmiş birim ucundur, sayılmaz).
     #[must_use]
@@ -775,6 +789,15 @@ impl LaneState {
             if lanes.on_acked(unit_id) {
                 self.stats.file_acked += 1;
             }
+        }
+    }
+
+    /// Oturumun FILE teyit sınırı ([`SessionLanes::on_confirm_frontier`]); düşenler
+    /// `file_acked`'ta sayılır.
+    pub fn on_confirm_frontier(&mut self, session: SessionHandle, frontier_id: u64) {
+        if let Some(lanes) = self.sessions.get_mut(&session) {
+            let released = lanes.on_confirm_frontier(frontier_id);
+            self.stats.file_acked = self.stats.file_acked.saturating_add(released as u64);
         }
     }
 
@@ -973,9 +996,11 @@ mod tests {
     }
 
     /// T-L3 ek: teyitler GEÇ okunursa (kanal 4096'yı aşacak kadar biriktikten sonra) FILE
-    /// teyitleri düşmüştür ve pencere kalıcı kilitlenir — boşaltmanın her turda olması şart.
+    /// teyitleri kanalda düşmüştür; kanal tek başına pencereyi bırakmaz. Teyit sınırı (birim
+    /// deposundan, düşmez) bırakır. ESKİ BEKLENTİ: pencere kalıcı kilitlenirdi (adaptör yalnız
+    /// kanalı okuyordu).
     #[test]
-    fn t_l3_late_drain_after_overflow_locks_the_window() {
+    fn t_l3_late_drain_after_overflow_is_released_by_the_confirm_frontier() {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<u64>(4096);
         let mut l = SessionLanes::new(&LaneConfig::default());
         let mut expired = 0;
@@ -1000,7 +1025,40 @@ mod tests {
         while let Ok(a) = rx.try_recv() {
             l.on_acked(a);
         }
-        assert_eq!(l.file_inflight(), 5, "düşen teyit pencereyi asla bırakmaz");
+        assert_eq!(l.file_inflight(), 5, "düşen teyidi kanal geri getirmez");
+        // Verilen her birim teyitli: sınır sıradaki kimlikte.
+        assert_eq!(
+            l.on_confirm_frontier(id),
+            5,
+            "teyit sınırı pencereyi bırakır"
+        );
+        assert_eq!(l.file_inflight(), 0);
+    }
+
+    /// Teyit sınırı yalnız altındaki kimlikleri düşürür; sınırın üstündeki teyit kanaldan gelir;
+    /// düşen birimin geç kanal olayı ikinci kez düşürmez. Sayaç `LaneState`'te.
+    #[test]
+    fn confirm_frontier_releases_only_ids_below_it() {
+        let mut st = LaneState::new(LaneConfig::default());
+        let h = SessionHandle::from_raw(4);
+        for i in 0..5u8 {
+            st.enqueue(h, unit(TrafficClass::Bk, i))
+                .expect("tavan altı");
+        }
+        let t0 = Instant::now();
+        for id in 10..15 {
+            let (lane, _) = st.pop_next(h, t0).expect("dosya");
+            st.on_given(h, lane, id);
+        }
+        st.on_confirm_frontier(h, 12);
+        assert_eq!(st.session(h).map(SessionLanes::file_inflight), Some(3));
+        assert_eq!(st.stats().file_acked, 2, "10 ve 11");
+        st.on_acked(h, 10);
+        assert_eq!(st.stats().file_acked, 2, "düşmüş birimin olayı sayılmaz");
+        st.on_acked(h, 14);
+        st.on_confirm_frontier(h, 12);
+        assert_eq!(st.session(h).map(SessionLanes::file_inflight), Some(2));
+        assert_eq!(st.stats().file_acked, 3);
     }
 
     #[test]

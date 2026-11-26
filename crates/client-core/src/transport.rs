@@ -1813,7 +1813,8 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
     }
 
     /// KK-T1-06 (iii): `drive()`'ın tek pompa çağrısı. (1) teyit boşaltma (KK-T1-07: her ucun
-    /// ilk-ACK kanalı `try_acked` ile; kanal 4096'lık ve dolunca olay düşer, `runtime.rs`), (2)
+    /// ilk-ACK kanalı `try_acked` ile; kanal 4096'lık ve dolunca olay düşer, `runtime.rs`; düşen
+    /// teyidi FILE şeridinin teyit sınırı `pump_session`'da kapatır), (2)
     /// etkin olmayan oturumun şeridi düşer ve sayılır (S1 K7: yeni oturuma taşınmaz), (3) şerit →
     /// uç, oturum sırasıyla.
     fn pump_lanes(&mut self) {
@@ -1849,6 +1850,11 @@ impl<C: PacketProtection + SessionControl> ClientTransport<C> {
         let profile_window = link_profile_window_bytes(&self.runtime_cfg);
         if let Some(s) = self.sessions.get(&session) {
             if let Some(e) = s.endpoint.as_ref() {
+                // KK-T1-07: FILE penceresi teyit sınırından boşalır (her pompa turunda; `send`
+                // yolunda da). Sınırın altındaki her birim teyitlidir ve kaynağı birim deposudur;
+                // teyit olay kanalı (`try_acked`) taşınca olay düşer, sınır düşmez.
+                let file = index_of_lane(Lane::File);
+                st.on_confirm_frontier(session, tagged(file, e.lane_confirm_frontier(file)));
                 let (btlbw, rtprop_ns) = e.path_estimate();
                 let unit_bytes = u64::from(self.caps.max_plaintext_unit_bytes);
                 let w = file_window_for_path(
