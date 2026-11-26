@@ -12,6 +12,10 @@ pub enum EngineError {
     /// PARAM_SET.profile_id ↔ bound-profil uyuşmazlığı (admission fail-closed).
     #[error("profile mismatch: shard {shard} != bound {bound}")]
     ProfileMismatch { shard: u8, bound: u8 },
+    /// PARAM_SET.code_suite_id yerel-beklenenden farklı (noise-wire §8: «Alpha'da-TEK-code_suite_id»,
+    /// «Unsupported/hash-mismatch → … FAIL-CLOSED»). Bağ kurulmaz.
+    #[error("code suite mismatch: got {got} != expected {expected}")]
+    CodeSuiteMismatch { got: u8, expected: u8 },
     /// Shard inner-header `block_id`'si çağrının blok bağlamından (ilk FEC shard'ı) farklı: bir
     /// decode çağrısı tek bloktur, block_id decoder-context'ten gelir (fec-core §6.5 MADDE-9).
     /// Fail-closed; iki bloğun shard'ları tek blok gibi çözülmez.

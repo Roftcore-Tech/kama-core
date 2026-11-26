@@ -6,7 +6,8 @@ mod common;
 
 use adaptive_transport::sender::{Event, Sender, Timer, TransmitKind};
 use kama_engine::{
-    plan_param_bootstrap, ParamAckTracker, ParamState, PreParamHold, MAX_PREPARAM_SHARDS,
+    plan_param_bootstrap, EngineError, ParamAckTracker, ParamState, PreParamHold,
+    MAX_PREPARAM_SHARDS,
 };
 use kama_transport_schema::control::Control;
 use kama_transport_schema::param::ParamFields;
@@ -164,6 +165,32 @@ fn receiver_param_verify_fail_closed() {
         "profile-mismatch → fail-closed"
     );
     assert!(!st3.is_confirmed());
+}
+
+// ── S-53/M2-11 (noise-wire §8 «Alpha'da-TEK-code_suite_id»; Unsupported → FAIL-CLOSED): hash ve
+//    profil yerel-beklenene uysa da gövdedeki code_suite_id farklıysa bağ kurulmaz (eskiden doğrulanmamış
+//    gelen değer BoundParam'a yazılıyordu) ──
+#[test]
+fn receiver_param_code_suite_mismatch_fail_closed() {
+    let f = fields();
+    let plan = plan_param_bootstrap(7, &f).unwrap();
+    let wrong_suite = Control::ParamSet {
+        id: 7,
+        param_hash: plan.param_hash, // yerel alanların hash'i (doğrulamayı geçer)
+        profile_id: 3,
+        code_suite_id: 2, // yerel-beklenen 1
+    };
+    let mut st = ParamState::new();
+    assert_eq!(
+        st.on_param_set(&wrong_suite, &f),
+        Err(EngineError::CodeSuiteMismatch {
+            got: 2,
+            expected: 1
+        }),
+        "code_suite-mismatch → fail-closed"
+    );
+    assert!(!st.is_confirmed(), "bağ kurulmadı (admission KAPALI)");
+    assert_eq!(st.bound(), None);
 }
 
 // ── Bounded pre-param hold: PARAM-öncesi authenticated-shard'lar bounded-tutulur (aşımda en-eski-drop) ──

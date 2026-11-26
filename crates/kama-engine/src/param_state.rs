@@ -30,10 +30,12 @@ impl ParamState {
     }
 
     /// Authenticated-PARAM_SET işle: yerel-beklenen `expected` alanlarla param_hash-verify (§8) +
-    /// profile_id-eşleşmesi → bind. **Fail-closed:** hash-mismatch veya profile-mismatch → bound OLMAZ.
+    /// profile_id- ve code_suite_id-eşleşmesi → bind. **Fail-closed:** hash-, profile- ya da
+    /// code_suite-mismatch → bound OLMAZ (§8 «Alpha'da-TEK-code_suite_id»; Unsupported → FAIL-CLOSED).
     ///
     /// # Errors
     /// [`EngineError::UnexpectedControl`] PARAM_SET değilse · [`EngineError::ProfileMismatch`] profile_id≠expected ·
+    /// [`EngineError::CodeSuiteMismatch`] code_suite_id≠expected ·
     /// [`EngineError::Param`] (`ParamHashMismatch`/`ParamInvalid`) hash-verify fail-closed.
     pub fn on_param_set(
         &mut self,
@@ -54,6 +56,14 @@ impl ParamState {
             return Err(EngineError::ProfileMismatch {
                 shard: *profile_id,
                 bound: expected.profile_id,
+            });
+        }
+        // code_suite_id gelen-PARAM ile yerel-beklenen eşleşmeli: hash yerel alanlar üzerinden
+        // doğrulandığından gövdedeki değer ayrıca denetlenmezse doğrulanmamış değer bağlanırdı.
+        if *code_suite_id != expected.code_suite_id {
+            return Err(EngineError::CodeSuiteMismatch {
+                got: *code_suite_id,
+                expected: expected.code_suite_id,
             });
         }
         // param_hash = BLAKE2s-256(yerel-beklenen-alanlar) ile bit-özdeş mi? (§8 fail-closed)
