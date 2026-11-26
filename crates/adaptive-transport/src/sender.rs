@@ -5099,7 +5099,7 @@ impl Sender {
                 crate::budget::budget_cap_permille(btlbw, &cfg)
             };
             let clamped = crate::budget::parity_final(final_ratio, cap, cfg.profile_cap_permille);
-            // ── SPEC-İÇİ ÇELİŞKİ (kayıtlı, sessizce çözülmedi) ──
+            // ── SPEC-İÇİ ÇELİŞKİ (engine-spec §8.5 [AMENDMENT-3] ile kapandı) ──
             // §8.5 formülü `cap = BtlBw×1000/budget_ref` dar bantta 0'a iner: `budget_ref =
             // 125 kB/s` fixture'ıyla BtlBw < 125 B/s ⇒ cap 0‰. Ama §11 (NORMATİF) TAM O KÖŞEDE
             // (sub-kbps, emergency) "minimal parity shard" ister ve ürünün MIN_RATE tabanı
@@ -5109,7 +5109,8 @@ impl Sender {
             // KARAR (kalibrasyon DEĞİL): clamp yalnız KÜÇÜLTTÜĞÜNDE uygulanır; parity'yi SIFIRA
             // indirecekse UYGULANMAZ ve ayrı sayaçla görünür kılınır. Böylece §8.5'in koruyucu
             // etkisi (dar bantta parity patlamasın) kazanılır, §11'in tabanı yok edilmez.
-            // Sıfırlama vakasının politikası owner kararıdır (kapanış raporu, açık kalem).
+            // Bu kural spec'tedir: §8.5 [AMENDMENT-3] "budget_cap YALNIZ KÜÇÜLTÜR, SIFIRLAMAZ"
+            // (docs/transport-v1/adr/ADR-minimal-parity-exception.md).
             if clamped == 0 && final_ratio > 0 {
                 self.diag_parity_budget_would_zero =
                     self.diag_parity_budget_would_zero.saturating_add(1);
@@ -6589,12 +6590,13 @@ impl Sender {
         self.retx_cap_connection_fail_drops
     }
 
-    /// [ACK-BITMAP · YALNIZ ÖLÇÜM PROTOTİPİ] Bir sonraki `Event::AckReceived`'ın kanıt aralığı
+    /// [ACK-BITMAP · ölçüm prototipi biçimi] Bir sonraki `Event::AckReceived`'ın kanıt aralığı
     /// (motor seq, kapsayıcı): aralıktaki teyitsiz iletim alınmamıştı (negatif kanıt). İlk çağrıdan
     /// itibaren kayıp dedektörü kanıt kipindedir: paket ve zaman eşiği yalnız bir kanıt aralığının
     /// kapsadığı seq'lere uygulanır, aralık dışı = bilinmiyor (PTO ve sonraki ACK'ler). `lo > hi`
-    /// boş aralıktır. Çağrılmazsa (0x14 yolu) davranış bit-aynı. Runtime 0x15 çerçevesini çözdükten
-    /// sonra, `Event::AckReceived`'dan hemen ÖNCE çağırır.
+    /// boş aralıktır. Çağrılmazsa (0x14 yolu) davranış bit-aynı. Ürün runtime'ı yalnız
+    /// `AckFormat::Bitmap` (0x15; biçim onayı yok) iken, 0x15 çerçevesini çözdükten sonra,
+    /// `Event::AckReceived`'dan hemen ÖNCE çağırır.
     ///
     /// Bağımlılık notu: aynı bilgi ileride `AckInfo` alanı olarak taşınabilir (`AckInfo` başka bir
     /// dalın sahiplik alanında; bu prototip 106 kurulum yerine dokunmamak için ayrı giriş kullanır).
@@ -6755,9 +6757,11 @@ impl Sender {
         self.start_budget_holds(Some(unit_id), size, now_ns)
     }
 
-    /// [FAZ-1 DÖNÜŞ-YOLU] Bir ACK datagram'ı gözlendi. **Motor davranışını DEĞİŞTİRMEZ** —
-    /// yalnız `diag_return_path()` çıktısını besler. Ürün runtime'ı `Event::AckReceived`'dan
-    /// hemen ÖNCE çağırır; çağrılmaması motoru etkilemez (gözlem boş kalır).
+    /// [FAZ-1 DÖNÜŞ-YOLU] Bir ACK datagram'ı gözlendi. Dönüş-yolu gözlemcisi salt gözlemdir
+    /// (`diag_return_path()`). [HAT-KORUMASI] Hat koruması kuruluysa (geri bildirimi aç kural)
+    /// ACK'in tel boyu da ona verilir: dönüş hattındaki serileşmesi varış anından düşülür — bu
+    /// yolda motor davranışına girer. Ürün runtime'ı `Event::AckReceived`'dan hemen ÖNCE çağırır;
+    /// çağrılmazsa gözlem boş kalır ve hat koruması ACK tel boyunu bilmez.
     pub fn observe_ack_feedback(&mut self, obs: crate::return_path::AckObservation, now_ns: u64) {
         // [HAT-KORUMASI] ACK'in tel boyu: dönüş hattındaki serileşmesi varış anından düşülür.
         if let Some(g) = self.cc_line_guard.as_mut() {
@@ -8012,10 +8016,6 @@ impl Sender {
         }
     }
 
-    /// RECOVER_ARQ (§9): ACK-güdümlü selective retransmit. arq_aggressiveness=0 → baskıla (fec-dominant).
-    /// Commit-V: pre-parity-token-kapısı. OFF: saf-try_send (inline; byte-özdeş). ON: rezerv-korunur —
-    /// `tokens < size + reserved` → red (yalnız-tokens≥size-iken-displacement-sayılır: "would-have-sent").
-    #[inline]
     /// [CC-PORT] PTO probu için jeton: pencere kapısı YOK (RFC 9002 §6.2.4), bütçe rezervi ve pacer
     /// aynı. `cc` yokken `try_send_pre_parity(size, true)` ile birebir aynı (pencere kapısı zaten yok).
     fn try_send_probe(&mut self, size: u64) -> bool {
@@ -8033,6 +8033,9 @@ impl Sender {
         self.pacer.try_send(size)
     }
 
+    /// Commit-V: pre-parity-token-kapısı. OFF: saf-try_send (inline; byte-özdeş). ON: rezerv-korunur —
+    /// `tokens < size + reserved` → red (yalnız-tokens≥size-iken-displacement-sayılır: "would-have-sent").
+    #[inline]
     fn try_send_pre_parity(&mut self, size: u64, is_retx: bool) -> bool {
         #[cfg(feature = "experimental-fec-budget")]
         {
@@ -8060,6 +8063,7 @@ impl Sender {
         self.pacer.try_send(size)
     }
 
+    /// RECOVER_ARQ (§9): ACK-güdümlü selective retransmit. arq_aggressiveness=0 → baskıla (fec-dominant).
     fn plan_arq_retransmits(&mut self, out: &mut Vec<TransmitDecision>, now_ns: u64) {
         let lost: Vec<LostSeq> = self
             .pending_lost
@@ -8220,7 +8224,8 @@ impl Sender {
     /// DR-ARQ-PRODUCT-TAIL-1 (gated; default OFF → no-op): emit at most one forced PTO tail probe. Called from
     /// schedule_transmit AFTER the normal ARQ planner and REGARDLESS of sender state (a PTO probe is independent of
     /// the RecoverArq state machine). ARQ-eligibility override ONLY — emission still uses the safe token
-    /// (try_send_pre_parity) + track_sent path (no pacing/wire-format bypass). Re-verifies the target is still
+    /// (`try_send_probe`: pacer + budget reserve; no window gate in the port, RFC 9002 §6.2.4) +
+    /// track_sent path (no pacing/wire-format bypass). Re-verifies the target is still
     /// outstanding at emission time (ACK race / already-retransmitted ⇒ absent from inflight ⇒ cancelled, attempt NOT
     /// consumed). Declares NO "confirmed loss" (pending_lost/loss counters untouched — INV-RATE-1). Karn: the probe
     /// copy is emitted as a Retransmit (origin ≠ Data ⇒ excluded from RTT sampling) and the superseded original's
@@ -8499,7 +8504,7 @@ impl Sender {
     ///   ilk probu → `(armed_at, probe_index)` farklı) yuva boşaltılır;
     /// * hedef artık teyitsiz değilse (ACK yarışı / zaten yeniden gönderildi) iptal;
     /// * jeton yoksa yuvada BEKLER (`emit_tail_probe`'un "no token → keep pending" kuralı);
-    /// * emisyon güvenli jeton yolundan (`try_send_pre_parity`) + `track_sent`; kayıp İLANI yok
+    /// * emisyon güvenli jeton yolundan (`try_send_probe`) + `track_sent`; kayıp İLANI yok
     ///   (INV-RATE-1); orijinal tombstone'a emekli edilip superseded işaretlenir (Karn).
     ///
     /// Tavan ve geri çekilme TUR sayar: `on_probe_sent` burada ÇAĞRILMAZ (`max_tail_probes` ve
