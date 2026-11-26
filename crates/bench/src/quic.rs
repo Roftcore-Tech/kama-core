@@ -42,13 +42,21 @@ impl GovHandle {
     }
 
     /// DÜZLEM-A t=0: bütçe uygulaması buradan başlar (öncesi = handshake, muaf + ayrı sayılır).
+    /// [S-74 / B-21] Zehirli kilit paniğe dönmez (ürün kolu `BudgetEgress` deseni): arm atlanır;
+    /// `try_send` zaten reddeder (fail-closed), anomali sayaçlarda görünür.
     pub(crate) fn arm_now(&self) {
         let now = self.now_ns();
-        self.gov.lock().expect("governor lock").arm(now);
+        if let Ok(mut g) = self.gov.lock() {
+            g.arm(now);
+        }
     }
 
+    /// Sayaç fotoğrafı. Zehirli kilitte de sayaçlar okunur (salt okuma; değer gizlenmez).
     pub(crate) fn snapshot(&self) -> BudgetSnapshot {
-        self.gov.lock().expect("governor lock").snapshot()
+        match self.gov.lock() {
+            Ok(g) => g.snapshot(),
+            Err(p) => p.into_inner().snapshot(),
+        }
     }
 }
 
@@ -82,12 +90,13 @@ impl AsyncUdpSocket for GovernedUdpSocket {
                 )
             }
         };
+        // [S-74 / B-21] Zehirli kilit = koşu geçersiz; panik yerine REDDET (fail-closed — sessizce
+        // "geçir" demek bütçeyi kaldırırdı; ürün kolu `BudgetEgress` ile aynı).
         let granted = self
             .handle
             .gov
             .lock()
-            .expect("governor lock")
-            .permit_n(total_ip, pkts, now);
+            .is_ok_and(|mut g| g.permit_n(total_ip, pkts, now));
         if granted {
             self.inner.try_send(transmit)
         } else {
@@ -820,6 +829,53 @@ impl rustls::client::danger::ServerCertVerifier for SkipVerify {
 #[cfg(test)]
 mod loopback_tests {
     use super::*;
+
+    /// [S-74 / B-21] Zehirli governor kilidi paniğe dönmez: arm atlanır, fotoğraf okunur,
+    /// `try_send` datagramı göndermez (fail-closed) ve `Ok` döner (quinn soket arızası sanmaz).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn poisoned_governor_lock_fails_closed_without_panic() {
+        let handle = GovHandle {
+            gov: Arc::new(Mutex::new(BudgetGovernor::new(BudgetMode::Unlimited))),
+            epoch: Instant::now(),
+        };
+        let g2 = Arc::clone(&handle.gov);
+        let _ = std::thread::spawn(move || {
+            let _g = g2.lock().unwrap();
+            panic!("kilidi zehirle");
+        })
+        .join();
+        assert!(handle.gov.is_poisoned());
+        handle.arm_now();
+        assert_eq!(handle.snapshot().mode, "unlimited");
+
+        let rx = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let dst = rx.local_addr().unwrap();
+        let tx = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let inner = quinn::Runtime::wrap_udp_socket(&TokioRuntime, tx).unwrap();
+        let sock = GovernedUdpSocket {
+            inner,
+            handle: handle.clone(),
+        };
+        let payload = [0x5Au8; 32];
+        let t = quinn::udp::Transmit {
+            destination: dst,
+            ecn: None,
+            contents: &payload,
+            segment_size: None,
+            src_ip: None,
+        };
+        assert!(
+            sock.try_send(&t).is_ok(),
+            "ret sessiz düşürmedir, io hatası değil"
+        );
+        let mut buf = [0u8; 64];
+        assert!(
+            timeout(Duration::from_millis(200), rx.recv_from(&mut buf))
+                .await
+                .is_err(),
+            "zehirli kilitte datagram gönderilmemeli"
+        );
+    }
 
     /// [S-60 / B-06] Rakip sürümleri Cargo.lock'tan okunur: iki paket bulunur ve `x.y.z`
     /// biçimindedir; kilitte olmayan paket `unknown` döner (elle yazılmış dize yok).
