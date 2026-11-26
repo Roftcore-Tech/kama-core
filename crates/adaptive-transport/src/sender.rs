@@ -1146,9 +1146,11 @@ pub struct BootstrapRttDiag {
     pub rtt_sample_ns: u64,
     /// Ladder cancelled after the first valid sample.
     pub cancelled: u64,
-    /// MUST stay 0: a probe was emitted after the ladder resolved.
+    /// MUST stay 0: a probe was emitted after the ladder resolved (counted at emission when a
+    /// valid echo had already been accepted — independent of the emission gate).
     pub probe_after_success_violation: u64,
-    /// MUST stay 0: budget exceeded.
+    /// MUST stay 0: budget exceeded (counted at emission when the epoch's probe bytes pass
+    /// `BS_TX_HARD_BUDGET` — independent of the refusal check).
     pub budget_violation: u64,
 }
 
@@ -4564,14 +4566,21 @@ impl Sender {
         self.bs_diag.step_edge += 1;
         self.bs_next_step += 1;
         if self.bs_bytes + BS_PROBE_WIRE_EXACT > BS_TX_HARD_BUDGET {
-            self.bs_diag.budget_violation += 0; // budget respected by refusing, not by exceeding
-            return;
+            return; // budget respected by refusing, not by exceeding
         }
         let probe_seq = self.bs_seq_next;
         self.bs_seq_next = self.bs_seq_next.saturating_add(1);
         // Single outstanding slot: a new probe supersedes the previous unanswered one.
         self.bs_outstanding = Some((probe_seq, now_ns));
         self.bs_bytes += BS_PROBE_WIRE_EXACT;
+        // Invariant witnesses (MUST stay 0): measured on the emission itself, not inferred from
+        // the gates above — a regression in either gate shows up here.
+        if self.bs_bytes > BS_TX_HARD_BUDGET {
+            self.bs_diag.budget_violation += 1;
+        }
+        if self.bs_diag.echo_match_valid > 0 {
+            self.bs_diag.probe_after_success_violation += 1;
+        }
         self.bs_diag.probe_emitted += 1;
         self.bs_diag.probe_wire_bytes += BS_PROBE_WIRE_EXACT;
         out.push(TransmitDecision {
