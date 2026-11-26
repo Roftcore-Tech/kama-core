@@ -373,9 +373,8 @@ impl HubLink {
                 let h = HubHandle::from_raw(h);
                 match self.attempts[i].assigned {
                     None if self.held_conflicts(i, h) => {
-                        // S4 C3: aynı denemede tutulan DELIVER{RESPONSE} başka h söylüyordu.
-                        let peer = self.attempts[i].peer;
-                        self.held.retain(|r| r.sender != peer);
+                        // S4 C3: aynı denemede tutulan DELIVER{RESPONSE} başka h söylüyordu. Tutulan
+                        // yanıtlar denemeyle düşer (`take_attempt`).
                         let a = self.take_attempt(i);
                         bump(&mut self.counters.attempt_handle_conflict);
                         self.peer_notice(now, a.peer, HubNotice::AttemptEnded { peer: a.peer });
@@ -557,10 +556,27 @@ impl HubLink {
     }
 
     /// Denemeyi kaldırır; atanmış handle'ı emekli halkasına yazar (K9 ayrımı).
+    ///
+    /// Eşin tutulan RESPONSE'ları (K3) bu denemenindir: `on_deliver_response` onları eşin TEK
+    /// açık denemesine bağlar (`send_init` eşin eskisini sonlandırır). Deneme biterken onlar da
+    /// "sonlandırılmış denemenin geç yanıtları" olur (S4 C3: "yeni denemeye atanmaz, sayılır"; §7
+    /// K9: "deneme 2 kendi h'siyle kurulur"): düşer, handle'ları emekli halkasına yazılır.
+    /// Kalsalardı aynı eşin sonraki denemesinin `StoreResp{OK, h2}`'si `held_conflicts`'te çelişki
+    /// sayılır, yeni deneme biterdi.
     fn take_attempt(&mut self, i: usize) -> InitAttempt {
         let a = self.attempts.remove(i);
         if let Some(h) = a.assigned {
             self.retire(h);
+        }
+        let mut k = 0;
+        while k < self.held.len() {
+            if self.held[k].sender == a.peer {
+                if let Some(r) = self.held.remove(k) {
+                    self.retire(r.h);
+                }
+            } else {
+                k += 1;
+            }
         }
         a
     }

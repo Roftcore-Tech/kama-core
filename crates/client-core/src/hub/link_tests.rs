@@ -1585,6 +1585,101 @@ fn fix1_k9_late_response_while_store_resp_pending_is_not_held() {
     assert_eq!(events(&mut t.link).len(), 1, "HandleAssigned");
 }
 
+/// S-40 (S4 C3 "sonlandırılmış denemelerin geç yanıtları … yeni denemeye atanmaz, sayılır"; §7 K9
+/// "deneme 2 kendi h'siyle kurulur"): StoreResp'i hiç gelmemiş (atanmamış) bir denemenin tutulan
+/// RESPONSE'u, deneme nasıl biterse bitsin (yerine geçme, terk, `{UNKNOWN_HANDLE, 0}`, yaş) onunla
+/// birlikte düşer ve handle'ı emekli halkasına yazılır. Aynı eşin sonraki denemesinin
+/// `StoreResp{OK, h2}`'si çelişki sayılmaz; eski RESPONSE'un yinelenen teslimi geç yanıttır.
+///
+/// ESKİ DAVRANIŞ: tutulan RESPONSE kalıyordu; deneme 2'nin `StoreResp{OK, h2}`'si `held_conflicts`
+/// ile çelişki sayılıyor, deneme 2 `attempt_handle_conflict` + `AttemptEnded` ile bitiyordu.
+#[test]
+fn s40_unassigned_attempts_held_response_ends_with_it() {
+    /// Deneme 1'i bitirme yolları.
+    #[derive(Clone, Copy, Debug)]
+    enum End {
+        Superseded,
+        Cancelled,
+        UnknownHandle,
+        Expired,
+    }
+    for end in [
+        End::Superseded,
+        End::Cancelled,
+        End::UnknownHandle,
+        End::Expired,
+    ] {
+        let mut t = bound();
+        let t0 = t.t0;
+        let a1 = t.link.send_init(t0, peer(0xB0), 1, vec![1]).unwrap();
+        let f1 = init_out(&mut t, t0).remove(0);
+        // StoreResp kayıp; deneme 1'in RESPONSE'u (h = 0x66) önce gelir ve tutulur.
+        t.link
+            .on_control(t0 + ms(50), &deliver(0x66, [0xB0; 32], 2, &[6; 20]));
+        assert_eq!(t.link.counters().response_held, 1, "{end:?}");
+        let t1 = match end {
+            End::Superseded => t0 + s(1),
+            End::Cancelled => {
+                t.link.cancel_attempt(a1);
+                t0 + s(1)
+            }
+            End::UnknownHandle => {
+                t.link
+                    .on_control(t0 + s(1), &store_resp(f1.rid, code::UNKNOWN_HANDLE, 0));
+                t0 + s(1)
+            }
+            End::Expired => {
+                // Bağ sürsün: yaşa dek heartbeat'ler yanıtlanır (deneme 1'in T3'ü de çıkar).
+                let at = t0 + ATTEMPT_MAX_AGE;
+                let _ = stores_until(&mut t, t0 + ms(50), at);
+                t.link.on_tick(at);
+                at
+            }
+        };
+        let _ = notices(&mut t.link);
+        // Deneme 2 aynı eşe (yerine geçme yolunda deneme 1'i bu çağrı bitirir).
+        let a2 = t.link.send_init(t1, peer(0xB0), 1, vec![2]).unwrap();
+        assert!(
+            t.link.held.is_empty(),
+            "{end:?}: tutulan yanıt denemeyle düşer"
+        );
+        let f2 = drain(&mut t.link, t1)
+            .into_iter()
+            .find(|o| o.method == method::STORE_MESSAGE && o.payload[41..] == [2])
+            .expect("deneme 2 gider");
+        t.link
+            .on_control(t1 + ms(10), &store_resp(f2.rid, code::OK, 0x77));
+        assert_eq!(
+            events(&mut t.link),
+            vec![LinkEvent::HandleAssigned {
+                attempt: a2,
+                hub_handle: HubHandle::from_raw(0x77)
+            }],
+            "{end:?}: deneme 2 kendi h'sini alır"
+        );
+        assert_eq!(t.link.counters().attempt_handle_conflict, 0, "{end:?}");
+        assert!(notices(&mut t.link).is_empty(), "{end:?}: deneme 2 sürer");
+        // Deneme 1'in RESPONSE'unun yinelenen teslimi: geç yanıt, deneme 2'yi bitirmez.
+        t.link
+            .on_control(t1 + ms(20), &deliver(0x66, [0xB0; 32], 2, &[6; 20]));
+        assert!(events(&mut t.link).is_empty(), "{end:?}");
+        assert_eq!(t.link.counters().late_response, 1, "{end:?}");
+        assert_eq!(t.link.counters().attempt_handle_conflict, 0, "{end:?}");
+        // Deneme 2 kendi h'siyle kurulur.
+        t.link
+            .on_control(t1 + ms(30), &deliver(0x77, [0xB0; 32], 2, &[7; 20]));
+        assert_eq!(
+            events(&mut t.link),
+            vec![LinkEvent::Response {
+                hub_handle: HubHandle::from_raw(0x77),
+                envelope_type: 2,
+                bytes: vec![7; 20]
+            }],
+            "{end:?}"
+        );
+    }
+}
+
 #[test]
 fn fix1_response_from_other_peer_is_not_a_conflict() {
     let mut t = bound();
