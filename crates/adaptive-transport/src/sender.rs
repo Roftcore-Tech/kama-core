@@ -5068,9 +5068,10 @@ impl Sender {
         //
         // TEK-ARBİTER İNVARYANTI KORUNUR: bu ikinci bir FEC otoritesi DEĞİL, arbiter ÇIKIŞINA
         // uygulanan bir üst-sınırdır (yalnız küçültür, asla büyütmez). Kalibrasyon YAPILMADI —
-        // `BudgetConfig::fixture()` mevcut [CAL] değerleriyle bağlandı.
+        // göndericinin bütçe yapılandırması (`self.budget_cfg`; `compute_send_rate` ile aynı
+        // kaynak, bugün `BudgetConfig::fixture()` [CAL]) okunur.
         let final_ratio = {
-            let cfg = crate::budget::BudgetConfig::fixture();
+            let cfg = self.budget_cfg;
             let btlbw = self.btlbw.btlbw();
             // KANIT YOKKEN CLAMP YOK: `btlbw()` örnek yokken 0 döner; 0'ı "bütçe yok" diye okumak
             // FEC'i kuruluş fazında SESSİZCE kapatırdı. Ölçüm yokken üst-sınır profil tavanıdır
