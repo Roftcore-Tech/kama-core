@@ -356,6 +356,24 @@ fn relink_whose_init_the_carrier_refuses_is_not_recorded() {
     assert_one_session(&mut a, &mut b, (a0, a1), (b0, b1));
 }
 
+/// Taşıyıcı niyetin ilk INIT'ini almazsa `connect` `Backpressure` döner (S1 §3): niyet ve bilet
+/// yok, Application olay görmez, sonraki `connect` yeni niyetle bağlanır. ESKİ DAVRANIŞ: hata
+/// yutuluyordu — niyet INIT'siz kaydedilir, `HALF_OPEN_TTL`'ye dek tele INIT çıkmazdı.
+#[test]
+fn connect_whose_init_the_carrier_refuses_is_backpressure() {
+    let hub = MemoryHub::new();
+    let (mut a, mut b) = pair(&hub);
+
+    hub.refuse_next_inits(1);
+    assert_eq!(a.t.connect(b.me, None), Err(TransportError::Backpressure));
+    a.pump();
+    assert!(a.events.is_empty(), "olay yok: {:?}", a.events);
+    assert_eq!(hub.relay(), 0, "INIT yok");
+    assert_eq!(a.t.renewal_state_for_test(b.me), (0, 0, 0));
+    // Yeni `connect` beklemede başlar, INIT gider, iki yönde veri (`establish`).
+    let _ = establish(&mut a, &mut b, &hub);
+}
+
 /// İki uç da aynı anda hattını kaybetti (iki uç da `ROUTE_MISS` aldı): iki yenileme INIT'i çapraz
 /// gider. S3 glare'i (K10): Alice kazanır (Bob'un INIT'i sessiz düşer), Bob kaybeder (bekleyeni
 /// silinir, Alice'in INIT'i provisional olur). Bob'un sahipsiz yenilemesi provisional onaylanınca

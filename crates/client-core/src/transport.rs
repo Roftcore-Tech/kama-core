@@ -60,7 +60,8 @@
 //! `connect` için zaman sınırı yoktur. Crypto bekleyen bir INIT'in yarım-açık kaydını anahtar
 //! hijyeni gereği düşürürse (`HALF_OPEN_TTL`) adaptör niyeti SÜRDÜRÜR: aynı bilet altında taze bir
 //! INIT başlatır, Application hiçbir olay görmez. Niyet yalnız `Ready`, `cancel` ya da kapalı bir
-//! `ConnectAbandoned` nedeniyle biter.
+//! `ConnectAbandoned` nedeniyle biter. Zarf taşıyıcısı niyetin İLK INIT'ini almazsa niyet
+//! kaydedilmez: `connect` `Backpressure` döner (S1 §3), bekleyen kapatılır.
 //!
 //! [T3-GLARE] Niyetin terk edilen INIT'inin taşıyıcı tekrarı (T3) durdurulur
 //! ([`EnvelopeLink::cancel_init`]). S4 C3'ün kapalı durma listesinden: `cancel` ("bağlantı niyeti
@@ -2136,13 +2137,12 @@ impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> 
         }
         let ticket = ConnectTicket::from_raw(self.next_ticket);
         self.next_ticket = self.next_ticket.saturating_add(1);
-        // F0.2(ii): `Pending` döndüğü anda `Measuring`.
-        self.events.push_back(SessionEvent::ConnectProgress(
-            ticket,
-            ConnectPhase::Measuring,
-        ));
+        // F0.2(ii): `Pending` döndüğü anda `Measuring`. Olay yalnız `Pending` dönen yolda kuyruğa
+        // girer (taşıyıcı INIT'i almazsa `connect` hata döner, bilet Application'a hiç verilmez).
+        let measuring = SessionEvent::ConnectProgress(ticket, ConnectPhase::Measuring);
         if !self.peer_addrs.contains_key(&peer) {
             // Direct-mode: eşin veri adresi yok → kalıcı yerel hata.
+            self.events.push_back(measuring);
             self.events.push_back(SessionEvent::ConnectAbandoned(
                 ticket,
                 AbandonReason::LocalPermanent,
@@ -2160,23 +2160,33 @@ impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> 
             } => {
                 // [K4G-01] INIT'ten ÖNCE beklenir (tablo ile veri yolu arasında yarış yok).
                 self.expected.insert_pending(session);
-                let attempt = self.link.send_init(peer, envelope_type, bytes).ok();
-                if let Some(a) = attempt {
-                    self.attempts.insert(a, session);
-                }
+                // Taşıyıcı INIT'i almadı (deneme tavanı dolu / yol yok): niyet KAYDEDİLMEZ —
+                // kaydedilseydi INIT'siz niyet hiçbir bildirim almadan `HALF_OPEN_TTL`'ye dek
+                // beklerdi. Bekleyen kapatılır, beklenen küme geri alınır; S1 §3 "Kuyruk dolu" →
+                // `Backpressure` (yeni pending oluşmaz). `start_renewal`'ın `Deferred`'ıyla aynı.
+                let Ok(attempt) = self.link.send_init(peer, envelope_type, bytes) else {
+                    self.close_unopened(session);
+                    self.sync_expected();
+                    return Err(TransportError::Backpressure);
+                };
+                self.attempts.insert(attempt, session);
+                self.events.push_back(measuring);
                 self.intents.push(Intent {
                     ticket,
                     peer,
                     pending: session,
                     early: early_unit.map(|u| u.bytes),
-                    attempt,
+                    attempt: Some(attempt),
                 });
             }
             // G1: dizinde olmayan eş → opak `Failed` → kalıcı yerel hata (eş malzemesi yok).
-            _ => self.events.push_back(SessionEvent::ConnectAbandoned(
-                ticket,
-                AbandonReason::LocalPermanent,
-            )),
+            _ => {
+                self.events.push_back(measuring);
+                self.events.push_back(SessionEvent::ConnectAbandoned(
+                    ticket,
+                    AbandonReason::LocalPermanent,
+                ));
+            }
         }
         Ok(ConnectResult::Pending(ticket))
     }
