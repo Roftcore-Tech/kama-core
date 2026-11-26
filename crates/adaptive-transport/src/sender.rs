@@ -9362,19 +9362,13 @@ impl Sender {
         if !self.ack_conf_active() {
             return 1000;
         }
-        // §5.1: silence = now − max(last_ack, first_send). [CC-PORT] `first_send_ns` aktif dönemin
-        // ilk gönderimi; dönemde henüz gönderim yoksa beklenen ACK yok → FULL. Eski motor bit-aynı.
-        let anchor = if self.cc_on() {
-            match self.first_send_ns {
-                Some(f) => self.last_ack_ns.map_or(f, |a| a.max(f)),
-                None => return 1000,
-            }
-        } else {
-            match self.last_ack_ns.or(self.first_send_ns) {
-                Some(a) => a,
-                None => return 1000,
-            }
+        // §5.1: silence = now − max(last_ack, first_send) (iki motorda aynı formül). Gönderim
+        // yoksa beklenen ACK yok → FULL. [CC-PORT] Port motorunda `first_send_ns` aktif dönemin
+        // ilk gönderimidir (dönem başında yeniden damgalanır); eski motorda oturumun ilk gönderimi.
+        let Some(first_send) = self.first_send_ns else {
+            return 1000;
         };
+        let anchor = self.last_ack_ns.map_or(first_send, |a| a.max(first_send));
         let silence = now_ns.saturating_sub(anchor);
         let srtt = dur_ns(self.rtt.srtt().unwrap_or(INITIAL_RTT));
         // [TUR-3b commit-C] eşik = max(3×srtt, K_CONF_EAI×EAI) — tüketici-8 (srtt-clock-v1 §3).
@@ -9650,6 +9644,19 @@ mod tests {
             acked_seqs: seqs.to_vec(),
             ack_delay: Duration::ZERO,
         })
+    }
+
+    /// §5.1 eski motorda da çapa `max(last_ack, first_send)`: ilk gönderimden önce damgalanan
+    /// ACK sessizliği ilk gönderimden önceye uzatmaz.
+    #[test]
+    fn legacy_ack_confidence_anchor_is_max_of_last_ack_and_first_send() {
+        let mut s = Sender::new();
+        s.on_event(Event::AppData(unit(0)), 60_000 * MS);
+        assert_eq!(s.first_send_ns, Some(60_000 * MS));
+        s.state = SenderState::Steady;
+        s.pacer.set_rate(1_000_000);
+        s.last_ack_ns = Some(0);
+        assert_eq!(s.ack_confidence_permille(60_100 * MS), 1000);
     }
 
     /// §9.1 tavan aşımında `ConnectionFail` politikası kaydı sessiz düşürmez: düşüş sayılır.
