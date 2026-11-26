@@ -29,7 +29,7 @@ Sahip talimatı #175 7175888074: «Her kural için tam SHA, kod konumu, test son
 
 | # | İhlal | Ölçüm | Somut engel |
 |---|---|---|---|
-| İ1 | «Tek yoklama» kuralı «geçti» ile kapanan yoklamayı bağlamıyor | Kapalı döngü: hat 6 250 sabit, ilk yoklama 4 568 B (taban hızının altında) ile `Passed` → kalıcı 6 995, kuyruk 594 ms → örnek hakkı yeniler → 8. ACK'te ikinci çift yoklaması (6 / 6 444 B, `Inconclusive`) | Yeni kural gerekir (sahibin cümlesi sonuçsuz kapanışı bağlıyor). Kök: parktaki kanıt eşiği (sahte `Passed`). |
+| İ1 | «Tek yoklama» kuralı «geçti» ile kapanan yoklamayı bağlamıyor | Kapalı döngü: hat 6 250 sabit, ilk yoklama 4 568 B (taban hızının altında) ile `Passed` → kalıcı 6 995, kuyruk 594 ms → örnek hakkı yeniler → 8. ACK'te ikinci çift yoklaması (6 / 6 444 B, `Inconclusive`) | Yeni kural gerekir (sahibin cümlesi sonuçsuz kapanışı bağlıyor). Kök: parktaki kanıt eşiği (sahte `Passed`). Bulut-D (#175 7183205351, hesap): hat değişmemişken yanlış geçiş koşulu kova kredisi ≥ yoklamanın fazlasının yarısı; 1 200 B kovada hedefi ≈ 1,48 × tabanın (6 250 tabanda 9 268 B/s) altındaki her çift yoklaması bu sınıfta — bu hücrenin hedefi 6 995. |
 | İ2 | Motor dışı datagramlar yoklama penceresinin adet / tel baytı sayımına girmiyor | Gerçek `Sender`, pencere içinde iki PARAM boyu muaf datagram: telde 8 datagram / 7 544 B, kayıt 6 / 7 368 | Yeni muhasebe yolu (karar 8 ile aynı konu: bütün tel baytlarının hat hesabına girmesi). |
 | İ3 | Pencere kurulduktan sonra yazılan tutma pencereyi kaydırmıyor; «fiilen gönderilen» kaydı eksik kalıyor | +605 ms'de 1 500 B paylaşılan hat gözlemi: kayıt 5 / 6 140, telde taban aralığından kısa aralıkla 6 datagram / 7 368 B (bütçe aşılmıyor) | Pencereyi sonraki tutmalara göre yeniden hizalamak yeni kural. |
 | İ4 | Bütçeyle kapanan pencerede bir datagram fazla boşaltma (gönderici gereksiz susuyor) | Dar model: yazılan 4 298 B, yoklamanın kuyruğu 3 070 B, hat 196,48 ms boş. Kanıt testi `ek9_a4_a_budget_closed_probe_is_drained_without_extra_silence` `#[ignore]`, kırmızı | Düzeltme hazır ama kapalı döngüde 12 hücreyi nedeni izlenmeden değiştiriyor (sonraki olağan yoklamalar `Passed` → `Inconclusive`) ve pencere içinde susma + sonda gönderimde EKSİK boşaltıyor (140 B, 544 B / 87 ms artık kuyruk). Kayıt #175 7179614439. |
@@ -52,3 +52,13 @@ Sahip talimatı #175 7175888074: «Her kural için tam SHA, kod konumu, test son
 - Deney anahtarı motor kütüphanesinde süreç ortamından okunuyor (değişmedi; süzgeç saf yardımcıya çıkarıldı ve test edildi).
 
 Tam tablo (61 satır; kural · kod konumu · test · sonuç · hüküm · sınır notu): `kural-tablosu-tablo.md`.
+
+## Son baş için bağımsız doğrulama (#175 7183152562)
+
+| Oturum | Ne doğruladı | Sonuç |
+|---|---|---|
+| Bulut-B (7183228044) | `a00bc34c` ve `6d9ddd9c` ayrı temiz ağaçlarda; `kos.sh` `dac42afb`'de | 79 / 8 kırmızı → 91 / 0; satırlar sha256 aynı (`fae8ea31…`) |
+| Web (7183226343) | `ca0608b8` temiz ağaçta rustc 1.97.0 ile | satırlar bayt-aynı; ürün kabulü hükmü (T2) #262 7182899149 |
+| Bulut-A (7183219391) | `git diff 1a5fc80c 6d9ddd9c` ↔ ön kayıtlar EK 9 / EK 11 | A1, A3 (a), A3 (b) + F1, A4 (ii), A5 ön kayıttaki gibi; A2 kısmen (örtüşme koşulu kodda yok — kayıtlı karar maddesi); kayıtsız davranış değişikliği yok; deney kapalıyken K2′ öncesi tabanla bayt-aynı |
+| Bulut-C (7183204413) | sahibin dört başlığından 17 DOĞRULANDI satırı (kod + testin kuralı ayırt edip etmediği) | 17 / 17 DOĞRULANDI; 6·i'nin test sütunu düzeltildi (yukarıdaki tabloda) |
+| Bulut-D (7183205351) | bağımsız düzenek `6d9ddd9c` üstünde | kayıpsız 12 / 12 hücre Yerel'le aynı hüküm; ‰200'de 4 hücre yörünge farkıyla ayrışıyor; sahte `Passed` için kapalı biçim (İ1) |
