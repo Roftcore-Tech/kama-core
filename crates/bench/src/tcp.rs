@@ -261,6 +261,7 @@ fn meta_for(
         cc: "tcp-kernel".to_string(),
         transport: transport.to_string(),
         quinn_version: String::new(),
+        quinn_proto_version: String::new(),
         seed: cfg.seed,
         repeat: cfg.repeat,
         msg_count: cfg.msg_count,

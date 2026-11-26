@@ -1049,6 +1049,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         cc: engine_name.to_string(),
         transport: "kama-product".to_string(),
         quinn_version: KAMA_VERSION.to_string(),
+        quinn_proto_version: String::new(),
         seed: cfg.seed,
         repeat: cfg.repeat,
         msg_count,

@@ -46,8 +46,15 @@ pub struct RunMeta {
     pub cc: String,
     /// Transport ("quinn" | "kama").
     pub transport: String,
-    /// quinn sürümü (rapor/reproducibility, §4.4.9).
+    /// quinn sürümü (rapor/reproducibility, §4.4.9). Rakip kollarda Cargo.lock'tan türetilir;
+    /// Kama kollarında taşıma sürümü (alan donmuş, yeniden adlandırma YOK).
     pub quinn_version: String,
+    /// [S-60 / B-06] quinn-proto sürümü (rakibin CC + kayıp kodu buradadır; §4.4.1 "versiyon
+    /// PİNLİ + Cargo.lock", "Kullanılan QUIC impl + CC profile RAPORDA açıkça yazılır").
+    /// Cargo.lock'tan türetilir. Yalnız quinn kolları doldurur; boşsa YAZILMAZ (öteki kolların
+    /// çıktısı bayt-bayt aynı); eski JSONL → boş.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub quinn_proto_version: String,
     /// Reproducibility seed / repeat kimliği.
     pub seed: u64,
     /// Tekrar indeksi (varyans için, A).

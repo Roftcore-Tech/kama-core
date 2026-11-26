@@ -580,6 +580,7 @@ async fn client_loop(
         cc: engine.label().to_string(),
         transport: "kama".to_string(),
         quinn_version: KAMA_VERSION.to_string(),
+        quinn_proto_version: String::new(),
         seed: cfg.seed,
         repeat: cfg.repeat,
         msg_count,

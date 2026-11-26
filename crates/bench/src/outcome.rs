@@ -541,6 +541,7 @@ mod tests {
             cc: "cubic".into(),
             transport: "kama-product".into(),
             quinn_version: String::new(),
+            quinn_proto_version: String::new(),
             seed: 0,
             repeat: 0,
             msg_count: 0,

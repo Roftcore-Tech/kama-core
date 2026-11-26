@@ -265,6 +265,7 @@ mod tests {
             cc: "cubic".into(),
             transport: "quinn".into(),
             quinn_version: "0.11.11".into(),
+            quinn_proto_version: String::new(),
             seed: 0,
             repeat: 0,
             msg_count: 1,

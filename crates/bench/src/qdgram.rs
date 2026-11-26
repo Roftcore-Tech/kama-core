@@ -27,7 +27,9 @@ use tokio::time::{interval, timeout};
 
 use crate::error::BenchError;
 use crate::event::{RawEvent, RunMeta, RunOutput, TxComponents};
-use crate::quic::{build_endpoint, client_config, server_config, GovHandle, QUINN_VERSION};
+use crate::quic::{
+    build_endpoint, client_config, quinn_proto_version, quinn_version, server_config, GovHandle,
+};
 use crate::transport::{BenchTransport, ClientCfg, ServerCfg};
 
 /// DATA datagramı: tip(1) + msg_id u64 (8) = 9 B başlık, sonra payload (fixed-width BE, ADR-05).
@@ -470,7 +472,8 @@ async fn client_loop(
             profile: cfg.profile.clone(),
             cc: cfg.cc.label().to_string(),
             transport: "qdgram".to_string(),
-            quinn_version: QUINN_VERSION.to_string(),
+            quinn_version: quinn_version().to_string(),
+            quinn_proto_version: quinn_proto_version().to_string(),
             seed: cfg.seed,
             repeat: cfg.repeat,
             msg_count: cfg.msg_count,
@@ -518,7 +521,8 @@ fn failed_output(cfg: &ClientCfg, gov: Option<&GovHandle>, setup_ns: u64) -> Run
             profile: cfg.profile.clone(),
             cc: cfg.cc.label().to_string(),
             transport: "qdgram".to_string(),
-            quinn_version: QUINN_VERSION.to_string(),
+            quinn_version: quinn_version().to_string(),
+            quinn_proto_version: quinn_proto_version().to_string(),
             seed: cfg.seed,
             repeat: cfg.repeat,
             msg_count: cfg.msg_count,

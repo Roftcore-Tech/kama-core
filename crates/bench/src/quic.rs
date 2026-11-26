@@ -1,4 +1,5 @@
-//! quinn (0.11.11) baseline transport (§4.4.1 best-available QUIC). CC seçilebilir:
+//! quinn baseline transport (§4.4.1 best-available QUIC; sürümler Cargo.lock'tan, bkz.
+//! [`quinn_version`] / [`quinn_proto_version`]). CC seçilebilir:
 //! Cubic (default, production) / Bbr (`Experimental! Use at your own risk.` — quinn kaynağı).
 //! Self-signed cert (bench-içi; client doğrulamayı atlar — yalnız benchmark, güvenlik değil).
 //!
@@ -156,7 +157,37 @@ pub(crate) fn build_endpoint(
     Ok((ep, Some(handle)))
 }
 
-pub(crate) const QUINN_VERSION: &str = "0.11.11";
+/// [S-60 / B-06] Çalışma alanının Cargo.lock'u (derlemede gömülür). Rakip sürümleri buradan
+/// türetilir; elle yazılmış sürüm dizesi kilit dosyasından sessizce ayrışabiliyordu (transport-tdd
+/// §4.4.1 "versiyon PİNLİ + Cargo.lock").
+const CARGO_LOCK: &str = include_str!("../../../Cargo.lock");
+
+/// Cargo.lock'ta `name = "<pkg>"` satırını izleyen `version` değeri; paket yoksa `"unknown"`.
+pub(crate) fn lock_version(pkg: &str) -> &'static str {
+    let key = format!("name = \"{pkg}\"");
+    let mut lines = CARGO_LOCK.lines();
+    while let Some(l) = lines.next() {
+        if l == key {
+            return lines
+                .next()
+                .and_then(|v| v.strip_prefix("version = \""))
+                .and_then(|v| v.strip_suffix('"'))
+                .unwrap_or("unknown");
+        }
+    }
+    "unknown"
+}
+
+/// Derlenen `quinn` sürümü (Cargo.lock).
+pub(crate) fn quinn_version() -> &'static str {
+    lock_version("quinn")
+}
+
+/// Derlenen `quinn-proto` sürümü (Cargo.lock) — CC ve kayıp kodu bu crate'tedir.
+pub(crate) fn quinn_proto_version() -> &'static str {
+    lock_version("quinn-proto")
+}
+
 const ALPN: &[u8] = b"kama-bench";
 
 fn transport_config(cc: Cc) -> Arc<TransportConfig> {
@@ -199,7 +230,7 @@ fn transport_config(cc: Cc) -> Arc<TransportConfig> {
             t.congestion_controller_factory(Arc::new(c));
         }
         Cc::Bbr => {
-            // quinn-proto 0.11.18 BbrConfig varsayılan ilk pencere = 200 × 1200 B = 240 000 B
+            // quinn-proto BbrConfig (sürüm Cargo.lock'ta) varsayılan ilk pencere = 200 × 1200 B = 240 000 B
             // (Cubic: 12 000 B). `--quinn-iw-bytes` bunu açıkça değiştirir.
             let mut c = BbrConfig::default();
             if let Some(w) = tu.quinn_iw_bytes {
@@ -459,7 +490,8 @@ impl BenchTransport for QuinnTransport {
                 profile: cfg.profile,
                 cc: cfg.cc.label().to_string(),
                 transport: tr_label.to_string(),
-                quinn_version: QUINN_VERSION.to_string(),
+                quinn_version: quinn_version().to_string(),
+                quinn_proto_version: quinn_proto_version().to_string(),
                 seed: cfg.seed,
                 repeat: cfg.repeat,
                 msg_count: cfg.msg_count,
@@ -518,7 +550,8 @@ fn handshake_failed_output(
             profile: cfg.profile.clone(),
             cc: cfg.cc.label().to_string(),
             transport: transport.to_string(),
-            quinn_version: QUINN_VERSION.to_string(),
+            quinn_version: quinn_version().to_string(),
+            quinn_proto_version: quinn_proto_version().to_string(),
             seed: cfg.seed,
             repeat: cfg.repeat,
             msg_count: cfg.msg_count,
@@ -787,6 +820,18 @@ impl rustls::client::danger::ServerCertVerifier for SkipVerify {
 #[cfg(test)]
 mod loopback_tests {
     use super::*;
+
+    /// [S-60 / B-06] Rakip sürümleri Cargo.lock'tan okunur: iki paket bulunur ve `x.y.z`
+    /// biçimindedir; kilitte olmayan paket `unknown` döner (elle yazılmış dize yok).
+    #[test]
+    fn rival_versions_come_from_cargo_lock() {
+        for v in [quinn_version(), quinn_proto_version()] {
+            let parts: Vec<&str> = v.split('.').collect();
+            assert_eq!(parts.len(), 3, "{v}");
+            assert!(parts.iter().all(|p| p.parse::<u32>().is_ok()), "{v}");
+        }
+        assert_eq!(lock_version("kama-bench-olmayan-paket"), "unknown");
+    }
 
     /// [KAPI-1 W2] governed socket pini: handshake bütçe-MUAF (pre_arm'da görünür, düşülmez);
     /// arm sonrası dar burst cap stream verisini enjekte ettirmez → teslim 0; ret sayaçları
