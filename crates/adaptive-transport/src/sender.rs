@@ -3920,6 +3920,15 @@ impl Sender {
         // [ACK-BITMAP] Kanıt aralığı yalnız bu olaya aittir; boş ACK'te de düşer.
         let evidence = self.next_ack_evidence.take();
         if ack.acked_seqs.is_empty() {
+            // [İLK-PENCERE · ÇİFT ARALIĞI · ÖLÇÜM-ARALIĞI] Notlar yalnız bu çerçeveye aittir
+            // (`note_ack_*`: "bir sonraki `AckReceived` çerçevesinin" alanı, "ACK işlenince
+            // tüketilir"): boş ACK'te de düşer, sonraki çerçeveye taşınmaz.
+            self.pending_arrival_rate = None;
+            self.pending_pair_rate = None;
+            self.pending_forward_interval = None;
+            if let Some(t) = self.diag_line_guard_trace.as_mut() {
+                t.note = None;
+            }
             return;
         }
         // [BOŞ-HAT YENİDEN İLETİMİ] Yeni ACK yeni bilgi: birimler yeniden aday olur.
@@ -9611,6 +9620,27 @@ mod tests {
             acked_seqs: seqs.to_vec(),
             ack_delay: Duration::ZERO,
         })
+    }
+
+    /// Boş ACK çerçevesinin notları (`arrival_rate`, `pair_rate`, ölçüm aralığı) o çerçeveyle
+    /// düşer; sonraki ACK'e taşınmaz.
+    #[test]
+    fn empty_ack_consumes_its_frame_notes() {
+        let mut s = Sender::with_cc_port();
+        let out = s.on_event(Event::AppData(unit(0)), 0);
+        let seq = out[0].seq;
+        s.pending_forward_interval = Some(crate::line_guard::ForwardInterval {
+            first_seq: seq,
+            last_seq: seq,
+            rx_span_ns: MS,
+            rx_wire: None,
+        });
+        s.note_ack_arrival_rate(1_000);
+        s.note_ack_pair_rate(2_000);
+        s.on_event(ack(&[]), 10 * MS);
+        assert_eq!(s.pending_arrival_rate, None);
+        assert_eq!(s.pending_pair_rate, None);
+        assert!(s.pending_forward_interval.is_none());
     }
 
     #[test]
