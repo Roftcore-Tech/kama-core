@@ -1000,6 +1000,33 @@ async fn main() -> Result<(), BenchError> {
                 "# secondary (§4.4.3): bytes/delivered-msg median={:.1}  ACK-overhead median={:.3}",
                 sec.bytes_per_delivered_msg_median, sec.ack_overhead_ratio_median,
             );
+            // [S-60 / B-11] Deadline-altı gecikme dağılımı (§4.4.3 SECONDARY-BUT-REQUIRED:
+            // time-to-first-delivery, p50/p95; §4.4.9 median + p95/p99 + güven aralığı). Her
+            // nicelik: koşular-arası medyan + sıra-istatistiği GA; `n` = o deadline'da teslimi
+            // olan koşu sayısı (payda `runs`). Var olan satırlar değişmedi.
+            let lat_fmt = |st: &outcome::Stats| {
+                if st.n == 0 {
+                    "n=0".to_string()
+                } else {
+                    let ci = st.median_ci.map_or_else(
+                        || "CI=n/a(n<6)".to_string(),
+                        |(l, h)| format!("CI=[{l:.4},{h:.4}]"),
+                    );
+                    format!("n={} median={:.4}s {ci}", st.n, st.median)
+                }
+            };
+            for l in metrics::aggregate_latency(&per_run, &deadlines, ci_permille) {
+                println!(
+                    "# latency (§4.4.3/§4.4.9) deadline={:>4}s runs={} | first: {} | p50: {} | \
+                     p95: {} | p99: {}",
+                    l.deadline.as_secs(),
+                    l.runs,
+                    lat_fmt(&l.first_delivery),
+                    lat_fmt(&l.p50),
+                    lat_fmt(&l.p95),
+                    lat_fmt(&l.p99),
+                );
+            }
 
             // ── [FAZ-4 §9] TEL MALİYETİ DÖKÜMÜ — kalem kalem, kolun BEYAN EDİLEN sınırıyla ──
             // Kama'nın parity/kontrol trafiğini sayıp rakibin transport ek yükünü dışlayarak

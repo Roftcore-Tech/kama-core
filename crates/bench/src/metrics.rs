@@ -18,6 +18,8 @@ pub struct DeadlineMetrics {
     pub p50: Option<Duration>,
     /// p95 teslim latency (deadline-altı).
     pub p95: Option<Duration>,
+    /// p99 teslim latency (deadline-altı) — transport-tdd §4.4.9 "median + p95/p99".
+    pub p99: Option<Duration>,
 }
 
 /// Bir koşunun tüm deadline'lardaki metrikleri + wire türevleri.
@@ -73,6 +75,7 @@ pub fn run_metrics(run: &RunOutput, deadlines: &[Duration]) -> RunMetrics {
                 first_delivery: lat.first().map(|&l| Duration::from_nanos(l)),
                 p50: percentile_ns(&lat, 50).map(Duration::from_nanos),
                 p95: percentile_ns(&lat, 95).map(Duration::from_nanos),
+                p99: percentile_ns(&lat, 99).map(Duration::from_nanos),
             }
         })
         .collect();
@@ -163,6 +166,59 @@ pub fn aggregate_secondary(runs: &[RunMetrics]) -> SecondaryAgg {
     }
 }
 
+/// [S-60 / B-11] Deadline-altı gecikme dağılımının koşular-arası özeti. transport-tdd §4.4.3
+/// SECONDARY-BUT-REQUIRED: "time-to-first-delivery; deadline-altı p50/p95 delivery latency ...
+/// ZORUNLU"; §4.4.9 "median + p95/p99 + %95 güven aralığı". Her nicelik için örnek = o
+/// deadline'da değeri olan koşular (deadline içinde teslimi olmayan koşu örneğe GİRMEZ; kapsam
+/// `Stats::n` / `runs` ile yazılır). Değerler saniye.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LatencyAgg {
+    /// Deadline.
+    pub deadline: Duration,
+    /// Toplam koşu sayısı (kapsam paydası).
+    pub runs: usize,
+    /// İlk teslim gecikmesi.
+    pub first_delivery: crate::outcome::Stats,
+    /// p50.
+    pub p50: crate::outcome::Stats,
+    /// p95.
+    pub p95: crate::outcome::Stats,
+    /// p99.
+    pub p99: crate::outcome::Stats,
+}
+
+/// Deadline başına gecikme niceliklerinin koşular-arası özeti (sıra-istatistiği medyan GA'sı;
+/// RNG yok, ADR-17).
+#[must_use]
+pub fn aggregate_latency(
+    runs: &[RunMetrics],
+    deadlines: &[Duration],
+    ci_permille: u32,
+) -> Vec<LatencyAgg> {
+    deadlines
+        .iter()
+        .enumerate()
+        .map(|(i, &dl)| {
+            let pick = |f: fn(&DeadlineMetrics) -> Option<Duration>| {
+                let v: Vec<f64> = runs
+                    .iter()
+                    .filter_map(|r| r.per_deadline.get(i).and_then(f))
+                    .map(|d| d.as_secs_f64())
+                    .collect();
+                crate::outcome::summarize(&v, ci_permille)
+            };
+            LatencyAgg {
+                deadline: dl,
+                runs: runs.len(),
+                first_delivery: pick(|d| d.first_delivery),
+                p50: pick(|d| d.p50),
+                p95: pick(|d| d.p95),
+                p99: pick(|d| d.p99),
+            }
+        })
+        .collect()
+}
+
 /// Nearest-rank percentile (deterministik). `p` ∈ [0,100]. Boş → `None`.
 #[must_use]
 pub fn percentile_ns(sorted: &[u64], p: u8) -> Option<u64> {
@@ -241,6 +297,7 @@ mod tests {
                     first_delivery: None,
                     p50: None,
                     p95: None,
+                    p99: None,
                 }],
                 bytes_per_delivered_msg: 0.0,
                 ack_overhead_ratio: 0.0,
@@ -296,5 +353,59 @@ mod tests {
         assert!((m.per_deadline[1].completion - 1.0).abs() < 1e-9); // 10s: 8s≤10s
         assert!((m.per_deadline[2].completion - 1.0).abs() < 1e-9);
         assert_eq!(m.bytes_per_delivered_msg, 1000.0); // 1000 tx / 1 delivered
+    }
+
+    /// [S-60 / B-11] p99 hesaplanır (nearest-rank) ve gecikme nicelikleri koşular arası
+    /// özetlenir; deadline içinde teslimi olmayan koşu örneğe girmez.
+    #[test]
+    fn latency_quantiles_include_p99_and_aggregate() {
+        // 100 mesaj, gecikme i ms (1..=100): p50 = 50 ms, p95 = 95 ms, p99 = 99 ms, ilk = 1 ms.
+        let events: Vec<_> = (1..=100u64).map(|i| ev(i, 0, Some(i))).collect();
+        let lat: Vec<u64> = (1..=100u64).map(|i| i * 1_000_000).collect();
+        assert_eq!(percentile_ns(&lat, 99), Some(99_000_000));
+        let mk = |events: Vec<RawEvent>| RunOutput {
+            meta: RunMeta {
+                profile: "t".into(),
+                cc: "bbr".into(),
+                transport: "quinn".into(),
+                quinn_version: String::new(),
+                quinn_proto_version: String::new(),
+                seed: 0,
+                repeat: 0,
+                msg_count: events.len() as u64,
+                payload_bytes: 256,
+                max_deadline_ns: dur_ns(s(120)),
+                udp_tx_bytes: 1,
+                udp_rx_bytes: 1,
+                tx: TxComponents::default(),
+                kama_arm: String::new(),
+                submit_interval_ns: 0,
+                budget: Default::default(),
+                t0_unix_ns: 0,
+                events_epoch_offset_ns: 0,
+                warmup_residue: 0,
+                activation: None,
+                setup_ns: 0,
+                setup_in_window: false,
+                profile_id: String::new(),
+                profile_delta: Vec::new(),
+                engine: String::new(),
+            },
+            events,
+        };
+        let m = run_metrics(&mk(events.clone()), &[s(10)]);
+        let d = &m.per_deadline[0];
+        assert_eq!(d.first_delivery, Some(Duration::from_millis(1)));
+        assert_eq!(d.p50, Some(Duration::from_millis(50)));
+        assert_eq!(d.p95, Some(Duration::from_millis(95)));
+        assert_eq!(d.p99, Some(Duration::from_millis(99)));
+        // İkinci koşu: hiç teslim yok → nicelik örneğine girmez.
+        let empty = run_metrics(&mk(vec![ev(0, 0, None)]), &[s(10)]);
+        let agg = aggregate_latency(&[m.clone(), m, empty], &[s(10)], 950);
+        assert_eq!(agg.len(), 1);
+        assert_eq!(agg[0].runs, 3);
+        assert_eq!(agg[0].p99.n, 2);
+        assert!((agg[0].p99.median - 0.099).abs() < 1e-9);
+        assert!((agg[0].first_delivery.median - 0.001).abs() < 1e-9);
     }
 }
