@@ -715,7 +715,7 @@ async fn main() -> Result<(), BenchError> {
                 // [§15] Boşsa (rakip kolları) BELİRSİZ taşıyıcı adı DEĞİL, hangi primitifin
                 // test edildiğini söyleyen açık kol adı kullanılır.
                 let arm = if output.meta.profile_id.is_empty() {
-                    manifest::arm_name(&tr).to_string()
+                    manifest::arm_name(&tr, &output.meta.engine)
                 } else {
                     output.meta.profile_id.clone()
                 };
@@ -930,7 +930,7 @@ async fn main() -> Result<(), BenchError> {
                     "# wire (§9) {}: payload={payload}B tx={}B rx={}B \
                      [data={}B retx={}B dup={}B fec={}B ctrl={}B] setup={}ns({}) — {visibility}",
                     if m.profile_id.is_empty() {
-                        manifest::arm_name(&m.transport).to_string()
+                        manifest::arm_name(&m.transport, &m.engine)
                     } else {
                         m.profile_id.clone()
                     },

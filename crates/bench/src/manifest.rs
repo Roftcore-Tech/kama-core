@@ -239,17 +239,22 @@ pub fn write(path: &std::path::Path, m: &RunManifest) {
 /// [FAZ-4 §15] KOL ADI POLİTİKASI — belirsiz `Quinn` / `Kama` etiketi YASAK. Rakip kolları
 /// hangi QUIC primitifini test ettiklerini adlarında TAŞIR; Kama kolunun adı profil kimliğinden
 /// (`kama-v1-full` / `kama-custom`) gelir, bu yüzden burada yer almaz.
+///
+/// [S-60 / B-17] Stub `kama` kolu iki motordan birini koşar (`--kama-arm cc-port`); ad motoru
+/// `RunMeta.engine`'den taşır (`kama-stub-legacy` | `kama-stub-cc-port`). Motor kaydı olmayan
+/// eski koşuda (`engine` boş) motor iddia edilmez: `kama-stub`.
 #[must_use]
-pub fn arm_name(transport: &str) -> &str {
+pub fn arm_name(transport: &str, engine: &str) -> String {
     match transport {
-        "quinn" => "quinn-reliable-stream",
+        "quinn" => "quinn-reliable-stream".to_string(),
         // [KTP2-F0 / D] `--rival-delivery transport-ack` kolları (ayrı anlam sınıfı).
-        "quinn-tack" => "quinn-uni-stream-transport-ack",
-        "tcp-tack" => "tcp-transport-ack",
-        "qdgram" => "quinn-datagram-app-retry",
-        "tcp-default" => "tcp-default",
-        "kama" => "kama-stub-legacy",
-        other => other,
+        "quinn-tack" => "quinn-uni-stream-transport-ack".to_string(),
+        "tcp-tack" => "tcp-transport-ack".to_string(),
+        "qdgram" => "quinn-datagram-app-retry".to_string(),
+        "tcp-default" => "tcp-default".to_string(),
+        "kama" if engine.is_empty() => "kama-stub".to_string(),
+        "kama" => format!("kama-stub-{engine}"),
+        other => other.to_string(),
     }
 }
 
@@ -418,16 +423,24 @@ mod tests {
     /// [FAZ-4 §15] Belirsiz kol adı YASAK: `quinn` iki farklı primitife karşılık gelir.
     #[test]
     fn kol_adlari_belirsiz_degil() {
-        assert_eq!(arm_name("quinn"), "quinn-reliable-stream");
-        assert_eq!(arm_name("qdgram"), "quinn-datagram-app-retry");
+        assert_eq!(arm_name("quinn", ""), "quinn-reliable-stream");
+        assert_eq!(arm_name("qdgram", ""), "quinn-datagram-app-retry");
         assert_ne!(
-            arm_name("quinn"),
-            arm_name("qdgram"),
+            arm_name("quinn", ""),
+            arm_name("qdgram", ""),
             "iki QUIC primitifi AYNI ada sahip olamaz"
         );
-        assert_eq!(arm_name("tcp-default"), "tcp-default");
+        assert_eq!(arm_name("tcp-default", ""), "tcp-default");
         // Kama kolunun adı profil kimliğinden gelir; taşıyıcı adı kullanılmaz.
-        assert_eq!(arm_name("kama-product"), "kama-product");
+        assert_eq!(arm_name("kama-product", "cc-port"), "kama-product");
+    }
+
+    /// [S-60 / B-17] Stub kolun adı koştuğu motoru taşır; motor kaydı yoksa motor iddia edilmez.
+    #[test]
+    fn stub_kol_adi_motoru_tasir() {
+        assert_eq!(arm_name("kama", "cc-port"), "kama-stub-cc-port");
+        assert_eq!(arm_name("kama", "legacy"), "kama-stub-legacy");
+        assert_eq!(arm_name("kama", ""), "kama-stub");
     }
 
     /// Tel-muhasebesi sınırı farklıysa BEYAN edilir — byte kıyası doğrudan yapılamaz.
