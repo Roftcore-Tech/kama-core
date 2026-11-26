@@ -190,7 +190,9 @@ impl ClientRun {
             tx_retx: 0,
             tx_dup: 0,
             warmup_delivered: HashSet::new(),
-            trace: std::env::var_os("KAMA_BENCH_TRACE").is_some(),
+            // [S-92 / B-25] Belgelenen anahtar `KAMA_BENCH_TRACE=1`; başka değer ("0" dahil) izi
+            // açmaz (eskiden tanımlı olması yetiyordu).
+            trace: std::env::var("KAMA_BENCH_TRACE").is_ok_and(|v| v == "1"),
         }
     }
 
