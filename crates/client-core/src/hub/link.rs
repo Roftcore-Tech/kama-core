@@ -42,11 +42,12 @@ use super::bind::{rpc_frame_checked, BindDeps, BindMachine, BindOutcome, Request
 use super::heartbeat::{HbOutcome, Heartbeat};
 use super::t3::{t3_delay, ATTEMPT_MAX_AGE, BACKOFF_MIN};
 use super::{BindSigner, HubConfig, HubCounters, HubError, HubNotice};
-use crate::transport::{EnvelopeLink, LinkAttempt, LinkError, LinkEvent};
+use crate::transport::{EnvelopeLink, LinkAttempt, LinkError, LinkEvent, PENDING_INIT_CAP};
 
-/// Eşzamanlı açılış denemesi tavanı = bind öncesi STORE kuyruğu (KK-H40; transport
-/// `PENDING_INIT_CAP` ile aynı).
-pub const MAX_ATTEMPTS: usize = 16;
+/// Eşzamanlı açılış denemesi tavanı = bind öncesi STORE kuyruğu (KK-H40). Türetilmiş: transport
+/// [`PENDING_INIT_CAP`] (ccr §35.15 KS-DOS-1 istemci bekleyen INIT tavanı); değer elle ikinci kez
+/// yazılmaz.
+pub const MAX_ATTEMPTS: usize = PENDING_INIT_CAP;
 /// Bind beklerken kuyruğa alınabilecek RESPONSE STORE'u (KK-H40).
 pub const MAX_QUEUED_RESPONSES: usize = 16;
 /// StoreResp'ten önce gelmiş, tutulan RESPONSE (KK-H37).
