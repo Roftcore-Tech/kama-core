@@ -1,0 +1,107 @@
+
+running 93 tests
+test line_guard::tests::a_failed_probe_level_bounds_the_pair_lower_bound ... ok
+test line_guard::tests::a_late_partial_verdict_ack_is_inconclusive_not_failed ... ok
+test line_guard::tests::a_late_verdict_ack_on_the_return_line_is_not_a_failed_probe ... ok
+test line_guard::tests::a_real_failed_probe_is_still_failed_in_interval_mode ... ok
+test line_guard::tests::a_real_failed_probe_with_a_partial_interval_is_failed_and_drained ... ok
+test line_guard::tests::a_real_narrowing_with_partial_verdict_intervals_is_still_measured ... ok
+test line_guard::tests::a_small_return_wait_with_a_partial_interval_reads_as_a_failed_probe_with_a_bounded_hold ... ok
+test line_guard::tests::an_app_limited_probe_is_inconclusive ... ok
+test line_guard::tests::backlog_estimate_never_exceeds_the_bottleneck_queue ... ok
+test line_guard::tests::ek6_no_permanent_raise_on_an_unchanged_line_for_any_mix ... ignored, EK 6: sahip kararı bekliyor — bugün kırmızı
+test line_guard::tests::ek6_report_small_datagram_probe_on_an_unchanged_line ... ok
+test line_guard::tests::ek7_d1_a_saturated_delay_ack_keeps_its_place_in_the_ack_count ... ok
+test line_guard::tests::ek7_d1_a_stale_frontier_ack_keeps_its_place_in_the_ack_count ... ok
+test line_guard::tests::ek7_d1_an_ack_arriving_before_its_frontier_was_sent_keeps_its_place_in_the_ack_count ... ok
+test line_guard::tests::ek7_d1_an_ack_on_a_zero_rate_return_line_keeps_its_place_in_the_ack_count ... ok
+test line_guard::tests::ek7_d1_an_ack_with_a_delay_beyond_now_keeps_its_place_in_the_ack_count ... ok
+test line_guard::tests::ek7_d1_an_ack_without_a_front_point_as_the_third_ack_closes_the_probe_like_a_measured_one ... ok
+test line_guard::tests::ek7_d1_an_ack_without_a_frontier_record_keeps_its_place_in_the_ack_count ... ok
+test line_guard::tests::ek7_d1_an_ack_without_its_wire_size_keeps_its_place_in_the_ack_count ... ok
+test line_guard::tests::ek7_d4_a_failed_pair_probe_keeps_its_window_for_the_next_sample ... ok
+test line_guard::tests::ek7_d4_control_a_sample_after_the_probe_renews_the_single_shot ... ok
+test line_guard::tests::ek7_d4_the_probes_own_queue_does_not_renew_the_single_shot ... ok
+test line_guard::tests::ek8_a_pair_probe_closed_without_evidence_keeps_its_window ... ok
+test line_guard::tests::ek8_a_sample_that_closes_a_registered_pair_probe_keeps_its_window ... ok
+test line_guard::tests::ek8_an_ack_without_a_front_point_gives_no_coverage_evidence ... ok
+test line_guard::tests::ek8_an_inconclusive_pair_probe_keeps_its_window_past_the_first_sample ... ok
+test line_guard::tests::ek8_control_a_sample_past_the_window_renews_after_an_own_queue_sample ... ok
+test line_guard::tests::ek8_on_ack_without_measurement_counts_only_for_a_registered_pair_probe ... ok
+test line_guard::tests::ek8_the_provisional_flat_interval_does_not_erase_a_registered_pair_probe ... ok
+test line_guard::tests::ek9_a1_a_sample_that_closes_a_registered_pair_probe_leaves_a_superseded_verdict ... ok
+test line_guard::tests::ek9_a1_ack_diag_reports_the_experiment_switch ... ok
+test line_guard::tests::ek9_a2_a_sample_before_an_open_probe_sent_anything_cancels_it_without_a_rejection ... ok
+test line_guard::tests::ek9_a2_a_sample_before_the_probe_window_opened_cancels_it_without_a_rejection ... ok
+test line_guard::tests::ek9_a2_control_a_probe_that_sent_one_datagram_keeps_the_rejection ... ok
+test line_guard::tests::ek9_a3_the_window_start_is_set_to_the_pacer_open_instant_for_a_fresh_pair_probe_only ... ok
+test line_guard::tests::ek9_a4_a_budget_closed_probe_is_drained_without_extra_silence ... ignored, EK 10 A4 (i): üçüncü test beklentisi için karar bekliyor — bugün kırmızı
+test line_guard::tests::ek9_a4_a_probe_closed_while_its_window_is_open_leaves_no_residual_queue ... ok
+test line_guard::tests::ek9_a4_report_the_probe_excess_drain_in_closed_loop ... ok
+test line_guard::tests::ek9_a5_the_post_send_check_does_not_end_an_ordinary_probe ... ok
+test line_guard::tests::ek9_a6_1_an_app_limited_pair_probe_closes_without_evidence_and_spends_the_shot ... ok
+test line_guard::tests::ek9_a6_2_a_failed_pair_probe_refutes_its_target_and_drains ... ok
+test line_guard::tests::ek9_a6_3_an_ack_without_a_measurement_interval_is_counted ... ok
+test line_guard::tests::ek9_a6_4_a_pair_probe_whose_window_never_opens_closes_inconclusive_with_nothing_sent ... ok
+test line_guard::tests::ek9_a6_5_an_early_close_scales_the_window_and_the_expected_trace ... ok
+test line_guard::tests::ek9_a6_6_a_pair_probe_replaces_a_running_ordinary_probe_from_its_base ... ok
+test line_guard::tests::ek9_a6_8_a_probe_closed_by_acks_without_a_front_keeps_its_window ... ok
+test line_guard::tests::ek9_a6_9_a_new_pair_probe_starts_without_a_stored_window_and_stores_its_own ... ok
+test line_guard::tests::failed_probes_on_a_steady_narrow_line_keep_the_queue_bounded ... ok
+test line_guard::tests::first_window_after_a_small_text_then_a_chunk_gives_no_info ... ok
+test line_guard::tests::first_window_measures_a_slow_line_in_one_ack ... ok
+test line_guard::tests::first_window_skips_a_small_leading_datagram_on_an_honest_line ... ok
+test line_guard::tests::first_window_verifies_an_honest_line ... ok
+test line_guard::tests::first_window_without_a_usable_measurement_is_inert ... ok
+test line_guard::tests::gap_budget_is_not_armed_when_priority_fills_half_the_line ... ok
+test line_guard::tests::honest_line_gives_no_sample_even_with_unequal_ack_sizes ... ok
+test line_guard::tests::inflated_span_cannot_raise_the_guard ... ok
+test line_guard::tests::interval_and_front_agree_on_a_recovered_line_and_the_probe_passes ... ok
+test line_guard::tests::interval_measures_a_slow_line_from_records_two_fronts_back ... ok
+test line_guard::tests::interval_mode_never_takes_a_front_sample_and_arms_the_gap_budget ... ok
+test line_guard::tests::measured_narrow_line_recovers_when_the_line_speeds_up ... ok
+test line_guard::tests::non_adjacent_alarm_interval_measures_only_the_new_line ... ok
+test line_guard::tests::overflow_is_sized_by_the_pair_lower_bound_when_the_mix_shortens_the_interval ... ok
+test line_guard::tests::overflow_needs_queue_evidence_and_excess_loss ... ok
+test line_guard::tests::pair_lower_bound_is_consumed_by_one_ack ... ok
+test line_guard::tests::pair_lower_bound_reopens_a_recovered_line_without_a_standing_queue ... ok
+test line_guard::tests::pair_probe_budget_is_six_datagrams_and_7368_wire_bytes_whichever_first ... ok
+test line_guard::tests::pair_probe_defers_once_then_is_inconclusive_when_the_next_interval_starts_later ... ok
+test line_guard::tests::pair_probe_expires_inconclusive_at_the_third_ack_and_later_acks_cannot_decide ... ok
+test line_guard::tests::pair_probe_on_an_unchanged_narrow_line_fails_once_and_drains ... ok
+test line_guard::tests::pair_probe_raises_a_recovered_line_at_the_second_ack ... ok
+test line_guard::tests::pair_probe_second_ack_before_probe_end_is_counted_and_third_ack_decides ... ok
+test line_guard::tests::pair_probe_setting_above_the_approved_cap_is_rejected ... ok
+test line_guard::tests::pair_probe_window_starts_after_the_hold_and_default_is_the_direct_path ... ok
+test line_guard::tests::pair_probe_without_a_covering_interval_is_inconclusive_and_single_shot ... ok
+test line_guard::tests::return_delay_step_does_not_lock_a_low_rate ... ok
+test line_guard::tests::slow_line_is_measured_within_one_percent_and_never_above_profile ... ok
+test line_guard::tests::stale_or_saturated_acks_give_no_point ... ok
+test line_guard::tests::start_budget_clock_starts_at_the_first_send_and_idle_time_does_not_accumulate ... ok
+test line_guard::tests::start_budget_is_a_burst_then_half_the_profile_line ... ok
+test line_guard::tests::start_budget_never_deadlocks_a_narrow_profile ... ok
+test line_guard::tests::successive_inconclusive_probes_on_a_narrow_line_keep_the_queue_bounded ... ok
+test line_guard::tests::verified_interval_raises_the_ceiling_up_to_the_profile ... ok
+test sender::pair_probe_unmeasured_ack_tests::ek11_f1_the_first_datagram_after_the_acks_own_hold_is_inside_the_window ... ok
+test sender::pair_probe_unmeasured_ack_tests::ek11_f3a_a_send_after_an_ordinary_probe_ran_out_does_not_change_the_ceiling ... ok
+test sender::pair_probe_unmeasured_ack_tests::ek11_f3c_the_sender_switch_rejects_a_budget_above_six ... ok
+test sender::pair_probe_unmeasured_ack_tests::ek8_an_unmeasured_third_ack_closes_the_probe_and_the_excess_reaches_the_pacer ... ok
+test sender::pair_probe_unmeasured_ack_tests::ek8_s1_an_ack_without_mapped_seqs_keeps_its_place_in_the_ack_count ... ok
+test sender::pair_probe_unmeasured_ack_tests::ek8_s3_an_ack_without_a_sent_seq_keeps_its_place_in_the_ack_count ... ok
+test sender::pair_probe_unmeasured_ack_tests::ek8_the_trace_record_of_an_ack_without_a_sent_seq_carries_the_live_state ... ok
+test sender::pair_probe_unmeasured_ack_tests::ek8_unmeasured_acks_change_nothing_while_the_experiment_is_off ... ok
+test sender::pair_probe_unmeasured_ack_tests::ek9_a3_control_without_a_hold_the_window_starts_at_the_ack ... ok
+test sender::pair_probe_unmeasured_ack_tests::ek9_a3_the_probe_window_starts_after_the_hold_already_in_the_pacer ... ok
+test sender::pair_probe_unmeasured_ack_tests::ek9_a6_7_the_experiment_switch_accepts_only_one_to_six ... ok
+
+test result: ok. 91 passed; 0 failed; 2 ignored; 0 measured; 281 filtered out; finished in 0.08s
+
+
+=== tam paket (cargo test --locked --release -p adaptive-transport --no-fail-fast): kırmızı satırlar ===
+test all_lost_ptt_bundle_within_the_1s_bound ... FAILED
+test a_queue_drop_hidden_in_the_first_window_is_not_closed ... FAILED
+test b_real_capacity_drop_is_detected_and_the_queue_drains ... FAILED
+test d2_queue_overflow_still_converges_and_stops_overflowing ... FAILED
+test result: FAILED. 10 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.93s
+test result: FAILED. 19 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 124.00s
+test result: ok satırı: 71
