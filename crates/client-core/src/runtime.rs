@@ -746,7 +746,8 @@ impl Default for RuntimeConfig {
 
 /// [S1] FEC-config doğrulaması (connect/bind, koşu-öncesi typed): profil bilinmeli ve kabul
 /// edilen en büyük payload canonical symbol'e sığmalı (prefix dahil) — aksi hâlde blok/esi
-/// hizası sessizce bozulurdu; bounds-before-run.
+/// hizası sessizce bozulurdu; bounds-before-run. Aynı kapı birim/mesaj tavanını ve yön hızlarını
+/// da denetler; uç başına kuyruk boyları [`validate_queue_cap`] ile.
 fn validate_fec(cfg: &RuntimeConfig) -> Result<Option<FecProfile>, RuntimeError> {
     // [S1B] Fragmenter sınırı: mesaj tavanı birim tavanının ALTINDA olamaz (chunk'lama tanımsız
     // kalırdı) ve birim tavanı sıfır olamaz (bölme/sonsuz-döngü). Koşu-öncesi typed.
@@ -757,6 +758,17 @@ fn validate_fec(cfg: &RuntimeConfig) -> Result<Option<FecProfile>, RuntimeError>
         if m < cfg.max_unit_bytes {
             return Err(RuntimeError::FecConfig(
                 "max_message_bytes < max_unit_bytes (mesaj birimden küçük olamaz)",
+            ));
+        }
+    }
+    // [S-34] Yön hızı sıfır bir ölçüm değil, tanımsız girdidir: aşağı yön 0 → bütçeli ACK aralığı
+    // `u64::MAX` (profil "geri bildirimi aç" sayılır, dönüş hattı 0 B/s); yukarı yön 0 → pacer
+    // tavanı 1 B/s. Taşıma sessizce kilitlenirdi; koşu-öncesi typed (kama-node `link_profile`
+    // ayrıştırıcısı da sıfırı reddeder).
+    if let Some(l) = cfg.link_rates {
+        if l.uplink_bps == 0 || l.downlink_bps == 0 {
+            return Err(RuntimeError::FecConfig(
+                "link_rates: uplink_bps ve downlink_bps 0 olamaz",
             ));
         }
     }
@@ -779,6 +791,16 @@ fn validate_fec(cfg: &RuntimeConfig) -> Result<Option<FecProfile>, RuntimeError>
         }
     }
     Ok(Some(p))
+}
+
+/// [S-34] Uç kuyruğunun kapasitesi koşu-öncesi typed: `tokio::sync::mpsc::channel(0)` panik verir.
+/// İstemci `offer_queue`'yu (offer kanalı; teyit kanalı `max(offer_queue, max_inflight_units)`),
+/// sunucu `delivery_queue`'yu kanal kapasitesi olarak kullanır.
+fn validate_queue_cap(cap: usize, err: &'static str) -> Result<(), RuntimeError> {
+    if cap == 0 {
+        return Err(RuntimeError::FecConfig(err));
+    }
+    Ok(())
 }
 
 /// [FEC-E-ÖLÇEK] Kontrolcü yolunda parite tavanı. İki terim:
@@ -902,6 +924,8 @@ pub enum RuntimeError {
     #[error("soket: {0}")]
     Io(#[from] std::io::Error),
     /// [S1] FEC konfigürasyonu geçersiz (bilinmeyen profil / payload-tavanı symbol'e sığmıyor).
+    /// Koşu-öncesi öteki sınır retleri de bu varyantla gelir (sıfır birim tavanı, mesaj < birim,
+    /// sıfır yön hızı, sıfır kuyruk kapasitesi); metin alanı adlandırır.
     #[error("fec config: {0}")]
     FecConfig(&'static str),
 }
@@ -2755,6 +2779,7 @@ impl ClientEndpoint {
         uplink: Option<UplinkShare>,
     ) -> Result<ClientHandle, RuntimeError> {
         validate_fec(&cfg)?; // [S1] koşu-öncesi typed FEC-config doğrulaması
+        validate_queue_cap(cfg.offer_queue, "offer_queue 0 olamaz")?;
         let sock = UdpSocket::bind(match server {
             SocketAddr::V4(_) => "0.0.0.0:0",
             SocketAddr::V6(_) => "[::]:0",
@@ -4818,6 +4843,7 @@ impl ServerEndpoint {
         uplink: Option<UplinkShare>,
     ) -> Result<ServerHandle, RuntimeError> {
         validate_fec(&cfg)?; // [S1] koşu-öncesi typed FEC-config doğrulaması
+        validate_queue_cap(cfg.delivery_queue, "delivery_queue 0 olamaz")?;
         let sock = UdpSocket::bind(bind).await?;
         let local_addr = sock.local_addr()?;
         let (delivery_tx, delivery_rx) = mpsc::channel(cfg.delivery_queue);
@@ -6511,6 +6537,61 @@ mod fec_payload_cap_tests {
         // 1 080 B sembol: 540 B/s → tam 2 s → kapı açık; 500 B/s → 2,16 s → bayt kapısı.
         assert_eq!(fec_payload_r_max(4, 8 * 120, 1080, Some(540)), 4);
         assert_eq!(fec_payload_r_max(4, 8 * 120, 1080, Some(500)), 0);
+    }
+}
+
+#[cfg(test)]
+mod config_bounds_tests {
+    //! [S-34] Sıfır yön hızı ve sıfır kuyruk kapasitesi koşu-öncesi typed reddedilir (önce:
+    //! yön hızı sessiz kilit, kuyruk `mpsc::channel(0)` paniği).
+    use super::{
+        validate_fec, ClientEndpoint, LinkRates, RuntimeConfig, RuntimeError, ServerEndpoint,
+    };
+    use crate::seam::IdentitySeam;
+
+    fn with_rates(uplink_bps: u64, downlink_bps: u64) -> RuntimeConfig {
+        RuntimeConfig {
+            link_rates: Some(LinkRates {
+                uplink_bps,
+                downlink_bps,
+            }),
+            ..RuntimeConfig::default()
+        }
+    }
+
+    #[test]
+    fn zero_link_rate_is_rejected_and_positive_rates_pass() {
+        for (up, down) in [(0, 12_500), (62, 0), (0, 0)] {
+            match validate_fec(&with_rates(up, down)) {
+                Err(RuntimeError::FecConfig(m)) => assert!(m.contains("link_rates"), "{m}"),
+                other => panic!("({up}, {down}) reddedilmeliydi: {other:?}"),
+            }
+        }
+        assert!(validate_fec(&with_rates(62, 12_500)).is_ok());
+        assert!(validate_fec(&RuntimeConfig::default()).is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn zero_queue_capacity_is_typed_not_a_panic() {
+        let addr = "127.0.0.1:0".parse().expect("adres");
+        let client = RuntimeConfig {
+            offer_queue: 0,
+            ..RuntimeConfig::default()
+        };
+        match ClientEndpoint::connect(addr, client, Box::new(IdentitySeam::new())).await {
+            Err(RuntimeError::FecConfig(m)) => assert!(m.contains("offer_queue"), "{m}"),
+            Err(other) => panic!("yanlış typed red: {other:?}"),
+            Ok(_) => panic!("offer_queue 0 reddedilmeliydi"),
+        }
+        let server = RuntimeConfig {
+            delivery_queue: 0,
+            ..RuntimeConfig::default()
+        };
+        match ServerEndpoint::bind(addr, server, Box::new(IdentitySeam::new())).await {
+            Err(RuntimeError::FecConfig(m)) => assert!(m.contains("delivery_queue"), "{m}"),
+            Err(other) => panic!("yanlış typed red: {other:?}"),
+            Ok(_) => panic!("delivery_queue 0 reddedilmeliydi"),
+        }
     }
 }
 
