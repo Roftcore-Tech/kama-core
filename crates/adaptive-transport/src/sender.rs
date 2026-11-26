@@ -322,22 +322,6 @@ pub struct InitialWindowConfig {
     pub bytes: u64,
 }
 
-/// [BURST-FUSION] Yapı-gate'inin **burst** dalındaki politikası.
-///
-/// Sorun: `Q18Iid` (mevcut sevk davranışı) burst-yapı görünce parity'yi SIFIR bırakıp işi tamamen
-/// ARQ'ya devreder. Ürün runtime'ında ölçüldü (`client-core/examples/fec_arm_compare.rs`,
-/// GE p_gb=3% / p_bg=20% / loss_bad=60%): adaptif kol o kanalda `fec_bytes=0, blocks=0,
-/// repairs=0` üretir — yani kodlama HİÇ devreye girmez ve kol, mekanizma olarak FEC-kapalı kolun
-/// aynısı olur. Hostile ağ tam olarak o rejim olduğundan, ürünün ayırt edici mekanizması tam
-/// ihtiyaç duyulan yerde kapalı kalıyor.
-///
-/// Gerekçenin diğer yarısı da gerçek: uzun bir burst tek bloktaki `r` sınırını aşarsa parity
-/// israf olur. Ama doğru cevap "hiç kodlama" değil, **füzyon**dur (§8.4): parity ölçülen silme
-/// oranını paylı biçimde takip eder, artakalanı ARQ taşır.
-///
-/// **KALİBRE EDİLMEMİŞ — default `Q18Iid`.** R1 disiplini: kampanya görmemiş bir eşik sevk
-/// edilmez. `BurstFusion`'a geçmek netem matrisinde ölçülmüş bir kanıt ister; flip edilene kadar
-/// davranış ve wire byte-özdeştir.
 /// [FEC-RISK] **Deneysel** FEC kayıp-riski tahmincisi. Default **KAPALI** → davranış bugünküyle
 /// semantik olarak özdeş (kanonik `loss_windowed_ppm` tek girdi kalır).
 ///
@@ -634,6 +618,22 @@ pub enum LossConfirmHorizon {
     },
 }
 
+/// [BURST-FUSION] Yapı-gate'inin **burst** dalındaki politikası.
+///
+/// Sorun: `Q18Iid` (mevcut sevk davranışı) burst-yapı görünce parity'yi SIFIR bırakıp işi tamamen
+/// ARQ'ya devreder. Ürün runtime'ında ölçüldü (`client-core/examples/fec_arm_compare.rs`,
+/// GE p_gb=3% / p_bg=20% / loss_bad=60%): adaptif kol o kanalda `fec_bytes=0, blocks=0,
+/// repairs=0` üretir — yani kodlama HİÇ devreye girmez ve kol, mekanizma olarak FEC-kapalı kolun
+/// aynısı olur. Hostile ağ tam olarak o rejim olduğundan, ürünün ayırt edici mekanizması tam
+/// ihtiyaç duyulan yerde kapalı kalıyor.
+///
+/// Gerekçenin diğer yarısı da gerçek: uzun bir burst tek bloktaki `r` sınırını aşarsa parity
+/// israf olur. Ama doğru cevap "hiç kodlama" değil, **füzyon**dur (§8.4): parity ölçülen silme
+/// oranını paylı biçimde takip eder, artakalanı ARQ taşır.
+///
+/// **KALİBRE EDİLMEMİŞ — default `Q18Iid`.** R1 disiplini: kampanya görmemiş bir eşik sevk
+/// edilmez. `BurstFusion`'a geçmek netem matrisinde ölçülmüş bir kanıt ister; flip edilene kadar
+/// davranış ve wire byte-özdeştir.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FecStructurePolicy {
     /// Sevk davranışı: yalnız IID-yapıda (`burst_delta ≤ 50k ppm`) FEC açılır; burst → ARQ.
