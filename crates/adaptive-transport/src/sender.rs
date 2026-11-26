@@ -2805,9 +2805,10 @@ impl Sender {
     /// [HAT-KORUMASI] Kuralın hız tavanı (B/s, UDP gövdesi): profil tavanı, ölçülen hat profil
     /// hattının altındaysa aynı oranda küçültülmüş hâli. Profil tavanını hiçbir zaman aşmaz.
     fn cc_feedback_cap(&self, rule: FeedbackStarvedRule) -> u64 {
-        // [TEMKİNLİ-BAŞLANGIÇ · YENİDEN-YOKLAMA] Tavan korumanın gönderim tavanıdır: ilk
-        // ölçümden önce profil hattının yarısından başlar, doğrulamayla yükselir, ölçülen hatta
-        // iner (`line_guard` modül belgesi).
+        // [TEMKİNLİ-BAŞLANGIÇ · YENİDEN-YOKLAMA] Tavan korumanın gönderim tavanıdır: ilk tavan
+        // profil hattıdır (`line_guard::START_NUM / START_DEN` = 1/1); ilk ACK'ten sonraki
+        // geçici evrede başlangıç bütçesinin hızına (profil hattının yarısı) inebilir, doğrulamayla
+        // yükselir, ölçülen hatta iner (`line_guard` modül belgesi).
         match self
             .cc_line_guard
             .as_ref()
@@ -4392,7 +4393,8 @@ impl Sender {
         // ACK'in ölçüm aralığı) dek sürer (`line_guard` modül belgesi, "İkinci ölçüm").
         g.settle_start_budget();
         // [TEMKİNLİ-BAŞLANGIÇ · YENİDEN-YOKLAMA] Hat modeli korumanın gönderim tavanındadır (ölçülen
-        // hat, doğrulanmamış başlangıçta yarı profil, yoklamada yükseltilmiş tavan): pacer'ın burst
+        // hat; ilk ACK'ten sonraki geçici evrede bütçe hızı, yarı profil; yoklamada yükseltilmiş
+        // tavan): pacer'ın burst
         // payı (≥ 10 MTU) tavanın üstünde patlama yapamaz.
         self.pacer.set_line_rate(g.pace_bps());
         // [ÇİFT-PACING · İŞ-35 gece] Aralık kipinde, bütçe ve yoklama yokken tavan profil hattının
