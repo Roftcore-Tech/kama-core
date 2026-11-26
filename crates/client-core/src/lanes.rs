@@ -507,9 +507,19 @@ impl SessionLanes {
     }
 
     /// [ŞERİT-W] FILE penceresini ayarlar (birim, ≥ 1). Daralma uçtaki birimi geri ALMAZ: pencere
-    /// yeniden açılana dek yeni dosya birimi verilmez.
+    /// yeniden açılana dek yeni dosya birimi verilmez. [ŞERİT-KUYRUK] Pencereye alınmış ama uca
+    /// verilmemiş (bekletilen) birimlerden yeni pencereyi aşanlar şerit kuyruğunun başına, sırası
+    /// korunarak döner: uçtaki ve bekletilen birimlerin toplamı ≤ W kalır, bekletilen birim
+    /// pencere daraldıktan sonra uca verilmez.
     pub fn set_file_window(&mut self, units: u32) {
         self.window = usize::try_from(units.max(1)).unwrap_or(usize::MAX);
+        let file = Lane::File.index();
+        while self.file_inflight.len() + self.file_staged.len() > self.window {
+            let Some(unit) = self.file_staged.pop_back() else {
+                break;
+            };
+            self.queues[file].push_front(unit);
+        }
     }
 
     /// Geçerli FILE penceresi (birim).
@@ -1348,6 +1358,42 @@ mod tests {
             "5 uçta, W = 1: yeni birim yok"
         );
         assert_eq!(s.file_window(), 1);
+    }
+
+    /// [ŞERİT-KUYRUK] Pencere daralınca bekletilen fazlası şerit kuyruğuna (başına, sırasıyla)
+    /// döner; uçtaki + bekletilen ≤ yeni W; daralmadan sonra W'yi aşan birim uca verilmez.
+    #[test]
+    fn shrinking_window_returns_staged_excess_to_the_lane() {
+        let mut l = SessionLanes::new(&file_cfg(6));
+        for i in 0..8u8 {
+            l.push(unit(TrafficClass::Bk, i)).expect("tavan altı");
+        }
+        l.set_file_backlog_room(Some(1));
+        let mut id = 0;
+        assert_eq!(drain(&mut l, Instant::now(), &mut id).len(), 1, "1 uçta");
+        assert_eq!(
+            (l.file_staged(), l.len()),
+            (5, 2),
+            "5 bekletilen, 2 şeritte"
+        );
+        l.set_file_window(3);
+        assert_eq!(l.file_inflight(), 3, "uçta 1 + bekletilen 2 = W");
+        assert_eq!((l.file_staged(), l.len()), (2, 5));
+        l.set_file_backlog_room(Some(u64::MAX));
+        let got = drain(&mut l, Instant::now(), &mut id);
+        assert_eq!(
+            got.iter().map(|g| g.1).collect::<Vec<_>>(),
+            [1, 2],
+            "yalnız pencere içi bekletilenler"
+        );
+        assert_eq!(l.file_inflight(), 3);
+        l.set_file_window(8);
+        let got = drain(&mut l, Instant::now(), &mut id);
+        assert_eq!(
+            got.iter().map(|g| g.1).collect::<Vec<_>>(),
+            [3, 4, 5, 6, 7],
+            "geri dönen birimler sırasıyla"
+        );
     }
 
     #[test]
