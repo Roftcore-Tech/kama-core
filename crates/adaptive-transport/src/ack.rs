@@ -176,6 +176,12 @@ impl AckFrame {
     /// doğal olarak ele alınır; alanlar u16 wire değeri olarak yazılır. Range'ler
     /// en yüksek seq'ler korunacak şekilde [`MAX_ACK_RANGES`] ile clamp'lenir
     /// (engine spec §2.1). Boş girdide `None`.
+    ///
+    /// u16 alana sığmayan boşluk ya da blok (engine spec §2: "gap_i kadar seq KAYIP"; alan
+    /// `u16_be`): bir boşluk 65535'i aşarsa o ve daha eski aralıklar YAZILMAZ; bir blok 65535'i
+    /// aşarsa yalnız en üst 65535 seq'i yazılır ve daha eski aralıklar yazılmaz. Kırpılmış değer
+    /// çözücüde alt blokları yanlış yere koyar ve hiç alınmamış seq'leri teyit ederdi; bildirmemek
+    /// kayıp değildir (SACK kümülatif, §2.1 "taşarsa en yeni bloklar öncelik").
     #[must_use]
     pub fn from_received(
         received_full: &[u64],
@@ -214,13 +220,22 @@ impl AckFrame {
         // Alt blokları descending yay; en yüksek seq'leri koruyarak clamp'le.
         let mut ranges = Vec::new();
         let mut cursor = b0_low; // yayılmış son bloğun full-counter alt ucu
+                                 // block0 kırpıldıysa çözücünün cursor'u b0_low değildir → alt aralık yazılamaz.
+        let block0_exact = !block_len_clamped(b0_low, b0_high);
         for &(low, high) in blocks.iter().rev().skip(1) {
-            if ranges.len() == MAX_ACK_RANGES {
+            if !block0_exact || ranges.len() == MAX_ACK_RANGES {
                 break;
             }
-            let gap = (cursor - high) as u16; // full-uzay farkı; wire'da mod 2^16
+            // full-uzay farkı; u16'ya sığmazsa bu ve daha eski aralıklar yazılmaz (doc).
+            let Ok(gap) = u16::try_from(cursor - high) else {
+                break;
+            };
             let len = block_len_u16(low, high);
             ranges.push(AckRange { gap, len });
+            if block_len_clamped(low, high) {
+                // Yazılan blok yalnız [high − 65534, high]; çözücünün cursor'u `low − 1` değil.
+                break;
+            }
             cursor = low.saturating_sub(1);
         }
 
@@ -335,8 +350,8 @@ impl AckFrame {
     /// bununla [`crate::seq::resolve_seq`] üzerinden full'e kaldırılır, alt bloklar full-uzayda türetilir.
     ///
     /// Sender'ın `OnAckReceived` (§3.2) wire ACK'ten çözülmüş `acked_seqs`'i buradan alır. TAM'dır ancak
-    /// encode'da hiçbir gap/blok 2^16'yı aşmadıysa (`from_received` gap'i `as u16` truncate, len'i clamp
-    /// eder — normal çalışmada aşılmaz). `ranges` [`MAX_ACK_RANGES`] ile sınırlı → çok-eski bloklar bu
+    /// encode'da hiçbir gap/blok u16'yı aşmadıysa (`from_received` u16'ya sığmayan boşluktan ya da
+    /// bloktan sonraki eski aralıkları yazmaz, kırpılmış değer yazmaz — normal çalışmada aşılmaz). `ranges` [`MAX_ACK_RANGES`] ile sınırlı → çok-eski bloklar bu
     /// ACK'te olmayabilir (SACK kümülatif: sonraki ACK'ler en yüksek seq'leri tekrar kapsar).
     #[must_use]
     pub fn acked_full(&self, expected: u64) -> Vec<u64> {
@@ -599,6 +614,11 @@ impl AckFrame {
 /// Full-uzay blok uzunluğunu u16'ya clamp'ler (degenerate >2^16 blok savunması).
 fn block_len_u16(low: u64, high: u64) -> u16 {
     (high - low + 1).min(u64::from(u16::MAX)) as u16
+}
+
+/// `[low, high]` bloğu u16 `len` alanına sığmıyor mu (uzunluk > 65535; [`block_len_u16`] kırpar).
+fn block_len_clamped(low: u64, high: u64) -> bool {
+    high - low >= u64::from(u16::MAX)
 }
 
 /// [low, high] kapsayıcı full-counter aralığını çıkışa ekler.
@@ -1061,5 +1081,64 @@ mod tests {
         assert_eq!(f.bitmap, None);
         assert_eq!(f.evidence_span_full(10), None);
         assert_eq!(f.encode()[0], FRAME_TYPE_ACK_V2);
+    }
+
+    /// `from_received` çerçevesinin tel üzerinden (encode → decode → `acked_full`) teyit kümesi.
+    fn wire_acked(recv: &[u64]) -> Vec<u64> {
+        let f = AckFrame::from_received(recv, 0, 0, 0, ARRIVAL_RATE_SENTINEL).expect("nonempty");
+        let d = AckFrame::decode(&f.encode()).expect("çözülür");
+        let expected = recv.iter().max().expect("nonempty") + 1;
+        d.acked_full(expected)
+    }
+
+    /// [S-23 / A4-01] u16'ya sığmayan boşluk kırpılmaz: {0, 70000} çerçevesi 70000 dışında hiçbir
+    /// seq'i teyit etmez (eski kod gap'i 4464'e kırpıp hiç alınmamış 65536'yı teyit ediyordu).
+    #[test]
+    fn gap_over_u16_stops_older_ranges_instead_of_false_ack() {
+        let f = AckFrame::from_received(&[0, 70_000], 0, 0, 0, ARRIVAL_RATE_SENTINEL).expect("x");
+        assert!(
+            f.ranges.is_empty(),
+            "sığmayan boşluktan sonraki aralık yazılmaz"
+        );
+        assert_eq!(wire_acked(&[0, 70_000]), vec![70_000]);
+        // Sığan boşluk yazılır, sonraki sığmayan boşlukta durulur.
+        let recv = [1u64, 80_000, 80_005];
+        let acked = wire_acked(&recv);
+        assert!(
+            acked.iter().all(|s| recv.contains(s)),
+            "yanlış teyit: {acked:?}"
+        );
+        assert_eq!(acked, vec![80_005, 80_000]);
+    }
+
+    /// [S-23 / A4-01] u16'ya sığmayan blok yalnız en üst 65535 seq'iyle yazılır ve daha eski
+    /// aralıklar yazılmaz; block0 kırpılırsa hiç alt aralık yazılmaz. Teyit kümesi ⊆ alınan küme.
+    #[test]
+    fn block_over_u16_stops_older_ranges_instead_of_false_ack() {
+        // Alt blok kırpılır: {100000} ∪ [100002, 170002) ∪ {170003}.
+        let mut recv = vec![100_000u64];
+        recv.extend(100_002..170_002);
+        recv.push(170_003);
+        let acked = wire_acked(&recv);
+        assert!(
+            acked.iter().all(|s| recv.binary_search(s).is_ok()),
+            "yanlış teyit"
+        );
+        assert!(!acked.contains(&100_000), "kırpılmış bloğun altı yazılmaz");
+        assert_eq!(acked.len(), 1 + usize::from(u16::MAX));
+        // block0 kırpılır: [10, 70011) ∪ {0}.
+        let mut recv = vec![0u64];
+        recv.extend(10..70_011);
+        let f = AckFrame::from_received(&recv, 0, 0, 0, ARRIVAL_RATE_SENTINEL).expect("x");
+        assert!(
+            f.ranges.is_empty(),
+            "kırpılmış block0'ın altına aralık yazılmaz"
+        );
+        let acked = wire_acked(&recv);
+        assert!(
+            acked.iter().all(|s| recv.binary_search(s).is_ok()),
+            "yanlış teyit"
+        );
+        assert_eq!(acked.len(), usize::from(u16::MAX));
     }
 }
