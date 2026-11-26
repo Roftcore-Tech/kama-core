@@ -25,13 +25,13 @@ for l in sys.stdin:
 for i in 1 2; do
   "$bin" k2_ --nocapture --test-threads=1 > "$tmp/ham$i.txt" 2>&1 || { echo "kos.sh: test koşusu $i başarısız" >&2; tail -20 "$tmp/ham$i.txt" >&2; exit 1; }
   # Test çalıştırıcısı satır sonu olmadan "test … ... " basar; kayıt satırı aynı satıra yapışabilir.
-  grep -o -E 'K2(NOT|ARAC|ROW|OZET) .*' "$tmp/ham$i.txt" > "$tmp/satir$i.txt"
+  grep -o -E 'K2(NOT|ARAC|ROW|OZET|BUTCE) .*' "$tmp/ham$i.txt" > "$tmp/satir$i.txt"
 done
 ayni=false; cmp -s "$tmp/satir1.txt" "$tmp/satir2.txt" && ayni=true
 {
-  printf 'K2BASLIK {"sha":"%s","agac_temiz":true,"test":"crates/adaptive-transport/tests/starved_line_sim.rs · k2_ (k2_bucket_model_matches_the_measured_gaps, k2_gate_refusal_counter_sees_a_binding_gate, k2_bucket_two_counterexamples_report)","komut":"%s","ikili_sha256":"%s","rustc":"%s","iki_kosu_bayt_ayni":%s,"satirlar_sha256":"%s","k2row":%s,"k2ozet":%s}\n' \
+  printf 'K2BASLIK {"sha":"%s","agac_temiz":true,"test":"crates/adaptive-transport/tests/starved_line_sim.rs · k2_ (k2_bucket_model_matches_the_measured_gaps, k2_gate_refusal_counter_sees_a_binding_gate, k2_bucket_two_counterexamples_report)","komut":"%s","ikili_sha256":"%s","rustc":"%s","iki_kosu_bayt_ayni":%s,"satirlar_sha256":"%s","k2row":%s,"k2ozet":%s,"k2butce":%s}\n' \
     "$sha" "$komut" "$(sha256sum "$bin" | cut -d' ' -f1)" "$(rustc -V)" "$ayni" "$(sha256sum "$tmp/satir1.txt" | cut -d' ' -f1)" \
-    "$(grep -c '^K2ROW ' "$tmp/satir1.txt")" "$(grep -c '^K2OZET ' "$tmp/satir1.txt")"
+    "$(grep -c '^K2ROW ' "$tmp/satir1.txt")" "$(grep -c '^K2OZET ' "$tmp/satir1.txt")" "$(grep -c '^K2BUTCE ' "$tmp/satir1.txt")"
   cat "$tmp/satir1.txt"
 } > "$out"
 echo "kos.sh: $out yazıldı (sha $sha, iki koşu bayt-aynı: $ayni)"
