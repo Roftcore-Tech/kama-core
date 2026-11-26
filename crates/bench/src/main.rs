@@ -475,6 +475,43 @@ fn budget_mode(
     }
 }
 
+/// [S-60 / B-09] TCP kolları bütçe governor'ünü, warmup'ı ve barrier protokolünü UYGULAMAZ
+/// (`tcp.rs`: bütçe fotoğrafı boş, `<gate>.ready` yazılmaz). Bu bayraklar o kolda sessizce yok
+/// sayılmaz, koşu öncesi reddedilir (`--dup-copies` ile aynı kural). `warmup_msgs`/`gate`/
+/// `establish_gate` istemci bayraklarıdır; sunucuda `gate` = `--gate-watch`.
+fn reject_tcp_unapplied(
+    transport: TransportArg,
+    budget: &budget::BudgetMode,
+    warmup_msgs: u64,
+    gate: bool,
+    establish_gate: bool,
+) -> Result<(), BenchError> {
+    if transport != TransportArg::Tcp {
+        return Ok(());
+    }
+    let mut given = Vec::new();
+    if *budget != budget::BudgetMode::Unlimited {
+        given.push("--budget-*");
+    }
+    if warmup_msgs > 0 {
+        given.push("--warmup-msgs");
+    }
+    if gate {
+        given.push("--gate / --gate-watch");
+    }
+    if establish_gate {
+        given.push("--establish-gate");
+    }
+    if given.is_empty() {
+        Ok(())
+    } else {
+        Err(BenchError::Other(format!(
+            "--transport tcp şu bayrakları uygulamaz (sessizce yok sayılmaz): {}",
+            given.join(", ")
+        )))
+    }
+}
+
 impl From<KamaArmArg> for KamaArm {
     fn from(a: KamaArmArg) -> KamaArm {
         match a {
@@ -555,18 +592,20 @@ async fn main() -> Result<(), BenchError> {
                 quinn_keepalive_ms,
                 false,
             ));
+            let budget = budget_mode(
+                budget_burst_bytes,
+                budget_refill_bytes_per_s,
+                budget_bucket_bytes,
+                budget_ceiling_bytes,
+            )?;
+            reject_tcp_unapplied(transport, &budget, 0, gate_watch.is_some(), false)?;
             run_server(
                 transport,
                 ServerCfg {
                     bind,
                     cc: cc.into(),
                     quota_r,
-                    budget: budget_mode(
-                        budget_burst_bytes,
-                        budget_refill_bytes_per_s,
-                        budget_bucket_bytes,
-                        budget_ceiling_bytes,
-                    )?,
+                    budget,
                     gate_watch,
                     fec: FecArm::from_args(fec_profile, fec_r, fec_mode.into(), fec_deadline_ms),
                     loss_confirm_k,
@@ -667,6 +706,13 @@ async fn main() -> Result<(), BenchError> {
                 budget_refill_bytes_per_s,
                 budget_bucket_bytes,
                 budget_ceiling_bytes,
+            )?;
+            reject_tcp_unapplied(
+                transport,
+                &budget,
+                warmup_msgs,
+                gate.is_some(),
+                establish_gate.is_some(),
             )?;
             // [S-60 / B-07] Manifestin koşu kimliği alanları (yapılandırma `cfg`'ye taşınmadan önce).
             let budget_label = budget.label();
@@ -1102,5 +1148,35 @@ async fn run_client(t: TransportArg, cfg: ClientCfg) -> Result<event::RunOutput,
         TransportArg::Qdgram => qdgram::QdgramTransport.run_client(cfg).await,
         TransportArg::Tcp => tcp::TcpTransport.run_client(cfg).await,
         TransportArg::KamaProduct => kama_product::KamaProductTransport.run_client(cfg).await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// [S-60 / B-09] TCP kolu uygulamadığı bütçe/warmup/gate bayraklarını reddeder; öteki kollar
+    /// ve bayraksız TCP koşusu etkilenmez.
+    #[test]
+    fn tcp_uygulamadigi_bayraklari_reddeder() {
+        let u = budget::BudgetMode::Unlimited;
+        let paced = budget::BudgetMode::Paced {
+            refill_bytes_per_s: 1000,
+            bucket_bytes: 2000,
+            ceiling_bytes: u64::MAX,
+        };
+        assert!(reject_tcp_unapplied(TransportArg::Tcp, &u, 0, false, false).is_ok());
+        assert!(reject_tcp_unapplied(TransportArg::Tcp, &paced, 0, false, false).is_err());
+        assert!(reject_tcp_unapplied(TransportArg::Tcp, &u, 10, false, false).is_err());
+        assert!(reject_tcp_unapplied(TransportArg::Tcp, &u, 0, true, false).is_err());
+        assert!(reject_tcp_unapplied(TransportArg::Tcp, &u, 0, false, true).is_err());
+        for t in [
+            TransportArg::Quinn,
+            TransportArg::Qdgram,
+            TransportArg::Kama,
+            TransportArg::KamaProduct,
+        ] {
+            assert!(reject_tcp_unapplied(t, &paced, 10, true, true).is_ok());
+        }
     }
 }
