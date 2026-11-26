@@ -760,7 +760,9 @@ async fn main() -> Result<(), BenchError> {
                     measurement_gate,
                     establish_gate: establish_gate_used,
                 };
-                manifest::write(mp, &m);
+                // [S-75 / B-22] Manifest yazılamazsa koşu hata döner; `out.jsonl` de YAZILMAZ
+                // (manifestsiz ölçüm dosyası bırakılmaz).
+                manifest::write(mp, &m)?;
             }
             output.write_jsonl(&out)?;
             eprintln!("wrote {} events → {}", output.events.len(), out.display());

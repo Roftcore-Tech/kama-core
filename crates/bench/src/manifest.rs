@@ -265,16 +265,17 @@ impl RunManifest {
     }
 }
 
-/// Manifesti diske yaz (JSON). Hata sessizce yutulmaz.
-pub fn write(path: &std::path::Path, m: &RunManifest) {
-    match serde_json::to_string_pretty(m) {
-        Ok(js) => {
-            if let Err(e) = std::fs::write(path, js) {
-                eprintln!("KP-MANIFEST-WRITE-FAILED {}: {e}", path.display());
-            }
-        }
-        Err(e) => eprintln!("KP-MANIFEST-SERIALIZE-FAILED: {e}"),
-    }
+/// Manifesti diske yaz (JSON). Hata sessizce yutulmaz: çağırana tipli döner ve koşu hata koduyla
+/// biter [S-75 / B-22] — yalnız stderr'e yazıp 0 ile bitmek manifestsiz bir `out.jsonl`
+/// bırakabiliyordu (§4.4.9 tekrar-üretilebilirlik: koşu kimliği ölçümün yanında durur).
+///
+/// # Errors
+/// Serileştirme ya da dosya yazımı başarısızsa.
+pub fn write(path: &std::path::Path, m: &RunManifest) -> Result<(), crate::error::BenchError> {
+    let js = serde_json::to_string_pretty(m)?;
+    std::fs::write(path, js).map_err(|e| {
+        crate::error::BenchError::Other(format!("manifest yazılamadı {}: {e}", path.display()))
+    })
 }
 
 /// [FAZ-4 §15] KOL ADI POLİTİKASI — belirsiz `Quinn` / `Kama` etiketi YASAK. Rakip kolları
@@ -387,6 +388,25 @@ mod tests {
             measurement_gate: false,
             establish_gate: false,
         }
+    }
+
+    /// [S-75 / B-22] Yazım hatası çağırana döner (yalnız stderr değil); başarılı yazım geri okunur.
+    #[test]
+    fn yazim_hatasi_tipli_doner() {
+        let m = base("kama-v1-full", "kama-product");
+        let dir = std::env::temp_dir().join(format!("kama-manifest-w-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ok = dir.join("manifest.json");
+        write(&ok, &m).expect("yazılır");
+        let back: RunManifest =
+            serde_json::from_str(&std::fs::read_to_string(&ok).unwrap()).unwrap();
+        assert_eq!(back.arm, m.arm);
+        let bad = dir.join("olmayan-dizin").join("manifest.json");
+        assert!(
+            write(&bad, &m).is_err(),
+            "olmayan dizine yazım hata dönmeli"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// [S-60 / B-07] v1 manifesti (yeni alanlar yok) okunabilir; yeni alanlar varsayılana düşer.
