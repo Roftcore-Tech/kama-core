@@ -44,6 +44,10 @@ fn hyst() -> (HysteresisController, HysteresisConfig) {
     (HysteresisController::new(cfg, EmergencyLevel::Arq), cfg)
 }
 
+fn dwell_ns(cfg: &HysteresisConfig) -> u64 {
+    u64::try_from(cfg.deescalate_dwell.as_nanos()).expect("dwell u64 ns'ye sığar")
+}
+
 /// MUTANT `emergency.rs:159:28` — `health < escalate_permille` → `<=`.
 #[test]
 fn escalation_threshold_is_strict_not_inclusive() {
@@ -98,8 +102,9 @@ fn deescalation_threshold_is_strict_not_inclusive() {
     }
     assert_eq!(c.update(cfg.escalate_permille - 1, t), EmergencyLevel::Dup3);
 
-    // TAM deescalate eşiği → gerilemez.
-    t += 10 * MS;
+    // TAM deescalate eşiği → gerilemez. Escalate'in başlattığı dwell (§11) geçtikten sonra
+    // denenir; yoksa sonuç eşikten değil kilitten gelirdi.
+    t += dwell_ns(&cfg);
     assert_eq!(
         c.update(cfg.deescalate_permille, t),
         EmergencyLevel::Dup3,
@@ -146,7 +151,7 @@ fn deescalation_respects_the_dwell_lock() {
     assert_eq!(c.update(cfg.escalate_permille - 1, t), EmergencyLevel::Dup3);
 
     let high = cfg.deescalate_permille + 1;
-    t += 100 * MS;
+    t += dwell_ns(&cfg); // escalate'in başlattığı dwell (§11) dolsun
     assert_eq!(c.update(high, t), EmergencyLevel::Dup2, "ilk gerileme");
 
     // Dwell içinde ikinci gerileme OLMAMALI.
@@ -390,9 +395,12 @@ fn receiver_accessors_reflect_real_reception_state() {
 /// bir sonraki GERÇEK gerileme (Dup2 → Arq) sahte bir dwell kilidine takılır ve emergency
 /// gereğinden uzun açık kalır — dar bantta forward-duplication israfı demektir.
 ///
-/// Test bu yan etkiyi zamanlama üzerinden gözlemler.
+/// [S-29 / A6-01] engine §11: de-escalate dwell'i escalate'te de başlar ("duplication'ın ölçüm
+/// etkisi sindirilene dek mode kilitli"). Arq'tan her çıkış escalate olduğundan Arq tabanındaki
+/// damga artık gözlenemez (mutant eşdeğer); test ilk gerçek gerilemenin escalate'ten TAM dwell
+/// sonra açıldığını, daha geç değil, sabitler.
 #[test]
-fn arq_floor_does_not_stamp_the_dwell_clock() {
+fn first_deescalation_opens_exactly_one_dwell_after_escalate() {
     let (mut c, cfg) = hyst();
     let high = cfg.deescalate_permille + 1;
     let low = cfg.escalate_permille - 1;
@@ -404,12 +412,17 @@ fn arq_floor_does_not_stamp_the_dwell_clock() {
     // (2) Tırman.
     assert_eq!(c.update(low, MS), EmergencyLevel::Dup2);
 
-    // (3) Hemen geriye: DOĞRU kodda `last_deescalate_ns` hâlâ None → kilit YOK → geriler.
-    //     Mutantta Some(0) → 2ms < 0+500ms → KİLİTLİ → Dup2'de kalır.
+    // (3) Hemen geriye: escalate dwell'i başlattı (§11) → KİLİTLİ, Dup2'de kalır.
     assert_eq!(
         c.update(high, 2 * MS),
+        EmergencyLevel::Dup2,
+        "escalate'ten hemen sonra gerileme — dwell escalate'te başlamıyor"
+    );
+
+    // (4) Escalate'ten tam dwell sonra kilit açılır ve geriler.
+    assert_eq!(
+        c.update(high, MS + dwell_ns(&cfg)),
         EmergencyLevel::Arq,
-        "ilk gerçek gerileme sahte dwell kilidine takıldı — \
-         Arq tabanında dwell damgası yazılıyor olabilir"
+        "ilk gerçek gerileme dwell sonrasında da kilitli"
     );
 }

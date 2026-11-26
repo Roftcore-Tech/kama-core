@@ -9,6 +9,8 @@
 //!   gürültüyü zaten soğurur.
 //! - **de-escalate (redundancy AZALT): asimetrik Schmitt (health > deescalate_threshold >
 //!   escalate_threshold) + minimum dwell** — osilasyonun asıl kaynağı erken de-escalate.
+//!   Dwell SON SEVİYE DEĞİŞİMİNDEN (escalate ya da de-escalate) sayılır: §11 "duplication'ın
+//!   ölçüm etkisi sindirilene dek mode kilitli" — escalate'ten hemen sonra iniş kilitlidir.
 //!
 //! Clean-arch: [`RecoveryModeController`] trait (port) + [`HysteresisController`] impl.
 
@@ -82,7 +84,8 @@ pub struct HysteresisConfig {
     pub escalate_permille: u32,
     /// health > bu → de-escalate (dwell'li). `> escalate_permille` (Schmitt bandı).
     pub deescalate_permille: u32,
-    /// de-escalate'ler arası minimum süre (escalate'e uygulanmaz).
+    /// Son seviye değişiminden (escalate ya da de-escalate) sonra de-escalate için minimum süre
+    /// (escalate'e uygulanmaz; §11).
     pub deescalate_dwell: Duration,
 }
 
@@ -140,7 +143,8 @@ pub trait RecoveryModeController {
 pub struct HysteresisController {
     cfg: HysteresisConfig,
     level: EmergencyLevel,
-    last_deescalate_ns: Option<u64>,
+    /// Son seviye değişimi anı (escalate ya da de-escalate) — de-escalate dwell çapası (§11).
+    last_change_ns: Option<u64>,
 }
 
 impl HysteresisController {
@@ -150,7 +154,7 @@ impl HysteresisController {
         Self {
             cfg,
             level: initial,
-            last_deescalate_ns: None,
+            last_change_ns: None,
         }
     }
 }
@@ -158,17 +162,19 @@ impl HysteresisController {
 impl RecoveryModeController for HysteresisController {
     fn update(&mut self, health_permille: u32, now_ns: u64) -> EmergencyLevel {
         if health_permille < self.cfg.escalate_permille && self.level < EmergencyLevel::Dup3 {
-            // ESCALATE — ANINDA, dwell YOK (recovery-obsesif: hemen koru).
+            // ESCALATE — ANINDA, dwell YOK (recovery-obsesif: hemen koru). De-escalate dwell'i
+            // buradan başlar (§11: duplication'ın ölçüm etkisi sindirilene dek mode kilitli).
             self.level = self.level.escalated();
+            self.last_change_ns = Some(now_ns);
         } else if health_permille > self.cfg.deescalate_permille && self.level > EmergencyLevel::Arq
         {
             // DE-ESCALATE — dwell'li (osilasyon önlemi).
             let locked = self
-                .last_deescalate_ns
+                .last_change_ns
                 .is_some_and(|t| now_ns < t.saturating_add(dur_ns(self.cfg.deescalate_dwell)));
             if !locked {
                 self.level = self.level.deescalated();
-                self.last_deescalate_ns = Some(now_ns);
+                self.last_change_ns = Some(now_ns);
             }
         }
         self.level

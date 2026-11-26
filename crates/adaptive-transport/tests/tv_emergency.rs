@@ -132,6 +132,21 @@ fn tv_emergency_g4_escalate_instant_bypasses_dwell() {
     assert_eq!(ctrl.update(250, ms(100)), EmergencyLevel::Dup3);
 }
 
+/// [S-29 / A6-01] GOLDEN G4d: de-escalate dwell'i escalate'te başlar (engine §11: "duplication'ın
+/// ölçüm etkisi sindirilene dek mode kilitli"). Arq'tan Dup2'ye çıkıştan hemen sonra gelen
+/// yüksek sağlık geri indirmez; escalate→de-escalate çevrimi dwell'den sık dönemez.
+#[test]
+fn tv_emergency_g4_escalate_starts_deescalate_dwell() {
+    let mut ctrl = HysteresisController::new(HysteresisConfig::fixture(), EmergencyLevel::Arq);
+    assert_eq!(ctrl.update(250, ms(0)), EmergencyLevel::Dup2); // escalate (dwell başlar)
+    assert_eq!(ctrl.update(750, ms(0)), EmergencyLevel::Dup2); // aynı anda iniş yok
+    assert_eq!(ctrl.update(750, ms(999)), EmergencyLevel::Dup2); // dwell kilitli
+    assert_eq!(ctrl.update(750, ms(1000)), EmergencyLevel::Arq); // dwell açıldı
+    assert_eq!(ctrl.update(250, ms(1001)), EmergencyLevel::Dup2); // escalate yine anında
+    assert_eq!(ctrl.update(750, ms(1500)), EmergencyLevel::Dup2); // yeni dwell kilitli
+    assert_eq!(ctrl.update(750, ms(2001)), EmergencyLevel::Arq);
+}
+
 /// [S-81 / A6-35] Dwell denetimi u64 sınırında doyar: saat sınırına yakın de-escalate damgası ve
 /// dev dwell taşma (debug panik / sarma sonucu erken kilit açılması) üretmez; kilit sürer.
 #[test]
