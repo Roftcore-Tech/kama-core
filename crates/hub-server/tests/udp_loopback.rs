@@ -345,6 +345,55 @@ fn probe_reports_an_undecodable_answer_as_malformed() {
     }
 }
 
+/// Okuma ucu kapalı boru: ikiliye yazılan her bayt `EPIPE` alır.
+fn closed_pipe() -> Stdio {
+    let (reader, writer) = std::io::pipe().expect("boru");
+    drop(reader);
+    Stdio::from(writer)
+}
+
+/// S-74 (H-HS-28) — çıktısı kapalı boruya giden ikili paniklemez (panik çıkış kodu 101 olurdu): kullanım
+/// hatası 2, okunamayan cihaz dosyası 1, yeşil probe 0 (S4 H12; CLAUDE.md §9 panik yok).
+#[test]
+fn closed_output_pipes_do_not_panic_the_binary() {
+    let usage = Command::new(BIN)
+        .stdin(Stdio::null())
+        .stdout(closed_pipe())
+        .stderr(closed_pipe())
+        .status()
+        .expect("hub-server koşmalı");
+    assert_eq!(usage.code(), Some(2), "kullanım hatası: {usage:?}");
+
+    let dir = TempDir::new("closed-pipe");
+    let missing = dir.0.join("yok.json");
+    let unreadable = Command::new(BIN)
+        .args(["probe".as_ref(), "--device".as_ref(), missing.as_os_str()])
+        .stdin(Stdio::null())
+        .stdout(closed_pipe())
+        .stderr(closed_pipe())
+        .status()
+        .expect("hub-server koşmalı");
+    assert_eq!(
+        unreadable.code(),
+        Some(1),
+        "cihaz okunamadı: {unreadable:?}"
+    );
+
+    let hub = RunningHub::start(&hub_config(&dir));
+    let device = dir.write(
+        "device-probe.json",
+        &device_file(&probe_phone(), &hub.addr.to_string()),
+    );
+    let healthy = Command::new(BIN)
+        .args(["probe".as_ref(), "--device".as_ref(), device.as_os_str()])
+        .stdin(Stdio::null())
+        .stdout(closed_pipe())
+        .stderr(closed_pipe())
+        .status()
+        .expect("hub-server koşmalı");
+    assert_eq!(healthy.code(), Some(0), "yeşil probe: {healthy:?}");
+}
+
 /// T-C3 — okunamayan dosya → tek satır `config unreadable: <yol>`, çıkış 1, başka çıktı yok; bozuk ve
 /// bilinmeyen alanlı dosya da başlamaz; kullanım hatası 2.
 #[test]

@@ -59,9 +59,19 @@ impl Sink for UdpSink<'_> {
     }
 
     fn log(&mut self, line: fmt::Arguments<'_>) {
-        // `println!` kapalı boruda panikler; yazılamayan satır düşer.
-        let _ = writeln!(std::io::stdout().lock(), "{line}");
+        out(line);
     }
+}
+
+/// Standart çıktıya bir satır. `println!` kapalı boruda panikler; yazılamayan satır düşer.
+fn out(line: fmt::Arguments<'_>) {
+    let _ = writeln!(std::io::stdout().lock(), "{line}");
+}
+
+/// Standart hataya bir satır. `eprintln!` kapalı boruda panikler; yazılamayan satır düşer (çıkış kodu
+/// yine belgelenen koddur).
+fn err(line: fmt::Arguments<'_>) {
+    let _ = writeln!(std::io::stderr().lock(), "{line}");
 }
 
 enum Command {
@@ -123,7 +133,7 @@ fn main() -> ExitCode {
         Some(Command::Serve { config, listen }) => serve(&config, listen),
         Some(Command::Probe { device, hub }) => run_probe(&device, hub.as_deref()),
         None => {
-            eprintln!("{USAGE}");
+            err(format_args!("{USAGE}"));
             ExitCode::from(EXIT_USAGE)
         }
     }
@@ -133,7 +143,7 @@ fn run_probe(device: &std::path::Path, hub: Option<&str>) -> ExitCode {
     let device = match probe::load_device(device) {
         Ok(device) => device,
         Err(error) => {
-            eprintln!("probe: {error}");
+            err(format_args!("probe: {error}"));
             return ExitCode::from(EXIT_FAILURE);
         }
     };
@@ -142,14 +152,14 @@ fn run_probe(device: &std::path::Path, hub: Option<&str>) -> ExitCode {
         .and_then(|hub| hub.to_socket_addrs().ok())
         .and_then(|mut addrs| addrs.next())
     else {
-        eprintln!(
+        err(format_args!(
             "probe: hub address missing or not host:port (--hub or hub.addr in the device file)"
-        );
+        ));
         return ExitCode::from(EXIT_USAGE);
     };
     match probe::run(&device, hub, &mut OsEntropy::new()) {
         Ok(outcome) => {
-            println!("{outcome}");
+            out(format_args!("{outcome}"));
             if outcome.healthy() {
                 ExitCode::SUCCESS
             } else {
@@ -157,7 +167,7 @@ fn run_probe(device: &std::path::Path, hub: Option<&str>) -> ExitCode {
             }
         }
         Err(error) => {
-            eprintln!("probe: {error}");
+            err(format_args!("probe: {error}"));
             ExitCode::from(EXIT_FAILURE)
         }
     }
@@ -168,11 +178,11 @@ fn serve(path: &std::path::Path, listen: Option<SocketAddr>) -> ExitCode {
         Ok(config) => config,
         Err(error @ ConfigError::Unreadable(_)) => {
             // T-C3 / Deploy T-DEP-6b: tek satır, başka çıktı yok.
-            eprintln!("{error}");
+            err(format_args!("{error}"));
             return ExitCode::from(EXIT_FAILURE);
         }
         Err(error) => {
-            eprintln!("{error}");
+            err(format_args!("{error}"));
             return ExitCode::from(EXIT_FAILURE);
         }
     };
@@ -183,12 +193,12 @@ fn serve(path: &std::path::Path, listen: Option<SocketAddr>) -> ExitCode {
     let socket = match UdpSocket::bind(config.listen) {
         Ok(socket) => socket,
         Err(error) => {
-            eprintln!("cannot bind {}: {error}", config.listen);
+            err(format_args!("cannot bind {}: {error}", config.listen));
             return ExitCode::from(EXIT_FAILURE);
         }
     };
     if let Err(error) = socket.set_read_timeout(Some(TICK)) {
-        eprintln!("cannot set read timeout: {error}");
+        err(format_args!("cannot set read timeout: {error}"));
         return ExitCode::from(EXIT_FAILURE);
     }
     let listen = socket.local_addr().unwrap_or(config.listen);
@@ -196,7 +206,7 @@ fn serve(path: &std::path::Path, listen: Option<SocketAddr>) -> ExitCode {
     let mut hub = match Hub::new(config, SystemClock::new(), OsEntropy::new()) {
         Ok(hub) => hub,
         Err(error) => {
-            eprintln!("{error}");
+            err(format_args!("{error}"));
             return ExitCode::from(EXIT_FAILURE);
         }
     };
@@ -229,11 +239,11 @@ fn serve(path: &std::path::Path, listen: Option<SocketAddr>) -> ExitCode {
             Err(error) => {
                 failures = failures.saturating_add(1);
                 if failures >= MAX_CONSECUTIVE_FAILURES {
-                    eprintln!("recv keeps failing ({error}); exiting");
+                    err(format_args!("recv keeps failing ({error}); exiting"));
                     return ExitCode::from(EXIT_FAILURE);
                 }
                 if failures == 1 {
-                    eprintln!("recv: {error}");
+                    err(format_args!("recv: {error}"));
                 }
                 std::thread::sleep(ERROR_BACKOFF);
             }
