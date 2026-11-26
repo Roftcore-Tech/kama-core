@@ -1390,7 +1390,7 @@ pub struct ClientLiveDiag {
     pub param_sends: u64,
     pub param_confirmed: u64,
     pub param_confirmed_at_ns: u64,
-    /// [FEC-TEŞHİS] Motorun taban PTO'su (µs; `srtt + 4·rttvar + max_ack_delay`).
+    /// [FEC-TEŞHİS] Motorun taban PTO'su (µs; `srtt + max(4·rttvar, min_pto) + max_ack_delay`).
     pub base_pto_us: u64,
     /// [İZ-ARALIK] Gönderen motorun hat koruması ACK kaydı
     /// (`Sender::diag_line_guard_trace`): son [`LINE_GUARD_LOG_LEN`] kayıt, ana döngü turu

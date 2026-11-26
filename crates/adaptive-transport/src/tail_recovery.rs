@@ -18,7 +18,7 @@
 pub struct TailRecoveryConfig {
     /// Master gate. Default false → mechanism inert (byte-identical wire/behaviour).
     pub enabled: bool,
-    /// Lower bound on the base PTO (ns).
+    /// Floor of the rttvar term of the base PTO (ns): `max(4·rttvar, min_pto)` (engine §12).
     pub min_pto_ns: u64,
     /// Upper bound on the base PTO (ns), before backoff.
     pub max_pto_ns: u64,
@@ -166,17 +166,20 @@ impl TailRecovery {
         self.cfg.enabled
     }
 
-    /// Base PTO = clamp(srtt + 4·rttvar + max_ack_delay, MIN, MAX). No RTT sample ⇒ initial_pto (Karn: never from a
-    /// retransmitted sample). Overflow-safe (saturating).
+    /// Base PTO = min(srtt + max(4·rttvar, MIN) + max_ack_delay, MAX) — engine spec §12
+    /// `PTO = srtt + max(RTTVAR_MULT × rttvar, min_pto) + max_ack_delay` (RFC 9002 §6.2.1 biçimi,
+    /// `min_pto` = kGranularity yeri; quinn `pto_base`). `min_pto` rttvar teriminin tabanıdır, toplamın
+    /// değil. No RTT sample ⇒ initial_pto (Karn: never from a retransmitted sample). Overflow-safe
+    /// (saturating).
     #[must_use]
     pub fn base_pto_ns(&self, srtt_ns: Option<u64>, rttvar_ns: u64) -> u64 {
         match srtt_ns {
             None => self.cfg.initial_pto_ns,
             Some(srtt) => {
                 let raw = srtt
-                    .saturating_add(rttvar_ns.saturating_mul(4))
+                    .saturating_add(rttvar_ns.saturating_mul(4).max(self.cfg.min_pto_ns))
                     .saturating_add(self.cfg.max_ack_delay_ns);
-                raw.clamp(self.cfg.min_pto_ns, self.cfg.max_pto_ns)
+                raw.min(self.cfg.max_pto_ns)
             }
         }
     }
@@ -328,7 +331,7 @@ mod tests {
     fn on_cfg() -> TailRecoveryConfig {
         TailRecoveryConfig {
             enabled: true,
-            min_pto_ns: 1_000_000,
+            min_pto_ns: MIN_PTO,
             max_pto_ns: 10_000_000_000,
             initial_pto_ns: 500_000_000,
             max_backoff_pto_ns: 60_000_000_000,
@@ -338,6 +341,9 @@ mod tests {
     }
     const RTT: u64 = 100_000_000; // 100 ms srtt
     const VAR: u64 = 0;
+    const MIN_PTO: u64 = 1_000_000; // on_cfg min_pto (1 ms)
+    /// on_cfg base PTO at srtt = RTT, rttvar = 0: srtt + max(4·0, min_pto) + 0 (engine §12).
+    const PTO: u64 = RTT + MIN_PTO;
 
     #[test]
     fn disabled_never_fires() {
@@ -366,26 +372,43 @@ mod tests {
         let t = TailRecovery::new(on_cfg());
         // no sample → initial.
         assert_eq!(t.base_pto_ns(None, 0), 500_000_000);
-        // srtt + 4·rttvar (+0 ack delay), clamped.
+        // srtt + max(4·rttvar, min_pto) (+0 ack delay).
         assert_eq!(t.base_pto_ns(Some(RTT), 10_000_000), RTT + 40_000_000);
-        // below floor → clamped to min.
-        assert_eq!(t.base_pto_ns(Some(1), 0), 1_000_000);
+        // [S-73] 4·rttvar below min_pto → the rttvar TERM is floored, not the sum (§12).
+        assert_eq!(t.base_pto_ns(Some(1), 0), 1 + MIN_PTO);
+        assert_eq!(t.base_pto_ns(Some(RTT), 0), PTO);
         // above ceiling → clamped to max.
         assert_eq!(t.base_pto_ns(Some(u64::MAX), 0), 10_000_000_000);
+    }
+
+    /// [S-73 / A6-09] engine §12 `PTO = srtt + max(RTTVAR_MULT × rttvar, min_pto) + max_ack_delay`
+    /// on the product configs: srtt 100 ms, rttvar 0, max_ack_delay 25 ms, min_pto 10 ms → 135 ms
+    /// (old `clamp(srtt + 4·rttvar + mad, min_pto, …)` gave 125 ms).
+    #[test]
+    fn base_pto_floors_the_rttvar_term_per_spec() {
+        for cfg in [
+            TailRecoveryConfig::validated_v1(),
+            TailRecoveryConfig::rfc9002_cc_port(),
+        ] {
+            let t = TailRecovery::new(cfg);
+            assert_eq!(t.base_pto_ns(Some(RTT), 0), 135_000_000);
+            // 4·rttvar above min_pto → rttvar term as is: 100 + 4·5 + 25 = 145 ms.
+            assert_eq!(t.base_pto_ns(Some(RTT), 5_000_000), 145_000_000);
+        }
     }
 
     #[test]
     fn arms_on_outstanding_fires_at_pto_boundary() {
         let mut t = TailRecovery::new(on_cfg());
         t.on_ack_progress(0);
-        // PTO = srtt = 100ms. Before boundary → idle.
+        // PTO = srtt + min_pto = 101ms. Before boundary → idle.
         assert_eq!(
-            t.on_timer(RTT - 1, Some(RTT), VAR, Some(3)),
+            t.on_timer(PTO - 1, Some(RTT), VAR, Some(3)),
             ProbeDecision::Idle
         );
         // at boundary → probe round 0 targets oldest.
         assert_eq!(
-            t.on_timer(RTT, Some(RTT), VAR, Some(3)),
+            t.on_timer(PTO, Some(RTT), VAR, Some(3)),
             ProbeDecision::ProbeDue {
                 target_seq: 3,
                 probe_index: 0
@@ -399,20 +422,20 @@ mod tests {
         t.on_ack_progress(0);
         // round 0 at 1·PTO.
         assert!(matches!(
-            t.on_timer(RTT, Some(RTT), VAR, Some(9)),
+            t.on_timer(PTO, Some(RTT), VAR, Some(9)),
             ProbeDecision::ProbeDue { probe_index: 0, .. }
         ));
-        t.on_probe_sent(RTT); // emission consumed the attempt.
-                              // round 1 needs 2·PTO after re-arm at RTT → fires at RTT+2·RTT = 3·RTT.
+        t.on_probe_sent(PTO); // emission consumed the attempt.
+                              // round 1 needs 2·PTO after re-arm at PTO → fires at PTO+2·PTO = 3·PTO.
         assert_eq!(
-            t.on_timer(2 * RTT, Some(RTT), VAR, Some(9)),
+            t.on_timer(3 * PTO - 1, Some(RTT), VAR, Some(9)),
             ProbeDecision::Idle
         );
         assert!(matches!(
-            t.on_timer(3 * RTT, Some(RTT), VAR, Some(9)),
+            t.on_timer(3 * PTO, Some(RTT), VAR, Some(9)),
             ProbeDecision::ProbeDue { probe_index: 1, .. }
         ));
-        t.on_probe_sent(3 * RTT);
+        t.on_probe_sent(3 * PTO);
         // cap = 2 → no more, forever (bounded).
         assert_eq!(
             t.on_timer(100 * RTT, Some(RTT), VAR, Some(9)),
@@ -431,7 +454,7 @@ mod tests {
         t.on_ack_progress(0);
         for k in 1..50u64 {
             assert!(matches!(
-                t.on_timer(k * RTT, Some(RTT), VAR, Some(1)),
+                t.on_timer(k * PTO, Some(RTT), VAR, Some(1)),
                 ProbeDecision::ProbeDue { probe_index: 0, .. }
             ));
         }
@@ -447,20 +470,20 @@ mod tests {
         let mut t = TailRecovery::new(on_cfg());
         t.on_ack_progress(0);
         assert!(matches!(
-            t.on_timer(RTT, Some(RTT), VAR, Some(1)),
+            t.on_timer(PTO, Some(RTT), VAR, Some(1)),
             ProbeDecision::ProbeDue { probe_index: 0, .. }
         ));
-        t.on_probe_sent(RTT);
+        t.on_probe_sent(PTO);
         // ACK progress resets window + backoff.
-        t.on_ack_progress(RTT + 5);
+        t.on_ack_progress(PTO + 5);
         assert_eq!(t.probe_index(), 0);
         // not due until 1·PTO after progress.
         assert_eq!(
-            t.on_timer(RTT + 5 + RTT - 1, Some(RTT), VAR, Some(2)),
+            t.on_timer(PTO + 5 + PTO - 1, Some(RTT), VAR, Some(2)),
             ProbeDecision::Idle
         );
         assert!(matches!(
-            t.on_timer(RTT + 5 + RTT, Some(RTT), VAR, Some(2)),
+            t.on_timer(PTO + 5 + PTO, Some(RTT), VAR, Some(2)),
             ProbeDecision::ProbeDue { probe_index: 0, .. }
         ));
     }
@@ -484,7 +507,7 @@ mod tests {
         t.on_ack_progress(0);
         // the sender supplies the oldest outstanding seq; the machine probes exactly that.
         assert_eq!(
-            t.on_timer(RTT, Some(RTT), VAR, Some(41)),
+            t.on_timer(PTO, Some(RTT), VAR, Some(41)),
             ProbeDecision::ProbeDue {
                 target_seq: 41,
                 probe_index: 0
@@ -497,13 +520,13 @@ mod tests {
         let mut t = TailRecovery::new(on_cfg());
         t.on_ack_progress(0);
         // a late ACK (progress) at t just before a would-be probe must suppress it for one PTO.
-        t.on_ack_progress(RTT - 10);
+        t.on_ack_progress(PTO - 10);
         assert_eq!(
-            t.on_timer(RTT, Some(RTT), VAR, Some(2)),
+            t.on_timer(PTO, Some(RTT), VAR, Some(2)),
             ProbeDecision::Idle
         );
         assert!(matches!(
-            t.on_timer(RTT - 10 + RTT, Some(RTT), VAR, Some(2)),
+            t.on_timer(PTO - 10 + PTO, Some(RTT), VAR, Some(2)),
             ProbeDecision::ProbeDue { .. }
         ));
     }
@@ -513,13 +536,13 @@ mod tests {
         let mut t = TailRecovery::new(on_cfg());
         t.on_ack_progress(0);
         let big = 900_000_000u64;
-        // PTO now 900ms → not due at 100ms.
+        // PTO now 900ms + min_pto → not due at 100ms.
         assert_eq!(
             t.on_timer(RTT, Some(big), VAR, Some(1)),
             ProbeDecision::Idle
         );
         assert!(matches!(
-            t.on_timer(big, Some(big), VAR, Some(1)),
+            t.on_timer(big + MIN_PTO, Some(big), VAR, Some(1)),
             ProbeDecision::ProbeDue { .. }
         ));
     }

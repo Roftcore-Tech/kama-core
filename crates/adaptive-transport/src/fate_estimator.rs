@@ -13,7 +13,7 @@
 //! * A logical source id can enter the window at most once (§3.1). Packets still unresolved at
 //!   the horizon stay `UNKNOWN` and never enter the estimator denominator (§3.1).
 //!
-//! Reordering guard (§3.1): `clamp(srtt + 4·rttvar + max_ack_delay, min_pto, max_pto)` — the SAME
+//! Reordering guard (§3.1): `min(srtt + max(4·rttvar, min_pto) + max_ack_delay, max_pto)` — the SAME
 //! bounded-PTO base as the validated product tail probe. This module does not re-derive it: callers
 //! obtain it from the product symbol [`crate::tail_recovery::TailRecovery::base_pto_ns`] (see
 //! [`reordering_guard_ns`]). The guard is snapshotted at loss-declaration time.
@@ -41,7 +41,7 @@ pub const MIN_NONLOSS_TRANSITIONS: u32 = 32;
 pub const PPM: u64 = 1_000_000;
 
 /// §3.1 reordering guard from the PRODUCT bounded-PTO base symbol (`TailRecovery::base_pto_ns`):
-/// `clamp(srtt + 4·rttvar + max_ack_delay, min_pto, max_pto)`; no RTT sample ⇒ `initial_pto_ns`
+/// `min(srtt + max(4·rttvar, min_pto) + max_ack_delay, max_pto)`; no RTT sample ⇒ `initial_pto_ns`
 /// (the same conservative product branch — an unconverged flow is estimator-ineligible anyway).
 #[must_use]
 pub fn reordering_guard_ns(cfg: &TailRecoveryConfig, srtt_ns: Option<u64>, rttvar_ns: u64) -> u64 {
