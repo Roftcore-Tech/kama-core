@@ -139,7 +139,10 @@ use crate::wire::HDR_DATA;
 pub const PENDING_INIT_CAP: usize = 16;
 
 /// Application okumadan birikebilecek S1 olayı tavanı (SR-AUDIT-001). Dolunca adaptör yeni
-/// olay üreten işi (zarf ve Crypto olayları) KAYNAKTA bekletir — olay düşmez.
+/// olay üreten işi (zarf ve Crypto olayları) KAYNAKTA bekletir — olay düşmez; yeni niyet açacak
+/// `connect` `Backpressure` döner (tavan altındayken en çok iki olay ekler). `close` ve `cancel`
+/// tam bir olay üretmek zorundadır (S1 F07.1, H9); her biri bir oturum / niyet tüketir, yani
+/// oturum ve niyet tablolarıyla (`PENDING_INIT_CAP`) sınırlıdır.
 pub const MAX_EVENTS: usize = 256;
 
 /// Application okumadan birikebilecek teslim tavanı. Dolunca teslimler veri alıcısının kendi
@@ -2135,6 +2138,11 @@ impl<C: PacketProtection + SessionControl> KamaTransport for ClientTransport<C> 
         if self.intents.len() >= PENDING_INIT_CAP {
             return Err(TransportError::Backpressure);
         }
+        // SR-AUDIT-001: yeni niyet olay üretir (`Measuring`, belki `ConnectAbandoned`); olay
+        // kuyruğu doluyken kabul edilmez — `MAX_EVENTS` olay düşürmez, işi kaynakta bekletir.
+        if !self.room_for_events() {
+            return Err(TransportError::Backpressure);
+        }
         let ticket = ConnectTicket::from_raw(self.next_ticket);
         self.next_ticket = self.next_ticket.saturating_add(1);
         // F0.2(ii): `Pending` döndüğü anda `Measuring`. Olay yalnız `Pending` dönen yolda kuyruğa
@@ -2588,5 +2596,44 @@ mod tests {
         assert!(transport.session_live_diags().is_empty());
         assert_eq!(transport.retired_live_diag(), ClientLiveDiag::default());
         assert!(transport.reorder_diags().is_empty());
+    }
+
+    /// SR-AUDIT-001 / `MAX_EVENTS`: okunmayan olay kuyruğu doluyken yeni niyet açacak `connect`
+    /// `Backpressure` döner ve olay eklemez; bir olay okununca yeniden kabul edilir. Veri adresi
+    /// olmayan eşe her `connect` niyet kaydı açmadan iki olay (`Measuring` + `ConnectAbandoned`)
+    /// ekler. ESKİ DAVRANIŞ: kuyruk oda denetimi olmadan sınırsız büyürdü.
+    #[test]
+    fn connect_refuses_when_the_event_queue_is_full() {
+        use kama_noise_wire::seam_mock::{fixture_directory, fixture_protection};
+        use kama_noise_wire::session_control::EnvelopeKind;
+
+        let me = PeerRef::from_dest_hash([0x4B; 32]);
+        let directory = fixture_directory([*me.as_bytes()]).expect("fikstür dizini");
+        let (crypto, _clock) = fixture_protection(*me.as_bytes(), directory, EnvelopeKind::Legacy);
+        let hub = crate::memory_link::MemoryHub::new();
+        let cfg = ClientTransportConfig::product(SocketAddr::from(([127, 0, 0, 1], 0)));
+        let mut t = ClientTransport::new(cfg, crypto, Box::new(hub.link(me))).expect("adaptör");
+        let peer = |i: usize| {
+            let mut d = [0u8; 32];
+            d[..8].copy_from_slice(&(i as u64).to_be_bytes());
+            PeerRef::from_dest_hash(d)
+        };
+        for i in 0..MAX_EVENTS / 2 {
+            assert!(matches!(
+                t.connect(peer(i), None),
+                Ok(ConnectResult::Pending(_))
+            ));
+        }
+        assert_eq!(t.events.len(), MAX_EVENTS);
+        assert_eq!(
+            t.connect(peer(MAX_EVENTS), None),
+            Err(TransportError::Backpressure)
+        );
+        assert_eq!(t.events.len(), MAX_EVENTS, "olay eklenmedi");
+        assert!(t.poll_event().is_some());
+        assert!(matches!(
+            t.connect(peer(MAX_EVENTS), None),
+            Ok(ConnectResult::Pending(_))
+        ));
     }
 }
