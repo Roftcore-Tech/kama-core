@@ -5,7 +5,8 @@
 //! dosyasıyla probe yapılmaz: aynı kimlikle bind, telefonun dönüş adresini laptopa taşır.
 //!
 //! Cihaz dosyasından okunan alanlar (KM-HUB-TDD-001 v0.6.1 §5: v1 = bugünkü v0 anahtar adları +
-//! `hub.ed25519_pub`; geri kalanı yok sayılır): `ed25519.priv` (64 hex — sertifikadaki cihaz anahtarı),
+//! `format_version: 1` + `hub.ed25519_pub`; geri kalanı yok sayılır): `format_version` (1 olmalı),
+//! `ed25519.priv` (64 hex — sertifikadaki cihaz anahtarı),
 //! `cert` (204 base64), `hub.addr` (`--hub` verilmezse), `hub.ed25519_pub` (64 hex — hub imzasını
 //! doğrulamak için; S4 C2 "hub imzası doğrulanmadan bind tamam sayılmaz").
 //! Her istek en çok 3 kez, 1 s arayla yollanır (S4 C2).
@@ -21,7 +22,7 @@ use kama_noise_wire::ed25519_strict::verify_strict;
 use kama_noise_wire::entropy::EntropySource;
 use kama_noise_wire::handshake::{cert_ref_of, COMPACT_DEVICE_CERT_LEN};
 
-use crate::config::{base64_decode, hex_decode};
+use crate::config::{base64_decode, hex_decode, FORMAT_VERSION};
 use crate::wire::{
     bind_ack_tbs, bind_proof_tbs, classify, code, control_datagram, flags, frame, method,
     BindProofRequest, BindProofResponse, CertRef, ClientBindRequest, ClientBindResponse, Datagram,
@@ -62,6 +63,9 @@ pub enum ProbeError {
     RequestTooLong,
     /// Hub cevap vermedi (dizinde değil, erişilemiyor ya da kayıp).
     Timeout(&'static str),
+    /// Hub bu isteğe eşleşen bir yanıt verdi ama yanıtın yükü çözülmedi (S4 §2.4 / §2.3 düzeni).
+    /// Cevapsızlıktan ([`ProbeError::Timeout`]) ayrıdır: hub erişilebilir, yanıtı bozuk.
+    Malformed(&'static str),
     /// Hub hata çerçevesi döndü.
     Refused(u16),
     /// Hub imzası doğrulanmadı.
@@ -78,6 +82,7 @@ impl fmt::Display for ProbeError {
             Self::Socket(error) => write!(f, "socket: {error}"),
             Self::RequestTooLong => f.write_str("request does not fit one datagram"),
             Self::Timeout(step) => write!(f, "{step}: no answer after {ATTEMPTS} attempts"),
+            Self::Malformed(step) => write!(f, "{step}: answer does not decode"),
             Self::Refused(code) => write!(f, "hub refused: error 0x{code:04x}"),
             Self::BadHubSignature => f.write_str("hub signature does not verify"),
             Self::Entropy => f.write_str("entropy source unavailable"),
@@ -138,6 +143,14 @@ pub fn load_device(path: &Path) -> Result<ProbeDevice, ProbeError> {
 pub fn parse_device(text: &str) -> Result<ProbeDevice, ProbeError> {
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|_| ProbeError::DeviceInvalid("not JSON"))?;
+    // TDD §5: v1 dosya biçimi `format_version: 1` taşır (hub.json ile aynı sürüm, config.rs).
+    if value
+        .get("format_version")
+        .and_then(serde_json::Value::as_u64)
+        != Some(u64::from(FORMAT_VERSION))
+    {
+        return Err(ProbeError::DeviceInvalid("format_version must be 1"));
+    }
     let field = |path: &[&str]| {
         path.iter()
             .try_fold(&value, |node, key| node.get(key))
@@ -242,7 +255,7 @@ fn bind_once(
         "CLIENT_BIND",
     )?;
     let hub_nonce = ClientBindResponse::decode(&answer)
-        .map_err(|_| ProbeError::Timeout("CLIENT_BIND"))?
+        .map_err(|_| ProbeError::Malformed("CLIENT_BIND"))?
         .hub_nonce;
 
     let tbs = bind_proof_tbs(&device.hub_pub, &device.cert_ref, &client_nonce, &hub_nonce);
@@ -261,7 +274,7 @@ fn bind_once(
         "BIND_PROOF",
     )?;
     let response =
-        BindProofResponse::decode(&answer).map_err(|_| ProbeError::Timeout("BIND_PROOF"))?;
+        BindProofResponse::decode(&answer).map_err(|_| ProbeError::Malformed("BIND_PROOF"))?;
     let ack = bind_ack_tbs(
         &device.cert_ref,
         &client_nonce,
@@ -274,7 +287,8 @@ fn bind_once(
     Ok((proof_id, rtt))
 }
 
-/// İstek yollar, eşleşen yanıtı bekler (en çok [`ATTEMPTS`] kez). Hata çerçevesi → [`ProbeError::Refused`].
+/// İstek yollar, eşleşen yanıtı bekler (en çok [`ATTEMPTS`] kez). Hata çerçevesi → [`ProbeError::Refused`];
+/// yükü çözülmeyen hata çerçevesi → [`ProbeError::Malformed`] (kod uydurulmaz).
 fn exchange(
     socket: &UdpSocket,
     method_id: u8,
@@ -309,8 +323,10 @@ fn exchange(
                 continue;
             }
             if answer.flags == flags::RESPONSE_ERROR {
-                let code = ErrorPayload::decode(answer.payload).map_or(0, |error| error.code);
-                return Err(ProbeError::Refused(code));
+                return Err(ErrorPayload::decode(answer.payload)
+                    .map_or(ProbeError::Malformed(step), |error| {
+                        ProbeError::Refused(error.code)
+                    }));
             }
             if answer.flags == flags::RESPONSE {
                 return Ok((answer.payload.to_vec(), sent_at.elapsed()));

@@ -15,11 +15,13 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use harness::{
-    base64, data, deliver, hex, hub_json, hub_public, reply, store_response, Phone, HUB_SEED,
+    base64, data, deliver, hex, hub_json, hub_public, reply, rpc, store_response, Phone, HUB_SEED,
 };
+use hub_server::probe::{self, ProbeError};
 use hub_server::wire::{
-    classify, code, envelope, frame, method, ClientBindResponse, Datagram, Payload,
+    classify, code, envelope, flags, frame, method, ClientBindResponse, Datagram, Payload,
 };
+use kama_noise_wire::entropy::OsEntropy;
 
 const BIN: &str = env!("CARGO_BIN_EXE_hub-server");
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -283,6 +285,64 @@ fn probe_binds_and_gets_three_heartbeats() {
     ]);
     assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&output.stderr).contains("CLIENT_BIND: no answer"));
+}
+
+/// S-90 (H-HS-27) — probe yalnız `format_version: 1` taşıyan cihaz dosyasını okur (KM-HUB-TDD-001 §5:
+/// "v1 dosya biçimi = bugünkü v0 anahtar adları + `format_version: 1` + `hub.ed25519_pub`").
+#[test]
+fn probe_device_file_must_carry_format_version_1() {
+    let file = device_file(&probe_phone(), "127.0.0.1:47000");
+    assert!(probe::parse_device(&file).is_ok());
+    for bad in [
+        file.replacen(r#""format_version": 1, "#, "", 1),
+        file.replacen(r#""format_version": 1"#, r#""format_version": 0"#, 1),
+        file.replacen(r#""format_version": 1"#, r#""format_version": 2"#, 1),
+        file.replacen(r#""format_version": 1"#, r#""format_version": "1""#, 1),
+    ] {
+        assert_ne!(bad, file);
+        let error = probe::parse_device(&bad).expect_err("format_version 1 değil");
+        assert!(
+            matches!(error, ProbeError::DeviceInvalid("format_version must be 1")),
+            "{error:?}"
+        );
+    }
+}
+
+/// S-90 (H-HS-27) — hub'ın eşleşen ama yükü çözülmeyen yanıtı cevapsızlık değildir: `Malformed`
+/// (`Timeout` değil); yükü çözülmeyen hata çerçevesi de uydurulmuş bir kodla `Refused` sayılmaz.
+#[test]
+fn probe_reports_an_undecodable_answer_as_malformed() {
+    let device =
+        probe::parse_device(&device_file(&probe_phone(), "127.0.0.1:47000")).expect("cihaz");
+    // (yanıt bayrağı, yük): CLIENT_BIND yanıtının boyunda olmayan yük · ErrorPayload olmayan yük.
+    for (answer_flags, payload) in [
+        (flags::RESPONSE, &[0x00][..]),
+        (flags::RESPONSE_ERROR, &[][..]),
+    ] {
+        let fake = UdpSocket::bind("127.0.0.1:0").expect("sahte hub");
+        fake.set_read_timeout(Some(TIMEOUT)).expect("zaman aşımı");
+        let addr = fake.local_addr().expect("adres");
+        let payload = payload.to_vec();
+        let hub = std::thread::spawn(move || {
+            let mut buffer = [0u8; 2048];
+            let (n, from) = fake.recv_from(&mut buffer).expect("CLIENT_BIND");
+            let request = reply(&buffer[..n]);
+            assert_eq!(request.method_id, method::CLIENT_BIND);
+            let answer = rpc(
+                method::CLIENT_BIND,
+                answer_flags,
+                request.request_id,
+                &payload,
+            );
+            fake.send_to(&answer, from).expect("yanıt");
+        });
+        let error = probe::run(&device, addr, &mut OsEntropy::new()).expect_err("bozuk yanıt");
+        hub.join().expect("sahte hub");
+        assert!(
+            matches!(error, ProbeError::Malformed("CLIENT_BIND")),
+            "{answer_flags:#04x}: {error:?}"
+        );
+    }
 }
 
 /// T-C3 — okunamayan dosya → tek satır `config unreadable: <yol>`, çıkış 1, başka çıktı yok; bozuk ve
