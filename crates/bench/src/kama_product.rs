@@ -105,7 +105,7 @@ struct ArmCfg {
     spec_l1: Option<u32>,
     spec_l2: Option<u32>,
     gate: Option<u32>,
-    persist_mode: Option<String>,
+    persist_mode: Option<PersistMode>,
     persist_alpha: Option<u32>,
     persist_rho: Option<u32>,
     persist_q: Option<u32>,
@@ -233,12 +233,8 @@ fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
                 c.persistent_cap_permille = v;
             }
             // [PERSIST] ufuk modu ve knob'ları (None = sevk default'ları).
-            if let Some(m) = persist_mode.as_deref() {
-                c.persist_mode = if m == "learned" {
-                    PersistMode::LearnedSpuriousAge
-                } else {
-                    PersistMode::FixedSrtt
-                };
+            if let Some(m) = persist_mode {
+                c.persist_mode = m;
             }
             if let Some(v) = persist_alpha {
                 c.persist_srtt_permille = v;
@@ -618,7 +614,7 @@ async fn server_loop(cfg: ServerCfg) -> Result<(), BenchError> {
         spec_l1: cfg.spec_l1_permille,
         spec_l2: cfg.spec_l2_permille,
         gate: cfg.gate_permille,
-        persist_mode: cfg.persist_mode.clone(),
+        persist_mode: cfg.persist_mode,
         persist_alpha: cfg.persist_alpha,
         persist_rho: cfg.persist_rho,
         persist_q: cfg.persist_q,
@@ -741,7 +737,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         spec_l1: cfg.spec_l1_permille,
         spec_l2: cfg.spec_l2_permille,
         gate: cfg.gate_permille,
-        persist_mode: cfg.persist_mode.clone(),
+        persist_mode: cfg.persist_mode,
         persist_alpha: cfg.persist_alpha,
         persist_rho: cfg.persist_rho,
         persist_q: cfg.persist_q,

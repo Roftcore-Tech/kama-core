@@ -107,9 +107,10 @@ enum Cmd {
         /// [R-SWEEP] Yapı-gate seviyesi (‰; 500 = sevk r4). None = motor default (fec_med).
         #[arg(long)]
         gate_permille: Option<u32>,
-        /// [PERSIST] Ufuk modu: fixed (sevk 0.5×srtt) | learned (max(α·srtt, ρ·Q_q(spurious yaşı))).
-        #[arg(long)]
-        persist_mode: Option<String>,
+        /// [PERSIST] Ufuk modu: fixed (sabit α·srtt) | learned (max(α·srtt, ρ·Q_q(spurious yaşı))).
+        /// Tanınmayan değer CLI'da reddedilir [S-92 / B-15].
+        #[arg(long, value_enum)]
+        persist_mode: Option<PersistModeCli>,
         /// [PERSIST] Taban α (‰ srtt; fixed modda eşiğin kendisi). None = 500.
         #[arg(long)]
         persist_alpha: Option<u32>,
@@ -252,9 +253,10 @@ enum Cmd {
         /// [R-SWEEP] Yapı-gate seviyesi (‰; 500 = sevk r4). None = motor default (fec_med).
         #[arg(long)]
         gate_permille: Option<u32>,
-        /// [PERSIST] Ufuk modu: fixed (sevk 0.5×srtt) | learned (max(α·srtt, ρ·Q_q(spurious yaşı))).
-        #[arg(long)]
-        persist_mode: Option<String>,
+        /// [PERSIST] Ufuk modu: fixed (sabit α·srtt) | learned (max(α·srtt, ρ·Q_q(spurious yaşı))).
+        /// Tanınmayan değer CLI'da reddedilir [S-92 / B-15].
+        #[arg(long, value_enum)]
+        persist_mode: Option<PersistModeCli>,
         /// [PERSIST] Taban α (‰ srtt; fixed modda eşiğin kendisi). None = 500.
         #[arg(long)]
         persist_alpha: Option<u32>,
@@ -377,6 +379,26 @@ impl From<FecModeCli> for FecModeArg {
             FecModeCli::Static => FecModeArg::Static,
             FecModeCli::Adaptive => FecModeArg::Adaptive,
             FecModeCli::Policy => FecModeArg::Policy,
+        }
+    }
+}
+
+/// [S-92 / B-15] `--persist-mode` değerleri — `client_core::runtime::PersistMode`'a birebir
+/// eşlenir. Eskiden serbest dizeydi: "learned" dışındaki her değer (yazım hatası dahil) sessizce
+/// `FixedSrtt` oluyordu.
+#[derive(Copy, Clone, ValueEnum, PartialEq)]
+enum PersistModeCli {
+    /// Sabit ufuk: `persist_srtt_permille × srtt`.
+    Fixed,
+    /// Öğrenilen ufuk: max(taban, ρ × Q_q(spurious yaşı)).
+    Learned,
+}
+
+impl From<PersistModeCli> for client_core::runtime::PersistMode {
+    fn from(m: PersistModeCli) -> Self {
+        match m {
+            PersistModeCli::Fixed => Self::FixedSrtt,
+            PersistModeCli::Learned => Self::LearnedSpuriousAge,
         }
     }
 }
@@ -612,7 +634,7 @@ async fn main() -> Result<(), BenchError> {
                     fec_risk,
                     ts_out: None,
                     gate_permille,
-                    persist_mode,
+                    persist_mode: persist_mode.map(Into::into),
                     persist_alpha,
                     persist_rho,
                     persist_q,
@@ -738,7 +760,7 @@ async fn main() -> Result<(), BenchError> {
                 fec_risk,
                 ts_out,
                 gate_permille,
-                persist_mode,
+                persist_mode: persist_mode.map(Into::into),
                 persist_alpha,
                 persist_rho,
                 persist_q,

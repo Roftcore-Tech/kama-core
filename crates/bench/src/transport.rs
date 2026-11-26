@@ -210,8 +210,8 @@ pub struct ClientCfg {
     pub spec_l1_permille: Option<u32>,
     pub spec_l2_permille: Option<u32>,
     pub gate_permille: Option<u32>,
-    /// [PERSIST] Ufuk modu ("fixed"|"learned"), taban α (‰ srtt), ρ (‰), quantile (‰). None = default.
-    pub persist_mode: Option<String>,
+    /// [PERSIST] Ufuk modu, taban α (‰ srtt), ρ (‰), quantile (‰). None = ürün profili değeri.
+    pub persist_mode: Option<client_core::runtime::PersistMode>,
     pub persist_alpha: Option<u32>,
     pub persist_rho: Option<u32>,
     pub persist_q: Option<u32>,
@@ -286,8 +286,8 @@ pub struct ServerCfg {
     pub spec_l1_permille: Option<u32>,
     pub spec_l2_permille: Option<u32>,
     pub gate_permille: Option<u32>,
-    /// [PERSIST] Ufuk modu ("fixed"|"learned"), taban α (‰ srtt), ρ (‰), quantile (‰). None = default.
-    pub persist_mode: Option<String>,
+    /// [PERSIST] Ufuk modu, taban α (‰ srtt), ρ (‰), quantile (‰). None = ürün profili değeri.
+    pub persist_mode: Option<client_core::runtime::PersistMode>,
     pub persist_alpha: Option<u32>,
     pub persist_rho: Option<u32>,
     pub persist_q: Option<u32>,
