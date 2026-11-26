@@ -91,14 +91,21 @@ fn decode_dg_ack(buf: &[u8]) -> Option<Vec<(u64, u32)>> {
     Some(out)
 }
 
-/// Alınan msg_id kümesini kümülatif (start,len) aralıklarına sıkıştırır. Bench mesaj sayıları
-/// küçük (≤ yüzler) → BTreeSet taraması yeterli; `max_ranges` datagram-boyu sınırı (kümülatif
-/// özet her ACK'te yeniden gönderildiğinden kırpma kendini onarır).
+/// Alınan msg_id kümesini kümülatif (start,len) aralıklarına sıkıştırır (artan sırada döner).
+/// Bench mesaj sayıları küçük (≤ yüzler) → BTreeSet taraması yeterli. `max_ranges` datagram-boyu
+/// sınırıdır; aşılırsa EN YENİ (en yüksek kimlikli) aralıklar tutulur — Kama alıcısının kuralı
+/// (adaptive-transport-engine-spec §2.1 "taşarsa en yeni (en yüksek seq) bloklar öncelik"; bu
+/// modül o SACK'in app-düzeyi eşleniğidir) [S-60 / B-10]. Eski hâli en düşük kimliklileri tutup
+/// yenileri kesiyordu: deadline'ı geçmiş (artık yeniden gönderilmeyen) mesajların bıraktığı kalıcı
+/// delikler birikince yeni mesajlar hiç ACK'lenmiyor, "kırpma kendini onarır" varsayımı tutmuyordu.
 fn to_ranges(set: &BTreeSet<u64>, max_ranges: usize) -> Vec<(u64, u32)> {
     let mut out: Vec<(u64, u32)> = Vec::new();
-    for &id in set {
+    for &id in set.iter().rev() {
         match out.last_mut() {
-            Some((start, len)) if id == *start + u64::from(*len) => *len += 1,
+            Some((start, len)) if id.checked_add(1) == Some(*start) && *len < u32::MAX => {
+                *start = id;
+                *len += 1;
+            }
             _ => {
                 if out.len() == max_ranges {
                     break;
@@ -107,6 +114,7 @@ fn to_ranges(set: &BTreeSet<u64>, max_ranges: usize) -> Vec<(u64, u32)> {
             }
         }
     }
+    out.reverse();
     out
 }
 
@@ -577,9 +585,19 @@ mod tests {
     fn range_compression_is_cumulative_and_bounded() {
         let set: BTreeSet<u64> = [0, 1, 2, 5, 6, 9].into_iter().collect();
         assert_eq!(to_ranges(&set, 64), vec![(0, 3), (5, 2), (9, 1)]);
-        // max_ranges sınırı: kırpılır (kümülatif re-ACK kendini onarır — doc).
-        assert_eq!(to_ranges(&set, 2), vec![(0, 3), (5, 2)]);
+        // [S-60 / B-10] max_ranges sınırı: EN YENİ aralıklar tutulur (engine-spec §2.1).
+        assert_eq!(to_ranges(&set, 2), vec![(5, 2), (9, 1)]);
         assert_eq!(to_ranges(&BTreeSet::new(), 64), vec![]);
+    }
+
+    /// [S-60 / B-10] Eski mesajların kalıcı delikleri yeni mesajın teyidini kesmez: tavan dolu
+    /// iken en yüksek kimlik ACK'te kalır.
+    #[test]
+    fn range_truncation_keeps_newest_ids() {
+        let set: BTreeSet<u64> = [0, 2, 4, 6, 8, 10].into_iter().collect();
+        let r = to_ranges(&set, 2);
+        assert_eq!(r, vec![(8, 1), (10, 1)]);
+        assert!(r.iter().any(|&(s, l)| (s..s + u64::from(l)).contains(&10)));
     }
 
     fn cfg(server: SocketAddr, msgs: u64, deadline_ms: u64) -> ClientCfg {
