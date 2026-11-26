@@ -1544,6 +1544,27 @@ const SINGLE_SHOT_CAP: usize = 64;
 /// eski kayıt düşer ([`LineGuardAckTrace::index`] boşluğu düşeni gösterir).
 pub const LINE_GUARD_TRACE_CAP: usize = 64;
 
+/// [GÖZLEM] Uçuş penceresi kapısının o anki girdileri ([`Sender::diag_flight_gate`]). Karar yolu
+/// okumaz: kapı (`cc_fits`) `inflight + boy ≤ effective_window` ifadesini kendi alanlarından kurar;
+/// bu yapı aynı alanların salt okunur kopyasıdır. Birimler kapının birimidir: bayt, UDP gövdesi
+/// (motorun `unit.size` değeri; zarf yok).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct FlightGateDiag {
+    /// Uçuştaki bayt (`inflight_bytes`).
+    pub inflight: u64,
+    /// BBR penceresi, toparlanma (`recovery_window`) uygulanmadan
+    /// ([`crate::cc::Bbr::window_without_recovery`]).
+    pub bbr_window: u64,
+    /// BBR penceresi, toparlanma uygulanmış ([`crate::cc::Bbr::window`]).
+    pub bbr_window_recovery: u64,
+    /// Geri bildirimi aç kuralın uçuş tabanı (`cc_feedback_floor`); kural yoksa `None`.
+    pub line_floor: Option<u64>,
+    /// Kapının kullandığı pencere (`cc_window()`; yeniden türetilmez, aynı çağrı).
+    pub effective_window: u64,
+    /// Hat korumasının gönderim tavanı (B/s, tel; `LineGuard::pace_bps`); koruma yoksa `None`.
+    pub pace_bps: Option<u64>,
+}
+
 /// [İZ-ARALIK] Çalışma zamanının bir ACK için verdiği ölçüm aralığı notu:
 /// [`Sender::note_ack_forward_interval`] girdisi, geçerlilik süzgecinden ÖNCE (salt gözlem).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -1574,7 +1595,8 @@ pub enum LineGuardAckDecision {
     /// Bu ACK'te ölçüm aralığı yok (ya da geçersiz) ve cephe örneği yok.
     #[default]
     NoMeasurement,
-    /// Çerçevede motorun gönderdiği seq yok: koruma çağrılmadı.
+    /// Çerçevede motorun gönderdiği seq yok: koruma ölçümle çağrılmadı ([ÇİFT YOKLAMASI · DENEY]
+    /// ACK yalnız kayıtlı çift yoklamasının ACK sayımına bildirilir).
     NotConsulted,
 }
 
@@ -1610,7 +1632,9 @@ pub struct LineGuardAckTrace {
     pub raised: bool,
     pub probe_failed: bool,
     /// Bu ACK'in kuyruk tahmini ve hüküm girdileri ([`crate::line_guard::AckDiag`]; salt gözlem).
-    /// Koruma bu ACK'e danışmadıysa (`NotConsulted`) boştur.
+    /// Koruma bu ACK'te ölçümle çağrılmadıysa (`NotConsulted`): ACK çift yoklamasının sayımına
+    /// girdiyse o hüküm, girmediyse yalnız canlı durum alanları (`pair_probes`,
+    /// `pair_probe_spent`, `refuted_bps`); kalan alanlar boştur.
     pub diag: crate::line_guard::AckDiag,
 }
 
@@ -1662,7 +1686,8 @@ impl LineGuardTraceRing {
 }
 
 /// [İZ-ARALIK] ACK'in kaydı: korumanın önceki ve sonraki gözlem durumundan karar sınıfı.
-/// `measured` = aralık korumaya ölçüm olarak verildi; `largest` = `None` ise koruma çağrılmadı.
+/// `measured` = aralık korumaya ölçüm olarak verildi; `largest` = `None` ise koruma ölçümle
+/// çağrılmadı.
 fn line_guard_trace_record(
     at_ns: u64,
     largest: Option<u64>,
@@ -1711,12 +1736,31 @@ fn line_guard_trace_record(
         first_window,
         raised: after.raises > before.raises,
         probe_failed: after.probe_failures > before.probe_failures,
-        diag: if largest.is_some() {
+        // Koruma ölçümle çağrılmadıysa (`NotConsulted`): ACK çift yoklamasının sayımına girdiyse
+        // (gözlem kaydı değişti) o hüküm; girmediyse yalnız canlı durum alanları (önceki ACK'in
+        // kuyruk tahmini ve hükmü bu ACK'e yazılmaz).
+        diag: if largest.is_some() || after.diag != before.diag {
             after.diag
         } else {
-            crate::line_guard::AckDiag::default()
+            crate::line_guard::AckDiag {
+                pair_probes: after.diag.pair_probes,
+                pair_probe_spent: after.diag.pair_probe_spent,
+                refuted_bps: after.diag.refuted_bps,
+                pair_probe_on: after.diag.pair_probe_on,
+                ..crate::line_guard::AckDiag::default()
+            }
         },
     }
+}
+
+/// [ÇİFT YOKLAMASI · DENEY · sahip kararı 2026-11-25] `KAMA_PAIR_PROBE_DATAGRAMS` değerinin
+/// süzgeci: baştaki / sondaki boşluk atılır, ondalık tam sayı `1..=6`
+/// ([`crate::line_guard::PAIR_PROBE_MAX_DATAGRAMS`]) ise deneyin datagram bütçesidir; değişken
+/// yoksa, sayı değilse, 0 ya da onaylı üst sınırın üstündeyse `None` (deney kapalı, bugünkü yol).
+fn pair_probe_datagrams_setting(value: Option<&str>) -> Option<u64> {
+    value
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|n| (1..=crate::line_guard::PAIR_PROBE_MAX_DATAGRAMS).contains(n))
 }
 
 /// [PTT-KOPYA-BÜTÇESİ] Öncelikli şeridin kopyası, bilinen hat kuyruğu bu süreyi (bir PTT demet
@@ -2119,6 +2163,11 @@ pub struct Sender {
     cc_feedback_starved: Option<FeedbackStarvedRule>,
     /// [HAT-KORUMASI] Gerçek ileri hattın tahmincisi; yalnız kural kuruluyken `Some`.
     cc_line_guard: Option<crate::line_guard::LineGuard>,
+    /// [GÖZLEM] karar yolu okumaz. Uçuş penceresi kapısının bir gönderim denemesini reddetme sayısı
+    /// ve son reddin girdileri `(boy, uçuştaki bayt, etkin pencere)`; bkz.
+    /// [`Self::diag_gate_refusals`].
+    cc_gate_refused: u64,
+    cc_gate_last: Option<(u64, u64, u64)>,
     /// [İZ-NEDEN] Emisyon / kayıp ilanı izi; `None` = kapalı (varsayılan).
     diag_emit_log: Option<Vec<EmitDiag>>,
     /// [İZ-ARALIK] Hat korumasının ACK başına karar kaydı; `None` = kapalı (varsayılan). Açıkken
@@ -2515,6 +2564,8 @@ impl Sender {
             pending_pair_rate: None,
             cc_feedback_starved: None,
             cc_line_guard: None,
+            cc_gate_refused: 0,
+            cc_gate_last: None,
             diag_emit_log: None,
             diag_line_guard_trace: None,
             prio_arq_first: 0,
@@ -2847,6 +2898,57 @@ impl Sender {
             cw,
             rw,
         ))
+    }
+
+    /// [GÖZLEM] karar yolu okumaz. Uçuş penceresi kapısının (`cc_fits`: `inflight + boy ≤
+    /// cc_window()`) o anki girdileri: uçuştaki bayt, BBR penceresi (toparlanmasız ve toparlanmalı),
+    /// geri bildirimi aç kuralın uçuş tabanı, kapının kullandığı pencere (`cc_window()` çağrısının
+    /// kendisi) ve hat korumasının gönderim tavanı. `cc` yoksa `None` (kapı yok). Hiçbir alanı
+    /// değiştirmez; yalnız ölçüm düzenekleri çağırır.
+    #[must_use]
+    pub fn diag_flight_gate(&self) -> Option<FlightGateDiag> {
+        let cc = self.cc.as_ref()?;
+        Some(FlightGateDiag {
+            inflight: self.inflight_bytes,
+            bbr_window: cc.window_without_recovery(),
+            bbr_window_recovery: cc.window(),
+            line_floor: self
+                .cc_feedback_starved
+                .map(|rule| self.cc_feedback_floor(rule)),
+            effective_window: self.cc_window(),
+            pace_bps: self
+                .cc_line_guard
+                .as_ref()
+                .map(crate::line_guard::LineGuard::pace_bps),
+        })
+    }
+
+    /// [GÖZLEM] karar yolu okumaz. Uçuş penceresi kapısının (`cc_fits`) bekleyen bir birimin
+    /// GÖNDERİM DENEMESİNİ reddetme sayısı ve son reddin girdileri `(boy, uçuştaki bayt, etkin
+    /// pencere)`; ret koşulu `uçuştaki + boy > etkin pencere`. Birim: bayt, UDP gövdesi (kapının
+    /// birimi). Sayılan yer `try_send_pre_parity`'nin kapı dalıdır; onu çağıranların hepsi bekleyen
+    /// bir birimin gönderim denemesidir: yeni veri (iki sıra), ARQ yeniden iletimi (iki sıra),
+    /// zamanlanmış / öncelikli kopya (iki sıra) ve boş hat yeniden iletimi. `cc_fits`'in öteki
+    /// çağrıları SAYILMAZ:
+    /// * `try_emit_front_parity`: kuyruk başındaki FEC onarım sembolünün gönderim denemesi (o da
+    ///   kapıya tabidir; reddi pacer reddiyle aynı sayaçta, `act_parity_token_denied`);
+    /// * birim testleri (kapının durumunu sorgular, gönderim denemesi değil).
+    ///
+    /// PTO / kuyruk probu yolu (`try_send_probe`) kapıya hiç sormaz. Sayaç deneme başınadır (aynı
+    /// bekleyen birim her olayda yeniden denenir): büyüklüğü paket sayısı değil, deneme sayısıdır.
+    /// `cc` yokken kapı yoktur, sayaç 0 kalır.
+    #[must_use]
+    pub fn diag_gate_refusals(&self) -> (u64, Option<(u64, u64, u64)>) {
+        (self.cc_gate_refused, self.cc_gate_last)
+    }
+
+    /// [GÖZLEM] karar yolu okumaz. Hat korumasının başlattığı çift yoklaması sayısı
+    /// (`LineGuard::pair_probes`); koruma yoksa `None`.
+    #[must_use]
+    pub fn diag_pair_probes(&self) -> Option<u64> {
+        self.cc_line_guard
+            .as_ref()
+            .map(crate::line_guard::LineGuard::pair_probes)
     }
 
     /// DR-CS-2 / DR-RATE-RAMP-1 (feature-gated): observation-only scheduler telemetry snapshot.
@@ -3930,6 +4032,9 @@ impl Sender {
         // [ACK-BITMAP] Kanıt aralığı yalnız bu olaya aittir; boş ACK'te de düşer.
         let evidence = self.next_ack_evidence.take();
         if ack.acked_seqs.is_empty() {
+            // [ÇİFT YOKLAMASI · DENEY · EK 8] İşlenen her ACK çift yoklamasının ACK sırasına girer;
+            // kayıtlı çift yoklaması yokken (anahtar kapalı yol dahil) etkisiz.
+            self.cc_line_guard_on_unmeasured_ack_traced(now_ns);
             return;
         }
         // [BOŞ-HAT YENİDEN İLETİMİ] Yeni ACK yeni bilgi: birimler yeniden aday olur.
@@ -4349,6 +4454,9 @@ impl Sender {
             .filter(|&s| s < self.next_seq)
             .max()
         else {
+            // [ÇİFT YOKLAMASI · DENEY · EK 8] Çerçevede motorun gönderdiği seq yok: ölçüm yok, ama
+            // ACK çift yoklamasının ACK sırasına girer; kayıtlı çift yoklaması yokken etkisiz.
+            self.cc_line_guard_on_unmeasured_ack();
             return;
         };
         // [İLK-PENCERE · İŞ-33 C4] Oturumun ilk ACK'i alıcının ilk varış penceresinin hızını taşır:
@@ -4370,23 +4478,93 @@ impl Sender {
         // doğruladıysa ya da alıcı ölçmüyorsa kalkar; değilse ikinci bağımsız ölçüme (sonraki bir
         // ACK'in ölçüm aralığı) dek sürer (`line_guard` modül belgesi, "İkinci ölçüm").
         g.settle_start_budget();
-        // [TEMKİNLİ-BAŞLANGIÇ · YENİDEN-YOKLAMA] Hat modeli korumanın gönderim tavanındadır (ölçülen
-        // hat, doğrulanmamış başlangıçta yarı profil, yoklamada yükseltilmiş tavan): pacer'ın burst
-        // payı (≥ 10 MTU) tavanın üstünde patlama yapamaz.
-        self.pacer.set_line_rate(g.pace_bps());
-        // [ÇİFT-PACING · İŞ-35 gece] Aralık kipinde, bütçe ve yoklama yokken tavan profil hattının
-        // altındaysa datagramlar yarım saniyede bir ikişer çıkar: hat toparlandıysa alıcının çift
-        // aralığı ölçüsü hattı görür (`pacer::set_line_pairs`, `LineGuard::pair_pacing`).
-        self.pacer.set_line_pairs(g.pair_pacing());
-        if let Some(u) = update {
-            self.pacer.line_raise_backlog(u.backlog_bytes);
-            // [SÜRELİ-YOKLAMA] Başarısız yoklamanın fazlası mevcut kuyruğun üstüne.
-            self.pacer.line_add_backlog(u.extra_backlog_bytes);
-        }
+        Self::apply_line_guard_update(&mut self.pacer, g, update);
         // [ÖLÇÜM-BOŞLUĞU · İŞ-35] Boşluk kuralı kurulduysa tek seferlik boşaltma.
         let drain = g.take_gap_drain();
         if drain > 0 {
             self.pacer.line_raise_backlog(drain);
+        }
+        // [ÇİFT YOKLAMASI · DENEY · EK 9 A3 · EK 11 F1 · sahip kararı: «Aynı ACK'in yazdığı tutma
+        // bittikten sonra yoklama başlar.»] Bu ACK'in tutması hat modeline yazıldı: bu ACK çift
+        // yoklaması kaydettiyse pencere başı, pacer'ın datagramı FİİLEN bırakacağı ana eşitlenir
+        // (ileri ya da geri; önceden süren tutma, boşluk boşaltması ve modelin kendi kuyruğu
+        // dahil). An `line_ns_until_open`'dır (kuyruk pacer'ın gönderim payına inince), kuyruğun
+        // sıfıra indiği an (`line_ns_until_drained`) değil: ikincisinde sırası gelen datagram
+        // pencereden ≈ 2 ms önce taban tavanında, sayılmadan çıkar ve pencere onun ardına altı
+        // datagram daha dizer (ölçüldü: 613 ms'de taban, 711..1 203 ms'de altı yoklama datagramı).
+        // Kayıt yoksa (anahtar kapalı yol dahil) koruma hiçbir alan yazmaz; pacer yalnız okunur.
+        g.set_pair_probe_start(now_ns.saturating_add(self.pacer.line_ns_until_open()));
+    }
+
+    /// [HAT-KORUMASI] Korumanın bir ACK'ten sonraki durumunu pacer'ın hat modeline yazar: gönderim
+    /// tavanı, çift-pacing ve (varsa) ACK'in kuyruk güncellemesi. Ölçülü ACK
+    /// ([`Self::cc_line_guard_on_ack`]) ve ölçüm taşımayan ACK
+    /// ([`Self::cc_line_guard_on_unmeasured_ack`]) aynı uygulamayı kullanır.
+    fn apply_line_guard_update(
+        pacer: &mut TokenBucket,
+        g: &crate::line_guard::LineGuard,
+        update: Option<crate::line_guard::LineGuardUpdate>,
+    ) {
+        // [TEMKİNLİ-BAŞLANGIÇ · YENİDEN-YOKLAMA] Hat modeli korumanın gönderim tavanındadır (ölçülen
+        // hat, doğrulanmamış başlangıçta yarı profil, yoklamada yükseltilmiş tavan): pacer'ın burst
+        // payı (≥ 10 MTU) tavanın üstünde patlama yapamaz.
+        pacer.set_line_rate(g.pace_bps());
+        // [ÇİFT-PACING · İŞ-35 gece] Aralık kipinde, bütçe ve yoklama yokken tavan profil hattının
+        // altındaysa datagramlar yarım saniyede bir ikişer çıkar: hat toparlandıysa alıcının çift
+        // aralığı ölçüsü hattı görür (`pacer::set_line_pairs`, `LineGuard::pair_pacing`).
+        pacer.set_line_pairs(g.pair_pacing());
+        if let Some(u) = update {
+            pacer.line_raise_backlog(u.backlog_bytes);
+            // [SÜRELİ-YOKLAMA] Başarısız yoklamanın fazlası mevcut kuyruğun üstüne.
+            pacer.line_add_backlog(u.extra_backlog_bytes);
+        }
+    }
+
+    /// [ÇİFT YOKLAMASI · DENEY · EK 8 · sahip kararı: «göndericinin işlediği her ACK kabul sırasını
+    /// korusun; ölçüm taşımayan ACK de sayılır, fakat kapsama kanıtı vermez»] Gönderici bir ACK
+    /// çerçevesi işledi ama korumaya ölçüm veremedi (çerçevede motorun gönderdiği seq yok): ACK
+    /// kayıtlı çift yoklamasının sayımına bildirilir
+    /// ([`crate::line_guard::LineGuard::on_ack_without_measurement`]).
+    ///
+    /// Koruma yokken ya da kayıtlı çift yoklaması yokken (anahtar kapalı yol dahil) etkisiz:
+    /// koruma hiçbir alan yazmaz, tavan ve çift-pacing değişmez, güncelleme dönmez; pacer'a
+    /// dokunulmaz. Sayım yoklamayı kapattıysa (tavan tabana döner, fazla boşaltılır) sonuç ölçülü
+    /// yoldaki uygulamayla yazılır. Bekleyen ACK alanlarına (`pending_*`) dokunmaz.
+    fn cc_line_guard_on_unmeasured_ack(&mut self) {
+        let Some(g) = self.cc_line_guard.as_mut() else {
+            return;
+        };
+        let before = (g.pace_bps(), g.pair_pacing());
+        let update = g.on_ack_without_measurement();
+        if update.is_some() || (g.pace_bps(), g.pair_pacing()) != before {
+            Self::apply_line_guard_update(&mut self.pacer, g, update);
+        }
+    }
+
+    /// [İZ-ARALIK] [`Self::cc_line_guard_on_unmeasured_ack`] ve — yalnız ACK çift yoklamasının
+    /// sayımına girdiyse (korumanın gözlem kaydı değiştiyse) — karar kaydı. SALT GÖZLEM. Bekleyen
+    /// aralık notuna dokunmaz. Kayıtlı çift yoklaması yokken kayıt yazılmaz (bugünkü gibi).
+    fn cc_line_guard_on_unmeasured_ack_traced(&mut self, now_ns: u64) {
+        let before = match (
+            self.diag_line_guard_trace.as_ref(),
+            self.cc_line_guard.as_ref(),
+        ) {
+            (Some(_), Some(g)) => Some(LineGuardSnap::of(g)),
+            _ => None,
+        };
+        self.cc_line_guard_on_unmeasured_ack();
+        let (Some(before), Some(g), Some(t)) = (
+            before,
+            self.cc_line_guard.as_ref(),
+            self.diag_line_guard_trace.as_mut(),
+        ) else {
+            return;
+        };
+        let after = LineGuardSnap::of(g);
+        if after.diag != before.diag {
+            t.push(line_guard_trace_record(
+                now_ns, None, None, false, before, after,
+            ));
         }
     }
 
@@ -5847,6 +6025,15 @@ impl Sender {
         self.cc_profile_pacing_cap = cap_bps.filter(|&c| c > 0);
     }
 
+    /// [ÇİFT YOKLAMASI · DENEY · sahip kararı 2026-11-25] Deney anahtarını kurulu hat korumasına
+    /// yazar (`LineGuard::set_pair_probe`); koruma yoksa etkisiz. Ürün yolu bunu çağırmaz: anahtar
+    /// yalnız `KAMA_PAIR_PROBE_DATAGRAMS` ortam değişkeninden okunur. Testler ve benzetim için.
+    pub fn set_pair_probe_datagrams(&mut self, datagrams: Option<u64>) {
+        if let Some(g) = self.cc_line_guard.as_mut() {
+            g.set_pair_probe(datagrams);
+        }
+    }
+
     /// [GERİ-BİLDİRİM-AÇ] Geri bildirimi aç profilin uçuş ve hız kuralı ([`FeedbackStarvedRule`]).
     /// `None` (varsayılan) = kural yok; `cc` yoksa etkisiz. Oturum başında, ilk olaydan önce çağrılır.
     pub fn set_cc_feedback_starved(&mut self, rule: Option<FeedbackStarvedRule>) {
@@ -5855,11 +6042,17 @@ impl Sender {
         if let (true, Some(r)) = (self.cc.is_some(), self.cc_feedback_starved) {
             self.pacer.set_line(Some(r.line));
             if r.return_line.rate_bps > 0 {
-                let g = crate::line_guard::LineGuard::new(
+                let mut g = crate::line_guard::LineGuard::new(
                     r.line,
                     r.return_line,
                     crate::line_guard::LineGuard::conservative_start(r.line),
                 );
+                // [ÇİFT YOKLAMASI · DENEY · sahip kararı 2026-11-25] Ürün varsayılanı DEĞİL: anahtar
+                // verilmedikçe çift ölçüsü bugünkü doğrudan yoldadır. Değer deneyin datagram
+                // bütçesidir (`LineGuard::set_pair_probe`).
+                g.set_pair_probe(pair_probe_datagrams_setting(
+                    std::env::var("KAMA_PAIR_PROBE_DATAGRAMS").ok().as_deref(),
+                ));
                 // [TEMKİNLİ-BAŞLANGIÇ] Hat modeli ilk ölçüme dek tavanın hızında (ölçüldü: profil
                 // hızındaki hat modeliyle pacer burst payı ilk 3 s'de tavanın iki katını gönderdi).
                 self.pacer.set_line_rate(g.pace_bps());
@@ -8017,6 +8210,9 @@ impl Sender {
         // [CC-PORT] Uçuş penceresi kapısı (quinn: `bytes_in_flight + size > window` → gönderme).
         // `cc` yokken `cc_fits` daima true.
         if !self.cc_fits(size) {
+            // [GÖZLEM] karar yolu okumaz: bekleyen birimin gönderim denemesi kapıda reddedildi.
+            self.cc_gate_refused = self.cc_gate_refused.saturating_add(1);
+            self.cc_gate_last = Some((size, self.inflight_bytes, self.cc_window()));
             return false;
         }
         self.pacer.try_send(size)
@@ -9297,6 +9493,16 @@ impl Sender {
                 .is_some_and(|r| unit.id < r.priority_below_id);
         if let Some(g) = self.cc_line_guard.as_mut() {
             g.on_sent_classed(seq, now_ns, unit.size, ahead_ns, priority);
+            // [ÇİFT YOKLAMASI · DENEY] Bütçe (en çok 6 fiilî datagram ve 7 368 tel baytı) bu
+            // gönderimle dolduysa yükseltilmiş tavan HEMEN biter: bir sonraki datagram yoklama
+            // hızında çıkamaz. [EK 9 A5] Yalnız kayıtlı çift yoklamasının denetimi: kayıtlı çift
+            // yoklaması yokken (deney kapalı, olağan yoklama kayıtlı olsa da) koruma hiçbir alan
+            // yazmaz ve `false` döner; olağan yoklamanın süre sonu yalnız olay başındaki `tick`'te
+            // işlenir (`on_event_core`).
+            if g.tick_pair_probe(now_ns) {
+                self.pacer.set_line_rate(g.pace_bps());
+                self.pacer.set_line_pairs(g.pair_pacing());
+            }
         }
         self.inflight.insert(
             seq,
@@ -16728,5 +16934,1065 @@ mod feedback_starved_tests {
         };
         assert_eq!(run(false), (1, 0), "parite: boşluk bütçesi kurulur");
         assert_eq!(run(true), (0, 1), "öncelikli veri: kurulmaz");
+    }
+}
+
+/// [ÇİFT YOKLAMASI · DENEY · EK 8] Hat korumasına ölçüm taşımayan ACK'ler gerçek göndericide
+/// (`Event::AckReceived` yolu): motor seq'i eşlenmeyen çerçeve (`acked_seqs` boş; S1) ve motorun
+/// göndermediği seq taşıyan çerçeve (cephe yok; S3). Sahip kararı: gönderici işlediği her ACK'i
+/// çift yoklamasının ACK sırasına sayar; böyle bir ACK kapsama kanıtı vermez.
+///
+/// Düzenek: iletimler `track_sent` ile verilen anlarda kaydedilir (test pacer'ın yerindedir),
+/// darboğaz FIFO'dur, ACK'ler ürün çalışma zamanının sırasıyla verilir (`observe_ack_feedback` →
+/// `note_ack_pair_rate` → `set_next_ack_evidence` → `note_ack_forward_interval` →
+/// `Event::AckReceived`).
+#[cfg(test)]
+mod pair_probe_unmeasured_ack_tests {
+    use super::*;
+    use crate::line_guard::{LineGuard, ProbeOutcome};
+    use crate::pacer::LineModel;
+    use crate::return_path::AckObservation;
+    use std::collections::BTreeMap;
+
+    const MS: u64 = 1_000_000;
+    const SEC: u64 = 1_000_000_000;
+    const PROFILE: u64 = 12_500;
+    const NARROW: u64 = 6_250;
+    const OVH: u64 = 28;
+    /// Tam datagramın gövdesi (1 228 B tel).
+    const UDP: u64 = 1200;
+    const WIRE: u64 = UDP + OVH;
+    const PROP_NS: u64 = 300 * MS;
+    const RET: u64 = 62;
+    const ACK_UDP: u64 = 55;
+    /// Çift ölçüsü 12 163 B/s gövde (≈ 12 447 tel ≥ profilin %95'i): hedef profil hattı.
+    const PAIR_AT_PROFILE: u16 = 12_163;
+    const GAP_FAST: u64 = WIRE * SEC / PROFILE;
+    const GAP_BASE: u64 = WIRE * SEC / NARROW;
+
+    /// Yoklamadan sonraki ACK'in türü.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Ack {
+        /// Ölçülü, yoklamayı kapsamıyor (aralığı pencereden sonra başlar).
+        MeasuredNotCovering,
+        /// `acked_seqs` boş (S1).
+        Empty,
+        /// Motorun göndermediği tek seq (S3).
+        Foreign,
+    }
+
+    struct Bench {
+        s: Sender,
+        /// FIFO darboğazın boşalma anı (ns) ve hızı (B/s, tel).
+        free: u64,
+        line: u64,
+        /// seq → (gönderim anı, alıcıya varış anı).
+        log: BTreeMap<u64, (u64, u64)>,
+        /// Henüz teyit edilmemiş en küçük seq.
+        next_ack: u64,
+    }
+
+    impl Bench {
+        fn new(pair_probe: Option<u64>) -> Self {
+            let line = LineModel {
+                rate_bps: PROFILE,
+                datagram_overhead: OVH,
+            };
+            let cap = PROFILE * UDP / WIRE;
+            let mut s = Sender::with_cc_port();
+            s.set_cc_profile_pacing_cap(Some(cap));
+            s.set_cc_feedback_starved(Some(FeedbackStarvedRule {
+                pacing_cap_bps: cap,
+                feedback_ns: 10 * SEC,
+                line,
+                return_line: LineModel {
+                    rate_bps: RET,
+                    datagram_overhead: OVH,
+                },
+            }));
+            // Önlemsel kopya kuralının kapsamı bütün birimleri alır (kopya sayısı 1: ek iletim
+            // yok): boş hat süpürmesi düzeneğe kendi datagramını katmaz, her iletim testin verdiği
+            // andadır.
+            s.set_forward_copy_rule(Some(ForwardCopyRule {
+                below_id: u64::MAX,
+                priority_below_id: 0,
+                copies: 1,
+                spacing_ns: 40 * MS,
+            }));
+            s.set_pair_probe_datagrams(pair_probe);
+            s.set_diag_line_guard_trace(true);
+            // Başlangıç bütçesi bu düzeneğin konusu değil: ilk ACK'ten önce kaldırılır.
+            s.cc_line_guard
+                .as_mut()
+                .expect("hat koruması kurulu")
+                .end_start_budget();
+            Self {
+                s,
+                free: 0,
+                line: NARROW,
+                log: BTreeMap::new(),
+                next_ack: 0,
+            }
+        }
+
+        fn guard(&self) -> &LineGuard {
+            self.s.cc_line_guard.as_ref().expect("hat koruması kurulu")
+        }
+
+        fn outcome(&self) -> Option<(ProbeOutcome, u8)> {
+            self.guard()
+                .ack_diag()
+                .verdict
+                .map(|v| (v.outcome, v.acks_after_start))
+        }
+
+        fn send(&mut self, at: u64) -> u64 {
+            let id = 1_000 + self.log.len() as u64;
+            let seq = self
+                .s
+                .track_sent(OpaqueUnit { id, size: UDP }, at, 0, TransmitKind::Data);
+            self.free = self.free.max(at) + WIRE * SEC / self.line;
+            self.log.insert(seq, (at, self.free + PROP_NS));
+            seq
+        }
+
+        fn sent_at(&self, seq: u64) -> u64 {
+            self.log[&seq].0
+        }
+
+        /// Alıcı `front`'ı alır almaz ACK çıkarırsa ACK'in göndericiye varış anı.
+        fn ack_time(&self, front: u64) -> u64 {
+            self.log[&front].1 + PROP_NS + (ACK_UDP + OVH) * SEC / RET
+        }
+
+        fn observe(&mut self, now: u64) {
+            self.s.observe_ack_feedback(
+                AckObservation {
+                    wire_bytes: ACK_UDP,
+                    seen_count: 0,
+                    v2: false,
+                    sent_datagrams: self.log.len() as u64,
+                },
+                now,
+            );
+        }
+
+        /// Ölçülü ACK: `next_ack..=front` teyit edilir; `first` ölçüm aralığının ilk seq'i.
+        fn ack(&mut self, now: u64, front: u64, first: Option<u64>, pair: bool) {
+            self.observe(now);
+            if pair {
+                self.s.note_ack_pair_rate(PAIR_AT_PROFILE);
+            }
+            self.s.set_next_ack_evidence(Some((self.next_ack, front)));
+            if let Some(f) = first {
+                let received: Vec<u64> = self.log.range(f..=front).map(|(&q, _)| q).collect();
+                let span = self.log[&front].1 - self.log[&f].1;
+                self.s
+                    .note_ack_forward_interval(f, front, Some(span), &received);
+            }
+            let acked_seqs: Vec<u64> = self
+                .log
+                .range(self.next_ack..=front)
+                .map(|(&q, _)| q)
+                .collect();
+            self.next_ack = front + 1;
+            self.event(acked_seqs, now);
+        }
+
+        /// `Event::AckReceived`; motor bu olayda kendi kararıyla datagram çıkarmamalı.
+        fn event(&mut self, acked_seqs: Vec<u64>, now: u64) {
+            let out = self.s.on_event(
+                Event::AckReceived(AckInfo {
+                    acked_seqs,
+                    ack_delay: Duration::ZERO,
+                }),
+                now,
+            );
+            assert!(
+                out.is_empty(),
+                "kurulum: motor ACK olayında kendi iletimini çıkardı: {out:?}"
+            );
+        }
+
+        /// Hat korumasına ölçüm taşımayan ACK (boş kanıt aralığıyla: kayıp ilanı doğurmaz).
+        fn unmeasured_ack(&mut self, now: u64, kind: Ack) {
+            self.observe(now);
+            self.s.set_next_ack_evidence(Some((1, 0)));
+            let acked_seqs = match kind {
+                Ack::Empty => Vec::new(),
+                Ack::Foreign => vec![self.s.next_seq + 1_000],
+                Ack::MeasuredNotCovering => unreachable!("ölçülü ACK `ack` ile verilir"),
+            };
+            self.event(acked_seqs, now);
+        }
+
+        /// Kurulum. (1) 0..=30 profil hızında, gerçek hat 6 250: cephesi 10 olan ölçümsüz ACK,
+        /// ardından ölçüm aralığı 11..30 olan ACK hattı 6 250'de ölçer. (2) Hat 12 500'e döner;
+        /// gönderici taban tavanında sürer. (3) Cephesi 40, ölçüm aralığı 36..40 olan ACK çift
+        /// ölçüsünü taşır: çift yoklaması kaydedilir (ACK1). (4) Pencerede 6 tam datagram yoklama
+        /// hızında çıkar; sonra taban hızında `tail` datagram.
+        /// Dönen: (pencerenin ilk seq'i, ACK1'in anı, pencereden sonraki son gönderimin anı).
+        fn open_window(&mut self, tail: u64) -> (u64, u64, u64) {
+            for k in 0..=30u64 {
+                self.send(k * GAP_FAST);
+            }
+            let at = self.ack_time(10);
+            self.ack(at, 10, None, false);
+            let at = self.ack_time(30);
+            self.ack(at, 30, Some(11), false);
+            assert_eq!(
+                (self.guard().samples(), self.guard().pace_bps()),
+                (1, NARROW),
+                "kurulum: hat 6 250'de ölçülmedi"
+            );
+            self.line = PROFILE;
+            let t0 = at + 70 * MS;
+            for k in 0..10u64 {
+                self.send(t0 + k * GAP_BASE);
+            }
+            let t1 = self.ack_time(40);
+            let mut t = t0 + 10 * GAP_BASE;
+            while t < t1 {
+                self.send(t);
+                t += GAP_BASE;
+            }
+            self.ack(t1, 40, Some(36), true);
+            assert_eq!(
+                (self.guard().pair_probes(), self.guard().pace_bps()),
+                (1, NARROW),
+                "kurulum: ACK1 çift yoklamasını kaydetmedi"
+            );
+            let mut first = 0;
+            for j in 0..6u64 {
+                let seq = self.send(t1 + j * GAP_FAST);
+                if j == 0 {
+                    first = seq;
+                }
+                assert_eq!(
+                    self.guard().pace_bps(),
+                    if j < 5 { PROFILE } else { NARROW },
+                    "kurulum: pencerenin {j}. datagramından sonra tavan"
+                );
+            }
+            let mut last = t1 + 5 * GAP_FAST;
+            for _ in 0..tail {
+                last += GAP_BASE;
+                self.send(last);
+            }
+            (first, t1, last)
+        }
+    }
+
+    /// Dizi: ACK1 yoklamayı başlatır · ACK2 = `second` · ACK3 = `third` · ACK4 ölçülü ve yoklamanın
+    /// tamamını kapsıyor (ilk ucu pencereden önce, cephesi pencereden sonra), hat 12 500'de olduğu
+    /// için kuyruk artışı yok. Dönen: ACK3'ten sonraki hüküm kaydı, ACK3'ün hat modeline yazdırdığı
+    /// tutma (ns), ACK3'ün iz kaydı ve ACK4'ten sonraki (tavan, pair_raises, pair_probes).
+    #[allow(clippy::type_complexity)]
+    fn run(
+        second: Ack,
+        third: Ack,
+    ) -> (
+        Option<(ProbeOutcome, u8)>,
+        u64,
+        Option<LineGuardAckTrace>,
+        (u64, u64, u64),
+    ) {
+        let mut b = Bench::new(Some(6));
+        let (w, _, last) = b.open_window(8);
+        let mut now = last + MS;
+        let mut step = |b: &mut Bench, kind: Ack| {
+            match kind {
+                Ack::MeasuredNotCovering => {
+                    // Cephe pencereden sonraki 2. datagram; aralık pencereden sonraki ilk datagramdan.
+                    now = now.max(b.ack_time(w + 7));
+                    b.ack(now, w + 7, Some(w + 6), true);
+                }
+                Ack::Empty | Ack::Foreign => {
+                    now += 100 * MS;
+                    b.unmeasured_ack(now, kind);
+                }
+            }
+            now
+        };
+        let _ = step(&mut b, second);
+        println!(
+            "EK8-GÖNDERİCİ ACK2 {second:?}: hüküm {:?}, tavan {}",
+            b.outcome(),
+            b.guard().pace_bps()
+        );
+        let total = b.s.diag_line_guard_trace_total();
+        let _ = step(&mut b, third);
+        let after_third = b.outcome();
+        let hold_ns = b.s.pacer.line_ns_until_drained();
+        let trace = (b.s.diag_line_guard_trace_total() > total)
+            .then(|| b.s.diag_line_guard_trace().last().copied())
+            .flatten();
+        println!(
+            "EK8-GÖNDERİCİ ACK3 {third:?}: hüküm {after_third:?}, tavan {}, hat modeli tutması {hold_ns} ns, iz {:?}",
+            b.guard().pace_bps(),
+            trace.map(|t| (t.decision, t.diag.verdict.map(|v| v.outcome)))
+        );
+        // ACK4: aralık pencereden önceki son-üçüncü datagramdan pencereden sonraki 5. datagrama.
+        let at = now.max(b.ack_time(w + 10));
+        assert!(
+            b.sent_at(w - 2) < b.sent_at(w) && b.sent_at(w + 10) > b.sent_at(w + 5),
+            "kurulum: ACK4 aralığı yoklamanın tamamını kapsamıyor"
+        );
+        b.ack(at, w + 10, Some(w - 2), true);
+        let g = b.guard();
+        println!(
+            "EK8-GÖNDERİCİ ACK4 (kapsıyor): hüküm {:?}, tavan {}, pair_raises {}, pair_probes {}",
+            b.outcome(),
+            g.pace_bps(),
+            g.pair_raises(),
+            g.pair_probes()
+        );
+        (
+            after_third,
+            hold_ns,
+            trace,
+            (g.pace_bps(), g.pair_raises(), g.pair_probes()),
+        )
+    }
+
+    /// [EK 8 · S1] ACK2'nin `acked_seqs`'i boş: sayılır. ACK3 (ölçülü, kapsamıyor) toparlanmadan
+    /// sonraki 3. ACK'tir: yoklama SONUÇSUZ kapanır. ACK4 kapsasa da kalıcı artış yazmaz.
+    #[test]
+    fn ek8_s1_an_ack_without_mapped_seqs_keeps_its_place_in_the_ack_count() {
+        let (third, _, _, after_fourth) = run(Ack::Empty, Ack::MeasuredNotCovering);
+        assert_eq!(
+            third,
+            Some((ProbeOutcome::Inconclusive, 2)),
+            "ACK3 hükmü (istenen: SONUÇSUZ, yoklamadan sonraki 2. ACK)"
+        );
+        assert_eq!(
+            after_fourth,
+            (NARROW, 0, 1),
+            "ACK4'ten sonra (tavan, pair_raises, pair_probes)"
+        );
+    }
+
+    /// [EK 8 · S3] ACK2 yalnız motorun göndermediği bir seq taşıyor (cephe yok): sayılır.
+    #[test]
+    fn ek8_s3_an_ack_without_a_sent_seq_keeps_its_place_in_the_ack_count() {
+        let (third, _, _, after_fourth) = run(Ack::Foreign, Ack::MeasuredNotCovering);
+        assert_eq!(
+            third,
+            Some((ProbeOutcome::Inconclusive, 2)),
+            "ACK3 hükmü (istenen: SONUÇSUZ, yoklamadan sonraki 2. ACK)"
+        );
+        assert_eq!(
+            after_fourth,
+            (NARROW, 0, 1),
+            "ACK4'ten sonra (tavan, pair_raises, pair_probes)"
+        );
+    }
+
+    /// [EK 8 · S1/S3 · KAPANIŞ] Ölçüm taşımayan ACK toparlanmadan sonraki 3. ACK ise yoklama o
+    /// ACK'te SONUÇSUZ kapanır ve kapanış ölçülü yoldaki gibi uygulanır: yoklamanın fiilî fazlası
+    /// (6 × 1 228 − 6 250 × pencere süresi = 4 298 B) hat modeline tutma olarak yazılır, hüküm iz
+    /// kaydına düşer. ACK4 kapsasa da kalıcı artış yazmaz.
+    #[test]
+    fn ek8_an_unmeasured_third_ack_closes_the_probe_and_the_excess_reaches_the_pacer() {
+        let excess = 6 * WIRE - NARROW * (5 * GAP_FAST) / SEC;
+        for kind in [Ack::Empty, Ack::Foreign] {
+            let (third, hold_ns, trace, after_fourth) = run(Ack::MeasuredNotCovering, kind);
+            assert_eq!(
+                third,
+                Some((ProbeOutcome::Inconclusive, 2)),
+                "{kind:?}: ACK3 hükmü (istenen: SONUÇSUZ, yoklamadan sonraki 2. ACK)"
+            );
+            assert!(
+                hold_ns >= excess * SEC / NARROW,
+                "{kind:?}: hat modeline yazılan tutma {hold_ns} ns (istenen ≥ {} ns = {excess} B)",
+                excess * SEC / NARROW
+            );
+            let t = trace.expect("ACK3 iz kaydı yok");
+            assert_eq!(
+                (t.decision, t.diag.verdict.map(|v| v.outcome)),
+                (
+                    LineGuardAckDecision::NotConsulted,
+                    Some(ProbeOutcome::Inconclusive)
+                ),
+                "{kind:?}: ACK3 iz kaydı"
+            );
+            assert_eq!(
+                after_fourth,
+                (NARROW, 0, 1),
+                "{kind:?}: ACK4'ten sonra (tavan, pair_raises, pair_probes)"
+            );
+        }
+    }
+
+    /// [EK 8 · ANAHTAR KAPALI] Deney kapalıyken (varsayılan) ölçüm taşımayan ACK hat korumasında,
+    /// hat modelinde ve iz kaydında hiçbir şey değiştirmez: bugünkü yol.
+    #[test]
+    fn ek8_unmeasured_acks_change_nothing_while_the_experiment_is_off() {
+        for kind in [Ack::Empty, Ack::Foreign] {
+            let mut b = Bench::new(None);
+            for k in 0..=30u64 {
+                b.send(k * GAP_FAST);
+            }
+            let at = b.ack_time(10);
+            b.ack(at, 10, None, false);
+            let at = b.ack_time(30);
+            b.ack(at, 30, Some(11), false);
+            assert_eq!(b.guard().pace_bps(), NARROW, "kurulum: hat ölçülmedi");
+            let now = at + 500 * MS;
+            // Aynı anda etkisiz bir olay: hat modelinin erimesi karşılaştırmadan çıksın.
+            b.unmeasured_ack(now, Ack::Empty);
+            let state = |b: &Bench| {
+                let g = b.guard();
+                (
+                    (g.pace_bps(), g.rate_bps(), g.pair_pacing(), g.pair_probes()),
+                    g.ack_diag(),
+                    b.s.pacer.line_model().map(|m| m.rate_bps),
+                    b.s.pacer.line_ns_until_drained(),
+                )
+            };
+            let before = state(&b);
+            let records = b.s.diag_line_guard_trace_total();
+            b.unmeasured_ack(now, kind);
+            assert_eq!(state(&b), before, "{kind:?}: durum değişti");
+            // Boş çerçeve iz kaydı yazmaz; cephesiz çerçeve bugünkü gibi bir kayıt yazar.
+            let wrote = b.s.diag_line_guard_trace_total() - records;
+            assert_eq!(wrote, u64::from(kind == Ack::Foreign), "{kind:?}: iz kaydı");
+        }
+    }
+
+    // [KIRMIZI-DIŞI · BAŞ] Aşağıdaki test `AckDiag`'ın üç gözlem alanını (`pair_probes`,
+    // `pair_probe_spent`, `refuted_bps`) okur; alanlar eski başta (ee168d3d) yoktur, test orada
+    // derlenmez. Eski baş + yalnız testler ağacına ALINMAZ.
+
+    /// [EK 8 · GÖZLEM] Motorun göndermediği seq taşıyan çerçevenin (`NotConsulted`) iz kaydı:
+    /// ACK çift yoklamasının sayımına girdiyse o hükmü, girmediyse yalnız canlı durum alanlarını
+    /// taşır (önceki ACK'in hükmü ve kuyruk tahmini bu ACK'e yazılmaz).
+    #[test]
+    fn ek8_the_trace_record_of_an_ack_without_a_sent_seq_carries_the_live_state() {
+        let mut b = Bench::new(Some(6));
+        let (w, _, last) = b.open_window(8);
+        let mut now = last + MS;
+        // ACK2 cephesiz, yoklama kayıtlı: sayılır; kayıt o hükmü taşır.
+        b.unmeasured_ack(now, Ack::Foreign);
+        let rec = *b.s.diag_line_guard_trace().last().expect("iz kaydı");
+        assert_eq!(
+            (
+                rec.decision,
+                rec.diag.verdict.map(|v| (v.outcome, v.acks_after_start)),
+                (rec.diag.pair_probes, rec.diag.pair_probe_spent),
+            ),
+            (
+                LineGuardAckDecision::NotConsulted,
+                Some((ProbeOutcome::Deferred, 1)),
+                (1, true),
+            )
+        );
+        // ACK3 ölçülü, kapsamıyor: yoklama SONUÇSUZ kapanır.
+        now = now.max(b.ack_time(w + 7));
+        b.ack(now, w + 7, Some(w + 6), true);
+        assert_eq!(b.outcome(), Some((ProbeOutcome::Inconclusive, 2)));
+        // ACK4 cephesiz, kayıtlı yoklama yok: koruma hiçbir şey yazmaz; kayıt canlı durumu taşır.
+        now += 100 * MS;
+        b.unmeasured_ack(now, Ack::Foreign);
+        let rec = *b.s.diag_line_guard_trace().last().expect("iz kaydı");
+        assert_eq!(
+            (
+                rec.decision,
+                rec.diag.verdict,
+                (rec.diag.pair_probes, rec.diag.pair_probe_spent),
+                (rec.diag.refuted_bps, rec.diag.backlog_bytes),
+            ),
+            (
+                LineGuardAckDecision::NotConsulted,
+                None,
+                (1, true),
+                (None, None),
+            )
+        );
+        assert_eq!(
+            b.outcome(),
+            Some((ProbeOutcome::Inconclusive, 2)),
+            "korumanın kendi kaydı değişti"
+        );
+    }
+    // [KIRMIZI-DIŞI · SON]
+
+    // =========================================================================================
+    // [ÇİFT YOKLAMASI · DENEY · EK 9] A3: yoklama penceresi, pacer'ın hat modelinde süren tutma
+    // bittikten sonra başlar. Gerçek pacing: datagramları motor kendi pacer'ıyla çıkarır.
+    // =========================================================================================
+
+    impl Bench {
+        /// `open_window`'un ilk yarısı (hat 6 250'de ölçülür, 12 500'e döner, gönderici taban
+        /// tavanında sürer), yoklamayı başlatan ACK'ten (ACK1) HEMEN ÖNCESİNE dek. Dönen: ACK1'in
+        /// anı. ACK1: `self.ack(t1, 40, Some(36), true)`.
+        fn before_probe_ack(&mut self) -> u64 {
+            for k in 0..=30u64 {
+                self.send(k * GAP_FAST);
+            }
+            let at = self.ack_time(10);
+            self.ack(at, 10, None, false);
+            let at = self.ack_time(30);
+            self.ack(at, 30, Some(11), false);
+            assert_eq!(
+                (self.guard().samples(), self.guard().pace_bps()),
+                (1, NARROW),
+                "kurulum: hat 6 250'de ölçülmedi"
+            );
+            self.line = PROFILE;
+            let t0 = at + 70 * MS;
+            for k in 0..10u64 {
+                self.send(t0 + k * GAP_BASE);
+            }
+            let t1 = self.ack_time(40);
+            let mut t = t0 + 10 * GAP_BASE;
+            while t < t1 {
+                self.send(t);
+                t += GAP_BASE;
+            }
+            t1
+        }
+
+        /// Motorun çıkardığı datagramlar darboğaza ve kayda girer.
+        fn emitted(&mut self, decs: Vec<TransmitDecision>, now: u64) -> u64 {
+            let n = decs.len() as u64;
+            for d in decs {
+                self.free = self.free.max(now) + (d.size + OVH) * SEC / self.line;
+                self.log.insert(d.seq, (now, self.free + PROP_NS));
+            }
+            n
+        }
+
+        /// Uygulama `now` anında `n` tam birim verir (motor pacer'ı izin verirse hemen de
+        /// çıkarabilir). Dönen: [`Self::pump`] gibi.
+        fn offer(&mut self, n: u64, now: u64) -> Vec<(u64, bool)> {
+            let mut out = Vec::new();
+            for k in 0..n {
+                let unit = OpaqueUnit {
+                    id: 50_000 + k,
+                    size: UDP,
+                };
+                let before = self.guard().pace_bps();
+                let decs = self.s.on_event(Event::AppData(unit), now);
+                let after = self.guard().pace_bps();
+                for _ in 0..self.emitted(decs, now) {
+                    out.push((now, before == PROFILE || after == PROFILE));
+                }
+            }
+            out
+        }
+
+        /// Gerçek pacing: motor `from`'dan `until`'e dek (o an hariç) 1 ms adımlarla sürülür
+        /// (`Timer::Pto`: çalışma zamanının pace tick'i). Dönen: çıkan her datagram için (an,
+        /// yoklama hızında mı). Datagramın çıktığı adımın başında ya da sonunda korumanın tavanı
+        /// profil hattındaysa yoklama hızında çıkmıştır (pencerenin ilk datagramı tavanın açıldığı
+        /// adımda, bütçeyi dolduran datagram tavanın kapandığı adımda çıkar).
+        fn pump(&mut self, from: u64, until: u64) -> Vec<(u64, bool)> {
+            let mut out = Vec::new();
+            let mut now = from;
+            while now < until {
+                let before = self.guard().pace_bps();
+                let decs = self.s.on_event(Event::TimerFired(Timer::Pto), now);
+                let after = self.guard().pace_bps();
+                for _ in 0..self.emitted(decs, now) {
+                    out.push((now, before == PROFILE || after == PROFILE));
+                }
+                now += MS;
+            }
+            out
+        }
+    }
+
+    /// [EK 9 · A3] Yoklamayı başlatan ACK geldiğinde pacer'ın hat modelinde `residual` B tutma
+    /// sürüyor (önceki bir ACK'in yazdırdığı tutmadan kalan; o ACK'in yerine pacer'ın aynı
+    /// çağrısı). Gönderici sürekli veriyle 1,6 s gerçek pacing'le sürülür. Dönen: (ACK1'in anı,
+    /// çıkan datagramlar).
+    fn paced_probe(residual: u64) -> (u64, Vec<(u64, bool)>) {
+        let mut b = Bench::new(Some(6));
+        let t1 = b.before_probe_ack();
+        // Aynı anda etkisiz bir olay: hat modelinin o ana dek erimesi düzenekten çıksın.
+        b.unmeasured_ack(t1, Ack::Empty);
+        b.s.pacer.line_raise_backlog(residual);
+        assert_eq!(
+            b.s.pacer.line_ns_until_drained(),
+            (residual * SEC).div_ceil(NARROW),
+            "kurulum: pacer'da süren tutma"
+        );
+        b.ack(t1, 40, Some(36), true);
+        assert_eq!(
+            (b.guard().pair_probes(), b.guard().pace_bps()),
+            (1, NARROW),
+            "kurulum: ACK1 çift yoklamasını kaydetmedi"
+        );
+        let mut sent = b.offer(40, t1);
+        sent.extend(b.pump(t1 + MS, t1 + 1_600 * MS));
+        (t1, sent)
+    }
+
+    /// [EK 9 · A3 · sahip kararı: «Aynı ACK'in yazdığı tutma bittikten sonra yoklama başlar.»]
+    /// Pacer'da önceki tutmadan ≈ 3 100 B kalmışken gelen ACK yoklamayı kaydeder. Pencere, pacer'ın
+    /// hat modeli boşaldıktan sonra başlamalı: yoklama hızında çıkan datagram tam bütçe kadardır
+    /// (6). Pencere tutmanın içinde başlarsa süresinin bir kısmı tutmada geçer ve yoklama hızında
+    /// daha az datagram çıkar.
+    #[test]
+    fn ek9_a3_the_probe_window_starts_after_the_hold_already_in_the_pacer() {
+        let (t1, sent) = paced_probe(3_100);
+        let at_probe: Vec<u64> = sent
+            .iter()
+            .filter(|&&(_, probe)| probe)
+            .map(|&(t, _)| (t - t1) / MS)
+            .collect();
+        println!(
+            "EK9-A3 pacer'da 3 100 B tutma: yoklama hızında çıkan {} datagram (ACK1'den sonra ms: \
+             {at_probe:?}); 1,6 s'de çıkan bütün datagramlar (ms, yoklama hızında mı): {:?}",
+            at_probe.len(),
+            sent.iter()
+                .map(|&(t, p)| ((t - t1) / MS, p))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            at_probe.len(),
+            6,
+            "yoklama hızında çıkan datagram (istenen 6: pencere tutmadan sonra başlar)"
+        );
+        // Tutma taban hızında erir (3 100 B / 6 250 B/s; pacer kuyruk 2 ms'lik burst payına
+        // inince datagram bırakır) ve tutmadan sonra çıkan İLK datagram yoklamanın ilk
+        // datagramıdır: pencereden önce taban hızında datagram çıkmaz.
+        let open_ms = (3_100 - NARROW * 2 / 1_000) * 1_000 / NARROW;
+        assert!(
+            at_probe[0] >= open_ms,
+            "ilk yoklama datagramı tutma bitmeden çıktı: {} ms (tutma {open_ms} ms)",
+            at_probe[0]
+        );
+        assert!(
+            sent[0].1,
+            "tutmadan sonraki ilk datagram yoklama hızında değil: {:?}",
+            ((sent[0].0 - t1) / MS, sent[0].1)
+        );
+        // Bütçe dolduktan sonraki ilk datagram taban hızının aralığından önce çıkmaz.
+        let after: Vec<u64> = sent.iter().map(|&(t, _)| t).collect();
+        assert!(
+            after[6] - after[5] >= GAP_BASE - MS,
+            "yedinci datagram {} ms sonra çıktı (taban aralığı {} ms)",
+            (after[6] - after[5]) / MS,
+            GAP_BASE / MS
+        );
+    }
+
+    /// [EK 9 · A3 · KONTROL] Pacer'da tutma yokken (ACK anında hat modeli boş) pencere ACK anında
+    /// başlar ve yoklama hızında 6 datagram çıkar. Bugün yeşil; düzeltmeden sonra da yeşil.
+    #[test]
+    fn ek9_a3_control_without_a_hold_the_window_starts_at_the_ack() {
+        let (t1, sent) = paced_probe(0);
+        let at_probe: Vec<u64> = sent
+            .iter()
+            .filter(|&&(_, probe)| probe)
+            .map(|&(t, _)| (t - t1) / MS)
+            .collect();
+        println!("EK9-A3 kontrol (tutma yok): yoklama hızında çıkan (ms) {at_probe:?}");
+        assert_eq!(at_probe.len(), 6);
+        assert!(at_probe[0] <= 2, "ilk yoklama datagramı {} ms", at_probe[0]);
+    }
+
+    /// [EK 9 · A6 (7)] `KAMA_PAIR_PROBE_DATAGRAMS` süzgeci (süreç ortamı değiştirilmeden): yalnız
+    /// `1..=6` kabul edilir; değişken yoksa, sayı değilse, 0 ya da 6'nın üstündeyse deney kapalı.
+    #[test]
+    fn ek9_a6_7_the_experiment_switch_accepts_only_one_to_six() {
+        for n in 1..=crate::line_guard::PAIR_PROBE_MAX_DATAGRAMS {
+            assert_eq!(pair_probe_datagrams_setting(Some(&n.to_string())), Some(n));
+        }
+        assert_eq!(pair_probe_datagrams_setting(Some(" 3\n")), Some(3));
+        for rejected in [
+            "",
+            " ",
+            "0",
+            "7",
+            "60",
+            "-1",
+            "6.0",
+            "0x6",
+            "altı",
+            "6 6",
+            "18446744073709551616",
+        ] {
+            assert_eq!(
+                pair_probe_datagrams_setting(Some(rejected)),
+                None,
+                "{rejected:?} kabul edildi"
+            );
+        }
+        assert_eq!(pair_probe_datagrams_setting(None), None, "değişken yok");
+        // Süzgeç korumanın kendi sınırıyla aynı aralığı kabul eder (`LineGuard::set_pair_probe`).
+        assert_eq!(crate::line_guard::PAIR_PROBE_MAX_DATAGRAMS, 6);
+    }
+
+    // =========================================================================================
+    // [ÇİFT YOKLAMASI · DENEY · EK 11] F1: pencere başı, pacer'ın datagramı FİİLEN bırakacağı
+    // andır. Yoklamayı kaydeden ACK tutmayı KENDİSİ yazar (darboğazda duran yabancı kuyruk).
+    // =========================================================================================
+
+    impl Bench {
+        /// Gerçek pacing sürerken bir olay: motor aynı olayda datagram çıkarabilir (darboğaza ve
+        /// kayda girer). Dönen: [`Self::pump`] gibi.
+        fn event_live(&mut self, event: Event, now: u64) -> Vec<(u64, bool)> {
+            let before = self.guard().pace_bps();
+            let decs = self.s.on_event(event, now);
+            let after = self.guard().pace_bps();
+            (0..self.emitted(decs, now))
+                .map(|_| (now, before == PROFILE || after == PROFILE))
+                .collect()
+        }
+
+        /// Ölçülü ACK, gerçek pacing sürerken ([`Self::ack`]'in aynısı; motorun bu olayda
+        /// çıkardığı datagramlar kayda girer). Ölçüm aralığı `first..=front`.
+        fn ack_live(&mut self, now: u64, front: u64, first: u64, pair: bool) -> Vec<(u64, bool)> {
+            self.observe(now);
+            if pair {
+                self.s.note_ack_pair_rate(PAIR_AT_PROFILE);
+            }
+            self.s.set_next_ack_evidence(Some((self.next_ack, front)));
+            let received: Vec<u64> = self.log.range(first..=front).map(|(&q, _)| q).collect();
+            let span = self.log[&front].1 - self.log[&first].1;
+            self.s
+                .note_ack_forward_interval(first, front, Some(span), &received);
+            let acked_seqs: Vec<u64> = self
+                .log
+                .range(self.next_ack..=front)
+                .map(|(&q, _)| q)
+                .collect();
+            self.next_ack = front + 1;
+            self.event_live(
+                Event::AckReceived(AckInfo {
+                    acked_seqs,
+                    ack_delay: Duration::ZERO,
+                }),
+                now,
+            )
+        }
+
+        /// Gerçek pacing: `now`'dan başlayarak 1 ms adımlarla, kayıtta `count` datagram daha
+        /// olana dek sürer. Dönen: bir sonraki adımın anı.
+        fn pump_datagrams(&mut self, mut now: u64, count: usize) -> u64 {
+            let target = self.log.len() + count;
+            while self.log.len() < target {
+                let _ = self.pump(now, now + MS);
+                now += MS;
+            }
+            now
+        }
+
+        /// Gerçek pacing: `now`'dan `until`'e dek (o an hariç) 1 ms adımlarla sürer. Dönen: bir
+        /// sonraki adımın anı (≥ `until`).
+        fn pump_to(&mut self, mut now: u64, until: u64) -> u64 {
+            while now < until {
+                let _ = self.pump(now, now + MS);
+                now += MS;
+            }
+            now
+        }
+
+        fn last_seq(&self) -> u64 {
+            *self.log.keys().next_back().expect("kayıtta datagram var")
+        }
+    }
+
+    /// [EK 11 · F1] Bir koşunun ölçüleri (anlar ACK1'e göre, ns).
+    #[derive(Debug)]
+    struct HoldRun {
+        /// ACK1'in hat modeline yazdırdığı tutma (bayt, tel) ve o tutmanın pacer'daki fiilî bitişi
+        /// (ACK1'den sonra pacer'ın datagram bırakacağı ana kalan süre, ns).
+        hold_bytes: u64,
+        open_ns: u64,
+        /// ACK1'den hemen önce hat modelinin kendi kuyruğu (ns).
+        own_ns: u64,
+        /// ACK1'den sonra çıkan datagramlar: (an, yoklama tavanında mı).
+        sent: Vec<(u64, bool)>,
+        /// Korumanın kaydı: pencere, pencerede sayılan datagram ve tel baytı.
+        window: (u64, u64),
+        counted: (u64, u64),
+    }
+
+    /// [EK 11 · F1] Hat 6 250'de ölçülür ve 6 250'de KALIR; gönderici gerçek pacing'le sürekli
+    /// veri gönderir. Temiz bir ACK'ten (kuyruk yok) sonra darboğaza `foreign` B yabancı trafik
+    /// girer (duran kuyruk: sonraki datagramlar onun arkasında). Cephesi o kuyruğun arkasındaki
+    /// datagram olan ACK (ACK1) çift ölçüsünü taşır: kuyruk tahminini hat modeline KENDİSİ yazar
+    /// (tutma; pacer'a testten yazılmaz) ve çift yoklamasını kaydeder. Sonra 2,4 s gerçek pacing.
+    fn probe_after_an_ack_that_writes_its_own_hold(foreign: u64) -> HoldRun {
+        let mut b = Bench::new(Some(6));
+        for k in 0..=30u64 {
+            b.send(k * GAP_FAST);
+        }
+        let at = b.ack_time(10);
+        b.ack(at, 10, None, false);
+        let at = b.ack_time(30);
+        b.ack(at, 30, Some(11), false);
+        assert_eq!(
+            (b.guard().samples(), b.guard().pace_bps()),
+            (1, NARROW),
+            "kurulum: hat 6 250'de ölçülmedi"
+        );
+        // Sürekli veri (koşunun sonuna dek yeter); motor kendi pacer'ıyla çıkarır.
+        let mut now = at + MS;
+        let _ = b.offer(160, now);
+        now += MS;
+        // Temiz ACK: gerçek pacing'le 8 datagram, cephe sonuncusu.
+        now = b.pump_datagrams(now, 8);
+        let clean = b.last_seq();
+        let ta = b.ack_time(clean);
+        let _ = b.pump_to(now, ta);
+        let _ = b.ack_live(ta, clean, clean - 4, false);
+        now = ta + MS;
+        // Darboğaza yabancı trafik girer.
+        b.free = b.free.max(now) + foreign * SEC / NARROW;
+        now = b.pump_datagrams(now, 8);
+        let front = b.last_seq();
+        let t1 = b.ack_time(front);
+        let _ = b.pump_to(now, t1);
+        let own_ns = b.s.pacer.line_ns_until_drained();
+        let at_ack = b.ack_live(t1, front, front - 4, true);
+        assert!(
+            at_ack.is_empty(),
+            "kurulum: ACK1 olayında datagram çıktı: {at_ack:?}"
+        );
+        let d = b.guard().ack_diag();
+        assert_eq!(
+            (d.pair_probes, b.guard().pace_bps(), d.verdict),
+            (1, NARROW, None),
+            "kurulum: ACK1 çift yoklamasını kaydetmedi (gözlem {d:?})"
+        );
+        let hold_bytes = d.backlog_bytes.unwrap_or(0) + d.extra_backlog_bytes.unwrap_or(0);
+        let open_ns = b.s.pacer.line_ns_until_open();
+        // Tutmayı ACK1 yazdı: hat modelindeki kuyruk tam o bayttır ve modelin kendi kuyruğundan
+        // uzundur.
+        assert_eq!(
+            b.s.pacer.line_ns_until_drained(),
+            (hold_bytes * SEC).div_ceil(NARROW),
+            "kurulum: hat modelindeki tutma ACK1'in yazdığı değil"
+        );
+        assert!(
+            hold_bytes * SEC / NARROW > own_ns,
+            "kurulum: ACK1'in tutması ({hold_bytes} B) modelin kendi kuyruğundan ({own_ns} ns) kısa"
+        );
+        let mut sent = b.pump(t1 + MS, t1 + 2_400 * MS);
+        // Korumanın kaydı: ölçüm taşımayan ACK (yoklamadan sonraki 1.: `Deferred`) pencereyi ve
+        // sayımı gözlem kaydına yazar.
+        let end = t1 + 2_400 * MS;
+        b.observe(end);
+        b.s.set_next_ack_evidence(Some((1, 0)));
+        sent.extend(b.event_live(
+            Event::AckReceived(AckInfo {
+                acked_seqs: Vec::new(),
+                ack_delay: Duration::ZERO,
+            }),
+            end,
+        ));
+        let v = b.guard().ack_diag().verdict.expect("hüküm kaydı");
+        assert_eq!(
+            (v.outcome, v.from_pair),
+            (ProbeOutcome::Deferred, true),
+            "kurulum: ölçümsüz ACK yoklamanın kaydını vermedi"
+        );
+        HoldRun {
+            hold_bytes,
+            open_ns,
+            own_ns,
+            sent: sent.iter().map(|&(t, p)| (t - t1, p)).collect(),
+            window: (
+                v.probe_start_ns.saturating_sub(t1),
+                v.probe_until_ns.saturating_sub(t1),
+            ),
+            counted: (v.probe_sent_datagrams, v.probe_sent_wire),
+        }
+    }
+
+    /// Art arda, taban aralığından belirgin kısa (iki aralığın orta noktasından kısa) aralıkla
+    /// çıkan en uzun datagram dizisinin uzunluğu.
+    fn longest_probe_spaced_train(sent: &[(u64, bool)]) -> u64 {
+        let (mut train, mut best) = (1u64, 1u64);
+        for w in sent.windows(2) {
+            if (w[1].0 - w[0].0) * 2 < GAP_BASE + GAP_FAST {
+                train += 1;
+                best = best.max(train);
+            } else {
+                train = 1;
+            }
+        }
+        best
+    }
+
+    /// [EK 11 · F1 · sahip kararları: «Tek yoklama, en fazla 6 fiilî datagram ve 7.368 tel baytı.»
+    /// «Aynı ACK'in yazdığı tutma bittikten sonra yoklama başlar.»] Yoklamayı kaydeden ACK tutmayı
+    /// kendisi yazdığında (darboğazda 5 000 B yabancı duran kuyruk) tutmadan sonra çıkan İLK
+    /// datagram pencerenin içindedir (yoklama tavanında ve sayılmış) ve art arda yoklama
+    /// aralığıyla çıkan datagram sayısı bütçe kadardır (6).
+    ///
+    /// Kusur (EK 9 A3 hizalaması «yalnız ileri» iken): pencere başı hat modeli kuyruğunun SIFIRA
+    /// indiği ana kuruluyordu; pacer kuyruk 2 ms'lik gönderim payına inince datagram bırakır.
+    /// Aradaki ≈ 1,92 ms'de sırası gelen datagram taban tavanında, pencereden önce ve SAYILMADAN
+    /// çıkıyor, pencere onun ardına altı datagram daha diziyordu (yoklama aralığıyla 7 datagram /
+    /// 8 596 B; kayıt 6 / 7 368).
+    #[test]
+    fn ek11_f1_the_first_datagram_after_the_acks_own_hold_is_inside_the_window() {
+        let r = probe_after_an_ack_that_writes_its_own_hold(5_000);
+        let ms = |ns: u64| ns as f64 / 1e6;
+        let train = longest_probe_spaced_train(&r.sent);
+        let first = r.sent[0];
+        println!(
+            "EK11-F1 yabancı kuyruk 5 000 B: ACK1 tutması {} B (modelin kendi kuyruğu {:.2} ms); \
+             pacer ACK1 + {:.2} ms'de açılıyor; pencere [{:.2}, {:.2}] ms; korumanın sayımı {} \
+             datagram / {} B; ilk datagram {:.0} ms (yoklama tavanında: {}); yoklama aralığıyla art \
+             arda çıkan {} datagram / {} B; ACK1'den sonra çıkanlar (ms, yoklama tavanında mı): {:?}",
+            r.hold_bytes,
+            ms(r.own_ns),
+            ms(r.open_ns),
+            ms(r.window.0),
+            ms(r.window.1),
+            r.counted.0,
+            r.counted.1,
+            ms(first.0),
+            first.1,
+            train,
+            train * WIRE,
+            r.sent
+                .iter()
+                .map(|&(t, p)| (t / MS, p))
+                .collect::<Vec<_>>()
+        );
+        let first_in_window = first.0 >= r.window.0 && first.0 <= r.window.1;
+        assert_eq!(
+            (first_in_window, first.1, train, r.counted),
+            (true, true, 6, (6, 6 * WIRE)),
+            "(tutmadan sonraki ilk datagram pencerenin içinde, yoklama tavanında, yoklama \
+             aralığıyla art arda çıkan datagram, korumanın sayımı) — istenen: ilk datagram \
+             pencerede ve tavanda, 6 datagram, sayım 6 / 7 368 B"
+        );
+        // «Tutma bittikten sonra»: pencere başı, ACK1'in yazdığı tutmanın pacer'daki fiilî
+        // bitişidir; ondan önce datagram çıkmaz.
+        assert_eq!(
+            r.window.0, r.open_ns,
+            "pencere başı pacer'ın açılma anı değil"
+        );
+        assert!(
+            first.0 >= r.open_ns,
+            "tutma bitmeden datagram çıktı: {:.2} ms (tutma {:.2} ms'de bitiyor)",
+            ms(first.0),
+            ms(r.open_ns)
+        );
+        // Bütçe dolduktan sonraki ilk datagram taban aralığından önce çıkmaz.
+        assert!(
+            r.sent[6].0 - r.sent[5].0 >= GAP_BASE - MS,
+            "yedinci datagram {:.0} ms sonra çıktı (taban aralığı {:.2} ms)",
+            ms(r.sent[6].0 - r.sent[5].0),
+            ms(GAP_BASE)
+        );
+    }
+    /// [EK 11 · F3 (a) · EK 9 A5, gönderici düzeyi] Gerçek göndericide OLAĞAN (süreli) yoklamanın
+    /// süresi dolmuşken yapılan gönderim (`track_sent`) tavanı ve hat modelini değiştirmez:
+    /// gönderim sonrası denetim yalnız kayıtlı çift yoklamasınındır
+    /// (`LineGuard::tick_pair_probe`). Olağan yoklamanın süre sonunu olay başındaki `tick` işler.
+    /// `track_sent` içindeki çağrı `tick`'e geri alınırsa bu test kırmızı olur (gönderim tavanı
+    /// tabana indirir).
+    #[test]
+    fn ek11_f3a_a_send_after_an_ordinary_probe_ran_out_does_not_change_the_ceiling() {
+        // Deney kapalı; hat 12 500'e dönmüş: doğrulanan aralık olağan yoklamayı başlatır.
+        let mut b = Bench::new(None);
+        let t1 = b.before_probe_ack();
+        b.ack(t1, 40, Some(36), false);
+        let raises = b.guard().raises();
+        assert_eq!(b.guard().pace_bps(), NARROW, "kurulum: tavan tabanda");
+        // Gönderici taban tavanında sürer; cephesi 56 olan ACK'in cephe aralığı (40 → 56) ≥ 3 s,
+        // tavan hızında gönderilmiş ve kuyruk büyümemiş: doğrulanır, olağan yoklama başlar.
+        let mut t = b.sent_at(b.last_seq()) + GAP_BASE;
+        while b.last_seq() < 56 {
+            b.send(t);
+            t += GAP_BASE;
+        }
+        let t1 = b.ack_time(56);
+        while t < t1 {
+            b.send(t);
+            t += GAP_BASE;
+        }
+        b.ack(t1, 56, Some(52), false);
+        let probing = b.guard().pace_bps();
+        let line_rate = |b: &Bench| b.s.pacer.line_model().map(|m| m.rate_bps);
+        assert!(
+            probing > NARROW && b.guard().raises() == raises && b.guard().pair_probes() == 0,
+            "kurulum: olağan yoklama başlamadı (tavan {probing}, gözlem {:?})",
+            b.guard().ack_diag()
+        );
+        assert_eq!(
+            line_rate(&b),
+            Some(probing),
+            "kurulum: hat modeli yoklama tavanında"
+        );
+        // Olağan yoklama en çok 3 s sürer (`line_guard::VERIFY_MIN_SPAN_NS`): bu an süresinden
+        // sonradır (aşağıda aynı anda işlenen olay yoklamayı bitirerek bunu doğrular). Arada olay
+        // yok: gönderim, olay başındaki `tick` çalışmadan yapılır.
+        let at = t1 + 10 * SEC;
+        b.send(at);
+        println!(
+            "EK11-F3a olağan yoklama (taban {NARROW}, yoklama {probing}): süresi dolduktan sonra \
+             gönderim: tavan {}, hat modeli {:?}",
+            b.guard().pace_bps(),
+            line_rate(&b)
+        );
+        assert_eq!(
+            (b.guard().pace_bps(), line_rate(&b)),
+            (probing, Some(probing)),
+            "gönderim olağan yoklamanın (tavan, hat modeli) çiftini değiştirdi"
+        );
+        // Aynı anda bir olay: olay başındaki `tick` süresi dolmuş olağan yoklamayı bitirir.
+        let _ = b.event_live(Event::TimerFired(Timer::Pto), at);
+        assert_eq!(
+            (b.guard().pace_bps(), line_rate(&b)),
+            (NARROW, Some(NARROW)),
+            "olay başındaki tick süresi dolmuş olağan yoklamayı bitirmedi"
+        );
+    }
+
+    /// [EK 11 · F3 (c) · «6 üstü ayar reddi»nin üçüncü yeri] `Sender::set_pair_probe_datagrams`
+    /// onaylı üst sınırın (6) üstündeki ayarı reddeder: deney KAPALI kalır ve çift ölçüsü bugünkü
+    /// doğrudan yoldadır (deney kapalı koşuyla aynı durum). Diğer iki yer: `LineGuard::
+    /// set_pair_probe` ve ortam değişkeni süzgeci (`pair_probe_datagrams_setting`).
+    #[test]
+    fn ek11_f3c_the_sender_switch_rejects_a_budget_above_six() {
+        let run = |setting: Option<u64>| {
+            let mut b = Bench::new(setting);
+            let on = b.guard().ack_diag().pair_probe_on;
+            let t1 = b.before_probe_ack();
+            b.ack(t1, 40, Some(36), true);
+            let g = b.guard();
+            (
+                on,
+                (g.pair_probes(), g.pair_raises(), g.pace_bps(), g.rate_bps()),
+                format!("{g:?}"),
+            )
+        };
+        let off = run(None);
+        let seven = run(Some(crate::line_guard::PAIR_PROBE_MAX_DATAGRAMS + 1));
+        let six = run(Some(crate::line_guard::PAIR_PROBE_MAX_DATAGRAMS));
+        println!(
+            "EK11-F3c (anahtar açık, (çift yoklaması, çift artışı, tavan, hız)): kapalı {:?} · 7 {:?} · 6 {:?}",
+            (off.0, off.1),
+            (seven.0, seven.1),
+            (six.0, six.1)
+        );
+        assert_eq!(
+            (off.0, off.1 .0, off.1 .1),
+            (false, 0, 1),
+            "kapalı: doğrudan yol"
+        );
+        assert_eq!(seven, off, "Some(7): deney kapalı koşudan farklı");
+        assert_eq!(
+            (six.0, six.1 .0, six.1 .1, six.1 .2),
+            (true, 1, 0, NARROW),
+            "Some(6): deney açık, yoklama kaydedilir"
+        );
+        assert_eq!(run(Some(0)), off, "Some(0): deney kapalı koşudan farklı");
+        assert_eq!(
+            run(Some(u64::MAX)),
+            off,
+            "Some(u64::MAX): deney kapalı koşudan farklı"
+        );
     }
 }

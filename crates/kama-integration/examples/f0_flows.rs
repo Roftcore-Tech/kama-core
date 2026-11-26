@@ -1335,12 +1335,26 @@ fn lg_line(clock: &Clock, sess: &str, origin: Option<Instant>, r: &LineGuardAckT
         |v| {
             format!(
                 "{{\"outcome\":{},\"expect_ns\":{},\"abs_q_ns\":{},\"growth_ns\":{},\
-                 \"interval_g_ns\":{}}}",
+                 \"interval_g_ns\":{},\"from_pair\":{},\"probe_sent_wire\":{},\"probe_sent_datagrams\":{},\
+                 \"base_pace\":{},\"probe_pace\":{},\"probe_start_ns\":{},\
+                 \"probe_until_ns\":{},\"iv_first_send_ns\":{},\"iv_last_send_ns\":{},\
+                 \"covered\":{},\"acks_after_start\":{}}}",
                 js(&format!("{:?}", v.outcome)),
                 v.expect_ns,
                 v.abs_q_ns,
                 v.growth_ns,
-                opt_u(v.interval_g_ns)
+                opt_u(v.interval_g_ns),
+                v.from_pair,
+                v.probe_sent_wire,
+                v.probe_sent_datagrams,
+                v.base_pace,
+                v.probe_pace,
+                v.probe_start_ns,
+                v.probe_until_ns,
+                opt_u(v.iv_first_send_ns),
+                opt_u(v.iv_last_send_ns),
+                v.covered,
+                v.acks_after_start
             )
         },
     );
@@ -1350,7 +1364,8 @@ fn lg_line(clock: &Clock, sess: &str, origin: Option<Instant>, r: &LineGuardAckT
          \"pace_after\":{},\"rate_before\":{},\"rate_after\":{},\"first_window\":{first_window},\
          \"first_window_bps\":{},\"raised\":{},\"probe_failed\":{},\"front_wait_ns\":{},\
          \"by_bytes\":{},\"by_delay\":{},\"backlog_bytes\":{},\"extra_backlog_bytes\":{},\
-         \"pair_bound_wire\":{},\"verdict\":{verdict}}}",
+         \"pair_bound_wire\":{},\"pair_probe_on\":{},\"pair_probes\":{},\
+         \"pair_probe_spent\":{},\"refuted_bps\":{},\"verdict\":{verdict}}}",
         opt_ms(clock, at),
         js(sess),
         r.index,
@@ -1371,7 +1386,11 @@ fn lg_line(clock: &Clock, sess: &str, origin: Option<Instant>, r: &LineGuardAckT
         opt_u(r.diag.by_delay),
         opt_u(r.diag.backlog_bytes),
         opt_u(r.diag.extra_backlog_bytes),
-        opt_u(r.diag.pair_bound_wire)
+        opt_u(r.diag.pair_bound_wire),
+        r.diag.pair_probe_on,
+        r.diag.pair_probes,
+        r.diag.pair_probe_spent,
+        opt_u(r.diag.refuted_bps)
     )
 }
 
