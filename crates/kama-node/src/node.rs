@@ -103,7 +103,9 @@ pub(crate) const COMMAND_QUEUE_CAP: usize = 64;
 /// yapmadan yeniden başlar, kuyruk her turda en az bir kez dolusu kadar boşalır.
 const MAX_EVENTS_PER_TURN: usize = MAX_INBOX;
 
-/// [S2-A3-2] Bir turda işlenen hub bildirimi tavanı (kalanlar sonraki turda).
+/// [S2-A3-2] Bir turda işlenen hub bildirimi tavanı (kalanlar sonraki turda) — yerel sınır,
+/// normatif DEĞİL, spec'ten türemez `[KALİBRASYON]`. Bildirimler `HubLink`'in sınırlı kuyruğunda
+/// bekler (`client_core::hub::link::MAX_NOTICES`; dolunca en eskisi düşer, `bounded_drops`).
 const HUB_NOTICES_PER_TURN: usize = 16;
 
 /// Tek yanıtlık kanal: her komut tam bir yanıt alır, gönderim bloklamaz.
