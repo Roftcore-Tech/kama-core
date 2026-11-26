@@ -7,12 +7,15 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-/// Congestion control seçimi (§4.4.1: Cubic default vs Bbr experimental).
+/// quinn kollarının congestion control seçimi. transport-tdd §4.4.1: QUIC'in en güçlü CC'si
+/// ölçülür ("default CC + destekliyorsa BBR/BBRv2 profili"; "Cubic/Reno'ya karşı kazanmak
+/// anlamsız"); ADR-18 kıyas kolu quinn+BBR'dır (`--cc bbr`). Bayraksız CLI değeri `cubic`'tir;
+/// seçilen CC `RunMeta.cc` ve manifestin `cc` alanıyla rapora yazılır [S-60 / B-05].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cc {
-    /// quinn default, production.
+    /// quinn'in varsayılan CC'si.
     Cubic,
-    /// quinn `Experimental! Use at your own risk.` (kaynak notu).
+    /// quinn BBR (quinn kaynağında `Experimental! Use at your own risk.` notlu).
     Bbr,
 }
 

@@ -12,7 +12,19 @@
 use serde::{Deserialize, Serialize};
 
 /// Manifest şema kimliği — analizörler bunu kontrol eder.
-pub const MANIFEST_SCHEMA: &str = "kama-bench-manifest/v1";
+///
+/// [S-60 / B-07] v2 = v1 + koşu kimliği alanları (`cc`, `transport_version`,
+/// `quinn_proto_version`, `engine`, `profile`, `budget_mode`, `warmup_msgs`, `measurement_gate`,
+/// `establish_gate`). EVOLUTION §9.7: "şema sürümü artmadan alan eklenmez".
+pub const MANIFEST_SCHEMA: &str = "kama-bench-manifest/v2";
+/// Önceki şema: yeni alanlar yoktur, okurken varsayılanlarına (boş / 0 / false) düşer.
+pub const MANIFEST_SCHEMA_V1: &str = "kama-bench-manifest/v1";
+
+/// `fairness` komutunun okuyabildiği şemalar.
+#[must_use]
+pub fn is_known_schema(s: &str) -> bool {
+    s == MANIFEST_SCHEMA || s == MANIFEST_SCHEMA_V1
+}
 
 /// Uygulama-düzeyi anlam sözleşmesi. Kollar arası kıyas ancak bu alanlar eşleşiyorsa "adil"dir.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -87,6 +99,35 @@ pub struct RunManifest {
     pub wire_accounting_note: String,
     #[serde(default)]
     pub activation: ActivationSummary,
+    // ── [S-60 / B-05, B-07] v2 KOŞU KİMLİĞİ (transport-tdd §4.4.1 "Kullanılan QUIC impl + CC
+    // profile RAPORDA açıkça yazılır"; §4.4.9 tekrar-üretilebilirlik). v1 manifestte yoktur. ──
+    /// Tıkanıklık denetimi (`RunMeta.cc`): quinn "cubic" | "bbr", tcp "tcp-kernel", Kama motor.
+    #[serde(default)]
+    pub cc: String,
+    /// Taşıma gerçeklemesinin sürümü (`RunMeta.quinn_version`: rakipte quinn, Kama'da crate).
+    #[serde(default)]
+    pub transport_version: String,
+    /// quinn-proto sürümü (yalnız quinn kolları; Cargo.lock).
+    #[serde(default)]
+    pub quinn_proto_version: String,
+    /// Kama motoru ("legacy" | "cc-port"; rakip kollarda boş).
+    #[serde(default)]
+    pub engine: String,
+    /// netem profil adı (`--profile`).
+    #[serde(default)]
+    pub profile: String,
+    /// İleri yön (istemci çıkışı) bütçe biçimi (`BudgetMode::label`).
+    #[serde(default)]
+    pub budget_mode: String,
+    /// Ölçüm-öncesi warmup mesajı sayısı.
+    #[serde(default)]
+    pub warmup_msgs: u64,
+    /// Ölçüm barrier'ı (`--gate`) kullanıldı mı.
+    #[serde(default)]
+    pub measurement_gate: bool,
+    /// Kuruluş barrier'ı (`--establish-gate`) kullanıldı mı.
+    #[serde(default)]
+    pub establish_gate: bool,
 }
 
 /// [FAZ-4 §16/§17] Kıyas denetim sonucu — ÜÇ DÜZEY, karıştırılmaz.
@@ -336,7 +377,57 @@ mod tests {
             repeat: 1,
             wire_accounting_note: "full".into(),
             activation: ActivationSummary::default(),
+            cc: "cc-port".into(),
+            transport_version: "0.1.0".into(),
+            quinn_proto_version: String::new(),
+            engine: "cc-port".into(),
+            profile: "p".into(),
+            budget_mode: "unlimited".into(),
+            warmup_msgs: 0,
+            measurement_gate: false,
+            establish_gate: false,
         }
+    }
+
+    /// [S-60 / B-07] v1 manifesti (yeni alanlar yok) okunabilir; yeni alanlar varsayılana düşer.
+    /// v2 kimlik alanları yazılır ve geri okunur.
+    #[test]
+    fn v1_manifest_okunur_v2_alanlari_yazilir() {
+        assert!(is_known_schema(MANIFEST_SCHEMA));
+        assert!(is_known_schema(MANIFEST_SCHEMA_V1));
+        assert!(!is_known_schema("kama-bench-manifest/v0"));
+        let mut v1 = serde_json::to_value(base("kama-v1-full", "kama-product")).unwrap();
+        let o = v1.as_object_mut().unwrap();
+        for k in [
+            "cc",
+            "transport_version",
+            "quinn_proto_version",
+            "engine",
+            "profile",
+            "budget_mode",
+            "warmup_msgs",
+            "measurement_gate",
+            "establish_gate",
+        ] {
+            o.remove(k);
+        }
+        o.insert("schema".into(), MANIFEST_SCHEMA_V1.into());
+        let m: RunManifest = serde_json::from_value(v1).expect("v1 okunur");
+        assert!(m.cc.is_empty() && m.engine.is_empty() && m.budget_mode.is_empty());
+        assert_eq!(m.warmup_msgs, 0);
+
+        let mut q = base("quinn-reliable-stream", "quinn");
+        q.cc = "bbr".into();
+        q.quinn_proto_version = "0.11.19".into();
+        q.budget_mode = "paced:1/2/3".into();
+        q.warmup_msgs = 10;
+        q.measurement_gate = true;
+        let back: RunManifest = serde_json::from_str(&serde_json::to_string(&q).unwrap()).unwrap();
+        assert_eq!(back.cc, "bbr");
+        assert_eq!(back.quinn_proto_version, "0.11.19");
+        assert_eq!(back.budget_mode, "paced:1/2/3");
+        assert_eq!(back.warmup_msgs, 10);
+        assert!(back.measurement_gate && !back.establish_gate);
     }
 
     /// [M0] Kanonik profil `kama-v1-full`; TEK alan sapması `kama-custom` yapar.

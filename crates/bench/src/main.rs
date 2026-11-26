@@ -655,6 +655,16 @@ async fn main() -> Result<(), BenchError> {
             tuning.early_exit = early_exit;
             tuning.payload_id = payload_id;
             rival::set(tuning);
+            let budget = budget_mode(
+                budget_burst_bytes,
+                budget_refill_bytes_per_s,
+                budget_bucket_bytes,
+                budget_ceiling_bytes,
+            )?;
+            // [S-60 / B-07] Manifestin koşu kimliği alanları (yapılandırma `cfg`'ye taşınmadan önce).
+            let budget_label = budget.label();
+            let measurement_gate = gate.is_some();
+            let establish_gate_used = establish_gate.is_some();
             let cfg = ClientCfg {
                 server,
                 msg_count: msgs,
@@ -666,12 +676,7 @@ async fn main() -> Result<(), BenchError> {
                 profile,
                 kama_arm: kama_arm.into(),
                 submit_interval: Duration::from_millis(submit_interval_ms),
-                budget: budget_mode(
-                    budget_burst_bytes,
-                    budget_refill_bytes_per_s,
-                    budget_bucket_bytes,
-                    budget_ceiling_bytes,
-                )?,
+                budget,
                 warmup_msgs,
                 gate,
                 establish_gate,
@@ -745,6 +750,15 @@ async fn main() -> Result<(), BenchError> {
                         "full harness-observed wire bytes".to_string()
                     },
                     activation: output.meta.activation.clone().unwrap_or_default(),
+                    cc: output.meta.cc.clone(),
+                    transport_version: output.meta.quinn_version.clone(),
+                    quinn_proto_version: output.meta.quinn_proto_version.clone(),
+                    engine: output.meta.engine.clone(),
+                    profile: output.meta.profile.clone(),
+                    budget_mode: budget_label,
+                    warmup_msgs,
+                    measurement_gate,
+                    establish_gate: establish_gate_used,
                 };
                 manifest::write(mp, &m);
             }
@@ -759,7 +773,7 @@ async fn main() -> Result<(), BenchError> {
                     .map_err(|e| BenchError::Other(format!("{}: {e}", p.display())))?;
                 let m: manifest::RunManifest = serde_json::from_str(&txt)
                     .map_err(|e| BenchError::Other(format!("{}: {e}", p.display())))?;
-                if m.schema != manifest::MANIFEST_SCHEMA {
+                if !manifest::is_known_schema(&m.schema) {
                     return Err(BenchError::Other(format!(
                         "{}: bilinmeyen şema {}",
                         p.display(),
@@ -797,6 +811,23 @@ async fn main() -> Result<(), BenchError> {
                     canon,
                     m.setup_class,
                     m.profile_delta.len()
+                );
+                // [S-60 / B-05, B-07] Koşu kimliği rapora AYNEN girer (§4.4.1: QUIC impl + CC
+                // profili raporda açıkça yazılır). v1 manifestte bu alanlar boştur.
+                println!(
+                    "  identity     {}: schema={} cc={} transport_version={} quinn_proto={} \
+                     engine={} profile={} budget={} warmup_msgs={} gate={} establish_gate={}",
+                    short(p),
+                    m.schema,
+                    m.cc,
+                    m.transport_version,
+                    m.quinn_proto_version,
+                    m.engine,
+                    m.profile,
+                    m.budget_mode,
+                    m.warmup_msgs,
+                    m.measurement_gate,
+                    m.establish_gate
                 );
             }
             for i in 0..loaded.len() {
