@@ -316,21 +316,18 @@ fn profile_delta(c: &RuntimeConfig) -> Vec<String> {
             c.structure_gate_level_permille, v.structure_gate_level_permille
         ));
     }
-    if c.fec_loss_risk.enabled != v.fec_loss_risk.enabled
-        || c.fec_loss_risk.bootstrap_cap_permille != v.fec_loss_risk.bootstrap_cap_permille
-        || c.fec_loss_risk.persistent_cap_permille != v.fec_loss_risk.persistent_cap_permille
-        || c.fec_loss_risk.reorder_suppress_permille != v.fec_loss_risk.reorder_suppress_permille
-        || c.fec_loss_risk.persist_mode != v.fec_loss_risk.persist_mode
-    {
+    // [S-60 / B-02] Risk kolunun TÜM alanları karşılaştırılır (`FecLossRiskConfig: PartialEq`):
+    // `--persist-alpha/--persist-rho/--persist-q` de kolu değiştirir; alt küme kıyası bu
+    // bayraklarla koşan kolu `kama-v1-full` bırakıyordu.
+    if c.fec_loss_risk != v.fec_loss_risk {
         d.push(format!(
-            "fec_loss_risk(enabled={} l1={} l2={} rp_suppress={} persist={:?}) != v1(enabled={} l1={} l2={} rp_suppress={} persist={:?})",
-            c.fec_loss_risk.enabled, c.fec_loss_risk.bootstrap_cap_permille,
-            c.fec_loss_risk.persistent_cap_permille, c.fec_loss_risk.reorder_suppress_permille,
-            c.fec_loss_risk.persist_mode,
-            v.fec_loss_risk.enabled, v.fec_loss_risk.bootstrap_cap_permille,
-            v.fec_loss_risk.persistent_cap_permille, v.fec_loss_risk.reorder_suppress_permille,
-            v.fec_loss_risk.persist_mode
+            "fec_loss_risk {:?} != v1 {:?}",
+            c.fec_loss_risk, v.fec_loss_risk
         ));
+    }
+    // [S-60 / B-02] Alıcı R-kotası da ürün profilinin alanıdır (sunucu `--quota-r`).
+    if c.quota_r != v.quota_r {
+        d.push(format!("quota_r {} != {}", c.quota_r, v.quota_r));
     }
     if c.bootstrap_rtt != v.bootstrap_rtt {
         d.push(format!(
@@ -1312,6 +1309,36 @@ mod tests {
         let d = profile_delta(&c);
         assert_eq!(d.len(), 1, "yalnız motor sapmalı: {d:?}");
         assert!(d[0].starts_with("engine "), "{d:?}");
+    }
+
+    /// [S-60 / B-02] Persistence knob'ları ve alıcı R-kotası tek başına sapma üretir.
+    #[test]
+    fn risk_knoblari_ve_kota_sapmasi_gorunur() {
+        for (ad, arm) in [
+            ("persist_alpha", {
+                let mut a = bayraksiz_arm();
+                a.persist_alpha = Some(1000);
+                a
+            }),
+            ("persist_rho", {
+                let mut a = bayraksiz_arm();
+                a.persist_rho = Some(2000);
+                a
+            }),
+            ("persist_q", {
+                let mut a = bayraksiz_arm();
+                a.persist_q = Some(900);
+                a
+            }),
+        ] {
+            let d = profile_delta(&runtime_cfg(arm));
+            assert_eq!(d.len(), 1, "{ad}: {d:?}");
+            assert!(d[0].starts_with("fec_loss_risk "), "{ad}: {d:?}");
+        }
+        let mut a = bayraksiz_arm();
+        a.quota_r = 8;
+        let d = profile_delta(&runtime_cfg(a));
+        assert_eq!(d, vec!["quota_r 8 != 4".to_string()]);
     }
 
     fn srv_cfg(bind: SocketAddr, fec: FecArm) -> ServerCfg {
