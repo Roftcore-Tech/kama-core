@@ -4967,7 +4967,9 @@ impl K2Arm {
     fn t_max(self) -> u64 {
         match self {
             Self::Recover => 70 * SEC,
-            Self::False => 80 * SEC,
+            // [EK 9 · DÜZENEK] 80 s → 100 s: yükseliş kanıtının doğduğu ACK'ten sonra en az altı
+            // ACK okunsun (ikinci yoklama ancak o zaman sınanmış sayılır; `kanit_sonrasi_ack`).
+            Self::False => 100 * SEC,
         }
     }
 }
@@ -5232,6 +5234,9 @@ struct K2Row {
     refusals: u64,
     pair_probes: u64,
     queue_ns: u64,
+    /// [EK 9 · A1] Korumanın deney anahtarı (`AckDiag::pair_probe_on`), ACK'in iz kaydından; kayıt
+    /// yazılmadıysa `None`.
+    switch_on: Option<bool>,
 }
 
 impl K2Row {
@@ -5359,6 +5364,7 @@ fn k2_rows(o: &Outcome) -> Vec<K2Row> {
             refusals: a.gate_refused - prev_refused,
             pair_probes: a.pair_probes,
             queue_ns: k2_queue_peak(o, prev_t, a.arrival),
+            switch_on: a.trace.map(|t| t.diag.pair_probe_on),
         });
         prev_t = a.arrival;
         prev_refused = a.gate_refused;
@@ -5404,7 +5410,7 @@ fn k2_row_json(key: &str, r: &K2Row) -> String {
          \"cift_tel\":{},\"cift_alici\":{obs},\"yoklama\":{probe},\"kapsadi\":{},\"hukum\":{},\"hukum_tur\":{},\
          \"yoklama_hizi\":{},\"kalici_tavan\":{},\"kalici_tavan_once\":{},\"ham_tavan\":{},\
          \"inflight\":{},\"etkin_pencere\":{},\"kapi_reddi\":{},\"cift_yoklama_sayisi\":{},\
-         \"kuyruk_tepe_ms\":{}}}",
+         \"kuyruk_tepe_ms\":{},\"anahtar_acik\":{}}}",
         r.sira,
         r.index,
         r.t / MS,
@@ -5428,6 +5434,7 @@ fn k2_row_json(key: &str, r: &K2Row) -> String {
         r.refusals,
         r.pair_probes,
         jms(r.queue_ns),
+        r.switch_on.map_or("null".to_string(), |b| b.to_string()),
     )
 }
 
@@ -5525,12 +5532,47 @@ fn k2_summary_json(key: &str, arm: K2Arm, probe_on: bool, o: &Outcome, rows: &[K
     let queue_at_event = k2_queue_peak(o, K2_EVENT_NS - SEC, K2_EVENT_NS);
     let at6 = rows.get(5).or(rows.last());
     let probes_at6 = at6.map_or(probes_before, |r| r.pair_probes);
-    let second = if probes_at6 - probes_before >= 2 {
-        "VAR"
-    } else {
-        "YOK"
+    // [EK 9 · DÜZENEK] İkinci yoklama, yükseliş kanıtının doğduğu ACK'ten (o ACK dahil) sonraki
+    // altı ACK'e dek başlayan çift yoklamalarından sayılır; kanıt yoksa ya da ondan sonra altıdan
+    // az ACK okunduysa SINANMADI.
+    let evidence_at = rows.iter().position(K2Row::eligible);
+    let after_evidence = evidence_at.map(|k| rows.len() - 1 - k);
+    let probes_evidence6 = evidence_at.filter(|&k| k + 6 < rows.len()).map(|k| {
+        let before = if k == 0 {
+            probes_before
+        } else {
+            rows[k - 1].pair_probes
+        };
+        rows[k + 6].pair_probes - before
+    });
+    let second = match probes_evidence6 {
+        None => "SINANMADI",
+        Some(n) if n >= 2 => "VAR",
+        Some(_) => "YOK",
     };
     let ceil_ack = rows.iter().find(|r| r.ceil >= CEIL_95).map(|r| r.sira);
+    // [EK 10 · DÜZENEK] Tel kullanımı: kalıcı tavanın ≥ 11 875 olduğu ilk ACK'ten (o ACK'in adımı
+    // dahil) koşu sonuna dek darboğaza GİREN tel baytı (IP boyu; adım izi) × 1000 ÷ (profil hattı ×
+    // süre). Yalnız toparlanma kolunda; o ACK yoksa `None`.
+    let wire_use_permille = rows
+        .iter()
+        .find(|r| r.ceil >= CEIL_95)
+        .filter(|_| arm == K2Arm::Recover)
+        .and_then(|r| {
+            let end = o.gate_steps.last()?.now + MS;
+            let wire: u64 = o
+                .gate_steps
+                .iter()
+                .filter(|s| s.now >= r.t)
+                .map(|s| s.wire)
+                .sum();
+            let span = end.checked_sub(r.t).filter(|&d| d > 0)?;
+            u64::try_from(
+                u128::from(wire) * 1000 * u128::from(SEC)
+                    / (u128::from(PROFILE_UP) * u128::from(span)),
+            )
+            .ok()
+        });
     let ceil_stable = (0..rows.len())
         .find(|&k| rows[k..].iter().all(|r| r.ceil >= CEIL_95))
         .map(|k| k + 1);
@@ -5768,7 +5810,9 @@ fn k2_summary_json(key: &str, arm: K2Arm, probe_on: bool, o: &Outcome, rows: &[K
          \"cift_yoklama_sayisi_son\":{},\"kanit_ack\":{},\"kuyruk_olayda_ms\":{},\
          \"kuyruk_dusen\":{},\"kapi_reddi_toplam\":{},\"ayna_tutmadi\":{},\"kapi_son_ret\":{},\
          \"kuyruk_tepe_kanit_sonrasi_ms\":{},\"kapi393_kanit_sonrasi\":{},\"tam_kanit_ack\":{},\
-         \"tam_kanit_sifirsiz_ack\":{},\"neden\":\"{why}\"}}",
+         \"tam_kanit_sifirsiz_ack\":{},\"kanit_sonrasi_ack\":{},\
+         \"cift_yoklama_kanit_sonrasi_6ack\":{},\"tel_kullanimi_permil\":{},\
+         \"neden\":\"{why}\"}}",
         jo(rows.get(2).map(|r| r.ceil)),
         jo(ceil_ack.map(|k| k as u64)),
         jms(queue_after),
@@ -5799,7 +5843,188 @@ fn k2_summary_json(key: &str, arm: K2Arm, probe_on: bool, o: &Outcome, rows: &[K
         }),
         jo(full_ack.map(|k| k as u64)),
         jo(full_no_reset_ack.map(|k| k as u64)),
+        jo(after_evidence.map(|k| k as u64)),
+        jo(probes_evidence6),
+        jo(wire_use_permille),
     )
+}
+
+/// [K2 · EK 9 A6 (10) · GÖNDERİCİ DÜZEYİ BÜTÇE · sahip kararı: «Tek yoklama, en fazla 6 fiilî
+/// datagram ve 7.368 tel baytı.» «Küçük datagramlar adede girer.»] Gerçek `Sender`'ın darboğaza
+/// verdiği datagramlar adım izinden sayılır (korumanın kendi sayacından bağımsız). Hükmü kayıtlı
+/// her çift yoklaması için:
+/// * pencerede (`[baş, son]`; pencere açıkken ya da açılmadan bir ACK ile kapandıysa o ACK'in
+///   olayına dek) çıkan datagram ≤ 6 ve tel baytı ≤ 7 368;
+/// * düzeneğin sayımı korumanın son hüküm kaydındaki sayıyla aynı («fiilen gönderilen tel
+///   baytlarını kaydedin»);
+/// * bütçeyle kapanan pencerede bütçeyi dolduran datagramdan sonraki ilk datagram yoklama
+///   hızında çıkmadı: aradaki süre, o datagramın TABAN tavanındaki serileşmesinden kısa değil
+///   (pay 3 ms: pacer'ın 2 ms'lik burst payı + 1 ms'lik adım);
+/// * [EK 11 · F3 (d)] pencere başından HEMEN ÖNCE çıkan datagram da sayılır: pencere başına, kendi
+///   tel baytının yoklama HEDEFİNDEKİ serileşmesinden (bir yoklama aralığı; taban tavanındaki
+///   serileşmesinden kısadır) daha yakın çıkan datagram, pencerenin ilk datagramıyla yoklama
+///   aralığında dizilir (F1 deseni: pacer pencere başından ≈ 2 ms önce açılır, o datagram taban
+///   tavanında ve korumanın sayımına girmeden çıkar, pencere ardına bütçe kadar datagram dizer).
+///   Ön datagramlar + pencere ≤ 6 datagram ve ≤ 7 368 tel baytı (aynı 3 ms pay). Doğru koşuda ön
+///   datagram yoktur: pencere başı pacer'ın açılma anıdır ve pacer bir datagramı öncekinin TABAN
+///   tavanındaki serileşmesi bitince bırakır.
+///
+/// Dönen: [`K2Budget`].
+///
+/// Not: `Sender::track_sent`'teki gönderim sonrası `tick_pair_probe` çağrısı silinirse bu
+/// benzetimde (1 ms'lik olay adımı, her datagram hat modelini kendi serileşmesi kadar kapatır)
+/// bütçe bir sonraki olayın başındaki `tick`'te, en çok 1 ms geç kapanır ve bu denetimler yeşil
+/// kalır; o çağrıyı sabitleyen denetim gönderici birim düzeneğindedir
+/// (`sender::pair_probe_unmeasured_ack_tests`: «pencerenin 6. datagramından sonra tavan taban»,
+/// arada olay yokken).
+fn k2_budget_check(key: &str, o: &Outcome) -> K2Budget {
+    const TOLERANCE_NS: i128 = 3_000_000;
+    let (mut windows, mut max_pkts, mut max_wire, mut gaps) = (0usize, 0u64, 0u64, 0usize);
+    let mut min_slack: Option<i128> = None;
+    let (mut lead_windows, mut max_train_pkts, mut max_train_wire) = (0usize, 0u64, 0u64);
+    let mut min_lead_gap: Option<u64> = None;
+    for p in probes_of(o).iter().filter(|p| p.from_pair) {
+        let &(last_ack, last) = p.chain.last().expect("hüküm zinciri boş olamaz");
+        let closing = o
+            .gate_acks
+            .iter()
+            .find(|a| a.index == last_ack)
+            .expect("hüküm ACK'i kayıtta");
+        let budget_closed = last.probe_sent_datagrams >= 6 || last.probe_sent_wire >= 6 * FULL_WIRE;
+        // Pencerenin fiilî sonu: bütçeyle kapandıysa kayıttaki son (bütçeyi dolduran gönderimin
+        // anı, dahil); kapanış ACK'i pencere bitmeden geldiyse o ACK'in olayına dek; değilse
+        // kayıttaki son (hariç).
+        let by_ack = !budget_closed && closing.arrival < p.until;
+        let end = if by_ack { closing.arrival } else { p.until };
+        let (mut pkts, mut wire) = (0u64, 0u64);
+        for st in o.gate_steps.iter().filter(|s| s.now >= p.start) {
+            if st.now > end || (st.now == end && !budget_closed && !by_ack) {
+                break;
+            }
+            pkts += st.pkts;
+            wire += st.wire;
+        }
+        if by_ack && closing.arrival >= p.start {
+            // Kapanış ACK'inin olayında (kapanıştan sonra) çıkanlar pencereye ait değildir.
+            pkts -= closing.emitted_pkts;
+            wire -= closing.emitted_wire;
+        }
+        windows += 1;
+        max_pkts = max_pkts.max(pkts);
+        max_wire = max_wire.max(wire);
+        assert!(
+            pkts <= 6 && wire <= 6 * FULL_WIRE,
+            "{key}: yoklama [{}-{} ms] penceresinde {pkts} datagram / {wire} B (bütçe 6 / {})",
+            p.start / MS,
+            p.until / MS,
+            6 * FULL_WIRE
+        );
+        assert_eq!(
+            (pkts, wire),
+            (last.probe_sent_datagrams, last.probe_sent_wire),
+            "{key}: yoklama [{}-{} ms]: düzeneğin sayımı ≠ korumanın kaydı",
+            p.start / MS,
+            p.until / MS
+        );
+        // [EK 11 · F3 (d)] Pencere başından hemen önce (kendi tel baytının yoklama hedefindeki
+        // serileşmesinden kısa süre önce) çıkan datagramlar.
+        let (mut lead_pkts, mut lead_wire) = (0u64, 0u64);
+        for st in o
+            .gate_steps
+            .iter()
+            .filter(|s| s.now < p.start && s.pkts > 0)
+        {
+            let probe_ns = i128::from(st.wire) * i128::from(SEC) / i128::from(p.pace.max(1));
+            if i128::from(p.start - st.now) + TOLERANCE_NS < probe_ns {
+                lead_pkts += st.pkts;
+                lead_wire += st.wire;
+            }
+        }
+        lead_windows += usize::from(lead_pkts > 0);
+        // Pencerede datagram çıktıysa: pencere başından önceki son datagramın başa uzaklığı.
+        if let Some(prev) = o
+            .gate_steps
+            .iter()
+            .rev()
+            .find(|s| s.now < p.start && s.pkts > 0)
+            .filter(|_| pkts > 0)
+        {
+            let gap = p.start - prev.now;
+            min_lead_gap = Some(min_lead_gap.map_or(gap, |m| m.min(gap)));
+        }
+        max_train_pkts = max_train_pkts.max(lead_pkts + pkts);
+        max_train_wire = max_train_wire.max(lead_wire + wire);
+        assert!(
+            lead_pkts + pkts <= 6 && lead_wire + wire <= 6 * FULL_WIRE,
+            "{key}: yoklama [{}-{} ms]: pencere başından hemen önce {lead_pkts} datagram / \
+             {lead_wire} B + pencerede {pkts} datagram / {wire} B (bütçe 6 / {})",
+            p.start / MS,
+            p.until / MS,
+            6 * FULL_WIRE
+        );
+        if !budget_closed {
+            continue;
+        }
+        // Bütçeyi dolduran datagram: pencerenin son adımındaki tek datagram.
+        let Some(fill) = o
+            .gate_steps
+            .iter()
+            .find(|s| s.now == p.until)
+            .filter(|s| s.pkts == 1)
+        else {
+            continue;
+        };
+        let Some(next) = o.gate_steps.iter().find(|s| s.now > p.until && s.pkts > 0) else {
+            continue;
+        };
+        gaps += 1;
+        let base_ns = i128::from(fill.wire) * i128::from(SEC) / i128::from(p.base.max(1));
+        let slack = i128::from(next.now - fill.now) - base_ns;
+        min_slack = Some(min_slack.map_or(slack, |m| m.min(slack)));
+        assert!(
+            slack >= -TOLERANCE_NS,
+            "{key}: yoklama [{}-{} ms]: bütçeyi dolduran datagramdan ({} B) sonraki datagram {} ms \
+             sonra çıktı; taban tavanında ({} B/s) serileşmesi {} ms",
+            p.start / MS,
+            p.until / MS,
+            fill.wire,
+            (next.now - fill.now) / MS,
+            p.base,
+            base_ns / i128::from(MS)
+        );
+    }
+    K2Budget {
+        windows,
+        max_pkts,
+        max_wire,
+        gaps,
+        min_slack,
+        lead_windows,
+        max_train_pkts,
+        max_train_wire,
+        min_lead_gap,
+    }
+}
+
+/// [K2 · `K2BUTCE`] [`k2_budget_check`]'in koşu özeti.
+#[derive(Debug, Clone, Copy)]
+struct K2Budget {
+    /// Denetlenen çift yoklaması penceresi; pencerede en çok datagram / tel baytı.
+    windows: usize,
+    max_pkts: u64,
+    max_wire: u64,
+    /// Bütçeyle kapanıp sonraki datagramın aralığı denetlenen pencere; en kısa «aralık − taban
+    /// serileşmesi» farkı (ns).
+    gaps: usize,
+    min_slack: Option<i128>,
+    /// [EK 11 · F3 (d)] Başından hemen önce datagram çıkan pencere; ön datagramlar + pencerede en
+    /// çok datagram / tel baytı.
+    lead_windows: usize,
+    max_train_pkts: u64,
+    max_train_wire: u64,
+    /// Datagram çıkan pencerelerde, pencere başından önceki son datagramın başa en kısa uzaklığı
+    /// (ns; gözlem: denetimin duyarlılığı).
+    min_lead_gap: Option<u64>,
 }
 
 /// [K2] Kovalı darboğazda iki karşı örnek, aynı düzenekte deney açık ve kapalı (sahip talimatı,
@@ -5807,7 +6032,8 @@ fn k2_summary_json(key: &str, arm: K2Arm, probe_on: bool, o: &Outcome, rows: &[K
 /// (`Scenario::bucket_burst`; araç doğrulaması [`k2_bucket_model_matches_the_measured_gaps`]).
 ///
 /// * kol `toparlanma`: hat 12 500 → 8 s'de 6 250 → 20 s'de 12 500; koşu 70 s;
-/// * kol `sahte`: hat 12 500 → 8 s'de 6 250 ve kalır; koşu 80 s; olay anı yine 20 s;
+/// * kol `sahte`: hat 12 500 → 8 s'de 6 250 ve kalır; koşu 100 s (EK 9: 80 s'den uzatıldı; kanıt
+///   ACK'inden sonra en az altı ACK okunsun); olay anı yine 20 s;
 /// * deney `kapali` (`pair_probe` yok) / `acik` (6 datagram); hat `kova` (ESAS) / `fifo` (TEŞHİS:
 ///   serileştiren FIFO, kova yok); kayıp 0 / anahtarlı ‰200; tohum 1–3; yük `pttsiz` (dosya + 2 s'de
 ///   bir 108 B metin) / `tek` (dosya + tek iletim PTT, 78 B gövde). Dosya birimi 1 046 B gövde
@@ -5834,6 +6060,15 @@ fn k2_summary_json(key: &str, arm: K2Arm, probe_on: bool, o: &Outcome, rows: &[K
 /// satırda olaydan) beri `Sender::diag_gate_refusals` farkı (gönderim DENEMESİ sayısı).
 /// `cift_yoklama_sayisi`: `LineGuard::pair_probes` (o ana dek başlayan). `kuyruk_tepe_ms`: önceki
 /// satırdan beri darboğaza giren datagramlarda en büyük bekleme ([`k2_queue_peak`]).
+/// `anahtar_acik` (EK 9 A1): korumanın deney anahtarı, ACK'in iz kaydından (`AckDiag::
+/// pair_probe_on`; kayıt yazılmadıysa `null`). Aşağı yönlü örnekle kapanan çift yoklaması artık
+/// hüküm kaydı bırakır: `hukum` = `Superseded`, `hukum_tur` = `cift`.
+///
+/// **`K2BUTCE`** (EK 9 A6 (10); koşu başına, `assert`'li): [`k2_budget_check`]. EK 11 F3 (d):
+/// `on_datagramli_pencere` (başından hemen önce datagram çıkan pencere sayısı),
+/// `en_cok_dgram_on_dahil` / `en_cok_tel_on_dahil` (ön datagramlar + pencere; ≤ 6 / 7 368),
+/// `baslangic_oncesi_en_yakin_ms` (datagram çıkan pencerelerde, baştan önceki son datagramın başa
+/// en kısa uzaklığı; gözlem).
 ///
 /// **Özet kuralları.**
 /// * `hedef4` (toparlanma kolu): olaydan sonraki ilk üç ACK'in birinde kalıcı tavan ≥ 11 875 →
@@ -5852,7 +6087,11 @@ fn k2_summary_json(key: &str, arm: K2Arm, probe_on: bool, o: &Outcome, rows: &[K
 /// * sahte kol: yükseliş kanıtı olaydan sonraki hiçbir ACK'te doğmadıysa `kalici_sahte_artis` ve
 ///   `kapi393` `SINANMADI`; doğduysa `kalici_sahte_artis` = kalıcı tavan > 6 875 olan ACK var mı,
 ///   `kapi393` = olaydan sonraki kuyruk tepesi ≤ 393 ms.
-/// * `ikinci_yoklama`: olaydan sonraki altı ACK içinde başlayan çift yoklaması ≥ 2.
+/// * `ikinci_yoklama` (EK 9): yükseliş kanıtının doğduğu ACK'ten (`kanit_ack`; o ACK dahil)
+///   sonraki altıncı ACK'e dek başlayan çift yoklaması (`cift_yoklama_kanit_sonrasi_6ack`) ≥ 2 →
+///   `VAR`, değilse `YOK`; kanıt doğmadıysa ya da kanıt ACK'inden sonra altıdan az ACK okunduysa
+///   (`kanit_sonrasi_ack` < 6) `SINANMADI`. (1a5fc80c kaydındaki kural olaydan sonraki altı ACK'i
+///   sayıyordu; o sayı `cift_yoklama_sayisi_6ack` alanında durur.)
 /// * Ek alanlar (kural dışı, okuma için): `kuyruk_tepe_kanit_sonrasi_ms` / `kapi393_kanit_sonrasi`
 ///   (kuyruk tepesi yalnız kanıtın doğduğu ACK'ten sonra giren datagramlarda; olaydan sonraki tepe
 ///   daralmanın kuyruğunu da taşıyabilir), `kuyruk_olayda_ms` (olaydan önceki son 1 s),
@@ -5860,7 +6099,10 @@ fn k2_summary_json(key: &str, arm: K2Arm, probe_on: bool, o: &Outcome, rows: &[K
 ///   koşu sonuna dek ≥ 11 875 kaldığı ilk ACK), `kanit_ack`, `cift_yoklama_olay_oncesi`,
 ///   `kuyruk_dusen`, `kapi_reddi_toplam`, `kapi_son_ret`, `ayna_tutmadi`, `tam_kanit_ack` /
 ///   `tam_kanit_sifirsiz_ack` (çift alt sınırı ≥ 11 875 olan ilk ACK: çerçevenin alanıyla / alıcının
-///   sıfırlama olayları olmasaydı), `neden`.
+///   sıfırlama olayları olmasaydı), `tel_kullanimi_permil` (EK 10; yalnız toparlanma kolu: kalıcı
+///   tavanın ≥ 11 875 olduğu ilk ACK'ten — `kalici_tavan_ack` — koşu sonuna dek darboğaza GİREN
+///   tel baytı (IP boyu, kuyrukta düşenler dahil) × 1000 ÷ (12 500 × süre); o ACK yoksa ve sahte
+///   kolda `null`), `neden`.
 ///
 /// Koşu: `cargo test --release -p adaptive-transport --test starved_line_sim k2_ -- --nocapture
 /// --test-threads=1`.
@@ -5928,10 +6170,43 @@ fn k2_bucket_two_counterexamples_report() {
                                 );
                             }
                             let rows = k2_rows(&o);
+                            // [EK 9 · A1] Kaydı yazılan her ACK korumanın anahtarını taşır ve
+                            // senaryonun anahtarıyla aynıdır.
+                            assert!(
+                                rows.iter()
+                                    .all(|r| r.switch_on.is_none_or(|on| on == probe)),
+                                "{key}: korumanın anahtar kaydı senaryoyla uyuşmuyor"
+                            );
                             for r in &rows {
                                 println!("K2ROW {}", k2_row_json(&key, r));
                             }
                             println!("K2OZET {}", k2_summary_json(&key, arm, probe, &o, &rows));
+                            // [EK 9 · A6 (10)] Gönderici düzeyi bütçe (deney kapalıyken çift
+                            // yoklaması yoktur: denetlenen pencere 0).
+                            let b = k2_budget_check(&key, &o);
+                            assert!(
+                                probe || b.windows == 0,
+                                "{key}: deney kapalıyken çift yoklaması"
+                            );
+                            println!(
+                                "K2BUTCE {{{key},\"pencere\":{},\"en_cok_dgram\":{},\
+                                 \"en_cok_tel\":{},\"aralik_denetlenen\":{},\
+                                 \"yedinci_en_kisa_fark_ms\":{},\"on_datagramli_pencere\":{},\
+                                 \"en_cok_dgram_on_dahil\":{},\"en_cok_tel_on_dahil\":{},\
+                                 \"baslangic_oncesi_en_yakin_ms\":{}}}",
+                                b.windows,
+                                b.max_pkts,
+                                b.max_wire,
+                                b.gaps,
+                                b.min_slack.map_or("null".to_string(), |s| format!(
+                                    "{:.1}",
+                                    s as f64 / MS as f64
+                                )),
+                                b.lead_windows,
+                                b.max_train_pkts,
+                                b.max_train_wire,
+                                b.min_lead_gap.map_or("null".to_string(), jms),
+                            );
                         }
                     }
                 }

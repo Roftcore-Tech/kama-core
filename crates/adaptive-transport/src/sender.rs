@@ -1746,10 +1746,21 @@ fn line_guard_trace_record(
                 pair_probes: after.diag.pair_probes,
                 pair_probe_spent: after.diag.pair_probe_spent,
                 refuted_bps: after.diag.refuted_bps,
+                pair_probe_on: after.diag.pair_probe_on,
                 ..crate::line_guard::AckDiag::default()
             }
         },
     }
+}
+
+/// [ÇİFT YOKLAMASI · DENEY · sahip kararı 2026-11-25] `KAMA_PAIR_PROBE_DATAGRAMS` değerinin
+/// süzgeci: baştaki / sondaki boşluk atılır, ondalık tam sayı `1..=6`
+/// ([`crate::line_guard::PAIR_PROBE_MAX_DATAGRAMS`]) ise deneyin datagram bütçesidir; değişken
+/// yoksa, sayı değilse, 0 ya da onaylı üst sınırın üstündeyse `None` (deney kapalı, bugünkü yol).
+fn pair_probe_datagrams_setting(value: Option<&str>) -> Option<u64> {
+    value
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|n| (1..=crate::line_guard::PAIR_PROBE_MAX_DATAGRAMS).contains(n))
 }
 
 /// [PTT-KOPYA-BÜTÇESİ] Öncelikli şeridin kopyası, bilinen hat kuyruğu bu süreyi (bir PTT demet
@@ -4473,6 +4484,16 @@ impl Sender {
         if drain > 0 {
             self.pacer.line_raise_backlog(drain);
         }
+        // [ÇİFT YOKLAMASI · DENEY · EK 9 A3 · EK 11 F1 · sahip kararı: «Aynı ACK'in yazdığı tutma
+        // bittikten sonra yoklama başlar.»] Bu ACK'in tutması hat modeline yazıldı: bu ACK çift
+        // yoklaması kaydettiyse pencere başı, pacer'ın datagramı FİİLEN bırakacağı ana eşitlenir
+        // (ileri ya da geri; önceden süren tutma, boşluk boşaltması ve modelin kendi kuyruğu
+        // dahil). An `line_ns_until_open`'dır (kuyruk pacer'ın gönderim payına inince), kuyruğun
+        // sıfıra indiği an (`line_ns_until_drained`) değil: ikincisinde sırası gelen datagram
+        // pencereden ≈ 2 ms önce taban tavanında, sayılmadan çıkar ve pencere onun ardına altı
+        // datagram daha dizer (ölçüldü: 613 ms'de taban, 711..1 203 ms'de altı yoklama datagramı).
+        // Kayıt yoksa (anahtar kapalı yol dahil) koruma hiçbir alan yazmaz; pacer yalnız okunur.
+        g.set_pair_probe_start(now_ns.saturating_add(self.pacer.line_ns_until_open()));
     }
 
     /// [HAT-KORUMASI] Korumanın bir ACK'ten sonraki durumunu pacer'ın hat modeline yazar: gönderim
@@ -6029,12 +6050,9 @@ impl Sender {
                 // [ÇİFT YOKLAMASI · DENEY · sahip kararı 2026-11-25] Ürün varsayılanı DEĞİL: anahtar
                 // verilmedikçe çift ölçüsü bugünkü doğrudan yoldadır. Değer deneyin datagram
                 // bütçesidir (`LineGuard::set_pair_probe`).
-                g.set_pair_probe(
-                    std::env::var("KAMA_PAIR_PROBE_DATAGRAMS")
-                        .ok()
-                        .and_then(|v| v.trim().parse::<u64>().ok())
-                        .filter(|n| (1..=crate::line_guard::PAIR_PROBE_MAX_DATAGRAMS).contains(n)),
-                );
+                g.set_pair_probe(pair_probe_datagrams_setting(
+                    std::env::var("KAMA_PAIR_PROBE_DATAGRAMS").ok().as_deref(),
+                ));
                 // [TEMKİNLİ-BAŞLANGIÇ] Hat modeli ilk ölçüme dek tavanın hızında (ölçüldü: profil
                 // hızındaki hat modeliyle pacer burst payı ilk 3 s'de tavanın iki katını gönderdi).
                 self.pacer.set_line_rate(g.pace_bps());
@@ -9477,9 +9495,11 @@ impl Sender {
             g.on_sent_classed(seq, now_ns, unit.size, ahead_ns, priority);
             // [ÇİFT YOKLAMASI · DENEY] Bütçe (en çok 6 fiilî datagram ve 7 368 tel baytı) bu
             // gönderimle dolduysa yükseltilmiş tavan HEMEN biter: bir sonraki datagram yoklama
-            // hızında çıkamaz. Deney kapalıyken ve yoklama yokken `tick` burada bir şey değiştirmez
-            // (olağan yoklamanın süre sonu zaten olay başında işlenir; aynı an ikinci kez sorulur).
-            if g.tick(now_ns) {
+            // hızında çıkamaz. [EK 9 A5] Yalnız kayıtlı çift yoklamasının denetimi: kayıtlı çift
+            // yoklaması yokken (deney kapalı, olağan yoklama kayıtlı olsa da) koruma hiçbir alan
+            // yazmaz ve `false` döner; olağan yoklamanın süre sonu yalnız olay başındaki `tick`'te
+            // işlenir (`on_event_core`).
+            if g.tick_pair_probe(now_ns) {
                 self.pacer.set_line_rate(g.pace_bps());
                 self.pacer.set_line_pairs(g.pair_pacing());
             }
@@ -17574,6 +17594,38 @@ mod pair_probe_unmeasured_ack_tests {
         assert!(at_probe[0] <= 2, "ilk yoklama datagramı {} ms", at_probe[0]);
     }
 
+    /// [EK 9 · A6 (7)] `KAMA_PAIR_PROBE_DATAGRAMS` süzgeci (süreç ortamı değiştirilmeden): yalnız
+    /// `1..=6` kabul edilir; değişken yoksa, sayı değilse, 0 ya da 6'nın üstündeyse deney kapalı.
+    #[test]
+    fn ek9_a6_7_the_experiment_switch_accepts_only_one_to_six() {
+        for n in 1..=crate::line_guard::PAIR_PROBE_MAX_DATAGRAMS {
+            assert_eq!(pair_probe_datagrams_setting(Some(&n.to_string())), Some(n));
+        }
+        assert_eq!(pair_probe_datagrams_setting(Some(" 3\n")), Some(3));
+        for rejected in [
+            "",
+            " ",
+            "0",
+            "7",
+            "60",
+            "-1",
+            "6.0",
+            "0x6",
+            "altı",
+            "6 6",
+            "18446744073709551616",
+        ] {
+            assert_eq!(
+                pair_probe_datagrams_setting(Some(rejected)),
+                None,
+                "{rejected:?} kabul edildi"
+            );
+        }
+        assert_eq!(pair_probe_datagrams_setting(None), None, "değişken yok");
+        // Süzgeç korumanın kendi sınırıyla aynı aralığı kabul eder (`LineGuard::set_pair_probe`).
+        assert_eq!(crate::line_guard::PAIR_PROBE_MAX_DATAGRAMS, 6);
+    }
+
     // =========================================================================================
     // [ÇİFT YOKLAMASI · DENEY · EK 11] F1: pencere başı, pacer'ın datagramı FİİLEN bırakacağı
     // andır. Yoklamayı kaydeden ACK tutmayı KENDİSİ yazar (darboğazda duran yabancı kuyruk).
@@ -17895,6 +17947,52 @@ mod pair_probe_unmeasured_ack_tests {
             (b.guard().pace_bps(), line_rate(&b)),
             (NARROW, Some(NARROW)),
             "olay başındaki tick süresi dolmuş olağan yoklamayı bitirmedi"
+        );
+    }
+
+    /// [EK 11 · F3 (c) · «6 üstü ayar reddi»nin üçüncü yeri] `Sender::set_pair_probe_datagrams`
+    /// onaylı üst sınırın (6) üstündeki ayarı reddeder: deney KAPALI kalır ve çift ölçüsü bugünkü
+    /// doğrudan yoldadır (deney kapalı koşuyla aynı durum). Diğer iki yer: `LineGuard::
+    /// set_pair_probe` ve ortam değişkeni süzgeci (`pair_probe_datagrams_setting`).
+    #[test]
+    fn ek11_f3c_the_sender_switch_rejects_a_budget_above_six() {
+        let run = |setting: Option<u64>| {
+            let mut b = Bench::new(setting);
+            let on = b.guard().ack_diag().pair_probe_on;
+            let t1 = b.before_probe_ack();
+            b.ack(t1, 40, Some(36), true);
+            let g = b.guard();
+            (
+                on,
+                (g.pair_probes(), g.pair_raises(), g.pace_bps(), g.rate_bps()),
+                format!("{g:?}"),
+            )
+        };
+        let off = run(None);
+        let seven = run(Some(crate::line_guard::PAIR_PROBE_MAX_DATAGRAMS + 1));
+        let six = run(Some(crate::line_guard::PAIR_PROBE_MAX_DATAGRAMS));
+        println!(
+            "EK11-F3c (anahtar açık, (çift yoklaması, çift artışı, tavan, hız)): kapalı {:?} · 7 {:?} · 6 {:?}",
+            (off.0, off.1),
+            (seven.0, seven.1),
+            (six.0, six.1)
+        );
+        assert_eq!(
+            (off.0, off.1 .0, off.1 .1),
+            (false, 0, 1),
+            "kapalı: doğrudan yol"
+        );
+        assert_eq!(seven, off, "Some(7): deney kapalı koşudan farklı");
+        assert_eq!(
+            (six.0, six.1 .0, six.1 .1, six.1 .2),
+            (true, 1, 0, NARROW),
+            "Some(6): deney açık, yoklama kaydedilir"
+        );
+        assert_eq!(run(Some(0)), off, "Some(0): deney kapalı koşudan farklı");
+        assert_eq!(
+            run(Some(u64::MAX)),
+            off,
+            "Some(u64::MAX): deney kapalı koşudan farklı"
         );
     }
 }
