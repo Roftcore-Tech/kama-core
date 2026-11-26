@@ -552,10 +552,11 @@ pub struct LineGuard {
     first_window_detail: Option<FirstWindowDetail>,
     /// [ÖLÇÜM-ARALIĞI] Oturumda en az bir ölçüm aralığı geldi (aralık kipi).
     interval_mode: bool,
-    /// [ÇİFT ARALIĞI] Son ACK aşağı yönlü örnek vermedi ve aralık kipindeydi: alıcının kapasite alt
-    /// sınırı ([`Self::on_pair_rate`]) tavanı açabilir. Her ACK'in başında düşer.
+    /// [ÇİFT ARALIĞI] Son ACK aşağı yönlü örnek vermedi ve aralık kipindeydi. Her ACK'in başında
+    /// düşer. [KAPASİTE-KANITI 2026-11-26] [`Self::on_pair_rate`] yalnız tüketir; tavanı açmaz.
     pair_allowed: bool,
-    /// [ÇİFT ARALIĞI] Alt sınırla tavan açma sayısı (gözlem).
+    /// [ÇİFT ARALIĞI] Alt sınırla tavan açma sayısı (gözlem). [KAPASİTE-KANITI 2026-11-26] Ham
+    /// çift tavanı açmadığından artmaz (0 kalır).
     pair_raises: u64,
     /// [ÖLÇÜM-ARALIĞI] Aralık kipinde üst üste ölçümsüz ACK sayısı.
     unmeasured_acks: u32,
@@ -595,9 +596,9 @@ pub struct LineGuard {
     /// [İKİNCİ-ÖLÇÜM] Geçici evreyi kapatan ölçüm (gözlem).
     start_exit: Option<StartExit>,
     /// [ÇİFT ARALIĞI · RET] En yeni başarısız yoklamanın tavanı (B/s, tel): hat bu hızın altında
-    /// ölçüldü. Çift alt sınırı tavanı bunun belirgin üstüne çıkmadan açamaz
-    /// ([`Self::on_pair_rate`]); yukarı yönlü kanıtla (başarılı yoklama, ret üstü çift) ya da
-    /// aşağı yönlü örnekle (hat yeniden ölçüldü) düşer.
+    /// ölçüldü. Başarılı yoklamanın tavanı ona ulaşınca ya da aşağı yönlü örnekle (hat yeniden
+    /// ölçüldü) düşer. [KAPASİTE-KANITI 2026-11-26] Çift alt sınırı artık okumaz ve düşürmez
+    /// ([`Self::on_pair_rate`] tavanı açmaz).
     refuted_bps: Option<u64>,
 }
 
@@ -1360,50 +1361,23 @@ impl LineGuard {
     }
 
     /// [ÇİFT ARALIĞI · #175 7068773849] Alıcının ölçtüğü ileri hat kapasitesi alt sınırı
-    /// (`pair_rate`, B/s UDP gövdesi; `crate::ack` 0x15). Yalnız az önce işlenen ACK aralık
-    /// kipindeyse ve aşağı yönlü örnek vermediyse etkilidir: aşağı yönlü kanıt her zaman önceliklidir.
-    /// Başarısız yoklamanın ret seviyesi de aşağı yönlü kanıttır (göndericinin kendi bayt
-    /// ölçeğiyle: hat o hızın altında): alt sınır tavanı ret seviyesini %5 aşmadan açamaz. Alıcının
-    /// bayt sayımı göndericininkinden büyükse alt sınır oturum boyunca şişer (start_budget_sim
-    /// size_skew: datagram başına +100 B, alt sınır 6 863, gerçek 6 250; başarısız başlangıç
-    /// yoklamasıyla aynı ACK'te tavanı açıyor, kuyruk 0,82–1,34 s).
+    /// (`pair_rate`, B/s UDP gövdesi; `crate::ack` 0x15).
     ///
-    /// Hattın tavandan belirgin (> %5) hızlı olduğunu gösteriyorsa tavan alt sınıra açılır; alt
-    /// sınır profil hattının %95'ine ulaştıysa koruma kalkar (UDP gövdesi tel baytından küçük, çift
-    /// alt sınırı hattı tam vermez). Tel baytına çeviri tam datagramın zarf oranıyla yapılır
-    /// (çiftin ikincisi ≥ [`crate::ack::PAIR_MIN_UDP_BYTES`]; küçük datagramda oran büyür, çeviri
-    /// yine alt sınırdır).
+    /// [KAPASİTE-KANITI · sahip kararı 2026-11-26] Ham çift ölçüsü tek başına kalıcı tavanı
+    /// açamaz: bu çağrı `pace_bps`, `rate_bps`, `probe` ya da `refuted_bps` YAZMAZ. Yalnız bu ACK'in
+    /// izni (`pair_allowed`) tüketilir. Gerekçe: çift aralığı `b / g ≤ hat` eşitsizliği tek FIFO
+    /// darboğaz varsayımına dayanır; darboğaz bir token kovasıysa kova kredisi ikinci datagramı
+    /// hattan hızlı geçirir ve değer şişer. Netem karşı örneği (#258, `b0659064`, tohum 1): gerçek
+    /// hat 6 250 B/s iken çift 12 229 / 12 375 B/s okudu, tavan 12 500'e açıldı, kuyruk 18 447 B.
+    /// Kalıcı artış, o hızı destekleyen kapasite kanıtı (`(D − B_max) / T`) ister; ürün yolu bugün
+    /// `B_max` üretmiyor, o artış kapalıdır. Çiftle tetiklenen geçici yoklama da `C_min` ve `Q_0`
+    /// gerektirir; onlar da yok, kapalıdır.
     ///
-    /// Neden: tavan hattın altındayken kuyruk yoktur; kuyruk artışı sessiz kalır ve yoklama (ACK başına, uygulama sınırlı aralıktan sonra kurulmaz) toparlanan
-    /// hattı ACK aralığı 8–9 s olan dar dönüşte ancak üç ACK'te (≈ 25 s) bulur. Ürün testi
-    /// (düşüş-toparlanma, `482ef1e1`, tohum 1–3): hat 20 s'de 12 500'e döndü, tavan 38–42 s'ye dek
-    /// 7 086–8 376'da kaldı, ikinci dosya 17,3–21,9 s (sınır 14 s).
-    pub fn on_pair_rate(&mut self, pair_udp_bps: u64) {
-        if !std::mem::take(&mut self.pair_allowed) || self.pace_bps >= self.line.rate_bps {
-            return;
-        }
-        let wire = self.pair_wire_bps(pair_udp_bps);
-        // Başarısız yoklamanın ret seviyesi de aşağı yönlü kanıttır: alt sınır onu da %5 aşmalı.
-        let floor = self
-            .refuted_bps
-            .map_or(self.pace_bps, |r| r.max(self.pace_bps));
-        if u128::from(wire) * 100 <= u128::from(floor) * 105 {
-            return;
-        }
-        self.refuted_bps = None;
-        let up = if u128::from(wire) * 100 >= u128::from(self.line.rate_bps) * 95 {
-            self.line.rate_bps
-        } else {
-            wire
-        };
-        self.probe = None;
-        self.pace_bps = up;
-        self.rate_bps = self
-            .rate_bps
-            .filter(|_| up < self.line.rate_bps)
-            .map(|_| up);
-        self.raises = self.raises.saturating_add(1);
-        self.pair_raises = self.pair_raises.saturating_add(1);
+    /// Kaldırılan kural (MUST NOT IMPLEMENT): alt sınır tavanı ve başarısız yoklamanın ret
+    /// seviyesini %5 aşınca tavan alt sınıra (profil hattının %95'ine ulaştıysa profile) açılır,
+    /// süren yoklama ve ret düşerdi.
+    pub fn on_pair_rate(&mut self, _pair_udp_bps: u64) {
+        self.pair_allowed = false;
     }
 
     /// [ÇİFT ARALIĞI] Alt sınırın tel baytına çevirisi (tam datagramın zarf oranıyla; küçük
@@ -1420,7 +1394,7 @@ impl LineGuard {
     /// [TAŞMA · ÇİFT ALT SINIRI] Sıradaki [`Self::on_ack_measured`] çağrısının ACK'inin taşıdığı
     /// kapasite alt sınırı (`pair_rate`, B/s UDP gövdesi; `None` = alt sınır yok). Her ACK'ten
     /// önce yazılır (`None` dahil); o ACK'te tüketilir. Yalnız taşma örneğinin büyüklüğünü verir
-    /// (modül belgesi, "Taşma"); tavan açma [`Self::on_pair_rate`]'tedir.
+    /// (modül belgesi, "Taşma"). Tavanı açmaz ([`Self::on_pair_rate`], KAPASİTE-KANITI).
     pub fn note_pair_lower_bound(&mut self, pair_udp_bps: Option<u64>) {
         self.pair_bound_wire = pair_udp_bps.map(|p| self.pair_wire_bps(p));
     }
@@ -1436,7 +1410,7 @@ impl LineGuard {
             && self.pace_bps < self.line.rate_bps
     }
 
-    /// [ÇİFT ARALIĞI] Alt sınırla tavan açma sayısı (gözlem).
+    /// [ÇİFT ARALIĞI] Alt sınırla tavan açma sayısı (gözlem). [KAPASİTE-KANITI 2026-11-26] Daima 0.
     #[must_use]
     pub fn pair_raises(&self) -> u64 {
         self.pair_raises
@@ -1808,8 +1782,8 @@ impl LineGuard {
                 }
             }
         }
-        // [ÇİFT ARALIĞI] Aşağı yönlü örnek yokken (aralık kipinde) yukarı yönlü kanıt alıcının
-        // kapasite alt sınırıdır ([`Self::on_pair_rate`]). (8abcfbf6'nın boşalma ölçüsü kaldırıldı:
+        // [ÇİFT ARALIĞI] Aşağı yönlü örnek yokken (aralık kipinde) çağrı izni. [KAPASİTE-KANITI
+        // 2026-11-26] Ham çift tavanı açmaz ([`Self::on_pair_rate`]). (8abcfbf6'nın boşalma ölçüsü kaldırıldı:
         // aralığın tel baytı kuyrukta düşen datagramları da sayıyordu; taşan kuyrukta hızı şişirip
         // yakınsamış tavanı yeniden açıyordu — starved_line_sim b, d2.)
         if best.is_none() && !fronts_decide {
@@ -1998,12 +1972,14 @@ mod tests {
     /// [ÇİFT ARALIĞI · #175 7068773849] Hat 6 250'de ölçülür; sonra gönderici tavanın altında
     /// (6 000 B/s) gönderir, yani kuyruk yoktur: boşalma ölçüsü ve kuyruk artışı sessizdir. Her
     /// gönderim yuvasında küçük bir datagramın (PTT gibi, 100 B gövde) 5 ms ardından tam bir datagram
-    /// gider. Alıcının çift alt sınırı (bu test aynı kuralla FIFO varışlarından hesaplar) hat
-    /// 12 500'e döndüyse tavanı ilk ölçüm aralığında profile açar. Karşı-olgu: hat 6 250'de kalırsa
-    /// alt sınır tavanın %5 üstüne çıkmaz, tavan açılmaz. Öncelik: aşağı yönlü örnek veren ACK'ten
-    /// sonra alt sınır (yanlış büyük bile olsa) yok sayılır; bir ACK'e bir kez.
+    /// gider. Alıcının çift alt sınırı bu test aynı kuralla FIFO varışlarından hesaplanır.
+    /// [KAPASİTE-KANITI 2026-11-26] Hat 12 500'e dönse de ham alt sınır tavanı AÇMAZ: tavan dizisi
+    /// alt sınırı hiç vermeyen aynı koşuyla birebir aynıdır (eski sözleşmede ilk ölçüm aralığında
+    /// profile açıyordu). Hat 6 250'de kalırsa da açılmaz; süreli yoklama küçük adımlarla ilerleyebilir,
+    /// profile çıkamaz. Öncelik: aşağı yönlü örnek veren ACK'ten sonra alt sınır (yanlış büyük bile
+    /// olsa) yok sayılır.
     #[test]
-    fn pair_lower_bound_reopens_a_recovered_line_without_a_standing_queue() {
+    fn pair_lower_bound_alone_does_not_reopen_a_recovered_line() {
         // Alıcı kuralı (`receiver::PairRate`): b ≥ 800, g ≥ 2 ms, en büyük ikinci b/g.
         fn pair_lb(arr: &[u64], udp: &[u64], from: usize, to: usize) -> Option<u64> {
             let mut top = [0u64; 2];
@@ -2020,7 +1996,7 @@ mod tests {
             }
             (top[1] > 0).then_some(top[1])
         }
-        let run = |recover: bool| {
+        let run = |recover: bool, feed_pair: bool| {
             let mut g = guard();
             let (mut free, mut arr, mut udp) = (0u64, Vec::new(), Vec::new());
             let mut send = |g: &mut LineGuard, seq: u64, s: u64, b: u64, real: u64| -> u64 {
@@ -2054,7 +2030,7 @@ mod tests {
             for (k, &a) in acks.iter().enumerate() {
                 let first = if k >= 2 { Some(acks[k - 2] + 1) } else { None };
                 let _ = ack_m(&mut g, &arr, a, 0, first);
-                if k >= 1 {
+                if k >= 1 && feed_pair {
                     let from = usize::try_from(acks[k - 1] + 1).expect("seq");
                     if let Some(p) = pair_lb(&arr, &udp, from, usize::try_from(a).expect("seq")) {
                         g.on_pair_rate(p);
@@ -2064,16 +2040,18 @@ mod tests {
             }
             (paces, g.pair_raises())
         };
-        let (paces, pair) = run(true);
+        let (paces, pair) = run(true, true);
         assert!(
             paces.iter().any(|&(_, p)| p < 7_000),
             "daralma ölçülmedi: {paces:?}"
         );
-        assert!(pair >= 1, "alt sınır tavanı açmadı: {paces:?}");
-        // Evre 2'nin ilk tam aralığı (ACK 320, M ≥ 241) içinde profile döner.
-        let at = paces.iter().find(|&&(_, p)| p == PROFILE).map(|&(a, _)| a);
-        assert!(at.is_some_and(|a| a <= 320), "profile dönüş geç: {paces:?}");
-        let (paces, pair) = run(false);
+        assert_eq!(pair, 0, "ham alt sınır tavanı açtı: {paces:?}");
+        let (without, _) = run(true, false);
+        assert_eq!(
+            paces, without,
+            "ham alt sınır tavan dizisini değiştirdi (alt sınırsız koşu: {without:?})"
+        );
+        let (paces, pair) = run(false, true);
         assert_eq!(
             pair, 0,
             "karşı-olgu: hat değişmeden alt sınır tavanı açtı: {paces:?}"
@@ -2742,10 +2720,11 @@ mod tests {
     }
 
     /// [ÇİFT ARALIĞI · RET] Sabit dar hatta (6 250) yoklama başarısız olur: ret seviyesi yoklama
-    /// tavanıdır. Çift alt sınırı tavanı ret seviyesini %5 aşmadan açamaz; aşınca açar ve ret
-    /// düşer. Aşağı yönlü örnek de reti düşürür (hat yeniden ölçüldü).
+    /// tavanıdır. [KAPASİTE-KANITI 2026-11-26] Çift alt sınırı ne retin altında ne %6 üstünde
+    /// tavanı açar; ret de düşmez (eski sözleşmede retin %5 üstü açıp reti düşürüyordu). Aşağı
+    /// yönlü örnek reti düşürür (hat yeniden ölçüldü).
     #[test]
-    fn a_failed_probe_level_bounds_the_pair_lower_bound() {
+    fn a_failed_probe_level_is_kept_and_a_pair_above_it_does_not_open() {
         let mut g = LineGuard::new(
             LineModel {
                 rate_bps: PROFILE,
@@ -2772,14 +2751,14 @@ mod tests {
         g.on_pair_rate(udp(mid));
         assert_eq!(g.pace_bps(), pace, "ret altında alt sınır tavanı açtı");
         assert_eq!(g.pair_raises(), 0);
-        // Retin %6 üstü: açılır, ret düşer.
+        // Retin %6 üstü: ham çift yine açmaz, ret kalır.
         g.pair_allowed = true;
         g.on_pair_rate(udp(refuted * 106 / 100));
-        assert!(g.pace_bps() * 100 > refuted * 105, "tavan {}", g.pace_bps());
-        assert_eq!(g.pair_raises(), 1);
-        assert_eq!(g.refuted_bps, None);
+        assert_eq!(g.pace_bps(), pace, "ret üstü ham çift tavanı açtı");
+        assert_eq!(g.pair_raises(), 0);
+        assert_eq!(g.refuted_bps, Some(refuted), "ham çift reti düşürdü");
 
-        // Aşağı yönlü örnek reti düşürür.
+        // Aşağı yönlü örnek reti düşürür (gerçek ret durumu korunur).
         let mut g = guard();
         g.refuted_bps = Some(9_000);
         let arr = send_into(&mut g, 6_250, 60);
@@ -2787,6 +2766,43 @@ mod tests {
         let _ = ack(&mut g, &arr, 20, 101);
         assert!(g.rate_bps().is_some(), "dar hat ölçülmedi");
         assert_eq!(g.refuted_bps, None, "örnekten sonra ret bayat kaldı");
+    }
+
+    /// [KAPASİTE-KANITI · sahip kararı 2026-11-26] #258 netem karşı örneği (`b0659064`, senaryo v1,
+    /// tohum 1, PTT'siz): gerçek hat 6 250 B/s iken 136 B'lik datagramı izleyen iki tam boy örnek
+    /// 85,53 / 85,49 ms arayla teslim oldu, çift 12 229 ve 12 375 B/s (UDP gövdesi) okudu, tavan
+    /// 12 500'e açıldı, kuyruk tepesi 18 447 B. Tel karşılıkları 12 514 / 12 663 ≥ %95 × 12 500:
+    /// eski kural tavanı profile açardı. Yeni sözleşme: gerçek daralma ölçülür (aşağı yönlü örnek),
+    /// sonra iki şişik okuma da `pace_bps`, `rate_bps`, `probe` ve `refuted_bps`'i değiştirmez.
+    #[test]
+    fn inflated_pair_on_a_narrow_line_does_not_open_the_ceiling() {
+        let mut g = guard();
+        let arr = send_into(&mut g, 6_250, 80);
+        let _ = ack_m(&mut g, &arr, 10, 0, None);
+        let _ = ack_m(&mut g, &arr, 20, 0, Some(10));
+        let u = ack_m(&mut g, &arr, 40, 0, Some(10)).expect("daralma örneği");
+        assert!(
+            u.rate_bps < 7_000,
+            "gerçek daralma ölçülmedi: {}",
+            u.rate_bps
+        );
+        g.refuted_bps = Some(7_000);
+        let before = (g.pace_bps(), g.rate_bps(), g.probe.is_some(), g.refuted_bps);
+        assert!(before.0 < 7_000, "tavan daralmadı: {}", before.0);
+        for pair_udp in [12_229, 12_375] {
+            assert!(
+                pair_udp * (1200 + OVH) * 100 >= PROFILE * 1200 * 95,
+                "girdi eski kuralda profile açacak büyüklükte değil"
+            );
+            g.pair_allowed = true;
+            g.on_pair_rate(pair_udp);
+            assert_eq!(
+                (g.pace_bps(), g.rate_bps(), g.probe.is_some(), g.refuted_bps),
+                before,
+                "şişik çift {pair_udp} tavan durumunu değiştirdi"
+            );
+        }
+        assert_eq!(g.pair_raises(), 0);
     }
 
     /// [DÖNÜŞ-GECİKMESİ] Dönüş gecikmesinin tek basamağı (400 ms) yanlış düşük örnek verebilir; sonraki

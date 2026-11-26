@@ -4352,7 +4352,8 @@ impl Sender {
         // yazılır: önceki ACK'in değeri kullanılmaz).
         g.note_pair_lower_bound(pair_rate.map(u64::from));
         let update = g.on_ack_measured(now_ns, dur_ns(ack.ack_delay), saturated, largest, interval);
-        // [ÇİFT ARALIĞI] Aşağı yönlü örnek yokken alıcının kapasite alt sınırı tavanı açabilir.
+        // [ÇİFT ARALIĞI · KAPASİTE-KANITI 2026-11-26] Ham çift tavanı açmaz; çağrı yalnız izni
+        // tüketir (`LineGuard::on_pair_rate`).
         if let Some(p) = pair_rate {
             g.on_pair_rate(u64::from(p));
         }
