@@ -416,7 +416,7 @@ pub async fn serve(a: ServeArgs) -> Result<(), BenchError> {
 }
 
 async fn serve_kama(a: &ServeArgs, log: &RxLog) -> Result<(), BenchError> {
-    let (cfg, _delta) = crate::kama_product::canonical_cfg_for_mixed("mixed-server", a.payload);
+    let (cfg, _delta) = crate::kama_product::canonical_cfg_for_mixed("mixed-server", a.payload)?;
     let mut srv =
         ServerEndpoint::bind_with_policy(a.bind, cfg, Box::new(IdentitySeam::new()), None)
             .await
@@ -680,7 +680,7 @@ async fn offer(tx: &ClientSender, payload: &[u8]) -> Result<(), BenchError> {
 }
 
 async fn client_kama(a: &ClientArgs, items: &[Item]) -> Result<Outcome, BenchError> {
-    let (cfg, delta) = crate::kama_product::canonical_cfg_for_mixed("mixed-client", a.payload);
+    let (cfg, delta) = crate::kama_product::canonical_cfg_for_mixed("mixed-client", a.payload)?;
     let setup = std::time::Instant::now();
     let mut cli =
         ClientEndpoint::connect_with_policy(a.server, cfg, Box::new(IdentitySeam::new()), None)

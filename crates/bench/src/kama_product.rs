@@ -112,6 +112,26 @@ struct ArmCfg {
     rp_suppress: Option<u32>,
 }
 
+/// [CC-PORT] Motor anahtarı, kama-node ile aynı ortam değişkeni (`KAMA_TRANSPORT_ENGINE`). İstemci
+/// ve sunucu süreçlerinde AYNI değer verilmelidir. Tanımsız ya da boş = ürün varsayılanı (port);
+/// eski motor yalnız açık `legacy` ile (CLAUDE.md YAMA KAYDI 2026-11-11: "Ürün varsayılanı port
+/// (`RuntimeConfig::engine`), geri alma `KAMA_TRANSPORT_ENGINE=legacy`"). Tanınmayan değer koşu
+/// öncesi tipli hatadır (sessiz düşüş ve panik yok).
+fn engine_from_env() -> Result<client_core::TransportEngine, BenchError> {
+    std::env::var("KAMA_TRANSPORT_ENGINE").ok().map_or(
+        Ok(client_core::TransportEngine::default()),
+        |v| {
+            client_core::TransportEngine::parse(&v).ok_or_else(|| {
+                BenchError::Other(format!(
+                    "KAMA_TRANSPORT_ENGINE={v:?}: 'legacy' ya da 'cc-port' olmalı"
+                ))
+            })
+        },
+    )
+}
+
+/// Kolun `RuntimeConfig`'i. Motor ürün varsayılanıdır; koşu yolları [`engine_from_env`] ile
+/// üstüne yazar.
 fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
     let ArmCfg {
         payload_bytes,
@@ -150,18 +170,9 @@ fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
     // bounded_v1 risk kolu, yapı-gate 250) benchmark'a HİÇ ulaşmıyordu ve "sevk" etiketli kol
     // ürünün sevk etmediği bir yapılandırmayı ölçüyordu.
     let v1 = KamaV1Profile::runtime_config();
-    // [CC-PORT] Motor anahtarı kama-node ile aynı ortam değişkeni: `KAMA_TRANSPORT_ENGINE=cc-port`.
-    // İstemci ve sunucu süreçlerinde AYNI değer verilmelidir. Tanınmayan değer → panik (ölçüm
-    // aracı; sessiz düşüş istenmez).
-    let engine = std::env::var("KAMA_TRANSPORT_ENGINE")
-        .ok()
-        .map(|v| {
-            client_core::TransportEngine::parse(&v)
-                .expect("KAMA_TRANSPORT_ENGINE: 'legacy' ya da 'cc-port'")
-        })
-        .unwrap_or_default();
+    // [CC-PORT] Motor ürün varsayılanıdır (`..RuntimeConfig::default()`); koşu yolları
+    // [`engine_from_env`] ile üstüne yazar (kama-node ile aynı ortam değişkeni).
     RuntimeConfig {
-        engine,
         max_unit_bytes: unit.max(1),
         // Mesaj chunk'a sığmıyorsa fragmenter AÇIK (açık opt-in; eşitsizlikten türemez).
         max_message_bytes: (payload > unit).then_some(payload),
@@ -483,11 +494,12 @@ fn print_activation(stats: &client_core::runtime::ClientStats) {
 /// adaptif mod, bounded_v1 risk kolu, IW ürün değeri, `quota_r` = 4); tek girdi `payload_bytes`
 /// (= en büyük öğe; fragmenter bundan türer). KP-MANIFEST satırını yazar ve sapma listesini döner
 /// (boş değilse kol `kama-custom`'dır — ör. 1 KB öğe FEC sembolüne sığmadığında `max_message_bytes`).
+/// Motor [`engine_from_env`]'den; tanınmayan değer tipli hatadır.
 pub(crate) fn canonical_cfg_for_mixed(
     role: &str,
     payload_bytes: u64,
-) -> (RuntimeConfig, Vec<String>) {
-    let c = runtime_cfg(ArmCfg {
+) -> Result<(RuntimeConfig, Vec<String>), BenchError> {
+    let mut c = runtime_cfg(ArmCfg {
         payload_bytes,
         quota_r: 4,
         fec: FecArm::from_args(
@@ -512,9 +524,10 @@ pub(crate) fn canonical_cfg_for_mixed(
         persist_q: None,
         rp_suppress: None,
     });
+    c.engine = engine_from_env()?;
     print_manifest(role, &c);
     let d = profile_delta(&c);
-    (c, d)
+    Ok((c, d))
 }
 
 fn rt_err(what: &str, e: RuntimeError) -> BenchError {
@@ -586,7 +599,7 @@ async fn server_loop(cfg: ServerCfg) -> Result<(), BenchError> {
     let start = Instant::now();
     let gov = Arc::new(Mutex::new(BudgetGovernor::new(cfg.budget)));
     let policy: Box<dyn EgressPolicy> = Box::new(BudgetEgress(Arc::clone(&gov)));
-    let rt_cfg = runtime_cfg(ArmCfg {
+    let mut rt_cfg = runtime_cfg(ArmCfg {
         payload_bytes: cfg.payload_bytes,
         quota_r: cfg.quota_r,
         fec: cfg.fec,
@@ -606,6 +619,7 @@ async fn server_loop(cfg: ServerCfg) -> Result<(), BenchError> {
         persist_q: cfg.persist_q,
         rp_suppress: cfg.rp_suppress,
     });
+    rt_cfg.engine = engine_from_env()?;
     print_manifest("server", &rt_cfg);
     let mut srv = ServerEndpoint::bind_with_policy(
         cfg.bind,
@@ -708,7 +722,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
 
     let gov = Arc::new(Mutex::new(BudgetGovernor::new(cfg.budget)));
     let policy: Box<dyn EgressPolicy> = Box::new(BudgetEgress(Arc::clone(&gov)));
-    let rt_cfg = runtime_cfg(ArmCfg {
+    let mut rt_cfg = runtime_cfg(ArmCfg {
         payload_bytes: cfg.payload_bytes,
         quota_r: 4,
         fec: cfg.fec,
@@ -728,10 +742,12 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         persist_q: cfg.persist_q,
         rp_suppress: cfg.rp_suppress,
     });
+    rt_cfg.engine = engine_from_env()?;
     print_manifest("client", &rt_cfg);
     // [FAZ-4 §1.3] PROFİL KİMLİĞİ — koddan türetilir (rt_cfg taşınmadan ÖNCE), operatör
     // disiplinine bırakılmaz. Tek bir alan bile saparsa kimlik `kama-custom` olur.
     let profile_delta_v = profile_delta(&rt_cfg);
+    let engine_label = rt_cfg.engine.label_suffix();
     let profile_id_label = if profile_delta_v.is_empty() {
         client_core::runtime::TRANSPORT_V1_PROFILE_ID.to_string()
     } else {
@@ -1048,11 +1064,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         kama_arm: format!(
             "kama-product-tailv1{}-{}{}{}{}{}{}",
             // [CC-PORT] motor etiketi: port ⇒ "-cc-port" (provenans; sondaki `-dupN` eki korunur).
-            std::env::var("KAMA_TRANSPORT_ENGINE")
-                .ok()
-                .and_then(|v| client_core::TransportEngine::parse(&v))
-                .unwrap_or_default()
-                .label_suffix(),
+            engine_label,
             cfg.fec.label(),
             if cfg.burst_fusion { "-burstfusion" } else { "" },
             if cfg.bootstrap_rtt {

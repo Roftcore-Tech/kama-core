@@ -99,8 +99,9 @@ impl ClientSession {
 
     /// [CC-PORT] quinn-proto 0.11.18 BBR + RFC 9002 motoruyla oturum (`Sender::with_cc_port`).
     /// Tail recovery kurucuda `TailRecoveryConfig::rfc9002_cc_port()` (validated_v1 sınırları,
-    /// prob turu tavansız); burada ÜSTÜNE YAZILMAZ. Ürün varsayılanı [`Self::new`] olmaya devam
-    /// eder; bu kurucu `RuntimeConfig::engine = CcPort` ile seçilir (ölçüm/gösterim anahtarı).
+    /// prob turu tavansız); burada ÜSTÜNE YAZILMAZ. Ürün runtime'ı bu motoru seçer:
+    /// `RuntimeConfig::engine` varsayılanı `CcPort`'tur (CLAUDE.md YAMA KAYDI 2026-11-11).
+    /// [`Self::new`] eski motordur, geri alma yolu (`KAMA_TRANSPORT_ENGINE=legacy`).
     #[must_use]
     pub fn with_cc_port() -> Self {
         Self {

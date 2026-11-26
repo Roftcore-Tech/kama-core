@@ -97,10 +97,16 @@ fn cc_port_initial_window_follows_profile_with_four_mtu_floor() {
     );
 }
 
-/// `TransportEngine::parse` sözleşmesi (kama-node `KAMA_TRANSPORT_ENGINE`, bench aynı).
+/// `TransportEngine::parse` sözleşmesi (kama-node `KAMA_TRANSPORT_ENGINE`, bench aynı). Boş değer
+/// ürün varsayılanıdır (port); eski motora yalnız açık `legacy` döner (CLAUDE.md YAMA KAYDI
+/// 2026-11-11).
 #[test]
 fn engine_parse_contract() {
-    assert_eq!(TransportEngine::parse(""), Some(TransportEngine::Legacy));
+    assert_eq!(TransportEngine::parse(""), Some(TransportEngine::CcPort));
+    assert_eq!(
+        TransportEngine::parse("  "),
+        Some(TransportEngine::default())
+    );
     assert_eq!(
         TransportEngine::parse("legacy"),
         Some(TransportEngine::Legacy)

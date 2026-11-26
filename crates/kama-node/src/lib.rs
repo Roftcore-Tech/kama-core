@@ -326,10 +326,11 @@ impl KamaNode {
             },
         };
         let mut transport_config = ClientTransportConfig::product(data_bind);
-        // [CC-PORT] Motor anahtarı: `KAMA_TRANSPORT_ENGINE=cc-port` ⇒ quinn BBR + RFC 9002 portu
-        // (`RuntimeConfig::engine`). Cihaz dosyası ve `start` imzası değişmez (KK-H50); yalnız
-        // ölçüm/gösterim düzeneği kurar, iki uçta AYNI olmalıdır. Boş/`legacy` = ürün (bit-eşit);
-        // tanınmayan değer yapılandırma hatasıdır (sessizce legacy'ye düşmez).
+        // [CC-PORT] Motor anahtarı (`RuntimeConfig::engine`). Ürün varsayılanı port (quinn BBR +
+        // RFC 9002); tanımsız, boş ya da `cc-port` = port. `KAMA_TRANSPORT_ENGINE=legacy` eski
+        // motora geri alır (CLAUDE.md YAMA KAYDI 2026-11-11). Cihaz dosyası ve `start` imzası
+        // değişmez (KK-H50); iki uçta AYNI olmalıdır. Tanınmayan değer yapılandırma hatasıdır
+        // (sessizce bir motora düşmez).
         if let Ok(v) = std::env::var("KAMA_TRANSPORT_ENGINE") {
             transport_config.runtime.engine =
                 client_core::TransportEngine::parse(&v).ok_or_else(|| {

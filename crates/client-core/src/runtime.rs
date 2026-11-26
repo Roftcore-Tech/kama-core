@@ -91,9 +91,10 @@ pub type EmitTraceSink = Arc<Mutex<Vec<(Instant, adaptive_transport::sender::Emi
 /// Çalışma-zamanı konfigürasyonu. Tüm sınırlar açık; `Default` üretim-makul değerler.
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
-    /// [CC-PORT] Taşıma motoru seçimi. `Legacy` (varsayılan, ürün profili) = bugünkü motor,
-    /// bit-eşit. `CcPort` = quinn-proto 0.11.18 BBR + RFC 9002 portu (`Sender::with_cc_port` +
-    /// `Receiver::with_cc_port`); ölçüm ve gösterim anahtarı, varsayılan DEĞİL (PR-2 kararına dek).
+    /// [CC-PORT] Taşıma motoru seçimi. `CcPort` (varsayılan, ürün profili; CC-PORT PR-2, KARAR-KAYDI
+    /// §8 D-CC-1) = quinn-proto 0.11.18 BBR + RFC 9002 portu (`Sender::with_cc_port` +
+    /// `Receiver::with_cc_port`). `Legacy` = eski motor (faz makinesi), geri alma yolu
+    /// (`KAMA_TRANSPORT_ENGINE=legacy`).
     /// İki uç AYNI motoru kurmalıdır (alıcının ACK kuralları göndericinin kayıp eşiğiyle eşleşir).
     pub engine: TransportEngine,
     /// Aynı anda outstanding (teslim-bekleyen) birim tavanı — unit-store sınırı.
@@ -712,13 +713,16 @@ pub enum TransportEngine {
 }
 
 impl TransportEngine {
-    /// Ortam değişkeni / argüman değerinden: `"cc-port"` → `CcPort`; `"legacy"` ya da boş →
-    /// `Legacy`; başka değer → `None` (çağıran hata verir).
+    /// Ortam değişkeni / argüman değerinden: `"cc-port"` ya da boş → `CcPort` (ürün varsayılanı,
+    /// [`Self::default`]); `"legacy"` → `Legacy`; başka değer → `None` (çağıran hata verir).
+    /// Eski motora yalnız açık `legacy` sözcüğü döner (CLAUDE.md YAMA KAYDI 2026-11-11: "Ürün
+    /// varsayılanı port (`RuntimeConfig::engine`), geri alma `KAMA_TRANSPORT_ENGINE=legacy`");
+    /// boş dışa aktarılmış değişken tanımsızla aynıdır.
     #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         match s.trim() {
-            "" | "legacy" => Some(Self::Legacy),
-            "cc-port" | "cc_port" => Some(Self::CcPort),
+            "" | "cc-port" | "cc_port" => Some(Self::CcPort),
+            "legacy" => Some(Self::Legacy),
             _ => None,
         }
     }
