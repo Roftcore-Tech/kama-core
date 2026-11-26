@@ -2562,22 +2562,6 @@ mod tests {
         assert_eq!(g.rate_bps(), None);
     }
 
-    /// Gönderim `send_rate` B/s ile (1 200 B tel), gerçek hat `real`, ileri yayılım 300 ms;
-    /// her iletimin alıcıya varış anı.
-    #[allow(dead_code)]
-    fn send_at(g: &mut LineGuard, send_rate: u64, real: u64, n: u64) -> Vec<u64> {
-        let mut free = 0u64;
-        let mut arrivals = Vec::new();
-        for k in 0..n {
-            let s = k * 1200 * SEC / send_rate;
-            g.on_sent(k, s, 1172);
-            let done = free.max(s) + 1200 * SEC / real;
-            free = done;
-            arrivals.push(done + 300 * MS);
-        }
-        arrivals
-    }
-
     /// `seq`'in ACK'i; dönüş yayılımı 300 ms + `extra`.
     fn ack_extra(
         g: &mut LineGuard,
