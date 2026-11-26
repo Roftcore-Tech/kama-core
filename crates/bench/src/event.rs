@@ -41,7 +41,8 @@ pub struct TxComponents {
 pub struct RunMeta {
     /// netem profil adı.
     pub profile: String,
-    /// Congestion control ("cubic" | "bbr").
+    /// Congestion control: quinn kolları "cubic" | "bbr"; tcp kolu "tcp-kernel"; Kama kolları
+    /// motor etiketi "legacy" | "cc-port" (quinn `--cc` bayrağı bu kollarda etkisizdir).
     pub cc: String,
     /// Transport ("quinn" | "kama").
     pub transport: String,

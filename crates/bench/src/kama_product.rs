@@ -1044,7 +1044,9 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
 
     let meta = RunMeta {
         profile: cfg.profile,
-        cc: cfg.cc.label().to_string(),
+        // [S-60 / B-19] Bu kolda tıkanıklık denetimi motorun kendisidir; quinn `--cc` bayrağı
+        // etkisizdir ve etiketi yazılmaz.
+        cc: engine_name.to_string(),
         transport: "kama-product".to_string(),
         quinn_version: KAMA_VERSION.to_string(),
         seed: cfg.seed,
@@ -1839,6 +1841,8 @@ mod tests {
         // [S-60 / B-01] Motor meta'ya kurulan yapılandırmadan yazılır (boş kalmaz).
         let motor = crate::kama::Engine::of_product(engine_from_env().expect("motor")).label();
         assert_eq!(out.meta.engine, motor);
+        // [S-60 / B-19] `cc` = motor; test yapılandırmasındaki `Cc::Cubic` yazılmaz.
+        assert_eq!(out.meta.cc, motor);
         assert!(out.meta.tx.data > 0, "DATA byte'ı sayılmalı");
         assert_eq!(out.meta.tx.fec, 0, "FEC kapalıyken repair byte'ı olamaz");
         let sum = out.meta.tx.data

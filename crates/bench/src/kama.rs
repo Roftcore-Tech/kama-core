@@ -575,7 +575,9 @@ async fn client_loop(
 
     let meta = RunMeta {
         profile: cfg.profile,
-        cc: cfg.cc.label().to_string(),
+        // [S-60 / B-19] Bu kolda tıkanıklık denetimi motorun kendisidir; quinn `--cc` bayrağı
+        // etkisizdir ve etiketi yazılmaz.
+        cc: engine.label().to_string(),
         transport: "kama".to_string(),
         quinn_version: KAMA_VERSION.to_string(),
         seed: cfg.seed,
@@ -1121,6 +1123,8 @@ mod tests {
         c.kama_arm = KamaArm::CcPort;
         let out = client_loop(client, c, Instant::now()).await.unwrap();
         assert_eq!(out.meta.engine, "cc-port");
+        // [S-60 / B-19] `cc` = motor (quinn `--cc` etiketi bu kolda yazılmaz).
+        assert_eq!(out.meta.cc, "cc-port");
         assert!(out.events.iter().all(|e| e.delivered_ns.is_some()));
 
         let text = std::fs::read_to_string(&path).unwrap();
