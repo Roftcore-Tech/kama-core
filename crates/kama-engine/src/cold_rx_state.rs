@@ -459,16 +459,18 @@ impl ColdRxState {
     ///
     /// # Errors
     /// Bilinmeyen-blok veya ÇİFT-iade: [`EngineError::ColdInvariantViolation`]
-    /// (`"release_unknown_or_double"`); defter-tutarsızlığı (underflow) da typed.
+    /// (`"release_unknown_or_double"`); defter-tutarsızlığı (underflow) da typed. Hata yolunda
+    /// session ve global defter DEĞİŞMEZ (modül ATOMİKLİK pini: plan-sonra-commit).
     pub fn release_block(
         &mut self,
         block_id: u32,
         _reason: ColdReleaseReason,
         global: &mut GlobalColdLedger,
     ) -> Result<ReleasedBlock, EngineError> {
+        // ---- SALT-OKUNUR plan fazı (hata yolunda sıfır mutasyon) ---------------------------------
         let e = self
             .blocks
-            .remove(&block_id)
+            .get(&block_id)
             .ok_or(EngineError::ColdInvariantViolation(
                 "release_unknown_or_double",
             ))?;
@@ -477,25 +479,33 @@ impl ColdRxState {
             shards: e.admitted.len() as u64,
             preparam_shards: e.preparam_shards,
         };
-        self.res.retained_bytes = self.res.retained_bytes.checked_sub(freed.bytes).ok_or(
+        let retained_bytes = self.res.retained_bytes.checked_sub(freed.bytes).ok_or(
             EngineError::ColdInvariantViolation("session_bytes_underflow"),
         )?;
-        self.res.total_shards = self.res.total_shards.checked_sub(freed.shards).ok_or(
+        let total_shards = self.res.total_shards.checked_sub(freed.shards).ok_or(
             EngineError::ColdInvariantViolation("session_shards_underflow"),
         )?;
-        self.res.preparam_shards = self
+        let preparam_shards = self
             .res
             .preparam_shards
             .checked_sub(freed.preparam_shards)
             .ok_or(EngineError::ColdInvariantViolation("preparam_underflow"))?;
-        self.res.open_blocks = self
+        let open_blocks = self
             .res
             .open_blocks
             .checked_sub(1)
             .ok_or(EngineError::ColdInvariantViolation("open_blocks_underflow"))?;
-        global.res.retained_bytes = global.res.retained_bytes.checked_sub(freed.bytes).ok_or(
+        let global_bytes = global.res.retained_bytes.checked_sub(freed.bytes).ok_or(
             EngineError::ColdInvariantViolation("global_bytes_underflow"),
         )?;
+
+        // ---- TEK-COMMIT-NOKTASI (infallible; iki-seviye birlikte) -------------------------------
+        self.blocks.remove(&block_id);
+        self.res.retained_bytes = retained_bytes;
+        self.res.total_shards = total_shards;
+        self.res.preparam_shards = preparam_shards;
+        self.res.open_blocks = open_blocks;
+        global.res.retained_bytes = global_bytes;
         Ok(freed)
     }
 

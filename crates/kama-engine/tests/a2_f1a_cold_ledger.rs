@@ -320,6 +320,34 @@ fn release_block_deadline_evicted_path() {
     assert_eq!(global.res.retained_bytes, 0);
 }
 
+/// S-84/M2-26 (modül ATOMİKLİK pini «hata yollarında SIFIR mutasyon»): release_block'ta defter
+/// tutarsızlığı (global underflow) typed döner ve ne blok ne session/global defter değişir (eskiden
+/// blok silinmiş, session sayaçları düşülmüş kalıyordu).
+#[test]
+fn release_block_underflow_leaves_ledger_unchanged() {
+    let mut cold = ColdRxState::new();
+    let mut global = GlobalColdLedger::new();
+    cold.admit_cold_shard(1, req(4, 0, 700, true), &mut global)
+        .unwrap();
+    cold.admit_cold_shard(1, req(4, 1, 300, false), &mut global)
+        .unwrap();
+    global.res.retained_bytes = 0; // tutarsız global defter (son denetim alt taşar)
+    let (cb, gb) = (cold.clone(), global);
+    assert_eq!(
+        cold.release_block(4, ColdReleaseReason::Delivered, &mut global),
+        Err(EngineError::ColdInvariantViolation(
+            "global_bytes_underflow"
+        ))
+    );
+    assert_eq!(cold, cb, "session defteri (blok dahil) değişmedi");
+    assert_eq!(global, gb, "global defter değişmedi");
+    assert_eq!(
+        cold.block_first_arrival_ns(4),
+        Some(1),
+        "blok defterde kaldı"
+    );
+}
+
 /// Session-release: İDEMPOTENT (belgeli); tüm rezervler globale döner; ikinci çağrı no-op.
 #[test]
 fn release_session_idempotent() {
