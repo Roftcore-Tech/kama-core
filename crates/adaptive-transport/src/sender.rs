@@ -7609,12 +7609,12 @@ impl Sender {
     }
 
     /// Parity-emisyon-gövdesi (Commit-V-refaktörü; davranış-birebir — try_send-BAŞARISI-sonrası-çağrılır).
-    /// idx: kuyruk-konumu (bulk=0; F2-ticket-servisi-hedef-blok-item'ı). Döner: emit-edilen-boyut.
+    /// idx: kuyruk-konumu (bulk=0; F2-ticket-servisi-hedef-blok-item'ı). Döner: emit-edilen-boyut;
+    /// `idx` kuyrukta yoksa 0 (hiçbir şey tele çıkmaz; çağıranlar `idx`'i kuyruktan bulur).
     fn emit_parity_at(&mut self, idx: usize, out: &mut Vec<TransmitDecision>, now_ns: u64) -> u64 {
-        let p = self
-            .pending_fec
-            .remove(idx)
-            .expect("emit_parity_at: idx-geçerli");
+        let Some(p) = self.pending_fec.remove(idx) else {
+            return 0;
+        };
         self.parity_emitted_total = self.parity_emitted_total.saturating_add(1);
         // [FAZ-3] Aktivasyon kanıtı: parity TELE ÇIKTI.
         self.act_parity_emitted = self.act_parity_emitted.saturating_add(1);
@@ -8093,8 +8093,12 @@ impl Sender {
                     });
                 }
                 RetxDecision::CapExceeded { seq, policy } => {
-                    if let Some(pos) = self.pending_lost.iter().position(|r| r.seq == seq) {
-                        let rec = self.pending_lost.remove(pos).expect("pos geçerli");
+                    if let Some(rec) = self
+                        .pending_lost
+                        .iter()
+                        .position(|r| r.seq == seq)
+                        .and_then(|pos| self.pending_lost.remove(pos))
+                    {
                         if policy == CapExceedPolicy::HandToForward {
                             // ARQ cap doldu → forward-recovery'ye devret (§9.1 "veri ulaşsın").
                             // [TUR-2c review-fix] devir de YENİDEN-EMİSYONDUR → superseded-işaret
