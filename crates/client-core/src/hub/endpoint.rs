@@ -59,7 +59,7 @@ use adaptive_transport::ack::{
     FRAME_TYPE_ACK_BITMAP_PTT_COALESCE, FRAME_TYPE_ACK_V2,
 };
 use kama_contracts::handles::PeerRef;
-use kama_contracts::s3::{HubHandle, ProtectionContext};
+use kama_contracts::s3::{HubHandle, ProtectionContext, SealError};
 
 use super::link::HubLink;
 use super::shared_crypto::{HubCryptoAccess, StashCounters};
@@ -352,14 +352,20 @@ pub struct HubEndpointCounters {
     pub hub_rx: u64,
     /// Hub'a gönderilen datagram.
     pub hub_tx: u64,
-    /// `MAX_DATAGRAM`'ı aştığı için gönderilmeyen.
+    /// `MAX_DATAGRAM`'ı aştığı için gönderilmeyen (ya da alımda düşen); kontrol çerçevesinin
+    /// mührü `SealError::FrameTooLarge` dediyse de burada.
     pub hub_oversize_drops: u64,
+    /// Kontrol çerçevesi `FrameTooLarge` dışı bir mühür hatasıyla (`UnknownSession`,
+    /// `CapReached`) gönderilmedi.
+    pub hub_seal_fail: u64,
     /// Açılmış oturum çerçevesinin tipi T3 tablosunda yok.
     pub hub_role_unknown: u64,
     /// İlk dört baytla bağlam uyuşmadı (`≠ 0` iken `HubChannel`, `0` iken `Session`).
     pub hub_ctx_mismatch: u64,
     /// Kripto açmadı.
     pub hub_open_fail: u64,
+    /// Hub'dan gelen, 4 baytlık bağlam önekinden kısa datagram (açma denenmedi; S4 H12).
+    pub hub_rx_short: u64,
     /// İstemci rolü çerçevesi, ama `h` için istemci ucu portu bilinmiyor.
     pub hub_no_client_port: u64,
     /// Sunucu rolü çerçevesi, ama veri alıcısı adresi verilmedi.
@@ -387,9 +393,11 @@ struct Atomics {
     hub_rx: AtomicU64,
     hub_tx: AtomicU64,
     hub_oversize_drops: AtomicU64,
+    hub_seal_fail: AtomicU64,
     hub_role_unknown: AtomicU64,
     hub_ctx_mismatch: AtomicU64,
     hub_open_fail: AtomicU64,
+    hub_rx_short: AtomicU64,
     hub_no_client_port: AtomicU64,
     hub_no_server_addr: AtomicU64,
     hub_out_unknown_handle: AtomicU64,
@@ -491,7 +499,7 @@ impl Core {
             return;
         }
         match wire_handle(bytes) {
-            None => inc(&self.counters.hub_open_fail),
+            None => inc(&self.counters.hub_rx_short),
             Some(0) => self.on_control_datagram(now, bytes),
             Some(h) => {
                 lock(&self.control).on_session_traffic(now, HubHandle::from_raw(h), false);
@@ -607,9 +615,16 @@ impl Core {
             v
         };
         for f in frames {
-            let Ok(sealed) = self.crypto.seal_hub(&f) else {
-                inc(&self.counters.hub_oversize_drops);
-                continue;
+            let sealed = match self.crypto.seal_hub(&f) {
+                Ok(sealed) => sealed,
+                Err(SealError::FrameTooLarge) => {
+                    inc(&self.counters.hub_oversize_drops);
+                    continue;
+                }
+                Err(SealError::UnknownSession | SealError::CapReached) => {
+                    inc(&self.counters.hub_seal_fail);
+                    continue;
+                }
             };
             match send_to_hub(&self.hub_sock, self.hub_addr, &sealed.bytes, &self.counters) {
                 Ok(()) => inc(&self.counters.control_tx),
@@ -629,9 +644,11 @@ impl Core {
             hub_rx: get(&c.hub_rx),
             hub_tx: get(&c.hub_tx),
             hub_oversize_drops: get(&c.hub_oversize_drops),
+            hub_seal_fail: get(&c.hub_seal_fail),
             hub_role_unknown: get(&c.hub_role_unknown),
             hub_ctx_mismatch: get(&c.hub_ctx_mismatch),
             hub_open_fail: get(&c.hub_open_fail),
+            hub_rx_short: get(&c.hub_rx_short),
             hub_no_client_port: get(&c.hub_no_client_port),
             hub_no_server_addr: get(&c.hub_no_server_addr),
             hub_out_unknown_handle: get(&c.hub_out_unknown_handle),
@@ -839,6 +856,8 @@ mod tests {
         seen: Mutex<HashSet<Vec<u8>>>,
         opens: Mutex<Vec<Vec<u8>>>,
         stash: Arc<Mutex<OpenedStash>>,
+        /// Sıradaki mühürlerin hatası (`None`: mühür başarılı).
+        seal_error: Mutex<Option<SealError>>,
     }
 
     impl FakeCrypto {
@@ -853,6 +872,7 @@ mod tests {
                 seen: Mutex::new(HashSet::new()),
                 opens: Mutex::new(Vec::new()),
                 stash,
+                seal_error: Mutex::new(None),
             })
         }
         fn opens_of(&self, bytes: &[u8]) -> usize {
@@ -896,6 +916,9 @@ mod tests {
             })
         }
         fn seal_hub(&self, frame: &[u8]) -> Result<SealedUnit, SealError> {
+            if let Some(e) = *lock(&self.seal_error) {
+                return Err(e);
+            }
             let mut bytes = frame.to_vec();
             bytes.resize(frame.len() + TAG, 0);
             Ok(SealedUnit {
@@ -1245,6 +1268,39 @@ mod tests {
         want.resize(want.len() + TAG, 0);
         assert_eq!(b, want);
         assert!(wait_until(|| r.ep.counters().control_tx == 1));
+    }
+
+    /// S-80 / S-75 (C5-B14; `HubEndpointCounters` alan belgeleri, S4 H12 "bozuk/kısa/uzun
+    /// datagram = sayaç + sessiz drop"): sayaç olayı adlandırır. `FrameTooLarge` dışı mühür hatası
+    /// `hub_seal_fail`, `FrameTooLarge` `hub_oversize_drops`; 4 bayttan kısa hub datagramı açma
+    /// denenmeden `hub_rx_short` (`hub_open_fail` değil). Hiçbiri tele çıkmaz.
+    ///
+    /// ESKİ DAVRANIŞ: her mühür hatası `hub_oversize_drops`, kısa datagram `hub_open_fail` idi.
+    #[test]
+    fn seal_failure_and_short_datagram_have_their_own_counters() {
+        let r = rig();
+        for (e, want) in [
+            (SealError::CapReached, (1, 0)),
+            (SealError::UnknownSession, (2, 0)),
+            (SealError::FrameTooLarge, (2, 1)),
+        ] {
+            *lock(&r.crypto.seal_error) = Some(e);
+            lock(&r.control).to_send.push_back(vec![0, 0, 0, 0, 0x1B]);
+            assert!(
+                wait_until(|| {
+                    let c = r.ep.counters();
+                    (c.hub_seal_fail, c.hub_oversize_drops) == want
+                }),
+                "{e:?}"
+            );
+        }
+        assert!(quiet(&r.hub), "mühürlenmeyen çerçeve tele çıkmaz");
+        assert_eq!(r.ep.counters().control_tx, 0);
+        r.hub_send(&[1, 2, 3]);
+        assert!(wait_until(|| r.ep.counters().hub_rx_short == 1));
+        let n = r.ep.counters();
+        assert_eq!((n.hub_open_fail, n.hub_rx), (0, 1), "açma denenmedi");
+        assert_eq!(r.crypto.opens_of(&[1, 2, 3]), 0);
     }
 
     /// Kanal doluyken gelen datagram AÇILMAZ.
