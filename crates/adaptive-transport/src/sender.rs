@@ -5331,7 +5331,7 @@ impl Sender {
                         SenderState::Startup
                     }
                 }
-                // [TUR-3b] DRAIN çıkışı: inflight ≤ BDP (byte-eşiği — saat-sınıfsız) ∨
+                // [TUR-3b] DRAIN çıkışı: inflight ≤ CWND_GAIN×BDP (byte-eşiği — saat-sınıfsız) ∨
                 // elapsed ≥ K_drain_max×ack_epoch (liveness-yedeği; ACK-açlığında sonsuz-Drain yok).
                 SenderState::Drain => {
                     // Hedef = cwnd_gain×BDP (Steady'nin yaşanabilir üst-sınırı; yalın-BDP
@@ -11418,19 +11418,29 @@ mod tests {
     #[test]
     fn startup_floor_never_exceeds_cwnd_over_srtt() {
         // The structural HARD ceiling has the last word at EVERY application, including after loss.
+        // The rate law is checked exactly at every point: rate = max(phase_rate, min(floor,
+        // cwnd/srtt)). The floor is armed at the ramp point; in this fixture the loss ACK releases
+        // it (the natural rate caught up), so the clamp binds at the ramp point only.
         let mut s = floor_on();
         ramping(&mut s);
-        for t in [1_200u64, 1_300, 1_400] {
-            s.on_event(ack(&[2, 3, 4]), t * MS);
+        assert!(s.startup_pacing_floor_bps() > 0, "kurulum: floor armed");
+        let check = |s: &Sender| {
             let ceiling = s.cwnd_over_srtt();
+            let phase = crate::rate::Gain::STARTUP.apply(s.btlbw.btlbw());
             assert!(
-                s.pacer.rate() <= ceiling.max(crate::rate::Gain::STARTUP.apply(s.btlbw.btlbw())),
+                s.pacer.rate() <= ceiling.max(phase),
                 "rate must never exceed the composition of the hard ceiling and the phase rate"
             );
-            assert!(
-                s.startup_pacing_floor_bps().min(ceiling) <= ceiling,
+            assert_eq!(
+                s.pacer.rate(),
+                phase.max(s.startup_pacing_floor_bps().min(ceiling)),
                 "effective floor is clamped to the CURRENT cwnd/srtt"
             );
+        };
+        check(&s);
+        for t in [1_200u64, 1_300, 1_400] {
+            s.on_event(ack(&[2, 3, 4]), t * MS);
+            check(&s);
         }
     }
 
@@ -11856,7 +11866,9 @@ mod tests {
 
     #[test]
     fn startup_exit_enters_drain_then_steady_on_bdp() {
-        // [TUR-3b] Plato → DRAIN (Steady değil); çıkış inflight≤BDP (byte-eşiği, saat-sınıfsız).
+        // [TUR-3b] Plato → DRAIN (Steady değil); çıkış inflight ≤ CWND_GAIN×BDP (byte-eşiği,
+        // saat-sınıfsız; engine-spec §3 "DRAIN --inflight≤cwnd_gain×BDP"). Çıkış adımında uçuş
+        // BDP'nin üstünde, CWND_GAIN×BDP'nin altında: iki eşik ayrılır.
         // (max-dwell yedeği DrainRtprop-testinde aynı formülle sınanıyor — tekrar edilmez.)
         let mut s = Sender::new();
         s.on_event(Event::AppData(unit(200)), 0);
@@ -11884,15 +11896,29 @@ mod tests {
             SenderState::Drain,
             "plato → Drain (BBR-analog; overfill Steady'ye taşınmaz)"
         );
-        // Drain'de KALIR (inflight > BDP; dwell dolmadı).
+        let bdp = |s: &Sender| {
+            crate::rate::bdp_bytes(s.btlbw.btlbw(), s.rtt.rtprop().unwrap_or(INITIAL_RTT))
+        };
+        // Drain'de KALIR (inflight > CWND_GAIN×BDP; dwell dolmadı).
         s.on_event(Event::TimerFired(Timer::Pto), 1_400 * MS);
-        assert_eq!(s.state(), SenderState::Drain, "inflight>BDP → Drain sürer");
-        // Boşalt (seq3 uçuşta kalır: 1200B ≤ BDP sınır-eşitliği + aktiflik) → Steady.
-        s.on_event(ack(&[1, 2]), 1_500 * MS);
+        assert!(s.inflight_bytes() > crate::rate::CWND_GAIN * bdp(&s));
+        assert_eq!(
+            s.state(),
+            SenderState::Drain,
+            "inflight>CWND_GAIN×BDP → Drain sürer"
+        );
+        // Kısmi boşalma (seq2, seq3 uçuşta): BDP < inflight ≤ CWND_GAIN×BDP → Steady.
+        s.on_event(ack(&[1]), 1_500 * MS);
+        assert!(
+            s.inflight_bytes() > bdp(&s) && s.inflight_bytes() <= crate::rate::CWND_GAIN * bdp(&s),
+            "çıkış adımı iki eşiği ayırır: inflight={} bdp={}",
+            s.inflight_bytes(),
+            bdp(&s)
+        );
         assert_eq!(
             s.state(),
             SenderState::Steady,
-            "inflight≤BDP → Drain-çıkışı (byte-eşiği)"
+            "inflight≤CWND_GAIN×BDP → Drain-çıkışı (byte-eşiği)"
         );
     }
 
