@@ -15,6 +15,7 @@ use kama_fec_codec::{by_id, FecCodec, ReceivedSymbol, RsSimdCodec};
 use kama_noise_wire::{InnerPlain, OpenedTransportShard, SensitiveSymbolBytes};
 use kama_transport_schema::inner_kind::ShardKind;
 use kama_transport_schema::prefix::SourcePrefix;
+use std::collections::BTreeSet;
 
 /// Authenticated-shard'ları (bound-profil) FEC-decode + reassemble → app-bytes.
 ///
@@ -22,7 +23,8 @@ use kama_transport_schema::prefix::SourcePrefix;
 /// her shard.profile_id == `bound_profile_id` (aksi fail-closed). Blok-gate: bir çağrı tek bloktur —
 /// her FEC shard'ının `block_id`'si ilk FEC shard'ınkine (§6.5 MADDE-9: block_id decoder-context'ten),
 /// inner-header `k_actual`'ı `k_actual` parametresine (blok durumu; §6 PATCH-4) eşit olmalı.
-/// `known_zero = k_shape − k_actual`.
+/// Yinelenen (aynı rol + ESI) shard kabul edilmez: ilk kopya tutulur, sonrakiler rank'a girmez
+/// (§13 duplicate-ESI-rejection; §6 decode koşulu benzersiz admitted sayısı). `known_zero = k_shape − k_actual`.
 ///
 /// # Errors
 /// [`EngineError::UnknownProfile`] by_id-miss · [`EngineError::ProfileMismatch`] shard-profil≠bound ·
@@ -46,6 +48,10 @@ pub fn admit_and_decode(
     let mut repair_syms: Vec<(u16, SensitiveSymbolBytes)> = Vec::new();
     // Blok bağlamı: ilk FEC shard'ının block_id'si (tek çağrı = tek blok; §6.5 MADDE-9).
     let mut block_ctx: Option<u32> = None;
+    // Kabul edilen ESI'ler (rol başına; boyu girdi shard sayısıyla sınırlı). fec-core §13
+    // duplicate-ESI-rejection; §6 decode koşulu benzersiz admitted sayısı üzerinden.
+    let mut seen_source: BTreeSet<u16> = BTreeSet::new();
+    let mut seen_repair: BTreeSet<u16> = BTreeSet::new();
     for shard in shards {
         match shard.into_inner() {
             InnerPlain::FecShard { header, symbol } => {
@@ -72,16 +78,26 @@ pub fn admit_and_decode(
                         block: k_actual,
                     });
                 }
+                // Yinelenen kabul edilmez: aynı rol + ESI'nin ilk kopyası tutulur, sonraki kopya
+                // rank'a girmeden düşer (drop'ta zeroize). Kodek yalnız benzersiz shard görür.
                 match header.kind {
-                    ShardKind::Source => source_syms.push((header.esi, symbol)),
-                    ShardKind::Repair => repair_syms.push((header.esi, symbol)),
+                    ShardKind::Source => {
+                        if seen_source.insert(header.esi) {
+                            source_syms.push((header.esi, symbol));
+                        }
+                    }
+                    ShardKind::Repair => {
+                        if seen_repair.insert(header.esi) {
+                            repair_syms.push((header.esi, symbol));
+                        }
+                    }
                 }
             }
             InnerPlain::Control { .. } => {} // control decode-yolunda değil (yok-say)
         }
     }
 
-    // FEC reconstruct (Model-A known-zero-inject; dup-esi/yetersiz → fail-closed FecError).
+    // FEC reconstruct (Model-A known-zero-inject; yetersiz/aralık dışı → fail-closed FecError).
     let codec = RsSimdCodec;
     let mut recv: Vec<ReceivedSymbol> = Vec::new();
     for (esi, bytes) in &source_syms {

@@ -5,11 +5,45 @@ mod common;
 
 use kama_engine::admit_and_decode;
 use kama_engine::EngineError;
-use kama_fec_codec::by_id;
-use kama_noise_wire::{OpenedTransportShard, WireError};
+use kama_fec_codec::{by_id, FecError};
+use kama_noise_wire::{KamaNoiseWireProtector, OpenedTransportShard, SealArgs, WireError};
+use kama_transport_schema::inner_kind::ShardKind;
+use kama_transport_schema::{LogicalShardHeader, UnsealedTransportPacket};
 
 fn profile3() -> kama_fec_codec::FecProfile {
     by_id(0x03).unwrap()
+}
+
+/// `encode_seal_block`'un tam-yüklü, FINAL'siz source'unu (aynı canonical sembol) yeni PN ile
+/// yeniden mühürler: aynı mantıksal source'un yeniden iletimi (K-RETX-1: yeni PN, aynı kimlik).
+fn reseal_source(
+    tx: &mut KamaNoiseWireProtector,
+    block_id: u32,
+    esi: u16,
+    k_actual: u8,
+    message_id: u32,
+    wire_pn: u64,
+) -> Vec<u8> {
+    let pkt = UnsealedTransportPacket::FecShard {
+        header: LogicalShardHeader {
+            kind: ShardKind::Source,
+            profile_id: 0x03,
+            block_id,
+            esi,
+            k_actual,
+        },
+        symbol: common::source_symbol(esi, message_id),
+    };
+    tx.seal(
+        &pkt,
+        SealArgs {
+            wire_pn,
+            dh_epoch: 0,
+            send_generation: 0,
+        },
+    )
+    .unwrap()
+    .bytes
 }
 
 // ── authenticated shard'lar → decode → app-bytes EŞİT (production köprü) ──
@@ -167,5 +201,57 @@ fn inner_k_actual_mismatch_fail_closed() {
         admit_and_decode(vec![opened], 3, 2),
         Err(EngineError::KActualMismatch { shard: 1, block: 2 }),
         "inner K_actual blok durumuyla uyuşmazsa packet-REJECT (rank artmaz)"
+    );
+}
+
+// ── YİNELENEN ESI (S-53/M2-09; fec-core §13 duplicate-ESI-rejection, §6 decode iff benzersiz
+//    admitted ≥ K_actual): aynı source'un yeniden iletimi çağrıyı düşürmez (eskiden DuplicateEsi) ──
+#[test]
+fn retransmitted_source_is_not_admitted_twice() {
+    let (mut tx, mut rx) = common::pair(0x0600_0009);
+    let p = profile3();
+    let app = vec![0x33u8; common::PAYLOAD_CAP * 5];
+    let (sealed, k_actual) = common::encode_seal_block(&mut tx, &p, &app, 1, 0x6161, 0);
+    let retx = reseal_source(&mut tx, 1, 0, k_actual, 0x6161, 50);
+
+    let mut opened: Vec<OpenedTransportShard> = sealed
+        .iter()
+        .filter(|s| !s.is_repair)
+        .map(|s| rx.open(&s.datagram).expect("authenticated"))
+        .collect();
+    opened.push(
+        rx.open(&retx)
+            .expect("yeni PN: replay penceresi kabul eder"),
+    );
+    assert_eq!(
+        admit_and_decode(opened, 3, k_actual),
+        Ok(app),
+        "yinelenen source rank'a girmeden bırakılır; benzersiz 5 source bloğu çözer"
+    );
+}
+
+// ── Yinelenen shard rank'ı ARTIRMAZ: 4 benzersiz source + 1 kopya, K_actual=5 → yetersiz ──
+#[test]
+fn duplicate_does_not_raise_rank() {
+    let (mut tx, mut rx) = common::pair(0x0600_000A);
+    let p = profile3();
+    let app = vec![0x33u8; common::PAYLOAD_CAP * 5];
+    let (sealed, k_actual) = common::encode_seal_block(&mut tx, &p, &app, 1, 0x6262, 0);
+    let retx = reseal_source(&mut tx, 1, 0, k_actual, 0x6262, 50);
+
+    let mut opened: Vec<OpenedTransportShard> = sealed
+        .iter()
+        .filter(|s| !s.is_repair && s.esi != 4)
+        .map(|s| rx.open(&s.datagram).expect("authenticated"))
+        .collect();
+    opened.push(rx.open(&retx).expect("authenticated"));
+    assert_eq!(
+        admit_and_decode(opened, 3, k_actual),
+        Err(EngineError::FecDecode(FecError::Insufficient {
+            admitted: 4,
+            known_zero: 3,
+            k_shape: 8,
+        })),
+        "kopya benzersiz sayıyı (4) artırmaz"
     );
 }
