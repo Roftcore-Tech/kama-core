@@ -132,6 +132,23 @@ fn tv_emergency_g4_escalate_instant_bypasses_dwell() {
     assert_eq!(ctrl.update(250, ms(100)), EmergencyLevel::Dup3);
 }
 
+/// [S-81 / A6-35] Dwell denetimi u64 sınırında doyar: saat sınırına yakın de-escalate damgası ve
+/// dev dwell taşma (debug panik / sarma sonucu erken kilit açılması) üretmez; kilit sürer.
+#[test]
+fn tv_emergency_dwell_check_saturates_at_u64_limit() {
+    let cfg = HysteresisConfig {
+        deescalate_dwell: Duration::MAX,
+        ..HysteresisConfig::fixture()
+    };
+    let mut ctrl = HysteresisController::new(cfg, EmergencyLevel::Dup3);
+    assert_eq!(ctrl.update(750, u64::MAX - 2), EmergencyLevel::Dup2);
+    assert_eq!(
+        ctrl.update(750, u64::MAX - 1),
+        EmergencyLevel::Dup2,
+        "kilit sürer"
+    );
+}
+
 #[test]
 fn tv_emergency_via_trait_object() {
     // Port temizliği: dyn RecoveryModeController üzerinden.

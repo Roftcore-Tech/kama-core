@@ -14,8 +14,9 @@
 
 use std::time::Duration;
 
+/// `Duration` → u64 ns; u64 sınırında doyar (sessiz kırpma yok, CLAUDE.md §9).
 fn dur_ns(d: Duration) -> u64 {
-    d.as_nanos() as u64
+    u64::try_from(d.as_nanos()).unwrap_or(u64::MAX)
 }
 
 /// Forward-recovery seviyesi. Sıralı: `Arq < Dup2 < Dup3` (redundancy artan).
@@ -164,7 +165,7 @@ impl RecoveryModeController for HysteresisController {
             // DE-ESCALATE — dwell'li (osilasyon önlemi).
             let locked = self
                 .last_deescalate_ns
-                .is_some_and(|t| now_ns < t + dur_ns(self.cfg.deescalate_dwell));
+                .is_some_and(|t| now_ns < t.saturating_add(dur_ns(self.cfg.deescalate_dwell)));
             if !locked {
                 self.level = self.level.deescalated();
                 self.last_deescalate_ns = Some(now_ns);
