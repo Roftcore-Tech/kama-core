@@ -4,15 +4,20 @@
 //! kripto DIŞINDA (INV-ENGINE-SOC): Sender yalnız opak birim KİMLİĞİ + BOYUTU tutar (`OpaqueUnit`),
 //! bytes/AEAD/anahtar TUTMAZ. `on_event` saf: aynı girdi → aynı çıktı → golden-vector'le test edilir.
 //!
-//! **INV-RATE-1:** loss `send_rate`'i DÜŞÜRMEZ. Recovery durumları (RECOVER_ARQ/FWD) pacing_gain'i
-//! `Steady` tutar; loss yalnız [`loss`](crate::loss) + fuzzy `loss_ppm` → FEC/ARQ recovery kolunu besler.
+//! **INV-RATE-1 (CLAUDE.md §4, 2026-11-11 metni):** loss PACING HIZINI düşürmez. Port motorunda
+//! (ürün varsayılanı, [`Sender::with_cc_port`]) pace = BBR `pacing_gain × BtlBw`; loss BBR
+//! `recovery_window` ile o turun uçuş tavanını sınırlar ve FEC/ARQ kolunu besler. Geri bildirimi aç
+//! profilde 2026-11-16 profil istisnası geçerlidir ([`FeedbackStarvedRule`]). Eski motorda (geri alma)
+//! recovery durumları (RECOVER_ARQ/FWD) faz kazancını değiştirmez; loss yalnız
+//! [`loss`](crate::loss) + fuzzy `loss_ppm` → FEC/ARQ recovery kolunu besler.
 //! Retransmit/duplication DATA pacing bütçesini PAYLAŞIR (§9/§13) → recovery fırtınası rate'i patlatamaz.
 //!
 //! **Recovery İCRA SoC (INV-FEC-1/INV-ENGINE-SOC):** ARQ retransmit (§9) + duplication (§11)
 //! transport-owned'dır — transport kayıp birimin METADATA'sını (id/size) tutar, yeniden pace eder.
-//! FEC parity (§10) yalnız POLİTİKA'dır (parity_ratio + `RecoveryAction::MinimalParity`); RS-encode +
-//! per-shard AEAD GÜVENLİK katmanında (code-then-encrypt-authenticate-shards). Transport parity BYTE'ı
-//! ÜRETMEZ — oranı verir, güvenlik katmanı encode eder, transport opak parity birimlerini pace eder.
+//! Bu motorda FEC parity (§10) POLİTİKA'dır (parity_ratio + `RecoveryAction::MinimalParity`). RS
+//! encode/reconstruct transport katmanının çalışma zamanında (client-core `runtime.rs`), per-shard
+//! AEAD seam'de (engine-spec §0.2 [AMENDMENT-5]; code-then-encrypt-authenticate-shards, INV-FEC-1).
+//! Motor parity BYTE'ı ÜRETMEZ — oranı verir, opak parity birimlerini pace eder.
 //!
 //! **SPEC-UYUMLU (§3 AMENDMENT-1 + §5.1/AMENDMENT-2 — impl-driven, spec'e patch'lendi):** RECOVER_FWD
 //! *ve* RECOVER_ARQ her aktif fazdan erişilir (§3 AMENDMENT-1: ACK-yolu çökerse STARTUP platoya ulaşamaz
@@ -21,7 +26,7 @@
 //! oranı değil). Bu kararlar önce implementasyonda bulundu, gerekçeleriyle spec'e cerrahi eklendi (çelişki yok).
 //!
 //! **Kapsam (Artım 1+3):** state machine + ölçüm + karar pipeline + DATA pacing + recovery İCRA
-//! (ARQ retransmit / forward duplication). Receiver (§4) = sonraki artım.
+//! (ARQ retransmit / forward duplication). Alıcı (§4): [`crate::receiver`].
 
 #[cfg(feature = "experimental-cold-start")]
 use std::collections::BTreeSet;
@@ -1163,7 +1168,8 @@ fn rate_per_srtt(bytes: u64, srtt_ns: u64) -> u64 {
 }
 
 /// DR-RATE-RAMP-2 (§FAZ-1) product config: startup pacing INITIALIZATION at the PreConverge→Startup
-/// transition. DEFAULT OFF ⇒ mechanism inert and the pacing path is byte-identical to the baseline.
+/// transition. DEFAULT ON (`Default` below, with its record); `enabled: false` ⇒ mechanism inert and
+/// the pacing path is byte-identical to the baseline.
 ///
 /// Rationale. Leaving `PreConverge` requires a valid SACK, so an `srtt` measurement exists — but `BtlBw`
 /// at that instant is seeded from a sample taken under the 31 B/s floor (one sealed unit per RTT). The
@@ -1175,12 +1181,13 @@ fn rate_per_srtt(bytes: u64, srtt_ns: u64) -> u64 {
 /// product's OWN cwnd policy already permits, and only for the bootstrap window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StartupPacingConfig {
-    /// Master gate. Default false → inert.
+    /// Master gate. Default `true`; `false` → inert.
     pub enabled: bool,
 }
 
-// The manual impl is deliberate: it carries the load-bearing rationale for why the default is OFF
-// (the sealed INV-RATE-1 lock-golden). A bare `#[derive(Default)]` would strip that record.
+// The manual impl is deliberate: it carries the load-bearing record of the default (ON since
+// 925dea66; the sealed INV-RATE-1 lock-golden supersession). A bare `#[derive(Default)]` would
+// strip that record.
 #[allow(clippy::derivable_impls)]
 impl Default for StartupPacingConfig {
     fn default() -> Self {
@@ -1426,8 +1433,9 @@ pub enum TransmitKind {
     Retransmit,
     /// forward-recovery duplication (§11) — ACK-bağımsız redundant kopya.
     Duplicate,
-    /// FEC parity shard (§10; DR-S5-1) — KOŞULLU-emit (fec_enabled). Shard-byte'ları güvenlik-katmanı
-    /// encode-eder; sender YALNIZ pace-eder + send-record-hint üretir. fec_enabled=OFF → emit-EDİLMEZ.
+    /// FEC parity shard (§10; DR-S5-1) — KOŞULLU-emit (fec_enabled). Shard-byte'larını çalışma zamanı
+    /// RS-encode eder, seam mühürler ([AMENDMENT-5]); sender YALNIZ pace-eder + send-record-hint
+    /// üretir. fec_enabled=OFF → emit-EDİLMEZ.
     FecParity,
     /// DR-CS-1 M2 (F2A): cold-start CS-probe (CTRL_PATH_PROBE cold-start-varyantı; ≤44B; amp≤1).
     /// `seq`-alanı = probe_seq (AYRI-namespace; INV-CS-7); data-seq/loss-ledger'a GİRMEZ (units=0-
@@ -2053,7 +2061,7 @@ pub struct Sender {
     tail_recovery: TailRecovery,
     /// [FAZ-1] Dönüş-yolu gözlemcisi — SALT GÖZLEM (hiçbir kontrol yolu okumaz).
     return_path: crate::return_path::ReturnPathObserver,
-    // DR-RATE-RAMP-2 (§FAZ-1): startup pacing initialization (default OFF).
+    // DR-RATE-RAMP-2 (§FAZ-1): startup pacing initialization (default ON).
     startup_pacing: StartupPacingConfig,
     // Active bootstrap pacing floor (B/s). 0 = inactive. Bootstrap-only: released on startup plateau or
     // as soon as the naturally-computed rate catches up. NEVER a permanent minimum rate.
@@ -2488,7 +2496,7 @@ impl Sender {
             pending_lost: VecDeque::new(),
             tail_recovery: TailRecovery::new(TailRecoveryConfig::default()), // default OFF
             return_path: crate::return_path::ReturnPathObserver::default(),
-            startup_pacing: StartupPacingConfig::default(), // default OFF
+            startup_pacing: StartupPacingConfig::default(), // default ON
             startup_pacing_floor_bps: 0,
             startup_floor_armed_once: false,
             startup_base_seen: false,
@@ -2896,7 +2904,7 @@ impl Sender {
         BS_TX_HARD_BUDGET.saturating_sub(self.bs_bytes)
     }
 
-    /// DR-RATE-RAMP-2 (§FAZ-1): product config — startup pacing initialization (default OFF).
+    /// DR-RATE-RAMP-2 (§FAZ-1): product config — startup pacing initialization (default ON).
     pub fn set_startup_pacing_init(&mut self, cfg: StartupPacingConfig) {
         self.startup_pacing = cfg;
     }
@@ -3153,7 +3161,7 @@ impl Sender {
         self.last_decision = decision;
         let prev_state = self.state;
         self.update_state(&decision, now_ns);
-        // DR-RATE-RAMP-2 (§FAZ-1, default OFF): arm the bootstrap pacing floor at the PreConverge exit.
+        // DR-RATE-RAMP-2 (§FAZ-1, default ON): arm the bootstrap pacing floor at the PreConverge exit.
         if self.startup_pacing.enabled
             && !self.startup_floor_armed_once
             && prev_state == SenderState::PreConverge
