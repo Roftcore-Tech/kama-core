@@ -1930,6 +1930,15 @@ const EXPECTED_ACK_FREQ_N: u64 = 2;
 const EAI_SACK_WIRE_BYTES: u64 = 65;
 /// Return-bw worst-corner önseli (§16.1; §3.3-E-FULL ölçülen return_bw ile değiştirecek) [CAL].
 const EAI_RETURN_BW_PRIOR: u64 = 31;
+/// [Y3 · K6R-mühürlü] `w_epoch`'un return-prior terimi (engine-spec §16.1 `W_BTLBW` satırı:
+/// "w_epoch = 2×unit/last_full_bw + return-prior(2.097s [CAL, E-FULL-borcu])"). Aynı önsel
+/// `EAI_SACK_WIRE_BYTES / EAI_RETURN_BW_PRIOR` = 65 B / 31 B·s⁻¹ ≈ 2,0968 s; spec ve mühürlü
+/// pencere ölçümü yuvarlanmış 2,097 s değerini kullanır (değer korunur, bit-aynı).
+const W_EPOCH_RETURN_PRIOR_NS: u64 = 2_097_000_000;
+const _: () = assert!(
+    W_EPOCH_RETURN_PRIOR_NS.abs_diff(EAI_SACK_WIRE_BYTES * 1_000_000_000 / EAI_RETURN_BW_PRIOR)
+        < 1_000_000
+);
 /// K_c cadence çarpanı = 3/2 (1.5) [CAL kalibrasyon-matrisi {1.25, 1.5, 2.0}].
 const CADENCE_KC_NUM: u64 = 3;
 const CADENCE_KC_DEN: u64 = 2;
@@ -3942,7 +3951,6 @@ impl Sender {
         // önceki srtt'yle yazılır (deterministik; 10s [STD] tabanı setter'larda).
         {
             let srtt_now = self.rtt.srtt().unwrap_or(INITIAL_RTT);
-            let ack_epoch = srtt_now.max(self.expected_ack_interval());
             // [TUR-D1 EK-3 AÇIK-BORÇ] W=K_BW×ack_epoch'un srtt-dalı daralma-rejiminde ANTİ-FİX:
             // srtt-eğimi > 1/K_BW iken cutoff GERİLER → bayat-max ölümsüz (DV-3 ölçülü 0.92 s/s).
             // Shrink-reset SEMPTOMU keser, KÖK DURUR — W-türetim/M3-decoupling turunda kapanır;
@@ -3955,9 +3963,9 @@ impl Sender {
             let w_epoch = {
                 let dbw = self.btlbw.last_sample_bw().max(1);
                 let term1 = Duration::from_nanos(2 * UNIT_SIZE_HINT * 1_000_000_000 / dbw);
-                (term1 + Duration::from_nanos(2_097_000_000)).max(INITIAL_RTT)
+                (term1 + Duration::from_nanos(W_EPOCH_RETURN_PRIOR_NS)).max(INITIAL_RTT)
             };
-            let _ = ack_epoch; // W_loss-kolu (fuzzy_evaluate) kendi ack_epoch'unu hesaplar (S2: zararsız)
+            // W_loss-kolu (fuzzy_evaluate) kendi `ack_epoch`'unu hesaplar; burada okunmaz.
             self.btlbw.set_window(w_epoch * K_BW);
             self.rtt.set_rtprop_window(srtt_now * K_RTPROP);
             // [S-FAZ-0, K8-fix] W_qd srtt-dalından delivered-EAI-saatine (TEK-TOKEN: ack_epoch→
