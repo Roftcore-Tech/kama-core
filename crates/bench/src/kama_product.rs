@@ -278,6 +278,12 @@ fn runtime_cfg(a: ArmCfg) -> RuntimeConfig {
 fn profile_delta(c: &RuntimeConfig) -> Vec<String> {
     let v = KamaV1Profile::runtime_config();
     let mut d = Vec::new();
+    // [S-60 / B-01] Motor ürün profilinin parçasıdır (CLAUDE.md YAMA KAYDI 2026-11-11: "Ürün
+    // varsayılanı port (`RuntimeConfig::engine`), geri alma `KAMA_TRANSPORT_ENGINE=legacy`").
+    // `KAMA_TRANSPORT_ENGINE=legacy` ile koşan kol `kama-v1-full` adını taşıyamaz.
+    if c.engine != v.engine {
+        d.push(format!("engine {:?} != {:?}", c.engine, v.engine));
+    }
     if c.max_unit_bytes != v.max_unit_bytes {
         d.push(format!(
             "max_unit_bytes {} != {}",
@@ -372,12 +378,13 @@ fn print_manifest(role: &str, c: &RuntimeConfig) {
         },
     );
     eprintln!(
-        "KP-MANIFEST role={role} profile={profile} commit={} unit={}B msg_cap={:?} \
+        "KP-MANIFEST role={role} profile={profile} commit={} engine={} unit={}B msg_cap={:?} \
          fec={fec} fec_risk={} spec_caps={}/{} rp_suppress={} persist={:?} gate={:?} \
          iw={}B arq=ON(selective+dup) tail=ON(validated_v1) establish_probe=ON \
          bootstrap_ladder={} fusion_policy={} structure_policy={:?} confirm_horizon={:?} \
          features=[diag-sched-telemetry={}]",
         option_env!("KAMA_GIT_SHA").unwrap_or("unknown"),
+        crate::kama::Engine::of_product(c.engine).label(),
         c.max_unit_bytes,
         c.max_message_bytes,
         c.fec_loss_risk.enabled,
@@ -748,6 +755,8 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
     // disiplinine bırakılmaz. Tek bir alan bile saparsa kimlik `kama-custom` olur.
     let profile_delta_v = profile_delta(&rt_cfg);
     let engine_label = rt_cfg.engine.label_suffix();
+    // [S-60 / B-01] `RunMeta.engine` kurulan yapılandırmadan (kol etiketinin ekinden değil).
+    let engine_name = crate::kama::Engine::of_product(rt_cfg.engine).label();
     let profile_id_label = if profile_delta_v.is_empty() {
         client_core::runtime::TRANSPORT_V1_PROFILE_ID.to_string()
     } else {
@@ -1121,7 +1130,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         setup_in_window: false,
         profile_id: profile_id_label.clone(),
         profile_delta: profile_delta_v.clone(),
-        engine: String::new(),
+        engine: engine_name.to_string(),
     };
     Ok(RunOutput { meta, events })
 }
@@ -1262,6 +1271,47 @@ mod tests {
                 .any(|x| x.contains("structure_gate_level_permille")),
             "{d2:?}"
         );
+    }
+
+    /// Bayraksız CLI yolunun kol yapılandırması (`bayraksiz_kiyas_yolu_kanonik_profildir` ile aynı).
+    fn bayraksiz_arm() -> ArmCfg {
+        ArmCfg {
+            payload_bytes: 256,
+            quota_r: 4,
+            fec: FecArm::from_args(
+                KamaV1Profile::FEC_PROFILE_ID,
+                0,
+                crate::transport::FecModeArg::Adaptive,
+                0,
+            ),
+            burst_fusion: false,
+            bootstrap_rtt: false,
+            initial_window_bytes: 0,
+            bootstrap_fast: false,
+            loss_confirm_k: 0,
+            fec_risk: false,
+            ts_sample: false,
+            spec_l1: None,
+            spec_l2: None,
+            gate: None,
+            persist_mode: None,
+            persist_alpha: None,
+            persist_rho: None,
+            persist_q: None,
+            rp_suppress: None,
+        }
+    }
+
+    /// [S-60 / B-01] Eski motorla (`KAMA_TRANSPORT_ENGINE=legacy`) kurulan kol ürün profilinden
+    /// sapar: sapma listesi motoru gösterir, kimlik `kama-custom` olur.
+    #[test]
+    fn motor_sapmasi_gorunur() {
+        let mut c = runtime_cfg(bayraksiz_arm());
+        assert!(profile_delta(&c).is_empty(), "{:?}", profile_delta(&c));
+        c.engine = client_core::TransportEngine::Legacy;
+        let d = profile_delta(&c);
+        assert_eq!(d.len(), 1, "yalnız motor sapmalı: {d:?}");
+        assert!(d[0].starts_with("engine "), "{d:?}");
     }
 
     fn srv_cfg(bind: SocketAddr, fec: FecArm) -> ServerCfg {
@@ -1759,6 +1809,9 @@ mod tests {
             "ürün kolu tail-ON etiketlemeli"
         );
         assert!(out.meta.kama_arm.contains("fec-off"));
+        // [S-60 / B-01] Motor meta'ya kurulan yapılandırmadan yazılır (boş kalmaz).
+        let motor = crate::kama::Engine::of_product(engine_from_env().expect("motor")).label();
+        assert_eq!(out.meta.engine, motor);
         assert!(out.meta.tx.data > 0, "DATA byte'ı sayılmalı");
         assert_eq!(out.meta.tx.fec, 0, "FEC kapalıyken repair byte'ı olamaz");
         let sum = out.meta.tx.data

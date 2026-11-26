@@ -111,6 +111,14 @@ impl Engine {
         }
     }
 
+    /// Ürün kolunun (`kama-product`) kurduğu motor: `RuntimeConfig::engine` ile bire bir.
+    pub(crate) fn of_product(e: client_core::TransportEngine) -> Self {
+        match e {
+            client_core::TransportEngine::Legacy => Self::Legacy,
+            client_core::TransportEngine::CcPort => Self::CcPort,
+        }
+    }
+
     /// Sunucu `--cc-port` bayrağının seçtiği alıcı motoru.
     fn of_server_flag(cc_port: bool) -> Self {
         if cc_port {
