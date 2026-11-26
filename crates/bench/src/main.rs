@@ -94,8 +94,8 @@ enum Cmd {
         /// güven). KAPALI = sevk davranışı. TEK tüketici FEC oranı kararıdır.
         #[arg(long, default_value_t = false)]
         fec_risk: bool,
-        /// [HANDOFF ENSTRÜMANI] Zaman-serisi CSV çıktısı (client): t_ms,instant,persistent,rp,
-        /// confirmed,cprop,sprop,specprop,final,reason,level. 50 ms örnekleme, ≤4096 satır.
+        /// [HANDOFF ENSTRÜMANI] Yalnız `client` komutunda geçerli; sunucuda verilirse hata
+        /// (sunucu zaman serisi yazmaz).
         #[arg(long)]
         ts_out: Option<std::path::PathBuf>,
         /// [R-SWEEP] Spekülatif L1 tavanı (‰; K=8'de 125=r1, 250=r2, 375=r3). None = default 125.
@@ -505,7 +505,7 @@ async fn main() -> Result<(), BenchError> {
             fec_deadline_ms,
             loss_confirm_k,
             fec_risk,
-            ts_out: _,
+            ts_out,
             spec_l1_permille,
             spec_l2_permille,
             gate_permille,
@@ -537,6 +537,13 @@ async fn main() -> Result<(), BenchError> {
             if rx_log.is_some() && !rx_supported {
                 return Err(BenchError::Other(
                     "--rx-log yalnız --transport kama | kama-product | tcp | quinn ile".into(),
+                ));
+            }
+            // [S-92 / B-18] Sunucu zaman serisi yazmaz (`ServerCfg::ts_out` "Server'da yok
+            // sayılır"); bayrak sessizce yok sayılmaz, reddedilir (`--dup-copies` kuralı gibi).
+            if ts_out.is_some() {
+                return Err(BenchError::Other(
+                    "--ts-out yalnız client komutunda (sunucu zaman serisi yazmaz)".into(),
                 ));
             }
             // [KTP2-F0 / D] Rakip-kol ayarları (bayraksız = eski davranış; Kama kollarına etkisiz).
