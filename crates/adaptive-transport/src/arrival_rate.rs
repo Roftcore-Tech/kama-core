@@ -240,6 +240,9 @@ pub struct RateDropDetector {
     reference_bps: u64,
     reference_ns: u64,
     fired: bool,
+    /// [ÇİFT YOKLAMASI · KAPSAMA · #175 7186813951] Son çıkan ACK'teki referans ([`Self::on_ack`]
+    /// sonrası; alarmdan sonra 0 = bilinmiyor).
+    reference_at_ack_bps: u64,
 }
 
 impl RateDropDetector {
@@ -386,6 +389,20 @@ impl RateDropDetector {
             self.reference_bps = 0;
             self.reference_ns = now_ns;
         }
+        self.reference_at_ack_bps = self.reference_bps;
+    }
+
+    /// [ÇİFT YOKLAMASI · KAPSAMA · #175 7186813951] Alarm durumunda: daralmanın referansı, son
+    /// çıkan ACK'teki referanstan alarm oranından (‰ [`DROP_PERMILLE`]) fazla yükselmemiş mi.
+    /// `true` = daralma, son ACK'in zaten gördüğü düzeye göre de bir daralmadır (gerçek daralma).
+    /// `false` = referans son ACK'ten sonra yükseldi (kısa tren, örneğin göndericinin yoklaması) ya
+    /// da son ACK'te referans yoktu: düşüş, son ACK'ten sonra başlayıp biten bir yükselişin sonudur.
+    /// Alarm durumunda değilse `false`.
+    #[must_use]
+    pub fn drop_below_ack_reference(&self) -> bool {
+        self.fired
+            && u128::from(self.reference_bps) * u128::from(DROP_PERMILLE)
+                <= u128::from(self.reference_at_ack_bps) * 1000
     }
 }
 

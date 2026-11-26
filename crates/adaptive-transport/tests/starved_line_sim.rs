@@ -1548,6 +1548,11 @@ fn run(sc: &Scenario) -> Outcome {
             r.set_ack_bitmap_ptt_lean(ptt_lean);
         }
     }
+    // [ÇİFT YOKLAMASI · KAPSAMA · #175 7186813951] Alıcının deney anahtarı göndericininkiyle
+    // birlikte (ürün yolunda ikisi de `KAMA_PAIR_PROBE_DATAGRAMS`'tan okunur).
+    if sc.pair_probe.is_some() {
+        r.set_pair_probe_span(true);
+    }
     let product_rx = matches!(sc.rx, RxModel::Product { .. });
     let mut fwd = Bottleneck::new(sc);
     s.set_diag_emit_log(sc.diag || sc.ledger);

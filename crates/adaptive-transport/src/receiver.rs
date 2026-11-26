@@ -638,7 +638,12 @@ impl Receiver {
                     self.drop_alarm = true;
                     self.alarm_yield_clear_ns = 0;
                     self.diag_drop_alarms += 1;
-                    self.alarm_span_first = Some(ev.first_seq());
+                    // [ÇİFT YOKLAMASI · KAPSAMA · DENEY · #175 7186813951] Deney açıkken aralık
+                    // yalnız son ACK'in referansına göre de bir daralmada kesilir; değilse (son
+                    // ACK'ten sonra başlayıp biten tren) bugünkü tabandan başlar ve treni içerir.
+                    self.alarm_span_first = (!self.pair_probe_span
+                        || self.rate_drop.drop_below_ack_reference())
+                    .then(|| ev.first_seq());
                     self.obs_pend.evidence_ns = Some(now_ns);
                     self.obs_pend.alarm_ns.get_or_insert(now_ns);
                 }
@@ -710,6 +715,11 @@ impl Receiver {
     pub fn with_cc_port() -> Self {
         let mut r = Self::new();
         r.cc_port = true;
+        // [ÇİFT YOKLAMASI · KAPSAMA · DENEY · #175 7186813951] Ürün varsayılanı DEĞİL: göndericinin
+        // deney anahtarıyla aynı ortam değişkeni (`KAMA_PAIR_PROBE_DATAGRAMS`, 1–6). Testler ve
+        // benzetim [`Self::set_pair_probe_span`] ile kurar.
+        r.pair_probe_span =
+            pair_probe_span_setting(std::env::var("KAMA_PAIR_PROBE_DATAGRAMS").ok().as_deref());
         r
     }
 
@@ -1811,6 +1821,16 @@ impl Default for Receiver {
     }
 }
 
+/// [ÇİFT YOKLAMASI · KAPSAMA · DENEY · #175 7186813951] `KAMA_PAIR_PROBE_DATAGRAMS` süzgeci,
+/// göndericininkiyle aynı (`sender::pair_probe_datagrams_setting`): baştaki / sondaki boşluk
+/// atılır, ondalık tam sayı `1..=6` ([`crate::line_guard::PAIR_PROBE_MAX_DATAGRAMS`]) ise deney
+/// açıktır; değişken yoksa, sayı değilse, 0 ya da üst sınırın üstündeyse kapalı.
+fn pair_probe_span_setting(value: Option<&str>) -> bool {
+    value
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .is_some_and(|n| (1..=crate::line_guard::PAIR_PROBE_MAX_DATAGRAMS).contains(&n))
+}
+
 /// [ÇİFT ARALIĞI · #175 7068773849] İleri hat kapasitesinin alıcıda ölçülen alt sınırı.
 ///
 /// Ardışık iki datagramın varış aralığı `g` ve ikincinin UDP gövdesi `b` için `b / g`. Tek FIFO
@@ -2202,6 +2222,21 @@ mod tests {
             crate::ack::PAIR_RATE_NONE - 1,
             "beyan yokken kural kapalı"
         );
+    }
+
+    /// [ÇİFT YOKLAMASI · KAPSAMA · #175 7186813951] Alıcının deney anahtarı göndericiyle aynı
+    /// süzgeçten: 1–6 açık; yok, sayı değil, 0 ya da 7 kapalı.
+    #[test]
+    fn pair_probe_span_setting_matches_the_sender_filter() {
+        for n in 1..=crate::line_guard::PAIR_PROBE_MAX_DATAGRAMS {
+            assert!(pair_probe_span_setting(Some(&n.to_string())), "{n}");
+        }
+        assert!(pair_probe_span_setting(Some(" 3\n")));
+        for v in ["0", "7", "", "x", "-1", "6.0"] {
+            assert!(!pair_probe_span_setting(Some(v)), "{v:?}");
+        }
+        assert!(!pair_probe_span_setting(None));
+        assert!(!Receiver::new().pair_probe_span, "Receiver::new kapalı");
     }
 
     /// [ALARM ARALIĞI × SIKIŞMA · #175 7086031917] Daralma alarmındaki sıfırlama (`top`) E'nin
