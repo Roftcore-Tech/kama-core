@@ -545,7 +545,8 @@ fn elapsed_ns(start: Instant) -> u64 {
 /// Bir birim sunar; kuyruk doluyken bekler-yeniden-dener (bounded backpressure sözleşmesi).
 ///
 /// `Closed`/`UnitTooLarge` = koşu GEÇERSİZ: birim id'leri offer sırasına bire bir bağlıdır
-/// (`unit_id = warmup_msgs + msg_id`), sessizce atlanan bir offer tüm eşlemeyi kaydırırdı.
+/// (`unit_id = sunulan warmup sayısı + msg_id × kopya + kopya`), sessizce atlanan bir offer tüm
+/// eşlemeyi kaydırırdı.
 /// Bu yüzden typed hata yutulmaz, koşuyu düşürür.
 async fn offer(
     tx: &ClientSender,
@@ -788,9 +789,13 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
     }
 
     // ── FAZ-0: warmup (ölçüm-DIŞI) ────────────────────────────────────────────────────────
-    // Warmup birimleri 0..warmup_msgs-1 id'lerini işgal eder; ölçüm birimleri warmup_msgs'ten
-    // başlar. Amaç: estimator/pacer/RTT + PARAM bağlanması ölçümden ÖNCE otursun.
+    // Warmup birimleri 0..warm_offered-1 id'lerini işgal eder; ölçüm birimleri FİİLEN sunulan
+    // warmup sayısından başlar. Amaç: estimator/pacer/RTT + PARAM bağlanması ölçümden ÖNCE otursun.
     let mut warm_acked: u64 = 0;
+    // [S-92 / B-23] Fiilen sunulan warmup birimi sayısı = ölçüm birimlerinin kimlik tabanı. Faz
+    // tavanı (`WARMUP_CAP_EXTRA`) ya da ölen uç warmup'ı erken keserse `warmup_msgs`'ten küçüktür;
+    // tabanı `warmup_msgs` varsaymak teslim eşlemesini kaydırırdı (`offer` sözleşmesi).
+    let mut warm_offered: u64 = 0;
     // [İSTEK-D4] Sunum geri basıncı sayaçları; ölçüm-t0'da sıfırlanır (warmup sayılmaz).
     let mut offer_st = OfferStats::default();
     if cfg.warmup_msgs > 0 {
@@ -799,17 +804,16 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
         let wdl = tokio::time::sleep(cap);
         tokio::pin!(wdl);
         let wstart = elapsed_ns(start);
-        let mut wnext: u64 = 0;
         while warm_acked < cfg.warmup_msgs {
             tokio::select! {
                 () = &mut wdl => break,
                 () = tokio::time::sleep(Duration::from_nanos(
                     wstart
-                        .saturating_add(interval_ns.saturating_mul(wnext))
+                        .saturating_add(interval_ns.saturating_mul(warm_offered))
                         .saturating_sub(elapsed_ns(start)),
-                )), if wnext < cfg.warmup_msgs => {
+                )), if warm_offered < cfg.warmup_msgs => {
                     offer(&tx, &payload, deadline_ns, &mut offer_st).await?;
-                    wnext += 1;
+                    warm_offered += 1;
                 }
                 a = cli.acked() => {
                     if a.is_none() { break } // endpoint öldü
@@ -840,7 +844,7 @@ async fn client_loop(cfg: ClientCfg) -> Result<RunOutput, BenchError> {
     offer_st = OfferStats::default();
 
     // ── FAZ-1: ölçüm ──────────────────────────────────────────────────────────────────────
-    let base_id = cfg.warmup_msgs;
+    let base_id = warm_offered;
     let mut sent_ns: Vec<Option<u64>> = vec![None; n_msgs];
     let mut delivered_ns: Vec<Option<u64>> = vec![None; n_msgs];
     let mut delivered_count: u64 = 0;

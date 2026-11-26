@@ -218,7 +218,8 @@ pub struct ClientCfg {
     pub rp_suppress: Option<u32>,
     /// [KTP2-F0 / C2] Yalnız `kama-product`: her ölçüm mesajı bu kadar AYRI birim olarak sunulur
     /// (gerçek tekrar kolu); teslim = kopyalardan ilkinin teyidi. `1` = eski davranış (kopya yok).
-    /// Birim kimliği: `warmup_msgs + msg_id × dup_copies + kopya`.
+    /// Birim kimliği: `sunulan warmup birimi sayısı + msg_id × dup_copies + kopya` (warmup erken
+    /// kesilirse sunulan sayı `warmup_msgs`'ten küçüktür).
     pub dup_copies: u32,
 }
 

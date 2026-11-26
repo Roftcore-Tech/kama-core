@@ -13,7 +13,8 @@
 //! ```
 //!
 //! Birim kimliği: `kama-product` = `Delivery::unit_id` (fragmenter açıkken mesaj kimliği;
-//! `warmup_msgs` ölçüm birimlerinin önündedir; `--dup-copies N` ile birim = mesaj × N + kopya).
+//! sunulan warmup birimleri ölçüm birimlerinin önündedir; `--dup-copies N` ile birim = mesaj × N +
+//! kopya).
 //! `tcp` = çerçevedeki `msg_id`. `quinn` = yükün ilk 8 baytı (BE) — istemci `--payload-id` ile
 //! yazar; yazılmamışsa ya da yük < 8 B ise `u64::MAX`. Damga anı: kama = teslim kanalından alındığı
 //! an; tcp = çerçevenin tamamı okunduğu an; quinn = stream sonuna (FIN) dek okunduğu an.
