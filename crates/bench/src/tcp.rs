@@ -140,6 +140,9 @@ impl BenchTransport for TcpTransport {
             let setup_ns = u64::try_from(setup_clock.elapsed().as_nanos()).unwrap_or(u64::MAX);
             // Ölçüm saati kurulumdan SONRA başlar (dört kolda aynı).
             let start = Instant::now();
+            // [S-92 / B-26] Ölçüm-t0'ın CLOCK_REALTIME damgası (`--rx-log` alıcı damgalarıyla
+            // hizalama tabanı; quinn/kama kollarıyla aynı alan).
+            let t0_unix_ns = crate::rxlog::unix_ns();
             let (mut rd, mut wr) = sock.into_split();
 
             let n = usize::try_from(cfg.msg_count).unwrap_or(0);
@@ -230,18 +233,17 @@ impl BenchTransport for TcpTransport {
                     payload_bytes: cfg.payload_bytes,
                 })
                 .collect();
-            Ok(RunOutput {
-                meta: meta_for(
-                    &cfg,
-                    app_tx,
-                    app_rx,
-                    setup_ns,
-                    TCP_LEGACY,
-                    format!("tcp-default;setup=excluded-from-window;setup_ns={setup_ns}"),
-                    delta,
-                ),
-                events,
-            })
+            let mut meta = meta_for(
+                &cfg,
+                app_tx,
+                app_rx,
+                setup_ns,
+                TCP_LEGACY,
+                format!("tcp-default;setup=excluded-from-window;setup_ns={setup_ns}"),
+                delta,
+            );
+            meta.t0_unix_ns = t0_unix_ns;
+            Ok(RunOutput { meta, events })
         }
     }
 }
@@ -278,6 +280,8 @@ fn meta_for(
         kama_arm: arm_label,
         submit_interval_ns: u64::try_from(cfg.submit_interval.as_nanos()).unwrap_or(u64::MAX),
         budget: crate::budget::BudgetSnapshot::default(),
+        // Bağlantı kurulamadıysa ölçüm-t0 yoktur (0 = kaydedilmedi); bağlanan kollar ölçüm-t0
+        // damgasını üstüne yazar [S-92 / B-26].
         t0_unix_ns: 0,
         events_epoch_offset_ns: 0,
         warmup_residue: 0,
@@ -375,6 +379,8 @@ async fn run_client_tack(
     let local_port = sock.local_addr().map_err(BenchError::Io)?.port();
     let peer_port = sock.peer_addr().map_err(BenchError::Io)?.port();
     let t0 = tokio::time::Instant::now();
+    // [S-92 / B-26] Ölçüm-t0'ın CLOCK_REALTIME damgası (bkz. `app-reply` kolu).
+    let t0_unix_ns = crate::rxlog::unix_ns();
     let (rd, mut wr) = sock.into_split();
 
     let n = usize::try_from(cfg.msg_count).unwrap_or(0);
@@ -471,10 +477,9 @@ async fn run_client_tack(
          poll_fail={poll_fail};send_errors={send_errors}",
         TACK_POLL.as_millis()
     );
-    Ok(RunOutput {
-        meta: meta_for(&cfg, app_tx, 0, setup_ns, TCP_TACK, label, delta),
-        events,
-    })
+    let mut meta = meta_for(&cfg, app_tx, 0, setup_ns, TCP_TACK, label, delta);
+    meta.t0_unix_ns = t0_unix_ns;
+    Ok(RunOutput { meta, events })
 }
 
 #[cfg(test)]
@@ -589,6 +594,8 @@ mod tests {
         // [§M4] Kurulum ölçüm penceresinin DIŞINDA ve ayrıca ölçülmüş.
         assert!(!out.meta.setup_in_window);
         assert!(out.meta.setup_ns > 0, "kurulum süresi ölçülmeli");
+        // [S-92 / B-26] Ölçüm-t0 CLOCK_REALTIME damgası yazılır (alıcı kaydıyla hizalama).
+        assert!(out.meta.t0_unix_ns > 0, "t0_unix_ns kaydedilmeli");
     }
 
     /// [KTP2-F0 / D] `transport-ack` kolu: uygulama ACK'i OLMADAN, `snd_una` örneklemesiyle her
@@ -672,5 +679,6 @@ mod tests {
         }
         assert_eq!(out.meta.udp_tx_bytes, n * (65 + FRAME_HDR as u64));
         assert_eq!(out.meta.udp_rx_bytes, 0, "uygulama ACK'i yok");
+        assert!(out.meta.t0_unix_ns > 0, "t0_unix_ns kaydedilmeli");
     }
 }
