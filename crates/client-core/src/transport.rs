@@ -24,9 +24,12 @@
 //!
 //! Aynı oturumdaki `Reliable` birimler gönderim sırasıyla teslim edilir. Veri alıcısı birimleri
 //! varış sırasıyla verir; adaptör onları kaynak uç (= oturum) başına `unit_id` sırasına sokar.
-//! Motor bir birimi hiçbir zaman terk etmediği için (ARQ teyide kadar sürer) bu sıra kalıcı bir
-//! boşlukta beklemez; `BestEffort` / `DeadlineBounded` birimler de aynı sırayla gelir (S1 onlara
-//! sırasızlık İZNİ verir, zorunluluğu değil).
+//! [ŞERİT-SIRA] Şeritler açıkken sıra şerit başınadır. Motor PTT şeridi dışındaki birimi terk
+//! etmediği için (ARQ teyide kadar sürer) bu sıra kalıcı bir boşlukta beklemez; `BestEffort` /
+//! `DeadlineBounded` birimler de aynı sırayla gelir (S1 onlara sırasızlık İZNİ verir, zorunluluğu
+//! değil). [PTT-YALIN] İstisna PTT şerididir: gönderici son tarihli PTT birimini son tarihte
+//! bırakır (`runtime`); eş PTT'yi son tarihli gönderiyorsa alıcının PTT şeridi eksik sıra başını
+//! `PTT_HOLE_SKIP` sonra (ya da arkasında iki birim tutulunca) atlar (`Reorder`).
 //!
 //! [K4G-01b] Sıralama durumu (`Reorder`) OTURUMA anahtarlıdır (`SessionHandle`; kaynak adres
 //! DEĞİL): karşı ucun her oturumu tek bir uçtan gelir, `unit_id` uzayı oturumundur. Böylece
@@ -499,8 +502,10 @@ struct Renewal {
 /// başı metin ve PTT şeritlerinin teslimini BEKLETMEZ. Etiketsiz kimlikler (şeritler kapalı) şerit
 /// 0'dır: davranış eski tek-sıralayıcıyla aynıdır.
 ///
-/// [F3] Eksik sıra başı HİÇBİR ZAMAN atlanmaz: buraya gelen her birim veri alıcısında ACK'lenmiştir,
-/// atlamak ACK'lenmiş birimi atmak olurdu. Bellek sınırı burada değil veri alıcısının kabul
+/// [F3] PTT şeridi dışında eksik sıra başı HİÇBİR ZAMAN atlanmaz: buraya gelen her birim veri
+/// alıcısında ACK'lenmiştir, atlamak ACK'lenmiş birimi atmak olurdu. [PTT-YALIN] PTT şeridinde
+/// `ptt_skip` açıkken eksik sıra başı atlanır (bkz. `Reorder::ptt_skip`, [`PTT_HOLE_SKIP`]);
+/// atlanan alınmamış sıradır, tutulan birim atılmaz. Bellek sınırı burada değil veri alıcısının kabul
 /// penceresindedir ([`ExpectedSessions::set_admit_window`]): şeridin `next`'inden pencere genişliği
 /// ve ötesindeki birim ACK'lenmez, buraya hiç gelmez; her şeridin `held`'i en çok o şeridin
 /// genişliği kadar birim tutar (`LaneConfig::admit_widths`). `next` her ilerleyişte veri alıcısına yayımlanır
@@ -560,7 +565,7 @@ pub struct ReorderDiag {
 
 impl Reorder {
     /// Birimi şeridine koyar; sırası gelen birimler `out`'a akar. Eksik sıra başı beklenir,
-    /// atlanmaz (F3). Döndürdüğü değer: şeridin yeni sıra başı (şerit etiketli; ilerlemediyse
+    /// atlanmaz (F3; PTT şeridi istisnası `ptt_skip`). Döndürdüğü değer: şeridin yeni sıra başı (şerit etiketli; ilerlemediyse
     /// eski değer) — çağıran değişince veri alıcısına yayımlar. Kutu sınırsız (birim testleri).
     #[cfg(test)]
     fn push(
@@ -768,7 +773,8 @@ pub struct ClientTransport<C: PacketProtection + SessionControl> {
     /// toplamı — ucun bırakıldığı andaki canlı aynasından ([`Self::retired_live_diag`]). Hiçbir
     /// karar okumaz. [DUR-19] Yalnız aynası olan uç eklenir (`RuntimeConfig::live_diag`).
     retired_diag: ClientLiveDiag,
-    /// [YOL3-T1 KK-T1-06 (i)] Şerit durumu; `None` = şeritsiz (ürün). Pompa çalışırken dışarı
+    /// [YOL3-T1 KK-T1-06 (i)] Şerit durumu; `None` = şeritsiz (yapılandırma `lanes = None`; ürün
+    /// profili şeritleri AÇIK kurar, [`ClientTransportConfig::product`]). Pompa çalışırken dışarı
     /// alınır (`Option::take`): o sırada `send` şerit dalına girmez, birimi doğrudan uca verir.
     lanes: Option<LaneState>,
     /// [ŞERİT-SIRA] Şeritler yapılandırmada açık mı (pompa `lanes`'i geçici olarak dışarı alır;
