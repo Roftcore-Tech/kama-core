@@ -1310,10 +1310,14 @@ pub struct ServerStats {
     pub frag_chunks_rx: u64,
     /// [S1B] Tam olarak yeniden kurulup app'e teslim edilen mesaj.
     pub msgs_reassembled: u64,
-    /// [S1B] Mesaj tavanını aşacağı için reddedilen chunk (bounds-before-alloc; bozuk/kötücül
-    /// FINAL'in belleği şişirmesi engellendi).
+    /// [S1B] Birleştiricinin kabul etmediği chunk: mesaj tavanını aşıyor (bounds-before-alloc;
+    /// bozuk/kötücül FINAL'in belleği şişirmesi engellendi) ya da birleştirici `MSG_ASM_CAP` yarım
+    /// mesajla dolu ve chunk yeni bir mesajın. [S-35] Kabul edilmeyen chunk ACK'lenmez: DATA motora
+    /// verilmedi, FEC kurtarımı RECOVERED'a yazılmadı; gönderici yeniden iletir.
     pub frag_chunk_dropped: u64,
-    /// [S1B] Kapasite gereği düşürülen en-eski yarım mesaj (bounded birleştirici).
+    /// [S1B] Kapasite gereği düşürülen yarım mesaj. [S-35] Artık hiçbir yolda artmaz: birleştirici
+    /// ACK'lenmiş chunk tutan yarım mesajı tahliye etmez, dolu iken yeni mesajı kabul etmez
+    /// ([`Self::frag_chunk_dropped`]). Alan geriye uyum için durur.
     pub msg_asm_evicted: u64,
     /// [DR-CS-3] Alınan CS-probe.
     pub cs_probes_rx: u64,
@@ -5057,8 +5061,13 @@ struct BlockAsm {
     repairs: BTreeMap<u16, Vec<u8>>,
 }
 
-/// [S1B] Peer-başına aynı anda birleştirilen mesaj tavanı (bounded, SR-AUDIT-001; en-eski
-/// düşer + sayaç — yarım kalan mesajlar belleği süresiz tutamaz).
+/// [S1B] Peer-başına aynı anda birleştirilen mesaj tavanı (bounded, SR-AUDIT-001).
+///
+/// [S-35 · sahip kararı 2026-11-11 «ACK'lenmiş birim kaybolmaz»] Tavan doluyken YENİ mesajın
+/// chunk'ı kabul edilmez: DATA ise motora verilmez (ACK yok), FEC kurtarımı ise RECOVERED'a
+/// yazılmaz; gönderici yeniden iletir ([`frag_chunk_admissible`]). Birleştiricideki her chunk
+/// ACK'lenmiş (ya da RECOVERED ile bildirilmiş) olduğundan yarım mesaj tahliye edilmez; eskiden
+/// en küçük mesaj kimliği düşürülüyordu ve o mesajın ACK'lenmiş chunk'ları kalıcı kayboluyordu.
 const MSG_ASM_CAP: usize = 64;
 
 /// [S1B] Bir mesajın yeniden-birleştirme durumu.
@@ -5107,6 +5116,15 @@ impl MsgAsm {
         true
     }
 
+    /// [S-35] [`Self::insert`] bu chunk'ı kabul eder mi (salt okuma; aynı sınırlar): uç mesaj
+    /// tavanını aşmamalı ve yeni offset tamponu tavanın üstüne çıkarmamalı. Bilinen offset'in
+    /// tekrarı kabul edilir (ilk-kazanır, bellek büyümez).
+    fn accepts(&self, offset: u32, len: usize, cap: usize) -> bool {
+        let end = (offset as usize).saturating_add(len);
+        end <= cap
+            && (self.chunks.contains_key(&offset) || self.buffered.saturating_add(len) <= cap)
+    }
+
     /// Mesaj TAMAMLANDIYSA birleştirilmiş payload. Tamamlanma = FINAL görüldü **ve** `0..total_len`
     /// BOŞLUKSUZ kaplandı. Boşluk/örtüşme varsa `None` (fail-closed: yarım mesaj asla teslim
     /// edilmez — app'e eksik payload vermek sessiz veri bozulmasıdır).
@@ -5120,6 +5138,22 @@ impl MsgAsm {
             out.extend_from_slice(data);
         }
         (out.len() == total).then_some(out)
+    }
+}
+
+/// [S-35 · INV-ACK-DELIVER-1] Fragmenter açıkken bir chunk birleştiriciye girebilir mi — ACK'ten
+/// (DATA: motor beslemesi; FEC: RECOVERED) ÖNCE sorulur. Bilinen mesajın chunk'ı
+/// [`MsgAsm::accepts`] ile; yeni mesajın chunk'ı yalnız birleştirici [`MSG_ASM_CAP`]'in altındayken
+/// ve uç mesaj tavanını aşmıyorsa. `false` = kabul edilmez, ACK'lenmez; gönderici yeniden iletir.
+fn frag_chunk_admissible(
+    msgs: &BTreeMap<u32, MsgAsm>,
+    pfx: &SourcePrefix,
+    len: usize,
+    cap: usize,
+) -> bool {
+    match msgs.get(&pfx.message_id) {
+        Some(asm) => asm.accepts(pfx.chunk_offset, len, cap),
+        None => msgs.len() < MSG_ASM_CAP && (pfx.chunk_offset as usize).saturating_add(len) <= cap,
     }
 }
 
@@ -5208,17 +5242,22 @@ fn admit_chunk<'a>(
     if slot.delivered_seen.contains(mid) {
         return true; // mesaj çoktan teslim edildi; geç chunk'lar (retransmit/kurtarma) yutulur
     }
+    // [S-35] Kabul edilemeyen chunk ACK'lenmiş sayılmaz: DATA yolu bunu motordan önce sordu (buraya
+    // yalnız kabul edilebilir chunk gelir); FEC yolunda `false` kurtarımı RECOVERED'a yazdırmaz.
+    if !frag_chunk_admissible(&slot.msgs, pfx, payload.len(), max_message_bytes) {
+        stats.frag_chunk_dropped += 1;
+        return false;
+    }
     stats.frag_chunks_rx += 1;
     let complete = {
         let asm = slot.msgs.entry(pfx.message_id).or_insert_with(MsgAsm::new);
-        if !asm.insert(
+        let inserted = asm.insert(
             pfx.chunk_offset,
             payload,
             pfx.source_flags & SOURCE_FLAG_FINAL != 0,
             max_message_bytes,
-        ) {
-            stats.frag_chunk_dropped += 1;
-        }
+        );
+        debug_assert!(inserted, "frag_chunk_admissible ile aynı sınırlar");
         asm.take_if_complete()
     };
     if let Some(full) = complete {
@@ -5234,9 +5273,6 @@ fn admit_chunk<'a>(
         stats.msgs_reassembled += 1;
         push_delivery(stats, permit, peer, slot.ctx, mid, full, from_fec);
         slot.delivered_seen.insert(mid, DELIVERED_DEDUP_WINDOW);
-    } else if slot.msgs.len() > MSG_ASM_CAP {
-        slot.msgs.pop_first();
-        stats.msg_asm_evicted += 1;
     }
     true
 }
@@ -6128,6 +6164,16 @@ async fn server_task(
                         };
                         if beyond_admit_window(&expected, slot.ctx, delivery_id) {
                             stats.data_not_admitted_window += 1;
+                            continue;
+                        }
+                        // [S-35 · INV-ACK-DELIVER-1] Birleştiricinin kabul etmeyeceği chunk motora
+                        // VERİLMEZ (ACK yok; gönderici yeniden iletir). Önce ACK'lenip sonra
+                        // birleştiricide reddediliyor ya da tahliye ediliyordu → kalıcı kayıp.
+                        if frag_on
+                            && !slot.delivered_seen.contains(delivery_id)
+                            && !frag_chunk_admissible(&slot.msgs, &pfx, payload.len(), msg_cap)
+                        {
+                            stats.frag_chunk_dropped += 1;
                             continue;
                         }
                         let Ok(permit) = delivery_tx.try_reserve() else {
@@ -8169,6 +8215,73 @@ mod lane_eviction_tests {
         // Eşitlikte düşük öncelikli (büyük indeks) şerit düşer.
         assert_eq!(busiest_lane(&[2, 0, 0, 2]), FILE);
         assert_eq!(busiest_lane(&[3, 0, 0, 2]), PTT);
+    }
+}
+
+/// [S-35 · INV-ACK-DELIVER-1] Mesaj birleştiricisi ACK'ten önce sorulur: kabul etmeyeceği chunk
+/// ACK'lenmez; tavan doluyken yarım mesaj tahliye edilmez, yeni mesaj beklemeye alınır.
+#[cfg(test)]
+mod frag_admission_tests {
+    use super::*;
+
+    const CAP: usize = 256;
+
+    fn pfx(message_id: u32, chunk_offset: u32) -> SourcePrefix {
+        SourcePrefix {
+            message_id,
+            chunk_offset,
+            actual_payload_len: 48,
+            source_flags: 0,
+        }
+    }
+
+    /// Birleştiriciyi `MSG_ASM_CAP` yarım mesajla doldurur (her biri offset 0'da tek chunk).
+    fn full_assembler() -> BTreeMap<u32, MsgAsm> {
+        let mut msgs = BTreeMap::new();
+        for id in 0..MSG_ASM_CAP as u32 {
+            let mut asm = MsgAsm::new();
+            assert!(asm.insert(0, &[0u8; 48], false, CAP));
+            msgs.insert(id, asm);
+        }
+        msgs
+    }
+
+    #[test]
+    fn full_assembler_refuses_a_new_message_but_keeps_accepting_known_ones() {
+        let msgs = full_assembler();
+        let new_id = MSG_ASM_CAP as u32;
+        assert!(
+            !frag_chunk_admissible(&msgs, &pfx(new_id, 0), 48, CAP),
+            "dolu birleştirici yeni mesajı kabul etmez (ACK'lenmez, tahliye yok)"
+        );
+        assert!(
+            frag_chunk_admissible(&msgs, &pfx(0, 48), 48, CAP),
+            "bilinen yarım mesajın sıradaki chunk'ı kabul edilir"
+        );
+        assert!(
+            frag_chunk_admissible(&msgs, &pfx(0, 0), 48, CAP),
+            "bilinen offset'in tekrarı kabul edilir (ilk-kazanır)"
+        );
+        let mut one_free = full_assembler();
+        one_free.remove(&0);
+        assert!(frag_chunk_admissible(&one_free, &pfx(new_id, 0), 48, CAP));
+    }
+
+    #[test]
+    fn chunk_beyond_the_message_cap_is_refused_before_insert() {
+        let msgs = BTreeMap::new();
+        assert!(!frag_chunk_admissible(&msgs, &pfx(1, 240), 48, CAP));
+        assert!(frag_chunk_admissible(&msgs, &pfx(1, 208), 48, CAP));
+        // Bilinen mesaj: tampon tavanı aşılırsa ret (yeni offset), aynı sınır `insert`'te.
+        let mut asm = MsgAsm::new();
+        for off in [0u32, 48, 96, 144, 192] {
+            assert!(asm.insert(off, &[0u8; 48], false, CAP));
+        }
+        assert!(!asm.accepts(200, 48, CAP), "tampon 240 + 48 > 256");
+        assert!(asm.accepts(192, 48, CAP), "bilinen offset bellek büyütmez");
+        let mut known = BTreeMap::new();
+        known.insert(1u32, asm);
+        assert!(!frag_chunk_admissible(&known, &pfx(1, 200), 48, CAP));
     }
 }
 
