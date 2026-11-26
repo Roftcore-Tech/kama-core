@@ -9986,12 +9986,13 @@ mod tests {
             })
             .collect();
         let pending_before = s.pending_lost.len();
+        // Olay zamanları tekdüze artar (son ACK 315 ms'de): düzenek saati geri sarmaz.
         if fires {
-            s.on_event(Event::RecoveredControl(RecoveredInfo { units }), 305 * MS);
+            s.on_event(Event::RecoveredControl(RecoveredInfo { units }), 316 * MS);
         }
         // Post-fire saf-tick'ler (ACK-yok → btlbw iki-kolda-da değişmemeli).
         for t in 0..5u64 {
-            s.on_event(Event::TimerFired(Timer::Pto), (310 + t * 10) * MS);
+            s.on_event(Event::TimerFired(Timer::Pto), (320 + t * 10) * MS);
         }
         (
             s.diag_rate().1,
