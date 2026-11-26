@@ -11712,19 +11712,44 @@ mod tests {
         // A duplicate/retransmit ACK must still yield no RTT sample (Karn), with the ladder ON.
         let mut on = bs_on();
         let mut off = Sender::new();
-        for s in [&mut on, &mut off] {
-            s.on_event(Event::AppData(unit(200)), 0);
+        let mut dups: [Vec<u64>; 2] = [Vec::new(), Vec::new()];
+        for (s, d) in [&mut on, &mut off].into_iter().zip(dups.iter_mut()) {
+            let mut out = s.on_event(Event::AppData(unit(200)), 0);
+            // identical ARQ-relevant driving (100 ms ticks through the PreConverge copy ladder)
+            for t in 1..=40u64 {
+                out.extend(s.on_event(Event::TimerFired(Timer::Pto), t * 100 * MS));
+            }
+            d.extend(
+                out.iter()
+                    .filter(|x| x.kind == TransmitKind::Duplicate)
+                    .map(|x| x.seq),
+            );
         }
-        // identical ARQ-relevant driving; compare loss/PTO diagnostics
-        for t in [700u64, 900, 1_100] {
-            on.on_event(Event::TimerFired(Timer::Pto), t * MS);
-            off.on_event(Event::TimerFired(Timer::Pto), t * MS);
-        }
+        assert!(!dups[0].is_empty(), "kurulum: PreConverge copy emitted");
+        assert_eq!(
+            dups[0], dups[1],
+            "the ladder does not move DATA-seq emissions"
+        );
         assert_eq!(
             on.diag_loss(),
             off.diag_loss(),
             "ARQ loss-declaration accounting must be unchanged before any echo"
         );
+        // Karn: an ACK that covers ONLY the copy (not the original) yields no RTT sample, ladder
+        // ON or OFF.
+        let copy = dups[0][0];
+        on.on_event(ack(&[copy]), 4_100 * MS);
+        off.on_event(ack(&[copy]), 4_100 * MS);
+        assert!(
+            on.rtt.srtt().is_none(),
+            "Karn: copy ACK is not an RTT sample (ladder ON)"
+        );
+        assert!(
+            off.rtt.srtt().is_none(),
+            "Karn: copy ACK is not an RTT sample (ladder OFF)"
+        );
+        assert_eq!(on.rtt_sample_count, off.rtt_sample_count);
+        assert_eq!(on.diag_loss(), off.diag_loss());
     }
 
     #[test]
