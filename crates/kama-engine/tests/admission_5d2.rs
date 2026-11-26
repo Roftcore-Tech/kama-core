@@ -129,3 +129,43 @@ fn unknown_bound_profile_fail_closed() {
         "registry-dışı profil → fail-closed"
     );
 }
+
+// ── BLOK-GATE (S-53/M2-07; fec-core §6.5 MADDE-9 block_id decoder-context'ten): ESI'leri çakışmayan
+//    iki bloğun shard'ları tek çağrıda → fail-closed (eskiden tek blok gibi çözülüp birleşiyordu) ──
+#[test]
+fn second_block_in_one_call_fail_closed() {
+    let (mut tx, mut rx) = common::pair(0x0600_0007);
+    let p = profile3();
+    let app_a = vec![0x33u8; common::PAYLOAD_CAP * 5];
+    let app_b = vec![0x33u8; common::PAYLOAD_CAP * 5];
+    let (sealed_a, k_actual) = common::encode_seal_block(&mut tx, &p, &app_a, 1, 0xA001, 0);
+    let (sealed_b, _) = common::encode_seal_block(&mut tx, &p, &app_b, 2, 0xB002, 100);
+
+    // Blok 1'in source 0..2'si + blok 2'nin source 3..4'ü: ESI'ler çakışmaz, K_actual tutar.
+    let mut opened: Vec<OpenedTransportShard> = Vec::new();
+    for s in sealed_a.iter().filter(|s| !s.is_repair && s.esi < 3) {
+        opened.push(rx.open(&s.datagram).expect("authenticated"));
+    }
+    for s in sealed_b.iter().filter(|s| !s.is_repair && s.esi >= 3) {
+        opened.push(rx.open(&s.datagram).expect("authenticated"));
+    }
+    assert_eq!(
+        admit_and_decode(opened, 3, k_actual),
+        Err(EngineError::BlockIdMismatch { shard: 2, block: 1 }),
+        "ikinci bloğun shard'ı bu bloğun decode'una giremez"
+    );
+}
+
+// ── K_ACTUAL-GATE (S-53/M2-07; fec-core §6 PATCH-4): inner-header K_actual ≠ blok durumu → fail-closed ──
+#[test]
+fn inner_k_actual_mismatch_fail_closed() {
+    let (mut tx, mut rx) = common::pair(0x0600_0008);
+    // seal_source inner-header k_actual=1 taşır; blok durumu (çağıran) K_actual=2 diyor.
+    let dg = common::seal_source(&mut tx, 1, 0, 3, 0x4444, 0);
+    let opened = rx.open(&dg).expect("authenticated");
+    assert_eq!(
+        admit_and_decode(vec![opened], 3, 2),
+        Err(EngineError::KActualMismatch { shard: 1, block: 2 }),
+        "inner K_actual blok durumuyla uyuşmazsa packet-REJECT (rank artmaz)"
+    );
+}

@@ -4,7 +4,8 @@
 //! (noise-wire AEAD-witness) → FEC-decode. **TYPE-GATE:** bu fonksiyonun girdisi YALNIZ
 //! `OpenedTransportShard`'tır; onu ÜRETMEnin tek-yolu `protector.open()` (AEAD-verify). Forge/unauthenticated
 //! datagram open()'da `AeadFail` alır → `OpenedTransportShard` ÜRETİLEMEZ → bu köprüye ULAŞAMAZ (authenticate-
-//! before-decode, INV-FEC-1). Ek: **profil-gate** — shard.profile_id ≠ bound-profil → fail-closed (PARAM-bağı).
+//! before-decode, INV-FEC-1). Ek: **profil-gate** — shard.profile_id ≠ bound-profil → fail-closed (PARAM-bağı);
+//! **blok-gate** — çağrıda ikinci block_id ya da blok durumundan farklı inner K_actual → fail-closed (fec-core §6 PATCH-4, §6.5 MADDE-9).
 //!
 //! **N8-firewall:** bu köprü decode-başarısını (RECOVERED) BtlBw/delivered-EAI/credit'e ASLA beslemez —
 //! yalnız app-bytes döndürür (logical-teslim). Kredi yalnız gerçek-wire-ACK (sender.bw.rs, mühürlü).
@@ -18,10 +19,14 @@ use kama_transport_schema::prefix::SourcePrefix;
 /// Authenticated-shard'ları (bound-profil) FEC-decode + reassemble → app-bytes.
 ///
 /// Type-gate: girdi `Vec<OpenedTransportShard>` (open()-üretimi; forge erişemez). Profil-gate:
-/// her shard.profile_id == `bound_profile_id` (aksi fail-closed). `known_zero = k_shape − k_actual`.
+/// her shard.profile_id == `bound_profile_id` (aksi fail-closed). Blok-gate: bir çağrı tek bloktur —
+/// her FEC shard'ının `block_id`'si ilk FEC shard'ınkine (§6.5 MADDE-9: block_id decoder-context'ten),
+/// inner-header `k_actual`'ı `k_actual` parametresine (blok durumu; §6 PATCH-4) eşit olmalı.
+/// `known_zero = k_shape − k_actual`.
 ///
 /// # Errors
 /// [`EngineError::UnknownProfile`] by_id-miss · [`EngineError::ProfileMismatch`] shard-profil≠bound ·
+/// [`EngineError::BlockIdMismatch`] çağrıda ikinci blok · [`EngineError::KActualMismatch`] shard-K_actual≠blok ·
 /// [`EngineError::FecDecode`] reconstruct fail-closed · [`EngineError::Reassembly`] eksik-source/prefix/`k_actual>k_shape`.
 pub fn admit_and_decode(
     shards: Vec<OpenedTransportShard>,
@@ -39,6 +44,8 @@ pub fn admit_and_decode(
     // decode-sonrası bu Vec'ler drop'ta zeroize olur. TYPE-GATE/profil/INV-FEC-1/N8 DEĞİŞMEZ.
     let mut source_syms: Vec<(u16, SensitiveSymbolBytes)> = Vec::new();
     let mut repair_syms: Vec<(u16, SensitiveSymbolBytes)> = Vec::new();
+    // Blok bağlamı: ilk FEC shard'ının block_id'si (tek çağrı = tek blok; §6.5 MADDE-9).
+    let mut block_ctx: Option<u32> = None;
     for shard in shards {
         match shard.into_inner() {
             InnerPlain::FecShard { header, symbol } => {
@@ -47,6 +54,22 @@ pub fn admit_and_decode(
                     return Err(EngineError::ProfileMismatch {
                         shard: header.profile_id,
                         bound: bound_profile_id,
+                    });
+                }
+                // Blok-gate: ikinci bloğun shard'ı bu bloğun decode'una giremez (ESI'ler
+                // çakışmasa da iki blok tek blok gibi çözülmez).
+                let block = *block_ctx.get_or_insert(header.block_id);
+                if header.block_id != block {
+                    return Err(EngineError::BlockIdMismatch {
+                        shard: header.block_id,
+                        block,
+                    });
+                }
+                // K_actual-gate (§6 PATCH-4): inner-header K_actual blok durumuyla uyuşmalı.
+                if header.k_actual != k_actual {
+                    return Err(EngineError::KActualMismatch {
+                        shard: header.k_actual,
+                        block: k_actual,
                     });
                 }
                 match header.kind {

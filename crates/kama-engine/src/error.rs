@@ -12,6 +12,15 @@ pub enum EngineError {
     /// PARAM_SET.profile_id ↔ bound-profil uyuşmazlığı (admission fail-closed).
     #[error("profile mismatch: shard {shard} != bound {bound}")]
     ProfileMismatch { shard: u8, bound: u8 },
+    /// Shard inner-header `block_id`'si çağrının blok bağlamından (ilk FEC shard'ı) farklı: bir
+    /// decode çağrısı tek bloktur, block_id decoder-context'ten gelir (fec-core §6.5 MADDE-9).
+    /// Fail-closed; iki bloğun shard'ları tek blok gibi çözülmez.
+    #[error("block mismatch: shard {shard} != block {block}")]
+    BlockIdMismatch { shard: u32, block: u32 },
+    /// Shard inner-header `k_actual`'ı blok durumundaki K_actual'dan farklı (fec-core §6 PATCH-4:
+    /// «Inner-K_actual ile-active-profile/block-state-uyuşmazsa: packet-REJECT + rank-ARTMAZ»).
+    #[error("k_actual mismatch: shard {shard} != block {block}")]
+    KActualMismatch { shard: u8, block: u8 },
     /// profile_id registry-allowlist dışında (by_id → None; fail-closed).
     #[error("unknown profile_id {0}")]
     UnknownProfile(u8),
