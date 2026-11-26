@@ -382,6 +382,10 @@ pub struct Receiver {
     /// daralma başlangıcından (`RateDropDetector::onset`) kurulan kanıtın ilk seq'i
     /// (`rx_span_field`). Yalnız kanıtlı bırakmada yazılır, her çıkan ACK'te silinir.
     alarm_span_first: Option<u64>,
+    /// [ÇİFT YOKLAMASI · KAPSAMA · DENEY · sahip kararı 2026-11-26, #175 7186813951] Deney açık:
+    /// alarm ACK'inin aralığı yalnız son çıkan ACK'in bildirdiği düzeye göre bir daralmada kesilir
+    /// ([`Self::set_pair_probe_span`]). `false` (varsayılan) = bugünkü kural.
+    pair_probe_span: bool,
     /// [ALARM ARALIĞI · TUR 4 · #175 7087793188] Daralma alarmı verildi, alarm ACK'i kanıtı bekliyor.
     /// Çıkan her ACK'te silinir; bekleme en çok bir ACK sürer.
     ///
@@ -490,6 +494,7 @@ impl Receiver {
             drop_alarm: false,
             diag_drop_alarms: 0,
             alarm_span_first: None,
+            pair_probe_span: false,
             drop_alarm_wait: false,
             alarm_evidence: None,
             alarm_pair_saved: [0, 0],
@@ -754,6 +759,15 @@ impl Receiver {
     /// `pair_rate` tele çıkmaz, etkisizdir. Kural ve türetme: [`PairRate`].
     pub fn set_pair_squeeze_line(&mut self, line_bps: Option<u64>) {
         self.pair.squeeze_line_bps = line_bps.filter(|&l| l > 0);
+    }
+
+    /// [ÇİFT YOKLAMASI · KAPSAMA · DENEY · sahip kararı 2026-11-26, #175 7186813951] Göndericinin
+    /// çift yoklaması deneyiyle birlikte açılır (`Sender::set_pair_probe_datagrams`). Açıkken
+    /// alarm ACK'inin ölçüm aralığı daralma başlangıcından yalnız daralma son çıkan ACK'in
+    /// referansına göre de bir daralmaysa kesilir; referans son ACK'ten sonra yükselmişse
+    /// (yoklama treni) aralık bugünkü tabandan başlar ve treni içerir. Oturum başında çağrılır.
+    pub fn set_pair_probe_span(&mut self, on: bool) {
+        self.pair_probe_span = on;
     }
 
     /// [ACK-BITMAP] Bitmap çerçevesi bu alıcıda yazılıyor mu.
