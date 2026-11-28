@@ -1813,6 +1813,22 @@ impl ForwardCopyLineScale {
 /// ölçülen daha yavaş hat); BBR'ın `kazanç × BtlBw` hızı okunmaz: BtlBw teslim hızıdır ve seyrek
 /// ACK ile ileri yöndeki rastgele kayıpta hattın yarısının altını okur (uçuş tavanının ACK saatine
 /// bağlanmamasıyla aynı neden).
+///
+/// [KARAR 1 · A1 · sahip kararı 2026-11-28] Bu kural etkinken pacing, uçuş tavanı ve burst'ün TEK
+/// kontrolcüsü hat korumasıdır ([`crate::line_guard::LineGuard`]):
+/// * pacing `pace = pacing_cap_bps × min(1, L / P)` (`Sender::cc_feedback_cap`); `L` korumanın o
+///   andaki etkin pacing tavanıdır (ham kapasite ölçüsü değildir), `P` profil hattı;
+/// * uçuş tavanı tam olarak `pace × (feedback_ns + rtprop)` (`Sender::cc_feedback_floor`); BBR
+///   penceresiyle `max` alınmaz (yukarıdaki "en az" bu profilde geçersizdir). Ufuk yapılandırmadan
+///   gelir; geciken ACK ufku ya da tavanı büyütmez;
+/// * burst aynı etkin uçuş tavanından ([`crate::cc::PacerParams::from_window`]; sınırlar ve pacer'ın
+///   hat kapısı aynı).
+///
+/// BBR bu profilde de ACK, kayıp ve RTT muhasebesini yapar (`on_sent`, `on_ack`,
+/// `on_congestion_event`, faz makinesi); penceresi, pacing hızı ve fazları hiçbir karara girmez.
+/// Kayıp pacing hızını düşürmez (Karar 2 / A2). Uçuş tavanı ACK gelene dek güvenle
+/// gönderilebilecek tel baytı bütçesi DEĞİLDİR (sahip, aynı karar, madde 3). Kural kapalıyken
+/// (profil dışı yol) ve eski motorda davranış değişmez.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FeedbackStarvedRule {
     /// Hat hızı tavanı (B/s, UDP gövdesi).
@@ -2757,6 +2773,9 @@ impl Sender {
     }
 
     /// [CC-PORT] Portun uçuş tavanı (bayt); `cc` yokken `u64::MAX` (kapı yok — bugünkü davranış).
+    /// [KARAR 1 · A1 · sahip kararı 2026-11-28] Geri bildirimi aç kural etkinken tavanın tek kaynağı
+    /// hat korumasıdır: [`Self::cc_feedback_floor`] (`pace × (ufuk + rtprop)`). BBR penceresiyle
+    /// (`window_without_recovery`) `max` alınmaz; geciken ACK ufku ya da tavanı büyütmez.
     #[inline]
     fn cc_window(&self) -> u64 {
         let Some(cc) = self.cc.as_ref() else {
@@ -2764,9 +2783,7 @@ impl Sender {
         };
         match self.cc_feedback_starved {
             None => cc.window(),
-            Some(rule) => cc
-                .window_without_recovery()
-                .max(self.cc_feedback_floor(rule)),
+            Some(rule) => self.cc_feedback_floor(rule),
         }
     }
 
@@ -3152,37 +3169,48 @@ impl Sender {
         // (`send_rate_gain_permille`) ve 31 B/s PreConverge tabanı OKUNMAZ; `cc` yokken eski blok.
         if let Some(cc) = self.cc.as_ref() {
             let srtt_ns = dur_ns(self.rtt.srtt().unwrap_or(INITIAL_RTT));
-            let p = crate::cc::PacerParams::from_window(cc.window(), srtt_ns, DEFAULT_MTU);
-            // Uyarlama 7 (cc/bbr.rs başlığı): BBR draft §4.2 `pacing_rate = pacing_gain × BtlBw`
-            // ölçüm varken hız kaynağıdır (Kama pacer'ı hız tabanlı); quinn'in pencere hızı
-            // (1,25·window/srtt) yalnız bant tahmini yokken kullanılır. Burst tavanı quinn formülü.
-            // Sebep: quinn pencere pacer'ı BBR'ın Drain/ProbeBW kazançlarını fiilen yok sayar
-            // (pacing_rate yalnız metrik; B5 bulgusu) → sığ kuyrukta Drain hiç boşaltmaz (ölçüldü,
-            // CC_TRACE: Drain'de kuyruk 6/6 sabit, 60 düşen paket).
-            let mut rate = if cc.pacing_rate() > 0 {
-                cc.pacing_rate()
+            // [KARAR 1 · A1 · sahip kararı 2026-11-28] Kural etkinken burst etkin uçuş tavanından
+            // (hat koruması, [`Self::cc_window`]) hesaplanır; BBR penceresi (recovery ve ProbeRTT
+            // dahil) okunmaz. Burst sınırları (10·MTU … 256·MTU) ve pacer'ın hat kapısı aynıdır.
+            let window = if self.cc_feedback_starved.is_some() {
+                self.cc_window()
             } else {
-                p.rate_bps
+                cc.window()
             };
-            // [ASİMETRİK-YOL] Profil tavanı yalnız ölçümle desteklenmeyen hız payını keser: ilk
-            // örnekten önce pencere hızı (1,25·pencere/100 ms) ve Startup'ın ilk-pencere/min_rtt
-            // hızı profil penceresinden türer, ölçümden değil. Ölçülen hedef (kazanç × BtlBw)
-            // tavanı aşarsa ölçüm kazanır.
-            if let Some(cap) = self.cc_profile_pacing_cap {
-                rate = rate.min(cap.max(cc.measured_pacing_target()));
-            }
-            // [GERİ-BİLDİRİM-AÇ] Bilinen hatta hız tavanı ölçümle de aşılmaz. [HAT-KORUMASI] Hız
-            // hattın kendisidir: profil hattı, ölçülen hat profilden yavaşsa ölçülen hat. BBR'ın
-            // hızı (kazanç × BtlBw) bu yolda okunmaz: BtlBw teslim hızıdır ve seyrek ACK + ileri
-            // yönde rastgele kayıpta hattın yarısının altını okur (ürün testi: 12,5 kB/s hatta
-            // 3,9 kB/s, 6,25 kB/s hatta 2,8–2,9 kB/s). BBR Startup'tan çıkınca (kayıpla tam bant
-            // kabulü, ProbeRTT) hız ona iner, gönderim düşünce teslim ve BtlBw daha da düşer
-            // (ölçüldü, hat koruması varken bu satır BBR hızını okurken: 6,25 kB/s hatta hız
-            // 2,8 → 1,5 → 1,1 kB/s, dosya 60 s'de bitmedi). Uçuş tavanı da aynı nedenle ACK
-            // saatinden bağımsızdır (`cc_window`).
-            if let Some(rule) = self.cc_feedback_starved {
-                rate = self.cc_feedback_cap(rule);
-            }
+            let p = crate::cc::PacerParams::from_window(window, srtt_ns, DEFAULT_MTU);
+            let rate = if let Some(rule) = self.cc_feedback_starved {
+                // [GERİ-BİLDİRİM-AÇ · KARAR 1 · A1] Bilinen hatta hız tavanı ölçümle de aşılmaz.
+                // [HAT-KORUMASI] Hız hattın kendisidir: profil hattı, ölçülen hat profilden
+                // yavaşsa ölçülen hat (korumanın etkin pacing tavanı). BBR'ın hızı (kazanç × BtlBw)
+                // ve profil tavanı kolu bu yolda hiç okunmaz: BtlBw teslim hızıdır ve seyrek ACK +
+                // ileri yönde rastgele kayıpta hattın yarısının altını okur (ürün testi: 12,5 kB/s
+                // hatta 3,9 kB/s, 6,25 kB/s hatta 2,8–2,9 kB/s). BBR Startup'tan çıkınca (kayıpla
+                // tam bant kabulü, ProbeRTT) hız ona iner, gönderim düşünce teslim ve BtlBw daha da
+                // düşer (ölçüldü, hat koruması varken BBR hızı okunurken: 6,25 kB/s hatta hız
+                // 2,8 → 1,5 → 1,1 kB/s, dosya 60 s'de bitmedi). Uçuş tavanı da aynı nedenle ACK
+                // saatinden bağımsızdır (`cc_window`).
+                self.cc_feedback_cap(rule)
+            } else {
+                // Uyarlama 7 (cc/bbr.rs başlığı): BBR draft §4.2 `pacing_rate = pacing_gain ×
+                // BtlBw` ölçüm varken hız kaynağıdır (Kama pacer'ı hız tabanlı); quinn'in pencere
+                // hızı (1,25·window/srtt) yalnız bant tahmini yokken kullanılır. Burst tavanı quinn
+                // formülü. Sebep: quinn pencere pacer'ı BBR'ın Drain/ProbeBW kazançlarını fiilen
+                // yok sayar (pacing_rate yalnız metrik; B5 bulgusu) → sığ kuyrukta Drain hiç
+                // boşaltmaz (ölçüldü, CC_TRACE: Drain'de kuyruk 6/6 sabit, 60 düşen paket).
+                let mut rate = if cc.pacing_rate() > 0 {
+                    cc.pacing_rate()
+                } else {
+                    p.rate_bps
+                };
+                // [ASİMETRİK-YOL] Profil tavanı yalnız ölçümle desteklenmeyen hız payını keser: ilk
+                // örnekten önce pencere hızı (1,25·pencere/100 ms) ve Startup'ın ilk-pencere/min_rtt
+                // hızı profil penceresinden türer, ölçümden değil. Ölçülen hedef (kazanç × BtlBw)
+                // tavanı aşarsa ölçüm kazanır.
+                if let Some(cap) = self.cc_profile_pacing_cap {
+                    rate = rate.min(cap.max(cc.measured_pacing_target()));
+                }
+                rate
+            };
             self.pacer.set_rate(rate);
             self.pacer.set_burst_cap(p.burst_cap);
             if prev_state == SenderState::PreConverge && self.state != SenderState::PreConverge {
@@ -16625,6 +16653,77 @@ mod feedback_starved_tests {
             "kuralla: ACK'siz tabana dek ({starved} B)"
         );
         assert!(rate <= cap, "hız tavanı aşılmaz ({rate} B/s)");
+    }
+
+    /// [KARAR 1 · A1 · sahip kararı 2026-11-28] Kural etkinken uçuş tavanı ve burst yalnız hat
+    /// korumasından gelir. BBR'ın ilk penceresi (2 000 000 B) tabandan (12 000 B/s × (10 s + 100 ms)
+    /// = 121 200 B) büyük: eski kural `max(BBR penceresi, taban)` ACK'siz uçuşu pacing hızında
+    /// sürdürürdü (40 s'de ≈ 480 kB) ve burst BBR penceresinden (2 000 000 × 2 ms / 100 ms = 40 000 B)
+    /// gelirdi. Şimdi ACK'siz gönderim tabanda durur, tavan tam tabandır ve burst tabandan
+    /// hesaplanır (10·MTU alt sınırı). Kural kapalıyken tavan ve burst BBR penceresinden (bayt-aynı).
+    #[test]
+    fn a1_flight_cap_and_burst_ignore_a_larger_bbr_window() {
+        let cap = 12_000u64;
+        let rule = FeedbackStarvedRule {
+            pacing_cap_bps: cap,
+            feedback_ns: 10_000 * MS,
+            line: crate::pacer::LineModel {
+                rate_bps: 12_500,
+                datagram_overhead: 28,
+            },
+            return_line: crate::pacer::LineModel {
+                rate_bps: 62,
+                datagram_overhead: 28,
+            },
+        };
+        let run = |r: Option<FeedbackStarvedRule>| {
+            let mut s = Sender::with_cc_port();
+            s.set_cc_profile_pacing_cap(Some(cap));
+            s.set_cc_initial_window(2_000_000);
+            s.set_cc_feedback_starved(r);
+            let bbr = s.cc.as_ref().map_or(0, crate::cc::Bbr::window);
+            let offers: Vec<(u64, u64)> = (0..800).map(|i| (1000 + i, 1000)).collect();
+            let out = emitted(&mut s, &offers, 40_000);
+            let bytes: u64 = out
+                .iter()
+                .filter(|t| t.kind == TransmitKind::Data)
+                .map(|t| t.size)
+                .sum();
+            let floor = r.map(|r| s.cc_feedback_floor(r));
+            (bbr, floor, s.cc_window(), bytes, s.diag_pacer().2)
+        };
+        let (bbr, floor, window, bytes, burst) = run(Some(rule));
+        let floor = floor.expect("kural");
+        assert!(
+            bbr >= 1_000_000,
+            "BBR penceresi tabandan büyük değil ({bbr} B)"
+        );
+        assert_eq!(floor, 121_200, "taban: tavan × (ufuk + başlangıç RTT'si)");
+        assert_eq!(
+            window, floor,
+            "uçuş tavanı tam taban (BBR penceresiyle max yok)"
+        );
+        assert!(
+            (100_000..=130_000).contains(&bytes),
+            "kuralla: ACK'siz gönderim tabanda durur ({bytes} B)"
+        );
+        assert_eq!(
+            burst,
+            crate::cc::PacerParams::from_window(floor, 100 * MS, DEFAULT_MTU).burst_cap,
+            "burst etkin uçuş tavanından"
+        );
+        let (bbr_plain, _, window_plain, bytes_plain, burst_plain) = run(None);
+        assert_eq!(window_plain, bbr_plain, "kuralsız: tavan BBR penceresi");
+        assert!(
+            bytes_plain > 300_000,
+            "kuralsız: BBR penceresi ACK'siz gönderimi tabanda durdurmaz ({bytes_plain} B)"
+        );
+        assert_eq!(
+            burst_plain,
+            crate::cc::PacerParams::from_window(bbr_plain, 100 * MS, DEFAULT_MTU).burst_cap,
+            "kuralsız: burst BBR penceresinden"
+        );
+        assert!(burst_plain > burst, "iki kol burst'te ayrışır");
     }
 
     /// [ÖLÇÜM-BOŞLUĞU] Parite öncelikli şerit değildir: paritede `unit.id` ESI'dir (0..r) ve öncelik

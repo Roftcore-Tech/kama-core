@@ -49,6 +49,17 @@ INV-RATE-1        [ÜSTÜ ÇİZİLDİ 2026-11-11, CC-PORT — eski metin:] loss 
                   tavan en az hat × (geri bildirim ufku + RTT), pacing profil hattıyla sert sınırlı
                   (ölçüm aşamaz). Loss yine ölçülür, FEC/ARQ'yu ve BBR durumunu besler. Profil kapalı
                   yol ve eski motor 2026-11-11 metnindedir. Kod: `sender::FeedbackStarvedRule`.
+                  [KARAR 1 · A1 · 2026-11-28, sahip kararı — YALNIZ bu profil:] FeedbackStarvedRule
+                  etkinken pacing, uçuş tavanı ve burst'ün TEK kontrolcüsü LineGuard'dır. pace =
+                  P_cap × min(1, L/P); L = LineGuard'ın o andaki etkin pacing tavanı (ham kapasite
+                  ölçüsü değil). Uçuş tavanı = pace × (yapılandırılmış geri bildirim ufku + rtprop);
+                  BBR penceresiyle max alınmaz (2026-11-16'daki "en az hat × (…)" bu profilde bu
+                  hesapla yer değiştirir); geciken ACK ufku ya da tavanı büyütmez. Burst aynı etkin
+                  uçuş tavanından. BBR bu profilde yalnız ACK/kayıp/RTT muhasebesi yapar; pacing,
+                  uçuş ve burst kararına girmez. "Loss pacing hızını düşürmez" geçerli (Karar 2 / A2:
+                  düşük teslim kesri pacing kesme örneği üretmez, istisna yok). Uçuş tavanı ACK'e
+                  dek güvenle gönderilebilecek tel baytı bütçesi DEĞİLDİR. Profil dışı yol ve eski
+                  motor yukarıdaki metinlerdedir. Kod: `sender::FeedbackStarvedRule`, `Sender::cc_window`.
 INV-FEC-1         CODE-THEN-ENCRYPT-AUTHENTICATE-SHARDS: FEC plaintext block'ta encode → per-shard AEAD →
                   wire'da yalnız ciphertext. Alıcı: AEAD verify SONRA decode (authenticate-before-decode).
                   ASLA "encrypt-then-code / ciphertext üstünde FEC" yazma.
@@ -122,6 +133,7 @@ KARAR-KAYDI-2026-11 §2'deki düzeltilmiş hâli main'deyken).
 ✗ transport'a AEAD/anahtar koyma (INV-ENGINE-SOC — kripto ayrı katman)
 ✗ loss ile PACING HIZI düşürme (INV-RATE-1, 2026-11-11 metni; uçuş tavanı recovery_window ile sınırlanabilir)
   [2026-11-16 profil istisnası: geri bildirimi aç profilde uçuş tavanı recovery_window ile sınırlanmaz]
+  [2026-11-28 Karar 1 / A1: o profilde pacing, uçuş ve burst sahibi LineGuard; BBR penceresi/hızı okunmaz]
 ✗ client'ı DHT'ye sokma (hub-mesh only)
 ✗ kripto primitifi registry (pki §13) dışından ekleme
 ✗ ölçülmemiş byte tahmini / "QUIC'i yendik" kanıtsız iddia (§4.4 ölç, varsayma)
@@ -146,6 +158,14 @@ BENCH-01   blackout survival İKİLİ metriği (oturum N-sn kesintiyi sağ atlat
 ```
 
 ## YAMA KAYDI
+
+- 2026-11-28 · KARAR 1 / A1 (sahip, doğrudan karar; #175 yorum 7239882322, aynen): §4 INV-RATE-1'e yalnız geri
+  bildirimi aç profile (`FeedbackStarvedRule`) uygulanan kontrolcü sahipliği paragrafı eklendi; 2026-11-11 ve
+  2026-11-16 metinleri silinmedi, değişmedi. §8 ilgili satıra not. Kod: pacing hesabı (`cc_feedback_cap`) aynı;
+  uçuş tavanı yalnız `cc_feedback_floor` (BBR `window_without_recovery` ile max kaldırıldı); burst etkin uçuş
+  tavanından; BBR muhasebesi çalışır, kararlara girmez. Profil kapalı yol, eski motor ve tel düzeni bayt-aynı.
+  Korunanlar: ham çift kararı (3f328e24), Karar 2 / A2 (b9bbbdb3), süreli yoklama. Spec metinleri (engine-spec
+  §0.3 CC-PORT YAMA'sı, §7.4 INV-ENGINE-BW) bu kayıtla değiştirilmedi.
 
 - 2026-11-16 · İŞ-26 profil paketi (sahip, doğrudan karar; #175 yorum 6920942098): §4 INV-RATE-1'e profil istisnası
   eklendi (2026-11-11 metni silinmedi, değişmedi); §8 ilgili satıra not. Kapsam yalnız `link_rates` verilmiş port
