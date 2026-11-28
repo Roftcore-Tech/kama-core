@@ -210,6 +210,11 @@ pub const DROP_MIN_ARRIVALS: usize = 4;
 pub const DROP_PERMILLE: u64 = 700;
 /// [DARALMA-ALARMI] Referans bu süre yenilenmezse güncel hıza iner (ns).
 pub const DROP_REF_HOLD_NS: u64 = 8_000_000_000;
+/// [DARALMA-ALARMI · EK YOL · sahip kararı 2026-11-28, #175 7239882322] Kısa pencereye
+/// ([`DROP_WINDOW_NS`]) [`DROP_MIN_ARRIVALS`] uygun varış sığmıyorsa son o kadar varışın
+/// değerlendirildiği en uzun geriye bakış (ns). 6 250 B/s hatta 1 074 B / 1 228 B'lik dört düzenli
+/// datagram 515,52 / 589,44 ms'ye yayılır; kısa pencere onları hiç görmez.
+pub const DROP_LOOKBACK_NS: u64 = 1_000_000_000;
 
 /// [ALARM ARALIĞI · TUR 4 · #175 7087793188] Alarm kanıtının datagram zarfı (B): IPv4 (20) + UDP (8).
 /// Alıcı zarfı bilmez; ürün teli IPv4'tür (çalışma zamanının hat modeli aynı zarfı kullanır). Kanıt
@@ -233,13 +238,63 @@ pub const ALARM_EVIDENCE_OVERHEAD: u64 = 28;
 /// Sınır: uygulamanın az göndermesi düzensiz aralıklar üretir (PTT demetleri, metin) ve sık-pencere
 /// sayılmaz. Gönderici kendisi sık ama yavaş gönderirse (tavanı ölçülen hatta indi) alarm çıkar;
 /// bu da bir ACK'in erken çıkmasıdır.
+///
+/// [EK YOL · sahip kararı 2026-11-28, #175 7239882322] Kısa pencereye [`DROP_MIN_ARRIVALS`] varış
+/// sığmıyorsa (dar hatta büyük datagram) en son [`DROP_MIN_ARRIVALS`] varış, en çok
+/// [`DROP_LOOKBACK_NS`] geriye bakılarak, gerçek varış anlarıyla aynı denetimlerden geçer: en az
+/// `DROP_WINDOW_NS / 2` (250 ms) süre, aynı aralık düzeni kuralı ve referansın ‰ [`DROP_PERMILLE`]
+/// eşiği. Ek yol YALNIZ alarm adayı üretir: referansı yazmaz, süresi dolmuş referansla aday
+/// vermez. Adaydan sonrası değişmez ([`AlarmEvidence::sufficient`], ACK aralık uçlarının
+/// eşleşmesi, ACK bütçesi ve yol verme alıcıda). Kısa pencere dört varışı taşıdığında karar,
+/// referans, [`Self::onset`] ve [`Self::alarm_evidence`] bayt-aynıdır: halka [`DROP_LOOKBACK_NS`]
+/// tutar, ana yol yalnız son [`DROP_WINDOW_NS`]'lik görünümü okur.
 #[derive(Debug, Clone, Default)]
 pub struct RateDropDetector {
-    /// `(varış anı, gövde baytı, seq)`; seq yalnız [`Self::on_arrival_seq`] ile gelir.
+    /// `(varış anı, gövde baytı, seq)`; seq yalnız [`Self::on_arrival_seq`] ile gelir. En yeni
+    /// varıştan [`DROP_LOOKBACK_NS`] geriye dek.
     ring: std::collections::VecDeque<(u64, u64, Option<u64>)>,
     reference_bps: u64,
     reference_ns: u64,
     fired: bool,
+    /// [EK YOL] Alarm ek yoldan verildi: [`Self::onset`] ve [`Self::alarm_evidence`] halkanın
+    /// tamamını ([`DROP_LOOKBACK_NS`]) okur; ana yoldan verildiyse yalnız kısa pencereyi.
+    fired_by_lookback: bool,
+    /// [EK YOL · yalnız test] Ek yolu kapatır (değişiklik öncesi kuralın karşı-olgusu).
+    no_lookback: bool,
+}
+
+/// [DARALMA-ALARMI] Bir varış dizisinin sık-pencere hızı (B/s, gövde; ilk varışın baytı sayılmaz):
+/// en az [`DROP_MIN_ARRIVALS`] varış, en az `DROP_WINDOW_NS / 2` süre ve düzenli aralık (en büyük
+/// boşluk ortalamanın 2,5 katını aşmıyor). Değilse `None`. `now_ns` dizinin en yeni varışıdır.
+/// Ana yol ve ek yol aynı hesabı kullanır.
+fn dense_rate<'a>(
+    arrivals: impl Iterator<Item = &'a (u64, u64, Option<u64>)> + Clone,
+    now_ns: u64,
+) -> Option<u64> {
+    let n = arrivals.clone().count();
+    if n < DROP_MIN_ARRIVALS {
+        return None;
+    }
+    let first = arrivals.clone().next().map_or(now_ns, |&(t, _, _)| t);
+    let span = now_ns.saturating_sub(first);
+    if span < DROP_WINDOW_NS / 2 {
+        return None;
+    }
+    let mean_gap = span / (n as u64 - 1);
+    let max_gap = arrivals
+        .clone()
+        .zip(arrivals.clone().skip(1))
+        .map(|(a, b)| b.0.saturating_sub(a.0))
+        .max()
+        .unwrap_or(0);
+    if max_gap.saturating_mul(2) > mean_gap.saturating_mul(5) {
+        return None;
+    }
+    let bytes: u64 = arrivals.skip(1).map(|&(_, b, _)| b).sum();
+    Some(
+        u64::try_from(u128::from(bytes) * 1_000_000_000 / u128::from(span.max(1)))
+            .unwrap_or(u64::MAX),
+    )
 }
 
 impl RateDropDetector {
@@ -255,33 +310,18 @@ impl RateDropDetector {
         while self
             .ring
             .front()
-            .is_some_and(|&(t, _, _)| t.saturating_add(DROP_WINDOW_NS) < now_ns)
+            .is_some_and(|&(t, _, _)| t.saturating_add(DROP_LOOKBACK_NS) < now_ns)
         {
             self.ring.pop_front();
         }
-        if self.ring.len() < DROP_MIN_ARRIVALS {
-            return false;
+        // Kısa pencere görünümü: değişiklik öncesi halkanın tam içeriği.
+        let short = self.short_start();
+        if self.ring.len() - short < DROP_MIN_ARRIVALS {
+            return self.lookback_candidate(now_ns);
         }
-        let first = self.ring.front().map_or(now_ns, |&(t, _, _)| t);
-        let span = now_ns.saturating_sub(first);
-        if span < DROP_WINDOW_NS / 2 {
+        let Some(rate) = dense_rate(self.ring.range(short..), now_ns) else {
             return false;
-        }
-        let n = self.ring.len() as u64;
-        let mean_gap = span / (n - 1);
-        let max_gap = self
-            .ring
-            .iter()
-            .zip(self.ring.iter().skip(1))
-            .map(|(a, b)| b.0.saturating_sub(a.0))
-            .max()
-            .unwrap_or(0);
-        if max_gap.saturating_mul(2) > mean_gap.saturating_mul(5) {
-            return false;
-        }
-        let bytes: u64 = self.ring.iter().skip(1).map(|&(_, b, _)| b).sum();
-        let rate = u64::try_from(u128::from(bytes) * 1_000_000_000 / u128::from(span.max(1)))
-            .unwrap_or(u64::MAX);
+        };
         if rate >= self.reference_bps || now_ns.saturating_sub(self.reference_ns) > DROP_REF_HOLD_NS
         {
             if rate >= self.reference_bps || !self.fired {
@@ -294,6 +334,50 @@ impl RateDropDetector {
             && rate.saturating_mul(1000) < self.reference_bps.saturating_mul(DROP_PERMILLE)
         {
             self.fired = true;
+            self.fired_by_lookback = false;
+            return true;
+        }
+        false
+    }
+
+    /// Kısa pencerenin ilk indisi: en yeni varıştan [`DROP_WINDOW_NS`] geriye (değişiklik öncesi
+    /// halkanın budama kuralı; varış anları artandır).
+    fn short_start(&self) -> usize {
+        let Some(&(newest, _, _)) = self.ring.back() else {
+            return 0;
+        };
+        self.ring
+            .partition_point(|&(t, _, _)| t.saturating_add(DROP_WINDOW_NS) < newest)
+    }
+
+    /// [`Self::onset`] ve [`Self::alarm_evidence`]'in okuduğu görünümün ilk indisi: alarm ek yoldan
+    /// verildiyse halkanın tamamı ([`DROP_LOOKBACK_NS`]), değilse kısa pencere (değişiklik öncesi).
+    fn view_start(&self) -> usize {
+        if self.fired_by_lookback {
+            0
+        } else {
+            self.short_start()
+        }
+    }
+
+    /// [EK YOL · sahip kararı 2026-11-28] Kısa pencereye [`DROP_MIN_ARRIVALS`] varış sığmadığında en
+    /// son [`DROP_MIN_ARRIVALS`] varış (halka en çok [`DROP_LOOKBACK_NS`] geriye) [`dense_rate`]'in
+    /// denetimlerinden geçer ve hızı referansın ‰ [`DROP_PERMILLE`]'inin altındaysa alarm adayıdır.
+    /// Yalnız aday: referans yazılmaz; referans yoksa ya da [`DROP_REF_HOLD_NS`]'i geçtiyse aday yok.
+    fn lookback_candidate(&mut self, now_ns: u64) -> bool {
+        if self.no_lookback || self.fired || self.ring.len() < DROP_MIN_ARRIVALS {
+            return false;
+        }
+        if self.reference_bps == 0 || now_ns.saturating_sub(self.reference_ns) > DROP_REF_HOLD_NS {
+            return false;
+        }
+        let from = self.ring.len() - DROP_MIN_ARRIVALS;
+        let Some(rate) = dense_rate(self.ring.range(from..), now_ns) else {
+            return false;
+        };
+        if rate.saturating_mul(1000) < self.reference_bps.saturating_mul(DROP_PERMILLE) {
+            self.fired = true;
+            self.fired_by_lookback = true;
             return true;
         }
         false
@@ -312,8 +396,8 @@ impl RateDropDetector {
     /// Pencerenin ilk varışı değil: alarm pencere hızı eşiğin altına iner inmez verilir, o anda
     /// pencerenin başı hâlâ eski hızla gelmiş varışları taşır (1 000 B gövde, 80 → 160 ms aralık:
     /// alarm düşüşten 360 ms sonra, pencere hızı 8 333, eşik 8 750; kuyruğun hızı 6 250). Alarm
-    /// durumunda değilse ya da en yeni çift eşiğin altında değilse `None`. Halka sınırlıdır (son
-    /// [`DROP_WINDOW_NS`]).
+    /// durumunda değilse ya da en yeni çift eşiğin altında değilse `None`. Görünüm sınırlıdır: alarm
+    /// ana yoldan verildiyse son [`DROP_WINDOW_NS`], ek yoldan verildiyse son [`DROP_LOOKBACK_NS`].
     #[must_use]
     pub fn onset(&self) -> Option<(u64, Option<u64>)> {
         if !self.fired {
@@ -332,11 +416,11 @@ impl RateDropDetector {
                     * u128::from(DROP_PERMILLE)
                     * u128::from(b.0.saturating_sub(a.0))
         };
-        self.ring
-            .iter()
+        let view = self.ring.range(self.view_start()..);
+        view.clone()
             .rev()
             .skip(1)
-            .zip(self.ring.iter().rev())
+            .zip(view.rev())
             .take_while(|(a, b)| below(a, b))
             .last()
             .map(|(a, _)| (a.0, a.2))
@@ -353,9 +437,9 @@ impl RateDropDetector {
             return None;
         };
         let bound = onset_seq.max(min_seq);
-        let &(first_ns, first_udp, first_seq) = self
-            .ring
-            .iter()
+        let view = self.ring.range(self.view_start()..);
+        let &(first_ns, first_udp, first_seq) = view
+            .clone()
             .filter(|&&(_, _, s)| s.is_some_and(|s| s >= bound))
             .min_by_key(|&&(_, _, s)| s)?;
         let first_seq = first_seq?;
@@ -370,7 +454,7 @@ impl RateDropDetector {
             received: 0,
             reference_bps: self.reference_bps,
         };
-        for &(t, b, s) in &self.ring {
+        for &(t, b, s) in view {
             if let Some(s) = s {
                 ev.on_arrival(t, Some(b), s);
             }
@@ -383,6 +467,7 @@ impl RateDropDetector {
     pub fn on_ack(&mut self, now_ns: u64) {
         if self.fired {
             self.fired = false;
+            self.fired_by_lookback = false;
             self.reference_bps = 0;
             self.reference_ns = now_ns;
         }
@@ -538,6 +623,7 @@ mod tests {
     use super::*;
 
     const MS: u64 = 1_000_000;
+    const SEC: u64 = 1_000_000_000;
 
     #[test]
     fn window_closes_at_the_byte_threshold_and_reports_the_rate() {
@@ -679,6 +765,151 @@ mod tests {
             );
             t += if k % 7 == 6 { 160_000_000 } else { 40_000_000 };
         }
+    }
+
+    /// [EK YOL] Hızlı evre (`fast` arayla, 3 s; referans), `pause` sessizlik, sonra `slow` arayla
+    /// `slow_for` boyunca varışlar. Dönen: adaylar `(an, seq)`, dedektör, yavaş evrenin ilk seq'i.
+    fn lookback_run(
+        no_lookback: bool,
+        body: u64,
+        fast: u64,
+        pause: u64,
+        slow: u64,
+        slow_for: u64,
+    ) -> (Vec<(u64, u64)>, RateDropDetector, u64) {
+        let mut d = RateDropDetector {
+            no_lookback,
+            ..RateDropDetector::default()
+        };
+        let (mut t, mut seq) = (0u64, 0u64);
+        let mut fired = Vec::new();
+        while t < 3 * SEC {
+            if d.on_arrival_seq(t, body, Some(seq)) {
+                fired.push((t, seq));
+            }
+            t += fast;
+            seq += 1;
+        }
+        t += pause;
+        let first_slow = seq;
+        let end = t + slow_for;
+        while t < end {
+            if d.on_arrival_seq(t, body, Some(seq)) {
+                fired.push((t, seq));
+            }
+            t += slow;
+            seq += 1;
+        }
+        (fired, d, first_slow)
+    }
+
+    /// [EK YOL · sahip kararı 2026-11-28, #175 7239882322] Dar regresyon: 6 250 B/s'de dört düzenli
+    /// 1 074 B / 1 228 B'lik (tel; gövde 1 046 / 1 200) datagram 515,52 / 589,44 ms'ye yayılır; kısa
+    /// pencerede en çok üç varış olur. Referans 12 500 B/s'deki hızlı evreden; gönderim 1,2 s
+    /// durup dar hatta yeniden başlar (dört varışın hepsi yeni hatta). Değişiklik öncesi kural (ek
+    /// yol kapalı) hiç aday üretmez. Ek yol dördüncü yeni-hat varışında tek aday üretir, kanıtın
+    /// başı yeni hattadır. `on_ack` sonrası aynı daralma için ikinci aday yok.
+    #[test]
+    fn lookback_alarms_where_four_arrivals_do_not_fit_the_short_window() {
+        for wire in [1_074u64, 1_228] {
+            let body = wire - ALARM_EVIDENCE_OVERHEAD;
+            let fast = wire * SEC / 12_500;
+            let slow = wire * SEC / 6_250;
+            assert_eq!(
+                3 * slow,
+                if wire == 1_074 {
+                    515_520_000
+                } else {
+                    589_440_000
+                },
+                "dört varışın yayıldığı süre"
+            );
+            assert!(2 * slow < DROP_WINDOW_NS && 3 * slow > DROP_WINDOW_NS);
+            let (old, _, _) = lookback_run(true, body, fast, 1_200 * MS, slow, 3 * SEC);
+            assert!(
+                old.is_empty(),
+                "{wire} B: değişiklik öncesi kural aday üretti: {old:?}"
+            );
+            let (new, mut d, first_slow) =
+                lookback_run(false, body, fast, 1_200 * MS, slow, 3 * SEC);
+            assert_eq!(new.len(), 1, "{wire} B: tek aday: {new:?}");
+            let (at, seq) = new[0];
+            assert_eq!(
+                seq,
+                first_slow + 3,
+                "{wire} B: aday dördüncü yeni-hat varışında"
+            );
+            let ev = d.alarm_evidence(0).expect("kanıt");
+            assert!(
+                ev.first_seq() >= first_slow,
+                "{wire} B: kanıtın başı ({}) düşüş öncesinde",
+                ev.first_seq()
+            );
+            assert!(
+                ev.sufficient(),
+                "{wire} B: dört yeni-hat varışının kanıtı yeterli"
+            );
+            // Aynı daralma için ikinci aday yok (referans `on_ack`'te iner).
+            d.on_ack(at);
+            let mut t = at;
+            for k in 1..=20u64 {
+                t += slow;
+                assert!(
+                    !d.on_arrival_seq(t, body, Some(seq + k)),
+                    "{wire} B: on_ack sonrası ikinci aday"
+                );
+            }
+        }
+    }
+
+    /// [EK YOL] Sağlıklı sabit hat: oturum baştan 6 250 B/s'de (1 200 B gövde, 196,48 ms) ve
+    /// 12 500 B/s'de (98,24 ms) sabit: aday yok. Dar hatta kısa pencere hiç dört varış görmediği
+    /// için referans kurulmaz, ek yol referanssız aday vermez.
+    #[test]
+    fn lookback_stays_silent_on_a_steady_line() {
+        for gap in [196_480_000u64, 98_240_000] {
+            let mut d = RateDropDetector::default();
+            let mut t = 0u64;
+            for seq in 0..200u64 {
+                assert!(
+                    !d.on_arrival_seq(t, 1_200, Some(seq)),
+                    "sabit hatta aday (aralık {} ms)",
+                    gap / MS
+                );
+                t += gap;
+            }
+        }
+    }
+
+    /// [EK YOL · sınır] Akış boşluğu: 12 500 B/s (1 200 B gövde, 98,24 ms), `pause` sessizlik, aynı
+    /// hızla devam. Geriye bakıştan (1 s) uzun boşlukta iki kural da aday üretmez. Dört varışlık
+    /// pencerede aralık düzeni kuralı (en büyük ≤ 2,5 × ortalama) iki hızlı aralıkla en çok
+    /// ≈ 980 ms'lik boşluğu geçirir: 600 ms'lik boşlukta ek yol aday üretir. Değişiklik öncesi kural
+    /// 300 ms'lik boşlukta da aday üretir (kısa pencerede dört varış). Bu aday göndericinin kesmesi
+    /// değildir: gönderici de durduğu için aralıkta kuyruk artışı yoktur (`tests/ack_alarm_lookback.rs`).
+    #[test]
+    fn a_flow_gap_longer_than_the_lookback_gives_no_candidate() {
+        let gap = 98_240_000u64;
+        let fired = |no_lookback: bool, pause: u64| {
+            lookback_run(no_lookback, 1_200, gap, pause - gap, gap, 3 * SEC).0
+        };
+        for no_lookback in [true, false] {
+            assert!(
+                fired(no_lookback, 1_500 * MS).is_empty(),
+                "1,5 s boşlukta aday (ek yol kapalı: {no_lookback})"
+            );
+        }
+        assert_eq!(fired(true, 600 * MS).len(), 0, "eski kural 600 ms boşlukta");
+        assert_eq!(
+            fired(false, 600 * MS).len(),
+            1,
+            "ek yol 600 ms boşlukta (sınır)"
+        );
+        assert_eq!(
+            fired(true, 300 * MS).len(),
+            1,
+            "eski kural 300 ms boşlukta (sınır)"
+        );
     }
 
     /// [ALARM ARALIĞI · TUR 4] Kanıtın aritmetiği, 2:1 düşüşte (referans 12 150 B/s gövde = 972 B
