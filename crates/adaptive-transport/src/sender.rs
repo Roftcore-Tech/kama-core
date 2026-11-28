@@ -4126,6 +4126,12 @@ impl Sender {
         let lost = self
             .loss
             .on_ack_with_evidence(&ack.acked_seqs, evidence, now_ns);
+        // [RFC 8985 §6.2 · mekanizma 5 + 9] Kayıp ilan eden ACK bir kurtarmadır: spurious görülmeden
+        // `REORDER_PERSIST_RECOVERIES` kurtarma geçerse tolerans tabana döner (aşağıdaki un-loss
+        // aynı ACK'te spurious teyit ederse sayaç yeniden kurulur).
+        if !lost.is_empty() {
+            self.reorder.note_recovery();
+        }
 
         // [TUR-2a D-1/3] UN-LOSS: kayıp-ilan-edilmiş seq'e ACK geldi → hipotez çürüdü.
         // pending-retransmit İPTAL + kopyalar iptal + note_spurious kablosu + kol-1 RTT adayı.
@@ -4155,7 +4161,7 @@ impl Sender {
                 // [K4G-05b-R] un-loss eşleşmesi canlı kayıttır. `LostRec` hiçbir zaman onarım sembolü
                 // değildir (queue_losses FecParity'yi pending_lost'a sokmaz).
                 confirmed_units.push(rec.unit.id);
-                // §9.3: gözlenen reorder mesafesiyle toleransı yükselt (küçülmez).
+                // §9.3: gözlenen reorder mesafesiyle toleransı yükselt (sönüm: `note_recovery`).
                 self.reorder
                     .note_spurious(u32::try_from(la.saturating_sub(rec.seq)).unwrap_or(u32::MAX));
                 // kol-1: retransmit HENÜZ gönderilmedi → orijinal RTT örneği GEÇERLİ.

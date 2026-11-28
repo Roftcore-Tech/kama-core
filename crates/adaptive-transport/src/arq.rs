@@ -149,10 +149,21 @@ impl ArqScheduler for DeadlineArqScheduler {
     }
 }
 
+/// [RFC 8985 §6.2 · `reo_wnd_persist`] Son spurious teyidinden sonra bu kadar kayıp kurtarması
+/// yeni spurious görmeden geçerse sırasızlık toleransı tabana (`K`) döner (§9.3 "recent").
+pub const REORDER_PERSIST_RECOVERIES: u32 = 16;
+
 /// Adaptif reorder tolerance + spurious-retransmit takibi (§9.3).
+///
+/// [RFC 3449 / 5690 · mekanizma 5 + 9] `recent_max_reorder` yalnız yakın geçmişi taşır: tek bir
+/// spurious teyidi eşiği kalıcı büyütmez. Seyrek ACK'te spurious mesafesi (`largest_acked − seq`)
+/// bir ACK aralığındaki datagram sayısı kadar büyüyebilir; sönüm olmadan paket eşiği oturum
+/// boyunca o mesafenin ρ katında kalır ve tek ACK'teki aralıklardan erken kayıp ilanı kapanır.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ReorderTracker {
     recent_max_reorder: u32,
+    /// Sönüme kalan kurtarma sayısı (spurious teyidinde [`REORDER_PERSIST_RECOVERIES`]).
+    persist_left: u32,
 }
 
 impl ReorderTracker {
@@ -172,15 +183,62 @@ impl ReorderTracker {
 
     /// Spurious retransmit teyidi (retransmit'ten SONRA orijinal ACK / DSACK geldi):
     /// `recent_max_reorder`'ı yükseltir → reorder_thresh↑ → gelecekte daha uzun bekle.
-    /// Küçülmez (max korunur).
+    /// Sönüm sayacını yeniden kurar ([`Self::note_recovery`]).
     pub fn note_spurious(&mut self, observed_reorder: u32) {
         self.recent_max_reorder = self.recent_max_reorder.max(observed_reorder);
+        self.persist_left = REORDER_PERSIST_RECOVERIES;
+    }
+
+    /// [RFC 8985 §6.2] Bir kayıp kurtarması (yeni kayıp ilan eden ACK) spurious görmeden geçti:
+    /// sayaç bir azalır; sıfıra inince `recent_max_reorder` sıfırlanır, eşik `K`'ya döner.
+    pub fn note_recovery(&mut self) {
+        if self.recent_max_reorder == 0 {
+            return;
+        }
+        self.persist_left = self.persist_left.saturating_sub(1);
+        if self.persist_left == 0 {
+            self.recent_max_reorder = 0;
+        }
     }
 
     /// Güncel `recent_max_reorder`.
     #[must_use]
     pub fn recent_max_reorder(&self) -> u32 {
         self.recent_max_reorder
+    }
+}
+
+#[cfg(test)]
+mod reorder_decay_tests {
+    use super::*;
+
+    /// [RFC 8985 §6.2 · mekanizma 5 + 9] Tek spurious teyidi (mesafe 30) eşiği 60'a çıkarır;
+    /// 15 kurtarmadan sonra hâlâ 60, 16.'da `K`'ya (3) döner. Araya giren spurious sayacı yeniden
+    /// kurar. Spurious hiç görülmeyen tracker'da kurtarma etkisizdir.
+    #[test]
+    fn a_single_spurious_decays_after_sixteen_recoveries() {
+        let cfg = RetxConfig::rfc9002_cc_port();
+        let mut t = ReorderTracker::new();
+        t.note_recovery();
+        assert_eq!(t.reorder_thresh(&cfg), 3, "spurious yokken taban");
+        t.note_spurious(30);
+        assert_eq!(t.reorder_thresh(&cfg), 60);
+        for _ in 0..REORDER_PERSIST_RECOVERIES - 1 {
+            t.note_recovery();
+        }
+        assert_eq!(t.reorder_thresh(&cfg), 60, "16. kurtarmadan önce sönmez");
+        t.note_spurious(10);
+        t.note_recovery();
+        assert_eq!(
+            t.reorder_thresh(&cfg),
+            60,
+            "yeni spurious sayacı yeniden kurar"
+        );
+        for _ in 0..REORDER_PERSIST_RECOVERIES - 1 {
+            t.note_recovery();
+        }
+        assert_eq!(t.reorder_thresh(&cfg), 3, "16 kurtarma spurious'suz: taban");
+        assert_eq!(t.recent_max_reorder(), 0);
     }
 }
 
